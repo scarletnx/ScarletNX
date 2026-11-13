@@ -47,6 +47,7 @@ static struct {
        they held (vk_own_room), the pool's free buffers given back to the heap and their bytes, the freed buffers
        waited for */
     u64 room_splits, room_dropped, room_dropped_bytes, room_waits;
+    u64 spilled, spilled_bytes; /* the results made in system memory for want of the device's, since then */
 } g_owned;
 
 /* Landings copy on the compute queue where it is a queue of its own: there the copy waits for the submission that wrote
@@ -186,6 +187,8 @@ static int own_pool_await(u64 size) {
     return 1;
 }
 
+int vk_own_make_room(void) { return own_pool_drop() || (own_pool_await(0) && own_pool_drop()); }
+
 /* At a job's start (a dispatch, a copy), before anything of it is set up: when device memory is short and the
    submission being recorded holds OWN_OPEN_MIN of freed result buffers, that submission ends here, so the GPU does it
    and the buffers come free for the job's own results. A game that loads records hundreds of megabytes of results into
@@ -245,12 +248,15 @@ void vk_own_log(void) {
             OWN_IDLE, (unsigned long long)g_owned.trim_landed, (double)g_owned.trim_bytes / 1048576.0,
             (unsigned long long)g_owned.trim_pooled);
     g_owned.trim_landed = g_owned.trim_bytes = g_owned.trim_pooled = 0;
-    if (g_owned.room_splits || g_owned.room_dropped || g_owned.room_waits)
+    if (g_owned.room_splits || g_owned.room_dropped || g_owned.room_waits || g_owned.spilled)
         LOG("vulkan: kept results short of device memory: %llu submissions ended for the freed buffers they held, "
-            "%llu free buffers of the pool given back (%.1f MB), %llu freed buffers waited for\n",
+            "%llu free buffers of the pool given back (%.1f MB), %llu freed buffers waited for, %llu results made in "
+            "system memory (%.1f MB)\n",
             (unsigned long long)g_owned.room_splits, (unsigned long long)g_owned.room_dropped,
-            (double)g_owned.room_dropped_bytes / 1048576.0, (unsigned long long)g_owned.room_waits);
+            (double)g_owned.room_dropped_bytes / 1048576.0, (unsigned long long)g_owned.room_waits,
+            (unsigned long long)g_owned.spilled, (double)g_owned.spilled_bytes / 1048576.0);
     g_owned.room_splits = g_owned.room_dropped = g_owned.room_dropped_bytes = g_owned.room_waits = 0;
+    g_owned.spilled = g_owned.spilled_bytes = 0;
 }
 
 /* The kept results within the budget. A result is the only copy of the guest bytes it holds, so it stays until the
@@ -349,20 +355,41 @@ VkOwnRes* vk_own_res_new(u64 size, u32 by) {
             free(r);
             return NULL;
         }
-        /* without room, the pool makes it: its free buffers go back to the heap; then a freed buffer of the size
-           that the GPU still uses is waited for and taken; then all of those are, and go back too. Only the last
-           failure is said */
-        int made = vk_buffer_create(&bi, &ai, &r->buf, &r->mem, NULL) == VK_SUCCESS ||
+        /* With device memory short, a freed buffer of the size that the GPU still uses is waited for and taken
+           before more memory is: the results then come no faster than the GPU frees them, where they took the heap
+           to its budget while 370 to 460 MB of freed buffers waited for the GPU, and the rings and the buffer cache
+           found none.
+           Without room, the pool makes it: its free buffers go back to the heap; then a freed buffer of the size is
+           waited for; then all of them are, and go back too. Last, the result is made in system memory, which the
+           GPU reads and writes across the bus: slower, where the dispatch or the copy that makes it was skipped, and
+           what read its bytes after (one game's indirect draws their counts) read what was there before. Only that
+           one's failure is said */
+        int made = 0;
+        u64 usage, budget;
+        vk_mem_use(&usage, &budget);
+        if (usage + want > budget / 5 * 4 && own_pool_await(want)) e = own_pool_take(want);
+        if (!e.buf)
+            made = vk_buffer_create(&bi, &ai, &r->buf, &r->mem, NULL) == VK_SUCCESS ||
                    (own_pool_drop() && vk_buffer_create(&bi, &ai, &r->buf, &r->mem, NULL) == VK_SUCCESS);
-        if (!made && own_pool_await(want) && (e = own_pool_take(want)).buf) {
+        if (!e.buf && !made && own_pool_await(want)) e = own_pool_take(want);
+        if (e.buf) {
             r->buf = e.buf;
             r->mem = e.mem;
             r->size = e.cap;
         } else if (!made) {
             if (own_pool_await(0)) own_pool_drop();
-            if (!VK_OK(vk_buffer_create(&bi, &ai, &r->buf, &r->mem, NULL))) {
-                free(r);
-                return NULL;
+            if (vk_buffer_create(&bi, &ai, &r->buf, &r->mem, NULL) != VK_SUCCESS) {
+                ai.at = DM_HOST;
+                if (g_vk.mem_model == VK_MEM_UMA || !VK_OK(vk_buffer_create(&bi, &ai, &r->buf, &r->mem, NULL))) {
+                    free(r);
+                    return NULL;
+                }
+                r->host = 1;
+                g_owned.spilled++;
+                g_owned.spilled_bytes += want;
+                LOG_LIMIT(1, "vulkan: no device memory for a kept result of %llu KiB: it is in system memory, as "
+                             "each one is that finds none (the statistics count them)\n",
+                          (unsigned long long)(want >> 10));
             }
             made = 1;
         }
@@ -404,7 +431,8 @@ static void res_release(void* res) {
     vk_lock();
     /* the frame recording may still copy from it: the pool keeps it from the next result until the GPU has done what
        is recorded now. A full pool has it destroyed with the frame, as before the pool */
-    if (!own_pool_put(r->buf, r->mem, r->size)) vk_defer_buffer(r->buf, r->mem);
+    /* one in system memory goes with the frame too: the next result is made in the device's, when it has room */
+    if (r->host || !own_pool_put(r->buf, r->mem, r->size)) vk_defer_buffer(r->buf, r->mem);
     vk_unlock();
     free(r);
 }

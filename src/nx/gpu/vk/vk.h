@@ -1307,6 +1307,7 @@ typedef struct VkOwnRes {
                     (vk_own_trim) */
     u8 borrowed; /* buf is another's (the GPU mirror's): letting go of the last reference frees only this record */
     u8 by;       /* VK_OWN_BY_*: what made it, for the statistics */
+    u8 host;     /* buf is in system memory, for want of the device's: not pooled when it is let go */
 } VkOwnRes;
 /* what makes a kept result: a dispatch, a draw that writes guest memory, a copy engine, the video engines, a render
    target written back */
@@ -1334,6 +1335,9 @@ void vk_own_trim(void);
 /* at a job's start (a dispatch, a copy), nothing of it set up: with device memory short, the submission being recorded
    ends when it holds freed result buffers the job's results could take (owned.c) */
 void vk_own_room(void);
+/* for another owner that found no device memory: the pool's free buffers go back to the heap, those the GPU still
+   uses in a submission it has waited for first when none is free. 1 when the heap got memory back (vk_lock held) */
+int vk_own_make_room(void);
 /* guest memory [cpu, cpu + size) watched for the CPU (own_watch), as vk_own_publish traps an owner's: 0, or -1 where it
    can't be (no traps, memory an import holds, memory not in the pool). vk_lock held */
 int vk_own_watch(u64 cpu, u64 size);
