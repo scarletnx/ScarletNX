@@ -30,7 +30,7 @@ SECTIONS = [
     ('bios_math', 615),
     ('dma', 1244),
     ('sio_read', 90),
-    ('sio_timing', 8),
+    ('sio_timing', 4),  # the multi-player four time out on the console, with no cable, and count for nothing
     ('misc_edge', 12),
 ]
 FONT = 0x2C194  # the 96 glyphs from ' ', 8x8 at 4 bits a pixel, in the ROM of e694203
