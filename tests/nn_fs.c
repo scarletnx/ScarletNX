@@ -7,9 +7,11 @@
    archive opened, read and closed by a 64-bit game and by a 32-bit one through its table's adapters (fs.hook's a32):
    the handle and the bytes read take 8 bytes of the game's memory in the first and 4 in the second, and a handle
    the SDK made goes back to the SDK's own code in both. A file's time stamps on a save's mount, MountHost's
-   refusal in both games, and IsMounted, which a native mount answers */
+   refusal in both games, and IsMounted, which a native mount answers. The RomFS of the program at an index: this
+   program's, answered natively, and with "other-program" the stop for another program's */
 #include "nx/nn/fs.c"
 #include "hle/hook/hooks.hook.inc" /* fs.hook's table, and a 32-bit game's */
+#include <stdarg.h>
 #include <stdio.h>
 
 static unsigned checks;
@@ -192,9 +194,15 @@ void plat_sleep_ns(int64_t ns) {
     slept_ns = (u64)ns;
 }
 void fatal(const char* fmt, ...) {
-    fprintf(stderr, "fatal: %s\n", fmt);
+    va_list ap;
+    va_start(ap, fmt);
+    fputs("fatal: ", stderr);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
     exit(1);
 }
+int g_program; /* main.c's: the game's own program unless a check says another */
 
 /* ---- hook.c's: each function is hooked somewhere, and the SDK's own code answers own_answer (0x77 unless a check
    sets another), counted by its symbol */
@@ -266,12 +274,17 @@ static void image_with_file(u8* b) {
 static void text(u32 at, const char* s) { strcpy((char*)mem + at, s); }
 static void outs(void) { memset(mem + RESULT, 0xee, 0x40); }
 
-int main(void) {
+int main(int argc, char** argv) {
     CPU* c = &cpu;
     cpu.mem = mem;
     nnfs_init();
     image(game_image, 4);
     image(data_image_bytes, 12);
+    if (argc > 1 && !strcmp(argv[1], "other-program")) { /* the RomFS of a program that is not this one: the stop */
+        nnfs_query_mount_rom_cache_size_program(c, RESULT, 1);
+        puts("nn_fs: the RomFS of another program was answered");
+        return 1;
+    }
 
     /* a commit of a native mount goes to the core as fs_save_root opened the save: a journaled save's to fs_save_commit,
        whose Result is the function's (WriteModeFileNotClosed, desc 6457, one the SDK stops on), and one whose files
@@ -341,6 +354,34 @@ int main(void) {
     nnfs_unmount(c, NAME);
     CHECK(storages_open == 0);
     CHECK(nnfs_is_path_mounted(c, PATH) == 1 && own_runs == 9); /* unmounted: the SDK's again */
+
+    /* the RomFS of the program at an index (the overloads with an int), through fs.hook's table: this program's, the
+       game's own (0) or a collection's other one (1), answered as the overloads without an index are, with nothing of
+       the SDK's run: the game's cache size, and its tables copied into the cache of a native mount */
+    {
+        u32 versions[HOOK_KEYS] = {0};
+        int first, query = hook_select(&hook_table, SYM_QUERY_ROM_PROGRAM, versions, &first),
+                   mount = hook_select(&hook_table, SYM_MOUNT_ROM_PROGRAM, versions, &first);
+        CHECK(query >= 0 && !strcmp(hook_handler[query], "nnfs_query_mount_rom_cache_size_program"));
+        CHECK(mount >= 0 && !strcmp(hook_handler[mount], "nnfs_mount_rom_program"));
+        for (int program = 0; program < 2; program++) {
+            g_program = program;
+            outs();
+            c->x[0] = RESULT, c->x[1] = (u64)program, c->x[30] = 0x9000, c->pc = 0;
+            hook_fn[query](c, 0);
+            CHECK(c->x[0] == 0 && c->pc == 0x9000 && snx_ld_le64(mem + RESULT) == 0x20 && mem[RESULT + 8] == 0xee);
+            text(NAME, "rom3");
+            memset(mem + CACHE, 0xee, 0x40);
+            c->x[0] = NAME, c->x[1] = (u64)program, c->x[2] = CACHE, c->x[3] = 0x20, c->x[30] = 0x9000, c->pc = 0;
+            hook_fn[mount](c, 0);
+            CHECK(c->x[0] == 0 && c->pc == 0x9000);
+            CHECK(!memcmp(mem + CACHE, game_image + 0x50, 0x20) && mem[CACHE + 0x20] == 0xee);
+            text(PATH, "rom3:/x");
+            CHECK(nnfs_is_path_mounted(c, PATH) == 1 && own_runs == 9);
+            nnfs_unmount(c, NAME);
+        }
+        g_program = 0;
+    }
 
     /* the device's save is asked of the file server as the save of type 3 that no user owns, an account's as type 1
        of its user; the server's answer (here: not there) is the function's */

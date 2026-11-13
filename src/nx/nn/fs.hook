@@ -17,6 +17,10 @@ hook _ZN2nn2fs8MountRomEPKcPvm(const char* name, addr cache, u64 cache_size) -> 
 hook _ZN2nn2fs8MountRomEPKc(const char* name) -> u32 = nnfs_mount_rom_name
 hook _ZN2nn2fs22QueryMountRomCacheSizeEPm(u64* size) -> u32 = nnfs_query_mount_rom_cache_size
 @version(< 1.0.0) a32 hook _ZN2nn2fs22QueryMountRomCacheSizeEPj(u32* size) -> u32 = nnfs_query_mount_rom_cache_size
+# the two above for the program of the application at an index, from SDK 8 (read in 8.2 and 19.3, where they run the
+# same code as those, with the index given)
+hook _ZN2nn2fs8MountRomEPKciPvm(const char* name, i32 program, addr cache, u64 cache_size) -> u32 = nnfs_mount_rom_program
+hook _ZN2nn2fs22QueryMountRomCacheSizeEPmi(u64* size, i32 program) -> u32 = nnfs_query_mount_rom_cache_size_program
 hook _ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE(const char* name, addr uid) -> u32 = nnfs_mount_save_data a32 @version(< 1.0.0)
 hook _ZN2nn2fs19MountDeviceSaveDataEPKc(const char* name) -> u32 = nnfs_mount_device_save_data a32 @version(< 1.0.0)
 hook _ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE(const char* name, u64 application, addr uid) -> u32 = nnfs_mount_save_data_read_only

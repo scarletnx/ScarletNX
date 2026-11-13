@@ -31,6 +31,7 @@
 #include "nx/hle/hle.h"
 #include "nx/hle/services/services.h"
 #include "nx/runtime/arm.h"
+#include "nx/runtime/main.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/common.h"
@@ -41,6 +42,8 @@
 #define SYM_MOUNT_ROM          "_ZN2nn2fs8MountRomEPKcPvm"
 #define SYM_MOUNT_ROM_NAME     "_ZN2nn2fs8MountRomEPKc"
 #define SYM_QUERY_ROM_CACHE    "_ZN2nn2fs22QueryMountRomCacheSizeEPm"
+#define SYM_MOUNT_ROM_PROGRAM  "_ZN2nn2fs8MountRomEPKciPvm"
+#define SYM_QUERY_ROM_PROGRAM  "_ZN2nn2fs22QueryMountRomCacheSizeEPmi"
 #define SYM_UNMOUNT            "_ZN2nn2fs7UnmountEPKc"
 #define SYM_OPEN_FILE          "_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci"
 #define SYM_CLOSE_FILE         "_ZN2nn2fs9CloseFileENS0_10FileHandleE"
@@ -603,15 +606,19 @@ static u32 mount_image(CPU* c, const char* function, u64 name, u64 cache, u64 ca
     return 0;
 }
 
-u32 nnfs_mount_rom(CPU* c, u64 name, u64 cache, u64 cache_size) {
+/* MountRom(name, cache, cache_size), whose own code is the function symbol's */
+static u32 mount_rom(CPU* c, const char* symbol, u64 name, u64 cache, u64 cache_size) {
     pm_lock(&g_nnfs.lock);
     if (game_rom()) {
         pm_unlock(&g_nnfs.lock);
-        return (u32)sdk_own(c, SYM_MOUNT_ROM);
+        return (u32)sdk_own(c, symbol);
     }
     u32 r = mount_image(c, "MountRom", name, cache, cache_size, 0);
     pm_unlock(&g_nnfs.lock);
     return done("MountRom", r);
+}
+u32 nnfs_mount_rom(CPU* c, u64 name, u64 cache, u64 cache_size) {
+    return mount_rom(c, SYM_MOUNT_ROM, name, cache, cache_size);
 }
 
 /* MountRom(name): the SDK allocates its cache itself (SetAllocator's allocator) and frees it at Unmount; the native
@@ -630,17 +637,36 @@ u32 nnfs_mount_rom_name(CPU* c, u64 name) {
     return done("MountRom", r);
 }
 
-u32 nnfs_query_mount_rom_cache_size(CPU* c, u64 size) {
+static u32 query_rom_cache_size(CPU* c, const char* symbol, u64 size) {
     pm_lock(&g_nnfs.lock);
     if (game_rom()) {
         pm_unlock(&g_nnfs.lock);
-        return (u32)sdk_own(c, SYM_QUERY_ROM_CACHE);
+        return (u32)sdk_own(c, symbol);
     }
     u64 n = rom_cache_size(rom_at(0));
     pm_unlock(&g_nnfs.lock);
     if (!size) return done("QueryMountRomCacheSize", R_NULL_ARGUMENT);
     put_size(c, size, n);
     return 0;
+}
+u32 nnfs_query_mount_rom_cache_size(CPU* c, u64 size) { return query_rom_cache_size(c, SYM_QUERY_ROM_CACHE, size); }
+
+/* MountRom and QueryMountRomCacheSize for the program of the application at index, whose RomFS the SDK opens: this
+   program's own when index is this program's (g_program, 0 for a game of one program), answered as the overloads
+   without an index are. The native layer has no other program's RomFS, so the game stops, naming both */
+static void own_program(const char* function, i32 index) {
+    if (index != g_program)
+        fatal("nn::fs::%s: the game asks for the RomFS of program %d of its application, and this is program %d, the "
+              "only one whose RomFS the runtime mounts",
+              function, index, g_program);
+}
+u32 nnfs_mount_rom_program(CPU* c, u64 name, i32 index, u64 cache, u64 cache_size) {
+    own_program("MountRom", index);
+    return mount_rom(c, SYM_MOUNT_ROM_PROGRAM, name, cache, cache_size);
+}
+u32 nnfs_query_mount_rom_cache_size_program(CPU* c, u64 size, i32 index) {
+    own_program("QueryMountRomCacheSize", index);
+    return query_rom_cache_size(c, SYM_QUERY_ROM_PROGRAM, size);
 }
 
 /* The data storage of id (an add-on content's, or a system archive's, as OpenDataStorageByDataId gives it), its tables
