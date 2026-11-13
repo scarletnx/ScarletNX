@@ -712,7 +712,8 @@ static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
    the page cache takes, the ranges the buffer cache copies for one submission. Those go through the stream: a chunk
    has the number of the submission after the one being recorded when it last handed out bytes, and is handed out
    again once that submission is done, whatever the frame. One submission later than the bytes' own, as a wait in
-   the middle of an upload (astc.c's queue) submits between a strip's bytes and the commands that read them. A busy
+   the middle of an upload (astc.c's queue) submits between a strip's bytes and the commands that read them, and
+   later by each split an upload makes after that (stream_carry). A busy
    chunk means another chunk, never a wait. A request bigger than a chunk gets a buffer of its size in whole MiB,
    not of the next doubled size. A chunk no request took for STREAM_IDLE frames goes, a big buffer after
    STREAM_BIG_IDLE: the stream holds what the last frames' busiest moment took */
@@ -783,6 +784,17 @@ u8* vk_stream_upload(u64 size, u64 align, VkBuffer* buf, u64* off) {
     *buf = c->buf;
     *off = at;
     return c->ptr + at;
+}
+/* After a split (vk_submit_split): the chunks that the submission it ended could read are read by the one recording
+   now too, so they stay until the one after it is done. A split is an upload's own, between the bytes it staged and
+   the commands that read them, and an upload makes one after another: a level of BCn blocks encoded again goes to the
+   GPU in up to 16 submissions (texture.c's encode_rows), each of which reads the bytes staged before the first.
+   Without this the second split left those bytes in a chunk that the next request took */
+static void stream_carry(void) {
+    for (u32 i = 0; i < g_cmd.nchunk; i++) {
+        Chunk* c = &g_cmd.chunk[i];
+        if (c->buf && c->ring == XRING_STREAM && c->sub >= g_gval) c->sub = g_gval + 2;
+    }
 }
 /* the stream's chunks that work not yet done reads: their bytes, and the oldest of their submissions that is on the
    queue (0: none is) */
@@ -1111,9 +1123,12 @@ void vk_submit_open(void) {
     if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_READBACK);
 }
 /* vk_submit_open's, counted apart. It takes what the next submission waits for (vk_submit_after's, the sparse binds
-   made since the last), as any submission does */
+   made since the last), as any submission does. It ends a submission in the middle of an upload, so the stream's
+   bytes that the ended one could read go on with the upload (stream_carry) */
 void vk_submit_split(void) {
-    if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_SPLIT);
+    if (!g_fr[g_cur].recording) return;
+    submit(NULL, NULL, 0, VK_SUB_SPLIT);
+    stream_carry();
 }
 /* vk_submit_open's for a piece of a background encode (astc.c), counted apart. It takes what the next submission waits
    for (vk_submit_after's, the sparse binds made since the last), as any submission does */

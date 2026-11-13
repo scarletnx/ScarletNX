@@ -106,3 +106,47 @@ static int check_stream_ring(void) {
     puts("stream ring: two chunks busy at once are two buffers, and both are handed out again once their work is done");
     return 0;
 }
+
+/* An upload splits its submission between the bytes it staged and the commands that read them, and more than once
+   (texture.c's encode_rows: a level of BCn blocks encoded again reads one staged piece from up to 16 submissions).
+   A chunk staged before two splits is still read by what the upload records after them: with both splits' work
+   done it is not handed out again. Once the submission after the last split is done, it is */
+static int check_stream_split(void) {
+    if (!g_settings.stream_ring) {
+        puts("stream ring across splits: skipped with vk_stream_ring=0");
+        return 0;
+    }
+    const u64 chunk = vk_stage_chunk();
+    VkBuffer staged, cur, next, later;
+    u64 off;
+    vk_lock();
+    vk_finish();
+    vk_frame_next();
+    /* two chunks, as the one the stream hands out of is never handed out again */
+    CHECK(vk_stream_upload(chunk, 16, &staged, &off) && !off);
+    CHECK(vk_stream_upload(chunk, 16, &cur, &off) && !off && cur != staged);
+    vk_submit_split();
+    vk_cmd();
+    vk_submit_split();
+    vk_wait_submit(vk_last_submit());
+    vk_cmd(); /* where the upload records the commands that read the first chunk */
+    CHECK(vk_stream_upload(chunk, 16, &next, &off) && !off);
+    const int early = next == staged;
+    vk_finish(); /* those commands, then the submission after them */
+    vk_cmd();
+    vk_finish();
+    const u64 made = vk_ring_made();
+    CHECK(vk_stream_upload(chunk, 16, &later, &off) && !off);
+    const u64 made_after = vk_ring_made();
+    vk_finish();
+    vk_unlock();
+    if (early || made_after != made) {
+        fprintf(stderr,
+                "stream ring: a chunk staged before two splits of an upload was %shanded out again before the "
+                "commands recorded after them went, and %llu buffers were made once they were done (none expected)\n",
+                early ? "" : "not ", (unsigned long long)(made_after - made));
+        return 1;
+    }
+    puts("stream ring: a chunk staged before an upload's splits stays until the commands after them are done");
+    return 0;
+}
