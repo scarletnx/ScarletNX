@@ -75,6 +75,9 @@ int own_watch(u64 addr, u64 size);
 int own_owed_take(u64* addr, u64* size);
 /* 1 when watches cover every byte of [addr, addr + size) */
 int own_watched(u64 addr, u64 size);
+/* 1 when owners and watches together cover every byte of [addr, addr + size), none of them being landed: every page
+   of it is trapped, and own_watch there would arm nothing */
+int own_covered(u64 addr, u64 size);
 /* the watches over [addr, addr + size) go (clipped to it), and their pages open where no entry is left. Nothing lands.
    The caller holds the producer's lock */
 void own_unwatch(u64 addr, u64 size);
