@@ -4871,7 +4871,7 @@ static bool wait_taken(const char* path) {
    in the --data folder, a launch a line of the plan, each line's words "pass=N", "fail=SUITE" and
    "summary=P,F,S,C"; the launches counted beside the report, each after its lines are there */
 static void fake_probe(int argc, char** argv) {
-    char *card = NULL, *runs, *report, *counter, *plan, *line, *word, *last, *text;
+    char *card = NULL, *runs, *report, *counter, *part, *plan, *line, *word, *last, *text;
     int launch, i;
     size_t size;
     for (i = 1; i + 1 < argc; ++i)
@@ -4920,10 +4920,13 @@ static void fake_probe(int argc, char** argv) {
         assert(out && fputs(text, out) >= 0 && !fclose(out));
     }
     free(text);
-    /* counted once its report is written: the test ends a launch (ESC) when it sees the count, and a launch ended
-       before its report leaves no run to go on with */
+    /* counted once its report is written, and put in place whole: the test ends a launch (ESC) as soon as the count's
+       file is there, and a launch ended before its report leaves no run to go on with, one ended before its count's
+       value an empty count */
     text = snx_format("%d", launch + 1);
-    assert(!snx_write_file(counter, text, strlen(text)));
+    part = snx_format("%s.part", counter);
+    assert(!snx_write_file(part, text, strlen(text)) && !plat_replace_file(part, counter));
+    free(part);
     free(text);
     free(plan);
     free(last);
