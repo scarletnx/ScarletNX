@@ -139,7 +139,7 @@ static u64 driver_report(DriverCalls* c, DriverCalls* reported, DriverCalls* out
     return out->n;
 }
 
-void vk_ledger_log(void) {
+u64 vk_ledger_owners(void) {
     char line[320];
     size_t at = 0;
     u64 tagged = 0;
@@ -157,7 +157,11 @@ void vk_ledger_log(void) {
     }
     if (at)
         LOG("vulkan: memory by owner (MB of the device, of the host, of the heap, in allocations):%s\n", line);
+    return tagged;
+}
 
+void vk_ledger_log(void) {
+    u64 tagged = vk_ledger_owners();
     /* what devmem.c holds beside the owners: the free space inside its blocks, which is the device's memory all the
        same, and what a site allocated and did not enter */
     DevMemBudget b[VK_MAX_MEMORY_HEAPS];
