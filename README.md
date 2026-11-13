@@ -21,6 +21,7 @@ download. Games need a Vulkan 1.3 driver, and keys and games must be dumped from
 
 Started with no arguments, ScarletNX opens its [launcher](docs/user/gui.md): **Install Keys** installs your `prod.keys` for
 Switch and your `aes_keys.txt` for the encrypted 3DS games, to `~/.switch` and `~/.3ds` (`%USERPROFILE%` on Windows),
+and your DS's ARM7 BIOS for the DS images whose secure area is still encrypted, to the data folder,
 and **Load Switch NSP/XCI/NRO** picks a dump, recompiles it and starts the game. The command line does the same with
 `scarletnx "Game.xci"` ([Usage](docs/user/usage.md)). To build it yourself, see [Build](docs/dev/build.md).
 

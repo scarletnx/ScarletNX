@@ -127,15 +127,23 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   compiled first, and its recent row shows at once. An APK in a games or dumps folder shows in Games, and Enter runs
   it the same way. R on it says that it runs as it is. See [Android apps](../platforms/android-apps/README.md).
 - **Install Keys**, immediately after the five load entries, blinks red (the theme's `failure` colour, at its
-  `blink_ms`) while no keys are in use, the Switch's or the 3DS's. It prompts you to
+  `blink_ms`) while no keys are in use, the Switch's or the 3DS's. Its screen has a row for each console's file,
+  **Switch** `prod.keys`, **3DS** `aes_keys.txt` and **NDS** `bios7.bin`, each *Installed* or *Not installed*: Up and
+  Down (a pad's D-pad) go over them, a click on one picks its file, and under them the row in focus says where its
+  file goes (*Installs to*). It prompts you to
   pick a keys file (a click on the blinking **[ Pick or drop a keys file ]** in the middle of
-  the screen, the theme's `[prompt]`, or Enter), drop it, or paste its path with Ctrl+V. The file's name says which
-  console's keys it is: a `prod.keys` is the Switch's and is installed to `~/.switch/prod.keys` (or
+  the screen, the theme's `[prompt]`, or Enter), drop it, or paste its path with Ctrl+V. A file picked is the row in
+  focus's; one dropped or pasted goes by its name: a `prod.keys` is the Switch's and is installed to
+  `~/.switch/prod.keys` (or
   `%USERPROFILE%\.switch\prod.keys` on Windows; on Linux, in the user's data folder, it is put there
   instead, `~/.local/share/scarletnx/prod.keys`, which the driver reads before
   `~/.switch`, and names the keys of `~/.switch` it would use until then), and an `aes_keys.txt` is the 3DS's, installed
-  to `~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows), where the 3DS driver reads it. The screen shows both
-  destinations, *Installs to* for the Switch's and *3DS keys to* for the 3DS's. Only **encrypted** 3DS files need the
+  to `~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows), where the 3DS driver reads it. Any other file is the
+  DS's ARM7 BIOS when it is named `bios7.bin`, has 16384 bytes or the NDS row has the focus: it is installed as
+  `bios7.bin` in the data folder (`~/.local/share/scarletnx/bios7.bin`, `%APPDATA%\scarletnx\bios7.bin` on Windows)
+  when its CRC-32 is 0x1280F0D5, the console's, and refused otherwise, the screen saying its size or its CRC-32 and the
+  BIOS's. `scarletnx-nds` decrypts with it a card image whose secure area is still encrypted
+  ([The DS](../platforms/nds/README.md#the-secure-area)). Only **encrypted** 3DS files need the
   3DS keys: a decrypted or homebrew 3DS game runs without an `aes_keys.txt`. It creates the
   folder if needed. Existing keys trigger the bright-red warning
   **Keys already setup. This will overwrite the previous ones**. The screen then says what the try

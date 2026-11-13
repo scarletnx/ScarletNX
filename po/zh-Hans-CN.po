@@ -919,6 +919,12 @@ msgstr "点击此框（或按 Enter）打开文件选择器"
 msgid "Ctrl+V: paste. ESC: back."
 msgstr "Ctrl+V: 粘贴. ESC: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: console. Ctrl+V: paste. ESC: back."
+msgstr "上/下: 主机. Ctrl+V: 粘贴. ESC: 返回."
+
 #: src/gui/main.c
 msgid "Pick or drop a keys file"
 msgstr "选取或拖入密钥文件"
@@ -1138,6 +1144,12 @@ msgstr "X: 即时存档."
 #, snx-keys
 msgid "A: pick a file. B: back."
 msgstr "A: 选取文件. B: 返回."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: console. A: pick a file. B: back."
+msgstr "十字键: 主机. A: 选取文件. B: 返回."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -2540,6 +2552,14 @@ msgid "%zu game(s)"
 msgstr "%zu 个游戏"
 
 #: src/gui/main.c
+msgid "Installed"
+msgstr "已安装"
+
+#: src/gui/main.c
+msgid "Not installed"
+msgstr "未安装"
+
+#: src/gui/main.c
 #, c-format
 msgid "Installs to: %s"
 msgstr "安装到：%s"
@@ -2550,16 +2570,8 @@ msgstr "没有主文件夹"
 
 #: src/gui/main.c
 #, c-format
-msgid "3DS keys to: %s"
-msgstr "3DS 密钥安装到：%s"
-
-#: src/gui/main.c
-msgid "Installed"
-msgstr "已安装"
-
-#: src/gui/main.c
-msgid "Not installed"
-msgstr "未安装"
+msgid "The DS's ARM7 BIOS: %u bytes, CRC-32 0x%08X"
+msgstr "DS 的 ARM7 BIOS：%u 字节，CRC-32 0x%08X"
 
 #: src/gui/main.c
 #, c-format
@@ -5003,12 +5015,24 @@ msgid "M opens the mods and cheats of a recompiled Switch game in focus."
 msgstr "M 打开选中的已重编译 Switch 游戏的模组和金手指。"
 
 #: src/gui/main.c
+msgid "Cannot install bios7.bin: APPDATA is not set"
+msgstr "无法安装 bios7.bin：APPDATA 未设置"
+
+#: src/gui/main.c
+msgid "Cannot install bios7.bin: HOME is not set"
+msgstr "无法安装 bios7.bin：HOME 未设置"
+
+#: src/gui/main.c
 msgid "Cannot install aes_keys.txt: neither USERPROFILE nor HOME is set"
 msgstr "无法安装 aes_keys.txt：USERPROFILE 和 HOME 都未设置"
 
 #: src/gui/main.c
 msgid "Cannot install aes_keys.txt: HOME is not set"
 msgstr "无法安装 aes_keys.txt：HOME 未设置"
+
+#: src/gui/main.c
+msgid "bios7.bin installed: encrypted NDS games can be decrypted now."
+msgstr "bios7.bin 已安装：现在可以解密加密的 NDS 游戏了。"
 
 #: src/gui/main.c
 msgid "aes_keys.txt installed: encrypted 3DS games can be decrypted now."
@@ -5024,8 +5048,34 @@ msgid "Cannot install %s: %s"
 msgstr "无法安装 %s：%s"
 
 #: src/gui/main.c
-msgid "Please drop a readable file named prod.keys or aes_keys.txt."
-msgstr "请拖入名为 prod.keys 或 aes_keys.txt 的可读文件。"
+#, c-format
+msgid "%s is not the DS's ARM7 BIOS: it has %zu bytes, the BIOS %u (CRC-32 0x%08X)."
+msgstr "%s 不是 DS 的 ARM7 BIOS：它有 %zu 字节，BIOS 为 %u 字节（CRC-32 0x%08X）。"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not the DS's ARM7 BIOS: its CRC-32 is 0x%08X, the BIOS's 0x%08X."
+msgstr "%s 不是 DS 的 ARM7 BIOS：它的 CRC-32 是 0x%08X，BIOS 的是 0x%08X。"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s could not be read, or has over %d bytes: the DS's ARM7 BIOS has %u."
+msgstr "无法读取 %s，或它超过 %d 字节：DS 的 ARM7 BIOS 有 %u 字节。"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s could not be read, or has over %d bytes."
+msgstr "无法读取 %s，或它超过 %d 字节。"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not prod.keys, aes_keys.txt or the DS's ARM7 BIOS."
+msgstr "%s 不是 prod.keys、aes_keys.txt 或 DS 的 ARM7 BIOS。"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not a file."
+msgstr "%s 不是文件。"
 
 #: src/gui/main.c
 #, c-format
@@ -6609,6 +6659,12 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "3DS keys to: %s"
+#~ msgstr "3DS 密钥安装到：%s"
+
+#~ msgid "Please drop a readable file named prod.keys or aes_keys.txt."
+#~ msgstr "请拖入名为 prod.keys 或 aes_keys.txt 的可读文件。"
 
 #~ msgid "Adreno only"
 #~ msgstr "仅 Adreno"
