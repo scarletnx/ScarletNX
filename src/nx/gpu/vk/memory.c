@@ -125,6 +125,34 @@ static struct {
     int readers; /* it changes blocks of an image in use: after the work submitted before it */
 } g_bind;
 
+/* An allocation of size bytes of system memory, no bigger than g_vk.alloc_cap, found none while its heap had the
+   room: the driver gives less in one allocation than the device's limit says, and from now on none is bigger than a
+   sixteenth of the cap under what failed. 1 when the cap came down, and the caller asks again within it.
+
+   NVIDIA's driver for a GT 1030 (2 GB, a window of 246 MiB) states a limit of 4 GiB and gives 240 MiB of system memory
+   or of the window at once, not 256, with 18 GB of that heap budgeted (the GPU's own memory gives 1 GiB at once). A
+   compute arena that had grown to 256 MiB for one dispatch's buffers found no memory, and the dispatches after it were
+   skipped. Asking the driver at the start would find the limit before any failure, but the answer is an allocation of
+   that size made and freed: 520 ms there, on every start of every device */
+int vk_alloc_cap_lower(u64 size) {
+    const VkPhysicalDeviceMemoryProperties* mp;
+    DevMemBudget b[VK_MAX_MEMORY_HEAPS];
+    const u64 least = 16ull << 20, step = ALLOC_CAP_DEFAULT / 16;
+    if (size > g_vk.alloc_cap || size <= least || g_vk.mem_model == VK_MEM_UMA) return 0;
+    mp = vk_devmem_props();
+    vk_devmem_budgets(b);
+    u32 h = 0;
+    while (h < mp->memoryHeapCount && (mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)) h++;
+    if (h == mp->memoryHeapCount || b[h].usage + size > b[h].budget) return 0; /* no such heap, or it is full */
+    u64 cap = size > least + step ? size - step : least;
+    LOG("vulkan: the driver had no %llu MiB of system memory in one allocation, with %llu of %llu MiB of the heap in "
+        "use: no allocation is bigger than %llu MiB from now on\n",
+        (unsigned long long)(size >> 20), (unsigned long long)(b[h].usage >> 20),
+        (unsigned long long)(b[h].budget >> 20), (unsigned long long)(cap >> 20));
+    g_vk.alloc_cap = cap;
+    return 1;
+}
+
 void vk_mem_init(int sparse_queue) {
     VkPhysicalDeviceMaintenance3Properties m3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES};
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &m3};
