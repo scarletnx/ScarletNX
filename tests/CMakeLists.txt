@@ -616,6 +616,11 @@ add_executable(snx-test-gui-probe gui_probe.c "${PROJECT_SOURCE_DIR}/src/gui/pro
 snx_test_target(snx-test-gui-probe 99)
 target_link_libraries(snx-test-gui-probe PRIVATE snx_test_common snx_yyjson)
 add_test(NAME gui_probe COMMAND snx-test-gui-probe)
+# the menu's Last Run record, what the system says of a process's end and the kernel's OOM kills (gui/last_run.c)
+add_executable(snx-test-gui-last-run gui_last_run.c "${PROJECT_SOURCE_DIR}/src/gui/last_run.c")
+snx_test_target(snx-test-gui-last-run 99)
+target_link_libraries(snx-test-gui-last-run PRIVATE snx_test_common)
+add_test(NAME gui_last_run COMMAND snx-test-gui-last-run)
 # a mod's IPS, IPS32 and IPSwitch patches: their formats, which module takes one, the played mods' in their order
 add_executable(snx-test-patches patches.c)
 snx_test_target(snx-test-patches 99)

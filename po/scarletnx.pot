@@ -2243,6 +2243,10 @@ msgid "Old Files"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Last Run"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Status"
 msgstr ""
 
@@ -3793,6 +3797,44 @@ msgstr ""
 msgid "was"
 msgstr ""
 
+#: src/gui/main.c
+#, c-format
+msgid "the kernel's out-of-memory killer ended it (oom_kill %lld to %lld in %s), and it held %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "the system ended it: a crash, its memory limit (jetsam), or a close from the app switcher"
+msgstr ""
+
+#: src/gui/main.c
+msgid "a crash (whose report ends its log), a kill (by the system for its memory, or by the user) or a power loss, which the system does not name"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, status %d, importance %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Android stopped it: %s (%s%s%s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Android says %s (%s%s%s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "PSS %s, RSS %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s. The report: %s"
+msgstr ""
+
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
@@ -3917,6 +3959,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Continue: %s holds no run of edenprobe left before its summary"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "No user written: %s"
 msgstr ""
 
@@ -4018,6 +4065,21 @@ msgid "Changed in older versions"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "Android stopped %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s stopped before its summary"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s stopped"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Install Type"
 msgstr ""
 
@@ -4046,6 +4108,14 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Tip: Settings > App > Move Old Files moves them later"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Tip: Settings > App > GPU Drivers' Continue goes on with it later"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Tip: Share Log sends the game's log"
 msgstr ""
 
 #: src/gui/main.c
@@ -4088,6 +4158,40 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Changed %d/%d"
+msgstr ""
+
+#: src/gui/main.c
+msgid "started"
+msgstr ""
+
+#: src/gui/main.c
+msgid "end"
+msgstr ""
+
+#: src/gui/main.c
+msgid "memory"
+msgstr ""
+
+#: src/gui/main.c
+msgid "log"
+msgstr ""
+
+#: src/gui/main.c
+msgid "it ended with an exit, or before its game wrote a log"
+msgstr ""
+
+#: src/gui/main.c
+msgid "none since it started"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Continue goes on from its journal: %d case so far"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Continue goes on from its journal: %d cases so far"
 msgstr ""
 
 #: src/gui/main.c
@@ -4435,6 +4539,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Program ended abnormally (status %d): %s."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Program ended abnormally (status %d)."
 msgstr ""
 
@@ -4616,11 +4725,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "edenprobe left no report in %s"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "%s. The report: %s"
 msgstr ""
 
 #: src/gui/main.c

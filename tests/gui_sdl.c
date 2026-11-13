@@ -18,6 +18,7 @@
 #include <sys/stat.h>     /* a mod's file it may not read */
 #include <sys/statvfs.h>  /* Folders on a disk mounted noexec */
 #include <unistd.h>       /* a cheats folder it may not write */
+#include <signal.h>       /* the fake driver's SIGKILL (oom_killed) */
 #endif
 /* app.ini as the menu writes it: its head, and the Games options' lines that end [app], at their defaults */
 #define APP_INI_HEAD "; Settings > App and Games' View in the launcher, as they were left\n[app]\n"
@@ -612,6 +613,65 @@ static void driver_will(const char* argv_file, int status, const char* say) {
     set_env("SNX_TEST_STATUS", argv_file ? text : NULL);
     set_env("SNX_TEST_SAY", argv_file ? say : NULL);
 }
+#ifdef __linux__
+static bool wait_taken(const char* path);
+/* a run the kernel's out-of-memory killer ends: SIGKILL (status 137) while the OOM kills of the menu's memory cgroup
+   went up, said with the counts, where they are and the memory the run held; its Last Run record beside the run log
+   while it goes, gone at its end. The same SIGKILL with the count where it was: said as before */
+static void oom_killed(App* app, const char* temporary) {
+    char *events = snx_path_join(temporary, "memory.events"), *go = snx_format("%s.go", events);
+    char *program = snx_path_join(temporary, "oom game"), *record = gui_last_run_path(app->run_log), *said, *quoted;
+    assert(record && !snx_write_file(program, "1", 1) && !snx_write_file(events, "oom 0\noom_kill 3\n", 17));
+    app->oom_events = events;
+    set_env("SNX_TEST_OOM", events);
+    for (int same = 0; same < 2; ++same) {
+        SDL_Event e = {0};
+        Uint64 until = SDL_GetTicks() + 10000;
+        size_t size;
+        char* kept;
+        set_env("SNX_TEST_OOM_SAME", same ? "1" : NULL);
+        if (app->finished) leave_run(app);
+        app->menu.selected = GUI_LINUX;
+        app->menu.view = GUI_LOAD_DROP;
+        quoted = snx_format("\"%s\"", program);
+        e.type = SDL_EVENT_DROP_TEXT;
+        e.drop.data = quoted;
+        event(app, &e);
+        free(quoted);
+        assert(app->menu.running && app->oom_before == 3 && !strcmp(app->oom_file, events));
+        kept = (char*)snx_read_file(record, &size); /* the run kept while it goes */
+        assert(kept && strstr(kept, "\nname = oom game\n") && strstr(kept, "\nstarted = ") && !strstr(kept, "probe ="));
+        free(kept);
+        assert(!snx_write_file(go, "", 0));
+        while (app->menu.running && SDL_GetTicks() < until) {
+            pump(app);
+            SDL_Delay(5);
+        }
+        assert(!app->menu.running && app->finished && app->abnormal_exit && !snx_path_exists(record));
+        said =
+            snx_format("Program ended abnormally (status 137): the kernel's out-of-memory killer ended it (oom_kill 3 "
+                       "to 4 in %s), and it held ",
+                       events);
+        if (same)
+            assert(!strcmp(app->message, "Program ended abnormally (status 137)."));
+        else
+            assert(!strncmp(app->message, said, strlen(said)) && app->message[strlen(app->message) - 1] == '.');
+        free(said);
+        assert(!snx_write_file(events, "oom 0\noom_kill 3\n", 17));
+    }
+    leave_run(app);
+    set_env("SNX_TEST_OOM", NULL);
+    set_env("SNX_TEST_OOM_SAME", NULL);
+    app->oom_events = NULL;
+    remove(events);
+    remove(program);
+    free(record);
+    free(program);
+    free(go);
+    free(events);
+    puts("PASS a run the kernel's OOM killer ended, said with its counts; its Last Run record while it goes");
+}
+#endif
 /* what launch() started, run to its end with status: the menu's run to its end screen, or the queue's job to its end,
    its line taken out and the Menu shown. The argv the fake driver got, a string a line (driver_will), which the
    caller frees */
@@ -4876,6 +4936,17 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
     snx_test_crash_said();
 #endif
+#ifdef __linux__
+    if (argc > 1 &&
+        getenv("SNX_TEST_OOM")) { /* oom_killed's run: once let go, its OOM kills up unless _SAME, SIGKILL */
+        const char* events = getenv("SNX_TEST_OOM");
+        char* go = snx_format("%s.go", events);
+        bool taken = wait_taken(go);
+        free(go);
+        if (taken && !getenv("SNX_TEST_OOM_SAME")) assert(!snx_write_file(events, "oom 1\noom_kill 4\n", 17));
+        raise(SIGKILL);
+    }
+#endif
     if (argc > 2 && !strcmp(argv[1], "-r") && strstr(argv[2], "queue game")) {
         /* a recompile of the queue: its blocks one at a time, each once the test makes <input>.step (which it takes),
            then how it ended; the threads and the priority it got on its second line, its pid in <input>.pid */
@@ -8615,6 +8686,9 @@ int main(int argc, char** argv) {
     free(runs);
     remove(program);
     free(program);
+#ifdef __linux__
+    oom_killed(&app, temporary);
+#endif
     char* flags_input = snx_path_join(temporary, "option flags.nro");
     assert(!snx_write_file(flags_input, "fixture", 7));
     input_made = made_game(&app, flags_input, "option flags");
