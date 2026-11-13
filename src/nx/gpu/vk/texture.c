@@ -3223,13 +3223,18 @@ static void tex_take_drawn(Surf* t) {
                 continue;
             }
             /* A 3D block-linear texture can be built a Z slice at a time through 2D targets. The target may be
-               wider than the texture: its rows include the 64-byte GOB padding of a narrow slice. */
-            if (!t->bl || !s->bl || s->f.vk != t->f.vk) continue;
+               wider than the texture: its rows include the 64-byte GOB padding of a narrow slice. A compressed
+               texture takes them as the 2D levels below do, a texel for a block: one game compresses an effect's
+               noise volumes into BC4 a slice at a time, each drawn as a 16x16 RGBA16UI target over a 64x64 slice */
+            if (!t->bl || !s->bl || (s->f.vk != t->f.vk && t->f.bw == 1)) continue;
             u64 lo = 0;
             for (u32 l = 0; l < t->levels; l++) {
                 u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
                 u32 ld = t->depth3d >> l ? t->depth3d >> l : 1, lbh, lbd;
                 u64 size = bl_level_size(t->w, t->h, t->depth3d, &t->f, t->bh, t->bd, t->tile_w, l, &lbh, &lbd);
+                /* a compressed level in blocks, the target's texels (the copy's extent counts those) */
+                lw = (lw + t->f.bw - 1) / t->f.bw;
+                lh = (lh + t->f.bh - 1) / t->f.bh;
                 u32 rowb = lw * t->f.bpp, gobs_x = bl_level_gobs_x(rowb, lh, ld, t->bh, t->bd, t->tile_w);
                 u32 blocks_y = ((lh + 7) / 8 + (1u << lbh) - 1) >> lbh;
                 /* A block is one GOB wide, 2^lbh high and 2^lbd deep, its GOBs Y first and then Z, and the blocks of
