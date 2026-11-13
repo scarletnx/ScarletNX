@@ -273,6 +273,7 @@ function's arguments, or a field added into a struct's tail padding: for those t
 | 16 | `stx`'s result for a store-exclusive whose range the armed monitor covers |
 | 17 | the FP helpers take FPCR by value and return their result with the FPSR flags they raised, and generated functions call `snx_fp_env` on entry |
 | 18 | a program's modules lie one after another, as the console's loader lays them (`src/nx/loader/loader.h`); the contract is as it was |
+| 19 | the route list names the SDK functions the runtime answers natively (nn::fs, time, pl, ngc, nsd, prepo, codec): a module made before calls the SDK's own code, which opens services no longer served; the contract is as it was |
 
 #### Code the game patches
 
