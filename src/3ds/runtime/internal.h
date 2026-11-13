@@ -262,6 +262,7 @@ struct SnxCtrProcess {
     /* where the process's linear heap starts, CTR_LINEAR or CTR_LINEAR_NEW by the kernel version its ExHeader
        names (Azahar Process::GetLinearHeapAreaAddress): page n of FCRAM is linear_base + n * 4096 */
     uint32_t linear_base;
+    unsigned char cpu_configured; /* ptm:sysm ConfigureNew3DSCPU asked for a New 3DS CPU mode, which was said */
     CtrSharedMap shared_maps[8]; /* MapMemoryBlock registrations, kernel ordered */
     /* ControlMemory MAP pairs: target mirrors the heap pages at source; both stay out of FREE and PROTECT until the
        matching UNMAP (Azahar's Aliased and Alias memory states) */
