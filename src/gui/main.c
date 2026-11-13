@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include <SDL3/SDL.h>
+#include "common/utilities/sdl_desktop.h"
 #include "common/utilities/ini_lines.h"
 #ifndef SNX_GUI_NO_MAIN
 #include <SDL3/SDL_main.h>
@@ -21288,6 +21289,7 @@ static bool initialize(App* app, const char* self) {
         free(logs);
     }
 #endif
+    snx_sdl_desktop_hints();
     if (!SDL_Init(SDL_INIT_VIDEO)) return false;
     snx_tr_languages(snx_gui_languages, snx_gui_language_count);
     language_apply(app);

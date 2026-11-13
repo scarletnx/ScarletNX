@@ -4,6 +4,7 @@
    and touch. Runs natively on Wayland and on X11 (SDL_VIDEO_DRIVER=x11 picks X11), and takes the unattended-run
    options (seconds, frames, shot, shot_every, press_len, script: platform/unattended.c). */
 #include "nx/runtime/main.h"
+#include "common/utilities/sdl_desktop.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/pause.h"
 #include "nx/runtime/state.h"
@@ -539,6 +540,7 @@ void video_init(const char* title, const char* addons) {
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
     SDL_SetHint(SDL_HINT_PEN_MOUSE_EVENTS, "0");
+    snx_sdl_desktop_hints();
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
     gamepad_scan();
     /* SDL subsystem initialization belongs to the main thread, before the guest can open audout sessions. */
