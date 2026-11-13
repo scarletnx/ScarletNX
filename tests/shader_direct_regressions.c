@@ -1585,7 +1585,10 @@ static void guarded_handle_merges(void) {
     memcpy(variant, both_sides, sizeof variant);
     variant[4] = other_load & under_p0;
     code = translate(variant, 7, ST_FS, &info, &words, 1);
-    check_refused(code, &info, "untracked texture handle", "different handles under each side stay refused");
+    check_translated(code, &info, "different handles under each side are each bound");
+    check(code && info.ntex == 2 && info.tex[0].bindless && info.tex[1].bindless && info.tex[0].bl_cbuf == 2 &&
+              info.tex[1].bl_cbuf == 2 && info.tex[0].cbuf_off + info.tex[1].cbuf_off == 1,
+          "the sample chooses between c[2][0] and c[2][4] by the handle's value");
     free(code);
     memcpy(variant, both_sides, sizeof variant);
     variant[2] = fmul_r5;
@@ -1610,7 +1613,10 @@ static void guarded_handle_merges(void) {
     memcpy(variant, if_else, sizeof variant);
     variant[2] = other_load;
     code = translate(variant, 7, ST_FS, &info, &words, 1);
-    check_refused(code, &info, "untracked texture handle", "different handles on each side of an SSY stay refused");
+    check_translated(code, &info, "different handles on each side of an SSY are each bound");
+    check(code && info.ntex == 2 && info.tex[0].bl_cbuf == 2 && info.tex[1].bl_cbuf == 2 &&
+              info.tex[0].cbuf_off + info.tex[1].cbuf_off == 1,
+          "the sample after the SSY chooses between both handles");
     free(code);
     memcpy(variant, if_else, sizeof variant);
     variant[2] = fmul_r5;

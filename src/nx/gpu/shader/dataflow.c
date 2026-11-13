@@ -1521,29 +1521,44 @@ int shader_direct_track_image_handle_pair(const ShFlow* f, u32 index, u32 reg, u
     return direct_joined_handle(f, index, reg, bank, off, bank2, off2, depth);
 }
 
-/* The handles reg can hold at index when its writes there don't agree: each one-word handle that a MOV or LDC reads
-   from a constant buffer into reg, by a write that control can carry to index. One program picks its texture with a
-   predicate (@P0 MOV R30, c[2][0x88]; @!P0 MOV R30, c[2][0x100]), and a path around both keeps a handle that it loaded
-   from memory. The translation binds each candidate and takes the sample of the one whose word equals the register
-   when the instruction runs, so a handle from elsewhere that equals a candidate's is that texture too. A MOV from
-   another register adds that register's candidates where the MOV reads it. The count, or 0 when there are none or
-   more than max. */
+/* The handles reg can hold at index when its writes there disagree on the texture: each one-word handle that a MOV or
+   LDC reads from a constant buffer into reg, by a write that reaches index (the reaching definitions). One program
+   picks its texture with a predicate (@P0 MOV R30, c[2][0x88]; @!P0 MOV R30, c[2][0x100]), and a path around both
+   keeps a handle that it loaded from memory. The translation binds each candidate and takes the sample of the one
+   whose word equals the register when the instruction runs, so a handle from elsewhere that equals a candidate's is
+   that texture too, and one that equals none samples zeros. A MOV from another register adds that register's
+   candidates where the MOV reads it. A reaching write that joins two words into a handle (a texture and a sampler)
+   holds no candidate's word, so it refuses them all. Where the reaching definitions aren't known (a BRK anywhere in
+   the program), each write that control can carry to index counts, a superset of them. The count, -1 for a refusal
+   or more than max. */
 static int handle_candidates(const ShFlow* f, u32 index, u32 reg, u32* banks, u32* offs, int count, int max,
                              int depth) {
+    u32 defs[63], ndefs = 0;
+    u64 reach;
+    /* RZ or a copy too deep: a value that isn't a candidate */
     if (reg == 255 || depth > 4) return count;
-    for (u32 k = 11; k < index && count >= 0; k++) {
-        const Op* op = IDX_OK(k) ? f->op[k] : NULL;
-        u32 bank, off, bank2, off2;
-        int seen = 0;
-        if (!op || B(f->insn[k], 0, 8) != reg || !shader_writes_reg(f->insn[k], op->id, reg)) continue;
+    reach = direct_reaching_writes(f, index, reg, defs, &ndefs);
+    if (!reach) {
+        ndefs = 0;
+        for (u32 k = 11; k < index && ndefs < 63; k++)
+            if (IDX_OK(k) && f->op[k] && shader_writes_reg(f->insn[k], f->op[k]->id, reg) &&
+                direct_can_reach(f, k + 1, index) != 0)
+                defs[ndefs++] = k;
+        if (ndefs == 63) return -1;
+        reach = ndefs ? (1ull << ndefs) - 1 : 0;
+    }
+    for (u32 d = 0; d < ndefs && count >= 0; d++) {
+        u32 k = defs[d], bank, off, bank2, off2;
+        const Op* op = f->op[k];
+        int seen = 0, words;
+        if (!(reach >> d & 1) || !op || B(f->insn[k], 0, 8) != reg) continue;
         if (op->id == O_MOV_R) {
-            if (direct_can_reach(f, k + 1, index) != 0)
-                count = handle_candidates(f, k, B(f->insn[k], 20, 8), banks, offs, count, max, depth + 1);
+            count = handle_candidates(f, k, B(f->insn[k], 20, 8), banks, offs, count, max, depth + 1);
             continue;
         }
-        if (op->id != O_MOV_C && op->id != O_LDC) continue;
-        if (direct_handle_definition(f, k, &bank, &off, &bank2, &off2, 0) != 1) continue;
-        if (direct_can_reach(f, k + 1, index) == 0) continue;
+        words = direct_handle_definition(f, k, &bank, &off, &bank2, &off2, depth);
+        if (words == 2) return -1;
+        if (words != 1) continue;
         for (int c = 0; c < count; c++) seen |= banks[c] == bank && offs[c] == off;
         if (seen) continue;
         if (count == max) return -1;
@@ -1552,9 +1567,11 @@ static int handle_candidates(const ShFlow* f, u32 index, u32 reg, u32* banks, u3
     }
     return count;
 }
+/* Only when the handles disagree: with one candidate, the other writes are values the tracker couldn't follow, and a
+   program refused for them stays refused */
 int shader_direct_handle_candidates(const ShFlow* f, u32 index, u32 reg, u32* banks, u32* offs, int max) {
     int count = handle_candidates(f, index, reg, banks, offs, 0, max, 0);
-    return count > 0 ? count : 0;
+    return count > 1 ? count : 0;
 }
 
 /* AL2P's predicate (bits 44-46) is a range check no source describes. The NVN compiler gives every AL2P one, P0 to P6
