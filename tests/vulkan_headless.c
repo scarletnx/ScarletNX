@@ -1834,6 +1834,68 @@ static int check_sparse_texture(void) {
     return 0;
 }
 
+/* The blocks of a sparse texture that show the same guest memory share an allocation only when they show it at the
+   same places (texture.c's keys: mark_pages', and resident_bind_mapped's for an image bound in bricks). Two half
+   tiles of guest memory, 32 KiB each and apart, are mapped under three blocks of level 0, of 128x128 texels each: one
+   then the other under the first block and the third, the other then the one under the second. Each block reads
+   the texels of what is mapped under it: with one allocation for all three, as their runs of memory are the same
+   ones, the second would read the first's */
+static int check_sparse_texture_shared(void) {
+    const u64 gva = 0x49000000, cpu = HEAP_BASE + 0x100000, half = 0x8000, other = cpu + 0x20000;
+    NvnTexture nt = {.d = {.format = NVN_FORMAT_RGBA8,
+                           .target = NVN_TEXTURE_TARGET_2D,
+                           .levels = 8,
+                           .width = 1024,
+                           .height = 1024,
+                           .depth = 1},
+                     .gpu = gva};
+    NvnTexLayout layout;
+    nvn_tex_layout(&nt.d, &layout);
+    u64 low = nvn_tex_level_offset(&nt.d, 3);
+    u64 size = (layout.size + 0xFFF) & ~0xFFFull;
+    u32 tic[8], texel[6] = {0};
+    CHECK(low == 0x540000 && size <= 0x700000 && nvn_tic_encode(&nt, NULL, 0, 0, tic));
+    memset(GP(cpu), 0x5a, (size_t)size);
+    memset(GP(cpu), 0x11, half);
+    memset(GP(other), 0x22, half);
+    gmmu_map(gva + low, cpu + low, size - low); /* the small levels */
+    gmmu_map(gva + 0x200000, cpu, half);        /* texels 0 to 127 of rows 512 to 639: one half, then the other */
+    gmmu_map(gva + 0x208000, other, half);
+    gmmu_map(gva + 0x210000, other, half); /* texels 128 to 255: the other, then the one */
+    gmmu_map(gva + 0x218000, cpu, half);
+    gmmu_map(gva + 0x220000, cpu, half); /* texels 256 to 383: as the first */
+    gmmu_map(gva + 0x228000, other, half);
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    CHECK(t && t->upload_valid);
+    if (!t->sparse && !t->bricks) { /* made whole: every block has its own memory, and nothing is shared */
+        printf("skip: the device makes no RGBA8 textures with memory only where they are mapped\n");
+        vk_unlock();
+        gmmu_space_unmap(gva, size);
+        return 0;
+    }
+    const u32 blocks = vk_image_bound_blocks(t->img), mems = vk_image_bound_memory(t->img);
+    for (u32 b = 0; b < 3; b++) {
+        CHECK(!sparse_texel(t, 0, b * 128 + 10, 600, &texel[2 * b]));
+        CHECK(!sparse_texel(t, 0, b * 128 + 100, 600, &texel[2 * b + 1]));
+    }
+    vk_unlock();
+    gmmu_space_unmap(gva, size);
+    if (texel[0] != 0x11111111u || texel[1] != 0x22222222u || texel[2] != 0x22222222u || texel[3] != 0x11111111u ||
+        texel[4] != 0x11111111u || texel[5] != 0x22222222u || mems > blocks) {
+        fprintf(stderr,
+                "sparse texture, shared blocks: texels %08x %08x of the first block (11111111 22222222 expected), "
+                "%08x %08x of the block with the halves the other way round (22222222 11111111), %08x %08x of the "
+                "third block (11111111 22222222); %u blocks and mip tails with memory on %u allocations\n",
+                texel[0], texel[1], texel[2], texel[3], texel[4], texel[5], blocks, mems);
+        return 1;
+    }
+    printf("Sparse texture, shared blocks: two half tiles under two blocks and the other way round under a third "
+           "read as mapped; %u blocks and mip tails with memory on %u allocations\n",
+           blocks, mems);
+    return 0;
+}
+
 /* A fetch of a multisampled texture's sample (TLDS.MS and TLD.MS, the sample in Rb) translates into a module the
    device takes (the validation layer checks its SPIR-V), with a multisampled texture slot */
 static int check_multisample_shader_gate(void) {
@@ -7247,6 +7309,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_write_tracking());
     CHECK(!check_descriptor_room());
     CHECK(!check_sparse_texture());
+    CHECK(!check_sparse_texture_shared());
     CHECK(!check_desc_pool_arrays());
     /* the pipeline workers: pipeline_threads when given, else all the CPUs but two, two to twelve */
     CHECK(snx_vk_pipeline_workers(0, 8) == 6 && snx_vk_pipeline_workers(0, 12) == 10 &&
