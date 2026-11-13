@@ -555,32 +555,43 @@ int main(void) {
     agb_write16(&board, 0x04000200, 0);
     board.irq_if = 0;
 
-    /* SIOCNT with no cable plugged: the multi-player mode says a child (SI) and a ready line (SD), and a transfer stays
-       busy for its time (mGBA's, which the console's start bit read right after shows in its suite's sio-read.c), then
-       ends with no partner's words and the serial interrupt; the normal mode's SI is pulled up */
+    /* SIOCNT with no cable plugged: the multi-player mode says a child (SI) and a ready line (SD), and its transfer
+       waits for a parent that never comes, its start bit set (the console's in its suite's sio-read.c and sio-timing.c,
+       which times out); the normal mode's SI is pulled up, and its transfer on the internal clock ends after its bits
+       with no partner's word and the serial interrupt, one on the external clock never */
     agb_write16(&board, 0x04000134, 0x0000); /* RCNT: the serial modes */
     board.irq_if = 0;
     agb_write16(&board, 0x04000128, 0x2003); /* multi-player, 115200 bauds */
     CHECK((agb_read16(&board, 0x04000128) & 0x000C) == 0x000C);
     agb_write16(&board, 0x04000128, 0x6083); /* start, the interrupt asked for */
-    CHECK((agb_read16(&board, 0x04000128) & 0x0080) && !(board.irq_if & AGB_IRQ_SERIAL));
-    agb_sio_step(&board, 3139);
-    CHECK(agb_read16(&board, 0x04000128) & 0x0080);
-    agb_sio_step(&board, 1);
-    CHECK(!(agb_read16(&board, 0x04000128) & 0x0080) && agb_read16(&board, 0x04000120) == 0);
-    CHECK(board.irq_if & AGB_IRQ_SERIAL);
-    board.irq_if = 0;
-    agb_write16(&board, 0x04000128, 0x0001); /* normal 8 bit mode, internal clock at 256 KiHz */
+    agb_sio_step(&board, 1u << 20);
+    if (!(agb_read16(&board, 0x04000128) & 0x0080) || (board.irq_if & AGB_IRQ_SERIAL)) {
+        fprintf(stderr,
+                "agb_board: a multi-player child's transfer reads SIOCNT 0x%04X and IF 0x%04X 2^20 cycles on, "
+                "not still busy with no interrupt\n",
+                agb_read16(&board, 0x04000128), board.irq_if);
+        return 1;
+    }
+    agb_write16(&board, 0x04000128, 0x0000); /* normal 8 bit mode, external clock */
     CHECK(agb_read16(&board, 0x04000128) & 0x0004);
-    agb_write16(&board, 0x04000128, 0x0081); /* start, no interrupt: 8 bits of 64 cycles */
+    agb_write16(&board, 0x04000128, 0x4080); /* start, the interrupt asked for: no clock comes */
+    agb_sio_step(&board, 1u << 20);
+    CHECK((agb_read16(&board, 0x04000128) & 0x0080) && !(board.irq_if & AGB_IRQ_SERIAL));
+    agb_write16(&board, 0x04000128, 0x0001); /* the internal clock at 256 KiHz, the start bit cleared */
+    agb_write16(&board, 0x0400012A, 0x00EF); /* SIODATA8, which no partner's byte replaces: 0 */
+    agb_write16(&board, 0x04000128, 0x4081); /* start: 8 bits of 64 cycles */
     if (!(agb_read16(&board, 0x04000128) & 0x0080) || board.sio_cycles != 512) {
         fprintf(stderr,
                 "agb_board: a normal 8 bit transfer reads SIOCNT 0x%04X and takes %u cycles, not busy for 512\n",
                 agb_read16(&board, 0x04000128), board.sio_cycles);
         return 1;
     }
-    agb_sio_step(&board, 512);
-    CHECK(!(agb_read16(&board, 0x04000128) & 0x0080) && !(board.irq_if & AGB_IRQ_SERIAL));
+    agb_sio_step(&board, 511);
+    CHECK((agb_read16(&board, 0x04000128) & 0x0080) && !(board.irq_if & AGB_IRQ_SERIAL));
+    agb_sio_step(&board, 1);
+    CHECK(!(agb_read16(&board, 0x04000128) & 0x0080) && (board.irq_if & AGB_IRQ_SERIAL));
+    CHECK(agb_read16(&board, 0x0400012A) == 0);
+    board.irq_if = 0;
     {
         /* each serial register written all ones in each mode reads back what the console keeps (mGBA's suite's
            sio-read.c): the data halfwords only where the mode has them, SIOCNT and RCNT without their unused bits and

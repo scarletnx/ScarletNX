@@ -176,10 +176,12 @@ static uint16_t io_written(AgbBoard* board, uint32_t byte, uint32_t offset) {
     return board->io[offset];
 }
 
-/* SIOCNT with no link cable plugged, as mGBA's machine without a link driver answers it: the multi-player mode's SI says
-   a child with no parent and SD that the line is ready, the normal modes' SI is pulled up. A transfer started keeps the
-   start bit set for the transfer's time (agb_sio_step), then ends with the data no partner sent, 0, and the serial
-   interrupt when SIOCNT asks for it. A game that looks for a partner finds none and plays alone */
+/* SIOCNT with no link cable plugged, as the console answers it (mGBA's suite's sio-read.c and sio-timing.c): the
+   multi-player mode's SI says a child with no parent and SD that the line is ready, the normal modes' SI is pulled up.
+   A transfer on the internal clock keeps the start bit set for its bits' time (agb_sio_step), then ends with the data
+   no partner sent, 0, and the serial interrupt when SIOCNT asks for it. One that waits for a partner's clock, a
+   multi-player child's or the normal modes' external one, keeps its start bit set and never ends, as the console's
+   times out */
 static void sio_write(AgbBoard* board, uint16_t value) {
     uint16_t old = board->io[0x128 >> 1], rcnt = board->io[0x134 >> 1];
     unsigned mode = ((rcnt & 0xC000) | (value & 0x3000)) >> 12;
@@ -190,12 +192,9 @@ static void sio_write(AgbBoard* board, uint16_t value) {
         value |= 0x0008; /* SD: ready */
     } else if (normal)
         value |= 0x0004; /* SI pulled up */
-    if ((multi || normal) && (value & 0x80) && !(old & 0x80)) {
-        /* mGBA's GBASIOTransferCycles with no partner: a multi-player word at its baud rate (bits 0-1), else 8 or 32
-           bits at 256 KiHz or, with bit 1, 2 MiHz */
-        static const uint32_t multi_cycles[4] = {31976, 8378, 5750, 3140};
-        board->sio_cycles = multi ? multi_cycles[value & 3] : (mode & 1 ? 32u : 8u) * (value & 2 ? 8u : 64u);
-    } else if (!(value & 0x80))
+    if (normal && (value & 0x81) == 0x81 && !(old & 0x80))
+        board->sio_cycles = (mode & 1 ? 32u : 8u) * (value & 2 ? 8u : 64u); /* 8 or 32 bits at 256 KiHz or 2 MiHz */
+    else if (!(value & 0x80))
         board->sio_cycles = 0; /* the start bit cleared: the transfer stops */
     board->io[0x128 >> 1] = value;
 }
@@ -208,12 +207,8 @@ void agb_sio_step(AgbBoard* board, uint32_t cycles) {
     }
     board->sio_cycles = 0;
     uint16_t siocnt = board->io[0x128 >> 1];
-    if (sio_mode(board) == SIO_MULTI)
-        for (uint32_t r = 0x120; r <= 0x126; r += 2) board->io[r >> 1] = 0; /* no partner's word */
-    else {
-        board->io[0x12A >> 1] = 0; /* SIODATA8, and SIODATA32's halves */
-        board->io[0x120 >> 1] = board->io[0x122 >> 1] = 0;
-    }
+    board->io[0x12A >> 1] = 0; /* SIODATA8, and SIODATA32's halves */
+    board->io[0x120 >> 1] = board->io[0x122 >> 1] = 0;
     board->io[0x128 >> 1] = (uint16_t)(siocnt & ~0x0080);
     if (siocnt & 0x4000) agb_irq_request(board, AGB_IRQ_SERIAL);
 }
