@@ -257,6 +257,18 @@ int snx_deploy_runtime(const char* run, const char* exe) {
     free(tmp);
     return rc;
 }
+/* recompile.c's --dump-modules of an XCI or NSP read in place: the dump and folder it was given, and whether it had a
+   data folder to find the keys in */
+static char *dumped, *dumped_into;
+static int dumped_repo;
+int snx_dump_modules_of_dump(const char* dump, const SnxPaths* paths, const char* outdir) {
+    free(dumped);
+    free(dumped_into);
+    dumped = snx_strdup(dump);
+    dumped_into = snx_strdup(outdir);
+    dumped_repo = paths->repo && paths->repo[0];
+    return 0;
+}
 /* recompile.c's: a setting of the recompile, from the generated tables */
 const IniOpt* snx_recompile_setting(const char* key) {
     const IniOpt* o = ini_find(g_recompile_ini, key);
@@ -870,6 +882,20 @@ int main(int argc, char** argv) {
     exe = snx_executable(argv[0]);
     root = snx_temp_dir(NULL);
     CHECK(exe && root);
+    { /* --dump-modules: an XCI or NSP (any case) goes to the in-place reader, with a data folder for its keys; an
+         extracted program that is not there to the loader, which says what it looked for */
+        char program[] = "scarletnx", flag[] = "--dump-modules", nsp[] = "Some Game [v0].NsP", into[] = "dumped";
+        char* nsp_args[] = {program, flag, nsp, into, NULL};
+        char* folder = snx_path_join(root, "no game here");
+        char* folder_args[] = {program, flag, folder, into, NULL};
+        CHECK(snx_driver(4, nsp_args) == 0 && dumped && !strcmp(dumped, nsp) && !strcmp(dumped_into, into) &&
+              dumped_repo);
+        free(dumped);
+        dumped = NULL;
+        CHECK(snx_driver(4, folder_args) != 0 && !dumped);
+        free(folder);
+        puts("PASS --dump-modules reads an XCI or NSP in place, an extracted program through the loader");
+    }
     keys = snx_path_join(root, "provided prod.keys");
     title_keys = snx_path_join(root, "provided title.keys");
     CHECK(!snx_write_file(keys, "header_key = 00112233\n", strlen("header_key = 00112233\n")) &&

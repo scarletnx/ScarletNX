@@ -86,7 +86,8 @@ static void usage(void) {
     puts("  --build-dir DIR        Override this build's build directory\n"
          "  --dump-modules PROGRAM DIR\n"
          "                         Write an extracted program's (or an NRO's) modules as laid out\n"
-         "                         in guest memory into DIR, for tools/symbols.py and tools/disasm.py");
+         "                         in guest memory into DIR, for tools/symbols.py and tools/disasm.py;\n"
+         "                         an XCI or NSP of a game or an update is read in place");
     puts("  --scan-log LOG... [--format json|markdown] [--name NAME]\n"
          "                         Summarize a game's log or the launcher's Share Log file: the build,\n"
          "                         the game, how the run ended and where, unimplemented services");
@@ -1460,7 +1461,20 @@ static int container_path(const char* path) {
    snx_dump_program has the format). Tools read game code through it */
 static int dump_modules(int argc, char** argv) {
     char error[1024];
-    if (argc != 4) return snx_error("--dump-modules takes a program (an extracted game or an NRO) and a folder");
+    if (argc != 4)
+        return snx_error("--dump-modules takes a program (an extracted game, an NRO, or an XCI or NSP of a game or "
+                         "an update) and a folder");
+    if (container_path(argv[2])) { /* read in place, with the keys of the data folder, else ~/.switch */
+        char *self = snx_executable(argv[0]), *dir = self ? snx_dirname(self) : NULL, *data = snx_data_dir(dir);
+        SnxPaths paths = {0};
+        int rc;
+        paths.repo = data ? data : ".";
+        rc = snx_dump_modules_of_dump(argv[2], &paths, argv[3]);
+        free(data);
+        free(dir);
+        free(self);
+        return rc;
+    }
     if (snx_dump_program(argv[2], argv[3], error, sizeof error)) return snx_error("%s", error);
     return 0;
 }
