@@ -488,16 +488,19 @@ static u64 rom_cache_size(const NRom* rm) {
 /* ---- handles */
 
 /* A native handle as the game holds it, of a file or a directory (dir), slot i at generation gen. A 64-bit game's:
-   bit 63, the kind in bit 62, the generation and the index. A 32-bit game's FileHandle and DirectoryHandle are one
-   pointer of 4 bytes: bit 0 set, which no pointer to the SDK's accessor (a heap object) has, bit 1 for a directory,
-   the index in bits 2 to 11 and the low 20 bits of the generation above them */
+   bit 63, the kind in bit 62, the generation and the index above the low 4 bits, which stay 0: the console's handle
+   is a pointer to an accessor the SDK allocates, and a game may keep flags of its own in those bits and mask them off
+   before it passes the handle back. A 32-bit game's FileHandle and DirectoryHandle are one pointer of 4 bytes: bit 0
+   set, which no pointer to the SDK's accessor (a heap object) has, bit 1 for a directory, the index in bits 2 to 11
+   and the low 20 bits of the generation above them */
 #define H32_NATIVE   1u
 #define H32_DIR      2u
 #define H32_GEN_MASK 0xfffffu
+#define H64_LOW      4 /* the low bits a 64-bit handle leaves 0 */
 typedef char nnfs_index_fits_a_handle32[NFILES <= 1024 && NDIRS <= 1024 ? 1 : -1]; /* the index's 10 bits */
 static u64 handle_make(int dir, u32 gen, u32 i) {
     if (g_arm_mod) return H32_NATIVE | (dir ? H32_DIR : 0) | i << 2 | (gen & H32_GEN_MASK) << 12;
-    return (dir ? TAG_DIR : TAG_FILE) | (u64)gen << 32 | (u64)i;
+    return (dir ? TAG_DIR : TAG_FILE) | (u64)gen << 32 | (u64)i << H64_LOW;
 }
 /* h's slot and generation when it is a native handle of the kind, and the bits of a slot's generation it holds: 1 */
 static int handle_parts(u64 h, int dir, u32* i, u32* gen, u32* gen_mask) {
@@ -508,8 +511,8 @@ static int handle_parts(u64 h, int dir, u32* i, u32* gen, u32* gen_mask) {
         *gen_mask = H32_GEN_MASK;
         return 1;
     }
-    if ((h & TAG_MASK) != (dir ? TAG_DIR : TAG_FILE)) return 0;
-    *i = (u32)(h & 0xffffffffu);
+    if ((h & TAG_MASK) != (dir ? TAG_DIR : TAG_FILE) || (h & ((1u << H64_LOW) - 1))) return 0;
+    *i = (u32)(h & 0xffffffffu) >> H64_LOW;
     *gen = (u32)(h >> 32) & 0x3fffffffu;
     *gen_mask = 0x3fffffffu;
     return 1;
@@ -537,6 +540,10 @@ static int is_native(u64 h) { return g_arm_mod ? (h & H32_NATIVE) != 0 : (h & TA
 /* a native handle that no live object has: the game passed a closed one, which the SDK's own code would read freed
    memory for */
 SNX_NORETURN static void stale(const char* function, u64 h) {
+    if (!g_arm_mod && (h & ((1u << H64_LOW) - 1)))
+        fatal("nn::fs::%s: the game passed the handle %llx, whose low %d bits a native handle has clear: flags of the "
+              "game's own left in it, or a save state from a runtime that put a handle's index there",
+              function, (unsigned long long)h, H64_LOW);
     fatal("nn::fs::%s: the game passed the handle %llx, which is closed", function, (unsigned long long)h);
 }
 /* the native file of h, with the lock taken: the caller unlocks */
@@ -1572,7 +1579,7 @@ u32 nnfs_commit_names(CPU* c, u64 names, i32 count) {
    take what a game writes, so nothing is ever missing space: a save and a cache storage are made when they are
    mounted (fs_save_root), and these answer as the runtime's am and fs services do */
 
-#define LIST_HANDLE (TAG_DIR | 0xffffffffu) /* the native cache storage list: an index no directory has */
+#define LIST_HANDLE (TAG_DIR | 0xfffffff0u) /* the native cache storage list: generation 0, which no directory has */
 
 u32 nnfs_ensure_save_data(CPU* c, u64 uid) {
     (void)c, (void)uid;

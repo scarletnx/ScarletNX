@@ -1529,6 +1529,9 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-nn-fs 23)
     snx_service_swipc(snx-test-nn-fs)
     snx_hookgen(snx-test-nn-fs SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/fs.hook" A32_MARKED)
+    add_test(NAME nn_fs_handle_flags COMMAND snx-test-nn-fs handle-flags)
+    set_tests_properties(nn_fs_handle_flags PROPERTIES PASS_REGULAR_EXPRESSION
+        "fatal: nn::fs::CloseFile: the game passed the handle 8000000[0-9a-f]+4, whose low 4 bits a native handle has clear")
     add_test(NAME nn_fs COMMAND snx-test-nn-fs)
     add_test(NAME nn_fs_other_program COMMAND snx-test-nn-fs other-program)
     set_tests_properties(nn_fs_other_program PROPERTIES PASS_REGULAR_EXPRESSION
