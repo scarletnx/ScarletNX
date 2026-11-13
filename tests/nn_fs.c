@@ -52,15 +52,17 @@ static int image_read(const u8* b, u64 off, void* dst, u64 size) {
 /* ---- the file server's core (fs.h), as far as these checks reach it */
 int romfs_peek(u64 off, void* dst, u64 size) { return image_read(game_image, off, dst, size); }
 int romfs_read_guest(u64 off, u64 addr, u64 size) { return image_read(game_image, off, mem + addr, size); }
-/* the reads the native ReadFile hands to fs.c's read pacing: how many, and the last one's storage and range */
+/* the reads the native ReadFile hands to fs.c's read pacing: how many, and the last one's storage and range; each
+   waits pace_wait ns */
 static unsigned paced;
 static const void* paced_storage;
-static u64 paced_off, paced_size;
-void fs_pace_read(const void* storage, u64 off, u64 sz) {
+static u64 paced_off, paced_size, pace_wait;
+u64 fs_pace_read(const void* storage, u64 off, u64 sz) {
     paced++;
     paced_storage = storage;
     paced_off = off;
     paced_size = sz;
+    return pace_wait;
 }
 static unsigned storages_open;
 u32 fs_storage_open(u64 data_id, FsStorage* out) {
@@ -169,6 +171,26 @@ void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+/* the kernel's core and the platform's sleep, as a paced read waits: the sleeps, how many of them the thread spent off
+   its core, and whether it holds its core now */
+static KThread self;
+static int off_core;
+static unsigned slept, slept_off_core, core_misuse;
+static u64 slept_ns;
+KThread* kthread_cur(void) { return &self; }
+void core_leave(KThread* t) {
+    core_misuse += t != &self || off_core;
+    off_core = 1;
+}
+void core_enter(KThread* t) {
+    core_misuse += t != &self || !off_core;
+    off_core = 0;
+}
+void plat_sleep_ns(int64_t ns) {
+    slept++;
+    slept_off_core += off_core;
+    slept_ns = (u64)ns;
+}
 void fatal(const char* fmt, ...) {
     fprintf(stderr, "fatal: %s\n", fmt);
     exit(1);
@@ -341,11 +363,20 @@ int main(void) {
         CHECK(nnfs_read_file(c, RESULT, h, 1, 0x600, 16) == 0 && snx_ld_le64(mem + RESULT) == 4);
         CHECK(!memcmp(mem + 0x600, "ello", 4) && mem[RESULT + 8] == 0xee);
         /* the bytes read go to fs.c's read pacing, as the archive's own storage (not the game's RomFS) at their place
-           in its image */
+           in its image; one it doesn't time waits nothing and keeps the core */
         CHECK(paced == before + 1 && paced_size == 4 && paced_storage && paced_storage != (const void*)&g_hle.fs &&
               paced_off > 1);
+        CHECK(slept == 0 && !off_core && !core_misuse);
+        /* a timed one waits its time off the thread's core, as the console's storage read blocks the thread and its
+           core runs the others, and takes the core back */
+        pace_wait = 8192000;
+        CHECK(nnfs_read_file(c, RESULT, h, 1, 0x600, 16) == 0 && snx_ld_le64(mem + RESULT) == 4);
+        CHECK(paced == before + 2 && slept == 1 && slept_ns == pace_wait && slept_off_core == 1 && !off_core &&
+              !core_misuse);
+        pace_wait = 0;
+        before = paced;
         CHECK(nnfs_read_file(c, RESULT, 0x5000, 0, 0x600, 16) == 0x77 && own(SYM_READ_FILE, 10)); /* the SDK's */
-        CHECK(paced == before + 1); /* the SDK's own read is not timed here */
+        CHECK(paced == before); /* the SDK's own read is not timed here */
         nnfs_close_file(c, h);
     }
     nnfs_unmount(c, NAME);

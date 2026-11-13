@@ -962,7 +962,15 @@ static u32 file_read(const char* function, u64 h, u64 read_out, int want_read, i
         return R_OUT_OF_RANGE;
     /* the game's RomFS is one storage whatever mount reads it (the SDK read it through one IStorage); another
        image is its own */
-    fs_pace_read(rm->game ? (const void*)&g_hle.fs : (const void*)&rm->st, data + (u64)offset, count);
+    u64 wait = fs_pace_read(rm->game ? (const void*)&g_hle.fs : (const void*)&rm->st, data + (u64)offset, count);
+    if (wait) {
+        /* off the thread's core, as the console's storage read blocks the thread and its core runs the others: a
+           movie's decoder, on the core of its read-ahead, set up too late to free its first buffers otherwise */
+        KThread* t = kthread_cur();
+        core_leave(t);
+        plat_sleep_ns((i64)wait);
+        core_enter(t);
+    }
     *n = count;
     return 0;
 }
