@@ -46,6 +46,9 @@ void agb_ppu_write(AgbBoard* board, uint32_t offset, uint16_t value);
 /* The frame's colours: lcd 0 widens each channel's five bits to eight (raw), 1 shows them as the original GBA's unlit
    screen does (gba, gba_color's) */
 void agb_ppu_lcd(AgbBoard* board, int lcd);
-/* Runs the display for the given CPU cycles: scanlines, the blanking flags and the interrupts. */
+/* Runs the display for the given CPU cycles from the board's clock on (its timers move the clock after): scanlines, the
+   blanking flags and the interrupts. */
 void agb_ppu_step(AgbBoard* board, uint32_t cycles);
+/* the first cycle from now on the display raises an interrupt IE lets through, UINT64_MAX for none */
+uint64_t agb_ppu_next_irq(const AgbBoard* board);
 #endif

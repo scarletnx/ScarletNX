@@ -37,6 +37,10 @@ typedef struct {
     uint64_t compared;
     char opt;      /* the -O letter the module compiles at: 2, the setting opt's default, or -O's */
     char* keep_ir; /* the folder the module's IR goes in (--keep-ir), NULL for none */
+    /* the blocks of one instruction the machine steps through where an interrupt is due before a whole block would
+       end: compiled at run time, never in the module or its map, their index of twice their capacity after them */
+    AgbBlock* steps;
+    size_t step_count, step_capacity;
 } AgbRecomp;
 
 void agb_recomp_init(AgbRecomp* recomp, const char* base);
@@ -55,6 +59,10 @@ int agb_recomp_load_cache(AgbRecomp* recomp, AgbBoard* board, char* error, size_
 /* The block at pc in the given ISA, compiling one if the cache does not hold it yet. */
 const AgbBlock* agb_recomp_lookup(AgbRecomp* recomp, AgbBoard* board, uint32_t pc, int thumb, char* error,
                                   size_t error_size);
+/* The block of the one instruction at pc in the given ISA, compiled now if it is not yet or memory holds other code
+   there since: the machine runs these one at a time where an interrupt is due inside a block */
+const AgbBlock* agb_recomp_step(AgbRecomp* recomp, AgbBoard* board, uint32_t pc, int thumb, char* error,
+                                size_t error_size);
 /* Keeps the blocks compiled at run time for the next run, in the map alone, as hints: the module stays as it is, and a
    recompile builds them into it. */
 int agb_recomp_save(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size);
