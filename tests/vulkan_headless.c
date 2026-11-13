@@ -6706,6 +6706,17 @@ static int check_vk12_way(void) {
     } else {
         CHECK(g_vk.api >= VK_API_VERSION_1_3 && version == 0x00010600u && g_vk.feat12.pNext == &g_vk.feat13);
     }
+    /* the shader cache's file keys on that version past its guest part: a vk_api=1.2 run translates again the shaders
+       a 1.3 run on the same device kept in SPIR-V 1.6, which the 1.2 way takes not, and keeps the file's pipelines */
+    char key[1024], other[1024];
+    size_t guest = 0, other_guest = 0;
+    CHECK(spv_emit_version() == version);
+    vk_pipeline_file_key(key, sizeof key, &guest);
+    spv_emit_set_version(version == 0x00010600u ? 0x00010500u : 0x00010600u);
+    vk_pipeline_file_key(other, sizeof other, &other_guest);
+    spv_emit_set_version(version);
+    CHECK(guest && other_guest == guest && !memcmp(key, other, guest));
+    CHECK(strcmp(key + guest, other + other_guest) != 0);
     /* a device with all of them but dynamic rendering, its store op NONE from the EXT */
     VkExtensionProperties list[16] = {{0}};
     static const char* const have[] = {

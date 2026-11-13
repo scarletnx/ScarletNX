@@ -507,6 +507,8 @@ void spv_emit_init(SpvEmitter* e, size_t estimated_function_words);
 /* the SPIR-V version of the modules spv_emit_init starts from then on: 0x00010600 (1.6) until it is set. A Vulkan 1.2
    device takes 1.5 at most */
 void spv_emit_set_version(uint32_t version);
+/* that version */
+uint32_t spv_emit_version(void);
 void spv_emit_destroy(SpvEmitter* e);
 uint32_t spv_emit_id(SpvEmitter* e);
 /* the GLSL.std.450 import, made on the first call */

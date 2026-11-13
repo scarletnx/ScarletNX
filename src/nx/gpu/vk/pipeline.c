@@ -12,7 +12,7 @@
 #include "nx/runtime/options.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/shader/shader.h"
-#include "common/utilities/spirv_emit.h" /* SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR, the scanner's */
+#include "common/utilities/spirv_emit.h" /* SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR, the scanner's; the version */
 #include "nx/gpu/shader/sm86.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -2632,9 +2632,9 @@ static void pf_key(char* out, size_t n, size_t* guest) {
     if (*guest)
         snprintf(
             out + *guest, n - *guest,
-            " %s%s driver=%u api=%u uuid=%s ftz=%d quad=%d,%d mixed_dot=%d hmma_coop=%d hmma_pairs=%d hmma_stage=%d half_flush=%d "
+            " %s%s driver=%u api=%u spirv=%x uuid=%s ftz=%d quad=%d,%d mixed_dot=%d hmma_coop=%d hmma_pairs=%d hmma_stage=%d half_flush=%d "
             "hmma_f16=%d sizes=%u,%u vertex_bounds=%d",
-            snx_build_info(), exe, d->driverVersion, d->apiVersion, uuid, g_vk_ftz, g_shader_quad,
+            snx_build_info(), exe, d->driverVersion, d->apiVersion, (unsigned)spv_emit_version(), uuid, g_vk_ftz, g_shader_quad,
             g_shader_quad_compute, g_shader_mixed_dot, g_shader_hmma_coop, g_shader_hmma_pairs, g_shader_hmma_stage,
             g_shader_half_flush, g_shader_hmma_f16, (unsigned)sizeof(ShaderInfo), (unsigned)sizeof(PfShader),
             g_vk.has_vertex_robustness2);
