@@ -335,9 +335,15 @@ int main(void) {
     {
         u64 h = snx_ld_le64(mem + RESULT);
         outs();
+        unsigned before = paced;
         CHECK(nnfs_read_file(c, RESULT, h, 1, 0x600, 16) == 0 && snx_ld_le64(mem + RESULT) == 4);
         CHECK(!memcmp(mem + 0x600, "ello", 4) && mem[RESULT + 8] == 0xee);
+        /* the bytes read go to fs.c's read pacing, as the archive's own storage (not the game's RomFS) at their place
+           in its image */
+        CHECK(paced == before + 1 && paced_size == 4 && paced_storage && paced_storage != (const void*)&g_hle.fs &&
+              paced_off > 1);
         CHECK(nnfs_read_file(c, RESULT, 0x5000, 0, 0x600, 16) == 0x77 && own(SYM_READ_FILE, 10)); /* the SDK's */
+        CHECK(paced == before + 1); /* the SDK's own read is not timed here */
         nnfs_close_file(c, h);
     }
     nnfs_unmount(c, NAME);
