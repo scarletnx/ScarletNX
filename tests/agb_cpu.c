@@ -260,7 +260,7 @@ int main(void) {
         cpu.arm.r[9] = 0x02000510;
         cpu.arm.r[15] = 0x03000A80;
         cpu.arm.cpsr = 0x1F;
-        board.cpu_halted = cpu.wait = 0;
+        board.cpu_halted = 0;
         CHECK(!agb_cpu_run(&board, &cpu, &recomp, AGB_SCANLINE_CYCLES * AGB_FRAME_LINES, audio, AGB_APU_RATE, &written,
                            error, sizeof error));
         CHECK(agb_read32(&board, 0x02000600) == 5 && agb_read32(&board, 0x02000604) == 6);
