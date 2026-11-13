@@ -475,7 +475,7 @@ void vk_uma_gpu_reads(int on) { (void)on; }
 int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off) {
     return (void)cpu, (void)len, (void)buf, (void)off, 0;
 }
-void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2) {
+void vk_defer_image(VkImage img, DevMem a, VkImageView v1, VkImageView v2) {
     (void)img, (void)a, (void)v1, (void)v2;
 }
 static u64 g_hashes;                   /* vk_hash's calls */
@@ -519,6 +519,7 @@ VkFormat vk_srgb_as(VkFormat f, int srgb) {
     return f;
 }
 void vk_surf_add(Surf* s) { (void)s; }
+void vk_tex_made(const Surf* t) { (void)t; } /* gpu/vk/tex_report.c's count, which no test here reads */
 void vk_surf_touch(Surf* s) { (void)s; }
 void vk_surf_relist(Surf* s) { (void)s; }
 u32 vk_surf_gen(void) {
@@ -533,6 +534,7 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
     (void)before, (void)want;
     return 0;
 }
+void vk_surf_ended_frame(void) {}
 u32 vk_present_before(u64 ago_ns, u32 presents) {
     (void)ago_ns, (void)presents;
     return 0;
@@ -547,7 +549,7 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
     return (VkFmt){0};
 }
 VkFmt vk_tic_format_3d(u32 w0, int srgb) { return vk_tic_format(w0, srgb); }
-VkImage vk_unscaled_image(const Surf* s, u32 layers, VmaAllocation* mem) {
+VkImage vk_unscaled_image(const Surf* s, u32 layers, DevMem* mem) {
     (void)s, (void)layers, (void)mem;
     return VK_NULL_HANDLE;
 }
@@ -634,13 +636,22 @@ void vk_all_barrier(VkCommandBuffer cb) {
     (void)cb;
     all_bars++;
 }
-VkResult vmaCreateImage(VmaAllocator a, const VkImageCreateInfo* ii, const VmaAllocationCreateInfo* ai, VkImage* img,
-                        VmaAllocation* mem, VmaAllocationInfo* info) {
-    (void)a, (void)ii, (void)ai, (void)img, (void)mem, (void)info;
+VkResult vk_devmem_image(const VkImageCreateInfo* ii, const DevMemWant* ai, VkImage* img, DevMem* mem) {
+    (void)ii, (void)ai, (void)img, (void)mem;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 }
-int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u64* bytes) {
-    (void)ii, (void)img, (void)mem, (void)bytes;
+/* tex_tag asks where a sampled texture's memory is, for the report of a stopped GPU: no image has memory here */
+void vk_devmem_info(DevMem mem, DevMemInfo* info) {
+    (void)mem;
+    *info = (DevMemInfo){0};
+}
+const VkPhysicalDeviceMemoryProperties* vk_devmem_props(void) {
+    static const VkPhysicalDeviceMemoryProperties none = {0};
+    return &none;
+}
+int vk_mem_heap(void) { return 0; }
+int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes) {
+    (void)ii, (void)img, (void)mem, (void)owner, (void)bytes;
     return 0;
 }
 /* images with memory only where it is bound: of the shape g_res.shape gives (none while its block is 0 texels), their
@@ -661,8 +672,12 @@ int vk_image_create_resident(const VkImageCreateInfo* ii, const VkResidentShape*
     *img = (VkImage)(uintptr_t)0x5E5;
     return g_res.shape.block.width != 0;
 }
-int vk_image_resident(VkImage img, u8* want, u32 n, u64* bytes) {
-    (void)img;
+u64 vk_image_resident_need(VkImage img, const u8* want, const u64* keys, u32 n) {
+    (void)img, (void)want, (void)keys, (void)n;
+    return 0;
+}
+int vk_image_resident(VkImage img, u8* want, const u64* keys, u32 n, u64* bytes) {
+    (void)img, (void)keys;
     *bytes = 0;
     if (n > sizeof g_res.bound) return 0;
     g_res.pages = n;
@@ -682,12 +697,12 @@ const VkSparseShape* vk_image_sparse_shape(VkImage img) {
     (void)img;
     return NULL;
 }
-int vk_image_sparse_bind(VkImage img, const u8* bits, u64* bytes) {
-    (void)img, (void)bits, (void)bytes;
+int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* bytes) {
+    (void)img, (void)bits, (void)keys, (void)bytes;
     return -1;
 }
-u64 vk_image_sparse_need(VkImage img, const u8* bits) {
-    (void)img, (void)bits;
+u64 vk_image_sparse_need(VkImage img, const u8* bits, const u64* keys) {
+    (void)img, (void)bits, (void)keys;
     return 0;
 }
 int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32 z0, u32 z1, int all) {

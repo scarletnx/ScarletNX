@@ -196,7 +196,8 @@ static void game_metadata(const char* directory, const SnxCtrSource* game, char*
     free(ini);
 }
 int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel model, uint64_t limit, double seconds,
-                    unsigned flags, uint32_t ipc_stubs, const char* runtime, char* error, size_t error_size) {
+                    unsigned flags, uint32_t ipc_stubs, const char* runtime, const SnxCliRecompile* asked, char* error,
+                    size_t error_size) {
     SnxCtrImage image = {0};
     SnxCtrProcess* process = NULL;
     SnxCtrJit* jit = NULL;
@@ -225,8 +226,8 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
     /* like the Switch driver's recompile: only when needed, an existing module is no error. Decided from the module's
        file, before it is loaded, which happens once */
     if ((flags & SNX_CTR_RECOMPILE) || !snx_ctr_module_current(module_path, &image)) {
-        printf("Recompiling %s (offline static AOT)\n", title[0] ? title : "the game");
-        int status = snx_ctr_aot_compile(directory, game, error, error_size);
+        if (!asked || !asked->quiet) printf("Recompiling %s (offline static AOT)\n", title[0] ? title : "the game");
+        int status = snx_ctr_aot_compile(directory, game, asked, error, error_size);
         if (status) {
             result = status == 3 ? 3 : 1;
             goto done;

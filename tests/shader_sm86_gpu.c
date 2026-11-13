@@ -513,6 +513,7 @@ typedef struct {
     int coop; /* VK_KHR_cooperative_matrix's 16x16x16 f16 product into f32 in subgroup scope, with the Vulkan memory
                  model, enabled: the device's maxComputeSharedMemorySize, for g_shader_hmma_coop, else 0 */
     int float_add; /* VK_EXT_shader_atomic_float's shaderBufferFloat32AtomicAdd, enabled (g_shader_float_atomic_add) */
+    int half_flush; /* no shaderDenormPreserveFloat16: f16 subnormals packed by hand, as vk/device.c's g_shader_half_flush */
 } Gpu;
 /* the subgroups of a device's compute stage: their size where they have shuffles, else 0, and *quad whether they
    have quad operations */
@@ -633,6 +634,12 @@ static int gpu_open(Gpu* g, int warp) {
     g->warp32 = v13q.subgroupSizeControl && v13q.computeFullSubgroups && p13.minSubgroupSize <= 32 &&
                 p13.maxSubgroupSize >= 32 && (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT);
     g->float16 = v12q.shaderFloat16 != 0;
+    {
+        VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
+        VkPhysicalDeviceProperties2 fp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
+        vkGetPhysicalDeviceProperties2(g->phys, &fp);
+        g->half_flush = !p12.shaderDenormPreserveFloat16;
+    }
     g->mixed_dot = has_mixed && mixq.shaderMixedFloatDotProductFloat16AccFloat32 && g->float16;
     g->float_add = has_float_add && addq.shaderBufferFloat32AtomicAdd;
     g->coop = has_coop && coopq.cooperativeMatrix && g->float16 && v12q.vulkanMemoryModel &&
@@ -720,6 +727,11 @@ static u32 g_unflagged;
 static u32 g_groups = GROUPS;
 /* gpu_run's pipeline in subgroups of 32, whole, as vk/compute.c makes those of the programs that read other lanes */
 static int g_warp32;
+/* gpu_run's dispatch timed (the HMMA bench): g_timed dispatches, each after a barrier on the one before, and the GPU
+   time of each in nanoseconds into g_ns; 0, one dispatch untimed */
+#define TIMED_MAX 40u
+static u32 g_timed;
+static double g_ns[TIMED_MAX];
 /* Runs the module with cbuf 0 (its first cb0_bytes) and the global buffers that si names (each a buffer of the bytes at
    in, or at out for the one whose address is at out_off of cbuf 0): 0 when Vulkan fails */
 static int gpu_run(Gpu* g, const u32* spv, size_t words, const ShaderInfo* si, const u32* cb0, u32 cb0_bytes,
@@ -805,13 +817,32 @@ static int gpu_run(Gpu* g, const u32* spv, size_t words, const ShaderInfo* si, c
     ok = ok && vkAllocateCommandBuffers(g->device, &cbai, &cmd) == VK_SUCCESS;
     VkFenceCreateInfo fci = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, 0};
     ok = ok && vkCreateFence(g->device, &fci, NULL, &fence) == VK_SUCCESS;
+    VkQueryPool queries = VK_NULL_HANDLE;
+    u32 timed = g_timed < TIMED_MAX ? g_timed : TIMED_MAX;
+    if (ok && timed) {
+        VkQueryPoolCreateInfo qci = {
+            VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_TIMESTAMP, timed + 1, 0};
+        ok = vkCreateQueryPool(g->device, &qci, NULL, &queries) == VK_SUCCESS;
+    }
     if (ok) {
         VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
                                        VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL};
         vkBeginCommandBuffer(cmd, &bi);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &set, 0, NULL);
-        vkCmdDispatch(cmd, g_groups, 1, 1);
+        if (timed) {
+            vkCmdResetQueryPool(cmd, queries, 0, timed + 1);
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries, 0);
+            for (u32 r = 0; r < timed; r++) {
+                vkCmdDispatch(cmd, g_groups, 1, 1);
+                VkMemoryBarrier after = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_SHADER_WRITE_BIT,
+                                         VK_ACCESS_SHADER_WRITE_BIT};
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                                     1, &after, 0, NULL, 0, NULL);
+                vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries, r + 1);
+            }
+        } else
+            vkCmdDispatch(cmd, g_groups, 1, 1);
         VkMemoryBarrier mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_SHADER_WRITE_BIT,
                               VK_ACCESS_HOST_READ_BIT};
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL,
@@ -823,6 +854,16 @@ static int gpu_run(Gpu* g, const u32* spv, size_t words, const ShaderInfo* si, c
     }
     for (int k = 0; k < si->ngbuf && ok; k++)
         if (si->gbuf_cbuf_off[k] == out_off) memcpy(out, gb[k].map, out_bytes);
+    if (ok && timed) {
+        u64 stamps[TIMED_MAX + 1];
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(g->phys, &props);
+        ok = vkGetQueryPoolResults(g->device, queries, 0, timed + 1, sizeof stamps, stamps, 8,
+                                   VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS;
+        for (u32 r = 0; ok && r < timed; r++)
+            g_ns[r] = (double)(stamps[r + 1] - stamps[r]) * (double)props.limits.timestampPeriod;
+    }
+    if (queries) vkDestroyQueryPool(g->device, queries, NULL);
     g_unflagged = 0;
     for (int k = 0; k < 2; k++) {
         memset(g_masks[k], 0, sizeof g_masks[k]);
@@ -1280,7 +1321,8 @@ static int tensor_match(u32 k, u32 h, u32 w, const Expect* e, int bits) {
 /* the program in workgroups of local (32: one warp each, 64: two in a subgroup of 64 where the device runs them so,
    as RADV does, or in two of 32 with warp32), translated with or without quad operations, the mixed dot product and
    the device's cooperative matrices (coop, in subgroups of 32 only), on one set of matrices */
-static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, int coop, int exact) {
+static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, int coop, int pairs, int exact) {
+    int stage = pairs == 2; /* pairs 2: A and B through a warp's slot of shared memory (g_shader_hmma_stage) */
     static Prog p;
     static u32 in[INVOCATIONS * 8], want[INVOCATIONS * TENSOR_OUT], got[INVOCATIONS * TENSOR_OUT];
     static Expect expect[INVOCATIONS * TENSOR_OUT];
@@ -1307,12 +1349,16 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
     si.shared_size = 2048;
     size_t words = 0;
     int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16,
-        coop_was = g_shader_hmma_coop;
+        coop_was = g_shader_hmma_coop, pairs_was = g_shader_hmma_pairs, stage_was = g_shader_hmma_stage,
+        flush_was = g_shader_half_flush;
     g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_float16 = g->float16;
-    g_shader_hmma_coop = coop ? g->coop : 0;
+    g_shader_half_flush = g->half_flush;
+    g_shader_hmma_coop = coop ? g->coop : 0, g_shader_hmma_pairs = pairs == 1;
+    g_shader_hmma_stage = stage ? 16384 : 0; /* every device's maxComputeSharedMemorySize is at least that */
     u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
     g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
-    g_shader_hmma_coop = coop_was;
+    g_shader_hmma_coop = coop_was, g_shader_hmma_pairs = pairs_was, g_shader_hmma_stage = stage_was;
+    g_shader_half_flush = flush_was;
     const char* how = exact ? "exact" : "rounded";
     if (!spv) {
         fprintf(stderr, "tensor: not translated: %s\n", si.first_unsupported);
@@ -1346,35 +1392,230 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
     const char* products = coop    ? "products by cooperative matrices"
                            : mixed ? "products by mixed dot products"
                                    : "products by unpacking to f32";
-    printf("tensor: workgroups of %u, A by %s, %s, %s sums: %u instructions, %u outputs x %u invocations (subgroups "
-           "of %u%s), %u differ\n",
-           local, coop ? "staging" : quad ? "quad broadcasts" : "shuffles", products, how, p.n, TENSOR_OUT,
-           INVOCATIONS, warp32 ? 32 : g->subgroup, warp32 ? ", required" : "", bad);
+    printf("tensor: workgroups of %u, A by %s, B by %s, %s, %s sums: %u instructions, %u outputs x %u invocations "
+           "(subgroups of %u%s), %u differ\n",
+           local,
+           coop || stage ? "staging"
+           : quad        ? "quad broadcasts"
+                         : "shuffles",
+           coop || stage ? "staging"
+           : pairs       ? "pairs"
+                         : "lanes",
+           products, how, p.n, TENSOR_OUT, INVOCATIONS, warp32 ? 32 : g->subgroup, warp32 ? ", required" : "", bad);
     return bad == 0;
 }
 /* every way the device can translate them: with what it has, then with neither quads nor the mixed dot product (the
-   fallbacks), each in workgroups of one warp and of two, those also in required subgroups of 32 where it can; and
-   with its cooperative matrices where it has them, in workgroups of one warp and of two in subgroups of 32 */
+   fallbacks), each in workgroups of one warp and of two, those also in required subgroups of 32 where it can, B
+   gathered by each lane and by pairs of lanes (g_shader_hmma_pairs), and A and B staged through shared memory
+   (g_shader_hmma_stage); and with its cooperative matrices where it has
+   them, in workgroups of one warp and of two in subgroups of 32. 1 when every run matches, 0 when one does not, -1
+   with no such device */
 static int run_tensor(void) {
     Gpu g = {0};
     if (!gpu_open(&g, 1)) {
         printf("tensor: no device with subgroups of 32 or more lanes and shuffles in compute: skipped\n");
-        return 1;
+        return -1;
     }
-    printf("tensor device: %s (quads in compute %d, shaderFloat16 %d, mixed dot product %d, subgroups of 32 %d, "
-           "cooperative matrices %d)\n",
-           g.name, g.quad, g.float16, g.mixed_dot, g.warp32, g.coop != 0);
+    printf("tensor device: %s (subgroups of %u, quads in compute %d, shaderFloat16 %d, mixed dot product %d, "
+           "subgroups of 32 %d, cooperative matrices %d, f16 subnormals packed by hand %d)\n",
+           g.name, g.subgroup, g.quad, g.float16, g.mixed_dot, g.warp32, g.coop != 0, g.half_flush);
     int ok = 1;
     for (int fallback = 0; fallback < 2; fallback++)
         for (u32 run = 0; run < 3; run++) { /* 32, 64, 64 in subgroups of 32 */
             if (run == 2 && !g.warp32) continue;
-            for (int exact = 1; exact >= 0; exact--)
-                ok &= run_tensor_with(&g, run ? 64 : 32, run == 2, !fallback && g.quad, !fallback && g.mixed_dot, 0,
-                                      exact);
+            for (int pairs = 0; pairs < 3; pairs++) /* each lane's gather, pairs of lanes, staged */
+                for (int exact = 1; exact >= 0; exact--)
+                    ok &= run_tensor_with(&g, run ? 64 : 32, run == 2, !fallback && g.quad, !fallback && g.mixed_dot, 0,
+                                          pairs, exact);
         }
     for (u32 run = 0; run < 2 && g.coop; run++)
         for (int exact = 1; exact >= 0; exact--)
-            ok &= run_tensor_with(&g, run ? 64 : 32, 1, g.quad, g.mixed_dot, 1, exact);
+            ok &= run_tensor_with(&g, run ? 64 : 32, 1, g.quad, g.mixed_dot, 1, 0, exact);
+    vkDestroyDevice(g.device, NULL);
+    vkDestroyInstance(g.instance, NULL);
+    return ok;
+}
+
+/* ---- the HMMA bench (SNX_HMMA_BENCH=ROUNDS: only it runs) ----
+   A warp's 32x32 tile as a GEMM's inner loop keeps it: each of BENCH_STEPS steps loads two A fragments (LDSM.4) and
+   four B fragments (two LDSM.T.4) from shared memory and multiplies each A by each B into its accumulator, eight
+   HMMA.16816.F32 whose C is that accumulator (RZ in the first step); the sum of the 32 accumulator registers is the
+   invocation's output. SNX_HMMA_BENCH_GROUPS workgroups of 64 (BENCH_GROUPS where unset), in subgroups of 32 where
+   the device lets a pipeline require them, as vk/compute.c asks for programs that read other lanes, else in the
+   device's own (64 on Adreno, two warps a subgroup, as the renderer runs them there). Each round times each form of
+   hmma in turn, 30 dispatches of which the first 10 only bring the GPU's clock up from an idle device's (an RX 6700 XT
+   ran the first ones several times slower), the forms' order alternating, and prints the median of each as an
+   HMMA_BENCH line */
+#define BENCH_STEPS  12u
+#define BENCH_GROUPS 65536u
+#define BENCH_LOCAL  64u
+static void bench_program(Prog* p) {
+    p->outputs = 1;
+    p->approx_from = 1;
+    Sm86Word w = sm86_fix(0x919); /* S2R R0, TID.X */
+    f(&w, 72, 8, 0x21);
+    emit(p, w);
+    w = sm86_fix(0x919); /* S2R R1, CTAID.X */
+    f(&w, 16, 8, 1);
+    f(&w, 72, 8, 0x25);
+    emit(p, w);
+    emit(p, ri(0x024, 2, 1, BENCH_LOCAL, 0)); /* IMAD R2, R1, 64, R0 */
+    for (u32 k = 0; k < 2; k++) {
+        w = sm86_fix(0xab9); /* ULDC.64 */
+        f(&w, 16, 6, 4 + 2 * k);
+        sm86_cbuf(&w, 0, 0x20 + 8 * k);
+        f(&w, 73, 3, 5);
+        emit(p, w);
+    }
+    w = rr(0x011, 3, 0, 255); /* LEA R3, R0, RZ, 6: the lane's 64 bytes of inputs, the same in every workgroup */
+    f(&w, 75, 5, 6);
+    f(&w, 81, 3, 7);
+    emit(p, w);
+    for (u32 k = 0; k < 4; k++) {
+        w = sm86_fix(0x981); /* LDG.E.128 R8 + 4k, [R3.U32 + UR4 + 16k] */
+        f(&w, 16, 8, 8 + 4 * k);
+        f(&w, 24, 8, 3);
+        f(&w, 32, 6, 4);
+        f(&w, 40, 24, 16 * k);
+        f(&w, 72, 1, 1);
+        f(&w, 73, 3, 6);
+        f(&w, 81, 3, 7);
+        f(&w, 84, 3, 1);
+        f(&w, 91, 1, 1);
+        emit(p, w);
+    }
+    emit(p, ri(0x024, 7, 0, 16, 255)); /* IMAD R7, R0, 16, RZ */
+    for (u32 q = 0; q < 4; q++) {
+        w = sm86_fix(0x388); /* STS.128 [R7 + 1024q], R8 + 4q: four sets of rows */
+        f(&w, 24, 8, 7);
+        f(&w, 32, 8, 8 + 4 * q);
+        f(&w, 40, 24, 1024 * q);
+        f(&w, 73, 3, 6);
+        emit(p, w);
+    }
+    emit(p, sm86_fix(0xb1d)); /* BAR.SYNC 0 */
+    for (u32 step = 0; step < BENCH_STEPS; step++) {
+        for (u32 m = 0; m < 4; m++) { /* A0 R24, A1 R28 (LDSM.4); B0-B1 R32, B2-B3 R36 (LDSM.T.4) */
+            w = sm86_fix(0x83b);
+            f(&w, 16, 8, 24 + 4 * m);
+            f(&w, 24, 8, 7);
+            f(&w, 40, 24, 1024 * ((step + m) % 4));
+            f(&w, 72, 2, 2);
+            f(&w, 78, 1, m >= 2);
+            emit(p, w);
+        }
+        for (u32 i = 0; i < 2; i++)
+            for (u32 j = 0; j < 4; j++) { /* HMMA.16816.F32 R40 + 4(4i + j), A_i, B_j, the same or RZ */
+                u32 d = 40 + 4 * (4 * i + j);
+                w = sm86_fix(0x23c);
+                f(&w, 16, 8, d);
+                f(&w, 24, 8, 24 + 4 * i);
+                f(&w, 32, 8, 32 + 2 * j);
+                f(&w, 64, 8, step ? d : 255);
+                f(&w, 72, 19, 0x18);
+                emit(p, w);
+            }
+    }
+    emit(p, rr(0x021, 72, 40, 41)); /* FADD R72, R40, R41, then R72 plus each of R42 to R71 */
+    for (u32 r = 42; r < 72; r++) emit(p, rr(0x021, 72, 72, r));
+    emit(p, ri(0x024, 6, 2, 4, 255)); /* IMAD R6, R2, 4, RZ */
+    store(p, 0, 72);
+    epilogue(p);
+}
+static int cmp_double(const void* a, const void* b) {
+    double x = *(const double*)a, y = *(const double*)b;
+    return x < y ? -1 : x > y;
+}
+/* the forms of hmma the bench times, each set before its translation (bench_form): each lane gathering its B words,
+   pairs of lanes sharing them (g_shader_hmma_pairs), and A and B through a warp's slot of shared memory
+   (g_shader_hmma_stage) */
+static const char* const bench_forms[] = {"gather", "pairs", "stage"};
+#define BENCH_FORMS (sizeof bench_forms / sizeof *bench_forms)
+static void bench_form(u32 form) { g_shader_hmma_pairs = form == 1, g_shader_hmma_stage = form == 2 ? 16384 : 0; }
+static int run_hmma_bench(u32 rounds, u32 groups) {
+    Gpu g = {0};
+    if (!gpu_open(&g, 1)) {
+        printf("HMMA bench: no device with subgroups of 32 or more lanes and shuffles in compute: skipped\n");
+        return 1;
+    }
+    printf("HMMA bench device: %s (subgroups of %u%s, quads in compute %d, shaderFloat16 %d, mixed dot product %d)\n",
+           g.name, g.warp32 ? 32 : g.subgroup, g.warp32 ? ", required" : ", the device's own", g.quad, g.float16,
+           g.mixed_dot);
+    Prog p = {0};
+    bench_program(&p);
+    static u32 in[BENCH_LOCAL * 16];
+    u32 seed = 0x2545f491u;
+    for (u32 k = 0; k < BENCH_LOCAL * 16; k++) { /* two f16 of [0.5, 2), either sign */
+        u32 h[2];
+        for (u32 j = 0; j < 2; j++) {
+            seed = seed * 1664525u + 1013904223u;
+            h[j] = (seed >> 31) << 15 | (14u + (seed >> 20 & 1)) << 10 | (seed >> 8 & 0x3ffu);
+        }
+        in[k] = h[0] | h[1] << 16;
+    }
+    u32 out_words = groups * BENCH_LOCAL;
+    u32* out = calloc(out_words, 4);
+    u32* first = calloc(out_words, 4);
+    static double samples[BENCH_FORMS][64 * TIMED_MAX];
+    u32 nsamples[BENCH_FORMS] = {0};
+    u32 cb0[64] = {0};
+    cb0[0x20 / 4] = (u32)VA_IN;
+    cb0[0x24 / 4] = (u32)(VA_IN >> 32);
+    cb0[0x28 / 4] = (u32)VA_OUT;
+    cb0[0x2c / 4] = (u32)(VA_OUT >> 32);
+    int ok = out && first;
+    double worst = 0; /* the largest relative difference of a form's outputs from the first form's */
+    if (rounds > 64) rounds = 64;
+    for (u32 round = 0; round < rounds && ok; round++)
+        for (u32 k = 0; k < BENCH_FORMS && ok; k++) {
+            u32 form = round & 1 ? (u32)BENCH_FORMS - 1 - k : k;
+            ShaderInfo si = {0};
+            si.cs_local[0] = (int)BENCH_LOCAL, si.cs_local[1] = si.cs_local[2] = 1;
+            si.shared_size = 4096;
+            int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16;
+            g_shader_quad_compute = g.quad, g_shader_mixed_dot = g.mixed_dot, g_shader_float16 = g.float16;
+            bench_form(form);
+            size_t words = 0;
+            u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
+            bench_form(0);
+            g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
+            if (!spv) {
+                fprintf(stderr, "HMMA bench: not translated: %s\n", si.first_unsupported);
+                ok = 0;
+                break;
+            }
+            g_groups = groups, g_warp32 = g.warp32, g_timed = 30;
+            ok =
+                si.ngbuf == 2 && gpu_run(&g, spv, words, &si, cb0, sizeof cb0, 0x28, in, sizeof in, out, out_words * 4);
+            g_groups = GROUPS, g_warp32 = 0, g_timed = 0;
+            free(spv);
+            if (!ok) {
+                fprintf(stderr, "HMMA bench: Vulkan failed\n");
+                break;
+            }
+            double round_ns[TIMED_MAX];
+            for (u32 r = 10; r < 30; r++) round_ns[r - 10] = samples[form][nsamples[form]++] = g_ns[r];
+            qsort(round_ns, 20, sizeof *round_ns, cmp_double);
+            printf("HMMA_BENCH round=%u form=%s median_us=%.1f min_us=%.1f max_us=%.1f\n", round, bench_forms[form],
+                   round_ns[10] / 1000, round_ns[0] / 1000, round_ns[19] / 1000);
+            if (round == 0 && form == 0) memcpy(first, out, out_words * 4);
+            for (u32 i = 0; i < out_words; i++) {
+                double a = (double)bits_f(first[i]), b = (double)bits_f(out[i]);
+                double rel = fabs(a - b) / (fabs(a) > 1 ? fabs(a) : 1);
+                if (!(rel <= worst)) worst = rel; /* a NaN too */
+            }
+        }
+    /* a warp's HMMAs a dispatch: its 8 a step, BENCH_GROUPS workgroups of two warps */
+    double hmmas = (double)groups * (BENCH_LOCAL / 32) * BENCH_STEPS * 8;
+    for (u32 k = 0; k < BENCH_FORMS && ok; k++) {
+        qsort(samples[k], nsamples[k], sizeof **samples, cmp_double);
+        double median = samples[k][nsamples[k] / 2];
+        printf("HMMA_BENCH form=%s dispatches=%u median_us=%.1f warp_hmma_ns=%.4f (%u steps, %u workgroups)\n",
+               bench_forms[k], nsamples[k], median / 1000, median / hmmas, BENCH_STEPS, groups);
+    }
+    printf("HMMA_BENCH outputs: the largest relative difference from form %s's is %.3g\n", bench_forms[0], worst);
+    free(out);
+    free(first);
     vkDestroyDevice(g.device, NULL);
     vkDestroyInstance(g.instance, NULL);
     return ok;
@@ -1531,26 +1772,48 @@ static int maxwell_log(Gpu* g) {
 }
 
 int main(void) {
-    Gpu g = {0};
-    if (!gpu_open(&g, 0)) {
-        printf("no Vulkan 1.3 device with shaderFloat64 and shaderInt64: skipped\n");
-        return 77;
+    const char* bench = getenv("SNX_HMMA_BENCH");
+    if (bench) {
+        char* end = NULL;
+        unsigned long rounds = strtoul(bench, &end, 10);
+        if (!*bench || *end || !rounds || rounds > 64) {
+            fprintf(stderr, "SNX_HMMA_BENCH=%s is not a count of rounds from 1 to 64\n", bench);
+            return 2;
+        }
+        const char* many = getenv("SNX_HMMA_BENCH_GROUPS");
+        unsigned long groups = BENCH_GROUPS;
+        if (many) {
+            groups = strtoul(many, &end, 10);
+            if (!*many || *end || !groups || groups > BENCH_GROUPS) {
+                fprintf(stderr, "SNX_HMMA_BENCH_GROUPS=%s is not a count of workgroups from 1 to %u\n", many,
+                        BENCH_GROUPS);
+                return 2;
+            }
+        }
+        return run_hmma_bench((u32)rounds, (u32)groups) ? 0 : 1;
     }
-    printf("device: %s\n", g.name);
-    int ok = run_program(&g, "integer", integer_program);
-    ok &= run_program(&g, "float", float_program);
-    /* and I2F.S32's integer converted in halves, as for a driver whose conversions truncate (g_shader_i2f_nearest) */
-    g_shader_i2f_nearest = 3;
-    ok &= run_program(&g, "float, I2F in halves", float_program);
-    g_shader_i2f_nearest = 0;
-    ok &= run_program(&g, "flow", flow_program);
-    ok &= run_program(&g, "wide", wide_program);
-    ok &= run_program(&g, "stores", stores_program);
-    ok &= maxwell_log(&g);
-    ok &= run_fadd(&g);
-    vkDestroyDevice(g.device, NULL);
-    vkDestroyInstance(g.instance, NULL);
+    Gpu g = {0};
+    int ok = 1, scalar = gpu_open(&g, 0);
+    if (scalar) {
+        printf("device: %s\n", g.name);
+        ok &= run_program(&g, "integer", integer_program);
+        ok &= run_program(&g, "float", float_program);
+        /* and I2F.S32's integer converted in halves, as for a driver whose conversions truncate
+           (g_shader_i2f_nearest) */
+        g_shader_i2f_nearest = 3;
+        ok &= run_program(&g, "float, I2F in halves", float_program);
+        g_shader_i2f_nearest = 0;
+        ok &= run_program(&g, "flow", flow_program);
+        ok &= run_program(&g, "wide", wide_program);
+        ok &= run_program(&g, "stores", stores_program);
+        ok &= maxwell_log(&g);
+        ok &= run_fadd(&g);
+    } else /* a phone's GPU: the warp's instructions below still run there */
+        printf("no Vulkan 1.3 device with shaderFloat64 and shaderInt64: the scalar programs skipped\n");
+    if (g.device) vkDestroyDevice(g.device, NULL);
+    if (g.instance) vkDestroyInstance(g.instance, NULL);
     /* on a device of its own, which volk's functions are then loaded for */
-    ok &= run_tensor();
-    return ok ? 0 : 1;
+    int tensor = run_tensor();
+    ok &= tensor != 0; /* -1: skipped */
+    return !scalar && tensor < 0 ? 77 : ok ? 0 : 1;
 }

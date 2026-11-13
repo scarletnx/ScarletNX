@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+family a
+struct S { u32 f @0x0 } size 0x4
+hook f(addr s) -> u32 = h uses S a32

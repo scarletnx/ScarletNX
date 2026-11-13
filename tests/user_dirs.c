@@ -305,6 +305,36 @@ int main(void) {
         free(caches);
         free(config);
     }
+#ifndef _WIN32
+    /* a user data folder this process cannot resolve (here through a link to itself, which realpath refuses with
+       ELOOP even as root; to a shell run as the Android app, /sdcard) is no folder's: snx_app_dir holds for no other
+       folder, and a portable copy's game still finds its .ini in the copy's config/ */
+    {
+        char *loop = join(root, "loop"), *unresolved = join(loop, "home"), *copy = join(root, "unresolved/.scarletnx");
+        char *game = join(copy, "recompiled/0100ABCD12345000"),
+             *expected = join(copy, "config/recompiled/0100ABCD12345000");
+        char *was_home = snx_strdup(getenv("HOME")),
+             *was_data = getenv("XDG_DATA_HOME") ? snx_strdup(getenv("XDG_DATA_HOME")) : NULL;
+        assert(!symlink(loop, loop) && !snx_mkdirs(game));
+        setenv("HOME", unresolved, 1);
+        unsetenv("XDG_DATA_HOME");
+        path = snx_user_data_dir();
+        assert(path && !snx_absolute(path)); /* the case: a data folder named, not resolved */
+        free(path);
+        assert(!snx_app_dir(root) && !snx_app_dir(game) && snx_app_dir(copy));
+        expect_path(game, SNX_USER_CONFIG, expected);
+        setenv("HOME", was_home, 1);
+        if (was_data) setenv("XDG_DATA_HOME", was_data, 1);
+        assert(!unlink(loop));
+        free(was_home);
+        free(was_data);
+        free(expected);
+        free(game);
+        free(copy);
+        free(unresolved);
+        free(loop);
+    }
+#endif
 #ifdef SNX_XDG /* elsewhere the config folder is always the data folder's config/ */
     /* a config folder that is the data folder divides nothing */
     setenv("XDG_CONFIG_HOME", getenv("XDG_DATA_HOME"), 1);

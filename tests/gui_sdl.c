@@ -456,6 +456,32 @@ static void press_key_at(int line, App* app, const char* key, int col, bool tap,
         mouse_px(app, x, y, true);
 }
 static void touch_box(App* app, GuiRect b) { tap_px(app, b.x + b.w / 2, b.y + b.h / 2); }
+/* a click, or a tap, on the middle of a run's ESC line: the console layout's foot, a loading screen's last row */
+static void press_esc_line(App* app, bool tap) {
+    int x, y;
+    layout(app);
+    if (app->theme.run == GUI_RUN_STEPS) {
+        x = 20 * 8 * app->scale;
+        y = (app->rows - 1) * 16 * app->scale + 8 * app->scale;
+    } else {
+        GuiPlace p;
+        run_place(app, &p);
+        x = p.keys.x + p.keys.w / 2;
+        y = p.keys.y + p.keys.h / 2;
+    }
+    if (tap)
+        tap_px(app, x, y);
+    else
+        mouse_px(app, x, y, true);
+}
+/* the question asked before a run is aborted, on Continue, answered Abort */
+static void abort_yes(App* app) {
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ABORT && app->confirm.selected == GUI_CONFIRM_KEEP &&
+           !app->aborting);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown);
+}
 /* a Library row's start as it shows path, whole or cut in its middle (gui_path_fit): the marker, the root and the first
    folder, which it always keeps */
 static void row_start(const char* path, char* out, size_t size) {
@@ -565,12 +591,12 @@ static void finish(App* app, int status) {
     shows_foot(app, "Press [ESC] to return to menu", red);
     app->theme.prompt = gui_theme_builtin(app->theme.id)->prompt;
     for (int i = 0; i < 3; ++i) pump(app);
-    mouse_px(app, 4, 4, true); /* A completed process still requires ESC acknowledgement. */
+    mouse_px(app, 4, 4, true); /* an ended run waits for ESC: a click off its ESC line, or another key, goes nowhere */
     key(app, SDLK_DOWN);
     key(app, SDLK_RETURN);
     key(app, SDLK_SPACE);
     assert(!app->menu.running && app->finished && app->menu.selected == selected);
-    key(app, SDLK_ESCAPE);
+    press_esc_line(app, false); /* a click on that line is ESC, as a tap there is */
     assert(!app->menu.running && !app->finished && app->menu.view == GUI_LOAD_NONE);
     assert(!app->menu.quit && !app->message[0] && app->has_output);
     /* the item the run was started from has the focus again */
@@ -3603,6 +3629,7 @@ static void run_edenprobe(App* app, const char* temporary) {
         Uint64 until = SDL_GetTicks() + 3000;
         while (!snx_is_file(launches) && SDL_GetTicks() < until) SDL_Delay(5); /* its report begun */
         key(app, SDLK_ESCAPE);
+        abort_yes(app);
         while (app->menu.running && SDL_GetTicks() < until) {
             pump(app);
             SDL_Delay(5);
@@ -4259,7 +4286,8 @@ static void recompile_queue(App* app) {
     key(app, SDLK_ESCAPE);
     assert(app->menu.view == GUI_LOAD_GAMES && !app->queue.count && tab_count(app) == GUI_TAB_RECOMPILE);
     app->log_due = false;
-    /* ESC on the one running aborts it, its line gone with it, the next one starting, the one after it waiting */
+    /* ESC on the one running asks, then aborts it, its line gone with it, the next one starting, the one after it
+       waiting */
     focus_game(app, names[0]);
     key(app, SDLK_R);
     go_tab(app, GUI_TAB_GAMES);
@@ -4273,6 +4301,7 @@ static void recompile_queue(App* app) {
     app->queue_focus = 0;
     job_started(app);
     key(app, SDLK_ESCAPE);
+    abort_yes(app);
     for (Uint64 until = SDL_GetTicks() + 10000; app->queue.count == 3 && SDL_GetTicks() < until;) {
         pump(app);
         SDL_Delay(2);
@@ -4284,6 +4313,7 @@ static void recompile_queue(App* app) {
     for (int left = 1; left >= 0; --left) { /* the others aborted too, one after the other; the tab goes with them */
         job_started(app);
         key(app, SDLK_ESCAPE);
+        abort_yes(app);
         for (Uint64 until = SDL_GetTicks() + 10000; app->queue.count > left && SDL_GetTicks() < until;) {
             pump(app);
             SDL_Delay(2);
@@ -4871,7 +4901,7 @@ static bool wait_taken(const char* path) {
    in the --data folder, a launch a line of the plan, each line's words "pass=N", "fail=SUITE" and
    "summary=P,F,S,C"; the launches counted beside the report, each after its lines are there */
 static void fake_probe(int argc, char** argv) {
-    char *card = NULL, *runs, *report, *counter, *plan, *line, *word, *last, *text;
+    char *card = NULL, *runs, *report, *counter, *part, *plan, *line, *word, *last, *text;
     int launch, i;
     size_t size;
     for (i = 1; i + 1 < argc; ++i)
@@ -4920,10 +4950,13 @@ static void fake_probe(int argc, char** argv) {
         assert(out && fputs(text, out) >= 0 && !fclose(out));
     }
     free(text);
-    /* counted once its report is written: the test ends a launch (ESC) when it sees the count, and a launch ended
-       before its report leaves no run to go on with */
+    /* counted once its report is written, and put in place whole: the test ends a launch (ESC) as soon as the count's
+       file is there, and a launch ended before its report leaves no run to go on with, one ended before its count's
+       value an empty count */
     text = snx_format("%d", launch + 1);
-    assert(!snx_write_file(counter, text, strlen(text)));
+    part = snx_format("%s.part", counter);
+    assert(!snx_write_file(part, text, strlen(text)) && !plat_replace_file(part, counter));
+    free(part);
     free(text);
     free(plan);
     free(last);
@@ -4931,6 +4964,484 @@ static void fake_probe(int argc, char** argv) {
     free(report);
     free(runs);
     free(card);
+}
+/* Locate...'s picker as the test's display has it (none): the box that says it could not open, which Back closes, or
+   none where it answered no file; then the answer the test gives for the game whose program is program, path, as a
+   picker would give it */
+static void locate_answer(App* app, const char* program, const char* path) {
+    SDL_Event e;
+    if (app->confirm.shown) {
+        assert(app->confirm.ask == GUI_ASK_ERROR &&
+               (strstr(app->error_line, "Locate...: the file picker could not open: ") ||
+                strstr(app->error_line, "Locate...: the folder picker could not open: ")));
+        key(app, SDLK_ESCAPE);
+    }
+    assert(app->missing_picked && !app->confirm.shown);
+    free(app->missing_picking);
+    app->missing_picking = snx_strdup(program);
+    SDL_zero(e);
+    e.type = app->missing_picked;
+    e.user.data1 = SDL_strdup(path);
+    event(app, &e);
+    assert(!app->missing_picking);
+}
+/* Games' row of the game named name, the list's count when it lists none */
+static size_t listed_at(const App* app, const char* name) {
+    size_t i = 0;
+    while (i < app->games.count && !(app->games.names[i] && !strcmp(app->games.names[i], name))) ++i;
+    return i;
+}
+/* the box a game whose file to play from is not there opens, over Games: the file whole in its question, Keep in
+   focus, then Locate... and Remove from Games, which wants care, each after its icon; nothing runs or compiles */
+static void missing_box(App* app, const char* file) {
+    char question[GUI_PICKS_QUESTION], *want = snx_format("Not found: %s", file);
+    const char* tab;
+    static const unsigned icons[] = {GUI_ICON_CHECK, GUI_ICON_FOLDER_OPEN, GUI_ICON_X};
+    assert(app->picks_shown && app->picks_of == GUI_PICKS_MISSING && app->picks.count == 3 && !app->picks.focus);
+    assert(!app->menu.running && gui_queue_running(&app->queue) < 0 && !app->confirm.shown);
+    picks_question(app, question, sizeof question, &tab);
+    assert(!strcmp(question, want) && !strcmp(tab, "Game"));
+    assert(!strcmp(pick_label(app, 0), "Keep") && !strcmp(pick_label(app, 1), "Locate...") &&
+           !strcmp(pick_label(app, 2), "Remove from Games") && !pick_label(app, 3));
+    render(app);
+    shows(app, "Keep", yellow);
+    shows(app, "Locate...", normal);
+    for (size_t row = 0; row < 3; ++row) {
+        UiRowInfo info = {0};
+        assert(app->choices_of == GUI_CHOICES_PICKS && ui_choices_rows_get_row_info(app, row, 0, &info));
+        assert(info.icon == icons[row] && !(info.attr & UI_ATTR_DANGER));
+        assert(!!(info.attr & UI_ATTR_CAUTION) == (row == 2));
+    }
+    free(want);
+}
+/* A made game whose file to play from is not there (a Switch game read in place from its dump, the dump moved): its
+   row and its recent row say "file not found", the side box names the file, and opening it, played or recompiled, asks
+   first in a box of its own (missing_box). Keep and Back leave it as it is; Locate... refuses a file of another kind,
+   said with the file the game keeps, and takes a dump, which its .ini names from then on: its row says nothing more and
+   Enter plays it. Remove from Games takes it off Games and its recent rows, its folder kept, removed.txt naming it for
+   the next start, until its dump is back; a removed.txt that cannot be written is said. A made game that plays from
+   its extraction asks nothing */
+static void missing_file(App* app, const char* dir) {
+    char *dump = snx_path_join(dir, "lost game.nsp"), *moved_dir = snx_path_join(dir, "moved");
+    char *moved = snx_path_join(moved_dir, "lost game.nsp"), *notes = snx_path_join(dir, "notes.txt");
+    char *got = snx_path_join(dir, "missing argv"), *kept = snx_path_join(dir, "removed.txt");
+    char *unwritable = snx_path_join(notes, "removed.txt"), *folder = made_game(app, dump, "lost game");
+    char *extracted = made_game(app, dump, "extracted game"), *source, *argv_got, *text, *want;
+    size_t size = 0;
+    int recorded = 0;
+#ifdef _WIN32
+    char* program = snx_path_join(folder, "lost game.exe");
+#else
+    char* program = snx_path_join(folder, "lost game");
+#endif
+    {
+        char* exefs = snx_path_join(extracted, "extracted game_data/exefs");
+        assert(!snx_mkdirs(exefs)); /* its ExeFS extracted: it plays without its dump */
+        free(exefs);
+    }
+    assert(!snx_write_file(notes, "notes", 5) && !snx_mkdirs(moved_dir));
+    assert(gui_settings_set(&app->settings, "fullscreen", "1")); /* as finish() reads a run's */
+    recent_open(app, snx_format("%s-missing-recent.txt", app->games_dir));
+    removed_open(app, snx_strdup(kept));
+    assert(!gui_recent_add(&app->recent, program, GUI_SWITCH, 1));
+    recent_changed(app);
+    app->theme = *gui_theme_builtin("default");
+    app->side_box = GUI_SIDE_AUTO;
+    go_tab(app, GUI_TAB_GAMES);
+    focus_game(app, "lost game");
+    assert(app->games_missing[listed_at(app, "lost game")] && !app->games_missing[listed_at(app, "extracted game")]);
+    assert(recent_shown(app) == 1 && app->recent_missing[0]);
+    render(app);
+    assert(!strcmp(app->missing_focus, dump));
+    { /* its row and its recent row (the first under Recent Games) say so, greyed */
+        UiRowInfo info = {0};
+        assert(ui_games_rows_get_row_info(app, games_focus_row(app), 0, &info) && (info.attr & UI_ATTR_OFF) &&
+               !strcmp(info.label, "lost game  (file not found)"));
+        info = (UiRowInfo){0};
+        assert(ui_games_rows_get_row_info(app, 1, 0, &info) && (info.attr & UI_ATTR_OFF) &&
+               !strcmp(info.label, "lost game  (file not found)"));
+        info = (UiRowInfo){0};
+        focus_game(app, "extracted game");
+        assert(ui_games_rows_get_row_info(app, games_focus_row(app), 0, &info) && !(info.attr & UI_ATTR_OFF) &&
+               !strcmp(info.label, "extracted game"));
+        focus_game(app, "lost game");
+        render(app);
+    }
+    shows(app, "lost game  (file", rgb(app->theme.soft)); /* in focus, its frame round it, cut as a long name is */
+    shows(app, "Not found: ", red);                       /* the side box, the file after it */
+    /* Enter: the box; Keep and Back leave it as it is */
+    key(app, SDLK_RETURN);
+    missing_box(app, dump);
+    key(app, SDLK_RETURN);
+    assert(!app->picks_shown && !app->menu.running && !app->missing_game && !app->removed_count);
+    key(app, SDLK_RETURN);
+    missing_box(app, dump);
+    key(app, SDLK_ESCAPE);
+    assert(!app->picks_shown && !app->menu.running && !app->missing_game && app->menu.view == GUI_LOAD_GAMES);
+    /* R and the recent row ask too */
+    key(app, SDLK_R);
+    missing_box(app, dump);
+    key(app, SDLK_ESCAPE);
+    assert(!app->queue.count);
+    app->browser.selected = 0;
+    key(app, SDLK_RETURN);
+    missing_box(app, dump);
+    key(app, SDLK_ESCAPE);
+    /* the game whose ExeFS is extracted plays */
+    driver_will(got, 0, "ScarletNX - extracted game");
+    focus_game(app, "extracted game");
+    key(app, SDLK_RETURN);
+    assert(!app->picks_shown && app->menu.running);
+    argv_got = ran(app, 0); /* back on the menu */
+    free(argv_got);
+    /* Locate...: a file of another kind refused, the dump it keeps said; a dump taken, its row saying nothing more */
+    go_tab(app, GUI_TAB_GAMES);
+    focus_game(app, "lost game");
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(!app->picks_shown && !app->missing_game && !app->menu.running);
+    locate_answer(app, program, notes);
+    want = snx_format("%s is no NSP or XCI: lost game keeps %s", notes, dump);
+    assert(!strcmp(app->message, want));
+    free(want);
+    source = snx_game_source(folder, "lost game", &recorded);
+    assert(recorded && !strcmp(source, dump));
+    free(source);
+    assert(!snx_write_file(moved, "dump", 4));
+    focus_game(app, "lost game");
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    locate_answer(app, program, moved);
+    want = snx_format("lost game plays from %s now.", moved);
+    assert(!strcmp(app->message, want));
+    free(want);
+    source = snx_game_source(folder, "lost game", &recorded);
+    assert(recorded && !strcmp(source, moved));
+    free(source);
+    assert(!app->games_missing[listed_at(app, "lost game")]);
+    for (int i = 0; i < recent_shown(app); ++i) assert(!app->recent_missing[i]);
+    focus_game(app, "lost game");
+    render(app);
+    shows(app, "lost game", yellow);
+    hides(app, "(file not", rgb(app->theme.soft));
+    hides(app, "Not found: ", red);
+    key(app, SDLK_RETURN);
+    assert(!app->picks_shown && app->menu.running);
+    argv_got = ran(app, 0);
+    assert(strstr(argv_got, folder));
+    free(argv_got);
+    driver_will(NULL, 0, NULL);
+    /* the dump gone again: Remove from Games, with removed.txt where it cannot be written, said whole; the game off
+       Games and its recent rows all the same */
+    assert(!remove(moved));
+    go_tab(app, GUI_TAB_GAMES);
+    focus_game(app, "lost game");
+    assert(app->games_missing[listed_at(app, "lost game")] && !app->removed_count);
+    free(app->removed_file);
+    app->removed_file = snx_strdup(unwritable);
+    key(app, SDLK_RETURN);
+    missing_box(app, moved);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR);
+    want = snx_format("Removed games not kept: %s could not be written (", unwritable);
+    assert(!strncmp(app->error_line, want, strlen(want)));
+    free(want);
+    key(app, SDLK_ESCAPE);
+    assert(app->removed_count == 1 && removed_has(app, program) && listed_at(app, "lost game") == app->games.count);
+    for (int i = 0; i < app->recent.count; ++i) assert(strcmp(app->recent.game[i].path, program));
+    want =
+        snx_format("lost game is off Games: %s is not found. Its folder %s stays, and Games lists it again once that "
+                   "file is back.",
+                   moved, folder);
+    assert(!strcmp(app->message, want));
+    free(want);
+    assert(snx_is_file(program)); /* the game, kept */
+    /* kept for the next start: removed.txt names it, and Games still leaves it out */
+    free(app->removed_file);
+    app->removed_file = snx_strdup(kept);
+    assert(!removed_save(app));
+    text = (char*)snx_read_file(kept, &size);
+    want = snx_format("%s\n", program);
+    assert(text && !strcmp(text, want));
+    free(want);
+    free(text);
+    removed_open(app, snx_strdup(kept));
+    assert(app->removed_count == 1);
+    list_games(app);
+    assert(listed_at(app, "lost game") == app->games.count);
+    /* its dump back: listed again, its line gone */
+    assert(!snx_write_file(moved, "dump", 4));
+    list_games(app);
+    assert(listed_at(app, "lost game") < app->games.count && !app->removed_count && !snx_path_exists(kept));
+    assert(!app->games_missing[listed_at(app, "lost game")]);
+    removed_open(app, NULL);
+    made_gone(app, extracted);
+    made_gone(app, folder);
+    assert(!snx_remove_tree(moved_dir) && !remove(notes));
+    free(program);
+    free(unwritable);
+    free(kept);
+    free(got);
+    free(notes);
+    free(moved);
+    free(moved_dir);
+    free(dump);
+}
+/* a bare NCCH at path: a 3DS game's file as gui_ctr_title reads it, its program ID and product code */
+static void ncch_file(const char* path, uint64_t id, const char* code) {
+    unsigned char h[0x200] = {0};
+    memcpy(h + 0x100, "NCCH", 4);
+    for (int i = 0; i < 8; ++i) h[0x118 + i] = (unsigned char)(id >> (8 * i));
+    memcpy(h + 0x150, code, strlen(code));
+    assert(!snx_write_file(path, h, sizeof h));
+}
+#ifndef _WIN32 /* the Vita game's test, which links its dumped folder */
+/* folder/sce_sys/param.sfo naming the dumped Vita game's TITLE_ID, id (nine characters) */
+static void sfo_file(const char* folder, const char* id) {
+    unsigned char sfo[64] = {0};
+    char* path = snx_path_join(folder, "sce_sys/param.sfo");
+    const unsigned char fields[] = {0x00, 0x50, 0x53, 0x46, 0x01, 0x01, 0,    0,    36, 0, 0, 0, 48, 0, 0, 0,
+                                    1,    0,    0,    0,    0,    0,    0x04, 0x02, 10, 0, 0, 0, 16, 0, 0, 0};
+    memcpy(sfo, fields, sizeof fields);
+    memcpy(sfo + 36, "TITLE_ID", 9);
+    memcpy(sfo + 48, id, strlen(id) + 1);
+    fixture_file(folder, "sce_sys/param.sfo", "");
+    assert(!snx_write_file(path, sfo, sizeof sfo));
+    free(path);
+}
+#endif
+/* the program of the made game named name in app's games, its .ini (in its folder) holding ini: as a 3DS or a Vita
+   driver leaves one. Its folder into *folder, owned */
+static char* console_game(const App* app, const char* name, const char* ini, char** folder) {
+    char *made = made_game(app, "unused", name), *file = snx_format("%s/%s.ini", made, name);
+#ifdef _WIN32
+    char* program = snx_format("%s/%s.exe", made, name);
+#else
+    char* program = snx_path_join(made, name);
+#endif
+    assert(!snx_write_file(file, ini, strlen(ini)));
+    free(file);
+    *folder = made;
+    return program;
+}
+/* A 3DS game whose file is not there, nor its extraction or a decrypted copy: its row says so and Enter asks; Locate...
+   refuses a file that is no 3DS game, said with the file it keeps, and another game's, both titles said, and takes its
+   own, which the .ini in its folder names from then on. A Vita game made from a dumped folder that went away: Enter
+   asks, naming where its app/ pointed; Locate... refuses another game's dumped folder and takes its own where it is
+   now, its app/ linked to it and its update beside it as patch/ */
+static void missing_consoles(App* app, const char* dir) {
+    char *cia = snx_path_join(dir, "ctr game.cia"), *moved = snx_path_join(dir, "moved ctr.cia");
+    char *notes = snx_path_join(dir, "ctr notes.txt"),
+         *ini = snx_format("[Game]\nsource=%s\nmodel=old\nsystem=3ds\n", cia);
+    char *folder, *program = console_game(app, "0004000000030000", ini, &folder), *source, *want, *file;
+    assert(!snx_write_file(notes, "notes", 5));
+    go_tab(app, GUI_TAB_GAMES);
+    focus_game(app, "0004000000030000");
+    assert(app->games_missing[listed_at(app, "0004000000030000")]);
+    key(app, SDLK_RETURN);
+    missing_box(app, cia);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    locate_answer(app, program, notes);
+    want = snx_format("%s is no 3DS game (.cia, .cci, .3ds, .cxi): 0004000000030000 keeps %s", notes, cia);
+    assert(!strcmp(app->message, want));
+    free(want);
+    ncch_file(moved, 0x0004000000040000ull, "CTR-P-WXYZ"); /* another game's */
+    focus_game(app, "0004000000030000");
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    locate_answer(app, program, moved);
+    want = snx_format("Not taken: %s is 0004000000040000 (CTR-P-WXYZ), and 0004000000030000 was made from "
+                      "0004000000030000; it keeps %s",
+                      moved, cia);
+    assert(!strcmp(app->message, want));
+    free(want);
+    ncch_file(moved, 0x0004000000030000ull, "CTR-P-ABCD");
+    focus_game(app, "0004000000030000");
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    locate_answer(app, program, moved);
+    file = snx_format("%s/0004000000030000.ini", folder);
+    source = snx_ini_value(file, "source");
+    assert(source && !strcmp(source, moved) && !app->games_missing[listed_at(app, "0004000000030000")]);
+    free(source);
+    free(file);
+    made_gone(app, folder);
+    free(program);
+#ifndef _WIN32
+    {
+        char *dumped = snx_path_join(dir, "vita dump/app/PCSE00000"),
+             *now = snx_path_join(dir, "vita now/app/PCSE00000");
+        char *update = snx_path_join(dir, "vita now/patch/PCSE00000"), *sfo = snx_path_join(now, "sce_sys");
+        char *app_link, *patch_link, *target;
+        program = console_game(app, "PCSE00000", "[Game]\nsystem=vita\n", &folder);
+        app_link = snx_path_join(folder, "app");
+        patch_link = snx_path_join(folder, "patch");
+        assert(!snx_mkdirs(dumped) && !snx_symlink(dumped, app_link) && !snx_remove_tree(dumped));
+        assert(!snx_mkdirs(sfo) && !snx_mkdirs(update));
+        sfo_file(now, "PCSE00001"); /* another game's */
+        fixture_file(update, "eboot.bin", "eboot");
+        focus_game(app, "PCSE00000");
+        assert(app->games_missing[listed_at(app, "PCSE00000")]);
+        key(app, SDLK_RETURN);
+        missing_box(app, dumped);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        locate_answer(app, program, now);
+        want =
+            snx_format("Not taken: %s is PCSE00001, and PCSE00000 was made from PCSE00000; it keeps %s", now, dumped);
+        assert(!strcmp(app->message, want));
+        free(want);
+        sfo_file(now, "PCSE00000");
+        focus_game(app, "PCSE00000");
+        key(app, SDLK_RETURN);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        locate_answer(app, program, now);
+        want = snx_format("PCSE00000 plays from %s now.", now);
+        assert(!strcmp(app->message, want));
+        free(want);
+        assert((target = snx_link_target(app_link)) && !strcmp(target, now));
+        free(target);
+        assert((target = snx_link_target(patch_link)) && !strcmp(target, update));
+        free(target);
+        assert(!app->games_missing[listed_at(app, "PCSE00000")]);
+        made_gone(app, folder);
+        free(program);
+        free(patch_link);
+        free(app_link);
+        free(sfo);
+        free(update);
+        free(now);
+        free(dumped);
+    }
+#endif
+    assert(!remove(moved) && !remove(notes));
+    free(ini);
+    free(notes);
+    free(moved);
+    free(cia);
+}
+/* the menu's message is want, the one it is said when not */
+static bool message_is(const App* app, const char* want) {
+    if (!strcmp(app->message, want)) return true;
+    fprintf(stderr, "gui_sdl.c: the message is \"%s\", not \"%s\"\n", app->message, want);
+    return false;
+}
+/* Locate... for a Switch game named by its title ID: the dump picked is asked of its driver (-x --icon's title.ini),
+   the answer waited for; another game's refused, both IDs said, one whose title the driver did not say refused, said,
+   and the game's own taken. For a GBA game: a ROM whose hash is not the one its map names refused, its header's code
+   and title said, with the code its .ini recorded beside the hash it was made from (none in a .ini from before code=),
+   and the ROM it was made from taken */
+static void locate_titles(App* app, const char* dir) {
+    char *old = snx_path_join(dir, "title old.nsp"), *other = snx_path_join(dir, "title other.nsp");
+    char *right = snx_path_join(dir, "title right.nsp"), *mute = snx_path_join(dir, "title mute.nsp");
+    char *ini = snx_format("[Game]\nsource=%s\n", old), *folder, *source, *want;
+    char* cache_was = getenv("XDG_CACHE_HOME") ? snx_strdup(getenv("XDG_CACHE_HOME")) : NULL;
+    char *cache = snx_path_join(dir, "titles cache"), *program;
+    int recorded = 0;
+    set_env("XDG_CACHE_HOME", cache); /* the dumps' title.ini goes in the menu's cache */
+    program = console_game(app, "0100ABCD99990000", ini, &folder);
+    assert(!snx_write_file(other, "title=0100ABCD88880000\ngame=0100ABCD88880000\n", 46));
+    assert(!snx_write_file(right, "title=0100ABCD99990000\ngame=0100ABCD99990000\n", 46));
+    assert(!snx_write_file(mute, "dump", 4)); /* the fake driver says no title of it */
+    go_tab(app, GUI_TAB_GAMES);
+    for (int i = 0; i < 3; ++i) {
+        const char* picked = i == 0 ? other : i == 1 ? mute : right;
+        focus_game(app, "0100ABCD99990000");
+        key(app, SDLK_RETURN);
+        missing_box(app, old);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        locate_answer(app, program, picked);
+        want = snx_format("Locate...: reading the title of %s", picked);
+        assert(!strcmp(app->message, want) && app->reading_game && !strcmp(app->reading_file, picked));
+        free(want);
+        dump_icons_pass(&app->dump_icons); /* the driver's answer */
+        pump(app);
+        assert(!app->reading_game);
+        want = i == 0   ? snx_format("Not taken: %s is 0100ABCD88880000, and 0100ABCD99990000 was made from "
+                                     "0100ABCD99990000; it keeps %s",
+                                     other, old)
+               : i == 1 ? snx_format("Not taken: the title of %s does not read (the driver said nothing of its "
+                                     "title); 0100ABCD99990000 keeps %s",
+                                     mute, old)
+                        : snx_format("0100ABCD99990000 plays from %s now.", right);
+        assert(message_is(app, want));
+        free(want);
+    }
+    source = snx_game_source(folder, "0100ABCD99990000", &recorded);
+    assert(recorded && !strcmp(source, right));
+    free(source);
+    made_gone(app, folder);
+    free(program);
+    free(ini);
+    { /* a GBA game, by the hash its map names */
+        unsigned char rom[0x200] = {0};
+        char *lost = snx_path_join(dir, "agb lost.gba"), *same = snx_path_join(dir, "agb same.gba");
+        char *another = snx_path_join(dir, "agb other.gba"), *map, *file;
+        uint64_t hash;
+        memcpy(rom + 0xA0, "TESTGAME", 8);
+        memcpy(rom + 0xAC, "ATST", 4);
+        hash = snx_fnv1a(SNX_FNV_BASIS, rom, sizeof rom);
+        assert(!snx_write_file(same, rom, sizeof rom));
+        memcpy(rom + 0xA0, "OTHERGAME", 9);
+        memcpy(rom + 0xAC, "AOTH", 4);
+        assert(!snx_write_file(another, rom, sizeof rom));
+        ini = snx_format("[Game]\nsource=%s\nsystem=gba\n", lost);
+        program = console_game(app, "agb lost", ini, &folder);
+        map = snx_format("snx-agb-code 3 7 %016llX\n", (unsigned long long)hash);
+        fixture_file(folder, "agb lost_code.map", map);
+        file = snx_format("%s/agb lost.ini", folder);
+        /* a .ini from before code= says the hash alone; one with it, the code beside the hash */
+        for (int i = 0; i < 3; ++i) {
+            if (i == 1) assert(!snx_ini_record(file, "code", "ATST"));
+            focus_game(app, "agb lost");
+            key(app, SDLK_RETURN);
+            missing_box(app, lost);
+            key(app, SDLK_DOWN);
+            key(app, SDLK_RETURN);
+            locate_answer(app, program, i == 2 ? same : another);
+            want = i == 2 ? snx_format("agb lost plays from %s now.", same)
+                   : i    ? snx_format("Not taken: %s is AOTH (OTHERGAME), hashed %016llX, and agb lost was made from "
+                                       "ATST, hashed %016llX; it keeps %s",
+                                       another, (unsigned long long)snx_fnv1a(SNX_FNV_BASIS, rom, sizeof rom),
+                                       (unsigned long long)hash, lost)
+                          : snx_format("Not taken: %s is AOTH (OTHERGAME), hashed %016llX, and agb lost was made from "
+                                       "the ROM hashed %016llX; it keeps %s",
+                                       another, (unsigned long long)snx_fnv1a(SNX_FNV_BASIS, rom, sizeof rom),
+                                       (unsigned long long)hash, lost);
+            assert(message_is(app, want));
+            free(want);
+        }
+        source = snx_ini_value(file, "source");
+        assert(source && !strcmp(source, same));
+        free(source);
+        free(file);
+        made_gone(app, folder);
+        assert(!remove(same) && !remove(another));
+        free(program);
+        free(map);
+        free(ini);
+        free(another);
+        free(same);
+        free(lost);
+    }
+    assert(!remove(other) && !remove(right) && !remove(mute));
+    set_env("XDG_CACHE_HOME", cache_was);
+    assert(!snx_path_exists(cache) || !snx_remove_tree(cache)); /* XDG's alone: elsewhere the menu's own folder */
+    free(cache);
+    free(cache_was);
+    free(mute);
+    free(right);
+    free(other);
+    free(old);
 }
 int main(int argc, char** argv) {
 #ifdef _WIN32
@@ -5247,7 +5758,7 @@ int main(int argc, char** argv) {
     char* input = snx_path_join(temporary, "game with spaces;literal.nro");
     assert(!snx_write_file(input, "0", 1));
     const char* names[] = {"runtime", "scarletnx-gnuabi", "scarletnx-3ds", "scarletnx-vita", "scarletnx-agb",
-                           "scarletnx-android"};
+                           "scarletnx-nds",    "scarletnx-android"};
     for (size_t i = 0; i < sizeof names / sizeof *names; ++i) {
 #ifdef _WIN32
         char* filename = snx_format("%s.exe", names[i]);
@@ -5458,6 +5969,10 @@ int main(int argc, char** argv) {
     assert(app.menu.selected == GUI_GBA);
     render(&app);
     shows(&app, "- " ICON_GAMEPAD " Load GBA/MultiBoot ROM", yellow);
+    key(&app, SDLK_RIGHT);
+    assert(app.menu.selected == GUI_NDS);
+    render(&app);
+    shows(&app, "- " ICON_GAMEPAD " Load NDS ROM", yellow);
     key(&app, SDLK_RIGHT);
     assert(app.menu.selected == GUI_ANDROID);
     render(&app);
@@ -5872,7 +6387,8 @@ int main(int argc, char** argv) {
     /* ESC goes back to the groups, on the one it came from */
     key(&app, SDLK_ESCAPE);
     assert(app.editing && app.form == GUI_FORM_SETTINGS && app.editor.row == 1);
-    /* GBA's, after Launch: Covers, None by default, then Box art (libretro-thumbnails), Del back to None */
+    /* GBA's, after Launch: Covers, None by default, then Box art (libretro-thumbnails), Del back to None; Colors,
+       GBA screen by default, then Raw, Del back to GBA screen */
     {
         char line[64];
         key(&app, SDLK_DOWN);
@@ -5880,7 +6396,7 @@ int main(int argc, char** argv) {
         shows(&app, "- " ICON_GAMEPAD " GBA", yellow);
         shows_half(&app, "Covers", normal); /* the group's help names its setting */
         key(&app, SDLK_RETURN);
-        assert(app.form == GUI_FORM_GROUP && app.group == 2 && app.editor.count == 1);
+        assert(app.form == GUI_FORM_GROUP && app.group == 2 && app.editor.count == 2);
         render(&app);
         shows(&app, "GBA", normal);
         snprintf(line, sizeof line, "- %-8s %s", "Covers", "None [default]"); /* no row of it opens a page: no gutter */
@@ -5893,6 +6409,17 @@ int main(int argc, char** argv) {
         shows(&app, line, yellow);
         key(&app, SDLK_DELETE);
         assert(setting_is(&app, "gba_covers", NULL));
+        key(&app, SDLK_DOWN);
+        render(&app);
+        snprintf(line, sizeof line, "- %-8s %s", "Colors", "GBA screen [default]");
+        shows(&app, line, yellow);
+        key(&app, SDLK_RIGHT);
+        assert(setting_is(&app, "gba_color", "raw"));
+        render(&app);
+        snprintf(line, sizeof line, "- %-8s %s", "Colors", "Raw *");
+        shows(&app, line, yellow);
+        key(&app, SDLK_DELETE);
+        assert(setting_is(&app, "gba_color", NULL));
         key(&app, SDLK_ESCAPE);
         assert(app.form == GUI_FORM_SETTINGS && app.editor.row == 2);
     }
@@ -8483,6 +9010,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
+    key(&app, SDLK_LEFT);
     /* a load opens the screen its file is picked on at once: games/ is Games' now, not an option under it */
     assert(app.menu.selected == GUI_SWITCH);
     pump(&app);
@@ -9038,7 +9566,8 @@ int main(int argc, char** argv) {
                                 {"card.3ds", GUI_3DS, "3DS game, opened with scarletnx-3ds"},
                                 {"homebrew.vpk", GUI_VITA, "Vita VPK, opened with scarletnx-vita"},
                                 {"homebrew.gba", GUI_GBA, "GBA ROM, played with scarletnx-agb"},
-                                {"homebrew.mb", GUI_GBA, "GBA MultiBoot ROM, played with scarletnx-agb"}};
+                                {"homebrew.mb", GUI_GBA, "GBA MultiBoot ROM, played with scarletnx-agb"},
+                                {"homebrew.nds", GUI_NDS, "NDS ROM, played with scarletnx-nds"}};
                 GuiRecent was = app.recent;
                 GuiGamesBoxes none = {0};
                 char kind[192], listed[192];
@@ -9912,8 +10441,10 @@ int main(int argc, char** argv) {
         key(&app, SDLK_ESCAPE);
         assert(!app.confirm.shown && app.menu.running && !app.closing_ms && !app.aborting);
     }
+    key(&app, SDLK_ESCAPE); /* asked first on every platform: one key by mistake would lose the run */
+    assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ABORT && app.menu.running && !app.aborting);
     Uint64 started = SDL_GetTicks();
-    key(&app, SDLK_ESCAPE);
+    abort_yes(&app);
     assert(app.aborting && SDL_GetTicks() - started < 1000);
     render(&app);
     shows(&app, "Aborting...", red);
@@ -9922,7 +10453,8 @@ int main(int argc, char** argv) {
     render(&app);
     shows_foot(&app, "[ Aborting... ]", red); /* where the keys go */
     app.theme.prompt = gui_theme_builtin(app.theme.id)->prompt;
-    key(&app, SDLK_ESCAPE); /* Repeated ESC while reaping is harmless. */
+    key(&app, SDLK_ESCAPE); /* Repeated ESC while reaping is harmless: no question either */
+    assert(!app.confirm.shown);
     while (app.menu.running && SDL_GetTicks() - started < 2000) {
         pump(&app);
         SDL_Delay(5);
@@ -9932,7 +10464,7 @@ int main(int argc, char** argv) {
     assert(!strcmp(app.message, "Aborted with ESC."));
     render(&app);
     shows_half(&app, "Aborted with ESC.", red); /* in the tips */
-    /* a finger on a running run's ESC line aborts it, anywhere else it does nothing */
+    /* a finger or a click on a running run's ESC line asks to abort it, anywhere else it does nothing */
     assert(!snx_write_file(hung, "", 0));
     launch(&app, snx_strdup(hung), false);
     for (until = SDL_GetTicks() + 5000, ready = false; !ready && SDL_GetTicks() < until; SDL_Delay(5)) {
@@ -9950,11 +10482,21 @@ int main(int argc, char** argv) {
         assert(!p.stacked && p.side.x == p.list.x + p.list.w + cw && p.side.w >= 24 * cw &&
                SDL_abs(p.list.w * 2 - p.side.w * 3) <= 5);
         touch_box(&app, p.list); /* the output: nothing */
-        assert(app.menu.running && !app.aborting);
+        point(&app, p.list, true);
+        assert(app.menu.running && !app.aborting && !app.confirm.shown);
+        press_esc_line(&app, false); /* the mouse on the foot asks as a finger there does */
+        assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ABORT && !app.aborting);
+        key(&app, SDLK_ESCAPE); /* Continue */
+        assert(!app.confirm.shown && app.menu.running && !app.aborting);
         app.theme = *gui_theme_builtin("yorha"); /* a loading screen's ESC line is its last row */
         tap_px(&app, 20 * cw, 3 * ch + ch / 2);
-        assert(!app.aborting);
+        mouse_px(&app, 20 * cw, 3 * ch + ch / 2, true);
+        assert(!app.aborting && !app.confirm.shown);
+        mouse_px(&app, 20 * cw, (app.rows - 1) * ch + ch / 2, true);
+        assert(app.confirm.shown && !app.aborting);
+        key(&app, SDLK_ESCAPE);
         tap_px(&app, 20 * cw, (app.rows - 1) * ch + ch / 2);
+        abort_yes(&app);
         assert(app.aborting);
         app.theme = *gui_theme_builtin("default");
     }
@@ -10003,15 +10545,15 @@ int main(int argc, char** argv) {
         app.clock = 0;
         app.message[0] = 0;
     }
-    /* where ESC is a back gesture made by mistake (ask_abort, Android's) it asks first: ESC again, a click off the box
-       or Continue leave the run going; Abort aborts it. The ESC line's tap asks too, and a held key answers nothing */
+    /* ESC asks first on every platform (a phone's Back is an edge swipe easily made by mistake): ESC again, a click off
+       the box or Continue leave the run going; Abort aborts it. The ESC line's tap asks too, and a held key answers
+       nothing */
     {
         int pass;
         GuiRect r;
         GuiChoices l;
         GuiPlace p;
         SDL_Event held;
-        app.ask_abort = true;
         for (pass = 0; pass < 2; ++pass) {
             assert(!snx_write_file(hung, "", 0));
             launch(&app, snx_strdup(hung), false);
@@ -10115,7 +10657,6 @@ int main(int argc, char** argv) {
         assert(!app.menu.running && app.finished && app.abnormal_exit && !app.confirm.shown);
         key(&app, SDLK_ESCAPE);
         assert(!app.finished && !app.confirm.shown);
-        app.ask_abort = false;
     }
     free(hung);
 
@@ -13668,6 +14209,7 @@ int main(int argc, char** argv) {
             r = foot_room(&app, p.keys, app.theme.footer_box);
             foot_px_is(&app, r.x + r.w - (int)strlen(SAY_ABORT) * 8 * foot_scale(&app), r.y, SAY_ABORT, red, black);
             touch_box(&app, p.keys);
+            abort_yes(&app);
             assert(app.aborting);
             for (until = SDL_GetTicks() + 3000; app.menu.running && SDL_GetTicks() < until; SDL_Delay(5)) pump(&app);
             assert(!app.menu.running && !app.finished);
@@ -15878,6 +16420,9 @@ int main(int argc, char** argv) {
     compile_first(&app, temporary);
     dump_addons(&app, temporary);
     relist_keeps_scroll(&app, temporary);
+    missing_file(&app, temporary);
+    missing_consoles(&app, temporary);
+    locate_titles(&app, temporary);
     recompile_queue(&app);
 #ifdef SNX_XDG /* the last of the test: SDL keeps the picker it found from then on */
     pickers_asked(&app, temporary, self);

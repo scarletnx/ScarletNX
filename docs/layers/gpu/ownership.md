@@ -33,11 +33,34 @@ reads the draws' stores and writes after them, and nothing is compared. Any othe
 fence and merged by the byte with what the CPU wrote meanwhile, but with unified memory, where the draws write guest
 memory in place (below).
 
+With the page cache writing (`vk_buffer_pages=2`, `vk/pagespace.c`), a binding that is not whole pages stays on the GPU too
+(`keep_pages`). The cache keeps guest memory by page in sparse buffers, one for each GiB of the guest's address space.
+It brings the pages the range is on up to date, the draw writes the cache's buffer in place, and the range is
+published GPU-owned, each 64 KiB granule's part under an owner of that granule, so a landing waits only for the
+submission that last wrote that granule. Only the range's own bytes are published. The runtime's reads of guest
+memory land an owner only for bytes it holds, and a game keeps the constant buffers its draws read beside the buffers
+they write. The ownership table is what tells the cache which of its pages have such bytes: such a page is trapped,
+so the region holds the truth of all of it, it takes nothing from guest memory, a later read of it binds the same
+buffer with no copy, and when the table lets go of it the stamp its publish left makes the cache take memory's bytes
+again. A page the game's CPU code touches lands, and its granule takes the copies again for 1200 presents. A range
+on pages the CPU wrote in the last 120 presents is not kept at all: a game that writes such pages every frame would
+land them every frame. No result of another kind may be pending on the pages when they are published, because its landing
+would write guest memory under the trap. A draw's write and another's read now share one buffer, so the cache keeps
+the ranges read and written in place since the last barrier of a submission: a read of bytes written since gets a
+barrier first, and a write gets one when the front end orders its draws by their place in the stream or the game
+asked for a dependency. What a submission wrote in place is stamped as written by the GPU when the submission goes
+to the queue. A granule nothing used for 120 presents lands before its memory goes back.
+
 Render targets stay the renderer's: their pixels reach guest memory only when a consumer asks. Pitch-linear targets
 are the exception, as a game draws into those to read the result on the CPU: each release publishes the ones
 drawn since the last (`vk_rt_publish_drawn` in `vk/surface.c`), and storage images are published the same way
-(`vk_surf_publish`): a dispatch's after it, a draw's at the release (`vk_surf_keep_begin` and `vk_surf_keep_end`), where
-the image's span is whole pages the CPU hasn't touched lately and write tracking answers for it. A publish takes the
+(`vk_surf_publish`): a dispatch's after it, a draw's when something reads its bytes after the release
+(`vk_surf_keep_begin` and `vk_surf_keep_end`), where the image's span is whole pages the CPU hasn't touched lately and
+write tracking answers for it. A release passes over a kept image whose span its owner still holds whole, and later
+draws to it join it. A GPU read finds it in the pending pages, a draw's buffer over it publishes it first (its owner
+holds the bytes from before the draws, `vk_gfx_image_read_need`), and a CPU touch lands its owner, which publishes it
+first (the `claim` hook of `memory/own.c`, `vk_gfx_image_cpu_need`). One game's draws wrote a 640x360 image between
+32 releases a frame, which nothing read: its publishes cost 1.1 to 1.5 ms of GPU time a frame. A publish takes the
 image's own texels and the targets it copied in, and leaves the bytes between its layers to their owners: a view of one
 level of a mip chain has the other levels there. A page the CPU writes
 between the draw and the release keeps the CPU's bytes. Any other draw's storage image keeps its write-back, which
@@ -50,8 +73,11 @@ each release would copy tens of megabytes a frame. So a release *watches* the on
 (`own_watch`, through `vk_own_watch`): a watch is an entry with no resource. Its pages are trapped as an owner's, but
 it holds no bytes. `own_lookup` and `own_stage` skip it, and its CPU bytes stay readable through the mirror (in place,
 `own_watch` copies each page it arms into a shadow). `own_hash` and `own_trapped` see it. A watch goes only into the
-gaps between real owners, and an owner that comes later (`own_begin`) replaces it. A target that the CPU read lately
-(`vk_own_cpu_read`), or that an owner already covers, is published at the release instead, as a pitch-linear one.
+gaps between real owners, and an owner that comes later (`own_begin`) replaces it. A target that a CPU access had published
+in the last 1200 presents (`cpu_asked`) is published at the release instead, as a pitch-linear one. A target that an
+owner already covers is left as it is: the owner's pages are trapped, and the CPU's access to them asks the renderer
+for the targets pending there before the owner lands (`OwnHooks.refresh`). Publishing such a target at every release
+copied one game's targets 24,000 to 43,000 times in 600 presents.
 
 The CPU's first access to a watched page lands it as any other. Before the landing marks an entry, with `vk_lock`
 held, it calls the renderer's `resolve` hook (`vk_rt_watch_hit`). That publishes the targets that are pending over the
@@ -63,8 +89,17 @@ pending target and only drops the watch.
 
 The thread that held `vk_lock` before it touched a watched page (the GPU thread, which reads guest memory in a draw's
 setup) cannot wait for a publish. Its `own_acquire`, or its fault on a page with only watches on it, drops the watches
-and reads the CPU's bytes, as it did before there were watches. That is not fatal, as a fault on a real owner is. The
-readers that test for trapped pages before a direct read see watches: `gmem_r32` and the ASTC content hash through
+and reads the CPU's bytes, as it did before there were watches. That is not fatal, as a fault on a real owner is.
+own.c owes the bytes of those watches (`own_owed_take`), and the outermost `vk_unlock` of that thread watches the
+targets that are pending over them again (`vk_rt_watch_owed`, through `rt_watch`). So the next CPU access publishes
+them and lands their pixels, where before the watch was gone until the target was drawn and released again. A watch
+copies nothing: a publish at the unlock copied each target into a buffer of its own, which stayed until the CPU touched
+it, and that may never come. The renderer's own reads do not set `cpu_asked`, as they are not the CPU asking for the
+target: a draw's setup that reads memory under a target each frame would publish it at each release. Eden keeps the
+protection of an image until it is flushed. Here a gap stays for the rest of that hold: another thread that reads the
+bytes before the hold ends gets the CPU's bytes, as a page has one protection for all threads.
+
+The readers that test for trapped pages before a direct read see watches: `gmem_r32` and the ASTC content hash through
 `own_hash`, `guest_held` and the staging ring choice through `own_trapped`. Both test whole host pages, so they also
 see the edge pages that an owner shares. When a target
 over watched bytes cannot be published, the write-back (`vk_surf_flush`) drops its watch before it writes memory. A
@@ -268,6 +303,13 @@ With resizable BAR, the staging ring of streamed uploads goes in device-local me
 (`vk_stage_upload`, within the heap's budget): the CPU's sequential writes cross the bus once, and every draw that
 reads them reads local memory. With a small BAR the ring stays in host memory (the window is shared with the whole
 desktop, `cmd.c`).
+
+The host memory of a ring that the CPU fills is of one of two kinds (`vk_stage_memory`, `stage_cached` in `cmd.c`).
+Memory for writes in order (`DM_HOST` in `devmem.h`) is a type that is not cached where the device has one, and a
+driver can map that write-combined. Cached memory (`DM_CACHED`) is a cached type. Cached is the default only on Intel's
+Mesa driver, where both types are the same system memory. `snx-test-vulkan -H --bench-stage-memory` times the CPU's
+copies into each kind on the device it runs on, for block sizes from 64 bytes to 16 MiB. On an RTX 2080 the type that
+is not cached takes them faster, 7,300 to 9,700 MB/s against 5,100 to 8,900, so that device keeps it.
 
 ### What the GPU reads in place
 

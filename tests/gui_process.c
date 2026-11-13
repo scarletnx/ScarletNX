@@ -131,6 +131,12 @@ static int tree_priority(long pid) {
     return errno ? -100 : n;
 #endif
 }
+/* a start the test needs, and why it failed when it did: an earlier run still going, the program missing */
+static void start(GuiProcess* process, const char* const* argv, char* error, size_t size) {
+    bool started = gui_process_start(process, argv, error, size);
+    if (!started) fprintf(stderr, "gui_process: %s %s did not start: %s\n", argv[0], argv[1] ? argv[1] : "", error);
+    assert(started);
+}
 /* the pid a --threads child says once its threads run */
 static long ready_pid(GuiProcess* process) {
     char buffer[256] = {0};
@@ -169,7 +175,7 @@ static void priority(const char* self) {
     usage = gui_process_usage_of(idle);
     assert(usage.available && !usage.memory_bytes);
     assert(gui_process_low(tree, true, error, sizeof error)); /* nothing runs: the next start takes it */
-    assert(gui_process_start(tree, threads, error, sizeof error));
+    start(tree, threads, error, sizeof error);
     pid = ready_pid(tree);
     assert(tree_priority(pid) == low);
     usage = gui_process_usage_of(tree);
@@ -188,7 +194,7 @@ static void priority(const char* self) {
         delay(5);
     }
     assert(gui_process_low(tree, false, error, sizeof error)); /* the next start's, normal */
-    assert(gui_process_start(tree, threads, error, sizeof error));
+    start(tree, threads, error, sizeof error);
     pid = ready_pid(tree);
     assert(tree_priority(pid) == own);
     assert(gui_process_low(tree, true, error, sizeof error) && tree_priority(pid) == low);
@@ -270,18 +276,20 @@ int main(int argc, char** argv) {
     GuiUsage baseline = gui_process_usage(process);
     assert(baseline.available && baseline.memory_bytes > 0);
     const char* command[] = {self, "--child", "a b;$(literal)\"\\", "", NULL};
-    assert(gui_process_start(process, command, error, sizeof(error)));
+    start(process, command, error, sizeof(error));
     unsigned found = 0;
     size_t bytes = 0;
     bool saw_cpu = false, saw_memory = false;
     uint64_t run_top = 0;
-    double end = now() + 10;
+    double started = now(), end = started + 10; /* a hang's guard: the run itself ends in about a second */
     char buffer[8192] = {0};
     size_t carry = 0;
-    int status = -1;
-    while (now() < end) {
-        int n = gui_process_read(process, buffer + carry, 4096);
-        if (n > 0) {
+    int status = -1, n;
+    bool ended = false;
+    while (!(ended = gui_process_finished(process, &status)) && now() < end) {
+        /* the pipe emptied each round: the grandchild's 400 KiB wait in it, and the round's looks at the usage, a scan
+           of every process each, take longer the busier the machine is. A read a round paced the run by them */
+        while ((n = gui_process_read(process, buffer + carry, 4096)) > 0) {
             size_t length = carry + (size_t)n;
             buffer[length] = 0;
             if (strstr(buffer, "child stdout")) found |= 1;
@@ -298,9 +306,15 @@ int main(int argc, char** argv) {
         /* the run's own: the test's grows apart from it, ASan keeping what it frees */
         if (usage.memory_bytes > own.memory_bytes && usage.memory_bytes - own.memory_bytes > run_top)
             run_top = usage.memory_bytes - own.memory_bytes;
-        if (gui_process_finished(process, &status)) break;
         delay(2);
     }
+    if (!ended) { /* ended by force, so that none of it outlives the failure */
+        fprintf(stderr,
+                "gui_process: the first run had not ended %.1f s after it started: %lu bytes read, found %u of 15\n",
+                now() - started, (unsigned long)bytes, found);
+        gui_process_terminate(process);
+    }
+    assert(ended);
     /* the child and the grandchild with its 32 MiB, each the test's size at most besides: one count of each */
     bool once = run_top < 2 * baseline.memory_bytes + 64 * 1024 * 1024;
     if (!(status == 7 && found == 15 && bytes > 409600 && saw_cpu && saw_memory && once))
@@ -320,7 +334,7 @@ int main(int argc, char** argv) {
        descendants, and the existing close-window cleanup path. Reuse must work. */
     for (int pass = 0; pass < 3; ++pass) {
         const char* linger[] = {self, pass == 1 ? "--orphan" : "--linger", marker, NULL};
-        assert(gui_process_start(process, linger, error, sizeof(error)));
+        start(process, linger, error, sizeof(error));
         end = now() + 5;
         bool ready = false;
         while (now() < end) {

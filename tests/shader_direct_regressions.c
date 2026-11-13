@@ -39,7 +39,7 @@ static const char* gradient_cube_path;
 static const char* draw_buffer_paths[10];
 static const char* texture_paths[6];
 static const char* arithmetic_path;
-static const char* beyond_paths[3];
+static const char* beyond_paths[4];
 static const char* attribute_paths[7];
 static const char* pexit_path;
 static const char* global_dynamic_path;
@@ -51,8 +51,10 @@ static const char* fswzadd_path;
 static const char* surface_op_paths[7];
 static const char* legacy_paths[4];
 static const char* rect_paths[3];
+static const char* minmax_paths[2]; /* a TEX and a TXD taking the least of their texels (minmax_samples) */
 static const char* window_paths[3];
-static const char* lone_lane_paths[9];
+static const char* lone_lane_paths[12];
+static const char* quad_read_paths[3];
 static struct {
     char** paths;
     size_t count, capacity;
@@ -1355,6 +1357,67 @@ static void hfma2_immediate(void) {
     }
 }
 
+/* An F32 operand of a half instruction (HADD2 R0, R7.F32, RZ, or HADD2 R0, RZ, c[0][0]) gives the F16 that rounds to
+   nearest even: 65520 and past it an infinity of its sign, as yuzu, Eden and Ryujinx convert it and
+   vulkan_texture_half.inc expects; below it the value rounds into the range. A NaN made an F16 is +0, as Eden makes
+   it, so R1 = R0 - R0 is 0 for an infinity too (a frac of a coordinate past the range). Run on the CPU
+   (support/spv_eval.c), the halves read as an integer render target's bits */
+static void half_f32_operand_range(void) {
+    static const struct {
+        u32 operand, halves;
+        const char* what;
+    } cases[] = {
+        {0x4b979000u, 0x7c007c00u, "19865600 is an infinity"},
+        {0x477ff000u, 0x7c007c00u, "65520, the tie past 65504, rounds to an infinity"},
+        {0xcf000000u, 0xfc00fc00u, "-2147483648 is a negative infinity"},
+        {0x477fef00u, 0x7bff7bffu, "65519 rounds to 65504"},
+        {0x477fe000u, 0x7bff7bffu, "65504 stays 65504"},
+        {0x3f800000u, 0x3c003c00u, "1 stays 1"},
+        {0x7f800000u, 0x7c007c00u, "an infinity stays an infinity"},
+        {0x7fc00000u, 0x00000000u, "a NaN becomes +0, as Eden converts it to an F16"},
+    };
+    const u64 hadd2_f32 = 0x5D10000000070000ull | 7ull << 8 | 255ull << 20 | 1ull << 47; /* HADD2 R0, R7.F32, RZ */
+    const u64 hadd2_cbuf = 0x7A80000000070000ull | 255ull << 8;                          /* HADD2 R0, RZ, c[0][0] */
+    const u64 hadd2_sub = 0x5D10000000070001ull | 1ull << 31;                            /* HADD2 R1, R0, -R0 */
+    for (size_t k = 0; k < 2 * sizeof cases / sizeof *cases; k++) {
+        size_t i = k / 2;
+        int cbuf = k % 2;
+        const u64 program[] = {mov32i(7, cases[i].operand), cbuf ? hadd2_cbuf : hadd2_f32, hadd2_sub};
+        ShaderInfo info = {0};
+        size_t words = 0, slots;
+        u64* code = guest_program(program, 3, NULL, &slots);
+        if (!code) return;
+        set_sph(code, 18, 0xf);
+        info.rt_int_mask = 1;
+        u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 1, 1, 1, 1);
+        free(code);
+        check_translated(spv, &info, "HADD2 of an F32 operand translates");
+        if (!spv) continue;
+        SpvEvalEnv env = {0};
+        float one[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+        u32 scale[4];
+        memcpy(scale, one, sizeof one);
+        u32 constants[4] = {cases[i].operand, 0, 0, 0};
+        env.ubo[SNX_VKB_RS] = scale;
+        env.ubo_words[SNX_VKB_RS] = 4;
+        env.ubo[SNX_VKB_CB] = constants;
+        env.ubo_words[SNX_VKB_CB] = 4;
+        const char* why = spv_eval(spv, words, &env);
+        u32 halves = env.out[0][0], difference = env.out[0][1];
+        int nan = (cases[i].halves & 0x7c00u) == 0x7c00u && (cases[i].halves & 0x3ffu);
+        int same = nan ? (halves & 0x7c00u) == 0x7c00u && (halves & 0x3ffu) && (halves >> 16 & 0x7c00u) == 0x7c00u &&
+                             (halves >> 16 & 0x3ffu)
+                       : halves == cases[i].halves;
+        if (why || !same || difference)
+            fprintf(stderr, "HADD2 R0, %s with %08x: %s, R0 = %08x (%08x expected), R0 - R0 = %08x\n",
+                    cbuf ? "RZ, c[0][0]" : "R7.F32, RZ", cases[i].operand, why ? why : "ran", halves, cases[i].halves,
+                    difference);
+        check(!why && same, cases[i].what);
+        check(!why && !difference, "R0 - R0 is 0, Inf - Inf too (a NaN made an F16 is +0)");
+        free(spv);
+    }
+}
+
 static void fragment_storage_images(void) {
     /* the same store and atomic on 2D array surfaces (bits 33-35 set to 4), as Pokemon Legends Z-A's fragment
        programs write them (issue #440): the layer in the coordinates' third register */
@@ -1523,7 +1586,10 @@ static void guarded_handle_merges(void) {
     memcpy(variant, both_sides, sizeof variant);
     variant[4] = other_load & under_p0;
     code = translate(variant, 7, ST_FS, &info, &words, 1);
-    check_refused(code, &info, "untracked texture handle", "different handles under each side stay refused");
+    check_translated(code, &info, "different handles under each side are each bound");
+    check(code && info.ntex == 2 && info.tex[0].bindless && info.tex[1].bindless && info.tex[0].bl_cbuf == 2 &&
+              info.tex[1].bl_cbuf == 2 && info.tex[0].cbuf_off + info.tex[1].cbuf_off == 1,
+          "the sample chooses between c[2][0] and c[2][4] by the handle's value");
     free(code);
     memcpy(variant, both_sides, sizeof variant);
     variant[2] = fmul_r5;
@@ -1548,7 +1614,10 @@ static void guarded_handle_merges(void) {
     memcpy(variant, if_else, sizeof variant);
     variant[2] = other_load;
     code = translate(variant, 7, ST_FS, &info, &words, 1);
-    check_refused(code, &info, "untracked texture handle", "different handles on each side of an SSY stay refused");
+    check_translated(code, &info, "different handles on each side of an SSY are each bound");
+    check(code && info.ntex == 2 && info.tex[0].bl_cbuf == 2 && info.tex[1].bl_cbuf == 2 &&
+              info.tex[0].cbuf_off + info.tex[1].cbuf_off == 1,
+          "the sample after the SSY chooses between both handles");
     free(code);
     memcpy(variant, if_else, sizeof variant);
     variant[2] = fmul_r5;
@@ -3262,6 +3331,34 @@ static void beyond_eden(void) {
     u32* code = translate(&invalid_shared, 1, ST_CS, &info, &words, 1);
     check_refused(code, &info, "ATOMS", "unsupported shared compare-and-swap subop is refused");
     free(code);
+    /* uam compiles barrier() to BAR.SYNC with RZ for its barrier and its thread count (bits 43 and 44 clear): the
+       module the immediate form's 0 and 0 makes */
+    const u64 bar_imm = 0xf0a81b8000070000ull, bar_rz = 0xf0a803800ff7ff00ull;
+    size_t imm_words = 0;
+    u32* imm_code = translate(&bar_imm, 1, ST_CS, &info, &imm_words, 1);
+    check_translated(imm_code, &info, "BAR.SYNC 0x0, 0x0 translates");
+    code = translate(&bar_rz, 1, ST_CS, &info, &words, 1);
+    check_translated(code, &info, "BAR.SYNC RZ, RZ translates");
+    if (code && imm_code) {
+        check(count_opcode(code, words, 224, 0xffffffffu) == 1, "BAR.SYNC RZ, RZ is one control barrier");
+        check(words == imm_words && !memcmp(code, imm_code, words * sizeof *code),
+              "BAR.SYNC RZ, RZ makes the module BAR.SYNC 0x0, 0x0 makes");
+        save_fixture(beyond_paths[3], code, words);
+    }
+    free(imm_code);
+    free(code);
+    const u64 other_bars[] = {
+        0xf0a803800ff70100ull, /* BAR.SYNC R1, RZ: a barrier from a register */
+        0xf0a803800027ff00ull, /* BAR.SYNC RZ, R2: a thread count from a register */
+        0xf0a803801ff7ff00ull, /* BAR.SYNC RZ, RZ with bit 28 set, past the count's register */
+        0xf0a813800407ff00ull, /* BAR.SYNC RZ, 0x40: 64 threads */
+        0xf0a803810ff7ff00ull, /* BAR.ARV RZ, RZ */
+    };
+    for (size_t i = 0; i < sizeof other_bars / sizeof *other_bars; i++) {
+        code = translate(&other_bars[i], 1, ST_CS, &info, &words, 1);
+        check_refused(code, &info, "BAR", "a BAR other than barrier 0 for the whole block is refused");
+        free(code);
+    }
 }
 
 /* AL2P keeps byte offsets, including bit 10, and adds the register before an attribute access. */
@@ -3520,6 +3617,82 @@ static void rect_textures(void) {
         free(plain);
         free(rect);
     }
+}
+
+/* A sampler's min/max reduction the program takes itself (ShaderInfo.tex_minmax_mask, the key; tex_minmax_max for
+   the greatest): TEX and TXD of a 2D texture become four gathers, one a component, and the least or greatest of the
+   texels their footprint weighs, which the evaluator runs on a 4x4 texture. At (0.5, 0.5) the footprint is texels 1
+   and 2 of both rows; at (0.375, 0.5) x lands on texel 1's centre, and column 2 weighs nothing. Without the key the
+   program samples as it did. MOV32I R4, u; MOV32I R5, v; TEX R0, R4, 2D (RGBA) or TXD R0, R4, R8, 2D */
+static float minmax_bits_f32(u32 bits) {
+    float f;
+    memcpy(&f, &bits, 4);
+    return f;
+}
+static void minmax_samples(void) {
+    const u64 tex = 0xc000000000000000ull | 0x10ull << 36 | 7ull << 51 | 0xfull << 31 | 2ull << 28 | 0xffull << 20 |
+                    7ull << 16 | 4ull << 8;
+    const u64 txd = 0xde00000000000000ull | 7ull << 51 | 0x10ull << 36 | 0xfull << 31 | 2ull << 28 | 8ull << 20 |
+                    7ull << 16 | 4ull << 8;
+    /* each component's gather: (i, j + 1), (i + 1, j + 1), (i + 1, j), (i, j) */
+    static const float gathered[4][4] = {{5, 1, 2, 7}, {0.25f, 0.5f, 0.75f, 1}, {-1, -2, -3, -4}, {8, 8, 9, 6}};
+    static const struct {
+        float u, v;
+        float least[4], greatest[4];
+    } at[] = {{0.5f, 0.5f, {1, 0.25f, -4, 6}, {7, 1, -1, 9}}, {0.375f, 0.5f, {5, 0.25f, -4, 6}, {7, 1, -1, 8}}};
+    const u64* forms[2] = {&tex, &txd};
+    static const char* names[2] = {"TEX", "TXD"};
+    for (int k = 0; k < 2; k++)
+        for (u32 greatest = 0; greatest < 2; greatest++)
+            for (u32 c = 0; c < sizeof at / sizeof *at; c++) {
+                u32 u, v;
+                memcpy(&u, &at[c].u, 4);
+                memcpy(&v, &at[c].v, 4);
+                const u64 program[3] = {mov32i(4, u), mov32i(5, v), *forms[k]};
+                size_t slots, words = 0;
+                u64* code = guest_program(program, 3, NULL, &slots);
+                if (!code) continue;
+                code[9] = 0xf; /* the header's outputs: render target 0's RGBA, from R0-R3 */
+                ShaderInfo info = {0};
+                info.tex_minmax_mask = 1;
+                info.tex_minmax_max = greatest;
+                u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 1, 1, 1, 1);
+                free(code);
+                check_translated(spv, &info, "a min/max sample translates");
+                if (!spv) continue;
+                check(info.tex_minmax_mask == 1 && info.tex_minmax_max == greatest,
+                      "a min/max sample's key outlives the translation, for the bind that reads it");
+                check(count_opcode(spv, words, 96, 0xffffffffu) == 4 &&
+                          count_opcode(spv, words, 87, 0xffffffffu) + count_opcode(spv, words, 88, 0xffffffffu) == 0,
+                      "a min/max sample is four gathers and no sample");
+                SpvEvalEnv env = {0};
+                env.image_size[SNX_VKB_TEX][0] = env.image_size[SNX_VKB_TEX][1] = 4;
+                for (u32 g = 0; g < 4; g++)
+                    for (u32 t = 0; t < 4; t++) memcpy(&env.gather[SNX_VKB_TEX][g][t], &gathered[g][t], 4);
+                u32 scale[4] = {0x3f800000, 0x3f800000, 0x3f800000, 0};
+                env.ubo[SNX_VKB_RS] = scale;
+                env.ubo_words[SNX_VKB_RS] = 4;
+                env.push[7] = 8;
+                const char* why = spv_eval(spv, words, &env);
+                const float* want = greatest ? at[c].greatest : at[c].least;
+                int same = !why && env.out_written[0];
+                for (u32 g = 0; same && g < 4; g++) same = !memcmp(&env.out[0][g], &want[g], 4);
+                if (!same)
+                    fprintf(stderr, "%s's %s at (%g, %g): %s; read %g %g %g %g, want %g %g %g %g\n", names[k],
+                            greatest ? "greatest" : "least", (double)at[c].u, (double)at[c].v, why ? why : "ran",
+                            (double)minmax_bits_f32(env.out[0][0]), (double)minmax_bits_f32(env.out[0][1]),
+                            (double)minmax_bits_f32(env.out[0][2]), (double)minmax_bits_f32(env.out[0][3]),
+                            (double)want[0], (double)want[1], (double)want[2], (double)want[3]);
+                check(same, "a min/max sample takes the least or greatest of the texels its footprint weighs");
+                if (!greatest && !c) save_fixture(minmax_paths[k], spv, words);
+                free(spv);
+            }
+    ShaderInfo info;
+    size_t words = 0;
+    u32* plain = translate(&tex, 1, ST_FS, &info, &words, 1);
+    check(plain && count_opcode(plain, words, 96, 0xffffffffu) == 0 && count_opcode(plain, words, 87, 0xffffffffu) == 1,
+          "without the key a sample is one sample and no gather");
+    free(plain);
 }
 
 /* One game's culling geometry program stores RZ or a MOV32I's 1 to the viewport mask (AST a[0x3a0]): no viewport or
@@ -4290,8 +4463,12 @@ static void fswzadd_forms(void) {
     check_translated(code, &info, "FSWZADD translates outside fragment programs");
     if (code) check(count_opcode(code, words, 169, 0xffffffffu) == 1, "FSWZADD 0xcc selects b on the left lanes");
     free(code);
+    /* without fragment subgroups the lane is the pixel's place in its quad, FragCoord's parities */
     code = fswzadd_spirv(fswzadd(0xcc), ST_FS, 0, &info, &words);
-    check_refused(code, &info, "subgroup", "FSWZADD with lanes that differ needs the subgroup's lane");
+    check_translated(code, &info, "FSWZADD with lanes that differ translates without fragment subgroups");
+    if (code)
+        check(has_builtin(code, words, 15) && !has_builtin(code, words, 41) && count_opcode(code, words, 17, 61) == 0,
+              "FSWZADD without fragment subgroups takes its lane from FragCoord");
     free(code);
     int adds[4];
     for (u32 mode = 0; mode < 4; mode++) {
@@ -5125,11 +5302,12 @@ static int no_subgroup(const u32* code, size_t words) {
     return found == 0;
 }
 
-/* A vertex, evaluation or geometry program that votes or shuffles, on a device whose subgroups leave its stage out (an
-   Adreno 830 lists fragment and compute), runs each invocation as lane 0 alone, as the console runs a batch of one
-   vertex or primitive. The forms are those of a game's vertex programs, whose draws were skipped on that phone: a
+/* A vertex, evaluation, geometry or fragment program that votes or shuffles, on a device whose subgroups leave its
+   stage out (an Adreno 830 lists fragment and compute, an Adreno 610 under Turnip compute alone), runs each invocation
+   as one lane alone, as the console runs a batch of one vertex or primitive: a fragment's lane is its place in its
+   quad, from FragCoord. The forms are those of a game's vertex programs, whose draws were skipped on that phone: a
    warp-aggregated atomic (the ballot of the live lanes, whose highest adds their count) and a block branched around
-   when the whole warp agrees, plus SHFL and the other votes. Control and fragment programs still need the subgroup */
+   when the whole warp agrees, plus SHFL and the other votes. Control programs still need the subgroup */
 static void lone_lane_forms(void) {
     const u64 aggregated[] = {
         vote(0, 2, 7, 7, 0),   /* VOTE.ALL R2, PT, PT: the live lanes */
@@ -5154,7 +5332,7 @@ static void lone_lane_forms(void) {
     static const struct {
         int stage;
         const char* what;
-    } stages[] = {{ST_VS, "a vertex"}, {ST_TES, "an evaluation"}, {ST_GS, "a geometry"}};
+    } stages[] = {{ST_VS, "a vertex"}, {ST_TES, "an evaluation"}, {ST_GS, "a geometry"}, {ST_FS, "a fragment"}};
     const struct {
         const u64* instructions;
         int count;
@@ -5168,7 +5346,9 @@ static void lone_lane_forms(void) {
     int fixture = 0;
     for (size_t s = 0; s < sizeof stages / sizeof *stages; s++)
         for (size_t f = 0; f < sizeof forms / sizeof *forms; f++) {
-            u32* code = lone_lane_spirv(forms[f].instructions, forms[f].count, stages[s].stage, 0, &info, &words);
+            /* a fragment program stores no attribute: the branch's result stays in R10 */
+            int count = forms[f].count - (stages[s].stage == ST_FS && forms[f].instructions == uniform);
+            u32* code = lone_lane_spirv(forms[f].instructions, count, stages[s].stage, 0, &info, &words);
             snprintf(what, sizeof what, "%s in %s program translates without subgroups in its stage", forms[f].what,
                      stages[s].what);
             check_translated(code, &info, what);
@@ -5177,10 +5357,13 @@ static void lone_lane_forms(void) {
                          forms[f].what, stages[s].what);
                 check(no_subgroup(code, words), what);
                 check(!info.primitive_split_safe, "a program that votes is never split into primitives");
-                if (fixture < 9) save_fixture(lone_lane_paths[fixture++], code, words);
+                if (stages[s].stage == ST_FS)
+                    check(has_builtin(code, words, 15),
+                          "a fragment's lone lane is its place in its quad, from FragCoord");
+                if (fixture < 12) save_fixture(lone_lane_paths[fixture++], code, words);
             }
             free(code);
-            code = lone_lane_spirv(forms[f].instructions, forms[f].count, stages[s].stage, 1, &info, &words);
+            code = lone_lane_spirv(forms[f].instructions, count, stages[s].stage, 1, &info, &words);
             snprintf(what, sizeof what, "%s in %s program uses the subgroup where its stage has it", forms[f].what,
                      stages[s].what);
             check_translated(code, &info, what);
@@ -5194,14 +5377,87 @@ static void lone_lane_forms(void) {
         check_refused(code, &info, "subgroup ballot/shuffle unavailable", what);
         free(code);
     }
-    u32* code = lone_lane_spirv(others, 4, ST_FS, 0, &info, &words);
-    check_refused(code, &info, "subgroup ballot/shuffle unavailable", "SHFL in a fragment program needs the subgroup");
-    free(code);
-    /* FSWZADD's lanes are a quad's: the lone lane doesn't stand for them */
+    /* FSWZADD's lanes are a quad's: outside a fragment program the lone lane doesn't stand for them */
     const u64 swizzled[] = {vote(0, 2, 7, 7, 0), fswzadd(0xcc)};
+    u32* code = lone_lane_spirv(swizzled, 2, ST_FS, 0, &info, &words);
+    check_translated(code, &info, "VOTE and FSWZADD in a fragment program translate without fragment subgroups");
+    free(code);
     code = lone_lane_spirv(swizzled, 2, ST_VS, 0, &info, &words);
     check_refused(code, &info, "subgroup ballot/shuffle unavailable",
                   "FSWZADD with lanes that differ keeps the subgroup");
+    free(code);
+}
+
+/* SHFL within a fragment program's quad, on a device without fragment subgroups (Turnip on an Adreno 610): the pixel
+   the lane would read is read through fine derivatives of the register's 16-bit halves as floats, one OpDPdxFine for
+   the pixel beside, one OpDPdyFine for the one above or below and both for the one across; a read of its own value
+   takes none, and a SHFL over the whole warp keeps its own. dFdx as the console computes it (SHFL.BFLY 1, then FSWZADD
+   0x99) is the form of a game's fragment program whose draws, 13% of a scene's, that phone skipped */
+static void fragment_quad_reads(void) {
+    static const struct {
+        u32 mode, index, mask;
+        int dx, dy;
+        const char* what;
+    } forms[] = {
+        {3, 1, 0x1c03, 1, 0, "SHFL.BFLY 1 reads the pixel beside"},
+        {3, 2, 0x1c03, 0, 1, "SHFL.BFLY 2 reads the pixel above or below"},
+        {3, 3, 0x1c03, 1, 1, "SHFL.BFLY 3 reads the pixel across"},
+        {0, 2, 0x1c03, 1, 2, "SHFL.IDX 2 reads lane 2's pixel from any of the four"},
+        {1, 1, 0x1c03, 1, 1, "SHFL.UP 1 reads the lane before it: beside, or across from the lower row"},
+        {2, 2, 0x1c03, 0, 1, "SHFL.DOWN 2 reads the lane two after it: below"},
+        {3, 0, 0x1c03, 0, 0, "SHFL.BFLY 0 keeps its own value"},
+        {3, 4, 0x1c03, 0, 0, "SHFL.BFLY 4 leaves the quad and keeps its own value"},
+        {0, 1, 0x1f, 0, 0, "SHFL.IDX over the whole warp keeps its own value"},
+    };
+    ShaderInfo info;
+    size_t words = 0;
+    char what[200];
+    for (size_t k = 0; k < sizeof forms / sizeof *forms; k++) {
+        const u64 instruction = shfl(forms[k].mode, 1, forms[k].index, forms[k].mask);
+        u32* code = lone_lane_spirv(&instruction, 1, ST_FS, 0, &info, &words);
+        snprintf(what, sizeof what, "%s without fragment subgroups", forms[k].what);
+        check_translated(code, &info, what);
+        if (code) {
+            int dx = count_opcode(code, words, 210, 0xffffffffu), dy = count_opcode(code, words, 211, 0xffffffffu);
+            if (dx != forms[k].dx || dy != forms[k].dy)
+                fprintf(stderr, "%s: %d OpDPdxFine and %d OpDPdyFine (expected %d and %d)\n", what, dx, dy, forms[k].dx,
+                        forms[k].dy);
+            check(dx == forms[k].dx && dy == forms[k].dy, what);
+            check(no_subgroup(code, words) && has_builtin(code, words, 15), "a quad's read takes no subgroup");
+            check(count_opcode(code, words, 17, 51) == (forms[k].dx || forms[k].dy),
+                  "DerivativeControl is declared where a fine derivative is read");
+            if (forms[k].mode == 0 && forms[k].mask == 0x1c03) save_fixture(quad_read_paths[0], code, words);
+        }
+        free(code);
+    }
+    /* with them, the quad operations stay */
+    const u64 broadcast = shfl(0, 1, 2, 0x1c03);
+    u32* code = lone_lane_spirv(&broadcast, 1, ST_FS, 1, &info, &words);
+    check_translated(code, &info, "SHFL.IDX 2 in a quad translates with fragment subgroups");
+    if (code)
+        check(count_opcode(code, words, 365, 0xffffffffu) == 1 && count_opcode(code, words, 210, 0xffffffffu) == 0,
+              "SHFL.IDX 2 with fragment subgroups is a quad broadcast, with no derivative");
+    free(code);
+    /* a guarded read runs unguarded, so that a pixel whose guard is false still gives the others its register, and
+       its writes keep their old values where the guard is false: no branch around it */
+    const u64 guarded = shfl(3, 1, 1, 0x1c03) & ~(7ull << 16); /* @P0 */
+    code = lone_lane_spirv(&guarded, 1, ST_FS, 0, &info, &words);
+    check_translated(code, &info, "@P0 SHFL.BFLY 1 translates without fragment subgroups");
+    if (code) {
+        check(count_opcode(code, words, 250, 0xffffffffu) == 0 && count_opcode(code, words, 210, 0xffffffffu) == 1,
+              "@P0 SHFL.BFLY 1 reads the pixel beside with no branch around the derivative");
+        save_fixture(quad_read_paths[1], code, words);
+    }
+    free(code);
+    /* dFdx(R1) into R0: SHFL.BFLY R0, R1, 1, 0x1c03, then FSWZADD R0, R0, R1, 0x99 (nouveau's handleDFDX) */
+    const u64 dfdx[] = {shfl(3, 1, 1, 0x1c03), 0x50F8000000070000ull | 0x99ull << 28 | 1ull << 20};
+    code = lone_lane_spirv(dfdx, 2, ST_FS, 0, &info, &words);
+    check_translated(code, &info, "dFdx as SHFL.BFLY 1 and FSWZADD 0x99 translates without fragment subgroups");
+    if (code) {
+        check(no_subgroup(code, words) && count_opcode(code, words, 210, 0xffffffffu) == 1,
+              "dFdx as SHFL.BFLY 1 and FSWZADD 0x99 reads the pixel beside through a fine derivative");
+        save_fixture(quad_read_paths[2], code, words);
+    }
     free(code);
 }
 
@@ -5265,6 +5521,246 @@ static u32* flow_lod_spirv(const u64* instructions, int count, int can_subgroup,
     g_shader_maximal_reconvergence = device;
     free(code);
     return result;
+}
+/* FSETP P<predicate>, PT, RZ, c[3][word]: whether 0 < the constant, which the test sets as it runs */
+static u64 fsetp_cbuf3(u32 predicate, u32 word) {
+    return (0x4bb1838c30f7ff07ull & ~(0x3fffull << 20) & ~(7ull << 3)) | (u64)word << 20 | (u64)predicate << 3;
+}
+/* A TEX.B whose handle the writes don't agree on, run on the CPU (support/spv_eval.c): the x of its sample, each
+   slot's texel 1 + the word of the constant buffer handle it was bound for (1 for c[2][0], 2 for c[2][4]), 0 when
+   none was chosen. c2 is bank 2's first words, c3 bank 3's (the predicates' constants), int_mask the slots of
+   integer textures (ShaderInfo.tex_int_mask) */
+static int chosen_sample(const u64* program, int count, const u32 c2[4], const u32 c3[4], u64 int_mask,
+                         ShaderInfo* info, float* x, const char** why) {
+    size_t words = 0, slots;
+    u64* code = guest_program(program, count, NULL, &slots);
+    *why = "out of memory";
+    if (!code) return 0;
+    set_sph(code, 18, 0xf);
+    memset(info, 0, sizeof *info);
+    info->tex_int_mask = int_mask;
+    u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, info, &words, 1, 1, 1, 1);
+    free(code);
+    *why = info->first_unsupported;
+    if (!spv || info->unsupported) {
+        free(spv);
+        return 0;
+    }
+    SpvEvalEnv env = {0};
+    float one[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+    u32 scale[4], bank2[4], bank3[4];
+    memcpy(scale, one, sizeof one);
+    memcpy(bank2, c2, sizeof bank2);
+    memcpy(bank3, c3, sizeof bank3);
+    env.ubo[SNX_VKB_RS] = scale;
+    env.ubo_words[SNX_VKB_RS] = 4;
+    env.ubo[SNX_VKB_CB + 2] = bank2;
+    env.ubo_words[SNX_VKB_CB + 2] = 4;
+    env.ubo[SNX_VKB_CB + 3] = bank3;
+    env.ubo_words[SNX_VKB_CB + 3] = 4;
+    for (int slot = 0; slot < info->ntex && SNX_VKB_TEX + slot < 64; slot++) {
+        float texel = 1.0f + (float)info->tex[slot].cbuf_off;
+        memcpy(&env.texel[SNX_VKB_TEX + slot][0], &texel, 4);
+    }
+    env.steps_max = 100000;
+    *why = spv_eval(spv, words, &env);
+    free(spv);
+    memcpy(x, &env.out[0][0], 4);
+    return !*why;
+}
+/* A multisample TLD.B takes its handle in Rb and the sample after it, the order of Mesa's compilers since f9d385d77716
+   ("nouveau/codegen: Handle/indirect goes before sample index"). uam's codegen predates it and puts the sample first:
+   edenprobe's fetch through a table of four sample handles comes with the sample in R4 and the handle in R5 */
+static void bindless_multisample_order(void) {
+    u64 fetch[] = {
+        0xe003ff870ff7ff00ull, /* IPA R0, a[0x70] */
+        0x5cb0118000071a00ull, /* F2I.S32 R0, R0 */
+        0xe003ff874ff7ff01ull, /* IPA R1, a[0x74] */
+        0x5cb0118000171a05ull, /* F2I.S32 R5, R1: the sample */
+        0x3848000000470000ull, /* SHL R0, R0, 4 */
+        0xef94002000070004ull, /* LDC R4, c[2][R0]: the handle */
+        0x5c9807800ff70000ull, /* MOV R0, RZ */
+        0x5c9807800ff70001ull, /* MOV R1, RZ */
+        0xdd3c0007a0470000ull, /* TLD.B.MS R0, R0, R4 */
+    };
+    ShaderInfo info;
+    size_t words = 0;
+    g_shader_texture_arrays = 1; /* the device's non-uniform indexing, for the table */
+    u32* code = translate(fetch, 9, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "a multisample TLD.B with its handle in Rb translates");
+    if (code)
+        check(info.ntex == 1 && info.tex[0].flags == (2 | SNX_TEX_INDEXED | 4 << 4) &&
+                  has_image_operands(code, words, 95, 0x40),
+              "it fetches a sample of a multisample element of the handle table, 16 bytes apart");
+    free(code);
+    fetch[3] = 0x5cb0118000171a04ull; /* F2I.S32 R4, R1 */
+    fetch[5] = 0xef94002000070005ull; /* LDC R5, c[2][R0] */
+    code = translate(fetch, 9, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle R4 of TLD.B",
+                  "uam's order, the sample in Rb, is not read as the handle");
+    free(code);
+    g_shader_texture_arrays = 0;
+}
+/* A TEX.B that chooses among the constant buffer handles that reach it keeps the sample of the one whose word the
+   register holds when it runs: c[2][0] under P0, c[2][4] under !P0, and under P1 a value from elsewhere (MOV32I
+   0x777), which is c[2][0]'s texture when c[2][0] holds 0x777 and zeros when no candidate does */
+static void tex_b_chosen_handle(void) {
+    const u64 tex_b = 0xdeb8000000070000ull | (2ull << 28) | (1ull << 37) | (6ull << 20) | (1ull << 31); /* R0.x */
+    const u64 under_p0 = ~(0xfull << 16), not_p0 = 8ull << 16;
+    const u64 load = 0x4c98078800070006ull, other_load = 0x4c98078800170006ull; /* MOV R6, c[2][0] / c[2][4] */
+    const u64 elsewhere = (mov32i(6, 0x777) & under_p0) | 1ull << 16;           /* @P1 MOV32I R6, 0x777 */
+    const u64 program[] = {
+        fsetp_cbuf3(0, 0), fsetp_cbuf3(1, 1), load & under_p0, (other_load & under_p0) | not_p0, elsewhere, tex_b};
+    static const struct {
+        u32 c2[4], c3[4];
+        u64 int_mask;
+        float x;
+        const char* what;
+    } cases[] = {
+        {{0x00100001u, 0x00200002u}, {0x3f800000u, 0}, 0, 1.0f, "under P0 the sample is c[2][0]'s"},
+        {{0x00100001u, 0x00200002u}, {0, 0}, 0, 2.0f, "under !P0 the sample is c[2][4]'s"},
+        {{0x777u, 0x00200002u},
+         {0, 0x3f800000u},
+         0,
+         1.0f,
+         "a value from elsewhere equal to c[2][0]'s word is its texture"},
+        {{0x00100001u, 0x00200002u},
+         {0, 0x3f800000u},
+         0,
+         0.0f,
+         "a value from elsewhere equal to no candidate's reads 0"},
+        /* c[2][0] an integer texture's handle, c[2][4] a float one's: each is kept with the bits it samples */
+        {{0x00100001u, 0x00200002u}, {0x3f800000u, 0}, 1, 1.0f, "an integer texture's sample is kept as its bits"},
+        {{0x00100001u, 0x00200002u}, {0, 0}, 1, 2.0f, "a float texture beside an integer one is kept too"},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        ShaderInfo info;
+        const char* why;
+        float x = -1.0f;
+        int ran = chosen_sample(program, 6, cases[i].c2, cases[i].c3, cases[i].int_mask, &info, &x, &why);
+        if (!ran || x != cases[i].x)
+            fprintf(stderr, "TEX.B chosen handle case %zu: %s, %d slots, x %g (%g expected)\n", i, ran ? "ran" : why,
+                    info.ntex, (double)x, (double)cases[i].x);
+        check(ran && info.ntex == 2 && x == cases[i].x, cases[i].what);
+    }
+    /* what the log says of a program that chooses (vk/pipeline.c): how many TEX.B do, and the first one's place,
+       handle register and candidates; nothing for a TEX.B with one handle */
+    const u64 one_handle[] = {load, tex_b};
+    for (int one = 0; one < 2; one++) {
+        ShaderInfo info;
+        const char* why;
+        float x;
+        const char* note = one ? "" : "TEX.B at 88, R6: c[2][0x0], c[2][0x4]";
+        int ran = one ? chosen_sample(one_handle, 2, cases[0].c2, cases[0].c3, 0, &info, &x, &why)
+                      : chosen_sample(program, 6, cases[0].c2, cases[0].c3, 0, &info, &x, &why);
+        if (!ran || info.chosen_tex != (u32)!one || strcmp(info.chosen_why, note))
+            fprintf(stderr, "TEX.B note: %s, %u choosing, \"%s\" (\"%s\" expected)\n", ran ? "ran" : why,
+                    info.chosen_tex, info.chosen_why, note);
+        check(ran && info.chosen_tex == (u32)!one && !strcmp(info.chosen_why, note),
+              one ? "a TEX.B with one handle leaves no note" : "the note names the TEX.B, its register and candidates");
+    }
+    /* In a loop with a BRK (so the reaching definitions aren't known), the write after the TEX.B that the loop carries
+       back to it is a candidate too: the first round samples c[2][0] or c[2][4] by P0, the second c[2][8], and P1,
+       set in the first round, ends the loop after the second sample */
+    const u64 pbk = 0xe2a000000007000full | (u64)((flow_word(9) - flow_word(4)) * 8) << 20; /* PBK to 9 */
+    const u64 looped[] = {fsetp_cbuf3(0, 0),     load & under_p0,  (other_load & under_p0) | not_p0, pbk, tex_b,
+                          0xe34000000001000full, /* @P1 BRK */
+                          0x4c98078800270006ull, /* MOV R6, c[2][8] */
+                          fsetp_cbuf3(1, 1),     flow_bra(8, 4, 7)};
+    const u32 words3[4] = {0x00100001u, 0x00200002u, 0x00300003u, 0};
+    for (u32 p0 = 0; p0 < 2; p0++) {
+        const u32 c3[4] = {p0 ? 0x3f800000u : 0, 0x3f800000u, 0, 0};
+        ShaderInfo info;
+        const char* why;
+        float x = -1.0f;
+        int ran = chosen_sample(looped, 9, words3, c3, 0, &info, &x, &why);
+        if (!ran || x != 3.0f || info.ntex != 3)
+            fprintf(stderr, "TEX.B in a loop with P0 %u: %s, %d slots, x %g after the second round (3 expected)\n", p0,
+                    ran ? "ran" : why, info.ntex, (double)x);
+        check(ran && info.ntex == 3 && x == 3.0f,
+              "a handle the loop carries back to the TEX.B from a write after it is one of its candidates");
+    }
+    /* the same write after a TEX.B that no loop comes back to, a BRK after both: no candidate */
+    const u64 after_pbk = 0xe2a000000007000full | (u64)((flow_word(7) - flow_word(5)) * 8) << 20; /* PBK to 7 */
+    const u64 after[] = {
+        fsetp_cbuf3(0, 0),     load & under_p0,      (other_load & under_p0) | not_p0, tex_b, after_pbk,
+        0xe34000000001000full, 0x4c98078800270006ull};
+    const u32 c3[4] = {0x3f800000u, 0, 0, 0};
+    ShaderInfo info;
+    const char* why;
+    float x = -1.0f;
+    int ran = chosen_sample(after, 7, words3, c3, 0, &info, &x, &why);
+    if (!ran || x != 1.0f || info.ntex != 2)
+        fprintf(stderr, "TEX.B before a BRK: %s, %d slots, x %g (1 expected)\n", ran ? "ran" : why, info.ntex,
+                (double)x);
+    check(ran && info.ntex == 2 && x == 1.0f, "a write after the TEX.B that no loop carries back is no candidate");
+}
+/* A fragment program's loop ends for a helper lane after SH_HELPER_LOOP_ROUNDS back-edges, and runs as written for the
+   other lanes: a loop with no way out but EXIT kills the helper, a loop with a BRK lets it on past the loop, and the
+   dispatch loop of a program with calls ends for it. Run on the CPU (support/spv_eval.c) as a helper and as a lane
+   that is not one; a vertex program and a fragment program without loops don't ask whether a lane is a helper */
+static void helper_loop_exit(void) {
+    enum { IS_HELPER = 5381 };
+    /* @P1 BRA to the EXIT at 4, then a loop of @P0 EXIT and a BRA back to it: P0 and P1 are never set, and the
+       loop's only way out is its EXIT */
+    const u64 endless[] = {flow_bra(0, 4, 1), mov32i(0, 1), 0xe30000000000000full, flow_bra(3, 2, 7)};
+    const u64 pbk = 0xe2a000000007000full | (u64)((flow_word(3) - flow_word(1)) * 8) << 20;  /* PBK to 3 */
+    const u64 breaks[] = {pbk, 0xe34000000000000full, flow_bra(2, 1, 7), mov32i(0, 0x1234)}; /* @P0 BRK */
+    const u64 cal = 0xe260000000070040ull | (u64)((flow_word(2) - flow_word(1)) * 8) << 20;  /* CAL 2 */
+    const u64 called[] = {cal, EXIT, flow_bra(2, 2, 7), 0xe32000000007000full};              /* RET */
+    const struct {
+        const u64* instructions;
+        int count, killed;
+        u32 out;
+        const char* what;
+    } cases[] = {
+        {endless, 4, 1, 0, "a helper in a loop no lane leaves but by EXIT ends there"},
+        {breaks, 4, 0, 0x1234, "a helper in a loop with a BRK goes on past the loop"},
+        {called, 4, 0, 0, "a helper in the dispatch loop of a program with calls leaves it"},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        ShaderInfo info = {0};
+        size_t words = 0, slots;
+        u64* code = guest_program(cases[i].instructions, cases[i].count, NULL, &slots);
+        if (!code) return;
+        set_sph(code, 18, 0xf);
+        info.rt_int_mask = 1;
+        u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 1, 1, 1, 1);
+        free(code);
+        check_translated(spv, &info, "a fragment program with a loop translates");
+        if (!spv) continue;
+        for (int helper = 1; helper >= 0; helper--) {
+            SpvEvalEnv env = {0};
+            float one[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+            u32 scale[4];
+            memcpy(scale, one, sizeof one);
+            env.ubo[SNX_VKB_RS] = scale;
+            env.ubo_words[SNX_VKB_RS] = 4;
+            env.helper = helper;
+            env.steps_max = 32u * 65536u; /* room for a helper's 65536 back-edges (SH_HELPER_LOOP_ROUNDS) */
+            const char* why = spv_eval(spv, words, &env);
+            int ended = !why && env.killed == cases[i].killed && (!cases[i].out || env.out[0][0] == cases[i].out);
+            if (helper ? !ended : !why)
+                fprintf(stderr, "helper loop case %zu as %s: %s, killed %d, R0 %08x\n", i,
+                        helper ? "a helper" : "a lane that is not one", why ? why : "ended", env.killed, env.out[0][0]);
+            check(helper ? ended : why && !strcmp(why, "too many steps"),
+                  helper ? cases[i].what : "a lane that is not a helper runs the loop as written");
+        }
+        free(spv);
+    }
+    const u64 straight[] = {mov32i(0, 1)};
+    for (int stage = 0; stage < 2; stage++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* spv = translate(stage ? straight : endless, stage ? 1 : 4, stage ? ST_FS : ST_VS, &info, &words, 1);
+        check_translated(spv, &info,
+                         stage ? "a fragment program without loops translates" : "a vertex loop translates");
+        if (spv)
+            check(count_opcode(spv, words, IS_HELPER, 0xffffffffu) == 0,
+                  stage ? "a fragment program without loops doesn't count back-edges"
+                        : "a vertex program's loop doesn't count back-edges");
+        free(spv);
+    }
 }
 /* A fragment program with flow and a sample that takes its level from derivatives, on a device whose subgroups leave
    the fragment stage out (Turnip on an Adreno 610 lists compute only, llvmpipe's have 8 lanes): the program's own
@@ -5593,6 +6089,52 @@ static void window_origin_specialized(void) {
     }
 }
 
+/* Constant buffer words that whoever translates gives as constants (g_shader_cb_fold): a load at a constant place is
+   then that constant, whatever the buffer holds when the module runs; a word it leaves, and every word where nobody
+   is asked, is loaded. The word is asked for by its bank and its byte offset */
+static int fold_second_word(u32 idx, u32 off, u32* out) {
+    if (idx != 2 || off != 4) return 0;
+    *out = 0x3F800000u;
+    return 1;
+}
+static void constant_buffer_words_folded(void) {
+    const u64 reads[] = {0x4c98078800070001ull, 0x4c98078800170002ull}; /* MOV R1, c[2][0]; MOV R2, c[2][4] */
+    for (int folded = 0; folded < 2; folded++) {
+        ShaderInfo info = {0};
+        size_t words = 0, slots;
+        u64* code = guest_program(reads, 2, NULL, &slots);
+        if (!code) return;
+        set_sph(code, 18, 0xf); /* R1 is colour 0's green and R2 its blue */
+        g_shader_cb_fold = folded ? fold_second_word : NULL;
+        u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 0, 1, 1, 1);
+        g_shader_cb_fold = NULL;
+        free(code);
+        check_translated(spv, &info, "a fragment program loading two constant buffer words translates");
+        if (!spv) continue;
+        /* the buffer holds 0.25 where the constant is 1.0 */
+        const float held[4] = {5.0f, 0.25f, 0.0f, 0.0f}, one[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+        u32 buffer[4], scale[4];
+        float green, blue;
+        SpvEvalEnv env = {0};
+        memcpy(buffer, held, sizeof held);
+        memcpy(scale, one, sizeof one);
+        env.ubo[2] = buffer;
+        env.ubo_words[2] = 4;
+        env.ubo[SNX_VKB_RS] = scale;
+        env.ubo_words[SNX_VKB_RS] = 4;
+        const char* why = spv_eval(spv, words, &env);
+        memcpy(&green, &env.out[0][1], 4);
+        memcpy(&blue, &env.out[0][2], 4);
+        if (why || green != 5.0f || blue != (folded ? 1.0f : 0.25f))
+            fprintf(stderr, "folded %d: %s, green %g and blue %g\n", folded, why ? why : "ran", (double)green,
+                    (double)blue);
+        check(!why && green == 5.0f && blue == (folded ? 1.0f : 0.25f),
+              folded ? "the word given is the module's constant, and the word left is loaded"
+                     : "where nobody is asked both words are loaded");
+        free(spv);
+    }
+}
+
 /* What the translator knows as it translates is settled there, not left for the driver's compiler: PT, the
    predicate most instructions name, is the constant true; a constant a register holds is a constant of the type it
    is read as; and a float a register holds is read back as that float, not through its bits */
@@ -5841,7 +6383,7 @@ int main(int argc, char** argv) {
             texture_paths[i] = fixture_path(argv[1], name);
         }
         arithmetic_path = fixture_path(argv[1], "arithmetic");
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 4; i++) {
             snprintf(name, sizeof name, "beyond_%d", i);
             beyond_paths[i] = fixture_path(argv[1], name);
         }
@@ -5882,13 +6424,21 @@ int main(int argc, char** argv) {
             snprintf(name, sizeof name, "rect_%d", i);
             rect_paths[i] = fixture_path(argv[1], name);
         }
+        for (int i = 0; i < 2; i++) {
+            snprintf(name, sizeof name, "minmax_%d", i);
+            minmax_paths[i] = fixture_path(argv[1], name);
+        }
         for (int i = 0; i < 3; i++) {
             snprintf(name, sizeof name, "window_%d", i);
             window_paths[i] = fixture_path(argv[1], name);
         }
-        for (int i = 0; i < 9; i++) {
+        for (int i = 0; i < 12; i++) {
             snprintf(name, sizeof name, "lone_lane_%d", i);
             lone_lane_paths[i] = fixture_path(argv[1], name);
+        }
+        for (int i = 0; i < 3; i++) {
+            snprintf(name, sizeof name, "quad_read_%d", i);
+            quad_read_paths[i] = fixture_path(argv[1], name);
         }
         if (g_fixtures.failed) {
             fprintf(stderr, "failed to allocate fixture paths\n");
@@ -5913,6 +6463,7 @@ int main(int argc, char** argv) {
     f2f_half_rounding();
     saturate_nan();
     hfma2_immediate();
+    half_f32_operand_range();
     tlds_fp16();
     scaled_texel_fetch();
     query_only_volume();
@@ -5950,6 +6501,7 @@ int main(int argc, char** argv) {
     attribute_pointer();
     legacy_varyings_forms();
     rect_textures();
+    minmax_samples();
     viewport_mask();
     indexed_attribute_load();
     structured_flow();
@@ -5957,7 +6509,11 @@ int main(int argc, char** argv) {
     shfl_quad_forms();
     shfl_predicate();
     lone_lane_forms();
+    fragment_quad_reads();
     fragment_flow_derivatives();
+    tex_b_chosen_handle();
+    bindless_multisample_order();
+    helper_loop_exit();
     feedback_own_pixel();
     feedback_screen_uv();
     texture_unread_slots();
@@ -5972,6 +6528,7 @@ int main(int argc, char** argv) {
     alpha_function_specialized();
     window_origin_specialized();
     inputs_loaded_once_a_block();
+    constant_buffer_words_folded();
     check(!g_fixtures.failed, "shader fixture paths allocated");
     for (size_t i = 0; i < g_fixtures.count; i++) free(g_fixtures.paths[i]);
     free(g_fixtures.paths);

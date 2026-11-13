@@ -22,7 +22,7 @@ fails.
 
 ```sh
 python3 scripts/edenprobe.py run --runtime build/scarletnx --nro edenprobe.nro --out /tmp/edenprobe \
-    --mode "quick notime cpu fs video display kernel audio" \
+    --mode "quick notime cpu fs video display kernel audio hooks" \
     [--baseline tests/edenprobe/linux-x86_64.txt]
 ```
 
@@ -51,7 +51,8 @@ With `-DSNX_TEST_EDENPROBE=/path/to/edenprobe.nro`, ctest runs it as `edenprobe_
 Settings > App > GPU Drivers' **Run edenprobe** plays it as a game on a player's machine, any platform, with the GPU
 driver picked there, in a data folder of its own, launched again after a crash as `scripts/edenprobe.py` does, and
 says the counts at the end ([GUI](../user/gui.md)). Its modes, Quick and Full, never ask for `net`, `service`, `pad`,
-`listen`, `fatal`, `hang`, `stress` or `game`, nor for times; it writes the machine beside them as
+`listen`, `fatal`, `hang`, `stress` or `game`, nor for times, and both ask for `hooks` as CI does: an edenprobe
+older than 0.13.0 opens fsp-srv and time:u itself and stops in sm. It writes the machine beside them as
 `scripts/edenprobe.py` does, `machine=scarletnx@<its commit>`. Nor for `quick`, a script's run, which opens no screen
 and leaves the window black to its end: a player watches this one, so it is edenprobe's detailed run, its start screen
 (begun by itself after ten seconds), its running screen and its results (left by themselves after ten seconds with
@@ -73,6 +74,7 @@ Those of the example, which CI runs; edenprobe's
 | `display` | a layer's buffer history |
 | `kernel` | the scheduler: priority inheritance, preemption, migration |
 | `audio` | the audio renderer: resampler, circular buffer, limiter; headless, nothing is played |
+| `hooks` | nn::fs, time, pl, ngc and nsd asked through the SDK's functions the probe exports, not by IPC: the runtime serves none of their services |
 
 Left out: `graphics` (the drawing suites: clears, blending, depth, textures and their formats, queries, blits),
 which write their own GPU command buffers. They were left out while the runtime had no Maxwell front end, when

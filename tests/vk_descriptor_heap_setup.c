@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* vk_descriptor_heaps_init with mock Vulkan and VMA calls: every setup failure logs what failed, with its values, and
+/* vk_descriptor_heaps_init with mock Vulkan and devmem.c calls: every setup failure logs what failed, with its values, and
    the graphics backend the device keeps (buffers or sets), then leaves heaps off; the setup that succeeds logs its
    heap sizes. No Vulkan loader, device or GPU is used. */
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
+#include "nx/gpu/vk/ledger.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -89,19 +90,18 @@ int vk_descriptor_sampler_info(VkSampler sampler, VkSamplerCreateInfo* out, void
     (void)sampler, (void)out, (void)chain, (void)size;
     return 0;
 }
-VkResult vmaCreateBuffer(VmaAllocator allocator, const VkBufferCreateInfo* info,
-                         const VmaAllocationCreateInfo* allocation, VkBuffer* buffer, VmaAllocation* memory,
-                         VmaAllocationInfo* details) {
-    (void)allocator, (void)allocation;
+VkResult vk_devmem_buffer(const VkBufferCreateInfo* info, const DevMemWant* allocation, VkBuffer* buffer,
+                          DevMem* memory, DevMemInfo* details) {
+    (void)allocation;
     if (g_test.buffer_result != VK_SUCCESS) return g_test.buffer_result;
     *buffer = (VkBuffer)(uintptr_t)0x1000;
-    *memory = (VmaAllocation)(uintptr_t)0x2000;
-    *details = (VmaAllocationInfo){.size = info->size, .pMappedData = g_test.mapped};
+    *memory = 0x2000;
+    *details = (DevMemInfo){.size = info->size, .ptr = g_test.mapped};
     return VK_SUCCESS;
 }
-void vmaDestroyBuffer(VmaAllocator allocator, VkBuffer buffer, VmaAllocation memory) {
-    (void)allocator, (void)buffer, (void)memory;
-}
+void vk_mem_track(DevMem a, u32 owner) { (void)a, (void)owner; }
+void vk_mem_untrack(DevMem a) { (void)a; }
+void vk_devmem_buffer_destroy(VkBuffer buffer, DevMem memory) { (void)buffer, (void)memory; }
 
 static VKAPI_ATTR VkDeviceSize VKAPI_CALL descriptor_size(VkPhysicalDevice device, VkDescriptorType type) {
     (void)device;

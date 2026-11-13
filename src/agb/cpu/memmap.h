@@ -13,8 +13,8 @@
 #define AGB_MAP_VIEW_MAX 0x8000u
 
 typedef struct AgbBoard AgbBoard;
-/* The flat window: 256 MiB of guest map, twice, because the console mirrors everything with bit 31
-   set. The guest's 0x00000000 is the window's base. */
+/* The flat window: the 256 MiB the console decodes at the window's base, the guest's 0x00000000, in a reservation of
+   every 32-bit address. Past those 28 bits it is plain memory no load or store reaches: the bus hook takes them. */
 typedef struct {
     uint8_t* base;              /* AGB_MAP_SIZE bytes and the guard, the guest's 0x00000000 */
     SnxHostMemory backings[10]; /* one per region, mapped at each of its mirrors */

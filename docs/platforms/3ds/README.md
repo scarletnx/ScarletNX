@@ -56,7 +56,11 @@ first time it is played, its module and hints renamed.
 
 `scarletnx-3ds` takes the [common options](../../user/usage.md#common-options) but
 `--frames`, `--shot` and `-H`, each value as `--option VALUE` or `--option=VALUE`.
-Its `--script` is the setting `ctr_script`, and `-f` the setting `fullscreen`.
+Its `--script` is the setting `ctr_script`, and `-f` the setting `fullscreen`. Of the recompile's, `-O` is the level of
+the static blocks and their helpers (the setting `opt`, 2), `--chunk N` puts N instructions in a chunk (512 blocks
+without it), `--jit-cache` names another game folder's `<title ID>.hints`, `--jit-only` makes a module of no blocks
+and `--keep-ir` keeps each chunk's IR in `<title ID>_build`. A recompile says a line for each chunk, as the Switch's
+says one for each code unit.
 
 What a file holds is read from its own header, not its name: a CIA's magic at 0, an
 NCSD's at 0x100, a bare NCCH's at 0x100 (`src/3ds/loader/loader.c`). A bundle is a
@@ -165,7 +169,31 @@ runs after 20 s in which no pipeline was made, so a run that stops early keeps w
 file another GPU or another build of the driver wrote, or one cut inside its header, is not given
 to the driver, and the log says why. The
 Switch's `vk_pipeline_cache=0` neither reads nor writes it, and `3ds_vk_pipeline_cache` and
-`3ds_vk_draw_pipeline_cache` check the file. Vertex and
+`3ds_vk_draw_pipeline_cache` check the file. Where the device has `VK_EXT_shader_object` (issue
+#1454), no pipeline is made at all:
+a draw binds its vertex and fragment shaders as shader objects and sets the output merger, the
+vertex layout and the rest as dynamic state, changing only what differs from the draw before it
+in the same recording. A new shader is still compiled as its first draw needs it, or by the
+workers with `async_pipelines=1`, but a scene's few dozen shaders replace its hundreds of
+pipelines. The driver's binary of each shader is kept between runs in
+`shader_cache/vk_shaders.<driver>.bin`, written as the pipeline cache is, so a later run makes
+each shader from its binary with no compile; the file names the device's shader binary UUID and
+version, and one of another device or driver version is not read. The shared parts are in
+`src/common/gpu/vk/shader_object.c`. `vk_ext_shader_object=off` draws through pipelines on such a
+device, and the drivers' bans (`src/common/gpu/vk/extension_bans.txt`) and the other `vk_ext_*`
+settings hold for the 3DS's device as for a Switch game's. `3ds_vk_shader_object` checks the
+binaries' file, and `3ds_vk_draw_pipelines` the draws through pipelines. With shader objects and
+`async_pipelines=1`, a draw whose shaders are still being made is drawn with stand-ins, two
+shaders made once per run. The vertex one (`gpu/vk/shaders/standin.vert`) runs the vertex
+program from a buffer, with `gpu/shader.c`'s flow control and `vsgen.c`'s arithmetic, registers
+and outputs, its config in push constants and the integer attributes in scaled formats, which
+it reads as floats. The fragment one (`gpu/vk/shaders/standin.frag`) reads the fragment state
+from push constants, and follows `fsgen.c`'s lighting, stages, rounding, sampling, alpha test,
+fog, scissor and depth. It takes every draw but those with gas, a procedural texture, shadow
+rendering, or a shadow or cube texture on unit 0, which are still skipped. Where the device
+keeps infinities and NaNs, both declare it as the generated shaders do. `ctr_stand_in=0` skips
+the draws, and `ctr_stand_in=2` gives the stand-ins every draw they draw, which
+`3ds_vk_draw_stand_in` holds to the CPU reference. Vertex and
 index data are read where the GPU works (in place, or its copy), except in a draw with a geometry shader, whose vertex and
 geometry shaders run on the CPU (see below). `tests/3ds_vk_draw.c` holds the draws to the
 software renderer they replaced, which stays as their reference. The shown

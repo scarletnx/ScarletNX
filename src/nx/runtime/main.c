@@ -7,6 +7,7 @@
 #include "common/cpu/recompiler/llvm/gdb_jit.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/utilities/build_info.h"
+#include "common/utilities/program_start.h"
 #include "common/utilities/cli.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/ascii.h"
@@ -21,6 +22,10 @@
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/hook/hook.h"
+#include "nx/nn/fs.h"
+#include "nx/nn/time.h"
+#include "nx/nn/pl.h"
+#include "nx/nn/prepo.h"
 #include "nx/hle/services/hid.h"
 #include "nx/runtime/guest_jit.h"
 #include "nx/runtime/nce/nce.h"
@@ -679,6 +684,7 @@ void snx_save_before_exit(void) {
 /* ---- the frontend's loop ---- */
 
 static void handover_write(void); /* ExecuteProgram's hand-over, written as the program ends */
+static void switch_tick(void);    /* a program switch's screen (transition_screen), each pass before the first frame */
 
 /* this long without a new frame is worth a line and a dump; and without progress on the shader loading screen, a
    line (prepare_wait) */
@@ -741,7 +747,7 @@ void resources_text(char* out, size_t size) {
        (descriptor pools, pipelines, argument buffers), not the game's textures and buffers */
     n = strlen(out);
     if (g_renderer && g_renderer->memory_blocks && n < size)
-        snprintf(out + n, size - n, ", VMA blocks %llu MiB", (unsigned long long)(g_renderer->memory_blocks() >> 20));
+        snprintf(out + n, size - n, ", GPU memory blocks %llu MiB", (unsigned long long)(g_renderer->memory_blocks() >> 20));
 }
 /* log level 2: the three host threads with the most CPU time since the last line, by their names. iOS reported a CPU
    exception (90 s of CPU in 93 s) that named no thread */
@@ -811,6 +817,7 @@ static void frontend_loop(void) {
         }
         if (++tick % 60 == 0) ini_poll(0);
         frontend_frame();
+        switch_tick();
         SNX_ZONE_END(z_frontend);
 #if defined(SNX_TRACY)
         SNX_PLOT("guest memory", used_memory());
@@ -957,6 +964,7 @@ static void prepare_wait(const char* title) {
                  (unsigned long long)(STALL_NS / 1000000000u), p.files_seen, p.files, p.programs_done, p.programs,
                  p.pipes_made, p.pipes, p.loaded ? "read" : "still being read");
         }
+        switch_tick();
         n = prepare_screen_steps(&p, st, began, now / 1000000u);
         if (now - t0 >= 250000000ull && n && backend_window_shown()) { /* not for a headless run */
             char* dir = !themed && snx_menu_run_theme ? backend_launcher_folder() : NULL;
@@ -1062,6 +1070,23 @@ static SnxNext g_next;
 static int g_next_taken;
 static unsigned long g_next_serial; /* the one taken's, which the next hand-over follows */
 static char g_next_why[512];
+/* ---- the screen of a program a collection's program started (transition_screen): the loading screen in the
+   launcher's look, the game's name and "(Program N)" in its head, what is known of the program as its steps (the
+   facts program_start.h lists) and the game's cover in its top right corner, from a quarter second after the window
+   opens until the game's first frame, the window black meanwhile without it */
+#if defined(__ANDROID__) /* no Esc there: back opens the menu, whose Exit quits */
+#define SWITCH_FOOT "Back: menu."
+#else
+#define SWITCH_FOOT "Esc twice: quit."
+#endif
+static struct {
+    SnxRunTheme theme;
+    int on, themed, rows; /* themed: the launcher's theme read, else YoRHa's built in; rows: row's count */
+    u64 opened, up;       /* plat_ns(): the window's opening, and the screen's (0 while it has not shown) */
+    char title[96];
+    SnxProgramStart facts; /* what the hand-over said (handover_give), then the rest (switch_start) */
+    SnxStartRow row[SNX_START_ROWS];
+} g_switch;
 /* g_exedir as a folder's path, without its last separator */
 static void exe_folder(char* out, size_t size) {
     size_t n;
@@ -1098,6 +1123,15 @@ static void handover_give(void) {
              "all the same\n",
              g_next.index, g_exename, g_program, g_next.previous);
     am_handover_in(g_program, g_next_taken > 0 ? &g_next : NULL);
+    snx_program_start_unknown(&g_switch.facts);
+    if (g_next_taken > 0) { /* for the screen of a program started so (switch_start) */
+        size_t i;
+        g_switch.facts.previous = g_next.previous;
+        g_switch.facts.user_kept = g_next.context != 0;
+        g_switch.facts.storages = (int)g_next.count;
+        g_switch.facts.storage_bytes = 0;
+        for (i = 0; i < g_next.count; i++) g_switch.facts.storage_bytes += g_next.size[i];
+    }
     if (g_next_taken > 0) g_next_serial = g_next.serial;
     if (g_next_taken > 0)
         LOG("game: program %d, started by program %d: %u storage%s in the user channel, its open user %s\n", g_program,
@@ -1145,6 +1179,120 @@ static void handover_write(void) {
             next.context ? "stored" : "not stored", path, g_gamename, folder, next.program);
     free(path);
     snx_next_free(&next);
+}
+
+/* what else is known of this program for its screen, into g_switch.facts, then its rows: its index and its
+   application's count, the user it plays as, the game's version and its update's, the DLCs that play, the GPU, its
+   title ID (after its game's in its name, <game>_<ID>[v<version>]) and ScarletNX's build; "" or -1 for what is not
+   known, which the rows say as "?" */
+static void switch_facts(void) {
+    SnxProgramStart* f = &g_switch.facts;
+    const SnxUser* u = snx_users_selected();
+    const char *name = g_renderer->device_name ? g_renderer->device_name() : NULL, *own = g_exename, *at;
+    const u64* ids;
+    size_t count = fs_dlcs(&ids), i, n;
+    u64 base = am_aoc_base_id();
+    SnxU64 id = 0;
+    f->program = g_program;
+    f->programs = fs_program_count();
+    if (u) {
+        snprintf(f->user, sizeof f->user, "%s", u->nickname);
+        f->user_number = snx_users_selected_number();
+    }
+    am_display_version_of(f->version); /* "" when the game says none: "?" on the screen */
+    f->updated = g_addon != 0;
+    at = strrchr(own, '_');
+    if (g_addon && at && (at = strchr(at, 'v')) != NULL) snprintf(f->update, sizeof f->update, "%s", at);
+    f->dlcs = (int)count;
+    for (i = 0, f->dlc[0] = 0; i < count && i < 4; i++) {
+        n = strlen(f->dlc);
+        if (ids[i] > base && ids[i] - base < 0x800)
+            snprintf(f->dlc + n, sizeof f->dlc - n, "%sDLC %u", n ? ", " : "", (unsigned)(ids[i] - base));
+        else
+            snprintf(f->dlc + n, sizeof f->dlc - n, "%sDLC %016llX", n ? ", " : "", (unsigned long long)ids[i]);
+    }
+    n = strlen(f->dlc);
+    if (count > 4) snprintf(f->dlc + n, sizeof f->dlc - n, " and %u more", (unsigned)(count - 4));
+    if (name) snprintf(f->gpu, sizeof f->gpu, "%s", name);
+    if (!strcmp(own, g_gamename)) { /* the game's own program: its name is its ID (an NRO's is none) */
+        if (!snx_title_parse(own, &id)) id = 0;
+    } else if ((at = strrchr(own, '_')) != NULL && strlen(at + 1) >= 16) {
+        char digits[17];
+        memcpy(digits, at + 1, 16);
+        digits[16] = 0;
+        if (!snx_title_parse(digits, &id)) id = 0;
+    }
+    f->title_id = id;
+    snprintf(f->build, sizeof f->build, "%s", snx_build_info());
+    g_switch.rows = snx_program_start_rows(f, g_switch.row);
+}
+/* after the window opens: whether this program was started by a hand-over (the system's start and Play have none),
+   and for one the launcher's theme and the game's cover, its icon.jpg in the game's own data folder (a collection's
+   other programs have none of their own), each said when it is not there or does not draw */
+static void switch_start(const char* title) {
+    char folder[sizeof g_exedir], path[sizeof g_exedir + 320];
+    unsigned char* jpeg;
+    size_t size = 0;
+    int bad;
+    if (g_next_taken <= 0 || !backend_window_shown()) return; /* started by no other program, or headless */
+    if (!g_settings.transition_screen) {
+        LOG("transition: transition_screen=0: program %d's window stays black until the game draws\n", g_program);
+        return;
+    }
+    g_switch.on = 1;
+    g_switch.opened = plat_ns();
+    snprintf(g_switch.title, sizeof g_switch.title, "%s", title);
+    {
+        char* dir = snx_menu_run_theme ? backend_launcher_folder() : NULL;
+        if (dir) {
+            snx_menu_run_theme(dir, &g_switch.theme);
+            g_switch.themed = g_switch.theme.ink != g_switch.theme.page; /* else the YoRHa theme's, built in */
+        }
+        free(dir);
+    }
+    exe_folder(folder, sizeof folder);
+    if (snx_path_format(path, sizeof path, "%s/%s_data/icon.jpg", folder, g_gamename)) return;
+    jpeg = snx_is_file(path) ? (unsigned char*)snx_read_file(path, &size) : NULL;
+    ui_lock();
+    bad = prepare_screen_cover(jpeg, size);
+    ui_unlock();
+    switch_facts();
+    if (!jpeg)
+        LOG("transition: %s is not there: program %d's screen shows no cover\n", path, g_program);
+    else if (bad)
+        WARN("transition: %s does not draw as a JPEG (%zu bytes): program %d's screen shows no cover\n", path, size,
+             g_program);
+    free(jpeg);
+}
+/* the screen up from a quarter second after the window opened, its dots turning, until the game's first frame (the
+   renderer takes it away before it draws that frame, prepare_screen_game_drew): said, with how long it showed */
+static void switch_tick(void) {
+    u64 now, waited;
+    if (!g_switch.on) return;
+    now = plat_ns();
+    waited = (now - g_switch.opened) / 1000000u;
+    if (__atomic_load_n(&g_frames, __ATOMIC_RELAXED)) {
+        ui_lock();
+        prepare_screen_switch(NULL, NULL, -1, NULL, 0, NULL, 0);
+        ui_unlock();
+        g_switch.on = 0;
+        if (g_switch.up)
+            LOG("transition: program %d's screen shown for %llu ms, until the game's first frame %llu ms after the "
+                "window opened\n",
+                g_program, (unsigned long long)((now - g_switch.up) / 1000000u), (unsigned long long)waited);
+        else
+            LOG("transition: program %d's screen not shown: the game drew %llu ms after the window opened, within a "
+                "quarter second\n",
+                g_program, (unsigned long long)waited);
+        return;
+    }
+    if (waited < 250) return;
+    if (!g_switch.up) g_switch.up = now;
+    ui_lock();
+    prepare_screen_switch(g_switch.themed ? &g_switch.theme : NULL, g_switch.title, g_program, g_switch.row,
+                          g_switch.rows, SWITCH_FOOT, now / 1000000u);
+    ui_unlock();
+    if (g_renderer->refresh) g_renderer->refresh();
 }
 
 int snx_main(int argc, char** argv) {
@@ -1307,11 +1455,21 @@ int snx_main(int argc, char** argv) {
     dispatch_init();
     if (g_arm_mod) arm_dispatch_init();
     load_hints();
-    if (loader_load()) fatal("Could not load the game executables. See the .log for details.");
+    {
+        int loaded = loader_load();
+        if (loaded == -2)
+            fatal_code(SNX_EXIT_REMAKE,
+                       "The game's recompiled code was made from another copy of the game: recompile it, or remove "
+                       "its folder");
+        if (loaded) fatal("Could not load the game executables. See the .log for details.");
+    }
     nce_init(); /* the patches of native code, before the hooks take their functions */
     kernel_load_symbols();
     linker_decide(); /* before the hooks: nn::ro's are installed only when the runtime links the game */
-    hook_install();  /* before NVN, which takes what a slot holds, and the JIT, which reads the slots */
+    nnfs_init();
+    nntime_init();
+    nnprepo_init();
+    hook_install(); /* before NVN, which takes what a slot holds, and the JIT, which reads the slots */
     nvn_loader_init();
     linker_init(); /* after the hooks and NVN, whose slots it leaves alone */
     entry = linker_entry(entry);
@@ -1337,9 +1495,10 @@ int snx_main(int argc, char** argv) {
     }
     svc_hid_init();
     svc_vi_init();
-    svc_pl_init();
+    nnpl_init();
     nv_init();
     romfs_init();
+    g_shader_hmma_f16 = g_settings.hmma_in_half_floats; /* before the first program is translated */
     gpu_init();
     {
         char addons[256];
@@ -1347,6 +1506,7 @@ int snx_main(int argc, char** argv) {
         if (addons[0]) LOG("game: played with %s\n", addons);
         video_init(title, addons);
     }
+    switch_start(title);
     /* the log's line on the host's power state, and the mode docked's Auto picks, before the game's first thread */
     options_tv_mode_start();
     if (g_settings.profiler) {

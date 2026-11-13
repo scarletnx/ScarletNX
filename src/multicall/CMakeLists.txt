@@ -15,7 +15,7 @@ if(ANDROID)
 else()
     add_executable(scarletnx main.c)
 endif()
-# linked as C++: VMA, LLVM and the demangler need the C++ runtime. It goes in the build folder itself, where the
+# linked as C++: LLVM and the demangler need the C++ runtime. It goes in the build folder itself, where the
 # driver and CI look for it
 set_target_properties(scarletnx PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX
                       RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}" LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
@@ -56,6 +56,9 @@ if(SNX_BUILD_GNUABI AND NOT (SNX_TOOLS_ONLY AND SNX_BUILD_NX))
 endif()
 if(SNX_BUILD_AGB AND NOT (SNX_TOOLS_ONLY AND SNX_BUILD_NX))
     snx_multicall_driver(AGB snx_agb_program scarletnx-agb AGB_RUNTIME)
+endif()
+if(SNX_BUILD_NDS AND NOT (SNX_TOOLS_ONLY AND SNX_BUILD_NX))
+    snx_multicall_driver(NDS snx_nds_program scarletnx-nds NDS_RUNTIME)
 endif()
 if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
     snx_multicall_driver(ANDROID snx_android_program scarletnx-android "")

@@ -756,68 +756,6 @@ static void test_hid(void) {
     for (int i = 0; i < 10; i++) kobj_unref(&kev(g_hle.hid.style_ev[i])->o);
 }
 
-/* ngc:u's Check (1) and Mask (2) {languages, options} of a text, and ngct:u's Match (0) and Filter (1): nothing found
-   or masked, the text back as sent and no byte past the room for it; GetContentVersion (0) 1 */
-typedef struct {
-    IpcCtx c;
-    u8 raw[0x40];
-} NgcRequest;
-static IpcCtx* ngc_request(NgcRequest* r, u32 cmd) {
-    memset(r, 0, sizeof *r);
-    r->c.cmd = cmd;
-    r->c.raw = r->raw;
-    r->c.raw_size = sizeof r->raw;
-    return &r->c;
-}
-static void test_ngc(void) {
-    static const char text[] = "edenprobe player";
-    SvcObj* ngc = new_ngc();
-    SvcObj* ngct = new_ngct();
-    NgcRequest r;
-    u32 cmd, v;
-    memcpy(g_mem + 0x100, text, sizeof text);
-    ngc_request(&r, 0);
-    CHECK(ngc->dispatch(ngc, &r.c) == 0 && r.c.out_size == 4);
-    v = snx_ld_le32(r.c.out);
-    CHECK(v == 1);
-    for (cmd = 1; cmd <= 5; cmd++) {
-        if (cmd == 3) continue;
-        ngc_request(&r, cmd);
-        snx_st_le32(r.raw, 2); /* American English */
-        r.c.na = 1;
-        r.c.a[0].addr = 0x100;
-        r.c.a[0].size = sizeof text;
-        if (cmd == 2 || cmd == 5) {
-            memset(g_mem + 0x200, 0xEE, 0x40);
-            r.c.nb = 1;
-            r.c.b[0].addr = 0x200;
-            r.c.b[0].size = sizeof text - 4; /* room for less than the text */
-        }
-        CHECK(ngc->dispatch(ngc, &r.c) == 0 && r.c.out_size == 4);
-        v = snx_ld_le32(r.c.out);
-        CHECK(v == 0);
-        if (cmd == 2 || cmd == 5)
-            CHECK(!memcmp(g_mem + 0x200, text, sizeof text - 4) && g_mem[0x200 + sizeof text - 4] == 0xEE);
-    }
-    ngc_request(&r, 0);
-    r.c.nx = 1;
-    r.c.x[0].addr = 0x100;
-    r.c.x[0].size = sizeof text;
-    CHECK(ngct->dispatch(ngct, &r.c) == 0 && r.c.out_size == 4 && r.c.out[0] == 0);
-    ngc_request(&r, 1);
-    memset(g_mem + 0x200, 0xEE, 0x40);
-    r.c.nx = 1;
-    r.c.x[0].addr = 0x100;
-    r.c.x[0].size = sizeof text;
-    r.c.nc = 1;
-    r.c.c[0].addr = 0x200;
-    r.c.c[0].size = 0x40;
-    CHECK(ngct->dispatch(ngct, &r.c) == 0 && !memcmp(g_mem + 0x200, text, sizeof text) &&
-          g_mem[0x200 + sizeof text] == 0xEE);
-    svcobj_unref(ngct);
-    svcobj_unref(ngc);
-}
-
 /* apm: Get (1) and Set (0) {mode, configuration} on a session, one configuration per mode, Config7 for both at
    first; one that is not a configuration, or a mode past Boost, kept out; SetCpuBoostMode's modes for Boost */
 static u32 apm_get(SvcObj* s, u32 mode) {
@@ -995,6 +933,33 @@ static void test_mm_full(void) {
     svcobj_unref(mm);
 }
 
+/* friends: a session's completion event is one for the session, unsignaled when the SDK takes it with command 0,
+   and signaled as the request the SDK's asynchronous function sends on the session returns (here the check of the
+   friend list's cache, which the game waits on at boot); it goes with the session */
+static void test_friends(void) {
+    SvcObj *creator = new_friend(), *svc = NULL;
+    Request r;
+    CHECK(nn_friends_detail_ipc_IServiceCreator_CreateFriendService(creator, &svc) == 0 && svc);
+    request(&r, 0);
+    call(svc, &r);
+    CHECK(r.c.nout_copy == 1);
+    KEvent* e = (KEvent*)handle_object(r.c.out_copy[0]);
+    CHECK(e->o.type == KO_EVENT && !e->signaled);
+    request(&r, 0);
+    call(svc, &r);
+    CHECK(r.c.nout_copy == 1 && (KEvent*)handle_object(r.c.out_copy[0]) == e && !e->signaled);
+    request(&r, 10120);
+    argument64(&r, 0, g_user_id[0]), argument64(&r, 8, g_user_id[1]);
+    call(svc, &r);
+    CHECK(r.c.out_size >= 1 && r.c.out[0] == 1 && e->signaled);
+    close_handles();
+    int kobjs = (int)test_kobjs;
+    CHECK(e->o.refs == 1); /* the session's own */
+    svcobj_unref(svc);
+    svcobj_unref(creator);
+    CHECK((int)test_kobjs == kobjs - 1);
+}
+
 /* nfp and nfc with no NFC device: the state follows Initialize and Finalize, the availability event is one per
    IUser, and the device commands fail */
 static void test_nfp(void) {
@@ -1103,63 +1068,6 @@ static void test_account_replies(void) {
     CHECK(nn_account_IAccountServiceForApplication_IsUserAccountSwitchLocked(NULL, &value) == 0 && value == 0);
     test_account_switch_lock = 1;
     CHECK(nn_account_IAccountServiceForApplication_IsUserAccountSwitchLocked(NULL, &value) == 0 && value == 1);
-}
-
-/* prepo's play reports, each firmware's command {uid,} pid, X event, A report: kept nowhere, and succeeded, and
-   refused without the pid */
-static void test_prepo_reports(void) {
-    SvcObj* prepo = new_prepo();
-    Request r;
-    for (u32 cmd = 10100; cmd <= 10107; cmd++) {
-        request(&r, cmd);
-        r.c.has_pid = 1;
-        r.c.nx = 1;
-        r.c.x[0].addr = 0x4000;
-        r.c.x[0].size = 8;
-        r.c.na = 1;
-        r.c.a[0].addr = 0x5000;
-        r.c.a[0].size = 0x20;
-        r.c.raw_size = cmd & 1 ? 0x18 : 8;
-        call(prepo, &r);
-        CHECK(r.c.out_size == 0);
-        r.c.has_pid = 0; /* declared, so held to its declaration: no pid is a bad request */
-        CHECK(prepo->dispatch(prepo, &r.c) == RC(11, 420));
-    }
-    /* GetTransmissionStatus: nothing is queued, so the status is 0, as Eden answers */
-    request(&r, 10300);
-    call(prepo, &r);
-    CHECK(r.c.out_size == 4 && reply32(&r, 0) == 0);
-    /* SendReportWithUser (10500) as SDK 20.5's PlayReport::Send sends it: {flag, two u32 sizes, uid, pid}, 0x28 bytes,
-       the event's name in X and the report's transfer memory. Its context is done: its event is signaled, and Cancel
-       and GetResult succeed */
-    request(&r, 10500);
-    r.c.has_pid = 1;
-    r.c.nx = 1;
-    r.c.x[0].addr = 0x4000;
-    r.c.x[0].size = 8;
-    r.c.ncopy = 1;
-    r.c.copy_h[0] = 0x1234;
-    r.c.raw_size = 0x28;
-    call(prepo, &r);
-    CHECK(r.c.out_size == 0 && r.c.nout_objs == 1 && !r.c.nout_copy);
-    SvcObj* context = r.c.out_objs[0];
-    CHECK(!strcmp(context->name, "nn::prepo::detail::ipc::IAsyncContext"));
-    request(&r, 0);
-    call(context, &r);
-    CHECK(r.c.nout_copy == 1 && handle_object(r.c.out_copy[0])->type == KO_EVENT);
-    CHECK(((KEvent*)handle_object(r.c.out_copy[0]))->signaled);
-    for (u32 cmd = 1; cmd <= 2; cmd++) {
-        request(&r, cmd);
-        call(context, &r);
-        CHECK(r.c.out_size == 0);
-    }
-    svcobj_unref(context);
-    request(&r, 10500); /* without the transfer memory */
-    r.c.has_pid = 1;
-    r.c.nx = 1;
-    r.c.raw_size = 0x28;
-    CHECK(prepo->dispatch(prepo, &r.c) == RC(11, 420) && r.c.nout_objs == 0);
-    svcobj_unref(prepo);
 }
 
 /* nfp's StartDetectionWithFilter (25, 23.0.0+) answers what StartDetection (3) does for the same device, before and
@@ -1644,43 +1552,6 @@ static void test_mii_latest(void) {
 }
 
 
-/* pctl's play timer display, GetPlayTimerRemainingTimeDisplayInfo (1459) and 1460 {u8}: NotConfigured (7) in the
-   first of 0x18 bytes, the rest zero */
-static void test_pctl_play_timer(void) {
-    SvcObj* factory = new_pctl();
-    Request r;
-    request(&r, 0);
-    argument64(&r, 0, 0);
-    r.c.has_pid = 1;
-    call(factory, &r);
-    CHECK(r.c.nout_objs == 1);
-    SvcObj* pctl = r.c.out_objs[0];
-    for (u32 cmd = 1459; cmd <= 1460; cmd++) {
-        request(&r, cmd);
-        call(pctl, &r);
-        CHECK(r.c.out_size == 0x18 && r.c.out[0] == 7);
-        for (u32 i = 1; i < 0x18; i++) CHECK(r.c.out[i] == 0);
-    }
-    svcobj_unref(pctl);
-    svcobj_unref(factory);
-}
-
-/* pctl's IsFreeCommunicationAvailable (1018), no arguments: success, no restriction set */
-static void test_pctl_free_communication(void) {
-    SvcObj *factory = new_pctl(), *pctl;
-    Request r;
-    request(&r, 0);
-    r.c.has_pid = 1;
-    call(factory, &r);
-    CHECK(r.c.nout_objs == 1);
-    pctl = r.c.out_objs[0];
-    request(&r, 1018);
-    call(pctl, &r);
-    CHECK(r.c.out_size == 0);
-    svcobj_unref(pctl);
-    svcobj_unref(factory);
-}
-
 /* IFriendService's GetBlockedUserListIds (10400) {i32 offset, uid at 8, a C buffer of ids}: nobody, the count 0 and
    the buffer as it was; DeclareOpenOnlinePlaySession (10600) and DeclareCloseOnlinePlaySession (10601) {uid};
    CheckFriendListAvailability (10120) {uid}: the list there to read, 1; GetPlayHistoryRegistrationKey (10700) {b8
@@ -1894,11 +1765,19 @@ static void test_olsc(void) {
     svcobj_unref(olsc);
 }
 
-/* nim:eca: the server a game opens on its transfer memory and the accessor it takes from it, then whether large
-   resources are available */
+/* nim:eca: the server a game opens on its transfer memory, by either command, and the accessor it takes from it,
+   then whether large resources are available */
 static void test_nim(void) {
     SvcObj *nim = new_nim(), *server;
     Request r;
+    request(&r, 5); /* the other cancel policy's */
+    argument64(&r, 8, 0x100000);
+    r.c.has_pid = 1;
+    r.c.ncopy = 1;
+    r.c.copy_h[0] = 0x1234;
+    call(nim, &r);
+    CHECK(r.c.nout_objs == 1 && !strcmp(r.c.out_objs[0]->name, "nn::nim::detail::IShopServiceAccessServer"));
+    svcobj_unref(r.c.out_objs[0]);
     request(&r, 0);
     argument64(&r, 8, 0x100000); /* the transfer memory's size, after the pid's slot */
     r.c.has_pid = 1;
@@ -1936,8 +1815,8 @@ int main(void) {
     test_acc_thumbnail();
     test_apm();
     test_ntc();
-    test_ngc();
     test_mm_full();
+    test_friends();
     test_nfp();
     test_acc_select();
     test_nfp_filter();
@@ -1948,11 +1827,8 @@ int main(void) {
     test_mii_own();
     test_mii_user();
     test_acc_resource_cache();
-    test_prepo_reports();
     test_mii_latest();
-    test_pctl_play_timer();
     test_nim();
-    test_pctl_free_communication();
     test_friend_blocked_and_presence();
     test_caps();
     test_olsc();

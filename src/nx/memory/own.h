@@ -42,6 +42,16 @@ typedef struct {
        or mark of own.c's, on a thread that did not hold the producer's lock before. The watches left over the bytes
        after it go. Optional: without it, a watch only goes */
     void (*resolve)(u64 addr, u64 size);
+    /* a CPU access of pages [addr, addr + size) that owners are on: the producer publishes what it holds of those
+       bytes that is newer than their owners (own_begin), and the access then lands that. A render target drawn
+       again since its publish is such a holder: it is not published at each release (vk/surface.c's rt_watch).
+       Called as resolve, once for a landing of owners, before any of them is marked. Optional */
+    void (*refresh)(u64 addr, u64 size);
+    /* a landing of the host pages [lo, hi), once it holds the producer's lock and before it looks for their entries:
+       the producer publishes over them what it held back from them (a storage image the guest released, which nothing
+       read since), so the landing finds those bytes. Called with the producer's lock held and none of own.c's.
+       Optional */
+    void (*claim)(u64 lo, u64 hi);
 } OwnHooks;
 
 /* 0 when the host can trap guest memory (plat_trap_init): own_begin can work from then on. -1: producers land their
@@ -57,8 +67,12 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off);
    and own_stage skip it, and its CPU bytes stay readable through the mirror (or, in place, a shadow of each page). It
    never cuts a real owner: it goes into the gaps between them, over older watches. A thread that held the producer's
    lock before it touched a watched page drops the watch and goes on with the CPU's bytes: it cannot wait for a publish.
-   0, or -1 as own_begin. The caller holds the producer's lock */
+   The watch's bytes are owed then (own_owed_take). 0, or -1 as own_begin. The caller holds the producer's lock */
 int own_watch(u64 addr, u64 size);
+/* Watched bytes whose watch a thread that held the producer's lock dropped with no publish: the producer watches them
+   again before that thread lets go of its lock, so the next CPU access still asks it for its result. 1, with one
+   owed span in [*addr, *addr + *size) taken from the list, or 0 when none is owed */
+int own_owed_take(u64* addr, u64* size);
 /* 1 when watches cover every byte of [addr, addr + size) */
 int own_watched(u64 addr, u64 size);
 /* the watches over [addr, addr + size) go (clipped to it), and their pages open where no entry is left. Nothing lands.
@@ -67,6 +81,9 @@ void own_unwatch(u64 addr, u64 size);
 /* 1 when an owner or a watch is on a host page of [addr, addr + size): the pages are trapped, and a direct read of
    them faults. own_lookup counts only owners, and only their bytes */
 int own_trapped(u64 addr, u64 size);
+/* the first byte of [addr, addr + size) on a host page that an owner or a watch is on (own_trapped), or addr + size
+   when there is none */
+u64 own_first_trapped(u64 addr, u64 size);
 /* the owned parts of [addr, addr + size), in address order and clipped to it, into out: how many there are (more
    than max when they didn't all fit). With the producer's lock held, as the resources live while it is */
 u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max);
@@ -88,6 +105,10 @@ void own_acquire(u64 addr, u64 size);
 void own_drop(u64 addr, u64 size);
 /* landings so far (each a wait for the GPU: the statistics count them), and whether own_init found traps */
 u64 own_landings(void);
+/* the same by what asked for them: the runtime's own access (own_acquire, own_stage), a read of the game's CPU code
+   that faulted on an owned page, or a write of it */
+enum { OWN_BY_RUNTIME, OWN_BY_READ, OWN_BY_WRITE, OWN_BY_N };
+void own_landings_by(u64 by[OWN_BY_N]);
 int own_traps(void);
 u64 own_faults(void);
 u64 own_land_bytes(void);
@@ -123,6 +144,8 @@ typedef struct {
     u8* mirror; /* the pool's mirror, which landings write through; NULL where they land in place */
     u64 lands; /* atomic: landings so far, for the statistics */
     char own_pad_lands[64];
+    u64 lands_by[3]; /* atomic: the same by what asked for them (OWN_BY_*) */
+    char own_pad_lands_by[64];
     u64 faults; /* atomic: the faults that landed */
     char own_pad_faults[64];
     u64 land_bytes; /* atomic: the bytes landed */
@@ -153,9 +176,14 @@ typedef struct {
     Scratch snap;        /* the pages own_watch and own_begin copy into shadows */
     Scratch held;        /* own_begin's and own_watch's: the pages an entry was on before theirs (arm_new) */
     int said_unshadowed; /* atomic: a trapped page with no shadow was read as zero, and the log said so once */
+#define OWN_OWED_MAX 8
+    u64 owed[OWN_OWED_MAX][2]; /* the owed spans [lo, hi) (own_owed_take), under lk */
+    u32 nowed;                 /* how many: changed under lk with __atomic_store_n, and read without it */
 } OwnState;
 extern OwnState g_own;
 /* whether anything is owned: the common case's test, without a lock */
 static inline int own_any(void) { return __atomic_load_n(&g_own.nown, __ATOMIC_ACQUIRE) != 0; }
+/* whether a span is owed (own_owed_take): the test of each outermost vk_unlock, without a lock */
+static inline int own_owed_any(void) { return __atomic_load_n(&g_own.nowed, __ATOMIC_ACQUIRE) != 0; }
 
 #endif

@@ -116,6 +116,7 @@ static GpuChannel* bufkeep_channel(u64 address) {
     r[0x3fd] = r[0x3fe] = 4u << 16;
     r[0x680] = 0x1111;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 1;
+    all_samples(r);
     memcpy(r + 0x280, transform, sizeof transform);
     r[0x458] = 1u << 21 | 7u << 27; /* RGBA32F */
     r[0x700] = 0x1000 | 16;
@@ -313,6 +314,128 @@ static int check_storage_buffer_keep(void) {
            kept  ? "kept on the GPU, written in place, nothing copied, read back or merged"
            : uma ? "written in guest memory (unified memory)"
                  : "copied, read back and merged (no traps here)");
+    return 0;
+}
+
+/* With the page cache writing (vk_buffer_pages=2), a writable binding that is not of whole pages stays on the GPU too: the draw
+   writes the cache's buffer in place, the range is GPU-owned from the bind on, and nothing is copied to the ring
+   before the draw, read back after it or merged. A later read binds the same buffer at the same
+   place, a second range on the same pages is written there as well, and the CPU's read lands the pages with the
+   stores and with its own bytes beside them. The range the CPU touched takes the copies from then on. Ranges of 11 KB
+   in a 64 KB granule of their own (vk_own_cpu_read), from 0x240 into a page */
+#define BUFPAGE_GVA 0x4f8100000ull
+#define BUFPAGE_CPU (HEAP_BASE + 0xa100000)
+#define BUFPAGE_LEN 0x2c00u
+static int bufpage_draw(u64 at, u32 len, u32 word, u32 value, VkBuffer* buf, u64* off) {
+    vk_lock();
+    CHECK(vk_buf_copy_writable(BUFPAGE_GVA + at, len, buf, off, 1));
+    vk_buf_writable_commit();
+    CHECK(!bufkeep_store(*buf, *off + word, value));
+    vk_unlock();
+    return 0;
+}
+static int check_storage_pages_keep(void) {
+    const u64 a = 0x240, b = 0x2e40, sa = g_vk.props.limits.minStorageBufferOffsetAlignment;
+    if (!vk_pages_keep() || !own_traps() || vk_uma() || a % sa) {
+        puts("writable storage buffers in the page cache: not here (no page cache, no traps, or unified memory)");
+        return 0;
+    }
+    static u8 got[0x6000];
+    VkBuffer b1, b2, b3, rd;
+    u64 o1, o2, o3, rd_at;
+    CHECK(mem_map(BUFPAGE_CPU, 0x20000, MS_NORMAL, PERM_RW) == 0); /* past the heap */
+    gmmu_map(BUFPAGE_GVA, BUFPAGE_CPU, 0x20000);
+    for (u64 i = 0; i < 0x20000; i += 4) snx_st_le32(GP(BUFPAGE_CPU + i), bufkeep_pattern(i));
+    vk_lock();
+    vk_finish();
+    u32 validation = g_vk_validation_messages;
+    vk_unlock();
+    BufCount was = bufkeep_since((BufCount){0}), d;
+    CHECK(!bufpage_draw(a, BUFPAGE_LEN, 0x10, 0x5eed0101, &b1, &o1));
+    bufkeep_finish();
+    d = bufkeep_since(was);
+    /* the range is the GPU's, and no byte beside it on its three pages */
+    OwnRange own[4];
+    u32 owners = own_lookup(BUFPAGE_CPU, 0x3000, own, 4);
+    u64 owned = 0;
+    for (u32 i = 0; i < owners && i < 4; i++) owned += own[i].size;
+    if (d.copied || d.back || d.merged || owned != BUFPAGE_LEN || own[0].addr != BUFPAGE_CPU + a)
+        fprintf(stderr,
+                "storage buffer in the page cache: the binding copied %llu bytes before its draw and %llu back after "
+                "it, merged %llu results, and %llu bytes of its 3 pages are GPU-owned: 0, 0, 0 and its own %u "
+                "expected\n",
+                (unsigned long long)d.copied, (unsigned long long)d.back, (unsigned long long)d.merged,
+                (unsigned long long)owned, BUFPAGE_LEN);
+    CHECK(!d.copied && !d.back && !d.merged && owned == BUFPAGE_LEN && own[0].addr == BUFPAGE_CPU + a);
+    /* the runtime reads a word beside the range on its first page: nothing lands for it */
+    u8 beside[4];
+    u64 landings = own_landings();
+    CHECK(!gmem_read(BUFPAGE_GVA + 0x100, beside, 4) && snx_ld_le32(beside) == bufkeep_pattern(0x100));
+    CHECK(own_landings() == landings && own_lookup(BUFPAGE_CPU, 0x3000, NULL, 0) >= 1);
+    /* a read of the result, and of a part of it, binds the same buffer; a second binding writes there again */
+    vk_lock();
+    CHECK(vk_buf_get_input(BUFPAGE_GVA + a, BUFPAGE_LEN, sa, &rd, &rd_at));
+    CHECK(rd == b1 && rd_at == o1);
+    CHECK(vk_buf_get_input(BUFPAGE_GVA + a + 0x400, 0x800, sa, &rd, &rd_at));
+    CHECK(rd == b1 && rd_at == o1 + 0x400);
+    vk_unlock();
+    was = bufkeep_since((BufCount){0});
+    CHECK(!bufpage_draw(a, BUFPAGE_LEN, 0x20, 0x5eed0102, &b2, &o2));
+    /* and a second range, which starts on the first one's last page */
+    CHECK(!bufpage_draw(b, BUFPAGE_LEN, 0x30, 0x5eed0103, &b3, &o3));
+    bufkeep_finish();
+    d = bufkeep_since(was);
+    CHECK(b2 == b1 && o2 == o1 && b3 == b1 && o3 == o1 + (b - a));
+    CHECK(!d.copied && !d.back && !d.merged);
+    CHECK(own_lookup(BUFPAGE_CPU, 0x6000, NULL, 0) >= 1);
+    /* the CPU reads all six pages: the stores, and the pattern everywhere else, also beside the ranges */
+    CHECK(!gmem_read(BUFPAGE_GVA, got, sizeof got));
+    for (u32 i = 0; i < sizeof got; i += 4) {
+        u32 want = i == a + 0x10   ? 0x5eed0101
+                   : i == a + 0x20 ? 0x5eed0102
+                   : i == b + 0x30 ? 0x5eed0103
+                                   : bufkeep_pattern(i);
+        if (snx_ld_le32(got + i) != want)
+            fprintf(stderr, "storage buffer in the page cache: the word at %#x is %08x, expected %08x\n", i,
+                    snx_ld_le32(got + i), want);
+        CHECK(snx_ld_le32(got + i) == want);
+    }
+    CHECK(own_lookup(BUFPAGE_CPU, 0x6000, NULL, 0) == 0); /* the read landed them */
+    /* the CPU writes a word of the first range: a read of the range has it, from the cache's copy of the page */
+    snx_st_le32(GP(BUFPAGE_CPU + a + 0x40), 0x5eed0104);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    CHECK(vk_buf_get_input(BUFPAGE_GVA + a, BUFPAGE_LEN, sa, &rd, &rd_at));
+    CHECK(rd == b1 && rd_at == o1);
+    /* the range the CPU touched takes the copies now */
+    was = bufkeep_since((BufCount){0});
+    vk_unlock();
+    CHECK(!bufpage_draw(a, BUFPAGE_LEN, 0x50, 0x5eed0105, &b2, &o2));
+    bufkeep_finish();
+    d = bufkeep_since(was);
+    CHECK(b2 != b1 && d.copied == 2 * BUFPAGE_LEN && d.back == BUFPAGE_LEN && d.merged == 1);
+    CHECK(!gmem_read(BUFPAGE_GVA, got, 0x3000));
+    for (u32 i = 0; i < 0x3000; i += 4) {
+        u32 want = i == a + 0x10   ? 0x5eed0101
+                   : i == a + 0x20 ? 0x5eed0102
+                   : i == a + 0x40 ? 0x5eed0104
+                   : i == a + 0x50 ? 0x5eed0105
+                   : i == b + 0x30 ? 0x5eed0103 /* the second range's, on the first one's last page */
+                                   : bufkeep_pattern(i);
+        if (snx_ld_le32(got + i) != want)
+            fprintf(stderr, "storage buffer in the page cache, after the CPU's write: the word at %#x is %08x, "
+                            "expected %08x\n",
+                    i, snx_ld_le32(got + i), want);
+        CHECK(snx_ld_le32(got + i) == want);
+    }
+    vk_lock();
+    vk_finish();
+    CHECK(g_vk_validation_messages == validation);
+    vk_unlock();
+    CHECK(mem_unmap(BUFPAGE_CPU, 0x20000) == 0);
+    puts("writable storage buffers in the page cache: ranges that are not whole pages written in place and GPU-owned, "
+         "nothing copied, read back or merged; a read beside them lands nothing, the CPU's read of them lands them, "
+         "and its write shows");
     return 0;
 }
 

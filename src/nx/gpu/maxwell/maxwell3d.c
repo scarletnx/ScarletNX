@@ -10,6 +10,7 @@
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/maxwell/write_pages.h"
 #include "nx/gpu/maxwell/draw_state.h"
+#include "nx/gpu/maxwell/maxwell_3d_regs.h"
 #include "nx/hle/services/nvdrv.h"
 
 /* ------------------------------------------------------------ the record of GPU-side writes */
@@ -176,6 +177,11 @@ void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u
     int verify = gpu_channel_verify(ch);
     if (ch->render_off || (!verify && !g_renderer->draw)) return;
     mx_draw_state_sync(ch);
+    const u32* quad = &ch->r3d[MAXWELL3D_SAMPLE_MASK];
+    if (((quad[0] ^ quad[1]) | (quad[0] ^ quad[2]) | (quad[0] ^ quad[3])) & 0xFFFF)
+        LOG_LIMIT(4, "gpu: the sample masks of a quad's pixels differ (%04x %04x %04x %04x): each pixel takes %04x\n",
+                  quad[0] & 0xFFFF, quad[1] & 0xFFFF, quad[2] & 0xFFFF, quad[3] & 0xFFFF,
+                  ch->ds.rkey.sample_mask & 0xFFFF);
     if (dirty_check()) {
         u32 stale = mx_draw_state_stale(ch);
         if (stale)

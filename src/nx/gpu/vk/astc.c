@@ -42,6 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/texture/astc_spv.h" /* compiled from astc.comp by the build (cmake/glsl.cmake) */
 #include "nx/gpu/texture/astc_bc7_spv.h" /* compiled from astc_bc7.comp, in each of the encoder's builds */
@@ -56,7 +57,7 @@
 typedef struct {
     u64 key[2];
     u8* back;
-    VmaAllocation mem;
+    DevMem mem;
     u64 off, size;
     u64 sub; /* the submission that copies them: 0, a free slot */
 } Bc7Capture;
@@ -70,7 +71,7 @@ typedef struct {
        constant, so the driver folds what depends on it however little it optimizes otherwise */
     VkPipeline pipes[9][9];
     VkBuffer scratch;
-    VmaAllocation mem;
+    DevMem mem;
     u64 cap;
     /* the BC7 encoder, made on the first BC7 image, and the blocks it writes: as large as the texels' scratch, which a
        strip's blocks never pass (vk_astc_upload sizes strips by both) */
@@ -79,13 +80,13 @@ typedef struct {
        the second pass's workgroups as an indirect dispatch reads them, and a number a block of a strip */
     VkDescriptorSetLayout bc7_ds;
     VkBuffer bc7_work;
-    VmaAllocation bc7_work_mem;
+    DevMem bc7_work_mem;
     /* its builds (vk_bc7_build): the full one, the fast one, mode 6 alone, and the quick one of a very large level
        (mode 6 from one line), each made on its first use */
     VkShaderModule bc7_modules[4][2];
     VkPipeline bc7_pipes[4][2];
     VkBuffer bc7_scratch;
-    VmaAllocation bc7_mem;
+    DevMem bc7_mem;
     /* image levels (or regions of them) uploaded as BC7, those the cache gave, their bytes, and what they would have
        taken as RGBA8 (vk_astc_stats) */
     u64 bc7_levels, bc7_hits, bc7_bytes, bc7_rgba8_bytes;
@@ -172,10 +173,10 @@ static void astc_init(void) {
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                       VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_astc.scratch, &g_astc.mem, NULL)))
+    DevMemWant ai = {.at = DM_DEVICE};
+    if (!VK_OK(vk_buffer_create(&bi, &ai, &g_astc.scratch, &g_astc.mem, NULL)))
         fatal("vulkan: cannot allocate ASTC scratch memory");
-    vk_mem_track(g_astc.mem);
+    vk_mem_track(g_astc.mem, VK_OWN_ENCODER);
 }
 
 /* astc_bc7.comp's push constants: the strip as astc.comp has it, then the footprint, which is no constant of its
@@ -194,17 +195,17 @@ static void bc7_init(void) {
                              .size = g_astc.cap,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_astc.bc7_scratch, &g_astc.bc7_mem, NULL)))
+    DevMemWant ai = {.at = DM_DEVICE};
+    if (!VK_OK(vk_buffer_create(&bi, &ai, &g_astc.bc7_scratch, &g_astc.bc7_mem, NULL)))
         fatal("vulkan: cannot allocate the BC7 encoder's scratch memory");
-    vk_mem_track(g_astc.bc7_mem);
+    vk_mem_track(g_astc.bc7_mem, VK_OWN_ENCODER);
     /* a word a block the scratch holds, were every block of a strip left to the second pass */
     bi.size = BC7_WORK_HEAD + g_astc.cap / 4;
     bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_astc.bc7_work, &g_astc.bc7_work_mem, NULL)))
+    if (!VK_OK(vk_buffer_create(&bi, &ai, &g_astc.bc7_work, &g_astc.bc7_work_mem, NULL)))
         fatal("vulkan: cannot allocate the BC7 encoder's work list");
-    vk_mem_track(g_astc.bc7_work_mem);
+    vk_mem_track(g_astc.bc7_work_mem, VK_OWN_ENCODER);
 }
 
 u32 vk_bc7_build(u32 w, u32 h, u32 d) {
@@ -307,7 +308,7 @@ void vk_bc7_level_key(const u64 content[2], u32 w, u32 h, u32 depth, u32 layers,
 #define DUMP_MAX (2ull << 30)
 typedef struct {
     u8* p;
-    VmaAllocation mem;
+    DevMem mem;
     u64 off, size, sub, at;
     u32 file;
 } AstcDump;
@@ -378,7 +379,7 @@ static void dump_landed(u64 sub) {
         char path[1100];
         dump_path(d->file, path, sizeof path);
         FILE* f = fopen(path, "r+b");
-        vmaInvalidateAllocation(g_vk.vma, d->mem, d->off, d->size);
+        vk_devmem_invalidate(d->mem, d->off, d->size);
         if (f && !fseek(f, (long)(16 + d->at), SEEK_SET)) fwrite(d->p, 1, d->size, f);
         if (f) fclose(f);
     }
@@ -391,7 +392,7 @@ void vk_astc_frame_done(u64 sub) {
     for (u32 i = 0; g_astc.captured && i < g_astc.ncaptures; i++) {
         Bc7Capture* c = &g_astc.captures[i];
         if (!c->sub || c->sub > sub) continue;
-        vmaInvalidateAllocation(g_vk.vma, c->mem, c->off, c->size);
+        vk_devmem_invalidate(c->mem, c->off, c->size);
         vk_bc7_cache_put(c->key, c->back, c->size);
         g_astc.captured -= c->size;
         c->sub = 0;
@@ -777,7 +778,7 @@ typedef struct {
     u64 ready_sub;
     int ready;
     VkBuffer snap;
-    VmaAllocation snap_mem;
+    DevMem snap_mem;
     u64 snap_bytes;
     u64 t0;          /* when it was made */
     u32 by_gpu, had; /* pieces the GPU encoded, and those the cache held already */
@@ -901,9 +902,9 @@ static Bc7Job* bg_job_new(const u64 key[2], u32 w, u32 h, u32 depth, u32 bw, u32
                              .size = bytes,
                              .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST}; /* only the GPU reads it */
-    VmaAllocationInfo info;
-    if (!j->state || (have < p.n && !VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &j->snap, &j->snap_mem, &info)))) {
+    DevMemWant ai = {.at = DM_HOST}; /* only the GPU reads it */
+    DevMemInfo info;
+    if (!j->state || (have < p.n && !VK_OK(vk_buffer_create(&bi, &ai, &j->snap, &j->snap_mem, &info)))) {
         LOG_LIMIT(4, "vulkan: no memory to keep a %ux%ux%u ASTC level's blocks for the background encode\n", w, h,
                   depth);
         free(j->state);
@@ -911,7 +912,7 @@ static Bc7Job* bg_job_new(const u64 key[2], u32 w, u32 h, u32 depth, u32 bw, u32
         return NULL;
     }
     if (j->snap) {
-        vk_mem_track(j->snap_mem);
+        vk_mem_track(j->snap_mem, VK_OWN_ENCODER);
         j->snap_bytes = bytes;
         g_bg.snap_bytes += bytes;
     }
@@ -1426,14 +1427,14 @@ int vk_astc_keep(Surf* t) {
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    DevMemWant ai = {.at = DM_DEVICE};
     if (!bytes || bytes > g_vk.alloc_cap ||
-        !VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &t->bc7.kept, &t->bc7.kept_mem, NULL))) {
+        !VK_OK(vk_buffer_create(&bi, &ai, &t->bc7.kept, &t->bc7.kept_mem, NULL))) {
         t->bc7.kept = VK_NULL_HANDLE;
-        t->bc7.kept_mem = VK_NULL_HANDLE;
+        t->bc7.kept_mem = 0;
         return 0;
     }
-    vk_mem_track(t->bc7.kept_mem);
+    vk_mem_track(t->bc7.kept_mem, VK_OWN_TEXTURE);
     t->bc7.kept_bytes = bytes;
     g_astc.kept_bytes += bytes;
     return 1;
@@ -1443,7 +1444,7 @@ void vk_astc_unkeep(Surf* t) {
     vk_defer_buffer(t->bc7.kept, t->bc7.kept_mem); /* once the copies into it and the transcoder's reads are done */
     g_astc.kept_bytes -= t->bc7.kept_bytes;
     t->bc7.kept = VK_NULL_HANDLE;
-    t->bc7.kept_mem = VK_NULL_HANDLE;
+    t->bc7.kept_mem = 0;
     t->bc7.kept_bytes = 0;
 }
 u64 vk_astc_kept_bytes(void) { return g_astc.kept_bytes; }

@@ -113,6 +113,10 @@ int main(int argc, char** argv) {
            gui_settings_set(&s, "aot_threads", "4"));
     assert(gui_settings_recompile(&s, 0, options) == 2 && !strcmp(options[0], "--opt=s") &&
            !strcmp(options[1], "--aot_threads=4"));
+    /* the 3DS, Vita and GBA drivers' recompiles take the level and the threads, never LLVM Internals' */
+    assert(gui_settings_set(&s, "llvm_batch", "ipo") && gui_settings_recompile_shared(&s, options) == 2 &&
+           !strcmp(options[0], "--opt=s") && !strcmp(options[1], "--aot_threads=4") &&
+           gui_settings_set(&s, "llvm_batch", "full"));
     assert(!strcmp(s.keys[opt + 1].section, "Launch") && !strcmp(s.keys[opt + 1].key, "LLVM batch") &&
            !strcmp(s.values[opt + 1].key, "llvm_batch") && !strcmp(s.values[opt + 1].def, "full") &&
            words(&s.keys[opt + 1]) == 2); /* full, the default, which is not passed, and ipo */
@@ -152,6 +156,19 @@ int main(int argc, char** argv) {
                !strcmp(on_screen(&s, "gba_covers"), "Box art (libretro-thumbnails)"));
         assert(!gui_settings_recompile(&s, 1, options) && !gui_settings_one(&s, "gba_covers", options));
         assert(gui_settings_set(&s, "gba_covers", "none") && !gui_settings_value(&s, "gba_covers"));
+    }
+    /* Settings > GBA's Colors after it: GBA screen by default and then no option for the run (the runner's own default),
+       Raw picked and then the run's --gba_color=raw, an unknown value refused, and never a recompile's option */
+    {
+        int colors = at(&s, "gba_color");
+        assert(colors == at(&s, "gba_covers") + 1 && colors < s.own && !strcmp(s.keys[colors].section, "GBA") &&
+               !strcmp(s.keys[colors].key, "Colors") && words(&s.keys[colors]) == 2 &&
+               !strcmp(on_screen(&s, "gba_color"), "GBA screen [default]") && !gui_settings_gba(&s, options));
+        assert(!gui_settings_set(&s, "gba_color", "sepia") && gui_settings_set(&s, "gba_color", "raw") &&
+               !strcmp(on_screen(&s, "gba_color"), "Raw") && gui_settings_gba(&s, options) == 1 &&
+               !strcmp(options[0], "--gba_color=raw"));
+        assert(!gui_settings_recompile(&s, 1, options) && !gui_settings_one(&s, "gba_color", options));
+        assert(gui_settings_set(&s, "gba_color", "gba") && !gui_settings_gba(&s, options));
     }
     /* a game's setting alone, as a GBA run takes fullscreen: once picked, and never a launcher's own */
     assert(!gui_settings_one(&s, "slp_vectorizer", options) && gui_settings_set(&s, "slp_vectorizer", "1"));

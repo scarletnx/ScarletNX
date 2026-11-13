@@ -10,6 +10,20 @@ if(SNX_BUILD_AGB AND BUILD_TESTING)
                   URL https://github.com/jsmolka/gba-tests/archive/a7113b67e63f83a9b321696ddd7042ccfad6c881.tar.gz
                   URL_HASH SHA256=b9373ef18700c48ccab0940ec480517fba47accc86516df5fd43ed9ec6cdf082
                   DOWNLOAD_ONLY YES)
+    # DenSinH's FuzzARM (GPL-3.0): five ROMs of 10000 random ARM and Thumb instructions each, checked against the
+    # values its generator computed (tests/agb_fuzzarm.py). Test data, not shipped
+    CPMAddPackage(NAME FuzzARM VERSION 2022.06.14
+                  URL https://github.com/DenSinH/FuzzARM/archive/a675329cd57da48e3e406216ba2d79dd7e09ee20.tar.gz
+                  URL_HASH SHA256=9099fd9cc8d5dd7bddca16a17bca84a8f716a57be609bef68d056cdd4a11929a
+                  DOWNLOAD_ONLY YES)
+endif()
+# mGBA's test suite (MIT), 13 sections of results measured on the console, as the ROM of mgba-emu/suite e694203 that
+# scarletnx/mgba-suite-rom's release keeps (tests/agb_mgba_suite.py). Off by default, as DraVee asked of slow GBA tests:
+# a section takes 5 to 14 s, the 13 about 90 s one after another in an -O0 tree (2026-11-13)
+option(SNX_TEST_AGB_MGBA_SUITE "Run mGBA's test suite's sections as AGB tests (downloads its ROM; about 90 s in all)" OFF)
+if(SNX_BUILD_AGB AND BUILD_TESTING AND SNX_TEST_AGB_MGBA_SUITE)
+    snx_cpm_file(mgba-suite 2026.07.08 https://github.com/scarletnx/mgba-suite-rom/releases/download/v0-e694203/suite.gba
+                 8cf68cd31c5468a70aca8a1c5b63dc372fe755c40b446cf6aa6d0fc6e3a1f035)
 endif()
 
 set(SNX_AGB_PROGRAM "${PROJECT_BINARY_DIR}/scarletnx-agb${CMAKE_EXECUTABLE_SUFFIX}") # what the tests run
@@ -59,6 +73,9 @@ if(BUILD_TESTING)
             "${SNX_AGB_PROGRAM}")
         add_test(NAME agb_eeprom COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_eeprom.py"
             "${SNX_AGB_PROGRAM}")
+        # the recompile's options every driver shares (common/utilities/cli.h), on a ROM the test makes
+        add_test(NAME agb_recompile_options COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/agb_recompile_options.py" "${SNX_AGB_PROGRAM}")
     endif()
     # jsmolka's gba-tests (cmake/dependencies.cmake), each ROM a test of its own
     if(Python3_Interpreter_FOUND AND gba-tests_SOURCE_DIR)
@@ -66,6 +83,30 @@ if(BUILD_TESTING)
                         ppu_shades ppu_stripes)
             add_test(NAME agb_gba_${rom} COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_gba_tests.py"
                 --runner "${SNX_AGB_PROGRAM}" --tests "${gba-tests_SOURCE_DIR}" ${rom})
+        endforeach()
+    endif()
+    if(Python3_Interpreter_FOUND AND FuzzARM_SOURCE_DIR)
+        foreach(rom IN ITEMS ARM_Any ARM_DataProcessing THUMB_Any THUMB_DataProcessing FuzzARM)
+            add_test(NAME agb_fuzzarm_${rom} COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_fuzzarm.py"
+                --runner "${SNX_AGB_PROGRAM}" --roms "${FuzzARM_SOURCE_DIR}" ${rom})
+        endforeach()
+    endif()
+    # each section of mGBA's suite a test, labelled mgba-suite: the ones short of all their results pass at the count
+    # they reach today, named with the issue that keeps them there, and fail at any other
+    if(Python3_Interpreter_FOUND AND mgba-suite_SOURCE_DIR)
+        foreach(section IN ITEMS memory io_read timing timer_count_up timer_irq shifter carry multiply_long bios_math
+                                 dma sio_read sio_timing misc_edge:4:2058)
+            string(REPLACE ":" ";" parts "${section}")
+            list(GET parts 0 name)
+            set(expect)
+            if(section MATCHES ":")
+                list(GET parts 1 passes)
+                list(GET parts 2 issue)
+                set(expect --expect ${passes} --issue "#${issue}")
+            endif()
+            add_test(NAME agb_mgba_${name} COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_mgba_suite.py"
+                --runner "${SNX_AGB_PROGRAM}" --rom "${mgba-suite_SOURCE_DIR}/suite.gba" ${expect} ${name})
+            set_tests_properties(agb_mgba_${name} PROPERTIES LABELS "mgba-suite")
         endforeach()
     endif()
 endif()

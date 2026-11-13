@@ -36,12 +36,12 @@ static int mirror_region(AgbMap* map, uint32_t address, uint32_t window, uint32_
     return 0;
 }
 
-static int mirror_vram(AgbMap* map, uint32_t base, int backing) {
+static int mirror_vram(AgbMap* map, int backing) {
     for (uint32_t offset = 0; offset < 0x1000000; offset += 0x20000) {
         for (uint32_t page = 0; page < 0x20000; page += (uint32_t)map->page) {
             /* the window's last 32 KiB repeat the 32 KiB above the bitmap region */
             uint32_t within = page >= 0x18000 ? page - 0x8000 : page;
-            if (!snx_host_map(&map->backings[backing], map->base, base + 0x06000000 + offset + page, within, map->page,
+            if (!snx_host_map(&map->backings[backing], map->base, 0x06000000 + offset + page, within, map->page,
                               SNX_HOST_READ | SNX_HOST_WRITE))
                 return -1;
         }
@@ -59,7 +59,7 @@ static int commit(AgbMap* map, uint64_t at, uint64_t size, char* error, size_t e
     return -1;
 }
 
-/* Each region a host memory object, mapped at every mirror in both halves; the window's rest is RAM of zeros. */
+/* Each region a host memory object, mapped at every mirror; the window's rest is RAM of zeros. */
 static int mirror(AgbMap* map, AgbBoard* board, size_t rom, size_t rom_backing_size, char* error, size_t error_size) {
     enum { BIOS, EWRAM, IWRAM, IO, PALETTE, VRAM, OAM, SRAM };
     /* a region smaller than a page takes a page, its mirrors inside one the same bytes no more */
@@ -80,33 +80,24 @@ static int mirror(AgbMap* map, AgbBoard* board, size_t rom, size_t rom_backing_s
             {0x05000000, 0x1000000, (uint32_t)small, PALETTE},  {0x07000000, 0x1000000, (uint32_t)small, OAM},
             {0x0E000000, 0x2000000, AGB_SRAM_SIZE, SRAM},
         };
-        for (uint32_t base = 0;; base = 0x80000000u) {
-            for (size_t i = 0; i < sizeof(mirrors) / sizeof(mirrors[0]); ++i) {
-                if (mirror_region(map, base + mirrors[i].address, mirrors[i].window, mirrors[i].unit,
-                                  mirrors[i].backing)) {
-                    snx_os_error(why, sizeof why);
-                    snprintf(error, error_size, "cannot mirror the guest memory region at 0x%08X: %s",
-                             base + mirrors[i].address, why);
-                    return -1;
-                }
-            }
-            if (mirror_vram(map, base, VRAM)) {
+        for (size_t i = 0; i < sizeof(mirrors) / sizeof(mirrors[0]); ++i) {
+            if (mirror_region(map, mirrors[i].address, mirrors[i].window, mirrors[i].unit, mirrors[i].backing)) {
                 snx_os_error(why, sizeof why);
-                snprintf(error, error_size, "cannot mirror the guest video RAM at 0x%08X: %s", base + 0x06000000, why);
+                snprintf(error, error_size, "cannot mirror the guest memory region at 0x%08X: %s", mirrors[i].address,
+                         why);
                 return -1;
             }
-            if (base) break;
+        }
+        if (mirror_vram(map, VRAM)) {
+            snx_os_error(why, sizeof why);
+            snprintf(error, error_size, "cannot mirror the guest video RAM at 0x06000000: %s", why);
+            return -1;
         }
     }
-    /* past the 28 bits the console decodes, and in both halves, the window is plain memory */
-    if (commit(map, 0x10000000u, 0x70000000u, error, error_size) ||
-        commit(map, 0x90000000u, AGB_MAP_SIZE + AGB_MAP_GUARD - 0x90000000u, error, error_size))
-        return -1;
+    /* past the 28 bits the console decodes the window is plain memory: every access there goes to the bus hook */
+    if (commit(map, 0x10000000u, AGB_MAP_SIZE + AGB_MAP_GUARD - 0x10000000u, error, error_size)) return -1;
     if (!board->has_cartridge) /* the cartridge windows too, with no cartridge in them */
-        return commit(map, 0x08000000u, 0x06000000u, error, error_size) ||
-                       commit(map, 0x88000000u, 0x06000000u, error, error_size)
-                   ? -1
-                   : 0;
+        return commit(map, 0x08000000u, 0x06000000u, error, error_size) ? -1 : 0;
     {
         /* Each of the three wait state windows holds the image over its extent (a 1 MiB one four times). Past it the
            cartridge drives no data and the bus keeps the halfword address it latched, GBATEK's "Address/2 AND
@@ -129,16 +120,11 @@ static int mirror(AgbMap* map, AgbBoard* board, size_t rom, size_t rom_backing_s
                 for (uint32_t i = 0; i < AGB_ROM_BUS_PERIOD; ++i) map->backings[bus].view[i] = agb_rom_open_bus8(i);
         }
         for (uint32_t window = 0x08000000; window < 0x0E000000; window += AGB_ROM_MAX) {
-            for (uint32_t base = 0;; base = 0x80000000u) {
-                if (mirror_region(map, base + window, extent, (uint32_t)rom_backing_size, backing) ||
-                    (bus >= 0 &&
-                     mirror_region(map, base + window + extent, AGB_ROM_MAX - extent, AGB_ROM_BUS_PERIOD, bus))) {
-                    snx_os_error(why, sizeof why);
-                    snprintf(error, error_size, "cannot mirror the guest's cartridge window at 0x%08X: %s",
-                             base + window, why);
-                    return -1;
-                }
-                if (base) break;
+            if (mirror_region(map, window, extent, (uint32_t)rom_backing_size, backing) ||
+                (bus >= 0 && mirror_region(map, window + extent, AGB_ROM_MAX - extent, AGB_ROM_BUS_PERIOD, bus))) {
+                snx_os_error(why, sizeof why);
+                snprintf(error, error_size, "cannot mirror the guest's cartridge window at 0x%08X: %s", window, why);
+                return -1;
             }
         }
     }
@@ -188,6 +174,8 @@ int agb_map_init(AgbMap* map, AgbBoard* board, char* error, size_t error_size) {
     board->memory.vram = map->base + 0x06000000;
     board->memory.oam = map->base + 0x07000000;
     board->memory.sram = map->base + 0x0E000000;
+    board->memory.rom = board->has_cartridge ? map->base + 0x08000000 : NULL;
+    board->memory.rom_windows = map->mirrored ? 1 : 3;
     board->memory.owned = 0;
     map->adopted = 1;
     return 0;

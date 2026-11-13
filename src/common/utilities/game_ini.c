@@ -184,6 +184,47 @@ const char* snx_source_kind(const char* source) {
         if (snx_ends_with_nocase(source, dumps[i])) return "dump";
     return "folder";
 }
+SnxRomfs snx_romfs_state(const char* folder, const char* name) {
+    char *data = snx_format("%s/%s_data", folder, name), *part;
+    SnxRomfs state = SNX_ROMFS_WHOLE;
+    if (!data) return SNX_ROMFS_WHOLE;
+    part = snx_format("%s/%s.tmpfs", folder, name);
+    if (part && snx_is_file(part)) goto done; /* Extract to tmpfs keeps it there */
+    free(part);
+    part = snx_format("%s/%s.extracting", folder, name);
+    if (part && snx_is_file(part)) {
+        state = SNX_ROMFS_EXTRACTING;
+        goto done;
+    }
+    free(part);
+    part = snx_path_join(data, "exefs/main");
+    if (!part || !snx_is_file(part)) goto done; /* nothing extracted here, or an NRO's exefs/main.nro */
+    free(part);
+    part = snx_path_join(data, "romfs.bin");
+    if (!part || snx_is_file(part)) goto done; /* an NRO's RomFS */
+    free(part);
+    part = snx_path_join(data, "romfs.copying");
+    if (part && (snx_path_exists(part) || snx_is_link(part)))
+        state = SNX_ROMFS_STOPPED;
+    else {
+        free(part);
+        part = snx_path_join(data, "romfs");
+        if (!part || !snx_is_dir(part)) state = SNX_ROMFS_MISSING;
+    }
+done:
+    free(part);
+    free(data);
+    return state;
+}
+const char* snx_romfs_why(SnxRomfs state) {
+    switch (state) {
+        case SNX_ROMFS_EXTRACTING: return "an extraction of it stopped before it ended (its .extracting is left)";
+        case SNX_ROMFS_STOPPED: return "a copy of it stopped before it ended (romfs.copying is left)";
+        case SNX_ROMFS_MISSING: return "its exefs/ is there and its romfs/ is not";
+        case SNX_ROMFS_WHOLE: break;
+    }
+    return "";
+}
 int snx_record_source(const char* folder, const char* name, const char* dump) {
     char* ini = snx_game_ini(folder, name);
     int rc = snx_ini_record(ini, "source", dump);
@@ -252,7 +293,7 @@ int snx_addon_check(const char* folder, const char* name, const char* entry) {
     return rc;
 }
 
-static const char* const g_system_words[] = {"switch", "3ds", "vita", "gba"};
+static const char* const g_system_words[] = {"switch", "3ds", "vita", "gba", "nds"};
 const char* snx_system_word(SnxSystem system) { return g_system_words[system]; }
 SnxSystem snx_game_system(const char* folder, const char* name) {
     char *ini = snx_format("%s/%s.ini", folder, name), *word = snx_ini_value(ini, "system"), *model = NULL,

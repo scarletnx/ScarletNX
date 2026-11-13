@@ -48,8 +48,7 @@ int vk_ftz_native(void) {
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = 6 * PROBE_N * sizeof(u32),
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
-    VmaAllocationCreateInfo ai = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                  .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    DevMemWant ai = {.at = DM_CACHED, .mapped = 1};
     VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                    .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
                                    .queueFamilyIndex = g_vk.compute_family};
@@ -61,8 +60,8 @@ int vk_ftz_native(void) {
     VkCommandPool cpool = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
     VkBuffer buffer = VK_NULL_HANDLE;
-    VmaAllocation memory = NULL;
-    VmaAllocationInfo allocation;
+    DevMem memory = 0;
+    DevMemInfo allocation;
     VkDescriptorSet set;
     VkCommandBuffer cb;
     u32* words;
@@ -71,12 +70,12 @@ int vk_ftz_native(void) {
     if (!VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), playout, ftz_probe_spv, ftz_probe_spv_size,
                                        &pipeline)))
         goto out;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &buffer, &memory, &allocation))) goto out;
-    words = allocation.pMappedData;
+    if (!VK_OK(vk_buffer_create(&bi, &ai, &buffer, &memory, &allocation))) goto out;
+    words = allocation.ptr;
     for (int i = 0; i < PROBE_N; i++)
         for (int k = 0; k < 3; k++) words[k * PROBE_N + i] = g_probe[i][k];
     memset(words + 3 * PROBE_N, 0, 3 * PROBE_N * sizeof *words);
-    if (!VK_OK(vmaFlushAllocation(g_vk.vma, memory, 0, VK_WHOLE_SIZE))) goto out;
+    if (!VK_OK(vk_devmem_flush(memory, 0, VK_WHOLE_SIZE))) goto out;
     if (!VK_OK(vkCreateDescriptorPool(g_vk.dev, &dpi, NULL, &dpool))) goto out;
     VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                                        .descriptorPool = dpool,
@@ -116,7 +115,7 @@ int vk_ftz_native(void) {
     if (!VK_OK(sr)) goto out;
     submitted = 1;
     done = VK_OK(vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, 5000000000ull));
-    if (!done || !VK_OK(vmaInvalidateAllocation(g_vk.vma, memory, 0, VK_WHOLE_SIZE))) goto out;
+    if (!done || !VK_OK(vk_devmem_invalidate(memory, 0, VK_WHOLE_SIZE))) goto out;
     native = 1;
     for (int i = 0; i < PROBE_N; i++)
         for (int k = 0; k < 3; k++) {
@@ -135,7 +134,7 @@ out:
     if (fence) vkDestroyFence(g_vk.dev, fence, NULL);
     if (cpool) vkDestroyCommandPool(g_vk.dev, cpool, NULL);
     if (dpool) vkDestroyDescriptorPool(g_vk.dev, dpool, NULL);
-    if (buffer) vmaDestroyBuffer(g_vk.vma, buffer, memory);
+    if (buffer) vk_devmem_buffer_destroy(buffer, memory);
     if (pipeline) vkDestroyPipeline(g_vk.dev, pipeline, NULL);
     if (playout) vkDestroyPipelineLayout(g_vk.dev, playout, NULL);
     if (dlayout) vkDestroyDescriptorSetLayout(g_vk.dev, dlayout, NULL);

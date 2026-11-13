@@ -23,11 +23,11 @@
 #include "nx/runtime/driver/toolchain.h"
 #include "snx_settings.h"
 #include "common/utilities/build_info.h"
+#include "common/utilities/cli.h"
 #include "common/utilities/mods.h"
 #include "common/utilities/patches.h"
 #include "common/platform/file.h"
 #include <ctype.h>
-#include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,11 +42,6 @@ static void usage(void) {
          "  INPUT                  Game/ExeFS folder, .nro, or an XCI or NSP dump (read in place)\n"
          "  --name NAME            Output name (default: the title ID, else the NPDM's or input name)\n"
          "  --outdir DIR           Where the game's folder goes (default: recompiled/)\n"
-         "  -O LEVEL               Optimization: 0,1,2,3,s,z (default: 2), the setting opt\n"
-         "  --jobs N               Parallel compiles (default: 1 to start, then one more each second while the\n"
-         "                         memory holds it, up to the cores with a quarter left free), the setting\n"
-         "                         aot_threads");
-    puts("  --jit-cache FILE       Link a profile run's .jitcache into the module as runtime code\n"
          "  --layout FILE          Put the code of these functions first, in this order (hex PCs, one per line):\n"
          "                         a profile's hot functions, as tools/layout.py orders them\n"
          "  --keys FILE            prod.keys for a dump (default: the data folder, then ~/.switch)\n"
@@ -54,18 +49,17 @@ static void usage(void) {
          "  --program N            Only program N of a dump's application of several (default: every one)");
     puts("  --KEY=VALUE            A recompile setting: opt, llvm_batch, aot_threads, unit_cache_gb,\n"
          "                         llvm_pass_<pass>=0 (scarletnx --settings=recompile lists them)");
-    printf("  --chunk N              Instructions per code unit, whole functions batched (default: %d), the setting\n"
-           "                         unit_instructions\n",
-           g_settings.unit_size);
     puts("  --target auto|linux|win64  The host only: modules are built for the machine that builds them\n"
          "  --target ios           A pack of objects for the iOS app, which loads them into JIT memory (docs/hosts/apple.md)\n"
          "  --no-build             Stage data/INI only, generate no code\n"
          "  --tmpfs                Leave the RomFS in the extraction (in tmpfs), which the game reads it from");
-    puts("  --jit-only             Generate no code: the runtime JIT compiles all of it\n"
-         "  --runtime FILE         Deploy this runtime instead of building one\n"
-         "  --hook-direct-calls    Route calls and branches between functions through dispatch (NVN)\n"
-         "  --keep-ir              Save the generated code (LLVM IR) in <NAME>/<NAME>_build\n"
-         "  -q, --quiet            Suppress progress");
+    puts("  --runtime FILE         Deploy this runtime instead of building one\n"
+         "  --hook-direct-calls    Route calls and branches between functions through dispatch (NVN)");
+    snx_cli_help(stdout, SNX_CLI_RECOMPILE_OPTIONS);
+    printf("On the Switch, --jobs's Auto starts on 1 thread and opens one more each second while the memory holds it,\n"
+           "--chunk's default is the setting unit_instructions (%d), whole functions to a unit, and --jit-cache\n"
+           "takes a profile run's .jitcache, linked into the module as runtime code.\n",
+           g_settings.unit_size);
     puts("Each game is a folder of <outdir>, <NAME>/: its program <NAME>, <NAME>_code and <NAME>_data/.\n"
          "An update's dump is made beside its game, <ID>/<ID>_<its own title ID>, which runs with the game's\n"
          "settings and saves and reads the dump in place. A DLC has no program: the driver checks it for its game.\n"
@@ -92,13 +86,6 @@ static void old_branch_profile(void) {
         snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated, and longer than ir_branch_profile's %u bytes: "
                   "ir_branch_profile is empty, no branch weights (docs/user/deprecations.md)",
                   old, (unsigned)sizeof g_settings.ir_branch_profile - 1);
-}
-static unsigned number(const char* text, unsigned max) {
-    char* end;
-    unsigned long n;
-    errno = 0;
-    n = strtoul(text, &end, 10);
-    return errno || !*text || *end || n == 0 || n > max ? 0 : (unsigned)n;
 }
 /* This build's, not the checkout's cpu.h: the modules are laid out as this build's headers say, and an installed
    build has no checkout */
@@ -330,6 +317,26 @@ static int load_dump(const char* dump, const char* update, int index, const SnxP
     }
     snx_hac_fs_free(fs);
     snx_dump_close(&opened);
+    return rc;
+}
+int snx_dump_modules_of_dump(const char* dump, const SnxPaths* paths, const char* outdir) {
+    SnxProgram program;
+    SnxU64 addon = 0, owner = 0, version = SNX_NO_VERSION;
+    char error[1024];
+    int rc, kind;
+    if (snx_extract_title(dump, paths, &addon, &owner, &version, NULL)) return -1;
+    kind = snx_addon_kind(owner, addon);
+    if (kind == SNX_ADDON_DLC) {
+        snx_error("%s is a DLC, which has no program of its own", dump);
+        return -1;
+    }
+    /* an update's ExeFS is whole, read without its game */
+    if (load_dump(dump, kind == SNX_ADDON_UPDATE ? dump : NULL, 0, paths, 1, NULL, NULL, 0, &program, error,
+                  sizeof error))
+        return -1;
+    rc = snx_dump_loaded(&program, outdir, error, sizeof error);
+    if (rc) snx_error("%s", error);
+    snx_free_program(&program);
     return rc;
 }
 /* The NROs of a dump's program of index (nros.h), from its RomFS read in place. An update's RomFS is its own over its
@@ -957,8 +964,9 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     char error[1024], option[64];
     const char* equal;
     size_t option_size;
+    SnxCliArg given;
     int i, rc, ios = 0, no_build = 0, keep_c = 0, host_win = 0, positional = 0, tmpfs = 0, dump = 0, asked = -1,
-               programs = 1;
+               programs = 1, common;
     memset(&compile, 0, sizeof(compile));
     memset(&gen, 0, sizeof(gen));
 #ifdef _WIN32
@@ -984,27 +992,37 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
             positional = 1;
             continue;
         }
+        /* the recompile's common options (common/utilities/cli.h), the table's every driver reads; another common
+           one (--outdir, --keys) is this one's own below */
+        common = snx_cli_match(argc, argv, &i, SNX_CLI_RECOMPILE_OPTIONS, "scarletnx", &given, error, sizeof error);
+        if (common == SNX_CLI_ERROR) {
+            fprintf(stderr, "%s\n", error);
+            return 1;
+        }
+        if (common == SNX_CLI_OPT)
+            strcpy(g_settings.optimization_level, given.value);
+        else if (common == SNX_CLI_JOBS)
+            g_settings.aot_threads = (int)given.number;
+        else if (common == SNX_CLI_CHUNK)
+            g_settings.unit_size = (int)given.number;
+        else if (common == SNX_CLI_JIT_CACHE)
+            jit_cache = given.value;
+        else if (common == SNX_CLI_JIT_ONLY)
+            gen.interp_only = 1;
+        else if (common == SNX_CLI_KEEP_IR)
+            keep_c = 1;
+        else if (common == SNX_CLI_QUIET)
+            compile.quiet = gen.quiet = 1;
+        if (common > 0) continue;
         if (!strcmp(arg, "--no-build"))
             no_build = 1;
         else if (!strcmp(arg, "--tmpfs"))
             tmpfs = 1;
-        else if (!strcmp(arg, "--jit-only") || !strcmp(arg, "--interp-only")) {
-            if (!strcmp(arg, "--interp-only")) snx_option_renamed("--interp-only", "--jit-only");
-            gen.interp_only = 1;
-        } else if (!strcmp(arg, "--hook-direct-calls"))
+        else if (!strcmp(arg, "--hook-direct-calls"))
             gen.hook_direct_calls = 1;
-        else if (!strcmp(arg, "--keep-ir") || !strcmp(arg, "--keep-c")) {
-            if (!strcmp(arg, "--keep-c"))
-                fprintf(stderr, "scarletnx: --keep-c is deprecated: use --keep-ir (docs/user/deprecations.md)\n");
-            keep_c = 1;
-        } else if (!strcmp(arg, "--quiet") || !strcmp(arg, "-q"))
-            compile.quiet = gen.quiet = 1;
         else if (arg[0] == '-') {
             value = NULL;
-            if (arg[1] == 'O' && arg[2]) {
-                value = arg + 2;
-                arg = "-O";
-            } else if ((equal = strchr(arg, '=')) != NULL) {
+            if ((equal = strchr(arg, '=')) != NULL) {
                 option_size = (size_t)(equal - arg);
                 if (option_size >= sizeof(option))
                     return snx_error("unknown option: %s (scarletnx -r -h lists them)", arg);
@@ -1021,8 +1039,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
             }
             if (strcmp(arg, "-o") && strcmp(arg, "--name") && strcmp(arg, "--out") && strcmp(arg, "--outname") &&
                 strcmp(arg, "--keys") && strcmp(arg, "--title-keys") && strcmp(arg, "--outdir") &&
-                strcmp(arg, "--runtime") && strcmp(arg, "--target") && strcmp(arg, "-O") && strcmp(arg, "--jobs") &&
-                strcmp(arg, "--chunk") && strcmp(arg, "--jit-cache") && strcmp(arg, "--layout") &&
+                strcmp(arg, "--runtime") && strcmp(arg, "--target") && strcmp(arg, "--layout") &&
                 strcmp(arg, "--program"))
                 return snx_error("unknown option: %s (scarletnx -r -h lists them)", arg);
             if (!value) {
@@ -1044,29 +1061,15 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
                 runtime = value;
             else if (!strcmp(arg, "--target"))
                 target = value;
-            else if (!strcmp(arg, "-O")) {
-                if (strlen(value) != 1 || !strchr("0123sz", value[0]))
-                    return snx_error("-O %s: not 0, 1, 2, 3, s or z", value);
-                strcpy(g_settings.optimization_level, value);
-            } else if (!strcmp(arg, "--jobs")) {
-                g_settings.aot_threads = (int)number(value, 1024);
-                if (!g_settings.aot_threads) return snx_error("--jobs %s: not a whole number from 1 to 1024", value);
-            } else if (!strcmp(arg, "--program")) {
+            else if (!strcmp(arg, "--program")) {
                 char* end;
                 long n = strtol(value, &end, 10);
                 if (*end || n < 0 || n >= SNX_PROGRAMS_MAX)
                     return snx_error("--program %s: not a whole number from 0 to %d, an application's program index",
                                      value, SNX_PROGRAMS_MAX - 1);
                 asked = (int)n;
-            } else if (!strcmp(arg, "--jit-cache")) {
-                jit_cache = value;
-            } else if (!strcmp(arg, "--layout")) {
+            } else
                 layout = value;
-            } else {
-                g_settings.unit_size = (int)number(value, INT_MAX);
-                if (!g_settings.unit_size)
-                    return snx_error("--chunk %s: not a whole number of instructions from 1", value);
-            }
         } else if (!input)
             input = arg;
         else if (!name)

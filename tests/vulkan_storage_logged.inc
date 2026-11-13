@@ -61,6 +61,7 @@ static int check_storage_logged(void) {
     gmmu_map(gva, cpu, 0x3000);
     vk_lock();
     vk_finish();
+    results_copied(cpu, 0x3000); /* a logged result lands its log's bytes */
     u32 validation = g_vk_validation_messages;
     VkBuffer out, out2;
     u64 at, at2;

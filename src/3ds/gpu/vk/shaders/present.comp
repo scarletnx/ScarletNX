@@ -20,7 +20,7 @@ layout(push_constant) uniform Present {
 #include "pixel.glsl"
 void main() {
     uint column = gl_GlobalInvocationID.x, row = gl_GlobalInvocationID.y; // the framebuffer's pixel, row
-    uint s = scale != 0u ? scale : 1u;
+    uint s = max(scale, 1u);
     if (from_target != 0u) {
         uint image_width = width * s, image_height = height * s;
         if (column >= image_width || row >= image_height) return;

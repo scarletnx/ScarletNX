@@ -22,13 +22,14 @@ and the wide letters a language shows, and nearest-neighbor
 integer scaling; its words are English or a language compiled into it ([Languages](#languages)). An item of a menu
 has an icon beside its name, 16x16 in the font's stroke (`src/gui/icons.hex`): the menu's, the groups of the Settings
 (each its own) and their rows that open a screen or do something (the others keep its columns), a game's box's actions,
-the setup's pages, the game's menu's and the keys of F1's box. A choice with no way back is framed and written in the
-theme's `failure` colour, and filled with it in focus: Delete All, a game's Clean Cache, a GPU driver's Remove, Clear
-Crash List, and the Delete, Remove or Clear of the question each asks first. One that wants care is so in its `warning`
-colour: Settings > App's Clean Old Settings, Move Old Files and Reset to Defaults, Folders' Reset to Defaults and a
-row's Reset to Default and Remove from Library, Freedreno Settings' Clear All, the setup's Move All, Clean Now and
-Overwrite (users.ini kept as `users.ini.old`), and the questions' Abort, Exit with a run going, Use Anyway, Run Anyway,
-Reset, Clean and Move. No font files or localization packages are needed.
+the setup's pages, the choices of a game whose file is not found, the game's menu's and the keys of F1's box. A choice
+with no way back is framed and written in the theme's `failure` colour, and filled with it in focus: Delete All, a
+game's Clean Cache, a GPU driver's Remove, Clear Crash List, and the Delete, Remove or Clear of the question each asks
+first. One that wants care is so in its `warning` colour: Settings > App's Clean Old Settings, Move Old Files and Reset
+to Defaults, Folders' Reset to Defaults and a row's Reset to Default and Remove from Library, a game's Remove from
+Games, Freedreno Settings' Clear All, the setup's Move All, Clean Now and Overwrite (users.ini kept as
+`users.ini.old`), and the questions' Abort, Exit with a run going, Use Anyway, Run Anyway, Reset, Clean and Move. No
+font files or localization packages are needed.
 
 ```sh
 ./build/scarletnx
@@ -85,8 +86,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   focus again. A tap on a finished run returns to the menu, and one on a
   running run's ESC line aborts it. Android's back button is ESC. On a screen packed with
   pixels (a phone) the text takes the display's own scale, as far as the menu still fits.
-- **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK**, **Load GBA/MultiBoot ROM** and
-  **Load Android APK/XAPK** open a screen as the keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
+- **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK**, **Load GBA/MultiBoot ROM**,
+  **Load NDS ROM** and **Load Android APK/XAPK** open a screen as the keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
   picker (on Linux the desktop's, else zenity's). Dropping a file on the window and Ctrl+V with
   a path work too. On the Switch's, **P** (on a phone a tap on *Folder* at the foot, on a pad Y) opens the system's
   folder picker instead, for an extracted game's folder (`exefs/` with its `main`, beside its `romfs/`), which plays as
@@ -117,6 +118,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Settings > GBA > **Covers** on *Box art (libretro-thumbnails)* (`gba_covers=boxart`, off by default), each make that
   ends well downloads the game's box into its folder (`icon.png`), which its rows show; a ROM with no box there keeps
   Wimsy, and its row says why ([Settings](settings.md#gba)). See [AGB board](../platforms/agb/README.md).
+- **Load NDS ROM** uses `scarletnx-nds` on a card image (`.nds`), with the menu's data folder as its `--data`: it
+  makes the game's folder of `recompiled/` (named after the image's file), compiles the game's code ahead of time
+  on the first run, which takes a few minutes, and plays it in a window with both screens. See
+  [DS](../platforms/nds/README.md).
 - **Load Android APK/XAPK** uses `scarletnx-android` on an `.apk`, `.xapk` or `.apks` file, with no other argument.
   The driver installs a bundle of split APKs itself. The app runs as it is, as a Linux program does: nothing is
   compiled first, and its recent row shows at once. An APK in a games or dumps folder shows in Games, and Enter runs
@@ -171,9 +176,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   back to App, and **Folders**, every folder on one screen, the whole of it, a box a group:
   - **App Folders**: **Data** (`recompiled/`, `dumps/`, `themes/` and `prod.keys`), **Settings**, shown only
     (`app.ini`, which names the others, and each game's `.ini`: `XDG_CONFIG_HOME` moves it, a portable copy keeps its
-    own), **Logs** (the games' logs and `threads.txt`, `recent.txt`, `last-run.log`, `last-recompile.log` and the
-    launcher's `scarletnx-console-<date>.log` and `scarletnx-error.log`), **Caches** (the recompile's
-    `units/`, the shader caches, the dumps' icons, and Extractions by default) and **Extractions**;
+    own), **Logs** (the games' logs and `threads.txt`, `recent.txt`, `removed.txt`, `last-run.log`,
+    `last-recompile.log` and the launcher's `scarletnx-console-<date>.log` and `scarletnx-error.log`), **Caches** (the
+    recompile's `units/`, the shader caches, the dumps' icons, and Extractions by default) and **Extractions**;
   - **Dumps Library**: its **Main**, the data folder's `dumps/` (with its subfolders, going with the data folder), then its
     **Extra** folders, whose dumps Games lists, and **Add a folder**. Main's box, or Del on it, has **Remove from
     Library**, which asks first: Games no longer lists it and ScarletNX no longer makes it as it starts, its files kept;
@@ -208,7 +213,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   from its zip. A
   game whose package does not load stops, saying why, and so does one whose package lists no Vulkan device, a driver
   for another GPU. Under them, **edenprobe Mode** (Quick, the default:
-  `notime cpu graphics`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
+  `notime cpu graphics hooks`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
   [edenprobe](../dev/edenprobe.md)'s probes as a game with the GPU driver picked here, from `probe/edenprobe.nro` of the
   Logs folder, in a data folder of its own there (`probe/.scarletnx`: none of your settings, saves or users) with the
   default settings, and the build as edenprobe's machine (`machine=scarletnx@<commit>`), whose ban list then skips the
@@ -304,7 +309,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   nothing of a dump is extracted: the game's `.ini` records the dump, the recompile reads the ExeFS from it, and the
   game reads its ExeFS and RomFS out of the dump on the fly, decrypting them as it reads ([Usage](usage.md)). A CIA
   is read the same way. On, a dump is extracted as before, into the game's folder or with *Extract to tmpfs* into
-  tmpfs, which implies it. Turning it off again takes a game's extraction away on its next run.
+  tmpfs, which implies it; an extracted game's folder is read in place all the same, and copied only into tmpfs. Turning it off again takes a game's extraction away on its next run.
   **Optimization level** (0, 1, 2, 3 or z, 2 by default) is LLVM's level for the game's code, **AOT threads** the
   threads compiling it (0, the default Auto: the machine's cores with a quarter left free, the physical cores
   where it says them, at most 75%, so a recompile does not make the computer stutter), **Unit cache limit** the GB
@@ -450,7 +455,7 @@ two; left out, none), `probe_mode` (edenprobe Mode's `quick`, the default, or `f
   The focus moves between them and the games in one ring, and the tips show the focused
   game's path. Choosing one runs it again with the driver it was
   loaded with and the options the menu has now; a game whose file is gone leaves the
-  list instead. The list is kept in `recent.txt`, beside `last-run.log`, at the root of the menu's state
+  list instead, and a made game whose file to play from is not found asks first, as in the list (below). The list is kept in `recent.txt`, beside `last-run.log`, at the root of the menu's state
   folder ([Usage](usage.md#folders)): `$XDG_STATE_HOME/scarletnx/` on Linux, by default
   `~/.local/state/scarletnx/`, `%APPDATA%\scarletnx\state\` on Windows, or the data folder's `state/` on Android. An
   older version's, in a `gui/` folder, stay where they are. A line per
@@ -539,9 +544,10 @@ cached behind the game, and then the game, and the app comes back with neither (
 game runs in). Its box says what ran and when it started, how it ended as the system says it (on Android 11 and later
 the reason Android keeps for the game's process, `Android stopped it: low memory (org.scarletnx:game, status 0,
 importance 100 foreground)`, the question then `Android stopped <game>`; elsewhere what it may have been), the memory
-that process held (`PSS 4.9 GB, RSS 1.9 GB`, `?` for what the system does not say) and the game's log. Run edenprobe
-left before its summary has **Continue**, in focus, which goes on with it from its journal once the setup is done, as
-GPU Drivers' Continue does, and **Not Now**, which leaves it to that row; one that reached its summary shows its counts
+that process held (`PSS 4.9 GB, RSS 1.9 GB`, `?` for what the system does not say, `none recorded by Android` where
+it measured none, as for a process killed by a signal) and the game's log. Run edenprobe
+left before its summary has **Continue**, in focus, which goes on with it from its journal at once, as GPU Drivers'
+Continue does, the setup's other pages coming back after its run, and **Not Now**, which leaves it to that row; one that reached its summary shows its counts
 in a box instead. A game has OK alone, and the page comes only for one that did not end with an exit, its own mark left
 beside its log: one that ended with an exit, or that still runs, is said in the launcher log alone. The page writes
 nothing to `setup.ini`, the setup's Skip comes on the page after it, and `--no-setup` leaves it out. When the menu
@@ -603,6 +609,30 @@ cannot be read is named and the others still listed.
   first (Tab), the tips say it is ready, and Enter then plays it. One a game was made from already, in `recompiled/` or
   a recompiled folder of the Library, asks first, naming the game and its folder: **Play**, in focus, plays it,
   **Recompile** recompiles it where it is, as R does, and Back does neither.
+- A made game whose file to play from is not there is greyed and says `(file not found)` after its name, in the list
+  and in Recent Games, and the side box names the file (*Not found:* and its path), as each driver plays it: a Switch
+  game read from its dump in place (`source=` in its `.ini`; its ExeFS not extracted into its `<name>_data`, or its
+  RomFS there cut by a stopped extraction or copy, or not there, which its next start extracts again from that dump:
+  a game whose `.ini` names none says *Not found: the dump or folder its RomFS is extracted from*), a GBA
+  game, whose ROM its driver reads at every run, a 3DS game (`source=` in the `.ini` of its folder), unless its folder
+  holds its extraction (`exheader.bin`) or the extractions' folder a copy the 3DS driver decrypted
+  (`3ds/<name>.decrypted.<extension>`), and a Vita game made from a dumped game's folder, which its `app/` links. A Vita
+  game extracted from a VPK keeps its own `app/`. Opening it, as Enter, L and R do, asks first in a box of its own that
+  names the file whole: **Keep**, in focus, and Back leave it as it is; **Locate...** opens the system's file picker
+  (its folder picker for an extracted game's folder and a Vita game's), and what is picked, a dump (`.nsp`, `.xci`) or
+  an extracted game's folder for a Switch game, a ROM (`.gba`) for a GBA game, a `.cia`, `.cci`, `.3ds` or `.cxi` for a
+  3DS game, is what the game plays from from then on, in its `.ini`; a dumped Vita game's folder (with its
+  `sce_sys/param.sfo`) gets the game's `app/` linked to it, and its update beside it (`patch/<title ID>`) its `patch/`.
+  Another kind is refused, the message naming it and the file the game keeps; so is another game's, by its title: a
+  Switch dump's as its driver reads it with the keys (the `title.ini` of its icon, asked for and waited on when it has
+  none yet), an extracted game's from its `main.npdm`, a 3DS game's from its CIA's TMD, its cartridge image's or its
+  NCCH's header (alone, in a bundle or in a z3ds file, the product code beside it where it is in the clear) and a Vita
+  game's `TITLE_ID`, each against the title ID the game's folder is named by; a GBA ROM by its hash against the one
+  the game's map names (`<name>_code.map`), its header's game code and title said. The message says both, and one
+  whose title does not read is refused, saying why. **Remove from Games**, in the warning
+  colour, takes the game off Games and Recent Games, its folder, settings and saves kept, until the file is back where
+  the game names it or a run of it records it anew. The games taken off are kept in `removed.txt`, beside
+  `recent.txt`, a program a line.
 - **L** (on Android a tap on *Play* at the foot, on a pad the right stick) plays the game in focus, recent or on the
   page, as Enter does, but a game with updates, DLCs, mods or cheats beside it plays as its box's **Play** does, with
   the ones the box keeps for it (its `.ini`'s `addons=`, `mods_off=` and `cheats_off=`), without showing the box or
@@ -820,6 +850,17 @@ the themes shipped beside the launcher, which it finds when the launcher started
 `[run]` colours, `layout`, `texture` and `progress`, and its loading title. A theme that is no longer there draws as
 YoRHa. So does a runtime built without the launcher, which on Android is every runtime: the launcher is the app's
 own library there, and the game's runtime can't ask it.
+
+The same screen shows when a collection's program starts another (a game picked in the collection's menu;
+`transition_screen = 1`, the default), in the new program's window from a quarter second after it opens until the game
+draws. Its head says the game's name and `(Program N)` for a program other than the collection's menu; the game's
+cover sits in its top right corner; and what is known of the program shows as done steps: PROGRAM (its number of the
+application's), STARTED BY, USER (with the user's picture, and whether the program before kept that user for it),
+VERSION (and the update's), DLC, HANDED OVER (what the program before left for it), GPU, TITLE ID and BUILD, each `?`
+when it is not known. The shaders' steps follow when there are some to prepare, and the bar shows their progress, full
+when there is none. While no window is open between the two programs, the launcher's run screen shows the same page in
+the run look, whatever the theme's `layout`, with what the launcher knows (not HANDED OVER, which only the program
+reads), and RECOMPILE: the recompile of a program not made, with its bar, or that none is needed.
 
 A theme is also a folder holding a `theme.ini`, the folder's name its id, in
 `themes/` in that same folder or in `themes/` beside the GUI; the first one found
@@ -1067,6 +1108,9 @@ self-copy safety, cancellation, and the bright-red overwrite warning. Setup test
 page of a first start in a home of their own and check what each writes (a portable copy, the language, the folders,
 the keys, the first user) and refuses, users.ini kept or overwritten, the fixed uid kept for its saves, a notice
 alone after an update, `--no-setup`, and the question where `options-dialog` puts it.
+Pixel order tests (`gui_pixel_order`) draw every database Mii's picture, square and round, Wimsy's, a 3DS icon and
+the covers on the renderer and check each shows its source's colours, which a big-endian host's byte order swaps
+where a picture's bytes and its format disagree.
 Language tests cover a catalog's search in either byte order, catalogs cut or pointing out of themselves, the language
 Auto picks from the system's locales, English where a language has none, the Language row and `app.ini`'s key, and
 the script's refusals; they use a language of their own, `tests/po/xx.po`. Glyph tests cover the Latin, the titles'

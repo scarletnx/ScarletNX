@@ -219,7 +219,7 @@ static int rs_landed(void) {
    buffers begun, the same submissions made. The release began one in the slot the present was leaving, which stayed
    open when the frames came round to it (commands past the recording thread) until the present submitted it as well */
 static int rs_present(int release, u32* begun, u64* submits) {
-    VkOwnRes* owner = vk_own_res_new(256);
+    VkOwnRes* owner = vk_own_res_new(256, VK_OWN_BY_DRAW);
     CHECK(owner);
     CHECK(!rs_result(owner, release, NULL, NULL));
     CHECK(!rs_record());
@@ -263,14 +263,14 @@ typedef struct {
 } RsHeld;
 static VkOwnRes* rs_owner(RsHeld* h, u64 size) {
     for (;;) {
-        VkOwnRes* r = vk_own_res_new(size);
+        VkOwnRes* r = vk_own_res_new(size, VK_OWN_BY_DRAW);
         if (!r || r->size == size) return r;
         if (h->n == sizeof h->held / sizeof h->held[0]) return NULL;
         h->held[h->n++] = r;
     }
 }
 static int rs_pooled(RsHeld* h, VkBuffer buf, u64 size) {
-    VkOwnRes* r = vk_own_res_new(size);
+    VkOwnRes* r = vk_own_res_new(size, VK_OWN_BY_DRAW);
     int pooled = r && r->buf == buf;
     if (r && h->n < sizeof h->held / sizeof h->held[0]) h->held[h->n++] = r;
     return pooled;

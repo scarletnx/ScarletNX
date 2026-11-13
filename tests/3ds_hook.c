@@ -3,7 +3,8 @@
 /* The hooks on the SDK's IPC stubs (aot/hook.c): a stub found in the text runs to its return without the SVC and the
    TLS command buffer, its reply the one svcSendSyncRequest gets; a transport error takes the stub's own error path; a
    request to srv: is declined with nothing changed, the static buffer descriptors the stub set put back; and a stub
-   whose TLS pointer escapes, or that calls out, is left to the SVC. */
+   whose TLS pointer escapes, or that calls out, is left to the SVC, as is a function that makes the SVC on a request
+   whose header it didn't store (libctru's svcSendSyncRequest, the only SVC 0x32 of a libctru homebrew). */
 #include "3ds/aot/ctr_hook.h"
 #include "3ds/ipc/ctr_ipc.h"
 #include "3ds/runtime/internal.h"
@@ -130,6 +131,52 @@ int main(void) {
     stub(CODE + 0x700, 0xe3a00703u); /* mov r0, #0xc0000 */
     put_enqueue(CODE + 0x800, CODE + 0x600, CODE + 0x700);
     put_enqueue(CODE + 0x900, CODE + 0x600, CODE);
+    /* libctru's svcSendSyncRequest after the BX LR of the function before it: its caller filled the TLS buffer */
+    put(CODE + 0xa00, (const uint32_t[]){0xe12fff1eu, 0xef000032u, 0xe12fff1eu}, 3);
+    /* a stub that stores its header on one path only */
+    const uint32_t one_path[] = {
+        0xe92d4010u, /* push {r4, lr} */
+        0xee1d4f70u, /* mrc p15, 0, r4, c13, c0, 3 */
+        0xe3510000u, /* cmp r1, #0 */
+        0x0a000000u, /* beq past the store */
+        0xe5840080u, /* str r0, [r4, #0x80] */
+        0xe59f0008u, /* ldr r0, [pc, #8] */
+        0xe5900000u, /* ldr r0, [r0] */
+        0xef000032u, /* svc 0x32 */
+        0xe8bd8010u, /* pop {r4, pc} */
+        HANDLE_GLOBAL,
+    };
+    put(CODE + 0xb00, one_path, sizeof one_path / sizeof *one_path);
+    /* one that stores its header and its argument with one STRD: its own request */
+    const uint32_t pair[] = {
+        0xe92d4010u, /* push {r4, lr} */
+        0xee1d4f70u, /* mrc p15, 0, r4, c13, c0, 3 */
+        0xe3a02815u, /* mov r2, #0x150000 */
+        0xe3a03001u, /* mov r3, #1 */
+        0xe1c428f0u, /* strd r2, r3, [r4, #0x80] */
+        0xe59f0008u, /* ldr r0, [pc, #8] */
+        0xe5900000u, /* ldr r0, [r0] */
+        0xef000032u, /* svc 0x32 */
+        0xe8bd8010u, /* pop {r4, pc} */
+        HANDLE_GLOBAL,
+    };
+    put(CODE + 0xc00, pair, sizeof pair / sizeof *pair);
+    /* one whose error path, which stores nothing, meets the request's path past the SVC: its own request still */
+    const uint32_t early[] = {
+        0xe92d4010u, /* push {r4, lr} */
+        0xee1d4f70u, /* mrc p15, 0, r4, c13, c0, 3 */
+        0xe3510000u, /* cmp r1, #0 */
+        0x03e00000u, /* mvneq r0, #0 */
+        0x0a000004u, /* beq to the pop */
+        0xe3a00815u, /* mov r0, #0x150000 */
+        0xe5840080u, /* str r0, [r4, #0x80] */
+        0xe59f0008u, /* ldr r0, [pc, #8] */
+        0xe5900000u, /* ldr r0, [r0] */
+        0xef000032u, /* svc 0x32 */
+        0xe8bd8010u, /* pop {r4, pc} */
+        HANDLE_GLOBAL,
+    };
+    put(CODE + 0xd00, early, sizeof early / sizeof *early);
     SnxCtrImage image = ctr_image(code, sizeof code, 0x1000);
     image.segment[0].bytes = 0x1000;
     SnxCtrProcess* p = snx_ctr_process_new(&image, SNX_CTR_OLD);
@@ -138,12 +185,14 @@ int main(void) {
     SnxCtrHooks* hooks = snx_ctr_hooks_find(p, summary, sizeof summary);
     assert(hooks);
     printf("%s\n", summary);
-    assert(!strcmp(summary, "5 of the 7 IPC stubs in the code run without the SVC, and the GX command queue's "
+    assert(!strcmp(summary, "7 of the 11 IPC stubs in the code run without the SVC, and the GX command queue's "
                             "enqueue runs each command at once"));
     assert(snx_ctr_hook_at(hooks, CODE + 0x800) && !snx_ctr_hook_at(hooks, CODE + 0x900));
-    assert(snx_ctr_hook_at(hooks, CODE) && snx_ctr_hook_at(hooks, CODE + 0x100) && snx_ctr_hook_at(hooks, CODE + 0x200) &&
-           snx_ctr_hook_at(hooks, CODE + 0x300));
+    assert(snx_ctr_hook_at(hooks, CODE) && snx_ctr_hook_at(hooks, CODE + 0x100) &&
+           snx_ctr_hook_at(hooks, CODE + 0x200) && snx_ctr_hook_at(hooks, CODE + 0x300) &&
+           snx_ctr_hook_at(hooks, CODE + 0xc00) && snx_ctr_hook_at(hooks, CODE + 0xd00));
     assert(!snx_ctr_hook_at(hooks, CODE + 0x400) && !snx_ctr_hook_at(hooks, CODE + 0x500));
+    assert(!snx_ctr_hook_at(hooks, CODE + 0xa04) && !snx_ctr_hook_at(hooks, CODE + 0xb00));
     assert(!snx_ctr_hook_at(hooks, CODE + 4) && !snx_ctr_hook_at(hooks, CODE + 0x2000));
 
     /* the reply the SVC gets, for the hook's to match */

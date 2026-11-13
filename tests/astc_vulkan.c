@@ -173,6 +173,7 @@ int vk_dslayout_arrays(VkDescriptorSetLayout layout) {
     (void)layout;
     return 0;
 }
+u32 vk_texture_array_elements(void) { return 0; }
 void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
     (void)array_sets;
     sz[0] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * 2};
@@ -260,16 +261,8 @@ static void init(void) {
     VK_OK(vkCreateDevice(g_vk.phys, &ci, NULL, &g_vk.dev));
     volkLoadDevice(g_vk.dev);
     vkGetDeviceQueue(g_vk.dev, family, 0, &g_vk.gfx);
-    VmaVulkanFunctions funcs = {.vkGetInstanceProcAddr = vkGetInstanceProcAddr,
-                                .vkGetDeviceProcAddr = vkGetDeviceProcAddr};
     vk_mem_init(sparse_queue);
-    VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys,
-                                 .device = g_vk.dev,
-                                 .instance = g_vk.instance,
-                                 .preferredLargeHeapBlockSize = g_vk.alloc_cap < (256ull << 20) ? g_vk.alloc_cap : 0,
-                                 .vulkanApiVersion = VK_API_VERSION_1_3,
-                                 .pVulkanFunctions = &funcs};
-    VK_OK(vmaCreateAllocator(&ai, &g_vk.vma));
+    vk_devmem_init(0);
     vk_cmd_init();
 }
 
@@ -807,8 +800,8 @@ static void bench(u32 w, u32 h, int runs, BenchSource src) {
                                 .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
         if (!vk_image_create(&ii, &t.img, &t.mem)) fatal("cannot create a %ux%u bench image\n", w, h);
         if (t.mem) {
-            VmaAllocationInfo allocation;
-            vmaGetAllocationInfo(g_vk.vma, t.mem, &allocation);
+            DevMemInfo allocation;
+            vk_devmem_info(t.mem, &allocation);
             printf("BENCH memory %s %ux%u: %llu bytes\n", fi ? "BC7" : "RGBA8", w, h,
                    (unsigned long long)allocation.size);
         } else {
@@ -1470,7 +1463,7 @@ static void bc_native_case(void) {
                                 .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
         VkImage src, dst;
-        VmaAllocation src_mem, dst_mem;
+        DevMem src_mem, dst_mem;
         if (!vk_image_create(&ii, &src, &src_mem)) fatal("cannot create a native BCn image\n");
         ii.format = VK_FORMAT_R32G32B32A32_SFLOAT;
         if (!vk_image_create(&ii, &dst, &dst_mem)) fatal("cannot create an RGBA32F image\n");
@@ -1630,7 +1623,7 @@ static void etc2_native(int kind, const u8* etc, u32 w, u32 h) {
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
     VkImage src, dst;
-    VmaAllocation src_mem, dst_mem;
+    DevMem src_mem, dst_mem;
     if (!vk_image_create(&ii, &src, &src_mem)) fatal("cannot create an ETC2 image\n");
     ii.format = VK_FORMAT_R32G32B32A32_SFLOAT;
     if (!vk_image_create(&ii, &dst, &dst_mem)) fatal("cannot create an RGBA32F image\n");

@@ -245,8 +245,11 @@ void mx_draw_blend(const u32* r, DsBlend* b) {
 }
 
 /* ANTI_ALIAS_ALPHA_CONTROL (0x54F, Eden's anti_alias_alpha_control): alpha to coverage in bit 0, alpha to one in
-   bit 4. The sample mask stays all samples: the 3D engine's per-pixel masks of a 2x2 quad (0x3EF-0x3F2) aren't
-   taken */
+   bit 4. SET_MULTISAMPLE_SAMPLE_MASK (0x3EF-0x3F2): the samples each pixel of a 2x2 quad may write, 16 bits each.
+   Vulkan's mask is one for every pixel: the four as one when they agree (deko3d writes one to all four), else the
+   samples any of them leaves (r3d_draw says so). All 16 is ~0, a mask of every sample. Under raster samples of its
+   own (SET_MULTISAMPLE_RASTER_ENABLE, 0x3ED) the mask is over those, which the renderer doesn't draw (#1895): it stays
+   all, so such a draw still covers its pixels */
 void mx_draw_raster_key(const u32* r, DsRasterKey* k) {
     u32 clip = (r[0x64F] >> 11) & 7;
     memset(k, 0, sizeof *k);
@@ -257,7 +260,9 @@ void mx_draw_raster_key(const u32* r, DsRasterKey* k) {
     k->alpha_to_coverage = r[0x54F] & 1;
     k->alpha_to_one = (r[0x54F] >> 4) & 1;
     k->patch_vertices = r[0x373];
-    k->sample_mask = ~0u;
+    u32 mask = 0;
+    for (u32 i = 0; i < 4; i++) mask |= r[MAXWELL3D_SAMPLE_MASK + i] & 0xFFFF;
+    k->sample_mask = mask == 0xFFFF || (r[MAXWELL3D_RASTER_SAMPLES_ENABLE] & 1) ? ~0u : mask;
     /* CONSERVATIVE_RASTER (0x452). Its dilation goes to a GPC register through a macro of NVN's (0x418800), which no
        3D register shows: taken as none */
     k->conservative = r[MAXWELL3D_CONSERVATIVE_RASTER] & 1;
@@ -333,12 +338,14 @@ void mx_draw_index(const u32* r, DsIndex* x) {
 
 /* CLEAR_SURFACE's word v: bit 0 depth, 1 stencil, 2-5 the RGBA mask, 6-9 the color slot, 10-20 the layer. The
    color at 0x360-0x363, depth 0x364, stencil 0x368 */
-/* SET_POINT_SIZE (0x546), the size of a point whose program writes none, which a channel starts at 1 (reset_3d); and
-   SET_DEPTH_BOUNDS_TEST (0x66F) with its bounds (0x3E7, 0x3E8), which keeps a sample whose depth buffer holds a value
-   inside them, both ends included */
+/* SET_POINT_SIZE (0x546), the size of a point whose program writes none, and the tessellation levels (0x0C9-0x0CE)
+   of a patch drawn without a control program, which a channel starts at 1 (reset_3d); and SET_DEPTH_BOUNDS_TEST
+   (0x66F) with its bounds (0x3E7, 0x3E8), which keeps a sample whose depth buffer holds a value inside them, both ends
+   included */
 void mx_draw_fixed(const u32* r, DrawCall* dc) {
-    dc->state_flags |= DS_DRAW_POINT_SIZE;
+    dc->state_flags |= DS_DRAW_POINT_SIZE | DS_DRAW_TESS_LEVELS;
     memcpy(&dc->point_size, &r[MAXWELL3D_POINT_SIZE], sizeof dc->point_size);
+    memcpy(dc->tess_levels, &r[MAXWELL3D_TESS_LEVELS], sizeof dc->tess_levels);
     if (r[MAXWELL3D_DEPTH_BOUNDS_ENABLE] & 1) {
         dc->state_flags |= DS_DRAW_DEPTH_BOUNDS;
         memcpy(dc->depth_bounds, &r[MAXWELL3D_DEPTH_BOUNDS], sizeof dc->depth_bounds);

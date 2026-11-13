@@ -128,7 +128,7 @@ def main():
         gradients = tuple(Path(directory) / f'gradient_{i}.spv' for i in range(3))
         textures = tuple(Path(directory) / f'texture_{i}.spv' for i in range(6))
         arithmetic = Path(directory) / 'arithmetic.spv'
-        beyond = tuple(Path(directory) / f'beyond_{i}.spv' for i in range(3))
+        beyond = tuple(Path(directory) / f'beyond_{i}.spv' for i in range(4))
         attributes = tuple(Path(directory) / f'attribute_{i}.spv' for i in range(7))
         pexit = Path(directory) / 'pexit.spv'
         subprocess.run(
@@ -168,8 +168,10 @@ def main():
             *(Path(directory) / f'surface_op_{i}.spv' for i in range(7)),
             *(Path(directory) / f'legacy_{i}.spv' for i in range(4)),
             *(Path(directory) / f'rect_{i}.spv' for i in range(3)),
+            *(Path(directory) / f'minmax_{i}.spv' for i in range(2)),
             *(Path(directory) / f'window_{i}.spv' for i in range(3)),
-            *(Path(directory) / f'lone_lane_{i}.spv' for i in range(9)),
+            *(Path(directory) / f'lone_lane_{i}.spv' for i in range(12)),
+            *(Path(directory) / f'quad_read_{i}.spv' for i in range(3)),
         )
         subprocess.run([args.regressions, directory], check=True)
         for fixture in (path, vertex, abs_fragment, stack_fragment, subgroup, *fixtures):

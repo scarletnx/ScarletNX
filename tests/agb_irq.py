@@ -129,7 +129,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('runner')
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix='snx-agb-irq-') as temporary:
+    # Windows can still hold the runner open after a passed run (WinError 32 on its removal)
+    with tempfile.TemporaryDirectory(prefix='snx-agb-irq-', ignore_cleanup_errors=True) as temporary:
         every_second, out = waits(args.runner, CODE, pathlib.Path(temporary) / 'flags')
         if not 28 <= every_second <= 31:
             sys.exit('agb_irq: VBlankIntrWait returned %d times in 60 frames, not about 30\n%s' % (every_second, out))

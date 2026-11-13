@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/gpu/vk/window.h"
+#include "common/utilities/sdl_desktop.h"
 #include "common/utilities/common.h"
 #include <SDL3/SDL_vulkan.h>
 #include <stdio.h>
@@ -27,6 +28,7 @@ bool snx_vk_window_open(const char* app, const char* title, int width, int heigh
     }
 #endif
     /* a window first: a display server and a Vulkan surface make it the output */
+    snx_sdl_desktop_hints();
     if (SDL_InitSubSystem(SDL_INIT_VIDEO))
         out->window = SDL_CreateWindow(title, width, height, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
     /* the loader's entry points, from the library SDL loads: the driver named above on Apple, so the instance and the

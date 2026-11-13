@@ -91,7 +91,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('runner')
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix='snx-agb-reset-') as temporary:
+    # Windows can still hold the runner open after a passed run (WinError 32 on its removal)
+    with tempfile.TemporaryDirectory(prefix='snx-agb-reset-', ignore_cleanup_errors=True) as temporary:
         work = pathlib.Path(temporary)
         (work / 'reset.gba').write_bytes(rom())
         run = subprocess.run(

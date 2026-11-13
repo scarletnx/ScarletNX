@@ -1,12 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* pl.c's shared fonts with no fonts/ in the game folder: the stand-ins compiled in (cmake/shared_fonts.cmake), the
-   Noto Sans JP, SC, TC and KR subsets for slots 0 to 4 and the button glyphs in slot 5, each a TrueType font behind
-   the obfuscated header the SDK decodes its size from, its private-use block blanked; and a game folder's .ttf taken
-   over the stand-in for its slot */
-#include "nx/hle/services/pl.c"
+/* The native nn::pl's shared fonts (src/nx/nn/pl.c) with no fonts/ in the game folder: the stand-ins compiled in
+   (cmake/shared_fonts.cmake), the Noto Sans JP, SC, TC and KR subsets for slots 0 to 4 and the button glyphs in slot 5,
+   each a TrueType font behind the obfuscated header the SDK decodes its size from, its private-use block blanked; a
+   game folder's .ttf taken over the stand-in for its slot; and the hooks' answers on a stand-in CPU, the fonts at the
+   address their memory was mapped at, and a 32-bit game's through its table's adapters (pl.hook's a32) */
+#include "nx/nn/pl.c"
+#include "hle/hook/hooks.hook.inc" /* pl.hook's table, and a 32-bit game's */
 #include "nx/hle/hle.c"
 #include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
+#include <setjmp.h>
+#include <stdarg.h>
 
 static unsigned checks;
 #define CHECK(x)                                                                                                       \
@@ -28,28 +32,6 @@ u8* fs_read_file(const char* path, u64* size) {
     *size = sizeof g_korean;
     return d;
 }
-/* what the IPC side of pl.c reaches: the handle a command gives (g_handle: 0 as the kernel's table gives when full),
-   the copy handles of a reply, and how many commands went to the stub that answers an undeclared one */
-u8* g_mem;
-#define SHM_HANDLE 0x1234u
-static u32 g_handle = SHM_HANDLE, g_copied[2], g_ncopied, g_undeclared;
-u32 h_new(KObj* o) {
-    (void)o;
-    return g_handle;
-}
-int ipc_bad_objects(SvcObj* o, IpcCtx* c) {
-    (void)o, (void)c;
-    return 0;
-}
-int ipc_bad_request(SvcObj* o, IpcCtx* c) {
-    (void)o, (void)c;
-    return 0;
-}
-int stub_ok(SvcObj* o, IpcCtx* c) {
-    (void)o, (void)c;
-    g_undeclared++;
-    return 0;
-}
 void kobj_ref(KObj* o) { (void)o; }
 KShmem* kshmem_new(u64 size, const char* name) {
     (void)size, (void)name;
@@ -57,16 +39,6 @@ KShmem* kshmem_new(u64 size, const char* name) {
 }
 u8* kshmem_ptr(KShmem* s) {
     (void)s;
-    return NULL;
-}
-void out_copy_h(IpcCtx* c, u32 h) {
-    (void)c;
-    if (g_ncopied < 2) g_copied[g_ncopied] = h;
-    g_ncopied++;
-}
-void svc_register(const char* name, SvcCtor ctor) { (void)name, (void)ctor; }
-SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
-    (void)name, (void)dispatch;
     return NULL;
 }
 void pm_init(PMutex* m) { (void)m; }
@@ -154,70 +126,126 @@ static void covered(u32 off, u32 size, int own_glyphs) {
     else CHECK(cmap_lookup(shm + off, size, 'A') != 0);
 }
 
-/* a command of the service's with n bytes of raw data, through its dispatcher: the reply is in c */
-static void command(IpcCtx* c, u32 cmd, const u8* raw, u32 n) {
-    static u8 data[8];
-    CHECK(n <= sizeof data);
-    memset(c, 0, sizeof *c);
-    memset(data, 0, sizeof data);
-    if (n) memcpy(data, raw, n);
-    c->cmd = cmd;
-    c->raw = data;
-    c->raw_size = n;
-    g_ncopied = g_undeclared = 0;
-    CHECK(nn_pl_detail_IPlatformServiceManager_dispatch(NULL, c) == 0);
-    CHECK(!g_undeclared); /* a command the service declares */
-}
-static u32 command_u32(u32 cmd, u32 font_type) {
-    IpcCtx c;
-    u8 raw[4];
-    snx_st_le32(raw, font_type);
-    command(&c, cmd, raw, sizeof raw);
-    CHECK(c.out_size == 4);
-    return snx_ld_le32(c.out);
-}
-/* the built-in fonts of the later SDK: 2000 gives the shared memory of the fonts and its size, 2010 where a font is
-   in it, the same font at the same place as 3 and 2 give for its type; a type past the six is not found. The reply's
-   bytes are where the SDK reads them: found at 0, then the font's 12 bytes at 4, its offset at 8 of the reply and its
-   size at 12 */
-static void built_in_fonts(void) {
-    IpcCtx c;
-    u32 type;
-    command(&c, 2000, NULL, 0);
-    CHECK(c.out_size == 4 && snx_ld_le32(c.out) == sizeof shm);
-    CHECK(g_ncopied == 1 && g_copied[0] == SHM_HANDLE);
-    for (type = 0; type < 8; type++) {
-        static const u8 none[0x10];
-        u8 raw[2];
-        raw[0] = (u8)type, raw[1] = 0;
-        command(&c, 2010, raw, sizeof raw);
-        CHECK(c.out_size == 0x10 && !g_ncopied);
-        if (type >= 6) {
-            CHECK(!memcmp(c.out, none, sizeof none));
-            continue;
-        }
-        CHECK(c.out[0] == 1 && !memcmp(c.out + 1, none, 3)); /* found, and the padding up to the font's bytes */
-        CHECK(snx_ld_le32(c.out + 4) == 1);
-        CHECK(snx_ld_le32(c.out + 8) == command_u32(3, type) && snx_ld_le32(c.out + 8) != 0);
-        CHECK(snx_ld_le32(c.out + 12) == command_u32(2, type) && snx_ld_le32(c.out + 12) != 0);
-        CHECK(truetype(snx_ld_le32(c.out + 8)));
-    }
+/* the kernel's mapping of the fonts' memory: once, at one address */
+#define FONTS_BASE 0x6000000ull
+static unsigned g_maps;
+static int g_no_pages; /* the game's address space has no room for the fonts */
+u64 kshmem_map_free(KShmem* s, u32 perm) {
+    (void)s;
+    CHECK(perm == PERM_R);
+    if (g_no_pages) return 0;
+    g_maps++;
+    return FONTS_BASE;
 }
 
-/* the handle table full: the two commands that give the shared memory's handle answer OutOfHandles, not success with
-   handle 0, and 2000's reply carries no size */
-static void full_handle_table(void) {
-    IpcCtx c = {0};
-    u32 handle = 7;
-    g_handle = 0;
-    CHECK((u32)nn_pl_detail_IPlatformServiceManager_GetSharedMemoryNativeHandle(NULL, &handle) ==
-              SNX_RC_SVC_OUT_OF_HANDLES &&
-          handle == 0);
-    c.cmd = 2000;
-    g_ncopied = 0;
-    CHECK((u32)nn_pl_detail_IPlatformServiceManager_dispatch(NULL, &c) == SNX_RC_SVC_OUT_OF_HANDLES);
-    CHECK(g_ncopied == 1 && g_copied[0] == 0 && c.out_size == 0);
-    g_handle = SHM_HANDLE;
+/* fatal: the game stops, which one check expects; its message is kept for it */
+static jmp_buf g_stopped;
+static int g_expect_stop;
+static char g_stop_text[160];
+void fatal(const char* fmt, ...) {
+    va_list a;
+    va_start(a, fmt);
+    vsnprintf(g_stop_text, sizeof g_stop_text, fmt, a);
+    va_end(a);
+    if (!g_expect_stop) {
+        fprintf(stderr, "%s\n", g_stop_text);
+        exit(1);
+    }
+    longjmp(g_stopped, 1);
+}
+
+static CPU cpu;
+static u8 mem[0x1000];
+CPU* hook_a32_cpu(SnxArmCPU* arm) { return (void)arm, &cpu; }
+/* a 32-bit game's adapter for symbol, which its table has */
+static SnxArmBlock a32(const char* symbol) {
+    for (int i = 0; i < HOOK32_COUNT; i++)
+        if (!strcmp(hook32_symbol[i], symbol)) return hook32_fn[i];
+    fprintf(stderr, "%s is not in a 32-bit game's table\n", symbol);
+    exit(1);
+}
+
+/* the hooks: every font loaded, its size and its address in the mapped memory, and the lists of all six */
+static void hooks(void) {
+    CPU* c = &cpu;
+    cpu.mem = mem;
+    /* no room to map the fonts: the game stops, and the message gives the size asked for */
+    g_no_pages = g_expect_stop = 1;
+    if (!setjmp(g_stopped)) {
+        nnpl_get_shared_font_address(c, 0);
+        CHECK(!"the game went on with no fonts mapped");
+    }
+    g_no_pages = g_expect_stop = 0;
+    CHECK(strstr(g_stop_text, "0x1100000") && !g_maps && !g_hle.pl.base);
+    for (i32 t = 0; t < 6; t++) {
+        nnpl_request_shared_font_load(c, t);
+        CHECK(nnpl_get_shared_font_load_state(c, t) == 1);
+        CHECK(nnpl_get_shared_font_size(c, t) == g_hle.pl.font_size[t]);
+        CHECK(nnpl_get_shared_font_address(c, t) == FONTS_BASE + g_hle.pl.font_off[t]);
+    }
+    CHECK(g_maps == 1 && g_hle.pl.base == FONTS_BASE);
+    CHECK(nnpl_get_shared_font_size(c, 6) == 0 && nnpl_get_shared_font_size(c, -1) == 0);
+    /* a built-in font is the shared font of its type: the flags, its address in the mapped memory and its size, the
+       bytes between left; a type with no font answers false and leaves the caller's structure */
+    for (u8 t = 0; t < 6; t++) {
+        memset(mem, 0xee, 0x40);
+        CHECK(nnpl_get_built_in_font_data(c, 0x10, t, 1) == 1 && mem[0x10] == 1 && mem[0x11] == 0 && mem[0x12] == 0xee);
+        CHECK(snx_ld_le64(mem + 0x18) == FONTS_BASE + g_hle.pl.font_off[t]);
+        CHECK(snx_ld_le64(mem + 0x20) == g_hle.pl.font_size[t] && mem[0x28] == 0xee);
+    }
+    memset(mem, 0xee, 0x40);
+    CHECK(nnpl_get_built_in_font_data(c, 0x10, 6, 0) == 0 && nnpl_get_built_in_font_data(c, 0x10, 0xff, 0) == 0);
+    CHECK(mem[0x10] == 0xee && mem[0x18] == 0xee && g_maps == 1);
+    /* the three arrays, as many entries as max allows, and the count of all six */
+    memset(mem, 0xee, sizeof mem);
+    CHECK(nnpl_get_shared_font_in_order_of_priority(c, 0x10, 0x20, 0x100, 0x200, 4, 0x53552d6e65ull));
+    CHECK(snx_ld_le32(mem + 0x10) == 6);
+    for (u32 i = 0; i < 4; i++) {
+        CHECK(snx_ld_le32(mem + 0x20 + 4 * i) == i);
+        CHECK(snx_ld_le64(mem + 0x100 + 8 * i) == FONTS_BASE + g_hle.pl.font_off[i]);
+        CHECK(snx_ld_le64(mem + 0x200 + 8 * i) == g_hle.pl.font_size[i]);
+    }
+    CHECK(mem[0x20 + 16] == 0xee && mem[0x100 + 32] == 0xee); /* the fifth entry is past max */
+    CHECK(nnpl_get_shared_font_in_order_of_priority_for_system(c, 0x10, 0x20, 0x100, 0x200, 7, 0));
+    CHECK(snx_ld_le32(mem + 0x10) == 6 && snx_ld_le32(mem + 0x20 + 20) == 5 && mem[0x20 + 24] == 0xee);
+    /* SharedFontData: the type, the address and the size, its padding left */
+    memset(mem, 0xee, sizeof mem);
+    CHECK(nnpl_get_shared_font(c, 0x10, 0x400, 6, 0));
+    for (u32 i = 0; i < 6; i++) {
+        const u8* d = mem + 0x400 + 0x18 * i;
+        CHECK(snx_ld_le32(d) == i && snx_ld_le32(d + 4) == 0xeeeeeeeeu);
+        CHECK(snx_ld_le64(d + 8) == FONTS_BASE + g_hle.pl.font_off[i] && snx_ld_le64(d + 0x10) == g_hle.pl.font_size[i]);
+    }
+    CHECK(nnpl_get_shared_font(c, 0x10, 0x400, 0, 0) && snx_ld_le32(mem + 0x10) == 6); /* no entry, the count */
+    CHECK(g_maps == 1);
+    /* a 32-bit game: the five functions its SDK has. A font's size and address in r0 alone, r1 as it was */
+    {
+        static SnxArmCPU a;
+        a.mem = mem, a.mem_size = sizeof mem;
+        CHECK(HOOK32_COUNT == 5);
+        /* each for the one 32-bit SDK read, 0.12.16, alone: a 32-bit game of another SDK has no hook here */
+        for (int i = 0; i < HOOK32_COUNT; i++)
+            CHECK(hook32_key[i] == HOOK_SDK && hook32_lo[i] == 0 && hook32_hi[i] == 0x10000);
+        a.r[0] = 3, a.r[1] = 0x1234, a.r[14] = 0x800;
+        a32("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE")(&a);
+        CHECK(a.r[0] == g_hle.pl.font_size[3] && a.r[1] == 0x1234 && a.r[15] == 0x800);
+        a.r[0] = 3;
+        a32("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE")(&a);
+        CHECK(a.r[0] == FONTS_BASE + g_hle.pl.font_off[3] && a.r[1] == 0x1234);
+        /* the list: max is the first word of the stack, and each address and size takes 4 bytes of its array */
+        memset(mem, 0xee, sizeof mem);
+        snx_st_le32(mem + 0xf00, 3);
+        a.r[0] = 0x10, a.r[1] = 0x20, a.r[2] = 0x100, a.r[3] = 0x200, a.r[13] = 0xf00;
+        a32("_ZN2nn2pl30GetSharedFontInOrderOfPriorityEPiPNS0_14SharedFontTypeEPPKvPjiNS_8settings12LanguageCodeE")(&a);
+        CHECK(a.r[0] == 1 && snx_ld_le32(mem + 0x10) == 6);
+        for (u32 i = 0; i < 3; i++) {
+            CHECK(snx_ld_le32(mem + 0x20 + 4 * i) == i);
+            CHECK(snx_ld_le32(mem + 0x100 + 4 * i) == FONTS_BASE + g_hle.pl.font_off[i]);
+            CHECK(snx_ld_le32(mem + 0x200 + 4 * i) == g_hle.pl.font_size[i]);
+        }
+        CHECK(mem[0x20 + 12] == 0xee && mem[0x100 + 12] == 0xee &&
+              mem[0x200 + 12] == 0xee); /* the fourth is past max */
+    }
 }
 
 int main(void) {
@@ -241,7 +269,7 @@ int main(void) {
     covered(g_hle.pl.font_off[3], g_hle.pl.font_size[3], 0);
     covered(g_hle.pl.font_off[4], g_hle.pl.font_size[4], 0);
     covered(g_hle.pl.font_off[5], g_hle.pl.font_size[5], 1);
-    built_in_fonts();
+    hooks();
 
     memset(shm, 0, sizeof shm);
     memset(&g_hle.pl, 0, sizeof g_hle.pl);
@@ -251,7 +279,6 @@ int main(void) {
     CHECK(g_hle.pl.font_off[2] == g_hle.pl.font_off[1]);
     CHECK(g_hle.pl.font_size[1] > snx_font_chinese_simplified_size);
     CHECK(g_hle.pl.font_size[0] > snx_font_japanese_size && g_hle.pl.font_size[3] > snx_font_chinese_traditional_size);
-    full_handle_table();
     printf("pl_fonts: %u checks passed\n", checks);
     return 0;
 }

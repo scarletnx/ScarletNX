@@ -65,7 +65,7 @@ void main() {
     if (x >= width || t >= height) return;
     uint y = height - 1u - t;
     uint tile = tile_bytes(format);
-    uint base = offset + (y / 8u) * tile * (width / 8u) + (x / 8u) * tile;
+    uint base = offset + ((y / 8u) * (width / 8u) + x / 8u) * tile;
     uint fx = x % 8u, fy = y % 8u;
     uvec4 c = uvec4(0u);
     if (format == TEX_ETC1 || format == TEX_ETC1A4) {
@@ -82,7 +82,7 @@ void main() {
         c.rgb = etc1(word(at), word(at + 4u), fx, fy);
     } else {
         const uint sizes[12] = uint[](4u, 3u, 2u, 2u, 2u, 2u, 2u, 1u, 1u, 1u, 0u, 0u);
-        uint index = morton(fx, fy, 1u), n = sizes[format];
+        uint index = tile_index(fx, fy), n = sizes[format];
         uint at = base + (n != 0u ? index * n : index / 2u);
         uint b0 = uint(SRC[at]);
         switch (format) {

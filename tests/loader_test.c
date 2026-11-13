@@ -815,8 +815,26 @@ static void test_dump(const char* root) {
     free(text);
     free(path);
     CHECK(snx_dump_program(scratch, out, error, sizeof error) == -1 && strstr(error, "exefs/main"));
+    { /* a program loaded already (an XCI's or NSP's, read in place) gives the same dump */
+        SnxProgram program;
+        unsigned char* again;
+        size_t again_size;
+        char *out2 = snx_path_join(scratch, "dump2"), *index = snx_path_join(out, "modules.txt"),
+             *index2 = snx_path_join(out2, "modules.txt");
+        CHECK(!snx_load_program(root, &program, error, sizeof error));
+        CHECK(!snx_dump_loaded(&program, out2, error, sizeof error));
+        snx_free_program(&program);
+        text = snx_read_file(index, &size);
+        again = snx_read_file(index2, &again_size);
+        CHECK(text && again && size == again_size && !memcmp(text, again, size));
+        free(text);
+        free(again);
+        free(index);
+        free(index2);
+        free(out2);
+    }
     free(out);
-    puts("PASS the module dump for tools");
+    puts("PASS the module dump for tools, of a program to load and of one loaded");
 }
 
 static void test_program(void) {
@@ -1178,17 +1196,17 @@ static void test_exports(void) {
     CHECK(!snx_module_bound(&modules[0], exports, count, 0, &bound, &bound_count, &own, &sites, error, sizeof error));
     CHECK(bound_count == 2 && own == 1 && sites == 2);
     if (bound_count == 2) {
-        CHECK(bound[0].at == a + 0xac && bound[0].target == b + 0xe8 && !bound[0].game);
-        CHECK(bound[1].at == a + 0xcc && bound[1].target == a + 0xe0 && !bound[1].game);
+        CHECK(bound[0].at == a + 0xac && bound[0].target == b + 0xe8 && !bound[0].game && !bound[0].guard);
+        CHECK(bound[1].at == a + 0xcc && bound[1].target == a + 0xe0 && !bound[1].game && !bound[1].guard);
     }
     free(bound);
     /* as an NRO the program maps: its own functions whatever the program defines, and the program's as the game's */
     CHECK(!snx_module_bound(&modules[0], exports, count, 1, &bound, &bound_count, &own, &sites, error, sizeof error));
     CHECK(bound_count == 3 && own == 2 && sites == 2);
     if (bound_count == 3) {
-        CHECK(bound[0].at == a + 0xac && bound[0].target == b + 0xe8 && bound[0].game == 1);
-        CHECK(bound[1].at == a + 0xbc && bound[1].target == a + 0xe4 && !bound[1].game);
-        CHECK(bound[2].at == a + 0xcc && bound[2].target == a + 0xe0 && !bound[2].game);
+        CHECK(bound[0].at == a + 0xac && bound[0].target == b + 0xe8 && bound[0].game == 1 && !bound[0].guard);
+        CHECK(bound[1].at == a + 0xbc && bound[1].target == a + 0xe4 && !bound[1].game && bound[1].guard == 1);
+        CHECK(bound[2].at == a + 0xcc && bound[2].target == a + 0xe0 && !bound[2].game && bound[2].guard == 1);
     }
     free(bound);
     /* nothing to bind to, and a module without a PLT: none */

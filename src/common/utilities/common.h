@@ -91,6 +91,9 @@ int snx_link_file(const char* src, const char* dst);
 /* link a symbolic link to target, which it names as given: nonzero when it cannot be made (on Windows, without the
    right to make one: developer mode or an administrator) */
 int snx_symlink(const char* target, const char* link);
+/* what the symbolic link at path names, as it was made (a junction's too on Windows), there or not: owned, NULL for
+   anything that is no link, or one the system does not let read */
+char* snx_link_target(const char* path);
 /* on Apple, the Vulkan driver a program's own folders carry, for SDL to load instead of the system's loader: the
    MoltenVK beside it (a game's runtime copy), the app bundle's Frameworks, or the framework in an iOS app. NULL
    elsewhere, and when its folders have none (the system's loader, which the app's own bundle finds by itself) */
@@ -328,6 +331,13 @@ int snx_abort_requested(void);
 /* the memory this process is charged for now, in bytes: its footprint on macOS and iOS, its resident set on Linux,
    Android and FreeBSD, its working set on Windows; 0 where the system does not tell */
 SnxU64 snx_footprint(void);
+/* A recompile's progress, a line for each unit, the form every driver prints and the launcher reads
+   (gui/steps.c): unit `done` of `count` finished, "  compiled block 3/40: code_002, <label> (4.2 s)", or "(cached)" */
+void snx_report_unit(size_t done, size_t count, const char* name, const char* label, int cached, double seconds);
+/* snx_report_unit's line, into out: the unit's place, name and label, then cached, or its time and the memory the
+   process holds when used tells it (0: the system does not) */
+void snx_unit_line(char* out, size_t size, size_t done, size_t count, const char* name, const char* label, int cached,
+                   double seconds, SnxU64 used);
 /* the processor time this process has used, every thread's together, in ns; 0 where the system does not tell */
 SnxU64 snx_process_cpu_ns(void);
 #define SNX_DEBUGGER_NAME 32 /* a debugger's name, as snx_debugger gives it, with its NUL */
@@ -430,6 +440,10 @@ FILE* snx_fopen(const char* path, const char* mode);
    in the other one too */
 #define SNX_CONSOLE_LOG "scarletnx-console.log"
 #define SNX_ERROR_LOG   "scarletnx-error.log"
+/* The runtime's exit status when its recompiled code was made from another copy of the game: the driver recompiles
+   the game from its dump and plays it again. Nothing else exits with it */
+#define SNX_EXIT_REMAKE 75
+
 /* The line a game's runtime prints as it makes the game's log, on the console and in the log, before the log's
    absolute path: the launcher's Share Log takes the last run's game log from it, whatever the program is named */
 #define SNX_LOG_WRITTEN "log: written to "

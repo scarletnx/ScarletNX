@@ -332,8 +332,25 @@ static void raster_key(void) {
     mx_draw_raster_key(r, &k);
     CHECK(k.polygon == DS_POLYGON_LINE && k.provoking_last == 0);
     r[0x36B] = 0x1B02;
+    for (u32 i = 0; i < 4; i++) r[0x3EF + i] = 0xFFFF; /* every sample, as a channel starts */
     mx_draw_raster_key(r, &k);
     CHECK(k.polygon == DS_POLYGON_FILL && !k.alpha_to_coverage && !k.alpha_to_one && k.sample_mask == ~0u);
+    /* 0x3EF-0x3F2: a mask for each pixel of a 2x2 quad, 16 bits each; one when they agree, else the samples any
+       leaves */
+    for (u32 i = 0; i < 4; i++) r[0x3EF + i] = 0x10002; /* sample 1, and a bit past the 16 */
+    mx_draw_raster_key(r, &k);
+    CHECK(k.sample_mask == 2);
+    for (u32 i = 0; i < 4; i++) r[0x3EF + i] = 1u << i;
+    mx_draw_raster_key(r, &k);
+    CHECK(k.sample_mask == 0xF);
+    for (u32 i = 0; i < 4; i++) r[0x3EF + i] = 0;
+    mx_draw_raster_key(r, &k);
+    CHECK(k.sample_mask == 0);
+    r[0x3ED] = 1; /* raster samples of their own, which the mask is over: it stays all */
+    mx_draw_raster_key(r, &k);
+    CHECK(k.sample_mask == ~0u);
+    r[0x3ED] = 0;
+    for (u32 i = 0; i < 4; i++) r[0x3EF + i] = 0xFFFF;
     /* 0x54F: alpha to coverage in bit 0, alpha to one in bit 4 */
     r[0x54F] = 0x11;
     mx_draw_raster_key(r, &k);
@@ -548,20 +565,24 @@ static void dispatch_state(void) {
     CHECK(!dx_cb_inline(&x, 1).bytes && !dx_cb_inline(&x, DX_CBUFS).bytes);
 }
 
-/* the state a draw carries beside DsState (DrawCall.state_flags): SET_POINT_SIZE (0x546), a float, every draw; the
-   depth bounds (0x3E7 near, 0x3E8 far) while SET_DEPTH_BOUNDS_TEST (0x66F) bit 0 is on */
+/* the state a draw carries beside DsState (DrawCall.state_flags): SET_POINT_SIZE (0x546), a float, and the
+   tessellation levels (0x0C9-0x0CC outer, 0x0CD-0x0CE inner), every draw; the depth bounds (0x3E7 near, 0x3E8 far)
+   while SET_DEPTH_BOUNDS_TEST (0x66F) bit 0 is on */
 static void fixed_state(void) {
     u32 r[REGS] = {0};
     DrawCall dc = {0};
     setf(r, 0x546, 4.0f);
     setf(r, 0x3E7, 0.25f);
     setf(r, 0x3E8, 0.75f);
+    for (u32 i = 0; i < 6; i++) setf(r, 0x0C9 + i, 3.0f + (float)i);
     mx_draw_fixed(r, &dc);
-    CHECK(dc.state_flags == DS_DRAW_POINT_SIZE && dc.point_size == 4.0f);
+    CHECK(dc.state_flags == (DS_DRAW_POINT_SIZE | DS_DRAW_TESS_LEVELS) && dc.point_size == 4.0f);
+    CHECK(dc.tess_levels[0] == 3.0f && dc.tess_levels[3] == 6.0f && dc.tess_levels[4] == 7.0f &&
+          dc.tess_levels[5] == 8.0f);
     r[0x66F] = 1;
     dc = (DrawCall){0};
     mx_draw_fixed(r, &dc);
-    CHECK(dc.state_flags == (DS_DRAW_POINT_SIZE | DS_DRAW_DEPTH_BOUNDS));
+    CHECK(dc.state_flags == (DS_DRAW_POINT_SIZE | DS_DRAW_TESS_LEVELS | DS_DRAW_DEPTH_BOUNDS));
     CHECK(dc.depth_bounds[0] == 0.25f && dc.depth_bounds[1] == 0.75f);
 }
 

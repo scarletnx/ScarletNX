@@ -19,7 +19,7 @@ layout(push_constant) uniform Target {
 #include "pixel.glsl"
 void main() {
     uint x = gl_GlobalInvocationID.x, r = gl_GlobalInvocationID.y;
-    uint s = scale != 0u ? scale : 1u;
+    uint s = max(scale, 1u);
     if (store != 0u) {
         if (x >= width || r >= height) return;
         uint y = flip != 0u ? r : height - 1u - r, bpp = pixel_bytes(format);

@@ -22,6 +22,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
@@ -31,6 +32,7 @@
 #include "nx/gpu/vk/descriptor_key.h"
 #include "nx/gpu/vk/indexed_handles.h"
 #include "nx/gpu/texture/texconv_modes.glsl"
+#include "nx/gpu/texture/descriptor.h"
 #include "nx/gpu/vk/draw_texture.h"
 #include "nx/gpu/vk/draw_texture_shader.h"
 #include "nx/gpu/vk/lookup_ways.h"
@@ -38,6 +40,7 @@
 #include "nx/gpu/vk/tess_passthrough.h"
 #include "nx/gpu/vk/varying_geometry.h"
 #include "nx/gpu/vk/quad_indices.h"
+#include "nx/gpu/vk/polygon_edges.h"
 #include "nx/gpu/vk/xfb_stores.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/internal_spv.h"
@@ -377,7 +380,7 @@ static int render_begin_empty(void) {
    captures as many vertices as it has, in whole primitives, while they fit in every buffer */
 static struct {
     VkBuffer buf;
-    VmaAllocation mem;
+    DevMem mem;
     u32 end[GPU_CHANNELS * 2][4];
 } g_xfb;
 static int xfb_counters(void) {
@@ -387,9 +390,9 @@ static int xfb_counters(void) {
                               .usage = VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT |
                                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &g_xfb.buf, &g_xfb.mem, NULL))) return 0;
-    vk_mem_track(g_xfb.mem);
+    DevMemWant aci = {.at = DM_DEVICE};
+    if (!VK_OK(vk_buffer_create(&bci, &aci, &g_xfb.buf, &g_xfb.mem, NULL))) return 0;
+    vk_mem_track(g_xfb.mem, VK_OWN_XFB);
     return 1;
 }
 static u64 xfb_counter_offset(u32 owner) { return ((u64)(owner & 0x7fffffff) + (owner >> 31 ? GPU_CHANNELS : 0)) * 16; }
@@ -1224,6 +1227,8 @@ typedef struct {
     Surf* t;
     int rt;   /* t is the render target itself, read whole */
     u32 used; /* g_tex_memo.use when last found or kept: the way used longest ago makes room */
+    /* vk_gfx_image_adds() + 1 when no storage image but its texture's own was pending over its texture: 0 unknown */
+    u64 img_adds;
 } TexMemo;
 /* by the handle, in sets of TEX_MEMO_WAYS ways. With one way in 4096 slots, a handle that shared its slot with another
    one the draws used too put it out each time: 9% of an Ounce game's lookups in a race and 22% of a Switch game's in
@@ -1259,6 +1264,16 @@ static int tex_memo_unpended(TexMemo* m, u64 tic_at, u64 tsc_at, u64 adds) {
         return 0;
     m->adds = adds;
     return 1;
+}
+/* a storage image other than m's texture itself pending over its memory. Asked of each texture of each draw while one
+   is pending anywhere: a released one is pending across the frame (vk_gfx_image_put_aside), and the lookups of every
+   way cost one game 0.45 ms a frame. Unchanged entries keep the answer, as the pending results do (tex_memo_unpended) */
+static int tex_memo_image_pending(TexMemo* m) {
+    u64 adds = vk_gfx_image_adds() + 1;
+    if (m->img_adds == adds) return 0;
+    if (vk_gfx_image_pending_besides(m->t->gva, vk_surf_guest_size(m->t), m->t)) return 1;
+    m->img_adds = adds;
+    return 0;
 }
 static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     const DsBindings* b = &ds->bind;
@@ -1301,9 +1316,11 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     }
     /* a pending storage image over this texture's own memory invalidates it; one elsewhere does not. The global flag
        alone dropped every memo once any fragment program's storage image was pending, so a race that draws its
-       targets and writes storage images in the same frame re-resolved every texture of every draw */
+       targets and writes storage images in the same frame re-resolved every texture of every draw. Nor does the
+       texture's own surface written as a storage image: it samples those writes where they are. A released one stays
+       pending across the frame (vk_gfx_image_put_aside), and one game's draws resolved it again 57 times a frame */
     if (m && m->surf_epoch == vk_surf_epoch_at(m->t_gva) && tex_memo_unwritten(m, tic_at, tsc_at, epoch, now) &&
-        !(g_gfx_img_any && vk_gfx_image_pending(m->t->gva, vk_surf_guest_size(m->t))) &&
+        !(g_gfx_img_any && tex_memo_image_pending(m)) &&
         tex_memo_unpended(m, tic_at, tsc_at, adds) &&
         (m->gw == gw || (!gpu_mem_dirty_since(m->gw, tic_at, 32) && !gpu_mem_dirty_since(m->gw, tsc_at, 32)))) {
         m->gw = gw;
@@ -1349,6 +1366,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         memcpy(m->tic, x->tic, sizeof m->tic);
         memcpy(m->tsc, x->tsc, sizeof m->tsc);
         m->t = x->t;
+        m->img_adds = 0;
     }
 }
 
@@ -1495,6 +1513,7 @@ typedef struct {
     u64 advanced_blend;
     u32 advanced_mask, config;
     u32 rm, rs, df, unfed;
+    u32 minmax;          /* the textures the program takes a min/max reduction of itself (vk_shader_get_ex's minmax) */
     u32 prim;            /* the generics a mesh program writes per primitive (ShaderInfo.prim_mask), as fs0's key */
     u8 query[SH_MAXTEX]; /* the dimensions of the textures only a TXQ names (ShaderInfo.tex_query_hint) */
     int queried;         /* any of them */
@@ -1545,6 +1564,26 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
         int num = vk_tex_num(res[i].tic, res[i].t);
         if (num) fk->tm |= 1ull << i;
         if (num == 2) fk->ts |= 1ull << i;
+        /* a min/max reduction the device's sampler can't take, which the program takes of the slot's texels: not of
+           an indexed slot's (whose texture changes within the draw), nor where a texture only a TXQ names may number
+           the variant's slots otherwise (fs_slot_res), nor past the key's room */
+        if (st->flags & SNX_TEX_INDEXED) continue;
+        int reduce = vk_tex_minmax_in_program(res[i].tsc, res[i].tic, res[i].t, vk_tex_view_type(st), num);
+        const char* which = reduce == 1 ? "least" : "greatest";
+        if (reduce && (i >= SH_MINMAX_SLOTS || s0->si.tex_query_mask)) {
+            if (i >= SH_MINMAX_SLOTS)
+                LOG_LIMIT(1,
+                          "vulkan: a fragment program's texture %d averages the texels its sampler asks the %s of: "
+                          "the program takes them itself for its first %d textures\n",
+                          i, which, SH_MINMAX_SLOTS);
+            else
+                LOG_LIMIT(1,
+                          "vulkan: a fragment program's texture %d averages the texels its sampler asks the %s of: "
+                          "a program with a texture only a TXQ names doesn't take them itself\n",
+                          i, which);
+            continue;
+        }
+        if (reduce) fk->minmax |= (1u | (reduce == 2 ? 1u << SH_MINMAX_SLOTS : 0)) << i;
     }
     fk->rm &= s0->si.sph[18] ? 0xFF : 0;
     fk->rs &= fk->rm;
@@ -1554,11 +1593,12 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
 }
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
 static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) {
-    if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed && !fk->rect && !fk->queried && !fk->advanced_blend && !fk->advanced_mask && !fk->config)
+    if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed && !fk->rect && !fk->queried && !fk->advanced_blend &&
+        !fk->advanced_mask && !fk->config && !fk->minmax)
         return s0;
     return vk_shader_get_ex(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, fk->prim, fk->dm, fk->df, fk->unfed,
                             fk->rect, NULL, fk->queried ? fk->query : NULL, fk->advanced_blend, fk->advanced_mask,
-                            fk->rm >> 8, fk->rs >> 8, fk->config);
+                            fk->rm >> 8, fk->rs >> 8, fk->config, fk->minmax);
 }
 /* whether slots a and b read their handles from the same words (tex_handle) */
 static int tex_same_handle(const ShTex* a, const ShTex* b) {
@@ -1610,7 +1650,14 @@ static VkComponentMapping tex_map(const Surf* t, const u32* tic) {
             m[k] = m[k] == VK_COMPONENT_SWIZZLE_R   ? VK_COMPONENT_SWIZZLE_B
                    : m[k] == VK_COMPONENT_SWIZZLE_B ? VK_COMPONENT_SWIZZLE_R
                                                     : m[k];
-    if (t->f.depth) { /* depth in r, g and b, alpha 1 */
+    if (t->f.depth && t->f.stencil && vk_tic_reads_stencil(tic)) { /* the stencil view's R where the header names
+                                                                        the stencil, its constants, nought for depth */
+        u32 sc = vk_tic_stencil_component(tic[0] & 0x7F);
+        for (int k = 0; k < 4; k++) {
+            u32 c = (tic[0] >> (19 + 3 * k)) & 7;
+            m[k] = c == sc ? VK_COMPONENT_SWIZZLE_R : c >= 6 ? VK_COMPONENT_SWIZZLE_ONE : VK_COMPONENT_SWIZZLE_ZERO;
+        }
+    } else if (t->f.depth) { /* depth in r, g and b, alpha 1 */
         m[0] = m[1] = m[2] = VK_COMPONENT_SWIZZLE_R;
         m[3] = VK_COMPONENT_SWIZZLE_ONE;
     }
@@ -1634,10 +1681,103 @@ static int tex_map_identity(VkComponentMapping map) {
            (map.a == VK_COMPONENT_SWIZZLE_IDENTITY || map.a == VK_COMPONENT_SWIZZLE_A);
 }
 
+/* Why a min/max reduction can't go to the device's sampler for t's view of the header tic, with the sampler tsc: 0
+   when it can, 1 when the device has no min/max filter, 2 when the view's format (*f) has none on it, 3 when it takes
+   no swizzle with it (filterMinmaxImageComponentMapping) and the view has one: Vulkan needs r to be the identity, and
+   the other components are poison, which a shader that reads them (a depth view's g, b and a) would get */
+static int minmax_unsampled(const Surf* t, const u32* tic, const u32* tsc, VkFormat* f) {
+    *f = vk_tex_view_format(t, tex_srgb(tic, tsc));
+    return !g_vk.feat12.samplerFilterMinmax                                 ? 1
+           : !vk_format_minmax_filter(*f)                                   ? 2
+           : !g_vk.has_minmax_swizzle && !tex_map_identity(tex_map(t, tic)) ? 3
+                                                                            : 0;
+}
+/* The line for a sampler asking for which (the least or the greatest) of its texels that the device's sampler can't
+   take (why: minmax_unsampled's, of format f) and that averages them: also why the program doesn't take them itself
+   (not: what it can't take them of; stage: its stage), when that is so */
+static void minmax_averaged(int why, VkFormat f, const char* which, const char* not, const char* stage) {
+    char in_program[160] = "";
+    if (not)
+        snprintf(in_program, sizeof in_program,
+                 " (a %s program takes them itself from a 2D texture's base level filtered linearly, not of %s)", stage,
+                 not);
+    if (why == 1)
+        LOG_LIMIT(1,
+                  "vulkan: the device has no min/max filter: a sampler asking for the %s of its texels averages "
+                  "them%s\n",
+                  which, in_program);
+    else if (why == 2)
+        LOG_LIMIT(1,
+                  "vulkan: VkFormat %d has no min/max filter on this device: a sampler asking for the %s of its "
+                  "texels averages them%s\n",
+                  (int)f, which, in_program);
+    else
+        LOG_LIMIT(1,
+                  "vulkan: the device's min/max filter takes no swizzle: a sampler asking for the %s of the "
+                  "texels of a swizzled view averages them%s\n",
+                  which, in_program);
+}
+/* The min/max reduction a sample through the sampler tsc (decoded: sf) of a texture of levels levels viewed as want
+   takes in a program of stage (ST_FS or ST_CS) instead of the device's sampler, which can't (why: minmax_unsampled's,
+   format f): 1 the least, 2 the greatest (shader_minmax_sample). The program takes the 2x2 texels of the base level's
+   bilinear footprint: for a 2D view or an array of them, of one level or sampled without a mip filter under a
+   minimum LOD of a half (vk_sampler's base level), filtered linearly both ways and without anisotropy. Otherwise 0:
+   the sampler averages, and the log says why */
+static int minmax_program(const TscFields* sf, u32 levels, VkImageViewType want, int why, VkFormat f, int stage) {
+    const char* not= want != VK_IMAGE_VIEW_TYPE_2D && want != VK_IMAGE_VIEW_TYPE_2D_ARRAY ? "a cube or a 3D texture"
+                     : sf->mag != 2 || sf->min != 2                       ? "a filter linear one way only"
+                     : sf->anisotropy                                     ? "anisotropic filtering"
+                     : levels > 1 && (sf->mip != 1 || sf->min_lod >= 128) ? "a texture of several levels"
+                                                                          : NULL;
+    if (!not) return (int)sf->reduction;
+    minmax_averaged(why, f, sf->reduction == 1 ? "least" : "greatest", not, stage == ST_CS ? "compute" : "fragment");
+    return 0;
+}
+/* whether a sample through the sampler tsc (decoded into sf) asks for a min/max reduction that changes what it reads:
+   filtered linearly some way, no compare, of a float texture (num 0) */
+static int minmax_asked(const u32* tsc, int num, TscFields* sf) {
+    tsc_decode(tsc, sf);
+    return (sf->reduction == 1 || sf->reduction == 2) && !num && !sf->compare &&
+           (sf->mag == 2 || sf->min == 2 || sf->mip == 3);
+}
+/* A fragment program's: the reduction the sampler tsc asks of the texture t (header tic, viewed as want, of number
+   type num) that the program takes itself (minmax_program), 0 when it asks for none, the device's sampler takes it,
+   or no texture is bound */
+int vk_tex_minmax_in_program(const u32* tsc, const u32* tic, const Surf* t, VkImageViewType want, int num) {
+    TscFields sf;
+    VkFormat f;
+    int why;
+    if (!t || !minmax_asked(tsc, num, &sf) || !(why = minmax_unsampled(t, tic, tsc, &f))) return 0;
+    return minmax_program(&sf, t->levels, want, why, f, ST_FS);
+}
+/* A compute program's, by the header tic alone (compute keys a program before its textures are resolved): the
+   levels and format of the view the header makes, and the device's filter. A view's swizzle is the bind's to find
+   (vk_tex_bind_sampler, which then averages, as without this) */
+int vk_tex_minmax_in_program_tic(const u32* tsc, const u32* tic, VkImageViewType want, int num) {
+    TscFields sf;
+    TicFields tf;
+    if (!minmax_asked(tsc, num, &sf)) return 0;
+    tic_decode(tic, &tf);
+    VkFormat f = vk_tic_format(tic[0], tex_srgb(tic, tsc)).vk;
+    int why = !g_vk.feat12.samplerFilterMinmax ? 1 : !vk_format_minmax_filter(f) ? 2 : 0;
+    if (!why) return 0;
+    /* the levels texture.c's view of the header shows: base level to max level, one for pitch-linear memory */
+    u32 levels = tf.levels;
+    if (tf.header == 2)
+        levels = 1;
+    else if (tf.base_level < tf.levels && (tf.base_level || tf.max_level + 1 != tf.levels)) {
+        levels = tf.max_level >= tf.base_level ? tf.max_level - tf.base_level + 1 : 1;
+        if (levels > tf.levels - tf.base_level) levels = tf.levels - tf.base_level;
+    }
+    return minmax_program(&sf, levels, want, why, f, ST_CS);
+}
+
 /* the texture (NULL for none) and the view type say whether anisotropy= may raise its filtering: 2D textures with
-   mipmaps only, as the yuzu family and Ryujinx do (a cube, a 3D LUT or a copied target keeps the game's) */
+   mipmaps only, as the yuzu family and Ryujinx do (a cube, a 3D LUT or a copied target keeps the game's). in_program:
+   the program takes the min/max reduction the sampler asks for itself (vk_tex_minmax_in_program), which the sampler
+   then leaves to it */
 VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, int num, const Surf* tex,
-                              VkImageViewType want) {
+                              VkImageViewType want, int in_program) {
     u32 tc[8];
     memcpy(tc, tsc, sizeof tc);
     /* the compare mode is what the shader declares */
@@ -1651,15 +1791,16 @@ VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, i
         tc[1] = (tc[1] & ~0xF3u) | 0x11u | (mip == 3 ? 2u : mip) << 6;
     }
     /* a min/max reduction (tc[1] bits 10-11) stays where it can change what the filter reads and Vulkan takes it: a
-       linear filter (magnification, minification or mip) of a view whose format has the min/max filter on this device,
-       without a compare, which Vulkan's samplers only average. Where the device takes no swizzle with it
-       (filterMinmaxImageComponentMapping), the view's mapping must be the identity too: Vulkan needs r to be, and the
-       other components are poison, which a shader that reads them (a depth view's g, b and a) would get. Elsewhere the
-       sampler averages: the null texture's texels are all alike, and nearest filters read one */
+       linear filter (magnification, minification or mip) of a view whose format has the min/max filter on this device
+       (minmax_unsampled), without a compare, which Vulkan's samplers only average. Elsewhere the sampler averages: the
+       null texture's texels are all alike, nearest filters read one, and a program that takes the reduction itself
+       gathers the texels */
     u32 reduction = (tc[1] >> 10) & 3;
     if (reduction == 1 || reduction == 2) {
         int linear = (tc[1] & 3) == 2 || ((tc[1] >> 4) & 3) == 2 || ((tc[1] >> 6) & 3) == 3;
         const char* which = reduction == 1 ? "least" : "greatest";
+        VkFormat f;
+        int why;
         if (!tex || num || !linear)
             tc[1] &= ~(3u << 10);
         else if ((tc[0] >> 9) & 1) {
@@ -1668,27 +1809,9 @@ VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, i
                       "don't take: they average them\n",
                       which);
             tc[1] &= ~(3u << 10);
-        } else if (!g_vk.feat12.samplerFilterMinmax) {
-            LOG_LIMIT(1,
-                      "vulkan: the device has no min/max filter: a sampler asking for the %s of its texels "
-                      "averages them\n",
-                      which);
+        } else if ((why = minmax_unsampled(tex, tic, tsc, &f)) != 0) {
+            if (!in_program) minmax_averaged(why, f, which, NULL, NULL);
             tc[1] &= ~(3u << 10);
-        } else {
-            VkFormat f = vk_tex_view_format(tex, tex_srgb(tic, tsc));
-            if (!vk_format_minmax_filter(f)) {
-                LOG_LIMIT(1,
-                          "vulkan: VkFormat %d has no min/max filter on this device: a sampler asking for the %s of "
-                          "its texels averages them\n",
-                          (int)f, which);
-                tc[1] &= ~(3u << 10);
-            } else if (!g_vk.has_minmax_swizzle && !tex_map_identity(tex_map(tex, tic))) {
-                LOG_LIMIT(1,
-                          "vulkan: the device's min/max filter takes no swizzle: a sampler asking for the %s of the "
-                          "texels of a swizzled view averages them\n",
-                          which);
-                tc[1] &= ~(3u << 10);
-            }
         }
     }
     /* raised only with anisotropy= set: without it the cache keeps one sampler per TSC */
@@ -2014,12 +2137,13 @@ static int tex_kind_init(TexKind* tk, const ShaderInfo* si, int slot) {
     tk->none = vk_null_view(tk->want, tk->num, !!(kind->flags & 2));
     tk->id = TEX_NO_ENTRY;
     if (!tk->none) return 0;
-    VkSampler null_sampler = vk_tex_bind_sampler(null_tsc, NULL, &plain, tk->num, NULL, tk->want);
+    VkSampler null_sampler = vk_tex_bind_sampler(null_tsc, NULL, &plain, tk->num, NULL, tk->want, 0);
     if (!null_sampler) return 0;
     tk->info = (VkDescriptorImageInfo){null_sampler, tk->none, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     if (!kind->shadow) return 1;
     VkImageView farthest = vk_null_view(tk->want, 3, 0); /* not far: windef.h defines it away */
-    VkSampler null_compare = farthest ? vk_tex_bind_sampler(null_tsc, NULL, kind, 0, NULL, tk->want) : VK_NULL_HANDLE;
+    VkSampler null_compare =
+        farthest ? vk_tex_bind_sampler(null_tsc, NULL, kind, 0, NULL, tk->want, 0) : VK_NULL_HANDLE;
     if (!null_compare) return 0;
     tk->depth = (VkDescriptorImageInfo){null_compare, farthest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     return 1;
@@ -2067,10 +2191,10 @@ static int indexed_uniform(DescWrites* writes, VkDescriptorSet set, int stage, u
     return 1;
 }
 
-/* The elements of SNX_VKB_TEXARRAY, from an indexed texture slot: SNX_TEX_ARRAY handles from the slot's offset on,
-   (1 << shift) bytes apart, or as many as the slot says, its stride apart. A handle past the constant buffer's size, or
-   with a header or sampler index past its pool's limit (no texture on hardware either), reads as its kind's null
-   texture. So does a texture of another kind than the slot's. Targets use snapshots refreshed after a draw changes
+/* The elements of SNX_VKB_TEXARRAY (g_shader_tex_array of them), from an indexed texture slot: SNX_TEX_ARRAY handles
+   from the slot's offset on, (1 << shift) bytes apart, or as many as the slot says, its stride apart. A handle past the
+   constant buffer's size, or with a header or sampler index past its pool's limit (no texture on hardware either),
+   reads as its kind's null texture. So does a texture of another kind than the slot's. Targets use snapshots refreshed after a draw changes
    them. Tables of different kinds share the binding, each element viewed as the kind of the table that names it: a
    handle that two kinds name has an element for each. */
 static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int* first, int count, Surf** rt, Surf* zt,
@@ -2116,8 +2240,8 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                other (edenprobe's bindless case samples it) */
             if ((!cba && !in.bytes) || at + 4 > size) {
                 if (tk->id == TEX_NO_ENTRY) {
-                    if (used == SNX_TEX_ARRAY) {
-                        LOG_LIMIT(4, "vulkan: indexed texture tables exceed %u unique handles\n", SNX_TEX_ARRAY);
+                    if (used == g_shader_tex_array) {
+                        LOG_LIMIT(4, "vulkan: indexed texture tables exceed %u unique handles\n", g_shader_tex_array);
                         return 0;
                     }
                     tk->id = used++;
@@ -2137,8 +2261,8 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
             u32 id = vk_indexed_handle_find(handle_slots, SNX_TEX_ARRAY, handles, element_kind, used, handle,
                                             (u8)kind_of[table], 8);
             if (id == used) {
-                if (used == SNX_TEX_ARRAY) {
-                    LOG_LIMIT(4, "vulkan: indexed texture tables exceed %u unique handles\n", SNX_TEX_ARRAY);
+                if (used == g_shader_tex_array) {
+                    LOG_LIMIT(4, "vulkan: indexed texture tables exceed %u unique handles\n", g_shader_tex_array);
                     return 0;
                 }
                 handles[id] = handle;
@@ -2176,16 +2300,16 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                                   handle);
                 }
                 VkImageView color_view = depth ? tk->none : view;
-                VkSampler smp =
-                    vk_tex_bind_sampler(x.tsc, x.tic, &plain, tk->num, color_view != tk->none ? x.t : NULL, tk->want);
+                VkSampler smp = vk_tex_bind_sampler(x.tsc, x.tic, &plain, tk->num, color_view != tk->none ? x.t : NULL,
+                                                    tk->want, 0);
                 if (!smp) return 0;
                 d->table[id] = (VkDescriptorImageInfo){
                     smp, color_view, color_view == tk->none ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
                 if (kind->shadow) {
                     VkImageView depth_view = depth && view != tk->none ? view : tk->depth.imageView;
                     if (depth_view != tk->depth.imageView && !g_settings.shadows) shadow_map_sampled(x.t);
-                    VkSampler compare = vk_tex_bind_sampler(x.tsc, x.tic, kind, 0,
-                                                            depth_view != tk->depth.imageView ? x.t : NULL, tk->want);
+                    VkSampler compare = vk_tex_bind_sampler(
+                        x.tsc, x.tic, kind, 0, depth_view != tk->depth.imageView ? x.t : NULL, tk->want, 0);
                     if (!compare) return 0;
                     d->depth_table[id] = (VkDescriptorImageInfo){
                         compare, depth_view,
@@ -2197,7 +2321,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
         }
     }
     /* the first kind's null texture in every entry left: the binding is read whole */
-    for (u32 k = used; k < SNX_TEX_ARRAY; k++) {
+    for (u32 k = used; k < g_shader_tex_array; k++) {
         d->table[k] = kinds[0].info;
         if (depth_fill) {
             d->depth_table[k] = depth_fill->depth;
@@ -2208,7 +2332,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
     *w = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                 .dstSet = set,
                                 .dstBinding = SNX_VKB_TEXARRAY,
-                                .descriptorCount = SNX_TEX_ARRAY,
+                                .descriptorCount = g_shader_tex_array,
                                 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                 .pImageInfo = d->table};
     if (depth_fill) {
@@ -2470,10 +2594,13 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         int guest = stage != ST_FS && t && t->is_rt && (t->sw != t->w || t->sh != t->h);
         if (guest) t = vk_tex_from_tic_guest(x->tic, 0);
         if (st->flags & 1) t = stage != ST_FS ? vk_tex_from_tic_guest(x->tic, 1) : vk_tex_from_tic_raw(x->tic);
-        /* a raw load's header without 4-byte texels, or no header at all, reads zeros through the null view, as a
-           missing texture does: the draw still runs (it was dropped, from one game's movie and gameplay passes) */
+        /* a raw load's header without 4-, 8- or 16-byte texels, or no header at all, reads zeros through the null
+           view, as a missing texture does: the draw still runs (it was dropped, from one game's movie and gameplay
+           passes) */
         if ((st->flags & 1) && !t)
-            LOG_LIMIT(1, "vulkan: a raw surface load's header %08x %08x %08x has no 32-bit view: it reads zeros\n",
+            LOG_LIMIT(1,
+                      "vulkan: a raw surface load's header %08x %08x %08x names no texture of 4-, 8- or 16-byte color "
+                      "texels stored as they are: it reads zeros\n",
                       x->tic[0], x->tic[2], x->tic[4]);
         VkImageViewType want = vk_tex_view_type(st);
         int num = st->flags & 1                                    ? 1
@@ -2550,7 +2677,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
         if (!view) return VK_NULL_HANDLE;
-        VkSampler smp = vk_tex_bind_sampler(x->tsc, x->tic, st, num, sampled, want);
+        VkSampler smp =
+            vk_tex_bind_sampler(x->tsc, x->tic, st, num, sampled, want, (int)(s->si.tex_minmax_mask >> i & 1));
         if (!smp) return VK_NULL_HANDLE;
         u32 b = SNX_VKB_TEX + i;
         d.ii[b] = (VkDescriptorImageInfo){smp, view, layout};
@@ -2821,7 +2949,7 @@ static VkPrimitiveTopology topology_vk(u32 topology) {
     switch (topology) {
         case 0: return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
         case 1: return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-        case 2: /* line loop: drawn open */
+        case 2: /* a line loop: a list of its sides where the CPU makes it (draw_edges), else open */
         case 3: return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
         case 5:
         case 8: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; /* quad strips are triangle strips */
@@ -3181,7 +3309,7 @@ static VkSh* vs_position_copy(const DsState* ds, const VkSh* vs, u32 slot) {
     return vk_shader_get_ex(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, vs->mask[0] | (u64)vs->mask[1] << 32,
                             vs->mask[2] | (u64)vs->mask[3] << 32, vs->mask[4], vs->mask[5], vs->mask[6], 0, vs->mask[9],
                             vs->mask[10], vs->mask[12] | (u64)vs->mask[13] << 32, NULL, queried ? query : NULL, 0, 0,
-                            vs->mask[24] & 255, vs->mask[25], 1 + slot);
+                            vs->mask[24] & 255, vs->mask[25], 1 + slot, 0);
 }
 /* stream s's address and bytes (to its limit, 0 when the limit is below) */
 static u64 stream_start(const DsVertexBuffers* b, u32 s) { return b->addr[s]; }
@@ -3214,6 +3342,18 @@ static void target_formats(Surf* const* rt, const Surf* zt, u32 n, TargetFormats
     }
     tf->samples = samples == ~0u ? VK_SAMPLE_COUNT_1_BIT : samples;
 }
+/* the topology class of a pipeline drawing topo: adjacency and patches are their own, as the geometry program's input
+   primitive is one of them */
+static u32 topology_class(VkPrimitiveTopology topo) {
+    return topo >= VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY ? topo
+           : topo == VK_PRIMITIVE_TOPOLOGY_POINT_LIST             ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+           : topo <= VK_PRIMITIVE_TOPOLOGY_LINE_STRIP             ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST
+                                                                  : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+}
+/* the polygon mode a pipeline takes for rk's: fill where the device has no other (draw_edges draws the others) */
+static u32 polygon_mode(const DsRasterKey* rk) {
+    return g_vk.feat.fillModeNonSolid ? rk->polygon : VK_POLYGON_MODE_FILL;
+}
 /* the pipeline key of the shaders (fs the fragment variant drawn), the state ds and the targets' surfaces rt and zt, all but the feedback loop, and the vertex bindings it
    describes: 0 when the draw is skipped */
 static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Surf* const* rt, const Surf* zt, u32 n,
@@ -3242,12 +3382,7 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
         else
             LOG_LIMIT(1, "vulkan: this GPU has no logic operations: targets are blended instead\n");
     }
-    VkPrimitiveTopology topo = topology_vk(topology);
-    /* adjacency and patches are their own topologies: the geometry program's input primitive is one of them */
-    k->topo_class = topo >= VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY ? topo
-                    : topo == VK_PRIMITIVE_TOPOLOGY_POINT_LIST             ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
-                    : topo <= VK_PRIMITIVE_TOPOLOGY_LINE_STRIP             ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST
-                                                                           : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    k->topo_class = topology_class(topology_vk(topology));
     k->tcs = sh->tcs ? sh->tcs->mod : VK_NULL_HANDLE;
     k->tes = sh->tes ? sh->tes->mod : VK_NULL_HANDLE;
     if (sh->mesh) { /* no input assembly: the mesh program's triangles, and no vertex input (it reads none) */
@@ -3266,7 +3401,7 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
         if (k->patch > g_vk.props.limits.maxTessellationPatchSize)
             k->patch = g_vk.props.limits.maxTessellationPatchSize;
     }
-    k->polygon = !g_vk.feat.fillModeNonSolid ? VK_POLYGON_MODE_FILL : rk->polygon;
+    k->polygon = polygon_mode(rk);
 
     /* vertex streams: each used guest stream is a binding, and so is an attribute at an offset past the device's
        limit or reaching past its stream's stride (it is read from its own offset there); one more holds the 0,0,0,1
@@ -3529,7 +3664,7 @@ static u64 draw_last_vertex(const u32* inline_indices, const DsIndex* ix, int in
    draw, made once for each size it grows to: 0 1 2 0 2 3, 4 5 6 4 6 7..., drawn from the draw's first vertex */
 static struct {
     VkBuffer buf;
-    VmaAllocation mem;
+    DevMem mem;
     u32 quads; /* how many quads it has the indices of */
 } g_quads;
 /* what the GPU wrote (src: the stage and access) before what reads it next (dst) */
@@ -3571,11 +3706,11 @@ static int quad_indices(u32 nq, VkBuffer* buf, u64* off) {
                                   .size = (u64)cap * 24,
                                   .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                   .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-        VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        DevMemWant aci = {.at = DM_DEVICE};
         VkBuffer b;
-        VmaAllocation m;
-        if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &b, &m, NULL))) return 0;
-        vk_mem_track(m);
+        DevMem m;
+        if (!VK_OK(vk_buffer_create(&bci, &aci, &b, &m, NULL))) return 0;
+        vk_mem_track(m, VK_OWN_XFB);
         vk_render_end(); /* dispatches happen outside rendering passes */
         VkCommandBuffer cb = vk_cmd();
         /* the input is bound but not read: vertex numbers are their own indices */
@@ -3619,6 +3754,119 @@ static int quad_indices_cpu(const DrawCall* dc, int inline_indices, u64 ia, u32 
     u8* out = vk_stage((u64)nq * 24, vk_stage_align(), buf, off);
     if (!out) return 0;
     snx_quad_indices(in, esz, nq, out);
+    return 1;
+}
+/* Whether a draw goes as a list of lines or points made of its primitives (polygon_edges.h, edge_indices) instead of
+   as Vulkan draws its topology: a line loop, which Vulkan has none of; polygons in the polygon mode Line or Point
+   where the device has no mode but fill (fillModeNonSolid); and on every device quads, quad strips and polygons drawn
+   as lines, whose outline the device's mode would cross with the diagonals of the triangles they become. Lines and
+   points take no face culling and no depth bias: where the device has the mode, a draw that asks for either keeps
+   it, diagonals and all, and elsewhere the log says the list takes neither. Only where the vertex program's
+   primitives are the ones drawn (no stage after it, no mesh program; a geometry program takes a loop's sides as the
+   lines they are), none are captured (transform feedback takes the primitives as they were) and the draw is direct
+   (the CPU makes the list: an indirect draw's count is the GPU's); the others are drawn as before, and logged */
+static int draw_edges(const DsState* ds, const DrawCall* dc, const DrawShaders* sh) {
+    u32 t = sh->topology, mode = ds->rkey.polygon;
+    int after = sh->tcs || sh->tes || sh->gs || sh->mesh, native = g_vk.feat.fillModeNonSolid != 0;
+    int outline = !after && t >= 7 && t <= 9 && mode == DS_POLYGON_LINE;
+    if (t != 2 && (mode == DS_POLYGON_FILL || (native && !outline) || (!after && (t < 4 || t > 9))))
+        return 0; /* filled, or drawn by the device's mode, or points and lines, which take no polygon mode */
+    const char *name = mode == DS_POLYGON_LINE ? "Line" : "Point", *as = mode == DS_POLYGON_LINE ? "lines" : "points";
+    const char* what = t == 7 ? "quads" : t == 8 ? "a quad strip" : "a polygon";
+    if (t == 2) { /* a geometry program takes its sides as the lines they are */
+        if (!sh->xfb_on && !dc->indirect) return 1;
+        LOG_LIMIT(1, "vulkan: a line loop %s is drawn open, without the side from its last vertex to its first\n",
+                  sh->xfb_on ? "captured by transform feedback" : "of an indirect draw");
+        return 0;
+    }
+    if (after) {
+        LOG_LIMIT(1,
+                  "vulkan: the device has no polygon mode %s (fillModeNonSolid): the polygons of a draw with "
+                  "tessellation, geometry or a mesh program are drawn filled\n",
+                  name);
+        return 0;
+    }
+    if (sh->xfb_on || dc->indirect) {
+        const char* why = sh->xfb_on ? "and captured by transform feedback" : "by an indirect draw";
+        if (native)
+            LOG_LIMIT(1, "vulkan: %s drawn as lines %s show the diagonals of the triangles they are drawn as\n", what,
+                      why);
+        else
+            LOG_LIMIT(1,
+                      "vulkan: the device has no polygon mode %s (fillModeNonSolid): polygons drawn as %s %s are drawn "
+                      "filled\n",
+                      name, as, why);
+        return 0;
+    }
+    int culled = ds->dyn.cull != DS_CULL_NONE, biased = ds->dyn.bias_on >> (mode == DS_POLYGON_POINT ? 0 : 1) & 1;
+    const char* taken = culled && biased ? "face culling and no depth bias" : culled ? "face culling" : "depth bias";
+    if ((culled || biased) && native) {
+        LOG_LIMIT(1,
+                  "vulkan: %s drawn as lines with %s show the diagonals of the triangles they are drawn as: a list of "
+                  "their sides would take no %s\n",
+                  what,
+                  culled && biased ? "face culling and a depth bias"
+                  : culled         ? "face culling"
+                                   : "a depth bias",
+                  taken);
+        return 0;
+    }
+    if (culled || biased)
+        LOG_LIMIT(1,
+                  "vulkan: the device has no polygon mode %s (fillModeNonSolid): polygons drawn as %s go as a list of "
+                  "%s, which takes no %s\n",
+                  name, as, as, taken);
+    return 1;
+}
+/* what a draw of topology that draw_edges would draw as a list is drawn as when edge_indices can't make the list */
+static const char* edges_instead(u32 topology) {
+    return topology == 2 ? "open" : g_vk.feat.fillModeNonSolid ? "with the diagonals of its triangles" : "filled";
+}
+/* The list draw_edges draws a direct draw's count indices from first as (polygon_edges.h), made here into the staging
+   ring and drawn indexed: from the guest's indices (isz bytes each), the draw's inline ones, or its vertex numbers
+   counted from its first (the draw's vertex offset then). 1 with *n indices at *buf and *off; 0 when the CPU hasn't
+   the guest's indices without waiting for the GPU (a result of its own over them), or they're more than EDGE_VERTICES:
+   the draw is drawn as before then (edges_instead), logged; -1 when staging fails */
+#define EDGE_VERTICES (1u << 20)
+static int edge_indices(const DsState* ds, const DrawCall* dc, int indexed, u32 isz, u32 first, u32 count, u32 topology,
+                        int points, VkBuffer* buf, u64* off, u32* n) {
+    SnxEdgeIndices in = {0};
+    const char* as = points ? "points" : "lines";
+    if (count > EDGE_VERTICES) {
+        LOG_LIMIT(1, "vulkan: a draw of %u vertices is past the %u the CPU makes into %s: drawn %s\n", count,
+                  EDGE_VERTICES, as, edges_instead(topology));
+        return 0;
+    }
+    if (indexed == 3)
+        in.words = dc->inline_indices + first;
+    else if (indexed) {
+        u64 a = ds->index.addr + (u64)first * isz, len = (u64)count * isz, at;
+        VkBuffer held;
+        /* as draw_last_vertex reads them: landing what the GPU holds there takes a submit and a wait */
+        if (vk_buf_pending(a, len) || vk_uma_pending(a, len) || vk_compute_gpu_src(a, len, &held, &at) ||
+            vk_buf_owned(a, len)) {
+            LOG_LIMIT(1, "vulkan: a draw whose indices the GPU wrote isn't made into %s on the CPU: drawn %s\n", as,
+                      edges_instead(topology));
+            return 0;
+        }
+        vk_compute_mem_need(a, len);
+        in.bytes = gmem_ptr(a, len);
+        in.size = isz;
+        if (!in.bytes) {
+            LOG_LIMIT(1,
+                      "vulkan: a draw's %u indices at %llx aren't in one run of memory, which the CPU makes into %s: "
+                      "drawn %s\n",
+                      count, (unsigned long long)a, as, edges_instead(topology));
+            return 0;
+        }
+    }
+    u32 ones = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : 0xFFFFFFFFu;
+    int restart = indexed && ds->index.restart;
+    u32 ri = ds->index.restart_index & ones;
+    *n = snx_polygon_edges(topology, &in, count, restart, ri, points, NULL);
+    u8* out = vk_stage((u64)(*n ? *n : 1) * 4, vk_stage_align(), buf, off);
+    if (!out) return -1;
+    snx_polygon_edges(topology, &in, count, restart, ri, points, out);
     return 1;
 }
 /* n elements of mode (with remap and the restart index restart, as texconv_modes.glsl says) made from count indices of
@@ -3880,6 +4128,10 @@ retry:
     tes = sh.tes;
     gs = sh.gs;
     int xfb_on = sh.xfb_on;
+    /* the draw as a list of lines or points made of its primitives (draw_edges), points for the polygon mode Point:
+       until edge_indices finds the CPU can't make it, which draws its topology */
+    int edges = !texture && !capture && draw_edges(ds, dc, &sh),
+        points = ds->rkey.polygon == DS_POLYGON_POINT && topology != 2;
     /* the fragment shader's variant, keyed on its textures each draw: they are resolved for stage_set anyway. fres is
        filled for the fragment program's textures (each resolved, have set), and read only for them: a clear of all
        SH_MAXTEX (10 KiB) and a check of all of them against each target were per draw */
@@ -4482,7 +4734,21 @@ retry:
                               (list_restart && (!dc->indirect || (ds->index.restart_index & vulkan_ri) == vulkan_ri)));
     u32 icount = count;
     i32 voffset = (i32)base_vertex; /* the draw's vertexOffset */
-    if (dc->indirect) {
+    if (edges) {
+        edges = edge_indices(ds, dc, indexed, isz, first, count, topology, points, &ibuf, &ioff, &icount);
+        if (edges < 0) {
+            draw_images_discard(&images);
+            if (late_depth) vk_depth_shadow_cancel();
+            return;
+        }
+        if (!edges) icount = count;
+    }
+    if (edges) {
+        if (!indexed) voffset = (i32)first; /* the vertex numbers count from the draw's first */
+        indexed = 2;                        /* drawn indexed, as a list without restart */
+        itype = VK_INDEX_TYPE_UINT32;
+        topo = points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    } else if (dc->indirect) {
         /* what the CPU makes into other indices needs the count, which only the GPU has */
         if (topology == 7 || (indexed && !indirect_indices(&ds->index, restart, &ibuf, &ioff, &itype))) {
             LOG_LIMIT(1, "vulkan: an indirect draw of %s isn't drawn\n",
@@ -4570,13 +4836,20 @@ retry:
         xsize[i] = (u32)size;
         xbound |= 1u << i;
     }
-    /* the feedback loop goes into the key last: stage_set found it */
+    /* the feedback loop goes into the key last: stage_set found it. So do the topology class and polygon mode, which
+       a draw made into lines or points changes (edge_indices) and the kept key may hold from the last draw */
     u32 feedback = fb && !g_vk.has_feedback_dynamic;
-    if (k == &made_k)
+    u32 topo_class = edges ? (u32)topo : mesh ? 0 : topology_class(topology_vk(topology));
+    u32 polygon = edges ? VK_POLYGON_MODE_FILL : polygon_mode(&ds->rkey);
+    if (k == &made_k) {
         made_k.feedback = feedback;
-    else if (k->feedback != feedback) {
+        made_k.topo_class = topo_class;
+        made_k.polygon = polygon;
+    } else if (k->feedback != feedback || k->topo_class != topo_class || k->polygon != polygon) {
         made_k = *k;
         made_k.feedback = feedback;
+        made_k.topo_class = topo_class;
+        made_k.polygon = polygon;
         k = &made_k;
         kept = 0;
     }
@@ -4848,12 +5121,13 @@ retry:
         lw = g_vk.feat.wideLines && lw > 0 && lw < 64 ? lw : 1.0f;
         DYNV(lw, lw, rec_CmdSetLineWidth(cb, lw));
     }
-    /* depth bias: enabled per polygon mode (the key's, as the device draws it); its values are ds_depth_bias's */
+    /* depth bias: enabled per polygon mode (the key's, as the device draws it), and off for a list of lines or points
+       made of polygons, which Vulkan biases only as polygons (draw_edges logs it); its values are ds_depth_bias's */
     {
-        u32 bias_on = ds->dyn.bias_on >> (k->polygon == VK_POLYGON_MODE_POINT  ? 0
-                                          : k->polygon == VK_POLYGON_MODE_LINE ? 1
-                                                                               : 2) &
-                      1;
+        u32 bias_on = !edges && ds->dyn.bias_on >> (k->polygon == VK_POLYGON_MODE_POINT  ? 0
+                                                    : k->polygon == VK_POLYGON_MODE_LINE ? 1
+                                                                                         : 2) &
+                                    1;
         DYN(bias_on, bias_on, rec_CmdSetDepthBiasEnable(cb, bias_on));
     }
     {
@@ -4999,7 +5273,8 @@ retry:
         rec_CmdBindTransformFeedbackBuffersEXT(cb, 0, xcount, xbuf, xoff, xsize);
         rec_CmdBeginTransformFeedbackEXT(cb, 0, xcount, from, counter_offs);
     }
-    rec_draw_tag(vs ? vs->hash : 0, fs ? fs->hash : 0); /* the vertex or mesh program, the fragment program */
+    /* the vertex or mesh program, the fragment program, and where the draw's ranges of guest memory were bound */
+    rec_draw_tag(vs ? vs->hash : 0, fs ? fs->hash : 0, vk_buf_sources() | vk_tex_tags());
     /* outside the predication: a predicated region writes no timestamp. Only a Tracy client times a draw
        (gpuprof.c), so a build without Tracy makes no call per draw */
 #if defined(SNX_TRACY)
@@ -5022,7 +5297,7 @@ retry:
         rec_CmdDraw(cb, count, instances, first, base_instance);
     pred_end(cb, o->pred);
     if (zoned) vk_gpuprof_op_end(cb);
-    rec_draw_tag(0, 0); /* the runtime's own draws after it (clears, blits) name no program */
+    rec_draw_tag(0, 0, 0); /* the runtime's own draws after it (clears, blits) name no program */
     if (xcount) {
         rec_CmdEndTransformFeedbackEXT(cb, 0, xcount, counters, counter_offs);
         o->xfb_started = (u8)((o->xfb_started | xbound) & 15);

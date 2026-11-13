@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "agb/runtime/host.h"
+#include "common/utilities/sdl_desktop.h"
 #include "agb/apu/apu.h"
 #include "agb/ppu/ppu.h"
 #include "common/utilities/pad_sdl.h"
@@ -96,6 +97,7 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
         snprintf(error, error_size, "out of memory");
         return NULL;
     }
+    snx_sdl_desktop_hints();
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         snprintf(error, error_size, "cannot start SDL's video: %s", SDL_GetError());
         free(host);

@@ -13,7 +13,7 @@ uint32_t shader_capture_tiles_declare(SpvEmitter* e, uint32_t u32_type, uint32_t
     uint32_t array = spv_emit_type_runtime_array(e, u32_type, 4);
     uint32_t block = spv_emit_type_struct_one(e, array);
     uint32_t buffer = spv_emit_storage_buffer(e, block, set, binding);
-    spv_emit_decorate(e, buffer, 23, NULL, 0); /* Coherent */
+    spv_emit_decorate(e, buffer, SPV_DECORATION_COHERENT, NULL, 0);
     return buffer;
 }
 void shader_capture_tile_mark(SpvEmitter* e, uint32_t f32, uint32_t u32_type, uint32_t boolean, uint32_t buffer,

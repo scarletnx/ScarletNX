@@ -55,7 +55,7 @@ static int mine(int* ids, int max) {
     return n;
 }
 static int g_all[CPU_SETSIZE], g_nall;
-static int g_child[CPU_SETSIZE], g_nchild = -1;
+static int g_child[CPU_SETSIZE], g_nchild = -1, g_parent_done;
 static pthread_mutex_t g_lk = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_done = PTHREAD_COND_INITIALIZER;
 static void child(void* p) {
@@ -73,6 +73,12 @@ static void parent(void* p) {
     n = mine(got, CPU_SETSIZE);
     CHECK(n == 1 && got[0] == one, "plat_thread_cpus(%d): the thread runs on %d CPUs, the first %d", one, n, got[0]);
     if (plat_thread(child, NULL, 0)) fatal("plat_thread failed\n");
+    /* plat_thread returns only once its attributes are destroyed, and glibc keeps the affinity's cpuset in them: the
+       process waits for that here, as its leak check at exit would read them as a leak while it runs */
+    pthread_mutex_lock(&g_lk);
+    g_parent_done = 1;
+    pthread_cond_broadcast(&g_done);
+    pthread_mutex_unlock(&g_lk);
 }
 
 int main(void) {
@@ -89,7 +95,7 @@ int main(void) {
     }
     if (plat_thread(parent, NULL, 0)) fatal("plat_thread failed\n");
     pthread_mutex_lock(&g_lk);
-    while (g_nchild < 0) pthread_cond_wait(&g_done, &g_lk);
+    while (g_nchild < 0 || !g_parent_done) pthread_cond_wait(&g_done, &g_lk);
     pthread_mutex_unlock(&g_lk);
     CHECK(g_nchild == g_nall && !memcmp(g_child, g_all, sizeof *g_all * (size_t)g_nall),
           "the thread a restricted thread started runs on %d CPUs, not the process's %d", g_nchild, g_nall);

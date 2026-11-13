@@ -11,7 +11,7 @@
    255. The sums stay within 32 signed bits (|298 x 239| + |541 x 128| < 2^17). */
 
 uint byte_at(uint at) { return (src[at >> 2u] >> ((at & 3u) << 3u)) & 0xffu; }
-uint clamp_byte(int v) { return uint(v < 0 ? 0 : v > 255 ? 255 : v); }
+uint clamp_byte(int v) { return uint(clamp(v, 0, 255)); }
 
 void main() {
     uint i = gl_GlobalInvocationID.x;

@@ -335,6 +335,7 @@ static int check_vertex_input_layouts(void) {
     r[0x3fd] = r[0x3fe] = 4u << 16;
     r[0x680] = 0x1111;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 1;
+    all_samples(r);
     memcpy(r + 0x280, transform, sizeof transform);
     r[0x458] = 0 | 0x01u << 21 | 7u << 27; /* the position, RGBA32F of stream 0 */
     r[0x459] = layout[0].reg;

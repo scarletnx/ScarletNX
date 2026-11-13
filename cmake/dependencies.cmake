@@ -234,7 +234,7 @@ if(SNX_JEMALLOC)
     include("${PROJECT_SOURCE_DIR}/cmake/jemalloc.cmake")
 endif()
 
-if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
+if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR SNX_BUILD_NDS OR snx_vita_runtime OR
    (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
     # the system's package is named VulkanHeaders
     snx_cpm_local_package(NAME Vulkan-Headers VERSION 1.4.367 FIND_PACKAGE_ARGUMENTS "NAMES VulkanHeaders CONFIG"
@@ -247,7 +247,7 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
         get_target_property(snx_vulkan_include_dir Vulkan::Headers INTERFACE_INCLUDE_DIRECTORIES)
         snx_local_vulkan_registry(snx_vulkan_local_registry)
     endif()
-    # volk.c is compiled into the vk components, VMA is a header
+    # volk.c is compiled into the vk components
     CPMAddPackage(NAME volk VERSION 1.4.363
                   URL https://github.com/zeux/volk/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz
                   URL_HASH SHA256=1547d8d74395d4048fb3f4a6313da56db626e89b55db238d0d7e8944c8a645f3
@@ -267,7 +267,7 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
                      fe040590fa035e2602c9ce25ba3cf6a208fcb72cb9d53945cbc5747610ad4e15)
         include("${PROJECT_SOURCE_DIR}/cmake/ctr_system_archives.cmake")
     endif()
-    # volk.c and VMA's implementation (src/nx/gpu/vk/vma.cpp) compiled into a target of ours: no warnings, and not
+    # volk.c compiled into a target of ours: no warnings, and not
     # the sanitizers SNX_TEST_SANITIZERS gives our code (tests/CMakeLists.txt)
     set(snx_third_party_flags -w)
     if(SNX_TEST_SANITIZERS)
@@ -353,15 +353,6 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
                  6fbbf5176ff4fd2024f9d150c889477f6b45ece4ac5e45d51286e32f8b13a6f2)
     include("${PROJECT_SOURCE_DIR}/cmake/shared_fonts.cmake")
 
-    snx_cpm_local_package(NAME VulkanMemoryAllocator VERSION 3.5.0
-                          URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.5.0.tar.gz
-                          URL_HASH SHA256=c5f3db848fca9cb9726b41f256cc3007773321fa92a86d1e0902e66474e8a9e3
-                          DOWNLOAD_ONLY YES)
-    if(VulkanMemoryAllocator_ADDED)
-        set(snx_vma_include_dir "${VulkanMemoryAllocator_SOURCE_DIR}/include")
-    else()
-        get_target_property(snx_vma_include_dir GPUOpen::VulkanMemoryAllocator INTERFACE_INCLUDE_DIRECTORIES)
-    endif()
     # RenderDoc's in-application API, one header (renderdoc, gpu/vk/renderdoc.c), from the release tag
     snx_cpm_file(renderdoc_app 1.46
                  https://raw.githubusercontent.com/baldurk/renderdoc/v1.46/renderdoc/api/app/renderdoc_app.h
@@ -395,9 +386,10 @@ endif()
 set(SNX_SDL3_FROM_SOURCE OFF)
 # The system's SDL3 from find_package, or CPM's pinned source build. FreeBSD's ports package lags the pin (3.4.16
 # against 3.4.18), so CPM's version check refuses it and builds SDL3 itself: SNX_SYSTEM_SDL3 takes the native package
-# instead, which needs only 3.4.16, the version every SDL call in the tree is in. It is the default on FreeBSD, whose
-# build installs the sdl3 package (docs/dev/build.md), and on NetBSD, whose pkgsrc SDL3 is 3.4.16 too (docs/hosts/netbsd.md); the
-# pinned source build is had with -DSNX_SYSTEM_SDL3=OFF
+# instead, from 3.4.12 (cmake/system_sdl3.cmake). It is the default on FreeBSD, whose build installs the sdl3 package
+# (docs/dev/build.md), and on NetBSD, whose pkgsrc SDL3 is 3.4.16 too (docs/hosts/netbsd.md); the pinned source build
+# is had with -DSNX_SYSTEM_SDL3=OFF
+include("${CMAKE_CURRENT_LIST_DIR}/system_sdl3.cmake")
 set(snx_sdl3_system_default OFF)
 if(CMAKE_SYSTEM_NAME MATCHES "^(FreeBSD|NetBSD)$")
     set(snx_sdl3_system_default ON)
@@ -405,18 +397,9 @@ endif()
 option(SNX_SYSTEM_SDL3 "Use the system's SDL3 from find_package, not CPM's pinned source build"
        ${snx_sdl3_system_default})
 if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR snx_vita_runtime OR SNX_BUILD_AGB OR
-   (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
+   SNX_BUILD_NDS OR (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
     if(SNX_SYSTEM_SDL3)
-        find_package(SDL3 3.4.16 CONFIG QUIET)
-        if(NOT SDL3_FOUND)
-            message(FATAL_ERROR "SNX_SYSTEM_SDL3: no SDL3 3.4.16 or newer package found (FreeBSD: pkg install sdl3; "
-                                "NetBSD: pkgin install SDL3). "
-                                "Use -DSNX_SYSTEM_SDL3=OFF for CPM's pinned source build.")
-        endif()
-        if(NOT TARGET SDL3::SDL3)
-            message(FATAL_ERROR "SNX_SYSTEM_SDL3: the system's SDL3 ${SDL3_VERSION} has no SDL3::SDL3 target")
-        endif()
-        message(STATUS "Using the system's SDL3 ${SDL3_VERSION}")
+        snx_system_sdl3()
     else()
     # Prefer a compatible system package. CPM handles the pinned static fallback and user overrides. SDL_ALTIVEC only
     # changes PowerPC builds: SDL's AltiVec blitters prefetch with dstt, which the ISA phased out and qemu's POWER10

@@ -71,6 +71,7 @@ static int check_storage_suffix(void) {
     CHECK(!suffix_open(gate));
     const u32 at[3] = {0x100, 0x140, 0x1100};
     const u8 value[3] = {0x22, 0x33, 0x44};
+    own_acquire(cpu, 0x3000); /* kept on the GPU where the page cache writes them in place: landed for this read */
     CHECK(!suffix_expect(GP(cpu), before, 0x3000, at, value, 3));
 
     /* A composed result whose bytes a later result took stays where it was recorded */
@@ -101,6 +102,7 @@ static int check_storage_suffix(void) {
     CHECK(!suffix_open(gate));
     const u32 at2[3] = {0x100, 0x140, 0x180};
     const u8 value2[3] = {0x55, 0x11, 0x66};
+    own_acquire(cpu, 0x3000);
     CHECK(!suffix_expect(GP(cpu), before, 0x3000, at2, value2, 3));
     CHECK(g_vk_validation_messages == validation);
     vk_unlock();

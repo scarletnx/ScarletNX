@@ -56,7 +56,11 @@ that runs the function's own code is still correct, only not accelerated.
 `hook_install` (`src/nx/hle/hook/hook.c`) reads the game's exported functions (`kernel_load_symbols`) and puts the
 hook's adapter into each matching function's slot, before the game's first thread and the JIT start. The slots never
 change while the game runs, except for `hook_restore` putting a hook back after the JIT drops the code of a range
-(`jit_code_invalidate`).
+(`jit_code_invalidate`). It holds `HOOK_SITES` hooked functions (`hook.h`), as many as a table has entries at most,
+and `hook.c` does not build with a table larger than that, so a game that exports each function once gets every hook.
+One whose modules export them more than once can run out: the game then stops, naming the function left without its
+hook, since that function would run the SDK's own code beside the native hooks of its family, which keep the family's
+state, and a service that only the native functions answer would be asked (`tests/hook_sites.c`).
 
 What no hook sees is code the game's own compiler inlined from an SDK header: there is no call to take. A handler
 therefore keeps the guest's data as the function does, so inlined copies read what it left.
@@ -83,6 +87,29 @@ hook memcpy(void* dst, const void* src, u64 size) -> void* = hook_memmove
   d7, and the rest on the stack. It calls the same handler with the thread's `CPU`, and returns to lr in the state lr's
   bit 0 gives. A pointer and a `usize` reach the handler zero-extended, an `isize` sign-extended. The NVN spec uses it:
   `tests/hook_adapters.c` checks the mapping.
+- The word `a32` after a hook's handler (after `pure`) says the declaration holds for a 32-bit game too: its
+  arguments are the function's under AAPCS32 as written (a `usize` for a `size_t`, never a `u64`), and its handler
+  reads nothing whose layout differs in the 32-bit SDK. A hook that `uses` a struct can't be one: a struct's layout
+  is one SDK's. A `@version` after that `a32` gives the versions the declaration holds for in a 32-bit game, in place
+  of the hook's own: `hook SYMBOL() -> u32 = handler a32 @version(< 1.0.0)`. The 32-bit SDKs a function was read in
+  are not the 64-bit ones, and the runtime's own specs name them on every declaration for a 32-bit game
+  (`tests/nn_*.c` check each family's). A 32-bit game of another SDK then has no hook, and stops when its SDK opens
+  a service the runtime answers only natively ("Versions", below).
+- A line that begins with `a32` declares a hook for a 32-bit game alone: `a32 hook SYMBOL(...) ...`, with a
+  `@version` before it and `uses` after its handler as any hook. It is for a function whose declaration differs
+  there. A 32-bit SDK mangles a `size_t` as `j` where the 64-bit one has `m` (and an `int64_t` as `x` for `l`), so a
+  function with one in its signature has another symbol. AAPCS32 returns a class of more than 4 bytes through a
+  pointer the caller passes in r0, where AAPCS64 returns one of 8 bytes in x0, so `nn::time`'s `now()` is
+  `() -> i64` for a 64-bit game and `a32 hook ...(addr out)` for a 32-bit one, under one symbol. And a struct there
+  has its own layout, declared as a struct of another name. A symbol's declarations for a 32-bit game (those marked
+  `a32` and those for it alone) are checked against each other, never against the ones that don't hold for it.
+- `hookgen --a32-marked` (`snx_hookgen(... A32_MARKED)`) writes a 32-bit game's table after the other,
+  `<prefix>32_table` with `<prefix>32_symbol`, `_fn` (the adapters, `SnxArmBlock`s), `_handler`, `_family`, `_key`,
+  `_lo`, `_hi` and `_layouts`: the hooks marked `a32` and the ones for a 32-bit game alone, which are in no other
+  table and name no route (a 32-bit game's every call goes through its code table). The runtime's own spec is
+  generated this way, and for a 32-bit game `hook_install` puts each adapter of that table in its function's slot
+  of the code table (`arm_slot`), a versioned one by the SDK label of the module that exports the function, as for
+  a 64-bit game; every other SDK function runs its own code there.
 - A pointer is a type followed by `*`, each `*` optionally followed by `const`, after an optional `const`:
   `const NVNtexture* const* textures`. It points to `void`, `char`, one of the types above, or a type of the C header
   that the spec's `include` line names (`include "nx/gpu/nvn/nvn.h"`, found in the folders that `-I` gives hookgen).
@@ -168,6 +195,12 @@ hook lock(addr m) -> u32 = os_lock_old uses nn::os::MutexType
   range holds the module's version. When a symbol has entries but none holds, the hook isn't installed and the log
   names the symbol and the version once. A versioned hook says the range it was installed for, once
   (`hook: lock at ... runs os_lock, the hook for sdk >= 12.0.0, with the layouts nn::os::MutexType of line 12`).
+- A function left to its own code this way works on the SDK's own state, and reaches the service behind it. Where
+  the runtime answers that service only natively, `sm` stops the game when it opens it, and the stop ends with what
+  was left: how many symbols have declarations of which none holds for their module's version, and the first one's
+  name, module, version and declared versions (`hook_missed_text`: `41 of the SDK functions the runtime has a hook
+  for run their own code in this 32-bit game, ...: the first is ... in sdk, of version 3.0.1, declared for sdk <
+  1.0.0`).
 
 ## Struct layouts
 

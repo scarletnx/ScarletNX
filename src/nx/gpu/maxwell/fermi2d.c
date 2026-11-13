@@ -71,16 +71,60 @@ static int f2d_float_format(u32 f, u32* n, u32* size) {
     return *n != 0;
 }
 
+/* a color format's pixel as the blit's conversion reads and writes it (pixel_format.h), 0 for one it doesn't take
+   (integers, the packed ones it has no layout for). The names are the components from the most significant: A8B8G8R8
+   is R in the first byte, A8R8G8B8 B in it, and R5G6B5 R in the top five bits of its word */
+static u32 f2d_pixel_format(u32 f) {
+    switch (f) {
+        case 0xC0: return GPU_PIXEL_DESC(2, 4, GPU_PIXEL_FLOAT);                 /* R32G32B32A32_FLOAT */
+        case 0xC3: return GPU_PIXEL_DESC(2, 4, GPU_PIXEL_FLOAT) | GPU_PIXEL_X;   /* R32G32B32X32_FLOAT */
+        case 0xC6: return GPU_PIXEL_DESC(1, 4, GPU_PIXEL_UNORM);                 /* R16G16B16A16_UNORM */
+        case 0xC7: return GPU_PIXEL_DESC(1, 4, GPU_PIXEL_SNORM);                 /* R16G16B16A16_SNORM */
+        case 0xCA: return GPU_PIXEL_DESC(1, 4, GPU_PIXEL_FLOAT);                 /* R16G16B16A16_FLOAT */
+        case 0xCB: return GPU_PIXEL_DESC(2, 2, GPU_PIXEL_FLOAT);                 /* R32G32_FLOAT */
+        case 0xCE: return GPU_PIXEL_DESC(1, 4, GPU_PIXEL_FLOAT) | GPU_PIXEL_X;   /* R16G16B16X16_FLOAT */
+        case 0xCF: return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM) | GPU_PIXEL_BGR; /* A8R8G8B8_UNORM */
+        case 0xD0: return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM) | GPU_PIXEL_BGR | GPU_PIXEL_SRGB;
+        case 0xD1: return GPU_PIXEL_DESC(2, 4, GPU_PIXEL_1010102); /* A2B10G10R10_UNORM */
+        case 0xD5: return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM);   /* A8B8G8R8_UNORM */
+        case 0xD6: return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM) | GPU_PIXEL_SRGB;
+        case 0xD7: return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_SNORM);
+        case 0xDA: return GPU_PIXEL_DESC(1, 2, GPU_PIXEL_UNORM); /* R16G16_UNORM */
+        case 0xDB: return GPU_PIXEL_DESC(1, 2, GPU_PIXEL_SNORM);
+        case 0xDE: return GPU_PIXEL_DESC(1, 2, GPU_PIXEL_FLOAT);
+        case 0xE0: return GPU_PIXEL_DESC(2, 3, GPU_PIXEL_111110);                              /* B10G11R11_FLOAT */
+        case 0xE5: return GPU_PIXEL_DESC(2, 1, GPU_PIXEL_FLOAT);                               /* R32_FLOAT */
+        case 0xE6: return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM) | GPU_PIXEL_BGR | GPU_PIXEL_X; /* X8R8G8B8_UNORM */
+        case 0xE7: return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM) | GPU_PIXEL_BGR | GPU_PIXEL_X | GPU_PIXEL_SRGB;
+        case 0xE8: return GPU_PIXEL_DESC(1, 3, GPU_PIXEL_565) | GPU_PIXEL_BGR; /* R5G6B5_UNORM */
+        case 0xEA: return GPU_PIXEL_DESC(0, 2, GPU_PIXEL_UNORM);               /* R8G8_UNORM */
+        case 0xEB: return GPU_PIXEL_DESC(0, 2, GPU_PIXEL_SNORM);
+        case 0xEE: return GPU_PIXEL_DESC(1, 1, GPU_PIXEL_UNORM); /* R16_UNORM */
+        case 0xEF: return GPU_PIXEL_DESC(1, 1, GPU_PIXEL_SNORM);
+        case 0xF2: return GPU_PIXEL_DESC(1, 1, GPU_PIXEL_FLOAT); /* R16_FLOAT */
+        case 0xF3: return GPU_PIXEL_DESC(0, 1, GPU_PIXEL_UNORM); /* R8_UNORM */
+        case 0xF4: return GPU_PIXEL_DESC(0, 1, GPU_PIXEL_SNORM);
+        case 0xFA: return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM) | GPU_PIXEL_X; /* X8B8G8R8_UNORM */
+        case 0xFB: return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM) | GPU_PIXEL_X | GPU_PIXEL_SRGB;
+    }
+    return 0;
+}
+
 /* The blit from memory, which the renderer does on the GPU (its destination kept there): which source column and row
    each destination column and row takes, nearest sampled, worked out here. Between two float formats each component is
    converted, as Eden's software blitter does (one game converts the RGBA32F tables its CPU fills into the RGBA16F
-   texture its lighting reads, at each scene's start). Other formats of the same bytes per pixel copy their bytes */
+   texture its lighting reads, at each scene's start); between other color formats the conversion's shader build reads
+   and writes each as f2d_pixel_format says (RGBA8 to BGRA8 swaps red and blue). Formats it doesn't take copy their
+   bytes when their pixels are as wide, else nothing is done */
 static void f2d_blit_memory(const u32* r, const Surf2D* s, const Surf2D* d, const F2dConfig* c) {
     u32 bs = gpu_color_bpp(s->format), bd = gpu_color_bpp(d->format), n, i, y0, y1, x0, x1, sn, ss, dn, ds, fmt = 0;
+    u32 sp = f2d_pixel_format(s->format), dp = f2d_pixel_format(d->format);
     GpuBlit b;
     u32* tab;
     if (s->format != d->format && f2d_float_format(s->format, &sn, &ss) && f2d_float_format(d->format, &dn, &ds))
         fmt = GPU_BLIT_FLOAT(sn, ss, dn, ds, s->format == 0xC3 || s->format == 0xCE);
+    else if (s->format != d->format && sp && dp)
+        fmt = GPU_BLIT_CONVERT(sp, dp);
     else if (bs != bd) {
         WARN_LIMIT(4, "gpu: a 2D blit from format %x to %x isn't done\n", s->format, d->format);
         return;

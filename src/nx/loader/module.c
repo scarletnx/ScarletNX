@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* What the game module's backends share: the dispatch entries, unit labels and progress lines */
+/* What the game module's backends share: the dispatch entries and unit labels */
 #include "nx/loader/module.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,21 +55,4 @@ char* snx_chunk_label(const SnxCodegen* codegen, size_t first, size_t last) {
     if (lo > hi) lo = hi = 0;
     return snx_format("0x%llX-0x%llX, %zu function%s, %zu instructions", (unsigned long long)lo,
                       (unsigned long long)hi, functions, functions == 1 ? "" : "s", instructions);
-}
-
-void snx_unit_line(char* out, size_t size, size_t done, size_t count, const char* name, const char* label, int cached,
-                   double seconds, SnxU64 used) {
-    if (cached)
-        snprintf(out, size, "  compiled block %zu/%zu: %s, %s (cached)", done, count, name, label);
-    else if (used)
-        snprintf(out, size, "  compiled block %zu/%zu: %s, %s (%.1f s, %llu MiB in use)", done, count, name, label,
-                 seconds, (unsigned long long)(used >> 20));
-    else
-        snprintf(out, size, "  compiled block %zu/%zu: %s, %s (%.1f s)", done, count, name, label, seconds);
-}
-void snx_report_unit(size_t done, size_t count, const char* name, const char* label, int cached, double seconds) {
-    char line[512];
-    snx_unit_line(line, sizeof line, done, count, name, label, cached, seconds, cached ? 0 : snx_footprint());
-    puts(line);
-    fflush(stdout);
 }

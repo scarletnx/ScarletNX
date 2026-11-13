@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <vulkan/vulkan.h>
 
 static void put(const char* path, const char* text) { assert(!snx_write_file(path, text, strlen(text))); }
@@ -166,6 +167,15 @@ int main(void) {
     assert(!snx_vulkan_driver(game));
     assert(!snx_deploy_vulkan_driver(app_program, game_dir));
     holds(game_driver, "MoltenVK, the app's, newer");
+    /* a build tree's driver is a link to the library a game keeps (a checkout's, whose build finds that one): the
+       deploy's own source, which it must not take away with the copy it replaces */
+    assert(!snx_remove_tree(app_driver));
+    assert(!symlink(game_driver, app_driver));
+    assert(!snx_deploy_vulkan_driver(app_program, game_dir));
+    holds(game_driver, "MoltenVK, the app's, newer");
+    assert(!stat(app_driver, &app_st) && !stat(game_driver, &game_st) && app_st.st_ino == game_st.st_ino);
+    assert(!snx_remove_tree(app_driver));
+    put(app_driver, "MoltenVK, the app's, newer");
     /* KosmicKrisp: an app that carries its loader, driver and ICD JSON finds them for the pick, and puts the three
        beside a game's runtime too */
     put(app_loader, "the Vulkan loader");

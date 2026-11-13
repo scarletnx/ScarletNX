@@ -38,6 +38,7 @@
 #include <string.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/query_compare_spv.h"
 #include "nx/gpu/vk/query_count_spv.h"
@@ -50,7 +51,7 @@
 
 static VkQueryPool g_qpool;
 static VkBuffer g_qbuf;
-static VmaAllocation g_qmem;
+static DevMem g_qmem;
 static u64* g_qres;   /* segment s's count at s % QN, once its copy has run */
 static int g_qfailed; /* the pool couldn't be made: reports keep the made-up value */
 /* each slot's segment: its counter (1 + its index in g_qc, 0 none) */
@@ -96,17 +97,15 @@ static int pool_make(void) {
                              /* read by the predicates' shader too */
                              .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo ai = {.flags =
-                                      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                  .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
-    VmaAllocationInfo info;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_qbuf, &g_qmem, &info))) {
+    DevMemWant ai = {.at = DM_CACHED, .mapped = 1};
+    DevMemInfo info;
+    if (!VK_OK(vk_buffer_create(&bi, &ai, &g_qbuf, &g_qmem, &info))) {
         vkDestroyQueryPool(g_vk.dev, g_qpool, NULL);
         g_qpool = VK_NULL_HANDLE;
         return 0;
     }
-    vk_mem_track(g_qmem);
-    g_qres = info.pMappedData;
+    vk_mem_track(g_qmem, VK_OWN_QUERY);
+    g_qres = info.ptr;
     /* a query is reset before its first use, outside a rendering pass */
     vk_render_end();
     rec_CmdResetQueryPool(vk_cmd(), g_qpool, 0, QN);
@@ -155,7 +154,7 @@ static void fold_done(void) {
     for (u32 i = 0; i < QMARKS; i++)
         if (g_qmark[i].sub && g_qmark[i].sub <= done && g_qmark[i].copied > upto) upto = g_qmark[i].copied;
     if (!upto) return;
-    vmaInvalidateAllocation(g_vk.vma, g_qmem, 0, VK_WHOLE_SIZE);
+    vk_devmem_invalidate(g_qmem, 0, VK_WHOLE_SIZE);
     for (int i = 0; i < QCH; i++) {
         QCounter* c = &g_qc[i];
         if (!c->used || !c->started || c->bad || c->whead != c->wtail || upto <= c->reported) continue;
@@ -278,7 +277,7 @@ int vk_query_report(u32 owner, u64 gva, u32 len, u64 ticks) {
    have run */
 u64 vk_query_value(u32 ci, u64 first, u64 end) {
     QCounter* c = &g_qc[ci % QCH];
-    vmaInvalidateAllocation(g_vk.vma, g_qmem, 0, VK_WHOLE_SIZE);
+    vk_devmem_invalidate(g_qmem, 0, VK_WHOLE_SIZE);
     if (first != c->sum_first) { /* a new epoch (one with segments starts past the last one's) */
         c->sum_first = c->sum_end = first;
         c->sum = 0;
@@ -297,7 +296,7 @@ u64 vk_query_value(u32 ci, u64 first, u64 end) {
 u64 vk_query_peek(u32 ci, u64 first, u64 end) {
     const QCounter* c = &g_qc[ci % QCH];
     u64 sum = 0, from = first;
-    vmaInvalidateAllocation(g_vk.vma, g_qmem, 0, VK_WHOLE_SIZE);
+    vk_devmem_invalidate(g_qmem, 0, VK_WHOLE_SIZE);
     /* the reports performed summed the epoch up to sum_end, whose oldest segments' slots may be in use again */
     if (first == c->sum_first && c->sum_end > first && c->sum_end <= end) {
         sum = c->sum;
@@ -325,7 +324,7 @@ u64 vk_query_peek(u32 ci, u64 first, u64 end) {
    reads of a slot before it is written again come first, by the barrier before each batch */
 #define PN 4096 /* predicate slots: more than two for each release queued (release.c), with the channels' */
 static VkBuffer g_pbuf;
-static VmaAllocation g_pmem;
+static DevMem g_pmem;
 static VkDescriptorSetLayout g_pds;
 static VkPipelineLayout g_playout_pred;
 static VkPipeline g_ppipe;
@@ -358,9 +357,9 @@ static int pred_init(void) {
                              .usage =
                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_pbuf, &g_pmem, NULL))) return 0;
-    vk_mem_track(g_pmem);
+    DevMemWant ai = {.at = DM_DEVICE};
+    if (!VK_OK(vk_buffer_create(&bi, &ai, &g_pbuf, &g_pmem, NULL))) return 0;
+    vk_mem_track(g_pmem, VK_OWN_QUERY);
     VkDescriptorSetLayoutBinding b[3];
     for (u32 i = 0; i < 3; i++)
         b[i] = (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,

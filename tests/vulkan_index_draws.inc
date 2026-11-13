@@ -50,6 +50,25 @@ static int index_pixels(u64 target, IndexPixels* px) {
     return 0;
 }
 
+/* the word of the predicate pred (query.c's slot pred - 1, which a draw under it reads: 0 skips the draw, else it
+   draws), as the GPU left it, for a failure's message; ~0u when it can't be read */
+static u32 index_pred_word(u32 pred) {
+    VkBuffer buffer;
+    u32 word = ~0u;
+    vk_lock();
+    vk_render_end();
+    u8* data = vk_readback_buffer(4, &buffer);
+    if (data) {
+        VkBufferCopy copy = {(VkDeviceSize)((pred & ~VK_PRED_EQUAL) - 1) * 4, 0, 4};
+        rec_CmdCopyBuffer(vk_cmd(), vk_query_pred_buffer(), buffer, 1, &copy);
+        vk_finish();
+        vk_readback_ready();
+        word = snx_ld_le32(data);
+    }
+    vk_unlock();
+    return word;
+}
+
 /* the 4x4 target's first pixel, for a failure's message */
 static int index_first_pixel(u64 target, u8 out[4]) {
     Surf* surface = vk_rt_find(target);
@@ -307,14 +326,25 @@ static int indirect_cases(GpuChannel* channel, u64 target, u64 indices, u64 args
             g_index_pred = pred;
             CHECK(!index_draw(channel, target, &call, &px));
             g_index_pred = 0;
+            /* a wrong frame says which side was wrong: the draw between the reports ran past its predicate (the
+               reports landed apart), or the predicate over the counts' segments said they differ when they don't */
+            int wrong = counted ? !index_all_green(&px) : px.blue != 16;
+            u32 inner = wrong ? index_pred_word(off + 1) : 0, outer = wrong ? index_pred_word(pred) : 0;
             g_renderer->render_predicate_drop(pred);
             vk_lock();
             vk_query_pred_drop(off);
             vk_unlock();
-            if (counted ? !index_all_green(&px) : px.blue != 16)
-                fprintf(stderr, "render enable on two queued counts %s: %u green, %u blue\n",
-                        counted ? "apart" : "equal", px.green, px.blue);
-            CHECK(counted ? index_all_green(&px) : px.blue == 16);
+            if (wrong) {
+                u8 landed[24] = {0};
+                vk_release_drain();
+                CHECK(!gmem_read(counts, landed, sizeof landed));
+                fprintf(stderr,
+                        "render enable on two queued counts %s: %u green, %u blue; the draw between the reports had "
+                        "predicate %u (%s), the render enable's predicate is %u, the reports landed %llu and %llu\n",
+                        counted ? "apart" : "equal", px.green, px.blue, inner, counted ? "not used" : "0 skips it",
+                        outer, (unsigned long long)snx_ld_le64(landed), (unsigned long long)snx_ld_le64(landed + 16));
+            }
+            CHECK(!wrong);
         }
         g_renderer->samples_enable(owner, 0);
         puts("render enable: two queued samples-passed counts compared on the GPU");
@@ -602,6 +632,303 @@ static int fragment_query_volume_case(GpuChannel* channel, u64 target, u64 addre
     channel->ds.bind.cb_size[4][2] = 0;
     CHECK(ok);
     puts("fragment textures: a fragment program's size query of a volume it reads nowhere else answers its depth");
+    return 0;
+}
+
+/* A sampler's min/max reduction on a device whose sampler has none (samplerFilterMinmax off): the fragment program
+   takes the least or the greatest of the texels itself (vk_tex_minmax_in_program, shader_minmax_sample), where the
+   sampler would average them. Edenprobe's sampling case: a 2x1 R32F texture of 0 and 1, linear both ways, no mip
+   filter, clamped, looked up halfway between them, (0.5, 0.5): the least is 0, the greatest 1, the average a half.
+   The fragment program writes the lookup's RGBA, so the first pixel's red is 0 or 255 (0.5 would be 127 or 128). The
+   device's own filter first, where it has one for R32F */
+static int minmax_fragment_case(GpuChannel* channel, u64 target, u64 address) {
+    const u64 program = address + 0x6000, pool = address + 0x1F800, samplers = pool + 0x100, cbuf = pool + 0x200,
+              texels = pool + 0x400;
+    const u32 half = 0x3f000000;
+    const u64 fragment[4] = {0x0100000000071004ull | (u64)half << 20, /* MOV32I R4, 0.5 */
+                             0x0100000000071005ull | (u64)half << 20, /* MOV32I R5, 0.5 */
+                             /* TEX R0, R4, c[0x40], 2D, RGBA */
+                             0xc000000000000000ull | 0x10ull << 36 | 7ull << 51 | 0xfull << 31 | 2ull << 28 |
+                                 0xffull << 20 | 7ull << 16 | 4ull << 8,
+                             0xe30000000007000full};
+    VkFormatProperties r32f;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_R32_SFLOAT, &r32f);
+    if (!(r32f.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
+        puts("min/max in a fragment program: R32F has no linear filter, skipped");
+        return 0;
+    }
+    /* R32F, 2x1 texels, one level, block linear, normalized */
+    const u32 tic[8] = {0x0f | 7u << 7 | 7u << 10 | 7u << 13 | 7u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                        (u32)texels,
+                        (u32)(texels >> 32) | 3u << 21,
+                        0,
+                        1 | 1u << 23,
+                        1u << 31,
+                        0,
+                        0};
+    u8 bytes[256] = {0};
+    for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+    CHECK(!gmem_write(pool, bytes, 32));
+    memset(bytes, 0, sizeof bytes);
+    CHECK(!gmem_write(cbuf, bytes, 256)); /* the handle at 0x40: 0, the header above and sampler 0 */
+    snx_st_le32(bytes + 4, 0x3f800000);   /* texel 1 is 1.0, texel 0 nought */
+    CHECK(!gmem_write(texels, bytes, 256));
+    CHECK(index_program(program, fragment, 4, 1));
+    u32* r = channel->r3d;
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 0;
+    r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 0;
+    r[0x48D] = 0;
+    r[0x982] = 2;
+    channel->ds.bind.cb_addr[4][2] = cbuf;
+    channel->ds.bind.cb_size[4][2] = 256;
+    r[0x851] = (u32)(program - address); /* the fragment program's offset */
+    int minmax = vk_format_minmax_filter(VK_FORMAT_R32_SFLOAT), ok = 1;
+    VkBool32 had = g_vk.feat12.samplerFilterMinmax;
+    for (int device = minmax ? 1 : 0; device >= 0 && ok; device--) {
+        g_vk.feat12.samplerFilterMinmax = device ? had : VK_FALSE;
+        for (u32 reduction = 1; reduction <= 2 && ok; reduction++) {
+            u32 tsc[8] = {2u | 2u << 3 | 2u << 6, 2u | 2u << 4 | 1u << 6 | reduction << 10};
+            for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tsc[i]);
+            CHECK(!gmem_write(samplers, bytes, 32));
+            DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+            IndexPixels px;
+            u8 first[4] = {0};
+            ok = !index_draw(channel, target, &call, &px) && !index_first_pixel(target, first) &&
+                 first[0] == (reduction == 1 ? 0 : 255);
+            if (!ok)
+                fprintf(stderr, "min/max %s: the %s of a texel of 0 and one of 1 reads red %u, not %u\n",
+                        device ? "by the device's sampler" : "in a fragment program",
+                        reduction == 1 ? "least" : "greatest", first[0], reduction == 1 ? 0 : 255);
+        }
+    }
+    g_vk.feat12.samplerFilterMinmax = had;
+    r[0x851] = 0x10000; /* the harness's fragment program again */
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    CHECK(ok);
+    printf("min/max in a fragment program: the least and the greatest of two texels taken by the program on a device "
+           "without the filter (the device's own %s)\n",
+           minmax ? "agrees" : "has none for R32F");
+    return 0;
+}
+
+/* Constant buffer words folded into a fragment program's translation (gpu/vk/cb_fold.h). The program's red and green
+   are the first two words of its constant buffer 2, so a quad shows which words its translation computed with: each
+   draw's own, whether a translation holds them as constants or loads them. The count of translations says which was
+   made: one for each of the first SH_CB_FOLD_VARIANTS pairs of words that fold, one more that folds nothing the
+   others disagree on, and none after it */
+static int cb_fold_words(u64 cbuf, float red, float green) {
+    u8 bytes[8];
+    u32 word;
+    memcpy(&word, &red, 4);
+    snx_st_le32(bytes, word);
+    memcpy(&word, &green, 4);
+    snx_st_le32(bytes + 4, word);
+    return gmem_write(cbuf, bytes, sizeof bytes);
+}
+static u64 cb_fold_translated(void) {
+    u64 ignored, shaders;
+    vk_pipeline_stats(&ignored, &ignored, &ignored, &ignored, &shaders, &ignored);
+    return shaders;
+}
+/* the fragment shader a draw of the bound state takes for the program at address, as a draw of no textures and
+   float targets asks for it */
+static VkSh* cb_fold_shader(GpuChannel* channel, u64 address) {
+    vk_lock();
+    VkSh* s = vk_shader_get(&channel->ds, address, 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 0, 0, 0, 0);
+    vk_unlock();
+    return s;
+}
+/* the hash vk_shader_get gives the fragment program index_program writes from ops */
+static u64 cb_fold_hash(const u64* ops, u32 count) {
+    u64 code[64] = {0};
+    u8* window = calloc(1, SH_CODE);
+    u32 at = 10, length = 0;
+    u64 hash = 0;
+    if (!window) return 0;
+    code[3] = 0xff;
+    code[9] = 15;
+    for (u32 i = 0; i < count; i++) {
+        if (!(i % 3)) code[at++] = 0x001f8000fc0007e0ull;
+        code[at++] = ops[i];
+    }
+    for (u32 i = 0; i < 64; i++) snx_st_le64(window + i * 8, code[i]);
+    vk_lock();
+    hash = vk_shader_hash(window, SH_CODE, &length, NULL);
+    vk_unlock();
+    free(window);
+    return hash;
+}
+static int cb_fold_case(GpuChannel* channel, u64 target, u64 address) {
+    const u64 program = address + 0x8000, plain = address + 0x8200, asked = address + 0x8400, cbuf = address + 0x1D000;
+    u64 fragment[6] = {0x4c98078800070000ull, /* MOV R0, c[2][0]: the red */
+                       0x4c98078800170001ull, /* MOV R1, c[2][4]: the green */
+                       0x0100000000071002ull, /* MOV32I R2, 0 */
+                       0x0103f80000071003ull, /* MOV32I R3, 1.0 */
+                       0xe30000000007000full};
+    /* pairs of words that fold, each a colour of its own */
+    const float folds[3][2] = {{0, 1}, {1, 0}, {0, 0}};
+    const DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    IndexPixels px;
+    u8 first[4] = {0};
+    u32* r = channel->r3d;
+    CHECK(SH_CB_FOLD_VARIANTS <= 3);
+    CHECK(index_program(program, fragment, 5, 1));
+    channel->ds.bind.cb_addr[4][2] = cbuf;
+    channel->ds.bind.cb_size[4][2] = 256;
+    r[0x851] = (u32)(program - address); /* the fragment program's offset */
+    u64 translated = cb_fold_translated(), again = vk_shader_folds();
+    for (u32 i = 0; i < SH_CB_FOLD_VARIANTS; i++) {
+        CHECK(!cb_fold_words(cbuf, folds[i][0], folds[i][1]));
+        CHECK(!index_draw(channel, target, &call, &px));
+        CHECK(px.green == (folds[i][1] != 0 ? 16u : 0u) && (px.red == 16) == (folds[i][0] != 0));
+        CHECK(cb_fold_translated() == translated + i + 1);
+    }
+    /* words that fold, of a pair no translation holds: the one more, which folds neither */
+    CHECK(!cb_fold_words(cbuf, 1, 1));
+    CHECK(!index_draw(channel, target, &call, &px) && !index_first_pixel(target, first));
+    CHECK(first[0] == 255 && first[1] == 255 && !first[2]);
+    CHECK(cb_fold_translated() == translated + SH_CB_FOLD_VARIANTS + 1);
+    /* words that do not fold, and then each pair again: no translation more, and each draw its own words */
+    CHECK(!cb_fold_words(cbuf, 0.5f, 0.25f));
+    CHECK(!index_draw(channel, target, &call, &px) && !index_first_pixel(target, first));
+    CHECK(first[0] >= 127 && first[0] <= 128 && first[1] >= 63 && first[1] <= 64 && !first[2]);
+    for (u32 i = 0; i < SH_CB_FOLD_VARIANTS; i++) {
+        CHECK(!cb_fold_words(cbuf, folds[i][0], folds[i][1]));
+        CHECK(!index_draw(channel, target, &call, &px));
+        CHECK(px.green == (folds[i][1] != 0 ? 16u : 0u) && (px.red == 16) == (folds[i][0] != 0));
+    }
+    CHECK(cb_fold_translated() == translated + SH_CB_FOLD_VARIANTS + 1 && vk_shader_folds() == again);
+
+    /* the same program by its lookup: the translation of each pair holds both words, the one of the pairs the others
+       disagree on holds none, and a draw takes the one that holds most of its words */
+    VkSh* by_value[3] = {NULL, NULL, NULL};
+    for (u32 i = 0; i < SH_CB_FOLD_VARIANTS; i++) {
+        CHECK(!cb_fold_words(cbuf, folds[i][0], folds[i][1]));
+        by_value[i] = cb_fold_shader(channel, program);
+        CHECK(by_value[i] && !by_value[i]->failed && by_value[i]->nfold == 2);
+        for (u32 k = 0; k < i; k++) CHECK(by_value[k] != by_value[i]);
+    }
+    CHECK(!cb_fold_words(cbuf, 1, 1));
+    VkSh* agreed = cb_fold_shader(channel, program);
+    CHECK(agreed && !agreed->failed && agreed->nfold == 0);
+    CHECK(!cb_fold_words(cbuf, 0.5f, 0.25f));
+    CHECK(cb_fold_shader(channel, program) == agreed);
+    CHECK(!cb_fold_words(cbuf, folds[0][0], folds[0][1]));
+    CHECK(cb_fold_shader(channel, program) == by_value[0]);
+
+    /* without the fold: one translation whatever the words, each draw still its own */
+    fragment[2] = 0x0100000000171002ull; /* another program: MOV32I R2, 1 (a denormal, no blue) */
+    CHECK(index_program(plain, fragment, 5, 1));
+    r[0x851] = (u32)(plain - address);
+    vk_cb_fold_switch(0);
+    translated = cb_fold_translated();
+    for (u32 i = 0; i < 2; i++) {
+        CHECK(!cb_fold_words(cbuf, folds[i][0], folds[i][1]));
+        CHECK(!index_draw(channel, target, &call, &px));
+        CHECK(px.green == (folds[i][1] != 0 ? 16u : 0u) && (px.red == 16) == (folds[i][0] != 0));
+    }
+    vk_cb_fold_switch(1);
+    CHECK(cb_fold_translated() == translated + 1);
+
+    /* a translation made before its draw's words were known (an earlier run's, the shipped programs' pass): the first
+       draw that finds it asks for one that folds its words, and that one is made beside it */
+    fragment[2] = 0x0100000000271002ull; /* a third program: MOV32I R2, 2 */
+    CHECK(index_program(asked, fragment, 5, 1));
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    VkSh* unbound = cb_fold_shader(channel, asked);
+    CHECK(unbound && !unbound->failed && unbound->nfold == 0);
+    unbound->fold_asked = 0; /* as a translation of an earlier run comes back */
+    channel->ds.bind.cb_addr[4][2] = cbuf;
+    channel->ds.bind.cb_size[4][2] = 256;
+    CHECK(!cb_fold_words(cbuf, 0.5f, 0.25f));
+    again = vk_shader_folds();
+    CHECK(cb_fold_shader(channel, asked) == unbound && vk_shader_folds() == again); /* nothing there folds */
+    unbound->fold_asked = 0;
+    CHECK(!cb_fold_words(cbuf, 0.5f, 1));
+    VkSh* green = cb_fold_shader(channel, asked); /* its first word a load, its second the constant 1.0 */
+    CHECK(green && green != unbound && green->nfold == 1 && vk_shader_folds() == again + 1);
+    /* the folded word changes to another that folds: the translation no longer holds, and the one asked again of
+       the program makes the second by value */
+    CHECK(!cb_fold_words(cbuf, 0.5f, 0));
+    VkSh* dark = cb_fold_shader(channel, asked);
+    CHECK(dark && dark != green && dark != unbound && dark->nfold == 1 && vk_shader_folds() == again + 2);
+    CHECK(!cb_fold_words(cbuf, 0.5f, 1));
+    CHECK(cb_fold_shader(channel, asked) == green);
+    CHECK(!cb_fold_words(cbuf, 0.5f, 0.25f));
+    CHECK(cb_fold_shader(channel, asked) == unbound && vk_shader_folds() == again + 2);
+
+    /* a translation the shipped programs' pass made is not one of the program's two by value: one more is */
+    green->shipped = 2;
+    unbound->fold_asked = 0;
+    CHECK(!cb_fold_words(cbuf, 1, 0.25f));
+    VkSh* red = cb_fold_shader(channel, asked);
+    CHECK(red && red != unbound && red->nfold == 1 && vk_shader_folds() == again + 3);
+    green->shipped = 0;
+
+    /* another program whose hash falls where that one's does in the shader table: its first translation folds by
+       value, whatever the other's count */
+    u64 bucket = unbound->hash & 1023, twin = 0;
+    for (u32 n = 16; n < 60000 && !twin; n++) {
+        fragment[2] = 0x0100000000071002ull | (u64)n << 20; /* MOV32I R2, n */
+        if ((cb_fold_hash(fragment, 5) & 1023) == bucket) twin = address + 0x8C00;
+    }
+    CHECK(twin && index_program(twin, fragment, 5, 1));
+    CHECK(!cb_fold_words(cbuf, 0, 1));
+    VkSh* beside = cb_fold_shader(channel, twin);
+    CHECK(beside && !beside->failed && (beside->hash & 1023) == bucket && beside->hash != unbound->hash &&
+          beside->nfold == 2);
+
+    /* a word past the buffer the draw binds is a load, whatever guest memory holds there */
+    fragment[2] = 0x0100000000371002ull; /* a fourth program: MOV32I R2, 3 */
+    CHECK(index_program(address + 0x8800, fragment, 5, 1));
+    channel->ds.bind.cb_size[4][2] = 4;
+    CHECK(!cb_fold_words(cbuf, 0, 1));
+    VkSh* cut = cb_fold_shader(channel, address + 0x8800);
+    CHECK(cut && !cut->failed && cut->nfold == 1);
+    channel->ds.bind.cb_size[4][2] = 256;
+
+    /* two draws of one submit that bind other buffers: the second is not drawn with the first one's constants */
+    const u64 other = cbuf + 0x100;
+    r[0x851] = (u32)(program - address);
+    CHECK(!cb_fold_words(cbuf, folds[0][0], folds[0][1]) && !cb_fold_words(other, folds[1][0], folds[1][1]));
+    vk_lock();
+    rt_clear(channel, target, 4, 4, 0, 1);
+    channel->r3d_dirty = ~0u;
+    mx_draw_state_sync(channel);
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    channel->ds.bind.cb_addr[4][2] = other;
+    channel->ds.gen[DS_BIND]++;
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    CHECK(!index_pixels(target, &px));
+    vk_unlock();
+    channel->ds.bind.cb_addr[4][2] = cbuf;
+    channel->ds.gen[DS_BIND]++;
+    CHECK(px.red == 16 && !px.green);
+
+    /* a vertex program's words are loads whatever they hold: only fragment programs fold */
+    const u64 vertex[] = {0x4c98078800070004ull, /* MOV R4, c[2][0] */
+                          0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
+                          0xeff1ff800707ff00ull, /* position */
+                          0xe30000000007000full};
+    CHECK(index_program(address + 0x8600, vertex, 4, 0));
+    channel->ds.bind.cb_addr[0][2] = cbuf;
+    channel->ds.bind.cb_size[0][2] = 256;
+    CHECK(!cb_fold_words(cbuf, 0, 1));
+    vk_lock();
+    VkSh* loads =
+        vk_shader_get(&channel->ds, address + 0x8600, 0, ST_VS, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 0, 0, 0, 0);
+    vk_unlock();
+    CHECK(loads && !loads->failed && loads->nfold == 0 && loads->cbr.n == 0);
+    channel->ds.bind.cb_addr[0][2] = 0;
+    channel->ds.bind.cb_size[0][2] = 0;
+
+    r[0x851] = 0x10000; /* the harness's fragment program again */
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    puts("constant buffer folds: a fragment program's translations hold the words of their draws that fold, each "
+         "draw takes the one whose words it has, and one more is made only as the rule allows");
     return 0;
 }
 
@@ -1263,6 +1590,7 @@ static int check_index_draws(void) {
     CHECK(index_program(address + 0x10000, fragment, 5, 1));
     u32* r = channel->r3d;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 1; /* as reset_3d starts a channel */
+    all_samples(r);
     r[0x582] = (u32)(address >> 32);
     r[0x583] = (u32)address;
     r[0x850] = 1;
@@ -1298,6 +1626,8 @@ static int check_index_draws(void) {
     CHECK(!vertex_query_volume_case(channel, target, address));
     CHECK(!fragment_query_volume_case(channel, target, address));
     CHECK(!fragment_query_slots_case(channel, target, address));
+    CHECK(!minmax_fragment_case(channel, target, address));
+    CHECK(!cb_fold_case(channel, target, address));
     CHECK(!shadow_map_cases(channel, target, address));
     CHECK(!query_target_case(channel, target, address));
     CHECK(!own_target_case(channel, target, address, 0));

@@ -40,6 +40,8 @@ typedef struct Renderer {
     int (*start)(void); /* 0 when it can't run here */
     /* after a start that returned 0: why, with the values that decided it (a device's Vulkan version), or "" */
     const char* (*start_failure)(void);
+    /* the device it draws on, as its driver names it: "" before a start that found one; NULL in a renderer without */
+    const char* (*device_name)(void);
     /* guest memory may have changed since the renderer's caches last checked it: a submission came (on the
        submitting thread), or a stream goes on after a wait (gpu_park, on the GPU thread) that the CPU may have ended
        after writing data. Caches read guest memory again. Any thread */

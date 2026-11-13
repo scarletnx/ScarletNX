@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/present_quad.h"
 #include "nx/gpu/vk/ui_spv.h"
@@ -33,15 +34,18 @@ static SnxUiQuad g_quads[MAX_QUADS];
 /* the font's and the icons' bits, a byte a row (ui.frag's Glyphs): what letters and icons read, not the atlas */
 #define UI_GLYPHS_SIZE ((256 + 2 * GUI_ICON_COUNT) * 16)
 static VkBuffer g_glyphs;
-static VmaAllocation g_glyphs_mem;
+static DevMem g_glyphs_mem;
 /* The quads and the ring's bytes (ui.vert's Ring), a region for each frame in flight in one buffer the CPU writes and
    the device reads as it is (host-visible, mapped): the ring's bytes, then the quads as instances. A frame writes into
    its region the quads written since the region was last (the parts ui_dirty_end gives, from each frame since), and
    the ring's bytes when they changed: no copy, no barrier. Its region is free, as vk_cmd waited for the frame two back
    that read it */
 #define UI_RING_BYTES SNX_UI_RING_MAX
+/* ui.vert's push constants: its Picture (UiPicture), then the frame's region's first word in Ring, pushed apart as it
+   changes every frame (ui_record) */
+#define UI_PUSH_BYTES 28
 static VkBuffer g_frames;
-static VmaAllocation g_frames_mem;
+static DevMem g_frames_mem;
 static u8* g_frames_at;
 static u64 g_region; /* a region's bytes, a multiple of the device's least storage buffer offset */
 typedef struct {
@@ -86,11 +90,11 @@ static VkDescriptorPool g_pool;
 static VkDescriptorSet g_sets[3];
 static VkSampler g_samplers[2];
 static VkImage g_atlas;
-static VmaAllocation g_atlas_mem;
+static DevMem g_atlas_mem;
 static VkImageView g_atlas_view;
 static u32 g_atlas_version;
 static VkImage g_image; /* ui_image's picture */
-static VmaAllocation g_image_mem;
+static DevMem g_image_mem;
 static VkImageView g_image_view;
 static u32 g_image_version;
 static VkImage g_sc_img[VK_SC_MAX];
@@ -106,22 +110,21 @@ static int layout_make(void) {
                                           .descriptorCount = 1,
                                           .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
                                          {.binding = 2,
-                                          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                                          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                           .descriptorCount = 1,
                                           .stageFlags = VK_SHADER_STAGE_VERTEX_BIT}};
     VkDescriptorSetLayoutCreateInfo dci = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 3, .pBindings = b};
-    VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 24};
+    VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, UI_PUSH_BYTES};
     VkPipelineLayoutCreateInfo lci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                       .setLayoutCount = 1,
                                       .pSetLayouts = &g_dsl,
                                       .pushConstantRangeCount = 1,
                                       .pPushConstantRanges = &pc};
-    VkDescriptorPoolSize size[3] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
-                                    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
-                                    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 3}};
+    VkDescriptorPoolSize size[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+                                    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6}};
     VkDescriptorPoolCreateInfo pci = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 3, .poolSizeCount = 3, .pPoolSizes = size};
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 3, .poolSizeCount = 2, .pPoolSizes = size};
     VkDescriptorSetLayout layouts[3];
     VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorSetCount = 3};
     int i;
@@ -258,15 +261,13 @@ static void atlas_upload(VkCommandBuffer cb) {
     u32 version;
     const u32* px = ui_atlas(&w, &h, &version);
     VkBuffer buf;
-    VmaAllocation mem;
-    VmaAllocationInfo info;
+    DevMem mem;
+    DevMemInfo info;
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                               .size = (VkDeviceSize)w * (VkDeviceSize)h * 4,
                               .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo bai = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                                            VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                   .usage = VMA_MEMORY_USAGE_AUTO};
+    DevMemWant bai = {.at = DM_WINDOW, .mapped = 1};
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
                             .format = VK_FORMAT_R8G8B8A8_UNORM,
@@ -277,7 +278,7 @@ static void atlas_upload(VkCommandBuffer cb) {
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo iai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    DevMemWant iai = {.at = DM_DEVICE};
     VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                  .viewType = VK_IMAGE_VIEW_TYPE_2D,
                                  .format = VK_FORMAT_R8G8B8A8_UNORM,
@@ -285,22 +286,22 @@ static void atlas_upload(VkCommandBuffer cb) {
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                               .imageExtent = {(u32)w, (u32)h, 1}};
     if (!px || version == g_atlas_version) return;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &bai, &buf, &mem, &info))) return;
-    vk_mem_track(mem);
-    memcpy(info.pMappedData, px, (size_t)w * (size_t)h * 4);
-    vmaFlushAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE);
+    if (!VK_OK(vk_buffer_create(&bci, &bai, &buf, &mem, &info))) return;
+    vk_mem_track(mem, VK_OWN_UI);
+    memcpy(info.ptr, px, (size_t)w * (size_t)h * 4);
+    vk_devmem_flush(mem, 0, VK_WHOLE_SIZE);
     vk_defer_buffer(buf, mem);
     if (g_atlas) vk_defer_image(g_atlas, g_atlas_mem, g_atlas_view, VK_NULL_HANDLE);
     g_atlas = VK_NULL_HANDLE;
-    if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &iai, &g_atlas, &g_atlas_mem, NULL))) {
+    if (!VK_OK(vk_devmem_image(&ii, &iai, &g_atlas, &g_atlas_mem))) {
         g_atlas = VK_NULL_HANDLE;
         return;
     }
-    vk_mem_track(g_atlas_mem);
+    vk_mem_track(g_atlas_mem, VK_OWN_UI);
     vci.image = g_atlas;
     if (!VK_OK(vk_image_view_create(g_vk.dev, &vci, NULL, &g_atlas_view))) {
         vk_mem_untrack(g_atlas_mem);
-        vmaDestroyImage(g_vk.vma, g_atlas, g_atlas_mem);
+        vk_devmem_image_destroy(g_atlas, g_atlas_mem);
         g_atlas = VK_NULL_HANDLE;
         return;
     }
@@ -338,7 +339,7 @@ static void image_upload(VkCommandBuffer cb) {
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo iai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    DevMemWant iai = {.at = DM_DEVICE};
     VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                  .viewType = VK_IMAGE_VIEW_TYPE_2D,
                                  .format = VK_FORMAT_R8G8B8A8_UNORM,
@@ -357,13 +358,15 @@ static void image_upload(VkCommandBuffer cb) {
                                    .descriptorCount = 1,
                                    .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                    .pImageInfo = &di};
-        if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &iai, &g_image, &g_image_mem, NULL))) {
+        if (!VK_OK(vk_devmem_image(&ii, &iai, &g_image, &g_image_mem))) {
             g_image = VK_NULL_HANDLE;
             return;
         }
         vci.image = g_image;
+        vk_mem_track(g_image_mem, VK_OWN_UI);
         if (!VK_OK(vk_image_view_create(g_vk.dev, &vci, NULL, &g_image_view))) {
-            vmaDestroyImage(g_vk.vma, g_image, g_image_mem);
+            vk_mem_untrack(g_image_mem);
+            vk_devmem_image_destroy(g_image, g_image_mem);
             g_image = VK_NULL_HANDLE;
             return;
         }
@@ -385,11 +388,12 @@ static void image_upload(VkCommandBuffer cb) {
     g_image_version = version;
 }
 /* ui.vert's Picture: the picture's size, the ring's head and its slots from bit 16, the bars' slow colour and its
-   height, and the backed letters' ground */
+   height, and the backed letters' ground, which g_shown compares from frame to frame */
 typedef struct {
     float w, h;
     u32 ring, slow, slow_from, ground;
 } UiPicture;
+_Static_assert(UI_PUSH_BYTES == sizeof(UiPicture) + sizeof(u32), "ui.vert's Picture, then the ring's word");
 static UiPicture g_pc;
 /* The layer the window shows, as the last pass drew it: its safe area, its quads' number (-1: none drawn yet, or
    another swapchain since) and what ui.vert took beside them; and whether the list has moved on from it (a quad
@@ -434,8 +438,8 @@ static int glyphs_upload(VkCommandBuffer cb) {
                               .size = UI_GLYPHS_SIZE,
                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    VmaAllocationInfo info;
+    DevMemWant ai = {.at = DM_DEVICE};
+    DevMemInfo info;
     VkBufferMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                                 .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -454,11 +458,11 @@ static int glyphs_upload(VkCommandBuffer cb) {
     if (g_glyphs) return 1;
     to = vk_stage(UI_GLYPHS_SIZE, 16, &buf, &off);
     if (!to) return 0;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &ai, &g_glyphs, &g_glyphs_mem, &info))) {
+    if (!VK_OK(vk_buffer_create(&bci, &ai, &g_glyphs, &g_glyphs_mem, &info))) {
         g_glyphs = VK_NULL_HANDLE;
         return 0;
     }
-    vk_mem_track(g_glyphs_mem);
+    vk_mem_track(g_glyphs_mem, VK_OWN_UI);
     memcpy(to, gui_vga_font, 256 * 16); /* bytes: the device's words read them little-endian, as the shader takes */
     memcpy(to + 256 * 16, gui_icon_font, 2 * GUI_ICON_COUNT * 16);
     copy.srcOffset = off;
@@ -477,7 +481,9 @@ static int glyphs_upload(VkCommandBuffer cb) {
     }
     return 1;
 }
-/* the frames' buffer, made once, each set's binding 2 its region's ring (the region an offset at each bind) */
+/* the frames' buffer, made once, each set's binding 2 all of it: ui.vert finds the frame's region's ring at the word
+   ui_record pushes, as a dynamic offset would need a descriptor set Turnip no longer keeps for them
+   (gpu_driver_load.c's turnip_sets) */
 static int frames_make(void) {
     u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment, region = UI_RING_BYTES + sizeof g_quads;
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -485,35 +491,32 @@ static int frames_make(void) {
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     /* written in order and never read by the CPU: the device's own memory where the CPU can write it (a BAR), else
        the host's */
-    VmaAllocationCreateInfo ai = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                                           VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                  .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    VmaAllocationInfo info;
+    DevMemWant ai = {.at = DM_WINDOW, .mapped = 1};
+    DevMemInfo info;
     int i;
     if (g_frames) return 1;
     align = align < 64 ? 64 : align;
     g_region = (region + align - 1) / align * align;
     bci.size = g_region * VK_FRAMES;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &ai, &g_frames, &g_frames_mem, &info)) || !info.pMappedData) {
-        if (g_frames) vmaDestroyBuffer(g_vk.vma, g_frames, g_frames_mem);
+    if (!VK_OK(vk_buffer_create(&bci, &ai, &g_frames, &g_frames_mem, &info)) || !info.ptr) {
+        if (g_frames) vk_devmem_buffer_destroy(g_frames, g_frames_mem);
         g_frames = VK_NULL_HANDLE;
         return 0;
     }
-    vk_mem_track(g_frames_mem);
-    g_frames_at = (u8*)info.pMappedData;
+    vk_mem_track(g_frames_mem, VK_OWN_UI);
+    g_frames_at = (u8*)info.ptr;
     {
-        VkMemoryPropertyFlags flags = 0;
-        vmaGetAllocationMemoryProperties(g_vk.vma, g_frames_mem, &flags);
+        VkMemoryPropertyFlags flags = vk_devmem_props()->memoryTypes[info.type].propertyFlags;
         g_frames_coherent = (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
     }
     for (i = 0; i < VK_FRAMES; ++i) g_slot[i] = (UiSlot){.fresh = 1};
     for (i = 0; i < 3; ++i) {
-        VkDescriptorBufferInfo bi = {g_frames, 0, UI_RING_BYTES};
+        VkDescriptorBufferInfo bi = {g_frames, 0, g_region * VK_FRAMES};
         VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                    .dstSet = g_sets[i],
                                    .dstBinding = 2,
                                    .descriptorCount = 1,
-                                   .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                                   .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                    .pBufferInfo = &bi};
         vkUpdateDescriptorSets(g_vk.dev, 1, &wr, 0, NULL);
     }
@@ -554,12 +557,12 @@ static int frames_send(int n, const SnxUiRing* ring) {
         u64 off = UI_RING_BYTES + (u64)g_slot[slot].first * sizeof(SnxUiQuad);
         quads_le(at + off, g_slot[slot].first, g_slot[slot].end);
         if (!g_frames_coherent)
-            vmaFlushAllocation(g_vk.vma, g_frames_mem, g_region * (u64)slot + off,
+            vk_devmem_flush(g_frames_mem, g_region * (u64)slot + off,
                                (u64)(g_slot[slot].end - g_slot[slot].first) * sizeof(SnxUiQuad));
     }
     if (g_slot[slot].fresh || g_slot[slot].ring != ring->version) { /* its maker's count of its changes */
         memcpy(at, ring->height, UI_RING_BYTES);
-        if (!g_frames_coherent) vmaFlushAllocation(g_vk.vma, g_frames_mem, g_region * (u64)slot, UI_RING_BYTES);
+        if (!g_frames_coherent) vk_devmem_flush(g_frames_mem, g_region * (u64)slot, UI_RING_BYTES);
         g_slot[slot].ring = ring->version;
     }
     g_slot[slot].first = g_slot[slot].end = 0;
@@ -670,7 +673,7 @@ static void ui_record(VkCommandBuffer cb, int n) {
     VkViewport vp = {0, 0, g_pc.w, g_pc.h, 0, 1};
     VkRect2D sci = {{0, 0}, g_vk.sc_extent};
     VkDeviceSize vo = g_region * (u64)g_slot_now + UI_RING_BYTES;
-    u32 ring_at = (u32)(g_region * (u64)g_slot_now);
+    u32 ring_at = (u32)(g_region * (u64)g_slot_now / 4); /* ui.vert's Picture.ring_at, in the ring's words */
     int i, set = -1, pipe = -1;
     if (g_runs_n != n) runs_make(n);
     vk_render_forget_state(); /* another pipeline and layout: a draw after it sets everything again */
@@ -678,14 +681,16 @@ static void ui_record(VkCommandBuffer cb, int n) {
     rec_CmdSetScissor(cb, 0, 1, &sci);
     rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof g_pc,
                          &g_pc);
+    rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, sizeof g_pc,
+                         sizeof ring_at, &ring_at);
     rec_CmdBindVertexBuffers(cb, 0, 1, &g_frames, &vo);
     for (i = 0; i < g_nruns; ++i) {
         const UiRun* r = &g_runs[i];
         if (r->set == UI_IMAGE && !g_image) continue; /* its upload failed */
         if (pipe != r->pipe) rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipes[pipe = r->pipe]);
         if (set != r->set)
-            rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1, &g_sets[set = r->set], 1,
-                                      &ring_at);
+            rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1, &g_sets[set = r->set], 0,
+                                      NULL);
         rec_CmdDraw(cb, r->vertices, (u32)r->count, 0, (u32)r->first);
     }
 }

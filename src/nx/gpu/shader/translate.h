@@ -85,11 +85,19 @@ typedef struct {
     u32 wlog;
     u8 wlog_mark[16];
     int quad; /* quad operations are declared: shader_shfl_quad's SHFL are ones */
+    /* A fragment program run as one lane alone, where the stage has no subgroup: its place in its 2x2 quad (x's parity
+       in bit 0, y's in bit 1, from FragCoord, as Vulkan groups the pixels of a fine derivative) and, for each axis,
+       1.0 where the other pixel of its pair along it comes after it and -1.0 where before (emit_thread.c's
+       quad_read). 0 in other programs */
+    u32 quad_lane, quad_sign[2];
     /* A fragment program with flow discards nothing inside its loop: a KIL or a failed alpha test sets this bool,
        an EXIT ends the loop for the lane, and the lane is discarded after it. A demote or a kill in the loop lets a
        driver drop a quad's remaining helpers from execution while they still hold the loop open: AMD's Windows
        compiler then repeats the loop with no lane left to end it, until the GPU is reset. */
     u32 discarded;
+    /* A fragment program with loops: the Function variable that counts the back-edges a lane took (0: none).
+       shader_helper_loop_exit reads it */
+    u32 helper_rounds;
     u32 blend_end;     /* one final fragment epilogue, reached after all guest control flow and alpha tests */
     u32 primitive_base; /* capture slices preserve the original fragment PrimitiveId through push constants */
     u32 branch_cond;   /* with structured flow, the condition of the branch that ends the block, 0 for always */
@@ -195,6 +203,7 @@ int shader_writes_reg(u64 w, int op, u32 reg);
 u32 shader_direct_pred_writes(u64 w, int op);
 u32 shader_next_instruction(u32 index, u32 limit);
 int shader_shfl_quad(u64 w, u32* lane);
+int shader_shfl_quad_lanes(u64 w, u8 dir[4], u32* valid);
 u32 shader_fswzadd_lanes(u64 w, u32 mode);
 int shader_predicate_comparison(int op);
 int shader_writes_predicate(u64 w, int op, u32 p);
@@ -226,6 +235,9 @@ int shader_direct_track_cbuf_word(const ShFlow* f, u32 index, u32 reg, u32* bank
 int shader_direct_track_image_handle(const ShFlow* f, u32 index, u32 reg, u32* bank, u32* off, int depth);
 int shader_direct_track_image_handle_pair(const ShFlow* f, u32 index, u32 reg, u32* bank, u32* off, u32* bank2,
                                           u32* off2, int depth);
+/* the most constant buffer handles one TEX.B chooses among (shader_direct_handle_candidates) */
+#define SH_HANDLE_CANDIDATES 4
+int shader_direct_handle_candidates(const ShFlow* f, u32 index, u32 reg, u32* banks, u32* offs, int max);
 int shader_al2p_predicate_unseen(const ShFlow* f, u32 at);
 u32 shader_direct_indexed_handle(const ShFlow* f, u32 index, u32 reg, int stage, u32* ldc);
 int shader_direct_bindless_matches(const ShTex* t, u32 bank, int handle_count, u32 bank2, u32 off2, u32 indexed,
@@ -282,6 +294,9 @@ int shader_dc_color_func(const ShaderInfo* si, int slot);
 u32 shader_dc_compare(DirectCtx* c, int func, u32 reference, u32 texel);
 u32 shader_indexed_is_depth(DirectCtx* c, int slot);
 u32 shader_dc_compare_indexed(DirectCtx* c, int slot, u32 reference, u32 texel);
+int shader_minmax_of(const ShaderInfo* si, int slot);
+u32 shader_minmax_direct(DirectCtx* c, u32 vec4_type, u32 sampled_type, u32 sampler, u32 coords, int array, u32 offset,
+                         int dynamic, int reduce);
 u32 shader_sample_dref(DirectCtx* c, const ShaderInfo* si, int slot, u32 vec4_type, u32 coords, u32 dref, int use_lod,
                        u32 lod);
 void shader_scaled_fetch(DirectCtx* c, u32 push, u32 fragcoord, u32 vec4, int slot, u32 i32_type, u32* x, u32* y);
@@ -335,6 +350,9 @@ void shader_geometry_passthrough(DirectCtx* c, const ShaderInfo* si, u32 vertice
 void shader_dynamic_pop(DirectCtx* c, u32 stack_ptr, const u32 stack[32], u32 kind_value, u32 fallback, u32* found,
                         u32* destination, u32* new_sp);
 int shader_structure_step(DirectCtx* c, StructEmit* se);
+/* A helper lane leaves a loop after this many back-edges of its invocation (shader_helper_loop_exit) */
+#define SH_HELPER_LOOP_ROUNDS 65536u
+u32 shader_helper_loop_exit(DirectCtx* c);
 
 /* value, of from_type, as to_type (both 32-bit scalars): a constant's bits as a constant of to_type, a value cast
    in this block as what that cast made or was made from, else its bitcast. A register copied and then read as a
@@ -628,6 +646,7 @@ typedef struct {
     u32 shared_words;
     u32 shared_element_pointer;
     u32 shared_array;
+    u32 shared_groups; /* NumWorkgroups where the shared memory is in a buffer (ShaderInfo.shared_spill), else 0 */
     u32 push;
     u32 push_pointer;
     u32 local_words;

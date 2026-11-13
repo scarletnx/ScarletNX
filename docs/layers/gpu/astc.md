@@ -300,7 +300,7 @@ Memory is what a desktop GPU runs short of. As RGBA8, one game's textures took 5
 evicted and uploaded again every frame (600 to 1000 ms frames); as BC7 they took 2.5 GB. Another took 3.9 GB of an
 RX 6700 XT's 11.8 GB budget as RGBA8, 0.4 GB more than as BC7, and its frames were smoother so. BC7 is not exact (its
 PSNR is below), mostly seen in UI text. Auto's line (`SNX_ASTC_EXACT_MB` in `gpu/texture/astc_bc.h`) is drawn
-between them: the budget is `VK_EXT_memory_budget`'s (VMA's estimate of 80% of the heap without it), or `vk_budget_mb`
+between them: the budget is `VK_EXT_memory_budget`'s (80% of the heap without it), or `vk_budget_mb`
 where that is lower, as `vk_mem_use` gives it, read once after the device is made (`device.c`'s `astc_choose`). The
 log's line says the budget, the line and the choice (an RX 6700 XT's):
 
@@ -601,7 +601,7 @@ FreeBSD), and a texture can be bigger once decoded: a 2D ASTC texture of 11584x1
 - The staging and readback rings stop growing at the cap: a full ring at the cap is followed by another one, and a
   request past it fails, so large uploads stage in parts. `texture.c` stages a level bigger than 64 MiB (or the
   cap) in bands of block rows of one slice, converted band by band.
-- VMA's own blocks stay within the cap.
+- The blocks of device memory (`devmem.c`) stay within the cap.
 
 The `[Debug]` setting `vk_max_allocation_mb` (`--vk_max_allocation_mb=4` for a run) lowers the cap, to test the pieces on a driver that accepts anything (lavapipe).
 
@@ -614,6 +614,15 @@ memory only for its mapped tiles. An ASTC 4x4 one held as BC7 (`astc_mode`, abov
 a texture's changed runs are. Other footprints (an 8x8 tile is 2x2 BC7 blocks) and ASTC held as RGBA8 (blocks of
 128x128 texels) keep the whole image, and the log line saying so names the format and the device's block in the
 layout's terms.
+
+A game maps one tile of its memory at many tiles of a sparse texture, and the blocks of those tiles show the same
+texels. Where the device binds memory to more than one place of an image (`sparseResidencyAliased`), such blocks
+share one allocation. `texture.c` gives each block a key: a hash of which guest memory lies under it and where in the
+block each run of that memory lies, with the block's level. `memory.c` binds the blocks of one key to the same memory
+(`vk_image_resident` for a texture bound a tile at a time, `vk_image_sparse_bind` for the others). A block that joins
+the memory of its key has that memory's texels and is not loaded. A block whose key changed is bound again. What is
+loaded into one block of a key is in all of them, which is right because they show the same bytes. A block at a
+level's edge and a mip tail share nothing. `vk_sparse_share=0` gives each block its own memory.
 
 ## Building the shader
 
@@ -648,7 +657,7 @@ separate SPIRV-Tools is needed.
   barrier is taken out. It also checks the
   shader's `Unorm16To8` for every input and the layer's built-ins against values from the GLSL specification.
 - `astc_vulkan` and `astc_vulkan_pieces` (ctest with `-DSNX_TEST_VULKAN=ON`) build `tests/astc_vulkan.c` with the
-  production `vk/astc.c`, `vk/cmd.c` and `vk/memory.c`, volk, VMA and the SPIR-V the build makes, and compare raw image
+  production `vk/astc.c`, `vk/cmd.c` and `vk/memory.c`, `vk/devmem.c`, volk and the SPIR-V the build makes, and compare raw image
   readbacks with the CPU decoder byte for byte. They cover all 14 footprints with UNORM and SRGB images, each against
   the CPU decoder in its decode mode, and decode the same blocks in both modes for every footprint, checking that
   alpha is the same, that R, G and B differ by at most one step, and that some do. They also cover images whose size

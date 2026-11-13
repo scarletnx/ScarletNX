@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gui/browser.h"
+#include "gui/title.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
 #include <assert.h>
@@ -12,6 +14,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef SNX_TEST_ZSTD
+#include <zstd.h>
+#endif
 
 /* gui_games_group's made: b.nsp is the dump of a game recompiled already */
 static bool made_b(const char* path, const void* user) {
@@ -31,11 +36,13 @@ static bool made_game(const char* path, const void* user) {
     (void)user;
     return n >= 8 && !strcmp(path + n - 8, "game.xci");
 }
-static const GuiGroups dumps_only = {"Recompiled", "Dumps", "Updates and DLCs", NULL, NULL, NULL};
-static const GuiGroups b_made = {"Recompiled", "Dumps", "Updates and DLCs", made_b, NULL, NULL};
-static const GuiGroups no_dumps = {"Recompiled", NULL, "Updates and DLCs", made_b, NULL, NULL};
-static const GuiGroups titled = {"Recompiled", "Dumps", "Updates and DLCs", NULL, titled_by_content, NULL};
-static const GuiGroups titled_made = {"Recompiled", "Dumps", "Updates and DLCs", made_game, titled_by_content, NULL};
+/* the headings of the groupings below, which each names what it asks of the dumps */
+#define GROUPS .ready = "Recompiled", .addons = "Updates and DLCs"
+static const GuiGroups dumps_only = {GROUPS, .dumps = "Dumps"};
+static const GuiGroups b_made = {GROUPS, .dumps = "Dumps", .made = made_b};
+static const GuiGroups no_dumps = {GROUPS, .made = made_b};
+static const GuiGroups titled = {GROUPS, .dumps = "Dumps", .titled = titled_by_content};
+static const GuiGroups titled_made = {GROUPS, .dumps = "Dumps", .made = made_game, .titled = titled_by_content};
 /* dir/name holding text */
 static void put(const char* dir, const char* name, const char* text) {
     char* path = snx_path_join(dir, name);
@@ -160,6 +167,348 @@ static void addon_items(void) {
     snx_remove_tree(d);
     free(d);
     puts("PASS a game's update and DLC dumps grouped as one item, by what each dump is");
+}
+/* a made game named name in dir, as a driver leaves one: its program <name>/<name> (.exe on Windows), which Games
+   lists as ready to run, and its .ini holding ini; its folder, owned */
+static char* game_made(const char* dir, const char* name, const char* ini) {
+    char *folder = snx_path_join(dir, name), *ini_name = snx_format("%s.ini", name);
+#ifdef _WIN32
+    char* leaf = snx_format("%s.exe", name);
+#else
+    char* leaf = snx_strdup(name);
+#endif
+    char* program = snx_path_join(folder, leaf);
+    assert(!snx_mkdirs(folder) && !snx_write_file(program, "x", 1) && !snx_make_executable(program));
+    if (ini) put(folder, ini_name, ini);
+    free(program);
+    free(leaf);
+    free(ini_name);
+    return folder;
+}
+static char* program_of(const char* folder, const char* name) {
+#ifdef _WIN32
+    char* leaf = snx_format("%s.exe", name);
+#else
+    char* leaf = snx_strdup(name);
+#endif
+    char* program = snx_path_join(folder, leaf);
+    free(leaf);
+    return program;
+}
+/* gui_games_group's removed: the game named 0100ABCD12340000 taken off the list */
+static bool removed_one(const char* path, const void* user) {
+    (void)user;
+    return strstr(path, "0100ABCD12340000") != NULL;
+}
+/* A made game plays from a file that is not there (gui_game_source_missing), as its driver plays it: a Switch game read
+   in place, its source= naming a dump that is gone, said with that dump's path; not once the dump is back, nor once
+   the game's ExeFS is extracted into its _data; an extracted game's folder as its source alike; an older version's
+   <name>.source link by where it points. A GBA game's ROM, which no extraction stands for. A 3DS game's file (source=
+   in the .ini of its folder), but with its extraction in the folder (exheader.bin) or a copy the 3DS driver decrypted
+   in the extractions' folder (work/3ds/<name>.decrypted.<extension>). A Vita game's dumped folder, which its app/
+   links, said by where the link points; one extracted from a VPK keeps its own app/. Never a game made from no file
+   (a homebrew's), nor a file that is no made game's program. A game taken off the list is left out of the ready ones
+   (gui_games_group's removed), the others kept */
+static void source_missing(void) {
+    char *dir = snx_temp_dir(NULL), *dump = snx_path_join(dir, "game.nsp"), *rom = snx_path_join(dir, "game.gba");
+    char *extracted = snx_path_join(dir, "extracted"), *exefs = snx_path_join(extracted, "exefs");
+    char *work = snx_path_join(dir, "work"), *cia = snx_path_join(dir, "game.cia");
+    char *text = snx_format("[Game]\nsource=%s\n", dump), out[4096];
+    char *nx = game_made(dir, "0100ABCD12340000", text), *program = program_of(nx, "0100ABCD12340000");
+    GuiGames g = {0};
+    GuiGroups removed = {GROUPS, .removed = removed_one};
+    char error[256];
+    assert(gui_game_source_missing(program, work, out, sizeof out) && !strcmp(out, dump));
+    assert(gui_game_source_missing(program, NULL, NULL, 0)); /* the answer alone */
+    put(dir, "game.nsp", "dump");
+    assert(!gui_game_source_missing(program, work, out, sizeof out) && !out[0]);
+    assert(!remove(dump));
+    {
+        char* data = snx_path_join(nx, "0100ABCD12340000_data/exefs");
+        assert(!snx_mkdirs(data) && !gui_game_source_missing(program, NULL, NULL, 0)); /* plays from its extraction */
+        assert(!snx_remove_tree(data));
+        free(data);
+    }
+    { /* #2110: its ExeFS extracted into its _data beside a RomFS that is not whole, which the driver extracts again
+         from its dump: a copy that stopped (romfs.copying), an extraction that stopped (its .extracting) or none,
+         missing while the dump is gone, and not once it is back; a whole one plays from its extraction. A game whose
+         .ini names no dump is missing all the same with such a RomFS, the file said as "" */
+        char *data = snx_path_join(nx, "0100ABCD12340000_data"), *own_exefs = snx_path_join(data, "exefs");
+        char *romfs = snx_path_join(data, "romfs"), *copying = snx_path_join(data, "romfs.copying");
+        char* marker = snx_path_join(nx, "0100ABCD12340000.extracting");
+        char *unnamed = game_made(dir, "0100ABCD44440000", "[Game]\n"),
+             *other = program_of(unnamed, "0100ABCD44440000");
+        char* other_data = snx_path_join(unnamed, "0100ABCD44440000_data");
+        char *other_exefs = snx_path_join(other_data, "exefs"),
+             *other_copying = snx_path_join(other_data, "romfs.copying");
+        assert(!snx_mkdirs(own_exefs) && !snx_mkdirs(romfs));
+        put(own_exefs, "main", "main");
+        assert(!gui_game_source_missing(program, NULL, NULL, 0));
+        assert(!snx_mkdirs(copying) && gui_game_source_missing(program, NULL, out, sizeof out) && !strcmp(out, dump));
+        assert(!snx_remove_tree(copying) && !snx_write_file(marker, "", 0));
+        assert(gui_game_source_missing(program, NULL, out, sizeof out) && !strcmp(out, dump));
+        assert(!snx_remove_tree(marker) && !snx_remove_tree(romfs));
+        assert(gui_game_source_missing(program, NULL, out, sizeof out) && !strcmp(out, dump));
+        put(dir, "game.nsp", "dump");
+        assert(!gui_game_source_missing(program, NULL, NULL, 0));
+        assert(!remove(dump) && !snx_remove_tree(data));
+        assert(!snx_mkdirs(other_exefs) && !snx_mkdirs(other_copying));
+        put(other_exefs, "main", "main");
+        assert(gui_game_source_missing(other, NULL, out, sizeof out) && !out[0]);
+        assert(!snx_remove_tree(other_copying));
+        {
+            char* other_romfs = snx_path_join(other_data, "romfs");
+            assert(!snx_mkdirs(other_romfs) && !gui_game_source_missing(other, NULL, NULL, 0));
+            free(other_romfs);
+        }
+        free(data);
+        free(own_exefs);
+        free(romfs);
+        free(copying);
+        free(marker);
+        free(unnamed);
+        free(other);
+        free(other_data);
+        free(other_exefs);
+        free(other_copying);
+    }
+    assert(!gui_game_source_missing(dump, NULL, NULL, 0) && !gui_game_source_missing(nx, NULL, NULL, 0));
+    { /* its source an extracted game's folder: gone, then there */
+        char* folder_ini = snx_format("[Game]\nsource=%s\n", extracted);
+        char *made = game_made(dir, "0100ABCD22220000", folder_ini), *own = program_of(made, "0100ABCD22220000");
+        assert(gui_game_source_missing(own, NULL, out, sizeof out) && !strcmp(out, extracted));
+        assert(!snx_mkdirs(exefs));
+        put(exefs, "main", "main");
+        assert(!gui_game_source_missing(own, NULL, NULL, 0));
+        free(own);
+        free(made);
+        free(folder_ini);
+    }
+    { /* a GBA game reads its ROM at every run */
+        char* gba_ini = snx_format("[Game]\nsource=%s\nsystem=gba\n", rom);
+        char *made = game_made(dir, "agb game", gba_ini), *own = program_of(made, "agb game");
+        assert(gui_game_source_missing(own, NULL, out, sizeof out) && !strcmp(out, rom));
+        put(dir, "game.gba", "rom");
+        assert(!gui_game_source_missing(own, NULL, NULL, 0));
+        free(own);
+        free(made);
+        free(gba_ini);
+    }
+    { /* a 3DS game: its file, else its extraction or the driver's decrypted copy */
+        char* ctr_ini = snx_format("[Game]\nsource=%s\nmodel=old\nsystem=3ds\n", cia);
+        char *ctr = game_made(dir, "0004000000030000", ctr_ini), *own = program_of(ctr, "0004000000030000");
+        char *copies = snx_path_join(work, "3ds"), *exheader = snx_path_join(ctr, "exheader.bin");
+        assert(gui_game_source_missing(own, work, out, sizeof out) && !strcmp(out, cia));
+        put(ctr, "exheader.bin", "exheader");
+        assert(!gui_game_source_missing(own, work, NULL, 0));
+        assert(!remove(exheader) && !snx_mkdirs(copies));
+        put(copies, "game.decrypted.cia", "decrypted");
+        assert(!gui_game_source_missing(own, work, NULL, 0));
+        assert(gui_game_source_missing(own, NULL, NULL, 0)); /* no extractions' folder: no copy */
+        put(dir, "game.cia", "cia");
+        assert(!gui_game_source_missing(own, NULL, NULL, 0));
+        free(exheader);
+        free(copies);
+        free(own);
+        free(ctr);
+        free(ctr_ini);
+    }
+    { /* one made from no file: none */
+        char *nro = game_made(dir, "homebrew", "[Game]\nname=A homebrew\n"), *own = program_of(nro, "homebrew");
+        assert(!gui_game_source_missing(own, work, NULL, 0));
+        free(own);
+        free(nro);
+    }
+#ifndef _WIN32
+    { /* an older version's link to its dump, by where it points */
+        char *old = game_made(dir, "0100ABCD33330000", NULL), *own = program_of(old, "0100ABCD33330000");
+        char *link = snx_path_join(old, "0100ABCD33330000.source"), *target;
+        assert(!snx_symlink(dump, link) && (target = snx_link_target(link)) && !strcmp(target, dump));
+        assert(gui_game_source_missing(own, work, out, sizeof out) && !strcmp(out, dump));
+        assert(!snx_link_target(own) && !snx_link_target(dir)); /* no link */
+        free(target);
+        free(link);
+        free(own);
+        free(old);
+    }
+    { /* a Vita game made from a dumped folder, which its app/ links; one extracted from a VPK, its own */
+        char *dumped = snx_path_join(dir, "vita dump/app/PCSE00000"),
+             *vita = game_made(dir, "PCSE00000", "[Game]\nsystem=vita\n");
+        char *own = program_of(vita, "PCSE00000"), *app = snx_path_join(vita, "app");
+        assert(!snx_mkdirs(dumped) && !snx_symlink(dumped, app) && !gui_game_source_missing(own, work, NULL, 0));
+        assert(!snx_remove_tree(dumped));
+        assert(gui_game_source_missing(own, work, out, sizeof out) && !strcmp(out, dumped));
+        assert(!remove(app) && !snx_mkdirs(app) && !gui_game_source_missing(own, work, NULL, 0));
+        free(app);
+        free(own);
+        free(vita);
+        free(dumped);
+    }
+#endif
+    /* taken off the list: the ready games without it */
+    assert(gui_games_add(&g, dir, GUI_GAMES_RUN, error, sizeof error) && gui_games_group(&g, &removed));
+    assert(named(&g, "0100ABCD12340000") == g.count && named(&g, "0100ABCD22220000") < g.count &&
+           named(&g, "agb game") < g.count);
+    gui_games_free(&g);
+    assert(gui_games_add(&g, dir, GUI_GAMES_RUN, error, sizeof error) && gui_games_group(&g, &dumps_only));
+    assert(named(&g, "0100ABCD12340000") < g.count); /* no removed: listed */
+    gui_games_free(&g);
+    assert(!snx_remove_tree(dir));
+    free(program);
+    free(nx);
+    free(text);
+    free(cia);
+    free(work);
+    free(exefs);
+    free(extracted);
+    free(rom);
+    free(dump);
+    free(dir);
+    puts("PASS a made game whose file to play from is not there, of each console, and one taken off the list");
+}
+/* little and big endian stores of a fixture's fields */
+static void le(unsigned char* at, uint64_t value, int bytes) {
+    for (int i = 0; i < bytes; ++i) at[i] = (unsigned char)(value >> (8 * i));
+}
+static void be(unsigned char* at, uint64_t value, int bytes) {
+    for (int i = 0; i < bytes; ++i) at[i] = (unsigned char)(value >> (8 * (bytes - 1 - i)));
+}
+/* an NCCH header at h: its program ID and product code */
+static void ncch_at(unsigned char* h, uint64_t id, const char* code) {
+    memcpy(h + 0x100, "NCCH", 4);
+    le(h + 0x118, id, 8);
+    memcpy(h + 0x150, code, strlen(code));
+}
+/* path holding size bytes of data */
+static void write_bytes(const char* path, const unsigned char* data, size_t size) {
+    assert(!snx_write_file(path, data, size));
+}
+/* What a game's file is, from its own header (gui/title.h): a 3DS game's title ID and product code from a bare NCCH, a
+   cartridge image's game partition, a CIA's TMD (the code from its first content, none when that is not in the clear),
+   a bundle's game and a z3ds file's; a file that is none of them, why said. A dumped Vita game's TITLE_ID. A GBA ROM's
+   game code, title and hash, and the hash its game's map names */
+static void titles_read(void) {
+    char *dir = snx_temp_dir(NULL), *path = snx_path_join(dir, "game"), code[24], why[256];
+    unsigned char* data = (unsigned char*)calloc(1, 0x8000);
+    uint64_t id = 0;
+    assert(dir && data);
+    /* a bare NCCH */
+    ncch_at(data, 0x0004000000ABCD00ull, "CTR-P-ABCD");
+    write_bytes(path, data, 0x200);
+    assert(gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && id == 0x0004000000ABCD00ull &&
+           !strcmp(code, "CTR-P-ABCD") && !why[0]);
+    /* a cartridge image: its game partition 0 at 0x4000 */
+    memset(data, 0, 0x8000);
+    memcpy(data + 0x100, "NCSD", 4);
+    le(data + 0x120, 0x4000 / 0x200, 4);
+    le(data + 0x124, 1, 4);
+    ncch_at(data + 0x4000, 0x0004000000BBBB00ull, "CTR-P-BBBB");
+    write_bytes(path, data, 0x4200);
+    assert(gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && id == 0x0004000000BBBB00ull &&
+           !strcmp(code, "CTR-P-BBBB"));
+#ifdef SNX_TEST_ZSTD
+    { /* the same in a z3ds file: its header, then the image as zstd */
+        size_t room = ZSTD_compressBound(0x4200), packed;
+        unsigned char* z = (unsigned char*)calloc(1, 0x20 + room);
+        assert(z);
+        packed = ZSTD_compress(z + 0x20, room, data, 0x4200, 3);
+        assert(!ZSTD_isError(packed));
+        memcpy(z, "Z3DS", 4);
+        z[8] = 1;
+        le(z + 0xA, 0x20, 2);
+        le(z + 0x10, packed, 8);
+        le(z + 0x18, 0x4200, 8);
+        write_bytes(path, z, 0x20 + packed);
+        id = 0;
+        assert(gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && id == 0x0004000000BBBB00ull &&
+               !strcmp(code, "CTR-P-BBBB"));
+        free(z);
+    }
+#endif
+    { /* a CIA: the title from its TMD (RSA-2048 SHA-256, body at 0x140), the code from its first content */
+        const size_t tmd = 0x2DC0, content = 0x3940;
+        memset(data, 0, 0x8000);
+        le(data, 0x2020, 4);
+        le(data + 8, 0xA00, 4);
+        le(data + 12, 0x350, 4);
+        le(data + 16, 0xB64, 4);
+        le(data + 24, 0x200, 8);
+        be(data + tmd, 0x10004, 4);
+        be(data + tmd + 0x140 + 0x4C, 0x0004000000CCCC00ull, 8);
+        ncch_at(data + content, 0x0004000000CCCC00ull, "CTR-P-CCCC");
+        write_bytes(path, data, content + 0x200);
+        assert(gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && id == 0x0004000000CCCC00ull &&
+               !strcmp(code, "CTR-P-CCCC"));
+        ncch_at(data + content, 0x0004000000DDDD00ull,
+                "CTR-P-DDDD"); /* another title's content: its code not this one's */
+        write_bytes(path, data, content + 0x200);
+        assert(gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && id == 0x0004000000CCCC00ull && !code[0]);
+        memset(data + content, 0x5A, 0x200); /* its content encrypted: the title alone */
+        write_bytes(path, data, content + 0x200);
+        assert(gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && id == 0x0004000000CCCC00ull && !code[0]);
+        { /* in a bundle, a ustar archive whose first game entry is it */
+            unsigned char* tar = (unsigned char*)calloc(1, 0x200 + content + 0x200 + 0x400);
+            assert(tar);
+            memset(data + content, 0, 0x200);
+            ncch_at(data + content, 0x0004000000CCCC00ull, "CTR-P-CCCC");
+            strcpy((char*)tar, "game.cia");
+            snprintf((char*)tar + 124, 12, "%011o", (unsigned)(content + 0x200));
+            tar[156] = '0';
+            memcpy(tar + 257, "ustar", 5);
+            memcpy(tar + 0x200, data, content + 0x200);
+            write_bytes(path, tar, 0x200 + content + 0x200 + 0x400);
+            assert(gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && id == 0x0004000000CCCC00ull &&
+                   !strcmp(code, "CTR-P-CCCC"));
+            free(tar);
+        }
+    }
+    write_bytes(path, (const unsigned char*)"not a game", 10);
+    assert(!gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && !id && strstr(why, "no CIA"));
+    { /* a dumped Vita game's param.sfo: one string, TITLE_ID */
+        unsigned char sfo[64] = {0};
+        char *folder = snx_path_join(dir, "vita/sce_sys"), *game = snx_path_join(dir, "vita"), title[32];
+        le(sfo, 0x46535000u, 4);
+        le(sfo + 4, 0x101, 4);
+        le(sfo + 8, 36, 4);
+        le(sfo + 12, 48, 4);
+        le(sfo + 16, 1, 4);
+        le(sfo + 22, 0x0204, 2);
+        le(sfo + 24, 10, 4);
+        le(sfo + 28, 16, 4);
+        memcpy(sfo + 36, "TITLE_ID", 9);
+        memcpy(sfo + 48, "PCSE00000", 10);
+        assert(!snx_mkdirs(folder) && !gui_vita_title(game, title, sizeof title) && !title[0]);
+        put(folder, "param.sfo", "x");
+        assert(!gui_vita_title(game, title, sizeof title));
+        free(folder);
+        folder = snx_path_join(dir, "vita/sce_sys/param.sfo");
+        write_bytes(folder, sfo, sizeof sfo);
+        assert(gui_vita_title(game, title, sizeof title) && !strcmp(title, "PCSE00000"));
+        free(game);
+        free(folder);
+    }
+    { /* a GBA ROM's header and hash, and the hash its game's map names */
+        char gba_code[5], title[13], *map;
+        uint64_t hash = 0, made = 0;
+        memset(data, 0, 0x8000);
+        memcpy(data + 0xA0, "TESTGAME", 8);
+        memcpy(data + 0xAC, "ATST", 4);
+        write_bytes(path, data, 0x200);
+        assert(gui_gba_title(path, gba_code, title, &hash, why, sizeof why) && !strcmp(gba_code, "ATST") &&
+               !strcmp(title, "TESTGAME") && hash == snx_fnv1a(SNX_FNV_BASIS, data, 0x200));
+        write_bytes(path, data, 0x40);
+        assert(!gui_gba_title(path, gba_code, title, &hash, why, sizeof why) && strstr(why, "too short"));
+        assert(!gui_gba_made_from(dir, "agb", &made) && !made);
+        map = snx_format("snx-agb-code 3 7 %016llX\n00000000 0 1 0 snx_agb_1\n", (unsigned long long)0x1234ABCDull);
+        put(dir, "agb_code.map", map);
+        assert(gui_gba_made_from(dir, "agb", &made) && made == 0x1234ABCDull);
+        free(map);
+    }
+    assert(!snx_remove_tree(dir));
+    free(data);
+    free(path);
+    free(dir);
+    puts("PASS what a game's file is, from its own header");
 }
 int main(void) {
     GuiGames games = {0};
@@ -701,6 +1050,8 @@ int main(void) {
         free(d);
     }
     addon_items();
+    source_missing();
+    titles_read();
     /* a game whose dump carries no control.nacp: the launcher shows the name the driver recorded for it, not the title
        ID the folder is named by */
     {

@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # Checks the AppImage scripts/make-appimage.sh made: a copy named after a game looks for its module next to itself and
-# where --game says, and the launcher's programs are in it. An install of the Linux runtime alone runs an AArch64
-# program instead. qemu-$ARCH runs the AppImage where the machine cannot: the kernel's binfmt handler never takes one
-# (its runtime carries the AppImage magic where qemu's mask wants zeros).
+# where --game says, and the launcher and the programs it runs are in it. An install of the Linux runtime alone runs an
+# AArch64 program instead. qemu-$ARCH runs the AppImage where the machine cannot: the kernel's binfmt handler never
+# takes one (its runtime carries the AppImage magic where qemu's mask wants zeros).
 set -euo pipefail
 
 ARCH=${ARCH:-$(uname -m)}
@@ -53,8 +53,16 @@ check() { # expected module, then the AppImage's arguments
 # -H: started bare, it would open the launcher instead
 check "$probe/Probe_code.so" -H
 check "$probe/games/Other_code.so" --game="$probe/games/Other"
-# Started bare it opens the launcher, which needs everything it runs beside it (the launcher itself can't be run
-# here: without a display SDL may fall back to an offscreen one and keep it open)
+# Started bare it opens the launcher, built into the runtime (the launcher itself can't be run here: without a display
+# SDL may fall back to an offscreen one and keep it open). Only a runtime with it takes --migrate, which refuses
+# anything after it before any window: one without says the option is unknown, as the big-endian AppImage did
+out=$(cd "$probe" && APPIMAGE_EXTRACT_AND_RUN=1 "${launch[@]}" ./Probe.AppImage --migrate extra 2>&1 || true)
+if ! grep -qF -- '--migrate takes nothing after it: extra' <<<"$out"; then
+    echo "The AppImage has no launcher: --migrate extra, which the launcher answers, printed:" >&2
+    echo "$out" >&2
+    exit 1
+fi
+# and it needs everything it runs beside it
 for program in scarletnx-3ds scarletnx-vita scarletnx-agb scarletnx-gnuabi; do
     if [ ! -e "$APPDIR/bin/$program" ]; then
         echo "The AppImage has no bin/$program, which the launcher runs" >&2

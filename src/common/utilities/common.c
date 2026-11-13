@@ -34,6 +34,7 @@
 #include <wchar.h>
 #include <psapi.h>
 #include <tlhelp32.h> /* the process's threads (snx_threads) */
+#include <winioctl.h> /* a link's reparse data (snx_link_target) */
 #else
 #include <dirent.h>
 #include <dlfcn.h>
@@ -985,6 +986,52 @@ int snx_link_file(const char* src, const char* dst) {
     return link(src, dst) != 0;
 #endif
 }
+char* snx_link_target(const char* path) {
+#ifdef _WIN32
+    /* the reparse data of a symbolic link or a junction: its print name, else its substitute name without \??\ */
+    wchar_t *p = path ? wide(path) : NULL, *name = NULL;
+    HANDLE h = p ? CreateFileW(p, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                               FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, NULL)
+                 : INVALID_HANDLE_VALUE;
+    unsigned char* data =
+        h != INVALID_HANDLE_VALUE ? (unsigned char*)snx_alloc(MAXIMUM_REPARSE_DATA_BUFFER_SIZE) : NULL;
+    DWORD got = 0;
+    char* target = NULL;
+    free(p);
+    if (!data) return NULL;
+    if (DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, NULL, 0, data, MAXIMUM_REPARSE_DATA_BUFFER_SIZE, &got, NULL) &&
+        got >= 16) {
+        uint32_t tag = snx_ld_le32(data);
+        /* after the tag, the data's size and a reserved half: the names' offsets and sizes, a symbolic link's flags,
+           then the names, offsets from there */
+        size_t names = tag == IO_REPARSE_TAG_SYMLINK ? 20 : tag == IO_REPARSE_TAG_MOUNT_POINT ? 16 : 0;
+        size_t substitute = snx_ld_le16(data + 8), substitute_size = snx_ld_le16(data + 10);
+        size_t print = snx_ld_le16(data + 12), print_size = snx_ld_le16(data + 14);
+        size_t at = print_size ? print : substitute, size = print_size ? print_size : substitute_size;
+        if (names && size && size % 2 == 0 && names + at + size <= got) {
+            name = (wchar_t*)snx_alloc(size + sizeof(wchar_t));
+            memcpy(name, data + names + at, size);
+            name[size / 2] = 0;
+            target = utf8(!print_size && !wcsncmp(name, L"\\??\\", 4) ? name + 4 : name);
+        }
+    }
+    CloseHandle(h);
+    free(data);
+    free(name);
+    return target;
+#else
+    struct stat st;
+    size_t room = path && !lstat(path, &st) && S_ISLNK(st.st_mode) && st.st_size > 0 ? (size_t)st.st_size + 1 : 0;
+    char* target = room ? (char*)snx_alloc(room) : NULL;
+    ssize_t n = target ? readlink(path, target, room) : -1;
+    if (n < 0 || (size_t)n >= room) { /* gone, or longer than when it was looked at */
+        free(target);
+        return NULL;
+    }
+    target[n] = 0;
+    return target;
+#endif
+}
 int snx_symlink(const char* target, const char* link) {
 #ifdef _WIN32
 #ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
@@ -1359,6 +1406,12 @@ static int copy_beside(const char* from, const char* folder, const char* leaf) {
     char* to = snx_path_join(folder, leaf);
     int rc = 0;
     if (!to) return snx_error("cannot name the Vulkan driver %s in %s", leaf, folder);
+    /* a build tree's driver can be another name of this game's, a link to it: removing the game's first would take
+       the source away, and the game has the driver already */
+    if (snx_same_file(from, to)) {
+        free(to);
+        return 0;
+    }
     if (snx_is_file(to) && snx_remove_tree(to))
         rc = snx_error("cannot remove the Vulkan driver at %s: %s", to, snx_os_error(error, sizeof error));
     else if (snx_link_file(from, to) && snx_copy_file(from, to))
@@ -1645,8 +1698,15 @@ char* snx_user_dir(int kind) {
     free(data);
     return dir;
 }
-/* the same folder, each resolved: one reached through a link is still it */
-static int same_folder(const char* a, const char* b) { return snx_path_within(a, b) && snx_path_within(b, a); }
+/* the same folder, each resolved: one reached through a link is still it. One this process cannot resolve (/sdcard to
+   a shell run as the Android app) is no folder of its, where snx_path_within counts it within anything */
+static int same_folder(const char* a, const char* b) {
+    char *ra = snx_absolute(a), *rb = snx_absolute(b);
+    int same = ra && rb && snx_path_within(ra, rb) && snx_path_within(rb, ra);
+    free(ra);
+    free(rb);
+    return same;
+}
 int snx_app_dir(const char* folder) {
     char *user = snx_user_data_dir(), *full = snx_absolute(folder);
     const char* base = full;
@@ -2213,6 +2273,22 @@ SnxU64 snx_footprint(void) {
 #else
     return 0;
 #endif
+}
+void snx_unit_line(char* out, size_t size, size_t done, size_t count, const char* name, const char* label, int cached,
+                   double seconds, SnxU64 used) {
+    if (cached)
+        snprintf(out, size, "  compiled block %zu/%zu: %s, %s (cached)", done, count, name, label);
+    else if (used)
+        snprintf(out, size, "  compiled block %zu/%zu: %s, %s (%.1f s, %llu MiB in use)", done, count, name, label,
+                 seconds, (unsigned long long)(used >> 20));
+    else
+        snprintf(out, size, "  compiled block %zu/%zu: %s, %s (%.1f s)", done, count, name, label, seconds);
+}
+void snx_report_unit(size_t done, size_t count, const char* name, const char* label, int cached, double seconds) {
+    char line[512];
+    snx_unit_line(line, sizeof line, done, count, name, label, cached, seconds, cached ? 0 : snx_footprint());
+    puts(line);
+    fflush(stdout);
 }
 SnxU64 snx_process_cpu_ns(void) {
 #ifdef _WIN32

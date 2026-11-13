@@ -15,7 +15,7 @@
 #define AGB_OAM_SIZE 0x400u          /* 0x07000000: object attribute memory */
 #define AGB_SRAM_SIZE (128u * 1024) /* 0x0E000000: the cartridge's save memory, up to the 128 KiB flash */
 #define AGB_IO_COUNT 0x200u          /* 0x04000000: register halfwords */
-#define AGB_MAP_SIZE 0x100000000ull /* the flat window: the 256 MiB map twice, for the bit 31 mirror */
+#define AGB_MAP_SIZE 0x100000000ull /* the flat window: every address recompiled code may add to its base */
 #define AGB_MAP_GUARD 0x10000u /* after it, zeros an access that wraps past 4 GiB reaches: an LDM's 64 bytes, a page */
 #define AGB_BIOS_SIZE 0x4000u        /* 0x00000000: the BIOS, which only the BIOS itself can read */
 #define AGB_ROM_BUS_PERIOD 0x20000u  /* the open bus pattern past the cartridge image repeats this often */
@@ -24,6 +24,10 @@ typedef struct AgbBoard AgbBoard;
 typedef struct {
    uint8_t *ewram, *iwram, *palette, *vram, *oam, *sram;
    int owned; /* the buffers are this board's, not the flat map's */
+   /* the cartridge window at 0x08000000 as recompiled code reads it, the flat map's (NULL without one), and the windows
+      that hold a copy of their own from it, 32 MiB apart: 1 where one memory sits behind all three */
+   uint8_t* rom;
+   uint32_t rom_windows;
 } AgbMemory;
 
 void agb_memory_init(AgbMemory* memory);

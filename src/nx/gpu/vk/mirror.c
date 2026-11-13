@@ -27,6 +27,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "common/utilities/bits.h"
@@ -38,7 +39,7 @@
 
 typedef struct {
     u8* shadow;                /* the guest bytes the mirror was given, as the GPU holds them less its own writes */
-    VmaAllocation mem, mask;   /* bound into the mirror and its mask */
+    DevMem mem, mask;   /* bound into the mirror and its mask */
     u64 valid[MIR_PAGES / 64]; /* the pages given guest memory's bytes: those bindings covered */
     /* each valid page's write tracking clock before it was last brought up to date: only a binding's own pages are,
        as the others may not be mapped any more */
@@ -46,6 +47,7 @@ typedef struct {
     /* the pages [ck_lo, ck_hi) all valid and brought up to date in the stream's epoch ck_epoch (vk_ww_epoch): a binding
        inside them needs nothing more in that epoch (vk_mirror_slice). Emptied when a page loses its shadow */
     u32 ck_epoch, ck_lo, ck_hi;
+    u32 used; /* the present a binding last took it at (vk_mirror_idle) */
 } Gran;
 
 /* the guest pages programs wrote in the mirror that haven't landed (vk_mirror_wrote to vk_mirror_done) */
@@ -56,6 +58,8 @@ static struct {
     u64 granules;
     Gran** gran; /* by granule, NULL where none is bound */
     u64 bound;   /* granules bound */
+    u64 trim_at; /* where vk_mirror_trim looks next */
+    u64 released; /* statistics: granules it let go */
 } g_mir = {.on = -1};
 
 int vk_mirror_on(void) {
@@ -136,20 +140,20 @@ static Gran* gran_bind(u64 g) {
     vkGetBufferMemoryRequirements(g_vk.dev, g_mir.mask, &req[1]);
     req[0].size = MIR_G;
     req[1].size = MIR_MASK_G;
-    VmaAllocationCreateInfo aci = {.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
-    VmaAllocationInfo info[2];
-    if (!r->shadow || !VK_OK(vmaAllocateMemory(g_vk.vma, &req[0], &aci, &r->mem, &info[0]))) goto fail;
-    if (!VK_OK(vmaAllocateMemory(g_vk.vma, &req[1], &aci, &r->mask, &info[1]))) {
-        vmaFreeMemory(g_vk.vma, r->mem);
+    DevMemWant aci = {.at = DM_DEVICE};
+    DevMemInfo info[2];
+    if (!r->shadow || !VK_OK(vk_devmem_alloc(&req[0], &aci, &r->mem, &info[0]))) goto fail;
+    if (!VK_OK(vk_devmem_alloc(&req[1], &aci, &r->mask, &info[1]))) {
+        vk_devmem_free(r->mem);
         goto fail;
     }
-    vk_mem_track(r->mem);
-    vk_mem_track(r->mask);
+    vk_mem_track(r->mem, VK_OWN_MIRROR);
+    vk_mem_track(r->mask, VK_OWN_MIRROR);
     VkSparseMemoryBind b[2] = {
-        {.resourceOffset = g * MIR_G, .size = MIR_G, .memory = info[0].deviceMemory, .memoryOffset = info[0].offset},
+        {.resourceOffset = g * MIR_G, .size = MIR_G, .memory = info[0].memory, .memoryOffset = info[0].offset},
         {.resourceOffset = g * MIR_MASK_G,
          .size = MIR_MASK_G,
-         .memory = info[1].deviceMemory,
+         .memory = info[1].memory,
          .memoryOffset = info[1].offset}};
     VkSparseBufferMemoryBindInfo bb[2] = {{g_mir.buf, 1, &b[0]}, {g_mir.mask, 1, &b[1]}};
     VkBindSparseInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, .bufferBindCount = 2, .pBufferBinds = bb};
@@ -168,6 +172,7 @@ static Gran* gran_bind(u64 g) {
     vk_render_end();
     rec_CmdFillBuffer(vk_cmd(), g_mir.mask, g * MIR_MASK_G, MIR_MASK_G, 0);
     g_mir.bound++;
+    vk_ledger_heap(VK_OWN_MIRROR, (i64)MIR_G); /* its shadow */
     return r;
 fail:
     free(r->shadow);
@@ -346,6 +351,7 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
             }
             fresh = 1; /* its mask cleared */
         }
+        r->used = g_vk_present;
         u64 base = g * MIR_G;
         u64 lo = cpu > base ? (cpu - base) >> 12 : 0, hi = (cpu + len - base + 4095) >> 12;
         if (hi > MIR_PAGES) hi = MIR_PAGES;
@@ -452,7 +458,7 @@ typedef struct {
     u32 n, room, entry;
     u64 pages;
     u32* out; /* in host memory, MIR_HEAD words then room entries then the pages left */
-    VmaAllocation mem;
+    DevMem mem;
 } MirBatch;
 static MirRange* g_mir_now; /* the ranges written in the submit being recorded */
 static u32 g_mir_nnow, g_mir_capnow;
@@ -654,7 +660,7 @@ static void harvest_batch(VkCommandBuffer cb, u64 submit, const MirRange* r, u32
     u32 room = pages < g_mir_room ? (u32)pages : g_mir_room;
     VkBuffer out;
     u64 at;
-    VmaAllocation mem;
+    DevMem mem;
     u32* p = (u32*)(void*)vk_stage_back(out_bytes(room, pages, entry), &out, &at, &mem);
     if (!p || !harvest_record(cb, kept, n, out, at, out_bytes(room, pages, entry), room, entry, VK_NULL_HANDLE))
         fatal("vulkan: no memory to land the GPU mirror's writes in");
@@ -928,13 +934,11 @@ static void harvest_left(const u32* left, u32 n) {
                               .size = size,
                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo aci = {.flags =
-                                       VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                   .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    DevMemWant aci = {.at = DM_CACHED, .mapped = 1};
     VkBuffer out;
-    VmaAllocation mem;
-    VmaAllocationInfo info;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &out, &mem, &info)))
+    DevMem mem;
+    DevMemInfo info;
+    if (!VK_OK(vk_buffer_create(&bci, &aci, &out, &mem, &info)))
         fatal("vulkan: no memory to land the GPU mirror's writes in");
     /* its sets from a pool of its own, freed once it is done: it runs inside a landing (vk_mirror_done), where the
        frame's sets would start the frame's command buffer (vk_desc_alloc's vk_cmd). Started there, that command buffer
@@ -963,12 +967,12 @@ static void harvest_left(const u32* left, u32 n) {
         ok = ok && vk_wait_fence(fence);
         vkDestroyFence(g_vk.dev, fence, NULL);
     }
-    if (!ok || !VK_OK(vmaInvalidateAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE)))
+    if (!ok || !VK_OK(vk_devmem_invalidate(mem, 0, VK_WHOLE_SIZE)))
         fatal("vulkan: could not land the GPU mirror's writes");
     vkDestroyDescriptorPool(g_vk.dev, dpool, NULL); /* its work is done */
-    const u32* w = info.pMappedData;
+    const u32* w = info.ptr;
     for (u32 i = 0; i < w[0] && i < n; i++) land_entry(w + MIR_HEAD + i * MIR_ENTRY);
-    vmaDestroyBuffer(g_vk.vma, out, mem);
+    vk_devmem_buffer_destroy(out, mem);
     free(r);
 }
 
@@ -985,7 +989,7 @@ void vk_mirror_done(u64 done) {
         MirBatch batch = g_mir_batch[b], *m = &batch;
         memmove(g_mir_batch + b, g_mir_batch + b + 1, (size_t)(g_mir_nbatch - b - 1) * sizeof *g_mir_batch);
         g_mir_nbatch--;
-        if (!VK_OK(vmaInvalidateAllocation(g_vk.vma, m->mem, 0, VK_WHOLE_SIZE)))
+        if (!VK_OK(vk_devmem_invalidate(m->mem, 0, VK_WHOLE_SIZE)))
             fatal("vulkan: could not read the GPU mirror's writes");
         u32 n = m->out[0], take = n < m->room ? n : m->room;
         vk_result_begin();
@@ -1026,6 +1030,68 @@ void vk_mirror_mem_need(u64 gva, u64 len) {
     vk_unlock();
 }
 
+/* Granule g's memory given back, in the batch of sparse binds ahead of the next submission, which waits for the
+   work submitted before it (memory.c): no binding took the granule for MIR_IDLE presents, so no command being
+   recorded reads it. 0 when it stays: a program's writes in it have not landed, or pages of it are published as the
+   mirror's own, whose only bytes are here. Those land now, as the CPU's touch would land them, and the granule goes
+   at a later call */
+static int gran_release(u64 g) {
+    Gran* r = g_mir.gran[g];
+    const u64 base = g * MIR_G;
+    if (pend_hit_pages(&g_mir_pend, base >> 12, (base + MIR_G - 1) >> 12)) return 0;
+    if (own_any()) {
+        OwnRange o[16];
+        u32 k = own_lookup(base, MIR_G, o, 16);
+        int own = k > 16; /* more owners than looked at: one of them may be the mirror */
+        for (u32 i = 0; i < k && i < 16; i++) own |= ((const VkOwnRes*)o[i].res)->buf == g_mir.buf;
+        if (own) {
+            own_acquire(base, MIR_G);
+            return 0;
+        }
+    }
+    VkSparseMemoryBind b[2] = {{.resourceOffset = g * MIR_G, .size = MIR_G},
+                               {.resourceOffset = g * MIR_MASK_G, .size = MIR_MASK_G}};
+    if (!vk_buffer_sparse_bind(g_mir.buf, &b[0], r->mem, MIR_G, 1)) return 0; /* no batch to put it in: it stays */
+    if (!vk_buffer_sparse_bind(g_mir.mask, &b[1], r->mask, MIR_MASK_G, 1))
+        fatal("vulkan: could not unbind a granule of the GPU mirror's mask");
+    free(r->shadow);
+    free(r);
+    g_mir.gran[g] = NULL;
+    g_mir.bound--;
+    g_mir.released++;
+    vk_ledger_heap(VK_OWN_MIRROR, -(i64)MIR_G); /* its shadow */
+    return 1;
+}
+/* The mirror's granules that no binding took for MIR_IDLE presents give their memory back when the device's memory
+   is short (four fifths of the budget in use, where owned.c starts to land kept results). A granule is 2 MiB of the
+   device's memory, its mask, and 2 MiB of host memory for its shadow, and the mirror never let one go: in one game
+   100 of its 117 granules, bound by the programs of its menus, took no binding through most of a race, 225 MB of the
+   device's memory, while its textures were evicted for room. One bound again later takes guest memory's bytes
+   whole, as a new one does. A few a call, each a part of the granules: a landing is a round trip to the GPU */
+#define MIR_IDLE    600
+#define MIR_RELEASE 8
+void vk_mirror_trim(void) {
+    if (g_mir.on <= 0 || !g_mir.bound || vk_rec_unsafe()) return;
+    u64 usage, budget;
+    vk_mem_use(&usage, &budget);
+    if (usage < budget / 5 * 4) return;
+    u32 done = 0;
+    for (u64 n = 0; n < g_mir.granules / 8 && done < MIR_RELEASE; n++) {
+        u64 g = g_mir.trim_at++ % g_mir.granules;
+        const Gran* r = g_mir.gran[g];
+        if (r && (u32)(g_vk_present - r->used) >= MIR_IDLE) {
+            gran_release(g);
+            done++;
+        }
+    }
+}
+u64 vk_mirror_released(void) { return g_mir.released; }
+u64 vk_mirror_idle(u32 presents) {
+    u64 n = 0;
+    for (u64 g = 0; g_mir.on > 0 && g < g_mir.granules; g++)
+        n += g_mir.gran[g] && (u32)(g_vk_present - g_mir.gran[g]->used) >= presents;
+    return n;
+}
 void vk_mirror_stats(u64* granules, u64* harvests, u64* pages, u64* landed, u64* overflows, u32* room) {
     *granules = g_mir.bound;
     *harvests = g_mir_stats.harvests;

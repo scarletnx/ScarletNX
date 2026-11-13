@@ -40,7 +40,9 @@ int main(void) {
     word = snx_ini_value(ini, "system");
     assert(word && !strcmp(word, "gba") && !strcmp(snx_system_word(SNX_SYSTEM_GBA), "gba"));
     assert(snx_game_system(folder, "agb") == SNX_SYSTEM_GBA);
-    assert(!snx_record_system(folder, "agb", SNX_SYSTEM_VITA)); /* one system=, the last */
+    assert(!snx_record_system(folder, "agb", SNX_SYSTEM_NDS)); /* one system=, the last */
+    assert(snx_game_system(folder, "agb") == SNX_SYSTEM_NDS && !strcmp(snx_system_word(SNX_SYSTEM_NDS), "nds"));
+    assert(!snx_record_system(folder, "agb", SNX_SYSTEM_VITA));
     assert(snx_game_system(folder, "agb") == SNX_SYSTEM_VITA);
     free(word);
     free(ini);

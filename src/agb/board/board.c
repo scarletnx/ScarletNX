@@ -19,11 +19,13 @@ void agb_board_init(AgbBoard* board) {
     board->apu.soundbias = 0x200;
     board->ppu.bgpa[2] = board->ppu.bgpd[2] = board->ppu.bgpa[3] = board->ppu.bgpd[3] = 0x100;
     board->io[0x300 >> 1] = 1;
+    board->memcnt[0] = 0x0020, board->memcnt[1] = 0x0D00; /* GBATEK's 0x0D000020: 256 KiB of EWRAM, 2 wait states */
     /* the BIOS's boot ends on line 126, 919 cycles into it, where mGBA's machine starts the cartridge when it skips the
        BIOS (line 0x7E, its first horizontal blank at cycle 1008 of the line 120 cycles away, then 31 cycles of its reset
        code): a game that turns its interrupts on as it boots meets the first vertical blank 34 lines later, not 160 */
     board->ppu.vcount = AGB_BOOT_LINE;
     board->ppu.dot = AGB_BOOT_DOT;
+    agb_gpio_reset(board, 0);
 }
 
 int agb_board_insert(AgbBoard* board, const void* image, size_t size, char* error, size_t error_size) {
@@ -33,6 +35,7 @@ int agb_board_insert(AgbBoard* board, const void* image, size_t size, char* erro
     board->cartridge = cartridge;
     board->has_cartridge = 1;
     agb_save_reset(board, agb_save_detect((const uint8_t*)image, size));
+    agb_gpio_reset(board, agb_gpio_detect((const uint8_t*)image, size));
     return 0;
 }
 
@@ -64,17 +67,74 @@ void agb_board_destroy(AgbBoard* board) {
 
 /* ---- the I/O window ---- */
 
-/* the registers whose reads give the open bus, as mGBA's GBAIORead has them: the display's write-only ones (scrolls,
-   the affine parameters, the windows' edges, MOSAIC, BLDY) and its unused ones, the sound FIFOs and the DMA addresses */
-static int io_open(uint32_t byte) {
-    return (byte >= 0x10 && byte <= 0x46) || byte == 0x4C || byte == 0x4E || (byte >= 0x54 && byte <= 0x5E) ||
-           (byte >= 0xA0 && byte <= 0xA6) || (byte >= 0xB0 && byte <= 0xDE && (byte - 0xB0) % 12 < 8);
+/* What a read of a register gives besides its value: the registers the console reads back, the unused halfwords it
+   reads as 0 (the sound's gaps, DMAxCNT_L, a few past the serial port and the interrupts), and the open bus for every
+   other address: the write-only ones (scrolls, the affine parameters, the windows' edges, MOSAIC, BLDY, the FIFOs, the
+   DMA addresses) and the unused ones. mGBA's GBAIORead has these, and its test suite's io-read.c the console's */
+enum { IO_OPEN, IO_ZERO, IO_READ };
+static int io_kind(uint32_t byte) {
+    static const uint16_t zero[] = {0x066, 0x06A, 0x06E, 0x076, 0x07A, 0x07E, 0x086, 0x08A, 0x0B8,
+                                    0x0C4, 0x0D0, 0x0DC, 0x136, 0x142, 0x15A, 0x206, 0x20A, 0x302};
+    static const uint16_t read[][2] = {{0x000, 0x00E}, {0x048, 0x04A}, {0x050, 0x052}, {0x060, 0x064}, {0x068, 0x068},
+                                       {0x06C, 0x06C}, {0x070, 0x074}, {0x078, 0x078}, {0x07C, 0x07C}, {0x080, 0x084},
+                                       {0x088, 0x088}, {0x090, 0x09E}, {0x0BA, 0x0BA}, {0x0C6, 0x0C6}, {0x0D2, 0x0D2},
+                                       {0x0DE, 0x0DE}, {0x100, 0x10E}, {0x120, 0x12A}, {0x130, 0x134}, {0x140, 0x140},
+                                       {0x150, 0x158}, {0x200, 0x204}, {0x208, 0x208}, {0x300, 0x300}};
+    for (size_t i = 0; i < sizeof read / sizeof read[0]; ++i)
+        if (byte >= read[i][0] && byte <= read[i][1]) return IO_READ;
+    for (size_t i = 0; i < sizeof zero / sizeof zero[0]; ++i)
+        if (byte == zero[i]) return IO_ZERO;
+    return IO_OPEN;
 }
 
-uint16_t agb_io_read16(AgbBoard* board, uint32_t address) {
-    uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1), byte = offset * 2;
-    if (io_open(byte)) return (uint16_t)board->open_bus;                   /* its low half, as GBAIORead gives it */
-    if (byte >= 0xB8 && byte <= 0xDC && (byte - 0xB0) % 12 == 8) return 0; /* DMAxCNT_L */
+/* the bits of a register a read gives back, the rest reading 0: BG0CNT's and BG1CNT's wrap bit, the windows' and
+   blending's unused bits, the sound's write-only lengths and FIFO resets, the DMA controls' unused bits and DMA0-2's
+   cartridge request (the suite's io-read.c, from the console) */
+static uint16_t io_readable(uint32_t byte) {
+    static const uint16_t masks[][2] = {{0x008, 0xDFFF}, {0x00A, 0xDFFF}, {0x048, 0x3F3F}, {0x04A, 0x3F3F},
+                                        {0x050, 0x3FFF}, {0x052, 0x1F1F}, {0x062, 0xFFC0}, {0x068, 0xFFC0},
+                                        {0x072, 0xE000}, {0x078, 0xFF00}, {0x082, 0x770F}, {0x0BA, 0xF7E0},
+                                        {0x0C6, 0xF7E0}, {0x0D2, 0xF7E0}, {0x0DE, 0xFFE0}};
+    for (size_t i = 0; i < sizeof masks / sizeof masks[0]; ++i)
+        if (byte == masks[i][0]) return masks[i][1];
+    return 0xFFFF;
+}
+
+/* The serial port's mode: RCNT's bits 15-14 pick general purpose (10) or JOY Bus (11), else SIOCNT's bits 13-12 the
+   normal 8 bit, normal 32 bit, multi-player or UART one */
+enum { SIO_NORMAL8, SIO_NORMAL32, SIO_MULTI, SIO_UART, SIO_GPIO, SIO_JOY };
+static int sio_mode(const AgbBoard* board) {
+    uint16_t rcnt = board->io[0x134 >> 1];
+    if (rcnt & 0x8000) return rcnt & 0x4000 ? SIO_JOY : SIO_GPIO;
+    return board->io[0x128 >> 1] >> 12 & 3;
+}
+
+/* The serial registers as the console reads them back with no cable (the suite's sio-read.c): the data halfwords only
+   in the modes that have them, SIOCNT without its unused bits, RCNT's lines at the levels the idle port gives them
+   (in general purpose mode the ones written), JOYCNT's interrupt enable and flags, JOY_TRANS reading 0 */
+static uint16_t sio_read(AgbBoard* board, uint32_t byte, uint32_t offset) {
+    int mode = sio_mode(board);
+    uint16_t value = board->io[offset];
+    switch (byte) {
+        case 0x120:
+        case 0x122: return mode == SIO_NORMAL32 || mode == SIO_MULTI ? value : 0;
+        case 0x124:
+        case 0x126: return mode == SIO_MULTI ? value : 0;
+        case 0x128: return value & (mode == SIO_UART ? 0x7FAF : 0x7F8F);
+        case 0x12A: return mode == SIO_UART ? 0 : value;
+        case 0x134: {
+            static const uint16_t lines[] = {0x5, 0x5, 0xF, 0xF, 0x0, 0xC};
+            return (uint16_t)((value & 0xC1F0) | (mode == SIO_GPIO ? value & 0xF : lines[mode]));
+        }
+        case 0x140: return value & 0x0047;
+        case 0x154:
+        case 0x156: return 0;
+        default: return value;
+    }
+}
+
+/* the register's value as the devices hold it */
+static uint16_t io_value(AgbBoard* board, uint32_t byte, uint32_t offset) {
     if (byte <= 0x5F) return agb_ppu_read(board, byte);
     if (byte >= 0x60 && byte <= 0xA7) return agb_apu_read(board, byte);
     if (byte >= 0xB0 && byte <= 0xDF) return agb_dma_read(board, byte);
@@ -83,7 +143,26 @@ uint16_t agb_io_read16(AgbBoard* board, uint32_t address) {
     if (byte == 0x200) return board->irq_ie;
     if (byte == 0x202) return board->irq_if;
     if (byte == 0x208) return board->irq_ime;
+    if ((byte >= 0x120 && byte <= 0x12A) || byte == 0x134 || byte == 0x140 || (byte >= 0x150 && byte <= 0x158))
+        return sio_read(board, byte, offset);
     return board->io[offset];
+}
+
+/* The window decodes its registers at 0x04000000-0x040003FE and the internal memory control at 0x04000800, repeated
+   every 64 KiB (GBATEK, "Internal Memory Control"). Nothing else answers there: a read gives the open bus and a write
+   goes nowhere, as mGBA's GBAIORead and GBAIOWrite have it past GBA_REG_MAX. A register's address with the window's
+   other bits set is not that register */
+static int io_unused(uint32_t address) { return (address & 0xFFFFFF) >= 0x400 && (address & 0xFFFC) != 0x800; }
+
+uint16_t agb_io_read16(AgbBoard* board, uint32_t address) {
+    uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1), byte = offset * 2;
+    if (io_unused(address)) return (uint16_t)board->open_bus;
+    if ((address & 0xFFFFFF) >= 0x400) return board->memcnt[address >> 1 & 1];
+    switch (io_kind(byte)) {
+        case IO_OPEN: return (uint16_t)board->open_bus; /* its low half, as GBAIORead gives it */
+        case IO_ZERO: return 0;
+        default: return io_value(board, byte, offset) & io_readable(byte);
+    }
 }
 
 /* the register as written, for the lane a byte store leaves: a device's copy where a read gives another value */
@@ -97,10 +176,12 @@ static uint16_t io_written(AgbBoard* board, uint32_t byte, uint32_t offset) {
     return board->io[offset];
 }
 
-/* SIOCNT with no link cable plugged, as mGBA's machine without a link driver answers it: the multi-player mode's SI says
-   a child with no parent and SD that the line is ready, the normal modes' SI is pulled up, and a transfer started ends
-   at once (mGBA after the transfer's time) with the data no partner sent, 0, the start bit cleared and the serial
-   interrupt raised when SIOCNT asks for it. A game that looks for a partner finds none and plays alone */
+/* SIOCNT with no link cable plugged, as the console answers it (mGBA's suite's sio-read.c and sio-timing.c): the
+   multi-player mode's SI says a child with no parent and SD that the line is ready, the normal modes' SI is pulled up.
+   A transfer on the internal clock keeps the start bit set for its bits' time and 2 cycles more (agb_sio_step), then
+   ends with the data no partner sent, 0, and the serial interrupt when SIOCNT asks for it. One that waits for a
+   partner's clock, a multi-player child's or the normal modes' external one, keeps its start bit set and never ends,
+   as the console's times out */
 static void sio_write(AgbBoard* board, uint16_t value) {
     uint16_t old = board->io[0x128 >> 1], rcnt = board->io[0x134 >> 1];
     unsigned mode = ((rcnt & 0xC000) | (value & 0x3000)) >> 12;
@@ -108,28 +189,58 @@ static void sio_write(AgbBoard* board, uint16_t value) {
     if (multi) {
         value = (uint16_t)((value & 0xFF83) | (old & 0x00FC) | 0x0004); /* SI: a child, ID 0 */
         value &= (uint16_t)~0x0030;
-        if ((value & 0x80) && !(old & 0x80)) {
-            for (uint32_t r = 0x120; r <= 0x126; r += 2) board->io[r >> 1] = 0; /* no partner's word */
-            value &= (uint16_t)~0x0080;
-            if (value & 0x4000) agb_irq_request(board, AGB_IRQ_SERIAL);
-        }
         value |= 0x0008; /* SD: ready */
-    } else if (normal) {
-        if ((value & 0x80) && !(old & 0x80)) {
-            board->io[0x12A >> 1] = 0; /* SIODATA8, and SIODATA32's halves */
-            board->io[0x120 >> 1] = board->io[0x122 >> 1] = 0;
-            value &= (uint16_t)~0x0080;
-            if (value & 0x4000) agb_irq_request(board, AGB_IRQ_SERIAL);
-        }
+    } else if (normal)
         value |= 0x0004; /* SI pulled up */
-    }
+    if (normal && (value & 0x81) == 0x81 && !(old & 0x80))
+        /* 8 or 32 bits at 256 KiHz or, with bit 1, 2 MiHz, and 2 cycles: mGBA's suite's sio-timing.c reads 633, 185,
+           2169 and 377 cycles on the console from its timer's start to its halt's end, each 2 more than the bits' time
+           gives, where the timer's start, the halt and the interrupt's entry pass its other tests */
+        board->sio_cycles = (mode & 1 ? 32u : 8u) * (value & 2 ? 8u : 64u) + 2;
+    else if (!(value & 0x80))
+        board->sio_cycles = 0; /* the start bit cleared: the transfer stops */
     board->io[0x128 >> 1] = value;
 }
 
+void agb_sio_step(AgbBoard* board, uint32_t cycles) {
+    if (!board->sio_cycles) return;
+    if (cycles < board->sio_cycles) {
+        board->sio_cycles -= cycles;
+        return;
+    }
+    board->sio_cycles = 0;
+    uint16_t siocnt = board->io[0x128 >> 1];
+    board->io[0x12A >> 1] = 0; /* SIODATA8, and SIODATA32's halves */
+    board->io[0x120 >> 1] = board->io[0x122 >> 1] = 0;
+    board->io[0x128 >> 1] = (uint16_t)(siocnt & ~0x0080);
+    if (siocnt & 0x4000) agb_irq_request(board, AGB_IRQ_SERIAL);
+}
+
+/* the interrupt line: IME on and an interrupt both IE and IF hold */
+static int irq_line(const AgbBoard* board) { return (board->irq_ime & 1) && (board->irq_ie & board->irq_if & 0x3FFF); }
+
 void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value, uint16_t mask) {
     uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1), byte = offset * 2;
+    if (io_unused(address)) return;
+    if ((address & 0xFFFFFF) >= 0x400) {
+        /* kept as written: the wait states and the RAM it switches are not the board's */
+        uint16_t* half = &board->memcnt[address >> 1 & 1];
+        *half = (uint16_t)((value & mask) | (*half & ~mask));
+        return;
+    }
     if (byte == 0x202) {
         board->irq_if &= (uint16_t)~(value & mask); /* one bits acknowledge the interrupt flags of the lanes written */
+        return;
+    }
+    if (byte == 0x200 || byte == 0x208) {
+        /* the CPU's line rises 3 cycles after a write that lets a held interrupt through */
+        int was = irq_line(board);
+        if (mask != 0xFFFF) value = (uint16_t)((value & mask) | (io_written(board, byte, offset) & ~mask));
+        if (byte == 0x200)
+            board->irq_ie = value;
+        else
+            board->irq_ime = value & 1;
+        if (!was && irq_line(board)) board->irq_at = board->now + 3;
         return;
     }
     if (mask != 0xFFFF) value = (uint16_t)((value & mask) | (io_written(board, byte, offset) & ~mask));
@@ -149,18 +260,14 @@ void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value, uint16_t 
         agb_timer_write(board, byte, value);
         return;
     }
-    if (byte == 0x200) {
-        board->irq_ie = value;
-        return;
-    }
-    if (byte == 0x208) {
-        board->irq_ime = value & 1;
-        return;
-    }
     if (byte == 0x128) {
         sio_write(board, value);
         return;
     }
+    /* what the port received is not the CPU's to write: the multi-player words and JOY_RECV; JOYCNT's flags clear
+       where a one is written */
+    if ((byte >= 0x120 && byte <= 0x126 && sio_mode(board) == SIO_MULTI) || byte == 0x150 || byte == 0x152) return;
+    if (byte == 0x140) value = (uint16_t)((board->io[offset] & 0x0007 & ~value) | (value & 0x0040));
     board->io[offset] = value;
 }
 
@@ -172,7 +279,22 @@ void agb_board_keys(AgbBoard* board, uint16_t held) {
         agb_irq_request(board, AGB_IRQ_KEYPAD);
 }
 
-void agb_irq_request(AgbBoard* board, uint32_t mask) {
+void agb_irq_raise(AgbBoard* board, uint32_t mask, uint64_t at) {
+    int was = irq_line(board);
     board->irq_if |= (uint16_t)mask;
-    board->cpu_halted = 0; /* any raised flag wakes a halted CPU */
+    /* a halted CPU waits while IE and IF share no interrupt (GBATEK's HALTCNT), whatever IME says */
+    if (board->irq_ie & board->irq_if & 0x3FFF) board->cpu_halted = 0;
+    if (!was && irq_line(board)) board->irq_at = at + 3;
+}
+
+void agb_irq_request(AgbBoard* board, uint32_t mask) { agb_irq_raise(board, mask, board->now); }
+
+uint64_t agb_board_next_irq(const AgbBoard* board) {
+    uint64_t at = agb_timer_next_irq(board), display = agb_ppu_next_irq(board);
+    if (display < at) at = display;
+    /* the serial transfer ends with its interrupt when SIOCNT asks for one */
+    if (board->sio_cycles && (board->io[0x128 >> 1] & 0x4000) && (board->irq_ie & AGB_IRQ_SERIAL) &&
+        board->now + board->sio_cycles < at)
+        at = board->now + board->sio_cycles;
+    return at == UINT64_MAX ? at : at + 3;
 }

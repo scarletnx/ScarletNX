@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The game's files as the runtime itself reads them (the loader, shared fonts, the control data, the shader programs
-   the game ships for gpu/shipped_pass.c), beside the fsp-srv service in fs.c */
+   the game ships for gpu/shipped_pass.c), beside the file system core in fs.c that the native nn::fs calls */
 #ifndef SNX_FS_H
 #define SNX_FS_H
 #include "nx/runtime/state_fns.h"
@@ -42,6 +42,12 @@ int fs_aoc_has(u64 id);
 /* the checked DLCs the game plays with, those found extracted or read from their dumps, in addons= order, into *ids:
    their count */
 size_t fs_dlcs(const u64** ids);
+/* the programs of this program's application, as its dump read in place says them: -1 when no dump says */
+int fs_program_count(void);
+/* a game's read of [off, off + sz) of a storage (a RomFS image), once it is done: the ns it waits for a console's time
+   for its bytes when it goes on where the thread's last read of that storage ended (fs.c's fs_pace_ns), else 0. The
+   caller waits them off the thread's core, as the console's storage read blocks the thread and frees its core */
+u64 fs_pace_read(const void* storage, u64 off, u64 sz);
 u8* fs_read_file(const char* path, u64* size);    /* malloc'd, or NULL */
 /* a file of the game's HtmlDocument content (the pages its web applet shows), by its path under html-document/,
    malloc'd: NULL when the game has no dump open, or the dump no such content or file */
@@ -66,6 +72,10 @@ void romfs_init(void);
 typedef int (*RomfsEach)(void* ctx, const char* name, u64 off, u64 size);
 int romfs_files(RomfsEach each, void* ctx);
 int romfs_peek(u64 off, void* dst, u64 size);
+/* size bytes of the RomFS image at off into guest memory at addr, as the game's own reads take them (logged, its
+   files opened as reached): 0, or -1 when the range is past the image, the buffer isn't writable guest memory, or part
+   couldn't be read from the host (that part zeroed) */
+int romfs_read_guest(u64 off, u64 addr, u64 size);
 /* ---- HLE state in g_hle (hle.h) */
 /* RomFS. With no romfs.bin, the image is made up from the romfs/ folder: its header and tables in memory (rmeta), the
    files' data read from the files themselves when the game reads that part of the image. With mods' romfs/ folders
@@ -87,9 +97,9 @@ typedef struct {
     FILE* f;
     u64 used; /* the clock when it was last read */
 } ROpen;
-/* The service objects' data, each in a pool (ipc.c's lock guards them, svcobj_new_data). obj is the object's pool
-   index + 1, which ipc.c writes */
-/* an IFileSystem's root folder, retained */
+/* An open root folder, file and directory: slots of g_hle.fs (fss, files, dirs), which the native nn::fs takes and a
+   save state finds again by path. obj is not 0 in a slot that is taken */
+/* a root folder, retained */
 typedef struct {
     u32 obj;
     FsNode* root;
@@ -98,14 +108,14 @@ typedef struct {
        folder, beside its last commit, 0 (fs.c's "A save's commit") */
     u32 journaled;
 } FsData;
-/* an IFile, or a system archive's IStorage (the RomFS's has no data). f is NULL for a node held in memory */
+/* an open file. f is NULL for a node held in memory */
 typedef struct {
     u32 obj;
     FILE* f;
     FsNode* node;
     u32 mode; /* OpenMode: 1 read, 2 write, 4 allow append */
 } FileData;
-/* an IDirectory: the entries filter picks (1 folders, 2 files), after the name last listed, until done */
+/* an open directory: the entries filter picks (1 folders, 2 files), after the name last listed, until done */
 typedef struct {
     u32 obj;
     FsNode* node;
@@ -113,8 +123,63 @@ typedef struct {
     char last[FS_TREE_PATH_MAX]; /* a name, not a node: the entry may be deleted or renamed meanwhile */
     int done;
 } DirData;
+/* The file system server's core, which the native nn::fs (nn/fs.c) calls: the operations on a root folder, an
+   open file and an open directory, with the arguments as values and the console's Results. Each takes tree.lock held
+   (fs_lock) */
+void fs_lock(void);
+void fs_unlock(void);
+/* the root of the save of type (1 an account's, 4 temporary, 5 cache) for uid and index, made when it is not there,
+   retained: 0, or the Result. noted: an Account, Device or BCAT save, whose commits write its note. journaled: a save
+   kept as the console keeps one in a folder, whose root is the copy the game works in, committed by fs_save_commit;
+   any other root's commit is fs_root_commit's. Takes the lock */
+u32 fs_save_root(u8 type, const u8 uid[16], u16 index, FsNode** root, int* noted, int* journaled);
+/* a journaled save's commit: its working folder work made its last commit, refused while a file of it is open for
+   writing (WriteModeFileNotClosed), then its note when noted. 0, or the Result */
+u32 fs_save_commit(FsNode* work, int noted);
+/* the SD card's root (the data folder's sdmc/), made when it is not there, retained. The card is always there.
+   Takes the lock */
+u32 fs_sd_root(FsNode** root);
+/* what opening the host's file system answers: a console has no host PC to reach */
+u32 fs_host_root_result(void);
+void fs_root_release(FsNode* root);
+u32 fs_root_create(FsNode* root, const char* path, i64 size, int dir);
+u32 fs_root_remove(FsNode* root, const char* path, int dir, int recursive, int clean);
+u32 fs_root_rename(FsNode* root, const char* from, const char* to, int dir);
+u32 fs_root_entry_type(FsNode* root, const char* path, u32* type); /* 0 a directory, 1 a file */
+/* when the entry at path was last modified, in seconds since 1970: the one time the host's tree keeps */
+u32 fs_root_time_stamp(FsNode* root, const char* path, u64* seconds);
+void fs_root_commit(FsNode* root, int noted);
+/* the free (total 0) or total (1) space that a save reports, the same for every save */
+i64 fs_root_space(int total);
+/* a file opened in mode (1 read, 2 write, 4 allow append) into out, its node retained */
+u32 fs_file_open(FsNode* root, const char* path, u32 mode, FileData* out);
+void fs_file_close(FileData* f);
+/* size bytes at off into guest memory at addr, clamped to the end of the file: *n the bytes read */
+u32 fs_file_read(FileData* f, u64 off, u64 addr, u64 size, u64* n);
+/* size bytes of guest memory at addr to off. option bit 0 flushes */
+u32 fs_file_write(FileData* f, u32 option, u64 off, u64 addr, u64 size);
+u32 fs_file_flush(FileData* f);
+u32 fs_file_set_size(FileData* f, i64 size);
+u32 fs_dir_open(FsNode* root, const char* path, u32 mode, DirData* out);
+void fs_dir_close(DirData* d);
+/* up to max 0x310-byte DirectoryEntry records into guest memory at addr, after the last one listed: *count of them */
+u32 fs_dir_read(DirData* d, u64 addr, u64 max, u64* count);
+u64 fs_dir_count(const DirData* d);
+/* A data storage as OpenDataStorageByDataId opens it: a DLC read in place from its dump (aoc, its index), or the file
+   of a system archive or add-on content in the data folder, or the one the runtime makes (file, aoc -1). Each call
+   takes the locks it needs */
+typedef struct {
+    int aoc;
+    FileData file;
+} FsStorage;
+u32 fs_storage_open(u64 data_id, FsStorage* out);
+void fs_storage_close(FsStorage* st);
+u64 fs_storage_size(const FsStorage* st);
+/* size bytes at off into host memory (dst) or guest memory (addr): 0, or -1 past the end or when the host read fails */
+int fs_storage_read(FsStorage* st, u64 off, void* dst, u64 size);
+int fs_storage_read_guest(FsStorage* st, u64 off, u64 addr, u64 size);
 #define FS_FS_MAX   64 /* IFileSystems: one per mount (save data, the SD card, caches, BCAT), a few dozen at most */
-#define FS_FILE_MAX 1024 /* IFiles and IStorages: each is an object of the fsp-srv domain, which holds DOMAIN_OBJECTS */
+#define FS_FILE_MAX 1024 /* the save files the native nn::fs has open */
 #define FS_DIR_MAX  128 /* IDirectories, 4 KB each: a game lists a few folders at a time, and closes each after */
 /* a DLC read in place: its dump, mapped, and its Data NCA's RomFS image */
 typedef struct {
@@ -181,9 +246,15 @@ typedef struct {
     unsigned save_flat_told;          /* and those whose save an older version kept, played where it is, was */
     unsigned save_stray_told; /* and those whose folder holds more than the save, which the game does not read */
     char save_newer[FS_TREE_PATH_MAX + 256]; /* the last save opened that a newer version wrote, said (save_note) */
+    int pace_told;                           /* the first paced read was said (fs.c's fs_pace_ns) */
 } HostFs;
+/* fs's thread state (hle.h's t_hle.fs): where this thread's last storage read ended, which the next one continues as
+   a stream when it starts there (fs.c's fs_pace_ns) */
+typedef struct {
+    const void* storage; /* the storage it read, NULL for none yet */
+    u64 next;            /* the offset just past it */
+} TlsFs;
 /* all zero: fs_init sets the tree up */
-extern const StateFnTable g_fs_state_fns; /* the functions a save state may hold of fs.c */
 /* a load's: the state's open file systems, files and folders found by path in this process's tree and opened, files as
    the loaded fs (loaded, the state's g_hle.fs) had them, before anything of the running game changes (NULL, with
    why, when one isn't there any more), then put in place in g_hle once it is the state's, or let go of when the load

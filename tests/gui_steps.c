@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* A run's output as a loading screen's steps. */
 #include "gui/steps.h"
+#include "common/utilities/common.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -48,6 +49,24 @@ int main(void) {
     assert(n == 2 && !strcmp(notes[0]->text, "vulkan: pipeline cache loaded (662 KB)"));
     assert(gui_step_notes(&s, at(&s, 0), notes, 8) == 0 && gui_step_notes(&s, at(&s, 4), notes, 8) == 0);
 
+    /* a collection's program that starts another: a PROGRAM step, the switch under way until the program's window
+       opens (its recompile in between when it is not made), and nothing once it has */
+    gui_steps_reset(&s);
+    feed(&s, "ScarletNX - Game\nvideo: a window of 1280x720 pixels, the display's scale 1.00\n", 1);
+    assert(s.switching == 0);
+    feed(&s, "The game starts its program 2, 0100000000010000_0100000000010002 (ExecuteProgram from program 0)\n", 2);
+    assert(s.count == 2 && !strcmp(at(&s, 1)->label, "PROGRAM") && !strcmp(at(&s, 1)->detail, "2"));
+    assert(s.switching == at(&s, 1)->serial && s.program == 2 && at(&s, 0)->state == GUI_STEP_DONE);
+    assert(s.previous == 0 && !strcmp(s.next, "0100000000010000_0100000000010002"));
+    feed(&s, "Recompiling Game, program 2 of 3 (4 modules)\n  compiled block 1/4: code_000 (1.0 s)\n", 3);
+    assert(s.switching == at(&s, 1)->serial && gui_steps_percent(&s) == 25);
+    feed(&s, "ScarletNX - Game\nvideo: a window of 1280x720 pixels, the display's scale 1.00\n", 4);
+    assert(s.switching == 0 && s.program == 2 && !strcmp(at(&s, 3)->label, "LAUNCH"));
+    feed(&s, "The game starts its program x, of no number\n", 5); /* not the driver's line: a note */
+    assert(s.switching == 0 && s.count == 4);
+    feed(&s, "The game starts its program 1, Other\n", 6); /* no program it started from: not known */
+    assert(s.program == 1 && s.previous == -1 && !strcmp(s.next, "Other"));
+
     /* Vita's compiler reports completed parallel chunks, not NX function blocks. */
     gui_steps_reset(&s);
     feed(&s, "Recompiling PCSG00001 (Vita AArch32)\nDiscovered 1200 blocks (4 addresses were not code)\n", 70);
@@ -58,6 +77,26 @@ int main(void) {
     assert(gui_steps_percent(&s) == 50);
     feed(&s, "Compiled 12/12 chunks of blocks\n", 100);
     assert(gui_steps_percent(&s) == 100 && at(&s, 0)->value == 12 && at(&s, 0)->total == 12);
+
+    /* the 3DS's recompile: a line for each chunk of static blocks, then the index's, the Switch's own lines
+       (snx_unit_line), so its bar moves as the Switch's does */
+    gui_steps_reset(&s);
+    feed(&s, "Recompiling Game (offline static AOT)\nARM11 AOT: 2 chunks of static blocks on 2 threads\n", 110);
+    assert(gui_steps_last(&s, "RECOMPILE") && gui_steps_percent(&s) == 0);
+    {
+        static const char* const names[] = {"blocks_001", "blocks_000", "index"};
+        static const char* const labels[] = {"0x00104000-0x00104B24, 89 blocks", "0x00100000-0x00104000, 512 blocks",
+                                             "the module's index, 601 blocks"};
+        static const int percents[] = {33, 66, 100};
+        for (i = 0; i < 3; ++i) {
+            char line[256];
+            snx_unit_line(line, sizeof line - 1, (size_t)i + 1, 3, names[i], labels[i], 0, 0.4, (SnxU64)300 << 20);
+            strcat(line, "\n");
+            feed(&s, line, 120 + (uint64_t)i);
+            assert(at(&s, 0)->value == (unsigned)i + 1 && at(&s, 0)->total == 3 &&
+                   gui_steps_percent(&s) == percents[i]);
+        }
+    }
 
     gui_steps_reset(&s);
     feed(&s, "a line before any step\n", 1);

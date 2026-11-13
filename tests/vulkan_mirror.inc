@@ -7,7 +7,7 @@
 static int buffer_read(VkBuffer src, u64 from, u32 len, u8* out) {
     VkBuffer back;
     u64 at;
-    VmaAllocation mem;
+    DevMem mem;
     u8* p = vk_stage_back(len, &back, &at, &mem);
     CHECK(p);
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -26,7 +26,7 @@ static int buffer_read(VkBuffer src, u64 from, u32 len, u8* out) {
     b.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
     rec_CmdPipelineBarrier2(vk_cmd(), &d);
     vk_finish();
-    CHECK(VK_OK(vmaInvalidateAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE)));
+    CHECK(VK_OK(vk_devmem_invalidate(mem, 0, VK_WHOLE_SIZE)));
     memcpy(out, p, len);
     return 0;
 }
@@ -317,6 +317,96 @@ static int check_mirror(void) {
     }
     CHECK(!check_mirror_fold(cpu, gva, 0));
     CHECK(!check_mirror_fold(cpu, gva, 1));
+    /* With the device's memory short, the granules no binding took for 600 presents give their memory back
+       (vk_mirror_trim): a program's write there lands first, and the next binding has guest memory's bytes, that
+       write among them. With memory to spare, or bound lately, they stay. Short is a budget of one byte, on any
+       device. To spare is the device's to give: the use the trim reads is the driver's count of the heap, so that
+       half is checked only where the count is under three quarters of the budget before the trims and after them
+       (the trim acts at four fifths), and says the numbers where it is not */
+    {
+        u64 gr0, gr, hv, pages, landed, overflows;
+        u32 room, present = g_vk_present;
+        u8 byte = 0;
+        CHECK(vk_mirror_slice(gva, len, &buf, &off));
+        CHECK(!mirror_write(cpu + 0x310, 1, 0x6d, 1));
+        vk_mirror_wrote(cpu + 0x310, 1);
+        vk_finish();
+        vk_mirror_stats(&gr0, &hv, &pages, &landed, &overflows, &room);
+        CHECK(gr0);
+        u64 usage, budget, usage_after, budget_after;
+        vk_mem_use(&usage, &budget);
+        g_vk_present += 601;
+        for (u32 i = 0; i < 32; i++) vk_mirror_trim(); /* memory to spare: nothing goes */
+        vk_mem_use(&usage_after, &budget_after);
+        vk_mirror_stats(&gr, &hv, &pages, &landed, &overflows, &room);
+        if (usage < budget / 4 * 3 && usage_after < budget_after / 4 * 3)
+            CHECK(gr == gr0);
+        else
+            printf("mirror: memory to spare is not checked here: %llu of %llu MiB budgeted in use before the trims and "
+                   "%llu of %llu after them, where the check needs under three quarters\n",
+                   (unsigned long long)(usage >> 20), (unsigned long long)(budget >> 20),
+                   (unsigned long long)(usage_after >> 20), (unsigned long long)(budget_after >> 20));
+        u64 cap = vk_mem_budget_cap(1); /* a budget of one byte: short */
+        g_vk_present += 601;
+        CHECK(vk_mirror_slice(gva, len, &buf, &off)); /* this one bound now: it stays */
+        u64 kept = 0;
+        for (u32 i = 0; i < 32; i++) vk_mirror_trim(); /* each call a part of the granules, a landing or a release */
+        vk_mirror_stats(&kept, &hv, &pages, &landed, &overflows, &room);
+        g_vk_present += 601;
+        for (u32 i = 0; i < 32; i++) vk_mirror_trim();
+        vk_mirror_stats(&gr, &hv, &pages, &landed, &overflows, &room);
+        vk_mem_budget_cap(cap);
+        g_vk_present = present;
+        if (!kept || kept >= gr0 || gr)
+            fprintf(stderr, "vulkan_headless: mirror: of %llu granules %llu stayed with one bound lately (some, not "
+                            "all, expected) and %llu once it was idle too (none expected)\n",
+                    (unsigned long long)gr0, (unsigned long long)kept, (unsigned long long)gr);
+        CHECK(kept && kept < gr0 && !gr);
+        vk_finish();
+        CHECK(!gmem_read(gva + 0x310, &byte, 1) && byte == 0x6d); /* landed before its granule went */
+        CHECK(vk_mirror_slice(gva, len, &buf, &off)); /* bound again, from guest memory */
+        static u8 again[0x400], guest[0x400];
+        memcpy(guest, GP(cpu), sizeof guest);
+        CHECK(!buffer_read(buf, off, sizeof again, again) && !memcmp(again, guest, sizeof again) && again[0x310] == 0x6d);
+    }
+    /* What keeps an idle granule with memory short (gran_release). One with a program's write that has not landed
+       stays: its bytes are only there. Once the write is taken in and published as the mirror's own, the granule's
+       pages land first, as the CPU's touch would land them, and it goes at a later call: guest memory has the byte,
+       and no owner is left over memory that is gone */
+    if (own_traps()) {
+        u64 gr, hv, pages, landed, overflows;
+        u32 room, present = g_vk_present;
+        g_vk_present +=
+            1300; /* past the presents a page the CPU touched keeps its writes off the GPU (the checks above) */
+        CHECK(vk_mirror_slice(gva, len, &buf, &off));
+        CHECK(!mirror_write(cpu + 0x320, 1, 0x7e, 1));
+        vk_mirror_wrote(cpu + 0x320, 1);
+        u64 cap = vk_mem_budget_cap(1);
+        g_vk_present += 601;
+        for (u32 i = 0; i < 32; i++) vk_mirror_trim();
+        vk_mirror_stats(&gr, &hv, &pages, &landed, &overflows, &room);
+        const u64 pending = gr;
+        vk_finish();
+        vk_mirror_publish();
+        const u32 owned = own_lookup(cpu, 0x1000, NULL, 0);
+        for (u32 i = 0; i < 32; i++) vk_mirror_trim();
+        vk_mirror_stats(&gr, &hv, &pages, &landed, &overflows, &room);
+        const u32 owned_after = own_lookup(cpu, 0x1000, NULL, 0);
+        vk_mem_budget_cap(cap);
+        g_vk_present = present;
+        /* read only with no owner left: this thread holds vk_lock, and its read of an owned page could not land it */
+        const u32 byte = owned_after ? 0x100 : GP(cpu)[0x320];
+        if (!pending || !owned || owned_after || gr || byte != 0x7e) {
+            fprintf(stderr,
+                    "vulkan_headless: mirror: with memory short and a write not landed %llu idle granules stayed (its "
+                    "own expected); published, %u owners were on its page (one expected), and after the trims %u "
+                    "(none expected) with %llu granules (none expected) and the byte %#x in guest memory (0x7e "
+                    "expected; 0x100: not read under an owner)\n",
+                    (unsigned long long)pending, owned, owned_after, (unsigned long long)gr, byte);
+            return 1;
+        }
+        CHECK(vk_mirror_slice(gva, len, &buf, &off)); /* bound again, for the checks after */
+    }
     CHECK(g_vk_validation_messages == validation);
     vk_unlock();
     puts("The GPU mirror takes the bytes the CPU changed and keeps those the GPU wrote; the bytes its programs logged "

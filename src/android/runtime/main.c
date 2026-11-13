@@ -36,8 +36,12 @@
 #endif
 
 /* the common options scarletnx-android takes (common/utilities/cli.h): an APK is installed and run as it is, so of
-   the rest only a run without a user's: --headless and --shot, whose frames --shot-frame names */
-static const unsigned android_cli = SNX_CLI_BIT(SNX_CLI_HEADLESS) | SNX_CLI_BIT(SNX_CLI_SHOT) | SNX_CLI_BIT(SNX_CLI_HELP);
+   the rest only a run without a user's: --headless and --shot, whose frames --shot-frame names. Its native code
+   compiles as it runs, so of the recompile's options it takes -O, the JIT's level, and --jit-only, what it does
+   anyway */
+static const unsigned android_cli = SNX_CLI_BIT(SNX_CLI_HEADLESS) | SNX_CLI_BIT(SNX_CLI_SHOT) |
+                                    SNX_CLI_BIT(SNX_CLI_HELP) | SNX_CLI_BIT(SNX_CLI_OPT) |
+                                    SNX_CLI_BIT(SNX_CLI_JIT_ONLY);
 static void usage(FILE* out) {
     fputs(
     "Usage: scarletnx-android [options] APK\n"
@@ -52,7 +56,7 @@ static void usage(FILE* out) {
     "                         and stop\n"
     "  -J OPTION              An option for the JVM (-J-Xmx2g)\n"
     "  --jit-opt=LEVEL        LLVM's optimization of the native code the JIT compiles: 0, 1, 2 (the default),\n"
-    "                         3, s or z. 0 compiles several times faster, to test the JIT itself\n"
+    "                         3, s or z, as -O. 0 compiles several times faster, to test the JIT itself\n"
     "  --framework=JAR        The framework's jar, in place of the one beside the program\n"
     "  --java-home=DIR        The JDK to run on (21 or later), in place of the one the build found\n"
     "\n"
@@ -405,6 +409,8 @@ int snx_android_main(int argc, char** argv) {
             headless = true;
         } else if (id == SNX_CLI_SHOT)
             shot = common.value;
+        else if (id == SNX_CLI_OPT)
+            (void)bridge_set_optimization(common.value[0]); /* a level the table checked */
         if (id) continue;
         for (size_t k = 0; k < sizeof java_options / sizeof *java_options && !java; ++k) {
             const char* v = !strcmp(argv[i], java_options[k].option) ? "true" : value_of(argv[i], java_options[k].option);

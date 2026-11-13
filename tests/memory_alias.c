@@ -93,6 +93,15 @@ static int changed(u64 a, u64 size) {
 
 /* handle 0x1234 names test_handle; references are counted */
 static KObj* test_handle;
+/* the native SDK's mapping of a shared memory (kshmem_map_free) takes a handle, which no test here makes */
+u32 h_new(KObj* o) {
+    (void)o;
+    return 0;
+}
+int h_close(u32 h) {
+    (void)h;
+    return 0;
+}
 KObj* h_get_ref(u32 h, int type) {
     if (h != 0x1234 || !test_handle || test_handle->type != type) return NULL;
     kobj_ref(test_handle);
@@ -293,6 +302,89 @@ static void test_process_memory_copies(void) {
         if (i != 0x40 && i != 0x100) CHECK(svc_code_line(src + (u64)i, &code) == 0);
     CHECK(svc_unmap_process_memory(dst, 0x1234, src, 0x2000) == 0);
     CHECK(state(dst) == MS_FREE && gr32(src + 0x40) == 0xD65F03C0 && gr32(src + 0x100) == 0xD503201F);
+    CHECK(mem_unmap(src, 0x2000) == 0);
+    test_handle = NULL;
+}
+
+/* Two views of the same code at once, as exlaunch keeps them: a view of the module's whole code, mapped first, and
+   one page of it for each hook it writes. A hook written through the page and flushed at the code address changes
+   the code, and the whole view shows it after the flush. Its write back at the unmap then keeps the hook */
+static void test_process_memory_two_views(void) {
+    KObj process = {0};
+    u64 src = HEAP_BASE + 0x1000, whole = STACK_BASE + 0x20000, page = STACK_BASE + 0x40000, code;
+    process.type = KO_PROCESS;
+    process.refs = 1;
+    test_handle = &process;
+    CHECK(mem_map(src, 0x2000, MS_CODE, PERM_RX) == 0);
+    memset(GP(src), 0, 0x2000);
+    gw32(src + 0x11E0, 0x14000004); /* a function of one branch, which the hook replaces */
+    CHECK(svc_map_process_memory(whole, 0x1234, src, 0x2000) == 0);
+    CHECK(svc_map_process_memory(page, 0x1234, src + 0x1000, 0x1000) == 0);
+    gw32(page + 0x1E0, 0x17FFFFF0); /* the hook's branch, through the page */
+    CHECK(gr32(src + 0x11E0) == 0x14000004 && gr32(whole + 0x11E0) == 0x14000004);
+    CHECK(svc_code_line(src + 0x11E0, &code) == 1 && code == src + 0x11C0);
+    CHECK(gr32(src + 0x11E0) == 0x17FFFFF0 && gr32(whole + 0x11E0) == 0x17FFFFF0);
+    CHECK(svc_code_line(src + 0x11E0, &code) == 0); /* every snapshot has it now */
+    CHECK(svc_unmap_process_memory(page, 0x1234, src + 0x1000, 0x1000) == 0);
+    CHECK(svc_unmap_process_memory(whole, 0x1234, src, 0x2000) == 0);
+    CHECK(gr32(src + 0x11E0) == 0x17FFFFF0);
+    CHECK(mem_unmap(src, 0x2000) == 0);
+    test_handle = NULL;
+}
+
+/* A patch written through the whole view and a hook through the page, in one line before its flush: on the console
+   both land in the same page, so the code and every view keep both */
+static void test_process_memory_two_copies_one_line(void) {
+    KObj process = {0};
+    u64 src = HEAP_BASE + 0x1000, whole = STACK_BASE + 0x20000, page = STACK_BASE + 0x40000, code;
+    process.type = KO_PROCESS;
+    process.refs = 1;
+    test_handle = &process;
+    CHECK(mem_map(src, 0x2000, MS_CODE, PERM_RX) == 0);
+    memset(GP(src), 0, 0x2000);
+    CHECK(svc_map_process_memory(whole, 0x1234, src, 0x2000) == 0);
+    CHECK(svc_map_process_memory(page, 0x1234, src + 0x1000, 0x1000) == 0);
+    gw32(whole + 0x11C0, 0xD503201F); /* bytes 0 to 3 of the line */
+    gw32(page + 0x1E0, 0x17FFFFF0);   /* bytes 32 to 35 of the same line */
+    CHECK(svc_code_line(src + 0x11C0, &code) == 1 && code == src + 0x11C0);
+    CHECK(gr32(src + 0x11C0) == 0xD503201F && gr32(src + 0x11E0) == 0x17FFFFF0);
+    CHECK(gr32(whole + 0x11E0) == 0x17FFFFF0 && gr32(page + 0x1C0) == 0xD503201F);
+    CHECK(svc_code_line(src + 0x11C0, &code) == 0);
+    CHECK(svc_unmap_process_memory(page, 0x1234, src + 0x1000, 0x1000) == 0);
+    CHECK(svc_unmap_process_memory(whole, 0x1234, src, 0x2000) == 0);
+    CHECK(gr32(src + 0x11C0) == 0xD503201F && gr32(src + 0x11E0) == 0x17FFFFF0);
+    CHECK(mem_unmap(src, 0x2000) == 0);
+    test_handle = NULL;
+}
+
+/* A view whose snapshot could not be kept (its malloc failed) still takes only what was written through it: its
+   bytes that differ from the code, never its whole line over what another view wrote */
+static void test_process_memory_view_without_snapshot(void) {
+    KObj process = {0};
+    u64 src = HEAP_BASE + 0x1000, whole = STACK_BASE + 0x20000, page = STACK_BASE + 0x40000, code;
+    int i;
+    process.type = KO_PROCESS;
+    process.refs = 1;
+    test_handle = &process;
+    CHECK(mem_map(src, 0x2000, MS_CODE, PERM_RX) == 0);
+    memset(GP(src), 0, 0x2000);
+    CHECK(svc_map_process_memory(whole, 0x1234, src, 0x2000) == 0);
+    CHECK(svc_map_process_memory(page, 0x1234, src + 0x1000, 0x1000) == 0);
+    for (i = 0; i < KCODEVIEW_MAX; i++)
+        if (g_hle.svcmem.views[i].size && g_hle.svcmem.views[i].dst == page) {
+            free(g_hle.svcmem.views[i].snap);
+            g_hle.svcmem.views[i].snap = NULL;
+        }
+    gw32(whole + 0x11C0, 0xD503201F); /* a patch through the view with a snapshot */
+    CHECK(svc_code_line(src + 0x11C0, &code) == 1 && code == src + 0x11C0);
+    CHECK(gr32(src + 0x11C0) == 0xD503201F && gr32(page + 0x1C0) == 0xD503201F);
+    gw32(page + 0x1E0, 0x17FFFFF0); /* a hook through the view without one */
+    CHECK(svc_code_line(page + 0x1E0, &code) == 1 && code == src + 0x11C0);
+    CHECK(gr32(src + 0x11C0) == 0xD503201F && gr32(src + 0x11E0) == 0x17FFFFF0);
+    CHECK(gr32(whole + 0x11E0) == 0x17FFFFF0);
+    CHECK(svc_unmap_process_memory(page, 0x1234, src + 0x1000, 0x1000) == 0);
+    CHECK(svc_unmap_process_memory(whole, 0x1234, src, 0x2000) == 0);
+    CHECK(gr32(src + 0x11C0) == 0xD503201F && gr32(src + 0x11E0) == 0x17FFFFF0);
     CHECK(mem_unmap(src, 0x2000) == 0);
     test_handle = NULL;
 }
@@ -567,6 +659,9 @@ int main(int argc, char** argv) {
     mem_init();
     if (copies) {
         test_process_memory_copies();
+        test_process_memory_two_views();
+        test_process_memory_two_copies_one_line();
+        test_process_memory_view_without_snapshot();
         CHECK(mapping_depth == 0);
         printf("memory alias copies: %u checks passed\n", checks);
         return 0;

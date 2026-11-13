@@ -78,18 +78,11 @@ void snx_arm_coproc(SnxArmCPU* cpu, uint32_t word);
 /* the coprocessor registers the architecture gives user mode with no system to ask: TPIDRURW (read and write) and
    TPIDRURO (read) from the cpu's fields; any other is SNX_ARM_UNDEFINED. A backend can end with it */
 void snx_arm_coproc_user(SnxArmCPU* cpu, uint32_t word);
+/* The ARM7TDMI's C after a multiply that sets the flags, word the instruction (a Thumb MULS's halfword when thumb), its
+   operands still in r[]: the carry out of its Booth multiplier, which the other profiles leave as it was */
+void snx_arm_multiply_carry(SnxArmCPU* cpu, uint32_t word, uint32_t thumb);
 
 typedef void (*SnxArmBlock)(SnxArmCPU* cpu);
-
-/* What an ARM7TDMI block's loads and stores cost on the bus, which the runtime knows (its wait states) and keeps in
-   this table: each load or store, a multiple one too, adds once max(0, nonseq + (words - 1) * seq + load + adjust),
-   by the region of its address (bits 24 to 27), to the runtime's counter (llvm.h's SnxArmCodegenOptions) */
-typedef struct {
-    uint8_t nonseq[16][4]; /* its first access, by region and width ([0] 8, [1] 16, [2] 32 bits) */
-    uint8_t seq[16];       /* each next word of a multiple one */
-    int8_t adjust[16];     /* once for the instruction, by its data's region: what the fetch after it adds, or (below 0)
-                              what the code region's prefetch buffer hides */
-} SnxArmBusCosts;
 
 typedef enum {
     SNX_A32_UNDEFINED,
@@ -148,8 +141,19 @@ SnxA32Kind snx_a32_decode(uint32_t word);
    ARM7TDMI is the AGB board's CPU on flat memory: misaligned loads rotate and stores align, stores of the PC write
    PC + 12, STM writes the written back base unless it comes first, Thumb's POP {pc} keeps the state, LDM and STM
    take an unaligned base and move the aligned words below the save memory, and SnxArmCPU.io sees the board's I/O
-   regions. It decodes as A57, but for an MSR that writes the mode, which is UNDEFINED for the board's runtime to run */
-typedef enum { SNX_ARM_PROFILE_A57, SNX_ARM_PROFILE_ARM11, SNX_ARM_PROFILE_A9, SNX_ARM_PROFILE_ARM7TDMI } SnxArmProfile;
+   regions. It decodes as A57, but for an MSR that writes the mode, which is UNDEFINED for the board's runtime to run.
+   ARM946E is the NDS's main CPU (ARM946E-S, ARMv5TE) on flat memory: the ARM7TDMI's bus rules where ARMv5 keeps them
+   (a misaligned word load rotates, stores align, stores of the PC write PC + 12, LDM and STM align their base), with
+   ARMv5's own: a load to the PC takes the state from bit 0, BLX, CLZ, the saturating and halfword DSP arithmetic and
+   LDRD/STRD run, and a halfword load reads its aligned unit. SnxArmCPU.io sees the I/O window alone (0x04). ARMv6's
+   and later instructions are UNDEFINED, and an MSR that writes the mode is the board's runtime's, as the ARM7TDMI's */
+typedef enum {
+    SNX_ARM_PROFILE_A57,
+    SNX_ARM_PROFILE_ARM11,
+    SNX_ARM_PROFILE_A9,
+    SNX_ARM_PROFILE_ARM7TDMI,
+    SNX_ARM_PROFILE_ARM946E
+} SnxArmProfile;
 SnxA32Kind snx_a32_decode_profile(SnxArmProfile profile, uint32_t word);
 
 /* ---- Thumb16/Thumb32 ----

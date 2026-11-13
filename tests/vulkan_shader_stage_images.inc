@@ -86,6 +86,7 @@ static int check_shader_stage_images(void) {
     r[0x3fd] = r[0x3fe] = 4u << 16;
     r[0x680] = 0x1111;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 0;
+    all_samples(r);
     const float transform[6] = {2, 2, 0.5f, 2, 2, 0.5f};
     memcpy(r + 0x280, transform, sizeof transform);
     for (u32 stage = ST_VS; stage <= ST_GS; stage++) {

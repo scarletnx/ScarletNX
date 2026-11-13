@@ -106,6 +106,7 @@ static int check_lone_lane(void) {
     r[0x3fd] = r[0x3fe] = 4u << 16;
     r[0x680] = 0x1111;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 0;
+    all_samples(r);
     memcpy(r + 0x280, transform, sizeof transform);
     channel->ds.bind.cb_addr[0][0] = address + 0x3000;
     channel->ds.bind.cb_size[0][0] = 0x1000;

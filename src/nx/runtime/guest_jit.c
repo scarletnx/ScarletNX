@@ -336,6 +336,8 @@ GuestFn jit_resolve(u64 pc) {
     return g_jit ? snx_jit_resolve(g_jit, pc) : NULL;
 }
 
+GuestFn jit_code_now(u64 pc) { return g_jit ? snx_jit_wait(g_jit, pc) : NULL; }
+
 GuestFn jit_wait(u64 pc) {
     GuestFn code = variant_resolve(pc);
     [[maybe_unused]] u64 t0 = 0;
@@ -541,6 +543,7 @@ static void fn_stale(const SnxModule* mod, u32 i) {
     for (; a < mod->nentries && mod->entry_addr[a] < hi; a++)
         if (__atomic_load_n(&entry_fn[a], __ATOMIC_RELAXED) == f) __atomic_store_n(&entry_fn[a], NULL, __ATOMIC_RELEASE);
     __atomic_store_n(&mod->stale[i], 1, __ATOMIC_RELEASE);
+    hook_orig_stale(f); /* a hooked function's own code is what the game put there now */
 }
 
 /* The NROs' own AOT modules, by their place in g_nros (nro_slots.h): each loaded when its NRO is first mapped at its

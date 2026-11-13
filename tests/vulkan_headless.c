@@ -8,13 +8,15 @@
 #include "nx/runtime/ini.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/maxwell/draw_state.h"
+#include "nx/gpu/guest_textures.h"
 #include "nx/gpu/renderer.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/utilities/spirv_emit.h"
 #include "common/utilities/spirv_opt.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/pagespace.h"
 #include "nx/gpu/vk/descriptors.h"
-#include "nx/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/extension_bans.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
@@ -22,6 +24,7 @@
 #include "nx/gpu/maxwell/maxwell_3d_regs.h"
 #include "nx/gpu/maxwell/gob.h"
 #include "nx/gpu/texture/blocklinear.h"
+#include "nx/gpu/texture/texconv_modes.glsl"
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_tex.h"
@@ -177,7 +180,7 @@ static int check_desc_pool_arrays(void) {
         puts("descriptor pools: no texture arrays here, or descriptor buffers: the pools' sets only");
         return 0;
     }
-    CHECK(arrayed[2].descriptorCount == one[2].descriptorCount + 2 * SNX_TEX_ARRAY);
+    CHECK(arrayed[2].descriptorCount == one[2].descriptorCount + 2 * g_shader_tex_array);
     CHECK(VK_POOL_ARRAY_SETS_FOR(g_vk_dslayout[1][1]) == VK_POOL_ARRAY_SETS_MORE &&
           VK_POOL_ARRAY_SETS_FOR(g_vk_dslayout[0][1]) == VK_POOL_ARRAY_SETS);
     /* each kind of frame pool as vk_desc_pool_new makes it, and how many sets of each fragment layout it holds */
@@ -218,6 +221,33 @@ static int check_desc_pool_arrays(void) {
     printf("descriptor pools: a frame's holds %u sets without the texture arrays and %u with them (%u and %u when "
            "made for those); %u with them in one frame were all taken (%u pools made for them)\n",
            held[0][0], held[0][1], held[1][0], held[1][1], n, vk_desc_pools() - pools);
+    return 0;
+}
+/* A burst of sets in one frame (a load) makes pools the slot's later frames never reach: after a window of
+   VK_DESC_POOL_USES uses of the slot that each take one pool, the others are destroyed */
+static int check_desc_pool_keep(void) {
+    if (g_vk.has_descriptor_buffers) {
+        puts("descriptor pools kept: descriptor buffers here, the frames' pools hold no stage sets");
+        return 0;
+    }
+    vk_lock();
+    vk_finish();
+    vk_frame_next();
+    u32 before = vk_desc_pools();
+    for (u32 i = 0; i < 3 * 1024 + 1; i++) CHECK(vk_desc_alloc(g_vk_dslayout[0][1]) != VK_NULL_HANDLE);
+    u32 burst = vk_desc_pools();
+    for (u32 i = 0; i < 2 * VK_FRAMES * VK_DESC_POOL_USES + VK_FRAMES; i++) {
+        vk_frame_next();
+        CHECK(vk_desc_alloc(g_vk_dslayout[0][1]) != VK_NULL_HANDLE);
+    }
+    u32 after = vk_desc_pools();
+    vk_finish();
+    vk_frame_next();
+    vk_unlock();
+    CHECK(after + 3 <= burst); /* the burst's slot held 4 pools or more, one of them stays */
+    printf(
+        "descriptor pools kept: %u before a burst of 3073 sets, %u after it, %u once %u uses of each slot took one\n",
+        before, burst, after, 2 * VK_DESC_POOL_USES);
     return 0;
 }
 /* Graphics descriptor tables fill the frame's descriptor memory. vk_frame_check, which runs before a draw's setup,
@@ -411,7 +441,7 @@ static int check_staging_overflow(void) {
     g_vk.alloc_cap = 1u << 20;
     for (u32 frame = 0; frame < VK_FRAMES * 3; frame++) {
         VkBuffer rb, output, next_output;
-        VmaAllocation memory;
+        DevMem memory;
         VkBufferCopy output_copy;
         u64 output_offset, next_offset;
         u8* result = vk_readback_buffer(80, &rb);
@@ -582,18 +612,21 @@ static void stats_frames(u32 n, VkBuffer from, VkBuffer to, u64 size) {
    timed before; and a command buffer begun while off isn't closed onto another's begin, so the wait between them
    isn't counted either. The device-local heap's use and budget are the driver's where it has VK_EXT_memory_budget */
 static int check_stats_gpu_time(void) {
-    const u64 size = 32ull << 20;
+    /* a copy long enough that empty frames stay far below it where the queue's time is the CPU's (lavapipe), which a
+       loaded machine stretches alike for both: there two empty frames take about half of a 32 MiB copy */
+    const u64 size = 128ull << 20;
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                               .size = size,
                               .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    VmaAllocationInfo info;
+    DevMemWant aci = {.at = DM_DEVICE};
+    DevMemInfo info;
     VkBuffer buf[2];
-    VmaAllocation mem[2];
-    u64 stamps, busy, copied, t0, wall, vram, budget;
+    DevMem mem[2];
+    u64 stamps, busy, copied, t0, wall, vram, budget, empty[5];
+    int ours;
     int was = g_settings.stats;
-    for (int i = 0; i < 2; i++) CHECK(vk_buffer_create(g_vk.vma, &bci, &aci, &buf[i], &mem[i], &info) == VK_SUCCESS);
+    for (int i = 0; i < 2; i++) CHECK(vk_buffer_create(&bci, &aci, &buf[i], &mem[i], &info) == VK_SUCCESS);
     g_settings.stats = 0;
     vk_finish();
     vk_frame_next();
@@ -615,20 +648,29 @@ static int check_stats_gpu_time(void) {
     stats_frames(8, buf[0], buf[1], size);
     wall = plat_ns() - t0;
     copied = vk_gpuprof_busy_ns() - busy;
-    printf("stats on: 8 frames copying 32 MiB, the graphics queue busy %.3f ms of their %.3f ms, %llu timestamps\n",
-           (double)copied / 1e6, (double)wall / 1e6, (unsigned long long)(g_vk_timestamps - stamps));
+    printf("stats on: 8 frames copying %llu MiB, the graphics queue busy %.3f ms of their %.3f ms, %llu timestamps\n",
+           (unsigned long long)(size >> 20), (double)copied / 1e6, (double)wall / 1e6,
+           (unsigned long long)(g_vk_timestamps - stamps));
     CHECK(g_vk_timestamps > stamps && copied > 0 && copied < wall);
-    /* a frame's copy timed, then stats off before its slot is used again, and on */
-    rec_CmdCopyBuffer(vk_cmd(), buf[0], buf[1], 1, &(VkBufferCopy){0, 0, size});
-    vk_frame_next();
-    g_settings.stats = 0;
-    stats_frames(0, buf[0], buf[1], 0); /* both slots used again, untimed */
-    g_settings.stats = 1;
-    busy = vk_gpuprof_busy_ns();
-    stats_frames(2, buf[0], buf[1], 0);
-    busy = vk_gpuprof_busy_ns() - busy;
-    printf("stats on again: 2 empty frames busy %.3f ms, against %.3f ms a frame copying\n", (double)busy / 1e6,
-           (double)copied / 8e6);
+    /* a frame's copy timed, then stats off before its slot is used again, and on: the empty frames after it count
+       none of the copy. Five times, their median: a moment of load stretches one of them */
+    for (int trial = 0; trial < 5; trial++) {
+        rec_CmdCopyBuffer(vk_cmd(), buf[0], buf[1], 1, &(VkBufferCopy){0, 0, size});
+        vk_frame_next();
+        g_settings.stats = 0;
+        stats_frames(0, buf[0], buf[1], 0); /* both slots used again, untimed */
+        g_settings.stats = 1;
+        busy = vk_gpuprof_busy_ns();
+        stats_frames(2, buf[0], buf[1], 0);
+        u64 took = vk_gpuprof_busy_ns() - busy;
+        int at = trial;
+        for (; at > 0 && empty[at - 1] > took; at--) empty[at] = empty[at - 1];
+        empty[at] = took;
+    }
+    busy = empty[2];
+    printf("stats on again: 2 empty frames busy %.3f ms (the median of 5, %.3f to %.3f), against %.3f ms a frame "
+           "copying\n",
+           (double)busy / 1e6, (double)empty[0] / 1e6, (double)empty[4] / 1e6, (double)copied / 8e6);
     CHECK(busy * 4 < copied / 8);
     /* within one frame: a command buffer begun and timed, stats off at its end, the next begun while off, a wait,
        stats on at its end */
@@ -645,14 +687,65 @@ static int check_stats_gpu_time(void) {
     busy = vk_gpuprof_busy_ns() - busy;
     printf("stats off and on within a frame, 50 ms between its command buffers: busy %.3f ms\n", (double)busy / 1e6);
     CHECK(busy < 25000000);
-    vk_mem_driver_use(&vram, &budget);
+    vk_mem_driver_use(&vram, &budget, &ours);
     printf("stats: video memory %llu of %llu MiB (VK_EXT_memory_budget %s)\n", (unsigned long long)(vram >> 20),
            (unsigned long long)(budget >> 20), g_vk.has_budget ? "on" : "off");
-    CHECK(g_vk.has_budget ? vram && budget : !vram && !budget);
+    CHECK(vram && budget && ours == !g_vk.has_budget);
+    {
+        /* as on a driver without the extension (Qualcomm's): devmem.c's blocks on the heap and the heap's size, never
+           its 80% guess */
+        int had = g_vk.has_budget;
+        const VkPhysicalDeviceMemoryProperties* mp = vk_devmem_props();
+        DevMemBudget b[VK_MAX_MEMORY_HEAPS];
+        g_vk.has_budget = 0;
+        vk_mem_driver_use(&vram, &budget, &ours);
+        g_vk.has_budget = had;
+        vk_devmem_budgets(b);
+        printf("stats without the budget: ours %llu of the heap's %llu MiB\n", (unsigned long long)(vram >> 20),
+               (unsigned long long)(budget >> 20));
+        CHECK(ours && vram && vram == b[vk_mem_heap()].block_bytes && budget == mp->memoryHeaps[vk_mem_heap()].size);
+    }
 done:
     g_settings.stats = was;
     vk_finish();
-    for (int i = 0; i < 2; i++) vmaDestroyBuffer(g_vk.vma, buf[i], mem[i]);
+    for (int i = 0; i < 2; i++) vk_devmem_buffer_destroy(buf[i], mem[i]);
+    return 0;
+}
+
+/* A driver that refuses vk_gpu_profile's pool at its size gets a smaller one (gpuprof.c's gp_slot halves the size until
+   one is taken), and a frame's passes past it go untimed: no timestamp is written past the pool. Here the driver takes
+   no timestamp pool over 1024 queries, made for the frame slot that comes next, and that frame begins 1000 passes, which
+   would take 2000. In a process of its own (SNX_TEST_GPUPROF_POOL_ONLY, --vk_gpu_profile=1): a slot's pool is made once,
+   at its first use */
+static PFN_vkCreateQueryPool g_pool_create;
+static VkResult VKAPI_CALL small_pools(VkDevice dev, const VkQueryPoolCreateInfo* info,
+                                       const VkAllocationCallbacks* alloc, VkQueryPool* pool) {
+    if (info->queryType == VK_QUERY_TYPE_TIMESTAMP && info->queryCount > 1024) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    return g_pool_create(dev, info, alloc, pool);
+}
+static int check_gpuprof_small_pool(void) {
+    u64 stamps;
+    if (!vk_gpuprof_timed()) {
+        printf("SKIP gpu profile pool: the graphics queue writes no timestamps (timestampValidBits %u)\n",
+               g_vk.gfx_timestamp_bits);
+        return 0;
+    }
+    g_pool_create = vkCreateQueryPool;
+    vkCreateQueryPool = small_pools;
+    vk_frame_next();
+    stamps = g_vk_timestamps;
+    VkCommandBuffer cb = vk_cmd();
+    for (u32 i = 0; i < 1000; i++) {
+        vk_gpuprof_pass_begin(cb, NULL, NULL);
+        vk_gpuprof_pass_end(cb);
+    }
+    vk_frame_next();
+    stamps = g_vk_timestamps - stamps;
+    vkCreateQueryPool = g_pool_create;
+    vk_finish();
+    printf("gpu profile pool of 1024 queries: a frame of 1000 passes wrote %llu timestamps\n",
+           (unsigned long long)stamps);
+    CHECK(stamps > 0 && stamps <= 1024);
     return 0;
 }
 
@@ -1557,7 +1650,7 @@ static int check_srgb_blit(void) {
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
     VkImage dst;
-    VmaAllocation mem;
+    DevMem mem;
     vk_lock();
     CHECK(vk_image_create(&ii, &dst, &mem));
     VkCommandBuffer cb = vk_cmd();
@@ -1708,7 +1801,7 @@ static int check_sparse_while_submitting(void) {
                                 .samples = VK_SAMPLE_COUNT_1_BIT,
                                 .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
         VkImage img;
-        VmaAllocation mem;
+        DevMem mem;
         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                                .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
@@ -1806,6 +1899,68 @@ static int check_sparse_texture(void) {
     return 0;
 }
 
+/* The blocks of a sparse texture that show the same guest memory share an allocation only when they show it at the
+   same places (texture.c's keys: mark_pages', and resident_bind_mapped's for an image bound in bricks). Two half
+   tiles of guest memory, 32 KiB each and apart, are mapped under three blocks of level 0, of 128x128 texels each: one
+   then the other under the first block and the third, the other then the one under the second. Each block reads
+   the texels of what is mapped under it: with one allocation for all three, as their runs of memory are the same
+   ones, the second would read the first's */
+static int check_sparse_texture_shared(void) {
+    const u64 gva = 0x49000000, cpu = HEAP_BASE + 0x100000, half = 0x8000, other = cpu + 0x20000;
+    NvnTexture nt = {.d = {.format = NVN_FORMAT_RGBA8,
+                           .target = NVN_TEXTURE_TARGET_2D,
+                           .levels = 8,
+                           .width = 1024,
+                           .height = 1024,
+                           .depth = 1},
+                     .gpu = gva};
+    NvnTexLayout layout;
+    nvn_tex_layout(&nt.d, &layout);
+    u64 low = nvn_tex_level_offset(&nt.d, 3);
+    u64 size = (layout.size + 0xFFF) & ~0xFFFull;
+    u32 tic[8], texel[6] = {0};
+    CHECK(low == 0x540000 && size <= 0x700000 && nvn_tic_encode(&nt, NULL, 0, 0, tic));
+    memset(GP(cpu), 0x5a, (size_t)size);
+    memset(GP(cpu), 0x11, half);
+    memset(GP(other), 0x22, half);
+    gmmu_map(gva + low, cpu + low, size - low); /* the small levels */
+    gmmu_map(gva + 0x200000, cpu, half);        /* texels 0 to 127 of rows 512 to 639: one half, then the other */
+    gmmu_map(gva + 0x208000, other, half);
+    gmmu_map(gva + 0x210000, other, half); /* texels 128 to 255: the other, then the one */
+    gmmu_map(gva + 0x218000, cpu, half);
+    gmmu_map(gva + 0x220000, cpu, half); /* texels 256 to 383: as the first */
+    gmmu_map(gva + 0x228000, other, half);
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    CHECK(t && t->upload_valid);
+    if (!t->sparse && !t->bricks) { /* made whole: every block has its own memory, and nothing is shared */
+        printf("skip: the device makes no RGBA8 textures with memory only where they are mapped\n");
+        vk_unlock();
+        gmmu_space_unmap(gva, size);
+        return 0;
+    }
+    const u32 blocks = vk_image_bound_blocks(t->img), mems = vk_image_bound_memory(t->img);
+    for (u32 b = 0; b < 3; b++) {
+        CHECK(!sparse_texel(t, 0, b * 128 + 10, 600, &texel[2 * b]));
+        CHECK(!sparse_texel(t, 0, b * 128 + 100, 600, &texel[2 * b + 1]));
+    }
+    vk_unlock();
+    gmmu_space_unmap(gva, size);
+    if (texel[0] != 0x11111111u || texel[1] != 0x22222222u || texel[2] != 0x22222222u || texel[3] != 0x11111111u ||
+        texel[4] != 0x11111111u || texel[5] != 0x22222222u || mems > blocks) {
+        fprintf(stderr,
+                "sparse texture, shared blocks: texels %08x %08x of the first block (11111111 22222222 expected), "
+                "%08x %08x of the block with the halves the other way round (22222222 11111111), %08x %08x of the "
+                "third block (11111111 22222222); %u blocks and mip tails with memory on %u allocations\n",
+                texel[0], texel[1], texel[2], texel[3], texel[4], texel[5], blocks, mems);
+        return 1;
+    }
+    printf("Sparse texture, shared blocks: two half tiles under two blocks and the other way round under a third "
+           "read as mapped; %u blocks and mip tails with memory on %u allocations\n",
+           blocks, mems);
+    return 0;
+}
+
 /* A fetch of a multisampled texture's sample (TLDS.MS and TLD.MS, the sample in Rb) translates into a module the
    device takes (the validation layer checks its SPIR-V), with a multisampled texture slot */
 static int check_multisample_shader_gate(void) {
@@ -1896,6 +2051,58 @@ static int check_translation_values(void) {
     return 0;
 }
 
+/* the instructions of module (words of them) that take a 32-bit integer and the constant 3 to & : the component of
+   a constant buffer read that the Maxwell translator splits off an address */
+static int count_and_3(const u32* module, size_t words) {
+    u32 bound = module[3], three = 0, n = 0;
+    u8* int32 = calloc(1, bound);
+    if (!int32) abort();
+    for (size_t i = 5; i < words; i += module[i] >> 16) {
+        const u32* w = module + i;
+        u32 width = w[0] >> 16, op = w[0] & 0xffff;
+        if (op == SPV_OP_TYPE_INT && width == 4 && w[1] < bound && w[2] == 32) int32[w[1]] = 1;
+        if (op == SPV_OP_CONSTANT && width == 4 && w[1] < bound && int32[w[1]] && w[3] == 3) three = w[2];
+        if (op == SPV_OP_BITWISE_AND && width == 5 && three && (w[3] == three || w[4] == three)) n++;
+    }
+    free(int32);
+    return (int)n;
+}
+
+/* and through the known bits: a fragment program that reads c[0][R5 + 0x20] with R5 an input shifted by 4 (IPA R2,
+   SHL R5, R2, 4) has its address's component, (address >> 2) & 3, known 0 in the runtime's module, which the
+   translator splits off with an & 3; the device takes the module */
+static int check_translation_known_bits(void) {
+    u64 guest[16] = {0};
+    guest[9] = 0xf;                    /* the header's output map: render target 0's RGBA, from R0-R3 */
+    guest[10] = 0x001f8000fc0007e0ull; /* scheduler */
+    guest[11] = 0xe003ff87cff7ff02ull; /* IPA R2, a[0x7c] */
+    guest[12] = 0x3848000000470205ull; /* SHL R5, R2, 4 */
+    guest[13] = 0xef94002000070500ull; /* LDC R0, c[0][R5 + 0x20] */
+    guest[14] = 0x001f8000fc0007e0ull; /* scheduler */
+    guest[15] = 0xe30000000007000full; /* EXIT */
+    ShaderInfo info = {0}, direct_info = {0};
+    size_t words = 0, direct_words = 0;
+    u32* spirv = vk_translate_spirv((const u8*)guest, sizeof guest, ST_FS, &info, &words, NULL, NULL);
+    u32* direct = shader_to_spirv((const u8*)guest, sizeof guest, ST_FS, &direct_info, &direct_words, g_vk_ftz,
+                                  g_vk_preserve_infnan, g_vk_preserve_infnan64,
+                                  (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) != 0);
+    if (!spirv || !direct)
+        fprintf(stderr, "known bits: %s; %s\n", info.first_unsupported, direct_info.first_unsupported);
+    CHECK(spirv && direct);
+    int before = count_and_3(direct, direct_words), after = count_and_3(spirv, words);
+    if (before < 1 || after)
+        fprintf(stderr, "known bits: the translator's module has %d & 3, the runtime's %d\n", before, after);
+    CHECK(before >= 1 && after == 0);
+    VkShaderModuleCreateInfo smi = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * sizeof(u32), .pCode = spirv};
+    VkShaderModule module;
+    CHECK(vkCreateShaderModule(g_vk.dev, &smi, NULL, &module) == VK_SUCCESS);
+    vkDestroyShaderModule(g_vk.dev, module, NULL);
+    free(spirv);
+    free(direct);
+    return 0;
+}
+
 /* Execute the direct writer's module, not only spirv-val's structural check. */
 /* code, a compute module of one invocation over set 0 binding 0, run once on count words of data, read back
    into data */
@@ -1934,15 +2141,13 @@ static int run_compute(const u32* code, size_t words, u32* data, u32 count, VkIm
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = (VkDeviceSize)count * sizeof(u32),
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
-    VmaAllocationCreateInfo ai = {.flags =
-                                      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                  .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    DevMemWant ai = {.at = DM_CACHED, .mapped = 1};
     VkBuffer buffer;
-    VmaAllocation memory;
-    VmaAllocationInfo allocation;
-    CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &buffer, &memory, &allocation) == VK_SUCCESS);
-    memcpy(allocation.pMappedData, data, (size_t)count * sizeof(u32));
-    CHECK(vmaFlushAllocation(g_vk.vma, memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
+    DevMem memory;
+    DevMemInfo allocation;
+    CHECK(vk_devmem_buffer(&bi, &ai, &buffer, &memory, &allocation) == VK_SUCCESS);
+    memcpy(allocation.ptr, data, (size_t)count * sizeof(u32));
+    CHECK(vk_devmem_flush(memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
     VkDescriptorPoolSize pool_sizes[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
                                           {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}};
     VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -1997,13 +2202,22 @@ static int run_compute(const u32* code, size_t words, u32* data, u32 count, VkIm
     vkCmdPipelineBarrier2(cmd, &dependency);
     CHECK(vkEndCommandBuffer(cmd) == VK_SUCCESS);
     VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cmd};
-    CHECK(vkQueueSubmit(g_vk.gfx, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS);
-    CHECK(vkQueueWaitIdle(g_vk.gfx) == VK_SUCCESS);
-    CHECK(vmaInvalidateAllocation(g_vk.vma, memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
-    memcpy(data, allocation.pMappedData, (size_t)count * sizeof(u32));
+    /* under the queue's lock, as the recording thread submits to it (record.c): a VkQueue takes one thread at a time.
+       Its own fence, waited outside the lock, so the recording thread's submits go on meanwhile */
+    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence;
+    CHECK(vkCreateFence(g_vk.dev, &fi, NULL, &fence) == VK_SUCCESS);
+    vk_queue_lock(g_vk.gfx);
+    VkResult submitted = vkQueueSubmit(g_vk.gfx, 1, &submit, fence);
+    vk_queue_unlock(g_vk.gfx);
+    int done = submitted == VK_SUCCESS && vk_wait_fence(fence);
+    vkDestroyFence(g_vk.dev, fence, NULL);
+    CHECK(done);
+    CHECK(vk_devmem_invalidate(memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
+    memcpy(data, allocation.ptr, (size_t)count * sizeof(u32));
     vkDestroyCommandPool(g_vk.dev, cpool, NULL);
     vkDestroyDescriptorPool(g_vk.dev, pool, NULL);
-    vmaDestroyBuffer(g_vk.vma, buffer, memory);
+    vk_devmem_buffer_destroy(buffer, memory);
     vkDestroyPipeline(g_vk.dev, pipeline, NULL);
     vkDestroyPipelineLayout(g_vk.dev, playout, NULL);
     vkDestroyDescriptorSetLayout(g_vk.dev, dlayout, NULL);
@@ -2039,22 +2253,20 @@ static int check_sampler_reduction(void) {
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
-    VmaAllocationCreateInfo device = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    DevMemWant device = {.at = DM_DEVICE};
     VkImage image;
-    VmaAllocation image_memory;
-    CHECK(vmaCreateImage(g_vk.vma, &ii, &device, &image, &image_memory, NULL) == VK_SUCCESS);
+    DevMem image_memory;
+    CHECK(vk_devmem_image(&ii, &device, &image, &image_memory) == VK_SUCCESS);
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = sizeof texels,
                              .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
-    VmaAllocationCreateInfo host = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                                             VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                    .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    DevMemWant host = {.at = DM_HOST, .mapped = 1};
     VkBuffer staging;
-    VmaAllocation staging_memory;
-    VmaAllocationInfo allocation;
-    CHECK(vmaCreateBuffer(g_vk.vma, &bi, &host, &staging, &staging_memory, &allocation) == VK_SUCCESS);
-    memcpy(allocation.pMappedData, texels, sizeof texels);
-    CHECK(vmaFlushAllocation(g_vk.vma, staging_memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
+    DevMem staging_memory;
+    DevMemInfo allocation;
+    CHECK(vk_devmem_buffer(&bi, &host, &staging, &staging_memory, &allocation) == VK_SUCCESS);
+    memcpy(allocation.ptr, texels, sizeof texels);
+    CHECK(vk_devmem_flush(staging_memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     VkImageMemoryBarrier2 to_copy = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -2081,7 +2293,7 @@ static int check_sampler_reduction(void) {
     dep.pImageMemoryBarriers = &to_read;
     rec_CmdPipelineBarrier2(cb, &dep);
     vk_finish();
-    vmaDestroyBuffer(g_vk.vma, staging, staging_memory);
+    vk_devmem_buffer_destroy(staging, staging_memory);
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                 .image = image,
                                 .viewType = VK_IMAGE_VIEW_TYPE_2D,
@@ -2114,7 +2326,7 @@ static int check_sampler_reduction(void) {
     /* clamp to edge; linear magnification and minification, no mip filter; mode the reduction */
     for (u32 mode = 0; filtered && mode < 4; mode++) {
         u32 tsc[8] = {2u | 2u << 3 | 2u << 6, 2u | 2u << 4 | 1u << 6 | mode << 10};
-        VkSampler sampler = vk_tex_bind_sampler(tsc, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D);
+        VkSampler sampler = vk_tex_bind_sampler(tsc, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0);
         u32 bits = 0;
         float got;
         CHECK(sampler && !run_compute(code, words, &bits, 1, view, sampler));
@@ -2128,32 +2340,32 @@ static int check_sampler_reduction(void) {
     u32 average[8] = {2u | 2u << 3 | 2u << 6, 2u | 2u << 4 | 1u << 6}, least[8];
     memcpy(least, average, sizeof least);
     least[1] |= 1u << 10;
-    VkSampler avg = vk_tex_bind_sampler(average, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D);
-    CHECK(vk_tex_bind_sampler(least, tic, &plain, 0, NULL, VK_IMAGE_VIEW_TYPE_2D) ==
-          vk_tex_bind_sampler(average, tic, &plain, 0, NULL, VK_IMAGE_VIEW_TYPE_2D));
-    CHECK(vk_tex_bind_sampler(least, tic, &plain, 1, &tex, VK_IMAGE_VIEW_TYPE_2D) ==
-          vk_tex_bind_sampler(average, tic, &plain, 1, &tex, VK_IMAGE_VIEW_TYPE_2D));
-    CHECK(vk_tex_bind_sampler(least, tic, &shadow, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) ==
-          vk_tex_bind_sampler(average, tic, &shadow, 0, &tex, VK_IMAGE_VIEW_TYPE_2D));
+    VkSampler avg = vk_tex_bind_sampler(average, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0);
+    CHECK(vk_tex_bind_sampler(least, tic, &plain, 0, NULL, VK_IMAGE_VIEW_TYPE_2D, 0) ==
+          vk_tex_bind_sampler(average, tic, &plain, 0, NULL, VK_IMAGE_VIEW_TYPE_2D, 0));
+    CHECK(vk_tex_bind_sampler(least, tic, &plain, 1, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) ==
+          vk_tex_bind_sampler(average, tic, &plain, 1, &tex, VK_IMAGE_VIEW_TYPE_2D, 0));
+    CHECK(vk_tex_bind_sampler(least, tic, &shadow, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) ==
+          vk_tex_bind_sampler(average, tic, &shadow, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0));
     u32 nearest[8] = {average[0], 1u | 1u << 4 | 1u << 6}, nearest_least[8] = {average[0], nearest[1] | 1u << 10};
-    CHECK(vk_tex_bind_sampler(nearest_least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) ==
-          vk_tex_bind_sampler(nearest, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D));
+    CHECK(vk_tex_bind_sampler(nearest_least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) ==
+          vk_tex_bind_sampler(nearest, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0));
     VkBool32 had = g_vk.feat12.samplerFilterMinmax;
     g_vk.feat12.samplerFilterMinmax = VK_FALSE;
-    CHECK(vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) == avg);
+    CHECK(vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) == avg);
     g_vk.feat12.samplerFilterMinmax = had;
-    CHECK(!minmax || vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) != avg);
+    CHECK(!minmax || vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) != avg);
     /* a device whose min/max filter takes no swizzle: a view of its own components keeps the reduction, and one that
        reads g into r averages */
     int had_swizzle = g_vk.has_minmax_swizzle;
     g_vk.has_minmax_swizzle = 0;
-    CHECK(vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) == avg);
-    CHECK(!minmax || vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) != avg);
+    CHECK(vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) == avg);
+    CHECK(!minmax || vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) != avg);
     g_vk.has_minmax_swizzle = 1;
-    CHECK(!minmax || vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) != avg);
+    CHECK(!minmax || vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) != avg);
     g_vk.has_minmax_swizzle = had_swizzle;
     vk_image_view_destroy(g_vk.dev, view, NULL);
-    vmaDestroyImage(g_vk.vma, image, image_memory);
+    vk_devmem_image_destroy(image, image_memory);
     return 0;
 }
 
@@ -2408,12 +2620,13 @@ static int check_vic_chain(const char* shot) {
 /* NVDEC's picture laid out on the GPU (vk/nvdec.c), then composed by VIC from there, with no CPU access between: the
    same steps on the CPU's references (nvdec_ref.c, vic_ref.c) into twin surfaces must give the same bytes, the GPU's
    read last (which lands them). Pictures whose rows end inside a 16 byte run, and surface padding that must keep its
-   bytes */
+   bytes. semi gives the GPU the picture's chroma interleaved, as the media engine's pictures are (NvdecPic.semi), in
+   rows longer than the pairs, and the reference the same picture planar */
 #define NV_GPU (HEAP_BASE + 0x40000)
 #define NV_REF (HEAP_BASE + 0xC0000)
-static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh, int linear) {
-    static u8 y[64 * 48], u[32 * 24], v[32 * 24];
-    u32 pairs = (w + 1) / 2;
+static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh, int linear, int semi) {
+    static u8 y[64 * 48], u[32 * 24], v[32 * 24], uv[24 * (2 * 32 + 6)];
+    u32 pairs = (w + 1) / 2, uv_stride = 2 * pairs + 6;
     u64 gob_rows = 8u << bh, ext_y = (u64)(pitch + 63) / 64 * 64 * ((sh + gob_rows - 1) / gob_rows * gob_rows);
     u64 ext_c = (u64)(pitch + 63) / 64 * 64 * (((sh + 1) / 2 + gob_rows - 1) / gob_rows * gob_rows);
     if (linear) { /* NV12 rows pitch apart, as the Ounce's video images are */
@@ -2434,6 +2647,18 @@ static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh, int linear) {
     NvdecPic q = p;
     q.luma = NV_REF;
     q.chroma = NV_REF + 0x10000;
+    if (semi) {
+        for (u32 j = 0; j < (h + 1) / 2; j++)
+            for (u32 i = 0; i < pairs; i++) {
+                uv[j * uv_stride + 2 * i] = u[j * pairs + i];
+                uv[j * uv_stride + 2 * i + 1] = v[j * pairs + i];
+            }
+        p.plane[1] = uv;
+        p.plane[2] = NULL;
+        p.stride[1] = (int)uv_stride;
+        p.stride[2] = 0;
+        p.semi = 1;
+    }
     CHECK(g_renderer->nvdec_write(&p));
     nvdec_write_ref(&q);
     /* VIC: the picture as an RGBA one, from the surfaces as NVDEC left them */
@@ -2463,13 +2688,18 @@ static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh, int linear) {
 }
 static int check_nvdec_vic(void) {
     u64 lands = own_landings();
-    CHECK(!nvdec_vic_case(64, 32, 64, 32, 1, 0));
-    CHECK(!nvdec_vic_case(33, 17, 64, 24, 0, 0)); /* rows ending inside a run, padding rows, blocks of one GOB */
-    CHECK(!nvdec_vic_case(54, 40, 128, 48, 2, 0)); /* a wider surface than the picture */
-    CHECK(!nvdec_vic_case(53, 41, 256, 48, 0, 1)); /* pitch linear: odd sizes, padding columns and rows kept */
-    CHECK(!nvdec_vic_case(2, 2, 256, 4, 0, 1));    /* pitch linear: one chroma pair, padding rows */
+    CHECK(!nvdec_vic_case(64, 32, 64, 32, 1, 0, 0));
+    CHECK(!nvdec_vic_case(33, 17, 64, 24, 0, 0, 0));  /* rows ending inside a run, padding rows, blocks of one GOB */
+    CHECK(!nvdec_vic_case(54, 40, 128, 48, 2, 0, 0)); /* a wider surface than the picture */
+    CHECK(!nvdec_vic_case(53, 41, 256, 48, 0, 1, 0)); /* pitch linear: odd sizes, padding columns and rows kept */
+    CHECK(!nvdec_vic_case(2, 2, 256, 4, 0, 1, 0));    /* pitch linear: one chroma pair, padding rows */
+    CHECK(!nvdec_vic_case(53, 41, 256, 48, 0, 1, 1)); /* the media engine's interleaved chroma, pitch linear */
+    CHECK(!nvdec_vic_case(33, 17, 64, 24, 0, 0, 1));  /* and block linear */
+    /* a CPU picture's chroma interleave compiles a small build of the conversion shader, not the plain one, whose
+       compile held the renderer 1.7 s at a movie's first picture on a slow GPU */
+    CHECK(vk_tc_spirv_bytes(TC_NV12_UV) * 8 < vk_tc_spirv_bytes(TC_RGBA4));
     /* each case lands its three ranges when read, nothing before */
-    CHECK(!own_traps() || own_landings() <= lands + 15);
+    CHECK(!own_traps() || own_landings() <= lands + 21);
     return 0;
 }
 
@@ -2499,7 +2729,8 @@ static int dma_case(GpuDmaOp o) {
    takes those bytes, not guest memory's, which changed after (the program freed its source), and lets go of them */
 static int dma_snap_case(GpuDmaOp o) {
     GpuDmaOp g = o, c = o;
-    u64 span = (u64)o.src.pitch * (o.lines - 1) + o.line_in, id = 0, held = vk_snap_bytes();
+    u64 span = gpu_dma_span(&o.src, o.lines, o.line_in), id = 0, held = vk_snap_bytes();
+    u64 low = o.src.addr + (u64)gpu_dma_low(&o.src, o.lines); /* the snapshot holds the span from its lowest byte */
     for (int k = 0; k < 2; k++) {
         u8* t = GP(k ? DMA_B : DMA_A);
         for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 31 + (i >> 9) * 5 + 1);
@@ -2508,12 +2739,12 @@ static int dma_snap_case(GpuDmaOp o) {
     c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
     u8* snap = g_renderer->snap_alloc(span, &id);
     CHECK(snap && id && vk_snap_bytes() == held + span);
-    memcpy(snap, GP(DMA_A) + o.src.addr, span);
-    for (u64 i = 0; i < span; i++) GP(DMA_A)[o.src.addr + i] ^= 0x5A; /* guest memory changes after the read */
+    memcpy(snap, GP(DMA_A) + low, span);
+    for (u64 i = 0; i < span; i++) GP(DMA_A)[low + i] ^= 0x5A; /* guest memory changes after the read */
     g.snap = snap;
     g.snap_id = id;
     CHECK(g_renderer->dma_copy(&g));
-    for (u64 i = 0; i < span; i++) GP(DMA_A)[o.src.addr + i] ^= 0x5A; /* the same again, for the comparison */
+    for (u64 i = 0; i < span; i++) GP(DMA_A)[low + i] ^= 0x5A; /* the same again, for the comparison */
     dma_copy_ref(&c);
     guest_done(DMA_A, DMA_SPAN);
     CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN));
@@ -2950,6 +3181,241 @@ static int check_sparse_view(void) {
     puts("sparse view: a view of a sparse texture's levels smaller than a tile reads rows of their own GOBs");
     return 0;
 }
+/* The sparse blocks that show the same bytes share memory (memory.c): an RGBA8 image of 2048x2048 with sparse
+   residency, blocks 0, 5, 17 and 40 bound with one key, 1 and 18 with another and 2 with none. Where the device binds
+   memory to more than one place of an image, the seven blocks are on three allocations, and what is copied to one
+   block of a key reads back through another. A block that takes another key is bound to that key's memory and leaves
+   the others of its old key theirs; a block let go gives its allocation to a new one; a block whose key goes takes
+   memory of its own; and all let go leaves none */
+static void alias_layout(VkImage img, VkImageLayout from, VkImageLayout to) {
+    VkImageMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                               .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                               .oldLayout = from,
+                               .newLayout = to,
+                               .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                               .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                               .image = img,
+                               .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b};
+    rec_CmdPipelineBarrier2(vk_cmd(), &d);
+}
+/* block b's texels all set to value, and block b's first texel read (the image in TRANSFER_DST and back to it) */
+static int alias_fill_at(VkImage img, VkExtent3D g, u32 bx, u32 b, u32 value) {
+    const u32 w = g.width, h = g.height, d = g.depth;
+    VkBuffer src;
+    u64 at;
+    u8* data = vk_stage_upload((u64)w * h * d * 4, 16, &src, &at);
+    CHECK(data);
+    for (u32 i = 0; i < w * h * d; i++) snx_st_le32(data + i * 4, value);
+    VkBufferImageCopy c = {.bufferOffset = at,
+                           .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                           .imageOffset = {(i32)(b % bx * w), (i32)(b / bx * h), 0},
+                           .imageExtent = {w, h, d}};
+    vk_render_end();
+    rec_CmdCopyBufferToImage(vk_cmd(), src, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    return 0;
+}
+static int alias_fill(VkImage img, const VkSparseShape* sh, u32 b, u32 value) {
+    return alias_fill_at(img, sh->gran, sh->bx[0], b, value);
+}
+static int alias_read_at(VkImage img, VkExtent3D g, u32 bx, u32 b, u32* texel) {
+    VkBuffer buffer;
+    u8* result = vk_readback_buffer(4, &buffer);
+    CHECK(result);
+    VkBufferImageCopy c = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                           .imageOffset = {(i32)(b % bx * g.width + 3), (i32)(b / bx * g.height + 5), 0},
+                           .imageExtent = {1, 1, 1}};
+    vk_render_end();
+    alias_layout(img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    rec_CmdCopyImageToBuffer(vk_cmd(), img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &c);
+    alias_layout(img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vk_finish();
+    vk_readback_ready();
+    *texel = snx_ld_le32(result);
+    return 0;
+}
+static int alias_read(VkImage img, const VkSparseShape* sh, u32 b, u32* texel) {
+    return alias_read_at(img, sh->gran, sh->bx[0], b, texel);
+}
+/* The same for an image with memory where it is bound, in pages (vk_image_resident): a 3D RGBA8 image four blocks
+   wide, pages 0 and 1 of one key, page 2 of another, page 3 of none. Pages 0 and 1 share memory, and page 1 has page
+   0's texels without a load; page 1 takes page 2's key and reads page 2's; page 0 let go frees its memory, which no
+   page has any more; page 2 let go leaves its memory to page 1 */
+/* whether the device makes the image with blocks that share memory: what memory.c asks of it for its images
+   (sparse_alias_supported) */
+static int alias_expected(const VkImageCreateInfo* ii) {
+    VkImageFormatProperties ip;
+    return g_vk.feat.sparseResidencyAliased && g_settings.sparse_texture_sharing &&
+           vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, ii->format, ii->imageType, ii->tiling, ii->usage,
+                                                    ii->flags | VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
+                                                        VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT |
+                                                        VK_IMAGE_CREATE_SPARSE_ALIASED_BIT,
+                                                    &ip) == VK_SUCCESS;
+}
+static int alias_bricks(void) {
+    VkResidentShape rs;
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_3D,
+                            .format = VK_FORMAT_R8G8B8A8_UNORM,
+                            .extent = {1, 1, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VkImage img;
+    if (!vk_resident_shape(&ii, &rs)) return -1;
+    ii.extent = (VkExtent3D){rs.block.width * 4, rs.block.height, rs.block.depth};
+    if (!vk_resident_shape(&ii, &rs) || !vk_image_create_resident(&ii, &rs, &img)) return -1;
+    const VkExtent3D g = rs.block;
+    u8 want[4] = {1, 1, 1, 1};
+    u64 keys[4] = {7, 7, 9, 0}, bytes = 0, need = vk_image_resident_need(img, want, keys, 4), block;
+    u32 texel = 0;
+    CHECK(vk_image_resident(img, want, keys, 4, &bytes) && bytes == need && bytes);
+    const int aliased = want[1] == 1; /* page 1 has page 0's memory */
+    CHECK(aliased == alias_expected(&ii)); /* where the device shares, the pages of a key do */
+    block = bytes / (aliased ? 3 : 4);
+    CHECK(want[0] == 2 && want[2] == 2 && want[3] == 2 && bytes == block * (aliased ? 3 : 4));
+    alias_layout(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    CHECK(!alias_fill_at(img, g, 4, 0, 0x11223344) && !alias_fill_at(img, g, 4, 2, 0x55667788) &&
+          !alias_fill_at(img, g, 4, 3, 0x99aabbcc));
+    if (!aliased) CHECK(!alias_fill_at(img, g, 4, 1, 0x11223344)); /* its own memory: loaded as page 0 */
+    CHECK(!alias_read_at(img, g, 4, 1, &texel) && texel == 0x11223344);
+    /* page 1 takes page 2's key */
+    keys[1] = 9;
+    memset(want, 1, 4);
+    CHECK(vk_image_resident_need(img, want, keys, 4) == 0 || !aliased);
+    CHECK(vk_image_resident(img, want, keys, 4, &bytes) && bytes == block * (aliased ? 3 : 4));
+    if (aliased) {
+        CHECK(want[1] == 1 && !alias_read_at(img, g, 4, 1, &texel) && texel == 0x55667788);
+        CHECK(!alias_read_at(img, g, 4, 0, &texel) && texel == 0x11223344);
+    }
+    /* page 0 goes: its key's memory with it */
+    memset(want, 1, 4);
+    want[0] = 0;
+    CHECK(vk_image_resident(img, want, keys, 4, &bytes) && bytes == block * (aliased ? 2 : 3));
+    if (g_vk.resident) CHECK(!alias_read_at(img, g, 4, 0, &texel) && texel == 0);
+    /* page 2 goes and page 0 comes with a new key: page 1 keeps the memory it shared with page 2 */
+    memset(want, 1, 4);
+    want[2] = 0;
+    keys[0] = 5;
+    CHECK(vk_image_resident(img, want, keys, 4, &bytes) && want[0] == 2 && bytes == block * 3);
+    CHECK(!alias_read_at(img, g, 4, 1, &texel) && texel == (aliased ? 0x55667788u : 0x11223344u));
+    CHECK(!alias_read_at(img, g, 4, 3, &texel) && texel == 0x99aabbcc);
+    memset(want, 0, 4);
+    CHECK(vk_image_resident(img, want, keys, 4, &bytes) && !bytes);
+    vk_finish();
+    vk_defer_image(img, 0, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    return aliased;
+}
+static int check_sparse_alias(void) {
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = VK_FORMAT_R8G8B8A8_UNORM,
+                            .extent = {2048, 2048, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    VkImage img;
+    vk_lock();
+    vk_finish();
+    u32 validation = g_vk_validation_messages;
+    if (!vk_image_create_sparse(&ii, &img)) {
+        vk_unlock();
+        puts("sparse alias: the device makes no RGBA8 image with sparse residency, skipped");
+        return 0;
+    }
+    const VkSparseShape* sh = vk_image_sparse_shape(img);
+    CHECK(sh && sh->per_layer > 41 && sh->tail_first == 1);
+    const int shares = alias_expected(&ii);
+    u8* bits = calloc(sh->per_layer / 8 + 1, 1);
+    u64* keys = calloc(sh->per_layer, sizeof *keys);
+    CHECK(bits && keys);
+    static const u32 a[4] = {0, 5, 17, 40}, b[2] = {1, 18};
+    for (u32 i = 0; i < 4; i++) bits[a[i] >> 3] |= (u8)(1u << (a[i] & 7)), keys[a[i]] = 11;
+    for (u32 i = 0; i < 2; i++) bits[b[i] >> 3] |= (u8)(1u << (b[i] & 7)), keys[b[i]] = 22;
+    bits[0] |= 1u << 2; /* block 2: like no other */
+    u64 bytes = 0, block;
+    CHECK(vk_image_sparse_need(img, bits, keys) && vk_image_sparse_bind(img, bits, keys, &bytes) == 1);
+    u32 blocks = vk_image_bound_blocks(img), mems = vk_image_bound_memory(img);
+    int aliased = mems < blocks;
+    if (blocks != 7 || mems != (shares ? 3u : 7u))
+        fprintf(stderr,
+                "sparse alias: %u blocks have memory, on %u allocations: 7 on %u expected, as the device "
+                "shares %s\n",
+                blocks, mems, shares ? 3u : 7u, shares ? "memory between blocks" : "none");
+    CHECK(blocks == 7 && mems == (shares ? 3u : 7u) && bytes && !(bytes % mems));
+    block = bytes / mems;
+    CHECK(!vk_image_sparse_need(img, bits, keys) && vk_image_sparse_bind(img, bits, keys, &bytes) == 0);
+    u32 texel = 0;
+    alias_layout(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    for (u32 i = 0; i < 4; i++) CHECK(!alias_fill(img, sh, a[i], 0x11223344)); /* what a load does: each block */
+    for (u32 i = 0; i < 2; i++) CHECK(!alias_fill(img, sh, b[i], 0x55667788));
+    CHECK(!alias_fill(img, sh, 2, 0x99aabbcc));
+    for (u32 i = 0; i < 4; i++) CHECK(!alias_read(img, sh, a[i], &texel) && texel == 0x11223344);
+    CHECK(!alias_read(img, sh, 18, &texel) && texel == 0x55667788);
+    CHECK(!alias_read(img, sh, 2, &texel) && texel == 0x99aabbcc);
+    if (g_vk.resident) CHECK(!alias_read(img, sh, 3, &texel) && texel == 0); /* a hole */
+    if (aliased) { /* one block of a key written: the others of it read it */
+        CHECK(!alias_fill(img, sh, 17, 0x0badf00d));
+        CHECK(!alias_read(img, sh, 0, &texel) && texel == 0x0badf00d);
+        CHECK(!alias_read(img, sh, 40, &texel) && texel == 0x0badf00d);
+        CHECK(!alias_read(img, sh, 1, &texel) && texel == 0x55667788);
+    }
+    /* block 5 takes the second key, block 2 goes and block 9 comes with no key: block 9 has block 2's allocation,
+       and block 5 reads the second key's texels with nothing loaded */
+    keys[5] = 22;
+    bits[0] &= (u8)~(1u << 2);
+    keys[2] = 0;
+    bits[1] |= 1u << 1;
+    u64 bytes2 = 0;
+    CHECK(vk_image_sparse_need(img, bits, keys) == 0 || !aliased);
+    CHECK(vk_image_sparse_bind(img, bits, keys, &bytes2) == 1);
+    CHECK(vk_image_bound_blocks(img) == 7 && vk_image_bound_memory(img) == mems && bytes2 == bytes);
+    if (aliased) {
+        CHECK(!alias_read(img, sh, 5, &texel) && texel == 0x55667788);
+        CHECK(!alias_read(img, sh, 0, &texel) && texel == 0x0badf00d);
+        CHECK(!alias_read(img, sh, 9, &texel) && texel == 0x99aabbcc); /* block 2's memory, as it was left */
+    }
+    if (g_vk.resident) CHECK(!alias_read(img, sh, 2, &texel) && texel == 0);
+    /* block 40's key goes: memory of its own, and the blocks it shared with keep theirs */
+    keys[40] = 0;
+    CHECK(vk_image_sparse_bind(img, bits, keys, &bytes2) == (aliased ? 1 : 0));
+    CHECK(vk_image_bound_memory(img) == mems + (aliased ? 1u : 0u) && bytes2 == bytes + (aliased ? block : 0));
+    CHECK(!alias_fill(img, sh, 40, 0x01020304));
+    CHECK(!alias_read(img, sh, 40, &texel) && texel == 0x01020304);
+    CHECK(!alias_read(img, sh, 17, &texel) && texel == (aliased ? 0x0badf00d : 0x11223344));
+    /* all let go */
+    memset(bits, 0, sh->per_layer / 8 + 1);
+    CHECK(vk_image_sparse_bind(img, bits, keys, &bytes2) == 1 && !bytes2);
+    CHECK(!vk_image_bound_blocks(img) && !vk_image_bound_memory(img));
+    vk_finish();
+    vk_image_destroy(img, 0);
+    int bricks = alias_bricks();
+    CHECK(bricks != 1 || aliased);
+    vk_finish();
+    CHECK(g_vk_validation_messages == validation);
+    vk_unlock();
+    free(bits);
+    free(keys);
+    printf("sparse alias: seven blocks of three keys on %u allocations (%s); a block written reads through the others "
+           "of its key, and blocks change keys, come and go with the rest left as they were; %s\n",
+           mems, aliased ? "the device binds one memory to several blocks" : "no aliased sparse residency here",
+           bricks < 0   ? "no 3D RGBA8 image with memory where it is bound here"
+           : bricks     ? "the pages of an image bound in pages share memory the same way"
+                        : "the pages of an image bound in pages have memory each");
+    return 0;
+}
 static int check_sparse_tiles(void) {
     const StCase cases[] = {
         {"BC1", NVN_FORMAT_RGBA_DXT1, 8, 4, VK_FORMAT_BC1_RGBA_UNORM_BLOCK, 0x2C0000000ull, HEAP_BASE + 0xD00000, 1, 0,
@@ -3052,11 +3518,11 @@ static int check_sparse_copy(void) {
    and reads as zeros again */
 #define RV_TILE 0x10000u
 enum { RV_X = 13, RV_Y = 7, RV_Z = 84 }; /* tiles across, down and deep */
-/* the bytes VMA has allocated in the heap images go to */
+/* the bytes devmem.c has handed out in the heap images go to */
 static u64 rv_allocated(void) {
-    VmaBudget b[VK_MAX_MEMORY_HEAPS];
-    vmaGetHeapBudgets(g_vk.vma, b);
-    return b[vk_mem_heap()].statistics.allocationBytes;
+    DevMemBudget b[VK_MAX_MEMORY_HEAPS];
+    vk_devmem_budgets(b);
+    return b[vk_mem_heap()].allocated_bytes;
 }
 /* whether the device can keep a 3D BC1 image's memory only where it is bound, in bricks of a tile, the rest reading as
    zeros */
@@ -3406,7 +3872,7 @@ static int check_sparse_unbind_in_flight(void) {
             "sparse unbind in flight: the device can't keep a 3D RGBA8 image's memory only where it is bound, skipped");
         return 0;
     }
-    CHECK(vk_image_resident(img, both, 2, &whole) && whole);
+    CHECK(vk_image_resident(img, both, NULL, 2, &whole) && whole);
     u8* back = vk_readback_buffer(256, &rb);
     CHECK(back);
     sparse_clear(img, VK_IMAGE_LAYOUT_UNDEFINED, SPARSE_RED);
@@ -3418,7 +3884,7 @@ static int check_sparse_unbind_in_flight(void) {
     /* block 0 released */
     ScCount c0 = sc_now();
     u64 held0 = rv_allocated(), deferred0 = vk_deferred_bytes(), t0 = plat_ns();
-    int ok = vk_image_resident(img, second, 2, &bytes);
+    int ok = vk_image_resident(img, second, NULL, 2, &bytes);
     u64 t1 = plat_ns(), held1 = rv_allocated();
     ScCount c1 = sc_now();
     const u64 reader = vk_last_submit(); /* the copies' */
@@ -3468,7 +3934,7 @@ static int check_sparse_unbind_in_flight(void) {
     const u64 gated = vk_last_submit();
     c0 = sc_now();
     t0 = plat_ns();
-    ok = vk_image_resident(img, both, 2, &bytes);
+    ok = vk_image_resident(img, both, NULL, 2, &bytes);
     t1 = plat_ns();
     c1 = sc_now();
     sparse_clear(img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, SPARSE_GREEN);
@@ -3483,7 +3949,7 @@ static int check_sparse_unbind_in_flight(void) {
     vk_readback_ready();
     memcpy(got[4], back + 64, 4);
     memcpy(got[5], back + 80, 4);
-    vk_defer_image(img, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_defer_image(img, 0, VK_NULL_HANDLE, VK_NULL_HANDLE);
     vk_unlock();
     vkDestroySemaphore(g_vk.dev, gate.sem, NULL);
     printf(
@@ -3519,7 +3985,7 @@ static int check_sparse_resident_batched(void) {
     CHECK(back);
     vk_finish();
     ScCount c0 = sc_now();
-    CHECK(vk_image_resident(a, both, 2, &bytes) && vk_image_resident(b, both, 2, &bytes));
+    CHECK(vk_image_resident(a, both, NULL, 2, &bytes) && vk_image_resident(b, both, NULL, 2, &bytes));
     sparse_clear(a, VK_IMAGE_LAYOUT_UNDEFINED, SPARSE_RED);
     sparse_clear(b, VK_IMAGE_LAYOUT_UNDEFINED, SPARSE_GREEN);
     sparse_copy(rb, 0, a, g.width);
@@ -3532,7 +3998,7 @@ static int check_sparse_resident_batched(void) {
     /* a block of one image released and bound again with no submission between: a batch binds a block once, so
        these are two batches, the second after the first, and the read after them sees the second */
     ScCount c3 = sc_now();
-    CHECK(vk_image_resident(a, second, 2, &bytes) && vk_image_resident(a, both, 2, &bytes));
+    CHECK(vk_image_resident(a, second, NULL, 2, &bytes) && vk_image_resident(a, both, NULL, 2, &bytes));
     sparse_clear(a, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, SPARSE_GREEN);
     sparse_copy(rb, 32, a, 0);
     vk_finish();
@@ -3540,8 +4006,8 @@ static int check_sparse_resident_batched(void) {
     const ScBind first = g_sc.prev, then = g_sc.last;
     vk_readback_ready();
     int again = !memcmp(back + 32, SPARSE_GREEN8, 4);
-    vk_defer_image(a, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
-    vk_defer_image(b, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_defer_image(a, 0, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_defer_image(b, 0, VK_NULL_HANDLE, VK_NULL_HANDLE);
     vk_unlock();
     printf("sparse binds batched: 2 images bound one after the other, %llu queue binds, %llu host waits before the "
            "frame's end; a block released and bound again, %llu queue binds, the second after the first: %s\n",
@@ -3554,7 +4020,7 @@ static int check_sparse_resident_batched(void) {
 /* The same for three images in pieces made in one frame, each cleared and read whole */
 static int check_sparse_pieces_batched(void) {
     VkImage pieces[3];
-    VmaAllocation none[3];
+    DevMem none[3];
     VkBuffer rb;
     if (!g_vk.sparse) {
         puts("sparse binds batched: no sparse binding, images in pieces skipped");
@@ -3593,7 +4059,7 @@ static int check_sparse_pieces_batched(void) {
     u32 wrong = 0;
     for (u64 at = 0; at < 3 * size; at += 4)
         wrong += !!memcmp(back + at, at / size == 1 ? SPARSE_GREEN8 : SPARSE_RED8, 4);
-    for (u32 i = 0; i < 3; i++) vk_defer_image(pieces[i], VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    for (u32 i = 0; i < 3; i++) vk_defer_image(pieces[i], 0, VK_NULL_HANDLE, VK_NULL_HANDLE);
     vk_unlock();
     printf("sparse binds batched: 3 images of 4 pieces made in one frame, %llu queue binds, %llu host waits before the "
            "frame's end, %u texels not their color\n",
@@ -4365,6 +4831,59 @@ static int check_dma(void) {
     return 0;
 }
 
+/* A copy with FlipY, as NVN records one: a pitch linear side whose pitch register is negative steps down, line k at
+   addr + k * pitch (pitch a signed 32-bit number). Into a block linear surface from such a source, and read at
+   submission; out of one into such a destination; pitch linear to pitch linear with both stepping down, with the
+   remap, and in bands of lines under a lowered cap. Each against the CPU reference, and the first also against where
+   the lines must be: the source's line k from 64 bytes a line below its address. They were sized as 64 GiB (the pitch
+   read as 4294967232): "needs more than an allocation may be", and nothing was copied */
+static int check_dma_flip(void) {
+    const u32 down = (u32)-64, line = 48, lines = 16;
+    const u64 top = 0x8000; /* line 0 of the source: lines 1 to 15 below it */
+    GpuDmaOp o = {0};
+    o.multi = 1;
+    o.width = o.line_in = o.line_out = line;
+    o.lines = lines;
+    o.src = pitch_side(top, down);
+    o.dst = pitch_side(0x80000, line);
+    CHECK(!dma_case(o));
+    for (u32 k = 0; k < lines; k++) /* line k of the destination is the source's line k, 64 * k bytes down */
+        if (memcmp(GP(DMA_A) + 0x80000 + (u64)k * line, GP(DMA_A) + top - (u64)k * 64, line)) {
+            fprintf(stderr, "dma flip: line %u of the destination is not the source's from %llx\n", k,
+                    (unsigned long long)(top - (u64)k * 64));
+            return 1;
+        }
+    CHECK(!dma_snap_case(o));
+    o.dst = bl_side(0xA0000, 64, 16, 1, 16, 0); /* a texture with FlipY from a buffer */
+    CHECK(!dma_case(o));
+    CHECK(!dma_snap_case(o));
+    o.src = bl_side(0x2000, 64, 16, 1, 0, 0); /* a buffer with FlipY from a texture */
+    o.dst = pitch_side(0x90000 + 15 * 80, (u32)-80);
+    CHECK(!dma_case(o));
+    o.src = pitch_side(top, down); /* both down, B and R swapped */
+    o.remap = o.shuffle = 1;
+    o.cs = 1, o.ns = 4, o.nd = 4;
+    o.sel[0] = 2, o.sel[1] = 1, o.sel[2] = 0, o.sel[3] = 3;
+    o.width = line / 4;
+    CHECK(!dma_case(o));
+    CHECK(!dma_snap_case(o));
+    o.remap = o.shuffle = 0; /* in bands of 4 lines of 4 KiB, each band's snapshot bytes from its own lowest line */
+    o.width = o.line_in = o.line_out = 4096;
+    o.src = pitch_side(0x40000, (u32)-8192);
+    o.dst = pitch_side(0x80000, (u32)-4096);
+    o.dst.addr += 15 * 4096;
+    const u64 cap = g_vk.alloc_cap;
+    g_vk.alloc_cap = 64 << 10;
+    u64 bands = 0, copies, bytes, after;
+    vk_dma_stats(&copies, &bands, &bytes);
+    int failed = dma_case(o) || dma_snap_case(o);
+    vk_dma_stats(&copies, &after, &bytes);
+    g_vk.alloc_cap = cap;
+    CHECK(!failed && after > bands);
+    printf("DMA copies with a negative pitch (FlipY) step down from their address\n");
+    return 0;
+}
+
 /* A copy over more GPU-owned ranges than a read of guest memory notes at once: 20 lines of 64 bytes, 128 apart, each
    its own owner, then one line over them all from byte 32 of the first. Their bytes are copied on the GPU a batch at a
    time and nothing lands; landing them waited for the GPU and read its results back */
@@ -4667,6 +5186,67 @@ static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, 
     }
     return bad;
 }
+/* A target over what one owner may hold, published (a watched page touched by the CPU): an owner a band of rows of
+   blocks over its span, each landing when the CPU touches it, rather than a write-back that let the span's pages go
+   before writing them over a second later (a 512 MiB RGBA16F one, edenprobe's tex8k, read on another thread
+   meanwhile: #2094). A block linear RGBA16F target of 256x128, 256 KiB, loaded from guest memory holding a pattern,
+   its red cleared to 0.25 alone, and published under a cap of 64 KiB: the publish takes it, owners hold its bytes in
+   more than one band, and every byte read from guest memory is where the guest's layout has it, red 0.25 and the
+   pattern in the others (each band's owner read from its own start). The publish refused it, and the caller wrote it
+   back */
+/* flush_pattern with no half NaN or infinity: an odd byte, a half's high one, has its exponent under 31 */
+static u8 band_pattern(u64 i) { return i % 2 ? flush_pattern(i) & 0x3B : flush_pattern(i); }
+static int check_publish_bands(void) {
+    const u64 cpu = HEAP_BASE + 0xC00000, gva = 0xB000000ull, cap = g_vk.alloc_cap;
+    const u32 w = 256, h = 128, bpp = 8;
+    const u64 size = (u64)w * bpp * h;
+    CHECK(mem_map(cpu, 0x100000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, 0x100000);
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    u8* got = malloc(size);
+    CHECK(ch && got);
+    u32* r = ch->r3d;
+    for (u64 i = 0; i < size; i++) GP(cpu)[i] = band_pattern(i);
+    r[0x487] = 1;
+    r[0x200] = (u32)(gva >> 32);
+    r[0x201] = (u32)gva;
+    r[0x202] = w;
+    r[0x203] = h;
+    r[0x204] = 0xCA; /* R16G16B16A16_FLOAT */
+    r[0x205] = 0;    /* block linear, 1 GOB a block */
+    r[0x206] = 1;
+    r[0x207] = (u32)(size >> 2);
+    float colour[4] = {0.25f, 0, 0, 0};
+    memcpy(&r[0x360], colour, sizeof colour);
+    engine_clear(ch, 1 << 2); /* red alone */
+    vk_render_end();
+    Surf* t = vk_rt_find(gva);
+    CHECK(t);
+    vk_lock();
+    g_vk.alloc_cap = 64 << 10;
+    int published = vk_surf_publish(t);
+    g_vk.alloc_cap = cap;
+    vk_unlock();
+    int owners = own_traps() ? own_lookup(cpu, size, NULL, 0) : 2;
+    if (!published || owners < 2) {
+        fprintf(stderr, "a target over one owner: published %d, %d owners over its span\n", published, owners);
+        return 1;
+    }
+    CHECK(!gmem_read(gva, got, size));
+    for (u64 i = 0; i < size; i++) { /* a texel's first two bytes are its red, as 0.25 is 0x3400 */
+        u8 want = i % 8 == 0 ? 0x00 : i % 8 == 1 ? 0x34 : band_pattern(i);
+        if (got[i] != want) {
+            fprintf(stderr, "a target published in bands: byte %llu holds %02x, not %02x\n", (unsigned long long)i,
+                    got[i], want);
+            return 1;
+        }
+    }
+    free(got);
+    free(ch);
+    CHECK(mem_unmap(cpu, 0x100000) == 0);
+    printf("A target over one owner is published a band at a time, %d owners, and lands whole\n", owners);
+    return 0;
+}
 static int check_flush_parts(void) {
     const u64 cpu = HEAP_BASE + 0xC00000, gva = 0xB000000ull;
     CHECK(mem_map(cpu, 0x100000, MS_NORMAL, PERM_RW) == 0);
@@ -4848,6 +5428,12 @@ static int check_blit_bands(void) {
     printf("blit bands: %llu frames ended between bands\n", (unsigned long long)ended);
     CHECK(!failed && ended >= 2);
     return 0;
+}
+
+/* the sample masks (SET_MULTISAMPLE_SAMPLE_MASK) as reset_3d starts a channel, every sample: a test's channel starts
+   zeroed, and a mask of 0 keeps its draws off their targets */
+static void all_samples(u32* r) {
+    for (u32 i = 0; i < 4; i++) r[MAXWELL3D_SAMPLE_MASK + i] = 0xFFFF;
 }
 
 /* a block linear A8B8G8R8 target of w by h at gva (blocks 2^bh GOBs high) cleared to red or blue */
@@ -5317,6 +5903,7 @@ static void rt_clear_rect(GpuChannel* ch, u64 gva, const float color[4], const u
    are those of the CPU reference (support/dma_ref.c) laying the same picture out over the same memory, padding
    included. A target drawn over three releases and never read is armed once, never published, and lands nothing. One
    that is watched can be sampled, and the GPU thread's reads of its memory see the CPU's bytes and do not fault */
+static int check_rt_watch_holder(void);
 #define WATCH_A  (HEAP_BASE + 0x1000000)
 #define WATCH_GA 0x3A0000000ull
 static int check_rt_watch(void) {
@@ -5412,6 +5999,71 @@ static int check_rt_watch(void) {
     vk_rt_before_write(WATCH_GA, 0x200000); /* the targets go back to memory before it does */
     vk_unlock();
     CHECK(mem_unmap(WATCH_A, 0x200000) == 0);
+    free(ch);
+    return check_rt_watch_holder();
+}
+/* The holder of vk_lock touches a watched target's page: its own_acquire (gmem_ptr), and its direct read, which faults
+   and which the trap thread answers. Neither can wait for a publish there, so each drops the watch and reads the CPU's
+   bytes. Its vk_unlock watches the target again (vk_rt_watch_owed), with no copy, and the read of a thread without the
+   lock publishes it and gets the GPU's pixels. Before, that thread read the CPU's bytes until the target was drawn and
+   released again. The renderer's own reads are no CPU asking for the target: drawn again, it is watched at the next
+   release, not published */
+#define HOLD_A  (HEAP_BASE + 0x7000000)
+#define HOLD_GA 0x3A0400000ull
+static int check_rt_watch_holder(void) {
+    const u64 targets[2] = {0, 0x80000}; /* through own_acquire, then through a fault */
+    const float blue[4] = {0, 0, 1, 1};
+    static const u8 px_blue[4] = {0, 0, 255, 255};
+    u8 got[64];
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    CHECK(mem_map(HOLD_A, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(HOLD_GA, HOLD_A, 0x200000);
+    memset(GP(HOLD_A), 0x11, 0x200000);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    vk_rt_publish_drawn();
+    vk_unlock();
+    for (int k = 0; k < 2; k++) rt_clear_rect(ch, HOLD_GA + targets[k], blue, NULL);
+    vk_lock();
+    vk_rt_publish_drawn();
+    vk_unlock();
+    for (int k = 0; k < 2; k++) {
+        const u64 t = targets[k];
+        CHECK(own_watched(HOLD_A + t, 0x1000));
+        VkRtWatchStats w0 = g_vk_rt_watch;
+        u64 lands = own_landings();
+        vk_lock();
+        if (!k) {
+            u8* p = gmem_ptr(HOLD_GA + t, sizeof got);
+            CHECK(p != NULL);
+            memcpy(got, p, sizeof got);
+        } else
+            memcpy(got, GP(HOLD_A + t), sizeof got);
+        CHECK(all_bytes(got, sizeof got, 0x11) && !own_watched(HOLD_A + t, 1));
+        vk_unlock();
+        /* watched again, with nothing published or landed */
+        CHECK(own_watched(HOLD_A + t, 0x1000) && own_lookup(HOLD_A + t, 0x1000, NULL, 0) == 0);
+        CHECK(g_vk_rt_watch.hits == w0.hits && g_vk_rt_watch.arms == w0.arms + 1 && own_landings() == lands);
+        if (!k) { /* drawn again: watched at the release, not published (no cpu_asked from the renderer's own reads) */
+            rt_clear_rect(ch, HOLD_GA + t, blue, NULL);
+            vk_lock();
+            vk_rt_publish_drawn();
+            vk_unlock();
+            CHECK(g_vk_rt_watch.publishes == w0.publishes && own_watched(HOLD_A + t, 0x1000));
+        }
+        /* this thread holds no lock now: its read faults, publishes the target and lands the GPU's pixels. The trap
+           thread does that work while the copy waits, so the compiler must not read the counters before the copy */
+        memcpy(got, GP(HOLD_A + t), sizeof got);
+        __atomic_signal_fence(__ATOMIC_SEQ_CST);
+        CHECK(g_vk_rt_watch.hits == w0.hits + 1 && own_landings() > lands && !own_trapped(HOLD_A + t, 0x1000));
+        for (u32 i = 0; i < sizeof got; i += 4) CHECK(!memcmp(got + i, px_blue, 4));
+    }
+    puts("render target watch: the holder of vk_lock touched watched pages, and the CPU read the GPU's pixels");
+    vk_lock();
+    vk_rt_before_write(HOLD_GA, 0x200000);
+    vk_unlock();
+    CHECK(mem_unmap(HOLD_A, 0x200000) == 0);
     free(ch);
     return 0;
 }
@@ -5887,10 +6539,14 @@ static int check_video_decode_gate(void) {
     }
     return 0;
 }
+/* For the checks of results that are copied to the ring, read back and landed: guest memory the CPU read lately takes
+   that path, where the page cache would keep a draw's result on the GPU (buffer.c keep_pages). vk_lock held */
+static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_shader_invalidate.inc"
 #include "vulkan_shader_windows.inc"
 #include "vulkan_shared_clamp.inc"
 #include "vulkan_index_draws.inc"
+#include "vulkan_polygon_lines.inc"
 #include "vulkan_pass_breaks.inc"
 #include "vulkan_ui.inc"
 #include "vulkan_storage_formats.inc"
@@ -5898,8 +6554,11 @@ static int check_video_decode_gate(void) {
 #include "vulkan_storage_atomics.inc"
 #include "vulkan_surface_loads.inc"
 #include "vulkan_rect_textures.inc"
+#include "vulkan_minmax_program.inc"
 #include "vulkan_compute_depth.inc"
 #include "vulkan_owned_readback.inc"
+#include "vulkan_own_trim.inc"
+#include "vulkan_wlog_again.inc"
 #include "vulkan_lock_waits.inc"
 #include "vulkan_release_slot.inc"
 #include "vulkan_guest_staging.inc"
@@ -5928,12 +6587,41 @@ static int check_video_decode_gate(void) {
 #include "vulkan_alpha_coverage.inc"
 #include "vulkan_indexed_feedback.inc"
 #include "vulkan_scaled_fragment.inc"
+#include "vulkan_slices_from_targets.inc"
 #include "vulkan_targetless_stores.inc"
 #include "vulkan_storage_image_keep.inc"
 #include "vulkan_uma_imports.inc"
 #include "vulkan_write_tracking.inc"
 #include "vulkan_tex_partial.inc"
 #include "vulkan_astc_later.inc"
+
+/* The file of earlier runs' pipelines keeps SPIR-V translated with the HMMA forms its key names: each form a run can
+   choose (the device's matrix unit, the B gather by pairs of lanes, the hmma_f16 setting's half sums, A and B through
+   shared memory) changes the part of the key past the guest part, so a run that chose another form translates its
+   programs again */
+static int check_hmma_file_key(void) {
+    int coop_was = g_shader_hmma_coop, pairs_was = g_shader_hmma_pairs, f16_was = g_shader_hmma_f16;
+    int stage_was = g_shader_hmma_stage;
+    char base[1024], other[1024];
+    size_t gbase = 0, gother = 0;
+    g_shader_hmma_coop = g_shader_hmma_pairs = g_shader_hmma_f16 = g_shader_hmma_stage = 0;
+    vk_pipeline_file_key(base, sizeof base, &gbase);
+    CHECK(gbase);
+    for (int form = 0; form < 4; form++) {
+        g_shader_hmma_coop = form == 0 ? 65536 : 0, g_shader_hmma_pairs = form == 1, g_shader_hmma_f16 = form == 2;
+        g_shader_hmma_stage = form == 3 ? 65536 : 0;
+        vk_pipeline_file_key(other, sizeof other, &gother);
+        g_shader_hmma_coop = g_shader_hmma_pairs = g_shader_hmma_f16 = g_shader_hmma_stage = 0;
+        CHECK(gother == gbase && !memcmp(base, other, gbase));
+        if (!strcmp(base + gbase, other + gother))
+            fprintf(stderr, "file key: HMMA form %d (0 coop, 1 pairs, 2 hmma_f16, 3 staged) leaves the key as %s\n",
+                    form, other + gother);
+        CHECK(strcmp(base + gbase, other + gother) != 0);
+    }
+    g_shader_hmma_coop = coop_was, g_shader_hmma_pairs = pairs_was, g_shader_hmma_f16 = f16_was;
+    g_shader_hmma_stage = stage_was;
+    return 0;
+}
 
 #include "vulkan_descriptor_bench.inc"
 #include "vulkan_pipeline_probe.inc"
@@ -5962,12 +6650,14 @@ static int check_video_decode_gate(void) {
 #include "vulkan_mesh_draw.inc"
 #include "vulkan_texture_limits.inc"
 #include "vulkan_fragment_flow_lod.inc"
+#include "vulkan_fragment_quad.inc"
 #include "vulkan_nvn_blend_resolve.inc"
 #include "vulkan_nvn_blend_capture.inc"
 #include "vulkan_late_depth_shadow.inc"
 #include "vulkan_capture_bench.inc"
 #include "vulkan_sparse_bench.inc"
 #include "vulkan_storage_lookup_bench.inc"
+#include "vulkan_stage_memory_bench.inc"
 #include "vulkan_storage_buffer_keep.inc"
 #include "vulkan_fragment_barrier.inc"
 #include "vulkan_capture_cap.inc"
@@ -6111,6 +6801,17 @@ static int check_vk12_way(void) {
     } else {
         CHECK(g_vk.api >= VK_API_VERSION_1_3 && version == 0x00010600u && g_vk.feat12.pNext == &g_vk.feat13);
     }
+    /* the shader cache's file keys on that version past its guest part: a vk_api=1.2 run translates again the shaders
+       a 1.3 run on the same device kept in SPIR-V 1.6, which the 1.2 way takes not, and keeps the file's pipelines */
+    char key[1024], other[1024];
+    size_t guest = 0, other_guest = 0;
+    CHECK(spv_emit_version() == version);
+    vk_pipeline_file_key(key, sizeof key, &guest);
+    spv_emit_set_version(version == 0x00010600u ? 0x00010500u : 0x00010600u);
+    vk_pipeline_file_key(other, sizeof other, &other_guest);
+    spv_emit_set_version(version);
+    CHECK(guest && other_guest == guest && !memcmp(key, other, guest));
+    CHECK(strcmp(key + guest, other + other_guest) != 0);
     /* a device with all of them but dynamic rendering, its store op NONE from the EXT */
     VkExtensionProperties list[16] = {{0}};
     static const char* const have[] = {
@@ -6176,7 +6877,7 @@ static int run_headless(int argc, char** argv) {
     int nvn_benchmark = -1, indexed_map_benchmark = -1;
     u32 benchmark_sets = 0, benchmark_count = 16, benchmark_images = 0, benchmark_indexed = 0;
     u32 benchmark_sparse = 0, benchmark_storage = 0, benchmark_image = 0;
-    u32 benchmark_buffer = 0;
+    u32 benchmark_buffer = 0, benchmark_stage = 0;
     u32 benchmark_passes = 0;
     const char* pipeline_probe = NULL;
     int pipeline_probe_disable = 0;
@@ -6258,6 +6959,10 @@ static int run_headless(int argc, char** argv) {
             benchmark_buffer = 1;
             continue;
         }
+        if (!strcmp(argv[i], "--bench-stage-memory")) {
+            benchmark_stage = 1;
+            continue;
+        }
         if (!strncmp(argv[i], "--bench-pass-breaks=", 20)) {
             benchmark_passes = (u32)strtoul(argv[i] + 20, NULL, 10);
             continue;
@@ -6271,8 +6976,9 @@ static int run_headless(int argc, char** argv) {
                     "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
                     "--bench-descriptors=N, --descriptor-images=N, --descriptor-indexed=N, --descriptor-count=N, "
                     "--bench-sparse-volume, --bench-sparse-texture, --bench-storage-lookup, --bench-storage-image, "
-                    "--bench-storage-buffer, --bench-pass-breaks=N, --nvn-draw-bench=N, --bench-indexed-map=N, "
-                    "--pipeline-probe=FILE, --pipeline-probe-disable-opt=0|1, --settings-ini=FILE\n",
+                    "--bench-storage-buffer, --bench-stage-memory, --bench-pass-breaks=N, --nvn-draw-bench=N, "
+                    "--bench-indexed-map=N, --pipeline-probe=FILE, --pipeline-probe-disable-opt=0|1, "
+                    "--settings-ini=FILE\n",
                     argv[i]);
             return 2;
         }
@@ -6290,6 +6996,18 @@ static int run_headless(int argc, char** argv) {
     CHECK(mem_map(HEAP_BASE, 0x800000, MS_NORMAL, PERM_RW) == 0);
     nv_init();                          /* color targets may import guest memory through the GPU page table */
     g_settings.vulkan_video_decode = 1; /* a Vulkan Video decode queue where the device has one (lavapipe has none) */
+    /* texture arrays of fewer elements, as a device that binds fewer samplers a stage than SNX_TEX_ARRAY's take gets
+       them (vk/texture_arrays.h): their checks alone, below */
+    const char* tex_array = getenv("SNX_TEST_TEX_ARRAY");
+    if (tex_array) {
+        char* end;
+        unsigned long n = strtoul(tex_array, &end, 10);
+        if (*end || !n || n > SNX_TEX_ARRAY) {
+            fprintf(stderr, "SNX_TEST_TEX_ARRAY=%s is not a whole number from 1 to %u\n", tex_array, SNX_TEX_ARRAY);
+            return 2;
+        }
+        g_shader_tex_array = (u32)n;
+    }
     video_init("Headless Vulkan fixture", "");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
     CHECK(!check_vk12_way());
@@ -6373,6 +7091,15 @@ static int run_headless(int argc, char** argv) {
     }
     if (benchmark_storage) {
         int result = bench_storage_lookup();
+        vk_pipeline_quiesce();
+        CHECK(!snx_remove_tree(root));
+        free(root);
+        free(shot);
+        free(ppm);
+        return result;
+    }
+    if (benchmark_stage) {
+        int result = bench_stage_memory();
         vk_pipeline_quiesce();
         CHECK(!snx_remove_tree(root));
         free(root);
@@ -6469,6 +7196,8 @@ static int run_headless(int argc, char** argv) {
             result = check_lone_lane();
         else if (!strcmp(name, "fragment_flow_lod"))
             result = check_fragment_flow_lod();
+        else if (!strcmp(name, "fragment_quad"))
+            result = check_fragment_quad();
         else if (!strcmp(name, "owned_page_reads"))
             result = check_owned_page_reads();
         else if (!strcmp(name, "cross_stage_blend"))
@@ -6531,6 +7260,19 @@ static int run_headless(int argc, char** argv) {
         printf("PASS headless Vulkan watched targets only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
+    if (tex_array) { /* the texture arrays at the size asked: their layouts, pools and indexed draws */
+        printf("Texture arrays of %u elements, %u asked\n", g_shader_tex_array, (unsigned)strtoul(tex_array, NULL, 10));
+        CHECK(g_shader_texture_arrays && g_shader_tex_array == strtoul(tex_array, NULL, 10));
+        CHECK(!check_desc_pool_arrays());
+        CHECK(!check_indexed_texture_feedback());
+        CHECK(!check_multisample_shader_gate());
+        CHECK(!check_msaa()); /* its indexed multisample fetch (vulkan_indexed_ms.inc) */
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan texture arrays of %u: %u validation messages\n", g_shader_tex_array,
+               g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_MSAA_ONLY")) { /* the multisample checks alone */
         CHECK(!check_multisample_shader_gate());
         CHECK(!check_msaa());
@@ -6550,6 +7292,8 @@ static int run_headless(int argc, char** argv) {
     }
     if (getenv("SNX_TEST_TRIM_ONLY")) { /* the budget's trim alone: a trim that wants everything takes the others' */
         CHECK(!check_trim_working_set());
+        CHECK(!check_trim_ended());
+        CHECK(!check_trim_headroom());
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan trim only: %u validation messages\n", g_vk_validation_messages);
@@ -6569,6 +7313,18 @@ static int run_headless(int argc, char** argv) {
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan resolution scale only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (getenv("SNX_TEST_SLICES_ONLY")) { /* textures taking their slices from targets alone, for their mutants */
+        CHECK(!check_slices_from_targets());
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan slices from targets only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (getenv("SNX_TEST_GPUPROF_POOL_ONLY")) { /* a smaller pool than the profile asks for, alone */
+        CHECK(!check_gpuprof_small_pool());
+        printf("PASS headless Vulkan profile pool only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
     if (getenv("SNX_TEST_UI_ONLY")) { /* vulkan_ui.inc's check alone: the on-screen layer's pass */
@@ -6703,6 +7459,8 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_mapping_landing());
     CHECK(!check_guest_staging());
     CHECK(!check_owned_writable());
+    CHECK(!check_own_trim());
+    CHECK(!check_wlog_again());
     CHECK(!check_owned_in_place_write());
     CHECK(!check_owned_read_device());
     CHECK(!check_owned_peek_identity());
@@ -6766,17 +7524,21 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_storage_image_formats());
     CHECK(!check_scaled_compute());
     CHECK(!check_scaled_fragment());
+    CHECK(!check_slices_from_targets());
     CHECK(!check_volume_surface_atomics());
     CHECK(!check_layered_surface_loads());
     CHECK(!check_rect_textures());
+    CHECK(!check_minmax_program());
     CHECK(!check_compute_depth_texture());
     CHECK(!check_compute_compares());
     CHECK(!check_viewport_orientation());
     CHECK(!check_index_draws());
+    CHECK(!check_polygon_lines());
     CHECK(!check_pass_breaks());
     CHECK(!check_mesh_inputs());
     CHECK(!check_lone_lane());
     CHECK(!check_fragment_flow_lod());
+    CHECK(!check_fragment_quad());
     CHECK(!check_owned_page_reads());
     CHECK(!check_frag_coord_origin());
     CHECK(!check_varying_passes());
@@ -6784,10 +7546,12 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_vertex_restride());
     CHECK(!check_vertex_input_layouts());
     CHECK(!check_vertex_input_file_key());
+    CHECK(!check_hmma_file_key());
     CHECK(!check_targetless_stores());
     CHECK(!check_deko_vertex_storage());
     CHECK(!check_storage_image_keep());
     CHECK(!check_storage_buffer_keep());
+    CHECK(!check_storage_pages_keep());
     CHECK(!check_packed_depth());
     CHECK(!check_astc_mode());
     CHECK(!check_depth_array());
@@ -6801,6 +7565,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_multisample_shader_gate());
     CHECK(!check_translation_dead_code());
     CHECK(!check_translation_values());
+    CHECK(!check_translation_known_bits());
     CHECK(!check_msaa());
     CHECK(!check_msaa_nvn());
     CHECK(!check_direct_spirv());
@@ -6810,19 +7575,23 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_shader_invalidation());
     CHECK(!check_indirect_dispatch_once());
     CHECK(!check_shared_clamp());
+    CHECK(!check_shared_spill());
     CHECK(!check_vic());
     CHECK(!check_vic_chain(shot));
     CHECK(!check_nvdec_vic());
     CHECK(!check_dma());
+    CHECK(!check_dma_flip());
     CHECK(!check_dma_owners());
     CHECK(!check_dma_bands());
     CHECK(!check_dma_bands_frames());
     CHECK(!check_flush_parts());
+    CHECK(!check_publish_bands());
     CHECK(!check_vic_bands());
     CHECK(!check_dma_texture());
     CHECK(!check_sparse_volume());
     CHECK(!check_sparse_view());
     CHECK(!check_sparse_tiles());
+    CHECK(!check_sparse_alias());
     CHECK(!check_sparse_copy());
     CHECK(!check_resident_volume());
     CHECK(!check_sparse_unbind_in_flight());
@@ -6871,7 +7640,9 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_write_tracking());
     CHECK(!check_descriptor_room());
     CHECK(!check_sparse_texture());
+    CHECK(!check_sparse_texture_shared());
     CHECK(!check_desc_pool_arrays());
+    CHECK(!check_desc_pool_keep());
     /* the pipeline workers: pipeline_threads when given, else all the CPUs but two, two to twelve */
     CHECK(snx_vk_pipeline_workers(0, 8) == 6 && snx_vk_pipeline_workers(0, 12) == 10 &&
           snx_vk_pipeline_workers(0, 4) == 2 && snx_vk_pipeline_workers(0, 0) == 2 &&

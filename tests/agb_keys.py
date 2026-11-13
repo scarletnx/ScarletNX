@@ -54,7 +54,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('runner')
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix='snx-agb-keys-') as temporary:
+    # Windows can still hold the runner open after a passed run (WinError 32 on its removal)
+    with tempfile.TemporaryDirectory(prefix='snx-agb-keys-', ignore_cleanup_errors=True) as temporary:
         work = pathlib.Path(temporary)
         (work / 'keys.gba').write_bytes(rom())
         cases = [
@@ -101,6 +102,35 @@ def main():
         )
         if bad.returncode != 2 or 'aot_threads=many is not a whole number from 0 to 1024' not in bad.stderr:
             sys.exit('agb_keys: --aot_threads=many was taken (%d)\n%s' % (bad.returncode, bad.stderr))
+        # --gba_color=, the launcher's GBA colors: the screen in forced blank is white, raw 255 255 255 and gba as the
+        # original GBA's screen shows white, 252 238 242; a value it does not take stops the run with the value
+        for value, white in (('raw', b'\xff\xff\xff'), ('gba', b'\xfc\xee\xf2')):
+            shot = work / ('%s.ppm' % value)
+            run = subprocess.run(
+                [
+                    args.runner,
+                    '--frames=2',
+                    '--gba_color=%s' % value,
+                    '--shot=%s' % shot,
+                    '--outdir',
+                    str(work),
+                    str(work / 'keys.gba'),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            pixel = shot.read_bytes().split(b'\n', 3)[3][:3] if shot.is_file() else b''
+            if run.returncode or pixel != white:
+                sys.exit(
+                    'agb_keys: --gba_color=%s (%d) showed white as %s, not %s\n%s%s'
+                    % (value, run.returncode, pixel.hex(), white.hex(), run.stdout, run.stderr)
+                )
+        bad = subprocess.run(
+            [args.runner, '--gba_color=sepia', str(work / 'keys.gba')], capture_output=True, text=True, timeout=60
+        )
+        if bad.returncode != 2 or '--gba_color=sepia is not raw or gba' not in bad.stderr:
+            sys.exit('agb_keys: --gba_color=sepia was taken (%d)\n%s' % (bad.returncode, bad.stderr))
     print('agb_keys: passed')
 
 

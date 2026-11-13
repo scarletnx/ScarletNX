@@ -27,11 +27,11 @@
 
 /* the common options scarletnx-vita takes (common/utilities/cli.h): a VPK is always extracted, and the Vita runtime
    has no keys, frame count, fullscreen setting or window-less run */
-static const unsigned vita_cli =
-    SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_RECOMPILE) | SNX_CLI_BIT(SNX_CLI_GAME) |
-    SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_OUTDIR) |
-    SNX_CLI_BIT(SNX_CLI_OUTPUT) | SNX_CLI_BIT(SNX_CLI_SECONDS) | SNX_CLI_BIT(SNX_CLI_SHOT) |
-    SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_HELP);
+static const unsigned vita_cli = SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_RECOMPILE) |
+                                 SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) |
+                                 SNX_CLI_BIT(SNX_CLI_OUTDIR) | SNX_CLI_BIT(SNX_CLI_OUTPUT) |
+                                 SNX_CLI_BIT(SNX_CLI_SECONDS) | SNX_CLI_BIT(SNX_CLI_SHOT) |
+                                 SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_HELP) | SNX_CLI_RECOMPILE_OPTIONS;
 static void usage(FILE* out) {
     fputs(
         "Usage: scarletnx-vita [OPTIONS] game.vpk\n"
@@ -49,7 +49,13 @@ static void usage(FILE* out) {
         "  --KEY=VALUE            A Vita debug setting: --vita_hle_trace=1 logs each import the runtime lacks (2\n"
         "                         every call), --vita_gxm_trace=1 each scene. And the Switch's --aot_threads=N:\n"
         "                         the game's code compiles on N threads (1 to 1024; the default 0: the computer's\n"
-        "                         cores with a quarter left free, or --aot_threads_most=N)\n"
+        "                         cores with a quarter left free, or --aot_threads_most=N), the same as --jobs N\n"
+        "\n"
+        "On the Vita, -O is the level of the blocks' code and of the helpers they call. --chunk N puts N instructions\n"
+        "in a chunk, whole blocks (default: 512 blocks a chunk). --jit-cache FILE is the list of the blocks a run\n"
+        "compiled at run time that discovery starts from, another game folder's <title ID>.hints (default: the\n"
+        "game's own). --jit-only makes a module of no blocks, the run-time compiler compiling every one, and\n"
+        "--keep-ir keeps each chunk's IR in <title ID>_build of the game's folder.\n"
         "\n"
         "On the Vita, --update is the dumped game's update folder (default: patch/<title ID> beside its app/<title\n"
         "ID>), --shot saves PATH.ppm, and --script=ms:buttons,... is the setting vita_script.\n",
@@ -173,7 +179,8 @@ static void deploy_runtime(const char* folder, const char* runtime) {
     free(ini);
     free(copy);
 }
-static int play(const char* folder, bool recompile, double seconds, const char* shot, const char* runtime) {
+static int play(const char* folder, bool recompile, double seconds, const char* shot, const char* runtime,
+                const SnxCliRecompile* asked) {
     VitaImage image;
     VitaNative native = {0};
     VitaProcess* process = NULL;
@@ -227,8 +234,8 @@ static int play(const char* folder, bool recompile, double seconds, const char* 
     /* An existing module that matches is played as it is, else it is compiled first: decided from its file, before it
        is loaded, which happens once */
     bool current = !recompile && vita_module_current(module, &image);
-    if (!current) printf("Recompiling %s (Vita AArch32)\n", image.name);
-    if ((!current && vita_aot_compile(folder, &image, error, sizeof error)) ||
+    if (!current && !asked->quiet) printf("Recompiling %s (Vita AArch32)\n", image.name);
+    if ((!current && vita_aot_compile(folder, &image, asked, error, sizeof error)) ||
         !vita_native_open(module, &image, &native, error, sizeof error)) {
         fprintf(stderr, "scarletnx-vita: %s\n", error);
         goto done;
@@ -326,6 +333,9 @@ int snx_vita_main(int argc, char** argv) {
             return common < 0 ? 2 : 0;
         }
         if (common == SNX_CLI_SCRIPT) ini_read(ini_find(g_vita_debug_ini, "vita_script"), cli.value[SNX_CLI_SCRIPT]);
+        /* the Switch's settings, as --aot_threads= is: the last given counts */
+        if (common == SNX_CLI_OPT) ini_read(ini_find(g_recompile_ini, "opt"), cli.value[SNX_CLI_OPT]);
+        if (common == SNX_CLI_JOBS) g_settings.aot_threads = cli.jobs;
         if (common) continue;
         if (!strncmp(a, "--", 2) && strchr(a, '=')) {
             /* the Vita debug table's, --press_len= and --shot_every= being vita_press_len and vita_shot_every (a Switch
@@ -376,6 +386,13 @@ int snx_vita_main(int argc, char** argv) {
     const char *repo = cli.value[SNX_CLI_DATA], *game = cli.value[SNX_CLI_GAME], *shot = cli.value[SNX_CLI_SHOT];
     const char* patch = cli.update_count ? cli.updates[0] : NULL;
     bool extract_only = cli.flags & SNX_CLI_BIT(SNX_CLI_EXTRACT);
+    /* the recompile's options, for the game's code, which -x makes none of */
+    SnxCliRecompile asked = snx_cli_recompile(&cli);
+    if (asked.given && extract_only) {
+        fprintf(stderr, "scarletnx-vita: %s is the recompile's, and -x compiles no code\n", asked.given);
+        snx_cli_free(&cli);
+        return 2;
+    }
     bool recompile = cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE);
     double seconds = cli.seconds;
     snx_cli_free(&cli);
@@ -439,7 +456,7 @@ int snx_vita_main(int argc, char** argv) {
             goto done;
         }
     }
-    status = play(folder, recompile, seconds, shot, runtime);
+    status = play(folder, recompile, seconds, shot, runtime, &asked);
 done:
     free(folder);
     free(runtime);

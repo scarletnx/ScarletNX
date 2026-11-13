@@ -3,6 +3,8 @@
 /* nvnSyncGetNvRmSyncNVX and nvnSyncInitializeFromNvRmSyncNVX against the game's driver, which reads and writes a sync
    in its own layout (kind at 0x08, fence count at 0x0c, fences {syncpoint, value} from 0x10, 0x40 bytes). The driver's
    code is a stub that sees the sync nvn_object.c built in guest memory */
+#include "nx/gpu/guest_pools.h"
+#include "nx/gpu/guest_textures.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_loader.h"
@@ -130,6 +132,12 @@ int arm_code_range(u64* lo, u64* hi) {
     *lo = *hi = 0;
     return 0;
 }
+/* the registry of the pools (gpu/guest_pools.c), which no test here reads */
+void gpu_pool_add(u64 gva, u64 size, int virtual) { (void)gva, (void)size, (void)virtual; }
+void gpu_pool_remove(u64 gva) { (void)gva; }
+/* the registry of the live textures (gpu/guest_textures.c), which no test here reads */
+void gpu_texture_add(u64 gva, u64 size) { (void)gva, (void)size; }
+void gpu_texture_remove(u64 gva) { (void)gva; }
 u64 gmmu_space_alloc(u64 size, u64 align) {
     (void)size;
     (void)align;

@@ -116,8 +116,7 @@
         "CMAKE_C_COMPILER_TARGET": "powerpc64-unknown-linux-gnu",
         "CMAKE_CXX_COMPILER_TARGET": "powerpc64-unknown-linux-gnu",
         "CMAKE_CROSSCOMPILING_EMULATOR": "qemu-ppc64;-L;$env{SNX_SYSROOT}",
-        "SNX_PPC64_ELFV2": "ON",
-        "SNX_BUILD_GUI": "OFF"
+        "SNX_PPC64_ELFV2": "ON"
       }
     },
     {

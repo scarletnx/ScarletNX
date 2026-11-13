@@ -538,7 +538,8 @@ static bool vmov(T* t, const arg_VMOV* arg) {
             for (unsigned i = 0; i < a.n && i < test.n; ++i) {
                 uint32_t zero = test.kind == K_FLOAT ? cf(t, 0) : test.kind == K_UINT ? cu(t, 0) : ci(t, 0), cond;
                 if (test.kind == K_FLOAT)
-                    cond = op2(t, compare == 1 ? 182u /* OpFOrdNotEqual */ : float_ops[compare], t->t_bool, test.c[i], zero);
+                    cond =
+                        op2(t, compare == 1 ? SPV_OP_F_ORD_NOT_EQUAL : float_ops[compare], t->t_bool, test.c[i], zero);
                 else if (compare < 2)
                     cond = op2(t, compare ? SPV_OP_I_NOT_EQUAL : SPV_OP_I_EQUAL, t->t_bool, test.c[i], zero);
                 else if (test.kind == K_UINT)
@@ -1145,7 +1146,7 @@ static unsigned test(T* t, TestOp op, Operand src1, Operand src2, unsigned zero_
         for (unsigned i = 0; i < r.n; ++i) b.c[i] = zero_of(t, kind);
     }
     static const uint32_t ops[3][2][3] = {
-        {{182u /* OpFOrdNotEqual */, SPV_OP_F_ORD_LESS_THAN, SPV_OP_F_ORD_GREATER_THAN},
+        {{SPV_OP_F_ORD_NOT_EQUAL, SPV_OP_F_ORD_LESS_THAN, SPV_OP_F_ORD_GREATER_THAN},
          {SPV_OP_F_ORD_EQUAL, SPV_OP_F_ORD_LESS_THAN_EQUAL, SPV_OP_F_ORD_GREATER_THAN_EQUAL}},
         {{SPV_OP_I_NOT_EQUAL, SPV_OP_S_LESS_THAN, SPV_OP_S_GREATER_THAN},
          {SPV_OP_I_EQUAL, SPV_OP_S_LESS_THAN_EQUAL, SPV_OP_S_GREATER_THAN_EQUAL}},
@@ -1438,7 +1439,7 @@ static bool gather(T* t, uint32_t sampler, uint32_t coord, uint32_t format, Type
     uint32_t lod = t->fragment ? SPV(&t->e, SPV_OP_COMPOSITE_EXTRACT, t->t_f32,
                                      SPV(&t->e, SPV_OP_IMAGE_QUERY_LOD, t->t_v2f, sampler, coord), 0)
                                : cf(t, 0);
-    uint32_t image_type = spv_emit_type_image(&t->e, t->t_f32, SPV_DIM_2D, 0, 0, 0, 1, 0);
+    uint32_t image_type = spv_emit_type_image(&t->e, t->t_f32, SPV_DIM_2D, 0, 0, 0, 1, SPV_IMAGE_FORMAT_UNKNOWN);
     uint32_t image = op1(t, SPV_OP_IMAGE, image_type, sampler);
     uint32_t size = SPV(&t->e, SPV_OP_IMAGE_QUERY_SIZE_LOD, v2i, image, op1(t, SPV_OP_CONVERT_F_TO_S, t->t_i32, lod));
     uint32_t texel = op2(t, SPV_OP_F_MUL, t->t_v2f, coord, op1(t, SPV_OP_CONVERT_S_TO_F, t->t_v2f, size));
@@ -1489,16 +1490,19 @@ static bool smp(T* t, const arg_SMP* arg) {
                                : SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, dx.c[0], dx.c[1]);
         uint32_t gy = dim == 3 ? SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v3f, dy.c[0], dy.c[1], dy.c[2])
                                : SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, dy.c[0], dy.c[1]);
-        sampled = SPV(&t->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t->t_v4f, sampler, coord, 4u /* Grad */, gx, gy);
+        sampled =
+            SPV(&t->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t->t_v4f, sampler, coord, SPV_IMAGE_OPERANDS_GRAD, gx, gy);
     } else if (arg->lod_mode) {
         uint32_t lod = load(t, src2, 1, 0).c[0];
         if (t->failed) return false;
-        sampled = implicit ? SPV(&t->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t->t_v4f, sampler, coord, 1u /* Bias */, lod)
-                           : SPV(&t->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t->t_v4f, sampler, coord, 2u /* Lod */,
-                                 arg->lod_mode == 1 ? cf(t, 0) : lod);
+        sampled = implicit ? SPV(&t->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t->t_v4f, sampler, coord,
+                                 SPV_IMAGE_OPERANDS_BIAS, lod)
+                           : SPV(&t->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t->t_v4f, sampler, coord,
+                                 SPV_IMAGE_OPERANDS_LOD, arg->lod_mode == 1 ? cf(t, 0) : lod);
     } else
         sampled = implicit ? SPV(&t->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t->t_v4f, sampler, coord)
-                           : SPV(&t->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t->t_v4f, sampler, coord, 2u, cf(t, 0));
+                           : SPV(&t->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t->t_v4f, sampler, coord,
+                                 SPV_IMAGE_OPERANDS_LOD, cf(t, 0));
     store_input(t, bank, arg->dest_n, type, vector_value(t, sampled, texture_components(format), K_FLOAT));
     return !t->failed;
 }
@@ -1578,7 +1582,7 @@ static bool instruction_begin(T* t, const char* name, bool predicated) {
     if (!pred) return true;
     uint32_t yes = spv_emit_id(&t->e), merge = spv_emit_id(&t->e);
     uint32_t cond = predicate_value(t, pred);
-    SPV_VOID(&t->e, SPV_OP_SELECTION_MERGE, merge, 0);
+    SPV_VOID(&t->e, SPV_OP_SELECTION_MERGE, merge, SPV_SELECTION_CONTROL_NONE);
     SPV_VOID(&t->e, SPV_OP_BRANCH_CONDITIONAL, cond, yes, merge);
     spv_emit_label(&t->e, yes);
     t->merge = merge;
@@ -1715,7 +1719,7 @@ static void translate_code(T* t, const unsigned char* code, uint32_t count) {
     uint32_t cases_merge = spv_emit_id(e);
     SPV_VOID(e, SPV_OP_BRANCH, header);
     spv_emit_label(e, header);
-    SPV_VOID(e, SPV_OP_LOOP_MERGE, merge, cont, 0);
+    SPV_VOID(e, SPV_OP_LOOP_MERGE, merge, cont, SPV_LOOP_CONTROL_NONE);
     SPV_VOID(e, SPV_OP_BRANCH, body);
     spv_emit_label(e, body);
     uint32_t pc_now = SPV(e, SPV_OP_LOAD, t->t_u32, pcv);
@@ -1731,7 +1735,7 @@ static void translate_code(T* t, const unsigned char* code, uint32_t count) {
         labels[i] = spv_emit_id(e);
         operands[2 + 2 * i] = leaders[i], operands[3 + 2 * i] = labels[i];
     }
-    SPV_VOID(e, SPV_OP_SELECTION_MERGE, cases_merge, 0);
+    SPV_VOID(e, SPV_OP_SELECTION_MERGE, cases_merge, SPV_SELECTION_CONTROL_NONE);
     spv_emit_void_op(e, SPV_OP_SWITCH, operands, 2 + 2 * unique);
     for (size_t i = 0; i < unique && !t->failed; ++i) {
         uint32_t first = leaders[i], end = i + 1 < unique ? leaders[i + 1] : count, next = end, last = end - 1;
@@ -1892,7 +1896,7 @@ static uint32_t sampler_of(T* t, unsigned resource, unsigned dimension) {
         return fail(t, "sampler %u dimension %u used as %u", resource, declared_dimension, dimension), cu(t, 0);
     if (t->sampler_dimensions[resource] && t->sampler_dimensions[resource] != dimension)
         return fail(t, "sampler %u used with multiple dimensions", resource), cu(t, 0);
-    uint32_t image = spv_emit_type_image(&t->e, t->t_f32, dimension, 0, 0, 0, 1, 0);
+    uint32_t image = spv_emit_type_image(&t->e, t->t_f32, dimension, 0, 0, 0, 1, SPV_IMAGE_FORMAT_UNKNOWN);
     uint32_t sampled_type = spv_emit_type_sampled_image(&t->e, image);
     if (!t->samplers[resource]) {
         t->samplers[resource] =
@@ -2276,11 +2280,11 @@ bool usse_translate(const unsigned char* gxp, size_t size, const UsseHints* hint
     /* a program that blends itself (FRAGCOLOR_USED) starts with its pixel's color in O0, of its output's type
        (spirv_recompiler.cpp: the input attachment read, its last_frag_data) */
     if (t->fragment && (snx_ld_le32(gxp + GXP_FLAGS) & GXP_FLAG_FRAGCOLOR_USED)) {
-        spv_emit_capability(e, 40 /* InputAttachment */);
-        uint32_t image = spv_emit_type_image(e, t->t_f32, 6 /* SubpassData */, 0, 0, 0, 2, 0);
+        spv_emit_capability(e, SPV_CAPABILITY_INPUT_ATTACHMENT);
+        uint32_t image = spv_emit_type_image(e, t->t_f32, SPV_DIM_SUBPASS_DATA, 0, 0, 0, 2, SPV_IMAGE_FORMAT_UNKNOWN);
         uint32_t color = spv_emit_resource(e, SPV_STORAGE_UNIFORM_CONSTANT, image, 0, USSE_COLOR_BINDING);
         const uint32_t index = 0;
-        spv_emit_decorate(e, color, 43 /* InputAttachmentIndex */, &index, 1);
+        spv_emit_decorate(e, color, SPV_DECORATION_INPUT_ATTACHMENT_INDEX, &index, 1);
         global(t, color);
         uint32_t v2i = spv_emit_type_vector(e, t->t_i32, 2);
         uint32_t texel = SPV(e, SPV_OP_IMAGE_READ, t->t_v4f, SPV(e, SPV_OP_LOAD, image, color),

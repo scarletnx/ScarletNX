@@ -207,7 +207,7 @@ static int compose(const VicJob* j, u32 r0, u32 r1, const VicBand* v) {
 
     vic_init();
     vk_render_end(); /* compute and copies happen outside rendering passes */
-    VkOwnRes* w = vk_own_res_new(total);
+    VkOwnRes* w = vk_own_res_new(total, VK_OWN_BY_VIDEO);
     VkBuffer staged;
     u64 soff;
     u8* host = w ? vk_stage(total, al, &staged, &soff) : NULL;

@@ -344,6 +344,32 @@ VkPipelineCache snx_vk_pipeline_cache_load(VkDevice dev, const VkPhysicalDeviceP
     plat_file_unmap(&data); /* the cache copied it, and a mapped file can't be replaced on Windows */
     return cache;
 }
+int snx_vk_write_replace(const char* path, const void* data, size_t size, char* why, size_t n) {
+    if (n) *why = 0;
+#if defined(_WIN32)
+    unsigned long pid = (unsigned long)GetCurrentProcessId();
+#else
+    unsigned long pid = (unsigned long)getpid();
+#endif
+    char* tmp = snx_format("%s.%lu.tmp", path, pid);
+    if (!tmp) {
+        snprintf(why, n, "the name of a temporary file beside %s cannot be allocated", path);
+        return -1;
+    }
+    char os[256];
+    FILE* f = fopen(tmp, "wb");
+    int failed = !f || fwrite(data, 1, size, f) != size;
+    if (f && fclose(f)) failed = 1;
+    if (failed)
+        snprintf(why, n, "%s cannot be written (%s)", tmp, snx_os_error(os, sizeof os));
+    else if (plat_replace_file(tmp, path)) { /* the old file stays whole until this */
+        failed = 1;
+        snprintf(why, n, "%s cannot be moved over it (%s)", tmp, snx_os_error(os, sizeof os));
+    }
+    if (failed && f) remove(tmp);
+    free(tmp);
+    return failed ? -1 : 0;
+}
 int snx_vk_pipeline_cache_save(VkDevice dev, VkPipelineCache cache, const char* path, size_t* saved, char* why,
                                size_t n) {
     *saved = 0;
@@ -369,27 +395,10 @@ int snx_vk_pipeline_cache_save(VkDevice dev, VkPipelineCache cache, const char* 
         free(data);
         return -1;
     }
-#if defined(_WIN32)
-    unsigned long pid = (unsigned long)GetCurrentProcessId();
-#else
-    unsigned long pid = (unsigned long)getpid();
-#endif
-    char* tmp = snx_format("%s.%lu.tmp", path, pid);
-    char os[256];
-    FILE* f = fopen(tmp, "wb");
-    int failed = !f || fwrite(data, 1, size, f) != size;
-    if (f && fclose(f)) failed = 1;
-    if (failed)
-        snprintf(why, n, "%s cannot be written (%s)", tmp, snx_os_error(os, sizeof os));
-    else if (plat_replace_file(tmp, path)) { /* the old file stays whole until this */
-        failed = 1;
-        snprintf(why, n, "%s cannot be moved over it (%s)", tmp, snx_os_error(os, sizeof os));
-    }
-    if (failed && f) remove(tmp);
+    int failed = snx_vk_write_replace(path, data, size, why, n);
     if (!failed) *saved = size;
-    free(tmp);
     free(data);
-    return failed ? -1 : 0;
+    return failed;
 }
 
 VkResult snx_vk_shader_module(VkDevice dev, const uint32_t* words, size_t size, VkShaderModule* out) {

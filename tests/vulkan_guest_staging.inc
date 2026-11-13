@@ -33,7 +33,7 @@ static int check_guest_staging(void) {
 
     if (own_traps()) {
         vk_frame_next();
-        VkOwnRes* owner = vk_own_res_new(256);
+        VkOwnRes* owner = vk_own_res_new(256, VK_OWN_BY_DRAW);
         CHECK(owner && !owned_test_fill(owner->buf, 0, 256, 0x22));
         vk_own_publish_owned(cpu + 64, 256, owner, 0);
         CHECK(own_lookup(cpu + 64, 256, NULL, 0) == 1);

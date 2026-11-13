@@ -1123,7 +1123,7 @@ int snx_module_bound(const SnxModuleImage* module, const SnxExport* exports, siz
         SnxU32 adrp = snx_ld_le32(module->image + pc), ldr = snx_ld_le32(module->image + pc + 4);
         SnxU64 page, slot, target = 0;
         size_t lo = 0, hi = slot_count;
-        int game = 0;
+        int game = 0, guard = 0;
         if (snx_ld_le32(module->image + pc + 12) != 0xD61F0220UL || (adrp & 0x9F00001FUL) != 0x90000010UL ||
             (ldr & 0xFFC003FFUL) != 0xF9400211UL ||
             (snx_ld_le32(module->image + pc + 8) & 0xFFC003FFUL) != 0x91000210UL)
@@ -1141,7 +1141,7 @@ int snx_module_bound(const SnxModuleImage* module, const SnxExport* exports, siz
         if (lo == slot_count || slots[lo].slot != slot) continue;
         if (nro && slots[lo].value) { /* the NRO's own function */
             if (!(slots[lo].value & 3) && slots[lo].value >= module->text_off && slots[lo].value < end)
-                target = module->base + slots[lo].value;
+                target = module->base + slots[lo].value, guard = 1;
         } else {
             SnxExport key;
             const SnxExport* found;
@@ -1156,6 +1156,7 @@ int snx_module_bound(const SnxModuleImage* module, const SnxExport* exports, siz
         out[n].at = module->base + pc + 12;
         out[n].target = target;
         out[n].game = game;
+        out[n].guard = guard;
         *own += target >= module->base + module->text_off && target < module->base + end;
         ++n;
     }
@@ -1365,7 +1366,7 @@ int snx_parse_npdm(const unsigned char* data, size_t size, SnxNpdm* npdm, char* 
 /* ------------------------------------------------------------------ programs */
 
 /* The ExeFS of an extracted program: <entry>/exefs, <entry>/ExeFS or entry itself, the first holding main */
-static char* find_exefs(const char* entry) {
+char* snx_exefs_folder(const char* entry) {
     static const char* const folders[] = {"exefs", "ExeFS", NULL};
     char *folder, *main_path;
     unsigned i;
@@ -1454,7 +1455,7 @@ int snx_load_npdm(const char* entry, SnxNpdm* npdm, char* error, size_t error_si
         return 0;
     }
     memset(npdm, 0, sizeof(*npdm));
-    exefs = find_exefs(entry);
+    exefs = snx_exefs_folder(entry);
     if (!exefs) return fail(error, error_size, snx_format("%s holds no exefs/main", entry));
     folder.read = folder_read;
     folder.source = exefs;
@@ -1562,7 +1563,7 @@ static int load_exefs_program(const char* entry, char* const* names, char* const
     const char* name;
     size_t length;
     int rc = -1;
-    exefs = find_exefs(entry);
+    exefs = snx_exefs_folder(entry);
     if (!exefs) return fail(error, error_size, snx_format("%s holds no exefs/main", entry));
     name = leaf(exefs, &length);
     root = same_word(name, length, "exefs") ? snx_dirname(exefs) : snx_strdup(exefs);
@@ -1660,19 +1661,26 @@ void snx_free_program(SnxProgram* program) {
 
 int snx_dump_program(const char* entry, const char* outdir, char* error, size_t error_size) {
     SnxProgram program;
+    int rc;
+    if (snx_load_program(entry, &program, error, error_size)) return -1;
+    rc = snx_dump_loaded(&program, outdir, error, error_size);
+    snx_free_program(&program);
+    return rc;
+}
+
+int snx_dump_loaded(const SnxProgram* program, const char* outdir, char* error, size_t error_size) {
     char *path = NULL, *index = NULL, *partial = NULL, *file_name;
     FILE* f = NULL;
     SnxMatch* match = NULL;
     SnxMatchStats st;
     size_t i, j, k, nmatch;
     int rc = -1;
-    if (snx_load_program(entry, &program, error, error_size)) return -1;
     if (snx_mkdirs(outdir)) {
         fail(error, error_size, snx_format("cannot create %s", outdir));
         goto done;
     }
-    for (i = 0; i < program.module_count; ++i) {
-        const SnxModuleImage* m = &program.modules[i];
+    for (i = 0; i < program->module_count; ++i) {
+        const SnxModuleImage* m = &program->modules[i];
         file_name = snx_format("%s.bin", m->name);
         path = snx_path_join(outdir, file_name);
         free(file_name);
@@ -1691,10 +1699,10 @@ int snx_dump_program(const char* entry, const char* outdir, char* error, size_t 
         fail(error, error_size, snx_format("cannot write %s", partial));
         goto done;
     }
-    fprintf(f, "program 1 %d\n", program.npdm.is64 ? 1 : 0);
-    nmatch = snx_match_program(&program, &match, &st);
-    for (i = 0, k = 0; i < program.module_count; ++i) {
-        const SnxModuleImage* m = &program.modules[i];
+    fprintf(f, "program 1 %d\n", program->npdm.is64 ? 1 : 0);
+    nmatch = snx_match_program(program, &match, &st);
+    for (i = 0, k = 0; i < program->module_count; ++i) {
+        const SnxModuleImage* m = &program->modules[i];
         fprintf(f, "module %s %llx %llx %llx\n", m->name, (unsigned long long)m->base, (unsigned long long)m->size,
                 (unsigned long long)m->image_size);
         for (j = 0; j < m->symbol_count; ++j)
@@ -1703,7 +1711,7 @@ int snx_dump_program(const char* entry, const char* outdir, char* error, size_t 
                     m->symbols[j].name);
         for (; k < nmatch && match[k].addr < m->base + m->size; ++k)
             fprintf(f, "match %llx %u %s\n", (unsigned long long)(match[k].addr - m->base), (unsigned)match[k].words,
-                    program.modules[st.sdk].symbols[match[k].symbol].name);
+                    program->modules[st.sdk].symbols[match[k].symbol].name);
     }
     fprintf(f, "matched %zu %zu %zu %zu %zu\n", nmatch, st.signatures, st.ambiguous, st.repeated, st.skipped);
     if (fclose(f) || plat_replace_file(partial, index)) {
@@ -1719,6 +1727,5 @@ done:
     free(index);
     free(partial);
     free(match);
-    snx_free_program(&program);
     return rc;
 }

@@ -3,8 +3,11 @@
 /* A test that includes a runtime source file which emits zones sees SNX_TRACY (snx_nx_flags) and links
    Tracy::TracyClient, but not the runtime's tracy.c: the gate is gated out here. */
 #include "nx/runtime/platform/tracy.h"
-#if defined(SNX_TEST_VMA_STUBS)
-#include "nx/gpu/vk/vk.h"
+#if defined(SNX_TEST_DEVMEM_STUBS)
+#include "nx/gpu/vk/ledger.h"
+/* texture.c creates allocations without memory.c and ledger.c, which have the real ones. */
+void vk_mem_track(DevMem a, u32 owner) { (void)a, (void)owner; }
+void vk_mem_untrack(DevMem a) { (void)a; }
 #endif
 
 #if defined(SNX_TRACY)
@@ -17,9 +20,4 @@ TracyCZoneCtx snx_tracy_zone_begin(const struct ___tracy_source_location_data* s
     return ctx;
 }
 void snx_tracy_zone_end(TracyCZoneCtx ctx) { (void)ctx; }
-#if defined(SNX_TEST_VMA_STUBS)
-/* texture.c creates allocations without memory.c, which has the real ones. */
-void vk_mem_track(VmaAllocation a) { (void)a; }
-void vk_mem_untrack(VmaAllocation a) { (void)a; }
-#endif
 #endif
