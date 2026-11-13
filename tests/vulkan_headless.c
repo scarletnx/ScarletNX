@@ -1846,8 +1846,8 @@ static int check_present_effects(void) {
         vk_unlock();
         CHECK(!bad);
     }
-    /* the settings changed while the game runs (the game's menu): the next frame takes them, FXAA alone at the frame's
-       own size, then neither */
+    /* the settings changed while the game runs (the game's menu): the next frame takes them, FXAA alone at the window's
+       size, then neither */
     for (u32 k = 0; k < 2; k++) {
         SnxPresentSource s;
         VkRect2D crop = {{0, 0}, {16, 16}}, to = {{0, 0}, {32, 32}};
@@ -1858,7 +1858,7 @@ static int check_present_effects(void) {
         CHECK(vk_present_quad_source(cb, target, 1, 1, &s));
         int ran = vk_present_quad_effects(cb, &s, &crop, to, 0);
         vk_unlock();
-        CHECK(k ? !ran && s.width == 16 && crop.extent.width == 16 : ran && s.width == 16 && s.height == 16);
+        CHECK(k ? !ran && s.width == 16 && crop.extent.width == 16 : ran && s.width == 32 && s.height == 32);
         vk_finish();
     }
     free(ch);

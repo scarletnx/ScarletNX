@@ -392,8 +392,9 @@ static unsigned char* read_ppm(const char* path, uint32_t* w, uint32_t* h) {
 
 /* --bench [--frame=PPM] [--showcase=DIR]: each pass's GPU time on the device (timestamps around snx_fx_render), the
    passes taken in turn 100 times after 5 warm rounds, so the device's clock moves them alike, and the median of each:
-   a 1280x720 frame (or the PPM's) shown at 1920x1080 and at 3840x2160, and a 400x240 one at 1600x960, the effects'
-   output of each written to DIR. A measure, not a check: run it under lock.sh gpu-measure */
+   a 1280x720 frame (or the PPM's) shown at 1920x1080 and at 3840x2160, and a 400x240 one at 1600x960 scaled in sharp
+   pixels with the upscaler Off, as the 3DS's window does, the effects' output of each written to DIR. A measure, not a
+   check: run it under lock.sh gpu-measure */
 #define BENCH_ROUNDS 105
 static int bench(Test* t, SnxFx* fx, const char* frame, const char* showcase) {
     static const struct {
@@ -423,6 +424,7 @@ static int bench(Test* t, SnxFx* fx, const char* frame, const char* showcase) {
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
         CHECK(upload(t, &src, p));
         free(p);
+        snx_fx_set_off_sharp(fx, size == 2);
         for (int i = 0; i < BENCH_ROUNDS; ++i)
             for (int r = 0; r < RUNS; ++r) {
                 SnxFxImage out = {0};
@@ -461,6 +463,7 @@ static int bench(Test* t, SnxFx* fx, const char* frame, const char* showcase) {
         }
         image_free(t, &src);
     }
+    snx_fx_set_off_sharp(fx, 0);
     vkDestroyQueryPool(t->dev, pool, NULL);
     return 0;
 }
@@ -758,6 +761,61 @@ int main(int argc, char** argv) {
                 edges, PW * PH, changed, worst, tolerance, bits);
         CHECK(edges >= 200 && changed * 3 >= edges);
     }
+    /* the upscaler Off on a window that keeps sharp pixels (the 3DS's): the frame scaled in whole pixels, then FXAA at
+       the window's size. A one-pixel font's strokes (a diagonal, its mirror, a column and a row) shown 4 times as large
+       keep each pixel's middle 2x2 its own colour, so the letters stay sharp; FXAA only touches the steps' edges, and
+       does touch some */
+    {
+        enum { GW = 16, GH = 12, GS = 4 };
+        static unsigned char glyph[GW * GH * 4];
+        Image font = {0};
+        SnxFxImage out = {0};
+        VkCommandBuffer cb;
+        uint64_t serial;
+        unsigned char* got;
+        unsigned kept = 0, smoothed = 0;
+        for (unsigned y = 0; y < GH; ++y)
+            for (unsigned x = 0; x < GW; ++x) {
+                unsigned char* px = glyph + (y * GW + x) * 4;
+                int stroke = (x == y && x >= 1 && x <= 9) || (x + y == 10 && x >= 1 && x <= 9) || (x == 12 && y >= 1) ||
+                             (y == 10 && x >= 1 && x <= 14);
+                px[0] = px[1] = px[2] = stroke ? 230 : 20;
+                px[3] = 255;
+            }
+        CHECK(image_make(&t, &font, GW, GH, VK_FORMAT_R8G8B8A8_UNORM,
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
+        CHECK(upload(&t, &font, glyph));
+        snx_fx_set_off_sharp(fx, 1);
+        cb = snx_vk_ring_commands(&t.ring);
+        CHECK(snx_fx_render(fx, cb, 0, font.view, GW, GH, 0, 0, GW, GH, 0, GW * GS, GH * GS, SNX_FX_UPSCALE_OFF,
+                            SNX_FX_AA_FXAA, &out));
+        serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+        snx_fx_set_off_sharp(fx, 0);
+        CHECK(out.width == GW * GS && out.height == GH * GS);
+        got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, GW * GS, GH * GS);
+        CHECK(got);
+        for (unsigned y = 0; y < GH * GS; ++y)
+            for (unsigned x = 0; x < GW * GS; ++x) {
+                const unsigned char *g = got + ((size_t)y * GW * GS + x) * 4, *p = glyph + ((y / GS) * GW + x / GS) * 4;
+                int middle = (x % GS == 1 || x % GS == 2) && (y % GS == 1 || y % GS == 2);
+                int same = abs((int)g[0] - (int)p[0]) <= 1 && abs((int)g[1] - (int)p[1]) <= 1 &&
+                           abs((int)g[2] - (int)p[2]) <= 1;
+                if (middle) {
+                    if (!same)
+                        fprintf(stderr, "present_fx: a glyph pixel's middle (%u, %u) is %u %u %u, the pixel's %u\n", x,
+                                y, g[0], g[1], g[2], p[0]);
+                    CHECK(same);
+                    ++kept;
+                } else
+                    smoothed += !same;
+            }
+        free(got);
+        image_free(&t, &font);
+        fprintf(stderr, "present_fx: a one-pixel font at 4x, Off and FXAA: %u middles kept, %u edge pixels smoothed\n",
+                kept, smoothed);
+        CHECK(smoothed > 0);
+    }
     /* FXAA and SMAA over a staircase, a dark half under a slope of one pixel up for two across: the steps' pixels
        take values between the two sides, where the frame has none */
     {
@@ -921,10 +979,7 @@ int main(int argc, char** argv) {
             uint64_t serial;
             unsigned char* got;
             uint32_t bad = 0, first = 0;
-            /* the upscaler off, FXAA and SMAA give the crop at its own size */
-            int own =
-                runs[r].filter == SNX_FX_UPSCALE_OFF && (runs[r].aa == SNX_FX_AA_FXAA || runs[r].aa == SNX_FX_AA_SMAA);
-            uint32_t gw = own ? cw : ow, gh = own ? ch : oh;
+            uint32_t gw = ow, gh = oh;
             CHECK(snx_fx_render(fx, cb, 0, framed.view, iw, ih, cx, cy, cw, ch, 0, ow, oh, runs[r].filter, runs[r].aa,
                                 &out));
             serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);

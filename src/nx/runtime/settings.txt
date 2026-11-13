@@ -283,10 +283,10 @@ setting Anti-aliasing
     default off
     words off=Off|auto=Auto|fxaa=FXAA|smaa=SMAA|ssaa2=SSAA 2x|ssaa4=SSAA 4x
     help Smoothing of the shown frame's edges, after the upscaler: Auto = FXAA where the window shows the frame at 1.25
-    help times its size or more each way, else none; FXAA and SMAA filter the frame (with the upscaler Off, at the
-    help frame's own size, which the window then scales as it would); SSAA 2x and 4x draw it 2 or 4 times as large and
-    help shrink it. A Switch game takes a change while it runs, the Anti-aliasing shortcut's for the run; a 3DS or Vita
-    help game takes it at start
+    help times its size or more each way, else none; FXAA and SMAA filter the frame at the window's size (with the
+    help upscaler Off, scaled as the window scales it, the 3DS in sharp pixels); SSAA 2x and 4x draw it 2 or 4 times as
+    help large and shrink it. A Switch game takes a change while it runs, the Anti-aliasing shortcut's for the run; a
+    help 3DS or Vita game takes it at start
 setting Game HDR
     key hdr_game
     label Game HDR output

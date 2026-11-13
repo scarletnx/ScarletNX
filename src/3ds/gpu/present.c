@@ -174,6 +174,7 @@ static void fx_init(const SnxCtrVk* v) {
             g_present.fx[i] = snx_fx_create(v->phys, v->device, VK_NULL_HANDLE, SNX_CTR_VK_SLOTS, fx_log);
             if (g_present.fx[i]) {
                 snx_fx_set_sharpness(g_present.fx[i], c->sharpness);
+                snx_fx_set_off_sharp(g_present.fx[i], 1); /* the window's own scale, in sharp pixels */
                 continue;
             }
             fprintf(stderr,
@@ -520,8 +521,7 @@ static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen, un
             image_barrier(cb, f->image, f->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
             f->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         }
-        /* the effects' image at the rectangle's size is copied; at the frame's own (anti-aliasing alone, the upscaler
-           off) it is scaled in sharp pixels, as the frame is; an upscaler that did not run leaves the smooth scale */
+        /* the effects' image is the rectangle's size, copied; an upscaler that did not run leaves the smooth scale */
         VkImageBlit blit = {
             .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
             .srcOffsets = {{0, 0, 0},
