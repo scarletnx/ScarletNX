@@ -1321,16 +1321,33 @@ minutes with no use.**
 - Comment: `surface.c`, above `rt_superseded`.
 - Check: no test covers it.
 
-**M16. The trim frees the working set only to stay under 95% of the budget, and only what is unused for eight
-presents.**
+**M16. The trim frees the working set only to stay half a head under the budget, and only what is unused for
+eight presents.**
 
+- A head is a sixteenth of the budget, 128 MiB at least and 256 MiB at most (`trim_head`). The trim starts a head
+  under the budget. What is unused for a second goes down to two heads under it. Lossy surfaces go only within a
+  head and within half a head of it.
 - Without the rule: a trim of the working set to 80% made one game load hundreds of textures and targets again
   every 600 presents under a lowered budget. With two presents the trim took textures that a game uses every few
   frames. Of 3,000 that it evicted in one game's menus, 2,358 were unused for three presents, and each came back at
-  once with a BC7 encode. The other steps are in the comment: what is unused for a second goes down to 80%, and
-  lossy surfaces go only past 90% and 95%.
-- Comment: `surface.c`, `vk_mem_trim`.
+  once with a BC7 encode.
+- The marks were shares of the budget before: a start at 90% and a stop at 80%. Each trim then emptied a tenth of
+  the GPU's memory. In one game's race, with the budget set to 4200 MB, the fixed head and M16a together took the
+  textures made again from 3.4 to 2.5 for each present (three runs of each, 300 s).
+- Comment: `surface.c`, `vk_mem_trim` and `trim_head`.
 - Check: `check_trim_working_set` in `tests/vulkan_trim.inc`.
+
+**M16a. A texture whose texture object the game ended goes before any texture that the game still has.**
+
+- The front end counts the live texture objects at each address (`gpu/guest_textures.h`). When the last object at
+  an address ends, the cache puts the textures at that address on a list (`ended_collect`).
+- A trim takes the textures of the list first, when memory can give their pixels again and two presents passed.
+- While four fifths of the budget are in use, such a texture also goes two seconds and 30 presents after the end
+  of its object (`vk_surf_ended_frame`). With memory to spare it stays until it ages out. One game ends textures
+  and makes them again at the same address some seconds later.
+- A texture at whose address the game made an object again leaves the list.
+- Comment: `surface.c`, `ended_reclaim` and `vk_surf_ended_frame`.
+- Check: `check_trim_ended` in `tests/vulkan_trim.inc`, and `tests/guest_textures.c` for the list of ended addresses.
 
 **M17. A forced trim runs at most one time in a present.**
 

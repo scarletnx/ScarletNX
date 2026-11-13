@@ -8,6 +8,7 @@
 #include "nx/runtime/ini.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/maxwell/draw_state.h"
+#include "nx/gpu/guest_textures.h"
 #include "nx/gpu/renderer.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/utilities/spirv_emit.h"
@@ -6901,6 +6902,7 @@ static int run_headless(int argc, char** argv) {
     }
     if (getenv("SNX_TEST_TRIM_ONLY")) { /* the budget's trim alone: a trim that wants everything takes the others' */
         CHECK(!check_trim_working_set());
+        CHECK(!check_trim_ended());
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan trim only: %u validation messages\n", g_vk_validation_messages);

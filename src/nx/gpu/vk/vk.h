@@ -967,6 +967,11 @@ typedef struct Surf {
        frame), with the device memory its image takes. A list runs from the least recently used to the most */
     int lru;
     struct Surf *lru_prev, *lru_next;
+    /* textures: the game ended the last texture object at its address (gpu/guest_textures.h) and made none there
+       since: in surface.c's list of those, which a trim takes first */
+    u8 ended;
+    u32 ended_at; /* the present the cache learned of it */
+    struct Surf* ended_next;
     u64 bytes;
     int took_drawn; /* textures: pixels copied from render targets since the last upload (memory may not have them) */
     /* storage images: the serial of the owner the last publish put over its texels (vk_surf_publish), 0 before one.
@@ -1173,6 +1178,11 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want);
 void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked);
 /* statistics: each texture (VK_LRU_TEX) or render target (VK_LRU_RT) of the caches given to fn, which changes none */
 void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx);
+/* each present, while memory is short: the textures whose texture object the game ended go, once memory can give
+   them again and a grace period passed with no object made at their address (a game that ends a texture and makes
+   it again there with the same bytes still finds it) */
+void vk_surf_ended_frame(void);
+u64 vk_surf_ended_freed(void); /* statistics: their bytes freed so far */
 /* frees cache entries (surfaces and own buffers), the least recently used first, when the heap's use with `extra`
    bytes more would be past 90% of its budget: idle lossless ones down to 80%, the lossless working set down to 95%,
    then lossy ones (vk_surf_reclaim). Only entries unused for the last two presents go, so the caller may hold any

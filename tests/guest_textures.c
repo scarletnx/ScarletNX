@@ -52,7 +52,21 @@ int main(void) {
     gpu_texture_remove(at(0));
     assert(!gpu_textures(v, N));
     gpu_texture_remove(at(0)); /* one end too many changes nothing */
-    assert(!gpu_textures(v, N) && gpu_textures_added() == 3);
+    /* the address ended once, when its last object did, and is live no more: the list gives it one time */
+    {
+        u64 ended[4] = {0};
+        assert(!gpu_texture_live(at(0)) && gpu_textures_ended(ended, 4) == 1 && ended[0] == at(0));
+        assert(!gpu_textures_ended(ended, 4));
+        /* an object made there again is live, and its end is listed again; one of two at an address ends nothing */
+        gpu_texture_add(at(0), 1);
+        gpu_texture_add(at(0), 1);
+        assert(gpu_texture_live(at(0)) && !gpu_texture_live(at(1)));
+        gpu_texture_remove(at(0));
+        assert(gpu_texture_live(at(0)) && !gpu_textures_ended(ended, 4));
+        gpu_texture_remove(at(0));
+        assert(gpu_textures_ended(ended, 1) == 1 && ended[0] == at(0) && !gpu_textures_ended(ended, 4));
+    }
+    assert(!gpu_textures(v, N) && gpu_textures_added() == 5);
 
     /* many addresses: all there after the table grew */
     for (u32 i = 0; i < N; i++) gpu_texture_add(at(i), i + 1);
@@ -87,7 +101,14 @@ int main(void) {
         if (i % 3) gpu_texture_remove(at(i));
     }
     assert(!gpu_textures(v, N));
-    assert(gpu_textures_added() == 3 + N + left + (N + 2) / 3);
+    assert(gpu_textures_added() == 5 + N + left + (N + 2) / 3);
+    /* the ends, a few at a time: N addresses ended, as many as the list holds, each given once */
+    {
+        u64 ended[100];
+        u32 got = 0;
+        for (u32 n; (n = gpu_textures_ended(ended, 100));) got += n;
+        assert(got == (N < 1024 ? N : 1024) && !gpu_textures_ended(ended, 100));
+    }
 
     free(v);
     puts("guest_textures: ok");

@@ -3041,6 +3041,7 @@ void vk_tex_frame(void) {
        Render targets later ones drew all over hold nothing: every 30 presents those unused for a second and eight
        presents go (a game at a dynamic resolution makes its scene's targets again each frame) */
     u32 before = vk_present_before(20000000000ull, 120);
+    vk_surf_ended_frame(); /* those the game ended go sooner */
     vk_surf_reclaim(VK_LRU_TEX, before, ~0ull, VK_RECLAIM_LOSSLESS);
     vk_surf_reclaim(VK_LRU_RT, before, ~0ull, VK_RECLAIM_LOSSLESS);
     if (g_vk_present % 30 == 0) vk_rt_reclaim_superseded(vk_present_before(1000000000ull, 8), ~0ull);

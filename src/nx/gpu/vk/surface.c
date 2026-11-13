@@ -18,6 +18,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/guest_textures.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/tex_report.h"
@@ -69,7 +70,23 @@ static void lru_unlink(Surf* s) {
     s->lru = VK_LRU_NONE;
 }
 static u64 g_touched;
+/* The textures whose last texture object the game ended (ended_collect), newest first. Nothing draws with one again
+   unless the game makes an object at its address, and its pixels are in memory still or they are not (lossless): a
+   trim takes these before any texture the game still has, whatever their age */
+static Surf* g_ended;
+static u64 g_ended_freed; /* bytes of them a trim took, for its log */
+static void ended_unlink(Surf* s) {
+    if (!s->ended) return;
+    for (Surf** pp = &g_ended; *pp; pp = &(*pp)->ended_next)
+        if (*pp == s) {
+            *pp = s->ended_next;
+            break;
+        }
+    s->ended = 0;
+    s->ended_next = NULL;
+}
 void vk_surf_touch(Surf* s) {
+    if (s->ended) ended_unlink(s); /* used: the game has an object there again */
     if (s->last_used == g_vk_present) return;
     s->last_used = g_vk_present;
     if (!s->lru) return;
@@ -2112,6 +2129,7 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
 /* a surface's image and views go when the frame being recorded is done (descriptors in it may name them), the BC7
    image being made for it too */
 static void surf_free(Surf* s) {
+    ended_unlink(s);
     vk_tex_later_forget(s);
     surf_changed(s->gva);
     vk_astc_forget(s, ~0u); /* the background encodes of its levels stop writing into it */
@@ -2271,6 +2289,60 @@ static void astc_bc_suggest(int force, u64 extra, u64 usage, u64 budget, u64 fre
 }
 static u64 g_trimmed;   /* statistics: bytes freed for the budget */
 static u32 g_trim_dry;  /* the present a trim last found too little to free (+1: 0 is none) */
+/* the textures at the addresses whose last object ended since the last call go on the list of those */
+static void ended_collect(void) {
+    u64 gva[256];
+    for (u32 n; (n = gpu_textures_ended(gva, 256));) {
+        for (u32 i = 0; i < n; i++)
+            for (Surf* s = g_surfh[hkey(gva[i])]; s; s = s->next)
+                if (s->gva == gva[i] && !s->is_rt && !s->ended && s->lru) {
+                    s->ended = 1;
+                    s->ended_at = g_vk_present;
+                    s->ended_next = g_ended;
+                    g_ended = s;
+                }
+        if (n < 256) break;
+    }
+}
+/* up to want bytes of them freed: those memory can give again, ended and unused since before `before`. One at whose
+   address the game made an object since is a texture as any other */
+static u64 ended_reclaim(u64 want, u32 before) {
+    u64 freed = 0;
+    for (Surf *s = g_ended, *n; s && freed < want; s = n) {
+        n = s->ended_next;
+        if (gpu_texture_live(s->gva))
+            ended_unlink(s);
+        else if ((i32)((u32)s->last_used - before) < 0 && (i32)(s->ended_at - before) < 0 && lossless(s) &&
+                 !vk_gfx_image_holds(s))
+            freed += surf_evict(s);
+    }
+    g_ended_freed += freed;
+    return freed;
+}
+u64 vk_surf_ended_freed(void) { return g_ended_freed; }
+/* Two seconds and 30 presents after its object ended, while four fifths of the budget are in use: before the trim
+   starts, as the other pools give back what is idle then (owned.c, writelog.c, mirror.c). With memory to spare they
+   stay, as any texture does, until they age out (vk_tex_frame): one game ends textures and makes them again at
+   their addresses some seconds later, and with 15% of its budget in use it loaded 480 textures again in 200 s
+   where it loads 49 */
+void vk_surf_ended_frame(void) {
+    ended_collect();
+    if (!g_ended) return;
+    u64 usage, budget;
+    vk_mem_use(&usage, &budget);
+    if (usage >= budget / 5 * 4) ended_reclaim(~0ull, vk_present_before(2000000000ull, 30));
+}
+/* What a trim leaves free of the budget: a sixteenth of it, 128 MiB at least and 256 MiB at most, and never more
+   than a quarter. The trim started at 90% of the budget and freed what had gone unused for a second down to 80%: a
+   tenth of the GPU's memory emptied each time, of textures most of which a game's race asked for again within 300
+   presents, 3.6 to 6.1 GB of images made again in 300 s. What the next frames allocate is a few hundred megabytes
+   at most, and the allocator stops at the budget itself (devmem.c), where a failed request frees what it needs */
+static u64 trim_head(u64 budget) {
+    u64 head = budget / 16;
+    if (head < (128ull << 20)) head = 128ull << 20;
+    if (head > (256ull << 20)) head = 256ull << 20;
+    return head > budget / 4 ? budget / 4 : head;
+}
 static u32 g_forced;    /* the present a failed allocation last forced a trim (+1) */
 static u32 g_oom;       /* the present an image allocation last found no memory (+1) */
 static u64 g_oom_bytes; /* the smallest size that found none in that present */
@@ -2286,34 +2358,47 @@ void vk_mem_trim(u64 extra, int force) {
         return; /* nothing more to free until the next present */
     vk_mem_use(&usage, &budget);
     usage += extra;
+    const u64 head = trim_head(budget);
     if (force) { /* the allocation's size, less what evictions before it are releasing already */
         u64 gone = vk_deferred_bytes();
         need = extra > gone ? extra - gone : 0;
-    } else if (usage <= budget / 100 * 90)
+    } else if (usage + head <= budget)
         return;
     SNX_ZONE_V(z, "vk mem trim", force);
     /* What goes first is what can be had again without loss: textures (loaded again from memory), own buffers (copied
-       again), then render targets memory holds. Those unused for a second go down to 80% of the budget, room for what
-       comes next. The working set itself (unused for eight presents) goes only to stay under 95%: freeing it to 80%
-       when it alone is bigger made one game load hundreds of textures and targets again every 600 presents under a
-       lowered budget, where staying near the budget costs nothing. Two presents took textures a game uses every few
-       frames: of 3,000 it evicted in one game's menus, 2,358 had gone unused for three presents, and each came back
-       at once, a BC7 encode each (astc.c). Render targets whose pixels exist only here
-       (memory has older ones: draws aren't written back, see vk_surf_reclaim) and textures that took such pixels lose
-       them when they go, so they go only when the lossless steps leave the heap past 90%: those unused for five
-       seconds, then, past 95%, those unused for a second and eight presents, the youngest a lossy entry can be. Every
-       step frees the least recently used first. Before them all go the render targets later ones drew all over, unused
-       for two presents: what they hold is no one's (rt_superseded) */
+       again), then render targets memory holds. Those unused for a second go down to two heads under the budget
+       (trim_head), room for what comes next. The working set itself (unused for eight presents) goes only to stay
+       half a head under it: freeing it further when it alone is bigger made one game load hundreds of textures and
+       targets again every 600 presents under a lowered budget, where staying near the budget costs nothing. Two
+       presents took textures a game uses every few frames: of 3,000 it evicted in one game's menus, 2,358 had gone
+       unused for three presents, and each came back at once, a BC7 encode each (astc.c). Render targets whose pixels
+       exist only here (memory has older ones: draws aren't written back, see vk_surf_reclaim) and textures that took
+       such pixels lose them when they go, so they go only when the lossless steps leave the heap within a head of
+       the budget: those unused for five seconds, then, within half a head, those unused for a second and eight
+       presents, the youngest a lossy entry can be. Every step frees the least recently used first. Before them all
+       go the render targets later ones drew all over, unused for two presents: what they hold is no one's
+       (rt_superseded), and the textures whose texture object the game ended (ended_reclaim) */
     u64 superseded = vk_rt_reclaim_superseded(vk_present_before(0, 2), ~0ull);
     static const struct {
         u32 ms, presents;
         int lossy;
-        u32 mark; /* percent of the budget the step frees down to */
-    } steps[] = {{1000, 8, 0, 80}, {0, 8, 0, 95}, {5000, 30, 1, 90}, {1000, 8, 1, 95}};
+        u32 mark; /* the halves of trim_head below the budget that the step frees down to */
+    } steps[] = {{1000, 8, 0, 4}, {0, 8, 0, 1}, {5000, 30, 1, 2}, {1000, 8, 1, 1}};
     u64 freed = superseded, by[3] = {0, 0, superseded}, working = 0;
     int short_of = 0;
+    /* first the textures the game has ended, down to the lowest mark: no later frame asks for them */
+    ended_collect();
+    {
+        const u64 low = budget - 2 * head, left = usage > freed ? usage - freed : 0;
+        u64 want = left > low ? left - low : 0;
+        if (want < need) want = need;
+        /* under the budget's pressure, after two presents: a draw recorded before the object ended may hold one */
+        const u64 got = want ? ended_reclaim(want, vk_present_before(0, 2)) : 0;
+        by[0] += got;
+        freed += got;
+    }
     for (u32 i = 0; i < sizeof steps / sizeof steps[0]; i++) {
-        u64 mark = budget / 100 * steps[i].mark, left = usage > freed ? usage - freed : 0;
+        u64 mark = budget - steps[i].mark * (head / 2), left = usage > freed ? usage - freed : 0;
         u64 want = left > mark ? left - mark : 0;
         if (freed < need && want < need - freed) want = need - freed;
         if (!want) continue;
