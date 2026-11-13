@@ -306,6 +306,16 @@ int main(void) {
         return 1;
     }
     agb_write32(&board, 0x040000B8, 0);
+    /* a DMA from the cartridge counts its source up even when the control says fixed: two halfwords, not one twice */
+    agb_write32(&board, 0x040000D4, 0x08000000);
+    agb_write32(&board, 0x040000D8, 0x02000500);
+    agb_write32(&board, 0x040000DC, 0x81000002); /* now, halfwords, the source fixed */
+    if (agb_read32(&board, 0x02000500) != 0xEA00002E) {
+        fprintf(stderr,
+                "agb_board: a fixed DMA from the cartridge moved 0x%08X, not its first two halfwords 0xEA00002E\n",
+                agb_read32(&board, 0x02000500));
+        return 1;
+    }
 
     /* a rejected insert leaves the accepted cartridge in place */
     CHECK(board.has_cartridge && !strcmp(board.cartridge.title, "TEST"));

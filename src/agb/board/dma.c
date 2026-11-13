@@ -49,12 +49,17 @@ static void dma_transfer(AgbBoard* board, int index, int fifo) {
             else
                 agb_write16(board, destination, (uint16_t)(channel->latch >> (destination & 2) * 8));
         }
-        switch (source_mode) {
-            case 0: source += (uint32_t)step; break;
-            case 1: source -= (uint32_t)step; break;
-            case 3: source += (uint32_t)step; break;
-            default: break;
-        }
+        /* from the cartridge the source counts up whatever the control says (the suite's dma.c on the console: a fixed
+           or decrementing source there moves the next units, as mGBA's GBADMAService has it) */
+        if (source - 0x08000000u < 0x06000000u)
+            source += (uint32_t)step;
+        else
+            switch (source_mode) {
+                case 0: source += (uint32_t)step; break;
+                case 1: source -= (uint32_t)step; break;
+                case 3: source += (uint32_t)step; break;
+                default: break;
+            }
         switch (destination_mode) {
             case 0:
             case 3: destination += (uint32_t)step; break;
