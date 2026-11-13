@@ -488,6 +488,123 @@ static void sum_terms(void) {
     check(folded >= rounds / 4, "and the pass folds a quarter of the differences at least");
 }
 
+/* a test of the integer s against 0 into m as id, in the form form picks: 0 s != 0, 1 0 != s, 2 s == 0, 3 !(s == 0),
+   4 !(0 != s), the last two with id + 1 for the comparison under the ! */
+static void zero_test(Module* m, uint32_t id, uint32_t s, uint32_t form) {
+    if (form == 0) put(m, I_NOT_EQUAL, 4, (uint32_t)BOOL, id, s, (uint32_t)U0);
+    if (form == 1) put(m, I_NOT_EQUAL, 4, (uint32_t)BOOL, id, (uint32_t)U0, s);
+    if (form == 2) put(m, I_EQUAL, 4, (uint32_t)BOOL, id, s, (uint32_t)U0);
+    if (form >= 3) {
+        if (form == 3) put(m, I_EQUAL, 4, (uint32_t)BOOL, id + 1, s, (uint32_t)U0);
+        if (form == 4) put(m, I_NOT_EQUAL, 4, (uint32_t)BOOL, id + 1, (uint32_t)U0, s);
+        put(m, LOGICAL_NOT, 3, (uint32_t)BOOL, id, id + 1);
+    }
+}
+
+/* An && or || of two tests against 0 where one implies the other is the one implied (||) or implying (&&):
+   (x & m) != 0 implies x != 0, which implies (x | m) != 0, and x == 0 implies (x & m) == 0. The translator writes
+   the first for a predicate made of a masked register, the second test through a ! of == */
+static void implications(void) {
+    /* the subjects: P = x & KA, Q = KA & x, P + 8 = x | y, P + 9 = y & KA, P + 10 = x & y */
+    static const struct {
+        uint32_t logic, s1, form1, s2, form2;
+        int expect; /* IS: the first test (1) or the second (2) */
+    } cases[] = {
+        {LOGICAL_OR, P, 0, X, 3, 2},     /* the translator's: (x & m) != 0 || !(x == 0) */
+        {LOGICAL_AND, P, 0, X, 3, 1},    /* (x & m) != 0 && !(x == 0) */
+        {LOGICAL_OR, X, 0, P, 1, 1},     /* x != 0 || 0 != (x & m), the implied first */
+        {LOGICAL_AND, X, 0, P, 1, 2},    /* x != 0 && 0 != (x & m) */
+        {LOGICAL_OR, Q, 0, X, 0, 2},     /* the mask on the left */
+        {LOGICAL_AND, P, 2, X, 2, 2},    /* (x & m) == 0 && x == 0 is x == 0 */
+        {LOGICAL_OR, P, 2, X, 2, 1},     /* (x & m) == 0 || x == 0 is (x & m) == 0 */
+        {LOGICAL_OR, P, 4, X, 4, 1},     /* !(0 != (x & m)) || !(0 != x) */
+        {LOGICAL_OR, X, 0, P + 8, 0, 2}, /* x != 0 implies (x | y) != 0 */
+        {LOGICAL_AND, X, 0, P + 8, 3, 1},
+        {LOGICAL_OR, P, 0, P + 8, 0, 2},          /* (x & m) != 0 implies (x | y) != 0 */
+        {LOGICAL_AND, P + 10, 0, Y, 0, 1},        /* (x & y) != 0 implies y != 0 */
+        {LOGICAL_OR, P, 0, P, 3, 2},              /* one subject twice */
+        {LOGICAL_OR, P, 0, Y, 0, STAYS},          /* another value */
+        {LOGICAL_OR, P + 9, 0, X, 0, STAYS},      /* a mask of another value */
+        {LOGICAL_OR, P, 0, X, 2, STAYS},          /* (x & m) != 0 || x == 0: no implication either way */
+        {LOGICAL_AND, P, 0, X, 2, STAYS},         /* false, which this does not see */
+        {LOGICAL_OR, P + 8, 0, X, 0, 1},          /* the implied one first */
+        {LOGICAL_OR, P + 8, 0, P + 9, 0, 1},      /* (y & m) != 0 implies (x | y) != 0 */
+        {LOGICAL_OR, P + 9, 0, P + 10, 0, STAYS}, /* y & m and x & y: neither within the other */
+        {LOGICAL_AND, P, 2, X, 0, STAYS},
+        {LOGICAL_EQUAL, P, 0, X, 0, STAYS}, /* only && and || */
+        {LOGICAL_NOT_EQUAL, P, 0, X, 0, STAYS},
+    };
+    const uint32_t k[] = {0x30, 0x0f};
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        Module m;
+        begin_with(&m, k, 2);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)KA, (uint32_t)X);
+        put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P + 8, (uint32_t)X, (uint32_t)Y);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P + 9, (uint32_t)Y, (uint32_t)KA);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P + 10, (uint32_t)X, (uint32_t)Y);
+        zero_test(&m, (uint32_t)P + 12, cases[i].s1, cases[i].form1);
+        zero_test(&m, (uint32_t)P + 14, cases[i].s2, cases[i].form2);
+        put(&m, cases[i].logic, 4, (uint32_t)BOOL, (uint32_t)R + 20, (uint32_t)P + 12, (uint32_t)P + 14);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R + 20);
+        end(&m);
+        Module o = m;
+        size_t left = spv_opt_values(o.words, o.count);
+        uint32_t read = stored(&o, left, 0);
+        int ok = cases[i].expect == STAYS
+                     ? read == (uint32_t)R + 20 && (result(&o, left, R + 20)[0] & 0xffff) == cases[i].logic
+                     : read == (uint32_t)P + (cases[i].expect == 1 ? 12u : 14u);
+        if (!ok) {
+            fprintf(stderr, "implications: case %zu stores %u\n", i, read);
+            check(0, "an && or || of two tests, one implying the other, is the one it should be");
+        }
+    }
+    /* a decorated comparison is a value of no known form */
+    Module m, d;
+    begin_with(&m, k, 2);
+    put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
+    zero_test(&m, (uint32_t)Q, (uint32_t)P, 0);
+    zero_test(&m, (uint32_t)P + 12, (uint32_t)X, 0);
+    put(&m, LOGICAL_OR, 4, (uint32_t)BOOL, (uint32_t)R, (uint32_t)Q, (uint32_t)P + 12);
+    put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+    end(&m);
+    decorated(&d, &m, Q);
+    check(outcome(&m, 5, IS, 0, P + 12) && outcome(&d, 5, STAYS, 0, 0), "a decorated comparison stays");
+    decorated(&d, &m, P);
+    check(outcome(&d, 5, STAYS, 0, 0), "and so does a decorated mask");
+    /* Modules at random: two tests of a value, a mask of it or both, and a logical instruction of the two, stored; each
+       runs the same before and after the pass on x and y of the samples */
+    static const uint32_t logic[] = {LOGICAL_OR, LOGICAL_AND, LOGICAL_EQUAL, LOGICAL_NOT_EQUAL};
+    uint32_t seed = 0x1b873593u;
+    int failed = 0, folded = 0;
+    const int rounds = 2000;
+    for (int round = 0; round < rounds && failed < 5; round++) {
+        uint32_t kr[2] = {next(&seed), next(&seed) % 3 ? next(&seed) : 0};
+        begin_with(&m, kr, 2);
+        uint32_t subjects[6] = {X, Y, P, Q, P + 8, P + 9};
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA + next(&seed) % 2);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)Q, next(&seed) % 2 ? (uint32_t)Y : (uint32_t)KB, (uint32_t)X);
+        put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P + 8, (uint32_t)X, (uint32_t)KA + next(&seed) % 2);
+        put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P + 9, (uint32_t)Q, (uint32_t)Y);
+        zero_test(&m, (uint32_t)P + 12, subjects[next(&seed) % 6], next(&seed) % 5);
+        zero_test(&m, (uint32_t)P + 14, subjects[next(&seed) % 6], next(&seed) % 5);
+        put(&m, logic[next(&seed) % 4], 4, (uint32_t)BOOL, (uint32_t)R + 20, (uint32_t)P + 12, (uint32_t)P + 14);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R + 20);
+        end(&m);
+        Module o = m;
+        size_t left = spv_opt_values(o.words, o.count);
+        uint32_t read = stored(&o, left, 0);
+        folded += read == (uint32_t)P + 12 || read == (uint32_t)P + 14;
+        if (!same_on_samples(&m, kr, 2, &seed)) {
+            fprintf(stderr, "implications: round %d of the modules at random runs otherwise after the pass\n", round);
+            failed++;
+        }
+    }
+    check(!failed, "a module of tests at random stores what it stored before the pass");
+    if (folded < rounds / 8) fprintf(stderr, "implications: %d of %d are one of their tests\n", folded, rounds);
+    check(folded >= rounds / 8, "and an eighth of them at least are one of their tests");
+}
+
 int main(void) {
     Module m, o;
     size_t left;
@@ -1395,6 +1512,7 @@ int main(void) {
         check(folded >= rounds / 4, "and the pass changes a quarter of them at least");
     }
     sum_terms();
+    implications();
     printf("spirv opt fold: %d checks failed\n", g_failures);
     return g_failures != 0;
 }
