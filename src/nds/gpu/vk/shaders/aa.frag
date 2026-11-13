@@ -7,10 +7,10 @@
 // covered.
 //
 // The console keeps a second pixel under each edge pixel: the neighbor polygon's where two polygons of a surface
-// meet (both fill their shared edge), else what the polygon hides. Here that pixel is the picture's pixel across the
-// edge (poly.frag says which way that is): the neighbor polygon's own pixel in the first case, the hidden surface a
-// pixel further in the second. A pixel across the edge that is nearer than the edge pixel hides nothing of it, so
-// such an edge stays as it is.
+// meet (both fill their shared edge), else what the polygon hides. Here the second pixel is the picture's pixel
+// across the edge (poly.frag says which way that is), taken only where it is farther than the edge pixel: that is
+// the hidden surface, a pixel further on. Where two polygons of a surface meet, the blend of a surface with itself
+// changes nothing on the console, and the pixel is left alone here, so a mesh's inner edges do not smear its texture.
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "config3d.glsl"
@@ -36,9 +36,11 @@ void main() {
     // past the picture's border the clear plane is under the edge
     vec4 under = clear_color;
     if (within(beside)) {
-        // nearer than the edge pixel by more than the polygon's own slope explains: not under it
+        // Only a pixel that is farther than the polygon's own slope explains is under the edge. A nearer one hides
+        // nothing of it. One at the surface's own depth is the neighbor polygon's, and what the console has under the
+        // edge there is that polygon at this very pixel: the same surface, so the pixel stays as it is
         float slope = within(inward) ? abs(depth - texelFetch(depth_buffer, inward, 0).r) : 0.0;
-        if (texelFetch(depth_buffer, beside, 0).r < depth - 2.0 * slope - 64.0 / 16777216.0) return;
+        if (texelFetch(depth_buffer, beside, 0).r <= depth + 2.0 * slope + 64.0 / 16777216.0) return;
         under = texelFetch(picture, beside, 0);
     }
     if (coverage == 0) {
