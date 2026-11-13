@@ -952,14 +952,15 @@ jobs:
       # The build machine's: Clang and LLD build for the target (cmake/cross.cmake) and LLVM's libraries for it
       # (scripts/linux-llvm.sh), ccache caches the compiles, glslang builds the shaders, qemu-user runs the target's
       # own programs, wayland's wayland-scanner the protocols SDL3 builds, jdk21-openjdk the Android app driver's javac
-      # and jni.h. Each pacman is tried 3 times, as in the linux job
+      # and jni.h, meson dav1d for the target (cmake/dav1d.cmake, from a cross file). Each pacman is tried 3 times, as
+      # in the linux job
       - name: Install the build tools
         run: |
           docker exec -i build sh -s <<'EOF'
           set -eu
           retry() { for try in 1 2 3; do "$@" && return; [ "$try" = 3 ] && return 1; sleep 5; done; }
           retry pacman -Syu --noconfirm --needed cmake ninja make patch perl python clang lld llvm glslang spirv-tools qemu-user \
-            git pkgconf patchelf wayland ccache jdk21-openjdk
+            git pkgconf patchelf wayland ccache jdk21-openjdk meson
           EOF
       # Saved once a week, as in the linux job. Every architecture's job installs the same, so one of them saves it
       - name: Keep the installed packages
@@ -1434,16 +1435,17 @@ jobs:
         with:
           path: android-llvm/arm64-v8a
           key: android-llvm-arm64-v8a-${{ hashFiles('scripts/android-llvm.sh') }}-${{ env.ANDROID_NDK_ROOT }}
-      # The NDK named above, which the runner's image may no longer carry, and NASM for FFmpeg's x86-64 assembly.
-      # sdkmanager's download sometimes ends early ("Premature EOF"): tried 3 times, 5 s apart
-      - name: Install the NDK and NASM
+      # The NDK named above, which the runner's image may no longer carry, NASM for FFmpeg's and dav1d's x86-64
+      # assembly, and meson for dav1d (cmake/dav1d.cmake, from a cross file). sdkmanager's download sometimes ends early
+      # ("Premature EOF"): tried 3 times, 5 s apart
+      - name: Install the NDK, NASM and meson
         run: |
           for try in 1 2 3; do
             "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;${ANDROID_NDK_ROOT##*/}" > /dev/null && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
-          sudo apt-get update && sudo apt-get install -y nasm ccache spirv-tools
+          sudo apt-get update && sudo apt-get install -y nasm meson ccache spirv-tools
       - name: Build LLVM's libraries for x86_64
         if: steps.llvm-x86_64.outputs.cache-hit != 'true'
         run: scripts/android-llvm.sh x86_64 "$PWD/android-llvm/x86_64"
@@ -1654,8 +1656,9 @@ jobs:
         with:
           path: ios-llvm
           key: ios-llvm-${{ hashFiles('scripts/apple-llvm.sh') }}-${{ steps.xcode.outputs.version }}
+      # meson: dav1d's build (cmake/dav1d.cmake), with a native file on macOS and a cross file on iOS
       - name: Install tools
-        run: brew install ninja ccache spirv-tools
+        run: brew install ninja meson ccache spirv-tools
       - name: Build LLVM's libraries for macOS
         id: macos-llvm-build
         if: steps.macos-llvm.outputs.cache-hit != 'true'
