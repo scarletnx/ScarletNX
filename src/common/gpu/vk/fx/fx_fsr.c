@@ -7,8 +7,12 @@
 
 #define A_CPU    1
 #define A_STATIC static inline
+/* ffx_a.h's CPU helpers return restrict pointers, a qualifier a return type ignores (-Wextra's -Wignored-qualifiers) */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wignored-qualifiers"
 #include "common/gpu/vk/fx/ffx_a.h"
 #include "common/gpu/vk/fx/ffx_fsr1.h"
+#pragma clang diagnostic pop
 
 #include "common/gpu/vk/fx/fx_fsr.h"
 
