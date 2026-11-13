@@ -20,18 +20,28 @@
 
    From SDK 10 Save has a limit, 900 calls in any 90 minutes as SDK 20's is: a call past the limit returns success and
    leaves the report as it is. The SDK also signals its own event for that (GetOverSaveFrequencyLimitEvent), which stays with the SDK's
-   code and is not signaled here. Any other nn::prepo function that needs the service opens prepo:u, and sm stops the
-   game with the name of this layer */
+   code and is not signaled here.
+
+   From SDK 10 AddSessionId adds a report's session id: an Any64BitId the SDK keeps, drawn at random whenever the
+   system's session id it asks the service for differs from the last one it saw, which starts as 0. The service gave 0
+   for that id (prepo:u answered so before it left, as Eden does), so the SDK's id stayed 0, and here too: 8 zero bytes,
+   added by the SDK's own PlayReport::Add.
+
+   Any other nn::prepo function that needs the service takes the session object the SDK's start did not make (its
+   getter gives none in SDK 3.5 to 20.5), and the game crashes in it. No game of the dumps read calls one: they are the
+   storage, the statistics, the upload history, the user agreement check, the operation mode and the system's reports */
 #include "nx/nn/prepo.h"
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
 #include "nx/hle/hle.h"
+#include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
 #include "common/platform/thread.h"
 
 #define PREPO_SEND_LIMIT       0xc81u /* the play report module (129), description 6 */
 #define PREPO_SYM_SEND         "_ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE"
+#define PREPO_SYM_ADD_ID       "_ZN2nn5prepo10PlayReport3AddEPKcRKNS0_10Any64BitIdE"
 #define PREPO_EVENT_ID_INVALID 0xa81u                      /* the play report module (129), description 5 */
 #define PREPO_LIMIT_NS         (5400ull * 1000000000ull)    /* 90 minutes */
 #define PREPO_EVENT_ID         0x20                         /* the event id at the report's start: 31 characters at most */
@@ -154,4 +164,16 @@ void nnprepo_send(CPU* c, const HookLayout_nn_prepo_PlayReport* L, const HookLay
          (unsigned long long)hook_get_u64(c, L->used, report));
     hook_put_addr(c, L->buffer, report, 0);
     context(c, A, out, 0);
+}
+
+/* AddSessionId: the session's id, 8 zero bytes, put below the caller's stack, where no frame is, and added under key by
+   the SDK's own PlayReport::Add(key, Any64BitId), whose Result it gives */
+u32 nnprepo_add_session_id(CPU* c, u64 report, u64 key) {
+    u64 add = kernel_find_symbol_exact(PREPO_SYM_ADD_ID), sp = c->x[31], id = (sp - 8) & ~15ull;
+    if (!add) fatal("nn::prepo: the SDK exports no %s, which AddSessionId adds the id with", PREPO_SYM_ADD_ID);
+    snx_st_le64(hook_host(c, id), 0);
+    c->x[31] = id;
+    hook_guest_call(c, add, report, key, id, 0);
+    c->x[31] = sp;
+    return (u32)c->x[0];
 }
