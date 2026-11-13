@@ -61,6 +61,8 @@ keeps audits and measurements as they were taken.
   - [SuperTux target](platforms/3ds/supertux.md): the pinned homebrew, how to reproduce its run, and its baseline
 - [PS Vita](platforms/vita/README.md): the Vita driver, its shader corpus and its limits
 - [Game Boy Advance](platforms/agb/README.md): the AGB board, playing a ROM, its devices and tests
+- [Nintendo DS](platforms/nds/README.md): the NDS driver, its compiled module, the ARM7's services and the display on
+  the GPU
 - [Linux AArch64 programs (GNU ABI)](platforms/gnuabi/README.md): the sysroot, how code runs, processes and the
   system calls
 - [Android apps](platforms/android-apps/README.md): `scarletnx-android`, which runs an Android app's code on a

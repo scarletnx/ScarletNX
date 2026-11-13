@@ -9,8 +9,9 @@ Discord: https://discord.gg/tRTRXXbyjp (my god why don't we just use IRC like go
 A GPLv3 static ARM64 to x86 recompiler with a Switch, GBA and GNU/Linux ABI translation layer for Solaris, Linux, Windows, FreeBSD and Android.
 
 A game from your own dump is recompiled ahead of time into a native module for the machine it plays on, and runs on a
-runtime that answers the console's system calls and services and draws with Vulkan. Experimental drivers run 3DS games
-and PS Vita homebrew the same way, and Game Boy Advance ROMs on an emulated AGB board still under construction.
+runtime that answers the console's system calls and services and draws with Vulkan. Experimental drivers run 3DS games,
+Nintendo DS games and PS Vita homebrew the same way, and Game Boy Advance ROMs on an emulated AGB board still under
+construction.
 
 ## Download and run
 
@@ -38,7 +39,8 @@ and **Load Switch NSP/XCI/NRO** picks a dump, recompiles it and starts the game.
   [PowerPC64](docs/hosts/ppc64.md), [RISC-V and LoongArch](docs/hosts/riscv-loongarch.md),
   [MIPS64](docs/hosts/mips64.md), [s390x](docs/hosts/s390x.md), [NetBSD](docs/hosts/netbsd.md)
 - Other systems: [3DS](docs/platforms/3ds/README.md), [PS Vita](docs/platforms/vita/README.md),
-  [Game Boy Advance](docs/platforms/agb/README.md), [Linux AArch64 programs](docs/platforms/gnuabi/README.md),
+  [Game Boy Advance](docs/platforms/agb/README.md), [Nintendo DS](docs/platforms/nds/README.md),
+  [Linux AArch64 programs](docs/platforms/gnuabi/README.md),
   [Android apps](docs/platforms/android-apps/README.md) (**Load Android APK/XAPK**)
 - [Every document](docs/README.md), by audience, platform and layer
 
