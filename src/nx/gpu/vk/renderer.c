@@ -177,6 +177,7 @@ static void vkr_mapping_end(void) {
     }
     vk_uma_mapping_end(); /* first: what follows may submit */
     vk_buf_mapping_changed();
+    if (g_mapping_size) vk_surf_mapping_changed(g_mapping_gva, g_mapping_size);
     pend_remap(g_mapping_gva, g_mapping_size);
     g_mapping_size = 0;
     pend_unlock();
