@@ -3078,8 +3078,11 @@ static VkCommandBuffer copy_begin(Surf* s, Surf* t) {
 }
 /* the first count layers of s into t's level l at layer or Z slice dst, w x h: copied, or blitted from s's scaled
    size, nearest (sampling applies the texture's filter later). A blit into a 3D image takes one slice from layer 0, so
-   a scaled s goes into slices one at a time (count 1: layered targets take vk_unscaled_image's way there) */
-static void copy_layers(VkCommandBuffer cb, Surf* s, Surf* t, u32 l, u32 dst, u32 count, u32 w, u32 h, int z) {
+   a scaled s goes into slices one at a time (count 1: layered targets take vk_unscaled_image's way there). A blit
+   converts formats where a copy keeps the bits, and makes no compressed texels: a scaled s of another format than t's,
+   or one t's format can't take by blits, is blitted down to an image of its own format at the guest's size, whose bits
+   a copy then takes. 0 when that image can't be made */
+static int copy_layers(VkCommandBuffer cb, Surf* s, Surf* t, u32 l, u32 dst, u32 count, u32 w, u32 h, int z) {
     /* a region takes one aspect: a depth target's depth, and its stencil in a second region when it has one */
     VkImageSubresourceLayers from = {t->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, 0,
                                      z ? 1 : count};
@@ -3095,7 +3098,30 @@ static void copy_layers(VkCommandBuffer cb, Surf* s, Surf* t, u32 l, u32 dst, u3
         c[1].srcSubresource.aspectMask = c[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
         rec_CmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                          regions, c);
-        return;
+        return 1;
+    }
+    if (s->f.vk != t->f.vk || !can_blit(t->f.vk)) { /* a color format: depth takes its own format alone */
+        DevMem mid_memory = 0;
+        VkImage mid = vk_unscaled_image(s, count, &mid_memory);
+        if (!mid) return 0;
+        VkImageSubresourceLayers all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, count};
+        VkImageBlit down = {.srcSubresource = all,
+                            .srcOffsets = {{0, 0, 0}, {(i32)s->sw, (i32)s->sh, 1}},
+                            .dstSubresource = all,
+                            .dstOffsets = {{0, 0, 0}, {(i32)s->w, (i32)s->h, 1}}};
+        VkImageCopy bits = {
+            .srcSubresource = all, .dstSubresource = to, .dstOffset = {0, 0, dz}, .extent = {w, h, z ? count : 1}};
+        vk_barrier(cb, mid, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED,
+                   VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        rec_CmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, mid, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                         &down, VK_FILTER_NEAREST);
+        vk_barrier(cb, mid, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        rec_CmdCopyImage(cb, mid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                         &bits);
+        vk_defer_image(mid, mid_memory, VK_NULL_HANDLE, VK_NULL_HANDLE); /* freed once the frame is done */
+        return 1;
     }
     VkImageBlit b[2];
     b[0] = (VkImageBlit){.srcSubresource = from,
@@ -3106,6 +3132,7 @@ static void copy_layers(VkCommandBuffer cb, Surf* s, Surf* t, u32 l, u32 dst, u3
     b[1].srcSubresource.aspectMask = b[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
     rec_CmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                      regions, b, VK_FILTER_NEAREST);
+    return 1;
 }
 
 /* a texture whose layers, levels or 3D slices were drawn as render targets of their own is copied from those targets
@@ -3171,9 +3198,10 @@ static void tex_take_drawn(Surf* t) {
         if (s->f.depth != t->f.depth || s->f.stencil != t->f.stencil || s->f.bpp != t->f.bpp ||
             (t->f.depth && s->f.vk != t->f.vk) || copied_into(s, t) || s->msaa || t->msaa)
             continue;
-        /* a blit converts formats where a copy keeps the bits: a scaled target only into a texture of its own format */
+        /* a scaled target is blitted to the guest's size, into the texture or an image of its own format first
+           (copy_layers): one its format can't be blitted from stays */
         int scaled = s->sw != s->w || s->sh != s->h;
-        if (scaled && (s->f.vk != t->f.vk || !can_blit(t->f.vk))) continue;
+        if (scaled && !can_blit(s->f.vk)) continue;
         u64 off = s->gva - t->gva;
         if (t->type == VK_IMAGE_VIEW_TYPE_3D) {
             if (t->f.depth) continue;
@@ -3249,8 +3277,10 @@ static void tex_take_drawn(Surf* t) {
                     (lbd || source_size == slab) && vk_rt_drawn_fresh(s)) {
                     u64 z = ((off - lo) / slab << lbd) + (off - lo) % slab / step;
                     if (z < ld) {
-                        copy_layers(copy_begin(s, t), s, t, l, (u32)z, 1, lw, lh, 1);
-                        mark_copied(s, t);
+                        if (copy_layers(copy_begin(s, t), s, t, l, (u32)z, 1, lw, lh, 1))
+                            mark_copied(s, t);
+                        else
+                            settled = 0;
                         break;
                     }
                 }
@@ -3281,8 +3311,10 @@ static void tex_take_drawn(Surf* t) {
                 u32 count = 1;
                 if (s->layers > 1 && !s->volume && s->layer_size == stride) /* a volume's are GOB slices */
                     count = s->layers < t->layers - layer ? s->layers : t->layers - layer;
-                copy_layers(copy_begin(s, t), s, t, l, layer, count, lw, lh, 0);
-                mark_copied(s, t);
+                if (copy_layers(copy_begin(s, t), s, t, l, layer, count, lw, lh, 0))
+                    mark_copied(s, t);
+                else
+                    settled = 0;
                 break;
             }
             if (!t->bl) break;
