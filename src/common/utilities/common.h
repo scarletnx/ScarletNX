@@ -91,6 +91,9 @@ int snx_link_file(const char* src, const char* dst);
 /* link a symbolic link to target, which it names as given: nonzero when it cannot be made (on Windows, without the
    right to make one: developer mode or an administrator) */
 int snx_symlink(const char* target, const char* link);
+/* what the symbolic link at path names, as it was made (a junction's too on Windows), there or not: owned, NULL for
+   anything that is no link, or one the system does not let read */
+char* snx_link_target(const char* path);
 /* on Apple, the Vulkan driver a program's own folders carry, for SDL to load instead of the system's loader: the
    MoltenVK beside it (a game's runtime copy), the app bundle's Frameworks, or the framework in an iOS app. NULL
    elsewhere, and when its folders have none (the system's loader, which the app's own bundle finds by itself) */

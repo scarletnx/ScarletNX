@@ -4939,7 +4939,8 @@ static void locate_answer(App* app, const char* program, const char* path) {
     SDL_Event e;
     if (app->confirm.shown) {
         assert(app->confirm.ask == GUI_ASK_ERROR &&
-               strstr(app->error_line, "Locate...: the file picker could not open: "));
+               (strstr(app->error_line, "Locate...: the file picker could not open: ") ||
+                strstr(app->error_line, "Locate...: the folder picker could not open: ")));
         key(app, SDLK_ESCAPE);
     }
     assert(app->missing_picked && !app->confirm.shown);
@@ -5156,6 +5157,98 @@ static void missing_file(App* app, const char* dir) {
     free(moved);
     free(moved_dir);
     free(dump);
+}
+/* the program of the made game named name in app's games, its .ini (in its folder) holding ini: as a 3DS or a Vita
+   driver leaves one. Its folder into *folder, owned */
+static char* console_game(const App* app, const char* name, const char* ini, char** folder) {
+    char *made = made_game(app, "unused", name), *file = snx_format("%s/%s.ini", made, name);
+#ifdef _WIN32
+    char* program = snx_format("%s/%s.exe", made, name);
+#else
+    char* program = snx_path_join(made, name);
+#endif
+    assert(!snx_write_file(file, ini, strlen(ini)));
+    free(file);
+    *folder = made;
+    return program;
+}
+/* A 3DS game whose file is not there, nor its extraction or a decrypted copy: its row says so and Enter asks; Locate...
+   refuses a file that is no 3DS game, said with the file it keeps, and takes a .cia, which the .ini in its folder names
+   from then on. A Vita game made from a dumped folder that went away: Enter asks, naming where its app/ pointed;
+   Locate... takes the dumped folder where it is now, its app/ linked to it and its update beside it as patch/ */
+static void missing_consoles(App* app, const char* dir) {
+    char *cia = snx_path_join(dir, "ctr game.cia"), *moved = snx_path_join(dir, "moved ctr.cia");
+    char *notes = snx_path_join(dir, "ctr notes.txt"),
+         *ini = snx_format("[Game]\nsource=%s\nmodel=old\nsystem=3ds\n", cia);
+    char *folder, *program = console_game(app, "0004000000030000", ini, &folder), *source, *want, *file;
+    assert(!snx_write_file(notes, "notes", 5));
+    go_tab(app, GUI_TAB_GAMES);
+    focus_game(app, "0004000000030000");
+    assert(app->games_missing[listed_at(app, "0004000000030000")]);
+    key(app, SDLK_RETURN);
+    missing_box(app, cia);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    locate_answer(app, program, notes);
+    want = snx_format("%s is no 3DS game (.cia, .cci, .3ds, .cxi): 0004000000030000 keeps %s", notes, cia);
+    assert(!strcmp(app->message, want));
+    free(want);
+    assert(!snx_write_file(moved, "cia", 3));
+    focus_game(app, "0004000000030000");
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    locate_answer(app, program, moved);
+    file = snx_format("%s/0004000000030000.ini", folder);
+    source = snx_ini_value(file, "source");
+    assert(source && !strcmp(source, moved) && !app->games_missing[listed_at(app, "0004000000030000")]);
+    free(source);
+    free(file);
+    made_gone(app, folder);
+    free(program);
+#ifndef _WIN32
+    {
+        char *dumped = snx_path_join(dir, "vita dump/app/PCSE00000"),
+             *now = snx_path_join(dir, "vita now/app/PCSE00000");
+        char *update = snx_path_join(dir, "vita now/patch/PCSE00000"), *sfo = snx_path_join(now, "sce_sys");
+        char *app_link, *patch_link, *target;
+        program = console_game(app, "PCSE00000", "[Game]\nsystem=vita\n", &folder);
+        app_link = snx_path_join(folder, "app");
+        patch_link = snx_path_join(folder, "patch");
+        assert(!snx_mkdirs(dumped) && !snx_symlink(dumped, app_link) && !snx_remove_tree(dumped));
+        assert(!snx_mkdirs(sfo) && !snx_mkdirs(update));
+        fixture_file(now, "sce_sys/param.sfo", "sfo");
+        fixture_file(update, "eboot.bin", "eboot");
+        focus_game(app, "PCSE00000");
+        assert(app->games_missing[listed_at(app, "PCSE00000")]);
+        key(app, SDLK_RETURN);
+        missing_box(app, dumped);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        locate_answer(app, program, now);
+        want = snx_format("PCSE00000 plays from %s now.", now);
+        assert(!strcmp(app->message, want));
+        free(want);
+        assert((target = snx_link_target(app_link)) && !strcmp(target, now));
+        free(target);
+        assert((target = snx_link_target(patch_link)) && !strcmp(target, update));
+        free(target);
+        assert(!app->games_missing[listed_at(app, "PCSE00000")]);
+        made_gone(app, folder);
+        free(program);
+        free(patch_link);
+        free(app_link);
+        free(sfo);
+        free(update);
+        free(now);
+        free(dumped);
+    }
+#endif
+    assert(!remove(moved) && !remove(notes));
+    free(ini);
+    free(notes);
+    free(moved);
+    free(cia);
 }
 int main(int argc, char** argv) {
 #ifdef _WIN32
@@ -16104,6 +16197,7 @@ int main(int argc, char** argv) {
     dump_addons(&app, temporary);
     relist_keeps_scroll(&app, temporary);
     missing_file(&app, temporary);
+    missing_consoles(&app, temporary);
     recompile_queue(&app);
 #ifdef SNX_XDG /* the last of the test: SDL keeps the picker it found from then on */
     pickers_asked(&app, temporary, self);

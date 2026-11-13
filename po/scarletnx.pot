@@ -5343,6 +5343,21 @@ msgid "Refresh"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "%s could not be taken away (%s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s could not be linked to %s (%s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s/app cannot be named"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Locate...: no folder was picked."
 msgstr ""
 
@@ -5357,12 +5372,27 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s is no dumped Vita game (sce_sys/param.sfo): %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s is no GBA ROM (.gba): %s keeps %s"
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s is no 3DS game (.cia, .cci, .3ds, .cxi): %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s is no NSP or XCI: %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not kept: %s"
 msgstr ""
 
 #: src/gui/main.c
