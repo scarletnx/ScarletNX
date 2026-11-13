@@ -266,6 +266,9 @@ typedef struct {
        translation found (in out_mask too); and key (fragment programs), the inputs that the draw's mesh program
        writes per primitive, which the module declares PerPrimitiveEXT */
     u32 prim_mask;
+    /* a fragment program reads the primitive's number (PrimitiveId), which no mesh program here writes: a mesh draw
+       with it is skipped (vk/render.c), as the value would be undefined */
+    int reads_primitive_id;
     int mixed_sample_invariant; /* proof: guest FS values and discard decisions do not depend on an invocation */
     u32 late_depth; /* key: ordered GPU depth/stencil shadow operations after guest fragment code */
     u32 capture_outputs; /* key: capture validity location2..7; zero retains the original location1 interface */

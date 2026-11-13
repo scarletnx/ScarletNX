@@ -4779,6 +4779,9 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 /* NAK's NAK_ATTR_PRIMITIVE_ID: the primitive's number, an integer, its bits as they are. The
                    builtin needs the Geometry capability in a fragment program */
                 if (!c->primitive_id) {
+                    /* the primitive's number with no geometry stage, or after the varying pass's (which writes it);
+                       a mesh program writes none, so a mesh draw with this program is refused at its link */
+                    c->si->reads_primitive_id = 1;
                     c->primitive_id = spv_emit_builtin_input_u32(&c->e, c->t_u32, SPV_BUILT_IN_PRIMITIVE_ID);
                     spv_emit_flat(&c->e, c->primitive_id);
                     spv_emit_capability(&c->e, SPV_CAPABILITY_GEOMETRY);

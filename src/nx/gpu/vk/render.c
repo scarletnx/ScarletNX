@@ -3317,6 +3317,13 @@ static int mesh_shaders(const DsState* ds, DrawShaders* o) {
     o->fs0 = (p->on >> 5 & 1)
                  ? vk_shader_get(ds, p->code[5], 0, ST_FS, 0, 0, 0, 0, o->prim, 0, 0, 0, 0, NULL, NULL, 0, 0, 0, 0)
                  : NULL;
+    if (o->fs0 && !o->fs0->failed && o->fs0->si.reads_primitive_id) {
+        /* the mesh translation writes no PrimitiveId, which the fragment program would read undefined */
+        LOG_LIMIT(4, "vulkan: a mesh draw whose fragment program at %llx reads the primitive's number, which the mesh "
+                     "program doesn't write (skipped)\n",
+                  (unsigned long long)p->code[5]);
+        return 0;
+    }
     rt_int_targets(&ds->tgt, &o->rt_int, &o->rt_sint);
     return 1;
 }
