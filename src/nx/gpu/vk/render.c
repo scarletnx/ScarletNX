@@ -5355,10 +5355,20 @@ retry:
         } else
             programmable_pass = render_begin_empty_area(bound, rt[0]->layers);
     }
+    /* Strict for a save draw (predraw_run), and for a feedback draw that the two draws could not take and samples in
+       place: each reads the targets after every earlier draw of the pass wrote them. Between two of the game's
+       barriers the console's draws all read the targets as they were at the barrier (feedback loops, above), and the
+       interlock's capture gives them that (vk/predraw.c). Here a draw read in place what the draws just before it
+       wrote or had not written yet: crossing rock props that blend into what lies under them read each other in one
+       frame and the cliff in the next, in patches. Ordered, each reads the draws before it, as a copy of the target
+       before each draw gives too, the same every frame. Only with dynamicRenderingLocalRead: without it the order
+       would begin the pass again at each such draw */
+    int strict_feedback = g_predraw.phase == 1 || (!g_predraw.phase && fb && g_vk.feedback_mode == VK_FEEDBACK_PREDRAW &&
+                                                   g_vk.has_local_read);
     if (programmable_blend ? !programmable_pass
         : !n && !zt ? !render_begin_empty()
                     : !render_begin(rt, zt, n, zt_ro, ds->tgt.srgb_write, fb | predraw_pass_slots(rt, n), bound) ||
-                          !feedback_order(fb, writes, 0)) {
+                          !feedback_order(fb, writes, strict_feedback)) {
         draw_images_discard(&images);
         if (late_depth) vk_depth_shadow_cancel();
         return;
