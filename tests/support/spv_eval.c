@@ -40,6 +40,10 @@ typedef struct {
     Block* blocks;
     uint32_t nblocks, room;
     SpvEvalEnv* env;
+    /* where run() goes on: the instruction, the labels (for OpPhi), the steps taken, the calls that run (where each
+       returns to, and its labels) */
+    uint32_t pc, prev_label, cur_label, steps, back[16][3], depth;
+    int lockstep; /* one of spv_eval_subgroup's lanes: run() stops at a subgroup operation or a barrier */
 } Ev;
 
 static uint32_t type_words(Ev* e, uint32_t t);
@@ -88,6 +92,23 @@ static int is64(Ev* e, uint32_t t) {
     return (e->ids[s].op == 21 || e->ids[s].op == 22) && e->ids[s].a == 64;
 }
 static int is_float(Ev* e, uint32_t t) { return e->ids[scalar_of(e, t)].op == 22; }
+static int is16(Ev* e, uint32_t t) {
+    uint32_t s = scalar_of(e, t);
+    return (e->ids[s].op == 21 || e->ids[s].op == 22) && e->ids[s].a == 16;
+}
+
+/* an f16's value, subnormals, infinities and NaNs too */
+static float half_f(uint32_t h) {
+    uint32_t sign = (h >> 15) & 1, exp = (h >> 10) & 31, man = h & 0x3ffu;
+    float f;
+    if (exp == 31) {
+        uint32_t bits = sign << 31 | 0x7f800000u | man << 13;
+        memcpy(&f, &bits, 4);
+        return f;
+    }
+    f = exp ? ldexpf((float)(man | 0x400u), (int)exp - 25) : ldexpf((float)man, -24);
+    return sign ? -f : f;
+}
 
 static float f32(uint64_t v) {
     uint32_t u = (uint32_t)v;
@@ -184,16 +205,8 @@ static const char* ext_inst(Ev* e, uint32_t t, uint32_t fn, const uint32_t* args
         return NULL;
     }
     if (fn == 62) { /* UnpackHalf2x16: the low half into x, the high one into y */
-        for (uint32_t k = 0; k < 2; k++) {
-            uint32_t h = (uint32_t)(e->ids[args[0]].v.c[0] >> (16 * k)) & 0xffffu;
-            uint32_t sign = (h >> 15) << 31, exp = (h >> 10) & 31, man = h & 0x3ffu;
-            if (exp == 31)
-                r->c[k] = sign | 0x7f800000u | man << 13;
-            else {
-                float f = exp ? ldexpf((float)(man | 0x400u), (int)exp - 25) : ldexpf((float)man, -24);
-                r->c[k] = u_f32(sign ? -f : f);
-            }
-        }
+        for (uint32_t k = 0; k < 2; k++)
+            r->c[k] = u_f32(half_f((uint32_t)(e->ids[args[0]].v.c[0] >> (16 * k)) & 0xffffu));
         return NULL;
     }
     for (uint32_t k = 0; k < n; k++) {
@@ -318,23 +331,27 @@ static uint64_t binary(Ev* e, uint32_t op, uint32_t t, uint32_t ta, uint64_t x, 
     return 0;
 }
 
-static const char* run(Ev* e, uint32_t entry_at) {
-    uint32_t pc = entry_at, prev_label = 0, cur_label = 0, steps = 0,
-             max = e->env->steps_max ? e->env->steps_max : 1000000u;
-    /* the calls that run: where each returns to, and its labels (for OpPhi) */
-    uint32_t back[16][3], depth = 0;
+/* what run() returns where a lane of spv_eval_subgroup waits for the others: at a subgroup operation (Elect to
+   QuadSwap) or a barrier, e->pc on it */
+static const char k_wait[] = "a subgroup operation";
+static int waits(uint32_t op) { return (op >= 333 && op <= 366) || op == 224 || op == 4431; }
+
+static const char* run(Ev* e) {
+    uint32_t max = e->env->steps_max ? e->env->steps_max : 1000000u;
     for (;;) {
+        uint32_t pc = e->pc;
         if (pc >= e->count || !(e->w[pc] >> 16)) return "ran past the module";
-        if (++steps > max) return "too many steps";
+        if (++e->steps > max) return "too many steps";
         const uint32_t* in = e->w + pc;
         uint32_t op = in[0] & 0xffff, len = in[0] >> 16;
         uint32_t next = pc + len;
         Id* r = len > 2 && in[2] < e->bound ? &e->ids[in[2]] : NULL;
         uint32_t t = len > 1 ? in[1] : 0;
+        if (e->lockstep && waits(op)) return k_wait;
         switch (op) {
             case 248: /* OpLabel */
-                prev_label = cur_label;
-                cur_label = in[1];
+                e->prev_label = e->cur_label;
+                e->cur_label = in[1];
                 break;
             case 59: { /* OpVariable in the function: its memory each time it is reached (once here) */
                 uint32_t pointee = e->ids[t].a, n = type_words(e, pointee);
@@ -500,6 +517,10 @@ static const char* run(Ev* e, uint32_t entry_at) {
                     r->v = (Val){{(v.c[0] & 0xffffffffu) | v.c[1] << 32}};
                 else if (is64(e, ts) && components(e, t) == 2)
                     r->v = (Val){{v.c[0] & 0xffffffffu, v.c[0] >> 32}};
+                else if (components(e, ts) == 1 && !is64(e, ts) && components(e, t) == 2 && is16(e, t))
+                    r->v = (Val){{v.c[0] & 0xffffu, (v.c[0] >> 16) & 0xffffu}};
+                else if (components(e, ts) == 2 && is16(e, ts) && components(e, t) == 1 && !is64(e, t))
+                    r->v = (Val){{(v.c[0] & 0xffffu) | (v.c[1] & 0xffffu) << 16}};
                 else
                     return "bitcast";
                 r->kind = K_VALUE;
@@ -578,6 +599,32 @@ static const char* run(Ev* e, uint32_t entry_at) {
                 r->v = v;
                 break;
             }
+            case 148: { /* OpDot of f32 vectors: each product rounded, then their sum in order */
+                uint32_t ta = e->ids[in[3]].type;
+                if (!is_float(e, ta) || is64(e, ta) || is16(e, ta)) return "a dot product of other than f32";
+                float s = 0.0f;
+                for (uint32_t k = 0; k < components(e, ta); k++) {
+                    float p = f32(e->ids[in[3]].v.c[k]) * f32(e->ids[in[4]].v.c[k]);
+                    s = k ? s + p : p;
+                }
+                r->kind = K_VALUE;
+                r->type = t;
+                r->v = (Val){{u_f32(s)}};
+                break;
+            }
+            case 6916: { /* OpFDot2MixAcc32VALVE: an f32 accumulator and two products of f16 pairs, as
+                            fma(a1, b1, fma(a0, b0, acc)): a product of two f16 is exact in f32, so each sum rounds
+                            once. SPV_VALVE_mixed_float_dot_product leaves the rounding to the device; this is the
+                            evaluator's */
+                const Val *a = &e->ids[in[3]].v, *b = &e->ids[in[4]].v;
+                float acc = f32(e->ids[in[5]].v.c[0]);
+                acc = fmaf(half_f((uint32_t)a->c[0] & 0xffffu), half_f((uint32_t)b->c[0] & 0xffffu), acc);
+                acc = fmaf(half_f((uint32_t)a->c[1] & 0xffffu), half_f((uint32_t)b->c[1] & 0xffffu), acc);
+                r->kind = K_VALUE;
+                r->type = t;
+                r->v = (Val){{u_f32(acc)}};
+                break;
+            }
             case 169: { /* OpSelect */
                 Val v = {{0}};
                 for (uint32_t k = 0; k < components(e, t); k++) {
@@ -619,7 +666,7 @@ static const char* run(Ev* e, uint32_t entry_at) {
                 return "extended arithmetic";
             case 245: { /* OpPhi */
                 for (uint32_t k = 3; k + 1 < len; k += 2)
-                    if (in[k + 1] == prev_label) {
+                    if (in[k + 1] == e->prev_label) {
                         r->kind = K_VALUE;
                         r->type = t;
                         r->v = e->ids[in[k]].v;
@@ -641,16 +688,16 @@ static const char* run(Ev* e, uint32_t entry_at) {
             case 252:
             case 4416: e->env->killed = 1; return NULL;
             case 253: /* OpReturn */
-                if (!depth) return NULL;
-                depth--;
-                next = back[depth][0], cur_label = back[depth][1], prev_label = back[depth][2];
+                if (!e->depth) return NULL;
+                e->depth--;
+                next = e->back[e->depth][0], e->cur_label = e->back[e->depth][1], e->prev_label = e->back[e->depth][2];
                 break;
             case 57: /* OpFunctionCall of a function without parameters */
                 if (len != 4) return "a call with arguments";
-                if (depth == 16) return "calls too deep";
+                if (e->depth == 16) return "calls too deep";
                 if (!e->ids[in[3]].at) return "a call of no function";
-                back[depth][0] = next, back[depth][1] = cur_label, back[depth][2] = prev_label;
-                depth++;
+                e->back[e->depth][0] = next, e->back[e->depth][1] = e->cur_label, e->back[e->depth][2] = e->prev_label;
+                e->depth++;
                 next = e->ids[in[3]].at;
                 break;
             case 224: /* OpControlBarrier, OpMemoryBarrier: the invocation is alone */
@@ -682,6 +729,8 @@ static const char* run(Ev* e, uint32_t entry_at) {
             case 338: /* BroadcastFirst */
             case 345: /* Shuffle: the invocation is alone, so every lane's value is its own */
             case 346:
+            case 365: /* QuadBroadcast */
+            case 366: /* QuadSwap */
                 if (op == 345) e->env->shuffle_id = (uint32_t)e->ids[in[5]].v.c[0];
                 r->kind = K_VALUE;
                 r->type = t;
@@ -766,23 +815,20 @@ static const char* run(Ev* e, uint32_t entry_at) {
                 }
                 return "an opcode";
         }
-        pc = next;
+        e->pc = next;
     }
 }
 
-const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
-    if (count < 5 || w[0] != 0x07230203u) return "not SPIR-V";
-    Ev* e = calloc(1, sizeof *e);
-    if (!e) return "out of memory";
+/* An invocation's ids and memory, made from the module's declarations, with run() to start at the entry point; NULL,
+   else why it can't run. first: the subgroup's lane 0, whose Workgroup variables are the others' too (NULL alone).
+   ev_close undoes it either way */
+static const char* ev_open(Ev* e, const uint32_t* w, size_t count, SpvEvalEnv* env, const Ev* first) {
     e->w = w;
     e->count = count;
     e->bound = w[3];
     e->env = env;
     e->ids = calloc(e->bound + 1, sizeof *e->ids);
-    if (!e->ids) {
-        free(e);
-        return "out of memory";
-    }
+    if (!e->ids) return "out of memory";
     new_block(e, NULL, 0, 0); /* block 0: none */
     const char* why = NULL;
     uint32_t entry = 0, entry_at = 0;
@@ -848,6 +894,9 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
             uint32_t k = v->binding - 1;
             int bound = k < SPV_EVAL_BINDINGS;
             b = new_block(e, bound ? env->ubo[k] : NULL, bound ? env->ubo_words[k] : 0, 0);
+        } else if (sc == 4 && first) { /* Workgroup: lane 0's */
+            const Block* own = &first->blocks[first->ids[in[2]].block];
+            b = new_block(e, own->words, own->n, 0);
         } else {
             uint32_t* m = calloc(n ? n : 1, 4);
             if (!m) {
@@ -871,7 +920,12 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
         v->v.c[0] = (uint64_t)b << 32;
     }
     if (!why && !entry_at) why = "no entry point";
-    if (!why) why = run(e, entry_at);
+    e->pc = entry_at;
+    return why;
+}
+/* what the invocation leaves (its outputs, task payload and shared memory) into its env, and its memory freed */
+static void ev_close(Ev* e) {
+    SpvEvalEnv* env = e->env;
     /* the outputs, by location, FragDepth (BuiltIn 22) and Position (BuiltIn 0) */
     for (uint32_t id = 0; id < e->bound; id++) {
         Id* v = &e->ids[id];
@@ -907,6 +961,112 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
         if (e->blocks[b].owned) free(e->blocks[b].words);
     free(e->blocks);
     free(e->ids);
+}
+
+const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
+    if (count < 5 || w[0] != 0x07230203u) return "not SPIR-V";
+    Ev* e = calloc(1, sizeof *e);
+    if (!e) return "out of memory";
+    const char* why = ev_open(e, w, count, env, NULL);
+    if (!why) why = run(e);
+    ev_close(e);
+    free(e);
+    return why;
+}
+
+/* the subgroup operation (or barrier) every lane waits at: each one's result from the lanes' operands, as
+   invocation l of the subgroup is lane l, and every lane past it. A read of a lane outside the subgroup, which
+   Vulkan leaves undefined, gives 0 */
+static const char* exchange(Ev* e, uint32_t n) {
+    const uint32_t* in = e[0].w + e[0].pc;
+    uint32_t op = in[0] & 0xffff, len = in[0] >> 16;
+    if (op != 224) {
+        if (len < 5 || e[0].ids[in[3]].v.c[0] != 3) return "a group operation outside the subgroup";
+        Val got[64];
+        for (uint32_t l = 0; l < n; l++) {
+            uint32_t arg = len > 5 ? (uint32_t)e[l].ids[in[5]].v.c[0] : 0, from = l;
+            int pick = 1;
+            Val v = {{0}};
+            switch (op) {
+                case 333: v.c[0] = l == 0, pick = 0; break; /* Elect: the first lane, all being active */
+                case 334:                                   /* All, Any, AllEqual */
+                case 335:
+                case 336: {
+                    int all = 1, any = 0, equal = 1;
+                    for (uint32_t k = 0; k < n; k++) {
+                        all &= e[k].ids[in[4]].v.c[0] != 0;
+                        any |= e[k].ids[in[4]].v.c[0] != 0;
+                        equal &= !memcmp(&e[k].ids[in[4]].v, &e[0].ids[in[4]].v, sizeof(Val));
+                    }
+                    v.c[0] = (uint64_t)(op == 334 ? all : op == 335 ? any : equal), pick = 0;
+                    break;
+                }
+                case 339: /* Ballot: lanes 32k to 32k + 31 in component k */
+                    for (uint32_t k = 0; k < n; k++)
+                        if (e[k].ids[in[4]].v.c[0]) v.c[k >> 5] |= 1ull << (k & 31);
+                    pick = 0;
+                    break;
+                case 337: /* Broadcast, Shuffle */
+                case 345: from = arg; break;
+                case 338: from = 0; break;                      /* BroadcastFirst */
+                case 346: from = l ^ arg; break;                /* ShuffleXor */
+                case 347: from = l - arg; break;                /* ShuffleUp */
+                case 348: from = l + arg; break;                /* ShuffleDown */
+                case 365: from = (l & ~3u) | (arg & 3u); break; /* QuadBroadcast */
+                case 366: from = l ^ (arg + 1); break;          /* QuadSwap: 0 horizontal, 1 vertical, 2 diagonal */
+                default: return "a subgroup operation the evaluator doesn't take";
+            }
+            if (pick && from < n) v = e[from].ids[in[4]].v;
+            got[l] = v;
+        }
+        for (uint32_t l = 0; l < n; l++) {
+            Id* r = &e[l].ids[in[2]];
+            r->kind = K_VALUE;
+            r->type = in[1];
+            r->v = got[l];
+        }
+    }
+    for (uint32_t l = 0; l < n; l++) e[l].pc += len;
+    return NULL;
+}
+
+const char* spv_eval_subgroup(const uint32_t* w, size_t count, SpvEvalEnv* envs, uint32_t lanes) {
+    if (!lanes || lanes > 64) return "a subgroup of other than 1 to 64 lanes";
+    if (count < 5 || w[0] != 0x07230203u) return "not SPIR-V";
+    Ev* e = calloc(lanes, sizeof *e);
+    if (!e) return "out of memory";
+    const char* why = NULL;
+    uint32_t opened = 0;
+    while (opened < lanes && !why) {
+        why = ev_open(&e[opened], w, count, &envs[opened], opened ? &e[0] : NULL);
+        e[opened++].lockstep = 1;
+    }
+    int ended[64] = {0};
+    while (!why) {
+        uint32_t waiting = 0, gone = 0;
+        for (uint32_t l = 0; l < lanes && !why; l++) {
+            if (ended[l]) {
+                gone++;
+                continue;
+            }
+            const char* stop = run(&e[l]);
+            if (stop == k_wait)
+                waiting++;
+            else {
+                ended[l] = 1, gone++;
+                why = stop;
+            }
+        }
+        if (why || !waiting) break;
+        if (gone) {
+            why = "a lane returned while the others wait at a subgroup operation";
+            break;
+        }
+        for (uint32_t l = 1; l < lanes && !why; l++)
+            if (e[l].pc != e[0].pc) why = "the lanes wait at different subgroup operations";
+        if (!why) why = exchange(e, lanes);
+    }
+    while (opened) ev_close(&e[--opened]); /* lane 0 last: its Workgroup memory is the others' */
     free(e);
     return why;
 }

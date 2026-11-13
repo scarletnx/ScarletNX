@@ -3,9 +3,10 @@
 /* A small SPIR-V evaluator for the tests of the shader translators: it runs one invocation of a module's entry
    point on the CPU, with the built-ins, the uniform buffers, the storage buffers and the texels of the sampled images
    that the test gives, and keeps what the invocation stores to its outputs and buffers. It takes the instructions
-   that the translators emit for their small test programs, and refuses the others by name. Subgroup operations see
-   one invocation alone, which the test places at a lane of its choice, and a barrier does nothing. Calls take no
-   arguments. Floats are the host's, with round to nearest. */
+   that the translators emit for their small test programs, and refuses the others by name. Alone (spv_eval), its
+   subgroup operations see one invocation, which the test places at a lane of its choice, and a barrier does nothing;
+   spv_eval_subgroup runs the lanes of a subgroup together. Calls take no arguments. Floats are the host's, with round
+   to nearest. */
 #ifndef SNX_TESTS_SPV_EVAL_H
 #define SNX_TESTS_SPV_EVAL_H
 #include <stddef.h>
@@ -47,4 +48,10 @@ typedef struct {
 } SpvEvalEnv;
 /* Runs the module's first entry point: NULL when it returned, else why it stopped (a static string) */
 const char* spv_eval(const uint32_t* words, size_t count, SpvEvalEnv* env);
+/* Runs it on lanes invocations together (1 to 64), envs[l] being lane l of one subgroup that is the whole workgroup:
+   at each subgroup operation and barrier every lane waits for the others, the operation takes their values, and the
+   Workgroup variables are one memory for all of them (each env's shared[] keeps it). Every lane must reach each of
+   those, as a subgroup in uniform control flow does. NULL when they all returned, else why the first that stopped
+   did, or why they couldn't go on together */
+const char* spv_eval_subgroup(const uint32_t* words, size_t count, SpvEvalEnv* envs, uint32_t lanes);
 #endif
