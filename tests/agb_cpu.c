@@ -685,6 +685,33 @@ int main(void) {
         CHECK((cpu.arm.cpsr & 0x3F) == 0x3F && cpu.arm.r[15] == 0x0300090C);
     }
     {
+        /* ldm sp!, {r0-r12, pc}^ from an interrupt handler, an exception return: the IRQ mode's SP takes the written
+           back base and the CPSR the SPSR after it, so system mode comes back with its own stack, as mGBA's LDM has it
+           (a game's handler returns so to the code it interrupted) */
+        agb_write32(&board, 0x03000E00, 0xE8FD9FFF); /* ldm sp!, {r0-r12, pc}^ */
+        agb_write32(&board, 0x03000E40, 0xEAFFFFFE); /* b . */
+        for (uint32_t i = 0; i < 13; ++i) agb_write32(&board, 0x03007E00 + i * 4, 0x100 + i);
+        agb_write32(&board, 0x03007E00 + 13 * 4, 0x03000E40);
+        cpu.arm.r[13] = 0x03007E00;
+        cpu.banked_r13[0] = 0x03006F00; /* system mode's */
+        cpu.spsr[2] = 0x1F;
+        cpu.arm.r[15] = 0x03000E00;
+        cpu.arm.cpsr = 0x92;
+        cpu.over = 0;
+        board.cpu_halted = 0;
+        board.held_cycles = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 200, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        if ((cpu.arm.cpsr & 0x1F) != 0x1F || cpu.arm.r[13] != 0x03006F00 || cpu.banked_r13[2] != 0x03007E38 ||
+            cpu.arm.r[15] != 0x03000E40 || cpu.arm.r[12] != 0x10C) {
+            fprintf(
+                stderr,
+                "agb_cpu: after the exception return the mode is 0x%02X, SP 0x%08X, the IRQ SP 0x%08X, PC 0x%08X and "
+                "r12 0x%X, not 0x1F, 0x03006F00, 0x03007E38, 0x03000E40 and 0x10C\n",
+                cpu.arm.cpsr & 0x1F, cpu.arm.r[13], cpu.banked_r13[2], cpu.arm.r[15], cpu.arm.r[12]);
+            goto done;
+        }
+    }
+    {
         /* the cache is the ROM's it was built from: another one's, named the same, recompiles and says why */
         AgbRecomp other;
         uint8_t* changed = make_rom(&size);
