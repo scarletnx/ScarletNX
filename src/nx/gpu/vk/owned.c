@@ -363,9 +363,6 @@ static void own_wait(u64 writer) {
     }
     if (writer > done) vk_wait_submit(writer); /* handed to the recording thread: it submits it */
 }
-/* own.c's, under vk_lock before a landing looks for its entries: the storage images the guest released, which the
-   release left on the GPU, published over those pages first */
-static void own_claim(u64 lo, u64 hi) { vk_gfx_image_cpu_need(lo, hi - lo); }
 /* a landing's bytes: the write tracking takes them as they were left, and the GPU mirror lets go of its copy's
    shadow */
 static void own_landed(u64 addr, u64 size, const u8* bytes) {
@@ -385,8 +382,7 @@ int vk_own_init(void) {
                   .landed = own_landed,
                   .writer = own_writer,
                   .wait = own_wait,
-                  .resolve = vk_rt_watch_hit,
-                  .claim = own_claim};
+                  .resolve = vk_rt_watch_hit};
     g_owned.traps = !own_init(&h);
     return g_owned.traps ? 0 : -1;
 }
