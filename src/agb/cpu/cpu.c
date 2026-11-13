@@ -128,9 +128,13 @@ static uint32_t bus(SnxArmCPU* arm, uint32_t address, uint32_t size_write, uint3
             agb_write16(board, address, (uint16_t)value);
         else
             agb_write32(board, address, value);
-        /* a DMA the write started holds the bus: the block ends after this instruction, and the next one runs once
-           the CPU waited it out (agb_cpu_run), as the console's does */
+        /* a DMA the write started takes the bus 2 cycles after it, at the CPU's first access from then on (timing.h);
+           the block ends after this instruction */
         if (board->held_cycles == held) return 0;
+        agb_bus_dma(&cpu->replay.bus, board->held_cycles - held,
+                    board->held_cartridge > held ? board->held_cartridge - held : 0);
+        board->held_cycles = held;
+        board->held_cartridge = 0;
         cpu->yield_end = ((arm->r[15] - cpu->block_pc) >> (cpu->block_thumb ? 1 : 2)) + 1;
         return 1;
     }
@@ -735,6 +739,8 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
         if (board->held_cycles) {
             uint32_t room = cycles - sink.elapsed, held = board->held_cycles < room ? board->held_cycles : room;
             board->held_cycles -= held;
+            agb_bus_waited(&cpu->replay.bus, board->io[0x204 >> 1] >> 14 & 1, held, board->held_cartridge);
+            board->held_cartridge = 0;
             advance(cpu, &sink, held);
             continue;
         }

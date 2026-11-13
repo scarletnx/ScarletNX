@@ -431,31 +431,38 @@ int main(void) {
         }
     }
     {
-        /* a DMA started by a store holds the bus before the next instruction runs, inside a block too: the block ends
-           after the store, so the VCOUNT read after it sees the line the copy ended on, 0x2000 words from EWRAM to
-           EWRAM, 12 cycles each and 2: 98306 cycles, 79 or 80 lines past the one read before it */
+        /* a DMA started by a store takes the bus 2 cycles after it, at the CPU's first access from then on, inside a
+           block too: an ldrh of VCOUNT right after the store reads it before the DMA (its fetch and its access start
+           0 and 1 cycles on, as mGBA's suite finds on the console), and the next one after it, the line the copy
+           ended on, 0x2000 words from EWRAM to EWRAM, 12 cycles each and 2: 98306 cycles, 79 or 80 lines on */
         static const uint32_t code[] = {
-            0xE59F0020, /* ldr r0, [pc, #32]: DMA3SAD */
-            0xE59F1020, /* ldr r1, [pc, #32]: the source */
+            0xE59F0024, /* ldr r0, [pc, #36]: DMA3SAD */
+            0xE59F1024, /* ldr r1, [pc, #36]: the source */
             0xE5801000, /* str r1, [r0] */
-            0xE59F101C, /* ldr r1, [pc, #28]: the destination */
+            0xE59F1020, /* ldr r1, [pc, #32]: the destination */
             0xE5801004, /* str r1, [r0, #4] */
             0xE1504CBE, /* ldrh r4, [r0, #-0xCE]: VCOUNT */
-            0xE59F1014, /* ldr r1, [pc, #20]: on, now, words, 0x2000 of them */
+            0xE59F1018, /* ldr r1, [pc, #24]: on, now, words, 0x2000 of them */
             0xE5801008, /* str r1, [r0, #8] */
-            0xE1505CBE, /* ldrh r5, [r0, #-0xCE]: VCOUNT */
+            0xE1506CBE, /* ldrh r6, [r0, #-0xCE]: VCOUNT, before the DMA */
+            0xE1505CBE, /* ldrh r5, [r0, #-0xCE]: VCOUNT, after it */
             0xEAFFFFFE, /* b . */
             0x040000D4, 0x02010000, 0x02020000, 0x84002000,
         };
         for (uint32_t i = 0; i < sizeof code / sizeof code[0]; ++i) agb_write32(&board, 0x03000D00 + i * 4, code[i]);
         agb_write32(&board, 0x02017FFC, 0x5A5AA5A5); /* the last word copied */
-        cpu.arm.r[4] = cpu.arm.r[5] = 0xFFFF;
+        cpu.arm.r[4] = cpu.arm.r[5] = cpu.arm.r[6] = 0xFFFF;
         cpu.arm.r[15] = 0x03000D00;
         cpu.arm.cpsr = 0x9F;
         cpu.over = 0;
         board.cpu_halted = 0;
         board.held_cycles = 0;
         CHECK(!agb_cpu_run(&board, &cpu, &recomp, 120000, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        if ((cpu.arm.r[6] + AGB_FRAME_LINES - cpu.arm.r[4]) % AGB_FRAME_LINES > 1) {
+            fprintf(stderr, "agb_cpu: VCOUNT %u before a DMA's start and %u right after it, not the same line\n",
+                    cpu.arm.r[4], cpu.arm.r[6]);
+            goto done;
+        }
         CHECK(agb_read32(&board, 0x02027FFC) == 0x5A5AA5A5);
         if ((cpu.arm.r[5] + AGB_FRAME_LINES - cpu.arm.r[4]) % AGB_FRAME_LINES < 79 ||
             (cpu.arm.r[5] + AGB_FRAME_LINES - cpu.arm.r[4]) % AGB_FRAME_LINES > 80) {
