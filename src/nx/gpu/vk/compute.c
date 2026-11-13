@@ -117,7 +117,7 @@ u64 g_vk_cs_wait_value;
 static u64 g_cval;
 static int g_ar_gfx;
 static u64 g_org_cap;
-u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns;
+u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns, g_cs_standins;
 /* A program's window: 80 zero bytes in place of a header, then the bytes of its code that cs_read_code reads, and zeros
    after them. It takes as much code as a graphics program's window (pipeline.c's SH_CODE): an Ounce game has a
    compute program of 256,160 bytes. In a window of 64 KiB that program had no end, and each of its dispatches was
@@ -1187,6 +1187,56 @@ static void mirror_need_others(u64 gva, u64 len) {
     vk_release_need(gva, len);
 }
 
+/* ------------------------------------------------------------ the tensor core's networks */
+/* Whether the program at code, bytes of it, multiplies with the tensor core's matrices (sm86_uses_hmma), kept by the
+   program's address: a program's code is the same at every one of its dispatches, and reading it replies */
+#define TENSOR_MEMO 64
+/* v: 0 not a network's pass, 1 it is, 2 it is and its translation has no storage image, so nothing it writes is
+   reached by anything of the game's and the dispatch can go before a binding of it is even asked for. The last is
+   only known once the program has been translated, which the first dispatch of it does: one dispatch a program pays
+   for it, and the tens of them a frame that follow pay for a lookup */
+typedef struct {
+    u64 code;
+    u32 bytes;
+    int v;
+} TensorMemo;
+static TensorMemo g_tensor[TENSOR_MEMO];
+static u32 g_tensor_next;
+static TensorMemo* tensor_find(u64 code, u32 bytes) {
+    if (!code || !bytes) return NULL;
+    for (u32 i = 0; i < TENSOR_MEMO; i++)
+        if (g_tensor[i].code == code && g_tensor[i].bytes == bytes) return &g_tensor[i];
+    return NULL;
+}
+static int cs_tensor_program(u64 code, u32 bytes) {
+    TensorMemo* m = tensor_find(code, bytes);
+    if (m) return m->v != 0;
+    u8* buf = malloc(bytes);
+    if (!buf) return 0;
+    gmem_read_code(code, buf, bytes);
+    int v = sm86_uses_hmma(buf, bytes);
+    free(buf);
+    g_tensor[g_tensor_next] = (TensorMemo){code, bytes, v};
+    g_tensor_next = (g_tensor_next + 1) % TENSOR_MEMO;
+    return v;
+}
+/* whether a dispatch of this program can go at once: it is a network's pass and its translation saves no image */
+static int cs_tensor_skippable(u64 code, u32 bytes) {
+    TensorMemo* m = tensor_find(code, bytes);
+    return m && m->v == 2;
+}
+static void cs_tensor_mark_skippable(u64 code, u32 bytes) {
+    TensorMemo* m = tensor_find(code, bytes);
+    if (m) m->v = 2;
+}
+/* The largest of the images a program stores to, or NULL: a network's pass saves its picture in one */
+static Surf* cs_largest_image(Surf* const* images, int n) {
+    Surf* out = NULL;
+    for (int i = 0; i < n; i++)
+        if (images[i] && (!out || (u64)images[i]->w * images[i]->h > (u64)out->w * out->h)) out = images[i];
+    return out;
+}
+
 void vk_dispatch(const DispatchState* d) {
     u32 gx = d->grid[0], gy = d->grid[1], gz = d->grid[2], lx = d->block[0], ly = d->block[1], lz = d->block[2],
         shm = d->shared;
@@ -1206,6 +1256,15 @@ void vk_dispatch(const DispatchState* d) {
         LOG_LIMIT(1, "vulkan: a dispatch of %ux%ux%u blocks of %ux%ux%u is past this GPU's limits (skipped)\n", gx, gy,
                   gz, lx, ly, lz);
         g_cs_skips[CS_SKIP_LIMITS]++;
+        return;
+    }
+    /* A network's pass that saves no image (setting tensor_standin), known from its code alone once it has been
+       translated: it goes here, before its constant buffers are read and its code checked. A title's upscaler is tens
+       of these a frame, and what each still cost there was 4 ms of the frame */
+    if (g_settings.tensor_standin && cs_tensor_skippable(d->code, d->code_bytes)) {
+        g_cs_standins++;
+        g_vk_dispatches++;
+        LOG_LIMIT(1, "vulkan: a network's pass goes at once: it saves no image (setting tensor_standin)\n");
         return;
     }
     cs_init();
@@ -1299,6 +1358,20 @@ void vk_dispatch(const DispatchState* d) {
         fe->lz = lz;
         fe->shm = shm;
         fe->p = p == &g_cs_alloc_failed ? NULL : p;
+    }
+    /* A network's pass that saves no image and writes no buffer of the game's (setting tensor_standin): it only makes
+       the network's own pictures, which nothing of the game's sees, so the pass is left out before a binding of it is
+       resolved. Its descriptors, its textures' headers and its buffer's copies are most of a pass's cost, and a title's
+       upscaler is 61 of them a frame. A pass that does save somewhere runs as it is, and a network of images gets its
+       picture from tensor.c as before */
+    if (g_settings.tensor_standin && !p->failed && p->si.nimg == 0 && cs_tensor_program(d->code, d->code_bytes)) {
+        cs_tensor_mark_skippable(d->code, d->code_bytes);
+        g_cs_standins++;
+        g_vk_dispatches++;
+        LOG_LIMIT(8, "vulkan: program %016llx multiplies with the tensor core's matrices and saves no image: left out "
+                     "before its bindings (setting tensor_standin)\n",
+                  (unsigned long long)p->key);
+        return;
     }
     /* Stores default to unsigned for bindless images and float for bound ones. Descriptors of another class,
        signed stores, and integer sampled textures select a variant keyed on their numeric types. */
@@ -1561,6 +1634,7 @@ rebind:
     VkDescriptorBufferInfo bi[80];
     VkDescriptorImageInfo ii[SH_MAXTEX + 8];
     Surf* images[8] = {0};
+    Surf* biggest_tex = NULL; /* the largest image the program samples: a network's pass's picture, for its stand-in */
     u8* originals[8] = {0};
     VkBufferView bufimg_view[8] = {0};
     VkBuffer bufimg_buf[8] = {0};
@@ -1854,6 +1928,7 @@ rebind:
                 v = vk_null_view(want, st->shadow ? 3 : num, ms); /* a compare's: the farthest depth, as a draw's */
                 sampled_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
+            if (v && (!biggest_tex || (u64)t->w * t->h > (u64)biggest_tex->w * biggest_tex->h)) biggest_tex = t;
             VkSampler smp =
                 vk_tex_bind_sampler(tsc, tic, st, num, sampled, want, (int)(p->si.tex_minmax_mask >> i & 1));
             if (!v || !smp) { /* before any output is recorded: nothing of this dispatch lands */
@@ -2116,11 +2191,33 @@ rebind:
     }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk.cs_playout, 0, 1, &set, 0, NULL);
-    if (d->indirect) {
-        rec_CmdDispatchIndirectKey(cb, grid_buf, grid_off, p->key, pa);
-    } else {
-        vk_ck(cb, VK_CK_DISPATCH, gx, gy, gz, 0);
-        rec_CmdDispatchKey(cb, gx, gy, gz, p->key, pa);
+    /* A network's pass, stood in for (setting tensor_standin): the picture the network sampled, filtered into the
+       image this pass would save, and no dispatch at all for the passes whose arithmetic only makes more of the
+       network's own pictures. Its ten passes of a frame are 40 ms of a title's */
+    int skip = 0;
+    if (g_settings.tensor_standin && !mir && cs_tensor_program(d->code, d->code_bytes)) {
+        Surf* out = cs_largest_image(images, p->si.nimg);
+        if (biggest_tex) vk_tensor_remember(biggest_tex); /* the pass that samples the picture carries it on */
+        int stood = out ? vk_tensor_standin(cb, out) : 0;
+        skip = 1;
+        g_cs_standins++;
+        LOG_LIMIT(16,
+                  "vulkan: program %016llx multiplies with the tensor core's matrices (a network's pass), its input "
+                  "%dx%d of %d and the image it saves %dx%d of %d: %s\n",
+                  (unsigned long long)p->key, biggest_tex ? (int)biggest_tex->w : 0,
+                  biggest_tex ? (int)biggest_tex->h : 0, biggest_tex ? (int)biggest_tex->f.vk : -1,
+                  out ? (int)out->w : 0, out ? (int)out->h : 0, out ? (int)out->f.vk : -1,
+                  stood == 1 ? "the picture it would make, in one pass"
+                             : stood == 2 ? "that picture is already in it this frame"
+                                          : "no picture to make: the pass is left out");
+    }
+    if (!skip) {
+        if (d->indirect) {
+            rec_CmdDispatchIndirectKey(cb, grid_buf, grid_off, p->key, pa);
+        } else {
+            vk_ck(cb, VK_CK_DISPATCH, gx, gy, gz, 0);
+            rec_CmdDispatchKey(cb, gx, gy, gz, p->key, pa);
+        }
     }
     if (mir) { /* the bytes its log gives into the mirror's mask, for the submit's harvest to land */
         VkMirFold f[16];

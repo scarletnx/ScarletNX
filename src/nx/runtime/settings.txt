@@ -1385,6 +1385,16 @@ setting HMMA in half floats
     help sum past 65504 is an infinity. 0 = the f32 sum, as exact as the console's. A device with the mixed dot
     help product (VK_VALVE_shader_mixed_float_dot_product) or without shaderFloat16 keeps the f32 sum, and the log
     help says so
+setting Tensor standin
+    key tensor_standin
+    int 0 1
+    default 0
+    startup
+    words Off|Approximate
+    help A program that multiplies with the tensor core's matrices (HMMA, LDSM) is a network's pass, as the titles'
+    help upscalers are: 1 replaces it with a filtered copy of its largest sampled image into its largest storage image,
+    help the picture such a network makes, in one pass instead of each of its own. 0 = every pass runs, exactly, which
+    help is tens of milliseconds a frame where the device's matrix unit is 8x8x8. The picture loses the network's detail
 setting Vulkan allocation cap
     key vk_max_allocation_mb
     int 0 INT_MAX

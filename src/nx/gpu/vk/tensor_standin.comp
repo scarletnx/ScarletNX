@@ -1,0 +1,21 @@
+#version 450
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* A network's pass stood in for (vk/tensor.c, setting tensor_standin): the largest picture it sampled, read with a
+   linear filter at the destination's own pixel centres and written into the image the pass would save at that
+   image's size. The write takes the destination's format, 8 bits to 10 among them, which a blit cannot convert
+   between. One invocation a pixel of the destination, an 8x8 group a workgroup. */
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+/* the picture the network sampled, and the image it saved (written only: its format is the view's, the 10 bit ones
+   the networks save a picture in among them, which a format qualifier would fix to one VkFormat) */
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(set = 0, binding = 1) writeonly uniform image2D dst;
+
+void main() {
+    ivec2 d = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(dst);
+    if (d.x >= size.x || d.y >= size.y) return;
+    /* the texel's centre in the picture: a whole copy picks each texel once, an upscale or a downscale filters */
+    imageStore(dst, d, textureLod(src, (vec2(d) + 0.5) / vec2(size), 0.0));
+}
