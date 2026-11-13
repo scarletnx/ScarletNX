@@ -141,7 +141,7 @@ void rec_CmdCopyBuffer(VkCommandBuffer cb, VkBuffer src, VkBuffer dst, u32 n, co
     }
 }
 u64 vk_stage_align(void) { return 64; }
-u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off) {
+u8* vk_stream_upload(u64 size, u64 align, VkBuffer* buf, u64* off) {
     u64 at = (g_t.stage_used + align - 1) & ~(align - 1);
     if (g_t.stage_refuse && !--g_t.stage_refuse) return NULL;
     CHECK(size && at + size <= STAGE);

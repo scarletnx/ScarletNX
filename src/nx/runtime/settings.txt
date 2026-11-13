@@ -1337,6 +1337,15 @@ setting Buffer pages
     help ranges that overlap share their bytes, and a range that did not change is not copied again. 2 = also keeps
     help what a draw writes to guest memory there, on the GPU, until the game's CPU code touches it (sparse buffers
     help only). 0 = by the range each draw asks for. It needs working write tracking, and stays off without it
+setting Stream ring
+    key vk_stream_ring
+    int 0 1
+    default 1
+    startup
+    words Frame rings|Stream
+    help 1 = the bytes that a copy or a draw recorded at once reads (texture uploads, the page cache's pages, the
+    help buffer cache's copies) go through chunks that are free again when that work is done. 0 = through the
+    help frame's rings, which come back when the frame's slot does
 setting Buffer page slabs
     key vk_buffer_slabs
     int 0 1

@@ -352,6 +352,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_slabs COMMAND snx-test-vulkan -H --vk_buffer_pages=1 --vk_buffer_slabs=1 --vk_memory=1)
     set_tests_properties(vulkan_headless_slabs PROPERTIES TIMEOUT 180
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again with the bytes that work recorded at once reads in the frame's rings, as before the stream
+    # (gpu/vk/cmd.c's vk_stream_upload)
+    add_test(NAME vulkan_headless_frame_rings COMMAND snx-test-vulkan -H --vk_stream_ring=0)
+    set_tests_properties(vulkan_headless_frame_rings PROPERTIES TIMEOUT 180
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # and with guest memory kept by the range each draw asks for, as with the page cache off
     add_test(NAME vulkan_headless_ranges COMMAND snx-test-vulkan -H --vk_buffer_pages=0 --vk_memory=1)
     set_tests_properties(vulkan_headless_ranges PROPERTIES TIMEOUT 180

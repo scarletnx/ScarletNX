@@ -471,6 +471,11 @@ u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off);
 u64 vk_stage_chunk(void);
 /* Streamed buffer snapshots in host RAM, with the same frame lifetime as vk_stage. */
 u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off);
+/* As vk_stage_upload, for bytes that only work recorded now reads: a copy, a dispatch or a draw recorded before the
+   submission being recorded goes, or the one after it. The memory is no frame's (cmd.c's stream): it is handed out
+   again once that work is done, so nothing may keep the buffer and offset past it. With vk_stream_ring=0 it is
+   vk_stage_upload */
+u8* vk_stream_upload(u64 size, u64 align, VkBuffer* buf, u64* off);
 /* One-use guest input: host staging for CPU-only bytes, output staging when GPU-owned or in-place writes cover it. */
 u8* vk_stage_guest_input(u64 gva, u64 source_size, u64 bytes, VkBuffer* buf, u64* off);
 /* GPU-written storage, device-local when host-visible memory and its budget allow;
