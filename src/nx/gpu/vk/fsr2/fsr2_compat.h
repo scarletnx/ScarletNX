@@ -12,7 +12,9 @@
 #ifndef _countof
 #define _countof(a) (sizeof(a) / sizeof((a)[0]))
 #endif
-#ifndef _MSC_VER
+/* the Windows C runtimes (MSVC's, MinGW-w64's) have wcscpy_s, with C++'s overload for an array; a macro there breaks
+   their own headers' three-argument calls (windows.h's stralign.h, which ffx_assert.cpp includes) */
+#ifndef _WIN32
 #define wcscpy_s(dst, src) wcscpy(dst, src)
 #endif
 #ifdef __cplusplus
