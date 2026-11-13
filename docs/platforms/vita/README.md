@@ -27,7 +27,8 @@ build/scarletnx-vita --game=~/.local/share/scarletnx/recompiled/LVBT00001 --seco
 ```
 
 `scarletnx-vita` takes the [common options](../../user/usage.md#common-options) that fit it: `-x`, `-r`, `--game`, `--update`, `--data`,
-`--outdir`, `--output`, `--seconds`, `--shot`, `--script` and `-h`, each value as `--option VALUE` or `--option=VALUE`.
+`--outdir`, `--output`, `--seconds`, `--shot`, `--script`, `-h` and the recompile's (`-O`, `--jobs`, `--chunk`,
+`--jit-cache`, `--jit-only`, `--keep-ir`, `-q`), each value as `--option VALUE` or `--option=VALUE`.
 
 A dumped game's folder (decrypted, as a console's `ux0:app/<title ID>`) is linked into the game's folder rather than
 copied: `app/` names it and `patch/` its update (`ux0:patch/<title ID>` beside it, or `--update DIR`, which an older version named `--patch`), whose files app0:

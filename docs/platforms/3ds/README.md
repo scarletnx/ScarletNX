@@ -56,7 +56,11 @@ first time it is played, its module and hints renamed.
 
 `scarletnx-3ds` takes the [common options](../../user/usage.md#common-options) but
 `--frames`, `--shot` and `-H`, each value as `--option VALUE` or `--option=VALUE`.
-Its `--script` is the setting `ctr_script`, and `-f` the setting `fullscreen`.
+Its `--script` is the setting `ctr_script`, and `-f` the setting `fullscreen`. Of the recompile's, `-O` is the level of
+the static blocks and their helpers (the setting `opt`, 2), `--chunk N` puts N instructions in a chunk (512 blocks
+without it), `--jit-cache` names another game folder's `<title ID>.hints`, `--jit-only` makes a module of no blocks
+and `--keep-ir` keeps each chunk's IR in `<title ID>_build`. A recompile says a line for each chunk, as the Switch's
+says one for each code unit.
 
 What a file holds is read from its own header, not its name: a CIA's magic at 0, an
 NCSD's at 0x100, a bare NCCH's at 0x100 (`src/3ds/loader/loader.c`). A bundle is a

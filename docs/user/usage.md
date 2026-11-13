@@ -37,7 +37,22 @@ Each driver that recompiles (`scarletnx`, `scarletnx-3ds`, `scarletnx-vita`, `sc
 `--aot_threads=N`, the setting [`aot_threads`](settings.md): the threads compiling the game's code, 0 (the default)
 up to the computer's cores with a quarter left free, or to `--aot_threads_most=N` (`scarletnx`'s open one at a time, as the memory holds them:
 [Extract → AOT → run](#extract--aot--run)). A GBA ROM's code is one module and compiles on one thread whatever N,
-which its recompile says. A value that is not a whole number from 0 to 1024 stops the run.
+which its recompile says. A value that is not a whole number from 0 to 1024 stops the run. `--jobs N` is the same
+setting, and `-O` the setting [`opt`](settings.md), 2 unless the launcher's Optimization level says another, which
+the launcher gives every one of them. The recompile's options take effect when the game is made: a game made already
+keeps its code until `-r`.
+
+The recompile's options mean on each system:
+
+| Option | Switch | 3DS | Vita | GBA |
+|---|---|---|---|---|
+| `--chunk N` | the instructions of a code unit, whole functions (default: the setting `unit_instructions`) | the instructions of a chunk, whole blocks (default: 512 blocks a chunk) | the same as the 3DS's | one module compiled whole, said |
+| `--jit-cache PATH` | a profile run's `.jitcache`, linked into the module ([AOT packs](aot-packs.md)) | the list of the blocks a run compiled at run time that discovery starts from, another game folder's `<title ID>.hints` (default: the game's own) | the same as the 3DS's | the map of the blocks runs reached, another game folder's `<name>_code.map` (default: the game's own) |
+| `--jit-only` | a module with no code: the JIT compiles all of it | a module of no blocks: the run-time compiler compiles every one | the same as the 3DS's | no module: every block compiled as the run reaches it |
+| `--keep-ir` | each unit's IR in `<name>/<name>_build` | each chunk's IR and the index's in `<title ID>_build` of the game's folder | the same as the 3DS's | the module's IR in `<name>_build` of the game's folder |
+
+On GNU ABI and Android the code compiles as it runs: `-O` is their JIT's level (their `--jit-opt`), GNU ABI's
+`--jit-cache DIR` the folder its JIT keeps code in between runs, and `--jit-only` what both do anyway.
 
 | Option | Meaning | Switch | 3DS | Vita | AGB | Android | GNU ABI |
 |---|---|---|---|---|---|---|---|
@@ -56,6 +71,13 @@ which its recompile says. A value that is not a whole number from 0 to 1024 stop
 | `--script SPEC` | Press buttons at times of the run, `MS:BUTTONS,...` (each platform's page names the buttons) | yes | yes | yes | yes | | |
 | `-f`, `--fullscreen[=0\|1]` | Start fullscreen for this run, or windowed with `=0` | yes | yes | | yes | | |
 | `-H`, `--headless` | Run without a window | yes | | | | yes | |
+| `-O LEVEL`, `--opt LEVEL` | LLVM's optimization of the code it compiles: 0, 1, 2, 3, s or z (default: the setting `opt`, 2); `-O2` too | yes | yes | yes | yes | yes | yes |
+| `--jobs N` | The threads compiling the game's code, the setting `aot_threads`: 1 to 1024, or 0 (the default), Auto | yes | yes | yes | yes | | |
+| `--chunk N` | The instructions of a unit of code compiled at once (below) | yes | yes | yes | yes | | |
+| `--jit-cache PATH` | The run-time compiler's record of the game's code, which the recompile starts from (below) | yes | yes | yes | yes | | yes |
+| `--jit-only` (`--interp-only`) | Compile no code ahead of time: the run-time compiler compiles all of it | yes | yes | yes | yes | yes | yes |
+| `--keep-ir` (`--keep-c`) | Save the code the recompile generates, LLVM IR (below) | yes | yes | yes | yes | | |
+| `-q`, `--quiet` | Say no progress of the recompile | yes | yes | yes | yes | | |
 | `-h`, `--help` | Show the help | yes | yes | yes | yes | yes | yes |
 
 The Switch's `--seconds`, `--frames`, `--shot` and `--script` are settings of the game's run
@@ -425,7 +447,8 @@ Remaining examples: POSIX.
   them. `--target ios` writes `<id>_code.snxobj` instead, a pack of the code's objects for the iOS app to load into JIT
   memory (64-bit games only, [macOS and iOS](../hosts/apple.md)); it makes no runtime copy. `--runtime FILE` deploys that runtime instead of the running one, or of the one a tools-only build builds in
   its checkout's `build/native-recomp` (`build/win64-recomp` on Windows). `-q` (`--quiet`) prints no progress.
-  `--keep-c` is the deprecated spelling of `--keep-ir`.
+  `--keep-c` is the older name of `--keep-ir`. These and the other recompile options are the
+  [common options](#common-options), which the 3DS, Vita and GBA drivers take too.
 - **Codegen:** `--no-build` stages data/INI only; `--jit-only` omits AOT functions.
   `--chunk N` (`--unit_instructions=N`) sets the instructions per code unit: 90000 by default, 20000 on Android and
   iOS, where a smaller unit takes less memory at once. Each unit's object, a 32-bit game's blocks too, is kept in
