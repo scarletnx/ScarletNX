@@ -189,7 +189,7 @@ int nds_bios_call(NdsBoard* board, uint32_t number, uint32_t r[16], uint64_t* cy
                 r[0] = 0x80000000u, r[1] = 0, r[3] = 0x80000000u;
             } else {
                 int32_t q = n / d;
-                r[0] = (uint32_t)q, r[1] = (uint32_t)(n % d), r[3] = (uint32_t)(q < 0 ? -q : q);
+                r[0] = (uint32_t)q, r[1] = (uint32_t)(n % d), r[3] = q < 0 ? 0u - (uint32_t)q : (uint32_t)q;
             }
             return 0;
         }
