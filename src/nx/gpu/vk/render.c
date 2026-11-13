@@ -4991,7 +4991,13 @@ retry:
             g_vk_skipped++;
             return;
         }
-        predraw = vk_predraw_next();
+        /* the captured slots' targets, in the order of their side images (shader/spirv_translate.c
+           predraw_prologue) */
+        const Surf* targets[SH_PREDRAW_MAX];
+        u32 ntargets = 0;
+        for (int i = 0; i < SH_MAXTEX && ntargets < SH_PREDRAW_MAX; i++)
+            if (fs->si.predraw_slots >> i & 1) targets[ntargets++] = res && res[i].have ? res[i].t : NULL;
+        predraw = vk_predraw_next(targets, ntargets);
     }
     int zt_ro = 0;
     u32 fb = 0;

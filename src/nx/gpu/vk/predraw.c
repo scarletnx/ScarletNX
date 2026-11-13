@@ -29,10 +29,13 @@
 #include "nx/runtime/platform/log.h"
 
 static struct {
-    Surf stamp;                /* the number of the last draw that captured each pixel */
-    Surf side[SH_PREDRAW_MAX]; /* each captured slot's texel, as it was before that draw */
-    u32 draw;                  /* the last draw's number */
+    Surf stamp;                /* the capture number of the last draw that captured each pixel */
+    Surf side[SH_PREDRAW_MAX]; /* each captured slot's texel, as it was before that capture */
+    u32 draw;                  /* the last capture number */
     int written;               /* a draw stored to them since the last barrier */
+    u64 epoch;                 /* g_vk_texture_epoch when the number was taken */
+    u32 nslot;                 /* the targets the number's draws capture, by side image */
+    const Surf* slot[SH_PREDRAW_MAX];
 } g_predraw;
 
 static void image_drop(Surf* s) {
@@ -113,7 +116,24 @@ int vk_predraw_reserve(u32 sw, u32 sh, u32 sides) {
     }
     return 1;
 }
-u32 vk_predraw_next(void) { return ++g_predraw.draw; }
+/* The draws between two of the game's texture barriers share one number. On the console each of them reads what the
+   targets held at the barrier: the texture cache keeps the lines it read, and the ROP's writes of the draws before
+   reach texture reads only after the next barrier (render.c, feedback loops). Here a later draw's capture read the
+   target in place, where the writes of the draws just before it may or may not have landed: two crossing rock props
+   that blend into what lies under them read each other in one frame and the cliff in the next, and whole patches
+   bounded by the first prop's triangles flickered while the camera turned. With one number the first fragment at a
+   pixel in the interval captures it, before any draw of the interval wrote it, and every later draw there reads that.
+   A draw that captures other targets, or in another order, takes a number of its own: the side images are by slot */
+u32 vk_predraw_next(const Surf* const* targets, u32 n) {
+    u64 epoch = __atomic_load_n(&g_vk_texture_epoch, __ATOMIC_RELAXED);
+    int same = g_predraw.draw && epoch == g_predraw.epoch && n == g_predraw.nslot;
+    for (u32 k = 0; same && k < n; k++) same = targets[k] == g_predraw.slot[k];
+    if (same) return g_predraw.draw;
+    g_predraw.epoch = epoch;
+    g_predraw.nslot = n;
+    for (u32 k = 0; k < n; k++) g_predraw.slot[k] = targets[k];
+    return ++g_predraw.draw;
+}
 VkImageView vk_predraw_view(u32 k) {
     if (k > SH_PREDRAW_MAX) return VK_NULL_HANDLE;
     return k ? g_predraw.side[k - 1].att : g_predraw.stamp.att;
