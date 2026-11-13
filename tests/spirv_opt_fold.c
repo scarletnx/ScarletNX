@@ -518,17 +518,24 @@ static void sum_terms(void) {
     check(folded >= rounds / 4, "and the pass folds a quarter of the differences at least");
 }
 
-/* a test of the integer s against 0 into m as id, in the form form picks: 0 s != 0, 1 0 != s, 2 s == 0, 3 !(s == 0),
-   4 !(0 != s), the last two with id + 1 for the comparison under the ! */
+/* a test of the integer s into m as id, in the form form picks: against 0, 0 s != 0, 1 0 != s, 2 s == 0, 3 !(s == 0),
+   4 !(0 != s), the last two with id + 1 for the comparison under the !; and none this reads as one, 5 s != KB, 6 KB ==
+   s, 7 s <= 0 unsigned, 8 s < 0 signed, 9 s != KA, 10 KA == s */
 static void zero_test(Module* m, uint32_t id, uint32_t s, uint32_t form) {
     if (form == 0) put(m, I_NOT_EQUAL, 4, (uint32_t)BOOL, id, s, (uint32_t)U0);
     if (form == 1) put(m, I_NOT_EQUAL, 4, (uint32_t)BOOL, id, (uint32_t)U0, s);
     if (form == 2) put(m, I_EQUAL, 4, (uint32_t)BOOL, id, s, (uint32_t)U0);
-    if (form >= 3) {
+    if (form == 3 || form == 4) {
         if (form == 3) put(m, I_EQUAL, 4, (uint32_t)BOOL, id + 1, s, (uint32_t)U0);
         if (form == 4) put(m, I_NOT_EQUAL, 4, (uint32_t)BOOL, id + 1, (uint32_t)U0, s);
         put(m, LOGICAL_NOT, 3, (uint32_t)BOOL, id, id + 1);
     }
+    if (form == 5) put(m, I_NOT_EQUAL, 4, (uint32_t)BOOL, id, s, (uint32_t)KB);
+    if (form == 6) put(m, I_EQUAL, 4, (uint32_t)BOOL, id, (uint32_t)KB, s);
+    if (form == 7) put(m, U_LESS_THAN_EQUAL, 4, (uint32_t)BOOL, id, s, (uint32_t)U0);
+    if (form == 8) put(m, S_LESS_THAN, 4, (uint32_t)BOOL, id, s, (uint32_t)U0);
+    if (form == 9) put(m, I_NOT_EQUAL, 4, (uint32_t)BOOL, id, s, (uint32_t)KA);
+    if (form == 10) put(m, I_EQUAL, 4, (uint32_t)BOOL, id, (uint32_t)KA, s);
 }
 
 /* An && or || of two tests against 0 where one implies the other is the one implied (||) or implying (&&):
@@ -561,7 +568,10 @@ static void implications(void) {
         {LOGICAL_OR, P + 8, 0, P + 9, 0, 1},      /* (y & m) != 0 implies (x | y) != 0 */
         {LOGICAL_OR, P + 9, 0, P + 10, 0, STAYS}, /* y & m and x & y: neither within the other */
         {LOGICAL_AND, P, 2, X, 0, STAYS},
-        {LOGICAL_EQUAL, P, 0, X, 0, STAYS}, /* only && and || */
+        {LOGICAL_OR, P + 10, 5, X, 9, STAYS},   /* (x & y) != 0x0f || x != 0x30: tests of other constants */
+        {LOGICAL_AND, P + 10, 6, X, 10, STAYS}, /* 0x0f == (x & y) && 0x30 == x */
+        {LOGICAL_OR, P, 7, X, 0, STAYS},        /* (x & m) <= 0 || x != 0: a comparison that is no test */
+        {LOGICAL_EQUAL, P, 0, X, 0, STAYS},     /* only && and || */
         {LOGICAL_NOT_EQUAL, P, 0, X, 0, STAYS},
     };
     const uint32_t k[] = {0x30, 0x0f};
@@ -616,8 +626,8 @@ static void implications(void) {
         put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)Q, next(&seed) % 2 ? (uint32_t)Y : (uint32_t)KB, (uint32_t)X);
         put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P + 8, (uint32_t)X, (uint32_t)KA + next(&seed) % 2);
         put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P + 9, (uint32_t)Q, (uint32_t)Y);
-        zero_test(&m, (uint32_t)P + 12, subjects[next(&seed) % 6], next(&seed) % 5);
-        zero_test(&m, (uint32_t)P + 14, subjects[next(&seed) % 6], next(&seed) % 5);
+        zero_test(&m, (uint32_t)P + 12, subjects[next(&seed) % 6], next(&seed) % 11);
+        zero_test(&m, (uint32_t)P + 14, subjects[next(&seed) % 6], next(&seed) % 11);
         put(&m, logic[next(&seed) % 4], 4, (uint32_t)BOOL, (uint32_t)R + 20, (uint32_t)P + 12, (uint32_t)P + 14);
         put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R + 20);
         end(&m);
@@ -730,6 +740,15 @@ static void few_values(void) {
     put(&m, LOGICAL_NOT, 3, (uint32_t)BOOL, (uint32_t)R, (uint32_t)P);
     DONE(R);
     check(stores(&m, IS, 0, XB, 0), "!!c is c, which is no operand of the second !");
+    begin_with(&m, k, 10);
+    put(&m, SELECT, 5, (uint32_t)U, (uint32_t)R, (uint32_t)XB, (uint32_t)U1, (uint32_t)U0);
+    DONE(R);
+    check(stores(&m, STAYS, 0, 0, SELECT), "c ? 1 : 0 stays: its values are c's, of another type");
+    begin_with(&m, k, 10);
+    put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KF);
+    put(&m, BITCAST, 3, (uint32_t)S, (uint32_t)R, (uint32_t)P);
+    DONE(R);
+    check(stores(&m, STAYS, 0, 0, BITCAST), "and a signed x & 3 stays: its values are those of x & 3, unsigned");
     /* an integer of two bits not known: x & 3, x & 0x11 */
     begin_with(&m, k, 10);
     put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KF);

@@ -343,7 +343,7 @@ static int commutes(uint32_t op, uint32_t width) {
 static const uint32_t* made_by(const uint32_t* module, uint32_t x, uint32_t width, const uint32_t* def,
                                const uint32_t* sign) {
     const uint32_t* w = module + def[x];
-    return w[0] >> 16 == width && w[2] == x && !sign[x] ? w : NULL;
+    return w[0] >> 16 == width && !sign[x] ? w : NULL;
 }
 
 /* x as y + k with k an integer constant: y, and k in *k, of the y + k, k + y or y - k that makes x; else x itself and
@@ -817,8 +817,8 @@ static uint32_t few_of(uint32_t id, uint32_t kind, uint32_t bound, const uint8_t
         return leaf[id];
     }
     uint32_t unknown = kind & SPV_OPT_BOOL ? 1 : ~(zeros[id] | ones[id]), low = unknown & (0u - unknown);
-    uint32_t high = unknown & ~low, base = kind & SPV_OPT_BOOL ? 0 : ones[id];
-    if (!unknown || (high & (high - 1))) return UINT32_MAX; /* three bits or more */
+    uint32_t high = unknown & ~low, base = ones[id]; /* 0 for a boolean: only a constant has its bits known */
+    if (!unknown) return UINT32_MAX;                 /* three bits or more few_values turned away before */
     entry[0] = base;
     entry[1] = base | low;
     entry[2] = base | high;
@@ -883,7 +883,7 @@ static uint32_t few_values(const uint32_t* w, uint32_t width, uint32_t op, uint3
         return SPV_OPT_FOLD_VALUE;
     }
     for (uint32_t k = 0; k < operands; k++)
-        if (of[k] == one && type_of[w[first + k]] == w[1] && !memcmp(entries[k], result, n * sizeof *result)) {
+        if (type_of[w[first + k]] == w[1] && !memcmp(entries[k], result, n * sizeof *result)) {
             *out = w[first + k];
             return SPV_OPT_FOLD_ID;
         }
