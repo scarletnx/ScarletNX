@@ -978,11 +978,17 @@ int main(void) {
     {
         /* a CPU woken in IntrWait takes the interrupt that woke it as one woken in Halt does, before IntrWait looks at
            its flags: a handler that reads timer 0 sees the vertical blank after VBlankIntrWait and the next one after
-           Halt a frame apart, 280896 cycles (18752 in the timer's 16 bits) */
+           Halt a frame apart, 280896 cycles (18752 in the timer's 16 bits); the caller reads it too, once
+           VBlankIntrWait returned */
         static const uint32_t main_code[] = {
             0xEF050000, /* swi 0x050000: VBlankIntrWait */
+            0xE59F1010, /* ldr r1, [pc, #16]: TM0CNT_L */
+            0xE1D120B0, /* ldrh r2, [r1] */
+            0xE59F300C, /* ldr r3, [pc, #12]: 0x02000360 */
+            0xE1C320B0, /* strh r2, [r3] */
             0xEF020000, /* swi 0x020000: Halt */
             0xEAFFFFFE, /* b . */
+            0x04000100, 0x02000360,
         };
         static const uint32_t handler[] = {
             0xE2801C01, /* add r1, r0, #0x100 */
@@ -1026,9 +1032,19 @@ int main(void) {
                                &written, error, sizeof error));
         uint32_t reads = agb_read32(&board, 0x02000350);
         uint32_t apart = (agb_read32(&board, 0x02000358) - agb_read32(&board, 0x02000354)) & 0xFFFF;
+        uint32_t back = (agb_read16(&board, 0x02000360) - agb_read32(&board, 0x02000354)) & 0xFFFF;
         if (reads < 2 || apart != (AGB_SCANLINE_CYCLES * AGB_FRAME_LINES & 0xFFFF)) {
             fprintf(stderr, "agb_cpu: %u reads of timer 0 by the blank's handler, the first two %u apart, not 18752\n",
                     reads, apart);
+            return 1;
+        }
+        /* and the caller's read after VBlankIntrWait returns, 103 cycles after the handler's: the handler's rest and
+           return, the BIOS's, IntrWait's look at the flags and its return as the console takes them (5 cycles more
+           than mGBA's HLE BIOS code), the dispatch's way out and the caller's two loads */
+        if (back != 103) {
+            fprintf(stderr,
+                    "agb_cpu: VBlankIntrWait returned to its caller's read %u cycles after the handler's, not 103\n",
+                    back);
             return 1;
         }
         agb_write16(&board, 0x04000208, 0);
