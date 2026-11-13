@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* gui/gpu_driver_fetch.h. Eden's repositories, a release's fields and which one is the latest, the newest-first order
    and the recommendation by Adreno model are Eden's (DriverFetcherFragment.kt: repoList, Release.fromJson, driverMap,
-   parseAdrenoModel); NX-Mali, the recommendation by Mali model and the proprietary mark are ScarletNX's */
+   parseAdrenoModel); NX-Mali and radv-xclipse, the recommendation by Mali and Xclipse model, the proprietary mark and
+   the assets left out are ScarletNX's */
 #include "gui/gpu_driver_fetch.h"
 #include "common/utilities/ascii.h"
 #include "gui/i18n.h"
@@ -17,7 +18,9 @@ const GuiDriverRepo gui_driver_repos[GUI_DRIVER_REPOS] = {
     {"KIMCHI Turnip", "K11MCH1/AdrenoToolsDrivers", 1, 1, GUI_DRIVER_ADRENO},
     {"Weab-Chan Freedreno", "Weab-chan/freedreno_turnip-CI", 0, 0, GUI_DRIVER_ADRENO},
     {"Whitebelyash Turnip", "whitebelyash/freedreno_turnip-CI", 0, 1, GUI_DRIVER_ADRENO},
-    {"NX-Mali", "Slopinator99/NX-Mali", 0, 0, GUI_DRIVER_MALI}};
+    {"NX-Mali", "Slopinator99/NX-Mali", 0, 0, GUI_DRIVER_MALI},
+    /* every release of it is named "RADV Xclipse (Based on Mesa <version>)": its tag tells them apart */
+    {"RADV Xclipse", "JimVulkan/radv-xclipse", 1, 0, GUI_DRIVER_XCLIPSE}};
 
 /* whether text has part, in any case */
 static int has_nocase(const char* text, const char* part) {
@@ -32,6 +35,10 @@ static int has_nocase(const char* text, const char* part) {
 }
 int gui_driver_proprietary(const char* repo_path, const char* asset_name) {
     return !strcmp(repo_path, "crueter/GameHub-8Elite-Drivers") || has_nocase(asset_name, "qualcomm");
+}
+int gui_driver_android_package(const char* repo_path, const char* asset_name) {
+    return strcmp(repo_path, "JimVulkan/radv-xclipse") ||
+           (!strncmp(asset_name, "radv-xclipse-", 13) && snx_is_digit((unsigned char)asset_name[13]));
 }
 
 /* a string field's text into out, cut to its room; "" when it has none */
@@ -96,7 +103,9 @@ int gui_driver_releases_parse(const char* json, size_t n, const GuiDriverRepo* r
             yyjson_val* bytes = yyjson_obj_get(asset, "size");
             text_of(asset, "name", d->name, sizeof d->name);
             text_of(asset, "browser_download_url", d->url, sizeof d->url);
-            if (!d->name[0] || strncmp(d->url, "https://", 8)) continue; /* none to download: not listed */
+            /* none to download, or no package for this app: not listed */
+            if (!d->name[0] || strncmp(d->url, "https://", 8) || !gui_driver_android_package(repo->path, d->name))
+                continue;
             d->size = yyjson_is_num(bytes) && yyjson_get_num(bytes) > 0 ? (unsigned long long)yyjson_get_num(bytes) : 0;
             d->proprietary = gui_driver_proprietary(repo->path, d->name);
             ++a;
@@ -136,12 +145,22 @@ int gui_mali_model(const char* gpu_name) {
     for (; snx_is_digit((unsigned char)*p) && model < 100000; ++p) model = model * 10 + (*p - '0');
     return !*p || *p == ' ' || *p == '-' || !strncmp(p, "AE", 2) ? model : 0;
 }
+int gui_xclipse_model(const char* gpu_name) {
+    const char* p = gpu_name + 16;
+    int model = 0;
+    if (strncmp(gpu_name, "Samsung Xclipse ", 16) || !snx_is_digit((unsigned char)*p)) return 0;
+    for (; snx_is_digit((unsigned char)*p) && model < 100000; ++p) model = model * 10 + (*p - '0');
+    return !*p || *p == ' ' ? model : 0;
+}
 /* the picks by model, each as the repository its release is in and a part of that release's tag, NULL for the
    repository's latest. Adreno's are Eden's (DriverFetcherFragment.kt); 605 to 613 have no multiview in hardware:
    EOL-24.3.4 then says Vulkan 1.0, short of what ScarletNX needs, and T30 emulates it and says 1.4. The Malis are
    those NX-Mali says Vulkan 1.3 on (its api_version_for_arch: arch 10 and up, the command-stream ones): the G610 and
    the G710, the G615 and the G715. On its job-manager parts (the G52, G57, G68, G77 and G78) it says 1.1, which
-   device_score refuses, so none is recommended there */
+   device_score refuses, so none is recommended there. The Xclipses are those radv-xclipse drives (its README's
+   Compatibility; its ac_xclipse_chips, none of them refused as unstable), each at Vulkan 1.4 (its build.sh turns
+   android-strict off): the 530, 540 and 550, the 920, 940, 950 and 960. Ray tracing, which hangs the 950 and the 960
+   there, is no part of what ScarletNX asks of a GPU */
 static const struct {
     int gpu, lo, hi;
     const char *driver, *repo, *tag;
@@ -155,14 +174,22 @@ static const struct {
                      {GUI_DRIVER_MALI, 610, 610, "NX-Mali", "Slopinator99/NX-Mali", NULL},
                      {GUI_DRIVER_MALI, 615, 615, "NX-Mali", "Slopinator99/NX-Mali", NULL},
                      {GUI_DRIVER_MALI, 710, 710, "NX-Mali", "Slopinator99/NX-Mali", NULL},
-                     {GUI_DRIVER_MALI, 715, 715, "NX-Mali", "Slopinator99/NX-Mali", NULL}};
+                     {GUI_DRIVER_MALI, 715, 715, "NX-Mali", "Slopinator99/NX-Mali", NULL},
+                     {GUI_DRIVER_XCLIPSE, 530, 530, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
+                     {GUI_DRIVER_XCLIPSE, 540, 540, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
+                     {GUI_DRIVER_XCLIPSE, 550, 550, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
+                     {GUI_DRIVER_XCLIPSE, 920, 920, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
+                     {GUI_DRIVER_XCLIPSE, 940, 940, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
+                     {GUI_DRIVER_XCLIPSE, 950, 950, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
+                     {GUI_DRIVER_XCLIPSE, 960, 960, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL}};
 #define GUI_DRIVER_PICKS (sizeof g_recommended / sizeof g_recommended[0])
 /* gpu_name's pick in g_recommended, GUI_DRIVER_PICKS for none */
 static size_t recommended_of(const char* gpu_name) {
-    int adreno = gui_adreno_model(gpu_name), mali = gui_mali_model(gpu_name);
+    /* by GuiDriverRepo's gpu */
+    const int models[] = {gui_adreno_model(gpu_name), gui_mali_model(gpu_name), gui_xclipse_model(gpu_name)};
     size_t i;
     for (i = 0; i < GUI_DRIVER_PICKS; ++i) {
-        int model = g_recommended[i].gpu == GUI_DRIVER_ADRENO ? adreno : mali;
+        int model = models[g_recommended[i].gpu];
         if (model >= g_recommended[i].lo && model <= g_recommended[i].hi) break;
     }
     return i;

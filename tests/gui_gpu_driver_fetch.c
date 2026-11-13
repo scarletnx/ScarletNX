@@ -2,9 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* gui/gpu_driver_fetch.c: a repository's releases from GitHub's list of them, its latest marked as GitHub marks it,
    titled by name or by tag and ordered as Eden orders them; the assets each has, those with no link to download left
-   out, a GPU maker's own marked; GitHub's own error said; NX-Mali's release, as GitHub lists it; and the
-   recommendation by GPU name, Eden's by Adreno model and NX-Mali by Mali model,
-   found among a repository's releases */
+   out, a GPU maker's own marked; GitHub's own error said; NX-Mali's release and radv-xclipse's, as GitHub lists them,
+   radv-xclipse's builds for Linux and for Bannerlator left out; and the recommendation by GPU name, Eden's by Adreno
+   model, NX-Mali by Mali model and RADV Xclipse by Xclipse model, found among a repository's releases */
 #include "gui/gpu_driver_fetch.h"
 #include <assert.h>
 #include <stdio.h>
@@ -30,7 +30,8 @@ int main(void) {
     char why[300];
     const GuiDriverRepo* kimchi = &gui_driver_repos[2];
     const GuiDriverRepo* purple = &gui_driver_repos[0];
-    /* Eden's five for an Adreno, KIMCHI's titled by tag and newest first; NX-Mali for a Mali */
+    /* Eden's five for an Adreno, KIMCHI's titled by tag and newest first; NX-Mali for a Mali; radv-xclipse for an
+       Xclipse, titled by tag, as each of its releases has the same name */
     assert(!strcmp(kimchi->path, "K11MCH1/AdrenoToolsDrivers") && kimchi->tag_titles && kimchi->by_time);
     assert(!strcmp(gui_driver_repos[1].path, "crueter/GameHub-8Elite-Drivers"));
     assert(!strcmp(gui_driver_repos[4].path, "whitebelyash/freedreno_turnip-CI") && gui_driver_repos[4].by_time);
@@ -38,6 +39,9 @@ int main(void) {
     assert(!strcmp(gui_driver_repos[5].path, "Slopinator99/NX-Mali") && !strcmp(gui_driver_repos[5].name, "NX-Mali") &&
            gui_driver_repos[5].gpu == GUI_DRIVER_MALI && !gui_driver_repos[5].tag_titles &&
            !gui_driver_repos[5].by_time);
+    assert(!strcmp(gui_driver_repos[6].path, "JimVulkan/radv-xclipse") &&
+           !strcmp(gui_driver_repos[6].name, "RADV Xclipse") && gui_driver_repos[6].gpu == GUI_DRIVER_XCLIPSE &&
+           gui_driver_repos[6].tag_titles && !gui_driver_repos[6].by_time);
     assert(gui_driver_releases_parse(releases_json, strlen(releases_json), kimchi, &r, why, sizeof why));
     assert(r.count == 3 && r.assets_count == 2); /* the http:// link is not one to download */
     /* newest first: the 840 (the latest, the first no prerelease in GitHub's order), the rc, the older */
@@ -66,6 +70,15 @@ int main(void) {
     assert(gui_driver_proprietary("crueter/GameHub-8Elite-Drivers", "adreno-driver-842.8.zip"));
     assert(gui_driver_proprietary("K11MCH1/AdrenoToolsDrivers", "qualcomm_837_adpkg.zip"));
     assert(!gui_driver_proprietary("whitebelyash/freedreno_turnip-CI", "mainline-turnip-V32.zip"));
+    /* a package for this app: every asset but radv-xclipse's builds for Linux (glibc) and for Bannerlator (Wayland) */
+    assert(gui_driver_android_package("JimVulkan/radv-xclipse", "radv-xclipse-27.0.0-devel-cc87fdf.zip") &&
+           gui_driver_android_package("JimVulkan/radv-xclipse", "radv-xclipse-26.2.1-b14b877.zip"));
+    assert(!gui_driver_android_package("JimVulkan/radv-xclipse", "radv-xclipse-glibc-27.0.0-devel-cc87fdf.zip") &&
+           !gui_driver_android_package("JimVulkan/radv-xclipse", "radv-xclipse-wayland-27.0.0-devel-cc87fdf.zip") &&
+           !gui_driver_android_package("JimVulkan/radv-xclipse", "radv-xclipse-") &&
+           !gui_driver_android_package("JimVulkan/radv-xclipse", "NOTICE.txt"));
+    assert(gui_driver_android_package("Slopinator99/NX-Mali", "NX-Mali_0.0.1.zip") &&
+           gui_driver_android_package("K11MCH1/AdrenoToolsDrivers", "radv-xclipse-glibc-27.0.0-devel-cc87fdf.zip"));
     /* NX-Mali's release as GitHub lists it: titled by its name, the latest, its package's zip */
     {
         static const char nx_mali_json[] =
@@ -86,6 +99,62 @@ int main(void) {
                gui_driver_recommended_release("Adreno (TM) 740", 5, &r) == -1);
         gui_driver_releases_free(&r);
     }
+    /* radv-xclipse's three newest releases as GitHub lists them (each body cut to its first line): titled by tag, the
+       latest the first that is no prerelease, each with its Android package alone */
+    {
+        static const char radv_json[] =
+            "[{\"tag_name\": \"v1.9.0\", \"name\": \"RADV Xclipse (Based on Mesa 27.0.0-devel)\","
+            "  \"prerelease\": false, \"body\": \"RADV for Samsung Xclipse GPUs, build `cc87fdf`.\","
+            "  \"published_at\": \"2026-11-11T22:39:02Z\","
+            "  \"assets\": [{\"name\": \"radv-xclipse-27.0.0-devel-cc87fdf.zip\", \"size\": 4396585,"
+            "    \"browser_download_url\": \"https://github.com/JimVulkan/radv-xclipse/releases/download/v1.9.0/"
+            "radv-xclipse-27.0.0-devel-cc87fdf.zip\"},"
+            "   {\"name\": \"radv-xclipse-glibc-27.0.0-devel-cc87fdf.zip\", \"size\": 4673254,"
+            "    \"browser_download_url\": \"https://github.com/JimVulkan/radv-xclipse/releases/download/v1.9.0/"
+            "radv-xclipse-glibc-27.0.0-devel-cc87fdf.zip\"},"
+            "   {\"name\": \"radv-xclipse-wayland-27.0.0-devel-cc87fdf.zip\", \"size\": 4474943,"
+            "    \"browser_download_url\": \"https://github.com/JimVulkan/radv-xclipse/releases/download/v1.9.0/"
+            "radv-xclipse-wayland-27.0.0-devel-cc87fdf.zip\"}]},"
+            " {\"tag_name\": \"v1.9.0-RC1\", \"name\": \"RADV Xclipse (Based on Mesa 27.0.0-devel)\","
+            "  \"prerelease\": true, \"body\": \"RADV for Samsung Xclipse GPUs, release candidate 1.\","
+            "  \"published_at\": \"2026-10-28T20:29:14Z\","
+            "  \"assets\": [{\"name\": \"radv-xclipse-27.0.0-devel-fe9b894.zip\", \"size\": 4385836,"
+            "    \"browser_download_url\": \"https://github.com/JimVulkan/radv-xclipse/releases/download/v1.9.0-RC1/"
+            "radv-xclipse-27.0.0-devel-fe9b894.zip\"},"
+            "   {\"name\": \"radv-xclipse-wayland-27.0.0-devel-fe9b894.zip\", \"size\": 4463103,"
+            "    \"browser_download_url\": \"https://github.com/JimVulkan/radv-xclipse/releases/download/v1.9.0-RC1/"
+            "radv-xclipse-wayland-27.0.0-devel-fe9b894.zip\"}]},"
+            " {\"tag_name\": \"v1.8.0\", \"name\": \"RADV Xclipse (Based on Mesa 27.0.0-devel)\","
+            "  \"prerelease\": false, \"body\": \"RADV for Samsung Xclipse GPUs.\","
+            "  \"published_at\": \"2026-10-19T22:27:02Z\","
+            "  \"assets\": [{\"name\": \"radv-xclipse-27.0.0-devel-269238e.zip\", \"size\": 4383848,"
+            "    \"browser_download_url\": \"https://github.com/JimVulkan/radv-xclipse/releases/download/v1.8.0/"
+            "radv-xclipse-27.0.0-devel-269238e.zip\"},"
+            "   {\"name\": \"radv-xclipse-wayland-27.0.0-devel-269238e.zip\", \"size\": 4460784,"
+            "    \"browser_download_url\": \"https://github.com/JimVulkan/radv-xclipse/releases/download/v1.8.0/"
+            "radv-xclipse-wayland-27.0.0-devel-269238e.zip\"}]}]";
+        const GuiDriverAsset* a;
+        assert(gui_driver_releases_parse(radv_json, strlen(radv_json), &gui_driver_repos[6], &r, why, sizeof why));
+        assert(r.count == 3 && r.assets_count == 3);
+        assert(!strcmp(r.releases[0].title, "v1.9.0") && r.releases[0].latest && !r.releases[0].prerelease &&
+               !strcmp(r.releases[1].title, "v1.9.0-RC1") && r.releases[1].prerelease && !r.releases[1].latest &&
+               !strcmp(r.releases[2].title, "v1.8.0") && !r.releases[2].latest);
+        for (size_t k = 0; k < r.count; ++k) {
+            a = &gui_driver_assets(&r)[r.releases[k].first];
+            assert(r.releases[k].count == 1 && !a->proprietary && !strncmp(a->name, "radv-xclipse-27.0.0-devel-", 26));
+        }
+        a = &gui_driver_assets(&r)[r.releases[0].first];
+        assert(!strcmp(a->name, "radv-xclipse-27.0.0-devel-cc87fdf.zip") && a->size == 4396585ull &&
+               !strcmp(a->url, "https://github.com/JimVulkan/radv-xclipse/releases/download/v1.9.0/"
+                               "radv-xclipse-27.0.0-devel-cc87fdf.zip"));
+        /* its latest recommended on an Xclipse it drives; on one it does not, a Mali, or another repository, never */
+        assert(gui_driver_recommended_release("Samsung Xclipse 940", 6, &r) == 0 &&
+               gui_driver_recommended_release("Samsung Xclipse 530", 6, &r) == 0);
+        assert(gui_driver_recommended_release("Samsung Xclipse 930", 6, &r) == -1 &&
+               gui_driver_recommended_release("Mali-G615 MC6", 6, &r) == -1 &&
+               gui_driver_recommended_release("Samsung Xclipse 940", 5, &r) == -1);
+        gui_driver_releases_free(&r);
+    }
     /* the models, and the recommendation for a GPU's name: Eden's by Adreno model, NX-Mali by Mali model */
     assert(gui_adreno_model("Adreno (TM) 830") == 830 && gui_adreno_model("Adreno (TM) A32") == 32);
     assert(gui_adreno_model("Adreno (TM) 610") == 610 && !gui_adreno_model("Mali-G78") &&
@@ -95,6 +164,14 @@ int main(void) {
            gui_mali_model("Mali-G52 r1") == 52);
     assert(!gui_mali_model("Mali-T880") && !gui_mali_model("Mali-G") && !gui_mali_model("Mali-G7x") &&
            !gui_mali_model("Adreno (TM) 830") && !gui_mali_model("Immortalis-G715"));
+    /* Samsung's driver's names; RADV's own on an Xclipse names its chip's codename, not its model (radv-xclipse's
+       radv_physical_device.c: "<libdrm's marketing name> (RADV <codename>)") */
+    assert(gui_xclipse_model("Samsung Xclipse 940") == 940 && gui_xclipse_model("Samsung Xclipse 530") == 530 &&
+           gui_xclipse_model("Samsung Xclipse 960 r1") == 960);
+    assert(!gui_xclipse_model("Samsung Xclipse") && !gui_xclipse_model("Samsung Xclipse 9x0") &&
+           !gui_xclipse_model("Xclipse 940") && !gui_xclipse_model("AMD Unknown (RADV MAGELLAN CARL)") &&
+           !gui_xclipse_model("Adreno (TM) 940") && !gui_adreno_model("Samsung Xclipse 940") &&
+           !gui_mali_model("Samsung Xclipse 940"));
     assert(!strcmp(gui_driver_recommended("Adreno (TM) 830"), "GameHub Adreno 8xx") &&
            !strcmp(gui_driver_recommended("Adreno (TM) 610"), "Mr. Purple T30") &&
            !strcmp(gui_driver_recommended("Adreno (TM) 613"), "Mr. Purple T30") &&
@@ -115,6 +192,20 @@ int main(void) {
             assert(!strcmp(gui_driver_recommended(at_11[i]), "Unsupported"));
         assert(!strcmp(gui_driver_recommended("Mali-G76 MC4"), "Unsupported") &&
                !strcmp(gui_driver_recommended("Adreno (TM) 615"), "Mr. Purple EOL-24.3.4"));
+    }
+    /* RADV Xclipse on the Xclipses it drives (radv-xclipse's README's Compatibility); not on another model, nor on an
+       Adreno or a Mali of the same number */
+    {
+        static const char* const driven[] = {"Samsung Xclipse 530", "Samsung Xclipse 540", "Samsung Xclipse 550",
+                                             "Samsung Xclipse 920", "Samsung Xclipse 940", "Samsung Xclipse 950",
+                                             "Samsung Xclipse 960"};
+        for (size_t i = 0; i < sizeof driven / sizeof *driven; ++i)
+            assert(!strcmp(gui_driver_recommended(driven[i]), "RADV Xclipse"));
+        assert(!strcmp(gui_driver_recommended("Samsung Xclipse 930"), "Unsupported") &&
+               !strcmp(gui_driver_recommended("Samsung Xclipse 970"), "Unsupported") &&
+               !strcmp(gui_driver_recommended("Samsung Xclipse 500"), "Unsupported") &&
+               !strcmp(gui_driver_recommended("Mali-G920"), "Unsupported") &&
+               !strcmp(gui_driver_recommended("AMD Unknown (RADV VANGOGHLITE)"), "Unsupported"));
     }
     /* the recommendation among a repository's releases: by a part of its tag, else its latest; another repository's,
        none, or a release the list lacks gives -1 */

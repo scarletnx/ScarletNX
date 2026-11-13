@@ -3179,10 +3179,6 @@ msgid "Not in this build"
 msgstr "Não está neste build"
 
 #: src/gui/main.c
-msgid "Adreno and Mali only"
-msgstr "Só Adreno e Mali"
-
-#: src/gui/main.c
 #, c-format
 msgid "No Vulkan loader: %s"
 msgstr "Sem loader do Vulkan: %s"
@@ -3242,12 +3238,8 @@ msgid "Download Driver"
 msgstr "Baixar driver"
 
 #: src/gui/main.c
-msgid "The driver repositories listed hold drivers for Adreno and Mali GPUs. An Xclipse GPU's driver, RADV, is added from its zip with Add Driver"
-msgstr "Os repositórios de drivers listados têm drivers para GPUs Adreno e Mali. O driver de uma GPU Xclipse, o RADV, é adicionado pelo zip com Adicionar driver"
-
-#: src/gui/main.c
-msgid "Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's marked proprietary, no license), NX-Mali for a Mali. One picked is downloaded and added as Add Driver adds a zip"
-msgstr "Drivers das releases do GitHub: o Turnip e o do próprio fabricante para uma Adreno (o do fabricante marcado como proprietário, sem licença), o NX-Mali para uma Mali. O escolhido é baixado e adicionado como o Adicionar driver adiciona um zip"
+msgid "Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's marked proprietary, no license), NX-Mali for a Mali, RADV for an Xclipse. One picked is downloaded and added as Add Driver adds a zip"
+msgstr "Drivers das releases do GitHub: o Turnip e o do próprio fabricante para uma Adreno (o do fabricante marcado como proprietário, sem licença), o NX-Mali para uma Mali, o RADV para uma Xclipse. O escolhido é baixado e adicionado como o Adicionar driver adiciona um zip"
 
 #: src/gui/main.c
 msgid "Add Driver"

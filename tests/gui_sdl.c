@@ -2919,8 +2919,8 @@ static char* driver_zip(const char* temporary, const char* name) {
 /* Settings > App > GPU Drivers. On a desktop: its rows, this device said, Download Driver and Add Driver greyed, each
    saying Android only on its row and why as its help and on Enter, with no page and no picker; a package left in the
    folder greyed too, its box's Use refused saying why, its Remove asked first. On a phone with an Xclipse GPU: the
-   page saying so, Download Driver greyed for its Adreno and Mali drivers, a package added and picked. On a phone with
-   a Mali GPU: the page naming its node, nothing greyed. On a phone with another GPU: greyed as a desktop, saying
+   page saying so, nothing greyed, a package added and picked. On a phone with a Mali GPU: the page naming its node,
+   nothing greyed. On a phone with another GPU: greyed as a desktop, saying
    which GPUs, the package removed by Del. Then Freedreno Settings: a preset applied,
    a variable Freedreno does not read refused, and Save keeping them in app.ini */
 static void gpu_drivers(App* app, const char* temporary) {
@@ -3003,26 +3003,20 @@ static void gpu_drivers(App* app, const char* temporary) {
     assert(!app->confirm.shown);
     assert(!snx_path_exists(package) && !app->packages_count &&
            !strcmp(app->editor.note, "Removed gpu_drivers/Turnip_v32"));
-    /* a phone with an Xclipse GPU: packages load, the page saying its GPU and render node; Download Driver alone
-       greyed, as its repositories hold Adreno's and Mali's drivers, saying to add the zip; a package added is
-       picked */
+    /* a phone with an Xclipse GPU: packages load, the page saying its GPU and render node; nothing greyed, RADV
+       Xclipse's releases being Download Driver's there (download_driver); a package added is picked */
     app->gpu_host = host_xclipse;
     open_drivers(app, NULL, NULL, 0);
     assert(!strcmp(app->editor.note, "This device: Android API 34, arm64, Xclipse GPU (/dev/dri/renderD128, kernel "
                                      "driver amdgpu): custom drivers load."));
-    assert(gui_editor_rows(&app->editor) == 5 && !strcmp(app->drivers_form.value[1], "Adreno and Mali only") &&
-           !app->drivers_form.value[2][0] && form_row_off(app, &app->editor, 1) && !form_row_off(app, &app->editor, 2));
-    app->editor.row = 1;
-    key(app, SDLK_RETURN);
-    assert(app->form == GUI_FORM_DRIVERS && strstr(app->editor.note, "hold drivers for Adreno and Mali GPUs") &&
-           strstr(app->editor.note, "RADV, is added from its zip with Add Driver"));
+    assert(gui_editor_rows(&app->editor) == 5 && !app->drivers_form.value[1][0] && !app->drivers_form.value[2][0] &&
+           !form_row_off(app, &app->editor, 1) && !form_row_off(app, &app->editor, 2));
+    assert(strstr(app->drivers_about[1], "RADV for an Xclipse"));
     driver_picked(app, zip, NULL, false);
     assert(app->packages_count == 1 && !strcmp(app->gpu_driver, "Turnip_v32") &&
            !strcmp(app->drivers_form.value[1], "(*)") && !form_row_off(app, &app->editor, 1));
     assert(!strcmp(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/Turnip_v32. GPU driver for "
                                      "every game: Turnip test"));
-    render(app);
-    shows(app, "Adreno and Mali only", rgb(app->theme.soft));
     /* a phone with a Mali GPU: packages load, the page naming its node; nothing greyed, NX-Mali's releases being
        Download Driver's there (download_driver) */
     app->gpu_host = host_mali;
@@ -3106,13 +3100,16 @@ static void gpu_drivers(App* app, const char* temporary) {
     free(bad);
 }
 /* Download Driver's network, the test's own: each repository's releases (one failing as GitHub's rate limit does,
-   NX-Mali's as GitHub lists its first), and the package a release's asset is; the lists asked for counted */
+   NX-Mali's as GitHub lists its first, radv-xclipse's as it lists its three newest), and the package a release's asset
+   is; the lists asked for counted */
 static struct {
     char* zip; /* the package's bytes */
     size_t zip_size;
     char* mali_zip; /* NX-Mali's */
     size_t mali_zip_size;
-    int lists, mali_lists; /* the releases asked for: every repository's, NX-Mali's */
+    char* radv_zip; /* radv-xclipse's Android package's */
+    size_t radv_zip_size;
+    int lists, mali_lists, radv_lists; /* the releases asked for: every repository's, NX-Mali's, radv-xclipse's */
 } g_fake_net;
 static int fake_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size) {
     const char* body = "[]";
@@ -3131,6 +3128,34 @@ static int fake_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse*
         out->body = (char*)malloc(g_fake_net.mali_zip_size + 1);
         memcpy(out->body, g_fake_net.mali_zip, g_fake_net.mali_zip_size);
         out->size = g_fake_net.mali_zip_size;
+        if (o && o->progress) o->progress(o->user, out->size, out->size);
+        return 0;
+    } else if (strstr(url, "/repos/JimVulkan/radv-xclipse/releases")) {
+        ++g_fake_net.radv_lists;
+        body =
+            "[{\"tag_name\": \"v1.9.0\", \"name\": \"RADV Xclipse (Based on Mesa 27.0.0-devel)\","
+            " \"prerelease\": false, \"body\": \"RADV for Samsung Xclipse GPUs, build `cc87fdf`.\","
+            " \"published_at\": \"2026-11-11T22:39:02Z\","
+            " \"assets\": [{\"name\": \"radv-xclipse-27.0.0-devel-cc87fdf.zip\", \"size\": 4396585,"
+            " \"browser_download_url\": \"https://example.invalid/radv-xclipse-27.0.0-devel-cc87fdf.zip\"},"
+            " {\"name\": \"radv-xclipse-glibc-27.0.0-devel-cc87fdf.zip\", \"size\": 4673254,"
+            " \"browser_download_url\": \"https://example.invalid/radv-xclipse-glibc-27.0.0-devel-cc87fdf.zip\"},"
+            " {\"name\": \"radv-xclipse-wayland-27.0.0-devel-cc87fdf.zip\", \"size\": 4474943,"
+            " \"browser_download_url\": \"https://example.invalid/radv-xclipse-wayland-27.0.0-devel-cc87fdf.zip\"}]},"
+            " {\"tag_name\": \"v1.9.0-RC1\", \"name\": \"RADV Xclipse (Based on Mesa 27.0.0-devel)\","
+            " \"prerelease\": true, \"body\": \"RADV for Samsung Xclipse GPUs, release candidate 1.\","
+            " \"published_at\": \"2026-10-28T20:29:14Z\","
+            " \"assets\": [{\"name\": \"radv-xclipse-27.0.0-devel-fe9b894.zip\", \"size\": 4385836,"
+            " \"browser_download_url\": \"https://example.invalid/radv-xclipse-27.0.0-devel-fe9b894.zip\"}]},"
+            " {\"tag_name\": \"v1.8.0\", \"name\": \"RADV Xclipse (Based on Mesa 27.0.0-devel)\","
+            " \"prerelease\": false, \"body\": \"RADV for Samsung Xclipse GPUs.\","
+            " \"published_at\": \"2026-10-19T22:27:02Z\","
+            " \"assets\": [{\"name\": \"radv-xclipse-27.0.0-devel-269238e.zip\", \"size\": 4383848,"
+            " \"browser_download_url\": \"https://example.invalid/radv-xclipse-27.0.0-devel-269238e.zip\"}]}]";
+    } else if (!strcmp(url, "https://example.invalid/radv-xclipse-27.0.0-devel-cc87fdf.zip")) {
+        out->body = (char*)malloc(g_fake_net.radv_zip_size + 1);
+        memcpy(out->body, g_fake_net.radv_zip, g_fake_net.radv_zip_size);
+        out->size = g_fake_net.radv_zip_size;
         if (o && o->progress) o->progress(o->user, out->size, out->size);
         return 0;
     } else if (strstr(url, "/repos/MrPurple666/purple-turnip/releases"))
@@ -3371,8 +3396,10 @@ static void gba_covers(App* app, const char* rom, const char* folder, const char
 /* GPU Drivers > Download Driver on a phone with an Adreno GPU, against the test's network: Eden's five lists fetched
    as the page opens, NX-Mali's not, one repository's failure said, a GPU maker's own marked in its release's box, a
    download failing said, and a package downloaded, added and picked. Then on a phone with a Mali GPU: NX-Mali's list
-   alone, its latest recommended, its package (meta.json as its first release's)
-   downloaded, added and picked */
+   alone, its latest recommended, its package (meta.json as its first release's) downloaded, added and picked. Then
+   on a phone with an Xclipse GPU: radv-xclipse's list alone, titled by tag, its latest recommended, its Android
+   package alone in the release's box, not its builds for Linux and for Bannerlator, and that package (meta.json as
+   its v1.9.0's) downloaded, added and picked */
 static void download_driver(App* app, const char* temporary) {
     char* zip = driver_zip(temporary, "turnip.zip");
     char* mali_zip = package_zip(
@@ -3381,13 +3408,21 @@ static void download_driver(App* app, const char* temporary) {
         " \"author\": \"NX-Mali contributors, based on bmdhacks/malisx2\", \"vendor\": \"NX-Mali\","
         " \"driverVersion\": \"0.0.1\", \"minApi\": 29, \"libraryName\": \"libvulkan_nxmali.so\"}",
         "libvulkan_nxmali.so");
+    char* radv_zip = package_zip(
+        temporary, "radv-xclipse-27.0.0-devel-cc87fdf.zip",
+        "{\"schemaVersion\": 1, \"name\": \"RADV Xclipse (Mesa 27.0.0-devel-cc87fdf)\","
+        " \"description\": \"RADV for Samsung Xclipse GPUs, based on Mesa 27.0.0-devel.\", \"author\": \"JimVulkan\","
+        " \"packageVersion\": \"20\", \"vendor\": \"Mesa\", \"driverVersion\": \"Vulkan 1.4.368\", \"minApi\": 34,"
+        " \"libraryName\": \"vulkan.radeon.so\"}",
+        "vulkan.radeon.so");
     SnxGpuDriverHost was = app->gpu_host;
     size_t i;
     int row = -1, blob = -1;
     g_fake_net.zip = (char*)snx_read_file(zip, &g_fake_net.zip_size);
     g_fake_net.mali_zip = (char*)snx_read_file(mali_zip, &g_fake_net.mali_zip_size);
-    g_fake_net.lists = g_fake_net.mali_lists = 0;
-    assert(g_fake_net.zip && g_fake_net.mali_zip);
+    g_fake_net.radv_zip = (char*)snx_read_file(radv_zip, &g_fake_net.radv_zip_size);
+    g_fake_net.lists = g_fake_net.mali_lists = g_fake_net.radv_lists = 0;
+    assert(g_fake_net.zip && g_fake_net.mali_zip && g_fake_net.radv_zip);
     app->https_get = fake_get;
     app->gpu_host = host_adreno;
     open_drivers(app, NULL, NULL, 0);
@@ -3405,7 +3440,7 @@ static void download_driver(App* app, const char* temporary) {
     assert(app->fetch_state[2] == GUI_FETCH_FAILED && strstr(app->fetch_error[2], "HTTP 403") &&
            strstr(app->fetch_error[2], "API rate limit exceeded"));
     assert(app->fetch_state[4] == GUI_FETCH_LISTED && !app->fetch_lists[4].count);
-    assert(g_fake_net.lists == 5 && !g_fake_net.mali_lists && app->fetch_groups == 5);
+    assert(g_fake_net.lists == 5 && !g_fake_net.mali_lists && !g_fake_net.radv_lists && app->fetch_groups == 5);
     assert(!strcmp(app->editor.note, "GPU: Adreno (TM) 740. Recommended: Mr. Purple T23."));
     render(app); /* as Folders: a box a repository, its title over its rows */
     assert(grouped_entries(app) == gui_editor_rows(&app->editor) + 5);
@@ -3486,7 +3521,8 @@ static void download_driver(App* app, const char* temporary) {
     key(app, SDLK_RETURN);
     assert(app->form == GUI_FORM_FETCH);
     pump_until(app, &app->fetching);
-    assert(g_fake_net.lists == 1 && g_fake_net.mali_lists == 1 && app->fetch_state[5] == GUI_FETCH_LISTED);
+    assert(g_fake_net.lists == 1 && g_fake_net.mali_lists == 1 && !g_fake_net.radv_lists &&
+           app->fetch_state[5] == GUI_FETCH_LISTED);
     assert(app->fetch_groups == 1 && !strcmp(app->fetch_title[0], "NX-Mali: 1 release") &&
            gui_editor_rows(&app->editor) == 1 && app->fetch_repo[0] == 5 && !app->fetch_group[0] &&
            !app->fetch_release[0] && !strcmp(app->fetch_label[0], "NX-Mali 0.0.1"));
@@ -3520,14 +3556,54 @@ static void download_driver(App* app, const char* temporary) {
     app->driver_off = 0;
     change_answer(app, GUI_ASK_DRIVER, true);
     assert(!app->packages_count && !app->gpu_driver[0]);
+    /* a phone with an Xclipse GPU radv-xclipse drives: its list alone fetched, one box titled by tag, the latest
+       recommended and More for the rest; its release's box only its Android package, which is downloaded, added and
+       picked */
+    app->gpu_host = host_xclipse;
+    snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", "Samsung Xclipse 940");
+    g_fake_net.lists = g_fake_net.mali_lists = 0;
+    open_drivers(app, NULL, NULL, 0);
+    assert(!app->drivers_form.value[1][0] && !form_row_off(app, &app->editor, 1));
+    app->editor.row = 1; /* Download Driver */
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_FETCH);
+    pump_until(app, &app->fetching);
+    assert(g_fake_net.lists == 1 && g_fake_net.radv_lists == 1 && !g_fake_net.mali_lists &&
+           app->fetch_state[6] == GUI_FETCH_LISTED);
+    assert(app->fetch_groups == 1 && !strcmp(app->fetch_title[0], "RADV Xclipse: 3 releases") &&
+           gui_editor_rows(&app->editor) == 2 && app->fetch_repo[0] == 6 && app->fetch_repo[1] == 6 &&
+           !app->fetch_group[0] && !app->fetch_group[1] && !app->fetch_release[0] &&
+           !strcmp(app->fetch_label[0], "v1.9.0") && app->fetch_release[1] == GUI_FETCH_MORE &&
+           !strcmp(app->fetch_label[1], "More (2)"));
+    assert(!strcmp(app->fetch_form.value[0], "Latest, Recommended"));
+    assert(!strcmp(app->editor.note, "GPU: Samsung Xclipse 940. Recommended: RADV Xclipse."));
+    render(app);
+    key(app, SDLK_RETURN);
+    assert(app->picks_shown && app->picks_of == GUI_PICKS_ASSET && app->picks.count == 1 &&
+           strstr(pick_label(app, 0), "radv-xclipse-27.0.0-devel-cc87fdf.zip, ") &&
+           !strstr(pick_label(app, 0), "proprietary"));
+    key(app, SDLK_RETURN);
+    pump_until(app, &app->downloading);
+    assert(app->form == GUI_FORM_DRIVERS && app->packages_count == 1 &&
+           !strcmp(app->packages[0].id, "radv-xclipse-27.0.0-devel-cc87fdf") &&
+           !strcmp(app->gpu_driver, "radv-xclipse-27.0.0-devel-cc87fdf") && !strcmp(app->drivers_form.value[1], "(*)"));
+    assert(strstr(app->editor.note, "Added RADV Xclipse (Mesa 27.0.0-devel-cc87fdf) (Vulkan 1.4.368), in "
+                                    "gpu_drivers/radv-xclipse-27.0.0-devel-cc87fdf. GPU driver for every game: RADV "
+                                    "Xclipse (Mesa 27.0.0-devel-cc87fdf)"));
+    app->editor.row = 1;
+    app->driver_off = 0;
+    change_answer(app, GUI_ASK_DRIVER, true);
+    assert(!app->packages_count && !app->gpu_driver[0]);
     app->gpu_host = was;
     key(app, SDLK_ESCAPE);
     assert(app->form == GUI_FORM_APP);
     for (i = 0; i < GUI_DRIVER_REPOS; ++i) gui_driver_releases_free(&app->fetch_lists[i]);
     free(g_fake_net.zip);
     free(g_fake_net.mali_zip);
+    free(g_fake_net.radv_zip);
     free(zip);
     free(mali_zip);
+    free(radv_zip);
     app->https_get = NULL;
 }
 /* Run edenprobe's launches through the fake driver, each let end as it starts (its .go), until the box */
