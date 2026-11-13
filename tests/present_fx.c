@@ -400,10 +400,11 @@ static int bench(Test* t, SnxFx* fx, const char* frame, const char* showcase) {
     static const struct {
         int filter, aa;
         const char* name;
-    } runs[] = {{SNX_FX_UPSCALE_OFF, SNX_FX_AA_FXAA, "fxaa"},       {SNX_FX_UPSCALE_BILINEAR, SNX_FX_AA_FXAA, "bilinear-fxaa"},
-                {SNX_FX_UPSCALE_OFF, SNX_FX_AA_SMAA, "smaa"},       {SNX_FX_UPSCALE_FSR1, SNX_FX_AA_OFF, "fsr1"},
-                {SNX_FX_UPSCALE_FSR1, SNX_FX_AA_FXAA, "fsr1-fxaa"}, {SNX_FX_UPSCALE_NIS, SNX_FX_AA_OFF, "nis"},
-                {SNX_FX_UPSCALE_SGSR, SNX_FX_AA_OFF, "sgsr"},       {SNX_FX_UPSCALE_OFF, SNX_FX_AA_SSAA2, "ssaa2"}};
+    } runs[] = {
+        {SNX_FX_UPSCALE_OFF, SNX_FX_AA_FXAA, "fxaa"},       {SNX_FX_UPSCALE_BILINEAR, SNX_FX_AA_FXAA, "bilinear-fxaa"},
+        {SNX_FX_UPSCALE_OFF, SNX_FX_AA_SMAA, "smaa"},       {SNX_FX_UPSCALE_FSR1, SNX_FX_AA_OFF, "fsr1"},
+        {SNX_FX_UPSCALE_FSR1, SNX_FX_AA_FXAA, "fsr1-fxaa"}, {SNX_FX_UPSCALE_NIS, SNX_FX_AA_OFF, "nis"},
+        {SNX_FX_UPSCALE_SGSR, SNX_FX_AA_OFF, "sgsr"},       {SNX_FX_UPSCALE_OFF, SNX_FX_AA_SSAA2, "ssaa2"}};
     enum { RUNS = sizeof runs / sizeof *runs };
     static const uint32_t sizes[3][4] = {{1280, 720, 1920, 1080}, {1280, 720, 3840, 2160}, {400, 240, 1600, 960}};
     static double ms[RUNS][BENCH_ROUNDS];
