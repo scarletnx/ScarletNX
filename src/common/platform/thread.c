@@ -8,6 +8,8 @@
 #include "common/platform/thread.h"
 #include <errno.h>
 #include <limits.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #if !defined(_WIN32)
@@ -39,14 +41,24 @@ static struct {
 } g_pm_wait[PM_WAITS];
 /* Written once per thread, on its first wait, and read by the hang report. */
 static unsigned g_pm_nwait;
-/* This thread's own state in the host's lock bookkeeping: the hang report's slot, and its id. One struct, so the
-   thread takes a single TLS slot for all of it. On Darwin the first access may allocate, which a signal handler must
-   not, so each thread touches it (plat_tid) before it can fault */
+/* This thread's own state in the host's lock bookkeeping: the hang report's slot, its id, and the note the crash
+   report prints (plat_thread_note). One struct, so the thread takes a single TLS slot for all of it. On Darwin the
+   first access may allocate, which a signal handler must not, so each thread touches it (plat_tid) before it can
+   fault */
 typedef struct {
     int slot;     /* the hang report's, -1 until this thread waits once (pm_wait_note) */
     uint32_t tid; /* plat_tid's, taken once: it is a system call, and pm_lock reads it on every call */
+    char note[PLAT_THREAD_NOTE_SIZE]; /* "" without one */
 } PmThread;
-static _Thread_local PmThread t_pm = {-1, 0};
+static _Thread_local PmThread t_pm = {-1, 0, ""};
+void plat_thread_note(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    if (vsnprintf(t_pm.note, sizeof t_pm.note, fmt, ap) < 0) t_pm.note[0] = 0;
+    va_end(ap);
+}
+void plat_thread_note_clear(void) { t_pm.note[0] = 0; }
+const char* plat_thread_note_get(void) { return t_pm.note; }
 void pm_wait_note(const void* m, const void* at, int cond) {
     int i = t_pm.slot;
     if (i < 0) {

@@ -417,6 +417,60 @@ static void check_bans(void) {
     }
 }
 
+/* the crash report's note of a pipeline (vk_pipe_key_text): the targets' formats and which blend, the depth and
+   stencil formats, the samples and the topology's class always, then only what is set of the rest; cut at its size */
+static void check_key_text(void) {
+    PipeKey k = {0};
+    char text[512];
+    k.ncolor = 2;
+    k.color[0] = VK_FORMAT_R8G8B8A8_UNORM;
+    k.color[1] = VK_FORMAT_R16G16B16A16_SFLOAT;
+    k.blend[0].en = 1;
+    k.depth = VK_FORMAT_D24_UNORM_S8_UINT;
+    k.stencil = VK_FORMAT_D24_UNORM_S8_UINT;
+    k.samples = VK_SAMPLE_COUNT_4_BIT;
+    k.topo_class = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    vk_pipe_key_text(&k, text, sizeof text);
+    CHECK(!strcmp(text, "color formats 37+blend 97, depth 129, stencil 129, 4 samples, topology class 3"), text);
+
+    k = (PipeKey){0};
+    k.topo_class = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+    vk_pipe_key_text(&k, text, sizeof text);
+    CHECK(!strcmp(text, "no color targets, depth 0, stencil 0, 1 sample, topology class 0"), text);
+
+    k.tes = (VkShaderModule)(uintptr_t)1;
+    k.patch = 4;
+    k.topo_class = VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+    k.polygon = VK_POLYGON_MODE_LINE;
+    k.fs_spec = 0x5;
+    k.logic_op = VK_LOGIC_OP_XOR + 1;
+    k.advanced.operation = VK_BLEND_OP_MULTIPLY_EXT;
+    k.alpha_to_coverage = 1;
+    k.sample_shading = 1;
+    k.conservative = 1;
+    k.depth_clamp = 1;
+    k.provoking_last = 1;
+    k.feedback = 1;
+    vk_pipe_key_text(&k, text, sizeof text);
+    CHECK(!strcmp(text, "no color targets, depth 0, stencil 0, 1 sample, topology class 10, 4 control points, polygon "
+                        "mode 1, fragment specialization 0x5, logic op 6, advanced blend 1000148012, alpha to "
+                        "coverage, every sample shaded, conservative, depth clamp, the last vertex provokes, a "
+                        "feedback loop"),
+          text);
+
+    k = (PipeKey){0};
+    k.mesh = 1;
+    vk_pipe_key_text(&k, text, sizeof text);
+    CHECK(!strcmp(text, "no color targets, depth 0, stencil 0, 1 sample, mesh"), text);
+
+    /* cut at the buffer's end, its end kept; no room writes nothing */
+    vk_pipe_key_text(&k, text, 10);
+    CHECK(!strcmp(text, "no color "), text);
+    text[0] = 'z';
+    vk_pipe_key_text(&k, text, 0);
+    CHECK(text[0] == 'z', "a buffer of no bytes was written");
+}
+
 int main(void) {
     check_off();
     check_dynamic();
@@ -425,6 +479,7 @@ int main(void) {
     check_states();
     check_split();
     check_fs_spec();
+    check_key_text();
     printf("%s: %u checks, %u failed\n", g_test.failures ? "FAIL" : "PASS", g_test.checks, g_test.failures);
     return g_test.failures != 0;
 }

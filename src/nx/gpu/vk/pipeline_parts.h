@@ -118,4 +118,8 @@ void vk_pipe_fs_spec_values(u32 fs_spec, u32 values[SH_SPEC_COUNT]);
    is made the same whatever pipeline needed it first, and a part made without a draw (the programs a game ships)
    is the one a draw makes. Its split gives key back for that part */
 void vk_pipe_part_src(u32 part, const void* key, PipeKey* out);
+/* the state of k a driver compiles a pipeline's shaders with, for the crash report's note of a pipeline being made
+   (plat_thread_note): the color targets' formats (VkFormat) and which blend, the depth and stencil formats, the samples
+   and the topology's class, then what is set of the rest. Into out (n bytes), cut at its end */
+void vk_pipe_key_text(const PipeKey* k, char* out, size_t n);
 #endif
