@@ -45,9 +45,11 @@ typedef struct {
     /* each valid page's write tracking clock before it was last brought up to date: only a binding's own pages are,
        as the others may not be mapped any more */
     u32 synced[MIR_PAGES];
-    /* the pages [ck_lo, ck_hi) all valid and brought up to date in the stream's epoch ck_epoch (vk_ww_epoch): a binding
-       inside them needs nothing more in that epoch (vk_mirror_slice). Emptied when a page loses its shadow */
+    /* the pages [ck_lo, ck_hi) all valid and brought up to date in the stream's epoch ck_epoch (vk_ww_epoch), and
+       with the GPU-side writes up to generation ck_gen (gpu_mem_generation): a binding inside them needs nothing more
+       in that epoch while no GPU-side write lands there (vk_mirror_slice). Emptied when a page loses its shadow */
     u32 ck_epoch, ck_lo, ck_hi;
+    u64 ck_gen;
     u32 used; /* the present a binding last took it at (vk_mirror_idle) */
 } Gran;
 
@@ -340,12 +342,23 @@ static u64 span_bits(u64 w, u64 lo, u64 hi) {
     if (hi < a + 64) m &= (1ull << (hi - a)) - 1;
     return m;
 }
+/* a run of GPU-side writes by GPU address (gpu_mem_dirty_runs), compared as diff_run compares the tracking's runs:
+   from the GPU address to the binding's guest bytes, then to the offset from the first page it checks */
+typedef struct {
+    Diff* d;
+    u64 gva, cpu, first;
+} LandedRuns;
+static void landed_run(void* user, u64 at, u64 n) {
+    const LandedRuns* lr = user;
+    diff_run(lr->d, lr->cpu + (at - lr->gva) - lr->first, n);
+}
 /* A slice is a binding's granules, up to 16 MiB of them for each storage buffer of each draw and dispatch: their pages
    are looked at by the 64 of a mask word, as a loop over each page's bit was a fourteenth of one game's GPU thread */
 int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     u64 cpu = 0;
     if (!vk_mirror_on() || !len || gmmu_run(gva, len, &cpu) != len || cpu + len > AS_SIZE) return 0;
     u32 now = vk_ww_now(), epoch = vk_ww_epoch(); /* before any byte is read */
+    u64 gen = gpu_mem_generation();
     u64 g0 = cpu / MIR_G, g1 = (cpu + len - 1) / MIR_G;
     Up u = {0};
     int owners = 0, fresh = 0;
@@ -366,7 +379,15 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
            cache that trusts a check for its epoch has them (vk_ww_epoch). A draw binds the same 16 MiB ranges as the
            draws before it, and the walks below over their 4096 pages, three of them at each binding, were 8% of an
            Ounce game's GPU thread */
-        if (r->ck_epoch == epoch && r->ck_lo <= lo && hi <= r->ck_hi) continue;
+        /* Nor do the renderer's own writes since the check: results of draws and dispatches outside the mirror land in
+           guest memory in the middle of an epoch (gpu_mem_written), and the stream orders them before this binding.
+           One game's particle programs share an allocation counter, some in the mirror and some not; the mirror's took
+           the counter of before the others' results and handed out the same records again, and a list of them linked
+           to itself, which the next pass over it walked until the GPU stopped */
+        u64 a = base + lo * 4096 > cpu ? base + lo * 4096 : cpu;
+        u64 b = base + hi * 4096 < cpu + len ? base + hi * 4096 : cpu + len;
+        int landed = r->ck_gen && gpu_mem_dirty_since(r->ck_gen, gva + (a - cpu), b - a);
+        if (r->ck_epoch == epoch && r->ck_lo <= lo && hi <= r->ck_hi && !landed) continue;
         /* the binding's valid pages written since the oldest of them was brought up to date: the bytes the CPU
            changed, those that differ from the shadow (a page brought up to date later compares equal). Owned pages
            aren't watched: their owners are copied in below */
@@ -391,8 +412,14 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         }
         u32 oldest = now - age;
         int written = any ? vk_written_since(GP(base + lo * 4096), (hi - lo) * 4096, oldest) : 0;
+        Diff d = {r, base, lo, &u};
+        /* the runs those writes stamped, compared whatever the write tracking says of them: the stamps are the
+           renderer's own record of its landings */
+        if (landed && written >= 0) {
+            LandedRuns lr = {&d, gva, cpu, base + lo * 4096};
+            gpu_mem_dirty_runs(r->ck_gen, gva + (a - cpu), b - a, landed_run, &lr);
+        }
         if (written) {
-            Diff d = {r, base, lo, &u};
             if (written > 0)
                 vk_written_runs(GP(base + lo * 4096), (hi - lo) * 4096, oldest, diff_run, &d);
             else /* pages the tracking doesn't watch: all of them compared */
@@ -416,12 +443,15 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
                 r->valid[w] |= 1ull << (p % 64);
             }
         if (whole && r->ck_epoch == epoch && lo <= r->ck_hi && r->ck_lo <= hi) { /* touching this epoch's: one */
+            /* its generation the older's, unless this binding checked all of it again */
+            if (lo <= r->ck_lo && r->ck_hi <= hi) r->ck_gen = gen;
             if (lo < r->ck_lo) r->ck_lo = (u32)lo;
             if (hi > r->ck_hi) r->ck_hi = (u32)hi;
         } else if (whole) {
             r->ck_epoch = epoch;
             r->ck_lo = (u32)lo;
             r->ck_hi = (u32)hi;
+            r->ck_gen = gen;
         }
     }
     int copied = u.n != 0;
