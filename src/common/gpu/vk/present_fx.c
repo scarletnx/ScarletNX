@@ -1060,6 +1060,12 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
     }
     if ((filter == SNX_FX_UPSCALE_OFF || filter == SNX_FX_UPSCALE_BILINEAR) && aa == SNX_FX_AA_OFF) return 0;
     if (!make_pipelines(fx)) return 0;
+    /* with the upscaler off, FXAA and SMAA smooth the frame at its own size, which the caller then scales as it scales
+       the frame: the jagged edges are the game's pixels, and a smaller image costs less */
+    if (filter == SNX_FX_UPSCALE_OFF && (aa == SNX_FX_AA_FXAA || aa == SNX_FX_AA_SMAA)) {
+        work_w = out_w = w;
+        work_h = out_h = h;
+    }
     if (aa == SNX_FX_AA_SSAA2 || aa == SNX_FX_AA_SSAA4) {
         uint32_t mult = aa == SNX_FX_AA_SSAA4 ? 4 : 2;
         ssaa = (int)mult;
