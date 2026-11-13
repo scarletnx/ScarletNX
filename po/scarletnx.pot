@@ -3967,16 +3967,16 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Continue: %s holds no run of edenprobe left before its summary"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "The setup was not kept, so it asks again: %s"
 msgstr ""
 
 #: src/gui/main.c
 msgid "no folder for setup.ini"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Continue: %s holds no run of edenprobe left before its summary"
 msgstr ""
 
 #: src/gui/main.c
