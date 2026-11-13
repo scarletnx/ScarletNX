@@ -8,6 +8,7 @@
 * [Value numbering](#value-numbering)
 * [Integer folds and identities](#integer-folds-and-identities)
 * [Known bits](#known-bits)
+* [Values of few possible values](#values-of-few-possible-values)
 * [Dead code](#dead-code)
 * [Tests](#tests)
 
@@ -136,6 +137,28 @@ splits an address made of a register shifted by 4 plus an offset into a vec4's i
 the low bits of such an address are known. Also the sign tests of masked values (an absolute value or a clamp of what
 cannot be negative) and the fields past a value's width.
 
+## Values of few possible values
+
+Known bits cannot see a value whose few possible values share no bit: a mask `m = c ? ~0 : 0`, its negation, its
+absolute value, a field or a product of those. The walk keeps, for a 32-bit integer or a boolean that is a function
+of one such value (its leaf), the value it has for each of the leaf's (ucas's map rule):
+
+- a leaf is a boolean (two values) or an integer whose known bits leave one or two bits unknown (two or four values,
+  `x & 3`);
+- an instruction whose operands are constants and values of one leaf (the leaf among them) is evaluated for each of
+  the leaf's values, with what SPIR-V gives each instruction: the integer and bitwise arithmetic, the shifts and
+  fields, `OpSelect`, the comparisons, the logical instructions, the bitcasts, and GLSL.std.450's `SAbs`, the
+  minima, maxima and clamps;
+- it is that constant when every value gives one (`0 > -m` is false, `-m == 0x80000000` false, a field of `-m` from
+  bit 16 is 0); it is an operand of its type, or the leaf itself, when it gives that one's values
+  (`0 > m ? -m : m` is `-m`, `m & (c ? 5 : 0)` is `c ? 5 : 0`, `!!c` is `c`, `((x & 3) << 4) >> 4` is `x & 3`); and
+  the bits all its values share are known bits for what follows;
+- a shift by 32 or more, a field past bit 32, a clamp whose least is past its most, or the absolute value of the
+  least integer for any of the values leaves the instruction as it is, and so do operands of two leaves.
+
+On the Maxwell translator's modules: the masks of predicates (`c ? ~0 : 0`), their negations and absolute values, and
+what vertex programs compute of them.
+
 ## Dead code
 
 `spv_opt_dead_code` takes out of a module's functions:
@@ -163,6 +186,7 @@ that never read them.
   modules at random (a fixed sequence) of values with a few unknown bits, runs each before and after the pass on
   every value of those bits, and checks they store the same. 2000 modules of differences of terms at random run the
   same way on values of x and y that take in the module's constants, their complements and negations, and numbers
-  at random. So do 2000 modules of tests against zero.
+  at random. So do 2000 modules of tests against zero. And 3000 of values of few possible values, GLSL.std.450's
+  integer instructions among them.
 - `vulkan_headless`, `check_translation_dead_code` and `check_translation_values`: the runtime's module is the
   translator's with the passes run, and the device takes it.

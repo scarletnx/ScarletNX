@@ -14,6 +14,15 @@
 #include <string.h>
 
 enum {
+    EXT_INST_IMPORT = 11,
+    EXT_INST = 12,
+    GLSL_S_ABS = 5, /* the GLSL.std.450 instructions on integers */
+    GLSL_U_MIN = 38,
+    GLSL_S_MIN = 39,
+    GLSL_U_MAX = 41,
+    GLSL_S_MAX = 42,
+    GLSL_U_CLAMP = 44,
+    GLSL_S_CLAMP = 45,
     TYPE_VOID = 19,
     TYPE_BOOL = 20,
     TYPE_INT = 21,
@@ -251,6 +260,27 @@ static int run(const uint32_t* m, size_t words, uint32_t x, uint32_t y, uint32_t
         if (op == STORE) {
             if (w[2] >= BOUND || !set[w[2]] || stores == max) return -1;
             out[stores++] = value[w[2]];
+            continue;
+        }
+        if (op == EXT_INST && width >= 6) { /* GLSL.std.450's on integers, of one to three operands from w[5] */
+            uint32_t e[3] = {0};
+            for (uint32_t k = 5; k < width && k < 8; k++) {
+                if (w[k] >= BOUND || !set[w[k]]) return -1;
+                e[k - 5] = value[w[k]];
+            }
+            uint32_t s0 = e[0] ^ 0x80000000u, s1 = e[1] ^ 0x80000000u, s2 = e[2] ^ 0x80000000u; /* signed order */
+            switch (w[4]) {
+                case GLSL_S_ABS: v = e[0] >> 31 ? 0u - e[0] : e[0]; break;
+                case GLSL_U_MIN: v = e[0] < e[1] ? e[0] : e[1]; break;
+                case GLSL_S_MIN: v = s0 < s1 ? e[0] : e[1]; break;
+                case GLSL_U_MAX: v = e[0] < e[1] ? e[1] : e[0]; break;
+                case GLSL_S_MAX: v = s0 < s1 ? e[1] : e[0]; break;
+                case GLSL_U_CLAMP: v = e[0] < e[1] ? e[1] : e[0] > e[2] ? e[2] : e[0]; break;
+                case GLSL_S_CLAMP: v = s0 < s1 ? e[1] : s2 < s0 ? e[2] : e[0]; break;
+                default: return -1;
+            }
+            value[w[2]] = v;
+            set[w[2]] = 1;
             continue;
         }
         if (op < BITCAST || op == FUNCTION || op == FUNCTION_END || op == LABEL || op == RETURN) {
@@ -605,6 +635,262 @@ static void implications(void) {
     check(folded >= rounds / 8, "and an eighth of them at least are one of their tests");
 }
 
+/* m with GLSL.std.450 imported as id G before its first type, into d */
+enum { G = 35 };
+static void with_glsl(Module* d, const Module* m) {
+    memcpy(d->words, m->words, 5 * sizeof *m->words);
+    d->count = 5;
+    put(d, EXT_INST_IMPORT, 5, (uint32_t)G, 0x4c534c47u, 0x6474732eu, 0x3035342eu, 0u);
+    memcpy(d->words + d->count, m->words + 5, (m->count - 5) * sizeof *m->words);
+    d->count += m->count - 5;
+}
+/* the pass over m (with GLSL.std.450 imported): whether its first store reads what expect says (IS: the id want;
+   VALUE: a constant of type and bits want; STAYS: R, still made by the opcode op) */
+static int stores(const Module* m, int expect, uint32_t type, uint32_t want, uint32_t op) {
+    Module o;
+    with_glsl(&o, m);
+    size_t left = spv_opt_values(o.words, o.count);
+    uint32_t read = stored(&o, left, 0);
+    if (expect == IS) return read == want;
+    if (expect == VALUE) return constant(&o, left, read, type, want);
+    for (size_t i = 5; i < left; i += o.words[i] >> 16) /* R's instruction, past a decoration of R */
+        if ((o.words[i] & 0xffff) != DECORATE && (o.words[i] >> 16) >= 3 && o.words[i + 2] == (uint32_t)R)
+            return read == (uint32_t)R && (o.words[i] & 0xffff) == op;
+    return 0;
+}
+
+/* A value of a few possible values that share no known bit, a function of one boolean (a mask m = c ? ~0 : 0, its
+   negation, its absolute value) or of an integer with one or two bits not known (x & 3), is evaluated for each of
+   them: an instruction whose values are one constant is it, one whose values are an operand's (or the boolean's or
+   the integer's itself) is that operand */
+static void few_values(void) {
+    const uint32_t k[10] = {0x80000000u, 5, 16, 4, 7, 3, 0x11, 40, 9, 0xffffff00u};
+    enum { K40 = KA + 7, K9 = KA + 8, KFF = KA + 9 };
+    Module m, d;
+#define MASKS()                                                                                                        \
+    do {                                                                                                               \
+        begin_with(&m, k, 10);                                                                                         \
+        put(&m, SELECT, 5, (uint32_t)U, (uint32_t)P, (uint32_t)XB, (uint32_t)ONES, (uint32_t)U0); /* m */              \
+        put(&m, S_NEGATE, 3, (uint32_t)U, (uint32_t)Q, (uint32_t)P);                              /* -m, 0 or 1 */     \
+    } while (0)
+#define DONE(id)                                                                                                       \
+    do {                                                                                                               \
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)(id));                                                              \
+        end(&m);                                                                                                       \
+    } while (0)
+    MASKS();
+    put(&m, S_GREATER_THAN, 4, (uint32_t)BOOL, (uint32_t)R + 2, (uint32_t)U0, (uint32_t)P);
+    put(&m, SELECT, 5, (uint32_t)U, (uint32_t)R, (uint32_t)R + 2, (uint32_t)Q, (uint32_t)P);
+    DONE(R);
+    check(stores(&m, IS, 0, Q, SELECT), "the absolute value of a mask, 0 > m ? -m : m, is -m");
+    MASKS();
+    put(&m, S_GREATER_THAN, 4, (uint32_t)BOOL, (uint32_t)R, (uint32_t)U0, (uint32_t)Q);
+    DONE(R);
+    check(stores(&m, VALUE, BOOL, 0, 0), "0 > -m is false");
+    MASKS();
+    put(&m, I_EQUAL, 4, (uint32_t)BOOL, (uint32_t)R + 2, (uint32_t)Q, (uint32_t)KA);
+    put(&m, LOGICAL_NOT, 3, (uint32_t)BOOL, (uint32_t)R, (uint32_t)R + 2);
+    DONE(R);
+    check(stores(&m, VALUE, BOOL, 1, 0), "-m == 0x80000000 is false, and its ! true");
+    MASKS();
+    put(&m, SELECT, 5, (uint32_t)U, (uint32_t)R + 2, (uint32_t)XB, (uint32_t)KB, (uint32_t)U0);
+    put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)P, (uint32_t)R + 2);
+    DONE(R);
+    check(stores(&m, IS, 0, R + 2, BITWISE_AND), "m & (c ? 5 : 0) is c ? 5 : 0");
+    decorated(&d, &m, P);
+    m = d;
+    check(stores(&m, STAYS, 0, 0, BITWISE_AND), "and stays with the mask decorated");
+    MASKS();
+    put(&m, BIT_FIELD_U_EXTRACT, 5, (uint32_t)U, (uint32_t)R, (uint32_t)Q, (uint32_t)KC, (uint32_t)KC);
+    DONE(R);
+    check(stores(&m, VALUE, U, 0, 0), "a field of -m from bit 16 is 0");
+    MASKS();
+    put(&m, SELECT, 5, (uint32_t)U, (uint32_t)R + 2, (uint32_t)XB, (uint32_t)U0, (uint32_t)K9);
+    put(&m, I_MUL, 4, (uint32_t)U, (uint32_t)R, (uint32_t)Q, (uint32_t)R + 2);
+    DONE(R);
+    check(stores(&m, VALUE, U, 0, 0), "-m * (c ? 0 : 9) is 0");
+    MASKS();
+    put(&m, I_ADD, 4, (uint32_t)U, (uint32_t)R, (uint32_t)P, (uint32_t)Q);
+    DONE(R);
+    check(stores(&m, VALUE, U, 0, 0), "m + -m is 0");
+    /* what the values share are known bits: (x & 0xffffff00 | -m) & 4 is 0 */
+    MASKS();
+    put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R + 2, (uint32_t)X, (uint32_t)KFF);
+    put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)R + 3, (uint32_t)R + 2, (uint32_t)Q);
+    put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)R + 3, (uint32_t)KD);
+    DONE(R);
+    check(stores(&m, VALUE, U, 0, 0), "the bits -m's values share are known: (x & ~0xff | -m) & 4 is 0");
+    /* of the boolean itself */
+    begin_with(&m, k, 10);
+    put(&m, SELECT, 5, (uint32_t)BOOL, (uint32_t)R, (uint32_t)XB, (uint32_t)YES, (uint32_t)NO);
+    DONE(R);
+    check(stores(&m, IS, 0, XB, 0), "c ? true : false is c");
+    begin_with(&m, k, 10);
+    put(&m, LOGICAL_NOT, 3, (uint32_t)BOOL, (uint32_t)P, (uint32_t)XB);
+    put(&m, LOGICAL_NOT, 3, (uint32_t)BOOL, (uint32_t)R, (uint32_t)P);
+    DONE(R);
+    check(stores(&m, IS, 0, XB, 0), "!!c is c, which is no operand of the second !");
+    /* an integer of two bits not known: x & 3, x & 0x11 */
+    begin_with(&m, k, 10);
+    put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KF);
+    put(&m, SHIFT_LEFT_LOGICAL, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)P, (uint32_t)KD);
+    put(&m, SHIFT_RIGHT_LOGICAL, 4, (uint32_t)U, (uint32_t)R, (uint32_t)Q, (uint32_t)KD);
+    DONE(R);
+    check(stores(&m, IS, 0, P, 0), "((x & 3) << 4) >> 4 is x & 3");
+    m.words[m.count - 2 - 3 - 5 - 5 - 5 + 4] = (uint32_t)KE; /* x & 7: three bits */
+    check(stores(&m, STAYS, 0, 0, SHIFT_RIGHT_LOGICAL), "((x & 7) << 4) >> 4 stays: three bits are eight values");
+    begin_with(&m, k, 10);
+    put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KG);
+    put(&m, I_EQUAL, 4, (uint32_t)BOOL, (uint32_t)Q, (uint32_t)P, (uint32_t)KG);
+    put(&m, SELECT, 5, (uint32_t)U, (uint32_t)R, (uint32_t)Q, (uint32_t)P, (uint32_t)KG);
+    DONE(R);
+    check(stores(&m, VALUE, U, 0x11, 0), "(x & 0x11) == 0x11 ? x & 0x11 : 0x11 is 0x11");
+    begin_with(&m, k, 10);
+    put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KF);
+    put(&m, SELECT, 5, (uint32_t)U, (uint32_t)Q, (uint32_t)XB, (uint32_t)KB, (uint32_t)U0);
+    put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)R, (uint32_t)P, (uint32_t)Q);
+    DONE(R);
+    check(stores(&m, STAYS, 0, 0, BITWISE_OR), "values of two leaves stay");
+    /* no value: a shift by 32 or more, a field past bit 32, the absolute value of the least integer, a clamp whose
+       least is past its most */
+    MASKS();
+    put(&m, SELECT, 5, (uint32_t)U, (uint32_t)R + 2, (uint32_t)XB, (uint32_t)K40, (uint32_t)U1);
+    put(&m, SHIFT_LEFT_LOGICAL, 4, (uint32_t)U, (uint32_t)R, (uint32_t)Q, (uint32_t)R + 2);
+    DONE(R);
+    check(stores(&m, STAYS, 0, 0, SHIFT_LEFT_LOGICAL), "a shift by 40 for one of the values stays");
+    MASKS();
+    put(&m, SELECT, 5, (uint32_t)U, (uint32_t)R + 2, (uint32_t)XB, (uint32_t)K40, (uint32_t)U0);
+    put(&m, BIT_FIELD_U_EXTRACT, 5, (uint32_t)U, (uint32_t)R, (uint32_t)P, (uint32_t)R + 2, (uint32_t)U1);
+    DONE(R);
+    check(stores(&m, STAYS, 0, 0, BIT_FIELD_U_EXTRACT), "a field from bit 40 for one of them stays");
+    begin_with(&m, k, 10);
+    put(&m, SELECT, 5, (uint32_t)U, (uint32_t)P, (uint32_t)XB, (uint32_t)KA, (uint32_t)KB);
+    put(&m, EXT_INST, 5, (uint32_t)U, (uint32_t)R, (uint32_t)G, (uint32_t)GLSL_S_ABS, (uint32_t)P);
+    DONE(R);
+    check(stores(&m, STAYS, 0, 0, EXT_INST), "the absolute value of c ? 0x80000000 : 5 stays");
+    MASKS();
+    put(&m, SELECT, 5, (uint32_t)U, (uint32_t)R + 2, (uint32_t)XB, (uint32_t)K9, (uint32_t)U1);
+    put(&m, SELECT, 5, (uint32_t)U, (uint32_t)R + 3, (uint32_t)XB, (uint32_t)KF, (uint32_t)KB);
+    put(&m, EXT_INST, 7, (uint32_t)U, (uint32_t)R, (uint32_t)G, (uint32_t)GLSL_U_CLAMP, (uint32_t)Q, (uint32_t)R + 2,
+        (uint32_t)R + 3);
+    DONE(R);
+    check(stores(&m, STAYS, 0, 0, EXT_INST), "a clamp from 9 to 3 for one of them stays");
+    /* GLSL.std.450 */
+    MASKS();
+    put(&m, EXT_INST, 6, (uint32_t)U, (uint32_t)R, (uint32_t)G, (uint32_t)GLSL_S_MAX, (uint32_t)Q, (uint32_t)P);
+    DONE(R);
+    check(stores(&m, IS, 0, Q, 0), "max(-m, m) is -m");
+    MASKS();
+    put(&m, SELECT, 5, (uint32_t)U, (uint32_t)R + 2, (uint32_t)XB, (uint32_t)KE, (uint32_t)U0);
+    put(&m, EXT_INST, 6, (uint32_t)U, (uint32_t)R, (uint32_t)G, (uint32_t)GLSL_U_MIN, (uint32_t)P, (uint32_t)R + 2);
+    DONE(R);
+    check(stores(&m, IS, 0, R + 2, 0), "umin(m, c ? 7 : 0) is c ? 7 : 0");
+    MASKS();
+    put(&m, EXT_INST, 5, (uint32_t)U, (uint32_t)R, (uint32_t)G, 6u, (uint32_t)Q); /* FSign: no integer one */
+    DONE(R);
+    check(stores(&m, STAYS, 0, 0, EXT_INST), "an extended instruction this does not know stays");
+#undef MASKS
+#undef DONE
+    /* Modules at random: a boolean (c, loaded), an integer of one or two bits not known (x & K, sometimes three),
+       masks and selects of them, then instructions of those and of constants, each stored; each module runs the same
+       before and after the pass on x and y of the samples */
+    static const uint32_t ints[] = {I_ADD,
+                                    I_SUB,
+                                    I_MUL,
+                                    BITWISE_AND,
+                                    BITWISE_OR,
+                                    BITWISE_XOR,
+                                    S_NEGATE,
+                                    NOT,
+                                    SHIFT_LEFT_LOGICAL,
+                                    SHIFT_RIGHT_LOGICAL,
+                                    SHIFT_RIGHT_ARITHMETIC,
+                                    BIT_FIELD_U_EXTRACT,
+                                    BIT_FIELD_S_EXTRACT,
+                                    SELECT,
+                                    EXT_INST};
+    static const uint32_t glsl[] = {GLSL_S_ABS, GLSL_U_MIN,   GLSL_S_MIN,  GLSL_U_MAX,
+                                    GLSL_S_MAX, GLSL_U_CLAMP, GLSL_S_CLAMP};
+    static const uint32_t bools[] = {I_EQUAL,           I_NOT_EQUAL, U_GREATER_THAN, S_GREATER_THAN, U_LESS_THAN,
+                                     S_LESS_THAN_EQUAL, LOGICAL_AND, LOGICAL_OR,     LOGICAL_NOT,    LOGICAL_EQUAL};
+    uint32_t seed = 0x9e3779b9u;
+    int failed = 0, folded = 0;
+    const int rounds = 3000;
+    for (int round = 0; round < rounds && failed < 5; round++) {
+        uint32_t kr[10], bits = next(&seed) % 4 ? 2 : next(&seed) % 2 ? 1 : 3, mask = 0;
+        for (uint32_t set = 0; set < bits;) { /* bits of them at random places */
+            uint32_t bit = 1u << (next(&seed) % 32);
+            set += !(mask & bit);
+            mask |= bit;
+        }
+        kr[0] = mask;
+        for (int i = 1; i < 6; i++) kr[i] = next(&seed) % 3 ? next(&seed) % 4 : next(&seed);
+        kr[6] = next(&seed) % 32; /* a shift's amount */
+        kr[7] = next(&seed) % 17; /* a field's offset and count */
+        kr[8] = next(&seed) % (33 - kr[7]);
+        kr[9] = 0x80000000u;
+        begin_with(&m, kr, 10);
+        uint32_t pool_int[16] = {X, KB, KC, KD, KE, KF, KA + 9, ONES, U0}, pool_bool[16] = {XB, YES, NO};
+        uint32_t nint = 9, nbool = 3, id = (uint32_t)P;
+        put(&m, BITWISE_AND, 4, (uint32_t)U, id, (uint32_t)X, (uint32_t)KA); /* x & K */
+        pool_int[nint++] = id++;
+        put(&m, SELECT, 5, (uint32_t)U, id, (uint32_t)XB, (uint32_t)ONES, (uint32_t)U0); /* a mask */
+        pool_int[nint++] = id++;
+        int stored_ones = 0;
+        for (int level = 0; level < 5 && id < BOUND - 2; level++) {
+            int boolean = next(&seed) % 3 == 0;
+            uint32_t a = pool_int[1 + next(&seed) % (nint - 1)], b = pool_int[1 + next(&seed) % (nint - 1)];
+            uint32_t c = pool_int[1 + next(&seed) % (nint - 1)], cond = pool_bool[next(&seed) % nbool];
+            if (boolean) {
+                uint32_t op = bools[next(&seed) % (sizeof bools / sizeof *bools)];
+                uint32_t p = pool_bool[next(&seed) % nbool], q = pool_bool[next(&seed) % nbool];
+                if (op == LOGICAL_NOT)
+                    put(&m, op, 3, (uint32_t)BOOL, id, p);
+                else if (op >= LOGICAL_EQUAL && op <= LOGICAL_AND)
+                    put(&m, op, 4, (uint32_t)BOOL, id, p, q);
+                else
+                    put(&m, op, 4, (uint32_t)BOOL, id, a, b);
+                pool_bool[nbool++] = id;
+            } else {
+                uint32_t op = ints[next(&seed) % (sizeof ints / sizeof *ints)];
+                if (op == S_NEGATE || op == NOT)
+                    put(&m, op, 3, (uint32_t)U, id, a);
+                else if (op == SHIFT_LEFT_LOGICAL || op == SHIFT_RIGHT_LOGICAL || op == SHIFT_RIGHT_ARITHMETIC)
+                    put(&m, op, 4, (uint32_t)U, id, a, (uint32_t)KA + 6);
+                else if (op == BIT_FIELD_U_EXTRACT || op == BIT_FIELD_S_EXTRACT)
+                    put(&m, op, 5, (uint32_t)U, id, a, (uint32_t)KA + 7, (uint32_t)KA + 8);
+                else if (op == SELECT)
+                    put(&m, op, 5, (uint32_t)U, id, cond, a, b);
+                else if (op == EXT_INST) {
+                    uint32_t g = glsl[next(&seed) % (sizeof glsl / sizeof *glsl)];
+                    if (g == GLSL_S_ABS)
+                        put(&m, op, 5, (uint32_t)U, id, (uint32_t)G, g, a);
+                    else if (g == GLSL_U_CLAMP || g == GLSL_S_CLAMP)
+                        put(&m, op, 7, (uint32_t)U, id, (uint32_t)G, g, a, b, c);
+                    else
+                        put(&m, op, 6, (uint32_t)U, id, (uint32_t)G, g, a, b);
+                } else
+                    put(&m, op, 4, (uint32_t)U, id, a, b);
+                pool_int[nint++] = id;
+            }
+            put(&m, STORE, 2, (uint32_t)OUT, id++);
+            stored_ones++;
+        }
+        end(&m);
+        with_glsl(&d, &m);
+        Module o = d;
+        size_t left = spv_opt_values(o.words, o.count);
+        for (int nth = 0; nth < stored_ones; nth++) folded += stored(&o, left, nth) != stored(&d, d.count, nth);
+        if (!same_on_samples(&d, kr, 10, &seed)) {
+            fprintf(stderr, "few values: round %d of the modules at random runs otherwise after the pass\n", round);
+            failed++;
+        }
+    }
+    check(!failed, "a module of few values at random stores what it stored before the pass");
+    if (folded < rounds / 2) fprintf(stderr, "few values: the pass folded %d stores of %d modules\n", folded, rounds);
+    check(folded >= rounds / 2, "and the pass folds half as many stores as there are modules at least");
+}
+
 int main(void) {
     Module m, o;
     size_t left;
@@ -838,11 +1124,11 @@ int main(void) {
         int expect;
         uint32_t want;
     } truths[] = {
-        {LOGICAL_AND, XB, YES, IS, XB},        {LOGICAL_AND, YES, XB, IS, XB},    {LOGICAL_AND, XB, NO, VALUE, 0},
-        {LOGICAL_AND, NO, XB, VALUE, 0},       {LOGICAL_AND, XB, XB, IS, XB},     {LOGICAL_OR, XB, NO, IS, XB},
-        {LOGICAL_OR, NO, XB, IS, XB},          {LOGICAL_OR, XB, YES, VALUE, 1},   {LOGICAL_OR, YES, XB, VALUE, 1},
-        {LOGICAL_OR, XB, XB, IS, XB},          {LOGICAL_EQUAL, XB, XB, STAYS, 0}, {LOGICAL_EQUAL, XB, YES, STAYS, 0},
-        {LOGICAL_NOT_EQUAL, XB, NO, STAYS, 0}, {LOGICAL_AND, XB, U1, STAYS, 0},   {LOGICAL_AND, X, YES, STAYS, 0},
+        {LOGICAL_AND, XB, YES, IS, XB},      {LOGICAL_AND, YES, XB, IS, XB},    {LOGICAL_AND, XB, NO, VALUE, 0},
+        {LOGICAL_AND, NO, XB, VALUE, 0},     {LOGICAL_AND, XB, XB, IS, XB},     {LOGICAL_OR, XB, NO, IS, XB},
+        {LOGICAL_OR, NO, XB, IS, XB},        {LOGICAL_OR, XB, YES, VALUE, 1},   {LOGICAL_OR, YES, XB, VALUE, 1},
+        {LOGICAL_OR, XB, XB, IS, XB},        {LOGICAL_EQUAL, XB, XB, VALUE, 1}, {LOGICAL_EQUAL, XB, YES, IS, XB},
+        {LOGICAL_NOT_EQUAL, XB, NO, IS, XB}, {LOGICAL_AND, XB, U1, STAYS, 0},   {LOGICAL_AND, X, YES, STAYS, 0},
         {LOGICAL_OR, X, X, STAYS, 0},
     };
     for (size_t k = 0; k < sizeof truths / sizeof *truths; k++)
@@ -1513,6 +1799,7 @@ int main(void) {
     }
     sum_terms();
     implications();
+    few_values();
     printf("spirv opt fold: %d checks failed\n", g_failures);
     return g_failures != 0;
 }

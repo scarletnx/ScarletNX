@@ -47,6 +47,13 @@ size_t spv_opt_dead_code(uint32_t* module, size_t words);
    comparison the operands' known bits decide (an operand's range lying past the other's, or an operand compared with
    itself) is true or false, and a & b, a | b and a field from bit 0 that the known bits leave equal to a are a.
 
+   And it keeps, of a 32-bit integer or a boolean that is a function of one value of few possible values (a boolean, an
+   integer with one or two bits not known), its value for each of them (spirv-opt has no such rule; ucas's map rule): an
+   instruction of constants and of such values of one leaf is evaluated for each, and is that constant when they all
+   give one (0 > -m is false for a mask m = c ? ~0 : 0), or its operand, or the leaf, when they give that one's values
+   (0 > m ? -m : m is -m). The bits its values share are known bits. Shifts, fields, clamps and the absolute value
+   that give one of the values no value leave the instruction as it is.
+
    A result an instruction of unknown layout may name (any of its words) neither goes nor stands for another, nor
    does one with a decoration that has operands. A module with a 64-bit integer type and an OpSwitch is left as it is. Run
    spv_opt_dead_code after it: what only fed an instruction that went (an access chain, a constant's use) is dead
