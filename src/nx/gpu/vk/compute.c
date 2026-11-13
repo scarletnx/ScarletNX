@@ -219,7 +219,12 @@ static void cs_init(void) {
 
 /* a bigger arena; only between batches, nothing points into it then */
 static u64 g_ar_want = 8ull << 20; /* doubles when a batch fills the arena, up to 64 MB */
-/* arenas draws read from: reused once the frames that read them are done */
+/* Arenas draws read from: reused once the frames that read them are done. They are kept by bytes, ARENA_KEEP or
+   twice what a batch's arena is wanted at where that is more (128 MiB once the arenas grew to 64 MiB), and one at
+   least: eight were kept whatever their size, up to 512 MiB of host memory after a burst. A game's frame takes
+   three or four of 8 MiB in turn, which the bytes hold. One no batch took for ARENA_IDLE frames goes too */
+#define ARENA_IDLE 600u
+#define ARENA_KEEP (64ull << 20)
 static struct {
     VkBuffer b;
     DevMem m;
@@ -227,14 +232,34 @@ static struct {
     u64 cap, frame;
 } g_retired[8];
 static int g_nretired;
+static void retired_drop(int i) {
+    vk_defer_buffer(g_retired[i].b, g_retired[i].m);
+    memmove(g_retired + i, g_retired + i + 1, sizeof g_retired[0] * (size_t)(g_nretired - i - 1));
+    g_nretired--;
+}
+/* the list within its bytes, its count and its age: the oldest go first, the newest stays */
+static void retired_trim(void) {
+    u64 bytes = 0;
+    for (int i = 0; i < g_nretired; i++) bytes += g_retired[i].cap;
+    const u64 keep = 2 * g_ar_want > ARENA_KEEP ? 2 * g_ar_want : ARENA_KEEP;
+    while (g_nretired > 1 && (bytes > keep || g_nretired == 8)) {
+        bytes -= g_retired[0].cap;
+        retired_drop(0);
+    }
+    for (int i = 0; i < g_nretired - 1;)
+        if (g_retired[i].frame + ARENA_IDLE <= vk_frame_id())
+            retired_drop(i);
+        else
+            i++;
+}
+static void retired_add(VkBuffer b, DevMem m, u8* p, u64 cap, u64 frame) {
+    if (g_nretired == 8) retired_drop(0); /* full: the oldest goes for good */
+    g_retired[g_nretired++] = (typeof(g_retired[0])){b, m, p, cap, frame};
+    retired_trim();
+}
 static void arena_retire(void) {
     if (!g_ar) return;
-    if (g_nretired == 8) { /* full: the oldest goes for good */
-        vk_defer_buffer(g_retired[0].b, g_retired[0].m);
-        memmove(g_retired, g_retired + 1, sizeof g_retired[0] * 7);
-        g_nretired--;
-    }
-    g_retired[g_nretired++] = (typeof(g_retired[0])){g_ar, g_ar_mem, g_ar_ptr, g_ar_cap, vk_frame_id()};
+    retired_add(g_ar, g_ar_mem, g_ar_ptr, g_ar_cap, vk_frame_id());
     g_ar = VK_NULL_HANDLE;
 }
 /* the original bytes beside the arena, as big as it: batches put aside swap theirs with the current one's */
@@ -433,13 +458,7 @@ static void cs_write_back(DevMem mem, const u8* ar, const u8* org, const CsOut* 
 /* an arena whose batch has landed: draws that read it may still run (gfx), so it waits for their frame like the
    arenas draws read; one they didn't read is free now */
 static void cs_arena_done(VkBuffer b, DevMem m, u8* p, u64 cap, int gfx) {
-    if (g_nretired == 8) { /* full: the oldest goes for good */
-        vk_defer_buffer(g_retired[0].b, g_retired[0].m);
-        memmove(g_retired, g_retired + 1, sizeof g_retired[0] * 7);
-        g_nretired--;
-    }
-    g_retired[g_nretired++] = (typeof(g_retired[0])){
-        b, m, p, cap, gfx || vk_frame_id() < VK_FRAMES ? vk_frame_id() : vk_frame_id() - VK_FRAMES};
+    retired_add(b, m, p, cap, gfx || vk_frame_id() < VK_FRAMES ? vk_frame_id() : vk_frame_id() - VK_FRAMES);
 }
 static void cs_any_update(void) {
     int any = g_nout > 0;
