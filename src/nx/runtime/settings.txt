@@ -1380,8 +1380,9 @@ setting HMMA in half floats
     words Off|On
     help An SM86 HMMA's products and their sum in half floats, two products an instruction, where the f32 sum the
     help console's tensor core keeps takes two: on a device whose matrix unit the driver does not offer (every
-    help MoltenVK so far), that is 2 and a half times the frames a second one game's upscaler gets, at about 1e-3 of
-    help its results' precision. 0 = the f32 sum, as exact as the console's
+    help MoltenVK so far), that is 2 and a half times the frames a second one game's upscaler gets. A result is then
+    help up to 0.4% of its products' size off, more than that of itself where they cancel, and a product or partial
+    help sum past 65504 is an infinity. 0 = the f32 sum, as exact as the console's
 setting Vulkan allocation cap
     key vk_max_allocation_mb
     int 0 INT_MAX

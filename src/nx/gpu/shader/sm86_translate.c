@@ -2926,9 +2926,11 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
     /* the pairs as two f16 for OpFDot2MixAcc32VALVE (a bitcast: no instruction), or unpacked to two f32 */
     int mixed = g_shader_mixed_dot && g_shader_float16;
     /* The products and their sum in half floats, two products to an OpFma where the f32 sum takes two instructions
-       (g_shader_hmma_f16), and C added in f32 to that sum at the end: the one speed an emulated tensor core finds, at
-       about 1e-3 of the f32 sum's precision, which is the console's. The driver's matrix unit (hmma_coop) is the
-       exact way to that speed and it is off where the driver has no VK_KHR_cooperative_matrix */
+       (g_shader_hmma_f16), and C added in f32 to that sum at the end: the one speed an emulated tensor core finds.
+       Each of the two half sums rounds in f16 once a product (8 times for k16, 4 for k8), so a result is within about
+       2^-8 of its products' magnitudes where the f32 sum is within 2^-20, and 2^-21 more below the normals (more where
+       the device flushes f16 subnormals); a product or partial sum past 65504 is an infinity. The driver's matrix
+       unit (hmma_coop) is the exact way to that speed and it is off where the driver has no VK_KHR_cooperative_matrix */
     int packed = !mixed && g_shader_hmma_f16 && g_shader_float16;
     u32 t_v2h = 0, zero2 = 0;
     if (mixed || packed) {

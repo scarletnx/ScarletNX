@@ -179,6 +179,18 @@ static uint32_t new_block(Ev* e, uint32_t* words, uint32_t n, int owned) {
     return e->nblocks++;
 }
 
+/* a value rounded to the nearest even f16, its bits: infinities past 65504 and its subnormals kept */
+static uint32_t half_bits(double v) {
+    uint32_t sign = signbit(v) ? 0x8000u : 0;
+    double a = fabs(v);
+    if (a != a) return 0x7e00u;
+    if (a >= 65520.0) return sign | 0x7c00u;
+    if (a < 6.103515625e-05) return sign | (uint32_t)nearbyint(ldexp(a, 24)); /* in units of 2^-24 */
+    int ex;
+    double m = frexp(a, &ex); /* a = m 2^ex, m in [0.5, 1) */
+    return sign | (((uint32_t)(ex + 14) << 10) + (uint32_t)nearbyint(ldexp(m, 11)) - 0x400u); /* a carry: next binade */
+}
+
 /* GLSL.std.450 */
 static const char* ext_inst(Ev* e, uint32_t t, uint32_t fn, const uint32_t* args, uint32_t nargs, Val* r) {
     uint32_t n = components(e, t);
@@ -213,7 +225,14 @@ static const char* ext_inst(Ev* e, uint32_t t, uint32_t fn, const uint32_t* args
         uint64_t x = nargs > 0 ? e->ids[args[0]].v.c[k] : 0, y = nargs > 1 ? e->ids[args[1]].v.c[k] : 0,
                  z = nargs > 2 ? e->ids[args[2]].v.c[k] : 0;
         uint64_t v;
-        if (fl && !is64(e, t)) {
+        if (fl && is16(e, t)) {
+            /* Fma of f16, rounded once: the double holds the product of two f16 whole, and its sum with a third
+               rounds only where the two are more than 53 bits apart, below any half's rounding point */
+            if (fn != 50) return "GLSL function on f16 other than Fma";
+            double a = half_f((uint32_t)x & 0xffffu), b = half_f((uint32_t)y & 0xffffu),
+                   c = half_f((uint32_t)z & 0xffffu);
+            v = half_bits(fma(a, b, c));
+        } else if (fl && !is64(e, t)) {
             float a = f32(x), b = f32(y), c = f32(z);
             switch (fn) {
                 case 1: v = u_f32(roundf(a)); break;
