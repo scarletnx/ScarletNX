@@ -31,11 +31,12 @@
 
 /* the common options scarletnx-3ds takes (common/utilities/cli.h): all but --frames, --shot and --headless, as the
    3DS runtime has no frame count, screenshot or window-less run of its own */
-static const unsigned ctr_cli =
-    SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_EXTRACT_CONTAINER) | SNX_CLI_BIT(SNX_CLI_RECOMPILE) |
-    SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_OUTDIR) |
-    SNX_CLI_BIT(SNX_CLI_OUTPUT) | SNX_CLI_BIT(SNX_CLI_KEYS) | SNX_CLI_BIT(SNX_CLI_SECONDS) |
-    SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_FULLSCREEN) | SNX_CLI_BIT(SNX_CLI_HELP);
+static const unsigned ctr_cli = SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_EXTRACT_CONTAINER) |
+                                SNX_CLI_BIT(SNX_CLI_RECOMPILE) | SNX_CLI_BIT(SNX_CLI_GAME) |
+                                SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_OUTDIR) |
+                                SNX_CLI_BIT(SNX_CLI_OUTPUT) | SNX_CLI_BIT(SNX_CLI_KEYS) | SNX_CLI_BIT(SNX_CLI_SECONDS) |
+                                SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_FULLSCREEN) |
+                                SNX_CLI_BIT(SNX_CLI_HELP) | SNX_CLI_RECOMPILE_OPTIONS;
 static void usage(FILE* out) {
     fputs(
         "Usage: scarletnx-3ds [OPTIONS] game\n"
@@ -88,7 +89,13 @@ static void usage(FILE* out) {
         "                         goes, game the console's (the default), and F4 turns it off and on.\n"
         "                         --aot_threads=N compiles the game's code on N threads (1 to 1024; the default 0:\n"
         "                         the computer's cores with a quarter left free, or --aot_threads_most=N), as the\n"
-        "                         Switch's\n"
+        "                         Switch's, the same as --jobs N\n"
+        "\n"
+        "On the 3DS, -O is the level of the static blocks' code and of the helpers they call. --chunk N puts N\n"
+        "instructions in a chunk, whole blocks (default: 512 blocks a chunk). --jit-cache FILE is the list of the\n"
+        "blocks a run compiled at run time that discovery starts from, another game folder's <title ID>.hints (default:\n"
+        "the game's own). --jit-only makes a module of no blocks, the run-time compiler compiling every one, and\n"
+        "--keep-ir keeps each chunk's IR in <title ID>_build of the game's folder.\n"
         "\n"
         "On the 3DS, --update takes an update's or a DLC's CIA (a bare NCCH for an update), given again for each.\n"
         "It is recorded beside the game in its folder and checked in its .ini's addons=, as a Switch game's are,\n"
@@ -295,8 +302,9 @@ out:
 /* The default: nothing extracted. The game is mapped and checked as the extraction checks it, its ExeFS and RomFS
    read where they lie, and folder keeps the title's state alone: an extraction an earlier --extract-container left
    there is taken away, as the game has all of it */
-static int play_game(const SnxCtrSource* game, const char* folder, SnxCtrModel model, uint64_t max_blocks, double seconds,
-                    unsigned flags, uint32_t ipc_stubs, const char* runtime, char* error, size_t error_size) {
+static int play_game(const SnxCtrSource* game, const char* folder, SnxCtrModel model, uint64_t max_blocks,
+                     double seconds, unsigned flags, uint32_t ipc_stubs, const char* runtime,
+                     const SnxCliRecompile* asked, char* error, size_t error_size) {
     char *state = NULL, why[256];
     int status = 1;
     if (snx_is_link(folder))
@@ -318,7 +326,8 @@ static int play_game(const SnxCtrSource* game, const char* folder, SnxCtrModel m
             if (failed) goto done;
         }
     }
-    status = snx_ctr_aot_run(state, game, model, max_blocks, seconds, flags, ipc_stubs, runtime, error, error_size);
+    status =
+        snx_ctr_aot_run(state, game, model, max_blocks, seconds, flags, ipc_stubs, runtime, asked, error, error_size);
     if (status) fprintf(stderr, "scarletnx-3ds: %s\n", error);
 done:
     free(state);
@@ -379,12 +388,12 @@ done:
    already, else the game at input, which source is opened (NULL when it is not) */
 static int play(const char* input, SnxCtrSource* source, char* extracted, SnxCtrModel model, uint64_t max_blocks,
                 double seconds, bool recompile, bool extract_only, bool extract_container, uint32_t ipc_stubs,
-                const char* runtime) {
+                const char* runtime, const SnxCliRecompile* asked) {
     char error[1024]; /* the run's last line: a GX command's stop carries why the GPU did not start */
     unsigned flags = recompile ? SNX_CTR_RECOMPILE | SNX_CTR_COMPILE_ONLY : 0;
     if (source && !extract_container && !extract_only) { /* the game read where it lies, the folder keeping its state */
-        int status =
-            play_game(source, extracted, model, max_blocks, seconds, flags, ipc_stubs, runtime, error, sizeof error);
+        int status = play_game(source, extracted, model, max_blocks, seconds, flags, ipc_stubs, runtime, asked, error,
+                               sizeof error);
         snx_ctr_source_close(source);
         free(extracted);
         return status;
@@ -409,8 +418,8 @@ static int play(const char* input, SnxCtrSource* source, char* extracted, SnxCtr
         free(extracted);
         return 0;
     }
-    int status =
-        snx_ctr_aot_run(extracted, NULL, model, max_blocks, seconds, flags, ipc_stubs, runtime, error, sizeof error);
+    int status = snx_ctr_aot_run(extracted, NULL, model, max_blocks, seconds, flags, ipc_stubs, runtime, asked, error,
+                                 sizeof error);
     free(extracted);
     if (status) fprintf(stderr, "scarletnx-3ds: %s\n", error);
     return status;
@@ -661,7 +670,7 @@ static char* own_game(const char* argv0) {
    owned too */
 static int play_folder(char* folder, SnxCtrModel model, bool model_set, const char* repo, const char* argv0,
                        const char* keys, uint64_t max_blocks, double seconds, bool recompile, bool extract_only,
-                       bool extract_container, uint32_t ipc_stubs, char* runtime) {
+                       bool extract_container, uint32_t ipc_stubs, char* runtime, const SnxCliRecompile* asked) {
     SnxCtrSource* source = NULL;
     char error[512];
     int status;
@@ -723,7 +732,7 @@ static int play_folder(char* folder, SnxCtrModel model, bool model_set, const ch
     }
     if (extract_container) addons_unplayed(folder);
     status = play(named, source, folder, model, max_blocks, seconds, recompile, extract_only, extract_container,
-                  ipc_stubs, runtime);
+                  ipc_stubs, runtime, asked);
     free(named);
     free(runtime);
     return status;
@@ -762,6 +771,10 @@ int snx_ctr_main(int argc, char** argv) {
             ini_read(ini_find(g_ctr_debug_ini, "ctr_script"), cli.value[SNX_CLI_SCRIPT]);
         else if (common == SNX_CLI_FULLSCREEN)
             ini_read(ini_find(g_display_ini, "fullscreen"), cli.fullscreen ? "1" : "0");
+        else if (common == SNX_CLI_OPT) /* the Switch's settings, as --aot_threads= is: the last given counts */
+            ini_read(ini_find(g_recompile_ini, "opt"), cli.value[SNX_CLI_OPT]);
+        else if (common == SNX_CLI_JOBS)
+            g_settings.aot_threads = cli.jobs;
         if (common) continue;
         if (!positional && !strcmp(arg, "--"))
             positional = true;
@@ -859,6 +872,16 @@ int snx_ctr_main(int argc, char** argv) {
         return 2;
     }
     for (int u = 0; u < cli.update_count; ++u) updates[update_count++] = cli.updates[u];
+    /* the recompile's options, for the game's code, which --board-info, --icon and -x make none of */
+    SnxCliRecompile asked = snx_cli_recompile(&cli);
+    if (asked.given && (info || icon || extract_only)) {
+        fprintf(stderr, "scarletnx-3ds: %s is the recompile's, and %s compiles no code\n", asked.given,
+                info   ? "--board-info"
+                : icon ? "--icon"
+                       : "-x");
+        snx_cli_free(&cli);
+        return 2;
+    }
     if (icon_out && !icon) {
         fputs("scarletnx-3ds: --out needs --icon\n", stderr);
         usage(stderr);
@@ -934,7 +957,7 @@ int snx_ctr_main(int argc, char** argv) {
     int status;
     if (folder)
         return play_folder(folder, model, model_set, repo, argv[0], keys, max_blocks, seconds, recompile, extract_only,
-                           extract_container, ipc_stubs, runtime);
+                           extract_container, ipc_stubs, runtime, &asked);
     /* Do not let a host filename inject progress/launch banners into the GUI. */
     if (!visible_path(input) || (output && !visible_path(output)) || (outdir && !visible_path(outdir))) {
         fputs("scarletnx-3ds: input/output paths may not contain control characters\n", stderr);
@@ -1003,7 +1026,7 @@ int snx_ctr_main(int argc, char** argv) {
         } else if (!record_addon(folder, name, title, version, input)) {
             free(named);
             return play_folder(folder, model, model_set, repo, argv[0], keys, max_blocks, seconds, recompile,
-                               extract_only, extract_container, ipc_stubs, runtime);
+                               extract_only, extract_container, ipc_stubs, runtime, &asked);
         }
         free(named);
         free(folder);
@@ -1086,7 +1109,7 @@ int snx_ctr_main(int argc, char** argv) {
         return status;
     }
     status = play(readable, source, folder, model, max_blocks, seconds, recompile, extract_only, extract_container,
-                  ipc_stubs, runtime);
+                  ipc_stubs, runtime, &asked);
     free(readable);
     free(runtime);
     return status;

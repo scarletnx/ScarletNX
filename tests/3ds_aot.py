@@ -476,6 +476,44 @@ def main():
         assert chunks == [(f'blocks_{k:03}', min(512, found - k * 512)) for k in range(count)], text
         assert lines[count][2] == 'index' and int(lines[count][3]) >= found, text
         assert 'chunks of static blocks emitted' not in text, text
+        # the recompile's common options (common/utilities/cli.h): --chunk's instructions to a chunk, whole blocks, each
+        # chunk's IR and the index's kept by --keep-ir, -q's silence, -O's level (another module at -O0)
+        source = root / f'input {cases};literal.cia'
+
+        def recompile(*options, status=0):
+            # each its own folder of one name, which the module's file and its library name carry
+            folder = root / f'recompiled {len(options)} {"-".join(options).replace("/", "")}' / 'game'
+            p = subprocess.run(
+                [driver, '-r', *options, '--output', str(folder), str(source)],
+                text=True,
+                capture_output=True,
+                timeout=90,
+            )
+            assert p.returncode == status, (options, p.stdout + p.stderr)
+            return folder, p.stdout + p.stderr
+
+        cut, text = recompile('--chunk', '100', '--keep-ir')
+        count = (found + 99) // 100  # the chained blocks are one instruction each, the last two
+        lines = re.findall(r'^  compiled block (\d+)/(\d+): (\w+), ', text, re.M)
+        assert sorted(int(done) for done, *_ in lines) == list(range(1, count + 2)), text
+        assert {int(of) for _, of, _ in lines} == {count + 1}, text
+        kept = sorted(f.name for f in (cut / f'{cut.name}_build').iterdir())
+        assert kept == sorted([f'blocks_{k:03}.ll' for k in range(count)] + ['index.ll']), kept
+        assert 'define ' in (cut / f'{cut.name}_build' / 'blocks_000.ll').read_text()
+        quiet, text = recompile('-q', '-O0')
+        assert 'compiled block' not in text and 'Recompiling' not in text and 'Discovered' not in text, text
+        # the level is the setting opt's, 2 unless -O or --opt says another: the same module as -O2's, not -O0's
+        default, _ = recompile('-q')
+        level, _ = recompile('--opt', '2', '-q')
+        assert module_of(default).read_bytes() == module_of(level).read_bytes() != module_of(quiet).read_bytes()
+        # --jit-only: a module of no blocks, every one compiled at run time when the game plays
+        empty, text = recompile('--jit-only')
+        assert 'No code ahead of time (--jit-only)' in text and "the module's index, 0 blocks" in text, text
+        p = subprocess.run([driver, '--output', str(empty), str(source)], text=True, capture_output=True, timeout=90)
+        assert 'Guest ExitProcess: r0=49' in p.stdout and 'Compiled at run time: ' in p.stdout, p.stdout + p.stderr
+        # --jit-cache names the list discovery starts from; one that is not there stops the recompile, named
+        _, text = recompile('--jit-cache', str(root / 'none.hints'), status=1)
+        assert f'--jit-cache {root / "none.hints"}: no such file' in text, text
         # A target the static discovery can't prove (a register's) compiles at run time, and goes in the title's
         # hints, which the next recompile starts from: then it is a static block.
         uncovered = bytearray(0x1800)
@@ -488,6 +526,16 @@ def main():
         assert p.returncode == 0 and 'Seeding ARM11 discovery with 1 blocks' in p.stdout, p.stdout + p.stderr
         p = subprocess.run([driver, '--output', str(hinted), str(source)], text=True, capture_output=True, timeout=90)
         assert 'Guest ExitProcess' in p.stdout and 'Compiled at run time' not in p.stdout, p.stdout + p.stderr
+        # another folder's hints, which --jit-cache names: its recompile starts from them as the folder's own does
+        (root / 'run.hints').write_text('00100100\n')
+        elsewhere = root / f'out {cases} elsewhere'
+        p = subprocess.run(
+            [driver, '-r', '--jit-cache', str(root / 'run.hints'), '--output', str(elsewhere), str(source)],
+            text=True,
+            capture_output=True,
+            timeout=90,
+        )
+        assert p.returncode == 0 and 'Seeding ARM11 discovery with 1 blocks' in p.stdout, p.stdout + p.stderr
         too_large, _ = run(application([0xEF000003], text_size=16 * 1024 * 1024 + 4), 3, 'static AOT text limit')
         assert not module_of(too_large).exists()
         extracted, text = run(application([0xE3A0002A, 0xEF000003]), message='Extracted', extra=('-x',))

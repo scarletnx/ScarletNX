@@ -97,6 +97,20 @@ static LLVMModuleRef new_module(SnxIr* ir) {
     LLVMSetDataLayout(m, LLVMGetDataLayoutStr(ir->mod));
     return m;
 }
+/* the module's IR as the backend made it, before its passes, as dir/id.ll (--keep-ir) */
+static bool save_ir(LLVMModuleRef mod, const char* dir, const char* id, char* error, size_t size) {
+    char *text = LLVMPrintModuleToString(mod), *file = snx_format("%s.ll", id);
+    char* path = file ? snx_path_join(dir, file) : NULL;
+    bool ok = path && !snx_write_file(path, text, strlen(text));
+    if (!ok) {
+        char why[256];
+        snprintf(error, size, "cannot save the IR of %s in %s: %s", id, dir, snx_os_error(why, sizeof why));
+    }
+    LLVMDisposeMessage(text);
+    free(file);
+    free(path);
+    return ok;
+}
 /* the module's object, *output's, from the backend's passes at the -O letter opt */
 static bool write_object(SnxIr* ir, LLVMModuleRef mod, SnxLinkInput* output, char opt, char* error, size_t size) {
     unsigned char* object = NULL;
@@ -104,11 +118,12 @@ static bool write_object(SnxIr* ir, LLVMModuleRef mod, SnxLinkInput* output, cha
     output->data = object;
     return ok;
 }
-/* The entries' blocks into one object. A block the backend ends sooner than discovery planned (at an MSR to the CPSR,
-   which it ends blocks on) goes on as a block of its own at the instruction after, appended to *rest (*rest_count of
-   them, the caller's to free) for the index */
+/* The entries' blocks into one object, at the -O letter opt, its IR kept in the folder keep_ir names as id.ll. A block
+   the backend ends sooner than discovery planned (at an MSR to the CPSR, which it ends blocks on) goes on as a block of
+   its own at the instruction after, appended to *rest (*rest_count of them, the caller's to free) for the index */
 static bool chunk(SnxIr* ir, const SnxCtrImage* image, const Entry* entries, unsigned count, SnxLinkInput* output,
-                  bool exhaustive, Entry** rest, unsigned* rest_count, char* error, size_t size) {
+                  char opt, const char* keep_ir, const char* id, Entry** rest, unsigned* rest_count, char* error,
+                  size_t size) {
     LLVMModuleRef mod = new_module(ir);
     bool ok = false;
     unsigned capacity = 0;
@@ -154,13 +169,13 @@ static bool chunk(SnxIr* ir, const SnxCtrImage* image, const Entry* entries, uns
             e.length -= (unsigned)consumed;
         }
     }
-    ok = write_object(ir, mod, output, exhaustive ? '2' : '1', error, size);
+    ok = (!keep_ir || save_ir(mod, keep_ir, id, error, size)) && write_object(ir, mod, output, opt, error, size);
 done:
     LLVMDisposeModule(mod);
     return ok;
 }
 static bool index_object(SnxIr* ir, const SnxCtrImage* image, const Entry* entries, unsigned count,
-                         SnxLinkInput* output, char* error, size_t size) {
+                         SnxLinkInput* output, const char* keep_ir, char* error, size_t size) {
     LLVMContextRef c = ir->ctx;
     LLVMModuleRef mod = new_module(ir);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(c, 0), ft = LLVMFunctionType(LLVMVoidTypeInContext(c), &ptr, 1, 0);
@@ -189,15 +204,14 @@ static bool index_object(SnxIr* ir, const SnxCtrImage* image, const Entry* entri
         snprintf(error, size, "incompatible native descriptor layout");
         goto done;
     }
-    ok = write_object(ir, mod, output, '0', error, size);
+    ok = (!keep_ir || save_ir(mod, keep_ir, "index", error, size)) && write_object(ir, mod, output, '0', error, size);
 done:
     LLVMDisposeModule(mod);
     return ok;
 }
-/* The title's hints (snx_ctr_jit_save_hints): the blocks earlier runs compiled at run time, one pc a line in hex, | 1
-   for Thumb. *count of them, the caller's to free; none (NULL) without the file */
-static uint32_t* read_hints(const char* directory, size_t* count) {
-    char* path = snx_ctr_game_file(directory, SNX_CTR_HINTS);
+/* A title's hints (snx_ctr_jit_save_hints), at path: the blocks earlier runs compiled at run time, one pc a line in
+   hex, | 1 for Thumb. *count of them, the caller's to free; none (NULL) without the file */
+static uint32_t* read_hints(const char* path, size_t* count) {
     FILE* f = path ? fopen(path, "r") : NULL;
     uint32_t* hints = NULL;
     size_t capacity = 0;
@@ -212,7 +226,6 @@ static uint32_t* read_hints(const char* directory, size_t* count) {
         hints[(*count)++] = value;
     }
     if (f) fclose(f);
-    free(path);
     return hints;
 }
 /* a chunk's place for its progress line: the addresses its blocks span and how many there are */
@@ -232,9 +245,12 @@ static void chunk_label(const SnxCtrImage* image, const Entry* entries, unsigned
 typedef struct {
     const SnxCtrImage* image;
     const Entry* entries;
-    SnxLinkInput* objects; /* chunk i's object is objects[i] */
+    const unsigned* starts; /* chunk i is entries starts[i] to starts[i + 1] */
+    SnxLinkInput* objects;  /* chunk i's object is objects[i] */
     unsigned count, chunks, next, finished;
-    bool exhaustive, failed;
+    char opt;            /* the -O letter */
+    const char* keep_ir; /* where each chunk's IR goes, NULL for nowhere */
+    bool quiet, failed;
     Entry* rest; /* the blocks the backend split off, every chunk's */
     unsigned rest_count;
     uint64_t output_bytes;
@@ -244,7 +260,7 @@ typedef struct {
 static void worker(void* arg) {
     Work* w = arg;
     char error[512] = "";
-    SnxIr* ir = snx_ir_new("ctr-static-aot", '1', error, sizeof error);
+    SnxIr* ir = snx_ir_new("ctr-static-aot", w->opt, error, sizeof error);
     bool ok = ir != NULL;
     for (;;) {
         snx_work_lock(&w->lock);
@@ -255,13 +271,14 @@ static void worker(void* arg) {
         unsigned i = w->failed ? w->chunks : w->next++;
         snx_work_unlock(&w->lock);
         if (i >= w->chunks) break;
-        unsigned begin = i * CHUNK_ENTRIES, n = w->count - begin;
-        if (n > CHUNK_ENTRIES) n = CHUNK_ENTRIES;
+        unsigned begin = w->starts[i], n = w->starts[i + 1] - begin;
         Entry* rest = NULL;
         unsigned rest_count = 0;
+        char id[24];
+        snprintf(id, sizeof id, "blocks_%03u", i);
         double start = snx_seconds();
-        ok = chunk(ir, w->image, w->entries + begin, n, &w->objects[i], w->exhaustive, &rest, &rest_count, error,
-                   sizeof error);
+        ok = chunk(ir, w->image, w->entries + begin, n, &w->objects[i], w->opt, w->keep_ir, id, &rest, &rest_count,
+                   error, sizeof error);
         double seconds = snx_seconds() - start;
         snx_work_lock(&w->lock);
         Entry* merged = rest_count ? realloc(w->rest, (w->rest_count + rest_count) * sizeof *merged) : w->rest;
@@ -275,10 +292,10 @@ static void worker(void* arg) {
             w->rest_count += rest_count;
             w->output_bytes += w->objects[i].size;
             /* a line for each chunk, as the Switch's recompile gives one for each unit, + the index */
-            char id[24], label[64];
-            snprintf(id, sizeof id, "blocks_%03u", i);
+            char label[64];
             chunk_label(w->image, w->entries + begin, n, label, sizeof label);
-            snx_report_unit(++w->finished, w->chunks + 1, id, label, 0, seconds);
+            ++w->finished;
+            if (!w->quiet) snx_report_unit(w->finished, w->chunks + 1, id, label, 0, seconds);
         }
         snx_work_unlock(&w->lock);
         free(rest);
@@ -292,7 +309,7 @@ static bool compile_chunks(Work* w) {
     if (note[0]) fprintf(stderr, "scarletnx-3ds: %s\n", note);
     if (jobs > w->chunks) jobs = w->chunks;
     if (jobs < 1) jobs = 1;
-    printf("ARM11 AOT: %u chunks of static blocks on %u threads\n", w->chunks, jobs);
+    if (!w->quiet) printf("ARM11 AOT: %u chunks of static blocks on %u threads\n", w->chunks, jobs);
     snx_work_lock_init(&w->lock);
     snx_run_workers(jobs, worker, w);
     snx_work_lock_destroy(&w->lock);
@@ -303,9 +320,26 @@ static int by_place(const void* a, const void* b) {
     if (x->mode != y->mode) return x->mode < y->mode ? -1 : 1;
     return (x->index > y->index) - (x->index < y->index);
 }
+/* where each chunk starts in entries, + count after the last, into starts (count + 1 of them at most): chunk instructions
+   to a chunk, whole blocks, or CHUNK_ENTRIES blocks for 0. The chunks' count */
+static unsigned cut_chunks(const Entry* entries, unsigned count, int chunk, unsigned* starts) {
+    unsigned chunks = 0, at = 0;
+    while (at < count) {
+        starts[chunks++] = at;
+        if (chunk) {
+            size_t instructions = 0;
+            do instructions += entries[at++].length;
+            while (at < count && instructions < (size_t)chunk);
+        } else
+            at = count - at > CHUNK_ENTRIES ? at + CHUNK_ENTRIES : count;
+    }
+    starts[chunks] = count;
+    return chunks;
+}
 /* The module: the blocks' chunks, the index and the helpers they call (armlib.c), linked by the backend's own linker
    into the shared library the runtime loads, which exports the descriptor alone */
-int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, char* error, size_t error_size) {
+int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const SnxCliRecompile* asked, char* error,
+                        size_t error_size) {
     int result = 1;
     SnxCtrImage image = {0}, check = {0};
     SnxCtrPlan plan = {0};
@@ -314,11 +348,13 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, char* e
     SnxLinkOutput linked = {NULL, 0};
     unsigned char* armlib = NULL;
     size_t armlib_size = 0;
-    char *directory = NULL, *target = NULL, *staged = NULL, *previous = NULL;
+    char *directory = NULL, *target = NULL, *staged = NULL, *previous = NULL, *kept = NULL, *recorded = NULL;
     const char* exports[1] = {"snx_ctr_module_v1"};
     Entry* entries = NULL;
-    unsigned count = 0, files = 0;
+    unsigned count = 0, files = 0, *starts = NULL;
     Work work = {0};
+    const char opt = g_settings.optimization_level[0]; /* the setting opt's, which -O sets */
+    bool quiet = asked && asked->quiet;
     if (error_size) error[0] = 0;
     if (!(game ? snx_ctr_image_from_source(game, &image, error, error_size)
               : snx_ctr_image_load(extracted, &image, error, error_size)))
@@ -340,42 +376,76 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, char* e
         snprintf(error, error_size, "out of memory");
         goto done;
     }
+    /* --keep-ir's folder, <title ID>_build, as a Switch game's */
+    if (asked && asked->keep_ir) {
+        kept = snx_ctr_game_file(directory, "_build");
+        if (!kept || snx_mkdirs(kept)) {
+            char why[256];
+            snprintf(error, error_size, "cannot make the folder of the IR --keep-ir keeps, %s: %s",
+                     kept ? kept : "(out of memory)", snx_os_error(why, sizeof why));
+            goto done;
+        }
+    }
     bool exhaustive = image.segment[0].bytes <= SNX_CTR_AOT_EXHAUSTIVE_LIMIT;
     unsigned capacity = image.segment[0].bytes / 4 + image.segment[0].bytes / 2;
-    size_t hint_count = 0;
-    uint32_t* hints = read_hints(directory, &hint_count);
-    if (hint_count) printf("Seeding ARM11 discovery with %zu blocks earlier runs compiled at run time\n", hint_count);
-    bool discovered = exhaustive || snx_ctr_discover(&image, hints, hint_count, &plan, error, error_size);
-    free(hints);
-    if (!discovered) {
-        result = 3;
-        goto done;
+    if (asked && asked->jit_only) { /* a module of no blocks: the run-time compiler compiles every one it reaches */
+        if (!quiet) puts("No code ahead of time (--jit-only): the run-time compiler compiles every block");
+        entries = calloc(1, sizeof *entries);
+    } else {
+        /* the blocks earlier runs compiled at run time: the title's own record, or another --jit-cache names */
+        size_t hint_count = 0;
+        recorded =
+            asked && asked->jit_cache ? snx_strdup(asked->jit_cache) : snx_ctr_game_file(directory, SNX_CTR_HINTS);
+        if (asked && asked->jit_cache && !snx_is_file(recorded)) {
+            snprintf(error, error_size,
+                     "--jit-cache %s: no such file, a list of the blocks a run compiled (<title ID>%s)",
+                     asked->jit_cache, SNX_CTR_HINTS);
+            goto done;
+        }
+        uint32_t* hints = read_hints(recorded, &hint_count);
+        if (hint_count && !quiet)
+            printf("Seeding ARM11 discovery with %zu blocks earlier runs compiled at run time\n", hint_count);
+        bool discovered = exhaustive || snx_ctr_discover(&image, hints, hint_count, &plan, error, error_size);
+        free(hints);
+        if (!discovered) {
+            result = 3;
+            goto done;
+        }
+        entries = calloc(exhaustive ? capacity : plan.entries, sizeof *entries);
     }
-    entries = calloc(exhaustive ? capacity : plan.entries, sizeof *entries);
     if (!entries) {
         snprintf(error, error_size, "out of memory for static entries");
         goto done;
     }
-    for (unsigned mode = 0; mode < 2; ++mode) {
+    for (unsigned mode = 0; !(asked && asked->jit_only) && mode < 2; ++mode) {
         unsigned width = mode ? 2 : 4;
         for (unsigned i = 0; i < image.segment[0].bytes / width; ++i) {
             unsigned length = exhaustive ? 1 : snx_ctr_plan_length(&plan, image.segment[0].address + i * width, !!mode);
             if (length) entries[count++] = (Entry){mode, i, length};
         }
     }
-    printf("Discovered ARM11 static coverage: %u blocks%s\n", count,
-           exhaustive ? " (exhaustive tiny image)" : " (conservative CFG)");
-    if (snx_ir_init(error, error_size) || !(ir = snx_ir_new("ctr-static-aot", '1', error, error_size))) goto done;
-    files = (count + CHUNK_ENTRIES - 1) / CHUNK_ENTRIES + 2; /* the helpers, the index, the chunks */
-    objects = calloc(files, sizeof *objects);
+    if (!quiet)
+        printf("Discovered ARM11 static coverage: %u blocks%s\n", count,
+               exhaustive ? " (exhaustive tiny image)" : " (conservative CFG)");
+    if (snx_ir_init(error, error_size) || !(ir = snx_ir_new("ctr-static-aot", opt, error, error_size))) goto done;
+    starts = malloc(((size_t)count + 1) * sizeof *starts);
+    files = starts ? cut_chunks(entries, count, asked ? asked->chunk : 0, starts) + 2 : 0; /* helpers, index, chunks */
+    objects = files ? calloc(files, sizeof *objects) : NULL;
     if (!objects) {
         snprintf(error, error_size, "out of memory for native chunks");
         goto done;
     }
     objects[0].name = "armlib", objects[1].name = "index";
     for (unsigned i = 2; i < files; ++i) objects[i].name = "blocks";
-    work = (Work){.image = &image, .entries = entries, .objects = objects + 2, .count = count, .chunks = files - 2,
-                  .exhaustive = exhaustive};
+    work = (Work){.image = &image,
+                  .entries = entries,
+                  .starts = starts,
+                  .objects = objects + 2,
+                  .count = count,
+                  .chunks = files - 2,
+                  .opt = opt,
+                  .keep_ir = kept,
+                  .quiet = quiet};
     if (!compile_chunks(&work)) {
         snprintf(error, error_size, "%s", work.error);
         goto done;
@@ -393,13 +463,13 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, char* e
         qsort(entries, count, sizeof *entries, by_place);
     }
     double start = snx_seconds();
-    if (!index_object(ir, &image, entries, count, &objects[1], error, error_size)) goto done;
-    {
+    if (!index_object(ir, &image, entries, count, &objects[1], kept, error, error_size)) goto done;
+    if (!quiet) {
         char label[48];
         snprintf(label, sizeof label, "the module's index, %u block%s", count, count == 1 ? "" : "s");
         snx_report_unit(work.chunks + 1, work.chunks + 1, "index", label, 0, snx_seconds() - start);
     }
-    if (snx_ir_armlib_object('1', &armlib, &armlib_size, error, error_size)) goto done;
+    if (snx_ir_armlib_object(opt, &armlib, &armlib_size, error, error_size)) goto done;
     objects[0].data = armlib, objects[0].size = armlib_size;
     uint64_t output_bytes = work.output_bytes + objects[1].size;
     if (output_bytes > OBJECT_LIMIT || armlib_size > OBJECT_LIMIT - output_bytes) {
@@ -437,7 +507,7 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, char* e
     /* an older version's module, in native/ */
     previous = snx_path_join(directory, "native");
     if (previous && snx_is_dir(previous)) (void)snx_remove_tree(previous);
-    printf("Compiled ARM11 static module: %u blocks in %u objects\n", count, files);
+    if (!quiet) printf("Compiled ARM11 static module: %u blocks in %u objects\n", count, files);
     result = 0;
 done:
     if (objects)
@@ -446,6 +516,9 @@ done:
     free(armlib);
     free(linked.data);
     free(entries);
+    free(starts);
+    free(kept);
+    free(recorded);
     free(work.rest);
     free(staged);
     free(target);
