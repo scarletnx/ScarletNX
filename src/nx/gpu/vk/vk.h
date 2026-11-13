@@ -86,7 +86,7 @@ typedef struct {
        and features enabled */
     u32 video_family;
     VkVideoCodecOperationFlagsKHR video_codecs;
-    const char* dev_ext[67]; /* create_device enables 67 at most, were every one it can enable there */
+    const char* dev_ext[68]; /* create_device enables 68 at most, were every one it can enable there */
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained (to 1.2 on a 1.2 device) */
     VkPhysicalDeviceVulkan11Features feat11;

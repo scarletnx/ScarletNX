@@ -6717,6 +6717,42 @@ static int check_vk12_way(void) {
     spv_emit_set_version(version);
     CHECK(guest && other_guest == guest && !memcmp(key, other, guest));
     CHECK(strcmp(key + guest, other + other_guest) != 0);
+    /* the compute subgroups of 32 and the mesh draws as the device has them, either way: the 1.2 way takes the sizes a
+       stage can require from VK_EXT_subgroup_size_control, which a 1.3 device has in its core. The device's own
+       answers, read here through the extension's structures, which hold for both */
+    {
+        SnxVkExtensions dev;
+        CHECK(snx_vk_device_extensions(g_vk.phys, &dev));
+        int sized =
+            g_vk.api >= VK_API_VERSION_1_3 || snx_vk_extensions_has(&dev, VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
+        int mesh = snx_vk_extensions_has(&dev, VK_EXT_MESH_SHADER_EXTENSION_NAME);
+        snx_vk_extensions_free(&dev);
+        VkPhysicalDeviceMeshShaderFeaturesEXT mf = {.sType =
+                                                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
+        VkPhysicalDeviceSubgroupSizeControlFeatures sf = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES, .pNext = mesh ? &mf : NULL};
+        VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                                        .pNext = sized  ? (void*)&sf
+                                                 : mesh ? (void*)&mf
+                                                        : NULL};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
+        VkPhysicalDeviceSubgroupSizeControlProperties sp = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &sp};
+        if (sized) vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+        int of32 = sized && sf.subgroupSizeControl && sf.computeFullSubgroups && sp.minSubgroupSize <= 32 &&
+                   sp.maxSubgroupSize >= 32;
+        int warp32 = of32 && (sp.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+        int meshes = g_settings.mesh_draws && mesh && mf.meshShader && of32 &&
+                     (sp.requiredSubgroupSizeStages & VK_SHADER_STAGE_MESH_BIT_EXT) != 0;
+        if (g_vk.has_cs_warp32 != warp32 || g_vk.has_mesh != meshes)
+            fprintf(stderr,
+                    "subgroup sizes: the Vulkan %u.%u way has compute subgroups of 32 %d and mesh draws %d, where "
+                    "the device has %d and %d\n",
+                    VK_API_VERSION_MAJOR(g_vk.api), VK_API_VERSION_MINOR(g_vk.api), g_vk.has_cs_warp32, g_vk.has_mesh,
+                    warp32, meshes);
+        CHECK(g_vk.has_cs_warp32 == warp32 && g_vk.has_mesh == meshes);
+    }
     /* a device with all of them but dynamic rendering, its store op NONE from the EXT */
     VkExtensionProperties list[16] = {{0}};
     static const char* const have[] = {
