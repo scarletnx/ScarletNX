@@ -13,12 +13,12 @@ layout(location = 0) out vec4 o_color;
 layout(location = 1) out vec4 o_attribute;
 
 void main() {
-    uvec2 at = (uvec2(gl_FragCoord.xy) + uvec2((clear_attr2 >> 16) & 0xFF, (clear_attr2 >> 24) & 0xFF)) & 255u;
+    uvec2 at = uvec2(ivec2(gl_FragCoord.xy) + clear_offset) & 255u;
     uint offset = (at.y * 256u + at.x) * 2u;
     uint c = tex16(0x40000u + offset), d = tex16(0x60000u + offset);
     uvec3 c5 = uvec3(c & 0x1Fu, (c >> 5) & 0x1Fu, (c >> 10) & 0x1Fu);
     uvec3 c6 = c5 * 2u + uvec3(notEqual(c5, uvec3(0u)));
     o_color = vec4(vec3(c6) / 63.0, (c & 0x8000u) != 0u ? 1.0 : 0.0);
-    o_attribute = vec4(float((clear_attr1 >> 24) & 0x3F) / 63.0, 0.0, float(d >> 15), 0.0);
+    o_attribute = vec4(clear_id_unorm, 0.0, float(d >> 15), 0.0);
     gl_FragDepth = float((d & 0x7FFFu) * 0x200u + 0x1FFu) / 16777216.0;
 }

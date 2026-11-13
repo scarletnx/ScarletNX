@@ -34,8 +34,7 @@ void main() {
     if (coverage >= 31) return;
     ivec2 out_of = ACROSS[code >> 6], beside = at + out_of, inward = at - out_of;
     // past the picture's border the clear plane is under the edge
-    vec4 under = vec4(vec3(clear_attr1 & 0x1F, (clear_attr1 >> 5) & 0x1F, (clear_attr1 >> 10) & 0x1F) / 31.0,
-                      float((clear_attr1 >> 16) & 0x1F) / 31.0);
+    vec4 under = clear_color;
     if (within(beside)) {
         // nearer than the edge pixel by more than the polygon's own slope explains: not under it
         float slope = within(inward) ? abs(depth - texelFetch(depth_buffer, inward, 0).r) : 0.0;

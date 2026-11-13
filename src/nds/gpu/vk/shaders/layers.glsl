@@ -9,8 +9,8 @@ layout(set = 0, binding = 3) uniform sampler2D depth_buffer;
 
 bool differs(ivec2 at, int id, float depth) {
     // past the picture's border lies the clear plane: its polygon ID, at its depth
-    int other = (clear_attr1 >> 24) & 0x3F;
-    float beyond = float((clear_attr2 & 0x7FFF) * 0x200 + 0x1FF) / 16777216.0;
+    int other = clear_id;
+    float beyond = clear_depth;
     if (at.x >= 0 && at.y >= 0 && at.x <= 255 && at.y <= 191) {
         other = int(texelFetch(attribute_buffer, at, 0).r * 63.0 + 0.5);
         beyond = texelFetch(depth_buffer, at, 0).r;

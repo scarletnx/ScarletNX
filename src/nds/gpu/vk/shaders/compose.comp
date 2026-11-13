@@ -33,6 +33,7 @@ uint line_register(uint line, uint index) { return L[(engine * 192u + line) * 32
 
 uint rd8(uint a) { return (V[a >> 2] >> ((a & 3u) * 8u)) & 0xFFu; }
 uint rd16(uint a) { return (V[a >> 2] >> ((a & 2u) * 8u)) & 0xFFFFu; }
+uint rd32(uint a) { return V[a >> 2]; } // a whole word, at a multiple of 4
 int s16(uint v) { return int(v << 16) >> 16; }
 
 uint dispcnt() { return R[0]; }
@@ -185,10 +186,11 @@ bool objects(out uint color, out uint priority, out uint flags, out uint alpha, 
     uint base = OAM + engine * 0x400u, cnt = dispcnt();
     uint block_x = px - px % mosaic_size(2u), block_y = py - py % mosaic_size(3u);
     for (uint n = 0u; n < 128u; ++n) {
-        uint a0 = rd16(base + n * 8u);
+        // an object's attributes 0 and 1 are one word of the OAM, and attribute 2 the low half of the next
+        uint a01 = rd32(base + n * 8u), a0 = a01 & 0xFFFFu;
         uint kind = (a0 >> 8) & 3u;
         if (kind == 2u) continue;
-        uint a1 = rd16(base + n * 8u + 2u);
+        uint a1 = a01 >> 16;
         uint shape = (a0 >> 14) | ((a1 & 0xC000u) >> 12);
         int width = OBJ_WIDTH[shape], height = OBJ_HEIGHT[shape];
         int bound_w = kind == 3u ? width * 2 : width, bound_h = kind == 3u ? height * 2 : height;
@@ -197,14 +199,15 @@ bool objects(out uint color, out uint priority, out uint flags, out uint alpha, 
         if (dy >= bound_h) continue;
         int dx = int(mosaic ? block_x : px) - (int(a1 << 23) >> 23);
         if (dx < 0 || dx >= bound_w) continue;
-        uint a2 = rd16(base + n * 8u + 4u);
+        uint a2 = rd32(base + n * 8u + 4u) & 0xFFFFu;
         uint mode = (a0 >> 10) & 3u, prio = (a2 >> 10) & 3u;
         if (mode != 2u && found && prio >= priority) continue;
         int x, y;
         if ((kind & 1u) != 0u) {
             uint params = base + ((a1 >> 9) & 0x1Fu) * 32u;
-            int pa = s16(rd16(params + 6u)), pb = s16(rd16(params + 14u));
-            int pc = s16(rd16(params + 22u)), pd = s16(rd16(params + 30u));
+            // the four parameters are the high halves of four words
+            int pa = int(rd32(params + 4u)) >> 16, pb = int(rd32(params + 12u)) >> 16;
+            int pc = int(rd32(params + 20u)) >> 16, pd = int(rd32(params + 28u)) >> 16;
             int cx = dx - bound_w / 2, cy = dy - bound_h / 2;
             x = (cx * pa + cy * pb + (width << 7)) >> 8;
             y = (cx * pc + cy * pd + (height << 7)) >> 8;

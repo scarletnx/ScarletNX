@@ -33,7 +33,11 @@
 
 typedef struct {
     float toon[32][4], edge[8][4], fog_color[4], fog_density[36];
-    int32_t disp_cnt, fog_offset, fog_shift, alpha_ref, clear_attr1, clear_attr2;
+    int32_t disp_cnt, fog_offset, fog_shift, alpha_ref;
+    /* the clear plane as the passes over the picture use it (shaders/config3d.glsl, std140's places) */
+    int32_t clear_offset[2], pad[2];
+    float clear_color[4], clear_depth, clear_id_unorm;
+    int32_t clear_id;
 } Config;
 
 typedef struct {
@@ -446,8 +450,13 @@ static void fill_config(const NdsGpu3D* g, Config* c) {
     c->fog_offset = (int32_t)g->render_fog_offset;
     c->fog_shift = (int32_t)g->render_fog_shift;
     c->alpha_ref = g->render_alpha_ref;
-    c->clear_attr1 = (int32_t)g->render_clear_attr1;
-    c->clear_attr2 = (int32_t)g->render_clear_attr2;
+    uint32_t a1 = g->render_clear_attr1, a2 = g->render_clear_attr2;
+    c->clear_offset[0] = (int32_t)(a2 >> 16 & 0xFF), c->clear_offset[1] = (int32_t)(a2 >> 24 & 0xFF);
+    for (unsigned k = 0; k < 3; ++k) c->clear_color[k] = (float)(a1 >> (k * 5) & 0x1F) / 31.0f;
+    c->clear_color[3] = (float)(a1 >> 16 & 0x1F) / 31.0f;
+    c->clear_depth = (float)(((a2 & 0x7FFF) * 0x200u) + 0x1FFu) / 16777216.0f;
+    c->clear_id = (int32_t)(a1 >> 24 & 0x3F);
+    c->clear_id_unorm = (float)c->clear_id / 63.0f;
 }
 
 /* a frame's descriptor set: the registers, the texture memory, and for the passes over the picture its attributes, its
