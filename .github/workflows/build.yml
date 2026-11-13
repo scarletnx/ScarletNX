@@ -1943,8 +1943,8 @@ jobs:
     timeout-minutes: 30
     container: archlinux:latest
     env:
-      EDENPROBE_VERSION: v0.13.0
-      EDENPROBE_SHA256: e00537e49527e7d4c31b8f855f20f1eddbc092a8004e7e7c30787bcc885f58b6
+      EDENPROBE_VERSION: v0.14.0
+      EDENPROBE_SHA256: 0e7db0f5ad88577b730481fe6f0f32b7b011fe90eb54e97e83a3eb46bbc01f3b
       # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
       # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
       # added back since it returned (docs/dev/edenprobe.md). hooks: the runtime answers nn::fs, time, pl, ngc and nsd

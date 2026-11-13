@@ -1,5 +1,5 @@
 # edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/dev/edenprobe.md)
-# build: v0.13.0
+# build: v0.14.0
 # mode: audio cpu display fs hooks kernel notime quick video
 audio: a 10 kHz voice at half the output rate keeps the level default quality's table gives
 audio: a 10 kHz voice at half the output rate keeps the level high quality's table gives
@@ -271,6 +271,7 @@ reference: sched: svcSleepThread(0) must keep the core, and the cores answer Q2 
 reference: sched: the chain passes when its end runs at 44, and fails one level deep
 reference: sched: the owner's drop back is read from the order, and Q1 from its priority
 reference: service: a closed decoder passes only when the next one opens
+reference: service: a silence packet passes only as 960 samples of nought a channel
 reference: service: acc-app passes every user qualified and a thumbnail checked
 reference: service: account passes 52 answering what 51 answers
 reference: service: am passes a save size that reads back as ExtendSaveData asked
@@ -294,6 +295,7 @@ reference: service: aoc passes none listed, lists that fit their room and the ba
 reference: service: apm passes a configuration kept per mode and the boost mode's
 reference: service: auddev passes a volume read back as set
 reference: service: auddev passes the active output among those listed
+reference: service: audin passes none or each named, inside the room given
 reference: service: audout passes one output opened, buffers held and given back
 reference: service: bsd-local passes the answers of a BSD stack
 reference: service: csrng passes two buffers written whole and apart
@@ -305,6 +307,7 @@ reference: service: fsdir passes the one file listed once
 reference: service: fsp passes a temporary storage whose last marker is gone
 reference: service: hid passes npad entries doubled and one apart
 reference: service: hwopus passes 24 decoders and the 25th refused out of decoders
+reference: service: hwopus through the SDK passes 24 decoders and the 25th OutOfResource
 reference: service: ipc passes the controller's answers and a Close
 reference: service: ldn passes a monitor that comes and takes this process
 reference: service: ldn passes a station with nothing near and nothing to join
@@ -319,6 +322,7 @@ reference: service: mii passes the six default Miis
 reference: service: nfp passes 25 answering what 3 answers
 reference: service: ngc in hooks mode passes a clean name found clean and left as it was
 reference: service: ngc passes a clean name found clean and given back
+reference: service: pctl passes only nothing restricted, communication free, level 0
 reference: service: pl passes six loaded fonts behind the decrypted magic
 reference: service: pl passes the six in order of priority, each as told
 reference: service: profile passes a 256x256 JPEG of the size told
