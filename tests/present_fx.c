@@ -368,6 +368,102 @@ static int max_step(const unsigned char* p, uint32_t w, uint32_t h, int* max_see
     return max;
 }
 
+/* a P6 PPM into RGBA8 (*w by *h), NULL when it is not one */
+static unsigned char* read_ppm(const char* path, uint32_t* w, uint32_t* h) {
+    FILE* f = fopen(path, "rb");
+    unsigned max = 0;
+    unsigned char* out = NULL;
+    if (!f) return NULL;
+    if (fscanf(f, "P6 %u %u %u", w, h, &max) == 3 && max == 255 && fgetc(f) != EOF && *w && *h && *w <= 8192 &&
+        *h <= 8192 && (out = malloc((size_t)*w * *h * 4))) {
+        for (size_t i = 0; i < (size_t)*w * *h; ++i) {
+            if (fread(out + i * 4, 1, 3, f) != 3) {
+                free(out);
+                out = NULL;
+                break;
+            }
+            out[i * 4 + 3] = 255;
+        }
+    }
+    fclose(f);
+    return out;
+}
+
+/* --bench [--frame=PPM] [--showcase=DIR]: each pass's GPU time on the device (timestamps around snx_fx_render), the
+   passes taken in turn 100 times after 5 warm rounds, so the device's clock moves them alike, and the median of each:
+   a 1280x720 frame (or the PPM's) shown at 1920x1080 and at 3840x2160, and a 400x240 one at 1600x960, the effects'
+   output of each written to DIR. A measure, not a check: run it under lock.sh gpu-measure */
+#define BENCH_ROUNDS 105
+static int bench(Test* t, SnxFx* fx, const char* frame, const char* showcase) {
+    static const struct {
+        int filter, aa;
+        const char* name;
+    } runs[] = {{SNX_FX_UPSCALE_OFF, SNX_FX_AA_FXAA, "fxaa"},       {SNX_FX_UPSCALE_BILINEAR, SNX_FX_AA_FXAA, "bilinear-fxaa"},
+                {SNX_FX_UPSCALE_OFF, SNX_FX_AA_SMAA, "smaa"},       {SNX_FX_UPSCALE_FSR1, SNX_FX_AA_OFF, "fsr1"},
+                {SNX_FX_UPSCALE_FSR1, SNX_FX_AA_FXAA, "fsr1-fxaa"}, {SNX_FX_UPSCALE_NIS, SNX_FX_AA_OFF, "nis"},
+                {SNX_FX_UPSCALE_SGSR, SNX_FX_AA_OFF, "sgsr"},       {SNX_FX_UPSCALE_OFF, SNX_FX_AA_SSAA2, "ssaa2"}};
+    enum { RUNS = sizeof runs / sizeof *runs };
+    static const uint32_t sizes[3][4] = {{1280, 720, 1920, 1080}, {1280, 720, 3840, 2160}, {400, 240, 1600, 960}};
+    static double ms[RUNS][BENCH_ROUNDS];
+    VkPhysicalDeviceProperties pp;
+    VkQueryPoolCreateInfo qi = {
+        .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 2};
+    VkQueryPool pool;
+    vkGetPhysicalDeviceProperties(t->phys, &pp);
+    CHECK(succeed(vkCreateQueryPool(t->dev, &qi, NULL, &pool)));
+    printf("bench: %s, timestamps of %.3f ns\n", pp.deviceName, (double)pp.limits.timestampPeriod);
+    for (int size = 0; size < 3; ++size) {
+        uint32_t w = sizes[size][0], h = sizes[size][1], ow = sizes[size][2], oh = sizes[size][3];
+        unsigned char* p = size < 2 && frame ? read_ppm(frame, &w, &h) : malloc((size_t)w * h * 4);
+        Image src = {0};
+        CHECK(p);
+        if (size == 2 || !frame) pattern(p, w, h);
+        CHECK(image_make(t, &src, w, h, VK_FORMAT_R8G8B8A8_UNORM,
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
+        CHECK(upload(t, &src, p));
+        free(p);
+        for (int i = 0; i < BENCH_ROUNDS; ++i)
+            for (int r = 0; r < RUNS; ++r) {
+                SnxFxImage out = {0};
+                uint64_t stamps[2], serial;
+                VkCommandBuffer cb = snx_vk_ring_commands(&t->ring);
+                vkCmdResetQueryPool(cb, pool, 0, 2);
+                vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pool, 0);
+                CHECK(snx_fx_render(fx, cb, (uint32_t)r, src.view, w, h, 0, 0, w, h, 0, ow, oh, runs[r].filter,
+                                    runs[r].aa, &out));
+                vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pool, 1);
+                serial = snx_vk_ring_submit(&t->ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+                CHECK(snx_vk_ring_wait(&t->ring, serial, UINT64_MAX));
+                CHECK(succeed(vkGetQueryPoolResults(t->dev, pool, 0, 2, sizeof stamps, stamps, sizeof *stamps,
+                                                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT)));
+                ms[r][i] = (double)(stamps[1] - stamps[0]) * pp.limits.timestampPeriod / 1e6;
+                if (i == BENCH_ROUNDS - 1 && showcase && size != 1) {
+                    char name[64];
+                    unsigned char* got =
+                        read_image_f16(t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out.width, out.height);
+                    snprintf(name, sizeof name, "bench-%ux%u-%s", w, h, runs[r].name);
+                    if (got) write_ppm(showcase, name, got, out.width, out.height);
+                    free(got);
+                }
+            }
+        for (int r = 0; r < RUNS; ++r) {
+            double* m = ms[r] + 5; /* the warm rounds left out */
+            int n = BENCH_ROUNDS - 5;
+            for (int a = 1; a < n; ++a) /* sorted, for the median */
+                for (int b = a; b > 0 && m[b] < m[b - 1]; --b) {
+                    double x = m[b];
+                    m[b] = m[b - 1];
+                    m[b - 1] = x;
+                }
+            printf("bench: %ux%u to %ux%u %-14s median %.3f ms (%.3f to %.3f)\n", w, h, ow, oh, runs[r].name, m[n / 2],
+                   m[0], m[n - 1]);
+        }
+        image_free(t, &src);
+    }
+    vkDestroyQueryPool(t->dev, pool, NULL);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const char* showcase = NULL;
     Test t = {0};
@@ -449,6 +545,18 @@ int main(int argc, char** argv) {
     fx = snx_fx_create(t.phys, t.dev, VK_NULL_HANDLE, 2, log_line);
     CHECK(fx);
     snx_fx_set_sharpness(fx, 75);
+    for (int i = 1; i < argc; ++i)
+        if (!strcmp(argv[i], "--bench")) {
+            const char* frame = NULL;
+            for (int k = 1; k < argc; ++k)
+                if (!strncmp(argv[k], "--frame=", 8)) frame = argv[k] + 8;
+            CHECK(!bench(&t, fx, frame, showcase));
+            snx_fx_destroy(fx);
+            snx_vk_ring_free(&t.ring);
+            vkDestroyDevice(t.dev, NULL);
+            snx_vk_instance_free(&t.instance);
+            return 0;
+        }
 
     /* FSR 1: the frame grows, and the result is the display's size */
     {
