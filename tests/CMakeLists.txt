@@ -2425,7 +2425,8 @@ endif()
 if(NOT SNX_TOOLS_ONLY)
     # tex_upload (gpu/vk/texture.c) into the staging buffer: block-linear rows against the layout, mip levels, 3D,
     # pitch linear, a converted format; a format uploaded as it is needs no level-sized buffer
-    add_executable(snx-test-tex-upload-rows tex_upload_rows.c tracy_stubs.c)
+    add_executable(snx-test-tex-upload-rows tex_upload_rows.c tracy_stubs.c
+                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c") # g_gob_native, which astc_kind.h reads
     snx_test_target(snx-test-tex-upload-rows 23)
     target_compile_definitions(snx-test-tex-upload-rows PRIVATE SNX_TEST_DEVMEM_STUBS=1)
     target_link_libraries(snx-test-tex-upload-rows PRIVATE snx_nx_flags)

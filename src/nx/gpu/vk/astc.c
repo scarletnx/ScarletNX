@@ -98,6 +98,9 @@ typedef struct {
     VkShaderModule bcn_modules[3];
     VkPipeline bcn_pipes[3];
     u64 bcn_levels[3], bcn_bytes[3], bcn_rgba8_bytes[3];
+    /* the textures whose blocks Auto read as they were made, by outcome (VK_ASTC_KIND_*), and the CPU's time for it;
+       those read again as they loaded again, and of them those that took another format (vk_astc_kind_seen) */
+    u64 kind_made[VK_ASTC_KIND_N], kind_made_ns, kind_again, kind_again_ns, kind_changed;
     /* the encoder's dispatches (vk_astc_dispatches) */
     u64 bc7_dispatches;
     /* encodes' blocks copied into the readback ring, each until its submission is done (vk_astc_frame_done), and
@@ -647,6 +650,58 @@ void vk_astc_stats(u64* levels, u64* hits, u64* bytes, u64* rgba8_bytes) {
     *rgba8_bytes = g_astc.bc7_rgba8_bytes;
 }
 u64 vk_astc_rgba8_bytes(void) { return g_astc.rgba8_bytes; }
+void vk_astc_kind_seen(int outcome, u64 ns, int again) {
+    if (outcome < 0 || outcome >= VK_ASTC_KIND_N) return;
+    if (!again) {
+        g_astc.kind_made[outcome]++;
+        g_astc.kind_made_ns += ns;
+        return;
+    }
+    g_astc.kind_again++;
+    g_astc.kind_again_ns += ns;
+    g_astc.kind_changed += again == 2;
+}
+const char* vk_astc_kind_name(int outcome) {
+    static const char* const names[VK_ASTC_KIND_N] = {"luminance alone",
+                                                      "luminance and alpha",
+                                                      "opaque colour on one line a 4x4 block",
+                                                      "luminance alone in sRGB, which BC4 has not",
+                                                      "colour and alpha",
+                                                      "colour on more than one line a 4x4 block",
+                                                      "luminance and alpha in sRGB, which BC5 has not",
+                                                      "the error colour or HDR",
+                                                      "memory the CPU can't read as one run"};
+    return outcome >= 0 && outcome < VK_ASTC_KIND_N ? names[outcome] : "?";
+}
+void vk_astc_kind_say(void) {
+    u64 n = 0;
+    for (int k = 0; k < VK_ASTC_KIND_N; k++) n += g_astc.kind_made[k];
+    if (!n) return;
+    char line[512];
+    int at = snprintf(line, sizeof line,
+                      "vulkan: astc_mode=0 (Auto): %llu ASTC textures read by their blocks' kind in %llu ms:",
+                      (unsigned long long)n, (unsigned long long)(g_astc.kind_made_ns / 1000000));
+    for (int k = 0; k < VK_ASTC_KIND_N && at < (int)sizeof line; k++)
+        if (g_astc.kind_made[k])
+            at += snprintf(line + at, sizeof line - at, " %llu %s%s;", (unsigned long long)g_astc.kind_made[k],
+                           vk_astc_kind_name(k),
+                           k == VK_ASTC_KIND_BC4         ? " (BC4)"
+                           : k == VK_ASTC_KIND_BC5       ? " (BC5)"
+                           : k <= VK_ASTC_KIND_SRGB_GREY ? " (BC1)"
+                                                         : "");
+    for (int k = 0; k < 3 && at < (int)sizeof line; k++)
+        if (g_astc.bcn_levels[k])
+            at += snprintf(line + at, sizeof line - at, " %s %llu levels, %llu MB where RGBA8 takes %llu;",
+                           bcn_builds[k].name, (unsigned long long)g_astc.bcn_levels[k],
+                           (unsigned long long)(g_astc.bcn_bytes[k] >> 20),
+                           (unsigned long long)(g_astc.bcn_rgba8_bytes[k] >> 20));
+    if (g_astc.kind_again && at < (int)sizeof line)
+        snprintf(line + at, sizeof line - at,
+                 " %llu read again as they loaded again (%llu ms), %llu of them to another format",
+                 (unsigned long long)g_astc.kind_again, (unsigned long long)(g_astc.kind_again_ns / 1000000),
+                 (unsigned long long)g_astc.kind_changed);
+    LOG("%s\n", line);
+}
 void vk_astc_bcn_stats(u64 levels[3], u64 bytes[3], u64 rgba8_bytes[3]) {
     for (int k = 0; k < 3; k++) {
         levels[k] = g_astc.bcn_levels[k];

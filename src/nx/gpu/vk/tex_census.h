@@ -51,9 +51,18 @@ void vk_tex_formats_add(VkTexFormats* f, u32 format, u64 bytes);
 void vk_tex_formats_sort(VkTexFormats* f);
 
 /* The bytes of the textures the guest gave as ASTC, by block size (4 to 12 texels a side, bytes[bw - 4][bh - 4]) and
-   by what the cache holds them as: BC7, RGBA8, or ASTC where the device samples it */
+   by what the cache holds them as: BC7, RGBA8, ASTC where the device samples it, or BC1, BC4 or BC5 where their
+   blocks hold no more (texture.c) */
 #define VK_ASTC_SIDES 9
-enum { VK_ASTC_AS_BC7, VK_ASTC_AS_RGBA8, VK_ASTC_AS_ASTC, VK_ASTC_AS_N };
+enum {
+    VK_ASTC_AS_BC7,
+    VK_ASTC_AS_RGBA8,
+    VK_ASTC_AS_ASTC,
+    VK_ASTC_AS_BC1,
+    VK_ASTC_AS_BC4,
+    VK_ASTC_AS_BC5,
+    VK_ASTC_AS_N
+};
 typedef struct {
     u64 bytes[VK_ASTC_SIDES][VK_ASTC_SIDES][VK_ASTC_AS_N];
 } VkAstcSizes;

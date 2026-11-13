@@ -850,6 +850,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (unsigned long long)bg.pending, (unsigned long long)bg.stored,
                         (unsigned long long)bg.gpu_pieces, (unsigned long long)bg.loaded, (unsigned long long)bg.hits);
                 vk_astc_auto_say();
+                vk_astc_kind_say();
                 vk_astc_quick_say();
                 u64 sparse_binds, sparse_ns;
                 vk_sparse_stats(&sparse_binds, &sparse_ns);

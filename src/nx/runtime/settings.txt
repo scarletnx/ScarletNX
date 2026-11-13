@@ -369,7 +369,9 @@ setting ASTC mode
     help load are Exact while there is room, BC7 from the moment the caches fill to where they start freeing memory
     help (a little under the budget), and Exact again once more room comes back than the caches' own trims leave;
     help those loaded Exact go to BC7 too at the turn, read again at their next use where their memory is unchanged.
-    help The log says each change with the memory in use, the budget and the room.
+    help The log says each change with the memory in use, the budget and the room. Whatever the room, a texture whose
+    help blocks hold luminance alone is BC4 as it loads, luminance and alpha BC5, and opaque colour on one line a 4x4
+    help block BC1 (sRGB luminance too): an eighth to a quarter of RGBA8's memory, close to what the blocks decode to.
     help Exact = decoded to RGBA8, exactly as the game's blocks decode, in four times the memory.
     help BC7 = shown at once decoded to RGBA8, then encoded again as BC7 between frames, a few at a time, into a
     help quarter of RGBA8's memory, close to what the blocks decode to but not always the same. A later run loads them

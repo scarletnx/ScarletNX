@@ -6652,6 +6652,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_write_tracking.inc"
 #include "vulkan_tex_partial.inc"
 #include "vulkan_astc_later.inc"
+#include "vulkan_astc_kind.inc"
 
 /* The file of earlier runs' pipelines keeps SPIR-V translated with the HMMA forms its key names: each form a run can
    choose (the device's matrix unit, the B gather by pairs of lanes, the hmma_f16 setting's half sums, A and B through
@@ -7367,6 +7368,13 @@ static int run_headless(int argc, char** argv) {
                g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_ASTC_KIND_ONLY")) { /* ASTC by its blocks' kind alone, for its mutants */
+        CHECK(!check_astc_kind());
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan ASTC by its blocks' kind only: %u validation messages\n",
+               g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_MSAA_ONLY")) { /* the multisample checks alone */
         CHECK(!check_multisample_shader_gate());
         CHECK(!check_msaa());
@@ -7698,6 +7706,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_resident_astc());
     CHECK(!check_astc_array_levels());
     CHECK(!check_astc_later());
+    CHECK(!check_astc_kind());
     CHECK(!check_resident_texture_in_flight());
     CHECK(!check_sparse_pieces_batched());
     CHECK(!check_dma_untracked_source());
