@@ -600,11 +600,11 @@ int main(int argc, char** argv) {
         uint64_t serial;
         CHECK(!snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_FSR1,
                              SNX_FX_AA_OFF, &out));
-        CHECK(!strcmp(g_test.said, "upscaler Bilinear and anti aliasing Off, 320x240 to 320x240 (AMD FSR 1 grows a "
+        CHECK(!strcmp(g_test.said, "upscaler Bilinear and anti-aliasing Off, 320x240 to 320x240 (AMD FSR 1 grows a "
                                    "frame, and this one is not shown larger)"));
         CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 960, 720, SNX_FX_UPSCALE_NIS,
                             SNX_FX_AA_AUTO, &out));
-        CHECK(!strcmp(g_test.said, "upscaler AMD FSR 1 and anti aliasing FXAA, 320x240 to 960x720 (NVIDIA NIS grows "
+        CHECK(!strcmp(g_test.said, "upscaler AMD FSR 1 and anti-aliasing FXAA, 320x240 to 960x720 (NVIDIA NIS grows "
                                    "a frame twice at most)"));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
@@ -885,7 +885,7 @@ int main(int argc, char** argv) {
         image_free(&t, &flat);
     }
     /* a crop smaller than its image (a game drawing a dynamic resolution into part of its target): no filter takes a
-       pixel from outside it. A flat crop inside a checker comes out flat from every filter and anti aliasing, where
+       pixel from outside it. A flat crop inside a checker comes out flat from every filter and anti-aliasing, where
        their taps past the crop's edge once took the checker into its last rows and columns */
     {
         static const struct {

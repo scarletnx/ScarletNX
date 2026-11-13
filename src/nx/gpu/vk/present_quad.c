@@ -8,8 +8,10 @@
 #include "common/gpu/vk/present_fx.h"
 #include "nx/gpu/hdr_output.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/ui.h"
 #include "snx_settings.h"
 #include <stdlib.h>
+#include <string.h>
 
 static struct {
     VkDescriptorSetLayout descriptors;
@@ -24,9 +26,10 @@ static struct {
     VkDescriptorSet frames[VK_FRAMES];
     u32 holds[VK_FRAMES]; /* the serial of the view each holds (Surf.present_serial), 0 for none */
     u32 serials;          /* the views made */
-    /* the upscaler and the anti aliasing (vk_present_quad_effects): what runs for this run (atomic: a shortcut steps
-       them on the frontend's thread), the sharpness, the effects once either is on, and an HDR frame said once */
-    int upscaler, aa, sharpness;
+    /* the upscaler and the anti-aliasing (vk_present_quad_effects): what runs for this run (atomic: a shortcut steps
+       them on the frontend's thread), the effects once either is on, and an HDR frame said once */
+    int upscaler, aa;
+    char upscaler_seen[sizeof g_settings.upscaler], aa_seen[sizeof g_settings.anti_aliasing]; /* the words last read */
     SnxFx* fx;
     int fx_failed, hdr_said;
 } g_present_quad;
@@ -229,17 +232,26 @@ int vk_present_quad(Surf* source, VkImage destination, VkFormat format, VkExtent
 }
 
 static void effects_say(const char* text) { LOG("vulkan: %s\n", text); }
-void vk_present_quad_effects_init(void) {
+/* the settings' words, upscaler and anti_aliasing, as they are now: at start, or when, read under ui_lock as the game's
+   menu and a reload of the .ini write them, they are not the words last read, they are the choice for the frames from
+   now, over a shortcut's step; said in the log */
+static void effects_follow(int start) {
+    char upscaler[sizeof g_settings.upscaler], aa[sizeof g_settings.anti_aliasing], said[512];
     SnxFxConfig c;
-    char said[512];
-    if (snx_fx_settings(&c, g_settings.upscaler, g_settings.upscaler_sharpness, g_settings.anti_aliasing, said,
-                        sizeof said))
-        LOG("settings: %s\n", said);
+    ui_lock();
+    memcpy(upscaler, g_settings.upscaler, sizeof upscaler);
+    memcpy(aa, g_settings.anti_aliasing, sizeof aa);
+    ui_unlock();
+    if (!start && !strcmp(upscaler, g_present_quad.upscaler_seen) && !strcmp(aa, g_present_quad.aa_seen)) return;
+    memcpy(g_present_quad.upscaler_seen, upscaler, sizeof upscaler);
+    memcpy(g_present_quad.aa_seen, aa, sizeof aa);
+    if (snx_fx_settings(&c, upscaler, 0, aa, said, sizeof said)) LOG("settings: %s\n", said);
     __atomic_store_n(&g_present_quad.upscaler, c.upscaler, __ATOMIC_RELAXED);
     __atomic_store_n(&g_present_quad.aa, c.aa, __ATOMIC_RELAXED);
-    g_present_quad.sharpness = c.sharpness;
-    LOG("vulkan: upscaler %s, anti aliasing %s\n", snx_fx_upscale_label(c.upscaler), snx_fx_aa_label(c.aa));
+    LOG("vulkan: upscaler %s, anti-aliasing %s%s\n", snx_fx_upscale_label(c.upscaler), snx_fx_aa_label(c.aa),
+        start ? "" : ", as the settings say now");
 }
+void vk_present_quad_effects_init(void) { effects_follow(1); }
 const char* vk_present_quad_effects_step(int which) {
     int* at = which ? &g_present_quad.aa : &g_present_quad.upscaler;
     int was = __atomic_load_n(at, __ATOMIC_RELAXED);
@@ -249,15 +261,17 @@ const char* vk_present_quad_effects_step(int which) {
     return which ? snx_fx_aa_label(next) : snx_fx_upscale_label(next);
 }
 int vk_present_quad_effects(VkCommandBuffer cb, SnxPresentSource* s, VkRect2D* crop, VkRect2D to, u32 transform) {
+    effects_follow(0);
     int filter = __atomic_load_n(&g_present_quad.upscaler, __ATOMIC_RELAXED);
     int aa = __atomic_load_n(&g_present_quad.aa, __ATOMIC_RELAXED);
+    int sharpness = __atomic_load_n(&g_settings.upscaler_sharpness, __ATOMIC_RELAXED);
     u32 w = transform & 4 ? to.extent.height : to.extent.width, h = transform & 4 ? to.extent.width : to.extent.height;
     SnxFxImage out;
     if ((filter == SNX_FX_UPSCALE_OFF && aa == SNX_FX_AA_OFF) || g_present_quad.fx_failed || !w || !h) return 0;
     /* an HDR frame (a game's own, gpu/vk/hdr_swapchain.c) is shown as it is: the passes are for SDR's range */
     if (g_vk.sc_space != SNX_HDR_SPACE_SRGB) {
         if (!g_present_quad.hdr_said++)
-            LOG("vulkan: upscaler %s and anti aliasing %s: the game's HDR frames are shown without them\n",
+            LOG("vulkan: upscaler %s and anti-aliasing %s: the game's HDR frames are shown without them\n",
                 snx_fx_upscale_label(filter), snx_fx_aa_label(aa));
         return 0;
     }
@@ -266,14 +280,14 @@ int vk_present_quad_effects(VkCommandBuffer cb, SnxPresentSource* s, VkRect2D* c
         g_present_quad.fx = snx_fx_create(g_vk.phys, g_vk.dev, vk_pipeline_cache(), VK_FRAMES, effects_say);
         if (!g_present_quad.fx) {
             g_present_quad.fx_failed = 1;
-            LOG("vulkan: upscaler %s and anti aliasing %s: their passes could not be made on this device, so the window "
+            LOG("vulkan: upscaler %s and anti-aliasing %s: their passes could not be made on this device, so the window "
                 "shows the frame with both off\n",
                 snx_fx_upscale_label(filter), snx_fx_aa_label(aa));
             return 0;
         }
-        snx_fx_set_sharpness(g_present_quad.fx, g_present_quad.sharpness);
         snx_fx_set_fp16(g_present_quad.fx, g_shader_float16);
     }
+    snx_fx_set_sharpness(g_present_quad.fx, sharpness);
     snx_fx_set_light(g_present_quad.fx, s->light);
     /* the passes record on cb at once, where the commands queued for the recording thread (vk_rec_call) come after
        what they read: the ring drained, every one of those is in cb */

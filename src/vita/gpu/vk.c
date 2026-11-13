@@ -13,10 +13,10 @@ static struct {
     /* the presenter's copy of the framebuffer, which the swapchain image is blitted from */
     VkImage frame;
     VkDeviceMemory frame_memory;
-    VkImageView frame_view; /* the upscaler's and the anti aliasing's source */
+    VkImageView frame_view; /* the upscaler's and the anti-aliasing's source */
     uint32_t frame_width, frame_height;
     VkImageLayout frame_layout;
-    /* the upscaler and the anti aliasing (common/gpu/vk/present_fx.h) as the settings say; none while both are Off */
+    /* the upscaler and the anti-aliasing (common/gpu/vk/present_fx.h) as the settings say; none while both are Off */
     SnxFxConfig fx_config;
     SnxFx* fx;
 } g;
@@ -117,7 +117,7 @@ static bool swapchain_make(VitaVk* v) {
     return snx_vk_swapchain_make(v->phys, v->device, &info, &v->swap);
 }
 static void fx_log(const char* text) { fprintf(stderr, "scarletnx-vita: %s\n", text); }
-/* the upscaler and the anti aliasing the settings ask for, said once, and their effects made where either is on */
+/* the upscaler and the anti-aliasing the settings ask for, said once, and their effects made where either is on */
 static void fx_init(VitaVk* v) {
     char said[512];
     SnxFxConfig* c = &g.fx_config;
@@ -137,7 +137,7 @@ static void fx_init(VitaVk* v) {
             c->aa = SNX_FX_AA_OFF;
         }
     }
-    fprintf(stderr, "scarletnx-vita: upscaler %s, anti aliasing %s\n", snx_fx_upscale_label(c->upscaler),
+    fprintf(stderr, "scarletnx-vita: upscaler %s, anti-aliasing %s\n", snx_fx_upscale_label(c->upscaler),
             snx_fx_aa_label(c->aa));
 }
 bool vita_vk_init(const char* title, char* error, size_t error_size) {
@@ -299,7 +299,7 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
     uint32_t sw = w, sh = (uint32_t)((uint64_t)w * height / width);
     if (sh > h) sh = h, sw = (uint32_t)((uint64_t)h * width / height);
     int32_t x = (int32_t)(w - sw) / 2, y = (int32_t)(h - sh) / 2;
-    /* through the upscaler and the anti aliasing where either is on, into an image of the rectangle's size */
+    /* through the upscaler and the anti-aliasing where either is on, into an image of the rectangle's size */
     SnxFxImage fx = {0};
     bool effects = false;
     if (g.fx && sw && sh) {
@@ -334,7 +334,7 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
         .srcOffsets = {{0, 0, 0}, {(int32_t)(effects ? fx.width : width), (int32_t)(effects ? fx.height : height), 1}},
         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
         .dstOffsets = {{x, y, 0}, {x + (int32_t)sw, y + (int32_t)sh, 1}}};
-    /* the effects' image at the rectangle's size is copied, at the frame's own (anti aliasing alone) it is scaled */
+    /* the effects' image at the rectangle's size is copied, at the frame's own (anti-aliasing alone) it is scaled */
     vkCmdBlitImage(cb, effects ? fx.image : g.frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                    effects && fx.width == sw && fx.height == sh ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);

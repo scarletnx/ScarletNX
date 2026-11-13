@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The presentation effects every Vulkan frontend shares: the spatial upscaler of the shown frame and anti aliasing of
+/* The presentation effects every Vulkan frontend shares: the spatial upscaler of the shown frame and anti-aliasing of
    the upscaled frame. The Switch frontend's presenter is the reference, and its FSR 1, NIS, SGSR, FXAA and SMAA
    shaders are built here for every frontend. A frontend hands in its device and the frame slot it is recording, and
    gets an image to blit. Nothing here reads guest memory: the source is a Vulkan image view, and every pass is on the
@@ -21,7 +21,7 @@ enum {
     SNX_FX_UPSCALE_SGSR,
     SNX_FX_UPSCALE_COUNT
 };
-/* the anti aliasing of the upscaled frame. Auto runs FXAA only where the display is at least 1.25 times the rendered
+/* the anti-aliasing of the upscaled frame. Auto runs FXAA only where the display is at least 1.25 times the rendered
    frame in each direction, the point where an upscale starts to make an edge visible (the ratio dynamic resolution
    scalers use to decide that a lower render size needs help). Supersampling renders the pass at 2x or 4x and
    downsamples, which also removes the edges a post process cannot see. */
@@ -80,11 +80,11 @@ void snx_fx_set_fp16(SnxFx* fx, int on);
    by the luma the display shows. 0, values as encoded, until set */
 void snx_fx_set_light(SnxFx* fx, int linear);
 
-/* Auto anti aliasing: 1 where the shown rectangle is at least 1.25 times the rendered frame in each direction, so
+/* Auto anti-aliasing: 1 where the shown rectangle is at least 1.25 times the rendered frame in each direction, so
    the upscale makes its edges visible, and where it is not smaller (a downscale already smooths). */
 int snx_fx_aa_auto(uint32_t render_w, uint32_t render_h, uint32_t shown_w, uint32_t shown_h);
 
-/* The shown crop of src (img_w by img_h) through the filter and the anti aliasing asked, into an image of out_w by
+/* The shown crop of src (img_w by img_h) through the filter and the anti-aliasing asked, into an image of out_w by
    out_h, or of the crop's own size where the upscaler is Off and FXAA or SMAA run, which the caller scales as it
    scales the frame: 1 with *out set (its size in it), 0 when neither runs (the caller keeps its own blit, a smooth one
    for any filter but Off).
