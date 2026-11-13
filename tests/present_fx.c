@@ -594,6 +594,66 @@ int main(int argc, char** argv) {
         free(flat_pixels);
         image_free(&t, &flat);
     }
+    /* a crop smaller than its image (a game drawing a dynamic resolution into part of its target): no filter takes a
+       pixel from outside it. A flat crop inside a checker comes out flat from every filter and anti aliasing, where
+       their taps past the crop's edge once took the checker into its last rows and columns */
+    {
+        static const struct {
+            int filter, aa;
+            const char* name;
+        } runs[] = {{SNX_FX_UPSCALE_FSR1, SNX_FX_AA_OFF, "FSR 1"},
+                    {SNX_FX_UPSCALE_NIS, SNX_FX_AA_OFF, "NIS"},
+                    {SNX_FX_UPSCALE_SGSR, SNX_FX_AA_OFF, "SGSR"},
+                    {SNX_FX_UPSCALE_BILINEAR, SNX_FX_AA_FXAA, "bilinear and FXAA"},
+                    {SNX_FX_UPSCALE_OFF, SNX_FX_AA_SMAA, "SMAA"},
+                    {SNX_FX_UPSCALE_OFF, SNX_FX_AA_SSAA2, "SSAA 2x"}};
+        static const unsigned char flat[3] = {100, 150, 200};
+        const uint32_t iw = 64, ih = 64, cx = 8, cy = 12, cw = 48, ch = 40, ow = 96, oh = 80;
+        Image framed = {0};
+        unsigned char* framed_pixels = malloc((size_t)iw * ih * 4);
+        CHECK(framed_pixels);
+        for (uint32_t y = 0; y < ih; ++y)
+            for (uint32_t x = 0; x < iw; ++x) {
+                unsigned char* at = framed_pixels + ((size_t)y * iw + x) * 4;
+                int inside = x >= cx && x < cx + cw && y >= cy && y < cy + ch;
+                unsigned char checker = ((x ^ y) & 1) ? 255 : 0;
+                for (int c = 0; c < 3; ++c) at[c] = inside ? flat[c] : checker;
+                at[3] = 255;
+            }
+        CHECK(image_make(&t, &framed, iw, ih, VK_FORMAT_R8G8B8A8_UNORM,
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
+        CHECK(upload(&t, &framed, framed_pixels));
+        free(framed_pixels);
+        for (size_t r = 0; r < sizeof runs / sizeof *runs; ++r) {
+            SnxFxImage out = {0};
+            VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
+            uint64_t serial;
+            unsigned char* got;
+            uint32_t bad = 0, first = 0;
+            CHECK(snx_fx_render(fx, cb, 0, framed.view, iw, ih, cx, cy, cw, ch, 0, ow, oh, runs[r].filter, runs[r].aa,
+                                &out));
+            serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+            CHECK(out.width == ow && out.height == oh);
+            got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ow, oh);
+            CHECK(got);
+            for (uint32_t i = 0; i < ow * oh; ++i)
+                for (int c = 0; c < 3; ++c)
+                    if (abs((int)got[(size_t)i * 4 + c] - (int)flat[c]) > 1) {
+                        if (!bad++) first = i;
+                        break;
+                    }
+            if (bad)
+                fprintf(stderr,
+                        "present_fx: %s over a %ux%u crop of a %ux%u frame: %u of %u pixels took the frame outside it, "
+                        "the first (%u, %u) = %u %u %u where the crop is %u %u %u\n",
+                        runs[r].name, cw, ch, iw, ih, bad, ow * oh, first % ow, first / ow, got[(size_t)first * 4],
+                        got[(size_t)first * 4 + 1], got[(size_t)first * 4 + 2], flat[0], flat[1], flat[2]);
+            free(got);
+            CHECK(!bad);
+        }
+        image_free(&t, &framed);
+    }
 
     snx_fx_destroy(fx);
     image_free(&t, &src);
