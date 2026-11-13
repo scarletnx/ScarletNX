@@ -4693,12 +4693,31 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         }
         case SM86_LDC: {
             u32 type = sm86_field(in, 73, 3), bank = sm86_field(in, 54, 5), off = sm86_field(in, 38, 16);
-            u32 r = sm86_field(in, 24, 8);
-            if (sm86_field(in, 78, 2) || type > 5) {
-                fail(c, "LDC of type %u, mode %u", type, sm86_field(in, 78, 2));
+            u32 r = sm86_field(in, 24, 8), mode = sm86_field(in, 78, 2);
+            if ((mode != 0 && mode != 2) || type > 5) {
+                fail(c, "LDC of type %u, mode %u", type, mode);
                 return;
             }
             u32 index = r < SM86_RZ ? rd(c, r) : 0;
+            if (mode == 2 && index) {
+                /* NAK's LdcMode::IndexedSegmented (.IS): the register holds the bank past the instruction's in its
+                   upper half and the byte offset in its lower half, as NAK packs them with PRMT for a bank known only
+                   at run time. A select over the banks from the instruction's on (an unbound one reads zeros). One
+                   game's vertex program that draws its frame into the window reads a record of bank 1 for each
+                   vertex, c[(VertexId << 5) + 0x10000 + 8] */
+                u32 seg = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, index, cu(c, 16));
+                u32 low = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, index, cu(c, 0xffff));
+                for (u32 w = 0; w < (type == 5 ? 2u : 1u); w++) {
+                    u32 v = c->zero;
+                    for (u32 b = bank; b < 18; b++) {
+                        u32 here = type < 4 ? cbuf_subword(c, b, off, low, type) : cbuf_load(c, b, off + 4 * w, low);
+                        u32 is = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, seg, cu(c, b - bank));
+                        v = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, is, here, v);
+                    }
+                    if (in->dst + w < SM86_RZ) wr(c, in->dst + w, v);
+                }
+                return;
+            }
             if (c->handle && c->handle[c->cur].var) { /* the element of the table of handles this reads */
                 const TexHandle* h = &c->handle[c->cur];
                 u32 at = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32,
