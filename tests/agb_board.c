@@ -370,6 +370,19 @@ int main(void) {
 
     /* a 32 KiB SRAM repeats twice in the 64 KiB window, which repeats over 0x0E000000 to 0x0FFFFFFF */
     agb_save_reset(&board, AGB_SAVE_SRAM);
+    /* a DMA of a word to an address that is not one puts the word's low byte at the word's address, the bits below
+       its width dropped */
+    agb_write32(&board, 0x03000300, 0xA5B6C7D8);
+    agb_write8(&board, 0x0E000100, 0x66);
+    agb_write8(&board, 0x0E000101, 0x66);
+    agb_write32(&board, 0x040000D4, 0x03000300);
+    agb_write32(&board, 0x040000D8, 0x0E000101);
+    agb_write32(&board, 0x040000DC, 0x84000001);
+    if (agb_read8(&board, 0x0E000100) != 0xD8 || agb_read8(&board, 0x0E000101) != 0x66) {
+        fprintf(stderr, "agb_board: a word DMA to 0x0E000101 left 0x%02X 0x%02X there, not 0xD8 0x66\n",
+                agb_read8(&board, 0x0E000100), agb_read8(&board, 0x0E000101));
+        return 1;
+    }
     agb_write8(&board, 0x0E000010, 0x5A);
     CHECK(agb_read8(&board, 0x0E008010) == 0x5A && agb_read8(&board, 0x0F018010) == 0x5A);
     agb_write8(&board, 0x0E008020, 0xA5);

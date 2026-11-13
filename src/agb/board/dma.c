@@ -38,16 +38,19 @@ static void dma_transfer(AgbBoard* board, int index, int fifo) {
                               agb_access_cycles(board, destination, word ? 32 : 16, i > 0);
         /* the channel reads nothing below EWRAM (the BIOS, the unused space): it moves the unit it read last again,
            a halfword in both halves of its latch (mGBA's GBADMAService, the console's in its suite's dma.c) */
+        /* the unit's own address: the DMA drops the bits below its width (GBATEK), which the save memory's 8 bit
+           bus would otherwise read as a lane */
+        uint32_t from = source & ~(uint32_t)(step - 1), to = destination & ~(uint32_t)(step - 1);
         if (word) {
-            if (source >= 0x02000000) channel->latch = agb_read32(board, source);
-            agb_write32(board, destination, channel->latch);
+            if (from >= 0x02000000) channel->latch = agb_read32(board, from);
+            agb_write32(board, to, channel->latch);
         } else {
-            if (source >= 0x02000000) channel->latch = agb_read16(board, source) * 0x00010001u;
+            if (from >= 0x02000000) channel->latch = agb_read16(board, from) * 0x00010001u;
             /* a request to the EEPROM: the halfwords left say where its block's number ends */
-            if ((destination >> 24 & 0x0F) == 0x0D && agb_save_eeprom(board))
+            if ((to >> 24 & 0x0F) == 0x0D && agb_save_eeprom(board))
                 agb_eeprom_write(board, (uint16_t)channel->latch, count - i);
             else
-                agb_write16(board, destination, (uint16_t)(channel->latch >> (destination & 2) * 8));
+                agb_write16(board, to, (uint16_t)(channel->latch >> (to & 2) * 8));
         }
         /* from the cartridge the source counts up whatever the control says (the suite's dma.c on the console: a fixed
            or decrementing source there moves the next units, as mGBA's GBADMAService has it) */
