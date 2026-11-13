@@ -1352,6 +1352,9 @@ static int create_device(void) {
                              ? (int)g_vk.props.limits.maxComputeSharedMemorySize
                              : 0;
     f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_shader_hmma_coop != 0;
+    /* RADV makes a shuffle's xor of 4 a DPP move from GFX10, the devices with subgroups of 32, and a shuffle at any
+       other index a permute through LDS: an RX 6700 XT's HMMA bench (SNX_HMMA_BENCH) ran 9.7% faster */
+    g_shader_hmma_pairs = p12.driverID == VK_DRIVER_ID_MESA_RADV && g_vk.has_cs_warp32;
     g_shader_half_rounding = 0;
     if (q12.shaderFloat16 && p12.shaderRoundingModeRTEFloat16 && p12.shaderDenormPreserveFloat16 &&
         p12.shaderSignedZeroInfNanPreserveFloat16 &&

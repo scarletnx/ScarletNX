@@ -2631,6 +2631,11 @@ static u32 warp_read(Ctx* c, u32 value, u32 j) {
     return SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, c->t_u32, cu(c, 3), value,
                spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, own, j));
 }
+/* value as lane l ^ mask of the invocation's own 32 holds it, for lane l (mask below 32) */
+static u32 warp_xor(Ctx* c, u32 value, u32 mask) {
+    spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
+    return SPV(&c->e, 346 /* OpGroupNonUniformShuffleXor */, c->t_u32, cu(c, 3), value, cu(c, mask));
+}
 /* value as lane 4g + p of the invocation's own 32 holds it, g4 = 4g for the reader's own g: a quad broadcast where the
    stage has quad operations, which AMD makes a DPP move where a shuffle goes through LDS. Vulkan's quad is four
    invocations of adjacent subgroup ids, the first a multiple of 4, in every stage that has them; so in a subgroup of
@@ -2791,7 +2796,12 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
    sums the products in f32, which an f16 D then rounds to. A product of two f16 is exact in f32, so only the sums
    round, in f32 for both D types: with the mixed dot product (g_shader_mixed_dot) each pair of products goes into
    the accumulator in one instruction, rounded as the device does it (RDNA 3.5's is a few f32 places off an FMA chain
-   even on exact sums, within the same bound); without it the pairs are unpacked to f32 and dotted */
+   even on exact sums, within the same bound); without it the pairs are unpacked to f32 and dotted.
+   With g_shader_hmma_pairs, lanes l and l ^ 4 (quads g and g ^ 1, the same t, so the same two B columns) split the
+   16 B words both multiply by: lane l shuffles in those of quad lanes 2 G0 and 2 G0 + 1 (G0 = bit 2 of l) and takes
+   its pair's, the other two, with a xor of 4, which RADV makes a DPP move where a shuffle at any index is a permute
+   through LDS. Its A pairs follow the same quad lanes, in the same order: quad broadcasts of lanes u and 2 + u, the
+   one G0 picks. Only the order of the sums changes, lanes of G0 1 adding quad lanes 2 and 3's pairs first */
 static void hmma(Ctx* c, const Sm86Insn* in) {
     u32 v = sm86_field(in, 72, 19);
     if (v & ~0x18u) {
@@ -2836,17 +2846,37 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
             acc[i][1] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 1);
         }
     }
-    for (u32 p = 0; p < 4; p++) {
-        u32 lb[2] = {spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, cu(c, p)),
-                     spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, cu(c, 4 + p))};
+    int pairs = g_shader_hmma_pairs != 0;
+    u32 g0 = 0, t8h = 0, mine[2][2][2]; /* pairs: [column 2t + j][B's register h][quad lane 2 G0 + u]'s word */
+    if (pairs) {
+        u32 half = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
+                                   spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 1)),
+                                   cu(c, 2)); /* 2 G0 */
+        g0 = spv_emit_binary(&c->e, SPV_OP_I_NOT_EQUAL, c->t_bool, half, c->zero);
+        t8h = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, half);
+    }
+    for (u32 p = 0; p < 4; p++) { /* pairs: quad lanes 2 G0 + p, then 2 (1 - G0) + p - 2 */
         u32 av[4], bv[2][2];
         for (k = 0; k < na; k++) {
-            u32 bits = quad_read(c, a[k], g4, p);
+            u32 bits;
+            if (pairs) {
+                u32 x = quad_read(c, a[k], g4, p & 1), y = quad_read(c, a[k], g4, 2 + (p & 1));
+                bits = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, g0, p < 2 ? y : x, p < 2 ? x : y);
+            } else
+                bits = quad_read(c, a[k], g4, p);
             av[k] = mixed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
         }
         for (u32 j = 0; j < 2; j++)
             for (k = 0; k < nb; k++) {
-                u32 bits = warp_read(c, b[k], lb[j]);
+                u32 bits;
+                if (!pairs)
+                    bits =
+                        warp_read(c, b[k], spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, cu(c, 4 * j + p)));
+                else if (p < 2)
+                    bits = mine[j][k][p] =
+                        warp_read(c, b[k], spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8h, cu(c, 4 * j + p)));
+                else
+                    bits = warp_xor(c, mine[j][k][p - 2], 4);
                 bv[j][k] = mixed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
             }
         for (u32 h = 0; h < nb; h++) /* the k halves: A's registers 2h (row g) and 2h + 1 (row g + 8), B's h */

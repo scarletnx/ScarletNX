@@ -3789,7 +3789,8 @@ static int spv_has_builtin(const u32* words, size_t count, u32 builtin) {
 /* HMMA (16816 and 1688, F16 and F32), LDSM and MOVM with and without the device's quads in compute and its mixed dot
    product: A's 48 reads are quad broadcasts or shuffles, B's 48, LDSM's 4 and MOVM's 2 stay shuffles, and each pair
    of products is an OpFDot2MixAcc32VALVE (96) or an OpDot. B's registers are OR'd with hmma_zero's zero, which
-   compares NumWorkgroups.x with 0 */
+   compares NumWorkgroups.x with 0. With g_shader_hmma_pairs B's reads are 24 shuffles and their 24 xors of 4, and A's
+   96 (two quad lanes, one picked, for each of the 48) */
 static void test_warp_matrix(const char* dir) {
     u8 code[16 * 8] = {0};
     static const u32 hmma[4][4] = {{16, 14, 0x08}, {20, 24, 0x18}, {28, 255, 0x00}, {32, 36, 0x10}};
@@ -3816,33 +3817,36 @@ static void test_warp_matrix(const char* dir) {
     put(code, n++, exit_insn());
     put(code, n, bra(n, n, 7, 0));
     n++;
-    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot;
-    for (int quad = 0; quad < 2; quad++)
-        for (int mixed = 0; mixed < 2; mixed++) {
-            g_shader_quad_compute = quad, g_shader_mixed_dot = mixed;
-            ShaderInfo si = {0};
-            si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
-            si.shared_size = 1024;
-            size_t count = 0;
-            u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
-            CHECK(spv != NULL);
-            if (!spv) continue;
-            u32 quads = spv_count(spv, count, 365), shuffles = spv_count(spv, count, 345);
-            u32 mixes = spv_count(spv, count, 6916), dots = spv_count(spv, count, 148);
-            CHECK(quads == (quad ? 48u : 0u) && shuffles == (quad ? 54u : 102u));
-            CHECK(mixes == (mixed ? 96u : 0u) && dots == (mixed ? 0u : 96u));
-            CHECK(spv_has_builtin(spv, count, 24) && spv_count(spv, count, 170 /* OpIEqual */) >= 1);
-            if (quads != (quad ? 48u : 0u) || mixes != (mixed ? 96u : 0u))
-                fprintf(stderr,
-                        "warp matrix, quad %d, mixed %d: %u quad broadcasts, %u shuffles, %u mixed dots, %u "
-                        "dots\n",
-                        quad, mixed, quads, shuffles, mixes, dots);
-            char name[32];
-            snprintf(name, sizeof name, "warp_matrix%d%d", quad, mixed);
-            CHECK(keep_module(dir, name, spv, count));
-            free(spv);
-        }
-    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was;
+    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, pairs_was = g_shader_hmma_pairs;
+    for (int pairs = 0; pairs < 2; pairs++)
+        for (int quad = 0; quad < 2; quad++)
+            for (int mixed = 0; mixed < 2; mixed++) {
+                g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_hmma_pairs = pairs;
+                ShaderInfo si = {0};
+                si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+                si.shared_size = 1024;
+                size_t count = 0;
+                u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+                CHECK(spv != NULL);
+                if (!spv) continue;
+                u32 quads = spv_count(spv, count, 365), shuffles = spv_count(spv, count, 345);
+                u32 xors = spv_count(spv, count, 346), mixes = spv_count(spv, count, 6916);
+                u32 dots = spv_count(spv, count, 148), a_reads = pairs ? 96u : 48u, b_reads = pairs ? 24u : 48u;
+                u32 want_quads = quad ? a_reads : 0, want_shuffles = (quad ? 0 : a_reads) + b_reads + 6;
+                CHECK(quads == want_quads && shuffles == want_shuffles && xors == (pairs ? 24u : 0u));
+                CHECK(mixes == (mixed ? 96u : 0u) && dots == (mixed ? 0u : 96u));
+                CHECK(spv_has_builtin(spv, count, 24) && spv_count(spv, count, 170 /* OpIEqual */) >= 1);
+                if (quads != want_quads || shuffles != want_shuffles || mixes != (mixed ? 96u : 0u))
+                    fprintf(stderr,
+                            "warp matrix, pairs %d, quad %d, mixed %d: %u quad broadcasts (%u wanted), %u shuffles "
+                            "(%u), %u xors, %u mixed dots, %u dots\n",
+                            pairs, quad, mixed, quads, want_quads, shuffles, want_shuffles, xors, mixes, dots);
+                char name[32];
+                snprintf(name, sizeof name, "warp_matrix%d%d%d", pairs, quad, mixed);
+                CHECK(keep_module(dir, name, spv, count));
+                free(spv);
+            }
+    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_hmma_pairs = pairs_was;
 }
 
 /* ---- HMMA's values on the evaluator's subgroup of 32 lanes (spv_eval_subgroup) ---- */
@@ -4030,47 +4034,61 @@ static int hmma_match(u32 got, int f32, u32 j, double want, double tol, int kind
     if (bits) return v == want;
     return fabs(v - want) <= tol;
 }
-/* HMMA (16816 and 1688, F16 and F32 D, C from RZ, an f16 input or an earlier D) on the evaluator's 32 lanes, with and
-   without the quads and the mixed dot product: on the exact set every output is the sum's bits; on the rounded one
-   within an f32 sum's error; on the special one infinities, NaNs and the sign of zero follow IEEE's sum of the terms
-   in any order */
+/* HMMA (16816 and 1688, F16 and F32 D, C from RZ, an f16 input or an earlier D) on the evaluator's 32 lanes, as each
+   lane gathers B and as pairs of lanes share it (g_shader_hmma_pairs), with and without the quads and the mixed dot
+   product: on the exact set every output is the sum's bits; on the rounded one within an f32 sum's error; on the
+   special one infinities, NaNs and the sign of zero follow IEEE's sum of the terms in any order. And the forms
+   agree with each other: bit for bit on the exact set, the same kinds on the others */
 static void test_warp_matrix_values(const char* dir) {
     u8 code[16 * 48] = {0};
     u32 n = hmma_program(code);
-    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16;
+    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16,
+        pairs_was = g_shader_hmma_pairs;
     static HmmaMats mats;
-    static u32 in[32 * 8], out[32 * HMMA_OUT];
+    static u32 in[32 * 8], out[2][32 * HMMA_OUT];
     for (int set = HM_EXACT; set <= HM_SPECIAL; set++) {
         hmma_inputs(&mats, in, set);
         for (int quad = 0; quad < 2; quad++)
             for (int mixed = 0; mixed < 2; mixed++) {
-                g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_float16 = 1;
-                char keep[32];
-                snprintf(keep, sizeof keep, "warp_values%d%d", quad, mixed);
-                int ran = hmma_run(code, n, in, out, dir, set == HM_EXACT ? keep : NULL);
-                g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
-                CHECK(ran);
-                if (!ran) return;
-                u32 bad = 0;
-                for (u32 l = 0; l < 32; l++)
-                    for (u32 w = 0; w < HMMA_OUT; w++) {
-                        u32 got = out[l * HMMA_OUT + w], at = 0, k = 0;
-                        for (; k < 8 && w >= at + (hmma_cases[k][2] & 0x10 ? 4u : 2u); k++)
-                            at += hmma_cases[k][2] & 0x10 ? 4u : 2u;
-                        int f32 = hmma_cases[k][2] >> 4 & 1;
-                        for (u32 j = 0; j < (f32 ? 1u : 2u); j++) {
-                            double tol;
-                            int kind, zero_sign;
-                            double want = hmma_expect(&mats, l, w, j, &tol, &kind, &zero_sign);
-                            if (hmma_match(got, f32, j, want, tol, kind, zero_sign, set == HM_EXACT)) continue;
-                            if (bad++ < 8)
-                                fprintf(stderr,
-                                        "warp matrix values (set %d, quad %d, mixed %d): lane %u word %u half %u is "
-                                        "0x%08x, expected %.9g within %.3g (kind %d)\n",
-                                        set, quad, mixed, l, w, j, got, want, tol, kind);
+                for (int pairs = 0; pairs < 2; pairs++) {
+                    g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_float16 = 1;
+                    g_shader_hmma_pairs = pairs;
+                    char keep[32];
+                    snprintf(keep, sizeof keep, "warp_values%d%d%d", quad, mixed, pairs);
+                    int ran = hmma_run(code, n, in, out[pairs], dir, set == HM_EXACT ? keep : NULL);
+                    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
+                    g_shader_hmma_pairs = pairs_was;
+                    CHECK(ran);
+                    if (!ran) return;
+                    u32 bad = 0;
+                    for (u32 l = 0; l < 32; l++)
+                        for (u32 w = 0; w < HMMA_OUT; w++) {
+                            u32 got = out[pairs][l * HMMA_OUT + w], at = 0, k = 0;
+                            for (; k < 8 && w >= at + (hmma_cases[k][2] & 0x10 ? 4u : 2u); k++)
+                                at += hmma_cases[k][2] & 0x10 ? 4u : 2u;
+                            int f32 = hmma_cases[k][2] >> 4 & 1;
+                            for (u32 j = 0; j < (f32 ? 1u : 2u); j++) {
+                                double tol;
+                                int kind, zero_sign;
+                                double want = hmma_expect(&mats, l, w, j, &tol, &kind, &zero_sign);
+                                if (hmma_match(got, f32, j, want, tol, kind, zero_sign, set == HM_EXACT)) continue;
+                                if (bad++ < 8)
+                                    fprintf(stderr,
+                                            "warp matrix values (set %d, quad %d, mixed %d, pairs %d): lane %u word "
+                                            "%u half %u is 0x%08x, expected %.9g within %.3g (kind %d)\n",
+                                            set, quad, mixed, pairs, l, w, j, got, want, tol, kind);
+                            }
                         }
-                    }
-                CHECK(bad == 0);
+                    CHECK(bad == 0);
+                }
+                /* the two forms: the same bits where the sums are exact, else the same kinds and values within both
+                   their bounds (hmma_match above) */
+                u32 differ = 0;
+                for (u32 i = 0; i < 32 * HMMA_OUT; i++) differ += out[0][i] != out[1][i];
+                if (set == HM_EXACT) CHECK(differ == 0);
+                if (set == HM_EXACT && differ)
+                    fprintf(stderr, "warp matrix values (quad %d, mixed %d): %u words differ between the forms\n", quad,
+                            mixed, differ);
             }
     }
 }

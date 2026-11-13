@@ -474,6 +474,11 @@ extern int g_shader_mixed_dot;
    one OpCooperativeMatrixMulAddKHR on fragments staged in shared memory after the program's (sm86_translate.c's
    hmma_coop), where the two fit in that size. 0 offline */
 extern int g_shader_hmma_coop;
+/* an SM86 HMMA off the cooperative matrices gathers its B fragment in pairs of lanes 4 apart, which multiply by the
+   same 16 words of it: each shuffles in half of them and takes the other half from its pair with a xor of 4
+   (sm86_translate.c's hmma). RADV with subgroups of 32 (GFX10 on): half of the B permutes through LDS become DPP
+   moves. 0 offline */
+extern int g_shader_hmma_pairs;
 /* the most mesh workgroups one task workgroup can launch (maxMeshWorkGroupCount[0] and maxMeshWorkGroupTotalCount,
    the less of them): a task program's count, read from its payload's header, is clamped to it, as a count past it is
    undefined behavior that can hang the GPU. 0 offline: not clamped */
