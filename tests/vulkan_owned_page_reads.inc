@@ -136,7 +136,6 @@ static int owned_word(void) {
    level goes up unkeyed (its bytes aren't hashed), a later one on pages of its own is keyed, and the owner stays */
 /* the texture's memory and address in vulkan_astc_later.inc's layout, apart from its cases' */
 #define OPR_ASTC_INDEX 12
-#define OPR_BC7_PATH "vulkan_headless_owned_reads.vkbc7"
 static int owned_astc_key(void) {
     static const AlCase c = {"ASTC 8x8 256x256 beside an owner", NVN_FORMAT_RGBA_ASTC_8x8, 256, 256, 1, 0};
     const int had = g_settings.astc_mode;
@@ -168,8 +167,9 @@ static int owned_astc_key(void) {
     al_fill(&x);
     gmmu_map(gbase, base, AL_SPAN);
     later_drain(); /* what the checks before left to the encoder */
-    remove(OPR_BC7_PATH);
-    vk_astc_cache_open(OPR_BC7_PATH); /* the keys are made only where a cache takes the levels */
+    char cache[sizeof g_cachedir + 40];
+    al_cache_path(cache, sizeof cache, "vulkan_headless_owned_reads.vkbc7");
+    CHECK(!al_cache_open(cache)); /* the keys are made only where a cache takes the levels */
     vk_lock();
     VkOwnRes* owner = vk_own_res_new(16);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 16, 0x3c));
@@ -187,7 +187,7 @@ static int owned_astc_key(void) {
                 all, kept ? "kept" : "gone", landed ? "landed" : "nothing landed");
     later_drain();
     vk_bc7_cache_close();
-    remove(OPR_BC7_PATH);
+    remove(cache);
     gmmu_space_unmap(gbase, AL_SPAN);
     mem_unmap(base, AL_SPAN);
     g_settings.astc_mode = had;
