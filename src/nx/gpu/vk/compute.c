@@ -1199,6 +1199,7 @@ typedef struct {
     u64 code;
     u32 bytes;
     int v;
+    u32 wseen; /* the write tracking's clock when the code was last seen, so a program loaded there since is not skipped */
 } TensorMemo;
 static TensorMemo g_tensor[TENSOR_MEMO];
 static u32 g_tensor_next;
@@ -1223,11 +1224,16 @@ static int cs_tensor_program(u64 code, u32 bytes) {
 /* whether a dispatch of this program can go at once: it is a network's pass and its translation saves no image */
 static int cs_tensor_skippable(u64 code, u32 bytes) {
     TensorMemo* m = tensor_find(code, bytes);
-    return m && m->v == 2;
+    /* another program can be loaded at the same address and size (two programs over one scratch): the write tracking
+       says whether the code was written since its translation, and a written one is translated again */
+    u8* host;
+    return m && m->v == 2 && (host = gmem_host(code, bytes)) != NULL && vk_written_since(host, bytes, m->wseen) < 0;
 }
 static void cs_tensor_mark_skippable(u64 code, u32 bytes) {
     TensorMemo* m = tensor_find(code, bytes);
-    if (m) m->v = 2;
+    if (!m) return;
+    m->v = 2;
+    m->wseen = vk_ww_now();
 }
 /* The largest of the images a program stores to, or NULL: a network's pass saves its picture in one */
 static Surf* cs_largest_image(Surf* const* images, int n) {
@@ -1364,7 +1370,8 @@ void vk_dispatch(const DispatchState* d) {
        resolved. Its descriptors, its textures' headers and its buffer's copies are most of a pass's cost, and a title's
        upscaler is 61 of them a frame. A pass that does save somewhere runs as it is, and a network of images gets its
        picture from tensor.c as before */
-    if (g_settings.tensor_standin && !p->failed && p->si.nimg == 0 && cs_tensor_program(d->code, d->code_bytes)) {
+    if (g_settings.tensor_standin && !p->failed && p->si.nimg == 0 && !p->si.gbuf_wmask &&
+        cs_tensor_program(d->code, d->code_bytes)) {
         cs_tensor_mark_skippable(d->code, d->code_bytes);
         g_cs_standins++;
         g_vk_dispatches++;
