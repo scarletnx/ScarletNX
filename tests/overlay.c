@@ -175,11 +175,11 @@ static void draw(void) {
     overlay_draw(&list, SW, SH, 0);
 }
 /* whether text shows anywhere on the picture, its letters a cell apart on one row (spaces draw nothing), each in rgba
-   unless any */
+   unless any. A cell is its first letter's width: the menu's letters, or a notification's smaller ones */
 static int shows_as(const char* text, int any, u32 rgba) {
     int i, k;
     for (i = 0; i < list.n; ++i) {
-        float x = qv(&list.q[i]).x, y = qv(&list.q[i]).y, step = 8.0f * (float)s;
+        float x = qv(&list.q[i]).x, y = qv(&list.q[i]).y, step = qv(&list.q[i]).w;
         for (k = 0; text[k]; ++k) {
             unsigned char c = (unsigned char)text[k];
             int j, found = c == ' ';
@@ -1585,19 +1585,22 @@ int main(void) {
     overlay_state_saved("slot 2", 0, 1000);
     draw();
     /* over the game it is its letters and a blank cell at either end, a row from the corner, each backed by the
-       layer's ground, the menu's ink, in its page's colour: a band of cells side by side with no fill under them */
+       layer's ground, the menu's ink, in its page's colour: a band of cells side by side with no fill under them. Its
+       letters are the stats box's and showcase's, a step under the menu's, which drew them a size larger than every
+       other text over a running game */
     {
         static const char said[] = "Saved to slot 2";
         const u32 page = 0xFF000000u | (SNX_GUI_THEME_YORHA_PAGE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_PAGE & 0xFF00u) |
                          (SNX_GUI_THEME_YORHA_PAGE >> 16 & 0xFFu);
-        int i;
+        int i, t = stats_scale(s);
+        assert(s > 1 && t < s); /* a picture where the two sizes differ */
         assert(list.n == (int)strlen(said) + 2 && ui_ground() == ui_rgba(ink));
         for (i = 0; i < list.n; ++i) {
             SnxUiQuadView q = qv(&list.q[i]);
             assert(q.ink == UI_GLYPH && q.backed && q.glyph == (u8)(i && i < list.n - 1 ? said[i - 1] : ' '));
             assert(q.uw == 8 && q.vh == 16 && q.rgba == ui_rgba(page));
-            assert(q.x == (float)(8 * s * (1 + i)) && q.y == (float)(16 * s));
-            assert(q.w == (float)(8 * s) && q.h == (float)(16 * s));
+            assert(q.x == (float)(8 * t * (1 + i)) && q.y == (float)(16 * t));
+            assert(q.w == (float)(8 * t) && q.h == (float)(16 * t));
         }
     }
     /* the stats' box in that corner too: the band goes under it, from the box's left, half a line apart; back in its
@@ -1607,7 +1610,7 @@ int main(void) {
         static SnxUiQuad kept[1024];
         SnxUiList box_quads = {kept, 0, 1024};
         const IniOpt* corner = ini_find(g_display_ini, "stats_corner");
-        float box[4], cw = (float)(8 * s), ch = (float)(16 * s);
+        float box[4], cw = (float)(8 * stats_scale(s)), ch = (float)(16 * stats_scale(s)); /* the band's cell */
         int short_s, short_x, short_y, h;
         assert(corner && !stats_box_drawn(box));
         g_settings.stats = 1;
@@ -1629,8 +1632,8 @@ int main(void) {
         list.n = 0;
         overlay_draw(&list, SW, h, 0);
         assert(list.n == (int)strlen("Saved to slot 2") + 2);
-        assert(qv(&list.q[0]).y == (float)(16 * short_s) &&
-               qv(&list.q[list.n - 1]).x + qv(&list.q[list.n - 1]).w == (float)(SW - 8 * short_s));
+        assert(qv(&list.q[0]).y == (float)(16 * stats_scale(short_s)) &&
+               qv(&list.q[list.n - 1]).x + qv(&list.q[list.n - 1]).w == (float)(SW - 8 * stats_scale(short_s)));
         stats_corner_set(corner, "br");
         box_quads.n = 0;
         stats_draw(&box_quads, all, s, 1000);
