@@ -70,6 +70,8 @@ caches = {
     'open pr ccache head': cache('refs/pull/204/head', 'ccache-apple-161-2', '2026-10-14T02:00:00Z'),
     'live branch ccache': cache('refs/heads/dravee/ci-arm64', 'ccache-linux-x86_64-170-1', '2026-10-15T11:00:00Z'),
     'open pr cpm': cache(PR, f'cpm-linux-{H1}', '2026-10-14T03:00:00Z'),
+    # a key only this pull request holds: main has nothing to restore, so its copy is the warm one and it stays
+    'open pr cpm only here': cache(PR, f'cpm-windows-{H2}', '2026-10-14T03:00:00Z'),
     'closed pr ccache': cache('refs/pull/180/merge', 'ccache-linux-x86_64-140-1', '2026-10-15T11:00:00Z'),
     'closed pr': cache('refs/pull/180/merge', f'cpm-linux-{H1}', '2026-10-15T11:00:00Z'),
     'closed pr head': cache('refs/pull/181/head', f'cpm-linux-{H1}', '2026-10-15T11:00:00Z'),
@@ -96,10 +98,12 @@ check(
             'open pr old',
             'open pr ccache',
             'open pr ccache head',
+            'open pr cpm',
             'closed pr',
             'closed pr ccache',
             'closed pr head',
             'gone branch',
+            'live branch',
             'copy',
             'tag',
         ]
@@ -110,6 +114,11 @@ check("why for a closed pull request's compiler cache", got.get('closed pr ccach
 check('why for a gone branch', got.get('gone branch'), 'its branch is gone')
 check("why for a tag's", got.get('tag'), "a tag's")
 check('why for a replaced entry', got.get('old ccache'), 'replaced by ccache-linux-x86_64-200-1')
+check(
+    "why for a copy of main's",
+    got.get('open pr cpm'),
+    'main holds this key, which this ref restores from it',
+)
 check(
     "why for a pull request's compiler cache",
     got.get('open pr ccache'),

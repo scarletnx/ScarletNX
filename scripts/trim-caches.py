@@ -12,6 +12,12 @@ systems is two caches). A key without such an end is a family of its own and sta
 saved by a push alone (build.yml): one on a pull request's ref, which that pull request reads in place of main's
 newer one, goes too.
 
+A cache whose key main holds already is a copy whatever ref it is on: the sources of a dependency, LLVM's libraries,
+a system root and the builds of FFmpeg and OpenSSL are named after a hash of what makes them, so the same key holds
+the same bytes on every ref, and a ref that lacks it restores main's (GitHub's fallback to the default branch). One
+such copy per ref of a pull request that is still open is what a run saved before main had it, and it counts against
+the 10 GB until the pull request closes: it goes as soon as main's is there.
+
 .github/workflows/cache-cleanup.yml runs it when a pull request closes and after each build. It needs gh, with GH_REPO
 set and a token allowed actions: write; --dry-run only lists.
 """
@@ -35,9 +41,12 @@ def family(key):
     return VOLATILE.sub('', key, count=1)
 
 
-def plan(caches, open_prs, branches):
+def plan(caches, open_prs, branches, default='main'):
     """The caches to delete, as (cache, why), from GitHub's listing, the open pull requests' numbers and the
     branches' names"""
+    default_ref = 'refs/heads/' + default
+    # what the default branch holds: a ref that lacks a key restores its copy, so any other copy is dead weight
+    on_default = {(cache['key'], cache.get('version')) for cache in caches if cache['ref'] == default_ref}
     doomed, families = [], {}
     for cache in caches:
         ref = cache['ref']
@@ -50,6 +59,8 @@ def plan(caches, open_prs, branches):
             doomed.append((cache, 'its branch is gone'))
         elif ref.startswith('refs/tags/'):  # a version's build reads main's: what it saves no later run reads
             doomed.append((cache, "a tag's"))
+        elif ref != default_ref and (cache['key'], cache.get('version')) in on_default:
+            doomed.append((cache, f"{default} holds this key, which this ref restores from it"))
         else:
             families.setdefault((ref, cache.get('version'), family(cache['key'])), []).append(cache)
     for entries in families.values():
@@ -78,7 +89,7 @@ def main():
     default = gh('api', 'repos/{owner}/{repo}', '--jq', '.default_branch').strip()
     if default not in branches:
         sys.exit(f'the branch listing has no {default}, the default branch: not deleting from it')
-    doomed = plan(caches, open_prs, branches)
+    doomed = plan(caches, open_prs, branches, default)
     failed = 0
     for cache, why in doomed:
         print(f'{cache["sizeInBytes"] / 1e6:8.1f} MB  {cache["ref"]}  {cache["key"]}: {why}')
