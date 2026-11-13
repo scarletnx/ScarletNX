@@ -8,8 +8,9 @@
 /* Images of at least sw x sh for a draw that captures sides slots, outside any pass when they are made again (their
    stamps cleared). 0 when they can't be made: the draw's slots read a copy */
 int vk_predraw_reserve(u32 sw, u32 sh, u32 sides);
-/* the next capturing draw's number, which no stamp holds yet */
-u32 vk_predraw_next(void);
+/* a capturing draw's number: the one before while no texture barrier came between (g_vk_texture_epoch) and the draw
+   captures the same targets, by side image (targets[k], n of them), else one no stamp holds yet */
+u32 vk_predraw_next(const Surf* const* targets, u32 n);
 /* the stamp image's view (0) or side image k - 1's, in GENERAL */
 VkImageView vk_predraw_view(u32 k);
 /* a capturing draw was recorded: its stores reach the next pass's draws through vk_predraw_pass_begin */
