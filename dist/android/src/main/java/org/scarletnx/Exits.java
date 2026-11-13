@@ -50,18 +50,10 @@ final class Exits {
         Android says of it, or that it says none. The system gives the ends of that pid alone, the ones before it
         started too, as pids come round again */
     static String of(ActivityManager manager, String app, int sdk, int pid, long since) {
-        if (sdk < 30) return "Android (API " + sdk + ") does not say why a process ended, as Android 11 (API 30) does";
+        if (sdk < 30) return none(sdk);
         try {
-            List<ApplicationExitInfo> exits = manager.getHistoricalProcessExitReasons(app, pid, 0);
-            ApplicationExitInfo end = null;
-            for (ApplicationExitInfo exit : exits) {
-                if (exit.getTimestamp() < since) continue;
-                boolean first = since > 0 ? end == null || exit.getTimestamp() < end.getTimestamp()
-                                          : end == null || exit.getTimestamp() > end.getTimestamp();
-                if (first) end = exit;
-            }
-            if (end == null)
-                return "Android keeps no end of pid " + pid + (since > 0 ? " since it started" : "");
+            ApplicationExitInfo end = end(manager, app, pid, since);
+            if (end == null) return kept(pid, since);
             String description = end.getDescription();
             return "Android says " + reasonName(end.getReason()) + " (" + end.getProcessName() + ", status " +
                 end.getStatus() + ", importance " + importance(end.getImportance()) + ", " + (end.getRss() >> 10) +
@@ -69,5 +61,49 @@ final class Exits {
         } catch (RuntimeException e) {
             return "Android's reason cannot be read: " + e;
         }
+    }
+
+    /** the same end as fields, a "key=value" line each, for the launcher's Last Run (src/gui/last_run.h): reason (the
+        REASON_* number), said (its name), process, status, importance, pss and rss (KiB), description; or a line
+        none= saying why there is none. A value keeps no line break */
+    static String fields(ActivityManager manager, String app, int sdk, int pid, long since) {
+        if (sdk < 30) return "none=" + none(sdk) + "\n";
+        try {
+            ApplicationExitInfo end = end(manager, app, pid, since);
+            if (end == null) return "none=" + kept(pid, since) + "\n";
+            String description = end.getDescription();
+            return "reason=" + end.getReason() + "\nsaid=" + reasonName(end.getReason()) + "\nprocess=" +
+                line(end.getProcessName()) + "\nstatus=" + end.getStatus() + "\nimportance=" +
+                importance(end.getImportance()) + "\npss=" + end.getPss() + "\nrss=" + end.getRss() + "\ndescription=" +
+                line(description) + "\n";
+        } catch (RuntimeException e) {
+            return "none=Android's reason cannot be read: " + line(e.toString()) + "\n";
+        }
+    }
+
+    private static String none(int sdk) {
+        return "Android (API " + sdk + ") does not say why a process ended, as Android 11 (API 30) does";
+    }
+
+    private static String kept(int pid, long since) {
+        return "Android keeps no end of pid " + pid + (since > 0 ? " since it started" : "");
+    }
+
+    /** text on one line, "" for none */
+    private static String line(String text) {
+        return text == null ? "" : text.replace('\n', ' ').replace('\r', ' ');
+    }
+
+    /** the first end of pid at or after since (ms since 1970), the newest when since is 0; null for none */
+    private static ApplicationExitInfo end(ActivityManager manager, String app, int pid, long since) {
+        List<ApplicationExitInfo> exits = manager.getHistoricalProcessExitReasons(app, pid, 0);
+        ApplicationExitInfo end = null;
+        for (ApplicationExitInfo exit : exits) {
+            if (exit.getTimestamp() < since) continue;
+            boolean first = since > 0 ? end == null || exit.getTimestamp() < end.getTimestamp()
+                                      : end == null || exit.getTimestamp() > end.getTimestamp();
+            if (first) end = exit;
+        }
+        return end;
     }
 }

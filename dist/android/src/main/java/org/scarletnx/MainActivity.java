@@ -4,6 +4,7 @@ package org.scarletnx;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
@@ -157,6 +158,13 @@ public class MainActivity extends SDLActivity {
         when unknown), as UTF-8 */
     public byte[] exitReason(int pid, long since) {
         return Exits.of(this, pid, since).getBytes(StandardCharsets.UTF_8);
+    }
+
+    /** src/gui/android.c: the same end as Exits.fields gives it, for the menu's Last Run, as UTF-8 */
+    public byte[] exitFields(int pid, long since) {
+        ActivityManager manager = (ActivityManager)getSystemService(ACTIVITY_SERVICE);
+        return Exits.fields(manager, getPackageName(), Build.VERSION.SDK_INT, pid, since)
+            .getBytes(StandardCharsets.UTF_8);
     }
 
     /** a stopped game's Share Log (GameActivity, a text log), from the activity that shows it: a file of the data
