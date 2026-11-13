@@ -1452,8 +1452,14 @@ int vk_surf_publish(Surf* s) {
     if (!r) return 0;
     /* straight into the buffer that becomes the span's owner, as the copy engine's destinations go (dma.c): the bytes
        the GPU owns there are copied on the GPU, and only the CPU's cross the bus, once. Staged in host memory, the span
-       went out and came back several times, 12 to 14 MB a frame in one game */
-    if (!vk_guest_read_device(s->gva, size, r->buf, 0)) {
+       went out and came back several times, 12 to 14 MB a frame in one game. The flush below writes the image's own
+       bytes into the span, so the copy is thrown away where the span is the image whole (no bytes past a row, no rows
+       past the image) and the CPU wrote none of it: the picture before the picture. A layout with padding keeps its
+       bytes, and the copy is what brings them */
+    u64 row = (u64)guest_w(s) * s->f.bpp;
+    int covers_all = s->bl && !surf_volume(s) && kept == 0 &&
+                     bl_size((u32)row, guest_h(s), s->bh) == row * guest_h(s);
+    if (!covers_all && !vk_guest_read_device(s->gva, size, r->buf, 0)) {
         vk_own_res_unref(r);
         return 0;
     }
