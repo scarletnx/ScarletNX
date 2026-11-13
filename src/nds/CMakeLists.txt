@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The NDS (Nintendo DS) runtime: the board scarletnx-nds runs card images on, its offline ARM9 compiler and its Vulkan
+# The NDS (the DS) runtime: the board scarletnx-nds runs card images on, its offline ARM9 compiler and its Vulkan
 # renderer. Independent of the NX and GNU ABI runtimes; a target here compiles only src/nds.
 #
 #   scarletnx-nds-runtime   the board: the card image, memory, the registers, the HLE BIOS and ARM7, the block cache

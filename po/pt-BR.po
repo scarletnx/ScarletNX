@@ -2274,8 +2274,8 @@ msgid "Runs a GBA ROM or MultiBoot ROM on the emulated AGB board"
 msgstr "Roda uma ROM de GBA ou de MultiBoot na placa AGB emulada"
 
 #: src/gui/main.c
-msgid "Recompiles a Nintendo DS card image, then runs it"
-msgstr "Recompila uma imagem de cartão de Nintendo DS e depois a roda"
+msgid "Recompiles a DS card image, then runs it"
+msgstr "Recompila uma imagem de cartão de DS e depois a roda"
 
 #: src/gui/main.c
 msgid "Runs an Android app's .apk, .xapk or .apks"

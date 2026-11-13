@@ -2274,8 +2274,8 @@ msgid "Runs a GBA ROM or MultiBoot ROM on the emulated AGB board"
 msgstr "在模拟的 AGB 主板上运行 GBA ROM 或 MultiBoot ROM"
 
 #: src/gui/main.c
-msgid "Recompiles a Nintendo DS card image, then runs it"
-msgstr "重新编译 Nintendo DS 卡带镜像，然后运行它"
+msgid "Recompiles a DS card image, then runs it"
+msgstr "重新编译 DS 卡带镜像，然后运行它"
 
 #: src/gui/main.c
 msgid "Runs an Android app's .apk, .xapk or .apks"

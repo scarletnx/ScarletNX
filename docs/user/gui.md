@@ -121,7 +121,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
 - **Load NDS ROM** uses `scarletnx-nds` on a card image (`.nds`), with the menu's data folder as its `--data`: it
   makes the game's folder of `recompiled/` (named after the image's file), compiles the game's code ahead of time
   on the first run, which takes a few minutes, and plays it in a window with both screens. See
-  [Nintendo DS](../platforms/nds/README.md).
+  [DS](../platforms/nds/README.md).
 - **Load Android APK/XAPK** uses `scarletnx-android` on an `.apk`, `.xapk` or `.apks` file, with no other argument.
   The driver installs a bundle of split APKs itself. The app runs as it is, as a Linux program does: nothing is
   compiled first, and its recent row shows at once. An APK in a games or dumps folder shows in Games, and Enter runs

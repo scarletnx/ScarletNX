@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* scarletnx-nds: the Nintendo DS system type. A card image's ARM9 code is compiled ahead of time into a native module
+/* scarletnx-nds: the DS system type. A card image's ARM9 code is compiled ahead of time into a native module
    (aot/), as a 3DS game's is, and runs on the board (board/), whose second processor, BIOS and firmware are answered
    by the runtime (hle/, bios/) and whose picture is drawn on the GPU (gpu/). A game is its image, read where it lies:
    there is nothing to extract and no update to add, so its folder is made as a GBA game's is. */
@@ -39,7 +39,7 @@ static void usage(FILE* out) {
     fputs("Usage: scarletnx-nds [OPTIONS] GAME.nds\n"
           "       scarletnx-nds [OPTIONS] --game=recompiled/<name>\n"
           "       <name> [OPTIONS]   (the game's copy of the runtime, in its folder)\n"
-          "Recompiles a Nintendo DS card image's ARM9 code ahead of time and plays it, both screens in a window.\n"
+          "Recompiles a DS card image's ARM9 code ahead of time and plays it, both screens in a window.\n"
           "\n",
           out);
     snx_cli_help(out, nds_cli);

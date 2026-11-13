@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Copyright 2026 the ScarletNX contributors -->
-# The Nintendo DS
+# The DS
 
 ## Index
 
@@ -17,7 +17,7 @@
 * [Known limits](#known-limits)
 * [Source provenance and licensing](#source-provenance-and-licensing)
 
-`scarletnx-nds` is the Nintendo DS system type. It takes a card image (`.nds`), compiles the game's ARM9 code ahead
+`scarletnx-nds` is the DS system type. It takes a card image (`.nds`), compiles the game's ARM9 code ahead
 of time into a native module, as the 3DS driver compiles a title's, and runs it on a board whose every other part is
 answered at a high level: there is no ARM7 processor, no BIOS and no firmware in the emulator, and none is read. The
 picture is drawn on the GPU with Vulkan. Nothing of it is drawn or copied a pixel at a time on the CPU.

@@ -6936,7 +6936,7 @@ static const char* item_about(const App* app, int item) {
                                         SNX_TR_NOOP("Recompiles a 3DS game, then runs it"),
                                         SNX_TR_NOOP("Recompiles a PS Vita homebrew .vpk, then runs it"),
                                         SNX_TR_NOOP("Runs a GBA ROM or MultiBoot ROM on the emulated AGB board"),
-                                        SNX_TR_NOOP("Recompiles a Nintendo DS card image, then runs it"),
+                                        SNX_TR_NOOP("Recompiles a DS card image, then runs it"),
                                         SNX_TR_NOOP("Runs an Android app's .apk, .xapk or .apks")};
     if (item >= GUI_SWITCH && item <= GUI_ANDROID) return snx_tr(loads[item - GUI_SWITCH]);
     if (item == GUI_KEYS) return snx_tr("Installs prod.keys, which games are extracted with");
