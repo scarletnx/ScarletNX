@@ -540,7 +540,8 @@ cached behind the game, and then the game, and the app comes back with neither (
 game runs in). Its box says what ran and when it started, how it ended as the system says it (on Android 11 and later
 the reason Android keeps for the game's process, `Android stopped it: low memory (org.scarletnx:game, status 0,
 importance 100 foreground)`, the question then `Android stopped <game>`; elsewhere what it may have been), the memory
-that process held (`PSS 4.9 GB, RSS 1.9 GB`, `?` for what the system does not say) and the game's log. Run edenprobe
+that process held (`PSS 4.9 GB, RSS 1.9 GB`, `?` for what the system does not say, `none recorded by Android` where
+it measured none, as for a process killed by a signal) and the game's log. Run edenprobe
 left before its summary has **Continue**, in focus, which goes on with it from its journal once the setup is done, as
 GPU Drivers' Continue does, and **Not Now**, which leaves it to that row; one that reached its summary shows its counts
 in a box instead. A game has OK alone, and the page comes only for one that did not end with an exit, its own mark left

@@ -3838,6 +3838,14 @@ msgid "Android says %s (%s%s%s)"
 msgstr ""
 
 #: src/gui/main.c
+msgid "none recorded by Android"
+msgstr ""
+
+#: src/gui/main.c
+msgid "none recorded"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "PSS %s, RSS %s"
 msgstr ""
