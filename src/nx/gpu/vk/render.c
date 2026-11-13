@@ -1487,17 +1487,25 @@ VkImageViewType vk_storage_image_type(const ShaderInfo* si, int i) {
                                     : VK_IMAGE_VIEW_TYPE_2D;
 }
 
+/* Whether a is an address of the GPU's address space. gmmu_run looks an address up by its low
+   GMMU_ADDRESS_SPACE_BITS, so a value above them aliases onto whatever is mapped at those bits */
+static int gbuf_address(u64 a) { return a && !(a >> GMMU_ADDRESS_SPACE_BITS); }
 /* An indirect buffer's address (SH_GBUF_INDIRECT): the 64-bit pointer at its cell, read from guest memory as the
    program loads it, a pending write there landed first. The cell is at the address its parent's constant buffer word
-   holds (v). A cell or a pointer with no memory mapped binds nothing (0) */
+   holds (v). A cell or a pointer with no memory mapped binds nothing (0), and so does a cell whose 8 bytes are no
+   address at all. One game's plant culling programs reach a buffer through a pointer at bytes 0x40 to 0x60 of a
+   block that, in their dispatches, holds the view's matrices. Two floats there whose bits 32 to 39 fell on mapped
+   memory passed for a pointer in a frame now and then: the program got 16 MiB at a nonsense, unaligned address, the
+   GPU mirror refused the dispatch for it (compute.c mirror_plan), and the plants' draws did not get that frame's
+   lists. Trees and bushes lost their leaves for one frame, a few times a minute */
 static u64 gbuf_pointer(u32 off, const u32* v) {
     u64 cell = (((u64)v[1] << 32) | v[0]) + SH_GBUF_CELL(off), cpu = 0;
     u32 w[2];
-    if (cell == SH_GBUF_CELL(off) || gmmu_run(cell, 8, &cpu) < 8) return 0;
+    if (cell == SH_GBUF_CELL(off) || !gbuf_address(cell) || gmmu_run(cell, 8, &cpu) < 8) return 0;
     vk_buf_mem_need(cell, 8);
     vk_gmem_words(cell, w, 2);
     u64 pointer = ((u64)w[1] << 32) | w[0];
-    return pointer && gmmu_run(pointer, 4, &cpu) ? pointer : 0;
+    return gbuf_address(pointer) && gmmu_run(pointer, 4, &cpu) ? pointer : 0;
 }
 u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr) {
     u32 size = v[2];
@@ -1507,6 +1515,7 @@ u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr) {
        An Ounce game's dispatches leave such an address in a slot, and the GPU mirror took no dispatch with one: each
        copied its written buffers on the CPU instead, about 230 MB a second of one race */
     *addr = SH_GBUF_INDIRECT(off) ? gbuf_pointer(off, v) : ((u64)v[1] << 32) | v[0];
+    if (!gbuf_address(*addr)) *addr = 0;
     if (!shader_gbuf_sized(stage, off)) {
         /* a bare address in the program's own constant buffer has no size beside it: the memory mapped from it on,
            whole words, to the cap below (Eden binds such a buffer to the end of its mapping, at most 8 MiB) */
