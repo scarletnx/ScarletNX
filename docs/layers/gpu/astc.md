@@ -436,8 +436,19 @@ roughness maps, 4x4, 8x8 and 12x12, `-esw rgb1`) mix partitions of colour, and l
 RGBA and edenprobe's whole picture hold colour and alpha. On the normal maps BC5 loses less than BC7's fast build at 6
 of the 8 footprints and errs far less in alpha (Y), its two channels apart where BC7 fits lines through RGBA.
 
-**Memory:** BC1 and BC4 take 8 bytes a 4x4 block, half a byte a texel, an eighth of RGBA8's four and half of BC7's
-16; BC5 takes BC7's 16.
+**Memory and time.** BC1 and BC4 take 8 bytes a 4x4 block, half a byte a texel, an eighth of RGBA8's four and half of
+BC7's 16; BC5 takes BC7's 16. Their encoders cost little more than the decode: on an RX 6700 XT (RADV), a level
+uploaded from the start of the upload to the GPU's end of it (`snx-test-astc-vulkan --bench`, the median of four runs
+after the first, which makes the pipeline; a -O0 test build, under `lock.sh gpu-measure`):
+
+| Blocks | Level | RGBA8 | BC7 (fast build) | BC1 | BC4 | BC5 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Random 8x8 | 4096x4096 | 1.5 ms | 13.4 ms | 5.2 ms | 2.5 ms | 2.8 ms |
+| | 2040x2040 | 0.7 ms | 4.0 ms | 1.5 ms | 0.7 ms | 0.9 ms |
+| The occlusion map's 4x4, repeated | 4096x4096 | 4.0 ms | 7.7 ms | 4.9 ms | 2.8 ms | 3.0 ms |
+| | 2040x2040 | 1.0 ms | 2.5 ms | 2.0 ms | 1.2 ms | 1.2 ms |
+| The occlusion map's 8x8, repeated | 4096x4096 | 1.5 ms | 4.9 ms | 4.9 ms | 2.5 ms | 2.5 ms |
+| | 2040x2040 | 0.5 ms | 1.2 ms | 1.4 ms | 0.8 ms | 0.8 ms |
 
 ### Between frames
 
