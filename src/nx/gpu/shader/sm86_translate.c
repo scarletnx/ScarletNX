@@ -57,7 +57,7 @@ typedef struct {
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
-    u32 point_coord, front_facing;
+    u32 point_coord, front_facing, primitive_id;
     /* a fragment program at a resolution scale: SNX_VKB_RS's vec4 (scale_component) and the fragment stage's push
        constants, whose uvec4s mark the textures bound to scaled render targets (scaled_slot) */
     u32 scale, scale_ptr, scaled_push;
@@ -4718,6 +4718,16 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 }
                 v = spv_emit_vec4_extract(&c->e, c->t_f32, spv_emit_load(&c->e, c->t_v2f, c->point_coord),
                                           (addr >> 2) & 1);
+            } else if (addr == 0x60 && c->stage == ST_FS && g_shader_geometry) {
+                /* NAK's NAK_ATTR_PRIMITIVE_ID: the primitive's number, an integer, its bits as they are. The
+                   builtin needs the Geometry capability in a fragment program */
+                if (!c->primitive_id) {
+                    c->primitive_id = spv_emit_builtin_input_u32(&c->e, c->t_u32, SPV_BUILT_IN_PRIMITIVE_ID);
+                    spv_emit_flat(&c->e, c->primitive_id);
+                    spv_emit_capability(&c->e, SPV_CAPABILITY_GEOMETRY);
+                    add_interface(c, c->primitive_id);
+                }
+                v = to_f(c, spv_emit_load(&c->e, c->t_u32, c->primitive_id));
             } else {
                 fail(c, "IPA of attribute 0x%x", addr);
                 return;
