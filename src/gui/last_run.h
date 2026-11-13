@@ -34,7 +34,7 @@ typedef struct {
     int known;             /* the system gave the end */
     int reason;            /* ApplicationExitInfo's REASON_* number; -1 when not known */
     int status;            /* the exit status or the signal */
-    long long pss, rss;    /* KiB; -1 when not said */
+    long long pss, rss;    /* KiB; -1 when not said, 0 when Android measured none (a process killed by a signal) */
     char said[64];         /* the reason's name, Android's: "low memory" */
     char process[128];     /* "org.scarletnx:game" */
     char importance[64];   /* "100 foreground" */

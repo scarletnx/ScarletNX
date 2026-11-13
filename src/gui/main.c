@@ -12950,12 +12950,21 @@ static void end_words(const RunEnd* end, char* out, size_t size) {
                                            : snx_tr("Android says %s (%s%s%s)"),
              s->said, details, s->description[0] ? ": " : "", s->description);
 }
-/* the memory its process held as it ended, as the system says it: ? for what it does not */
+/* the memory its process held as it ended, as the system says it: ? for what it does not say, and none recorded for
+   what Android measured none of, its 0 (a process killed by a signal, a stop by force), never a size of 0 */
 static void end_memory(const RunEnd* end, char* out, size_t size) {
-    char pss[32] = "?", rss[32] = "?";
-    if (end->system.pss >= 0) gui_size_text(pss, sizeof pss, (uint64_t)end->system.pss << 10);
-    if (end->system.rss >= 0) gui_size_text(rss, sizeof rss, (uint64_t)end->system.rss << 10);
-    snprintf(out, size, snx_tr("PSS %s, RSS %s"), pss, rss);
+    long long kib[2] = {end->system.pss, end->system.rss};
+    char said[2][48];
+    if (!kib[0] && !kib[1]) {
+        snprintf(out, size, "%s", snx_tr("none recorded by Android"));
+        return;
+    }
+    for (int i = 0; i < 2; ++i)
+        if (kib[i] > 0)
+            gui_size_text(said[i], sizeof said[i], (uint64_t)kib[i] << 10);
+        else
+            snprintf(said[i], sizeof said[i], "%s", kib[i] ? "?" : snx_tr("none recorded"));
+    snprintf(out, size, snx_tr("PSS %s, RSS %s"), said[0], said[1]);
 }
 /* a run's start, seconds since 1970, as local time into out ("2026-11-12 20:18:25"); ? when the system cannot say */
 static void run_when(long long started, char* out, size_t size) {

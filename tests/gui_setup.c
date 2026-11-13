@@ -1521,6 +1521,10 @@ static void test_start_scale(App* app) {
 #define F8_LOW_MEMORY                                                                                                  \
     "reason=3\nsaid=low memory\nprocess=org.scarletnx:game\nstatus=0\nimportance=100 foreground\npss=5138022\n"        \
     "rss=1992704\ndescription=\n"
+/* the same game's end where Android measured none of its memory (a kill by a signal): pss=0, rss=0 */
+#define F8_SIGNALED                                                                                                    \
+    "reason=2\nsaid=signaled\nprocess=org.scarletnx:game\nstatus=9\nimportance=100 foreground\npss=0\nrss=0\n"         \
+    "description=\n"
 /* a run the menu started and did not see end, as it kept it beside its run log: program's (its state folder holding a
    log written since, headed name, and with mark a start's mark no program holds), the probe's folder for Run
    edenprobe. The record's path, owned */
@@ -1554,7 +1558,8 @@ static char* stopped_run(App* app, const char* program, const char* name, const 
     return record;
 }
 /* the run the menu did not see end, Last Run: a game Android stopped for its memory, a page first that says what ran,
-   when it started, Android's reason, its process's PSS and RSS and its log, OK alone; Run edenprobe without its
+   when it started, Android's reason, its process's PSS and RSS (none recorded where Android measured none, never 0
+   MB) and its log, OK alone; Run edenprobe without its
    summary, Continue (going on with it from its journal once the setup is done) and Not Now; one that reached its
    summary, its counts in a box; a game that ended with an exit, or still runs, nothing but the log's line; with
    --no-setup none, the record read all the same. setup.ini written by none */
@@ -1594,6 +1599,23 @@ static void test_last_run(App* app) {
     assert(before ? at && !strcmp(at, before) : !at); /* the page writes nothing */
     free(at);
     free(record);
+    /* a memory Android did not record is said so, never as 0 MB: both, then the PSS alone */
+    for (int one = 0; one < 2; ++one) {
+        app->system_said = one ? "reason=2\nsaid=signaled\nprocess=org.scarletnx:game\nstatus=9\nimportance=100 "
+                                 "foreground\npss=0\nrss=1992704\ndescription=\n"
+                               : F8_SIGNALED;
+        record = stopped_run(app, program, "A Test Game", NULL, true);
+        last_run_look(app);
+        setup_start(app);
+        assert(app->setup_on && page(app) == SETUP_STOPPED);
+        render(app);
+        shows(app, one ? "PSS none recorded, RSS 1.9 GB" : "none recorded by Android", rgb(app->theme.ink));
+        hides(app, "0 MB", rgb(app->theme.ink));
+        key(app, SDLK_RETURN);
+        assert(!app->setup_on);
+        free(record);
+    }
+    app->system_said = F8_LOW_MEMORY;
     /* the same game ended with an exit (its mark gone), or still running (its mark held): the log's line alone */
     record = stopped_run(app, program, "A Test Game", NULL, false);
     state = snx_user_path(folder, SNX_USER_STATE);
