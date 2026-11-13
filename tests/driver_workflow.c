@@ -39,13 +39,13 @@ static int event(char stage) {
     CHECK(log != NULL);
     CHECK(fputc(stage, log) != EOF);
     CHECK(!fclose(log));
-    if (stage == 'G' && getenv("SNX_WORKFLOW_REMAKE") && *getenv("SNX_WORKFLOW_REMAKE")) {
+    if ((stage == 'G' || stage == 'A') && getenv("SNX_WORKFLOW_REMAKE") && *getenv("SNX_WORKFLOW_REMAKE")) {
         /* the first game run says its code is another build's; the driver recompiles and runs it again */
         FILE* seen = snx_fopen(getenv("SNX_WORKFLOW_LOG"), "r");
         int count = 0, c;
         if (seen) {
             while ((c = fgetc(seen)) != EOF)
-                if (c == 'G') ++count;
+                if (c == stage) ++count;
             fclose(seen);
         }
         if (count == 1) return SNX_EXIT_REMAKE;
@@ -1609,6 +1609,12 @@ int main(int argc, char** argv) {
         run(exe, repo, update, log, 0, "A", NULL);
         run(exe, repo, own, log, 0, "A", NULL);
         run(exe, repo, game_dump, log, 0, "A", NULL); /* the game, played with its checked update */
+        /* given with --update, a program of another build is recompiled with its update, then played */
+        set_env("SNX_WORKFLOW_UPDATE", update);
+        set_env("SNX_WORKFLOW_REMAKE", "1");
+        run(exe, repo, game_dump, log, 0, "ARRA", "made from other content: recompiling");
+        set_env("SNX_WORKFLOW_REMAKE", "");
+        set_env("SNX_WORKFLOW_UPDATE", "");
         /* a DLC program an older version made, taken away as its dump is played: the game played with it */
         CHECK(!snx_copy_file(exe, old_dlc));
         { /* --out, which the menu passes with Extract dump: a DLC's goes into its own data folder */

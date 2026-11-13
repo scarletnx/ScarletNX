@@ -996,8 +996,10 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
         snx_title_text(title, of);
         if (!prepared) folder = game_folder(outdir, paths->repo, of);
         program = game_program(folder, of);
-        rc = !program || play_dump(program, paths, flags, NULL, NULL, opt, recompiling, recompile, settings, setting,
-                                   game_argc, game_argv, NULL, 0);
+        /* the game's own status: SNX_EXIT_REMAKE has the driver recompile it with its updates */
+        rc = program ? play_dump(program, paths, flags, NULL, NULL, opt, recompiling, recompile, settings, setting,
+                                 game_argc, game_argv, NULL, 0)
+                     : 1;
         free(program);
         goto done;
     }
