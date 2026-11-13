@@ -919,6 +919,12 @@ msgstr "clique na caixa (ou Enter) para abrir o seletor de arquivos"
 msgid "Ctrl+V: paste. ESC: back."
 msgstr "Ctrl+V: colar. ESC: voltar."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: console. Ctrl+V: paste. ESC: back."
+msgstr "Cima/Baixo: console. Ctrl+V: colar. ESC: voltar."
+
 #: src/gui/main.c
 msgid "Pick or drop a keys file"
 msgstr "Escolha ou solte um arquivo de chaves"
@@ -1138,6 +1144,12 @@ msgstr "X: save states."
 #, snx-keys
 msgid "A: pick a file. B: back."
 msgstr "A: escolher um arquivo. B: voltar."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: console. A: pick a file. B: back."
+msgstr "Direcional: console. A: escolher um arquivo. B: voltar."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -2540,6 +2552,14 @@ msgid "%zu game(s)"
 msgstr "%zu jogo(s)"
 
 #: src/gui/main.c
+msgid "Installed"
+msgstr "Instalado"
+
+#: src/gui/main.c
+msgid "Not installed"
+msgstr "Não instalado"
+
+#: src/gui/main.c
 #, c-format
 msgid "Installs to: %s"
 msgstr "Instala em: %s"
@@ -2550,16 +2570,8 @@ msgstr "Sem pasta pessoal"
 
 #: src/gui/main.c
 #, c-format
-msgid "3DS keys to: %s"
-msgstr "Chaves do 3DS em: %s"
-
-#: src/gui/main.c
-msgid "Installed"
-msgstr "Instalado"
-
-#: src/gui/main.c
-msgid "Not installed"
-msgstr "Não instalado"
+msgid "The DS's ARM7 BIOS: %u bytes, CRC-32 0x%08X"
+msgstr "O BIOS ARM7 do DS: %u bytes, CRC-32 0x%08X"
 
 #: src/gui/main.c
 #, c-format
@@ -5003,12 +5015,24 @@ msgid "M opens the mods and cheats of a recompiled Switch game in focus."
 msgstr "M abre os mods e cheats de um jogo de Switch recompilado em foco."
 
 #: src/gui/main.c
+msgid "Cannot install bios7.bin: APPDATA is not set"
+msgstr "Não foi possível instalar o bios7.bin: APPDATA não está definido"
+
+#: src/gui/main.c
+msgid "Cannot install bios7.bin: HOME is not set"
+msgstr "Não foi possível instalar o bios7.bin: HOME não está definido"
+
+#: src/gui/main.c
 msgid "Cannot install aes_keys.txt: neither USERPROFILE nor HOME is set"
 msgstr "Não foi possível instalar o aes_keys.txt: nem USERPROFILE nem HOME estão definidos"
 
 #: src/gui/main.c
 msgid "Cannot install aes_keys.txt: HOME is not set"
 msgstr "Não foi possível instalar o aes_keys.txt: HOME não está definido"
+
+#: src/gui/main.c
+msgid "bios7.bin installed: encrypted NDS games can be decrypted now."
+msgstr "bios7.bin instalado: os jogos de NDS criptografados já podem ser descriptografados."
 
 #: src/gui/main.c
 msgid "aes_keys.txt installed: encrypted 3DS games can be decrypted now."
@@ -5024,8 +5048,34 @@ msgid "Cannot install %s: %s"
 msgstr "Não foi possível instalar %s: %s"
 
 #: src/gui/main.c
-msgid "Please drop a readable file named prod.keys or aes_keys.txt."
-msgstr "Solte um arquivo legível chamado prod.keys ou aes_keys.txt."
+#, c-format
+msgid "%s is not the DS's ARM7 BIOS: it has %zu bytes, the BIOS %u (CRC-32 0x%08X)."
+msgstr "%s não é o BIOS ARM7 do DS: tem %zu bytes, o BIOS %u (CRC-32 0x%08X)."
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not the DS's ARM7 BIOS: its CRC-32 is 0x%08X, the BIOS's 0x%08X."
+msgstr "%s não é o BIOS ARM7 do DS: o CRC-32 dele é 0x%08X, o do BIOS 0x%08X."
+
+#: src/gui/main.c
+#, c-format
+msgid "%s could not be read, or has over %d bytes: the DS's ARM7 BIOS has %u."
+msgstr "Não foi possível ler %s, ou ele tem mais de %d bytes: o BIOS ARM7 do DS tem %u."
+
+#: src/gui/main.c
+#, c-format
+msgid "%s could not be read, or has over %d bytes."
+msgstr "Não foi possível ler %s, ou ele tem mais de %d bytes."
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not prod.keys, aes_keys.txt or the DS's ARM7 BIOS."
+msgstr "%s não é prod.keys, aes_keys.txt nem o BIOS ARM7 do DS."
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not a file."
+msgstr "%s não é um arquivo."
 
 #: src/gui/main.c
 #, c-format
@@ -6609,6 +6659,12 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "3DS keys to: %s"
+#~ msgstr "Chaves do 3DS em: %s"
+
+#~ msgid "Please drop a readable file named prod.keys or aes_keys.txt."
+#~ msgstr "Solte um arquivo legível chamado prod.keys ou aes_keys.txt."
 
 #~ msgid "Adreno only"
 #~ msgstr "Só Adreno"

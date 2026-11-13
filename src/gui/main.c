@@ -20,6 +20,8 @@
 #include "common/cpu/aarch64/cpu.h" /* SNX_ABI, which the games this build's driver makes are stamped with */
 #include "common/utilities/state_header.h"
 #include "common/utilities/demangle.h"
+#include "common/utilities/zip.h" /* snx_crc32: the DS's ARM7 BIOS, checked before it is installed */
+#include "nds/cartridge/key1.h"   /* the BIOS's file, size and CRC-32, as scarletnx-nds reads it */
 #include "common/utilities/logscan.h"
 #include "common/utilities/run_mark.h"
 #include "gui/aot.h"
@@ -162,8 +164,12 @@ enum {
     GUI_LIST_APPEARANCE,
     GUI_LIST_QUEUE,
     GUI_LIST_STATES,
+    GUI_LIST_KEYS,
     GUI_LISTS
 };
+/* the keys screen's consoles, a row each (ui.txt's scene Keys), in the menu's order: whose file each takes, where it
+   goes and whether it is there are keys_file, keys_place and keys_there */
+enum { GUI_KEYS_SWITCH, GUI_KEYS_3DS, GUI_KEYS_NDS, GUI_KEYS_CONSOLES };
 /* a scene list drawn this frame (ui_bar): its rows' area, a finger's to scroll, and its scroll bar's track and thumb
    (empty while its rows all show), the rows it has and shows from first, kept in App's firsts[list] */
 typedef struct {
@@ -421,6 +427,8 @@ typedef struct App {
     uint64_t loads_key;
     Uint64 loads_at;
     char *cwd, *file, *games_dir, *keys_path, *keys3_path;
+    char* bios7_path; /* the DS's ARM7 BIOS in the data folder: scarletnx-nds decrypts secure areas with it */
+    int keys_of;      /* the keys screen's console in focus (GUI_KEYS_*): the one a file picked is for */
     char*
         data_dir; /* recompiled/, dumps/, work/ and themes/: the driver's too, which gets it as --repo (snx_data_dir) */
     char* checkout;       /* a build tree's menu's checkout (snx_checkout), where an older version kept games/ */
@@ -953,6 +961,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #else
 #define SAY_KEYS_HOW SNX_TR_KEYS("Pick a keys file.")
 #endif
+#define SAY_KEYS_CONSOLES SAY_KEYS_HOW /* a finger taps a console's row */
 #define SAY_KEYS_WAIT SNX_TR_NOOP("Pick a keys file")
 #define SAY_PICK_BOX  SNX_TR_NOOP("tap the box to open the file picker")
 #define SAY_FILE_WAIT SNX_TR_NOOP("Pick a file")
@@ -1034,6 +1043,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_GAMES_STATES SNX_TR_KEYS("S: save states.")
 #define SAY_PICK_BOX     SNX_TR_NOOP("click the box (or Enter) to open the file picker")
 #define SAY_KEYS_HOW     SNX_TR_KEYS("Ctrl+V: paste. ESC: back.")
+#define SAY_KEYS_CONSOLES SNX_TR_KEYS("Up/Down: console. Ctrl+V: paste. ESC: back.")
 #define SAY_KEYS_WAIT    SNX_TR_NOOP("Pick or drop a keys file")
 #define SAY_FILE_WAIT    SNX_TR_NOOP("Pick or drop a file")
 #define SAY_DONE         SNX_TR_NOOP("Press [ESC] to return to menu")
@@ -1079,6 +1089,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_PAD_GAMES_AOT        SNX_TR_KEYS("R3: AOT pack.")
 #define SAY_PAD_GAMES_STATES     SNX_TR_KEYS("X: save states.")
 #define SAY_PAD_KEYS_HOW         SNX_TR_KEYS("A: pick a file. B: back.")
+#define SAY_PAD_KEYS_CONSOLES    SNX_TR_KEYS("D-pad: console. A: pick a file. B: back.")
 #define SAY_PAD_EDITOR           SNX_TR_KEYS("D-pad: key, change. A: edit. B: back.")
 #define SAY_PAD_PICKER           SNX_TR_KEYS("D-pad: row, step 1. LT/RT: step 16. A: OK. B: cancel.")
 #define SAY_PAD_SETTINGS         SNX_TR_KEYS("D-pad: setting, change. A: type. B: back.")
@@ -1401,16 +1412,37 @@ static char* device_keys_path(const App* app) {
     free(dir);
     return path;
 }
-/* the keys a driver reads: the Switch's installed here, else with the user's data folder the ones in ~/.switch, else
-   the 3DS's in ~/.3ds; NULL when none */
-static char* keys_in_use(const App* app) {
+/* the Switch's keys its driver reads: those installed here, else with the user's data folder the ones in ~/.switch;
+   NULL when none */
+static char* switch_keys_in_use(const App* app) {
     if (app->keys_path && snx_is_file(app->keys_path)) return snx_strdup(app->keys_path);
 #ifdef SNX_XDG
     char* home = installed(app) ? home_keys_path() : NULL;
     if (home && snx_is_file(home)) return home;
     free(home);
 #endif
-    return snx_ctr_keys_found();
+    return NULL;
+}
+/* the keys a driver reads: the Switch's, else the 3DS's in ~/.3ds; NULL when none */
+static char* keys_in_use(const App* app) {
+    char* in_use = switch_keys_in_use(app);
+    return in_use ? in_use : snx_ctr_keys_found();
+}
+/* the keys screen's consoles, as the menu's loads name them */
+static const char* const keys_consoles[GUI_KEYS_CONSOLES] = {"Switch", "3DS", "NDS"};
+/* the file the keys screen's console takes, by the name its driver reads it by */
+static const char* keys_file(int console) {
+    return console == GUI_KEYS_SWITCH ? "prod.keys" : console == GUI_KEYS_3DS ? "aes_keys.txt" : NDS_BIOS7_FILE;
+}
+/* where it is installed: NULL when no folder can be named (no home) */
+static const char* keys_place(const App* app, int console) {
+    return console == GUI_KEYS_SWITCH ? app->keys_path : console == GUI_KEYS_3DS ? app->keys3_path : app->bios7_path;
+}
+/* the console's file its driver reads, installed or, the Switch's, found in ~/.switch; NULL when none */
+static char* keys_there(const App* app, int console) {
+    const char* place = keys_place(app, console);
+    if (console == GUI_KEYS_SWITCH) return switch_keys_in_use(app);
+    return place && snx_is_file(place) ? snx_strdup(place) : NULL;
 }
 /* the footer from row: the usage, then the working folder, which recompiled/ and themes/ are found in. The theme's bar
    style puts them on a band of ink over rows rows, its plain one in soft and ink; a rule above when it says so */
@@ -3370,6 +3402,7 @@ static unsigned key_icon(const char* key, const char* what) {
                  {"folder", GUI_ICON_MOVE},
                  {"user", GUI_ICON_MOVE},
                  {"queue", GUI_ICON_MOVE},
+                 {"console", GUI_ICON_MOVE},
                  {"scroll", GUI_ICON_MOVE},
                  {"page", GUI_ICON_MOVE},
                  {"move, change", GUI_ICON_MOVE},
@@ -3507,9 +3540,10 @@ static const char* screen_keys(const App* app, bool help, char* out, size_t size
                    : app->form == GUI_FORM_FREEDRENO ? SAY_PAD_FREEDRENO
                                                      : SAY_PAD_SETTINGS;
         else
-            keys = app->menu.view == GUI_LOAD_GAMES ? SAY_PAD_GAMES
-                   : pick_screen(app)               ? SAY_PAD_KEYS_HOW
-                                                    : SAY_PAD_MENU;
+            keys = app->menu.view == GUI_LOAD_GAMES  ? SAY_PAD_GAMES
+                   : app->menu.view == GUI_LOAD_KEYS ? SAY_PAD_KEYS_CONSOLES
+                   : pick_screen(app)                ? SAY_PAD_KEYS_HOW
+                                                     : SAY_PAD_MENU;
         if (app->editing && app->form == GUI_FORM_FOLDERS) folders_said(app, true, parts, &n);
         if (!app->editing && app->menu.view == GUI_LOAD_GAMES) games_said(app, true, parts, &n);
         if (!app->editing && folder_pick_screen(app)) said_add(parts, &n, SAY_PAD_PICK_FOLDER);
@@ -3532,6 +3566,8 @@ static const char* screen_keys(const App* app, bool help, char* out, size_t size
                                                      : SAY_SETTINGS;
         else if (app->menu.view == GUI_LOAD_GAMES)
             keys = games_grid(app) ? SAY_GAMES_GRID : SAY_GAMES;
+        else if (app->menu.view == GUI_LOAD_KEYS)
+            keys = SAY_KEYS_CONSOLES;
         else if (pick_screen(app))
             keys = SAY_KEYS_HOW;
         if (app->editing && app->form == GUI_FORM_FOLDERS) folders_said(app, false, parts, &n);
@@ -7719,30 +7755,72 @@ static void prompt_in(App* app, GuiRect r, int y, GuiPromptLine line, const char
 typedef struct {
     GuiPlace place;
     int prompt; /* the waiting line's pixel row */
+    /* the keys screen's: its consoles' rows under the box's head (ui.txt's scene Keys), and the pixel row under them */
+    GuiRect rects[UI_KEYS_ITEMS];
+    UiList lists[UI_KEYS_ITEMS];
+    int below;
 } GuiPickBoxes;
 static void pick_boxes(App* app, GuiPickBoxes* k) {
     char keys[256];
+    int s = app->scale, y, h;
+    GuiRect r;
     place_screen(app, &k->place, shown_keys(app, keys, sizeof keys), GUI_SHOWS_TABS);
     k->prompt = k->place.list.y + k->place.list.h / 2;
+    memset(k->lists, 0, sizeof k->lists);
+    memset(k->rects, 0, sizeof k->rects);
+    y = k->place.list.y + head_h(app) + 2 * s; /* where pane() starts its text */
+    k->below = y;
+    if (app->menu.view != GUI_LOAD_KEYS) return;
+    r = inner(app, k->place.list);
+    h = rows_h(ui_keys_layout, ui_keys_row, k->rects, UI_KEYS_ROWS, s, GUI_KEYS_CONSOLES);
+    h = SDL_min(h, SDL_max(0, k->place.list.y + k->place.list.h - y - 2 * s));
+    ui_keys_layout(gui_rect(r.x, y, r.w, h), s, k->rects);
+    k->lists[UI_KEYS_ROWS].focus = (size_t)app->keys_of;
+    list_follow(app, GUI_LIST_KEYS, ui_keys_follow, ui_keys_row, k->rects, UI_KEYS_ROWS, GUI_KEYS_CONSOLES,
+                &k->lists[UI_KEYS_ROWS]);
+    k->below = y + h + cell_h(app) / 2;
+}
+/* a console's row: its name, the file it takes and whether it is installed */
+bool ui_keys_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
+    const char* place;
+    (void)width;
+    if (row >= GUI_KEYS_CONSOLES) return false;
+    place = keys_place(app, (int)row);
+    snprintf(app->row_text, sizeof app->row_text, "%-6s  %-12s  %s", keys_consoles[row], keys_file((int)row),
+             place && snx_is_file(place) ? snx_tr("Installed") : snx_tr("Not installed"));
+    info->label = app->row_text;
+    return true;
+}
+/* a row under the pointer takes the focus, its console's place shown under the rows; a click on it opens the picker
+   for its file, as Enter does */
+void ui_keys_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
+    if (row >= GUI_KEYS_CONSOLES) return;
+    if (app->keys_of != (int)row) app->keys_done = 0; /* the last try's outcome was another console's */
+    app->keys_of = (int)row;
+    if (hit & UI_HIT_CLICK) menu_key(app, GUI_SELECT);
 }
 static void draw_pick(App* app) {
     GuiPickBoxes k;
     GuiRect r;
     bool keys = app->menu.view == GUI_LOAD_KEYS;
-    char line[1100], hints_line[256], *in_use = keys ? keys_in_use(app) : NULL;
+    char line[1100], hints_line[256], *in_use = keys ? keys_there(app, app->keys_of) : NULL;
+    const char* place = keys ? keys_place(app, app->keys_of) : NULL;
     int y;
     pick_boxes(app, &k);
     chrome(app, &k.place);
     y = pane(app, k.place.list, snx_tr(entry_text(keys ? GUI_KEYS : app->menu.active)));
     r = inner(app, k.place.list);
     r = gui_rect(r.x, y, r.w, r.y + r.h - y);
-    if (keys) {
-        snprintf(line, sizeof line, snx_tr("Installs to: %s"),
-                 app->keys_path ? app->keys_path : snx_tr("No home folder"));
+    if (keys) { /* the consoles, then where the one in focus's file goes */
+        ui_keys_draw(app, k.rects, app->scale, k.lists);
+        y = k.below;
+        snprintf(line, sizeof line, snx_tr("Installs to: %s"), place ? place : snx_tr("No home folder"));
         y += wrap_in(app, r, r.x, y, line, 1, rgb(app->theme.ink)) * cell_h(app);
-        snprintf(line, sizeof line, snx_tr("3DS keys to: %s"),
-                 app->keys3_path ? app->keys3_path : snx_tr("No home folder"));
-        y += wrap_in(app, r, r.x, y, line, 1, rgb(app->theme.ink)) * cell_h(app);
+        if (app->keys_of == GUI_KEYS_NDS) { /* the one file it is: scarletnx-nds refuses another */
+            snprintf(line, sizeof line, snx_tr("The DS's ARM7 BIOS: %u bytes, CRC-32 0x%08X"), NDS_BIOS7_SIZE,
+                     NDS_BIOS7_CRC32);
+            y += wrap_in(app, r, r.x, y, line, 0, rgb(app->theme.soft)) * cell_h(app);
+        }
     }
     if (keys && keys_left(app)) { /* what the last try did, and when the menu comes back */
         GuiRgb said = app->keys_ok ? app->theme.focus : app->theme.failure;
@@ -7760,7 +7838,7 @@ static void draw_pick(App* app) {
             in_use = NULL;
         }
     }
-    if (in_use && app->keys_path && !strcmp(in_use, app->keys_path))
+    if (in_use && place && !strcmp(in_use, place))
         y += wrap_in(app, r, r.x, y, snx_tr("Keys installed here: installing again replaces them"), 0,
                      rgb(app->theme.failure)) *
              cell_h(app);
@@ -8887,6 +8965,8 @@ static void places_apply(App* app) {
     free(app->keys_path);
     app->keys_path = device_keys_path(app);
     if (!app->keys3_path) app->keys3_path = snx_ctr_keys_path(); /* the 3DS driver's, ~/.3ds/aes_keys.txt */
+    free(app->bios7_path);
+    app->bios7_path = snx_path_join(app->data_dir, NDS_BIOS7_FILE); /* where scarletnx-nds reads it (bios7_path) */
 }
 static const char* place_path(const App* app, int place) {
     return place == GUI_PLACE_DATA    ? app->data_dir
@@ -18606,9 +18686,20 @@ static void keys_result(App* app, bool ok) {
     app->keys_ok = ok;
     app->keys_done = now_ms(app) ? now_ms(app) : 1;
 }
-static void keys_write(App* app, const char* data, size_t size, bool ctr) {
+/* the console's file (GUI_KEYS_*) installed where its driver reads it */
+static void keys_write(App* app, const char* data, size_t size, int console) {
     char why[256];
-    const char* path = ctr ? app->keys3_path : app->keys_path;
+    const char* path = keys_place(app, console);
+    bool ctr = console == GUI_KEYS_3DS;
+    if (!path && console == GUI_KEYS_NDS) { /* places_apply's: no data folder, snx_user_data_dir's variable unset */
+#ifdef _WIN32
+        snprintf(app->message, sizeof(app->message), "%s", snx_tr("Cannot install bios7.bin: APPDATA is not set"));
+#else
+        snprintf(app->message, sizeof(app->message), "%s", snx_tr("Cannot install bios7.bin: HOME is not set"));
+#endif
+        keys_result(app, false);
+        return;
+    }
     if (!path) { /* snx_keys_dir's: the variables it reads are unset */
 #ifdef _WIN32
         snprintf(app->message, sizeof(app->message), "%s",
@@ -18626,29 +18717,73 @@ static void keys_write(App* app, const char* data, size_t size, bool ctr) {
     bool ok = !snx_keys_put(path, data, size, why, sizeof why);
     if (ok)
         snprintf(app->message, sizeof(app->message), "%s",
-                 ctr ? snx_tr("aes_keys.txt installed: encrypted 3DS games can be decrypted now.")
-                     : snx_tr("prod.keys installed: games can be extracted now."));
+                 console == GUI_KEYS_NDS ? snx_tr("bios7.bin installed: encrypted NDS games can be decrypted now.")
+                 : ctr                   ? snx_tr("aes_keys.txt installed: encrypted 3DS games can be decrypted now.")
+                                         : snx_tr("prod.keys installed: games can be extracted now."));
     else
         snprintf(app->message, sizeof(app->message), snx_tr("Cannot install %s: %s"), path, why);
     keys_result(app, ok); /* the keys' screen says it whole in its box */
+}
+/* file's bytes installed as the DS's ARM7 BIOS when they are the console's, as scarletnx-nds takes it: else refused,
+   saying what the file has and what the BIOS has */
+static void bios7_write(App* app, const char* file, const char* data, size_t size) {
+    uint32_t crc = snx_crc32(data, size);
+    if (size != NDS_BIOS7_SIZE)
+        snprintf(app->message, sizeof(app->message),
+                 snx_tr("%s is not the DS's ARM7 BIOS: it has %zu bytes, the BIOS %u (CRC-32 0x%08X)."), file, size,
+                 NDS_BIOS7_SIZE, NDS_BIOS7_CRC32);
+    else if (crc != NDS_BIOS7_CRC32)
+        snprintf(app->message, sizeof(app->message),
+                 snx_tr("%s is not the DS's ARM7 BIOS: its CRC-32 is 0x%08X, the BIOS's 0x%08X."), file, crc,
+                 NDS_BIOS7_CRC32);
+    else {
+        keys_write(app, data, size, GUI_KEYS_NDS);
+        return;
+    }
+    keys_result(app, false);
+}
+/* file, picked or dropped as the DS's ARM7 BIOS, could not be read whole */
+static void bios7_unread(App* app, const char* file) {
+    snprintf(app->message, sizeof(app->message),
+             snx_tr("%s could not be read, or has over %d bytes: the DS's ARM7 BIOS has %u."), file, SNX_GUI_KEYS_MAX,
+             NDS_BIOS7_SIZE);
+    keys_result(app, false);
 }
 static void install_keys(App* app, const char* source) {
     const char* name = source ? snx_path_leaf(source) : NULL;
     char* data = NULL;
     size_t size = 0;
-    bool ctr = false;
-    /* the name says which console's keys: the same file can only be the Switch's (prod.keys) or the 3DS's (aes_keys.txt),
-       each installed where its driver reads them */
-    if (source && snx_is_file(source)) {
-        ctr = !strcmp(name, "aes_keys.txt");
-        if (!strcmp(name, "prod.keys") || ctr) data = keys_read(source, &size);
+    int console = -1;
+    /* the name says which console's keys: prod.keys the Switch's, aes_keys.txt the 3DS's, each installed where its
+       driver reads them. Another file is the DS's ARM7 BIOS when it is named so, has the BIOS's size, or is picked on
+       the NDS row: dumps name it bios7.bin, biosnds7.rom or otherwise */
+    if (source && snx_is_file(source))
+        console =
+            !strcmp(name, "prod.keys")      ? GUI_KEYS_SWITCH
+            : !strcmp(name, "aes_keys.txt") ? GUI_KEYS_3DS
+            : !strcmp(name, NDS_BIOS7_FILE) || snx_file_size(source) == NDS_BIOS7_SIZE || app->keys_of == GUI_KEYS_NDS
+                ? GUI_KEYS_NDS
+                : -1;
+    if (console >= 0) {
+        app->keys_of = console; /* its row shows where it went, or why not */
+        data = keys_read(source, &size);
     }
-    if (!data) {
-        snprintf(app->message, sizeof(app->message), "%s",
-                 snx_tr("Please drop a readable file named prod.keys or aes_keys.txt."));
+    if (!data && console == GUI_KEYS_NDS)
+        bios7_unread(app, source);
+    else if (!data) {
+        if (console >= 0)
+            snprintf(app->message, sizeof(app->message), snx_tr("%s could not be read, or has over %d bytes."), source,
+                     SNX_GUI_KEYS_MAX);
+        else
+            snprintf(app->message, sizeof(app->message),
+                     source && snx_is_file(source) ? snx_tr("%s is not prod.keys, aes_keys.txt or the DS's ARM7 BIOS.")
+                                                   : snx_tr("%s is not a file."),
+                     source ? source : "?");
         keys_result(app, false);
-    } else
-        keys_write(app, data, size, ctr);
+    } else if (console == GUI_KEYS_NDS)
+        bios7_write(app, source, data, size);
+    else
+        keys_write(app, data, size, console);
     free(data);
 }
 /* what a picked file that cannot be used says, for the platform's picker: Android's documents, a desktop's files */
@@ -18665,17 +18800,20 @@ static void install_keys(App* app, const char* source) {
 #define SAY_PICK_UNREAD SNX_TR_NOOP("Pick the file from this computer's storage (%s).")
 #endif
 /* keys the picker gave as a document of an app's (Android's), read through it: a path to it may be one this app cannot
-   read, or there is none (Downloads by number, #280). With no name to go by, its text has to be a prod.keys' */
+   read, or there is none (Downloads by number, #280). With no name to go by, it is the file of the row in focus */
 static void install_keys_document(App* app, const char* uri) {
     size_t size = 0;
     char* data = keys_read(uri, &size);
-    if (!data)
-        snprintf(app->message, sizeof(app->message), snx_tr(SAY_KEYS_UNREAD), uri);
-    else if (!gui_keys_text(data, size))
-        snprintf(app->message, sizeof(app->message), snx_tr(SAY_KEYS_NOT), uri);
-    else
-        keys_write(app, data, size, false); /* a document has no name: its text has to be a prod.keys' */
-    if (!data || !gui_keys_text(data, size)) keys_result(app, false);
+    if (app->keys_of == GUI_KEYS_NDS && data)
+        bios7_write(app, uri, data, size);
+    else if (app->keys_of == GUI_KEYS_NDS)
+        bios7_unread(app, uri);
+    else if (data && gui_keys_text(data, size))
+        keys_write(app, data, size, app->keys_of);
+    else {
+        snprintf(app->message, sizeof(app->message), snx_tr(data ? SAY_KEYS_NOT : SAY_KEYS_UNREAD), uri);
+        keys_result(app, false);
+    }
     free(data);
 }
 /* a file dropped or picked on a load whose name says another console's (Android's picker shows every file): refused,
@@ -19632,6 +19770,12 @@ static void menu_key(App* app, GuiKey key) {
         }
         return;
     }
+    if (app->menu.view == GUI_LOAD_KEYS && (key == GUI_UP || key == GUI_DOWN)) { /* another console's row */
+        int to = SDL_clamp(app->keys_of + (key == GUI_UP ? -1 : 1), 0, GUI_KEYS_CONSOLES - 1);
+        if (to != app->keys_of) app->keys_done = 0; /* the last try's outcome was another console's */
+        app->keys_of = to;
+        return;
+    }
     if (pick_screen(app) && key != GUI_SELECT && key != GUI_CANCEL) return; /* nothing there to move to */
     /* a load whose driver is not there opens no screen: it says which driver, looked for again now (#640) */
     if (key == GUI_SELECT && app->menu.view == GUI_LOAD_NONE && !app->menu.running &&
@@ -19865,7 +20009,16 @@ static void screen_pointer(App* app, float x, float y, bool click, bool touch) {
     }
     if (pick_screen(app)) {
         GuiPickBoxes k;
+        size_t row;
+        uint32_t hit;
         pick_boxes(app, &k);
+        if (app->menu.view == GUI_LOAD_KEYS) { /* a console's row: its file picked */
+            hit = ui_keys_hit(app, k.rects, app->scale, k.lists, (int)x, (int)y, click ? UI_HIT_CLICK : 0, &i, &row);
+            if (hit) {
+                ui_keys_act(app, i, row, hit);
+                return;
+            }
+        }
         if (click && y >= (float)k.place.list.y && y < (float)(k.place.list.y + k.place.list.h) &&
             x >= (float)k.place.list.x && x < (float)(k.place.list.x + k.place.list.w))
             menu_key(app, GUI_SELECT); /* the box the waiting line is in */
@@ -21443,6 +21596,7 @@ static void forget(App* app) {
     gui_themes_free(&app->themes);
     free(app->keys_path);
     free(app->keys3_path);
+    free(app->bios7_path);
     free(app->recent_file);
     snx_free_strings(app->removed, app->removed_count);
     free(app->removed_file);

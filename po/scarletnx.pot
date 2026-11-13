@@ -916,6 +916,12 @@ msgstr ""
 msgid "Ctrl+V: paste. ESC: back."
 msgstr ""
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: console. Ctrl+V: paste. ESC: back."
+msgstr ""
+
 #: src/gui/main.c
 msgid "Pick or drop a keys file"
 msgstr ""
@@ -1134,6 +1140,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "A: pick a file. B: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: console. A: pick a file. B: back."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -2537,6 +2549,14 @@ msgid "%zu game(s)"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Installed"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Not installed"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Installs to: %s"
 msgstr ""
@@ -2547,15 +2567,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "3DS keys to: %s"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Installed"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Not installed"
+msgid "The DS's ARM7 BIOS: %u bytes, CRC-32 0x%08X"
 msgstr ""
 
 #: src/gui/main.c
@@ -5000,11 +5012,23 @@ msgid "M opens the mods and cheats of a recompiled Switch game in focus."
 msgstr ""
 
 #: src/gui/main.c
+msgid "Cannot install bios7.bin: APPDATA is not set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Cannot install bios7.bin: HOME is not set"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Cannot install aes_keys.txt: neither USERPROFILE nor HOME is set"
 msgstr ""
 
 #: src/gui/main.c
 msgid "Cannot install aes_keys.txt: HOME is not set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "bios7.bin installed: encrypted NDS games can be decrypted now."
 msgstr ""
 
 #: src/gui/main.c
@@ -5021,7 +5045,33 @@ msgid "Cannot install %s: %s"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Please drop a readable file named prod.keys or aes_keys.txt."
+#, c-format
+msgid "%s is not the DS's ARM7 BIOS: it has %zu bytes, the BIOS %u (CRC-32 0x%08X)."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not the DS's ARM7 BIOS: its CRC-32 is 0x%08X, the BIOS's 0x%08X."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s could not be read, or has over %d bytes: the DS's ARM7 BIOS has %u."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s could not be read, or has over %d bytes."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not prod.keys, aes_keys.txt or the DS's ARM7 BIOS."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not a file."
 msgstr ""
 
 #: src/gui/main.c

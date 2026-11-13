@@ -6,6 +6,7 @@
 #define SNX_SCREEN_TEST "gui_sdl.c"
 #include "gui_screen.h"
 #include "support/sdl_real_pads.h"
+#include "support/crc_forge.h"
 #include "common/cpu/aarch64/cpu.h" /* SNX_ABI, which a save state names */
 #include <assert.h>
 #include <miniz.h> /* Share Log's zip, read back */
@@ -6235,12 +6236,128 @@ int main(int argc, char** argv) {
         ctr_event.drop.data = wrong;
         app.menu.view = GUI_LOAD_KEYS;
         event(&app, &ctr_event);
-        assert(!snx_is_file(app.keys3_path) && strstr(app.message, "prod.keys or aes_keys.txt"));
+        assert(!snx_is_file(app.keys3_path) &&
+               strstr(app.message, "is not prod.keys, aes_keys.txt or the DS's ARM7 BIOS"));
         keys_outcome(&app, false);
         app.menu.view = GUI_LOAD_NONE;
         free(wrong);
         free(source_3ds);
         free(ctr_dir);
+    }
+    /* the DS's ARM7 BIOS, the NDS row of the same screen: a file of the BIOS's size, or named bios7.bin, or any picked
+       on that row, is checked by its size and CRC-32 and installed as bios7.bin where scarletnx-nds reads it; another is
+       refused, saying what it has and what the BIOS has. A file of the test's own with the BIOS's CRC-32 stands for it */
+    {
+        char *bios7 = snx_path_join(temporary, "data-folder-" NDS_BIOS7_FILE),
+             *named = snx_path_join(temporary, "bios7.bin");
+        char *source = snx_path_join(temporary, "biosnds7.rom"), *game = snx_path_join(temporary, "game.nds"), *said;
+        unsigned char* bios = (unsigned char*)calloc(1, NDS_BIOS7_SIZE);
+        size_t bios_size;
+        unsigned char* installed_bios;
+        GuiPickBoxes k;
+        assert(bios && !snx_write_file(source, bios, NDS_BIOS7_SIZE) && !snx_write_file(named, bios, 100) &&
+               !snx_write_file(game, bios, 200));
+        free(app.bios7_path);
+        app.bios7_path = bios7;
+        app.menu.view = GUI_LOAD_KEYS;
+        app.keys_of = GUI_KEYS_SWITCH;
+        drop(&app, source, false); /* the BIOS's size, on the Switch's row: the NDS row's, and not the console's */
+        said = snx_format("%s is not the DS's ARM7 BIOS: its CRC-32 is 0x%08X, the BIOS's 0x1280F0D5.", source,
+                          snx_crc32(bios, NDS_BIOS7_SIZE));
+        assert(app.keys_of == GUI_KEYS_NDS && !strcmp(app.message, said) && !snx_is_file(bios7));
+        free(said);
+        keys_outcome(&app, false);
+        app.menu.view = GUI_LOAD_KEYS;
+        app.keys_of = GUI_KEYS_3DS;
+        drop(&app, named, false); /* its name: the NDS row's whatever its size */
+        said = snx_format("%s is not the DS's ARM7 BIOS: it has 100 bytes, the BIOS 16384 (CRC-32 0x1280F0D5).", named);
+        assert(app.keys_of == GUI_KEYS_NDS && !strcmp(app.message, said) && !snx_is_file(bios7));
+        free(said);
+        keys_outcome(&app, false);
+        app.menu.view = GUI_LOAD_KEYS;
+        app.keys_of = GUI_KEYS_SWITCH;
+        drop(&app, game, false); /* neither, on another row: no console's */
+        said = snx_format("%s is not prod.keys, aes_keys.txt or the DS's ARM7 BIOS.", game);
+        assert(app.keys_of == GUI_KEYS_SWITCH && !strcmp(app.message, said));
+        free(said);
+        keys_outcome(&app, false);
+        app.menu.view = GUI_LOAD_KEYS;
+        app.keys_of = GUI_KEYS_NDS;
+        drop(&app, game, false); /* on the NDS row, it is checked as the BIOS */
+        said = snx_format("%s is not the DS's ARM7 BIOS: it has 200 bytes, the BIOS 16384 (CRC-32 0x1280F0D5).", game);
+        assert(!strcmp(app.message, said));
+        free(said);
+        keys_outcome(&app, false);
+        crc_forge(bios, NDS_BIOS7_SIZE, NDS_BIOS7_CRC32);
+        assert(snx_crc32(bios, NDS_BIOS7_SIZE) == NDS_BIOS7_CRC32 && !snx_write_file(source, bios, NDS_BIOS7_SIZE));
+        app.menu.view = GUI_LOAD_KEYS;
+        app.bios7_path = NULL; /* no data folder: the variable it is named from */
+        drop(&app, source, false);
+#ifdef _WIN32
+        assert(!strcmp(app.message, "Cannot install bios7.bin: APPDATA is not set"));
+#else
+        assert(!strcmp(app.message, "Cannot install bios7.bin: HOME is not set"));
+#endif
+        keys_outcome(&app, false);
+        app.bios7_path = bios7;
+        app.menu.view = GUI_LOAD_KEYS;
+        app.keys_of = GUI_KEYS_SWITCH;
+        drop(&app, source, false);
+        installed_bios = snx_read_file(bios7, &bios_size);
+        assert(strstr(app.message, "bios7.bin installed") && installed_bios && bios_size == NDS_BIOS7_SIZE &&
+               !memcmp(installed_bios, bios, bios_size));
+        free(installed_bios);
+        keys_outcome(&app, true);
+        /* the rows: Up and Down go over the consoles, and the one in focus says where its file goes */
+        key(&app, SDLK_RETURN);
+        assert(app.menu.view == GUI_LOAD_KEYS && app.keys_of == GUI_KEYS_NDS);
+        app.keys_of = GUI_KEYS_SWITCH;
+        render(&app);
+        shows(&app, "Switch  prod.keys", yellow);
+        shows(&app, "3DS     aes_keys.txt  Not installed", rgb(app.theme.ink));
+        shows(&app, "NDS     bios7.bin     Installed", rgb(app.theme.ink));
+        shows(&app, "Installs to: ", rgb(app.theme.ink)); /* the path's own length wraps it or not */
+        assert(keys_place(&app, app.keys_of) == app.keys_path);
+        key(&app, SDLK_UP); /* the first: nothing above it */
+        assert(app.keys_of == GUI_KEYS_SWITCH);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_DOWN); /* the last: nothing under it */
+        assert(app.keys_of == GUI_KEYS_NDS && app.menu.view == GUI_LOAD_KEYS);
+        render(&app);
+        assert(keys_place(&app, app.keys_of) == bios7);
+        shows(&app, "The DS's ARM7 BIOS: 16384 bytes, CRC-32 0x1280F0D5", rgb(app.theme.soft));
+        shows(&app, "Keys installed here: installing again replaces them", rgb(app.theme.failure));
+        { /* Up/Down's sentence, which F1's box says as it says every screen's arrows */
+            char keys_said_here[1024];
+            assert(strstr(screen_said(&app, true, keys_said_here, sizeof keys_said_here), "Up/Down: console."));
+        }
+        /* the pointer on a row takes the focus to it (a click picks its file then, as Enter does: the system's picker,
+           which the menu's checks further on open first) */
+        pick_boxes(&app, &k);
+        {
+            GuiRect row = ui_keys_row(k.rects, app.scale, UI_KEYS_ROWS, GUI_KEYS_3DS);
+            screen_pointer(&app, (float)(row.x + 4), (float)(row.y + row.h / 2), false, false);
+            assert(app.keys_of == GUI_KEYS_3DS && app.menu.view == GUI_LOAD_KEYS && !app.picked);
+        }
+        /* a document (Android's picker) has no name: on the NDS row it is the BIOS */
+        app.keys_of = GUI_KEYS_NDS;
+        assert(!snx_remove_tree(bios7));
+        install_keys_document(&app, source);
+        installed_bios = snx_read_file(bios7, &bios_size);
+        assert(app.keys_ok && installed_bios && bios_size == NDS_BIOS7_SIZE);
+        free(installed_bios);
+        app.menu.view = GUI_LOAD_KEYS;
+        install_keys_document(&app, game);
+        assert(!app.keys_ok && strstr(app.message, "it has 200 bytes"));
+        app.menu.view = GUI_LOAD_NONE;
+        app.keys_of = GUI_KEYS_SWITCH;
+        app.keys_done = 0;
+        app.message[0] = 0;
+        free(bios);
+        free(game);
+        free(source);
+        free(named);
     }
     free(switch_dir);
     free(source_keys);
