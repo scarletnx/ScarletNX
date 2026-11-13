@@ -132,7 +132,8 @@ int main(int argc, char** argv) {
                 if (verbose) printf("%s: no complete SM86 compute program in the window\n", base);
                 continue;
             }
-            spv = sm86_to_spirv(code + found[0].code, found[0].size - found[0].code, ST_CS, NULL, &info, &words);
+            spv = sm86_to_spirv(code + found[0].code, found[0].size, ST_CS, NULL, &info,
+                                &words); /* size counts from code */
         } else
             spv = shader_to_spirv(code, max_bytes, stage, &info, &words, flush, 1, 1, 1);
         free(code);
