@@ -3066,6 +3066,11 @@ if(TARGET snx_vita_program)
     snx_test_target(snx-test-vita-quit-key 11)
     target_link_libraries(snx-test-vita-quit-key PRIVATE snx_vita_program)
     add_test(NAME vita_quit_key COMMAND snx-test-vita-quit-key)
+    # the driver's command line, the recompile's options every driver shares: no game
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME vita_driver COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vita_driver.py"
+            "${PROJECT_BINARY_DIR}/scarletnx-vita${CMAKE_EXECUTABLE_SUFFIX}")
+    endif()
 endif()
 if(TARGET snx_vita_usse)
     add_executable(snx-test-vita-usse-vdual vita_usse_vdual.c)
