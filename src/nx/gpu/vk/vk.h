@@ -2220,6 +2220,10 @@ int vk_display_wait(u64 deadline_ns, u64* refresh_ns);
 /* compute.c */
 void vk_dispatch(const DispatchState* d);
 void vk_compute_land(void); /* pending compute results into guest memory, now */
+/* tensor.c: a game's tensor-core network, its passes stood in for (setting tensor_standin). vk_tensor_remember: the
+   picture the network samples, which its last pass's image then gets. vk_tensor_standin: that dispatch recorded (1) */
+void vk_tensor_remember(const Surf* in);
+int vk_tensor_standin(VkCommandBuffer cb, Surf* out);
 /* the compute results so far, submitted and put aside to land later: the batch to wait for (0: none pending) */
 u64 vk_compute_put_aside(void);
 void vk_compute_wait(u64 value);                     /* until the compute batch is done (any thread, without vk_lock) */
@@ -2236,6 +2240,7 @@ int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off);
 extern VkSemaphore g_vk_csem;  /* timeline semaphore the compute queue signals */
 extern u64 g_vk_cs_wait_value; /* the value graphics work waits for before reading compute results */
 extern u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns; /* statistics */
+extern u64 g_cs_standins; /* dispatches a network's pass was stood in for (setting tensor_standin) */
 extern u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because the CPU reads what they write */
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
 int vk_uma_choose(int has_import, int has_ahb, int has_placed);
