@@ -19,6 +19,9 @@
 #include "hle/hook/hooks.hook.h"
 #include "hle/hook/hooks.hook.inc"
 
+/* a site for every hook of either table, so that no family is left half native (hook.h) */
+typedef char hook_sites_hold_the_tables[HOOK_COUNT <= HOOK_SITES && HOOK32_COUNT <= HOOK_SITES ? 1 : -1];
+
 /* whether a setting's list (hooks_off, hooks_verify) names family: one of its words, separated by commas or spaces */
 static int family_listed(const char* list, const char* family) {
     const char* p = list;
@@ -209,15 +212,15 @@ static void routes_say(void) {
             (unsigned)r->count, (unsigned long long)r->list, (unsigned long long)own, (unsigned)snx_hook_route_count());
 }
 
-/* the function at addr given entry k's adapter, or verify mode's check: 0, or -1 when every site is taken */
-static int hook_put(int k, u64 addr, const char* name, const unsigned char verify[]) {
+/* the function at addr given entry k's adapter, or verify mode's check. With every site taken the game stops: its
+   function would run the SDK's own code beside the hooks of its family, which keep the family's state natively */
+static void hook_put(int k, u64 addr, const char* name, const unsigned char verify[]) {
     HostHook* h = &g_host.hook;
     GuestFn* slot;
-    if (h->count == HOOK_SITES) {
-        WARN("hooks: more than %d functions to hook, so %s at %llx and those after it run their own code\n", HOOK_SITES,
-             name, (unsigned long long)addr);
-        return -1;
-    }
+    if (h->count == HOOK_SITES)
+        fatal("hooks: no site left for %s at %llx: the runtime holds %d, one for each hook, and the game's modules "
+              "export the functions of the hooks more than once",
+              name, (unsigned long long)addr, HOOK_SITES);
     slot = &g_disp[(addr - g_code_lo) >> 2];
     h->hook[h->count] = (u16)k;
     h->addr[h->count] = addr;
@@ -232,7 +235,6 @@ static int hook_put(int k, u64 addr, const char* name, const unsigned char verif
              "did not bind: the module's route list doesn't name it, so its direct calls run its own code. Recompile "
              "the game for them\n",
              name, (unsigned long long)addr, hook_handler[k]);
-    return 0;
 }
 
 /* the address hooks (hookgen's [BUILDID:OFFSET]), each in the module built as its build ID, at its offset there */
@@ -252,7 +254,7 @@ static void hook_put_addresses(const unsigned char off[], const unsigned char ve
                 continue;
             }
             if (off[hook_family[k]] || site_of(addr) >= 0) continue;
-            if (hook_put(k, addr, hook_symbol[k], verify)) return;
+            hook_put(k, addr, hook_symbol[k], verify);
             LOG("hook: %s at %llx (%s+%llx) runs %s\n", hook_symbol[k], (unsigned long long)addr, mi->name,
                 (unsigned long long)offset, hook_handler[k]);
         }
@@ -301,11 +303,10 @@ static void install_a32(void) {
         if (k < 0 || off[hook32_family[k]]) continue;
         slot = arm_slot((u32)addr & ~1u, (int)(addr & 1));
         if (!slot || *slot == hook32_fn[k]) continue;
-        if (g_host.hook.a32_count == HOOK_SITES) {
-            WARN("hooks: more than %d functions to hook, so %s at %llx and those after it run their own code\n",
-                 HOOK_SITES, name, (unsigned long long)addr);
-            break;
-        }
+        if (g_host.hook.a32_count == HOOK_SITES)
+            fatal("hooks: no site left for %s at %llx: the runtime holds %d, one for each hook, and the game's "
+                  "modules export the functions of the hooks more than once",
+                  name, (unsigned long long)addr, HOOK_SITES);
         /* the function's own block first: once the hook has its slot, the slot is all that names the address */
         g_host.hook.a32_orig[g_host.hook.a32_count] = arm_block((u32)addr & ~1u, (int)(addr & 1));
         g_host.hook.a32_addr[g_host.hook.a32_count++] = (u32)addr;
@@ -378,7 +379,7 @@ void hook_install(void) {
                 text);
         }
         if (k < 0 || off[hook_family[k]]) continue;
-        if (hook_put(k, addr, name, verify)) break;
+        hook_put(k, addr, name, verify);
         if (hook_key[k] == HOOK_ANY || said[k]) {
             LOG("hook: %s at %llx runs %s\n", name, (unsigned long long)addr, hook_handler[k]);
             continue;

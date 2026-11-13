@@ -1162,6 +1162,23 @@ target_include_directories(snx-test-hook-install PRIVATE "${PROJECT_SOURCE_DIR}/
 snx_service_swipc(snx-test-hook-install)
 snx_hookgen(snx-test-hook-install SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook" A32_MARKED)
 add_test(NAME hook_install COMMAND snx-test-hook-install)
+# hook_install over a full table (src/nx/hle/hook/hook.c), the spec written here with as many hooks as tools/hookgen
+# takes (its MAX_ENTRIES): one module exporting every function gets each one hooked, and a second exporting them again
+# runs out of sites, which stops the game naming the first function left without its hook
+set(full_spec "family full\n")
+foreach(i RANGE 1023)
+    string(APPEND full_spec "hook full_${i}() = test_full\n")
+endforeach()
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/hook/full.hook" CONTENT "${full_spec}")
+add_executable(snx-test-hook-sites hook_sites.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+snx_test_target(snx-test-hook-sites 23)
+target_include_directories(snx-test-hook-sites PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_service_swipc(snx-test-hook-sites)
+snx_hookgen(snx-test-hook-sites SPEC "${CMAKE_CURRENT_BINARY_DIR}/hook/full.hook" A32_MARKED)
+add_test(NAME hook_sites COMMAND snx-test-hook-sites)
+add_test(NAME hook_sites_twice COMMAND snx-test-hook-sites twice)
+set_tests_properties(hook_sites_twice PROPERTIES
+    PASS_REGULAR_EXPRESSION "fatal: hooks: no site left for full_0 at 2000: the runtime holds 1024, one for each hook")
 # the route list (src/nx/loader/hook_routes.c): hookgen --routes over three specs (tests/hook/routes.hook,
 # versions.hook and address.hook), the runtime's own list, its lookup and the hashes a module carries, and the build
 # IDs an address hook's key names
