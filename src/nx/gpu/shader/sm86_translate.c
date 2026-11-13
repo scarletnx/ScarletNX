@@ -49,7 +49,7 @@ typedef struct {
     u32 shared, shared_ptr, shared_words;
     u32 local, local_ptr, local_words; /* LDL and STL's memory: a Function array, made at the start */
     u32 in_attr[32], out_attr[32], position, point_size, fragcoord, color[8], depth;
-    u32 vertex_index, instance_index, local_id, group_id, lane_id;
+    u32 vertex_index, instance_index, base_instance, local_id, group_id, lane_id;
     u32 num_groups, hmma_count;  /* NumWorkgroups and the HMMAs so far, for hmma_zero */
     int coop;                    /* HMMA takes hmma_coop (coop_wanted), and the module the Vulkan memory model */
     u32 coop_slots, subgroup_id; /* hmma_coop's slots (Workgroup) and SubgroupId */
@@ -742,10 +742,22 @@ static u32 frag_coord(Ctx* c, u32 k) {
 /* ALD's attribute at byte address addr, as bits */
 static u32 attr_load(Ctx* c, u32 addr) {
     if (addr >= 0x80 && addr < 0x280) return input_load(c, (addr - 0x80) >> 4, (addr >> 2) & 3);
-    if (c->stage == ST_VS && addr == 0x2f8) /* InstanceIndex counts from the base instance, the push constant's x */
+    if (c->stage == ST_VS && addr == 0x2f8) {
+        /* The instance ID counts from 0 whatever the draw's base instance (the game's driver gives the program the
+           base instance apart, in c[0]), and Vulkan's InstanceIndex counts from firstInstance. Without draw
+           parameters the push constant's x is the base instance. With them it is what the draw's first instance adds
+           to the base instance (render.c), and BaseInstance gives the rest, an indirect draw's too, as the Maxwell
+           translator has it (emit_io.c). Less the push constant alone, a direct draw's instances counted from its
+           base instance there: one game's instanced buildings and trees took other instances' transforms */
+        u32 base = to_u(c, push_component(c, 0));
+        if (g_shader_draw_parameters) {
+            spv_emit_draw_parameters_capability(&c->e);
+            base = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32,
+                                   builtin_u32(c, &c->base_instance, SPV_BUILT_IN_BASE_INSTANCE), base);
+        }
         return spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32,
-                               builtin_u32(c, &c->instance_index, SPV_BUILT_IN_INSTANCE_INDEX),
-                               to_u(c, push_component(c, 0)));
+                               builtin_u32(c, &c->instance_index, SPV_BUILT_IN_INSTANCE_INDEX), base);
+    }
     if (c->stage == ST_VS && addr == 0x2fc) return builtin_u32(c, &c->vertex_index, SPV_BUILT_IN_VERTEX_INDEX);
     if (c->stage == ST_FS && addr >= 0x70 && addr < 0x80) return to_u(c, frag_coord(c, (addr >> 2) & 3));
     fail(c, "attribute load 0x%x", addr);
