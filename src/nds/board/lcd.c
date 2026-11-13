@@ -54,6 +54,11 @@ static void keep_line(NdsBoard* board, unsigned e, unsigned line) {
 
 static void line_begins(NdsBoard* board) {
     unsigned line = board->vcount;
+    /* the main memory display's line: a channel that waits for it sends the line's 256 pixels now */
+    if (line < NDS_SCREEN_HEIGHT) {
+        board->main_display_at = line * NDS_SCREEN_WIDTH;
+        nds_dma_trigger(board, NDS_DMA_DISPLAY);
+    }
     for (unsigned e = 0; e < 2; ++e) {
         if (line == 0) {
             for (unsigned bg = 0; bg < 2; ++bg) {

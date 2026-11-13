@@ -332,6 +332,13 @@ void nds_io_write(NdsBoard* board, uint32_t address, unsigned bytes, uint32_t va
             board->ime = value & 1;
             return;
         }
+        if (offset == 0x068) { /* DISP_MMEM_FIFO: two pixels of the main memory display */
+            if (board->main_display_at + 2 <= NDS_SCREEN_HEIGHT * NDS_SCREEN_WIDTH) {
+                board->main_display[board->main_display_at++] = (uint16_t)value;
+                board->main_display[board->main_display_at++] = (uint16_t)(value >> 16);
+            }
+            return;
+        }
         if (offset == 0x1A4) { /* one write, not the low half and then the start */
             nds_card_write_romctrl(board, value);
             return;
