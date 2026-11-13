@@ -6402,6 +6402,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_compute_depth.inc"
 #include "vulkan_owned_readback.inc"
 #include "vulkan_own_trim.inc"
+#include "vulkan_wlog_again.inc"
 #include "vulkan_lock_waits.inc"
 #include "vulkan_release_slot.inc"
 #include "vulkan_guest_staging.inc"
@@ -7283,6 +7284,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_guest_staging());
     CHECK(!check_owned_writable());
     CHECK(!check_own_trim());
+    CHECK(!check_wlog_again());
     CHECK(!check_owned_in_place_write());
     CHECK(!check_owned_read_device());
     CHECK(!check_owned_peek_identity());
