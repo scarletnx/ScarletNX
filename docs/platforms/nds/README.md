@@ -88,9 +88,9 @@ keeps, is read once, when the folder has none.
 | Memory, DMA, timers, divider, square root, interrupts | done |
 | BIOS | done but for the calls that read through the game's own functions, which read memory instead |
 | ARM7's services | the handshake, the firmware's settings, the clock, the touch screen, the power chip, the save memory, the sound driver. No wireless, no microphone |
-| 2D engines | done on the GPU: text, affine, extended and large backgrounds, objects (affine and bitmap ones too), windows, the color effects, the master brightness, the display modes. No mosaic on objects, no main memory display |
-| 3D engine | geometry done on the CPU. Drawn on the GPU: textures in all seven formats, toon and highlight shading, translucency by polygon ID, shadows, fog, edge marking. No lines and wireframes, no clear bitmap, no anti-aliasing |
-| Display capture | done on the GPU: the compute pass writes the captured picture, which lands in the VRAM bank the capture names. No capture from main memory |
+| 2D engines | done on the GPU: text, affine, extended and large backgrounds, objects (affine and bitmap ones too), windows, the color effects, mosaic, the master brightness, the display modes, the main memory display |
+| 3D engine | geometry done on the CPU. Drawn on the GPU: polygons, lines and wireframes, textures in all seven formats, toon and highlight shading, translucency by polygon ID, shadows, the clear plane and the clear bitmap, edge marking, fog, anti-aliasing |
+| Display capture | done on the GPU: the compute pass writes the captured picture, which lands in the VRAM bank the capture names |
 | Sound | the SDK's sequence player and the sixteen channels. No sound capture |
 | Save memory | kept in the game's folder |
 
@@ -212,18 +212,43 @@ palettes decoded there), and composes them by priority, window and color effect,
 video memory, the palettes and the OAM are the ones the frame's end left: a change to them in the middle of a frame
 is seen for the whole frame.
 
+Mosaic is the pixel's own arithmetic: a background takes its block's first pixel (an affine one with the reference
+point of the block's first line), and an object with the mosaic bit shows in each block what it has at the block's
+first pixel. The main memory display (display mode 3) is a frame the board keeps: a DMA channel with the display's
+timing sends a line of 256 pixels to DISP_MMEM_FIFO at each visible line, and the shader reads the frame from the
+copy.
+
 **The 3D engine.** The geometry engine is on the CPU (`src/nds/gpu/gpu3d.c`, ported from melonDS): the matrix stacks,
 lighting, clipping and the viewport transform are the console's fixed point, and the game reads their results back
 (the clip matrix, the box, position and vector tests, the polygon and vertex counts). What it leaves is a frame's
 polygons, their vertices already on the screen. At line 215 they are drawn (`render3d.c`, after melonDS's OpenGL
 renderer): opaque pixels first, then the translucent polygons in their order, the stencil buffer holding each pixel's
 polygon ID so a translucent polygon does not blend with itself and a shadow falls only where its mask says, then edge
-marking and fog as passes over the picture. The fragment shader decodes each texel where it lies in the copy of
+marking and fog as passes over the picture, and anti-aliasing as the last. The fragment shader decodes each texel where it lies in the copy of
 texture memory (`shaders/texture.glsl`), in all seven formats, so there is no texture cache and no decoding on the
 CPU. The picture is the console's 256 by 192.
 
+Four things are drawn that melonDS's OpenGL renderer leaves out or draws another way, each in a shader. Every
+triangle has its own three vertices, which say which of its sides are its polygon's, so the fragment shader knows how
+many pixels a pixel is inside its polygon (`shaders/poly.frag`):
+
+- A wireframe polygon (alpha 0) keeps only its outline's pixels.
+- An opaque pixel carries an edge flag, and edge marking colors only edge pixels, as the software renderer does.
+- With anti-aliasing on, an edge pixel carries a coverage and the way across its edge. The last pass
+  (`shaders/aa.frag`) blends it with the picture's pixel across the edge where that pixel is farther away, which is
+  the surface the polygon hides. The console blends an edge pixel with a second pixel it keeps under it. Where two
+  polygons of a surface meet, that is the neighbor polygon at the same pixel, so the blend changes nothing there, and
+  here such a pixel is left alone: a mesh's inner edges do not smear its texture. The coverage is from the pixel's
+  distance to the edge, not the console's own count along the edge's slope, so the smoothing is close to the
+  console's and not equal to it.
+- A polygon that is a line is drawn with a line pipeline.
+
+With DISP3DCNT's bit 14 the picture starts from the clear bitmap, not from a plain plane: a pass
+(`shaders/clear.frag`) reads each pixel's color, depth and fog bit from texture slots 2 and 3.
+
 **Display capture.** When DISPCAPCNT asks for a frame, the compute pass also writes the captured picture (the
-engine's frame or the 3D picture, blended with the other source as the register says) to a second image. It is read
+engine's frame or the 3D picture, blended with a VRAM bank's picture or the main memory display's as the register
+says) to a second image. It is read
 back in one range into the VRAM bank the register names, so the game, or the other engine, finds it there as a bitmap.
 A game that draws 3D on both screens does it this way.
 
@@ -249,6 +274,9 @@ commands in two other ways (its early builds and its later ones), which the prog
 - The geometry engine takes no time, and neither does a DMA transfer.
 - A game that changes video memory, a palette or the OAM in the middle of a frame shows the change for the whole frame.
 - A captured picture is in its VRAM bank one frame after the console would have it there.
+- An anti-aliased edge's coverage is from the pixel's distance to the edge, and an object's mosaic is taken object by
+  object, where the console takes it from the line of objects already drawn. Both are close to the console's
+  picture and not equal to it.
 - No wireless, no microphone, no GBA slot.
 - An image that is shorter than its header says (a copy that stopped early) is played with a warning, and the game
   stops where it reads the part that is not there.
@@ -263,6 +291,9 @@ file and the revision they came from:
 - `src/nds/gpu/vk/render3d.c` and `shaders/poly.vert`, `poly.frag`, `post.frag`: `GPU3D_OpenGL.cpp` and its shaders
   at `497aa6c` (how a frame is drawn: the passes, the stencil's polygon IDs, the blends, edge marking and fog). The
   Vulkan code is new.
+- `shaders/aa.frag`, `shaders/layers.glsl` and the edge rules of `shaders/poly.frag`: the anti-aliasing blend, the
+  edge marking test and what an edge pixel is, as `GPU3D_Soft.cpp` has them. `shaders/clear.frag`: the clear bitmap
+  as `GPU3D_OpenGL.cpp` reads it.
 - `shaders/texture.glsl`: the texture formats as `GPU3D_Soft.cpp`'s `TextureLookup` reads them.
 - `shaders/compose.comp`: the 2D engines' rules as `GPU2D_Soft.cpp` and `GPU_ColorOp.h` have them (the layers' order,
   the objects, the windows, the blends). The shader is new: melonDS draws lines on the CPU.
