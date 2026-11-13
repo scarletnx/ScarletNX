@@ -593,6 +593,10 @@ uint32_t spv_emit_image_fetch_sample(SpvEmitter* e, uint32_t result_type, uint32
                                      uint32_t coordinates, uint32_t sample);
 uint32_t spv_emit_image_gather_ex(SpvEmitter* e, uint32_t vec4_type, uint32_t sampled_type, uint32_t sampler,
                                   uint32_t coordinates, uint32_t component, uint32_t dref, uint32_t offset);
+/* A gather of component around coordinates moved by offset (0 for none): a ConstOffset, or with dynamic_offset an
+   Offset, which needs ImageGatherExtended (declared here) */
+uint32_t spv_emit_image_gather_offset(SpvEmitter* e, uint32_t vec4_type, uint32_t sampled_type, uint32_t sampler,
+                                      uint32_t coordinates, uint32_t component, uint32_t offset, int dynamic_offset);
 /* mode: 0 implicit LOD, 1 explicit LOD, 2 bias. Optional depth and texel offset. */
 static inline uint32_t spv_emit_sample_image(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type,
                                              uint32_t sampler, uint32_t coordinates, uint32_t depth_reference,

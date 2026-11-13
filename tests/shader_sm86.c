@@ -1014,6 +1014,63 @@ static u32* translate_fs(const u8* code, u32 n, ShaderInfo* si, size_t* count) {
     if (!spv) fprintf(stderr, "texel offsets: %s\n", si->first_unsupported);
     return spv;
 }
+/* A sampler's min/max reduction the program takes itself (ShaderInfo.tex_minmax_mask, tex_minmax_max for the
+   greatest): TEX.SCR R0-R3, R4, R5 of a 2D texture becomes four gathers, one a component, and the least or greatest
+   of the texels its footprint weighs, which the evaluator runs on a 4x4 texture. At (0.5, 0.5) that is texels 1 and 2
+   of both rows; at (0.375, 0.5) x lands on texel 1's centre, and column 2 weighs nothing */
+static void test_minmax_samples(const char* dir) {
+    /* each component's gather: (i, j + 1), (i + 1, j + 1), (i + 1, j), (i, j) */
+    static const float gathered[4][4] = {{5, 1, 2, 7}, {0.25f, 0.5f, 0.75f, 1}, {-1, -2, -3, -4}, {8, 8, 9, 6}};
+    static const struct {
+        float u, v;
+        float least[4], greatest[4];
+    } at[] = {{0.5f, 0.5f, {1, 0.25f, -4, 6}, {7, 1, -1, 9}}, {0.375f, 0.5f, {5, 0.25f, -4, 6}, {7, 1, -1, 8}}};
+    for (u32 greatest = 0; greatest < 2; greatest++)
+        for (u32 c = 0; c < sizeof at / sizeof *at; c++) {
+            u8 code[5 * 16] = {0};
+            Word tex = tex_offset();
+            set(&tex, 32, 8, 255); /* no offset register */
+            set(&tex, 76, 1, 0);
+            put(code, 0, mov_imm(4, f2u(at[c].u)));
+            put(code, 1, mov_imm(5, f2u(at[c].v)));
+            put(code, 2, tex);
+            put(code, 3, exit_insn());
+            put(code, 4, bra(4, 4, 7, 0));
+            u32 fsph[32] = {0};
+            fsph[0] = sph0(2, 5);
+            fsph[18] = 0xf;
+            ShaderInfo si = {0};
+            si.tex_minmax_mask = 1;
+            si.tex_minmax_max = greatest;
+            size_t count = 0;
+            u32* spv = sm86_to_spirv(code, sizeof code, ST_FS, fsph, &si, &count);
+            CHECK(spv != NULL);
+            if (!spv) {
+                fprintf(stderr, "min/max sample: %s\n", si.first_unsupported);
+                return;
+            }
+            CHECK(si.tex_minmax_mask == 1 && si.tex_minmax_max == greatest); /* for the bind, which reads them */
+            u32 found[8];
+            CHECK(spv_find(spv, count, 96 /* OpImageGather */, found, 8) == 4);
+            CHECK(spv_find(spv, count, 87 /* OpImageSampleImplicitLod */, found, 8) == 0);
+            if (!greatest && !c) CHECK(keep_module(dir, "tex_minmax", spv, count));
+            SpvEvalEnv env = {0};
+            env.image_size[SNX_VKB_TEX][0] = env.image_size[SNX_VKB_TEX][1] = 4;
+            for (u32 g = 0; g < 4; g++)
+                for (u32 t = 0; t < 4; t++) env.gather[SNX_VKB_TEX][g][t] = f2u(gathered[g][t]);
+            const char* why = spv_eval(spv, count, &env);
+            const float* want = greatest ? at[c].greatest : at[c].least;
+            int same = !why && env.out_written[0];
+            for (u32 g = 0; same && g < 4; g++) same = u2f(env.out[0][g]) == want[g];
+            if (!same)
+                fprintf(stderr, "min/max sample's %s at (%g, %g): %s; read %g %g %g %g, want %g %g %g %g\n",
+                        greatest ? "greatest" : "least", (double)at[c].u, (double)at[c].v, why ? why : "ran",
+                        (double)u2f(env.out[0][0]), (double)u2f(env.out[0][1]), (double)u2f(env.out[0][2]),
+                        (double)u2f(env.out[0][3]), (double)want[0], (double)want[1], (double)want[2], (double)want[3]);
+            CHECK(same);
+            free(spv);
+        }
+}
 /* TEX, TLD and TLD4 with texel offsets: a register every path sets to one immediate is ConstOffset, as the program
    packs it (four bits a component); a register two paths set apart moves the coordinates instead. TLD adds its
    offset to the coordinates, and TLD4's offset for each texel takes four gathers */
@@ -3967,6 +4024,7 @@ int main(int argc, char** argv) {
     test_kill_discard();
     test_root_tables(dir);
     test_texel_offsets(dir);
+    test_minmax_samples(dir);
     test_global_flow(dir);
     test_fswzadd(dir);
     test_lane_masks(dir);

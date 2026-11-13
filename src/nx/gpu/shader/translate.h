@@ -282,6 +282,9 @@ int shader_dc_color_func(const ShaderInfo* si, int slot);
 u32 shader_dc_compare(DirectCtx* c, int func, u32 reference, u32 texel);
 u32 shader_indexed_is_depth(DirectCtx* c, int slot);
 u32 shader_dc_compare_indexed(DirectCtx* c, int slot, u32 reference, u32 texel);
+int shader_minmax_of(const ShaderInfo* si, int slot);
+u32 shader_minmax_direct(DirectCtx* c, u32 vec4_type, u32 sampled_type, u32 sampler, u32 coords, int array, u32 offset,
+                         int dynamic, int reduce);
 u32 shader_sample_dref(DirectCtx* c, const ShaderInfo* si, int slot, u32 vec4_type, u32 coords, u32 dref, int use_lod,
                        u32 lod);
 void shader_scaled_fetch(DirectCtx* c, u32 push, u32 fragcoord, u32 vec4, int slot, u32 i32_type, u32* x, u32* y);

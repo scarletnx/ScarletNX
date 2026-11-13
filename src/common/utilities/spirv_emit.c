@@ -1300,6 +1300,23 @@ uint32_t spv_emit_image_gather_ex(SpvEmitter* e, uint32_t vec4_type, uint32_t sa
     return id;
 }
 
+uint32_t spv_emit_image_gather_offset(SpvEmitter* e, uint32_t vec4_type, uint32_t sampled_type, uint32_t sampler,
+                                      uint32_t coordinates, uint32_t component, uint32_t offset, int dynamic_offset) {
+    if (offset && dynamic_offset) spv_emit_capability(e, SPV_CAPABILITY_IMAGE_GATHER_EXTENDED);
+    uint32_t image = spv_emit_load(e, sampled_type, sampler);
+    uint32_t id = spv_emit_id(e);
+    instruction(&e->functions, SPV_OP_IMAGE_GATHER, offset ? 8 : 6);
+    put(&e->functions, vec4_type);
+    put(&e->functions, id);
+    put(&e->functions, image);
+    put(&e->functions, coordinates);
+    put(&e->functions, component);
+    if (offset) {
+        put(&e->functions, dynamic_offset ? 16 : 8); /* ImageOperands Offset, or ConstOffset */
+        put(&e->functions, offset);
+    }
+    return id;
+}
 
 uint32_t spv_emit_sample_image_min_lod(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
                                        uint32_t coordinates, uint32_t depth_reference, uint32_t mode, uint32_t level,

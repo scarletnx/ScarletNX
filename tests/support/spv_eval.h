@@ -27,6 +27,7 @@ typedef struct {
     uint32_t texel[64][4];      /* what every sample or fetch of the sampled image at each binding returns */
     uint32_t image_size[64][3]; /* what a size query of the sampled image at each binding answers; its levels are 1 */
     uint32_t fetched[64][3];    /* the coordinates of the last OpImageFetch of the image at each binding */
+    uint32_t gather[64][4][4];  /* what an OpImageGather of each component of the image at each binding returns */
     int killed;                 /* the invocation ended with OpKill or OpTerminateInvocation */
     uint32_t shuffle_id;        /* the invocation the last OpGroupNonUniformShuffle read from (its Id operand) */
     uint32_t steps_max;         /* 0: 1000000 */

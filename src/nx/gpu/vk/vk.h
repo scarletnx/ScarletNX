@@ -1985,10 +1985,13 @@ void vk_pipeline_init(void);
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                     u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                     const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint);
+/* vk_shader_get with a fragment program's configuration (SH_FS_CONFIG_MASK) or a vertex program's position copy
+   (fs_config), and a fragment program's min/max textures (minmax: the first SH_MINMAX_SLOTS slots of
+   ShaderInfo.tex_minmax_mask, then theirs of tex_minmax_max from bit SH_MINMAX_SLOTS on) */
 VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                        u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                        const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint,
-                       u32 fs_config);
+                       u32 fs_config, u32 minmax);
 /* An Ounce's task or mesh program at gva (stage ST_TS or ST_MS), with the fields of its key k: vk_shader_get with the
    fields in the key's words, and the per-primitive SPH that k names read from the program's code area. A fragment
    program drawn after a mesh program takes the generics that it writes per primitive (ShaderInfo.prim_mask) in the
@@ -2199,11 +2202,16 @@ int vk_xfb_indirect(u64 control, VkBuffer* arguments, u64* offset);
    swizzle (VK_NULL_HANDLE when t is NULL or not of the number type num: 0 float, 1 unsigned, 2 signed integer), and
    the header's sampler with the declaration's comparison (integer textures unfiltered). The sampler's t and want,
    the texture whose own view is bound (NULL for none) and its view type, say whether anisotropy= may raise it, and
-   with tic (unread when t is NULL) whether its view's format and swizzle take the TSC's min/max reduction */
+   with tic (unread when t is NULL) whether its view's format and swizzle take the TSC's min/max reduction;
+   in_program, that the program takes the reduction itself, which the sampler then leaves to it.
+   vk_tex_minmax_in_program: whether a fragment program takes it (1 the least, 2 the greatest, 0 not), and
+   vk_tex_minmax_in_program_tic a compute program, by the header */
 VkImageViewType vk_tex_view_type(const ShTex* st);
 VkImageView vk_tex_bind_view(Surf* t, VkImageViewType want, const u32* tic, const u32* tsc, int num);
 VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, int num, const Surf* t,
-                              VkImageViewType want);
+                              VkImageViewType want, int in_program);
+int vk_tex_minmax_in_program(const u32* tsc, const u32* tic, const Surf* t, VkImageViewType want, int num);
+int vk_tex_minmax_in_program_tic(const u32* tsc, const u32* tic, VkImageViewType want, int num);
 /* Draws and compute key, read and bind their programs' resources alike, here, so that the two don't drift apart.
    vk_tex_num: the number type num a texture is declared with (ShaderInfo.tex_int_mask and tex_sint_mask, 0 float,
    1 unsigned, 2 signed) for its header tic, matching what vk_tex_bind_view binds. t is the surface the header resolves

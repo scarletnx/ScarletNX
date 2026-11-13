@@ -1857,6 +1857,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
        zeros (shader_float_ftz): without the import its OpExtInst named id 0, which NVIDIA's SPIR-V front end (615.78)
        crashed on, a shader of FADD and FMUL with nothing else from the set */
     if (fp32_flush && soft_ftz_on && can_preserve) needs_glsl = 1;
+    if (si->tex_minmax_mask) needs_glsl = 1; /* a min/max sample's fractions and extremes (shader_minmax_sample) */
     if (needs_glsl) c->glsl = spv_emit_glsl450_import(&c->emit);
     u32 fn = spv_emit_id(&c->emit), label = spv_emit_id(&c->emit);
     u32 void_type = spv_emit_type_void(&c->emit);
@@ -2968,6 +2969,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     next.tex_sint_mask = si->tex_sint_mask;
     next.tex_dc_color_mask = si->tex_dc_color_mask;
     next.tex_dc_color_funcs = si->tex_dc_color_funcs;
+    next.tex_minmax_mask = si->tex_minmax_mask;
+    next.tex_minmax_max = si->tex_minmax_max;
     next.in_unfed_mask = si->in_unfed_mask;
     next.ntex = texture_count;
     /* a slot sampled both ways would need both of the vertex stage's mappings: it reads elsewhere */

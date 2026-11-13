@@ -31,6 +31,7 @@
 #include "nx/gpu/vk/descriptor_key.h"
 #include "nx/gpu/vk/indexed_handles.h"
 #include "nx/gpu/texture/texconv_modes.glsl"
+#include "nx/gpu/texture/descriptor.h"
 #include "nx/gpu/vk/draw_texture.h"
 #include "nx/gpu/vk/draw_texture_shader.h"
 #include "nx/gpu/vk/lookup_ways.h"
@@ -1495,6 +1496,7 @@ typedef struct {
     u64 advanced_blend;
     u32 advanced_mask, config;
     u32 rm, rs, df, unfed;
+    u32 minmax;          /* the textures the program takes a min/max reduction of itself (vk_shader_get_ex's minmax) */
     u32 prim;            /* the generics a mesh program writes per primitive (ShaderInfo.prim_mask), as fs0's key */
     u8 query[SH_MAXTEX]; /* the dimensions of the textures only a TXQ names (ShaderInfo.tex_query_hint) */
     int queried;         /* any of them */
@@ -1545,6 +1547,26 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
         int num = vk_tex_num(res[i].tic, res[i].t);
         if (num) fk->tm |= 1ull << i;
         if (num == 2) fk->ts |= 1ull << i;
+        /* a min/max reduction the device's sampler can't take, which the program takes of the slot's texels: not of
+           an indexed slot's (whose texture changes within the draw), nor where a texture only a TXQ names may number
+           the variant's slots otherwise (fs_slot_res), nor past the key's room */
+        if (st->flags & SNX_TEX_INDEXED) continue;
+        int reduce = vk_tex_minmax_in_program(res[i].tsc, res[i].tic, res[i].t, vk_tex_view_type(st), num);
+        const char* which = reduce == 1 ? "least" : "greatest";
+        if (reduce && (i >= SH_MINMAX_SLOTS || s0->si.tex_query_mask)) {
+            if (i >= SH_MINMAX_SLOTS)
+                LOG_LIMIT(1,
+                          "vulkan: a fragment program's texture %d averages the texels its sampler asks the %s of: "
+                          "the program takes them itself for its first %d textures\n",
+                          i, which, SH_MINMAX_SLOTS);
+            else
+                LOG_LIMIT(1,
+                          "vulkan: a fragment program's texture %d averages the texels its sampler asks the %s of: "
+                          "a program with a texture only a TXQ names doesn't take them itself\n",
+                          i, which);
+            continue;
+        }
+        if (reduce) fk->minmax |= (1u | (reduce == 2 ? 1u << SH_MINMAX_SLOTS : 0)) << i;
     }
     fk->rm &= s0->si.sph[18] ? 0xFF : 0;
     fk->rs &= fk->rm;
@@ -1554,11 +1576,12 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
 }
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
 static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) {
-    if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed && !fk->rect && !fk->queried && !fk->advanced_blend && !fk->advanced_mask && !fk->config)
+    if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed && !fk->rect && !fk->queried && !fk->advanced_blend &&
+        !fk->advanced_mask && !fk->config && !fk->minmax)
         return s0;
     return vk_shader_get_ex(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, fk->prim, fk->dm, fk->df, fk->unfed,
                             fk->rect, NULL, fk->queried ? fk->query : NULL, fk->advanced_blend, fk->advanced_mask,
-                            fk->rm >> 8, fk->rs >> 8, fk->config);
+                            fk->rm >> 8, fk->rs >> 8, fk->config, fk->minmax);
 }
 /* whether slots a and b read their handles from the same words (tex_handle) */
 static int tex_same_handle(const ShTex* a, const ShTex* b) {
@@ -1634,10 +1657,103 @@ static int tex_map_identity(VkComponentMapping map) {
            (map.a == VK_COMPONENT_SWIZZLE_IDENTITY || map.a == VK_COMPONENT_SWIZZLE_A);
 }
 
+/* Why a min/max reduction can't go to the device's sampler for t's view of the header tic, with the sampler tsc: 0
+   when it can, 1 when the device has no min/max filter, 2 when the view's format (*f) has none on it, 3 when it takes
+   no swizzle with it (filterMinmaxImageComponentMapping) and the view has one: Vulkan needs r to be the identity, and
+   the other components are poison, which a shader that reads them (a depth view's g, b and a) would get */
+static int minmax_unsampled(const Surf* t, const u32* tic, const u32* tsc, VkFormat* f) {
+    *f = vk_tex_view_format(t, tex_srgb(tic, tsc));
+    return !g_vk.feat12.samplerFilterMinmax                                 ? 1
+           : !vk_format_minmax_filter(*f)                                   ? 2
+           : !g_vk.has_minmax_swizzle && !tex_map_identity(tex_map(t, tic)) ? 3
+                                                                            : 0;
+}
+/* The line for a sampler asking for which (the least or the greatest) of its texels that the device's sampler can't
+   take (why: minmax_unsampled's, of format f) and that averages them: also why the program doesn't take them itself
+   (not: what it can't take them of; stage: its stage), when that is so */
+static void minmax_averaged(int why, VkFormat f, const char* which, const char* not, const char* stage) {
+    char in_program[160] = "";
+    if (not)
+        snprintf(in_program, sizeof in_program,
+                 " (a %s program takes them itself from a 2D texture's base level filtered linearly, not of %s)", stage,
+                 not);
+    if (why == 1)
+        LOG_LIMIT(1,
+                  "vulkan: the device has no min/max filter: a sampler asking for the %s of its texels averages "
+                  "them%s\n",
+                  which, in_program);
+    else if (why == 2)
+        LOG_LIMIT(1,
+                  "vulkan: VkFormat %d has no min/max filter on this device: a sampler asking for the %s of its "
+                  "texels averages them%s\n",
+                  (int)f, which, in_program);
+    else
+        LOG_LIMIT(1,
+                  "vulkan: the device's min/max filter takes no swizzle: a sampler asking for the %s of the "
+                  "texels of a swizzled view averages them%s\n",
+                  which, in_program);
+}
+/* The min/max reduction a sample through the sampler tsc (decoded: sf) of a texture of levels levels viewed as want
+   takes in a program of stage (ST_FS or ST_CS) instead of the device's sampler, which can't (why: minmax_unsampled's,
+   format f): 1 the least, 2 the greatest (shader_minmax_sample). The program takes the 2x2 texels of the base level's
+   bilinear footprint: for a 2D view or an array of them, of one level or sampled without a mip filter under a
+   minimum LOD of a half (vk_sampler's base level), filtered linearly both ways and without anisotropy. Otherwise 0:
+   the sampler averages, and the log says why */
+static int minmax_program(const TscFields* sf, u32 levels, VkImageViewType want, int why, VkFormat f, int stage) {
+    const char* not= want != VK_IMAGE_VIEW_TYPE_2D && want != VK_IMAGE_VIEW_TYPE_2D_ARRAY ? "a cube or a 3D texture"
+                     : sf->mag != 2 || sf->min != 2                       ? "a filter linear one way only"
+                     : sf->anisotropy                                     ? "anisotropic filtering"
+                     : levels > 1 && (sf->mip != 1 || sf->min_lod >= 128) ? "a texture of several levels"
+                                                                          : NULL;
+    if (!not) return (int)sf->reduction;
+    minmax_averaged(why, f, sf->reduction == 1 ? "least" : "greatest", not, stage == ST_CS ? "compute" : "fragment");
+    return 0;
+}
+/* whether a sample through the sampler tsc (decoded into sf) asks for a min/max reduction that changes what it reads:
+   filtered linearly some way, no compare, of a float texture (num 0) */
+static int minmax_asked(const u32* tsc, int num, TscFields* sf) {
+    tsc_decode(tsc, sf);
+    return (sf->reduction == 1 || sf->reduction == 2) && !num && !sf->compare &&
+           (sf->mag == 2 || sf->min == 2 || sf->mip == 3);
+}
+/* A fragment program's: the reduction the sampler tsc asks of the texture t (header tic, viewed as want, of number
+   type num) that the program takes itself (minmax_program), 0 when it asks for none, the device's sampler takes it,
+   or no texture is bound */
+int vk_tex_minmax_in_program(const u32* tsc, const u32* tic, const Surf* t, VkImageViewType want, int num) {
+    TscFields sf;
+    VkFormat f;
+    int why;
+    if (!t || !minmax_asked(tsc, num, &sf) || !(why = minmax_unsampled(t, tic, tsc, &f))) return 0;
+    return minmax_program(&sf, t->levels, want, why, f, ST_FS);
+}
+/* A compute program's, by the header tic alone (compute keys a program before its textures are resolved): the
+   levels and format of the view the header makes, and the device's filter. A view's swizzle is the bind's to find
+   (vk_tex_bind_sampler, which then averages, as without this) */
+int vk_tex_minmax_in_program_tic(const u32* tsc, const u32* tic, VkImageViewType want, int num) {
+    TscFields sf;
+    TicFields tf;
+    if (!minmax_asked(tsc, num, &sf)) return 0;
+    tic_decode(tic, &tf);
+    VkFormat f = vk_tic_format(tic[0], tex_srgb(tic, tsc)).vk;
+    int why = !g_vk.feat12.samplerFilterMinmax ? 1 : !vk_format_minmax_filter(f) ? 2 : 0;
+    if (!why) return 0;
+    /* the levels texture.c's view of the header shows: base level to max level, one for pitch-linear memory */
+    u32 levels = tf.levels;
+    if (tf.header == 2)
+        levels = 1;
+    else if (tf.base_level < tf.levels && (tf.base_level || tf.max_level + 1 != tf.levels)) {
+        levels = tf.max_level >= tf.base_level ? tf.max_level - tf.base_level + 1 : 1;
+        if (levels > tf.levels - tf.base_level) levels = tf.levels - tf.base_level;
+    }
+    return minmax_program(&sf, levels, want, why, f, ST_CS);
+}
+
 /* the texture (NULL for none) and the view type say whether anisotropy= may raise its filtering: 2D textures with
-   mipmaps only, as the yuzu family and Ryujinx do (a cube, a 3D LUT or a copied target keeps the game's) */
+   mipmaps only, as the yuzu family and Ryujinx do (a cube, a 3D LUT or a copied target keeps the game's). in_program:
+   the program takes the min/max reduction the sampler asks for itself (vk_tex_minmax_in_program), which the sampler
+   then leaves to it */
 VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, int num, const Surf* tex,
-                              VkImageViewType want) {
+                              VkImageViewType want, int in_program) {
     u32 tc[8];
     memcpy(tc, tsc, sizeof tc);
     /* the compare mode is what the shader declares */
@@ -1651,15 +1767,16 @@ VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, i
         tc[1] = (tc[1] & ~0xF3u) | 0x11u | (mip == 3 ? 2u : mip) << 6;
     }
     /* a min/max reduction (tc[1] bits 10-11) stays where it can change what the filter reads and Vulkan takes it: a
-       linear filter (magnification, minification or mip) of a view whose format has the min/max filter on this device,
-       without a compare, which Vulkan's samplers only average. Where the device takes no swizzle with it
-       (filterMinmaxImageComponentMapping), the view's mapping must be the identity too: Vulkan needs r to be, and the
-       other components are poison, which a shader that reads them (a depth view's g, b and a) would get. Elsewhere the
-       sampler averages: the null texture's texels are all alike, and nearest filters read one */
+       linear filter (magnification, minification or mip) of a view whose format has the min/max filter on this device
+       (minmax_unsampled), without a compare, which Vulkan's samplers only average. Elsewhere the sampler averages: the
+       null texture's texels are all alike, nearest filters read one, and a program that takes the reduction itself
+       gathers the texels */
     u32 reduction = (tc[1] >> 10) & 3;
     if (reduction == 1 || reduction == 2) {
         int linear = (tc[1] & 3) == 2 || ((tc[1] >> 4) & 3) == 2 || ((tc[1] >> 6) & 3) == 3;
         const char* which = reduction == 1 ? "least" : "greatest";
+        VkFormat f;
+        int why;
         if (!tex || num || !linear)
             tc[1] &= ~(3u << 10);
         else if ((tc[0] >> 9) & 1) {
@@ -1668,27 +1785,9 @@ VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, i
                       "don't take: they average them\n",
                       which);
             tc[1] &= ~(3u << 10);
-        } else if (!g_vk.feat12.samplerFilterMinmax) {
-            LOG_LIMIT(1,
-                      "vulkan: the device has no min/max filter: a sampler asking for the %s of its texels "
-                      "averages them\n",
-                      which);
+        } else if ((why = minmax_unsampled(tex, tic, tsc, &f)) != 0) {
+            if (!in_program) minmax_averaged(why, f, which, NULL, NULL);
             tc[1] &= ~(3u << 10);
-        } else {
-            VkFormat f = vk_tex_view_format(tex, tex_srgb(tic, tsc));
-            if (!vk_format_minmax_filter(f)) {
-                LOG_LIMIT(1,
-                          "vulkan: VkFormat %d has no min/max filter on this device: a sampler asking for the %s of "
-                          "its texels averages them\n",
-                          (int)f, which);
-                tc[1] &= ~(3u << 10);
-            } else if (!g_vk.has_minmax_swizzle && !tex_map_identity(tex_map(tex, tic))) {
-                LOG_LIMIT(1,
-                          "vulkan: the device's min/max filter takes no swizzle: a sampler asking for the %s of the "
-                          "texels of a swizzled view averages them\n",
-                          which);
-                tc[1] &= ~(3u << 10);
-            }
         }
     }
     /* raised only with anisotropy= set: without it the cache keeps one sampler per TSC */
@@ -2014,12 +2113,13 @@ static int tex_kind_init(TexKind* tk, const ShaderInfo* si, int slot) {
     tk->none = vk_null_view(tk->want, tk->num, !!(kind->flags & 2));
     tk->id = TEX_NO_ENTRY;
     if (!tk->none) return 0;
-    VkSampler null_sampler = vk_tex_bind_sampler(null_tsc, NULL, &plain, tk->num, NULL, tk->want);
+    VkSampler null_sampler = vk_tex_bind_sampler(null_tsc, NULL, &plain, tk->num, NULL, tk->want, 0);
     if (!null_sampler) return 0;
     tk->info = (VkDescriptorImageInfo){null_sampler, tk->none, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     if (!kind->shadow) return 1;
     VkImageView farthest = vk_null_view(tk->want, 3, 0); /* not far: windef.h defines it away */
-    VkSampler null_compare = farthest ? vk_tex_bind_sampler(null_tsc, NULL, kind, 0, NULL, tk->want) : VK_NULL_HANDLE;
+    VkSampler null_compare =
+        farthest ? vk_tex_bind_sampler(null_tsc, NULL, kind, 0, NULL, tk->want, 0) : VK_NULL_HANDLE;
     if (!null_compare) return 0;
     tk->depth = (VkDescriptorImageInfo){null_compare, farthest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     return 1;
@@ -2176,16 +2276,16 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                                   handle);
                 }
                 VkImageView color_view = depth ? tk->none : view;
-                VkSampler smp =
-                    vk_tex_bind_sampler(x.tsc, x.tic, &plain, tk->num, color_view != tk->none ? x.t : NULL, tk->want);
+                VkSampler smp = vk_tex_bind_sampler(x.tsc, x.tic, &plain, tk->num, color_view != tk->none ? x.t : NULL,
+                                                    tk->want, 0);
                 if (!smp) return 0;
                 d->table[id] = (VkDescriptorImageInfo){
                     smp, color_view, color_view == tk->none ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
                 if (kind->shadow) {
                     VkImageView depth_view = depth && view != tk->none ? view : tk->depth.imageView;
                     if (depth_view != tk->depth.imageView && !g_settings.shadows) shadow_map_sampled(x.t);
-                    VkSampler compare = vk_tex_bind_sampler(x.tsc, x.tic, kind, 0,
-                                                            depth_view != tk->depth.imageView ? x.t : NULL, tk->want);
+                    VkSampler compare = vk_tex_bind_sampler(
+                        x.tsc, x.tic, kind, 0, depth_view != tk->depth.imageView ? x.t : NULL, tk->want, 0);
                     if (!compare) return 0;
                     d->depth_table[id] = (VkDescriptorImageInfo){
                         compare, depth_view,
@@ -2550,7 +2650,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
         if (!view) return VK_NULL_HANDLE;
-        VkSampler smp = vk_tex_bind_sampler(x->tsc, x->tic, st, num, sampled, want);
+        VkSampler smp =
+            vk_tex_bind_sampler(x->tsc, x->tic, st, num, sampled, want, (int)(s->si.tex_minmax_mask >> i & 1));
         if (!smp) return VK_NULL_HANDLE;
         u32 b = SNX_VKB_TEX + i;
         d.ii[b] = (VkDescriptorImageInfo){smp, view, layout};
@@ -3181,7 +3282,7 @@ static VkSh* vs_position_copy(const DsState* ds, const VkSh* vs, u32 slot) {
     return vk_shader_get_ex(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, vs->mask[0] | (u64)vs->mask[1] << 32,
                             vs->mask[2] | (u64)vs->mask[3] << 32, vs->mask[4], vs->mask[5], vs->mask[6], 0, vs->mask[9],
                             vs->mask[10], vs->mask[12] | (u64)vs->mask[13] << 32, NULL, queried ? query : NULL, 0, 0,
-                            vs->mask[24] & 255, vs->mask[25], 1 + slot);
+                            vs->mask[24] & 255, vs->mask[25], 1 + slot, 0);
 }
 /* stream s's address and bytes (to its limit, 0 when the limit is below) */
 static u64 stream_start(const DsVertexBuffers* b, u32 s) { return b->addr[s]; }
