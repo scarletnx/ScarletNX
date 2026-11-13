@@ -3477,6 +3477,10 @@ endif()
 
 endif() # SNX_BUILD_NX
 
+# the bands a block linear target is published or written back in (vk/rt_bands.h): they tile the span within the cap
+add_executable(snx-test-rt-bands rt_bands.c)
+snx_test_target(snx-test-rt-bands 23)
+add_test(NAME rt_bands COMMAND snx-test-rt-bands)
 # dist/icons/ is what scripts/make-icons.py draws from dist/wimsy.svg: a changed SVG fails until it runs again
 if(Python3_Interpreter_FOUND)
     add_test(NAME dist_icons COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/make-icons.py" --check)

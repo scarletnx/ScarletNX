@@ -8,6 +8,7 @@
    caches' eviction takes from (vk_surf_reclaim): idle ones, and more when device memory nears its budget
    (vk_mem_trim, with the budget from gpu/vk/memory.c). */
 #include "nx/gpu/vk/descriptor_objects.h"
+#include "nx/gpu/vk/rt_bands.h"
 #include "common/utilities/bits.h"
 #include <stdlib.h>
 #include <string.h>
@@ -1273,8 +1274,10 @@ static void flush_parts(Surf* s, u64 size, const u8* original) {
     /* a layer's bytes as flush_land takes them: block linear layers layer_size apart, pitch linear rows packed */
     u64 layer = !s->bl ? (u64)row * h : s->layers > 1 ? s->layer_size : rt_layer_bytes(s);
     u64 per = layer <= limit ? limit / layer : 0;
-    u32 band = s->bl ? 8u << bl_height(h, s->bh) : 1, rows = (u32)(limit / (s->bl ? pitch : row)) / band * band;
-    if (!rows && (u64)band * pitch <= g_vk.alloc_cap) rows = band; /* a row of blocks is the least a band takes */
+    u64 lines = limit / row; /* pitch linear: rows of row bytes, one at least when it is within the cap */
+    u32 rows = s->bl   ? vk_rt_band_rows(g_vk.alloc_cap, VK_PART_SHARE, row, h, bl_height(h, s->bh))
+               : lines ? (u32)(lines < h ? lines : h)
+                       : row <= g_vk.alloc_cap;
     if (surf_volume(s) || (!per && (depth_packs(s) || !rows))) {
         LOG_LIMIT(4,
                   "vulkan: a target at %llx of %llu bytes, %llu a layer, is more than an allocation may be (%llu) and "
@@ -1441,10 +1444,8 @@ static int surf_publishable(const Surf* s) {
    a read on another thread meanwhile took the bytes from before (#2094). 0 when a band can't be, with the bands
    before it published: the caller writes the target back, over them */
 static int publish_bands(Surf* s, u64 size, u32 mem_wgen, u64 gw0) {
-    u64 limit = g_vk.alloc_cap / VK_PART_SHARE;
     u32 h = guest_h(s), pitch = (guest_w(s) * s->f.bpp + 15) & ~15u;
-    u32 band = 8u << bl_height(h, s->bh), rows = (u32)(limit / pitch) / band * band;
-    if (!rows && (u64)band * pitch <= g_vk.alloc_cap) rows = band; /* a row of blocks is the least a band takes */
+    u32 rows = vk_rt_band_rows(g_vk.alloc_cap, VK_PART_SHARE, guest_w(s) * s->f.bpp, h, bl_height(h, s->bh));
     if (!rows) return 0;
     for (u32 y = 0; y < h; y += rows) {
         FlushPart part = {0, 1, y, h - y < rows ? h - y : rows};
