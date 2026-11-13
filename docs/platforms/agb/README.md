@@ -45,8 +45,11 @@ to the Switch, Linux and 3DS loaders.
 ## Playing
 
 `scarletnx-agb` takes the [common options](../../user/usage.md#common-options) that fit it: `-r`, `--game`, `--data`,
-`--outdir`, `--output`, `--frames`, `--shot`, `--script`, `-f` and `-h`, each
-value as `--option VALUE` or `--option=VALUE`.
+`--outdir`, `--output`, `--frames`, `--shot`, `--script`, `-f`, `-h` and the recompile's (`-O`, `--jobs`, `--chunk`,
+`--jit-cache`, `--jit-only`, `--keep-ir`, `-q`), each value as `--option VALUE` or `--option=VALUE`. A ROM's code is
+one module compiled on one thread as one unit, so `--jobs`, `--chunk` and `--aot_threads_most` change nothing, which
+the recompile says; `--jit-cache` names another game folder's `<name>_code.map`, and `--jit-only` plays with no
+module.
 
 A MultiBoot ROM (`.mb`) is a program the console receives through the link cable, as a GameCube game or another
 console sends one: `scarletnx-agb Program.mb` plays it with no cartridge, from EWRAM, where the BIOS puts it (256 KiB

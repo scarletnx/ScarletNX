@@ -53,7 +53,8 @@ build/gnuabi/scarletnx-gnuabi -L ~/aarch64-sysroot ./hello
 PROGRAM is a host path. Arguments after it are passed to the guest, with the host's
 environment (`-E VAR=VALUE` sets a variable and `-U VAR` removes one, as with QEMU).
 `-0 ARGV0` replaces the program's `argv[0]`. `--help` lists every option. Of the [common options](../../user/usage.md#common-options) of
-every driver, it takes `--data` and `-h`.
+every driver, it takes `--data`, `-h`, `-O` (its JIT's level, as `--jit-opt`), `--jit-cache DIR` (the folder its JIT
+keeps code in between runs) and `--jit-only`, what it does anyway.
 
 | Option | Effect |
 | --- | --- |
@@ -61,8 +62,8 @@ every driver, it takes `--data` and `-h`.
 | `--data DIR` | The data folder, whose `linux/` is the guest's root when neither `-L` nor `--sysroot` names one |
 | `--isolated` | No host files: `/tmp` in memory and the program alone as `/program`, the namespace the unit tests use |
 | `--jit` (default) | Compile the guest's code in process as it runs, the only mode |
-| `--jit-cache=DIR`, `--no-jit-cache` | Where compiled code is kept between runs (default `linux-jit` in the user's cache folder) |
-| `--jit-opt=LEVEL` | The JIT's LLVM optimization level (default 2) |
+| `--jit-cache DIR`, `--no-jit-cache` | Where compiled code is kept between runs (default `linux-jit` in the user's cache folder) |
+| `--jit-opt=LEVEL`, `-O LEVEL` | The JIT's LLVM optimization level (default 2) |
 | `--verbose-jit` | A line for each piece of code compiled, and how long it took |
 | `--strace` | Every system call, its arguments and its result on stderr, prefixed with the process id |
 | `--sample-pc` | The guest's program counter on stderr once a second, for a loop that makes no system call (not on Windows) |

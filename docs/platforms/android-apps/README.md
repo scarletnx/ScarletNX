@@ -74,7 +74,8 @@ an option, as these system properties:
 
 These options of `scarletnx-android` run an app without a user, as the Switch runtime's `--script` and `--shot` do.
 `--headless` (`-H`) and `--shot` are [common options](../../user/usage.md#common-options), which take a value as
-`--shot PATH` or `--shot=PATH`:
+`--shot PATH` or `--shot=PATH`; so are `-O`, the level of the native code its JIT compiles (as `--jit-opt`), and
+`--jit-only`, what it does anyway:
 
 | Option | Meaning |
 | --- | --- |
