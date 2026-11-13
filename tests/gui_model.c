@@ -30,6 +30,9 @@ static void drivers(void) {
     assert(!strcmp(run.file, "libscarletnx-run.so") && !strcmp(run.first, "scarletnx-vita"));
     assert(gui_driver_run(GUI_DRIVERS_APP, GUI_GBA, false, app, &run));
     assert(!strcmp(run.file, "libscarletnx-run.so") && !strcmp(run.first, "scarletnx-agb"));
+    /* a driver the app's build lacks is not held: the DS's */
+    assert(!(app >> GUI_NDS & 1u) && !strcmp(gui_driver_name(GUI_NDS), "scarletnx-nds"));
+    assert(gui_drivers_held("scarletnx-nds") == 1u << GUI_NDS);
     assert(gui_driver_run(GUI_DRIVERS_APP, GUI_SWITCH, false, app, &run));
     assert(!strcmp(run.file, "libscarletnx-run.so") && !run.first);
     /* the one its build left out is looked for nowhere, and said so by its name, not a library's */
@@ -102,6 +105,11 @@ int main(void) {
     assert(menu.selected == GUI_GBA);
     gui_menu_key(&menu, GUI_SELECT);
     assert(menu.active == GUI_GBA && menu.view == GUI_LOAD_DROP);
+    gui_menu_key(&menu, GUI_CANCEL);
+    gui_menu_key(&menu, GUI_RIGHT);
+    assert(menu.selected == GUI_NDS);
+    gui_menu_key(&menu, GUI_SELECT);
+    assert(menu.active == GUI_NDS && menu.view == GUI_LOAD_DROP);
     gui_menu_key(&menu, GUI_CANCEL);
     gui_menu_key(&menu, GUI_RIGHT);
     assert(menu.selected == GUI_ANDROID);

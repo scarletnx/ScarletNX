@@ -86,8 +86,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   focus again. A tap on a finished run returns to the menu, and one on a
   running run's ESC line aborts it. Android's back button is ESC. On a screen packed with
   pixels (a phone) the text takes the display's own scale, as far as the menu still fits.
-- **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK**, **Load GBA/MultiBoot ROM** and
-  **Load Android APK/XAPK** open a screen as the keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
+- **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK**, **Load GBA/MultiBoot ROM**,
+  **Load NDS ROM** and **Load Android APK/XAPK** open a screen as the keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
   picker (on Linux the desktop's, else zenity's). Dropping a file on the window and Ctrl+V with
   a path work too. On the Switch's, **P** (on a phone a tap on *Folder* at the foot, on a pad Y) opens the system's
   folder picker instead, for an extracted game's folder (`exefs/` with its `main`, beside its `romfs/`), which plays as
@@ -118,6 +118,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Settings > GBA > **Covers** on *Box art (libretro-thumbnails)* (`gba_covers=boxart`, off by default), each make that
   ends well downloads the game's box into its folder (`icon.png`), which its rows show; a ROM with no box there keeps
   Wimsy, and its row says why ([Settings](settings.md#gba)). See [AGB board](../platforms/agb/README.md).
+- **Load NDS ROM** uses `scarletnx-nds` on a card image (`.nds`), with the menu's data folder as its `--data`: it
+  makes the game's folder of `recompiled/` (named after the image's file), compiles the game's code ahead of time
+  on the first run, which takes a few minutes, and plays it in a window with both screens. See
+  [Nintendo DS](../platforms/nds/README.md).
 - **Load Android APK/XAPK** uses `scarletnx-android` on an `.apk`, `.xapk` or `.apks` file, with no other argument.
   The driver installs a bundle of split APKs itself. The app runs as it is, as a Linux program does: nothing is
   compiled first, and its recent row shows at once. An APK in a games or dumps folder shows in Games, and Enter runs

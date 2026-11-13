@@ -41,6 +41,7 @@ GuiMenuDo gui_menu_key(GuiMenu* menu, GuiKey key) {
                 case GUI_3DS:
                 case GUI_VITA: menu->view = GUI_LOAD_DROP; break;
                 case GUI_GBA:
+                case GUI_NDS:
                 case GUI_ANDROID: menu->view = GUI_LOAD_DROP; break;
                 case GUI_KEYS: menu->view = GUI_LOAD_KEYS; break;
                 case GUI_SETTINGS: return GUI_MENU_SETTINGS;
@@ -61,6 +62,7 @@ const char* gui_driver_name(int item) {
         case GUI_3DS: return "scarletnx-3ds";
         case GUI_VITA: return "scarletnx-vita";
         case GUI_GBA: return "scarletnx-agb";
+        case GUI_NDS: return "scarletnx-nds";
         case GUI_ANDROID: return "scarletnx-android";
         default: return NULL;
     }
