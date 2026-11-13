@@ -924,6 +924,7 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
                      char** game_argv, const char* const* updates, int nupdates) {
     char *dumped = NULL, *dump = snx_absolute(input), *name = NULL, *games = NULL, *extracted = NULL, *work = NULL;
     char *pending = NULL, *game = NULL, *folder = NULL, *base = NULL, *code = NULL, *source = NULL, error[256];
+    char* unmakeable = NULL; /* why a game made already cannot be made again, said only when it has to be */
     char* game_dump = NULL; /* an update's game's dump, which its RomFS is read over */
     char asked[16];
     SnxU64 addon = 0, owner = 0; /* an update or a DLC, and the game it belongs to */
@@ -1100,15 +1101,27 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
         source = snx_format("%s_data/exefs/main.nro", base);
         if (!snx_is_file(source)) {
             char* exefs = snx_format("%s_data/exefs", base);
+            int kept = snx_is_dir(exefs), recorded = 0;
             free(source);
-            /* made from its dump read in place, else from what its _data keeps */
-            source = snx_is_dir(exefs) ? NULL : snx_game_source(folder, name, NULL);
-            if (source && !source_there(source)) {
+            free(exefs);
+            /* made from its dump read in place, else from what its _data keeps: a game whose _data keeps no ExeFS has
+               only its dump to be made again from, and without it nothing to make it from */
+            source = kept ? NULL : snx_game_source(folder, name, &recorded);
+            if (!kept && !source_there(source)) { /* said if it has to be made again (made:) */
+                char* ini = snx_game_ini(folder, name);
+                unmakeable = recorded
+                                 ? snx_format("%s keeps no ExeFS in %s_data, and the %s it was made from, %s, is not "
+                                              "there: put it back, or make the game again from its dump (its .ini: "
+                                              "%s)",
+                                              input, name, snx_source_kind(source), source, ini)
+                                 : snx_format("%s keeps no ExeFS in %s_data, and its .ini %s names no dump "
+                                              "(source=): make the game again from its dump",
+                                              input, name, ini);
+                free(ini);
                 free(source);
                 source = NULL;
             }
             if (!source) source = snx_format("%s_data", base);
-            free(exefs);
         }
         named = named_otherwise(source, name); /* an NRO's, one named when it was made */
         { /* made before its extraction kept its icon: the icon alone, from the dump its .ini names, while it has none */
@@ -1243,6 +1256,10 @@ made:
     if (nro || (flags & SNX_RECOMP) || !snx_is_file(game) || !snx_is_file(code) || !stamped(base) ||
         !programs_made(folder, name, programs)) {
 #endif
+        if (unmakeable) {
+            snx_error("%s", unmakeable);
+            goto done;
+        }
         command[5] = "-r";
         command[6] = "--outdir";
         command[7] = games;
@@ -1336,6 +1353,7 @@ done:
     free(code);
     free(source);
     free(game_dump);
+    free(unmakeable);
     free(command);
     return rc;
 }
