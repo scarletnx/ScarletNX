@@ -136,6 +136,16 @@ int main(void) {
     regs[2] = 4 | (1u << 24); /* fill with the first halfword */
     CHECK(call(regs, AGB_SWI_CPU_SET) == 0);
     CHECK(agb_read16(&board, 0x02000100) == 0x1234 && agb_read16(&board, 0x02000106) == 0x1234);
+    /* halfwords from an odd address: the BIOS's LDRH rotates each, and its STRH keeps the high byte alone */
+    regs[0] = 0x02000001;
+    regs[1] = 0x02000200;
+    regs[2] = 2;
+    CHECK(call(regs, AGB_SWI_CPU_SET) == 0);
+    if (agb_read32(&board, 0x02000200) != 0x00560012) {
+        fprintf(stderr, "agb_bios: CpuSet of halfwords from 0x02000001 wrote 0x%08X, not 0x00560012\n",
+                agb_read32(&board, 0x02000200));
+        return 1;
+    }
 
     /* CpuFastSet rounds its count up to eight words */
     for (int i = 0; i < 8; ++i) agb_write32(&board, 0x02000000 + (uint32_t)i * 4, 0x1000u + (uint32_t)i);
