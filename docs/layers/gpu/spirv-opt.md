@@ -78,12 +78,13 @@ The same walk folds an instruction before it looks it up, so what it folds to is
 with (spirv-opt's constant folding and instruction simplification, for what the translators write). Only 32-bit
 integers of either sign and booleans, on constants that are no specialization constants:
 
-- on constants alone: `OpIAdd`, `OpISub`, `OpIMul`, the bitwise ones, `OpNot`, `OpSNegate`, the three shifts (by less
-  than 32), `OpBitFieldUExtract` and `OpBitFieldSExtract` (a field that ends by bit 32), the integer comparisons, the
-  logical instructions, and an `OpBitcast` between the two signs;
-- one operand that decides: `x & 0`, `x * 0`, `x | ~0`, `x - x`, `x ^ x`, `false && x`, `true || x`;
-- one operand that leaves the other: `x + 0`, `x - 0`, `x | 0`, `x ^ 0`, a shift by 0, `x * 1`, `x & ~0`, `x & x`,
-  `x | x`, `true && x`, `false || x`, `x && x`, `x || x`, with the constant on either side of what commutes;
+- on constants alone: `OpIMul` and the logical instructions; every other integer instruction on constants has all
+  its bits known (below);
+- one operand that decides: `x - x`, `x ^ x`, `false && x`, `true || x` (`x & 0`, `x * 0` and `x | ~0` by their
+  known bits);
+- one operand that leaves the other: `x + 0`, `x - 0`, `x | 0`, `x ^ 0`, a shift by 0, `x * 1`, `x & x`, `x | x`,
+  `true && x`, `false || x`, `x && x`, `x || x`, with the constant on either side of what commutes (`x & ~0` by its
+  known bits);
 - of any type: an `OpSelect` whose condition is a constant or whose two values are one id, and an `OpBitcast` to
   the type its operand has, or of a bitcast from that type.
 
