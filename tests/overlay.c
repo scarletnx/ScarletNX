@@ -282,7 +282,7 @@ static void keys_page(void) {
     assert(shows_as("Ctrl+D", 0, light) && shows("TV on/off/auto"));
     /* the last runtime keys, after the TV mode's */
     assert(shows_as("Ctrl+U", 0, light) && shows("upscaler") && shows_as("Ctrl+Shift+A", 0, light) &&
-           shows("anti aliasing"));
+           shows("anti-aliasing"));
     assert(!shows("\x19") && shows("\x18") && !shows("a screenshot"));
     overlay_scroll(-100);
     draw();
