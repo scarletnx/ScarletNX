@@ -632,6 +632,32 @@ int main(void) {
     agb_write16(&board, 0x040000C6, 0xB640); /* DMA1CNT_H: the sound FIFO's timing, repeat, 32 bits */
     CHECK(board.dma[1].control == 0xB640 && !board.dma[0].control && !board.dma[2].control);
     CHECK(agb_read16(&board, 0x040000C6) == 0xB640);
+    /* a channel takes its count as it starts: one written while it waits for its blank is the next repeat's, as the
+       suite's misc-edge.c finds on the console (two halfwords, then four) */
+    for (uint32_t i = 0; i < 8; ++i) agb_write16(&board, 0x02000300 + i * 2, (uint16_t)i);
+    agb_write32(&board, 0x040000D4, 0x02000300);
+    agb_write32(&board, 0x040000D8, 0x02000400);
+    agb_write32(&board, 0x040000DC, 0x12400002); /* the vertical blank, repeat, halfwords, a fixed destination */
+    agb_write16(&board, 0x040000DE, (uint16_t)(agb_read16(&board, 0x040000DE) | 0x8000));
+    agb_write16(&board, 0x040000DC, 4);
+    agb_dma_event(&board, AGB_DMA_VBLANK);
+    if (agb_read16(&board, 0x02000400) != 1) {
+        fprintf(stderr, "agb_board: the first blank's DMA ends at halfword %u, not 1\n",
+                agb_read16(&board, 0x02000400));
+        return 1;
+    }
+    agb_dma_event(&board, AGB_DMA_VBLANK);
+    if (agb_read16(&board, 0x02000400) != 5) {
+        fprintf(stderr, "agb_board: the repeat ends at halfword %u, not 5\n", agb_read16(&board, 0x02000400));
+        return 1;
+    }
+    agb_write16(&board, 0x040000DE, 0);
+    /* DMA0 to DMA2 count 14 bits: 0xC001 is one unit */
+    agb_write16(&board, 0x02000502, 0xFFFF);
+    agb_write32(&board, 0x040000B0, 0x02000302);
+    agb_write32(&board, 0x040000B4, 0x02000500);
+    agb_write32(&board, 0x040000B8, 0x8000C001);
+    CHECK(agb_read16(&board, 0x02000500) == 1 && agb_read16(&board, 0x02000502) == 0xFFFF);
     agb_board_destroy(&board);
     CHECK(!board.has_cartridge && !board.cartridge.data);
 
