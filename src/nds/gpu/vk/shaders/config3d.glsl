@@ -10,6 +10,11 @@ layout(std140, set = 0, binding = 0) uniform Config {
     int fog_offset;
     int fog_shift;
     int alpha_ref;
-    int clear_attr1; // CLEAR_COLOR: the plane's polygon ID in bits 24 to 29
-    int clear_attr2; // CLEAR_DEPTH: the clear bitmap's offset in bits 16 to 31
+    // the clear plane, as the passes over the picture use it: every pixel would work the same values out of the
+    // registers, so the frame does it once (render3d.c's fill_config)
+    ivec2 clear_offset; // the clear bitmap's
+    vec4 clear_color;   // in 31sts
+    float clear_depth;  // of 24 bits, in 1
+    float clear_id_unorm; // the plane's polygon ID in 63rds, as the attributes carry it
+    int clear_id;
 };

@@ -23,11 +23,8 @@ void main() {
         int z = int(depth * 16777216.0), index = 0, fraction = 0;
         if (z >= fog_offset) {
             uint u = ((uint(z) - uint(fog_offset)) >> 2) << uint(fog_shift);
-            index = int(u >> 17);
-            if (index >= 32)
-                index = 32;
-            else
-                fraction = int(u & 0x1FFFFu);
+            index = min(int(u >> 17), 32);
+            if (index < 32) fraction = int(u & 0x1FFFFu);
         }
         float a = fog_density[index >> 2][index & 3], b = fog_density[(index + 1) >> 2][(index + 1) & 3];
         o_color = vec4(mix(a, b, float(fraction) / 131072.0));
