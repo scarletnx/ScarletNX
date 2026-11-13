@@ -173,6 +173,12 @@ def main():
         run(["-L", root, *jit, "--sample-pc", "--host-page=65536"], {}, 42)
         refused = "--host-page=12288 is not a power of two from the host's page"
         run(["-L", root, *jit, "--host-page=12288"], {}, 2, refused)
+        # the recompile's options every driver shares (common/utilities/cli.h): -O is the JIT's level, --jit-cache
+        # the folder its code is kept in, in either form, and --jit-only what it does anyway; the others refused, named
+        run(["-L", root, "--jit-cache", cache, "-O0", "--jit-only"], {}, 42)
+        run(["-L", root, *jit, "-O5"], {}, 2, "scarletnx-gnuabi: -O 5: not 0, 1, 2, 3, s or z")
+        run(["-L", root, *jit, "--jobs", "2"], {}, 2, "scarletnx-gnuabi does not take --jobs")
+        run(["-L", root, *jit, "--keep-ir"], {}, 2, "scarletnx-gnuabi does not take --keep-ir")
         # the variables an older version read (docs/user/deprecations.md), still read
         run([*jit], {"SNX_LINUX_SYSROOT": root}, 42, f"SNX_LINUX_SYSROOT={root} is deprecated, replaced by -L DIR")
         run(
