@@ -15,9 +15,16 @@
 
 static const uint8_t duty_steps[4] = {1, 2, 4, 6}; /* how many of a duty cycle's eight positions are high */
 
+/* A channel's DAC is on while its envelope starts above 0 or rises (bits 11 to 15 of its envelope), the wave's while
+   SOUND3CNT_L's bit 7 is set. With it off a trigger does not start the channel, and turning it off stops the channel
+   (the Game Boy's sound, which the GBA keeps: SOUNDCNT_X's status bits in mGBA's test suite, io-read.c) */
+static int dac_on(const AgbApu* apu, int channel) {
+    return channel == 2 ? (apu->cnt_l[2] & 0x80) != 0 : (apu->cnt_h[channel] & 0xF800) != 0;
+}
+
 static void trigger(AgbBoard* board, int channel) {
     AgbApu* apu = &board->apu;
-    apu->enabled[channel] = 1;
+    apu->enabled[channel] = dac_on(apu, channel);
     apu->phase[channel] = 0;
     if (channel < 2) apu->duty_position[channel] = 0;
     if (channel == 2) apu->wave_position = 0;
@@ -102,6 +109,7 @@ void agb_apu_write(AgbBoard* board, uint32_t offset, uint16_t value) {
             channel = offset == 0x062 ? 0 : 1;
             apu->cnt_h[channel] = value;
             apu->length[channel] = 64 - (value & 63);
+            if (!dac_on(apu, channel)) apu->enabled[channel] = 0;
             return;
         case 0x072:
             apu->cnt_h[2] = value & 0xE0FF;
@@ -110,6 +118,7 @@ void agb_apu_write(AgbBoard* board, uint32_t offset, uint16_t value) {
         case 0x078:
             apu->cnt_h[3] = value;
             apu->length[3] = 64 - (value & 63);
+            if (!dac_on(apu, 3)) apu->enabled[3] = 0;
             return;
         case 0x064:
         case 0x06C:

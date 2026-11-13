@@ -185,6 +185,26 @@ int main(void) {
     CHECK(run_samples(8) == 8);
     CHECK(out[0] == 0 && out[1] == 0);
 
+    /* a channel whose DAC is off, an envelope of volume 0 going down or the wave's bit 7 clear, does not start on a
+       trigger and stops when its DAC goes off, as SOUNDCNT_X's status bits say on the console */
+    reset();
+    agb_apu_write(&board, 0x062, 0x0000);
+    agb_apu_write(&board, 0x064, 0x8000);
+    agb_apu_write(&board, 0x070, 0x0000);
+    agb_apu_write(&board, 0x074, 0x8000);
+    agb_apu_write(&board, 0x068, 0x0800); /* volume 0 rising: on */
+    agb_apu_write(&board, 0x06C, 0x8000);
+    agb_apu_write(&board, 0x078, 0xF000);
+    agb_apu_write(&board, 0x07C, 0x8000);
+    if (agb_apu_read(&board, 0x084) != 0x008A) {
+        fprintf(stderr,
+                "agb_apu: SOUNDCNT_X reads 0x%04X, not 0x008A: squares 2 and the noise on, 1 and the wave off\n",
+                agb_apu_read(&board, 0x084));
+        return 1;
+    }
+    agb_apu_write(&board, 0x078, 0x0000);
+    CHECK(agb_apu_read(&board, 0x084) == 0x0082);
+
     puts("agb_apu: ok");
     return 0;
 }
