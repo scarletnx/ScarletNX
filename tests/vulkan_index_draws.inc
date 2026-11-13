@@ -1359,9 +1359,11 @@ static int query_target_case(GpuChannel* channel, u64 target, u64 address) {
    from the bottom is in place again under a viewport of negative height. With clip set, the mapping is the fragment
    program's (ShaderInfo.pos_out_mask, screen_ndc): the vertex program writes the generic as its position itself, and
    the sample is at the generic's (x / w / 2 + 1/2, y / w / 2 + 1/2), or -y / w / 2 + 1/2 counted from the bottom. The
-   same rounds, the generic loaded apart from the position in place of the stored w. Each round writes the target's
-   texels anew and puts a texture barrier before its draw, as the console's texture reads see those writes only after
-   one */
+   same rounds, the generic loaded apart from the position in place of the stored w. Without clip, a last round samples
+   through a header that swaps red and green, which the program swaps back: every pixel ends as its own, as a draw
+   drawn two times (render.c predraw_run) has it only when its save draw copies the texels without the swizzle. Each
+   round writes the target's texels anew and puts a texture barrier before its draw, as the console's texture reads
+   see those writes only after one */
 #define OWN_FFMA(d, a, c, scale, negc)                                                                                 \
     (0x32a0000000070000ull | (u64)((scale) >> 12 & 0x7ffff) << 20 | (u64)((scale) >> 31) << 56 | (u64)(c) << 39 |      \
      (u64)(negc) << 49 | (u64)(a) << 8 | (u64)(d))
@@ -1412,13 +1414,13 @@ static int own_target_case(GpuChannel* channel, u64 target, u64 address, int cli
                         3 | 1u << 31, /* height 4, depth 1, normalized */
                         0,
                         0};
-    static const char* const names[2][5] = {
+    static const char* const names[2][6] = {
         {"the generic mapped onto the whole viewport", "a viewport a pixel to the right",
          "a generic counted from the bottom, a viewport from the top", "a w stored from an attribute",
-         "a generic counted from the bottom, a viewport of negative height"},
+         "a generic counted from the bottom, a viewport of negative height", "a header that swaps red and green"},
         {"the position mapped from clip space onto the whole viewport", "clip space, a viewport a pixel to the right",
          "clip space counted from the bottom, a viewport from the top", "the generic loaded apart from the position",
-         "clip space counted from the bottom, a viewport of negative height"}};
+         "clip space counted from the bottom, a viewport of negative height", ""}};
     u8 bytes[256] = {0}, initial[64], out[64];
     u32* r = channel->r3d;
     float kept[6];
@@ -1446,10 +1448,16 @@ static int own_target_case(GpuChannel* channel, u64 target, u64 address, int cli
     memcpy(kept, r + 0x280, sizeof kept);
     DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
     int ok = 1;
-    for (u32 round = 0; ok && round < 5; round++) {
+    for (u32 round = 0; ok && round < (clip ? 5u : 6u); round++) {
         float transform[6];
         int down = round == 2 || round == 4, in_place = (round == 0 || round == 4) && g_vk.has_feedback;
         u64 program = programs + round * 0x200;
+        if (round == 5) { /* the header swaps red and green, which the program swaps back: every pixel its own */
+            u8 header[32];
+            for (u32 i = 0; i < 8; i++)
+                snx_st_le32(header + i * 4, i ? tic[i] : (tic[0] & ~(0x3Fu << 19)) | 3u << 19 | 2u << 22);
+            CHECK(!gmem_write(pool + 96, header, sizeof header));
+        }
         memcpy(transform, kept, sizeof transform);
         if (round == 1) transform[3] += 1.0f;         /* the translation's x: the viewport from x = 1 */
         if (round == 4) transform[1] = -transform[1]; /* the scale's y: a viewport of negative height */
@@ -1507,7 +1515,7 @@ static int own_target_case(GpuChannel* channel, u64 target, u64 address, int cli
         vk_unlock();
         channel->ds.bind.cb_addr[4][2] = 0;
         channel->ds.bind.cb_size[4][2] = 0;
-        if (ok && (in_place ? loops != 1 || written || through : loops || written != 1 || through != 1)) {
+        if (ok && round != 5 && (in_place ? loops != 1 || written || through : loops || written != 1 || through != 1)) {
             fprintf(
                 stderr, "own target, %s: %llu draws in place, %llu through a copy, %llu copies written; expected %s\n",
                 names[clip][round], (unsigned long long)loops, (unsigned long long)through, (unsigned long long)written,
@@ -1522,7 +1530,7 @@ static int own_target_case(GpuChannel* channel, u64 target, u64 address, int cli
             u32 from = kept_pixel ? i : round == 1 ? i - 1 : round == 2 ? (3 - y) * 4 + x : i;
             u8 want[4];
             memcpy(want, initial + from * 4, 4);
-            if (!kept_pixel) want[0] = initial[from * 4 + 1], want[1] = initial[from * 4];
+            if (!kept_pixel && round != 5) want[0] = initial[from * 4 + 1], want[1] = initial[from * 4];
             if (memcmp(out + i * 4, want, 4)) {
                 fprintf(stderr, "own target, %s: pixel (%u, %u) is %u %u %u %u, expected %u %u %u %u\n",
                         names[clip][round], x, y, out[i * 4], out[i * 4 + 1], out[i * 4 + 2], out[i * 4 + 3], want[0],

@@ -2774,7 +2774,14 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             if (t->predraw) g_predraw_stats.save_copied++;
             else if (predrawn) g_predraw_stats.target_copied++;
         }
-        if (slots) {
+        if (slots && predrawn) {
+            /* the save draw copies the target's texels as they are, through a view of the format its save attachment
+               is written in and none of the header's swizzle or sRGB reading: the guest's draw reads the save
+               attachment through the header's view, which applies them once */
+            const VkComponentMapping identity = {0};
+            view = vk_tex_view(t, want, ds->tgt.srgb_write && vk_srgb_as(t->f.vk, 0) != t->f.vk, &identity, 0);
+            if (view) *fb |= slots;
+        } else if (slots) {
             /* the guest reads the target's previous contents during a draw that writes it: in place, in a feedback
                loop */
             view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
