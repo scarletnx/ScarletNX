@@ -13,10 +13,10 @@
    The object is one of three shapes, each the same in every SDK read that has it:
    - the HardwareOpusDecoder class up to SDK 4 (0.12.14 to 4.5.0): a flag that it is initialized at 8, the rate at
      0xc, the channels at 0x10 and, in the multistream class, the stream counts at 0x14 and 0x18;
-   - the HardwareOpusDecoderType struct from SDK 5 (5.4.180 to 20.5.17): the session's object at 0, the rate at 0x18,
-     the channels at 0x1c; from SDK 6 the last decode's time in microseconds at 0x20 and, at 0x28, the flag the SDK's
-     own ResetHardwareOpusDecoder sets for the next decode to start the stream again. The multistream struct has the
-     stream counts at 0x20 and 0x24, and the time and the flag 8 bytes later;
+   - the HardwareOpusDecoderType struct from SDK 5 (5.4.180 to 20.5.17, and 22.2.8): the session's object at 0, the
+     rate at 0x18, the channels at 0x1c; from SDK 6 the last decode's time in microseconds at 0x20 and, at 0x28, the
+     flag the SDK's own ResetHardwareOpusDecoder sets for the next decode to start the stream again. The multistream
+     struct has the stream counts at 0x20 and 0x24, and the time and the flag 8 bytes later;
    - the class from SDK 5 to 14, which is that struct behind its vtable.
    A decoder is found by the address of that object (g_hle.audio.opus, which a save state holds), and the word where
    the SDK keeps its session's object holds the decoder's place in the pool, so the SDK's own IsInitialized says yes.
