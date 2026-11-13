@@ -128,7 +128,7 @@ def main():
         gradients = tuple(Path(directory) / f'gradient_{i}.spv' for i in range(3))
         textures = tuple(Path(directory) / f'texture_{i}.spv' for i in range(6))
         arithmetic = Path(directory) / 'arithmetic.spv'
-        beyond = tuple(Path(directory) / f'beyond_{i}.spv' for i in range(3))
+        beyond = tuple(Path(directory) / f'beyond_{i}.spv' for i in range(4))
         attributes = tuple(Path(directory) / f'attribute_{i}.spv' for i in range(7))
         pexit = Path(directory) / 'pexit.spv'
         subprocess.run(

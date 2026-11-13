@@ -673,10 +673,11 @@ int shader_supported(u64 w, int op) {
         case O_STL: return B(w, 48, 3) <= 7;
         case O_LDS:
         case O_STS: return B(w, 48, 3) <= 7;
-        /* BAR.SYNC 0 for the whole workgroup: arrivals, reductions and thread counts are other barriers */
+        /* BAR.SYNC 0 for the whole workgroup, the barrier and the thread count each an immediate 0 (bits 43 and 44) or
+           RZ, as uam compiles barrier(): arrivals, reductions, other barriers and thread counts are not translated */
         case O_BAR:
-            return (w & 0x0000009B00000000ull) == 0x0000008000000000ull && B(w, 43, 1) && !B(w, 8, 8) && B(w, 44, 1) &&
-                   !B(w, 20, 12);
+            return (w & 0x0000009B00000000ull) == 0x0000008000000000ull && B(w, 8, 8) == (B(w, 43, 1) ? 0u : 255u) &&
+                   B(w, 20, 12) == (B(w, 44, 1) ? 0u : 255u);
         case O_S2R: {
             u32 sr = B(w, 20, 8);
             /* SR_AFFINITY (0x1c) is not modeled; the clock registers require the shader-clock feature below. */

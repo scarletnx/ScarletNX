@@ -39,7 +39,7 @@ static const char* gradient_cube_path;
 static const char* draw_buffer_paths[10];
 static const char* texture_paths[6];
 static const char* arithmetic_path;
-static const char* beyond_paths[3];
+static const char* beyond_paths[4];
 static const char* attribute_paths[7];
 static const char* pexit_path;
 static const char* global_dynamic_path;
@@ -3330,6 +3330,34 @@ static void beyond_eden(void) {
     u32* code = translate(&invalid_shared, 1, ST_CS, &info, &words, 1);
     check_refused(code, &info, "ATOMS", "unsupported shared compare-and-swap subop is refused");
     free(code);
+    /* uam compiles barrier() to BAR.SYNC with RZ for its barrier and its thread count (bits 43 and 44 clear): the
+       module the immediate form's 0 and 0 makes */
+    const u64 bar_imm = 0xf0a81b8000070000ull, bar_rz = 0xf0a803800ff7ff00ull;
+    size_t imm_words = 0;
+    u32* imm_code = translate(&bar_imm, 1, ST_CS, &info, &imm_words, 1);
+    check_translated(imm_code, &info, "BAR.SYNC 0x0, 0x0 translates");
+    code = translate(&bar_rz, 1, ST_CS, &info, &words, 1);
+    check_translated(code, &info, "BAR.SYNC RZ, RZ translates");
+    if (code && imm_code) {
+        check(count_opcode(code, words, 224, 0xffffffffu) == 1, "BAR.SYNC RZ, RZ is one control barrier");
+        check(words == imm_words && !memcmp(code, imm_code, words * sizeof *code),
+              "BAR.SYNC RZ, RZ makes the module BAR.SYNC 0x0, 0x0 makes");
+        save_fixture(beyond_paths[3], code, words);
+    }
+    free(imm_code);
+    free(code);
+    const u64 other_bars[] = {
+        0xf0a803800ff70100ull, /* BAR.SYNC R1, RZ: a barrier from a register */
+        0xf0a803800027ff00ull, /* BAR.SYNC RZ, R2: a thread count from a register */
+        0xf0a803801ff7ff00ull, /* BAR.SYNC RZ, RZ with bit 28 set, past the count's register */
+        0xf0a813800407ff00ull, /* BAR.SYNC RZ, 0x40: 64 threads */
+        0xf0a803810ff7ff00ull, /* BAR.ARV RZ, RZ */
+    };
+    for (size_t i = 0; i < sizeof other_bars / sizeof *other_bars; i++) {
+        code = translate(&other_bars[i], 1, ST_CS, &info, &words, 1);
+        check_refused(code, &info, "BAR", "a BAR other than barrier 0 for the whole block is refused");
+        free(code);
+    }
 }
 
 /* AL2P keeps byte offsets, including bit 10, and adds the register before an attribute access. */
@@ -6192,7 +6220,7 @@ int main(int argc, char** argv) {
             texture_paths[i] = fixture_path(argv[1], name);
         }
         arithmetic_path = fixture_path(argv[1], "arithmetic");
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 4; i++) {
             snprintf(name, sizeof name, "beyond_%d", i);
             beyond_paths[i] = fixture_path(argv[1], name);
         }
