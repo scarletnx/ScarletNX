@@ -1918,6 +1918,7 @@ static int may_write(const Sm86Insn* in, u32 r) {
         case SM86_R2UR:
         case SM86_PLOP3:
         case SM86_UPLOP3:
+        case SM86_PSETP:
         case SM86_UVOTE:
         case SM86_ISETP:
         case SM86_FSETP:
@@ -4149,6 +4150,16 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             if (q < SM86_PT) pwr(c, q, lut3(c, lut1, c->t_bool, x, y, z, c->true_v, c->false_v), u);
             return;
         }
+        case SM86_PSETP: {
+            /* PSETP as a vertex's cull test (sm86.decode): how it combines its predicates isn't known, and in the
+               programs seen the predicate it writes only ends the vertex program early, its outputs unwritten. Never
+               culled, the vertex is drawn as without the test, and the rasterizer clips what is outside. Refused,
+               every draw of such a program was skipped */
+            u32 p = sm86_field(in, 81, 3), q = sm86_field(in, 84, 3);
+            if (p < SM86_PT) pwr(c, p, c->false_v, 0);
+            if (q < SM86_PT) pwr(c, q, c->false_v, 0);
+            return;
+        }
         case SM86_CS2R: {
             if (sm86_field(in, 72, 8) != 0xff) {
                 fail(c, "CS2R of system register 0x%x", sm86_field(in, 72, 8));
@@ -5459,7 +5470,8 @@ static int mh_may_write(const Sm86Insn* in, int file, u32 r) {
             case SM86_FSETP:
             case SM86_DSETP:
             case SM86_HSETP2: return uk == u && (p81 || p84);
-            case SM86_PLOP3: return !u && (p81 || p84);
+            case SM86_PLOP3:
+            case SM86_PSETP: return !u && (p81 || p84);
             case SM86_UPLOP3: return u && (p81 || p84);
             case SM86_LEA:
             case SM86_ULEA:

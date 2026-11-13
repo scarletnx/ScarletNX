@@ -285,6 +285,14 @@ UP2UR        ---- 001 010000011
 UP2UR        ---- 010 010000011
 UP2UR        ---- 100 010000011
 PLOP3        ---- 100 000011100
+# 0x80d, which neither NAK nor CuAssembler's sm_86 list has: by the name, PSETP ("Combine Predicates and Set
+# Predicate"), which NVIDIA's Ampere instruction set table lists in the predicate group beside PLOP3 (0x81c) and which
+# compute compilers don't emit. An Ounce game's vertex programs end with two of them after six FSETPs of the position
+# against its w (P0 to P5, outside each clip plane), then @P0 EXIT before any output is written: a cull test of the
+# vertex. Its destinations are at bits 81 and 84 as PLOP3's (both PT in the first, P0 in the second); bits 32-63 hold
+# 0xc4321111 in the first and 0x80000000 in the second, by their nibbles the predicate operands (not decoded). Only
+# this form is seen
+PSETP        ---- 100 000001101
 UPLOP3       ---- 100 010011100
 CS2R         ---- 100 000000101
 S2R          ---- 100 100011001
