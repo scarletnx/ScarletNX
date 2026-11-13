@@ -1523,8 +1523,7 @@ static int run_hmma_bench(u32 rounds) {
     }
     printf("HMMA bench device: %s (quads in compute %d, shaderFloat16 %d, mixed dot product %d)\n", g.name, g.quad,
            g.float16, g.mixed_dot);
-    static Prog p;
-    memset(&p, 0, sizeof p);
+    Prog p = {0};
     bench_program(&p);
     static u32 in[BENCH_LOCAL * 16];
     u32 seed = 0x2545f491u;
