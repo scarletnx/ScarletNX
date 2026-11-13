@@ -5426,6 +5426,41 @@ static void tex_b_chosen_handle(void) {
                     info.ntex, (double)x, (double)cases[i].x);
         check(ran && info.ntex == 2 && x == cases[i].x, cases[i].what);
     }
+    /* In a loop with a BRK (so the reaching definitions aren't known), the write after the TEX.B that the loop carries
+       back to it is a candidate too: the first round samples c[2][0] or c[2][4] by P0, the second c[2][8], and P1,
+       set in the first round, ends the loop after the second sample */
+    const u64 pbk = 0xe2a000000007000full | (u64)((flow_word(9) - flow_word(4)) * 8) << 20; /* PBK to 9 */
+    const u64 looped[] = {fsetp_cbuf3(0, 0),     load & under_p0,  (other_load & under_p0) | not_p0, pbk, tex_b,
+                          0xe34000000001000full, /* @P1 BRK */
+                          0x4c98078800270006ull, /* MOV R6, c[2][8] */
+                          fsetp_cbuf3(1, 1),     flow_bra(8, 4, 7)};
+    const u32 words3[4] = {0x00100001u, 0x00200002u, 0x00300003u, 0};
+    for (u32 p0 = 0; p0 < 2; p0++) {
+        const u32 c3[4] = {p0 ? 0x3f800000u : 0, 0x3f800000u, 0, 0};
+        ShaderInfo info;
+        const char* why;
+        float x = -1.0f;
+        int ran = chosen_sample(looped, 9, words3, c3, &info, &x, &why);
+        if (!ran || x != 3.0f || info.ntex != 3)
+            fprintf(stderr, "TEX.B in a loop with P0 %u: %s, %d slots, x %g after the second round (3 expected)\n", p0,
+                    ran ? "ran" : why, info.ntex, (double)x);
+        check(ran && info.ntex == 3 && x == 3.0f,
+              "a handle the loop carries back to the TEX.B from a write after it is one of its candidates");
+    }
+    /* the same write after a TEX.B that no loop comes back to, a BRK after both: no candidate */
+    const u64 after_pbk = 0xe2a000000007000full | (u64)((flow_word(7) - flow_word(5)) * 8) << 20; /* PBK to 7 */
+    const u64 after[] = {
+        fsetp_cbuf3(0, 0),     load & under_p0,      (other_load & under_p0) | not_p0, tex_b, after_pbk,
+        0xe34000000001000full, 0x4c98078800270006ull};
+    const u32 c3[4] = {0x3f800000u, 0, 0, 0};
+    ShaderInfo info;
+    const char* why;
+    float x = -1.0f;
+    int ran = chosen_sample(after, 7, words3, c3, &info, &x, &why);
+    if (!ran || x != 1.0f || info.ntex != 2)
+        fprintf(stderr, "TEX.B before a BRK: %s, %d slots, x %g (1 expected)\n", ran ? "ran" : why, info.ntex,
+                (double)x);
+    check(ran && info.ntex == 2 && x == 1.0f, "a write after the TEX.B that no loop carries back is no candidate");
 }
 /* A fragment program's loop ends for a helper lane after SH_HELPER_LOOP_ROUNDS back-edges, and runs as written for the
    other lanes: a loop with no way out but EXIT kills the helper, a loop with a BRK lets it on past the loop, and the

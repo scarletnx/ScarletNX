@@ -1521,6 +1521,34 @@ int shader_direct_track_image_handle_pair(const ShFlow* f, u32 index, u32 reg, u
     return direct_joined_handle(f, index, reg, bank, off, bank2, off2, depth);
 }
 
+/* The last instruction that control can leave from to come back to index or before it: the farthest source of a branch
+   there, then of one to before that, and so on (a loop around index), or index when none does. A write after index
+   reaches it only from up to there. The program's last when an arrival there comes from instructions no edge names
+   (a call's return point, a PCNT's target) or a jump isn't known; a BRK or SYNC goes on to a target past it */
+static u32 direct_back_end(const ShFlow* f, u32 index) {
+    u32 end = index;
+    for (int changed = 1; changed;) {
+        changed = 0;
+        for (u32 k = 11; k < f->n; k++) {
+            const u32* targets;
+            const u8* elsewhere;
+            int count;
+            if (!IDX_OK(k)) continue;
+            count = direct_flow_targets(f, k, &targets, &elsewhere);
+            if (count < 0) return f->n - 1;
+            for (int t = 0; t < count; t++) {
+                if (targets[t] > end) continue;
+                if (elsewhere[t]) return f->n - 1;
+                if (k > end) {
+                    end = k;
+                    changed = 1;
+                }
+            }
+        }
+    }
+    return end;
+}
+
 /* The handles reg can hold at index when its writes there disagree on the texture: each one-word handle that a MOV or
    LDC reads from a constant buffer into reg, by a write that reaches index (the reaching definitions). One program
    picks its texture with a predicate (@P0 MOV R30, c[2][0x88]; @!P0 MOV R30, c[2][0x100]), and a path around both
@@ -1529,8 +1557,8 @@ int shader_direct_track_image_handle_pair(const ShFlow* f, u32 index, u32 reg, u
    that texture too, and one that equals none samples zeros. A MOV from another register adds that register's
    candidates where the MOV reads it. A reaching write that joins two words into a handle (a texture and a sampler)
    holds no candidate's word, so it refuses them all. Where the reaching definitions aren't known (a BRK anywhere in
-   the program), each write that control can carry to index counts, a superset of them. The count, -1 for a refusal
-   or more than max. */
+   the program), each write before index that control can carry to it counts, and each one after it that a loop
+   around it can carry back (direct_back_end), a superset of them. The count, -1 for a refusal or more than max. */
 static int handle_candidates(const ShFlow* f, u32 index, u32 reg, u32* banks, u32* offs, int count, int max,
                              int depth) {
     u32 defs[63], ndefs = 0;
@@ -1539,10 +1567,11 @@ static int handle_candidates(const ShFlow* f, u32 index, u32 reg, u32* banks, u3
     if (reg == 255 || depth > 4) return count;
     reach = direct_reaching_writes(f, index, reg, defs, &ndefs);
     if (!reach) {
+        u32 back = direct_back_end(f, index);
         ndefs = 0;
-        for (u32 k = 11; k < index && ndefs < 63; k++)
-            if (IDX_OK(k) && f->op[k] && shader_writes_reg(f->insn[k], f->op[k]->id, reg) &&
-                direct_can_reach(f, k + 1, index) != 0)
+        for (u32 k = 11; k <= back && ndefs < 63; k++)
+            if (IDX_OK(k) && k != index && f->op[k] && shader_writes_reg(f->insn[k], f->op[k]->id, reg) &&
+                (k > index || direct_can_reach(f, k + 1, index) != 0))
                 defs[ndefs++] = k;
         if (ndefs == 63) return -1;
         reach = ndefs ? (1ull << ndefs) - 1 : 0;
