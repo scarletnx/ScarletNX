@@ -514,6 +514,7 @@ int main(void) {
     agb_write16(&board, 0x04000100, 0x1234); /* TM0CNT_L sets the reload, and reads as the counter */
     board.timer[0].counter = 0xABCD;
     agb_write8(&board, 0x04000100, 0x56);
+    agb_timer_step(&board, 1); /* a timer takes a write a cycle after it */
     CHECK(board.timer[0].reload == 0x1256);
     /* timer 0 has no timer before it: its count-up bit does nothing and it counts the clock, as a game that sets that
        bit and plays its sound FIFOs at timer 0's rate needs; timer 1's counts timer 0's overflows */
@@ -521,10 +522,11 @@ int main(void) {
     agb_write16(&board, 0x04000104, 0xFFFE);
     agb_write16(&board, 0x04000106, 0x0084); /* timer 1 on, counting up */
     agb_write16(&board, 0x04000102, 0x0084); /* timer 0 on, its count-up bit set */
-    agb_timer_step(&board, 0x100);
-    CHECK(board.timer[0].counter == 0xFF00 && board.timer[1].counter == 0xFFFF);
+    /* the write lands a cycle later and the count starts a cycle after that */
+    agb_timer_step(&board, 0x102);
+    CHECK(agb_read16(&board, 0x04000100) == 0xFF00 && agb_read16(&board, 0x04000104) == 0xFFFF);
     agb_timer_step(&board, 0x80);
-    CHECK(board.timer[0].counter == 0xFF80 && board.timer[1].counter == 0xFFFF);
+    CHECK(agb_read16(&board, 0x04000100) == 0xFF80 && agb_read16(&board, 0x04000104) == 0xFFFF);
     agb_write16(&board, 0x04000102, 0x0000);
     agb_write16(&board, 0x04000106, 0x0000);
     agb_write16(&board, 0x040000B0, 0x1234); /* DMA0SAD, write-only */
