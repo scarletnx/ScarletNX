@@ -72,6 +72,9 @@ void own_unwatch(u64 addr, u64 size);
 /* 1 when an owner or a watch is on a host page of [addr, addr + size): the pages are trapped, and a direct read of
    them faults. own_lookup counts only owners, and only their bytes */
 int own_trapped(u64 addr, u64 size);
+/* the first byte of [addr, addr + size) on a host page that an owner or a watch is on (own_trapped), or addr + size
+   when there is none */
+u64 own_first_trapped(u64 addr, u64 size);
 /* the owned parts of [addr, addr + size), in address order and clipped to it, into out: how many there are (more
    than max when they didn't all fit). With the producer's lock held, as the resources live while it is */
 u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max);
