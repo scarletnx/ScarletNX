@@ -74,6 +74,18 @@ def main():
         'scarletnx-3ds: aot_threads=many is not a whole number from 0 to 1024',
     )
     run(['--board-info', '--aot_threads=2000'], 2, 'aot_threads=2000 is not a whole number from 0 to 1024')
+    # the recompile's common options (common/utilities/cli.h): their lines in the help, each value they do not take
+    # stopping the run with it, and none where nothing is compiled
+    assert '\n  -O, --opt LEVEL        LLVM' in help_text and '\n  --jobs N' in help_text
+    assert '\n  --jit-only' in help_text and '\n  -q, --quiet' in help_text
+    assert 'On the 3DS, -O is the level' in help_text
+    run(['--board-info', '-O9'], 2, 'scarletnx-3ds: -O 9: not 0, 1, 2, 3, s or z')
+    run(['--board-info', '--jobs', 'x'], 2, 'scarletnx-3ds: --jobs x: not a whole number from 0 (Auto) to 1024')
+    run(['--board-info', '--chunk=0'], 2, 'scarletnx-3ds: --chunk 0: not a whole number of instructions from 1')
+    run(['--board-info', '-O2'], 2, "scarletnx-3ds: -O is the recompile's, and --board-info compiles no code")
+    run(['--board-info', '--opt=1'], 2, "scarletnx-3ds: -O is the recompile's, and --board-info compiles no code")
+    run(['-x', '--keep-ir', 'game.cia'], 2, "scarletnx-3ds: --keep-ir is the recompile's, and -x compiles no code")
+    run(['-x', '--icon', '--out', 'icon', '--jobs', '0', 'game.cia'], 2, "--jobs is the recompile's, and --icon")
     # the Controllers table's A and B and dead zone, read as the Switch's (a dead zone past 90 is 90, said), never
     # its vibration, which the 3DS has none of
     run(['--board-info', '--gamepad_swap_ab=1', '--gamepad_deadzone=30'], 0, 'Old 3DS')
