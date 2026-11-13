@@ -136,8 +136,10 @@ static inline void hook_put_f64(CPU* c, HookField_f64 f, u64 addr, f64 v) {
     snx_st_le64(hook_host(c, addr + f.offset), bits);
 }
 
-/* the functions hooked: a hook's symbol may name one in each of the game's modules */
-#define HOOK_SITES 256
+/* the functions hooked: a hook's symbol may name one in each of the game's modules. As many as a table has entries at
+   most (tools/hookgen's MAX_ENTRIES), so a game that exports each function once has a site for every hook: hook.c
+   checks that its tables fit */
+#define HOOK_SITES 1024
 
 /* verify mode's scratch memory: slots of guest memory in the kernel region, each call verified taking one without
    waiting (a guest thread may lose its core inside the function's own code, and another verifying a call then must

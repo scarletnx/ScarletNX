@@ -56,7 +56,11 @@ that runs the function's own code is still correct, only not accelerated.
 `hook_install` (`src/nx/hle/hook/hook.c`) reads the game's exported functions (`kernel_load_symbols`) and puts the
 hook's adapter into each matching function's slot, before the game's first thread and the JIT start. The slots never
 change while the game runs, except for `hook_restore` putting a hook back after the JIT drops the code of a range
-(`jit_code_invalidate`).
+(`jit_code_invalidate`). It holds `HOOK_SITES` hooked functions (`hook.h`), as many as a table has entries at most,
+and `hook.c` does not build with a table larger than that, so a game that exports each function once gets every hook.
+One whose modules export them more than once can run out: the game then stops, naming the function left without its
+hook, since that function would run the SDK's own code beside the native hooks of its family, which keep the family's
+state, and a service that only the native functions answer would be asked (`tests/hook_sites.c`).
 
 What no hook sees is code the game's own compiler inlined from an SDK header: there is no call to take. A handler
 therefore keeps the guest's data as the function does, so inlined copies read what it left.
