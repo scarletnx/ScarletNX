@@ -104,7 +104,7 @@ static int owned_constant_buffers(void) {
     channel->ds.bind.cb_addr[4][0] = OPR_GVA + 0x3000;
     channel->ds.bind.cb_size[4][0] = 0x200;
     vk_lock();
-    VkOwnRes* owner = vk_own_res_new(16);
+    VkOwnRes* owner = vk_own_res_new(16, VK_OWN_BY_DRAW);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 16, 0));
     vk_own_publish_owned(OPR_CPU + 0x3100, 16, owner, 0);
     CHECK(own_lookup(OPR_CPU + 0x3100, 16, NULL, 0) == 1);
