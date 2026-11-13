@@ -36,12 +36,16 @@ typedef struct {
     uint16_t vcount;
     uint32_t dot;                                               /* cycles into the current scanline */
     uint32_t framebuffer[AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT]; /* 0xAABBGGRR words, one scanline at a time */
+    uint8_t lcd;      /* gba_color: 0 the colours as written (raw), 1 as the original GBA's screen shows them (gba) */
     AgbScanline scan; /* the line being drawn */
 } AgbPpu;
 
 /* The register window at 0x04000000 to 0x0400005F, halfword addressed. */
 uint16_t agb_ppu_read(AgbBoard* board, uint32_t offset);
 void agb_ppu_write(AgbBoard* board, uint32_t offset, uint16_t value);
+/* The frame's colours: lcd 0 widens each channel's five bits to eight (raw), 1 shows them as the original GBA's unlit
+   screen does (gba, gba_color's) */
+void agb_ppu_lcd(AgbBoard* board, int lcd);
 /* Runs the display for the given CPU cycles: scanlines, the blanking flags and the interrupts. */
 void agb_ppu_step(AgbBoard* board, uint32_t cycles);
 #endif

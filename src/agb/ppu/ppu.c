@@ -4,6 +4,7 @@
 #include "agb/ppu/ppu.h"
 #include "agb/board/board.h"
 #include "common/utilities/endian.h"
+#include <math.h>
 #include <string.h>
 
 #define LAYER_TRANSPARENT 0x8000 /* an unused bit of the 15 bit palette colour: AgbScanline's open pixels */
@@ -23,6 +24,38 @@ static uint32_t rgb888(uint16_t color) {
     g = (g << 3) | (g >> 2);
     b = (b << 3) | (b >> 2);
     return r | (g << 8) | (b << 16) | (0xFFu << 24);
+}
+
+/* gba_color=gba: each of the 32768 colours as the original GBA's unlit screen shows it, made once: the screen washes the
+   channels out, so they are raised to its gamma, 4.0, mixed into one another, then brought to the PC's 2.2 and scaled
+   by 255/280 (near's color emulation article, Talarubi's formula) */
+static struct {
+    uint32_t lcd[0x8000];
+    int lcd_made;
+} g_ppu;
+
+static uint32_t lcd888(uint16_t color) {
+    double r = pow((color & 31) / 31.0, 4.0), g = pow((color >> 5 & 31) / 31.0, 4.0);
+    double b = pow((color >> 10 & 31) / 31.0, 4.0);
+    double mixed[3] = {(50 * g + 255 * r) / 255, (30 * b + 230 * g + 10 * r) / 255, (220 * b + 10 * g + 50 * r) / 255};
+    uint32_t pixel = 0xFFu << 24;
+    for (int channel = 0; channel < 3; ++channel) {
+        double value = pow(mixed[channel], 1 / 2.2) * 255.0 / 280.0 * 255.0 + 0.5;
+        pixel |= (uint32_t)(value > 255.0 ? 255.0 : value) << (channel * 8);
+    }
+    return pixel;
+}
+
+void agb_ppu_lcd(AgbBoard* board, int lcd) {
+    if (lcd && !g_ppu.lcd_made) {
+        for (uint32_t color = 0; color < 0x8000; ++color) g_ppu.lcd[color] = lcd888((uint16_t)color);
+        g_ppu.lcd_made = 1;
+    }
+    board->ppu.lcd = (uint8_t)(lcd != 0);
+}
+
+static uint32_t pixel888(const AgbPpu* ppu, uint16_t color) {
+    return ppu->lcd ? g_ppu.lcd[color & 0x7FFF] : rgb888(color);
 }
 
 static void render_line(AgbBoard* board, int y);
@@ -458,7 +491,7 @@ static void composite_line(AgbBoard* board, int y) {
     int seconds = ppu->bldcnt >> 13 & 1;
     for (int i = 0; i < 4; ++i) seconds |= (ppu->dispcnt >> (8 + i) & 1) && (ppu->bldcnt >> (8 + i) & 1);
     if (forced_blank) {
-        for (int x = 0; x < AGB_SCREEN_WIDTH; ++x) out[x] = 0xFFu << 24 | 0xFFFFFFu;
+        for (int x = 0; x < AGB_SCREEN_WIDTH; ++x) out[x] = pixel888(ppu, 0x7FFF); /* white */
         return;
     }
     uint8_t masks[AGB_SCREEN_WIDTH];
@@ -537,7 +570,7 @@ static void composite_line(AgbBoard* board, int y) {
                 color = (uint16_t)result;
             }
         }
-        out[x] = rgb888(color);
+        out[x] = pixel888(ppu, color);
     }
 }
 

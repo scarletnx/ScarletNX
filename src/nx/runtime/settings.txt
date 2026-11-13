@@ -1970,5 +1970,14 @@ setting GBA covers
     help box from libretro-thumbnails, downloaded as the game is made: the ROM's CRC-32 names the game in
     help libretro-database's No-Intro list, and the box under that name goes in the game's folder as icon.png. A ROM the
     help list does not have, or a game with no box there, keeps Wimsy and its row says which name was looked for
+setting GBA colors
+    label Colors
+    key gba_color
+    text 8
+    default raw
+    words raw=Raw|gba=GBA screen
+    help The colors a GBA game shows. Raw = as the game writes them, the same as mGBA without a shader. GBA screen =
+    help as the original GBA's unlit screen showed them: the game's colors, painted strong for that screen, come out
+    help softer and darker (near's color emulation article, Talarubi's formula)
 
 section GBA: g_gba_ini    launcher

@@ -1532,6 +1532,50 @@ msgstr "...失败"
 msgid "...OK"
 msgstr "...成功"
 
+#: src/gui/main.c src/gui/steps.c
+msgid "PROGRAM"
+msgstr ""
+
+#: src/gui/main.c
+msgid "STARTED BY"
+msgstr ""
+
+#: src/gui/main.c
+msgid "USER"
+msgstr ""
+
+#: src/gui/main.c
+msgid "VERSION"
+msgstr ""
+
+#: src/gui/main.c
+msgid "DLC"
+msgstr ""
+
+#: src/gui/main.c
+msgid "HANDED OVER"
+msgstr ""
+
+#: src/gui/main.c src/gui/steps.c
+msgid "GPU"
+msgstr "GPU"
+
+#: src/gui/main.c
+msgid "TITLE ID"
+msgstr ""
+
+#: src/gui/main.c src/gui/steps.c
+msgid "BUILD"
+msgstr "构建"
+
+#: src/gui/main.c src/gui/steps.c
+msgid "RECOMPILE"
+msgstr "重新编译"
+
+#: src/gui/main.c
+msgid "Program"
+msgstr ""
+
 #: src/gui/main.c
 msgid "Aborting..."
 msgstr "正在中止..."
@@ -5648,24 +5692,12 @@ msgid "EXTRACT"
 msgstr "提取"
 
 #: src/gui/steps.c
-msgid "RECOMPILE"
-msgstr "重新编译"
-
-#: src/gui/steps.c
-msgid "BUILD"
-msgstr "构建"
-
-#: src/gui/steps.c
 msgid "LAUNCH"
 msgstr "启动"
 
 #: src/gui/steps.c
 msgid "READY"
 msgstr "就绪"
-
-#: src/gui/steps.c
-msgid "GPU"
-msgstr "GPU"
 
 #: src/gui/steps.c
 msgid "--:-- left"
@@ -6564,6 +6596,18 @@ msgstr ""
 
 #: src/nx/runtime/settings.txt
 msgid "The picture a GBA game made from a ROM shows in Games. None = Wimsy, as a game with no icon. Box art = its box from libretro-thumbnails, downloaded as the game is made: the ROM's CRC-32 names the game in libretro-database's No-Intro list, and the box under that name goes in the game's folder as icon.png. A ROM the list does not have, or a game with no box there, keeps Wimsy and its row says which name was looked for"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "GBA colors"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "Colors"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "The colors a GBA game shows. Raw = as the game writes them, the same as mGBA without a shader. GBA screen = as the original GBA's unlit screen showed them: the game's colors, painted strong for that screen, come out softer and darker (near's color emulation article, Talarubi's formula)"
 msgstr ""
 
 #: src/nx/runtime/settings.txt
