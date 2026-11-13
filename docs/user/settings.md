@@ -419,8 +419,10 @@ window, and the start says which run.
 | `vita_press_len` | `300` | How long each press of the script is held, in ms (`--press_len=` too) |
 | `vita_shot_every` | `0` | With `--shot=PATH`, also a screenshot every this many vblanks (60 a second), `PATH_0000.ppm` on; `0`, only the last frame's |
 | `vita_lockstep` | `-1` | From this import call on (`0` is the first), every instruction group of the game also runs in Unicorn, and the first difference in registers, flags or written memory stops the run with both states ([Checking the CPU backend](../platforms/vita/README.md#checking-the-cpu-backend)). Only in a build configured with `-DSNX_VITA_LOCKSTEP=ON`: another build says so at start. `-1` is off |
-| `upscaler`, `upscaler_sharpness`, `anti_aliasing` | as the Switch's | The Switch's (Graphics), for the frame scaled to the window: the launcher passes them, and the start says which run |
 | `vita_lockstep_steps` | `0` | With `vita_lockstep`, how many instruction groups are compared before the game runs on without Unicorn. `0` has no limit |
+
+The Switch's `upscaler`, `upscaler_sharpness` and `anti_aliasing` (Graphics) scale the frame to the window, the
+launcher passing them, and the start says which run.
 
 ## Launch
 
