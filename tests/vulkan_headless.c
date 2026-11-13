@@ -567,6 +567,52 @@ static int check_rings_budget_share(void) {
     return 0;
 }
 
+/* The stream's chunks are memory the caches budget too (cmd.c's vk_stream_upload): where the GPU shares the system's
+   memory, what was recorded goes to the GPU once the stream wrote an eighth of the budget, not VK_FRAME_RING_CAPS
+   allocations. With allocations of 1 MiB and a budget of 16 MiB that is every 2 MiB rather than every 4: 64 draws of a
+   megabyte each, all of it through the stream, send 31 submissions (15 by the allocations alone), and the copies still
+   read their uploads */
+static int check_stream_budget_share(void) {
+    const u32 draws = 64;
+    u64 saved_cap = g_vk.alloc_cap, saved_budget;
+    VkBuffer rb;
+    u8* result;
+    if (g_vk.mem_model != VK_MEM_UMA || !g_settings.stream_ring) {
+        printf("skip: the stream's share of the budget holds on a GPU that shares the system's memory, with "
+               "vk_stream_ring=1\n");
+        return 0;
+    }
+    vk_finish();
+    vk_frame_next();
+    g_vk.alloc_cap = 1u << 20;
+    saved_budget = vk_mem_budget_cap(16u << 20);
+    const u64 went0 = vk_submits(VK_SUB_PERIODIC), first = vk_frame_id();
+    result = vk_readback_buffer(draws * 16, &rb);
+    CHECK(result);
+    for (u32 i = 0; i < draws; i++) {
+        VkBuffer buffer;
+        u64 offset;
+        vk_frame_check(); /* a draw's start */
+        u8* data = vk_stream_upload(g_vk.alloc_cap, 16, &buffer, &offset);
+        CHECK(data);
+        memset(data, (int)(i + 1), 16);
+        VkBufferCopy copy = {offset, i * 16ull, 16};
+        rec_CmdCopyBuffer(vk_cmd(), buffer, rb, 1, &copy);
+    }
+    vk_finish();
+    vk_readback_ready();
+    const u64 went = vk_submits(VK_SUB_PERIODIC) - went0, frames = vk_frame_id() - first;
+    vk_mem_budget_cap(saved_budget);
+    g_vk.alloc_cap = saved_cap;
+    vk_frame_next();
+    for (u32 i = 0; i < draws * 16; i++) CHECK(result[i] == i / 16 + 1);
+    printf("%u draws of 1 MiB through the stream under a 16 MiB budget: %llu submissions between them, %llu frames "
+           "ended\n",
+           draws, (unsigned long long)went, (unsigned long long)frames);
+    CHECK(went + frames >= draws / 2 - 2);
+    return 0;
+}
+
 /* A frame that ended at its limit of submissions leaves its slot's counts as they were until the slot is used again:
    vk_frame_check on that slot, fresh after a present, keeps it rather than ending a frame that recorded nothing and
    moving on to the slot whose work was just submitted */
@@ -7443,6 +7489,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_staging_overflow()); /* first: it counts the staging blocks of a fresh device */
     CHECK(!check_rings_without_present());
     CHECK(!check_rings_budget_share());
+    CHECK(!check_stream_budget_share());
     CHECK(!check_fresh_frame_kept());
     CHECK(!check_stats_gpu_time());
     CHECK(!check_staging_burst());
