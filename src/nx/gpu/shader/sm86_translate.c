@@ -2698,6 +2698,7 @@ void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int s
     g_shader_hmma_pairs = subgroups && radv_warp32 && !g_shader_hmma_stage;
 }
 void shader_hmma_way(char* out, size_t n) {
+    int mixed = g_shader_mixed_dot && g_shader_float16, halves = !mixed && g_shader_hmma_f16 && g_shader_float16;
     const char* how = g_shader_hmma_stage ? "A and B through a warp's slot of shared memory"
                       : g_shader_hmma_pairs && g_shader_quad_compute
                           ? "A by quad broadcasts, B shared by pairs of lanes"
@@ -2708,7 +2709,10 @@ void shader_hmma_way(char* out, size_t n) {
              g_shader_hmma_coop ? "the device's cooperative matrices where a program's blocks are whole warps and "
                                   "their fragments fit in shared memory, else "
                                 : "",
-             how, g_shader_mixed_dot && g_shader_float16 ? "by the mixed dot product into f32" : "unpacked to f32");
+             how,
+             mixed    ? "by the mixed dot product into f32"
+             : halves ? "summed in half floats (hmma_f16), then in f32"
+                      : "unpacked to f32");
 }
 const char* shader_hmma_f16_unused(void) {
     if (!g_shader_hmma_f16) return NULL;
