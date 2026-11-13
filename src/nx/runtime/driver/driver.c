@@ -87,7 +87,8 @@ static void usage(void) {
          "  --dump-modules PROGRAM DIR\n"
          "                         Write an extracted program's (or an NRO's) modules as laid out\n"
          "                         in guest memory into DIR, for tools/symbols.py and tools/disasm.py;\n"
-         "                         an XCI or NSP of a game or an update is read in place");
+         "                         an XCI or NSP of a game or an update is read in place, with the\n"
+         "                         keys of the data folder (--data)");
     puts("  --scan-log LOG... [--format json|markdown] [--name NAME]\n"
          "                         Summarize a game's log or the launcher's Share Log file: the build,\n"
          "                         the game, how the run ended and where, unimplemented services");
@@ -1457,26 +1458,62 @@ static int container_path(const char* path) {
     for (i = 0; i <= size; ++i) lower[i] = (char)tolower((unsigned char)ext[i]);
     return !strcmp(lower, ".xci") || !strcmp(lower, ".nsp") || !strcmp(lower, ".dxci") || !strcmp(lower, ".dnsp");
 }
-/* --dump-modules PROGRAM DIR: each module's image and symbols, at the bases the runtime gives them (loader.h's
-   snx_dump_program has the format). Tools read game code through it */
+/* The data folder of a run: the one --data (--repo) names, else snx_data_dir's for the program in program_dir, made
+   when make is set and it is not there yet, else "." when none can be named. *found is the folder looked up, owned,
+   NULL when --data named one. 0, or nonzero said when the folder cannot be made */
+static int data_folder(const char* given, const char* program_dir, int make, const char** folder, char** found) {
+    *found = NULL;
+    if (given) {
+        *folder = given;
+        return 0;
+    }
+    *found = snx_data_dir(program_dir);
+    if (make && *found && snx_mkdirs(*found)) return snx_error("cannot create the data folder %s", *found);
+    *folder = *found ? *found : ".";
+    return 0;
+}
+/* --dump-modules PROGRAM DIR [--data DIR]: each module's image and symbols, at the bases the runtime gives them
+   (loader.h's snx_dump_program has the format). Tools read game code through it. An XCI or NSP is read in place, with
+   the keys of the data folder, else ~/.switch */
 static int dump_modules(int argc, char** argv) {
-    char error[1024];
-    if (argc != 4)
+    const char *program = NULL, *outdir = NULL, *given = NULL, *repo;
+    char error[1024], *self, *dir, *found = NULL;
+    SnxPaths paths = {0};
+    SnxCliArg arg;
+    int i, rc;
+    for (i = 2; i < argc; ++i) {
+        int common =
+            snx_cli_match(argc, argv, &i, SNX_CLI_BIT(SNX_CLI_DATA), "--dump-modules", &arg, error, sizeof error);
+        if (common < 0) return snx_error("%s", error);
+        if (common == SNX_CLI_DATA)
+            given = arg.value;
+        else if (argv[i][0] == '-' && argv[i][1])
+            return snx_error("--dump-modules takes no %s: a program, a folder and --data DIR", argv[i]);
+        else if (!program)
+            program = argv[i];
+        else if (!outdir)
+            outdir = argv[i];
+        else
+            return snx_error("--dump-modules takes one program and one folder, and %s is a third", argv[i]);
+    }
+    if (!outdir)
         return snx_error("--dump-modules takes a program (an extracted game, an NRO, or an XCI or NSP of a game or "
                          "an update) and a folder");
-    if (container_path(argv[2])) { /* read in place, with the keys of the data folder, else ~/.switch */
-        char *self = snx_executable(argv[0]), *dir = self ? snx_dirname(self) : NULL, *data = snx_data_dir(dir);
-        SnxPaths paths = {0};
-        int rc;
-        paths.repo = data ? data : ".";
-        rc = snx_dump_modules_of_dump(argv[2], &paths, argv[3]) ? 1 : 0;
-        free(data);
-        free(dir);
-        free(self);
-        return rc;
+    if (!container_path(program)) {
+        if (snx_dump_program(program, outdir, error, sizeof error)) return snx_error("%s", error);
+        return 0;
     }
-    if (snx_dump_program(argv[2], argv[3], error, sizeof error)) return snx_error("%s", error);
-    return 0;
+    self = snx_executable(argv[0]);
+    dir = self ? snx_dirname(self) : NULL;
+    rc = data_folder(given, dir, 0, &repo, &found); /* only its keys are read: nothing is made */
+    if (!rc) {
+        paths.repo = repo;
+        rc = snx_dump_modules_of_dump(program, &paths, outdir) ? 1 : 0;
+    }
+    free(found);
+    free(dir);
+    free(self);
+    return rc;
 }
 /* the setup in the terminal for the program at argv0: all of it, or what setup.ini has left. 0 once done */
 static int setup_run(const char* argv0, int all) {
@@ -1825,13 +1862,9 @@ int snx_driver(int argc, char** argv) {
     exe = self ? snx_dirname(self) : NULL;
     free(self);
     source = snx_checkout(SNX_SOURCE_DIR, build, exe);
-    if (!repo_given) {
-        data = snx_data_dir(exe);
-        if (data && snx_mkdirs(data)) {
-            result = snx_error("cannot create the data folder %s", data);
-            goto done;
-        }
-        repo = data ? data : ".";
+    if (data_folder(repo_given ? repo : NULL, exe, 1, &repo, &data)) {
+        result = 1;
+        goto done;
     }
     free(exe);
     exe = NULL;
