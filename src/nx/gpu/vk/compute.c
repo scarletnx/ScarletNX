@@ -297,7 +297,7 @@ static u64 arena_alloc(u64 size) {
    most a dispatch of its queue needed */
 static struct {
     VkBuffer b;
-    VmaAllocation m;
+    DevMem m;
     u64 cap;
 } g_spill[2];
 
@@ -341,15 +341,15 @@ static int cs_spill(const CsPipe* p, int indirect, u32 gx, u32 gy, u32 gz, int g
                                       fam[0] != fam[1] ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
                                   .queueFamilyIndexCount = fam[0] != fam[1] ? 2 : 0,
                                   .pQueueFamilyIndices = fam};
-        VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &g_spill[gfx].b, &g_spill[gfx].m, NULL))) {
+        DevMemWant aci = {.at = DM_DEVICE};
+        if (!VK_OK(vk_buffer_create(&bci, &aci, &g_spill[gfx].b, &g_spill[gfx].m, NULL))) {
             g_spill[gfx].b = VK_NULL_HANDLE;
             LOG_LIMIT(
                 4, "vulkan: no memory for %llu bytes of shared memory in a storage buffer: compute %016llx skipped\n",
                 (unsigned long long)cap, (unsigned long long)p->key);
             return 0;
         }
-        vk_mem_track(g_spill[gfx].m);
+        vk_mem_track(g_spill[gfx].m, VK_OWN_ARENA);
         g_spill[gfx].cap = cap;
     }
     *out = (VkDescriptorBufferInfo){g_spill[gfx].b, 0, need};
