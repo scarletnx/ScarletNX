@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define AGB_RECOMP_ABI 9   /* a map's block names its module function, or none ("-") for a hint */
+#define AGB_RECOMP_ABI 10  /* a map's block names its module function, or none ("-") for a hint */
 #define AGB_BLOCK_MAX  256 /* words compiled per block at most */
 
 /* the ARM7TDMI's rules (arm.h) on the flat window: the A57 default would run the ROM as ARMv8-A. Its loads and stores
