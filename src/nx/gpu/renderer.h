@@ -243,6 +243,7 @@ extern _Atomic int g_cs_any;      /* compute results are pending somewhere */
 extern _Atomic int g_gfx_any;     /* graphics storage-buffer results are pending somewhere */
 extern _Atomic int g_gfx_img_any; /* graphics storage-image results are pending somewhere */
 extern _Atomic int g_uma_any;     /* writes into guest memory in place are pending somewhere (gpu/vk/uma.c) */
+extern _Atomic int g_mir_any;     /* writes of the GPU mirror's programs are pending somewhere (gpu/vk/mirror.c) */
 extern u64 g_tex_cache_hits, g_tex_cache_misses, g_tex_upload_bytes, g_tex_frees; /* added to atomically */
 
 #endif

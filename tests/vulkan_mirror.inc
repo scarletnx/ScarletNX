@@ -177,6 +177,15 @@ static int check_mirror(void) {
         memcpy(before_landing, GP(cpu), len);
         CHECK(!mirror_read(cpu, len, got)); /* its finish takes the program's bytes too */
         CHECK(!mirror_expect(got, before_landing, len, 0x100, 16, 0x77));
+        /* gmem_read itself, of the program's bytes while they are pending: the mirror's own flag makes it ask for them
+           (g_mir_any), with no graphics result, storage image or write in place pending anywhere. Without the flag the
+           read asked for nothing and took the bytes from before the program's writes */
+        {
+            u8 seen[16];
+            CHECK(g_mir_any);
+            CHECK(!gmem_read(gva + 0x100, seen, sizeof seen));
+            for (u32 i = 0; i < sizeof seen; i++) CHECK(seen[i] == 0x77);
+        }
         /* the CPU's read, as gmem_read makes it: what is pending first, then what the GPU owns lands */
         vk_mirror_mem_need(gva, len);
         own_acquire(cpu, len);

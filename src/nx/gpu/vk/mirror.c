@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/renderer.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/hle/services/nvdrv.h"
@@ -52,6 +53,12 @@ typedef struct {
 
 /* the guest pages programs wrote in the mirror that haven't landed (vk_mirror_wrote to vk_mirror_done) */
 static PendPages g_mir_pend = {.also = &g_pend_any};
+/* the pending pages gain or lose a write, and g_mir_any says whether any is left: a read of guest memory looks at the
+   flag before it asks the mirror for anything (gpu.c's gmem_need) */
+static void mir_pend_pages(u64 first, u64 last, int delta) {
+    pend_add_pages(&g_mir_pend, first, last, delta);
+    g_mir_any = g_mir_pend.total != 0;
+}
 static struct {
     int on; /* -1 until vk_mirror_init has decided */
     VkBuffer buf, mask;
@@ -486,7 +493,7 @@ void vk_mirror_wrote(u64 cpu, u64 len) {
     }
     MirRange r = {cpu >> 12, (cpu + len + 4095) >> 12};
     g_mir_now[g_mir_nnow++] = r;
-    pend_add_pages(&g_mir_pend, r.first, r.end - 1, 1);
+    mir_pend_pages(r.first, r.end - 1, 1);
 }
 int vk_mirror_pending(u64 gva, u64 len) { return g_mir.on > 0 && len && pend_hit(&g_mir_pend, gva, len); }
 int vk_mirror_holds(u64 gva, u64 len) {
@@ -687,8 +694,8 @@ void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) {
     memcpy(r, g_mir_now, (size_t)n0 * sizeof *r);
     u32 n = ranges_join(g_mir_now, g_mir_nnow);
     if (n < n0) {
-        for (u32 i = 0; i < n; i++) pend_add_pages(&g_mir_pend, g_mir_now[i].first, g_mir_now[i].end - 1, 1);
-        for (u32 i = 0; i < n0; i++) pend_add_pages(&g_mir_pend, r[i].first, r[i].end - 1, -1);
+        for (u32 i = 0; i < n; i++) mir_pend_pages(g_mir_now[i].first, g_mir_now[i].end - 1, 1);
+        for (u32 i = 0; i < n0; i++) mir_pend_pages(r[i].first, r[i].end - 1, -1);
     }
     free(r);
     if (!own_traps()) { /* no traps: every page lands with its bytes once done */
@@ -791,7 +798,7 @@ static void own_entries(const u32* out, u32 n) {
     g_mir_nq += n;
     for (u32 i = 0; i < n; i++) {
         u64 pg = out[MIR_HEAD + i * MIR_ENTRY_PAGE];
-        pend_add_pages(&g_mir_pend, pg, pg, 1);
+        mir_pend_pages(pg, pg, 1);
     }
 }
 /* First the CPU's changes to the pages since they were brought up to date, the bytes their programs didn't log, go
@@ -889,7 +896,7 @@ void vk_mirror_publish(void) {
         vk_own_publish_submitted(cpu, len, res, cpu);
         i = j;
     }
-    for (u32 i = 0; i < n; i++) pend_add_pages(&g_mir_pend, pages[i], pages[i], -1);
+    for (u32 i = 0; i < n; i++) mir_pend_pages(pages[i], pages[i], -1);
     vk_own_res_unref(res);
     g_mir_stats.owned_pages += n;
     free(pages);
@@ -1011,7 +1018,7 @@ void vk_mirror_done(u64 done) {
         }
         vk_result_end();
         g_mir_stats.pages += n;
-        for (u32 i = 0; i < m->n; i++) pend_add_pages(&g_mir_pend, m->r[i].first, m->r[i].end - 1, -1);
+        for (u32 i = 0; i < m->n; i++) mir_pend_pages(m->r[i].first, m->r[i].end - 1, -1);
         free(m->r);
     }
     busy = 0;
