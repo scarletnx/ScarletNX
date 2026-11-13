@@ -10,6 +10,7 @@
    else. A save while a queue's work waits on the GPU is refused, and so is the load of a state saved without NVN, or
    whose NVN state indexes past the runtime's tables. Runs alone (SNX_TEST_NVN_CASE=savestate): a load replaces the
    process's guest memory */
+#include "nx/runtime/pause.h"
 #include "nx/runtime/state.h"
 #include "nx/runtime/state_io.h"
 #include "common/filesystem/tree.h"
@@ -93,7 +94,14 @@ static int check_nvn_state_damage(void) {
     NvnSection saved = {0};
     char why[256];
     StateIo io = {&saved, section_put, section_get};
-    CHECK(!nvn_state_save(&io, why, sizeof why));
+    int refused;
+    /* saved paused, as state_save saves it: nvn_QueueFinish returns once the GPU thread lets the queue's syncpoint go,
+       before that thread gives the work's slot back, and a save that finds the slot taken refuses the state */
+    CHECK(!game_pause());
+    refused = nvn_state_save(&io, why, sizeof why);
+    game_resume();
+    if (refused) fprintf(stderr, "NVN state not saved: %s\n", why);
+    CHECK(!refused);
     CHECK(g_nvn.cmd.slots >= 1 && g_nvn.cmd.slots < NVN_SPILL_PIECES);
     const u32 none = 0, one = 1, many = NVN_SPILL_PIECES + 1, past = g_nvn.cmd.slots + 1, owner = 5;
     CHECK(nvn_parses(&saved, NULL, 0) == 1); /* as it was saved */
