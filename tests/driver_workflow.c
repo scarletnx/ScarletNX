@@ -257,16 +257,16 @@ int snx_deploy_runtime(const char* run, const char* exe) {
     free(tmp);
     return rc;
 }
-/* recompile.c's --dump-modules of an XCI or NSP read in place: the dump and folder it was given, and whether it had a
-   data folder to find the keys in */
-static char *dumped, *dumped_into;
-static int dumped_repo;
+/* recompile.c's --dump-modules of an XCI or NSP read in place: the dump and folder it was given, and the data folder
+   it finds the keys in */
+static char *dumped, *dumped_into, *dumped_repo;
 int snx_dump_modules_of_dump(const char* dump, const SnxPaths* paths, const char* outdir) {
     free(dumped);
     free(dumped_into);
+    free(dumped_repo);
     dumped = snx_strdup(dump);
     dumped_into = snx_strdup(outdir);
-    dumped_repo = paths->repo && paths->repo[0];
+    dumped_repo = paths->repo ? snx_strdup(paths->repo) : NULL;
     return strstr(dump, "unreadable") ? -1 : 0; /* a dump it cannot read: -1, said */
 }
 /* recompile.c's: a setting of the recompile, from the generated tables */
@@ -882,26 +882,44 @@ int main(int argc, char** argv) {
     exe = snx_executable(argv[0]);
     root = snx_temp_dir(NULL);
     CHECK(exe && root);
-    { /* --dump-modules: an XCI or NSP (any case) goes to the in-place reader, with a data folder for its keys; an
-         extracted program that is not there to the loader, which says what it looked for */
+    { /* --dump-modules: an XCI or NSP (any case) goes to the in-place reader, with the data folder a run uses for its
+         keys, or the one --data (--repo, before or after) names; an extracted program that is not there to the
+         loader, which says what it looked for; an option it does not take, and a third name, refused; the reader's
+         -1 is the run's status 1, never the -1 that says no mode took the arguments */
         char program[] = "scarletnx", flag[] = "--dump-modules", nsp[] = "Some Game [v0].NsP", into[] = "dumped";
+        char data[] = "--data", repo_flag[] = "--repo", update[] = "--update", bogus[] = "--bogus", third[] = "x";
+        char bad[] = "unreadable.nsp";
         char* nsp_args[] = {program, flag, nsp, into, NULL};
+        char* given = snx_path_join(root, "given data");
+        char* data_args[] = {program, flag, nsp, into, data, given, NULL};
+        char* repo_args[] = {program, flag, repo_flag, given, nsp, into, NULL};
         char* folder = snx_path_join(root, "no game here");
         char* folder_args[] = {program, flag, folder, into, NULL};
+        char* update_args[] = {program, flag, update, nsp, nsp, into, NULL};
+        char* bogus_args[] = {program, flag, nsp, into, bogus, NULL};
+        char* third_args[] = {program, flag, nsp, into, third, NULL};
+        char* bad_args[] = {program, flag, bad, into, NULL};
+        CHECK(!snx_mkdirs(given));
         CHECK(snx_driver(4, nsp_args) == 0 && dumped && !strcmp(dumped, nsp) && !strcmp(dumped_into, into) &&
-              dumped_repo);
+              dumped_repo && dumped_repo[0] && strcmp(dumped_repo, given));
+        CHECK(snx_driver(6, data_args) == 0 && !strcmp(dumped, nsp) && dumped_repo && !strcmp(dumped_repo, given));
+        free(dumped_repo);
+        dumped_repo = NULL;
+        CHECK(snx_driver(6, repo_args) == 0 && !strcmp(dumped, nsp) && dumped_repo && !strcmp(dumped_repo, given));
+        CHECK(snx_driver(4, bad_args) == 1 && !strcmp(dumped, bad));
         free(dumped);
         dumped = NULL;
         CHECK(snx_driver(4, folder_args) != 0 && !dumped);
-        { /* the reader's -1 is the run's exit status 1, never the -1 that says no mode took the arguments */
-            char bad[] = "unreadable.nsp";
-            char* bad_args[] = {program, flag, bad, into, NULL};
-            CHECK(snx_driver(4, bad_args) == 1 && dumped && !strcmp(dumped, bad));
-            free(dumped);
-            dumped = NULL;
-        }
+        CHECK(snx_driver(6, update_args) != 0 && !dumped);
+        CHECK(snx_driver(5, bogus_args) != 0 && !dumped);
+        CHECK(snx_driver(5, third_args) != 0 && !dumped);
+        free(dumped_into);
+        free(dumped_repo);
+        dumped_into = dumped_repo = NULL;
         free(folder);
-        puts("PASS --dump-modules reads an XCI or NSP in place, an extracted program through the loader");
+        free(given);
+        puts("PASS --dump-modules reads an XCI or NSP in place with the data folder's keys or --data's, an extracted "
+             "program through the loader, and refuses what it does not take");
     }
     keys = snx_path_join(root, "provided prod.keys");
     title_keys = snx_path_join(root, "provided title.keys");
