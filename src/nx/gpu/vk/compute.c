@@ -1288,6 +1288,7 @@ void vk_dispatch(const DispatchState* d) {
     VkBufImg bimg[8] = {0};
     int i;
     vk_frame_check();
+    vk_own_room();
     if (d->indirect) gx = gy = gz = 1; /* the GPU's: these only say there is a grid */
     if (!gx || !gy || !gz || !lx || !ly || !lz) return;
     const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
