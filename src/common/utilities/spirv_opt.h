@@ -37,6 +37,12 @@ size_t spv_opt_dead_code(uint32_t* module, size_t words);
    instruction's own id, in the room the instruction left: the module never grows. Float arithmetic, divisions,
    shifts by 32 or more and decorated instructions are not folded.
 
+   The same walk keeps which bits of each 32-bit integer value are known 0 or 1, from the constants through the
+   bitwise instructions, the sums, differences, negations and products, the shifts and fields by constant amounts,
+   the selects and the bitcasts: an instruction whose result's bits are all known is that constant, an integer
+   comparison the operands' known bits decide (an operand's range lying past the other's, or an operand compared with
+   itself) is true or false, and a & b, a | b and a field from bit 0 that the known bits leave equal to a are a.
+
    A result an instruction of unknown layout may name (any of its words) neither goes nor stands for another, nor
    does one with a decoration that has operands. A module with a 64-bit integer type and an OpSwitch is left as it is. Run
    spv_opt_dead_code after it: what only fed an instruction that went (an access chain, a constant's use) is dead

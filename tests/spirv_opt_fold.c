@@ -1,12 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* What spv_opt_values (common/utilities/spirv_opt.h) folds: an integer or boolean instruction on constants, one an
-   operand decides or leaves as it is, a select and a bitcast that are one of their operands. Each module here is a
-   function that loads a value of each type, makes one instruction of them and of constants, and stores its result:
-   the store then reads a constant, an operand, or the instruction that stayed. tests/spirv_opt_values.c has the
+   operand decides or leaves as it is, a select and a bitcast that are one of their operands, and what the bits known
+   of its operands decide. Each module here is a function that loads a value of each type, makes one instruction of
+   them and of constants, and stores its result: the store then reads a constant, an operand, or the instruction that
+   stayed. The known bits are checked twice: on the shapes the Maxwell translator writes, and on modules made at
+   random, run before and after the pass on every value of their unknown bits. tests/spirv_opt_values.c has the
    numbering. */
 #include "common/utilities/spirv_opt.h"
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -25,6 +28,7 @@ enum {
     LOAD = 61,
     STORE = 62,
     DECORATE = 71,
+    COPY_OBJECT = 83,
     BITCAST = 124,
     S_NEGATE = 126,
     I_ADD = 128,
@@ -81,9 +85,13 @@ enum {
     SHORT0 = 17, /* a 16-bit zero */
     F0 = 18,     /* a constant of F, its bits zero */
     S0 = 19,     /* a signed zero */
-    KA = 20,     /* constants of U with a module's own values */
+    KA = 20,     /* constants of U with a module's own values: KA to KJ, ten at most */
     KB = 21,
     KC = 22,
+    KD = 23,
+    KE = 24,
+    KF = 25,
+    KG = 26,
     /* the values the function loads */
     X = 30,  /* of U */
     Y = 31,  /* of U */
@@ -118,8 +126,8 @@ static void put(Module* m, uint32_t op, int n, ...) {
     for (int i = 0; i < n; i++) m->words[m->count++] = va_arg(operands, uint32_t);
     va_end(operands);
 }
-/* the header, the types, the constants (KA, KB and KC of U with the values given) and the function up to its loads */
-static void begin(Module* m, uint32_t ka, uint32_t kb, uint32_t kc) {
+/* the header, the types, the constants (n of U with the values k, from KA on) and the function up to its loads */
+static void begin_with(Module* m, const uint32_t* k, int n) {
     m->count = 0;
     m->words[m->count++] = 0x07230203;
     m->words[m->count++] = 0x00010600;
@@ -141,9 +149,7 @@ static void begin(Module* m, uint32_t ka, uint32_t kb, uint32_t kc) {
     put(m, CONSTANT, 3, (uint32_t)SHORT, (uint32_t)SHORT0, 0u);
     put(m, CONSTANT, 3, (uint32_t)F, (uint32_t)F0, 0u);
     put(m, CONSTANT, 3, (uint32_t)S, (uint32_t)S0, 0u);
-    put(m, CONSTANT, 3, (uint32_t)U, (uint32_t)KA, ka);
-    put(m, CONSTANT, 3, (uint32_t)U, (uint32_t)KB, kb);
-    put(m, CONSTANT, 3, (uint32_t)U, (uint32_t)KC, kc);
+    for (int i = 0; i < n; i++) put(m, CONSTANT, 3, (uint32_t)U, (uint32_t)KA + (uint32_t)i, k[i]);
     put(m, VARIABLE, 3, (uint32_t)F, (uint32_t)OUT, 3u);
     put(m, VARIABLE, 3, (uint32_t)F, (uint32_t)IN, 6u);
     put(m, FUNCTION, 4, (uint32_t)F, (uint32_t)FN, 0u, (uint32_t)F);
@@ -153,6 +159,11 @@ static void begin(Module* m, uint32_t ka, uint32_t kb, uint32_t kc) {
     put(m, LOAD, 3, (uint32_t)S, (uint32_t)XS, (uint32_t)IN);
     put(m, LOAD, 3, (uint32_t)BOOL, (uint32_t)XB, (uint32_t)IN);
     put(m, LOAD, 3, (uint32_t)F, (uint32_t)XF, (uint32_t)IN);
+}
+/* with KA, KB and KC */
+static void begin(Module* m, uint32_t ka, uint32_t kb, uint32_t kc) {
+    const uint32_t k[3] = {ka, kb, kc};
+    begin_with(m, k, 3);
 }
 static void end(Module* m) {
     put(m, RETURN, 0);
@@ -215,6 +226,126 @@ static int instruction(uint32_t ka, uint32_t kb, uint32_t kc, int expect, uint32
                                 : "value",
                 want);
     return ok;
+}
+
+/* The value of each store of the function in m (words long), when X loads x, Y loads y and XB loads (x + y) & 1,
+   into out (max of them); a boolean is 0 or 1. Returns the stores, or -1 when an instruction reads an id nothing
+   defined before it or is one this does not run */
+static int run(const uint32_t* m, size_t words, uint32_t x, uint32_t y, uint32_t* out, int max) {
+    uint32_t value[BOUND] = {0};
+    uint8_t set[BOUND] = {0};
+    int stores = 0;
+    for (size_t i = 5; i < words; i += m[i] >> 16) {
+        const uint32_t* w = m + i;
+        uint32_t width = w[0] >> 16, op = w[0] & 0xffff, v = 0;
+        if (op == CONSTANT || op == CONSTANT_TRUE || op == CONSTANT_FALSE || op == CONSTANT_NULL) {
+            value[w[2]] = op == CONSTANT ? w[3] : op == CONSTANT_TRUE;
+            set[w[2]] = 1;
+            continue;
+        }
+        if (op == LOAD) {
+            value[w[2]] = w[2] == X ? x : w[2] == Y ? y : w[2] == XB ? (x + y) & 1 : 0;
+            set[w[2]] = 1;
+            continue;
+        }
+        if (op == STORE) {
+            if (w[2] >= BOUND || !set[w[2]] || stores == max) return -1;
+            out[stores++] = value[w[2]];
+            continue;
+        }
+        if (op < BITCAST || op == FUNCTION || op == FUNCTION_END || op == LABEL || op == RETURN) {
+            if (op == COPY_OBJECT) break;
+            continue; /* the declarations, the function's frame */
+        }
+        uint32_t a = 0, b = 0, c = 0, d = 0;
+        for (uint32_t k = 3; k < width; k++) {
+            if (w[k] >= BOUND || !set[w[k]]) return -1;
+            uint32_t o = value[w[k]];
+            if (k == 3) a = o;
+            if (k == 4) b = o;
+            if (k == 5) c = o;
+            if (k == 6) d = o;
+        }
+        switch (op) {
+            case I_ADD: v = a + b; break;
+            case I_SUB: v = a - b; break;
+            case I_MUL: v = a * b; break;
+            case S_NEGATE: v = 0u - a; break;
+            case NOT: v = ~a; break;
+            case BITWISE_AND: v = a & b; break;
+            case BITWISE_OR: v = a | b; break;
+            case BITWISE_XOR: v = a ^ b; break;
+            case SHIFT_LEFT_LOGICAL: v = a << b; break;
+            case SHIFT_RIGHT_LOGICAL: v = a >> b; break;
+            case SHIFT_RIGHT_ARITHMETIC: v = a >> b | (a >> 31 && b ? 0xffffffffu << (32 - b) : 0); break;
+            case BIT_FIELD_U_EXTRACT:
+            case BIT_FIELD_S_EXTRACT:
+                v = c ? a >> b & 0xffffffffu >> (32 - c) : 0;
+                if (op == BIT_FIELD_S_EXTRACT && c && c < 32 && v >> (c - 1)) v |= 0xffffffffu << c;
+                break;
+            case BIT_FIELD_INSERT: {
+                uint32_t mask = d ? 0xffffffffu >> (32 - d) << c : 0;
+                v = (a & ~mask) | (b << (c & 31) & mask);
+                break;
+            }
+            case SELECT: v = a ? b : c; break;
+            case BITCAST: v = a; break;
+            case LOGICAL_EQUAL: v = a == b; break;
+            case LOGICAL_NOT_EQUAL: v = a != b; break;
+            case LOGICAL_OR: v = a || b; break;
+            case LOGICAL_AND: v = a && b; break;
+            case LOGICAL_NOT: v = !a; break;
+            case I_EQUAL: v = a == b; break;
+            case I_NOT_EQUAL: v = a != b; break;
+            case U_GREATER_THAN: v = a > b; break;
+            case S_GREATER_THAN: v = (int32_t)a > (int32_t)b; break;
+            case U_GREATER_THAN_EQUAL: v = a >= b; break;
+            case S_GREATER_THAN_EQUAL: v = (int32_t)a >= (int32_t)b; break;
+            case U_LESS_THAN: v = a < b; break;
+            case S_LESS_THAN: v = (int32_t)a < (int32_t)b; break;
+            case U_LESS_THAN_EQUAL: v = a <= b; break;
+            case S_LESS_THAN_EQUAL: v = (int32_t)a <= (int32_t)b; break;
+            default: return -1;
+        }
+        value[w[2]] = v;
+        set[w[2]] = 1;
+    }
+    return stores;
+}
+/* the next number of a fixed sequence (xorshift32), so that every run makes the same modules */
+static uint32_t g_seed = 0x2545f491u;
+static uint32_t next(void) {
+    g_seed ^= g_seed << 13;
+    g_seed ^= g_seed >> 17;
+    g_seed ^= g_seed << 5;
+    return g_seed;
+}
+/* a mask of up to four bits at random places: the bits of a value the module does not know */
+static uint32_t unknown_bits(void) {
+    uint32_t mask = 0, n = next() % 5;
+    for (uint32_t k = 0; k < n; k++) mask |= 1u << (next() % 32);
+    return mask;
+}
+/* m before and after the pass store the same values for every x within the bits of xs and every y within those of
+   ys (each a subset of the mask's bits, all of them) */
+static int same_stores(const Module* m, uint32_t xs, uint32_t ys) {
+    Module o = *m;
+    size_t left = spv_opt_values(o.words, o.count);
+    uint32_t x = 0, y = 0;
+    do {
+        do {
+            uint32_t want[8], got[8];
+            int n = run(m->words, m->count, x, y, want, 8);
+            if (n < 0 || run(o.words, left, x, y, got, 8) != n || memcmp(want, got, (size_t)n * sizeof *want)) {
+                fprintf(stderr, "x %#x y %#x: %d stores before the pass, after it %d\n", x, y, n,
+                        run(o.words, left, x, y, got, 8));
+                return 0;
+            }
+            y = (y - ys) & ys; /* the next subset of ys */
+        } while (y);
+        x = (x - xs) & xs;
+    } while (x);
+    return 1;
 }
 
 int main(void) {
@@ -323,8 +454,12 @@ int main(void) {
                   "a comparison of two constants is true or false");
     check(instruction(5, 5, 77, STAYS, 0, 0, I_EQUAL, BOOL, 2, X, KB, 0) &&
               instruction(5, 5, 77, STAYS, 0, 0, I_EQUAL, BOOL, 2, KA, X, 0) &&
-              instruction(5, 5, 77, STAYS, 0, 0, I_EQUAL, BOOL, 2, X, X, 0),
+              instruction(5, 5, 77, STAYS, 0, 0, I_EQUAL, BOOL, 2, X, Y, 0),
           "a comparison with a value stays");
+    for (size_t k = 0; k < sizeof comparisons / sizeof *comparisons; k++)
+        check(instruction(5, 5, 77, VALUE, BOOL, comparisons[k].truth[2], comparisons[k].op, BOOL, 2, X, X, 0) &&
+                  instruction(5, 5, 77, VALUE, BOOL, comparisons[k].truth[2], comparisons[k].op, BOOL, 2, XS, XS, 0),
+              "an integer compared with itself is what 5 compared with 5 is");
     check(instruction(5, 5, 77, STAYS, 0, 0, 169 + 11, BOOL, 2, KA, KB, 0) &&
               instruction(5, 5, 77, STAYS, 0, 0, 169, BOOL, 2, KA, KB, 0),
           "the opcodes on either side of the integer comparisons stay");
@@ -678,6 +813,417 @@ int main(void) {
     put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
     end(&m);
     check(outcome(&m, 5, STAYS, 0, 0), "an instruction of a type past the module's bound stays");
+
+    /* What the known bits of the operands decide. The Maxwell translator splits a constant buffer address made of a
+       register shifted by 4 plus an offset into a vec4's index and a component: (x << 4) + 480 >> 2 & 3 has its two
+       low bits known 0 */
+    {
+        const uint32_t k[] = {4, 480, 2, 3, 484};
+        begin_with(&m, k, 5);
+        put(&m, SHIFT_LEFT_LOGICAL, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
+        put(&m, I_ADD, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)P, (uint32_t)KB);
+        put(&m, SHIFT_RIGHT_LOGICAL, 4, (uint32_t)U, (uint32_t)(R + 1), (uint32_t)Q, (uint32_t)KC);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)(R + 1), (uint32_t)KD);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        end(&m);
+        check(outcome(&m, 5, VALUE, U, 0), "the component of (x << 4) + 480 is 0");
+        size_t sum = m.count - 2 - 3 - 5 - 5 - 5; /* the sum's first word: the end, the store, the mask, the shift */
+        m.words[sum + 4] = (uint32_t)KE;          /* + 484 */
+        check(outcome(&m, 5, VALUE, U, 1), "and of (x << 4) + 484 is 1");
+        m.words[sum + 4] = (uint32_t)Y; /* (x << 4) + y */
+        check(outcome(&m, 5, STAYS, 0, 0), "and a sum with a value stays");
+    }
+    /* one value whose bits two masks set, P = (x & KA) | KB (without the and when KA is ~0, nor the or when KB is 0:
+       the pass would fold them), and an instruction of it and the constant KC, R */
+    static const struct {
+        uint32_t op, type, ka, kb, n;
+        int expect;
+        uint32_t want; /* the value, or the id it reads */
+        const char* what;
+    } known[] = {
+        {BITWISE_AND, U, 0xf0, 0, 0x0f, VALUE, 0, "(x & 0xf0) & 0x0f is 0"},
+        {BITWISE_AND, U, 0xf0, 0, 0xff, IS, P, "(x & 0xf0) & 0xff is x & 0xf0"},
+        {BITWISE_AND, U, 0xf0, 0, 0x3f, STAYS, 0, "(x & 0xf0) & 0x3f stays"},
+        {BITWISE_AND, U, 0xff, 0x10, 0x10, VALUE, 0x10, "a known 1 and 0x10 is 0x10"},
+        {BITWISE_OR, U, 0xffffff00, 0xff, 0x0f, IS, P, "(x | 0xff) | 0x0f is x | 0xff"},
+        {BITWISE_OR, U, 0xffffff00, 0x0f, 0xff, STAYS, 0, "(x | 0x0f) | 0xff stays"},
+        {BITWISE_OR, U, 0xffffffff, 0xf0, 0xffffff0f, VALUE, 0xffffffff, "(x | 0xf0) | ~0xf0 is ~0"},
+        {BITWISE_OR, U, 0xf0, 0, 0xffffff0f, STAYS, 0, "(x & 0xf0) | ~0xf0 stays"},
+        {BITWISE_XOR, U, 0x0f, 0x30, 0x30, STAYS, 0, "a xor of a value stays"},
+        {BITWISE_XOR, U, 0x0f, 0x30, 0x0f, STAYS, 0, "and with its unknown bits too"},
+        {BITWISE_AND, U, 0xffffffff, 0x0f, 0xfffffff0, STAYS, 0, "(x | 0x0f) & ~0x0f stays"},
+        {I_ADD, U, 0xfffffff0, 8, 0x10, STAYS, 0, "(x & ~15 | 8) + 16 stays"},
+        {I_SUB, U, 0xfffffff0, 0, 1, STAYS, 0, "(x & ~15) - 1 stays"},
+        {SHIFT_LEFT_LOGICAL, U, 0xffff, 0, 16, STAYS, 0, "(x & 0xffff) << 16 stays"},
+        {SHIFT_LEFT_LOGICAL, U, 0xffff, 0, 31, STAYS, 0, "(x & 0xffff) << 31 stays"},
+        {SHIFT_LEFT_LOGICAL, U, 0xffff0000, 0, 16, VALUE, 0, "(x & 0xffff0000) << 16 is 0"},
+        {SHIFT_RIGHT_LOGICAL, U, 0xffff, 0, 16, VALUE, 0, "(x & 0xffff) >> 16 is 0"},
+        {SHIFT_RIGHT_LOGICAL, U, 0xffff, 0, 15, STAYS, 0, "(x & 0xffff) >> 15 stays"},
+        {SHIFT_RIGHT_ARITHMETIC, U, 0x7fffffff, 0, 31, VALUE, 0, "a value with its sign 0 >> 31 is 0"},
+        {SHIFT_RIGHT_ARITHMETIC, U, 0x7fff0000, 0x80000000, 31, VALUE, 0xffffffff, "one with its sign 1 is ~0"},
+        {SHIFT_RIGHT_ARITHMETIC, U, 0x7fff0000, 0x80000000, 16, STAYS, 0, "a negative value >> 16 stays"},
+        {SHIFT_RIGHT_ARITHMETIC, U, 0xffffffff, 0, 31, STAYS, 0, "x >> 31 stays: its sign is unknown"},
+        {U_LESS_THAN, BOOL, 0xff, 0, 0x100, VALUE, 1, "(x & 0xff) < 256"},
+        {U_LESS_THAN, BOOL, 0xff, 0, 0xff, STAYS, 0, "(x & 0xff) < 255 stays"},
+        {U_GREATER_THAN_EQUAL, BOOL, 0xff, 0x100, 0x100, VALUE, 1, "(x & 0xff | 0x100) >= 256"},
+        {U_GREATER_THAN_EQUAL, BOOL, 0xff, 0x100, 0x101, STAYS, 0, "it may be 256"},
+        {U_LESS_THAN_EQUAL, BOOL, 0xff, 0, 0xff, VALUE, 1, "(x & 0xff) <= 255"},
+        {U_LESS_THAN_EQUAL, BOOL, 0xff, 0x10, 0x0f, VALUE, 0, "(x & 0xff | 0x10) <= 15 is false"},
+        {U_GREATER_THAN, BOOL, 0xff, 0, 0xff, VALUE, 0, "(x & 0xff) > 255 is false"},
+        {U_GREATER_THAN, BOOL, 0xff, 0x10, 0x0f, VALUE, 1, "(x & 0xff | 0x10) > 15"},
+        {S_GREATER_THAN, BOOL, 0x7fffffff, 0, 0xffffffff, VALUE, 1, "a value with its sign 0 is > -1"},
+        {S_GREATER_THAN_EQUAL, BOOL, 0x7fffffff, 0, 0, VALUE, 1, "and >= 0"},
+        {S_LESS_THAN, BOOL, 0x7fffffff, 0, 0, VALUE, 0, "and not < 0"},
+        {S_LESS_THAN, BOOL, 0xff, 0x80000000, 0, VALUE, 1, "one with its sign 1 is < 0"},
+        {S_LESS_THAN, BOOL, 0xff, 0x80000000, 0xffffff00, VALUE, 1, "and < -256, from -2^31 to -2^31 + 255"},
+        {S_LESS_THAN, BOOL, 0xff, 0x80000000, 0x80000010, STAYS, 0, "but may be < -2^31 + 16 or not"},
+        {S_LESS_THAN_EQUAL, BOOL, 0xffffffff, 0, 0x7fffffff, VALUE, 1, "any x is <= INT_MAX"},
+        {S_LESS_THAN_EQUAL, BOOL, 0xffffffff, 0, 0x7ffffffe, STAYS, 0, "x <= INT_MAX - 1 stays"},
+        {U_GREATER_THAN_EQUAL, BOOL, 0xffffffff, 0, 0, VALUE, 1, "any x is >= 0 unsigned"},
+        {U_LESS_THAN, BOOL, 0xffffffff, 0, 0xffffffff, STAYS, 0, "x < ~0 stays"},
+        {I_EQUAL, BOOL, 0xfffffffe, 1, 0x10, VALUE, 0, "an odd value is not 16"},
+        {I_NOT_EQUAL, BOOL, 0xfffffffe, 1, 0x10, VALUE, 1, "and differs from 16"},
+        {I_EQUAL, BOOL, 0xfffffffe, 1, 0x11, STAYS, 0, "it may be 17"},
+        {I_EQUAL, BOOL, 0xfe, 0, 1, VALUE, 0, "an even value is not 1"},
+        {U_LESS_THAN_EQUAL, BOOL, 0xff, 0x10, 0x10, STAYS, 0, "(x & 0xff | 0x10) <= 16 stays: it may be 16"},
+        {U_GREATER_THAN_EQUAL, BOOL, 0xff, 0x10, 0x10, VALUE, 1, "and it is >= 16"},
+        {S_GREATER_THAN_EQUAL, BOOL, 0x7fffffff, 0, 0x7fffffff, STAYS, 0, "x & INT_MAX >= INT_MAX stays"},
+        {S_GREATER_THAN, BOOL, 0x0f, 0x80000000, 0x80000000, STAYS, 0, "a negative value > INT_MIN stays"},
+        {S_GREATER_THAN, BOOL, 0x0f, 0x80000000, 0x80000010, VALUE, 0, "but not > INT_MIN + 16"},
+    };
+    for (size_t k = 0; k < sizeof known / sizeof *known; k++) {
+        const uint32_t c[] = {known[k].ka, known[k].kb, known[k].n};
+        uint32_t p = (uint32_t)X;
+        begin_with(&m, c, 3);
+        if (known[k].ka != 0xffffffffu) {
+            put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)Q, p, (uint32_t)KA);
+            p = (uint32_t)Q;
+        }
+        if (known[k].kb) {
+            put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P, p, (uint32_t)KB);
+            p = (uint32_t)P;
+        }
+        put(&m, known[k].op, 4, known[k].type, (uint32_t)R, p, (uint32_t)KC);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        end(&m);
+        int ok = outcome(&m, 5, known[k].expect, known[k].type, known[k].want == P ? p : known[k].want);
+        if (ok && known[k].expect == VALUE && known[k].type == BOOL) { /* the module's own true or false */
+            o = m;
+            left = spv_opt_values(o.words, o.count);
+            ok = stored(&o, left, 0) == (known[k].want ? (uint32_t)YES : (uint32_t)NO);
+        }
+        if (!ok) fprintf(stderr, "known bits: %s\n", known[k].what);
+        check(ok, "an instruction its operands' known bits decide, or leave");
+    }
+    /* the carries of a sum and a difference: (x << 4) + 8 has bit 3 known 1 and bits 0 to 2 known 0, (x << 4) + 24
+       its bit 4 unknown, (x << 4) - 1 its four low bits 1, and -(x << 4) and (x << 2) * (y << 3) their low 4 and 5
+       bits 0 */
+    {
+        static const struct {
+            uint32_t op, shift, add, mask;
+            int expect;
+            uint32_t want;
+        } carries[] = {
+            {I_ADD, 4, 8, 15, VALUE, 8},    {I_ADD, 4, 24, 15, VALUE, 8},          {I_ADD, 4, 24, 31, STAYS, 0},
+            {I_SUB, 4, 1, 15, VALUE, 15},   {I_SUB, 4, 1, 31, STAYS, 0},           {S_NEGATE, 4, 0, 15, VALUE, 0},
+            {S_NEGATE, 4, 0, 31, STAYS, 0}, {I_MUL, 2, 3, 31, VALUE, 0},           {I_MUL, 2, 3, 63, STAYS, 0},
+            {NOT, 4, 0, 15, VALUE, 15},     {BITCAST, 4, 0, 15, VALUE, 0},         {I_MUL, 1, 1, 3, VALUE, 0},
+            {I_MUL, 1, 1, 7, STAYS, 0},     {BITWISE_XOR, 4, 0x0f, 15, VALUE, 15}, {BITWISE_XOR, 4, 0x0f, 31, STAYS, 0},
+        };
+        /* a product's high bits: below 2^16 times below 2^1 is below 2^17, and (x & 0xffff) * (y & 1) & 0xffff
+           keeps it whole only where the second is 0 or 1 */
+        {
+            const uint32_t c[] = {0xffff, 1, 0xfffe0000, 0x1ffff, 3};
+            begin_with(&m, c, 5);
+            put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
+            put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)Y, (uint32_t)KB);
+            put(&m, I_MUL, 4, (uint32_t)U, (uint32_t)(R + 1), (uint32_t)P, (uint32_t)Q);
+            put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)(R + 1), (uint32_t)KC);
+            put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+            end(&m);
+            check(outcome(&m, 5, VALUE, U, 0), "(x & 0xffff) * (y & 1) has no bit from 17 up");
+            size_t mask = m.count - 2 - 3 - 5;
+            m.words[mask + 4] = (uint32_t)KD;
+            check(outcome(&m, 5, IS, 0, R + 1), "and is its own low 17 bits");
+            m.words[mask - 5 - 5 + 4] = (uint32_t)KE; /* y & 3 */
+            check(outcome(&m, 5, STAYS, 0, 0), "(x & 0xffff) * (y & 3) may reach bit 17");
+        }
+        for (size_t k = 0; k < sizeof carries / sizeof *carries; k++) {
+            const uint32_t c[] = {carries[k].shift, carries[k].add, carries[k].mask};
+            begin_with(&m, c, 3);
+            put(&m, SHIFT_LEFT_LOGICAL, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
+            if (carries[k].op == I_MUL && carries[k].add == 1) { /* (x << 1) * (y << 1): two low zeros */
+                put(&m, SHIFT_LEFT_LOGICAL, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)Y, (uint32_t)KB);
+                put(&m, I_MUL, 4, (uint32_t)U, (uint32_t)(R + 1), (uint32_t)P, (uint32_t)Q);
+            } else if (carries[k].op == I_MUL) {
+                put(&m, SHIFT_LEFT_LOGICAL, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)Y, (uint32_t)KB);
+                put(&m, I_MUL, 4, (uint32_t)U, (uint32_t)(R + 1), (uint32_t)P, (uint32_t)Q);
+            } else if (carries[k].op == S_NEGATE || carries[k].op == NOT || carries[k].op == BITCAST)
+                put(&m, carries[k].op, 3, carries[k].op == BITCAST ? (uint32_t)S : (uint32_t)U, (uint32_t)(R + 1),
+                    (uint32_t)P);
+            else
+                put(&m, carries[k].op, 4, (uint32_t)U, (uint32_t)(R + 1), (uint32_t)P, (uint32_t)KB);
+            put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)(R + 1), (uint32_t)KC);
+            put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+            end(&m);
+            int ok = outcome(&m, 5, carries[k].expect, U, carries[k].want);
+            if (!ok) fprintf(stderr, "known bits: case %zu of the carries\n", k);
+            check(ok, "the low bits of a sum, a difference, a negation, a product, a complement and a bitcast");
+        }
+    }
+    /* a field: of a value masked to 16 bits, bits 16 up are 0 and bits 0 up are the value; signed, a field whose sign
+       bit is known 0 is the value too */
+    {
+        static const struct {
+            uint32_t op, mask, offset, count;
+            int expect;
+            uint32_t want;
+        } fields_known[] = {
+            {BIT_FIELD_U_EXTRACT, 0xffff, 16, 16, VALUE, 0}, {BIT_FIELD_U_EXTRACT, 0xffff, 0, 16, IS, P},
+            {BIT_FIELD_U_EXTRACT, 0xffff, 0, 15, STAYS, 0},  {BIT_FIELD_U_EXTRACT, 0xffff, 8, 16, STAYS, 0},
+            {BIT_FIELD_S_EXTRACT, 0x7fff, 0, 16, IS, P},     {BIT_FIELD_S_EXTRACT, 0xffff, 0, 16, STAYS, 0},
+            {BIT_FIELD_S_EXTRACT, 0xffff, 16, 16, VALUE, 0}, {BIT_FIELD_U_EXTRACT, 0x7fffffff, 0, 32, IS, P},
+            {BIT_FIELD_S_EXTRACT, 0xffff, 4, 0, VALUE, 0},
+        };
+        /* the bits past a field: 0 unsigned, the field's sign bit signed (known 1 here: bit 7 is) */
+        {
+            const uint32_t c[] = {0x80, 4, 4, 0xfffffff0};
+            begin_with(&m, c, 4);
+            put(&m, BIT_FIELD_U_EXTRACT, 5, (uint32_t)U, (uint32_t)(R + 1), (uint32_t)X, (uint32_t)KB, (uint32_t)KC);
+            put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)(R + 1), (uint32_t)KD);
+            put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+            end(&m);
+            check(outcome(&m, 5, VALUE, U, 0), "a 4-bit field of x has no bit from 4 up");
+            begin_with(&m, c, 4);
+            put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
+            put(&m, BIT_FIELD_S_EXTRACT, 5, (uint32_t)U, (uint32_t)(R + 1), (uint32_t)P, (uint32_t)KB, (uint32_t)KC);
+            put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)(R + 1), (uint32_t)KD);
+            put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+            end(&m);
+            check(outcome(&m, 5, VALUE, U, 0xfffffff0), "a signed 4-bit field of x | 0x80 has every bit from 4 up");
+        }
+        for (size_t k = 0; k < sizeof fields_known / sizeof *fields_known; k++) {
+            const uint32_t c[] = {fields_known[k].mask, fields_known[k].offset, fields_known[k].count};
+            begin_with(&m, c, 3);
+            put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
+            put(&m, fields_known[k].op, 5, (uint32_t)U, (uint32_t)R, (uint32_t)P, (uint32_t)KB, (uint32_t)KC);
+            put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+            end(&m);
+            int ok = outcome(&m, 6, fields_known[k].expect, U, fields_known[k].want);
+            if (!ok) fprintf(stderr, "known bits: case %zu of the fields\n", k);
+            check(ok, "a field of a value with known bits");
+        }
+    }
+    /* 0 > (x & 0x7fffffff) as a signed integer is false, and a select on it is its second value: the absolute value
+       of what cannot be negative */
+    {
+        const uint32_t k[] = {0x7fffffff};
+        begin_with(&m, k, 1);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
+        put(&m, BITCAST, 3, (uint32_t)S, (uint32_t)Q, (uint32_t)P);
+        put(&m, S_GREATER_THAN, 4, (uint32_t)BOOL, (uint32_t)(R + 1), (uint32_t)S0, (uint32_t)Q);
+        put(&m, I_SUB, 4, (uint32_t)U, (uint32_t)(R + 2), (uint32_t)U0, (uint32_t)P);
+        put(&m, SELECT, 5, (uint32_t)U, (uint32_t)R, (uint32_t)(R + 1), (uint32_t)(R + 2), (uint32_t)P);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        end(&m);
+        o = m;
+        left = spv_opt_values(o.words, o.count);
+        check(stored(&o, left, 0) == P && left == m.count - 5 - 6,
+              "the absolute value of x & 0x7fffffff is x & 0x7fffffff, its comparison gone");
+    }
+    /* a field inserted into a value with its low byte known 1s: bits 0 and 1 stay 1, bits 2 and 3 are the field's */
+    {
+        const uint32_t k[] = {0xff, 3, 2, 0x3, 0xf};
+        begin_with(&m, k, 5);
+        put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)Y, (uint32_t)KB);
+        put(&m, BIT_FIELD_INSERT, 6, (uint32_t)U, (uint32_t)(R + 1), (uint32_t)P, (uint32_t)Q, (uint32_t)KC,
+            (uint32_t)KC);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)(R + 1), (uint32_t)KD);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        end(&m);
+        check(outcome(&m, 5, VALUE, U, 3), "an insert at bit 2 keeps the two low 1s");
+        m.words[m.count - 2 - 3 - 5 + 4] = (uint32_t)KE;
+        check(outcome(&m, 5, STAYS, 0, 0), "and leaves bits 2 and 3 unknown");
+    }
+    {
+        const uint32_t k[] = {4, 0xf0, 0x3fffffff, 30, 0xff};
+        begin_with(&m, k, 5);
+        put(&m, BIT_FIELD_INSERT, 6, (uint32_t)U, (uint32_t)(R + 1), (uint32_t)X, (uint32_t)U0, (uint32_t)KA,
+            (uint32_t)KA);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)(R + 1), (uint32_t)KB);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        end(&m);
+        check(outcome(&m, 5, VALUE, U, 0), "a zero inserted at bit 4 makes bits 4 to 7 0");
+        begin_with(&m, k, 5);
+        put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KC);
+        put(&m, BIT_FIELD_INSERT, 6, (uint32_t)U, (uint32_t)(R + 1), (uint32_t)P, (uint32_t)Y, (uint32_t)KD,
+            (uint32_t)KA);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)(R + 1), (uint32_t)KC);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        end(&m);
+        check(outcome(&m, 5, STAYS, 0, 0), "an insert past bit 32, which has no value, stays unknown");
+    }
+    /* the constant on the left of an and; a constant the pass made, whose bits it knows; a decorated instruction */
+    {
+        const uint32_t k[] = {0xf0, 0xff, 0x70, 0x81, 0x0f, 0x0e};
+        begin_with(&m, k, 6);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)KB, (uint32_t)P);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        end(&m);
+        check(outcome(&m, 5, IS, 0, P), "0xff & (x & 0xf0) is x & 0xf0");
+        begin_with(&m, k, 6);
+        put(&m, I_ADD, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)KC, (uint32_t)KD); /* 0xf1, which no constant is */
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)Q);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)P, (uint32_t)KF);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        end(&m);
+        o = m;
+        left = spv_opt_values(o.words, o.count);
+        check(constant(&o, left, Q, U, 0xf1) && stored(&o, left, 0) == U0,
+              "x & (0x70 + 0x81) & 0x0e is 0: the sum made a constant whose bits are known");
+        begin_with(&m, k, 6);
+        put(&m, I_ADD, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)KC, (uint32_t)KD);
+        put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)Q);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)P, (uint32_t)U1);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        end(&m);
+        o = m;
+        left = spv_opt_values(o.words, o.count);
+        check(stored(&o, left, 0) == U1, "and (x | (0x70 + 0x81)) & 1 is 1");
+        /* a xor: of a known 1 with a 1 is 0, of a known 1 with a 0 is 1 */
+        begin_with(&m, k, 6);
+        put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KE);
+        put(&m, BITWISE_XOR, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)P, (uint32_t)KE);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)Q, (uint32_t)KE);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        end(&m);
+        check(outcome(&m, 5, VALUE, U, 0), "(x | 0x0f) ^ 0x0f has its low 4 bits 0");
+        m.words[m.count - 2 - 3 - 5 - 5 + 4] = (uint32_t)KA;
+        check(outcome(&m, 5, VALUE, U, 0x0f), "(x | 0x0f) ^ 0xf0 has them 1");
+        Module d;
+        begin_with(&m, k, 6);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)P, (uint32_t)KE);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        end(&m);
+        check(outcome(&m, 5, VALUE, U, 0), "(x & 0xf0) & 0x0f is 0");
+        memcpy(d.words, m.words, 5 * sizeof *m.words);
+        d.count = 5;
+        put(&d, DECORATE, 2, (uint32_t)R, (uint32_t)NO_CONTRACTION);
+        memcpy(d.words + d.count, m.words + 5, (m.count - 5) * sizeof *m.words);
+        d.count += m.count - 5;
+        check(outcome(&d, 5, STAYS, 0, 0), "and stays decorated");
+    }
+    /* what nothing is known of: a phi's value, a load's, an operand of another kind or past the bound */
+    {
+        const uint32_t k[] = {0xf0, 0x0f};
+        begin_with(&m, k, 2);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
+        put(&m, BITCAST, 3, (uint32_t)U, (uint32_t)Q, (uint32_t)XF);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)Q, (uint32_t)KB);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        end(&m);
+        check(outcome(&m, 5, STAYS, 0, 0), "a bitcast of a float is unknown");
+        m.words[m.count - 2 - 3 - 5 + 3] = (uint32_t)(BOUND + U0); /* past the bound by the number of a zero */
+        check(outcome(&m, 5, STAYS, 0, 0), "and an operand past the bound");
+    }
+    /* Modules at random: two values whose unknown bits are a few random ones (P from x, Q from y), an instruction of
+       them or of constants (R), a second one of R (R + 1), and a mask of that (R + 2), all stored; each module runs
+       the same before and after the pass for every x and y of those bits */
+    {
+        static const uint32_t ops[] = {I_ADD,
+                                       I_SUB,
+                                       I_MUL,
+                                       BITWISE_AND,
+                                       BITWISE_OR,
+                                       BITWISE_XOR,
+                                       S_NEGATE,
+                                       NOT,
+                                       SHIFT_LEFT_LOGICAL,
+                                       SHIFT_RIGHT_LOGICAL,
+                                       SHIFT_RIGHT_ARITHMETIC,
+                                       BIT_FIELD_U_EXTRACT,
+                                       BIT_FIELD_S_EXTRACT,
+                                       BIT_FIELD_INSERT,
+                                       SELECT,
+                                       BITCAST,
+                                       I_EQUAL,
+                                       I_NOT_EQUAL,
+                                       U_GREATER_THAN,
+                                       S_GREATER_THAN,
+                                       U_GREATER_THAN_EQUAL,
+                                       S_GREATER_THAN_EQUAL,
+                                       U_LESS_THAN,
+                                       S_LESS_THAN,
+                                       U_LESS_THAN_EQUAL,
+                                       S_LESS_THAN_EQUAL};
+        int failed = 0, folded = 0;
+        const int rounds = 4000;
+        for (int round = 0; round < rounds && failed < 5; round++) {
+            uint32_t xs = unknown_bits(), ys = unknown_bits(), k[10];
+            /* (x & xs) | known 1s outside xs, the same of y, the 1s as many as a quarter, half or three quarters of
+               the bits, or none, and xs and ys sometimes low or high bits only (a product's low zeros, a field's
+               high ones); then shift amounts, field offsets and counts, masks */
+            if (next() % 4 == 0) xs &= next() % 2 ? 0xffffu : 0xffff0000u;
+            if (next() % 4 == 0) ys = next() % 2 ? ys << 4 : ys >> 4;
+            k[0] = xs;
+            k[1] = next() & ~xs & (next() % 4 == 0 ? 0 : next() % 3 == 0 ? next() & next() : next() | next());
+            k[2] = ys;
+            k[3] = next() & ~ys & (next() % 4 == 0 ? 0 : next() % 3 == 0 ? next() & next() : next() | next());
+            uint32_t count = next() % 33, offset = next() % (33 - count);
+            k[4] = next() % 32;
+            k[5] = offset;
+            k[6] = count;
+            k[7] = next() & (next() | next());
+            k[8] = next() % 4 ? next() : k[1] ^ k[3];
+            k[9] = next() % 2 ? 1u << (next() % 32) : (next() & 0xff) << (next() % 24);
+            begin_with(&m, k, 10);
+            put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)(P + 8), (uint32_t)X, (uint32_t)KA);
+            put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P, (uint32_t)(P + 8), (uint32_t)KB);
+            put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)(Q + 8), (uint32_t)Y, (uint32_t)KC);
+            put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)(Q + 8), (uint32_t)(KC + 1));
+            uint32_t ids[3] = {(uint32_t)R, (uint32_t)R + 1, (uint32_t)R + 2}, prev = (uint32_t)P;
+            int bool_result = 0;
+            for (int level = 0; level < 2 && !bool_result; level++) {
+                uint32_t op = ops[next() % (sizeof ops / sizeof *ops)], id = ids[level];
+                /* the other operand: Q, P itself, a constant, or the field or shift amounts */
+                uint32_t other = next() % 4 == 0 ? prev : next() % 3 == 0 ? (uint32_t)KA + 8 : (uint32_t)Q;
+                if (op == SHIFT_LEFT_LOGICAL || op == SHIFT_RIGHT_LOGICAL || op == SHIFT_RIGHT_ARITHMETIC)
+                    put(&m, op, 4, (uint32_t)U, id, prev, (uint32_t)KA + 4);
+                else if (op == BIT_FIELD_U_EXTRACT || op == BIT_FIELD_S_EXTRACT)
+                    put(&m, op, 5, (uint32_t)U, id, prev, (uint32_t)KA + 5, (uint32_t)KA + 6);
+                else if (op == BIT_FIELD_INSERT)
+                    put(&m, op, 6, (uint32_t)U, id, prev, other, (uint32_t)KA + 5, (uint32_t)KA + 6);
+                else if (op == SELECT)
+                    put(&m, op, 5, (uint32_t)U, id, (uint32_t)XB, prev, other);
+                else if (op == S_NEGATE || op == NOT || op == BITCAST)
+                    put(&m, op, 3, op == BITCAST ? (uint32_t)S : (uint32_t)U, id, prev);
+                else if (op >= I_EQUAL && op <= S_LESS_THAN_EQUAL) {
+                    put(&m, op, 4, (uint32_t)BOOL, id, prev, other);
+                    bool_result = 1;
+                } else
+                    put(&m, op, 4, (uint32_t)U, id, prev, other);
+                put(&m, STORE, 2, (uint32_t)OUT, id);
+                prev = id;
+            }
+            if (!bool_result) {
+                put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R + 2, prev, (uint32_t)KA + 7);
+                put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R + 2);
+            }
+            end(&m);
+            o = m;
+            folded += spv_opt_values(o.words, o.count) != m.count;
+            if (!same_stores(&m, xs, ys)) {
+                fprintf(stderr, "known bits: round %d of the modules at random runs otherwise after the pass\n", round);
+                failed++;
+            }
+        }
+        check(!failed, "a module at random stores what it stored before the pass");
+        if (folded < rounds / 4) fprintf(stderr, "known bits: the pass changed %d modules of %d\n", folded, rounds);
+        check(folded >= rounds / 4, "and the pass changes a quarter of them at least");
+    }
     printf("spirv opt fold: %d checks failed\n", g_failures);
     return g_failures != 0;
 }

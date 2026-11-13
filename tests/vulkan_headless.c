@@ -1896,6 +1896,58 @@ static int check_translation_values(void) {
     return 0;
 }
 
+/* the instructions of module (words of them) that take a 32-bit integer and the constant 3 to & : the component of
+   a constant buffer read that the Maxwell translator splits off an address */
+static int count_and_3(const u32* module, size_t words) {
+    u32 bound = module[3], three = 0, n = 0;
+    u8* int32 = calloc(1, bound);
+    if (!int32) abort();
+    for (size_t i = 5; i < words; i += module[i] >> 16) {
+        const u32* w = module + i;
+        u32 width = w[0] >> 16, op = w[0] & 0xffff;
+        if (op == SPV_OP_TYPE_INT && width == 4 && w[1] < bound && w[2] == 32) int32[w[1]] = 1;
+        if (op == SPV_OP_CONSTANT && width == 4 && w[1] < bound && int32[w[1]] && w[3] == 3) three = w[2];
+        if (op == SPV_OP_BITWISE_AND && width == 5 && three && (w[3] == three || w[4] == three)) n++;
+    }
+    free(int32);
+    return (int)n;
+}
+
+/* and through the known bits: a fragment program that reads c[0][R5 + 0x20] with R5 an input shifted by 4 (IPA R2,
+   SHL R5, R2, 4) has its address's component, (address >> 2) & 3, known 0 in the runtime's module, which the
+   translator splits off with an & 3; the device takes the module */
+static int check_translation_known_bits(void) {
+    u64 guest[16] = {0};
+    guest[9] = 0xf;                    /* the header's output map: render target 0's RGBA, from R0-R3 */
+    guest[10] = 0x001f8000fc0007e0ull; /* scheduler */
+    guest[11] = 0xe003ff87cff7ff02ull; /* IPA R2, a[0x7c] */
+    guest[12] = 0x3848000000470205ull; /* SHL R5, R2, 4 */
+    guest[13] = 0xef94002000070500ull; /* LDC R0, c[0][R5 + 0x20] */
+    guest[14] = 0x001f8000fc0007e0ull; /* scheduler */
+    guest[15] = 0xe30000000007000full; /* EXIT */
+    ShaderInfo info = {0}, direct_info = {0};
+    size_t words = 0, direct_words = 0;
+    u32* spirv = vk_translate_spirv((const u8*)guest, sizeof guest, ST_FS, &info, &words, NULL, NULL);
+    u32* direct = shader_to_spirv((const u8*)guest, sizeof guest, ST_FS, &direct_info, &direct_words, g_vk_ftz,
+                                  g_vk_preserve_infnan, g_vk_preserve_infnan64,
+                                  (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) != 0);
+    if (!spirv || !direct)
+        fprintf(stderr, "known bits: %s; %s\n", info.first_unsupported, direct_info.first_unsupported);
+    CHECK(spirv && direct);
+    int before = count_and_3(direct, direct_words), after = count_and_3(spirv, words);
+    if (before < 1 || after)
+        fprintf(stderr, "known bits: the translator's module has %d & 3, the runtime's %d\n", before, after);
+    CHECK(before >= 1 && after == 0);
+    VkShaderModuleCreateInfo smi = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * sizeof(u32), .pCode = spirv};
+    VkShaderModule module;
+    CHECK(vkCreateShaderModule(g_vk.dev, &smi, NULL, &module) == VK_SUCCESS);
+    vkDestroyShaderModule(g_vk.dev, module, NULL);
+    free(spirv);
+    free(direct);
+    return 0;
+}
+
 /* Execute the direct writer's module, not only spirv-val's structural check. */
 /* code, a compute module of one invocation over set 0 binding 0, run once on count words of data, read back
    into data */
@@ -6810,6 +6862,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_multisample_shader_gate());
     CHECK(!check_translation_dead_code());
     CHECK(!check_translation_values());
+    CHECK(!check_translation_known_bits());
     CHECK(!check_msaa());
     CHECK(!check_msaa_nvn());
     CHECK(!check_direct_spirv());
