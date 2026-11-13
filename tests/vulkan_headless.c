@@ -2531,12 +2531,13 @@ static int check_vic_chain(const char* shot) {
 /* NVDEC's picture laid out on the GPU (vk/nvdec.c), then composed by VIC from there, with no CPU access between: the
    same steps on the CPU's references (nvdec_ref.c, vic_ref.c) into twin surfaces must give the same bytes, the GPU's
    read last (which lands them). Pictures whose rows end inside a 16 byte run, and surface padding that must keep its
-   bytes */
+   bytes. semi gives the GPU the picture's chroma interleaved, as the media engine's pictures are (NvdecPic.semi), in
+   rows longer than the pairs, and the reference the same picture planar */
 #define NV_GPU (HEAP_BASE + 0x40000)
 #define NV_REF (HEAP_BASE + 0xC0000)
-static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh, int linear) {
-    static u8 y[64 * 48], u[32 * 24], v[32 * 24];
-    u32 pairs = (w + 1) / 2;
+static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh, int linear, int semi) {
+    static u8 y[64 * 48], u[32 * 24], v[32 * 24], uv[24 * (2 * 32 + 6)];
+    u32 pairs = (w + 1) / 2, uv_stride = 2 * pairs + 6;
     u64 gob_rows = 8u << bh, ext_y = (u64)(pitch + 63) / 64 * 64 * ((sh + gob_rows - 1) / gob_rows * gob_rows);
     u64 ext_c = (u64)(pitch + 63) / 64 * 64 * (((sh + 1) / 2 + gob_rows - 1) / gob_rows * gob_rows);
     if (linear) { /* NV12 rows pitch apart, as the Ounce's video images are */
@@ -2557,6 +2558,18 @@ static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh, int linear) {
     NvdecPic q = p;
     q.luma = NV_REF;
     q.chroma = NV_REF + 0x10000;
+    if (semi) {
+        for (u32 j = 0; j < (h + 1) / 2; j++)
+            for (u32 i = 0; i < pairs; i++) {
+                uv[j * uv_stride + 2 * i] = u[j * pairs + i];
+                uv[j * uv_stride + 2 * i + 1] = v[j * pairs + i];
+            }
+        p.plane[1] = uv;
+        p.plane[2] = NULL;
+        p.stride[1] = (int)uv_stride;
+        p.stride[2] = 0;
+        p.semi = 1;
+    }
     CHECK(g_renderer->nvdec_write(&p));
     nvdec_write_ref(&q);
     /* VIC: the picture as an RGBA one, from the surfaces as NVDEC left them */
@@ -2586,16 +2599,18 @@ static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh, int linear) {
 }
 static int check_nvdec_vic(void) {
     u64 lands = own_landings();
-    CHECK(!nvdec_vic_case(64, 32, 64, 32, 1, 0));
-    CHECK(!nvdec_vic_case(33, 17, 64, 24, 0, 0)); /* rows ending inside a run, padding rows, blocks of one GOB */
-    CHECK(!nvdec_vic_case(54, 40, 128, 48, 2, 0)); /* a wider surface than the picture */
-    CHECK(!nvdec_vic_case(53, 41, 256, 48, 0, 1)); /* pitch linear: odd sizes, padding columns and rows kept */
-    CHECK(!nvdec_vic_case(2, 2, 256, 4, 0, 1));    /* pitch linear: one chroma pair, padding rows */
+    CHECK(!nvdec_vic_case(64, 32, 64, 32, 1, 0, 0));
+    CHECK(!nvdec_vic_case(33, 17, 64, 24, 0, 0, 0));  /* rows ending inside a run, padding rows, blocks of one GOB */
+    CHECK(!nvdec_vic_case(54, 40, 128, 48, 2, 0, 0)); /* a wider surface than the picture */
+    CHECK(!nvdec_vic_case(53, 41, 256, 48, 0, 1, 0)); /* pitch linear: odd sizes, padding columns and rows kept */
+    CHECK(!nvdec_vic_case(2, 2, 256, 4, 0, 1, 0));    /* pitch linear: one chroma pair, padding rows */
+    CHECK(!nvdec_vic_case(53, 41, 256, 48, 0, 1, 1)); /* the media engine's interleaved chroma, pitch linear */
+    CHECK(!nvdec_vic_case(33, 17, 64, 24, 0, 0, 1));  /* and block linear */
     /* a CPU picture's chroma interleave compiles a small build of the conversion shader, not the plain one, whose
        compile held the renderer 1.7 s at a movie's first picture on a slow GPU */
     CHECK(vk_tc_spirv_bytes(TC_NV12_UV) * 8 < vk_tc_spirv_bytes(TC_RGBA4));
     /* each case lands its three ranges when read, nothing before */
-    CHECK(!own_traps() || own_landings() <= lands + 15);
+    CHECK(!own_traps() || own_landings() <= lands + 21);
     return 0;
 }
 
