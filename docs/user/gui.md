@@ -1102,6 +1102,9 @@ self-copy safety, cancellation, and the bright-red overwrite warning. Setup test
 page of a first start in a home of their own and check what each writes (a portable copy, the language, the folders,
 the keys, the first user) and refuses, users.ini kept or overwritten, the fixed uid kept for its saves, a notice
 alone after an update, `--no-setup`, and the question where `options-dialog` puts it.
+Pixel order tests (`gui_pixel_order`) draw every database Mii's picture, square and round, Wimsy's, a 3DS icon and
+the covers on the renderer and check each shows its source's colours, which a big-endian host's byte order swaps
+where a picture's bytes and its format disagree.
 Language tests cover a catalog's search in either byte order, catalogs cut or pointing out of themselves, the language
 Auto picks from the system's locales, English where a language has none, the Language row and `app.ini`'s key, and
 the script's refusals; they use a language of their own, `tests/po/xx.po`. Glyph tests cover the Latin, the titles'

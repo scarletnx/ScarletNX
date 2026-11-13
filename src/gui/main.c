@@ -4148,7 +4148,8 @@ static SDL_Texture* mii_texture(App* app, int mii, int side, bool* failed) {
     snx_mii_db_charinfo((uint32_t)mii, charinfo);
     snx_mii_db_look((uint32_t)mii, &look);
     if (!snx_mii_picture(charinfo, &look, side, rgba)) {
-        /* ARGB8888 (B, G, R, A in memory) with the alpha premultiplied, cut to the circle when the theme's is round */
+        /* B, G, R, A in memory, BGRA32, which is ARGB8888 only on a little-endian host, with the alpha premultiplied,
+           cut to the circle when the theme's is round */
         for (y = 0; y < side; ++y)
             for (x = 0; x < side; ++x) {
                 uint8_t* p = rgba + 4 * ((size_t)y * (size_t)side + (size_t)x);
@@ -4157,7 +4158,7 @@ static SDL_Texture* mii_texture(App* app, int mii, int side, bool* failed) {
                 uint8_t r = p[0], g = p[1], b = p[2];
                 p[0] = (uint8_t)(b * a), p[1] = (uint8_t)(g * a), p[2] = (uint8_t)(r * a), p[3] = (uint8_t)(255 * a);
             }
-        texture = SDL_CreateTexture(app->renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, side, side);
+        texture = SDL_CreateTexture(app->renderer, SDL_PIXELFORMAT_BGRA32, SDL_TEXTUREACCESS_STATIC, side, side);
         if (texture && (!SDL_UpdateTexture(texture, NULL, rgba, side * 4) ||
                         !SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND_PREMULTIPLIED))) {
             SDL_DestroyTexture(texture);
@@ -4169,7 +4170,8 @@ static SDL_Texture* mii_texture(App* app, int mii, int side, bool* failed) {
     return texture;
 }
 /* The 3DS driver's icon of a game (icon.rgba): its SMDH's 48x48 icon as RGBA, rows top down, scaled nearest to side
-   pixels square with B, G, R, A in memory as the renderer takes them. 0 when drawn, 1 when bytes are not that icon */
+   pixels square as ARGB8888 words, 0xAARRGGBB in the host's order, as the renderer takes them. 0 when drawn, 1 when
+   bytes are not that icon */
 static int rgba_icon(const unsigned char* bytes, size_t size, int side, void* pixels) {
     const unsigned char* src = bytes;
     unsigned char* out = (unsigned char*)pixels;
