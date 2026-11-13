@@ -35,6 +35,8 @@ bool gui_is_vpk(const char* name) { return suffix(name, ".vpk"); }
 /* a GBA ROM: a cartridge's image, or a MultiBoot ROM (.mb), the program the console receives through the link cable */
 bool gui_is_gba(const char* name) { return suffix(name, ".gba") || gui_is_multiboot(name); }
 bool gui_is_multiboot(const char* name) { return suffix(name, ".mb"); }
+/* a DS card's image */
+bool gui_is_nds(const char* name) { return suffix(name, ".nds"); }
 /* an Android app, one APK or a bundle of split APKs (an XAPK, an APKS) that scarletnx-android installs */
 bool gui_is_apk(const char* name) { return suffix(name, ".apk") || suffix(name, ".xapk") || suffix(name, ".apks"); }
 bool gui_is_dump(const char* name) {
@@ -108,7 +110,7 @@ static bool playable(const char* directory, char* name, int kinds) {
     char* path;
     bool listed;
     if (name[0] == '.') return false;
-    if (gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name) || gui_is_apk(name)) {
+    if (gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name) || gui_is_nds(name) || gui_is_apk(name)) {
         if (!(kinds & GUI_GAMES_CIA)) return false;
         path = snx_path_join(directory, name);
         listed = path && snx_is_file(path);
@@ -758,7 +760,7 @@ bool gui_games_add_deep(GuiGames* games, const char* directory, int kinds, int d
 bool gui_games_heading(const GuiGames* games, size_t i) { return i < games->count && !games->paths[i]; }
 bool gui_games_dumps_group(const GuiGames* games, size_t i) {
     return gui_is_dump(games->names[i]) || gui_is_cia(games->names[i]) || gui_is_vpk(games->names[i]) ||
-           gui_is_gba(games->names[i]) || gui_is_apk(games->names[i]);
+           gui_is_gba(games->names[i]) || gui_is_nds(games->names[i]) || gui_is_apk(games->names[i]);
 }
 bool gui_dump_title(const char* path, GuiDumpTitle* title) {
     size_t size = 0;

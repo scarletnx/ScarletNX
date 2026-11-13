@@ -53,6 +53,9 @@ the window at the console's shape. The keyboard is the other consoles': the arro
 S X, A Y, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are where the console has them. The pointer
 held on the lower screen is the pen. F11 switches fullscreen, and Esc twice within 3 seconds closes the window.
 
+`scarletnx-nds` is also a menu entry of `scarletnx-gui` ("Load NDS ROM"), and an image in a games folder shows in
+Games.
+
 The first run of a game compiles it, which takes a few minutes on a few cores (a game of 3 MiB of code makes about
 200000 blocks). Later runs load the module.
 

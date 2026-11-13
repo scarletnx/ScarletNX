@@ -2315,6 +2315,10 @@ msgid "Runs a GBA ROM or MultiBoot ROM on the emulated AGB board"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Recompiles a Nintendo DS card image, then runs it"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Runs an Android app's .apk, .xapk or .apks"
 msgstr ""
 
@@ -2353,6 +2357,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "GBA game, ready to run"
+msgstr ""
+
+#: src/gui/main.c
+msgid "NDS game, ready to run"
 msgstr ""
 
 #: src/gui/main.c
@@ -2403,6 +2411,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "GBA ROM, played with scarletnx-agb"
+msgstr ""
+
+#: src/gui/main.c
+msgid "NDS ROM, played with scarletnx-nds"
 msgstr ""
 
 #: src/gui/main.c
@@ -6073,6 +6085,10 @@ msgstr ""
 
 #: src/gui/ui.txt
 msgid "Load GBA/MultiBoot ROM"
+msgstr ""
+
+#: src/gui/ui.txt
+msgid "Load NDS ROM"
 msgstr ""
 
 #: src/gui/ui.txt
