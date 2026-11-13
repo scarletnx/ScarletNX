@@ -13,6 +13,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | libvpx's VP9 test vectors (the WebM project's test data, downloaded for the `nvdec_vp9_*` tests, not shipped) | BSD-3-Clause |
 | libaom's AV1 test vectors (AOMedia's test data, downloaded for the `vulkan_video_av1` test, not shipped) | BSD-2-Clause, libaom's: the test data carries no licence of its own |
 | jsmolka's gba-tests (test ROMs, downloaded for the `agb_gba_*` tests, not shipped) | MIT |
+| DenSinH's FuzzARM (test ROMs, downloaded for the `agb_fuzzarm_*` tests, not shipped) | GPL-3.0 |
 | hactool / ConvertUTF (`src/nx/runtime/driver/hactool`, with ScarletNX's changes) | ISC / Unicode license |
 | yyjson (the MCP server's JSON and the GPU driver packages' meta.json) | MIT |
 | LibHac storage code, ported into hactool (`src/nx/runtime/driver/hactool/storage.c`) | MIT |
