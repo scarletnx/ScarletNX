@@ -41,8 +41,9 @@ typedef struct {
    reactive, which may be absent: image VK_NULL_HANDLE); output is in VK_IMAGE_LAYOUT_GENERAL and stays so. Its view
    has the storage usage. render: the size of the picture in color, depth and motion, from their corner.
    jitter: the offset the camera was moved by, in render pixels (the picture moved by +jitter). motion_scale: what
-   brings a motion vector's value to pixels of the render size, as FSR's own scale does;
-   a vector points from a pixel to where it was the frame before */
+   brings a motion vector's value to pixels of the motion vectors' size, the render size or with
+   SNX_FSR2_DISPLAY_MOTION the output's, as FSR's own scale does; a vector points from a pixel to where it was the
+   frame before */
 typedef struct {
     VkCommandBuffer cb;
     SnxFsr2Image color, depth, motion, exposure, reactive, output;
