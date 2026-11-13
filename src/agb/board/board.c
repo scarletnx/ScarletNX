@@ -67,11 +67,50 @@ void agb_board_destroy(AgbBoard* board) {
 
 /* ---- the I/O window ---- */
 
-/* the registers whose reads give the open bus, as mGBA's GBAIORead has them: the display's write-only ones (scrolls,
-   the affine parameters, the windows' edges, MOSAIC, BLDY) and its unused ones, the sound FIFOs and the DMA addresses */
-static int io_open(uint32_t byte) {
-    return (byte >= 0x10 && byte <= 0x46) || byte == 0x4C || byte == 0x4E || (byte >= 0x54 && byte <= 0x5E) ||
-           (byte >= 0xA0 && byte <= 0xA6) || (byte >= 0xB0 && byte <= 0xDE && (byte - 0xB0) % 12 < 8);
+/* What a read of a register gives besides its value: the registers the console reads back, the unused halfwords it
+   reads as 0 (the sound's gaps, DMAxCNT_L, a few past the serial port and the interrupts), and the open bus for every
+   other address: the write-only ones (scrolls, the affine parameters, the windows' edges, MOSAIC, BLDY, the FIFOs, the
+   DMA addresses) and the unused ones. mGBA's GBAIORead has these, and its test suite's io-read.c the console's */
+enum { IO_OPEN, IO_ZERO, IO_READ };
+static int io_kind(uint32_t byte) {
+    static const uint16_t zero[] = {0x066, 0x06A, 0x06E, 0x076, 0x07A, 0x07E, 0x086, 0x08A, 0x0B8,
+                                    0x0C4, 0x0D0, 0x0DC, 0x136, 0x142, 0x15A, 0x206, 0x20A, 0x302};
+    static const uint16_t read[][2] = {{0x000, 0x00E}, {0x048, 0x04A}, {0x050, 0x052}, {0x060, 0x064}, {0x068, 0x068},
+                                       {0x06C, 0x06C}, {0x070, 0x074}, {0x078, 0x078}, {0x07C, 0x07C}, {0x080, 0x084},
+                                       {0x088, 0x088}, {0x090, 0x09E}, {0x0BA, 0x0BA}, {0x0C6, 0x0C6}, {0x0D2, 0x0D2},
+                                       {0x0DE, 0x0DE}, {0x100, 0x10E}, {0x120, 0x12A}, {0x130, 0x134}, {0x140, 0x140},
+                                       {0x150, 0x158}, {0x200, 0x204}, {0x208, 0x208}, {0x300, 0x300}};
+    for (size_t i = 0; i < sizeof read / sizeof read[0]; ++i)
+        if (byte >= read[i][0] && byte <= read[i][1]) return IO_READ;
+    for (size_t i = 0; i < sizeof zero / sizeof zero[0]; ++i)
+        if (byte == zero[i]) return IO_ZERO;
+    return IO_OPEN;
+}
+
+/* the bits of a register a read gives back, the rest reading 0: BG0CNT's and BG1CNT's wrap bit, the windows' and
+   blending's unused bits, the sound's write-only lengths and FIFO resets, the DMA controls' unused bits and DMA0-2's
+   cartridge request (the suite's io-read.c, from the console) */
+static uint16_t io_readable(uint32_t byte) {
+    static const uint16_t masks[][2] = {{0x008, 0xDFFF}, {0x00A, 0xDFFF}, {0x048, 0x3F3F}, {0x04A, 0x3F3F},
+                                        {0x050, 0x3FFF}, {0x052, 0x1F1F}, {0x062, 0xFFC0}, {0x068, 0xFFC0},
+                                        {0x072, 0xE000}, {0x078, 0xFF00}, {0x082, 0x770F}, {0x0BA, 0xF7E0},
+                                        {0x0C6, 0xF7E0}, {0x0D2, 0xF7E0}, {0x0DE, 0xFFE0}};
+    for (size_t i = 0; i < sizeof masks / sizeof masks[0]; ++i)
+        if (byte == masks[i][0]) return masks[i][1];
+    return 0xFFFF;
+}
+
+/* the register's value as the devices hold it */
+static uint16_t io_value(AgbBoard* board, uint32_t byte, uint32_t offset) {
+    if (byte <= 0x5F) return agb_ppu_read(board, byte);
+    if (byte >= 0x60 && byte <= 0xA7) return agb_apu_read(board, byte);
+    if (byte >= 0xB0 && byte <= 0xDF) return agb_dma_read(board, byte);
+    if (byte >= 0x100 && byte <= 0x10F) return agb_timer_read(board, byte);
+    if (byte == 0x130) return (uint16_t)(~board->keys & 0x3FF); /* KEYINPUT: a key held reads 0 */
+    if (byte == 0x200) return board->irq_ie;
+    if (byte == 0x202) return board->irq_if;
+    if (byte == 0x208) return board->irq_ime;
+    return board->io[offset];
 }
 
 /* The window decodes its registers at 0x04000000-0x040003FE and the internal memory control at 0x04000800, repeated
@@ -84,17 +123,11 @@ uint16_t agb_io_read16(AgbBoard* board, uint32_t address) {
     uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1), byte = offset * 2;
     if (io_unused(address)) return (uint16_t)board->open_bus;
     if ((address & 0xFFFFFF) >= 0x400) return board->memcnt[address >> 1 & 1];
-    if (io_open(byte)) return (uint16_t)board->open_bus;                   /* its low half, as GBAIORead gives it */
-    if (byte >= 0xB8 && byte <= 0xDC && (byte - 0xB0) % 12 == 8) return 0; /* DMAxCNT_L */
-    if (byte <= 0x5F) return agb_ppu_read(board, byte);
-    if (byte >= 0x60 && byte <= 0xA7) return agb_apu_read(board, byte);
-    if (byte >= 0xB0 && byte <= 0xDF) return agb_dma_read(board, byte);
-    if (byte >= 0x100 && byte <= 0x10F) return agb_timer_read(board, byte);
-    if (byte == 0x130) return (uint16_t)(~board->keys & 0x3FF); /* KEYINPUT: a key held reads 0 */
-    if (byte == 0x200) return board->irq_ie;
-    if (byte == 0x202) return board->irq_if;
-    if (byte == 0x208) return board->irq_ime;
-    return board->io[offset];
+    switch (io_kind(byte)) {
+        case IO_OPEN: return (uint16_t)board->open_bus; /* its low half, as GBAIORead gives it */
+        case IO_ZERO: return 0;
+        default: return io_value(board, byte, offset) & io_readable(byte);
+    }
 }
 
 /* the register as written, for the lane a byte store leaves: a device's copy where a read gives another value */

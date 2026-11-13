@@ -185,6 +185,34 @@ int main(void) {
         return 1;
     }
     agb_write16(&board, 0x04000200, 0);
+    {
+        /* each register written all ones reads back its readable bits, an unused one 0 or the open bus, as the
+           console reads them in mGBA's test suite (io-read.c) */
+        static const struct {
+            uint32_t address;
+            int32_t expected; /* -1: the open bus's low half */
+        } reads[] = {
+            {0x04000008, 0xDFFF}, {0x0400000C, 0xFFFF}, {0x04000048, 0x3F3F}, {0x04000050, 0x3FFF},
+            {0x04000062, 0xFFC0}, {0x04000072, 0xE000}, {0x04000078, 0xFF00}, {0x04000082, 0x770F},
+            {0x040000BA, 0xF7E0}, {0x040000DE, 0xFFE0}, {0x04000066, 0},      {0x04000136, 0},
+            {0x04000206, 0},      {0x04000302, 0},      {0x0400008C, -1},     {0x040000A8, -1},
+            {0x040000E0, -1},     {0x04000110, -1},
+        };
+        agb_write16(&board, 0x04000084, 0x0080); /* the sound on: its registers take writes */
+        board.open_bus = 0xDEADDEAD;
+        for (size_t i = 0; i < sizeof reads / sizeof reads[0]; ++i) {
+            uint16_t expected = (uint16_t)(reads[i].expected < 0 ? 0xDEAD : reads[i].expected), got;
+            agb_write16(&board, reads[i].address, 0xFFFF);
+            got = agb_read16(&board, reads[i].address);
+            agb_write16(&board, reads[i].address, 0);
+            if (got != expected) {
+                fprintf(stderr, "agb_board: 0x%08X written 0xFFFF reads 0x%04X, not 0x%04X\n", reads[i].address, got,
+                        expected);
+                return 1;
+            }
+        }
+        agb_write16(&board, 0x04000084, 0);
+    }
     CHECK(!agb_board_insert(&board, rom, ROM_SIZE, error, sizeof error));
     CHECK(board.has_cartridge);
     const AgbCartridge* cartridge = &board.cartridge;
