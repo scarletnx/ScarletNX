@@ -139,9 +139,9 @@ int gui_mali_model(const char* gpu_name) {
 /* the picks by model, each as the repository its release is in and a part of that release's tag, NULL for the
    repository's latest. Adreno's are Eden's (DriverFetcherFragment.kt); 605 to 613 have no multiview in hardware:
    EOL-24.3.4 then says Vulkan 1.0, short of what ScarletNX needs, and T30 emulates it and says 1.4. The Malis are
-   those NX-Mali names as its own (its mali_physical_device.c, mali_device_name): the G52, first-generation Valhall's
-   G57, G68, G77 and G78, the G615 and the G715; on another it makes no device. They count only with
-   GUI_DRIVER_MALI_RECOMMENDED */
+   those NX-Mali says Vulkan 1.3 on (its api_version_for_arch: arch 10 and up, the command-stream ones): the G610 and
+   the G710, the G615 and the G715. On its job-manager parts (the G52, G57, G68, G77 and G78) it says 1.1, which
+   device_score refuses, so none is recommended there */
 static const struct {
     int gpu, lo, hi;
     const char *driver, *repo, *tag;
@@ -152,11 +152,9 @@ static const struct {
                      {GUI_DRIVER_ADRENO, 700, 710, "KIMCHI 25.2.0_r5", "K11MCH1/AdrenoToolsDrivers", "v25.2.0-rc.05"},
                      {GUI_DRIVER_ADRENO, 711, 799, "Mr. Purple T23", "MrPurple666/purple-turnip", "T23"},
                      {GUI_DRIVER_ADRENO, 800, 899, "GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", NULL},
-                     {GUI_DRIVER_MALI, 52, 52, "NX-Mali", "Slopinator99/NX-Mali", NULL},
-                     {GUI_DRIVER_MALI, 57, 57, "NX-Mali", "Slopinator99/NX-Mali", NULL},
-                     {GUI_DRIVER_MALI, 68, 68, "NX-Mali", "Slopinator99/NX-Mali", NULL},
-                     {GUI_DRIVER_MALI, 77, 78, "NX-Mali", "Slopinator99/NX-Mali", NULL},
+                     {GUI_DRIVER_MALI, 610, 610, "NX-Mali", "Slopinator99/NX-Mali", NULL},
                      {GUI_DRIVER_MALI, 615, 615, "NX-Mali", "Slopinator99/NX-Mali", NULL},
+                     {GUI_DRIVER_MALI, 710, 710, "NX-Mali", "Slopinator99/NX-Mali", NULL},
                      {GUI_DRIVER_MALI, 715, 715, "NX-Mali", "Slopinator99/NX-Mali", NULL}};
 #define GUI_DRIVER_PICKS (sizeof g_recommended / sizeof g_recommended[0])
 /* gpu_name's pick in g_recommended, GUI_DRIVER_PICKS for none */
@@ -164,7 +162,7 @@ static size_t recommended_of(const char* gpu_name) {
     int adreno = gui_adreno_model(gpu_name), mali = gui_mali_model(gpu_name);
     size_t i;
     for (i = 0; i < GUI_DRIVER_PICKS; ++i) {
-        int model = g_recommended[i].gpu == GUI_DRIVER_ADRENO ? adreno : GUI_DRIVER_MALI_RECOMMENDED ? mali : 0;
+        int model = g_recommended[i].gpu == GUI_DRIVER_ADRENO ? adreno : mali;
         if (model >= g_recommended[i].lo && model <= g_recommended[i].hi) break;
     }
     return i;

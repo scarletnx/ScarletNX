@@ -201,8 +201,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Adreno those Eden's driver fetcher lists (Mr. Purple Turnip, GameHub Adreno 8xx, KIMCHI Turnip, Weab-Chan
   Freedreno, Whitebelyash Turnip), on a Mali [NX-Mali](https://github.com/Slopinator99/NX-Mali). They are fetched as
   it opens, with the GPU and the driver recommended for it: on an Adreno Eden's, but T30 on an Adreno 605 to 613
-  (EOL-24.3.4 gives those Vulkan 1.0); on a Mali none yet, as NX-Mali says Vulkan 1.1 and ScarletNX needs 1.3, or
-  1.2 with the extensions 1.3 took in. A repository that failed says why, and Enter fetches the
+  (EOL-24.3.4 gives those Vulkan 1.0); on a Mali NX-Mali where it says Vulkan 1.3 (the G610, G615, G710 and G715),
+  none on the older ones, where it says 1.1 and ScarletNX needs 1.3, or 1.2 with the extensions 1.3 took in. A repository that failed says why, and Enter fetches the
   lists again. A release's box lists its downloads with their sizes, a GPU maker's own drivers (every GameHub one, and
   one named Qualcomm) marked *proprietary, no license*; the one picked is downloaded, its progress in the note, and
   added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU (`/dev/kgsl-3d0`), a Mali

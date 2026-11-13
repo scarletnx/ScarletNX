@@ -3371,7 +3371,7 @@ static void gba_covers(App* app, const char* rom, const char* folder, const char
 /* GPU Drivers > Download Driver on a phone with an Adreno GPU, against the test's network: Eden's five lists fetched
    as the page opens, NX-Mali's not, one repository's failure said, a GPU maker's own marked in its release's box, a
    download failing said, and a package downloaded, added and picked. Then on a phone with a Mali GPU: NX-Mali's list
-   alone, recommended only as GUI_DRIVER_MALI_RECOMMENDED says, its package (meta.json as its first release's)
+   alone, its latest recommended, its package (meta.json as its first release's)
    downloaded, added and picked */
 static void download_driver(App* app, const char* temporary) {
     char* zip = driver_zip(temporary, "turnip.zip");
@@ -3475,8 +3475,8 @@ static void download_driver(App* app, const char* temporary) {
     app->driver_off = 0;
     change_answer(app, GUI_ASK_DRIVER, true); /* back to none, for what follows */
     assert(!app->packages_count && !app->gpu_driver[0]);
-    /* a phone with a Mali GPU NX-Mali drives: its list alone fetched, one box, the latest release recommended only
-       with GUI_DRIVER_MALI_RECOMMENDED; its package downloaded, added and picked */
+    /* a phone with a Mali GPU NX-Mali gives Vulkan 1.3: its list alone fetched, one box, the latest release
+       recommended; its package downloaded, added and picked */
     app->gpu_host = host_mali;
     snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", "Mali-G615 MC6");
     g_fake_net.lists = 0;
@@ -3490,9 +3490,8 @@ static void download_driver(App* app, const char* temporary) {
     assert(app->fetch_groups == 1 && !strcmp(app->fetch_title[0], "NX-Mali: 1 release") &&
            gui_editor_rows(&app->editor) == 1 && app->fetch_repo[0] == 5 && !app->fetch_group[0] &&
            !app->fetch_release[0] && !strcmp(app->fetch_label[0], "NX-Mali 0.0.1"));
-    assert(!strcmp(app->fetch_form.value[0], GUI_DRIVER_MALI_RECOMMENDED ? "Latest, Recommended" : "Latest"));
-    assert(!strcmp(app->editor.note, GUI_DRIVER_MALI_RECOMMENDED ? "GPU: Mali-G615 MC6. Recommended: NX-Mali."
-                                                                 : "GPU: Mali-G615 MC6. Recommended: Unsupported."));
+    assert(!strcmp(app->fetch_form.value[0], "Latest, Recommended"));
+    assert(!strcmp(app->editor.note, "GPU: Mali-G615 MC6. Recommended: NX-Mali."));
     render(app);
     assert(grouped_entries(app) == 2);
     {
@@ -3508,13 +3507,13 @@ static void download_driver(App* app, const char* temporary) {
            !strcmp(app->gpu_driver, "NX-Mali_0.0.1") && !strcmp(app->drivers_form.value[1], "(*)"));
     assert(strstr(app->editor.note, "Added NX-Mali 0.0.1 (0.0.1), in gpu_drivers/NX-Mali_0.0.1. GPU driver for every "
                                     "game: NX-Mali 0.0.1"));
-    /* a Mali it does not drive: listed, never recommended */
-    snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", "Mali-G710 MC10");
+    /* a Mali it gives only Vulkan 1.1: listed, not recommended */
+    snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", "Mali-G78 MC14");
     app->editor.row = 2; /* Download Driver, under the package */
     key(app, SDLK_RETURN);
     pump_until(app, &app->fetching);
     assert(app->fetch_groups == 1 && !strcmp(app->fetch_form.value[0], "Latest") &&
-           !strcmp(app->editor.note, "GPU: Mali-G710 MC10. Recommended: Unsupported."));
+           !strcmp(app->editor.note, "GPU: Mali-G78 MC14. Recommended: Unsupported."));
     key(app, SDLK_ESCAPE);
     assert(app->form == GUI_FORM_DRIVERS);
     app->editor.row = 1;

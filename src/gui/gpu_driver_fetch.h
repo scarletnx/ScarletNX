@@ -58,12 +58,8 @@ int gui_adreno_model(const char* gpu_name);
 /* the Mali model of a GPU's Vulkan name, as Arm's driver names it ("Mali-G615 MC6": 615, "Mali-G78AE": 78,
    "Mali-G715-Immortalis MC11": 715), 0 for another GPU */
 int gui_mali_model(const char* gpu_name);
-/* 0: NX-Mali 0.0.1 says Vulkan 1.1 and has none of the extensions the renderer asks of a 1.2 device
-   (nx/gpu/vk/device.c's vk12_extensions), so device_score refuses its device; listed, it is not recommended until it
-   says 1.3, or 1.2 with those */
-#define GUI_DRIVER_MALI_RECOMMENDED 0
 /* the driver recommended for the GPU of that Vulkan name, as the page says it: Eden's for an Adreno model ("GameHub
-   Adreno 8xx"), NX-Mali for a Mali it drives (with GUI_DRIVER_MALI_RECOMMENDED); "Unsupported" for none */
+   Adreno 8xx"), NX-Mali for a Mali it gives Vulkan 1.3; "Unsupported" for none */
 const char* gui_driver_recommended(const char* gpu_name);
 /* that driver among repository repo's releases (gui_driver_repos' index), listed in list: its index there, -1 when the
    recommendation is another repository's, none, or a release list does not have */
