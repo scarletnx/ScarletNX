@@ -50,9 +50,11 @@ struct SnxFx {
     int sharpness;    /* upscaler_sharpness: 0 the softest, 100 the sharpest */
     uint32_t max_dim; /* the device's largest 2D image side */
     int fp16;
+    int light; /* the frames given hold linear light (snx_fx_set_light) */
     int fmt_checked, fmt_ok;
     VkFormat fmt;
-    VkSampler sampler;
+    VkSampler sampler, nearest; /* the passes' bilinear one; the Off copy's sharp one (snx_fx_set_off_sharp) */
+    int off_sharp;
     VkDescriptorSetLayout dsl1, dsl2, dsl3, dsl_nis, dsl_sgsr; /* dslN, plN: N combined samplers */
     VkPipelineLayout pl1, pl2, pl3, pl_nis, pl_sgsr;
     VkDescriptorPool pool;
@@ -87,7 +89,7 @@ struct SnxFx {
     VkDeviceMemory tex_mem;
     int tex_uploaded;
     int said
-        [8]; /* the last choice the log said: filter, anti aliasing, those asked, the crop's and the output's size */
+        [8]; /* the last choice the log said: filter, anti-aliasing, those asked, the crop's and the output's size */
 };
 
 static int fx_ok(VkResult r) { return r == VK_SUCCESS; }
@@ -166,7 +168,7 @@ int snx_fx_settings(SnxFxConfig* cfg, const char* upscaler, int sharpness, const
     return unknown;
 }
 
-/* Auto anti aliasing: the displayed rectangle is at least 1.25x the rendered frame in each direction, and the frame
+/* Auto anti-aliasing: the displayed rectangle is at least 1.25x the rendered frame in each direction, and the frame
    is not larger than the rectangle (a downscale is already smoothed). 1.25 is the ratio dynamic resolution scalers
    use as the point where a lower render size starts to show its edges. */
 int snx_fx_aa_auto(uint32_t render_w, uint32_t render_h, uint32_t shown_w, uint32_t shown_h) {
@@ -279,8 +281,8 @@ static void fx_barrier(SnxFx* fx, VkCommandBuffer cb, VkImage image, VkImageAspe
     vkCmdPipelineBarrier2(cb, &d);
 }
 
-static void bind_combined(SnxFx* fx, VkDescriptorSet set, VkImageView view, uint32_t binding) {
-    VkDescriptorImageInfo di = {fx->sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+static void bind_sampled(SnxFx* fx, VkDescriptorSet set, VkImageView view, uint32_t binding, VkSampler sampler) {
+    VkDescriptorImageInfo di = {sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                .dstSet = set,
                                .dstBinding = binding,
@@ -288,6 +290,9 @@ static void bind_combined(SnxFx* fx, VkDescriptorSet set, VkImageView view, uint
                                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                .pImageInfo = &di};
     vkUpdateDescriptorSets(fx->dev, 1, &wr, 0, NULL);
+}
+static void bind_combined(SnxFx* fx, VkDescriptorSet set, VkImageView view, uint32_t binding) {
+    bind_sampled(fx, set, view, binding, fx->sampler);
 }
 
 static void fx_draw(VkCommandBuffer cb, VkImageView view, VkPipeline pipe, VkPipelineLayout layout, uint32_t w,
@@ -468,7 +473,7 @@ static int make_pipelines(SnxFx* fx) {
         make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_smaa_blend_spv, fx_smaa_blend_spv_size, fx->pl2, fmt);
     if (!fx->copy || !fx->easu || !fx->rcas || !fx->fxaa || !fx->smaa_edge || !fx->smaa_weights || !fx->smaa_blend) {
         fx->pipes_failed = 1;
-        fx_echo(fx, "the upscaler's and anti aliasing's pipelines could not be made on this device: the frame shows "
+        fx_echo(fx, "the upscaler's and anti-aliasing's pipelines could not be made on this device: the frame shows "
                     "as with both off");
         return 0;
     }
@@ -610,7 +615,10 @@ SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkPipelineCache cache,
                                       .maxSets = 128,
                                       .poolSizeCount = 5,
                                       .pPoolSizes = sizes};
-    if (!fx_ok(vkCreateSampler(fx->dev, &si, NULL, &fx->sampler)) || !make_layouts(fx) ||
+    VkSamplerCreateInfo ni = si;
+    ni.magFilter = ni.minFilter = VK_FILTER_NEAREST;
+    if (!fx_ok(vkCreateSampler(fx->dev, &si, NULL, &fx->sampler)) ||
+        !fx_ok(vkCreateSampler(fx->dev, &ni, NULL, &fx->nearest)) || !make_layouts(fx) ||
         !fx_ok(vkCreateDescriptorPool(fx->dev, &pci, NULL, &fx->pool)))
         goto failed;
     for (uint32_t i = 0; i < fx->slots; ++i) {
@@ -696,6 +704,7 @@ void snx_fx_destroy(SnxFx* fx) {
     if (fx->dsl_sgsr) vkDestroyDescriptorSetLayout(fx->dev, fx->dsl_sgsr, NULL);
     if (fx->pool) vkDestroyDescriptorPool(fx->dev, fx->pool, NULL);
     if (fx->sampler) vkDestroySampler(fx->dev, fx->sampler, NULL);
+    if (fx->nearest) vkDestroySampler(fx->dev, fx->nearest, NULL);
     free(fx);
 }
 
@@ -707,11 +716,19 @@ void snx_fx_set_fp16(SnxFx* fx, int on) {
     if (fx) fx->fp16 = on != 0;
 }
 
+void snx_fx_set_light(SnxFx* fx, int linear) {
+    if (fx) fx->light = linear != 0;
+}
+
+void snx_fx_set_off_sharp(SnxFx* fx, int sharp) {
+    if (fx) fx->off_sharp = sharp != 0;
+}
+
 /* ---- a copy, for the filters that are not a filter ---- */
 
 static void record_copy(SnxFx* fx, VkCommandBuffer cb, VkDescriptorSet set, VkImageView src, uint32_t image_w,
                         uint32_t image_h, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t transform,
-                        uint32_t dw, uint32_t dh, FxImage* out) {
+                        uint32_t dw, uint32_t dh, int sharp, FxImage* out) {
     struct {
         float rect[4];
         float crop[4];
@@ -719,7 +736,7 @@ static void record_copy(SnxFx* fx, VkCommandBuffer cb, VkDescriptorSet set, VkIm
     } pc = {{0, 0, (float)dw, (float)dh},
             {(float)x, (float)y, (float)w, (float)h},
             {(float)image_w, (float)image_h, (transform & 1) ? 1.0f : 0.0f, (transform & 2) ? 1.0f : 0.0f}};
-    bind_combined(fx, set, src, 0);
+    bind_sampled(fx, set, src, 0, sharp ? fx->nearest : fx->sampler);
     fx_barrier(fx, cb, out->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
@@ -780,15 +797,15 @@ static void record_fsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
 }
 
-/* ---- anti aliasing ---- */
+/* ---- anti-aliasing ---- */
 
 static void record_fxaa(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, FxImage* src, FxImage* dst) {
-    float rcp[4] = {1.0f / (float)src->width, 1.0f / (float)src->height, 0, 0};
+    uint32_t flags[4] = {fx->light ? 1u : 0u, 0, 0, 0}; /* fxaa.frag's */
     bind_combined(fx, fx->fxaa_set[slot], src->view, 0);
     fx_barrier(fx, cb, dst->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    fx_draw(cb, dst->view, fx->fxaa, fx->pl1, dst->width, dst->height, fx->fxaa_set[slot], rcp, sizeof rcp,
+    fx_draw(cb, dst->view, fx->fxaa, fx->pl1, dst->width, dst->height, fx->fxaa_set[slot], flags, sizeof flags,
             VK_ATTACHMENT_LOAD_OP_DONT_CARE);
     fx_barrier(fx, cb, dst->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -866,7 +883,7 @@ failed:
     return 0;
 }
 
-/* What runs for the filter and anti aliasing asked over w x h shown at out_w x out_h, and why where it is not what was
+/* What runs for the filter and anti-aliasing asked over w x h shown at out_w x out_h, and why where it is not what was
    asked (why: "" for none). The effects' images need format_ok: without it none runs */
 static void pick(SnxFx* fx, int* filter, int* aa, uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h, char* why,
                  size_t n) {
@@ -1048,7 +1065,7 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
             char said[192];
             int now[8] = {filter, aa, asked_filter, asked_aa, (int)w, (int)h, (int)out_w, (int)out_h};
             memcpy(fx->said, now, sizeof now);
-            snprintf(said, sizeof said, "upscaler %s and anti aliasing %s, %ux%u to %ux%u%s", upscale_labels[filter],
+            snprintf(said, sizeof said, "upscaler %s and anti-aliasing %s, %ux%u to %ux%u%s", upscale_labels[filter],
                      aa_labels[aa], w, h, out_w, out_h, why);
             fx_echo(fx, said);
         }
@@ -1068,7 +1085,7 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
        the crop's. At 1:1 the copy samples texel centres, which take no neighbour */
     if (x || y || w != img_w || h != img_h) {
         if (!img_make(fx, &fx->crop[slot], w, h, choose_format(fx), fx_usage())) return 0;
-        record_copy(fx, cb, fx->crop_set[slot], src, img_w, img_h, x, y, w, h, 0, w, h, &fx->crop[slot]);
+        record_copy(fx, cb, fx->crop_set[slot], src, img_w, img_h, x, y, w, h, 0, w, h, 0, &fx->crop[slot]);
         fx_barrier(fx, cb, fx->crop[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                    VK_ACCESS_2_TRANSFER_READ_BIT,
@@ -1091,8 +1108,10 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
         if (!img_make(fx, &fx->mid[slot], work_w, work_h, choose_format(fx), fx_usage())) return 0;
         record_fsr(fx, cb, slot, src, img_w, img_h, x, y, w, h, transform, work_w, work_h);
     } else if (filter != SNX_FX_UPSCALE_NIS && filter != SNX_FX_UPSCALE_SGSR) {
+        /* Off scales as the caller's window does where it keeps sharp pixels (the 3DS's), so the anti-aliasing smooths
+           the edges a pixel shows on the screen and leaves the pixels whole */
         record_copy(fx, cb, fx->copy_set[slot], src, img_w, img_h, x, y, w, h, transform, work_w, work_h,
-                    &fx->main[slot]);
+                    filter == SNX_FX_UPSCALE_OFF && fx->off_sharp, &fx->main[slot]);
     }
     if (aa != SNX_FX_AA_OFF)
         fx_barrier(fx, cb, fx->main[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1104,7 +1123,7 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
         /* its own set: the copy set is bound by the pass that filled main, and updating it again would invalidate
            that draw */
         record_copy(fx, cb, fx->ssaa_set[slot], fx->main[slot].view, fx->main[slot].width, fx->main[slot].height, 0, 0,
-                    fx->main[slot].width, fx->main[slot].height, 0, out_w, out_h, &fx->aa[slot]);
+                    fx->main[slot].width, fx->main[slot].height, 0, out_w, out_h, 0, &fx->aa[slot]);
         out->image = fx->aa[slot].image;
         out->view = fx->aa[slot].view;
     } else if (aa == SNX_FX_AA_FXAA) {

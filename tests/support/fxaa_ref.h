@@ -9,4 +9,8 @@
    four a pixel as out: at an edge the colour of the pair of taps the shader did not keep, which a GPU whose bilinear
    weights are coarser may keep where the wider pair's luma is at the neighbourhood's range; elsewhere out's */
 void fxaa_ref(const uint8_t* rgba, unsigned width, unsigned height, float* out, float* other, uint8_t* edge);
+/* fxaa_ref with the taps held inside bounds, the part of the picture a window shows from its first pixel's centre to
+   its last's (x0, y0, x1, y1), as the shader's bounds hold them */
+void fxaa_ref_bounds(const uint8_t* rgba, unsigned width, unsigned height, const float bounds[4], float* out,
+                     float* other, uint8_t* edge);
 #endif
