@@ -6520,6 +6520,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_alpha_coverage.inc"
 #include "vulkan_indexed_feedback.inc"
 #include "vulkan_scaled_fragment.inc"
+#include "vulkan_slices_from_targets.inc"
 #include "vulkan_targetless_stores.inc"
 #include "vulkan_storage_image_keep.inc"
 #include "vulkan_uma_imports.inc"
@@ -7247,6 +7248,13 @@ static int run_headless(int argc, char** argv) {
         printf("PASS headless Vulkan resolution scale only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_SLICES_ONLY")) { /* textures taking their slices from targets alone, for their mutants */
+        CHECK(!check_slices_from_targets());
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan slices from targets only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_GPUPROF_POOL_ONLY")) { /* a smaller pool than the profile asks for, alone */
         CHECK(!check_gpuprof_small_pool());
         printf("PASS headless Vulkan profile pool only: %u validation messages\n", g_vk_validation_messages);
@@ -7449,6 +7457,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_storage_image_formats());
     CHECK(!check_scaled_compute());
     CHECK(!check_scaled_fragment());
+    CHECK(!check_slices_from_targets());
     CHECK(!check_volume_surface_atomics());
     CHECK(!check_layered_surface_loads());
     CHECK(!check_rect_textures());
