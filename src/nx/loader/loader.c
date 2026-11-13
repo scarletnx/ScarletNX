@@ -1365,7 +1365,7 @@ int snx_parse_npdm(const unsigned char* data, size_t size, SnxNpdm* npdm, char* 
 /* ------------------------------------------------------------------ programs */
 
 /* The ExeFS of an extracted program: <entry>/exefs, <entry>/ExeFS or entry itself, the first holding main */
-static char* find_exefs(const char* entry) {
+char* snx_exefs_folder(const char* entry) {
     static const char* const folders[] = {"exefs", "ExeFS", NULL};
     char *folder, *main_path;
     unsigned i;
@@ -1454,7 +1454,7 @@ int snx_load_npdm(const char* entry, SnxNpdm* npdm, char* error, size_t error_si
         return 0;
     }
     memset(npdm, 0, sizeof(*npdm));
-    exefs = find_exefs(entry);
+    exefs = snx_exefs_folder(entry);
     if (!exefs) return fail(error, error_size, snx_format("%s holds no exefs/main", entry));
     folder.read = folder_read;
     folder.source = exefs;
@@ -1562,7 +1562,7 @@ static int load_exefs_program(const char* entry, char* const* names, char* const
     const char* name;
     size_t length;
     int rc = -1;
-    exefs = find_exefs(entry);
+    exefs = snx_exefs_folder(entry);
     if (!exefs) return fail(error, error_size, snx_format("%s holds no exefs/main", entry));
     name = leaf(exefs, &length);
     root = same_word(name, length, "exefs") ? snx_dirname(exefs) : snx_strdup(exefs);
