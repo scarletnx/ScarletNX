@@ -7,8 +7,9 @@
 
    The kind is what the decoded texels may be, by the ASTC specification's decode (tests/support/astc.c, the GPU's
    astc_decode.glsl, which the tests hold to it byte for byte), never less: a texture said to be luminance decodes to
-   R = G = B and A = 255 in every texel. It is conservative the other way: a block of an RGB mode whose endpoints are
-   grey counts as colour, as only its decode would tell */
+   R, G and B within SNX_ASTC_GREY_SPREAD of each other and A = 255 in every texel. A partition of an RGB or RGBA mode
+   counts as grey where its two endpoints, as the decoders make them from its colour values, are grey within that
+   (snx_astc_rgb_spread): an encoder writes grey in those modes too, as astcenc does a normal map's X in R, G and B */
 #ifndef SNX_TEXTURE_ASTC_KIND_H
 #define SNX_TEXTURE_ASTC_KIND_H
 #include "nx/gpu/texture/blocklinear.h"
@@ -25,6 +26,13 @@
 /* the error colour (an illegal block, a reserved bit, too few bits for its values) or HDR, which the LDR profile
    decodes as the error colour too: nothing BCn is chosen for */
 #define SNX_ASTC_OTHER  8u
+
+/* The most an RGB or RGBA partition's endpoints may have R, G and B apart, in levels of 256, and still count as grey.
+   astcenc's -normal encodings of two normal maps wrote the RGBA mode (12) in 17% and 0.1% of their blocks, X in R, G
+   and B; decoded, 8 and 16 texels of a million and four were a level apart, the endpoints' rounding, which
+   counted as colour kept the maps from BC5 (tests/glsl/astc_bcn_glsl.cpp --measure). A texel is then within 2 levels
+   of grey, the BC5 view giving R for G and B: the tests hold every decoded texel of such blocks to that */
+#define SNX_ASTC_GREY_SPREAD 1u
 
 /* the format snx_astc_kind_as picks: none (as astc_mode holds them), BC4, BC5, BC1 */
 enum { SNX_ASTC_AS_USUAL, SNX_ASTC_AS_BC4, SNX_ASTC_AS_BC5, SNX_ASTC_AS_BC1 };
@@ -49,12 +57,188 @@ static inline u32 snx_astc_ise_bits(u32 max_value, u32 n) {
     return plain[m] * n + (tq[m] == 3 ? (n * 8 + 4) / 5 : tq[m] == 5 ? (n * 7 + 2) / 3 : 0);
 }
 
+/* the bits of n values of the integer sequence encoded with trits (tq 3), quints (5) or neither (0), and nb bits each */
+static inline u32 snx_astc_seq_bits(u32 tq, u32 nb, u32 n) {
+    return nb * n + (tq == 3 ? (n * 8 + 4) / 5 : tq == 5 ? (n * 7 + 2) / 3 : 0);
+}
+/* k bits (k <= 8) of a block from *pos on, those at or past end read as zero, as the decoders read a sequence */
+static inline u32 snx_astc_seq_read(u64 lo, u64 hi, u32* pos, u32 k, u32 end) {
+    u32 v = 0;
+    for (u32 i = 0; i < k; i++, (*pos)++)
+        if (*pos < end && *pos < 128) v |= snx_astc_bits(lo, hi, *pos, 1) << i;
+    return v;
+}
+/* a colour value of nb bits m, and its trit or quint t (tq 3 or 5), unquantized to 8 bits as the decoders do it */
+static inline u32 snx_astc_colour_value(u32 tq, u32 nb, u32 m, u32 t) {
+    if (!tq) { /* the bits repeated down to 8 */
+        u32 r = 0, have = 0;
+        if (!nb) return 0;
+        while (have < 8) {
+            const u32 take = nb < 8 - have ? nb : 8 - have;
+            r = (r << take) | (m >> (nb - take));
+            have += take;
+        }
+        return r;
+    }
+    const u32 a = (m & 1) * 0x1FF, b = m >> 1;
+    u32 c = 0, bb = 0;
+    if (tq == 3) switch (nb) {
+            case 1: c = 204; break;
+            case 2: c = 93, bb = (b & 1) << 8 | (b & 1) << 4 | (b & 1) << 2 | (b & 1) << 1; break;
+            case 3: c = 44, bb = (b & 3) << 7 | (b & 3) << 2 | (b & 3); break;
+            case 4: c = 22, bb = (b & 7) << 6 | (b & 7); break;
+            case 5: c = 11, bb = (b & 15) << 5 | (b & 15) >> 2; break;
+            case 6: c = 5, bb = (b & 31) << 4 | (b & 31) >> 4; break;
+            default: break;
+        }
+    else
+        switch (nb) {
+            case 1: c = 113; break;
+            case 2: c = 54, bb = (b & 1) << 8 | (b & 1) << 3 | (b & 1) << 2; break;
+            case 3: c = 26, bb = (b & 3) << 7 | (b & 3) << 1 | (b & 3) >> 1; break;
+            case 4: c = 13, bb = (b & 7) << 6 | (b & 7) >> 1; break;
+            case 5: c = 6, bb = (b & 15) << 5 | (b & 15) >> 3; break;
+            default: break;
+        }
+    const u32 x = (t * c + bb) ^ a;
+    return (a & 0x80) | (x >> 2);
+}
+/* the encoding of n colour values in color_bits bits: the specification's largest range whose values fit, of these,
+   largest first (trits 3, quints 5 or plain bits 0, and bits a value), as tq << 8 | nb; its smallest where none fits */
+static inline u32 snx_astc_colour_range(u32 n, u32 color_bits) {
+    static const u8 ranges[21][2] = {{0, 8}, {3, 6}, {5, 5}, {0, 7}, {3, 5}, {5, 4}, {0, 6},
+                                     {3, 4}, {5, 3}, {0, 5}, {3, 3}, {5, 2}, {0, 4}, {3, 2},
+                                     {5, 1}, {0, 3}, {3, 1}, {5, 0}, {0, 2}, {3, 0}, {0, 1}};
+    u32 r = 0;
+    while (r < 20 && snx_astc_seq_bits(ranges[r][0], ranges[r][1], n) > color_bits) r++;
+    return (u32)ranges[r][0] << 8 | ranges[r][1];
+}
+/* The n colour values (18 at most) of a block, its colour data color_bits bits from bit at, as the decoders read and
+   unquantize them (tests/support/astc.c's decode_color_values), in snx_astc_colour_range's encoding */
+static inline void snx_astc_colour_values(u64 lo, u64 hi, u32 at, u32 color_bits, u32 n, u32* v) {
+    const u32 range = snx_astc_colour_range(n, color_bits), tq = range >> 8, nb = range & 255;
+    const u32 end = at + snx_astc_seq_bits(tq, nb, n);
+    u32 pos = at, got = 0;
+    while (got < n) {
+        u32 m[5] = {0, 0, 0, 0, 0}, t[5] = {0, 0, 0, 0, 0}, k = 1;
+        if (tq == 0) {
+            m[0] = snx_astc_seq_read(lo, hi, &pos, nb, end);
+        } else if (tq == 3) { /* five values: their bits and the 8 bits of their trits between them */
+            u32 tt;
+            m[0] = snx_astc_seq_read(lo, hi, &pos, nb, end);
+            tt = snx_astc_seq_read(lo, hi, &pos, 2, end);
+            m[1] = snx_astc_seq_read(lo, hi, &pos, nb, end);
+            tt |= snx_astc_seq_read(lo, hi, &pos, 2, end) << 2;
+            m[2] = snx_astc_seq_read(lo, hi, &pos, nb, end);
+            tt |= snx_astc_seq_read(lo, hi, &pos, 1, end) << 4;
+            m[3] = snx_astc_seq_read(lo, hi, &pos, nb, end);
+            tt |= snx_astc_seq_read(lo, hi, &pos, 2, end) << 5;
+            m[4] = snx_astc_seq_read(lo, hi, &pos, nb, end);
+            tt |= snx_astc_seq_read(lo, hi, &pos, 1, end) << 7;
+            u32 cc;
+            if ((tt >> 2 & 7) == 7) {
+                cc = (tt >> 5 & 7) << 2 | (tt & 3);
+                t[4] = t[3] = 2;
+            } else {
+                cc = tt & 31;
+                if ((tt >> 5 & 3) == 3)
+                    t[4] = 2, t[3] = tt >> 7 & 1;
+                else
+                    t[4] = tt >> 7 & 1, t[3] = tt >> 5 & 3;
+            }
+            if ((cc & 3) == 3)
+                t[2] = 2, t[1] = cc >> 4 & 1, t[0] = (cc >> 3 & 1) << 1 | ((cc >> 2 & 1) & ~(cc >> 3) & 1);
+            else if ((cc >> 2 & 3) == 3)
+                t[2] = 2, t[1] = 2, t[0] = cc & 3;
+            else
+                t[2] = cc >> 4 & 1, t[1] = cc >> 2 & 3, t[0] = (cc >> 1 & 1) << 1 | ((cc & 1) & ~(cc >> 1) & 1);
+            k = 5;
+        } else { /* three values: their bits and the 7 bits of their quints between them */
+            u32 qq;
+            m[0] = snx_astc_seq_read(lo, hi, &pos, nb, end);
+            qq = snx_astc_seq_read(lo, hi, &pos, 3, end);
+            m[1] = snx_astc_seq_read(lo, hi, &pos, nb, end);
+            qq |= snx_astc_seq_read(lo, hi, &pos, 2, end) << 3;
+            m[2] = snx_astc_seq_read(lo, hi, &pos, nb, end);
+            qq |= snx_astc_seq_read(lo, hi, &pos, 2, end) << 5;
+            if ((qq >> 1 & 3) == 3 && (qq >> 5 & 3) == 0) {
+                t[0] = t[1] = 4;
+                t[2] = (qq & 1) << 2 | ((qq >> 4 & 1) & ~qq & 1) << 1 | ((qq >> 3 & 1) & ~qq & 1);
+            } else {
+                u32 cc;
+                if ((qq >> 1 & 3) == 3)
+                    t[2] = 4, cc = (qq >> 3 & 3) << 3 | (~(qq >> 5) & 3) << 1 | (qq & 1);
+                else
+                    t[2] = qq >> 5 & 3, cc = qq & 31;
+                if ((cc & 7) == 5)
+                    t[1] = 4, t[0] = cc >> 3 & 3;
+                else
+                    t[1] = cc >> 3 & 3, t[0] = cc & 7;
+            }
+            k = 3;
+        }
+        for (u32 i = 0; i < k && got < n; i++) v[got++] = snx_astc_colour_value(tq, nb, m[i], t[i]);
+    }
+}
+/* the most R, G and B lie apart in either endpoint of a partition of LDR mode cem (6, 8, 9, 10, 12 or 13) from its
+   colour values v, as the decoders make the endpoints (tests/support/astc.c's compute_endpoints): blue contraction,
+   the base and offset's bit transfer and their clamp */
+static inline u32 snx_astc_rgb_spread(u32 cem, const u32* u) {
+    int v[8], e[2][3];
+    for (u32 i = 0; i < 8; i++)
+        v[i] = (int)(i < (cem == 6 ? 4u : cem == 10 || cem == 8 || cem == 9 ? 6u : 8u) ? u[i] : 0u);
+    if (cem == 9 || cem == 13) /* each pair's bit transfer: a base of 8 bits, a signed offset of 6 */
+        for (u32 i = 0; i < (cem == 9 ? 6u : 8u); i += 2) {
+            v[i] >>= 1;
+            v[i] |= v[i + 1] & 0x80;
+            v[i + 1] = (v[i + 1] >> 1) & 0x3F;
+            if (v[i + 1] & 0x20) v[i + 1] -= 0x40;
+        }
+    if (cem == 6 || cem == 10) {
+        for (u32 c = 0; c < 3; c++) e[0][c] = v[c] * v[3] >> 8, e[1][c] = v[c];
+    } else if (cem == 8 || cem == 12) {
+        const int contract = v[1] + v[3] + v[5] < v[0] + v[2] + v[4];
+        for (u32 c = 0; c < 3; c++) e[0][c] = v[2 * c + contract], e[1][c] = v[2 * c + 1 - contract];
+        if (contract)
+            for (u32 k = 0; k < 2; k++) e[k][0] = (e[k][0] + e[k][2]) >> 1, e[k][1] = (e[k][1] + e[k][2]) >> 1;
+    } else { /* 9 and 13: a base and an offset */
+        const int contract = v[1] + v[3] + v[5] < 0;
+        for (u32 c = 0; c < 3; c++) {
+            const int base = v[2 * c], sum = v[2 * c] + v[2 * c + 1];
+            e[0][c] = contract ? sum : base, e[1][c] = contract ? base : sum;
+        }
+        if (contract)
+            for (u32 k = 0; k < 2; k++) e[k][0] = (e[k][0] + e[k][2]) >> 1, e[k][1] = (e[k][1] + e[k][2]) >> 1;
+        for (u32 k = 0; k < 2; k++)
+            for (u32 c = 0; c < 3; c++) e[k][c] = e[k][c] < 0 ? 0 : e[k][c] > 255 ? 255 : e[k][c];
+    }
+    u32 spread = 0;
+    for (u32 k = 0; k < 2; k++) {
+        const int hi = e[k][0] > e[k][1]   ? (e[k][0] > e[k][2] ? e[k][0] : e[k][2])
+                       : e[k][1] > e[k][2] ? e[k][1]
+                                           : e[k][2];
+        const int lo = e[k][0] < e[k][1]   ? (e[k][0] < e[k][2] ? e[k][0] : e[k][2])
+                       : e[k][1] < e[k][2] ? e[k][1]
+                                           : e[k][2];
+        if ((u32)(hi - lo) > spread) spread = (u32)(hi - lo);
+    }
+    return spread;
+}
+
+/* What snx_astc_block_read read of a block past its header, for the tests to hold to the decoder: its partitions (0
+   where it stopped before them: a void extent, or a block of the error colour), their endpoint modes and, for those of
+   RGB and RGBA, the most R, G and B lie apart in their endpoints (snx_astc_rgb_spread; else 0) */
+typedef struct {
+    u32 parts, cem[4], spread[4];
+} SnxAstcBlockRead;
 /* The kind of one block of a bw x bh footprint (16 bytes, little-endian), decoded in the sRGB decode mode or not
-   (srgb: a void extent's R, G and B round otherwise). Every block the decoders make the error colour of is OTHER, by
-   the same tests in the same order (tests/support/astc.c's decompress_block) */
-static inline u32 snx_astc_block_kind(const u8* blk, u32 bw, u32 bh, int srgb) {
+   (srgb: a void extent's R, G and B round otherwise), and what it read into *read where read is not NULL. Every block the
+   decoders make the error colour of is OTHER, by the same tests in the same order (tests/support/astc.c's
+   decompress_block) */
+static inline u32 snx_astc_block_read(const u8* blk, u32 bw, u32 bh, int srgb, SnxAstcBlockRead* read) {
     static const u8 low_weights[6] = {1, 2, 3, 4, 5, 7}, high_weights[6] = {9, 11, 15, 19, 23, 31};
     u64 lo = 0, hi = 0;
+    if (read) read->parts = 0;
     for (u32 i = 0; i < 8; i++) {
         lo |= (u64)blk[i] << (8 * i);
         hi |= (u64)blk[8 + i] << (8 * i);
@@ -126,27 +310,43 @@ static inline u32 snx_astc_block_kind(const u8* blk, u32 bw, u32 bh, int srgb) {
     u32 values = 0;
     for (u32 i = 0; i < parts; i++) values += ((cem[i] >> 2) + 1) << 1;
     if (values > 18 || snx_astc_ise_bits(5, values) > color_bits) return SNX_ASTC_OTHER;
-    u32 kind = 0, colour = 0;
-    for (u32 i = 0; i < parts; i++) switch (cem[i]) {
+    u32 kind = 0, colour = 0, v[18], at_value = 0, spread[4] = {0, 0, 0, 0};
+    snx_astc_colour_values(lo, hi, at, color_bits, values, v);
+    for (u32 i = 0; i < parts; i++) {
+        if ((cem[i] == 6 || cem[i] >= 8) && cem[i] <= 13 && cem[i] != 11)
+            spread[i] = snx_astc_rgb_spread(cem[i], v + at_value);
+        at_value += ((cem[i] >> 2) + 1) << 1;
+    }
+    if (read) {
+        read->parts = parts;
+        for (u32 i = 0; i < 4; i++) read->cem[i] = cem[i], read->spread[i] = spread[i];
+    }
+    for (u32 i = 0; i < parts; i++) {
+        const u32 grey = spread[i] <= SNX_ASTC_GREY_SPREAD;
+        switch (cem[i]) {
             case 0: /* luminance, direct and base+offset: R = G = B, alpha 255 */
             case 1: break;
             case 4: /* luminance and alpha */
             case 5: kind |= SNX_ASTC_ALPHA; break;
-            case 6: /* RGB, base+scale, direct, base+offset: alpha 255 */
+            case 6: /* RGB, base+scale, direct, base+offset: alpha 255; grey ends are luminance */
             case 8:
-            case 9: colour++; break;
-            case 10: /* RGB base+scale with two alphas, RGBA direct and base+offset */
+            case 9: colour += !grey; break;
+            case 10: /* RGB base+scale with two alphas, RGBA direct and base+offset; grey ends are luminance and alpha */
             case 12:
             case 13:
-                colour++;
+                colour += !grey;
                 kind |= SNX_ASTC_ALPHA;
                 break;
             default: return SNX_ASTC_OTHER; /* HDR: the error colour on that partition's texels */
         }
+    }
     if (colour) kind |= SNX_ASTC_CHROMA | (parts > 1 || bw % 4 || bh % 4 ? SNX_ASTC_LINES : 0u);
     /* a second plane on R, G or B weighs that channel apart: no longer grey, nor one line */
     if (ccs != 3) kind |= SNX_ASTC_CHROMA | SNX_ASTC_LINES;
     return kind;
+}
+static inline u32 snx_astc_block_kind(const u8* blk, u32 bw, u32 bh, int srgb) {
+    return snx_astc_block_read(blk, bw, bh, srgb, NULL);
 }
 
 /* the format a texture of kind is held in (SNX_ASTC_AS_*), decoded as sRGB or not: BC4 and BC5 have no sRGB twin, so

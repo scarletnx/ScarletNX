@@ -14,12 +14,14 @@
 #include "support/astc.h"
 
 /* the test's state: its random words, the failures, the blocks counted by the format their kind takes (by decode
-   mode), the farthest a block of colour on one line lay off it, and a level's layout */
+   mode), the farthest a block of colour on one line lay off it, the most a grey block's texel lay off grey, the blocks
+   of an RGB or RGBA mode taken for grey and those of them a level apart, and a level's layout */
 static struct {
     u32 rng;
     int failures;
     u32 as[2][4];
     double off_most[2];
+    u32 grey_most[2], grey_rgb, grey_apart;
     u8 level[1 << 20];
 } g_astc_kind = {.rng = 0x13579bdfu};
 
@@ -46,6 +48,36 @@ static void block_new(u8 b[16]) {
         if (rnd() & 1) w[3] |= 0xFFFF0000u;
         for (int k = 0; k < 16; k++) b[k] = (u8)(w[k / 4] >> (k % 4 * 8));
     }
+}
+
+/* A block of one partition of RGB or RGBA mode cem (6, 8, 9, 10, 12 or 13), a 4x4 grid of 2 bit weights (block mode
+   0x42: the colour values then take 8 bits each, the specification's largest range), its values v (four, six or
+   eight), its weights random: what an encoder writes for grey in those modes when R, G and B have the same values */
+static void block_rgb(u8 b[16], u32 cem, const u32* v) {
+    u64 lo = 0x42u | (u64)cem << 13, hi = 0;
+    const u32 n = cem == 6 ? 4 : cem <= 10 ? 6 : 8;
+    for (u32 i = 0; i < n; i++) {
+        const u32 at = 17 + 8 * i;
+        if (at < 64) lo |= (u64)(v[i] & 255) << at;
+        if (at + 8 > 64) hi |= at >= 64 ? (u64)(v[i] & 255) << (at - 64) : (u64)(v[i] & 255) >> (64 - at);
+    }
+    hi |= (u64)rnd() << 32; /* the weights, from the top */
+    for (int k = 0; k < 8; k++) b[k] = (u8)(lo >> (8 * k)), b[8 + k] = (u8)(hi >> (8 * k));
+}
+/* one of block_rgb's of a random mode, each end's R, G and B values up to `apart` over its R (a base and offset
+   mode's offsets too), the rest random */
+static void block_grey(u8 b[16], u32 apart) {
+    static const u8 cems[6] = {6, 8, 9, 10, 12, 13};
+    const u32 mode = cems[rnd() % 6];
+    u32 v[8];
+    for (u32 i = 0; i < 8; i++) v[i] = rnd() & 255;
+    for (u32 e = 0; e < (mode == 6 || mode == 10 ? 1u : 2u); e++) /* base+scale: R, G, B are v0, v1, v2 */
+        for (u32 c = 1; c < 3; c++) {
+            const u32 at = mode == 6 || mode == 10 ? c : 2 * c + e;
+            v[at] = v[e] + rnd() % (apart + 1);
+            if (v[at] > 255) v[at] = 255;
+        }
+    block_rgb(b, mode, v);
 }
 
 /* the squared distance of the texels of a block from the line through its two texels farthest apart, the most of
@@ -80,9 +112,15 @@ static void check_block(const u8 b[16], u32 bw, u32 bh, int srgb) {
     u8 px[144 * 4];
     astc_decode_image(b, bw, bh, bw, bh, px, srgb);
     const u32 kind = snx_astc_block_kind(b, bw, bh, srgb), n = bw * bh;
-    u32 grey = 1, opaque = 1, error = 1;
+    u32 grey = 1, opaque = 1, error = 1, off_grey = 0;
     for (u32 i = 0; i < n; i++) {
-        grey &= px[i * 4] == px[i * 4 + 1] && px[i * 4 + 1] == px[i * 4 + 2];
+        const u8* t = px + i * 4;
+        const u32 hi = t[0] > t[1] ? (t[0] > t[2] ? t[0] : t[2]) : t[1] > t[2] ? t[1] : t[2];
+        const u32 lo = t[0] < t[1] ? (t[0] < t[2] ? t[0] : t[2]) : t[1] < t[2] ? t[1] : t[2];
+        if (hi - lo > off_grey) off_grey = hi - lo;
+        /* grey within 2 levels: the ends of an RGB or RGBA partition taken for grey are a level apart at most
+           (SNX_ASTC_GREY_SPREAD), and each channel rounds on its own */
+        grey &= hi - lo <= 2;
         opaque &= px[i * 4 + 3] == 255;
         error &= px[i * 4] == 255 && px[i * 4 + 1] == 0 && px[i * 4 + 2] == 255 && px[i * 4 + 3] == 255;
     }
@@ -94,6 +132,27 @@ static void check_block(const u8 b[16], u32 bw, u32 bh, int srgb) {
     /* a 4x4 block that takes two ASTC blocks or more takes two lines or more of colour */
     if ((bw % 4 || bh % 4) && (kind & SNX_ASTC_CHROMA) && !(kind & SNX_ASTC_LINES))
         wrong = "colour at a footprint whose 4x4 blocks take several ASTC blocks, on one line";
+    /* what it read past the header, against the decoder: the same partitions, and each RGB or RGBA one's endpoints as
+       far apart as the decoder's */
+    SnxAstcBlockRead r;
+    int ends[4][2][4];
+    const u32 parts = astc_block_endpoints(b, bw, bh, ends);
+    (void)snx_astc_block_read(b, bw, bh, srgb, &r);
+    if (r.parts != parts) wrong = "partitions read where the decoder has none, or the other way";
+    for (u32 i = 0; i < parts && r.parts == parts; i++) {
+        const u32 m = r.cem[i];
+        if (!((m == 6 || m >= 8) && m <= 13 && m != 11)) continue;
+        u32 most = 0;
+        for (u32 e = 0; e < 2; e++) {
+            const int* c = ends[i][e] + 1;
+            const int hi = c[0] > c[1] ? (c[0] > c[2] ? c[0] : c[2]) : c[1] > c[2] ? c[1] : c[2];
+            const int lo = c[0] < c[1] ? (c[0] < c[2] ? c[0] : c[2]) : c[1] < c[2] ? c[1] : c[2];
+            if ((u32)(hi - lo) > most) most = (u32)(hi - lo);
+        }
+        if (most != r.spread[i]) wrong = "an RGB or RGBA partition's ends lie apart other than the decoder's";
+    }
+    if (!(kind & (SNX_ASTC_CHROMA | SNX_ASTC_OTHER)) && off_grey > g_astc_kind.grey_most[srgb])
+        g_astc_kind.grey_most[srgb] = off_grey;
     if (kind == SNX_ASTC_CHROMA) {
         const double off = off_line(px, n);
         if (off > g_astc_kind.off_most[srgb]) g_astc_kind.off_most[srgb] = off;
@@ -144,6 +203,42 @@ static void ise_bits(void) {
         }
     }
     puts("PASS the bits of a bounded integer sequence, every weight range, 1 to 64 values");
+    /* the colour values' encoding against the decoders' search: down from 255, the first range whose values fit,
+       each range's encoding the specification's search for it (as above) */
+    for (u32 n = 2; n <= 18; n += 2)
+        for (u32 bits = 0; bits <= 128; bits++) {
+            u32 want = 0;
+            for (u32 range = 255; range > 0; range--) {
+                u32 m = range, kind = 0, nb = 0;
+                while (m > 0) {
+                    const u32 check = m + 1;
+                    if (!(check & (check - 1))) {
+                        for (u32 v = m; v; v >>= 1) nb++;
+                        break;
+                    }
+                    if (check % 3 == 0 && !((check / 3) & (check / 3 - 1))) {
+                        kind = 3;
+                        for (u32 v = check / 3 - 1; v; v >>= 1) nb++;
+                        break;
+                    }
+                    if (check % 5 == 0 && !((check / 5) & (check / 5 - 1))) {
+                        kind = 5;
+                        for (u32 v = check / 5 - 1; v; v >>= 1) nb++;
+                        break;
+                    }
+                    m--;
+                }
+                want = kind << 8 | nb;
+                if (snx_astc_seq_bits(kind, nb, n) <= bits) break;
+            }
+            if (snx_astc_colour_range(n, bits) != want) {
+                fprintf(stderr, "FAIL %u colour values in %u bits: encoding %x, not %x\n", n, bits,
+                        snx_astc_colour_range(n, bits), want);
+                g_astc_kind.failures++;
+                return;
+            }
+        }
+    puts("PASS the colour values' encoding, 2 to 18 values in 0 to 128 bits");
 }
 
 /* where block (x, y, z) of a block linear level lies, from the layout's own words (docs/layers/gpu/blocklinear.md):
@@ -203,10 +298,44 @@ int main(void) {
                 if (f == 0 && !srgb && !kind && !have_grey) memcpy(grey, b, 16), have_grey = 1;
                 if (f == 0 && !srgb && kind == SNX_ASTC_CHROMA && !have_colour) memcpy(colour, b, 16), have_colour = 1;
             }
+    /* blocks of RGB and RGBA modes whose values make grey ends, or ends a level or two apart: their decoded texels held
+       above to the kind they are taken for */
+    for (int srgb = 0; srgb < 2; srgb++)
+        for (u32 f = 0; f < 14; f++)
+            for (u32 n = 0; n < 1500; n++) {
+                u8 b[16];
+                const u32 apart = n % 3;
+                block_grey(b, apart);
+                check_block(b, footprints[f][0], footprints[f][1], srgb);
+                if (!(snx_astc_block_kind(b, footprints[f][0], footprints[f][1], srgb) & SNX_ASTC_CHROMA)) {
+                    g_astc_kind.grey_rgb++;
+                    g_astc_kind.grey_apart += apart != 0;
+                }
+            }
+    {
+        /* RGBA direct (12) with grey ends, or G a level over R, is luminance and alpha; the control, G 2 levels over R,
+           is colour and alpha, and so are ends 2 and 4 apart */
+        const u32 v[4][8] = {{100, 200, 100, 200, 100, 200, 30, 220},
+                             {100, 200, 101, 201, 100, 200, 30, 220},
+                             {100, 200, 102, 200, 100, 200, 30, 220},
+                             {100, 200, 102, 202, 104, 204, 30, 220}};
+        for (u32 k = 0; k < 4; k++) {
+            u8 b[16];
+            block_rgb(b, 12, v[k]);
+            const u32 got = snx_astc_block_kind(b, 4, 4, 0),
+                      want = k < 2 ? SNX_ASTC_ALPHA : SNX_ASTC_CHROMA | SNX_ASTC_ALPHA;
+            if (got != want) {
+                fprintf(stderr, "FAIL RGBA direct, G %u and B %u over R: kind %u, not %u\n", v[k][2] - v[k][0],
+                        v[k][4] - v[k][0], got, want);
+                g_astc_kind.failures++;
+            }
+        }
+    }
     for (int srgb = 0; srgb < 2; srgb++) {
-        printf("srgb=%d: %u usual, %u BC4, %u BC5, %u BC1; colour on one line at most %.2f off it (squared)\n", srgb,
-               g_astc_kind.as[srgb][0], g_astc_kind.as[srgb][1], g_astc_kind.as[srgb][2], g_astc_kind.as[srgb][3],
-               g_astc_kind.off_most[srgb]);
+        printf("srgb=%d: %u usual, %u BC4, %u BC5, %u BC1; colour on one line at most %.2f off it (squared), grey at "
+               "most %u off it\n",
+               srgb, g_astc_kind.as[srgb][0], g_astc_kind.as[srgb][1], g_astc_kind.as[srgb][2], g_astc_kind.as[srgb][3],
+               g_astc_kind.off_most[srgb], g_astc_kind.grey_most[srgb]);
         /* each kind came often enough for the checks above to mean something */
         for (int as = 0; as < 4; as++)
             if (g_astc_kind.as[srgb][as] < (srgb && as == SNX_ASTC_AS_BC4   ? 0u
@@ -215,6 +344,13 @@ int main(void) {
                 fprintf(stderr, "FAIL srgb=%d: only %u blocks take format %d\n", srgb, g_astc_kind.as[srgb][as], as);
                 g_astc_kind.failures++;
             }
+    }
+    printf("blocks of RGB and RGBA modes taken for grey: %u, %u of them with ends apart in their values\n",
+           g_astc_kind.grey_rgb, g_astc_kind.grey_apart);
+    if (g_astc_kind.grey_rgb < 30000 || g_astc_kind.grey_apart < 20000) {
+        fprintf(stderr, "FAIL only %u blocks of RGB and RGBA modes taken for grey, %u with ends apart\n",
+                g_astc_kind.grey_rgb, g_astc_kind.grey_apart);
+        g_astc_kind.failures++;
     }
     if (!g_astc_kind.failures)
         puts("PASS every block's kind holds for its decoded texels, both decode modes, every footprint");
