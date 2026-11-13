@@ -3176,10 +3176,6 @@ msgid "Not in this build"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Adreno and Mali only"
-msgstr ""
-
-#: src/gui/main.c
 #, c-format
 msgid "No Vulkan loader: %s"
 msgstr ""
@@ -3239,11 +3235,7 @@ msgid "Download Driver"
 msgstr ""
 
 #: src/gui/main.c
-msgid "The driver repositories listed hold drivers for Adreno and Mali GPUs. An Xclipse GPU's driver, RADV, is added from its zip with Add Driver"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's marked proprietary, no license), NX-Mali for a Mali. One picked is downloaded and added as Add Driver adds a zip"
+msgid "Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's marked proprietary, no license), NX-Mali for a Mali, RADV for an Xclipse. One picked is downloaded and added as Add Driver adds a zip"
 msgstr ""
 
 #: src/gui/main.c

@@ -9890,15 +9890,11 @@ static const char* drivers_lack(App* app) {
            : lack == SNX_GPU_DRIVER_OLD_ANDROID ? snx_tr("Needs Android 9")
                                                 : snx_tr("Not in this build");
 }
-/* the GPUs Download Driver's repositories hold drivers for (GuiDriverRepo's gpu) this device's is, -1 for neither */
+/* the GPUs Download Driver's repositories hold drivers for (GuiDriverRepo's gpu) this device's is, -1 for none of the
+   three a package drives */
 static int fetch_gpu(App* app) {
     const SnxGpuDriverHost* host = drivers_host(app);
-    return host->kgsl ? GUI_DRIVER_ADRENO : host->mali ? GUI_DRIVER_MALI : -1;
-}
-/* the same for Download Driver, whose repositories hold drivers for Adreno and Mali GPUs alone */
-static const char* fetch_lack(App* app) {
-    const char* lack = drivers_lack(app);
-    return lack ? lack : fetch_gpu(app) >= 0 ? NULL : snx_tr("Adreno and Mali only");
+    return host->kgsl ? GUI_DRIVER_ADRENO : host->mali ? GUI_DRIVER_MALI : host->amdgpu ? GUI_DRIVER_XCLIPSE : -1;
 }
 /* the system's Vulkan driver, as GPU Drivers' System driver row says it: asked once, an instance and no device */
 static void vk_system_ask(App* app) {
@@ -10015,16 +10011,12 @@ static int drivers_fill(App* app) {
     snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Download Driver"));
     if (lack)
         snx_gpu_driver_loads(drivers_host(app), app->drivers_about[r], sizeof app->drivers_about[r]);
-    else if (fetch_lack(app))
-        snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
-                 snx_tr("The driver repositories listed hold drivers for Adreno and Mali GPUs. An Xclipse GPU's "
-                        "driver, RADV, is added from its zip with Add Driver"));
     else
         snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
                  snx_tr("Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's "
-                        "marked proprietary, no license), NX-Mali for a Mali. One picked is downloaded and added as "
-                        "Add Driver adds a zip"));
-    snprintf(f->value[r], sizeof f->value[r], "%s", fetch_lack(app) ? fetch_lack(app) : "");
+                        "marked proprietary, no license), NX-Mali for a Mali, RADV for an Xclipse. One picked is "
+                        "downloaded and added as Add Driver adds a zip"));
+    snprintf(f->value[r], sizeof f->value[r], "%s", lack ? lack : "");
     app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
                                     sizeof f->value[0], app->drivers_about[r]);
     ++r;
@@ -10082,11 +10074,10 @@ static int driver_of(const App* app, int r) {
     int i = r - app->drivers_base;
     return i >= 0 && i < (int)SDL_min(app->packages_count, (size_t)GUI_DRIVERS_SHOWN) ? i : -1;
 }
-/* a GPU Drivers row greyed: a package, Download Driver and Add Driver where no package loads, Download Driver where
-   its repositories hold no driver for the GPU */
+/* a GPU Drivers row greyed: a package, Download Driver and Add Driver where no package loads */
 static bool driver_row_off(App* app, int r) {
-    if (r == app->drivers_tail) return fetch_lack(app) != NULL;
-    return (driver_of(app, r) >= 0 || r == app->drivers_tail + 1) && drivers_lack(app) != NULL;
+    return (driver_of(app, r) >= 0 || r == app->drivers_tail || r == app->drivers_tail + 1) &&
+           drivers_lack(app) != NULL;
 }
 /* the page's note: this device's line (snx_gpu_driver_loads), whose game, the packages not listed */
 static void drivers_note(App* app) {
@@ -10333,8 +10324,9 @@ static void driver_select(App* app, int r) {
 }
 
 /* ---- GPU Drivers > Download Driver: the releases of the driver repositories for this device's GPU, Eden's for an
-   Adreno, NX-Mali for a Mali (gui/gpu_driver_fetch.h), fetched from GitHub as the page opens, as Eden's driver fetcher
-   fetches them; a release's asset picked is downloaded and added as Add Driver adds a zip ---- */
+   Adreno, NX-Mali for a Mali, radv-xclipse for an Xclipse (gui/gpu_driver_fetch.h), fetched from GitHub as the page
+   opens, as Eden's driver fetcher fetches them; a release's asset picked is downloaded and added as Add Driver adds a
+   zip ---- */
 enum { GUI_FETCH_EVENT_LIST, GUI_FETCH_EVENT_PROGRESS, GUI_FETCH_EVENT_DONE };
 /* the fetch thread's answer for a repository, or the download's, an event's data1 the main thread frees */
 typedef struct {

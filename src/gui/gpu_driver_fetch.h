@@ -1,24 +1,24 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* GPU Drivers' Download Driver, its lists as Eden's driver fetcher has them (DriverFetcherFragment.kt): the
-   repositories it asks, Eden's for an Adreno and NX-Mali for a Mali, each one's releases as GitHub's API lists them,
-   the assets of each with their links, the ones that are a GPU maker's own drivers marked, and the driver recommended
-   for a GPU: Eden's for an Adreno model, NX-Mali for a Mali it drives. No SDL, no network: the page fetches
-   (gui/main.c) */
+   repositories it asks, Eden's for an Adreno, NX-Mali for a Mali and radv-xclipse for an Xclipse, each one's releases
+   as GitHub's API lists them, the assets of each with their links, those that are no Android package left out and
+   those that are a GPU maker's own drivers marked, and the driver recommended for a GPU: Eden's for an Adreno model,
+   NX-Mali for a Mali it drives, RADV for an Xclipse it drives. No SDL, no network: the page fetches (gui/main.c) */
 #ifndef SNX_GUI_GPU_DRIVER_FETCH_H
 #define SNX_GUI_GPU_DRIVER_FETCH_H
 #include <stddef.h>
 
 /* the GPUs a repository's drivers are for */
-enum { GUI_DRIVER_ADRENO, GUI_DRIVER_MALI };
+enum { GUI_DRIVER_ADRENO, GUI_DRIVER_MALI, GUI_DRIVER_XCLIPSE };
 typedef struct {
     const char* name; /* as the page shows it */
     const char* path; /* owner/repository on GitHub */
     int tag_titles;   /* a release named by its tag, not its title */
     int by_time;      /* its releases newest first, not in the API's order */
-    int gpu;          /* GUI_DRIVER_ADRENO or GUI_DRIVER_MALI */
+    int gpu;          /* GUI_DRIVER_ADRENO, GUI_DRIVER_MALI or GUI_DRIVER_XCLIPSE */
 } GuiDriverRepo;
-#define GUI_DRIVER_REPOS 6
+#define GUI_DRIVER_REPOS 7
 extern const GuiDriverRepo gui_driver_repos[GUI_DRIVER_REPOS];
 
 typedef struct {
@@ -53,13 +53,21 @@ int gui_driver_releases_parse(const char* json, size_t n, const GuiDriverRepo* r
 void gui_driver_releases_free(GuiDriverReleases* r);
 /* 1 for an asset that is a GPU maker's own driver: every one of the GameHub repository's, and one named Qualcomm */
 int gui_driver_proprietary(const char* repo_path, const char* asset_name);
+/* 1 for an asset that is a driver package for this app: every one but radv-xclipse's other builds, named by their kind
+   before the version (radv-xclipse-glibc-<version>.zip for Linux under Termux, -wayland- for Bannerlator's Wayland
+   mode); its Android package's name has the version alone (radv-xclipse-27.0.0-devel-cc87fdf.zip) */
+int gui_driver_android_package(const char* repo_path, const char* asset_name);
 /* the Adreno model of a GPU's Vulkan name ("Adreno (TM) 830": 830, "Adreno (TM) A32": 32), 0 for another GPU */
 int gui_adreno_model(const char* gpu_name);
 /* the Mali model of a GPU's Vulkan name, as Arm's driver names it ("Mali-G615 MC6": 615, "Mali-G78AE": 78,
    "Mali-G715-Immortalis MC11": 715), 0 for another GPU */
 int gui_mali_model(const char* gpu_name);
+/* the Xclipse model of a GPU's Vulkan name, as Samsung's driver names it ("Samsung Xclipse 940": 940), 0 for another
+   GPU */
+int gui_xclipse_model(const char* gpu_name);
 /* the driver recommended for the GPU of that Vulkan name, as the page says it: Eden's for an Adreno model ("GameHub
-   Adreno 8xx"), NX-Mali for a Mali it gives Vulkan 1.3; "Unsupported" for none */
+   Adreno 8xx"), NX-Mali for a Mali it gives Vulkan 1.3, RADV Xclipse for an Xclipse it drives; "Unsupported" for
+   none */
 const char* gui_driver_recommended(const char* gpu_name);
 /* that driver among repository repo's releases (gui_driver_repos' index), listed in list: its index there, -1 when the
    recommendation is another repository's, none, or a release list does not have */
