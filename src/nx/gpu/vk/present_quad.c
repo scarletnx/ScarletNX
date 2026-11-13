@@ -168,7 +168,10 @@ int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw
         vkUpdateDescriptorSets(g_vk.dev, 1, &write, 0, NULL);
         vk_defer_image(VK_NULL_HANDLE, 0, from, VK_NULL_HANDLE);
     }
-    *out = (SnxPresentSource){.set = set, .view = from, .width = source->sw, .height = source->sh};
+    /* an sRGB view reads linear light: an sRGB format is not its own UNORM twin */
+    VkFormat format = raw ? vk_srgb_as(source->f.vk, 0) : source->f.vk;
+    *out = (SnxPresentSource){
+        .set = set, .view = from, .light = vk_srgb_as(format, 0) != format, .width = source->sw, .height = source->sh};
     return 1;
 }
 int vk_present_quad_draw(VkCommandBuffer cb, const SnxPresentSource* s, VkFormat format, VkRect2D source_rect,
@@ -271,6 +274,7 @@ int vk_present_quad_effects(VkCommandBuffer cb, SnxPresentSource* s, VkRect2D* c
         snx_fx_set_sharpness(g_present_quad.fx, g_present_quad.sharpness);
         snx_fx_set_fp16(g_present_quad.fx, g_shader_float16);
     }
+    snx_fx_set_light(g_present_quad.fx, s->light);
     /* the passes record on cb at once, where the commands queued for the recording thread (vk_rec_call) come after
        what they read: the ring drained, every one of those is in cb */
     vk_rec_sync();
@@ -292,7 +296,7 @@ int vk_present_quad_effects(VkCommandBuffer cb, SnxPresentSource* s, VkRect2D* c
                                   .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                   .pImageInfo = &image};
     vkUpdateDescriptorSets(g_vk.dev, 1, &write, 0, NULL);
-    *s = (SnxPresentSource){.set = set, .view = out.view, .width = out.width, .height = out.height};
+    *s = (SnxPresentSource){.set = set, .view = out.view, .light = s->light, .width = out.width, .height = out.height};
     *crop = (VkRect2D){{0, 0}, {out.width, out.height}};
     return 1;
 }

@@ -6,6 +6,7 @@
 #include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/vk_common.h"
+#include "support/fxaa_ref.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -679,6 +680,83 @@ int main(int argc, char** argv) {
             CHECK(!bad);
             image_free(&t, &flat[i]);
         }
+    }
+    /* FXAA against its CPU reference (support/fxaa_ref.c, the shader step for step): a picture of a triangle's
+       shallow and steep edges, a circle and a nearly level line over flat colours and a gradient. A pixel with no edge
+       in its taps keeps its colour; an edge pixel is the reference's colour, or the other pair of taps' where its luma
+       sits at the range's end, within what the device's bilinear weights (subTexelPrecisionBits) differ by; and a
+       third of the edge pixels change at least */
+    {
+        enum { PW = 96, PH = 64 };
+        static unsigned char pic[PW * PH * 4], edge[PW * PH];
+        static float want[PW * PH * 4], other[PW * PH * 4];
+        VkPhysicalDeviceProperties props;
+        Image picture = {0};
+        SnxFxImage out = {0};
+        VkCommandBuffer cb;
+        uint64_t serial;
+        unsigned char* got;
+        unsigned bits, tolerance, edges = 0, changed = 0, worst = 0;
+        for (unsigned y = 0; y < PH; ++y)
+            for (unsigned x = 0; x < PW; ++x) {
+                unsigned char* px = pic + (y * PW + x) * 4;
+                unsigned grey = x < PW / 2 ? 40u : 60u + (x - PW / 2) * 2u;
+                float dx = (float)x - 70.5f, dy = (float)y - 30.5f;
+                px[0] = px[1] = px[2] = (unsigned char)grey;
+                px[3] = 255;
+                if (y >= 8 && y < 56 && (int)x >= 8 + (int)(56 - y) / 3 && x < 8 + (y - 8) + 4)
+                    px[0] = px[1] = px[2] = 230;
+                if (dx * dx + dy * dy < 15.0f * 15.0f) px[0] = 220, px[1] = 30, px[2] = 30;
+                if (y == 58 + x / 24) px[0] = px[1] = px[2] = 250;
+            }
+        fxaa_ref(pic, PW, PH, want, other, edge);
+        vkGetPhysicalDeviceProperties(t.phys, &props);
+        bits = props.limits.subTexelPrecisionBits;
+        tolerance = 1u + (255u + (1u << bits) - 1u) / (1u << bits);
+        CHECK(image_make(&t, &picture, PW, PH, VK_FORMAT_R8G8B8A8_UNORM,
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
+        CHECK(upload(&t, &picture, pic));
+        cb = snx_vk_ring_commands(&t.ring);
+        CHECK(snx_fx_render(fx, cb, 0, picture.view, PW, PH, 0, 0, PW, PH, 0, PW, PH, SNX_FX_UPSCALE_OFF,
+                            SNX_FX_AA_FXAA, &out));
+        serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+        CHECK(out.width == PW && out.height == PH);
+        got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, PW, PH);
+        CHECK(got);
+        for (unsigned i = 0; i < PW * PH; ++i) {
+            const unsigned char *g = got + i * 4, *p = pic + i * 4;
+            unsigned d = 0, alternative = 0;
+            if (!edge[i]) {
+                if (memcmp(g, p, 3))
+                    fprintf(stderr, "present_fx: FXAA, pixel (%u, %u) with no edge: %u %u %u, the picture's %u %u %u\n",
+                            i % PW, i / PW, g[0], g[1], g[2], p[0], p[1], p[2]);
+                CHECK(!memcmp(g, p, 3));
+                continue;
+            }
+            ++edges;
+            changed += memcmp(g, p, 3) != 0;
+            for (int c = 0; c < 3; ++c) {
+                int w = (int)lrintf(fminf(fmaxf(want[i * 4 + c], 0.0f), 1.0f) * 255.0f);
+                int o = (int)lrintf(fminf(fmaxf(other[i * 4 + c], 0.0f), 1.0f) * 255.0f);
+                unsigned dw = (unsigned)abs((int)g[c] - w), dob = (unsigned)abs((int)g[c] - o);
+                d = dw > d ? dw : d;
+                alternative = dob > alternative ? dob : alternative;
+            }
+            d = alternative < d ? alternative : d;
+            worst = d > worst ? d : worst;
+            if (d > tolerance)
+                fprintf(stderr, "present_fx: FXAA, edge pixel (%u, %u): %u %u %u, %u off the reference (%u allowed)\n",
+                        i % PW, i / PW, g[0], g[1], g[2], d, tolerance);
+            CHECK(d <= tolerance);
+        }
+        free(got);
+        image_free(&t, &picture);
+        fprintf(stderr,
+                "present_fx: FXAA: %u of %u pixels at an edge, %u smoothed, each within %u of the reference (%u "
+                "allowed, %u sub-texel bits)\n",
+                edges, PW * PH, changed, worst, tolerance, bits);
+        CHECK(edges >= 200 && changed * 3 >= edges);
     }
     /* FXAA and SMAA over a staircase, a dark half under a slope of one pixel up for two across: the steps' pixels
        take values between the two sides, where the frame has none */

@@ -76,6 +76,9 @@ void snx_fx_destroy(SnxFx* fx);
 void snx_fx_set_sharpness(SnxFx* fx, int sharpness);
 /* the device's shaderFloat16, for FSR 1's fp16 passes where it runs */
 void snx_fx_set_fp16(SnxFx* fx, int on);
+/* whether the frames snx_fx_render is given hold linear light (read through an sRGB view): FXAA then judges an edge
+   by the luma the display shows. 0, values as encoded, until set */
+void snx_fx_set_light(SnxFx* fx, int linear);
 
 /* Auto anti aliasing: 1 where the shown rectangle is at least 1.25 times the rendered frame in each direction, so
    the upscale makes its edges visible, and where it is not smaller (a downscale already smooths). */

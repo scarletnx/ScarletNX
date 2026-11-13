@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
-// Fast approximate anti-aliasing of the picture a window shows (the anti_aliasing setting), the same for the Switch's
-// presenter (nx/gpu/vk/present_quad.frag) and the 3DS's (3ds/gpu/vk/shaders/fxaa.comp). Where the luma at a point and
+// Fast approximate anti-aliasing of the picture a window shows (the anti_aliasing setting): the shared effects' FXAA
+// pass (common/gpu/vk/fx/fxaa.frag), for the Switch's, the 3DS's and the Vita's windows. Where the luma at a point and
 // at its four diagonal neighbours a pixel away spans enough to be an edge, the colour there is blurred along the edge:
 // two pairs of taps along the edge's direction, the wider pair kept while its luma stays inside the neighbourhood's
 // range. Every tap is one bilinear fetch of image, which takes a linear sampler that clamps to the edge. A point is in
