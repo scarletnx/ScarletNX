@@ -2673,6 +2673,19 @@ static u32 quad_read(Ctx* c, u32 value, u32 g4, u32 p) {
     return warp_read(c, value, spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, g4, cu(c, p)));
 }
 static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, bits); }
+void shader_hmma_way(char* out, size_t n) {
+    const char* how = g_shader_hmma_stage ? "A and B through a warp's slot of shared memory"
+                      : g_shader_hmma_pairs && g_shader_quad_compute
+                          ? "A by quad broadcasts, B shared by pairs of lanes"
+                      : g_shader_hmma_pairs   ? "A by shuffles, B shared by pairs of lanes"
+                      : g_shader_quad_compute ? "A by quad broadcasts, B by shuffles"
+                                              : "A and B by shuffles";
+    snprintf(out, n, "%s%s, the products %s",
+             g_shader_hmma_coop ? "the device's cooperative matrices where a program's blocks are whole warps and "
+                                  "their fragments fit in shared memory, else "
+                                : "",
+             how, g_shader_mixed_dot && g_shader_float16 ? "by the mixed dot product into f32" : "unpacked to f32");
+}
 /* A zero for an HMMA to OR its B registers with before it gathers them, a new one every 8 HMMAs, so that a driver
    doesn't keep a B fragment's 16 gathered words live from its first HMMA to its last. Mesa merges identical subgroup
    operations within a block, and one game's video upscaler multiplies one B fragment by many A ones, far apart: with

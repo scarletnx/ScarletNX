@@ -1363,6 +1363,11 @@ static int create_device(void) {
     g_shader_hmma_stage = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) && !g_shader_quad_compute
                               ? (int)g_vk.props.limits.maxComputeSharedMemorySize
                               : 0;
+    if (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) {
+        char way[256];
+        shader_hmma_way(way, sizeof way);
+        LOG("vulkan: an SM86 compute program's HMMA: %s\n", way);
+    }
     /* shaderDenormPreserveFloat16 is the device's word that it can keep f16 subnormals: without it an SM86 program
        packs those by hand (sm86_translate.c's pack_half), as Turnip on an Adreno 610 flushed them to zero */
     g_shader_half_flush = !p12.shaderDenormPreserveFloat16;

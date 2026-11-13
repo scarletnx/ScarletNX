@@ -4172,6 +4172,35 @@ static void test_warp_matrix_flush(const char* dir) {
     }
 }
 
+/* the way the log says a device's compute HMMAs take (shader_hmma_way), from the flags device.c sets */
+static void test_hmma_way(void) {
+    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16,
+        pairs_was = g_shader_hmma_pairs, stage_was = g_shader_hmma_stage, coop_was = g_shader_hmma_coop;
+    static const struct {
+        int quad, mixed, pairs, stage, coop;
+        const char* want;
+    } cases[] = {
+        {1, 1, 1, 0, 0,
+         "A by quad broadcasts, B shared by pairs of lanes, the products by the mixed dot product into f32"},
+        {1, 0, 0, 0, 0, "A by quad broadcasts, B by shuffles, the products unpacked to f32"},
+        {0, 0, 0, 65536, 0, "A and B through a warp's slot of shared memory, the products unpacked to f32"},
+        {1, 1, 0, 0, 65536,
+         "the device's cooperative matrices where a program's blocks are whole warps and their "
+         "fragments fit in shared memory, else A by quad broadcasts, B by shuffles, the products by the "
+         "mixed dot product into f32"},
+    };
+    for (size_t k = 0; k < sizeof cases / sizeof *cases; k++) {
+        g_shader_quad_compute = cases[k].quad, g_shader_mixed_dot = cases[k].mixed, g_shader_float16 = 1;
+        g_shader_hmma_pairs = cases[k].pairs, g_shader_hmma_stage = cases[k].stage, g_shader_hmma_coop = cases[k].coop;
+        char way[256];
+        shader_hmma_way(way, sizeof way);
+        if (strcmp(way, cases[k].want)) fprintf(stderr, "HMMA way %zu: \"%s\", wanted \"%s\"\n", k, way, cases[k].want);
+        CHECK(!strcmp(way, cases[k].want));
+    }
+    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
+    g_shader_hmma_pairs = pairs_was, g_shader_hmma_stage = stage_was, g_shader_hmma_coop = coop_was;
+}
+
 /* the memory model a module declares (OpMemoryModel's: 1 GLSL450, 3 Vulkan), whether it declares a capability, and
    how many OpDecorates of a decoration it has */
 static u32 spv_memory_model(const u32* words, size_t count) {
@@ -4398,6 +4427,7 @@ int main(int argc, char** argv) {
     test_warp_matrix(dir);
     test_warp_matrix_values(dir);
     test_warp_matrix_flush(dir);
+    test_hmma_way();
     test_warp_matrix_coop(dir);
     test_ftz_modes(dir);
     if (failures) {
