@@ -9,7 +9,9 @@
    the SDK made goes back to the SDK's own code in both. A file's time stamps on a save's mount, MountHost's
    refusal in both games, and IsMounted, which a native mount answers. The RomFS of the program at an index: this
    program's, answered natively, and with "other-program" the stop for another program's. Commit of several mounts,
-   and with "commit-null" and "commit-eleven" its stops on no array and on more than 10 mounts */
+   and with "commit-null" and "commit-eleven" its stops on no array and on more than 10 mounts. A file handle's low
+   bits, which a game may use as a pointer's and mask off, and with "handle-flags" the stop for a handle passed with
+   them */
 #include "nx/nn/fs.c"
 #include "hle/hook/hooks.hook.inc" /* fs.hook's table, and a 32-bit game's */
 #include <stdarg.h>
@@ -283,7 +285,9 @@ int main(int argc, char** argv) {
     nnfs_init();
     image(game_image, 4);
     image(data_image_bytes, 12);
-    if (argc > 1) { /* the stops: the RomFS of a program that is not this one, a Commit of no array or of 11 mounts */
+    /* the stops: the RomFS of a program that is not this one, a Commit of no array or of 11 mounts; handle-flags's
+       comes once a file is open, below */
+    if (argc > 1 && strcmp(argv[1], "handle-flags")) {
         if (!strcmp(argv[1], "other-program")) nnfs_query_mount_rom_cache_size_program(c, RESULT, 1);
         if (!strcmp(argv[1], "commit-null")) nnfs_commit_names(c, 0, 1);
         if (!strcmp(argv[1], "commit-eleven")) nnfs_commit_names(c, NAMES, 11);
@@ -444,7 +448,23 @@ int main(int argc, char** argv) {
         before = paced;
         CHECK(nnfs_read_file(c, RESULT, 0x5000, 0, 0x600, 16) == 0x77 && own(SYM_READ_FILE, 10)); /* the SDK's */
         CHECK(paced == before); /* the SDK's own read is not timed here */
-        nnfs_close_file(c, h);
+        /* a handle keeps its low 4 bits clear, as the console's pointer does: a game that keeps flags there and masks
+           them off before CloseFile closes the file it opened, in every slot, so the mount has none left at Unmount */
+        u64 more[9];
+        more[0] = h;
+        for (int k = 1; k < 9; k++) {
+            CHECK(nnfs_open_file(c, RESULT, PATH, 1) == 0);
+            more[k] = snx_ld_le64(mem + RESULT);
+            CHECK(more[k] >> 63 && (more[k] & 0xf) == 0 && more[k] != more[k - 1]);
+        }
+        if (argc > 1 &&
+            !strcmp(argv[1], "handle-flags")) { /* a handle passed back with a flag of the game's: the stop */
+            nnfs_close_file(c, more[1] | 4);
+            puts("nn_fs: a handle with its low bits set was closed");
+            return 1;
+        }
+        for (int k = 8; k >= 0; k--) nnfs_close_file(c, (more[k] | 5) & ~(u64)7);
+        CHECK((LIST_HANDLE & 0xf) == 0);
     }
     nnfs_unmount(c, NAME);
 
