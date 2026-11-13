@@ -1432,16 +1432,14 @@ static u64 fs_pace_ns(TlsFs* t, const void* storage, u64 off, u64 sz) {
     t->next = off + sz;
     return stream && sz <= FS_PACE_MAX_BYTES ? sz * 1000000000ull / FS_PACE_BYTES_PER_S : 0;
 }
-void fs_pace_read(const void* storage, u64 off, u64 sz) {
+u64 fs_pace_read(const void* storage, u64 off, u64 sz) {
     u64 ns = fs_pace_ns(&t_hle.fs, storage, off, sz);
-    if (!ns) return;
-    if (!__atomic_exchange_n(&g_host.fs.pace_told, 1, __ATOMIC_RELAXED))
+    if (ns && !__atomic_exchange_n(&g_host.fs.pace_told, 1, __ATOMIC_RELAXED))
         LOG("fs: storage reads of up to %u bytes that go on where the thread's last one ended take a console's time "
             "from here, %u bytes a second (this one %llu bytes, %llu us)\n",
             FS_PACE_MAX_BYTES, FS_PACE_BYTES_PER_S, (unsigned long long)sz, (unsigned long long)(ns / 1000));
-    plat_sleep_ns((i64)ns);
+    return ns;
 }
-
 
 static int file_truncate(FILE* f, u64 n, u64* actual) {
     if (fflush(f)) return -1;

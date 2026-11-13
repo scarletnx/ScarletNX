@@ -44,9 +44,10 @@ int fs_aoc_has(u64 id);
 size_t fs_dlcs(const u64** ids);
 /* the programs of this program's application, as its dump read in place says them: -1 when no dump says */
 int fs_program_count(void);
-/* a game's read of [off, off + sz) of a storage (a RomFS image), once it is done: one that goes on where the thread's
-   last read of that storage ended waits a console's time for its bytes (fs.c's fs_pace_ns) */
-void fs_pace_read(const void* storage, u64 off, u64 sz);
+/* a game's read of [off, off + sz) of a storage (a RomFS image), once it is done: the ns it waits for a console's time
+   for its bytes when it goes on where the thread's last read of that storage ended (fs.c's fs_pace_ns), else 0. The
+   caller waits them off the thread's core, as the console's storage read blocks the thread and frees its core */
+u64 fs_pace_read(const void* storage, u64 off, u64 sz);
 u8* fs_read_file(const char* path, u64* size);    /* malloc'd, or NULL */
 /* a file of the game's HtmlDocument content (the pages its web applet shows), by its path under html-document/,
    malloc'd: NULL when the game has no dump open, or the dump no such content or file */
