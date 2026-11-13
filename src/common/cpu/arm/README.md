@@ -188,6 +188,19 @@ width (0x200 | 2 for LDRSH)
 and return the value, writes pass 0x100 | width and the value. No other profile reads `io`. `tests/arm7tdmi_test.py`
 runs each rule under both profiles.
 
+## Opt-in ARM946E-S profile
+
+`SNX_ARM_PROFILE_ARM946E` is the NDS's main CPU (`src/nds/`), ARMv5TE on flat memory only. It decodes as A57 does
+with ARMv6's and later instructions UNDEFINED, ARMv5TE's unconditional space being BLX and PLD alone, and Thumb's
+BL as two 16-bit instructions with ARMv5's BLX suffix and BKPT. An MSR that writes the control or extension byte is
+UNDEFINED, for the board's runtime to run through `SnxArmRt.undefined` with the banked registers, as is everything
+else the system owns (MRS of the SPSR, SWP, the exception returns). Its blocks keep the ARM7TDMI's bus rules where
+ARMv5 has them: a misaligned word load rotates, stores align, STR and STM of the PC store PC + 12, and LDM, STM, PUSH
+and POP take an unaligned base. They differ where ARMv5 does: a load to the PC takes the state from bit 0 (POP {pc}
+too), an ALU write to the PC stays in its state, a halfword load reads its aligned unit without the rotation or the
+signed byte, and STM stores the base as it was. `SnxArmCPU.io` sees the I/O window alone, the addresses whose top
+byte is 0x04, and every other address is the window's memory.
+
 ## Implemented instructions (default A57/flat configuration)
 
 - Word/byte LDR and STR, immediate and shifted-register offsets, positive/negative offsets, pre/post indexing, writeback and unprivileged aliases. Stores, like loads, take the PC (PC+8) as their base without writeback.
