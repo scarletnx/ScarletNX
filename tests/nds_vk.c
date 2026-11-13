@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The NDS's picture on the Vulkan device, with no window: a background of one tile composed by the 2D engines' pass, a
    triangle drawn by the 3D engine's and shown as BG0 (filled, as a wireframe, as a line, anti-aliased, and over a
-   clear bitmap), and a display capture read back into its VRAM bank. The frames
+   clear bitmap), a display capture read back into its VRAM bank, an object under a mosaic and the main memory
+   display. The frames
    are read back and their pixels compared. No game's data. Exits 77 where the host has no Vulkan 1.3 device. */
 #include "nds/board/nds.h"
 #include "nds/gpu/gpu3d.h"
@@ -183,6 +184,41 @@ int main(void) {
     CHECK(is_color(pixel(0, 12, 18), 251, 0, 0) && is_color(pixel(0, 20, 20), 0, 255, 0));
     CHECK(is_color(pixel(0, 120, 108), 0, 255, 0) && is_color(pixel(0, 128, 110), 0, 0, 255));
     nds_io_write(board, IO + 0x060, 2, 0);
+
+    /* an object of engine A, 8 by 8 at (100, 50): its first column red, the rest green. With its mosaic bit and a
+       mosaic 4 wide, each block of 4 shows the object's pixel at the block's start */
+    nds_io_write(board, IO + 0x241, 1, 0x82); /* bank B: engine A's objects */
+    snx_st_le16(w + 0x05000202, 0x001F);
+    snx_st_le16(w + 0x05000204, 0x03E0);
+    for (unsigned row = 0; row < 8; ++row) snx_st_le32(w + 0x06400000 + row * 4, 0x22222221);
+    for (unsigned n = 0; n < 128; ++n) snx_st_le16(w + 0x07000000 + n * 8, 0x0200); /* the others not shown */
+    snx_st_le16(w + 0x07000000, 50);
+    snx_st_le16(w + 0x07000002, 100);
+    snx_st_le16(w + 0x07000004, 0);
+    nds_io_write(board, IO + 0x000, 4, 0x00011200); /* BG1 and the objects */
+    nds_io_write(board, IO + 0x04C, 2, 3 << 8);
+    frame(board);
+    CHECK(nds_vk_frame_read(g_frame));
+    CHECK(is_color(pixel(0, 100, 50), 251, 0, 0) && is_color(pixel(0, 101, 50), 0, 251, 0)); /* no mosaic bit */
+    snx_st_le16(w + 0x07000000, 50 | 0x1000);
+    frame(board);
+    CHECK(nds_vk_frame_read(g_frame));
+    CHECK(is_color(pixel(0, 101, 50), 251, 0, 0) && is_color(pixel(0, 103, 50), 251, 0, 0));
+    CHECK(is_color(pixel(0, 104, 50), 0, 251, 0) && is_color(pixel(0, 107, 57), 0, 251, 0));
+    nds_io_write(board, IO + 0x04C, 2, 0);
+    /* the main memory display: a DMA channel sends a frame from main memory to the display's FIFO, a line at each
+       visible line. The frame is blue with a green pixel at (7, 3) */
+    for (unsigned i = 0; i < 256 * 192; ++i) snx_st_le16(w + 0x02100000 + i * 2, 0x7C00);
+    snx_st_le16(w + 0x02100000 + (3 * 256 + 7) * 2, 0x03E0);
+    nds_io_write(board, IO + 0x0B0, 4, 0x02100000);
+    nds_io_write(board, IO + 0x0B4, 4, IO + 0x068);
+    nds_io_write(board, IO + 0x0B8, 4, 0x80000000u | 4u << 27 | 1u << 26 | 2u << 21 | 0x6000);
+    nds_io_write(board, IO + 0x000, 4, 0x00030000);
+    frame(board);
+    frame(board);
+    CHECK(nds_vk_frame_read(g_frame));
+    CHECK(is_color(pixel(0, 0, 0), 0, 0, 251) && is_color(pixel(0, 255, 191), 0, 0, 251));
+    CHECK(is_color(pixel(0, 7, 3), 0, 251, 0) && is_color(pixel(0, 8, 3), 0, 0, 251));
 
     nds_board_free(board);
     free(board);

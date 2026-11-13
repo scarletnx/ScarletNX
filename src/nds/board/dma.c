@@ -95,22 +95,32 @@ static void run(NdsBoard* board, unsigned channel) {
     if (control & (1u << 30)) nds_irq(board, NDS_IRQ_DMA0 + channel);
 }
 
+/* words of the channel's count now, and the channel left on for the rest. All of it when no more is left */
+static void run_part(NdsBoard* board, unsigned channel, uint32_t words) {
+    NdsDma* d = &board->dma[channel];
+    uint32_t control = d->control, left = d->left;
+    if (words >= left) {
+        run(board, channel);
+        return;
+    }
+    d->left = words;
+    d->control |= 1u << 25; /* more to come: the channel stays on */
+    d->control &= ~(1u << 30);
+    run(board, channel);
+    d->control = control;
+    d->left = left - words;
+    d->running = 1;
+}
+
 /* The card's words go to a channel as long as the card has them. A channel that repeats takes its count again each
    time (the SDK reads a block of 512 bytes with a count of one word), and one whose count is more than the block
    stays on for the next */
 static void card_feed(NdsBoard* board, unsigned channel) {
     NdsDma* d = &board->dma[channel];
     while (d->running && (d->control >> 31) && board->card_left >= 4) {
-        uint32_t words = board->card_left / 4, left = d->left;
-        if (words < left) {
-            uint32_t control = d->control;
-            d->left = words;
-            d->control |= 1u << 25; /* more to come: the channel stays on */
-            d->control &= ~(1u << 30);
-            run(board, channel);
-            d->control = control;
-            d->left = left - words;
-            d->running = 1;
+        uint32_t words = board->card_left / 4;
+        if (words < d->left) {
+            run_part(board, channel, words);
             return;
         }
         run(board, channel);
@@ -144,6 +154,8 @@ void nds_dma_trigger(NdsBoard* board, unsigned when) {
         if (!d->running || (d->control >> 27 & 7) != when) continue;
         if (when == NDS_DMA_CARD)
             card_feed(board, channel);
+        else if (when == NDS_DMA_DISPLAY)
+            run_part(board, channel, NDS_SCREEN_WIDTH / 2); /* a line's pixels, two to a word */
         else
             run(board, channel);
     }

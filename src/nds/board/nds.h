@@ -113,6 +113,10 @@ struct NdsBoard {
     uint16_t lcd[2][0x38];
     int32_t affine_x[2][2], affine_y[2][2]; /* BG2's and BG3's reference points as the line counts them on */
     uint8_t window_y[2][2];                 /* each window's vertical flag: inside its lines */
+    /* the main memory display: the frame's pixels as a DMA channel feeds them to DISP_MMEM_FIFO, a line of 256 at each
+       visible line, and where the next two go */
+    uint16_t main_display[NDS_SCREEN_HEIGHT * NDS_SCREEN_WIDTH];
+    uint32_t main_display_at;
     NdsLine lines[2][NDS_SCREEN_HEIGHT];
     uint8_t vramcnt[NDS_VRAM_BANKS], wramcnt;
     uint16_t exmemcnt;

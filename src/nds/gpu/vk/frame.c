@@ -117,6 +117,7 @@ void nds_vk_frame_compose(NdsBoard* board) {
         else
             memset(stage + NDS_VK_LCDC + bank * 0x20000u, 0, 0x20000);
     }
+    memcpy(stage + NDS_VK_MAIN, board->main_display, sizeof board->main_display);
     memcpy(stage + NDS_VK_2D_BYTES, board->lines, NDS_VK_LINES_BYTES);
     VkBufferCopy copies[2] = {{0, 0, NDS_VK_2D_BYTES}, {NDS_VK_2D_BYTES, 0, NDS_VK_LINES_BYTES}};
     vkCmdCopyBuffer(cb, g_frame.staging[v->ring.slot].buffer, g_frame.vram.buffer, 1, &copies[0]);

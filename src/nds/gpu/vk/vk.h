@@ -24,7 +24,9 @@
 #define NDS_VK_PALETTE   0x114000u
 #define NDS_VK_OAM       0x114800u
 #define NDS_VK_LCDC      0x120000u
-#define NDS_VK_2D_BYTES  0x1A0000u
+/* the main memory display's frame, 256 by 192 pixels of 16 bits */
+#define NDS_VK_MAIN      0x1A0000u
+#define NDS_VK_2D_BYTES  0x1B8000u
 #define NDS_VK_LINES_BYTES (2u * NDS_SCREEN_HEIGHT * NDS_LINE_WORDS * 4u)
 /* the 3D engine's copy: the texture space, then the texture palettes (shaders/texture.glsl) */
 #define NDS_VK_TEXPAL    0x080000u
