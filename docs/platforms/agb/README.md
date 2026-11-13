@@ -231,6 +231,14 @@ generator computed ends in the loop after its tests with "End of testing" alone
 on its top line; one that met a difference waits for a key with the instruction
 on its screen.
 
+With `-DSNX_TEST_AGB_MGBA_SUITE=ON` it downloads mGBA's test suite too (the ROM of
+mgba-emu/suite `e694203`, pinned in scarletnx/mgba-suite-rom's release), its 13
+sections each a test, `agb_mgba_<section>`, labelled `mgba-suite`
+(`tests/agb_mgba_suite.py`). Its results were measured on the console; a section
+short of all of them passes at the count it reaches today, its issue named, and
+fails at any other. It is off by default: the 13 take about 90 s.
+
 ```sh
 ctest --test-dir build/agb -R 'agb_(gba|fuzzarm)'
+ctest --test-dir build/agb -L mgba-suite    # with SNX_TEST_AGB_MGBA_SUITE=ON
 ```
