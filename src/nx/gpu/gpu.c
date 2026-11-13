@@ -409,9 +409,10 @@ void i2m_data(GpuChannel* ch, u32 v) {
 /* the 3D state a channel starts from: zero, but for what games expect without setting it (Eden's
    InitializeRegisterDefaults), and ScarletNX's own: color masks enabled (two games never write them), sRGB writes
    on (framebuffer_srgb, else sRGB targets come out too dark), the render enable TRUE and its override
-   USE_RENDER_ENABLE (deko3d never writes it), and the tessellation levels 1, as the NVN path starts them (a patch
-   drawn without a control program before any level is set is not culled). The registers and their values are
-   Eden's Maxwell3D::Regs fields and enums (maxwell_3d_regs.h) */
+   USE_RENDER_ENABLE (deko3d never writes it), the tessellation levels 1, as the NVN path starts them (a patch
+   drawn without a control program before any level is set is not culled), and every sample in the sample masks, as
+   deko3d starts them (a draw before any mask is set writes them all). The registers and their values are Eden's
+   Maxwell3D::Regs fields and enums (maxwell_3d_regs.h) */
 static void reset_3d(u32* r) {
     static const float one = 1.0f;
     u32 i, f1;
@@ -453,6 +454,7 @@ static void reset_3d(u32* r) {
     r[MAXWELL3D_GL_CULL_FACE] = MAXWELL3D_CULL_FACE_BACK;
     r[MAXWELL3D_POINT_SIZE] = f1;
     for (i = 0; i < 6; i++) r[MAXWELL3D_TESS_LEVELS + i] = f1;
+    for (i = 0; i < 4; i++) r[MAXWELL3D_SAMPLE_MASK + i] = 0xFFFF;
     for (i = 0; i < MAXWELL3D_NUM_VERTEX_ATTRIBUTES; i++)
         r[MAXWELL3D_VERTEX_ATTRIB_FORMAT + i] = MAXWELL3D_VERTEX_ATTRIB_CONSTANT; /* constant until set */
     r[MAXWELL3D_RASTERIZE_ENABLE] = 1;
