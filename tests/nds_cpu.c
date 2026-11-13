@@ -65,6 +65,54 @@ static uint64_t run(const NdsRom* rom, const char* module, unsigned frames) {
     return from_module;
 }
 
+/* LDM with its base in the list and writeback, as the ARM946E-S (ARMv5) runs it: the base written back when it is the
+   list's only register or not its last, the loaded value when it is the last. Assembled at 0x02000000:
+           mov r4, #0x02100000
+           add r0, r4, #0x40
+           mov r1, #0x11
+           str r1, [r0]
+           mov r1, #0x22
+           str r1, [r0, #4]
+           ldmia r0!, {r0, r1}      @ r0 not last: 0x02100048
+           str r0, [r4]
+           str r1, [r4, #4]         @ 0x22
+           add r2, r4, #0x40
+           ldmia r2!, {r2}          @ the only one: 0x02100044
+           str r2, [r4, #8]
+           add r3, r4, #0x40
+           ldmia r3!, {r1, r3}      @ r3 last: what it loaded, 0x22
+           str r3, [r4, #12]
+   loop:   b loop */
+static const uint32_t ldm_program[] = {0xE3A04621, 0xE2840040, 0xE3A01011, 0xE5801000, 0xE3A01022, 0xE5801004,
+                                       0xE8B00003, 0xE5840000, 0xE5841004, 0xE2842040, 0xE8B20004, 0xE5842008,
+                                       0xE2843040, 0xE8B3000A, 0xE584300C, 0xEAFFFFFE};
+static void test_ldm_base_in_list(const char* dir) {
+    char error[512] = "", note[512] = "";
+    char* image = snx_path_join(dir, "ldm.nds");
+    CHECK(image && nds_test_image(image, ldm_program, sizeof ldm_program / sizeof *ldm_program));
+    NdsRom rom;
+    CHECK(nds_rom_open(&rom, image, error, sizeof error));
+    NdsBoard* board = calloc(1, sizeof *board);
+    NdsCpu* cpu = calloc(1, sizeof *cpu);
+    CHECK(board && cpu && nds_board_init(board, &rom, error, sizeof error));
+    NdsRecomp* recomp = nds_recomp_new(&rom, NULL, note, sizeof note);
+    CHECK(recomp && !note[0]);
+    nds_cpu_init(cpu, board, recomp);
+    if (nds_cpu_run_frame(cpu, error, sizeof error)) {
+        fprintf(stderr, "the machine stopped: %s\n", error);
+        exit(1);
+    }
+    CHECK(result(board, 0) == 0x02100048u && result(board, 1) == 0x22);
+    CHECK(result(board, 2) == 0x02100044u);
+    CHECK(result(board, 3) == 0x22);
+    nds_recomp_free(recomp);
+    nds_board_free(board);
+    nds_rom_close(&rom);
+    free(cpu);
+    free(board);
+    free(image);
+}
+
 int main(void) {
     char error[512] = "";
     char* dir = snx_temp_dir(NULL);
@@ -89,6 +137,7 @@ int main(void) {
     CHECK(nds_module_current(module, &rom));
     CHECK(run(&rom, module, 12) >= 8);
     nds_rom_close(&rom);
+    test_ldm_base_in_list(dir);
     (void)snx_remove_tree(dir);
     free(module);
     free(image);
