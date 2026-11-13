@@ -137,7 +137,7 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     target_link_libraries(snx_vk_common PUBLIC Vulkan::Headers SDL3::SDL3 scarletnx-common)
     # the spatial upscalers and the anti aliasing (gpu/vk/present_fx.c, gpu/vk/fx/)
     include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
-    foreach(pair IN ITEMS "fsr.vert=fx_fsr_vert" "copy.frag=fx_copy" "copy_linear.frag=fx_copy_linear"
+    foreach(pair IN ITEMS "fsr.vert=fx_fsr_vert" "copy.frag=fx_copy"
                           "fsr_easu.frag=fx_fsr_easu" "fsr_rcas.frag=fx_fsr_rcas" "fxaa.frag=fx_fxaa"
                           "smaa_edge.frag=fx_smaa_edge" "smaa_weights.frag=fx_smaa_weights"
                           "smaa_blend.frag=fx_smaa_blend")

@@ -53,11 +53,11 @@ struct SnxFx {
     int fmt_checked, fmt_ok;
     VkFormat fmt;
     VkSampler sampler;
-    VkDescriptorSetLayout dsl0, dsl1, dsl2, dsl3, dsl_nis, dsl_sgsr;
-    VkPipelineLayout pl0, pl1, pl2, pl3, pl_nis, pl_sgsr;
+    VkDescriptorSetLayout dsl1, dsl2, dsl3, dsl_nis, dsl_sgsr; /* dslN, plN: N combined samplers */
+    VkPipelineLayout pl1, pl2, pl3, pl_nis, pl_sgsr;
     VkDescriptorPool pool;
     VkPipeline easu, rcas, easu16, rcas16;
-    VkPipeline copy, copy_linear;
+    VkPipeline copy;
     VkPipeline fxaa;
     VkPipeline smaa_edge, smaa_weights, smaa_blend;
     VkPipeline nis, nis8, sgsr;
@@ -413,13 +413,11 @@ static int make_layouts(SnxFx* fx) {
                                      .setLayoutCount = 1,
                                      .pushConstantRangeCount = 1,
                                      .pPushConstantRanges = &pc};
-    VkDescriptorSetLayout* layouts[4] = {&fx->dsl0, &fx->dsl1, &fx->dsl2, &fx->dsl3};
-    VkPipelineLayout* pipes[4] = {&fx->pl0, &fx->pl1, &fx->pl2, &fx->pl3};
-    for (uint32_t i = 0; i < 4; ++i) {
-        if (i) {
-            dl.bindingCount = i;
-            dl.pBindings = b;
-        }
+    VkDescriptorSetLayout* layouts[3] = {&fx->dsl1, &fx->dsl2, &fx->dsl3};
+    VkPipelineLayout* pipes[3] = {&fx->pl1, &fx->pl2, &fx->pl3};
+    dl.pBindings = b;
+    for (uint32_t i = 0; i < 3; ++i) {
+        dl.bindingCount = i + 1;
         if (!fx_ok(vkCreateDescriptorSetLayout(fx->dev, &dl, NULL, layouts[i]))) return 0;
         pl.pSetLayouts = layouts[i];
         if (!fx_ok(vkCreatePipelineLayout(fx->dev, &pl, NULL, pipes[i]))) return 0;
@@ -466,8 +464,6 @@ static int make_pipelines(SnxFx* fx) {
     if (fx->pipes_ready) return 1;
     if (fx->pipes_failed) return 0;
     fx->copy = make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_copy_spv, fx_copy_spv_size, fx->pl1, fmt);
-    fx->copy_linear =
-        make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_copy_linear_spv, fx_copy_linear_spv_size, fx->pl1, fmt);
     fx->easu = make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_fsr_easu_spv, fx_fsr_easu_spv_size, fx->pl1, fmt);
     fx->rcas = make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_fsr_rcas_spv, fx_fsr_rcas_spv_size, fx->pl1, fmt);
     if (fx->fp16) {
@@ -484,8 +480,7 @@ static int make_pipelines(SnxFx* fx) {
                                 fx->pl3, VK_FORMAT_R8G8B8A8_UNORM);
     fx->smaa_blend = make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_smaa_blend_spv, fx_smaa_blend_spv_size,
                               fx->pl2, fmt);
-    if (!fx->copy || !fx->copy_linear || !fx->easu || !fx->rcas || !fx->fxaa || !fx->smaa_edge ||
-        !fx->smaa_weights || !fx->smaa_blend) {
+    if (!fx->copy || !fx->easu || !fx->rcas || !fx->fxaa || !fx->smaa_edge || !fx->smaa_weights || !fx->smaa_blend) {
         fx->pipes_failed = 1;
         fx_echo(fx, "the upscaler's and anti aliasing's pipelines could not be made on this device: the frame shows "
                     "as with both off");
@@ -696,7 +691,6 @@ void snx_fx_destroy(SnxFx* fx) {
     DESTROY_PIPE(easu16);
     DESTROY_PIPE(rcas16);
     DESTROY_PIPE(copy);
-    DESTROY_PIPE(copy_linear);
     DESTROY_PIPE(fxaa);
     DESTROY_PIPE(smaa_edge);
     DESTROY_PIPE(smaa_weights);
@@ -705,13 +699,11 @@ void snx_fx_destroy(SnxFx* fx) {
     DESTROY_PIPE(nis8);
     DESTROY_PIPE(sgsr);
 #undef DESTROY_PIPE
-    if (fx->pl0) vkDestroyPipelineLayout(fx->dev, fx->pl0, NULL);
     if (fx->pl1) vkDestroyPipelineLayout(fx->dev, fx->pl1, NULL);
     if (fx->pl2) vkDestroyPipelineLayout(fx->dev, fx->pl2, NULL);
     if (fx->pl3) vkDestroyPipelineLayout(fx->dev, fx->pl3, NULL);
     if (fx->pl_nis) vkDestroyPipelineLayout(fx->dev, fx->pl_nis, NULL);
     if (fx->pl_sgsr) vkDestroyPipelineLayout(fx->dev, fx->pl_sgsr, NULL);
-    if (fx->dsl0) vkDestroyDescriptorSetLayout(fx->dev, fx->dsl0, NULL);
     if (fx->dsl1) vkDestroyDescriptorSetLayout(fx->dev, fx->dsl1, NULL);
     if (fx->dsl2) vkDestroyDescriptorSetLayout(fx->dev, fx->dsl2, NULL);
     if (fx->dsl3) vkDestroyDescriptorSetLayout(fx->dev, fx->dsl3, NULL);
@@ -735,7 +727,7 @@ void snx_fx_set_fp16(SnxFx* fx, int on) {
 
 static void record_copy(SnxFx* fx, VkCommandBuffer cb, VkDescriptorSet set, VkImageView src, uint32_t image_w,
                         uint32_t image_h, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t transform,
-                        uint32_t dw, uint32_t dh, int linear, FxImage* out) {
+                        uint32_t dw, uint32_t dh, FxImage* out) {
     struct {
         float rect[4];
         float crop[4];
@@ -747,8 +739,7 @@ static void record_copy(SnxFx* fx, VkCommandBuffer cb, VkDescriptorSet set, VkIm
     fx_barrier(fx, cb, out->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    fx_draw(fx, cb, out->view, linear ? fx->copy_linear : fx->copy, fx->pl1, dw, dh, set, &pc, sizeof pc,
-            VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+    fx_draw(fx, cb, out->view, fx->copy, fx->pl1, dw, dh, set, &pc, sizeof pc, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
     fx_barrier(fx, cb, out->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -1099,7 +1090,7 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
        the crop's. At 1:1 the copy samples texel centres, which take no neighbour */
     if (x || y || w != img_w || h != img_h) {
         if (!img_make(fx, &fx->crop[slot], w, h, choose_format(fx), fx_usage())) return 0;
-        record_copy(fx, cb, fx->crop_set[slot], src, img_w, img_h, x, y, w, h, 0, w, h, 1, &fx->crop[slot]);
+        record_copy(fx, cb, fx->crop_set[slot], src, img_w, img_h, x, y, w, h, 0, w, h, &fx->crop[slot]);
         fx_barrier(fx, cb, fx->crop[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                    VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1121,7 +1112,7 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
         if (!img_make(fx, &fx->mid[slot], work_w, work_h, choose_format(fx), fx_usage())) return 0;
         record_fsr(fx, cb, slot, src, img_w, img_h, x, y, w, h, transform, work_w, work_h);
     } else if (filter != SNX_FX_UPSCALE_NIS && filter != SNX_FX_UPSCALE_SGSR) {
-        record_copy(fx, cb, fx->copy_set[slot], src, img_w, img_h, x, y, w, h, transform, work_w, work_h, 1,
+        record_copy(fx, cb, fx->copy_set[slot], src, img_w, img_h, x, y, w, h, transform, work_w, work_h,
                     &fx->main[slot]);
     }
     if (aa != SNX_FX_AA_OFF)
@@ -1134,7 +1125,7 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
         /* its own set: the copy set is bound by the pass that filled main, and updating it again would invalidate
            that draw */
         record_copy(fx, cb, fx->ssaa_set[slot], fx->main[slot].view, fx->main[slot].width, fx->main[slot].height, 0, 0,
-                    fx->main[slot].width, fx->main[slot].height, 0, out_w, out_h, 1, &fx->aa[slot]);
+                    fx->main[slot].width, fx->main[slot].height, 0, out_w, out_h, &fx->aa[slot]);
         out->image = fx->aa[slot].image;
         out->view = fx->aa[slot].view;
     } else if (aa == SNX_FX_AA_FXAA) {

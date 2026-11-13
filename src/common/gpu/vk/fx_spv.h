@@ -10,8 +10,6 @@ extern const u32 fx_fsr_vert_spv[];
 extern const u64 fx_fsr_vert_spv_size;
 extern const u32 fx_copy_spv[];
 extern const u64 fx_copy_spv_size;
-extern const u32 fx_copy_linear_spv[];
-extern const u64 fx_copy_linear_spv_size;
 extern const u32 fx_fsr_easu_spv[];
 extern const u64 fx_fsr_easu_spv_size;
 extern const u32 fx_fsr_rcas_spv[];
