@@ -1923,17 +1923,25 @@ static int check_present_effects(void) {
         CHECK(!bad);
     }
     /* the settings changed while the game runs (the game's menu): the next frame takes them, FXAA alone at the window's
-       size, then neither */
-    for (u32 k = 0; k < 2; k++) {
+       size, then Bilinear and Off without anti-aliasing, the quad's own sampler: no pass, and the recording ring not
+       drained for one */
+    static const char* const steps[3][2] = {{"off", "fxaa"}, {"bilinear", "off"}, {"off", "off"}};
+    for (u32 k = 0; k < 3; k++) {
         SnxPresentSource s;
         VkRect2D crop = {{0, 0}, {16, 16}}, to = {{0, 0}, {32, 32}};
-        snprintf(g_settings.upscaler, sizeof g_settings.upscaler, "off");
-        snprintf(g_settings.anti_aliasing, sizeof g_settings.anti_aliasing, k ? "off" : "fxaa");
+        u64 frames = vk_present_quad_effects_frames();
+        snprintf(g_settings.upscaler, sizeof g_settings.upscaler, "%s", steps[k][0]);
+        snprintf(g_settings.anti_aliasing, sizeof g_settings.anti_aliasing, "%s", steps[k][1]);
         vk_lock();
         VkCommandBuffer cb = vk_cmd();
         CHECK(vk_present_quad_source(cb, target, 1, 1, &s));
         int ran = vk_present_quad_effects(cb, &s, &crop, to, 0);
         vk_unlock();
+        u64 handed = vk_present_quad_effects_frames() - frames;
+        if (handed != (k ? 0u : 1u))
+            fprintf(stderr, "present effects: upscaler=%s anti_aliasing=%s handed %llu frames to the effects, not %u\n",
+                    steps[k][0], steps[k][1], (unsigned long long)handed, k ? 0u : 1u);
+        CHECK(handed == (k ? 0u : 1u));
         CHECK(k ? !ran && s.width == 16 && crop.extent.width == 16 : ran && s.width == 32 && s.height == 32);
         vk_finish();
     }
