@@ -558,6 +558,18 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
        screen's would wait for two vblanks a frame. A bottom screen that changes while the top one stays still shows
        at its second frame. In separate windows each screen shows at its own */
     unsigned window_index = g_present.separate ? screen : 0;
+    /* a window the swapchain was not made for (a phone turned tall, a window dragged): the frames show turned or
+       stretched, and the driver need not say the surface is out of date. Made again until the surface reports the
+       window's size, which it does a frame or two after a turn */
+    {
+        SDL_Window* window = screen_window(screen);
+        int ww = 0, wh = 0;
+        if (window && SDL_GetWindowSizeInPixels(window, &ww, &wh) && ww > 0 && wh > 0 &&
+            g_present.swap[window_index].swapchain &&
+            ((uint32_t)ww != g_present.swap[window_index].extent.width ||
+             (uint32_t)wh != g_present.swap[window_index].extent.height))
+            (void)swap_create(window_index);
+    }
     uint32_t index = 0;
     g_present.bottom_alone = screen ? g_present.bottom_alone + 1 : 0;
     /* a window without a swapchain gets one again when its surface has a size: on Windows a minimized window's
