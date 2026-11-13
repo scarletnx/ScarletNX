@@ -5668,7 +5668,7 @@ retry:
     vk_buf_writable_commit();
     draw_images_commit(&images);
     feedback_done(fb, writes);
-    if (fb) g_vk_fb_draws++;
+    if (fb && g_predraw.phase != 1) g_vk_fb_draws++; /* the guest's draws: a save draw is the renderer's own */
     if (predraw) vk_predraw_drawn();
     for (u32 i = 0; i < n; i++)
         if ((writes >> i & 1) && !capture && !g_rp.rt[i]->predraw) target_written(g_rp.rt[i]);
