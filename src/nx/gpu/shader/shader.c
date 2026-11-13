@@ -16,6 +16,7 @@
 #define CRS_DEPTH     16    /* static resolution gives up on a deeper stack */
 
 int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
+int (*g_shader_cb_fold)(u32 idx, u32 off, u32* out);
 int g_shader_sm86;
 const char* g_shader_sm86_dump;
 

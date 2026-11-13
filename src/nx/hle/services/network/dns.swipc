@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# sfdnsres and nsd: name resolution (dns.c)
-
-type nn::nsd::Fqdn = bytes<0x100>;
-type nn::nsd::EnvironmentIdentifier = bytes<8>;
+# sfdnsres: name resolution (dns.c)
 
 interface nn::socket::resolver::IResolver is sfdnsres {
     [2] GetHostByNameRequest(b8 use_nsd_resolve, u32 cancel_handle, pid, buffer<u8, 5> name, buffer<u8, 6> hostent)
@@ -28,14 +25,4 @@ interface nn::socket::resolver::IResolver is sfdnsres {
                                        buffer<u8, 0x22> response)
         -> (u32 size, i32 gai_error, u32 netdb_error, u32 bsd_errno);
     @stub [14] ResolverSetOptionRequest(u32 unknown, pid, buffer<u8, 5> options) -> (i32 ret, u32 bsd_errno);
-}
-
-# Resolve(Ex) returns the FQDN as it is, which serves every server but the console's own (Eden). The environment is the
-# retail one, lp1
-interface nn::nsd::detail::IManager is nsd:u, nsd:a {
-    [11] GetEnvironmentIdentifier(buffer<nn::nsd::EnvironmentIdentifier, 0x16> identifier);
-    @stub [15] SetChangeEnvironmentIdentifierDisabled(b8 disabled);
-    [20] Resolve(buffer<nn::nsd::Fqdn, 0x15> fqdn_in, buffer<nn::nsd::Fqdn, 0x16> fqdn_out);
-    [21] ResolveEx(buffer<nn::nsd::Fqdn, 0x15> fqdn_in, buffer<nn::nsd::Fqdn, 0x16> fqdn_out) -> u32 inner_result;
-    [100] GetApplicationServerEnvironmentType() -> u8 type;
 }

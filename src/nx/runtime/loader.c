@@ -194,8 +194,10 @@ static int load_module(const SnxModInfo* mi) {
 }
 
 int loader_load(void) {
-    for (u32 i = 0; i < g_mod->nmods; i++)
-        if (load_module(&g_mod->mods[i])) return -1;
+    for (u32 i = 0; i < g_mod->nmods; i++) {
+        int rc = load_module(&g_mod->mods[i]);
+        if (rc) return rc; /* -2 when the module is another build of the dump's */
+    }
     return 0;
 }
 /* "module.segment" in out (size bytes): its length, as snprintf truncated it */

@@ -22,7 +22,7 @@ typedef struct {
     u32 mixed_count; /* source0 keeps the fields above; source i>0 is extra[i-1] */
     VkCaptureExtra extra[6]; /* one fixed allocation owned by the capture cache, with one shared validity image */
     VkBuffer tile_buffer;
-    VmaAllocation tile_memory;
+    DevMem tile_memory;
     u64 tile_bytes;
     u32 tile_count;
     int tile_dirty; /* a capture not followed by a recorded resolve requires a full flag clear */

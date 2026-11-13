@@ -29,6 +29,9 @@ enum {
     MAXWELL3D_INVALIDATE_SHADER_CACHE = 0x087,
     MAXWELL3D_SYNC_INFO = 0x0B2,
     MAXWELL3D_TESSELLATION = 0x0C8,
+    /* SET_TESSELLATION_LOD: the levels of a patch drawn without a control program, the four outer then the two
+       inner (0x0CD), floats */
+    MAXWELL3D_TESS_LEVELS = 0x0C9,
     MAXWELL3D_RASTERIZE_ENABLE = 0x0DF,
     /* transform_feedback.buffers[4]: 8 words each, start_offset the fifth (open-gpu-doc's
        SET_STREAM_OUT_BUFFER_LOAD_WRITE_POINTER) */
@@ -54,6 +57,8 @@ enum {
     /* depth_bounds: the near bound, then the far, floats */
     MAXWELL3D_DEPTH_BOUNDS = 0x3E7,
     MAXWELL3D_COLOR_TARGET_MRT_ENABLE = 0x3EB,
+    MAXWELL3D_RASTER_SAMPLES_ENABLE = 0x3ED, /* SET_MULTISAMPLE_RASTER_ENABLE: raster samples apart from the target's */
+    MAXWELL3D_SAMPLE_MASK = 0x3EF, /* SET_MULTISAMPLE_SAMPLE_MASK: 4 words, a pixel of a 2x2 quad's 16 samples each */
     /* draw_texture (12 words, Eden's Regs::DrawTexture): its last, src_y0, starts it */
     MAXWELL3D_DRAW_TEXTURE = 0x420,
     MAXWELL3D_DRAW_TEXTURE_SRC_Y0 = 0x42B,

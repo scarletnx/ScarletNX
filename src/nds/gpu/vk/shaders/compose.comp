@@ -1,0 +1,433 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2016-2026 melonDS team
+// Copyright 2026 the ScarletNX contributors
+// The two 2D engines' frame, a pixel at a time: each pixel reads the registers its line was drawn with (the board keeps
+// them at every horizontal blank, board/lcd.c's keep_line, whose places these are) and the video memory as the frame's
+// end left it, fetches the four backgrounds and the objects there, and composes them by priority, window and color
+// effect. The rules are the console's as melonDS's software renderer has them (GPU2D_Soft.cpp and GPU_ColorOp.h,
+// GPL-3.0-or-later): the layers' order, the objects' priority, the blends of 3D pixels and of translucent objects.
+#version 450
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer Vram { uint V[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Lines { uint L[]; };
+layout(set = 0, binding = 2, rgba8) uniform readonly image2D layer3d;
+layout(set = 0, binding = 3, rgba8) uniform writeonly image2D frame;
+layout(set = 0, binding = 4, r16ui) uniform writeonly uimage2D capture;
+
+// where each of the video memory's spaces lies in V, in bytes (gpu/vk/vk.h has the same)
+const uint BG_SPACE[2] = uint[2](0x000000u, 0x080000u);
+const uint BG_MASK[2] = uint[2](0x7FFFFu, 0x1FFFFu);
+const uint OBJ_SPACE[2] = uint[2](0x0A0000u, 0x0E0000u);
+const uint OBJ_MASK[2] = uint[2](0x3FFFFu, 0x1FFFFu);
+const uint BG_EXTPAL[2] = uint[2](0x100000u, 0x108000u);
+const uint OBJ_EXTPAL[2] = uint[2](0x110000u, 0x112000u);
+const uint PALETTE = 0x114000u, OAM = 0x114800u, LCDC = 0x120000u, MAIN_DISPLAY = 0x1A0000u;
+
+uint engine, px, py; // the pixel
+uint R[23];          // its line's registers
+
+// MOSAIC's four sizes, each less one: the backgrounds' width and height, the objects'
+uint mosaic_size(uint which) { return ((R[17] >> (which * 4u)) & 15u) + 1u; }
+// a line's register of the frame: an affine background under a mosaic takes its block's first line's
+uint line_register(uint line, uint index) { return L[(engine * 192u + line) * 32u + index]; }
+
+uint rd8(uint a) { return (V[a >> 2] >> ((a & 3u) * 8u)) & 0xFFu; }
+uint rd16(uint a) { return (V[a >> 2] >> ((a & 2u) * 8u)) & 0xFFFFu; }
+uint rd32(uint a) { return V[a >> 2]; } // a whole word, at a multiple of 4
+int s16(uint v) { return int(v << 16) >> 16; }
+
+uint dispcnt() { return R[0]; }
+uint bgcnt(uint bg) { return (R[1u + (bg >> 1)] >> ((bg & 1u) * 16u)) & 0xFFFFu; }
+uint bg_palette(uint index) { return rd16(PALETTE + engine * 0x400u + index * 2u); }
+uint obj_palette(uint index) { return rd16(PALETTE + engine * 0x400u + 0x200u + index * 2u); }
+uint bg8(uint a) { return rd8(BG_SPACE[engine] + (a & BG_MASK[engine])); }
+uint bg16(uint a) { return rd16(BG_SPACE[engine] + (a & BG_MASK[engine] & ~1u)); }
+uint obj8(uint a) { return rd8(OBJ_SPACE[engine] + (a & OBJ_MASK[engine])); }
+uint obj16(uint a) { return rd16(OBJ_SPACE[engine] + (a & OBJ_MASK[engine] & ~1u)); }
+
+// a 15-bit color as the engines carry it, 6 bits a channel: green's low bit is the color's bit 15
+ivec3 rgb6(uint c) {
+    return ivec3(int(c & 0x1Fu) << 1, int((c >> 4) & 0x3Eu) | int(c >> 15), int((c >> 9) & 0x3Eu));
+}
+
+// a text background's pixel: true when it is not transparent
+bool bg_text(uint bg, out uint color) {
+    uint cnt = bgcnt(bg), scroll = R[3u + bg];
+    uint x = px, y = py;
+    if ((cnt & 0x40u) != 0u) { // mosaic
+        x -= x % mosaic_size(0u);
+        y -= y % mosaic_size(1u);
+    }
+    uint xoff = x + (scroll & 0x1FFu), yoff = y + ((scroll >> 16) & 0x1FFu);
+    uint tileset = ((cnt >> 2) & 15u) << 14, tilemap = ((cnt >> 8) & 0x1Fu) << 11;
+    if (engine == 0u) {
+        tileset += ((dispcnt() >> 24) & 7u) << 16;
+        tilemap += ((dispcnt() >> 27) & 7u) << 16;
+    }
+    if ((cnt & 0x8000u) != 0u) {
+        tilemap += (yoff & 0x1F8u) << 3;
+        if ((cnt & 0x4000u) != 0u) tilemap += (yoff & 0x100u) << 3;
+    } else
+        tilemap += (yoff & 0xF8u) << 3;
+    uint wide = (cnt & 0x4000u) != 0u ? 0x100u : 0u;
+    uint entry = bg16(tilemap + ((xoff & 0xF8u) >> 2) + ((xoff & wide) << 3));
+    uint tx = xoff & 7u, ty = yoff & 7u;
+    if ((entry & 0x400u) != 0u) tx = 7u - tx;
+    if ((entry & 0x800u) != 0u) ty = 7u - ty;
+    if ((cnt & 0x80u) != 0u) {
+        uint index = bg8(tileset + (entry & 0x3FFu) * 64u + ty * 8u + tx);
+        if (index == 0u) return false;
+        if ((dispcnt() & 0x40000000u) != 0u) {
+            uint slot = bg < 2u && (cnt & 0x2000u) != 0u ? bg + 2u : bg;
+            color = rd16(BG_EXTPAL[engine] + slot * 0x2000u + (entry >> 12) * 512u + index * 2u);
+        } else
+            color = bg_palette(index);
+        return true;
+    }
+    uint index = (bg8(tileset + (entry & 0x3FFu) * 32u + ty * 4u + (tx >> 1)) >> ((tx & 1u) * 4u)) & 15u;
+    if (index == 0u) return false;
+    color = bg_palette((entry >> 12) * 16u + index);
+    return true;
+}
+
+// an affine or extended background's pixel (BG2 or BG3): extended reads 16-bit map entries or a bitmap
+bool bg_affine(uint bg, bool extended, out uint color) {
+    uint cnt = bgcnt(bg), at = 7u + (bg - 2u) * 4u;
+    uint column = px, line = py;
+    if ((cnt & 0x40u) != 0u) { // mosaic: the block's first pixel, with the reference point its line had
+        column -= column % mosaic_size(0u);
+        line -= line % mosaic_size(1u);
+    }
+    int ref_x = int(line_register(line, at + 2u)), ref_y = int(line_register(line, at + 3u));
+    int rx = ref_x + s16(R[at] & 0xFFFFu) * int(column), ry = ref_y + s16(R[at + 1u] & 0xFFFFu) * int(column);
+    int x = rx >> 8, y = ry >> 8;
+    uint size = cnt >> 14;
+    if (extended && (cnt & 0x80u) != 0u) { // a bitmap: 128x128, 256x256, 512x256, 512x512
+        int width = size == 0u ? 128 : size == 1u ? 256 : 512, height = size == 0u ? 128 : size == 3u ? 512 : 256;
+        if ((cnt & 0x2000u) != 0u) {
+            x &= width - 1;
+            y &= height - 1;
+        } else if (x < 0 || y < 0 || x >= width || y >= height)
+            return false;
+        uint base = ((cnt >> 8) & 0x1Fu) << 14, pixel = uint(y * width + x);
+        if ((cnt & 0x04u) != 0u) {
+            color = bg16(base + pixel * 2u);
+            return (color & 0x8000u) != 0u;
+        }
+        uint index = bg8(base + pixel);
+        if (index == 0u) return false;
+        color = bg_palette(index);
+        return true;
+    }
+    int side = 128 << size;
+    if ((cnt & 0x2000u) != 0u) {
+        x &= side - 1;
+        y &= side - 1;
+    } else if (x < 0 || y < 0 || x >= side || y >= side)
+        return false;
+    uint tileset = ((cnt >> 2) & 15u) << 14, tilemap = ((cnt >> 8) & 0x1Fu) << 11;
+    if (engine == 0u) {
+        tileset += ((dispcnt() >> 24) & 7u) << 16;
+        tilemap += ((dispcnt() >> 27) & 7u) << 16;
+    }
+    uint cell = (uint(y >> 3) << (4u + size)) + uint(x >> 3), tx = uint(x) & 7u, ty = uint(y) & 7u;
+    if (!extended) {
+        uint index = bg8(tileset + bg8(tilemap + cell) * 64u + ty * 8u + tx);
+        if (index == 0u) return false;
+        color = bg_palette(index);
+        return true;
+    }
+    uint entry = bg16(tilemap + cell * 2u);
+    if ((entry & 0x400u) != 0u) tx = 7u - tx;
+    if ((entry & 0x800u) != 0u) ty = 7u - ty;
+    uint index = bg8(tileset + (entry & 0x3FFu) * 64u + ty * 8u + tx);
+    if (index == 0u) return false;
+    if ((dispcnt() & 0x40000000u) != 0u)
+        color = rd16(BG_EXTPAL[engine] + bg * 0x2000u + (entry >> 12) * 512u + index * 2u);
+    else
+        color = bg_palette(index);
+    return true;
+}
+
+// mode 6's large bitmap, BG2: 512x1024 or 1024x512, 256 colors
+bool bg_large(out uint color) {
+    uint cnt = bgcnt(2u);
+    uint column = px, line = py;
+    if ((cnt & 0x40u) != 0u) {
+        column -= column % mosaic_size(0u);
+        line -= line % mosaic_size(1u);
+    }
+    int rx = int(line_register(line, 9u)) + s16(R[7] & 0xFFFFu) * int(column);
+    int ry = int(line_register(line, 10u)) + s16(R[8] & 0xFFFFu) * int(column);
+    int x = rx >> 8, y = ry >> 8;
+    int width = (cnt & 0x4000u) != 0u ? 1024 : 512, height = (cnt & 0x4000u) != 0u ? 512 : 1024;
+    if ((cnt & 0x2000u) != 0u) {
+        x &= width - 1;
+        y &= height - 1;
+    } else if (x < 0 || y < 0 || x >= width || y >= height)
+        return false;
+    uint index = bg8(uint(y * width + x));
+    if (index == 0u) return false;
+    color = bg_palette(index);
+    return true;
+}
+
+const int OBJ_WIDTH[16] = int[16](8, 16, 8, 8, 16, 32, 8, 8, 32, 32, 16, 8, 64, 64, 32, 8);
+const int OBJ_HEIGHT[16] = int[16](8, 8, 16, 8, 16, 8, 32, 8, 32, 16, 32, 8, 64, 32, 64, 8);
+
+// The object at the pixel: among the ones that cover it with a pixel that is not transparent, the one of the best
+// priority, and of them the first in the OAM. flags: 1 translucent, 2 a bitmap object, whose alpha is in alpha.
+// window is set where an object of the object window covers the pixel. An object with the mosaic bit shows, in each
+// block of the objects' mosaic, what it has at the block's first pixel
+bool objects(out uint color, out uint priority, out uint flags, out uint alpha, out bool window) {
+    bool found = false;
+    window = false;
+    priority = 4u;
+    uint base = OAM + engine * 0x400u, cnt = dispcnt();
+    uint block_x = px - px % mosaic_size(2u), block_y = py - py % mosaic_size(3u);
+    for (uint n = 0u; n < 128u; ++n) {
+        // an object's attributes 0 and 1 are one word of the OAM, and attribute 2 the low half of the next
+        uint a01 = rd32(base + n * 8u), a0 = a01 & 0xFFFFu;
+        uint kind = (a0 >> 8) & 3u;
+        if (kind == 2u) continue;
+        uint a1 = a01 >> 16;
+        uint shape = (a0 >> 14) | ((a1 & 0xC000u) >> 12);
+        int width = OBJ_WIDTH[shape], height = OBJ_HEIGHT[shape];
+        int bound_w = kind == 3u ? width * 2 : width, bound_h = kind == 3u ? height * 2 : height;
+        bool mosaic = (a0 & 0x1000u) != 0u;
+        int dy = int(((mosaic ? block_y : py) - (a0 & 0xFFu)) & 0xFFu);
+        if (dy >= bound_h) continue;
+        int dx = int(mosaic ? block_x : px) - (int(a1 << 23) >> 23);
+        if (dx < 0 || dx >= bound_w) continue;
+        uint a2 = rd32(base + n * 8u + 4u) & 0xFFFFu;
+        uint mode = (a0 >> 10) & 3u, prio = (a2 >> 10) & 3u;
+        if (mode != 2u && found && prio >= priority) continue;
+        int x, y;
+        if ((kind & 1u) != 0u) {
+            uint params = base + ((a1 >> 9) & 0x1Fu) * 32u;
+            // the four parameters are the high halves of four words
+            int pa = int(rd32(params + 4u)) >> 16, pb = int(rd32(params + 12u)) >> 16;
+            int pc = int(rd32(params + 20u)) >> 16, pd = int(rd32(params + 28u)) >> 16;
+            int cx = dx - bound_w / 2, cy = dy - bound_h / 2;
+            x = (cx * pa + cy * pb + (width << 7)) >> 8;
+            y = (cx * pc + cy * pd + (height << 7)) >> 8;
+            if (x < 0 || y < 0 || x >= width || y >= height) continue;
+        } else {
+            x = (a1 & 0x1000u) != 0u ? width - 1 - dx : dx;
+            y = (a1 & 0x2000u) != 0u ? height - 1 - dy : dy;
+        }
+        uint tile = a2 & 0x3FFu, c;
+        if (mode == 3u) { // a bitmap object: 16-bit pixels, its alpha in the palette's place
+            if ((a2 >> 12) == 0u) continue;
+            uint address;
+            if ((cnt & 0x40u) != 0u) {
+                if ((cnt & 0x20u) != 0u) continue;
+                address = (tile << (7u + ((cnt >> 22) & 1u))) + uint(y * width + x) * 2u;
+            } else if ((cnt & 0x20u) != 0u)
+                address = ((tile & 0x1Fu) << 4) + ((tile & 0x3E0u) << 7) + uint(y * 256 + x) * 2u;
+            else
+                address = ((tile & 0x0Fu) << 4) + ((tile & 0x3F0u) << 7) + uint(y * 128 + x) * 2u;
+            c = obj16(address);
+            if ((c & 0x8000u) == 0u) continue;
+            found = true, color = c, priority = prio, flags = 2u, alpha = (a2 >> 12) + 1u;
+            continue;
+        }
+        bool mapped_1d = (cnt & 0x10u) != 0u;
+        uint address = tile << (mapped_1d ? 5u + ((cnt >> 20) & 3u) : 5u);
+        if ((a0 & 0x2000u) != 0u) {
+            address += uint(y >> 3) * (mapped_1d ? uint(width) << 3 : 0x400u) + uint(y & 7) * 8u;
+            uint index = obj8(address + uint(x >> 3) * 64u + uint(x & 7));
+            if (index == 0u) continue;
+            c = (cnt & 0x80000000u) != 0u ? rd16(OBJ_EXTPAL[engine] + (a2 >> 12) * 512u + index * 2u)
+                                         : obj_palette(index);
+        } else {
+            address += uint(y >> 3) * (mapped_1d ? uint(width) << 2 : 0x400u) + uint(y & 7) * 4u;
+            uint index = (obj8(address + uint(x >> 3) * 32u + uint((x & 7) >> 1)) >> (uint(x & 1) * 4u)) & 15u;
+            if (index == 0u) continue;
+            c = obj_palette((a2 >> 12) * 16u + index);
+        }
+        if (mode == 2u) {
+            window = true;
+            continue;
+        }
+        found = true, color = c, priority = prio, flags = mode == 1u ? 1u : 0u, alpha = 0u;
+    }
+    return found;
+}
+
+// the layers a pixel may show: bits 0 to 3 the backgrounds, 4 the objects, 5 the color effects
+uint window_mask(bool object_window) {
+    uint cnt = dispcnt();
+    if ((cnt & 0xE000u) == 0u) return 0xFFu;
+    uint inside = R[16] & 0xFFFFu, outside = R[16] >> 16;
+    for (uint w = 0u; w < 2u; ++w) {
+        if ((cnt & (0x2000u << w)) == 0u || ((R[19] >> (16u + w)) & 1u) == 0u) continue;
+        uint h = (R[15] >> (w * 16u)) & 0xFFFFu, x1 = h >> 8, x2 = h & 0xFFu;
+        bool in_x = x1 <= x2 ? px >= x1 && px < x2 : px >= x1 || px < x2;
+        if (in_x) return (inside >> (w * 8u)) & 0xFFu;
+    }
+    if ((cnt & 0x8000u) != 0u && object_window) return outside >> 8;
+    return outside & 0xFFu;
+}
+
+// a layer's pixel on its way to the top: what it was over stays below it
+struct Pixel {
+    ivec3 rgb;
+    uint layer;  // 1, 2, 4, 8 the backgrounds, 0x10 the objects, 0x20 the backdrop
+    uint kind;   // 0 plain, 1 a translucent object, 2 a bitmap object, 3 the 3D picture
+    uint alpha;
+};
+Pixel top, below;
+void put(ivec3 rgb, uint layer, uint kind, uint alpha) {
+    below = top;
+    top = Pixel(rgb, layer, kind, alpha);
+}
+
+ivec3 composed() {
+    uint blend = R[17] >> 16, eva = min(R[18] & 0x1Fu, 16u), evb = min((R[18] >> 8) & 0x1Fu, 16u);
+    uint evy = min((R[18] >> 16) & 0x1Fu, 16u);
+    bool second = (blend & (below.layer << 8)) != 0u;
+    if ((top.kind == 1u || top.kind == 2u) && second) { // a translucent object blends whatever BLDCNT's effect is
+        if (top.kind == 2u) {
+            eva = top.alpha;
+            evb = 16u - eva;
+        }
+        return min((top.rgb * int(eva) + below.rgb * int(evb) + 8) >> 4, ivec3(63));
+    }
+    if (top.kind == 3u && second) { // a 3D pixel blends by its own alpha
+        int a = int(top.alpha) + 1;
+        if (a == 32) return top.rgb;
+        return min((top.rgb * a + below.rgb * (32 - a) + 16) >> 5, ivec3(63));
+    }
+    return top.rgb;
+}
+
+// the backgrounds and the objects composed: what the engine shows in its graphics display mode
+ivec3 graphics() {
+    uint cnt = dispcnt();
+    if ((cnt & 0x80u) != 0u) return ivec3(63); // forced blank
+
+    uint obj_color = 0u, obj_priority = 4u, obj_flags = 0u, obj_alpha = 0u;
+    bool obj_window = false;
+    bool has_obj = (cnt & 0x1000u) != 0u && objects(obj_color, obj_priority, obj_flags, obj_alpha, obj_window);
+    uint mask = window_mask(obj_window);
+    uint mode = cnt & 7u, layers = (cnt >> 8) & 0x1Fu & mask;
+    top = Pixel(rgb6(bg_palette(0u)), 0x20u, 0u, 0u);
+    below = top;
+    for (int priority = 3; priority >= 0; --priority) {
+        for (int n = 3; n >= 0; --n) {
+            uint bg = uint(n);
+            if ((layers & (1u << bg)) == 0u || (bgcnt(bg) & 3u) != uint(priority)) continue;
+            uint color = 0u;
+            bool drawn = false;
+            if (bg == 0u && engine == 0u && (cnt & 8u) != 0u) {
+                // the 3D engine's picture, moved by BG0's horizontal scroll
+                int x = int(px) + (int((R[3] & 0x1FFu) << 23) >> 23);
+                if (x >= 0 && x < 256) {
+                    vec4 c = imageLoad(layer3d, ivec2(x, int(py)));
+                    uint alpha = uint(c.a * 31.0 + 0.5);
+                    if (alpha != 0u) put(ivec3(c.rgb * 63.0 + 0.5), 1u, 3u, alpha);
+                }
+                continue;
+            }
+            if (mode == 6u) {
+                if (bg == 2u) drawn = bg_large(color);
+            } else if (mode == 7u) {
+                if (bg < 2u) drawn = bg_text(bg, color);
+            } else if (bg < 2u || (bg == 2u && mode < 2u) || (bg == 3u && mode == 0u) || (bg == 2u && mode == 3u))
+                drawn = bg_text(bg, color);
+            else if (bg == 3u)
+                drawn = bg_affine(bg, mode >= 3u, color);
+            else
+                drawn = bg_affine(bg, mode == 5u, color);
+            if (drawn) put(rgb6(color), 1u << bg, 0u, 0u);
+        }
+        if (has_obj && obj_priority == uint(priority) && (mask & 0x10u) != 0u)
+            put(rgb6(obj_color), 0x10u, obj_flags, obj_alpha);
+    }
+    uint blend = R[17] >> 16;
+    ivec3 rgb = composed();
+    bool special = (top.kind == 1u || top.kind == 2u || top.kind == 3u) && (blend & (below.layer << 8)) != 0u;
+    if (!special && (blend & top.layer) != 0u && (mask & 0x20u) != 0u) {
+        uint effect = (blend >> 6) & 3u, evy = min((R[18] >> 16) & 0x1Fu, 16u);
+        if (effect == 1u && (blend & (below.layer << 8)) != 0u) {
+            uint eva = min(R[18] & 0x1Fu, 16u), evb = min((R[18] >> 8) & 0x1Fu, 16u);
+            rgb = min((top.rgb * int(eva) + below.rgb * int(evb) + 8) >> 4, ivec3(63));
+        } else if (effect == 2u)
+            rgb = top.rgb + ((((ivec3(63) - top.rgb) * int(evy)) + 8) >> 4);
+        else if (effect == 3u)
+            rgb = top.rgb - (((top.rgb * int(evy)) + 7) >> 4);
+    }
+    return rgb;
+}
+
+// The display capture, engine A's: the line's pixels as its graphics (or the 3D picture alone), a VRAM bank's or the
+// main memory display's, or the two blended, written as 15-bit pixels to the capture image, which the board puts into the bank DISPCAPCNT names
+// (gpu/vk/frame.c). The arithmetic is melonDS's (GPU.cpp's DoCapture)
+void captured(ivec3 shown) {
+    uint cap = R[20], size = (cap >> 20) & 3u;
+    uint width = size == 0u ? 128u : 256u, height = size == 0u ? 128u : size == 1u ? 64u : size == 2u ? 128u : 192u;
+    if (px >= width || py >= height) return;
+    ivec3 a = shown >> 1;
+    int a_alpha = 1;
+    if ((cap & 0x01000000u) != 0u) {
+        vec4 c = imageLoad(layer3d, ivec2(int(px), int(py)));
+        a = ivec3(c.rgb * 31.0 + 0.5);
+        a_alpha = c.a * 31.0 >= 0.5 ? 1 : 0;
+    }
+    ivec3 b = ivec3(0);
+    int b_alpha = 0;
+    {
+        uint cnt = dispcnt();
+        uint offset = ((cnt >> 16) & 3u) == 2u ? 0u : ((cap >> 26) & 3u) * 0x8000u;
+        uint c = (cap & 0x02000000u) != 0u // the main memory display's frame, or a VRAM bank's
+                     ? rd16(MAIN_DISPLAY + (py * 256u + px) * 2u)
+                     : rd16(LCDC + ((cnt >> 18) & 3u) * 0x20000u + ((offset + (py * 256u + px) * 2u) & 0x1FFFFu));
+        b = ivec3(int(c & 0x1Fu), int((c >> 5) & 0x1Fu), int((c >> 10) & 0x1Fu));
+        b_alpha = int(c >> 15);
+    }
+    uint source = (cap >> 29) & 3u;
+    int eva = int(min(cap & 0x1Fu, 16u)), evb = int(min((cap >> 8) & 0x1Fu, 16u));
+    ivec3 d = a;
+    int d_alpha = a_alpha;
+    if (source == 1u) {
+        d = b;
+        d_alpha = b_alpha;
+    } else if (source >= 2u) {
+        d = min((a * a_alpha * eva + b * b_alpha * evb + 8) >> 4, ivec3(31));
+        d_alpha = (eva > 0 ? a_alpha : 0) | (evb > 0 ? b_alpha : 0);
+    }
+    imageStore(capture, ivec2(int(px), int(py)), uvec4(uint(d.r) | uint(d.g) << 5 | uint(d.b) << 10 | uint(d_alpha) << 15));
+}
+
+ivec3 engine_pixel() {
+    uint cnt = dispcnt();
+    bool on = ((R[19] >> 20) & 1u) != 0u, capturing = engine == 0u && (R[20] & 0x80000000u) != 0u;
+    uint display = (cnt >> 16) & (engine == 0u ? 3u : 1u);
+    ivec3 shown = ivec3(0);
+    if (on && (display == 1u || capturing)) shown = graphics();
+    if (on && capturing) captured(shown);
+    if (!on) return engine == 0u ? ivec3(0) : ivec3(63); // the engine is off
+    if (display == 0u) return ivec3(63);
+    if (display == 2u) return rgb6(rd16(LCDC + ((cnt >> 18) & 3u) * 0x20000u + (py * 256u + px) * 2u));
+    if (display == 3u) return rgb6(rd16(MAIN_DISPLAY + (py * 256u + px) * 2u));
+    return shown;
+}
+
+void main() {
+    px = gl_GlobalInvocationID.x, py = gl_GlobalInvocationID.y, engine = gl_GlobalInvocationID.z;
+    if (px >= 256u || py >= 192u) return;
+    uint line = (engine * 192u + py) * 32u;
+    for (uint i = 0u; i < 23u; ++i) R[i] = L[line + i];
+    ivec3 rgb = engine_pixel();
+    // the master brightness: toward white or toward black
+    uint bright = R[19] & 0xFFFFu, factor = min(bright & 0x1Fu, 16u);
+    if ((bright >> 14) == 1u)
+        rgb += ((ivec3(63) - rgb) * int(factor)) >> 4;
+    else if ((bright >> 14) == 2u)
+        rgb -= (rgb * int(factor)) >> 4;
+    // POWCNT's bit 15 puts engine A on the upper screen
+    bool upper = (engine == 0u) == (((R[19] >> 18) & 1u) != 0u);
+    vec3 color = vec3((rgb << 2) | (rgb >> 4)) / 255.0;
+    imageStore(frame, ivec2(int(px), int(py) + (upper ? 0 : 192)), vec4(color, 1.0));
+}

@@ -14,6 +14,7 @@
 #include "nx/gpu/shader/sm86.h"
 #include "nx/gpu/shader/translator.h"
 #include "nx/gpu/shader/write_log.h"
+#include "nx/gpu/shader/minmax_spirv.h"
 #include "common/utilities/spirv_emit.h"
 #include "common/utilities/bits.h"
 #include <stdarg.h>
@@ -52,6 +53,7 @@ typedef struct {
     u32 num_groups, hmma_count;  /* NumWorkgroups and the HMMAs so far, for hmma_zero */
     int coop;                    /* HMMA takes hmma_coop (coop_wanted), and the module the Vulkan memory model */
     u32 coop_slots, subgroup_id; /* hmma_coop's slots (Workgroup) and SubgroupId */
+    u32 stage_slots;             /* hmma's A and B staged a warp each (g_shader_hmma_stage, Workgroup) */
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
@@ -121,6 +123,29 @@ static u32 cf(Ctx* c, float v) { return spv_emit_constant_f32(&c->e, c->t_f32, v
 static u32 to_f(Ctx* c, u32 v) { return spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_f32, v); }
 static u32 to_u(Ctx* c, u32 v) { return spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_u32, v); }
 static u32 op2(Ctx* c, u32 opcode, u32 type, u32 a, u32 b) { return SPV(&c->e, opcode, type, a, b); }
+/* PackHalf2x16 of a vec2 of f32, as the console converts f32 to f16. Where the device may flush f16 subnormals
+   (g_shader_half_flush) a half below 2^-14 is RoundEven(|x| 2^24), the subnormal's own bits, and x's sign: 2^24
+   scales without rounding and the product is below 1024, so it is the f16 for every such f32 */
+static u32 pack_half(Ctx* c, u32 pair) {
+    u32 bits = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, pair);
+    if (!g_shader_half_flush) return bits;
+    for (u32 k = 0; k < 2; k++) {
+        u32 x = spv_emit_vec4_extract(&c->e, c->t_f32, pair, k);
+        u32 a = SPV_EXT(&c->e, c->t_f32, SPV_GLSL_F_ABS, x);
+        u32 small = op2(c, SPV_OP_F_ORD_LESS_THAN, c->t_bool, a, cf(c, 0x1p-14f));
+        u32 m = spv_emit_unary(
+            &c->e, SPV_OP_CONVERT_F_TO_U, c->t_u32,
+            SPV_EXT(&c->e, c->t_f32, SPV_GLSL_ROUND_EVEN, op2(c, SPV_OP_F_MUL, c->t_f32, a, cf(c, 0x1p24f))));
+        u32 sign = op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32,
+                       op2(c, SPV_OP_BITWISE_AND, c->t_u32, to_u(c, x), cu(c, 0x80000000u)), cu(c, 16));
+        u32 half = op2(c, SPV_OP_BITWISE_OR, c->t_u32, m, sign);
+        u32 kept = op2(c, SPV_OP_BITWISE_AND, c->t_u32, bits, cu(c, k ? 0xffffu : 0xffff0000u));
+        u32 exact = op2(c, SPV_OP_BITWISE_OR, c->t_u32, kept,
+                        k ? op2(c, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, half, cu(c, 16)) : half);
+        bits = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, small, exact, bits);
+    }
+    return bits;
+}
 
 /* ---- registers ---- */
 
@@ -439,13 +464,32 @@ static u32 round_sum(Ctx* c, u32 mode, u32 p, u32 q) {
                     op2(c, SPV_OP_LOGICAL_AND, c->t_bool, tie, op2(c, SPV_OP_F_ORD_LESS_THAN, c->t_bool, err, zero)));
     return directed(c, mode, r, above, below);
 }
-/* FADD: x + y in mode */
+/* FADD: x + y in mode. A device without doubles (g_shader_float64) rounds to nearest, as its floats do */
 static u32 float_add(Ctx* c, u32 mode, u32 x, u32 y) {
+    if (!g_shader_float64) mode = 0;
     if (mode == 0) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_ADD, c->t_f32, x, y));
     return round_sum(c, mode, widen(c, x), widen(c, y));
 }
 /* FMUL: x * y * 2^(scale - 4) in mode. The product of two floats is exact in a double */
 static u32 float_mul(Ctx* c, u32 mode, u32 scale, u32 x, u32 y) {
+    if (!g_shader_float64) {
+        if (scale == 4) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
+        /* 2^(scale - 4), scale 1 to 7. scale is unsigned: below 4, scale - 4 is a number near 2^32, not a
+           negative one, so a .D scale divides by 2^(4 - scale) */
+        float factor = scale > 4 ? (float)(1u << (scale - 4)) : 1.0f / (float)(1u << (4 - scale));
+        /* the power of two goes on the operand it leaves exact, the larger one for a .D and the smaller for a .M, and
+           the one product then rounds as the double's does. On the product it rounds twice where x * y is past a
+           float's range or subnormal: 2^100 * 2^28 .D4 is 2^126, not infinity */
+        u32 ax = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_ABS, x);
+        u32 ay = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_ABS, y);
+        u32 x_scaled =
+            op2(c, scale < 4 ? SPV_OP_F_ORD_GREATER_THAN_EQUAL : SPV_OP_F_ORD_LESS_THAN_EQUAL, c->t_bool, ax, ay);
+        u32 scaled = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, x_scaled, x, y);
+        u32 other = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, x_scaled, y, x);
+        scaled = nocontract(
+            c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, scaled, spv_emit_constant_f32(&c->e, c->t_f32, factor)));
+        return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, scaled, other));
+    }
     if (mode == 0 && scale == 4) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
     u32 f64 = f64_type(c);
     u32 d = nocontract(c, op2(c, SPV_OP_F_MUL, f64, widen(c, x), widen(c, y)));
@@ -458,6 +502,7 @@ static u32 float_mul(Ctx* c, u32 mode, u32 scale, u32 x, u32 y) {
 /* FFMA: x * y + z in mode. To nearest, a float FMA, as spirv_translate.c writes it. A directed mode rounds the
    exact sum of the product (exact in a double) and z */
 static u32 float_fma(Ctx* c, u32 mode, u32 x, u32 y, u32 z) {
+    if (!g_shader_float64) mode = 0;
     if (mode == 0) return spv_emit_glsl_ternary(&c->e, c->t_f32, c->glsl, SPV_GLSL_FMA, x, y, z);
     u32 product = nocontract(c, op2(c, SPV_OP_F_MUL, f64_type(c), widen(c, x), widen(c, y)));
     return round_sum(c, mode, product, widen(c, z));
@@ -534,7 +579,7 @@ static u32 interp_mode(Ctx* c, u32 input) {
     return 2;
 }
 static void mesh_capability(Ctx* c) {
-    spv_emit_capability(&c->e, 5283 /* MeshShadingEXT */);
+    spv_emit_capability(&c->e, SPV_CAPABILITY_MESH_SHADING_EXT);
     spv_emit_extension(&c->e, "SPV_EXT_mesh_shader");
 }
 static u32 input_var(Ctx* c, u32 i) {
@@ -552,7 +597,7 @@ static u32 input_var(Ctx* c, u32 i) {
         add_interface(c, c->in_attr[i]);
         if (per_primitive) { /* a mesh program's output per primitive */
             mesh_capability(c);
-            spv_emit_decorate(&c->e, c->in_attr[i], 5271 /* PerPrimitiveEXT */, NULL, 0);
+            spv_emit_decorate(&c->e, c->in_attr[i], SPV_DECORATION_PER_PRIMITIVE_EXT, NULL, 0);
         }
         c->si->in_mask |= 1u << i;
     }
@@ -568,7 +613,7 @@ static u32 input_load(Ctx* c, u32 i, u32 k) {
     u32 var = input_var(c, i);
     int integer = c->stage == ST_VS && (c->si->attr_int_mask & (1u << i));
     u32 scalar = integer ? (c->si->attr_sint_mask & (1u << i) ? c->t_i32 : c->t_u32) : c->t_f32;
-    u32 ptr = spv_emit_interface_scalar_pointer(&c->e, 1, scalar, var, 0, cu(c, k));
+    u32 ptr = spv_emit_interface_scalar_pointer(&c->e, SPV_STORAGE_INPUT, scalar, var, 0, cu(c, k));
     return to_u(c, spv_emit_load(&c->e, scalar, ptr));
 }
 static u32 builtin_u32(Ctx* c, u32* var, u32 builtin) {
@@ -612,12 +657,12 @@ static u32 scaled_slot(Ctx* c, int slot, int own) {
     if (!c->scaled_push) {
         const u32 members[3] = {c->t_v4f, c->t_v4u, c->t_v4u}, offsets[3] = {16, 32, 96};
         u32 block = spv_emit_type_struct(&c->e, members, offsets, 3);
-        spv_emit_decorate(&c->e, block, 2, NULL, 0);         /* Block */
-        c->scaled_push = spv_emit_variable(&c->e, 9, block); /* 9: PushConstant */
+        spv_emit_decorate(&c->e, block, SPV_DECORATION_BLOCK, NULL, 0);
+        c->scaled_push = spv_emit_variable(&c->e, SPV_STORAGE_PUSH_CONSTANT, block);
         add_interface(c, c->scaled_push);
     }
-    u32 bits = spv_emit_push_component_f32(&c->e, spv_emit_type_pointer(&c->e, 9, c->t_u32), c->scaled_push,
-                                           cu(c, own ? 2 : 1), cu(c, slot >= 32), c->t_u32);
+    u32 bits = spv_emit_push_component_f32(&c->e, spv_emit_type_pointer(&c->e, SPV_STORAGE_PUSH_CONSTANT, c->t_u32),
+                                           c->scaled_push, cu(c, own ? 2 : 1), cu(c, slot >= 32), c->t_u32);
     u32 bit = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
                               spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, bits, cu(c, (u32)slot & 31)),
                               cu(c, 1));
@@ -694,9 +739,10 @@ static u32 frag_coord(Ctx* c, u32 k) {
 static u32 attr_load(Ctx* c, u32 addr) {
     if (addr >= 0x80 && addr < 0x280) return input_load(c, (addr - 0x80) >> 4, (addr >> 2) & 3);
     if (c->stage == ST_VS && addr == 0x2f8) /* InstanceIndex counts from the base instance, the push constant's x */
-        return spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, builtin_u32(c, &c->instance_index, 43),
+        return spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32,
+                               builtin_u32(c, &c->instance_index, SPV_BUILT_IN_INSTANCE_INDEX),
                                to_u(c, push_component(c, 0)));
-    if (c->stage == ST_VS && addr == 0x2fc) return builtin_u32(c, &c->vertex_index, 42);
+    if (c->stage == ST_VS && addr == 0x2fc) return builtin_u32(c, &c->vertex_index, SPV_BUILT_IN_VERTEX_INDEX);
     if (c->stage == ST_FS && addr >= 0x70 && addr < 0x80) return to_u(c, frag_coord(c, (addr >> 2) & 3));
     fail(c, "attribute load 0x%x", addr);
     return c->zero;
@@ -747,7 +793,8 @@ static void attr_store(Ctx* c, u32 addr, u32 bits) {
         fail(c, "attribute store 0x%x", addr);
         return;
     }
-    spv_emit_store(&c->e, spv_emit_interface_scalar_pointer(&c->e, 3, c->t_f32, var, 0, cu(c, k)), to_f(c, bits));
+    spv_emit_store(&c->e, spv_emit_interface_scalar_pointer(&c->e, SPV_STORAGE_OUTPUT, c->t_f32, var, 0, cu(c, k)),
+                   to_f(c, bits));
 }
 
 /* ---- global and shared memory ---- */
@@ -757,8 +804,10 @@ static u32 gbuf_slot(Ctx* c, u32 key, int write) {
     for (int i = 0; i < c->si->ngbuf; i++)
         if (c->si->gbuf_cbuf_off[i] == key) slot = i;
     if (slot < 0) {
-        if (c->si->ngbuf >= 16) {
-            fail(c, "more than 16 global buffers");
+        /* the last slot holds the shared memory where it is in a buffer (SH_SHARED_SPILL) */
+        if (c->si->ngbuf >= (c->si->shared_spill ? SH_SHARED_SPILL : 16)) {
+            fail(c, c->si->shared_spill ? "more than 15 global buffers, with the shared memory in a buffer"
+                                        : "more than 16 global buffers");
             return 0;
         }
         slot = c->si->ngbuf++;
@@ -775,8 +824,8 @@ static u32 gbuf_slot(Ctx* c, u32 key, int write) {
            the compiler kept a value it had read, and a program waiting on its own store through the other buffer
            never finished: the GPU's context timed out. The Vulkan memory model (c->coop) has no Coherent: there the
            loads and stores are relaxed atomics instead (mem_word_load), which Mesa makes the same coherent accesses */
-        spv_emit_decorate(&c->e, c->gbuf[slot], 20 /* Aliased */, NULL, 0);
-        if (!c->coop) spv_emit_decorate(&c->e, c->gbuf[slot], 23 /* Coherent */, NULL, 0);
+        spv_emit_decorate(&c->e, c->gbuf[slot], SPV_DECORATION_ALIASED, NULL, 0);
+        if (!c->coop) spv_emit_decorate(&c->e, c->gbuf[slot], SPV_DECORATION_COHERENT, NULL, 0);
         add_interface(c, c->gbuf[slot]);
     }
     if (write)
@@ -937,7 +986,7 @@ static void global_dynamic(Ctx* c, const Sm86Insn* in, int kind, u32 opcode, int
         if (!base) return;
         u32 relative = op2(c, SPV_OP_I_SUB, u64_type(c), address, base);
         u32 length = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
-                                     SPV(&c->e, 68 /* OpArrayLength */, c->t_u32, buffer, 0), cu(c, 2));
+                                     SPV(&c->e, SPV_OP_ARRAY_LENGTH, c->t_u32, buffer, 0), cu(c, 2));
         u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, relative, to64(c, length));
         u32 then = spv_emit_id(&c->e), other = spv_emit_id(&c->e);
         merges[k] = spv_emit_id(&c->e);
@@ -1373,16 +1422,37 @@ static int track_globals(Ctx* c) {
     free(start);
     return ok;
 }
+/* The shared memory: the workgroup's array, or where it is in a buffer (ShaderInfo.shared_spill), global buffer slot
+   SH_SHARED_SPILL, whose barriers and atomics then order that buffer (UniformMemory) */
 static u32 shared_var(Ctx* c) {
     if (!c->shared) {
         u32 bytes = c->si->shared_size > 0 ? (u32)c->si->shared_size : 16384u;
         c->shared_words = (bytes + 3) / 4;
-        u32 array = spv_emit_type_array_u32(&c->e, c->t_u32, c->shared_words);
-        c->shared = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
-        c->shared_ptr = spv_emit_type_workgroup_pointer(&c->e, c->t_u32);
+        if (c->si->shared_spill) {
+            u32 structure = spv_emit_type_struct_one(&c->e, spv_emit_type_runtime_array(&c->e, c->t_u32, 4));
+            c->shared_ptr = spv_emit_type_storage_pointer(&c->e, c->t_u32);
+            c->shared =
+                spv_emit_storage_buffer(&c->e, structure, (u32)shader_vk_set(c->stage), SNX_VKB_SSBO + SH_SHARED_SPILL);
+            spv_emit_decorate(&c->e, c->shared, SPV_DECORATION_COHERENT, NULL, 0);
+            c->e.shared_semantics = SPV_MEMORY_SEMANTICS_UNIFORM_MEMORY;
+        } else {
+            u32 array = spv_emit_type_array_u32(&c->e, c->t_u32, c->shared_words);
+            c->shared = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
+            c->shared_ptr = spv_emit_type_workgroup_pointer(&c->e, c->t_u32);
+        }
         add_interface(c, c->shared);
     }
     return c->shared;
+}
+/* where the shared memory is in a buffer, the first word of this block's part: its place in the grid (x, then y, then
+   z) times the program's words */
+static u32 shared_block_base(Ctx* c) {
+    u32 place = builtin_vec3(c, &c->group_id, SPV_BUILT_IN_WORKGROUP_ID, 2);
+    for (u32 k = 2; k-- > 0;)
+        place = spv_emit_iadd_u32(&c->e, c->t_u32, builtin_vec3(c, &c->group_id, SPV_BUILT_IN_WORKGROUP_ID, k),
+                                  spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, place,
+                                                  builtin_vec3(c, &c->num_groups, SPV_BUILT_IN_NUM_WORKGROUPS, k)));
+    return spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, place, cu(c, c->shared_words));
 }
 /* the buffer that names local memory to mem_ptr, mem_load and mem_store */
 #define MEM_LOCAL 0xffffffffu
@@ -1431,10 +1501,13 @@ static u32 mem_ptr(Ctx* c, u32 buffer, u32 address, u32 word) {
             spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, index, cu(c, c->local_words - 1)));
     if (buffer)
         return spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, buffer, c->zero, gbuf_word_index(c, buffer, index));
-    u32 last = cu(c, c->shared_words - 1);
+    u32 shared = shared_var(c), last = cu(c, c->shared_words - 1);
     index = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
                              spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, last, index), last, index);
-    return SPV(&c->e, SPV_OP_ACCESS_CHAIN, c->shared_ptr, shared_var(c), index);
+    if (c->si->shared_spill)
+        return spv_emit_storage_access_u32(&c->e, c->shared_ptr, shared, c->zero,
+                                           spv_emit_iadd_u32(&c->e, c->t_u32, shared_block_base(c), index));
+    return SPV(&c->e, SPV_OP_ACCESS_CHAIN, c->shared_ptr, shared, index);
 }
 /* an address in shared or local memory: the register at 24 times 1, 4, 8 or 16 (bits 78-79, NAK's OffsetStride), the
    uniform register ur (SM86_URZ for none) and the signed 24-bit offset */
@@ -1543,18 +1616,18 @@ static u32 atomic_fadd(Ctx* c, u32 buffer, u32 address, u32 data) {
             u32 structure = spv_emit_type_struct_one(&c->e, spv_emit_type_runtime_array(&c->e, c->t_f32, 4));
             c->gbuf_f32[slot] =
                 spv_emit_storage_buffer(&c->e, structure, (u32)shader_vk_set(c->stage), SNX_VKB_SSBO + slot);
-            spv_emit_decorate(&c->e, c->gbuf_f32[slot], 20 /* Aliased */, NULL, 0);
-            if (!c->coop) spv_emit_decorate(&c->e, c->gbuf_f32[slot], 23 /* Coherent */, NULL, 0);
+            spv_emit_decorate(&c->e, c->gbuf_f32[slot], SPV_DECORATION_ALIASED, NULL, 0);
+            if (!c->coop) spv_emit_decorate(&c->e, c->gbuf_f32[slot], SPV_DECORATION_COHERENT, NULL, 0);
             add_interface(c, c->gbuf_f32[slot]);
         }
         spv_emit_extension(&c->e, "SPV_EXT_shader_atomic_float_add");
-        spv_emit_capability(&c->e, 6033 /* AtomicFloat32AddEXT */);
+        spv_emit_capability(&c->e, SPV_CAPABILITY_ATOMIC_FLOAT32_ADD_EXT);
         u32 index =
             gbuf_word_index(c, buffer, spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, address, cu(c, 2)));
         u32 ptr = spv_emit_storage_access_u32(&c->e, spv_emit_type_storage_pointer(&c->e, c->t_f32), c->gbuf_f32[slot],
                                               c->zero, index);
-        return to_u(c, SPV(&c->e, 6035 /* OpAtomicFAddEXT */, c->t_f32, ptr, cu(c, 1) /* Device */,
-                           cu(c, 0) /* Relaxed */, to_f(c, data)));
+        return to_u(c, SPV(&c->e, SPV_OP_ATOMIC_F_ADD_EXT, c->t_f32, ptr, cu(c, SPV_SCOPE_DEVICE),
+                           cu(c, SPV_MEMORY_SEMANTICS_RELAXED), to_f(c, data)));
     }
     SpvEmitter* e = &c->e;
     u32 ptr = mem_ptr(c, buffer, address, 0), header = spv_emit_id(e), body = spv_emit_id(e), cont = spv_emit_id(e),
@@ -1646,7 +1719,7 @@ static u32 map_var(Ctx* c) { return isbe_var(c, &c->isbe_map, SPV_STORAGE_WORKGR
    program, or a mesh program without one, which counts from the draw's first group (the push constant's x, as bits).
    A mesh program after a task program reads its index in its task's launch */
 static u32 workgroup_index(Ctx* c) {
-    u32 id = builtin_vec3(c, &c->group_id, 26, 0);
+    u32 id = builtin_vec3(c, &c->group_id, SPV_BUILT_IN_WORKGROUP_ID, 0);
     if (c->stage == ST_MS && c->si->mesh.has_task) return id;
     /* an indirect draw's first group: the record's, in the uniform buffer at SNX_VKB_RS (SH_PUSH_GPU_MESH_FIRST) */
     if (!c->mesh_first) {
@@ -2048,11 +2121,11 @@ static int tex_slot_indexed(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 
         c->tex_depth_type[i] = c->tex_depth_type[same];
     } else {
         c->tex_array[i] = spv_emit_sampler_image_array(&c->e, c->t_f32, c->t_u32, set, SNX_VKB_TEXARRAY, dim,
-                                                       (int)array, 0, SNX_TEX_ARRAY, &c->tex_sampled[i]);
+                                                       (int)array, 0, g_shader_tex_array, &c->tex_sampled[i]);
         add_interface(c, c->tex_array[i]);
         if (shadow) {
             c->tex_depth[i] = spv_emit_sampler_image_array(&c->e, c->t_f32, c->t_u32, set, SNX_VKB_TEXDEPTH, dim,
-                                                           (int)array, 1, SNX_TEX_ARRAY, &c->tex_depth_type[i]);
+                                                           (int)array, 1, g_shader_tex_array, &c->tex_depth_type[i]);
             add_interface(c, c->tex_depth[i]);
         }
     }
@@ -2124,6 +2197,13 @@ static u32 sample_indexed_shadow(Ctx* c, int slot, u32 element, u32 coord, u32 d
                                    spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, meta, cu(c, 8)), cu(c, 8));
     return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, is_depth, depth, result);
 }
+/* a filtered sample of slot at coord (array: its last component the layer) moved by const_offset (0 for none) as the
+   least or greatest of its texels (reduce: shader_minmax_slot), as its sampler asks and the device's can't */
+static u32 minmax_sample(Ctx* c, int slot, u32 coord, int array, u32 const_offset, int reduce) {
+    ShMinmaxTypes t = {c->t_f32, c->t_u32, c->t_bool, c->t_v4f, c->glsl};
+    return shader_minmax_sample(&c->e, &t, c->tex_sampled[slot], c->tex[slot], coord, array, const_offset, 0,
+                                reduce == 2);
+}
 /* NAK's TexDim (bits 61-63): ShTex's type (0 1D, 1 2D, 2 3D, 3 cube), array, and the coordinates */
 static int tex_dim(u32 dim, u32* type, u32* array, u32* coords) {
     static const u8 types[8] = {0, 1, 2, 3, 0, 1, 0, 3}, arrays[8] = {0, 0, 0, 0, 1, 1, 0, 1},
@@ -2165,7 +2245,7 @@ static void tex_results(Ctx* c, const Sm86Insn* in, u32 value, u32 scalar) {
             u32 pair =
                 spv_emit_vec2_construct(&c->e, c->t_v2f, half[2 * p], 2 * p + 1 < n ? half[2 * p + 1] : cf(c, 0.0f));
             u32 r = p == 0 || d1 >= SM86_RZ ? (d0 >= SM86_RZ ? d0 : d0 + p) : d1;
-            wr(c, r, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, pair));
+            wr(c, r, pack_half(c, pair));
         }
         return;
     }
@@ -2329,9 +2409,11 @@ static void texture(Ctx* c, const Sm86Insn* in) {
                 coord = coord_vector(c, moved, count);
             }
         }
+        int reduce = shadow ? 0 : shader_minmax_slot(c->si->tex_minmax_mask, c->si->tex_minmax_max, slot);
         result = indexed && shadow ? sample_indexed_shadow(c, slot, element, coord, dref, mode, level, const_offset)
-                                   : spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord,
-                                                           dref, mode, level, const_offset, 0);
+                 : reduce ? minmax_sample(c, slot, coord, (int)array, const_offset, reduce)
+                          : spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord, dref, mode,
+                                                  level, const_offset, 0);
         if (shadow) {
             u32 v[4] = {result, cf(c, 0.0f), cf(c, 0.0f), cf(c, 1.0f)};
             result = spv_emit_vec4_construct(&c->e, c->t_v4f, v);
@@ -2405,10 +2487,12 @@ static void texture_grad(Ctx* c, const Sm86Insn* in) {
             &c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32,
             spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, rd(c, TXD_REG(a, coords)), cu(c, 0xffff)));
 #undef TXD_REG
-    tex_results(
-        c, in,
-        spv_emit_sample_grad(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord_vector(c, f, count), gx, gy, 0),
-        c->t_f32);
+    int reduce = shader_minmax_slot(c->si->tex_minmax_mask, c->si->tex_minmax_max, slot);
+    u32 coord = coord_vector(c, f, count);
+    tex_results(c, in,
+                reduce ? minmax_sample(c, slot, coord, (int)array, 0, reduce)
+                       : spv_emit_sample_grad(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, gx, gy, 0),
+                c->t_f32);
 }
 /* TLD: a texel at integer coordinates and an explicit level (bits 87-89, NAK's TexLodMode: 1 the base level, 3 a
    level register). Its operands: the layer and the coordinates, then the level (nak_nir_lower_tex.c) */
@@ -2540,7 +2624,7 @@ static void surface(Ctx* c, const Sm86Insn* in) {
         si->img[slot].bindless = 1;
         si->img[slot].bl_cbuf = (u8)bank;
         si->img[slot].kind = (u8)kind;
-        if (kind != 1) spv_emit_capability(&c->e, 55); /* StorageImageReadWithoutFormat */
+        if (kind != 1) spv_emit_capability(&c->e, SPV_CAPABILITY_STORAGE_IMAGE_READ_WITHOUT_FORMAT);
         c->img[slot] =
             spv_emit_storage_image(&c->e, image_scalar(c, kind), (u32)shader_vk_set(c->stage), SNX_VKB_IMG + (u32)slot,
                                    sdim == 0 ? 1 : sdim, (int)array, kind == 1 ? 33 : 0, &c->img_type[slot]);
@@ -2616,8 +2700,13 @@ static u32 warp_lane(Ctx* c) {
 static u32 warp_read(Ctx* c, u32 value, u32 j) {
     u32 own = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, ~31u));
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
-    return SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, c->t_u32, cu(c, 3), value,
+    return SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE, c->t_u32, cu(c, SPV_SCOPE_SUBGROUP), value,
                spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, own, j));
+}
+/* value as lane l ^ mask of the invocation's own 32 holds it, for lane l (mask below 32) */
+static u32 warp_xor(Ctx* c, u32 value, u32 mask) {
+    spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
+    return SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE_XOR, c->t_u32, cu(c, SPV_SCOPE_SUBGROUP), value, cu(c, mask));
 }
 /* value as lane 4g + p of the invocation's own 32 holds it, g4 = 4g for the reader's own g: a quad broadcast where the
    stage has quad operations, which AMD makes a DPP move where a shuffle goes through LDS. Vulkan's quad is four
@@ -2632,6 +2721,35 @@ static u32 quad_read(Ctx* c, u32 value, u32 g4, u32 p) {
     return warp_read(c, value, spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, g4, cu(c, p)));
 }
 static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, bits); }
+void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int shared_max) {
+    g_shader_hmma_stage = subgroups && shuffle_loops ? shared_max : 0;
+    g_shader_hmma_pairs = subgroups && radv_warp32 && !g_shader_hmma_stage;
+}
+void shader_hmma_way(char* out, size_t n) {
+    int mixed = g_shader_mixed_dot && g_shader_float16, halves = !mixed && g_shader_hmma_f16 && g_shader_float16;
+    const char* how = g_shader_hmma_stage ? "A and B through a warp's slot of shared memory"
+                      : g_shader_hmma_pairs && g_shader_quad_compute
+                          ? "A by quad broadcasts, B shared by pairs of lanes"
+                      : g_shader_hmma_pairs   ? "A by shuffles, B shared by pairs of lanes"
+                      : g_shader_quad_compute ? "A by quad broadcasts, B by shuffles"
+                                              : "A and B by shuffles";
+    snprintf(out, n, "%s%s, the products %s",
+             g_shader_hmma_coop ? "the device's cooperative matrices where a program's blocks are whole warps and "
+                                  "their fragments fit in shared memory, else "
+                                : "",
+             how,
+             mixed    ? "by the mixed dot product into f32"
+             : halves ? "summed in half floats (hmma_f16), then in f32"
+                      : "unpacked to f32");
+}
+const char* shader_hmma_f16_unused(void) {
+    if (!g_shader_hmma_f16) return NULL;
+    if (!g_shader_float16) return "the device has no shaderFloat16";
+    if (g_shader_mixed_dot)
+        return "the device's mixed dot product (VK_VALVE_shader_mixed_float_dot_product) sums two products an "
+               "instruction in f32";
+    return NULL;
+}
 /* A zero for an HMMA to OR its B registers with before it gathers them, a new one every 8 HMMAs, so that a driver
    doesn't keep a B fragment's 16 gathered words live from its first HMMA to its last. Mesa merges identical subgroup
    operations within a block, and one game's video upscaler multiplies one B fragment by many A ones, far apart: with
@@ -2645,7 +2763,8 @@ static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLS
 static u32 hmma_zero(Ctx* c) {
     u32 group = c->hmma_count++ / 8;
     if (c->stage != ST_CS) return 0;
-    u32 never = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, builtin_vec3(c, &c->num_groups, 24, 0), c->zero);
+    u32 never = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool,
+                                builtin_vec3(c, &c->num_groups, SPV_BUILT_IN_NUM_WORKGROUPS, 0), c->zero);
     return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, never, cu(c, group + 1), c->zero);
 }
 /* HMMA on the device's matrix unit (g_shader_hmma_coop): one OpCooperativeMatrixMulAddKHR of 16x16 f16 A and B into
@@ -2686,8 +2805,9 @@ static int coop_wanted(const Ctx* c) {
     return 0;
 }
 static void coop_barrier(Ctx* c) {
-    SPV_VOID(&c->e, 224 /* OpControlBarrier */, cu(c, 3), cu(c, 3),
-             cu(c, spv_emit_memory_semantics(&c->e, 0x108)) /* Subgroup, Subgroup, AcquireRelease | Workgroup */);
+    SPV_VOID(&c->e, SPV_OP_CONTROL_BARRIER, cu(c, SPV_SCOPE_SUBGROUP), cu(c, SPV_SCOPE_SUBGROUP),
+             cu(c, spv_emit_memory_semantics(&c->e, SPV_MEMORY_SEMANTICS_ACQUIRE_RELEASE |
+                                                        SPV_MEMORY_SEMANTICS_WORKGROUP_MEMORY)));
 }
 static u32 coop_ptr(Ctx* c, u32 index) {
     return SPV(&c->e, SPV_OP_ACCESS_CHAIN, spv_emit_type_workgroup_pointer(&c->e, c->t_u32), c->coop_slots, index);
@@ -2700,19 +2820,23 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
     for (k = 0; k < ncd; k++) cc[k] = rd(c, rc + k);
     spv_emit_capability(&c->e, SPV_CAPABILITY_FLOAT16);
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
-    spv_emit_capability(&c->e, 6022 /* CooperativeMatrixKHR */);
+    spv_emit_capability(&c->e, SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR);
     spv_emit_extension(&c->e, "SPV_KHR_cooperative_matrix");
     u32 t_h = spv_emit_type_float(&c->e, 16);
-    u32 t_a = spv_emit_type_cooperative_matrix(&c->e, t_h, 3 /* Subgroup */, 16, 16, 0 /* MatrixAKHR */);
-    u32 t_b = spv_emit_type_cooperative_matrix(&c->e, t_h, 3, 16, 16, 1 /* MatrixBKHR */);
-    u32 t_acc = spv_emit_type_cooperative_matrix(&c->e, c->t_f32, 3, 16, 16, 2 /* MatrixAccumulatorKHR */);
+    u32 tile = g_shader_hmma_coop_tile == 8 ? 8 : 16; /* Metal's simdgroup_matrix is 8x8x8, RADV's 16x16x16 */
+    u32 t_a = spv_emit_type_cooperative_matrix(&c->e, t_h, SPV_SCOPE_SUBGROUP, tile, tile,
+                                               SPV_COOPERATIVE_MATRIX_USE_MATRIX_A_KHR);
+    u32 t_b = spv_emit_type_cooperative_matrix(&c->e, t_h, SPV_SCOPE_SUBGROUP, tile, tile,
+                                               SPV_COOPERATIVE_MATRIX_USE_MATRIX_B_KHR);
+    u32 t_acc = spv_emit_type_cooperative_matrix(&c->e, c->t_f32, SPV_SCOPE_SUBGROUP, tile, tile,
+                                                 SPV_COOPERATIVE_MATRIX_USE_MATRIX_ACCUMULATOR_KHR);
     if (!c->coop_slots) {
         u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
         u32 array = spv_emit_type_array_u32(&c->e, c->t_u32, lanes / 32 * COOP_WORDS);
         c->coop_slots = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
         add_interface(c, c->coop_slots);
     }
-    u32 base = spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, builtin_u32(c, &c->subgroup_id, 40 /* SubgroupId */),
+    u32 base = spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, builtin_u32(c, &c->subgroup_id, SPV_BUILT_IN_SUBGROUP_ID),
                                cu(c, COOP_WORDS));
     u32 lane = warp_lane(c);
     u32 g8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
@@ -2729,20 +2853,51 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
                                             spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 1)),
                                             cu(c, COOP_D))));
     coop_barrier(c);
+    /* the K halves the products read: a .1688's second is zeros, which an 8 wide tile does not multiply */
+    u32 halves = tile == 8 && !k16 ? 1 : 2;
     static const u32 a_at[4] = {0, 64, 4, 68};
-    for (k = 0; k < 4; k++)
+    for (k = 0; k < 2 * halves; k++)
         spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_a, a_at[k])), k < na ? a[k] : c->zero);
-    for (k = 0; k < 2; k++)
+    for (k = 0; k < halves; k++)
         spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_b, 4 * k)), k < nb ? b[k] : c->zero);
     coop_barrier(c);
-    u32 ma = SPV(&c->e, 4457 /* OpCooperativeMatrixLoadKHR */, t_a, coop_ptr(c, base), cu(c, 0) /* RowMajorKHR */,
-                 cu(c, 8), 0x20 /* NonPrivatePointer */);
-    u32 mb =
-        SPV(&c->e, 4457, t_b, coop_ptr(c, coop_add(c, base, COOP_B)), cu(c, 1) /* ColumnMajorKHR */, cu(c, 8), 0x20);
-    u32 md = SPV(&c->e, 4459 /* OpCooperativeMatrixMulAddKHR */, t_acc, ma, mb,
-                 spv_emit_const_composite(&c->e, t_acc, (const u32[]){cf(c, 0.0f)}, 1));
-    SPV_VOID(&c->e, 4458 /* OpCooperativeMatrixStoreKHR */, coop_ptr(c, coop_add(c, base, COOP_D)), md, cu(c, 0),
-             cu(c, 16), 0x20);
+    u32 zero_acc = spv_emit_const_composite(&c->e, t_acc, (const u32[]){cf(c, 0.0f)}, 1);
+    if (g_shader_hmma_coop_tile != 8) {
+        u32 ma =
+            SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a, coop_ptr(c, base),
+                cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 8), SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
+        u32 mb =
+            SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b, coop_ptr(c, coop_add(c, base, COOP_B)),
+                cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_COLUMN_MAJOR_KHR), cu(c, 8), SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
+        u32 md = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_MUL_ADD_KHR, t_acc, ma, mb, zero_acc);
+        SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR, coop_ptr(c, coop_add(c, base, COOP_D)), md,
+                 cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 16), SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
+    } else {
+        /* An 8x8x8 tile, as Metal's simdgroup_matrix is: the HMMA's 16x8x16 is two M halves of 8 rows, each the sum
+           of the two K halves' products, so four products a .16816 (two a .1688, whose K is one half), the K halves'
+           the second of each pair adding into the first. The tiles sit where a_at and the B words already are, and D's two go a row of 16 words apart,
+           so the lanes read D back as they do above */
+        static const u32 half_at[2] = {0, 4};     /* K's two halves of A, and of B's columns, 4 words apart */
+        u32 a_at2[2] = {coop_add(c, base, 0), coop_add(c, base, 64)};
+        u32 d_at[2] = {coop_add(c, base, COOP_D), coop_add(c, base, COOP_D + 128)};
+        for (u32 m = 0; m < 2; m++) {
+            u32 acc8 = 0;
+            for (u32 h = 0; h < halves; h++) {
+                u32 ma =
+                    SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a, coop_ptr(c, coop_add(c, a_at2[m], half_at[h])),
+                        cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 8),
+                        SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
+                u32 mb = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b,
+                             coop_ptr(c, coop_add(c, coop_add(c, base, COOP_B), half_at[h])),
+                             cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_COLUMN_MAJOR_KHR), cu(c, 8),
+                             SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
+                acc8 = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_MUL_ADD_KHR, t_acc, ma, mb, acc8 ? acc8 : zero_acc);
+            }
+            SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR, coop_ptr(c, d_at[m]), acc8,
+                     cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 16),
+                     SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
+        }
+    }
     coop_barrier(c);
     u32 acc[4]; /* row g columns 2t and 2t + 1, row g + 8 the same */
     for (k = 0; k < 4; k++) {
@@ -2763,9 +2918,21 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
         for (k = 0; k < 4; k++) wr(c, d + k, to_u(c, acc[k]));
     else
         for (u32 i = 0; i < 2; i++)
-            wr(c, d + i,
-               SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
-                       spv_emit_vec2_construct(&c->e, c->t_v2f, acc[2 * i], acc[2 * i + 1])));
+            wr(c, d + i, pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, acc[2 * i], acc[2 * i + 1])));
+}
+/* hmma's A and B through shared memory (g_shader_hmma_stage), for a device whose shuffles cost far more than a store
+   and a load: each warp has a slot of HMMA_STAGE_WORDS after the program's shared memory, lane l's A words at 4l and
+   its B words at 128 + 2l, between two subgroup barriers as hmma_coop's slots are. A compute program's, where the
+   slots fit the device's shared memory beside the program's own */
+#define HMMA_STAGE_WORDS 192u
+static int stage_wanted(const Ctx* c) {
+    if (!g_shader_hmma_stage || c->coop || c->stage != ST_CS || c->si->cs_local[0] <= 0) return 0;
+    u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
+    u32 own = c->si->shared_size > 0 ? (u32)c->si->shared_size : 16384u; /* shared_var's */
+    return own + (lanes + 31) / 32 * HMMA_STAGE_WORDS * 4 <= (u32)g_shader_hmma_stage;
+}
+static u32 stage_ptr(Ctx* c, u32 index) {
+    return SPV(&c->e, SPV_OP_ACCESS_CHAIN, spv_emit_type_workgroup_pointer(&c->e, c->t_u32), c->stage_slots, index);
 }
 /* HMMA (0x23c): D = A B + C on the warp's fragments, as PTX's mma.sync.aligned.m16n8k16 (bit 75) or m16n8k8 .row.col
    with f16 A and B, and f16 (bit 76 clear) or f32 C and D (the encodings of CuAssembler's sm_86 records: bits 72-90 8
@@ -2779,7 +2946,12 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
    sums the products in f32, which an f16 D then rounds to. A product of two f16 is exact in f32, so only the sums
    round, in f32 for both D types: with the mixed dot product (g_shader_mixed_dot) each pair of products goes into
    the accumulator in one instruction, rounded as the device does it (RDNA 3.5's is a few f32 places off an FMA chain
-   even on exact sums, within the same bound); without it the pairs are unpacked to f32 and dotted */
+   even on exact sums, within the same bound); without it the pairs are unpacked to f32 and dotted.
+   With g_shader_hmma_pairs, lanes l and l ^ 4 (quads g and g ^ 1, the same t, so the same two B columns) split the
+   16 B words both multiply by: lane l shuffles in those of quad lanes 2 G0 and 2 G0 + 1 (G0 = bit 2 of l) and takes
+   its pair's, the other two, with a xor of 4, which RADV makes a DPP move where a shuffle at any index is a permute
+   through LDS. Its A pairs follow the same quad lanes, in the same order: quad broadcasts of lanes u and 2 + u, the
+   one G0 picks. Only the order of the sums changes, lanes of G0 1 adding quad lanes 2 and 3's pairs first */
 static void hmma(Ctx* c, const Sm86Insn* in) {
     u32 v = sm86_field(in, 72, 19);
     if (v & ~0x18u) {
@@ -2806,44 +2978,135 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
                              spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3)), cu(c, 3));
     /* the pairs as two f16 for OpFDot2MixAcc32VALVE (a bitcast: no instruction), or unpacked to two f32 */
     int mixed = g_shader_mixed_dot && g_shader_float16;
-    u32 t_v2h = 0;
-    if (mixed) {
+    /* The products and their sum in half floats, two products to an OpFma where the f32 sum takes two instructions
+       (g_shader_hmma_f16), and C added in f32 to that sum at the end: the one speed an emulated tensor core finds.
+       Each of the two half sums rounds in f16 once a product (8 times for k16, 4 for k8), so a result is within about
+       2^-8 of its products' magnitudes where the f32 sum is within 2^-20, and 2^-21 more below the normals (more where
+       the device flushes f16 subnormals); a product or partial sum past 65504 is an infinity. The driver's matrix
+       unit (hmma_coop) is the exact way to that speed and it is off where the driver has no VK_KHR_cooperative_matrix */
+    int packed = g_shader_hmma_f16 && !shader_hmma_f16_unused();
+    u32 t_v2h = 0, start2 = 0;
+    if (mixed || packed) {
         spv_emit_capability(&c->e, SPV_CAPABILITY_FLOAT16);
-        spv_emit_capability(&c->e, 6912 /* DotProductFloat16AccFloat32VALVE */);
-        spv_emit_extension(&c->e, "SPV_VALVE_mixed_float_dot_product");
         t_v2h = spv_emit_type_vector(&c->e, spv_emit_type_float(&c->e, 16), 2);
     }
-    u32 acc[2][2]; /* [row g, g + 8][column 2t, 2t + 1] */
-    for (u32 i = 0; i < 2; i++) {
-        if (f32) {
-            acc[i][0] = to_f(c, cc[2 * i]);
-            acc[i][1] = to_f(c, cc[2 * i + 1]);
-        } else {
-            u32 pair = half_pair(c, cc[i]);
-            acc[i][0] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 0);
-            acc[i][1] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 1);
+    if (packed) { /* -0, the sum's identity, and +0 in one half where C is RZ: the console adds that +0 */
+        u32 t_f16 = spv_emit_type_float(&c->e, 16), neg = spv_emit_constant_u32(&c->e, t_f16, 0x8000u);
+        start2 = spv_emit_constant_vec2(&c->e, t_v2h, rc < SM86_RZ ? neg : spv_emit_constant_u32(&c->e, t_f16, 0), neg);
+    }
+    if (mixed) {
+        spv_emit_capability(&c->e, SPV_CAPABILITY_DOT_PRODUCT_FLOAT16_ACC_FLOAT32_VALVE);
+        spv_emit_extension(&c->e, "SPV_VALVE_mixed_float_dot_product");
+    }
+    u32 acc[2][2];                        /* [row g, g + 8][column 2t, 2t + 1] */
+    u32 pacc[2][2] = {{0, 0}, {0, 0}};    /* packed: the f16 half sums of the same, C's not in them yet */
+    if (packed) {
+        for (u32 i = 0; i < 2; i++)
+            for (u32 j = 0; j < 2; j++) pacc[i][j] = start2;
+    } else {
+        for (u32 i = 0; i < 2; i++) {
+            if (f32) {
+                acc[i][0] = to_f(c, cc[2 * i]);
+                acc[i][1] = to_f(c, cc[2 * i + 1]);
+            } else {
+                u32 pair = half_pair(c, cc[i]);
+                acc[i][0] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 0);
+                acc[i][1] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 1);
+            }
         }
     }
-    for (u32 p = 0; p < 4; p++) {
-        u32 lb[2] = {spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, cu(c, p)),
-                     spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, cu(c, 4 + p))};
+    /* staged: lane 4g + p's A words at 16g + 4p, lane 8t + 4j + p's B words at 128 + 16t + 8j + 2p */
+    int stage = stage_wanted(c), pairs = !stage && g_shader_hmma_pairs != 0;
+    u32 a_at = 0, b_at = 0;
+    if (stage) {
+        if (!c->stage_slots) {
+            u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
+            u32 array = spv_emit_type_array_u32(&c->e, c->t_u32, (lanes + 31) / 32 * HMMA_STAGE_WORDS);
+            c->stage_slots = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
+            add_interface(c, c->stage_slots);
+        }
+        u32 slot = spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32,
+                                   spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32,
+                                                   builtin_u32(c, &c->local_index, SPV_BUILT_IN_LOCAL_INVOCATION_INDEX),
+                                                   cu(c, 5)),
+                                   cu(c, HMMA_STAGE_WORDS));
+        u32 own_a = spv_emit_iadd_u32(&c->e, c->t_u32, slot,
+                                      spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, lane, cu(c, 2)));
+        u32 own_b = spv_emit_iadd_u32(
+            &c->e, c->t_u32, slot,
+            spv_emit_iadd_u32(&c->e, c->t_u32,
+                              spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, lane, cu(c, 1)), cu(c, 128)));
+        coop_barrier(c); /* the HMMA before's loads of the slot */
+        for (k = 0; k < na; k++) spv_emit_store_nonprivate(&c->e, stage_ptr(c, coop_add(c, own_a, k)), a[k]);
+        for (k = 0; k < nb; k++) spv_emit_store_nonprivate(&c->e, stage_ptr(c, coop_add(c, own_b, k)), b[k]);
+        coop_barrier(c);
+        a_at = spv_emit_iadd_u32(&c->e, c->t_u32, slot,
+                                 spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g4, cu(c, 2)));
+        b_at = spv_emit_iadd_u32(
+            &c->e, c->t_u32, slot,
+            spv_emit_iadd_u32(&c->e, c->t_u32,
+                              spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t8, cu(c, 1)), cu(c, 128)));
+    }
+    u32 g0 = 0, t8h = 0, mine[2][2][2]; /* pairs: [column 2t + j][B's register h][quad lane 2 G0 + u]'s word */
+    if (pairs) {
+        u32 half = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
+                                   spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 1)),
+                                   cu(c, 2)); /* 2 G0 */
+        g0 = spv_emit_binary(&c->e, SPV_OP_I_NOT_EQUAL, c->t_bool, half, c->zero);
+        t8h = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, half);
+    }
+    for (u32 p = 0; p < 4; p++) { /* pairs: quad lanes 2 G0 + p, then 2 (1 - G0) + p - 2 */
         u32 av[4], bv[2][2];
         for (k = 0; k < na; k++) {
-            u32 bits = quad_read(c, a[k], g4, p);
-            av[k] = mixed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
+            u32 bits;
+            if (stage)
+                bits = spv_emit_load_nonprivate(&c->e, c->t_u32, stage_ptr(c, coop_add(c, a_at, 4 * p + k)));
+            else if (pairs) {
+                u32 x = quad_read(c, a[k], g4, p & 1), y = quad_read(c, a[k], g4, 2 + (p & 1));
+                bits = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, g0, p < 2 ? y : x, p < 2 ? x : y);
+            } else
+                bits = quad_read(c, a[k], g4, p);
+            av[k] = mixed || packed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
         }
         for (u32 j = 0; j < 2; j++)
             for (k = 0; k < nb; k++) {
-                u32 bits = warp_read(c, b[k], lb[j]);
-                bv[j][k] = mixed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
+                u32 bits;
+                if (stage)
+                    bits =
+                        spv_emit_load_nonprivate(&c->e, c->t_u32, stage_ptr(c, coop_add(c, b_at, 8 * j + 2 * p + k)));
+                else if (!pairs)
+                    bits =
+                        warp_read(c, b[k], spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, cu(c, 4 * j + p)));
+                else if (p < 2)
+                    bits = mine[j][k][p] =
+                        warp_read(c, b[k], spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8h, cu(c, 4 * j + p)));
+                else
+                    bits = warp_xor(c, mine[j][k][p - 2], 4);
+                bv[j][k] = mixed || packed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
             }
         for (u32 h = 0; h < nb; h++) /* the k halves: A's registers 2h (row g) and 2h + 1 (row g + 8), B's h */
             for (u32 i = 0; i < 2; i++)
                 for (u32 j = 0; j < 2; j++)
-                    acc[i][j] = mixed ? SPV(&c->e, 6916 /* OpFDot2MixAcc32VALVE */, c->t_f32, av[2 * h + i], bv[j][h],
-                                            acc[i][j])
-                                      : op2(c, SPV_OP_F_ADD, c->t_f32, acc[i][j],
-                                            op2(c, 148 /* OpDot */, c->t_f32, av[2 * h + i], bv[j][h]));
+                    if (packed)
+                        pacc[i][j] = spv_emit_glsl_ternary(&c->e, t_v2h, c->glsl, SPV_GLSL_FMA, av[2 * h + i],
+                                                           bv[j][h], pacc[i][j]);
+                    else
+                        acc[i][j] = mixed ? SPV(&c->e, SPV_OP_F_DOT2_MIX_ACC32_VALVE, c->t_f32, av[2 * h + i], bv[j][h],
+                                                acc[i][j])
+                                          : op2(c, SPV_OP_F_ADD, c->t_f32, acc[i][j],
+                                                op2(c, SPV_OP_DOT, c->t_f32, av[2 * h + i], bv[j][h]));
+    }
+    if (packed) { /* the half sums added into one f32, then C: the console's f32 sum up to the half sums' precision */
+        for (u32 i = 0; i < 2; i++)
+            for (u32 j = 0; j < 2; j++) {
+                u32 pair = half_pair(c, spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_u32, pacc[i][j]));
+                acc[i][j] = op2(c, SPV_OP_F_ADD, c->t_f32, spv_emit_vec4_extract(&c->e, c->t_f32, pair, 0),
+                                spv_emit_vec4_extract(&c->e, c->t_f32, pair, 1));
+                if (rc < SM86_RZ)
+                    acc[i][j] = op2(c, SPV_OP_F_ADD, c->t_f32, acc[i][j],
+                                    f32 ? to_f(c, cc[2 * i + j])
+                                        : spv_emit_vec4_extract(&c->e, c->t_f32, half_pair(c, cc[i]), j));
+            }
     }
     u32 d = in->dst;
     if (d >= SM86_RZ) return;
@@ -2854,9 +3117,7 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
         wr(c, d + 3, to_u(c, acc[1][1]));
     } else
         for (u32 i = 0; i < 2; i++)
-            wr(c, d + i,
-               SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
-                       spv_emit_vec2_construct(&c->e, c->t_v2f, acc[i][0], acc[i][1])));
+            wr(c, d + i, pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, acc[i][0], acc[i][1])));
 }
 /* a 16-bit element of shared memory at the byte address, in the low half */
 static u32 shared_u16(Ctx* c, u32 address) {
@@ -2936,7 +3197,7 @@ static u32 ballot32(Ctx* c, u32 pred) {
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT);
     u32 all = spv_emit_subgroup_ballot(&c->e, c->t_v4u, c->t_u32, pred);
     u32 half = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, system_value(c, 0), cu(c, 5));
-    return SPV(&c->e, 77 /* OpVectorExtractDynamic */, c->t_u32, all, half);
+    return SPV(&c->e, SPV_OP_VECTOR_EXTRACT_DYNAMIC, c->t_u32, all, half);
 }
 
 /* IPA of component k of generic input i: at the centroid (loc 1) or the default place, and with the program's
@@ -2947,7 +3208,7 @@ static u32 ipa_input(Ctx* c, u32 i, u32 k, u32 loc, u32 freq) {
         /* a variable has one location: centroid when any IPA of the input asks for it. An input that no stage
            before writes (in_unfed_mask) is a constant with no variable: a decoration of it named id 0, a module
            that spirv-val and the validation layer refuse */
-        spv_emit_decorate(&c->e, c->in_attr[i], 16 /* Centroid */, NULL, 0);
+        spv_emit_decorate(&c->e, c->in_attr[i], SPV_DECORATION_CENTROID, NULL, 0);
         c->centroid_mask |= 1u << i;
     }
     /* The hardware interpolates attr/w for a perspective input, and the program multiplies by w (the reciprocal of
@@ -2994,13 +3255,13 @@ static u32 system_value(Ctx* c, u32 sr) {
     switch (sr) {
         case 0x00: /* LANEID */
             spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
-            return builtin_u32(c, &c->lane_id, 41);
+            return builtin_u32(c, &c->lane_id, SPV_BUILT_IN_SUBGROUP_LOCAL_INVOCATION_ID);
         case 0x21:
         case 0x22:
-        case 0x23: return builtin_vec3(c, &c->local_id, 27, sr - 0x21);
+        case 0x23: return builtin_vec3(c, &c->local_id, SPV_BUILT_IN_LOCAL_INVOCATION_ID, sr - 0x21);
         case 0x25:
         case 0x26:
-        case 0x27: return builtin_vec3(c, &c->group_id, 26, sr - 0x25);
+        case 0x27: return builtin_vec3(c, &c->group_id, SPV_BUILT_IN_WORKGROUP_ID, sr - 0x25);
         case 0x38: /* EQMASK, LTMASK, LEMASK, GTMASK, GEMASK: of the lane in its 32 */
         case 0x39:
         case 0x3a:
@@ -3102,7 +3363,7 @@ static u32 mesh_outputs(Ctx* c, const u32* sph, u32 base, u32 element, u32 count
                 generic[i] = spv_emit_interface_variable(e, SPV_STORAGE_OUTPUT, c->t_v4f, c->t_u32, count,
                                                          SPV_NOT_BUILTIN, i, 0);
                 if (per_primitive) {
-                    spv_emit_decorate(e, generic[i], 5271 /* PerPrimitiveEXT */, NULL, 0);
+                    spv_emit_decorate(e, generic[i], SPV_DECORATION_PER_PRIMITIVE_EXT, NULL, 0);
                     spv_emit_flat(e, generic[i]); /* a per-primitive output is not interpolated */
                 }
                 add_interface(c, generic[i]);
@@ -3130,7 +3391,7 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     MeshLoop loop = {0};
     if (c->stage == ST_MS) loop.counter = spv_emit_function_variable(e, spv_emit_type_function_pointer(e, c->t_u32));
     loop.step = cu(c, m->threads);
-    u32 invocation = builtin_u32(c, &c->local_index, 29); /* LocalInvocationIndex */
+    u32 invocation = builtin_u32(c, &c->local_index, SPV_BUILT_IN_LOCAL_INVOCATION_INDEX);
     u32 first = spv_emit_binary(e, SPV_OP_I_EQUAL, c->t_bool, invocation, c->zero);
     u32 then = spv_emit_id(e), merge = spv_emit_id(e);
     spv_emit_selection_merge(e, merge);
@@ -3150,14 +3411,14 @@ static u32 mesh_entry(Ctx* c, u32 body) {
         /* within the device's limit: a count past it is undefined behavior, which can hang the GPU */
         if (g_shader_mesh_tasks_max)
             count = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, count, cu(c, g_shader_mesh_tasks_max));
-        SPV_VOID(e, 5294 /* OpEmitMeshTasksEXT */, count, cu(c, 1), cu(c, 1), payload_var(c));
+        SPV_VOID(e, SPV_OP_EMIT_MESH_TASKS_EXT, count, cu(c, 1), cu(c, 1), payload_var(c));
         spv_emit_function_end(e);
         return fn;
     }
     u32 map = map_var(c);
     u32 written = spv_emit_load(e, c->t_u32, isbe_ptr(c, map, SPV_STORAGE_WORKGROUP, cu(c, 3)));
     u32 primitives = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, written, cu(c, m->max_primitives));
-    SPV_VOID(e, 5295 /* OpSetMeshOutputsEXT */, cu(c, m->max_vertices), primitives);
+    SPV_VOID(e, SPV_OP_SET_MESH_OUTPUTS_EXT, cu(c, m->max_vertices), primitives);
     /* the vertices */
     if (c->vertex_words) {
         u32 v = loop_begin(c, &loop, invocation, cu(c, m->max_vertices));
@@ -3173,7 +3434,7 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     u32 p = loop_begin(c, &loop, invocation, primitives);
     u32 pointer = spv_emit_type_pointer(e, SPV_STORAGE_OUTPUT, c->t_v3u);
     u32 indices = spv_emit_interface_variable(e, SPV_STORAGE_OUTPUT, c->t_v3u, c->t_u32, m->max_primitives,
-                                              5296 /* PrimitiveTriangleIndicesEXT */, 0, 0);
+                                              SPV_BUILT_IN_PRIMITIVE_TRIANGLE_INDICES_EXT, 0, 0);
     add_interface(c, indices);
     u32 at = spv_emit_iadd_u32(e, c->t_u32, spv_emit_binary(e, SPV_OP_I_MUL, c->t_u32, p, cu(c, 3)), cu(c, 4)),
         index[3];
@@ -3441,13 +3702,10 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 case 4: v = spv_emit_binary(&c->e, SPV_OP_F_DIV, c->t_f32, cf(c, 1.0f), x); break;
                 case 5: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_INVERSE_SQRT, x); break;
                 case 8: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_SQRT, x); break;
-                case 9: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, (SpvGlsl450Op)21 /* Tanh */, x); break;
+                case 9: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_TANH, x); break;
                 default: fail(c, "MUFU function %u", fn); return;
             }
-            dwr(c, in,
-                half ? SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
-                               spv_emit_vec2_construct(&c->e, c->t_v2f, v, cf(c, 0.0f)))
-                     : to_u(c, v));
+            dwr(c, in, half ? pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, v, cf(c, 0.0f))) : to_u(c, v));
             return;
         }
         case SM86_F2F: {
@@ -3458,9 +3716,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 fail(c, "F2F from %u to %u bytes, rounding %u", 1u << ssize, 1u << dsize, rnd);
                 return;
             }
-            dwr(c, in,
-                SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
-                        spv_emit_vec2_construct(&c->e, c->t_v2f, src_f(c, &in->b), cf(c, 0.0f))));
+            dwr(c, in, pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, src_f(c, &in->b), cf(c, 0.0f))));
             return;
         }
         case SM86_F2I: {
@@ -3564,6 +3820,9 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                                          cu(c, width)))
                               : spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_U_EXTRACT, c->t_u32, x, at, cu(c, width));
             }
+            /* a device without doubles converts to a float, which a 32-bit integer keeps no more exactly: it rounds
+               to nearest, as the mode 0 conversion does */
+            if (!g_shader_float64) mode = 0;
             u32 type = mode ? f64_type(c) : c->t_f32, v;
             if (!mode && src_size == 2 && (g_shader_i2f_nearest & (is_signed ? 1 : 2)))
                 v = spv_emit_int_to_f32_nearest(&c->e, x, is_signed);
@@ -3630,9 +3889,9 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                inverted. No 1 gives 0xffffffff, as FindUMsb's -1 */
             u32 x = src_bits(c, &in->b);
             if (sm86_field(in, 63, 1)) x = spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, x);
-            u32 bit = sm86_field(in, 73, 1) ? to_u(c, SPV_EXT(&c->e, c->t_i32, 74 /* FindSMsb */,
+            u32 bit = sm86_field(in, 73, 1) ? to_u(c, SPV_EXT(&c->e, c->t_i32, SPV_GLSL_FIND_S_MSB,
                                                               spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, x)))
-                                            : SPV_EXT(&c->e, c->t_u32, 75 /* FindUMsb */, x);
+                                            : SPV_EXT(&c->e, c->t_u32, SPV_GLSL_FIND_U_MSB, x);
             if (sm86_field(in, 74, 1))
                 bit = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
                                        spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, bit, cu(c, 0xffffffffu)), bit,
@@ -3683,8 +3942,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 u32 keep = src_bits(c, &in->c);
                 if (sm86_field(in, 72, 1))
                     keep = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, keep, cu(c, 16));
-                u32 low = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
-                                  spv_emit_vec2_construct(&c->e, c->t_v2f, src_f(c, &in->b), cf(c, 0.0f)));
+                u32 low = pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, src_f(c, &in->b), cf(c, 0.0f)));
                 dwr(c, in,
                     spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32,
                                     spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, keep, cu(c, 16)), low));
@@ -3697,7 +3955,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                     spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, bf16(c, hi), cu(c, 16)),
                                     bf16(c, lo));
             else
-                v = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, spv_emit_vec2_construct(&c->e, c->t_v2f, lo, hi));
+                v = pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, lo, hi));
             dwr(c, in, v);
             return;
         }
@@ -3854,7 +4112,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                          spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, id, cu(c, ~31u)),
                                          spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, j, cu(c, 31)));
             u32 value = rd(c, sm86_field(in, 24, 8));
-            u32 got = SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, c->t_u32, cu(c, 3), value, source);
+            u32 got = SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE, c->t_u32, cu(c, SPV_SCOPE_SUBGROUP), value, source);
             wr(c, in->dst, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, ok, got, value));
             pwr(c, sm86_field(in, 81, 3), ok, 0);
             return;
@@ -3865,7 +4123,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                (2, bits 72-73) of it into the predicate at 81-83. The ballot is of the invocation's 32 lanes */
             u32 pred = prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), 0), how = sm86_field(in, 72, 2);
             spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT);
-            spv_emit_capability(&c->e, 62 /* GroupNonUniformVote */);
+            spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_VOTE);
             u32 ballot = ballot32(c, pred);
             if (op == SM86_UVOTE)
                 uwr(c, sm86_field(in, 16, 6), ballot);
@@ -3876,10 +4134,10 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 return;
             }
             u32 vote = SPV(&c->e,
-                           how == 0   ? 334
-                           : how == 1 ? 335
-                                      : 336 /* All, Any, AllEqual */,
-                           c->t_bool, cu(c, 3), pred);
+                           how == 0   ? SPV_OP_GROUP_NON_UNIFORM_ALL
+                           : how == 1 ? SPV_OP_GROUP_NON_UNIFORM_ANY
+                                      : SPV_OP_GROUP_NON_UNIFORM_ALL_EQUAL /* All, Any, AllEqual */,
+                           c->t_bool, cu(c, SPV_SCOPE_SUBGROUP), pred);
             pwr(c, sm86_field(in, 81, 3), vote, op == SM86_UVOTE);
             return;
         }
@@ -3895,12 +4153,15 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 mask = c->zero;
             for (u32 j = 0; j < 32; j++) {
                 u32 lane = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, base, cu(c, j));
-                u32 same = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool,
-                                           SPV(&c->e, 345, c->t_u32, cu(c, 3), lo, lane), lo);
+                u32 same = spv_emit_binary(
+                    &c->e, SPV_OP_I_EQUAL, c->t_bool,
+                    SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE, c->t_u32, cu(c, SPV_SCOPE_SUBGROUP), lo, lane), lo);
                 if (pair)
                     same = op2(c, SPV_OP_LOGICAL_AND, c->t_bool, same,
                                spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool,
-                                               SPV(&c->e, 345, c->t_u32, cu(c, 3), hi, lane), hi));
+                                               SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE, c->t_u32,
+                                                   cu(c, SPV_SCOPE_SUBGROUP), hi, lane),
+                                               hi));
                 mask = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, mask,
                                        spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, same, cu(c, 1u << j), c->zero));
             }
@@ -3968,25 +4229,27 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_REDUX: {
             /* NAK's OpRedux: of the source over the invocation's 32 lanes, into a uniform register: 78-80 0 and, 1
                or, 2 xor, 3 sum, 4 min, 5 max, bit 73 signed. A clustered reduction of 32 keeps it to those lanes */
-            static const u16 ops[6] = {359, 360, 361, 349, 354, 357}; /* BitwiseAnd, Or, Xor, IAdd, UMin, UMax */
+            static const u16 ops[6] = {SPV_OP_GROUP_NON_UNIFORM_BITWISE_AND, SPV_OP_GROUP_NON_UNIFORM_BITWISE_OR,
+                                       SPV_OP_GROUP_NON_UNIFORM_BITWISE_XOR, SPV_OP_GROUP_NON_UNIFORM_I_ADD,
+                                       SPV_OP_GROUP_NON_UNIFORM_U_MIN,       SPV_OP_GROUP_NON_UNIFORM_U_MAX};
             u32 how = sm86_field(in, 78, 3), opcode;
             if (how > 5) {
                 fail(c, "REDUX operation %u", how);
                 return;
             }
             opcode = ops[how];
-            if (sm86_field(in, 73, 1) && how == 4) opcode = 353; /* SMin */
-            if (sm86_field(in, 73, 1) && how == 5) opcode = 356; /* SMax */
+            if (sm86_field(in, 73, 1) && how == 4) opcode = SPV_OP_GROUP_NON_UNIFORM_S_MIN;
+            if (sm86_field(in, 73, 1) && how == 5) opcode = SPV_OP_GROUP_NON_UNIFORM_S_MAX;
             spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC);
-            spv_emit_capability(&c->e, 67 /* GroupNonUniformClustered */);
-            u32 v = SPV(&c->e, opcode, c->t_u32, cu(c, 3), 3 /* ClusteredReduce */, rd(c, sm86_field(in, 24, 8)),
-                        cu(c, 32));
+            spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_CLUSTERED);
+            u32 v = SPV(&c->e, opcode, c->t_u32, cu(c, SPV_SCOPE_SUBGROUP), SPV_GROUP_OPERATION_CLUSTERED_REDUCE,
+                        rd(c, sm86_field(in, 24, 8)), cu(c, 32));
             uwr(c, sm86_field(in, 16, 6), v);
             return;
         }
         case SM86_MEMBAR:
             /* the device scope, for every scope: acquire and release of buffer, workgroup and image memory */
-            spv_emit_memory_barrier(&c->e, c->t_u32, 1, 0x8 | 0x40 | 0x100 | 0x800);
+            spv_emit_memory_barrier(&c->e, c->t_u32, SPV_SCOPE_DEVICE, 0x8 | 0x40 | 0x100 | 0x800);
             return;
         case SM86_UMOV: uwr(c, in->dst, src_bits(c, &in->b)); return;
         case SM86_ERRBAR: return;
@@ -4111,7 +4374,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             if (in->c.kind == SM86_SRC_REG && in->c.abs) cpair = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_F_ABS, cpair);
             if (in->c.kind == SM86_SRC_REG && in->c.neg) cpair = SPV(&c->e, SPV_OP_F_NEGATE, c->t_v2f, cpair);
             u32 sum = nocontract(c, op2(c, SPV_OP_F_ADD, c->t_v2f, p, cpair));
-            dwr(c, in, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, sum));
+            dwr(c, in, pack_half(c, sum));
             return;
         }
         case SM86_HFMA2: {
@@ -4177,7 +4440,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 }
                 r = spv_emit_vec2_construct(&c->e, c->t_v2f, lane[0], lane[1]);
             }
-            dwr(c, in, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, r));
+            dwr(c, in, pack_half(c, r));
             return;
         }
         case SM86_HMUL2:
@@ -4224,7 +4487,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                                spv_emit_vec4_extract(&c->e, c->t_f32, hi, k));
                 r = spv_emit_vec2_construct(&c->e, c->t_v2f, lane[0], lane[1]);
             }
-            dwr(c, in, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, r));
+            dwr(c, in, pack_half(c, r));
             return;
         }
         case SM86_HADD2: {
@@ -4255,9 +4518,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 sum = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_N_CLAMP, sum,
                               spv_emit_vec2_construct(&c->e, c->t_v2f, cf(c, 0.0f), cf(c, 0.0f)),
                               spv_emit_vec2_construct(&c->e, c->t_v2f, cf(c, 1.0f), cf(c, 1.0f)));
-            dwr(c, in,
-                as_f32 ? to_u(c, spv_emit_vec4_extract(&c->e, c->t_f32, sum, 0))
-                       : SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, sum));
+            dwr(c, in, as_f32 ? to_u(c, spv_emit_vec4_extract(&c->e, c->t_f32, sum, 0)) : pack_half(c, sum));
             return;
         }
         case SM86_ULDC_IDX: {
@@ -4394,7 +4655,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             else if (addr == 0x3fc) {
                 /* NAK's NAK_ATTR_FRONT_FACE: all ones for a front face, as spirv_translate.c reads Maxwell's */
                 if (!c->front_facing) {
-                    c->front_facing = spv_emit_builtin_input_u32(&c->e, c->t_bool, 17);
+                    c->front_facing = spv_emit_builtin_input_u32(&c->e, c->t_bool, SPV_BUILT_IN_FRONT_FACING);
                     add_interface(c, c->front_facing);
                 }
                 v = to_f(c, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
@@ -4404,7 +4665,8 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 /* NAK's NAK_ATTR_POINT_SPRITE_S and _T: PointCoord. The Maxwell path flips T with the sprite's
                    origin, a push constant of the fragment stage that this translation does not have */
                 if (!c->point_coord) {
-                    c->point_coord = spv_emit_interface_variable(&c->e, 1, c->t_v2f, c->t_u32, 0, 16, 0, 0);
+                    c->point_coord =
+                        spv_emit_interface_variable(&c->e, SPV_STORAGE_INPUT, c->t_v2f, c->t_u32, 0, 16, 0, 0);
                     add_interface(c, c->point_coord);
                 }
                 v = spv_emit_vec4_extract(&c->e, c->t_f32, spv_emit_load(&c->e, c->t_v2f, c->point_coord),
@@ -5657,8 +5919,8 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         c->coop = coop_wanted(c);
         if (c->coop) {
             e->vulkan_memory_model = 1;
-            spv_emit_capability(e, 5345 /* VulkanMemoryModel */);
-            spv_emit_capability(e, 5346 /* VulkanMemoryModelDeviceScope: the atomics' and MEMBAR.GPU's */);
+            spv_emit_capability(e, SPV_CAPABILITY_VULKAN_MEMORY_MODEL);
+            spv_emit_capability(e, SPV_CAPABILITY_VULKAN_MEMORY_MODEL_DEVICE_SCOPE);
         }
         c->glsl = spv_emit_glsl450_import(e);
         c->t_void = spv_emit_type_void(e);
@@ -5789,9 +6051,9 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             fn = mesh_entry(c, fn);
             spv_emit_local_size(e, fn, si->mesh.threads, 1, 1);
             if (stage == ST_MS) {
-                spv_emit_execution_mode(e, fn, 26 /* OutputVertices */, 1, si->mesh.max_vertices);
-                spv_emit_execution_mode(e, fn, 5270 /* OutputPrimitivesEXT */, 1, si->mesh.max_primitives);
-                spv_emit_execution_mode(e, fn, 5298 /* OutputTrianglesEXT */, 0, 0);
+                spv_emit_execution_mode(e, fn, SPV_MODE_OUTPUT_VERTICES, 1, si->mesh.max_vertices);
+                spv_emit_execution_mode(e, fn, SPV_MODE_OUTPUT_PRIMITIVES_EXT, 1, si->mesh.max_primitives);
+                spv_emit_execution_mode(e, fn, SPV_MODE_OUTPUT_TRIANGLES_EXT, 0, 0);
             }
         }
         if (!c->failed) {

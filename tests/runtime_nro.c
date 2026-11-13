@@ -137,8 +137,10 @@ static void nso_fixture(void) {
     file_size = at;
     info.is_nro = 0;
 }
-static void rejected(void) {
-    CHECK(loader_load() == -1);
+/* the module refused: as, -1 for a file that is not a valid one, -2 for another build of the one the descriptor
+   names (its build ID, segments or BSS another's), which the driver recompiles */
+static void rejected(int as) {
+    CHECK(loader_load() == as);
     CHECK(maps == 1 && unmaps == 1 && !permissions && !g_code_memory);
     for (size_t i = info.base; i < info.base + info.size; ++i) CHECK(guest[i] == 0xcc);
 }
@@ -159,27 +161,27 @@ int main(void) {
     for (size_t i = 0; i < 0x80; ++i) {
         fixture();
         file_size = i;
-        rejected();
+        rejected(-1);
     }
     static const u32 offsets[] = {0x10, 0x18, 0x18, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x30, 0x34, 0x38, 0x40};
     static const u32 values[] = {0, 0x7f, 0x4000, 0xffffffff, 2, 4, 0x800, 0x1004, 0x2004, 0xffffffff, 0xffffffff, 0};
     for (size_t i = 0; i < sizeof offsets / sizeof *offsets; ++i) {
         fixture();
         put32(offsets[i], values[i]);
-        rejected();
+        rejected(offsets[i] == 0x40 ? -2 : -1);
     }
     fixture();
     file_size = 0x2fff;
-    rejected();
+    rejected(-1);
     fixture();
     info.size = 0x3000; /* no room for BSS */
-    rejected();
+    rejected(-1);
     fixture();
     info.ro_size -= 4; /* the recompiled descriptor must match the file */
-    rejected();
+    rejected(-2);
     fixture();
     info.bss_size = 0;
-    rejected();
+    rejected(-2);
     nso_fixture();
     CHECK(!loader_load());
     CHECK(maps == 1 && unmaps == 1 && permissions == 3 && g_code_memory == info.size);
@@ -188,13 +190,13 @@ int main(void) {
     for (size_t i = 0x3000; i < info.size; ++i) CHECK(guest[info.base + i] == 0);
     nso_fixture();
     file[0x40] ^= 1; /* another build */
-    rejected();
+    rejected(-2);
     nso_fixture();
     put32(0x38, 0x4000); /* data past the mapping */
-    rejected();
+    rejected(-1);
     nso_fixture();
     file_size -= 1; /* data past the file */
-    rejected();
+    rejected(-1);
     nso_fixture();
     put32(0x60, 0x100); /* a block cut short */
     CHECK(loader_load() == -1 && unmaps == 1 && !permissions && !g_code_memory);

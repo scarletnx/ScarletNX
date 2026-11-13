@@ -33,8 +33,11 @@ target_include_directories(snx_ctr_gpu PUBLIC "${volk_SOURCE_DIR}")
 include("${PROJECT_SOURCE_DIR}/cmake/decodetree.cmake")
 snx_decodetree(snx_ctr_gpu OUTPUT decode-pica.inc DECODE "${CMAKE_CURRENT_SOURCE_DIR}/gpu/pica.decode"
                OPTIONS --static-decode=decode_pica)
-target_link_libraries(snx_ctr_gpu PUBLIC snx_ctr_memory scarletnx-common Vulkan::Headers SDL3::SDL3 snx_settings snx_build_info
-                                         snx_window_icon snx_vk_common snx_pad_sdl ${CMAKE_DL_LIBS})
+# snx_settings_runtime: the vk_ext_* table (g_vk_extension_settings) gpu/vk/device.c reads; a linker that reads each
+# archive once (GNU ld) needs it after snx_ctr_gpu
+target_link_libraries(snx_ctr_gpu PUBLIC snx_ctr_memory scarletnx-common Vulkan::Headers SDL3::SDL3 snx_settings
+                                         snx_settings_runtime snx_build_info snx_window_icon snx_vk_common snx_pad_sdl
+                                         ${CMAKE_DL_LIBS})
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
 # the GPU's compute shaders, compiled at build time (cmake/glsl.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
@@ -42,6 +45,14 @@ foreach(shader fill display_transfer texture_copy present texture color depth y2
     snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/${shader}.comp NAME snx_ctr_${shader}_spv
                    HEADER 3ds/gpu/vk/shaders/${shader}_spv.h)
 endforeach()
+# the stand-in shaders a draw takes while its own are made (gpu/vk/render.c): the fragment one, and the vertex one
+# without and with clip distances
+snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/standin.frag NAME snx_ctr_standin_frag_spv
+               HEADER 3ds/gpu/vk/shaders/standin_spv.h)
+snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/standin.vert NAME snx_ctr_standin_vert_spv
+               HEADER 3ds/gpu/vk/shaders/standin_spv.h)
+snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/standin.vert NAME snx_ctr_standin_vert_clip_spv
+               HEADER 3ds/gpu/vk/shaders/standin_spv.h DEFINES CLIP)
 # the PICA's software renderer, ported from Azahar's: the CPU reference the GPU's draws are tested against, which the
 # runtime does not draw with. Its shader units and vertex processing (gpu/shader.c, gpu/draw.c) are the runtime's, which
 # runs a draw with a geometry shader there

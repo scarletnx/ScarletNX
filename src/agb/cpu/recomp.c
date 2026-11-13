@@ -16,27 +16,30 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define AGB_RECOMP_ABI 9   /* a map's block names its module function, or none ("-") for a hint */
-#define AGB_BLOCK_MAX  256 /* words compiled per block at most */
+#define AGB_RECOMP_ABI 11 /* a map's block names its module function, or none ("-") for a hint */
 
-/* the ARM7TDMI's rules (arm.h) on the flat window: the A57 default would run the ROM as ARMv8-A. Its loads and stores
-   count their bus cycles into the machine's CPU (agb_cpu.h), whose first member is the one the blocks get */
+/* the ARM7TDMI's rules (arm.h) on the flat window: the A57 default would run the ROM as ARMv8-A. Its blocks leave the
+   trace their time is replayed from (agb/cpu/timing.h) in the machine's CPU (agb_cpu.h), whose first member is the one
+   they get */
 static const SnxArmCodegenOptions agb_codegen = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM7TDMI,
-                                                 SNX_ARM_MEMORY_FLAT, offsetof(AgbCpu, bus_costs),
-                                                 offsetof(AgbCpu, bus_cycles)};
+                                                 SNX_ARM_MEMORY_FLAT, offsetof(AgbCpu, trace),
+                                                 offsetof(AgbCpu, skipped)};
 _Static_assert(offsetof(AgbCpu, arm) == 0, "the blocks' CPU is the machine's first member");
 
 void agb_recomp_init(AgbRecomp* recomp, const char* base) {
     *recomp = (AgbRecomp){0};
     recomp->base = (char*)malloc(strlen(base) + 1);
     if (recomp->base) strcpy(recomp->base, base);
+    recomp->opt = '2';
 }
 
 void agb_recomp_free(AgbRecomp* recomp) {
     snx_arm_exec_free(recomp->exec);
     if (recomp->handle) plat_dl_close(recomp->handle);
     free(recomp->blocks);
+    free(recomp->steps);
     free(recomp->base);
+    free(recomp->keep_ir);
     *recomp = (AgbRecomp){0};
 }
 
@@ -66,6 +69,28 @@ static uint64_t code_hash(AgbBoard* board, uint32_t pc, int thumb, size_t count)
         for (size_t j = 0; j < count; ++j) words[j] = agb_read32(board, pc + (uint32_t)j * 4);
         return snx_fnv1a(SNX_FNV_BASIS, words, count * sizeof(*words));
     }
+}
+
+/* The ARM words a block is built from at pc, and how many of them it may take: in RAM, up to a store through r15 into
+   the code past the two instructions the ARM7TDMI has fetched by then, which runs as written on the console (GBATEK's
+   ARM CPU Instruction Prefetch). The block ends after the store, and the next dispatch builds the code that is there
+   now. A store into the two fetched instructions leaves them as they were, and the cartridge's code never changes */
+static size_t arm_words(AgbBoard* board, uint32_t pc, uint32_t* words) {
+    for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j) words[j] = agb_read32(board, pc + j * 4);
+    if (fixed(pc)) return AGB_BLOCK_MAX;
+    for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j) {
+        uint32_t w = words[j], at = pc + j * 4, offset;
+        if ((w >> 28) == 0xF || (w >> 16 & 0xF) != 15 || !(w & 1u << 24)) continue; /* NV, another base, post-index */
+        if ((w & 0x0E100000) == 0x04000000)
+            offset = w & 0xFFF; /* STR, STRB with an immediate offset */
+        else if ((w & 0x0E5000F0) == 0x004000B0)
+            offset = (w >> 4 & 0xF0) | (w & 0xF); /* STRH with an immediate offset */
+        else
+            continue;
+        uint32_t target = w & 1u << 23 ? at + 8 + offset : at + 8 - offset;
+        if (target >= at + 12 && target < pc + AGB_BLOCK_MAX * 4) return j + 1;
+    }
+    return AGB_BLOCK_MAX;
 }
 
 static void* module_symbol(void* handle, size_t index) {
@@ -268,7 +293,7 @@ static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t e
         snprintf(error, error_size, "out of memory");
         goto done;
     }
-    if (snx_ir_init(error, error_size) || !(ir = snx_ir_new("agb-code", '2', error, error_size))) goto done;
+    if (snx_ir_init(error, error_size) || !(ir = snx_ir_new("agb-code", recomp->opt, error, error_size))) goto done;
     module = LLVMModuleCreateWithNameInContext("agb-code", ir->ctx);
     LLVMSetTarget(module, LLVMGetTarget(ir->mod));
     LLVMSetDataLayout(module, LLVMGetDataLayoutStr(ir->mod));
@@ -287,8 +312,8 @@ static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t e
             fn = snx_thumb_llvm_block_ex(module, name, words, AGB_BLOCK_MAX, block->pc, &consumed, &agb_codegen);
         } else {
             uint32_t words[AGB_BLOCK_MAX];
-            for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j) words[j] = agb_read32(board, block->pc + j * 4);
-            fn = snx_arm_llvm_block_ex(module, name, words, AGB_BLOCK_MAX, block->pc, &consumed, &agb_codegen);
+            size_t count = arm_words(board, block->pc, words);
+            fn = snx_arm_llvm_block_ex(module, name, words, count, block->pc, &consumed, &agb_codegen);
         }
         if (!fn || !consumed) {
             snprintf(error, error_size, "the ARM recompiler rejected the block at 0x%08X", block->pc);
@@ -297,8 +322,20 @@ static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t e
         block->instructions = (uint16_t)(consumed > 0xFFFF ? 0xFFFF : consumed);
         block->code = code_hash(board, block->pc, block->thumb, block->instructions);
     }
-    if (snx_ir_module_object(ir, module, '2', &object, &object_size, error, error_size) ||
-        snx_ir_armlib_object('2', &armlib, &armlib_size, error, error_size))
+    if (recomp->keep_ir) { /* the module's IR as the backend made it, before its passes */
+        char *text = LLVMPrintModuleToString(module), *kept = snx_path_join(recomp->keep_ir, "blocks.ll");
+        int failed = !kept || snx_write_file(kept, text, strlen(text));
+        if (failed) {
+            char why[256];
+            snprintf(error, error_size, "cannot save the IR of blocks in %s: %s", recomp->keep_ir,
+                     snx_os_error(why, sizeof why));
+        }
+        LLVMDisposeMessage(text);
+        free(kept);
+        if (failed) goto done;
+    }
+    if (snx_ir_module_object(ir, module, recomp->opt, &object, &object_size, error, error_size) ||
+        snx_ir_armlib_object(recomp->opt, &armlib, &armlib_size, error, error_size))
         goto done;
     inputs[0].data = armlib, inputs[0].size = armlib_size, inputs[0].name = "armlib";
     inputs[1].data = object, inputs[1].size = object_size, inputs[1].name = "blocks";
@@ -380,8 +417,8 @@ static int compile_block(AgbRecomp* recomp, AgbBoard* board, AgbBlock* block, ch
         block->fn = snx_arm_exec_compile_ex(recomp->exec, words, AGB_BLOCK_MAX, block->pc, 1, &agb_codegen, &consumed);
     } else {
         uint32_t words[AGB_BLOCK_MAX];
-        for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j) words[j] = agb_read32(board, block->pc + j * 4);
-        block->fn = snx_arm_exec_compile_ex(recomp->exec, words, AGB_BLOCK_MAX, block->pc, 0, &agb_codegen, &consumed);
+        size_t count = arm_words(board, block->pc, words);
+        block->fn = snx_arm_exec_compile_ex(recomp->exec, words, count, block->pc, 0, &agb_codegen, &consumed);
     }
     if (!block->fn || !consumed) {
         snprintf(error, error_size, "the ARM recompiler rejected the block at 0x%08X", block->pc);
@@ -421,35 +458,42 @@ static int write_cache(AgbRecomp* recomp, const AgbBoard* board) {
 }
 
 int agb_recomp_load_map(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size) {
-    size_t length = strlen(recomp->base);
-    char* map_path = (char*)malloc(length + 8);
+    char* map_path = snx_format("%s.map", recomp->base);
+    FILE* file = map_path ? fopen(map_path, "r") : NULL;
+    if (!file) {
+        free(map_path);
+        return -1;
+    }
+    fclose(file);
+    int loaded = agb_recomp_load_map_from(recomp, board, map_path, error, error_size);
+    free(map_path);
+    return loaded;
+}
+int agb_recomp_load_map_from(AgbRecomp* recomp, AgbBoard* board, const char* path, char* error, size_t error_size) {
     char line[128];
     int abi = 0;
     unsigned arm_abi = 0;
     unsigned long long rom = 0;
-    if (!map_path) return -1;
-    sprintf(map_path, "%s.map", recomp->base);
+    const char* map_path = path;
     FILE* file = fopen(map_path, "r");
     if (!file) {
-        free(map_path);
+        char why[256];
+        snprintf(error, error_size, "cannot read %s: %s", map_path, snx_os_error(why, sizeof why));
         return -1;
     }
     if (!fgets(line, sizeof(line), file) || sscanf(line, "snx-agb-code %d %u", &abi, &arm_abi) != 2 ||
         abi != AGB_RECOMP_ABI || arm_abi != SNX_ARM_ABI) {
         snprintf(error, error_size, "%s is another build's (ABI %d and %u, this one's %d and %u)", map_path, abi,
                  arm_abi, AGB_RECOMP_ABI, SNX_ARM_ABI);
-        free(map_path);
         fclose(file);
         return -1;
     }
     unsigned long long here = (unsigned long long)rom_hash(board);
     if (sscanf(line, "snx-agb-code %*d %*u %llX", &rom) != 1 || rom != here) {
         snprintf(error, error_size, "%s is another ROM's (%016llX, this one %016llX)", map_path, rom, here);
-        free(map_path);
         fclose(file);
         return -1;
     }
-    free(map_path);
     while (fgets(line, sizeof(line), file)) {
         unsigned pc, thumb, instructions, symbol = 0;
         unsigned long long code;
@@ -519,6 +563,75 @@ const AgbBlock* agb_recomp_lookup(AgbRecomp* recomp, AgbBoard* board, uint32_t p
         return NULL;
     }
     return block;
+}
+
+/* the steps' index, after them in their allocation, as the blocks' is */
+static uint32_t* step_slots(const AgbRecomp* recomp) { return (uint32_t*)(recomp->steps + recomp->step_capacity); }
+
+static size_t step_slot(const AgbRecomp* recomp, uint32_t pc, int thumb) {
+    uint64_t key = pc ^ (uint32_t)thumb;
+    return (size_t)((key * 0x9E3779B97F4A7C15ull) >> 32) & (recomp->step_capacity * 2 - 1);
+}
+
+static void step_index(AgbRecomp* recomp) {
+    uint32_t* slot = step_slots(recomp);
+    memset(slot, 0, recomp->step_capacity * 2 * sizeof(uint32_t));
+    for (size_t i = 1; i <= recomp->step_count; ++i) {
+        size_t at = step_slot(recomp, recomp->steps[i].pc, recomp->steps[i].thumb);
+        while (slot[at]) at = (at + 1) & (recomp->step_capacity * 2 - 1);
+        slot[at] = (uint32_t)i;
+    }
+}
+
+const AgbBlock* agb_recomp_step(AgbRecomp* recomp, AgbBoard* board, uint32_t pc, int thumb, char* error,
+                                size_t error_size) {
+    AgbBlock* step = NULL;
+    if (recomp->step_capacity)
+        for (size_t at = step_slot(recomp, pc, thumb); step_slots(recomp)[at];
+             at = (at + 1) & (recomp->step_capacity * 2 - 1)) {
+            AgbBlock* candidate = &recomp->steps[step_slots(recomp)[at]];
+            if (candidate->pc == pc && candidate->thumb == (uint8_t)thumb) {
+                step = candidate;
+                break;
+            }
+        }
+    if (step && (fixed(pc) || code_hash(board, pc, thumb, 1) == step->code)) return step;
+    if (!step) {
+        if (recomp->step_count + 1 >= recomp->step_capacity) {
+            size_t capacity = recomp->step_capacity ? recomp->step_capacity * 2 : 64;
+            size_t each = sizeof(AgbBlock) + 2 * sizeof(uint32_t);
+            AgbBlock* grown;
+            if (capacity > UINT32_MAX / 2 || capacity > (size_t)-1 / each ||
+                !(grown = (AgbBlock*)realloc(recomp->steps, capacity * each))) {
+                snprintf(error, error_size, "out of memory for %zu one-instruction blocks", capacity);
+                return NULL;
+            }
+            recomp->steps = grown;
+            recomp->step_capacity = capacity;
+        }
+        step = &recomp->steps[++recomp->step_count];
+        *step = (AgbBlock){0};
+        step->pc = pc;
+        step->thumb = (uint8_t)thumb;
+        step_index(recomp);
+    }
+    size_t consumed = 0;
+    if (!recomp->exec && !(recomp->exec = snx_arm_exec_new(error, error_size))) return NULL;
+    if (thumb) {
+        uint16_t word = agb_read16(board, pc);
+        step->fn = snx_arm_exec_compile_ex(recomp->exec, &word, 1, pc, 1, &agb_codegen, &consumed);
+    } else {
+        uint32_t word = agb_read32(board, pc);
+        step->fn = snx_arm_exec_compile_ex(recomp->exec, &word, 1, pc, 0, &agb_codegen, &consumed);
+    }
+    if (!step->fn || consumed != 1) {
+        snprintf(error, error_size, "the ARM recompiler rejected the instruction at 0x%08X on its own", pc);
+        step->fn = NULL;
+        return NULL;
+    }
+    step->instructions = 1;
+    step->code = code_hash(board, pc, thumb, 1);
+    return step;
 }
 
 int agb_recomp_save(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size) {

@@ -796,7 +796,7 @@ static int imp_bind(Imp* m, u64 cpu, u64 size, VkExternalMemoryHandleTypeFlagBit
         return 0;
     }
     vkGetBufferMemoryRequirements(g_vk.dev, m->buf, &req);
-    vmaGetMemoryProperties(g_vk.vma, &mp);
+    mp = vk_devmem_props();
     bits &= req.memoryTypeBits;
     u32 t = ~0u;
     /* the GPU reads it: device-local where the import can be (a GPU that shares memory), else any it takes */
@@ -1298,7 +1298,7 @@ void vk_uma_init(void) {
            flush), cached where a type is */
         const VkPhysicalDeviceMemoryProperties* mp;
         u32 want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, type = ~0u;
-        vmaGetMemoryProperties(g_vk.vma, &mp);
+        mp = vk_devmem_props();
         /* not AMD's device-coherent or uncached types, which want a feature of their own, nor protected memory */
         u32 skip = VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD | VK_MEMORY_PROPERTY_DEVICE_UNCACHED_BIT_AMD |
                    VK_MEMORY_PROPERTY_PROTECTED_BIT | VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;

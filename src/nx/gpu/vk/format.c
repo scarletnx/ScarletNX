@@ -276,11 +276,25 @@ static VkFmt TV(VkFormat f, int bpp, int conv) { /* converted on upload */
     r.conv = (u8)conv;
     return r;
 }
-/* Whether a header samples a depth/stencil target's stencil: R24G8 (stencil in G) or R8G24 (stencil in R), with
-   the first component taken from the stencil one. Unreal reads its scene stencil this way, R8G24 with R everywhere. */
+/* The header component a depth and stencil format keeps its stencil in, as the header's swizzle names it (2 R, 3 G),
+   0 for none: R in G24R8 and in the Z24S8 texture (0x29) whose word's low byte is the stencil, G in G8R24, in the one
+   with the stencil above its depth (0x2B) and in ZF32_X24S8, whose next word holds it */
+u32 vk_tic_stencil_component(u32 format) {
+    switch (format) {
+        case 0x0E:
+        case 0x29: return 2;
+        case 0x0D:
+        case 0x2B:
+        case 0x30: return 3;
+    }
+    return 0;
+}
+/* Whether a header samples a depth/stencil target's stencil: its first component taken from the stencil one. Unreal
+   reads its scene stencil this way, R8G24 with R everywhere; NVN's stencil view of a Z24S8 or ZF32_X24S8 texture
+   does it with the texture's own format */
 int vk_tic_reads_stencil(const u32* tic) {
-    u32 f = tic[0] & 0x7F, x = (tic[0] >> 19) & 7; /* 2 R, 3 G */
-    return (f == 0x0D && x == 3) || (f == 0x0E && x == 2);
+    u32 c = vk_tic_stencil_component(tic[0] & 0x7F);
+    return c && ((tic[0] >> 19) & 7) == c;
 }
 
 static VkFmt tic_format(u32 w0, int srgb, u32 native) {

@@ -110,8 +110,13 @@ const char* gui_settings_extract(const GuiSettings* settings);
    (settings.txt's recompile: NCE, Debug's SLP vectorizer) picked, which a run gets with the game's options. Their
    count */
 size_t gui_settings_recompile(GuiSettings* settings, int make, const char** argv);
+/* argv's --key=value for each of the recompile's settings every driver that recompiles takes picked: the optimization
+   level and the AOT threads, which the 3DS, Vita and GBA drivers read as the Switch's does. Their count */
+size_t gui_settings_recompile_shared(GuiSettings* settings, const char** argv);
 /* argv's --key=value of the game's setting key when it is picked: its count, 1 or 0 */
 size_t gui_settings_one(GuiSettings* settings, const char* key, const char** argv);
+/* argv's --gba_color=raw for a GBA game's run, when the launcher's GBA colors (gba_color) is Raw, not its default: 1, else 0 */
+size_t gui_settings_gba(GuiSettings* settings, const char** argv);
 /* argv's --java-home=DIR for the Android driver when Java home is set: its count, 1 or 0 (empty, the driver's own) */
 size_t gui_settings_java_home(GuiSettings* settings, const char** argv);
 #endif

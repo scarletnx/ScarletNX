@@ -14,6 +14,8 @@
 #include "hle/hook/hooks.hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/services_int.h"
+#include "nx/nn/codec.h"
+#include "nx/runtime/arm.h"
 #include "nx/runtime/platform/log.h"
 #include <stdlib.h>
 #include <string.h>
@@ -64,6 +66,10 @@ static void unlock(void) { pm_unlock(&g_lk); }
 
 void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
     u64 lr = c->x[30], pc = fn;
+    if (g_arm_mod) {
+        hook_guest_call_a32(c, (u32)fn, (u32)a0, (u32)a1, (u32)a2, (u32)a3);
+        return;
+    }
     c->x[0] = a0;
     c->x[1] = a1;
     c->x[2] = a2;
@@ -88,6 +94,14 @@ KEvent* hook_attach_event(CPU* c, u64 event, const char* name) {
     }
     if (event) hook_guest_call(c, fn, event, h, 1, 1);
     return e;
+}
+int hook_attach_handle(CPU* c, u64 event, u32 handle) {
+    static const char attach[] =
+        "_ZN2nn2os33AttachReadableHandleToSystemEventEPNS0_15SystemEventTypeEjbNS0_14EventClearModeE";
+    u64 fn = kernel_find_symbol_exact(attach);
+    if (!fn || !handle) return 0;
+    hook_guest_call(c, fn, event, handle, 1, 1);
+    return 1;
 }
 
 static CodecManager* manager_of(u64 guest) {
@@ -219,7 +233,6 @@ u32 codec_decoder_init(CPU* c, u64 decoder, i32 rate, i32 channels, i64 frame, u
 }
 void codec_decoder_finalize(CPU* c, u64 decoder) {
     CodecDecoder** slot;
-    (void)c;
     lock();
     slot = decoder_slot(decoder);
     if (slot) {
@@ -229,11 +242,12 @@ void codec_decoder_finalize(CPU* c, u64 decoder) {
         *slot = NULL;
     }
     unlock();
+    /* the function's symbol is an older SDK's too, whose decoder is nn/codec.c's */
+    if (!slot) nncodec_hwopus_finalize(c, decoder);
 }
 /* its requests dropped, and the next packet starts the stream again */
 void codec_decoder_reset(CPU* c, u64 decoder) {
     CodecDecoder** slot;
-    (void)c;
     lock();
     slot = decoder_slot(decoder);
     if (slot) {
@@ -241,6 +255,7 @@ void codec_decoder_reset(CPU* c, u64 decoder) {
         (*slot)->reset = 1;
     }
     unlock();
+    if (!slot) nncodec_hwopus_reset(c, decoder); /* an older SDK's, as its finalize */
 }
 
 /* a packet decoded now into a waiting request: all of the data is consumed */

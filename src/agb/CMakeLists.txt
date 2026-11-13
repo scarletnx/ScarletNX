@@ -14,9 +14,9 @@ if(NOT TARGET snx_arm_llvm)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" agb-arm-backend)
 endif()
 
-add_library(scarletnx-agb STATIC board/board.c board/memory.c board/dma.c board/timers.c board/save.c
-                                 cartridge/cartridge.c bios/bios.c ppu/ppu.c apu/apu.c cpu/memmap.c cpu/recomp.c
-                                 cpu/cpu.c)
+add_library(scarletnx-agb STATIC board/board.c board/memory.c board/dma.c board/timers.c board/save.c board/gpio.c
+                                 cartridge/cartridge.c bios/bios.c bios/bios_time.c ppu/ppu.c apu/apu.c cpu/memmap.c cpu/recomp.c
+                                 cpu/cpu.c cpu/timing.c)
 set_target_properties(scarletnx-agb PROPERTIES OUTPUT_NAME scarletnx-agb-runtime C_STANDARD 23 C_STANDARD_REQUIRED ON)
 # The LLVM backend (snx_llvm, which the Switch driver's tree, the GNU ABI runtime's or the top level configures):
 # the module's objects and their helpers (armlib.c) linked by its linker, and the blocks a run reaches compiled in

@@ -3,6 +3,7 @@
 #ifndef SNX_CTR_MODULE_H
 #define SNX_CTR_MODULE_H
 #include "3ds/runtime/ctr_process.h"
+#include "common/utilities/cli.h"
 #define SNX_CTR_MODULE_MAGIC         0x31525443584e5353ull
 #define SNX_CTR_MODULE_ABI           3u /* 2: checked VFP transfers of up to 128 bytes; 3: hosted blocks */
 #define SNX_CTR_MODULE_CODEGEN_ABI   1u
@@ -79,7 +80,9 @@ char* snx_ctr_game_file(const char* directory, const char* suffix);
 enum { SNX_CTR_RECOMPILE = 1, SNX_CTR_COMPILE_ONLY = 2 };
 /* ipc_stubs: the services whose unknown commands answer success instead of stopping when the ctr_auto_stub_ipc setting
    is off (snx_ctr_ipc_stub_mask). runtime: the program copied into the folder as the game's own once its module is
-   ready (snx_ctr_game_file's name, .exe on Windows), NULL for none */
+   ready (snx_ctr_game_file's name, .exe on Windows), NULL for none. asked: the recompile's options (ctr_compile.h),
+   NULL for none */
 int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel model, uint64_t limit, double seconds,
-                    unsigned flags, uint32_t ipc_stubs, const char* runtime, char* error, size_t error_size);
+                    unsigned flags, uint32_t ipc_stubs, const char* runtime, const SnxCliRecompile* asked, char* error,
+                    size_t error_size);
 #endif

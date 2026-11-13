@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/space.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
@@ -25,20 +27,21 @@ static u64 up(u64 v, u64 a) { return (v + a - 1) / a * a; }
 /* ------------------------------------------------ copies of linear sources made at submission (maxwell/dma.c) */
 /* They were read into malloc's memory on the submitting thread and copied again into staging here: now they are read
    once, into host-cached memory the copy reads in place. Chunks of it are made as the copies need them, up to what
-   maxwell/dma.c holds at most (256 MiB), each with a VMA virtual block handing out its ranges. Any thread allocates
+   maxwell/dma.c holds at most (256 MiB), each with its free space in 64-byte units (space.h) handing out its ranges. Any thread allocates
    (vk_snap_alloc, under the lock); a copy lets go of its range when its frame's work is done, an unused one at once */
 #define SNAP_CHUNK  (32ull << 20)
 #define SNAP_CHUNKS 8
+#define SNAP_UNIT   64u
 typedef struct {
     u32 chunk;
-    VmaVirtualAllocation a;
-    u64 off, len;
+    u32 at, units; /* its place in the chunk, in SNAP_UNITs */
+    u64 len;
 } SnapMem;
 typedef struct {
     VkBuffer buf;
-    VmaAllocation mem;
+    DevMem mem;
     u8* ptr;
-    VmaVirtualBlock block;
+    Space free;
 } SnapChunk;
 static struct {
     PMutex lk;
@@ -52,23 +55,20 @@ static int snap_chunk_new(SnapChunk* c) {
                               .size = SNAP_CHUNK,
                               .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo aci = {
-        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
-    VmaVirtualBlockCreateInfo vbi = {.size = SNAP_CHUNK};
-    VmaAllocationInfo info;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &c->buf, &c->mem, &info))) return 0;
-    if (!VK_OK(vmaCreateVirtualBlock(&vbi, &c->block))) {
-        vmaDestroyBuffer(g_vk.vma, c->buf, c->mem);
+    DevMemWant aci = {.at = DM_CACHED, .mapped = 1};
+    DevMemInfo info;
+    if (!VK_OK(vk_buffer_create(&bci, &aci, &c->buf, &c->mem, &info))) return 0;
+    if (!space_init(&c->free, (u32)(SNAP_CHUNK / SNAP_UNIT))) {
+        vk_devmem_buffer_destroy(c->buf, c->mem);
         c->buf = VK_NULL_HANDLE;
         return 0;
     }
-    vk_mem_track(c->mem);
-    c->ptr = info.pMappedData;
+    vk_mem_track(c->mem, VK_OWN_DMA);
+    c->ptr = info.ptr;
     return 1;
 }
 u8* vk_snap_alloc(u64 len, u64* id) {
-    VmaVirtualAllocationCreateInfo vai = {.size = len ? len : 1, .alignment = 64};
+    u32 units = (u32)(((len ? len : 1) + SNAP_UNIT - 1) / SNAP_UNIT);
     SnapMem* m;
     u8* p = NULL;
     if (len > SNAP_CHUNK || !(m = (SnapMem*)malloc(sizeof *m))) return NULL;
@@ -76,10 +76,11 @@ u8* vk_snap_alloc(u64 len, u64* id) {
     for (u32 i = 0; i < SNAP_CHUNKS && !p; i++) {
         SnapChunk* c = &g_dma.c[i];
         if (!c->buf && !snap_chunk_new(c)) break;
-        if (vmaVirtualAllocate(c->block, &vai, &m->a, &m->off) == VK_SUCCESS) { /* else the next chunk */
+        if (space_take(&c->free, units, 1, &m->at)) { /* else the next chunk */
             m->chunk = i;
+            m->units = units;
             m->len = len;
-            p = c->ptr + m->off;
+            p = c->ptr + (u64)m->at * SNAP_UNIT;
             g_dma.bytes += len;
         }
     }
@@ -95,7 +96,7 @@ void vk_snap_free(u64 id) {
     SnapMem* m = (SnapMem*)(uintptr_t)id;
     if (!m) return;
     pm_lock(&g_dma.lk);
-    vmaVirtualFree(g_dma.c[m->chunk].block, m->a);
+    space_give(&g_dma.c[m->chunk].free, m->at, m->units);
     g_dma.bytes -= m->len;
     pm_unlock(&g_dma.lk);
     free(m);
@@ -148,9 +149,10 @@ static DmaNeeds dma_needs(const GpuDmaOp* o) {
     u64 hi;
     n.sv = o->src.bl ? side_rows(&o->src, lines) : lines;
     n.dv = o->dst.bl ? side_rows(&o->dst, lines) : lines;
-    if (!o->fill && !o->src.bl)
-        n.sspan = (u64)o->src.pitch * (lines - 1) + o->line_in;
-    else if (!o->fill) { /* its columns even with no line in the surface: those read as zeros, as wide */
+    if (!o->fill && !o->src.bl) { /* from its lowest line: the last one when the pitch steps down */
+        n.sspan = gpu_dma_span(&o->src, lines, o->line_in);
+        n.slo = (u64)gpu_dma_low(&o->src, lines);
+    } else if (!o->fill) { /* its columns even with no line in the surface: those read as zeros, as wide */
         side_cols(&o->src, o->line_in, &n.sx0, &n.sgobs);
         if (n.sv) {
             VkBlMove m = {o->src.wb, o->src.h, o->src.bh, o->src.bd, o->src.oy, n.sv, o->src.z, 1, 16};
@@ -161,7 +163,8 @@ static DmaNeeds dma_needs(const GpuDmaOp* o) {
         }
     }
     if (!o->dst.bl) {
-        n.dlen = n.drun = (u64)o->dst.pitch * (lines - 1) + o->line_out;
+        n.dlen = n.drun = gpu_dma_span(&o->dst, lines, o->line_out);
+        n.dlo = (u64)gpu_dma_low(&o->dst, lines);
         n.druns = 1;
     } else if (n.dv) {
         VkBlMove m = {o->dst.wb, o->dst.h, o->dst.bh, o->dst.bd, o->dst.oy, n.dv, o->dst.z, 1, 16};
@@ -226,8 +229,8 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
             const SnapMem* m = (const SnapMem*)(uintptr_t)o->snap_id;
             const SnapChunk* c = &g_dma.c[m->chunk]; /* chunks stay once made */
             sb = c->buf;
-            sat = m->off + snap_skip;
-            got = VK_OK(vmaFlushAllocation(g_vk.vma, c->mem, sat, sspan));
+            sat = (u64)m->at * SNAP_UNIT + snap_skip;
+            got = VK_OK(vk_devmem_flush(c->mem, sat, sspan));
         } else if (o->snap) { /* the same in the submitting thread's memory */
             u8* p = vk_stage(sspan, vk_stage_align(), &sb, &sat);
             if ((got = p != NULL)) memcpy(p, o->snap, sspan);
@@ -240,7 +243,7 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
         if (!got) return dma_fail(o, "could not stage its source's", sspan);
     }
     /* those bytes as they are, read straight into the buffer that becomes their owner, run by run */
-    d = vk_own_res_new(dlen);
+    d = vk_own_res_new(dlen, VK_OWN_BY_COPY);
     for (u32 r = 0; d && r < need->druns; r++)
         if (!vk_guest_read_seen(o->dst.addr + need->dlo + r * need->dstride, need->drun, d->buf, r * need->drun)) {
             vk_own_res_unref(d);
@@ -251,8 +254,8 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
     vk_all_barrier(cb);
     /* the lines in: the source's rows (block linear: their GOB columns taken apart, rows past its surface zero) */
     VkBuffer ib = sb;
-    u64 iat = sat;
-    u32 ip = o->src.pitch;
+    u64 iat = sat - need->slo; /* line 0, above the lowest when the pitch steps down */
+    i64 ip = gpu_dma_pitch(&o->src);
     int ok = 1;
     if (!o->fill && o->src.bl) {
         VkBlMove m = {pa, o->src.h, o->src.bh, o->src.bd, o->src.oy, sv, o->src.z, 1, pa, (o->src.wb + 63) / 64};
@@ -280,8 +283,9 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
     }
     /* where the lines out go: the destination's rows (block linear: its tiles taken apart) */
     VkBuffer tb = d->buf;
-    u64 tat = 0;
-    u32 tp = o->dst.pitch, tl = dv;
+    u64 tat = 0 - need->dlo;
+    i64 tp = gpu_dma_pitch(&o->dst);
+    u32 tl = dv;
     if (o->dst.bl) {
         ok = ok && vk_bl_move(cb, &md, 0, d->buf, 0, scr, at_b);
         tb = scr;
@@ -353,18 +357,22 @@ u32 vk_band(const VkBands* b, u32 y, u32 left, u64* most) {
    destination's bands end on its rows of blocks (8 << bh rows), so each block is read and written back by one band.
    Lines [y, y + lines) of o as a copy of their own: a pitch linear side's start y lines on, a block linear one's
    origin y rows down */
+/* the bytes from a pitch linear side's lowest to the lowest of its lines [y, y + lines) */
+static u64 band_low(const GpuDmaSide* s, u32 all, u32 y, u32 lines) {
+    return (u64)(y * gpu_dma_pitch(s) + gpu_dma_low(s, lines) - gpu_dma_low(s, all));
+}
 static GpuDmaOp dma_band(const GpuDmaOp* o, u32 y, u32 lines) {
     GpuDmaOp b = *o;
     b.lines = lines;
     if (o->src.bl)
         b.src.oy += y;
     else if (!o->fill)
-        b.src.addr += (u64)y * o->src.pitch;
+        b.src.addr += (u64)(y * gpu_dma_pitch(&o->src));
     if (o->dst.bl)
         b.dst.oy += y;
     else
-        b.dst.addr += (u64)y * o->dst.pitch;
-    if (o->snap) b.snap = o->snap + (u64)y * o->src.pitch;
+        b.dst.addr += (u64)(y * gpu_dma_pitch(&o->dst));
+    if (o->snap) b.snap = o->snap + band_low(&o->src, o->lines, y, lines);
     return b;
 }
 static u64 most_of(const DmaNeeds* n) {
@@ -392,7 +400,7 @@ static int dma_bands(const GpuDmaOp* o) {
         GpuDmaOp b = dma_band(o, y, lines);
         if (most > bands.cap) return dma_fail(&b, "needs more than an allocation may be:", most);
         DmaNeeds n = dma_needs(&b);
-        if (!dma(&b, &n, o->fill || o->src.bl ? 0 : (u64)y * o->src.pitch)) return 0;
+        if (!dma(&b, &n, o->fill || o->src.bl ? 0 : band_low(&o->src, o->lines, y, lines))) return 0;
         if (lines < o->lines) g_dma.bands++;
         if (y + lines < o->lines) vk_frame_check(); /* the next band may record in the other slot (cmd.c) */
     }

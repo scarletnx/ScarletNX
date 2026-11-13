@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# a second spec for the route list (tests/hook_routes.c): a symbol versions.hook names too, a mangled one and a route
-# line
+# a second spec for the route list (tests/hook_routes.c): a symbol versions.hook names too, a mangled one, a route
+# line, and a declaration for a 32-bit program alone, whose symbol is no route
 route wrapped
 family libc
 hook lock(addr m) -> u32 = other_lock
 hook _ZN2nn2os4WaitEv() = os_wait
+a32 hook _ZN2nn2os4WaitEj(usize n) = os_wait_n

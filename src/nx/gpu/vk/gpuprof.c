@@ -23,6 +23,7 @@
    or read. */
 #include <stdlib.h>
 #include <string.h>
+#include "common/gpu/vk/vk_common.h"
 #include "nx/gpu/vk/gpuprof_setting.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/runtime/options.h"
@@ -170,17 +171,37 @@ static void gp_stamp(VkCommandBuffer cb, VkPipelineStageFlags2 stage, VkQueryPoo
 static GpSlot* gp_slot(void) {
     u32 s = vk_frame_slot();
     if (!g_slot[s]) {
-        VkQueryPoolCreateInfo qi = {
-            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = GP_QUERIES};
+        /* A driver may refuse a pool this size, and its refusal turned the whole profile off for the run: the size is
+           halved until one is taken, and a smaller pool times fewer passes a frame rather than none. MoltenVK takes a
+           pool larger than its Metal counter sample buffer (32768 bytes, 4096 timestamps) and then emulates every
+           timestamp, which reads as 0.00 ms a pass: a portability driver starts at 4096 */
+        u32 count = g_vk.has_portability ? 4096 : GP_QUERIES;
         GpSlot* g = calloc(1, sizeof *g);
-        if (!g || !VK_OK(vkCreateQueryPool(g_vk.dev, &qi, NULL, &g->ops.pool))) {
+        VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY, refused = VK_SUCCESS;
+        for (; g && count >= 256; count /= 2) {
+            VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                                        .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                        .queryCount = count};
+            r = vkCreateQueryPool(g_vk.dev, &qi, NULL, &g->ops.pool);
+            if (r == VK_SUCCESS) break;
+            refused = r; /* said once, with the size taken; with none, VK_OK below says the last */
+        }
+        if (!g || !VK_OK(r)) {
             free(g);
             g_dead = 1;
             return NULL;
         }
         g->ops.op = g->op;
         g->ops.cap = GP_DISP;
-        g->ops.queries = GP_QUERIES;
+        g->ops.queries = count;
+        if (refused != VK_SUCCESS)
+            LOG("vulkan: vk_gpu_profile's pool takes %u timestamps where %u were asked for: the driver refused %u "
+                "(%s)\n",
+                count, (u32)GP_QUERIES, count * 2, snx_vk_result_str(refused));
+        else if (count != GP_QUERIES)
+            LOG("vulkan: vk_gpu_profile's pool takes %u timestamps where %u were asked for: a portability driver's "
+                "Metal counter buffer holds %u\n",
+                count, (u32)GP_QUERIES, count);
         g_slot[s] = g;
     }
     return g_slot[s];
@@ -190,7 +211,7 @@ static GpSlot* gp_slot_reset(VkCommandBuffer cb, int on) {
     GpSlot* g;
     if (!on || !(g = gp_slot())) return NULL;
     if (!g->ops.reset) {
-        rec_CmdResetQueryPool(cb, g->ops.pool, 0, GP_QUERIES);
+        rec_CmdResetQueryPool(cb, g->ops.pool, 0, g->ops.queries);
         g->ops.reset = 1;
         g->ops.used = g->npass = g->nsub = g->ops.nop = 0;
     }
@@ -200,7 +221,7 @@ static GpSlot* gp_slot_reset(VkCommandBuffer cb, int on) {
 void vk_gpuprof_cb_begin(VkCommandBuffer cb) {
     GpSlot* g = gp_slot_reset(cb, gp_timed());
     if (!g) return;
-    if (g->ops.used + 1 > GP_QUERIES || g->nsub >= GP_SUBS) {
+    if (g->ops.used + 1 > g->ops.queries || g->nsub >= GP_SUBS) {
         g_lost++;
         return;
     }
@@ -215,7 +236,7 @@ void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value) {
     GpSlot* g = gp_timed() ? g_slot[vk_frame_slot()] : NULL;
     GpSub* s;
     if (!g || !g->ops.reset || !g->nsub || (s = &g->sub[g->nsub - 1])->q1 || s->cb != cb) return;
-    if (g->ops.used + 1 > GP_QUERIES) {
+    if (g->ops.used + 1 > g->ops.queries) {
         g_lost++;
         g->nsub--; /* no end: its begin is never read */
         return;
@@ -387,7 +408,7 @@ void vk_gpuprof_waited(u64 value, int kind) {
 void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt) {
     GpSlot* g = gp_slot_reset(cb, gp_on());
     if (!g) return;
-    if (g->ops.used + 2 > GP_QUERIES || g->npass >= GP_QUERIES / 2) {
+    if (g->ops.used + 2 > g->ops.queries || g->npass >= GP_QUERIES / 2) {
         g_lost++;
         return;
     }

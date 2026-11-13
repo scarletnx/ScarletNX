@@ -157,7 +157,7 @@ int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw
         *holds = tag;
     } else {
         vkUpdateDescriptorSets(g_vk.dev, 1, &write, 0, NULL);
-        vk_defer_image(VK_NULL_HANDLE, NULL, from, VK_NULL_HANDLE);
+        vk_defer_image(VK_NULL_HANDLE, 0, from, VK_NULL_HANDLE);
     }
     *out = (SnxPresentSource){.surf = source, .set = set};
     return 1;
@@ -212,6 +212,6 @@ int vk_present_quad(Surf* source, VkImage destination, VkFormat format, VkExtent
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    vk_defer_image(VK_NULL_HANDLE, NULL, VK_NULL_HANDLE, to);
+    vk_defer_image(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, to);
     return 1;
 }

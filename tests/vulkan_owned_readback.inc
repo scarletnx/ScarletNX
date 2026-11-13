@@ -11,7 +11,7 @@ static int check_owned_readback(void) {
     for (u32 fresh = 0; fresh < 2; fresh++) {
         VkBuffer output;
         u64 offset;
-        VkOwnRes* owner = vk_own_res_new(256);
+        VkOwnRes* owner = vk_own_res_new(256, VK_OWN_BY_DRAW);
         VkSemaphore gate;
         VkSemaphoreTypeCreateInfo type = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
                                           .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
@@ -84,7 +84,7 @@ static int check_owned_writable(void) {
     u32 validation = g_vk_validation_messages;
     for (u32 edit = 0; edit < 2; edit++) {
         memset(GP(cpu), 0x11, 0x1000);
-        VkOwnRes* owner = vk_own_res_new(256);
+        VkOwnRes* owner = vk_own_res_new(256, VK_OWN_BY_DRAW);
         CHECK(owner);
         CHECK(!owned_test_fill(owner->buf, 0, 256, 0x22));
         vk_own_publish_owned(cpu + 64, 256, owner, 0);
@@ -125,7 +125,7 @@ static int check_owned_writable(void) {
     gmmu_map(gva + 0x2000, cpu + 0x4000, 0x1000);
     memset(GP(cpu), 0x11, 0x1000);
     memset(GP(cpu + 0x4000), 0x66, 0x1000);
-    VkOwnRes* owner = vk_own_res_new(256);
+    VkOwnRes* owner = vk_own_res_new(256, VK_OWN_BY_DRAW);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 256, 0x22));
     vk_own_publish_owned(cpu + 0x4000, 256, owner, 0);
     u64 lands = own_landings(), submits = vk_submit_number(), at;
@@ -158,7 +158,7 @@ static int check_owned_whole_identity(void) {
     gmmu_map(gva, cpu, 0x2000);
     vk_lock();
     vk_finish();
-    VkOwnRes* owner = vk_own_res_new(0x1000);
+    VkOwnRes* owner = vk_own_res_new(0x1000, VK_OWN_BY_DRAW);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 0x1000, 0x22));
     vk_own_publish_owned(cpu, 0x1000, owner, 0);
     CHECK(vk_guest_owned_whole(gva, 0x1000, &a) && vk_guest_owned_whole(gva, 0x1000, &b) && a == b);
@@ -167,7 +167,7 @@ static int check_owned_whole_identity(void) {
     CHECK(!owned_test_fill(owner->buf, 0, 0x1000, 0x55));
     vk_own_res_wrote(owner);
     CHECK(vk_guest_owned_whole(gva, 0x1000, &c) && c != a);
-    VkOwnRes* next = vk_own_res_new(0x1000);
+    VkOwnRes* next = vk_own_res_new(0x1000, VK_OWN_BY_DRAW);
     CHECK(next && !owned_test_fill(next->buf, 0, 0x1000, 0x55));
     vk_own_publish_owned(cpu, 0x1000, next, 0);
     CHECK(vk_guest_owned_whole(gva, 0x1000, &d) && d != c && d != a);
@@ -189,7 +189,7 @@ static int check_owned_peek_identity(void) {
     gmmu_map(gva, cpu, 0x1000);
     vk_lock();
     vk_finish();
-    VkOwnRes* owner = vk_own_res_new(256);
+    VkOwnRes* owner = vk_own_res_new(256, VK_OWN_BY_DRAW);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 256, 0x22));
     vk_own_publish_owned(cpu, 256, owner, 0);
     vk_guest_peek(gva, before, sizeof before);
@@ -200,7 +200,8 @@ static int check_owned_peek_identity(void) {
     vk_guest_peek(gva, after, sizeof after);
     CHECK(memcmp(before, after, sizeof before)); /* written in place */
     memcpy(before, after, sizeof before);
-    VkOwnRes* next = vk_own_res_new(256); /* a new owner over the same bytes, as each copy of a whole surface makes */
+    VkOwnRes* next = vk_own_res_new(
+        256, VK_OWN_BY_DRAW); /* a new owner over the same bytes, as each copy of a whole surface makes */
     CHECK(next && !owned_test_fill(next->buf, 0, 256, 0x55));
     vk_own_publish_owned(cpu, 256, next, 0);
     vk_guest_peek(gva, after, sizeof after);
@@ -221,7 +222,7 @@ static int check_owned_in_place_write(void) {
     vk_lock();
     vk_finish();
     memset(GP(cpu), 0x11, 0x1000);
-    VkOwnRes* owner = vk_own_res_new(256);
+    VkOwnRes* owner = vk_own_res_new(256, VK_OWN_BY_DRAW);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 256, 0x22));
     vk_own_publish_owned(cpu, 256, owner, 0);
     vk_finish(); /* the owner's submission is done: a landing now waits for nothing */
@@ -253,8 +254,8 @@ static int check_owned_read_device(void) {
     vk_finish();
     vk_frame_next();
     memset(GP(cpu), 0x11, 0x2000);
-    VkOwnRes* owner = vk_own_res_new(0x1000);
-    VkOwnRes* dst = vk_own_res_new(0x2000);
+    VkOwnRes* owner = vk_own_res_new(0x1000, VK_OWN_BY_DRAW);
+    VkOwnRes* dst = vk_own_res_new(0x2000, VK_OWN_BY_DRAW);
     result = vk_readback_buffer(0x2000, &rb);
     CHECK(owner && dst && result);
     CHECK(!owned_test_fill(owner->buf, 0, 0x1000, 0x22));

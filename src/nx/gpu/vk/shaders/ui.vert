@@ -22,8 +22,10 @@ layout(push_constant) uniform Picture {
     uint slow;      // the colour of a bar past slow_from, R G B A bytes
     uint slow_from; // the height past which a bar is slow
     uint ground;    // the backed letters' ground, R G B A bytes (ui.h's UI_BACKED): ui.frag's
+    uint ring_at;   // the first word of this frame's region in Ring, where its ring's bytes are (ui.c's ui_record)
 } pc;
-// the ring's bytes, a bar's height in 255ths of the graph's for each slot, four a word
+// every frame's region (ui.c's frames_make), a ring's bytes at the start of each: a bar's height in 255ths of the
+// graph's for each slot, four a word
 layout(std430, set = 0, binding = 2) readonly buffer Ring {
     uint heights[];
 } ring;
@@ -89,7 +91,7 @@ void main() {
     uint height = 1u;
     if (ink == 4u) { // UI_RING: its slot's bar, as ui_drawn gives it, w / n wide over the graph
         uint n = pc.ring >> 16, slot = glyph;
-        height = n != 0u && slot < n ? (ring.heights[slot >> 2] >> ((slot & 3u) * 8u)) & 0xFFu : 0u;
+        height = n != 0u && slot < n ? (ring.heights[pc.ring_at + (slot >> 2)] >> ((slot & 3u) * 8u)) & 0xFFu : 0u;
         if (height != 0u) {
             uint age = ((pc.ring & 0xFFFFu) + n - slot) % n;
             float h = r.w * float(height) / 255.0, bw = r.z / float(n);

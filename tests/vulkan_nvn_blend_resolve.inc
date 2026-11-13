@@ -7,7 +7,7 @@
 
 typedef struct {
     VkImage image;
-    VmaAllocation memory;
+    DevMem memory;
     VkImageView view;
     VkImageLayout layout;
     u32 layers;

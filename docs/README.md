@@ -61,6 +61,8 @@ keeps audits and measurements as they were taken.
   - [SuperTux target](platforms/3ds/supertux.md): the pinned homebrew, how to reproduce its run, and its baseline
 - [PS Vita](platforms/vita/README.md): the Vita driver, its shader corpus and its limits
 - [Game Boy Advance](platforms/agb/README.md): the AGB board, playing a ROM, its devices and tests
+- [DS](platforms/nds/README.md): the NDS driver, its compiled module, the ARM7's services and the display on
+  the GPU
 - [Linux AArch64 programs (GNU ABI)](platforms/gnuabi/README.md): the sysroot, how code runs, processes and the
   system calls
 - [Android apps](platforms/android-apps/README.md): `scarletnx-android`, which runs an Android app's code on a
@@ -81,6 +83,8 @@ keeps audits and measurements as they were taken.
   - [NVN](layers/gpu/nvn.md): how games draw through NVN, and how the runtime replays it
   - [GPU-owned guest memory](layers/gpu/ownership.md): the design of memory the GPU keeps, guest buffers on
     unified memory, and its phases
+  - [Regression inventory for the buffer cache rewrite](layers/gpu/buffer-rewrite-inventory.md): the behaviors
+    that the rewrite of the buffer cache, the rings and the texture trim must keep, from the comments of the code
   - [Graphics pipeline libraries](layers/gpu/pipeline-libraries.md): the design of pipelines linked from shader parts,
     and the optimized pipeline made after them
   - [ASTC compute uploads](layers/gpu/astc.md)
@@ -88,6 +92,8 @@ keeps audits and measurements as they were taken.
   - [BCn without BCn: ETC2 and EAC on phone GPUs](layers/gpu/bcn.md)
   - [glslc](layers/gpu/glslc.md): GLSL ES into SPIR-V, for the backends that run OpenGL ES programs on Vulkan
   - [The shared SPIR-V optimizer](layers/gpu/spirv-opt.md): the passes a layer runs on the module it translated
+  - [Constant buffer words folded into a translation](layers/gpu/constant-buffer-folds.md): which words a
+    fragment program's translation holds as constants, how many translations a program takes, what a draw pays
 - Video (`layers/media/`)
   - [VIC composition on the GPU](layers/media/vic.md)
 

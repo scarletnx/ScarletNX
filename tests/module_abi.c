@@ -93,6 +93,19 @@ static int play(const char* runtime, const char* root, const char* name, const c
     free(folder);
     return rc;
 }
+/* the game name in its folder of root, with an NSO of another build in its data folder's exefs/main: the runtime's
+   check of the module the descriptor names refuses it as another build, not a missing one */
+static void write_other_nso(const char* root, const char* name) {
+    unsigned char nso[0x100] = {0};
+    char *data = game_file(root, name, "_data"), *exefs = snx_path_join(data, "exefs"),
+         *path = snx_path_join(exefs, "main");
+    memcpy(nso, "NSO0", 4);
+    nso[0x40] = 1; /* a build ID the fixture's module, which is zeroes, does not have */
+    check(!snx_mkdirs(exefs) && !snx_write_file(path, nso, sizeof nso), "the game's other NSO", NULL);
+    free(path);
+    free(exefs);
+    free(data);
+}
 /* the game name in its folder of root, with a control.nacp in its data folder whose American English name is title,
    and none in any language for NULL */
 static void write_nacp(const char* root, const char* name, const char* title) {
@@ -150,6 +163,26 @@ int main(int argc, char** argv) {
           "a module of SNX_ABI is taken", output);
     check(wrote(root, "current", "config", ".ini") && wrote(root, "current", "state", ".log"),
           "a module taken runs the game, which writes its settings and log", output);
+    free(output);
+
+    /* the dump's NSO is another build than the module's: the runtime ends with SNX_EXIT_REMAKE, which the driver
+       reads to recompile the game from its dump */
+    write_other_nso(root, "remake");
+    rc = play(argv[1], root, "remake", argv[2], SNX_ABI, &output);
+    check(rc == SNX_EXIT_REMAKE && strstr(output, "is not the NSO that was recompiled") &&
+              strstr(output, "The game's recompiled code was made from another copy of the game"),
+          "a module of another build of the dump ends with SNX_EXIT_REMAKE", output);
+    /* and says so as any fatal error does, in the error log beside the game's log that Share Log sends, and in a box
+       where one shows: a game an app or a shortcut started has no driver to recompile it */
+    {
+        char* path = snx_format("%s/remake/state/%s", root, SNX_ERROR_LOG);
+        size_t size = 0;
+        char* text = (char*)snx_read_file(path, &size);
+        check(text && strstr(text, "The game's recompiled code was made from another copy of the game"),
+              "a module of another build of the dump is in the error log", text ? text : path);
+        free(text);
+        free(path);
+    }
     free(output);
 
     /* the ABI before it and the one after: refused, saying the module's ABI and the one this runtime runs */

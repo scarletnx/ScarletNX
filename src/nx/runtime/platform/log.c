@@ -352,7 +352,7 @@ void log_error_line(const char* line) {
     WARN("%s\n", line);
 }
 
-void fatal(const char* fmt, ...) {
+void fatal_code(int status, const char* fmt, ...) {
     char msg[LINE_MAX_];
     va_list ap;
     va_start(ap, fmt);
@@ -362,9 +362,20 @@ void fatal(const char* fmt, ...) {
     logf_(0, "FATAL: %s\n", msg);
 #if !defined(_WIN32)
     /* from the crash handler: a box or a flush could wait on a lock the crashed code holds */
-    if (__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) _exit(1);
+    if (__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) _exit(status);
 #endif
-    /* everywhere, since a player started from a desktop entry sees no console and no log */
+    /* everywhere, since a player started from a desktop entry sees no console and no log. A remake's too: a game
+       an app or a shortcut started has no driver to recompile it, and one the driver started recompiles once
+       the box is closed */
     win_fatal_box(msg);
-    plat_exit_now(1);
+    plat_exit_now(status);
+}
+
+void fatal(const char* fmt, ...) {
+    char msg[LINE_MAX_];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    fatal_code(1, "%s", msg);
 }

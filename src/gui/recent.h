@@ -9,7 +9,7 @@
 typedef struct {
     char path[1024]; /* absolute */
     char name[128];  /* what the run called it, else the file's own name */
-    int driver;      /* GUI_SWITCH, GUI_LINUX, GUI_3DS, GUI_VITA, GUI_GBA or GUI_ANDROID: the item that loaded it */
+    int driver;      /* GUI_SWITCH, GUI_LINUX, GUI_3DS, GUI_VITA, GUI_GBA, GUI_NDS or GUI_ANDROID: the item that loaded it */
     int prepared;    /* a program from games/, run as it is */
 } GuiRecentGame;
 typedef struct {

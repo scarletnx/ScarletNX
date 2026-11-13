@@ -330,6 +330,16 @@ int main(void) {
     assert(!strcmp(text(1), "cpu 100%") && !strcmp(gpu_text(), "gpu 100%  100.0 ms"));
     assert(!strcmp(text(2), "ram 65535/65535 MiB"));
     assert(!strcmp(text(3), "vram 24564/24564 MiB") && past_margin() == 0);
+    /* a driver with no budget: what the process took from the heap and the heap's size, said to be them, the longest
+       still inside the box */
+    stats_measured(
+        &(SnxStatsMeasure){.cpu = 7, .gpu = -1, .vram = 871ull << 20, .vram_budget = 11121ull << 20, .vram_ours = 1});
+    draw(t + 600 * MS);
+    assert(!strcmp(text(3), "vram 871/11121 MiB ours/heap"));
+    stats_measured(
+        &(SnxStatsMeasure){.cpu = 7, .gpu = -1, .vram = 24564ull << 20, .vram_budget = 24564ull << 20, .vram_ours = 1});
+    draw(t + 600 * MS);
+    assert(!strcmp(text(3), "vram 24564/24564 MiB ours/heap") && past_margin() == 0);
     /* a 40 ms frame in the failure colour, then an 80 ms one as tall as the graph */
     stats_frame(at += 40 * MS, &g_test.gpu);
     draw(t + 700 * MS);

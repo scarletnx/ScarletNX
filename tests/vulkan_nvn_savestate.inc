@@ -10,6 +10,7 @@
    else. A save while a queue's work waits on the GPU is refused, and so is the load of a state saved without NVN, or
    whose NVN state indexes past the runtime's tables. Runs alone (SNX_TEST_NVN_CASE=savestate): a load replaces the
    process's guest memory */
+#include "nx/runtime/pause.h"
 #include "nx/runtime/state.h"
 #include "nx/runtime/state_io.h"
 #include "common/filesystem/tree.h"
@@ -93,7 +94,14 @@ static int check_nvn_state_damage(void) {
     NvnSection saved = {0};
     char why[256];
     StateIo io = {&saved, section_put, section_get};
-    CHECK(!nvn_state_save(&io, why, sizeof why));
+    int refused;
+    /* saved paused, as state_save saves it: nvn_QueueFinish returns once the GPU thread lets the queue's syncpoint go,
+       before that thread gives the work's slot back, and a save that finds the slot taken refuses the state */
+    CHECK(!game_pause());
+    refused = nvn_state_save(&io, why, sizeof why);
+    game_resume();
+    if (refused) fprintf(stderr, "NVN state not saved: %s\n", why);
+    CHECK(!refused);
     CHECK(g_nvn.cmd.slots >= 1 && g_nvn.cmd.slots < NVN_SPILL_PIECES);
     const u32 none = 0, one = 1, many = NVN_SPILL_PIECES + 1, past = g_nvn.cmd.slots + 1, owner = 5;
     CHECK(nvn_parses(&saved, NULL, 0) == 1); /* as it was saved */
@@ -208,6 +216,23 @@ static int check_nvn_savestate(const char* shot) {
     put_rgba(rgba, 1, 0, 0);
     u64 first = nvn_clear(cmd, pool, 0, targets, rgba);
     CHECK(nvn_frame(queue, window, handles, first, shot) == red);
+    /* a fragment program that asks for early tests (its control section's byte at 0x718), which the state keeps */
+    const u64 program = cpu + 0x13000, later = cpu + 0x13400, pairs = cpu + 0x13800, control = cpu + 0x14000;
+    memset(GP(control), 0, 0x900);
+    gw32(control, 0x98761234);
+    gw32(control + 4, 1);
+    gw32(control + 8, 8);
+    gw32(control + 0x700, 0x200);
+    gw32(control + 0x704, 0x400);
+    gw32(control + 0x708, 0x30);
+    gw32(control + 0x714, NVN_SHADER_STAGE_FRAGMENT);
+    GP(control)[0x718] = 1;
+    gw64(pairs, gpu + 0x9000);
+    gw64(pairs + 8, control);
+    nvn_ProgramInitialize(NULL, program, 0);
+    CHECK(nvn_ProgramSetShaders(NULL, program, 1, pairs));
+    const u64 early = NVN_OBJ(const NvnProgram, program)->serial;
+    CHECK(nvn_program_early_z(early));
     CHECK(!state_save(path, why, sizeof why));
     g_nvn.queue.clock = 0; /* from here as a process that started an hour later: on its own plat_ns */
 
@@ -248,6 +273,15 @@ static int check_nvn_savestate(const char* shot) {
     int loaded = state_load(path, why, sizeof why);
     if (loaded) fprintf(stderr, "NVN state not loaded: %s\n", why);
     CHECK(!loaded);
+    /* the programs' early test flags came back, in an array a program made after the load can grow: one that took the
+       loaded array's count for its room would write past it */
+    if (g_nvn.object.early_z_capacity < g_nvn.object.nearly_z)
+        fprintf(stderr, "the early test flags after the load: room for %u, %u held\n", g_nvn.object.early_z_capacity,
+                g_nvn.object.nearly_z);
+    CHECK(nvn_program_early_z(early) && g_nvn.object.early_z_capacity >= g_nvn.object.nearly_z);
+    nvn_ProgramInitialize(NULL, later, 0);
+    CHECK(nvn_ProgramSetShaders(NULL, later, 1, pairs));
+    CHECK(nvn_program_early_z(early) && nvn_program_early_z(NVN_OBJ(const NvnProgram, later)->serial));
     /* the buffer cache as a load leaves it: none of its entries holds a buffer of its own */
     u32 own = 0;
     u64 own_bytes = 0;

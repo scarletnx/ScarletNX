@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The extension bans (gpu/vk/extension_bans.c), with no GPU: the table's errors, each named with its line and value;
+/* The extension bans (common/gpu/vk/extension_bans.c), with no GPU: the table's errors, each named with its line and value;
    each driver's numbering of versions and every kind of bound at its edges; systems and GPUs; the filter taking a
    banned extension out of a stand-in device's list and leaving one a setting owns; the features asked for, said only
    where the device has them; the "off" lines nothing asked for, said; the log lines naming the key, the device, its
@@ -11,7 +11,7 @@
      --devices [--table FILE]                     this machine's Vulkan devices, and the lines that hold for each
      --match DRIVER VERSION [SYSTEM [DEVICEID]] [--table FILE]   the lines that hold for a driver given by hand
      --check FILE                                 FILE read as the table: its first error, or that it reads */
-#include "nx/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/extension_bans.h"
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
 #include <stdio.h>
@@ -490,6 +490,15 @@ static void check_shipped(void) {
         {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 2u, 99u), 0, SNX_VK_BAN_ANDROID, "OpConvertUToF", 1, "Turnip"},
         {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0, SNX_VK_BAN_ANDROID, "OpConvertSToF", 0, NULL},
         {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0, SNX_VK_BAN_LINUX, "OpConvertUToF", 0, NULL},
+        /* the shuffle whose index differs between lanes: a loop on Turnip, the phones' Adreno 610 among its GPUs; the
+           Adreno 830's own driver and RADV shuffle in hardware */
+        {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 2u, 99u), 0x6010000, SNX_VK_BAN_ANDROID, "OpGroupNonUniformShuffle", 1,
+         "Turnip"},
+        {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 0u, 0u), 0x43050a01, SNX_VK_BAN_LINUX, "OpGroupNonUniformShuffle", 1,
+         "Turnip"},
+        {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0x44050a01, SNX_VK_BAN_ANDROID,
+         "OpGroupNonUniformShuffle", 0, NULL},
+        {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0x73df, SNX_VK_BAN_LINUX, "OpGroupNonUniformShuffle", 0, NULL},
     };
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         char what[400];
@@ -573,6 +582,47 @@ static void check_shipped(void) {
         CHECK(w >= 0 && g_test.warned[w], "native ASTC on PanVK is a warning naming native_astc=0 and the issue");
         if (w < 0) show_said();
         CHECK(vk_ban_find("textureCompressionASTC_LDR") == 0, "and turns native ASTC off nowhere on PanVK");
+    }
+    /* the Adreno drivers' shader deviations no setting goes around, each a warning at the filter with its issue or its
+       suite: Qualcomm's driver on an Adreno 830 all four, Turnip on an Adreno 610 the two of the sampler and the FMA */
+    {
+        static const struct {
+            const char* name;
+            const char* driver;
+            const char* info;
+            uint32_t id, v, gpu;
+        } adreno[2] = {{"Adreno (TM) 830", "Qualcomm Technologies Inc. Adreno Vulkan Driver",
+                        "Driver Build: 512.800.48", VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u),
+                        0x43050a01},
+                       {"Turnip Adreno (TM) 610", "turnip Mesa driver", "Mesa 26.3.0-devel", VK_DRIVER_ID_MESA_TURNIP,
+                        MESA(26u, 2u, 99u), 0x6010001}};
+        static const struct {
+            const char* said;
+            const char* source;
+            int turnip;
+        } warns[4] = {{"Fma on ", "#1654", 1},
+                      {"OpImageSampleExplicitLod on ", "#1916", 1},
+                      {"VK_STENCIL_FACE_BACK_BIT on ", "stencil suite", 0},
+                      {"ClipDistance on ", "geometry suite", 0}};
+        for (int a = 0; a < 2; a++) {
+            VkExtensionProperties list[1] = {{"VK_KHR_swapchain", 1}};
+            SnxVkExtensions e = {list, 1};
+            VkBanDevice d = {adreno[a].name, adreno[a].driver, adreno[a].info,    adreno[a].id,
+                             adreno[a].v,    adreno[a].gpu,    SNX_VK_BAN_ANDROID};
+            vk_bans_device(&d);
+            g_test.nsaid = 0;
+            CHECK(vk_bans_filter(&e, say) == 0 && e.count == 1, "the Adreno warnings take no extension out");
+            for (int i = 0; i < 4; i++) {
+                char what[200];
+                int w = said_with("vulkan: a known problem the extension bans do not turn off: ", warns[i].said,
+                                  warns[i].source);
+                snprintf(what, sizeof what, "%s: %s%s, a warning naming %s", adreno[a].name, warns[i].said,
+                         a && !warns[i].turnip ? "not said" : "said", warns[i].source);
+                CHECK(a && !warns[i].turnip ? w < 0
+                                            : w >= 0 && g_test.warned[w] && strstr(g_test.said[w], adreno[a].name),
+                      what);
+            }
+        }
     }
     /* this machine's drivers, RADV and lavapipe: no "off" line holds; RADV's warnings are the lifted bans */
     static const struct {

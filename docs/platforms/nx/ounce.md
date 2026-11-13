@@ -74,18 +74,12 @@ stops if 21 fails. With no camera, the event is never signaled.
 ## Built-in fonts
 
 An Ounce game's SDK has `nn::pl::GetBuiltInFontData(BuiltInFontDataOunce*, BuiltInFontTypeOunce, bool)` beside the
-shared fonts' calls. It asks `pl` with two commands (`pl.c`):
+shared fonts' calls. The runtime answers it in the game's own SDK function (`src/nx/nn/pl.c`, `pl.hook`), as it does
+the shared fonts': it fills the caller's `BuiltInFontDataOunce` as the SDK fills it from the service's answer, two
+bytes of flags, the font's address at +8 and its size at +0x10, and answers whether the type has a font.
 
-- **2010**, with the font's type in the request's first byte and a bool in the second. The reply's raw data is a found
-  byte, then at +4 the font's 12 bytes: two bytes that the SDK copies to the caller's `BuiltInFontDataOunce`, the
-  font's offset at +8 of the reply and its size at +0xc. The SDK reads the font's bytes as a u64 at +4 and a u32 at
-  +0xc, and it fills the caller's structure only when the found byte is 1.
-- **2000**, once, at the first font that 2010 finds: a `u32` size and a copy handle of the shared memory that holds
-  the fonts. The SDK maps that memory read-only and stops when the command fails. The pointer it gives the game is
-  the base of that mapping plus the offset of 2010.
-
-The fonts are the shared fonts of commands 0 to 6: each is a plain TrueType font after its header, so the same memory
-answers both. `tests/pl_fonts.c` sends both commands through the dispatcher.
+The fonts are the shared fonts: each is a plain TrueType font after its header, so the same memory, mapped read only
+in the game at the first ask, answers both. `tests/pl_fonts.c` checks the structure for each type.
 
 ## Shaders
 
@@ -218,6 +212,25 @@ a grid in world space, then the cell's list, in a loop) is bound as no texture, 
 (`SH_PROBE_NONE`), and the log names the program once: the draw goes on without it. An array of the pool's textures
 indexed on the GPU would sample them, but the renderer would have to make each texture such a handle can name, which
 no draw tells it.
+
+A program whose FADD, FMUL, FFMA or I2F has a directed rounding mode is translated through f64, which keeps the
+rounding exact. Apple's GPUs have no `shaderFloat64`, and the runtime skipped each such program: one game's title
+sequence drew black, and 10 of its compute programs never ran. `g_shader_float64` is the device's capability now, and
+the translator keeps those operations in f32, as rounds to nearest, where it is 0. A float scale of FMUL is a power
+of two, so it stays exact.
+
+`snx-shaderc DIR --sm86 --no-doubles --out DIR` translates a recorded compute program again, as a device without
+doubles has it, and without the game (`--sm86` needs no header, which a compute program has none of). Of one game's 14
+compute programs, 10 make a pipeline on KosmicKrisp and 4, its largest (1 MB of SPIR-V and more), do not: the Metal
+compiler service ends with an XPC error after Mesa's own retries, about 30 s each, and the game lost 220 s of presents
+before it ran again. MoltenVK makes all 14. The modules pass `spirv-val`, and the validation layer says nothing of
+them, so the programs are not in doubt: a compiler service that crashes on one of them is the driver's, and the
+largest are the ones it cannot take.
+
+A program that still holds f64, which the runtime no longer emits on such a device, fails sooner and says why: Mesa's
+Metal backend prints itself into the module as `t192 = ALU u2f64` and the Metal compiler rejects the text, so
+KosmicKrisp has no conversion to a double at all. The game shows its title menu on either driver, after the stall on
+KosmicKrisp, and `vulkan_driver=moltenvk` skips the stall.
 
 ## Surfaces
 

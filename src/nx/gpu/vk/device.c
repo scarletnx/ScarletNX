@@ -10,12 +10,14 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
+#include "nx/memory/own.h"
 #include "nx/gpu/vk/vertex_input.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/texture/astc_bc.h"
-#include "nx/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/extension_bans.h"
 #include "nx/gpu/vk/hdr_swapchain.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
@@ -51,6 +53,9 @@ static void vk_let_go(void) {
     vk_release_events();
 }
 void vk_unlock(void) {
+    /* watched bytes that this hold read with no publish (own.c owes them): the targets over them are watched again
+       before the lock goes, and the next CPU access publishes them */
+    if (t_vkdepth == 1 && own_owed_any()) vk_rt_watch_owed();
     if (!--t_vkdepth) vk_let_go();
 }
 int vk_trylock(void) {
@@ -61,65 +66,64 @@ int vk_trylock(void) {
 u32 vk_lock_owner(void) { return __atomic_load_n(&g_vk_owner, __ATOMIC_RELAXED); }
 int vk_lock_held(void) { return t_vkdepth > 0; }
 
-/* What held the memory at an out-of-memory, at the first ones: each heap as VMA counts it, and the descriptor pools,
-   which MoltenVK backs with Metal memory that VMA's blocks do not hold (cmd.c). The heap's use less its blocks is
-   what the driver and the other allocations of the process took. Any thread can fail, and VMA's statistics take its
-   own lock */
-/* set once the allocator exists, which lives to the end of the process: vk_memory_text's threads read g_vk.vma only
-   after they see it, atomic */
-static int g_vma_ready;
+/* What held the memory at an out-of-memory, at the first ones: each heap as devmem.c counts it, and the descriptor
+   pools, which MoltenVK backs with Metal memory that its blocks do not hold (cmd.c). The heap's use less its blocks
+   is what the driver and the other allocations of the process took. Any thread can fail, and the counts take
+   devmem.c's own lock */
+/* set once devmem.c knows the device's memory: vk_memory_text's threads ask it only after they see this, atomic */
+static int g_devmem_ready;
 #define OOM_REPORTS 3
 static void oom_report(VkResult r) {
     static u32 reports;
-    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    DevMemBudget b[VK_MAX_MEMORY_HEAPS];
     const VkPhysicalDeviceMemoryProperties* mp;
     if (r != VK_ERROR_OUT_OF_DEVICE_MEMORY && r != VK_ERROR_OUT_OF_HOST_MEMORY) return;
-    if (!__atomic_load_n(&g_vma_ready, __ATOMIC_ACQUIRE) ||
+    if (!__atomic_load_n(&g_devmem_ready, __ATOMIC_ACQUIRE) ||
         __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) >= OOM_REPORTS)
         return;
-    vmaGetHeapBudgets(g_vk.vma, b);
-    vmaGetMemoryProperties(g_vk.vma, &mp);
+    vk_devmem_budgets(b);
+    mp = vk_devmem_props();
     for (u32 h = 0; h < mp->memoryHeapCount; h++)
-        LOG("vulkan: out of memory, heap %u%s: use %llu MiB, budget %llu MiB, VMA blocks %u (%llu MiB), allocations "
+        LOG("vulkan: out of memory, heap %u%s: use %llu MiB, budget %llu MiB, blocks %u (%llu MiB), allocations "
             "%u (%llu MiB), heap size %llu MiB\n",
             h, mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? " (device local)" : "",
-            (unsigned long long)(b[h].usage >> 20), (unsigned long long)(b[h].budget >> 20), b[h].statistics.blockCount,
-            (unsigned long long)(b[h].statistics.blockBytes >> 20), b[h].statistics.allocationCount,
-            (unsigned long long)(b[h].statistics.allocationBytes >> 20),
+            (unsigned long long)(b[h].usage >> 20), (unsigned long long)(b[h].budget >> 20), b[h].blocks,
+            (unsigned long long)(b[h].block_bytes >> 20), b[h].allocations,
+            (unsigned long long)(b[h].allocated_bytes >> 20),
             (unsigned long long)(mp->memoryHeaps[h].size >> 20));
     LOG("vulkan: out of memory with %u descriptor pools\n", vk_desc_pools());
 }
 
 /* Each heap and the descriptor pools in one part of a line, for a low memory warning from a thread that never calls
-   Vulkan. VMA's functions are safe on any thread (its own locks), and the budget it fetches again now and then comes
-   from vkGetPhysicalDeviceMemoryProperties2, which needs no external synchronization */
+   Vulkan. devmem.c's functions are safe on any thread (its own lock), and the budget it fetches again now and then
+   comes from vkGetPhysicalDeviceMemoryProperties2, which needs no external synchronization */
 u64 vk_memory_blocks(void) {
-    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    DevMemBudget b[VK_MAX_MEMORY_HEAPS];
     const VkPhysicalDeviceMemoryProperties* mp;
     u64 sum = 0;
-    if (!__atomic_load_n(&g_vma_ready, __ATOMIC_ACQUIRE)) return 0;
-    vmaGetHeapBudgets(g_vk.vma, b);
-    vmaGetMemoryProperties(g_vk.vma, &mp);
-    for (u32 h = 0; h < mp->memoryHeapCount; h++) sum += b[h].statistics.blockBytes;
+    if (!__atomic_load_n(&g_devmem_ready, __ATOMIC_ACQUIRE)) return 0;
+    vk_devmem_budgets(b);
+    mp = vk_devmem_props();
+    for (u32 h = 0; h < mp->memoryHeapCount; h++) sum += b[h].block_bytes;
     return sum;
 }
 void vk_memory_text(char* out, size_t size) {
-    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    DevMemBudget b[VK_MAX_MEMORY_HEAPS];
     const VkPhysicalDeviceMemoryProperties* mp;
     size_t n = 0;
     if (!size) return;
     out[0] = 0;
-    if (!__atomic_load_n(&g_vma_ready, __ATOMIC_ACQUIRE)) {
+    if (!__atomic_load_n(&g_devmem_ready, __ATOMIC_ACQUIRE)) {
         snprintf(out, size, "no GPU heaps yet, %u descriptor pools", vk_desc_pools());
         return;
     }
-    vmaGetHeapBudgets(g_vk.vma, b);
-    vmaGetMemoryProperties(g_vk.vma, &mp);
+    vk_devmem_budgets(b);
+    mp = vk_devmem_props();
     for (u32 h = 0; h < mp->memoryHeapCount && n < size; h++) {
-        int w = snprintf(out + n, size - n, "GPU heap %u%s use %llu of %llu MiB (VMA blocks %llu MiB), ", h,
+        int w = snprintf(out + n, size - n, "GPU heap %u%s use %llu of %llu MiB (blocks %llu MiB), ", h,
                          mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? " (device local)" : "",
                          (unsigned long long)(b[h].usage >> 20), (unsigned long long)(b[h].budget >> 20),
-                         (unsigned long long)(b[h].statistics.blockBytes >> 20));
+                         (unsigned long long)(b[h].block_bytes >> 20));
         if (w < 0) return;
         n += (size_t)w;
     }
@@ -403,13 +407,19 @@ static int coop_f16_f32(VkPhysicalDevice phys) {
     for (u32 i = 0; i < n; i++)
         props[i] = (VkCooperativeMatrixPropertiesKHR){.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
     vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(phys, &n, props);
-    for (u32 i = 0; i < n; i++)
-        if (props[i].MSize == 16 && props[i].NSize == 16 && props[i].KSize == 16 &&
-            props[i].AType == VK_COMPONENT_TYPE_FLOAT16_KHR && props[i].BType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
-            props[i].CType == VK_COMPONENT_TYPE_FLOAT32_KHR && props[i].ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
-            !props[i].saturatingAccumulation && props[i].scope == VK_SCOPE_SUBGROUP_KHR)
-            return 1;
-    return 0;
+    int tile = 0;
+    for (u32 i = 0; i < n; i++) {
+        int size = (int)props[i].MSize;
+        if ((size != 8 && size != 16) || props[i].NSize != props[i].MSize || props[i].KSize != props[i].MSize ||
+            props[i].AType != VK_COMPONENT_TYPE_FLOAT16_KHR || props[i].BType != VK_COMPONENT_TYPE_FLOAT16_KHR ||
+            props[i].CType != VK_COMPONENT_TYPE_FLOAT32_KHR ||
+            props[i].ResultType != VK_COMPONENT_TYPE_FLOAT32_KHR || props[i].saturatingAccumulation ||
+            props[i].scope != VK_SCOPE_SUBGROUP_KHR)
+            continue;
+        if (size == 16) return 16; /* one product an HMMA, where the driver has the wider tile */
+        tile = 8;
+    }
+    return tile;
 }
 
 /* An Ounce's mesh draws (render.c): VK_EXT_mesh_shader's mesh stage, and its task stage when the device has one. The
@@ -541,8 +551,9 @@ static void log_subgroups(u32 size, VkSubgroupFeatureFlags operations, VkShaderS
         (unsigned)operations, (unsigned)stages, with[0] ? with : "no",
         g_vk_subgroup_stages || !stages ? "" : ", as they need 32 lanes or more, ballot, shuffle and arithmetic");
     if (without[0])
-        LOG("vulkan: %s programs have no subgroup: a vertex, evaluation or geometry one among them that votes or "
-            "shuffles runs each invocation as lane 0 alone, and a control, fragment or compute one is not translated\n",
+        LOG("vulkan: %s programs have no subgroup: a vertex, evaluation, geometry or fragment one among them that "
+            "votes or shuffles runs each invocation as one lane alone (a fragment's reads within its quad through fine "
+            "derivatives), and a control or compute one is not translated\n",
             without);
 }
 
@@ -727,6 +738,8 @@ static int create_device(void) {
            and other textures in the device's sparse blocks */
         WANT(sparseResidencyImage2D);
         WANT(sparseResidencyImage3D);
+        /* and the blocks of such a texture that show the same guest memory bound to the same memory */
+        WANT(sparseResidencyAliased);
         /* the mirror of guest memory that the programs logging their writes read and write in place (mirror.c) */
         WANT(sparseResidencyBuffer);
     }
@@ -831,8 +844,8 @@ static int create_device(void) {
         g_vk.has_depth_range_unrestricted = snx_vk_extensions_has(&e, VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME);
         has_pipeline_robustness = snx_vk_extensions_has(&e, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
         has_robustness2 = snx_vk_extensions_has(&e, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
-        /* the driver's budget for each heap, the other processes' use taken out, for VMA: without it VMA took
-           80% of a heap's size as its budget, blind to what the desktop and other programs hold */
+        /* the driver's budget for each heap, the other processes' use taken out (devmem.c): without it the budget
+           is 80% of a heap's size, blind to what the desktop and other programs hold */
         g_vk.has_budget = snx_vk_extensions_has(&e, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
         /* the GPU's clock next to the client's, for the profiler's GPU track (gpuprof.c's calibration) */
         has_calibrated = snx_vk_extensions_has(&e, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
@@ -1341,15 +1354,47 @@ static int create_device(void) {
     /* shaders pick an indexed texture per invocation from an array (SNX_VKB_TEXARRAY) */
     g_shader_texture_arrays = q12.shaderSampledImageArrayNonUniformIndexing != 0;
     g_shader_float16 = q12.shaderFloat16 != 0;
+    g_shader_float64 = have.shaderFloat64 != 0;
     /* its f16 vectors are Float16's, so shaderFloat16 too */
     g_shader_mixed_dot = has_mixed_dot && qmixdot.shaderMixedFloatDotProductFloat16AccFloat32 && g_shader_float16;
     g_shader_float_atomic_add = has_atomic_float && qatomic_float.shaderBufferFloat32AtomicAdd;
-    /* its f16 matrices are Float16's, its modules the Vulkan memory model's, and its matrices span a subgroup of 32 */
-    g_shader_hmma_coop = has_coop && qcoop.cooperativeMatrix && g_shader_float16 && q12.vulkanMemoryModel &&
-                                 q12.vulkanMemoryModelDeviceScope && g_vk.has_cs_warp32 && coop_f16_f32(g_vk.phys)
-                             ? (int)g_vk.props.limits.maxComputeSharedMemorySize
-                             : 0;
+    if (shader_hmma_f16_unused())
+        LOG("vulkan: hmma_f16=1 asks for HMMA's sums in half floats; they stay in f32, as hmma_f16=0's: %s\n",
+            shader_hmma_f16_unused());
+    /* its f16 matrices are Float16's, its modules the Vulkan memory model's, and its matrices span a subgroup of 32.
+       The tile is the 8 or the 16 its vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR offers: Metal's
+       simdgroup_matrix is 8x8x8, so an SM86 HMMA is four products there and one where the tile is 16 */
+    /* A subgroup of 32 lanes, which is what an HMMA and its matrices span: has_cs_warp32 where the device lets a
+       pipeline ask for one, or where its subgroups are already 32 and compute has them (Metal's are, at every
+       stage). Gating the matrix unit on the request alone left every driver whose size is fixed without it */
+    int warp32 = g_vk.has_cs_warp32 || (subgroup.subgroupSize == 32 &&
+                                        (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0);
+    int coop_tile = has_coop && qcoop.cooperativeMatrix && g_shader_float16 && q12.vulkanMemoryModel &&
+                            q12.vulkanMemoryModelDeviceScope && warp32
+                        ? coop_f16_f32(g_vk.phys)
+                        : 0;
+    g_shader_hmma_coop = coop_tile ? (int)g_vk.props.limits.maxComputeSharedMemorySize : 0;
+    g_shader_hmma_coop_tile = coop_tile ? coop_tile : 16;
+    if (coop_tile)
+        LOG("vulkan: HMMA runs on the device's cooperative matrices, %dx%dx%d a product, shared memory's own "
+            "fragments after the program's\n",
+            coop_tile, coop_tile, coop_tile);
     f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_shader_hmma_coop != 0;
+    /* HMMA off the matrix unit: pairs of lanes on RADV with subgroups of 32 (an RX 6700 XT's HMMA bench ran 9.7%
+       faster), and A and B through shared memory where the driver loops for a shuffle whose index differs between
+       lanes, which no feature or property tells, so the table does */
+    int compute_subgroups = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+    shader_hmma_choose(compute_subgroups, p12.driverID == VK_DRIVER_ID_MESA_RADV && g_vk.has_cs_warp32,
+                       vk_ban("OpGroupNonUniformShuffle", compute_subgroups, ban_say) != 0,
+                       (int)g_vk.props.limits.maxComputeSharedMemorySize);
+    if (compute_subgroups) {
+        char way[256];
+        shader_hmma_way(way, sizeof way);
+        LOG("vulkan: an SM86 compute program's HMMA: %s\n", way);
+    }
+    /* shaderDenormPreserveFloat16 is the device's word that it can keep f16 subnormals: without it an SM86 program
+       packs those by hand (sm86_translate.c's pack_half), as Turnip on an Adreno 610 flushed them to zero */
+    g_shader_half_flush = !p12.shaderDenormPreserveFloat16;
     g_shader_half_rounding = 0;
     if (q12.shaderFloat16 && p12.shaderRoundingModeRTEFloat16 && p12.shaderDenormPreserveFloat16 &&
         p12.shaderSignedZeroInfNanPreserveFloat16 &&
@@ -1778,21 +1823,10 @@ static int create_device(void) {
     pm_lock_announce(&g_vklock, "vulkan"); /* the device's calls, every thread's */
     vkGetDeviceQueue(g_vk.dev, g_vk.gfx_family, 0, &g_vk.gfx);
     vkGetDeviceQueue(g_vk.dev, g_vk.compute_family, second ? 1 : 0, &g_vk.compute);
-    VmaVulkanFunctions vf = {.vkGetInstanceProcAddr = vkGetInstanceProcAddr,
-                             .vkGetDeviceProcAddr = vkGetDeviceProcAddr};
     vk_mem_init(sparse_queue);
-    /* VMA's blocks are 256 MiB at most already, and kept within a smaller cap */
-    VmaAllocatorCreateInfo vai = {.physicalDevice = g_vk.phys,
-                                  .device = g_vk.dev,
-                                  .instance = g_vk.instance,
-                                  .preferredLargeHeapBlockSize = g_vk.alloc_cap < (256ull << 20) ? g_vk.alloc_cap : 0,
-                                  .vulkanApiVersion = core13 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2,
-                                  .pVulkanFunctions = &vf,
-                                  .flags = g_vk.has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
-    if (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)
-        vai.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
-    if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
-    __atomic_store_n(&g_vma_ready, 1, __ATOMIC_RELEASE);
+    /* the renderer's own allocator (devmem.c): its blocks are 64 MiB at most, and no more than the cap */
+    if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)) return 0;
+    __atomic_store_n(&g_devmem_ready, 1, __ATOMIC_RELEASE);
     if (g_vk.has_descriptor_heaps && !vk_descriptor_heaps_init(&g_vk.descriptor_heap_props)) {
         g_vk.has_descriptor_heaps = 0;
         g_vk.has_descriptor_heap_support = 0;

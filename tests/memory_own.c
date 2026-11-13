@@ -147,6 +147,17 @@ static void resolve(u64 addr, u64 size) {
     __atomic_add_fetch(&g_resolves, 1, __ATOMIC_RELAXED);
     if (g_resolve_res) CHECK(own_begin(g_resolve_lo, g_resolve_size, g_resolve_res, 0) == 0);
 }
+/* the producer's answer before owners land (OwnHooks' refresh): g_refresh_res published over
+   [g_refresh_lo, + g_refresh_size), or nothing when it is NULL */
+static int g_refreshes; /* atomic */
+static void* g_refresh_res;
+static u64 g_refresh_lo, g_refresh_size;
+static void refresh(u64 addr, u64 size) {
+    (void)addr;
+    (void)size;
+    __atomic_add_fetch(&g_refreshes, 1, __ATOMIC_RELAXED);
+    if (g_refresh_res) CHECK(own_begin(g_refresh_lo, g_refresh_size, g_refresh_res, 0) == 0);
+}
 /* the producer's lock: recursive, as the renderer's */
 static pthread_mutex_t g_producer;
 static void producer_lock(void) { pthread_mutex_lock(&g_producer); }
@@ -744,7 +755,43 @@ static void test_let_go_watched(void) {
 /* a watch: trapped pages that no resource holds. own_lookup skips it, own_stage reads its CPU bytes (through the
    mirror, or in place the shadows that own_watch took), own_trapped and own_hash see it. The first access asks the
    producer once (resolve), and lands what it published there. own_drop and own_unwatch open its pages with no resolve,
-   and a thread that holds the producer's lock drops it with no resolve and goes on. A watch never cuts an owner */
+   and a thread that holds the producer's lock drops it with no resolve, goes on and leaves its bytes owed
+   (own_owed_take). A watch never cuts an owner */
+/* An owner whose producer holds newer bytes for its span (a render target drawn again since its publish): the CPU's
+   access asks the producer once before the owner lands, the producer publishes over it, and the access lands that.
+   With nothing newer the owner lands as it is. A thread that holds the producer's lock is not asked */
+static void test_refresh(void) {
+    u64 a = region(R0 + 0xF00000, 0x10000);
+    Res *r = res_new(0x2000, 0xB0), *newer = res_new(0x2000, 0xC0), *plain = res_new(0x1000, 0xD0);
+    int asked = __atomic_load_n(&g_refreshes, __ATOMIC_ACQUIRE);
+    CHECK(own_begin(a + 0x1000, 0x2000, r, 0) == 0);
+    g_refresh_res = newer;
+    g_refresh_lo = a + 0x1000;
+    g_refresh_size = 0x2000;
+    CHECK(GP(a)[0x1800] == (u8)(0xC0 + 0x800)); /* the newer bytes, not the owner's */
+    g_refresh_res = NULL;
+    CHECK(GP(a)[0x2FFF] == (u8)(0xC0 + 0x1FFF) && GP(a)[0x0FFF] == (u8)(0x11 + 0x0FFF));
+    CHECK(refs(r) == 0 && refs(newer) == 0 && !own_trapped(a, 0x10000));
+    CHECK(__atomic_load_n(&g_refreshes, __ATOMIC_ACQUIRE) == asked + 1);
+    /* nothing newer: asked once, and the owner's bytes land */
+    CHECK(own_begin(a + 0x5000, 0x1000, plain, 0) == 0);
+    CHECK(GP(a)[0x5010] == (u8)(0xD0 + 0x10) && refs(plain) == 0);
+    CHECK(__atomic_load_n(&g_refreshes, __ATOMIC_ACQUIRE) == asked + 2);
+    /* the producer's lock holder is not asked */
+    res_free(plain);
+    plain = res_new(0x1000, 0xE0);
+    CHECK(own_begin(a + 0x7000, 0x1000, plain, 0) == 0);
+    g_busy_tid = plat_tid();
+    own_acquire(a + 0x7000, 0x1000);
+    g_busy_tid = 0;
+    CHECK(GP(a)[0x7010] == (u8)(0xE0 + 0x10));
+    CHECK(refs(plain) == 0 && __atomic_load_n(&g_refreshes, __ATOMIC_ACQUIRE) == asked + 2);
+    CHECK(mem_unmap(a, 0x10000) == 0);
+    res_free(r);
+    res_free(newer);
+    res_free(plain);
+    puts("memory_own: an owner's landing asks its producer for newer bytes first, once");
+}
 static void test_watch(void) {
     u64 a = region(R0 + 0xC00000, 0x10000), h = 0;
     Res* r = res_new(0x2000, 0xA0);
@@ -754,6 +801,11 @@ static void test_watch(void) {
     CHECK(own_watch(a + 0x1100, 0x2000) == 0);
     CHECK(own_lookup(a, 0x10000, o, 4) == 0 && own_any());
     CHECK(own_trapped(a + 0x1000, 1) && own_trapped(a + 0x30FF, 1) && !own_trapped(a + 0x4000, 0x1000));
+    /* the first trapped byte (own_first_trapped, where vk_buf_get_window_input ends a range): the watch's first page,
+       the range's own start on a trapped page, and the range's end where none is */
+    CHECK(own_first_trapped(a, 0x10000) == a + 0x1000 && own_first_trapped(a + 0x800, 0x1000) == a + 0x1000);
+    CHECK(own_first_trapped(a + 0x1800, 0x100) == a + 0x1800);
+    CHECK(own_first_trapped(a, 0x800) == a + 0x800 && own_first_trapped(a + 0x4000, 0x1000) == a + 0x5000);
     CHECK(own_watched(a + 0x1100, 0x2000) && !own_watched(a + 0x1000, 0x2100) && !own_watched(a + 0x8000, 4));
     CHECK(own_hash(a, 0x10000, &h) == 1 && h != 0);
     CHECK(own_stage(a, sizeof buf, buf, o, 4) == 0);
@@ -779,18 +831,24 @@ static void test_watch(void) {
     CHECK(GP(a)[0x7010] == (u8)(0x11 + 0x7010));
     refs(r); /* the landing's thread done: it holds the producer's lock until then */
     CHECK(g_resolves == resolves + 2 && !own_trapped(a + 0x7000, 0x1000));
-    /* the producer's lock holder: its own_acquire and its own read drop the watch, with no resolve and no fatal */
+    /* the producer's lock holder: its own_acquire and its own read drop the watch, with no resolve and no fatal. Each
+       leaves the watch's bytes owed, for the producer to watch again when the holder lets go of its lock */
+    u64 owed = 0, owed_size = 0;
     CHECK(own_watch(a + 0x9000, 0x1000) == 0);
     g_busy_tid = plat_tid();
     own_acquire(a + 0x9000, 0x10);
     CHECK(!own_trapped(a + 0x9000, 0x1000));
+    CHECK(own_owed_take(&owed, &owed_size) && owed == a + 0x9000 && owed_size == 0x1000);
     CHECK(own_watch(a + 0x9000, 0x1000) == 0);
     CHECK(GP(a)[0x9010] == (u8)(0x11 + 0x9010));
     g_busy_tid = 0;
     CHECK(!own_trapped(a + 0x9000, 0x1000) && g_resolves == resolves + 2);
+    CHECK(own_owed_take(&owed, &owed_size) && owed == a + 0x9000 && owed_size == 0x1000);
+    CHECK(!own_owed_take(&owed, &owed_size));
     /* a watch and an owner on one page: the watch goes into the gap before the owner, and leaves it whole. A read of
        the owner's page answers the watch first (whole, its other page too), then lands the owner */
     CHECK(own_begin(a + 0xB400, 0x800, r, 0) == 0);
+    CHECK(own_first_trapped(a + 0xA000, 0x2000) == a + 0xB000); /* an owner's page */
     CHECK(own_watch(a + 0xA800, 0x1400) == 0);
     CHECK(own_lookup(a + 0xA000, 0x2000, o, 4) == 1 && o[0].addr == a + 0xB400 && o[0].size == 0x800);
     CHECK(own_watched(a + 0xA800, 0xC00) && !own_watched(a + 0xA800, 0xD00) && !own_watched(a + 0xBC00, 0x200));
@@ -811,6 +869,36 @@ static void test_watch(void) {
     CHECK(own_watched(a + 0xD000, 0x800) && own_watched(a + 0xE000, 0x1000));
     CHECK(mem_unmap(a, 0x10000) == 0);
     CHECK(refs(r) == 0 && g_resolves == resolves + 3);
+    res_free(r);
+}
+
+/* watches past the end of a lookup, and one across its end, with an owner after them: the walk over watches stops at
+   the end of the range (next_real_nl), and the results are those of a walk over every entry. A lookup or a stage that
+   ends before the owner finds no owner; one that reaches it finds it, after the watches before it */
+static void test_watch_bound(void) {
+    u64 a = region(R0 + 0xF00000, 0x40000);
+    Res* r = res_new(0x1000, 0x50);
+    OwnRange o[4];
+    u8 buf[0x8000];
+    CHECK(own_watch(a + 0x7C00, 0x800) == 0); /* across the end of [a, a + 0x8000) */
+    for (u64 k = 0; k < 32; k++) CHECK(own_watch(a + 0x10000 + k * 0x1000, 0x800) == 0);
+    CHECK(own_begin(a + 0x38000, 0x1000, r, 0) == 0);
+    CHECK(own_lookup(a, 0x8000, o, 4) == 0);
+    CHECK(own_lookup(a + 0x10000, 0x20000, o, 4) == 0);
+    CHECK(own_lookup(a, 0x40000, o, 4) == 1 && o[0].addr == a + 0x38000 && o[0].size == 0x1000 && o[0].res == r &&
+          o[0].res_off == 0);
+    CHECK(own_lookup(a + 0x2F000, 0xA000, o, 4) == 1 && o[0].addr == a + 0x38000);
+    CHECK(own_lookup(a + 0x38800, 0x10, o, 4) == 1 && o[0].addr == a + 0x38800 && o[0].res_off == 0x800);
+    /* a stage of watched pages reads the CPU's bytes; a stage over the owner leaves the owner's part to the caller */
+    CHECK(own_stage(a, 0x8000, buf, o, 4) == 0);
+    for (u32 i = 0; i < 0x8000; i++) CHECK(buf[i] == (u8)(0x11 + i));
+    CHECK(own_stage(a + 0x2F000, 0x8000, buf, o, 4) == 0);
+    for (u32 i = 0; i < 0x8000; i++) CHECK(buf[i] == (u8)(0x11 + 0x2F000 + i));
+    CHECK(own_stage(a + 0x37000, 0x3000, buf, o, 4) == 1 && o[0].addr == a + 0x38000 && o[0].size == 0x1000);
+    for (u32 i = 0; i < 0x1000; i++)
+        CHECK(buf[i] == (u8)(0x11 + 0x37000 + i) && buf[0x2000 + i] == (u8)(0x11 + 0x39000 + i));
+    CHECK(mem_unmap(a, 0x40000) == 0);
+    CHECK(refs(r) == 0);
     res_free(r);
 }
 
@@ -967,7 +1055,8 @@ int main(int argc, char** argv) {
                   .busy_tid = busy_tid,
                   .lock = producer_lock,
                   .unlock = producer_unlock,
-                  .resolve = resolve};
+                  .resolve = resolve,
+                  .refresh = refresh};
     pthread_mutexattr_t recursive;
     pthread_mutexattr_init(&recursive);
     pthread_mutexattr_settype(&recursive, PTHREAD_MUTEX_RECURSIVE);
@@ -1039,7 +1128,9 @@ int main(int argc, char** argv) {
     test_busy_unowned();
     test_scan_owned();
     test_let_go_watched();
+    test_refresh();
     test_watch();
+    test_watch_bound();
     test_watch_many();
     test_rearm();
     test_stress();

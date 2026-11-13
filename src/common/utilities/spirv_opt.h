@@ -31,11 +31,28 @@ size_t spv_opt_dead_code(uint32_t* module, size_t words);
 
    Before an instruction is looked up it is folded, when it makes a 32-bit integer or a boolean: on constants (no
    specialization constant) to their result, and to an operand or a constant when one operand decides (x + 0, x * 1,
-   x & 0, x - x, true && x); of any type, a select on a constant or of one value twice, and a bitcast to its
-   operand's type or back from a bitcast, are that operand. An operand stands for the instruction only with the
+   x & 0, x - x, true && x); a difference of two terms of one value, each y + k, k + y, y - k or y as the instruction
+   that makes it reads, is the difference of their constants ((y + k1) - (y + k2) is k1 - k2); an && or || of two
+   tests against zero where one implies the other is the one implying it (&&) or implied (||): s != 0 implies t != 0
+   when s is t, an & of t, t an | of s, or s an & and t an | of one operand ((x & m) != 0 implies x != 0), and s == 0
+   implies t == 0 the other way round; of any type, a select on a constant or of one value twice, and a bitcast to
+   its operand's type or back from a bitcast, are that operand. An operand stands for the instruction only with the
    instruction's type. A constant the module does not declare is declared before the first function under the
    instruction's own id, in the room the instruction left: the module never grows. Float arithmetic, divisions,
    shifts by 32 or more and decorated instructions are not folded.
+
+   The same walk keeps which bits of each 32-bit integer value are known 0 or 1, from the constants through the
+   bitwise instructions, the sums, differences, negations and products, the shifts and fields by constant amounts,
+   the selects and the bitcasts: an instruction whose result's bits are all known is that constant, an integer
+   comparison the operands' known bits decide (an operand's range lying past the other's, or an operand compared with
+   itself) is true or false, and a & b, a | b and a field from bit 0 that the known bits leave equal to a are a.
+
+   And it keeps, of a 32-bit integer or a boolean that is a function of one value of few possible values (a boolean, an
+   integer with one or two bits not known), its value for each of them (spirv-opt has no such rule; ucas's map rule): an
+   instruction of constants and of such values of one leaf is evaluated for each, and is that constant when they all
+   give one (0 > -m is false for a mask m = c ? ~0 : 0), or its operand, or the leaf, when they give that one's values
+   (0 > m ? -m : m is -m). The bits its values share are known bits. Shifts, fields, clamps and the absolute value
+   that give one of the values no value leave the instruction as it is.
 
    A result an instruction of unknown layout may name (any of its words) neither goes nor stands for another, nor
    does one with a decoration that has operands. A module with a 64-bit integer type and an OpSwitch is left as it is. Run

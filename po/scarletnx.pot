@@ -1529,6 +1529,50 @@ msgstr ""
 msgid "...OK"
 msgstr ""
 
+#: src/gui/main.c src/gui/steps.c
+msgid "PROGRAM"
+msgstr ""
+
+#: src/gui/main.c
+msgid "STARTED BY"
+msgstr ""
+
+#: src/gui/main.c
+msgid "USER"
+msgstr ""
+
+#: src/gui/main.c
+msgid "VERSION"
+msgstr ""
+
+#: src/gui/main.c
+msgid "DLC"
+msgstr ""
+
+#: src/gui/main.c
+msgid "HANDED OVER"
+msgstr ""
+
+#: src/gui/main.c src/gui/steps.c
+msgid "GPU"
+msgstr ""
+
+#: src/gui/main.c
+msgid "TITLE ID"
+msgstr ""
+
+#: src/gui/main.c src/gui/steps.c
+msgid "BUILD"
+msgstr ""
+
+#: src/gui/main.c src/gui/steps.c
+msgid "RECOMPILE"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Program"
+msgstr ""
+
 #: src/gui/main.c
 msgid "Aborting..."
 msgstr ""
@@ -2271,6 +2315,10 @@ msgid "Runs a GBA ROM or MultiBoot ROM on the emulated AGB board"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Recompiles a DS card image, then runs it"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Runs an Android app's .apk, .xapk or .apks"
 msgstr ""
 
@@ -2292,6 +2340,10 @@ msgid "In use: %s"
 msgstr ""
 
 #: src/gui/main.c
+msgid "  (file not found)"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Show More"
 msgstr ""
 
@@ -2305,6 +2357,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "GBA game, ready to run"
+msgstr ""
+
+#: src/gui/main.c
+msgid "NDS game, ready to run"
 msgstr ""
 
 #: src/gui/main.c
@@ -2355,6 +2411,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "GBA ROM, played with scarletnx-agb"
+msgstr ""
+
+#: src/gui/main.c
+msgid "NDS ROM, played with scarletnx-nds"
 msgstr ""
 
 #: src/gui/main.c
@@ -2432,6 +2492,11 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Made with: O%c, AOT %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not found: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -3826,6 +3891,14 @@ msgid "Android says %s (%s%s%s)"
 msgstr ""
 
 #: src/gui/main.c
+msgid "none recorded by Android"
+msgstr ""
+
+#: src/gui/main.c
+msgid "none recorded"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "PSS %s, RSS %s"
 msgstr ""
@@ -3950,16 +4023,16 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Continue: %s holds no run of edenprobe left before its summary"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "The setup was not kept, so it asks again: %s"
 msgstr ""
 
 #: src/gui/main.c
 msgid "no folder for setup.ini"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Continue: %s holds no run of edenprobe left before its summary"
 msgstr ""
 
 #: src/gui/main.c
@@ -4342,6 +4415,10 @@ msgid "Library folders"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Removed from Games"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Closing ScarletNX"
 msgstr ""
 
@@ -4613,6 +4690,14 @@ msgid "Use"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Locate..."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Remove from Games"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"
 msgstr ""
@@ -4640,6 +4725,30 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "Mods"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Removed games not kept: %s could not be written (%s)."
+msgstr ""
+
+#: src/gui/main.c
+msgid "the dump or folder its RomFS is extracted from, which its settings do not name"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Locate...: the folder picker could not open: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Locate...: the file picker could not open: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is off Games: %s is not found. Its folder %s stays, and Games lists it again once that file is back."
 msgstr ""
 
 #: src/gui/main.c
@@ -5303,6 +5412,110 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s could not be taken away (%s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s could not be linked to %s (%s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s/app cannot be named"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, hashed %016llX"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "the ROM hashed %016llX"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s (%s), hashed %016llX"
+msgstr ""
+
+#: src/gui/main.c
+msgid "its sce_sys/param.sfo names no TITLE_ID"
+msgstr ""
+
+#: src/gui/main.c
+msgid "it has no exefs/main.npdm"
+msgstr ""
+
+#: src/gui/main.c
+msgid "the driver said nothing of its title"
+msgstr ""
+
+#: src/gui/main.c
+msgid "the driver could not be asked"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Locate...: no folder was picked."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Locate...: no file was picked."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no extracted game (exefs/ with its main): %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no dumped Vita game (sce_sys/param.sfo): %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no GBA ROM (.gba): %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no 3DS game (.cia, .cci, .3ds, .cxi): %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no NSP or XCI: %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Locate...: reading the title of %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not taken: %s is %s, and %s was made from %s; it keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not taken: the title of %s does not read (%s); %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not kept: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s plays from %s now."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s%s %s is not there"
 msgstr ""
 
@@ -5480,23 +5693,11 @@ msgid "EXTRACT"
 msgstr ""
 
 #: src/gui/steps.c
-msgid "RECOMPILE"
-msgstr ""
-
-#: src/gui/steps.c
-msgid "BUILD"
-msgstr ""
-
-#: src/gui/steps.c
 msgid "LAUNCH"
 msgstr ""
 
 #: src/gui/steps.c
 msgid "READY"
-msgstr ""
-
-#: src/gui/steps.c
-msgid "GPU"
 msgstr ""
 
 #: src/gui/steps.c
@@ -5845,6 +6046,31 @@ msgstr ""
 msgid "No themes/%s/theme.ini could be read: it shows %s"
 msgstr ""
 
+#: src/gui/title.c
+#, c-format
+msgid "its z3ds stream does not decompress: %s"
+msgstr ""
+
+#: src/gui/title.c
+msgid "its z3ds header or stream does not read"
+msgstr ""
+
+#: src/gui/title.c
+msgid "a z3ds file, which this build does not decompress"
+msgstr ""
+
+#: src/gui/title.c
+msgid "it is no CIA, cartridge image or NCCH, alone or in a bundle"
+msgstr ""
+
+#: src/gui/title.c
+msgid "it does not read"
+msgstr ""
+
+#: src/gui/title.c
+msgid "it is too short to be a GBA ROM"
+msgstr ""
+
 #: src/gui/ui.txt
 msgid "Load Switch NSP/XCI/NRO"
 msgstr ""
@@ -5863,6 +6089,10 @@ msgstr ""
 
 #: src/gui/ui.txt
 msgid "Load GBA/MultiBoot ROM"
+msgstr ""
+
+#: src/gui/ui.txt
+msgid "Load NDS ROM"
 msgstr ""
 
 #: src/gui/ui.txt
@@ -6367,6 +6597,18 @@ msgstr ""
 
 #: src/nx/runtime/settings.txt
 msgid "The picture a GBA game made from a ROM shows in Games. None = Wimsy, as a game with no icon. Box art = its box from libretro-thumbnails, downloaded as the game is made: the ROM's CRC-32 names the game in libretro-database's No-Intro list, and the box under that name goes in the game's folder as icon.png. A ROM the list does not have, or a game with no box there, keeps Wimsy and its row says which name was looked for"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "GBA colors"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "Colors"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "The colors a GBA game shows. GBA screen = as the original GBA's unlit screen showed them: the game's colors, painted strong for that screen, come out softer and darker (near's color emulation article, Talarubi's formula). Raw = as the game writes them, the same as mGBA without a shader"
 msgstr ""
 
 #: src/nx/runtime/settings.txt

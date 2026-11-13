@@ -60,7 +60,7 @@ uint et_dist(uint i, int r, int g, int b) {
 /* texel i's place in the index bits: ETC2 numbers its texels down the columns */
 uint et_pos(uint i) { return (i & 3u) * 4u + (i >> 2); }
 /* the subblock of texel i: side by side (flip 0), or one above the other */
-uint et_sub(uint flip, uint i) { return flip != 0u ? uint(i >= 8u) : uint((i & 3u) >= 2u); }
+uint et_sub(uint flip, uint i) { return (i >> (flip != 0u ? 3u : 1u)) & 1u; } /* i is below 16 */
 /* index k (0 to 3) of texel i in the index bits */
 uint et_index_bits(uint i, uint k) {
     uint p = et_pos(i);
@@ -377,15 +377,17 @@ void et_planar_build() {
         hz[ch] = q1;
         vt[ch] = q2;
         for (int k = 0; k < 4 * 27; k++) {
-            if (k % 27 == 0 && k != 0) {
+            if (k == 27 || k == 54 || k == 81) { /* a pass of 27 is over */
                 /* the pass's best in the middle: no level nearby is better */
                 if (o[ch] == q0 && hz[ch] == q1 && vt[ch] == q2) break;
                 q0 = o[ch];
                 q1 = hz[ch];
                 q2 = vt[ch];
             }
-            int qo = clamp(q0 + k % 3 - 1, 0, top), qh = clamp(q1 + (k / 3) % 3 - 1, 0, top);
-            int qv = clamp(q2 + (k / 9) % 3 - 1, 0, top);
+            /* k's three digits in base 3, unsigned: k is never negative, and a signed remainder costs more */
+            uint uk = uint(k);
+            int qo = clamp(q0 + int(uk % 3u) - 1, 0, top), qh = clamp(q1 + int((uk / 3u) % 3u) - 1, 0, top);
+            int qv = clamp(q2 + int((uk / 9u) % 3u) - 1, 0, top);
             int eo = ch == 1u ? tc_ext7(uint(qo)) : tc_ext6(uint(qo));
             int eh = ch == 1u ? tc_ext7(uint(qh)) : tc_ext6(uint(qh));
             int ev = ch == 1u ? tc_ext7(uint(qv)) : tc_ext6(uint(qv));
@@ -491,8 +493,12 @@ uint ex_index(uint kind, int base, int m, uint t, int v) {
     }
     return bk;
 }
-/* n / d rounded to nearest, halves away from 0 (d > 0) */
-int ex_round(int n, int d) { return n >= 0 ? (n + d / 2) / d : -((d / 2 - n) / d); }
+/* n / d rounded to nearest, halves away from 0 (d > 0): either dividend is positive or 0, so the divisions are
+   unsigned ones */
+int ex_round(int n, int d) {
+    uint h = uint(d) >> 1, ud = uint(d);
+    return n >= 0 ? int((uint(n) + h) / ud) : -int((h + uint(-n)) / ud);
+}
 /* tx_v as an EAC block of kind into tx_hi and tx_lo */
 void ex_encode(uint kind) {
     int lo = tx_v[0], hi = tx_v[0];

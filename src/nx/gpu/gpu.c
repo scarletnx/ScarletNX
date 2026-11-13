@@ -177,6 +177,14 @@ u32 gmem_r32(u64 gva) {
     gmem_read(gva, b, 4);
     return snx_ld_le32(b);
 }
+const u8* gmem_cpu_bytes(u64 gva, u64 size) {
+    u64 cpu = 0, owners = 0;
+    if ((__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) || g_cs_any || g_gfx_any || g_gfx_img_any || g_uma_any) &&
+        mem_pending(gva, size))
+        return NULL;
+    if (!size || gmmu_run(gva, size, &cpu) != size || own_hash(cpu, size, &owners)) return NULL;
+    return GP(cpu);
+}
 void gmem_w32(u64 gva, u32 v) {
     u8 b[4];
     snx_st_le32(b, v);
@@ -401,8 +409,10 @@ void i2m_data(GpuChannel* ch, u32 v) {
 /* the 3D state a channel starts from: zero, but for what games expect without setting it (Eden's
    InitializeRegisterDefaults), and ScarletNX's own: color masks enabled (two games never write them), sRGB writes
    on (framebuffer_srgb, else sRGB targets come out too dark), the render enable TRUE and its override
-   USE_RENDER_ENABLE (deko3d never writes it). The registers and their values are Eden's Maxwell3D::Regs fields
-   and enums (maxwell_3d_regs.h) */
+   USE_RENDER_ENABLE (deko3d never writes it), the tessellation levels 1, as the NVN path starts them (a patch
+   drawn without a control program before any level is set is not culled), and every sample in the sample masks, as
+   deko3d starts them (a draw before any mask is set writes them all). The registers and their values are Eden's
+   Maxwell3D::Regs fields and enums (maxwell_3d_regs.h) */
 static void reset_3d(u32* r) {
     static const float one = 1.0f;
     u32 i, f1;
@@ -443,6 +453,8 @@ static void reset_3d(u32* r) {
     r[MAXWELL3D_GL_FRONT_FACE] = MAXWELL3D_FRONT_FACE_CLOCKWISE;
     r[MAXWELL3D_GL_CULL_FACE] = MAXWELL3D_CULL_FACE_BACK;
     r[MAXWELL3D_POINT_SIZE] = f1;
+    for (i = 0; i < 6; i++) r[MAXWELL3D_TESS_LEVELS + i] = f1;
+    for (i = 0; i < 4; i++) r[MAXWELL3D_SAMPLE_MASK + i] = 0xFFFF;
     for (i = 0; i < MAXWELL3D_NUM_VERTEX_ATTRIBUTES; i++)
         r[MAXWELL3D_VERTEX_ATTRIB_FORMAT + i] = MAXWELL3D_VERTEX_ATTRIB_CONSTANT; /* constant until set */
     r[MAXWELL3D_RASTERIZE_ENABLE] = 1;

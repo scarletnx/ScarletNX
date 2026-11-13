@@ -35,6 +35,8 @@ bool gui_is_vpk(const char* name) { return suffix(name, ".vpk"); }
 /* a GBA ROM: a cartridge's image, or a MultiBoot ROM (.mb), the program the console receives through the link cable */
 bool gui_is_gba(const char* name) { return suffix(name, ".gba") || gui_is_multiboot(name); }
 bool gui_is_multiboot(const char* name) { return suffix(name, ".mb"); }
+/* a DS card's image */
+bool gui_is_nds(const char* name) { return suffix(name, ".nds"); }
 /* an Android app, one APK or a bundle of split APKs (an XAPK, an APKS) that scarletnx-android installs */
 bool gui_is_apk(const char* name) { return suffix(name, ".apk") || suffix(name, ".xapk") || suffix(name, ".apks"); }
 bool gui_is_dump(const char* name) {
@@ -108,7 +110,7 @@ static bool playable(const char* directory, char* name, int kinds) {
     char* path;
     bool listed;
     if (name[0] == '.') return false;
-    if (gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name) || gui_is_apk(name)) {
+    if (gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name) || gui_is_nds(name) || gui_is_apk(name)) {
         if (!(kinds & GUI_GAMES_CIA)) return false;
         path = snx_path_join(directory, name);
         listed = path && snx_is_file(path);
@@ -293,6 +295,93 @@ char* gui_game_shown(const char* path) {
     shown = shown_name(path, leaf);
     free(folder);
     return shown;
+}
+/* a Switch game's file to play from when it is not there, owned: source= in its .ini, or an older version's link
+   <name>.source by where it points, naming a dump or an extracted game's folder that it reads in place, its ExeFS not
+   extracted into its <name>_data (driver.c's drop_extraction), or whose RomFS there is not whole (snx_romfs_state),
+   which the driver extracts again from it: "" for such a RomFS when no file is named; else NULL */
+static char* switch_missing(const char* folder, const char* name) {
+    char *source, *target, link[SNX_PATH_SIZE], exefs[SNX_PATH_SIZE];
+    int recorded = 0;
+    SnxRomfs romfs;
+    if (snx_path_format(link, sizeof link, "%s/%s.source", folder, name) ||
+        snx_path_format(exefs, sizeof exefs, "%s/%s_data/exefs", folder, name) ||
+        !(source = snx_game_source(folder, name, &recorded)))
+        return NULL;
+    if (recorded && !strcmp(source, link) && (target = snx_link_target(link)) != NULL) {
+        free(source);
+        source = target;
+    }
+    if (recorded && (snx_is_file(source) || snx_extracted_game(source))) { /* there */
+        free(source);
+        return NULL;
+    }
+    romfs = snx_romfs_state(folder, name);
+    if (!recorded || (snx_is_dir(exefs) && romfs == SNX_ROMFS_WHOLE)) { /* none named, or played from its extraction */
+        free(source);
+        return recorded || romfs == SNX_ROMFS_WHOLE ? NULL : snx_strdup("");
+    }
+    return source;
+}
+/* a GBA game's ROM, which its driver reads at every run, from source= in the .ini of its folder (src/agb/runtime),
+   owned when it is not there; else NULL */
+static char* gba_missing(const char* folder, const char* name) {
+    char* ini = snx_format("%s/%s.ini", folder, name);
+    char* rom = ini ? snx_ini_value(ini, "source") : NULL;
+    free(ini);
+    if (rom && snx_is_file(rom)) {
+        free(rom);
+        return NULL;
+    }
+    return rom;
+}
+/* a 3DS game's file, as its driver plays the game in its folder (src/3ds/runtime/main.c's play_folder), owned when
+   it is not there: source= in the .ini of its folder, with no extraction in the folder (exheader.bin) and no copy of it
+   decrypted in the driver's folder of them, <work>/3ds/<its name>.decrypted.<its extension>, which the driver reads
+   in its place; else NULL */
+static char* ctr_missing(const char* folder, const char* name, const char* work) {
+    char *ini = snx_format("%s/%s.ini", folder, name), *source = ini ? snx_ini_value(ini, "source") : NULL;
+    char *dumped = source ? snx_dump_name(source) : NULL, exheader[SNX_PATH_SIZE], copy[SNX_PATH_SIZE];
+    const char* dot = source ? strrchr(source, '.') : NULL;
+    bool there = !source || snx_is_file(source) ||
+                 (!snx_path_format(exheader, sizeof exheader, "%s/exheader.bin", folder) && snx_is_file(exheader)) ||
+                 (work && dumped &&
+                  !snx_path_format(copy, sizeof copy, "%s/3ds/%s.decrypted.%s", work, dumped, dot ? dot + 1 : "game") &&
+                  snx_is_file(copy));
+    free(dumped);
+    free(ini);
+    if (there) {
+        free(source);
+        return NULL;
+    }
+    return source;
+}
+/* a Vita game made from a dumped game's folder, which the driver links as its app/ (src/vita/runtime/main.c's
+   link_dump): where that link points, owned, when it is gone; else NULL, as for a game extracted from a VPK, which keeps
+   its app/ */
+static char* vita_missing(const char* folder) {
+    char app[SNX_PATH_SIZE], *target;
+    if (snx_path_format(app, sizeof app, "%s/app", folder) || !snx_is_link(app) || snx_is_dir(app)) return NULL;
+    target = snx_link_target(app);
+    return target ? target : snx_strdup(app);
+}
+bool gui_game_source_missing(const char* path, const char* work, char* out, size_t size) {
+    char *folder, *name, *file = NULL;
+    if (out && size) out[0] = 0;
+    if (!gui_game_program(path) || !(folder = snx_dirname(path))) return false;
+    name = snx_strdup(snx_path_leaf(folder));
+    switch (snx_game_system(folder, name)) {
+        case SNX_SYSTEM_SWITCH: file = switch_missing(folder, name); break;
+        case SNX_SYSTEM_GBA:
+        case SNX_SYSTEM_NDS: file = gba_missing(folder, name); break; /* a card image, named as a ROM is */
+        case SNX_SYSTEM_3DS: file = ctr_missing(folder, name, work); break;
+        case SNX_SYSTEM_VITA: file = vita_missing(folder); break;
+    }
+    if (file && out && size) snprintf(out, size, "%s", file);
+    free(file);
+    free(name);
+    free(folder);
+    return file != NULL;
 }
 char* gui_game_icon(const char* path) {
     char *folder, icon[SNX_PATH_SIZE], *found = NULL;
@@ -678,7 +767,7 @@ bool gui_games_add_deep(GuiGames* games, const char* directory, int kinds, int d
 bool gui_games_heading(const GuiGames* games, size_t i) { return i < games->count && !games->paths[i]; }
 bool gui_games_dumps_group(const GuiGames* games, size_t i) {
     return gui_is_dump(games->names[i]) || gui_is_cia(games->names[i]) || gui_is_vpk(games->names[i]) ||
-           gui_is_gba(games->names[i]) || gui_is_apk(games->names[i]);
+           gui_is_gba(games->names[i]) || gui_is_nds(games->names[i]) || gui_is_apk(games->names[i]);
 }
 bool gui_dump_title(const char* path, GuiDumpTitle* title) {
     size_t size = 0;
@@ -837,7 +926,10 @@ bool gui_games_group(GuiGames* games, const GuiGroups* groups) {
             e->group = -1;
             continue;
         }
-        if (e->file == SIZE_MAX && !gui_games_dumps_group(games, e->row)) continue; /* ready: 0 */
+        if (e->file == SIZE_MAX && !gui_games_dumps_group(games, e->row)) { /* ready: 0 */
+            if (groups->removed && groups->removed(path, groups->user)) e->group = -1;
+            continue;
+        }
         e->group = !groups->dumps || (groups->made && groups->made(path, groups->user)) ? -1 : 1;
         if (e->group < 0 || !gui_is_dump(snx_path_leaf(path)) || !groups->titled ||
             !groups->titled(path, groups->user, &e->title)) {

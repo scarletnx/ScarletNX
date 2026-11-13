@@ -15,6 +15,7 @@ static int check_unmapped_tail(void) {
     memset(GP(cpu), 0x11, 4096);
     vk_lock();
     vk_finish();
+    results_copied(cpu, 0x1000); /* a result that lands */
     VkBuffer out, buf;
     u64 at, bat;
     CHECK(vk_buf_copy_writable(gva + off, len, &out, &at, 1));

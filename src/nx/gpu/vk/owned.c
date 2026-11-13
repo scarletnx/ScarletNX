@@ -6,10 +6,12 @@
    submission only), and copied into the pool's mirror. On a host without traps a publish lands at once. Landing runs
    on whatever thread faulted or acquired, under vk_lock, which own.c takes before it marks what lands (OwnHooks'
    lock) and own_land again for itself (it is reentrant, and a publish without traps lands with no landing of own.c's) */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/memory/mem.h"
@@ -30,10 +32,17 @@ static struct {
     VkCommandBuffer cb;
     VkFence fence;
     VkBuffer back;
-    VmaAllocation mem;
+    DevMem mem;
     u8* ptr;
     u64 cap;
     u64 serial; /* the last VkOwnRes.serial given */
+    /* the results with a buffer of their own that are in use, and their buffers' bytes: any thread adds and takes */
+    u64 live[VK_OWN_BY_N], live_bytes[VK_OWN_BY_N];
+    /* those let go since the last statistics, by how many presents they were kept: under 8, under 120, under 1200,
+       longer */
+    u64 let_go[4];
+    /* since the last statistics: the results vk_own_trim landed and their bytes, the freed buffers it let go */
+    u64 trim_landed, trim_bytes, trim_pooled;
 } g_owned;
 
 /* Landings copy on the compute queue where it is a queue of its own: there the copy waits for the submission that wrote
@@ -57,20 +66,23 @@ static void land_sharing(VkBufferCreateInfo* bi, u32 fam[2]) {
    returns it instead of destroying. The pool is small and low-contention: it is taken on the GPU thread (vk_own_res_new)
    and returned at the frame's recycle (vk_defer_call), which the GPU thread runs. */
 #define OWN_POOL_MAX 512
+#define OWN_IDLE     120 /* presents a result or a freed buffer is left alone before vk_own_trim takes it */
+#define OWN_LAND_MAX 16  /* results landed at one present */
 typedef struct {
     VkBuffer buf;
-    VmaAllocation mem;
+    DevMem mem;
     u64 cap; /* the buffer's bytes, at least the resource's */
+    u32 put; /* the present it came back at: one no result took for OWN_IDLE presents goes (vk_own_trim) */
 } OwnPoolEntry;
 static OwnPoolEntry g_pool[OWN_POOL_MAX];
 static u32 g_pool_n;
 static PMutex g_pool_lk = PMUTEX_INIT;
-static void own_pool_put_locked(VkBuffer buf, VmaAllocation mem, u64 cap) {
+static void own_pool_put_locked(VkBuffer buf, DevMem mem, u64 cap) {
     if (g_pool_n < OWN_POOL_MAX)
-        g_pool[g_pool_n++] = (OwnPoolEntry){buf, mem, cap};
+        g_pool[g_pool_n++] = (OwnPoolEntry){buf, mem, cap, g_vk_present};
     else { /* the pool is full: free it, as it was before the pool */
         vk_mem_untrack(mem);
-        vmaDestroyBuffer(g_vk.vma, buf, mem);
+        vk_devmem_buffer_destroy(buf, mem);
     }
 }
 static void own_pool_return(void* arg) {
@@ -95,7 +107,105 @@ static OwnPoolEntry own_pool_take(u64 size) {
     return e;
 }
 
-VkOwnRes* vk_own_res_new(u64 size) {
+/* statistics: what the ledger's kept results are, the ones in use and the freed buffers that wait in the pool */
+void vk_own_log(void) {
+    u64 pooled = 0;
+    pm_lock(&g_pool_lk);
+    u32 n = g_pool_n;
+    for (u32 i = 0; i < n; i++) pooled += g_pool[i].cap;
+    pm_unlock(&g_pool_lk);
+    static const char* const by[VK_OWN_BY_N] = {"dispatches", "draws", "copies", "video", "render targets"};
+    char line[320];
+    size_t at = 0;
+    u64 live = 0;
+    for (u32 k = 0; k < VK_OWN_BY_N; k++) {
+        u64 count = __atomic_load_n(&g_owned.live[k], __ATOMIC_RELAXED),
+            bytes = __atomic_load_n(&g_owned.live_bytes[k], __ATOMIC_RELAXED);
+        live += count;
+        if (!count) continue;
+        int w = snprintf(line + at, sizeof line - at, "%s %llu of %s (%.1f MB)", at ? "," : "",
+                         (unsigned long long)count, by[k], (double)bytes / 1048576.0);
+        if (w > 0) at += (size_t)w < sizeof line - at ? (size_t)w : sizeof line - at - 1;
+    }
+    u64 gone[4];
+    for (u32 k = 0; k < 4; k++) gone[k] = __atomic_exchange_n(&g_owned.let_go[k], 0, __ATOMIC_RELAXED);
+    if (n || live)
+        LOG("vulkan: kept results in use:%s; %u freed buffers in the pool (%.1f MB); let go since the last report "
+            "after under 8 presents %llu, under 120 %llu, under 1200 %llu, longer %llu\n",
+            at ? line : " none", n, (double)pooled / 1048576.0, (unsigned long long)gone[0],
+            (unsigned long long)gone[1], (unsigned long long)gone[2], (unsigned long long)gone[3]);
+    if (g_owned.trim_landed || g_owned.trim_pooled)
+        LOG("vulkan: kept results left alone for %u presents: %llu landed in guest memory for the budget (%.1f MB), "
+            "%llu freed buffers let go\n",
+            OWN_IDLE, (unsigned long long)g_owned.trim_landed, (double)g_owned.trim_bytes / 1048576.0,
+            (unsigned long long)g_owned.trim_pooled);
+    g_owned.trim_landed = g_owned.trim_bytes = g_owned.trim_pooled = 0;
+}
+
+/* The kept results within the budget. A result is the only copy of the guest bytes it holds, so it stays until the
+   CPU touches them or something writes over them. One game's copy engines move every tile of its streamed textures,
+   and nothing ever reads the tiles on the CPU: in a race 2267 such results held 1046 MB of device memory that no
+   limit reached, the caches were left 5.2 of 5.5 GB, and the trim made room by evicting textures that the game was
+   using, 6517 of which it then loaded again.
+
+   So when device memory is short, the results that nothing has written or read for OWN_IDLE presents land in guest
+   memory, as the CPU's touch would land them, the ones left alone longest first. What they were made for has read
+   them by then (a texture is built from its tile within a frame or two), and a later read finds the bytes in guest
+   memory. A landing is a round trip to the GPU, so only a few land a present, here at the frame's boundary where no
+   draw is being set up. With memory to spare nothing lands. The freed buffers of the pool are no one's bytes: one
+   that no result took for OWN_IDLE presents goes at any time */
+void vk_own_trim(void) {
+    if (g_vk_present % 4) return;
+    pm_lock(&g_pool_lk);
+    for (u32 i = 0; i < g_pool_n;) {
+        if ((u32)(g_vk_present - g_pool[i].put) < OWN_IDLE) {
+            i++;
+            continue;
+        }
+        vk_mem_untrack(g_pool[i].mem);
+        vk_devmem_buffer_destroy(g_pool[i].buf, g_pool[i].mem); /* free: nothing uses a pooled buffer */
+        g_pool[i] = g_pool[--g_pool_n];
+        g_owned.trim_pooled++;
+    }
+    pm_unlock(&g_pool_lk);
+    u64 usage, budget;
+    vk_mem_use(&usage, &budget);
+    u32 n = __atomic_load_n(&g_own.nown, __ATOMIC_ACQUIRE);
+    if (!g_owned.traps || !n || usage < budget / 5 * 4) return; /* four fifths: before the caches' trim starts */
+    u32 max = n + 64; /* more than there are: a publish may add some before the lookup */
+    OwnRange* r = malloc((size_t)max * sizeof *r);
+    if (!r) return;
+    struct {
+        u64 addr, size;
+        u32 used;
+    } pick[OWN_LAND_MAX];
+    u32 np = 0, k = own_lookup(0, 1ull << 48, r, max);
+    u64 now = vk_submit_number();
+    for (u32 i = 0; i < k && i < max; i++) {
+        const VkOwnRes* o = (const VkOwnRes*)r[i].res;
+        /* not one of another's buffer (the mirror's), nor one whose writes are still being recorded */
+        if (!o || o->borrowed || (u32)(g_vk_present - o->used) < OWN_IDLE || o->written >= now) continue;
+        u32 at = np;
+        if (np == OWN_LAND_MAX) { /* full: in place of the one used last, if this one is older */
+            at = 0;
+            for (u32 j = 1; j < np; j++)
+                if ((i32)(pick[j].used - pick[at].used) > 0) at = j;
+            if ((i32)(o->used - pick[at].used) >= 0) continue;
+        } else
+            np++;
+        pick[at].addr = r[i].addr;
+        pick[at].size = r[i].size;
+        pick[at].used = o->used;
+    }
+    free(r);
+    for (u32 i = 0; i < np; i++) { /* a landing takes its whole pages: one picked beside another may be gone by now */
+        own_acquire(pick[i].addr, pick[i].size);
+        g_owned.trim_landed++;
+        g_owned.trim_bytes += pick[i].size;
+    }
+}
+
+VkOwnRes* vk_own_res_new(u64 size, u32 by) {
     VkOwnRes* r = (VkOwnRes*)calloc(1, sizeof *r);
     u64 want = size ? size : 16;
     if (!r) return NULL;
@@ -118,17 +228,21 @@ VkOwnRes* vk_own_res_new(u64 size) {
                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                           (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        DevMemWant ai = {.at = DM_DEVICE};
         land_sharing(&bi, fam);
-        if (size > g_vk.alloc_cap || !VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &r->buf, &r->mem, NULL))) {
+        if (size > g_vk.alloc_cap || !VK_OK(vk_buffer_create(&bi, &ai, &r->buf, &r->mem, NULL))) {
             free(r);
             return NULL;
         }
-        vk_mem_track(r->mem);
+        vk_mem_track(r->mem, VK_OWN_OWNED);
         r->size = want;
     }
     r->refs = 1;
     r->serial = __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED);
+    r->by = (u8)by;
+    r->born = r->used = g_vk_present;
+    __atomic_fetch_add(&g_owned.live[by], 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&g_owned.live_bytes[by], r->size, __ATOMIC_RELAXED);
     return r;
 }
 static void res_retain(void* res) { __atomic_add_fetch(&((VkOwnRes*)res)->refs, 1, __ATOMIC_RELAXED); }
@@ -149,6 +263,10 @@ static void res_release(void* res) {
         free(r);
         return;
     }
+    u32 kept = g_vk_present - r->born;
+    __atomic_fetch_sub(&g_owned.live[r->by], 1, __ATOMIC_RELAXED);
+    __atomic_fetch_sub(&g_owned.live_bytes[r->by], r->size, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&g_owned.let_go[kept < 8 ? 0 : kept < 120 ? 1 : kept < 1200 ? 2 : 3], 1, __ATOMIC_RELAXED);
     vk_lock();
     /* the frame recording may still copy from it: return it to the pool at the frame's recycle, as a destroy was
        deferred there before */
@@ -232,21 +350,19 @@ static void land_prepare(u64 size) {
     if (size > cap) fatal("vulkan: ownership readback exceeds its allocation limit");
     if (g_owned.back) {
         vk_mem_untrack(g_owned.mem);
-        vmaDestroyBuffer(g_vk.vma, g_owned.back, g_owned.mem);
+        vk_devmem_buffer_destroy(g_owned.back, g_owned.mem);
     }
     u32 fam[2];
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = cap,
                              .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     land_sharing(&bi, fam);
-    VmaAllocationCreateInfo ai = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
-                                           VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                  .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
-    VmaAllocationInfo info;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_owned.back, &g_owned.mem, &info)))
+    DevMemWant ai = {.at = DM_CACHED, .mapped = 1};
+    DevMemInfo info;
+    if (!VK_OK(vk_buffer_create(&bi, &ai, &g_owned.back, &g_owned.mem, &info)))
         fatal("vulkan: no host memory for ownership readback");
-    vk_mem_track(g_owned.mem);
-    g_owned.ptr = info.pMappedData;
+    vk_mem_track(g_owned.mem, VK_OWN_OWNED);
+    g_owned.ptr = info.ptr;
     g_owned.cap = cap;
 }
 
@@ -339,7 +455,7 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
         if (!ok) { /* a GPU fault (Xid 109's CTX SWITCH TIMEOUT, say): name the draw that hung, from its checkpoints */
             vk_checkpoint_dump("device lost");
         }
-        if (!ok || !VK_OK(vmaInvalidateAllocation(g_vk.vma, g_owned.mem, 0, total)))
+        if (!ok || !VK_OK(vk_devmem_invalidate(g_owned.mem, 0, total)))
             fatal("vulkan: could not complete ownership readback");
         for (j = 0; j < np; j++) memcpy(pc[j].dst, g_owned.ptr + pc[j].at, pc[j].size);
     }
@@ -363,6 +479,9 @@ static void own_wait(u64 writer) {
     }
     if (writer > done) vk_wait_submit(writer); /* handed to the recording thread: it submits it */
 }
+/* own.c's, under vk_lock before a landing looks for its entries: the storage images the guest released, which the
+   release left on the GPU, published over those pages first */
+static void own_claim(u64 lo, u64 hi) { vk_gfx_image_cpu_need(lo, hi - lo); }
 /* a landing's bytes: the write tracking takes them as they were left, and the GPU mirror lets go of its copy's
    shadow */
 static void own_landed(u64 addr, u64 size, const u8* bytes) {
@@ -382,12 +501,15 @@ int vk_own_init(void) {
                   .landed = own_landed,
                   .writer = own_writer,
                   .wait = own_wait,
-                  .resolve = vk_rt_watch_hit};
+                  .resolve = vk_rt_watch_hit,
+                  .refresh = vk_rt_watch_hit,
+                  .claim = own_claim};
     g_owned.traps = !own_init(&h);
     return g_owned.traps ? 0 : -1;
 }
 
 void vk_own_res_wrote(VkOwnRes* r) {
+    r->used = g_vk_present;
     /* atomic: own_writer reads it on a thread without vk_lock */
     if (r->written < vk_submit_number()) __atomic_store_n(&r->written, vk_submit_number(), __ATOMIC_RELEASE);
     __atomic_store_n(&r->serial, __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
@@ -488,6 +610,7 @@ static void cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at, int* any
         if (!*any) read_barrier(vk_cmd(), 1);
         *any = 1;
         rec_CmdCopyBuffer(vk_cmd(), ((const VkOwnRes*)o[i].res)->buf, buf, 1, &c);
+        ((VkOwnRes*)o[i].res)->used = g_vk_present;
     }
 }
 void vk_cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at) {
@@ -650,6 +773,7 @@ static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead) {
                     if (!any) read_barrier(vk_cmd(), 1);
                     any = 1;
                     rec_CmdCopyBuffer(dev_cmd(ahead), ((const VkOwnRes*)r[i].res)->buf, buf, 1, &cp);
+                    ((VkOwnRes*)r[i].res)->used = g_vk_present;
                 }
                 dev_gap(&d, o + (from - cpu), c + part - from);
             }
@@ -748,16 +872,16 @@ void vk_all_barrier(VkCommandBuffer cb) {
     VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
     rec_CmdPipelineBarrier2(cb, &d);
 }
-void vk_copy_rows(VkCommandBuffer cb, VkBuffer src, u64 src_at, u32 src_pitch, VkBuffer dst, u64 dst_at,
-                  u32 dst_pitch, u32 row_bytes, u32 rows) {
+void vk_copy_rows(VkCommandBuffer cb, VkBuffer src, u64 src_at, i64 src_pitch, VkBuffer dst, u64 dst_at, i64 dst_pitch,
+                  u32 row_bytes, u32 rows) {
     VkBufferCopy c[64];
     u32 y = 0;
     if (!row_bytes) return;
     while (y < rows) {
         u32 n = 0;
         for (; y < rows && n < sizeof c / sizeof *c; y++, n++) {
-            c[n].srcOffset = src_at + (u64)y * src_pitch;
-            c[n].dstOffset = dst_at + (u64)y * dst_pitch;
+            c[n].srcOffset = src_at + (u64)(y * src_pitch);
+            c[n].dstOffset = dst_at + (u64)(y * dst_pitch);
             c[n].size = row_bytes;
         }
         rec_CmdCopyBuffer(cb, src, dst, n, c);

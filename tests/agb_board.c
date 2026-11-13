@@ -58,6 +58,94 @@ static void make_rom(uint8_t* rom) {
     rom[0xBC] = 3;
     fix_checksum(rom);
 }
+/* the cartridge clock's serial line as the clock library drives it through the GPIO port: a byte out, from bit 0, each
+   bit set on SIO with SCK low and taken as SCK rises, chip select high */
+static void rtc_send(AgbBoard* board, uint8_t byte) {
+    for (unsigned i = 0; i < 8; ++i) {
+        uint16_t sio = (uint16_t)((byte >> i & 1) << 1);
+        agb_write16(board, 0x080000C4, 4 | sio);
+        agb_write16(board, 0x080000C4, 5 | sio);
+    }
+}
+/* a byte in: SIO an input, each bit the clock's after SCK falls, from bit 0 */
+static uint8_t rtc_receive(AgbBoard* board) {
+    uint8_t byte = 0;
+    for (unsigned i = 0; i < 8; ++i) {
+        agb_write16(board, 0x080000C4, 4);
+        byte |= (uint8_t)((agb_read16(board, 0x080000C4) >> 1 & 1) << i);
+        agb_write16(board, 0x080000C4, 5);
+    }
+    return byte;
+}
+/* a command to the clock: chip select low then high with SCK high, its byte, then for a read SIO turned into an input */
+static void rtc_command(AgbBoard* board, uint8_t command) {
+    agb_write16(board, 0x080000C6, 7);
+    agb_write16(board, 0x080000C4, 1);
+    agb_write16(board, 0x080000C4, 5);
+    rtc_send(board, command);
+    if (command & 0x80) agb_write16(board, 0x080000C6, 5);
+}
+/* The real-time clock a cartridge with the clock library's tag has on its GPIO port: the date and time it reads, in BCD,
+   its status register's 24 hour mode, the port's registers as they read back or not, and none without the tag */
+static int check_rtc(void) {
+    static const uint8_t date[7] = {0x26, 0x11, 0x12, 0x04, 0x22, 0x30, 0x45}; /* 2026-11-12, a Thursday, 22:30:45 */
+    static const uint8_t leap[7] = {0x00, 0x02, 0x29, 0x02, 0x13, 0x00, 0x07}; /* 2000-02-29, a Tuesday, 13:00:07 */
+    char error[256];
+    uint8_t* rom = (uint8_t*)malloc(ROM_SIZE);
+    AgbBoard board;
+    CHECK(rom);
+    make_rom(rom);
+    memcpy(rom + 0x180, "SIIRTC_V001", 11);
+    rom[0xC4] = 0x11, rom[0xC6] = 0x22, rom[0xC8] = 0x33;
+    agb_board_init(&board);
+    CHECK(!agb_board_insert(&board, rom, ROM_SIZE, error, sizeof error));
+    CHECK(board.gpio.rtc);
+    /* before a write the port's registers read as the ROM's bytes */
+    CHECK(agb_read16(&board, 0x080000C4) == 0x11 && agb_read8(&board, 0x080000C8) == 0x33);
+    agb_write16(&board, 0x080000C8, 1); /* the port reads back */
+    board.gpio.clock = 847837845;       /* 2026-11-12 22:30:45 */
+    rtc_command(&board, 0xA6);          /* read the date and time */
+    for (unsigned i = 0; i < 7; ++i) {
+        uint8_t got = rtc_receive(&board);
+        if (got != date[i]) {
+            fprintf(stderr, "agb_board: the clock's byte %u is 0x%02X, not 0x%02X\n", i, got, date[i]);
+            return 1;
+        }
+    }
+    agb_write16(&board, 0x080000C4, 1); /* chip select low: the transfer ends */
+    /* the registers read back in every cartridge window: SIO an input still, chip select low, SCK high */
+    CHECK(agb_read16(&board, 0x080000C6) == 5 && agb_read16(&board, 0x0A0000C8) == 1 &&
+          agb_read16(&board, 0x0C0000C4) == 3);
+    board.gpio.clock = 5144407; /* 2000-02-29 13:00:07, a leap day */
+    rtc_command(&board, 0xA6);
+    for (unsigned i = 0; i < 7; ++i) CHECK(rtc_receive(&board) == leap[i]);
+    /* the status register: 0x40 (24 hours) as the clock starts; written 0, the time reads its hour in 12 hours */
+    rtc_command(&board, 0xC6);
+    CHECK(rtc_receive(&board) == 0x40);
+    rtc_command(&board, 0x46);
+    rtc_send(&board, 0x00);
+    rtc_command(&board, 0xC6);
+    CHECK(rtc_receive(&board) == 0x00);
+    rtc_command(&board, 0xE6); /* the time alone: hour, minute, second */
+    CHECK(rtc_receive(&board) == 0x01 && rtc_receive(&board) == 0x00 && rtc_receive(&board) == 0x07);
+    /* write-only, the port's registers read zeros */
+    agb_write16(&board, 0x080000C8, 0);
+    CHECK(agb_read16(&board, 0x080000C4) == 0 && agb_read16(&board, 0x080000C6) == 0);
+    agb_board_destroy(&board);
+
+    /* no tag, no clock: the store goes nowhere and the ROM's bytes stay */
+    make_rom(rom);
+    rom[0xC6] = 0x5A;
+    agb_board_init(&board);
+    CHECK(!agb_board_insert(&board, rom, ROM_SIZE, error, sizeof error));
+    CHECK(!board.gpio.rtc);
+    agb_write16(&board, 0x080000C8, 1);
+    agb_write16(&board, 0x080000C6, 7);
+    CHECK(agb_read8(&board, 0x080000C6) == 0x5A && agb_read16(&board, 0x080000C8) == 0);
+    agb_board_destroy(&board);
+    free(rom);
+    return 0;
+}
 
 int main(void) {
     uint8_t* rom = (uint8_t*)malloc(ROM_SIZE);
@@ -71,6 +159,60 @@ int main(void) {
        to tell a link boot from its own), the sound's bias at its middle, POSTFLG */
     CHECK(agb_read16(&board, 0x04000000) == 0x0080 && agb_read16(&board, 0x04000134) == 0x8000);
     CHECK(agb_read16(&board, 0x04000088) == 0x0200 && agb_read8(&board, 0x04000300) == 1);
+    /* the registers answer at their own addresses only: a store past them, as a debug port a test ROM writes to on an
+       emulator, leaves IE and DISPCNT alone and a read there gives the open bus; the memory control at 0x04000800, at
+       each 64 KiB, keeps what was written */
+    agb_write16(&board, 0x04000200, 0x0001);
+    agb_write16(&board, 0x04FFF600, 0x654D);
+    agb_write8(&board, 0x04000600, 0x44);
+    agb_write32(&board, 0x04000400, 0x12345678);
+    board.open_bus = 0xE3A01234;
+    if (agb_read16(&board, 0x04000200) != 0x0001 || agb_read16(&board, 0x04000000) != 0x0080 ||
+        agb_read16(&board, 0x04FFF600) != 0x1234 || agb_read32(&board, 0x04000400) != 0x12341234) {
+        fprintf(stderr,
+                "agb_board: stores past the registers left IE 0x%04X (0x0001) and DISPCNT 0x%04X (0x0080); "
+                "0x04FFF600 reads 0x%04X (0x1234), 0x04000400 0x%08X (0x12341234)\n",
+                agb_read16(&board, 0x04000200), agb_read16(&board, 0x04000000), agb_read16(&board, 0x04FFF600),
+                agb_read32(&board, 0x04000400));
+        return 1;
+    }
+    CHECK(agb_read32(&board, 0x04000800) == 0x0D000020);
+    agb_write32(&board, 0x04000800, 0x0E000020);
+    agb_write8(&board, 0x04120801, 0x01);
+    if (agb_read32(&board, 0x04FF0800) != 0x0E000120 || agb_read16(&board, 0x04000000) != 0x0080) {
+        fprintf(stderr, "agb_board: the memory control reads 0x%08X, not 0x0E000120, and DISPCNT 0x%04X (0x0080)\n",
+                agb_read32(&board, 0x04FF0800), agb_read16(&board, 0x04000000));
+        return 1;
+    }
+    agb_write16(&board, 0x04000200, 0);
+    {
+        /* each register written all ones reads back its readable bits, an unused one 0 or the open bus, as the
+           console reads them in mGBA's test suite (io-read.c) */
+        static const struct {
+            uint32_t address;
+            int32_t expected; /* -1: the open bus's low half */
+        } reads[] = {
+            {0x04000008, 0xDFFF}, {0x0400000C, 0xFFFF}, {0x04000048, 0x3F3F}, {0x04000050, 0x3FFF},
+            {0x04000062, 0xFFC0}, {0x04000072, 0xE000}, {0x04000078, 0xFF00}, {0x04000082, 0x770F},
+            {0x040000BA, 0xF7E0}, {0x040000DE, 0xFFE0}, {0x04000066, 0},      {0x04000136, 0},
+            {0x04000206, 0},      {0x04000302, 0},      {0x0400008C, -1},     {0x040000A8, -1},
+            {0x040000E0, -1},     {0x04000110, -1},
+        };
+        agb_write16(&board, 0x04000084, 0x0080); /* the sound on: its registers take writes */
+        board.open_bus = 0xDEADDEAD;
+        for (size_t i = 0; i < sizeof reads / sizeof reads[0]; ++i) {
+            uint16_t expected = (uint16_t)(reads[i].expected < 0 ? 0xDEAD : reads[i].expected), got;
+            agb_write16(&board, reads[i].address, 0xFFFF);
+            got = agb_read16(&board, reads[i].address);
+            agb_write16(&board, reads[i].address, 0);
+            if (got != expected) {
+                fprintf(stderr, "agb_board: 0x%08X written 0xFFFF reads 0x%04X, not 0x%04X\n", reads[i].address, got,
+                        expected);
+                return 1;
+            }
+        }
+        agb_write16(&board, 0x04000084, 0);
+    }
     CHECK(!agb_board_insert(&board, rom, ROM_SIZE, error, sizeof error));
     CHECK(board.has_cartridge);
     const AgbCartridge* cartridge = &board.cartridge;
@@ -142,6 +284,38 @@ int main(void) {
     agb_write16(&board, 0x040000DC, 1);
     agb_write16(&board, 0x040000DE, 0x8400);
     CHECK(agb_read32(&board, 0x05000000) == 0x11223344);
+    /* a DMA reads nothing below EWRAM: it moves the unit its channel read last, a halfword in both halves of a word,
+       and DMA0, which reaches only the console's own memory, reads the cartridge's addresses there too */
+    agb_write32(&board, 0x02000400, 0xABCD1234);
+    dma3(&board, 0x02000402, 0x02000410, 1);     /* halfwords: its latch is 0xABCDABCD */
+    agb_write32(&board, 0x040000D4, 0x00000010); /* the BIOS */
+    agb_write32(&board, 0x040000D8, 0x02000420);
+    agb_write32(&board, 0x040000DC, 0x84000002); /* two words, now */
+    agb_write32(&board, 0x040000B0, 0x02000400);
+    agb_write32(&board, 0x040000B4, 0x02000430);
+    agb_write32(&board, 0x040000B8, 0x84000001); /* DMA0: a word, its latch 0xABCD1234 */
+    agb_write32(&board, 0x040000B0, 0x08000000); /* the cartridge, which DMA0 does not reach */
+    agb_write32(&board, 0x040000B4, 0x02000434);
+    agb_write32(&board, 0x040000B8, 0x84000001);
+    if (agb_read32(&board, 0x02000420) != 0xABCDABCD || agb_read32(&board, 0x02000424) != 0xABCDABCD ||
+        agb_read32(&board, 0x02000434) != 0xABCD1234) {
+        fprintf(stderr,
+                "agb_board: a DMA from the BIOS moved 0x%08X 0x%08X (0xABCDABCD), DMA0 from the cartridge 0x%08X "
+                "(0xABCD1234)\n",
+                agb_read32(&board, 0x02000420), agb_read32(&board, 0x02000424), agb_read32(&board, 0x02000434));
+        return 1;
+    }
+    agb_write32(&board, 0x040000B8, 0);
+    /* a DMA from the cartridge counts its source up even when the control says fixed: two halfwords, not one twice */
+    agb_write32(&board, 0x040000D4, 0x08000000);
+    agb_write32(&board, 0x040000D8, 0x02000500);
+    agb_write32(&board, 0x040000DC, 0x81000002); /* now, halfwords, the source fixed */
+    if (agb_read32(&board, 0x02000500) != 0xEA00002E) {
+        fprintf(stderr,
+                "agb_board: a fixed DMA from the cartridge moved 0x%08X, not its first two halfwords 0xEA00002E\n",
+                agb_read32(&board, 0x02000500));
+        return 1;
+    }
 
     /* a rejected insert leaves the accepted cartridge in place */
     CHECK(board.has_cartridge && !strcmp(board.cartridge.title, "TEST"));
@@ -163,16 +337,29 @@ int main(void) {
     agb_write32(&board, 0x00000000, 0);
     board.bios_prefetch = AGB_BIOS_PREFETCH_SWI;
     CHECK(agb_read32(&board, 0x00000000) == AGB_BIOS_PREFETCH_SWI);
-    /* past the 28 bits the console decodes (but for the mirror at bit 31) nothing answers: a read gives the open bus at
-       its lane and a write goes nowhere, as mGBA's GBALoadBad */
+    /* where the console decodes nothing, past the BIOS up to EWRAM and past the 28 bits (0x8xxxxxxx too), a read gives
+       the open bus at its lane and a write goes nowhere, as mGBA's GBALoadBad */
     board.open_bus = 0x0A000005;
     CHECK(agb_read32(&board, 0x2E00A610) == 0x0A000005 && agb_read16(&board, 0xFFFFFFFE) == 0x0A00 &&
           agb_read8(&board, 0x10000001) == 0x00 && agb_read8(&board, 0x7FFFFFF3) == 0x0A);
+    CHECK(agb_read32(&board, 0x00004000) == 0x0A000005 && agb_read16(&board, 0x01FFFFFE) == 0x0A00 &&
+          agb_read8(&board, 0x80000000) == 0x05);
     agb_write32(&board, 0x2E00A610, 0x12345678);
     agb_write8(&board, 0x9E000000, 0x77);
     CHECK(agb_read32(&board, 0x2E00A610) == 0x0A000005);
+    /* bit 31 mirrors nothing: a word there reads the open bus, not EWRAM's, and a store of any width there reaches
+       neither EWRAM nor the save memory */
+    agb_save_reset(&board, AGB_SAVE_SRAM);
     agb_write32(&board, 0x02000040, 0x5A5A5A5A);
-    CHECK(agb_read32(&board, 0x82000040) == 0x5A5A5A5A);
+    {
+        uint8_t saved[2] = {agb_read8(&board, 0x0E000040), agb_read8(&board, 0x0E000044)};
+        agb_write32(&board, 0x82000040, 0x11111111);
+        agb_write16(&board, 0x82000044, 0x2222);
+        agb_write8(&board, 0x8E000040, 0x33);
+        CHECK(agb_read32(&board, 0x82000040) == 0x0A000005 && agb_read32(&board, 0x02000040) == 0x5A5A5A5A);
+        CHECK(agb_read8(&board, 0x0E000040) == saved[0] && agb_read8(&board, 0x0E000044) == saved[1] &&
+              !board.save.dirty);
+    }
 
     /* the cartridge windows hold the image once, and past it the bus still holds address / 2 */
     CHECK(agb_read32(&board, 0x08000000) == board.cartridge.entry);
@@ -183,6 +370,26 @@ int main(void) {
 
     /* a 32 KiB SRAM repeats twice in the 64 KiB window, which repeats over 0x0E000000 to 0x0FFFFFFF */
     agb_save_reset(&board, AGB_SAVE_SRAM);
+    /* a DMA of a word to an address that is not one puts the word's low byte at the word's address, the bits below
+       its width dropped */
+    agb_write32(&board, 0x03000300, 0xA5B6C7D8);
+    agb_write8(&board, 0x0E000100, 0x66);
+    agb_write8(&board, 0x0E000101, 0x66);
+    agb_write32(&board, 0x040000D4, 0x03000300);
+    agb_write32(&board, 0x040000D8, 0x0E000101);
+    agb_write32(&board, 0x040000DC, 0x84000001);
+    if (agb_read8(&board, 0x0E000100) != 0xD8 || agb_read8(&board, 0x0E000101) != 0x66) {
+        fprintf(stderr, "agb_board: a word DMA to 0x0E000101 left 0x%02X 0x%02X there, not 0xD8 0x66\n",
+                agb_read8(&board, 0x0E000100), agb_read8(&board, 0x0E000101));
+        return 1;
+    }
+    /* its 8 bit bus reads the byte the whole address names, however wide the read */
+    agb_write8(&board, 0x0E000201, 0x61);
+    if (agb_read16(&board, 0x0E000201) != 0x6161 || agb_read32(&board, 0x0E000201) != 0x61616161) {
+        fprintf(stderr, "agb_board: SRAM at 0x0E000201 reads 0x%04X and 0x%08X, not 0x6161 and 0x61616161\n",
+                agb_read16(&board, 0x0E000201), agb_read32(&board, 0x0E000201));
+        return 1;
+    }
     agb_write8(&board, 0x0E000010, 0x5A);
     CHECK(agb_read8(&board, 0x0E008010) == 0x5A && agb_read8(&board, 0x0F018010) == 0x5A);
     agb_write8(&board, 0x0E008020, 0xA5);
@@ -307,6 +514,7 @@ int main(void) {
     agb_write16(&board, 0x04000100, 0x1234); /* TM0CNT_L sets the reload, and reads as the counter */
     board.timer[0].counter = 0xABCD;
     agb_write8(&board, 0x04000100, 0x56);
+    agb_timer_step(&board, 1); /* a timer takes a write a cycle after it */
     CHECK(board.timer[0].reload == 0x1256);
     /* timer 0 has no timer before it: its count-up bit does nothing and it counts the clock, as a game that sets that
        bit and plays its sound FIFOs at timer 0's rate needs; timer 1's counts timer 0's overflows */
@@ -314,10 +522,11 @@ int main(void) {
     agb_write16(&board, 0x04000104, 0xFFFE);
     agb_write16(&board, 0x04000106, 0x0084); /* timer 1 on, counting up */
     agb_write16(&board, 0x04000102, 0x0084); /* timer 0 on, its count-up bit set */
-    agb_timer_step(&board, 0x100);
-    CHECK(board.timer[0].counter == 0xFF00 && board.timer[1].counter == 0xFFFF);
+    /* the write lands a cycle later and the count starts a cycle after that */
+    agb_timer_step(&board, 0x102);
+    CHECK(agb_read16(&board, 0x04000100) == 0xFF00 && agb_read16(&board, 0x04000104) == 0xFFFF);
     agb_timer_step(&board, 0x80);
-    CHECK(board.timer[0].counter == 0xFF80 && board.timer[1].counter == 0xFFFF);
+    CHECK(agb_read16(&board, 0x04000100) == 0xFF80 && agb_read16(&board, 0x04000104) == 0xFFFF);
     agb_write16(&board, 0x04000102, 0x0000);
     agb_write16(&board, 0x04000106, 0x0000);
     agb_write16(&board, 0x040000B0, 0x1234); /* DMA0SAD, write-only */
@@ -334,21 +543,92 @@ int main(void) {
     agb_write8(&board, 0x04000001, 0x01);
     CHECK(board.ppu.dispcnt == 0x0103);
 
-    /* SIOCNT with no cable plugged: the multi-player mode says a child (SI) and a ready line (SD), and a transfer ends at
-       once with no partner's words and the serial interrupt; the normal mode's SI is pulled up */
+    /* a halted CPU waits while IE and IF share no interrupt: a blank's flag with only a timer's enabled leaves it
+       halted, the timer's wakes it */
+    board.irq_if = 0;
+    agb_write16(&board, 0x04000200, AGB_IRQ_TIMER(1)); /* IE */
+    board.cpu_halted = 1;
+    agb_irq_request(&board, AGB_IRQ_VBLANK);
+    CHECK(board.cpu_halted);
+    agb_irq_request(&board, AGB_IRQ_TIMER(1));
+    CHECK(!board.cpu_halted);
+    agb_write16(&board, 0x04000200, 0);
+    board.irq_if = 0;
+
+    /* SIOCNT with no cable plugged: the multi-player mode says a child (SI) and a ready line (SD), and its transfer
+       waits for a parent that never comes, its start bit set (the console's in its suite's sio-read.c and sio-timing.c,
+       which times out); the normal mode's SI is pulled up, and its transfer on the internal clock ends 2 cycles past
+       its bits with no partner's word and the serial interrupt, one on the external clock never */
     agb_write16(&board, 0x04000134, 0x0000); /* RCNT: the serial modes */
     board.irq_if = 0;
     agb_write16(&board, 0x04000128, 0x2003); /* multi-player, 115200 bauds */
     CHECK((agb_read16(&board, 0x04000128) & 0x000C) == 0x000C);
-    agb_write16(&board, 0x04000120, 0x1234); /* SIOMULTI0, before the transfer */
     agb_write16(&board, 0x04000128, 0x6083); /* start, the interrupt asked for */
-    CHECK(!(agb_read16(&board, 0x04000128) & 0x0080) && agb_read16(&board, 0x04000120) == 0);
-    CHECK(board.irq_if & AGB_IRQ_SERIAL);
-    board.irq_if = 0;
-    agb_write16(&board, 0x04000128, 0x0001); /* normal 8 bit mode, internal clock */
+    agb_sio_step(&board, 1u << 20);
+    if (!(agb_read16(&board, 0x04000128) & 0x0080) || (board.irq_if & AGB_IRQ_SERIAL)) {
+        fprintf(stderr,
+                "agb_board: a multi-player child's transfer reads SIOCNT 0x%04X and IF 0x%04X 2^20 cycles on, "
+                "not still busy with no interrupt\n",
+                agb_read16(&board, 0x04000128), board.irq_if);
+        return 1;
+    }
+    agb_write16(&board, 0x04000128, 0x0000); /* normal 8 bit mode, external clock */
     CHECK(agb_read16(&board, 0x04000128) & 0x0004);
-    agb_write16(&board, 0x04000128, 0x0081); /* start, no interrupt */
-    CHECK(!(agb_read16(&board, 0x04000128) & 0x0080) && !(board.irq_if & AGB_IRQ_SERIAL));
+    agb_write16(&board, 0x04000128, 0x4080); /* start, the interrupt asked for: no clock comes */
+    agb_sio_step(&board, 1u << 20);
+    CHECK((agb_read16(&board, 0x04000128) & 0x0080) && !(board.irq_if & AGB_IRQ_SERIAL));
+    agb_write16(&board, 0x04000128, 0x0001); /* the internal clock at 256 KiHz, the start bit cleared */
+    agb_write16(&board, 0x0400012A, 0x00EF); /* SIODATA8, which no partner's byte replaces: 0 */
+    agb_write16(&board, 0x04000128, 0x4081); /* start: 8 bits of 64 cycles */
+    if (!(agb_read16(&board, 0x04000128) & 0x0080) || board.sio_cycles != 514) {
+        fprintf(stderr,
+                "agb_board: a normal 8 bit transfer reads SIOCNT 0x%04X and takes %u cycles, not busy for 514\n",
+                agb_read16(&board, 0x04000128), board.sio_cycles);
+        return 1;
+    }
+    agb_sio_step(&board, 513);
+    CHECK((agb_read16(&board, 0x04000128) & 0x0080) && !(board.irq_if & AGB_IRQ_SERIAL));
+    agb_sio_step(&board, 1);
+    CHECK(!(agb_read16(&board, 0x04000128) & 0x0080) && (board.irq_if & AGB_IRQ_SERIAL));
+    CHECK(agb_read16(&board, 0x0400012A) == 0);
+    board.irq_if = 0;
+    {
+        /* each serial register written all ones in each mode reads back what the console keeps (mGBA's suite's
+           sio-read.c): the data halfwords only where the mode has them, SIOCNT and RCNT without their unused bits and
+           RCNT's lines at the idle port's levels, JOYCNT's interrupt enable alone, JOY_RECV and JOY_TRANS 0 */
+        static const struct {
+            uint16_t rcnt, siocnt;
+            uint32_t address;
+            uint16_t expected;
+        } reads[] = {
+            {0x0000, 0x1000, 0x04000120, 0xFFFF}, {0x0000, 0x0000, 0x04000120, 0x0000},
+            {0x0000, 0x2000, 0x04000120, 0x0000}, {0x0000, 0x2000, 0x04000124, 0x0000},
+            {0x0000, 0x3000, 0x04000128, 0x7FAF}, {0x8000, 0x0000, 0x04000128, 0x4F8F},
+            {0x0000, 0x3000, 0x0400012A, 0x0000}, {0x0000, 0x0000, 0x0400012A, 0xFFFF},
+            {0x0000, 0x0000, 0x04000134, 0x01F5}, {0x0000, 0x2000, 0x04000134, 0x01FF},
+            {0x8000, 0x0000, 0x04000134, 0x81FF}, {0xC000, 0x0000, 0x04000134, 0xC1FC},
+            {0x0000, 0x0000, 0x04000140, 0x0040}, {0xC000, 0x0000, 0x04000150, 0x0000},
+            {0xC000, 0x0000, 0x04000156, 0x0000},
+        };
+        for (size_t i = 0; i < sizeof reads / sizeof reads[0]; ++i) {
+            uint16_t value = 0xFFFF, got;
+            agb_write16(&board, 0x04000134, reads[i].rcnt);
+            agb_write16(&board, 0x04000128, reads[i].siocnt);
+            if (reads[i].address == 0x04000128) value = (uint16_t)(reads[i].siocnt | 0xCFFF);
+            if (reads[i].address == 0x04000134) value = (uint16_t)(reads[i].rcnt | 0x3FFF);
+            agb_write16(&board, reads[i].address, value);
+            got = agb_read16(&board, reads[i].address);
+            if (got != reads[i].expected) {
+                fprintf(stderr,
+                        "agb_board: RCNT 0x%04X SIOCNT 0x%04X: 0x%08X written 0x%04X reads 0x%04X, not 0x%04X\n",
+                        reads[i].rcnt, reads[i].siocnt, reads[i].address, value, got, reads[i].expected);
+                return 1;
+            }
+            agb_write16(&board, reads[i].address, 0);
+        }
+        agb_write16(&board, 0x04000134, 0x8000);
+        agb_write16(&board, 0x04000128, 0);
+    }
 
     /* the DMA channels' registers, 12 bytes apart from 0xB0: DMA3 copies at a 32-bit store of its count and control,
        as a game copies its interrupt handler to IWRAM, and DMA1's control is DMA1's alone */
@@ -372,15 +652,48 @@ int main(void) {
     agb_write32(&board, 0x040000D8, 0x02000100);
     agb_write32(&board, 0x040000DC, 0x80000004);
     CHECK(board.held_cycles == 26);
+    /* only the first access on the cartridge is a first one: four words from it to it, 2 + (6 + 4) + 3 x (4 + 4) */
+    board.held_cycles = 0;
+    agb_write32(&board, 0x040000D4, 0x08000000);
+    agb_write32(&board, 0x040000D8, 0x08000100);
+    agb_write32(&board, 0x040000DC, 0x84000004);
+    CHECK(board.held_cycles == 36);
     board.held_cycles = 0;
     agb_write16(&board, 0x04000204, 0);
     agb_write16(&board, 0x040000C6, 0xB640); /* DMA1CNT_H: the sound FIFO's timing, repeat, 32 bits */
     CHECK(board.dma[1].control == 0xB640 && !board.dma[0].control && !board.dma[2].control);
     CHECK(agb_read16(&board, 0x040000C6) == 0xB640);
+    /* a channel takes its count as it starts: one written while it waits for its blank is the next repeat's, as the
+       suite's misc-edge.c finds on the console (two halfwords, then four) */
+    for (uint32_t i = 0; i < 8; ++i) agb_write16(&board, 0x02000300 + i * 2, (uint16_t)i);
+    agb_write32(&board, 0x040000D4, 0x02000300);
+    agb_write32(&board, 0x040000D8, 0x02000400);
+    agb_write32(&board, 0x040000DC, 0x12400002); /* the vertical blank, repeat, halfwords, a fixed destination */
+    agb_write16(&board, 0x040000DE, (uint16_t)(agb_read16(&board, 0x040000DE) | 0x8000));
+    agb_write16(&board, 0x040000DC, 4);
+    agb_dma_event(&board, AGB_DMA_VBLANK);
+    if (agb_read16(&board, 0x02000400) != 1) {
+        fprintf(stderr, "agb_board: the first blank's DMA ends at halfword %u, not 1\n",
+                agb_read16(&board, 0x02000400));
+        return 1;
+    }
+    agb_dma_event(&board, AGB_DMA_VBLANK);
+    if (agb_read16(&board, 0x02000400) != 5) {
+        fprintf(stderr, "agb_board: the repeat ends at halfword %u, not 5\n", agb_read16(&board, 0x02000400));
+        return 1;
+    }
+    agb_write16(&board, 0x040000DE, 0);
+    /* DMA0 to DMA2 count 14 bits: 0xC001 is one unit */
+    agb_write16(&board, 0x02000502, 0xFFFF);
+    agb_write32(&board, 0x040000B0, 0x02000302);
+    agb_write32(&board, 0x040000B4, 0x02000500);
+    agb_write32(&board, 0x040000B8, 0x8000C001);
+    CHECK(agb_read16(&board, 0x02000500) == 1 && agb_read16(&board, 0x02000502) == 0xFFFF);
     agb_board_destroy(&board);
     CHECK(!board.has_cartridge && !board.cartridge.data);
 
     free(rom);
+    if (check_rtc()) return 1;
     puts("agb_board: ok");
     return 0;
 }

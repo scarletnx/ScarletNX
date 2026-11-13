@@ -115,7 +115,8 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-linux-${{ matrix.arch }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-linux-${{ matrix.arch }}-
-      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with
+      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with. meson: dav1d's build
+      # (cmake/dav1d.cmake), FFmpeg's AV1 decoder; without it AV1 movies play black
       # llvm: llvm-config and LLVM-C for the recompiler (llvm-libs alone has no headers). gdb: the gdbserver gdbstub_native drives. jq: scripts/pr-builds.sh, which pr_builds tests. Mirrors drop a connection now
       # and then (pkgforge's for aarch64 most), so each pacman install is tried 3 times, 5 s apart. -Syuu, not -Syu: an
       # image can be built ahead of its repo (pkgforge's of 2026-11-12 had openssl 4 against Arch Linux ARM's 3.6.5,
@@ -123,7 +124,7 @@ jobs:
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syuu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang spirv-tools jdk21-openjdk && break
+            pacman -Syuu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang spirv-tools jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -254,9 +255,11 @@ jobs:
       # vulkan_headless again in the variants that take another path on lavapipe: a change that passes the plain run
       # and breaks one of them is found here, not on a GPU later. Left out: mesh (lavapipe has no subgroups of 32, so
       # it is the plain run), descriptor_heaps (heaps are lavapipe's default already), libraries (the plain run under
-      # the validation layer, which pipeline_library_linked has) and descriptor_buffers_uma (each of its two alone)
+      # the validation layer, which pipeline_library_linked has) and descriptor_buffers_uma (each of its two alone).
+      # As many at a time as the runner has cores, as each run keeps its shaders and frames in a folder of its own
+      # (tests/vulkan_headless.c)
       - name: Test headless Vulkan and NX runtime
-        run: &headless-tests ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_headless_pipeline_library_whole|vulkan_headless_pipeline_library_linked|vulkan_headless_libraries_off|vulkan_headless_vk12|vulkan_headless_descriptor_buffers|vulkan_headless_vertex_input_off|vulkan_headless_uma|vulkan_headless_hot|vulkan_recorder|vulkan_tex_partial|vulkan_video_av1|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep|vulkan_nvn_savestate|vulkan_owned_page_reads|vulkan_owned_page_reads_protection)$' --output-on-failure
+        run: &headless-tests ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_headless_pipeline_library_whole|vulkan_headless_pipeline_library_linked|vulkan_headless_libraries_off|vulkan_headless_vk12|vulkan_headless_descriptor_buffers|vulkan_headless_vertex_input_off|vulkan_headless_uma|vulkan_headless_hot|vulkan_recorder|vulkan_tex_partial|vulkan_video_av1|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep|vulkan_nvn_savestate|vulkan_owned_page_reads|vulkan_owned_page_reads_protection)$' --output-on-failure --parallel "$(getconf _NPROCESSORS_ONLN)"
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
         run: &abi-helpers clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
@@ -440,10 +443,11 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-linux-x86_64-${{ steps.week.outputs.week }}
           restore-keys: pacman-linux-x86_64-
+      # meson: dav1d's build (cmake/dav1d.cmake), as in the linux job
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang spirv-tools jdk21-openjdk && break
+            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang spirv-tools jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -595,7 +599,8 @@ jobs:
           86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
           EOF
       # llvm: Clang's own, and the opt of the LLVM settings; the runtime links LLVM's libraries statically (below).
-      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with.
+      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with. meson: dav1d's build
+      # (cmake/dav1d.cmake), as in the linux job.
       # get-debloated-pkgs reads its release from api.github.com: unauthenticated, a runner's shared address gets
       # GitHub's 60 requests an hour and the script's 403, so it takes the job's token for those requests. Pinning its
       # release would still read api.github.com, and its own wait on a 403 ends after 5 tries
@@ -604,7 +609,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang spirv-tools jdk21-openjdk && break
+            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang spirv-tools jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -711,9 +716,24 @@ jobs:
       - name: Install Unicorn
         if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
         run: *unicorn
+      # The linux job's compiler cache and dependency builds from main, where it builds x86-64's test and headless
+      # trees: this job's own hold the AppImage's tree alone, not the headless tree's FFmpeg nor its compiles. Read
+      # after the dependency builds are named and saved above, which keep only the AppImage's
+      - if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        uses: actions/cache/restore@v5
+        with:
+          path: .cache/ccache
+          key: ccache-linux-x86_64-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-linux-x86_64-
+      - if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        uses: actions/cache/restore@v5
+        with:
+          path: .cache/deps
+          key: deps-linux-x86_64-${{ github.run_id }}
+          restore-keys: deps-linux-x86_64-
       # The linux job's test options on the same tree, and its headless tree with this job's LLVM: the A64 disassembler
       # stays out, as in the AppImage, so on a pull request its tests run on x86-64 in the sanitizers' job alone, and
-      # on AArch64 in the linux job
+      # on AArch64 in the linux job. The compiler cache's counts are this build's, zeroed by the trim above
       - name: Build the tests and the headless Vulkan tree
         if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
         run: |
@@ -723,6 +743,7 @@ jobs:
             -DLLVM_DIR="$PWD/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/headless --parallel "$(getconf _NPROCESSORS_ONLN)"
+          ccache --show-stats
       - name: Test headless Vulkan and NX runtime
         if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
         run: *headless-tests
@@ -790,10 +811,9 @@ jobs:
         with:
           name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
           path: reference
-      # The four cross builds run on x86-64 and fetch the same sources, SDL3's from the pinned archive among them
-      # (the linux job takes it from its package). ppc64 has no GUI, so no miniz: one cache either way only costs the
-      # others that package. The first to finish saves it, and the second restore key reads the caches from before
-      # this one
+      # The four cross builds run on x86-64 and fetch the same sources (SDL3 is the system root's package, as the linux
+      # job's is), so they share one cache. The first to finish saves it, and the second restore key reads the caches
+      # from before this one
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
@@ -884,7 +904,7 @@ jobs:
             -e LINUX_ONLY -e GITHUB_TOKEN target sh -s <<'EOF'
           set -eu
           libraries="patchelf binutils"
-          [ -n "$LINUX_ONLY" ] || libraries="$libraries libx11 mesa vulkan-icd-loader vulkan-radeon vulkan-swrast
+          [ -n "$LINUX_ONLY" ] || libraries="$libraries sdl3 libx11 mesa vulkan-icd-loader vulkan-radeon vulkan-swrast
             libxext libxcursor libxfixes libxi libxinerama libxrandr libxrender libxss libxtst libxkbcommon wayland
             wayland-protocols libdecor alsa-lib libpulse libpipewire hidapi libusb"
           retry() { for try in 1 2 3; do "$@" && return; [ "$try" = 3 ] && return 1; sleep 5; done; }
@@ -932,14 +952,15 @@ jobs:
       # The build machine's: Clang and LLD build for the target (cmake/cross.cmake) and LLVM's libraries for it
       # (scripts/linux-llvm.sh), ccache caches the compiles, glslang builds the shaders, qemu-user runs the target's
       # own programs, wayland's wayland-scanner the protocols SDL3 builds, jdk21-openjdk the Android app driver's javac
-      # and jni.h. Each pacman is tried 3 times, as in the linux job
+      # and jni.h, meson dav1d for the target (cmake/dav1d.cmake, from a cross file). Each pacman is tried 3 times, as
+      # in the linux job
       - name: Install the build tools
         run: |
           docker exec -i build sh -s <<'EOF'
           set -eu
           retry() { for try in 1 2 3; do "$@" && return; [ "$try" = 3 ] && return 1; sleep 5; done; }
           retry pacman -Syu --noconfirm --needed cmake ninja make patch perl python clang lld llvm glslang spirv-tools qemu-user \
-            git pkgconf patchelf wayland ccache jdk21-openjdk
+            git pkgconf patchelf wayland ccache jdk21-openjdk meson
           EOF
       # Saved once a week, as in the linux job. Every architecture's job installs the same, so one of them saves it
       - name: Keep the installed packages
@@ -990,8 +1011,13 @@ jobs:
         with:
           path: .cache/llvm/${{ matrix.arch }}
           key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
+      # When this run's compiles start: what ccache keeps is what they used (Keep what this run compiled, below)
+      - name: Name the compiles' start
+        id: compiles
+        run: echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
       # Through ccache, without debug information, which no one reads in these builds and the AppImage would carry.
-      # LLVM is the one built above (-DSNX_LLVM_CONFIG= drops the preset's, the system root's), and a release leaves
+      # LLVM is the one built above (-DSNX_LLVM_CONFIG= drops the preset's, the system root's), SDL3 the system root's
+      # package (SNX_SYSTEM_SDL3: a root without it, or with one too old, stops the configure), and a release leaves
       # out scarletnx --mcp's A64 disassembler (SNX_A64_DISASM)
       - name: Cross-build and install
         run: |
@@ -1000,17 +1026,12 @@ jobs:
           set -eu
           git config --global --add safe.directory '*'
           export SNX_SYSROOT=/src/sysroot
-          start=$(date +%s)
           cmake --preset ${{ matrix.preset }} -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF \
             -DSNX_OPT_FLAGS="-O2 -g0" -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DLLVM_DIR=/src/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm -DSNX_LLVM_CONFIG= -DSNX_A64_DISASM=OFF
+            -DLLVM_DIR=/src/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm -DSNX_LLVM_CONFIG= -DSNX_A64_DISASM=OFF \
+            -DSNX_SYSTEM_SDL3=ON
           cmake --build --preset ${{ matrix.preset }} --parallel "$(getconf _NPROCESSORS_ONLN)"
           DESTDIR=/src/stage cmake --install build/${{ matrix.preset }}
-          # only what this run used is kept, as in the linux job
-          ccache --show-stats --verbose
-          ccache --evict-older-than "$(( $(date +%s) - start ))s"
-          ccache --zero-stats
-          du -sh "$CCACHE_DIR"
           mkdir -p /src/.cache/deps
           chown -R "$(stat -c %u:%g /src)" /src/.cache/ccache /src/.cache/deps
           EOF
@@ -1026,7 +1047,8 @@ jobs:
           export SNX_SYSROOT=/src/sysroot
           cmake --preset ${{ matrix.preset }} -DBUILD_TESTING=ON \
             -DSNX_OPT_FLAGS="-O2 -g0" -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DLLVM_DIR=/src/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm -DSNX_LLVM_CONFIG= -DSNX_A64_DISASM=OFF
+            -DLLVM_DIR=/src/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm -DSNX_LLVM_CONFIG= -DSNX_A64_DISASM=OFF \
+            -DSNX_SYSTEM_SDL3=ON
           cmake --build --preset ${{ matrix.preset }} --parallel "$(getconf _NPROCESSORS_ONLN)" \
             --target snx-test-llvm-qemu-differential
           # both forms run, and a failing one's examples go to the log: the container's /tmp goes with the job. A form
@@ -1050,6 +1072,38 @@ jobs:
             fi
           done
           exit $failed
+          EOF
+      # The launcher's tests on the target through qemu-user, as the preset's test preset runs them (QEMU_LD_PREFIX for
+      # the programs a test starts, which the binfmt handler above runs): what the AppImage's launcher draws, reads and
+      # writes, on a big-endian host too. The tree is the differential's, with every launcher test built. gui_sdl_events
+      # stops at the Settings' groups under qemu in these containers, whatever the architecture (#2017)
+      - name: Run the launcher's tests through qemu
+        run: |
+          docker exec -i -e CCACHE_DIR=/src/.cache/ccache -e CCACHE_BASEDIR=/src -e CCACHE_NOHASHDIR=true \
+            -e SNX_DEPS_CACHE=/src/.cache/deps build sh -s <<'EOF'
+          set -eu
+          git config --global --add safe.directory '*'
+          export SNX_SYSROOT=/src/sysroot
+          cmake --preset ${{ matrix.preset }} -DBUILD_TESTING=ON \
+            -DSNX_OPT_FLAGS="-O2 -g0" -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DLLVM_DIR=/src/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm -DSNX_LLVM_CONFIG= -DSNX_A64_DISASM=OFF \
+            -DSNX_SYSTEM_SDL3=ON
+          cmake --build --preset ${{ matrix.preset }} --parallel "$(getconf _NPROCESSORS_ONLN)" --target snx_gui_tests
+          ctest --preset ${{ matrix.preset }} -R '^gui_' -E '^gui_sdl_events$' -j"$(getconf _NPROCESSORS_ONLN)"
+          EOF
+      # Only what this run compiled is kept, as in the linux job: the AppImage's, the differential's and the launcher
+      # tests'. The container builds as root, and the runner's user saves the cache
+      - name: Keep what this run compiled
+        env:
+          START: ${{ steps.compiles.outputs.start }}
+        run: |
+          docker exec -i -e CCACHE_DIR=/src/.cache/ccache -e START build sh -s <<'EOF'
+          set -eu
+          ccache --show-stats --verbose
+          ccache --evict-older-than "$(( $(date +%s) - START ))s"
+          ccache --zero-stats
+          du -sh "$CCACHE_DIR"
+          chown -R "$(stat -c %u:%g /src)" /src/.cache/ccache
           EOF
       - if: github.event_name != 'pull_request'
         uses: actions/cache/save@v5
@@ -1173,7 +1227,8 @@ jobs:
             echo "SNX_DEPS_CACHE=$ws/.cache/deps"
             echo "SNX_CCACHE_START=$(date +%s)"
           } >> "$GITHUB_ENV"
-      # llvm-mingw alone has no LLVM development libraries. Do not mix its C++ runtime with another LLVM build.
+      # llvm-mingw alone has no LLVM development libraries. Do not mix its C++ runtime with another LLVM build. meson:
+      # dav1d's build (cmake/dav1d.cmake), as in the linux job
       - name: Install Clang, LLVM development files and FFmpeg build tools
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
@@ -1192,6 +1247,7 @@ jobs:
             mingw-w64-clang-x86_64-lld
             mingw-w64-clang-x86_64-cmake
             mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-meson
             mingw-w64-clang-x86_64-nasm
             mingw-w64-clang-x86_64-pkgconf
             mingw-w64-clang-x86_64-python
@@ -1208,6 +1264,7 @@ jobs:
           make --version
           perl --version
           nasm --version
+          meson --version
           spirv-val --version
           spirv-dis --version
       - name: Build the runtime and pinned dependencies
@@ -1378,16 +1435,17 @@ jobs:
         with:
           path: android-llvm/arm64-v8a
           key: android-llvm-arm64-v8a-${{ hashFiles('scripts/android-llvm.sh') }}-${{ env.ANDROID_NDK_ROOT }}
-      # The NDK named above, which the runner's image may no longer carry, and NASM for FFmpeg's x86-64 assembly.
-      # sdkmanager's download sometimes ends early ("Premature EOF"): tried 3 times, 5 s apart
-      - name: Install the NDK and NASM
+      # The NDK named above, which the runner's image may no longer carry, NASM for FFmpeg's and dav1d's x86-64
+      # assembly, and meson for dav1d (cmake/dav1d.cmake, from a cross file). sdkmanager's download sometimes ends early
+      # ("Premature EOF"): tried 3 times, 5 s apart
+      - name: Install the NDK, NASM and meson
         run: |
           for try in 1 2 3; do
             "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;${ANDROID_NDK_ROOT##*/}" > /dev/null && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
-          sudo apt-get update && sudo apt-get install -y nasm ccache spirv-tools
+          sudo apt-get update && sudo apt-get install -y nasm meson ccache spirv-tools
       - name: Build LLVM's libraries for x86_64
         if: steps.llvm-x86_64.outputs.cache-hit != 'true'
         run: scripts/android-llvm.sh x86_64 "$PWD/android-llvm/x86_64"
@@ -1598,8 +1656,9 @@ jobs:
         with:
           path: ios-llvm
           key: ios-llvm-${{ hashFiles('scripts/apple-llvm.sh') }}-${{ steps.xcode.outputs.version }}
+      # meson: dav1d's build (cmake/dav1d.cmake), with a native file on macOS and a cross file on iOS
       - name: Install tools
-        run: brew install ninja ccache spirv-tools
+        run: brew install ninja meson ccache spirv-tools
       - name: Build LLVM's libraries for macOS
         id: macos-llvm-build
         if: steps.macos-llvm.outputs.cache-hit != 'true'
@@ -1925,15 +1984,16 @@ jobs:
     timeout-minutes: 30
     container: archlinux:latest
     env:
-      EDENPROBE_VERSION: v0.12.0
-      EDENPROBE_SHA256: 43075089ac39c366deac8e12cf39baa5c957d2c7027741c4fb4f8096719dfa11
+      EDENPROBE_VERSION: v0.15.0
+      EDENPROBE_SHA256: 00ad41a1ffc9184b93628f1e6398ff9b82222a97d747b84251602eabf7350132
       # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
       # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
-      # added back since it returned (docs/dev/edenprobe.md)
-      EDENPROBE_MODE: quick notime cpu fs video display kernel audio
+      # added back since it returned (docs/dev/edenprobe.md). hooks: the runtime answers nn::fs, time, pl, ngc and nsd
+      # in the SDK's own functions and serves none of their services, so the probe asks through the functions it exports
+      EDENPROBE_MODE: quick notime cpu fs video display kernel audio hooks
       # the APK (edenprobe's Android build) of a release of its own: its words run every family it has
-      EDENPROBE_APK_VERSION: v0.12.0
-      EDENPROBE_APK_SHA256: 18c6547496deab49265bfaa6f0856d98dc3f53f4edf5156b7f9ca4c6a33738a6
+      EDENPROBE_APK_VERSION: v0.15.0
+      EDENPROBE_APK_SHA256: 97404f74f28bdb6fb5810526757599fc7c0c276c18a8f2d68d992d2baa2a2e25
       EDENPROBE_APK_MODE: quick
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed

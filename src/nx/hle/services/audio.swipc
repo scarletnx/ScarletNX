@@ -1,71 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# audren:u, audout:u and hwopus (audio.c, and audren.c for RequestUpdate)
-
-type nn::audio::detail::AudioRendererParameterInternal = struct {
-    u32 sample_rate;
-    u32 sample_count;
-    u32 mix_buffer_count;
-    u32 sub_mix_count;
-    u32 voice_count;
-    u32 sink_count;
-    u32 effect_count;
-    u32 performance_frame_count;
-    b8 is_voice_drop_enabled;
-    u8 reserved;
-    u8 rendering_device;
-    u8 execution_mode;
-    u32 splitter_count;
-    u32 splitter_send_channel_count;
-    u32 external_context_size;
-    u32 revision;
-};
-type nn::audio::AudioOutName = nn::audio::AudioDeviceName;
-type nn::audio::AudioOutParameter = struct {
-    u32 sample_rate;
-    u16 channel_count;
-    u16 reserved;
-};
-type nn::audio::AudioInParameter = struct {
-    u32 sample_rate;
-    u16 channel_count;
-    u16 reserved;
-};
-type nn::audio::AudioInProtocol = u32[2];
-# libnx's AudioOutBuffer: the next buffer, the samples' address, their capacity and size, and the offset into them
-type nn::audio::AudioOutBuffer = struct {
-    u64 next;
-    u64 buffer;
-    u64 buffer_capacity;
-    u64 data_size;
-    u64 data_offset;
-};
-type nn::codec::detail::HardwareOpusDecoderParameterInternal = struct {
-    u32 sample_rate;
-    u32 channel_count;
-};
-type nn::codec::detail::HardwareOpusDecoderParameterInternalEx = struct {
-    u32 sample_rate;
-    u32 channel_count;
-    u32 flags;
-    u32 reserved;
-};
-type nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternal = struct {
-    u32 sample_rate;
-    u32 channel_count;
-    u32 stream_count;
-    u32 stereo_stream_count;
-    u8[0x100] channel_mappings;
-};
-type nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternalEx = struct {
-    u32 sample_rate;
-    u32 channel_count;
-    u32 stream_count;
-    u32 stereo_stream_count;
-    u32 flags;
-    u32 reserved;
-    u8[0x100] channel_mappings;
-};
+# aud:u (audio.c). The audio outs, the audio ins, the audio device, the audio renderer and the hardware Opus
+# decoders are native (nn/)
 
 # The Ounce native audio service (aud:u): a TIPC session that hands back the managers audren:u/audout:u/audin:u
 # serve, one per command. Native-ABI games reach the renderer manager this way, then its GetWorkBufferSize (cmd 1).
@@ -75,156 +11,17 @@ interface nn::audio::detail::INativeAudioManager is aud:u {
     [2] GetAudioRendererManager() -> object<nn::audio::detail::IAudioRendererManager> manager;
 }
 
-interface nn::audio::detail::IAudioRendererManager is audren:u {
-    [0] OpenAudioRenderer(nn::audio::detail::AudioRendererParameterInternal params, u64 work_buffer_size, aruid aruid,
-                          handle<copy, transfer_memory> work_buffer, handle<copy, process> process)
-        -> object<nn::audio::detail::IAudioRenderer> renderer;
-    [1] GetWorkBufferSize(nn::audio::detail::AudioRendererParameterInternal params) -> u64 size;
-    [2] GetAudioDeviceService(nn::applet::AppletResourceUserId aruid) -> object<nn::audio::detail::IAudioDevice> device;
-    # two u64s around the process handle: the SDK's server uses the first whole and the second as 32 bits
-    [3] OpenAudioRendererForManualExecution(nn::audio::detail::AudioRendererParameterInternal params,
-                                            u64 work_buffer_address, handle<copy, process> process,
-                                            u64 work_buffer_size, aruid aruid)
-        -> object<nn::audio::detail::IAudioRenderer> renderer;
-    [4] GetAudioDeviceServiceWithRevisionInfo(nn::applet::AppletResourceUserId aruid, u32 revision)
-        -> object<nn::audio::detail::IAudioDevice> device;
+# audren:u's manager, which nothing here serves: the audio renderer and the audio device are native
+# (nn/audio_renderer.c, nn/audio.c), and aud:u's command 2 stops the game that asks for it
+interface nn::audio::detail::IAudioRendererManager {
 }
 
-interface nn::audio::detail::IAudioRenderer {
-    [0] GetSampleRate() -> u32 sample_rate;
-    [1] GetSampleCount() -> u32 sample_count;
-    [2] GetMixBufferCount() -> u32 mix_buffer_count;
-    [3] GetState() -> u32 state;
-    [4] RequestUpdate(buffer<u8, 5> input, buffer<u8, 6> output, buffer<u8, 6> performance);
-    [5] Start();
-    [6] Stop();
-    [7] QuerySystemEvent() -> handle<copy, event> event;
-    [8] SetRenderingTimeLimit(u32 percent);
-    [9] GetRenderingTimeLimit() -> u32 percent;
-    [10] RequestUpdateAuto(buffer<u8, 0x21> input, buffer<u8, 0x22> output, buffer<u8, 0x22> performance);
-    @stub [11] ExecuteAudioRendererRendering();
-    [12] SetVoiceDropParameter(f32 parameter);
-    [13] GetVoiceDropParameter() -> f32 parameter;
+# audout:u's manager, which nothing here serves: the audio outs are native (nn/audio.c), and aud:u's command 1 stops
+# the game that asks for it
+interface nn::audio::detail::IAudioOutManager {
 }
 
-interface nn::audio::detail::IAudioDevice {
-    [0] ListAudioDeviceName(array<nn::audio::AudioDeviceName, 6> names) -> i32 count;
-    [1] SetAudioDeviceOutputVolume(buffer<nn::audio::AudioDeviceName, 5> name, f32 volume);
-    [2] GetAudioDeviceOutputVolume(buffer<nn::audio::AudioDeviceName, 5> name) -> f32 volume;
-    [3] GetActiveAudioDeviceName(buffer<nn::audio::AudioDeviceName, 6> name);
-    [4] QueryAudioDeviceSystemEvent() -> handle<copy, event> event;
-    [5] GetActiveChannelCount() -> u32 count;
-    [6] ListAudioDeviceNameAuto(array<nn::audio::AudioDeviceName, 0x22> names) -> i32 count;
-    [7] SetAudioDeviceOutputVolumeAuto(buffer<nn::audio::AudioDeviceName, 0x21> name, f32 volume);
-    [8] GetAudioDeviceOutputVolumeAuto(buffer<nn::audio::AudioDeviceName, 0x21> name) -> f32 volume;
-    [10] GetActiveAudioDeviceNameAuto(buffer<nn::audio::AudioDeviceName, 0x22> name);
-    [11] QueryAudioDeviceInputEvent() -> handle<copy, event> event;
-    [12] QueryAudioDeviceOutputEvent() -> handle<copy, event> event;
-    # SDK 13 and later: before, 13 was another command (an A buffer in, a u32 out), which this declaration refuses
-    [13] GetActiveAudioOutputDeviceName(buffer<nn::audio::AudioDeviceName, 6> name);
-    # SDK 13 and later (nn::audio::ListAudioOutputDeviceName): a game may compare each name with the outputs it knows
-    [14] ListAudioOutputDeviceName(array<nn::audio::AudioDeviceName, 6> names) -> i32 count;
-    # 17.0.0 and later: the server's own symbols give (Out<NativeHandle>, u64) and (u64). The SDK's client reads a copy
-    # handle, and its wrapper aborts on a failed result. A release changes nothing: the device keeps its event to its end
-    [15] AcquireAudioInputDeviceNotification(u64 id) -> handle<copy, event> event;
-    @stub [16] ReleaseAudioInputDeviceNotification(u64 id);
-    [17] AcquireAudioOutputDeviceNotification(u64 id) -> handle<copy, event> event;
-    @stub [18] ReleaseAudioOutputDeviceNotification(u64 id);
-    # 18.0.0 and later: a mode in which the console tunes the output volume. A failed result stops the SDK's wrapper
-    # (an abort)
-    [19] SetAudioDeviceOutputVolumeAutoTuneEnabled(b8 enabled);
-    [20] IsAudioDeviceOutputVolumeAutoTuneEnabled() -> b8 enabled;
-}
-
-interface nn::audio::detail::IAudioOutManager is audout:u {
-    [0] ListAudioOuts(array<nn::audio::AudioOutName, 6> names) -> u32 count;
-    [1] OpenAudioOut(nn::audio::AudioOutParameter params, aruid aruid, handle<copy, process> process,
-                     buffer<nn::audio::AudioOutName, 5> name, buffer<nn::audio::AudioOutName, 6> name_out)
-        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioOut> out);
-    [2] ListAudioOutsAuto(array<nn::audio::AudioOutName, 0x22> names) -> u32 count;
-    [3] OpenAudioOutAuto(nn::audio::AudioOutParameter params, aruid aruid, handle<copy, process> process,
-                         buffer<nn::audio::AudioOutName, 0x21> name, buffer<nn::audio::AudioOutName, 0x22> name_out)
-        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioOut> out);
-}
-
-interface nn::audio::detail::IAudioOut {
-    [0] GetAudioOutState() -> u32 state;
-    [1] Start();
-    [2] Stop();
-    [3] AppendAudioOutBuffer(u64 tag, buffer<nn::audio::AudioOutBuffer, 5> buffer);
-    [4] RegisterBufferEvent() -> handle<copy, event> event;
-    [5] GetReleasedAudioOutBuffers(array<u64, 6> tags) -> u32 count;
-    [6] ContainsAudioOutBuffer(u64 tag) -> b8 contains;
-    [7] AppendAudioOutBufferAuto(u64 tag, buffer<nn::audio::AudioOutBuffer, 0x21> buffer);
-    [8] GetReleasedAudioOutBuffersAuto(array<u64, 0x22> tags) -> u32 count;
-    [9] GetAudioOutBufferCount() -> u32 count;
-    [10] GetAudioOutPlayedSampleCount() -> u64 count;
-    [11] FlushAudioOutBuffers() -> b8 released;
-    [12] SetAudioOutVolume(f32 volume);
-    [13] GetAudioOutVolume() -> f32 volume;
-}
-
-interface nn::audio::detail::IAudioInManager is audin:u {
-    @stub [0] ListAudioIns(array<nn::audio::AudioDeviceName, 6> names) -> u32 count;
-    [1] OpenAudioIn(nn::audio::AudioInParameter params, aruid aruid, handle<copy, process> process,
-                    buffer<nn::audio::AudioDeviceName, 5> name, buffer<nn::audio::AudioDeviceName, 6> name_out)
-        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
-    @stub [2] ListAudioInsAuto(array<nn::audio::AudioDeviceName, 0x22> names) -> u32 count;
-    [3] OpenAudioInAuto(nn::audio::AudioInParameter params, aruid aruid, handle<copy, process> process,
-                        buffer<nn::audio::AudioDeviceName, 0x21> name, buffer<nn::audio::AudioDeviceName, 0x22> name_out)
-        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
-    @stub [4] ListAudioInsAutoFiltered(array<nn::audio::AudioDeviceName, 0x22> names) -> u32 count;
-    [5] OpenAudioInProtocolSpecified(nn::audio::AudioInProtocol protocol, nn::audio::AudioInParameter params,
-                                     aruid aruid, handle<copy, process> process,
-                                     buffer<nn::audio::AudioDeviceName, 0x21> name,
-                                     buffer<nn::audio::AudioDeviceName, 0x22> name_out)
-        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
-}
-interface nn::audio::detail::IAudioIn {
-}
-
-@fallback(quiet_ok)
-interface nn::codec::detail::IHardwareOpusDecoderManager is hwopus {
-    [0] OpenHardwareOpusDecoder(nn::codec::detail::HardwareOpusDecoderParameterInternal params, u32 work_buffer_size,
-                                handle<copy, transfer_memory> work_buffer)
-        -> object<nn::codec::detail::IHardwareOpusDecoder> decoder;
-    [1] GetWorkBufferSize(nn::codec::detail::HardwareOpusDecoderParameterInternal params) -> u32 size;
-    [2] OpenHardwareOpusDecoderForMultiStream(
-            buffer<nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternal, 0x19> params,
-            u32 work_buffer_size, handle<copy, transfer_memory> work_buffer)
-        -> object<nn::codec::detail::IHardwareOpusDecoder> decoder;
-    [3] GetWorkBufferSizeForMultiStream(
-            buffer<nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternal, 0x19> params) -> u32 size;
-    [4] OpenHardwareOpusDecoderEx(nn::codec::detail::HardwareOpusDecoderParameterInternalEx params,
-                                  u32 work_buffer_size, handle<copy, transfer_memory> work_buffer)
-        -> object<nn::codec::detail::IHardwareOpusDecoder> decoder;
-    [5] GetWorkBufferSizeEx(nn::codec::detail::HardwareOpusDecoderParameterInternalEx params) -> u32 size;
-    [6] OpenHardwareOpusDecoderForMultiStreamEx(
-            buffer<nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternalEx, 0x19> params,
-            u32 work_buffer_size, handle<copy, transfer_memory> work_buffer)
-        -> object<nn::codec::detail::IHardwareOpusDecoder> decoder;
-    [7] GetWorkBufferSizeForMultiStreamEx(
-            buffer<nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternalEx, 0x19> params) -> u32 size;
-    [8] GetWorkBufferSizeExEx(nn::codec::detail::HardwareOpusDecoderParameterInternalEx params) -> u32 size;
-    [9] GetWorkBufferSizeForMultiStreamExEx(
-            buffer<nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternalEx, 0x19> params) -> u32 size;
-}
-
-interface nn::codec::detail::IHardwareOpusDecoder {
-    [0] DecodeInterleavedOld(buffer<u8, 5> input, buffer<i16, 6> output) -> (u32 consumed, u32 samples);
-    @stub [1] SetContext(buffer<u8, 5> context);
-    [2] DecodeInterleavedForMultiStreamOld(buffer<u8, 5> input, buffer<i16, 6> output) -> (u32 consumed, u32 samples);
-    @stub [3] SetContextForMultiStream(buffer<u8, 5> context);
-    [4] DecodeInterleavedWithPerfOld(buffer<u8, 5> input, buffer<i16, 0x46> output)
-        -> (u32 consumed, u32 samples, u64 perf_us);
-    [5] DecodeInterleavedForMultiStreamWithPerfOld(buffer<u8, 5> input, buffer<i16, 0x46> output)
-        -> (u32 consumed, u32 samples, u64 perf_us);
-    [6] DecodeInterleavedWithPerfAndResetOld(b8 reset, buffer<u8, 5> input, buffer<i16, 0x46> output)
-        -> (u32 consumed, u32 samples, u64 perf_us);
-    [7] DecodeInterleavedForMultiStreamWithPerfAndResetOld(b8 reset, buffer<u8, 5> input, buffer<i16, 0x46> output)
-        -> (u32 consumed, u32 samples, u64 perf_us);
-    [8] DecodeInterleaved(b8 reset, buffer<u8, 0x45> input, buffer<i16, 0x46> output)
-        -> (u32 consumed, u32 samples, u64 perf_us);
-    [9] DecodeInterleavedForMultiStream(b8 reset, buffer<u8, 0x45> input, buffer<i16, 0x46> output)
-        -> (u32 consumed, u32 samples, u64 perf_us);
+# audin:u's manager, which nothing here serves: the audio ins are native (nn/audio.c), and aud:u's command 0 stops
+# the game that asks for it
+interface nn::audio::detail::IAudioInManager {
 }

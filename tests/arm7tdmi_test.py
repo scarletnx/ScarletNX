@@ -156,11 +156,23 @@ def check(arm, thumb, profile):
     run = Run(arm['io_load'], r4=0x02000000)
     put(run.memory, 0x02000000, b'\x01\x02\x03\x04')
     assert run().r[0] == 0x04030201 and not run.calls
-    # past the console's 28 bits (but for the mirror at bit 31) nothing answers: the hook gives the open bus there
-    for address in (0x2E00A610, 0x10000000, 0xFFFFFFF0) if seven else ():
+    # past the console's 28 bits nothing answers, 0x8xxxxxxx included: the hook gives the open bus there
+    for address in (0x2E00A610, 0x10000000, 0xFFFFFFF0, 0x82000000, 0x84000004) if seven else ():
         run = Run(arm['io_load'], r4=address)
         run.cpu.mem_size = 1 << 32  # the board's window: the hook takes these, nothing past SIZE is touched
         assert run().exit == 0 and run.calls == [(address, 4, 0)] and run.cpu.r[0] == 0xCAFE, (hex(address), run.calls)
+    # the cartridge's ROM takes no writes: a store there reaches the hook, which drops it, and the window keeps the image
+    if seven:
+        run = Run(arm['io_store'], r1=0x12345678, r4=0x08000006)
+        run.cpu.mem_size = 0x10000000  # the board's window: the hook takes the store, nothing past SIZE is touched
+        assert run().exit == 0 and run.calls == [(0x08000006, 0x102, 0x12345678)], run.calls
+        # past the 28 bits a store and a list go to the hook too, word by word, 0x8xxxxxxx included
+        run = Run(arm['io_store'], r1=0x12345678, r4=0x88000006)
+        run.cpu.mem_size = 1 << 32
+        assert run().exit == 0 and run.calls == [(0x88000006, 0x102, 0x12345678)], run.calls
+        run = Run(arm['ldm'], r4=0x82000001)
+        run.cpu.mem_size = 1 << 32
+        assert run().exit == 0 and run.calls == [(0x82000001, 4, 0), (0x82000005, 4, 0)], run.calls
     # the BIOS answers with the board's open bus, so its reads go through the hook too
     run = Run(arm['io_load'], r4=0x00000100)
     assert run().exit == 0 and run.calls == ([(0x00000100, 4, 0)] if seven else [])

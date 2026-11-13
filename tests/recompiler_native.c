@@ -300,17 +300,20 @@ int main(int argc, char** argv) {
     check_empty(temp);
     free(text);
     text = NULL;
-    { /* --keep-c, --keep-ir's old name: still taken, and said to be deprecated */
+    { /* --keep-c, --keep-ir's old name: still taken, and said with its name now (common/utilities/cli.h) */
         const char* old[] = {argv[1], "--repo", argv[2], "--recomp", "/nonexistent/old.nro", "--keep-c", NULL};
-        check(snx_run(old, root, NULL, &text) != 0 && strstr(text, "--keep-c is deprecated: use --keep-ir"),
+        check(snx_run(old, root, NULL, &text) != 0 &&
+                  strstr(text, "--keep-c is --keep-ir now: this run takes it as --keep-ir"),
               "--keep-c said to be deprecated");
         free(text);
         text = NULL;
     }
-    { /* the help names the level a recompile takes without -O (its line ends in \r\n on Windows) */
+    { /* the help names the level a recompile takes without -O, the common table's line (its lines end in \r\n on
+         Windows) */
         const char* help[] = {argv[1], "--repo", argv[2], "-r", "--help", NULL};
         check(!snx_run(help, root, NULL, &text) &&
-                  strstr(text, "-O LEVEL               Optimization: 0,1,2,3,s,z (default: 2)"),
+                  strstr(text, "-O, --opt LEVEL        LLVM's optimization of the code it compiles: 0, 1, 2, 3, s or z") &&
+                  strstr(text, "setting opt, 2)"),
               "-O's default in the help");
         free(text);
         text = NULL;
@@ -387,10 +390,11 @@ int main(int argc, char** argv) {
     args[k++] = argv[2];
     args[k++] = "-r";
     args[k++] = input;
-    args[k++] = "--jobs";
-    args[k++] = "0";
+    args[k++] = "--jobs"; /* 0 is Auto, as the setting aot_threads; past 1024 refused with the value */
+    args[k++] = "1025";
     args[k] = NULL;
-    check(snx_run(args, root, NULL, &text) != 0, "reject zero jobs");
+    check(snx_run(args, root, NULL, &text) != 0 && strstr(text, "--jobs 1025: not a whole number from 0 (Auto) to 1024"),
+          "reject 1025 jobs");
     free(text);
     text = NULL;
     source = snx_path_join(root, "copy source");

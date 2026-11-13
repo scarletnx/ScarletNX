@@ -28,21 +28,24 @@
 
 /* what the renderer reads of the GPU at a frame while stats is on: the time its graphics queue was busy, summed from
    any start (busy_ns), where it can time that queue (timed); the device-local heap's use by the process and the
-   driver's budget for it, in bytes, 0 where the driver does not tell them */
+   driver's budget for it, in bytes, 0 where nothing tells them; vram_ours where the driver tells neither, and they are
+   what the process took from the heap and the heap's size */
 typedef struct {
     u64 busy_ns;
     int timed;
     u64 vram, vram_budget;
+    int vram_ours;
 } SnxStatsGpu;
 /* what the measured lines say. cpu: the processor's share of the machine in percent, -1 unknown; memory in bytes, 0
    unknown; memory_total the machine's physical memory, 0 unknown. gpu: the graphics queue's busy share of the time in percent, -1 unknown; gpu_ns its busy time a frame.
-   vram and vram_budget as SnxStatsGpu's */
+   vram, vram_budget and vram_ours as SnxStatsGpu's */
 typedef struct {
     int cpu;
     u64 memory, memory_total;
     int gpu;
     u64 gpu_ns;
     u64 vram, vram_budget;
+    int vram_ours;
 } SnxStatsMeasure;
 
 /* what RenderDoc's lines say (gpu/vk/renderdoc.c, as it loads and after each capture): ready, a capture can be taken

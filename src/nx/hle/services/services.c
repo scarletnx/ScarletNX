@@ -7,7 +7,6 @@
 #include "hle/services/sm.swipc.h"
 #include "hle/services/am.swipc.h"
 #include "hle/services/set.swipc.h"
-#include "hle/services/time.swipc.h"
 #include "hle/services/acc.swipc.h"
 #include "hle/services/audio.swipc.h"
 #include "hle/services/misc.swipc.h"
@@ -56,7 +55,6 @@ void svc_core_init(void) {
     snx_users_init(); /* before am: its launch parameter names the user */
     am_init();
     audio_init();
-    time_init();
     network_init();
     network_room_init(); /* after the users: the room knows this console by the nickname of the one playing */
 
@@ -65,18 +63,13 @@ void svc_core_init(void) {
     nn_am_service_IAllSystemAppletProxiesService_register(new_appletae);
     nn_settings_ISettingsServer_register(new_set);
     nn_settings_ISystemSettingsServer_register(new_setsys);
-    nn_timesrv_detail_service_IStaticService_register(new_time);
-    svc_register("time:u", new_time_user);
     nn_account_IAccountServiceForApplication_register(new_acc);
     nn_account_IAccountServiceForSystemService_register(new_acc_system);
     nn_account_IAccountServiceForAdministrator_register(new_acc_admin);
     /* one interface, two kinds of session (ldr.c) */
     svc_register("ldr:ro", new_ldr);
     svc_register("ro:1", new_ro1);
-    nn_audio_detail_IAudioRendererManager_register(new_audren);
-    nn_audio_detail_IAudioOutManager_register(new_audout);
     nn_audio_detail_INativeAudioManager_register(new_aud);
-    nn_codec_detail_IHardwareOpusDecoderManager_register(new_hwopus);
 
     /* bsd:u and bsd:a are the application's and the applets' sessions, bsd:s the system's (bsd.c) */
     svc_register("bsd:u", new_bsd_u);
@@ -84,20 +77,17 @@ void svc_core_init(void) {
     svc_register("bsd:s", new_bsd_s);
     nn_bsdsocket_cfg_ServerInterface_register(new_bsdcfg);
     nn_socket_resolver_IResolver_register(new_sfdnsres);
-    nn_nsd_detail_IManager_register(new_nsd);
     nn_nifm_detail_IStaticService_register(new_nifm);
     nn_ssl_sf_ISslService_register(new_ssl);
     nn_ssl_sf_ISslServiceForSystem_register(new_ssl_system);
 
     nn_apm_IManager_register(new_apm);
     nn_lm_ILogService_register(new_lm);
-    nn_pctl_detail_ipc_IParentalControlServiceFactory_register(new_pctl);
     nn_friends_detail_ipc_IServiceCreator_register(new_friend);
     nn_chat_IUserService_register(new_chat);
     nn_ntc_detail_service_IStaticService_register(new_ntc);
     nn_streamplay_IUserService_register(new_stpl);
     nn_ns_detail_IServiceGetterInterface_register(new_ns);
-    nn_prepo_detail_ipc_IPrepoService_register(new_prepo);
     nn_capsrv_sf_IAlbumApplicationService_register(new_caps);
     nn_capsrv_sf_IScreenShotApplicationService_register(new_capssu);
     nn_err_context_IWriterForApplication_register(new_ectx);
@@ -115,9 +105,6 @@ void svc_core_init(void) {
     nn_mii_detail_IStaticService_register(new_mii);
     nn_ldn_detail_IUserServiceCreator_register(new_ldn);
     nn_btm_IBtmUser_register(new_btmu);
-    nn_audio_detail_IAudioInManager_register(new_audin);
-    nn_ngc_detail_IService_register(new_ngc);
-    nn_ngct_detail_IService_register(new_ngct);
     nn_olsc_srv_IOlscServiceForApplication_register(new_olsc);
 
     /* the audio renderer's 5 ms frames and the audio outs' buffers (audio.c), from the start as on the console */

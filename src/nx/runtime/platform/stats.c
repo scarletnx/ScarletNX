@@ -157,7 +157,8 @@ void stats_frame(u64 now_ns, const SnxStatsGpu* gpu) {
             .memory_total = snx_memory_total(&total) ? total : 0,
             .gpu = -1,
             .vram = gpu->vram,
-            .vram_budget = gpu->vram_budget};
+            .vram_budget = gpu->vram_budget,
+            .vram_ours = gpu->vram_ours};
         /* the GPU's busy time read since the last measure, over its time and its frames: the renderer reads a frame's
            once its slot is reused, two frames on, a shift a second's sum hardly shows */
         if (gpu->timed && g_stats.busy_timed) {
@@ -466,7 +467,9 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
         cells(g_box.gpu, STATS_GPU_CELLS, text);
         *ui_put(put_mib(ui_put(put_mib(ui_put(text, "ram "), m->memory), "/"), m->memory_total), " MiB") = 0;
         cells(g_box.cells[2], STATS_CELLS, text);
-        *ui_put(put_mib(ui_put(put_mib(ui_put(text, "vram "), m->vram), "/"), m->vram_budget), " MiB") = 0;
+        /* our use and the heap's size, said to be them, where the driver gives neither its use nor a budget */
+        *ui_put(put_mib(ui_put(put_mib(ui_put(text, "vram "), m->vram), "/"), m->vram_budget),
+                m->vram_ours ? " MiB ours/heap" : " MiB") = 0;
         cells(g_box.cells[3], STATS_CELLS, text);
         g_box.measures = g_stats.measures;
     }

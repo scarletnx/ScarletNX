@@ -216,6 +216,7 @@ void ipc_stats_log(u64 now_ns);
 
 KShmem* kshmem_new(u64 size, const char* name);
 u8* kshmem_ptr(KShmem* s);
+u64 kshmem_map_free(KShmem* s, u32 perm); /* mapped where the game's own code would: the address, or 0 (svc_mem.c) */
 
 /* once the game's modules are loaded, for the dumps and kernel_find_symbol_exact */
 void kernel_load_symbols(void);
@@ -244,8 +245,8 @@ void mem_report(char* out, int n);
 /* g_klock, the kernel lock, is g_host.kernel.klock (hle.h): every list a waiter or signaller touches is under it */
 /* svc_mem.c, for RtAPI.code_changed (runtime/rtapi.c): IC IVAU of the 64-byte line at addr, in a view of code
    (svcMapProcessMemory) or in the code a view shows. Its code address into *code, and 1 when its bytes differ from
-   what the view kept of them (which then takes them), 0 when they are the same. -1 for a line no view knows, which may
-   have changed */
+   what a view of it kept of them (each view then takes them), 0 when they are the same in every view. -1 for a line no
+   view knows, which may have changed */
 int svc_code_line(u64 addr, u64* code);
 
 #endif

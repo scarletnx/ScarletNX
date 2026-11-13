@@ -198,7 +198,8 @@ SnxArmExec* snx_arm_exec_new(char* error, size_t error_size) {
     if (!e->loader || snx_code_define(e->loader, "snx_arm_fp", (SnxU64)(uintptr_t)snx_arm_fp) ||
         snx_code_define(e->loader, "snx_arm_crypto", (SnxU64)(uintptr_t)snx_arm_crypto) ||
         snx_code_define(e->loader, "snx_arm_undefined", (SnxU64)(uintptr_t)snx_arm_undefined) ||
-        snx_code_define(e->loader, "snx_arm_coproc", (SnxU64)(uintptr_t)snx_arm_coproc)) {
+        snx_code_define(e->loader, "snx_arm_coproc", (SnxU64)(uintptr_t)snx_arm_coproc) ||
+        snx_code_define(e->loader, "snx_arm_multiply_carry", (SnxU64)(uintptr_t)snx_arm_multiply_carry)) {
 #endif
         if (error_size && !error[0]) snprintf(error, error_size, "cannot name the runtime library's functions");
         snx_arm_exec_free(e);

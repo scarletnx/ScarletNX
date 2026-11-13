@@ -105,10 +105,31 @@
    the table and the route list, so that the recompiler routes the direct calls to it. It holds for the one build, so
    it has no @version.
 
-   Usage: hookgen [--prefix NAME] [--a32] [-I DIR]... --header OUT.h --out OUT.inc SPEC... (NAME, hook by default,
-          names the tables; --a32 adds the adapters for a 32-bit program, <prefix>_a32; each -I DIR a folder to find
-          the include line's header in; the specs are read one after another into one table, each with its own
-          family lines, as hooks.hook and the game patches of src/nx/patches/ are)
+   A 32-bit program. A hook says a32 after its handler (and its uses and pure) when its declaration holds for a
+   32-bit program too: the function has the same symbol there, its arguments are these under AAPCS32 (a usize for a
+   size_t) and its handler reads nothing whose layout differs, so it uses no struct. A @version after that a32 gives
+   the versions it holds for there, in place of the hook's own: the 32-bit SDKs the function was read in, which are
+   not the 64-bit ones. A function that a 32-bit program has another declaration of is declared for it alone, on a
+   line that begins with a32:
+
+     hook _ZN2nn4time10InitializeEv() -> u32 = initialize a32 @version(< 1.0.0)
+     hook _ZN2nn4time19StandardSteadyClock3nowEv() -> i64 = steady_now
+     @version(< 1.0.0) a32 hook _ZN2nn4time19StandardSteadyClock3nowEv(addr out) = steady_now_out
+     @version(< 1.0.0) a32 hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = save32 uses PlayReport32
+
+   one whose result AAPCS32 returns through a pointer (a class of 8 bytes, which AAPCS64 returns in x0), one whose
+   symbol a 32-bit SDK mangles another way (a size_t is j there and m in a 64-bit one), or one that reads a struct,
+   whose layout is the 32-bit SDK's. A symbol's declarations for a 32-bit program (the ones marked a32 and the ones
+   for it alone) are checked against each other as a symbol's are, and never against the ones that don't hold for
+   it. --a32-marked writes that program's table after the other, <prefix>32_symbol, _fn (SnxArmBlock adapters, as
+   --a32's), _handler, _family, _key, _lo, _hi, _layouts and _table with <PREFIX>32_COUNT entries: the hooks marked
+   a32 and the ones for a 32-bit program alone, which are in no other table and name no route.
+
+   Usage: hookgen [--prefix NAME] [--a32 | --a32-marked] [-I DIR]... --header OUT.h --out OUT.inc SPEC... (NAME,
+          hook by default, names the tables; --a32 adds an adapter for a 32-bit program to every entry,
+          <prefix>_a32, and --a32-marked a 32-bit program's own table instead, <prefix>32_table; each -I DIR a
+          folder to find the include line's header in; the specs are read one after another into one table, each
+          with its own family lines, as hooks.hook and the game patches of src/nx/patches/ are)
           hookgen [-I DIR]... --routes OUT.inc SPEC... (the symbols that the hooks and route lines of every SPEC
           name, sorted by strcmp and without duplicates, as hook_route_names and HOOK_ROUTE_COUNT, for
           nx/loader/hook_routes.c)
@@ -204,9 +225,12 @@ typedef struct {
     char symbol[MAX_NAME], handler[MAX_NAME]; /* an address hook's symbol is its key, BUILDID:OFFSET */
     Arg args[MAX_ARGS];
     int nargs, line, family, nuses, pure, nbufs, at;
+    int a32; /* FOR_A32_TOO: the declaration holds for a 32-bit program too (the word a32 after it); FOR_A32_ALONE: it
+                is for a 32-bit program alone (a32 before hook) */
     Kind ret;
     char ret_cname[MAX_NAME];
     Range range;
+    Range range32; /* its versions in a 32-bit program: those after its a32, else range */
     char use_name[MAX_USES][MAX_NAME];
     int use[MAX_USES]; /* the structs' first variants */
 } Hook;
@@ -242,6 +266,9 @@ static Variant variants[MAX_VARIANTS];
 static int nvariants;
 static Entry entries[MAX_ENTRIES];
 static int nentries;
+static Entry entries32[MAX_ENTRIES]; /* a 32-bit program's table (--a32-marked) */
+static int nentries32;
+enum { FOR_A32_TOO = 1, FOR_A32_ALONE };
 static char families[MAX_FAMILIES][MAX_NAME];
 static int nfamilies;
 static char routes[MAX_ROUTES][MAX_NAME]; /* the route lines' symbols */
@@ -761,10 +788,11 @@ static void assign_a32(Hook* h) {
     }
 }
 
-/* hook SYMBOL(TYPE NAME, ...) [-> TYPE] [= HANDLER] [uses STRUCT, ...] [pure], or for an address hook (at, its key
-   BUILDID:OFFSET) hook HANDLER(TYPE NAME, ...) [-> TYPE] [uses STRUCT, ...] [pure]: a function without a symbol has
-   only the name its handler gives it */
-static void parse_hook(const char* p, int line, const Range* range, const char* at) {
+/* hook SYMBOL(TYPE NAME, ...) [-> TYPE] [= HANDLER] [uses STRUCT, ...] [pure] [a32 [@version(...)]], or for an address
+   hook (at, its key BUILDID:OFFSET) hook HANDLER(TYPE NAME, ...) [-> TYPE] [uses STRUCT, ...] [pure]: a function
+   without a symbol has only the name its handler gives it. alone: the line began with a32, a declaration for a 32-bit
+   program alone */
+static void parse_hook(const char* p, int line, const Range* range, const char* at, int alone) {
     Hook* h;
     char derived[MAX_NAME];
     int x = 0, v = 0, nstack = 0;
@@ -774,8 +802,9 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
     memset(h, 0, sizeof *h);
     h->line = line;
     h->family = nfamilies - 1;
-    h->range = *range;
+    h->range = h->range32 = *range;
     h->at = at != NULL;
+    h->a32 = alone ? FOR_A32_ALONE : 0;
     if (at) {
         strcpy(h->symbol, at);
         p = word(p, h->handler, line, "handler");
@@ -845,8 +874,18 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
         }
     }
     if (keyword(p, "pure")) {
+        if (alone) fail(line, "verify mode checks no hook of a 32-bit program: drop pure");
         h->pure = 1;
         p = skip_space(p + 4);
+    }
+    if (keyword(p, "a32")) {
+        if (alone) fail(line, "the a32 before hook says it already: drop the a32 after the handler");
+        if (h->nuses)
+            fail(line, "a hook that holds for a 32-bit program too uses no struct, as a struct's layout is one "
+                       "SDK's: declare the 32-bit program's with a32 before hook");
+        h->a32 = FOR_A32_TOO;
+        p = skip_space(p + 3);
+        if (!strncmp(p, "@version", 8)) p = skip_space(parse_version(p + 8, &h->range32, line));
     }
     if (*p) fail(line, "unexpected text after the hook's handler");
     resolve_buffers(h, line);
@@ -1013,9 +1052,13 @@ static void read_spec(const char* path) {
             if (versioned) fail(version_line, "an address hook is for one build of its module: it has no @version");
             p = parse_at(p + 1, key, line);
             if (!keyword(p, "hook")) fail(line, "expected 'hook' after the address");
-            parse_hook(p + 4, line, &any, key);
+            parse_hook(p + 4, line, &any, key, 0);
         } else if (keyword(p, "hook")) {
-            parse_hook(p + 4, line, versioned ? &range : &any, NULL);
+            parse_hook(p + 4, line, versioned ? &range : &any, NULL, 0);
+        } else if (keyword(p, "a32")) {
+            p = skip_space(p + 3);
+            if (!keyword(p, "hook")) fail(line, "expected 'hook' after a32");
+            parse_hook(p + 4, line, versioned ? &range : &any, NULL, 1);
         } else if (keyword(p, "struct")) {
             open = !parse_fields(parse_struct(p + 6, line, versioned ? &range : &any, versioned), line);
         } else if (keyword(p, "family")) {
@@ -1134,14 +1177,57 @@ static void check_structs(void) {
     }
 }
 
+/* by symbol, a symbol's declarations for a 32-bit program alone after its others, each kind by version */
 static int by_symbol(const void* a, const void* b) {
     const Hook *x = (const Hook*)a, *y = (const Hook*)b;
     int order = strcmp(x->symbol, y->symbol);
+    if (!order) order = (x->a32 == FOR_A32_ALONE) - (y->a32 == FOR_A32_ALONE);
     return order ? order : by_range(&x->range, &y->range);
 }
 
-/* each symbol's declarations against each other; then each hook's uses resolved, and its versions split at the bounds
-   of the variants it uses into the entries */
+/* hook i's versions (range: its own, or a 32-bit program's) split at the bounds of the variants it uses, into the
+   entries of list (*count of them) */
+static void split_hook(int i, const Range* range, Entry* list, int* count) {
+    const Hook* h = &hooks[i];
+    int first = *count, end, j, u;
+    if (*count == MAX_ENTRIES) fail(h->line, "more than %d hooks once split by version", MAX_ENTRIES);
+    list[*count].hook = i;
+    list[*count].range = *range;
+    ++*count;
+    /* each use splits the entries so far at its variants' bounds */
+    for (u = 0; u < h->nuses; u++) {
+        int start = *count;
+        end = *count;
+        for (j = first; j < end; j++) {
+            int v;
+            for (v = h->use[u]; v < nvariants && !strcmp(variants[v].name, h->use_name[u]); v++) {
+                const Range *a = &list[j].range, *b = &variants[v].range;
+                Range r;
+                if (a->key != K_ANY && b->key != K_ANY && a->key != b->key)
+                    fail(h->line, "%s's versions are %s's and struct %s's (%s) %s's", h->symbol, key_name[a->key],
+                         h->use_name[u], ref(variants[v].line, h->line), key_name[b->key]);
+                r.key = a->key != K_ANY ? a->key : b->key;
+                r.lo = a->lo > b->lo ? a->lo : b->lo;
+                r.hi = a->hi < b->hi ? a->hi : b->hi;
+                if (r.lo >= r.hi) continue;
+                if (*count == MAX_ENTRIES) fail(h->line, "more than %d hooks once split by version", MAX_ENTRIES);
+                list[*count] = list[j];
+                list[*count].range = r;
+                list[*count].variant[u] = v;
+                ++*count;
+            }
+        }
+        /* the split entries replace those they came from */
+        memmove(&list[first], &list[start], sizeof *list * (size_t)(*count - start));
+        *count = first + (*count - start);
+        if (*count == first)
+            fail(h->line, "no declaration of struct %s holds for %s's versions", h->use_name[u], h->symbol);
+    }
+}
+
+/* each symbol's declarations for one kind of program against each other (one for a 32-bit program alone and one that
+   doesn't hold for it never meet); then each hook's uses resolved, and its versions split into the entries of the
+   table, and of a 32-bit program's */
 static void check_hooks(void) {
     int i, j, u;
     for (i = 0; i < nhooks; i++)
@@ -1149,9 +1235,12 @@ static void check_hooks(void) {
             if (!strcmp(hooks[i].symbol, hooks[j].symbol)) {
                 const Hook *a = hooks[i].line < hooks[j].line ? &hooks[i] : &hooks[j],
                            *b = a == &hooks[i] ? &hooks[j] : &hooks[i];
-                if (a->range.key == K_ANY && b->range.key == K_ANY)
+                int both64 = a->a32 != FOR_A32_ALONE && b->a32 != FOR_A32_ALONE, both32 = a->a32 && b->a32;
+                if ((both64 && a->range.key == K_ANY && b->range.key == K_ANY) ||
+                    (both32 && a->range32.key == K_ANY && b->range32.key == K_ANY))
                     fail(b->line, "%s is hooked on %s too", b->symbol, ref(a->line, b->line));
-                check_ranges(b->symbol, &a->range, a->line, &b->range, b->line);
+                if (both64) check_ranges(b->symbol, &a->range, a->line, &b->range, b->line);
+                if (both32) check_ranges(b->symbol, &a->range32, a->line, &b->range32, b->line);
             }
     for (i = 0; i < nroutes; i++) {
         for (j = 0; j < i; j++)
@@ -1165,46 +1254,14 @@ static void check_hooks(void) {
     qsort(hooks, (size_t)nhooks, sizeof *hooks, by_symbol);
     for (i = 0; i < nhooks; i++) {
         Hook* h = &hooks[i];
-        int first = nentries, end;
         for (u = 0; u < h->nuses; u++) {
             for (j = 0; j < nvariants && strcmp(variants[j].name, h->use_name[u]); j++) {
             }
             if (j == nvariants) fail(h->line, "unknown struct '%s'", h->use_name[u]);
             h->use[u] = j;
         }
-        if (nentries == MAX_ENTRIES) fail(h->line, "more than %d hooks once split by version", MAX_ENTRIES);
-        entries[nentries].hook = i;
-        entries[nentries].range = h->range;
-        nentries++;
-        /* each use splits the entries so far at its variants' bounds */
-        for (u = 0; u < h->nuses; u++) {
-            int start = nentries;
-            end = nentries;
-            for (j = first; j < end; j++) {
-                int v;
-                for (v = h->use[u]; v < nvariants && !strcmp(variants[v].name, h->use_name[u]); v++) {
-                    const Range *a = &entries[j].range, *b = &variants[v].range;
-                    Range r;
-                    if (a->key != K_ANY && b->key != K_ANY && a->key != b->key)
-                        fail(h->line, "%s's versions are %s's and struct %s's (%s) %s's", h->symbol, key_name[a->key],
-                             h->use_name[u], ref(variants[v].line, h->line), key_name[b->key]);
-                    r.key = a->key != K_ANY ? a->key : b->key;
-                    r.lo = a->lo > b->lo ? a->lo : b->lo;
-                    r.hi = a->hi < b->hi ? a->hi : b->hi;
-                    if (r.lo >= r.hi) continue;
-                    if (nentries == MAX_ENTRIES) fail(h->line, "more than %d hooks once split by version", MAX_ENTRIES);
-                    entries[nentries] = entries[j];
-                    entries[nentries].range = r;
-                    entries[nentries].variant[u] = v;
-                    nentries++;
-                }
-            }
-            /* the split entries replace those they came from */
-            memmove(&entries[first], &entries[start], sizeof *entries * (size_t)(nentries - start));
-            nentries = first + (nentries - start);
-            if (nentries == first)
-                fail(h->line, "no declaration of struct %s holds for %s's versions", h->use_name[u], h->symbol);
-        }
+        if (h->a32 != FOR_A32_ALONE) split_hook(i, &h->range, entries, &nentries);
+        if (h->a32) split_hook(i, &h->range32, entries32, &nentries32);
     }
 }
 
@@ -1232,7 +1289,9 @@ static void check_function_types(void) {
     for (i = 0; i < nhooks; i++) {
         const Hook *a = &hooks[i], *b = i ? &hooks[i - 1] : NULL; /* sorted by symbol */
         int same;
-        if (a->at) continue; /* no symbol to name its type after */
+        /* no symbol to name its type after; a 32-bit program's own declaration, sorted after the symbol's others, is
+           another function's */
+        if (a->at || a->a32 == FOR_A32_ALONE) continue;
         if (!is_identifier(a->symbol)) fail(a->line, "%s can't name a function type", a->symbol);
         if (!b || strcmp(a->symbol, b->symbol)) continue;
         same = !strcmp(a->ret_cname, b->ret_cname) && a->nargs == b->nargs;
@@ -1324,7 +1383,9 @@ static void adapter(const Entry* e, int index) {
 /* --a32: each entry also gets an adapter for a 32-bit program, a block of its code table (common/cpu/arm/arm.h's
    SnxArmBlock) that reads the arguments where AAPCS32 puts them (assign_a32), calls the same handler with the
    thread's CPU, puts the result in r0 (and r1 for 64 bits), s0 or d0, and returns to lr as the function's bx lr
-   would, in the state lr's bit 0 says */
+   would, in the state lr's bit 0 says. --a32-marked: a 32-bit program has a table of its own (entries32), of the
+   hooks that hold for it too and of those declared for it alone, each with such an adapter */
+enum { A32_ALL = 1, A32_MARKED };
 static int a32;
 
 /* an argument's 32 or 64 bits under AAPCS32, as a u32 or u64 expression */
@@ -1377,10 +1438,11 @@ static void a32_argument(const Arg* a) {
     }
 }
 
-static void adapter_a32(const Entry* e, int index) {
+/* stem: the adapter's name before its index */
+static void adapter_a32(const Entry* e, int index, const char* stem) {
     const Hook* h = &hooks[e->hook];
     int i;
-    out("static void %s_a32_%d(SnxArmCPU* RESTRICT arm) {\n", prefix, index);
+    out("static void %s%s_%d(SnxArmCPU* RESTRICT arm) {\n", prefix, stem, index);
     out("    CPU* c = hook_a32_cpu(arm);\n    ");
     switch (h->ret) {
         case T_VOID: break;
@@ -1417,8 +1479,8 @@ static void function_types(void) {
     for (i = 0; i < nhooks; i++) {
         const Hook* h = &hooks[i];
         char name[MAX_NAME];
+        if (h->at || h->a32 == FOR_A32_ALONE) continue;
         if (i && !strcmp(hooks[i - 1].symbol, h->symbol)) continue; /* its other versions take the same types */
-        if (h->at) continue;
         for (k = 0; h->symbol[k]; k++) name[k] = (char)toupper((unsigned char)h->symbol[k]);
         name[k] = 0;
         out("typedef %s (*PFN%sPROC)(", h->ret_cname, name);
@@ -1455,6 +1517,47 @@ static void write_header(const char* path) {
     flush(path);
 }
 
+/* --a32-marked: a 32-bit program's table, <prefix>32_..., as the table but its functions SnxArmBlocks, and without
+   verify mode's */
+static void table_a32(void) {
+    int i, k;
+    out("\n/* a 32-bit program's table: the hooks declared a32, and those declared for it alone */\n");
+    out("#define %s32_COUNT %d\n", upper, nentries32);
+    for (i = 0; i < nentries32; i++) {
+        char range[96];
+        range_text(&entries32[i].range, range, sizeof range);
+        out("/* %s, %s */\n", hooks[entries32[i].hook].symbol, range);
+        adapter_a32(&entries32[i], i, "32_fn");
+    }
+    out("static const char* const %s32_symbol[%s32_COUNT + 1] = {\n", prefix, upper);
+    for (i = 0; i < nentries32; i++) out("    \"%s\",\n", hooks[entries32[i].hook].symbol);
+    out("    0};\nstatic const char* const %s32_handler[%s32_COUNT + 1] = {\n", prefix, upper);
+    for (i = 0; i < nentries32; i++) out("    \"%s\",\n", hooks[entries32[i].hook].handler);
+    out("    0};\nstatic const SnxArmBlock %s32_fn[%s32_COUNT + 1] = {\n", prefix, upper);
+    for (i = 0; i < nentries32; i++) out("    %s32_fn_%d,\n", prefix, i);
+    out("    0};\nstatic const unsigned char %s32_family[%s32_COUNT + 1] = {\n", prefix, upper);
+    for (i = 0; i < nentries32; i++) out("    %d,\n", hooks[entries32[i].hook].family);
+    out("    0};\nstatic const unsigned char %s32_key[%s32_COUNT + 1] = {\n", prefix, upper);
+    for (i = 0; i < nentries32; i++) out("    %s,\n", key_macro[entries32[i].range.key]);
+    out("    0};\nstatic const u32 %s32_lo[%s32_COUNT + 1] = {\n", prefix, upper);
+    for (i = 0; i < nentries32; i++) out("    0x%lx,\n", entries32[i].range.lo);
+    out("    0};\nstatic const u32 %s32_hi[%s32_COUNT + 1] = {\n", prefix, upper);
+    for (i = 0; i < nentries32; i++) out("    0x%lx,\n", entries32[i].range.hi);
+    out("    0};\nstatic const char* const %s32_layouts[%s32_COUNT + 1] = {\n", prefix, upper);
+    for (i = 0; i < nentries32; i++) {
+        const Hook* h = &hooks[entries32[i].hook];
+        out("    \"");
+        for (k = 0; k < h->nuses; k++) {
+            const Variant* v = &variants[entries32[i].variant[k]];
+            out("%s%s of line %d", k ? ", " : "", v->name, local(v->line));
+        }
+        out("\",\n");
+    }
+    out("    0};\n");
+    out("static const HookTable %s32_table = {%s32_COUNT, %s32_symbol, %s32_key, %s32_lo, %s32_hi};\n", prefix, upper,
+        prefix, prefix, prefix, prefix);
+}
+
 static void write_table(const char* path) {
     int i, j, k;
     out("/* Generated by hookgen from %s: the structs' variants, the hooks' adapters and their table, sorted by symbol "
@@ -1485,9 +1588,9 @@ static void write_table(const char* path) {
     }
     if (nvariants) out("\n");
     for (i = 0; i < nentries; i++) adapter(&entries[i], i);
-    if (a32) {
+    if (a32 == A32_ALL) {
         out("\n/* the adapters for a 32-bit program */\n");
-        for (i = 0; i < nentries; i++) adapter_a32(&entries[i], i);
+        for (i = 0; i < nentries; i++) adapter_a32(&entries[i], i, "_a32");
         out("static const SnxArmBlock %s_a32[%s_COUNT + 1] = {\n", prefix, upper);
         for (i = 0; i < nentries; i++) out("    %s_a32_%d,\n", prefix, i);
         out("    0};\n");
@@ -1537,6 +1640,7 @@ static void write_table(const char* path) {
     out("    0};\n");
     out("static const HookTable %s_table = {%s_COUNT, %s_symbol, %s_key, %s_lo, %s_hi};\n", prefix, upper, prefix,
         prefix, prefix, prefix);
+    if (a32 == A32_MARKED) table_a32();
     flush(path);
 }
 
@@ -1549,13 +1653,16 @@ static void write_routes(const char* path, char** specs, int nspecs) {
     int s, k;
     for (s = 0; s < nspecs; s++) {
         spec_path = specs[s];
-        nhooks = nvariants = nentries = nfamilies = nroutes = ntypes = 0;
+        nhooks = nvariants = nentries = nentries32 = nfamilies = nroutes = ntypes = 0;
         include_name[0] = 0;
         read_spec(spec_path);
         check_structs();
         check_hooks();
         for (k = 0; k < nhooks + nroutes; k++) {
             const char* name = k < nhooks ? hooks[k].symbol : routes[k - nhooks];
+            /* a 32-bit program's code calls every function through its code table: only the 64-bit program's
+               declarations name a route */
+            if (k < nhooks && hooks[k].a32 == FOR_A32_ALONE) continue;
             if (count == cap) {
                 cap = cap ? cap * 2 : 256;
                 names = (char**)realloc(names, cap * sizeof *names);
@@ -1599,7 +1706,9 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--prefix") && i + 1 < argc)
             prefix = argv[++i];
         else if (!strcmp(argv[i], "--a32"))
-            a32 = 1;
+            a32 = A32_ALL;
+        else if (!strcmp(argv[i], "--a32-marked"))
+            a32 = A32_MARKED;
         else if (!strcmp(argv[i], "-I") && i + 1 < argc && ninclude_dirs < MAX_DIRS)
             include_dirs[ninclude_dirs++] = argv[++i];
         else if (argv[i][0] != '-' && nspecs < MAX_SPECS)
@@ -1613,8 +1722,10 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (!nspecs || (!header && !table)) {
-        fprintf(stderr, "usage: hookgen [--prefix NAME] [--a32] [-I DIR]... --header OUT.h --out OUT.inc SPEC...\n"
-                        "       hookgen [-I DIR]... --routes OUT.inc SPEC...\n");
+        fprintf(
+            stderr,
+            "usage: hookgen [--prefix NAME] [--a32 | --a32-marked] [-I DIR]... --header OUT.h --out OUT.inc SPEC...\n"
+            "       hookgen [-I DIR]... --routes OUT.inc SPEC...\n");
         return 2;
     }
     for (i = 0; prefix[i]; i++) { /* an identifier, its macros' prefix the same in capitals */
@@ -1632,6 +1743,11 @@ int main(int argc, char** argv) {
     check_hooks();
     check_handlers();
     check_function_types();
+    if (a32 == A32_ALL)
+        for (i = 0; i < nhooks; i++)
+            if (hooks[i].a32 == FOR_A32_ALONE)
+                fail(hooks[i].line, "--a32 gives every hook's declaration to a 32-bit program: one for it alone "
+                                    "needs --a32-marked");
     if (header) write_header(header);
     if (table) write_table(table);
     free(obuf);

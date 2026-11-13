@@ -164,6 +164,8 @@ float ui_icon_backed(SnxUiList* l, float x, float y, int scale, unsigned icon, u
 #define SNX_UI_IMAGE_W 320
 #define SNX_UI_IMAGE_H 180
 int ui_image(SnxUiList* l, float x, float y, float w, float h);
+/* the same, of the picture's texels u, v, uw x vh alone */
+int ui_image_part(SnxUiList* l, float x, float y, float w, float h, int u, int v, int uw, int vh);
 /* the picture's texels, R G B A bytes, opaque, copied (NULL: none), under ui_lock */
 void ui_image_set(const u8* rgba);
 /* the picture for the renderer, under ui_lock: its texels, NULL for none, and version counting the pictures given */

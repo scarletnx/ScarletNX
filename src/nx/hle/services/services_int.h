@@ -68,10 +68,6 @@ void set_language_code(int lang, u8 code[8]); /* the 8-byte LanguageCode, en-US 
 SvcObj* new_set(void);
 SvcObj* new_setsys(void);
 
-/* ---- time.c */
-void time_init(void);
-SvcObj* new_time(void);      /* time:a and time:s */
-SvcObj* new_time_user(void); /* time:u, an application's: no write */
 
 /* ---- acc.c */
 SvcObj* new_acc(void);
@@ -86,24 +82,20 @@ SvcObj* new_ldr(void);
 SvcObj* new_ro1(void);
 
 /* ---- audio.c */
+/* whether [addr, addr + size) is guest memory with perm, block by block */
+int snx_audio_guest_ok(u64 addr, u64 size, u32 perm);
 void audio_init(void); /* the renderer's event, before the audio clock runs */
 void audio_clock(void* arg);
-SvcObj* new_audren(void);
-SvcObj* new_audout(void);
-SvcObj* new_audin(void); /* audin:u: no microphone to open */
 SvcObj* new_aud(void);   /* aud:u, the Ounce native audio manager */
-SvcObj* new_hwopus(void);
 
 /* ---- misc.c: the small services */
 SvcObj* new_apm(void);
 SvcObj* new_lm(void);
-SvcObj* new_pctl(void);
 SvcObj* new_friend(void);
 SvcObj* new_chat(void);
 SvcObj* new_ntc(void);
 SvcObj* new_stpl(void);
 SvcObj* new_ns(void);
-SvcObj* new_prepo(void);
 SvcObj* new_psm(void);
 SvcObj* new_fatal(void);
 SvcObj* new_csrng(void);
@@ -123,13 +115,16 @@ SvcObj* new_btmu(void);
 u32 apm_configuration(u32 mode); /* apm's performance configuration of a mode, Normal (0) or Boost */
 void apm_set_configuration(u32 mode, u32 config);
 void apm_cpu_boost(u32 boost); /* am's SetCpuBoostMode: Boost mode's configuration for it */
-SvcObj* new_ngc(void);
-SvcObj* new_ngct(void);
 SvcObj* new_olsc(void);
 
 /* ---- audren.c: the audio renderer */
-int audren_update(SvcObj* o, IpcBuf in, IpcBuf out); /* RequestUpdate, on its input and output buffers */
-int audren_open(SvcObj* o, const u8* params);        /* 0 when the renderer can't be made */
+/* a renderer of the internal parameters at params, stopped: its name, its slot plus 1, or 0 when it can't be made
+   (parameters the DSP refuses, or every slot taken). manual: the game executes it itself */
+u32 audren_open(const u8* params, int manual);
+void audren_close(u32 id);
+struct ARRen* audren_at(u32 id); /* the open renderer id names, NULL for none */
+/* an update of renderer id, from the guest's input buffer into its output buffer: 0 or the renderer's result */
+int audren_update(u32 id, u64 in, u64 in_size, u64 out, u64 out_size);
 void audren_tick(void);                              /* one frame of every started renderer */
 void audren_volume(float gain); /* the output device's volume (audio.c), on every renderer's host output */
 
@@ -279,9 +274,9 @@ typedef struct {
 } HostAm;
 
 /* ---- audio.c */
+#define SNX_AUDREN_METHODS 18 /* nn/audio_renderer.c's M_COUNT */
 #define AUDOUT_BUFFERS 64 /* appended and released buffers an audio out holds */
 #define AUDOUT_MAX     32 /* the audio outs open at once: the console's audout:u has a dozen (Eden's 12 sessions) */
-#define AUDDEV_MAX     32 /* the IAudioDevices: one per GetAudioDeviceService, a few in a game's run */
 /* the firmware keeps 24 decoders (OutOfOpusDecoders after), as many as the pool holds: audio.c counts the slots
    taken, a closing decoder's among them, before an open takes one */
 #define SNX_HWOPUS_MAX_DECODERS 24
@@ -289,15 +284,15 @@ typedef struct {
 struct AVCodecContext;
 struct AVPacket;
 struct AVFrame;
-/* an IAudioOut: its buffers in one ring, the released ones first, oldest to newest, then the ones still queued */
+/* an audio out (nn/audio.c): its buffers in one ring, the released ones first, oldest to newest, then the ones still
+   queued */
 typedef struct AudOut {
-    u32 obj;
+    u64 guest; /* the game's nn::audio::AudioOut, which names the out: 0 for a free slot */
     u32 channels, started;
     float volume;
-    struct AudOut* next; /* in g_hle.audio.outs */
-    PAudio* output;      /* NULL without a host device: the buffers are still played on the clock */
-    u32 ev;              /* the buffer event: a buffer released */
-    u64 tag[AUDOUT_BUFFERS];
+    PAudio* output;          /* NULL without a host device: the buffers are still played on the clock */
+    u32 ev;                  /* the buffer event (a buffer released), 0 until the game registers one */
+    u64 tag[AUDOUT_BUFFERS]; /* each buffer's nn::audio::AudioOutBuffer */
     u32 frames[AUDOUT_BUFFERS];
     u32 first, nreleased, nqueued;
     u32 head_played; /* frames of the first queued buffer already played */
@@ -305,23 +300,9 @@ typedef struct AudOut {
     u64 t0_frames;   /* frames played since t0 */
     u64 played;      /* GetAudioOutPlayedSampleCount */
 } AudOut;
-/* an IAudioRenderer. Its play state is the object's u[0] (SNX_AUDREN_STARTED or SNX_AUDREN_STOPPED), which the clock
-   reads in audren_tick; audren.c keeps its renderer's slot in u[1] */
+/* a hardware Opus decoder (audio.c): one of the pool is a game's (nn/codec.c), named by its decoder object */
 typedef struct {
-    u32 obj;
-    u32 sample_rate, sample_count, mix_buffer_count; /* the parameters it was opened with, read back */
-    u32 limit;
-    float voice_drop; /* as the game set it, read back: no voice is dropped here */
-    u32 manual;       /* OpenAudioRendererForManualExecution: no system event */
-} AudRen;
-/* an IAudioDevice's system, input and output events, and its input and output device notifications */
-typedef struct {
-    u32 obj;
-    u32 ev[5];
-} AudDevice;
-/* a hwopus decoder (audio.c) */
-typedef struct {
-    u32 obj;
+    u64 guest; /* the game's decoder object, which names the decoder: 0 for a free slot */
     u32 rate, channels, step;
     /* how it was opened, for a save state's load to open it again: the streams and their channels' places, mapped
        set for a multistream decoder */
@@ -341,6 +322,12 @@ typedef struct {
 /* a decoder of one stream outside the service (audio.c), for hle/hook/codec.c: NULL when it can't be opened. A packet
    is the service's, behind its 8 byte header; out takes its samples, interleaved, little-endian */
 HwOpus* hwopus_new(u32 rate, u32 channels);
+/* the pool's decoders (nn/codec.c): h opened for rate and channels, one stream (mapping NULL) or streams of them with
+   stereo_streams coupled and mapping placing their channels, 0 when it can't be; and closed */
+int hwopus_open(HwOpus* h, u32 rate, u32 channels, u32 streams, u32 stereo_streams, const u8* mapping);
+void hwopus_free(HwOpus* h);
+u32 hwopus_packet_samples(const HwOpus* h, const u8* payload, u32 size);
+u32 hwopus_work_size(u32 rate, u32 channels, u32 streams, u32 stereo_streams, int multi, u32 flags, int dsp);
 void hwopus_delete(HwOpus* h);
 int hwopus_decode_packet(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out_size, int reset, u32* consumed,
                          u32* samples);
@@ -348,15 +335,16 @@ int hwopus_decode_packet(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out
 void outstream_tick(u64 now);
 typedef struct {
     u32 ev;              /* the renderers' system event, every frame */
-    AudOut* outs;        /* every open audio out, for the clock */
     float device_volume; /* the output device's, as SetAudioDeviceOutputVolume set it */
     u8 auto_tune;        /* the output volume's auto-tune mode, for its getter: what plays keeps its volume */
     u32 hwopus_live;     /* decoders open, across every hwopus session */
-    AudOut outs_pool[AUDOUT_MAX];
-    AudRen rens[SNX_AUDREN_MAX];
-    AudDevice devices[AUDDEV_MAX];
+    AudOut outs_pool[AUDOUT_MAX]; /* every open audio out, for the clock */
     HwOpus opus[HWOPUS_POOL];
-    u32 out_next, ren_next, device_next, opus_next;
+    u32 out_next, opus_next;
+    /* the SDK's managers RequestUpdateAudioRenderer runs (nn/audio_renderer.c), found once: 0 not looked for, 1 every
+       one found, 2 some missing */
+    u64 ren_fn[SNX_AUDREN_METHODS];
+    u32 ren_fn_found;
     int hold, held;
 } HleAudio;
 /* audio's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
@@ -367,9 +355,16 @@ typedef struct {
 } HostAudio;
 
 /* ---- audren.c */
-/* an open renderer, its object's u[1] its slot plus 1 */
-typedef struct {
-    SvcObj* o; /* set while the slot is taken */
+/* an open renderer, named by its slot plus 1 */
+typedef struct ARRen {
+    u32 used;  /* set while the slot is taken */
+    u32 state; /* atomic: SNX_AUDREN_STARTED or SNX_AUDREN_STOPPED, which the clock reads in audren_tick */
+    u32 sample_rate, sample_count, mix_buffer_count; /* the parameters it was opened with, read back */
+    u32 limit;                                       /* atomic: the rendering time limit, percent, as set */
+    float voice_drop; /* atomic: as the game set it, read back: no voice is dropped here */
+    u32 manual;       /* opened for the game's own execution: no system event */
+    u32 rendering_device; /* as asked for, read back */
+    u64 manual_event; /* the game's SystemEvent the SDK signals after a manual renderer's frame, 0 for none */
     ARState* s;
     PAudio* out;    /* opened on the first frame with a device sink; NULL before, or without a host device */
     int out_failed; /* the host had no output for it: not asked again */
@@ -461,12 +456,6 @@ typedef struct {
     PMutex irs_lock;
 } HostMisc;
 
-/* ---- pl.c */
-#define PL_FONTS 6
-typedef struct {
-    u32 shm;
-    u32 font_off[PL_FONTS], font_size[PL_FONTS]; /* where each font starts (past its header), and its size */
-} HlePl;
 
 /* ---- set.c */
 /* the system settings set:sys keeps for the run, each at first as on a console fresh from the factory (Eden's
@@ -489,28 +478,4 @@ typedef struct {
     PMutex lk;
 } HostSm;
 
-/* ---- time.c */
-#define TIME_OBJS 1024 /* time's objects: a service per session, and the clocks and time zone services it hands out */
-/* a time zone rule as time.c writes it into the game's nn::time::TimeZoneRule */
-typedef struct {
-    char magic[4];  /* "SNXZ" */
-    i32 utc_offset; /* seconds east of UTC */
-    char abbreviation[8];
-} TimeRule;
-/* each time object's: 1 for time:u's and what it hands out, which may write nothing */
-typedef struct {
-    u32 obj;
-    int read_only;
-} TimeObj;
-typedef struct {
-    u32 shm;
-    u8 source_id[16]; /* the steady clock's: the console makes a new one when its RTC resets */
-    i64 base_ns;      /* the steady clock at the guest clock's start */
-    /* every system clock's context: its offset, and the steady clock's time (s) it was taken at */
-    i64 context_offset, context_start;
-    TimeRule rule; /* the device's */
-    char location[0x24];
-    TimeObj objs[TIME_OBJS];
-    u32 obj_next;
-} HleTime;
 #endif

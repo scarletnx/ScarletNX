@@ -118,6 +118,24 @@ int nvideo_decoder_open(NativeVideoDecoder* d, u32 index, u32 mime, u32 width, u
         }
         no_hw = "FFmpeg's AV1 decoder for Vulkan Video could not be opened";
     }
+#if defined(__APPLE__)
+    /* the Apple media engine, where the setting allows it: no Metal driver offers Vulkan Video, so this is the GPU's
+       own decoder on every macOS host that has one */
+    if (g_settings.apple_video_decode && nvideo_vt_available()) {
+        av_buffer_unref(&hw);
+        if ((d->vt = nvideo_vt_open(index, width, height))) {
+            d->way = NVIDEO_DECODER_VT;
+            LOG("gsv: video codec %u: AV1 decodes on the media engine (VideoToolbox)\n", d->index);
+            return 1;
+        }
+        no_hw = "VideoToolbox's AV1 session could not be made";
+        LOG("gsv: video codec %u: the media engine's AV1 decoder won't open: the CPU decodes the stream\n", d->index);
+    } else if (g_settings.apple_video_decode) {
+        no_hw = "the media engine of this Mac has no AV1 decoder (Intel, or an Apple one before M3)";
+    } else {
+        no_hw = "apple_video=0";
+    }
+#endif
     return av1_cpu_open(d, no_hw);
 }
 static void replay_clear(NativeVideoDecoder* d) {
@@ -125,6 +143,9 @@ static void replay_clear(NativeVideoDecoder* d) {
     d->nreplay = d->replayed = 0;
 }
 void nvideo_decoder_close(NativeVideoDecoder* d) {
+#if defined(__APPLE__)
+    if (d->vt) nvideo_vt_close(d->vt);
+#endif
     avcodec_free_context(&d->ctx);
     replay_clear(d);
     av_frame_free(&d->black);
@@ -132,11 +153,15 @@ void nvideo_decoder_close(NativeVideoDecoder* d) {
 }
 void nvideo_decoder_flush(NativeVideoDecoder* d) {
     if (d->ctx) avcodec_flush_buffers(d->ctx);
+#if defined(__APPLE__)
+    if (d->vt) nvideo_vt_flush(d->vt); /* a movie that loops starts a new stream: its sequence header may differ */
+#endif
     replay_clear(d);
     d->pictures = d->black_due = d->black_end = 0;
 }
 const char* nvideo_decoder_name(const NativeVideoDecoder* d) {
-    return d->way == NVIDEO_DECODER_VULKAN  ? "av1 (Vulkan Video)"
+    return d->way == NVIDEO_DECODER_VT      ? "av1 (VideoToolbox)"
+           : d->way == NVIDEO_DECODER_VULKAN ? "av1 (Vulkan Video)"
            : d->way == NVIDEO_DECODER_BLACK ? "av1 (black stand-in)"
            : d->ctx                         ? d->ctx->codec->name
                                             : "none";
@@ -148,9 +173,13 @@ static int av1_refused(const NativeVideoDecoder* d, int r) { return r == AVERROR
    neither opened: the codec then decodes nothing more */
 static int av1_take_over(NativeVideoDecoder* d, const char* why) {
     char line[160];
-    snprintf(line, sizeof line, "Vulkan Video gave the stream up after %u pictures (%s), packets kept for it: %u",
-             d->pictures, why, d->nreplay);
+    snprintf(line, sizeof line, "%s gave the stream up after %u pictures (%s), packets kept for it: %u",
+             d->way == NVIDEO_DECODER_VT ? "VideoToolbox" : "Vulkan Video", d->pictures, why, d->nreplay);
     avcodec_free_context(&d->ctx);
+#if defined(__APPLE__)
+    if (d->vt) nvideo_vt_close(d->vt);
+    d->vt = NULL;
+#endif
     d->way = NVIDEO_DECODER_NONE;
     d->replayed = 0;
     if (av1_cpu_open(d, line)) return 1;
@@ -165,6 +194,9 @@ static int av1_take_over_error(NativeVideoDecoder* d, int r) {
 }
 /* the decoder in use, the stand-in among them: avcodec_send_packet's and avcodec_receive_frame's results */
 static int way_send(NativeVideoDecoder* d, const AVPacket* pkt) {
+#if defined(__APPLE__)
+    if (d->vt) return nvideo_vt_send(d->vt, pkt);
+#endif
     if (d->ctx) return avcodec_send_packet(d->ctx, pkt);
     if (d->way != NVIDEO_DECODER_BLACK) return AVERROR(EINVAL);
     if (d->black_end) return AVERROR_EOF;
@@ -178,6 +210,9 @@ static int way_send(NativeVideoDecoder* d, const AVPacket* pkt) {
 }
 static int way_receive(NativeVideoDecoder* d, AVFrame* frame) {
     int r;
+#if defined(__APPLE__)
+    if (d->vt) return nvideo_vt_receive(d->vt, frame);
+#endif
     if (d->ctx) return avcodec_receive_frame(d->ctx, frame);
     if (d->way != NVIDEO_DECODER_BLACK) return AVERROR(EINVAL);
     if (!d->black_due) return d->black_end ? AVERROR_EOF : AVERROR(EAGAIN);
@@ -189,7 +224,8 @@ static int way_receive(NativeVideoDecoder* d, AVFrame* frame) {
 int nvideo_decoder_send(NativeVideoDecoder* d, const AVPacket* pkt) {
     AVPacket* keep;
     int r;
-    if (d->way != NVIDEO_DECODER_VULKAN) return d->replayed < d->nreplay ? AVERROR(EAGAIN) : way_send(d, pkt);
+    if (d->way != NVIDEO_DECODER_VULKAN && d->way != NVIDEO_DECODER_VT)
+        return d->replayed < d->nreplay ? AVERROR(EAGAIN) : way_send(d, pkt);
     if (!pkt) return way_send(d, NULL);
     if (d->nreplay == NVIDEO_REPLAY) return AVERROR(EAGAIN); /* nvideo_decoder_receive hands the stream over first */
     if (!(keep = av_packet_clone(pkt))) return AVERROR(ENOMEM);
@@ -205,7 +241,7 @@ int nvideo_decoder_send(NativeVideoDecoder* d, const AVPacket* pkt) {
 int nvideo_decoder_receive(NativeVideoDecoder* d, AVFrame* frame) {
     for (;;) {
         int r = way_receive(d, frame);
-        if (d->way == NVIDEO_DECODER_VULKAN) {
+        if (d->way == NVIDEO_DECODER_VULKAN || d->way == NVIDEO_DECODER_VT) {
             if (!r) {
                 replay_clear(d);
                 d->pictures++;

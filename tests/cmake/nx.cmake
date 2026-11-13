@@ -32,6 +32,19 @@ if(BUILD_TESTING)
         target_link_libraries(snx-test-shader-float-rounding PRIVATE Threads::Threads m)
     endif()
     add_test(NAME shader_float_rounding COMMAND $<TARGET_FILE:snx-test-shader-float-rounding>)
+    # snx-shaderc --sm86 on a compute program that starts past its own length in its window (shaderc_sm86_corpus.c)
+    add_executable(snx-test-shaderc-sm86-corpus "${PROJECT_SOURCE_DIR}/tests/shaderc_sm86_corpus.c")
+    snx_test_target(snx-test-shaderc-sm86-corpus 99)
+    target_link_libraries(snx-test-shaderc-sm86-corpus PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shaderc-sm86-corpus PRIVATE Threads::Threads m)
+    endif()
+    set(snx_shaderc_corpus "${CMAKE_CURRENT_BINARY_DIR}/shaderc-sm86-corpus")
+    add_test(NAME shaderc_sm86_corpus COMMAND $<TARGET_FILE:snx-test-shaderc-sm86-corpus> "${snx_shaderc_corpus}")
+    set_tests_properties(shaderc_sm86_corpus PROPERTIES FIXTURES_SETUP shaderc_sm86)
+    add_test(NAME shaderc_sm86 COMMAND $<TARGET_FILE:snx-shaderc> "${snx_shaderc_corpus}" --sm86)
+    set_tests_properties(shaderc_sm86 PROPERTIES FIXTURES_REQUIRED shaderc_sm86 TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "1 shaders: 1 translated, 0 unsupported, 0 failed")
     add_executable(snx-test-shader-indexed-ms "${PROJECT_SOURCE_DIR}/tests/shader_indexed_ms.c")
     snx_test_target(snx-test-shader-indexed-ms 11)
     target_link_libraries(snx-test-shader-indexed-ms PRIVATE snx_shader)
@@ -308,13 +321,40 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the on-screen layer's pass (gpu/vk/ui.c, tests/vulkan_ui.inc) under the validation layer when it is installed:
     # quads as instances, sampled in texels, and the device's buffer given only the quads that changed
+    # a vk_gpu_profile pool smaller than asked for, which a driver gave (check_gpuprof_small_pool)
+    add_test(NAME vulkan_gpuprof_pool COMMAND snx-test-vulkan -H --vk_gpu_profile=1 --vk_validation=1)
+    set_tests_properties(vulkan_gpuprof_pool PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_GPUPROF_POOL_ONLY=1;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     add_test(NAME vulkan_ui COMMAND snx-test-vulkan -H --vk_validation=1)
     set_tests_properties(vulkan_ui PROPERTIES TIMEOUT 60
         ENVIRONMENT "SNX_TEST_UI_ONLY=1;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the texture arrays of 32 elements a device that binds 128 samplers a stage gets (PanVK on Bifrost;
+    # gpu/vk/texture_arrays.h), under the validation layer: their layouts, pools and the draws that index them
+    add_test(NAME vulkan_texture_arrays COMMAND snx-test-vulkan -H --vk_validation=1)
+    set_tests_properties(vulkan_texture_arrays PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_TEX_ARRAY=32;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        PASS_REGULAR_EXPRESSION "PASS headless Vulkan texture arrays of 32"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with guest memory read in place where the device can import it (gpu/vk/uma.c)
     add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk_memory=2)
     set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 120
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again with the guest memory that draws read kept by page in sparse buffers, and what draws write to
+    # guest memory kept there too (gpu/vk/pagespace.c). A device without sparse buffers or write tracking runs the
+    # checks as before
+    add_test(NAME vulkan_headless_pages COMMAND snx-test-vulkan -H --vk_buffer_pages=2 --vk_memory=1)
+    set_tests_properties(vulkan_headless_pages PROPERTIES TIMEOUT 180
+        FAIL_REGULAR_EXPRESSION "failed: VK_ERROR")
+    # and with guest memory kept by the range each draw asks for, as on a device without sparse buffers
+    add_test(NAME vulkan_headless_ranges COMMAND snx-test-vulkan -H --vk_buffer_pages=0 --vk_memory=1)
+    set_tests_properties(vulkan_headless_ranges PROPERTIES TIMEOUT 180
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again with the rings that the CPU fills in cached host memory (vk_stage_memory, cmd.c's chunk_new),
+    # which is the default only on Intel's Mesa driver
+    add_test(NAME vulkan_headless_stage_cached COMMAND snx-test-vulkan -H --vk_stage_memory=2)
+    set_tests_properties(vulkan_headless_stage_cached PROPERTIES TIMEOUT 180
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with the write tracking by page protection and its hot pages (write_tracking_hot): each render
     # target's baseline cools its pages, or its write-back keeps the CPU's old bytes over its pixels
@@ -378,10 +418,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         gpu/vk/blocklinear.c gpu/texture/blocklinear.c gpu/vk/texconv.c "${PROJECT_SOURCE_DIR}/tests/support/etc2.c"
         "${PROJECT_SOURCE_DIR}/tests/support/bcn.c"
         gpu/vk/cmd.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c
-        gpu/vk/memory.c gpu/vk/resource_stats.c gpu/vk/record.c gpu/vk/checkpoints.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
+        gpu/vk/memory.c gpu/vk/ledger.c gpu/vk/resource_stats.c gpu/vk/record.c gpu/vk/checkpoints.c gpu/vk/devmem.c gpu/vk/space.c ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/texconv_etc2_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_convert_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_nv12_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_b_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_c_spv.c"

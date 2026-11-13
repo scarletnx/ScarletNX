@@ -1,0 +1,143 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The drivers known to break a Vulkan extension or feature: which driver, which versions, on which system, what breaks,
+# and who found it. The renderer reads this before it turns anything on (common/gpu/vk/extension_bans.c): an "off" line takes
+# the extension out of the device's list, or turns the feature off where the renderer can do without it, and the log
+# says which, on which device, driver and version, and why. A "warn" line is only said: a ban another project lifted,
+# one not proven for the way this renderer uses the feature, or a part it has no way around. Compiled in
+# (cmake/vk_extension_bans.cmake); tests/vk_extension_bans.c reads it, and "snx-test-vk-bans --devices" lists the lines
+# that hold for this machine's drivers.
+#
+# Each extension the renderer can use has a setting of its own (vk_ext_<its name in lowercase>, Graphics > Vulkan
+# Extensions), auto by default: auto leaves the extension to this table, on goes over every line on it, off takes it out
+# of the device's list. The log says each extension's value in effect and why (extension_bans.c).
+#
+# A line per ban, its fields between |, in the header's order:
+#   key       an extension (VK_EXT_custom_border_color), taken out of the device's list; or a feature, property,
+#             dynamic state, format or call (shaderFloat16, VK_DYNAMIC_STATE_CULL_MODE, an extension's feature as
+#             VK_EXT_extended_dynamic_state3.extendedDynamicState3ColorBlendEquation), turned off where the renderer
+#             asks for it (vk_ban). The log names an "off" line that holds and nothing asked for
+#   action    off or warn
+#   driver    one of the names below (VkDriverId)
+#   versions  * for all of them, or bounds in the driver's own numbering: < V, <= V, >= V, > V, or a lower bound then an
+#             upper one (>= 512.676 < 512.680). NVIDIA's are A.B.C[.D] (580.119.02); Intel's Windows driver gives the
+#             last two of its four numbers (27.20.100.9684 or 100.9684); MoltenVK's are A.B.C (1.2.11); every other
+#             driver's are VK_MAKE_VERSION's A.B.C: Mesa's release (25.0.3; a -devel build is the release before's
+#             .99), Qualcomm's 512.800.48, Arm's r48p0 as 48.0.0, AMD's 2.0.302
+#   system    any, or a list of linux, android, windows, macos, ios, freebsd, openbsd, netbsd
+#   devices   *, or a list of the GPUs' deviceID (VkPhysicalDeviceProperties): 0x6020200 is an Adreno 622
+#   breaks    what goes wrong, as it reads after the driver and its versions: "NVIDIA's driver before 580.119.02 ..."
+#   source    where it is known from: a commit, a file and line at a commit, an issue
+#   retest    the case that tests it again: headless:ARGS (tests/vulkan_headless.c given ARGS), edenprobe:SUITE[: CASE],
+#             or new:headless: or new:edenprobe: and the case still to be written
+#   checked   never, or the date we last tested it and what we saw: 2026-11-04 broken on 512.800.48
+#   override  -, or the setting that turns it on anyway (KEY=VALUE), which the code owning that setting applies
+#
+# Drivers: amd-proprietary amdvlk radv nvidia intel-windows anv powervr qualcomm mali swiftshader ggp broadcom lavapipe
+# moltenvk coreavi juice verisilicon turnip v3dv panvk samsung venus dozen nvk powervr-mesa honeykrisp vulkansc
+# kosmickrisp gfxstream apesoft
+#
+# The other projects' sources, read at: ANGLE 97d96dab70 (src/libANGLE/renderer/vulkan/vk_renderer.cpp), DXVK
+# 829e377d2d (src/dxvk/dxvk_device_info.cpp), vkd3d-proton db5628e2af (libs/vkd3d/device.c), Dolphin 257a6d0eac
+# (Source/Core/VideoCommon/DriverDetails.cpp), PPSSPP 9f286ee4ca (Common/GPU/Vulkan/thin3d_vulkan.cpp); yuzu's and
+# Eden's commits by their hash, Eden's with the PR it came in (src/video_core/vulkan_common/vulkan_device.cpp).
+
+key | action | driver | versions | system | devices | breaks | source | retest | checked | override
+
+# Dynamic vertex input (gpu/vk/vertex_input.c: vertex_input_dynamic_state=auto keeps off what holds here, on goes over it)
+VK_EXT_vertex_input_dynamic_state | off | nvidia | < 580.119.02 | any | * | breaks dynamic vertex input | Eden PR 3379 (9b1f6801a5, 2026-02-05) | headless:--vertex_input_dynamic_state=on | never | vertex_input_dynamic_state=on
+VK_EXT_vertex_input_dynamic_state | off | intel-windows | < 27.20.100.0 | any | * | breaks dynamic vertex input | yuzu 279005448a (2022-12-31), kept by Eden | headless:--vertex_input_dynamic_state=on | never | vertex_input_dynamic_state=on
+VK_EXT_vertex_input_dynamic_state | warn | intel-windows | >= 27.20.100.0 | any | * | still has issues with dynamic vertex input by ANGLE's account, which keeps it off on every version | ANGLE vk_renderer.cpp:6632, anglebug 42265637 | headless:--vertex_input_dynamic_state=on | never | -
+VK_EXT_vertex_input_dynamic_state | off | qualcomm | * | android | * | draws edenprobe's coherence suite wrong with dynamic vertex input | ScarletNX 5722fc560 (2026-11-04); ANGLE vk_renderer.cpp:6632 keeps it off too (anglebug 381384988) | edenprobe:coherence | 2026-11-04 broken on 512.800.48 | vertex_input_dynamic_state=on
+VK_EXT_vertex_input_dynamic_state | off | mali | < 48.0.0 | any | * | applies vkCmdBindVertexBuffers2's strides to the wrong binding (Arm errata SDEN-3735689) | ANGLE vk_renderer.cpp:6632 | headless:--vertex_input_dynamic_state=on | never | vertex_input_dynamic_state=on
+
+# A vertex binding's stride as dynamic state (pipeline.c puts it in the pipeline instead)
+VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE | off | moltenvk | * | any | * | fails every pipeline that lists it: Metal has no dynamic stride | ScarletNX 5d9691ab2 (2026-10-21) | headless: | 2026-10-21 broken, version not recorded | -
+VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE | off | mali | < 48.0.0 | any | * | applies vkCmdBindVertexBuffers2's strides to the wrong binding (Arm errata SDEN-3735689) | ANGLE vk_renderer.cpp:6652 | headless: | never | -
+VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE | off | intel-windows | < 100.9684 | any | * | breaks dynamic vertex strides | ANGLE vk_renderer.cpp:6652 | headless: | never | -
+
+# Float controls and 16-bit floats (device.c; without them shaders do the same in 32 bits)
+shaderDenormFlushToZeroFloat32 | off | qualcomm | * | any | * | miscompiles shaders that declare DenormFlushToZero for 32 bits: one game's waterfall shader drew its background's colour on an Adreno 740 | ScarletNX 33bf51294 (2026-10-22); Eden PR 4297 (60a474b8df, 2026-08-24) found the same | new:headless:a fragment shader declaring DenormFlushToZero whose FMUL, FADD and FFMA results are read back | 2026-10-22 broken on 512.676 | -
+shaderFloat16 | off | intel-windows | * | any | * | crashes its SPIR-V compiler on a game's shaders that use FP16 | yuzu ef6cc3aa1d (2021-01-27), kept by Eden | new:headless:FP16 arithmetic in each stage, compiled and read back | never | -
+shaderFloat16 | warn | samsung | * | any | * | has FP16 turned off by ANGLE, which gives no reason | ANGLE vk_renderer.cpp:7364 | new:headless:FP16 arithmetic in each stage, compiled and read back | never | -
+shaderFloat16 | warn | nvidia | * | any | * | gets FP16 math wrong on Ampere and newer GPUs by yuzu's account, which Eden still follows | yuzu 7277d7fe96 (2021-07-03) | new:edenprobe:the HADD2, HMUL2 and HFMA2 cases against the console's | never | -
+shaderFloat16 | warn | amd-proprietary | * | any | * | gets FP16 math wrong from its 2026 versions in one game, by Eden's account | Eden PR 3661 (9d2341eaea, 2026-03-03) | new:edenprobe:the HADD2, HMUL2 and HFMA2 cases against the console's | never | -
+shaderDenormPreserveFloat16 | warn | nvidia | * | any | * | lets a DenormPreserve for 16 bits keep 32-bit denormals too, over a DenormFlushToZero for 32 bits | vkd3d-proton device.c:10180 | new:headless:one shader declaring both, its FP32 subnormals read back | never | -
+shaderInt64 | warn | qualcomm | * | any | * | has 64-bit integers and atomics turned off by Eden, which gives no reason | Eden PR 2732 (b389a72697, 2025-10-14) | new:edenprobe:64-bit integer arithmetic in a shader | never | -
+
+# Integer to float conversion (shader.h's g_shader_i2f_nearest: I2F.F32 of a 32-bit integer converts its two halves,
+# each exact, and adds them)
+OpConvertSToF | off | turnip | * | any | * | truncates a 32-bit signed integer it converts to a float, where the console rounds to nearest even (seen on an Adreno 610) | edenprobe's intmath suite on an Adreno 610 phone (2026-11-11) | edenprobe:intmath: a signed integer converts to the nearest float, ties to even | 2026-11-11 broken on 26.2.99 (Adreno 610) | -
+OpConvertUToF | off | turnip | * | any | * | truncates a 32-bit unsigned integer it converts to a float, where the console rounds to nearest even (seen on an Adreno 610) | edenprobe's intmath suite on an Adreno 610 phone (2026-11-11) | edenprobe:intmath: an unsigned integer converts to the nearest float, ties to even | 2026-11-11 broken on 26.2.99 (Adreno 610) | -
+Fma | warn | qualcomm | * | any | * | rounds an Fma's product before the add, as OpFMul then OpFAdd, where the console's FFMA keeps it exact (seen on an Adreno 830) | #1654 | edenprobe:fmath: a multiply and an add in one call | 2026-11-12 broken on 512.800.48 (Adreno 830) | -
+Fma | warn | turnip | * | any | * | rounds an Fma's product before the add, as OpFMul then OpFAdd, where the console's FFMA keeps it exact (seen on an Adreno 610) | #1654 | edenprobe:fmath: a multiply and an add in one call | 2026-11-12 broken on 26.2.99 (Adreno 610) | -
+OpImageSampleExplicitLod | warn | qualcomm | * | any | * | picks a Grad sample's level of detail from its gradients once for each 2x2 quad, so a pixel whose gradients differ from its quad neighbour's reads the neighbour's level (seen on an Adreno 830) | #1916 | edenprobe:lod: textureGrad along x picks levels 0 to 3 | 2026-11-12 broken on 512.800.48 (Adreno 830) | -
+OpImageSampleExplicitLod | warn | turnip | * | any | * | picks a Grad sample's level of detail from its gradients once for each 2x2 quad, so a pixel whose gradients differ from its quad neighbour's reads the neighbour's level (seen on an Adreno 610) | #1916 | edenprobe:lod: textureGrad along x picks levels 0 to 3 | 2026-11-12 broken on 26.2.99 (Adreno 610) | -
+VK_STENCIL_FACE_BACK_BIT | warn | qualcomm | * | any | * | gives back faces the front face's stencil reference when vkCmdSetStencilReference sets the two apart, in Z24S8 and ZF32_X24S8 (seen on an Adreno 830) | edenprobe 0.12.0's stencil suite on an Adreno 830 phone (2026-11-12) | edenprobe:stencil: z24s8: each winding takes its own face's reference | 2026-11-12 broken on 512.800.48 (Adreno 830) | -
+ClipDistance | warn | qualcomm | * | any | * | fails to make a pipeline whose evaluation stage reads clip distances and writes them on (VK_ERROR_UNKNOWN, its log saying the shader did not compile), and the draws that need it are dropped (seen on an Adreno 830) | edenprobe 0.12.0's geometry suite on an Adreno 830 phone (2026-11-12) | edenprobe:geometry: a positive first clip distance passed on by the evaluation stage clips nothing | 2026-11-12 broken on 512.800.48 (Adreno 830) | -
+
+# Presentation
+VK_KHR_present_id2 | off | nvidia | < 595.0.0 | any | * | hangs games at their first frames with present_id2 and present_wait2 (590.48, with Smooth Motion on) | DXVK dxvk_device_info.cpp:610, issue 5507 | new:edenprobe:a windowed run with frame_pacing=2 | never | -
+
+# Subgroup operations by stage (device.c: the stage leaves the ones whose programs the translator gives ballot, shuffle
+# and arithmetic, and a program of it that votes or shuffles runs each invocation as one lane alone)
+VK_SHADER_STAGE_GEOMETRY_BIT | off | turnip | * | any | * | lists the geometry stage for subgroup operations (supportedStages) and gives wrong ballot and shuffle results there, which lost a game's meshes and textures; Qualcomm's own driver does not list the stage | Eden PR 4344 (b846577037, 2026-09-01) | new:headless:a geometry shader's ballot and shuffle results read back | never | -
+
+# Shuffles whose index differs between lanes (device.c: an SM86 HMMA takes A and B through shared memory, its gathers
+# being such shuffles; SHFL and the other warp instructions keep them)
+OpGroupNonUniformShuffle | off | turnip | * | any | * | compiles a shuffle whose index differs between invocations into a loop, a hardware shuffle for each distinct index, as many as 32 for an HMMA's gather: an Adreno 610 ran the HMMA bench 35 times faster staged through shared memory (684.9 ms a dispatch to 19.6), where Qualcomm's driver on an Adreno 830 and RADV ran it 5.4 and 2.2 times slower so; no feature or property says it | Mesa's src/freedreno/ir3/ir3_lower_subgroups.c (make_shuffle_uniform, main of 2026-11-04: every Adreno with shfl); ScarletNX #2037 | new:headless:an HMMA program's dispatch timed gathered and staged, as shader_sm86_gpu's SNX_HMMA_BENCH does | 2026-11-13 a loop on 26.2.99 (Adreno 610) | -
+
+# Descriptors (without heaps, graphics descriptors use buffers or sets)
+VK_EXT_descriptor_heap | off | amd-proprietary | * | any | * | crashes a game at start with descriptor heaps (Adrenalin 26.7.1 on an RX 7900 XTX) | DXVK 076922bd24 (2026-09-19), issue 5837 | headless:--vk_descriptors_mode=3 | never | -
+VK_EXT_descriptor_heap | warn | nvidia | < 595.84.0 | any | * | runs descriptor heaps slower than its later drivers do | DXVK dxvk_device_info.cpp:506 (b5fadf8e5a, 2026-06-18) | new:headless:--bench-descriptors under vk_descriptors_mode=3 against vk_descriptors_mode=1 | never | -
+
+# Pipeline libraries (gpu/vk/pipeline_parts.c: a new pipeline links the parts of its shaders)
+VK_EXT_graphics_pipeline_library | off | nvidia | < 531.0.0 | any | * | draws transient glitches with pipeline libraries | ANGLE vk_renderer.cpp:6928, anglebug 42266655 | new:edenprobe:the graphics suites with pipeline libraries on | never | -
+VK_EXT_graphics_pipeline_library | off | mali | * | any | * | runs unacceptably slower with pipeline libraries | ANGLE vk_renderer.cpp:6928, anglebug 404581992 | new:edenprobe:the graphics suites timed with pipeline libraries on and off | never | -
+VK_EXT_graphics_pipeline_library | warn | radv | * | any | * | crashed creating graphics pipelines with it under ANGLE, which keeps it off on RADV; DXVK and vkd3d-proton use it there | ANGLE vk_renderer.cpp:6928, crbug 1497512 | new:headless:pipelines made from libraries and fast-linked | never | -
+
+# Extended dynamic state 3 (pipeline_parts.c's vk_gpl_bans: with pipeline libraries the polygon mode, the depth clamp,
+# the provoking vertex, conservative rasterization and the clip volume's depth range are dynamic state; a member a
+# line holds for stays in the key, and the range is then the last stage's)
+VK_EXT_extended_dynamic_state3 | off | samsung | * | any | * | has bugs with extended dynamic state 3, blend enable and equation among them | ANGLE vk_renderer.cpp:6732 (issues.angleproject.org/579500670); Eden PR 3074 (5edcdea78f, 2026-01-07) | new:edenprobe:blending suites with blend state dynamic | never | -
+VK_EXT_extended_dynamic_state3.extendedDynamicState3DepthClampEnable | off | radv | < 23.1.0 | any | * | breaks depth clamp as dynamic state | yuzu 856838f7ce (2023-05-13) | new:edenprobe:depth clamp cases with it dynamic | never | -
+VK_EXT_extended_dynamic_state3.extendedDynamicState3ColorBlendEquation | warn | radv | * | any | * | broke blend enable and equation as dynamic state (2023); Eden lifted the ban | yuzu da83afdeaf (2023-03-15); lifted in Eden PR 3074 (5edcdea78f, 2026-01-07) | new:edenprobe:blending suites with blend state dynamic | never | -
+VK_EXT_extended_dynamic_state3.extendedDynamicState3ColorBlendEquation | warn | amd-proprietary | * | any | * | broke blend enable and equation as dynamic state (2023); Eden lifted the ban | yuzu d6d43e11a3 (2023-08-01); lifted in Eden PR 3074 (5edcdea78f, 2026-01-07) | new:edenprobe:blending suites with blend state dynamic | never | -
+VK_EXT_extended_dynamic_state3.extendedDynamicState3ColorBlendEquation | warn | amdvlk | * | any | * | broke blend enable and equation as dynamic state (2023); Eden lifted the ban | yuzu d6d43e11a3 (2023-08-01); lifted in Eden PR 3074 (5edcdea78f, 2026-01-07) | new:edenprobe:blending suites with blend state dynamic | never | -
+VK_EXT_extended_dynamic_state3.extendedDynamicState3RasterizationSamples | off | nvidia | < 610.0.0 | any | * | fails multisample tests with rasterization samples as dynamic state (seen on 535, not on 610) | ANGLE vk_renderer.cpp:6839 | new:edenprobe:multisample suites with samples dynamic | never | -
+VK_EXT_extended_dynamic_state3.extendedDynamicState3AlphaToCoverageEnable | off | intel-windows | * | any | * | fails framebuffer fetch and state change tests with alpha to coverage as dynamic state | ANGLE vk_renderer.cpp:6787 | new:edenprobe:alpha to coverage cases with it dynamic | never | -
+VK_EXT_extended_dynamic_state3.extendedDynamicState3AlphaToCoverageEnable | off | anv | * | any | * | has driver bugs with alpha to coverage as dynamic state | ANGLE vk_renderer.cpp:6787, crbug 577864200 | new:edenprobe:alpha to coverage cases with it dynamic | never | -
+VK_EXT_extended_dynamic_state3.extendedDynamicState3DepthClipNegativeOneToOne | off | intel-windows | * | any | * | corrupts rendering with the depth clip range as dynamic state | ANGLE vk_renderer.cpp:6815 | headless: | never | -
+VK_EXT_extended_dynamic_state3.extendedDynamicState3DepthClampEnable | off | powervr | * | any | * | fails dEQP tests with depth clamp as dynamic state | ANGLE vk_renderer.cpp:6808 | new:edenprobe:depth clamp cases with it dynamic | never | -
+VK_EXT_extended_dynamic_state3.extendedDynamicState3PolygonMode | off | powervr | * | any | * | fails a polygon mode test with polygon mode as dynamic state | ANGLE vk_renderer.cpp:6830 | new:edenprobe:polygon mode cases with it dynamic | never | -
+VK_EXT_extended_dynamic_state3.extendedDynamicState3AlphaToOneEnable | off | powervr | * | any | * | fails tests and loses the device with alpha to one as dynamic state | ANGLE vk_renderer.cpp:6795 | new:edenprobe:alpha to one cases with it dynamic | never | -
+
+# Blending and samplers
+VK_EXT_blend_operation_advanced | off | qualcomm | * | any | 0x6020200,0x7000201 | misrenders pixels along shared primitive edges with advanced blending (Adreno 622 and 702) | ANGLE vk_renderer.cpp:6093 | new:edenprobe:advanced blend over triangles that share an edge | never | -
+VK_EXT_custom_border_color | warn | qualcomm | * | any | * | crashed creating samplers with custom border colours in a game (2023); Eden lifted the ban | yuzu b2aeb50229 (2023-04-01); lifted in Eden PR 3042 (f7f6a4cde4, 2025-11-21) | new:edenprobe:samplers with custom border colours of every format | never | -
+VK_EXT_custom_border_color | warn | turnip | * | any | * | crashed creating samplers with custom border colours in a game (2023); Eden lifted the ban | yuzu b2aeb50229 (2023-04-01); lifted in Eden PR 3042 (f7f6a4cde4, 2025-11-21) | new:edenprobe:samplers with custom border colours of every format | never | -
+
+# Block formats (format.c: native_astc=1, the default, samples ASTC as the game's blocks where the device has it, and
+# 0 decodes it on the GPU)
+textureCompressionASTC_LDR | warn | turnip | * | any | * | decodes an illegal or HDR ASTC block as transparent black where the specification says opaque magenta, and sRGB ASTC texels up to 2 steps off (seen on an Adreno 610); native_astc=0 decodes them as the specification says but for a step of sRGB | #1655 | edenprobe:astc: an illegal block is the error colour | 2026-11-11 broken on 26.2.99 (Adreno 610) | -
+textureCompressionASTC_LDR | warn | panvk | * | any | * | decodes an illegal or HDR ASTC block as transparent black where the specification says opaque magenta (seen on a Mali-G76); native_astc=0 decodes them as the specification says | #1898 | edenprobe:astc: an illegal block is the error colour | 2026-11-12 broken on 26.99.99 (Mali-G76 MC4) | -
+
+# Core parts the renderer has no way around: said so a report from such a driver starts from them
+timelineSemaphore | warn | qualcomm | * | any | * | does not run timeline semaphores properly on all of its drivers | yuzu 1462db4694 (2023-07-03) | new:headless:timeline waits and signals across the two queues | never | -
+timelineSemaphore | warn | turnip | * | any | * | has timeline semaphore problems on some devices (a ZTE handset's Snapdragon 870) | yuzu 1462db4694 (2023-07-03) | new:headless:timeline waits and signals across the two queues | never | -
+extendedDynamicState | warn | mali | < 44.1.0 | any | * | has several dynamic state bugs, fixed in r44p1 (r44p0 on Pixels) | ANGLE vk_renderer.cpp:6612 (issuetracker.google.com 285124778, 285196249, 286224923, 287318431) | edenprobe:coherence | never | -
+extendedDynamicState | warn | mali | >= 46.0.0 < 51.0.0 | any | * | has dynamic state regressions on job manager GPUs (Midgard and Bifrost), fixed in r51 | ANGLE vk_renderer.cpp:6612 (issuetracker.google.com 336411904) | edenprobe:coherence | never | -
+VK_DYNAMIC_STATE_CULL_MODE | warn | mali | < 52.0.0 | any | * | culls points and lines with the cull mode set by vkCmdSetCullMode (Arm errata SDEN-3735689) | ANGLE vk_renderer.cpp:6663 | new:edenprobe:points and lines drawn with front and back culling | never | -
+VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY | warn | mali | * | any | * | breaks topology as dynamic state with geometry shaders | ANGLE vk_renderer.cpp:6684 | new:edenprobe:geometry shader draws switching topology | never | -
+VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY | warn | powervr | * | any | * | renders wrong with topology as dynamic state | ANGLE vk_renderer.cpp:6684, b/472763050 | new:edenprobe:draws switching topology | never | -
+primitiveRestartEnable | warn | mali | * | any | * | breaks primitive restart | Dolphin DriverDetails.cpp:110 | new:edenprobe:strips with restart indices | never | -
+primitiveRestartEnable | warn | qualcomm | * | any | * | breaks primitive restart | Dolphin DriverDetails.cpp:152 | new:edenprobe:strips with restart indices | never | -
+primitiveRestartEnable | warn | amd-proprietary | * | windows | * | resets the GPU with primitive restart on GCN 4 | Dolphin DriverDetails.cpp:108, VulkanContext.cpp:514 | new:edenprobe:strips with restart indices | never | -
+VkViewport.minDepth | warn | qualcomm | * | any | * | breaks a viewport whose minDepth is above its maxDepth | Dolphin DriverDetails.cpp:125 | new:edenprobe:depth with a reversed viewport range | never | -
+VkViewport.minDepth | warn | anv | * | any | * | breaks a viewport whose minDepth is above its maxDepth | Dolphin DriverDetails.cpp:122 | new:edenprobe:depth with a reversed viewport range | never | -
+VkViewport.minDepth | warn | moltenvk | * | any | * | breaks a viewport whose minDepth is above its maxDepth | Dolphin DriverDetails.cpp:127 | new:edenprobe:depth with a reversed viewport range | never | -
+VK_FORMAT_D32_SFLOAT | warn | qualcomm | * | any | * | leaves 32-bit float depth uncleared by a clear | Dolphin DriverDetails.cpp:120 | new:edenprobe:D32 depth clears read back | never | -
+vkCmdClearAttachments | warn | nvidia | * | any | * | can lock the GPU up clearing part of a multisampled target, several clears in one command buffer | Dolphin DriverDetails.cpp:116 | new:edenprobe:partial clears of a multisampled target, several a frame | never | -
+vkCmdClearAttachments | warn | qualcomm | < 512.762.12 | any | * | races clears inside a pass with the draws around them | ANGLE vk_renderer.cpp:6380, issuetracker.google.com 166809097 | new:edenprobe:clears between draws in one pass | never | -
+shaderCullDistance | warn | powervr | * | any | * | culls nothing for a shader that writes both clip and cull distances (BXM-8-256) | PPSSPP thin3d_vulkan.cpp:1147 | new:edenprobe:a draw with clip and cull distances both written | never | -

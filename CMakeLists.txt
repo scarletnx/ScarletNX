@@ -64,6 +64,7 @@ option(SNX_BUILD_GNUABI "Build the CPU-only Linux AArch64 runtime" ON)
 option(SNX_BUILD_3DS "Build the 3DS driver: extraction, the ARM11 AOT compiler and the runtime" ON)
 option(SNX_BUILD_VITA "Build the PS Vita driver: VPK extraction, the AArch32 AOT compiler and the runtime" ON)
 option(SNX_BUILD_AGB "Build the Game Boy Advance AGB board runtime" ON)
+option(SNX_BUILD_NDS "Build the DS driver: the ARM9 AOT compiler, the board and its Vulkan renderer" ON)
 # the Android app driver runs apps on a desktop's JVM: not in ScarletNX's own Android and iOS apps, which have none.
 # Its native bridge passes the guest's registers as an x86-64 or AArch64 host's (bridge/hle_libc.c)
 # By default only where a JDK 21 or later with include/jni.h is found (cmake/android_jdk.cmake); asked for with none,
@@ -114,7 +115,7 @@ if(SNX_RECOMPILED_DIR STREQUAL "${PROJECT_SOURCE_DIR}/games")
 endif()
 
 # RelWithDebInfo builds with -O2 and adds symbols for crash reports. It leaves out -DNDEBUG, which keeps the runtime's
-# few assert()s (hle/kernel/ipc.c's full pools) and VMA's assertions on.
+# few assert()s (hle/kernel/ipc.c's full pools) on.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
@@ -210,7 +211,7 @@ endif()
 # the program, wherever the build has a driver: it links the drivers' libraries by name, the ones configured below too,
 # by the conditions their folders are configured by here (a build of the host tools has no Vita driver, and with the
 # Switch's tools it stops here)
-if(SNX_BUILD_NX OR SNX_BUILD_3DS OR SNX_BUILD_GNUABI OR SNX_BUILD_AGB OR SNX_BUILD_ANDROID OR
+if(SNX_BUILD_NX OR SNX_BUILD_3DS OR SNX_BUILD_GNUABI OR SNX_BUILD_AGB OR SNX_BUILD_NDS OR SNX_BUILD_ANDROID OR
    (SNX_BUILD_VITA AND NOT SNX_TOOLS_ONLY))
     add_subdirectory(src/multicall)
 endif()
@@ -231,6 +232,12 @@ if(SNX_BUILD_AGB)
     include(cmake/window_icon.cmake)
     include(cmake/pad_sdl.cmake)
     add_subdirectory(src/agb)
+endif()
+if(SNX_BUILD_NDS)
+    # the window's icon and the gamepads' controls, as the 3DS's: a target of src/nds compiles only src/nds
+    include(cmake/window_icon.cmake)
+    include(cmake/pad_sdl.cmake)
+    add_subdirectory(src/nds)
 endif()
 if(SNX_BUILD_GUI)
     add_subdirectory(src/gui)
@@ -294,9 +301,6 @@ if(Vulkan-Headers_ADDED)
     install(DIRECTORY "${Vulkan-Headers_SOURCE_DIR}/LICENSES" DESTINATION ${licenses}/Vulkan-Headers)
 endif()
 install(FILES "${volk_SOURCE_DIR}/LICENSE.md" DESTINATION ${licenses}/volk)
-if(VulkanMemoryAllocator_ADDED)
-    install(FILES "${VulkanMemoryAllocator_SOURCE_DIR}/LICENSE.txt" DESTINATION ${licenses}/VulkanMemoryAllocator)
-endif()
 # renderdoc_app.h's license is the comment at the top of the header
 file(READ "${renderdoc_app_SOURCE_DIR}/renderdoc_app.h" renderdoc_app)
 string(FIND "${renderdoc_app}" "*/" renderdoc_app_end)

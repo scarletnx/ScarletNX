@@ -12,7 +12,8 @@
    followed by etc2_encode.glsl: BCn blocks encoded again as ETC2 and EAC for a GPU that samples those and not BCn, a
    pipeline of its own so the encoder's registers don't weigh on the other conversions. Built again with
    SNX_TC_CONVERT, TC_BLIT_CONVERT alone: an Adreno 610's stock compiler fails to link the plain build with it inside
-   and links each half. */
+   and links each half. And with SNX_TC_NV12, TC_NV12_UV alone: a movie's first picture needs only that, and the plain
+   build is a long compile on a slow GPU's compiler. */
 
 #include "texconv_modes.glsl"
 

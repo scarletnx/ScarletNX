@@ -312,8 +312,8 @@ uint Decoded(uint stored) {
 
 /* the stored value of n bits (its lowest the p-bit p when the shape has p-bits) that widens nearest to t, the lower on
    a tie. It is guess - 1 or guess without p-bits; with them guess when its parity is p, else guess - 1 or guess + 1:
-   two candidates, compared once (ucas: exhaustive equiv with the search of guess - 2 to guess + 2, over t 0 to 255, n 5
-   to 8, both p and with and without p-bits) */
+   two candidates, compared once (ucas: exhaustive equiv with the search of every stored value, over t 0 to 255, n 5 to
+   8, both p and with and without p-bits) */
 uint Quant(int t, uint p) {
 #if SNX_ASTC_ENC
     /* an ASTC end is kept as the 8 bits it decodes to (StoredBits is 8): the value its colour encoding holds nearest
@@ -323,13 +323,14 @@ uint Quant(int t, uint p) {
 #endif
     const uint n = StoredBits();
     const int top = int((1u << n) - 1u);
-    const int guess = (t * top + 127) / 255;
+    /* (t * top + 127) / 255: the dividend is below 65536, where x * 32897 >> 23 is x / 255 */
+    const int guess = int(uint(t * top + 127) * 32897u >> 23u);
     const bool other = sh_pk != 0u && (uint(guess) & 1u) != p;
     int lo = sh_pk == 0u || other ? guess - 1 : guess;
     const int hi = other ? guess + 1 : guess;
     lo = lo < 0 ? hi : lo;
-    /* hi = top + 1 (guess = top of the wrong parity) widens past 255 and never wins, so it needs no clamp (ucas: the
-       function-level pass, exhaustive over Quant's every call) */
+    /* hi = top + 1 (guess = top of the wrong parity) widens past 255 and never wins, so it needs no clamp (ucas:
+       exhaustive over the same t, n, p and p-bits) */
     const int el = int(Widen(uint(lo), n)) - t, eh = int(Widen(uint(hi), n)) - t;
     return uint(abs(el) <= abs(eh) ? lo : hi);
 }
@@ -405,7 +406,7 @@ uint Eval(uint s, uint q0, uint q1, bool near) {
         if (dd > 0) {
             /* the texel's place along the line, 0 to 64, then the nearest weight */
             const int t = clamp(int(Dot4(p, b)) - int(Dot4(p, a)) - along, 0, dd);
-            const int n = t * 64 + dd / 2;
+            const int n = t * 64 + (dd >> 1); /* dd / 2, dd being positive here */
 #if SNX_NO_ARRAYS
             /* No division and no floating point in this build, whose lines have weights of 2 or 3 bits (mobile GPUs
                convert between integers and floats slowly; on a GT 1030 the reciprocal below is 3% the faster, which
@@ -970,6 +971,33 @@ uvec4 Encode() {
        end, 2-bit weights) in each of the two, then mode 2 (three subsets, RGB, 5 bits an end, 2-bit weights); any
        other block mode 7 (two subsets, RGBA, 5 bits and a p-bit an end, 2-bit weights) in each. Last modes 5, 4 and 4
        with the other index selection, in each rotation */
+#if SNX_BC7_PASS == 1 || SNX_BC7_FAST == 2 || SNX_BC7_FAST == 3
+    /* These builds try mode 6 alone, so its job is written out here without the loop of jobs: the shape is then the
+       same constants wherever the fit reads it, and the compiler folds every test of the mode out of FitSubset and
+       Pack. In the loop below it cannot: the shape is whatever the job before left */
+    SetShape(1u, 0u);
+    sh_cb = 7u;
+    sh_alpha = 1u;
+    sh_pk = 2u;
+    sh_ib = 4u;
+    sh_mask = 15u;
+    FitSubset(0u);
+    if (fit_err < best_err) {
+        best_err = fit_err;
+        best_mode = 6u;
+        best_part = 0u;
+        best_lo = fit_lo;
+        best_hi = fit_hi;
+        best_s0[0] = fit_s0;
+        best_s1[0] = fit_s1;
+    }
+    if (SNX_BC7_PASS == 1 && SNX_BC7_FAST != 2 && SNX_BC7_FAST != 3 && best_err > uint(SNX_BC7_GOOD_ENOUGH) &&
+        best_err > SNX_BC7_ENOUGH) {
+        enc_more = true;
+        return uvec4(0u);
+    }
+    return Pack();
+#else
     const uint shapes = 1u + (opaque ? 5u : 2u);
     const uint jobs = shapes + (SNX_BC7_MODES_4_5 != 0 ? 12u : 0u);
     uint first = 0u, second = 1u, third = 0u;
@@ -1101,4 +1129,5 @@ uvec4 Encode() {
     sh_pk = best_mode == 2u ? 0u : best_mode == 1u ? 1u : 2u;
     sh_ib = best_mode == 6u ? 4u : best_mode == 1u ? 3u : 2u;
     return Pack();
+#endif
 }

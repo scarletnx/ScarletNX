@@ -96,7 +96,7 @@ static int check_mapping_lock(void) {
     if (own_traps()) {
         const u64 cpu = LW_CPU + 2 * LW_SIZE;
         CHECK(mem_map(cpu, LW_SIZE, MS_NORMAL, PERM_RW) == 0);
-        VkOwnRes* owner = vk_own_res_new(256);
+        VkOwnRes* owner = vk_own_res_new(256, VK_OWN_BY_DRAW);
         CHECK(owner);
         vk_lock();
         vk_own_publish_owned(cpu + 0x1000, 256, owner, 0);
@@ -152,7 +152,7 @@ static int check_landing_wait(void) {
     if (!own_traps()) return 0;
     CHECK(mem_map(LW_OWN_CPU, 0x1000, MS_NORMAL, PERM_RW) == 0);
     memset(GP(LW_OWN_CPU), 0x11, 0x1000);
-    VkOwnRes* owner = vk_own_res_new(256);
+    VkOwnRes* owner = vk_own_res_new(256, VK_OWN_BY_DRAW);
     CHECK(owner);
     vk_lock();
     VkBuffer upload;
@@ -202,6 +202,9 @@ static int check_mapping_landing(void) {
     gmmu_map(LW_LAND_GVA, LW_LAND_CPU, LW_SIZE);
     vk_lock();
     vk_finish();
+    /* memory the CPU read lately: its result is copied and lands, where the page cache would keep it on the GPU and
+       an unmap would let go of it with no wait (keep_pages) */
+    results_copied(LW_LAND_CPU, 256);
     CHECK(vk_buf_copy_writable(LW_LAND_GVA, 256, &output, &offset, 1));
     u8* data = vk_stage_upload(256, 16, &upload, &at);
     CHECK(data);

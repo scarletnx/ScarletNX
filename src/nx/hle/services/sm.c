@@ -37,11 +37,64 @@ static const char* stand_in_name(const char* name) {
 }
 static SvcObj* sm_stand_in(const char* name) { return svcobj_new(stand_in_name(name), stub_ok); }
 
+/* the services the runtime answers in the SDK's own functions (nn/), with no session: a game that still asks
+   for one called a function there that is not native yet, and a stand-in would give its SDK objects with nothing
+   behind them. A program with no SDK, which opens them itself as libnx does, has no function to answer in: the
+   runtime keeps no second, IPC copy of these services for it */
+static const char* const g_native_only[][2] = {
+    {"fsp-srv", "nn::fs (nn/fs.c)"},
+    {"fsp-pr", "nn::fs (nn/fs.c)"},
+    {"fsp-ldr", "nn::fs (nn/fs.c)"},
+    {"time:u", "nn::time (nn/time.c)"},
+    {"time:a", "nn::time (nn/time.c)"},
+    {"time:s", "nn::time (nn/time.c)"},
+    {"time:r", "nn::time (nn/time.c)"},
+    {"time:su", "nn::time (nn/time.c)"},
+    {"pl:u", "nn::pl (nn/pl.c)"},
+    {"pl:s", "nn::pl (nn/pl.c)"},
+    {"pctl", "nn::pctl (nn/pctl.c)"},
+    {"pctl:a", "nn::pctl (nn/pctl.c)"},
+    {"pctl:s", "nn::pctl (nn/pctl.c)"},
+    {"pctl:r", "nn::pctl (nn/pctl.c)"},
+    {"nsd:u", "nn::nsd (nn/nsd.c)"},
+    {"nsd:a", "nn::nsd (nn/nsd.c)"},
+    {"ngc:u", "nn::ngc (nn/ngc.c)"},
+    {"ngct:u", "nn::ngc (nn/ngc.c)"},
+    {"prepo:u", "nn::prepo (nn/prepo.c)"},
+    {"prepo:s", "nn::prepo (nn/prepo.c)"},
+    {"prepo:m", "nn::prepo (nn/prepo.c)"},
+    {"prepo:a", "nn::prepo (nn/prepo.c)"},
+    {"prepo:a2", "nn::prepo (nn/prepo.c)"},
+    {"audout:u", "nn::audio (nn/audio.c)"},
+    {"audout:a", "nn::audio (nn/audio.c)"},
+    {"audout:d", "nn::audio (nn/audio.c)"},
+    {"audren:u", "nn::audio (nn/audio_renderer.c)"},
+    {"audren:a", "nn::audio (nn/audio_renderer.c)"},
+    {"audren:d", "nn::audio (nn/audio_renderer.c)"},
+    {"hwopus", "nn::codec (nn/codec.c)"},
+    {"audin:u", "nn::audio (nn/audio.c)"},
+    {"audin:a", "nn::audio (nn/audio.c)"},
+    {"audin:d", "nn::audio (nn/audio.c)"},
+};
 static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_sm_ServiceName* name, u32* session) {
     char s[9];
     SvcObj* o;
     (void)self;
     R_UNLESS(sm_name(name, s), SNX_RC_SM_INVALID_SERVICE_NAME);
+    for (size_t i = 0; i < sizeof g_native_only / sizeof g_native_only[0]; i++)
+        if (!strcmp(s, g_native_only[i][0])) {
+            char missed[640]; /* what the hooks did not take for the game's SDK version, which may be why */
+            hook_missed_text(missed, sizeof missed);
+            /* the SDK function that asked is in the calls of the thread that sent this request */
+            WARN("\n*** The program opened %s, which the runtime answers only natively ***\n", s);
+            kernel_dump_threads();
+            fatal("sm: the program opened %s, which the runtime answers only in the SDK's own functions, %s. A game "
+                  "got here through an SDK function that is not native yet (the calls of its thread, in the log's "
+                  "thread list before this, name it). A homebrew program that opens %s itself, as libnx does, is "
+                  "not supported: it has to call the SDK's functions, as edenprobe does with the word hooks in its "
+                  "mode file%s%s",
+                  s, g_native_only[i][1], s, *missed ? ". " : "", missed);
+        }
     o = svc_open(s);
     if (!o) {
         WARN("sm: %s is not implemented, its commands answer without doing anything\n", s);

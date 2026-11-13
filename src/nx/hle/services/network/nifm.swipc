@@ -50,5 +50,5 @@ interface nn::nifm::detail::IRequest {
     @stub [5] SetRequirement(nn::nifm::Requirement requirement);
     @stub [6] SetRequirementPreset(i32 preset);
     @stub [11] SetConnectionConfirmationOption(i8 option);
-    @stub [21] GetAppletInfo(u32 theme_color, buffer<u8, 6> data) -> (u32 applet_id, u32 library_applet_mode, u32 size);
+    [21] GetAppletInfo(u32 theme_color, buffer<u8, 6> data) -> (u32 applet_id, u32 library_applet_mode, u32 size);
 }

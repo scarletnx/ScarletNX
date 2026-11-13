@@ -34,7 +34,7 @@ qemu-ppc64, but no game has run on a big-endian machine yet. See [Big-endian hos
 The tools, once:
 
 ```bash
-sudo apt install clang lld llvm ninja-build cmake ccache mmdebstrap qemu-user qemu-user-binfmt binfmt-support \
+sudo apt install clang lld llvm ninja-build meson cmake ccache mmdebstrap qemu-user qemu-user-binfmt binfmt-support \
     glslang-tools spirv-tools debian-ports-archive-keyring
 ```
 
@@ -120,8 +120,9 @@ itself.
   fails on its vector form, so FRINTN and the conversions in that mode use the software path (FPCR's own mode, which
   may select it, too). The other modes are instructions. Fused multiply-add and square root are fast paths on the
   scalar FPU of every PowerPC64, and on the vectors where VSX is there.
-- **SDL3 is built without AltiVec** (`cmake/dependencies.cmake`): its blitters prefetch with `dstt`, which the ISA
-  phased out and qemu traps.
+- **SDL3 built from source has no AltiVec** (`cmake/dependencies.cmake`): its blitters prefetch with `dstt`, which
+  the ISA phased out and qemu traps. The AppImages take Arch POWER's `sdl3` package instead (`SNX_SYSTEM_SDL3`),
+  which has them.
 
 ## Big-endian hosts
 
@@ -157,7 +158,7 @@ No CI job builds it. Its tests, the Linux runtime's (`gnuabi_*`, `endian`, `cas1
 `ctest --preset linux-ppc64-cross`.
 
 Arch POWER's big-endian glibc is ELFv2, as LLD links it. Its preset (`linux-ppc64-elfv2-cross`, `SNX_PPC64_ELFV2`)
-builds for ELFv2 with `-mabi=elfv2` and the Linux runtime alone. Its system root is pkgforge's Arch image of the
+builds for ELFv2 with `-mabi=elfv2`, every runtime and the launcher. Its system root is pkgforge's Arch image of the
 architecture with LLVM and GCC's runtime installed into it, as the `appimage-cross` job makes it. The runtime's own
 code generator takes its ABI from the runtime itself (`_CALL_ELF`, `new_ir` in `ir.c`), as LLVMs differ in which
 ABI their `powerpc64-*-linux-gnu` picks: Debian's 19 ELFv1, Arch POWER's 22 ELFv2.
@@ -191,11 +192,11 @@ compile to nothing on a little-endian host:
 - hactool's headers are converted as they are read, or at each field where they are signed or written back, so
   extraction and recompiling work on a big-endian machine.
 
-The build (the Arch POWER system root of the `appimage-cross` job, with GCC's runtime and LLVM installed):
+The build (the Arch POWER system root of the `appimage-cross` job, with GCC's runtime, SDL3 and LLVM installed):
 
 ```bash
 export SNX_SYSROOT=/path/to/arch-power-ppc64
-cmake --preset linux-ppc64-elfv2-cross
+cmake --preset linux-ppc64-elfv2-cross -DSNX_SYSTEM_SDL3=ON
 cmake --build --preset linux-ppc64-elfv2-cross
 ctest --preset linux-ppc64-elfv2-cross -j"$(nproc)"
 ```
@@ -236,7 +237,7 @@ The `linux-ppc64-g5-cross` preset is the ELFv2 build with this baseline, named f
 ```bash
 export SNX_SYSROOT=/path/to/arch-power-ppc64
 scripts/linux-llvm.sh ppc64 "$PWD/.cache/llvm/ppc64"
-cmake --preset linux-ppc64-g5-cross
+cmake --preset linux-ppc64-g5-cross -DSNX_SYSTEM_SDL3=ON
 cmake --build --preset linux-ppc64-g5-cross
 ```
 

@@ -319,6 +319,22 @@ static void test_nifm(void) {
     CHECK(req->dispatch(req, &ctx) == 0 && state->signaled);
     request(0);
     CHECK(req->dispatch(req, &ctx) == 0 && reply(0) == REQ_INVALID);
+    /* the applet that tells the player: the network connection applet (0x0f) in the foreground, with an empty list of
+       storages for it, a u32 of ~0 in the SDK's buffer of 0x1000 */
+    memset(GP(OUT0), 0xee, 8);
+    request(21); /* GetAppletInfo */
+    arg32(0, 1); /* the theme color */
+    ctx.nb = 1;
+    ctx.b[0] = buf(OUT0, 0x1000);
+    CHECK(req->dispatch(req, &ctx) == 0 && ctx.out_size == 12);
+    CHECK(reply(0) == 0x0f && reply(4) == 0 && reply(8) == 4);
+    CHECK(snx_ld_le32(GP(OUT0)) == 0xffffffffu && GP(OUT0)[4] == 0xee);
+    /* a buffer with no room for the list's end: none, 0 bytes, which the SDK refuses itself */
+    memset(GP(OUT0), 0xee, 8);
+    request(21);
+    ctx.nb = 1;
+    ctx.b[0] = buf(OUT0, 3);
+    CHECK(req->dispatch(req, &ctx) == 0 && reply(0) == 0x0f && reply(8) == 0 && GP(OUT0)[0] == 0xee);
     svcobj_unref(req);
     svcobj_unref(g);
     svcobj_unref(nifm);

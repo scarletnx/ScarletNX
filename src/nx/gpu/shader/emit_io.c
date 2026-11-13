@@ -58,7 +58,7 @@ void shader_alpha_test(DirectCtx* c, u32 push, u32 push_pointer, u32 alpha) {
 
 u32 shader_frag_y_origin(DirectCtx* c, u32 push, u32 y) {
     u32 one = shader_u32(c, 1);
-    u32 pointer = spv_emit_type_pointer(&c->emit, 9, c->u32_type); /* PushConstant */
+    u32 pointer = spv_emit_type_pointer(&c->emit, SPV_STORAGE_PUSH_CONSTANT, c->u32_type);
     u32 lower_left = shader_spec(c, SH_SPEC_LOWER_LEFT, 0);
     u32 height = spv_emit_push_component_f32(&c->emit, pointer, push, one, shader_u32(c, 3), c->u32_type);
     u32 up = spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type,
@@ -159,7 +159,7 @@ u32 shader_vertex_value(DirectCtx* c, u32 vec4_type, const u32 at[3], int flat, 
     SpvEmitter* e = &c->emit;
     if (flat) return shader_input_component(c, vec4_type, at[vertex], c->f32_type, component);
     return spv_emit_load(e, c->f32_type,
-                         spv_emit_interface_scalar_pointer(e, 1, c->f32_type, at[vertex],
+                         spv_emit_interface_scalar_pointer(e, SPV_STORAGE_INPUT, c->f32_type, at[vertex],
                                                            spv_emit_constant_u32(e, c->u32_type, vertex),
                                                            spv_emit_constant_u32(e, c->u32_type, component)));
 }
@@ -295,7 +295,8 @@ void shader_geometry_passthrough(DirectCtx* c, const ShaderInfo* si, u32 vertice
             u32 value = saved[a];
             for (u32 k = 0; k < 4; k++) {
                 if (!(mask & (1u << k))) continue;
-                u32 ptr = spv_emit_interface_scalar_pointer(&c->emit, 1, c->f32_type, in, index, shader_u32(c, k));
+                u32 ptr = spv_emit_interface_scalar_pointer(&c->emit, SPV_STORAGE_INPUT, c->f32_type, in, index,
+                                                            shader_u32(c, k));
                 value = spv_emit_vec4_insert(&c->emit, vec4, value, spv_emit_load(&c->emit, c->f32_type, ptr), k);
             }
             spv_emit_store(&c->emit, out, value);
@@ -309,12 +310,14 @@ void shader_geometry_passthrough(DirectCtx* c, const ShaderInfo* si, u32 vertice
         if (position_fix) shader_vertex_position_fix(c, position, push, push_pointer, vec4);
         int streams = 0;
         for (u32 buffer = 0; buffer < 4; buffer++) streams |= si->xfb.count[buffer] && si->xfb.stream[buffer];
-        if (streams) spv_emit_void_op(&c->emit, 220, &c->zero, 1);
+        if (streams)
+            spv_emit_void_op(&c->emit, SPV_OP_EMIT_STREAM_VERTEX, &c->zero, 1);
         else spv_emit_emit_vertex(&c->emit);
     }
     int streams = 0;
     for (u32 buffer = 0; buffer < 4; buffer++) streams |= si->xfb.count[buffer] && si->xfb.stream[buffer];
-    if (streams) spv_emit_void_op(&c->emit, 221, &c->zero, 1);
+    if (streams)
+        spv_emit_void_op(&c->emit, SPV_OP_END_STREAM_PRIMITIVE, &c->zero, 1);
     else spv_emit_end_primitive(&c->emit);
 }
 
@@ -385,7 +388,8 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 if (!variable) continue;
                 u32 type = v < 32 ? input_component_type[v] : c->f32_type;
                 u32 bits = spv_emit_load(
-                    &c->emit, type, spv_emit_interface_scalar_pointer(&c->emit, 1, type, variable, vertex, component));
+                    &c->emit, type,
+                    spv_emit_interface_scalar_pointer(&c->emit, SPV_STORAGE_INPUT, type, variable, vertex, component));
                 if (type != c->u32_type) bits = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, bits);
                 u32 at = shader_u32(c, v < 32 ? 8 + v : 7);
                 value =
@@ -412,7 +416,7 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                                                 location < 0x10 ? tess_outer : tess_inner, 0,
                                                                 shader_u32(c, (location & 0xf) / 4));
             } else if (location == 0x2f0 || location == 0x2f4)
-                pointer = spv_emit_interface_scalar_pointer(&c->emit, 1, c->f32_type, tess_coord, 0,
+                pointer = spv_emit_interface_scalar_pointer(&c->emit, SPV_STORAGE_INPUT, c->f32_type, tess_coord, 0,
                                                             shader_u32(c, (location - 0x2f0) / 4));
             else if (location == 0x60)
                 value = primitive_read(c, primitive_id);
@@ -434,8 +438,8 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                     location < 0x80 ? position : output_attrs[(location - 0x80) >> 4], vertex, component);
             else
                 pointer = spv_emit_interface_scalar_pointer(
-                    &c->emit, 1, c->f32_type, location < 0x80 ? position_in : inputs[(location - 0x80) >> 4], vertex,
-                    component);
+                    &c->emit, SPV_STORAGE_INPUT, c->f32_type,
+                    location < 0x80 ? position_in : inputs[(location - 0x80) >> 4], vertex, component);
             if (pointer)
                 reg_write_as(c, d + k, spv_emit_load(&c->emit, c->f32_type, pointer), c->f32_type);
             else
@@ -477,21 +481,21 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             if (!B(w, 31, 1) && (location == 0x64 || location == 0x68)) continue;
             u32 component = shader_u32(c, (location >> 2) & 3);
             if (!B(w, 31, 1) && location == 0x6c && point_size) {
-                u32 type = spv_emit_type_pointer(&c->emit, 3, c->f32_type);
+                u32 type = spv_emit_type_pointer(&c->emit, SPV_STORAGE_OUTPUT, c->f32_type);
                 pointer = SPV(&c->emit, SPV_OP_ACCESS_CHAIN, type, point_size, vertex);
             } else if (!B(w, 31, 1) && location >= 0x2c0 && location < 0x2e0) {
                 if (clip_output && (clip_used & (1u << ((location - 0x2c0) / 4))))
-                    pointer = spv_emit_interface_scalar_pointer(&c->emit, 3, c->f32_type, clip_output, vertex,
-                                                                shader_u32(c, (location - 0x2c0) / 4));
+                    pointer = spv_emit_interface_scalar_pointer(&c->emit, SPV_STORAGE_OUTPUT, c->f32_type, clip_output,
+                                                                vertex, shader_u32(c, (location - 0x2c0) / 4));
             } else if (!B(w, 31, 1))
                 pointer = spv_emit_interface_scalar_pointer(
                     &c->emit, location >= 0x80 && attr_private[(location - 0x80) >> 4] ? 6 : 3, c->f32_type,
                     location < 0x80 ? position : output_attrs[(location - 0x80) >> 4], vertex, component);
             else if (location >= 0x20)
-                pointer = spv_emit_interface_scalar_pointer(&c->emit, 3, c->f32_type,
+                pointer = spv_emit_interface_scalar_pointer(&c->emit, SPV_STORAGE_OUTPUT, c->f32_type,
                                                             patch_vars[(location - 0x20) >> 4], 0, component);
             else if (location < 0x18)
-                pointer = spv_emit_interface_scalar_pointer(&c->emit, 3, c->f32_type,
+                pointer = spv_emit_interface_scalar_pointer(&c->emit, SPV_STORAGE_OUTPUT, c->f32_type,
                                                             location < 0x10 ? tess_outer : tess_inner, 0,
                                                             shader_u32(c, (location & 0xf) / 4));
             if (pointer) spv_emit_store(&c->emit, pointer, reg_read_as(c, d + k, c->f32_type));
@@ -576,12 +580,14 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                         }
                     }
                 }
-                if (t->stream_mask) spv_emit_void_op(&c->emit, 220, &literal, 1);
+                if (t->stream_mask)
+                    spv_emit_void_op(&c->emit, SPV_OP_EMIT_STREAM_VERTEX, &literal, 1);
                 else spv_emit_emit_vertex(&c->emit);
                 if (point_size && !point_size_used) spv_emit_store(&c->emit, point_size, t->default_point_size);
             }
             if (B(w, 40, 1)) {
-                if (t->stream_mask) spv_emit_void_op(&c->emit, 221, &literal, 1);
+                if (t->stream_mask)
+                    spv_emit_void_op(&c->emit, SPV_OP_END_STREAM_PRIMITIVE, &literal, 1);
                 else spv_emit_end_primitive(&c->emit);
             }
             spv_emit_branch(&c->emit, merge);
@@ -610,9 +616,9 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             u32 bits;
             if (!((sph[6 + v / 4] >> (v % 4 * 8)) & 0xff)) continue;
             if (inputs[v]) {
-                bits =
-                    spv_emit_load(&c->emit, c->f32_type,
-                                  spv_emit_interface_scalar_pointer(&c->emit, 1, c->f32_type, inputs[v], 0, component));
+                bits = spv_emit_load(&c->emit, c->f32_type,
+                                     spv_emit_interface_scalar_pointer(&c->emit, SPV_STORAGE_INPUT, c->f32_type,
+                                                                       inputs[v], 0, component));
                 if (shader_ipa_interpolation(sph, v) == 2 && wcoord) {
                     bits = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, bits, wcoord);
                     spv_emit_no_contraction(&c->emit, bits);
@@ -715,9 +721,10 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         reg_write_as(c, d, value, c->f32_type);
     } else if (op == O_PIXLD) {
         reg_write(c, d,
-                  B(w, 31, 3) == 5 ? spv_emit_load(&c->emit, c->u32_type, sample_id)
-                                   : spv_emit_load(&c->emit, c->u32_type,
-                                                   spv_emit_interface_scalar_pointer(&c->emit, 1, c->u32_type, coverage,
-                                                                                     0, c->zero)));
+                  B(w, 31, 3) == 5
+                      ? spv_emit_load(&c->emit, c->u32_type, sample_id)
+                      : spv_emit_load(&c->emit, c->u32_type,
+                                      spv_emit_interface_scalar_pointer(&c->emit, SPV_STORAGE_INPUT, c->u32_type,
+                                                                        coverage, 0, c->zero)));
     }
 }

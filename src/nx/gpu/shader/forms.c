@@ -528,6 +528,25 @@ int shader_shfl_quad(u64 w, u32* lane) {
     return B(w, 30, 2) == 3 && index >= 1 && index <= 3 ? 2 : 0;
 }
 
+/* SHFL within a fragment program's quad (the immediate mask 0x1c03) from a lane known when translated (an immediate
+   index, or RZ), for each lane L of the quad as the generic shuffle's bounds give it (the segment's lanes are the
+   quad's, 0 to 3): dir[L] the pixel it reads, as the quad lane L ^ dir[L] (0 its own value: an invalid read keeps
+   it), and in *valid bit L where the SHFL's predicate is true. IDX, UP and DOWN read every quad of a warp alike;
+   BFLY 4 and up, which reads another quad from some, reads none (the warp's first quad's result). 0 for any other
+   SHFL. dir and valid may be NULL */
+int shader_shfl_quad_lanes(u64 w, u8 dir[4], u32* valid) {
+    if ((!B(w, 28, 1) && B(w, 20, 8) != 255) || !B(w, 29, 1) || B(w, 34, 13) != 0x1c03) return 0;
+    u32 index = B(w, 28, 1) ? B(w, 20, 5) : 0, mode = B(w, 30, 2), lanes = 0;
+    for (u32 lane = 0; lane < 4; lane++) {
+        u32 source = mode == 0 ? index & 3 : mode == 1 ? lane - index : mode == 2 ? lane + index : lane ^ index;
+        int ok = mode == 1 ? lane >= index : source <= 3;
+        if (ok) lanes |= 1u << lane;
+        if (dir) dir[lane] = ok ? (u8)(source ^ lane) : 0;
+    }
+    if (valid) *valid = lanes;
+    return 1;
+}
+
 /* FSWZADD's lanes (bit L for quad lane L) whose two bits of the swizzle (28-35) are mode: lane L's are bits
    6 - 2L of it, the upper left lane's the top two, as nouveau's QUADOP lays them out (nv50_ir_lowering_gm107.cpp) */
 u32 shader_fswzadd_lanes(u64 w, u32 mode) {
@@ -673,10 +692,11 @@ int shader_supported(u64 w, int op) {
         case O_STL: return B(w, 48, 3) <= 7;
         case O_LDS:
         case O_STS: return B(w, 48, 3) <= 7;
-        /* BAR.SYNC 0 for the whole workgroup: arrivals, reductions and thread counts are other barriers */
+        /* BAR.SYNC 0 for the whole workgroup, the barrier and the thread count each an immediate 0 (bits 43 and 44) or
+           RZ, as uam compiles barrier(): arrivals, reductions, other barriers and thread counts are not translated */
         case O_BAR:
-            return (w & 0x0000009B00000000ull) == 0x0000008000000000ull && B(w, 43, 1) && !B(w, 8, 8) && B(w, 44, 1) &&
-                   !B(w, 20, 12);
+            return (w & 0x0000009B00000000ull) == 0x0000008000000000ull && B(w, 8, 8) == (B(w, 43, 1) ? 0u : 255u) &&
+                   B(w, 20, 12) == (B(w, 44, 1) ? 0u : 255u);
         case O_S2R: {
             u32 sr = B(w, 20, 8);
             /* SR_AFFINITY (0x1c) is not modeled; the clock registers require the shader-clock feature below. */

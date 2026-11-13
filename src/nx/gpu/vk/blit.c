@@ -115,7 +115,7 @@ static int blit(const GpuBlit* b, u32 y, u32 n, const BlitNeeds* need) {
         } else
             t[w + i] = b->srow[y + i] - sr0;
     snx_le32_array(t, (size_t)w + n); /* the device reads the tables' words little-endian */
-    d = vk_own_res_new(dlen);
+    d = vk_own_res_new(dlen, VK_OWN_BY_COPY);
     /* straight into the buffer that becomes its owner */
     if (!d || !vk_guest_read_seen(b->dst.addr + need->dlo, dlen, d->buf, 0)) {
         if (d) vk_own_res_unref(d);

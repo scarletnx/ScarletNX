@@ -13,7 +13,7 @@
    src/core/hle/service/mii/types/raw_data.cpp, and StoreData's checksums from Ryubing's
    src/Ryujinx.HLE/HOS/Services/Mii/Helper.cs and Types/StoreData.cs:
    SPDX-FileCopyrightText: Ryujinx Team and Contributors (MIT) */
-/* The smaller services: apm, lm, pctl, friend, ns, prepo, caps, ectx, psm, fatal, csrng, spl, mm, nfp, nfc, bcat,
+/* The smaller services: apm, lm, friend, ns, caps, ectx, psm, fatal, csrng, spl, mm, nfp, nfc, bcat,
    nim, aoc, irs, mii, btm, audin and olsc, each as a console offline, with no NFC device or microphone, and the add-on
    content the data folder holds */
 #include "nx/hle/services/services_int.h"
@@ -134,52 +134,6 @@ static int nn_lm_ILogger_Log(SvcObj* self, IpcBuf message) {
     R_SUCCEED();
 }
 
-/* ============================================================ pctl: no restrictions set */
-static int nn_pctl_detail_ipc_IParentalControlServiceFactory_CreateService(SvcObj* self, u64 pid, SvcObj** service) {
-    (void)self, (void)pid;
-    *service = nn_pctl_detail_ipc_IParentalControlService_new();
-    R_SUCCEED();
-}
-static int nn_pctl_detail_ipc_IParentalControlServiceFactory_CreateServiceWithoutInitialize(SvcObj* self, u64 pid,
-                                                                                         SvcObj** service) {
-    return nn_pctl_detail_ipc_IParentalControlServiceFactory_CreateService(self, pid, service);
-}
-static int nn_pctl_detail_ipc_IParentalControlService_IsStereoVisionPermitted(SvcObj* self, u8* permitted) {
-    (void)self;
-    *permitted = 1;
-    R_SUCCEED();
-}
-static int nn_pctl_detail_ipc_IParentalControlService_GetSynchronizationEvent(SvcObj* self, u32* event) {
-    (void)self;
-    return new_event(event, "pctl synchronization", 0);
-}
-static int nn_pctl_detail_ipc_IParentalControlService_GetPlayTimerEventToRequestSuspension(SvcObj* self, u32* event) {
-    (void)self;
-    return new_event(event, "pctl play timer", 0);
-}
-static int nn_pctl_detail_ipc_IParentalControlService_GetUnlinkedEvent(SvcObj* self, u32* event) {
-    (void)self;
-    return new_event(event, "pctl unlinked", 0);
-}
-/* the play timer's display as nobody configured it: NotConfigured in its first byte. Zeros read as TimesUp, and a
-   game that believes it stops the person playing */
-#define SNX_PCTL_PLAY_TIMER_NOT_CONFIGURED 7
-static int pctl_play_timer(nn_pctl_PlayTimerRemainingTimeDisplayInfo* info) {
-    memset(info->v, 0, sizeof info->v);
-    info->v[0] = SNX_PCTL_PLAY_TIMER_NOT_CONFIGURED;
-    return 0;
-}
-static int nn_pctl_detail_ipc_IParentalControlService_GetPlayTimerRemainingTimeDisplayInfo(
-    SvcObj* self, nn_pctl_PlayTimerRemainingTimeDisplayInfo* info) {
-    (void)self;
-    return pctl_play_timer(info);
-}
-static int nn_pctl_detail_ipc_IParentalControlService_Unknown1460(SvcObj* self, u8 unknown,
-                                                                  nn_pctl_PlayTimerRemainingTimeDisplayInfo* info) {
-    (void)self, (void)unknown;
-    return pctl_play_timer(info);
-}
-
 /* ============================================================ friend */
 #define FRIEND_NO_NOTIFICATIONS SNX_RC_ACCOUNT_NO_NOTIFICATIONS /* which friends answers too */
 
@@ -277,9 +231,24 @@ static int nn_streamplay_IUserShimScopedObject_GetHidSharedMemory(SvcObj* self,
     R_UNLESS(*memory, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
+/* An IFriendService's completion event (u[0], its id), one for the session. The SDK's asynchronous functions
+   (EnsureFriendListAvailable, GetProfileList and the like, read in SDK 19.3) open a session of their own, take its
+   event with command 0, send their one request from a thread of theirs, keep its result, and the game waits on the
+   event, or polls AsyncContext::HasDone, which reads it, for the request to end. Every request here ends as it is
+   answered, so each one but command 0 signals the event as it returns */
+static void friend_service_destroy(SvcObj* o) { kobj_unref(kobj_at((u32)o->u[0])); }
+static int friend_service_dispatch(SvcObj* o, IpcCtx* c) {
+    int r = nn_friends_detail_ipc_IFriendService_dispatch(o, c);
+    if (c->cmd != 0) ev_signal((u32)o->u[0]);
+    return r;
+}
 static int nn_friends_detail_ipc_IServiceCreator_CreateFriendService(SvcObj* self, SvcObj** service) {
     (void)self;
-    *service = nn_friends_detail_ipc_IFriendService_new();
+    SvcObj* o = nn_friends_detail_ipc_IFriendService_new();
+    o->u[0] = owned_event("friend completion");
+    o->destroy = friend_service_destroy;
+    o->dispatch = friend_service_dispatch;
+    *service = o;
     R_SUCCEED();
 }
 static int nn_friends_detail_ipc_IServiceCreator_CreateNotificationService(SvcObj* self, const nn_account_Uid* uid,
@@ -294,8 +263,9 @@ static int nn_friends_detail_ipc_IServiceCreator_CreateDaemonSuspendSessionServi
     R_SUCCEED();
 }
 static int nn_friends_detail_ipc_IFriendService_GetCompletionEvent(SvcObj* self, u32* event) {
-    (void)self;
-    return new_event(event, "friend completion", 0);
+    *event = ev_handle((u32)self->u[0]);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
+    R_SUCCEED();
 }
 /* nobody is a friend, and the list of none is always there to read */
 static int nn_friends_detail_ipc_IFriendService_CheckFriendListAvailability(SvcObj* self, const nn_account_Uid* uid,
@@ -1016,12 +986,18 @@ static int nn_bcat_detail_ipc_INotifierService_GetEvent(SvcObj* self, u32* event
     return new_event(event, "bcat storage update", 0);
 }
 
-/* ============================================================ nim:eca: the shop, never reached */
+/* ============================================================ nim:eca: the shop, with no server behind it */
 static int nn_nim_detail_IShopServiceAccessServerInterface_CreateServerInterface(SvcObj* self, u64 pid, u64 size,
                                                                                  u32 transfer_memory, SvcObj** server) {
     (void)self, (void)pid, (void)size, (void)transfer_memory;
     *server = nn_nim_detail_IShopServiceAccessServer_new();
     R_SUCCEED();
+}
+static int nn_nim_detail_IShopServiceAccessServerInterface_CreateServerInterface2(SvcObj* self, u64 pid, u64 size,
+                                                                                  u32 transfer_memory,
+                                                                                  SvcObj** server) {
+    return nn_nim_detail_IShopServiceAccessServerInterface_CreateServerInterface(self, pid, size, transfer_memory,
+                                                                                 server);
 }
 static int nn_nim_detail_IShopServiceAccessServer_CreateAccessorInterface(SvcObj* self, u8 type, SvcObj** accessor) {
     (void)self, (void)type;
@@ -1031,7 +1007,7 @@ static int nn_nim_detail_IShopServiceAccessServer_CreateAccessorInterface(SvcObj
 
 /* ============================================================ aoc:u: the add-on content in system/archives */
 /* the running game's from its control.nacp (am_aoc_base_id), another application's as the SDK numbers them */
-static u64 aoc_base_id(u64 application_id) {
+u64 aoc_base_id(u64 application_id) {
     return application_id == g_hle.kernel.title_id ? am_aoc_base_id() : snx_nacp_aoc_base(NULL, 0, application_id);
 }
 /* An add-on content is installed when its RomFS image is in the data folder as system/archives/<data id>.romfs, the
@@ -1492,75 +1468,6 @@ static int nn_btm_IBtmUserCore_AcquireBleMtuConfigEvent(SvcObj* self, u8* succes
     return btm_event(success, event, "btm BLE MTU config");
 }
 
-/* ============================================================ ngc:u and ngct:u: no word lists */
-/* the lists' version: there are none here, and reden answers 1 for its own empty ones */
-#define NGC_CONTENT_VERSION 1u
-/* a text back as it was sent, as much of it as the buffer for it holds */
-static void ngc_back(IpcBuf text, IpcBuf out) {
-    u64 n = text.size < out.size ? text.size : out.size;
-    if (n) memmove(GP(out.addr), GP(text.addr), (size_t)n);
-}
-static int nn_ngc_detail_IService_GetContentVersion(SvcObj* self, u32* version) {
-    (void)self;
-    *version = NGC_CONTENT_VERSION;
-    R_SUCCEED();
-}
-static int nn_ngc_detail_IService_Check(SvcObj* self, u32 languages, const nn_ngc_detail_ProfanityFilterOption* option,
-                                        IpcBuf text, u32* found) {
-    (void)self, (void)languages, (void)option, (void)text;
-    *found = 0;
-    R_SUCCEED();
-}
-static int nn_ngc_detail_IService_Mask(SvcObj* self, u32 languages, const nn_ngc_detail_ProfanityFilterOption* option,
-                                       IpcBuf text, IpcBuf masked, u32* count) {
-    (void)self, (void)languages, (void)option;
-    ngc_back(text, masked);
-    *count = 0;
-    R_SUCCEED();
-}
-static int nn_ngc_detail_IService_Reload(SvcObj* self) {
-    (void)self;
-    R_SUCCEED();
-}
-static int nn_ngc_detail_IService_Check2(SvcObj* self, u32 languages, const nn_ngc_detail_ProfanityFilterOption* option,
-                                         IpcBuf text, u32* found) {
-    return nn_ngc_detail_IService_Check(self, languages, option, text, found);
-}
-static int nn_ngc_detail_IService_Mask2(SvcObj* self, u32 languages, const nn_ngc_detail_ProfanityFilterOption* option,
-                                        IpcBuf text, IpcBuf masked, u32* count) {
-    return nn_ngc_detail_IService_Mask(self, languages, option, text, masked, count);
-}
-static int nn_ngct_detail_IService_Match(SvcObj* self, IpcBuf text, u8* matched) {
-    (void)self, (void)text;
-    *matched = 0;
-    R_SUCCEED();
-}
-static int nn_ngct_detail_IService_Filter(SvcObj* self, IpcBuf text, IpcBuf filtered) {
-    (void)self;
-    ngc_back(text, filtered);
-    R_SUCCEED();
-}
-
-/* prepo's queue has nothing to send: the console's status when it is empty, as Eden answers */
-static int nn_prepo_detail_ipc_IPrepoService_GetTransmissionStatus(SvcObj* self, i32* status) {
-    (void)self;
-    *status = 0;
-    R_SUCCEED();
-}
-
-/* the report goes nowhere: a context whose send is done and succeeded, as acc's async contexts are */
-static int nn_prepo_detail_ipc_IPrepoService_SendReportWithUser(SvcObj* self, u8 flag, u32 memory_size, u32 report_size,
-                                                                const u8* uid, u64 pid, IpcBuf event_id, u32 report,
-                                                                SvcObj** context) {
-    (void)self, (void)flag, (void)memory_size, (void)report_size, (void)uid, (void)pid, (void)event_id, (void)report;
-    *context = nn_prepo_detail_ipc_IAsyncContext_new();
-    R_SUCCEED();
-}
-static int nn_prepo_detail_ipc_IAsyncContext_GetSystemEvent(SvcObj* self, u32* event) {
-    (void)self;
-    return new_event(event, "prepo async context", 1);
-}
-
 /* ============================================================ olsc:u: no online service */
 /* a command for a user, on a session Initialize was called on (u[0]) */
 static int olsc_check(const SvcObj* self, const nn_account_Uid* uid) {
@@ -1621,13 +1528,11 @@ static int nn_olsc_srv_IAsyncResult_GetSystemEvent(SvcObj* self, u32* event) {
 /* ============================================================ the services' objects */
 SvcObj* new_apm(void) { return nn_apm_IManager_new(); }
 SvcObj* new_lm(void) { return nn_lm_ILogService_new(); }
-SvcObj* new_pctl(void) { return nn_pctl_detail_ipc_IParentalControlServiceFactory_new(); }
 SvcObj* new_friend(void) { return nn_friends_detail_ipc_IServiceCreator_new(); }
 SvcObj* new_chat(void) { return nn_chat_IUserService_new(); }
 SvcObj* new_ntc(void) { return nn_ntc_detail_service_IStaticService_new(); }
 SvcObj* new_stpl(void) { return nn_streamplay_IUserService_new(); }
 SvcObj* new_ns(void) { return nn_ns_detail_IServiceGetterInterface_new(); }
-SvcObj* new_prepo(void) { return nn_prepo_detail_ipc_IPrepoService_new(); }
 SvcObj* new_psm(void) { return nn_psm_IPsmServer_new(); }
 SvcObj* new_fatal(void) { return nn_fatalsrv_IService_new(); }
 SvcObj* new_csrng(void) { return nn_spl_detail_IRandomInterface_new(); }
@@ -1644,9 +1549,7 @@ SvcObj* new_mii(void) { return nn_mii_detail_IStaticService_new(); }
 SvcObj* new_ectx(void) { return nn_err_context_IWriterForApplication_new(); }
 SvcObj* new_spl(void) { return nn_spl_detail_IGeneralInterface_new(); }
 SvcObj* new_btmu(void) { return nn_btm_IBtmUser_new(); }
-SvcObj* new_ngc(void) { return nn_ngc_detail_IService_new(); }
-SvcObj* new_ngct(void) { return nn_ngct_detail_IService_new(); }
 SvcObj* new_olsc(void) { return nn_olsc_srv_IOlscServiceForApplication_new(); }
 /* the functions a save state may hold of this file (state_fns.h) */
-STATE_FN_TABLE(g_misc_state_fns,
-               STATE_FN("misc", nfc_user_destroy));
+STATE_FN_TABLE(g_misc_state_fns, STATE_FN("misc", nfc_user_destroy), STATE_FN("misc", friend_service_destroy),
+               STATE_FN("misc", friend_service_dispatch));

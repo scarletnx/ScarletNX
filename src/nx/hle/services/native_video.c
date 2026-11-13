@@ -231,7 +231,8 @@ int native_video_image_write(const NativeVideoPool* p, u32 id, const AVFrame* f)
                     .surf_h = l->rows,
                     .pitch_linear = 1};
     int hw = f->format == AV_PIX_FMT_VULKAN; /* 8 bit 4:2:0 too: the decoder takes no other from Vulkan Video */
-    if ((!hw && f->format != AV_PIX_FMT_YUV420P && f->format != AV_PIX_FMT_YUVJ420P) ||
+    int semi = f->format == AV_PIX_FMT_NV12; /* the media engine's: its chroma is interleaved already */
+    if ((!hw && !semi && f->format != AV_PIX_FMT_YUV420P && f->format != AV_PIX_FMT_YUVJ420P) ||
         (!nv12 && ext_y + ext_c > l->image_bytes) || w > (l->extent & 0xffff) + 1u || h > (l->extent >> 16) + 1u) {
         WARN_LIMIT(4, "gsv: a %ux%u picture (format %d) doesn't fit video image %u (kind %u, extent %#x)\n", w, h,
                    f->format, id, l->kind, l->extent);
@@ -247,11 +248,13 @@ int native_video_image_write(const NativeVideoPool* p, u32 id, const AVFrame* f)
     }
     if (hw)
         pic.hw = f;
-    else
+    else {
+        pic.semi = semi;
         for (int i = 0; i < 3; i++) { /* Y, U, V */
             pic.plane[i] = f->data[i];
             pic.stride[i] = f->linesize[i];
         }
+    }
     if (!g_renderer->nvdec_write(&pic)) return 0;
     if (nv12) return 1;
     if (!g_renderer->vic_compose) {

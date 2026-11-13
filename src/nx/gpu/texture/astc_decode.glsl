@@ -259,6 +259,10 @@ uint PackRGBA(uint r, uint g, uint b, uint a) {
 uint PackClamped(int r, int g, int b, int a) {
     return PackRGBA(uint(clamp(r, 0, 255)), uint(clamp(g, 0, 255)), uint(clamp(b, 0, 255)), uint(clamp(a, 0, 255)));
 }
+/* with an alpha already a byte */
+uint PackClampedRGB(int r, int g, int b, uint a) {
+    return PackRGBA(uint(clamp(r, 0, 255)), uint(clamp(g, 0, 255)), uint(clamp(b, 0, 255)), a);
+}
 
 /* the two endpoints of a partition with endpoint mode cem, from its values at off; HDR modes (2, 3, 7, 11, 14 and
    15, the bits of 0xC88C) are the error color, as in the LDR profile, which interpolates to itself */
@@ -275,6 +279,8 @@ uvec2 ComputeEndpoints(uint cem, uint off) {
     const int s5 = bitfieldExtract(int(v5), 1, 6), s7 = bitfieldExtract(int(v7), 1, 6);
     const int s0 = int((v0 >> 1u) | (v1 & 0x80u)), s2 = int((v2 >> 1u) | (v3 & 0x80u));
     const int s4 = int((v4 >> 1u) | (v5 & 0x80u)), s6 = int((v6 >> 1u) | (v7 & 0x80u));
+    /* s0, s2, s4 and s6 are bytes, and so is the mean of two of them: only a sum with s1, s3, s5 or s7 is clamped */
+    const uint u0 = uint(s0), u2 = uint(s2), u4 = uint(s4), u6 = uint(s6);
     switch (cem) {
     case 0u:
         return uvec2(v0 * 0x10101u | 0xFF000000u, v1 * 0x10101u | 0xFF000000u);
@@ -286,7 +292,7 @@ uvec2 ComputeEndpoints(uint cem, uint off) {
     case 4u:
         return uvec2(v0 * 0x10101u | (v2 << 24u), v1 * 0x10101u | (v3 << 24u));
     case 5u:
-        return uvec2(PackClamped(s0, s0, s0, s2), PackClamped(s0 + s1, s0 + s1, s0 + s1, s2 + s3));
+        return uvec2(u0 * 0x10101u | (u2 << 24u), PackClamped(s0 + s1, s0 + s1, s0 + s1, s2 + s3));
     case 6u:
         return uvec2(PackRGBA((v0 * v3) >> 8u, (v1 * v3) >> 8u, (v2 * v3) >> 8u, 0xFFu), PackRGBA(v0, v1, v2, 0xFFu));
     case 8u:
@@ -297,10 +303,10 @@ uvec2 ComputeEndpoints(uint cem, uint off) {
                      PackRGBA((v0 + v4) >> 1u, (v2 + v4) >> 1u, v4, 0xFFu));
     case 9u:
         if (s1 + s3 + s5 >= 0) {
-            return uvec2(PackClamped(s0, s2, s4, 0xFF), PackClamped(s0 + s1, s2 + s3, s4 + s5, 0xFF));
+            return uvec2(PackRGBA(u0, u2, u4, 0xFFu), PackClampedRGB(s0 + s1, s2 + s3, s4 + s5, 0xFFu));
         }
-        return uvec2(PackClamped((s0 + s1 + s4 + s5) >> 1, (s2 + s3 + s4 + s5) >> 1, s4 + s5, 0xFF),
-                     PackClamped((s0 + s4) >> 1, (s2 + s4) >> 1, s4, 0xFF));
+        return uvec2(PackClampedRGB((s0 + s1 + s4 + s5) >> 1, (s2 + s3 + s4 + s5) >> 1, s4 + s5, 0xFFu),
+                     PackRGBA((u0 + u4) >> 1u, (u2 + u4) >> 1u, u4, 0xFFu));
     case 10u:
         return uvec2(PackRGBA((v0 * v3) >> 8u, (v1 * v3) >> 8u, (v2 * v3) >> 8u, v4), PackRGBA(v0, v1, v2, v5));
     case 12u:
@@ -311,10 +317,10 @@ uvec2 ComputeEndpoints(uint cem, uint off) {
                      PackRGBA((v0 + v4) >> 1u, (v2 + v4) >> 1u, v4, v6));
     default: /* 13 */
         if (s1 + s3 + s5 >= 0) {
-            return uvec2(PackClamped(s0, s2, s4, s6), PackClamped(s0 + s1, s2 + s3, s4 + s5, s6 + s7));
+            return uvec2(PackRGBA(u0, u2, u4, u6), PackClamped(s0 + s1, s2 + s3, s4 + s5, s6 + s7));
         }
         return uvec2(PackClamped((s0 + s1 + s4 + s5) >> 1, (s2 + s3 + s4 + s5) >> 1, s4 + s5, s6 + s7),
-                     PackClamped((s0 + s4) >> 1, (s2 + s4) >> 1, s4, s6));
+                     PackRGBA((u0 + u4) >> 1u, (u2 + u4) >> 1u, u4, u6));
     }
 }
 

@@ -6,6 +6,7 @@
    and from images take. One pipeline serves both directions; it is made on first use and kept for the device's
    lifetime, like the other internal pipelines. Uses are on g_vk.gfx, under vk_lock() */
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/gpu/texture/blocklinear_spv.h" /* compiled from blocklinear.comp by the build (cmake/glsl.cmake) */
@@ -26,7 +27,7 @@ static struct {
     VkPipelineLayout layout;
     VkPipeline pipe;
     VkBuffer scratch;
-    VmaAllocation mem;
+    DevMem mem;
     u64 cap, asked;
 } g_blocklinear;
 
@@ -67,13 +68,13 @@ VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                       VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_blocklinear.scratch, &g_blocklinear.mem, NULL))) {
+    DevMemWant ai = {.at = DM_DEVICE};
+    if (!VK_OK(vk_buffer_create(&bi, &ai, &g_blocklinear.scratch, &g_blocklinear.mem, NULL))) {
         g_blocklinear.scratch = VK_NULL_HANDLE;
         *cap_out = 0;
         return VK_NULL_HANDLE;
     }
-    vk_mem_track(g_blocklinear.mem);
+    vk_mem_track(g_blocklinear.mem, VK_OWN_CONVERT);
     *cap_out = g_blocklinear.cap = cap;
     return g_blocklinear.scratch;
 }

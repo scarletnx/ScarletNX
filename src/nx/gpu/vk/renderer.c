@@ -23,11 +23,14 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/stats.h"
+#include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/hdr_swapchain.h"
 #include "nx/gpu/vk/resource_stats.h"
+#include "nx/gpu/vk/tex_report.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/pending_pages.h"
@@ -394,13 +397,13 @@ static Surf* cpu_frame(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bh
                                 .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                          VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-        VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &g_cpu_img->img, &g_cpu_img->mem, NULL))) {
+        DevMemWant aci = {.at = DM_DEVICE};
+        if (!VK_OK(vk_devmem_image(&ii, &aci, &g_cpu_img->img, &g_cpu_img->mem))) {
             free(g_cpu_img);
             g_cpu_img = NULL;
             return NULL;
         }
-        vk_mem_track(g_cpu_img->mem);
+        vk_mem_track(g_cpu_img->mem, VK_OWN_UI);
     }
     /* its bytes, staged as they are: a block linear one's whole rows of blocks, a pitch linear one's rows (and
        16 bytes, as a conversion reads whole words and a row of 2 byte pixels may end inside one) */
@@ -717,7 +720,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             if (__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) { /* read only while the box shows */
                 gpu.busy_ns = vk_gpuprof_busy_ns();
                 gpu.timed = vk_gpuprof_timed();
-                vk_mem_driver_use(&gpu.vram, &gpu.vram_budget);
+                vk_mem_driver_use(&gpu.vram, &gpu.vram_budget, &gpu.vram_ours);
             }
             stats_frame(now_ns, &gpu);
         }
@@ -729,6 +732,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         if (g_last) vk_surf_touch(g_last); /* what screenshots read stays */
         vk_tex_frame();
         vk_buf_frame();
+        vk_own_trim(); /* before the caches' trim: what it lands is room the trim then need not make */
         vk_mem_trim(0, 0);
         if (g_vk_present % 600 == 0) {
             char cs_why[256];
@@ -772,6 +776,10 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                     (unsigned long long)(upload_bytes >> 20), (unsigned long long)partial,
                     (unsigned long long)(partial_bytes >> 20), (unsigned long long)slow_frames,
                     (unsigned long long)(slowest_ns / 1000000));
+                if (vk_shader_folds())
+                    LOG("vulkan: %llu of those shaders translated again, to hold more of their draws' constant buffer "
+                        "words as constants\n",
+                        (unsigned long long)vk_shader_folds());
                 slow_frames = slowest_ns = 0;
                 if (g_vk.has_gpl) {
                     u64 made[4], hits[4], make_ms[4], links, link_ms, opts, opt_ms;
@@ -848,23 +856,25 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             }
             {
                 /* each memory heap's use and the driver's budget for it (VK_EXT_memory_budget), and our own memory in
-                   it (VMA's blocks): past the budget the driver moves memory, and the heap the CPU maps (the BAR window)
+                   it (devmem.c's blocks): past the budget the driver moves memory, and the heap the CPU maps (the BAR window)
                    is the one to watch. NVIDIA counts the whole system's use of the window as ours, and budgets what
                    is left of it (cmd.c bar_room) */
-                VmaBudget b[VK_MAX_MEMORY_HEAPS];
+                DevMemBudget b[VK_MAX_MEMORY_HEAPS];
                 const VkPhysicalDeviceMemoryProperties* mp;
                 char line[256];
                 size_t at = 0;
-                vmaGetHeapBudgets(g_vk.vma, b);
-                vmaGetMemoryProperties(g_vk.vma, &mp);
+                vk_devmem_budgets(b);
+                mp = vk_devmem_props();
                 for (u32 q = 0; q < mp->memoryHeapCount && at < sizeof line; q++)
                     at += (size_t)snprintf(
                         line + at, sizeof line - at, "%s heap %u %llu of %llu MB (%llu ours, %llu of it allocated)",
                         q ? "," : "", q, (unsigned long long)(b[q].usage >> 20),
-                        (unsigned long long)(b[q].budget >> 20), (unsigned long long)(b[q].statistics.blockBytes >> 20),
-                        (unsigned long long)(b[q].statistics.allocationBytes >> 20));
+                        (unsigned long long)(b[q].budget >> 20), (unsigned long long)(b[q].block_bytes >> 20),
+                        (unsigned long long)(b[q].allocated_bytes >> 20));
                 LOG("vulkan: memory used and budgeted:%s\n", line);
             }
+            vk_ledger_log();
+            vk_own_log();
             {
                 /* what the caches hold, which vk_mem_trim keeps within the budget */
                 u32 nrt, ntex, nbuf, parked, none;
@@ -875,11 +885,14 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 vk_mem_use(&usage, &budget);
                 trimmed = vk_mem_trimmed();
                 LOG("vulkan: caches: %u render targets (%llu MB, %u parked), %u textures (%llu MB), %u buffers (%llu "
-                    "MB); %llu of %llu MB in use as they count it, %llu MB freed for the budget so far\n",
+                    "MB); %llu of %llu MB in use as they count it, %llu MB freed for the budget so far; %llu MB of "
+                    "textures freed so far because the game ended them\n",
                     nrt, (unsigned long long)(brt >> 20), parked, ntex, (unsigned long long)(btex >> 20), nbuf,
                     (unsigned long long)(bbuf >> 20), (unsigned long long)(usage >> 20),
-                    (unsigned long long)(budget >> 20), (unsigned long long)(trimmed >> 20));
+                    (unsigned long long)(budget >> 20), (unsigned long long)(trimmed >> 20),
+                    (unsigned long long)(vk_surf_ended_freed() >> 20));
             }
+            vk_tex_report_log();
             LOG("vulkan: %llu draws sampled a target they render to in place (%llu barriers in passes, %llu passes "
                 "begun again), %llu through a copy; %llu copies of targets written\n",
                 (unsigned long long)g_vk_fb_draws, (unsigned long long)g_vk_fb_barriers,
@@ -900,10 +913,15 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             vk_ww_stats(600);
             vk_descriptors_stats();
             /* what the GPU engines keep on the GPU (docs/layers/gpu/ownership.md), and what the CPU had to wait for */
-            LOG("vulkan: GPU-owned guest memory landed for the CPU %llu times, render targets written back for an "
+            u64 by[OWN_BY_N];
+            own_landings_by(by);
+            LOG("vulkan: GPU-owned guest memory landed for the CPU %llu times (%llu for the runtime's own access, "
+                "%llu for a read of the game's code, %llu for a write of it), render targets written back for an "
                 "engine %llu times; block linear targets watched %llu times, published for a CPU access %llu times "
                 "and at a release %llu times\n",
-                (unsigned long long)own_landings(), (unsigned long long)g_vk_rt_readbacks,
+                (unsigned long long)own_landings(), (unsigned long long)by[OWN_BY_RUNTIME],
+                (unsigned long long)by[OWN_BY_READ], (unsigned long long)by[OWN_BY_WRITE],
+                (unsigned long long)g_vk_rt_readbacks,
                 (unsigned long long)g_vk_rt_watch.arms, (unsigned long long)g_vk_rt_watch.hits,
                 (unsigned long long)g_vk_rt_watch.publishes);
         }
@@ -988,6 +1006,11 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
         g_last_w = (u32)((u64)src->sw * x1 / src->w) - g_last_x;
         g_last_h = (u32)((u64)src->sh * y1 / src->h) - g_last_y;
     }
+    if (prepare_screen_shown()) { /* a program switch's screen gives way before the game's frame takes its layer */
+        ui_lock();
+        prepare_screen_game_drew();
+        ui_unlock();
+    }
     show(src, &hdr, x1 - x0, y1 - y0, transform, 1, released_ns, period_ns, shown_syncpt);
     __atomic_store_n(&g_shown_ns, plat_ns(), __ATOMIC_RELAXED);
     vk_unlock();
@@ -1016,6 +1039,7 @@ static int refresh_due(void) {
     if (due) seen = events;
     return due;
 }
+static const char* vkr_device_name(void) { return g_vk.props.deviceName; }
 /* The last frame again, under the controls and the menu, while the game shows none: a game loading, stuck, or drawing
    nothing still has them. Not before a quarter second without a frame (a slow game's own come between), at 30 a second
    at most, only when the GPU thread holds no Vulkan work (then the next call tries again), and only when the layer or
@@ -1051,16 +1075,16 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
                             .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    DevMemWant aci = {.at = DM_DEVICE};
     VkImage tmp;
-    VmaAllocation tmem;
-    if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &tmp, &tmem, NULL))) return NULL;
-    vk_mem_track(tmem);
+    DevMem tmem;
+    if (!VK_OK(vk_devmem_image(&ii, &aci, &tmp, &tmem))) return NULL;
+    vk_mem_track(tmem, VK_OWN_IMAGE_OTHER);
     VkBuffer buf;
     u8* p = vk_readback_buffer((u64)dw * dh * 4, &buf);
     if (!p) {
         vk_mem_untrack(tmem);
-        vmaDestroyImage(g_vk.vma, tmp, tmem);
+        vk_devmem_image_destroy(tmp, tmem);
         return NULL;
     }
     vk_render_end(); /* the blit, the copy and their barriers can't be recorded inside a rendering pass */
@@ -1104,7 +1128,7 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
     vk_finish();
     vk_readback_ready();
     vk_mem_untrack(tmem);
-    vmaDestroyImage(g_vk.vma, tmp, tmem);
+    vk_devmem_image_destroy(tmp, tmem);
     return p;
 }
 /* the frame's picture on the trace's timeline (tracy_frame_images' seconds): a readback of what was just
@@ -1234,6 +1258,7 @@ const Renderer vk_renderer = {
     .name = "Vulkan",
     .start = vkr_start,
     .start_failure = vk_start_failure,
+    .device_name = vkr_device_name,
     .mem_may_have_changed = vkr_mem_may_have_changed,
     .stream_run = vk_ww_stream,
     .mem_seen = vk_ww_seen,

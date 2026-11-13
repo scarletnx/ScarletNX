@@ -2,15 +2,57 @@
  * Copyright 2026 the ScarletNX contributors
  */
 
+/* A compute program behind an NVN header with its magic and a size of 0 (one game's headers are all so) that is longer
+   than 64 KiB: an SSY to an EXIT 66 KiB on, NOPs between, and the next program's header after it. The runtime reads
+   the window whole and cuts it at that header, so the program is translated and its dispatch runs. In the surface
+   loads' mapping, past the programs they use */
+static int check_unsized_compute_program(u64 address, GpuChannel *channel, const u32 *qmd)
+{
+	const u64 program = address + 0x5000, header = program - 0x100;
+	const u32 last = 0x10800 / 8 + 1; /* the EXIT's word, 66 KiB on: not a scheduling word */
+	const u32 next = ((last + 1) * 8 + 0xff) & ~0xffu;
+	u8 *code = calloc(next + 16, 1);
+	u64 dispatches = g_vk_dispatches;
+
+	CHECK(code);
+	for (u32 i = 0; i <= last; i++) {
+		u64 w = !(i % 4) ? 0x001f8000fc0007e0ull
+			: i == 1 ? 0xe290000000000000ull | (u64)(((last - 2) * 8) & 0xffffff) << 20 /* SSY to the EXIT */
+			: i == last ? 0xe30000000007000full
+			: 0x50b0000000070f00ull; /* NOP */
+		snx_st_le64(code + 8 * i, w);
+	}
+	snx_st_le32(code + next, 0x12345679); /* the next program's header */
+	CHECK(!gmem_write(header, (const u8[16]){0x79, 0x56, 0x34, 0x12}, 16));
+	CHECK(!gmem_write(program, code, next + 16));
+	free(code);
+	vk_lock();
+	{
+		DispatchState d;
+		mx_dispatch_state(qmd, channel->rcomp, program, &d);
+		vk_dispatch(&d);
+	}
+	vk_unlock();
+	if (g_vk_dispatches != dispatches + 1)
+		fprintf(stderr, "a 66 KiB compute program behind a header of size 0: %llu dispatches\n",
+			(unsigned long long)(g_vk_dispatches - dispatches));
+	CHECK(g_vk_dispatches == dispatches + 1);
+	puts("unsized compute header: a 66 KiB program is read whole and cut at the next program's header");
+	return 0;
+}
+
 static int check_layered_surface_loads(void)
 {
 	static const struct {
 		u32 format, component_type, pixel;
 		int raw;
+		u32 bytes; /* of a texel */
 	} cases[] = {
-		{0x0f, 4, 0x12345678, 0}, {0x0f, 3, 0xffffffde, 0}, {0x0f, 7, 0xbf400000, 0},
-		{0x08, 4, 0xaa996655, 0}, {0x08, 3, 0x44cd22ef, 0},
-		{0x0f, 7, 0xbe800000, 1}, {0x08, 2, 0x87654321, 1},
+		{0x0f, 4, 0x12345678, 0, 4}, {0x0f, 3, 0xffffffde, 0, 4}, {0x0f, 7, 0xbf400000, 0, 4},
+		{0x08, 4, 0xaa996655, 0, 4}, {0x08, 3, 0x44cd22ef, 0, 4},
+		{0x0f, 7, 0xbe800000, 1, 4}, {0x08, 2, 0x87654321, 1, 4},
+		/* a raw load of an R32G32 texel reads its first word (an exposure kept in a 1x1 R32G32 texture) */
+		{0x04, 7, 0x3f800001, 1, 8},
 	};
 	const u64 address = 0x700000000ull;
 	const u64 cbuf = address + 0x20000, descriptors = address + 0x21000, samplers = address + 0x22000;
@@ -64,7 +106,9 @@ static int check_layered_surface_loads(void)
 					u64 level0 = 512u * (dim == 5 ? 4 : 1);
 					u64 stride = level0 + 512u * (dim == 5 ? 2 : 1) + 512u;
 					u64 start = (base ? level0 : 0) + (dim == 4 ? stride : 0);
-					u64 input_offset = start + bl_offset(4, 1, dim == 5 ? 1 : 0, (8u >> base) * 4, 4u >> base, 0, 0);
+					u32 texel = cases[c].bytes;
+					u64 input_offset =
+						start + bl_offset(texel, 1, dim == 5 ? 1 : 0, (8u >> base) * texel, 4u >> base, 0, 0);
 					u64 output_offset = start + bl_offset(8, 1, dim == 5 ? 1 : 0, (8u >> base) * 4, 4u >> base, 0, 0);
 
 					memcpy(output_tic, tic, sizeof(tic));
@@ -114,7 +158,51 @@ static int check_layered_surface_loads(void)
 					CHECK(!memcmp(result, input, sizeof(result)));
 					count++;
 				}
+	/* a raw load of an R32G32B32 texel (12 bytes, kept as RGBA) has no view: its dispatch is skipped, and the log
+	   names the header */
+	{
+		u32 word0 = 0x02 | 7u << 7 | 7u << 10 | 7u << 13 | 7u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28;
+		u32 tic[8] = {word0, (u32)source, (u32)(source >> 32) | 3u << 21, 2u << 28, 7u | 5u << 23, 3u | 3u << 16,
+			0, 2u << 4};
+		u64 load = 0xeb00000000070008ull | 4ull << 33 | 4ull << 39 | 4ull << 20 | 1ull << 52; /* SULD.D.32 */
+		u64 instructions[] = {storage_mov(0, 1), storage_mov(1, 1), storage_mov(2, 1), 0x4c98078804a70004ull,
+			0x4c98078804b70006ull, load, 0xe30000000007000full};
+		u64 program = address + 0x4000; /* past the loop's programs */
+		u8 code[256] = {0};
+		u32 at = 0;
+		char expected[160], text[4096] = {0};
+		u64 dispatches = g_vk_dispatches;
+		FILE *log = tmpfile();
+
+		CHECK(log);
+		for (u32 i = 0; i < sizeof(instructions) / sizeof(instructions[0]); i++) {
+			if (!(i % 3)) snx_st_le64(code + 8 * at++, 0x001f8000fc0007e0ull);
+			snx_st_le64(code + 8 * at++, instructions[i]);
+		}
+		CHECK(!gmem_write(program, code, sizeof(code)));
+		CHECK(!storage_write_words(descriptors, tic, 8));
+		t_plat.log_redirect = log;
+		vk_lock();
+		{
+			DispatchState d;
+			mx_dispatch_state(qmd, channel->rcomp, program, &d);
+			vk_dispatch(&d);
+		}
+		vk_unlock();
+		t_plat.log_redirect = NULL;
+		rewind(log);
+		text[fread(text, 1, sizeof(text) - 1, log)] = 0;
+		fclose(log);
+		snprintf(expected, sizeof(expected),
+			"vulkan: a raw surface load's header %08x %08x %08x names no texture of 4-, 8- or 16-byte color "
+			"texels stored as they are: the dispatch is skipped", tic[0], tic[2], tic[4]);
+		if (g_vk_dispatches != dispatches || !strstr(text, expected))
+			fprintf(stderr, "an R32G32B32 raw load: %llu dispatches, log:\n%s", (unsigned long long)(g_vk_dispatches - dispatches), text);
+		CHECK(g_vk_dispatches == dispatches);
+		CHECK(strstr(text, expected));
+	}
 	printf("array and volume surface loads: %u formatted/raw round-trips checked\n", count);
+	CHECK(!check_unsized_compute_program(address, channel, qmd));
 	free(channel);
 	return 0;
 }

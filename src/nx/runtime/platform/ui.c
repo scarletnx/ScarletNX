@@ -364,8 +364,11 @@ float ui_icon(SnxUiList* l, float x, float y, int scale, unsigned icon, u32 rgba
     return 16.0f * (float)scale;
 }
 int ui_image(SnxUiList* l, float x, float y, float w, float h) {
+    return ui_image_part(l, x, y, w, h, 0, 0, SNX_UI_IMAGE_W, SNX_UI_IMAGE_H);
+}
+int ui_image_part(SnxUiList* l, float x, float y, float w, float h, int u, int v, int uw, int vh) {
     if (!g_image_set) return 0;
-    quad(l, x, y, w, h, 0, 0, SNX_UI_IMAGE_W, SNX_UI_IMAGE_H, 0xFFFFFFFFu, 0, UI_IMAGE, UI_ATLAS, 0);
+    quad(l, x, y, w, h, u, v, uw, vh, 0xFFFFFFFFu, 0, UI_IMAGE, UI_ATLAS, 0);
     return 1;
 }
 void ui_image_set(const u8* rgba) {

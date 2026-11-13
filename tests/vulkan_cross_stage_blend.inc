@@ -96,6 +96,7 @@ static int check_cross_stage_blend_snapshots(void) {
     r[0x3fd] = r[0x3fe] = 4u << 16;
     r[0x680] = 0x1111;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 1;
+    all_samples(r);
     const float transform[6] = {2, 2, 0.5f, 2, 2, 0.5f};
     memcpy(r + 0x280, transform, sizeof transform);
     r[0x458] = 1u << 21 | 7u << 27;

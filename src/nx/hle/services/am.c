@@ -794,6 +794,14 @@ int am_user_account_switch_lock(void) {
     return p ? p[0] != 0 : 0;
 }
 /* the NACP's display version, "1.0.0" for a game without one */
+int am_display_version_of(char version[16]) {
+    const u8* p = am_nacp(NACP_DISPLAY_VERSION, 16);
+    version[0] = 0;
+    if (!p) return 0;
+    memcpy(version, p, 16);
+    version[15] = 0;
+    return version[0] != 0;
+}
 void am_display_version(char version[16]) {
     const u8* p = am_nacp(NACP_DISPLAY_VERSION, 16);
     if (p)
@@ -861,16 +869,18 @@ static int nn_am_service_IApplicationFunctions_NotifyRunning(SvcObj* self, u8* b
     *became_running = 1;
     R_SUCCEED();
 }
+void am_save_data_extend(u8 type, i64 normal_size, i64 journal_size) {
+    if (type != 1 && type != 3) return;
+    pm_lock(&g_host.am.lock);
+    g_hle.am.save_size[type == 3][0] = normal_size;
+    g_hle.am.save_size[type == 3][1] = journal_size;
+    g_hle.am.save_extended[type == 3] = 1;
+    pm_unlock(&g_host.am.lock);
+}
 static int nn_am_service_IApplicationFunctions_ExtendSaveData(SvcObj* self, u8 type, const nn_account_Uid* uid,
                                                               i64 normal_size, i64 journal_size, i64* required_size) {
     (void)self, (void)uid;
-    if (type == 1 || type == 3) {
-        pm_lock(&g_host.am.lock);
-        g_hle.am.save_size[type == 3][0] = normal_size;
-        g_hle.am.save_size[type == 3][1] = journal_size;
-        g_hle.am.save_extended[type == 3] = 1;
-        pm_unlock(&g_host.am.lock);
-    }
+    am_save_data_extend(type, normal_size, journal_size);
     *required_size = 0; /* the space still missing, when there isn't enough: there always is */
     R_SUCCEED();
 }

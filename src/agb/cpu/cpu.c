@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "agb/cpu/agb_cpu.h"
 #include "agb/bios/bios.h"
+#include "agb/bios/bios_time.h"
 #include "agb/board/board.h"
 #include <stdio.h>
 #include <string.h>
@@ -60,13 +61,70 @@ static void exception_return(AgbCpu* cpu) {
     cpu->arm.cpsr = saved;
 }
 
+/* the board's devices run for the given cycles of the CPU's */
+static void devices(AgbBoard* board, uint32_t cycles) {
+    agb_ppu_step(board, cycles);
+    agb_timer_step(board, cycles);
+    agb_save_step(board, cycles);
+    agb_sio_step(board, cycles);
+}
+
+/* the wait states for the WAITCNT the board has: turning the prefetch unit off makes its next fetch a first one */
+static void waits_now(AgbCpu* cpu, const AgbBoard* board) {
+    uint32_t waitcnt = board->io[0x204 >> 1];
+    if (cpu->waits.waitcnt == waitcnt) return;
+    if ((cpu->waits.waitcnt & 0x4000) && !(waitcnt & 0x4000)) cpu->replay.bus.was_disabled = 1;
+    agb_waits(&cpu->waits, waitcnt);
+}
+
+/* the running block's replay moved on to the instruction at unit, up to its data access `access` (timing.h), and the
+   cycles from the block's start to there */
+static uint32_t replay(AgbCpu* cpu, uint32_t unit, int32_t access) {
+    const AgbBoard* board = cpu->board;
+    waits_now(cpu, board);
+    AgbBlockRun run = {.code = cpu->arm.mem + cpu->block_pc,
+                       .pc = cpu->block_pc,
+                       .thumb = cpu->block_thumb,
+                       .trace = cpu->trace,
+                       .skipped = cpu->skipped,
+                       .next = cpu->arm.r[15],
+                       .next_thumb = (cpu->arm.cpsr & SNX_ARM_T) != 0};
+    return agb_replay_to(&cpu->replay, &cpu->waits, board->io[0x204 >> 1] >> 14 & 1, &run, unit, access);
+}
+
+/* The board catches up with the running block at an access to an I/O register: its devices run for the time the
+   block's instructions took up to that access, so a timer or the display read there, or a timer started there, is as
+   the console has it then */
+static void catch_up(AgbCpu* cpu, uint32_t address) {
+    uint32_t unit = (cpu->arm.r[15] - cpu->block_pc) >> (cpu->block_thumb ? 1 : 2);
+    if (unit >= AGB_BLOCK_MAX) return;
+    /* a multiple transfer's word: its place from the lowest, which the trace holds */
+    uint32_t word = ((address & ~3u) - (cpu->trace[unit] & ~3u)) >> 2;
+    uint32_t cycles = replay(cpu, unit, word < 16 ? (int32_t)word : 0);
+    if (cycles <= cpu->advanced) return;
+    devices(cpu->board, cycles - cpu->advanced);
+    cpu->advanced = cycles;
+}
+
+/* a write that may raise an interrupt soon or let one through: to a timer's control, DISPSTAT, IE, IME or SIOCNT */
+static int interrupt_write(uint32_t address, unsigned bytes) {
+    static const uint16_t registers[] = {0x004, 0x102, 0x106, 0x10A, 0x10E, 0x128, 0x200, 0x208};
+    uint32_t low = address & 0xFFFF; /* the registers repeat every 64 KiB of the window */
+    if ((address >> 24) != 0x04) return 0;
+    for (unsigned i = 0; i < sizeof registers / sizeof registers[0]; ++i)
+        if (low <= registers[i] + 1u && low + bytes > registers[i]) return 1;
+    return 0;
+}
+
 /* The bus hook the recompiled blocks call for the regions with bus rules a plain access cannot follow:
-   the I/O window, the palette, OAM and the save memory. This keeps the 1 KiB mirrors, the byte write
-   widths and the register side effects correct while generated code runs at memory speed elsewhere.
-   The machine's CPU state is its first member. */
+   the I/O window, the palette, OAM and the save memory, and the stores to the cartridge's ROM, which the board drops.
+   This keeps the 1 KiB mirrors, the byte write widths and the register side effects correct while generated code
+   runs at memory speed elsewhere. The machine's CPU state is its first member. */
 static uint32_t bus(SnxArmCPU* arm, uint32_t address, uint32_t size_write, uint32_t value) {
-    AgbBoard* board = ((AgbCpu*)arm)->board;
+    AgbCpu* cpu = (AgbCpu*)arm;
+    AgbBoard* board = cpu->board;
     unsigned bytes = size_write & 0xFF;
+    if (cpu->in_block && (address >> 24) == 0x04) catch_up(cpu, address);
     if (!(size_write & 0x100)) board->open_bus = value; /* a read's value: the open bus (llvm.c's open_bus) */
     if (size_write & 0x200) {
         /* LDRSH: the ARM7TDMI quirk reads a sign extended byte at an odd address */
@@ -81,9 +139,18 @@ static uint32_t bus(SnxArmCPU* arm, uint32_t address, uint32_t size_write, uint3
             agb_write16(board, address, (uint16_t)value);
         else
             agb_write32(board, address, value);
-        /* a DMA the write started holds the bus: the block ends after this instruction, and the next one runs once
-           the CPU waited it out (agb_cpu_run), as the console's does */
-        return board->held_cycles != held;
+        /* the block ends after this instruction where the write started a DMA, which takes the bus 2 cycles after it
+           at the CPU's first access from then on (timing.h), or may bring an interrupt before the block would end (a
+           timer's control, DISPSTAT, IE, IME, SIOCNT): the machine looks at it before the next instruction */
+        if (board->held_cycles != held) {
+            agb_bus_dma(&cpu->replay.bus, board->held_cycles - held,
+                        board->held_cartridge > held ? board->held_cartridge - held : 0);
+            board->held_cycles = held;
+            board->held_cartridge = 0;
+        } else if (!interrupt_write(address, bytes))
+            return 0;
+        cpu->yield_end = ((arm->r[15] - cpu->block_pc) >> (cpu->block_thumb ? 1 : 2)) + 1;
+        return 1;
     }
     return bytes == 1 ? agb_read8(board, address) : bytes == 2 ? agb_read16(board, address)
                                                              : agb_read32(board, address);
@@ -108,33 +175,93 @@ void agb_cpu_init(AgbCpu* cpu, AgbBoard* board, uint8_t* map) {
     cpu->over =
         (uint32_t)((board->ppu.vcount + AGB_FRAME_LINES - AGB_SCREEN_HEIGHT) % AGB_FRAME_LINES) * AGB_SCANLINE_CYCLES +
         board->ppu.dot;
-    cpu->costs_waitcnt = 0x10000;    /* none made yet: the first block's run makes them */
-    cpu->bus_costs = &cpu->costs[0]; /* a block run on its own reads one, all zero */
+    agb_waits(&cpu->waits, board->io[0x204 >> 1]);
+    cpu->replay.done = AGB_REPLAY_FETCH;
 }
 
-static void advance(AgbCpu* cpu, AgbSink* sink, uint32_t cycles) {
+/* the sound for cycles of the run, which the run counts */
+static void sound(AgbSink* sink, uint32_t cycles) {
     AgbBoard* board = sink->board;
-    (void)cpu;
-    agb_ppu_step(board, cycles);
-    agb_timer_step(board, cycles);
-    agb_save_step(board, cycles);
     if (sink->audio && sink->written < sink->capacity)
         sink->written += agb_apu_run(board, cycles, sink->audio + sink->written * 2, sink->capacity - sink->written);
     sink->elapsed += cycles;
 }
 
+/* the machine's time passes outside the CPU's instructions: a DMA's, a halt's */
+static void advance(AgbCpu* cpu, AgbSink* sink, uint32_t cycles) {
+    (void)cpu;
+    devices(sink->board, cycles);
+    sound(sink, cycles);
+}
+
+/* the running block's time up to its replay's end: what the board has not run of it yet, and the sound of it all */
+static void block_time(AgbCpu* cpu, AgbSink* sink, uint32_t cycles, uint32_t* charged) {
+    if (cycles > cpu->advanced) {
+        devices(sink->board, cycles - cpu->advanced);
+        cpu->advanced = cycles;
+    }
+    sound(sink, cycles - *charged);
+    *charged = cycles;
+}
+
 /* ---- interrupts ---- */
 
 /* the 14 interrupt lines, IE's and IF's bits 0 to 13: the DMAs' (8 to 11), the keypad's and the cartridge's too */
-static int irq_pending(AgbBoard* board) { return (board->irq_ime & 1) && (board->irq_ie & board->irq_if & 0x3FFF); }
+static int irq_pending(const AgbBoard* board) {
+    return (board->irq_ime & 1) && (board->irq_ie & board->irq_if & 0x3FFF);
+}
+
+/* The BIOS's interrupt code as the console runs it (GBATEK, BIOS Interrupt handling), whose time an interrupt takes: at
+   0x18 the vector's branch to 0x128; there the registers stacked, the I/O base, the return address and the jump through
+   0x03FFFFFC to the game's handler; at 0x138, once the handler returns, the registers back and the return to the code
+   it interrupted. Its words, little endian */
+static const uint8_t bios_vector[] = {0x42, 0x00, 0x00, 0xEA}; /* b 0x128 */
+static const uint8_t bios_entry[] = {
+    0x0F, 0x50, 0x2D, 0xE9, 0x01, 0x03, 0xA0, 0xE3,  /* stmfd sp!, {r0-r3, r12, lr} */
+    0x00, 0xE0, 0x8F, 0xE2, 0x04, 0xF0, 0x10, 0xE5}; /* add lr, pc, #0; ldr pc, [r0, #-4] */
+static const uint8_t bios_exit[] = {0x0F, 0x50, 0xBD, 0xE8,
+                                    0x04, 0xF0, 0x5E, 0xE2}; /* ldmfd sp!, {...}; subs pc, lr, #4 */
+
+static int prefetch_on(const AgbBoard* board) { return board->io[0x204 >> 1] >> 14 & 1; }
+
+/* the time BIOS code at pc takes, units of it with the accesses trace gives, up to its jump to next */
+static uint32_t bios_time(AgbCpu* cpu, const uint8_t* code, uint32_t pc, uint32_t units, const uint32_t* trace,
+                          uint32_t next, int next_thumb) {
+    const uint32_t skipped[1] = {0};
+    AgbBlockRun run = {.code = code,
+                       .pc = pc,
+                       .thumb = 0,
+                       .trace = trace,
+                       .skipped = skipped,
+                       .next = next,
+                       .next_thumb = (uint32_t)next_thumb};
+    AgbReplay bios = {.bus = cpu->replay.bus, .done = AGB_REPLAY_FETCH};
+    waits_now(cpu, cpu->board);
+    uint32_t cycles = agb_replay_to(&bios, &cpu->waits, prefetch_on(cpu->board), &run, units, AGB_REPLAY_WHOLE);
+    cpu->replay.bus = bios.bus;
+    return cycles;
+}
 
 /* The interrupt entry the BIOS stub performs: the live registers land on the IRQ stack, the handler at
-   0x03007FFC runs, and its return reaches the epilogue the machine services. Returns 0 while no handler
-   is installed yet, so the caller keeps the machine moving. */
-static int irq_enter(AgbBoard* board, AgbCpu* cpu) {
+   0x03007FFC runs, and its return reaches the epilogue the machine services. Its cycles, the CPU's fetch it abandons
+   and the BIOS's code; 0 while no handler is installed yet, so the caller keeps the machine moving. */
+static uint32_t irq_enter(AgbBoard* board, AgbCpu* cpu) {
     uint32_t handler = agb_read32(board, 0x03007FFC);
-    uint32_t saved_cpsr = cpu->arm.cpsr, next = cpu->arm.r[15], sp;
+    uint32_t saved_cpsr = cpu->arm.cpsr, next = cpu->arm.r[15], sp, cycles;
+    unsigned width = saved_cpsr & SNX_ARM_T ? 2 : 4;
     if (!handler) return 0;
+    {
+        uint32_t irq_sp = bank_index(saved_cpsr) == 2 ? cpu->arm.r[13] : cpu->banked_r13[2];
+        uint32_t entry[4] = {irq_sp - 24, 0, 0, 0x03FFFFFC}, vector[1] = {0};
+        AgbBus* bus = &cpu->replay.bus;
+        waits_now(cpu, board);
+        cycles = agb_bus_fetch(bus, &cpu->waits, prefetch_on(board), next + 2 * width, width, bus->sequential);
+        cycles += agb_bus_fetch(bus, &cpu->waits, prefetch_on(board), 0x18, 4, 0);
+        cycles += agb_bus_fetch(bus, &cpu->waits, prefetch_on(board), 0x1C, 4, 1);
+        bus->sequential = 1;
+        cycles += bios_time(cpu, bios_vector, 0x18, 1, vector, 0x128, 0);
+        cycles += bios_time(cpu, bios_entry, 0x128, 4, entry, handler & ~(uint32_t)1, handler & 1);
+    }
     switch_mode(cpu, 0x12);
     cpu->spsr[2] = saved_cpsr;
     cpu->arm.r[14] = next + 4; /* hardware sets lr to the interrupted pc plus four */
@@ -152,12 +279,17 @@ static int irq_enter(AgbBoard* board, AgbCpu* cpu) {
     cpu->arm.cpsr = (cpu->arm.cpsr & ~(uint32_t)SNX_ARM_T) | (handler & 1 ? SNX_ARM_T : 0);
     cpu->arm.r[15] = handler & ~(uint32_t)1;
     board->bios_prefetch = AGB_BIOS_PREFETCH_IRQ;
-    return 1;
+    return cycles;
 }
 
-/* The other half of the BIOS stub: the saved registers come back and the interrupted code resumes. */
-static void irq_return(AgbBoard* board, AgbCpu* cpu) {
-    uint32_t sp = cpu->arm.r[13], saved_cpsr = cpu->spsr[2], back;
+/* The other half of the BIOS stub: the saved registers come back and the interrupted code resumes. Its cycles */
+static uint32_t irq_return(AgbBoard* board, AgbCpu* cpu) {
+    uint32_t sp = cpu->arm.r[13], saved_cpsr = cpu->spsr[2], back, cycles;
+    {
+        uint32_t trace[2] = {sp, 0};
+        cycles =
+            bios_time(cpu, bios_exit, 0x138, 2, trace, agb_read32(board, sp + 20) - 4, (saved_cpsr & SNX_ARM_T) != 0);
+    }
     cpu->arm.r[0] = agb_read32(board, sp);
     cpu->arm.r[1] = agb_read32(board, sp + 4);
     cpu->arm.r[2] = agb_read32(board, sp + 8);
@@ -169,9 +301,30 @@ static void irq_return(AgbBoard* board, AgbCpu* cpu) {
     cpu->arm.cpsr = saved_cpsr;
     cpu->arm.r[15] = back - 4;
     board->bios_prefetch = AGB_BIOS_PREFETCH_IRQ_RETURN;
+    return cycles;
 }
 
 /* ---- software interrupts and the privileged residue ---- */
+
+/* the bus a BIOS call runs on, its stacks where the CPU's mode in cpsr has them now (bios_time.h) */
+static AgbBiosClock bios_clock(AgbCpu* cpu, uint32_t cpsr) {
+    int bank = bank_index(cpsr);
+    waits_now(cpu, cpu->board);
+    AgbBiosClock clock = {.bus = &cpu->replay.bus,
+                          .waits = &cpu->waits,
+                          .prefetch = prefetch_on(cpu->board),
+                          .svc_sp = bank == 3 ? cpu->arm.r[13] : cpu->banked_r13[3],
+                          .sys_sp = bank == 0 ? cpu->arm.r[13] : cpu->banked_r13[0]};
+    return clock;
+}
+
+/* the caller a call that waits returns to, from the frame the BIOS's entry keeps on the supervisor stack (swi_enter):
+   its address and whether it runs Thumb */
+static uint32_t waiting_caller(AgbCpu* cpu, int* thumb) {
+    uint32_t frame = bank_index(cpu->arm.cpsr) == 3 ? cpu->arm.r[13] : cpu->banked_r13[3];
+    *thumb = (agb_read32(cpu->board, frame) & SNX_ARM_T) != 0;
+    return agb_read32(cpu->board, frame + 12);
+}
 
 /* SoftReset, as the BIOS runs it: the top 0x200 bytes of IWRAM (the stacks, the BIOS's flags and its IRQ vector)
    cleared, r0 to r12 zero, the irq and svc stacks set with their lr and spsr cleared, then system mode in ARM state
@@ -217,8 +370,14 @@ static void swi_enter(AgbBoard* board, AgbCpu* cpu) {
 
 /* The other half, at AGB_BIOS_SWI_RETURN: r2 and lr come back, then what the supervisor stack holds, and the caller
    resumes */
-static void swi_return(AgbBoard* board, AgbCpu* cpu) {
+static void swi_return(AgbBoard* board, AgbCpu* cpu, int halted) {
     uint32_t sp = cpu->arm.r[13], caller, back;
+    if (halted) { /* Halt's return once woken, then the BIOS's way out (bios_time.h) */
+        int thumb;
+        uint32_t to = waiting_caller(cpu, &thumb);
+        AgbBiosClock clock = bios_clock(cpu, cpu->arm.cpsr);
+        cpu->bios_held += agb_bios_halt_leave(&clock, to, thumb);
+    }
     cpu->arm.r[2] = agb_read32(board, sp);
     cpu->arm.r[14] = agb_read32(board, sp + 4);
     cpu->arm.r[13] = sp + 8;
@@ -251,8 +410,13 @@ static uint32_t intr_check(AgbBoard* board, AgbCpu* cpu) {
 /* IntrWait's loop, at AGB_BIOS_INTR_WAIT: over once a handler flagged an interrupt it waits for, when r4 and its
    return come back from the caller's stack; else it halts for the next interrupt */
 static void intr_wait(AgbBoard* board, AgbCpu* cpu) {
+    int thumb, done;
+    uint32_t to = waiting_caller(cpu, &thumb);
+    AgbBiosClock clock = bios_clock(cpu, cpu->arm.cpsr);
     cpu->arm.r[14] = AGB_BIOS_INTR_WAIT + 4;
-    if (!intr_check(board, cpu)) {
+    done = intr_check(board, cpu) != 0;
+    cpu->bios_held += agb_bios_intr_check(&clock, to, thumb, done); /* its look at the flags, and halt or return */
+    if (!done) {
         board->cpu_halted = 1;
         return;
     }
@@ -276,6 +440,10 @@ static uint32_t open_bus_at(AgbBoard* board, uint32_t pc, int thumb) {
 static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb) {
     AgbBoard* board = sink->board;
     uint32_t number = thumb ? syndrome & 0xFF : (syndrome >> 16) & 0xFF;
+    /* the BIOS's own time (bios_time.h): its code for the call from the vector on, with the caller's stacks as the
+       call finds them; back is the address after the SWI, where the call returns */
+    uint32_t back = cpu->arm.r[15], source = cpu->arm.r[0], destination = cpu->arm.r[1], control = cpu->arm.r[2];
+    AgbBiosClock clock = bios_clock(cpu, cpu->arm.cpsr);
     /* what the BIOS's own reads of nothing give: the code after the call, which mGBA's HLE BIOS runs inside */
     board->open_bus = open_bus_at(board, cpu->arm.r[15] - (thumb ? 2u : 4u), thumb);
     board->bios_prefetch = AGB_BIOS_PREFETCH_SWI;
@@ -286,6 +454,7 @@ static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb)
     if (number == AGB_SWI_HALT || number == AGB_SWI_STOP) {
         /* halted inside the BIOS, r2 zero and the I/O base in r12 as its routine has them: the interrupt that wakes
            the machine is taken there, then the call returns */
+        cpu->bios_held += agb_bios_halt(&clock, back, number);
         swi_enter(board, cpu);
         cpu->arm.r[2] = 0;
         cpu->arm.r[12] = 0x04000000;
@@ -301,6 +470,7 @@ static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb)
            meanwhile may use */
         if (number == AGB_SWI_VBLANK_INTR_WAIT) cpu->arm.r[0] = cpu->arm.r[1] = 1;
         int discard = cpu->arm.r[0] != 0;
+        cpu->bios_held += agb_bios_intr_wait(&clock, back, number, number == AGB_SWI_VBLANK_INTR_WAIT, discard);
         swi_enter(board, cpu);
         cpu->arm.r[13] -= 8;
         agb_write32(board, cpu->arm.r[13], cpu->arm.r[4]);
@@ -316,13 +486,19 @@ static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb)
         }
         return;
     }
-    /* the BIOS's routine takes its time: its entry and return (45 cycles, as mGBA's HLE BIOS counts them) and the
-       memory it streams through, which the CPU spends before its next instruction */
+    /* the routine runs at once; its time is its code's (CpuSet, CpuFastSet), a stall in mGBA's loop for the math and
+       LZ77, or the BIOS's entry and return with what the routine counted (the memory it streamed through) */
     board->counting = 1;
     board->counted_cycles = 0;
     int ran = agb_bios_call(board, number, cpu->arm.r);
     board->counting = 0;
-    board->held_cycles += 45 + board->counted_cycles;
+    if ((number == AGB_SWI_CPU_SET || number == AGB_SWI_CPU_FAST_SET) && source >= 0x02000000u)
+        cpu->bios_held += agb_bios_cpu_set(&clock, back, thumb, number, source, destination, control);
+    else if ((number >= AGB_SWI_DIV && number <= AGB_SWI_ARCTAN2) || number == AGB_SWI_LZ77_UNCOMP_WRAM ||
+             number == AGB_SWI_LZ77_UNCOMP_VRAM)
+        cpu->bios_held += agb_bios_stalled(&clock, back, thumb, number, board->counted_cycles);
+    else
+        cpu->bios_held += agb_bios_direct(&clock, back, thumb, board->counted_cycles);
     if (ran < 0) {
         cpu->unknown_swi = number;
         cpu->unknown_swi_at = cpu->arm.r[15] - (thumb ? 2u : 4u); /* the PC is past the instruction already */
@@ -468,6 +644,7 @@ static int transfer_quirk(AgbBoard* board, AgbCpu* cpu, uint32_t word, unsigned 
     uint32_t base = n == 15 ? cpu->arm.r[15] + 8 : cpu->arm.r[n];
     uint32_t adjusted = up ? base + offset : base - offset;
     uint32_t address = pre ? adjusted : base, value = 0, mis;
+    cpu->trace[cpu->note] = address;
     if (load) {
         address &= ~(uint32_t)(bytes - 1); /* the single transfer reads the aligned unit and rotates */
         value = bytes == 1   ? agb_read8(board, address)
@@ -499,6 +676,7 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
         /* the ARM7TDMI quirk: an empty register list transfers R15 and moves the base by 0x40 */
         if ((word & 0xF000) == 0xC000 && !(word & 0xFF)) {
             uint32_t base = cpu->arm.r[word >> 8 & 7];
+            cpu->trace[cpu->note] = base;
             if (word & 0x0800) {
                 cpu->arm.r[15] = agb_read32(board, base) & ~(uint32_t)1;
             } else {
@@ -544,6 +722,7 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
     if ((word & 0x0fb00ff0) == 0x01000090) { /* SWP and SWPB */
         uint32_t address = operand(cpu, word >> 16 & 15), held = cpu->arm.r[word & 15];
         unsigned rd = word >> 12 & 15, mis;
+        cpu->trace[cpu->note] = address;
         if (word & (1u << 22)) {
             cpu->arm.r[rd] = agb_read8(board, address);
             agb_write8(board, address, (uint8_t)held);
@@ -586,6 +765,7 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
             /* the empty list transfers R15 where the first of 16 registers would go, and moves the base by
                0x40 in its direction */
             uint32_t address = up ? base + (pre ? 4 : 0) : base - 0x40 + (pre ? 0 : 4);
+            cpu->trace[cpu->note] = address;
             if (load)
                 cpu->arm.r[15] = agb_read32(board, address) & ~(uint32_t)1;
             else {
@@ -601,6 +781,7 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
         for (unsigned i = 0; i < 16; ++i) count += list >> i & 1;
         uint32_t adjusted = up ? base + count * 4 : base - count * 4;
         uint32_t start = up ? base + (pre ? 4 : 0) : adjusted + (pre ? 0 : 4);
+        cpu->trace[cpu->note] = start;
         for (unsigned i = 0; i < 16; ++i) {
             if (!(list >> i & 1)) continue;
             uint32_t address = start + index++ * 4;
@@ -653,43 +834,15 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
     return -1;
 }
 
-/* The bus costs of the loads and stores of code running from each region (arm.h's SnxArmBusCosts), for the WAITCNT
-   the board has, as mGBA counts them (gba/memory.c: GBALoad*, GBAStore*, GBAMemoryStall): a first access 1 + its wait
-   states, each next word of a multiple one 1 + a sequential word's, then the fetch after it a non-sequential one. With
-   the prefetch buffer on, code on the cartridge has its next halfwords fetched while the CPU reaches other memory: the
-   instruction's time there hides up to that many fetches, 8 at most (1 + 8 sequential wait states), and its fetch
-   after it is one of them */
-static void bus_costs(AgbCpu* cpu, const AgbBoard* board) {
-    int prefetch = (board->io[0x204 >> 1] & 0x4000) != 0;
-    for (unsigned code = 0; code < 16; ++code) {
-        SnxArmBusCosts* c = &cpu->costs[code];
-        int n = (int)agb_access_cycles(board, code << 24, 16, 0) - 1,
-            s = (int)agb_access_cycles(board, code << 24, 16, 1) - 1;
-        int cartridge = code >= 0x8 && code <= 0xD;
-        for (unsigned region = 0; region < 16; ++region) {
-            c->nonseq[region][0] = (uint8_t)agb_access_cycles(board, region << 24, 8, 0);
-            c->nonseq[region][1] = (uint8_t)agb_access_cycles(board, region << 24, 16, 0);
-            c->nonseq[region][2] = c->nonseq[region][3] = (uint8_t)agb_access_cycles(board, region << 24, 32, 0);
-            c->seq[region] = (uint8_t)agb_access_cycles(board, region << 24, 32, 1);
-            c->adjust[region] = (int8_t)(cartridge && prefetch && region < 0x8 ? -(1 + 8 * s) : n - s);
-        }
-    }
-    cpu->costs_waitcnt = board->io[0x204 >> 1];
-}
-
-/* The cycles a block took, as mGBA counts an instruction's: each its fetch, 1 + a sequential access's wait states
-   (GBATEK's memory timings by region and WAITCNT), whatever the prefetch buffer; a jump to next (a branch taken, not
-   the instruction after the block) a refill of the pipeline there, a non-sequential and a sequential fetch and two
-   cycles; and what its loads and stores counted (bus_costs) */
-static uint32_t block_cycles(AgbCpu* cpu, const AgbBoard* board, const AgbBlock* block, uint32_t next) {
-    unsigned width = block->thumb ? 16 : 32;
-    uint32_t fallthrough = block->pc + (uint32_t)block->instructions * (width / 8);
-    uint32_t cycles = (uint32_t)block->instructions * agb_access_cycles(board, block->pc, width, 1) + cpu->bus_cycles;
-    unsigned next_width = cpu->arm.cpsr & SNX_ARM_T ? 16 : 32;
-    if (next != fallthrough)
-        cycles += agb_access_cycles(board, next, next_width, 0) + agb_access_cycles(board, next, next_width, 1);
-    cpu->bus_cycles = 0;
-    return cycles;
+/* whether the CPU may take an interrupt before the block would end: IME on, IRQs on in CPSR, and the line up or rising
+   within a bound on the block's time, twice its instructions' sequential fetches and 16 cycles more */
+static int interrupt_soon(AgbCpu* cpu, const AgbBoard* board, const AgbBlock* block) {
+    if (block->instructions < 2 || !(board->irq_ime & 1) || (cpu->arm.cpsr & 0x80)) return 0;
+    uint64_t line = irq_pending(board) ? board->irq_at : agb_board_next_irq(board);
+    if (line == UINT64_MAX) return 0;
+    waits_now(cpu, board);
+    uint32_t page = block->pc >> 24 & 0xF;
+    return line < board->now + 16u + 2u * block->instructions * cpu->waits.wait32[1][page];
 }
 
 int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles, int16_t* audio,
@@ -702,30 +855,55 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
         /* the CPU waits while a DMA holds the bus: the time its transfers took passes before the next instruction, up
            to this run's end, the rest in the next run's, so a run ends where the machine's frame does and gives a
            frame's sound. A DMA that ran while the CPU was halted took none of the CPU's time */
+        /* the BIOS's code for its call takes its time first, as the CPU runs it */
+        if (cpu->bios_held) {
+            uint32_t room = cycles - sink.elapsed, spent = cpu->bios_held < room ? cpu->bios_held : room;
+            cpu->bios_held -= spent;
+            advance(cpu, &sink, spent);
+            continue;
+        }
         if (board->held_cycles && board->cpu_halted) board->held_cycles = 0;
         if (board->held_cycles) {
             uint32_t room = cycles - sink.elapsed, held = board->held_cycles < room ? board->held_cycles : room;
             board->held_cycles -= held;
+            agb_bus_waited(&cpu->replay.bus, board->io[0x204 >> 1] >> 14 & 1, held, board->held_cartridge);
+            board->held_cartridge = 0;
             advance(cpu, &sink, held);
             continue;
         }
-        if (cpu->arm.r[15] == AGB_BIOS_INTR_WAIT && !board->cpu_halted) intr_wait(board, cpu);
+        /* IntrWait looks at its flags once awake, after the interrupt that woke it, which the CPU takes first */
+        if (cpu->arm.r[15] == AGB_BIOS_INTR_WAIT && !board->cpu_halted &&
+            !(irq_pending(board) && !(cpu->arm.cpsr & 0x80)))
+            intr_wait(board, cpu);
         if (board->cpu_halted && (board->irq_if & board->irq_ie)) board->cpu_halted = 0;
         if (board->cpu_halted) {
-            advance(cpu, &sink, 64);
+            /* up to the cycle an interrupt IE lets through wakes it, 2 after its flag (a cycle before the line) */
+            uint64_t wake = agb_board_next_irq(board);
+            uint32_t room = cycles - sink.elapsed;
+            advance(cpu, &sink,
+                    wake == UINT64_MAX || wake - 1 <= board->now ? (room < 64 ? room : 64)
+                    : wake - 1 - board->now < (uint64_t)room     ? (uint32_t)(wake - 1 - board->now)
+                                                                 : room);
             continue;
         }
         if (irq_pending(board) && !(cpu->arm.cpsr & 0x80)) {
-            if (!irq_enter(board, cpu)) advance(cpu, &sink, 64);
-            continue;
+            if (board->now >= board->irq_at) {
+                uint32_t entry = irq_enter(board, cpu);
+                advance(cpu, &sink, entry ? entry : 64);
+                continue;
+            }
+            /* a CPU waiting in the BIOS takes it there once the line is up */
+            if (cpu->arm.r[15] == AGB_BIOS_HALT || cpu->arm.r[15] == AGB_BIOS_INTR_WAIT) {
+                advance(cpu, &sink, (uint32_t)(board->irq_at - board->now));
+                continue;
+            }
         }
         if (cpu->arm.r[15] == AGB_IRQ_RETURN) {
-            irq_return(board, cpu);
+            advance(cpu, &sink, irq_return(board, cpu));
             continue;
         }
-        if (cpu->arm.r[15] == AGB_BIOS_HALT) cpu->arm.r[15] = AGB_BIOS_SWI_RETURN; /* Halt awake: bx lr */
-        if (cpu->arm.r[15] == AGB_BIOS_SWI_RETURN) {
-            swi_return(board, cpu);
+        if (cpu->arm.r[15] == AGB_BIOS_HALT || cpu->arm.r[15] == AGB_BIOS_SWI_RETURN) { /* Halt awake: bx lr */
+            swi_return(board, cpu, cpu->arm.r[15] == AGB_BIOS_HALT);
             continue;
         }
         /* IntrWait awake with no interrupt it may take: the BIOS's loop goes round */
@@ -738,23 +916,42 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
             cpu->arm.r[15] = cpu->arm.r[14] & ~(uint32_t)1;
             continue;
         }
-        const AgbBlock* block =
-            agb_recomp_lookup(recomp, board, cpu->arm.r[15], (cpu->arm.cpsr & SNX_ARM_T) != 0, error, error_size);
+        /* where the interrupt line may rise before a block would end, the CPU runs its instructions one at a time, to
+           take the interrupt after the one it rises in, as the console does */
+        int thumb = (cpu->arm.cpsr & SNX_ARM_T) != 0;
+        const AgbBlock* block = agb_recomp_lookup(recomp, board, cpu->arm.r[15], thumb, error, error_size);
+        if (block && interrupt_soon(cpu, board, block))
+            block = agb_recomp_step(recomp, board, cpu->arm.r[15], thumb, error, error_size);
         if (!block) return -1;
-        if (cpu->costs_waitcnt != board->io[0x204 >> 1]) bus_costs(cpu, board);
-        cpu->bus_costs = &cpu->costs[block->pc >> 24 & 0xF];
-        cpu->bus_cycles = 0;
+        /* the block runs, then its time is replayed from what it left (timing.h): up to the instruction a DMA's start
+           ended it after, or the one it stopped at for the machine to interpret, else all of it */
+        unsigned shift = block->thumb ? 1 : 2;
+        uint32_t charged = 0, end;
+        cpu->block_pc = block->pc;
+        cpu->block_thumb = block->thumb;
+        cpu->advanced = cpu->yield_end = 0;
+        memset(cpu->skipped, 0, sizeof cpu->skipped);
+        cpu->replay.cycles = cpu->replay.unit = 0;
+        cpu->replay.done = AGB_REPLAY_FETCH;
         cpu->arm.exit = SNX_ARM_OK;
+        cpu->in_block = 1;
         block->fn(&cpu->arm);
-        advance(cpu, &sink, block_cycles(cpu, board, block, cpu->arm.r[15]));
+        cpu->in_block = 0;
+        end = cpu->arm.exit == SNX_ARM_UNDEFINED ? (cpu->arm.r[15] - block->pc) >> shift
+              : cpu->yield_end                   ? cpu->yield_end
+                                                 : block->instructions;
+        block_time(cpu, &sink, replay(cpu, end, AGB_REPLAY_WHOLE), &charged);
         if (cpu->arm.exit == SNX_ARM_SVC)
             handle_swi(cpu, &sink, cpu->arm.syndrome, block->thumb);
         else if (cpu->arm.exit == SNX_ARM_UNDEFINED) {
+            cpu->trace[end] = 0; /* what its transfer reaches, if it has one, interpret notes */
+            cpu->note = end;
             if (interpret(board, cpu, cpu->arm.syndrome, block->thumb)) {
                 snprintf(error, error_size, "unimplemented instruction 0x%08X at 0x%08X", cpu->arm.syndrome,
                          cpu->arm.r[15]);
                 return -1;
             }
+            block_time(cpu, &sink, replay(cpu, end + 1, AGB_REPLAY_WHOLE), &charged);
         } else if (cpu->arm.exit != SNX_ARM_OK) {
             snprintf(error, error_size, "the recompiled ROM stopped (exit %u) at 0x%08X (syndrome 0x%08X)",
                      cpu->arm.exit, cpu->arm.r[15], cpu->arm.syndrome);

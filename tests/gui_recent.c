@@ -55,8 +55,10 @@ int main(void) {
        and the game its driver made of it, ready to run, as one too */
     GuiRecent before_ctr = r;
     assert(gui_recent_add(&r, games[6], GUI_KEYS, 0));
-    for (int d = 0; d < 8; ++d) {
-        int driver = d % 4 == 0 ? GUI_3DS : d % 4 == 1 ? GUI_VITA : d % 4 == 2 ? GUI_GBA : GUI_ANDROID, made = d >= 4;
+    for (int d = 0; d < 10; ++d) {
+        static const int drivers[5] = {GUI_3DS, GUI_VITA, GUI_GBA, GUI_NDS, GUI_ANDROID};
+        int driver = drivers[d % 5];
+        int made = d >= 5;
         assert(!gui_recent_add(&r, games[6], driver, made));
         assert(r.game[0].prepared == made && r.game[0].driver == driver);
         assert(!gui_recent_save(&r, file));

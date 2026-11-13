@@ -8,6 +8,7 @@
 //
 // snx-test-astc-encode-glsl --measure FILE.astc... gives the PSNR of a game's own textures (astc_dump's files) made
 // ASTC 4x4 from their texels and, as the runtime does, from BC7 blocks of them, with the BCn block's hints and without.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -155,6 +156,77 @@ static void direct_blocks() {
                     ok ? "PASS" : "FAIL", cases[c].name, most, cases[c].most, sum / double(was.size()));
         if (!ok) failures++;
     }
+}
+
+// n bits of v into a block from bit at, the low bit first
+static void put_bits(uint8_t* b, uint32_t at, uint32_t n, uint32_t v) {
+    for (uint32_t k = 0; k < n; k++, at++)
+        b[at / 8] = uint8_t((b[at / 8] & ~(1u << at % 8)) | ((v >> k & 1u) << at % 8));
+}
+// The source's hint of two planes (texconv.glsl's as_hplane): a BC7 block of mode 5 that rotates red, green or blue
+// out has that channel on the alpha stream, with weights of its own, and its alpha is the colour stream's. The hint
+// names the rotated channel apart, and AsTryDual then holds such blocks in the second pass, the one that takes what a
+// hint settles; a hint that names alpha apart leaves them to the third pass's search. Here the rotated channel moves
+// by itself, the other two by the colour weights, and alpha is one value under 255 (no opaque block, no direct one).
+// A block the hint settles keeps a squared error of SNX_ASTC_HINT_ENOUGH (1024) at most: one channel 32 off
+static void rotated_hints() {
+    for (uint32_t own = 0; own < 3; own++) {
+        const uint32_t n = 1024;
+        std::vector<uint8_t> src((size_t)n * 16), astc((size_t)n * 16), was((size_t)n * 64), is((size_t)n * 64);
+        for (uint32_t i = 0; i < n; i++) {
+            uint8_t* b = &src[(size_t)i * 16];
+            for (uint32_t k = 0; k < 16; k++) b[k] = uint8_t(random_word() >> 24);
+            put_bits(b, 0, 8, 0x20u);    // mode 5
+            put_bits(b, 6, 2, own + 1u); // the rotation: alpha with red, green or blue
+            for (uint32_t c = 0; c < 3; c++) {
+                const uint32_t e0 = c == own ? 64u : random_word() >> 25, e1 = c == own ? 64u : random_word() >> 25;
+                put_bits(b, 8 + 14 * c, 7, e0); // the colour ends of 7 bits: the rotated one's, alpha's 129
+                put_bits(b, 15 + 14 * c, 7, e1);
+            }
+            put_bits(b, 50, 8, 16u + (random_word() >> 26)); // alpha's ends, the rotated channel's: apart
+            put_bits(b, 58, 8, 160u + (random_word() >> 26));
+        }
+        uint32_t listed[2];
+        bcn_astc_passes_cpu(9, src.data(), n, astc.data(), listed);
+        bcn_decode_image(src.data(), n * 4, 4, 9, was.data());
+        astc_decode_image(astc.data(), n * 4, 4, 4, 4, is.data(), 0);
+        uint32_t most = 0;
+        for (size_t k = 0; k < was.size(); k++) most = std::max(most, uint32_t(std::abs(int(was[k]) - int(is[k]))));
+        const bool ok = listed[0] == n && listed[1] <= n / 16 && most <= 32;
+        std::printf(
+            "%s BC7 mode 5 rotating channel %u out: of %u blocks the hint left %u to the search (%u allowed), a "
+            "channel %u off at most (32 allowed)\n",
+            ok ? "PASS" : "FAIL", own, listed[0], listed[1], n / 16, most);
+        if (!ok) failures++;
+    }
+}
+// BC2 whose alpha is 15 in every texel but one (each of the sixteen in turn, 0 to 14 there): no block that is an
+// ASTC layout already, which takes BC2's alpha for 255 only where all sixteen are ones (texconv.glsl's ASTC main),
+// so that texel keeps its alpha
+static void bc2_one_alpha() {
+    const uint32_t n = 16 * 15;
+    std::vector<uint8_t> src((size_t)n * 16), astc((size_t)n * 16), was((size_t)n * 64), is((size_t)n * 64);
+    for (uint32_t i = 0; i < n; i++) {
+        uint8_t* b = &src[(size_t)i * 16];
+        const uint32_t texel = i % 16, alpha = i / 16;
+        std::memset(b, 0xFF, 8);
+        b[texel / 2] = uint8_t((b[texel / 2] & ~(15u << 4 * (texel % 2))) | (alpha << 4 * (texel % 2)));
+        for (uint32_t k = 8; k < 16; k++) b[k] = uint8_t(random_word() >> 24);
+    }
+    bcn_astc_cpu(1, src.data(), n, 1, 1, astc.data());
+    bcn_decode_image(src.data(), n * 4, 4, 1, was.data());
+    astc_decode_image(astc.data(), n * 4, 4, 4, 4, is.data(), 0);
+    uint32_t most = 0, at = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t texel = i % 16, k = ((texel / 4) * n * 4 + i * 4 + texel % 4) * 4 + 3;
+        const uint32_t d = uint32_t(std::abs(int(was[k]) - int(is[k])));
+        if (d > most) most = d, at = texel;
+    }
+    const bool ok = most <= 17;
+    std::printf(
+        "%s BC2 of one alpha under 15 in one texel: that texel's alpha %u off at most, at texel %u (17 allowed)\n",
+        ok ? "PASS" : "FAIL", most, at);
+    if (!ok) failures++;
 }
 
 // astc_quant.glsl works the colour encodings out where a table would do, so every answer it has is held here to the
@@ -419,6 +491,8 @@ int main(int argc, char** argv) {
     passes();
     blocks();
     direct_blocks();
+    rotated_hints();
+    bc2_one_alpha();
     picture_psnr();
     if (failures) {
         std::fprintf(stderr, "%d failures\n", failures);

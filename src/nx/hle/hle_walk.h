@@ -32,8 +32,6 @@
     X(AmLock, (h).am.lock_objs[0])                                                                                     \
     X(LibApplet, (h).am.applets[0])                                                                                    \
     X(AudOut, (h).audio.outs_pool[0])                                                                                  \
-    X(AudRen, (h).audio.rens[0])                                                                                       \
-    X(AudDevice, (h).audio.devices[0])                                                                                 \
     X(HwOpus, (h).audio.opus[0])                                                                                       \
     X(ARRen, (h).audren.rens[0])                                                                                       \
     X(ARCompressor, (h).audren_dsp.compressors[0])                                                                     \
@@ -54,7 +52,6 @@
     X(NvEventTable, (h).nvdrv.ctrl_evt[0])                                                                             \
     X(NvFile, (h).nvdrv.nvf[0])                                                                                        \
     X(NvSeen, (h).nvdrv.seen[0])                                                                                       \
-    X(TimeObj, (h).time.objs[0])                                                                                       \
     X(ViLayer, (h).vi.layer[0])                                                                                        \
     X(Bsd, (h).bsd.bsds[0])                                                                                            \
     X(Ldn, (h).ldn.ldn[0])                                                                                             \
@@ -65,6 +62,10 @@
     X(FsData, (h).fs.fss[0])                                                                                           \
     X(FileData, (h).fs.files[0])                                                                                       \
     X(DirData, (h).fs.dirs[0])                                                                                         \
+    X(NnfsRom, (h).nnfs.roms[0])                                                                                       \
+    X(NnfsMount, (h).nnfs.mounts[0])                                                                                   \
+    X(NnfsFile, (h).nnfs.files[0])                                                                                     \
+    X(NnfsDir, (h).nnfs.dirs[0])                                                                                       \
     X(NativeVideoPool, (h).native_video.pools[0])                                                                      \
     X(NativeVideoMap, (h).native_video.maps[0])                                                                        \
     X(NativeVideoContext, (h).native_video.contexts[0])                                                                \
@@ -89,6 +90,7 @@
     X(nvdrv, (h).nvdrv)                                                                                                \
     X(native_video, (h).native_video)                                                                                  \
     X(pl, (h).pl)                                                                                                      \
+    X(prepo, (h).prepo)                                                                                                \
     X(set, (h).set)                                                                                                    \
     X(sm, (h).sm)                                                                                                      \
     X(time, (h).time)                                                                                                  \
@@ -98,6 +100,7 @@
     X(nifm, (h).nifm)                                                                                                  \
     X(ssl, (h).ssl)                                                                                                    \
     X(fs, (h).fs)                                                                                                      \
+    X(nnfs, (h).nnfs)                                                                                                  \
     X(hook, (h).hook)
 
 #endif

@@ -7,6 +7,7 @@
    Sampler bytes are deterministic for identical create infos (VK_EXT_descriptor_heap), so byte interning preserves
    sampler state while it removes duplicate heap copies. All cache comparisons use CPU memory, never mapped GPU memory. */
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "common/utilities/endian.h"
 #include "nx/runtime/platform/log.h"
@@ -23,7 +24,7 @@
 enum { HEAP_UBO, HEAP_SSBO, HEAP_IMAGE, HEAP_STORAGE_IMAGE, HEAP_TEXEL, HEAP_SAMPLER, HEAP_KINDS };
 typedef struct {
     VkBuffer buffer;
-    VmaAllocation memory;
+    DevMem memory;
     u8* mapped;
     VkDeviceAddress address;
     VkDeviceSize allocation_bytes;
@@ -93,7 +94,7 @@ static int kind(VkDescriptorType type) {
 static void heap_discard(Heap* heap) {
     if (heap->buffer) {
         vk_mem_untrack(heap->memory);
-        vmaDestroyBuffer(g_vk.vma, heap->buffer, heap->memory);
+        vk_devmem_buffer_destroy(heap->buffer, heap->memory);
     }
     *heap = (Heap){0};
 }
@@ -115,27 +116,26 @@ static int heap_create(Heap* heap, const VkDescriptorHeapMemoryPlan* plan, const
         .size = plan->allocation_size,
         .usage = VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo allocation = {.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
-            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-        .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
-    VmaAllocationInfo details;
-    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &create, &allocation, &heap->buffer, &heap->memory, &details)))
+    DevMemWant allocation = {.at = DM_HOST,
+                             .mapped = 1,
+                             .need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+    DevMemInfo details;
+    if (!VK_OK(vk_devmem_buffer(&create, &allocation, &heap->buffer, &heap->memory, &details)))
         return refused("the %s heap's %llu-byte buffer could not be made", name,
                        (unsigned long long)plan->allocation_size);
-    vk_mem_track(heap->memory);
+    vk_mem_track(heap->memory, VK_OWN_DESCRIPTORS);
     VkDeviceAddress original = buffer_address(heap->buffer);
     VkDeviceSize padding = snx_align_up(original, plan->alignment) - original;
-    if (!original || !details.pMappedData || padding > plan->allocation_size - plan->range_size) {
+    if (!original || !details.ptr || padding > plan->allocation_size - plan->range_size) {
         heap_discard(heap);
         return refused("the %s heap's buffer is at address 0x%llx, %s, and needs %llu bytes of padding to its "
                        "%llu-byte alignment, %llu at most",
-                       name, (unsigned long long)original, details.pMappedData ? "mapped" : "not mapped",
+                       name, (unsigned long long)original, details.ptr ? "mapped" : "not mapped",
                        (unsigned long long)padding, (unsigned long long)plan->alignment,
                        (unsigned long long)(plan->allocation_size - plan->range_size));
     }
     heap->address = original + padding;
-    heap->mapped = (u8*)details.pMappedData + padding;
+    heap->mapped = (u8*)details.ptr + padding;
     heap->plan = *plan;
     heap->allocation_bytes = details.size;
     return 1;

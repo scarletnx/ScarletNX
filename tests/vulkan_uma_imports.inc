@@ -22,7 +22,7 @@ static int uma_skip(void) {
 }
 /* a GPU result of size bytes of value, its writes recorded */
 static VkOwnRes* uma_owner(u64 size, u8 value) {
-    VkOwnRes* r = vk_own_res_new(size);
+    VkOwnRes* r = vk_own_res_new(size, VK_OWN_BY_DRAW);
     if (r && owned_test_fill(r->buf, 0, (u32)size, value)) {
         vk_own_res_unref(r);
         r = NULL;
@@ -334,6 +334,7 @@ static int check_uma_constants(void) {
     r[0x3fd] = r[0x3fe] = 4u << 16;
     r[0x680] = 0x1111;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 1;
+    all_samples(r);
     const float transform[6] = {2, 2, 0.5f, 2, 2, 0.5f};
     memcpy(r + 0x280, transform, sizeof transform);
     r[0x458] = 0 | 0u << 7 | 1u << 21 | 7u << 27;  /* stream 0 at 0: RGBA32F */
@@ -472,6 +473,7 @@ static int check_uma_feedback(void) {
     r[0x3fd] = r[0x3fe] = 4u << 16;
     r[0x680] = 0x1111;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 1;
+    all_samples(r);
     memcpy(r + 0x280, transform, sizeof transform);
     r[0x458] = 0 | 0u << 7 | 1u << 21 | 7u << 27;  /* stream 0 at 0: RGBA32F */
     r[0x459] = 0 | 16u << 7 | 1u << 21 | 7u << 27; /* stream 0 at 16: RGBA32F */

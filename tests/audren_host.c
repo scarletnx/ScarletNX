@@ -73,57 +73,69 @@ int audren_frame(ARState* s, i16* stereo) {
     return 1;
 }
 
-static PAudio* host_of(SvcObj* o) { return audren_of(o)->out; }
+static PAudio* host_of(u32 id) { return audren_at(id)->out; }
 /* started, and its first frame played: the host stream opens */
-static void play(SvcObj* o) {
-    o->u[0] = SNX_AUDREN_STARTED;
+static void play(u32 id) {
+    audren_at(id)->state = SNX_AUDREN_STARTED;
     audren_tick();
 }
 
 void pm_init(PMutex* m) { (void)m; }
 
-/* RequestUpdate (audren_update): InvalidUpdateInfo, 2153-0041, without an update's header, and the DSP's failures as
-   the renderer's results, InvalidUpdateInfo and InsufficientBuffer (2153-0004), any other OperationFailed (2153-0002) */
-static void test_update_results(SvcObj* o) {
+/* an update (audren_update): InvalidUpdateInfo, 2153-0041, without an update's header, and the DSP's failures as
+   the renderer's results, InvalidUpdateInfo and InsufficientBuffer (2153-0004), any other OperationFailed (2153-0002);
+   InvalidHandle for a name that is no open renderer's */
+static void test_update_results(u32 id) {
     u8 memory[0x100] = {0};
-    const IpcBuf in = {0x40, 0x40, 0}, out = {0x80, 0x80, 0}, none = {0, 0, 0}, short_in = {0x40, 0x3f, 0};
     g_mem = memory;
-    CHECK(audren_update(o, none, out) == RC(153, 41) && audren_update(o, in, none) == RC(153, 41));
-    CHECK(audren_update(o, short_in, out) == RC(153, 41));
+    CHECK(audren_update(id, 0, 0, 0x80, 0x80) == RC(153, 41) && audren_update(id, 0x40, 0x40, 0, 0) == RC(153, 41));
+    CHECK(audren_update(id, 0x40, 0x3f, 0x80, 0x80) == RC(153, 41));
     test_update_result = -41;
-    CHECK(audren_update(o, in, out) == RC(153, 41));
+    CHECK(audren_update(id, 0x40, 0x40, 0x80, 0x80) == RC(153, 41));
     test_update_result = -4;
-    CHECK(audren_update(o, in, out) == RC(153, 4));
+    CHECK(audren_update(id, 0x40, 0x40, 0x80, 0x80) == RC(153, 4));
     test_update_result = -1;
-    CHECK(audren_update(o, in, out) == RC(153, 2));
+    CHECK(audren_update(id, 0x40, 0x40, 0x80, 0x80) == RC(153, 2));
     test_update_result = 0;
-    CHECK(audren_update(o, in, out) == 0);
+    CHECK(audren_update(id, 0x40, 0x40, 0x80, 0x80) == 0);
+    CHECK(audren_update(0, 0x40, 0x40, 0x80, 0x80) == RC(153, 1536));
+    CHECK(audren_update(SNX_AUDREN_MAX + 1, 0x40, 0x40, 0x80, 0x80) == RC(153, 1536));
     g_mem = NULL;
 }
 
 int main(void) {
     hle_init();
     static const u8 params[0x34];
-    SvcObj first, second, later;
-    memset(&first, 0, sizeof first);
-    memset(&second, 0, sizeof second);
-    memset(&later, 0, sizeof later);
-    CHECK(audren_open(&first, params) && audren_open(&second, params) && audren_open(&later, params));
-    first.u[0] = second.u[0] = later.u[0] = SNX_AUDREN_STOPPED; /* as OpenAudioRenderer leaves them */
-    play(&first);
-    play(&second);
-    CHECK(host_of(&first)->volume == 1.0f && host_of(&second)->volume == 1.0f && !host_of(&later));
+    static const u8 device[0x34] = {[0] = 0x80, [1] = 0xbb, [4] = 240, [8] = 6, [0x22] = 1};
+    u32 first = audren_open(params, 0), second = audren_open(params, 0), later = audren_open(device, 1);
+    CHECK(first && second && later && first != second && second != later && first != later);
+    /* as OpenAudioRenderer leaves them: stopped, the limit at 100%, the voice drop parameter 1, and the parameters
+       they read back */
+    CHECK(audren_at(first)->state == SNX_AUDREN_STOPPED && audren_at(first)->limit == 100);
+    CHECK(audren_at(first)->voice_drop == 1.0f && !audren_at(first)->manual);
+    CHECK(audren_at(later)->sample_rate == 48000 && audren_at(later)->sample_count == 240);
+    CHECK(audren_at(later)->mix_buffer_count == 6 && audren_at(later)->manual == 1);
+    CHECK(audren_at(later)->rendering_device == 1 && audren_at(0) == NULL && audren_at(SNX_AUDREN_MAX + 1) == NULL);
+    play(first);
+    play(second);
+    CHECK(host_of(first)->volume == 1.0f && host_of(second)->volume == 1.0f && !host_of(later));
     audren_volume(0.5f);
-    CHECK(host_of(&first)->volume == 0.5f && host_of(&second)->volume == 0.5f);
-    play(&later); /* opened after the volume was set */
-    CHECK(host_of(&later)->volume == 0.5f);
+    CHECK(host_of(first)->volume == 0.5f && host_of(second)->volume == 0.5f);
+    play(later); /* opened after the volume was set */
+    CHECK(host_of(later)->volume == 0.5f);
     audren_volume(1.0f);
-    CHECK(host_of(&first)->volume == 1.0f && host_of(&second)->volume == 1.0f && host_of(&later)->volume == 1.0f);
-    test_update_results(&first);
-    first.destroy(&first);
-    second.destroy(&second);
-    later.destroy(&later);
-    for (int i = 0; i < SNX_AUDREN_MAX; i++) CHECK(g_hle.audren.rens[i].o == NULL); /* every renderer's slot free */
+    CHECK(host_of(first)->volume == 1.0f && host_of(second)->volume == 1.0f && host_of(later)->volume == 1.0f);
+    test_update_results(first);
+    audren_close(first);
+    audren_close(second);
+    audren_close(later);
+    audren_close(later); /* a name already closed: nothing */
+    for (int i = 0; i < SNX_AUDREN_MAX; i++) CHECK(!g_hle.audren.rens[i].used); /* every renderer's slot free */
+    /* every slot taken: the next open makes none, and frees the state it made */
+    u32 all[SNX_AUDREN_MAX];
+    for (int i = 0; i < SNX_AUDREN_MAX; i++) CHECK((all[i] = audren_open(params, 0)) != 0);
+    CHECK(audren_open(params, 0) == 0);
+    for (int i = 0; i < SNX_AUDREN_MAX; i++) audren_close(all[i]);
     printf("audren_host: %u checks passed\n", test_checks);
     return 0;
 }

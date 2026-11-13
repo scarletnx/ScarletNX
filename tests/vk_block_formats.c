@@ -253,6 +253,24 @@ int main(void) {
     takes(0x17, 0, 0, VK_FORMAT_R8G8B8A8_UNORM, VKC_BC7, "none BC7");
     takes(0x0A, 0, 0, VK_FORMAT_R8G8B8A8_UNORM, VKC_ETC2_PTA, "none ETC2 RGB8A1");
 
+    /* a depth texture's stencil view (vk_tic_reads_stencil): the headers edenprobe's zeta suite samples through NVN,
+       the stencil of a Z24S8 (R, all four components) and of a ZF32_X24S8 (G), beside their depth views, and the
+       game driver's R8G24 one. The first two were taken for depth, and their stencil read as depth bits */
+    static const struct {
+        u32 w0;
+        int stencil;
+        const char* what;
+    } views[] = {
+        {0x24924a29u, 1, "Z24S8's stencil, R"},      {0x76da4a29u, 0, "Z24S8's depth, G"},
+        {0x36da53b0u, 1, "ZF32_X24S8's stencil, G"}, {0x749253b0u, 0, "ZF32_X24S8's depth, R"},
+        {0x60124a0eu, 1, "R8G24's stencil, R"},      {0x60124a0du, 0, "G8R24's depth, R"},
+    };
+    for (size_t i = 0; i < sizeof views / sizeof views[0]; i++) {
+        u32 tic[8] = {views[i].w0};
+        CHECK(vk_tic_reads_stencil(tic) == views[i].stencil, "%s (header word 0 %08x): reads the stencil %d, not %d",
+              views[i].what, views[i].w0, vk_tic_reads_stencil(tic), views[i].stencil);
+    }
+
     if (g_test.failures) {
         printf("%u of %u checks failed\n", g_test.failures, g_test.checks);
         return 1;

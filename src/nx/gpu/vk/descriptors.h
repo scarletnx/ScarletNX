@@ -24,9 +24,8 @@ typedef struct {
 } VkDescriptorStats;
 /* Monotonic counters; allocated bytes and peak use are gauges. Log reporting does not reset these counters. */
 void vk_descriptors_get_stats(VkDescriptorStats* stats);
-VkResult vk_buffer_create(VmaAllocator allocator, const VkBufferCreateInfo* info,
-                           const VmaAllocationCreateInfo* allocation, VkBuffer* buffer,
-                           VmaAllocation* memory, VmaAllocationInfo* details);
+VkResult vk_buffer_create(const VkBufferCreateInfo* info, const DevMemWant* allocation, VkBuffer* buffer,
+                          DevMem* memory, DevMemInfo* details);
 void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress address);
 void rec_CmdSetDescriptorBufferOffsetsEXT(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count,
                                          const VkDeviceSize* offsets);

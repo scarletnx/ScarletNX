@@ -74,7 +74,7 @@ static int check_shader_read_windows(void) {
             VkBuffer upload;
             u64 offset;
             u8* staging = vk_stage_upload(bytes, 16, &upload, &offset);
-            owner = vk_own_res_new(bytes);
+            owner = vk_own_res_new(bytes, VK_OWN_BY_DRAW);
             CHECK(staging && owner);
             memcpy(staging, full, bytes);
             VkBufferCopy copy = {offset, 0, bytes};

@@ -422,6 +422,7 @@ static void make_programs(NvnDraw* d) {
     memcpy(p.code, d->code, sizeof p.code);
     p.on = d->prog_on;
     p.tess_params = d->tess_params;
+    p.early_z = d->early_z;
     p.clip_enable = 0xff; /* NVN has no clip distance enables: those the program writes clip */
     p.xfb_on = d->tf_on;
     p.task = d->task;
@@ -941,6 +942,7 @@ static void bind_program(NvnDraw* d, u64 payload, u32 size) {
             d->code[j] = st->data + (j ? st->off : r.off_a);
             d->prog_on |= 1u << j;
         }
+        if (n == NVN_SHADER_STAGE_FRAGMENT) d->early_z = (u8)(st->data && r.serial && nvn_program_early_z(r.serial));
         if (j == 0) continue;
         /* bank 1: the program's constants, after its code. The game's driver binds 64 KiB from there, constants or
            not (NVN 53.13, 53.314 and 55.12): a read past them gets what follows, as on the console */

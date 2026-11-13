@@ -50,16 +50,27 @@ int hook_select(const HookTable* t, const char* symbol, const u32 versions[HOOK_
 void hook_version_text(char* out, size_t n, int key, u32 version);
 /* an entry's versions as @version writes them ("sdk >= 12.0.0, < 16.0.0"), "any version" for HOOK_ANY */
 void hook_range_text(char* out, size_t n, int key, u32 lo, u32 hi);
+/* What hook_install left to the game's own code for its version, for the stop of a game that then reached a service
+   the runtime answers only natively (sm.c): "" when every symbol with a hook got one, else a sentence with how
+   many symbols have declarations that all are for other versions than their module's, and the first one's name,
+   module, version and the versions it is declared for */
+void hook_missed_text(char* out, size_t n);
 
-/* Runs the 64-bit guest function fn(a0, a1, a2, a3) from inside a handler, as nvn_cmd.c's guest_call runs a game's
+/* Runs the guest function fn(a0, a1, a2, a3) from inside a handler, as nvn_cmd.c's guest_call runs a game's
    callback: its return to the handler's own return address ends the run, and the link register is put back
-   (codec.c) */
+   (codec.c). In a 32-bit game it is hook_guest_call_a32 */
 void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3);
+/* the same for a 32-bit game's function (bit 0 of fn set for Thumb), its four words in r0 to r3: the thread is put
+   back at the hooked function its handler is for, where hook_run_original_a32 finds it (hook.c) */
+void hook_guest_call_a32(CPU* c, u32 fn, u32 a0, u32 a1, u32 a2, u32 a3);
 /* a readable handle of a new kernel event attached to the game's SystemEventType at event through its SDK's own
    nn::os::AttachReadableHandleToSystemEvent (auto close, auto clear), as an SDK object attaches its service's: the
    event, with a reference of the caller's beside the handle's, to drop (kobj_unref) when the caller's object goes;
    NULL when the SDK exports no such function or the handle table is full (codec.c) */
 struct KEvent* hook_attach_event(CPU* c, u64 event, const char* name);
+/* attaches handle, a readable handle the caller made, to the game's SystemEventType at event the same way (auto
+   close, auto clear): 0 when the SDK exports no such function or handle is 0, and the handle is then the caller's */
+int hook_attach_handle(CPU* c, u64 event, u32 handle);
 /* the host address of guest address a, in integers as GP (memory/mem.h) makes it: under NCE c->mem is 0 */
 static inline u8* hook_host(const CPU* c, u64 a) { return (u8*)(uintptr_t)((uintptr_t)c->mem + a); }
 /* A field of a guest struct, as a layout hookgen generated from a struct declaration gives it for the module a hook
@@ -125,8 +136,10 @@ static inline void hook_put_f64(CPU* c, HookField_f64 f, u64 addr, f64 v) {
     snx_st_le64(hook_host(c, addr + f.offset), bits);
 }
 
-/* the functions hooked: a hook's symbol may name one in each of the game's modules */
-#define HOOK_SITES 256
+/* the functions hooked: a hook's symbol may name one in each of the game's modules. As many as a table has entries at
+   most (tools/hookgen's MAX_ENTRIES), so a game that exports each function once has a site for every hook: hook.c
+   checks that its tables fit */
+#define HOOK_SITES 1024
 
 /* verify mode's scratch memory: slots of guest memory in the kernel region, each call verified taking one without
    waiting (a guest thread may lose its core inside the function's own code, and another verifying a call then must
@@ -147,11 +160,20 @@ typedef struct {
     u16 hook[HOOK_SITES];     /* its hook, in the generated table */
     u64 addr[HOOK_SITES];     /* the function's guest address */
     GuestFn orig[HOOK_SITES]; /* its recompiled code, which its slot held */
+    u8 stale[HOOK_SITES];     /* atomic: the game changed the function's code (a mod's patch), so orig is stale */
     GuestFn fn[HOOK_SITES];   /* what its slot holds now: the hook's adapter, or verify mode's check */
     /* verify mode: which scratch slots are taken (bit i, atomic), and each site's calls that agreed, differed and
        were skipped (atomic) */
     u32 verify_taken;
     u64 agreed[HOOK_SITES], differed[HOOK_SITES], skipped[HOOK_SITES];
+    /* a 32-bit game's hooked functions: each one's address (bit 0 set for Thumb) and the block its slot held, for
+       hook_run_original_a32; and the symbols hook_install found declared only for other versions than their
+       module's, for hook_missed_text: how many, and the first one's first entry in its table, its module and that
+       module's version of the entry's key */
+    u32 a32_count;
+    u32 a32_addr[HOOK_SITES];
+    SnxArmBlock a32_orig[HOOK_SITES];
+    u32 missed, missed_entry, missed_module, missed_version;
 } HostHook;
 
 /* hooks the functions the game exports that hooks.hook names, and those of the game's builds that the address hooks
@@ -172,12 +194,15 @@ void hook_restore(u64 addr, u64 size);
    long as the game runs; NULL when addr isn't hooked */
 GuestFn hook_function(u64 addr);
 /* the recompiled code of the function at addr when it is hooked, for a handler that hands a case back to it with the
-   CPU as the function's call left it; NULL when addr isn't hooked */
+   CPU as the function's call left it; NULL when addr isn't hooked. Once the game changed the function's code, the
+   JIT's code of what is there now: the AOT code is stale, and leaves for the dispatch slot, which holds the hook */
 GuestFn hook_original(u64 addr);
 /* the symbol of the function hooked at addr, and the name of the runtime's handler that runs it in *handler; NULL when
    addr isn't hooked. Reads only the sites hook_install wrote before the game's first thread, so the crash report may
    call it (debug.c) */
 const char* hook_at(u64 addr, const char** handler);
+/* the AOT function f went stale (guest_jit.c): the sites whose own code it was run what the game put there instead */
+void hook_orig_stale(GuestFn f);
 /* where the hook of symbol (a symbol, or an address hook's key as hookgen writes it, BUILDID:OFFSET) was installed:
    the function's guest address, the first one for a symbol several modules export; 0 when it wasn't */
 u64 hook_site(const char* symbol);
@@ -185,6 +210,11 @@ u64 hook_site(const char* symbol);
    return address (x30) with the call's stack, through the dispatch loop when its code leaves for code compiled apart:
    for a handler that does its work around the function's, as the function's own code then sees every call */
 void hook_run_original(CPU* c, u64 addr);
+/* The same for a 32-bit game, from the handler of the hooked function its thread is in: the adapter runs with r15 at
+   the function, so no address is given (a 32-bit SDK's symbol is often not the 64-bit one's). The function's own
+   code runs with the registers and the stack as the call left them until it returns to the call's lr; its result
+   comes back, r0 with r1 above it */
+u64 hook_run_original_a32(CPU* c);
 
 /* the float arguments and results of the generated adapters: lane 0 of a vector register, the guest's bytes */
 static inline f32 hook_f32(const CPU* c, int r) {

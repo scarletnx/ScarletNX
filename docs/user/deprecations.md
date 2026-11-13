@@ -51,7 +51,7 @@ renderer=opengl
 | `.ini` key `nvn_direct` (`0` the game's NVN driver, `1` the runtime, `2` the runtime where it knew the game's NVN API version) | [gpu] Make NVN the only GPU path and rename nvn_direct to the loader | nothing: the runtime always runs the game's NVN calls | the same |
 | `.ini` key `astc_background_threads` (the CPU threads that made the better ASTC textures) | [vk] Encode the background's ASTC levels on the GPU alone | nothing: the GPU makes them alone | the same |
 | `.ini` keys `press`, `press_at` (an unattended run's one press: its buttons in hex, at a time in ms) | #373 | `script`: `press_at:press` is the same press, held `press_len` ms | the same |
-| `--keep-c` | Replace Python pipeline with a C90 driver | `--keep-ir` | still taken, said on stderr each time |
+| `--keep-c` | Replace Python pipeline with a C90 driver | `--keep-ir` | still taken, said on stderr once a run |
 | `--recomp` | [cli] the options' names | `--recompile` | still taken, said on stderr once a run |
 | `--repo DIR` | [cli] the options' names | `--data DIR` | still taken, said on stderr once a run |
 | `--debug`, `--skip --skip` | [cli] the options' names | `--no-setup` | still taken, said on stderr once a run |

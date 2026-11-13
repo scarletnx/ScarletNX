@@ -44,7 +44,7 @@ static int cbown_case(GpuChannel* channel, u32 cb, u32 own, u32 cpu_word, u8 fil
     channel->r3d_dirty = ~0u;
     mx_draw_state_sync(channel);
     vk_lock();
-    VkOwnRes* owner = vk_own_res_new(16);
+    VkOwnRes* owner = vk_own_res_new(16, VK_OWN_BY_DRAW);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 16, fill));
     vk_own_publish_owned(OPR_CPU + own, 16, owner, 0);
     CHECK(own_lookup(OPR_CPU + own, 16, NULL, 0) == 1);
@@ -90,12 +90,35 @@ static int owned_constant_buffers(void) {
     r[0x3fd] = r[0x3fe] = 4u << 16;
     r[0x680] = 0x1111;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 0;
+    all_samples(r);
     memcpy(r + 0x280, transform, sizeof transform);
     channel->ds.owner = channel->id;
     CHECK(!cbown_case(channel, 0x3000, 0x3100, 0x11111111, 0x5a, 0x5a5a5a5a, "an owner in the bytes it binds"));
     CHECK(!cbown_case(channel, 0x6000, 0x6200, 0x22222222, 0x6b, 0x22222222, "an owner past them on their page"));
     channel->ds.bind.cb_addr[0][0] = 0;
     channel->ds.bind.cb_size[0][0] = 0;
+    /* A fragment program's lookup folds the words of its constant buffers that the CPU holds (gpu/vk/cb_fold.h): of
+       a buffer with an owner's bytes it reads none, so nothing lands, the owner keeps them and the word stays a load.
+       The owner's bytes are zeros, a word that would fold */
+    const u64 loads[] = {0x4C98078004070000ull, 0xE30000000007000Full}; /* MOV R0, c[0x0][0x100] */
+    CHECK(mesh_program(OPR_GVA + 0x2800, loads, 2, 1));
+    channel->ds.bind.cb_addr[4][0] = OPR_GVA + 0x3000;
+    channel->ds.bind.cb_size[4][0] = 0x200;
+    vk_lock();
+    VkOwnRes* owner = vk_own_res_new(16, VK_OWN_BY_DRAW);
+    CHECK(owner && !owned_test_fill(owner->buf, 0, 16, 0));
+    vk_own_publish_owned(OPR_CPU + 0x3100, 16, owner, 0);
+    CHECK(own_lookup(OPR_CPU + 0x3100, 16, NULL, 0) == 1);
+    u64 lands = own_landings();
+    const VkSh* folded =
+        vk_shader_get(&channel->ds, OPR_GVA + 0x2800, 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 0, 0, 0, 0);
+    int kept = own_lookup(OPR_CPU + 0x3100, 16, NULL, 0) == 1, landed = own_landings() != lands;
+    own_acquire(OPR_CPU + 0x3100, 16);
+    vk_own_res_unref(owner);
+    vk_unlock();
+    CHECK(folded && !folded->failed && folded->nfold == 0 && folded->cbr.n == 1 && kept && !landed);
+    channel->ds.bind.cb_addr[4][0] = 0;
+    channel->ds.bind.cb_size[4][0] = 0;
     free(channel);
     puts("owned page reads: a draw's constant buffers took an owner's bytes and the CPU's beside another");
     return 0;
@@ -111,7 +134,7 @@ static int owned_word(void) {
     snx_st_le32(bytes, word);
     CHECK(!gmem_write(gva + 0x10, bytes, sizeof bytes));
     vk_lock();
-    VkOwnRes* owner = vk_own_res_new(16);
+    VkOwnRes* owner = vk_own_res_new(16, VK_OWN_BY_DRAW);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 16, 0x77));
     vk_own_publish_owned(cpu + 0x800, 16, owner, 0);
     CHECK(own_lookup(cpu + 0x800, 16, NULL, 0) == 1);
@@ -136,7 +159,6 @@ static int owned_word(void) {
    level goes up unkeyed (its bytes aren't hashed), a later one on pages of its own is keyed, and the owner stays */
 /* the texture's memory and address in vulkan_astc_later.inc's layout, apart from its cases' */
 #define OPR_ASTC_INDEX 12
-#define OPR_BC7_PATH "vulkan_headless_owned_reads.vkbc7"
 static int owned_astc_key(void) {
     static const AlCase c = {"ASTC 8x8 256x256 beside an owner", NVN_FORMAT_RGBA_ASTC_8x8, 256, 256, 1, 0};
     const int had = g_settings.astc_mode;
@@ -168,10 +190,11 @@ static int owned_astc_key(void) {
     al_fill(&x);
     gmmu_map(gbase, base, AL_SPAN);
     later_drain(); /* what the checks before left to the encoder */
-    remove(OPR_BC7_PATH);
-    vk_astc_cache_open(OPR_BC7_PATH); /* the keys are made only where a cache takes the levels */
+    char cache[sizeof g_cachedir + 40];
+    al_cache_path(cache, sizeof cache, "vulkan_headless_owned_reads.vkbc7");
+    CHECK(!al_cache_open(cache)); /* the keys are made only where a cache takes the levels */
     vk_lock();
-    VkOwnRes* owner = vk_own_res_new(16);
+    VkOwnRes* owner = vk_own_res_new(16, VK_OWN_BY_DRAW);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 16, 0x3c));
     vk_own_publish_owned(own, 16, owner, 0);
     CHECK(own_lookup(own, 16, NULL, 0) == 1);
@@ -187,7 +210,7 @@ static int owned_astc_key(void) {
                 all, kept ? "kept" : "gone", landed ? "landed" : "nothing landed");
     later_drain();
     vk_bc7_cache_close();
-    remove(OPR_BC7_PATH);
+    remove(cache);
     gmmu_space_unmap(gbase, AL_SPAN);
     mem_unmap(base, AL_SPAN);
     g_settings.astc_mode = had;
@@ -221,7 +244,7 @@ static int owned_nvn_record(void) {
     gpu_call_poll(opr_gate, NULL, q - 1); /* the queue's lane (nvn_replay.c): its submission waits behind it */
     nvn_replay_submit(q, 1, handles, &ready, &shown);
     vk_lock();
-    VkOwnRes* owner = vk_own_res_new(16);
+    VkOwnRes* owner = vk_own_res_new(16, VK_OWN_BY_DRAW);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 16, fill));
     vk_own_publish_owned(own, 16, owner, 0);
     CHECK(own_lookup(own, 16, NULL, 0) == 1);

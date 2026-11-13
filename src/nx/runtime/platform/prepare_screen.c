@@ -2,6 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/fatal_screen.h"
+#include "nx/runtime/platform/overlay.h"
+#include "gui/splash.h"
 #include "nx/gpu/renderer.h"
 #include "nx/runtime/platform/ui_colors.h"
 #include <stdio.h>
@@ -16,13 +18,21 @@ typedef struct {
 } Row;
 static struct {
     SnxRunTheme theme;
-    char name[96], foot[96];
+    char name[96], foot[96], switch_foot[96]; /* switch_foot: a switch's, shown while no step is */
     Row row[SNX_PREPARE_STEPS];
     char note[SNX_PREPARE_NOTES][SNX_PREPARE_NOTE_SIZE];
     int notes;
-    int rows;   /* 0: not shown */
+    int rows;   /* the steps: 0 for none */
     u64 now_ms; /* the last update's, for the dots and the time left */
+    /* a program a collection's program started (prepare_screen_switch): up while switching, program the one that
+       starts; the game's cover (cover), in the left square of the layer's picture (picture), given to the layer once
+       drawn (made), its version then picture_version */
+    int switching, program, cover, made, facts; /* facts: the rows of start, which the switch draws */
+    SnxStartRow start[SNX_START_ROWS];
+    u32 picture_version;
+    u8 picture[SNX_UI_IMAGE_W * SNX_UI_IMAGE_H * 4];
 } g_prepare_screen;
+typedef char prepare_cover_fits[SNX_PREPARE_COVER == SNX_UI_IMAGE_H && SNX_UI_IMAGE_W >= SNX_UI_IMAGE_H ? 1 : -1];
 
 /* the YoRHa theme's [run] look, all of it from its theme.ini (gui_theme_colors.h): the launcher's own theme, for a
    runtime without the launcher to ask */
@@ -60,7 +70,60 @@ void prepare_screen_set(const SnxRunTheme* theme, const char* name, const SnxPre
         r->done = steps[i].done;
     }
 }
-int prepare_screen_shown(void) { return g_prepare_screen.rows > 0; }
+void prepare_screen_switch(const SnxRunTheme* theme, const char* name, int program, const SnxStartRow* rows, int n,
+                           const char* foot, u64 now_ms) {
+    u32 version;
+    if (program < 0) {
+        /* the picture back to none, unless the menu gave it one of its own since */
+        if (g_prepare_screen.switching && g_prepare_screen.made && ui_image_get(&version) &&
+            version == g_prepare_screen.picture_version)
+            ui_image_set(NULL);
+        g_prepare_screen.switching = 0;
+        g_prepare_screen.made = 0;
+        return;
+    }
+    g_prepare_screen.switching = 1;
+    g_prepare_screen.program = program;
+    g_prepare_screen.facts = !rows || n < 0 ? 0 : n > SNX_START_ROWS ? SNX_START_ROWS : n;
+    if (g_prepare_screen.facts) memcpy(g_prepare_screen.start, rows, (size_t)g_prepare_screen.facts * sizeof *rows);
+    g_prepare_screen.theme = theme ? *theme : yorha;
+    g_prepare_screen.now_ms = now_ms;
+    snprintf(g_prepare_screen.name, sizeof g_prepare_screen.name, "%s", name ? name : "");
+    snprintf(g_prepare_screen.switch_foot, sizeof g_prepare_screen.switch_foot, "%s", foot ? foot : "");
+}
+int prepare_screen_cover(const void* jpeg, size_t size) {
+    const int side = SNX_PREPARE_COVER, stride = SNX_UI_IMAGE_W * 4;
+    g_prepare_screen.made = 0;
+    g_prepare_screen.cover = 0;
+    if (!jpeg) return 0;
+    if (snx_splash_picture(jpeg, size, side, 0, g_prepare_screen.picture, stride)) return 1;
+    for (int y = 0; y < side; ++y) { /* ARGB8888, opaque, to the bytes R G B A */
+        u8* q = &g_prepare_screen.picture[(size_t)y * (size_t)stride];
+        for (int x = 0; x < side; ++x, q += 4) {
+            u32 p = (u32)q[0] | (u32)q[1] << 8 | (u32)q[2] << 16 | (u32)q[3] << 24;
+            q[0] = (u8)(p >> 16);
+            q[1] = (u8)(p >> 8);
+            q[2] = (u8)p;
+            q[3] = 0xFF;
+        }
+    }
+    g_prepare_screen.cover = 1;
+    return 0;
+}
+void prepare_screen_game_drew(void) {
+    if (g_prepare_screen.switching) prepare_screen_switch(NULL, NULL, -1, NULL, 0, NULL, 0);
+}
+int prepare_screen_shown(void) { return g_prepare_screen.rows > 0 || g_prepare_screen.switching; }
+
+/* the cover as the layer's picture, given again when the menu gave one of its own since */
+static void cover_picture(void) {
+    u32 version;
+    if (!g_prepare_screen.made || !ui_image_get(&version) || version != g_prepare_screen.picture_version) {
+        ui_image_set(g_prepare_screen.picture);
+        ui_image_get(&g_prepare_screen.picture_version);
+        g_prepare_screen.made = 1;
+    }
+}
 
 typedef char prepare_step_room[SNX_PREPARE_KINDS <= SNX_PREPARE_STEPS ? 1 : -1];
 /* the next row of the screen, a step of a kind first seen at work at *began (set to now_ms the first time) */
@@ -162,6 +225,36 @@ static int screen_scale(int h, int text_size, int display_percent) {
     return screen_fits(s, h, SCREEN_LEAST_ROWS);
 }
 
+/* a switch's part, under the head: the game's cover in the top right corner, a quarter of the rows high (3 to 8), not
+   while the menu is over the screen, which shows its own picture; then what is known of the program (its rows) as done
+   steps, cut before the cover, the user's picture beside the USER row's value. The row the steps after them start on */
+static int switch_rows(SnxUiList* l, int x0, int w, float top, int s, int cols, int rows) {
+    const SnxRunTheme* t = &g_prepare_screen.theme;
+    float cw = 8.0f * (float)s, ch = 16.0f * (float)s, left = (float)x0 + cw, x, y;
+    int room = cols - 2, i;
+    if (g_prepare_screen.cover) {
+        int span = rows / 4 < 3 ? 3 : rows / 4 > 8 ? 8 : rows / 4;
+        float side = ch * (float)span, at = (float)x0 + (float)w - cw - side;
+        if (!overlay_shown()) {
+            cover_picture();
+            ui_image_part(l, at, top + ch * 3, side, side, 0, 0, SNX_PREPARE_COVER, SNX_PREPARE_COVER);
+        }
+        room = (int)((at - left) / cw) - 1;
+    }
+    for (i = 0; i < g_prepare_screen.facts; ++i) {
+        const SnxStartRow* r = &g_prepare_screen.start[i];
+        char label[24];
+        y = top + ch * (float)(3 + i);
+        /* the launcher's step: LABEL: DETAIL ...OK; the console's line: its label and value as they are said */
+        snprintf(label, sizeof label, t->steps ? "%s:" : "%s", r->label);
+        x = left + screen_text(l, left, y, s, label, 0, room, t->soft) + cw;
+        if (!strcmp(r->label, "USER") && r->value[0] != '?' && ui_picture(l, x, y, ch)) x += ch + cw; /* a user */
+        x += screen_text(l, x, y, s, r->value, t->steps, room - (int)((x - left) / cw) - (t->steps ? 6 : 0), t->soft);
+        if (t->steps) screen_text(l, x + cw, y, s, "...OK", 0, 5, t->ink);
+    }
+    return 3 + g_prepare_screen.facts;
+}
+
 void prepare_screen_draw(SnxUiList* l, int sw, int sh, const int safe[4], int display_percent) {
     static const char* const turn[] = {"", ".", "..", "..."};
     const SnxRunTheme* t = &g_prepare_screen.theme;
@@ -169,11 +262,12 @@ void prepare_screen_draw(SnxUiList* l, int sw, int sh, const int safe[4], int di
     int x0 = safe && safe[2] > 0 ? safe[0] : 0, y0 = safe && safe[3] > 0 ? safe[1] : 0;
     int w = safe && safe[2] > 0 ? safe[2] : sw, h = safe && safe[3] > 0 ? safe[3] : sh;
     int s = screen_scale(h, t->text_size, display_percent), i, k, all_done = 1, at_work = -1, percent = 100;
+    int first_row = 3; /* the first step's: under a switch's rows when there are some */
     float cw = 8.0f * (float)s, ch = 16.0f * (float)s, x, y, left = (float)x0 + cw;
     int rows = h / (int)ch, cols = w / (int)cw;
     char line[SNX_PREPARE_NOTE_SIZE], progress[32];
     float top = (float)y0;
-    if (!g_prepare_screen.rows) return;
+    if (!prepare_screen_shown()) return;
     /* the page over the whole window, the rest within its safe part */
     ui_fill(l, 0, 0, (float)sw, (float)sh, UI_RGB(t->page));
     if (t->texture) { /* the launcher's faint lines, white at 14 of 255 over the page (opaque), every four pixels */
@@ -185,18 +279,25 @@ void prepare_screen_draw(SnxUiList* l, int sw, int sh, const int safe[4], int di
             all_done = 0;
             if (at_work < 0) at_work = i;
         }
-    /* the head: the title, the game's name and dots that turn while the work goes on (still once it is done) */
+    /* the head: the title, the game's name (and the program a switch starts) and dots that turn while the work goes on,
+       still once it is done; a switch's work is the game's first frame */
+    if (g_prepare_screen.switching) all_done = 0;
     x = left + screen_text(l, left, top + ch, s, t->title, 0, cols - 2, t->ink);
     if (t->title[0]) x += cw;
-    snprintf(line, sizeof line, "%s%s", g_prepare_screen.name, all_done ? "..." : turn[now / 400 % 4]);
+    if (g_prepare_screen.switching && g_prepare_screen.program > 0)
+        snprintf(line, sizeof line, "%s (Program %d)%s", g_prepare_screen.name, g_prepare_screen.program,
+                 all_done ? "..." : turn[now / 400 % 4]);
+    else
+        snprintf(line, sizeof line, "%s%s", g_prepare_screen.name, all_done ? "..." : turn[now / 400 % 4]);
     screen_text(l, x, top + ch, s, line, 1, cols - 1 - (int)((x - (float)x0) / cw), t->soft);
+    if (g_prepare_screen.switching) first_row = switch_rows(l, x0, w, top, s, cols, rows);
     /* a row for each step, coloured as the launcher's: the last row's label and a step at work's detail in ink, the
        others soft */
     for (i = 0; i < g_prepare_screen.rows; ++i) {
         const Row* r = &g_prepare_screen.row[i];
         int last = i == g_prepare_screen.rows - 1, col = 1; /* col: the next one, from the safe part's left */
         u32 label_ink = last ? t->ink : t->soft, detail_ink = last || !r->done ? t->ink : t->soft;
-        y = top + ch * (float)(3 + i);
+        y = top + ch * (float)(first_row + i);
         screen_progress(r, now, progress, sizeof progress);
         if (t->steps) { /* LABEL: DETAIL progress, then dots while at work, ...OK once done */
             const char* status = r->done ? "...OK" : progress;
@@ -230,7 +331,8 @@ void prepare_screen_draw(SnxUiList* l, int sw, int sh, const int safe[4], int di
         percent = r->total ? (int)((u64)(r->value < r->total ? r->value : r->total) * 100 / r->total) : 0;
     }
     { /* forty segments, filled for that step's part done, and the percentage: in every theme, as the screen is there
-         for its progress (the launcher's loading screen draws one only when its theme says bar) */
+         for its progress (the launcher's loading screen draws one only when its theme says bar); full while a switch
+         waits for the game with no step at work, as the launcher's is once the game launched */
         enum { SEGMENTS = 40 };
         int filled = (percent * SEGMENTS + 50) / 100;
         float span = (float)(cols - 8) * cw, gap = 2.0f * (float)s, seg = (span - gap * (SEGMENTS - 1)) / SEGMENTS;
@@ -250,11 +352,15 @@ void prepare_screen_draw(SnxUiList* l, int sw, int sh, const int safe[4], int di
         snprintf(line, sizeof line, "%3d%%", percent);
         screen_text(l, (float)x0 + cw * (float)(cols - 6), top + ch * (float)(rows - 3), s, line, 0, 5, t->ink);
     }
-    screen_text(l, left, top + ch * (float)(rows - 1), s, g_prepare_screen.foot, 0, cols - 2, t->soft);
-    { /* last, the latest lines under the steps, as the launcher's detailed loading screen shows a step's: as many as
-         fit above the bar's divider and in the quads left, found from the newest back so it is never the one left
-         out, then drawn the newest last, each cut to the width */
-        int first = 3 + g_prepare_screen.rows, room = rows - 4 - first, from = g_prepare_screen.notes;
+    /* the steps' foot while they show (prepare_wait's: a press starts the game), else a switch's */
+    screen_text(l, left, top + ch * (float)(rows - 1), s,
+                g_prepare_screen.rows || !g_prepare_screen.switching ? g_prepare_screen.foot
+                                                                     : g_prepare_screen.switch_foot,
+                0, cols - 2, t->soft);
+    if (g_prepare_screen.rows) { /* last, the latest lines under the steps, as the launcher's detailed loading screen
+         shows a step's: as many as fit above the bar's divider and in the quads left, found from the newest back so it
+         is never the one left out, then drawn the newest last, each cut to the width */
+        int first = first_row + g_prepare_screen.rows, room = rows - 4 - first, from = g_prepare_screen.notes;
         int budget = l->max - l->n - PREPARE_SCREEN_MENU_QUADS;
         while (from > 0 && g_prepare_screen.notes - from < room) {
             int n = screen_line(g_prepare_screen.note[from - 1], 0, cols - 4, line, sizeof line);

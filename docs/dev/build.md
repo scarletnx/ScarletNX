@@ -25,10 +25,11 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
 
 - **Linux / FreeBSD:** Clang (CI: 23; FreeBSD's system Clang also works), LLVM's development files
   (`llvm-config`, required by the recompiler), CMake ≥3.25, Ninja, POSIX shell, GNU make (`gmake` on FreeBSD),
-  NASM on x86-64, Perl, Python 3 (the menu's languages), Git, pkg-config and `patch`.
+  NASM on x86-64, Perl, Python 3 (the menu's languages), Git, pkg-config, `patch` and meson (dav1d's build).
   Use a system SDL3 development package, or X11/Wayland and audio development libraries for the bundled
   SDL3 build.
-- **macOS:** Apple silicon, macOS 13 or newer, Xcode (its Clang and SDKs), CMake ≥3.25, Ninja, Python 3 and Git.
+- **macOS:** Apple silicon, macOS 13 or newer, Xcode (its Clang and SDKs), CMake ≥3.25, Ninja, meson, Python 3 and
+  Git.
   LLVM's libraries come from `scripts/apple-llvm.sh` or Homebrew ([steps](#macos)).
 - **Windows:** Win10/11 x64. CI builds in MSYS2's CLANG64 environment, which has LLVM's development files
   ([steps](#windows--msys2-clang64)). Bootstrap stages SHA-256-checked llvm-mingw/Clang, CMake, Ninja,
@@ -46,6 +47,9 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
 - **FFmpeg:** required by every NX runtime build and by the Android driver (its image codec). CMake builds the pinned
   source release, and with the Android driver its image codecs, libswscale and zlib for its PNG codec.
   Avoid spaces in checkout/cache paths.
+- **dav1d:** FFmpeg's AV1 decoder for the NX runtime's movies, built from the pinned release with meson and Ninja for
+  every target, cross builds, Android and iOS included (`cmake/dav1d.cmake`). Without meson the configure says so
+  and the runtime plays AV1 movies black; `-DSNX_DAV1D=OFF` leaves it out.
 - **OpenSSL:** required by every build with the NX or 3DS loaders (hashes, ciphers, the ssl service's TLS). CMake
   builds the pinned source release with OpenSSL's Configure, which needs **Perl**.
 
@@ -61,7 +65,7 @@ system include; Fedora lists it below.
 
 ```sh
 sudo apt update
-sudo apt install build-essential git cmake ninja-build clang llvm-dev nasm pkg-config python3 spirv-tools \
+sudo apt install build-essential git cmake ninja-build meson clang llvm-dev nasm pkg-config python3 spirv-tools \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
   libasound2-dev libpulse-dev libpipewire-0.3-dev
 ```
@@ -94,8 +98,8 @@ Vulkan-capable NVIDIA driver.
 ### Fedora
 
 ```sh
-sudo dnf install clang cmake ninja-build nasm make perl git pkgconf-pkg-config patch llvm-devel python3 spirv-tools \
-  libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
+sudo dnf install clang cmake ninja-build meson nasm make perl git pkgconf-pkg-config patch llvm-devel python3 \
+  spirv-tools libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
   libXScrnSaver-devel libXtst-devel alsa-lib-devel pulseaudio-libs-devel pipewire-devel
 ```
 
@@ -119,7 +123,7 @@ sudo dnf install wayland-devel libxkbcommon-devel wayland-protocols-devel libdec
 ### Arch Linux
 
 ```sh
-sudo pacman -Syu --needed base-devel git cmake ninja clang llvm nasm perl pkgconf python sdl3 spirv-tools
+sudo pacman -Syu --needed base-devel git cmake ninja meson clang llvm nasm perl pkgconf python sdl3 spirv-tools
 ```
 
 ### FreeBSD
@@ -128,7 +132,7 @@ FreeBSD provides Clang in the base system. Install the remaining tools, the SDL3
 HIDAPI loads at run time to read controllers (an Xbox pad is only read that way):
 
 ```sh
-sudo pkg install git cmake ninja gmake nasm perl5 pkgconf python3 sdl3 llvm libusb glslang spirv-tools
+sudo pkg install git cmake ninja meson gmake nasm perl5 pkgconf python3 sdl3 llvm libusb glslang spirv-tools
 ```
 
 The build uses that `sdl3` package by default (`SNX_SYSTEM_SDL3`, see [SDL3 troubleshooting](#sdl3-troubleshooting));
@@ -153,10 +157,10 @@ On all platforms, CPM first looks for a compatible SDL3 development package (3.4
 `SDL3Config.cmake`. If none is found, CPM downloads and builds the SHA-256-pinned SDL3. The fallback is static, so no separate SDL3 runtime
 installation is needed. It still needs your platform's window-system development libraries.
 
-- `SNX_SYSTEM_SDL3=ON` (the default on FreeBSD) takes the system's package from `find_package` whatever its version,
-  needing only 3.4.16, the version every SDL call in the tree is in, and never downloads. FreeBSD's ports `sdl3`
-  (3.4.16) is older than the pin, so without it CPM's version check builds SDL3 from source. `SNX_SYSTEM_SDL3=OFF`
-  keeps the pinned build everywhere.
+- `SNX_SYSTEM_SDL3=ON` (the default on FreeBSD) takes the system's package from `find_package` from 3.4.12, Arch
+  POWER's, which has every SDL name the tree uses, and never downloads. FreeBSD's ports `sdl3` (3.4.16) is older than
+  the pin, so without it CPM's version check builds SDL3 from source. `SNX_SYSTEM_SDL3=OFF` keeps the pinned build
+  everywhere.
 
 - An old checkout showing `Could not find a package configuration file provided by SDL3` needs either
   the SDL3 **development** package or this updated fallback. Pull the latest checkout and configure again.
@@ -199,7 +203,7 @@ Install Xcode, then the build tools:
 
 ```sh
 xcode-select --install
-brew install cmake ninja spirv-tools
+brew install cmake ninja meson spirv-tools
 ```
 
 1. **LLVM's libraries**, once (about 10 minutes on an M1). The script builds the AArch64 code generator alone,
@@ -290,8 +294,8 @@ runtime must not mix with another LLVM build.
    pacman -S --needed git make patch perl patchutils \
      mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-llvm mingw-w64-clang-x86_64-lld \
      mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja mingw-w64-clang-x86_64-nasm \
-     mingw-w64-clang-x86_64-pkgconf mingw-w64-clang-x86_64-python mingw-w64-clang-x86_64-spirv-tools \
-     mingw-w64-clang-x86_64-glslang
+     mingw-w64-clang-x86_64-meson mingw-w64-clang-x86_64-pkgconf mingw-w64-clang-x86_64-python \
+     mingw-w64-clang-x86_64-spirv-tools mingw-w64-clang-x86_64-glslang
    ```
 
    Python builds the menu's languages; spirv-tools optimizes and validates the shaders. CI also installs ccache, which
@@ -345,10 +349,9 @@ The Switch runtime's shared font stand-ins download only when it is built ([Shar
 Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 uses CPM's system-package discovery with a pinned static
 source fallback. Use `-DCPM_DOWNLOAD_SDL3=ON` to request the bundled source build.
 
-`-DCPM_USE_LOCAL_PACKAGES=ON` (CPM's own option, OFF by default, also read from the environment) takes LZ4, the Vulkan
-headers and VulkanMemoryAllocator from the system when `find_package` finds their CMake package at the pinned version
-or newer (`lz4`, `VulkanHeaders` with its `share/vulkan/registry/vk.xml`, `VulkanMemoryAllocator`), and the pinned
-source otherwise. LZ4 then links as the system's library. The configure says where each came from:
+`-DCPM_USE_LOCAL_PACKAGES=ON` (CPM's own option, OFF by default, also read from the environment) takes LZ4 and the Vulkan
+headers from the system when `find_package` finds their CMake package at the pinned version or newer (`lz4`,
+`VulkanHeaders` with its `share/vulkan/registry/vk.xml`), and the pinned source otherwise. LZ4 then links as the system's library. The configure says where each came from:
 `CPM: Using local package lz4@1.10.0`, or `CPM: Adding package lz4@1.10.0 (...)` for the pinned source. Every other
 package keeps its pinned source with the option on ([cpm_local.cmake](../../cmake/cpm_local.cmake)): the build compiles
 it into a target of its own, with its own flags or a change of ours (FFmpeg, OpenSSL and the libcurl built on it,
@@ -393,7 +396,7 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
   tree's driver uses). `SNX_GAMES_DIR`, its name before, is still taken while it is empty, said as it configures. A
   tree whose value is the checkout's `games/`, the default before, is set back to empty.
 - `-DCPM_SOURCE_CACHE=/path`: override source-download cache.
-- `-DCPM_USE_LOCAL_PACKAGES=ON`: take LZ4, the Vulkan headers and VulkanMemoryAllocator from the system where it has
+- `-DCPM_USE_LOCAL_PACKAGES=ON`: take LZ4 and the Vulkan headers from the system where it has
   them at the pinned version or newer (default OFF: every package from its pinned source). See
   [Rebuild, deploy, cache](#rebuild-deploy-cache).
 - `-DSNX_DEPS_CACHE=/path`: reuse and publish finished FFmpeg, OpenSSL and jemalloc builds there (default: the

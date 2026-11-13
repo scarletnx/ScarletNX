@@ -109,8 +109,8 @@ static void region_lines(const TexPlane* p, i32 w, i32 h, GpuDmaOp* o) {
     o->line_in = o->line_out = o->width;
 }
 
-/* A reversed buffer row order cannot be represented by the DMA interface's unsigned pitch. Gather the same
-   rectangle on the GPU, once per slice, while preserving the destination's bytes outside the rectangle. */
+/* A mirrored copy, columns or rows, as a gather of the same rectangle on the GPU, once per slice, while preserving the
+   destination's bytes outside the rectangle: a copy engine launch reverses no columns. */
 static void copy_buffer_mirrored(const GpuDmaOp* o, u32 bpb, int to_tex, u32 flags) {
     GpuBlit b = {.src = o->src, .dst = o->dst, .bpp = bpb};
     u32 columns = o->width / bpb;

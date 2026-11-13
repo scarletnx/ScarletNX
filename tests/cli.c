@@ -124,10 +124,74 @@ int main(void) {
         CHECK(g_test.said_count > 0 && strstr(g_test.said[0], "--repo is --data now"), "said: %s", g_test.said[0]);
         CHECK(g_test.said_count > 1 && strstr(g_test.said[1], "--patch is --update now"), "said: %s", g_test.said[1]);
     }
+    /* the recompile's: -O's level after its letter or apart and --opt's both forms, --jobs from 0 (Auto), --chunk
+       from 1, each value they do not take refused with it, and their older names said once */
+    {
+        char *a[] = {"-O", "2", NULL}, *b[] = {"-Os", NULL}, *c[] = {"--opt=z", NULL}, *d[] = {"--opt", "0", NULL};
+        CHECK(match(ALL, &i, &arg, error, sizeof error, a) == SNX_CLI_OPT && i == 1 && !strcmp(arg.value, "2"),
+              "-O 2: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, b) == SNX_CLI_OPT && i == 0 && !strcmp(arg.value, "s"),
+              "-Os: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, c) == SNX_CLI_OPT && i == 0 && !strcmp(arg.value, "z"),
+              "--opt=z: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, d) == SNX_CLI_OPT && i == 1 && !strcmp(arg.value, "0"),
+              "--opt 0: %s", error);
+    }
+    {
+        char *a[] = {"-O5", NULL}, *b[] = {"--opt=22", NULL}, *c[] = {"-O", NULL}, *d[] = {"-O", "-x", NULL};
+        CHECK(match(ALL, &i, &arg, error, sizeof error, a) == SNX_CLI_ERROR &&
+                  !strcmp(error, "scarletnx-test: -O 5: not 0, 1, 2, 3, s or z"),
+              "-O5: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, b) == SNX_CLI_ERROR &&
+                  !strcmp(error, "scarletnx-test: --opt 22: not 0, 1, 2, 3, s or z"),
+              "--opt=22: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, c) == SNX_CLI_ERROR &&
+                  !strcmp(error, "scarletnx-test: -O requires a level"),
+              "-O: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, d) == SNX_CLI_ERROR, "-O -x: %s", error);
+        CHECK(match(SNX_CLI_BIT(SNX_CLI_DATA), &i, &arg, error, sizeof error, a) == SNX_CLI_REFUSED &&
+                  !strcmp(error, "scarletnx-test does not take -O"),
+              "-O5 refused: %s", error);
+    }
+    {
+        char *a[] = {"--jobs", "0", NULL}, *b[] = {"--jobs=1024", NULL}, *c[] = {"--jobs=1025", NULL};
+        char *d[] = {"--jobs", "four", NULL}, *e[] = {"--chunk=20000", NULL}, *f[] = {"--chunk", "0", NULL};
+        CHECK(match(ALL, &i, &arg, error, sizeof error, a) == SNX_CLI_JOBS && i == 1 && arg.number == 0,
+              "--jobs 0 is Auto: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, b) == SNX_CLI_JOBS && arg.number == 1024, "--jobs=1024: %s",
+              error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, c) == SNX_CLI_ERROR &&
+                  !strcmp(error, "scarletnx-test: --jobs 1025: not a whole number from 0 (Auto) to 1024"),
+              "--jobs=1025: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, d) == SNX_CLI_ERROR &&
+                  !strcmp(error, "scarletnx-test: --jobs four: not a whole number from 0 (Auto) to 1024"),
+              "--jobs four: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, e) == SNX_CLI_CHUNK && arg.number == 20000, "--chunk=20000");
+        CHECK(match(ALL, &i, &arg, error, sizeof error, f) == SNX_CLI_ERROR &&
+                  !strcmp(error, "scarletnx-test: --chunk 0: not a whole number of instructions from 1"),
+              "--chunk 0: %s", error);
+    }
+    {
+        char *a[] = {"--jit-cache", "g.jitcache", NULL}, *b[] = {"--jit-only", NULL}, *c[] = {"--keep-ir", NULL};
+        char *d[] = {"-q", NULL}, *e[] = {"--quiet", NULL}, *f[] = {"--keep-c", NULL}, *g[] = {"--interp-only", NULL};
+        int before = g_test.said_count;
+        CHECK(match(ALL, &i, &arg, error, sizeof error, a) == SNX_CLI_JIT_CACHE && !strcmp(arg.value, "g.jitcache"),
+              "--jit-cache: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, b) == SNX_CLI_JIT_ONLY, "--jit-only: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, c) == SNX_CLI_KEEP_IR, "--keep-ir: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, d) == SNX_CLI_QUIET, "-q: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, e) == SNX_CLI_QUIET, "--quiet: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, f) == SNX_CLI_KEEP_IR, "--keep-c: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, f) == SNX_CLI_KEEP_IR, "--keep-c again: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, g) == SNX_CLI_JIT_ONLY, "--interp-only: %s", error);
+        CHECK(g_test.said_count == before + 2 && strstr(g_test.said[before], "--keep-c is --keep-ir now") &&
+                  strstr(g_test.said[before + 1], "--interp-only is --jit-only now"),
+              "%d renamed lines: %s", g_test.said_count - before, g_test.said[before]);
+    }
     /* a run's options together: --update given again, each kept */
     {
-        char* argv[] = {"prog",       "--update", "a.cia", "--update=b.cia", "-r",   "--game", "g",
-                        "--fullscreen=0", "--seconds=3", "own",    NULL};
+        char* argv[] = {"prog",        "--update", "a.cia", "--update=b.cia", "-r", "--game",    "g",  "--fullscreen=0",
+                        "--seconds=3", "own",      "-O3",   "--jobs",         "0",  "--chunk=7", "-q", NULL};
         int argc = (int)(sizeof argv / sizeof *argv) - 1, own = 0;
         SnxCli cli;
         snx_cli_init(&cli, "scarletnx-test", ALL);
@@ -138,21 +202,33 @@ int main(void) {
         }
         CHECK(cli.update_count == 2 && !strcmp(cli.updates[0], "a.cia") && !strcmp(cli.updates[1], "b.cia"),
               "%d updates", cli.update_count);
-        CHECK(cli.flags == SNX_CLI_BIT(SNX_CLI_RECOMPILE), "flags %#x", cli.flags);
+        CHECK(cli.flags == (SNX_CLI_BIT(SNX_CLI_RECOMPILE) | SNX_CLI_BIT(SNX_CLI_QUIET)), "flags %#x", cli.flags);
+        CHECK(cli.value[SNX_CLI_OPT] && !strcmp(cli.value[SNX_CLI_OPT], "3") && cli.jobs == 0 && cli.chunk == 7,
+              "-O3 --jobs 0 --chunk=7");
+        /* as a driver's compiler reads them, the first of them given named */
+        SnxCliRecompile asked = snx_cli_recompile(&cli);
+        CHECK(asked.chunk == 7 && asked.quiet && !asked.jit_only && !asked.keep_ir && !asked.jit_cache &&
+                  asked.given && !strcmp(asked.given, "-O"),
+              "the run's recompile options: %s", asked.given ? asked.given : "none given");
         CHECK(cli.fullscreen == 0 && cli.seconds == 3 && cli.frames == -1 && own == 1, "values");
         CHECK(cli.value[SNX_CLI_GAME] && !strcmp(cli.value[SNX_CLI_GAME], "g"), "--game g");
         snx_cli_free(&cli);
+        snx_cli_init(&cli, "scarletnx-test", ALL); /* none given */
+        CHECK(!snx_cli_recompile(&cli).given, "none given, one named");
     }
     /* joined for a reader of the = form, up to the "--" */
     {
-        char* argv[] = {"prog", "--seconds", "5", "--shot=s", "--keys", "k", "--script", "--", "--seconds", "9", NULL};
+        char* argv[] = {"prog", "--seconds", "5",  "--shot=s",  "--keys", "k", "-O2",
+                        "x",    "--script",  "--", "--seconds", "9",      NULL};
         int argc = (int)(sizeof argv / sizeof *argv) - 1, n = 0;
-        unsigned ids = SNX_CLI_BIT(SNX_CLI_SECONDS) | SNX_CLI_BIT(SNX_CLI_SHOT) | SNX_CLI_BIT(SNX_CLI_SCRIPT);
+        unsigned ids = SNX_CLI_BIT(SNX_CLI_SECONDS) | SNX_CLI_BIT(SNX_CLI_SHOT) | SNX_CLI_BIT(SNX_CLI_SCRIPT) |
+                       SNX_CLI_BIT(SNX_CLI_OPT);
         char** joined = snx_cli_joined(argc, argv, ids, &n);
-        static const char* const want[] = {"prog", "--seconds=5", "--shot=s", "--keys", "k", "--script",
-                                           "--",   "--seconds",   "9"};
-        CHECK(n == 9 && !joined[n], "%d joined", n);
-        for (int k = 0; k < n && k < 9; ++k) CHECK(!strcmp(joined[k], want[k]), "joined %d: %s", k, joined[k]);
+        /* -O2's value is its own already: x stays the next argument */
+        static const char* const want[] = {"prog", "--seconds=5", "--shot=s", "--keys",    "k", "-O2",
+                                           "x",    "--script",    "--",       "--seconds", "9"};
+        CHECK(n == 11 && !joined[n], "%d joined", n);
+        for (int k = 0; k < n && k < 11; ++k) CHECK(!strcmp(joined[k], want[k]), "joined %d: %s", k, joined[k]);
         free(joined);
     }
     /* the help: each mask's lines are the full table's, the same words in the same column */
@@ -162,6 +238,8 @@ int main(void) {
         CHECK(strstr(all, "\n  -x, --extract          Extract the game"), "-x's line:\n%s", all);
         CHECK(strstr(all, "\n  --update PATH          An update"), "--update's line:\n%s", all);
         CHECK(strstr(all, "\n  -f, --fullscreen[=0|1] Start fullscreen"), "-f's line:\n%s", all);
+        CHECK(strstr(all, "\n  -O, --opt LEVEL        LLVM's optimization"), "-O's line:\n%s", all);
+        CHECK(strstr(all, "\n  -q, --quiet            Say no progress"), "-q's line:\n%s", all);
         unsigned masks[] = {SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_HELP),
                             SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_KEYS) | SNX_CLI_BIT(SNX_CLI_OUTDIR),
                             SNX_CLI_BIT(SNX_CLI_EXTRACT_CONTAINER) | SNX_CLI_BIT(SNX_CLI_SCRIPT)};

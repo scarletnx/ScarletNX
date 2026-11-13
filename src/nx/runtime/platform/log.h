@@ -36,7 +36,9 @@ void log_sync(void);
 /* snx_error's sink (common.h) for the runtime: the line as a warning, in the log and on stderr */
 void log_error_line(const char* line);
 
-/* Logs "FATAL: ..." and ends the process, after the error box where there is one */
+/* Logs "FATAL: ..." and ends the process with status, after the error box where there is one */
+void fatal_code(int status, const char* fmt, ...) __attribute__((format(printf, 2, 3), noreturn));
+/* fatal_code with status 1 */
 void fatal(const char* fmt, ...) __attribute__((format(printf, 1, 2), noreturn));
 
 /* log.c's thread state, this thread's */

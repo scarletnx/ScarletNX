@@ -499,11 +499,31 @@ size_t gui_settings_recompile(GuiSettings* s, int make, const char** argv) {
     }
     return n;
 }
+size_t gui_settings_recompile_shared(GuiSettings* s, const char** argv) {
+    static const char* const shared[] = {"opt", "aot_threads", "aot_threads_most"};
+    size_t n = 0;
+    for (size_t k = 0; k < sizeof shared / sizeof *shared; ++k) {
+        int i = find(s, shared[k]);
+        const char* value = i < s->own ? picked(s, i) : NULL;
+        if (!value) continue;
+        snprintf(s->values[i].option, sizeof s->values[i].option, "--%s=%s", shared[k], value);
+        argv[n++] = s->values[i].option;
+    }
+    return n;
+}
 size_t gui_settings_java_home(GuiSettings* s, const char** argv) {
     int i = find(s, "java_home");
     const char* value = i < s->own ? picked(s, i) : NULL;
     if (!value) return 0;
     snprintf(s->values[i].option, sizeof s->values[i].option, "--java-home=%s", value);
+    argv[0] = s->values[i].option;
+    return 1;
+}
+size_t gui_settings_gba(GuiSettings* s, const char** argv) {
+    int i = find(s, "gba_color");
+    const char* value = i < s->own ? picked(s, i) : NULL;
+    if (!value) return 0;
+    snprintf(s->values[i].option, sizeof s->values[i].option, "--gba_color=%s", value);
     argv[0] = s->values[i].option;
     return 1;
 }

@@ -10,6 +10,8 @@
    table (its API version is the SDK's, 55.8 in one game) rather than nxnative's 55.15 */
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/guest_pools.h"
+#include "nx/gpu/guest_textures.h"
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/gpu/nvn/nvn_state.h"
@@ -423,6 +425,7 @@ int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
     if (!va)
         fatal("nvn: no GPU address space left for a memory pool of %llx bytes", (unsigned long long)o.size);
     o.gpu = va + lead;
+    gpu_pool_add(o.gpu, o.size, (o.flags & NVN_POOL_VIRTUAL) != 0);
     memcpy(GP(p), &o, sizeof o);
     LOGV("nvn: memory pool %llx: %llx, %llx bytes at GPU %llx, flags %#x\n", (unsigned long long)p,
          (unsigned long long)o.memory, (unsigned long long)o.size, (unsigned long long)o.gpu, o.flags);
@@ -433,6 +436,7 @@ void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
     u64 lead = o->gpu & 0xfff;
     (void)c;
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) {
+        gpu_pool_remove(o->gpu);
         nvn_wait_begin(); /* off the core, as nvn_MemoryPoolInitialize's map changes */
         gmmu_space_free(o->gpu - lead, lead + o->size);
         nvn_wait_end();
@@ -1057,11 +1061,17 @@ int nvn_TextureInitialize(CPU* c, u64 t, u64 b) {
        converted, before any submission can read the texture */
     if (s->packaged_data && o.memory && o.size) memmove(GP(o.memory), GP(s->packaged_data), (size_t)o.size);
     memcpy(GP(t), &o, sizeof o);
+    /* a live texture at that address (gpu/guest_textures.c), until nvn_TextureFinalize: the renderer's texture cache
+       measures what it holds for none. A texture with no storage has no address */
+    gpu_texture_add(o.gpu, o.size);
     return 1;
 }
 void nvn_TextureFinalize(CPU* c, u64 t) {
+    NvnTexture* o = NVN_OBJ(NvnTexture, t);
     (void)c;
-    NVN_OBJ(NvnTexture, t)->magic = 0;
+    /* only a texture that nvn_TextureInitialize made, and one time: the count of its address stays whole */
+    if (o->magic == NVN_MAGIC('T', 'E', 'X', 0)) gpu_texture_remove(o->gpu);
+    o->magic = 0;
 }
 #define CT(t) NVN_OBJ(const NvnTexture, t)
 i32 nvn_TextureGetFlags(CPU* c, u64 t) {
@@ -1907,6 +1917,29 @@ int nvn_program_tess(u64 serial, NvnTessStage stages[2]) {
     pm_unlock(&g_nvn.object.xfb_lock);
     return found;
 }
+int nvn_program_early_z(u64 serial) {
+    pm_lock(&g_nvn.object.xfb_lock);
+    u32 i = program_metadata_index(g_nvn.object.early_z, g_nvn.object.nearly_z, sizeof *g_nvn.object.early_z, serial);
+    int found = i < g_nvn.object.nearly_z && g_nvn.object.early_z[i] == serial;
+    pm_unlock(&g_nvn.object.xfb_lock);
+    return found;
+}
+/* The early tests a fragment stage's control section asks for: its byte at 0x718, nonzero for on. The game's driver
+   reads it in SetShaders (its accessor returns the byte) and writes MANDATED_EARLY_Z (3D method 0x084) with it into
+   the program's commands, which BindProgram copies. Without it Vulkan may run a fragment program before its depth
+   and stencil tests, and a fragment those tests reject keeps its image stores: one game's light volumes record
+   which volumes cover a pixel in an image, and a volume's rejected fragments recorded it where it does not, so a
+   floor beside the volume lost its indoor light and took the sky's */
+static void early_z_of(u64 control, u64 serial) {
+    if (!control || !GP(control)[0x718]) return;
+    LOG_LIMIT(1, "nvn: a fragment program asks for early depth and stencil tests: they run before it\n");
+    pm_lock(&g_nvn.object.xfb_lock);
+    void* entries = g_nvn.object.early_z;
+    program_metadata_insert(&entries, &g_nvn.object.nearly_z, &g_nvn.object.early_z_capacity,
+                            sizeof *g_nvn.object.early_z, &serial, "early test flags");
+    g_nvn.object.early_z = entries;
+    pm_unlock(&g_nvn.object.xfb_lock);
+}
 /* the Ounce records of the program SetShaders gave serial, all 0 for none */
 static NvnOunceEntry ounce_find(u64 serial) {
     NvnOunceEntry e = {0};
@@ -2029,6 +2062,7 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     NvnProgram* o = NVN_OBJ(NvnProgram, p);
     u64 last = 0; /* the control section of the last stage before rasterization */
     u64 tess_controls[2] = {0};
+    u64 fragment = 0; /* the fragment stage's control section, which the Ounce's is not */
     NvnOunceEntry ounce = {0};
     u32 subroutine_mask = 0;
     i32 i, last_rank = -1;
@@ -2059,6 +2093,7 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
         if (gr32(control + 8) >= 7 && GP(control)[0x7c0]) subroutine_mask |= 1u << stage;
         if (stage == NVN_SHADER_STAGE_TESS_CONTROL) tess_controls[0] = control;
         if (stage == NVN_SHADER_STAGE_TESS_EVALUATION) tess_controls[1] = control;
+        if (stage == NVN_SHADER_STAGE_FRAGMENT && !ounce_section(control)) fragment = control;
         rank = stage == NVN_SHADER_STAGE_GEOMETRY          ? 3
                : stage == NVN_SHADER_STAGE_TESS_EVALUATION ? 2
                : stage == NVN_SHADER_STAGE_TESS_CONTROL    ? 1
@@ -2074,6 +2109,7 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     o->sample_shading = (u16)((o->sample_shading & 0xff) | (o->sample_shading & 0xff) << 8);
     if (last) xfb_of(last, o->serial);
     tess_of(tess_controls, o->serial);
+    early_z_of(fragment, o->serial);
     ounce_of(&ounce, o->serial);
     sub_program(o->serial, subroutine_mask);
     return 1;

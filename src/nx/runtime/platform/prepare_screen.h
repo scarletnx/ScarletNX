@@ -6,6 +6,7 @@
 #define SNX_PREPARE_SCREEN_H
 #include "nx/runtime/platform/ui.h"
 #include "common/utilities/run_theme.h"
+#include "common/utilities/program_start.h"
 
 #define SNX_PREPARE_NOTES     48
 #define SNX_PREPARE_NOTE_SIZE 256 /* a line's bytes, the row's width cutting it */
@@ -35,6 +36,23 @@ enum { SNX_PREPARE_FIND, SNX_PREPARE_TRANSLATE, SNX_PREPARE_PIPES, SNX_PREPARE_K
 int prepare_screen_steps(const struct RendererPrepare* p, SnxPrepareStep* steps, u64 began[SNX_PREPARE_KINDS],
                          u64 now_ms);
 #define PREPARE_SCREEN_MENU_QUADS 1536 /* the quads its scrolling lines leave for the menu: its widest page's */
+/* A program a collection's program started (ExecuteProgram; main.c's transition screen): the screen also shows while
+   the game has drawn nothing yet. program: the one that starts, named after the game as "(Program N)" when it is not
+   0; rows (n of them, program_start.h's, copied) drawn as done steps above the shaders' ones, the user's picture
+   beside the USER row's value; the bar full while no step is at work. -1 takes this part away, the screen then
+   showing while it has steps. theme, name, foot and now_ms as prepare_screen_set takes them, but the foot while the
+   shaders' steps show, which is theirs. Under ui_lock */
+void prepare_screen_switch(const SnxRunTheme* theme, const char* name, int program, const SnxStartRow* rows, int n,
+                           const char* foot, u64 now_ms);
+/* the game's cover in the switch's top right corner, from its icon's JPEG (size bytes; NULL for none): drawn
+   SNX_PREPARE_COVER texels square into the left of the layer's one picture (ui_image), which it takes while the
+   switch's part is up and the menu is not over it. 0, or 1 for a JPEG that does not decode, which shows none. Under
+   ui_lock */
+#define SNX_PREPARE_COVER 180 /* ui.h's SNX_UI_IMAGE_H: the picture's height */
+int prepare_screen_cover(const void* jpeg, size_t size);
+/* the game's frame is shown (the renderer's present, before it makes the frame's layer): a switch's part gives way,
+   so the game's first frame is drawn without it. Under ui_lock */
+void prepare_screen_game_drew(void);
 /* whether it is up (under ui_lock): the on-screen controls aren't drawn under it, nor take fingers */
 int prepare_screen_shown(void);
 /* it, on a picture sw x sh whose part clear of the system's bars and cutouts is safe (x, y, w, h), its letters the

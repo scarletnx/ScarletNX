@@ -22,7 +22,7 @@ static const u8 ui_back[4] = {40, 80, 120, 255};
 
 typedef struct {
     VkImage img;
-    VmaAllocation mem;
+    DevMem mem;
     u32* atlas; /* the atlas as ui_atlas_make makes it: R G B A bytes, alpha premultiplied */
     int atlas_h;
     SnxUiQuad quads[4096];
@@ -206,14 +206,14 @@ static int check_ui(void) {
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
-    VmaAllocationCreateInfo device = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    DevMemWant device = {.at = DM_DEVICE};
     VkExtent2D extent = g_vk.sc_extent;
     VkFormat format = g_vk.sc_format;
     int srgb = g_vk.sc_srgb, changed, stats = g_settings.stats, controls = g_settings.show_controls,
         showcase = g_settings.showcase;
     const IniOpt* corner = ini_find(g_display_ini, "stats_corner");
     CHECK(c && corner);
-    CHECK(vmaCreateImage(g_vk.vma, &ii, &device, &c->img, &c->mem, NULL) == VK_SUCCESS);
+    CHECK(vk_devmem_image(&ii, &device, &c->img, &c->mem) == VK_SUCCESS);
     /* the atlas: the font, the white block and the icons */
     c->atlas = ui_atlas_make(&c->atlas_h);
     CHECK(c->atlas);
@@ -363,7 +363,7 @@ static int check_ui(void) {
     CHECK(!ui_frame(c, safe, "nothing", &changed));
     vk_finish();
     vk_ui_swapchain_gone();
-    vmaDestroyImage(g_vk.vma, c->img, c->mem);
+    vk_devmem_image_destroy(c->img, c->mem);
     hud_debug_set("");
     g_settings.stats = stats;
     g_settings.show_controls = controls;

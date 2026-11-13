@@ -166,16 +166,20 @@ int snx_program_exports(const SnxProgram* program, SnxExport** exports, size_t* 
 /* A branch through a register whose target is known once the program's linker has bound it: the BR that ends a PLT
    stub (at, its guest address: ADRP x16, LDR x17 of the slot, ADD x16 and the BR) and the function its slot's symbol
    names (target). game: the function is another module's (the game's, for an NRO's module), which the module reaches
-   through its import of it (snx_imports, nro_slots.h); else one of the module's own build */
+   through its import of it (snx_imports, nro_slots.h); else one of the module's own build. guard: the slot may hold
+   another function once it is bound, so a call of the stub reads it and compares; clear when whatever links the
+   program binds the slot to target: a symbol one of the program's modules alone defines, which those modules come
+   first for, in a game's own linker and in the runtime's */
 typedef struct {
     SnxU64 at, target;
-    int game;
+    int game, guard;
 } SnxBoundBranch;
 /* The bound branches of a 64-bit module, in the order of their addresses, malloc'd into *bound, *count of them: each
    PLT stub of its text whose slot's symbol names one of exports. nro: the module is an NRO, outside the program
-   exports are of: a stub whose symbol the NRO defines itself, a function of its text, is bound to that function, and
-   one bound to an export has game set. Else the module is one of that program's: every stub is bound through exports
-   alone, whichever module defines its symbol, with game clear. *own: how many are bound to a function of the module
+   exports are of: a stub whose symbol the NRO defines itself, a function of its text, is bound to that function with
+   guard set (a module loaded before the NRO that defines the name too takes the slot), and one bound to an export
+   has game set. Else the module is one of that program's: every stub is bound through exports alone, whichever
+   module defines its symbol, with game clear. *own: how many are bound to a function of the module
    itself. *sites: the BL and B instructions of its text that go to those stubs. 0, or -1 said in error
    (snx_module_plt's) */
 int snx_module_bound(const SnxModuleImage* module, const SnxExport* exports, size_t export_count, int nro,
@@ -191,6 +195,9 @@ int snx_nro_icon(const char* path, unsigned char** icon, size_t* size, char* err
 void snx_free_module(SnxModuleImage* module);
 /* data NULL with size 0 gives the defaults of a program without an NPDM */
 int snx_parse_npdm(const unsigned char* data, size_t size, SnxNpdm* npdm, char* error, size_t error_size);
+/* The folder of entry that holds its ExeFS's main, where the loader reads one: exefs/, ExeFS/ or entry itself. NULL
+   for none */
+char* snx_exefs_folder(const char* entry);
 /* The NPDM snx_load_program would use for entry, without loading any module: an NRO's (the defaults), the ExeFS's
    main.npdm, or the defaults when it has none */
 int snx_load_npdm(const char* entry, SnxNpdm* npdm, char* error, size_t error_size);
@@ -209,5 +216,7 @@ int snx_load_npdm(const char* entry, SnxNpdm* npdm, char* error, size_t error_si
    (match.h), with the instructions its code matched; the last line counts what the matcher named and left unnamed
    (SnxMatchStats), in decimal. 0, or -1 with a message */
 int snx_dump_program(const char* entry, const char* outdir, char* error, size_t error_size);
+/* the same dump of a program loaded already (a dump read in place, recompile.c's) */
+int snx_dump_loaded(const SnxProgram* program, const char* outdir, char* error, size_t error_size);
 
 #endif

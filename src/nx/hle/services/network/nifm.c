@@ -46,6 +46,27 @@ static int nn_nifm_detail_IRequest_Submit(SvcObj* self) {
     ev_signal(((NifmRequest*)self->data)->ev[0]);
     R_SUCCEED();
 }
+/* The applet that tells the player why a request was refused, which the SDK's HandleNetworkRequestResult runs: the
+   network connection applet in the foreground, as a console's nifm names it. data is the list of storages the SDK
+   pushes to it, each a u32 size and its bytes, up to a u32 of ~0: none here, as am.c's applet reads none. That applet
+   closes at once with a zero result, which the SDK hands the game as ErrorHandlingCompleted, the player having seen
+   the error and closed it */
+#define NIFM_APPLET_NET_CONNECT 0x0f /* nn::applet::AppletId */
+static int nn_nifm_detail_IRequest_GetAppletInfo(SvcObj* self, u32 theme_color, IpcBuf data, u32* applet_id,
+                                                 u32* library_applet_mode, u32* size) {
+    (void)self, (void)theme_color;
+    *applet_id = NIFM_APPLET_NET_CONNECT;
+    *library_applet_mode = 0; /* AllForeground */
+    *size = 0;
+    if (data.size < 4) { /* no room for the list's end: the SDK refuses a list of none */
+        WARN("nifm: GetAppletInfo's buffer holds %llu bytes, under the 4 of an empty list: the list is 0 bytes\n",
+             (unsigned long long)data.size);
+        R_SUCCEED();
+    }
+    gw32(data.addr, 0xffffffffu);
+    *size = 4;
+    R_SUCCEED();
+}
 static SvcObj* nifm_req_new(void) {
     SvcObj* o = nn_nifm_detail_IRequest_new_data(g_hle.nifm.reqs, g_hle.nifm.req_next, "nifm requests");
     NifmRequest* r = o->data;
