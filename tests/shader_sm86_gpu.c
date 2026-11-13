@@ -513,6 +513,7 @@ typedef struct {
     int coop; /* VK_KHR_cooperative_matrix's 16x16x16 f16 product into f32 in subgroup scope, with the Vulkan memory
                  model, enabled: the device's maxComputeSharedMemorySize, for g_shader_hmma_coop, else 0 */
     int float_add; /* VK_EXT_shader_atomic_float's shaderBufferFloat32AtomicAdd, enabled (g_shader_float_atomic_add) */
+    int half_flush; /* no shaderDenormPreserveFloat16: f16 subnormals packed by hand, as vk/device.c's g_shader_half_flush */
 } Gpu;
 /* the subgroups of a device's compute stage: their size where they have shuffles, else 0, and *quad whether they
    have quad operations */
@@ -633,6 +634,12 @@ static int gpu_open(Gpu* g, int warp) {
     g->warp32 = v13q.subgroupSizeControl && v13q.computeFullSubgroups && p13.minSubgroupSize <= 32 &&
                 p13.maxSubgroupSize >= 32 && (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT);
     g->float16 = v12q.shaderFloat16 != 0;
+    {
+        VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
+        VkPhysicalDeviceProperties2 fp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
+        vkGetPhysicalDeviceProperties2(g->phys, &fp);
+        g->half_flush = !p12.shaderDenormPreserveFloat16;
+    }
     g->mixed_dot = has_mixed && mixq.shaderMixedFloatDotProductFloat16AccFloat32 && g->float16;
     g->float_add = has_float_add && addq.shaderBufferFloat32AtomicAdd;
     g->coop = has_coop && coopq.cooperativeMatrix && g->float16 && v12q.vulkanMemoryModel &&
@@ -1342,13 +1349,16 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
     si.shared_size = 2048;
     size_t words = 0;
     int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16,
-        coop_was = g_shader_hmma_coop, pairs_was = g_shader_hmma_pairs, stage_was = g_shader_hmma_stage;
+        coop_was = g_shader_hmma_coop, pairs_was = g_shader_hmma_pairs, stage_was = g_shader_hmma_stage,
+        flush_was = g_shader_half_flush;
     g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_float16 = g->float16;
+    g_shader_half_flush = g->half_flush;
     g_shader_hmma_coop = coop ? g->coop : 0, g_shader_hmma_pairs = pairs == 1;
     g_shader_hmma_stage = stage ? 16384 : 0; /* every device's maxComputeSharedMemorySize is at least that */
     u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
     g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
     g_shader_hmma_coop = coop_was, g_shader_hmma_pairs = pairs_was, g_shader_hmma_stage = stage_was;
+    g_shader_half_flush = flush_was;
     const char* how = exact ? "exact" : "rounded";
     if (!spv) {
         fprintf(stderr, "tensor: not translated: %s\n", si.first_unsupported);
@@ -1407,8 +1417,8 @@ static int run_tensor(void) {
         return -1;
     }
     printf("tensor device: %s (subgroups of %u, quads in compute %d, shaderFloat16 %d, mixed dot product %d, "
-           "subgroups of 32 %d, cooperative matrices %d)\n",
-           g.name, g.subgroup, g.quad, g.float16, g.mixed_dot, g.warp32, g.coop != 0);
+           "subgroups of 32 %d, cooperative matrices %d, f16 subnormals packed by hand %d)\n",
+           g.name, g.subgroup, g.quad, g.float16, g.mixed_dot, g.warp32, g.coop != 0, g.half_flush);
     int ok = 1;
     for (int fallback = 0; fallback < 2; fallback++)
         for (u32 run = 0; run < 3; run++) { /* 32, 64, 64 in subgroups of 32 */
