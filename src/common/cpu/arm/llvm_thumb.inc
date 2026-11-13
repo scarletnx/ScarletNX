@@ -98,7 +98,15 @@ static void thumb_alu(ArmIR* a, const SnxThumb* t, int hi) {
         case ALU_NEG: r = taddsub(a, c32(a, 0), y, 1, flags); setreg(a, t->rd, r); break;
         case ALU_CMP: taddsub(a, x, y, 1, hi ? flags : 1); break;
         case ALU_CMN: taddsub(a, x, y, 0, 1); break;
-        case ALU_MUL: r = LLVMBuildMul(a->b, x, y, ""); setreg(a, t->rd, r); if (flags) nz(a, r, NULL, NULL); break;
+        case ALU_MUL:
+            if (flags && arm7tdmi(a)) { /* its C (snx_arm_multiply_carry), from the operands before Rd changes */
+                LLVMValueRef args[2] = {c32(a, a->word), c32(a, 1)};
+                rt_call(a, "snx_arm_multiply_carry", args, 2);
+            }
+            r = LLVMBuildMul(a->b, x, y, "");
+            setreg(a, t->rd, r);
+            if (flags) nz(a, r, NULL, NULL);
+            break;
         case ALU_LSL: case ALU_LSR: case ALU_ASR: case ALU_ROR: {
             LLVMValueRef carry;
             unsigned type = t->op == ALU_LSL ? 0 : t->op == ALU_LSR ? 1 : t->op == ALU_ASR ? 2 : 3;

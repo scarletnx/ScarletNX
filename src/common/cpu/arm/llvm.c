@@ -876,7 +876,13 @@ static void acquire_release(ArmIR* a) {
 static void multiply(ArmIR* a, SnxA32Kind kind) {
     uint32_t w = a->word;
     unsigned n = (w >> 16) & 15, d = (w >> 12) & 15;
-    LLVMValueRef x = reg(a, w & 15), y = reg(a, (w >> 8) & 15), r;
+    LLVMValueRef x, y, r;
+    if (arm7tdmi(a) && (w & (1u << 20)) && (kind == SNX_A32_MUL || kind == SNX_A32_MULL)) {
+        /* its C: the runtime library reads the operands before the results land (snx_arm_multiply_carry) */
+        LLVMValueRef args[2] = {c32(a, w), c32(a, 0)};
+        rt_call(a, "snx_arm_multiply_carry", args, 2);
+    }
+    x = reg(a, w & 15), y = reg(a, (w >> 8) & 15);
     if (kind == SNX_A32_MULL && (w & 0x00e00000) == 0x00400000) { /* UMAAL: Rn * Rm + RdHi + RdLo, unsigned */
         r = add(a, LLVMBuildMul(a->b, z64(a, x), z64(a, y), ""), add(a, z64(a, reg(a, d)), z64(a, reg(a, n))));
         setreg(a, d, LLVMBuildTrunc(a->b, r, a->i32, ""));
