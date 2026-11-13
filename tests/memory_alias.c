@@ -348,6 +348,38 @@ static void test_process_memory_two_copies_one_line(void) {
     test_handle = NULL;
 }
 
+/* A view whose snapshot could not be kept (its malloc failed) still takes only what was written through it: its
+   bytes that differ from the code, never its whole line over what another view wrote */
+static void test_process_memory_view_without_snapshot(void) {
+    KObj process = {0};
+    u64 src = HEAP_BASE + 0x1000, whole = STACK_BASE + 0x20000, page = STACK_BASE + 0x40000, code;
+    int i;
+    process.type = KO_PROCESS;
+    process.refs = 1;
+    test_handle = &process;
+    CHECK(mem_map(src, 0x2000, MS_CODE, PERM_RX) == 0);
+    memset(GP(src), 0, 0x2000);
+    CHECK(svc_map_process_memory(whole, 0x1234, src, 0x2000) == 0);
+    CHECK(svc_map_process_memory(page, 0x1234, src + 0x1000, 0x1000) == 0);
+    for (i = 0; i < KCODEVIEW_MAX; i++)
+        if (g_hle.svcmem.views[i].size && g_hle.svcmem.views[i].dst == page) {
+            free(g_hle.svcmem.views[i].snap);
+            g_hle.svcmem.views[i].snap = NULL;
+        }
+    gw32(whole + 0x11C0, 0xD503201F); /* a patch through the view with a snapshot */
+    CHECK(svc_code_line(src + 0x11C0, &code) == 1 && code == src + 0x11C0);
+    CHECK(gr32(src + 0x11C0) == 0xD503201F && gr32(page + 0x1C0) == 0xD503201F);
+    gw32(page + 0x1E0, 0x17FFFFF0); /* a hook through the view without one */
+    CHECK(svc_code_line(page + 0x1E0, &code) == 1 && code == src + 0x11C0);
+    CHECK(gr32(src + 0x11C0) == 0xD503201F && gr32(src + 0x11E0) == 0x17FFFFF0);
+    CHECK(gr32(whole + 0x11E0) == 0x17FFFFF0);
+    CHECK(svc_unmap_process_memory(page, 0x1234, src + 0x1000, 0x1000) == 0);
+    CHECK(svc_unmap_process_memory(whole, 0x1234, src, 0x2000) == 0);
+    CHECK(gr32(src + 0x11C0) == 0xD503201F && gr32(src + 0x11E0) == 0x17FFFFF0);
+    CHECK(mem_unmap(src, 0x2000) == 0);
+    test_handle = NULL;
+}
+
 /* shared memory: the service's pointer and every guest mapping are the same pages */
 static void test_shared_memory(void) {
     KShmem* s = kshmem_new(0x2000, "test");
@@ -620,6 +652,7 @@ int main(int argc, char** argv) {
         test_process_memory_copies();
         test_process_memory_two_views();
         test_process_memory_two_copies_one_line();
+        test_process_memory_view_without_snapshot();
         CHECK(mapping_depth == 0);
         printf("memory alias copies: %u checks passed\n", checks);
         return 0;
