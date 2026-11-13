@@ -1092,14 +1092,10 @@ static void title_paused(int paused) {
 }
 static void menu_open(int open);
 /* a key's modifiers as hotkeys.h counts them, either side's */
-static unsigned key_mods(SDL_Keymod m) {
-    return (m & SDL_KMOD_CTRL ? HOTKEY_CTRL : 0u) | (m & SDL_KMOD_ALT ? HOTKEY_ALT : 0u) |
-           (m & SDL_KMOD_SHIFT ? HOTKEY_SHIFT : 0u) | (m & SDL_KMOD_GUI ? HOTKEY_GUI : 0u);
-}
 /* the runtime's key a key press is (hotkeys.h's action), -1 for none: a key two actions are set to does the first's,
    which the log says */
 static int key_action(const SDL_KeyboardEvent* k) {
-    int also, a = hotkey_find(k->key, key_mods(k->mod), &also);
+    int also, a = hotkey_find(k->key, snx_key_mods(k->mod), &also);
     if (a >= 0 && also >= 0 && !k->repeat)
         WARN_LIMIT(4, "input: %s is %s's and %s's: it does %s's\n", hotkey_text(a), hotkey_row(a)->key,
                    hotkey_row(also)->key, hotkey_row(a)->key);
@@ -1257,7 +1253,7 @@ static int keyboard_event(const SDL_Event* e, int action) {
         return 1;
     }
     if ((action == HOTKEY_FULLSCREEN || action == HOTKEY_FULLSCREEN_2) &&
-        (key_mods(e->key.mod) & (HOTKEY_CTRL | HOTKEY_ALT | HOTKEY_GUI)))
+        (snx_key_mods(e->key.mod) & (HOTKEY_CTRL | HOTKEY_ALT | HOTKEY_GUI)))
         return 0;
     switch (e->key.key) {
         case SDLK_BACKSPACE: overlay_keyboard_key(OVERLAY_KEY_BACKSPACE); break;
@@ -1285,7 +1281,7 @@ static int menu_event(const SDL_Event* e, int action) {
     float d;
     /* the Shortcuts page's wait: any key is the one it waits for, the menu's too */
     if (e->type == SDL_EVENT_KEY_DOWN && overlay_shortcut_listening()) {
-        if (!e->key.repeat) overlay_shortcut_key(e->key.key, key_mods(e->key.mod));
+        if (!e->key.repeat) overlay_shortcut_key(e->key.key, snx_key_mods(e->key.mod));
         return 1;
     }
     if ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && (e->key.key == SDLK_AC_BACK || action == HOTKEY_MENU)) ||

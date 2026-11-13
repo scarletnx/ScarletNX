@@ -1606,6 +1606,29 @@ int main(void) {
             assert(q.w == (float)(8 * t) && q.h == (float)(16 * t));
         }
     }
+    /* the 3DS's, the Vita's and the GBA's notice (common/utilities/notice.h) is this band: its letters' scale, its
+       place and its size here, and the scale on pictures and displays of every size */
+    {
+        static const int widths[] = {320, 640, 1280, 1920, 2424, 2560, 3840}, heights[] = {240, 360, 720, 1080, 2160};
+        static const float scales[] = {1.0f, 1.25f, 1.5f, 2.0f, 2.6f};
+        SnxNotice n = {0};
+        int rect[4], t = stats_scale(s), sc, x, y;
+        const SnxUiQuadView last = qv(&list.q[list.n - 1]);
+        snx_notice_show(&n, "Saved to slot 2", 0);
+        assert(snx_notice_scale(SW, SH, overlay_display_percent()) == t && snx_notice_rect(&n, SW, SH, t, rect));
+        assert(rect[0] == (int)qv(&list.q[0]).x && rect[1] == (int)qv(&list.q[0]).y);
+        assert(rect[2] == (int)(last.x + last.w) - rect[0] && rect[3] == (int)qv(&list.q[0]).h);
+        for (size_t w = 0; w < sizeof widths / sizeof *widths; ++w)
+            for (size_t h = 0; h < sizeof heights / sizeof *heights; ++h)
+                for (size_t d = 0; d < sizeof scales / sizeof *scales; ++d) {
+                    overlay_set_display_scale(scales[d]);
+                    overlay_place(widths[w], heights[h], &x, &y, &sc);
+                    assert(snx_notice_scale(widths[w], heights[h], snx_display_percent(scales[d])) == stats_scale(sc));
+                }
+        overlay_set_display_scale(1.0f);
+        overlay_place(SW, SH, &x, &y, &sc);
+        assert(sc == s);
+    }
     /* the stats' box in that corner too: the band goes under it, from the box's left, half a line apart; back in its
        corner with the box in another, or off; and in the picture's top right where there is no room under the box */
     {

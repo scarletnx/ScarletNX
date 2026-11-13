@@ -2,11 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/hotkeys.h"
 #include "nx/runtime/platform/log.h"
+#include "common/utilities/key_text.h"
 #include "common/utilities/quit_key.h"
 #include "snx_settings.h"
-#include <SDL3/SDL_keyboard.h>
-#include <SDL3/SDL_keycode.h>
-#include <SDL3/SDL_stdinc.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -16,13 +14,6 @@ static const char* const KEYS[HOTKEY_COUNT] = {
     "hotkey_showcase", "hotkey_save_state", "hotkey_load_state",   "hotkey_next_slot", "hotkey_tracy",
     "hotkey_pause",    "hotkey_fullscreen", "hotkey_fullscreen_2", "hotkey_stats",     "hotkey_capture",
     "hotkey_mouse",    "hotkey_quit",       "hotkey_tv_mode",      "hotkey_upscaler",  "hotkey_anti_aliasing"};
-/* the modifiers' words, in a text's order */
-static const struct {
-    const char* word;
-    unsigned bit;
-} MODS[] = {{"Ctrl", HOTKEY_CTRL}, {"Alt", HOTKEY_ALT}, {"Shift", HOTKEY_SHIFT}, {"GUI", HOTKEY_GUI}};
-#define MOD_COUNT (int)(sizeof MODS / sizeof *MODS)
-
 /* each action's key and modifiers in effect: their defaults' until hotkey_set reads a setting (the settings' variables
    start as their defaults); started once the first call needs them */
 static struct {
@@ -43,57 +34,11 @@ const char* hotkey_text(int action) {
     return o ? (const char*)o->var : "";
 }
 
-int hotkey_modifier(unsigned key) {
-    return (key >= SDLK_LCTRL && key <= SDLK_RGUI) || key == SDLK_MODE || key == SDLK_LEVEL5_SHIFT ||
-           (key >= SDLK_LMETA && key <= SDLK_RHYPER);
-}
-
+int hotkey_modifier(unsigned key) { return snx_key_modifier(key); }
 int hotkey_parse(const char* text, unsigned* key, unsigned* mods, char* why, size_t n) {
-    const char* p = text;
-    SDL_Keycode k;
-    int i;
-    *key = *mods = 0;
-    if (!*text) return 0;
-    /* the modifiers, each with its +: "Ctrl++" is Ctrl and the + key */
-    for (;;) {
-        size_t len = 0;
-        for (i = 0; i < MOD_COUNT; ++i) {
-            len = strlen(MODS[i].word);
-            if (!SDL_strncasecmp(p, MODS[i].word, len) && p[len] == '+') break;
-        }
-        if (i == MOD_COUNT) break;
-        *mods |= MODS[i].bit;
-        p += len + 1;
-    }
-    if (!*p) {
-        snprintf(why, n, "no key after %s", text);
-        return -1;
-    }
-    k = SDL_GetKeyFromName(p);
-    if (k == SDLK_UNKNOWN) {
-        snprintf(why, n, "no key is named \"%s\" (a key as SDL names it, after Ctrl+, Alt+, Shift+ or GUI+)", p);
-        return -1;
-    }
-    if (hotkey_modifier(k)) {
-        snprintf(why, n, "%s is a modifier, which goes with a key (Ctrl+F1)", p);
-        return -1;
-    }
-    *key = k;
-    return 0;
+    return snx_key_parse(text, key, mods, why, n);
 }
-
-void hotkey_name(unsigned key, unsigned mods, char* out, size_t n) {
-    size_t at = 0;
-    int i;
-    if (n) out[0] = 0;
-    if (!key) return;
-    for (i = 0; i < MOD_COUNT; ++i)
-        if (mods & MODS[i].bit) {
-            snprintf(out + at, n - at, "%s+", MODS[i].word);
-            at += strlen(out + at);
-        }
-    snprintf(out + at, n - at, "%s", SDL_GetKeyName(key));
-}
+void hotkey_name(unsigned key, unsigned mods, char* out, size_t n) { snx_key_name(key, mods, out, n); }
 
 /* the defaults' keys, the first time one is needed */
 static void start(void) {
@@ -109,22 +54,8 @@ static void start(void) {
 }
 
 int hotkey_find(unsigned key, unsigned mods, int* also) {
-    int found = -1, a;
-    unsigned m = mods;
-    *also = -1;
     start();
-    if (!key) return -1;
-    for (;;) {
-        for (a = 0; a < HOTKEY_COUNT; ++a) {
-            if (g_hotkeys.key[a] != key || g_hotkeys.mods[a] != m) continue;
-            if (found < 0)
-                found = a;
-            else if (*also < 0)
-                *also = a;
-        }
-        if (found >= 0 || !(m & HOTKEY_SHIFT)) return found;
-        m &= ~(unsigned)HOTKEY_SHIFT; /* the key without Shift's */
-    }
+    return snx_key_find(g_hotkeys.key, g_hotkeys.mods, HOTKEY_COUNT, key, mods, also);
 }
 
 void hotkey_set(const IniOpt* o, const char* v) {

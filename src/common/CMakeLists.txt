@@ -121,12 +121,15 @@ endif()
 # the device's choice, the drivers known to break an extension or feature (gpu/vk/extension_bans.txt, compiled in),
 # the submission ring, VK_EXT_shader_object's shader binaries and dynamic state, the swapchain and the SDL window
 # (gpu/vk/). Each frontend compiles volk.c, whose functions these call
+if(TARGET SDL3::SDL3)
+    include("${PROJECT_SOURCE_DIR}/cmake/notice.cmake") # the windows' notices and the keys' text (snx_notice)
+endif()
 if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_bans.cmake")
     add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/driver_tag.c gpu/vk/extension_bans.c
                                      "${PROJECT_BINARY_DIR}/generated/vk_extension_bans_text.c" gpu/vk/ring.c
                                      gpu/vk/shader_object.c gpu/vk/swapchain.c gpu/vk/window.c gpu/vk/present_fx.c
-                                     gpu/vk/fx/fx_fsr.c)
+                                     gpu/vk/fx/fx_fsr.c gpu/vk/notice.c)
     set_target_properties(snx_vk_common PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_vk_common PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                                  -Werror=missing-variable-declarations)
@@ -135,6 +138,7 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     # scarletnx-common: on macOS the window names the Vulkan driver beside the program (snx_executable,
     # snx_vulkan_driver)
     target_link_libraries(snx_vk_common PUBLIC Vulkan::Headers SDL3::SDL3 scarletnx-common)
+    target_link_libraries(snx_vk_common PUBLIC snx_notice) # a window's notice copied over its picture (gpu/vk/notice.c)
     # the spatial upscalers and the anti-aliasing (gpu/vk/present_fx.c, gpu/vk/fx/)
     include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
     foreach(pair IN ITEMS "fsr.vert=fx_fsr_vert" "copy.frag=fx_copy"

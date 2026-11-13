@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The shared presentation effects on a real Vulkan device, with no game data and no window: a synthetic frame through
-   FSR 1, FXAA, SMAA and SSAA, and the choices that turn them on. Read back and checked.
+   FSR 1, FXAA, SMAA and SSAA, and the choices that turn them on, and the 3DS's and the Vita's notice copied over a
+   window's image (common/gpu/vk/notice.c). Read back and checked.
    --showcase=DIR writes the frames as PPM panels. */
+#include "common/gpu/vk/notice.h"
 #include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/vk_common.h"
@@ -1004,6 +1006,85 @@ int main(int argc, char** argv) {
             CHECK(!bad);
         }
         image_free(&t, &framed);
+    }
+
+    /* the shortcuts' words, the Switch's (backend/sdl3.c's "Upscaler: %s" and "Anti-aliasing: %s") */
+    {
+        char text[64];
+        snx_fx_step_text(0, SNX_FX_UPSCALE_FSR1, text, sizeof text);
+        CHECK(!strcmp(text, "Upscaler: AMD FSR 1"));
+        snx_fx_step_text(1, SNX_FX_AA_OFF, text, sizeof text);
+        CHECK(!strcmp(text, "Anti-aliasing: Off"));
+    }
+    /* the 3DS's and the Vita's notice over a window's image, after the picture's own transfers: the band's pixels
+       where snx_notice_rect puts it, in the window's byte order, and the picture's everywhere else; a slot's buffer
+       grown for a longer text; nothing drawn once its time is up, nor on a window format it does not write, said
+       once */
+    {
+        static const VkFormat formats[2] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB};
+        static const char* const texts[2] = {"Anti-aliasing: FXAA", "Press Esc again within 3 seconds to quit"};
+        enum { WW = 640, WH = 360 };
+        const unsigned char ground[3] = {0, 255, 0}; /* the same bytes in an sRGB image */
+        SnxVkNotice* vn = snx_vk_notice_create(t.phys, t.dev, 2);
+        SnxNotice n = {0};
+        unsigned char* band = malloc((size_t)WW * WH * 4);
+        CHECK(vn && band);
+        for (int k = 0; k < 4; ++k) {
+            Image win = {0};
+            VkFormat format = formats[k & 1];
+            int bgra = format == VK_FORMAT_B8G8R8A8_UNORM, rect[4], scale = snx_notice_scale(WW, WH, 100), drawn;
+            uint64_t now = k < 3 ? 0 : (uint64_t)SNX_NOTICE_MS * 1000000u;
+            unsigned bad = 0, inside = 0;
+            VkClearColorValue clear = {.float32 = {0}};
+            VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            VkCommandBuffer cb;
+            uint64_t serial;
+            unsigned char* got;
+            snx_notice_show(&n, texts[k == 2], 0);
+            for (int c = 0; c < 3; ++c) clear.float32[c] = (float)ground[c] / 255.0f;
+            clear.float32[3] = 1.0f;
+            CHECK(image_make(&t, &win, WW, WH, format,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                 VK_IMAGE_USAGE_SAMPLED_BIT)); /* the helper's view needs one a view takes */
+            cb = snx_vk_ring_commands(&t.ring);
+            barrier(cb, win.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            vkCmdClearColorImage(cb, win.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &all);
+            drawn = snx_vk_notice_record(vn, cb, (uint32_t)(k & 1), win.image, format, WW, WH, 100, &n, now, log_line);
+            serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+            CHECK(drawn == (k < 3));
+            got = read_image(&t, win.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, WW, WH);
+            CHECK(got && snx_notice_rect(&n, WW, WH, scale, rect));
+            snx_notice_pixels(&n, scale, bgra, rect, band, (size_t)rect[2] * 4u);
+            for (int y = 0; y < WH; ++y)
+                for (int x = 0; x < WW; ++x) {
+                    const unsigned char* p = got + ((size_t)y * WW + (size_t)x) * 4u;
+                    int in = drawn && x >= rect[0] && x < rect[0] + rect[2] && y >= rect[1] && y < rect[1] + rect[3];
+                    inside += in;
+                    if (in)
+                        bad += memcmp(p, band + ((size_t)(y - rect[1]) * (size_t)rect[2] + (size_t)(x - rect[0])) * 4u,
+                                      4) != 0;
+                    else
+                        bad += abs((int)p[bgra ? 2 : 0] - ground[0]) > 1 || abs((int)p[1] - ground[1]) > 1 ||
+                               abs((int)p[bgra ? 0 : 2] - ground[2]) > 1;
+                }
+            printf("present_fx: the notice \"%s\" over a %ux%u %s window: %u pixels of its band, %u wrong\n", n.text,
+                   WW, WH, bgra ? "BGRA" : "RGBA sRGB", inside, bad);
+            CHECK(!bad && (k == 3 || inside == (unsigned)(rect[2] * rect[3])));
+            free(got);
+            image_free(&t, &win);
+        }
+        g_test.said[0] = 0;
+        CHECK(!snx_vk_notice_record(vn, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_FORMAT_A2B10G10R10_UNORM_PACK32, WW, WH,
+                                    100, &n, 0, log_line));
+        CHECK(strstr(g_test.said, "format 64") && strstr(g_test.said, "only on 8-bit RGBA or BGRA"));
+        g_test.said[0] = 0;
+        CHECK(!snx_vk_notice_record(vn, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_FORMAT_A2B10G10R10_UNORM_PACK32, WW, WH,
+                                    100, &n, 0, log_line));
+        CHECK(!g_test.said[0]); /* once */
+        free(band);
+        snx_vk_notice_destroy(vn);
     }
 
     snx_fx_destroy(fx);
