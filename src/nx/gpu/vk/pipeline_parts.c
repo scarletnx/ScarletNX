@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Graphics pipeline libraries: the choice and the dynamic pre-rasterization state (pipeline_parts.h) */
 #include "nx/gpu/vk/pipeline_parts.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -276,3 +277,40 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
     fo->advanced = k->advanced;
 }
 
+/* out's text from at, which may be past its end (the text is then cut): where the next one goes */
+static size_t key_say(char* out, size_t n, size_t at, const char* fmt, ...) __attribute__((format(printf, 4, 5)));
+static size_t key_say(char* out, size_t n, size_t at, const char* fmt, ...) {
+    va_list ap;
+    int wrote;
+    if (at >= n) return at;
+    va_start(ap, fmt);
+    wrote = vsnprintf(out + at, n - at, fmt, ap);
+    va_end(ap);
+    return wrote < 0 ? n : at + (size_t)wrote;
+}
+void vk_pipe_key_text(const PipeKey* k, char* out, size_t n) {
+    size_t at = 0;
+    if (!n) return;
+    out[0] = 0;
+    if (!k->ncolor) at = key_say(out, n, at, "no color targets");
+    for (u32 i = 0; i < k->ncolor && i < 8; i++)
+        at = key_say(out, n, at, "%s%u%s", i ? " " : "color formats ", k->color[i], k->blend[i].en ? "+blend" : "");
+    const u32 samples = k->samples ? k->samples : 1;
+    at = key_say(out, n, at, ", depth %u, stencil %u, %u sample%s", k->depth, k->stencil, samples,
+                 samples > 1 ? "s" : "");
+    if (k->mesh)
+        at = key_say(out, n, at, ", mesh");
+    else
+        at = key_say(out, n, at, ", topology class %u", k->topo_class);
+    if (k->tes) at = key_say(out, n, at, ", %u control points", k->patch);
+    if (k->polygon) at = key_say(out, n, at, ", polygon mode %u", k->polygon);
+    if (k->fs_spec) at = key_say(out, n, at, ", fragment specialization %#x", k->fs_spec);
+    if (k->logic_op) at = key_say(out, n, at, ", logic op %u", k->logic_op - 1);
+    if (k->advanced.operation) at = key_say(out, n, at, ", advanced blend %u", k->advanced.operation);
+    if (k->alpha_to_coverage) at = key_say(out, n, at, ", alpha to coverage");
+    if (k->sample_shading) at = key_say(out, n, at, ", every sample shaded");
+    if (k->conservative) at = key_say(out, n, at, ", conservative");
+    if (k->depth_clamp) at = key_say(out, n, at, ", depth clamp");
+    if (k->provoking_last) at = key_say(out, n, at, ", the last vertex provokes");
+    if (k->feedback) key_say(out, n, at, ", a feedback loop");
+}

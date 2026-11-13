@@ -13,6 +13,8 @@
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "common/platform/thread.h"  /* plat_thread_note_get */
+#include "common/utilities/common.h" /* snx_thread_name_get */
 #if !defined(_WIN32)
 #include <dlfcn.h>
 #include <signal.h>
@@ -32,6 +34,7 @@ extern const char __ehdr_start[] __attribute__((weak, visibility("hidden")));
 
 static const char* crash_kind(void* fault, int sig) {
 #if defined(_WIN32)
+    (void)fault; /* the exception's code says it */
     switch ((unsigned long)sig) {
         case 0xC0000005ul: /* EXCEPTION_ACCESS_VIOLATION */
         case 0xC0000006ul: return "invalid memory access"; /* EXCEPTION_IN_PAGE_ERROR */
@@ -168,8 +171,20 @@ void crash_report(void* host_pc, void* fault, int sig) {
         WARN("  thread %llu (%s)\n", (unsigned long long)t->id, t->name);
         if (fault && in_guest) kernel_dump_libc_fault(&t->cpu, guest); /* a copy the runtime ran for the game */
         kernel_dump_regs(&t->cpu);
-    } else
-        WARN("  on one of the runtime's threads, not the game's\n");
+    } else {
+        /* a driver's own thread has no note, and its name says whose it is */
+        char name[64];
+        const char* note = plat_thread_note_get();
+        snx_thread_name_get(name, sizeof name);
+        if (name[0])
+            WARN("  on one of the runtime's threads, not the game's: \"%s\"\n", name);
+        else
+            WARN("  on one of the runtime's threads, not the game's, which the system gives no name\n");
+        if (note[0])
+            WARN("  it was %s\n", note);
+        else
+            WARN("  it noted nothing it was doing (the runtime notes the driver's compiles of the game's pipelines)\n");
+    }
     if (mem_reserved()) {
         char foreign[512];
         mem_report(memory, sizeof memory);

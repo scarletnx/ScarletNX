@@ -1781,6 +1781,15 @@ add_executable(snx-test-rtapi-miss rtapi_miss.c "${PROJECT_SOURCE_DIR}/src/nx/ru
 snx_test_target(snx-test-rtapi-miss 23)
 target_link_libraries(snx-test-rtapi-miss PRIVATE snx_nx_flags snx_settings_runtime)
 add_test(NAME rtapi_miss COMMAND snx-test-rtapi-miss)
+# the crash report of a runtime thread (runtime/crash.c): its name as the system has it and what it noted it was doing,
+# a pipeline the driver was making (common/platform/thread.c's plat_thread_note), or that it noted nothing
+add_executable(snx-test-crash-runtime-thread crash_runtime_thread.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/crash.c")
+snx_test_target(snx-test-crash-runtime-thread 23)
+target_link_libraries(snx-test-crash-runtime-thread PRIVATE snx_nx_flags Threads::Threads ${CMAKE_DL_LIBS})
+if(CMAKE_SYSTEM_NAME STREQUAL "NetBSD")
+    target_link_libraries(snx-test-crash-runtime-thread PRIVATE execinfo) # crash.c's host frames
+endif()
+add_test(NAME crash_runtime_thread COMMAND snx-test-crash-runtime-thread)
 
 add_executable(snx-test-ini-deprecated ini_deprecated.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-ini-deprecated 11)
