@@ -16545,7 +16545,7 @@ static void removed_open(App* app, char* file) {
 static void removed_prune(App* app) {
     size_t i, kept = 0;
     for (i = 0; i < app->removed_count; ++i)
-        if (snx_is_file(app->removed[i]) && !gui_game_source_missing(app->removed[i], NULL, 0))
+        if (snx_is_file(app->removed[i]) && !gui_game_source_missing(app->removed[i], app->work_dir, NULL, 0))
             free(app->removed[i]);
         else
             app->removed[kept++] = app->removed[i];
@@ -16562,16 +16562,17 @@ static void missing_forget(App* app) {
    there, its box asks what becomes of it, and true; false for a game that plays */
 static bool missing_ask(App* app, const char* program) {
     char file[SNX_PATH_SIZE];
-    if (!program || !gui_game_source_missing(program, file, sizeof file)) return false;
+    if (!program || !gui_game_source_missing(program, app->work_dir, file, sizeof file)) return false;
     missing_forget(app);
     app->missing_game = snx_strdup(program);
     app->missing_file = snx_strdup(file);
     picks_open(app, GUI_PICKS_MISSING);
     return true;
 }
-/* how the file a game plays from is picked again, by what it was: a GBA game's ROM, a Switch game's dump by its name
-   (one the driver reads in place), else an extracted game's folder */
-typedef enum { MISSING_DUMP, MISSING_FOLDER, MISSING_ROM } MissingKind;
+/* how the file a game plays from is picked again, by its console and what it was: a Switch game's dump (one the driver
+   reads in place, by its name) or an extracted game's folder, a GBA game's ROM, a 3DS game's file, a Vita game's dumped
+   folder */
+typedef enum { MISSING_DUMP, MISSING_FOLDER, MISSING_ROM, MISSING_CTR, MISSING_VITA } MissingKind;
 static MissingKind missing_kind(const char* program, const char* file) {
     static const char* const dumps[] = {".nsp", ".xci", ".dnsp", ".dxci"};
     char *folder, *name;
@@ -16581,16 +16582,42 @@ static MissingKind missing_kind(const char* program, const char* file) {
     free(name);
     free(folder);
     if (system == SNX_SYSTEM_GBA) return MISSING_ROM;
+    if (system == SNX_SYSTEM_3DS) return MISSING_CTR;
+    if (system == SNX_SYSTEM_VITA) return MISSING_VITA;
     for (size_t i = 0; file && i < SDL_arraysize(dumps); ++i)
         if (snx_ends_with_nocase(file, dumps[i])) return MISSING_DUMP;
     return MISSING_FOLDER;
+}
+/* what the game whose program is at program plays from, as its driver has it named: a Switch game's source= (or its
+   older link's own path), a GBA or 3DS game's source= in the .ini of its folder, where a Vita game's app/ links (its
+   own path when it cannot be read). Owned; NULL for none */
+static char* played_file(const char* program) {
+    char *folder, *name, *file = NULL, app[SNX_PATH_SIZE];
+    game_where(program, &folder, &name);
+    switch (snx_game_system(folder, name)) {
+        case SNX_SYSTEM_SWITCH: file = snx_game_source(folder, name, NULL); break;
+        case SNX_SYSTEM_VITA:
+            if (!snx_path_format(app, sizeof app, "%s/app", folder) && snx_is_link(app) &&
+                !(file = snx_link_target(app)))
+                file = snx_strdup(app);
+            break;
+        default: {
+            char* ini = snx_format("%s/%s.ini", folder, name);
+            file = ini ? snx_ini_value(ini, "source") : NULL;
+            free(ini);
+        }
+    }
+    free(name);
+    free(folder);
+    return file;
 }
 static void SDLCALL folder_picked(void* userdata, const char* const* files, int filter);
 /* Locate...: the system's picker, for a file or, for an extracted game, a folder, at the game the box was of; its
    answer an event of missing_picked (missing_located). Why it could not open, said */
 static void missing_locate(App* app) {
     char why[sizeof app->message - 64] = "";
-    bool folder = missing_kind(app->missing_game, app->missing_file) == MISSING_FOLDER, opened = true;
+    MissingKind kind = missing_kind(app->missing_game, app->missing_file);
+    bool folder = kind == MISSING_FOLDER || kind == MISSING_VITA, opened = true;
     const char* cannot = folder ? snx_tr("Locate...: the folder picker could not open: %s")
                                 : snx_tr("Locate...: the file picker could not open: %s");
     free(app->missing_picking);
@@ -18063,7 +18090,7 @@ static void recent_rows_read(App* app) {
     for (int i = 0; i < recent_shown(app); ++i) {
         const GuiRecentGame* r = &app->recent.game[recent_index(app, i)];
         app->recent_debug[i] = game_debug(app, r->path, 0, NULL, 0) > 0;
-        app->recent_missing[i] = r->prepared && gui_game_source_missing(r->path, NULL, 0);
+        app->recent_missing[i] = r->prepared && gui_game_source_missing(r->path, app->work_dir, NULL, 0);
     }
 }
 /* the focused row's Debug settings and the file it plays from when that is not there, for the side panel: looked at
@@ -18076,7 +18103,7 @@ static void side_focus_update(App* app) {
     app->debug_path = path ? snx_strdup(path) : NULL;
     app->debug_checked = now_ms(app);
     game_debug(app, path, 1, app->debug_focus, sizeof app->debug_focus);
-    gui_game_source_missing(path, app->missing_focus, sizeof app->missing_focus);
+    gui_game_source_missing(path, app->work_dir, app->missing_focus, sizeof app->missing_focus);
 }
 static int aot_focus_game(App* app, AotFocus* f) {
     size_t row = app->browser.selected, head = app->browser.head;
@@ -19155,7 +19182,8 @@ static void list_games(App* app) {
     free(app->games_missing);
     app->games_missing = (bool*)snx_alloc((app->games.count + 1) * sizeof *app->games_missing);
     for (size_t i = 0; i < app->games.count; ++i)
-        app->games_missing[i] = app->games.paths[i] && gui_game_source_missing(app->games.paths[i], NULL, 0);
+        app->games_missing[i] =
+            app->games.paths[i] && gui_game_source_missing(app->games.paths[i], app->work_dir, NULL, 0);
     recent_as_games(app); /* a recent dump made since, by any run, shows as its game */
     recent_rows_read(app);
     app->debug_checked = 0; /* and the focused row's, at the next draw */
@@ -19946,60 +19974,109 @@ static void pointer(App* app, float window_x, float window_y, bool click, bool t
         screen_pointer(app, x, y, click, touch);
 }
 /* the file the system's picker chose, as a dropped one; none (cancelled) stays on the screen and says so */
+/* link a symbolic link to target, one there before taken away: 0, else why into why */
+static int relink(const char* link, const char* target, char* why, size_t size) {
+    char reason[160];
+    if (snx_is_link(link) && snx_remove_tree(link)) {
+        snprintf(why, size, snx_tr("%s could not be taken away (%s)"), link, snx_os_error(reason, sizeof reason));
+        return 1;
+    }
+    if (snx_symlink(target, link)) {
+        snprintf(why, size, snx_tr("%s could not be linked to %s (%s)"), link, target,
+                 snx_os_error(reason, sizeof reason));
+        return 1;
+    }
+    return 0;
+}
+/* a Vita game's app/ in folder linked to the dumped game's folder dump, as its driver links one (link_dump), and that
+   game's update beside it (patch/<title ID>, with its eboot.bin) as its patch/ when it has one and patch/ is no folder
+   of the game's own: 0, else why into why */
+static int vita_relink(const char* folder, const char* title, const char* dump, char* why, size_t size) {
+    char *full = snx_absolute(dump), *parent = full ? snx_dirname(full) : NULL,
+         *root = parent ? snx_dirname(parent) : NULL;
+    char app[SNX_PATH_SIZE], patch[SNX_PATH_SIZE], update[SNX_PATH_SIZE], eboot[SNX_PATH_SIZE];
+    int failed = 1;
+    why[0] = 0;
+    if (!full || snx_path_format(app, sizeof app, "%s/app", folder))
+        snprintf(why, size, snx_tr("%s/app cannot be named"), folder);
+    else
+        failed = relink(app, full, why, size);
+    if (!failed && root && !snx_path_format(update, sizeof update, "%s/patch/%s", root, title) &&
+        !snx_path_format(eboot, sizeof eboot, "%s/eboot.bin", update) && snx_is_file(eboot) &&
+        !snx_path_format(patch, sizeof patch, "%s/patch", folder) && (!snx_path_exists(patch) || snx_is_link(patch)))
+        failed = relink(patch, update, why, size);
+    free(root);
+    free(parent);
+    free(full);
+    return failed;
+}
 /* Locate...'s answer: uri picked (NULL for none), or error when the picker could not open. A file of the kind the
-   game played from (missing_kind) is what it plays from from then on, source= in its .ini: Games lists it again
-   where it was, its row no longer saying the file is not found. Anything else is refused, said with the file it
-   keeps */
+   game played from (missing_kind) is what it plays from from then on: source= in its .ini, or for a Vita game its
+   app/ linked to it. Games lists it again where it was, its row no longer saying the file is not found. Anything else
+   is refused, said with the file it keeps */
 static void missing_located(App* app, const char* uri, const char* error, bool failed) {
     char *program = app->missing_picking, *path = NULL, *folder = NULL, *name = NULL, *shown, *ini = NULL, *was;
-    int recorded = 0;
+    char why[1024], sfo[SNX_PATH_SIZE];
     MissingKind kind;
-    bool fits;
+    bool fits, folder_kind;
     app->missing_picking = NULL;
     if (!program) return;
     game_where(program, &folder, &name);
-    was = snx_game_source(folder, name, &recorded);
+    was = played_file(program);
     kind = missing_kind(program, was);
+    folder_kind = kind == MISSING_FOLDER || kind == MISSING_VITA;
     shown = gui_game_shown(program);
     if (failed) {
         snprintf(app->message, sizeof app->message,
-                 kind == MISSING_FOLDER ? snx_tr("Locate...: the folder picker could not open: %s")
-                                        : snx_tr("Locate...: the file picker could not open: %s"),
+                 folder_kind ? snx_tr("Locate...: the folder picker could not open: %s")
+                             : snx_tr("Locate...: the file picker could not open: %s"),
                  error ? error : snx_tr("no reason given"));
         say_failure(app, app->message);
         goto done;
     }
     if (!uri) {
         snprintf(app->message, sizeof app->message, "%s",
-                 kind == MISSING_FOLDER ? snx_tr("Locate...: no folder was picked.")
-                                        : snx_tr("Locate...: no file was picked."));
+                 folder_kind ? snx_tr("Locate...: no folder was picked.") : snx_tr("Locate...: no file was picked."));
         goto done;
     }
     path = gui_document_path(uri);
 #ifdef SDL_PLATFORM_ANDROID
-    if (!path && kind != MISSING_FOLDER) path = gui_android_document_file(uri); /* a download, by its number */
+    if (!path && !folder_kind) path = gui_android_document_file(uri); /* a download, by its number */
 #endif
     if (!path) {
         snprintf(app->message, sizeof app->message, snx_tr(SAY_PICK_UNREAD), uri);
         goto done;
     }
     fits = kind == MISSING_FOLDER ? snx_extracted_game(path) != 0
+           : kind == MISSING_VITA ? !snx_path_format(sfo, sizeof sfo, "%s/sce_sys/param.sfo", path) && snx_is_file(sfo)
            : kind == MISSING_ROM  ? snx_is_file(path) && gui_is_gba(path)
+           : kind == MISSING_CTR  ? snx_is_file(path) && gui_is_cia(snx_path_leaf(path))
                                   : snx_is_file(path) && missing_kind(program, path) == MISSING_DUMP;
     if (!fits) {
         snprintf(app->message, sizeof app->message,
                  kind == MISSING_FOLDER ? snx_tr("%s is no extracted game (exefs/ with its main): %s keeps %s")
+                 : kind == MISSING_VITA ? snx_tr("%s is no dumped Vita game (sce_sys/param.sfo): %s keeps %s")
                  : kind == MISSING_ROM  ? snx_tr("%s is no GBA ROM (.gba): %s keeps %s")
+                 : kind == MISSING_CTR  ? snx_tr("%s is no 3DS game (.cia, .cci, .3ds, .cxi): %s keeps %s")
                                         : snx_tr("%s is no NSP or XCI: %s keeps %s"),
                  path, shown ? shown : name, was ? was : "?");
         goto done;
     }
-    /* where each driver reads it: the Switch's from the game's .ini, the GBA's from the one in its folder */
-    ini = kind == MISSING_ROM ? snx_format("%s/%s.ini", folder, name) : snx_game_ini(folder, name);
-    if (!ini || snx_ini_record(ini, "source", path)) {
-        snprintf(app->message, sizeof app->message, snx_tr("Not kept: %s could not be written"), ini ? ini : folder);
-        say_failure(app, app->message);
-        goto done;
+    if (kind == MISSING_VITA) {
+        if (vita_relink(folder, name, path, why, sizeof why)) {
+            snprintf(app->message, sizeof app->message, snx_tr("Not kept: %s"), why);
+            say_failure(app, app->message);
+            goto done;
+        }
+    } else { /* where each driver reads it: the Switch's from the game's .ini, the others' from the one in its folder */
+        ini = kind == MISSING_DUMP || kind == MISSING_FOLDER ? snx_game_ini(folder, name)
+                                                             : snx_format("%s/%s.ini", folder, name);
+        if (!ini || snx_ini_record(ini, "source", path)) {
+            snprintf(app->message, sizeof app->message, snx_tr("Not kept: %s could not be written"),
+                     ini ? ini : folder);
+            say_failure(app, app->message);
+            goto done;
+        }
     }
     if (app->menu.view == GUI_LOAD_GAMES) games_relist(app);
     snprintf(app->message, sizeof app->message, snx_tr("%s plays from %s now."), shown ? shown : name, path);

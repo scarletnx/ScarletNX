@@ -195,39 +195,43 @@ static bool removed_one(const char* path, const void* user) {
     (void)user;
     return strstr(path, "0100ABCD12340000") != NULL;
 }
-/* A made game plays from a file that is not there (gui_game_source_missing): a Switch game read in place, its source=
-   naming a dump that is gone, said with that dump's path; not once the dump is back, nor once the game's ExeFS is
-   extracted into its _data; an extracted game's folder as its source alike; a GBA game's ROM, which no extraction
-   stands for. Never a 3DS game's (its driver keeps copies of its own), a game made from no dump, one an older version
-   linked to its dump, nor a file that is no made game's program. A game taken off the list is left out of the ready
-   ones (gui_games_group's removed), the others kept */
+/* A made game plays from a file that is not there (gui_game_source_missing), as its driver plays it: a Switch game read
+   in place, its source= naming a dump that is gone, said with that dump's path; not once the dump is back, nor once
+   the game's ExeFS is extracted into its _data; an extracted game's folder as its source alike; an older version's
+   <name>.source link by where it points. A GBA game's ROM, which no extraction stands for. A 3DS game's file (source=
+   in the .ini of its folder), but with its extraction in the folder (exheader.bin) or a copy the 3DS driver decrypted
+   in the extractions' folder (work/3ds/<name>.decrypted.<extension>). A Vita game's dumped folder, which its app/
+   links, said by where the link points; one extracted from a VPK keeps its own app/. Never a game made from no file
+   (a homebrew's), nor a file that is no made game's program. A game taken off the list is left out of the ready ones
+   (gui_games_group's removed), the others kept */
 static void source_missing(void) {
     char *dir = snx_temp_dir(NULL), *dump = snx_path_join(dir, "game.nsp"), *rom = snx_path_join(dir, "game.gba");
     char *extracted = snx_path_join(dir, "extracted"), *exefs = snx_path_join(extracted, "exefs");
+    char *work = snx_path_join(dir, "work"), *cia = snx_path_join(dir, "game.cia");
     char *text = snx_format("[Game]\nsource=%s\n", dump), out[4096];
     char *nx = game_made(dir, "0100ABCD12340000", text), *program = program_of(nx, "0100ABCD12340000");
     GuiGames g = {0};
     GuiGroups removed = {GROUPS, .removed = removed_one};
     char error[256];
-    assert(gui_game_source_missing(program, out, sizeof out) && !strcmp(out, dump));
-    assert(gui_game_source_missing(program, NULL, 0)); /* the answer alone */
+    assert(gui_game_source_missing(program, work, out, sizeof out) && !strcmp(out, dump));
+    assert(gui_game_source_missing(program, NULL, NULL, 0)); /* the answer alone */
     put(dir, "game.nsp", "dump");
-    assert(!gui_game_source_missing(program, out, sizeof out) && !out[0]);
+    assert(!gui_game_source_missing(program, work, out, sizeof out) && !out[0]);
     assert(!remove(dump));
     {
         char* data = snx_path_join(nx, "0100ABCD12340000_data/exefs");
-        assert(!snx_mkdirs(data) && !gui_game_source_missing(program, NULL, 0)); /* plays from its extraction */
+        assert(!snx_mkdirs(data) && !gui_game_source_missing(program, NULL, NULL, 0)); /* plays from its extraction */
         assert(!snx_remove_tree(data));
         free(data);
     }
-    assert(!gui_game_source_missing(dump, NULL, 0) && !gui_game_source_missing(nx, NULL, 0)); /* no program */
+    assert(!gui_game_source_missing(dump, NULL, NULL, 0) && !gui_game_source_missing(nx, NULL, NULL, 0));
     { /* its source an extracted game's folder: gone, then there */
         char* folder_ini = snx_format("[Game]\nsource=%s\n", extracted);
         char *made = game_made(dir, "0100ABCD22220000", folder_ini), *own = program_of(made, "0100ABCD22220000");
-        assert(gui_game_source_missing(own, out, sizeof out) && !strcmp(out, extracted));
+        assert(gui_game_source_missing(own, NULL, out, sizeof out) && !strcmp(out, extracted));
         assert(!snx_mkdirs(exefs));
         put(exefs, "main", "main");
-        assert(!gui_game_source_missing(own, NULL, 0));
+        assert(!gui_game_source_missing(own, NULL, NULL, 0));
         free(own);
         free(made);
         free(folder_ini);
@@ -235,34 +239,64 @@ static void source_missing(void) {
     { /* a GBA game reads its ROM at every run */
         char* gba_ini = snx_format("[Game]\nsource=%s\nsystem=gba\n", rom);
         char *made = game_made(dir, "agb game", gba_ini), *own = program_of(made, "agb game");
-        assert(gui_game_source_missing(own, out, sizeof out) && !strcmp(out, rom));
+        assert(gui_game_source_missing(own, NULL, out, sizeof out) && !strcmp(out, rom));
         put(dir, "game.gba", "rom");
-        assert(!gui_game_source_missing(own, NULL, 0));
+        assert(!gui_game_source_missing(own, NULL, NULL, 0));
         free(own);
         free(made);
         free(gba_ini);
     }
-    { /* a 3DS game's, one made from no dump, one an older version linked: none */
-        char* ctr_ini = snx_format("[Game]\nsource=%s\nsystem=3ds\n", dump);
-        char *ctr = game_made(dir, "0004000000030000", ctr_ini), *ctr_own = program_of(ctr, "0004000000030000");
-        char *nro = game_made(dir, "homebrew", "[Game]\nname=A homebrew\n"), *nro_own = program_of(nro, "homebrew");
-        char *old = game_made(dir, "0100ABCD33330000", NULL), *old_own = program_of(old, "0100ABCD33330000");
-        assert(!gui_game_source_missing(ctr_own, NULL, 0) && !gui_game_source_missing(nro_own, NULL, 0));
-#ifndef _WIN32
-        {
-            char* link = snx_path_join(old, "0100ABCD33330000.source");
-            assert(!symlink(dump, link) && !gui_game_source_missing(old_own, out, sizeof out) && !out[0]);
-            free(link);
-        }
-#endif
-        free(old_own);
-        free(old);
-        free(nro_own);
-        free(nro);
-        free(ctr_own);
+    { /* a 3DS game: its file, else its extraction or the driver's decrypted copy */
+        char* ctr_ini = snx_format("[Game]\nsource=%s\nmodel=old\nsystem=3ds\n", cia);
+        char *ctr = game_made(dir, "0004000000030000", ctr_ini), *own = program_of(ctr, "0004000000030000");
+        char *copies = snx_path_join(work, "3ds"), *exheader = snx_path_join(ctr, "exheader.bin");
+        assert(gui_game_source_missing(own, work, out, sizeof out) && !strcmp(out, cia));
+        put(ctr, "exheader.bin", "exheader");
+        assert(!gui_game_source_missing(own, work, NULL, 0));
+        assert(!remove(exheader) && !snx_mkdirs(copies));
+        put(copies, "game.decrypted.cia", "decrypted");
+        assert(!gui_game_source_missing(own, work, NULL, 0));
+        assert(gui_game_source_missing(own, NULL, NULL, 0)); /* no extractions' folder: no copy */
+        put(dir, "game.cia", "cia");
+        assert(!gui_game_source_missing(own, NULL, NULL, 0));
+        free(exheader);
+        free(copies);
+        free(own);
         free(ctr);
         free(ctr_ini);
     }
+    { /* one made from no file: none */
+        char *nro = game_made(dir, "homebrew", "[Game]\nname=A homebrew\n"), *own = program_of(nro, "homebrew");
+        assert(!gui_game_source_missing(own, work, NULL, 0));
+        free(own);
+        free(nro);
+    }
+#ifndef _WIN32
+    { /* an older version's link to its dump, by where it points */
+        char *old = game_made(dir, "0100ABCD33330000", NULL), *own = program_of(old, "0100ABCD33330000");
+        char *link = snx_path_join(old, "0100ABCD33330000.source"), *target;
+        assert(!snx_symlink(dump, link) && (target = snx_link_target(link)) && !strcmp(target, dump));
+        assert(gui_game_source_missing(own, work, out, sizeof out) && !strcmp(out, dump));
+        assert(!snx_link_target(own) && !snx_link_target(dir)); /* no link */
+        free(target);
+        free(link);
+        free(own);
+        free(old);
+    }
+    { /* a Vita game made from a dumped folder, which its app/ links; one extracted from a VPK, its own */
+        char *dumped = snx_path_join(dir, "vita dump/app/PCSE00000"),
+             *vita = game_made(dir, "PCSE00000", "[Game]\nsystem=vita\n");
+        char *own = program_of(vita, "PCSE00000"), *app = snx_path_join(vita, "app");
+        assert(!snx_mkdirs(dumped) && !snx_symlink(dumped, app) && !gui_game_source_missing(own, work, NULL, 0));
+        assert(!snx_remove_tree(dumped));
+        assert(gui_game_source_missing(own, work, out, sizeof out) && !strcmp(out, dumped));
+        assert(!remove(app) && !snx_mkdirs(app) && !gui_game_source_missing(own, work, NULL, 0));
+        free(app);
+        free(own);
+        free(vita);
+        free(dumped);
+    }
+#endif
     /* taken off the list: the ready games without it */
     assert(gui_games_add(&g, dir, GUI_GAMES_RUN, error, sizeof error) && gui_games_group(&g, &removed));
     assert(named(&g, "0100ABCD12340000") == g.count && named(&g, "0100ABCD22220000") < g.count &&
@@ -275,12 +309,14 @@ static void source_missing(void) {
     free(program);
     free(nx);
     free(text);
+    free(cia);
+    free(work);
     free(exefs);
     free(extracted);
     free(rom);
     free(dump);
     free(dir);
-    puts("PASS a made game whose file to play from is not there, and one taken off the list");
+    puts("PASS a made game whose file to play from is not there, of each console, and one taken off the list");
 }
 int main(void) {
     GuiGames games = {0};

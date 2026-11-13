@@ -34,6 +34,7 @@
 #include <wchar.h>
 #include <psapi.h>
 #include <tlhelp32.h> /* the process's threads (snx_threads) */
+#include <winioctl.h> /* a link's reparse data (snx_link_target) */
 #else
 #include <dirent.h>
 #include <dlfcn.h>
@@ -983,6 +984,52 @@ int snx_link_file(const char* src, const char* dst) {
     return !ok;
 #else
     return link(src, dst) != 0;
+#endif
+}
+char* snx_link_target(const char* path) {
+#ifdef _WIN32
+    /* the reparse data of a symbolic link or a junction: its print name, else its substitute name without \??\ */
+    wchar_t *p = path ? wide(path) : NULL, *name = NULL;
+    HANDLE h = p ? CreateFileW(p, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                               FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, NULL)
+                 : INVALID_HANDLE_VALUE;
+    unsigned char* data =
+        h != INVALID_HANDLE_VALUE ? (unsigned char*)snx_alloc(MAXIMUM_REPARSE_DATA_BUFFER_SIZE) : NULL;
+    DWORD got = 0;
+    char* target = NULL;
+    free(p);
+    if (!data) return NULL;
+    if (DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, NULL, 0, data, MAXIMUM_REPARSE_DATA_BUFFER_SIZE, &got, NULL) &&
+        got >= 16) {
+        uint32_t tag = snx_ld_le32(data);
+        /* after the tag, the data's size and a reserved half: the names' offsets and sizes, a symbolic link's flags,
+           then the names, offsets from there */
+        size_t names = tag == IO_REPARSE_TAG_SYMLINK ? 20 : tag == IO_REPARSE_TAG_MOUNT_POINT ? 16 : 0;
+        size_t substitute = snx_ld_le16(data + 8), substitute_size = snx_ld_le16(data + 10);
+        size_t print = snx_ld_le16(data + 12), print_size = snx_ld_le16(data + 14);
+        size_t at = print_size ? print : substitute, size = print_size ? print_size : substitute_size;
+        if (names && size && size % 2 == 0 && names + at + size <= got) {
+            name = (wchar_t*)snx_alloc(size + sizeof(wchar_t));
+            memcpy(name, data + names + at, size);
+            name[size / 2] = 0;
+            target = utf8(!print_size && !wcsncmp(name, L"\\??\\", 4) ? name + 4 : name);
+        }
+    }
+    CloseHandle(h);
+    free(data);
+    free(name);
+    return target;
+#else
+    struct stat st;
+    size_t room = path && !lstat(path, &st) && S_ISLNK(st.st_mode) && st.st_size > 0 ? (size_t)st.st_size + 1 : 0;
+    char* target = room ? (char*)snx_alloc(room) : NULL;
+    ssize_t n = target ? readlink(path, target, room) : -1;
+    if (n < 0 || (size_t)n >= room) { /* gone, or longer than when it was looked at */
+        free(target);
+        return NULL;
+    }
+    target[n] = 0;
+    return target;
 #endif
 }
 int snx_symlink(const char* target, const char* link) {

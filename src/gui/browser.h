@@ -104,13 +104,14 @@ char* gui_folder_game(const char* directory, const char* name);
 /* whether path is a game's program in the folder named for it, <folder>/<name> (.exe, _code.snxobj or _code.so cut):
    a 3DS game's shape, which has no <name>_data folder for gui_game_folder to find */
 bool gui_game_program(const char* path);
-/* Whether the game whose program is at path, a game of a folder of its own, plays from a file that is not there: a
-   Switch game's dump or extracted folder (source= in its .ini) it reads in place, its ExeFS not extracted into its
-   <name>_data, or a GBA game's ROM, which its driver reads at every run. That file's path into out (size bytes, ""
-   when false; out may be NULL). False for a game that plays without it (made from no dump, as an NRO's; extracted),
-   for a 3DS or Vita game (their drivers keep copies of their own), for one an older version linked to its dump
-   (<name>.source) and for any other file */
-bool gui_game_source_missing(const char* path, char* out, size_t size);
+/* Whether the game whose program is at path, a game of a folder of its own, plays from a file that is not there, as its
+   driver plays it: a Switch game's dump or extracted folder (source= in its .ini, or an older version's <name>.source
+   link) that it reads in place, its ExeFS not extracted into its <name>_data; a GBA game's ROM, read at every run; a
+   3DS game's file, its folder holding no extraction and work (the extractions' folder, NULL for none) no copy of it
+   that the 3DS driver decrypted; a Vita game's dumped folder, which its app/ links. That file's path into out (size
+   bytes, "" when false; out may be NULL). False for a game that plays without it, made from no file (an NRO's), one
+   whose file is there, a Vita game extracted from a VPK, and any other file */
+bool gui_game_source_missing(const char* path, const char* work, char* out, size_t size);
 /* What Games shows the game whose program is at path as, a game of a folder of its own: the name in its
    <name>_data/control.nacp, or a Vita game's TITLE in its sce_sys/param.sfo, else its folder's name. Owned */
 char* gui_game_shown(const char* path);

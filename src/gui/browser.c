@@ -294,26 +294,84 @@ char* gui_game_shown(const char* path) {
     free(folder);
     return shown;
 }
-bool gui_game_source_missing(const char* path, char* out, size_t size) {
-    char *folder, *name, *source = NULL, exefs[SNX_PATH_SIZE], link[SNX_PATH_SIZE];
+/* a Switch game's file to play from when it is not there, owned: source= in its .ini, or an older version's link
+   <name>.source by where it points, naming a dump or an extracted game's folder that it reads in place, its ExeFS not
+   extracted into its <name>_data (driver.c's drop_extraction); else NULL */
+static char* switch_missing(const char* folder, const char* name) {
+    char *source, *target, link[SNX_PATH_SIZE], exefs[SNX_PATH_SIZE];
     int recorded = 0;
-    bool missing = false;
-    SnxSystem system;
+    if (snx_path_format(link, sizeof link, "%s/%s.source", folder, name) ||
+        snx_path_format(exefs, sizeof exefs, "%s/%s_data/exefs", folder, name) ||
+        !(source = snx_game_source(folder, name, &recorded)))
+        return NULL;
+    if (recorded && !strcmp(source, link) && (target = snx_link_target(link)) != NULL) {
+        free(source);
+        source = target;
+    }
+    if (!recorded || snx_is_file(source) || snx_extracted_game(source) || snx_is_dir(exefs)) {
+        free(source);
+        return NULL;
+    }
+    return source;
+}
+/* a GBA game's ROM, which its driver reads at every run, from source= in the .ini of its folder (src/agb/runtime),
+   owned when it is not there; else NULL */
+static char* gba_missing(const char* folder, const char* name) {
+    char* ini = snx_format("%s/%s.ini", folder, name);
+    char* rom = ini ? snx_ini_value(ini, "source") : NULL;
+    free(ini);
+    if (rom && snx_is_file(rom)) {
+        free(rom);
+        return NULL;
+    }
+    return rom;
+}
+/* a 3DS game's file, as its driver plays the game in its folder (src/3ds/runtime/main.c's play_folder), owned when
+   it is not there: source= in the .ini of its folder, with no extraction in the folder (exheader.bin) and no copy of it
+   decrypted in the driver's folder of them, <work>/3ds/<its name>.decrypted.<its extension>, which the driver reads
+   in its place; else NULL */
+static char* ctr_missing(const char* folder, const char* name, const char* work) {
+    char *ini = snx_format("%s/%s.ini", folder, name), *source = ini ? snx_ini_value(ini, "source") : NULL;
+    char *dumped = source ? snx_dump_name(source) : NULL, exheader[SNX_PATH_SIZE], copy[SNX_PATH_SIZE];
+    const char* dot = source ? strrchr(source, '.') : NULL;
+    bool there = !source || snx_is_file(source) ||
+                 (!snx_path_format(exheader, sizeof exheader, "%s/exheader.bin", folder) && snx_is_file(exheader)) ||
+                 (work && dumped &&
+                  !snx_path_format(copy, sizeof copy, "%s/3ds/%s.decrypted.%s", work, dumped, dot ? dot + 1 : "game") &&
+                  snx_is_file(copy));
+    free(dumped);
+    free(ini);
+    if (there) {
+        free(source);
+        return NULL;
+    }
+    return source;
+}
+/* a Vita game made from a dumped game's folder, which the driver links as its app/ (src/vita/runtime/main.c's
+   link_dump): where that link points, owned, when it is gone; else NULL, as for a game extracted from a VPK, which keeps
+   its app/ */
+static char* vita_missing(const char* folder) {
+    char app[SNX_PATH_SIZE], *target;
+    if (snx_path_format(app, sizeof app, "%s/app", folder) || !snx_is_link(app) || snx_is_dir(app)) return NULL;
+    target = snx_link_target(app);
+    return target ? target : snx_strdup(app);
+}
+bool gui_game_source_missing(const char* path, const char* work, char* out, size_t size) {
+    char *folder, *name, *file = NULL;
     if (out && size) out[0] = 0;
     if (!gui_game_program(path) || !(folder = snx_dirname(path))) return false;
     name = snx_strdup(snx_path_leaf(folder));
-    system = snx_game_system(folder, name);
-    if (system == SNX_SYSTEM_SWITCH || system == SNX_SYSTEM_GBA) source = snx_game_source(folder, name, &recorded);
-    /* an older version's <name>.source link names its dump only by where it points, which the launcher cannot read */
-    if (source && recorded && !snx_path_format(link, sizeof link, "%s/%s.source", folder, name) &&
-        strcmp(source, link) && !snx_is_file(source) && !snx_extracted_game(source))
-        missing = system == SNX_SYSTEM_GBA ||
-                  (!snx_path_format(exefs, sizeof exefs, "%s/%s_data/exefs", folder, name) && !snx_is_dir(exefs));
-    if (missing && out && size) snprintf(out, size, "%s", source);
-    free(source);
+    switch (snx_game_system(folder, name)) {
+        case SNX_SYSTEM_SWITCH: file = switch_missing(folder, name); break;
+        case SNX_SYSTEM_GBA: file = gba_missing(folder, name); break;
+        case SNX_SYSTEM_3DS: file = ctr_missing(folder, name, work); break;
+        case SNX_SYSTEM_VITA: file = vita_missing(folder); break;
+    }
+    if (file && out && size) snprintf(out, size, "%s", file);
+    free(file);
     free(name);
     free(folder);
-    return missing;
+    return file != NULL;
 }
 char* gui_game_icon(const char* path) {
     char *folder, icon[SNX_PATH_SIZE], *found = NULL;

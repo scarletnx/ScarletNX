@@ -605,16 +605,21 @@ cannot be read is named and the others still listed.
   a recompiled folder of the Library, asks first, naming the game and its folder: **Play**, in focus, plays it,
   **Recompile** recompiles it where it is, as R does, and Back does neither.
 - A made game whose file to play from is not there is greyed and says `(file not found)` after its name, in the list
-  and in Recent Games, and the side box names the file (*Not found:* and its path): a Switch game read from its dump in
-  place (its ExeFS not extracted into its `<name>_data`), or a GBA game, whose ROM its driver reads at every run, the
-  file its `.ini`'s `source=` names. Opening it, as Enter, L and R do, asks first in a box of its own that names the
-  file whole: **Keep**, in focus, and Back leave it as it is; **Locate...** opens the system's file picker (its folder
-  picker for an extracted game's folder), and the file picked, a dump (`.nsp`, `.xci`) for a Switch game or a ROM
-  (`.gba`) for a GBA game, is what the game plays from from then on, in its `.ini`, another kind refused, the message
-  naming it and the file the game keeps; **Remove from Games**, in the warning colour, takes the game off Games and
-  Recent Games, its folder, settings and saves kept, until the file is back where its `.ini` says or a run of the dump
-  records it anew. The games taken off are kept in `removed.txt`, beside `recent.txt`, a program a line. A 3DS or Vita
-  game, whose drivers keep copies of their own, and a game that plays from its extraction say nothing.
+  and in Recent Games, and the side box names the file (*Not found:* and its path), as each driver plays it: a Switch
+  game read from its dump in place (`source=` in its `.ini`; its ExeFS not extracted into its `<name>_data`), a GBA
+  game, whose ROM its driver reads at every run, a 3DS game (`source=` in the `.ini` of its folder), unless its folder
+  holds its extraction (`exheader.bin`) or the extractions' folder a copy the 3DS driver decrypted
+  (`3ds/<name>.decrypted.<extension>`), and a Vita game made from a dumped game's folder, which its `app/` links. A Vita
+  game extracted from a VPK keeps its own `app/`. Opening it, as Enter, L and R do, asks first in a box of its own that
+  names the file whole: **Keep**, in focus, and Back leave it as it is; **Locate...** opens the system's file picker
+  (its folder picker for an extracted game's folder and a Vita game's), and what is picked, a dump (`.nsp`, `.xci`) or
+  an extracted game's folder for a Switch game, a ROM (`.gba`) for a GBA game, a `.cia`, `.cci`, `.3ds` or `.cxi` for a
+  3DS game, is what the game plays from from then on, in its `.ini`; a dumped Vita game's folder (with its
+  `sce_sys/param.sfo`) gets the game's `app/` linked to it, and its update beside it (`patch/<title ID>`) its `patch/`.
+  Another kind is refused, the message naming it and the file the game keeps. **Remove from Games**, in the warning
+  colour, takes the game off Games and Recent Games, its folder, settings and saves kept, until the file is back where
+  the game names it or a run of it records it anew. The games taken off are kept in `removed.txt`, beside
+  `recent.txt`, a program a line.
 - **L** (on Android a tap on *Play* at the foot, on a pad the right stick) plays the game in focus, recent or on the
   page, as Enter does, but a game with updates, DLCs, mods or cheats beside it plays as its box's **Play** does, with
   the ones the box keeps for it (its `.ini`'s `addons=`, `mods_off=` and `cheats_off=`), without showing the box or
