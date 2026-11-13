@@ -57,9 +57,13 @@ With no GPU profiler, take the GPU's cost by difference: the same scene at two `
 
 ## 4. The CPU's time
 
-- **Windows**: `profiler=1` (the `--profiler` setting) writes `profile.txt` beside the game every 10 s, by thread,
+- **Windows**: `profile=1` (the `--profile` setting) writes `profile.txt` beside the game every 10 s, by thread,
   with waiting threads counted as waiting (`platform/profiler_win32.c`).
-- **Linux**: `perf record -g --call-graph dwarf -p <pid>`, then `perf report`.
+- **Linux**: launch the game under perf with its events off, and turn them on for the scene: `mkfifo ctl ack`,
+  `perf record -F 199 --call-graph dwarf,8192 -D -1 --control fifo:ctl,ack -- <the game's command>`, then
+  `echo enable > ctl` and `echo disable > ctl`, and `perf report`. Attached with `-p <pid>`, perf runs out of time
+  reading the game's memory maps and the game's own frames come out `[unknown]`; `dwarf,65528` slowed a game three
+  times over.
 - **macOS**: `sample <pid> 5 -file out.txt`. It samples every thread, so a busy process can look idle; check
   `ps -o time` as well. Read CPU **seconds per frame**, not samples.
 - **iOS**: Instruments, Time Profiler, on a device.
