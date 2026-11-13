@@ -11,6 +11,9 @@ static struct {
     GpuTexture* v; /* open addressed by gva, a power of two of slots: one with no refs is free */
     u32 n, cap;    /* the slots taken, and all of them */
     u64 added;
+    /* the addresses whose last object ended, until gpu_textures_ended takes them */
+    u64 ended[1024];
+    u32 nended;
 } g_guest_textures = {.lock = PMUTEX_INIT};
 
 /* the slot the search for gva starts at, in a table of cap slots */
@@ -74,6 +77,8 @@ void gpu_texture_remove(u64 gva) {
         if (g_guest_textures.v[i].refs && !--g_guest_textures.v[i].refs) {
             slot_free(g_guest_textures.v, g_guest_textures.cap, i);
             g_guest_textures.n--;
+            if (g_guest_textures.nended < sizeof g_guest_textures.ended / sizeof *g_guest_textures.ended)
+                g_guest_textures.ended[g_guest_textures.nended++] = gva;
         }
     }
     pm_unlock(&g_guest_textures.lock);
@@ -84,6 +89,24 @@ u32 gpu_textures(GpuTexture* out, u32 cap) {
     const u32 n = g_guest_textures.n;
     for (u32 i = 0, k = 0; i < g_guest_textures.cap && k < cap; i++)
         if (g_guest_textures.v[i].refs) out[k++] = g_guest_textures.v[i];
+    pm_unlock(&g_guest_textures.lock);
+    return n;
+}
+
+int gpu_texture_live(u64 gva) {
+    int live = 0;
+    pm_lock(&g_guest_textures.lock);
+    if (g_guest_textures.cap)
+        live = g_guest_textures.v[slot_find(g_guest_textures.v, g_guest_textures.cap, gva)].refs != 0;
+    pm_unlock(&g_guest_textures.lock);
+    return live;
+}
+
+u32 gpu_textures_ended(u64* out, u32 cap) {
+    pm_lock(&g_guest_textures.lock);
+    const u32 n = g_guest_textures.nended < cap ? g_guest_textures.nended : cap;
+    for (u32 i = 0; i < n; i++) out[i] = g_guest_textures.ended[g_guest_textures.nended - n + i];
+    g_guest_textures.nended -= n;
     pm_unlock(&g_guest_textures.lock);
     return n;
 }

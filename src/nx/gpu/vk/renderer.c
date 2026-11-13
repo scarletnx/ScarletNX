@@ -880,10 +880,12 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 vk_mem_use(&usage, &budget);
                 trimmed = vk_mem_trimmed();
                 LOG("vulkan: caches: %u render targets (%llu MB, %u parked), %u textures (%llu MB), %u buffers (%llu "
-                    "MB); %llu of %llu MB in use as they count it, %llu MB freed for the budget so far\n",
+                    "MB); %llu of %llu MB in use as they count it, %llu MB freed for the budget so far; %llu MB of "
+                    "textures freed so far because the game ended them\n",
                     nrt, (unsigned long long)(brt >> 20), parked, ntex, (unsigned long long)(btex >> 20), nbuf,
                     (unsigned long long)(bbuf >> 20), (unsigned long long)(usage >> 20),
-                    (unsigned long long)(budget >> 20), (unsigned long long)(trimmed >> 20));
+                    (unsigned long long)(budget >> 20), (unsigned long long)(trimmed >> 20),
+                    (unsigned long long)(vk_surf_ended_freed() >> 20));
             }
             vk_tex_report_log();
             LOG("vulkan: %llu draws sampled a target they render to in place (%llu barriers in passes, %llu passes "

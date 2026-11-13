@@ -534,6 +534,7 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
     (void)before, (void)want;
     return 0;
 }
+void vk_surf_ended_frame(void) {}
 u32 vk_present_before(u64 ago_ns, u32 presents) {
     (void)ago_ns, (void)presents;
     return 0;
