@@ -4,7 +4,7 @@
    titled by name or by tag and ordered as Eden orders them; the assets each has, those with no link to download left
    out, a GPU maker's own marked; GitHub's own error said; NX-Mali's release and radv-xclipse's, as GitHub lists them,
    radv-xclipse's builds for Linux and for Bannerlator left out; and the recommendation by GPU name, Eden's by Adreno
-   model, NX-Mali by Mali model and RADV Xclipse by Xclipse model, found among a repository's releases */
+   model, NX-Mali from 0.0.3 on by Mali model and RADV Xclipse by Xclipse model, found among a repository's releases */
 #include "gui/gpu_driver_fetch.h"
 #include <assert.h>
 #include <stdio.h>
@@ -92,12 +92,36 @@ int main(void) {
         assert(r.count == 1 && r.assets_count == 1 && !strcmp(r.releases[0].title, "NX-Mali 0.0.1") &&
                r.releases[0].latest && !gui_driver_assets(&r)[0].proprietary &&
                !strcmp(gui_driver_assets(&r)[0].name, "NX-Mali_0.0.1.zip"));
-        /* its latest recommended on a Mali it gives 1.3; on one it gives 1.1, and on an Adreno, never */
-        assert(gui_driver_recommended_release("Mali-G615 MC6", 5, &r) == 0 &&
-               gui_driver_recommended_release("Mali-G710 MC10", 5, &r) == 0);
-        assert(gui_driver_recommended_release("Mali-G78 MC14", 5, &r) == -1 &&
-               gui_driver_recommended_release("Adreno (TM) 740", 5, &r) == -1);
+        /* older than 0.0.3, the first with the features Vulkan 1.2 and 1.3 require: not recommended */
+        assert(gui_driver_recommended_release("Mali-G615 MC6", 5, &r) == -1);
         gui_driver_releases_free(&r);
+    }
+    /* its releases share the tag beta and are told apart by their titles' versions: its latest recommended on a Mali
+       it gives 1.3 from 0.0.3 on (0.0.2's release as GitHub lists it, then later ones named the same way); on one it
+       gives 1.1, and on an Adreno, never */
+    {
+        static const struct {
+            const char* title;
+            int recommended;
+        } nx_mali[] = {{"NX-Mali 0.0.2", 0}, {"NX-Mali 0.0.3", 1}, {"NX-Mali 0.0.10", 1},
+                       {"NX-Mali 0.1", 1},   {"NX-Mali 1.0.0", 1}, {"NX-Mali beta", 0}};
+        for (size_t i = 0; i < sizeof nx_mali / sizeof *nx_mali; ++i) {
+            char json[600];
+            snprintf(json, sizeof json,
+                     "[{\"tag_name\": \"beta\", \"name\": \"%s\", \"prerelease\": false,"
+                     "  \"body\": \"Vulkan 1.3 on Mali-G615 (CSF), built on malisx2 0.5.0.\","
+                     "  \"published_at\": \"2026-11-13T19:32:45Z\","
+                     "  \"assets\": [{\"name\": \"NX-Mali_0.0.2.zip\", \"size\": 4646207, \"browser_download_url\":"
+                     "    \"https://github.com/Slopinator99/NX-Mali/releases/download/beta/NX-Mali_0.0.2.zip\"}]}]",
+                     nx_mali[i].title);
+            assert(gui_driver_releases_parse(json, strlen(json), &gui_driver_repos[5], &r, why, sizeof why));
+            assert(r.count == 1 && r.releases[0].latest && !strcmp(r.releases[0].title, nx_mali[i].title));
+            assert(gui_driver_recommended_release("Mali-G615 MC6", 5, &r) == (nx_mali[i].recommended ? 0 : -1) &&
+                   gui_driver_recommended_release("Mali-G710 MC10", 5, &r) == (nx_mali[i].recommended ? 0 : -1));
+            assert(gui_driver_recommended_release("Mali-G78 MC14", 5, &r) == -1 &&
+                   gui_driver_recommended_release("Adreno (TM) 740", 5, &r) == -1);
+            gui_driver_releases_free(&r);
+        }
     }
     /* radv-xclipse's three newest releases as GitHub lists them (each body cut to its first line): titled by tag, the
        latest the first that is no prerelease, each with its Android package alone */
@@ -187,7 +211,7 @@ int main(void) {
                                             "Mali-G715-Immortalis MC11"};
         static const char* const at_11[] = {"Mali-G52", "Mali-G57 MC2", "Mali-G68 MC4", "Mali-G77 MC9", "Mali-G78AE"};
         for (size_t i = 0; i < sizeof at_13 / sizeof *at_13; ++i)
-            assert(!strcmp(gui_driver_recommended(at_13[i]), "NX-Mali"));
+            assert(!strcmp(gui_driver_recommended(at_13[i]), "NX-Mali 0.0.3"));
         for (size_t i = 0; i < sizeof at_11 / sizeof *at_11; ++i)
             assert(!strcmp(gui_driver_recommended(at_11[i]), "Unsupported"));
         assert(!strcmp(gui_driver_recommended("Mali-G76 MC4"), "Unsupported") &&

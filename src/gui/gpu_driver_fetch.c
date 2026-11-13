@@ -152,36 +152,39 @@ int gui_xclipse_model(const char* gpu_name) {
     for (; snx_is_digit((unsigned char)*p) && model < 100000; ++p) model = model * 10 + (*p - '0');
     return !*p || *p == ' ' ? model : 0;
 }
-/* the picks by model, each as the repository its release is in and a part of that release's tag, NULL for the
-   repository's latest. Adreno's are Eden's (DriverFetcherFragment.kt); 605 to 613 have no multiview in hardware:
-   EOL-24.3.4 then says Vulkan 1.0, short of what ScarletNX needs, and T30 emulates it and says 1.4. The Malis are
-   those NX-Mali says Vulkan 1.3 on (its api_version_for_arch: arch 10 and up, the command-stream ones): the G610 and
-   the G710, the G615 and the G715. On its job-manager parts (the G52, G57, G68, G77 and G78) it says 1.1, which
-   device_score refuses, so none is recommended there. The Xclipses are those radv-xclipse drives (its README's
-   Compatibility; its ac_xclipse_chips, none of them refused as unstable), each at Vulkan 1.4 (its build.sh turns
-   android-strict off): the 530, 540 and 550, the 920, 940, 950 and 960. Ray tracing, which hangs the 950 and the 960
-   there, is no part of what ScarletNX asks of a GPU */
+/* the picks by model, each as the repository its release is in, a part of that release's tag (NULL for the
+   repository's latest) and the oldest version recommended, by the version in the release's title (NULL for any).
+   Adreno's are Eden's (DriverFetcherFragment.kt); 605 to 613 have no multiview in hardware: EOL-24.3.4 then says
+   Vulkan 1.0, short of what ScarletNX needs, and T30 emulates it and says 1.4. The Malis are those NX-Mali says Vulkan
+   1.3 on (its api_version_for_arch: arch 10 and up, the command-stream ones): the G610 and the G710, the G615 and the
+   G715, from NX-Mali 0.0.3 on, the first to report the descriptor indexing features 1.2 and 1.3 require and to write
+   gl_DrawID for each draw; its releases share one tag, beta, and their titles name them ("NX-Mali 0.0.3"). On its
+   job-manager parts (the G52, G57, G68, G77 and G78) it says 1.1, which device_score refuses, so none is recommended
+   there. The Xclipses are those radv-xclipse drives (its README's Compatibility; its ac_xclipse_chips, none of them
+   refused as unstable), each at Vulkan 1.4 (its build.sh turns android-strict off): the 530, 540 and 550, the 920,
+   940, 950 and 960. Ray tracing, which hangs the 950 and the 960 there, is no part of what ScarletNX asks of a GPU */
 static const struct {
     int gpu, lo, hi;
-    const char *driver, *repo, *tag;
-} g_recommended[] = {{GUI_DRIVER_ADRENO, 10, 99, "KIMCHI Latest", "K11MCH1/AdrenoToolsDrivers", NULL},
-                     {GUI_DRIVER_ADRENO, 600, 613, "Mr. Purple T30", "MrPurple666/purple-turnip", "T30"},
-                     {GUI_DRIVER_ADRENO, 614, 639, "Mr. Purple EOL-24.3.4", "MrPurple666/purple-turnip", "EOL-24.3.4"},
-                     {GUI_DRIVER_ADRENO, 640, 699, "Mr. Purple T19", "MrPurple666/purple-turnip", "T19"},
-                     {GUI_DRIVER_ADRENO, 700, 710, "KIMCHI 25.2.0_r5", "K11MCH1/AdrenoToolsDrivers", "v25.2.0-rc.05"},
-                     {GUI_DRIVER_ADRENO, 711, 799, "Mr. Purple T23", "MrPurple666/purple-turnip", "T23"},
-                     {GUI_DRIVER_ADRENO, 800, 899, "GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", NULL},
-                     {GUI_DRIVER_MALI, 610, 610, "NX-Mali", "Slopinator99/NX-Mali", NULL},
-                     {GUI_DRIVER_MALI, 615, 615, "NX-Mali", "Slopinator99/NX-Mali", NULL},
-                     {GUI_DRIVER_MALI, 710, 710, "NX-Mali", "Slopinator99/NX-Mali", NULL},
-                     {GUI_DRIVER_MALI, 715, 715, "NX-Mali", "Slopinator99/NX-Mali", NULL},
-                     {GUI_DRIVER_XCLIPSE, 530, 530, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
-                     {GUI_DRIVER_XCLIPSE, 540, 540, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
-                     {GUI_DRIVER_XCLIPSE, 550, 550, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
-                     {GUI_DRIVER_XCLIPSE, 920, 920, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
-                     {GUI_DRIVER_XCLIPSE, 940, 940, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
-                     {GUI_DRIVER_XCLIPSE, 950, 950, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
-                     {GUI_DRIVER_XCLIPSE, 960, 960, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL}};
+    const char *driver, *repo, *tag, *min;
+} g_recommended[] = {
+    {GUI_DRIVER_ADRENO, 10, 99, "KIMCHI Latest", "K11MCH1/AdrenoToolsDrivers", NULL, NULL},
+    {GUI_DRIVER_ADRENO, 600, 613, "Mr. Purple T30", "MrPurple666/purple-turnip", "T30", NULL},
+    {GUI_DRIVER_ADRENO, 614, 639, "Mr. Purple EOL-24.3.4", "MrPurple666/purple-turnip", "EOL-24.3.4", NULL},
+    {GUI_DRIVER_ADRENO, 640, 699, "Mr. Purple T19", "MrPurple666/purple-turnip", "T19", NULL},
+    {GUI_DRIVER_ADRENO, 700, 710, "KIMCHI 25.2.0_r5", "K11MCH1/AdrenoToolsDrivers", "v25.2.0-rc.05", NULL},
+    {GUI_DRIVER_ADRENO, 711, 799, "Mr. Purple T23", "MrPurple666/purple-turnip", "T23", NULL},
+    {GUI_DRIVER_ADRENO, 800, 899, "GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", NULL, NULL},
+    {GUI_DRIVER_MALI, 610, 610, "NX-Mali 0.0.3", "Slopinator99/NX-Mali", NULL, "0.0.3"},
+    {GUI_DRIVER_MALI, 615, 615, "NX-Mali 0.0.3", "Slopinator99/NX-Mali", NULL, "0.0.3"},
+    {GUI_DRIVER_MALI, 710, 710, "NX-Mali 0.0.3", "Slopinator99/NX-Mali", NULL, "0.0.3"},
+    {GUI_DRIVER_MALI, 715, 715, "NX-Mali 0.0.3", "Slopinator99/NX-Mali", NULL, "0.0.3"},
+    {GUI_DRIVER_XCLIPSE, 530, 530, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL, NULL},
+    {GUI_DRIVER_XCLIPSE, 540, 540, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL, NULL},
+    {GUI_DRIVER_XCLIPSE, 550, 550, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL, NULL},
+    {GUI_DRIVER_XCLIPSE, 920, 920, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL, NULL},
+    {GUI_DRIVER_XCLIPSE, 940, 940, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL, NULL},
+    {GUI_DRIVER_XCLIPSE, 950, 950, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL, NULL},
+    {GUI_DRIVER_XCLIPSE, 960, 960, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL, NULL}};
 #define GUI_DRIVER_PICKS (sizeof g_recommended / sizeof g_recommended[0])
 /* gpu_name's pick in g_recommended, GUI_DRIVER_PICKS for none */
 static size_t recommended_of(const char* gpu_name) {
@@ -194,6 +197,26 @@ static size_t recommended_of(const char* gpu_name) {
     }
     return i;
 }
+/* the first version in text, its whole numbers between dots ("NX-Mali 0.0.3": 0, 0 and 3), into part: 0 for a part
+   it lacks, all of them for a text with no digit */
+static void version_of(const char* text, unsigned part[4]) {
+    memset(part, 0, 4 * sizeof *part);
+    while (*text && !snx_is_digit((unsigned char)*text)) ++text;
+    for (int i = 0; i < 4 && snx_is_digit((unsigned char)*text); ++i) {
+        for (; snx_is_digit((unsigned char)*text); ++text)
+            if (part[i] < 100000) part[i] = part[i] * 10 + (unsigned)(*text - '0');
+        if (*text == '.') ++text;
+    }
+}
+/* 1 when title's version is min's or newer, a title with none being 0 */
+static int version_at_least(const char* title, const char* min) {
+    unsigned have[4], need[4];
+    version_of(title, have);
+    version_of(min, need);
+    for (int i = 0; i < 4; ++i)
+        if (have[i] != need[i]) return have[i] > need[i];
+    return 1;
+}
 const char* gui_driver_recommended(const char* gpu_name) {
     size_t i = recommended_of(gpu_name);
     return i < GUI_DRIVER_PICKS ? g_recommended[i].driver : SNX_TR_NOOP("Unsupported");
@@ -205,6 +228,8 @@ int gui_driver_recommended_release(const char* gpu_name, int repo, const GuiDriv
         return -1;
     for (k = 0; k < list->count; ++k)
         if (g_recommended[i].tag ? has_nocase(list->releases[k].tag, g_recommended[i].tag) : list->releases[k].latest)
-            return (int)k;
-    return -1;
+            break;
+    if (k == list->count || (g_recommended[i].min && !version_at_least(list->releases[k].title, g_recommended[i].min)))
+        return -1;
+    return (int)k;
 }
