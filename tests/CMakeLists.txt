@@ -1914,6 +1914,10 @@ add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "
 # CPM_USE_LOCAL_PACKAGES takes from the system the packages added with snx_cpm_local_package alone (cmake/cpm_local.cmake)
 add_test(NAME cpm_local COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCPM=${cpm_file}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpm-local-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/cpm_local_test.cmake")
+# SNX_SYSTEM_SDL3 takes a system SDL3 from 3.4.12, and says what it found where it takes none (cmake/system_sdl3.cmake)
+add_test(NAME system_sdl3 COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/system-sdl3-test" "-DGENERATOR=${CMAKE_GENERATOR}"
+         "-DMAKE=${CMAKE_MAKE_PROGRAM}" -P "${CMAKE_CURRENT_SOURCE_DIR}/system_sdl3_test.cmake")
 # where cmake/cross.cmake puts -mabi=elfv2: PowerPC64's compiles and links, no other processor's
 add_test(NAME cross_flags COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" -P
          "${CMAKE_CURRENT_SOURCE_DIR}/cross_flags_test.cmake")
