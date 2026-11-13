@@ -17,7 +17,7 @@ import org.robolectric.shadows.ShadowActivityManager;
 
 /** What Android says of how a process of the app ended (Exits), for a start's mark that no process holds: the end of
     that pid after its start, never an earlier process's that had the pid, nor another pid's; none kept said so; below
-    Android 11 that the system says none */
+    Android 11 that the system says none. The same end as fields for the launcher's Last Run */
 @RunWith(RobolectricTestRunner.class)
 public class ExitsTest {
     private static final long STARTED = 1_767_225_600_000L;
@@ -36,6 +36,7 @@ public class ExitsTest {
                                        .setStatus(status)
                                        .setImportance(400)
                                        .setRss(3_500L << 10)
+                                       .setPss(5_000L << 10)
                                        .setTimestamp(at)
                                        .setDescription(description)
                                        .build();
@@ -76,6 +77,23 @@ public class ExitsTest {
     public void belowAndroid11TheSystemSaysNone() {
         assertEquals("Android (API 29) does not say why a process ended, as Android 11 (API 30) does",
                      Exits.of(null, "org.scarletnx", 29, 4242, STARTED));
+    }
+
+    @Test
+    public void theSameEndAsFieldsForTheLastRun() {
+        ended(4242, ApplicationExitInfo.REASON_CRASH_NATIVE, 11, STARTED - 60_000, "an earlier process of that pid");
+        ended(4242, ApplicationExitInfo.REASON_LOW_MEMORY, 0, STARTED + 90_000, "two\nlines");
+        assertEquals("reason=3\nsaid=low memory\nprocess=org.scarletnx:game\nstatus=0\nimportance=400 cached\n"
+                         + "pss=5120000\nrss=3584000\ndescription=two lines\n",
+                     Exits.fields(manager, "org.scarletnx", 36, 4242, STARTED));
+        ended(77, ApplicationExitInfo.REASON_SIGNALED, 9, STARTED + 5_000, null);
+        assertEquals("reason=2\nsaid=signaled\nprocess=org.scarletnx:game\nstatus=9\nimportance=400 cached\n"
+                         + "pss=5120000\nrss=3584000\ndescription=\n",
+                     Exits.fields(manager, "org.scarletnx", 30, 77, STARTED));
+        assertEquals("none=Android keeps no end of pid 99 since it started\n",
+                     Exits.fields(manager, "org.scarletnx", 36, 99, STARTED));
+        assertEquals("none=Android (API 29) does not say why a process ended, as Android 11 (API 30) does\n",
+                     Exits.fields(null, "org.scarletnx", 29, 4242, STARTED));
     }
 
     @Test

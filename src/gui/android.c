@@ -157,6 +157,15 @@ char* gui_android_exit_reason(long long pid, long long started) {
     return text ? text : snx_format("the system's reason is unknown: %s", why);
 }
 
+char* gui_android_exit_fields(long long pid, long long started) {
+    char why[640], *text;
+    jvalue args[2];
+    args[0].i = (jint)pid;
+    args[1].j = (jlong)started * 1000;
+    text = ask("exitFields", "(IJ)[B", args, why, sizeof why);
+    return text ? text : snx_format("none=the system's reason is unknown: %s\n", why);
+}
+
 int gui_android_state_watch(char* message, size_t size) { return call("stateWatch", "()V", NULL, message, size); }
 /* MainActivity's state: line, UTF-8, at the watch's start and at each change of what it says */
 JNIEXPORT void JNICALL Java_org_scarletnx_MainActivity_stateSaid(JNIEnv* env, jclass activity, jbyteArray line);
