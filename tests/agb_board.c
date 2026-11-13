@@ -251,16 +251,29 @@ int main(void) {
     agb_write32(&board, 0x00000000, 0);
     board.bios_prefetch = AGB_BIOS_PREFETCH_SWI;
     CHECK(agb_read32(&board, 0x00000000) == AGB_BIOS_PREFETCH_SWI);
-    /* past the 28 bits the console decodes (but for the mirror at bit 31) nothing answers: a read gives the open bus at
-       its lane and a write goes nowhere, as mGBA's GBALoadBad */
+    /* where the console decodes nothing, past the BIOS up to EWRAM and past the 28 bits (0x8xxxxxxx too), a read gives
+       the open bus at its lane and a write goes nowhere, as mGBA's GBALoadBad */
     board.open_bus = 0x0A000005;
     CHECK(agb_read32(&board, 0x2E00A610) == 0x0A000005 && agb_read16(&board, 0xFFFFFFFE) == 0x0A00 &&
           agb_read8(&board, 0x10000001) == 0x00 && agb_read8(&board, 0x7FFFFFF3) == 0x0A);
+    CHECK(agb_read32(&board, 0x00004000) == 0x0A000005 && agb_read16(&board, 0x01FFFFFE) == 0x0A00 &&
+          agb_read8(&board, 0x80000000) == 0x05);
     agb_write32(&board, 0x2E00A610, 0x12345678);
     agb_write8(&board, 0x9E000000, 0x77);
     CHECK(agb_read32(&board, 0x2E00A610) == 0x0A000005);
+    /* bit 31 mirrors nothing: a word there reads the open bus, not EWRAM's, and a store of any width there reaches
+       neither EWRAM nor the save memory */
+    agb_save_reset(&board, AGB_SAVE_SRAM);
     agb_write32(&board, 0x02000040, 0x5A5A5A5A);
-    CHECK(agb_read32(&board, 0x82000040) == 0x5A5A5A5A);
+    {
+        uint8_t saved[2] = {agb_read8(&board, 0x0E000040), agb_read8(&board, 0x0E000044)};
+        agb_write32(&board, 0x82000040, 0x11111111);
+        agb_write16(&board, 0x82000044, 0x2222);
+        agb_write8(&board, 0x8E000040, 0x33);
+        CHECK(agb_read32(&board, 0x82000040) == 0x0A000005 && agb_read32(&board, 0x02000040) == 0x5A5A5A5A);
+        CHECK(agb_read8(&board, 0x0E000040) == saved[0] && agb_read8(&board, 0x0E000044) == saved[1] &&
+              !board.save.dirty);
+    }
 
     /* the cartridge windows hold the image once, and past it the bus still holds address / 2 */
     CHECK(agb_read32(&board, 0x08000000) == board.cartridge.entry);
