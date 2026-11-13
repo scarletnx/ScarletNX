@@ -44,6 +44,7 @@ int g_frames, g_opt_fps;
 #define EVENT     0x3600u
 #define EVENT_B   0x3640u
 #define PROGRAM   0x3700u
+#define PROGRAM2  0x3800u
 #define DEVICE    0x4000u
 #define DEVICE_B  0x7000u
 #define QUEUE_B   0x7100u
@@ -670,6 +671,53 @@ static void test_geometry_stream_metadata(void) {
         check(layout.stream[i] == i && g_ds.xfb.stream[i] == i && g_ds.xfb.count[i] == 4 &&
                   g_ds.xfb.stride[i] == 16 && g_ds.xfb.layout[i][0] == 32 + 4 * i,
               "each immutable geometry capture buffer retains its own stream and attribute layout");
+    nvn_CommandBufferFinalize(NULL, CMDBUF);
+}
+
+/* A fragment program's early tests: its control section's byte at 0x718, which the game's driver writes into
+   MANDATED_EARLY_Z (3D method 0x084) when SetShaders builds the program's commands. A bind of the program sets the
+   draw state's early_z, and a bind of a program without the byte clears it. A bind of other stages keeps it */
+static void test_early_tests(void) {
+    const u64 control = 0xa000, vertex = 0xb000, pairs = 0xc000;
+    static NvnDraw draw;
+    nvn_draw_init(&draw, 0x80000001u);
+    nvn_CommandBufferInitialize(NULL, CMDBUF, DEVICE);
+    nvn_CommandBufferAddCommandMemory(NULL, CMDBUF, POOL, 0x9000, 0x8000);
+    nvn_CommandBufferAddControlMemory(NULL, CMDBUF, SCRATCH + 0x1000, 0x400);
+    check(nvn_ProgramInitialize(NULL, PROGRAM, DEVICE), "a program for early tests");
+    for (u32 asks = 0; asks < 2; asks++) {
+        tess_control(control, NVN_SHADER_STAGE_FRAGMENT, 16, (const u32[4]){0}, 0);
+        GP(control)[0x718] = (u8)asks;
+        gw64(pairs, 0x900000);
+        gw64(pairs + 8, control);
+        check(nvn_ProgramSetShaders(NULL, PROGRAM, 1, pairs), "a fragment program");
+        u64 serial = NVN_OBJ(const NvnProgram, PROGRAM)->serial;
+        check(nvn_program_early_z(serial) == (int)asks, "SetShaders keeps the control section's early test byte");
+        nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+        nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM, NVN_SHADER_STAGE_FRAGMENT_BIT);
+        nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3);
+        u64 handle = nvn_CommandBufferEndRecording(NULL, CMDBUF);
+        memset(GP(control), 0, 0x900); /* the control section goes back to the game before the replay */
+        check(replay(&draw, handle, OP_DRAW) == 1 && g_ds.prog.early_z == asks,
+              "a bind of the fragment program gives the draw its early tests");
+    }
+    /* the fragment program with the byte bound, then a vertex program alone: the fragment stage's flag stays */
+    tess_control(control, NVN_SHADER_STAGE_FRAGMENT, 16, (const u32[4]){0}, 0);
+    GP(control)[0x718] = 1;
+    gw64(pairs, 0x900000);
+    gw64(pairs + 8, control);
+    check(nvn_ProgramSetShaders(NULL, PROGRAM, 1, pairs), "a fragment program that asks for early tests");
+    nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+    nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM, NVN_SHADER_STAGE_FRAGMENT_BIT);
+    tess_control(vertex, NVN_SHADER_STAGE_VERTEX, 16, (const u32[4]){0}, 0);
+    gw64(pairs, 0xa00000);
+    gw64(pairs + 8, vertex);
+    check(nvn_ProgramInitialize(NULL, PROGRAM2, DEVICE), "a second program");
+    check(nvn_ProgramSetShaders(NULL, PROGRAM2, 1, pairs), "a vertex program");
+    nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM2, NVN_SHADER_STAGE_VERTEX_BIT);
+    nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3);
+    check(replay(&draw, nvn_CommandBufferEndRecording(NULL, CMDBUF), OP_DRAW) == 1 && g_ds.prog.early_z == 1,
+          "a bind of the vertex stage alone keeps the fragment program's early tests");
     nvn_CommandBufferFinalize(NULL, CMDBUF);
 }
 
@@ -1335,6 +1383,7 @@ int main(void) {
     test_tessellation_metadata();
     test_ounce_program_records();
     test_geometry_stream_metadata();
+    test_early_tests();
     test_subroutines();
     test_program_object_bytes();
     test_texture();

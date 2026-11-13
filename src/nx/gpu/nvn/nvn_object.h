@@ -83,6 +83,8 @@ typedef struct {
     u32 nounce, ounce_capacity;
     NvnSubProgram* subprogram;
     u32 nsubprogram, subprogram_capacity;
+    u64* early_z; /* the serials of the programs whose fragment stage asks for early tests, sorted, under xfb_lock */
+    u32 nearly_z, early_z_capacity;
     NvnSubLinkage** sublinkage;
     u32 nsublinkage, sublinkage_capacity;
 } NvnObjectState;
@@ -110,6 +112,9 @@ void nvn_wait_end(void);
 /* the transform feedback layout of the program SetShaders gave serial, 0 when it captures nothing */
 int nvn_program_xfb(u64 serial, ShXfb* x);
 int nvn_program_tess(u64 serial, NvnTessStage stages[2]);
+/* whether the fragment stage of the program SetShaders gave serial asks for the depth and stencil tests before it
+   runs: the game's driver sets MANDATED_EARLY_Z (3D method 0x084) for it */
+int nvn_program_early_z(u64 serial);
 /* the c[0] record of the Ounce compute program SetShaders gave serial (NVN_C0_RECORD), all 0 for another program */
 void nvn_program_c0(u64 serial, u8 c0[NVN_C0_RECORD]);
 /* the task and mesh programs' fields of the Ounce program SetShaders gave serial, all 0 for another program */
