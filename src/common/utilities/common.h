@@ -359,6 +359,9 @@ void snx_thread_clock_close(SnxU64 clock);
 /* names the calling thread for the system, which debuggers, crash reports, the system's tools and snx_threads show:
    Linux and Android keep its first 15 bytes, FreeBSD 19, the others 63 (Windows from 10 1607; earlier ones none) */
 void snx_thread_name(const char* name);
+/* the calling thread's name as the system keeps it, into out (n bytes): "" where the system gives none (Windows
+   before 10 1607, the BSDs but FreeBSD). On Linux and Android a system call alone, which a crash handler may make */
+void snx_thread_name_get(char* out, size_t n);
 /* The nice a thread snx_thread_priority_low lowers gets above its own on Linux and Android. Their scheduler shares a
    busy CPU by weight, 1.25 times less a step of nice (sched_prio_to_weight: 1024 at 0, 110 at 10, 15 at 19): at 10 a
    game thread at 0 keeps 90% of a CPU it shares with one and is given it first when it wakes, while a pipeline the

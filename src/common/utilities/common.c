@@ -2429,6 +2429,32 @@ void snx_thread_name(const char* name) {
     pthread_set_name_np(pthread_self(), cut);
 #endif
 }
+void snx_thread_name_get(char* out, size_t n) {
+    if (!n) return;
+    out[0] = 0;
+#if defined(_WIN32)
+    typedef HRESULT(WINAPI * DescriptionFn)(HANDLE, PWSTR*);
+    DescriptionFn description =
+        (DescriptionFn)(void (*)(void))GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription");
+    PWSTR wide = NULL;
+    char full[256];
+    if (description && SUCCEEDED(description(GetCurrentThread(), &wide)) && wide) {
+        if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, full, (int)sizeof full, NULL, NULL))
+            snprintf(out, n, "%s", full); /* cut as the other systems cut it */
+        LocalFree(wide);
+    }
+#elif defined(__APPLE__)
+    if (pthread_getname_np(pthread_self(), out, n)) out[0] = 0;
+#elif defined(__linux__)
+    char name[16]; /* PR_GET_NAME writes 16 bytes, its end included */
+    size_t i = 0;
+    if (!prctl(PR_GET_NAME, (unsigned long)name, 0, 0, 0))
+        for (; i + 1 < n && i < sizeof name - 1 && name[i]; i++) out[i] = name[i];
+    out[i] = 0;
+#elif defined(__FreeBSD__)
+    pthread_get_name_np(pthread_self(), out, n);
+#endif
+}
 #if defined(__APPLE__)
 static const char* qos_name(qos_class_t c) {
     switch (c) {

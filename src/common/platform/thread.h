@@ -117,6 +117,14 @@ int plat_thread_idle(void);
 /* the calling thread's id, as the system numbers threads (Linux's gettid, kept per thread). Safe in a signal handler
    once the thread has called it one time */
 uint32_t plat_tid(void);
+/* What the calling thread is doing while it is in code outside the runtime that may crash, a driver compiling a
+   pipeline: the crash report of a runtime thread prints it, as the place it gives for such a crash is only the
+   library's. A line, cut at PLAT_THREAD_NOTE_SIZE - 1 bytes, kept until plat_thread_note_clear. Per thread */
+#define PLAT_THREAD_NOTE_SIZE 512
+void plat_thread_note(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+void plat_thread_note_clear(void);
+/* the calling thread's note, "" without one */
+const char* plat_thread_note_get(void);
 #if defined(_WIN32)
 /* asks Windows one time for a 1 ms scheduler tick (its default is 15.6 ms), before the first timed wait */
 void plat_timer_1ms(void);
