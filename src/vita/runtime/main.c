@@ -18,6 +18,7 @@
 #include "common/platform/file.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/key_text.h"
 #include "snx_settings.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -49,7 +50,11 @@ static void usage(FILE* out) {
         "  --KEY=VALUE            A Vita debug setting: --vita_hle_trace=1 logs each import the runtime lacks (2\n"
         "                         every call), --vita_gxm_trace=1 each scene. And the Switch's --aot_threads=N:\n"
         "                         the game's code compiles on N threads (1 to 1024; the default 0: the computer's\n"
-        "                         cores with a quarter left free, or --aot_threads_most=N), the same as --jobs N\n"
+        "                         cores with a quarter left free, or --aot_threads_most=N), the same as --jobs N.\n"
+        "                         --upscaler=, --upscaler_sharpness= and --anti_aliasing= are the Switch's (both\n"
+        "                         off by default), which --hotkey_upscaler=KEY (Ctrl+U) and\n"
+        "                         --hotkey_anti_aliasing=KEY (Ctrl+Shift+A) step while the game runs, a notice\n"
+        "                         over the game saying what runs\n"
         "\n"
         "On the Vita, -O is the level of the blocks' code and of the helpers they call. --chunk N puts N instructions\n"
         "in a chunk, whole blocks (default: 512 blocks a chunk). --jit-cache FILE is the list of the blocks a run\n"
@@ -340,7 +345,7 @@ int snx_vita_main(int argc, char** argv) {
         if (!strncmp(a, "--", 2) && strchr(a, '=')) {
             /* the Vita debug table's, --press_len= and --shot_every= being vita_press_len and vita_shot_every (a Switch
                game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet), the
-               upscaler and the anti-aliasing (the presenter's, gpu/vk.c) and gamepad_map */
+               upscaler and the anti-aliasing (the presenter's, gpu/vk.c), the keys that step them and gamepad_map */
             char key[64];
             const char* value = ini_arg(a, key, sizeof key);
             const IniOpt* o = NULL;
@@ -363,7 +368,16 @@ int snx_vita_main(int argc, char** argv) {
             }
             if (o)
                 ini_read(o, value);
-            else if (value && !strcmp(key, "gamepad_map")) /* the input's to read, as the 3DS's */
+            else if (value && (!strcmp(key, "hotkey_upscaler") || !strcmp(key, "hotkey_anti_aliasing"))) {
+                /* the keys that step the upscaler and the anti-aliasing (gpu/present.c): a text that is no key is
+                   said, the key kept, as a Switch game says it */
+                char said[320];
+                bool up = !strcmp(key, "hotkey_upscaler");
+                if (snx_key_set(key, value, up ? g_settings.upscaler_shortcut : g_settings.anti_aliasing_shortcut,
+                                up ? sizeof g_settings.upscaler_shortcut : sizeof g_settings.anti_aliasing_shortcut,
+                                said, sizeof said))
+                    fprintf(stderr, "scarletnx-vita: %s\n", said);
+            } else if (value && !strcmp(key, "gamepad_map")) /* the input's to read, as the 3DS's */
                 vita_input_map(value);
             else {
                 fprintf(stderr, "scarletnx-vita: unknown setting: %s\n", a);
