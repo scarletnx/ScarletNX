@@ -19,6 +19,10 @@ if(BUILD_TESTING)
     add_test(NAME gui_ui COMMAND snx-test-gui-ui)
     add_executable(snx-test-gui-cia-browser "${PROJECT_SOURCE_DIR}/tests/gui_cia_browser.c")
     target_link_libraries(snx-test-gui-cia-browser PRIVATE snx_gui_support scarletnx-common)
+    if(TARGET snx_zstd) # a z3ds game's title, its fixture made with zstd's compressor
+        target_link_libraries(snx-test-gui-cia-browser PRIVATE snx_zstd)
+        target_compile_definitions(snx-test-gui-cia-browser PRIVATE SNX_TEST_ZSTD)
+    endif()
     add_test(NAME gui_cia_browser COMMAND snx-test-gui-cia-browser)
     # a GPU driver package's zip added, refused, listed and removed, and the driver a game's run is passed
     add_executable(snx-test-gui-gpu-driver "${PROJECT_SOURCE_DIR}/tests/gui_gpu_driver.c")

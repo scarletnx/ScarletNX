@@ -616,7 +616,13 @@ cannot be read is named and the others still listed.
   an extracted game's folder for a Switch game, a ROM (`.gba`) for a GBA game, a `.cia`, `.cci`, `.3ds` or `.cxi` for a
   3DS game, is what the game plays from from then on, in its `.ini`; a dumped Vita game's folder (with its
   `sce_sys/param.sfo`) gets the game's `app/` linked to it, and its update beside it (`patch/<title ID>`) its `patch/`.
-  Another kind is refused, the message naming it and the file the game keeps. **Remove from Games**, in the warning
+  Another kind is refused, the message naming it and the file the game keeps; so is another game's, by its title: a
+  Switch dump's as its driver reads it with the keys (the `title.ini` of its icon, asked for and waited on when it has
+  none yet), an extracted game's from its `main.npdm`, a 3DS game's from its CIA's TMD, its cartridge image's or its
+  NCCH's header (alone, in a bundle or in a z3ds file, the product code beside it where it is in the clear) and a Vita
+  game's `TITLE_ID`, each against the title ID the game's folder is named by; a GBA ROM by its hash against the one
+  the game's map names (`<name>_code.map`), its header's game code and title said. The message says both, and one
+  whose title does not read is refused, saying why. **Remove from Games**, in the warning
   colour, takes the game off Games and Recent Games, its folder, settings and saves kept, until the file is back where
   the game names it or a run of it records it anew. The games taken off are kept in `removed.txt`, beside
   `recent.txt`, a program a line.

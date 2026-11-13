@@ -48,6 +48,7 @@
 #include "common/utilities/window_icon.h"
 #include "common/utilities/build_info.h"
 #include "gui/recent.h"
+#include "gui/title.h"
 #include "gui/pad_menu.h"
 #include "gui/clean.h"
 #include "gui/settings.h"
@@ -801,6 +802,8 @@ typedef struct App {
        event of missing_picked */
     char *missing_game, *missing_file, *missing_picking;
     Uint32 missing_picked;
+    /* the file Locate... picked whose title the driver is asked for, and its game's program, until it answers */
+    char *reading_game, *reading_file;
     bool compiled;   /* the game a compile just made plays (job_play): its stamp is not looked at again */
     char* room_file; /* a run asked about (GUI_ASK_ROOM): its file, its load and whether it was prepared */
     int room_item;
@@ -1999,6 +2002,7 @@ static void place_screen(App* app, GuiPlace* p, const char* keys, int shows);
 static const char* shown_keys(const App* app, char* out, size_t size);
 static void aot_status_update(App* app);
 static void side_focus_update(App* app);
+static void missing_read(App* app);
 /* a screen's keys, Tab's after them; the key back of a screen whose own keys do not say it; F1's, last in a foot */
 #define SAY_TAB SNX_TR_KEYS("Tab: screen. F2: side box.")
 #ifdef SNX_TOUCH_UI
@@ -16049,6 +16053,7 @@ static void pump(App* app) {
             app->dump_icons_seen = answered;
             icons_forget_none(app);
             app->titles_due = true;
+            missing_read(app); /* the title Locate... waits on */
         }
     }
     titles_look(app, now);
@@ -20010,13 +20015,97 @@ static int vita_relink(const char* folder, const char* title, const char* dump, 
     free(full);
     return failed;
 }
+/* what Locate... found of the title of the file picked, against the game's: the same (or nothing to compare it with),
+   another, one that does not read, or one asked of the driver, whose answer comes later */
+typedef enum { TITLE_SAME, TITLE_OTHER, TITLE_UNREAD, TITLE_ASKED } TitleSaid;
+/* the title of path, of kind for the game whose program is program, against the one the game was made from, each
+   said into found and expected (or why it does not read into why): a Switch dump's as its driver read it (title.ini of
+   its icon's folder, asked for when it has none yet), an extracted game's from its main.npdm, a 3DS game's from its
+   container (gui_ctr_title), a Vita game's TITLE_ID, each to the title ID its game's folder is named by; a GBA ROM's
+   header and hash, to the hash its game's map names (gui_gba_made_from). A game named by no title, and a GBA game with
+   no map, have nothing to compare with */
+static TitleSaid missing_title(App* app, const char* program, MissingKind kind, const char* path, char* found,
+                               size_t found_size, char* expected, size_t expected_size, char* why, size_t why_size) {
+    char *folder, *name, code[24] = "", title[13] = "", id[32] = "";
+    SnxU64 want = 0, got = 0;
+    TitleSaid said = TITLE_SAME;
+    found[0] = expected[0] = why[0] = 0;
+    game_where(program, &folder, &name);
+    if (kind == MISSING_ROM) {
+        uint64_t made = 0, hash = 0;
+        if (gui_gba_made_from(folder, name, &made)) {
+            if (!gui_gba_title(path, code, title, &hash, why, why_size))
+                said = TITLE_UNREAD;
+            else if (hash != made)
+                said = TITLE_OTHER;
+            snprintf(expected, expected_size, snx_tr("the ROM hashed %016llX"), (unsigned long long)made);
+            snprintf(found, found_size, snx_tr("%s (%s), hashed %016llX"), code[0] ? code : "?", title[0] ? title : "?",
+                     (unsigned long long)hash);
+        }
+    } else if (kind == MISSING_VITA) {
+        snprintf(expected, expected_size, "%s", name);
+        if (!gui_vita_title(path, id, sizeof id)) {
+            snprintf(why, why_size, "%s", snx_tr("its sce_sys/param.sfo names no TITLE_ID"));
+            said = TITLE_UNREAD;
+        } else if (strcmp(id, name))
+            said = TITLE_OTHER;
+        snprintf(found, found_size, "%s", id);
+    } else if (snx_title_parse(name, &want)) {
+        snprintf(expected, expected_size, "%016llX", (unsigned long long)want);
+        if (kind == MISSING_CTR) {
+            uint64_t ctr = 0;
+            if (!gui_ctr_title(path, &ctr, code, sizeof code, why, why_size)) said = TITLE_UNREAD;
+            got = ctr;
+        } else if (kind == MISSING_FOLDER) {
+            char *exefs = snx_extracted_part(path, 0), *npdm = exefs ? snx_path_join(exefs, "main.npdm") : NULL;
+            size_t size = 0;
+            unsigned char* bytes = npdm ? snx_read_file(npdm, &size) : NULL;
+            got = bytes ? snx_npdm_title(bytes, size) : 0;
+            if (!bytes) {
+                snprintf(why, why_size, "%s", snx_tr("it has no exefs/main.npdm"));
+                said = TITLE_UNREAD;
+            }
+            free(bytes);
+            free(npdm);
+            free(exefs);
+        } else { /* a dump: its driver reads it, with the keys (-x --icon's title.ini) */
+            char *dir = dump_icon_dir(app, path), *ini = dir ? snx_path_join(dir, "title.ini") : NULL;
+            char* icon = dir ? snx_path_join(dir, "icon.jpg") : NULL;
+            GuiDumpTitle t;
+            if (ini && gui_dump_title(ini, &t))
+                got = t.title;
+            else if (!dir || icon_failed(&app->dump_icons, dir, why, why_size))
+                said = TITLE_UNREAD;
+            else if (snx_is_file(icon)) { /* answered with no title.ini */
+                snprintf(why, why_size, "%s", snx_tr("the driver said nothing of its title"));
+                said = TITLE_UNREAD;
+            } else if (dump_icon_ask(app, path, dir)) {
+                if (app->dump_icons.live) dump_icons_start(app);
+                said = TITLE_ASKED;
+            } else if (!icon_failed(&app->dump_icons, dir, why, why_size)) {
+                snprintf(why, why_size, "%s", snx_tr("the driver could not be asked"));
+                said = TITLE_UNREAD;
+            } else
+                said = TITLE_UNREAD;
+            free(icon);
+            free(ini);
+            free(dir);
+        }
+        if (said == TITLE_SAME && got != want) said = TITLE_OTHER;
+        if (said != TITLE_UNREAD && said != TITLE_ASKED)
+            snprintf(found, found_size, code[0] ? "%016llX (%s)" : "%016llX", (unsigned long long)got, code);
+    }
+    if (!why[0] && said == TITLE_UNREAD) snprintf(why, why_size, "?");
+    free(name);
+    free(folder);
+    return said;
+}
+static void missing_check(App* app, char* program, char* path);
 /* Locate...'s answer: uri picked (NULL for none), or error when the picker could not open. A file of the kind the
-   game played from (missing_kind) is what it plays from from then on: source= in its .ini, or for a Vita game its
-   app/ linked to it. Games lists it again where it was, its row no longer saying the file is not found. Anything else
-   is refused, said with the file it keeps */
+   game played from (missing_kind) goes on to its title (missing_check); anything else is refused, said with the file
+   the game keeps */
 static void missing_located(App* app, const char* uri, const char* error, bool failed) {
-    char *program = app->missing_picking, *path = NULL, *folder = NULL, *name = NULL, *shown, *ini = NULL, *was;
-    char why[1024], sfo[SNX_PATH_SIZE];
+    char *program = app->missing_picking, *path = NULL, *name = NULL, *folder = NULL, *shown, *was, sfo[SNX_PATH_SIZE];
     MissingKind kind;
     bool fits, folder_kind;
     app->missing_picking = NULL;
@@ -20062,6 +20151,48 @@ static void missing_located(App* app, const char* uri, const char* error, bool f
                  path, shown ? shown : name, was ? was : "?");
         goto done;
     }
+    missing_check(app, program, path);
+    program = path = NULL; /* missing_check's now */
+done:
+    free(shown);
+    free(was);
+    free(path);
+    free(name);
+    free(folder);
+    free(program);
+}
+/* the file picked by Locate... for the game whose program is program, both owned and taken here, once its title is the
+   game's (missing_title): what the game plays from from then on, source= in its .ini, or for a Vita game its app/
+   linked to it; Games lists it again where it was, its row no longer saying the file is not found. A file of another
+   title is refused, both titles said, and one whose title does not read; one the driver is asked about waits for its
+   answer, kept until then (missing_reading) */
+static void missing_check(App* app, char* program, char* path) {
+    char *folder = NULL, *name = NULL, *shown = gui_game_shown(program), *was = played_file(program), *ini = NULL;
+    char found[96], expected[96], why[1024];
+    MissingKind kind = missing_kind(program, was);
+    free(app->reading_game);
+    free(app->reading_file);
+    app->reading_game = app->reading_file = NULL;
+    game_where(program, &folder, &name);
+    switch (missing_title(app, program, kind, path, found, sizeof found, expected, sizeof expected, why, sizeof why)) {
+        case TITLE_ASKED:
+            snprintf(app->message, sizeof app->message, snx_tr("Locate...: reading the title of %s"), path);
+            app->reading_game = program;
+            app->reading_file = path;
+            program = path = NULL;
+            goto done;
+        case TITLE_OTHER:
+            snprintf(app->message, sizeof app->message,
+                     snx_tr("Not taken: %s is %s, and %s was made from %s; it keeps %s"), path, found,
+                     shown ? shown : name, expected, was ? was : "?");
+            goto done;
+        case TITLE_UNREAD:
+            snprintf(app->message, sizeof app->message,
+                     snx_tr("Not taken: the title of %s does not read (%s); %s keeps %s"), path, why,
+                     shown ? shown : name, was ? was : "?");
+            goto done;
+        case TITLE_SAME: break;
+    }
     if (kind == MISSING_VITA) {
         if (vita_relink(folder, name, path, why, sizeof why)) {
             snprintf(app->message, sizeof app->message, snx_tr("Not kept: %s"), why);
@@ -20082,12 +20213,20 @@ static void missing_located(App* app, const char* uri, const char* error, bool f
     snprintf(app->message, sizeof app->message, snx_tr("%s plays from %s now."), shown ? shown : name, path);
 done:
     free(ini);
-    free(shown);
     free(was);
-    free(path);
+    free(shown);
     free(name);
     free(folder);
+    free(path);
     free(program);
+}
+/* the file Locate... waits on the driver's answer about (missing_check), looked at again once the driver answered a
+   dump */
+static void missing_read(App* app) {
+    char *program = app->reading_game, *path = app->reading_file;
+    if (!program) return;
+    app->reading_game = app->reading_file = NULL;
+    missing_check(app, program, path);
 }
 static void picked(App* app, const char* uri) {
     char* path;
@@ -21027,6 +21166,8 @@ static void forget(App* app) {
     free(app->missing_game);
     free(app->missing_file);
     free(app->missing_picking);
+    free(app->reading_game);
+    free(app->reading_file);
     if (app->run_out) fclose(app->run_out);
     free(app->run_log);
     gui_process_destroy(app->job_process); /* the queue's recompile ends with the menu */
