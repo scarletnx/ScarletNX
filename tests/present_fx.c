@@ -571,6 +571,45 @@ int main(int argc, char** argv) {
             image_free(&t, &flat[i]);
         }
     }
+    /* FXAA and SMAA over a staircase, a dark half under a slope of one pixel up for two across: the steps' pixels
+       take values between the two sides, where the frame has none */
+    {
+        const uint32_t side = 64;
+        Image stairs = {0};
+        unsigned char* p = malloc((size_t)side * side * 4);
+        CHECK(p);
+        for (uint32_t y = 0; y < side; ++y)
+            for (uint32_t x = 0; x < side; ++x) {
+                unsigned char v = 2 * y > x + side / 2 ? 230 : 20;
+                p[((size_t)y * side + x) * 4 + 0] = p[((size_t)y * side + x) * 4 + 1] = v;
+                p[((size_t)y * side + x) * 4 + 2] = v;
+                p[((size_t)y * side + x) * 4 + 3] = 255;
+            }
+        CHECK(image_make(&t, &stairs, side, side, VK_FORMAT_R8G8B8A8_UNORM,
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
+        CHECK(upload(&t, &stairs, p));
+        free(p);
+        for (int k = 0; k < 2; ++k) {
+            SnxFxImage out = {0};
+            VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
+            uint64_t serial;
+            unsigned char* got;
+            uint32_t between = 0;
+            CHECK(snx_fx_render(fx, cb, 0, stairs.view, side, side, 0, 0, side, side, 0, side, side, SNX_FX_UPSCALE_OFF,
+                                k ? SNX_FX_AA_SMAA : SNX_FX_AA_FXAA, &out));
+            serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+            got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, side, side);
+            CHECK(got);
+            for (uint32_t i = 0; i < side * side; ++i) between += got[(size_t)i * 4] > 30 && got[(size_t)i * 4] < 220;
+            write_ppm(showcase, k ? "fx-smaa-stairs" : "fx-fxaa-stairs", got, side, side);
+            free(got);
+            fprintf(stderr, "present_fx: %s over the staircase: %u pixels between its sides\n", k ? "SMAA" : "FXAA",
+                    between);
+            CHECK(between >= side / 2); /* the staircase has a step every two columns, 48 of them in the frame */
+        }
+        image_free(&t, &stairs);
+    }
     /* FXAA and SMAA at 1:1: the source's hard step is smoothed */
     {
         double plain_avg, fxaa_avg, smaa_avg;
