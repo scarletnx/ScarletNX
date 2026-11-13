@@ -703,9 +703,10 @@ typedef struct App {
     GuiThemeKey fetch_keys[GUI_FETCH_ROWS];
     char fetch_label[GUI_FETCH_ROWS][180];
     char fetch_title[GUI_DRIVER_REPOS][240]; /* each repository's box's head */
+    int fetch_groups;                        /* how many boxes */
     bool fetch_open[GUI_DRIVER_REPOS];       /* its box every release, not its latest and recommended alone */
     char fetch_about[GUI_FETCH_ROWS][900];
-    int fetch_repo[GUI_FETCH_ROWS], fetch_release[GUI_FETCH_ROWS];
+    int fetch_repo[GUI_FETCH_ROWS], fetch_release[GUI_FETCH_ROWS], fetch_group[GUI_FETCH_ROWS];
     char asset_labels[GUI_FETCH_ASSETS][240];
     const char* asset_picks[GUI_FETCH_ASSETS + 1];
     char download_name[160], download_said[400];
@@ -9889,10 +9890,10 @@ static const char* drivers_lack(App* app) {
            : lack == SNX_GPU_DRIVER_OLD_ANDROID ? snx_tr("Needs Android 9")
                                                 : snx_tr("Not in this build");
 }
-/* the same for Download Driver, whose repositories hold drivers for Adreno GPUs alone */
-static const char* fetch_lack(App* app) {
-    const char* lack = drivers_lack(app);
-    return lack ? lack : drivers_host(app)->kgsl ? NULL : snx_tr("Adreno only");
+/* this device's GPU as GuiDriverRepo's gpu, -1 for one no package drives */
+static int fetch_gpu(App* app) {
+    const SnxGpuDriverHost* host = drivers_host(app);
+    return host->kgsl ? GUI_DRIVER_ADRENO : host->mali ? GUI_DRIVER_MALI : host->amdgpu ? GUI_DRIVER_XCLIPSE : -1;
 }
 /* the system's Vulkan driver, as GPU Drivers' System driver row says it: asked once, an instance and no device */
 static void vk_system_ask(App* app) {
@@ -10009,16 +10010,12 @@ static int drivers_fill(App* app) {
     snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Download Driver"));
     if (lack)
         snx_gpu_driver_loads(drivers_host(app), app->drivers_about[r], sizeof app->drivers_about[r]);
-    else if (fetch_lack(app))
-        snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
-                 snx_tr("The driver repositories Eden lists hold drivers for Adreno GPUs. An Xclipse GPU's driver, "
-                        "RADV, is added from its zip with Add Driver"));
     else
         snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
-                 snx_tr("The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded "
-                        "and added as Add Driver adds a zip. A GPU maker's own drivers are marked proprietary, no "
-                        "license"));
-    snprintf(f->value[r], sizeof f->value[r], "%s", fetch_lack(app) ? fetch_lack(app) : "");
+                 snx_tr("Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's "
+                        "marked proprietary, no license), NX-Mali for a Mali, RADV for an Xclipse. One picked is "
+                        "downloaded and added as Add Driver adds a zip"));
+    snprintf(f->value[r], sizeof f->value[r], "%s", lack ? lack : "");
     app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
                                     sizeof f->value[0], app->drivers_about[r]);
     ++r;
@@ -10076,11 +10073,10 @@ static int driver_of(const App* app, int r) {
     int i = r - app->drivers_base;
     return i >= 0 && i < (int)SDL_min(app->packages_count, (size_t)GUI_DRIVERS_SHOWN) ? i : -1;
 }
-/* a GPU Drivers row greyed: a package, Download Driver and Add Driver where no package loads, Download Driver where
-   its repositories hold no driver for the GPU */
+/* a GPU Drivers row greyed: a package, Download Driver and Add Driver where no package loads */
 static bool driver_row_off(App* app, int r) {
-    if (r == app->drivers_tail) return fetch_lack(app) != NULL;
-    return (driver_of(app, r) >= 0 || r == app->drivers_tail + 1) && drivers_lack(app) != NULL;
+    return (driver_of(app, r) >= 0 || r == app->drivers_tail || r == app->drivers_tail + 1) &&
+           drivers_lack(app) != NULL;
 }
 /* the page's note: this device's line (snx_gpu_driver_loads), whose game, the packages not listed */
 static void drivers_note(App* app) {
@@ -10326,14 +10322,15 @@ static void driver_select(App* app, int r) {
         driver_use(app, r);
 }
 
-/* ---- GPU Drivers > Download Driver: the releases of Eden's driver repositories (gui/gpu_driver_fetch.h), fetched
-   from GitHub as the page opens, as Eden's driver fetcher fetches them; a release's asset picked is downloaded and
-   added as Add Driver adds a zip ---- */
+/* ---- GPU Drivers > Download Driver: the releases of the driver repositories for this device's GPU
+   (gui/gpu_driver_fetch.h), fetched from GitHub as the page opens, as Eden's driver fetcher fetches them; a release's
+   asset picked is downloaded and added as Add Driver adds a zip ---- */
 enum { GUI_FETCH_EVENT_LIST, GUI_FETCH_EVENT_PROGRESS, GUI_FETCH_EVENT_DONE };
 /* the fetch thread's answer for a repository, or the download's, an event's data1 the main thread frees */
 typedef struct {
     int repo;
     int failed;
+    int last; /* the fetch's last repository */
     SnxHttpsResponse r;
     char why[700];
     char name[160]; /* a download's asset */
@@ -10342,6 +10339,7 @@ typedef struct {
 typedef struct {
     GuiHttpsGet get;
     Uint32 event;
+    int gpu; /* the GPU whose repositories it fetches */
     char url[600];
     char name[160];
     unsigned long long said; /* the bytes the last progress event said */
@@ -10354,15 +10352,21 @@ static void fetch_push(Uint32 event, int code, void* data) {
     e.user.data1 = data;
     if (!SDL_PushEvent(&e)) free(data); /* the queue is full or SDL is going: the answer is lost with it */
 }
-/* the five repositories' releases, one after the other: GitHub's rate limit counts each request */
+/* the GPU's repositories' releases, one after the other: GitHub's rate limit counts each request */
 static int SDLCALL fetch_run(void* data) {
     GuiFetchJob* job = (GuiFetchJob*)data;
-    for (int i = 0; i < GUI_DRIVER_REPOS; ++i) {
-        GuiFetchAnswer* a = (GuiFetchAnswer*)calloc(1, sizeof *a);
+    int last = -1;
+    for (int i = 0; i < GUI_DRIVER_REPOS; ++i)
+        if (gui_driver_repos[i].gpu == job->gpu) last = i;
+    for (int i = 0; i <= last; ++i) {
+        GuiFetchAnswer* a;
         SnxHttpsOptions o = {"application/vnd.github+json", 30, 8ull << 20, 0, NULL, NULL};
         char url[300];
+        if (gui_driver_repos[i].gpu != job->gpu) continue;
+        a = (GuiFetchAnswer*)calloc(1, sizeof *a);
         if (!a) continue;
         a->repo = i;
+        a->last = i == last;
         snprintf(url, sizeof url, "https://api.github.com/repos/%s/releases", gui_driver_repos[i].path);
         a->failed = job->get(url, &o, &a->r, a->why, sizeof a->why) != 0;
         if (!a->failed && a->r.status != 200) {
@@ -10447,23 +10451,25 @@ static void fetch_release_row(App* app, int r, int repo, int k, int recommended)
                                               : "",
               about, repo, k);
 }
-/* the page's rows, as Eden's fetcher folds each repository: its latest and the release Eden recommends for this GPU,
+/* the page's rows, as Eden's fetcher folds each repository of the GPU's: its latest and the release recommended for it,
    then More, which opens every release (Less closing them again); else one row saying its list loads, failed (Select
    fetches it again) or has none. Its title over them (fetch_entries) */
 static int fetch_fill(App* app) {
-    int r = 0, model = gui_adreno_model(app->vk_gpu);
+    int r = 0, gpu = fetch_gpu(app), model = gui_gpu_model(app->vk_gpu);
     memset(&app->fetch_form, 0, sizeof app->fetch_form);
+    app->fetch_groups = 0;
     for (int i = 0; i < GUI_DRIVER_REPOS && r + 3 <= GUI_FETCH_ROWS; ++i) {
+        if (gui_driver_repos[i].gpu != gpu) continue;
         const GuiDriverReleases* list = &app->fetch_lists[i];
         int listed = app->fetch_state[i] == GUI_FETCH_LISTED, failed = app->fetch_state[i] == GUI_FETCH_FAILED;
         int recommended = listed ? gui_driver_recommended_release(model, i, list) : -1, latest = -1, shown = 0;
-        char more[64];
+        char more[64], *title = app->fetch_title[app->fetch_groups++];
         if (listed)
-            snprintf(app->fetch_title[i], sizeof app->fetch_title[i],
+            snprintf(title, sizeof app->fetch_title[0],
                      list->count == 1 ? snx_tr("%s: %zu release") : snx_tr("%s: %zu releases"),
                      gui_driver_repos[i].name, list->count);
         else
-            snprintf(app->fetch_title[i], sizeof app->fetch_title[i], "%s", gui_driver_repos[i].name);
+            snprintf(title, sizeof app->fetch_title[0], "%s", gui_driver_repos[i].name);
         if (!listed || !list->count) {
             fetch_row(app, r++,
                       listed   ? snx_tr("No releases")
@@ -10494,22 +10500,26 @@ static int fetch_fill(App* app) {
             fetch_row(app, r++, more, "", gui_driver_repos[i].path, i, GUI_FETCH_MORE);
         }
     }
+    for (int k = 0, group = -1; k < r; ++k) {
+        if (!k || app->fetch_repo[k] != app->fetch_repo[k - 1]) ++group;
+        app->fetch_group[k] = group;
+    }
     return r;
 }
 /* Download Driver's screen, as Folders': each repository's title over its rows, a box each (grouped_frames). The
-   list's entries, row r's, and entry e's row (-1 a title, its repository in *group) */
+   list's entries, row r's, and entry e's row (-1 a title, its box in *group) */
 static int fetch_entries(const App* app) {
     int rows = gui_editor_rows(&app->editor);
-    return rows ? rows + app->fetch_repo[rows - 1] + 1 : 0;
+    return rows ? rows + app->fetch_group[rows - 1] + 1 : 0;
 }
-static int fetch_entry(const App* app, int r) { return r + app->fetch_repo[r] + 1; }
+static int fetch_entry(const App* app, int r) { return r + app->fetch_group[r] + 1; }
 static int fetch_entry_row(const App* app, int e, int* group) {
     int r, rows = gui_editor_rows(&app->editor);
     *group = -1;
     for (r = 0; r < rows; ++r) {
-        *group = app->fetch_repo[r];
+        *group = app->fetch_group[r];
         if (fetch_entry(app, r) == e) return r;
-        if (fetch_entry(app, r) - 1 == e && (!r || app->fetch_repo[r - 1] != app->fetch_repo[r])) return -1;
+        if (fetch_entry(app, r) - 1 == e && (!r || app->fetch_group[r - 1] != app->fetch_group[r])) return -1;
     }
     return -1;
 }
@@ -10526,11 +10536,11 @@ static int grouped_entry_row(const App* app, int e, int* group) {
     return app->form == GUI_FORM_FETCH ? fetch_entry_row(app, e, group) : folder_entry_row(app, e, group);
 }
 static int grouped_groups(const App* app) {
-    return app->form == GUI_FORM_FETCH ? GUI_DRIVER_REPOS : GUI_FOLDER_GROUPS + 1;
+    return app->form == GUI_FORM_FETCH ? app->fetch_groups : GUI_FOLDER_GROUPS + 1;
 }
-/* the page's note: the GPU and the driver Eden recommends for it, then what the last answer or press did */
+/* the page's note: the GPU and the driver recommended for it, then what the last answer or press did */
 static void fetch_head(App* app, char* out, size_t size) {
-    int model = gui_adreno_model(app->vk_gpu);
+    int model = gui_gpu_model(app->vk_gpu);
     snprintf(out, size, snx_tr("GPU: %s. Recommended: %s."), app->vk_gpu[0] ? app->vk_gpu : snx_tr("not known"),
              snx_tr(gui_driver_recommended(model)));
 }
@@ -10564,6 +10574,7 @@ static void open_fetch(App* app) {
             app->fetch_error[i][0] = 0;
         }
         job = (GuiFetchJob*)calloc(1, sizeof *job);
+        if (job) job->gpu = fetch_gpu(app);
         app->fetching = job && fetch_start(app, fetch_run, "driver lists", job);
     }
     fetch_show(app, 0, app->downloading ? app->download_said : "");
@@ -10655,7 +10666,7 @@ static void fetch_answer(App* app, int code, void* data) {
             app->fetch_state[i] = GUI_FETCH_FAILED;
             gui_log("Download Driver: %s: %s", gui_driver_repos[i].path, app->fetch_error[i]);
         }
-        if (i == GUI_DRIVER_REPOS - 1) app->fetching = false;
+        if (a->last) app->fetching = false;
         free(a->r.body);
         if (here) fetch_show(app, app->editor.row, app->downloading ? app->download_said : "");
     } else {

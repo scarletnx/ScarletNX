@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* gui/gpu_driver_fetch.h. The repositories, a release's fields and which one is the latest, the newest-first order and
    the recommendation by model are Eden's (DriverFetcherFragment.kt: repoList, Release.fromJson, driverMap,
-   parseAdrenoModel); the proprietary mark is ScarletNX's */
+   parseAdrenoModel); NX-Mali, radv-xclipse and the proprietary mark are ScarletNX's */
 #include "gui/gpu_driver_fetch.h"
 #include "common/utilities/ascii.h"
 #include "gui/i18n.h"
@@ -12,11 +12,14 @@
 #include <string.h>
 
 const GuiDriverRepo gui_driver_repos[GUI_DRIVER_REPOS] = {
-    {"Mr. Purple Turnip", "MrPurple666/purple-turnip", 0, 0},
-    {"GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", 0, 0},
-    {"KIMCHI Turnip", "K11MCH1/AdrenoToolsDrivers", 1, 1},
-    {"Weab-Chan Freedreno", "Weab-chan/freedreno_turnip-CI", 0, 0},
-    {"Whitebelyash Turnip", "whitebelyash/freedreno_turnip-CI", 0, 1}};
+    {"Mr. Purple Turnip", "MrPurple666/purple-turnip", 0, 0, GUI_DRIVER_ADRENO, 0},
+    {"GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", 0, 0, GUI_DRIVER_ADRENO, 0},
+    {"KIMCHI Turnip", "K11MCH1/AdrenoToolsDrivers", 1, 1, GUI_DRIVER_ADRENO, 0},
+    {"Weab-Chan Freedreno", "Weab-chan/freedreno_turnip-CI", 0, 0, GUI_DRIVER_ADRENO, 0},
+    {"Whitebelyash Turnip", "whitebelyash/freedreno_turnip-CI", 0, 1, GUI_DRIVER_ADRENO, 0},
+    /* NX-Mali reports the features Vulkan 1.2 and 1.3 require from 0.0.3 on */
+    {"NX-Mali", "Slopinator99/NX-Mali", 0, 0, GUI_DRIVER_MALI, 3},
+    {"RADV Xclipse", "JimVulkan/radv-xclipse", 1, 0, GUI_DRIVER_XCLIPSE, 0}}; /* its releases share one name */
 
 /* whether text has part, in any case */
 static int has_nocase(const char* text, const char* part) {
@@ -95,7 +98,12 @@ int gui_driver_releases_parse(const char* json, size_t n, const GuiDriverRepo* r
             yyjson_val* bytes = yyjson_obj_get(asset, "size");
             text_of(asset, "name", d->name, sizeof d->name);
             text_of(asset, "browser_download_url", d->url, sizeof d->url);
-            if (!d->name[0] || strncmp(d->url, "https://", 8)) continue; /* none to download: not listed */
+            /* none to download: not listed; nor radv-xclipse's -glibc- and -wayland- zips, for Linux and Bannerlator:
+               its Android one has the version right after its name */
+            if (!d->name[0] || strncmp(d->url, "https://", 8) ||
+                (!strcmp(repo->path, "JimVulkan/radv-xclipse") &&
+                 (strncmp(d->name, "radv-xclipse-", 13) || !snx_is_digit((unsigned char)d->name[13]))))
+                continue;
             d->size = yyjson_is_num(bytes) && yyjson_get_num(bytes) > 0 ? (unsigned long long)yyjson_get_num(bytes) : 0;
             d->proprietary = gui_driver_proprietary(repo->path, d->name);
             ++a;
@@ -127,9 +135,22 @@ int gui_adreno_model(const char* gpu_name) {
     for (; snx_is_digit((unsigned char)*p) && model < 100000; ++p) model = model * 10 + (*p - '0');
     return *p && *p != ' ' ? 0 : model;
 }
-/* Eden's picks by model (DriverFetcherFragment.kt), each as the repository its release is in and a part of that
-   release's tag, NULL for the repository's latest. 605 to 613 have no multiview in hardware: EOL-24.3.4 then says
-   Vulkan 1.0, short of what ScarletNX needs, and T30 emulates it and says 1.4 */
+int gui_gpu_model(const char* gpu_name) {
+    static const char* const family[] = {"Mali-G", "Samsung Xclipse "};
+    for (int f = 0; f < 2; ++f) {
+        size_t n = strlen(family[f]);
+        int model = 0;
+        if (strncmp(gpu_name, family[f], n)) continue;
+        for (const char* p = gpu_name + n; snx_is_digit((unsigned char)*p) && model < 1000; ++p)
+            model = model * 10 + (*p - '0');
+        return model ? (f + 1) * 10000 + model : 0;
+    }
+    return gui_adreno_model(gpu_name);
+}
+/* the picks by model (gui_gpu_model; Adreno's are Eden's, DriverFetcherFragment.kt), each as the repository its
+   release is in and a part of that release's tag, NULL for the repository's latest. 605 to 613 have no multiview in
+   hardware: EOL-24.3.4 then says Vulkan 1.0, short of what ScarletNX needs, and T30 emulates it and says 1.4. NX-Mali
+   says 1.3 only on its command-stream Malis; radv-xclipse drives every Xclipse so far, at 1.4 */
 static const struct {
     int lo, hi;
     const char *driver, *repo, *tag;
@@ -139,7 +160,11 @@ static const struct {
                      {640, 699, "Mr. Purple T19", "MrPurple666/purple-turnip", "T19"},
                      {700, 710, "KIMCHI 25.2.0_r5", "K11MCH1/AdrenoToolsDrivers", "v25.2.0-rc.05"},
                      {711, 799, "Mr. Purple T23", "MrPurple666/purple-turnip", "T23"},
-                     {800, 899, "GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", NULL}};
+                     {800, 899, "GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", NULL},
+                     {10610, 10615, "NX-Mali 0.0.3", "Slopinator99/NX-Mali", NULL},
+                     {10710, 10715, "NX-Mali 0.0.3", "Slopinator99/NX-Mali", NULL},
+                     {20530, 20550, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL},
+                     {20920, 20960, "RADV Xclipse", "JimVulkan/radv-xclipse", NULL}};
 const char* gui_driver_recommended(int model) {
     size_t i;
     for (i = 0; i < sizeof g_recommended / sizeof g_recommended[0]; ++i)
@@ -154,7 +179,12 @@ int gui_driver_recommended_release(int model, int repo, const GuiDriverReleases*
         strcmp(gui_driver_repos[repo].path, g_recommended[i].repo))
         return -1;
     for (k = 0; k < list->count; ++k)
-        if (g_recommended[i].tag ? has_nocase(list->releases[k].tag, g_recommended[i].tag) : list->releases[k].latest)
-            return (int)k;
+        if (g_recommended[i].tag ? has_nocase(list->releases[k].tag, g_recommended[i].tag) : list->releases[k].latest) {
+            /* NX-Mali's releases share one tag: its title says the version */
+            const char* v = strpbrk(list->releases[k].title, "0123456789");
+            unsigned x = 0, y = 0, z = 0;
+            if (v) (void)sscanf(v, "%3u.%3u.%3u", &x, &y, &z);
+            return (x * 1000 + y) * 1000 + z >= gui_driver_repos[repo].min ? (int)k : -1;
+        }
     return -1;
 }

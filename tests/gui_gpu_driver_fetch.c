@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* gui/gpu_driver_fetch.c: a repository's releases from GitHub's list of them, its latest marked as GitHub marks it,
    titled by name or by tag and ordered as Eden orders them; the assets each has, those with no link to download left
-   out, a GPU maker's own marked; GitHub's own error said; and Eden's recommendation by Adreno model, found among a
-   repository's releases */
+   out, a GPU maker's own marked, radv-xclipse's that are not for Android left out; GitHub's own error said; and the
+   recommendation by model, found among a repository's releases, NX-Mali's from 0.0.3 on */
 #include "gui/gpu_driver_fetch.h"
 #include <assert.h>
 #include <stdio.h>
@@ -99,6 +99,40 @@ int main(void) {
                r.releases[gui_driver_recommended_release(32, 2, &r)].latest);
         assert(gui_driver_recommended_release(705, 0, &r) == -1); /* named for another repository */
         gui_driver_releases_free(&r);
+    }
+    /* radv-xclipse's release as GitHub lists it: titled by its tag, its builds for Linux and Bannerlator left out */
+    {
+        static const char radv_json[] =
+            "[{\"tag_name\": \"v1.9.0\", \"name\": \"RADV Xclipse (Based on Mesa 27.0.0-devel)\","
+            "  \"prerelease\": false, \"assets\": ["
+            "   {\"name\": \"radv-xclipse-27.0.0-devel-cc87fdf.zip\", \"browser_download_url\": \"https://a\"},"
+            "   {\"name\": \"radv-xclipse-glibc-27.0.0-devel-cc87fdf.zip\", \"browser_download_url\": \"https://b\"},"
+            "   {\"name\": \"radv-xclipse-wayland-27.0.0-devel-cc87fdf.zip\", \"browser_download_url\": \"https://c\"}"
+            "]}]";
+        assert(gui_driver_releases_parse(radv_json, strlen(radv_json), &gui_driver_repos[6], &r, why, sizeof why));
+        assert(r.assets_count == 1 && !strcmp(r.releases[0].title, "v1.9.0") &&
+               !strcmp(gui_driver_assets(&r)[0].name, "radv-xclipse-27.0.0-devel-cc87fdf.zip"));
+        gui_driver_releases_free(&r);
+    }
+    /* a Mali's and an Xclipse's models; NX-Mali's latest recommended on a Mali it gives 1.3 from 0.0.3 on, by the
+       version in its title, and radv-xclipse's on an Xclipse */
+    assert(gui_gpu_model("Mali-G615 MC6") == 10615 && gui_gpu_model("Samsung Xclipse 940") == 20940 &&
+           gui_gpu_model("Adreno (TM) 615") == 615 && !strcmp(gui_driver_recommended(10078), "Unsupported"));
+    {
+        static const struct {
+            const char* title;
+            int model, repo, recommended;
+        } picks[] = {{"NX-Mali 0.0.2", 10615, 5, -1}, {"NX-Mali 0.0.10", 10615, 5, 0}, {"v1.9.0", 20940, 6, 0}};
+        for (size_t i = 0; i < sizeof picks / sizeof *picks; ++i) {
+            char json[160];
+            snprintf(json, sizeof json,
+                     "[{\"tag_name\": \"%s\", \"name\": \"%s\", \"prerelease\": false, \"assets\": []}]",
+                     picks[i].title, picks[i].title);
+            assert(
+                gui_driver_releases_parse(json, strlen(json), &gui_driver_repos[picks[i].repo], &r, why, sizeof why));
+            assert(gui_driver_recommended_release(picks[i].model, picks[i].repo, &r) == picks[i].recommended);
+            gui_driver_releases_free(&r);
+        }
     }
     puts("gui_gpu_driver_fetch: ok");
     return 0;
