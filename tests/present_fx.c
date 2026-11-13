@@ -37,18 +37,27 @@ typedef struct {
 
 static int succeed(VkResult r) { return r == VK_SUCCESS; }
 
-static void log_line(const char* text) { puts(text); }
+/* the test's state: the effects' last line, for the checks of what they say, and the Khronos layer's errors */
+static struct {
+    char said[256];
+    unsigned val_errors;
+} g_test;
+
+/* the effects' log: printed, and the last line kept */
+static void log_line(const char* text) {
+    puts(text);
+    snprintf(g_test.said, sizeof g_test.said, "%s", text);
+}
 
 /* --validation: the Khronos layer's errors fail the test. The SSAA pass once updated a descriptor set while the
    command buffer that bound it was recording, which the layer names and a plain run does not */
-static unsigned g_val_errors;
 static VKAPI_ATTR VkBool32 VKAPI_CALL val_cb(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                              VkDebugUtilsMessageTypeFlagsEXT type,
                                              const VkDebugUtilsMessengerCallbackDataEXT* data, void* user) {
     (void)type;
     (void)user;
     if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-        ++g_val_errors;
+        ++g_test.val_errors;
         fprintf(stderr, "present_fx validation: %s\n", data->pMessage);
     }
     return VK_FALSE;
@@ -364,7 +373,6 @@ int main(int argc, char** argv) {
     Image src = {0}, step = {0};
     unsigned char *pixels, *step_pixels;
     SnxFx* fx;
-    SnxFxConfig cfg = {SNX_FX_UPSCALE_FSR1, 25, SNX_FX_AA_OFF};
     for (int i = 1; i < argc; ++i)
         if (!strncmp(argv[i], "--showcase=", 11)) showcase = argv[i] + 11;
     {
@@ -414,14 +422,32 @@ int main(int argc, char** argv) {
     CHECK(!snx_fx_aa_auto(320, 240, 380, 285));
     CHECK(snx_fx_aa_auto(320, 240, 400, 300));
     CHECK(!snx_fx_aa_auto(400, 300, 320, 240));
-    CHECK(snx_fx_upscale_parse("fsr1") == SNX_FX_UPSCALE_FSR1);
-    CHECK(snx_fx_upscale_parse("none") == SNX_FX_UPSCALE_OFF);
-    CHECK(snx_fx_aa_parse("smaa") == SNX_FX_AA_SMAA);
-    CHECK(snx_fx_aa_parse("ssaa 2x") == SNX_FX_AA_SSAA2);
+    CHECK(snx_fx_upscale_parse("fsr1") == SNX_FX_UPSCALE_FSR1 && snx_fx_upscale_parse("NIS") == SNX_FX_UPSCALE_NIS);
+    CHECK(snx_fx_upscale_parse("none") == -1 && snx_fx_upscale_parse("") == -1 && snx_fx_upscale_parse(NULL) == -1);
+    CHECK(snx_fx_aa_parse("smaa") == SNX_FX_AA_SMAA && snx_fx_aa_parse("ssaa2") == SNX_FX_AA_SSAA2);
+    CHECK(snx_fx_aa_parse("ssaa 2x") == -1);
+    CHECK(!strcmp(snx_fx_upscale_key(SNX_FX_UPSCALE_SGSR), "sgsr") && !snx_fx_upscale_key(SNX_FX_UPSCALE_COUNT));
+    CHECK(!strcmp(snx_fx_aa_label(SNX_FX_AA_SSAA4), "SSAA 4x") && !snx_fx_aa_label(-1));
+    /* the shortcuts step in the settings' order, round */
+    CHECK(snx_fx_upscale_next(SNX_FX_UPSCALE_OFF) == SNX_FX_UPSCALE_BILINEAR &&
+          snx_fx_upscale_next(SNX_FX_UPSCALE_FSR1) == SNX_FX_UPSCALE_NIS &&
+          snx_fx_upscale_next(SNX_FX_UPSCALE_SGSR) == SNX_FX_UPSCALE_OFF);
+    CHECK(snx_fx_aa_next(SNX_FX_AA_OFF) == SNX_FX_AA_AUTO && snx_fx_aa_next(SNX_FX_AA_SSAA4) == SNX_FX_AA_OFF);
+    /* the settings as the .ini gives them: a word none of the setting's is said, with Off, which runs for it */
+    {
+        SnxFxConfig cfg;
+        char said[256];
+        CHECK(!snx_fx_settings(&cfg, "fsr1", 80, "smaa", said, sizeof said) && !said[0]);
+        CHECK(cfg.upscaler == SNX_FX_UPSCALE_FSR1 && cfg.sharpness == 80 && cfg.aa == SNX_FX_AA_SMAA);
+        CHECK(snx_fx_settings(&cfg, "fsr", 120, "msaa", said, sizeof said) == 2);
+        CHECK(cfg.upscaler == SNX_FX_UPSCALE_OFF && cfg.sharpness == 100 && cfg.aa == SNX_FX_AA_OFF);
+        CHECK(!strcmp(said, "upscaler=fsr is not one of off, bilinear, fsr1, nis, sgsr: it runs off; "
+                            "anti_aliasing=msaa is not one of off, auto, fxaa, smaa, ssaa2, ssaa4: it runs off"));
+    }
 
-    fx = snx_fx_create(t.phys, t.dev, t.queue, t.family, VK_NULL_HANDLE, 2, NULL, NULL, log_line);
+    fx = snx_fx_create(t.phys, t.dev, VK_NULL_HANDLE, 2, log_line);
     CHECK(fx);
-    snx_fx_configure(fx, &cfg);
+    snx_fx_set_sharpness(fx, 75);
 
     /* FSR 1: the frame grows, and the result is the display's size */
     {
@@ -430,7 +456,7 @@ int main(int argc, char** argv) {
         uint64_t serial;
         unsigned char* got;
         int step;
-        CHECK(snx_fx_render(fx, cb, src.view, 320, 240, 0, 0, 320, 240, 0, 640, 480, SNX_FX_UPSCALE_FSR1,
+        CHECK(snx_fx_render(fx, cb, 0, src.view, 320, 240, 0, 0, 320, 240, 0, 640, 480, SNX_FX_UPSCALE_FSR1,
                             SNX_FX_AA_OFF, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
@@ -441,19 +467,148 @@ int main(int argc, char** argv) {
         write_ppm(showcase, "fx-fsr1", got, 640, 480);
         free(got);
     }
-    /* NIS and SGSR: the shared filters run at 1:1 as well */
+    /* NIS and SGSR grow the frame half as large again */
     {
         int filters[2] = {SNX_FX_UPSCALE_NIS, SNX_FX_UPSCALE_SGSR};
         for (int i = 0; i < 2; ++i) {
             SnxFxImage out = {0};
             VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
             uint64_t serial;
-            CHECK(snx_fx_render(fx, cb, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, filters[i], SNX_FX_AA_OFF,
+            CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 480, 360, filters[i], SNX_FX_AA_OFF,
                                 &out));
             serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
             CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
-            CHECK(out.width == 320 && out.height == 240);
+            CHECK(out.width == 480 && out.height == 360);
+            CHECK(strstr(g_test.said, i ? "upscaler Qualcomm SGSR and" : "upscaler NVIDIA NIS and"));
         }
+    }
+    /* what runs where it is not what was asked, said with why: an upscaler where the frame does not grow is the caller's
+       smooth blit, NIS past twice is FSR 1, and Auto's FXAA where the frame grows 1.25 times */
+    {
+        SnxFxImage out = {0};
+        VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
+        uint64_t serial;
+        CHECK(!snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_FSR1,
+                             SNX_FX_AA_OFF, &out));
+        CHECK(!strcmp(g_test.said, "upscaler Bilinear and anti aliasing Off, 320x240 to 320x240 (AMD FSR 1 grows a "
+                              "frame, and this one is not shown larger)"));
+        CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 960, 720, SNX_FX_UPSCALE_NIS,
+                            SNX_FX_AA_AUTO, &out));
+        CHECK(!strcmp(g_test.said, "upscaler AMD FSR 1 and anti aliasing FXAA, 320x240 to 960x720 (NVIDIA NIS grows "
+                              "a frame twice at most)"));
+        serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+    }
+    /* upscaler_sharpness: 100 draws the edges harder than 0 */
+    {
+        double soft = 0, sharp = 0;
+        for (int i = 0; i < 2; ++i) {
+            SnxFxImage out = {0};
+            VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
+            uint64_t serial;
+            unsigned char* got;
+            snx_fx_set_sharpness(fx, i ? 100 : 0);
+            CHECK(snx_fx_render(fx, cb, 0, src.view, 320, 240, 0, 0, 320, 240, 0, 640, 480, SNX_FX_UPSCALE_FSR1,
+                                SNX_FX_AA_OFF, &out));
+            serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+            got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 640, 480);
+            CHECK(got);
+            *(i ? &sharp : &soft) = avg_step(got, 640, 480);
+            free(got);
+        }
+        fprintf(stderr, "present_fx: FSR 1's edge step at sharpness 0 %.3f, at 100 %.3f\n", soft, sharp);
+        CHECK(sharp > soft);
+        snx_fx_set_sharpness(fx, 75);
+    }
+    /* two frames' NIS in flight: each slot reads its own config. Both are recorded before either runs, as the next
+       frame's can be while the GPU still reads the last one's; one config for both took the second's sizes into the
+       first, whose pixels past them stayed unwritten */
+    {
+        static const unsigned char colours[2][3] = {{200, 40, 40}, {40, 200, 40}};
+        const uint32_t side[2] = {64, 32}, out_side[2] = {128, 48};
+        Image flat[2] = {{0}};
+        SnxFxImage out[2] = {{0}};
+        VkCommandBuffer cb;
+        uint64_t serial;
+        for (int i = 0; i < 2; ++i) {
+            unsigned char* p = malloc((size_t)side[i] * side[i] * 4);
+            CHECK(p);
+            for (size_t k = 0; k < (size_t)side[i] * side[i]; ++k) {
+                memcpy(p + k * 4, colours[i], 3);
+                p[k * 4 + 3] = 255;
+            }
+            CHECK(image_make(&t, &flat[i], side[i], side[i], VK_FORMAT_R8G8B8A8_UNORM,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
+            CHECK(upload(&t, &flat[i], p));
+            free(p);
+        }
+        cb = snx_vk_ring_commands(&t.ring);
+        for (uint32_t i = 0; i < 2; ++i)
+            CHECK(snx_fx_render(fx, cb, i, flat[i].view, side[i], side[i], 0, 0, side[i], side[i], 0, out_side[i],
+                                out_side[i], SNX_FX_UPSCALE_NIS, SNX_FX_AA_OFF, &out[i]));
+        serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+        for (int i = 0; i < 2; ++i) {
+            unsigned char* got = read_image_f16(&t, out[i].image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out_side[i],
+                                                out_side[i]);
+            uint32_t bad = 0, first = 0;
+            CHECK(got);
+            for (uint32_t k = 0; k < out_side[i] * out_side[i]; ++k)
+                for (int c = 0; c < 3; ++c)
+                    if (abs((int)got[(size_t)k * 4 + c] - (int)colours[i][c]) > 1) {
+                        if (!bad++) first = k;
+                        break;
+                    }
+            if (bad)
+                fprintf(stderr,
+                        "present_fx: NIS in slot %d, %ux%u to %ux%u: %u pixels are not its frame's colour, the first "
+                        "(%u, %u) = %u %u %u\n",
+                        i, side[i], side[i], out_side[i], out_side[i], bad, first % out_side[i], first / out_side[i],
+                        got[(size_t)first * 4], got[(size_t)first * 4 + 1], got[(size_t)first * 4 + 2]);
+            free(got);
+            CHECK(!bad);
+            image_free(&t, &flat[i]);
+        }
+    }
+    /* FXAA and SMAA over a staircase, a dark half under a slope of one pixel up for two across: the steps' pixels
+       take values between the two sides, where the frame has none */
+    {
+        const uint32_t side = 64;
+        Image stairs = {0};
+        unsigned char* p = malloc((size_t)side * side * 4);
+        CHECK(p);
+        for (uint32_t y = 0; y < side; ++y)
+            for (uint32_t x = 0; x < side; ++x) {
+                unsigned char v = 2 * y > x + side / 2 ? 230 : 20;
+                p[((size_t)y * side + x) * 4 + 0] = p[((size_t)y * side + x) * 4 + 1] = v;
+                p[((size_t)y * side + x) * 4 + 2] = v;
+                p[((size_t)y * side + x) * 4 + 3] = 255;
+            }
+        CHECK(image_make(&t, &stairs, side, side, VK_FORMAT_R8G8B8A8_UNORM,
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
+        CHECK(upload(&t, &stairs, p));
+        free(p);
+        for (int k = 0; k < 2; ++k) {
+            SnxFxImage out = {0};
+            VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
+            uint64_t serial;
+            unsigned char* got;
+            uint32_t between = 0;
+            CHECK(snx_fx_render(fx, cb, 0, stairs.view, side, side, 0, 0, side, side, 0, side, side, SNX_FX_UPSCALE_OFF,
+                                k ? SNX_FX_AA_SMAA : SNX_FX_AA_FXAA, &out));
+            serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+            got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, side, side);
+            CHECK(got);
+            for (uint32_t i = 0; i < side * side; ++i) between += got[(size_t)i * 4] > 30 && got[(size_t)i * 4] < 220;
+            write_ppm(showcase, k ? "fx-smaa-stairs" : "fx-fxaa-stairs", got, side, side);
+            free(got);
+            fprintf(stderr, "present_fx: %s over the staircase: %u pixels between its sides\n", k ? "SMAA" : "FXAA",
+                    between);
+            CHECK(between >= side / 2); /* the staircase has a step every two columns, 48 of them in the frame */
+        }
+        image_free(&t, &stairs);
     }
     /* FXAA and SMAA at 1:1: the source's hard step is smoothed */
     {
@@ -466,7 +621,7 @@ int main(int argc, char** argv) {
         max_step(step_pixels, 320, 240, &plain_step);
         plain_avg = avg_step(step_pixels, 320, 240);
         cb = snx_vk_ring_commands(&t.ring);
-        CHECK(snx_fx_render(fx, cb, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_BILINEAR,
+        CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_BILINEAR,
                             SNX_FX_AA_FXAA, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
@@ -477,7 +632,7 @@ int main(int argc, char** argv) {
         write_ppm(showcase, "fx-fxaa", got, 320, 240);
         free(got);
         cb = snx_vk_ring_commands(&t.ring);
-        CHECK(snx_fx_render(fx, cb, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_BILINEAR,
+        CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_BILINEAR,
                             SNX_FX_AA_SMAA, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
@@ -498,8 +653,7 @@ int main(int argc, char** argv) {
         SnxFxImage out = {0};
         VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
         uint64_t serial;
-        CHECK(snx_fx_pick_aa(fx, SNX_FX_AA_SSAA2, 320, 240, 320, 240, 16384) == SNX_FX_AA_SSAA2);
-        CHECK(snx_fx_render(fx, cb, src.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_OFF,
+        CHECK(snx_fx_render(fx, cb, 0, src.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_OFF,
                             SNX_FX_AA_SSAA2, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
@@ -524,9 +678,8 @@ int main(int argc, char** argv) {
             flat_pixels[i * 4 + 3] = 255;
         }
         CHECK(upload(&t, &flat, flat_pixels));
-        CHECK(snx_fx_pick_aa(fx, SNX_FX_AA_SSAA4, 320, 240, 320, 240, 16384) == SNX_FX_AA_SSAA4);
         cb = snx_vk_ring_commands(&t.ring);
-        CHECK(snx_fx_render(fx, cb, flat.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_OFF,
+        CHECK(snx_fx_render(fx, cb, 0, flat.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_OFF,
                             SNX_FX_AA_SSAA4, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
@@ -544,6 +697,66 @@ int main(int argc, char** argv) {
         free(flat_pixels);
         image_free(&t, &flat);
     }
+    /* a crop smaller than its image (a game drawing a dynamic resolution into part of its target): no filter takes a
+       pixel from outside it. A flat crop inside a checker comes out flat from every filter and anti aliasing, where
+       their taps past the crop's edge once took the checker into its last rows and columns */
+    {
+        static const struct {
+            int filter, aa;
+            const char* name;
+        } runs[] = {{SNX_FX_UPSCALE_FSR1, SNX_FX_AA_OFF, "FSR 1"},
+                    {SNX_FX_UPSCALE_NIS, SNX_FX_AA_OFF, "NIS"},
+                    {SNX_FX_UPSCALE_SGSR, SNX_FX_AA_OFF, "SGSR"},
+                    {SNX_FX_UPSCALE_BILINEAR, SNX_FX_AA_FXAA, "bilinear and FXAA"},
+                    {SNX_FX_UPSCALE_OFF, SNX_FX_AA_SMAA, "SMAA"},
+                    {SNX_FX_UPSCALE_OFF, SNX_FX_AA_SSAA2, "SSAA 2x"}};
+        static const unsigned char flat[3] = {100, 150, 200};
+        const uint32_t iw = 64, ih = 64, cx = 8, cy = 12, cw = 48, ch = 40, ow = 96, oh = 80;
+        Image framed = {0};
+        unsigned char* framed_pixels = malloc((size_t)iw * ih * 4);
+        CHECK(framed_pixels);
+        for (uint32_t y = 0; y < ih; ++y)
+            for (uint32_t x = 0; x < iw; ++x) {
+                unsigned char* at = framed_pixels + ((size_t)y * iw + x) * 4;
+                int inside = x >= cx && x < cx + cw && y >= cy && y < cy + ch;
+                unsigned char checker = ((x ^ y) & 1) ? 255 : 0;
+                for (int c = 0; c < 3; ++c) at[c] = inside ? flat[c] : checker;
+                at[3] = 255;
+            }
+        CHECK(image_make(&t, &framed, iw, ih, VK_FORMAT_R8G8B8A8_UNORM,
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
+        CHECK(upload(&t, &framed, framed_pixels));
+        free(framed_pixels);
+        for (size_t r = 0; r < sizeof runs / sizeof *runs; ++r) {
+            SnxFxImage out = {0};
+            VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
+            uint64_t serial;
+            unsigned char* got;
+            uint32_t bad = 0, first = 0;
+            CHECK(snx_fx_render(fx, cb, 0, framed.view, iw, ih, cx, cy, cw, ch, 0, ow, oh, runs[r].filter, runs[r].aa,
+                                &out));
+            serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+            CHECK(out.width == ow && out.height == oh);
+            got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ow, oh);
+            CHECK(got);
+            for (uint32_t i = 0; i < ow * oh; ++i)
+                for (int c = 0; c < 3; ++c)
+                    if (abs((int)got[(size_t)i * 4 + c] - (int)flat[c]) > 1) {
+                        if (!bad++) first = i;
+                        break;
+                    }
+            if (bad)
+                fprintf(stderr,
+                        "present_fx: %s over a %ux%u crop of a %ux%u frame: %u of %u pixels took the frame outside it, "
+                        "the first (%u, %u) = %u %u %u where the crop is %u %u %u\n",
+                        runs[r].name, cw, ch, iw, ih, bad, ow * oh, first % ow, first / ow, got[(size_t)first * 4],
+                        got[(size_t)first * 4 + 1], got[(size_t)first * 4 + 2], flat[0], flat[1], flat[2]);
+            free(got);
+            CHECK(!bad);
+        }
+        image_free(&t, &framed);
+    }
 
     snx_fx_destroy(fx);
     image_free(&t, &src);
@@ -551,7 +764,7 @@ int main(int argc, char** argv) {
     snx_vk_ring_free(&t.ring);
     vkDestroyDevice(t.dev, NULL);
     snx_vk_instance_free(&t.instance);
-    CHECK(g_val_errors == 0);
+    CHECK(g_test.val_errors == 0);
     puts("present_fx: passed");
     return 0;
 }
