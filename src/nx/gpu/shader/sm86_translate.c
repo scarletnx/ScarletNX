@@ -3739,6 +3739,63 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             dwr(c, in, pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, src_f(c, &in->b), cf(c, 0.0f))));
             return;
         }
+        case SM86_F2I64: {
+            /* F2I's fields (NAK), to a 64-bit integer: the register pair dst, dst + 1. One game's compute programs
+               have F2I.U64.F32.TRUNC, the only form here: the hardware saturates, and a NaN gives 0 */
+            u32 dsize = sm86_field(in, 75, 2), ssize = sm86_field(in, 84, 2);
+            if (dsize != 3 || ssize != 2 || sm86_field(in, 72, 1)) {
+                fail(c, "F2I.64 of sizes %u, %u, signed %u", ssize, dsize, sm86_field(in, 72, 1));
+                return;
+            }
+            static const u16 rounding[4] = {SPV_GLSL_ROUND_EVEN, SPV_GLSL_FLOOR, SPV_GLSL_CEIL, SPV_GLSL_TRUNC};
+            u32 x = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, rounding[sm86_field(in, 78, 2)], src_f(c, &in->b));
+            u32 nan = spv_emit_unary(&c->e, SPV_OP_IS_NAN, c->t_bool, x), t64 = u64_type(c);
+            u32 high = spv_emit_fcompare(&c->e, c->t_bool, 6, x, cf(c, 18446744073709551616.0f));
+            /* the largest float under 2^64 keeps the conversion in range where the result is not taken */
+            u32 clamped = spv_emit_glsl_binary(
+                &c->e, c->t_f32, c->glsl, SPV_GLSL_N_MIN,
+                spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_N_MAX, x, cf(c, 0.0f)),
+                cf(c, 18446742974197923840.0f));
+            u32 v = spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_U, t64, clamped);
+            v = spv_emit_ternary(&c->e, SPV_OP_SELECT, t64, high, c64(c, ~0ull), v);
+            v = spv_emit_ternary(&c->e, SPV_OP_SELECT, t64, nan, c64(c, 0), v);
+            wr(c, in->dst, lo32(c, v));
+            if (in->dst < SM86_RZ) wr(c, in->dst + 1, hi32(c, v));
+            return;
+        }
+        case SM86_I2F64: {
+            /* I2F's fields, from a 64-bit integer in the register pair b, b + 1: the same programs' I2F.F32.U64,
+               to the nearest and upward. The conversion rounds as the device does, so for a direction the result
+               is stepped to the float on the asked side of the integer when it is on the other */
+            u32 dsize = sm86_field(in, 75, 2), ssize = sm86_field(in, 84, 2), mode = sm86_field(in, 78, 2);
+            if (dsize != 2 || ssize != 3 || sm86_field(in, 74, 1) || in->b.kind != SM86_SRC_REG) {
+                fail(c, "I2F.64 of sizes %u, %u, signed %u", ssize, dsize, sm86_field(in, 74, 1));
+                return;
+            }
+            u32 t64 = u64_type(c), hi_reg = in->b.reg + 1 < SM86_RZ ? in->b.reg + 1 : SM86_RZ;
+            u32 x = pair64(c, rd(c, in->b.reg), rd(c, hi_reg));
+            u32 r = spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32, x);
+            if (mode) {
+                u32 big = spv_emit_fcompare(&c->e, c->t_bool, 6, r, cf(c, 18446744073709551616.0f));
+                u32 back = spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_U, t64,
+                                          spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_N_MIN, r,
+                                                               cf(c, 18446742974197923840.0f)));
+                u32 bits = to_u(c, r), step;
+                if (mode == 2) { /* up: under the integer, and not 2^64 itself */
+                    u32 under = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, back, x);
+                    step = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, under, cu(c, 1), c->zero);
+                    step = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, big, c->zero, step);
+                    r = to_f(c, spv_emit_iadd_u32(&c->e, c->t_u32, bits, step));
+                } else { /* down, toward zero: over the integer, as 2^64 is */
+                    u32 over = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, x, back);
+                    step = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, over, cu(c, 1), c->zero);
+                    step = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, big, cu(c, 1), step);
+                    r = to_f(c, spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, bits, step));
+                }
+            }
+            dwr(c, in, to_u(c, r));
+            return;
+        }
         case SM86_F2I: {
             u32 dsize = sm86_field(in, 75, 2); /* NAK: log2 of the destination's bytes */
             u32 ssize = sm86_field(in, 84, 2);
