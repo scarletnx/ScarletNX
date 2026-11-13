@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* gui/gpu_driver_fetch.c: a repository's releases from GitHub's list of them, its latest marked as GitHub marks it,
    titled by name or by tag and ordered as Eden orders them; the assets each has, those with no link to download left
-   out, a GPU maker's own marked, radv-xclipse's that are not for Android left out; GitHub's own error said; and the
-   recommendation by model, found among a repository's releases, NX-Mali's from 0.0.3 on */
+   out, a GPU maker's own marked, radv-xclipse's that are not for Android and a release's .txt left out; GitHub's own
+   error said; and the recommendation by model, found among a repository's releases, NX-Mali's from 0.0.3 on */
 #include "gui/gpu_driver_fetch.h"
 #include <assert.h>
 #include <stdio.h>
@@ -50,6 +50,23 @@ int main(void) {
     assert(!strcmp(r.releases[0].title, "Turnip 26.1 rc1") && !strcmp(r.releases[1].title, "Qualcomm 840") &&
            !strcmp(r.releases[2].title, "v26.0.0-rc08"));
     gui_driver_releases_free(&r);
+    /* FristOneRR's PanVK, for a Mali: its releases titled by tag, its checksums no driver to list */
+    {
+        static const char panvk_json[] =
+            "[{\"tag_name\": \"v3.7.0\", \"name\": \"FristOneRR PanVK v3.7.0 ( Mesa 27.0.0 devel)\", \"prerelease\": false,"
+            "  \"assets\": [{\"name\": \"PanVK-FristOneRR-V.3.7.0.zip\", \"size\": 6259246, \"browser_download_url\":"
+            "    \"https://github.com/FristOneRR/FristOneRR-Panvk-Driver/releases/download/v3.7.0/PanVK-FristOneRR-V.3.7.0.zip\"},"
+            "   {\"name\": \"SHA256SUMS_v370.TXT\", \"size\": 183, \"browser_download_url\":"
+            "    \"https://github.com/FristOneRR/FristOneRR-Panvk-Driver/releases/download/v3.7.0/SHA256SUMS_v370.TXT\"}]}]";
+        const GuiDriverRepo* panvk = &gui_driver_repos[7];
+        assert(!strcmp(panvk->path, "FristOneRR/FristOneRR-Panvk-Driver") && panvk->gpu == GUI_DRIVER_MALI &&
+               panvk->tag_titles && !panvk->by_time);
+        assert(gui_driver_releases_parse(panvk_json, strlen(panvk_json), panvk, &r, why, sizeof why));
+        assert(r.count == 1 && r.assets_count == 1 && !strcmp(r.releases[0].title, "v3.7.0") && r.releases[0].latest &&
+               !strcmp(gui_driver_assets(&r)[0].name, "PanVK-FristOneRR-V.3.7.0.zip") &&
+               !gui_driver_assets(&r)[0].proprietary);
+        gui_driver_releases_free(&r);
+    }
     /* GitHub's own error, said; what is no list of releases, said by its size */
     assert(!gui_driver_releases_parse("{\"message\": \"API rate limit exceeded for 1.2.3.4.\"}", 51, purple, &r, why,
                                       sizeof why) &&

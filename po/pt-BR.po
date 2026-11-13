@@ -3250,8 +3250,8 @@ msgid "Download Driver"
 msgstr "Baixar driver"
 
 #: src/gui/main.c
-msgid "Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's marked proprietary, no license), NX-Mali for a Mali, RADV for an Xclipse. One picked is downloaded and added as Add Driver adds a zip"
-msgstr "Drivers das releases do GitHub: o Turnip e o do próprio fabricante para uma Adreno (o do fabricante marcado como proprietário, sem licença), o NX-Mali para uma Mali, o RADV para uma Xclipse. O escolhido é baixado e adicionado como o Adicionar driver adiciona um zip"
+msgid "Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's marked proprietary, no license), NX-Mali and FristOneRR's PanVK for a Mali, RADV for an Xclipse. One picked is downloaded and added as Add Driver adds a zip"
+msgstr "Drivers das releases do GitHub: o Turnip e o do próprio fabricante para uma Adreno (o do fabricante marcado como proprietário, sem licença), o NX-Mali e o PanVK do FristOneRR para uma Mali, o RADV para uma Xclipse. O escolhido é baixado e adicionado como o Adicionar driver adiciona um zip"
 
 #: src/gui/main.c
 msgid "Add Driver"

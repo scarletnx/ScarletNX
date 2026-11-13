@@ -10096,8 +10096,8 @@ static int drivers_fill(App* app) {
     else
         snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
                  snx_tr("Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's "
-                        "marked proprietary, no license), NX-Mali for a Mali, RADV for an Xclipse. One picked is "
-                        "downloaded and added as Add Driver adds a zip"));
+                        "marked proprietary, no license), NX-Mali and FristOneRR's PanVK for a Mali, RADV for an "
+                        "Xclipse. One picked is downloaded and added as Add Driver adds a zip"));
     snprintf(f->value[r], sizeof f->value[r], "%s", lack ? lack : "");
     app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
                                     sizeof f->value[0], app->drivers_about[r]);

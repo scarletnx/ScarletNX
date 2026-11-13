@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* gui/gpu_driver_fetch.h. The repositories, a release's fields and which one is the latest, the newest-first order and
    the recommendation by model are Eden's (DriverFetcherFragment.kt: repoList, Release.fromJson, driverMap,
-   parseAdrenoModel); NX-Mali, radv-xclipse and the proprietary mark are ScarletNX's */
+   parseAdrenoModel); NX-Mali, FristOneRR's PanVK, radv-xclipse and the proprietary mark are ScarletNX's */
 #include "gui/gpu_driver_fetch.h"
 #include "common/utilities/ascii.h"
 #include "gui/i18n.h"
@@ -19,7 +19,9 @@ const GuiDriverRepo gui_driver_repos[GUI_DRIVER_REPOS] = {
     {"Whitebelyash Turnip", "whitebelyash/freedreno_turnip-CI", 0, 1, GUI_DRIVER_ADRENO, 0},
     /* NX-Mali reports the features Vulkan 1.2 and 1.3 require from 0.0.3 on */
     {"NX-Mali", "Slopinator99/NX-Mali", 0, 0, GUI_DRIVER_MALI, 3},
-    {"RADV Xclipse", "JimVulkan/radv-xclipse", 1, 0, GUI_DRIVER_XCLIPSE, 0}}; /* its releases share one name */
+    {"RADV Xclipse", "JimVulkan/radv-xclipse", 1, 0, GUI_DRIVER_XCLIPSE, 0}, /* its releases share one name */
+    /* PanVK on kbase, its zips Add Driver's packages; its release names vary, its tags are the versions */
+    {"FristOneRR PanVK", "FristOneRR/FristOneRR-Panvk-Driver", 1, 0, GUI_DRIVER_MALI, 0}};
 
 /* whether text has part, in any case */
 static int has_nocase(const char* text, const char* part) {
@@ -31,6 +33,11 @@ static int has_nocase(const char* text, const char* part) {
         if (i == n) return 1;
     }
     return 0;
+}
+/* whether text ends with tail, in any case */
+static int ends_nocase(const char* text, const char* tail) {
+    size_t n = strlen(text), k = strlen(tail);
+    return n >= k && has_nocase(text + n - k, tail);
 }
 int gui_driver_proprietary(const char* repo_path, const char* asset_name) {
     return !strcmp(repo_path, "crueter/GameHub-8Elite-Drivers") || has_nocase(asset_name, "qualcomm");
@@ -98,9 +105,10 @@ int gui_driver_releases_parse(const char* json, size_t n, const GuiDriverRepo* r
             yyjson_val* bytes = yyjson_obj_get(asset, "size");
             text_of(asset, "name", d->name, sizeof d->name);
             text_of(asset, "browser_download_url", d->url, sizeof d->url);
-            /* none to download: not listed; nor radv-xclipse's -glibc- and -wayland- zips, for Linux and Bannerlator:
-               its Android one has the version right after its name */
-            if (!d->name[0] || strncmp(d->url, "https://", 8) ||
+            /* none to download: not listed; nor a .txt (a release's checksums or notes), no driver package; nor
+               radv-xclipse's -glibc- and -wayland- zips, for Linux and Bannerlator: its Android one has the version
+               right after its name */
+            if (!d->name[0] || strncmp(d->url, "https://", 8) || ends_nocase(d->name, ".txt") ||
                 (!strcmp(repo->path, "JimVulkan/radv-xclipse") &&
                  (strncmp(d->name, "radv-xclipse-", 13) || !snx_is_digit((unsigned char)d->name[13]))))
                 continue;
