@@ -2,8 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* plat_apple.h's activity, which only an Objective-C caller can take. NSActivityUserInitiated says the user asked for
    this work, NSActivityLatencyCritical that a deadline the user can feel depends on it, and NSActivityIdleSystemSleepDisabled
-   that the display may not sleep under it: those three are what a title's own runs are, and between them they keep App
-   Nap and the timer coalescing beside it away from the game. */
+   (which NSActivityUserInitiated holds already) that the system may not sleep while the user is idle; the display still
+   may: those are what a title's own runs are, and between them they keep App Nap and the timer coalescing beside it
+   away from the game. */
 #import <Foundation/Foundation.h>
 
 #include "plat_apple.h"

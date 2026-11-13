@@ -112,6 +112,8 @@ if(APPLE)
     # the activity a title takes so App Nap leaves it alone (runtime/platform/plat_apple.m), which is Objective-C
     enable_language(OBJC)
     list(APPEND platform runtime/platform/plat_apple.m)
+    # under ARC, as gui/apple.m is: the global that holds the activity's token keeps it
+    set_source_files_properties(runtime/platform/plat_apple.m PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 endif()
 if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
     # a GPU driver package loaded in place of the system's driver (runtime/platform/gpu_driver_load.c), on the
