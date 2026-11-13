@@ -639,7 +639,7 @@ static void fill(u32 out[144], u32 n, u32 rgba) {
    srgb selects the specification's sRGB decode mode for R, G and B: the LDR endpoints expand to 16 bits as
    (e << 8) | 0x80 instead of by bit replication, and the top 8 bits of the result are the decoded value (also
    those of a void extent's color). Alpha decodes the same in both modes */
-static void decompress_block(const u8 in[16], u32 bw, u32 bh, int srgb, u32 out[144]) {
+static void decompress_block(const u8 in[16], u32 bw, u32 bh, int srgb, u32 out[144], int (*ends)[2][4], u32* nparts) {
     BitIn strm;
     WeightParams wp;
     IseList weights;
@@ -741,6 +741,10 @@ static void decompress_block(const u8 in[16], u32 bw, u32 bh, int srgb, u32 out[
     decode_color_values(color_values, color_data, cem, partitions, color_bits);
     vals = color_values;
     for (i = 0; i < partitions; i++) compute_endpoints(endpoints[i][0], endpoints[i][1], &vals, cem[i]);
+    if (ends) {
+        memcpy(ends, endpoints, sizeof endpoints);
+        *nparts = partitions;
+    }
 
     /* the weights run from the top of the block down: reverse the bits, then clear those above the weights */
     for (i = 0; i < 16; i++) {
@@ -782,7 +786,7 @@ void astc_decode_image(const u8* src, u32 w, u32 h, u32 bw, u32 bh, u8* dst, int
     u32 texels[144];
     for (by = 0; by < rows; by++)
         for (bx = 0; bx < cols; bx++) {
-            decompress_block(src + ((size_t)by * cols + bx) * 16, bw, bh, srgb, texels);
+            decompress_block(src + ((size_t)by * cols + bx) * 16, bw, bh, srgb, texels, NULL, NULL);
             for (y = 0; y < bh && by * bh + y < h; y++)
                 for (x = 0; x < bw && bx * bw + x < w; x++) {
                     u32 v = texels[y * bw + x];
@@ -793,4 +797,10 @@ void astc_decode_image(const u8* src, u32 w, u32 h, u32 bw, u32 bh, u8* dst, int
                     p[3] = (u8)(v >> 24);
                 }
         }
+}
+
+u32 astc_block_endpoints(const u8 in[16], u32 bw, u32 bh, int ends[4][2][4]) {
+    u32 texels[144], parts = 0;
+    decompress_block(in, bw, bh, 0, texels, ends, &parts);
+    return parts;
 }

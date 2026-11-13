@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* astc_mode's Auto by what an ASTC texture's blocks hold (texture.c's astc_by_kind, gpu/texture/astc_kind.h): a texture
    whose blocks are luminance alone is made BC4, luminance and alpha BC5, opaque colour on one line a 4x4 block BC1 (sRGB
-   luminance too, as BC4 has no sRGB), straight as it loads, its RGBA8 never made; its texels, the image decoded as the
+   luminance too, as BC4 has no sRGB), and one of RGBA direct blocks whose ends are grey (a normal map's) BC5, straight
+   as it loads, its RGBA8 never made, where the same blocks with ends apart stay RGBA8; its texels, the image decoded as the
    view gives them back (BC4 as R, R, R, 1, BC5 as R, R, R, G, whatever the header's swizzle picks of them), are its
    Exact twin's within what the encoder loses on such blocks (tests/glsl/astc_bcn_glsl.cpp's floors). Loaded again with
    blocks that hold more, it takes their format; a single block written loads it whole and reads it again; blocks of
@@ -31,6 +32,34 @@ static void ak_fill(AlTex* x, u32 want, int srgb, u32 bw, u32 bh) {
             }
         } while (snx_astc_block_kind(b, bw, bh, srgb) != want);
         memcpy(GP(x->cpu) + i, b, 16);
+    }
+}
+
+/* the memory of x's texture: blocks of RGBA direct mode (12), one partition, a 4x4 grid of 2 bit weights (block mode
+   0x42: 8 bits a colour value), random values and weights but for each end's G and B, R's plus apart and twice apart:
+   at 0, grey ends, as astcenc writes a normal map's X in R, G and B with Y in alpha */
+static void ak_fill_rgba(AlTex* x, u32 apart) {
+    guest_done(x->cpu, x->lay.size);
+    for (u64 i = 0; i < x->lay.size; i += 16) {
+        u32 v[8];
+        for (u32 k = 0; k < 8; k++) {
+            x->rng ^= x->rng << 13, x->rng ^= x->rng >> 17, x->rng ^= x->rng << 5;
+            v[k] = x->rng & 255;
+        }
+        for (u32 e = 0; e < 2; e++) {
+            v[2 + e] = v[e] + apart > 255 ? 255 : v[e] + apart;
+            v[4 + e] = v[e] + 2 * apart > 255 ? 255 : v[e] + 2 * apart;
+        }
+        u64 lo = 0x42u | 12ull << 13, hi = 0;
+        for (u32 k = 0; k < 8; k++) {
+            const u32 at = 17 + 8 * k;
+            if (at < 64) lo |= (u64)v[k] << at;
+            if (at + 8 > 64) hi |= at >= 64 ? (u64)v[k] << (at - 64) : (u64)v[k] >> (64 - at);
+        }
+        x->rng ^= x->rng << 13, x->rng ^= x->rng >> 17, x->rng ^= x->rng << 5;
+        hi |= (u64)x->rng << 32; /* the weights, from the top */
+        for (int k = 0; k < 8; k++)
+            GP(x->cpu + i)[k] = (u8)(lo >> (8 * k)), GP(x->cpu + i)[8 + k] = (u8)(hi >> (8 * k));
     }
 }
 
@@ -109,7 +138,7 @@ static u32 ak_view(Surf* t, const AlTex* x, const u8 sw[4]) {
 typedef struct {
     const char* name;
     u16 format; /* NVN's, 8x8 */
-    u32 kind;   /* the blocks' (snx_astc_block_kind) */
+    u32 kind;   /* the blocks' (snx_astc_block_kind), or ~0u: RGBA direct ends with grey ends (ak_fill_rgba) */
     int srgb;
     VkFormat held;
     u32 most[4];         /* the largest error of each channel the encoder may make on them */
@@ -122,7 +151,10 @@ static int ak_case(const AkCase* k, u32 index) {
     AlTex x;
     u32 most[4];
     if (al_place(&x, &c, index, 14)) return 1;
-    ak_fill(&x, k->kind, k->srgb, 8, 8);
+    if (k->kind == ~0u)
+        ak_fill_rgba(&x, 0);
+    else
+        ak_fill(&x, k->kind, k->srgb, 8, 8);
     vk_lock();
     Surf* t = vk_tex_from_tic(x.tic);
     vk_unlock();
@@ -152,6 +184,35 @@ static int ak_case(const AkCase* k, u32 index) {
                k->name, (int)t->f.vk, most[0], most[1], most[2], most[3]);
     al_free(&x);
     return failed;
+}
+
+/* The control of the RGBA direct case: each end's G and B 2 and 4 levels over R in their values, colour and alpha, which
+   Auto holds as the rest, RGBA8 with room, its Exact twin's texels exactly */
+static int ak_rgba_colour(u32 index) {
+    static const AlCase c = {"ASTC 8x8 128x96, RGBA direct ends apart", NVN_FORMAT_RGBA_ASTC_8x8, 128, 96, 1, 0};
+    AlTex x;
+    u64 size = 0, exact_size = 0;
+    if (al_place(&x, &c, index, 14)) return 1;
+    ak_fill_rgba(&x, 2);
+    vk_lock();
+    Surf* t = vk_tex_from_tic(x.tic);
+    vk_unlock();
+    g_settings.astc_mode = 1;
+    Surf* twin = al_frame(x.twin);
+    g_settings.astc_mode = 0;
+    u8* got = t && t->f.vk == VK_FORMAT_R8G8B8A8_UNORM ? al_image(&x, t, &size) : NULL;
+    u8* exact = twin ? al_image(&x, twin, &exact_size) : NULL;
+    const int same = got && exact && size == exact_size && !memcmp(got, exact, (size_t)size);
+    free(got);
+    free(exact);
+    al_free(&x);
+    if (!same) {
+        fprintf(stderr, "ASTC by its blocks' kind, %s: format %d, not RGBA8 with its Exact twin's texels\n", c.name,
+                t ? (int)t->f.vk : -1);
+        return 1;
+    }
+    printf("ASTC by its blocks' kind, %s: RGBA8, its Exact twin's texels\n", c.name);
+    return 0;
 }
 
 /* A BC4 texture loaded again: blocks of luminance and alpha take it to BC5; one block of colour written over them
@@ -226,7 +287,7 @@ static int check_astc_kind(void) {
         ZERO = VK_COMPONENT_SWIZZLE_ZERO
     };
     /* the floors tests/glsl/astc_bcn_glsl.cpp measured on random blocks of each kind, every footprint */
-    const AkCase cases[4] = {{"luminance, ASTC 8x8",
+    const AkCase cases[5] = {{"luminance, ASTC 8x8",
                               NVN_FORMAT_RGBA_ASTC_8x8,
                               0,
                               0,
@@ -257,7 +318,15 @@ static int check_astc_kind(void) {
                               VK_FORMAT_BC1_RGBA_SRGB_BLOCK,
                               {40, 43, 40, 0},
                               AK_MAP(R, G, B, A),
-                              AK_MAP(A, ONE, R, ZERO)}};
+                              AK_MAP(A, ONE, R, ZERO)},
+                             {"RGBA direct with grey ends (a normal map), ASTC 8x8",
+                              NVN_FORMAT_RGBA_ASTC_8x8,
+                              ~0u,
+                              0,
+                              VK_FORMAT_BC5_UNORM_BLOCK,
+                              {17, 17, 17, 19},
+                              AK_MAP(R, R, R, G),
+                              AK_MAP(G, ONE, R, ZERO)}};
     const int had = g_settings.astc_mode;
     const SnxAstcAuto auto_had = g_vk.astc_auto;
     u32 tic[8];
@@ -280,8 +349,9 @@ static int check_astc_kind(void) {
         return 0;
     }
     int failed = 0;
-    for (u32 i = 0; i < 4; i++) failed |= ak_case(&cases[i], 20 + i);
-    failed |= ak_again(24);
+    for (u32 i = 0; i < 5; i++) failed |= ak_case(&cases[i], 20 + i);
+    failed |= ak_rgba_colour(25);
+    failed |= ak_again(26);
     g_settings.astc_mode = had;
     g_vk.astc_auto = auto_had;
     return failed;

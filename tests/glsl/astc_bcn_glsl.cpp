@@ -165,7 +165,7 @@ static const struct {
 } floors[4] = {{0, 0, SNX_ASTC_AS_BC4, "luminance as BC4", 41.07, {17, 17, 17, 0}},
                {SNX_ASTC_ALPHA, 0, SNX_ASTC_AS_BC5, "luminance and alpha as BC5", 40.19, {17, 17, 17, 19}},
                {SNX_ASTC_CHROMA, 0, SNX_ASTC_AS_BC1, "colour on one line as BC1", 36.74, {39, 32, 33, 0}},
-               {0, 1, SNX_ASTC_AS_BC1, "sRGB luminance as BC1", 34.40, {40, 43, 40, 0}}};
+               {0, 1, SNX_ASTC_AS_BC1, "sRGB luminance as BC1", 34.35, {40, 43, 40, 0}}};
 
 static int measure(int n, char** files, int srgb) {
     static const char* names[4] = {"as it is (BC7 fast build)", "BC4", "BC5", "BC1"};

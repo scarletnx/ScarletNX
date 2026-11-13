@@ -346,16 +346,22 @@ BC5 (16, as BC7), opaque colour on one line a 4x4 block as BC1 (8, half of BC7).
 BC7 by the room. Exact (`astc_mode=1`), BC7 (`2`) and BC7 at load (`3`) are as they were, and so are 3D textures and
 textures with holes in their mapping.
 
-**The kind** (`gpu/texture/astc_kind.h`) comes from each block's header and colour endpoint modes, not from its
-texels: luminance modes (0, 1) decode R = G = B with alpha 255, luminance and alpha (4, 5) R = G = B, the RGB ones
-(6, 8, 9) alpha 255, each partition a line through its two endpoints. A second plane on R, G or B weighs that channel
+**The kind** (`gpu/texture/astc_kind.h`) comes from each block's header, its colour endpoint modes and, for the RGB and
+RGBA modes, its endpoints' values, not from its texels: luminance modes (0, 1) decode R = G = B with alpha 255,
+luminance and alpha (4, 5) R = G = B, the RGB ones (6, 8, 9) alpha 255, each partition a line through its two
+endpoints. A partition of an RGB or RGBA mode (6, 8, 9, 10, 12, 13) whose two endpoints, made from its colour values as
+the decoders make them (the integer sequence, unquantized, then blue contraction, the base and offset's bit transfer and
+clamp), have R, G and B within a level of each other (`SNX_ASTC_GREY_SPREAD`) counts as luminance, or luminance and
+alpha: its texels are grey within two levels, which the BC4 and BC5 views give back as R. Encoders write grey there
+too: astcenc's `-normal` encodings of two normal maps (X in R, G and B, Y in alpha) used the RGBA direct mode (12) in
+17% and 0.1% of their blocks, which read by mode alone would have kept them from BC5, and 8 and 16 of their texels in a
+million and four are a level off grey. A second plane on R, G or B weighs that channel
 apart, two partitions of colour are two lines, and an HDR mode, an illegal block or a void extent with a reserved bit
 off decode as the error colour, which takes the texture to the usual format. Every test the decoders (`tests/support/astc.c`,
 `astc_decode.glsl`) make a block the error colour by is made here in the same order. BC1's one line a block also needs
 each 4x4 block inside one ASTC block: at 5x5, 6x6 or 10x8 a 4x4 block takes the texels of two to four ASTC blocks, each
 a line of its own, and on random blocks BC1 erred by up to 141 levels there against 39 at 4x4, 8x8 and 12x12, so
-colour goes to BC1 only at those three footprints. The reading is conservative: an RGB block whose endpoints happen
-to be grey counts as colour. `texture.c`'s `astc_kind_of` reads every level of every layer from guest memory through
+colour goes to BC1 only at those three footprints. `texture.c`'s `astc_kind_of` reads every level of every layer from guest memory through
 its block linear layout (or pitch rows), the layout's padding left out, and stops at the first block that leaves no
 BCn format; memory mapped in more than one run, with bytes the GPU holds or a write of the GPU's pending over it, is
 not read, and the texture is held as usual. One of the tests' 128x96 textures of 8 levels took 15 to 22 us (a -O0
@@ -411,18 +417,24 @@ astc-encoder's tests carry (MIT), and edenprobe's astcimage picture:
 | | 12x12 | BC1 sRGB | 47.66 dB, 22 23 22 0 | 59.67 dB, 5 5 5 0 |
 | edenprobe's gradients, 64x64 | 8x8 | BC1 | 45.33 dB, 5 4 5 0 | 53.57 dB, 2 2 2 0 |
 | The same, sRGB | 8x8 | BC1 sRGB | 45.25 dB, 5 4 5 0 | 53.72 dB, 2 2 2 0 |
+| A 1024x1024 normal map (`-normal`: X in R, G and B, Y in alpha) | 4x4 | BC5 | 50.08 dB, 17 17 17 14 | 46.67 dB, 29 29 29 90 |
+| | 6x6 | BC5 | 50.01 dB, 17 17 17 14 | 47.61 dB, 37 37 37 102 |
+| | 8x8 | BC5 | 50.57 dB, 17 17 17 14 | 48.95 dB, 67 67 67 101 |
+| | 12x12 | BC5 | 50.76 dB, 20 20 20 14 | 51.18 dB, 32 32 32 108 |
+| A 2048x2048 normal map, the same | 4x4 | BC5 | 52.73 dB, 17 17 17 20 | 50.63 dB, 28 28 28 74 |
+| | 6x6 | BC5 | 52.71 dB, 17 17 17 17 | 51.73 dB, 29 29 29 66 |
+| | 8x8 | BC5 | 53.15 dB, 20 20 20 17 | 53.01 dB, 30 30 30 78 |
+| | 12x12 | BC5 | 53.11 dB, 18 18 18 16 | 53.83 dB, 35 35 35 69 |
 | Random blocks of luminance, every footprint | | BC4 | 41.08 dB, 17 17 17 0 | |
 | Random blocks of luminance and alpha | | BC5 | 40.20 dB, 17 17 17 19 | |
 | Random blocks of colour on one line, 4x4, 8x8, 12x12 | | BC1 | 36.75 dB, 39 32 33 0 | |
-| Random blocks of luminance, sRGB | | BC1 sRGB | 34.41 dB, 40 43 40 0 | |
+| Random blocks of luminance, sRGB | | BC1 sRGB | 34.35 dB, 40 43 40 0 | |
 
 Random blocks are the encoders' worst case, each texel at a weight of its own; `astc_bcn_glsl` holds them to those
 numbers. The rest of those pictures keeps the usual format: the four RGB ones (diffuse, emissive, two metal and
 roughness maps, 4x4, 8x8 and 12x12, `-esw rgb1`) mix partitions of colour, and luminance blocks among colour ones;
-RGBA and edenprobe's whole picture hold colour and alpha. Two normal maps encoded with `-normal` (X in R, G and B, Y in
-alpha) decode grey in all but 8 and 16 texels of a million and four (by one level), yet astcenc wrote 17% and 0.1% of
-their blocks in the RGBA endpoint mode (12): read by their modes they are colour and alpha, and keep the usual format.
-Reading the endpoints' values as well would take such maps to BC5.
+RGBA and edenprobe's whole picture hold colour and alpha. On the normal maps BC5 loses less than BC7's fast build at 6
+of the 8 footprints and errs far less in alpha (Y), its two channels apart where BC7 fits lines through RGBA.
 
 **Memory:** BC1 and BC4 take 8 bytes a 4x4 block, half a byte a texel, an eighth of RGBA8's four and half of BC7's
 16; BC5 takes BC7's 16.
@@ -839,13 +851,16 @@ separate SPIRV-Tools is needed.
   They do it also for arrays whose layers go up a level at a time, all of them at once (`vk_astc_upload_layers`), as
   RGBA8 and as BC7.
 - `astc_kind` (ctest, no GPU) holds `gpu/texture/astc_kind.h` to the CPU decoder: 168,000 random blocks of every
-  block mode, partition count and endpoint mode, all 14 footprints, both decode modes: a block said to have no colour
-  decodes grey in every texel, one said to have no alpha opaque, one said to be colour on one line no more than 1.6
+  block mode, partition count and endpoint mode, and 42,000 of RGB and RGBA modes whose values make grey ends or
+  ends a level or two apart, all 14 footprints, both decode modes: a block said to have no colour decodes grey within
+  two levels in every texel (these come to one), each RGB or RGBA partition's endpoints as far apart as the decoder's
+  own (`tests/support/astc.c`'s `astc_block_endpoints`), RGBA direct with G a level over R luminance and alpha and with
+  G 2 levels over R colour, one said to have no alpha opaque, one said to be colour on one line no more than 1.6
   (squared) off one, and only blocks the decoder makes all the error colour are taken for it. Each format comes from
   at least 500 of them. Then a level's kind read through block linear layouts (GOB blocks of several heights and
   depths, padding columns, slices) and pitch rows, the padding blocks of the error colour left out, a coloured block
-  found wherever it is, a layout a byte short refused; the ISE's bit counts against the specification's search; and
-  the format each of the 16 kinds takes in each decode mode.
+  found wherever it is, a layout a byte short refused; the ISE's bit counts and the colour values' encoding against the
+  specification's search; and the format each of the 16 kinds takes in each decode mode.
 - `astc_bcn_glsl` (ctest, no GPU) runs `astc_bcn.comp`'s body on the CPU over levels of random blocks of each kind at
   every footprint, decodes its blocks (`tests/support/bcn.c`) as the view gives them back and holds the loss against
   the CPU decoder's texels to the floors measured (the table above), BC1's blocks to four colours; a block of one value
@@ -853,8 +868,9 @@ separate SPIRV-Tools is needed.
   `astc_vulkan` and `astc_vulkan_pieces` upload random blocks straight into BC1, BC4 and BC5 images (BC1 in sRGB
   too), the strips BC7's take, with mips, layers and many strips, and hold the GPU's blocks to the CPU's, byte for
   byte; `--bench` times them beside RGBA8 and BC7. `vulkan_headless`'s `check_astc_kind` (`SNX_TEST_ASTC_KIND_ONLY=1`
-  runs it alone) makes 128x96 ASTC 8x8 textures of luminance, of luminance and alpha, of colour on one line and of
-  sRGB luminance under Auto, checks each is held as BC4, BC5, BC1 or sRGB BC1 straight as it loads, its image as the
+  runs it alone) makes 128x96 ASTC 8x8 textures of luminance, of luminance and alpha, of colour on one line, of sRGB
+  luminance and of RGBA direct blocks with grey ends under Auto, checks each is held as BC4, BC5, BC1, sRGB BC1 or BC5
+  straight as it loads (the same RGBA blocks with ends apart stay RGBA8, their Exact twin's texels), its image as the
   view gives it back within the floors of its Exact twin, and the view's components for two of the header's
   swizzles; then loads one BC4 texture again with blocks of luminance and alpha (BC5), and writes one block of colour
   and alpha over it (loaded whole, RGBA8, its Exact twin's texels exactly).
