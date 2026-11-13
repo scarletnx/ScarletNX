@@ -84,6 +84,15 @@ typedef struct {
     int update_count;
 } SnxCli;
 void snx_cli_init(SnxCli* cli, const char* program, unsigned accepted);
+/* the recompile's options of a run as a driver's compiler reads them, from what snx_cli_take collected: -O and --jobs
+   are the settings opt and aot_threads, which the driver sets as it takes them */
+typedef struct {
+    int chunk;             /* --chunk's instructions, 0 for the driver's own unit */
+    const char* jit_cache; /* --jit-cache, NULL for the game's own record */
+    int jit_only, keep_ir, quiet;
+    const char* given; /* the name of the first of them the run was given, -O and --jobs too; NULL for none */
+} SnxCliRecompile;
+SnxCliRecompile snx_cli_recompile(const SnxCli* cli);
 /* snx_cli_match on argv[*i], its option recorded in cli: its id, 0, SNX_CLI_ERROR or SNX_CLI_REFUSED as there */
 int snx_cli_take(SnxCli* cli, int argc, char** argv, int* i, char* error, size_t size);
 void snx_cli_free(SnxCli* cli);
