@@ -3810,6 +3810,14 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     target_include_directories(snx-test-vk-checkpoints PRIVATE "${volk_SOURCE_DIR}")
     target_link_libraries(snx-test-vk-checkpoints PRIVATE Vulkan::Headers)
     add_test(NAME vk_checkpoints COMMAND snx-test-vk-checkpoints)
+    # the renderer's device memory (gpu/vk/devmem.c) over a driver the test plays, which checks each call as the
+    # specification reads: alignment, memory types, no byte and no granularity page shared, memory made for a
+    # resource alone, whole atoms flushed; the cap of the GPU's own heap, and requests from several threads
+    add_executable(snx-test-vk-devmem vk_devmem.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/space.c")
+    snx_test_target(snx-test-vk-devmem 23)
+    target_include_directories(snx-test-vk-devmem PRIVATE "${volk_SOURCE_DIR}")
+    target_link_libraries(snx-test-vk-devmem PRIVATE Vulkan::Headers scarletnx-common) # snx_thread_name
+    add_test(NAME vk_devmem COMMAND snx-test-vk-devmem)
     add_executable(snx-test-vk-descriptor-heap-setup vk_descriptor_heap_setup.c
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/descriptor_heaps.c")
     snx_test_target(snx-test-vk-descriptor-heap-setup 11)
