@@ -88,7 +88,8 @@ static void verify_regions(void) {
     }
 }
 static void reset_map(void) {
-    for (u32 i = 0; i < g_own.nown; i++) release_resource(g_own.ent[i].res);
+    for (u32 i = 0; i < g_own.nown; i++)
+        if (g_own.ent[i].res) release_resource(g_own.ent[i].res); /* a watch has none */
     g_own.nown = 0;
     memset(g_own.region, 0, sizeof *g_own.region * (size_t)g_own.nregion);
 }
@@ -154,6 +155,46 @@ static void differential_cuts(void) {
         verify_regions();
     }
     reset_map();
+}
+
+/* maps of watches (entries with no resource) and owners, and a range that ends among them: the walk over watches
+   (next_real_nl) passes only watches that start before the range's end, and stops at an owner, at the first entry
+   that starts at or past the end, or past the last entry. own_lookup finds what a walk over every entry finds */
+static void watch_walk_bound(void) {
+    Resource resources[64] = {0};
+    u32 seed = 1880, past_end = 0;
+    for (u32 trial = 0; trial < 4096; trial++) {
+        reset_map();
+        u64 at = 0x10000;
+        for (u32 i = 0; i < 64; i++) {
+            u64 gap = random_word(&seed) % 64, size = random_word(&seed) % 96 + 1;
+            Resource* res = random_word(&seed) % 4 ? NULL : &resources[i];
+            Own o = {at + gap, at + gap + size, at + gap, res, i * 100, 0};
+            if (res) retain_resource(res);
+            insert_nl(g_own.nown, &o);
+            at = o.hi;
+        }
+        u64 addr = g_own.ent[0].lo + random_word(&seed) % (u32)(at - g_own.ent[0].lo);
+        u64 end = addr + 1 + random_word(&seed) % (u32)(at - addr);
+        u32 first = first_after_nl(addr), stop = next_real_nl(first, end);
+        for (u32 j = first; j < stop; j++) CHECK(!g_own.ent[j].res && g_own.ent[j].lo < end);
+        CHECK(stop == g_own.nown || g_own.ent[stop].res || g_own.ent[stop].lo >= end);
+        past_end += stop < g_own.nown && !g_own.ent[stop].res; /* a watch past the end: the bound stopped there */
+        OwnRange got[64];
+        u32 n = own_lookup(addr, end - addr, got, 64), want = 0;
+        for (u32 j = 0; j < g_own.nown; j++) {
+            const Own* o = &g_own.ent[j];
+            if (!o->res || o->hi <= addr || o->lo >= end) continue;
+            u64 lo = o->lo > addr ? o->lo : addr, hi = o->hi < end ? o->hi : end;
+            CHECK(want < n && got[want].addr == lo && got[want].size == hi - lo && got[want].res == o->res &&
+                  got[want].res_off == o->res_off + (lo - o->lo));
+            want++;
+        }
+        CHECK(n == want);
+    }
+    CHECK(past_end > 0);
+    reset_map();
+    for (u32 i = 0; i < 64; i++) CHECK(!resources[i].refs);
 }
 
 static void land_and_replace(void) {
@@ -225,6 +266,7 @@ int main(int argc, char** argv) {
     OwnHooks hooks = {.land = land_resources, .retain = retain_resource, .release = release_resource};
     CHECK(own_init(&hooks) == 0);
     differential_cuts();
+    watch_walk_bound();
     land_and_replace();
     if (argc == 2 && !strcmp(argv[1], "--bench")) benchmark();
     else CHECK(argc == 1);
