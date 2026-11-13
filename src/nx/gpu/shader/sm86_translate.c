@@ -5727,6 +5727,9 @@ static int tex_b_cbuf_handle(Ctx* c, u32 i, u32 reg) {
         k = reaching_write(c, (u32)k, c->in[k].b.reg);
     if (k < 0) return 0;
     const Sm86Insn* w = &c->in[k];
+    /* a compute program has no texture arrays, so a table's LDC (its address has a register) is tried as a handle
+       from memory: where every lane picks the same element, the dispatch's own, it is that texture; else none */
+    if (c->stage == ST_CS && w->op == SM86_LDC && sm86_field(w, 24, 8) < SM86_RZ) return 0;
     return (w->op == SM86_MOV && w->b.kind == SM86_SRC_CBUF && !w->b.bindless) || w->op == SM86_LDC;
 }
 /* The handles from memory: TEX, TLD, TLD4 and TXQ with the handle in a uniform register pair (URn the texture's word,
@@ -5881,7 +5884,15 @@ static void prepare_handles(Ctx* c) {
                 int m = reaching_write(c, (u32)k, index);
                 const Sm86Insn* mul = m >= 0 ? &c->in[m] : NULL;
                 u32 stride = 0, base = 0, count = SNX_TEX_ARRAY;
-                if (!g_shader_texture_arrays || c->stage == ST_CS) {
+                if (c->stage == ST_CS && handle_table_index(c, m, &stride, &base)) {
+                    /* a compute program has no texture arrays yet: the table's textures are sampled as none, as a
+                       handle from memory that no dispatch gives is (SH_PROBE_NONE), and the program runs */
+                    slot = tex_slot_memory(c, SH_PROBE_NONE, 0, 0, type, array, shadow, 0);
+                    c->si->memh_none++;
+                    if (!c->si->memh_why[0])
+                        snprintf(c->si->memh_why, sizeof c->si->memh_why,
+                                 "a table of handles in a compute program (for %u)", i);
+                } else if (!g_shader_texture_arrays || c->stage == ST_CS) {
                     fail(c, "TEX.B of a table of handles, without texture arrays");
                 } else if (!handle_table_index(c, m, &stride, &base)) {
                     fail(c, "TEX.B of a table of handles, indexed by %s",
