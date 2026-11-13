@@ -84,10 +84,16 @@ static void line(GuiSteps* steps, const char* s, uint64_t now) {
         begin(steps, SNX_TR_NOOP("READY"), s + 6, strlen(s + 6), now);
     else if (prefix(s, "The game starts its program ") && sscanf(s, "The game starts its program %d,", &program) == 1) {
         char number[16];
+        const char *name = strchr(s, ','), *from = strstr(s, "(ExecuteProgram from program ");
+        size_t n;
         snprintf(number, sizeof number, "%d", program);
         begin(steps, SNX_TR_NOOP("PROGRAM"), number, strlen(number), now);
         steps->switching = current(steps)->serial;
         steps->program = program;
+        if (!from || sscanf(from, "(ExecuteProgram from program %d)", &steps->previous) != 1) steps->previous = -1;
+        for (name = name + 1; *name == ' '; ++name) continue;
+        for (n = 0; name[n] && name[n] != ' ' && n + 1 < sizeof steps->next; ++n) steps->next[n] = name[n];
+        steps->next[n] = 0;
     } else if (prefix(s, "vulkan: ") && !steps->gpu && strstr(s, ", Vulkan ")) {
         /* the first device line: "vulkan: <device> [(<driver>)], Vulkan <version>, ..."; a later "(" is not the
            device's */

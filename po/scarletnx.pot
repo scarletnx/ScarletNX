@@ -1529,6 +1529,46 @@ msgstr ""
 msgid "...OK"
 msgstr ""
 
+#: src/gui/main.c src/gui/steps.c
+msgid "PROGRAM"
+msgstr ""
+
+#: src/gui/main.c
+msgid "STARTED BY"
+msgstr ""
+
+#: src/gui/main.c
+msgid "USER"
+msgstr ""
+
+#: src/gui/main.c
+msgid "VERSION"
+msgstr ""
+
+#: src/gui/main.c
+msgid "DLC"
+msgstr ""
+
+#: src/gui/main.c
+msgid "HANDED OVER"
+msgstr ""
+
+#: src/gui/main.c src/gui/steps.c
+msgid "GPU"
+msgstr ""
+
+#: src/gui/main.c
+msgid "TITLE ID"
+msgstr ""
+
+#: src/gui/main.c src/gui/steps.c
+msgid "BUILD"
+msgstr ""
+
+#: src/gui/main.c src/gui/steps.c
+msgid "RECOMPILE"
+msgstr ""
+
 #: src/gui/main.c
 msgid "Program"
 msgstr ""
@@ -5637,27 +5677,11 @@ msgid "EXTRACT"
 msgstr ""
 
 #: src/gui/steps.c
-msgid "RECOMPILE"
-msgstr ""
-
-#: src/gui/steps.c
-msgid "BUILD"
-msgstr ""
-
-#: src/gui/steps.c
 msgid "LAUNCH"
 msgstr ""
 
 #: src/gui/steps.c
 msgid "READY"
-msgstr ""
-
-#: src/gui/steps.c
-msgid "PROGRAM"
-msgstr ""
-
-#: src/gui/steps.c
-msgid "GPU"
 msgstr ""
 
 #: src/gui/steps.c
