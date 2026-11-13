@@ -1315,6 +1315,7 @@ static int tensor_match(u32 k, u32 h, u32 w, const Expect* e, int bits) {
    as RADV does, or in two of 32 with warp32), translated with or without quad operations, the mixed dot product and
    the device's cooperative matrices (coop, in subgroups of 32 only), on one set of matrices */
 static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, int coop, int pairs, int exact) {
+    int stage = pairs == 2; /* pairs 2: A and B through a warp's slot of shared memory (g_shader_hmma_stage) */
     static Prog p;
     static u32 in[INVOCATIONS * 8], want[INVOCATIONS * TENSOR_OUT], got[INVOCATIONS * TENSOR_OUT];
     static Expect expect[INVOCATIONS * TENSOR_OUT];
@@ -1341,12 +1342,13 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
     si.shared_size = 2048;
     size_t words = 0;
     int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16,
-        coop_was = g_shader_hmma_coop, pairs_was = g_shader_hmma_pairs;
+        coop_was = g_shader_hmma_coop, pairs_was = g_shader_hmma_pairs, stage_was = g_shader_hmma_stage;
     g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_float16 = g->float16;
-    g_shader_hmma_coop = coop ? g->coop : 0, g_shader_hmma_pairs = pairs;
+    g_shader_hmma_coop = coop ? g->coop : 0, g_shader_hmma_pairs = pairs == 1;
+    g_shader_hmma_stage = stage ? 16384 : 0; /* every device's maxComputeSharedMemorySize is at least that */
     u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
     g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
-    g_shader_hmma_coop = coop_was, g_shader_hmma_pairs = pairs_was;
+    g_shader_hmma_coop = coop_was, g_shader_hmma_pairs = pairs_was, g_shader_hmma_stage = stage_was;
     const char* how = exact ? "exact" : "rounded";
     if (!spv) {
         fprintf(stderr, "tensor: not translated: %s\n", si.first_unsupported);
@@ -1383,18 +1385,19 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
     printf("tensor: workgroups of %u, A by %s, B by %s, %s, %s sums: %u instructions, %u outputs x %u invocations "
            "(subgroups of %u%s), %u differ\n",
            local,
-           coop   ? "staging"
-           : quad ? "quad broadcasts"
-                  : "shuffles",
-           coop    ? "staging"
-           : pairs ? "pairs"
-                   : "lanes",
+           coop || stage ? "staging"
+           : quad        ? "quad broadcasts"
+                         : "shuffles",
+           coop || stage ? "staging"
+           : pairs       ? "pairs"
+                         : "lanes",
            products, how, p.n, TENSOR_OUT, INVOCATIONS, warp32 ? 32 : g->subgroup, warp32 ? ", required" : "", bad);
     return bad == 0;
 }
 /* every way the device can translate them: with what it has, then with neither quads nor the mixed dot product (the
    fallbacks), each in workgroups of one warp and of two, those also in required subgroups of 32 where it can, B
-   gathered by each lane and by pairs of lanes (g_shader_hmma_pairs); and with its cooperative matrices where it has
+   gathered by each lane and by pairs of lanes (g_shader_hmma_pairs), and A and B staged through shared memory
+   (g_shader_hmma_stage); and with its cooperative matrices where it has
    them, in workgroups of one warp and of two in subgroups of 32. 1 when every run matches, 0 when one does not, -1
    with no such device */
 static int run_tensor(void) {
@@ -1410,7 +1413,7 @@ static int run_tensor(void) {
     for (int fallback = 0; fallback < 2; fallback++)
         for (u32 run = 0; run < 3; run++) { /* 32, 64, 64 in subgroups of 32 */
             if (run == 2 && !g.warp32) continue;
-            for (int pairs = 0; pairs < 2; pairs++)
+            for (int pairs = 0; pairs < 3; pairs++) /* each lane's gather, pairs of lanes, staged */
                 for (int exact = 1; exact >= 0; exact--)
                     ok &= run_tensor_with(&g, run ? 64 : 32, run == 2, !fallback && g.quad, !fallback && g.mixed_dot, 0,
                                           pairs, exact);
@@ -1514,10 +1517,11 @@ static int cmp_double(const void* a, const void* b) {
     return x < y ? -1 : x > y;
 }
 /* the forms of hmma the bench times, each set before its translation (bench_form): each lane gathering its B words,
-   and pairs of lanes sharing them (g_shader_hmma_pairs) */
-static const char* const bench_forms[] = {"gather", "pairs"};
+   pairs of lanes sharing them (g_shader_hmma_pairs), and A and B through a warp's slot of shared memory
+   (g_shader_hmma_stage) */
+static const char* const bench_forms[] = {"gather", "pairs", "stage"};
 #define BENCH_FORMS (sizeof bench_forms / sizeof *bench_forms)
-static void bench_form(u32 form) { g_shader_hmma_pairs = form == 1; }
+static void bench_form(u32 form) { g_shader_hmma_pairs = form == 1, g_shader_hmma_stage = form == 2 ? 16384 : 0; }
 static int run_hmma_bench(u32 rounds, u32 groups) {
     Gpu g = {0};
     if (!gpu_open(&g, 1)) {

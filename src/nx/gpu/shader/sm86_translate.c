@@ -53,6 +53,7 @@ typedef struct {
     u32 num_groups, hmma_count;  /* NumWorkgroups and the HMMAs so far, for hmma_zero */
     int coop;                    /* HMMA takes hmma_coop (coop_wanted), and the module the Vulkan memory model */
     u32 coop_slots, subgroup_id; /* hmma_coop's slots (Workgroup) and SubgroupId */
+    u32 stage_slots;             /* hmma's A and B staged a warp each (g_shader_hmma_stage, Workgroup) */
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
@@ -2805,6 +2806,20 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
         for (u32 i = 0; i < 2; i++)
             wr(c, d + i, pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, acc[2 * i], acc[2 * i + 1])));
 }
+/* hmma's A and B through shared memory (g_shader_hmma_stage), for a device whose shuffles cost far more than a store
+   and a load: each warp has a slot of HMMA_STAGE_WORDS after the program's shared memory, lane l's A words at 4l and
+   its B words at 128 + 2l, between two subgroup barriers as hmma_coop's slots are. A compute program's, where the
+   slots fit the device's shared memory beside the program's own */
+#define HMMA_STAGE_WORDS 192u
+static int stage_wanted(const Ctx* c) {
+    if (!g_shader_hmma_stage || c->coop || c->stage != ST_CS || c->si->cs_local[0] <= 0) return 0;
+    u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
+    u32 own = c->si->shared_size > 0 ? (u32)c->si->shared_size : 16384u; /* shared_var's */
+    return own + (lanes + 31) / 32 * HMMA_STAGE_WORDS * 4 <= (u32)g_shader_hmma_stage;
+}
+static u32 stage_ptr(Ctx* c, u32 index) {
+    return SPV(&c->e, SPV_OP_ACCESS_CHAIN, spv_emit_type_workgroup_pointer(&c->e, c->t_u32), c->stage_slots, index);
+}
 /* HMMA (0x23c): D = A B + C on the warp's fragments, as PTX's mma.sync.aligned.m16n8k16 (bit 75) or m16n8k8 .row.col
    with f16 A and B, and f16 (bit 76 clear) or f32 C and D (the encodings of CuAssembler's sm_86 records: bits 72-90 8
    16816.F16, 0x18 16816.F32, 0 1688.F16, 0x10 1688.F32; BF16, TF32 and 1684 are other bits). D at 16, A at 24, B at
@@ -2867,7 +2882,37 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
             acc[i][1] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 1);
         }
     }
-    int pairs = g_shader_hmma_pairs != 0;
+    /* staged: lane 4g + p's A words at 16g + 4p, lane 8t + 4j + p's B words at 128 + 16t + 8j + 2p */
+    int stage = stage_wanted(c), pairs = !stage && g_shader_hmma_pairs != 0;
+    u32 a_at = 0, b_at = 0;
+    if (stage) {
+        if (!c->stage_slots) {
+            u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
+            u32 array = spv_emit_type_array_u32(&c->e, c->t_u32, (lanes + 31) / 32 * HMMA_STAGE_WORDS);
+            c->stage_slots = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
+            add_interface(c, c->stage_slots);
+        }
+        u32 slot = spv_emit_binary(
+            &c->e, SPV_OP_I_MUL, c->t_u32,
+            spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, builtin_u32(c, &c->local_index, 29), cu(c, 5)),
+            cu(c, HMMA_STAGE_WORDS));
+        u32 own_a = spv_emit_iadd_u32(&c->e, c->t_u32, slot,
+                                      spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, lane, cu(c, 2)));
+        u32 own_b = spv_emit_iadd_u32(
+            &c->e, c->t_u32, slot,
+            spv_emit_iadd_u32(&c->e, c->t_u32,
+                              spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, lane, cu(c, 1)), cu(c, 128)));
+        coop_barrier(c); /* the HMMA before's loads of the slot */
+        for (k = 0; k < na; k++) spv_emit_store_nonprivate(&c->e, stage_ptr(c, coop_add(c, own_a, k)), a[k]);
+        for (k = 0; k < nb; k++) spv_emit_store_nonprivate(&c->e, stage_ptr(c, coop_add(c, own_b, k)), b[k]);
+        coop_barrier(c);
+        a_at = spv_emit_iadd_u32(&c->e, c->t_u32, slot,
+                                 spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g4, cu(c, 2)));
+        b_at = spv_emit_iadd_u32(
+            &c->e, c->t_u32, slot,
+            spv_emit_iadd_u32(&c->e, c->t_u32,
+                              spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t8, cu(c, 1)), cu(c, 128)));
+    }
     u32 g0 = 0, t8h = 0, mine[2][2][2]; /* pairs: [column 2t + j][B's register h][quad lane 2 G0 + u]'s word */
     if (pairs) {
         u32 half = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
@@ -2880,7 +2925,9 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
         u32 av[4], bv[2][2];
         for (k = 0; k < na; k++) {
             u32 bits;
-            if (pairs) {
+            if (stage)
+                bits = spv_emit_load_nonprivate(&c->e, c->t_u32, stage_ptr(c, coop_add(c, a_at, 4 * p + k)));
+            else if (pairs) {
                 u32 x = quad_read(c, a[k], g4, p & 1), y = quad_read(c, a[k], g4, 2 + (p & 1));
                 bits = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, g0, p < 2 ? y : x, p < 2 ? x : y);
             } else
@@ -2890,7 +2937,10 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
         for (u32 j = 0; j < 2; j++)
             for (k = 0; k < nb; k++) {
                 u32 bits;
-                if (!pairs)
+                if (stage)
+                    bits =
+                        spv_emit_load_nonprivate(&c->e, c->t_u32, stage_ptr(c, coop_add(c, b_at, 8 * j + 2 * p + k)));
+                else if (!pairs)
                     bits =
                         warp_read(c, b[k], spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, cu(c, 4 * j + p)));
                 else if (p < 2)

@@ -1359,6 +1359,10 @@ static int create_device(void) {
     /* RADV makes a shuffle's xor of 4 a DPP move from GFX10, the devices with subgroups of 32, and a shuffle at any
        other index a permute through LDS: an RX 6700 XT's HMMA bench (SNX_HMMA_BENCH) ran 9.7% faster */
     g_shader_hmma_pairs = p12.driverID == VK_DRIVER_ID_MESA_RADV && g_vk.has_cs_warp32;
+    /* HMMA's A and B through shared memory where compute has no quad operations: every A read would be a shuffle too */
+    g_shader_hmma_stage = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) && !g_shader_quad_compute
+                              ? (int)g_vk.props.limits.maxComputeSharedMemorySize
+                              : 0;
     /* shaderDenormPreserveFloat16 is the device's word that it can keep f16 subnormals: without it an SM86 program
        packs those by hand (sm86_translate.c's pack_half), as Turnip on an Adreno 610 flushed them to zero */
     g_shader_half_flush = !p12.shaderDenormPreserveFloat16;
