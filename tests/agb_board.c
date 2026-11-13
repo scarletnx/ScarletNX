@@ -163,6 +163,17 @@ int main(void) {
     agb_write32(&board, 0x00000000, 0);
     board.bios_prefetch = AGB_BIOS_PREFETCH_SWI;
     CHECK(agb_read32(&board, 0x00000000) == AGB_BIOS_PREFETCH_SWI);
+    /* past the 28 bits the console decodes (but for the mirror at bit 31) nothing answers: a read gives the open bus at
+       its lane and a write goes nowhere, as mGBA's GBALoadBad */
+    board.open_bus = 0x0A000005;
+    CHECK(agb_read32(&board, 0x2E00A610) == 0x0A000005 && agb_read16(&board, 0xFFFFFFFE) == 0x0A00 &&
+          agb_read8(&board, 0x10000001) == 0x00 && agb_read8(&board, 0x7FFFFFF3) == 0x0A);
+    agb_write32(&board, 0x2E00A610, 0x12345678);
+    agb_write8(&board, 0x9E000000, 0x77);
+    CHECK(agb_read32(&board, 0x2E00A610) == 0x0A000005);
+    agb_write32(&board, 0x02000040, 0x5A5A5A5A);
+    CHECK(agb_read32(&board, 0x82000040) == 0x5A5A5A5A);
+
     /* the cartridge windows hold the image once, and past it the bus still holds address / 2 */
     CHECK(agb_read32(&board, 0x08000000) == board.cartridge.entry);
     CHECK(agb_read16(&board, 0x08000000 + ROM_SIZE) == ROM_SIZE / 2);
