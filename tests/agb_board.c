@@ -556,6 +556,43 @@ int main(void) {
     CHECK(agb_read16(&board, 0x04000128) & 0x0004);
     agb_write16(&board, 0x04000128, 0x0081); /* start, no interrupt */
     CHECK(!(agb_read16(&board, 0x04000128) & 0x0080) && !(board.irq_if & AGB_IRQ_SERIAL));
+    {
+        /* each serial register written all ones in each mode reads back what the console keeps (mGBA's suite's
+           sio-read.c): the data halfwords only where the mode has them, SIOCNT and RCNT without their unused bits and
+           RCNT's lines at the idle port's levels, JOYCNT's interrupt enable alone, JOY_RECV and JOY_TRANS 0 */
+        static const struct {
+            uint16_t rcnt, siocnt;
+            uint32_t address;
+            uint16_t expected;
+        } reads[] = {
+            {0x0000, 0x1000, 0x04000120, 0xFFFF}, {0x0000, 0x0000, 0x04000120, 0x0000},
+            {0x0000, 0x2000, 0x04000120, 0x0000}, {0x0000, 0x2000, 0x04000124, 0x0000},
+            {0x0000, 0x3000, 0x04000128, 0x7FAF}, {0x8000, 0x0000, 0x04000128, 0x4F8F},
+            {0x0000, 0x3000, 0x0400012A, 0x0000}, {0x0000, 0x0000, 0x0400012A, 0xFFFF},
+            {0x0000, 0x0000, 0x04000134, 0x01F5}, {0x0000, 0x2000, 0x04000134, 0x01FF},
+            {0x8000, 0x0000, 0x04000134, 0x81FF}, {0xC000, 0x0000, 0x04000134, 0xC1FC},
+            {0x0000, 0x0000, 0x04000140, 0x0040}, {0xC000, 0x0000, 0x04000150, 0x0000},
+            {0xC000, 0x0000, 0x04000156, 0x0000},
+        };
+        for (size_t i = 0; i < sizeof reads / sizeof reads[0]; ++i) {
+            uint16_t value = 0xFFFF, got;
+            agb_write16(&board, 0x04000134, reads[i].rcnt);
+            agb_write16(&board, 0x04000128, reads[i].siocnt);
+            if (reads[i].address == 0x04000128) value = (uint16_t)(reads[i].siocnt | 0xCFFF);
+            if (reads[i].address == 0x04000134) value = (uint16_t)(reads[i].rcnt | 0x3FFF);
+            agb_write16(&board, reads[i].address, value);
+            got = agb_read16(&board, reads[i].address);
+            if (got != reads[i].expected) {
+                fprintf(stderr,
+                        "agb_board: RCNT 0x%04X SIOCNT 0x%04X: 0x%08X written 0x%04X reads 0x%04X, not 0x%04X\n",
+                        reads[i].rcnt, reads[i].siocnt, reads[i].address, value, got, reads[i].expected);
+                return 1;
+            }
+            agb_write16(&board, reads[i].address, 0);
+        }
+        agb_write16(&board, 0x04000134, 0x8000);
+        agb_write16(&board, 0x04000128, 0);
+    }
 
     /* the DMA channels' registers, 12 bytes apart from 0xB0: DMA3 copies at a 32-bit store of its count and control,
        as a game copies its interrupt handler to IWRAM, and DMA1's control is DMA1's alone */
