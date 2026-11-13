@@ -46,26 +46,32 @@ static inline void snx_edge_shape(uint8_t* out, uint32_t* n, const uint32_t* v, 
    restart, the index ri (as the indices' size holds it) ends a run. At most 6 for each index and 2 for each run */
 static inline uint32_t snx_polygon_edges(uint32_t topology, const SnxEdgeIndices* in, uint32_t count, int restart,
                                          uint32_t ri, int points, uint8_t* out) {
-    uint32_t n = 0, start = 0, run = 0, first = 0, last = 0, v[4] = {0};
+    uint32_t n = 0, run = 0, first = 0, last = 0, v[4] = {0};
     if (topology == 2) points = 0;
     for (uint32_t j = 0; j <= count; j++) {
         uint32_t x = j < count ? snx_edge_index(in, j) : 0;
         if (j == count || (restart && x == ri)) { /* the run ends: a loop and a polygon close */
-            if (topology == 9 && run < 3)
-                n = start; /* no polygon: its sides so far go */
-            else if ((topology == 2 && run >= 2) || (topology == 9 && !points)) {
+            if ((topology == 2 && run >= 2) || (topology == 9 && !points && run >= 3)) {
                 snx_edge_put(out, &n, last);
                 snx_edge_put(out, &n, first);
             }
             run = 0;
-            start = n;
             continue;
         }
         if (!run) first = x;
         run++;
         switch (topology) {
             case 2:
-            case 9: /* a side from each vertex to the next; a polygon's points are its vertices */
+            case 9: /* a side from each vertex to the next; a polygon's points are its vertices. A polygon's first two
+                       wait for its third, as one of fewer puts nothing down (the count is the staging's size) */
+                if (topology == 9 && run < 3) {
+                    v[run - 1] = x;
+                    break;
+                }
+                if (topology == 9 && run == 3) {
+                    snx_edge_put(out, &n, v[0]);
+                    snx_edge_put(out, &n, v[1]);
+                }
                 if (points)
                     snx_edge_put(out, &n, x);
                 else if (run >= 2) {

@@ -31,10 +31,12 @@ static void check(const char* what, uint32_t topology, uint32_t isz, const uint3
             failures++;
             return;
         }
-    if (out[4 * n] != 0xAA) {
-        fprintf(stderr, "FAIL: %s: wrote past its %u indices\n", what, n);
-        failures++;
-    }
+    for (size_t b = 4 * (size_t)n; b < sizeof out; b++)
+        if (out[b] != 0xAA) {
+            fprintf(stderr, "FAIL: %s: wrote past its %u indices, at byte %zu\n", what, n, b);
+            failures++;
+            break;
+        }
     if (6 * count + 2 < n) {
         fprintf(stderr, "FAIL: %s: %u indices from %u, past the bound of 6 each and 2\n", what, n, count);
         failures++;
@@ -81,6 +83,12 @@ int main(void) {
     CHECK_EDGES("two loops", 2, 1, loops, 1, 8, 0, 0, 1, 1, 2, 2, 0, 3, 4, 4, 5, 5, 3);
     CHECK_EDGES("a short quad before a restart", 7, 4, short_quad, 1, 8, 0, 3, 4, 4, 5, 5, 6, 6, 3);
     CHECK_EDGES("a polygon of two vertices", 9, 2, short_poly, 1, 8, 0, 2, 3, 3, 4, 4, 2);
+    /* one of fewer than three vertices last puts nothing down, not even where the count leaves no room */
+    static const uint32_t two[2] = {0, 1}, short_last[6] = {0, 1, 2, 8, 3, 4};
+    check("a polygon of two vertices alone", 9, 0, two, 2, 0, 0, 0, NULL, 0);
+    check("a polygon of two vertices alone, as points", 9, 0, two, 2, 0, 0, 1, NULL, 0);
+    CHECK_EDGES("a polygon of two vertices last", 9, 2, short_last, 1, 8, 0, 0, 1, 1, 2, 2, 0);
+    CHECK_EDGES("a polygon of two vertices last, as points", 9, 2, short_last, 1, 8, 1, 0, 1, 2);
     CHECK_EDGES("a strip restarting", 5, 2, polys, 1, 8, 0, 0, 1, 1, 2, 2, 0, 2, 1, 1, 3, 3, 2, 4, 5, 5, 6, 6, 4, 6, 5,
                 5, 7, 7, 6);
     CHECK_EDGES("a fan restarting with its own hub", 6, 2, polys, 1, 8, 0, 0, 1, 1, 2, 2, 0, 0, 2, 2, 3, 3, 0, 4, 5, 5,
