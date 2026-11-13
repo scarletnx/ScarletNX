@@ -206,6 +206,23 @@ int snx_cli_take(SnxCli* cli, int argc, char** argv, int* i, char* error, size_t
         cli->flags |= SNX_CLI_BIT(id);
     return id;
 }
+SnxCliRecompile snx_cli_recompile(const SnxCli* cli) {
+    SnxCliRecompile r = {cli->chunk,
+                         cli->value[SNX_CLI_JIT_CACHE],
+                         !!(cli->flags & SNX_CLI_BIT(SNX_CLI_JIT_ONLY)),
+                         !!(cli->flags & SNX_CLI_BIT(SNX_CLI_KEEP_IR)),
+                         !!(cli->flags & SNX_CLI_BIT(SNX_CLI_QUIET)),
+                         NULL};
+    r.given = cli->value[SNX_CLI_OPT] ? "-O"
+              : cli->jobs >= 0        ? "--jobs"
+              : r.chunk               ? "--chunk"
+              : r.jit_cache           ? "--jit-cache"
+              : r.jit_only            ? "--jit-only"
+              : r.keep_ir             ? "--keep-ir"
+              : r.quiet               ? "-q"
+                                      : NULL;
+    return r;
+}
 void snx_cli_free(SnxCli* cli) {
     free((void*)cli->updates);
     cli->updates = NULL;

@@ -205,9 +205,16 @@ int main(void) {
         CHECK(cli.flags == (SNX_CLI_BIT(SNX_CLI_RECOMPILE) | SNX_CLI_BIT(SNX_CLI_QUIET)), "flags %#x", cli.flags);
         CHECK(cli.value[SNX_CLI_OPT] && !strcmp(cli.value[SNX_CLI_OPT], "3") && cli.jobs == 0 && cli.chunk == 7,
               "-O3 --jobs 0 --chunk=7");
+        /* as a driver's compiler reads them, the first of them given named */
+        SnxCliRecompile asked = snx_cli_recompile(&cli);
+        CHECK(asked.chunk == 7 && asked.quiet && !asked.jit_only && !asked.keep_ir && !asked.jit_cache &&
+                  asked.given && !strcmp(asked.given, "-O"),
+              "the run's recompile options: %s", asked.given ? asked.given : "none given");
         CHECK(cli.fullscreen == 0 && cli.seconds == 3 && cli.frames == -1 && own == 1, "values");
         CHECK(cli.value[SNX_CLI_GAME] && !strcmp(cli.value[SNX_CLI_GAME], "g"), "--game g");
         snx_cli_free(&cli);
+        snx_cli_init(&cli, "scarletnx-test", ALL); /* none given */
+        CHECK(!snx_cli_recompile(&cli).given, "none given, one named");
     }
     /* joined for a reader of the = form, up to the "--" */
     {
