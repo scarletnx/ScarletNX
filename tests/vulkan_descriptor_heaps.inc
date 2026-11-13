@@ -44,6 +44,19 @@ static int descriptor_heap_aux_create(DescriptorHeapAux* aux) {
     vkUpdateDescriptorSets(g_vk.dev, 1, &write, 0, NULL);
     return 0;
 }
+/* The submissions since before[] by reason (VK_SUB_*), as " other 0 present 0 ..." */
+static void descriptor_heap_submits_said(const u64* before, char* said, size_t size) {
+    static const char* const why[VK_SUB_N] = {"other",    "present", "finish", "1 ms",
+                                              "readback", "frame",   "split",  "background"};
+    size_t n = 0;
+    said[0] = 0;
+    for (int i = 0; i < VK_SUB_N && n < size; i++) {
+        int wrote = snprintf(said + n, size - n, " %s %llu", why[i] ? why[i] : "?",
+                             (unsigned long long)(vk_submits(i) - before[i]));
+        if (wrote < 0) break;
+        n += (size_t)wrote;
+    }
+}
 static int check_descriptor_heaps(void) {
     if (!g_vk.has_descriptor_heaps) {
         puts("SKIP descriptor heap rendering: selected device backend is not descriptor heaps");
@@ -105,7 +118,14 @@ static int check_descriptor_heaps(void) {
     state->dyn.alpha_test = 0;
     DescriptorHeapAux aux = {0};
     u32 begun = 0;
-    for (u32 warm = 1; ; warm = 0) {
+    u64 before[VK_SUB_N] = {0}; /* the submissions by reason when column 0's command buffer was recording */
+    /* The renderer submits on its own clock and counts: after 1 ms of recording, or when a frame slot's command
+       buffers, rings or descriptors run out (VK_SUB_PERIODIC, VK_SUB_FRAME), which a slow or loaded runner reaches
+       inside the transition now and then. A pass a submit split runs again; one the transition makes itself splits
+       every pass, and fails at this many in a row */
+    const u32 split_most = 8;
+    u32 split = 0;
+    for (u32 warm = 1;; warm = 0) {
         /* First use can upload a new view or allocate a legacy descriptor arena and submit. Warm every variant
            before checking state invalidation, then erase its pixels so it cannot hide a bad measured draw. */
         if (!warm) {
@@ -113,14 +133,16 @@ static int check_descriptor_heaps(void) {
             vk_finish();
             DrawClear clear = {.color_mask = 15, .color = {0, 0, 0x3f800000, 0x3f800000}};
             vk_render_clear(state, &clear, &channel->owner);
-            CHECK(!descriptor_heap_aux_create(&aux));
+            if (!aux.pipeline) CHECK(!descriptor_heap_aux_create(&aux));
         }
         u64 drawn = g_vk_drawn;
-        for (u32 column = 0; column < 7; column++) {
+        int split_here = 0;
+        for (u32 column = 0; column < 7 && !split_here; column++) {
             if (!warm && column == 1) {
                 vk_render_end();
                 VkCommandBuffer cb = vk_cmd();
-                CHECK(vk_cb_begun() == begun);
+                split_here = vk_cb_begun() != begun;
+                if (split_here) break;
                 rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, aux.pipeline);
                 rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, aux.layout, 0, 1, &aux.set, 0, NULL);
                 rec_CmdDispatch(cb, 1, 1, 1);
@@ -134,16 +156,28 @@ static int check_descriptor_heaps(void) {
             vk_render_draw_texture(state, &rectangle);
             CHECK(g_vk_drawn == drawn + column + 1);
             if (!warm) {
-                if (!column) begun = vk_cb_begun();
-                /* The renderer periodically submits long batches. Require the adjacent legacy-compute/heap
-                   transition itself to stay in one command buffer; later independent color cases may submit. */
-                if (column == 1 && vk_cb_begun() != begun)
-                    fprintf(stderr, "descriptor heap transition column%u changed command buffer %u to%u\n",
-                            column, begun, vk_cb_begun());
-                if (column == 1) CHECK(vk_cb_begun() == begun);
+                if (!column) {
+                    begun = vk_cb_begun();
+                    for (int i = 0; i < VK_SUB_N; i++) before[i] = vk_submits(i);
+                }
+                /* Require the adjacent legacy-compute/heap transition itself to stay in one command buffer; later
+                   independent color cases may submit. */
+                if (column == 1) split_here = vk_cb_begun() != begun;
             }
         }
-        if (!warm) break;
+        if (!warm && !split_here) break;
+        if (split_here) {
+            char said[256];
+            descriptor_heap_submits_said(before, said, sizeof said);
+            split++;
+            printf("descriptor heap transition: measured pass %u changed command buffer %u to %u; submits since, by "
+                   "reason:%s\n",
+                   split, begun, vk_cb_begun(), said);
+            if (split == split_most)
+                fprintf(stderr, "descriptor heap transition: %u measured passes in a row were split by a submit\n",
+                        split);
+            CHECK(split < split_most);
+        }
     }
     g_vk.has_descriptor_heaps = 1;
     vk_render_end();
