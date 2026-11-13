@@ -47,7 +47,8 @@ struct SnxFx {
     VkPipelineCache cache;
     uint32_t slots;
     void (*log)(const char*);
-    SnxFxConfig cfg;
+    int sharpness;    /* upscaler_sharpness: 0 the softest, 100 the sharpest */
+    uint32_t max_dim; /* the device's largest 2D image side */
     int fp16;
     int fmt_checked, fmt_ok;
     VkFormat fmt;
@@ -85,8 +86,8 @@ struct SnxFx {
     VkBuffer tex_buf;
     VkDeviceMemory tex_mem;
     int tex_uploaded;
-    int aa_logged;
-    int aa_last; /* the anti aliasing last said in the log, -1 before the first */
+    int said
+        [8]; /* the last choice the log said: filter, anti aliasing, those asked, the crop's and the output's size */
 };
 
 static int fx_ok(VkResult r) { return r == VK_SUCCESS; }
@@ -109,54 +110,60 @@ static int equal_ci(const char* a, const char* b) {
 
 /* ---- the pure choices ---- */
 
-static int parse_word(const char* value, const char* const* words, const signed char* ids, int count, int fallback) {
-    char text[16];
-    size_t i, n;
-    if (!value) return fallback;
-    while (*value == ' ' || *value == '\t') value++;
-    n = strlen(value);
-    while (n && (value[n - 1] == ' ' || value[n - 1] == '\t')) n--;
-    if (n >= sizeof text) return fallback;
-    memcpy(text, value, n);
-    text[n] = 0;
-    for (i = 0; i < (size_t)count; i++)
-        if (equal_ci(text, words[i])) return ids[i];
-    return fallback;
+/* the settings' words, settings.txt's upscaler and anti_aliasing rows', in the enums' order */
+static const char* const upscale_keys[SNX_FX_UPSCALE_COUNT] = {"off", "bilinear", "fsr1", "nis", "sgsr"};
+static const char* const upscale_labels[SNX_FX_UPSCALE_COUNT] = {"Off", "Bilinear", "AMD FSR 1", "NVIDIA NIS",
+                                                                 "Qualcomm SGSR"};
+static const char* const aa_keys[SNX_FX_AA_COUNT] = {"off", "auto", "fxaa", "smaa", "ssaa2", "ssaa4"};
+static const char* const aa_labels[SNX_FX_AA_COUNT] = {"Off", "Auto", "FXAA", "SMAA", "SSAA 2x", "SSAA 4x"};
+
+static int parse_word(const char* value, const char* const* words, int count) {
+    for (int i = 0; value && i < count; i++)
+        if (equal_ci(value, words[i])) return i;
+    return -1;
 }
 
-int snx_fx_upscale_parse(const char* value) {
-    static const char* const words[] = {"off", "none", "bilinear", "fsr1", "fsr", "nis", "sgsr"};
-    static const signed char ids[] = {SNX_FX_UPSCALE_OFF,  SNX_FX_UPSCALE_OFF, SNX_FX_UPSCALE_BILINEAR,
-                                      SNX_FX_UPSCALE_FSR1, SNX_FX_UPSCALE_FSR1, SNX_FX_UPSCALE_NIS,
-                                      SNX_FX_UPSCALE_SGSR};
-    return parse_word(value, words, ids, (int)(sizeof ids / sizeof *ids), SNX_FX_UPSCALE_FSR1);
-}
+int snx_fx_upscale_parse(const char* value) { return parse_word(value, upscale_keys, SNX_FX_UPSCALE_COUNT); }
 const char* snx_fx_upscale_key(int filter) {
-    static const char* const keys[] = {"off", "bilinear", "fsr1", "nis", "sgsr"};
-    return filter >= 0 && filter < SNX_FX_UPSCALE_COUNT ? keys[filter] : keys[SNX_FX_UPSCALE_FSR1];
+    return filter >= 0 && filter < SNX_FX_UPSCALE_COUNT ? upscale_keys[filter] : NULL;
 }
 const char* snx_fx_upscale_label(int filter) {
-    static const char* const labels[] = {"None", "Bilinear", "AMD FSR 1", "NVIDIA NIS", "Qualcomm SGSR"};
-    return filter >= 0 && filter < SNX_FX_UPSCALE_COUNT ? labels[filter] : labels[SNX_FX_UPSCALE_FSR1];
+    return filter >= 0 && filter < SNX_FX_UPSCALE_COUNT ? upscale_labels[filter] : NULL;
 }
+int snx_fx_aa_parse(const char* value) { return parse_word(value, aa_keys, SNX_FX_AA_COUNT); }
+const char* snx_fx_aa_key(int aa) { return aa >= 0 && aa < SNX_FX_AA_COUNT ? aa_keys[aa] : NULL; }
+const char* snx_fx_aa_label(int aa) { return aa >= 0 && aa < SNX_FX_AA_COUNT ? aa_labels[aa] : NULL; }
+int snx_fx_upscale_next(int filter) {
+    return filter >= 0 && filter + 1 < SNX_FX_UPSCALE_COUNT ? filter + 1 : SNX_FX_UPSCALE_OFF;
+}
+int snx_fx_aa_next(int aa) { return aa >= 0 && aa + 1 < SNX_FX_AA_COUNT ? aa + 1 : SNX_FX_AA_OFF; }
 
-int snx_fx_aa_parse(const char* value) {
-    static const char* const words[] = {"off", "none", "auto", "fxaa", "smaa", "ssaa2", "ssaa4", "ssaa 2x", "ssaa 4x"};
-    static const signed char ids[] = {SNX_FX_AA_OFF,  SNX_FX_AA_OFF,  SNX_FX_AA_AUTO, SNX_FX_AA_FXAA, SNX_FX_AA_SMAA,
-                                      SNX_FX_AA_SSAA2, SNX_FX_AA_SSAA4, SNX_FX_AA_SSAA2, SNX_FX_AA_SSAA4};
-    return parse_word(value, words, ids, (int)(sizeof ids / sizeof *ids), SNX_FX_AA_AUTO);
+/* a word the setting does not know, said after what said holds */
+static void unknown_word(char* said, size_t n, const char* key, const char* value, const char* const* words,
+                         int count) {
+    size_t at = strlen(said);
+    at += (size_t)snprintf(said + at, at < n ? n - at : 0, "%s%s=%s is not one of", at ? "; " : "", key, value);
+    for (int i = 0; i < count && at < n; i++)
+        at += (size_t)snprintf(said + at, n - at, "%s %s", i ? "," : "", words[i]);
+    if (at < n) snprintf(said + at, n - at, ": it runs %s", words[0]);
 }
-const char* snx_fx_aa_key(int aa) {
-    static const char* const keys[] = {"off", "auto", "fxaa", "smaa", "ssaa2", "ssaa4"};
-    return aa >= 0 && aa < SNX_FX_AA_COUNT ? keys[aa] : keys[SNX_FX_AA_AUTO];
-}
-const char* snx_fx_aa_label(int aa) {
-    static const char* const labels[] = {"Off", "Auto", "FXAA", "SMAA", "SSAA 2x", "SSAA 4x"};
-    return aa >= 0 && aa < SNX_FX_AA_COUNT ? labels[aa] : labels[SNX_FX_AA_AUTO];
-}
-
-int snx_fx_filter_uses_sharpness(int filter) {
-    return filter == SNX_FX_UPSCALE_FSR1 || filter == SNX_FX_UPSCALE_NIS || filter == SNX_FX_UPSCALE_SGSR;
+int snx_fx_settings(SnxFxConfig* cfg, const char* upscaler, int sharpness, const char* aa, char* said, size_t n) {
+    int unknown = 0;
+    if (n) said[0] = 0;
+    cfg->upscaler = snx_fx_upscale_parse(upscaler);
+    cfg->aa = snx_fx_aa_parse(aa);
+    cfg->sharpness = snx_clamp_int(sharpness, 0, 100);
+    if (cfg->upscaler < 0) {
+        unknown_word(said, n, "upscaler", upscaler ? upscaler : "", upscale_keys, SNX_FX_UPSCALE_COUNT);
+        cfg->upscaler = SNX_FX_UPSCALE_OFF;
+        ++unknown;
+    }
+    if (cfg->aa < 0) {
+        unknown_word(said, n, "anti_aliasing", aa ? aa : "", aa_keys, SNX_FX_AA_COUNT);
+        cfg->aa = SNX_FX_AA_OFF;
+        ++unknown;
+    }
+    return unknown;
 }
 
 /* Auto anti aliasing: the displayed rectangle is at least 1.25x the rendered frame in each direction, and the frame
@@ -168,13 +175,6 @@ int snx_fx_aa_auto(uint32_t render_w, uint32_t render_h, uint32_t shown_w, uint3
     return (uint64_t)shown_w * 4 >= (uint64_t)render_w * 5 && (uint64_t)shown_h * 4 >= (uint64_t)render_h * 5;
 }
 
-uint32_t snx_fx_target(uint32_t w, uint32_t h, uint32_t mult, uint32_t max_dim, uint32_t* out_w, uint32_t* out_h) {
-    if (mult < 1) mult = 1;
-    while (mult > 1 && ((uint64_t)w * mult > max_dim || (uint64_t)h * mult > max_dim)) mult--;
-    if (out_w) *out_w = w * mult;
-    if (out_h) *out_h = h * mult;
-    return mult;
-}
 
 /* ---- images ---- */
 
@@ -487,7 +487,8 @@ static int make_pipelines(SnxFx* fx) {
     if (!fx->copy || !fx->copy_linear || !fx->easu || !fx->rcas || !fx->fxaa || !fx->smaa_edge ||
         !fx->smaa_weights || !fx->smaa_blend) {
         fx->pipes_failed = 1;
-        fx_echo(fx, "vulkan: the presentation effects could not be made, the frame is blitted");
+        fx_echo(fx, "the upscaler's and anti aliasing's pipelines could not be made on this device: the frame shows "
+                    "as with both off");
         return 0;
     }
     fx->pipes_ready = 1;
@@ -547,7 +548,7 @@ static int ensure_nis(SnxFx* fx, VkCommandBuffer cb) {
         fx->nis = make_compute(fx, fx_nis_spv, fx_nis_spv_size, fx->pl_nis);
     if (!fx->nis || (!fx->coef_ready && !make_coef(fx, cb))) {
         fx->nis_failed = 1;
-        fx_echo(fx, "vulkan: the NIS upscaler could not be made");
+        fx_echo(fx, "NVIDIA NIS could not be made on this device: AMD FSR 1 runs in its place");
         return 0;
     }
     if (!fx->nis_ub) {
@@ -588,7 +589,7 @@ static int ensure_sgsr(SnxFx* fx) {
                         fx->pl_sgsr, choose_format(fx));
     if (!fx->sgsr) {
         fx->sgsr_failed = 1;
-        fx_echo(fx, "vulkan: the SGSR upscaler could not be made");
+        fx_echo(fx, "Qualcomm SGSR could not be made on this device: AMD FSR 1 runs in its place");
         return 0;
     }
     return 1;
@@ -605,7 +606,13 @@ SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkPipelineCache cache,
     fx->cache = cache;
     fx->slots = slots < 1 ? 1 : slots > SNX_FX_SLOTS_MAX ? SNX_FX_SLOTS_MAX : slots;
     fx->log = log;
-    fx->aa_last = -1;
+    fx->said[0] = -1;
+    {
+        VkPhysicalDeviceProperties pp;
+        vkGetPhysicalDeviceProperties(phys, &pp);
+        fx->max_dim = pp.limits.maxImageDimension2D;
+    }
+    fx->sharpness = 75;
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                               .magFilter = VK_FILTER_LINEAR,
                               .minFilter = VK_FILTER_LINEAR,
@@ -715,43 +722,14 @@ void snx_fx_destroy(SnxFx* fx) {
     free(fx);
 }
 
-void snx_fx_configure(SnxFx* fx, const SnxFxConfig* cfg) {
-    if (!fx || !cfg) return;
-    fx->cfg = *cfg;
-    fx->cfg.sharpness = snx_clamp_int(cfg->sharpness, 0, 100);
-}
-
-void snx_fx_set_aa(SnxFx* fx, int aa) {
-    if (fx) fx->cfg.aa = aa;
+void snx_fx_set_sharpness(SnxFx* fx, int sharpness) {
+    if (fx) fx->sharpness = snx_clamp_int(sharpness, 0, 100);
 }
 
 void snx_fx_set_fp16(SnxFx* fx, int on) {
     if (fx) fx->fp16 = on != 0;
 }
 
-int snx_fx_upscale_cycle(SnxFx* fx) {
-    static const int order[] = {SNX_FX_UPSCALE_FSR1, SNX_FX_UPSCALE_BILINEAR, SNX_FX_UPSCALE_NIS,
-                                SNX_FX_UPSCALE_SGSR, SNX_FX_UPSCALE_OFF};
-    int i;
-    if (!fx) return 0;
-    for (i = 0; i < (int)(sizeof order / sizeof *order) && order[i] != fx->cfg.upscaler; ++i) {}
-    fx->cfg.upscaler = i == (int)(sizeof order / sizeof *order) ? order[0]
-                                                                : order[(i + 1) % (int)(sizeof order / sizeof *order)];
-    return fx->cfg.upscaler;
-}
-
-int snx_fx_aa_cycle(SnxFx* fx) {
-    static const int order[] = {SNX_FX_AA_AUTO, SNX_FX_AA_FXAA, SNX_FX_AA_SMAA, SNX_FX_AA_SSAA2,
-                                SNX_FX_AA_SSAA4, SNX_FX_AA_OFF};
-    int i;
-    if (!fx) return 0;
-    for (i = 0; i < (int)(sizeof order / sizeof *order) && order[i] != fx->cfg.aa; ++i) {}
-    fx->cfg.aa = i == (int)(sizeof order / sizeof *order) ? order[0] : order[(i + 1) % (int)(sizeof order / sizeof *order)];
-    return fx->cfg.aa;
-}
-
-int snx_fx_upscaler(const SnxFx* fx) { return fx ? fx->cfg.upscaler : SNX_FX_UPSCALE_FSR1; }
-int snx_fx_aa(const SnxFx* fx) { return fx ? fx->cfg.aa : SNX_FX_AA_AUTO; }
 
 /* ---- a copy, for the filters that are not a filter ---- */
 
@@ -788,7 +766,7 @@ static void record_fsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView
         float crop[4];
     } easu, rcas;
     uint32_t rcas_con[4];
-    float sharp = (float)fx->cfg.sharpness / 100.0f;
+    float sharp = (float)(100 - fx->sharpness) / 100.0f; /* RCAS's stops: 0 the sharpest */
     VkPipeline easu_pipe = fx->fp16 && fx->easu16 ? fx->easu16 : fx->easu;
     VkPipeline rcas_pipe = fx->fp16 && fx->rcas16 ? fx->rcas16 : fx->rcas;
     snx_fx_fsr_easu_con(easu.con, (float)w, (float)h, (float)image_w, (float)image_h, (float)dw, (float)dh, (float)x,
@@ -919,29 +897,32 @@ failed:
     return 0;
 }
 
-int snx_fx_pick_aa(SnxFx* fx, int aa, uint32_t render_w, uint32_t render_h, uint32_t shown_w, uint32_t shown_h,
-                   uint32_t max_dim) {
-    if (aa == SNX_FX_AA_AUTO) return snx_fx_aa_auto(render_w, render_h, shown_w, shown_h) ? SNX_FX_AA_FXAA : SNX_FX_AA_OFF;
-    if (aa == SNX_FX_AA_SSAA2) return (uint64_t)shown_w * 2 <= max_dim && (uint64_t)shown_h * 2 <= max_dim ? aa : SNX_FX_AA_FXAA;
-    if (aa == SNX_FX_AA_SSAA4) return (uint64_t)shown_w * 4 <= max_dim && (uint64_t)shown_h * 4 <= max_dim ? aa : SNX_FX_AA_SSAA2;
-    if (aa == SNX_FX_AA_FXAA || aa == SNX_FX_AA_SMAA) return format_ok(fx) ? aa : SNX_FX_AA_OFF;
-    return SNX_FX_AA_OFF;
-}
-
-int snx_fx_filter_available(SnxFx* fx, int filter) {
-    if (filter == SNX_FX_UPSCALE_OFF || filter == SNX_FX_UPSCALE_BILINEAR) return 1;
-    return (filter == SNX_FX_UPSCALE_FSR1 || filter == SNX_FX_UPSCALE_NIS || filter == SNX_FX_UPSCALE_SGSR) &&
-           format_ok(fx);
-}
-
-int snx_fx_pick_filter(SnxFx* fx, uint32_t src_w, uint32_t src_h, uint32_t dst_w, uint32_t dst_h, uint32_t transform) {
-    int f = fx->cfg.upscaler;
-    (void)transform;
-    if (!src_w || !src_h || !dst_w || !dst_h) return -1;
-    if (f == SNX_FX_UPSCALE_OFF || f == SNX_FX_UPSCALE_BILINEAR) return f;
-    if (!snx_fx_filter_available(fx, f)) f = SNX_FX_UPSCALE_FSR1;
-    if (!snx_fx_filter_available(fx, f)) return SNX_FX_UPSCALE_BILINEAR;
-    return f;
+/* What runs for the filter and anti aliasing asked over w x h shown at out_w x out_h, and why where it is not what was
+   asked (why: "" for none). The effects' images need format_ok: without it none runs */
+static void pick(SnxFx* fx, int* filter, int* aa, uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h, char* why,
+                 size_t n) {
+    int asked_filter = *filter, asked_aa = *aa;
+    why[0] = 0;
+    if (!format_ok(fx)) {
+        *filter = *filter == SNX_FX_UPSCALE_OFF ? SNX_FX_UPSCALE_OFF : SNX_FX_UPSCALE_BILINEAR;
+        *aa = SNX_FX_AA_OFF;
+        snprintf(why, n, " (the device renders to neither RGBA16F nor RGBA8 storage images)");
+        return;
+    }
+    if (*filter >= SNX_FX_UPSCALE_FSR1 && !(out_w >= w && out_h >= h && (out_w > w || out_h > h))) {
+        *filter = SNX_FX_UPSCALE_BILINEAR;
+        snprintf(why, n, " (%s grows a frame, and this one is not shown larger)", upscale_labels[asked_filter]);
+    } else if (*filter == SNX_FX_UPSCALE_NIS && ((uint64_t)out_w > 2ull * w || (uint64_t)out_h > 2ull * h)) {
+        *filter = SNX_FX_UPSCALE_FSR1;
+        snprintf(why, n, " (NVIDIA NIS grows a frame twice at most)");
+    }
+    if (*aa == SNX_FX_AA_AUTO) *aa = snx_fx_aa_auto(w, h, out_w, out_h) ? SNX_FX_AA_FXAA : SNX_FX_AA_OFF;
+    while ((*aa == SNX_FX_AA_SSAA4 && ((uint64_t)out_w * 4 > fx->max_dim || (uint64_t)out_h * 4 > fx->max_dim)) ||
+           (*aa == SNX_FX_AA_SSAA2 && ((uint64_t)out_w * 2 > fx->max_dim || (uint64_t)out_h * 2 > fx->max_dim))) {
+        *aa = *aa == SNX_FX_AA_SSAA4 ? SNX_FX_AA_SSAA2 : SNX_FX_AA_FXAA;
+        if (!why[0])
+            snprintf(why, n, " (%s over the device's %u pixels a side)", aa_labels[asked_aa], (unsigned)fx->max_dim);
+    }
 }
 
 static int nis_config(NisConfig* c, float sharpness, u32 image_w, u32 image_h, u32 x, u32 y, u32 w, u32 h, u32 dw,
@@ -992,7 +973,7 @@ static int nis_config(NisConfig* c, float sharpness, u32 image_w, u32 image_h, u
 static int record_nis(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src, uint32_t image_w, uint32_t image_h,
                       uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t dw, uint32_t dh) {
     NisConfig cfg;
-    if (!nis_config(&cfg, 1.0f - (float)fx->cfg.sharpness / 200.0f, image_w, image_h, x, y, w, h, dw, dh)) return 0;
+    if (!nis_config(&cfg, 0.5f + (float)fx->sharpness / 200.0f, image_w, image_h, x, y, w, h, dw, dh)) return 0;
     memcpy((unsigned char*)fx->nis_ub_map + fx->nis_ub_stride * slot, &cfg, sizeof cfg);
     {
         VkDescriptorBufferInfo bi = {fx->nis_ub, fx->nis_ub_stride * slot, sizeof cfg};
@@ -1061,7 +1042,7 @@ static int record_sgsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView
     pc[5] = (float)h / (float)image_h;
     pc[6] = (float)x / (float)image_w;
     pc[7] = (float)y / (float)image_h;
-    pc[8] = 2.0f - (float)fx->cfg.sharpness / 200.0f;
+    pc[8] = 1.5f + (float)fx->sharpness / 200.0f;
     pc[12] = (transform & 1) ? 1.0f : 0.0f;
     pc[13] = (transform & 2) ? 1.0f : 0.0f;
     bind_combined(fx, fx->sgsr_set[slot], src, 0);
@@ -1085,14 +1066,23 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
     uint32_t work_w = out_w, work_h = out_h;
     int ssaa = 0;
     if (!fx || !cb || !src || !img_w || !img_h || !w || !h || !out_w || !out_h || !out) return 0;
+    if (filter < 0 || filter >= SNX_FX_UPSCALE_COUNT || aa < 0 || aa >= SNX_FX_AA_COUNT) return 0;
     slot %= fx->slots;
-    aa = snx_fx_pick_aa(fx, aa, w, h, out_w, out_h, 16384);
-    if (aa != fx->aa_last) {
-        char said[96];
-        fx->aa_last = aa;
-        snprintf(said, sizeof said, "vulkan: anti aliasing %s over %ux%u to %ux%u", snx_fx_aa_label(aa), w, h, out_w,
-                 out_h);
-        fx_echo(fx, said);
+    {
+        char why[96];
+        int asked_filter = filter, asked_aa = aa;
+        pick(fx, &filter, &aa, w, h, out_w, out_h, why, sizeof why);
+        /* said once for each choice, size and reason: a frame a second of another size says it again */
+        if (filter != fx->said[0] || aa != fx->said[1] || asked_filter != fx->said[2] || asked_aa != fx->said[3] ||
+            w != (uint32_t)fx->said[4] || h != (uint32_t)fx->said[5] || out_w != (uint32_t)fx->said[6] ||
+            out_h != (uint32_t)fx->said[7]) {
+            char said[192];
+            int now[8] = {filter, aa, asked_filter, asked_aa, (int)w, (int)h, (int)out_w, (int)out_h};
+            memcpy(fx->said, now, sizeof now);
+            snprintf(said, sizeof said, "upscaler %s and anti aliasing %s, %ux%u to %ux%u%s", upscale_labels[filter],
+                     aa_labels[aa], w, h, out_w, out_h, why);
+            fx_echo(fx, said);
+        }
     }
     if ((filter == SNX_FX_UPSCALE_OFF || filter == SNX_FX_UPSCALE_BILINEAR) && aa == SNX_FX_AA_OFF) return 0;
     if (!make_pipelines(fx)) return 0;
@@ -1211,9 +1201,5 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
     }
     out->width = out_w;
     out->height = out_h;
-    if (!fx->aa_logged) {
-        fx->aa_logged = 1;
-        fx_echo(fx, "vulkan: presentation effects ready");
-    }
     return 1;
 }

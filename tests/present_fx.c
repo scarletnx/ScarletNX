@@ -37,18 +37,27 @@ typedef struct {
 
 static int succeed(VkResult r) { return r == VK_SUCCESS; }
 
-static void log_line(const char* text) { puts(text); }
+/* the test's state: the effects' last line, for the checks of what they say, and the Khronos layer's errors */
+static struct {
+    char said[256];
+    unsigned val_errors;
+} g_test;
+
+/* the effects' log: printed, and the last line kept */
+static void log_line(const char* text) {
+    puts(text);
+    snprintf(g_test.said, sizeof g_test.said, "%s", text);
+}
 
 /* --validation: the Khronos layer's errors fail the test. The SSAA pass once updated a descriptor set while the
    command buffer that bound it was recording, which the layer names and a plain run does not */
-static unsigned g_val_errors;
 static VKAPI_ATTR VkBool32 VKAPI_CALL val_cb(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                              VkDebugUtilsMessageTypeFlagsEXT type,
                                              const VkDebugUtilsMessengerCallbackDataEXT* data, void* user) {
     (void)type;
     (void)user;
     if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-        ++g_val_errors;
+        ++g_test.val_errors;
         fprintf(stderr, "present_fx validation: %s\n", data->pMessage);
     }
     return VK_FALSE;
@@ -364,7 +373,6 @@ int main(int argc, char** argv) {
     Image src = {0}, step = {0};
     unsigned char *pixels, *step_pixels;
     SnxFx* fx;
-    SnxFxConfig cfg = {SNX_FX_UPSCALE_FSR1, 25, SNX_FX_AA_OFF};
     for (int i = 1; i < argc; ++i)
         if (!strncmp(argv[i], "--showcase=", 11)) showcase = argv[i] + 11;
     {
@@ -414,14 +422,32 @@ int main(int argc, char** argv) {
     CHECK(!snx_fx_aa_auto(320, 240, 380, 285));
     CHECK(snx_fx_aa_auto(320, 240, 400, 300));
     CHECK(!snx_fx_aa_auto(400, 300, 320, 240));
-    CHECK(snx_fx_upscale_parse("fsr1") == SNX_FX_UPSCALE_FSR1);
-    CHECK(snx_fx_upscale_parse("none") == SNX_FX_UPSCALE_OFF);
-    CHECK(snx_fx_aa_parse("smaa") == SNX_FX_AA_SMAA);
-    CHECK(snx_fx_aa_parse("ssaa 2x") == SNX_FX_AA_SSAA2);
+    CHECK(snx_fx_upscale_parse("fsr1") == SNX_FX_UPSCALE_FSR1 && snx_fx_upscale_parse("NIS") == SNX_FX_UPSCALE_NIS);
+    CHECK(snx_fx_upscale_parse("none") == -1 && snx_fx_upscale_parse("") == -1 && snx_fx_upscale_parse(NULL) == -1);
+    CHECK(snx_fx_aa_parse("smaa") == SNX_FX_AA_SMAA && snx_fx_aa_parse("ssaa2") == SNX_FX_AA_SSAA2);
+    CHECK(snx_fx_aa_parse("ssaa 2x") == -1);
+    CHECK(!strcmp(snx_fx_upscale_key(SNX_FX_UPSCALE_SGSR), "sgsr") && !snx_fx_upscale_key(SNX_FX_UPSCALE_COUNT));
+    CHECK(!strcmp(snx_fx_aa_label(SNX_FX_AA_SSAA4), "SSAA 4x") && !snx_fx_aa_label(-1));
+    /* the shortcuts step in the settings' order, round */
+    CHECK(snx_fx_upscale_next(SNX_FX_UPSCALE_OFF) == SNX_FX_UPSCALE_BILINEAR &&
+          snx_fx_upscale_next(SNX_FX_UPSCALE_FSR1) == SNX_FX_UPSCALE_NIS &&
+          snx_fx_upscale_next(SNX_FX_UPSCALE_SGSR) == SNX_FX_UPSCALE_OFF);
+    CHECK(snx_fx_aa_next(SNX_FX_AA_OFF) == SNX_FX_AA_AUTO && snx_fx_aa_next(SNX_FX_AA_SSAA4) == SNX_FX_AA_OFF);
+    /* the settings as the .ini gives them: a word none of the setting's is said, with Off, which runs for it */
+    {
+        SnxFxConfig cfg;
+        char said[256];
+        CHECK(!snx_fx_settings(&cfg, "fsr1", 80, "smaa", said, sizeof said) && !said[0]);
+        CHECK(cfg.upscaler == SNX_FX_UPSCALE_FSR1 && cfg.sharpness == 80 && cfg.aa == SNX_FX_AA_SMAA);
+        CHECK(snx_fx_settings(&cfg, "fsr", 120, "msaa", said, sizeof said) == 2);
+        CHECK(cfg.upscaler == SNX_FX_UPSCALE_OFF && cfg.sharpness == 100 && cfg.aa == SNX_FX_AA_OFF);
+        CHECK(!strcmp(said, "upscaler=fsr is not one of off, bilinear, fsr1, nis, sgsr: it runs off; "
+                            "anti_aliasing=msaa is not one of off, auto, fxaa, smaa, ssaa2, ssaa4: it runs off"));
+    }
 
     fx = snx_fx_create(t.phys, t.dev, VK_NULL_HANDLE, 2, log_line);
     CHECK(fx);
-    snx_fx_configure(fx, &cfg);
+    snx_fx_set_sharpness(fx, 75);
 
     /* FSR 1: the frame grows, and the result is the display's size */
     {
@@ -441,19 +467,59 @@ int main(int argc, char** argv) {
         write_ppm(showcase, "fx-fsr1", got, 640, 480);
         free(got);
     }
-    /* NIS and SGSR: the shared filters run at 1:1 as well */
+    /* NIS and SGSR grow the frame half as large again */
     {
         int filters[2] = {SNX_FX_UPSCALE_NIS, SNX_FX_UPSCALE_SGSR};
         for (int i = 0; i < 2; ++i) {
             SnxFxImage out = {0};
             VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
             uint64_t serial;
-            CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, filters[i], SNX_FX_AA_OFF,
+            CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 480, 360, filters[i], SNX_FX_AA_OFF,
                                 &out));
             serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
             CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
-            CHECK(out.width == 320 && out.height == 240);
+            CHECK(out.width == 480 && out.height == 360);
+            CHECK(strstr(g_test.said, i ? "upscaler Qualcomm SGSR and" : "upscaler NVIDIA NIS and"));
         }
+    }
+    /* what runs where it is not what was asked, said with why: an upscaler where the frame does not grow is the caller's
+       smooth blit, NIS past twice is FSR 1, and Auto's FXAA where the frame grows 1.25 times */
+    {
+        SnxFxImage out = {0};
+        VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
+        uint64_t serial;
+        CHECK(!snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_FSR1,
+                             SNX_FX_AA_OFF, &out));
+        CHECK(!strcmp(g_test.said, "upscaler Bilinear and anti aliasing Off, 320x240 to 320x240 (AMD FSR 1 grows a "
+                              "frame, and this one is not shown larger)"));
+        CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 960, 720, SNX_FX_UPSCALE_NIS,
+                            SNX_FX_AA_AUTO, &out));
+        CHECK(!strcmp(g_test.said, "upscaler AMD FSR 1 and anti aliasing FXAA, 320x240 to 960x720 (NVIDIA NIS grows "
+                              "a frame twice at most)"));
+        serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+    }
+    /* upscaler_sharpness: 100 draws the edges harder than 0 */
+    {
+        double soft = 0, sharp = 0;
+        for (int i = 0; i < 2; ++i) {
+            SnxFxImage out = {0};
+            VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
+            uint64_t serial;
+            unsigned char* got;
+            snx_fx_set_sharpness(fx, i ? 100 : 0);
+            CHECK(snx_fx_render(fx, cb, 0, src.view, 320, 240, 0, 0, 320, 240, 0, 640, 480, SNX_FX_UPSCALE_FSR1,
+                                SNX_FX_AA_OFF, &out));
+            serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+            got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 640, 480);
+            CHECK(got);
+            *(i ? &sharp : &soft) = avg_step(got, 640, 480);
+            free(got);
+        }
+        fprintf(stderr, "present_fx: FSR 1's edge step at sharpness 0 %.3f, at 100 %.3f\n", soft, sharp);
+        CHECK(sharp > soft);
+        snx_fx_set_sharpness(fx, 75);
     }
     /* two frames' NIS in flight: each slot reads its own config. Both are recorded before either runs, as the next
        frame's can be while the GPU still reads the last one's; one config for both took the second's sizes into the
@@ -548,7 +614,6 @@ int main(int argc, char** argv) {
         SnxFxImage out = {0};
         VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
         uint64_t serial;
-        CHECK(snx_fx_pick_aa(fx, SNX_FX_AA_SSAA2, 320, 240, 320, 240, 16384) == SNX_FX_AA_SSAA2);
         CHECK(snx_fx_render(fx, cb, 0, src.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_OFF,
                             SNX_FX_AA_SSAA2, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
@@ -574,7 +639,6 @@ int main(int argc, char** argv) {
             flat_pixels[i * 4 + 3] = 255;
         }
         CHECK(upload(&t, &flat, flat_pixels));
-        CHECK(snx_fx_pick_aa(fx, SNX_FX_AA_SSAA4, 320, 240, 320, 240, 16384) == SNX_FX_AA_SSAA4);
         cb = snx_vk_ring_commands(&t.ring);
         CHECK(snx_fx_render(fx, cb, 0, flat.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_OFF,
                             SNX_FX_AA_SSAA4, &out));
@@ -661,7 +725,7 @@ int main(int argc, char** argv) {
     snx_vk_ring_free(&t.ring);
     vkDestroyDevice(t.dev, NULL);
     snx_vk_instance_free(&t.instance);
-    CHECK(g_val_errors == 0);
+    CHECK(g_test.val_errors == 0);
     puts("present_fx: passed");
     return 0;
 }
