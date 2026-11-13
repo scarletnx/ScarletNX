@@ -46,6 +46,10 @@ const char* snx_fx_aa_label(int aa);
 /* the shortcuts' step: the next value in the settings' order, the last one's the first */
 int snx_fx_upscale_next(int filter);
 int snx_fx_aa_next(int aa);
+/* what a step says, in every console's window the Switch's words: "Upscaler: AMD FSR 1" for the upscaler's (which 0,
+   mode an SNX_FX_UPSCALE_), "Anti-aliasing: FXAA" for the anti-aliasing's (which 1, mode an SNX_FX_AA_), into out (n
+   bytes) */
+void snx_fx_step_text(int which, int mode, char* out, size_t n);
 
 /* what a frontend's settings say, read once at start (the Switch's settings, which every frontend takes) */
 typedef struct {

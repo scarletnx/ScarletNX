@@ -241,13 +241,7 @@ static int place_scale(int sw, int sh) {
     /* the tallest page sets the scale, so the letters keep their size from page to page: half the picture, or twice
        the display's scale as the menu's UI scale Auto (src/gui) if that is more, within three quarters of it. A
        phone's short picture held its letters at 2x by the half alone */
-    int w = OVERLAY_COLS * 8, h = OVERLAY_ROWS * 16;
-    int s = sw / 2 / w < sh / 2 / h ? sw / 2 / w : sh / 2 / h;
-    int dense = 2 * __atomic_load_n(&display_percent, __ATOMIC_RELAXED) / 100;
-    if (dense > s) s = dense;
-    if (s > sw * 3 / 4 / w) s = sw * 3 / 4 / w;
-    if (s > sh * 3 / 4 / h) s = sh * 3 / 4 / h;
-    return s < 1 ? 1 : s;
+    return snx_menu_scale(sw, sh, __atomic_load_n(&display_percent, __ATOMIC_RELAXED));
 }
 /* an item's row in pixels, its letters at scale s */
 static int item_h(int s) {
@@ -648,7 +642,7 @@ void overlay_toggle(void) {
 /* the panel's rows: the page's items under the head, a blank row under them */
 static int rows(void) { return FIRST + (items() < visible() ? items() : visible()) + 1; }
 void overlay_set_display_scale(float scale) {
-    __atomic_store_n(&display_percent, scale > 0.0f ? (int)(scale * 100.0f) : 100, __ATOMIC_RELAXED);
+    __atomic_store_n(&display_percent, snx_display_percent(scale), __ATOMIC_RELAXED);
     changed();
 }
 int overlay_display_percent(void) { return __atomic_load_n(&display_percent, __ATOMIC_RELAXED); }

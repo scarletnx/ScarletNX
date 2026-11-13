@@ -1766,7 +1766,7 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
         target_compile_definitions(snx-test-overlay PRIVATE SNX_TRACY=1)
     endif()
     snx_test_target(snx-test-overlay 11)
-    target_link_libraries(snx-test-overlay PRIVATE scarletnx-common snx_splash m SDL3::SDL3)
+    target_link_libraries(snx-test-overlay PRIVATE scarletnx-common snx_splash m SDL3::SDL3 snx_notice)
     target_include_directories(snx-test-overlay PRIVATE "${PROJECT_BINARY_DIR}/generated")
     add_test(NAME overlay COMMAND snx-test-overlay)
 endif()
@@ -1791,8 +1791,15 @@ if(TARGET SDL3::SDL3) # the keys' names are SDL's
     # found by them, a value that isn't a key refused with the one in effect
     add_executable(snx-test-hotkeys hotkeys.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hotkeys.c")
     snx_test_target(snx-test-hotkeys 11)
-    target_link_libraries(snx-test-hotkeys PRIVATE SDL3::SDL3)
+    target_link_libraries(snx-test-hotkeys PRIVATE SDL3::SDL3 snx_notice)
     add_test(NAME hotkeys COMMAND snx-test-hotkeys)
+    # the notice of the windows with no menu of their own (common/utilities/notice.c): the Switch's notice's letters,
+    # place and colours, and the shortcuts' keys as the 3DS and the Vita read them (key_text.c)
+    add_executable(snx-test-notice notice.c)
+    snx_test_target(snx-test-notice 11)
+    target_link_libraries(snx-test-notice PRIVATE snx_notice)
+    target_include_directories(snx-test-notice PRIVATE "${PROJECT_BINARY_DIR}/generated") # the theme's colours
+    add_test(NAME notice COMMAND snx-test-notice)
     # the hints every program sets before its SDL video starts (common/utilities/sdl_desktop.h)
     add_executable(snx-test-sdl-desktop-hints sdl_desktop_hints.c)
     snx_test_target(snx-test-sdl-desktop-hints 11)

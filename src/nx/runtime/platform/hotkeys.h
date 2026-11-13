@@ -7,6 +7,7 @@
    (backend_ini) and the menu hold too */
 #ifndef SNX_HOTKEYS_H
 #define SNX_HOTKEYS_H
+#include "common/utilities/key_text.h"
 #include "nx/runtime/ini.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -35,8 +36,9 @@ enum {
     HOTKEY_ANTI_ALIASING,
     HOTKEY_COUNT
 };
-/* the modifiers held with a key, either side's, in the order a key's text names them */
-enum { HOTKEY_CTRL = 1, HOTKEY_ALT = 2, HOTKEY_SHIFT = 4, HOTKEY_GUI = 8 };
+/* the modifiers held with a key, either side's, in the order a key's text names them (common/utilities/key_text.h,
+   whose parsing and matching these keys' are) */
+enum { HOTKEY_CTRL = SNX_KEY_CTRL, HOTKEY_ALT = SNX_KEY_ALT, HOTKEY_SHIFT = SNX_KEY_SHIFT, HOTKEY_GUI = SNX_KEY_GUI };
 
 /* action's row of settings.txt's Shortcuts (its key, label and default), NULL where the build has none: Tracy's
    without SNX_TRACY */
