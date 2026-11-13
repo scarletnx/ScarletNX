@@ -25,10 +25,11 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
 
 - **Linux / FreeBSD:** Clang (CI: 23; FreeBSD's system Clang also works), LLVM's development files
   (`llvm-config`, required by the recompiler), CMake ≥3.25, Ninja, POSIX shell, GNU make (`gmake` on FreeBSD),
-  NASM on x86-64, Perl, Python 3 (the menu's languages), Git, pkg-config and `patch`.
+  NASM on x86-64, Perl, Python 3 (the menu's languages), Git, pkg-config, `patch` and meson (dav1d's build).
   Use a system SDL3 development package, or X11/Wayland and audio development libraries for the bundled
   SDL3 build.
-- **macOS:** Apple silicon, macOS 13 or newer, Xcode (its Clang and SDKs), CMake ≥3.25, Ninja, Python 3 and Git.
+- **macOS:** Apple silicon, macOS 13 or newer, Xcode (its Clang and SDKs), CMake ≥3.25, Ninja, meson, Python 3 and
+  Git.
   LLVM's libraries come from `scripts/apple-llvm.sh` or Homebrew ([steps](#macos)).
 - **Windows:** Win10/11 x64. CI builds in MSYS2's CLANG64 environment, which has LLVM's development files
   ([steps](#windows--msys2-clang64)). Bootstrap stages SHA-256-checked llvm-mingw/Clang, CMake, Ninja,
@@ -46,6 +47,9 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
 - **FFmpeg:** required by every NX runtime build and by the Android driver (its image codec). CMake builds the pinned
   source release, and with the Android driver its image codecs, libswscale and zlib for its PNG codec.
   Avoid spaces in checkout/cache paths.
+- **dav1d:** FFmpeg's AV1 decoder for the NX runtime's movies, built from the pinned release with meson and Ninja for
+  every target, cross builds, Android and iOS included (`cmake/dav1d.cmake`). Without meson the configure says so
+  and the runtime plays AV1 movies black; `-DSNX_DAV1D=OFF` leaves it out.
 - **OpenSSL:** required by every build with the NX or 3DS loaders (hashes, ciphers, the ssl service's TLS). CMake
   builds the pinned source release with OpenSSL's Configure, which needs **Perl**.
 
@@ -61,7 +65,7 @@ system include; Fedora lists it below.
 
 ```sh
 sudo apt update
-sudo apt install build-essential git cmake ninja-build clang llvm-dev nasm pkg-config python3 spirv-tools \
+sudo apt install build-essential git cmake ninja-build meson clang llvm-dev nasm pkg-config python3 spirv-tools \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
   libasound2-dev libpulse-dev libpipewire-0.3-dev
 ```
@@ -94,8 +98,8 @@ Vulkan-capable NVIDIA driver.
 ### Fedora
 
 ```sh
-sudo dnf install clang cmake ninja-build nasm make perl git pkgconf-pkg-config patch llvm-devel python3 spirv-tools \
-  libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
+sudo dnf install clang cmake ninja-build meson nasm make perl git pkgconf-pkg-config patch llvm-devel python3 \
+  spirv-tools libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
   libXScrnSaver-devel libXtst-devel alsa-lib-devel pulseaudio-libs-devel pipewire-devel
 ```
 
@@ -119,7 +123,7 @@ sudo dnf install wayland-devel libxkbcommon-devel wayland-protocols-devel libdec
 ### Arch Linux
 
 ```sh
-sudo pacman -Syu --needed base-devel git cmake ninja clang llvm nasm perl pkgconf python sdl3 spirv-tools
+sudo pacman -Syu --needed base-devel git cmake ninja meson clang llvm nasm perl pkgconf python sdl3 spirv-tools
 ```
 
 ### FreeBSD
@@ -128,7 +132,7 @@ FreeBSD provides Clang in the base system. Install the remaining tools, the SDL3
 HIDAPI loads at run time to read controllers (an Xbox pad is only read that way):
 
 ```sh
-sudo pkg install git cmake ninja gmake nasm perl5 pkgconf python3 sdl3 llvm libusb glslang spirv-tools
+sudo pkg install git cmake ninja meson gmake nasm perl5 pkgconf python3 sdl3 llvm libusb glslang spirv-tools
 ```
 
 The build uses that `sdl3` package by default (`SNX_SYSTEM_SDL3`, see [SDL3 troubleshooting](#sdl3-troubleshooting));
@@ -199,7 +203,7 @@ Install Xcode, then the build tools:
 
 ```sh
 xcode-select --install
-brew install cmake ninja spirv-tools
+brew install cmake ninja meson spirv-tools
 ```
 
 1. **LLVM's libraries**, once (about 10 minutes on an M1). The script builds the AArch64 code generator alone,
@@ -290,8 +294,8 @@ runtime must not mix with another LLVM build.
    pacman -S --needed git make patch perl patchutils \
      mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-llvm mingw-w64-clang-x86_64-lld \
      mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja mingw-w64-clang-x86_64-nasm \
-     mingw-w64-clang-x86_64-pkgconf mingw-w64-clang-x86_64-python mingw-w64-clang-x86_64-spirv-tools \
-     mingw-w64-clang-x86_64-glslang
+     mingw-w64-clang-x86_64-meson mingw-w64-clang-x86_64-pkgconf mingw-w64-clang-x86_64-python \
+     mingw-w64-clang-x86_64-spirv-tools mingw-w64-clang-x86_64-glslang
    ```
 
    Python builds the menu's languages; spirv-tools optimizes and validates the shaders. CI also installs ccache, which

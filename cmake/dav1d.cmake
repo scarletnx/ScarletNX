@@ -6,9 +6,9 @@
 # only parses the stream for a hardware decoder (Vulkan Video's, with the vulkan_video setting: cmake/ffmpeg.cmake), so
 # a software decode needs dav1d. It builds from the release in
 # cmake/dependencies.cmake with meson and ninja, which it has instead of a CMake build: only the library, at 8 and 16
-# bits a sample (8- and 10-bit streams), with its assembly (NASM's on x86-64). Built on Linux, the BSDs and Windows (MSYS2's
-# meson, as its CI builds), not in a cross build yet (meson would need a cross file of its own); a runtime without it plays
-# an AV1 movie black. This file is
+# bits a sample (8- and 10-bit streams), with its assembly (NASM's on x86-64). Meson compiles it for the target with
+# the flags FFmpeg gets, from the machine file cmake/meson_machine.cmake writes: a cross file in a cross build (the
+# Linux cross presets, Android, iOS), a native file on a Mac. A runtime without it plays an AV1 movie black. This file is
 # included into the top-level scope before cmake/ffmpeg.cmake, which reads snx_dav1d_ready: its variables carry the
 # snx_dav1d_ prefix.
 option(SNX_DAV1D "Build dav1d, for the Ounce's AV1 movies (needs meson and ninja)" ON)
@@ -16,9 +16,7 @@ set(snx_dav1d_ready OFF)
 if(SNX_DAV1D)
     find_program(SNX_MESON meson)
     find_program(SNX_DAV1D_NINJA NAMES ninja ninja-build)
-    if(CMAKE_CROSSCOMPILING OR ANDROID)
-        message(STATUS "dav1d: not built for this target yet: AV1 movies play black")
-    elseif(NOT SNX_MESON OR NOT SNX_DAV1D_NINJA)
+    if(NOT SNX_MESON OR NOT SNX_DAV1D_NINJA)
         message(STATUS "dav1d: meson or ninja not found: AV1 movies play black. Install them, or configure with "
                        "-DSNX_DAV1D=OFF to silence this")
     else()
@@ -30,8 +28,8 @@ if(snx_dav1d_ready)
     set(snx_dav1d_prefix "${PROJECT_BINARY_DIR}/dav1d")
     set(snx_dav1d_build "${PROJECT_BINARY_DIR}/dav1d-build/meson")
     # where its dav1d.pc goes, which FFmpeg's configure reads (cmake/ffmpeg.cmake): meson's pkgconfig module puts it
-    # in libdata/pkgconfig on FreeBSD, whatever --libdir says, and in the libdir's pkgconfig elsewhere
-    if(CMAKE_HOST_SYSTEM_NAME STREQUAL "FreeBSD")
+    # in libdata/pkgconfig for FreeBSD, whatever --libdir says, and in the libdir's pkgconfig for the others
+    if(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
         set(snx_dav1d_pkgconfig "${snx_dav1d_prefix}/libdata/pkgconfig")
     else()
         set(snx_dav1d_pkgconfig "${snx_dav1d_prefix}/lib/pkgconfig")
@@ -45,6 +43,20 @@ if(snx_dav1d_ready)
             message(STATUS "dav1d: NASM not found, built without its x86-64 assembly (AV1 movies decode more slowly)")
         endif()
     endif()
+    include("${PROJECT_SOURCE_DIR}/cmake/meson_machine.cmake")
+    set(snx_dav1d_machine "${PROJECT_BINARY_DIR}/dav1d-build/machine.ini")
+    snx_meson_machine_file("${snx_dav1d_machine}" snx_dav1d_machine_args snx_dav1d_machine_error snx_dav1d_target)
+    if(snx_dav1d_machine_error)
+        message(STATUS "dav1d: not built for ${snx_dav1d_target}: ${snx_dav1d_machine_error}: AV1 movies play black")
+        set(snx_dav1d_ready OFF)
+    else()
+        string(STRIP "${snx_dav1d_machine_args} -Denable_asm=${snx_dav1d_asm}" snx_dav1d_how)
+        message(STATUS "dav1d: built for ${snx_dav1d_target} by meson setup ${snx_dav1d_how}; FFmpeg decodes AV1 "
+                       "through it (--enable-libdav1d)")
+    endif()
+endif()
+
+if(snx_dav1d_ready)
     include(ExternalProject)
     ExternalProject_Add(dav1d_build
         SOURCE_DIR "${dav1d_SOURCE_DIR}"
@@ -57,6 +69,7 @@ if(snx_dav1d_ready)
                 "${dav1d_SOURCE_DIR}" --prefix=${snx_dav1d_prefix} --libdir=lib --buildtype=release
                 --default-library=static -Db_staticpic=true -Dbitdepths=8,16 -Denable_asm=${snx_dav1d_asm}
                 -Denable_tools=false -Denable_examples=false -Denable_tests=false -Denable_docs=false
+                ${snx_dav1d_machine_args}
         # installed in the build step, as FFmpeg's is (cmake/ffmpeg.cmake): Ninja checks the library as soon as it ends
         BUILD_COMMAND "${SNX_DAV1D_NINJA}" -C "${snx_dav1d_build}"
         COMMAND "${SNX_DAV1D_NINJA}" -C "${snx_dav1d_build}" install
@@ -65,6 +78,10 @@ if(snx_dav1d_ready)
         LOG_CONFIGURE ON
         LOG_BUILD ON
         LOG_OUTPUT_ON_FAILURE ON)
+    if(snx_dav1d_machine_args)
+        # the file changes with the compiler or the flags while the arguments above stay the same
+        ExternalProject_Add_StepDependencies(dav1d_build configure "${snx_dav1d_machine}")
+    endif()
     file(MAKE_DIRECTORY "${snx_dav1d_prefix}/include")
     add_library(dav1d::dav1d STATIC IMPORTED GLOBAL)
     set_target_properties(dav1d::dav1d PROPERTIES IMPORTED_LOCATION "${snx_dav1d_prefix}/lib/libdav1d.a"
