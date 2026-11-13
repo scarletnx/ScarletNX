@@ -12,7 +12,9 @@
    and with "commit-null" and "commit-eleven" its stops on no array and on more than 10 mounts. A file handle's low
    bits, which a game may use as a pointer's and mask off, and with "handle-flags" the stop for a handle passed with
    them. A file's data cache on each kind of mount, and with "cache-null", "cache-small" and "cache-path" the stops on
-   no buffer, a buffer smaller than the file and a path Disable cannot take */
+   no buffer, a buffer smaller than the file and a path Disable cannot take. A save's Restore flag, clear on the
+   device's save, and with "restore-null", "restore-account" and "restore-card" the stops on no place for it and on a
+   mount with no save attribute, an account's save and the SD card */
 #include "nx/nn/fs.c"
 #include "hle/hook/hooks.hook.inc" /* fs.hook's table, and a 32-bit game's */
 #include <stdarg.h>
@@ -308,6 +310,15 @@ int main(int argc, char** argv) {
             if (!strcmp(argv[1], "cache-small")) nnfs_enable_individual_file_data_cache(c, PATH, CACHE, 4);
             text(PATH, "ng:/../a");
             if (!strcmp(argv[1], "cache-path")) nnfs_disable_individual_file_data_cache(c, PATH);
+        }
+        /* the device's save asked with no place for the flag, or another mount asked */
+        if (!strncmp(argv[1], "restore-", 8)) {
+            text(NAME, "mnt");
+            save_given = 1, sd_there = 1;
+            if (!strcmp(argv[1], "restore-null")) CHECK(nnfs_mount_device_save_data(c, NAME) == 0);
+            if (!strcmp(argv[1], "restore-account")) CHECK(nnfs_mount_save_data(c, NAME, CACHE) == 0);
+            if (!strcmp(argv[1], "restore-card")) CHECK(nnfs_mount_sd_card(c, NAME) == 0);
+            nnfs_get_save_data_restore_flag(c, strcmp(argv[1], "restore-null") ? RESULT : 0, NAME);
         }
         printf("nn_fs: %s was answered\n", argv[1]);
         return 1;
@@ -654,6 +665,27 @@ int main(int argc, char** argv) {
         nnfs_unmount(c, NAME);
         CHECK(nnfs_is_mounted(c, NAME) == 0 && own(SYM_IS_MOUNTED, runs + 4));
         own_answer = 0x77;
+    }
+    /* GetSaveDataRestoreFlag, through fs.hook's table: on the device's save the flag is clear, its one byte written,
+       with nothing of the SDK's run, whose own table never holds the mount; a name the native layer did not mount,
+       and the save's once unmounted, are the SDK's */
+    {
+        u32 versions[HOOK_KEYS] = {0};
+        int first, k = hook_select(&hook_table, SYM_RESTORE_FLAG, versions, &first);
+        unsigned runs = own_runs;
+        CHECK(k >= 0 && !strcmp(hook_handler[k], "nnfs_get_save_data_restore_flag"));
+        text(NAME, "deviceSave");
+        save_given = 1;
+        CHECK(nnfs_mount_device_save_data(c, NAME) == 0);
+        outs();
+        c->x[0] = RESULT, c->x[1] = NAME, c->x[30] = 0x9000, c->pc = 0;
+        hook_fn[k](c, 0);
+        CHECK(c->x[0] == 0 && c->pc == 0x9000 && mem[RESULT] == 0 && mem[RESULT + 1] == 0xee && own_runs == runs);
+        text(OTHER, "other");
+        CHECK(nnfs_get_save_data_restore_flag(c, RESULT, OTHER) == 0x77 && own(SYM_RESTORE_FLAG, runs + 1));
+        nnfs_unmount(c, NAME);
+        CHECK(nnfs_get_save_data_restore_flag(c, RESULT, NAME) == 0x77 && own(SYM_RESTORE_FLAG, runs + 2));
+        save_given = -1;
     }
     printf("nn_fs: %u checks passed\n", checks);
     return 0;
