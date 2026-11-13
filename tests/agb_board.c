@@ -543,6 +543,18 @@ int main(void) {
     agb_write8(&board, 0x04000001, 0x01);
     CHECK(board.ppu.dispcnt == 0x0103);
 
+    /* a halted CPU waits while IE and IF share no interrupt: a blank's flag with only a timer's enabled leaves it
+       halted, the timer's wakes it */
+    board.irq_if = 0;
+    agb_write16(&board, 0x04000200, AGB_IRQ_TIMER(1)); /* IE */
+    board.cpu_halted = 1;
+    agb_irq_request(&board, AGB_IRQ_VBLANK);
+    CHECK(board.cpu_halted);
+    agb_irq_request(&board, AGB_IRQ_TIMER(1));
+    CHECK(!board.cpu_halted);
+    agb_write16(&board, 0x04000200, 0);
+    board.irq_if = 0;
+
     /* SIOCNT with no cable plugged: the multi-player mode says a child (SI) and a ready line (SD), and a transfer stays
        busy for its time (mGBA's, which the console's start bit read right after shows in its suite's sio-read.c), then
        ends with no partner's words and the serial interrupt; the normal mode's SI is pulled up */
