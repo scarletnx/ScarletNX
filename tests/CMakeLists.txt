@@ -1676,6 +1676,11 @@ if(TARGET SDL3::SDL3) # the keys' names are SDL's
     snx_test_target(snx-test-hotkeys 11)
     target_link_libraries(snx-test-hotkeys PRIVATE SDL3::SDL3)
     add_test(NAME hotkeys COMMAND snx-test-hotkeys)
+    # the hints every program sets before its SDL video starts (common/utilities/sdl_desktop.h)
+    add_executable(snx-test-sdl-desktop-hints sdl_desktop_hints.c)
+    snx_test_target(snx-test-sdl-desktop-hints 11)
+    target_link_libraries(snx-test-sdl-desktop-hints PRIVATE SDL3::SDL3)
+    add_test(NAME sdl_desktop_hints COMMAND snx-test-sdl-desktop-hints)
 endif()
 # F1's text (runtime/platform/help.c): Ctrl+Shift+F12 while RenderDoc can capture, the debugger while one traces the
 # game
