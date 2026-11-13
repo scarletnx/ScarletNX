@@ -61,6 +61,50 @@ static int check_trim_working_set(void) {
     return 0;
 }
 
+/* In a game with no texture objects, the unmap of a texture's memory is the sign that the game ended it (surface.c
+   remapped_collect): two textures at two GPU ranges over the same guest memory, made in one present and unused for
+   six. One's range is unmapped. A trim that wants everything takes that one and leaves the other. It runs before any
+   texture object is made: with objects, their ends are the sign */
+static int check_trim_unmapped(void) {
+    const u64 gone_gva = TRIM_GVA + 0x100000, kept_gva = TRIM_GVA + 0x200000;
+    u32 gone_tic[8], kept_tic[8];
+    u64 usage, budget;
+    CHECK(!gpu_textures_added());
+    gmmu_map(gone_gva, TRIM_CPU, 0x10000);
+    gmmu_map(kept_gva, TRIM_CPU, 0x10000);
+    trim_tic(gone_tic, gone_gva);
+    trim_tic(kept_tic, kept_gva);
+    vk_lock();
+    g_vk_present = 500; /* what the check before left goes first, so the counts below are these two textures' */
+    vk_mem_use(&usage, &budget);
+    vk_mem_trim(budget, 0);
+    const u32 held = trim_textures();
+    CHECK(vk_tex_from_tic(gone_tic) && vk_tex_from_tic(kept_tic) && trim_textures() == held + 2);
+    vk_unlock();
+    g_vk_present = 503;
+    gmmu_space_unmap(gone_gva, 0x10000);
+    vk_lock();
+    vk_surf_ended_frame(); /* the cache learns of it; with memory to spare it frees nothing */
+    CHECK(trim_textures() == held + 2);
+    g_vk_present = 506;
+    vk_mem_trim(budget, 0);
+    const u32 left = trim_textures();
+    CHECK(vk_tex_from_tic(kept_tic));
+    const u32 with_kept = trim_textures();
+    g_vk_present = 530;
+    vk_mem_trim(budget, 0); /* for the checks after: the other gone too */
+    vk_unlock();
+    if (left != held + 1 || with_kept != left) {
+        fprintf(stderr,
+                "trim: %u textures held three presents after one of two lost its mapping, %u before the two (one "
+                "more expected), and %u with the mapped one found again (as many expected)\n",
+                left, held, with_kept);
+        return 1;
+    }
+    printf("trim: with no texture objects, a texture whose memory the game unmapped goes first\n");
+    return 0;
+}
+
 /* A texture whose texture object the game ended goes first (surface.c ended_reclaim): two textures made in one
    present, with an object each at its address (gpu/guest_textures.h), unused for six presents, fewer than the eight
    that the working set is kept for. One's object ends. A trim that wants everything takes that one and leaves the

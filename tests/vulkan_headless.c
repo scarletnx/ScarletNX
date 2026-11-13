@@ -7292,6 +7292,7 @@ static int run_headless(int argc, char** argv) {
     }
     if (getenv("SNX_TEST_TRIM_ONLY")) { /* the budget's trim alone: a trim that wants everything takes the others' */
         CHECK(!check_trim_working_set());
+        CHECK(!check_trim_unmapped());
         CHECK(!check_trim_ended());
         CHECK(!check_trim_headroom());
         vk_finish();

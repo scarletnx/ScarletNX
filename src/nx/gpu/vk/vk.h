@@ -979,7 +979,8 @@ typedef struct Surf {
     int lru;
     struct Surf *lru_prev, *lru_next;
     /* textures: the game ended the last texture object at its address (gpu/guest_textures.h) and made none there
-       since: in surface.c's list of those, which a trim takes first */
+       since (1), or, in a game with no texture objects, unmapped its first page and mapped nothing there since (2):
+       in surface.c's list of those, which a trim takes first */
     u8 ended;
     u32 ended_at; /* the present the cache learned of it */
     struct Surf* ended_next;
@@ -1212,6 +1213,9 @@ void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx);
    it again there with the same bytes still finds it) */
 void vk_surf_ended_frame(void);
 u64 vk_surf_ended_freed(void); /* statistics: their bytes freed so far */
+/* the game changed the GPU mapping of [gva, gva + size): where its front end has no texture objects, a texture
+   whose memory it unmapped is one it ended (the renderer's bracket of a GMMU change, at its end) */
+void vk_surf_mapping_changed(u64 gva, u64 size);
 /* frees cache entries (surfaces and own buffers), the least recently used first, when the heap's use with `extra`
    bytes more would be past 90% of its budget: idle lossless ones down to 80%, the lossless working set down to 95%,
    then lossy ones (vk_surf_reclaim). Only entries unused for the last two presents go, so the caller may hold any

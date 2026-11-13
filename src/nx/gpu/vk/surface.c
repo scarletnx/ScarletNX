@@ -2364,9 +2364,48 @@ static void astc_bc_suggest(int force, u64 extra, u64 usage, u64 budget, u64 fre
 }
 static u64 g_trimmed;   /* statistics: bytes freed for the budget */
 static u32 g_trim_dry;  /* the present a trim last found too little to free (+1: 0 is none) */
+/* The GPU ranges whose mapping the game changed since ended_collect last looked, in a game whose front end has no
+   texture objects (one that writes its own command buffers): the unmap of a texture's memory is the one sign such a
+   game gives that it ended the texture. More ranges than the list holds count as all of the address space */
+static struct {
+    u64 gva[16], size[16];
+    u32 n;
+    int all;
+} g_remapped;
+void vk_surf_mapping_changed(u64 gva, u64 size) {
+    if (gpu_textures_added()) return; /* the front end tells of each texture's end */
+    if (g_remapped.n == sizeof g_remapped.gva / sizeof *g_remapped.gva)
+        g_remapped.all = 1;
+    else {
+        g_remapped.gva[g_remapped.n] = gva;
+        g_remapped.size[g_remapped.n++] = size;
+    }
+}
+static int ended_live(const Surf* s) {
+    return s->ended == 2 ? gmmu_translate(s->gva) != 0 : gpu_texture_live(s->gva);
+}
+/* the textures in those ranges whose first page is mapped no more go on the list of the ended */
+static void remapped_collect(void) {
+    if (!g_remapped.n && !g_remapped.all) return;
+    for (int list = VK_LRU_TEX; list <= VK_LRU_TEX + LRU_AGED; list += LRU_AGED)
+        for (Surf* s = g_lru[list].head; s; s = s->lru_next) {
+            int in = g_remapped.all;
+            for (u32 i = 0; i < g_remapped.n && !in; i++)
+                in = s->gva < g_remapped.gva[i] + g_remapped.size[i] &&
+                     g_remapped.gva[i] < s->gva + (s->size ? s->size : 1);
+            if (!in || s->is_rt || s->ended || gmmu_translate(s->gva)) continue;
+            s->ended = 2;
+            s->ended_at = g_vk_present;
+            s->ended_next = g_ended;
+            g_ended = s;
+        }
+    g_remapped.n = 0;
+    g_remapped.all = 0;
+}
 /* the textures at the addresses whose last object ended since the last call go on the list of those */
 static void ended_collect(void) {
     u64 gva[256];
+    remapped_collect();
     for (u32 n; (n = gpu_textures_ended(gva, 256));) {
         for (u32 i = 0; i < n; i++)
             for (Surf* s = g_surfh[hkey(gva[i])]; s; s = s->next)
@@ -2385,7 +2424,7 @@ static u64 ended_reclaim(u64 want, u32 before) {
     u64 freed = 0;
     for (Surf *s = g_ended, *n; s && freed < want; s = n) {
         n = s->ended_next;
-        if (gpu_texture_live(s->gva))
+        if (ended_live(s))
             ended_unlink(s);
         else if ((i32)((u32)s->last_used - before) < 0 && (i32)(s->ended_at - before) < 0 && lossless(s) &&
                  !vk_gfx_image_holds(s))
