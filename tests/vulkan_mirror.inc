@@ -163,6 +163,14 @@ static int check_mirror(void) {
     CHECK(buf == vk_mirror_buffer() && off == cpu);
     CHECK(!mirror_read(cpu, len, got));
     CHECK(!mirror_expect(got, GP(cpu), len, 0, 0, 0));
+    /* a result landed in guest memory by the renderer in the same write epoch (a dispatch outside the mirror, which
+       stamps it: gpu_mem_written): bound again in that epoch, the binding takes it, where it trusted its check of
+       the epoch and kept the bytes from before */
+    GP(cpu)[0x800] = 0xc3;
+    gpu_mem_written(gva + 0x800, 1);
+    CHECK(vk_mirror_slice(gva, len, &buf, &off));
+    CHECK(!mirror_read(cpu, len, got));
+    CHECK(!mirror_expect(got, GP(cpu), len, 0, 0, 0));
     /* a program writes 16 bytes at 0x100, pending on page 0; the CPU writes the byte after them, and one on page 2,
        where nothing is pending: bound again, the CPU's bytes go in, page 2 whole and page 0 the bytes it changed, and
        the program's stay */
