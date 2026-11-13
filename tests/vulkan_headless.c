@@ -1997,8 +1997,17 @@ static int run_compute(const u32* code, size_t words, u32* data, u32 count, VkIm
     vkCmdPipelineBarrier2(cmd, &dependency);
     CHECK(vkEndCommandBuffer(cmd) == VK_SUCCESS);
     VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cmd};
-    CHECK(vkQueueSubmit(g_vk.gfx, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS);
-    CHECK(vkQueueWaitIdle(g_vk.gfx) == VK_SUCCESS);
+    /* under the queue's lock, as the recording thread submits to it (record.c): a VkQueue takes one thread at a time.
+       Its own fence, waited outside the lock, so the recording thread's submits go on meanwhile */
+    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence;
+    CHECK(vkCreateFence(g_vk.dev, &fi, NULL, &fence) == VK_SUCCESS);
+    vk_queue_lock(g_vk.gfx);
+    VkResult submitted = vkQueueSubmit(g_vk.gfx, 1, &submit, fence);
+    vk_queue_unlock(g_vk.gfx);
+    int done = submitted == VK_SUCCESS && vk_wait_fence(fence);
+    vkDestroyFence(g_vk.dev, fence, NULL);
+    CHECK(done);
     CHECK(vmaInvalidateAllocation(g_vk.vma, memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
     memcpy(data, allocation.pMappedData, (size_t)count * sizeof(u32));
     vkDestroyCommandPool(g_vk.dev, cpool, NULL);
