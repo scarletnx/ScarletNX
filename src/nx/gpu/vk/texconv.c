@@ -314,16 +314,19 @@ int vk_tc_convert_vi(VkCommandBuffer cb, u32 fmt, u32 w, u32 rows, VkBuffer in, 
                      u64 out_at) {
     return tc_record(cb, tc_vi_mode(fmt), 0, w, rows, 1, in, in_at, in_pitch, out, out_at);
 }
-int vk_tc_dma_remap(VkCommandBuffer cb, const GpuDmaOp* o, u32 lines, VkBuffer in, u64 in_at, u32 in_pitch,
+int vk_tc_dma_remap(VkCommandBuffer cb, const GpuDmaOp* o, u32 lines, VkBuffer in, u64 in_at, i64 in_pitch,
                     VkBuffer out, u64 out_at, u32 out_pitch) {
-    u64 align = storage_align(), in_off = in_at & ~(align - 1), out_off = out_at & ~(align - 1);
+    /* the bound input from its lowest line, the last one when the pitch steps down: the shader's u32 offsets from
+       line 0 wrap back into it */
+    u64 in_low = in_at + (u64)(in_pitch < 0 && lines ? in_pitch * (i64)(lines - 1) : 0);
+    u64 align = storage_align(), in_off = in_low & ~(align - 1), out_off = out_at & ~(align - 1);
     u32 units = (o->line_out + 3) / 4, k, remap = o->cs | o->ns << 4 | o->nd << 8;
     if ((out_at | out_pitch) & 3) return 0;
     for (k = 0; k < 4; k++) remap |= (o->sel[k] & 7) << (12 + 4 * k);
     TcParams p = {.mode = TC_DMA_REMAP,
                   .units = units,
                   .rows = lines,
-                  .in_pitch = in_pitch, /* bytes, for this mode */
+                  .in_pitch = (u32)in_pitch, /* bytes, for this mode; a step down as its two's complement */
                   .out_pitch = out_pitch / 4,
                   .in_bias = (u32)(in_at - in_off),
                   .out_bias = (u32)((out_at - out_off) / 4),
@@ -332,7 +335,8 @@ int vk_tc_dma_remap(VkCommandBuffer cb, const GpuDmaOp* o, u32 lines, VkBuffer i
                   .const_b = o->const_b,
                   .line_out = o->line_out};
     /* the input range covers every line's bytes (a fill reads none: a word of it still binds) */
-    u64 in_size = in_at + (lines ? (u64)in_pitch * (lines - 1) + o->line_in : 0) + 4 - in_off;
+    u64 in_size =
+        in_low + (lines ? (u64)(in_pitch < 0 ? -in_pitch : in_pitch) * (lines - 1) + o->line_in : 0) + 4 - in_off;
     return tc_dispatch(cb, &p, (units + 63) / 64, lines, 1, in, in_off, (in_size + 3) & ~3ull, out, out_off,
                        out_at + (u64)out_pitch * lines - out_off);
 }
