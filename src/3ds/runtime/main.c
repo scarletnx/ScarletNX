@@ -16,6 +16,7 @@
 #include "common/platform/file.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/key_text.h"
 #include "snx_settings.h"
 #include <errno.h>
 #include <inttypes.h>
@@ -93,6 +94,10 @@ static void usage(FILE* out) {
         "                         anisotropically (default 0: as the game asks). --fps_limit=N runs the game at\n"
         "                         N/60 of the console's pace (the 3DS shows 60 frames a second), 0 as fast as it\n"
         "                         goes, game the console's (the default), and F4 turns it off and on.\n"
+        "                         --upscaler=, --upscaler_sharpness= and --anti_aliasing= are the Switch's (both\n"
+        "                         off by default), which --hotkey_upscaler=KEY (Ctrl+U) and\n"
+        "                         --hotkey_anti_aliasing=KEY (Ctrl+Shift+A) step while the game runs, a notice\n"
+        "                         over the game saying what runs.\n"
         "                         --aot_threads=N compiles the game's code on N threads (1 to 1024; the default 0:\n"
         "                         the computer's cores with a quarter left free, or --aot_threads_most=N), as the\n"
         "                         Switch's, the same as --jobs N\n"
@@ -866,7 +871,16 @@ int snx_ctr_main(int argc, char** argv) {
                 if (!o) o = ini_find(g_vk_extensions_ini, key);
                 map = !strcmp(key, "gamepad_map");
             }
-            if (map)
+            if (value && (!strcmp(key, "hotkey_upscaler") || !strcmp(key, "hotkey_anti_aliasing"))) {
+                /* the Switch's shortcuts that step the upscaler and the anti-aliasing (gpu/present.c): a text that is
+                   no key is said, the key kept, as a Switch game says it */
+                char said[320];
+                bool up = !strcmp(key, "hotkey_upscaler");
+                if (snx_key_set(key, value, up ? g_settings.upscaler_shortcut : g_settings.anti_aliasing_shortcut,
+                                up ? sizeof g_settings.upscaler_shortcut : sizeof g_settings.anti_aliasing_shortcut,
+                                said, sizeof said))
+                    fprintf(stderr, "scarletnx-3ds: %s\n", said);
+            } else if (map)
                 snx_ctr_input_map(value);
             else if (!o) {
                 fprintf(stderr, "scarletnx-3ds: unknown setting: %s\n", arg);

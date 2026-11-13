@@ -19,10 +19,12 @@
 #include "3ds/gpu/vk/vk_y2r.h"
 #include "3ds/gpu/vk/vk_render.h"
 #include "common/utilities/bits.h"
+#include "common/gpu/vk/notice.h"
 #include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
+#include "common/utilities/key_text.h"
 #include "common/utilities/quit_key.h"
 #include "common/platform/file.h"
 #include "common/utilities/window_icon.h"
@@ -54,6 +56,15 @@ static struct {
        are Off */
     SnxFxConfig fx_config;
     SnxFx* fx[2];
+    /* the keys that step them for the run (the Switch's hotkey_upscaler and hotkey_anti_aliasing), 0 for none */
+    unsigned shortcut_key[2], shortcut_mods[2];
+    /* a line over the game for a few seconds, as a Switch game shows one: a shortcut's step, Esc's first press. In
+       the window it was asked in, each window's band copied by its own (common/gpu/vk/notice.h) */
+    SnxNotice notice;
+    SDL_WindowID notice_window;
+    SnxVkNotice* notice_vk[2];
+    unsigned shared_said;    /* both shortcuts are one key, said once */
+    unsigned shortcuts_read; /* their keys read from the settings */
     /* each submission slot's: a slot is free again only once its submission is done, and so are they */
     VkSemaphore acquire[2][SNX_CTR_VK_SLOTS], presented[2][SNX_CTR_VK_SLOTS];
     const char* frame_dir;
@@ -162,14 +173,10 @@ static bool semaphores(const SnxCtrVk* v, const VkSemaphoreCreateInfo* si) {
     return true;
 }
 static void fx_log(const char* text) { fprintf(stderr, "3ds gpu: %s\n", text); }
-/* the upscaler and the anti-aliasing the settings ask for, said once, and their effects made where either is on */
-static void fx_init(const SnxCtrVk* v) {
-    char said[512];
+/* each screen's effects, where either is on and they are not made yet: both Off when they could not be, said */
+static void fx_make(const SnxCtrVk* v) {
     SnxFxConfig* c = &g_present.fx_config;
-    if (snx_fx_settings(c, g_settings.upscaler, g_settings.upscaler_sharpness, g_settings.anti_aliasing, said,
-                        sizeof said))
-        fprintf(stderr, "3ds gpu: settings: %s\n", said);
-    if (c->upscaler != SNX_FX_UPSCALE_OFF || c->aa != SNX_FX_AA_OFF)
+    if (!g_present.fx[0] && (c->upscaler != SNX_FX_UPSCALE_OFF || c->aa != SNX_FX_AA_OFF))
         for (unsigned i = 0; i < 2; ++i) {
             g_present.fx[i] = snx_fx_create(v->phys, v->device, VK_NULL_HANDLE, SNX_CTR_VK_SLOTS, fx_log);
             if (g_present.fx[i]) {
@@ -187,8 +194,31 @@ static void fx_init(const SnxCtrVk* v) {
             g_present.fx[0] = NULL;
             break;
         }
+}
+/* the shortcuts' keys from their settings, once, as the Switch reads them (common/utilities/key_text.h): main.c
+   refused a text that is no key already, keeping the default's */
+static void shortcuts_init(void) {
+    const char* const keys[2] = {"hotkey_upscaler", "hotkey_anti_aliasing"};
+    const char* const texts[2] = {g_settings.upscaler_shortcut, g_settings.anti_aliasing_shortcut};
+    char why[192];
+    if (g_present.shortcuts_read) return;
+    g_present.shortcuts_read = 1;
+    for (unsigned i = 0; i < 2; ++i)
+        if (snx_key_parse(texts[i], &g_present.shortcut_key[i], &g_present.shortcut_mods[i], why, sizeof why))
+            fprintf(stderr, "3ds gpu: %s=%s: %s: it has no key\n", keys[i], texts[i], why);
+}
+/* the upscaler and the anti-aliasing the settings ask for, said once, their effects made where either is on, and the
+   keys that step them */
+static void fx_init(const SnxCtrVk* v) {
+    char said[512];
+    SnxFxConfig* c = &g_present.fx_config;
+    if (snx_fx_settings(c, g_settings.upscaler, g_settings.upscaler_sharpness, g_settings.anti_aliasing, said,
+                        sizeof said))
+        fprintf(stderr, "3ds gpu: settings: %s\n", said);
+    fx_make(v);
     fprintf(stderr, "3ds gpu: upscaler %s, anti-aliasing %s\n", snx_fx_upscale_label(c->upscaler),
             snx_fx_aa_label(c->aa));
+    shortcuts_init();
 }
 bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     if (g_present.up) return true;
@@ -233,6 +263,8 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
         !semaphores(v, &si))
         return false;
     g_present.readback_view = mapped;
+    for (unsigned screen = 0; screen < 2; ++screen)
+        if (!(g_present.notice_vk[screen] = snx_vk_notice_create(v->phys, v->device, SNX_CTR_VK_SLOTS))) return false;
     image_barrier(snx_ctr_vk_commands(), g_present.source_dummy.image, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_GENERAL);
     g_present.source_dummy.layout = VK_IMAGE_LAYOUT_GENERAL;
@@ -434,12 +466,43 @@ void snx_ctr_present_fullscreen(void) {
     const SnxCtrVk* v = snx_ctr_vk();
     if (g_present.up && v && v->host.window) fullscreen(v->host.window, true);
 }
+/* a line over the game in window (0: the top screen's) for a few seconds */
+static void notice(const char* text, SDL_WindowID window) {
+    snx_notice_show(&g_present.notice, text, SDL_GetTicksNS());
+    g_present.notice_window = window || !g_present.up ? window : SDL_GetWindowID(screen_window(0));
+}
+/* the upscaler's step (which 0) or the anti-aliasing's (1) for this run, as a Switch game's shortcuts step them, said
+   over the game in the window it was pressed in */
+static void shortcut(int which, SDL_WindowID window) {
+    SnxFxConfig* c = &g_present.fx_config;
+    char text[64];
+    if (which)
+        c->aa = snx_fx_aa_next(c->aa);
+    else
+        c->upscaler = snx_fx_upscale_next(c->upscaler);
+    if (g_present.up) fx_make(snx_ctr_vk()); /* a window up: else when it comes up */
+    snx_fx_step_text(which, which ? c->aa : c->upscaler, text, sizeof text);
+    fprintf(stderr, "3ds gpu: %s, for this run\n", text);
+    notice(text, window);
+}
 /* The window's own keys, as a Switch game's (backend/sdl3.c): F11, or Alt+Enter, switches the window it is pressed in
-   to fullscreen and back, F4 turns the FPS limit off and back on (board/clock.h), and Esc twice closes it, a first one
-   warning on the terminal; not with Ctrl or the system key, the desktop's, nor F4 or Esc with Alt */
+   to fullscreen and back, F4 turns the FPS limit off and back on (board/clock.h), Esc twice closes it, a first one
+   warning on the terminal and over the game, and the upscaler's and the anti-aliasing's shortcuts step them; none
+   else with Ctrl or the system key, the desktop's, nor F4 or Esc with Alt */
 static void key_event(const SDL_Event* event) {
-    if (event->type != SDL_EVENT_KEY_DOWN || event->key.repeat || (event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)))
+    int also, which;
+    if (event->type != SDL_EVENT_KEY_DOWN || event->key.repeat) return;
+    shortcuts_init();
+    which = snx_key_find(g_present.shortcut_key, g_present.shortcut_mods, 2, event->key.key,
+                         snx_key_mods(event->key.mod), &also);
+    if (which >= 0) {
+        if (also >= 0 && !g_present.shared_said++)
+            fprintf(stderr, "3ds gpu: %s is hotkey_upscaler's and hotkey_anti_aliasing's: it does %s's\n",
+                    g_settings.upscaler_shortcut, which ? "hotkey_anti_aliasing" : "hotkey_upscaler");
+        shortcut(which, event->key.windowID);
         return;
+    }
+    if (event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) return;
     bool alt = event->key.mod & SDL_KMOD_ALT;
     SDL_Window* window = SDL_GetWindowFromID(event->key.windowID);
     if (event->key.key == SDLK_ESCAPE && !alt) {
@@ -449,6 +512,7 @@ static void key_event(const SDL_Event* event) {
             char warning[64];
             snx_quit_warning(warning, sizeof warning, "Esc");
             fprintf(stderr, "%s\n", warning);
+            notice(warning, event->key.windowID);
         }
     } else if (window && ((event->key.key == SDLK_F11 && !alt) || (event->key.key == SDLK_RETURN && alt)))
         fullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
@@ -470,6 +534,9 @@ static void pump(void) {
         key_event(&event);
         snx_ctr_input_event(&event); /* the gamepads connected and gone */
     }
+}
+const char* snx_ctr_present_notice(void) {
+    return snx_notice_shown(&g_present.notice, SDL_GetTicksNS()) ? g_present.notice.text : "";
 }
 /* SDL turns SIGINT and SIGTERM into a quit event too, so this is also how Ctrl+C ends a run, with or without a window
    (the audio output initializes SDL's events) */
@@ -534,6 +601,12 @@ static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen, un
                            ? VK_FILTER_NEAREST
                            : VK_FILTER_LINEAR);
     }
+    SDL_Window* window = screen_window(screen);
+    if (window && SDL_GetWindowID(window) == g_present.notice_window)
+        (void)snx_vk_notice_record(g_present.notice_vk[screen], cb, slot, target, g_present.swap[screen].format.format,
+                                   g_present.swap[screen].extent.width, g_present.swap[screen].extent.height,
+                                   snx_display_percent(SDL_GetWindowDisplayScale(window)), &g_present.notice,
+                                   SDL_GetTicksNS(), fx_log);
     image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
 bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigned height, unsigned format,
@@ -706,7 +779,10 @@ void snx_ctr_present_free(void) {
         if (g_present.swap[screen].swapchain) swap_destroy(screen);
     for (unsigned i = 0; i < 2; ++i) frame_free(&g_present.frames[i]);
     frame_free(&g_present.source_dummy);
-    for (unsigned i = 0; i < 2; ++i) snx_fx_destroy(g_present.fx[i]);
+    for (unsigned i = 0; i < 2; ++i) {
+        snx_fx_destroy(g_present.fx[i]);
+        snx_vk_notice_destroy(g_present.notice_vk[i]);
+    }
     for (unsigned screen = 0; screen < 2; ++screen)
         for (unsigned i = 0; i < SNX_CTR_VK_SLOTS; ++i) {
             if (g_present.acquire[screen][i]) vkDestroySemaphore(v->device, g_present.acquire[screen][i], NULL);

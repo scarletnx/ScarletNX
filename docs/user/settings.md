@@ -403,7 +403,8 @@ The unattended runs' settings ([Run / diagnose](../dev/development.md#run--diagn
 | `ctr_bottom_resolution` | `1` | The same for the bottom screen: `1` is the console's 320x240, `2` 640x480 |
 
 The Switch's `upscaler`, `upscaler_sharpness` and `anti_aliasing` (Graphics) scale each screen to its place in the
-window, and the start says which run.
+window, and the start says which run; its `hotkey_upscaler` and `hotkey_anti_aliasing` (Shortcuts) step them for the
+run, and a key that is none is said with the one kept.
 
 ## Vita driver
 

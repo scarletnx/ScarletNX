@@ -76,6 +76,7 @@ endforeach()
 # (snx_checkout)
 add_library(snx_ctr_program STATIC runtime/main.c)
 target_link_libraries(snx_ctr_program PUBLIC snx_ctr_board snx_ctr_loader)
+target_link_libraries(snx_ctr_program PRIVATE snx_notice) # the shortcuts' keys as the settings give them
 set_target_properties(snx_ctr_program PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_ctr_program PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_compile_definitions(snx_ctr_program PRIVATE SNX_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
