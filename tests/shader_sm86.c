@@ -4254,23 +4254,30 @@ static void test_warp_matrix_flush(const char* dir) {
 /* the way the log says a device's compute HMMAs take (shader_hmma_way), from the flags device.c sets */
 static void test_hmma_way(void) {
     int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16,
-        pairs_was = g_shader_hmma_pairs, stage_was = g_shader_hmma_stage, coop_was = g_shader_hmma_coop;
+        pairs_was = g_shader_hmma_pairs, stage_was = g_shader_hmma_stage, coop_was = g_shader_hmma_coop,
+        half_was = g_shader_hmma_f16;
     static const struct {
-        int quad, mixed, pairs, stage, coop;
+        int quad, mixed, pairs, stage, coop, half;
         const char* want;
     } cases[] = {
-        {1, 1, 1, 0, 0,
+        {1, 1, 1, 0, 0, 0,
          "A by quad broadcasts, B shared by pairs of lanes, the products by the mixed dot product into f32"},
-        {1, 0, 0, 0, 0, "A by quad broadcasts, B by shuffles, the products unpacked to f32"},
-        {0, 0, 0, 65536, 0, "A and B through a warp's slot of shared memory, the products unpacked to f32"},
-        {1, 1, 0, 0, 65536,
+        {1, 0, 0, 0, 0, 0, "A by quad broadcasts, B by shuffles, the products unpacked to f32"},
+        {0, 0, 0, 65536, 0, 0, "A and B through a warp's slot of shared memory, the products unpacked to f32"},
+        {1, 1, 0, 0, 65536, 0,
          "the device's cooperative matrices where a program's blocks are whole warps and their "
          "fragments fit in shared memory, else A by quad broadcasts, B by shuffles, the products by the "
          "mixed dot product into f32"},
+        /* hmma_f16's half sums, where the mixed dot product does not take the products first */
+        {0, 0, 0, 65536, 0, 1,
+         "A and B through a warp's slot of shared memory, the products summed in half floats (hmma_f16), then in f32"},
+        {1, 1, 1, 0, 0, 1,
+         "A by quad broadcasts, B shared by pairs of lanes, the products by the mixed dot product into f32"},
     };
     for (size_t k = 0; k < sizeof cases / sizeof *cases; k++) {
         g_shader_quad_compute = cases[k].quad, g_shader_mixed_dot = cases[k].mixed, g_shader_float16 = 1;
         g_shader_hmma_pairs = cases[k].pairs, g_shader_hmma_stage = cases[k].stage, g_shader_hmma_coop = cases[k].coop;
+        g_shader_hmma_f16 = cases[k].half;
         char way[256];
         shader_hmma_way(way, sizeof way);
         if (strcmp(way, cases[k].want)) fprintf(stderr, "HMMA way %zu: \"%s\", wanted \"%s\"\n", k, way, cases[k].want);
@@ -4278,6 +4285,7 @@ static void test_hmma_way(void) {
     }
     g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
     g_shader_hmma_pairs = pairs_was, g_shader_hmma_stage = stage_was, g_shader_hmma_coop = coop_was;
+    g_shader_hmma_f16 = half_was;
 }
 
 /* the HMMA forms vk/device.c chooses (shader_hmma_choose) for the devices measured: the Adreno 610 on Turnip, whose
