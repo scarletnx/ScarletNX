@@ -1717,11 +1717,13 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
     u32 cw = guest ? w : sw, ch = guest ? h : sh;
     for (Surf** pp = &rt->crop; *pp;) {
         Surf* x = *pp;
-        if (x->w == w && x->h == h && x->sw == cw && x->sh == ch && x->f.vk == f.vk)
+        if (!x->predraw && x->w == w && x->h == h && x->sw == cw && x->sh == ch && x->f.vk == f.vk)
             c = x;
         else if ((i32)(g_vk_present - (u32)x->last_used) > 60) {
             *pp = x->next;
             for (int i = 0; i < x->nsv; i++) vk_defer_image(VK_NULL_HANDLE, 0, x->sv[i].v, VK_NULL_HANDLE);
+            if (x->att) vk_defer_image(VK_NULL_HANDLE, 0, x->att, VK_NULL_HANDLE);
+            if (x->att_linear) vk_defer_image(VK_NULL_HANDLE, 0, x->att_linear, VK_NULL_HANDLE);
             vk_defer_image(x->img, x->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
             vk_defer_bytes(x->bytes);
             free(x);
@@ -1835,6 +1837,68 @@ static Surf* rt_guest(Surf* rt, u32 w, u32 h, const VkFmt* as) {
 Surf* vk_rt_snapshot(Surf* rt, int pixels) {
     if (!rt || rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) return rt;
     return rt_copy(rt, rt->w, rt->h, NULL, 0, pixels, 1);
+}
+
+/* The save attachment of a feedback draw that the renderer draws two times (render.c predraw_run): an image of the
+   format and size of the 2D color target rt, which the first draw writes with the values of rt from before the
+   draw, and which the second draw samples in place of rt. It is an attachment of the pass, in the feedback-loop
+   layout. set 0 or 1: the renderer uses two in turn where the pass has room. Kept in rt's list of copies, so it goes
+   with rt or after 60 presents unused. NULL when it can't be made */
+Surf* vk_rt_save(Surf* rt, u32 set) {
+    if (!rt || rt->f.depth || rt->msaa || rt->layers != 1 || rt->depth3d > 1 || !g_vk.has_feedback) return NULL;
+    Surf* c = NULL;
+    for (Surf* x = rt->crop; x && !c; x = x->next)
+        if (x->predraw == set + 1 && x->sw == rt->sw && x->sh == rt->sh && x->f.vk == rt->f.vk) c = x;
+    if (!c) {
+        c = calloc(1, sizeof *c);
+        if (!c) return NULL;
+        c->gva = rt->gva;
+        c->w = rt->w;
+        c->h = rt->h;
+        c->sw = rt->sw;
+        c->sh = rt->sh;
+        c->layers = c->levels = c->depth3d = 1;
+        c->f = rt->f;
+        c->fkey = rt->fkey;
+        c->type = VK_IMAGE_VIEW_TYPE_2D;
+        c->is_rt = 1; /* sampled like one; not in the table, so never found as one */
+        c->predraw = (u8)(set + 1);
+        c->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                  VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .imageType = VK_IMAGE_TYPE_2D,
+                                .format = rt->f.vk,
+                                .extent = {c->sw, c->sh, 1},
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = usage,
+                                .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        VkViewFormats vf;
+        vk_view_formats(&ii, &vf, VK_FORMAT_UNDEFINED);
+        if (!vk_cache_image_create(&ii, &c->img, &c->mem, VK_OWN_TEXTURE, &c->bytes)) {
+            free(c);
+            return NULL;
+        }
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                    .image = c->img,
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                    .format = rt->f.vk,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        if (!VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &c->att))) {
+            vk_defer_image(c->img, c->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            vk_defer_bytes(c->bytes);
+            free(c);
+            return NULL;
+        }
+        c->crop_gen = ~0u;
+        c->next = rt->crop;
+        rt->crop = c;
+    }
+    c->last_used = g_vk_present;
+    return c;
 }
 
 /* texture header type -> what the image is created as */

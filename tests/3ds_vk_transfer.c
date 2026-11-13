@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define IN  0x20100000u /* FCRAM */
+#define IN   test_ctr_fcram(0x20100000u) /* FCRAM, its upper half on a New 3DS */
 #define OUT 0x18000000u /* VRAM */
 #define SPAN 0x80000u
 
@@ -49,9 +49,10 @@ static void same(SnxCtrMemory* m, const unsigned char* expected, const char* wha
         }
 }
 int main(int argc, char** argv) {
+    SnxCtrModel model = test_ctr_model(&argc, argv);
     int vk_memory = test_ctr_vk_memory(&argc, argv);
     static unsigned char in[SPAN], out[SPAN];
-    SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
+    SnxCtrMemory* m = snx_ctr_memory_new(model);
     char why[256];
     assert(m);
     if (!snx_ctr_vk_init(m, why, sizeof why)) {

@@ -13,8 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PAGE  0x20004000u /* FCRAM */
-#define OTHER 0x18001000u /* VRAM */
+/* an FCRAM page and one in VRAM; on a New 3DS (--new3ds) FCRAM's last page and one of its extra RAM */
+static uint32_t g_page = 0x20004000u, g_other = 0x18001000u;
 static SnxCtrMemory* g_m;
 
 /* where the host holds the region at physical address pa */
@@ -71,14 +71,19 @@ static int start(int vk_memory) {
     return 77;
 }
 int main(int argc, char** argv) {
+    SnxCtrModel model = test_ctr_model(&argc, argv);
     int vk_memory = test_ctr_vk_memory(&argc, argv);
     static unsigned char before[256], fill[64], stored[64], got[256];
-    g_m = snx_ctr_memory_new(SNX_CTR_OLD);
+    if (model == SNX_CTR_NEW) {
+        g_page = 0x2ffff000u;
+        g_other = 0x1f3ff000u;
+    }
+    g_m = snx_ctr_memory_new(model);
     SnxCtrAddressSpace* s = snx_ctr_space_new(g_m);
     assert(g_m && s);
     unsigned char* base = snx_ctr_space_base(s); /* NULL without a flat space: the API alone */
-    assert(snx_ctr_map(s, 0x100000, PAGE, 4096, SNX_CTR_READ | SNX_CTR_WRITE) == SNX_CTR_MEM_OK);
-    assert(snx_ctr_map(s, 0x200000, PAGE, 4096, SNX_CTR_READ) == SNX_CTR_MEM_OK);
+    assert(snx_ctr_map(s, 0x100000, g_page, 4096, SNX_CTR_READ | SNX_CTR_WRITE) == SNX_CTR_MEM_OK);
+    assert(snx_ctr_map(s, 0x200000, g_page, 4096, SNX_CTR_READ) == SNX_CTR_MEM_OK);
     for (unsigned i = 0; i < sizeof before; ++i) before[i] = (unsigned char)(i * 13 + 5);
     assert(snx_ctr_write(s, 0x100000, before, sizeof before) == SNX_CTR_MEM_OK);
     int started = start(vk_memory);
@@ -88,17 +93,17 @@ int main(int argc, char** argv) {
         return started;
     }
     /* what the guest wrote before the device started */
-    gpu_copy(PAGE, OTHER, sizeof before);
-    assert(snx_ctr_phys_read(g_m, OTHER, got, sizeof before) == SNX_CTR_MEM_OK);
+    gpu_copy(g_page, g_other, sizeof before);
+    assert(snx_ctr_phys_read(g_m, g_other, got, sizeof before) == SNX_CTR_MEM_OK);
     expect(got, before, sizeof before, "the GPU's copy of the guest's bytes");
     /* a GPU fill, in every view of the page */
-    gpu_fill(PAGE + 0x200, sizeof fill, 0xc0dec0deu);
+    gpu_fill(g_page + 0x200, sizeof fill, 0xc0dec0deu);
     for (unsigned i = 0; i < sizeof fill; ++i) fill[i] = (unsigned char)(0xc0dec0deu >> (i % 4 * 8));
     assert(snx_ctr_read(s, 0x100200, got, sizeof fill) == SNX_CTR_MEM_OK);
     expect(got, fill, sizeof fill, "the fill through the API");
     assert(snx_ctr_read(s, 0x200200, got, sizeof fill) == SNX_CTR_MEM_OK);
     expect(got, fill, sizeof fill, "the fill through the read-only alias");
-    expect(region(0x20000000u) + (PAGE - 0x20000000u) + 0x200, fill, sizeof fill,
+    expect(region(0x20000000u) + (g_page - 0x20000000u) + 0x200, fill, sizeof fill,
            "the fill in the host's view of FCRAM");
     unsigned checks = 4;
     if (base) {
@@ -107,8 +112,8 @@ int main(int argc, char** argv) {
         /* a store through the flat space, as compiled code makes it, reaches the GPU */
         for (unsigned i = 0; i < sizeof stored; ++i) stored[i] = (unsigned char)(0x80 + i);
         memcpy(base + 0x100300, stored, sizeof stored);
-        gpu_copy(PAGE + 0x300, OTHER + 0x400, sizeof stored);
-        assert(snx_ctr_phys_read(g_m, OTHER + 0x400, got, sizeof stored) == SNX_CTR_MEM_OK);
+        gpu_copy(g_page + 0x300, g_other + 0x400, sizeof stored);
+        assert(snx_ctr_phys_read(g_m, g_other + 0x400, got, sizeof stored) == SNX_CTR_MEM_OK);
         expect(got, stored, sizeof stored, "the GPU's copy of a store through the flat space");
         checks += 3;
     }
@@ -123,8 +128,8 @@ int main(int argc, char** argv) {
     /* a device made again takes the RAM again */
     started = start(vk_memory);
     assert(!started);
-    gpu_copy(PAGE, OTHER + 0x800, sizeof before);
-    assert(snx_ctr_phys_read(g_m, OTHER + 0x800, got, sizeof before) == SNX_CTR_MEM_OK);
+    gpu_copy(g_page, g_other + 0x800, sizeof before);
+    assert(snx_ctr_phys_read(g_m, g_other + 0x800, got, sizeof before) == SNX_CTR_MEM_OK);
     expect(got, before, sizeof before, "the second device's copy of the guest's bytes");
     ++checks;
     snx_ctr_vk_free();

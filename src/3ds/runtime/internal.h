@@ -272,8 +272,10 @@ struct SnxCtrProcess {
     CtrObject objects[CTR_OBJECTS];
     CtrHandle handles[CTR_HANDLES];
     uint32_t last_svc, current_thread;
-    /* the cores take turns on the one host thread: the one the next scheduling serves, and each one's thread last run */
+    /* the cores take turns on the one host thread: the one the next scheduling serves, and each one's thread last run.
+       stay_on_core asks the next scheduling to serve the core last served first, as an SVC inside its slice does */
     uint32_t next_core, core_thread[4];
+    unsigned char stay_on_core;
     uint32_t last_ipc_service, last_ipc_header;
     /* why a service ended the run, when one did (a GX command with no GPU): the run's last line; "" otherwise */
     char stopped[832];

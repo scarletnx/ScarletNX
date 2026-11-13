@@ -359,10 +359,12 @@ static void sleep_until(uint64_t deadline) {
     if (!(wait > 0)) return;
     plat_sleep_ns((int64_t)(wait * 1e9));
 }
-/* The cores take turns, each scheduling a slice of its own as Azahar's per-core schedulers do (a slice ends at an SVC
-   or after SNX_CTR_POLL_BLOCKS blocks): a busy thread on the system core no longer keeps a waiting one of the
-   application core from running, as it never does on the console. A core with no thread to run gives its turn to the
-   next. On the core whose turn it is: the runnable thread of best effective priority (inheritance from mutex waiters
+/* The cores take turns, each running a slice of its own as Azahar's per-core schedulers do: a busy thread on one core
+   does not keep a waiting one of another core from running, as it never does on the console. A slice is
+   SNX_CTR_POLL_BLOCKS blocks of the dispatcher. An SVC inside it (stay_on_core) schedules the same core first, so a
+   thread that makes many SVCs gets as much of the host as one that makes none: with the turn passed at each SVC, a
+   New 3DS game's audio thread on core 2 fell behind its DSP frames while core 0 spun, and never let the core's other
+   thread run. A core with no thread to run gives its turn to the next. On the core whose turn it is: the runnable thread of best effective priority (inheritance from mutex waiters
    included). Among equals the core's own last one keeps it (Azahar's PopNextReadyThread: only a strictly better
    priority takes it), else the one runnable longest (ready_seq: Azahar's per-priority ready queue, a preempted thread keeping its place at the front). Time is
    part of it: a sleeping thread is runnable again at its deadline, a waiting one times out at its own, timers fire,
@@ -383,7 +385,8 @@ SnxCtrSchedule snx_ctr_schedule(SnxCtrProcess* p) {
     p->cpu.state.cpu.exclusive_valid = 0;
     if (p->objects[current].type == CTR_OBJ_THREAD && !p->objects[current].data.thread.dead)
         snx_ctr_thread(p)->context = p->cpu.state.cpu;
-    bool slept_for_device = false;
+    bool slept_for_device = false, stay = p->stay_on_core;
+    p->stay_on_core = 0;
     uint32_t priority[CTR_OBJECTS];
     for (;;) {
         uint64_t now = now_ns(), earliest = UINT64_MAX;
@@ -429,7 +432,7 @@ SnxCtrSchedule snx_ctr_schedule(SnxCtrProcess* p) {
         snx_ctr_thread_priorities(p, priority);
         uint32_t next = 0, core = 0;
         for (uint32_t turn = 0; turn < 4 && !next; ++turn) {
-            core = (p->next_core + turn) & 3;
+            core = (p->next_core + turn + (stay ? 3u : 0u)) & 3;
             uint32_t yielded = 0, own = p->core_thread[core];
             for (uint32_t n = 0; n < p->sched_thread_count; ++n) {
                 uint32_t i = p->sched_threads[n];

@@ -57,7 +57,7 @@ typedef struct {
 typedef struct {
     u64 gva, gva_a, gw;
     u64 shader_generation;
-    u32 mask[26], epoch, wseen;
+    u32 mask[SH_KEY_WORDS], epoch, wseen;
     int stage;
     VkSh* s;
     /* whether s folds as many constant buffer words as any translation of its program (sh_fold_top), as the tables
@@ -281,7 +281,7 @@ static void pf_merge(void);
 static void pf_shader_record(const VkSh* s, const u32* spv, size_t nw, const u8* code, u32 ncode, const ShXfb* xfb);
 static u32 src_bytes(u32 mlen);
 static void pf_ship_found(VkSh* s);
-static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[26], u32 len, u64 qh, u32 len_a, u64 qh_a);
+static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len, u64 qh, u32 len_a, u64 qh_a);
 /* the bindings (DsBindings' stage) a program of stage reads: an Ounce's task and mesh programs have their own */
 static int sh_bind_stage(int stage) {
     return stage == ST_TS ? DS_TASK : stage == ST_MS ? DS_MESH : stage <= ST_FS ? stage : 0;
@@ -880,7 +880,7 @@ static int code_same(const ShA* ca, u64 gva, u32 len, u64 qh) {
 }
 
 /* what a shader's key words (vk_shader_get's mask) tell its translation, into si zeroed */
-static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[26], const ShXfb* xfb) {
+static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[SH_KEY_WORDS], const ShXfb* xfb) {
     u64 ints = mask[0] | (u64)mask[1] << 32, sints = mask[2] | (u64)mask[3] << 32;
     memset(si, 0, sizeof *si);
     si->flow_base = mask[20];
@@ -894,6 +894,7 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[26], const ShX
         si->late_depth = (mask[24] >> 8) & SH_FS_LATE_DEPTH;
         si->capture_outputs = (mask[24] >> (8 + SH_FS_CAPTURE_SHIFT)) & 7;
         si->varying = mask[24] >> (8 + SH_FS_VARYING_SHIFT);
+        si->predraw_slots = mask[26] | (u64)mask[27] << 32;
     }
     if (stage == ST_FS) {
         si->tex_int_mask = ints;
@@ -940,7 +941,7 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[26], const ShX
 /* a mesh program's per-primitive SPH, at the offset that its key's word 3 gives (vk_shader_mesh), into si. The offset
    counts from the start of the program's code area, its own SPH included, as code holds it: a code area of 0xe00
    bytes has it at 0xd00, one of 0x4900 bytes at 0x4800 (docs/platforms/nx/ounce.md) */
-static void sh_mesh_sph(ShaderInfo* si, int stage, const u8* code, const u32 mask[26]) {
+static void sh_mesh_sph(ShaderInfo* si, int stage, const u8* code, const u32 mask[SH_KEY_WORDS]) {
     if (stage != ST_MS || !mask[3] || mask[3] > SH_CODE - sizeof si->mesh.prim_sph) return;
     const u8* at = code + mask[3];
     for (u32 i = 0; i < sizeof si->mesh.prim_sph / 4; i++) si->mesh.prim_sph[i] = snx_ld_le32(at + 4 * i);
@@ -951,8 +952,9 @@ static void sh_mesh_sph(ShaderInfo* si, int stage, const u8* code, const u32 mas
    the game ships, translated before any draw (ship_make), which fails when its translation read a constant buffer
    word that its own constants don't hold: a draw's lookup checks the reads against its own buffers, which a read
    that failed never matches */
-static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[26], u32 len, u64 qh, u32 len_a,
-                     u64 qh_a, const ShXfb* xfb, VkCbReader read, const VkCbFold* fold, int shipped, size_t* nw) {
+static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len, u64 qh,
+                     u32 len_a, u64 qh_a, const ShXfb* xfb, VkCbReader read, const VkCbFold* fold, int shipped,
+                     size_t* nw) {
     s->shipped = shipped;
     s->hash = h;
     s->stage = stage;
@@ -1002,8 +1004,8 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[2
 /* A draw's shader (sh_spirv's arguments, and mlen, the bytes of code the translation reads): translated, its module
    made, kept in the shader file with its program. One that couldn't be translated comes back failed; NULL when out
    of memory */
-static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[26], u32 len, u64 qh, u32 len_a,
-                     u64 qh_a, const ShXfb* xfb, VkCbReader read, const VkCbFold* fold) {
+static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len, u64 qh,
+                     u32 len_a, u64 qh_a, const ShXfb* xfb, VkCbReader read, const VkCbFold* fold) {
     size_t nw;
     VkSh* s = calloc(1, sizeof *s);
     if (!s) return NULL;
@@ -1057,11 +1059,12 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
 }
 /* A program's translations (cb_fold.h): the tables hold one for each set of constant buffer words it was made to
    hold, and a draw takes the one that holds most of those whose words its buffers still have */
-static int sh_same_program(const VkSh* q, u64 h, int stage, const u32 mask[26], u32 len, u64 qh, u32 len_a, u64 qh_a) {
+static int sh_same_program(const VkSh* q, u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len, u64 qh, u32 len_a,
+                           u64 qh_a) {
     return q->hash == h && q->stage == stage && !memcmp(q->mask, mask, sizeof q->mask) && q->clen == len &&
            q->qh == qh && q->clen_a == len_a && q->qh_a == qh_a;
 }
-static VkSh* sh_holder(u64 h, int stage, const u32 mask[26], u32 len, u64 qh, u32 len_a, u64 qh_a) {
+static VkSh* sh_holder(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len, u64 qh, u32 len_a, u64 qh_a) {
     VkSh* best = NULL;
     for (VkSh* q = g_pipeline.shh[h & 1023]; q; q = q->next)
         if (sh_same_program(q, h, stage, mask, len, qh, len_a, qh_a) && (!best || q->nfold > best->nfold) &&
@@ -1078,8 +1081,8 @@ static int sh_fold_top(const VkSh* s) {
 /* how a translation of the program made now folds: by the count of those a draw's words made (the shipped pass's is
    not one: it knew the program's own constants alone), whose reads go in others for the one that folds what they
    agree on */
-static void sh_fold_plan(u64 h, int stage, const u32 mask[26], u32 len, u64 qh, u32 len_a, u64 qh_a, VkCbFold* fold,
-                         const VkCbReads* others[SH_CB_FOLD_VARIANTS]) {
+static void sh_fold_plan(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len, u64 qh, u32 len_a, u64 qh_a,
+                         VkCbFold* fold, const VkCbReads* others[SH_CB_FOLD_VARIANTS]) {
     u32 made = 0;
     for (const VkSh* q = g_pipeline.shh[h & 1023]; q; q = q->next)
         if (sh_same_program(q, h, stage, mask, len, qh, len_a, qh_a) && q->nfold && !q->shipped) {
@@ -1107,21 +1110,22 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
                     u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                     const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint) {
     return vk_shader_get_ex(ds, gva, gva_a, stage, int_mask, sint_mask, rt_int, rt_sint, clip, dc_color, dc_funcs,
-                            unfed, rect, xfb, query_hint, advanced_blend, advanced_mask, img_int, img_sint, 0, 0);
+                            unfed, rect, xfb, query_hint, advanced_blend, advanced_mask, img_int, img_sint, 0, 0, 0, 0);
 }
 VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                        u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                        const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint,
-                       u32 fs_config, u32 minmax) {
+                       u32 fs_config, u32 minmax, u64 predraw, int early) {
     /* a vertex program's is its position's copy (ShaderInfo.position_copy) */
     if ((fs_config & ~SH_FS_CONFIG_MASK) || (fs_config && stage != ST_FS && (stage != ST_VS || fs_config > 32)))
         return NULL;
     if ((minmax >> 2 * SH_MINMAX_SLOTS) || (minmax && stage != ST_FS)) return NULL;
+    if ((predraw || early) && stage != ST_FS) return NULL;
     const DsPrograms* p = ds ? &ds->prog : NULL;
     pf_merge();
     g_pipeline.sh_ds = ds;
     g_pipeline.sh_bind = sh_bind_stage(stage);
-    u32 mask[26] = {(u32)int_mask,
+    u32 mask[SH_KEY_WORDS] = {(u32)int_mask,
                     (u32)(int_mask >> 32),
                     (u32)sint_mask,
                     (u32)(sint_mask >> 32),
@@ -1136,11 +1140,13 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
     mask[25] = img_sint;
     if (stage == ST_FS && p) mask[11] = p->early_z;
     /* the min/max textures above the early tests' bit, in a word every key has */
-    if (stage == ST_FS) mask[11] |= minmax << 1;
+    if (stage == ST_FS) mask[11] |= minmax << 1 | (early ? 1u : 0u);
     if (stage == ST_FS) {
         mask[21] = (u32)advanced_blend;
         mask[22] = (u32)(advanced_blend >> 32);
         mask[23] = advanced_mask;
+        mask[26] = (u32)predraw;
+        mask[27] = (u32)(predraw >> 32);
     }
     if (stage == ST_GS && p) memcpy(mask + 12, p->gs_skip, 8 * sizeof(u32));
     /* the rectangle textures, and the dimensions of the textures only a TXQ names (ShaderInfo.tex_query_hint,
@@ -1159,7 +1165,7 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
         mask[8] = (u32)(xh >> 32);
     }
     u32 mix = (u32)vk_hash(mask, 12 * sizeof(u32));
-    mix ^= (u32)vk_hash(mask + 21, 5 * sizeof(u32));
+    mix ^= (u32)vk_hash(mask + 21, (SH_KEY_WORDS - 21) * sizeof(u32));
     if (stage == ST_GS) mix ^= (u32)vk_hash(mask + 12, 8 * sizeof(u32));
     if (stage != ST_GS && rect) mix ^= (u32)vk_hash(mask + 12, 2 * sizeof(u32));
     if (queried) mix ^= (u32)vk_hash(mask + 14, SH_QUERY_WORDS * sizeof(u32));
@@ -1169,7 +1175,7 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
     u32 epoch = vk_ww_epoch(); /* before the code is checked or read */
     for (int w = 0; w < VK_SHA_WAYS && !ca; w++)
         if (set[w].s && set[w].gva == gva && set[w].gva_a == gva_a && set[w].stage == stage &&
-            !memcmp(set[w].mask, mask, 20 * sizeof *mask) && !memcmp(set[w].mask + 21, mask + 21, 5 * sizeof *mask))
+            !memcmp(set[w].mask, mask, 20 * sizeof *mask) && !memcmp(set[w].mask + 21, mask + 21, (SH_KEY_WORDS - 21) * sizeof *mask))
             ca = &set[w];
     if (ca) {
         VkSh* s = ca->s;
@@ -2436,7 +2442,7 @@ static u64 pf_shader_into(PFile* pf, const VkSh* s, u64 module, const u32* spv, 
 static void pf_shader_record(const VkSh* s, const u32* spv, size_t nw, const u8* code, u32 ncode, const ShXfb* xfb) {
     pf_shader_into(&g_pipeline.pf.file, s, mod_bits(s->mod), spv, nw, code, ncode, xfb);
 }
-VkSh* vk_shader_generated_find(u64 hash, int stage, const u32 mask[26]) {
+VkSh* vk_shader_generated_find(u64 hash, int stage, const u32 mask[SH_KEY_WORDS]) {
     pf_merge();
     for (VkSh* s = g_pipeline.shh[hash & 1023]; s; s = s->next)
         if (s->hash == hash && s->stage == stage && !memcmp(s->mask, mask, sizeof s->mask)) return s;
@@ -2854,7 +2860,7 @@ static void idx_add(u64 hash, int stage, u32 clip, u32 len, u64 qh, u32 len_a, u
    (docs/layers/gpu/nvn.md); SNX_SH_NOT_LAST for tessellation control, which never is; none for fragment */
 static u32 ship_clip(int stage) { return stage == ST_TCS ? SNX_SH_NOT_LAST : stage == ST_FS ? 0 : 0xFFu; }
 /* a key whose words are all zero but the clip word: the keys the pass translates with */
-static int ship_key_only_clip(const u32 mask[26]) {
+static int ship_key_only_clip(const u32 mask[SH_KEY_WORDS]) {
     for (int i = 0; i < 26; i++)
         if (i != 6 && mask[i]) return 0;
     return 1;
@@ -2923,7 +2929,7 @@ static u64 pf_load_shipref(void* ctx, u64 at, u64 check) {
    record is made into a module now, and named in the main file by a PF_SHIPREF, so that the pipelines made with it
    are kept too. One whose jump tables the pass read from the program's constants is taken only while the draw's
    constant buffer 1 holds the same words, as every shader with reads is. NULL when the file has none */
-static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[26], u32 len, u64 qh, u32 len_a, u64 qh_a) {
+static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len, u64 qh, u32 len_a, u64 qh_a) {
     const ShipIdx* e;
     const u32 *spv, *cbr;
     PfShader r;
@@ -3024,7 +3030,7 @@ static void ship_warm(int stage, int indexed, const u32* spv, u32 nw) {
 static int ship_make(const u8* code, u64 h, int stage, u32 len, u64 qh, u32 len_a, u64 qh_a) {
     /* Absolute calls name the draw's loaded GPU address, which shipped source discovery does not yet know. */
     if (shader_absolute_flow(code, len)) return SHIP_SKIPPED;
-    u32 mask[26] = {0};
+    u32 mask[SH_KEY_WORDS] = {0};
     VkSh s = {0};
     size_t nw;
     u64 at = 0;

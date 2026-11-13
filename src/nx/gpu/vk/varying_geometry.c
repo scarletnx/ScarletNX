@@ -88,7 +88,7 @@ VkSh* vk_varying_geometry(const VkSh* vertex, u32 per_vertex, u32 slot) {
                   limits->maxGeometryOutputComponents);
         return NULL;
     }
-    u32 key[26] = {0x56475350, outputs, per_vertex, slot, 1};
+    u32 key[SH_KEY_WORDS] = {0x56475350, outputs, per_vertex, slot, 1};
     u64 hash = vk_hash(key, sizeof key);
     VkSh* cached = vk_shader_generated_find(hash, ST_GS, key);
     if (cached) return cached;
