@@ -976,6 +976,67 @@ int main(void) {
         agb_write16(&board, 0x04000200, 0);
     }
     {
+        /* a CPU woken in IntrWait takes the interrupt that woke it as one woken in Halt does, before IntrWait looks at
+           its flags: a handler that reads timer 0 sees the vertical blank after VBlankIntrWait and the next one after
+           Halt a frame apart, 280896 cycles (18752 in the timer's 16 bits) */
+        static const uint32_t main_code[] = {
+            0xEF050000, /* swi 0x050000: VBlankIntrWait */
+            0xEF020000, /* swi 0x020000: Halt */
+            0xEAFFFFFE, /* b . */
+        };
+        static const uint32_t handler[] = {
+            0xE2801C01, /* add r1, r0, #0x100 */
+            0xE1D120B0, /* ldrh r2, [r1]: TM0CNT_L */
+            0xE59F302C, /* ldr r3, [pc, #44]: 0x02000350, the count of reads */
+            0xE593C000, /* ldr r12, [r3] */
+            0xE28CC001, /* add r12, r12, #1 */
+            0xE583C000, /* str r12, [r3] */
+            0xE783210C, /* str r2, [r3, r12, lsl #2] */
+            0xE3A01001, /* mov r1, #1 */
+            0xE280CC02, /* add r12, r0, #0x200 */
+            0xE1CC10B2, /* strh r1, [r12, #2]: IF, the blank acknowledged */
+            0xE59F3010, /* ldr r3, [pc, #16]: the BIOS's flags */
+            0xE1D3C0B0, /* ldrh r12, [r3] */
+            0xE38CC001, /* orr r12, r12, #1 */
+            0xE1C3C0B0, /* strh r12, [r3]: the blank IntrWait waits for */
+            0xE12FFF1E, /* bx lr */
+            0x02000350, 0x03007FF8,
+        };
+        uint32_t written = 0;
+        for (uint32_t i = 0; i < sizeof main_code / sizeof main_code[0]; ++i)
+            agb_write32(&board, 0x03004400 + i * 4, main_code[i]);
+        for (uint32_t i = 0; i < sizeof handler / sizeof handler[0]; ++i)
+            agb_write32(&board, 0x03004480 + i * 4, handler[i]);
+        agb_write32(&board, 0x02000350, 0);
+        agb_write32(&board, 0x03007FFC, 0x03004480);
+        agb_write16(&board, 0x03007FF8, 0);
+        agb_write32(&board, 0x04000100, 0x00800000); /* timer 0 on from 0 at a prescaler of 1 */
+        agb_write16(&board, 0x04000004, 0x0008);     /* the vertical blank's interrupt */
+        agb_write16(&board, 0x04000200, 0x0001);
+        agb_write16(&board, 0x04000208, 0x0001);
+        board.irq_if = 0;
+        board.cpu_halted = 0;
+        board.held_cycles = 0;
+        cpu.arm.r[13] = 0x03007E00;
+        cpu.arm.r[15] = 0x03004400;
+        cpu.arm.cpsr = 0x1F;
+        cpu.over = 0;
+        for (int frame = 0; frame < 3; ++frame)
+            CHECK(!agb_cpu_run(&board, &cpu, &recomp, AGB_SCANLINE_CYCLES * AGB_FRAME_LINES, audio, AGB_APU_RATE,
+                               &written, error, sizeof error));
+        uint32_t reads = agb_read32(&board, 0x02000350);
+        uint32_t apart = (agb_read32(&board, 0x02000358) - agb_read32(&board, 0x02000354)) & 0xFFFF;
+        if (reads < 2 || apart != (AGB_SCANLINE_CYCLES * AGB_FRAME_LINES & 0xFFFF)) {
+            fprintf(stderr, "agb_cpu: %u reads of timer 0 by the blank's handler, the first two %u apart, not 18752\n",
+                    reads, apart);
+            return 1;
+        }
+        agb_write16(&board, 0x04000208, 0);
+        agb_write16(&board, 0x04000200, 0);
+        agb_write16(&board, 0x04000004, 0);
+        agb_write16(&board, 0x04000102, 0);
+    }
+    {
         /* a DMA's interrupt is taken like any other: DMA 3's, with nothing else pending, enters the handler, which stores
            the IF it saw at 0x02000330 and acknowledges it */
         static const uint32_t handler[] = {0xE2802C02, 0xE1D210B2, 0xE1C210B2, 0xE59F3004,
