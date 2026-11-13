@@ -30,6 +30,7 @@ void agb_recomp_init(AgbRecomp* recomp, const char* base) {
     *recomp = (AgbRecomp){0};
     recomp->base = (char*)malloc(strlen(base) + 1);
     if (recomp->base) strcpy(recomp->base, base);
+    recomp->opt = '2';
 }
 
 void agb_recomp_free(AgbRecomp* recomp) {
@@ -37,6 +38,7 @@ void agb_recomp_free(AgbRecomp* recomp) {
     if (recomp->handle) plat_dl_close(recomp->handle);
     free(recomp->blocks);
     free(recomp->base);
+    free(recomp->keep_ir);
     *recomp = (AgbRecomp){0};
 }
 
@@ -268,7 +270,7 @@ static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t e
         snprintf(error, error_size, "out of memory");
         goto done;
     }
-    if (snx_ir_init(error, error_size) || !(ir = snx_ir_new("agb-code", '2', error, error_size))) goto done;
+    if (snx_ir_init(error, error_size) || !(ir = snx_ir_new("agb-code", recomp->opt, error, error_size))) goto done;
     module = LLVMModuleCreateWithNameInContext("agb-code", ir->ctx);
     LLVMSetTarget(module, LLVMGetTarget(ir->mod));
     LLVMSetDataLayout(module, LLVMGetDataLayoutStr(ir->mod));
@@ -297,8 +299,20 @@ static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t e
         block->instructions = (uint16_t)(consumed > 0xFFFF ? 0xFFFF : consumed);
         block->code = code_hash(board, block->pc, block->thumb, block->instructions);
     }
-    if (snx_ir_module_object(ir, module, '2', &object, &object_size, error, error_size) ||
-        snx_ir_armlib_object('2', &armlib, &armlib_size, error, error_size))
+    if (recomp->keep_ir) { /* the module's IR as the backend made it, before its passes */
+        char *text = LLVMPrintModuleToString(module), *kept = snx_path_join(recomp->keep_ir, "blocks.ll");
+        int failed = !kept || snx_write_file(kept, text, strlen(text));
+        if (failed) {
+            char why[256];
+            snprintf(error, error_size, "cannot save the IR of blocks in %s: %s", recomp->keep_ir,
+                     snx_os_error(why, sizeof why));
+        }
+        LLVMDisposeMessage(text);
+        free(kept);
+        if (failed) goto done;
+    }
+    if (snx_ir_module_object(ir, module, recomp->opt, &object, &object_size, error, error_size) ||
+        snx_ir_armlib_object(recomp->opt, &armlib, &armlib_size, error, error_size))
         goto done;
     inputs[0].data = armlib, inputs[0].size = armlib_size, inputs[0].name = "armlib";
     inputs[1].data = object, inputs[1].size = object_size, inputs[1].name = "blocks";
@@ -421,35 +435,42 @@ static int write_cache(AgbRecomp* recomp, const AgbBoard* board) {
 }
 
 int agb_recomp_load_map(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size) {
-    size_t length = strlen(recomp->base);
-    char* map_path = (char*)malloc(length + 8);
+    char* map_path = snx_format("%s.map", recomp->base);
+    FILE* file = map_path ? fopen(map_path, "r") : NULL;
+    if (!file) {
+        free(map_path);
+        return -1;
+    }
+    fclose(file);
+    int loaded = agb_recomp_load_map_from(recomp, board, map_path, error, error_size);
+    free(map_path);
+    return loaded;
+}
+int agb_recomp_load_map_from(AgbRecomp* recomp, AgbBoard* board, const char* path, char* error, size_t error_size) {
     char line[128];
     int abi = 0;
     unsigned arm_abi = 0;
     unsigned long long rom = 0;
-    if (!map_path) return -1;
-    sprintf(map_path, "%s.map", recomp->base);
+    const char* map_path = path;
     FILE* file = fopen(map_path, "r");
     if (!file) {
-        free(map_path);
+        char why[256];
+        snprintf(error, error_size, "cannot read %s: %s", map_path, snx_os_error(why, sizeof why));
         return -1;
     }
     if (!fgets(line, sizeof(line), file) || sscanf(line, "snx-agb-code %d %u", &abi, &arm_abi) != 2 ||
         abi != AGB_RECOMP_ABI || arm_abi != SNX_ARM_ABI) {
         snprintf(error, error_size, "%s is another build's (ABI %d and %u, this one's %d and %u)", map_path, abi,
                  arm_abi, AGB_RECOMP_ABI, SNX_ARM_ABI);
-        free(map_path);
         fclose(file);
         return -1;
     }
     unsigned long long here = (unsigned long long)rom_hash(board);
     if (sscanf(line, "snx-agb-code %*d %*u %llX", &rom) != 1 || rom != here) {
         snprintf(error, error_size, "%s is another ROM's (%016llX, this one %016llX)", map_path, rom, here);
-        free(map_path);
         fclose(file);
         return -1;
     }
-    free(map_path);
     while (fgets(line, sizeof(line), file)) {
         unsigned pc, thumb, instructions, symbol = 0;
         unsigned long long code;

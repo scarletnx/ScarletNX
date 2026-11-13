@@ -33,6 +33,8 @@ typedef struct {
     /* the blocks a search compared with the pc it looked for: a dispatch's cost, which the index keeps to a slot or two
        however many blocks there are (tests/agb_cpu.c) */
     uint64_t compared;
+    char opt;      /* the -O letter the module compiles at: 2, the setting opt's default, or -O's */
+    char* keep_ir; /* the folder the module's IR goes in (--keep-ir), NULL for none */
 } AgbRecomp;
 
 void agb_recomp_init(AgbRecomp* recomp, const char* base);
@@ -42,6 +44,9 @@ int agb_recomp_build(AgbRecomp* recomp, AgbBoard* board, char* error, size_t err
 /* The blocks of the cache's map, without its module: every block the runs reached, which a recompile (-r) builds the
    module from. 0, else -1, error saying why when a map is there but for another ROM or another build */
 int agb_recomp_load_map(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size);
+/* The same from the map at path, another game folder's (--jit-cache): 0, else -1, error saying why, its missing file
+   too */
+int agb_recomp_load_map_from(AgbRecomp* recomp, AgbBoard* board, const char* path, char* error, size_t error_size);
 /* Loads the module a previous build cached in the game's folder, and its map. Returns 0 on success, else -1, error
    saying why when a cache is there but for another ROM or another build. */
 int agb_recomp_load_cache(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size);
