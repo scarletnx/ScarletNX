@@ -1,18 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
-   Ported from Eden (src/video_core/host1x/codecs/h264.cpp, codecs/decoder.cpp, nvdec.cpp, nvdec_common.h, ffmpeg.cpp,
-   codec_types.h):
+   Ported from Eden (src/video_core/host1x/codecs/h264.cpp, codecs/vp8.cpp, codecs/decoder.cpp, nvdec.cpp,
+   nvdec_common.h, ffmpeg.cpp, codec_types.h):
    SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
+   SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
    SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project */
-/* NVDEC: H.264 and VP9 jobs decoded with FFmpeg's libavcodec, each picture written into the surface its job names, on
-   the GPU (the renderer's nvdec_write). host1x.c's channel worker calls nvdec_execute when the stream writes Execute,
-   with the channel's method registers (nvdec_regs.h). FFmpeg decodes on the CPU, or H.264 with Vulkan Video on the
-   renderer's GPU when the vulkan_video setting asks for it (experimental and untested).
+/* NVDEC: H.264, VP8 and VP9 jobs decoded with FFmpeg's libavcodec, each picture written into the surface its job
+   names, on the GPU (the renderer's nvdec_write). host1x.c's channel worker calls nvdec_execute when the stream writes
+   Execute, with the channel's method registers (nvdec_regs.h). FFmpeg decodes on the CPU, or H.264 with Vulkan Video
+   on the renderer's GPU when the vulkan_video setting asks for it (experimental and untested).
 
    NVDEC takes a job's slice data alone, with the stream's parameters in its picture info, so H.264's sequence and
    picture parameter sets are rebuilt from it (Eden's H264::ComposeFrame and H264BitWriter); vp9_rebuild.cpp does the
-   same for VP9's headers.
+   same for VP9's headers, and vp8_frame_header for the few bytes before a VP8 frame's first partition.
 
    NVDEC writes a picture into its job's surface as it decodes it, in decode order, and the game shows surfaces in
    display order on its own. FFmpeg hands pictures out in display order, later, or not at all for one it judges out
@@ -429,6 +430,16 @@ static void dec_close(NvdecCtx* d) {
     d->last_hdr_n = 0;
     d->prev_invisible = 0;
 }
+/* the codecs NVDEC jobs are decoded for: FFmpeg's decoder and the name the log gives it */
+static int codec_decoded(u32 app) {
+    return app == NVDEC_CODEC_H264 || app == NVDEC_CODEC_VP8 || app == NVDEC_CODEC_VP9;
+}
+static int codec_id(u32 app) {
+    return app == NVDEC_CODEC_VP9 ? AV_CODEC_ID_VP9 : app == NVDEC_CODEC_VP8 ? AV_CODEC_ID_VP8 : AV_CODEC_ID_H264;
+}
+static const char* codec_name(u32 app) {
+    return app == NVDEC_CODEC_VP9 ? "VP9" : app == NVDEC_CODEC_VP8 ? "VP8" : "H.264";
+}
 /* a fresh decoder for codec app (NVDEC_CODEC_*): 1 when it opened. Slice threads only, since frame threads would
    still be decoding a picture when its surface is written; VP9's tile columns decode side by side on four */
 #define VP9_THREADS 4 /* 1.8x on 1080p content of four tile columns */
@@ -438,9 +449,9 @@ static int dec_open(NvdecCtx* d, u32 app) {
     dec_close(d);
     d->app = app;
     ffmpeg_log_init();
-    codec = avcodec_find_decoder(app == NVDEC_CODEC_VP9 ? AV_CODEC_ID_VP9 : AV_CODEC_ID_H264);
+    codec = avcodec_find_decoder(codec_id(app));
     if (!codec) {
-        WARN("video: FFmpeg has no %s decoder, so the movies stay black\n", app == NVDEC_CODEC_VP9 ? "VP9" : "H.264");
+        WARN("video: FFmpeg has no %s decoder, so the movies stay black\n", codec_name(app));
         return 0;
     }
     if (app == NVDEC_CODEC_VP9 && !(d->vp9 = snx_vp9_new())) return 0;
@@ -643,6 +654,124 @@ static void vp9_job(NvdecCtx* d, const u32* r, u8* st) {
     put_status(st, 1, mbs);
 }
 
+/* VP8's uncompressed data chunk (RFC 6386 9.1), which NVDEC takes in the picture info instead of the frame: a 3-byte
+   little endian tag, 0 in bit 0 for a key frame, the version in bits 1-3, show_frame in bit 4, the first partition's
+   size in bits 5-23; then, on a key frame, the start code and 16 bits each of width and of height, whose top 2 bits
+   (the upscaling NVDEC's picture info has no field for) stay 0 */
+#define VP8_TAG_SIZE        3u
+#define VP8_KEY_HEADER_SIZE 10u
+#define VP8_MAX_VERSION     7u
+#define VP8_MAX_FIRST_PART  0x7FFFFu
+static const u8 vp8_start_code[3] = {0x9D, 0x01, 0x2A};
+/* the chunk of a frame NVDEC decodes (Eden's VP8::ComposeFrame) into out, which holds VP8_KEY_HEADER_SIZE: its
+   length. show_frame is always set, since NVDEC writes a hidden picture into its surface too and the game picks what
+   it shows */
+static u32 vp8_frame_header(int key, u32 version, u32 first_part, u32 w, u32 h, u8* out) {
+    u32 tag = (key ? 0u : 1u) | version << 1 | 1u << 4 | first_part << 5;
+    out[0] = (u8)tag;
+    out[1] = (u8)(tag >> 8);
+    out[2] = (u8)(tag >> 16);
+    if (!key) return VP8_TAG_SIZE;
+    memcpy(out + VP8_TAG_SIZE, vp8_start_code, sizeof vp8_start_code);
+    snx_st_le16(out + 6, (u16)w);
+    snx_st_le16(out + 8, (u16)h);
+    return VP8_KEY_HEADER_SIZE;
+}
+/* a VP8 job: the frame's chunk put back before its partitions, the frame decoded and written into the current
+   picture's surface, which the picture info's frame offsets point into (as H.264's) */
+static void vp8_job(NvdecCtx* d, const u32* r, u8* st) {
+    u64 info = nvdec_offset_address(r[NVDEC_PICTURE_INFO_OFFSET]);
+    u64 frame = nvdec_offset_address(r[NVDEC_FRAME_BITSTREAM_OFFSET]);
+    const u8 *s = iova_ptr(info, VP8_PICTURE_INFO_SIZE), *body;
+    u32 w, h, mbs, len, version, first_part, surface_format, pitch_y, pitch_c, hn;
+    u64 luma_offset, chroma_offset;
+    u8 hdr[VP8_KEY_HEADER_SIZE];
+    int key, e;
+    PicOut t;
+    if (!s) {
+        WARN_LIMIT(8, "video: a VP8 job's picture info at %llx isn't mapped\n", (unsigned long long)info);
+        job_fail(d, st, 0);
+        return;
+    }
+    w = snx_ld_le16(s + VP8_FRAME_WIDTH);
+    h = snx_ld_le16(s + VP8_FRAME_HEIGHT);
+    mbs = ((w + MB_SIZE - 1) / MB_SIZE) * ((h + MB_SIZE - 1) / MB_SIZE);
+    len = rd32(s, VP8_VLD_BUFFER_SIZE);
+    key = s[VP8_KEY_FRAME] != 0;
+    version = s[VP8_VERSION];
+    first_part = rd32(s, VP8_FIRST_PART_SIZE);
+    if (!len || len > MAX_STREAM || !w || !h || w > MAX_DIM || h > MAX_DIM) {
+        WARN_LIMIT(8,
+                   "video: a VP8 job of a %ux%u frame of %u bytes isn't decoded: NVDEC takes 1 to %u pixels a side, "
+                   "1 to %u bytes\n",
+                   w, h, len, MAX_DIM, MAX_STREAM);
+        job_fail(d, st, mbs);
+        return;
+    }
+    if (version > VP8_MAX_VERSION || first_part > len || first_part > VP8_MAX_FIRST_PART) {
+        WARN_LIMIT(8,
+                   "video: a VP8 job's version %u, first partition %u of %u bytes, isn't a frame's: versions 0 to %u, "
+                   "a first partition within the frame, of %u bytes at most\n",
+                   version, first_part, len, VP8_MAX_VERSION, VP8_MAX_FIRST_PART);
+        job_fail(d, st, mbs);
+        return;
+    }
+    if (!(body = iova_ptr(frame, len))) {
+        WARN_LIMIT(8, "video: a VP8 job's frame of %u bytes at %llx isn't mapped\n", len, (unsigned long long)frame);
+        job_fail(d, st, mbs);
+        return;
+    }
+    hn = vp8_frame_header(key, version, first_part, w, h, hdr);
+    av_packet_unref(d->pkt);
+    if ((e = av_new_packet(d->pkt, (int)(hn + len))) < 0) {
+        ff_warn("cannot hold a VP8 frame", e);
+        job_fail(d, st, mbs);
+        return;
+    }
+    memcpy(d->pkt->data, hdr, hn);
+    memcpy(d->pkt->data + hn, body, len);
+    d->cur_new = 0;
+    if (send(d) || drain(d)) {
+        job_fail(d, st, mbs);
+        return;
+    }
+    if (!d->cur_new) {
+        WARN_LIMIT(8, "video: a VP8 job started no picture\n");
+        job_fail(d, st, mbs);
+        return;
+    }
+    /* checked once the frame is decoded, so the frames after it still have it to predict from */
+    surface_format = s[VP8_SURFACE_FORMAT];
+    pitch_y = rd32(s, VP8_FRAME_STRIDE_LUMA);
+    pitch_c = rd32(s, VP8_FRAME_STRIDE_CHROMA);
+    if (h264_tile_format(surface_format) || pitch_y < w || pitch_c < (w + 1) / 2 * 2) {
+        WARN_LIMIT(4,
+                   "video: a %ux%u VP8 picture in tile format %u, rows of %u and %u bytes, isn't written: block "
+                   "linear (0) only, rows of %u and %u bytes at least\n",
+                   w, h, h264_tile_format(surface_format), pitch_y, pitch_c, w, (w + 1) / 2 * 2);
+        job_fail(d, st, mbs);
+        return;
+    }
+    luma_offset = rd32(s, VP8_LUMA_FRAME_OFFSET);
+    chroma_offset = rd32(s, VP8_CHROMA_FRAME_OFFSET);
+    if (luma_offset || chroma_offset)
+        LOG_LIMIT(1, "video: VP8 pictures go %llx and %llx bytes into their surfaces, as their frame offsets say\n",
+                  (unsigned long long)nvdec_offset_address(luma_offset),
+                  (unsigned long long)nvdec_offset_address(chroma_offset));
+    t.luma = nvdec_offset_address((u64)r[NVDEC_SURFACE_LUMA_OFFSETS + VP8_SURFACE_CURRENT] + luma_offset);
+    t.chroma = nvdec_offset_address((u64)r[NVDEC_SURFACE_CHROMA_OFFSETS + VP8_SURFACE_CURRENT] + chroma_offset);
+    t.pitch_y = pitch_y;
+    t.pitch_c = pitch_c;
+    t.bh = h264_gob_height(surface_format) + 1; /* gob_height counts from 2 GOBs */
+    t.w = w;
+    t.h = h;
+    if (!write_pic(d->cur, &t)) {
+        job_fail(d, st, mbs);
+        return;
+    }
+    put_status(st, 1, mbs);
+}
+
 NvdecCtx* nvdec_new(void) {
     NvdecCtx* d = calloc(1, sizeof *d);
     if (!d) return NULL;
@@ -669,8 +798,8 @@ void nvdec_execute(NvdecCtx* d, const u32* r) {
     u32 app = r[NVDEC_SET_CODEC_ID];
     u8* st = iova_ptr(nvdec_offset_address(r[NVDEC_FRAME_STATS_OFFSET]), NVDEC_STATUS_SIZE);
     if (!d) return;
-    /* VP8 and H.265 aren't decoded: the job fails and the decoder stays as it is */
-    if (app != NVDEC_CODEC_H264 && app != NVDEC_CODEC_VP9) {
+    /* H.265 isn't decoded: the job fails and the decoder stays as it is */
+    if (!codec_decoded(app)) {
         WARN_LIMIT(4, "video: NVDEC jobs of codec %u aren't decoded\n", app);
         put_status(st, 0, 0);
         return;
@@ -683,6 +812,8 @@ void nvdec_execute(NvdecCtx* d, const u32* r) {
     }
     if (app == NVDEC_CODEC_H264)
         h264_job(d, r, st);
+    else if (app == NVDEC_CODEC_VP8)
+        vp8_job(d, r, st);
     else
         vp9_job(d, r, st);
 }

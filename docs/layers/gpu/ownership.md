@@ -637,7 +637,7 @@ Vulkan references: [host pointer import](https://docs.vulkan.org/spec/latest/cha
    Vulkan Video decode is an option, off by default and marked experimental: the `vulkan_video` setting gives FFmpeg
    this device with a decode queue (`vk/nvdec.c`), and its H.264 pictures, and the native video service's AV1 ones,
    are copied out of their images on the GPU. VP9 stays on the CPU decoder (the NVDEC probability patch is in FFmpeg's
-   software VP9). AV1 runs on RADV (`vulkan_video_av1`); H.264 has not run on a GPU with Vulkan Video yet, and
+   software VP9), and so does VP8, which FFmpeg decodes with no Vulkan Video. AV1 runs on RADV (`vulkan_video_av1`); H.264 has not run on a GPU with Vulkan Video yet, and
    lavapipe has no decode queue.
 4. Done, inline-to-memory aside. DMA, 2D, inline-to-memory: every copy, layout change, remap and fill as a GPU copy or dispatch from the source's
    owner (or its guest bytes, staged whole) into a GPU-owned destination. `f2d_blit_memory`, the DMA engine's CPU
