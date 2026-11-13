@@ -241,6 +241,20 @@ int main(void) {
         assert(!snx_ctr_image_load(root, &other, error, sizeof error) && !other.code && !strcmp(error, said));
         free(said);
     }
+    /* the New 3DS system mode is 0x20D's low four bits, the 804 MHz clock and the L2 cache 0x20C's bits 1 and 0; only
+       mode 2 asks for the 178 MiB memory that an Old 3DS lacks */
+    for (unsigned mode = 0; mode < 4; ++mode) {
+        unsigned char changed[sizeof ex];
+        memcpy(changed, ex, sizeof ex);
+        changed[0x20d] = (unsigned char)(0xf0 | mode);
+        changed[0x20c] = (unsigned char)(mode & 3);
+        assert(!snx_write_file(ex_path, changed, sizeof changed));
+        assert(snx_ctr_image_load(root, &other, error, sizeof error) && other.new3ds_mode == mode);
+        assert(other.cpu_804mhz == ((mode & 2) != 0) && other.l2_cache == ((mode & 1) != 0));
+        assert(snx_ctr_exheader_new3ds_memory(changed) == (mode == 2));
+        snx_ctr_image_free(&other);
+    }
+    assert(!snx_ctr_exheader_new3ds_memory(NULL));
     assert(!snx_write_file(ex_path, ex, sizeof ex));
 #ifndef _WIN32
     assert(!remove(code_path));

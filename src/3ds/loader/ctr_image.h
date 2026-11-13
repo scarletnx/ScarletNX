@@ -17,12 +17,19 @@ typedef struct {
     /* the Old 3DS system mode (ExHeader 0x20E bits 4 to 7), which sizes the application's FCRAM on an Old 3DS: 0
        (64 MiB), 2 (96 MiB), 3 (80 MiB), 4 (72 MiB) or 5 (32 MiB) */
     uint32_t system_mode;
+    /* the New 3DS system mode (ExHeader 0x20D bits 0 to 3): 0 legacy (the Old 3DS mode's share of a New 3DS's mode 6),
+       1 or 3 (124 MiB, mode 6), 2 (178 MiB, mode 7); and the 804 MHz clock and the L2 cache it asks for (0x20C bits 1
+       and 0), which the runtime keeps but does not model */
+    uint32_t new3ds_mode;
+    bool cpu_804mhz, l2_cache;
     /* the ARM11 kernel capability descriptors (ExHeader 0x370): the address mappings live here */
     uint32_t kernel_caps[28];
     unsigned char identity[32]; /* SHA-256(domain || full ExHeader || expanded .code) */
     unsigned char* code;
     size_t code_size;
 } SnxCtrImage;
+/* whether an ExHeader (0x400 bytes) names the New 3DS's 178 MiB system mode, which only a New 3DS has */
+bool snx_ctr_exheader_new3ds_memory(const unsigned char* exheader);
 /* Revalidate raw ExHeader and bounded, exact-sized .code, not an editable INI.
    Only use freshly extracted trees in trusted, non-concurrently-modified host
    directories. Identity is compatibility/integrity, NOT signature authenticity.

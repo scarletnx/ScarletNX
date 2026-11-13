@@ -24,6 +24,7 @@ void snx_ctr_image_free(SnxCtrImage* image) {
         *image = (SnxCtrImage){0};
     }
 }
+bool snx_ctr_exheader_new3ds_memory(const unsigned char* exheader) { return exheader && (exheader[0x20d] & 15) == 2; }
 /* the image an ExHeader describes, its expanded .code read exact and bounded by code(source, out, size) */
 static bool image_parse(const unsigned char* ex, bool (*code)(const void*, unsigned char*, size_t),
                         const void* source, SnxCtrImage* image, char* error, size_t error_size) {
@@ -33,6 +34,9 @@ static bool image_parse(const unsigned char* ex, bool (*code)(const void*, unsig
     memcpy(image->name, ex, sizeof image->name);
     image->main_priority = ex[0x20f];
     image->system_mode = ex[0x20e] >> 4;
+    image->new3ds_mode = ex[0x20d] & 15;
+    image->cpu_804mhz = (ex[0x20c] >> 1) & 1;
+    image->l2_cache = ex[0x20c] & 1;
     for (unsigned i = 0; i < 28; ++i) image->kernel_caps[i] = snx_ld_le32(ex + 0x370 + i * 4);
     const char* reason = "invalid ExHeader main thread priority";
     if (image->main_priority > 63) goto fail;

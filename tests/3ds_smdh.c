@@ -45,6 +45,17 @@ int main(void) {
     assert(snx_ctr_smdh_valid(smdh, sizeof smdh));
     assert(!snx_ctr_smdh_valid(smdh, sizeof smdh - 1)); /* the large icon is part of it */
     assert(!snx_ctr_smdh_valid(NULL, sizeof smdh));
+    /* the New 3DS exclusive flag: bit 12 of the little-endian flags at 0x2028, whatever the other bits hold */
+    assert(!snx_ctr_smdh_new3ds_only(smdh, sizeof smdh));
+    smdh[0x2028] = 0xff;
+    smdh[0x2029] = 0xef;
+    assert(!snx_ctr_smdh_new3ds_only(smdh, sizeof smdh));
+    smdh[0x2029] = 0x10;
+    assert(snx_ctr_smdh_new3ds_only(smdh, sizeof smdh));
+    assert(snx_ctr_smdh_new3ds_only(smdh, 0x202c));  /* the flags read, the icons not needed */
+    assert(!snx_ctr_smdh_new3ds_only(smdh, 0x202b)); /* the flags cut */
+    assert(!snx_ctr_smdh_new3ds_only(NULL, sizeof smdh));
+    smdh[0x2028] = smdh[0x2029] = 0;
     /* English first, then Japanese, then the others in the SMDH's order */
     snx_ctr_smdh_title(smdh, sizeof smdh, title, sizeof title);
     assert(!title[0]);
