@@ -580,6 +580,117 @@ static void prepare_screen_cut(void) {
     assert(!strcmp(row, " PREPARING SHADERS: (0 NEW) 0%..."));
     prepare_screen_set(NULL, NULL, NULL, 0, NULL, 0, NULL, 0);
 }
+/* a JPEG of side x side pixels of one colour, as a game's icon.jpg, into a buffer of the test's */
+typedef struct {
+    unsigned char bytes[65536];
+    int n;
+} TestJpeg;
+static void jpeg_put(void* closure, void* data, int size) {
+    TestJpeg* j = (TestJpeg*)closure;
+    assert(j->n + size <= (int)sizeof j->bytes);
+    memcpy(j->bytes + j->n, data, (size_t)size);
+    j->n += size;
+}
+static void jpeg_of(TestJpeg* j, int side, u32 rgb) {
+    static u8 px[256 * 256 * 4];
+    for (int i = 0; i < side * side; ++i) {
+        px[i * 4] = (u8)(rgb >> 16);
+        px[i * 4 + 1] = (u8)(rgb >> 8);
+        px[i * 4 + 2] = (u8)rgb;
+        px[i * 4 + 3] = 0xFF;
+    }
+    j->n = 0;
+    assert(snx_splash_jpeg_rgba(px, side, side, 90, jpeg_put, j) == 0 && j->n > 0);
+}
+/* the quads of l drawn from the layer's picture (ui_image), and the first's view in *first */
+static int pictures_in(const SnxUiList* l, SnxUiQuadView* first) {
+    int n = 0;
+    for (int i = 0; i < l->n; ++i)
+        if (qv(&l->q[i]).sample == UI_IMAGE && !n++ && first) *first = qv(&l->q[i]);
+    return n;
+}
+/* A program a collection's program started (prepare_screen_switch): the screen up with no step, the program after the
+   game's name (none for program 0) and its dots turning; no bar; the cover under the head at the text's left, a
+   quarter of the rows high, its texels the left square of the picture, the steps under it once there are some; the
+   cover given again after the menu took the picture, and the picture back to none when the switch's part goes */
+static void prepare_screen_switching(void) {
+    static SnxUiQuad q[4096];
+    static TestJpeg jpeg;
+    SnxUiList l = {q, 0, 4096};
+    SnxRunTheme t = {0};
+    SnxPrepareStep st[1] = {{0}};
+    SnxUiQuadView cover = {0};
+    static u8 other[SNX_UI_IMAGE_W * SNX_UI_IMAGE_H * 4];
+    const u8* now;
+    char row[128];
+    u32 version;
+    int i, bar = 0;
+    t.ink = 0xFFFFFFu;
+    t.steps = 1;
+    assert(!prepare_screen_shown());
+    prepare_screen_switch(&t, "GAME", 1, "FOOT", 1200); /* 1200 ms: three dots */
+    assert(prepare_screen_shown());
+    prepare_screen_draw(&l, 1280, 720, NULL, 100); /* 2x: 22 rows of 32 pixels */
+    prepare_row(&l, 32.0f, 2, row, sizeof row);
+    assert(!strcmp(row, " GAME (PROGRAM 1)..."));
+    prepare_row(&l, 32.0f * 21, 2, row, sizeof row);
+    assert(!strcmp(row, " FOOT"));
+    for (i = 0; i < l.n; ++i) bar += qv(&q[i]).y >= 32.0f * 18 && qv(&q[i]).y < 32.0f * 21;
+    assert(bar == 0 && pictures_in(&l, NULL) == 0);     /* no bar, no cover given */
+    prepare_screen_switch(&t, "GAME", 1, "FOOT", 1600); /* the dots turn: none at 1600 ms */
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    prepare_row(&l, 32.0f, 2, row, sizeof row);
+    assert(!strcmp(row, " GAME (PROGRAM 1)"));
+    prepare_screen_switch(&t, "GAME", 0, "FOOT", 1200); /* program 0, the collection's menu: the name alone */
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    prepare_row(&l, 32.0f, 2, row, sizeof row);
+    assert(!strcmp(row, " GAME..."));
+    /* a JPEG that does not draw: 1, and no cover */
+    assert(prepare_screen_cover("not a jpeg", 10) == 1);
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    assert(pictures_in(&l, NULL) == 0);
+    /* the cover: 5 rows of 32 under the head's two, at the text's left; its texels the picture's left square, red */
+    jpeg_of(&jpeg, 256, 0xFF0000u);
+    assert(prepare_screen_cover(jpeg.bytes, (size_t)jpeg.n) == 0);
+    st[0].label = "PREPARING SHADERS";
+    st[0].value = 1;
+    st[0].total = 2;
+    prepare_screen_set(&t, "GAME", st, 1, NULL, 0, "FOOT", 1200);
+    prepare_screen_switch(&t, "GAME", 2, "FOOT", 1200);
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    assert(pictures_in(&l, &cover) == 1);
+    assert(cover.x == 16 && cover.y == 32.0f * 3 && cover.w == 32.0f * 5 && cover.h == cover.w);
+    assert(cover.u == 0 && cover.v == 0 && cover.uw == SNX_PREPARE_COVER && cover.vh == SNX_PREPARE_COVER);
+    now = ui_image_get(&version);
+    assert(now && now[0] > 240 && now[1] < 16 && now[2] < 16 && now[3] == 0xFF);
+    prepare_row(&l, 32.0f * 9, 2, row, sizeof row); /* the step under the cover: 3 + 5 + 1 */
+    assert(!strncmp(row, " PREPARING SHADERS:", 19));
+    for (i = 0, bar = 0; i < l.n; ++i) bar += qv(&q[i]).y > 32.0f * 18 && qv(&q[i]).y < 32.0f * 20;
+    assert(bar > 0); /* a step: the bar */
+    /* the menu's thumbnail took the picture: the cover is given again at the next draw */
+    memset(other, 0x40, sizeof other);
+    ui_image_set(other);
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    now = ui_image_get(&version);
+    assert(now && now[0] > 240 && now[1] < 16);
+    /* the game's first frame: the switch's part gone, the steps alone, then nothing; the picture back to none */
+    prepare_screen_game_drew();
+    assert(prepare_screen_shown() && !ui_image_get(&version));
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    assert(pictures_in(&l, NULL) == 0);
+    prepare_row(&l, 32.0f, 2, row, sizeof row);
+    assert(!strcmp(row, " GAME..."));               /* no program after the name: the step's dots at 1200 ms */
+    prepare_screen_switch(NULL, NULL, -1, NULL, 0); /* again: nothing to take away */
+    prepare_screen_set(NULL, NULL, NULL, 0, NULL, 0, NULL, 0);
+    assert(!prepare_screen_shown());
+    assert(prepare_screen_cover(NULL, 0) == 0);
+}
 /* a tap on a row of the dialog drawn last, list.q[0] its page: rows from its top, items counted from its foot */
 static int tap_row(int row) {
     return overlay_tap(qv(&list.q[0]).x + 10.0f, qv(&list.q[0]).y + (float)(row * 16 * s) + 5.0f, SW, SH);
@@ -843,6 +954,7 @@ int main(void) {
     prepare_screen_size();
     prepare_screen_steps_from();
     prepare_screen_cut();
+    prepare_screen_switching();
     assert(!overlay_shown());
     overlay_toggle();
     assert(overlay_shown());

@@ -154,6 +154,15 @@ setting Fullscreen
     words Off|On
     help 1 = starts fullscreen, except in timed test runs. -f or --fullscreen=0 sets it for one run, and F11 or
     help Alt+Enter switches while the game runs without changing it
+setting Transition screen
+    key transition_screen
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = when a program of a collection starts another (a game picked in its menu), the new program's window shows
+    help the loading screen, with the game's name, the program's number and the game's cover, from a quarter second
+    help after it opens until the game draws, and the launcher's run screen shows it while no window is open
 setting Language
     key language
     int 0 17
