@@ -103,6 +103,11 @@ static void test_registers(NdsBoard* board) {
     nds_io_write(board, IO + 0xB8, 4, 0x84000000u | 1u << 30 | 16);
     CHECK(nds_read32(board, 0x0202003C) == 15 * 0x01010101u);
     CHECK(!(nds_io_read(board, IO + 0xB8, 4) >> 31) && (board->irf & 1u << NDS_IRQ_DMA0));
+    /* a channel is on the bus and does not reach the ITCM: a transfer to address 0 changes nothing there */
+    nds_write32(board, 0x01FF8000, 0xE92D4000);
+    nds_io_write(board, IO + 0xB4, 4, 0x00000000);
+    nds_io_write(board, IO + 0xB8, 4, 0x84000000u | 16);
+    CHECK(nds_read32(board, 0x01FF8000) == 0xE92D4000 && nds_read32(board, 0x00000000) == 0xE92D4000);
     /* the card's data read: 512 bytes from 0x8000 of the image, a word at a time */
     static const uint8_t command[8] = {0xB7, 0x00, 0x00, 0x80, 0x00, 0, 0, 0};
     for (unsigned i = 0; i < 8; ++i) nds_io_write(board, IO + 0x1A8 + i, 1, command[i]);

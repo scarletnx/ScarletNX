@@ -11,6 +11,44 @@ static bool plain(uint32_t address, uint64_t bytes) {
     return address >> 24 != 0x04 && (address + bytes - 1) >> 24 != 0x04 && (uint64_t)address + bytes <= NDS_MAP_SIZE;
 }
 
+/* The two TCMs are inside the processor, and a DMA channel is on the bus: it does not see them. Below main memory the
+   bus has nothing (a write is lost, a read gives zeros), and where the DTCM lies over main memory the channel has
+   main memory. A game that loads a texture with no bank set for it writes at address 0 this way, and loses nothing */
+static bool tcm(const NdsBoard* board, uint32_t address, uint64_t bytes) {
+    const NdsMemory* m = &board->mem;
+    if (address < 0x02000000u) return true;
+    return m->dtcm_size && address < (uint64_t)m->dtcm_base + m->dtcm_size && address + bytes > m->dtcm_base;
+}
+
+static unsigned char* under_dtcm(NdsBoard* board, uint32_t address) {
+    if (address < 0x02000000u || address >= 0x03000000u) return NULL;
+    return board->mem.main.view + (address & (NDS_MAIN_RAM_SIZE - 1));
+}
+
+static uint32_t bus_read(NdsBoard* board, uint32_t address, unsigned width) {
+    if (tcm(board, address, width)) {
+        const unsigned char* at = under_dtcm(board, address);
+        return !at ? 0 : width == 4 ? snx_ld_le32(at) : snx_ld_le16(at);
+    }
+    return width == 4 ? nds_read32(board, address) : nds_read16(board, address);
+}
+
+static void bus_write(NdsBoard* board, uint32_t address, unsigned width, uint32_t value) {
+    if (tcm(board, address, width)) {
+        unsigned char* at = under_dtcm(board, address);
+        if (!at) return;
+        if (width == 4)
+            snx_st_le32(at, value);
+        else
+            snx_st_le16(at, (uint16_t)value);
+        return;
+    }
+    if (width == 4)
+        nds_write32(board, address, value);
+    else
+        nds_write16(board, address, (uint16_t)value);
+}
+
 static void run(NdsBoard* board, unsigned channel) {
     NdsDma* d = &board->dma[channel];
     uint32_t control = d->control, count = d->left;
@@ -20,7 +58,8 @@ static void run(NdsBoard* board, unsigned channel) {
     uint32_t source = d->at_source & ~(width - 1), destination = d->at_destination & ~(width - 1);
     uint64_t span = (uint64_t)count * width;
     /* memory to memory, both rising or the source held: the window's bytes moved as they are */
-    if (from_step >= 0 && to_step > 0 && plain(source, from_step ? span : width) && plain(destination, span)) {
+    if (from_step >= 0 && to_step > 0 && plain(source, from_step ? span : width) && plain(destination, span) &&
+        !tcm(board, source, from_step ? span : width) && !tcm(board, destination, span)) {
         unsigned char* base = board->mem.base;
         if (from_step) {
             for (uint32_t i = 0; i < count; ++i) {
@@ -40,10 +79,7 @@ static void run(NdsBoard* board, unsigned channel) {
         }
     } else {
         for (uint32_t i = 0; i < count; ++i) {
-            if (width == 4)
-                nds_write32(board, destination, nds_read32(board, source));
-            else
-                nds_write16(board, destination, nds_read16(board, source));
+            bus_write(board, destination, width, bus_read(board, source, width));
             source += (uint32_t)from_step, destination += (uint32_t)to_step;
         }
     }
