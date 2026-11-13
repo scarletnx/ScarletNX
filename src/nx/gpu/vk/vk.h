@@ -1353,6 +1353,9 @@ int vk_tc_convert(VkCommandBuffer cb, const VkFmt* f, u32 w, u32 rows, u32 slice
    written in whole words: pairs rounded up to 4). 0 past the device's limits */
 int vk_tc_nv12_uv(VkCommandBuffer cb, u32 pairs, u32 rows, VkBuffer in, u64 u_at, u64 v_at, u32 in_pitch, VkBuffer out,
                   u64 out_at, u32 out_pitch);
+/* the bytes of SPIR-V the pipeline of a conversion of mode (texconv_modes.glsl's TC_*) compiles from, its first pass's
+   for the ASTC build */
+u64 vk_tc_spirv_bytes(u32 mode);
 /* the DMA copy engine's remap (gpu.h's GpuDmaOp) of lines lines: each line in at in_at + y * in_pitch (bytes, any
    alignment), out at out_at + y * out_pitch (words), which holds the destination's own bytes already for the
    components that keep them. 0 past the device's limits */

@@ -3,9 +3,9 @@
 /* Texture formats the host can't take as they are, converted on the GPU (gpu/texture/texconv.comp) from linear rows
    into rows the copies into the image take. One pipeline for every format, made on first use and kept for the
    device's lifetime, like the other internal pipelines; a second, the shader's ETC2 build, for BCn blocks encoded again
-   as ETC2 and EAC (gpu/texture/etc2_encode.glsl), its ASTC build for those encoded again as ASTC 4x4, and its
-   conversion build for the blits that convert between pixel formats (TC_BLIT_CONVERT), each made the first time it
-   is used. Uses are on g_vk.gfx, under vk_lock() */
+   as ETC2 and EAC (gpu/texture/etc2_encode.glsl), its ASTC build for those encoded again as ASTC 4x4, its
+   conversion build for the blits that convert between pixel formats (TC_BLIT_CONVERT) and its NV12 build for a CPU
+   decoded picture's chroma (TC_NV12_UV), each made the first time it is used. Uses are on g_vk.gfx, under vk_lock() */
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
@@ -22,8 +22,20 @@ typedef struct {
 
 static VkDescriptorSetLayout g_tc_ds;
 static VkPipelineLayout g_tc_layout;
-static VkPipeline g_tc_pipe[6]; /* texconv.comp's, its ETC2 build's, its ASTC build's three passes and its
-                                   conversion build's */
+/* texconv.comp's builds: the plain one, its ETC2 build, its ASTC build's three passes, its conversion build and its
+   NV12 build */
+static const struct {
+    const u32* code;
+    const u64* size;
+    const char* what;
+} tc_builds[7] = {{texconv_spv, &texconv_spv_size, ""},
+                  {texconv_etc2_spv, &texconv_etc2_spv_size, " (its ETC2 build)"},
+                  {texconv_astc_spv, &texconv_astc_spv_size, " (its ASTC build)"},
+                  {texconv_astc_b_spv, &texconv_astc_b_spv_size, " (its ASTC build's second pass)"},
+                  {texconv_astc_c_spv, &texconv_astc_c_spv_size, " (its ASTC build's third pass)"},
+                  {texconv_convert_spv, &texconv_convert_spv_size, " (its conversion build)"},
+                  {texconv_nv12_spv, &texconv_nv12_spv_size, " (its NV12 build)"}};
+static VkPipeline g_tc_pipe[7]; /* tc_builds' pipelines, made on first use */
 /* the ASTC build's work lists (texconv.comp's Work): the blocks each pass leaves to a later one, two lists of a word a
    block after a head of four words each, as large as the largest dispatch yet */
 static VkBuffer g_tc_work;
@@ -31,32 +43,30 @@ static DevMem g_tc_work_mem;
 static u64 g_tc_work_size;
 #define TC_WORK_HEAD 32u
 
-/* the pipeline of mode: the ETC2 or the ASTC build's for the BCn modes they encode again (the ASTC build's pass
-   `pass`, 0 to 2), the conversion build's for TC_BLIT_CONVERT, made on first use as the other */
+/* mode's build in tc_builds: the ETC2 or the ASTC build for the BCn modes they encode again (the ASTC build's pass
+   `pass`, 0 to 2), the conversion build for TC_BLIT_CONVERT, the NV12 build for TC_NV12_UV, else the plain one */
+static int tc_build(u32 mode, int pass) {
+    return mode >= TC_BCN_ASTC       ? 2 + pass
+           : mode >= TC_BCN_ETC2     ? 1
+           : mode == TC_BLIT_CONVERT ? 5
+           : mode == TC_NV12_UV      ? 6
+                                     : 0;
+}
+u64 vk_tc_spirv_bytes(u32 mode) { return *tc_builds[tc_build(mode, 0)].size; }
+/* the pipeline of mode's build (tc_build), made on first use */
 static VkPipeline tc_init(u32 mode, int pass) {
-    int build = mode >= TC_BCN_ASTC ? 2 + pass : mode >= TC_BCN_ETC2 ? 1 : mode == TC_BLIT_CONVERT ? 5 : 0;
+    int build = tc_build(mode, pass);
     VkPipeline* pipe = &g_tc_pipe[build];
     if (*pipe) return *pipe;
     /* the third buffer is the ASTC build's work list; the other conversions name two */
     if (!g_tc_layout && !VK_OK(snx_vk_compute_layouts(g_vk.dev, 3, 0, sizeof(TcParams), &g_tc_ds, &g_tc_layout)))
         fatal("vulkan: cannot create the texture conversion descriptor and pipeline layouts");
-    static const char* const what[6] = {"", " (its ETC2 build)", " (its ASTC build)", " (its ASTC build's second pass)",
-                                        " (its ASTC build's third pass)", " (its conversion build)"};
-    static const struct {
-        const u32* code;
-        const u64* size;
-    } spv[6] = {{texconv_spv, &texconv_spv_size},
-                {texconv_etc2_spv, &texconv_etc2_spv_size},
-                {texconv_astc_spv, &texconv_astc_spv_size},
-                {texconv_astc_b_spv, &texconv_astc_b_spv_size},
-                {texconv_astc_c_spv, &texconv_astc_c_spv_size},
-                {texconv_convert_spv, &texconv_convert_spv_size}};
     VkShaderModule module;
-    if (!VK_OK(snx_vk_shader_module(g_vk.dev, spv[build].code, *spv[build].size, &module)))
-        fatal("vulkan: cannot load the texture conversion shader%s", what[build]);
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, tc_builds[build].code, *tc_builds[build].size, &module)))
+        fatal("vulkan: cannot load the texture conversion shader%s", tc_builds[build].what);
     u64 started = plat_ns();
     if (!VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_tc_layout, module, NULL, pipe)))
-        fatal("vulkan: cannot create the texture conversion compute pipeline%s", what[build]);
+        fatal("vulkan: cannot create the texture conversion compute pipeline%s", tc_builds[build].what);
     vk_texture_pipeline_made(plat_ns() - started);
     vkDestroyShaderModule(g_vk.dev, module, NULL);
     return *pipe;
