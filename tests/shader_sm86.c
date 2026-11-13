@@ -2644,6 +2644,37 @@ static void test_wide_carries(const char* dir) {
     free(spv);
 }
 
+/* A vertex program's instance ID (ALD of a[0x2f8]) counts from 0 whatever the draw's base instance: with draw
+   parameters (the offline default) the module takes BaseInstance beside InstanceIndex, InstanceIndex - (BaseInstance -
+   push.x), as the Maxwell translator does. With InstanceIndex less the push constant alone, a direct draw's instances
+   counted from its base instance (one game's instanced scenery took other instances' transforms) */
+static void test_instance_id(const char* dir) {
+    u8 code[16 * 4] = {0};
+    Word x = fix(0x321); /* ALD R0 = a[0x2f8] */
+    set(&x, 16, 8, 0), set(&x, 24, 8, 255), set(&x, 32, 8, 255), set(&x, 40, 10, 0x2f8), set(&x, 74, 2, 0);
+    put(code, 0, x);
+    put(code, 1, ast(0x70, 0, 1));
+    put(code, 2, exit_insn());
+    put(code, 3, bra(3, 3, 7, 0));
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 4 * 16, ST_VS, vsph, &si, &count);
+    CHECK(spv != NULL);
+    int instance_index = 0, base_instance = 0;
+    for (size_t at = 5; spv && at < count && (spv[at] >> 16);) { /* OpDecorate x BuiltIn n */
+        if ((spv[at] & 0xffff) == 71 && (spv[at] >> 16) == 4 && spv[at + 2] == 11) {
+            if (spv[at + 3] == 43) instance_index = 1;
+            if (spv[at + 3] == 4425) base_instance = 1;
+        }
+        at += spv[at] >> 16;
+    }
+    CHECK(instance_index && base_instance);
+    if (spv) CHECK(keep_module(dir, "instance_id", spv, count));
+    free(spv);
+}
+
 /* LDG.E.64 (the uniform form) into dst from [UR + imm], RZ the register */
 static Word ldg_uniform64(u32 dst, u32 ur, u32 imm) {
     Word x = fix(0x981);
@@ -4638,6 +4669,7 @@ int main(int argc, char** argv) {
     test_flow_operand(dir);
     test_global_pointer(dir);
     test_wide_carries(dir);
+    test_instance_id(dir);
     test_global_indirect(dir);
     test_global_table(dir);
     test_global_table_cells(dir);
