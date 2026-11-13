@@ -50,6 +50,25 @@ static int index_pixels(u64 target, IndexPixels* px) {
     return 0;
 }
 
+/* the word of the predicate pred (query.c's slot pred - 1, which a draw under it reads: 0 skips the draw, else it
+   draws), as the GPU left it, for a failure's message; ~0u when it can't be read */
+static u32 index_pred_word(u32 pred) {
+    VkBuffer buffer;
+    u32 word = ~0u;
+    vk_lock();
+    vk_render_end();
+    u8* data = vk_readback_buffer(4, &buffer);
+    if (data) {
+        VkBufferCopy copy = {(VkDeviceSize)((pred & ~VK_PRED_EQUAL) - 1) * 4, 0, 4};
+        rec_CmdCopyBuffer(vk_cmd(), vk_query_pred_buffer(), buffer, 1, &copy);
+        vk_finish();
+        vk_readback_ready();
+        word = snx_ld_le32(data);
+    }
+    vk_unlock();
+    return word;
+}
+
 /* the 4x4 target's first pixel, for a failure's message */
 static int index_first_pixel(u64 target, u8 out[4]) {
     Surf* surface = vk_rt_find(target);
@@ -307,14 +326,25 @@ static int indirect_cases(GpuChannel* channel, u64 target, u64 indices, u64 args
             g_index_pred = pred;
             CHECK(!index_draw(channel, target, &call, &px));
             g_index_pred = 0;
+            /* a wrong frame says which side was wrong: the draw between the reports ran past its predicate (the
+               reports landed apart), or the predicate over the counts' segments said they differ when they don't */
+            int wrong = counted ? !index_all_green(&px) : px.blue != 16;
+            u32 inner = wrong ? index_pred_word(off + 1) : 0, outer = wrong ? index_pred_word(pred) : 0;
             g_renderer->render_predicate_drop(pred);
             vk_lock();
             vk_query_pred_drop(off);
             vk_unlock();
-            if (counted ? !index_all_green(&px) : px.blue != 16)
-                fprintf(stderr, "render enable on two queued counts %s: %u green, %u blue\n",
-                        counted ? "apart" : "equal", px.green, px.blue);
-            CHECK(counted ? index_all_green(&px) : px.blue == 16);
+            if (wrong) {
+                u8 landed[24] = {0};
+                vk_release_drain();
+                CHECK(!gmem_read(counts, landed, sizeof landed));
+                fprintf(stderr,
+                        "render enable on two queued counts %s: %u green, %u blue; the draw between the reports had "
+                        "predicate %u (%s), the render enable's predicate is %u, the reports landed %llu and %llu\n",
+                        counted ? "apart" : "equal", px.green, px.blue, inner, counted ? "not used" : "0 skips it",
+                        outer, (unsigned long long)snx_ld_le64(landed), (unsigned long long)snx_ld_le64(landed + 16));
+            }
+            CHECK(!wrong);
         }
         g_renderer->samples_enable(owner, 0);
         puts("render enable: two queued samples-passed counts compared on the GPU");
