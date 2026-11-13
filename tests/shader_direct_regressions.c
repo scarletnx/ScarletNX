@@ -5484,6 +5484,39 @@ static int chosen_sample(const u64* program, int count, const u32 c2[4], const u
     memcpy(x, &env.out[0][0], 4);
     return !*why;
 }
+/* A multisample TLD.B takes its handle in Rb and the sample after it, the order of Mesa's compilers since f9d385d77716
+   ("nouveau/codegen: Handle/indirect goes before sample index"). uam's codegen predates it and puts the sample first:
+   edenprobe's fetch through a table of four sample handles comes with the sample in R4 and the handle in R5 */
+static void bindless_multisample_order(void) {
+    u64 fetch[] = {
+        0xe003ff870ff7ff00ull, /* IPA R0, a[0x70] */
+        0x5cb0118000071a00ull, /* F2I.S32 R0, R0 */
+        0xe003ff874ff7ff01ull, /* IPA R1, a[0x74] */
+        0x5cb0118000171a05ull, /* F2I.S32 R5, R1: the sample */
+        0x3848000000470000ull, /* SHL R0, R0, 4 */
+        0xef94002000070004ull, /* LDC R4, c[2][R0]: the handle */
+        0x5c9807800ff70000ull, /* MOV R0, RZ */
+        0x5c9807800ff70001ull, /* MOV R1, RZ */
+        0xdd3c0007a0470000ull, /* TLD.B.MS R0, R0, R4 */
+    };
+    ShaderInfo info;
+    size_t words = 0;
+    g_shader_texture_arrays = 1; /* the device's non-uniform indexing, for the table */
+    u32* code = translate(fetch, 9, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "a multisample TLD.B with its handle in Rb translates");
+    if (code)
+        check(info.ntex == 1 && info.tex[0].flags == (2 | SNX_TEX_INDEXED | 4 << 4) &&
+                  has_image_operands(code, words, 95, 0x40),
+              "it fetches a sample of a multisample element of the handle table, 16 bytes apart");
+    free(code);
+    fetch[3] = 0x5cb0118000171a04ull; /* F2I.S32 R4, R1 */
+    fetch[5] = 0xef94002000070005ull; /* LDC R5, c[2][R0] */
+    code = translate(fetch, 9, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle R4 of TLD.B",
+                  "uam's order, the sample in Rb, is not read as the handle");
+    free(code);
+    g_shader_texture_arrays = 0;
+}
 /* A TEX.B that chooses among the constant buffer handles that reach it keeps the sample of the one whose word the
    register holds when it runs: c[2][0] under P0, c[2][4] under !P0, and under P1 a value from elsewhere (MOV32I
    0x777), which is c[2][0]'s texture when c[2][0] holds 0x777 and zeros when no candidate does */
@@ -6344,6 +6377,7 @@ int main(int argc, char** argv) {
     lone_lane_forms();
     fragment_flow_derivatives();
     tex_b_chosen_handle();
+    bindless_multisample_order();
     helper_loop_exit();
     feedback_own_pixel();
     feedback_screen_uv();
