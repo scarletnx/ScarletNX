@@ -1045,6 +1045,9 @@ void vk_gfx_image_put_aside(void);
 /* the CPU is about to touch guest memory [cpu, cpu + size) (own.c's landing): the kept storage images a release
    passed over there published first (vk_lock) */
 void vk_gfx_image_cpu_need(u64 cpu, u64 size);
+/* a draw reads [gva, gva + size) as a buffer (buffer.c buf_get): the kept storage images a release passed over there
+   published first, as their owner holds the bytes from before their draws (vk_lock) */
+void vk_gfx_image_read_need(u64 gva, u64 size);
 /* a recorded write-back waits to land (unsubmitted: in the submit being recorded) */
 int vk_gfx_image_in_flight(int unsubmitted);
 /* the submissions up to sub are done: the write-backs recorded in them land (cmd.c's landing, vk_lock) */
