@@ -2009,6 +2009,7 @@ static void place_screen(App* app, GuiPlace* p, const char* keys, int shows);
 static const char* shown_keys(const App* app, char* out, size_t size);
 static void aot_status_update(App* app);
 static void side_focus_update(App* app);
+static const char* missing_name(const char* file);
 static void missing_read(App* app);
 /* a screen's keys, Tab's after them; the key back of a screen whose own keys do not say it; F1's, last in a foot */
 #define SAY_TAB SNX_TR_KEYS("Tab: screen. F2: side box.")
@@ -16536,7 +16537,7 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
         return;
     }
     if (app->picks_of == GUI_PICKS_MISSING) { /* the file, whole */
-        snprintf(out, size, snx_tr("Not found: %s"), app->missing_file ? app->missing_file : "?");
+        snprintf(out, size, snx_tr("Not found: %s"), missing_name(app->missing_file));
         return;
     }
     if (app->picks_of == GUI_PICKS_THEME) { /* the line says what the box is: YoRHa's tab names it, the default's
@@ -16817,7 +16818,24 @@ static MissingKind missing_kind(const char* program, const char* file) {
     if (system == SNX_SYSTEM_VITA) return MISSING_VITA;
     for (size_t i = 0; file && i < SDL_arraysize(dumps); ++i)
         if (snx_ends_with_nocase(file, dumps[i])) return MISSING_DUMP;
+    if (file && !file[0]) { /* none named: a folder when a copy of its RomFS stopped, which only a folder's leaves */
+        char stopped[SNX_PATH_SIZE];
+        bool copy;
+        game_where(program, &folder, &name);
+        copy = !snx_path_format(stopped, sizeof stopped, "%s/%s_data/romfs.copying", folder, name) &&
+               snx_path_exists(stopped);
+        free(name);
+        free(folder);
+        return copy ? MISSING_FOLDER : MISSING_DUMP;
+    }
     return MISSING_FOLDER;
+}
+/* the file a made game plays from, for a line: what gui_game_source_missing says of a game whose RomFS the driver has
+   no file named to extract again from ("") said so */
+static const char* missing_name(const char* file) {
+    return !file     ? "?"
+           : file[0] ? file
+                     : snx_tr("the dump or folder its RomFS is extracted from, which its settings do not name");
 }
 /* what the game whose program is at program plays from, as its driver has it named: a Switch game's source= (or its
    older link's own path), a GBA or 3DS game's source= in the .ini of its folder, where a Vita game's app/ links (its
@@ -16906,7 +16924,7 @@ static void missing_remove(App* app) {
     snprintf(app->message, sizeof app->message,
              snx_tr("%s is off Games: %s is not found. Its folder %s stays, and Games lists it again once that file is "
                     "back."),
-             shown ? shown : program, file ? file : "?", folder ? folder : "?");
+             shown ? shown : program, missing_name(file), folder ? folder : "?");
     recent_note(app);
     free(folder);
     free(shown);
@@ -18357,7 +18375,9 @@ static void side_focus_update(App* app) {
     app->debug_path = path ? snx_strdup(path) : NULL;
     app->debug_checked = now_ms(app);
     game_debug(app, path, 1, app->debug_focus, sizeof app->debug_focus);
-    gui_game_source_missing(path, app->work_dir, app->missing_focus, sizeof app->missing_focus);
+    if (gui_game_source_missing(path, app->work_dir, app->missing_focus, sizeof app->missing_focus) &&
+        !app->missing_focus[0])
+        snprintf(app->missing_focus, sizeof app->missing_focus, "%s", missing_name(""));
 }
 static int aot_focus_game(App* app, AotFocus* f) {
     size_t row = app->browser.selected, head = app->browser.head;

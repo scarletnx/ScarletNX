@@ -298,10 +298,12 @@ char* gui_game_shown(const char* path) {
 }
 /* a Switch game's file to play from when it is not there, owned: source= in its .ini, or an older version's link
    <name>.source by where it points, naming a dump or an extracted game's folder that it reads in place, its ExeFS not
-   extracted into its <name>_data (driver.c's drop_extraction); else NULL */
+   extracted into its <name>_data (driver.c's drop_extraction), or whose RomFS there is not whole (snx_romfs_state),
+   which the driver extracts again from it: "" for such a RomFS when no file is named; else NULL */
 static char* switch_missing(const char* folder, const char* name) {
     char *source, *target, link[SNX_PATH_SIZE], exefs[SNX_PATH_SIZE];
     int recorded = 0;
+    SnxRomfs romfs;
     if (snx_path_format(link, sizeof link, "%s/%s.source", folder, name) ||
         snx_path_format(exefs, sizeof exefs, "%s/%s_data/exefs", folder, name) ||
         !(source = snx_game_source(folder, name, &recorded)))
@@ -310,9 +312,14 @@ static char* switch_missing(const char* folder, const char* name) {
         free(source);
         source = target;
     }
-    if (!recorded || snx_is_file(source) || snx_extracted_game(source) || snx_is_dir(exefs)) {
+    if (recorded && (snx_is_file(source) || snx_extracted_game(source))) { /* there */
         free(source);
         return NULL;
+    }
+    romfs = snx_romfs_state(folder, name);
+    if (!recorded || (snx_is_dir(exefs) && romfs == SNX_ROMFS_WHOLE)) { /* none named, or played from its extraction */
+        free(source);
+        return recorded || romfs == SNX_ROMFS_WHOLE ? NULL : snx_strdup("");
     }
     return source;
 }
