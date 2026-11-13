@@ -61,9 +61,9 @@ static void exception_return(AgbCpu* cpu) {
 }
 
 /* The bus hook the recompiled blocks call for the regions with bus rules a plain access cannot follow:
-   the I/O window, the palette, OAM and the save memory. This keeps the 1 KiB mirrors, the byte write
-   widths and the register side effects correct while generated code runs at memory speed elsewhere.
-   The machine's CPU state is its first member. */
+   the I/O window, the palette, OAM and the save memory, and the stores to the cartridge's ROM, which the board drops.
+   This keeps the 1 KiB mirrors, the byte write widths and the register side effects correct while generated code
+   runs at memory speed elsewhere. The machine's CPU state is its first member. */
 static uint32_t bus(SnxArmCPU* arm, uint32_t address, uint32_t size_write, uint32_t value) {
     AgbBoard* board = ((AgbCpu*)arm)->board;
     unsigned bytes = size_write & 0xFF;

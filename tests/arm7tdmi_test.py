@@ -161,6 +161,11 @@ def check(arm, thumb, profile):
         run = Run(arm['io_load'], r4=address)
         run.cpu.mem_size = 1 << 32  # the board's window: the hook takes these, nothing past SIZE is touched
         assert run().exit == 0 and run.calls == [(address, 4, 0)] and run.cpu.r[0] == 0xCAFE, (hex(address), run.calls)
+    # the cartridge's ROM takes no writes: a store there reaches the hook, which drops it, and the window keeps the image
+    if seven:
+        run = Run(arm['io_store'], r1=0x12345678, r4=0x08000006)
+        run.cpu.mem_size = 0x10000000  # the board's window: the hook takes the store, nothing past SIZE is touched
+        assert run().exit == 0 and run.calls == [(0x08000006, 0x102, 0x12345678)], run.calls
     # the BIOS answers with the board's open bus, so its reads go through the hook too
     run = Run(arm['io_load'], r4=0x00000100)
     assert run().exit == 0 and run.calls == ([(0x00000100, 4, 0)] if seven else [])

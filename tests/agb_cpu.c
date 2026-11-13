@@ -311,6 +311,45 @@ int main(void) {
         CHECK(cpu.arm.r[5] > 0);
     }
     {
+        /* the cartridge's ROM takes no writes: a word, a halfword, a byte and an STM into the literal pool at 0xF0 leave
+           it as it was, for the loads after them and in the flat map (a game that stored into a table of its own there
+           called the entry it had overwritten) */
+        static const uint32_t code[] = {
+            0xE59F0028, /* ldr r0, [pc, #40]: 0x080000F0 */
+            0xE59F1028, /* ldr r1, [pc, #40]: 0x12345678 */
+            0xE5801000, /* str r1, [r0] */
+            0xE1C010B4, /* strh r1, [r0, #4] */
+            0xE5C01008, /* strb r1, [r0, #8] */
+            0xE280200C, /* add r2, r0, #12 */
+            0xE8820002, /* stmia r2, {r1} */
+            0xE5903000, /* ldr r3, [r0] */
+            0xE5904004, /* ldr r4, [r0, #4] */
+            0xE5905008, /* ldr r5, [r0, #8] */
+            0xE590600C, /* ldr r6, [r0, #12] */
+            0xEAFFFFFE, /* b . */
+            0x080000F0, 0x12345678,
+        };
+        static const uint32_t pool[] = {0x04000004, 0x04000208, 0x04000200, 0x03007FFC};
+        for (uint32_t i = 0; i < sizeof code / sizeof code[0]; ++i) agb_write32(&board, 0x03000E00 + i * 4, code[i]);
+        cpu.arm.r[15] = 0x03000E00;
+        cpu.arm.cpsr = 0x9F;
+        cpu.over = 0;
+        board.cpu_halted = 0;
+        board.held_cycles = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 200, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        for (uint32_t i = 0; i < 4; ++i) {
+            const uint8_t* flat = map.base + 0x080000F0 + i * 4;
+            uint32_t kept =
+                (uint32_t)flat[0] | (uint32_t)flat[1] << 8 | (uint32_t)flat[2] << 16 | (uint32_t)flat[3] << 24;
+            if (cpu.arm.r[3 + i] != pool[i] || kept != pool[i]) {
+                fprintf(stderr,
+                        "agb_cpu: the ROM word at 0x%08X reads 0x%08X and holds 0x%08X after a store, not 0x%08X\n",
+                        0x080000F0 + i * 4, cpu.arm.r[3 + i], kept, pool[i]);
+                goto done;
+            }
+        }
+    }
+    {
         /* an S-bit write to the PC in system mode, which has no SPSR, sets the flags and keeps the mode, as mGBA does: a
            game's code ran on with the CPSR's mode 0 after one. orrs pc, pc, #0 jumps two words on with N and Z clear */
         agb_write32(&board, 0x03000C00, 0xE39FF000); /* orrs pc, pc, #0 */

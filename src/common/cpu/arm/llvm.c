@@ -394,6 +394,9 @@ static LLVMValueRef memptr(ArmIR* a, LLVMValueRef addr) {
    window and video memory, 0x0D the EEPROM a cartridge may have there, 0x0E and 0x0F the save memory. */
 #define SNX_ARM_IO_REGIONS                                                                                             \
     (1u << 0x00 | 1u << 0x01 | 1u << 0x04 | 1u << 0x05 | 1u << 0x06 | 1u << 0x07 | 1u << 0x0D | 1u << 0x0E | 1u << 0x0F)
+/* Stores reach the hook from the cartridge's ROM, 0x08 to 0x0C, as well: the flat window holds the image there, and the
+   console's ROM takes no writes, so a game's store into a table of its own leaves the table as it was */
+#define SNX_ARM_IO_STORE_REGIONS (SNX_ARM_IO_REGIONS | 1u << 0x08 | 1u << 0x09 | 1u << 0x0A | 1u << 0x0B | 1u << 0x0C)
 /* A write through the hook that returns nonzero ends the block once its instruction is done (yield_check), with R15
    the next instruction's: the board has something to run first, a DMA holding the bus while the CPU waits */
 static void yield_after(ArmIR* a, LLVMValueRef result) {
@@ -411,9 +414,9 @@ static void yield_check(ArmIR* a) {
 }
 /* addresses past the console's 28 bits, but for the mirror at bit 31 the flat window keeps, go to the hook as well:
    nothing answers them there, which the board gives as the open bus */
-static LLVMValueRef io_route(ArmIR* a, LLVMValueRef addr, LLVMValueRef fn) {
+static LLVMValueRef io_route(ArmIR* a, LLVMValueRef addr, LLVMValueRef fn, uint32_t regions) {
     LLVMValueRef top = lsr(a, addr, 24), high = lsr(a, addr, 28);
-    LLVMValueRef route = band(a, LLVMBuildLShr(a->b, c32(a, SNX_ARM_IO_REGIONS), band(a, top, c32(a, 31)), ""),
+    LLVMValueRef route = band(a, LLVMBuildLShr(a->b, c32(a, regions), band(a, top, c32(a, 31)), ""),
                               z32(a, cmp(a, LLVMIntULT, top, c32(a, 32))));
     LLVMValueRef unused =
         band(a, z32(a, cmp(a, LLVMIntNE, high, c32(a, 0))), z32(a, cmp(a, LLVMIntNE, high, c32(a, 8))));
@@ -468,7 +471,7 @@ static LLVMValueRef readmem(ArmIR* a, LLVMValueRef addr, unsigned bytes, int sig
     LLVMBasicBlockRef io = block(a, "io"), mem = block(a, "mem"), done = block(a, "read");
     LLVMValueRef incoming[2], joined;
     LLVMBasicBlockRef from[2];
-    LLVMBuildCondBr(a->b, cmp(a, LLVMIntNE, io_route(a, addr, fn), c32(a, 0)), io, mem);
+    LLVMBuildCondBr(a->b, cmp(a, LLVMIntNE, io_route(a, addr, fn, SNX_ARM_IO_REGIONS), c32(a, 0)), io, mem);
     LLVMPositionBuilderAtEnd(a->b, mem);
     {
         LLVMValueRef value = LLVMBuildLoad2(a->b, type, memptr(a, aligned), "");
@@ -530,7 +533,7 @@ static void writemem(ArmIR* a, LLVMValueRef addr, unsigned bytes, LLVMValueRef v
     LLVMValueRef fn = get(a, offsetof(SnxArmCPU, io), a->ptr);
     LLVMBasicBlockRef io = block(a, "io"), mem = block(a, "mem"), done = block(a, "written");
     PUT(a, exclusive_valid, c32(a, 0));
-    LLVMBuildCondBr(a->b, cmp(a, LLVMIntNE, io_route(a, addr, fn), c32(a, 0)), io, mem);
+    LLVMBuildCondBr(a->b, cmp(a, LLVMIntNE, io_route(a, addr, fn, SNX_ARM_IO_STORE_REGIONS), c32(a, 0)), io, mem);
     LLVMPositionBuilderAtEnd(a->b, mem);
     {
         LLVMValueRef narrow = bytes < 4 ? LLVMBuildTrunc(a->b, value, type, "") : value;
@@ -563,7 +566,7 @@ static LLVMValueRef readmem_list(ArmIR* a, LLVMValueRef addr, unsigned bytes) {
     LLVMBasicBlockRef io = block(a, "io"), mem = block(a, "mem"), done = block(a, "read");
     LLVMValueRef incoming[2], joined;
     LLVMBasicBlockRef from[2];
-    LLVMBuildCondBr(a->b, cmp(a, LLVMIntNE, io_route(a, addr, fn), c32(a, 0)), io, mem);
+    LLVMBuildCondBr(a->b, cmp(a, LLVMIntNE, io_route(a, addr, fn, SNX_ARM_IO_REGIONS), c32(a, 0)), io, mem);
     LLVMPositionBuilderAtEnd(a->b, mem);
     {
         LLVMValueRef value = LLVMBuildLoad2(a->b, type, memptr(a, addr), "");
@@ -593,7 +596,7 @@ static void writemem_list(ArmIR* a, LLVMValueRef addr, unsigned bytes, LLVMValue
     LLVMTypeRef type = LLVMIntTypeInContext(a->ctx, bytes * 8);
     LLVMValueRef fn = get(a, offsetof(SnxArmCPU, io), a->ptr);
     LLVMBasicBlockRef io = block(a, "io"), mem = block(a, "mem"), done = block(a, "written");
-    LLVMBuildCondBr(a->b, cmp(a, LLVMIntNE, io_route(a, addr, fn), c32(a, 0)), io, mem);
+    LLVMBuildCondBr(a->b, cmp(a, LLVMIntNE, io_route(a, addr, fn, SNX_ARM_IO_STORE_REGIONS), c32(a, 0)), io, mem);
     LLVMPositionBuilderAtEnd(a->b, mem);
     {
         LLVMValueRef narrow = bytes < 4 ? LLVMBuildTrunc(a->b, value, type, "") : value;
