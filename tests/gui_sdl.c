@@ -3700,9 +3700,13 @@ static void game_gpu_driver(App* app) {
     addons_open(app, game, title, true);
     assert(!app->addons_driver_off && !strcmp(app->addons_driver, "GPU Driver: Global (System driver)"));
     app->addons_focus = row;
+    app->drivers_continue = app->drivers_clear = 0; /* a launcher that never opened its own GPU Drivers page */
     key(app, SDLK_RETURN);
     assert(!app->addons_shown && app->editing && app->form == GUI_FORM_DRIVERS && app->drivers_game &&
            gui_editor_rows(&app->editor) == 4 && !strcmp(app->drivers_form.value[0], "(*)"));
+    info = (UiRowInfo){0}; /* Global is no Clear Crash List: not in its red */
+    assert(app->drivers_continue == -1 && app->drivers_clear == -1 &&
+           ui_form_side_rows_get_row_info(app, 0, 0, &info) && !(info.attr & UI_ATTR_DANGER));
     assert(strstr(app->editor.note, ": its own GPU driver. This device: "));
     app->editor.row = 1; /* System driver, its own */
     key(app, SDLK_RETURN);
@@ -3711,8 +3715,9 @@ static void game_gpu_driver(App* app) {
     option = gui_run_option("gpu_driver", ini, "Turnip_v32");
     assert(!option); /* its own pick: the run reads it */
     app->editor.row = 0;
-    key(app, SDLK_RETURN);
-    assert(!snx_ini_has(ini, "gpu_driver") && !strcmp(app->drivers_form.value[0], "(*)"));
+    key(app, SDLK_RETURN); /* Global again: taken as the pick, never edenprobe's Continue nor its Clear Crash List */
+    assert(!snx_ini_has(ini, "gpu_driver") && !strcmp(app->drivers_form.value[0], "(*)") && !app->confirm.shown &&
+           !app->probe_launch && strstr(app->editor.note, ": the GPU driver for every game (System driver)"));
     option = gui_run_option("gpu_driver", ini, "Turnip_v32");
     assert(option && !strcmp(option, "--gpu_driver=Turnip_v32"));
     free(option);

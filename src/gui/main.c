@@ -10047,6 +10047,9 @@ static int drivers_fill(App* app) {
     size_t i, shown = SDL_min(app->packages_count, (size_t)GUI_DRIVERS_SHOWN);
     int r = 0;
     memset(f, 0, sizeof *f);
+    /* the launcher's page shows them; a game's page has none, and a row a game's page shares a number with is no
+       edenprobe row (an App starts zeroed: Global would be Continue and Clear Crash List) */
+    app->drivers_continue = app->drivers_clear = -1;
     if (ini) {
         own = snx_ini_has(ini, "gpu_driver") ? snx_ini_value(ini, "gpu_driver") : NULL;
         picked = snx_ini_has(ini, "gpu_driver") ? (own ? own : "") : NULL;
@@ -10127,7 +10130,6 @@ static int drivers_fill(App* app) {
                         "own with the default settings, %s; then their counts"),
                  folder ? folder : "?");
         app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
-        app->drivers_continue = app->drivers_clear = -1;
         if (folder && probe_unfinished(folder, app->drivers_about[r + 1], sizeof app->drivers_about[0])) {
             app->drivers_continue = ++r;
             snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Continue"));
