@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* What the Ounce's display session (hle/services/gsv.c, nn::vi2::IVi2Session) tells a game of the display's HDR, with
    the renderer stood in for: GetHdrStatus's format (1 for SDR and 2 for HDR, as the SDK's QueryDisplayHdrStatus reads
-   it) and peak, GetHdrPaperWhite, and the HDR status event when the display's changes. Everything else gsv.c reaches
-   is stood in for by functions no check here calls */
+   it) and peak, GetHdrPaperWhite, and the HDR status event when the display's changes; and the largest picture it
+   takes, GetBufferMaxResolution. Everything else gsv.c reaches is stood in for by functions no check here calls */
 #include "nx/hle/services/services_int.h"
 #include <stdarg.h>
 
@@ -198,9 +198,24 @@ static void status(u64 name, int rc_ok, u64 want_format, u32 want_peak, u32 want
     if (rc_ok) CHECK(paper_white == want_paper_white);
 }
 
+/* GetBufferMaxResolution: one bit for the largest picture the display takes (1 1280x720, 2 1920x1080, 8 3840x2160),
+   a TV's in TV mode and the console's own screen in handheld mode */
+static void max_resolution(void) {
+    u8 r[12];
+    u64 resolution = 0;
+    request(r, DEFAULT_DISPLAY, 0);
+    g_settings.tv_mode = 1;
+    CHECK(!nn_vi2_IVi2Session_GetBufferMaxResolution(NULL, r, &resolution) && resolution == 8);
+    g_settings.tv_mode = 0;
+    CHECK(!nn_vi2_IVi2Session_GetBufferMaxResolution(NULL, r, &resolution) && resolution == 2);
+    request(r, 0x1234, 0); /* no such display */
+    CHECK(nn_vi2_IVi2Session_GetBufferMaxResolution(NULL, r, &resolution) != 0);
+}
+
 int main(void) {
     u8 r[12], other[12];
     u32 hdr_event = 0, vsync_event = 0;
+    max_resolution();
     /* no renderer, one that shows no HDR at all, and one whose display is SDR: format 1, no peak, no paper white */
     status(DEFAULT_DISPLAY, 1, 1, 0, 0);
     g_renderer = &g_without;
