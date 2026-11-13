@@ -183,6 +183,10 @@ if(BUILD_TESTING)
         target_compile_options(${test} PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     endforeach()
     snx_test_sanitize(${gui_tests})
+    # every gui_ test's program, tests/CMakeLists.txt's two with these: what a cross build runs of the launcher's tests
+    # alone (.github/workflows/build.yml, appimage-cross)
+    add_custom_target(snx_gui_tests)
+    add_dependencies(snx_gui_tests ${gui_tests} snx-test-gui-probe snx-test-gui-last-run)
 endif()
 if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
     snx_sanitizer_path()
