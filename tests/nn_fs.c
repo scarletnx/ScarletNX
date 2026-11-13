@@ -11,7 +11,8 @@
    program's, answered natively, and with "other-program" the stop for another program's. Commit of several mounts,
    and with "commit-null" and "commit-eleven" its stops on no array and on more than 10 mounts. A file handle's low
    bits, which a game may use as a pointer's and mask off, and with "handle-flags" the stop for a handle passed with
-   them */
+   them. A file's data cache on each kind of mount, and with "cache-null", "cache-small" and "cache-path" the stops on
+   no buffer, a buffer smaller than the file and a path Disable cannot take */
 #include "nx/nn/fs.c"
 #include "hle/hook/hooks.hook.inc" /* fs.hook's table, and a 32-bit game's */
 #include <stdarg.h>
@@ -142,10 +143,17 @@ u32 fs_root_time_stamp(FsNode* root, const char* path, u64* seconds) {
     return 0;
 }
 i64 fs_root_space(int total) { return (void)total, 0; }
+/* a save's file and the card's: /five, of 5 bytes, on either root, opened to read; nothing else is there. The opens
+   and closes are counted */
+static FsNode five = {.size = 5};
+static unsigned files_open;
 u32 fs_file_open(FsNode* root, const char* path, u32 mode, FileData* out) {
-    return (void)root, (void)path, (void)mode, (void)out, FSR(1);
+    if ((root != save_root && root != sd_root) || strcmp(path, "/five") || mode != 1) return FSR(1);
+    *out = (FileData){.node = &five, .mode = mode};
+    files_open++;
+    return 0;
 }
-void fs_file_close(FileData* f) { (void)f; }
+void fs_file_close(FileData* f) { files_open -= f->node == &five; }
 u32 fs_file_flush(FileData* f) { return (void)f, 0; }
 u32 fs_file_read(FileData* f, u64 off, u64 addr, u64 size, u64* n) {
     return (void)f, (void)off, (void)addr, (void)size, (void)n, FSR(1);
@@ -291,6 +299,16 @@ int main(int argc, char** argv) {
         if (!strcmp(argv[1], "other-program")) nnfs_query_mount_rom_cache_size_program(c, RESULT, 1);
         if (!strcmp(argv[1], "commit-null")) nnfs_commit_names(c, 0, 1);
         if (!strcmp(argv[1], "commit-eleven")) nnfs_commit_names(c, NAMES, 11);
+        if (!strncmp(argv[1], "cache-", 6)) { /* on a system archive's file of 5 bytes */
+            image_with_file(data_image_bytes);
+            text(NAME, "ng");
+            text(PATH, "ng:/a");
+            CHECK(nnfs_mount_system_data(c, NAME, SYSTEM_ID, CACHE, 0x100) == 0);
+            if (!strcmp(argv[1], "cache-null")) nnfs_enable_individual_file_data_cache(c, PATH, 0, 5);
+            if (!strcmp(argv[1], "cache-small")) nnfs_enable_individual_file_data_cache(c, PATH, CACHE, 4);
+            text(PATH, "ng:/../a");
+            if (!strcmp(argv[1], "cache-path")) nnfs_disable_individual_file_data_cache(c, PATH);
+        }
         printf("nn_fs: %s was answered\n", argv[1]);
         return 1;
     }
@@ -466,6 +484,14 @@ int main(int argc, char** argv) {
         for (int k = 8; k >= 0; k--) nnfs_close_file(c, (more[k] | 5) & ~(u64)7);
         CHECK((LIST_HANDLE & 0xf) == 0);
     }
+    /* a file's data cache on a RomFS, which takes one: the file's size against the buffer's, the buffer left as it
+       was; a file that is not there, and a directory, give PathNotFound */
+    memset(mem + 0x600, 0xee, 16);
+    CHECK(nnfs_enable_individual_file_data_cache(c, PATH, 0x600, 5) == 0 && mem[0x600] == 0xee && own_runs == 10);
+    text(PATH, "ng:/b");
+    CHECK(nnfs_enable_individual_file_data_cache(c, PATH, 0x600, 5) == FSR(1));
+    text(PATH, "ng:/");
+    CHECK(nnfs_enable_individual_file_data_cache(c, PATH, 0x600, 5) == FSR(1) && own_runs == 10);
     nnfs_unmount(c, NAME);
 
     /* a file's time stamps. On no native mount they are the SDK's own. On a save's mount (here the SD card's) the
@@ -488,8 +514,42 @@ int main(int argc, char** argv) {
     text(PATH, "sd:/none");
     outs();
     CHECK(nnfs_get_file_time_stamp(c, RESULT, PATH) == FSR(1) && mem[RESULT] == 0xee && own_runs == 12);
+    /* a file's data cache, through fs.hook's table. The card takes none, so the SDK checks nothing of the file there:
+       one that is not there answers 0 */
+    {
+        u32 versions[HOOK_KEYS] = {0};
+        int first, enable = hook_select(&hook_table, SYM_ENABLE_FILE_CACHE, versions, &first),
+                   disable = hook_select(&hook_table, SYM_DISABLE_FILE_CACHE, versions, &first);
+        CHECK(enable >= 0 && !strcmp(hook_handler[enable], "nnfs_enable_individual_file_data_cache"));
+        CHECK(disable >= 0 && !strcmp(hook_handler[disable], "nnfs_disable_individual_file_data_cache"));
+        c->x[0] = PATH, c->x[1] = CACHE, c->x[2] = 1, c->x[30] = 0x9000, c->pc = 0;
+        hook_fn[enable](c, 0);
+        CHECK(c->x[0] == 0 && c->pc == 0x9000 && files_open == 0 && own_runs == 12);
+        c->x[0] = PATH, c->x[30] = 0x9000, c->pc = 0;
+        hook_fn[disable](c, 0);
+        CHECK(c->pc == 0x9000 && own_runs == 12);
+    }
     nnfs_unmount(c, NAME);
     sd_there = 0;
+    /* on a save, which takes one: the file opened to read and closed, and its size against the buffer's; a file that
+       is not there gives the open's Result. The buffer is left as the game gave it, since every read is the host's */
+    text(NAME, "save");
+    save_given = 0;
+    CHECK(nnfs_mount_save_data(c, NAME, CACHE) == 0);
+    text(PATH, "save:/five");
+    memset(mem + 0x600, 0xee, 16);
+    CHECK(nnfs_enable_individual_file_data_cache(c, PATH, 0x600, 5) == 0 && files_open == 0 && mem[0x600] == 0xee);
+    text(PATH, "save:/none");
+    CHECK(nnfs_enable_individual_file_data_cache(c, PATH, 0x600, 5) == FSR(1) && files_open == 0);
+    nnfs_disable_individual_file_data_cache(c, PATH); /* a cache never made: nothing to end */
+    CHECK(own_runs == 12);
+    nnfs_unmount(c, NAME);
+    save_given = -1;
+    /* a path on no native mount is the SDK's, for both */
+    CHECK(nnfs_enable_individual_file_data_cache(c, PATH, 0x600, 5) == 0x77 && own(SYM_ENABLE_FILE_CACHE, 13));
+    nnfs_disable_individual_file_data_cache(c, PATH);
+    CHECK(own(SYM_DISABLE_FILE_CACHE, 14));
+    own_runs = 12; /* the counts below are of their own calls */
     /* a folder of the host PC: what the file server answers for the host's root, under either form's symbol */
     {
         static const char* const host[3] = {"_ZN2nn2fs9MountHostEPKcS2_",

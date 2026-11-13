@@ -94,6 +94,8 @@
 #define SYM_COMMIT_NAMES       "_ZN2nn2fs6CommitEPKPKci"
 #define SYM_READ_CACHE_LIST    "_ZN2nn2fs20ReadCacheStorageListEPiPNS0_16CacheStorageInfoENS0_22CacheStorageListHandleEi"
 #define SYM_CLOSE_CACHE_LIST   "_ZN2nn2fs21CloseCacheStorageListENS0_22CacheStorageListHandleE"
+#define SYM_ENABLE_FILE_CACHE  "_ZN2nn2fs29EnableIndividualFileDataCacheEPKcPvm"
+#define SYM_DISABLE_FILE_CACHE "_ZN2nn2fs30DisableIndividualFileDataCacheEPKc"
 
 /* a Result of the fs module (2): the description above bit 9 */
 #define FSR(d) ((u32)2 | (u32)(d) << 9)
@@ -1516,6 +1518,66 @@ u32 nnfs_get_file_time_stamp(CPU* c, u64 stamp, u64 path) {
 }
 u32 nnfs_get_file_time_stamp_raw(CPU* c, u64 stamp, u64 path) {
     return time_stamp(c, SYM_TIME_STAMP_RAW, "GetFileTimeStampRawForDebug", stamp, path, 1);
+}
+
+/* ---- a file's data cache
+
+   EnableIndividualFileDataCache (SDK 6 on; read in 6.5, 7.3, 11.4, 16.2 and 20.5) has the SDK read a whole file into the
+   game's buffer and answer the file's later reads from it, on a mount that takes such a cache: a RomFS or a save, and
+   not the SD card (its mount registers without one). Here a read is the host's own on every native mount, so no cache
+   is kept and the buffer stays as the game gave it. What remains are the SDK's checks, in its order: a buffer
+   (NullptrArgument), and on a mount that takes a cache the file, opened to read (that open's Result), and room for it
+   (InvalidSize, 6062). A second Enable of one file, which the SDK refuses with fs 70, is not seen: nothing is kept to
+   see it. Disable ends a cache that was never made, as the SDK's does for a file it does not hold */
+
+/* whether native mount m is the SD card's (lock held): the mount the SDK keeps no file data cache on */
+static int mount_is_sd_card(int m) {
+    FsNode* sd;
+    if (g_hle.nnfs.mounts[m].kind != MOUNT_SAVE || fs_sd_root(&sd)) return 0;
+    fs_lock();
+    int is = mount_root(m) == sd;
+    fs_root_release(sd);
+    fs_unlock();
+    return is;
+}
+u32 nnfs_enable_individual_file_data_cache(CPU* c, u64 path, u64 buffer, u64 size) {
+    char p[PATH_MAX_LEN + 1];
+    u32 r;
+    int m = path_take(c, path, p, &r);
+    if (m < 0) return (u32)sdk_own(c, SYM_ENABLE_FILE_CACHE);
+    if (!r && !buffer) r = R_NULL_ARGUMENT;
+    u64 n = 0;
+    if (!r && g_hle.nnfs.mounts[m].kind == MOUNT_ROM) {
+        const NRom* rm = rom_at(g_hle.nnfs.mounts[m].rom);
+        int is_dir = 0;
+        u32 e = 0;
+        r = rom_lookup(rm, p, &is_dir, &e);
+        if (!r && is_dir) r = R_PATH_NOT_FOUND;
+        if (!r) n = rom_file_u64(rm, e, 16);
+    } else if (!r && !mount_is_sd_card(m)) {
+        FileData fd = {0};
+        fs_lock();
+        r = fs_file_open(mount_root(m), p, 1, &fd);
+        if (!r) {
+            n = fd.node->size;
+            fs_file_close(&fd);
+        }
+        fs_unlock();
+    }
+    if (!r && (i64)n > (i64)size) r = R_NEGATIVE_SIZE; /* InvalidSize, which a negative size also gives */
+    pm_unlock(&g_nnfs.lock);
+    return done("EnableIndividualFileDataCache", r);
+}
+void nnfs_disable_individual_file_data_cache(CPU* c, u64 path) {
+    char p[PATH_MAX_LEN + 1];
+    u32 r;
+    int m = path_take(c, path, p, &r);
+    if (m < 0) {
+        sdk_own(c, SYM_DISABLE_FILE_CACHE);
+        return;
+    }
+    pm_unlock(&g_nnfs.lock);
+    if (r) stop("DisableIndividualFileDataCache", r); /* the SDK stops on any failure of it */
 }
 
 /* a commit of native mount m (lock held): a save writes its note, and the RomFS has nothing to commit */
