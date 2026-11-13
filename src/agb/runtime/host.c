@@ -4,6 +4,7 @@
 #include "common/utilities/sdl_desktop.h"
 #include "agb/apu/apu.h"
 #include "agb/ppu/ppu.h"
+#include "agb/runtime/vk.h"
 #include "common/utilities/notice.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/quit_key.h"
@@ -23,6 +24,9 @@
 #define STICK_DEAD    16384
 
 struct AgbHost {
+    /* the screen through Vulkan (runtime/vk.c), as the other consoles' windows; SDL's renderer and its texture where
+       the host has no Vulkan window */
+    AgbVk* vk;
     SDL_Window* window;
     SDL_Renderer* renderer;
     SDL_Texture* texture;
@@ -109,24 +113,38 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
         free(host);
         return NULL;
     }
-    if (!SDL_CreateWindowAndRenderer(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE,
-                                     SDL_WINDOW_RESIZABLE | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0), &host->window,
-                                     &host->renderer) ||
-        !(host->texture = SDL_CreateTexture(host->renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING,
-                                            AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT)) ||
-        !SDL_SetTextureScaleMode(host->texture, SDL_SCALEMODE_NEAREST) ||
-        !SDL_SetRenderLogicalPresentation(host->renderer, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT,
-                                          SDL_LOGICAL_PRESENTATION_INTEGER_SCALE)) {
+    /* the screen through Vulkan, as every other console's window, where the host has a Vulkan window; else SDL's
+       renderer, said */
+    {
+        char why[256];
+        host->vk = agb_vk_open(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE, fullscreen, why,
+                               sizeof why);
+        if (!host->vk)
+            fprintf(stderr, "scarletnx-agb: no Vulkan window (%s): the screen shows through SDL's renderer\n", why);
+    }
+    if (host->vk)
+        host->window = agb_vk_window(host->vk);
+    else if (!SDL_CreateWindowAndRenderer(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE,
+                                          SDL_WINDOW_RESIZABLE | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0),
+                                          &host->window, &host->renderer) ||
+             !(host->texture = SDL_CreateTexture(host->renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING,
+                                                 AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT)) ||
+             !SDL_SetTextureScaleMode(host->texture, SDL_SCALEMODE_NEAREST) ||
+             !SDL_SetRenderLogicalPresentation(host->renderer, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT,
+                                               SDL_LOGICAL_PRESENTATION_INTEGER_SCALE)) {
         snprintf(error, error_size, "cannot open the game's window: %s", SDL_GetError());
         agb_host_close(host);
         return NULL;
     }
-    /* each frame whole on screen, as the launcher presents its own */
-    if (!SDL_SetRenderVSync(host->renderer, 1))
-        fprintf(stderr,
-                "scarletnx-agb: the display refused vsync 1 (%s): frames go on screen with vsync 0 and may tear\n",
-                SDL_GetError());
-    snx_window_icon(host->window);
+    /* each frame whole on screen, as the launcher presents its own (the Vulkan window's images go at the display's
+       refresh too) */
+    if (!host->vk) {
+        if (!SDL_SetRenderVSync(host->renderer, 1))
+            fprintf(stderr,
+                    "scarletnx-agb: the display refused vsync 1 (%s): frames go on screen with vsync 0 and may tear\n",
+                    SDL_GetError());
+        snx_window_icon(host->window);
+    }
     snx_pad_map_position(&host->pad); /* A where the console has it, east */
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO) ||
         !(host->audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL)) ||
@@ -145,7 +163,10 @@ void agb_host_close(AgbHost* host) {
     if (host->notice_texture) SDL_DestroyTexture(host->notice_texture);
     if (host->texture) SDL_DestroyTexture(host->texture);
     if (host->renderer) SDL_DestroyRenderer(host->renderer);
-    if (host->window) SDL_DestroyWindow(host->window);
+    if (host->vk)
+        agb_vk_close(host->vk); /* its window with it */
+    else if (host->window)
+        SDL_DestroyWindow(host->window);
     free(host);
     SDL_Quit();
 }
@@ -220,6 +241,7 @@ static void notice_draw(AgbHost* host) {
 }
 
 void agb_host_draw(AgbHost* host, const uint32_t* framebuffer) {
+    if (!host->renderer) return; /* the Vulkan window's frames go through agb_host_frame */
     SDL_UpdateTexture(host->texture, NULL, framebuffer, AGB_SCREEN_WIDTH * 4);
     SDL_SetRenderDrawColor(host->renderer, 0, 0, 0, 255);
     SDL_RenderClear(host->renderer);
@@ -227,9 +249,17 @@ void agb_host_draw(AgbHost* host, const uint32_t* framebuffer) {
     notice_draw(host);
 }
 
+const char* agb_host_notice(const AgbHost* host) {
+    return snx_notice_shown(&host->notice, SDL_GetTicksNS()) ? host->notice.text : "";
+}
+
 void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* samples, uint32_t count) {
-    agb_host_draw(host, framebuffer);
-    SDL_RenderPresent(host->renderer);
+    if (host->vk)
+        (void)agb_vk_frame(host->vk, framebuffer, &host->notice); /* no image for it: the next frame goes */
+    else {
+        agb_host_draw(host, framebuffer);
+        SDL_RenderPresent(host->renderer);
+    }
     if (host->audio && SDL_GetAudioStreamQueued(host->audio) < (int)(QUEUED_FRAMES * count * 4))
         SDL_PutAudioStreamData(host->audio, samples, (int)(count * 4));
     uint64_t now = SDL_GetTicksNS();
