@@ -1445,7 +1445,7 @@ static int dump_modules(int argc, char** argv) {
         SnxPaths paths = {0};
         int rc;
         paths.repo = data ? data : ".";
-        rc = snx_dump_modules_of_dump(argv[2], &paths, argv[3]);
+        rc = snx_dump_modules_of_dump(argv[2], &paths, argv[3]) ? 1 : 0;
         free(data);
         free(dir);
         free(self);

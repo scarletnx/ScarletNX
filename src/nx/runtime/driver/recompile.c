@@ -324,17 +324,20 @@ int snx_dump_modules_of_dump(const char* dump, const SnxPaths* paths, const char
     SnxU64 addon = 0, owner = 0, version = SNX_NO_VERSION;
     char error[1024];
     int rc, kind;
-    if (snx_extract_title(dump, paths, &addon, &owner, &version, NULL)) return 1;
+    if (snx_extract_title(dump, paths, &addon, &owner, &version, NULL)) return -1;
     kind = snx_addon_kind(owner, addon);
-    if (kind == SNX_ADDON_DLC) return snx_error("%s is a DLC, which has no program of its own", dump);
+    if (kind == SNX_ADDON_DLC) {
+        snx_error("%s is a DLC, which has no program of its own", dump);
+        return -1;
+    }
     /* an update's ExeFS is whole, read without its game */
     if (load_dump(dump, kind == SNX_ADDON_UPDATE ? dump : NULL, 0, paths, 1, NULL, NULL, 0, &program, error,
                   sizeof error))
-        return 1;
+        return -1;
     rc = snx_dump_loaded(&program, outdir, error, sizeof error);
     if (rc) snx_error("%s", error);
     snx_free_program(&program);
-    return rc ? 1 : 0;
+    return rc;
 }
 /* The NROs of a dump's program of index (nros.h), from its RomFS read in place. An update's RomFS is its own over its
    game's, so its dump is read with the game's (base, the dump the game's .ini records): alone it has no RomFS, and

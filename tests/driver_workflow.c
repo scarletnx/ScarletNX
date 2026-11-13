@@ -267,7 +267,7 @@ int snx_dump_modules_of_dump(const char* dump, const SnxPaths* paths, const char
     dumped = snx_strdup(dump);
     dumped_into = snx_strdup(outdir);
     dumped_repo = paths->repo && paths->repo[0];
-    return 0;
+    return strstr(dump, "unreadable") ? -1 : 0; /* a dump it cannot read: -1, said */
 }
 /* recompile.c's: a setting of the recompile, from the generated tables */
 const IniOpt* snx_recompile_setting(const char* key) {
@@ -893,6 +893,13 @@ int main(int argc, char** argv) {
         free(dumped);
         dumped = NULL;
         CHECK(snx_driver(4, folder_args) != 0 && !dumped);
+        { /* the reader's -1 is the run's exit status 1, never the -1 that says no mode took the arguments */
+            char bad[] = "unreadable.nsp";
+            char* bad_args[] = {program, flag, bad, into, NULL};
+            CHECK(snx_driver(4, bad_args) == 1 && dumped && !strcmp(dumped, bad));
+            free(dumped);
+            dumped = NULL;
+        }
         free(folder);
         puts("PASS --dump-modules reads an XCI or NSP in place, an extracted program through the loader");
     }
