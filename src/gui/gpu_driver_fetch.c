@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* gui/gpu_driver_fetch.h. The repositories, a release's fields and which one is the latest, the newest-first order and
-   the recommendation by model are Eden's (DriverFetcherFragment.kt: repoList, Release.fromJson, driverMap,
-   parseAdrenoModel); the proprietary mark is ScarletNX's */
+/* gui/gpu_driver_fetch.h. Eden's repositories, a release's fields and which one is the latest, the newest-first order
+   and the recommendation by Adreno model are Eden's (DriverFetcherFragment.kt: repoList, Release.fromJson, driverMap,
+   parseAdrenoModel); NX-Mali, the recommendation by Mali model and the proprietary mark are ScarletNX's */
 #include "gui/gpu_driver_fetch.h"
 #include "common/utilities/ascii.h"
 #include "gui/i18n.h"
@@ -12,11 +12,12 @@
 #include <string.h>
 
 const GuiDriverRepo gui_driver_repos[GUI_DRIVER_REPOS] = {
-    {"Mr. Purple Turnip", "MrPurple666/purple-turnip", 0, 0},
-    {"GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", 0, 0},
-    {"KIMCHI Turnip", "K11MCH1/AdrenoToolsDrivers", 1, 1},
-    {"Weab-Chan Freedreno", "Weab-chan/freedreno_turnip-CI", 0, 0},
-    {"Whitebelyash Turnip", "whitebelyash/freedreno_turnip-CI", 0, 1}};
+    {"Mr. Purple Turnip", "MrPurple666/purple-turnip", 0, 0, GUI_DRIVER_ADRENO},
+    {"GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", 0, 0, GUI_DRIVER_ADRENO},
+    {"KIMCHI Turnip", "K11MCH1/AdrenoToolsDrivers", 1, 1, GUI_DRIVER_ADRENO},
+    {"Weab-Chan Freedreno", "Weab-chan/freedreno_turnip-CI", 0, 0, GUI_DRIVER_ADRENO},
+    {"Whitebelyash Turnip", "whitebelyash/freedreno_turnip-CI", 0, 1, GUI_DRIVER_ADRENO},
+    {"NX-Mali", "Slopinator99/NX-Mali", 0, 0, GUI_DRIVER_MALI}};
 
 /* whether text has part, in any case */
 static int has_nocase(const char* text, const char* part) {
@@ -127,30 +128,54 @@ int gui_adreno_model(const char* gpu_name) {
     for (; snx_is_digit((unsigned char)*p) && model < 100000; ++p) model = model * 10 + (*p - '0');
     return *p && *p != ' ' ? 0 : model;
 }
-/* Eden's picks by model (DriverFetcherFragment.kt), each as the repository its release is in and a part of that
-   release's tag, NULL for the repository's latest. 605 to 613 have no multiview in hardware: EOL-24.3.4 then says
-   Vulkan 1.0, short of what ScarletNX needs, and T30 emulates it and says 1.4 */
-static const struct {
-    int lo, hi;
-    const char *driver, *repo, *tag;
-} g_recommended[] = {{10, 99, "KIMCHI Latest", "K11MCH1/AdrenoToolsDrivers", NULL},
-                     {600, 613, "Mr. Purple T30", "MrPurple666/purple-turnip", "T30"},
-                     {614, 639, "Mr. Purple EOL-24.3.4", "MrPurple666/purple-turnip", "EOL-24.3.4"},
-                     {640, 699, "Mr. Purple T19", "MrPurple666/purple-turnip", "T19"},
-                     {700, 710, "KIMCHI 25.2.0_r5", "K11MCH1/AdrenoToolsDrivers", "v25.2.0-rc.05"},
-                     {711, 799, "Mr. Purple T23", "MrPurple666/purple-turnip", "T23"},
-                     {800, 899, "GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", NULL}};
-const char* gui_driver_recommended(int model) {
-    size_t i;
-    for (i = 0; i < sizeof g_recommended / sizeof g_recommended[0]; ++i)
-        if (model >= g_recommended[i].lo && model <= g_recommended[i].hi) return g_recommended[i].driver;
-    return SNX_TR_NOOP("Unsupported");
+int gui_mali_model(const char* gpu_name) {
+    const char* p = gpu_name + 6;
+    int model = 0;
+    /* Mali-G<model>, then the end, " MC<cores>", "-Immortalis" or the AE of an automotive part */
+    if (strncmp(gpu_name, "Mali-G", 6) || !snx_is_digit((unsigned char)*p)) return 0;
+    for (; snx_is_digit((unsigned char)*p) && model < 100000; ++p) model = model * 10 + (*p - '0');
+    return !*p || *p == ' ' || *p == '-' || !strncmp(p, "AE", 2) ? model : 0;
 }
-int gui_driver_recommended_release(int model, int repo, const GuiDriverReleases* list) {
-    size_t i, k;
-    for (i = 0; i < sizeof g_recommended / sizeof g_recommended[0]; ++i)
+/* the picks by model, each as the repository its release is in and a part of that release's tag, NULL for the
+   repository's latest. Adreno's are Eden's (DriverFetcherFragment.kt); 605 to 613 have no multiview in hardware:
+   EOL-24.3.4 then says Vulkan 1.0, short of what ScarletNX needs, and T30 emulates it and says 1.4. The Malis are
+   those NX-Mali names as its own (its mali_physical_device.c, mali_device_name): the G52, first-generation Valhall's
+   G57, G68, G77 and G78, the G615 and the G715; on another it makes no device. They count only with
+   GUI_DRIVER_MALI_RECOMMENDED */
+static const struct {
+    int gpu, lo, hi;
+    const char *driver, *repo, *tag;
+} g_recommended[] = {{GUI_DRIVER_ADRENO, 10, 99, "KIMCHI Latest", "K11MCH1/AdrenoToolsDrivers", NULL},
+                     {GUI_DRIVER_ADRENO, 600, 613, "Mr. Purple T30", "MrPurple666/purple-turnip", "T30"},
+                     {GUI_DRIVER_ADRENO, 614, 639, "Mr. Purple EOL-24.3.4", "MrPurple666/purple-turnip", "EOL-24.3.4"},
+                     {GUI_DRIVER_ADRENO, 640, 699, "Mr. Purple T19", "MrPurple666/purple-turnip", "T19"},
+                     {GUI_DRIVER_ADRENO, 700, 710, "KIMCHI 25.2.0_r5", "K11MCH1/AdrenoToolsDrivers", "v25.2.0-rc.05"},
+                     {GUI_DRIVER_ADRENO, 711, 799, "Mr. Purple T23", "MrPurple666/purple-turnip", "T23"},
+                     {GUI_DRIVER_ADRENO, 800, 899, "GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", NULL},
+                     {GUI_DRIVER_MALI, 52, 52, "NX-Mali", "Slopinator99/NX-Mali", NULL},
+                     {GUI_DRIVER_MALI, 57, 57, "NX-Mali", "Slopinator99/NX-Mali", NULL},
+                     {GUI_DRIVER_MALI, 68, 68, "NX-Mali", "Slopinator99/NX-Mali", NULL},
+                     {GUI_DRIVER_MALI, 77, 78, "NX-Mali", "Slopinator99/NX-Mali", NULL},
+                     {GUI_DRIVER_MALI, 615, 615, "NX-Mali", "Slopinator99/NX-Mali", NULL},
+                     {GUI_DRIVER_MALI, 715, 715, "NX-Mali", "Slopinator99/NX-Mali", NULL}};
+#define GUI_DRIVER_PICKS (sizeof g_recommended / sizeof g_recommended[0])
+/* gpu_name's pick in g_recommended, GUI_DRIVER_PICKS for none */
+static size_t recommended_of(const char* gpu_name) {
+    int adreno = gui_adreno_model(gpu_name), mali = gui_mali_model(gpu_name);
+    size_t i;
+    for (i = 0; i < GUI_DRIVER_PICKS; ++i) {
+        int model = g_recommended[i].gpu == GUI_DRIVER_ADRENO ? adreno : GUI_DRIVER_MALI_RECOMMENDED ? mali : 0;
         if (model >= g_recommended[i].lo && model <= g_recommended[i].hi) break;
-    if (i == sizeof g_recommended / sizeof g_recommended[0] || repo < 0 || repo >= GUI_DRIVER_REPOS ||
+    }
+    return i;
+}
+const char* gui_driver_recommended(const char* gpu_name) {
+    size_t i = recommended_of(gpu_name);
+    return i < GUI_DRIVER_PICKS ? g_recommended[i].driver : SNX_TR_NOOP("Unsupported");
+}
+int gui_driver_recommended_release(const char* gpu_name, int repo, const GuiDriverReleases* list) {
+    size_t i = recommended_of(gpu_name), k;
+    if (i == GUI_DRIVER_PICKS || repo < 0 || repo >= GUI_DRIVER_REPOS ||
         strcmp(gui_driver_repos[repo].path, g_recommended[i].repo))
         return -1;
     for (k = 0; k < list->count; ++k)

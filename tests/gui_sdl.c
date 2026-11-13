@@ -2890,32 +2890,38 @@ static const SnxGpuDriverHost host_other = {.system = "Android",
                                             .api = 36,
                                             .render = "/dev/dri/renderD128, kernel driver panfrost",
                                             .built = 1};
-/* a GPU driver package's zip, as released: meta.json, an arm64 library (its ELF header) and its folder name's file */
-static char* driver_zip(const char* temporary, const char* name) {
+/* a GPU driver package's zip, as released: meta.json, an arm64 library named library (its ELF header) and its folder
+   name's file */
+static char* package_zip(const char* temporary, const char* name, const char* meta, const char* library) {
     mz_zip_archive z = {0};
     void* zip = NULL;
     size_t size = 0;
     unsigned char lib[64] = {0};
-    const char* meta = "{\"name\": \"Turnip test\", \"vendor\": \"Mesa\", \"driverVersion\": \"Vulkan 1.4.335\", "
-                       "\"minApi\": 28, \"libraryName\": \"libvulkan_freedreno.so\"}";
     char* path = snx_path_join(temporary, name);
     memcpy(lib, "\177ELF\2\1\1", 7);
     lib[18] = 183;
     assert(mz_zip_writer_init_heap(&z, 0, 0));
     assert(mz_zip_writer_add_mem(&z, "meta.json", meta, strlen(meta), MZ_BEST_SPEED));
-    assert(mz_zip_writer_add_mem(&z, "libvulkan_freedreno.so", lib, sizeof lib, MZ_BEST_SPEED));
+    assert(mz_zip_writer_add_mem(&z, library, lib, sizeof lib, MZ_BEST_SPEED));
     assert(mz_zip_writer_finalize_heap_archive(&z, &zip, &size));
     mz_zip_writer_end(&z);
     assert(!snx_write_file(path, zip, size));
     mz_free(zip);
     return path;
 }
+/* a Turnip package's */
+static char* driver_zip(const char* temporary, const char* name) {
+    return package_zip(temporary, name,
+                       "{\"name\": \"Turnip test\", \"vendor\": \"Mesa\", \"driverVersion\": \"Vulkan 1.4.335\", "
+                       "\"minApi\": 28, \"libraryName\": \"libvulkan_freedreno.so\"}",
+                       "libvulkan_freedreno.so");
+}
 /* Settings > App > GPU Drivers. On a desktop: its rows, this device said, Download Driver and Add Driver greyed, each
    saying Android only on its row and why as its help and on Enter, with no page and no picker; a package left in the
    folder greyed too, its box's Use refused saying why, its Remove asked first. On a phone with an Xclipse GPU: the
-   page saying so, Download Driver greyed for its Adreno drivers, a package added and picked. On a phone with a Mali
-   GPU: the page naming its node, the same row greyed. On a phone with another GPU: greyed as a desktop, saying which
-   GPUs, the package removed by Del. Then Freedreno Settings: a preset applied,
+   page saying so, Download Driver greyed for its Adreno and Mali drivers, a package added and picked. On a phone with
+   a Mali GPU: the page naming its node, nothing greyed. On a phone with another GPU: greyed as a desktop, saying
+   which GPUs, the package removed by Del. Then Freedreno Settings: a preset applied,
    a variable Freedreno does not read refused, and Save keeping them in app.ini */
 static void gpu_drivers(App* app, const char* temporary) {
     char *dir = snx_path_join(temporary, "gpu_drivers"), *zip = driver_zip(temporary, "Turnip_v32.zip"), *kept;
@@ -2998,36 +3004,35 @@ static void gpu_drivers(App* app, const char* temporary) {
     assert(!snx_path_exists(package) && !app->packages_count &&
            !strcmp(app->editor.note, "Removed gpu_drivers/Turnip_v32"));
     /* a phone with an Xclipse GPU: packages load, the page saying its GPU and render node; Download Driver alone
-       greyed, as its repositories hold Adreno's drivers, saying to add the zip; a package added is picked */
+       greyed, as its repositories hold Adreno's and Mali's drivers, saying to add the zip; a package added is
+       picked */
     app->gpu_host = host_xclipse;
     open_drivers(app, NULL, NULL, 0);
     assert(!strcmp(app->editor.note, "This device: Android API 34, arm64, Xclipse GPU (/dev/dri/renderD128, kernel "
                                      "driver amdgpu): custom drivers load."));
-    assert(gui_editor_rows(&app->editor) == 5 && !strcmp(app->drivers_form.value[1], "Adreno only") &&
+    assert(gui_editor_rows(&app->editor) == 5 && !strcmp(app->drivers_form.value[1], "Adreno and Mali only") &&
            !app->drivers_form.value[2][0] && form_row_off(app, &app->editor, 1) && !form_row_off(app, &app->editor, 2));
     app->editor.row = 1;
     key(app, SDLK_RETURN);
-    assert(app->form == GUI_FORM_DRIVERS && strstr(app->editor.note, "RADV, is added from its zip with Add Driver"));
+    assert(app->form == GUI_FORM_DRIVERS && strstr(app->editor.note, "hold drivers for Adreno and Mali GPUs") &&
+           strstr(app->editor.note, "RADV, is added from its zip with Add Driver"));
     driver_picked(app, zip, NULL, false);
     assert(app->packages_count == 1 && !strcmp(app->gpu_driver, "Turnip_v32") &&
            !strcmp(app->drivers_form.value[1], "(*)") && !form_row_off(app, &app->editor, 1));
     assert(!strcmp(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/Turnip_v32. GPU driver for "
                                      "every game: Turnip test"));
     render(app);
-    shows(app, "Adreno only", rgb(app->theme.soft));
-    /* a phone with a Mali GPU: packages load, the page naming its node; Download Driver alone greyed, as its
-       repositories hold Adreno's drivers */
+    shows(app, "Adreno and Mali only", rgb(app->theme.soft));
+    /* a phone with a Mali GPU: packages load, the page naming its node; nothing greyed, NX-Mali's releases being
+       Download Driver's there (download_driver) */
     app->gpu_host = host_mali;
     open_drivers(app, NULL, NULL, 0);
     assert(!strcmp(app->editor.note, "This device: Android API 36, arm64, Mali GPU (/dev/mali0 or /dev/mali): "
                                      "custom drivers load."));
     assert(gui_editor_rows(&app->editor) == 6 && !strcmp(app->drivers_form.value[1], "(*)") &&
-           !strcmp(app->drivers_form.value[2], "Adreno only") && !app->drivers_form.value[3][0] &&
-           !form_row_off(app, &app->editor, 1) && form_row_off(app, &app->editor, 2) &&
-           !form_row_off(app, &app->editor, 3));
-    app->editor.row = 2; /* Download Driver */
-    key(app, SDLK_RETURN);
-    assert(app->form == GUI_FORM_DRIVERS && strstr(app->editor.note, "hold drivers for Adreno GPUs"));
+           !app->drivers_form.value[2][0] && !app->drivers_form.value[3][0] && !form_row_off(app, &app->editor, 1) &&
+           !form_row_off(app, &app->editor, 2) && !form_row_off(app, &app->editor, 3));
+    assert(strstr(app->drivers_about[2], "NX-Mali for a Mali"));
     /* a phone with another GPU: the package, Download Driver and Add Driver greyed, saying which GPUs load one; Del
        still removes the package, the launcher's pick going back to the System driver */
     app->gpu_host = host_other;
@@ -3100,18 +3105,35 @@ static void gpu_drivers(App* app, const char* temporary) {
     free(zip);
     free(bad);
 }
-/* Download Driver's network, the test's own: each repository's releases (one failing as GitHub's rate limit does),
-   and the package a release's asset is */
+/* Download Driver's network, the test's own: each repository's releases (one failing as GitHub's rate limit does,
+   NX-Mali's as GitHub lists its first), and the package a release's asset is; the lists asked for counted */
 static struct {
     char* zip; /* the package's bytes */
     size_t zip_size;
+    char* mali_zip; /* NX-Mali's */
+    size_t mali_zip_size;
+    int lists, mali_lists; /* the releases asked for: every repository's, NX-Mali's */
 } g_fake_net;
 static int fake_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size) {
     const char* body = "[]";
     memset(out, 0, sizeof *out);
     snprintf(out->url, sizeof out->url, "%s", url);
     out->status = 200;
-    if (strstr(url, "/repos/MrPurple666/purple-turnip/releases"))
+    if (strstr(url, "https://api.github.com/repos/")) ++g_fake_net.lists;
+    if (strstr(url, "/repos/Slopinator99/NX-Mali/releases")) {
+        ++g_fake_net.mali_lists;
+        body = "[{\"tag_name\": \"beta\", \"name\": \"NX-Mali 0.0.1\", \"prerelease\": false,"
+               " \"body\": \"First release of the WIP driver for Mali devices\","
+               " \"published_at\": \"2026-11-13T15:57:50Z\", \"assets\": [{\"name\": \"NX-Mali_0.0.1.zip\","
+               " \"size\": 4404914, \"browser_download_url\":"
+               " \"https://example.invalid/NX-Mali_0.0.1.zip\"}]}]";
+    } else if (!strcmp(url, "https://example.invalid/NX-Mali_0.0.1.zip")) {
+        out->body = (char*)malloc(g_fake_net.mali_zip_size + 1);
+        memcpy(out->body, g_fake_net.mali_zip, g_fake_net.mali_zip_size);
+        out->size = g_fake_net.mali_zip_size;
+        if (o && o->progress) o->progress(o->user, out->size, out->size);
+        return 0;
+    } else if (strstr(url, "/repos/MrPurple666/purple-turnip/releases"))
         body = "[{\"tag_name\": \"T30\", \"name\": \"Turnip T30\", \"prerelease\": false, \"body\": \"Notes\","
                " \"published_at\": \"2026-08-17T12:38:01Z\", \"assets\": [{\"name\": \"turnip.zip\", \"size\": 300,"
                " \"browser_download_url\": \"https://example.invalid/turnip.zip\"}, {\"name\": \"gone.zip\","
@@ -3346,16 +3368,26 @@ static void gba_covers(App* app, const char* rom, const char* folder, const char
     free(icon);
     free(ini);
 }
-/* GPU Drivers > Download Driver on a phone with an Adreno GPU, against the test's network: the lists fetched as the
-   page opens, one repository's failure said, a GPU maker's own marked in its release's box, a download failing said,
-   and a package downloaded, added and picked */
+/* GPU Drivers > Download Driver on a phone with an Adreno GPU, against the test's network: Eden's five lists fetched
+   as the page opens, NX-Mali's not, one repository's failure said, a GPU maker's own marked in its release's box, a
+   download failing said, and a package downloaded, added and picked. Then on a phone with a Mali GPU: NX-Mali's list
+   alone, recommended only as GUI_DRIVER_MALI_RECOMMENDED says, its package (meta.json as its first release's)
+   downloaded, added and picked */
 static void download_driver(App* app, const char* temporary) {
     char* zip = driver_zip(temporary, "turnip.zip");
+    char* mali_zip = package_zip(
+        temporary, "NX-Mali_0.0.1.zip",
+        "{\"name\": \"NX-Mali 0.0.1\", \"description\": \"NX-Mali 0.0.1: Vulkan driver for Arm Mali-G615 (kbase/CSF)\","
+        " \"author\": \"NX-Mali contributors, based on bmdhacks/malisx2\", \"vendor\": \"NX-Mali\","
+        " \"driverVersion\": \"0.0.1\", \"minApi\": 29, \"libraryName\": \"libvulkan_nxmali.so\"}",
+        "libvulkan_nxmali.so");
     SnxGpuDriverHost was = app->gpu_host;
     size_t i;
     int row = -1, blob = -1;
     g_fake_net.zip = (char*)snx_read_file(zip, &g_fake_net.zip_size);
-    assert(g_fake_net.zip);
+    g_fake_net.mali_zip = (char*)snx_read_file(mali_zip, &g_fake_net.mali_zip_size);
+    g_fake_net.lists = g_fake_net.mali_lists = 0;
+    assert(g_fake_net.zip && g_fake_net.mali_zip);
     app->https_get = fake_get;
     app->gpu_host = host_adreno;
     open_drivers(app, NULL, NULL, 0);
@@ -3373,12 +3405,14 @@ static void download_driver(App* app, const char* temporary) {
     assert(app->fetch_state[2] == GUI_FETCH_FAILED && strstr(app->fetch_error[2], "HTTP 403") &&
            strstr(app->fetch_error[2], "API rate limit exceeded"));
     assert(app->fetch_state[4] == GUI_FETCH_LISTED && !app->fetch_lists[4].count);
-    assert(strstr(app->editor.note, "GPU: ") && strstr(app->editor.note, "Recommended: "));
+    assert(g_fake_net.lists == 5 && !g_fake_net.mali_lists && app->fetch_groups == 5);
+    assert(!strcmp(app->editor.note, "GPU: Adreno (TM) 740. Recommended: Mr. Purple T23."));
     render(app); /* as Folders: a box a repository, its title over its rows */
-    assert(grouped_entries(app) == gui_editor_rows(&app->editor) + GUI_DRIVER_REPOS);
+    assert(grouped_entries(app) == gui_editor_rows(&app->editor) + 5);
     for (i = 0; i < (size_t)gui_editor_rows(&app->editor); ++i) {
         int group;
-        assert(grouped_entry_row(app, grouped_entry(app, (int)i), &group) == (int)i && group == app->fetch_repo[i]);
+        assert(grouped_entry_row(app, grouped_entry(app, (int)i), &group) == (int)i && group == app->fetch_repo[i] &&
+               group == app->fetch_group[i] && app->fetch_repo[i] < 5);
         if (app->fetch_release[i] == 0 && app->fetch_repo[i] == 0) row = (int)i;
         if (app->fetch_release[i] >= 0 && app->fetch_repo[i] == 1) blob = (int)i;
         if (app->fetch_repo[i] == 2) /* the failed one: a row that fetches again, its failure its help */
@@ -3441,12 +3475,60 @@ static void download_driver(App* app, const char* temporary) {
     app->driver_off = 0;
     change_answer(app, GUI_ASK_DRIVER, true); /* back to none, for what follows */
     assert(!app->packages_count && !app->gpu_driver[0]);
+    /* a phone with a Mali GPU NX-Mali drives: its list alone fetched, one box, the latest release recommended only
+       with GUI_DRIVER_MALI_RECOMMENDED; its package downloaded, added and picked */
+    app->gpu_host = host_mali;
+    snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", "Mali-G615 MC6");
+    g_fake_net.lists = 0;
+    open_drivers(app, NULL, NULL, 0);
+    assert(!app->drivers_form.value[1][0] && !form_row_off(app, &app->editor, 1));
+    app->editor.row = 1; /* Download Driver */
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_FETCH);
+    pump_until(app, &app->fetching);
+    assert(g_fake_net.lists == 1 && g_fake_net.mali_lists == 1 && app->fetch_state[5] == GUI_FETCH_LISTED);
+    assert(app->fetch_groups == 1 && !strcmp(app->fetch_title[0], "NX-Mali: 1 release") &&
+           gui_editor_rows(&app->editor) == 1 && app->fetch_repo[0] == 5 && !app->fetch_group[0] &&
+           !app->fetch_release[0] && !strcmp(app->fetch_label[0], "NX-Mali 0.0.1"));
+    assert(!strcmp(app->fetch_form.value[0], GUI_DRIVER_MALI_RECOMMENDED ? "Latest, Recommended" : "Latest"));
+    assert(!strcmp(app->editor.note, GUI_DRIVER_MALI_RECOMMENDED ? "GPU: Mali-G615 MC6. Recommended: NX-Mali."
+                                                                 : "GPU: Mali-G615 MC6. Recommended: Unsupported."));
+    render(app);
+    assert(grouped_entries(app) == 2);
+    {
+        int group;
+        assert(grouped_entry_row(app, 0, &group) < 0 && !group && grouped_entry_row(app, 1, &group) == 0 && !group);
+    }
+    key(app, SDLK_RETURN);
+    assert(app->picks_shown && app->picks_of == GUI_PICKS_ASSET && app->picks.count == 1 &&
+           strstr(pick_label(app, 0), "NX-Mali_0.0.1.zip, ") && !strstr(pick_label(app, 0), "proprietary"));
+    key(app, SDLK_RETURN);
+    pump_until(app, &app->downloading);
+    assert(app->form == GUI_FORM_DRIVERS && app->packages_count == 1 && !strcmp(app->packages[0].id, "NX-Mali_0.0.1") &&
+           !strcmp(app->gpu_driver, "NX-Mali_0.0.1") && !strcmp(app->drivers_form.value[1], "(*)"));
+    assert(strstr(app->editor.note, "Added NX-Mali 0.0.1 (0.0.1), in gpu_drivers/NX-Mali_0.0.1. GPU driver for every "
+                                    "game: NX-Mali 0.0.1"));
+    /* a Mali it does not drive: listed, never recommended */
+    snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", "Mali-G710 MC10");
+    app->editor.row = 2; /* Download Driver, under the package */
+    key(app, SDLK_RETURN);
+    pump_until(app, &app->fetching);
+    assert(app->fetch_groups == 1 && !strcmp(app->fetch_form.value[0], "Latest") &&
+           !strcmp(app->editor.note, "GPU: Mali-G710 MC10. Recommended: Unsupported."));
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_DRIVERS);
+    app->editor.row = 1;
+    app->driver_off = 0;
+    change_answer(app, GUI_ASK_DRIVER, true);
+    assert(!app->packages_count && !app->gpu_driver[0]);
     app->gpu_host = was;
     key(app, SDLK_ESCAPE);
     assert(app->form == GUI_FORM_APP);
     for (i = 0; i < GUI_DRIVER_REPOS; ++i) gui_driver_releases_free(&app->fetch_lists[i]);
     free(g_fake_net.zip);
+    free(g_fake_net.mali_zip);
     free(zip);
+    free(mali_zip);
     app->https_get = NULL;
 }
 /* Run edenprobe's launches through the fake driver, each let end as it starts (its .go), until the box */

@@ -3179,8 +3179,8 @@ msgid "Not in this build"
 msgstr "此构建中没有"
 
 #: src/gui/main.c
-msgid "Adreno only"
-msgstr "仅 Adreno"
+msgid "Adreno and Mali only"
+msgstr "仅 Adreno 和 Mali"
 
 #: src/gui/main.c
 #, c-format
@@ -3242,12 +3242,12 @@ msgid "Download Driver"
 msgstr "下载驱动"
 
 #: src/gui/main.c
-msgid "The driver repositories Eden lists hold drivers for Adreno GPUs. An Xclipse GPU's driver, RADV, is added from its zip with Add Driver"
-msgstr "Eden 列出的驱动仓库提供 Adreno GPU 的驱动。Xclipse GPU 的驱动 RADV 需用「添加驱动」从其 zip 添加"
+msgid "The driver repositories listed hold drivers for Adreno and Mali GPUs. An Xclipse GPU's driver, RADV, is added from its zip with Add Driver"
+msgstr "列出的驱动仓库提供 Adreno 和 Mali GPU 的驱动。Xclipse GPU 的驱动 RADV 需用「添加驱动」从其 zip 添加"
 
 #: src/gui/main.c
-msgid "The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded and added as Add Driver adds a zip. A GPU maker's own drivers are marked proprietary, no license"
-msgstr "来自 GitHub 的 Eden 所列驱动仓库的发布版本：选中的版本会被下载，并像「添加驱动」添加 zip 一样添加。GPU 厂商自己的驱动标为专有、无许可证"
+msgid "Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's marked proprietary, no license), NX-Mali for a Mali. One picked is downloaded and added as Add Driver adds a zip"
+msgstr "来自 GitHub 发布版本的驱动：Adreno 用 Turnip 和 GPU 厂商自己的驱动（厂商的标为专有、无许可证），Mali 用 NX-Mali。选中的会被下载，并像「添加驱动」添加 zip 一样添加"
 
 #: src/gui/main.c
 msgid "Add Driver"
@@ -6613,6 +6613,15 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "Adreno only"
+#~ msgstr "仅 Adreno"
+
+#~ msgid "The driver repositories Eden lists hold drivers for Adreno GPUs. An Xclipse GPU's driver, RADV, is added from its zip with Add Driver"
+#~ msgstr "Eden 列出的驱动仓库提供 Adreno GPU 的驱动。Xclipse GPU 的驱动 RADV 需用「添加驱动」从其 zip 添加"
+
+#~ msgid "The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded and added as Add Driver adds a zip. A GPU maker's own drivers are marked proprietary, no license"
+#~ msgstr "来自 GitHub 的 Eden 所列驱动仓库的发布版本：选中的版本会被下载，并像「添加驱动」添加 zip 一样添加。GPU 厂商自己的驱动标为专有、无许可证"
 
 #~ msgid "Runs a GBA ROM on the emulated AGB board"
 #~ msgstr "在模拟的 AGB 主板上运行 GBA ROM"
