@@ -347,18 +347,21 @@ void backend_window_safe(int* x, int* y, int* w, int* h) {
    the log and the console to the files. At most MEMORY_LINES in a run, for a warning that comes again and again. Any
    thread: the renderer's part takes no lock of Vulkan (vk_memory_text) */
 #define MEMORY_LINES 6
-/* 1 while more lines may come */
+/* 1 while the watch goes on: more lines may come, or the renderer frees memory at each warning */
 static int memory_line(const char* why) {
     char stats[320], gpu[1024] = "";
     u32 n;
+    /* what the renderer can make again goes at its next frame, at every warning, past the lines too */
+    const int release = g_renderer && g_renderer->memory_release;
+    if (release) g_renderer->memory_release(why);
     if (__atomic_load_n(&g_sdl3.memory_said, __ATOMIC_RELAXED) >= MEMORY_LINES ||
         (n = __atomic_fetch_add(&g_sdl3.memory_said, 1, __ATOMIC_RELAXED)) >= MEMORY_LINES)
-        return 0;
+        return release;
     resources_text(stats, sizeof stats);
     if (g_renderer && g_renderer->memory_text) g_renderer->memory_text(gpu, sizeof gpu);
     LOG("memory: %s: %s%s%s\n", why, stats, gpu[0] ? ", " : "", gpu);
     log_sync();
-    return n + 1 < MEMORY_LINES;
+    return release || n + 1 < MEMORY_LINES;
 }
 #ifdef SDL_PLATFORM_APPLE
 /* The system's memory pressure on iOS and macOS, on a queue of the system: SDL's low memory event (iOS's alone) comes
@@ -396,10 +399,31 @@ static bool SDLCALL lifecycle(void* unused, SDL_Event* e) {
         case SDL_EVENT_DID_ENTER_BACKGROUND: LOG("lifecycle: the app is in the background\n"); break;
         case SDL_EVENT_WILL_ENTER_FOREGROUND: LOG("lifecycle: the app will enter the foreground\n"); break;
         case SDL_EVENT_DID_ENTER_FOREGROUND: LOG("lifecycle: the app is in the foreground\n"); break;
-        case SDL_EVENT_LOW_MEMORY:
+        case SDL_EVENT_LOW_MEMORY: {
+            /* Android's level, which GameActivity passed before SDL's event that carries none */
+            static const struct {
+                int level;
+                const char* name;
+            } levels[] = {{80, "TRIM_MEMORY_COMPLETE"},         {60, "TRIM_MEMORY_MODERATE"},
+                          {40, "TRIM_MEMORY_BACKGROUND"},       {20, "TRIM_MEMORY_UI_HIDDEN"},
+                          {15, "TRIM_MEMORY_RUNNING_CRITICAL"}, {10, "TRIM_MEMORY_RUNNING_LOW"},
+                          {5, "TRIM_MEMORY_RUNNING_MODERATE"}};
+            char why[96];
+            int level = plat_trim_level_take();
+            const char* name = "a level this build has no name for";
+            for (size_t i = 0; i < sizeof levels / sizeof *levels; i++)
+                if (level >= levels[i].level) {
+                    name = levels[i].name;
+                    break;
+                }
+            if (level >= 0)
+                snprintf(why, sizeof why, "Android's onTrimMemory, level %d (%s)", level, name);
+            else
+                snprintf(why, sizeof why, "SDL's low memory event");
             LOG("lifecycle: the system warns of low memory\n");
-            memory_line("SDL's low memory event");
+            memory_line(why);
             break;
+        }
         case SDL_EVENT_TERMINATING: LOG("lifecycle: the system is ending the app\n"); break;
         default: break;
     }

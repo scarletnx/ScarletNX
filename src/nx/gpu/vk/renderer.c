@@ -733,6 +733,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         vk_tex_frame();
         vk_buf_frame();
         vk_own_trim(); /* before the caches' trim: what it lands is room the trim then need not make */
+        vk_mem_release_run();
         vk_mem_trim(0, 0);
         if (g_vk_present % 600 == 0) {
             char cs_why[256];
@@ -1292,6 +1293,7 @@ const Renderer vk_renderer = {
     .report_stall = vk_report_stall,
     .memory_text = vk_memory_text,
     .memory_blocks = vk_memory_blocks,
+    .memory_release = vk_mem_release_ask,
     .idle = vkr_idle,
     .reset = vkr_reset,
     .flush_targets = vkr_flush_targets,

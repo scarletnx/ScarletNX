@@ -2440,6 +2440,53 @@ void vk_mem_trim(u64 extra, int force) {
                   short_of ? ", all that could go" : "");
 }
 
+/* the system's word (vk_mem_release_ask): asked, its words, and once run what went and the blocks before, for the line
+   four presents later */
+static struct {
+    int asked;   /* atomic */
+    PMutex lock; /* why, between the thread that asks and the renderer's */
+    char why[160], said[160];
+    u64 by[3], blocks; /* what went (textures, buffers, render targets), and the blocks before */
+    u32 present;       /* when it ran (+1), 0 none to tell */
+    u32 runs;
+} g_release = {.lock = PMUTEX_INIT};
+u32 vk_mem_release_stats(u64 by[3]) {
+    for (int k = 0; k < 3; k++) by[k] = g_release.by[k];
+    return g_release.runs;
+}
+void vk_mem_release_ask(const char* why) {
+    pm_lock(&g_release.lock);
+    snprintf(g_release.why, sizeof g_release.why, "%s", why);
+    pm_unlock(&g_release.lock);
+    __atomic_store_n(&g_release.asked, 1, __ATOMIC_RELEASE);
+}
+void vk_mem_release_run(void) {
+    if (g_release.present && g_vk_present - (g_release.present - 1) >= 4) {
+        LOG_LIMIT(20,
+                  "vulkan: %s: %llu MB of textures, %llu of buffers and %llu of render targets that the two presents "
+                  "before didn't use went, and the renderer's memory blocks went from %llu to %llu MB\n",
+                  g_release.said, (unsigned long long)(g_release.by[0] >> 20),
+                  (unsigned long long)(g_release.by[1] >> 20), (unsigned long long)(g_release.by[2] >> 20),
+                  (unsigned long long)(g_release.blocks >> 20), (unsigned long long)(vk_memory_blocks() >> 20));
+        g_release.present = 0;
+    }
+    if (!__atomic_exchange_n(&g_release.asked, 0, __ATOMIC_ACQ_REL)) return;
+    pm_lock(&g_release.lock);
+    snprintf(g_release.said, sizeof g_release.said, "%s", g_release.why);
+    pm_unlock(&g_release.lock);
+    /* what can be had again without loss, as vk_mem_trim's lossless steps take it, whatever the budget: render
+       targets later ones drew over, then textures, own buffers and render targets unused for two presents */
+    u32 before = vk_present_before(0, 2);
+    g_release.blocks = vk_memory_blocks();
+    g_release.by[2] = vk_rt_reclaim_superseded(before, ~0ull);
+    g_release.by[0] = vk_surf_reclaim(VK_LRU_TEX, before, ~0ull, VK_RECLAIM_LOSSLESS);
+    g_release.by[1] = vk_buf_reclaim(before, ~0ull);
+    g_release.by[2] += vk_surf_reclaim(VK_LRU_RT, before, ~0ull, VK_RECLAIM_LOSSLESS);
+    g_trimmed += g_release.by[0] + g_release.by[1] + g_release.by[2];
+    g_release.present = g_vk_present + 1;
+    g_release.runs++;
+}
+
 void vk_surf_bytes(Surf* s, u64 bytes) {
     if (s->lru) g_held[lru_kind(s)].bytes = g_held[lru_kind(s)].bytes - s->bytes + bytes;
     s->bytes = bytes;

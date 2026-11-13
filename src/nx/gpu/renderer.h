@@ -168,6 +168,9 @@ typedef struct Renderer {
     void (*memory_text)(char* out, size_t size);
     /* the bytes of the renderer's memory blocks in all heaps, 0 before they exist. Any thread, unlocked */
     u64 (*memory_blocks)(void);
+    /* the system says its memory runs short (why, its words): what the renderer can make again goes at its next frame,
+       and its blocks emptied go back. Any thread, unlocked */
+    void (*memory_release)(const char* why);
     /* a game pause (gpu_hold): everything recorded is submitted and done on the GPU, its results landed and every queued
        release performed, so nothing of the renderer's writes guest memory until the next job. The GPU thread, between
        jobs. NULL when the renderer has nothing in flight */

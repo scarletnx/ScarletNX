@@ -6234,6 +6234,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_cross_stage_alias.inc"
 #include "vulkan_draw_texture.inc"
 #include "vulkan_lone_lane.inc"
+#include "vulkan_memory_release.inc"
 #include "vulkan_descriptor_heaps.inc"
 #include "vulkan_sample_raster.inc"
 #include "vulkan_mixed_coverage.inc"
@@ -6810,6 +6811,8 @@ static int run_headless(int argc, char** argv) {
             result = check_fragment_flow_lod();
         else if (!strcmp(name, "owned_page_reads"))
             result = check_owned_page_reads();
+        else if (!strcmp(name, "memory_release"))
+            result = check_memory_release();
         else if (!strcmp(name, "cross_stage_blend"))
             result = check_cross_stage_blend_snapshots();
         else if (!strcmp(name, "txd_uniform"))
@@ -7133,6 +7136,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_lone_lane());
     CHECK(!check_fragment_flow_lod());
     CHECK(!check_owned_page_reads());
+    CHECK(!check_memory_release());
     CHECK(!check_frag_coord_origin());
     CHECK(!check_varying_passes());
     CHECK(!check_rt_other_layout());
