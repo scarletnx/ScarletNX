@@ -2758,12 +2758,13 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
     for (k = 0; k < ncd; k++) cc[k] = rd(c, rc + k);
     spv_emit_capability(&c->e, SPV_CAPABILITY_FLOAT16);
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
-    spv_emit_capability(&c->e, 6022 /* CooperativeMatrixKHR */);
+    spv_emit_capability(&c->e, SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR);
     spv_emit_extension(&c->e, "SPV_KHR_cooperative_matrix");
     u32 t_h = spv_emit_type_float(&c->e, 16);
-    u32 t_a = spv_emit_type_cooperative_matrix(&c->e, t_h, 3 /* Subgroup */, 16, 16, 0 /* MatrixAKHR */);
-    u32 t_b = spv_emit_type_cooperative_matrix(&c->e, t_h, 3, 16, 16, 1 /* MatrixBKHR */);
-    u32 t_acc = spv_emit_type_cooperative_matrix(&c->e, c->t_f32, 3, 16, 16, 2 /* MatrixAccumulatorKHR */);
+    u32 tile = g_shader_hmma_coop_tile == 8 ? 8 : 16; /* Metal's simdgroup_matrix is 8x8x8, RADV's 16x16x16 */
+    u32 t_a = spv_emit_type_cooperative_matrix(&c->e, t_h, 3 /* Subgroup */, tile, tile, 0 /* MatrixAKHR */);
+    u32 t_b = spv_emit_type_cooperative_matrix(&c->e, t_h, 3, tile, tile, 1 /* MatrixBKHR */);
+    u32 t_acc = spv_emit_type_cooperative_matrix(&c->e, c->t_f32, 3, tile, tile, 2 /* MatrixAccumulatorKHR */);
     if (!c->coop_slots) {
         u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
         u32 array = spv_emit_type_array_u32(&c->e, c->t_u32, lanes / 32 * COOP_WORDS);
@@ -2793,14 +2794,35 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
     for (k = 0; k < 2; k++)
         spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_b, 4 * k)), k < nb ? b[k] : c->zero);
     coop_barrier(c);
-    u32 ma = SPV(&c->e, 4457 /* OpCooperativeMatrixLoadKHR */, t_a, coop_ptr(c, base), cu(c, 0) /* RowMajorKHR */,
-                 cu(c, 8), 0x20 /* NonPrivatePointer */);
-    u32 mb =
-        SPV(&c->e, 4457, t_b, coop_ptr(c, coop_add(c, base, COOP_B)), cu(c, 1) /* ColumnMajorKHR */, cu(c, 8), 0x20);
-    u32 md = SPV(&c->e, 4459 /* OpCooperativeMatrixMulAddKHR */, t_acc, ma, mb,
-                 spv_emit_const_composite(&c->e, t_acc, (const u32[]){cf(c, 0.0f)}, 1));
-    SPV_VOID(&c->e, 4458 /* OpCooperativeMatrixStoreKHR */, coop_ptr(c, coop_add(c, base, COOP_D)), md, cu(c, 0),
-             cu(c, 16), 0x20);
+    u32 zero_acc = spv_emit_const_composite(&c->e, t_acc, (const u32[]){cf(c, 0.0f)}, 1);
+    if (g_shader_hmma_coop_tile != 8) {
+        u32 ma = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a, coop_ptr(c, base), cu(c, 0) /* RowMajorKHR */,
+                     cu(c, 8), 0x20 /* NonPrivatePointer */);
+        u32 mb = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b, coop_ptr(c, coop_add(c, base, COOP_B)), cu(c, 1) /* ColumnMajorKHR */, cu(c, 8),
+                     0x20);
+        u32 md = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_MUL_ADD_KHR, t_acc, ma, mb, zero_acc);
+        SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR, coop_ptr(c, coop_add(c, base, COOP_D)), md, cu(c, 0),
+                 cu(c, 16), 0x20);
+    } else {
+        /* An 8x8x8 tile, as Metal's simdgroup_matrix is: the HMMA's 16x8x16 is two M halves of 8 rows, each the sum
+           of the two K halves' products, so four products the HMMA, the K halves' the second of each pair adding into
+           the first. The tiles sit where a_at and the B words already are, and D's two go a row of 16 words apart,
+           so the lanes read D back as they do above */
+        static const u32 half_at[2] = {0, 4};     /* K's two halves of A, and of B's columns, 4 words apart */
+        u32 a_at2[2] = {coop_add(c, base, 0), coop_add(c, base, 64)};
+        u32 d_at[2] = {coop_add(c, base, COOP_D), coop_add(c, base, COOP_D + 128)};
+        for (u32 m = 0; m < 2; m++) {
+            u32 acc8 = 0;
+            for (u32 h = 0; h < 2; h++) {
+                u32 ma = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a, coop_ptr(c, coop_add(c, a_at2[m], half_at[h])), cu(c, 0), cu(c, 8),
+                             0x20);
+                u32 mb = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b, coop_ptr(c, coop_add(c, coop_add(c, base, COOP_B), half_at[h])),
+                             cu(c, 1), cu(c, 8), 0x20);
+                acc8 = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_MUL_ADD_KHR, t_acc, ma, mb, acc8 ? acc8 : zero_acc);
+            }
+            SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR, coop_ptr(c, d_at[m]), acc8, cu(c, 0), cu(c, 16), 0x20);
+        }
+    }
     coop_barrier(c);
     u32 acc[4]; /* row g columns 2t and 2t + 1, row g + 8 the same */
     for (k = 0; k < 4; k++) {

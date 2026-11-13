@@ -1507,7 +1507,7 @@ uint32_t spv_emit_type_cooperative_matrix(SpvEmitter* e, uint32_t component, uin
                                           uint32_t columns, uint32_t use) {
     uint32_t operands[5] = {component, spv_emit_const_u32(e, scope), spv_emit_const_u32(e, rows),
                             spv_emit_const_u32(e, columns), spv_emit_const_u32(e, use)};
-    return known(e, 4456 /* OpTypeCooperativeMatrixKHR */, 1, operands, 5);
+    return known(e, SPV_OP_TYPE_COOPERATIVE_MATRIX_KHR, 1, operands, 5);
 }
 uint32_t spv_emit_type_function(SpvEmitter* e, uint32_t result, const uint32_t* params, size_t count) {
     uint32_t operands[17];

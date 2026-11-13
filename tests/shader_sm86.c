@@ -3818,6 +3818,7 @@ static void test_warp_matrix(const char* dir) {
     put(code, n, bra(n, n, 7, 0));
     n++;
     int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, pairs_was = g_shader_hmma_pairs;
+    int coop_was = g_shader_hmma_coop, tile_was = g_shader_hmma_coop_tile;
     for (int pairs = 0; pairs < 2; pairs++)
         for (int quad = 0; quad < 2; quad++)
             for (int mixed = 0; mixed < 2; mixed++) {
@@ -3871,6 +3872,30 @@ static void test_warp_matrix(const char* dir) {
     }
     g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_hmma_pairs = pairs_was;
     g_shader_hmma_stage = stage_was;
+    /* The matrix unit's tile: one OpCooperativeMatrixMulAddKHR an HMMA where the driver offers 16x16x16 (RADV), four
+       where its tile is 8x8x8 (Metal's simdgroup_matrix, which a MoltenVK with VK_KHR_cooperative_matrix reports):
+       the two M halves, each the sum of the two K halves. Every one of the 4 HMMAs above takes it, the 1688 forms
+       with their second K half zeroed by the staging */
+    for (int tile = 0; tile < 2; tile++) {
+        g_shader_hmma_coop = 65536, g_shader_hmma_coop_tile = tile ? 8 : 16;
+        g_shader_quad_compute = 1, g_shader_mixed_dot = 0, g_shader_hmma_pairs = 0;
+        ShaderInfo si = {0};
+        si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+        si.shared_size = 1024;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+        u32 muladds = spv ? spv_count(spv, count, 4459) : 0;
+        CHECK(muladds == (tile ? 16u : 4u));
+        if (muladds != (tile ? 16u : 4u))
+            fprintf(stderr, "matrix tile %d: %u products for 4 HMMAs, expected %u\n", tile ? 8 : 16, muladds,
+                    tile ? 16u : 4u);
+        char name[32];
+        snprintf(name, sizeof name, "warp_matrix_coop%d", tile ? 8 : 16);
+        CHECK(spv && keep_module(dir, name, spv, count));
+        free(spv);
+    }
+    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_hmma_pairs = pairs_was;
+    g_shader_hmma_coop = coop_was, g_shader_hmma_coop_tile = tile_was;
 }
 
 /* ---- HMMA's values on the evaluator's subgroup of 32 lanes (spv_eval_subgroup) ---- */
