@@ -42,13 +42,10 @@ static void run(const void* arg) {
 
 static void release(void) {
     if (!g_upscale.fsr) return;
-    /* nothing recorded or running may still use the context's images and sets */
-    vk_rec_sync();
-    vk_queue_lock(g_vk.gfx);
-    if (g_vk.compute != g_vk.gfx) vk_queue_lock(g_vk.compute);
-    vkDeviceWaitIdle(g_vk.dev);
-    if (g_vk.compute != g_vk.gfx) vk_queue_unlock(g_vk.compute);
-    vk_queue_unlock(g_vk.gfx);
+    /* nothing recorded or running may still use the context's pipelines, sets and images: a dispatch of this frame
+       may be in the open command buffer (a second evaluation of another size in the frame), which a device wait
+       doesn't cover. vk_finish submits it and waits */
+    vk_finish();
     snx_fsr2_destroy(g_upscale.fsr);
     g_upscale.fsr = NULL;
     vk_defer_image(g_upscale.image, g_upscale.memory, g_upscale.view, VK_NULL_HANDLE);
