@@ -3322,6 +3322,12 @@ static u32 system_value(Ctx* c, u32 sr) {
                 return c->zero;
             }
             return cu(c, 1u << 8 | 1u << 16);
+        case 0x1e:
+        case 0x1f:
+            /* SR_WSCALEFACTOR_XY and SR_WSCALEFACTOR_Z (NAK's numbering): the factors of clip space w scaling, by
+               which one game's vertex programs scale w before they test the position against it (FMUL by the
+               register, then FSETP, then PSETP). The runtime sets no w scaling, which is a factor of 1 */
+            return cu(c, 0x3f800000u);
         default: fail(c, "S2R system register 0x%x", sr); return c->zero;
     }
 }
