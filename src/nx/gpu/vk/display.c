@@ -25,6 +25,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat_apple.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -202,6 +203,8 @@ static VkResult past_timing(const DPresent* p, u64* at) {
 }
 
 static void display_thread(void* arg) {
+    /* a title is presenting: the process asks macOS to run it as one (plat_apple.h) */
+    plat_apple_title_begin();
     (void)arg;
     SNX_THREAD_NAME("Vulkan display");
     for (;;) {

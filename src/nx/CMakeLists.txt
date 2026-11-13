@@ -108,6 +108,11 @@ if(WIN32)
 else()
     list(APPEND platform runtime/platform/plat_posix.c)
 endif()
+if(APPLE)
+    # the activity a title takes so App Nap leaves it alone (runtime/platform/plat_apple.m), which is Objective-C
+    enable_language(OBJC)
+    list(APPEND platform runtime/platform/plat_apple.m)
+endif()
 if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
     # a GPU driver package loaded in place of the system's driver (runtime/platform/gpu_driver_load.c), on the
     # packages' one ABI
@@ -298,7 +303,7 @@ if(WIN32)
     target_link_libraries(snx_platform PUBLIC synchronization powrprof) # plat_wait_word's WaitOnAddress, the power notification
 endif()
 if(APPLE AND NOT IOS) # plat_posix.c's power source: IOKit's notifications on CoreFoundation's run loop
-    target_link_libraries(snx_platform PUBLIC "-framework IOKit" "-framework CoreFoundation")
+    target_link_libraries(snx_platform PUBLIC "-framework IOKit" "-framework CoreFoundation" "-framework Foundation")
 endif()
 # the build is part of the key of the shader files, .vkshaders and .vkshipped (gpu/vk/pipeline.c)
 target_link_libraries(snx_vk PRIVATE snx_build_info FFmpeg::avutil) # vk/nvdec.c: FFmpeg's Vulkan device and pictures
