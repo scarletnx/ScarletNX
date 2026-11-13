@@ -2567,16 +2567,20 @@ static void texture_query(Ctx* c, const Sm86Insn* in) {
         return;
     }
     u32 handle = sm86_field(in, 40, 19), bank = (handle >> 14) & 31, off = handle & 0x3fff;
-    int slot = in->op == SM86_TXQ_U ? (int)c->handle[c->cur].slot - 1 : -1; /* memory_handles' */
-    for (int i = 0; i < c->si->ntex && slot < 0 && in->op != SM86_TXQ_U; i++)
+    int mem = in->op == SM86_TXQ_U || in->op == SM86_TXQ_B;
+    int slot = mem ? (int)c->handle[c->cur].slot - 1 : -1; /* memory_handles' */
+    /* the level: a TXQ.B's is in the register after its handle's */
+    u32 level = sm86_field(in, 24, 8);
+    if (in->op == SM86_TXQ_B) level = level + 1 < SM86_RZ ? level + 1 : SM86_RZ;
+    for (int i = 0; i < c->si->ntex && slot < 0 && !mem; i++)
         if (c->si->tex[i].bl_cbuf == bank && c->si->tex[i].cbuf_off == off &&
             !(c->si->tex[i].flags & (SNX_TEX_INDEXED | SNX_TEX_MEMORY)))
             slot = i;
     /* a TLD of a multisampled 2D texture with the handle, anywhere in the program, names its view */
     u32 ms = 0;
-    for (u32 k = 0; k < c->n && slot < 0 && !ms && in->op != SM86_TXQ_U; k++)
+    for (u32 k = 0; k < c->n && slot < 0 && !ms && !mem; k++)
         ms = c->in[k].op == SM86_TLD && sm86_field(&c->in[k], 78, 1) && sm86_field(&c->in[k], 40, 19) == handle;
-    if (slot < 0 && in->op != SM86_TXQ_U) slot = tex_slot(c, bank, off * 4, 1, 0, 0, ms);
+    if (slot < 0 && !mem) slot = tex_slot(c, bank, off * 4, 1, 0, 0, ms);
     if (slot < 0) return;
     const ShTex* t = &c->si->tex[slot];
     ms = t->flags & 2;
@@ -2586,7 +2590,7 @@ static void texture_query(Ctx* c, const Sm86Insn* in) {
     /* a multisampled texture has one level, and its size takes none */
     u32 size = spv_emit_image_query_size_lod(
         &c->e, spv_emit_type_vector(&c->e, c->t_u32, dims), c->tex_sampled[slot], c->tex[slot],
-        ms ? 0 : spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, sm86_field(in, 24, 8))));
+        ms ? 0 : spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, level)));
     u32 v[4];
     for (u32 k = 0; k < 3; k++) v[k] = k < dims ? SPV(&c->e, SPV_OP_COMPOSITE_EXTRACT, c->t_u32, size, k) : cu(c, 1);
     if (t->type == 0) v[1] = cu(c, 1);
@@ -4765,6 +4769,14 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_TXD: texture_grad(c, in); return;
         case SM86_TLD: texel_fetch(c, in); return;
         case SM86_TXQ: texture_query(c, in); return;
+        case SM86_TXQ_B:
+            /* the handle from memory, as a TEX.B's (memory_handles) */
+            if (!c->handle || !c->handle[c->cur].slot) {
+                fail(c, "TXQ.B whose handle is not memory's");
+                return;
+            }
+            texture_query(c, in);
+            return;
         case SM86_SULD_P:
         case SM86_SUST_P:
         case SM86_SURED:
@@ -5634,6 +5646,11 @@ static u32 tex_b_handle_reg(const Sm86Insn* in) {
     u32 n0 = array + coords, n1 = 1 + (lod == 2 || lod == 3) + sm86_field(in, 76, 1) + sm86_field(in, 78, 1);
     return tex_operands(in, n0, n1, regs) ? regs[n0] : SM86_RZ;
 }
+/* the handle register of a TEX.B, or of a TXQ.B: its first source, the level in the register after it (NAK's OpTxq
+   with TexRef::Bindless) */
+static u32 handle_b_reg(const Sm86Insn* in) {
+    return in->op == SM86_TXQ_B ? sm86_field(in, 24, 8) : tex_b_handle_reg(in);
+}
 /* whether a TEX.B's handle is a constant buffer word's, which prepare_handles binds: a MOV of one, or an LDC. A handle
    with no one writer is memory_handles' too (one game's lights take theirs from memory in a loop, as a TEX.B's
    handle from an LDG was before), which then samples it as no texture */
@@ -5653,8 +5670,8 @@ static void memory_handles(Ctx* c) {
     for (u32 i = 0; i < n; i++) {
         int op = c->in[i].op;
         any |= op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXQ_U ||
-               (op == SM86_TEX_B && tex_b_handle_reg(&c->in[i]) < SM86_RZ &&
-                !tex_b_cbuf_handle(c, i, tex_b_handle_reg(&c->in[i])));
+               ((op == SM86_TEX_B || op == SM86_TXQ_B) && handle_b_reg(&c->in[i]) < SM86_RZ &&
+                !tex_b_cbuf_handle(c, i, handle_b_reg(&c->in[i])));
     }
     if (!any) return;
     c->mh_mark = calloc((size_t)n + 1, 1);
@@ -5674,8 +5691,9 @@ static void memory_handles(Ctx* c) {
     for (u32 i = 0; i < n && !c->failed; i++) {
         const Sm86Insn* in = &c->in[i];
         int op = in->op, u = op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXQ_U;
-        u32 reg = op == SM86_TEX_B ? tex_b_handle_reg(in) : SM86_RZ;
-        if (!u && !(op == SM86_TEX_B && reg < SM86_RZ && !tex_b_cbuf_handle(c, i, reg))) continue;
+        int b = op == SM86_TEX_B || op == SM86_TXQ_B;
+        u32 reg = b ? handle_b_reg(in) : SM86_RZ;
+        if (!u && !(b && reg < SM86_RZ && !tex_b_cbuf_handle(c, i, reg))) continue;
         u32 ur = sm86_field(in, 40, 6), nmh = c->nmh, ndep = c->nmh_dep;
         if (u && ur + 1 >= SM86_URZ) {
             fail(c, "%s of UR%u", sm86_ops[op].name, ur);
@@ -5702,12 +5720,12 @@ static void memory_handles(Ctx* c) {
         for (u32 i = 0; i < n && !c->failed; i++) {
             const Sm86Insn* in = &c->in[i];
             int op = in->op, slot = -1;
-            if (probe[i][0] == ~0u || (op == SM86_TXQ_U) != (pass == 1)) continue;
-            if (op != SM86_TEX_U && op != SM86_TLD_U && op != SM86_TLD4_U && op != SM86_TXQ_U && op != SM86_TEX_B)
-                continue;
+            int query = op == SM86_TXQ_U || op == SM86_TXQ_B;
+            if (probe[i][0] == ~0u || query != (pass == 1)) continue;
+            if (op != SM86_TEX_U && op != SM86_TLD_U && op != SM86_TLD4_U && !query && op != SM86_TEX_B) continue;
             u32 tex = mh_final(c, probe[i][0]), smp = probe[i][1] == ~0u ? 0 : mh_final(c, probe[i][1]);
             int has_smp = probe[i][1] != ~0u;
-            if (op == SM86_TXQ_U) {
+            if (query) {
                 for (int k = 0; k < c->si->ntex && slot < 0; k++) {
                     const ShTex* t = &c->si->tex[k];
                     if ((t->flags & SNX_TEX_MEMORY) && t->cbuf_off == tex && t->bl2 == has_smp && t->bl2_off == smp)
