@@ -18,9 +18,15 @@ static int channel_of(uint32_t offset, int* part) {
     return at < 4 * 12 ? (int)(at / 12) : -1;
 }
 
+/* DMAxCNT_L's units: 14 bits on DMA0 to DMA2, 16 on DMA3, zero the most (GBATEK, DMA Transfers) */
+static uint32_t units(const AgbBoard* board, int index) {
+    uint32_t count = board->dma[index].count & (index == 3 ? 0xFFFFu : 0x3FFFu);
+    return count ? count : (index == 3 ? 0x10000u : 0x4000u);
+}
+
 static void dma_transfer(AgbBoard* board, int index, int fifo) {
     AgbDmaChannel* channel = &board->dma[index];
-    uint32_t count = channel->count ? channel->count : (index == 3 ? 0x10000 : 0x4000);
+    uint32_t count = channel->count_now;
     int word = channel->control & AGB_DMA_WORD, step = word ? 4 : 2;
     int source_mode = channel->control >> 7 & 3, destination_mode = channel->control >> 5 & 3;
     uint32_t source = channel->source_now, destination = channel->destination_now;
@@ -78,6 +84,7 @@ static void dma_transfer(AgbBoard* board, int index, int fifo) {
         channel->destination_now = fifo                    ? channel->destination
                                    : destination_mode == 3 ? channel->destination
                                                            : destination;
+        channel->count_now = units(board, index);
     } else {
         channel->control &= (uint16_t)~AGB_DMA_ENABLE;
         channel->destination_now = destination;
@@ -106,6 +113,7 @@ void agb_dma_write(AgbBoard* board, uint32_t offset, uint16_t value) {
             channel->source_now = channel->source;
             channel->destination_now = channel->destination;
             if (!was && (value & AGB_DMA_ENABLE)) {
+                channel->count_now = units(board, index);
                 int timing = value >> 12 & 3;
                 if (!timing) dma_transfer(board, index, 0);
             }
