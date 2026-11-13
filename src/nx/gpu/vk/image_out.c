@@ -22,8 +22,9 @@
    owner (vk_surf_keep_end).
    A release publishes a kept entry only where the CPU touched its span. One it still owns whole stays kept (released),
    and later draws to its image join it, as they do before a release: what reads its bytes publishes it then. The GPU
-   finds it in g_img_pages (vk_gfx_image_mem_need), and the CPU's touch lands its owner, which publishes it first
-   (vk_gfx_image_cpu_need). One game's draws wrote a 640x360 image between 32 releases a frame: each release made a
+   finds it in g_img_pages (vk_gfx_image_mem_need), a draw's buffer over it too (vk_gfx_image_read_need: its owner,
+   bound where it is, holds the bytes from before the draws), and the CPU's touch lands its owner, which publishes it
+   first (vk_gfx_image_cpu_need). One game's draws wrote a 640x360 image between 32 releases a frame: each release made a
    new owner and copied the image into it, 30 MB and 1.1 to 1.5 ms of GPU time a frame, and nothing read it */
 typedef struct {
     u64 cpu, n;
@@ -385,18 +386,31 @@ void vk_gfx_image_put_aside(void) {
     g_img_landing = 0;
     vk_unlock();
 }
-void vk_gfx_image_cpu_need(u64 cpu, u64 size) {
-    if (!g_gfx_img_any || g_img_landing || !size) return;
-    SNX_ZONE(z, "vk image cpu need");
+/* the released entries over [a, a + size), by guest memory or (gpu) by the GPU's address, published (vk_lock) */
+static void released_flush(u64 a, u64 size, int gpu) {
     vk_lock();
     g_img_landing = 1;
-    for (size_t i = 0; i < g_image_out.count;)
-        if (g_image_out.out[i].released && image_meets(&g_image_out.out[i], cpu, size)) {
+    for (size_t i = 0; i < g_image_out.count;) {
+        const GfxImageOut* o = &g_image_out.out[i];
+        if (o->released && (gpu ? image_overlaps(o, a, size) : image_meets(o, a, size))) {
             image_flush_at(i);
             i = 0;
         } else
             i++;
+    }
     g_img_landing = 0;
+    vk_unlock();
+}
+void vk_gfx_image_cpu_need(u64 cpu, u64 size) {
+    if (!g_gfx_img_any || g_img_landing || !size) return;
+    SNX_ZONE(z, "vk image cpu need");
+    released_flush(cpu, size, 0);
+}
+void vk_gfx_image_read_need(u64 gva, u64 size) {
+    if (!g_gfx_img_any || g_img_landing || !size) return;
+    SNX_ZONE(z, "vk image read need");
+    vk_lock();
+    if (pend_hit(&g_img_pages, gva, size)) released_flush(gva, size, 1);
     vk_unlock();
 }
 int vk_gfx_image_in_flight(int unsubmitted) {
