@@ -148,6 +148,7 @@ int g_shader_quad_compute = 1;
 int g_shader_mixed_dot;
 int g_shader_hmma_coop;
 int g_shader_hmma_pairs;
+int g_shader_half_flush;
 u32 g_shader_mesh_tasks_max;
 int g_shader_float_atomic_add;
 int g_shader_tessellation = 1;
