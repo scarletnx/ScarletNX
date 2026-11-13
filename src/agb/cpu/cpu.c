@@ -871,7 +871,10 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
             advance(cpu, &sink, held);
             continue;
         }
-        if (cpu->arm.r[15] == AGB_BIOS_INTR_WAIT && !board->cpu_halted) intr_wait(board, cpu);
+        /* IntrWait looks at its flags once awake, after the interrupt that woke it, which the CPU takes first */
+        if (cpu->arm.r[15] == AGB_BIOS_INTR_WAIT && !board->cpu_halted &&
+            !(irq_pending(board) && !(cpu->arm.cpsr & 0x80)))
+            intr_wait(board, cpu);
         if (board->cpu_halted && (board->irq_if & board->irq_ie)) board->cpu_halted = 0;
         if (board->cpu_halted) {
             /* up to the cycle an interrupt IE lets through wakes it, 2 after its flag (a cycle before the line) */
