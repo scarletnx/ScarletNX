@@ -562,6 +562,8 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
                 own = DM_OWN_RATHER;
         }
         *mem = alloc_in((u32)type, req, want, own, buf, img, &res);
+        /* a preference is not a need: when the driver has no memory for the resource alone, a block may have */
+        if (!*mem && own == DM_OWN_RATHER) *mem = alloc_in((u32)type, req, want, 0, buf, img, &res);
     }
     bits = req->memoryTypeBits;
     for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type))
