@@ -716,6 +716,7 @@ typedef struct {
     u8 query[SH_MAXTEX]; /* the dimension of each texture only a TXQ names (ShaderInfo.tex_query_hint) */
     u64 tex_dc; /* color textures sampled with a depth compare, and their functions (ShaderInfo.tex_dc_color_*) */
     u32 tex_dc_funcs;
+    u64 tex_minmax, tex_minmax_max; /* min/max reductions the program takes (ShaderInfo.tex_minmax_*) */
 } CsKey;
 static CsPipe g_cs_alloc_failed = {.failed = 1}; /* out of memory: not cached, retried */
 /* the key of a program (code, its window as cs_read_code makes it), its launch parameters and its variant, its BRX
@@ -726,7 +727,8 @@ static u64 cs_key(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm
               ((u64)shm << 20) ^ ((u64)k->image << 32) ^ (u64)k->tex_int * 0x9E3779B97F4A7C15ull ^
               (u64)k->tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k->image_sint * 0xA24BAED4963EE407ull ^
               (u64)k->tex_rect * 0x165667B19E3779F9ull ^ (u64)k->tex_dc * 0x27D4EB2F165667C5ull ^
-              (u64)k->tex_dc_funcs * 0x94D049BB133111EBull;
+              (u64)k->tex_dc_funcs * 0x94D049BB133111EBull ^ k->tex_minmax * 0xFF51AFD7ED558CCDull ^
+              k->tex_minmax_max * 0xC4CEB9FE1A85EC53ull;
     if (shader_absolute_flow(code, CS_WINDOW)) key ^= (u64)flow_base * 0xD6E8FEB86659FD93ull;
     for (u32 q = 0; q < SH_MAXTEX; q++) key ^= (u64)k->query[q] * (0x9E3779B97F4A7C15ull + 2 * q + 1) << (q & 15);
     return key;
@@ -834,6 +836,8 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
     p->si.tex_rect_mask = k.tex_rect;
     p->si.tex_dc_color_mask = k.tex_dc;
     p->si.tex_dc_color_funcs = k.tex_dc_funcs;
+    p->si.tex_minmax_mask = k.tex_minmax;
+    p->si.tex_minmax_max = k.tex_minmax_max;
     memcpy(p->si.tex_query_hint, k.query, sizeof p->si.tex_query_hint);
     const char* corpus = vk_corpus_dir();
     if (corpus) shader_corpus_save(corpus, code, blen, CS_WINDOW, ST_CS, &p->si, key);
@@ -1319,6 +1323,20 @@ void vk_dispatch(const DispatchState* d) {
             num = vk_tex_num(tic, NULL);
             if (num) ck.tex_int |= 1ull << i;
             if (num == 2) ck.tex_sint |= 1ull << i;
+            /* a min/max reduction the device's sampler can't take, which the program takes of the texels itself:
+               by the header and the sampler, as above */
+            u32 tsc[8];
+            vk_gmem_words(d->smp_pool + (u64)texture_handle_tsc_id(h) * TEXTURE_POOL_ENTRY_BYTES, tsc, 8);
+            int reduce = vk_tex_minmax_in_program_tic(tsc, tic, vk_tex_view_type(st), num);
+            if (reduce && p->si.tex_query_mask) { /* whose keyed variant may number its slots otherwise */
+                LOG_LIMIT(1,
+                          "vulkan: a compute program's texture %u averages the texels its sampler asks the %s of: a "
+                          "program with a texture only a TXQ names doesn't take them itself\n",
+                          i, reduce == 1 ? "least" : "greatest");
+                reduce = 0;
+            }
+            if (reduce) ck.tex_minmax |= 1ull << i;
+            if (reduce == 2) ck.tex_minmax_max |= 1ull << i;
         }
     if (!p->failed)
         for (i = 0; i < p->si.nimg && i < 8; i++) {
@@ -1333,11 +1351,12 @@ void vk_dispatch(const DispatchState* d) {
         }
     int queried = 0;
     for (i = 0; i < SH_MAXTEX; i++) queried |= ck.query[i] != 0;
-    if (ck.tex_int || ck.image || ck.image_sint || ck.tex_rect || ck.tex_dc || queried) {
+    if (ck.tex_int || ck.image || ck.image_sint || ck.tex_rect || ck.tex_dc || ck.tex_minmax || queried) {
         if (!p->keyed || p->keyed->si.img_int_mask != ck.image || p->keyed->si.tex_int_mask != ck.tex_int ||
             p->keyed->si.tex_sint_mask != ck.tex_sint || p->keyed->si.img_sint_mask != ck.image_sint ||
             p->keyed->si.tex_rect_mask != ck.tex_rect || p->keyed->si.tex_dc_color_mask != ck.tex_dc ||
-            p->keyed->si.tex_dc_color_funcs != ck.tex_dc_funcs ||
+            p->keyed->si.tex_dc_color_funcs != ck.tex_dc_funcs || p->keyed->si.tex_minmax_mask != ck.tex_minmax ||
+            p->keyed->si.tex_minmax_max != ck.tex_minmax_max ||
             memcmp(p->keyed->si.tex_query_hint, ck.query, sizeof ck.query) != 0) {
             static u8 keyed_code[CS_WINDOW];
             static u32 keyed_used;
@@ -1812,7 +1831,8 @@ rebind:
                 v = vk_null_view(want, st->shadow ? 3 : num, ms); /* a compare's: the farthest depth, as a draw's */
                 sampled_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
-            VkSampler smp = vk_tex_bind_sampler(tsc, tic, st, num, sampled, want);
+            VkSampler smp =
+                vk_tex_bind_sampler(tsc, tic, st, num, sampled, want, (int)(p->si.tex_minmax_mask >> i & 1));
             if (!v || !smp) { /* before any output is recorded: nothing of this dispatch lands */
                 g_cs_skips[CS_SKIP_TEXTURE]++;
                 cs_abandon_binding(originals);

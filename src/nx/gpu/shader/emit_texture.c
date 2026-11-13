@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Texture samples, fetches, gathers and queries, the texture slots, and surface loads and stores */
 #include "nx/gpu/shader/translate.h"
+#include "nx/gpu/shader/minmax_spirv.h"
 
 /* a texture instruction's array layer: the low 16 bits of its register */
 u32 shader_array_layer(DirectCtx* c, u32 r) {
@@ -58,6 +59,18 @@ u32 shader_dc_compare_indexed(DirectCtx* c, int slot, u32 reference, u32 texel) 
                                   shader_dc_compare(c, i, reference, texel), result);
     }
     return result;
+}
+/* what a filtered sample of slot takes of its texels in the program (ShaderInfo.tex_minmax_mask): 1 the least, 2 the
+   greatest, 0 neither */
+int shader_minmax_of(const ShaderInfo* si, int slot) {
+    return shader_minmax_slot(si->tex_minmax_mask, si->tex_minmax_max, slot);
+}
+/* shader_minmax_sample of slot's texture, a float one, at coords (array: its third component the layer) moved by offset
+   (0 for none; dynamic: not a constant), for reduce (shader_minmax_of) */
+u32 shader_minmax_direct(DirectCtx* c, u32 vec4_type, u32 sampled_type, u32 sampler, u32 coords, int array, u32 offset,
+                         int dynamic, int reduce) {
+    ShMinmaxTypes t = {c->f32_type, c->u32_type, c->bool_type, vec4_type, c->glsl};
+    return shader_minmax_sample(&c->emit, &t, sampled_type, sampler, coords, array, offset, dynamic, reduce == 2);
 }
 /* a sample with a depth reference (dref 0: none), implicit lod or lod: compared in the shader on a color texture */
 u32 shader_sample_dref(DirectCtx* c, const ShaderInfo* si, int slot, u32 vec4_type, u32 coords, u32 dref, int use_lod,
@@ -327,9 +340,13 @@ typedef struct {
     u32 result_type, i32_type, offset_type, sampled_type, sampler;
     u32 coords, dx, dy, count, levels, mask[3], selector[3];
     u32 regular, mode, level, depth_reference, min_lod;
+    int reduce, array; /* shader_minmax_of the slot's, and whether it is an array */
 } TextureOffsetTree;
 static u32 texture_offset_sample(const TextureOffsetTree* tree, u32 offset, int dynamic) {
     DirectCtx* c = tree->c;
+    if (tree->reduce && !tree->depth_reference)
+        return shader_minmax_direct(c, tree->result_type, tree->sampled_type, tree->sampler, tree->coords, tree->array,
+                                    offset, dynamic, tree->reduce);
     return tree->regular
         ? spv_emit_sample_image_min_lod(&c->emit, tree->result_type, tree->sampled_type, tree->sampler,
             tree->coords, tree->depth_reference, tree->mode, tree->level, offset, dynamic, tree->min_lod)
@@ -426,10 +443,18 @@ static u32 texture_offset_dispatch(TextureOffsetTree tree, u32 packed, u32 shift
 }
 static u32 texture_gradient_offset(const Tr* t, int slot, u32 coords, u32 dx, u32 dy, u32 packed, u32 count,
                                     u32 known, u32 value) {
-    TextureOffsetTree tree = {.c = t->c, .coords = coords, .dx = dx, .dy = dy, .count = count,
-        .result_type = t->texture_vec4[slot], .i32_type = t->i32_type,
-        .offset_type = count == 3 ? t->vec3_i32 : t->vec2_i32,
-        .sampled_type = t->c->sampled_type[slot], .sampler = t->c->sampler[slot]};
+    TextureOffsetTree tree = {.c = t->c,
+                              .coords = coords,
+                              .dx = dx,
+                              .dy = dy,
+                              .count = count,
+                              .result_type = t->texture_vec4[slot],
+                              .i32_type = t->i32_type,
+                              .offset_type = count == 3 ? t->vec3_i32 : t->vec2_i32,
+                              .sampled_type = t->c->sampled_type[slot],
+                              .sampler = t->c->sampler[slot],
+                              .reduce = shader_minmax_of(t->si, slot),
+                              .array = t->textures[slot].array};
     return texture_offset_dispatch(tree, packed, 16, known, value);
 }
 /* a surface instruction's coordinates x and y with what its dimension adds: a 2D array's layer is the low 16 bits of
@@ -693,7 +718,10 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         int explicit_lod = shader_texs_explicit(encoding) || stage != ST_FS;
         u32 level = shader_texs_explicit(encoding) ? shader_texs_level(encoding, b) : 255;
         u32 lod = level < 255 ? reg_read_as(c, level, c->f32_type) : zero_f;
-        sample = shader_sample_dref(c, si, slot, texture_vec4[slot], uv, dref, explicit_lod, lod);
+        int reduce = shadow ? 0 : shader_minmax_of(si, slot);
+        sample = reduce ? shader_minmax_direct(c, texture_vec4[slot], c->sampled_type[slot], c->sampler[slot], uv,
+                                               array, 0, 0, reduce)
+                        : shader_sample_dref(c, si, slot, texture_vec4[slot], uv, dref, explicit_lod, lod);
         shader_texs_store(c, w, sample, texture_scalar[slot], shadow, i32_type, vec2, zero_f);
     } else if (op == O_TEX || op == O_TEX_B) {
         int bindless = op == O_TEX_B;
@@ -788,11 +816,21 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         /* a depth compare of a color texture samples it plainly and compares its first component here */
         int indexed_dc = dref && shadow && (textures[slot].flags & SNX_TEX_INDEXED);
         int dc_func = indexed_dc ? 3 : dref ? shader_dc_color_func(si, slot) : -1;
-        TextureOffsetTree sampling = {.c = c, .regular = 1, .mode = sample_mode, .level = level,
-            .result_type = dc_func < 0 && shadow ? c->f32_type : texture_vec4[slot],
-            .i32_type = i32_type, .offset_type = offset_count == 3 ? vec3_i32 : vec2_i32,
-            .sampled_type = c->sampled_type[slot], .sampler = c->sampler[slot], .coords = coords,
-            .depth_reference = dc_func < 0 ? dref : 0, .min_lod = min_lod, .count = offset_count};
+        TextureOffsetTree sampling = {.c = c,
+                                      .regular = 1,
+                                      .mode = sample_mode,
+                                      .level = level,
+                                      .result_type = dc_func < 0 && shadow ? c->f32_type : texture_vec4[slot],
+                                      .i32_type = i32_type,
+                                      .offset_type = offset_count == 3 ? vec3_i32 : vec2_i32,
+                                      .sampled_type = c->sampled_type[slot],
+                                      .sampler = c->sampler[slot],
+                                      .coords = coords,
+                                      .depth_reference = dc_func < 0 ? dref : 0,
+                                      .min_lod = min_lod,
+                                      .count = offset_count,
+                                      .reduce = shadow ? 0 : shader_minmax_of(si, slot),
+                                      .array = (int)array};
         u32 sample = varying_offset ? texture_offset_dispatch(sampling, varying_offset, 0, offset_known, offset_value)
                                     : texture_offset_sample(&sampling, offset, dynamic_offset);
         if (dc_func >= 0)
@@ -894,11 +932,14 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                    : spv_emit_vec2_construct(&c->emit, vec2, dx[0], dx[1]);
         u32 gradient_y = dims == 3 ? spv_emit_vec3_construct(&c->emit, vec3, dy[0], dy[1], dy[2])
                                    : spv_emit_vec2_construct(&c->emit, vec2, dy[0], dy[1]);
-        u32 sample = varying_offset
-                         ? texture_gradient_offset(t, slot, coords, gradient_x, gradient_y, varying_offset, count,
-                                                   varying_known, varying_value)
-                         : spv_emit_sample_grad_offset(&c->emit, texture_vec4[slot], c->sampled_type[slot], c->sampler[slot],
-                                                        coords, gradient_x, gradient_y, offset, dynamic_offset, 0);
+        int reduce = shader_minmax_of(si, slot);
+        u32 sample = varying_offset ? texture_gradient_offset(t, slot, coords, gradient_x, gradient_y, varying_offset,
+                                                              count, varying_known, varying_value)
+                     : reduce ? shader_minmax_direct(c, texture_vec4[slot], c->sampled_type[slot], c->sampler[slot],
+                                                     coords, (int)array, offset, dynamic_offset, reduce)
+                              : spv_emit_sample_grad_offset(&c->emit, texture_vec4[slot], c->sampled_type[slot],
+                                                            c->sampler[slot], coords, gradient_x, gradient_y, offset,
+                                                            dynamic_offset, 0);
         u32 mask = B(w, 31, 4), dst = d;
         for (u32 component = 0; component < 4; component++)
             if (mask & (1u << component)) {

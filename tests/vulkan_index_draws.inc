@@ -605,6 +605,83 @@ static int fragment_query_volume_case(GpuChannel* channel, u64 target, u64 addre
     return 0;
 }
 
+/* A sampler's min/max reduction on a device whose sampler has none (samplerFilterMinmax off): the fragment program
+   takes the least or the greatest of the texels itself (vk_tex_minmax_in_program, shader_minmax_sample), where the
+   sampler would average them. Edenprobe's sampling case: a 2x1 R32F texture of 0 and 1, linear both ways, no mip
+   filter, clamped, looked up halfway between them, (0.5, 0.5): the least is 0, the greatest 1, the average a half.
+   The fragment program writes the lookup's RGBA, so the first pixel's red is 0 or 255 (0.5 would be 127 or 128). The
+   device's own filter first, where it has one for R32F */
+static int minmax_fragment_case(GpuChannel* channel, u64 target, u64 address) {
+    const u64 program = address + 0x6000, pool = address + 0x1F800, samplers = pool + 0x100, cbuf = pool + 0x200,
+              texels = pool + 0x400;
+    const u32 half = 0x3f000000;
+    const u64 fragment[4] = {0x0100000000071004ull | (u64)half << 20, /* MOV32I R4, 0.5 */
+                             0x0100000000071005ull | (u64)half << 20, /* MOV32I R5, 0.5 */
+                             /* TEX R0, R4, c[0x40], 2D, RGBA */
+                             0xc000000000000000ull | 0x10ull << 36 | 7ull << 51 | 0xfull << 31 | 2ull << 28 |
+                                 0xffull << 20 | 7ull << 16 | 4ull << 8,
+                             0xe30000000007000full};
+    VkFormatProperties r32f;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_R32_SFLOAT, &r32f);
+    if (!(r32f.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
+        puts("min/max in a fragment program: R32F has no linear filter, skipped");
+        return 0;
+    }
+    /* R32F, 2x1 texels, one level, block linear, normalized */
+    const u32 tic[8] = {0x0f | 7u << 7 | 7u << 10 | 7u << 13 | 7u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                        (u32)texels,
+                        (u32)(texels >> 32) | 3u << 21,
+                        0,
+                        1 | 1u << 23,
+                        1u << 31,
+                        0,
+                        0};
+    u8 bytes[256] = {0};
+    for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+    CHECK(!gmem_write(pool, bytes, 32));
+    memset(bytes, 0, sizeof bytes);
+    CHECK(!gmem_write(cbuf, bytes, 256)); /* the handle at 0x40: 0, the header above and sampler 0 */
+    snx_st_le32(bytes + 4, 0x3f800000);   /* texel 1 is 1.0, texel 0 nought */
+    CHECK(!gmem_write(texels, bytes, 256));
+    CHECK(index_program(program, fragment, 4, 1));
+    u32* r = channel->r3d;
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 0;
+    r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 0;
+    r[0x48D] = 0;
+    r[0x982] = 2;
+    channel->ds.bind.cb_addr[4][2] = cbuf;
+    channel->ds.bind.cb_size[4][2] = 256;
+    r[0x851] = (u32)(program - address); /* the fragment program's offset */
+    int minmax = vk_format_minmax_filter(VK_FORMAT_R32_SFLOAT), ok = 1;
+    VkBool32 had = g_vk.feat12.samplerFilterMinmax;
+    for (int device = minmax ? 1 : 0; device >= 0 && ok; device--) {
+        g_vk.feat12.samplerFilterMinmax = device ? had : VK_FALSE;
+        for (u32 reduction = 1; reduction <= 2 && ok; reduction++) {
+            u32 tsc[8] = {2u | 2u << 3 | 2u << 6, 2u | 2u << 4 | 1u << 6 | reduction << 10};
+            for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tsc[i]);
+            CHECK(!gmem_write(samplers, bytes, 32));
+            DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+            IndexPixels px;
+            u8 first[4] = {0};
+            ok = !index_draw(channel, target, &call, &px) && !index_first_pixel(target, first) &&
+                 first[0] == (reduction == 1 ? 0 : 255);
+            if (!ok)
+                fprintf(stderr, "min/max %s: the %s of a texel of 0 and one of 1 reads red %u, not %u\n",
+                        device ? "by the device's sampler" : "in a fragment program",
+                        reduction == 1 ? "least" : "greatest", first[0], reduction == 1 ? 0 : 255);
+        }
+    }
+    g_vk.feat12.samplerFilterMinmax = had;
+    r[0x851] = 0x10000; /* the harness's fragment program again */
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    CHECK(ok);
+    printf("min/max in a fragment program: the least and the greatest of two texels taken by the program on a device "
+           "without the filter (the device's own %s)\n",
+           minmax ? "agrees" : "has none for R32F");
+    return 0;
+}
+
 /* A fragment program that queries a volume, samples it, then samples a 2D texture through another handle: its own
    slots are the query's (2D until the header says otherwise), the volume's and the 2D texture's, and its variant
    keyed on the volume's header samples and queries the volume through one slot, so the 2D texture's slot is the
@@ -1298,6 +1375,7 @@ static int check_index_draws(void) {
     CHECK(!vertex_query_volume_case(channel, target, address));
     CHECK(!fragment_query_volume_case(channel, target, address));
     CHECK(!fragment_query_slots_case(channel, target, address));
+    CHECK(!minmax_fragment_case(channel, target, address));
     CHECK(!shadow_map_cases(channel, target, address));
     CHECK(!query_target_case(channel, target, address));
     CHECK(!own_target_case(channel, target, address, 0));

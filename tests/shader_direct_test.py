@@ -168,6 +168,7 @@ def main():
             *(Path(directory) / f'surface_op_{i}.spv' for i in range(7)),
             *(Path(directory) / f'legacy_{i}.spv' for i in range(4)),
             *(Path(directory) / f'rect_{i}.spv' for i in range(3)),
+            *(Path(directory) / f'minmax_{i}.spv' for i in range(2)),
             *(Path(directory) / f'window_{i}.spv' for i in range(3)),
             *(Path(directory) / f'lone_lane_{i}.spv' for i in range(9)),
         )

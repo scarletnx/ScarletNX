@@ -422,6 +422,16 @@ static const char* run(Ev* e, uint32_t entry_at) {
                 for (uint32_t k = 0; op == 95 && k < 3; k++) e->env->fetched[b - 1][k] = (uint32_t)e->ids[in[4]].v.c[k];
                 break;
             }
+            case 96: { /* OpImageGather: the test's four texels of its component */
+                uint64_t b = e->ids[in[3]].v.c[0];
+                if (!b || b > 64) return "a gather of an image with no binding";
+                uint32_t component = (uint32_t)e->ids[in[5]].v.c[0] & 3;
+                r->kind = K_VALUE;
+                r->type = t;
+                r->v = (Val){{0}};
+                for (uint32_t k = 0; k < 4; k++) r->v.c[k] = e->env->gather[b - 1][component][k];
+                break;
+            }
             case 103:   /* OpImageQuerySizeLod */
             case 104:   /* OpImageQuerySize */
             case 106: { /* OpImageQueryLevels */

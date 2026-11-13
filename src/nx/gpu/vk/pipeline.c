@@ -859,7 +859,9 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[26], const ShX
         si->tex_dc_color_mask = mask[7] | (u64)mask[8] << 32;
         si->tex_dc_color_funcs = mask[9];
         si->in_unfed_mask = mask[10];
-        si->early_fragment_tests = mask[11];
+        si->early_fragment_tests = mask[11] & 1;
+        si->tex_minmax_mask = mask[11] >> 1 & ((1u << SH_MINMAX_SLOTS) - 1);
+        si->tex_minmax_max = mask[11] >> (1 + SH_MINMAX_SLOTS) & ((1u << SH_MINMAX_SLOTS) - 1);
         si->tex_rect_mask = mask[12] | (u64)mask[13] << 32;
         shader_query_hint_unpack(mask + 14, si->tex_query_hint);
         si->prim_mask = mask[6]; /* the generics the draw's mesh program writes per primitive (vk_shader_mesh) */
@@ -1004,15 +1006,16 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
                     u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                     const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint) {
     return vk_shader_get_ex(ds, gva, gva_a, stage, int_mask, sint_mask, rt_int, rt_sint, clip, dc_color, dc_funcs,
-                            unfed, rect, xfb, query_hint, advanced_blend, advanced_mask, img_int, img_sint, 0);
+                            unfed, rect, xfb, query_hint, advanced_blend, advanced_mask, img_int, img_sint, 0, 0);
 }
 VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                        u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                        const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint,
-                       u32 fs_config) {
+                       u32 fs_config, u32 minmax) {
     /* a vertex program's is its position's copy (ShaderInfo.position_copy) */
     if ((fs_config & ~SH_FS_CONFIG_MASK) || (fs_config && stage != ST_FS && (stage != ST_VS || fs_config > 32)))
         return NULL;
+    if ((minmax >> 2 * SH_MINMAX_SLOTS) || (minmax && stage != ST_FS)) return NULL;
     const DsPrograms* p = ds ? &ds->prog : NULL;
     pf_merge();
     g_pipeline.sh_ds = ds;
@@ -1031,6 +1034,8 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
     mask[24] = (img_int & 255) | fs_config << 8;
     mask[25] = img_sint;
     if (stage == ST_FS && p) mask[11] = p->early_z;
+    /* the min/max textures above the early tests' bit, in a word every key has */
+    if (stage == ST_FS) mask[11] |= minmax << 1;
     if (stage == ST_FS) {
         mask[21] = (u32)advanced_blend;
         mask[22] = (u32)(advanced_blend >> 32);

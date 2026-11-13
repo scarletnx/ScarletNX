@@ -183,6 +183,10 @@ typedef struct {
        order */
     u64 tex_dc_color_mask;
     u32 tex_dc_color_funcs;
+    /* FS and compute key: texture slots whose filtered samples take the least of their texels in the program (the
+       greatest in tex_minmax_max), as their sampler asks and the device's sampler can't (vk/render.c
+       vk_tex_minmax_in_program, shader_minmax_sample). A fragment program's key holds the first SH_MINMAX_SLOTS */
+    u64 tex_minmax_mask, tex_minmax_max;
     /* FS: texture slots every read of which is a texel fetch at the fragment's own pixel (TLD or TLDS of a 2D texture
        at gl_FragCoord's integer x and y, level 0, no offset): the only ones a draw may sample in place while it
        renders to them (vk/render.c), each fragment reading what earlier draws left at its pixel */
@@ -349,6 +353,7 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
     }
 }
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs has room for */
+#define SH_MINMAX_SLOTS    15 /* slots a fragment program's key has room for in tex_minmax_mask (vk/pipeline.c) */
 /* Each stage has a descriptor set (shader_vk_set), its bindings grouped by kind. */
 #define SNX_VKB_CB       0                         /* 18 constant buffers */
 #define SNX_VKB_SSBO     18                        /* 16 global memory buffers */

@@ -2203,7 +2203,7 @@ static int check_sampler_reduction(void) {
     /* clamp to edge; linear magnification and minification, no mip filter; mode the reduction */
     for (u32 mode = 0; filtered && mode < 4; mode++) {
         u32 tsc[8] = {2u | 2u << 3 | 2u << 6, 2u | 2u << 4 | 1u << 6 | mode << 10};
-        VkSampler sampler = vk_tex_bind_sampler(tsc, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D);
+        VkSampler sampler = vk_tex_bind_sampler(tsc, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0);
         u32 bits = 0;
         float got;
         CHECK(sampler && !run_compute(code, words, &bits, 1, view, sampler));
@@ -2217,29 +2217,29 @@ static int check_sampler_reduction(void) {
     u32 average[8] = {2u | 2u << 3 | 2u << 6, 2u | 2u << 4 | 1u << 6}, least[8];
     memcpy(least, average, sizeof least);
     least[1] |= 1u << 10;
-    VkSampler avg = vk_tex_bind_sampler(average, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D);
-    CHECK(vk_tex_bind_sampler(least, tic, &plain, 0, NULL, VK_IMAGE_VIEW_TYPE_2D) ==
-          vk_tex_bind_sampler(average, tic, &plain, 0, NULL, VK_IMAGE_VIEW_TYPE_2D));
-    CHECK(vk_tex_bind_sampler(least, tic, &plain, 1, &tex, VK_IMAGE_VIEW_TYPE_2D) ==
-          vk_tex_bind_sampler(average, tic, &plain, 1, &tex, VK_IMAGE_VIEW_TYPE_2D));
-    CHECK(vk_tex_bind_sampler(least, tic, &shadow, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) ==
-          vk_tex_bind_sampler(average, tic, &shadow, 0, &tex, VK_IMAGE_VIEW_TYPE_2D));
+    VkSampler avg = vk_tex_bind_sampler(average, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0);
+    CHECK(vk_tex_bind_sampler(least, tic, &plain, 0, NULL, VK_IMAGE_VIEW_TYPE_2D, 0) ==
+          vk_tex_bind_sampler(average, tic, &plain, 0, NULL, VK_IMAGE_VIEW_TYPE_2D, 0));
+    CHECK(vk_tex_bind_sampler(least, tic, &plain, 1, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) ==
+          vk_tex_bind_sampler(average, tic, &plain, 1, &tex, VK_IMAGE_VIEW_TYPE_2D, 0));
+    CHECK(vk_tex_bind_sampler(least, tic, &shadow, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) ==
+          vk_tex_bind_sampler(average, tic, &shadow, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0));
     u32 nearest[8] = {average[0], 1u | 1u << 4 | 1u << 6}, nearest_least[8] = {average[0], nearest[1] | 1u << 10};
-    CHECK(vk_tex_bind_sampler(nearest_least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) ==
-          vk_tex_bind_sampler(nearest, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D));
+    CHECK(vk_tex_bind_sampler(nearest_least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) ==
+          vk_tex_bind_sampler(nearest, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0));
     VkBool32 had = g_vk.feat12.samplerFilterMinmax;
     g_vk.feat12.samplerFilterMinmax = VK_FALSE;
-    CHECK(vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) == avg);
+    CHECK(vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) == avg);
     g_vk.feat12.samplerFilterMinmax = had;
-    CHECK(!minmax || vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) != avg);
+    CHECK(!minmax || vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) != avg);
     /* a device whose min/max filter takes no swizzle: a view of its own components keeps the reduction, and one that
        reads g into r averages */
     int had_swizzle = g_vk.has_minmax_swizzle;
     g_vk.has_minmax_swizzle = 0;
-    CHECK(vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) == avg);
-    CHECK(!minmax || vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) != avg);
+    CHECK(vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) == avg);
+    CHECK(!minmax || vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) != avg);
     g_vk.has_minmax_swizzle = 1;
-    CHECK(!minmax || vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) != avg);
+    CHECK(!minmax || vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) != avg);
     g_vk.has_minmax_swizzle = had_swizzle;
     vk_image_view_destroy(g_vk.dev, view, NULL);
     vmaDestroyImage(g_vk.vma, image, image_memory);
@@ -5988,6 +5988,7 @@ static int check_video_decode_gate(void) {
 #include "vulkan_storage_atomics.inc"
 #include "vulkan_surface_loads.inc"
 #include "vulkan_rect_textures.inc"
+#include "vulkan_minmax_program.inc"
 #include "vulkan_compute_depth.inc"
 #include "vulkan_owned_readback.inc"
 #include "vulkan_lock_waits.inc"
@@ -6884,6 +6885,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_volume_surface_atomics());
     CHECK(!check_layered_surface_loads());
     CHECK(!check_rect_textures());
+    CHECK(!check_minmax_program());
     CHECK(!check_compute_depth_texture());
     CHECK(!check_compute_compares());
     CHECK(!check_viewport_orientation());

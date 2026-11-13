@@ -14,6 +14,7 @@
 #include "nx/gpu/shader/sm86.h"
 #include "nx/gpu/shader/translator.h"
 #include "nx/gpu/shader/write_log.h"
+#include "nx/gpu/shader/minmax_spirv.h"
 #include "common/utilities/spirv_emit.h"
 #include "common/utilities/bits.h"
 #include <stdarg.h>
@@ -2124,6 +2125,13 @@ static u32 sample_indexed_shadow(Ctx* c, int slot, u32 element, u32 coord, u32 d
                                    spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, meta, cu(c, 8)), cu(c, 8));
     return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, is_depth, depth, result);
 }
+/* a filtered sample of slot at coord (array: its last component the layer) moved by const_offset (0 for none) as the
+   least or greatest of its texels (reduce: shader_minmax_slot), as its sampler asks and the device's can't */
+static u32 minmax_sample(Ctx* c, int slot, u32 coord, int array, u32 const_offset, int reduce) {
+    ShMinmaxTypes t = {c->t_f32, c->t_u32, c->t_bool, c->t_v4f, c->glsl};
+    return shader_minmax_sample(&c->e, &t, c->tex_sampled[slot], c->tex[slot], coord, array, const_offset, 0,
+                                reduce == 2);
+}
 /* NAK's TexDim (bits 61-63): ShTex's type (0 1D, 1 2D, 2 3D, 3 cube), array, and the coordinates */
 static int tex_dim(u32 dim, u32* type, u32* array, u32* coords) {
     static const u8 types[8] = {0, 1, 2, 3, 0, 1, 0, 3}, arrays[8] = {0, 0, 0, 0, 1, 1, 0, 1},
@@ -2329,9 +2337,11 @@ static void texture(Ctx* c, const Sm86Insn* in) {
                 coord = coord_vector(c, moved, count);
             }
         }
+        int reduce = shadow ? 0 : shader_minmax_slot(c->si->tex_minmax_mask, c->si->tex_minmax_max, slot);
         result = indexed && shadow ? sample_indexed_shadow(c, slot, element, coord, dref, mode, level, const_offset)
-                                   : spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord,
-                                                           dref, mode, level, const_offset, 0);
+                 : reduce ? minmax_sample(c, slot, coord, (int)array, const_offset, reduce)
+                          : spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord, dref, mode,
+                                                  level, const_offset, 0);
         if (shadow) {
             u32 v[4] = {result, cf(c, 0.0f), cf(c, 0.0f), cf(c, 1.0f)};
             result = spv_emit_vec4_construct(&c->e, c->t_v4f, v);
@@ -2405,10 +2415,12 @@ static void texture_grad(Ctx* c, const Sm86Insn* in) {
             &c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32,
             spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, rd(c, TXD_REG(a, coords)), cu(c, 0xffff)));
 #undef TXD_REG
-    tex_results(
-        c, in,
-        spv_emit_sample_grad(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord_vector(c, f, count), gx, gy, 0),
-        c->t_f32);
+    int reduce = shader_minmax_slot(c->si->tex_minmax_mask, c->si->tex_minmax_max, slot);
+    u32 coord = coord_vector(c, f, count);
+    tex_results(c, in,
+                reduce ? minmax_sample(c, slot, coord, (int)array, 0, reduce)
+                       : spv_emit_sample_grad(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, gx, gy, 0),
+                c->t_f32);
 }
 /* TLD: a texel at integer coordinates and an explicit level (bits 87-89, NAK's TexLodMode: 1 the base level, 3 a
    level register). Its operands: the layer and the coordinates, then the level (nak_nir_lower_tex.c) */

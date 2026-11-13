@@ -122,7 +122,8 @@ snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c
                      gpu/shader/emit_int.c gpu/shader/emit_float.c gpu/shader/emit_memory.c gpu/shader/emit_texture.c
                      gpu/shader/emit_io.c gpu/shader/emit_flow.c gpu/shader/emit_thread.c
                      gpu/shader/sm86_decode.c gpu/shader/sm86_translate.c gpu/shader/sm86_eval.c gpu/shader/advanced_blend_spirv.c
-                     gpu/shader/coverage_spirv.c gpu/shader/capture_tiles_spirv.c gpu/shader/depth_stencil_spirv.c gpu/shader/write_log.c)
+                     gpu/shader/coverage_spirv.c gpu/shader/capture_tiles_spirv.c gpu/shader/depth_stencil_spirv.c gpu/shader/write_log.c
+                     gpu/shader/minmax_spirv.c)
 # decode.c and sm86_decode.c include the Maxwell and SM86 decoders tools/decodetree makes from gpu/shader/sm53.decode
 # and sm86.decode (cmake/decodetree.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/decodetree.cmake")

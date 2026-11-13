@@ -51,6 +51,7 @@ static const char* fswzadd_path;
 static const char* surface_op_paths[7];
 static const char* legacy_paths[4];
 static const char* rect_paths[3];
+static const char* minmax_paths[2]; /* a TEX and a TXD taking the least of their texels (minmax_samples) */
 static const char* window_paths[3];
 static const char* lone_lane_paths[9];
 static struct {
@@ -3522,6 +3523,82 @@ static void rect_textures(void) {
     }
 }
 
+/* A sampler's min/max reduction the program takes itself (ShaderInfo.tex_minmax_mask, the key; tex_minmax_max for
+   the greatest): TEX and TXD of a 2D texture become four gathers, one a component, and the least or greatest of the
+   texels their footprint weighs, which the evaluator runs on a 4x4 texture. At (0.5, 0.5) the footprint is texels 1
+   and 2 of both rows; at (0.375, 0.5) x lands on texel 1's centre, and column 2 weighs nothing. Without the key the
+   program samples as it did. MOV32I R4, u; MOV32I R5, v; TEX R0, R4, 2D (RGBA) or TXD R0, R4, R8, 2D */
+static float minmax_bits_f32(u32 bits) {
+    float f;
+    memcpy(&f, &bits, 4);
+    return f;
+}
+static void minmax_samples(void) {
+    const u64 tex = 0xc000000000000000ull | 0x10ull << 36 | 7ull << 51 | 0xfull << 31 | 2ull << 28 | 0xffull << 20 |
+                    7ull << 16 | 4ull << 8;
+    const u64 txd = 0xde00000000000000ull | 7ull << 51 | 0x10ull << 36 | 0xfull << 31 | 2ull << 28 | 8ull << 20 |
+                    7ull << 16 | 4ull << 8;
+    /* each component's gather: (i, j + 1), (i + 1, j + 1), (i + 1, j), (i, j) */
+    static const float gathered[4][4] = {{5, 1, 2, 7}, {0.25f, 0.5f, 0.75f, 1}, {-1, -2, -3, -4}, {8, 8, 9, 6}};
+    static const struct {
+        float u, v;
+        float least[4], greatest[4];
+    } at[] = {{0.5f, 0.5f, {1, 0.25f, -4, 6}, {7, 1, -1, 9}}, {0.375f, 0.5f, {5, 0.25f, -4, 6}, {7, 1, -1, 8}}};
+    const u64* forms[2] = {&tex, &txd};
+    static const char* names[2] = {"TEX", "TXD"};
+    for (int k = 0; k < 2; k++)
+        for (u32 greatest = 0; greatest < 2; greatest++)
+            for (u32 c = 0; c < sizeof at / sizeof *at; c++) {
+                u32 u, v;
+                memcpy(&u, &at[c].u, 4);
+                memcpy(&v, &at[c].v, 4);
+                const u64 program[3] = {mov32i(4, u), mov32i(5, v), *forms[k]};
+                size_t slots, words = 0;
+                u64* code = guest_program(program, 3, NULL, &slots);
+                if (!code) continue;
+                code[9] = 0xf; /* the header's outputs: render target 0's RGBA, from R0-R3 */
+                ShaderInfo info = {0};
+                info.tex_minmax_mask = 1;
+                info.tex_minmax_max = greatest;
+                u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 1, 1, 1, 1);
+                free(code);
+                check_translated(spv, &info, "a min/max sample translates");
+                if (!spv) continue;
+                check(info.tex_minmax_mask == 1 && info.tex_minmax_max == greatest,
+                      "a min/max sample's key outlives the translation, for the bind that reads it");
+                check(count_opcode(spv, words, 96, 0xffffffffu) == 4 &&
+                          count_opcode(spv, words, 87, 0xffffffffu) + count_opcode(spv, words, 88, 0xffffffffu) == 0,
+                      "a min/max sample is four gathers and no sample");
+                SpvEvalEnv env = {0};
+                env.image_size[SNX_VKB_TEX][0] = env.image_size[SNX_VKB_TEX][1] = 4;
+                for (u32 g = 0; g < 4; g++)
+                    for (u32 t = 0; t < 4; t++) memcpy(&env.gather[SNX_VKB_TEX][g][t], &gathered[g][t], 4);
+                u32 scale[4] = {0x3f800000, 0x3f800000, 0x3f800000, 0};
+                env.ubo[SNX_VKB_RS] = scale;
+                env.ubo_words[SNX_VKB_RS] = 4;
+                env.push[7] = 8;
+                const char* why = spv_eval(spv, words, &env);
+                const float* want = greatest ? at[c].greatest : at[c].least;
+                int same = !why && env.out_written[0];
+                for (u32 g = 0; same && g < 4; g++) same = !memcmp(&env.out[0][g], &want[g], 4);
+                if (!same)
+                    fprintf(stderr, "%s's %s at (%g, %g): %s; read %g %g %g %g, want %g %g %g %g\n", names[k],
+                            greatest ? "greatest" : "least", (double)at[c].u, (double)at[c].v, why ? why : "ran",
+                            (double)minmax_bits_f32(env.out[0][0]), (double)minmax_bits_f32(env.out[0][1]),
+                            (double)minmax_bits_f32(env.out[0][2]), (double)minmax_bits_f32(env.out[0][3]),
+                            (double)want[0], (double)want[1], (double)want[2], (double)want[3]);
+                check(same, "a min/max sample takes the least or greatest of the texels its footprint weighs");
+                if (!greatest && !c) save_fixture(minmax_paths[k], spv, words);
+                free(spv);
+            }
+    ShaderInfo info;
+    size_t words = 0;
+    u32* plain = translate(&tex, 1, ST_FS, &info, &words, 1);
+    check(plain && count_opcode(plain, words, 96, 0xffffffffu) == 0 && count_opcode(plain, words, 87, 0xffffffffu) == 1,
+          "without the key a sample is one sample and no gather");
+    free(plain);
+}
+
 /* One game's culling geometry program stores RZ or a MOV32I's 1 to the viewport mask (AST a[0x3a0]): no viewport or
    viewport 0 alone, no broadcast, so the program is the one without the store, word for word. A mask the translation
    can't know (R0, an attribute's), one of more viewports (3) and a mask of 1 beside a written viewport index are
@@ -5882,6 +5959,10 @@ int main(int argc, char** argv) {
             snprintf(name, sizeof name, "rect_%d", i);
             rect_paths[i] = fixture_path(argv[1], name);
         }
+        for (int i = 0; i < 2; i++) {
+            snprintf(name, sizeof name, "minmax_%d", i);
+            minmax_paths[i] = fixture_path(argv[1], name);
+        }
         for (int i = 0; i < 3; i++) {
             snprintf(name, sizeof name, "window_%d", i);
             window_paths[i] = fixture_path(argv[1], name);
@@ -5950,6 +6031,7 @@ int main(int argc, char** argv) {
     attribute_pointer();
     legacy_varyings_forms();
     rect_textures();
+    minmax_samples();
     viewport_mask();
     indexed_attribute_load();
     structured_flow();
