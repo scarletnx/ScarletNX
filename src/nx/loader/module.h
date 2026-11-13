@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* What the game module's backends (module_llvm.c, module_arm.c) share: their options, how code is
-   cut into units, the dispatch entry table and the progress lines */
+   cut into units and the dispatch entry table */
 #ifndef SNX_TOOL_MODULE_H
 #define SNX_TOOL_MODULE_H
 
@@ -38,11 +38,5 @@ SnxModuleEntry* snx_module_entries(const SnxCodegen* codegen, size_t* count);
 /* A unit's description for progress lines, for functions [first, last), allocated, e.g.
    "0x8012340-0x8019ABC, 512 functions, 90120 instructions" */
 char* snx_chunk_label(const SnxCodegen* codegen, size_t first, size_t last);
-/* Prints that unit `done` of `count` finished: "  compiled block 3/40: code_002, <label> (4.2 s)", or "(cached)" */
-void snx_report_unit(size_t done, size_t count, const char* name, const char* label, int cached, double seconds);
-/* snx_report_unit's line, into out: the unit's place, name and label, then cached, or its time and the memory the
-   process holds when used tells it (0: the system does not) */
-void snx_unit_line(char* out, size_t size, size_t done, size_t count, const char* name, const char* label, int cached,
-                   double seconds, SnxU64 used);
 
 #endif

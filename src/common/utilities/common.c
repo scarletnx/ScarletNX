@@ -2261,6 +2261,22 @@ SnxU64 snx_footprint(void) {
     return 0;
 #endif
 }
+void snx_unit_line(char* out, size_t size, size_t done, size_t count, const char* name, const char* label, int cached,
+                   double seconds, SnxU64 used) {
+    if (cached)
+        snprintf(out, size, "  compiled block %zu/%zu: %s, %s (cached)", done, count, name, label);
+    else if (used)
+        snprintf(out, size, "  compiled block %zu/%zu: %s, %s (%.1f s, %llu MiB in use)", done, count, name, label,
+                 seconds, (unsigned long long)(used >> 20));
+    else
+        snprintf(out, size, "  compiled block %zu/%zu: %s, %s (%.1f s)", done, count, name, label, seconds);
+}
+void snx_report_unit(size_t done, size_t count, const char* name, const char* label, int cached, double seconds) {
+    char line[512];
+    snx_unit_line(line, sizeof line, done, count, name, label, cached, seconds, cached ? 0 : snx_footprint());
+    puts(line);
+    fflush(stdout);
+}
 SnxU64 snx_process_cpu_ns(void) {
 #ifdef _WIN32
     FILETIME created, exited, kernel, user;
