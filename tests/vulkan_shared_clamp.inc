@@ -67,11 +67,30 @@ static int check_shared_clamp(void) {
     return 0;
 }
 
+/* the launch of qmd at code with the device's shared memory faked to shared bytes and, where range is not 0, its
+   maxStorageBufferRange to range: the dispatches it recorded */
+static u64 spill_dispatch(GpuChannel* ch, u32* qmd, u64 code, u32 shared, u32 range) {
+    VkPhysicalDeviceLimits* limits = &g_vk.props.limits;
+    u32 shared_was = limits->maxComputeSharedMemorySize, range_was = limits->maxStorageBufferRange;
+    u64 before = g_vk_dispatches;
+    limits->maxComputeSharedMemorySize = shared;
+    if (range) limits->maxStorageBufferRange = range;
+    vk_lock();
+    DispatchState d;
+    mx_dispatch_state(qmd, ch->rcomp, code, &d);
+    vk_dispatch(&d);
+    vk_compute_land();
+    vk_unlock();
+    limits->maxComputeSharedMemorySize = shared_was, limits->maxStorageBufferRange = range_was;
+    return g_vk_dispatches - before;
+}
+
 /* Shared memory in a storage buffer (ShaderInfo.shared_spill) where a block asks for more than the device gives: 4
    blocks of 64 threads each ask for 48 KiB on a device that gives 1024 bytes (faked on the real one, as above), store
    (block << 8 | thread) at 0xb000 + 4 thread (the base from the constants, which no bound reaches), wait at the
    barrier and read their word back into memory. Each word comes back: the blocks' parts are apart and the barrier
-   orders the buffer. With the program skipped the output keeps its 0xcdcdcdcd */
+   orders the buffer. With the program skipped the output keeps its 0xcdcdcdcd, as it must where the parts are more
+   than one storage buffer may hold */
 static int check_shared_spill(void) {
     const u64 gpu = 0x9b0000000ull, cpu = HEAP_BASE + 0x1f400000;
     const u64 code_at = gpu, constants = gpu + 0x1000, output = gpu + 0x2000;
@@ -120,16 +139,24 @@ static int check_shared_spill(void) {
     qmd[QMD_CONST_BUFFER_ENABLE] = 1;
     qmd[QMD_CONST_BUFFER_CONFIG] = (u32)constants;
     qmd[QMD_CONST_BUFFER_CONFIG + 1] = (u32)(constants >> 32) | 0x200u << 15;
-    u32 limit = g_vk.props.limits.maxComputeSharedMemorySize;
+    /* the blocks' parts take 4 * 48 KiB of one storage buffer: past a device's maxStorageBufferRange (faked here
+       one word short of it) the launch is skipped with its reason, never bound with a range the device can't take */
+    u32 range = g_vk.props.limits.maxStorageBufferRange;
+    char why[512];
+    u64 skipped = vk_cs_skipped(why, sizeof why),
+        short_ran = spill_dispatch(ch, qmd, code_at, faked, blocks * asks - 4);
+    u64 short_skipped = vk_cs_skipped(why, sizeof why) - skipped;
+    u32 untouched[256];
+    CHECK(!gmem_read(output, untouched, sizeof untouched));
+    if (short_ran || short_skipped != 1 || untouched[0] != 0xcdcdcdcd)
+        fprintf(stderr,
+                "shared memory past a storage buffer's range: %llu dispatches recorded, %llu skipped, the first word "
+                "%08x\n",
+                (unsigned long long)short_ran, (unsigned long long)short_skipped, untouched[0]);
+    CHECK(!short_ran && short_skipped == 1 && untouched[0] == 0xcdcdcdcd);
+    CHECK(g_vk.props.limits.maxStorageBufferRange == range);
     u64 before = g_vk_dispatches;
-    g_vk.props.limits.maxComputeSharedMemorySize = faked;
-    vk_lock();
-    DispatchState d;
-    mx_dispatch_state(qmd, ch->rcomp, code_at, &d);
-    vk_dispatch(&d);
-    vk_compute_land();
-    vk_unlock();
-    g_vk.props.limits.maxComputeSharedMemorySize = limit;
+    spill_dispatch(ch, qmd, code_at, faked, 0);
     u32 got[256], wrong = 0, first = 0;
     CHECK(!gmem_read(output, got, sizeof got));
     for (u32 i = 0; i < blocks * threads; i++) {
