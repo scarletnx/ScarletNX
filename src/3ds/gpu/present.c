@@ -311,13 +311,29 @@ static bool screen_rect(unsigned screen, VkOffset2D rect[2]) {
     uint32_t layout_w = snx_max_u32(frames[0].width, frames[1].width);
     uint32_t layout_h = frames[0].height + frames[1].height;
     if (!layout_w || !layout_h || !e.width || !e.height) return false;
-    const Frame* f = &frames[screen];
-    double sx, sy, x, y;
+    const Frame *top = &frames[0], *bottom = &frames[1];
+    double sx, sy, top_h, bottom_s, bottom_h, total, y0, x;
     screen_scale(layout_w, layout_h, e, &sx, &sy);
-    x = (e.width - layout_w * sx) / 2 + (layout_w - f->width) * sx / 2;
-    y = (e.height - layout_h * sy) / 2 + (screen ? frames[0].height * sy : 0);
-    rect[0] = (VkOffset2D){(int32_t)x, (int32_t)y};
-    rect[1] = (VkOffset2D){(int32_t)(x + f->width * sx), (int32_t)(y + f->height * sy)};
+    top_h = top->height * sy;
+    /* the top screen is 5:3 and the bottom 4:3: at the pair's width the bottom is taller than the top, and takes the
+       room a tall window has below it with its shape kept, where that room is there */
+    bottom_s = (double)e.width / bottom->width;
+    bottom_h = bottom->height * bottom_s;
+    if (bottom_s <= sy || top_h + bottom_h > e.height) {
+        bottom_s = sy;
+        bottom_h = bottom->height * sy;
+    }
+    total = top_h + bottom_h;
+    y0 = (e.height - total) / 2;
+    if (screen == 0) {
+        x = (e.width - top->width * sx) / 2;
+        rect[0] = (VkOffset2D){(int32_t)x, (int32_t)y0};
+        rect[1] = (VkOffset2D){(int32_t)(x + top->width * sx), (int32_t)(y0 + top_h)};
+    } else {
+        x = (e.width - bottom->width * bottom_s) / 2;
+        rect[0] = (VkOffset2D){(int32_t)x, (int32_t)(y0 + top_h)};
+        rect[1] = (VkOffset2D){(int32_t)(x + bottom->width * bottom_s), (int32_t)(y0 + total)};
+    }
     return true;
 }
 /* The touch screen's pixel under a pointer at x and y, in the window's points as SDL reports them. The blit's own scale
