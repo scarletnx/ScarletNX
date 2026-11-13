@@ -1651,16 +1651,26 @@ int main(int argc, char** argv) {
         CHECK(records_dump(own, "0100ABCD12345000", source));
         run(exe, repo, source, log, 0, "G", NULL);
         run(exe, repo, program, log, 0, "G", NULL);
+        /* Extract dump on: the folder read in place all the same (its RomFS can take gigabytes a copy doubles, #2110);
+           what an older start copied, or a copy or an extraction of it that stopped left, taken away, said */
         set_env("SNX_WORKFLOW_EXTRACT", "1");
-        run(exe, repo, source, log, 0, "EG", NULL);
-        CHECK(snx_is_dir(exefs));
+        run(exe, repo, source, log, 0, "G", NULL);
+        CHECK(!snx_path_exists(exefs) && !snx_path_exists(romfs));
         {
-            char* copied = snx_path_join(romfs, "data");
-            CHECK(snx_is_file(copied));
+            char *main = snx_path_join(exefs, "main"), *copied = snx_path_join(romfs, "data");
+            char *copying = snx_path_join(data, "romfs.copying"), *extracting = snx_format("%s.extracting", program);
+            CHECK(!snx_mkdirs(exefs) && !snx_write_file(main, "main", 4) && !snx_mkdirs(romfs) &&
+                  !snx_write_file(copied, "cut", 3) && !snx_mkdirs(copying) && !snx_write_file(extracting, "", 0));
+            run(exe, repo, program, log, 0, "G", "the game reads it from its folder");
+            CHECK(!snx_path_exists(exefs) && !snx_path_exists(romfs) && !snx_path_exists(copying) &&
+                  !snx_path_exists(extracting));
+            free(main);
             free(copied);
+            free(copying);
+            free(extracting);
         }
         set_env("SNX_WORKFLOW_EXTRACT", "");
-        run(exe, repo, program, log, 0, "G", "the game reads it from its folder");
+        run(exe, repo, program, log, 0, "G", NULL);
         CHECK(!snx_path_exists(exefs) && !snx_path_exists(romfs));
         CHECK(!rename(source, moved));
         run(exe, repo, program, log, 1, "", "cannot read the game from its folder");
