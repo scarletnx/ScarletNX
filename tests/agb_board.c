@@ -284,6 +284,28 @@ int main(void) {
     agb_write16(&board, 0x040000DC, 1);
     agb_write16(&board, 0x040000DE, 0x8400);
     CHECK(agb_read32(&board, 0x05000000) == 0x11223344);
+    /* a DMA reads nothing below EWRAM: it moves the unit its channel read last, a halfword in both halves of a word,
+       and DMA0, which reaches only the console's own memory, reads the cartridge's addresses there too */
+    agb_write32(&board, 0x02000400, 0xABCD1234);
+    dma3(&board, 0x02000402, 0x02000410, 1);     /* halfwords: its latch is 0xABCDABCD */
+    agb_write32(&board, 0x040000D4, 0x00000010); /* the BIOS */
+    agb_write32(&board, 0x040000D8, 0x02000420);
+    agb_write32(&board, 0x040000DC, 0x84000002); /* two words, now */
+    agb_write32(&board, 0x040000B0, 0x02000400);
+    agb_write32(&board, 0x040000B4, 0x02000430);
+    agb_write32(&board, 0x040000B8, 0x84000001); /* DMA0: a word, its latch 0xABCD1234 */
+    agb_write32(&board, 0x040000B0, 0x08000000); /* the cartridge, which DMA0 does not reach */
+    agb_write32(&board, 0x040000B4, 0x02000434);
+    agb_write32(&board, 0x040000B8, 0x84000001);
+    if (agb_read32(&board, 0x02000420) != 0xABCDABCD || agb_read32(&board, 0x02000424) != 0xABCDABCD ||
+        agb_read32(&board, 0x02000434) != 0xABCD1234) {
+        fprintf(stderr,
+                "agb_board: a DMA from the BIOS moved 0x%08X 0x%08X (0xABCDABCD), DMA0 from the cartridge 0x%08X "
+                "(0xABCD1234)\n",
+                agb_read32(&board, 0x02000420), agb_read32(&board, 0x02000424), agb_read32(&board, 0x02000434));
+        return 1;
+    }
+    agb_write32(&board, 0x040000B8, 0);
 
     /* a rejected insert leaves the accepted cartridge in place */
     CHECK(board.has_cartridge && !strcmp(board.cartridge.title, "TEST"));
