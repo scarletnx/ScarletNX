@@ -3003,6 +3003,7 @@ u64 vk_cs_skipped(char* why, size_t size);
 /* ends the dynamic rendering pass, if one is open. The caller's file and line count the passes it ended, which the
    stats every 600 presents name (vk_pass_ends_log): what splits a frame into many passes */
 void vk_render_end_at(const char* file, int line);
+int vk_render_open(void);
 #define vk_render_end() vk_render_end_at(__FILE__, __LINE__)
 int vk_render_begun(void); /* a rendering pass is open with commands or clears in it: vk_render_end ends one */
 /* the guest's fragment barrier (NVN's ORDER_FRAGMENTS or INVALIDATE_TEXTURE, the 3D engine's): the open pass's later
