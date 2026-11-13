@@ -292,9 +292,8 @@ static void bind_combined(SnxFx* fx, VkDescriptorSet set, VkImageView view, uint
     vkUpdateDescriptorSets(fx->dev, 1, &wr, 0, NULL);
 }
 
-static void fx_draw_scissor(SnxFx* fx, VkCommandBuffer cb, VkImageView view, VkPipeline pipe, VkPipelineLayout layout,
-                            uint32_t w, uint32_t h, VkRect2D sc, VkDescriptorSet set, const void* pc, uint32_t pc_size,
-                            VkAttachmentLoadOp load) {
+static void fx_draw(VkCommandBuffer cb, VkImageView view, VkPipeline pipe, VkPipelineLayout layout, uint32_t w,
+                    uint32_t h, VkDescriptorSet set, const void* pc, uint32_t pc_size, VkAttachmentLoadOp load) {
     VkRenderingAttachmentInfo at = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                     .imageView = view,
                                     .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -308,6 +307,7 @@ static void fx_draw_scissor(SnxFx* fx, VkCommandBuffer cb, VkImageView view, VkP
                           .colorAttachmentCount = 1,
                           .pColorAttachments = &at};
     VkViewport vp = {0, 0, (float)w, (float)h, 0, 1};
+    VkRect2D sc = {{0, 0}, {w, h}};
     vkCmdBeginRendering(cb, &ri);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     vkCmdSetViewport(cb, 0, 1, &vp);
@@ -317,12 +317,6 @@ static void fx_draw_scissor(SnxFx* fx, VkCommandBuffer cb, VkImageView view, VkP
                                           pc_size, pc);
     vkCmdDraw(cb, 3, 1, 0, 0);
     vkCmdEndRendering(cb);
-}
-
-static void fx_draw(SnxFx* fx, VkCommandBuffer cb, VkImageView view, VkPipeline pipe, VkPipelineLayout layout, uint32_t w,
-                    uint32_t h, VkDescriptorSet set, const void* pc, uint32_t pc_size, VkAttachmentLoadOp load) {
-    VkRect2D full = {{0, 0}, {w, h}};
-    fx_draw_scissor(fx, cb, view, pipe, layout, w, h, full, set, pc, pc_size, load);
 }
 
 /* ---- pipelines ---- */
@@ -739,7 +733,7 @@ static void record_copy(SnxFx* fx, VkCommandBuffer cb, VkDescriptorSet set, VkIm
     fx_barrier(fx, cb, out->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    fx_draw(fx, cb, out->view, fx->copy, fx->pl1, dw, dh, set, &pc, sizeof pc, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+    fx_draw(cb, out->view, fx->copy, fx->pl1, dw, dh, set, &pc, sizeof pc, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
     fx_barrier(fx, cb, out->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -780,7 +774,7 @@ static void record_fsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView
     fx_barrier(fx, cb, fx->mid[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    fx_draw(fx, cb, fx->mid[slot].view, easu_pipe, fx->pl1, dw, dh, fx->fsr_easu[slot], &easu, sizeof easu,
+    fx_draw(cb, fx->mid[slot].view, easu_pipe, fx->pl1, dw, dh, fx->fsr_easu[slot], &easu, sizeof easu,
             VK_ATTACHMENT_LOAD_OP_DONT_CARE);
     fx_barrier(fx, cb, fx->mid[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -789,7 +783,7 @@ static void record_fsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView
     fx_barrier(fx, cb, f->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    fx_draw(fx, cb, f->view, rcas_pipe, fx->pl1, dw, dh, fx->fsr_rcas[slot], &rcas, sizeof rcas,
+    fx_draw(cb, f->view, rcas_pipe, fx->pl1, dw, dh, fx->fsr_rcas[slot], &rcas, sizeof rcas,
             VK_ATTACHMENT_LOAD_OP_DONT_CARE);
     fx_barrier(fx, cb, f->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -805,7 +799,7 @@ static void record_fxaa(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, FxImage* s
     fx_barrier(fx, cb, dst->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    fx_draw(fx, cb, dst->view, fx->fxaa, fx->pl1, dst->width, dst->height, fx->fxaa_set[slot], rcp, sizeof rcp,
+    fx_draw(cb, dst->view, fx->fxaa, fx->pl1, dst->width, dst->height, fx->fxaa_set[slot], rcp, sizeof rcp,
             VK_ATTACHMENT_LOAD_OP_DONT_CARE);
     fx_barrier(fx, cb, dst->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1040,7 +1034,7 @@ static int record_sgsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView
     fx_barrier(fx, cb, fx->main[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    fx_draw(fx, cb, fx->main[slot].view, fx->sgsr, fx->pl_sgsr, dw, dh, fx->sgsr_set[slot], pc, sizeof pc,
+    fx_draw(cb, fx->main[slot].view, fx->sgsr, fx->pl_sgsr, dw, dh, fx->sgsr_set[slot], pc, sizeof pc,
             VK_ATTACHMENT_LOAD_OP_DONT_CARE);
     fx_barrier(fx, cb, fx->main[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1146,8 +1140,8 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
             fx_barrier(fx, cb, fx->edge[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-            fx_draw(fx, cb, fx->edge[slot].view, fx->smaa_edge, fx->pl1, out_w, out_h, fx->edge_set[slot], inv,
-                    sizeof inv, VK_ATTACHMENT_LOAD_OP_CLEAR);
+            fx_draw(cb, fx->edge[slot].view, fx->smaa_edge, fx->pl1, out_w, out_h, fx->edge_set[slot], inv, sizeof inv,
+                    VK_ATTACHMENT_LOAD_OP_CLEAR);
             fx_barrier(fx, cb, fx->edge[slot].image, VK_IMAGE_ASPECT_COLOR_BIT,
                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -1163,7 +1157,7 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
             fx_barrier(fx, cb, fx->weight[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-            fx_draw(fx, cb, fx->weight[slot].view, fx->smaa_weights, fx->pl3, out_w, out_h, fx->weight_set[slot], inv,
+            fx_draw(cb, fx->weight[slot].view, fx->smaa_weights, fx->pl3, out_w, out_h, fx->weight_set[slot], inv,
                     sizeof inv, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
             fx_barrier(fx, cb, fx->weight[slot].image, VK_IMAGE_ASPECT_COLOR_BIT,
                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1177,8 +1171,8 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
             fx_barrier(fx, cb, fx->aa[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-            fx_draw(fx, cb, fx->aa[slot].view, fx->smaa_blend, fx->pl2, out_w, out_h, fx->blend_set[slot], inv,
-                    sizeof inv, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+            fx_draw(cb, fx->aa[slot].view, fx->smaa_blend, fx->pl2, out_w, out_h, fx->blend_set[slot], inv, sizeof inv,
+                    VK_ATTACHMENT_LOAD_OP_DONT_CARE);
             fx_barrier(fx, cb, fx->aa[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
