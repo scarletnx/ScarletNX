@@ -5135,9 +5135,10 @@ static int check_dma_bands_frames(void) {
            (unsigned long long)(bands1 - bands0), (unsigned long long)ended, (unsigned long long)went,
            (unsigned long long)(grown >> 10));
     CHECK(!failed && bands1 - bands0 >= 8);
-    /* one at least: the frame's rings and the stream each take half of the bytes here, and a frame's end sends the
-       stream's too. The rings' growth below is what must hold */
-    CHECK(ended + went >= 1);
+    /* with the stream, the frame's rings and the stream each take half of the bytes here, and a frame's end sends
+       the stream's too: two ends or submissions at least. With the frame's rings alone (vk_stream_ring=0), two frames
+       as before the stream. The rings' growth below is what must hold */
+    CHECK(g_settings.stream_ring ? ended + went >= 2 : ended >= 2);
     CHECK(grown <= (u64)(VK_FRAMES + 1) * VK_FRAME_RING_CAPS * (64 << 10));
     return 0;
 }
@@ -5466,7 +5467,8 @@ static int check_blit_bands(void) {
     }
     /* and a frame ends between two bands once its rings hold VK_FRAME_RING_CAPS allocations (256 KiB here), as
        between a copy engine's (check_dma_bands_frames), or a submission goes where the bands' source is the stream's:
-       the three blits end 3 frames or as many submissions, and none without it */
+       the three blits end 3 frames with the frame's rings alone (vk_stream_ring=0), or a frame and 3 submissions,
+       and none without it */
     vk_finish();
     vk_frame_next();
     g_vk.alloc_cap = 64 << 10;
@@ -5481,7 +5483,7 @@ static int check_blit_bands(void) {
     g_vk.alloc_cap = cap;
     printf("blit bands: %llu frames ended and %llu submissions went between bands\n", (unsigned long long)ended,
            (unsigned long long)went);
-    CHECK(!failed && ended + went >= 1);
+    CHECK(!failed && (g_settings.stream_ring ? ended + went >= 2 : ended >= 2));
     return 0;
 }
 
