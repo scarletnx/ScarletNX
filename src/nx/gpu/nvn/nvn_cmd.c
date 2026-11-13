@@ -1225,7 +1225,7 @@ void nvn_CommandBufferCopyTextureToTexture(CPU* c, u64 cb, u64 s, u64 sv, u64 sr
 /* nvnCommandBufferEvaluateDlss with no upscaler (nvn_dlss.c): the input color's subrectangle copied onto the output's
    with a linear filter, as CopyTextureToTexture scales. The input's size is the parameters' subrectangle size, else
    the network's render size; the output's is the network's output size, else the output texture's. Depth, motion
-   vectors, jitter and exposure go unused */
+   vectors and exposure go unused; the jitter moves the copy (below) */
 void nvn_CommandBufferEvaluateDlss(CPU* c, u64 cb, u64 n, u64 p) {
     const NvnDlssParameters q = *NVN_OBJ(const NvnDlssParameters, p);
     const NvnDlssNetwork* o = NVN_OBJ(const NvnDlssNetwork, n);
@@ -1242,9 +1242,42 @@ void nvn_CommandBufferEvaluateDlss(CPU* c, u64 cb, u64 n, u64 p) {
         out_w = (i32)t->d.width;
         out_h = (i32)t->d.height;
     }
+    /* The input was drawn with the camera moved by the jitter, a fraction of an input pixel that differs each frame
+       (the upscaler's samples): copied as it is, the picture shakes. Where the output is a whole number of times the
+       input, the copy is moved back by the jitter to the nearest output pixel: k input pixels are left out at an
+       edge so both rectangles keep whole pixels, and the output's edge keeps what it had there */
+    i32 sx0 = q.base[0][0], sy0 = q.base[0][1], dx0 = q.base[4][0], dy0 = q.base[4][1];
+    i32 sw = in_w, sh = in_h, dw = out_w, dh = out_h, move[2] = {0, 0};
+    {
+        static const float f[2] = {-1, -1}; /* measured: the picture moves by +jitter, so the copy goes back by it */
+        if (in_w > 0 && in_h > 0 && out_w % in_w == 0 && out_h % in_h == 0 && out_w / in_w == out_h / in_h &&
+            out_w / in_w > 1 && (f[0] != 0 || f[1] != 0)) {
+            i32 s = out_w / in_w;
+            for (u32 a = 0; a < 2; a++) {
+                float m = q.jitter[a] * f[a] * (float)s;
+                i32 d = (i32)(m < 0 ? m - 0.5f : m + 0.5f);
+                if (d > s) d = s;
+                if (d < -s) d = -s;
+                move[a] = d;
+            }
+            /* per axis: k input pixels cut at the start when it moves back, k2 at the end when forward */
+            i32 kx = move[0] < 0 ? (-move[0] + s - 1) / s : 0, kx2 = move[0] > 0 ? (move[0] + s - 1) / s : 0;
+            i32 ky = move[1] < 0 ? (-move[1] + s - 1) / s : 0, ky2 = move[1] > 0 ? (move[1] + s - 1) / s : 0;
+            sx0 += kx, sw -= kx + kx2, dx0 += kx * s + move[0], dw = sw * s;
+            sy0 += ky, sh -= ky + ky2, dy0 += ky * s + move[1], dh = sh * s;
+        }
+    }
+    if (move[0] || move[1]) {
+        /* the whole output first, as it is: the moved copy leaves a strip at an edge, and a target written in part
+           is not the upscaler's output, which is all new each frame */
+        r = copy_t2t(c, cb, q.input.texture, q.input.view, q.output.texture, q.output.view);
+        r->sr = (NVNcopyRegion){q.base[0][0], q.base[0][1], 0, in_w, in_h, 1};
+        r->dr = (NVNcopyRegion){q.base[4][0], q.base[4][1], 0, out_w, out_h, 1};
+        r->flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT;
+    }
     r = copy_t2t(c, cb, q.input.texture, q.input.view, q.output.texture, q.output.view);
-    r->sr = (NVNcopyRegion){q.base[0][0], q.base[0][1], 0, in_w, in_h, 1};
-    r->dr = (NVNcopyRegion){q.base[4][0], q.base[4][1], 0, out_w, out_h, 1};
+    r->sr = (NVNcopyRegion){sx0, sy0, 0, sw, sh, 1};
+    r->dr = (NVNcopyRegion){dx0, dy0, 0, dw, dh, 1};
     r->flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT;
     LOG_LIMIT(4, "nvn: DLSS evaluation copied %dx%d at (%d, %d) to %dx%d at (%d, %d)\n", in_w, in_h, q.base[0][0],
               q.base[0][1], out_w, out_h, q.base[4][0], q.base[4][1]);
