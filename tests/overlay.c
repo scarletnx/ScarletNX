@@ -610,39 +610,60 @@ static int pictures_in(const SnxUiList* l, SnxUiQuadView* first) {
     return n;
 }
 /* A program a collection's program started (prepare_screen_switch): the screen up with no step, the program after the
-   game's name (none for program 0) and its dots turning; no bar; the cover under the head at the text's left, a
-   quarter of the rows high, its texels the left square of the picture, the steps under it once there are some; the
-   cover given again after the menu took the picture, and the picture back to none when the switch's part goes */
+   game's name (none for program 0) and its dots turning; the rows of what is known as done steps; the bar full with
+   no step at work; the cover in the top right corner, a quarter of the rows high, its texels the left square of the
+   picture, the rows cut before it and the steps under them; the cover given again after the menu took the picture,
+   and the picture back to none when the switch's part goes */
 static void prepare_screen_switching(void) {
     static SnxUiQuad q[4096];
     static TestJpeg jpeg;
+    static u8 other[SNX_UI_IMAGE_W * SNX_UI_IMAGE_H * 4];
     SnxUiList l = {q, 0, 4096};
     SnxRunTheme t = {0};
     SnxPrepareStep st[1] = {{0}};
+    SnxProgramStart f;
+    SnxStartRow start[SNX_START_ROWS];
     SnxUiQuadView cover = {0};
-    static u8 other[SNX_UI_IMAGE_W * SNX_UI_IMAGE_H * 4];
     const u8* now;
-    char row[128];
+    char row[160];
     u32 version;
-    int i, bar = 0;
+    int i, n, bar = 0;
     t.ink = 0xFFFFFFu;
     t.steps = 1;
+    snx_program_start_unknown(&f);
+    f.program = 1;
+    f.programs = 4;
+    f.previous = 0;
+    snprintf(f.gpu, sizeof f.gpu, "%s", "A GPU");
+    n = snx_program_start_rows(&f, start); /* the rest not known: "?" */
     assert(!prepare_screen_shown());
-    prepare_screen_switch(&t, "GAME", 1, "FOOT", 1200); /* 1200 ms: three dots */
+    prepare_screen_switch(&t, "GAME", 1, start, n, "FOOT", 1200); /* 1200 ms: three dots */
     assert(prepare_screen_shown());
-    prepare_screen_draw(&l, 1280, 720, NULL, 100); /* 2x: 22 rows of 32 pixels */
+    prepare_screen_draw(&l, 1280, 720, NULL, 100); /* 2x: 22 rows of 32 pixels, 80 columns */
     prepare_row(&l, 32.0f, 2, row, sizeof row);
     assert(!strcmp(row, " GAME (PROGRAM 1)..."));
+    prepare_row(&l, 32.0f * 3, 2, row, sizeof row);
+    assert(!strcmp(row, " PROGRAM: 1 OF 4 ...OK"));
+    prepare_row(&l, 32.0f * 4, 2, row, sizeof row);
+    assert(!strcmp(row, " STARTED BY: PROGRAM 0 ...OK"));
+    prepare_row(&l, 32.0f * 5, 2, row, sizeof row);
+    assert(!strcmp(row, " USER: ? ...OK"));
+    prepare_row(&l, 32.0f * 6, 2, row, sizeof row);
+    assert(!strcmp(row, " VERSION: ? (UPDATE ?) ...OK"));
+    prepare_row(&l, 32.0f * 9, 2, row, sizeof row);
+    assert(!strcmp(row, " TITLE ID: ? ...OK"));
     prepare_row(&l, 32.0f * 21, 2, row, sizeof row);
     assert(!strcmp(row, " FOOT"));
+    prepare_row(&l, 32.0f * 19, 2, row, sizeof row); /* the bar's percentage: full, no step at work */
+    assert(strstr(row, "100%"));
     for (i = 0; i < l.n; ++i) bar += qv(&q[i]).y >= 32.0f * 18 && qv(&q[i]).y < 32.0f * 21;
-    assert(bar == 0 && pictures_in(&l, NULL) == 0);     /* no bar, no cover given */
-    prepare_screen_switch(&t, "GAME", 1, "FOOT", 1600); /* the dots turn: none at 1600 ms */
+    assert(bar > 40 && pictures_in(&l, NULL) == 0);               /* the bar's segments; no cover given */
+    prepare_screen_switch(&t, "GAME", 1, start, n, "FOOT", 1600); /* the dots turn: none at 1600 ms */
     l.n = 0;
     prepare_screen_draw(&l, 1280, 720, NULL, 100);
     prepare_row(&l, 32.0f, 2, row, sizeof row);
     assert(!strcmp(row, " GAME (PROGRAM 1)"));
-    prepare_screen_switch(&t, "GAME", 0, "FOOT", 1200); /* program 0, the collection's menu: the name alone */
+    prepare_screen_switch(&t, "GAME", 0, start, n, "FOOT", 1200); /* program 0, the collection's menu: the name alone */
     l.n = 0;
     prepare_screen_draw(&l, 1280, 720, NULL, 100);
     prepare_row(&l, 32.0f, 2, row, sizeof row);
@@ -652,25 +673,31 @@ static void prepare_screen_switching(void) {
     l.n = 0;
     prepare_screen_draw(&l, 1280, 720, NULL, 100);
     assert(pictures_in(&l, NULL) == 0);
-    /* the cover: 5 rows of 32 under the head's two, at the text's left; its texels the picture's left square, red */
+    /* the cover: 5 rows of 32 at the top right, from the head's row 3, a column from the right edge; its texels the
+       picture's left square, red; the rows cut before it; a step under the rows */
     jpeg_of(&jpeg, 256, 0xFF0000u);
     assert(prepare_screen_cover(jpeg.bytes, (size_t)jpeg.n) == 0);
+    snprintf(f.build, sizeof f.build, "%s", "ScarletNX a-branch-name-long-enough-to-reach-past-the-cover abc1234");
+    n = snx_program_start_rows(&f, start);
     st[0].label = "PREPARING SHADERS";
     st[0].value = 1;
     st[0].total = 2;
-    prepare_screen_set(&t, "GAME", st, 1, NULL, 0, "FOOT", 1200);
-    prepare_screen_switch(&t, "GAME", 2, "FOOT", 1200);
+    prepare_screen_set(&t, "GAME", st, 1, NULL, 0, "STEPS FOOT", 1200);
+    prepare_screen_switch(&t, "GAME", 2, start, n, "FOOT", 1200);
     l.n = 0;
     prepare_screen_draw(&l, 1280, 720, NULL, 100);
     assert(pictures_in(&l, &cover) == 1);
-    assert(cover.x == 16 && cover.y == 32.0f * 3 && cover.w == 32.0f * 5 && cover.h == cover.w);
+    assert(cover.w == 32.0f * 5 && cover.h == cover.w && cover.x == 1280 - 16 - cover.w && cover.y == 32.0f * 3);
     assert(cover.u == 0 && cover.v == 0 && cover.uw == SNX_PREPARE_COVER && cover.vh == SNX_PREPARE_COVER);
     now = ui_image_get(&version);
     assert(now && now[0] > 240 && now[1] < 16 && now[2] < 16 && now[3] == 0xFF);
-    prepare_row(&l, 32.0f * 9, 2, row, sizeof row); /* the step under the cover: 3 + 5 + 1 */
+    for (i = 0; i < l.n; ++i) /* no letter of the rows over the cover */
+        assert(!(qv(&q[i]).h == 32 && qv(&q[i]).y >= 32.0f * 3 && qv(&q[i]).y < 32.0f * 8 &&
+                 qv(&q[i]).x + qv(&q[i]).w > cover.x && qv(&q[i]).sample != UI_IMAGE));
+    prepare_row(&l, 32.0f * (float)(3 + n), 2, row, sizeof row); /* the step under the rows */
     assert(!strncmp(row, " PREPARING SHADERS:", 19));
-    for (i = 0, bar = 0; i < l.n; ++i) bar += qv(&q[i]).y > 32.0f * 18 && qv(&q[i]).y < 32.0f * 20;
-    assert(bar > 0); /* a step: the bar */
+    prepare_row(&l, 32.0f * 21, 2, row, sizeof row); /* the steps' foot while they show, not the switch's */
+    assert(!strcmp(row, " STEPS FOOT"));
     /* the menu's thumbnail took the picture: the cover is given again at the next draw */
     memset(other, 0x40, sizeof other);
     ui_image_set(other);
@@ -685,8 +712,10 @@ static void prepare_screen_switching(void) {
     prepare_screen_draw(&l, 1280, 720, NULL, 100);
     assert(pictures_in(&l, NULL) == 0);
     prepare_row(&l, 32.0f, 2, row, sizeof row);
-    assert(!strcmp(row, " GAME..."));               /* no program after the name: the step's dots at 1200 ms */
-    prepare_screen_switch(NULL, NULL, -1, NULL, 0); /* again: nothing to take away */
+    assert(!strcmp(row, " GAME...")); /* no program after the name: the step's dots at 1200 ms */
+    prepare_row(&l, 32.0f * 3, 2, row, sizeof row);
+    assert(!strncmp(row, " PREPARING SHADERS:", 19));        /* the rows gone with the switch */
+    prepare_screen_switch(NULL, NULL, -1, NULL, 0, NULL, 0); /* again: nothing to take away */
     prepare_screen_set(NULL, NULL, NULL, 0, NULL, 0, NULL, 0);
     assert(!prepare_screen_shown());
     assert(prepare_screen_cover(NULL, 0) == 0);

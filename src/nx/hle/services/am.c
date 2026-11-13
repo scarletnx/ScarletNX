@@ -794,6 +794,14 @@ int am_user_account_switch_lock(void) {
     return p ? p[0] != 0 : 0;
 }
 /* the NACP's display version, "1.0.0" for a game without one */
+int am_display_version_of(char version[16]) {
+    const u8* p = am_nacp(NACP_DISPLAY_VERSION, 16);
+    version[0] = 0;
+    if (!p) return 0;
+    memcpy(version, p, 16);
+    version[15] = 0;
+    return version[0] != 0;
+}
 void am_display_version(char version[16]) {
     const u8* p = am_nacp(NACP_DISPLAY_VERSION, 16);
     if (p)

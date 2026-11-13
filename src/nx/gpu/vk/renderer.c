@@ -1022,6 +1022,7 @@ static int refresh_due(void) {
     if (due) seen = events;
     return due;
 }
+static const char* vkr_device_name(void) { return g_vk.props.deviceName; }
 /* The last frame again, under the controls and the menu, while the game shows none: a game loading, stuck, or drawing
    nothing still has them. Not before a quarter second without a frame (a slow game's own come between), at 30 a second
    at most, only when the GPU thread holds no Vulkan work (then the next call tries again), and only when the layer or
@@ -1240,6 +1241,7 @@ const Renderer vk_renderer = {
     .name = "Vulkan",
     .start = vkr_start,
     .start_failure = vk_start_failure,
+    .device_name = vkr_device_name,
     .mem_may_have_changed = vkr_mem_may_have_changed,
     .stream_run = vk_ww_stream,
     .mem_seen = vk_ww_seen,
