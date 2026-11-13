@@ -365,11 +365,15 @@ static u32 carry_in(Ctx* c, u32 field_lo, const Sm86Insn* in, int uniform) {
     u32 p = prd(c, sm86_field(in, field_lo, 3), sm86_field(in, field_lo + 3, 1), uniform);
     return spv_emit_ternary(&c->e, SPV_OP_SELECT, u64_type(c), p, c64(c, 1), c64(c, 0));
 }
-/* a source of a 64-bit sum: its two's complement as NAK's fold reads it, ~x + 1 in 33 bits */
-static u32 term64(Ctx* c, const Sm86Src* s) {
+/* a source of a 64-bit sum: its two's complement as NAK's fold reads it, ~x + 1 in 33 bits. With the carries in
+   (.X) the modifier is the complement alone, ~x (NAK's OpIAdd3X folds get_u32_bnot_src, and nvdisasm writes
+   IADD3.X R17, ~R17, ...): the low word's sum gave the + 1 as a carry. One game's 64-bit subtractions are
+   IADD3 a, b, -c then IADD3.X a', b', ~c', and with ~c' + 1 their high word was one too many */
+static u32 term64(Ctx* c, const Sm86Src* s, int x) {
     u32 v = src_bits(c, s);
     if (!s->neg || s->kind == SM86_SRC_IMM) return to64(c, v);
-    return op2(c, SPV_OP_I_ADD, u64_type(c), to64(c, spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, v)), c64(c, 1));
+    v = to64(c, spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, v));
+    return x ? v : op2(c, SPV_OP_I_ADD, u64_type(c), v, c64(c, 1));
 }
 
 /* ---- FTZ and the rounding modes ---- */
@@ -3489,8 +3493,8 @@ static void emit_insn_iadd3(Ctx* c, const Sm86Insn* in, int uniform, u32 p, u32 
         return;
     }
     /* the sum in 64 bits: its carries, and .X's two carries in */
-    u32 sum = op2(c, SPV_OP_I_ADD, u64_type(c), term64(c, &in->a), term64(c, &in->b));
-    sum = op2(c, SPV_OP_I_ADD, u64_type(c), sum, term64(c, &in->c));
+    u32 sum = op2(c, SPV_OP_I_ADD, u64_type(c), term64(c, &in->a, x), term64(c, &in->b, x));
+    sum = op2(c, SPV_OP_I_ADD, u64_type(c), sum, term64(c, &in->c, x));
     if (x) {
         sum = op2(c, SPV_OP_I_ADD, u64_type(c), sum, carry_in(c, 87, in, uniform));
         sum = op2(c, SPV_OP_I_ADD, u64_type(c), sum, carry_in(c, 77, in, uniform));
@@ -3854,9 +3858,13 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         }
         case SM86_UIMAD:
         case SM86_IMAD: {
-            /* .X (bit 74) adds the carry predicate at 87-90, as IADD3.X does */
+            /* .X (bit 74) adds the carry predicate at 87-90, as IADD3.X does, and as there a negated addend is then
+               its complement, ~c: one game's 64-bit division negates a high word with IMAD.X RZ, RZ, ~c, P */
             u32 v = spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, src_int(c, &in->a), src_int(c, &in->b));
-            v = spv_emit_iadd_u32(&c->e, c->t_u32, v, src_int(c, &in->c));
+            u32 addend = sm86_field(in, 74, 1) && in->c.neg && in->c.kind != SM86_SRC_IMM
+                             ? spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, src_bits(c, &in->c))
+                             : src_int(c, &in->c);
+            v = spv_emit_iadd_u32(&c->e, c->t_u32, v, addend);
             if (sm86_field(in, 74, 1))
                 v = spv_emit_iadd_u32(&c->e, c->t_u32, v,
                                       spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
@@ -4280,6 +4288,17 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 sum =
                 op2(c, SPV_OP_I_ADD, t64, op2(c, SPV_OP_I_MUL, t64, a64, b64), pair64(c, src_bits(c, &in->c), chi));
             u32 d = in->dst;
+            /* the carry out of the 64-bit sum, in the predicate at 81-83 as IADD3's first (nvdisasm: IMAD.WIDE.U32
+               R14, P0, R10, R19, R14): one game's 64-bit division chains IMAD.WIDE ..., P0 into IMAD.X. With .X
+               (bit 74; nvdisasm: IMAD.WIDE.U32.X R6, RZ, R5, R6, P1) the carry predicate at 87-90 joins the sum */
+            u32 carry = op2(c, SPV_OP_U_LESS_THAN, c->t_bool, sum, op2(c, SPV_OP_I_MUL, t64, a64, b64));
+            if (sm86_field(in, 74, 1)) {
+                u32 more = op2(c, SPV_OP_I_ADD, t64, sum, carry_in(c, 87, in, uniform));
+                carry = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_bool, carry, c->true_v,
+                                         op2(c, SPV_OP_U_LESS_THAN, c->t_bool, more, sum));
+                sum = more;
+            }
+            pwr(c, sm86_field(in, 81, 3), carry, uniform);
             dwr(c, in, lo32(c, sum));
             if (uniform && d < SM86_URZ)
                 uwr(c, d + 1, hi32(c, sum));
@@ -4288,9 +4307,13 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             return;
         }
         case SM86_IMAD_HI: {
-            /* the high word of a * b (bit 73 signed), plus c */
+            /* The high word of a * b + c (bit 73 signed): the addend goes into the 64-bit product, below the word
+               that is kept, and with .X the carry predicate at 87-90 with it; the carry out of the 64 bits goes to
+               the predicate at 81-83. One game's 64-bit division is written that way (IMAD.HI R8, R7, R11, R8 adds
+               the middle column's low word and hands its carry to P1): with the addend added to the high word
+               instead, 4239360 / 20480 came out 728513, and with this 207 (tools/div_model.py) */
             int is_signed = (int)sm86_field(in, 73, 1);
-            u32 t64 = u64_type(c), a32 = src_int(c, &in->a), b32 = src_int(c, &in->b), product;
+            u32 t64 = u64_type(c), a32 = src_int(c, &in->a), b32 = src_int(c, &in->b), product, addend;
             if (is_signed) {
                 u32 i64 = spv_emit_type_int64(&c->e, 1);
                 product = op2(c, SPV_OP_I_MUL, t64,
@@ -4300,15 +4323,23 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                               spv_emit_unary(&c->e, SPV_OP_BITCAST, t64,
                                              SPV(&c->e, SPV_OP_S_CONVERT, i64,
                                                  spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, b32))));
-            } else
+                addend = spv_emit_unary(&c->e, SPV_OP_BITCAST, t64,
+                                        SPV(&c->e, SPV_OP_S_CONVERT, i64,
+                                            spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, src_int(c, &in->c))));
+            } else {
                 product = op2(c, SPV_OP_I_MUL, t64, to64(c, a32), to64(c, b32));
-            u32 v = spv_emit_iadd_u32(&c->e, c->t_u32, hi32(c, product), src_int(c, &in->c));
-            if (sm86_field(in, 74, 1))
-                v = spv_emit_iadd_u32(&c->e, c->t_u32, v,
-                                      spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
-                                                       prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), 0),
-                                                       cu(c, 1), c->zero));
-            dwr(c, in, v);
+                addend = to64(c, src_int(c, &in->c));
+            }
+            u32 sum = op2(c, SPV_OP_I_ADD, t64, product, addend);
+            u32 carry = op2(c, SPV_OP_U_LESS_THAN, c->t_bool, sum, product);
+            if (sm86_field(in, 74, 1)) {
+                u32 more = op2(c, SPV_OP_I_ADD, t64, sum, carry_in(c, 87, in, uniform));
+                carry = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_bool, carry, c->true_v,
+                                         op2(c, SPV_OP_U_LESS_THAN, c->t_bool, more, sum));
+                sum = more;
+            }
+            if (!is_signed) pwr(c, sm86_field(in, 81, 3), carry, uniform);
+            dwr(c, in, hi32(c, sum));
             return;
         }
         case SM86_SGXT:
@@ -5324,6 +5355,9 @@ static int mh_may_write(const Sm86Insn* in, int file, u32 r) {
             case SM86_UPLOP3: return u && (p81 || p84);
             case SM86_LEA:
             case SM86_ULEA:
+            case SM86_IMAD_WIDE: /* their carry out */
+            case SM86_UIMAD_WIDE:
+            case SM86_IMAD_HI:
             case SM86_LOP3:
             case SM86_ULOP3: return uk == u && p81;
             case SM86_UVOTE: return u && p81;
