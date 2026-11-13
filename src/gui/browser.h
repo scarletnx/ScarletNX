@@ -152,5 +152,6 @@ bool gui_is_cia(const char* name);
 bool gui_is_vpk(const char* name);
 bool gui_is_gba(const char* name);
 bool gui_is_multiboot(const char* name);
+bool gui_is_nds(const char* name);
 bool gui_is_apk(const char* name);
 #endif

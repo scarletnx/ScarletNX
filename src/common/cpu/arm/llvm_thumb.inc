@@ -98,7 +98,15 @@ static void thumb_alu(ArmIR* a, const SnxThumb* t, int hi) {
         case ALU_NEG: r = taddsub(a, c32(a, 0), y, 1, flags); setreg(a, t->rd, r); break;
         case ALU_CMP: taddsub(a, x, y, 1, hi ? flags : 1); break;
         case ALU_CMN: taddsub(a, x, y, 0, 1); break;
-        case ALU_MUL: r = LLVMBuildMul(a->b, x, y, ""); setreg(a, t->rd, r); if (flags) nz(a, r, NULL, NULL); break;
+        case ALU_MUL:
+            if (flags && arm7tdmi(a)) { /* its C (snx_arm_multiply_carry), from the operands before Rd changes */
+                LLVMValueRef args[2] = {c32(a, a->word), c32(a, 1)};
+                rt_call(a, "snx_arm_multiply_carry", args, 2);
+            }
+            r = LLVMBuildMul(a->b, x, y, "");
+            setreg(a, t->rd, r);
+            if (flags) nz(a, r, NULL, NULL);
+            break;
         case ALU_LSL: case ALU_LSR: case ALU_ASR: case ALU_ROR: {
             LLVMValueRef carry;
             unsigned type = t->op == ALU_LSL ? 0 : t->op == ALU_LSR ? 1 : t->op == ALU_ASR ? 2 : 3;
@@ -145,7 +153,7 @@ static void thumb_pushpop(ArmIR* a, const SnxThumb* t) {
     if (t->op == 0) { /* PUSH */
         LLVMValueRef start = sub(a, sp, c32(a, count * 4));
         /* the ARM7TDMI transfers at an unaligned SP */
-        transfer_begin(a, start, count * 4, arm7tdmi(a) ? 1 : 4, 1, 1);
+        transfer_begin(a, start, count * 4, legacy(a) ? 1 : 4, 1, 1);
         unsigned index = 0;
         for (unsigned i = 0; i < 8; ++i)
             if (list & (1u << i)) writemem_list(a, add(a, start, c32(a, index++ * 4)), 4, treg(a, i));
@@ -154,7 +162,7 @@ static void thumb_pushpop(ArmIR* a, const SnxThumb* t) {
         setreg(a, 13, start);
     } else { /* POP */
         LLVMValueRef start = sp;
-        transfer_begin(a, start, count * 4, arm7tdmi(a) ? 1 : 4, 0, 1);
+        transfer_begin(a, start, count * 4, legacy(a) ? 1 : 4, 0, 1);
         unsigned index = 0;
         for (unsigned i = 0; i < 8; ++i)
             if (list & (1u << i)) setreg(a, i, readmem_list(a, add(a, start, c32(a, index++ * 4)), 4));
@@ -177,7 +185,7 @@ static void thumb_ldmstm(ArmIR* a, const SnxThumb* t) {
     if (!count) { trap(a, SNX_ARM_UNDEFINED, c32(a, a->word)); return; }
     LLVMValueRef base = treg(a, t->rn), values[8];
     /* the ARM7TDMI transfers at an unaligned base */
-    transfer_begin(a, base, count * 4, arm7tdmi(a) ? 1 : 4, !t->op, 1);
+    transfer_begin(a, base, count * 4, legacy(a) ? 1 : 4, !t->op, 1);
     unsigned index = 0;
     if (t->op == 1) { /* LDMIA: snapshot before writeback */
         for (unsigned i = 0; i < 8; ++i)

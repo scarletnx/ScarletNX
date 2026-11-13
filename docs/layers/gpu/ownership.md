@@ -54,8 +54,13 @@ to the queue. A granule nothing used for 120 presents lands before its memory go
 Render targets stay the renderer's: their pixels reach guest memory only when a consumer asks. Pitch-linear targets
 are the exception, as a game draws into those to read the result on the CPU: each release publishes the ones
 drawn since the last (`vk_rt_publish_drawn` in `vk/surface.c`), and storage images are published the same way
-(`vk_surf_publish`): a dispatch's after it, a draw's at the release (`vk_surf_keep_begin` and `vk_surf_keep_end`), where
-the image's span is whole pages the CPU hasn't touched lately and write tracking answers for it. A publish takes the
+(`vk_surf_publish`): a dispatch's after it, a draw's when something reads its bytes after the release
+(`vk_surf_keep_begin` and `vk_surf_keep_end`), where the image's span is whole pages the CPU hasn't touched lately and
+write tracking answers for it. A release passes over a kept image whose span its owner still holds whole, and later
+draws to it join it. A GPU read finds it in the pending pages, a draw's buffer over it publishes it first (its owner
+holds the bytes from before the draws, `vk_gfx_image_read_need`), and a CPU touch lands its owner, which publishes it
+first (the `claim` hook of `memory/own.c`, `vk_gfx_image_cpu_need`). One game's draws wrote a 640x360 image between
+32 releases a frame, which nothing read: its publishes cost 1.1 to 1.5 ms of GPU time a frame. A publish takes the
 image's own texels and the targets it copied in, and leaves the bytes between its layers to their owners: a view of one
 level of a mip chain has the other levels there. A page the CPU writes
 between the draw and the release keeps the CPU's bytes. Any other draw's storage image keeps its write-back, which

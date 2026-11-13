@@ -1372,6 +1372,19 @@ setting Compute dispatches
     startup
     words Off|On
     help 0 = skips every compute shader dispatch, to see whether a bug is in one
+setting HMMA in half floats
+    key hmma_f16
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help An SM86 HMMA's products and their sum in half floats, two products an instruction, where the f32 sum the
+    help console's tensor core keeps takes two: on a device whose matrix unit the driver does not offer (every
+    help MoltenVK so far), that is 2 and a half times the frames a second one game's upscaler gets. A result is then
+    help up to 0.4% of its products' size off, more than that of itself where they cancel, and a product or partial
+    help sum past 65504 is an infinity. 0 = the f32 sum, as exact as the console's. A device with the mixed dot
+    help product (VK_VALVE_shader_mixed_float_dot_product) or without shaderFloat16 keeps the f32 sum, and the log
+    help says so
 setting Vulkan allocation cap
     key vk_max_allocation_mb
     int 0 INT_MAX
@@ -1604,6 +1617,15 @@ setting CTR SVC trace
     words Off|Failures|All
     help 1 = logs each SVC the 3DS game makes that answers a failure (r0 with its top bit set), 2 = every SVC, with
     help the thread, its pc and r0 to r3 before and after
+setting CTR stand in
+    key ctr_stand_in
+    int 0 2
+    default 1
+    words Off|On|Every draw
+    help 1 = with async_pipelines=1, on a GPU with shader objects, a draw whose shaders are still being made is drawn
+    help with stand-in shaders, one that runs the vertex program from a buffer and one that reads the texture
+    help environment as it goes, where they draw it as its own would, instead of being skipped; 0 skips it; 2 draws
+    help every draw they draw with them, to test them
 setting CTR GPU trace
     key ctr_gpu_trace
     int 0 1

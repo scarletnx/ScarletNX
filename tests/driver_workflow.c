@@ -1446,8 +1446,44 @@ int main(int argc, char** argv) {
         set_env("SNX_WORKFLOW_NAMED", "");
         CHECK(!rename(dump, moved));
         run(exe, repo, game, log, 1, "", "is not there");
-        CHECK(!rename(moved, dump));
+        /* made again (-r) with its dump gone and no ExeFS in its _data: the dump and the .ini that names it said,
+           nothing made from the _data; and an .ini that names none says so */
         set_env("SNX_WORKFLOW_FLAGS", "-r");
+        {
+            /* the dump as the .ini records it: resolved, under /private/var on macOS where the test names /var */
+            char *ini = snx_game_ini(own, "Test game"), *recorded = snx_game_source(own, "Test game", NULL), *kept;
+            size_t kept_size;
+            char* said =
+                snx_format("Test game_data, and the dump it was made from, %s, is not there: put it back, or make the "
+                           "game again from its dump (its .ini: %s)",
+                           recorded, ini);
+            run(exe, repo, game, log, 1, "", said);
+            kept = (char*)snx_read_file(ini, &kept_size);
+            CHECK(kept && !snx_write_file(ini, "[Game]\n", 7));
+            free(said);
+            said = snx_format("keeps no ExeFS in Test game_data, and its .ini %s names no dump (source=)", ini);
+            run(exe, repo, game, log, 1, "", said);
+            CHECK(!snx_write_file(ini, kept, kept_size));
+            free(kept);
+            free(recorded);
+            { /* an ExeFS where the loader reads one, not exefs/ (ExeFS/, as another tool names it): made from it */
+                char *data = snx_path_join(own, "Test game_data"), *exefs = snx_path_join(data, "ExeFS"),
+                     *main = snx_path_join(exefs, "main");
+                CHECK(!snx_mkdirs(exefs) && !snx_write_file(main, "", 0));
+                set_env("SNX_WORKFLOW_SOURCE", data);
+                set_env("SNX_WORKFLOW_NAMED", "Test game");
+                run(exe, repo, game, log, 0, "R", NULL);
+                set_env("SNX_WORKFLOW_SOURCE", "");
+                set_env("SNX_WORKFLOW_NAMED", "");
+                CHECK(!snx_remove_tree(exefs));
+                free(main);
+                free(exefs);
+                free(data);
+            }
+            free(said);
+            free(ini);
+        }
+        CHECK(!rename(moved, dump));
         reset(repo, dump);
         run(exe, repo, dump, log, 0, "R", NULL);
         CHECK(!snx_path_exists(extracted) && records_dump(own, "Test game", dump));

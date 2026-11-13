@@ -22,6 +22,9 @@
 #ifdef SNX_MULTICALL_AGB
 #include "agb/runtime/main.h"
 #endif
+#ifdef SNX_MULTICALL_NDS
+#include "nds/runtime/main.h"
+#endif
 #ifdef SNX_MULTICALL_ANDROID
 #include "android/runtime/main.h"
 #endif
@@ -52,6 +55,9 @@ typedef struct {
 static const Driver drivers[] = {
 #ifdef SNX_MULTICALL_AGB
     {"scarletnx-agb", snx_agb_main, snx_agb_game_name},
+#endif
+#ifdef SNX_MULTICALL_NDS
+    {"scarletnx-nds", snx_nds_main, snx_nds_game_name},
 #endif
 #ifdef SNX_MULTICALL_3DS
     {"scarletnx-3ds", snx_ctr_main, snx_ctr_title_name},

@@ -24,6 +24,9 @@
 		[button]"Load GBA/MultiBoot ROM" {
 			icon = gamepad
 		}
+		[button]"Load NDS ROM" {
+			icon = gamepad
+		}
 		[button]"Load Android APK/XAPK" {
 			icon = package-plus
 		}

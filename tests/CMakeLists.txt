@@ -68,6 +68,8 @@ if(SNX_TEST_SANITIZERS)
         scarletnx-vita snx_vita_program snx_vita_loader snx_vita_usse snx-vita-usse
         # the GBA board and its runner
         scarletnx-agb snx_agb_program
+        # the DS board, its picture on the GPU and its runner
+        scarletnx-nds snx_nds_gpu snx_nds_program
         # the Switch driver's entry, which scarletnx runs as it runs the others
         snx_switch_program
         # the menu, its splash, icon and pads
@@ -408,8 +410,11 @@ if(TARGET snx_ctr_board)
     # the pipeline cache kept between runs: the file named for the driver, and a failed write made again by the next.
     # Through pipelines, as a device with shader objects makes none (3ds_vk_shader_object checks their binaries)
     add_test(NAME 3ds_vk_draw_pipeline_cache COMMAND snx-test-3ds-vk-draw --pipeline-cache --vk_ext_shader_object=off)
+    # the stand-in shaders (shaders/standin.vert and standin.frag) given every draw they draw, against the CPU
+    # reference
+    add_test(NAME 3ds_vk_draw_stand_in COMMAND snx-test-3ds-vk-draw --ctr_stand_in=2)
     set_tests_properties(3ds_vk_draw 3ds_vk_draw_async 3ds_vk_draw_pipelines 3ds_vk_draw_async_pipelines
-                         3ds_vk_draw_pipeline_cache PROPERTIES SKIP_RETURN_CODE 77)
+                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_stand_in PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's copy of the RAM, page by page: what is copied in and back, and when, and every byte where it belongs
     add_executable(snx-test-3ds-vk-copies 3ds_vk_copies.c)
     snx_test_target(snx-test-3ds-vk-copies 11)
@@ -1557,6 +1562,15 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     add_test(NAME nn_fs_commit_eleven COMMAND snx-test-nn-fs commit-eleven)
     set_tests_properties(nn_fs_commit_eleven PROPERTIES PASS_REGULAR_EXPRESSION
         "fatal: nn::fs::Commit failed with result 0x2f6e02 \\(error 2002-6071\\)")
+    add_test(NAME nn_fs_cache_null COMMAND snx-test-nn-fs cache-null)
+    set_tests_properties(nn_fs_cache_null PROPERTIES PASS_REGULAR_EXPRESSION
+        "fatal: nn::fs::EnableIndividualFileDataCache failed with result 0x2f5e02 \\(error 2002-6063\\)")
+    add_test(NAME nn_fs_cache_small COMMAND snx-test-nn-fs cache-small)
+    set_tests_properties(nn_fs_cache_small PROPERTIES PASS_REGULAR_EXPRESSION
+        "fatal: nn::fs::EnableIndividualFileDataCache failed with result 0x2f5c02 \\(error 2002-6062\\)")
+    add_test(NAME nn_fs_cache_path COMMAND snx-test-nn-fs cache-path)
+    set_tests_properties(nn_fs_cache_path PROPERTIES PASS_REGULAR_EXPRESSION
+        "fatal: nn::fs::DisableIndividualFileDataCache failed with result 0x2ee602 \\(error 2002-6003\\)")
     # the native nn::pctl (nn/pctl.c): the answers of a console with no parental controls set
     add_executable(snx-test-nn-pctl nn_pctl.c)
     snx_test_target(snx-test-nn-pctl 23)

@@ -1698,8 +1698,15 @@ char* snx_user_dir(int kind) {
     free(data);
     return dir;
 }
-/* the same folder, each resolved: one reached through a link is still it */
-static int same_folder(const char* a, const char* b) { return snx_path_within(a, b) && snx_path_within(b, a); }
+/* the same folder, each resolved: one reached through a link is still it. One this process cannot resolve (/sdcard to
+   a shell run as the Android app) is no folder of its, where snx_path_within counts it within anything */
+static int same_folder(const char* a, const char* b) {
+    char *ra = snx_absolute(a), *rb = snx_absolute(b);
+    int same = ra && rb && snx_path_within(ra, rb) && snx_path_within(rb, ra);
+    free(ra);
+    free(rb);
+    return same;
+}
 int snx_app_dir(const char* folder) {
     char *user = snx_user_data_dir(), *full = snx_absolute(folder);
     const char* base = full;

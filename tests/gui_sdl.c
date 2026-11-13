@@ -5728,7 +5728,7 @@ int main(int argc, char** argv) {
     char* input = snx_path_join(temporary, "game with spaces;literal.nro");
     assert(!snx_write_file(input, "0", 1));
     const char* names[] = {"runtime", "scarletnx-gnuabi", "scarletnx-3ds", "scarletnx-vita", "scarletnx-agb",
-                           "scarletnx-android"};
+                           "scarletnx-nds",    "scarletnx-android"};
     for (size_t i = 0; i < sizeof names / sizeof *names; ++i) {
 #ifdef _WIN32
         char* filename = snx_format("%s.exe", names[i]);
@@ -5939,6 +5939,10 @@ int main(int argc, char** argv) {
     assert(app.menu.selected == GUI_GBA);
     render(&app);
     shows(&app, "- " ICON_GAMEPAD " Load GBA/MultiBoot ROM", yellow);
+    key(&app, SDLK_RIGHT);
+    assert(app.menu.selected == GUI_NDS);
+    render(&app);
+    shows(&app, "- " ICON_GAMEPAD " Load NDS ROM", yellow);
     key(&app, SDLK_RIGHT);
     assert(app.menu.selected == GUI_ANDROID);
     render(&app);
@@ -8964,6 +8968,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
+    key(&app, SDLK_LEFT);
     /* a load opens the screen its file is picked on at once: games/ is Games' now, not an option under it */
     assert(app.menu.selected == GUI_SWITCH);
     pump(&app);
@@ -9519,7 +9524,8 @@ int main(int argc, char** argv) {
                                 {"card.3ds", GUI_3DS, "3DS game, opened with scarletnx-3ds"},
                                 {"homebrew.vpk", GUI_VITA, "Vita VPK, opened with scarletnx-vita"},
                                 {"homebrew.gba", GUI_GBA, "GBA ROM, played with scarletnx-agb"},
-                                {"homebrew.mb", GUI_GBA, "GBA MultiBoot ROM, played with scarletnx-agb"}};
+                                {"homebrew.mb", GUI_GBA, "GBA MultiBoot ROM, played with scarletnx-agb"},
+                                {"homebrew.nds", GUI_NDS, "NDS ROM, played with scarletnx-nds"}};
                 GuiRecent was = app.recent;
                 GuiGamesBoxes none = {0};
                 char kind[192], listed[192];

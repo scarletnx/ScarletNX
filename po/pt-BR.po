@@ -2274,6 +2274,10 @@ msgid "Runs a GBA ROM or MultiBoot ROM on the emulated AGB board"
 msgstr "Roda uma ROM de GBA ou de MultiBoot na placa AGB emulada"
 
 #: src/gui/main.c
+msgid "Recompiles a DS card image, then runs it"
+msgstr "Recompila uma imagem de cartão de DS e depois a roda"
+
+#: src/gui/main.c
 msgid "Runs an Android app's .apk, .xapk or .apks"
 msgstr "Roda o .apk, .xapk ou .apks de um app Android"
 
@@ -2313,6 +2317,10 @@ msgstr "Jogo de Vita, pronto para rodar"
 #: src/gui/main.c
 msgid "GBA game, ready to run"
 msgstr "Jogo de GBA, pronto para rodar"
+
+#: src/gui/main.c
+msgid "NDS game, ready to run"
+msgstr "Jogo de NDS, pronto para rodar"
 
 #: src/gui/main.c
 msgid "Ready to run"
@@ -2363,6 +2371,10 @@ msgstr ""
 #: src/gui/main.c
 msgid "GBA ROM, played with scarletnx-agb"
 msgstr "ROM de GBA, jogada com o scarletnx-agb"
+
+#: src/gui/main.c
+msgid "NDS ROM, played with scarletnx-nds"
+msgstr "ROM de NDS, jogada com o scarletnx-nds"
 
 #: src/gui/main.c
 msgid "Android app, run with scarletnx-android"
@@ -6045,6 +6057,10 @@ msgstr "Abrir Vita VPK"
 #: src/gui/ui.txt
 msgid "Load GBA/MultiBoot ROM"
 msgstr "Abrir ROM de GBA/MultiBoot"
+
+#: src/gui/ui.txt
+msgid "Load NDS ROM"
+msgstr "Abrir ROM de NDS"
 
 #: src/gui/ui.txt
 msgid "Load Android APK/XAPK"

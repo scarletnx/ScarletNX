@@ -27,13 +27,13 @@ For the keyboard-controlled SDL3 menu and file drops, see [GUI](gui.md).
 ## Common options
 
 Every driver of the program (`scarletnx` for the Switch, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-agb`,
-`scarletnx-android`, `scarletnx-gnuabi`) reads the options below from one table, `src/common/utilities/cli.c`. Each
+`scarletnx-nds`, `scarletnx-android`, `scarletnx-gnuabi`) reads the options below from one table, `src/common/utilities/cli.c`. Each
 `--help` shows them first, with the same words in the same column, then the driver's own options. Each option that
 takes a value takes it as `--option VALUE` or as `--option=VALUE`. A common option that a driver cannot do stops the
 run with the same message in each driver, `scarletnx-agb does not take --update`. An older name of an option still
 works for now, and the run says once what it is called now ([Deprecations](deprecations.md#now)).
 
-Each driver that recompiles (`scarletnx`, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-agb`) also takes
+Each driver that recompiles (`scarletnx`, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-agb`, `scarletnx-nds`) also takes
 `--aot_threads=N`, the setting [`aot_threads`](settings.md): the threads compiling the game's code, 0 (the default)
 up to the computer's cores with a quarter left free, or to `--aot_threads_most=N` (`scarletnx`'s open one at a time, as the memory holds them:
 [Extract → AOT → run](#extract--aot--run)). A GBA ROM's code is one module and compiles on one thread whatever N,
@@ -54,31 +54,31 @@ The recompile's options mean on each system:
 On GNU ABI and Android the code compiles as it runs: `-O` is their JIT's level (their `--jit-opt`), GNU ABI's
 `--jit-cache DIR` the folder its JIT keeps code in between runs, and `--jit-only` what both do anyway.
 
-| Option | Meaning | Switch | 3DS | Vita | AGB | Android | GNU ABI |
-|---|---|---|---|---|---|---|---|
-| `-x`, `--extract` | Extract the game, without playing it | yes | yes | yes | | | |
-| `--extract-container` | Extract the game into its folder and play it from there. Without it, the game is read where it lies | yes | yes | | | | |
-| `-r`, `--recompile` (`--recomp`) | Recompile the game, without playing it | yes | yes | yes | yes | | |
-| `--game DIR` | Play the game in its folder DIR (`recompiled/<name>`), as its copy of the runtime does | yes | yes | yes | yes | | |
-| `--update PATH` (`--patch`) | An update or a DLC of the game, played with it. Give it once for each. For the Vita, it is the dumped game's update folder, given once | yes | yes | yes | | | |
-| `--data DIR` (`--repo`) | The data folder ([Folders](#folders)) | yes | yes | yes | yes | | yes |
-| `--outdir DIR` | The folder of the games, in which the game's folder is made (default: `recompiled/` of the data folder) | yes | yes | yes | yes | | |
-| `--output DIR` | The game's folder itself (default: `<outdir>/<the game's name>`) | | yes | yes | yes | | |
-| `--keys FILE` | The console's keys: `prod.keys` for the Switch, Azahar's `aes_keys.txt` for the 3DS | yes | yes | | | | |
-| `--seconds N` | Stop after N seconds | yes | yes | yes | | | |
-| `--frames N` | Stop after N frames (the AGB's run has no window, sound or pacing) | yes | | | yes | | |
-| `--shot PATH` | Save the screen to PATH when the run ends (Android: each frame `--shot-frame` names) | yes | | yes | yes | yes | |
-| `--script SPEC` | Press buttons at times of the run, `MS:BUTTONS,...` (each platform's page names the buttons) | yes | yes | yes | yes | | |
-| `-f`, `--fullscreen[=0\|1]` | Start fullscreen for this run, or windowed with `=0` | yes | yes | | yes | | |
-| `-H`, `--headless` | Run without a window | yes | | | | yes | |
-| `-O LEVEL`, `--opt LEVEL` | LLVM's optimization of the code it compiles: 0, 1, 2, 3, s or z (default: the setting `opt`, 2); `-O2` too | yes | yes | yes | yes | yes | yes |
-| `--jobs N` | The threads compiling the game's code, the setting `aot_threads`: 1 to 1024, or 0 (the default), Auto | yes | yes | yes | yes | | |
-| `--chunk N` | The instructions of a unit of code compiled at once (below) | yes | yes | yes | yes | | |
-| `--jit-cache PATH` | The run-time compiler's record of the game's code, which the recompile starts from (below) | yes | yes | yes | yes | | yes |
-| `--jit-only` (`--interp-only`) | Compile no code ahead of time: the run-time compiler compiles all of it | yes | yes | yes | yes | yes | yes |
-| `--keep-ir` (`--keep-c`) | Save the code the recompile generates, LLVM IR (below) | yes | yes | yes | yes | | |
-| `-q`, `--quiet` | Say no progress of the recompile | yes | yes | yes | yes | | |
-| `-h`, `--help` | Show the help | yes | yes | yes | yes | yes | yes |
+| Option | Meaning | Switch | 3DS | Vita | AGB | NDS | Android | GNU ABI |
+|---|---|---|---|---|---|---|---|---|
+| `-x`, `--extract` | Extract the game, without playing it | yes | yes | yes | | | | |
+| `--extract-container` | Extract the game into its folder and play it from there. Without it, the game is read where it lies | yes | yes | | | | | |
+| `-r`, `--recompile` (`--recomp`) | Recompile the game, without playing it | yes | yes | yes | yes | yes | | |
+| `--game DIR` | Play the game in its folder DIR (`recompiled/<name>`), as its copy of the runtime does | yes | yes | yes | yes | yes | | |
+| `--update PATH` (`--patch`) | An update or a DLC of the game, played with it. Give it once for each. For the Vita, it is the dumped game's update folder, given once | yes | yes | yes | | | | |
+| `--data DIR` (`--repo`) | The data folder ([Folders](#folders)) | yes | yes | yes | yes | yes | | yes |
+| `--outdir DIR` | The folder of the games, in which the game's folder is made (default: `recompiled/` of the data folder) | yes | yes | yes | yes | yes | | |
+| `--output DIR` | The game's folder itself (default: `<outdir>/<the game's name>`) | | yes | yes | yes | yes | | |
+| `--keys FILE` | The console's keys: `prod.keys` for the Switch, Azahar's `aes_keys.txt` for the 3DS | yes | yes | | | | | |
+| `--seconds N` | Stop after N seconds | yes | yes | yes | | yes | | |
+| `--frames N` | Stop after N frames (the AGB's run has no window, sound or pacing) | yes | | | yes | yes | | |
+| `--shot PATH` | Save the screen to PATH when the run ends (Android: each frame `--shot-frame` names) | yes | | yes | yes | yes | yes | |
+| `--script SPEC` | Press buttons at times of the run, `MS:BUTTONS,...` (each platform's page names the buttons) | yes | yes | yes | yes | yes | | |
+| `-f`, `--fullscreen[=0\|1]` | Start fullscreen for this run, or windowed with `=0` | yes | yes | | yes | yes | | |
+| `-H`, `--headless` | Run without a window | yes | | | | yes | yes | |
+| `-O LEVEL`, `--opt LEVEL` | LLVM's optimization of the code it compiles: 0, 1, 2, 3, s or z (default: the setting `opt`, 2); `-O2` too | yes | yes | yes | yes | | yes | yes |
+| `--jobs N` | The threads compiling the game's code, the setting `aot_threads`: 1 to 1024, or 0 (the default), Auto | yes | yes | yes | yes | | | |
+| `--chunk N` | The instructions of a unit of code compiled at once (below) | yes | yes | yes | yes | | | |
+| `--jit-cache PATH` | The run-time compiler's record of the game's code, which the recompile starts from (below) | yes | yes | yes | yes | | | yes |
+| `--jit-only` (`--interp-only`) | Compile no code ahead of time: the run-time compiler compiles all of it | yes | yes | yes | yes | | yes | yes |
+| `--keep-ir` (`--keep-c`) | Save the code the recompile generates, LLVM IR (below) | yes | yes | yes | yes | | | |
+| `-q`, `--quiet` | Say no progress of the recompile | yes | yes | yes | yes | | | |
+| `-h`, `--help` | Show the help | yes | yes | yes | yes | yes | yes | yes |
 
 The Switch's `--seconds`, `--frames`, `--shot` and `--script` are settings of the game's run
 ([Settings](settings.md)), which reach the game as `--key=value` in both forms. The 3DS's `--script` is its setting

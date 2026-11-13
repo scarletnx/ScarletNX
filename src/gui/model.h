@@ -15,6 +15,7 @@ enum {
     GUI_3DS,
     GUI_VITA,
     GUI_GBA,
+    GUI_NDS, /* a DS card image, compiled and played by scarletnx-nds */
     GUI_ANDROID, /* an app's .apk, .xapk or .apks, run as it is by scarletnx-android */
     GUI_KEYS,
     GUI_SETTINGS, /* the game's .ini settings, the launcher's own for the runs and its App: settings.h */

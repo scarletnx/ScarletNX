@@ -252,7 +252,7 @@ int snx_addon_check(const char* folder, const char* name, const char* entry) {
     return rc;
 }
 
-static const char* const g_system_words[] = {"switch", "3ds", "vita", "gba"};
+static const char* const g_system_words[] = {"switch", "3ds", "vita", "gba", "nds"};
 const char* snx_system_word(SnxSystem system) { return g_system_words[system]; }
 SnxSystem snx_game_system(const char* folder, const char* name) {
     char *ini = snx_format("%s/%s.ini", folder, name), *word = snx_ini_value(ini, "system"), *model = NULL,

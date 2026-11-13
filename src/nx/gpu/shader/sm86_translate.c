@@ -2698,6 +2698,7 @@ void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int s
     g_shader_hmma_pairs = subgroups && radv_warp32 && !g_shader_hmma_stage;
 }
 void shader_hmma_way(char* out, size_t n) {
+    int mixed = g_shader_mixed_dot && g_shader_float16, halves = !mixed && g_shader_hmma_f16 && g_shader_float16;
     const char* how = g_shader_hmma_stage ? "A and B through a warp's slot of shared memory"
                       : g_shader_hmma_pairs && g_shader_quad_compute
                           ? "A by quad broadcasts, B shared by pairs of lanes"
@@ -2708,7 +2709,18 @@ void shader_hmma_way(char* out, size_t n) {
              g_shader_hmma_coop ? "the device's cooperative matrices where a program's blocks are whole warps and "
                                   "their fragments fit in shared memory, else "
                                 : "",
-             how, g_shader_mixed_dot && g_shader_float16 ? "by the mixed dot product into f32" : "unpacked to f32");
+             how,
+             mixed    ? "by the mixed dot product into f32"
+             : halves ? "summed in half floats (hmma_f16), then in f32"
+                      : "unpacked to f32");
+}
+const char* shader_hmma_f16_unused(void) {
+    if (!g_shader_hmma_f16) return NULL;
+    if (!g_shader_float16) return "the device has no shaderFloat16";
+    if (g_shader_mixed_dot)
+        return "the device's mixed dot product (VK_VALVE_shader_mixed_float_dot_product) sums two products an "
+               "instruction in f32";
+    return NULL;
 }
 /* A zero for an HMMA to OR its B registers with before it gathers them, a new one every 8 HMMAs, so that a driver
    doesn't keep a B fragment's 16 gathered words live from its first HMMA to its last. Mesa merges identical subgroup
@@ -2925,22 +2937,41 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
                              spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3)), cu(c, 3));
     /* the pairs as two f16 for OpFDot2MixAcc32VALVE (a bitcast: no instruction), or unpacked to two f32 */
     int mixed = g_shader_mixed_dot && g_shader_float16;
-    u32 t_v2h = 0;
-    if (mixed) {
+    /* The products and their sum in half floats, two products to an OpFma where the f32 sum takes two instructions
+       (g_shader_hmma_f16), and C added in f32 to that sum at the end: the one speed an emulated tensor core finds.
+       Each of the two half sums rounds in f16 once a product (8 times for k16, 4 for k8), so a result is within about
+       2^-8 of its products' magnitudes where the f32 sum is within 2^-20, and 2^-21 more below the normals (more where
+       the device flushes f16 subnormals); a product or partial sum past 65504 is an infinity. The driver's matrix
+       unit (hmma_coop) is the exact way to that speed and it is off where the driver has no VK_KHR_cooperative_matrix */
+    int packed = g_shader_hmma_f16 && !shader_hmma_f16_unused();
+    u32 t_v2h = 0, start2 = 0;
+    if (mixed || packed) {
         spv_emit_capability(&c->e, SPV_CAPABILITY_FLOAT16);
-        spv_emit_capability(&c->e, 6912 /* DotProductFloat16AccFloat32VALVE */);
-        spv_emit_extension(&c->e, "SPV_VALVE_mixed_float_dot_product");
         t_v2h = spv_emit_type_vector(&c->e, spv_emit_type_float(&c->e, 16), 2);
     }
-    u32 acc[2][2]; /* [row g, g + 8][column 2t, 2t + 1] */
-    for (u32 i = 0; i < 2; i++) {
-        if (f32) {
-            acc[i][0] = to_f(c, cc[2 * i]);
-            acc[i][1] = to_f(c, cc[2 * i + 1]);
-        } else {
-            u32 pair = half_pair(c, cc[i]);
-            acc[i][0] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 0);
-            acc[i][1] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 1);
+    if (packed) { /* -0, the sum's identity, and +0 in one half where C is RZ: the console adds that +0 */
+        u32 t_f16 = spv_emit_type_float(&c->e, 16), neg = spv_emit_constant_u32(&c->e, t_f16, 0x8000u);
+        start2 = spv_emit_constant_vec2(&c->e, t_v2h, rc < SM86_RZ ? neg : spv_emit_constant_u32(&c->e, t_f16, 0), neg);
+    }
+    if (mixed) {
+        spv_emit_capability(&c->e, 6912 /* DotProductFloat16AccFloat32VALVE */);
+        spv_emit_extension(&c->e, "SPV_VALVE_mixed_float_dot_product");
+    }
+    u32 acc[2][2];                        /* [row g, g + 8][column 2t, 2t + 1] */
+    u32 pacc[2][2] = {{0, 0}, {0, 0}};    /* packed: the f16 half sums of the same, C's not in them yet */
+    if (packed) {
+        for (u32 i = 0; i < 2; i++)
+            for (u32 j = 0; j < 2; j++) pacc[i][j] = start2;
+    } else {
+        for (u32 i = 0; i < 2; i++) {
+            if (f32) {
+                acc[i][0] = to_f(c, cc[2 * i]);
+                acc[i][1] = to_f(c, cc[2 * i + 1]);
+            } else {
+                u32 pair = half_pair(c, cc[i]);
+                acc[i][0] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 0);
+                acc[i][1] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 1);
+            }
         }
     }
     /* staged: lane 4g + p's A words at 16g + 4p, lane 8t + 4j + p's B words at 128 + 16t + 8j + 2p */
@@ -2993,7 +3024,7 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
                 bits = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, g0, p < 2 ? y : x, p < 2 ? x : y);
             } else
                 bits = quad_read(c, a[k], g4, p);
-            av[k] = mixed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
+            av[k] = mixed || packed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
         }
         for (u32 j = 0; j < 2; j++)
             for (k = 0; k < nb; k++) {
@@ -3009,15 +3040,31 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
                         warp_read(c, b[k], spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8h, cu(c, 4 * j + p)));
                 else
                     bits = warp_xor(c, mine[j][k][p - 2], 4);
-                bv[j][k] = mixed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
+                bv[j][k] = mixed || packed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
             }
         for (u32 h = 0; h < nb; h++) /* the k halves: A's registers 2h (row g) and 2h + 1 (row g + 8), B's h */
             for (u32 i = 0; i < 2; i++)
                 for (u32 j = 0; j < 2; j++)
-                    acc[i][j] = mixed ? SPV(&c->e, 6916 /* OpFDot2MixAcc32VALVE */, c->t_f32, av[2 * h + i], bv[j][h],
-                                            acc[i][j])
-                                      : op2(c, SPV_OP_F_ADD, c->t_f32, acc[i][j],
-                                            op2(c, 148 /* OpDot */, c->t_f32, av[2 * h + i], bv[j][h]));
+                    if (packed)
+                        pacc[i][j] = spv_emit_glsl_ternary(&c->e, t_v2h, c->glsl, SPV_GLSL_FMA, av[2 * h + i],
+                                                           bv[j][h], pacc[i][j]);
+                    else
+                        acc[i][j] = mixed ? SPV(&c->e, 6916 /* OpFDot2MixAcc32VALVE */, c->t_f32, av[2 * h + i],
+                                                bv[j][h], acc[i][j])
+                                          : op2(c, SPV_OP_F_ADD, c->t_f32, acc[i][j],
+                                                op2(c, 148 /* OpDot */, c->t_f32, av[2 * h + i], bv[j][h]));
+    }
+    if (packed) { /* the half sums added into one f32, then C: the console's f32 sum up to the half sums' precision */
+        for (u32 i = 0; i < 2; i++)
+            for (u32 j = 0; j < 2; j++) {
+                u32 pair = half_pair(c, spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_u32, pacc[i][j]));
+                acc[i][j] = op2(c, SPV_OP_F_ADD, c->t_f32, spv_emit_vec4_extract(&c->e, c->t_f32, pair, 0),
+                                spv_emit_vec4_extract(&c->e, c->t_f32, pair, 1));
+                if (rc < SM86_RZ)
+                    acc[i][j] = op2(c, SPV_OP_F_ADD, c->t_f32, acc[i][j],
+                                    f32 ? to_f(c, cc[2 * i + j])
+                                        : spv_emit_vec4_extract(&c->e, c->t_f32, half_pair(c, cc[i]), j));
+            }
     }
     u32 d = in->dst;
     if (d >= SM86_RZ) return;

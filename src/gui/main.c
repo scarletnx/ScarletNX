@@ -916,6 +916,7 @@ typedef char gui_entries_in_order[GUI_ENTRY(GUI_LINUX) == UI_MENU_ENTRIES_LOAD_L
                                           GUI_ENTRY(GUI_3DS) == UI_MENU_ENTRIES_LOAD_3DS_GAME &&
                                           GUI_ENTRY(GUI_VITA) == UI_MENU_ENTRIES_LOAD_VITA_VPK &&
                                           GUI_ENTRY(GUI_GBA) == UI_MENU_ENTRIES_LOAD_GBA_MULTI_BOOT_ROM &&
+                                          GUI_ENTRY(GUI_NDS) == UI_MENU_ENTRIES_LOAD_NDS_ROM &&
                                           GUI_ENTRY(GUI_ANDROID) == UI_MENU_ENTRIES_LOAD_ANDROID_APK_XAPK &&
                                           GUI_ENTRY(GUI_KEYS) == UI_MENU_ENTRIES_INSTALL_KEYS &&
                                           GUI_ENTRY(GUI_SETTINGS) == UI_MENU_ENTRIES_SETTINGS &&
@@ -6935,6 +6936,7 @@ static const char* item_about(const App* app, int item) {
                                         SNX_TR_NOOP("Recompiles a 3DS game, then runs it"),
                                         SNX_TR_NOOP("Recompiles a PS Vita homebrew .vpk, then runs it"),
                                         SNX_TR_NOOP("Runs a GBA ROM or MultiBoot ROM on the emulated AGB board"),
+                                        SNX_TR_NOOP("Recompiles a DS card image, then runs it"),
                                         SNX_TR_NOOP("Runs an Android app's .apk, .xapk or .apks")};
     if (item >= GUI_SWITCH && item <= GUI_ANDROID) return snx_tr(loads[item - GUI_SWITCH]);
     if (item == GUI_KEYS) return snx_tr("Installs prod.keys, which games are extracted with");
@@ -7387,13 +7389,14 @@ static int row_driver(const GuiGames* games, size_t i);
 static const char* cover_why(const App* app, const char* path);
 /* a 3DS game, a Vita VPK, a GBA ROM or an Android app: a package its driver makes a game of, or runs as it is */
 static bool package(const char* name) {
-    return gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name) || gui_is_apk(name);
+    return gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name) || gui_is_nds(name) || gui_is_apk(name);
 }
 /* a made game's kind, by the console its folder says */
 static const char* ready_kind(int driver) {
     return driver == GUI_3DS    ? snx_tr("3DS game, ready to run")
            : driver == GUI_VITA ? snx_tr("Vita game, ready to run")
            : driver == GUI_GBA  ? snx_tr("GBA game, ready to run")
+           : driver == GUI_NDS  ? snx_tr("NDS game, ready to run")
                                 : snx_tr("Ready to run");
 }
 /* after a dump's kind, why it shows no icon (dump_icon_why), in out; the bytes written */
@@ -7453,6 +7456,7 @@ static void game_kind(const App* app, const GuiGames* games, size_t i, char* kin
                  : gui_is_vpk(name)       ? snx_tr("Vita VPK, opened with scarletnx-vita")
                  : gui_is_multiboot(name) ? snx_tr("GBA MultiBoot ROM, played with scarletnx-agb")
                  : gui_is_gba(name)       ? snx_tr("GBA ROM, played with scarletnx-agb")
+                 : gui_is_nds(name)       ? snx_tr("NDS ROM, played with scarletnx-nds")
                  : gui_is_apk(name)       ? snx_tr("Android app, run with scarletnx-android")
                  : gui_is_dump(name) ? snx_tr("A dump, prepared when it runs")
                                      /* Games' own rows by what list_games read, another list's from its folder */
@@ -16808,7 +16812,7 @@ static MissingKind missing_kind(const char* program, const char* file) {
     system = snx_game_system(folder, name);
     free(name);
     free(folder);
-    if (system == SNX_SYSTEM_GBA) return MISSING_ROM;
+    if (system == SNX_SYSTEM_GBA || system == SNX_SYSTEM_NDS) return MISSING_ROM;
     if (system == SNX_SYSTEM_3DS) return MISSING_CTR;
     if (system == SNX_SYSTEM_VITA) return MISSING_VITA;
     for (size_t i = 0; file && i < SDL_arraysize(dumps); ++i)
@@ -17367,7 +17371,8 @@ static void launch(App* app, char* absolute, bool prepared) {
        cannot be */
     bool folders = (app->menu.selected == GUI_SWITCH && !native) ||
                    (!game_option &&
-                    (app->menu.selected == GUI_3DS || app->menu.selected == GUI_VITA || app->menu.selected == GUI_GBA));
+                    (app->menu.selected == GUI_3DS || app->menu.selected == GUI_VITA || app->menu.selected == GUI_GBA ||
+                     app->menu.selected == GUI_NDS));
     if (folders && !places_fit(app, app->message, sizeof app->message)) {
         free(driver);
         free(absolute);
@@ -17490,8 +17495,8 @@ static void launch(App* app, char* absolute, bool prepared) {
         argv[n++] = "--outdir";
         argv[n++] = app->dest_out ? app->dest_out : app->games_dir;
     }
-    /* the GBA's window starts fullscreen as a Switch game's does; a compile opens none */
-    if (app->menu.selected == GUI_GBA && !make) n += gui_settings_one(s, "fullscreen", argv + n);
+    /* the GBA's window, and the DS's, starts fullscreen as a Switch game's does; a compile opens none */
+    if ((app->menu.selected == GUI_GBA || app->menu.selected == GUI_NDS) && !make) n += gui_settings_one(s, "fullscreen", argv + n);
     /* the picked extractions folder, which Extract to tmpfs leaves for the temporary one, and a Switch dump read in
        place (Extract dump off) has no use for */
     if (folders && app->place[GUI_PLACE_WORK] && app->menu.selected == GUI_SWITCH && !nro_file(absolute) &&
@@ -18220,6 +18225,7 @@ static int program_driver(const char* program) {
     return system == SNX_SYSTEM_3DS    ? GUI_3DS
            : system == SNX_SYSTEM_VITA ? GUI_VITA
            : system == SNX_SYSTEM_GBA  ? GUI_GBA
+           : system == SNX_SYSTEM_NDS  ? GUI_NDS
                                        : GUI_SWITCH;
 }
 /* the driver a file's name says: a package its console's, a dump the Switch's; -1 for a name that says none */
@@ -18227,6 +18233,7 @@ static int named_driver(const char* name) {
     return gui_is_cia(name)    ? GUI_3DS
            : gui_is_vpk(name)  ? GUI_VITA
            : gui_is_gba(name)  ? GUI_GBA
+           : gui_is_nds(name)  ? GUI_NDS
            : gui_is_apk(name)  ? GUI_ANDROID
            : gui_is_dump(name) ? GUI_SWITCH
                                : -1;
@@ -18364,6 +18371,7 @@ static int aot_focus_game(App* app, AotFocus* f) {
     } else if (game) {
         if (gui_games_heading(&app->games, index) || gui_is_cia(app->games.names[index]) ||
             gui_is_vpk(app->games.names[index]) || gui_is_gba(app->games.names[index]) ||
+            gui_is_nds(app->games.names[index]) ||
             gui_is_apk(app->games.names[index]))
             return 0; /* no path */
         path = app->games.paths[index];
@@ -19845,6 +19853,7 @@ void ui_menu_entries_load_linux_arm_elf_action_cb(App* app, uint32_t hit) { menu
 void ui_menu_entries_load_3ds_game_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_3DS, hit); }
 void ui_menu_entries_load_vita_vpk_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_VITA, hit); }
 void ui_menu_entries_load_gba_multi_boot_rom_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_GBA, hit); }
+void ui_menu_entries_load_nds_rom_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_NDS, hit); }
 void ui_menu_entries_load_android_apk_xapk_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_ANDROID, hit); }
 void ui_menu_entries_install_keys_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_KEYS, hit); }
 void ui_menu_entries_settings_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_SETTINGS, hit); }
@@ -20386,7 +20395,7 @@ static void missing_located(App* app, const char* uri, const char* error, bool f
     }
     fits = kind == MISSING_FOLDER ? snx_extracted_game(path) != 0
            : kind == MISSING_VITA ? !snx_path_format(sfo, sizeof sfo, "%s/sce_sys/param.sfo", path) && snx_is_file(sfo)
-           : kind == MISSING_ROM  ? snx_is_file(path) && gui_is_gba(path)
+           : kind == MISSING_ROM  ? snx_is_file(path) && (gui_is_gba(path) || gui_is_nds(path))
            : kind == MISSING_CTR  ? snx_is_file(path) && gui_is_cia(snx_path_leaf(path))
                                   : snx_is_file(path) && missing_kind(program, path) == MISSING_DUMP;
     if (!fits) {

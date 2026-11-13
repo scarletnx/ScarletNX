@@ -631,11 +631,13 @@ static void commands_after_draw(SnxCtrMemory* m) {
 static void screens(SnxCtrMemory* m) { present_screens(m, false); }
 /* async_pipelines: a draw whose pipeline is new is skipped while a worker makes it, so its target keeps what it held;
    once the pipeline is made the same list draws as the CPU reference does, and is not skipped again. Of the three
-   workers the third runs at the system's low priority */
+   workers the third runs at the system's low priority. The stand-in shaders, which would draw it at once, are off:
+   3ds_vk_draw_stand_in holds them to the reference */
 static void async_pipelines(SnxCtrMemory* m) {
     static unsigned char start[W * H * 4], none[W * H * 4], sw[W * H * 4], sw_depth[W * H * 4], gpu[W * H * 4],
         gpu_depth[W * H * 4];
     g_settings.async_pipelines = 1;
+    g_settings.ctr_stand_in = 0;
     g_settings.pipeline_threads = 3;
     Scene* s = triangle_scene("async, then made", 6);
     random_fill(start, sizeof start);
@@ -866,6 +868,110 @@ static void shadows(SnxCtrMemory* m) {
     shadow_sample(m, "shadow 2D, biased", false, 1.0f, 0x500000u << 1, 200);
     shadow_sample(m, "shadow cube, lit", true, 0.25f, 1, 200);
     shadow_sample(m, "shadow cube, shadowed", true, 0.75f, 1, 0);
+}
+
+/* count writes of one register in a burst: the header's extra count, the values after it, the list kept 8-byte
+   aligned */
+static void put_run(List* l, uint32_t id, const uint32_t* values, unsigned count) {
+    l->w[l->n++] = values[0];
+    l->w[l->n++] = id | 15u << 16 | (count - 1) << 20;
+    for (unsigned i = 1; i < count; ++i) l->w[l->n++] = values[i];
+    if (l->n & 1) l->w[l->n++] = 0;
+}
+/* lighting LUT table's 256 entries, a ramp from start, its differences to the next entry (12-bit values, 11-bit
+   differences of 1.0 / 2047 with a sign) */
+static void lighting_lut(List* l, unsigned table, unsigned start, int step) {
+    uint32_t values[256];
+    for (unsigned i = 0; i < 256; ++i) {
+        int v = (int)start + step * (int)i;
+        v = v < 0 ? 0 : v > 4095 ? 4095 : v;
+        uint32_t diff = (uint32_t)(step < 0 ? -step : step) * 2047u / 4095u;
+        values[i] = (uint32_t)v | diff << 12 | (step < 0 ? 1u << 23 : 0);
+    }
+    put(l, 0x1c5, table << 8);
+    put_run(l, 0x1c8, values, 256);
+}
+/* the outputs as lighting reads them: o1 the normal quaternion (the vertex colours, normalized by the shader), o2 the
+   view (the texture coordinate, z 0), the primary colour none (1.0) */
+static void lit_outputs(List* l) {
+    put(l, 0x051, 0x07060504u);
+    put(l, 0x052, 0x1f141312u);
+}
+/* lighting with more of its parts, which the generated fragment shader and the stand-in (ctr_stand_in=2) must both
+   draw as the reference does */
+static void lit_scene(SnxCtrMemory* m) {
+    {
+        Scene* s = scene("lighting, two lights and LUTs", 0, 0xff);
+        lit_outputs(&s->list);
+        /* light 0: positional at (0, 0, 1), its spot down -z, distance and spot attenuation; light 1: directional,
+           two-sided, the geometric factor on specular 0. Each in the slot of its number: the generated shader reads
+           a LUT input's two-sided switch by the light's number, as Azahar's does, where the reference reads the
+           slot's light */
+        put(&s->list, 0x140 + 0, 600u << 20 | 300u << 10 | 100u);
+        put(&s->list, 0x140 + 1, 200u << 20 | 800u << 10 | 400u);
+        put(&s->list, 0x140 + 2, 1023u << 20 | 700u << 10 | 300u);
+        put(&s->list, 0x140 + 3, 60u << 20 | 40u << 10 | 30u);
+        put(&s->list, 0x140 + 4, 0);
+        put(&s->list, 0x140 + 5, 0x3c00); /* z 1.0 */
+        put(&s->list, 0x140 + 6, 0);
+        put(&s->list, 0x140 + 7, 0x1801); /* spot z -1.0 */
+        put(&s->list, 0x140 + 9, 0);
+        put(&s->list, 0x140 + 10, 0);       /* distance bias 0 */
+        put(&s->list, 0x140 + 11, 0x3e000); /* distance scale 0.5 */
+        put(&s->list, 0x150 + 0, 300u << 20 | 300u << 10 | 900u);
+        put(&s->list, 0x150 + 1, 100u << 20 | 100u << 10 | 100u);
+        put(&s->list, 0x150 + 2, 200u << 20 | 500u << 10 | 1000u);
+        put(&s->list, 0x150 + 3, 0);
+        put(&s->list, 0x150 + 4, 0xb800u << 16 | 0x3800u); /* direction (0.5, -0.5, 1.0) */
+        put(&s->list, 0x150 + 5, 0x3c00);
+        put(&s->list, 0x150 + 9, 1 | 2 | 4);
+        put(&s->list, 0x1c0, 20u << 20 | 20u << 10 | 40u); /* global ambient */
+        put(&s->list, 0x1c2, 1);                           /* two lights */
+        put(&s->list, 0x1d9, 0u | 1u << 4);                /* slot 0 light 0, slot 1 light 1 */
+        /* configuration 4 (d0, d1, sp, rr, rg, rb), Fresnel into the primary alpha, highlights clamped */
+        put(&s->list, 0x1c3, 4u << 4 | 1u << 2 | 1u << 27);
+        /* shadows off; spot and distance attenuation for light 0 only; Fresnel off */
+        put(&s->list, 0x1c4, 0xfeu << 24 | 1u << 19 | 0xfeu << 8 | 0xffu);
+        put(&s->list, 0x1d0, 1u << 5 | 1u << 25); /* d1 and rr signed, the rest absolute */
+        put(&s->list, 0x1d1, 0u | 2u << 4 | 4u << 8 | 1u << 16 | 3u << 20 | 2u << 24); /* the LUTs' inputs */
+        put(&s->list, 0x1d2, 1u | 6u << 24);                                           /* d0 x2, rr x0.25 */
+        lighting_lut(&s->list, 0, 400, 14);
+        lighting_lut(&s->list, 1, 4000, -12);
+        lighting_lut(&s->list, 4, 1000, 9);
+        lighting_lut(&s->list, 5, 2000, 5);
+        lighting_lut(&s->list, 6, 3000, -7);
+        lighting_lut(&s->list, 8, 0, 16);      /* light 0's spot */
+        lighting_lut(&s->list, 16, 4095, -10); /* light 0's distance */
+        put(&s->list, 0x1c6, 0);               /* lighting on */
+        /* stage 0: primary fragment + secondary fragment, alpha the primary fragment's */
+        put(&s->list, 0x0c0, 1u | 2u << 4 | 1u << 16);
+        put(&s->list, 0x0c2, 2u | 0u << 16);
+        triangles(s, 6);
+        array_draw(s);
+        run(m, s);
+        free(s);
+    }
+}
+/* that, and fog */
+static void lit_scenes(SnxCtrMemory* m) {
+    lit_scene(m);
+    {
+        Scene* s = scene("fog", 0, 0xff);
+        uint32_t values[128];
+        for (unsigned i = 0; i < 128; ++i) {
+            /* the factor 1.0 at depth 0 down to near 0 at 1, its difference to the next entry */
+            uint32_t value = 2047u - i * 16u, diff = (uint32_t)(-16) & 0x1fff;
+            values[i] = value << 13 | diff;
+        }
+        put(&s->list, 0x0e0, 5);                                /* fog */
+        put(&s->list, 0x0e1, 0x20u << 16 | 0x80u << 8 | 0xc0u); /* its colour */
+        put(&s->list, 0x0e6, 0);
+        put_run(&s->list, 0x0e8, values, 128);
+        triangles(s, 6);
+        array_draw(s);
+        run(m, s);
+        free(s);
+    }
 }
 static void all_scenes(SnxCtrMemory* m) {
     static const char* const color_names[5] = {"colour RGBA8", "colour RGB8", "colour RGB5A1", "colour RGB565",
@@ -1135,6 +1241,7 @@ static void all_scenes(SnxCtrMemory* m) {
         run(m, s);
         free(s);
     }
+    lit_scenes(m);
     commands_after_draw(m);
     texture_after_draw(m);
     draw_after_index_copy(m);
