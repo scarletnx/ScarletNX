@@ -3261,6 +3261,61 @@ static void test_memory_handle_carry(const char* dir) {
         fprintf(stderr, "memory handle carry: ran %d, %08x %08x, load %llx\n", ran, values[0], values[1],
                 (unsigned long long)g_mh_loads[0]);
 }
+/* A compute program's TEX.B whose handle is an element of a table, LDC R6, c[1][R1 + 0x10]: tex_b_cbuf_handle leaves
+   it to memory_handles, so the element the dispatch picks (R1 = c[5][0x2ec] = 4, the word c[1][0x14]) is bound as that
+   texture, and an element picked per invocation (R1 from S2R of the lane) is sampled as none with the program going
+   on. Neither reaches prepare_handles' table path, which a compute program fails ("without texture arrays") */
+static void test_compute_handle_table(const char* dir) {
+    for (u32 variant = 0; variant < 2; variant++) {
+        u8 code[16 * 6] = {0};
+        u32 n = 0;
+        if (variant) { /* S2R R1, SR_LANEID */
+            Word x = fix(0x919);
+            set(&x, 16, 8, 1);
+            set(&x, 72, 8, 0);
+            put(code, n++, x);
+        } else
+            put(code, n++, mov_cbuf(1, 5, 0x2ec));
+        Word l = fix(0xb82); /* LDC R6, c[1][R1 + 0x10] */
+        set(&l, 16, 8, 6);
+        set(&l, 24, 8, 1);
+        cbuf(&l, 1, 0x10);
+        set(&l, 73, 3, 4);
+        put(code, n++, l);
+        Word b = fix(0x361); /* TEX.B R0, R8, R6, 2D */
+        set(&b, 16, 8, 0);
+        set(&b, 24, 8, 8);
+        set(&b, 32, 8, 6);
+        set(&b, 61, 3, 1);
+        set(&b, 64, 8, 255);
+        set(&b, 72, 4, 0xf);
+        set(&b, 81, 3, 7);
+        put(code, n++, b);
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+        int ok = spv && si.ntex == 1 && (si.tex[0].flags & SNX_TEX_MEMORY) &&
+                 (variant ? si.tex[0].cbuf_off == SH_PROBE_NONE && si.memh_none == 1 && strstr(si.memh_why, "S2R")
+                          : !SH_PROBE_UNIFORM(si.tex[0].cbuf_off) && SH_PROBE_REG(si.tex[0].cbuf_off) == 6 &&
+                                si.memh_none == 0);
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "compute handle table %u: %s, %u textures, %u none (%s)\n", variant, si.first_unsupported,
+                    (unsigned)si.ntex, si.memh_none, si.memh_why);
+        if (spv) CHECK(keep_module(dir, variant ? "cs_handle_table_none" : "cs_handle_table", spv, count));
+        free(spv);
+        if (variant || !ok) continue;
+        u32 probes[1] = {si.tex[0].cbuf_off}, values[1] = {0};
+        Sm86EvalIo io = {NULL, mh_cbuf, mh_mem};
+        int ran = sm86_eval((const u64(*)[2])si.memh, si.nmemh, &io, probes, 1, values);
+        CHECK(ran && values[0] == 0x66666666u);
+        if (!ran || values[0] != 0x66666666u)
+            fprintf(stderr, "compute handle table: ran %d, %08x\n", ran, values[0]);
+    }
+}
 /* An address's base through a ULDC of one word to the register before it: UR4 = c[0][0x530] (64 bits), UR7 = UR4 +
    0x30, then a ULDC UR6 of one word of bank 3, UMOV UR4 = UR7, and the LDG at [UR4 + 0x5c]. UR7 keeps its key: the
    word's ULDC took the key of UR7 as a 64-bit one's high word, and one game's material program was refused for "a
@@ -4819,6 +4874,7 @@ int main(int argc, char** argv) {
     test_global_atomic_same_register(dir);
     test_uniform_handle(dir);
     test_memory_handle_carry(dir);
+    test_compute_handle_table(dir);
     test_memory_eval();
     test_uldc_word_key(dir);
     test_mesh(dir);
