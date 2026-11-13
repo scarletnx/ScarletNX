@@ -159,6 +159,22 @@ if(BUILD_TESTING)
         add_test(NAME gui_setup COMMAND snx-test-gui-setup)
         set_tests_properties(gui_setup PROPERTIES TIMEOUT 30 ENVIRONMENT "${gui_screen_env}")
     endif()
+    # the pictures' colours on the real renderer (gui_pixel_order.c), which a big-endian host's byte order would swap
+    add_executable(snx-test-gui-pixel-order "${PROJECT_SOURCE_DIR}/tests/gui_pixel_order.c")
+    target_link_libraries(snx-test-gui-pixel-order PRIVATE snx_gui_support snx_gui_ui scarletnx-common SDL3::SDL3
+                          snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages_test snx_demangle)
+    if(APPLE)
+        target_sources(snx-test-gui-pixel-order PRIVATE apple.m)
+        target_link_libraries(snx-test-gui-pixel-order PRIVATE snx_apple_frontend "-framework Foundation")
+        if(IOS)
+            target_link_libraries(snx-test-gui-pixel-order PRIVATE "-framework UIKit")
+        endif()
+        set_target_properties(snx-test-gui-pixel-order PROPERTIES LINKER_LANGUAGE CXX)
+    endif()
+    if(NOT IOS)
+        add_test(NAME gui_pixel_order COMMAND snx-test-gui-pixel-order)
+        set_tests_properties(gui_pixel_order PROPERTIES TIMEOUT 60 ENVIRONMENT "${gui_screen_env}")
+    endif()
     # every test here, as snx_test_target does: warnings are errors, the asserts stay in any build type, and the
     # sanitizers come with SNX_TEST_SANITIZERS
     get_directory_property(gui_tests BUILDSYSTEM_TARGETS)
