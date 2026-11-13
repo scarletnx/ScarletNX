@@ -699,6 +699,14 @@ setting Controller assignment
     help 1 = as a console's (Eden's Modern Console): each controller that connects takes the lowest free player, one
     help that leaves keeps its player 45 s, the game pauses once one has been gone 3 s until it comes back or + is let
     help go on another controller, and a notice says each that joins or leaves, with its player
+setting Joy-Con mouse
+    key game_mouse
+    int 0 1
+    default 0
+    words Hotkey|Auto
+    help How the mouse reaches an Ounce game as its Joy-Con mouse. 0 = only after hotkey_mouse (Ctrl+G) declares mouse
+    help mode, which holds the mouse until a second press ends it, and nothing reaches the game before. 1 = always, as
+    help before this setting: held while the game plays with it, and hotkey_mouse lets it go
 
 table g_gamepad_map_ini
 setting Button map
@@ -873,10 +881,11 @@ setting Mouse shortcut
     key hotkey_mouse
     text 64
     default Ctrl+G
-    label Let the mouse go
+    label Joy-Con mouse
     set hotkey_set
-    help The key that lets the mouse go from a game that holds it (an Ounce game's Joy-Con mouse mode), and holds it
-    help again, as hotkey_help's
+    help The key for an Ounce game's Joy-Con mouse, as hotkey_help's. With game_mouse at Hotkey it declares mouse mode,
+    help which gives the mouse to the game and holds it, and ends it. At Auto it lets the mouse go from a game that holds
+    help it, and holds it again
 setting Quit shortcut
     key hotkey_quit
     text 64

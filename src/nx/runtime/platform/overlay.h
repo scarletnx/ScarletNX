@@ -53,7 +53,8 @@ int overlay_side_held(int step);
 /* what F1's page shows besides its rows: the capture key's row while RenderDoc is in the process, and the debugger
    tracing the process ("" for none) */
 void overlay_keys_extra(int capture, const char* debugger);
-/* whether a game holds the mouse (an Ounce game's Joy-Con mouse mode), which shows the mouse key's row */
+/* whether the mouse key's row shows: the key is the way into an Ounce game's Joy-Con mouse mode (game_mouse at
+   Hotkey), or a game holds the mouse in that mode */
 void overlay_keys_mouse(int on);
 int overlay_keys(void);
 int overlay_other(void);
