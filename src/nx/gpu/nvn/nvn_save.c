@@ -28,10 +28,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define NVN_STATE_VERSION 2
+#define NVN_STATE_VERSION 3 /* 3: the programs' early test flags */
 /* the heap memory g_nvn's members own, after it: g_nvn.object's program metadata and linkage maps, and the blocks the
    small store of g_nvn.cmd was given back */
-enum { NH_END, NH_XFB, NH_TESS, NH_SUBPROGRAM, NH_SUBLINKAGE, NH_SMALL };
+enum { NH_END, NH_XFB, NH_TESS, NH_SUBPROGRAM, NH_SUBLINKAGE, NH_SMALL, NH_EARLY_Z };
 /* the most entries a state's heap array may hold: far above what a game makes (one program's metadata each) */
 #define NH_MAX (1u << 24)
 
@@ -56,7 +56,9 @@ static void nil_host(Nvn* c) {
     c->object.tess = NULL;
     c->object.subprogram = NULL;
     c->object.sublinkage = NULL;
+    c->object.early_z = NULL;
     c->object.xfb_capacity = c->object.tess_capacity = c->object.subprogram_capacity = 0;
+    c->object.early_z_capacity = 0;
     c->object.sublinkage_capacity = 0;
     memset(&c->cmd.lock, 0, sizeof c->cmd.lock);
     for (i = 0; i < NVN_SMALL_CLASSES; i++) { /* written from their first, which the load's arrays start at */
@@ -112,6 +114,7 @@ int nvn_state_save(StateIo* io, char* why, size_t whysize) {
     if (o->nxfb) r |= heap_put(io, NH_XFB, 0, o->xfb, (u64)o->nxfb * sizeof *o->xfb);
     if (o->ntess) r |= heap_put(io, NH_TESS, 0, o->tess, (u64)o->ntess * sizeof *o->tess);
     if (o->nsubprogram) r |= heap_put(io, NH_SUBPROGRAM, 0, o->subprogram, (u64)o->nsubprogram * sizeof *o->subprogram);
+    if (o->nearly_z) r |= heap_put(io, NH_EARLY_Z, 0, o->early_z, (u64)o->nearly_z * sizeof *o->early_z);
     for (i = 0; i < o->nsublinkage; i++)
         r |= heap_put(io, NH_SUBLINKAGE, i, o->sublinkage[i],
                       (u64)offsetof(NvnSubLinkage, data) + o->sublinkage[i]->bytes);
@@ -134,6 +137,7 @@ static void heap_free(Nvn* n) {
     free(n->object.xfb);
     free(n->object.tess);
     free(n->object.subprogram);
+    free(n->object.early_z);
     for (i = 0; n->object.sublinkage && i < n->object.nsublinkage; i++) free(n->object.sublinkage[i]);
     free(n->object.sublinkage);
     for (i = 0; i < NVN_SMALL_CLASSES; i++) free(n->cmd.small[i].given);
@@ -216,7 +220,9 @@ NvnStaged* nvn_state_parse(StateIo* io) {
         return NULL;
     }
     nil_host(n);
-    if (o->nxfb > NH_MAX || o->ntess > NH_MAX || o->nsubprogram > NH_MAX || o->nsublinkage > NH_MAX) goto bad;
+    if (o->nxfb > NH_MAX || o->ntess > NH_MAX || o->nsubprogram > NH_MAX || o->nsublinkage > NH_MAX ||
+        o->nearly_z > NH_MAX)
+        goto bad;
     for (i = 0; i < NVN_SMALL_CLASSES; i++)
         if (n->cmd.small[i].n > NH_MAX) goto bad;
     if (o->nsublinkage && !(o->sublinkage = (NvnSubLinkage**)calloc(o->nsublinkage, sizeof *o->sublinkage))) goto bad;
@@ -243,6 +249,12 @@ NvnStaged* nvn_state_parse(StateIo* io) {
                     goto bad;
                 o->subprogram_capacity = o->nsubprogram;
                 break;
+            case NH_EARLY_Z:
+                if (o->early_z || size != (u64)o->nearly_z * sizeof *o->early_z ||
+                    !(o->early_z = (u64*)heap_get(io, size)))
+                    goto bad;
+                o->early_z_capacity = o->nearly_z;
+                break;
             case NH_SUBLINKAGE: {
                 NvnSubLinkage* l;
                 if (slot >= o->nsublinkage || o->sublinkage[slot] || size < offsetof(NvnSubLinkage, data) + 80 ||
@@ -266,7 +278,9 @@ NvnStaged* nvn_state_parse(StateIo* io) {
         }
     }
     /* each array its count says it has */
-    if ((o->nxfb && !o->xfb) || (o->ntess && !o->tess) || (o->nsubprogram && !o->subprogram)) goto bad;
+    if ((o->nxfb && !o->xfb) || (o->ntess && !o->tess) || (o->nsubprogram && !o->subprogram) ||
+        (o->nearly_z && !o->early_z))
+        goto bad;
     for (i = 0; i < o->nsublinkage; i++)
         if (!o->sublinkage[i]) goto bad;
     for (i = 0; i < NVN_SMALL_CLASSES; i++)

@@ -50,6 +50,7 @@ struct NvnDraw {
     DsMeshKey mesh_key; /* their fields (nvn_program_mesh) */
     NvnTessStage tess_stage[2];
     u32 tess_params;
+    u8 early_z; /* the bound fragment program asks for early tests (nvn_program_early_z) */
     ShXfb xfb;            /* the bound program's capture layout (zero: none) */
     NVNbufferRange tf[4]; /* the transform feedback buffers */
     u8 tf_on;             /* between Begin (or Resume) and End (or Pause) */

@@ -68,6 +68,10 @@ int nvn_program_tess(u64 serial, NvnTessStage stages[2]) {
     (void)stages;
     return 0;
 }
+int nvn_program_early_z(u64 serial) {
+    (void)serial;
+    return 0;
+}
 int nvn_subroutine_apply(u32 linkage, i32 first, i32 count, const i32* values) {
     (void)linkage;
     (void)first;
