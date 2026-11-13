@@ -73,9 +73,11 @@ struct SnxFx {
     FxImage aa[SNX_FX_SLOTS_MAX];
     FxImage edge[SNX_FX_SLOTS_MAX];
     FxImage weight[SNX_FX_SLOTS_MAX];
+    FxImage crop[SNX_FX_SLOTS_MAX]; /* a crop smaller than its image, alone (snx_fx_render) */
     VkDescriptorSet fsr_easu[SNX_FX_SLOTS_MAX], fsr_rcas[SNX_FX_SLOTS_MAX];
     VkDescriptorSet copy_set[SNX_FX_SLOTS_MAX], fxaa_set[SNX_FX_SLOTS_MAX];
     VkDescriptorSet ssaa_set[SNX_FX_SLOTS_MAX]; /* the downsample's own: the copy set is bound by the pass before it */
+    VkDescriptorSet crop_set[SNX_FX_SLOTS_MAX]; /* the crop's copy, bound before the filter's set in the same frame */
     VkDescriptorSet edge_set[SNX_FX_SLOTS_MAX], weight_set[SNX_FX_SLOTS_MAX], blend_set[SNX_FX_SLOTS_MAX];
     VkImage area, search;
     VkDeviceMemory area_mem, search_mem;
@@ -632,7 +634,7 @@ SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkPipelineCache cache,
                                           .descriptorSetCount = 1,
                                           .pSetLayouts = all};
         VkDescriptorSet* sets[] = {&fx->fsr_easu[i], &fx->fsr_rcas[i], &fx->copy_set[i], &fx->fxaa_set[i],
-                                   &fx->edge_set[i], &fx->ssaa_set[i]};
+                                   &fx->edge_set[i], &fx->ssaa_set[i], &fx->crop_set[i]};
         for (uint32_t s = 0; s < sizeof sets / sizeof *sets; ++s) {
             ai.pSetLayouts = &one;
             if (!fx_ok(vkAllocateDescriptorSets(fx->dev, &ai, sets[s]))) goto failed;
@@ -663,6 +665,7 @@ void snx_fx_destroy(SnxFx* fx) {
         img_free(fx, &fx->aa[i]);
         img_free(fx, &fx->edge[i]);
         img_free(fx, &fx->weight[i]);
+        img_free(fx, &fx->crop[i]);
     }
     img_free(fx, &fx->coef[0]);
     img_free(fx, &fx->coef[1]);
@@ -1100,6 +1103,22 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
         work_h = out_h * mult;
     }
     if (!img_make(fx, &fx->main[slot], work_w, work_h, choose_format(fx), fx_usage())) return 0;
+    /* A crop that is not its whole image (a dynamic resolution drawn into part of the target): every filter samples
+       past its pixel (EASU's 12 taps, NIS's 6x6 kernel, SGSR's gathers, a bilinear copy's half pixel), which there is
+       the image's hidden part. The crop is copied alone first, at its own size, so the sampler's clamp to the edge is
+       the crop's. At 1:1 the copy samples texel centres, which take no neighbour */
+    if (x || y || w != img_w || h != img_h) {
+        if (!img_make(fx, &fx->crop[slot], w, h, choose_format(fx), fx_usage())) return 0;
+        record_copy(fx, cb, fx->crop_set[slot], src, img_w, img_h, x, y, w, h, 0, w, h, 1, &fx->crop[slot]);
+        fx_barrier(fx, cb, fx->crop[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                   VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        src = fx->crop[slot].view;
+        img_w = w;
+        img_h = h;
+        x = y = 0;
+    }
     if (filter == SNX_FX_UPSCALE_NIS && !ensure_nis(fx, cb)) filter = SNX_FX_UPSCALE_FSR1;
     if (filter == SNX_FX_UPSCALE_SGSR && !ensure_sgsr(fx)) filter = SNX_FX_UPSCALE_FSR1;
     if (filter == SNX_FX_UPSCALE_NIS) {
