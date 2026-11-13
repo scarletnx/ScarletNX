@@ -1031,16 +1031,22 @@ static int cs_code_unchanged(u64 pa, u32 len, u64 gw, u32 wseen) {
    the bytes of guest memory it read from pa */
 static u32 cs_read_code(u64 pa, u32 bytes, u8* dst, u32* used) {
     /* NVN puts a header with its program size 0x100 bytes before compute code. Bounded by it, a BRX whose
-       targets aren't resolved can't scan into the unrelated programs that follow in the same window. An Ounce
+       targets aren't resolved can't scan into the unrelated programs that follow in the same window. Some games'
+       headers have the magic but a size of 0: such a program can be longer than 64 KiB (one game's lighting program
+       had an SSY target past it), so it gets the whole window, cut at the header of the program after it. An Ounce
        program has no header: its control section gives its size (bytes). Other clients keep 64 KiB. A program
        longer than CS_CODE stays cut, and is not translated */
     u32 code_size = !bytes ? 0x10000 : bytes < CS_CODE ? bytes : CS_CODE;
+    int unsized = 0;
     u8 header[8];
-    if (pa >= 0x100 && gmem_read_code_cpu(pa - 0x100, header, 8) == 8) {
-        u32 magic = snx_ld_le32(header), declared = snx_ld_le32(header + 4);
-        if (magic == 0x12345679 && declared >= 0x80 && declared <= CS_CODE && !(declared & 7) &&
-            gmem_host(pa, declared))
+    if (pa >= 0x100 && gmem_read_code_cpu(pa - 0x100, header, 8) == 8 && snx_ld_le32(header) == 0x12345679) {
+        u32 declared = snx_ld_le32(header + 4);
+        if (declared >= 0x80 && declared <= CS_CODE && !(declared & 7) && gmem_host(pa, declared))
             code_size = declared;
+        else if (!declared && !bytes) {
+            code_size = CS_CODE;
+            unsized = 1;
+        }
     }
     /* the reads below write all of [80, 80 + code_size), zeros past what they find: only what an earlier, longer
        program left past that is cleared, not the whole window (8 times the old 64 KiB) at every read */
@@ -1053,6 +1059,14 @@ static u32 cs_read_code(u64 pa, u32 bytes, u8* dst, u32* used) {
         vk_shader_hash(dst, CS_WINDOW, &len, cs_cb_read);
         if (gmem_code_cut(len, 80 + cpu, 80 + code_size)) gmem_read_code(pa, dst + 80, code_size);
     }
+    /* NVN aligns programs to 0x100 bytes: the next program's header (the magic, then a zero word where code has an
+       instruction) ends this one */
+    for (u32 at = 0x100; unsized && at + 16 <= code_size; at += 0x100)
+        if (snx_ld_le32(dst + 80 + at) == 0x12345679 && !snx_ld_le64(dst + 80 + at + 8)) {
+            memset(dst + 80 + at, 0, code_size - at);
+            code_size = at;
+            break;
+        }
     return code_size;
 }
 
