@@ -65,6 +65,7 @@ struct SnxFx {
     VkBuffer coef_buf, nis_ub;
     VkDeviceMemory coef_mem, nis_ub_mem;
     void* nis_ub_map;
+    VkDeviceSize nis_ub_stride; /* a slot's config in nis_ub, at the device's uniform offset alignment */
     VkDescriptorSet nis_set[SNX_FX_SLOTS_MAX], sgsr_set[SNX_FX_SLOTS_MAX];
     int pipes_ready, pipes_failed;
     FxImage main[SNX_FX_SLOTS_MAX];
@@ -548,8 +549,14 @@ static int ensure_nis(SnxFx* fx, VkCommandBuffer cb) {
         return 0;
     }
     if (!fx->nis_ub) {
+        /* a config for each slot: a frame writes its own while the GPU may still read the frame's before */
+        VkPhysicalDeviceProperties pp;
+        VkDeviceSize align;
+        vkGetPhysicalDeviceProperties(fx->phys, &pp);
+        align = pp.limits.minUniformBufferOffsetAlignment ? pp.limits.minUniformBufferOffsetAlignment : 1;
+        fx->nis_ub_stride = (sizeof(NisConfig) + align - 1) / align * align;
         VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                                 .size = sizeof(NisConfig),
+                                 .size = fx->nis_ub_stride * fx->slots,
                                  .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
         VkMemoryRequirements req;
         VkPhysicalDeviceMemoryProperties mp;
@@ -983,9 +990,9 @@ static int record_nis(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView 
                       uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t dw, uint32_t dh) {
     NisConfig cfg;
     if (!nis_config(&cfg, 1.0f - (float)fx->cfg.sharpness / 200.0f, image_w, image_h, x, y, w, h, dw, dh)) return 0;
-    memcpy(fx->nis_ub_map, &cfg, sizeof cfg);
+    memcpy((unsigned char*)fx->nis_ub_map + fx->nis_ub_stride * slot, &cfg, sizeof cfg);
     {
-        VkDescriptorBufferInfo bi = {fx->nis_ub, 0, sizeof cfg};
+        VkDescriptorBufferInfo bi = {fx->nis_ub, fx->nis_ub_stride * slot, sizeof cfg};
         VkDescriptorImageInfo in = {VK_NULL_HANDLE, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo out = {VK_NULL_HANDLE, fx->main[slot].view, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo smp = {fx->sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};

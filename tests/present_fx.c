@@ -455,6 +455,56 @@ int main(int argc, char** argv) {
             CHECK(out.width == 320 && out.height == 240);
         }
     }
+    /* two frames' NIS in flight: each slot reads its own config. Both are recorded before either runs, as the next
+       frame's can be while the GPU still reads the last one's; one config for both took the second's sizes into the
+       first, whose pixels past them stayed unwritten */
+    {
+        static const unsigned char colours[2][3] = {{200, 40, 40}, {40, 200, 40}};
+        const uint32_t side[2] = {64, 32}, out_side[2] = {128, 48};
+        Image flat[2] = {{0}};
+        SnxFxImage out[2] = {{0}};
+        VkCommandBuffer cb;
+        uint64_t serial;
+        for (int i = 0; i < 2; ++i) {
+            unsigned char* p = malloc((size_t)side[i] * side[i] * 4);
+            CHECK(p);
+            for (size_t k = 0; k < (size_t)side[i] * side[i]; ++k) {
+                memcpy(p + k * 4, colours[i], 3);
+                p[k * 4 + 3] = 255;
+            }
+            CHECK(image_make(&t, &flat[i], side[i], side[i], VK_FORMAT_R8G8B8A8_UNORM,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
+            CHECK(upload(&t, &flat[i], p));
+            free(p);
+        }
+        cb = snx_vk_ring_commands(&t.ring);
+        for (uint32_t i = 0; i < 2; ++i)
+            CHECK(snx_fx_render(fx, cb, i, flat[i].view, side[i], side[i], 0, 0, side[i], side[i], 0, out_side[i],
+                                out_side[i], SNX_FX_UPSCALE_NIS, SNX_FX_AA_OFF, &out[i]));
+        serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+        for (int i = 0; i < 2; ++i) {
+            unsigned char* got = read_image_f16(&t, out[i].image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out_side[i],
+                                                out_side[i]);
+            uint32_t bad = 0, first = 0;
+            CHECK(got);
+            for (uint32_t k = 0; k < out_side[i] * out_side[i]; ++k)
+                for (int c = 0; c < 3; ++c)
+                    if (abs((int)got[(size_t)k * 4 + c] - (int)colours[i][c]) > 1) {
+                        if (!bad++) first = k;
+                        break;
+                    }
+            if (bad)
+                fprintf(stderr,
+                        "present_fx: NIS in slot %d, %ux%u to %ux%u: %u pixels are not its frame's colour, the first "
+                        "(%u, %u) = %u %u %u\n",
+                        i, side[i], side[i], out_side[i], out_side[i], bad, first % out_side[i], first / out_side[i],
+                        got[(size_t)first * 4], got[(size_t)first * 4 + 1], got[(size_t)first * 4 + 2]);
+            free(got);
+            CHECK(!bad);
+            image_free(&t, &flat[i]);
+        }
+    }
     /* FXAA and SMAA at 1:1: the source's hard step is smoothed */
     {
         double plain_avg, fxaa_avg, smaa_avg;
