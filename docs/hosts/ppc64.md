@@ -34,7 +34,7 @@ qemu-ppc64, but no game has run on a big-endian machine yet. See [Big-endian hos
 The tools, once:
 
 ```bash
-sudo apt install clang lld llvm ninja-build cmake ccache mmdebstrap qemu-user qemu-user-binfmt binfmt-support \
+sudo apt install clang lld llvm ninja-build meson cmake ccache mmdebstrap qemu-user qemu-user-binfmt binfmt-support \
     glslang-tools spirv-tools debian-ports-archive-keyring
 ```
 
