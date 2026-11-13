@@ -68,6 +68,9 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | Key | Default | Effect |
 | --- | --- | --- |
 | `resolution` | `1` | Internal 3D scale, `0.25` to `16`: `1` native, `2` double, `0.75` and `0.5` faster. The launcher's Settings takes only the digits, three in all with two decimals at most, and refuses a value past the range, its dialog saying so. It warns below `0.5` and above `4`, where a game may use too much GPU memory or fall apart |
+| `dlss_upscaler` | `1` | What a Switch 2 game's DLSS evaluations run: `1` = AMD FidelityFX Super Resolution 2.2 (a temporal upscaler, on any GPU), `0` = a filtered copy (cheaper, soft, and the picture shakes with the game's camera jitter). FSR 2 falls back to the copy where it can't run |
+| `dlss_render_size` | `0` | The size a Switch 2 game is told to render at before its DLSS evaluation: `0` = what the game's own DLSS mode asks, `1` = the output's size, `2` = 1/1.5, `3` = 1/1.7, `4` = 1/2, `5` = 1/3 of it (fastest) |
+| `fsr_sharpness` | `0` | The sharpening FSR 2 applies after upscaling, 0 to 1: `0` = none, and no sharpening pass runs |
 | `shadows` | `1` | `0` skips shadow maps |
 | `vsync` | `1` | Images are shown only on the display's refresh, so nothing tears. `0` doesn't wait for it: the newest image is shown on the next refresh where the display can do that, else at once (which may tear). A display that can do neither waits for the refresh as `1` does. A 3DS game takes it too (`--vsync=0`), its window saying at start which it got |
 | `frame_pacing` | `1` | With VSync and `fps_limit=game`: `0` paces the game's frames by a timer; `1` also has the next frame wait until the one before is on the display (`VK_KHR_present_wait` or `VK_GOOGLE_display_timing`), so frames don't queue for it; `2` also holds each frame of a game that asks for two refreshes or more a frame until its refresh, where the display can say when (`VK_EXT_present_timing` or `VK_GOOGLE_display_timing`). Where the display can't do one, the one before it |
@@ -289,6 +292,7 @@ The profiler's rows (`tracy_`) only do something in a build with `SNX_TRACY` (`c
 
 | Key | Default | Effect |
 | --- | --- | --- |
+| `fsr_input_conventions` | `0` | Reverses what the runtime takes a game's DLSS inputs to mean when it gives them to FSR 2, a bit each: `1` the jitter's sign in x, `2` in y, `4` the motion vectors' sign, `8` inverted depth, `16` motion vectors that include the jitter, `32` FSR's own exposure, `64` HDR color input. For a game whose picture smears |
 | `log` | `1` | Log detail. `2` logs everything, which adds runtime overhead |
 | `log_max` | `16` | The game log's size in MiB, `1` to `1024`. Past it the log keeps the run's start and its last lines, saying so in the log and once over the game. The 5 last runs' logs are kept, the ones before this run's in `logs/` beside it |
 | `emulated_cores` | `1` | `1` runs a guest thread only while it holds one of the console's cores, one thread per core at a time, in priority order. `0` runs every guest thread as soon as the host schedules it (`svcGetCurrentProcessorNumber` still answers the thread's core) |

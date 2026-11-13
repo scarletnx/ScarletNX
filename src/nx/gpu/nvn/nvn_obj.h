@@ -563,6 +563,7 @@ enum {
     OP_DISCARD,
     OP_PUSH_CONSTANTS,
     OP_DRAW_MESH,
+    OP_DLSS,
     OP_COUNT_
 };
 typedef char NvnOpcodeMaskFits[(OP_COUNT_ <= 128) ? 1 : -1]; /* nvn_replay.h's unknown[2] */
@@ -816,6 +817,21 @@ typedef struct {
     i32 flags;
 } NvnPCopyT2T;
 #define NVN_COPY_RESOLVE 0x40000000
+/* A DLSS evaluation (nvnCommandBufferEvaluateDlss), its textures' snapshots after it: the upscaler's inputs as the
+   game's parameters give them, and the filtered copies (n_copies of them, input to output) that stand in where no
+   upscaler runs. tex and view in the order of NVN_DLSS_* */
+enum { NVN_DLSS_INPUT, NVN_DLSS_OUTPUT, NVN_DLSS_MOTION, NVN_DLSS_DEPTH, NVN_DLSS_BIAS, NVN_DLSS_EXPOSURE, NVN_DLSS_TEXTURES };
+typedef struct {
+    u64 tex[NVN_DLSS_TEXTURES];
+    NvnView view[NVN_DLSS_TEXTURES];
+    u8 has_view[NVN_DLSS_TEXTURES];
+    u8 reset, n_copies;
+    f32 jitter[2], motion_scale[2], pre_exposure;
+    i32 flags;                    /* the network's builder flags */
+    i32 in[2], out[2];            /* the render size and the output size */
+    i32 base[5][2];               /* NvnDlssParameters.base */
+    NVNcopyRegion sr[2], dr[2];   /* the stand-in copies */
+} NvnPDlss;
 typedef struct {
     u64 texture;
     NvnView view;
