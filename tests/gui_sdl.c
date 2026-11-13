@@ -6358,7 +6358,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_ESCAPE);
     assert(app.editing && app.form == GUI_FORM_SETTINGS && app.editor.row == 1);
     /* GBA's, after Launch: Covers, None by default, then Box art (libretro-thumbnails), Del back to None; Colors,
-       Raw by default, then GBA screen, Del back to Raw */
+       GBA screen by default, then Raw, Del back to GBA screen */
     {
         char line[64];
         key(&app, SDLK_DOWN);
@@ -6381,12 +6381,12 @@ int main(int argc, char** argv) {
         assert(setting_is(&app, "gba_covers", NULL));
         key(&app, SDLK_DOWN);
         render(&app);
-        snprintf(line, sizeof line, "- %-8s %s", "Colors", "Raw [default]");
+        snprintf(line, sizeof line, "- %-8s %s", "Colors", "GBA screen [default]");
         shows(&app, line, yellow);
         key(&app, SDLK_RIGHT);
-        assert(setting_is(&app, "gba_color", "gba"));
+        assert(setting_is(&app, "gba_color", "raw"));
         render(&app);
-        snprintf(line, sizeof line, "- %-8s %s", "Colors", "GBA screen *");
+        snprintf(line, sizeof line, "- %-8s %s", "Colors", "Raw *");
         shows(&app, line, yellow);
         key(&app, SDLK_DELETE);
         assert(setting_is(&app, "gba_color", NULL));
