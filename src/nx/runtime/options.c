@@ -616,6 +616,32 @@ static void vk_descriptors_old(void) {
     }
 }
 
+int options_async_pipelines_old(const char* old) {
+    if (!strcmp(old, "1")) return 2;
+    if (!strcmp(old, "0")) return -1;
+    return -2;
+}
+/* async_pipelines, deprecated for pipeline_wait, read while the file and the command line give pipeline_wait none */
+static void async_pipelines_old(void) {
+    const char* old = ini_deprecated_value("async_pipelines");
+    int now;
+    if (!old || override_of("pipeline_wait") || store_find("pipeline_wait")) return;
+    now = options_async_pipelines_old(old);
+    if (now == -2)
+        WARN("settings: async_pipelines=%s, deprecated, is neither 0 nor 1: pipeline_wait takes its default, 0 (Auto) "
+             "(docs/user/deprecations.md)\n",
+             old);
+    else if (now == -1)
+        WARN("settings: async_pipelines=%s, deprecated, was its default: pipeline_wait takes its own, 0 (Auto), which "
+             "waits for a new pipeline within a frame's budget (docs/user/deprecations.md)\n",
+             old);
+    else {
+        store_put("pipeline_wait", "2");
+        WARN("settings: async_pipelines=%s, deprecated, is pipeline_wait=2 (Skip) now (docs/user/deprecations.md)\n",
+             old);
+    }
+}
+
 static void say_deprecated(void) {
     const char* keys[STORE_MAX];
     char line[2048];
@@ -701,6 +727,7 @@ void ini_open(const char* path) {
     memory_fit_old();
     astc_bc_old();
     vk_descriptors_old();
+    async_pipelines_old();
     n = pending_take(taken);
     say_deprecated();
     apply_all();

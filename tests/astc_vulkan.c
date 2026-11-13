@@ -125,6 +125,11 @@ VkPipeline vk_pipeline_now(VkPipeline h, int* pending) {
     *pending = 0;
     return h;
 }
+VkPipeline vk_pipeline_wait(VkPipeline h, i64 ns, int* pending) {
+    (void)ns;
+    *pending = 0;
+    return h;
+}
 /* cmd.c reads the frame's GPU timestamps for gpuprof.c, which isn't here */
 void vk_gpuprof_frame_done(u32 slot) { (void)slot; }
 void vk_gpuprof_cb_begin(VkCommandBuffer cb) { (void)cb; }

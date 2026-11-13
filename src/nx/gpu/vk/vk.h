@@ -650,6 +650,11 @@ void vk_rec_begin(VkCommandBuffer cb); /* begins cb, the frame's command buffer 
 void vk_rec_begin_upload(VkCommandBuffer cb); /* begins cb, the submission's upload command buffer (vk_cmd_upload) */
 /* ends and submits up (the upload command buffer, VK_NULL_HANDLE for none) and then cb with those semaphores (s[0]
    the graphics timeline's) */
+/* a game frame's end, after its submission: pipeline_wait's Auto gives the next frame its budget for new pipelines,
+   half of period_ns, the game's frame (snx_vk_pipeline_budget) */
+void vk_rec_frame(u64 period_ns);
+/* pipeline_wait's Auto so far, in the log: what was waited for and skipped, when anything was */
+void vk_rec_pipeline_log(void);
 void vk_rec_submit(VkCommandBuffer up, VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw,
                    const VkSemaphoreSubmitInfo* s, u32 ns);
 void vk_rec_sync(void);       /* until everything queued is recorded and submitted */
@@ -2124,6 +2129,8 @@ VkPipeline vk_pipeline_resolve(VkPipeline h);
 VkPipeline vk_pipeline_ready(VkPipeline h);
 /* h's pipeline if it is ready, else VK_NULL_HANDLE, *pending saying whether a worker still makes it */
 VkPipeline vk_pipeline_now(VkPipeline h, int* pending);
+/* the same, after waiting for it at most ns (none at 0 or less), on the recording thread */
+VkPipeline vk_pipeline_wait(VkPipeline h, i64 ns, int* pending);
 /* so far: pipelines made, how many of them the pipeline cache had, ms the workers took making them, ms the GPU thread
    waited for new ones, shaders translated, ms translating them */
 void vk_pipeline_stats(u64* pipes, u64* hits, u64* make_ms, u64* wait_ms, u64* shaders, u64* shader_ms);

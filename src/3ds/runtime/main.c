@@ -69,11 +69,14 @@ static void usage(FILE* out) {
         "                         --ctr_jit_trace=1 each block compiled while the game runs, --ctr_auto_stub_ipc=0\n"
         "                         stops at a service command the runtime lacks. And the Switch's --vk_memory=N, as\n"
         "                         it means there: 0 has the GPU work on a copy of the RAM in its own memory unless\n"
-        "                         it shares the system's, 1 on the copy, 2 on the RAM in place. --async_pipelines=1\n"
-        "                         skips what a new pipeline draws while it is made, on --pipeline_threads=N threads\n"
-        "                         (0: all the computer's but two, two to twelve). --vk_pipeline_cache=0 neither\n"
-        "                         reads nor writes the pipelines kept between runs (shader_cache of the game's\n"
-        "                         folder). --gamepad_swap_ab=1 swaps a\n"
+        "                         it shares the system's, 1 on the copy, 2 on the RAM in place. --pipeline_wait=N is\n"
+        "                         what a draw does while its new pipeline is made, on --pipeline_threads=N threads\n"
+        "                         (0: all the computer's but two, two to twelve): 0 (the default) waits for it\n"
+        "                         within half a frame, a frame's waits together, then skips its draws but those of\n"
+        "                         6 vertices or fewer, 1 always waits, 2 always skips them.\n"
+        "                         --async_pipelines=1, deprecated, is --pipeline_wait=2. --vk_pipeline_cache=0\n"
+        "                         neither reads nor writes the pipelines kept between runs (shader_cache of the\n"
+        "                         game's folder). --gamepad_swap_ab=1 swaps a\n"
         "                         gamepad's A and B, --gamepad_deadzone=N is its sticks' dead zone in percent of\n"
         "                         their travel (default 20), --gamepad_map=MAP the buttons its controls send\n"
         "                         (south:B east:A ..., the Switch's names: Plus is Start, Minus Select). --touch=N\n"
@@ -808,6 +811,17 @@ int snx_ctr_main(int argc, char** argv) {
             const char* value = ini_arg(arg, key, sizeof key);
             const IniOpt* o = NULL;
             bool map = false;
+            if (value && !strcmp(key, "async_pipelines")) { /* deprecated: its 1 is pipeline_wait's Skip, 0 the Auto */
+                if (strcmp(value, "0") && strcmp(value, "1")) {
+                    fprintf(stderr, "scarletnx-3ds: --async_pipelines=%s, deprecated, is neither 0 nor 1\n", value);
+                    snx_cli_free(&cli);
+                    return 2;
+                }
+                ini_read(ini_find(g_performance_ini, "pipeline_wait"), !strcmp(value, "1") ? "2" : "0");
+                fprintf(stderr, "scarletnx-3ds: --async_pipelines=%s is deprecated: --pipeline_wait=%d (%s) now\n",
+                        value, g_settings.pipeline_wait, g_settings.pipeline_wait ? "Skip" : "Auto");
+                continue;
+            }
             /* the recompile's threads, the Switch's setting: a value it does not take stops here, as there */
             if (value && (!strcmp(key, "aot_threads") || !strcmp(key, "aot_threads_most"))) {
                 o = ini_find(g_recompile_ini, key);

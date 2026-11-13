@@ -40,7 +40,7 @@ FAIL = re.compile(r'\*\*\* Crash|svcBreak|FATAL|No new frame for|unknown option:
 AXES = {'nvn_storage_order': ['2', '1', '0'], 'vk_descriptors_mode': ['0', '1'], 'vk_record': ['1', '0'], 'emulated_cores': ['1', '0'],
         'vk_memory': ['0', '1', '2'], 'pipeline_threads': ['0', '1', '2'],
         'jit_threads': ['0', '1', '4']}
-FIXED = {'async_pipelines': '0', 'compute': '1', 'vk_gpu_profile': '0',
+FIXED = {'pipeline_wait': '1', 'compute': '1', 'vk_gpu_profile': '0',
          'vk_buffer_stats': '0'}
 
 

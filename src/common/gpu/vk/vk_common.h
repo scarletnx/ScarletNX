@@ -90,6 +90,13 @@ int snx_vk_pipeline_workers(int setting, int cpus);
 /* Of that many pipeline workers, the ones past the first two, which run at the system's low priority
    (snx_thread_priority_low) */
 int snx_vk_pipeline_low_workers(int workers);
+/* pipeline_wait's Auto: a draw waits for its pipeline while the frame's budget lasts, in ns: half the game's frame
+   (period_ns, its pace), or half a 60 FPS frame where it gives none. Every wait of a frame comes from it, so a frame
+   grows by no more; past it the draws of a pipeline still being made are skipped until a later frame has it */
+int64_t snx_vk_pipeline_budget(uint64_t period_ns);
+/* a draw of that many vertices or indices or fewer waits for its pipeline whole, whatever the budget: a full-screen
+   quad, which a game may draw once to make a texture (Eden's rule), would be lost for good if skipped */
+#define SNX_VK_SMALL_DRAW 6
 
 /* Each driver keeps a cache of its own: <dir>/<name>.<tag><ext>, the tag the driver's, so a game run with another
    driver and then with this one again finds this one's shaders and pipelines. A driver is its ID (VkDriverId), the

@@ -2229,6 +2229,23 @@ VkPipeline vk_pipeline_ready(VkPipeline h) {
     Pipe* p = g_pipeline.pstand[i / PSTAND_PAGE][i % PSTAND_PAGE];
     return __atomic_load_n(&p->ready, __ATOMIC_ACQUIRE) ? __atomic_load_n(&p->p, __ATOMIC_ACQUIRE) : h;
 }
+/* on the recording thread: the pipeline h names, waited for at most ns (none at 0 or less) while a worker makes it:
+   VK_NULL_HANDLE with *pending set when it still makes it after that, VK_NULL_HANDLE alone when it couldn't be made */
+VkPipeline vk_pipeline_wait(VkPipeline h, i64 ns, int* pending) {
+    u64 v = (u64)(uintptr_t)h;
+    *pending = 0;
+    if ((v & ~(u64)0xFFFFFFFFull) != PIPE_STANDIN) return h;
+    u32 i = (u32)v - 1;
+    Pipe* p = g_pipeline.pstand[i / PSTAND_PAGE][i % PSTAND_PAGE];
+    if (!__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE) && ns > 0) {
+        u64 t0 = plat_ns();
+        (void)pipe_wait(p, ns);
+        __atomic_add_fetch(&g_pipeline.pipe_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+    }
+    if (__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE)) return __atomic_load_n(&p->p, __ATOMIC_ACQUIRE);
+    *pending = 1;
+    return VK_NULL_HANDLE;
+}
 /* the pipeline h names without waiting for it: VK_NULL_HANDLE with *pending set while a worker still makes it, and
    VK_NULL_HANDLE alone when it couldn't be made */
 VkPipeline vk_pipeline_now(VkPipeline h, int* pending) {

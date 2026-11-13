@@ -337,6 +337,7 @@ static const struct {
                       {"astc_background_threads", "astc_background's CPU threads are gone: the GPU encodes alone"},
                       {"press", "now script, whose press_at:press is the same press"},
                       {"press_at", "now script, whose press_at:press is the same press"},
+                      {"async_pipelines", "now pipeline_wait, whose 0 is Auto, 1 Wait (async_pipelines' 0) and 2 Skip"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;
