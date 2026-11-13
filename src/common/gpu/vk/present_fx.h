@@ -8,6 +8,7 @@
 #ifndef SNX_COMMON_GPU_VK_PRESENT_FX_H
 #define SNX_COMMON_GPU_VK_PRESENT_FX_H
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <volk.h>
 
@@ -26,20 +27,27 @@ enum {
    downsamples, which also removes the edges a post process cannot see. */
 enum { SNX_FX_AA_OFF, SNX_FX_AA_AUTO, SNX_FX_AA_FXAA, SNX_FX_AA_SMAA, SNX_FX_AA_SSAA2, SNX_FX_AA_SSAA4, SNX_FX_AA_COUNT };
 
-/* the .ini's names, and the menu's labels, for the settings every frontend shares */
+/* the settings' words (upscaler, anti_aliasing; settings.txt's) and the menus' labels: a word case aside, -1 for one
+   that is none of them; a value out of the enum has key and label NULL */
 int snx_fx_upscale_parse(const char* value);
 const char* snx_fx_upscale_key(int filter);
 const char* snx_fx_upscale_label(int filter);
 int snx_fx_aa_parse(const char* value);
 const char* snx_fx_aa_key(int aa);
 const char* snx_fx_aa_label(int aa);
+/* the shortcuts' step: the next value in the settings' order, the last one's the first */
+int snx_fx_upscale_next(int filter);
+int snx_fx_aa_next(int aa);
 
-/* what a frontend's settings say, read once at start (the same settings the Switch frontend uses) */
+/* what a frontend's settings say, read once at start (the Switch's settings, which every frontend takes) */
 typedef struct {
     int upscaler;
-    int sharpness;
+    int sharpness; /* upscaler_sharpness: 0 the softest, 100 the sharpest */
     int aa;
 } SnxFxConfig;
+/* the settings' values into cfg: a word that is none of its setting's is said into said (n bytes, "" when every one
+   is known), with the value that runs for it, Off. How many were not known */
+int snx_fx_settings(SnxFxConfig* cfg, const char* upscaler, int sharpness, const char* aa, char* said, size_t n);
 
 typedef struct SnxFx SnxFx;
 
@@ -56,36 +64,21 @@ typedef struct {
 SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkPipelineCache cache, uint32_t slots,
                      void (*log)(const char*));
 void snx_fx_destroy(SnxFx* fx);
-void snx_fx_configure(SnxFx* fx, const SnxFxConfig* cfg);
+/* the upscalers' sharpness, upscaler_sharpness's 0 (the softest) to 100 (the sharpest), clamped */
+void snx_fx_set_sharpness(SnxFx* fx, int sharpness);
 /* the device's shaderFloat16, for FSR 1's fp16 passes where it runs */
 void snx_fx_set_fp16(SnxFx* fx, int on);
-/* the anti aliasing now, for a live key that changes it */
-void snx_fx_set_aa(SnxFx* fx, int aa);
-/* the live cycles of the hotkeys: the upscaler (FSR 1, Bilinear, NIS, SGSR, None) and the anti aliasing (Auto, FXAA,
-   SMAA, SSAA 2x, SSAA 4x, Off). The changed value is returned */
-int snx_fx_upscale_cycle(SnxFx* fx);
-int snx_fx_aa_cycle(SnxFx* fx);
-int snx_fx_upscaler(const SnxFx* fx);
-int snx_fx_aa(const SnxFx* fx);
 
-/* the filter the frame runs: an unavailable filter is replaced by FSR 1, then Bilinear; -1 for no source */
-int snx_fx_pick_filter(SnxFx* fx, uint32_t src_w, uint32_t src_h, uint32_t dst_w, uint32_t dst_h, uint32_t transform);
-/* whether the filter exists on this device */
-int snx_fx_filter_available(SnxFx* fx, int filter);
-/* whether the filter uses sharpness */
-int snx_fx_filter_uses_sharpness(int filter);
-/* the upscaler's target from the screen rectangle and upscaler_mult, at most max_dim each axis */
-uint32_t snx_fx_target(uint32_t w, uint32_t h, uint32_t mult, uint32_t max_dim, uint32_t* out_w, uint32_t* out_h);
 /* Auto anti aliasing: 1 where the shown rectangle is at least 1.25 times the rendered frame in each direction, so
    the upscale makes its edges visible, and where it is not smaller (a downscale already smooths). */
 int snx_fx_aa_auto(uint32_t render_w, uint32_t render_h, uint32_t shown_w, uint32_t shown_h);
-/* the anti aliasing a frame runs: Auto resolves to FXAA or Off; SSAA2/4 when the device can hold the larger image */
-int snx_fx_pick_aa(SnxFx* fx, int aa, uint32_t render_w, uint32_t render_h, uint32_t shown_w, uint32_t shown_h,
-                   uint32_t max_dim);
 
-/* The shown crop of src (img_w by img_h) through the spatial filter and the anti aliasing, into an image of out_w by
-   out_h: 1 with *out set, 0 when neither runs (the caller keeps its own blit). slot is the frame slot cb records
-   (modulo slots), whose last frame the GPU is done with: its images are this frame's. src is in
+/* The shown crop of src (img_w by img_h) through the filter and the anti aliasing asked, into an image of out_w by
+   out_h: 1 with *out set, 0 when neither runs (the caller keeps its own blit, a smooth one for any filter but Off).
+   What runs: an upscaler where the crop grows, the bilinear copy where it does not; NIS where it grows twice at most,
+   else FSR 1; Auto as snx_fx_aa_auto says; SSAA where the device holds the image 2 or 4 times as large, else the
+   step under it. The log says what runs and why it is not what was asked, once each time that changes. slot is the
+   frame slot cb records (modulo slots), whose last frame the GPU is done with: its images are this frame's. src is in
    SHADER_READ_ONLY_OPTIMAL. transform is vi's flip: bit 0 mirrors x, bit 1 mirrors y. The output is left in
    TRANSFER_SRC_OPTIMAL. */
 int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src, uint32_t img_w, uint32_t img_h,
