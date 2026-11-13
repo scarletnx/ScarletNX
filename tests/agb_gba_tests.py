@@ -10,6 +10,7 @@ against what their source draws.
 """
 
 import argparse
+import itertools
 import os
 import pathlib
 import re
@@ -143,6 +144,11 @@ def main():
         ini = (work / stem / ('%s.ini' % stem)).read_text()
         if not copy.is_file() or 'system=gba' not in ini or 'source=%s' % rom.resolve() not in ini:
             sys.exit("%s: no copy of the runtime %s, or its .ini is not a GBA game's:\n%s" % (args.name, copy, ini))
+        # code=, the header's game code: its printable characters up to the first other, as the launcher reads them
+        header = rom.read_bytes()[0xAC:0xB0]
+        code = ''.join(itertools.takewhile(lambda c: ' ' <= c < '\x7f', (chr(b) for b in header)))
+        if 'code=%s\n' % code not in ini:
+            sys.exit('%s: its .ini does not say code=%s, the header\'s game code:\n%s' % (args.name, code, ini))
         if args.name == 'arm' and 'added to the hints' in run.stdout:
             # the blocks the run compiled are in the map as hints ('-'), the module left as it was; a run that
             # reaches them again adds none, and a recompile (-r) builds every one of them into the module

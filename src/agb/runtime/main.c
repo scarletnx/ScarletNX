@@ -56,8 +56,8 @@ static void usage(FILE* out) {
           "\n"
           "The game's folder, named after the ROM's file, holds its save (<name>.sav), the recompiled module\n"
           "(<name>_code.so), the copy of the runtime that plays it from then on (<name>) and <name>.ini, which names\n"
-          "the ROM and the console (source=, system=). A <ROM>.sav beside the ROM is read once when the folder has\n"
-          "none; a MultiBoot ROM has no save memory.\n",
+          "the ROM, its header's game code and the console (source=, code=, system=). A <ROM>.sav beside the ROM is\n"
+          "read once when the folder has none; a MultiBoot ROM has no save memory.\n",
           out);
 }
 
@@ -341,7 +341,16 @@ int snx_agb_main(int argc, char** argv) {
             if (placed == 1) printf("The game's runtime is %s\n", copy);
             if (placed < 0) fprintf(stderr, "scarletnx-agb: %s\n", runtime ? error : "cannot name this program");
             error[0] = 0;
-            placed = snx_ini_record(ini, "source", path) || snx_record_system(folder, name, SNX_SYSTEM_GBA);
+            /* code=, the header's game code (empty for none, or for a multiboot program), which the launcher's Locate...
+               says beside the hash its map names: its printable characters up to the first other, as the launcher reads
+               them */
+            char code[5] = "";
+            for (size_t i = 0; board.has_cartridge && i < 4 && board.cartridge.game_code[i] >= 0x20 &&
+                               board.cartridge.game_code[i] < 0x7F;
+                 ++i)
+                code[i] = board.cartridge.game_code[i];
+            placed = snx_ini_record(ini, "source", path) || snx_ini_record(ini, "code", code) ||
+                     snx_record_system(folder, name, SNX_SYSTEM_GBA);
             free(runtime);
             free(copy);
             if (placed) goto done; /* the record said why */
