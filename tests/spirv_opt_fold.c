@@ -347,6 +347,147 @@ static int same_stores(const Module* m, uint32_t xs, uint32_t ys) {
     return 1;
 }
 
+/* the module m with a decoration of id (NoContraction) before its first type, into d */
+static void decorated(Module* d, const Module* m, uint32_t id) {
+    memcpy(d->words, m->words, 5 * sizeof *m->words);
+    d->count = 5;
+    put(d, DECORATE, 2, id, (uint32_t)NO_CONTRACTION);
+    memcpy(d->words + d->count, m->words + 5, (m->count - 5) * sizeof *m->words);
+    d->count += m->count - 5;
+}
+/* m before and after the pass store the same values for x and y each 0, 1, ~0, 0x80000000, one of the module's n
+   constants k, its complement or its negation, or one of 8 numbers at random */
+static int same_on_samples(const Module* m, const uint32_t* k, int n, uint32_t* seed) {
+    uint32_t v[4 + 3 * 10 + 8] = {0, 1, 0xffffffffu, 0x80000000u};
+    int count = 4;
+    for (int i = 0; i < n; i++) {
+        v[count++] = k[i];
+        v[count++] = ~k[i];
+        v[count++] = 0u - k[i];
+    }
+    for (int i = 0; i < 8; i++) v[count++] = next(seed);
+    Module o = *m;
+    size_t left = spv_opt_values(o.words, o.count);
+    for (int i = 0; i < count; i++)
+        for (int j = 0; j < count; j++) {
+            uint32_t want[8], got[8];
+            int stores = run(m->words, m->count, v[i], v[j], want, 8);
+            if (stores < 0 || run(o.words, left, v[i], v[j], got, 8) != stores ||
+                memcmp(want, got, (size_t)stores * sizeof *want)) {
+                fprintf(stderr, "x %#x y %#x: %d stores before the pass, after it %d\n", v[i], v[j], stores,
+                        run(o.words, left, v[i], v[j], got, 8));
+                return 0;
+            }
+        }
+    return 1;
+}
+
+/* A difference of two terms of one value, y + k, k + y, y - k or y itself, is the difference of their constants: the
+   offsets of one address from its base, which the known bits then carry on through the shifts and sums of it */
+static void sum_terms(void) {
+    static const struct {
+        uint32_t first_op, first_a, first_b, second_op, second_a, second_b; /* P and Q; an op of 0: no instruction */
+        uint32_t a, b;                                                      /* R = a - b */
+        int expect;
+        uint32_t want;
+    } cases[] = {
+        {I_ADD, X, KA, 0, 0, 0, P, X, VALUE, 192},
+        {I_ADD, KA, X, 0, 0, 0, P, X, VALUE, 192},
+        {I_SUB, X, KA, 0, 0, 0, P, X, VALUE, 0u - 192},
+        {I_ADD, X, KA, 0, 0, 0, X, P, VALUE, 0u - 192},
+        {I_SUB, X, KA, 0, 0, 0, X, P, VALUE, 192},
+        {I_ADD, X, KA, I_ADD, X, KB, P, Q, VALUE, 192 - 7},
+        {I_ADD, X, KA, I_ADD, KB, X, Q, P, VALUE, 7 - 192},
+        {I_SUB, X, KA, I_ADD, X, KB, P, Q, VALUE, 0u - 192 - 7},
+        {I_SUB, X, KA, I_SUB, X, KB, P, Q, VALUE, 7 - 192},
+        {I_ADD, XS, KA, 0, 0, 0, P, XS, VALUE, 192}, /* a signed y, the difference unsigned */
+        {I_SUB, X, KB, I_ADD, X, KB, P, Q, VALUE, 0u - 14},
+        {I_ADD, X, KA, 0, 0, 0, P, Y, STAYS, 0},
+        {I_ADD, X, KA, I_ADD, Y, KA, P, Q, STAYS, 0},
+        {I_ADD, X, Y, 0, 0, 0, P, X, STAYS, 0},  /* (x + y) - x, y no constant */
+        {I_SUB, KA, X, 0, 0, 0, P, X, STAYS, 0}, /* k - x is no term of x */
+        {I_SUB, KA, X, 0, 0, 0, KA, P, STAYS, 0},
+        {I_ADD, X, SPEC, 0, 0, 0, P, X, STAYS, 0}, /* a specialization constant is not known */
+        {I_MUL, X, KA, 0, 0, 0, P, X, STAYS, 0},
+        {BITWISE_OR, X, KA, 0, 0, 0, P, X, STAYS, 0},
+    };
+    const uint32_t k[] = {192, 7};
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        Module m;
+        begin_with(&m, k, 2);
+        uint32_t type = cases[i].first_a == XS ? (uint32_t)S : (uint32_t)U;
+        put(&m, cases[i].first_op, 4, type, (uint32_t)P, cases[i].first_a, cases[i].first_b);
+        if (cases[i].second_op) put(&m, cases[i].second_op, 4, type, (uint32_t)Q, cases[i].second_a, cases[i].second_b);
+        put(&m, I_SUB, 4, (uint32_t)U, (uint32_t)R, cases[i].a, cases[i].b);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        end(&m);
+        if (!outcome(&m, 5, cases[i].expect, U, cases[i].want)) {
+            fprintf(stderr, "sum terms: case %zu, (%u %u %u) - ..., expected %s %#x\n", i, cases[i].first_op,
+                    cases[i].first_a, cases[i].first_b, cases[i].expect == STAYS ? "to stay" : "value", cases[i].want);
+            check(0, "a difference of two terms of one value is the difference of their constants");
+        }
+    }
+    /* decorated, a term is a value of no known form */
+    Module m, d;
+    begin_with(&m, k, 2);
+    put(&m, I_ADD, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
+    put(&m, I_SUB, 4, (uint32_t)U, (uint32_t)R, (uint32_t)P, (uint32_t)X);
+    put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+    end(&m);
+    decorated(&d, &m, P);
+    check(outcome(&m, 5, VALUE, U, 192) && outcome(&d, 5, STAYS, 0, 0), "a decorated term stays");
+    /* the shape the Maxwell translator writes: an address less its base, a quarter of it, plus one */
+    const uint32_t k4[] = {192, 2, 1, 49};
+    begin_with(&m, k4, 4);
+    put(&m, I_ADD, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
+    put(&m, I_SUB, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)P, (uint32_t)X);
+    put(&m, SHIFT_RIGHT_LOGICAL, 4, (uint32_t)U, (uint32_t)R + 2, (uint32_t)Q, (uint32_t)KB);
+    put(&m, I_ADD, 4, (uint32_t)U, (uint32_t)R, (uint32_t)R + 2, (uint32_t)KC);
+    put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+    end(&m);
+    Module o = m;
+    size_t left = spv_opt_values(o.words, o.count);
+    check(stored(&o, left, 0) == (uint32_t)KD, "((x + 192) - x >> 2) + 1 is 49");
+    /* Modules at random: two terms of x or y, their difference, a shift of it and a sum, all stored; each runs the
+       same before and after the pass on x and y of the samples */
+    uint32_t seed = 0x6c8e9cf5u;
+    int failed = 0, folded = 0;
+    const int rounds = 2000;
+    for (int round = 0; round < rounds && failed < 5; round++) {
+        uint32_t kr[4] = {next(&seed), next(&seed) % 4 ? next(&seed) & 0xfff : 0, next(&seed) % 32, next(&seed)};
+        uint32_t terms[2];
+        begin_with(&m, kr, 4);
+        for (int t = 0; t < 2; t++) {
+            uint32_t base = next(&seed) % 4 ? (uint32_t)X : (uint32_t)Y, id = (uint32_t)P + (uint32_t)t;
+            uint32_t constant = (uint32_t)KA + next(&seed) % 2;
+            switch (next(&seed) % 5) {
+                case 0: terms[t] = base; continue;
+                case 1: put(&m, I_ADD, 4, (uint32_t)U, id, base, constant); break;
+                case 2: put(&m, I_ADD, 4, (uint32_t)U, id, constant, base); break;
+                case 3: put(&m, I_SUB, 4, (uint32_t)U, id, base, constant); break;
+                default: put(&m, I_SUB, 4, (uint32_t)U, id, constant, base); break;
+            }
+            terms[t] = id;
+        }
+        put(&m, I_SUB, 4, (uint32_t)U, (uint32_t)R, terms[0], terms[1]);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        put(&m, SHIFT_RIGHT_LOGICAL, 4, (uint32_t)U, (uint32_t)R + 1, (uint32_t)R, (uint32_t)KC);
+        put(&m, I_ADD, 4, (uint32_t)U, (uint32_t)R + 2, (uint32_t)R + 1, (uint32_t)KD);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R + 2);
+        end(&m);
+        o = m;
+        left = spv_opt_values(o.words, o.count);
+        folded += (result(&o, left, R)[0] & 0xffff) != I_SUB;
+        if (!same_on_samples(&m, kr, 4, &seed)) {
+            fprintf(stderr, "sum terms: round %d of the modules at random runs otherwise after the pass\n", round);
+            failed++;
+        }
+    }
+    check(!failed, "a module of terms at random stores what it stored before the pass");
+    if (folded < rounds / 4) fprintf(stderr, "sum terms: the pass folded %d differences of %d\n", folded, rounds);
+    check(folded >= rounds / 4, "and the pass folds a quarter of the differences at least");
+}
+
 int main(void) {
     Module m, o;
     size_t left;
@@ -1253,6 +1394,7 @@ int main(void) {
         if (folded < rounds / 4) fprintf(stderr, "known bits: the pass changed %d modules of %d\n", folded, rounds);
         check(folded >= rounds / 4, "and the pass changes a quarter of them at least");
     }
+    sum_terms();
     printf("spirv opt fold: %d checks failed\n", g_failures);
     return g_failures != 0;
 }

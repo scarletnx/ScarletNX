@@ -338,17 +338,45 @@ static int commutes(uint32_t op, uint32_t width) {
            (op >= SPV_OP_LOGICAL_EQUAL && op <= SPV_OP_LOGICAL_AND);
 }
 
+/* the instruction of width words that makes x with no decoration, module + def[x], or NULL: def[x] is 0 for an id
+   the walk has not met, and the header's first word has no width a caller asks for */
+static const uint32_t* made_by(const uint32_t* module, uint32_t x, uint32_t width, const uint32_t* def,
+                               const uint32_t* sign) {
+    const uint32_t* w = module + def[x];
+    return w[0] >> 16 == width && w[2] == x && !sign[x] ? w : NULL;
+}
+
+/* x as y + k with k an integer constant: y, and k in *k, of the y + k, k + y or y - k that makes x; else x itself and
+   0. Two terms of one y differ by a constant (spirv-opt's merge of add and sub) */
+static uint32_t term(const uint32_t* module, uint32_t x, uint32_t bound, const uint8_t* is, const uint32_t* type_of,
+                     const uint32_t* value, const uint32_t* def, const uint32_t* sign, uint32_t* k) {
+    const uint32_t* w = made_by(module, x, 5, def, sign);
+    uint32_t op = w ? w[0] & 0xffff : 0, a = w && w[3] < bound ? w[3] : 0, b = w && w[4] < bound ? w[4] : 0;
+    int ka = a && is[a] & SPV_OPT_CONSTANT && is[type_of[a]] & SPV_OPT_INT;
+    int kb = b && is[b] & SPV_OPT_CONSTANT && is[type_of[b]] & SPV_OPT_INT;
+    *k = 0;
+    if ((op != SPV_OP_I_ADD && op != SPV_OP_I_SUB) || !a || !b || ka == kb) return x;
+    if (kb) {
+        *k = op == SPV_OP_I_SUB ? 0u - value[b] : value[b];
+        return a;
+    }
+    if (op != SPV_OP_I_ADD) return x;
+    *k = value[a];
+    return b;
+}
+
 /* What the instruction at w always equals, when its type is a 32-bit integer or the boolean and its operands say so
    (they were replaced already), beyond what known_bits computes of it (an integer whose bits are all known):
-   SPV_OPT_FOLD_VALUE with the constant's bits in *out for a product of two constants, x - x, x ^ x and the logical
-   instructions on constants (false && x, true || x); SPV_OPT_FOLD_ID with an operand in *out when the others leave it
-   as it is (x + 0, x - 0, x | 0, x ^ 0, x << 0, x * 1, x & x, x | x, true && x, false || x, x && x), only when that
-   operand has the instruction's type. Of any type: a select whose condition is a constant or whose two
-   values are one id, and a bitcast to the type its operand has, or of a bitcast from that type. module is for the
-   instruction that makes a bitcast's operand, def[] says where; is, type_of and value are by id. */
+   SPV_OPT_FOLD_VALUE with the constant's bits in *out for a product of two constants, a difference of two terms of
+   one value ((y + k1) - (y + k2) is k1 - k2, x - x is 0), x ^ x and the logical instructions on constants (false && x,
+   true || x); SPV_OPT_FOLD_ID with an operand in *out when the others leave it as it is (x + 0, x - 0, x | 0, x ^ 0,
+   x << 0, x * 1, x & x, x | x, true && x, false || x, x && x), only when that operand has the instruction's type. Of any type: a select whose condition is
+   a constant or whose two values are one id, and a bitcast to the type its operand has, or of a bitcast from that
+   type. module is for the instructions that make the operands, def[] says where, and an instruction with a
+   decoration (sign[]) is read as a value of no known form; is, type_of and value are by id. */
 static uint32_t fold(const uint32_t* module, const uint32_t* w, uint32_t width, uint32_t op, uint32_t bound,
                      const uint8_t* is, const uint32_t* type_of, const uint32_t* value, const uint32_t* def,
-                     uint32_t* out) {
+                     const uint32_t* sign, uint32_t* out) {
     uint32_t t = w[1], a = width > 3 && w[3] < bound ? w[3] : 0, b = width > 4 && w[4] < bound ? w[4] : 0;
     uint32_t c = width > 5 && w[5] < bound ? w[5] : 0;
     /* a, b, c: the operands that are ids the pass has tables for (0 is none: no id is 0) */
@@ -393,7 +421,15 @@ static uint32_t fold(const uint32_t* module, const uint32_t* w, uint32_t width, 
                 return SPV_OPT_FOLD_ID;
             }
         }
-        if (a && a == b && (op == SPV_OP_I_SUB || op == SPV_OP_BITWISE_XOR)) {
+        if (a && b && op == SPV_OP_I_SUB) {
+            uint32_t ta, tb;
+            if (term(module, a, bound, is, type_of, value, def, sign, &ta) ==
+                term(module, b, bound, is, type_of, value, def, sign, &tb)) {
+                *out = ta - tb;
+                return SPV_OPT_FOLD_VALUE;
+            }
+        }
+        if (a && a == b && op == SPV_OP_BITWISE_XOR) {
             *out = 0;
             return SPV_OPT_FOLD_VALUE;
         }
@@ -878,7 +914,7 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
         /* fold looks at a 32-bit integer or a boolean, a select and a bitcast: the rest are not worth its call */
         if (kind == SPV_OPT_PURE && !sign[w[2]] && w[1] < bound &&
             (is[w[1]] & (SPV_OPT_INT | SPV_OPT_BOOL) || op == SPV_OP_SELECT || op == SPV_OP_BITCAST))
-            how = fold(module, w, width, op, bound, is, type_of, value, def, &folded);
+            how = fold(module, w, width, op, bound, is, type_of, value, def, sign, &folded);
         if (how == SPV_OPT_FOLD_NONE && kind == SPV_OPT_PURE && !sign[w[2]] && w[1] < bound &&
             is[w[1]] & (SPV_OPT_INT | SPV_OPT_BOOL)) {
             uint32_t zero, one;
