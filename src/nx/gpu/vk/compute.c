@@ -315,12 +315,14 @@ static int cs_spill(const CsPipe* p, int indirect, u32 gx, u32 gy, u32 gz, int g
                   (unsigned long long)p->key);
         return 0;
     }
-    if (need > g_vk.alloc_cap) {
+    /* the descriptor's range is all of it: no more than the device binds as one storage buffer, nor allocates */
+    u64 range = g_vk.props.limits.maxStorageBufferRange, most = range < g_vk.alloc_cap ? range : g_vk.alloc_cap;
+    if (need > most) {
         LOG_LIMIT(4,
                   "vulkan: compute %016llx's shared memory for %ux%ux%u blocks of %llu bytes is %llu bytes, past the "
-                  "%llu an allocation may be: skipped\n",
+                  "%llu a storage buffer may be (maxStorageBufferRange %llu, an allocation %llu): skipped\n",
                   (unsigned long long)p->key, gx, gy, gz, (unsigned long long)block, (unsigned long long)need,
-                  (unsigned long long)g_vk.alloc_cap);
+                  (unsigned long long)most, (unsigned long long)range, (unsigned long long)g_vk.alloc_cap);
         return 0;
     }
     if (need > g_spill[gfx].cap) {
