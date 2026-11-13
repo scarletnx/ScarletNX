@@ -247,6 +247,7 @@ static int image_keep_end(u64 id) {
         return 1;
     }
     g_image_out.out[index].original = original;
+    g_image_out.out[index].released = 0; /* a write-back now: it holds nothing back from the CPU */
     return 0;
 }
 static void image_flush_at(size_t index) {

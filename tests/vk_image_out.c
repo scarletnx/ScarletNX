@@ -345,6 +345,20 @@ int main(void) {
     check(g.published == 1 && g.guest[1] == 0x11 && !g_gfx_img_any && !g.refs,
           "a touch of its span after the release publishes it");
 
+    /* the CPU touched its span after the release: the next release makes it a write-back, which lands at its frame's
+       end. A CPU touch that lands another owner there later neither lands it nor waits for its copy */
+    start();
+    keep_draw(a, 1, 0x11);
+    release();
+    g.touched = 1;
+    keep_draw(a, 2, 0x22);
+    release();
+    vk_gfx_image_cpu_need(BASE + 8, 4);
+    check(g.waits == 0 && g.syncs == 0 && g_gfx_img_any,
+          "a write-back is not a released image: the CPU's touch leaves it");
+    frame_done();
+    check(!g_gfx_img_any && g.guest[1] == 0x11 && g.guest[2] == 0x22 && !g.refs, "it lands at its frame's end");
+
     /* a read before the release: a kept image is published then, the read landing it from its owner */
     start();
     keep_draw(a, 1, 0x11);
