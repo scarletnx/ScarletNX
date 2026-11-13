@@ -2788,10 +2788,12 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
                                             spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 1)),
                                             cu(c, COOP_D))));
     coop_barrier(c);
+    /* the K halves the products read: a .1688's second is zeros, which an 8 wide tile does not multiply */
+    u32 halves = tile == 8 && !k16 ? 1 : 2;
     static const u32 a_at[4] = {0, 64, 4, 68};
-    for (k = 0; k < 4; k++)
+    for (k = 0; k < 2 * halves; k++)
         spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_a, a_at[k])), k < na ? a[k] : c->zero);
-    for (k = 0; k < 2; k++)
+    for (k = 0; k < halves; k++)
         spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_b, 4 * k)), k < nb ? b[k] : c->zero);
     coop_barrier(c);
     u32 zero_acc = spv_emit_const_composite(&c->e, t_acc, (const u32[]){cf(c, 0.0f)}, 1);
@@ -2805,15 +2807,15 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
                  cu(c, 16), 0x20);
     } else {
         /* An 8x8x8 tile, as Metal's simdgroup_matrix is: the HMMA's 16x8x16 is two M halves of 8 rows, each the sum
-           of the two K halves' products, so four products the HMMA, the K halves' the second of each pair adding into
-           the first. The tiles sit where a_at and the B words already are, and D's two go a row of 16 words apart,
+           of the two K halves' products, so four products a .16816 (two a .1688, whose K is one half), the K halves'
+           the second of each pair adding into the first. The tiles sit where a_at and the B words already are, and D's two go a row of 16 words apart,
            so the lanes read D back as they do above */
         static const u32 half_at[2] = {0, 4};     /* K's two halves of A, and of B's columns, 4 words apart */
         u32 a_at2[2] = {coop_add(c, base, 0), coop_add(c, base, 64)};
         u32 d_at[2] = {coop_add(c, base, COOP_D), coop_add(c, base, COOP_D + 128)};
         for (u32 m = 0; m < 2; m++) {
             u32 acc8 = 0;
-            for (u32 h = 0; h < 2; h++) {
+            for (u32 h = 0; h < halves; h++) {
                 u32 ma = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a, coop_ptr(c, coop_add(c, a_at2[m], half_at[h])), cu(c, 0), cu(c, 8),
                              0x20);
                 u32 mb = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b, coop_ptr(c, coop_add(c, coop_add(c, base, COOP_B), half_at[h])),
