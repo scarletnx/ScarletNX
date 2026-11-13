@@ -440,6 +440,13 @@ static int marker(Span line, Marker* m) {
         return 1;
     }
     s = line;
+    if (after(&s, "*** The game ran undefined instruction ")) {
+        if (!take_hex(&s, &m->word) || !take_lit(&s, " at ") || !take_hex(&s, &m->address)) return 0;
+        m->set = cstr("A64");
+        m->kind = SNX_LOG_GAME_UNDEFINED;
+        return 1;
+    }
+    s = line;
     if (take_lit(&s, "Unsupported ")) {
         if (take_lit(&s, "Thumb"))
             m->set = cstr("Thumb");
@@ -959,10 +966,12 @@ static int abort_frame(const char* name) {
 }
 
 /* The function the failure is pinned on: the pc's, else the first frame with a symbol. When the game stopped itself
-   (svcBreak, an unhandled exception), the pc is in the SDK's svc wrapper, often named after whatever symbol comes
-   before it, so only the frames count, past the abort machinery */
+   (svcBreak, an unhandled exception, an undefined instruction), the pc is in the SDK's svc wrapper or abort, often
+   named after whatever symbol comes before it, so only the frames count, past the abort machinery */
 static int culprit(const SnxLogScan* s) {
-    int stopped = s->outcome == SNX_LOG_SVCBREAK || s->outcome == SNX_LOG_EXCEPTION, i;
+    int stopped =
+        s->outcome == SNX_LOG_SVCBREAK || s->outcome == SNX_LOG_EXCEPTION || s->outcome == SNX_LOG_GAME_UNDEFINED;
+    int i;
     if (s->pc.name && !stopped) return 1;
     for (i = 0; i < s->nframes; i++)
         if (s->frames[i].sym.name && !(stopped && abort_frame(snx_logscan_text(s, s->frames[i].sym.name))))
@@ -995,9 +1004,9 @@ static void normalized(Buf* b, const char* text) {
     }
 }
 
-static const char* const outcome_names[] = {"no failure logged", "crash",      "svcBreak",
-                                            "exception",         "brk",        "unsupported instruction",
-                                            "thread stopped",    "host abort", "fatal"};
+static const char* const outcome_names[] = {
+    "no failure logged",     "crash",          "svcBreak",   "exception", "brk", "unsupported instruction",
+    "undefined instruction", "thread stopped", "host abort", "fatal"};
 const char* snx_logscan_console_name(int console) {
     static const char* const names[] = {NULL, "Switch", "3DS", "Vita", "GBA"};
     return console > 0 && console <= SNX_CONSOLE_GBA ? names[console] : NULL;
@@ -1041,7 +1050,12 @@ static unsigned signature(SnxLogScan* s) {
                 put(&b, snx_logscan_text(s, s->result));
             } else if (s->outcome == SNX_LOG_THREAD_STOPPED)
                 put(&b, snx_logscan_text(s, s->what));
-            else
+            else if (s->outcome == SNX_LOG_GAME_UNDEFINED) {
+                put(&b, "undefined ");
+                put(&b, snx_logscan_text(s, s->set));
+                put(&b, " instruction ");
+                put(&b, snx_logscan_text(s, s->word));
+            } else
                 put(&b, s->outcome == SNX_LOG_BRK ? "brk" : "svcBreak");
             /* in the runtime or a library, the host place is the bug's, whatever game code led there */
             if (s->place == SNX_PLACE_RUNTIME) {

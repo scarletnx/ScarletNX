@@ -753,7 +753,8 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
     static const char* const game[] = {"game"};
     static const char scan_says[] =
         "The summary of a game's .log or the launcher's Share Log file: build, title ID, game version, system, GPU, how the "
-        "run ended (crash, svcBreak, exception, BRK, an instruction the recompiler cannot run, fatal), the game "
+        "run ended (crash, svcBreak, exception, BRK, an instruction the recompiler cannot run, an undefined "
+        "instruction, fatal), the game "
         "function it is pinned on with its backtrace, "
         "the service commands the runtime doesn't implement, what else it missed (shaders not translated, GPU classes "
         "and operations, macros with no native or compiled form, SVCs, guest code the JIT compiled), warnings, the "

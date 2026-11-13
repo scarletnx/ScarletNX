@@ -9,6 +9,7 @@
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/memory/mem.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/guest_jit.h"
 #include "nx/runtime/guest_stats.h"
@@ -114,6 +115,11 @@ int hints_add(u64 pc) {
 void save_hints(void) {}
 void fs_save_report(void) {}
 void plat_yield(void) {}
+int mem_user_mapped(u64 addr, u64 size) {
+    (void)addr;
+    (void)size;
+    return 0;
+}
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
     (void)lvl;
