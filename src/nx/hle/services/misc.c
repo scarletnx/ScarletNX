@@ -986,12 +986,18 @@ static int nn_bcat_detail_ipc_INotifierService_GetEvent(SvcObj* self, u32* event
     return new_event(event, "bcat storage update", 0);
 }
 
-/* ============================================================ nim:eca: the shop, never reached */
+/* ============================================================ nim:eca: the shop, with no server behind it */
 static int nn_nim_detail_IShopServiceAccessServerInterface_CreateServerInterface(SvcObj* self, u64 pid, u64 size,
                                                                                  u32 transfer_memory, SvcObj** server) {
     (void)self, (void)pid, (void)size, (void)transfer_memory;
     *server = nn_nim_detail_IShopServiceAccessServer_new();
     R_SUCCEED();
+}
+static int nn_nim_detail_IShopServiceAccessServerInterface_CreateServerInterface2(SvcObj* self, u64 pid, u64 size,
+                                                                                  u32 transfer_memory,
+                                                                                  SvcObj** server) {
+    return nn_nim_detail_IShopServiceAccessServerInterface_CreateServerInterface(self, pid, size, transfer_memory,
+                                                                                 server);
 }
 static int nn_nim_detail_IShopServiceAccessServer_CreateAccessorInterface(SvcObj* self, u8 type, SvcObj** accessor) {
     (void)self, (void)type;
