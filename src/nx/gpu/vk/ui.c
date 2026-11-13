@@ -40,6 +40,9 @@ static VmaAllocation g_glyphs_mem;
    the ring's bytes when they changed: no copy, no barrier. Its region is free, as vk_cmd waited for the frame two back
    that read it */
 #define UI_RING_BYTES SNX_UI_RING_MAX
+/* ui.vert's push constants: its Picture (UiPicture), then the frame's region's first word in Ring, pushed apart as it
+   changes every frame (ui_record) */
+#define UI_PUSH_BYTES 28
 static VkBuffer g_frames;
 static VmaAllocation g_frames_mem;
 static u8* g_frames_at;
@@ -106,22 +109,21 @@ static int layout_make(void) {
                                           .descriptorCount = 1,
                                           .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
                                          {.binding = 2,
-                                          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                                          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                           .descriptorCount = 1,
                                           .stageFlags = VK_SHADER_STAGE_VERTEX_BIT}};
     VkDescriptorSetLayoutCreateInfo dci = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 3, .pBindings = b};
-    VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 24};
+    VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, UI_PUSH_BYTES};
     VkPipelineLayoutCreateInfo lci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                       .setLayoutCount = 1,
                                       .pSetLayouts = &g_dsl,
                                       .pushConstantRangeCount = 1,
                                       .pPushConstantRanges = &pc};
-    VkDescriptorPoolSize size[3] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
-                                    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
-                                    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 3}};
+    VkDescriptorPoolSize size[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+                                    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6}};
     VkDescriptorPoolCreateInfo pci = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 3, .poolSizeCount = 3, .pPoolSizes = size};
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 3, .poolSizeCount = 2, .pPoolSizes = size};
     VkDescriptorSetLayout layouts[3];
     VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorSetCount = 3};
     int i;
@@ -385,11 +387,12 @@ static void image_upload(VkCommandBuffer cb) {
     g_image_version = version;
 }
 /* ui.vert's Picture: the picture's size, the ring's head and its slots from bit 16, the bars' slow colour and its
-   height, and the backed letters' ground */
+   height, and the backed letters' ground, which g_shown compares from frame to frame */
 typedef struct {
     float w, h;
     u32 ring, slow, slow_from, ground;
 } UiPicture;
+_Static_assert(UI_PUSH_BYTES == sizeof(UiPicture) + sizeof(u32), "ui.vert's Picture, then the ring's word");
 static UiPicture g_pc;
 /* The layer the window shows, as the last pass drew it: its safe area, its quads' number (-1: none drawn yet, or
    another swapchain since) and what ui.vert took beside them; and whether the list has moved on from it (a quad
@@ -477,7 +480,9 @@ static int glyphs_upload(VkCommandBuffer cb) {
     }
     return 1;
 }
-/* the frames' buffer, made once, each set's binding 2 its region's ring (the region an offset at each bind) */
+/* the frames' buffer, made once, each set's binding 2 all of it: ui.vert finds the frame's region's ring at the word
+   ui_record pushes, as a dynamic offset would need a descriptor set Turnip no longer keeps for them
+   (gpu_driver_load.c's turnip_sets) */
 static int frames_make(void) {
     u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment, region = UI_RING_BYTES + sizeof g_quads;
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -508,12 +513,12 @@ static int frames_make(void) {
     }
     for (i = 0; i < VK_FRAMES; ++i) g_slot[i] = (UiSlot){.fresh = 1};
     for (i = 0; i < 3; ++i) {
-        VkDescriptorBufferInfo bi = {g_frames, 0, UI_RING_BYTES};
+        VkDescriptorBufferInfo bi = {g_frames, 0, g_region * VK_FRAMES};
         VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                    .dstSet = g_sets[i],
                                    .dstBinding = 2,
                                    .descriptorCount = 1,
-                                   .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                                   .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                    .pBufferInfo = &bi};
         vkUpdateDescriptorSets(g_vk.dev, 1, &wr, 0, NULL);
     }
@@ -670,7 +675,7 @@ static void ui_record(VkCommandBuffer cb, int n) {
     VkViewport vp = {0, 0, g_pc.w, g_pc.h, 0, 1};
     VkRect2D sci = {{0, 0}, g_vk.sc_extent};
     VkDeviceSize vo = g_region * (u64)g_slot_now + UI_RING_BYTES;
-    u32 ring_at = (u32)(g_region * (u64)g_slot_now);
+    u32 ring_at = (u32)(g_region * (u64)g_slot_now / 4); /* ui.vert's Picture.ring_at, in the ring's words */
     int i, set = -1, pipe = -1;
     if (g_runs_n != n) runs_make(n);
     vk_render_forget_state(); /* another pipeline and layout: a draw after it sets everything again */
@@ -678,14 +683,16 @@ static void ui_record(VkCommandBuffer cb, int n) {
     rec_CmdSetScissor(cb, 0, 1, &sci);
     rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof g_pc,
                          &g_pc);
+    rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, sizeof g_pc,
+                         sizeof ring_at, &ring_at);
     rec_CmdBindVertexBuffers(cb, 0, 1, &g_frames, &vo);
     for (i = 0; i < g_nruns; ++i) {
         const UiRun* r = &g_runs[i];
         if (r->set == UI_IMAGE && !g_image) continue; /* its upload failed */
         if (pipe != r->pipe) rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipes[pipe = r->pipe]);
         if (set != r->set)
-            rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1, &g_sets[set = r->set], 1,
-                                      &ring_at);
+            rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1, &g_sets[set = r->set], 0,
+                                      NULL);
         rec_CmdDraw(cb, r->vertices, (u32)r->count, 0, (u32)r->first);
     }
 }

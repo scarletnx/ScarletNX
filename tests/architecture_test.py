@@ -86,6 +86,34 @@ class ArchitectureTests(unittest.TestCase):
         both = 'void o(void) { SDL_CreateWindowAndRenderer("t", 1, 1, 0, &w, &r); }\n'
         self.assertEqual(len(self.window_errors({'src/nx/a.c': both})), 1)
 
+    def dynamic_errors(self, files):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            return architecture.check_dynamic_descriptors(root)
+
+    def test_a_dynamic_buffer_descriptor_is_rejected(self):
+        layout = (
+            'static VkDescriptorSetLayoutBinding b = {\n'
+            '    .binding = 2,\n    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC};\n'
+        )
+        errors = self.dynamic_errors({'src/nx/gpu/vk/ui.c': layout})
+        self.assertEqual(len(errors), 1)
+        self.assertIn('src/nx/gpu/vk/ui.c:3: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: Turnip keeps', errors[0])
+        pool = 'VkDescriptorPoolSize s = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 3};\n'
+        self.assertEqual(len(self.dynamic_errors({'src/nx/gpu/vk/a.c': pool})), 1)
+
+    def test_a_recorders_case_and_a_comment_pass(self):
+        files = {
+            'src/nx/gpu/vk/record.c': 'switch (t) {\n    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:\n'
+            '    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: return 1;\n}\n',
+            'src/nx/gpu/vk/b.c': '/* not VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC */\n'
+            'static int t = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;\n',
+        }
+        self.assertEqual(self.dynamic_errors(files), [])
+
     def test_a_window_of_the_displays_pixels_passes(self):
         files = {
             'src/nx/a.c': 'void o(void) { w = SDL_CreateWindow("t", 1, 1, SDL_WINDOW_VULKAN |\n'
