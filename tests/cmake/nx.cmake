@@ -347,7 +347,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_pages COMMAND snx-test-vulkan -H --vk_buffer_pages=2 --vk_memory=1)
     set_tests_properties(vulkan_headless_pages PROPERTIES TIMEOUT 180
         FAIL_REGULAR_EXPRESSION "failed: VK_ERROR")
-    # and with guest memory kept by the range each draw asks for, as on a device without sparse buffers
+    # every check again with the page cache's bytes in slabs, its way on a device without sparse buffers
+    # (gpu/vk/pagespace.c's slab_join), forced where the device has them
+    add_test(NAME vulkan_headless_slabs COMMAND snx-test-vulkan -H --vk_buffer_pages=1 --vk_buffer_slabs=1 --vk_memory=1)
+    set_tests_properties(vulkan_headless_slabs PROPERTIES TIMEOUT 180
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # and with guest memory kept by the range each draw asks for, as with the page cache off
     add_test(NAME vulkan_headless_ranges COMMAND snx-test-vulkan -H --vk_buffer_pages=0 --vk_memory=1)
     set_tests_properties(vulkan_headless_ranges PROPERTIES TIMEOUT 180
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")

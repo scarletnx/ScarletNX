@@ -159,6 +159,17 @@ VkResult vk_devmem_alloc(const VkMemoryRequirements* req, const DevMemWant* want
     return VK_SUCCESS;
 }
 void vk_devmem_free(DevMem mem) { (void)mem; }
+/* the slabs' calls: the model's device has sparse buffers, so the cache makes no slab here */
+VkResult vk_buffer_create(const VkBufferCreateInfo* info, const DevMemWant* allocation, VkBuffer* buffer, DevMem* memory,
+                          DevMemInfo* allocation_info) {
+    (void)info, (void)allocation, (void)buffer, (void)memory, (void)allocation_info;
+    CHECK(!"a slab made on a device with sparse buffers");
+    return VK_ERROR_FEATURE_NOT_PRESENT;
+}
+void vk_defer_buffer(VkBuffer b, DevMem a) {
+    (void)b, (void)a;
+    CHECK(!"a slab retired on a device with sparse buffers");
+}
 /* a granule's memory bound, or (gone) given back: what it held is lost */
 u64 vk_buffer_sparse_bind(VkBuffer buf, const VkSparseMemoryBind* bind, DevMem gone, u64 size, int readers) {
     (void)size, (void)readers;
