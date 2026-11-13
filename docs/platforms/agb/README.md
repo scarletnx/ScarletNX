@@ -221,6 +221,13 @@ number of its first failed test in a register, which `scarletnx-agb --registers`
 prints at the end of the run. The display ROMs are checked against the picture
 their source draws.
 
+It downloads [DenSinH's FuzzARM](https://github.com/DenSinH/FuzzARM) too, five
+ROMs of 10000 random ARM and Thumb instructions each, `agb_fuzzarm_<rom>`
+(`tests/agb_fuzzarm.py`). A ROM whose instructions all gave the values its
+generator computed ends in the loop after its tests with "End of testing" alone
+on its top line; one that met a difference waits for a key with the instruction
+on its screen.
+
 ```sh
-ctest --test-dir build/agb -R agb_gba
+ctest --test-dir build/agb -R 'agb_(gba|fuzzarm)'
 ```

@@ -10,6 +10,12 @@ if(SNX_BUILD_AGB AND BUILD_TESTING)
                   URL https://github.com/jsmolka/gba-tests/archive/a7113b67e63f83a9b321696ddd7042ccfad6c881.tar.gz
                   URL_HASH SHA256=b9373ef18700c48ccab0940ec480517fba47accc86516df5fd43ed9ec6cdf082
                   DOWNLOAD_ONLY YES)
+    # DenSinH's FuzzARM (GPL-3.0): five ROMs of 10000 random ARM and Thumb instructions each, checked against the
+    # values its generator computed (tests/agb_fuzzarm.py). Test data, not shipped
+    CPMAddPackage(NAME FuzzARM VERSION 2022.06.14
+                  URL https://github.com/DenSinH/FuzzARM/archive/a675329cd57da48e3e406216ba2d79dd7e09ee20.tar.gz
+                  URL_HASH SHA256=9099fd9cc8d5dd7bddca16a17bca84a8f716a57be609bef68d056cdd4a11929a
+                  DOWNLOAD_ONLY YES)
 endif()
 
 set(SNX_AGB_PROGRAM "${PROJECT_BINARY_DIR}/scarletnx-agb${CMAKE_EXECUTABLE_SUFFIX}") # what the tests run
@@ -66,6 +72,12 @@ if(BUILD_TESTING)
                         ppu_shades ppu_stripes)
             add_test(NAME agb_gba_${rom} COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_gba_tests.py"
                 --runner "${SNX_AGB_PROGRAM}" --tests "${gba-tests_SOURCE_DIR}" ${rom})
+        endforeach()
+    endif()
+    if(Python3_Interpreter_FOUND AND FuzzARM_SOURCE_DIR)
+        foreach(rom IN ITEMS ARM_Any ARM_DataProcessing THUMB_Any THUMB_DataProcessing FuzzARM)
+            add_test(NAME agb_fuzzarm_${rom} COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_fuzzarm.py"
+                --runner "${SNX_AGB_PROGRAM}" --roms "${FuzzARM_SOURCE_DIR}" ${rom})
         endforeach()
     endif()
 endif()
