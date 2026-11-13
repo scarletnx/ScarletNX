@@ -59,6 +59,9 @@ if(BUILD_TESTING)
             "${SNX_AGB_PROGRAM}")
         add_test(NAME agb_eeprom COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_eeprom.py"
             "${SNX_AGB_PROGRAM}")
+        # the recompile's options every driver shares (common/utilities/cli.h), on a ROM the test makes
+        add_test(NAME agb_recompile_options COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/agb_recompile_options.py" "${SNX_AGB_PROGRAM}")
     endif()
     # jsmolka's gba-tests (cmake/dependencies.cmake), each ROM a test of its own
     if(Python3_Interpreter_FOUND AND gba-tests_SOURCE_DIR)
