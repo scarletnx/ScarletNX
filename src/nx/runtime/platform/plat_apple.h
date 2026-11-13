@@ -9,6 +9,11 @@
    nothing. plat_apple.m on Apple platforms, nothing everywhere else. */
 #ifndef SNX_PLAT_APPLE_H
 #define SNX_PLAT_APPLE_H
+#if defined(__APPLE__)
 void plat_apple_title_begin(void);
 void plat_apple_title_end(void);
+#else /* every other host has no App Nap, and nothing to ask it with: the calls compile to nothing */
+static inline void plat_apple_title_begin(void) {}
+static inline void plat_apple_title_end(void) {}
+#endif
 #endif
