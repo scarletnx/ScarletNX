@@ -43,7 +43,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | Qualcomm Snapdragon Game Super Resolution 1 (`src/common/gpu/vk/fx/sgsr1.vert`, `sgsr1.frag`) | BSD-3-Clause |
 | FXAA 3.11 (`src/common/gpu/vk/fx/fxaa.frag`), after Timothy Lottes' public domain FXAA | Public domain |
 | SMAA 1x (`src/common/gpu/vk/fx/smaa_*.frag`, `AreaTex.h`, `SearchTex.h`), Jorge Jimenez and the SMAA contributors' shader and textures, with the Vulkan GLSL form of the OpenQ4 port | MIT |
-| The shared presentation effects (`src/common/gpu/vk/present_fx.c`, `fx/fx_fsr.c`), the presented frame's upscaler and anti aliasing, after Eden's and yuzu's FSR and SGSR wrappers | GPL-3.0-or-later, GPL-2.0-or-later |
+| The shared presentation effects (`src/common/gpu/vk/present_fx.c`, `fx/fx_fsr.c`), the presented frame's upscaler and anti-aliasing, after Eden's and yuzu's FSR and SGSR wrappers | GPL-3.0-or-later, GPL-2.0-or-later |
 | SDL3 | zlib |
 | The HD rumble amplitude steps of a Switch controller (`src/nx/runtime/platform/backend/gamepad.c`), from SDL3's `src/joystick/hidapi/SDL_hidapi_switch.c`, Copyright (C) 1997-2026 Sam Lantinga, after dekuNukem's Nintendo_Switch_Reverse_Engineering `rumble_data_table.md` | zlib |
 | The AppImage's runtime (uruntime) and launcher (sharun, with Anylinux-sharun's `anylinux.so` and cross-libc-dlopen) | MIT |

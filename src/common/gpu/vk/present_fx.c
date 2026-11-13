@@ -88,7 +88,7 @@ struct SnxFx {
     VkDeviceMemory tex_mem;
     int tex_uploaded;
     int said
-        [8]; /* the last choice the log said: filter, anti aliasing, those asked, the crop's and the output's size */
+        [8]; /* the last choice the log said: filter, anti-aliasing, those asked, the crop's and the output's size */
 };
 
 static int fx_ok(VkResult r) { return r == VK_SUCCESS; }
@@ -167,7 +167,7 @@ int snx_fx_settings(SnxFxConfig* cfg, const char* upscaler, int sharpness, const
     return unknown;
 }
 
-/* Auto anti aliasing: the displayed rectangle is at least 1.25x the rendered frame in each direction, and the frame
+/* Auto anti-aliasing: the displayed rectangle is at least 1.25x the rendered frame in each direction, and the frame
    is not larger than the rectangle (a downscale is already smoothed). 1.25 is the ratio dynamic resolution scalers
    use as the point where a lower render size starts to show its edges. */
 int snx_fx_aa_auto(uint32_t render_w, uint32_t render_h, uint32_t shown_w, uint32_t shown_h) {
@@ -469,7 +469,7 @@ static int make_pipelines(SnxFx* fx) {
         make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_smaa_blend_spv, fx_smaa_blend_spv_size, fx->pl2, fmt);
     if (!fx->copy || !fx->easu || !fx->rcas || !fx->fxaa || !fx->smaa_edge || !fx->smaa_weights || !fx->smaa_blend) {
         fx->pipes_failed = 1;
-        fx_echo(fx, "the upscaler's and anti aliasing's pipelines could not be made on this device: the frame shows "
+        fx_echo(fx, "the upscaler's and anti-aliasing's pipelines could not be made on this device: the frame shows "
                     "as with both off");
         return 0;
     }
@@ -785,7 +785,7 @@ static void record_fsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
 }
 
-/* ---- anti aliasing ---- */
+/* ---- anti-aliasing ---- */
 
 static void record_fxaa(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, FxImage* src, FxImage* dst) {
     uint32_t flags[4] = {fx->light ? 1u : 0u, 0, 0, 0}; /* fxaa.frag's */
@@ -871,7 +871,7 @@ failed:
     return 0;
 }
 
-/* What runs for the filter and anti aliasing asked over w x h shown at out_w x out_h, and why where it is not what was
+/* What runs for the filter and anti-aliasing asked over w x h shown at out_w x out_h, and why where it is not what was
    asked (why: "" for none). The effects' images need format_ok: without it none runs */
 static void pick(SnxFx* fx, int* filter, int* aa, uint32_t w, uint32_t h, uint32_t out_w, uint32_t out_h, char* why,
                  size_t n) {
@@ -1053,7 +1053,7 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
             char said[192];
             int now[8] = {filter, aa, asked_filter, asked_aa, (int)w, (int)h, (int)out_w, (int)out_h};
             memcpy(fx->said, now, sizeof now);
-            snprintf(said, sizeof said, "upscaler %s and anti aliasing %s, %ux%u to %ux%u%s", upscale_labels[filter],
+            snprintf(said, sizeof said, "upscaler %s and anti-aliasing %s, %ux%u to %ux%u%s", upscale_labels[filter],
                      aa_labels[aa], w, h, out_w, out_h, why);
             fx_echo(fx, said);
         }

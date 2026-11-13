@@ -49,7 +49,7 @@ static struct {
     VkDeviceMemory readback_memory;
     unsigned char* readback_view;
     SnxVkSwapchain swap[2]; /* the combined window's, or each screen's own */
-    /* the upscaler and the anti aliasing (common/gpu/vk/present_fx.h) as the settings say, each screen's effects of
+    /* the upscaler and the anti-aliasing (common/gpu/vk/present_fx.h) as the settings say, each screen's effects of
        its own: both screens are drawn in one recording, whose frame slot each keeps its images by. None while both
        are Off */
     SnxFxConfig fx_config;
@@ -119,7 +119,7 @@ static bool frame_make(Frame* f, unsigned width, unsigned height, unsigned scale
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                                     VK_IMAGE_USAGE_SAMPLED_BIT, /* the upscaler's and anti aliasing's source */
+                                     VK_IMAGE_USAGE_SAMPLED_BIT, /* the upscaler's and anti-aliasing's source */
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     if (vkCreateImage(v->device, &ii, NULL, &f->image) != VK_SUCCESS) return false;
@@ -162,7 +162,7 @@ static bool semaphores(const SnxCtrVk* v, const VkSemaphoreCreateInfo* si) {
     return true;
 }
 static void fx_log(const char* text) { fprintf(stderr, "3ds gpu: %s\n", text); }
-/* the upscaler and the anti aliasing the settings ask for, said once, and their effects made where either is on */
+/* the upscaler and the anti-aliasing the settings ask for, said once, and their effects made where either is on */
 static void fx_init(const SnxCtrVk* v) {
     char said[512];
     SnxFxConfig* c = &g_present.fx_config;
@@ -186,7 +186,7 @@ static void fx_init(const SnxCtrVk* v) {
             g_present.fx[0] = NULL;
             break;
         }
-    fprintf(stderr, "3ds gpu: upscaler %s, anti aliasing %s\n", snx_fx_upscale_label(c->upscaler),
+    fprintf(stderr, "3ds gpu: upscaler %s, anti-aliasing %s\n", snx_fx_upscale_label(c->upscaler),
             snx_fx_aa_label(c->aa));
 }
 bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
@@ -491,7 +491,7 @@ static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, 
 }
 /* The window's picture: in one window the top screen above the bottom one, which is centred under it (400 and 320
    pixels wide, 240 high), the pair scaled as one to fit the swapchain's image and centred in it, the rest black; in
-   separate windows this screen alone, scaled to fit and centred. Scaled through the upscaler and the anti aliasing
+   separate windows this screen alone, scaled to fit and centred. Scaled through the upscaler and the anti-aliasing
    where either is on (slot: the recording's), else in sharp pixels */
 static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen, unsigned slot) {
     image_barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -520,7 +520,7 @@ static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen, un
             image_barrier(cb, f->image, f->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
             f->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         }
-        /* the effects' image at the rectangle's size is copied; at the frame's own (anti aliasing alone, the upscaler
+        /* the effects' image at the rectangle's size is copied; at the frame's own (anti-aliasing alone, the upscaler
            off) it is scaled in sharp pixels, as the frame is; an upscaler that did not run leaves the smooth scale */
         VkImageBlit blit = {
             .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},

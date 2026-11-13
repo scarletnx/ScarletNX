@@ -19,10 +19,11 @@ typedef struct {
 int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw, SnxPresentSource* out);
 int vk_present_quad_draw(VkCommandBuffer cb, const SnxPresentSource* s, VkFormat format, VkRect2D source_rect,
                          VkRect2D destination_rect, u32 transform);
-/* The upscaler and the anti aliasing of the window's frame (common/gpu/vk/present_fx.h), the settings' at start
-   (upscaler, upscaler_sharpness, anti_aliasing), said in the log; a shortcut's step for the run since */
+/* The upscaler and the anti-aliasing of the window's frame (common/gpu/vk/present_fx.h), the settings' at start
+   (upscaler, upscaler_sharpness, anti_aliasing), said in the log; then a shortcut's step for the run, or a change of
+   the settings while the game runs (the game's menu), whichever came last */
 void vk_present_quad_effects_init(void);
-/* the upscaler's (which 0) or the anti aliasing's (1) next step for this run, and its label (any thread) */
+/* the upscaler's (which 0) or the anti-aliasing's (1) next step for this run, and its label (any thread) */
 const char* vk_present_quad_effects_step(int which);
 /* s's crop (an SDR frame: the swapchain's g_vk.sc_space SRGB) through them, into an image of the size to has on
    screen (its sides swapped by transform's quarter turn), which s and crop then name, drawn with the same transform:

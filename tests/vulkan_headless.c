@@ -1747,7 +1747,7 @@ static int check_srgb_blit(void) {
     return 0;
 }
 
-/* The window's frame through the upscaler and the anti aliasing (present_quad.c's vk_present_quad_effects): their
+/* The window's frame through the upscaler and the anti-aliasing (present_quad.c's vk_present_quad_effects): their
    passes recorded at once on the frame's command buffer, which the recording thread fills, between the commands queued
    before and after them. A flat target's crop comes out at the window rectangle's size, its colour kept, and the quad
    draws it from there; a crop of part of the target too. Run under the Khronos layer by vulkan_present_effects */
@@ -1846,9 +1846,21 @@ static int check_present_effects(void) {
         vk_unlock();
         CHECK(!bad);
     }
-    snprintf(g_settings.upscaler, sizeof g_settings.upscaler, "off");
-    snprintf(g_settings.anti_aliasing, sizeof g_settings.anti_aliasing, "off");
-    vk_present_quad_effects_init();
+    /* the settings changed while the game runs (the game's menu): the next frame takes them, FXAA alone at the frame's
+       own size, then neither */
+    for (u32 k = 0; k < 2; k++) {
+        SnxPresentSource s;
+        VkRect2D crop = {{0, 0}, {16, 16}}, to = {{0, 0}, {32, 32}};
+        snprintf(g_settings.upscaler, sizeof g_settings.upscaler, "off");
+        snprintf(g_settings.anti_aliasing, sizeof g_settings.anti_aliasing, k ? "off" : "fxaa");
+        vk_lock();
+        VkCommandBuffer cb = vk_cmd();
+        CHECK(vk_present_quad_source(cb, target, 1, 1, &s));
+        int ran = vk_present_quad_effects(cb, &s, &crop, to, 0);
+        vk_unlock();
+        CHECK(k ? !ran && s.width == 16 && crop.extent.width == 16 : ran && s.width == 16 && s.height == 16);
+        vk_finish();
+    }
     free(ch);
     return 0;
 }
@@ -7528,7 +7540,7 @@ static int run_headless(int argc, char** argv) {
         printf("PASS headless Vulkan profile pool only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
-    if (getenv("SNX_TEST_PRESENT_EFFECTS_ONLY")) { /* the window's upscaler and anti aliasing alone */
+    if (getenv("SNX_TEST_PRESENT_EFFECTS_ONLY")) { /* the window's upscaler and anti-aliasing alone */
         CHECK(!check_present_effects());
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan present effects only: %u validation messages\n", g_vk_validation_messages);

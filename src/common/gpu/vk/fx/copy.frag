@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The shown crop of a frame to the pass's output extent, with the frame's flip. It is the pass that runs where the
-   setting names no filter but the anti aliasing still needs an image (Super Sampling's first pass, or FXAA over a
+   setting names no filter but the anti-aliasing still needs an image (Super Sampling's first pass, or FXAA over a
    bilinear blit). */
 #version 450
 
