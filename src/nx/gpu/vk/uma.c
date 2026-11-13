@@ -2071,7 +2071,12 @@ int vk_uma_none_why(u64 cpu, u64 len) {
 int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off) {
     VkBuffer ib;
     u64 io;
-    if (!vk_uma_held(cpu, len) || !bind(cpu, len, 1, &ib, &io)) return 0; /* no import made for it */
+    /* bind, which asks imp_get for the import and makes it when there is none: asked for one first (vk_uma_held),
+       this could never make the first one, and answered 0 for every span that had none, which the caller then
+       landed as a readback of its own with a wait for the queue. 0 stands for no import to be had.
+       An open rendering pass takes it too: the copy is recorded outside one, and ending the pass for it broke the pass
+       a frame's draws share, a samples report after every draw ending it once each */
+    if (!vk_uma() || vk_render_open() || !bind(cpu, len, 1, &ib, &io)) return 0;
     /* a landing the import takes instead of a trap: the bytes copied into it, and why there was no trap */
     SNX_ZONE_T(z, "vk mem uma publish", "%s", "no owner or trap, import holds the bytes");
     SNX_ZONE_VALUE(z, len);
