@@ -4,7 +4,8 @@
    primitive's sides or vertices instead (render.c draw_edges, edge_indices), which must draw what the device's own
    mode draws, where it has one, and not the filled polygons the pipeline takes. On every device quads, quad strips
    and polygons drawn as lines go as that list too, without the diagonals of the triangles Vulkan draws them as;
-   with face culling they keep the device's mode, which culls. A rectangle of corners on pixel
+   with face culling they keep the device's mode, which culls. So does a line loop, closed, which Vulkan has none of.
+   A rectangle of corners on pixel
    centres, (2.5, 3.5) to (13.5, 11.5) of a 16x16 target, drawn green over blue in every topology the 3D engine has
    for polygons, from vertex numbers, 16-bit and inline indices, through a base vertex and over a restart. Its outline
    is what a list of its four sides draws, as lines: quads and polygons drawn as lines show it, with no diagonal */
@@ -114,6 +115,19 @@ static int pl_cases(GpuChannel* channel, u64 target, u64 indices, u64 args, cons
     CHECK(!pl_draw(channel, target, &call, PL_LINE, px));
     channel->r3d[0x591] = 0;
     CHECK(!pl_same("a polygon restarting as lines", px, outline));
+    /* a line loop, closed from its last vertex to its first: of vertex numbers, in the polygon mode Point (which lines
+       don't take), and of 8-bit indices restarting at 8 into a second loop over one side */
+    call = (DrawCall){.topology = 2, .count = 4, .instances = 1};
+    CHECK(!pl_draw(channel, target, &call, PL_FILL, px));
+    CHECK(!pl_same("a line loop", px, outline));
+    CHECK(!pl_draw(channel, target, &call, PL_POINT, px));
+    CHECK(!pl_same("a line loop in the polygon mode Point", px, outline));
+    const u32 loops[7] = {0, 1, 2, 3, 8, 0, 1};
+    CHECK(!index_buffer(channel, indices, loops, 7, 1, 8));
+    call = (DrawCall){.topology = 2, .indexed = 1, .count = 7, .instances = 1};
+    CHECK(!pl_draw(channel, target, &call, PL_FILL, px));
+    channel->r3d[0x591] = 0;
+    CHECK(!pl_same("two line loops of 8-bit indices", px, outline));
     /* an indirect fan: the CPU hasn't its count, so it is drawn by the device's mode, or filled, which the log says */
     const u32 record[4] = {4, 1, 0, 0}; /* count, instances, first vertex, base instance */
     CHECK(!put_words(args, record, 4));
@@ -223,8 +237,8 @@ static int check_polygon_lines(void) {
     int failed = pl_cases(channel, target, indices, args, outline, filled, had ? lines : NULL, had ? points : NULL, 0);
     g_vk.feat.fillModeNonSolid = had;
     CHECK(!failed);
-    printf("polygon lines: quads and polygons drawn as their outline, and polygons drawn as lines and points without "
-           "the device's polygon modes, checked (%s)\n",
+    printf("polygon lines: line loops closed, quads and polygons drawn as their outline, and polygons drawn as lines "
+           "and points without the device's polygon modes, checked (%s)\n",
            had ? "against the device's own" : "the device has none to compare with");
     free(channel);
     return 0;

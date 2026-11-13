@@ -2822,7 +2822,7 @@ static VkPrimitiveTopology topology_vk(u32 topology) {
     switch (topology) {
         case 0: return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
         case 1: return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-        case 2: /* line loop: drawn open */
+        case 2: /* a line loop: a list of its sides where the CPU makes it (draw_edges), else open */
         case 3: return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
         case 5:
         case 8: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; /* quad strips are triangle strips */
@@ -3630,21 +3630,28 @@ static int quad_indices_cpu(const DrawCall* dc, int inline_indices, u64 ia, u32 
     return 1;
 }
 /* Whether a draw goes as a list of lines or points made of its primitives (polygon_edges.h, edge_indices) instead of
-   as Vulkan draws its topology: polygons in the polygon mode Line or Point where the device has no mode but fill
-   (fillModeNonSolid), and on every device quads, quad strips and polygons drawn as lines, whose outline the device's
-   mode would cross with the diagonals of the triangles they become. Lines and points take no face culling and no
-   depth bias: where the device has the mode, a draw that asks for either keeps it, diagonals and all, and elsewhere
-   the log says the list takes neither. Only where the vertex program's primitives are the ones drawn (no stage after
-   it, no mesh program), none are captured (transform feedback takes the polygons) and the draw is direct (the CPU
-   makes the list: an indirect draw's count is the GPU's); the others are drawn as before, and logged */
+   as Vulkan draws its topology: a line loop, which Vulkan has none of; polygons in the polygon mode Line or Point
+   where the device has no mode but fill (fillModeNonSolid); and on every device quads, quad strips and polygons drawn
+   as lines, whose outline the device's mode would cross with the diagonals of the triangles they become. Lines and
+   points take no face culling and no depth bias: where the device has the mode, a draw that asks for either keeps
+   it, diagonals and all, and elsewhere the log says the list takes neither. Only where the vertex program's
+   primitives are the ones drawn (no stage after it, no mesh program; a geometry program takes a loop's sides as the
+   lines they are), none are captured (transform feedback takes the primitives as they were) and the draw is direct
+   (the CPU makes the list: an indirect draw's count is the GPU's); the others are drawn as before, and logged */
 static int draw_edges(const DsState* ds, const DrawCall* dc, const DrawShaders* sh) {
     u32 t = sh->topology, mode = ds->rkey.polygon;
     int after = sh->tcs || sh->tes || sh->gs || sh->mesh, native = g_vk.feat.fillModeNonSolid != 0;
     int outline = !after && t >= 7 && t <= 9 && mode == DS_POLYGON_LINE;
-    if (mode == DS_POLYGON_FILL || (native && !outline) || (!after && (t < 4 || t > 9)))
+    if (t != 2 && (mode == DS_POLYGON_FILL || (native && !outline) || (!after && (t < 4 || t > 9))))
         return 0; /* filled, or drawn by the device's mode, or points and lines, which take no polygon mode */
     const char *name = mode == DS_POLYGON_LINE ? "Line" : "Point", *as = mode == DS_POLYGON_LINE ? "lines" : "points";
     const char* what = t == 7 ? "quads" : t == 8 ? "a quad strip" : "a polygon";
+    if (t == 2) { /* a geometry program takes its sides as the lines they are */
+        if (!sh->xfb_on && !dc->indirect) return 1;
+        LOG_LIMIT(1, "vulkan: a line loop %s is drawn open, without the side from its last vertex to its first\n",
+                  sh->xfb_on ? "captured by transform feedback" : "of an indirect draw");
+        return 0;
+    }
     if (after) {
         LOG_LIMIT(1,
                   "vulkan: the device has no polygon mode %s (fillModeNonSolid): the polygons of a draw with "
@@ -3684,9 +3691,9 @@ static int draw_edges(const DsState* ds, const DrawCall* dc, const DrawShaders* 
                   name, as, as, taken);
     return 1;
 }
-/* what a draw draw_edges would draw as a list is drawn as when edge_indices can't make the list */
-static const char* edges_instead(void) {
-    return g_vk.feat.fillModeNonSolid ? "with the diagonals of its triangles" : "filled";
+/* what a draw of topology that draw_edges would draw as a list is drawn as when edge_indices can't make the list */
+static const char* edges_instead(u32 topology) {
+    return topology == 2 ? "open" : g_vk.feat.fillModeNonSolid ? "with the diagonals of its triangles" : "filled";
 }
 /* The list draw_edges draws a direct draw's count indices from first as (polygon_edges.h), made here into the staging
    ring and drawn indexed: from the guest's indices (isz bytes each), the draw's inline ones, or its vertex numbers
@@ -3700,7 +3707,7 @@ static int edge_indices(const DsState* ds, const DrawCall* dc, int indexed, u32 
     const char* as = points ? "points" : "lines";
     if (count > EDGE_VERTICES) {
         LOG_LIMIT(1, "vulkan: a draw of %u vertices is past the %u the CPU makes into %s: drawn %s\n", count,
-                  EDGE_VERTICES, as, edges_instead());
+                  EDGE_VERTICES, as, edges_instead(topology));
         return 0;
     }
     if (indexed == 3)
@@ -3712,7 +3719,7 @@ static int edge_indices(const DsState* ds, const DrawCall* dc, int indexed, u32 
         if (vk_buf_pending(a, len) || vk_uma_pending(a, len) || vk_compute_gpu_src(a, len, &held, &at) ||
             vk_buf_owned(a, len)) {
             LOG_LIMIT(1, "vulkan: a draw whose indices the GPU wrote isn't made into %s on the CPU: drawn %s\n", as,
-                      edges_instead());
+                      edges_instead(topology));
             return 0;
         }
         vk_compute_mem_need(a, len);
@@ -3722,7 +3729,7 @@ static int edge_indices(const DsState* ds, const DrawCall* dc, int indexed, u32 
             LOG_LIMIT(1,
                       "vulkan: a draw's %u indices at %llx aren't in one run of memory, which the CPU makes into %s: "
                       "drawn %s\n",
-                      count, (unsigned long long)a, as, edges_instead());
+                      count, (unsigned long long)a, as, edges_instead(topology));
             return 0;
         }
     }
@@ -3996,7 +4003,8 @@ retry:
     int xfb_on = sh.xfb_on;
     /* the draw as a list of lines or points made of its primitives (draw_edges), points for the polygon mode Point:
        until edge_indices finds the CPU can't make it, which draws its topology */
-    int edges = !texture && !capture && draw_edges(ds, dc, &sh), points = ds->rkey.polygon == DS_POLYGON_POINT;
+    int edges = !texture && !capture && draw_edges(ds, dc, &sh),
+        points = ds->rkey.polygon == DS_POLYGON_POINT && topology != 2;
     /* the fragment shader's variant, keyed on its textures each draw: they are resolved for stage_set anyway. fres is
        filled for the fragment program's textures (each resolved, have set), and read only for them: a clear of all
        SH_MAXTEX (10 KiB) and a check of all of them against each target were per draw */
