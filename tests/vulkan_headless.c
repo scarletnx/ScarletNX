@@ -7469,6 +7469,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_mapping_landing());
     CHECK(!check_guest_staging());
     CHECK(!check_stream_ring());
+    CHECK(!check_stream_split());
     CHECK(!check_owned_writable());
     CHECK(!check_own_trim());
     CHECK(!check_wlog_again());
