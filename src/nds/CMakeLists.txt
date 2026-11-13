@@ -43,6 +43,10 @@ snx_glsl_spirv(snx_nds_gpu SOURCE gpu/vk/shaders/post.frag NAME snx_nds_post_fra
                HEADER nds/gpu/vk/shaders/post_spv.h)
 snx_glsl_spirv(snx_nds_gpu SOURCE gpu/vk/shaders/stencil.frag NAME snx_nds_stencil_frag_spv
                HEADER nds/gpu/vk/shaders/post_spv.h)
+snx_glsl_spirv(snx_nds_gpu SOURCE gpu/vk/shaders/clear.frag NAME snx_nds_clear_frag_spv
+               HEADER nds/gpu/vk/shaders/post_spv.h)
+snx_glsl_spirv(snx_nds_gpu SOURCE gpu/vk/shaders/aa.frag NAME snx_nds_aa_frag_spv
+               HEADER nds/gpu/vk/shaders/post_spv.h)
 target_link_libraries(scarletnx-nds PUBLIC snx_nds_gpu)
 
 add_library(snx_nds_program STATIC runtime/main.c runtime/host.c aot/compiler.c aot/discover.c)

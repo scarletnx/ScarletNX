@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The NDS's picture on the Vulkan device, with no window: a background of one tile composed by the 2D engines' pass, a
-   triangle drawn by the 3D engine's and shown as BG0, and a display capture read back into its VRAM bank. The frames
+   triangle drawn by the 3D engine's and shown as BG0 (filled, as a wireframe, as a line, anti-aliased, and over a
+   clear bitmap), and a display capture read back into its VRAM bank. The frames
    are read back and their pixels compared. No game's data. Exits 77 where the host has no Vulkan 1.3 device. */
 #include "nds/board/nds.h"
 #include "nds/gpu/gpu3d.h"
@@ -45,6 +46,27 @@ static bool is_color(const unsigned char* p, unsigned r, unsigned g, unsigned b)
 }
 static void gx(NdsBoard* board, uint32_t command, uint32_t parameter) {
     nds_io_write(board, IO + 0x400 + (command << 2 & 0x1FC), 4, parameter);
+}
+
+/* the test's triangle, blue, drawn and shown: its last vertex at (x, y), where the whole triangle has (0, 0.5) */
+static void triangle(NdsBoard* board, uint32_t attributes, uint16_t x, uint16_t y) {
+    gx(board, 0x29, attributes);
+    gx(board, 0x40, 0);
+    gx(board, 0x20, 0x7C00);
+    gx(board, 0x25, (uint16_t)-0x800 | (uint32_t)(uint16_t)-0x800 << 16);
+    gx(board, 0x25, 0x800 | (uint32_t)(x == 0x800 && y == 0x800 ? 0x800 : (uint16_t)-0x800) << 16);
+    gx(board, 0x25, x | (uint32_t)y << 16);
+    gx(board, 0x41, 0);
+    gx(board, 0x50, 0);
+    frame(board);
+    frame(board);
+    CHECK(nds_vk_frame_read(g_frame));
+}
+/* a line's pixel is at (x, y) or beside it */
+static bool blue_near(unsigned x, unsigned y) {
+    for (unsigned k = x - 1; k <= x + 1; ++k)
+        if (is_color(pixel(0, k, y), 0, 0, 255) || is_color(pixel(0, k, y - 1), 0, 0, 255)) return true;
+    return false;
 }
 
 int main(void) {
@@ -113,6 +135,54 @@ int main(void) {
     const unsigned char* bank = board->mem.vram[1].view;
     CHECK(snx_ld_le16(bank + (10 * 256 + 10) * 2) == 0x801F);   /* red */
     CHECK(snx_ld_le16(bank + (110 * 256 + 128) * 2) == 0xFC00); /* blue */
+
+    /* the triangle again, as the 3D engine's other ways of drawing have it. Its corners are (64, 144), (192, 144) and
+       (128, 48) */
+    /* a wireframe (the polygon's alpha 0): its outline alone, one pixel wide */
+    triangle(board, 0x000000C0, 0x800, (uint16_t)-0x800);
+    CHECK(is_color(pixel(0, 128, 143), 0, 0, 255));  /* its lowest row */
+    CHECK(is_color(pixel(0, 128, 141), 251, 0, 0));  /* two rows up: inside, where nothing is drawn */
+    CHECK(is_color(pixel(0, 128, 110), 251, 0, 0));
+    /* a line (two of the three vertices at one place), from (64, 144) to (192, 48) */
+    triangle(board, 0x001F00C0, 0x800, 0x800);
+    CHECK(blue_near(128, 96) && blue_near(96, 120) && blue_near(160, 72));
+    CHECK(is_color(pixel(0, 128, 130), 251, 0, 0) && is_color(pixel(0, 128, 60), 251, 0, 0));
+    /* anti-aliasing: the first pixel of the triangle in a row that crosses its slanted side is part triangle and part
+       what is under it. The picture's alpha says how much, so BG1 is BLDCNT's second target */
+    nds_io_write(board, IO + 0x050, 2, 0x0200);
+    for (unsigned smooth = 0; smooth < 2; ++smooth) {
+        nds_io_write(board, IO + 0x060, 2, smooth ? 0x0010 : 0);
+        triangle(board, 0x001F00C0, 0, 0x800);
+        unsigned x = 0, mixed = 0;
+        while (x < 128 && !pixel(0, x, 97)[2]) ++x;
+        CHECK(x > 80 && x < 112);
+        for (unsigned y = 60; y < 140; ++y)
+            for (unsigned k = 64; k < 128; ++k) mixed += pixel(0, k, y)[0] && pixel(0, k, y)[2];
+        CHECK(smooth ? mixed >= 16 : !mixed);
+        CHECK(is_color(pixel(0, 128, 110), 0, 0, 255) && is_color(pixel(0, 10, 10), 251, 0, 0));
+    }
+    nds_io_write(board, IO + 0x050, 2, 0);
+    /* the clear bitmap: texture slots 2 and 3 (banks C and D) hold the color and the depth of a 256 by 256 picture the
+       frame starts from. All of it is green and far, but for one pixel that is not there and one that is near */
+    for (unsigned i = 0; i < 0x10000; ++i) {
+        snx_st_le16(board->mem.vram[2].view + i * 2, 0x83E0);
+        snx_st_le16(board->mem.vram[3].view + i * 2, 0x7FFF);
+    }
+    snx_st_le16(board->mem.vram[2].view + (20 * 256 + 20) * 2, 0x03E0);
+    snx_st_le16(board->mem.vram[3].view + (110 * 256 + 128) * 2, 0x0000);
+    nds_io_write(board, IO + 0x242, 1, 0x93);
+    nds_io_write(board, IO + 0x243, 1, 0x9B);
+    nds_io_write(board, IO + 0x060, 2, 0x4000);
+    triangle(board, 0x001F00C0, 0, 0x800);
+    CHECK(is_color(pixel(0, 10, 10), 0, 255, 0));    /* the bitmap */
+    CHECK(is_color(pixel(0, 20, 20), 251, 0, 0));    /* its pixel that is not there: the background */
+    CHECK(is_color(pixel(0, 128, 100), 0, 0, 255));  /* the triangle before it */
+    CHECK(is_color(pixel(0, 128, 110), 0, 255, 0));  /* and behind its near pixel */
+    nds_io_write(board, IO + 0x356, 2, 8 | 2 << 8);  /* the bitmap moved 8 left and 2 up */
+    triangle(board, 0x001F00C0, 0, 0x800);
+    CHECK(is_color(pixel(0, 12, 18), 251, 0, 0) && is_color(pixel(0, 20, 20), 0, 255, 0));
+    CHECK(is_color(pixel(0, 120, 108), 0, 255, 0) && is_color(pixel(0, 128, 110), 0, 0, 255));
+    nds_io_write(board, IO + 0x060, 2, 0);
 
     nds_board_free(board);
     free(board);
