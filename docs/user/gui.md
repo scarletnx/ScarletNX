@@ -846,11 +846,15 @@ YoRHa. So does a runtime built without the launcher, which on Android is every r
 own library there, and the game's runtime can't ask it.
 
 The same screen shows when a collection's program starts another (a game picked in the collection's menu;
-`transition_screen = 1`, the default): in the new program's window from a quarter second after it opens until the game
-draws, with the game's name, `(Program N)` for a program other than the collection's menu and the game's cover, its
-steps and bar only while there are shaders to prepare. While no window is open between the two programs, the
-launcher's run screen shows that program's page in the run look, whatever the theme's `layout`: the name,
-`(Program N)`, the cover, and the recompile of a program not made, with its bar.
+`transition_screen = 1`, the default), in the new program's window from a quarter second after it opens until the game
+draws. Its head says the game's name and `(Program N)` for a program other than the collection's menu; the game's
+cover sits in its top right corner; and what is known of the program shows as done steps: PROGRAM (its number of the
+application's), STARTED BY, USER (with the user's picture, and whether the program before kept that user for it),
+VERSION (and the update's), DLC, HANDED OVER (what the program before left for it), GPU, TITLE ID and BUILD, each `?`
+when it is not known. The shaders' steps follow when there are some to prepare, and the bar shows their progress, full
+when there is none. While no window is open between the two programs, the launcher's run screen shows the same page in
+the run look, whatever the theme's `layout`, with what the launcher knows (not HANDED OVER, which only the program
+reads), and RECOMPILE: the recompile of a program not made, with its bar, or that none is needed.
 
 A theme is also a folder holding a `theme.ini`, the folder's name its id, in
 `themes/` in that same folder or in `themes/` beside the GUI; the first one found
