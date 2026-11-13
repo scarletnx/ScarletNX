@@ -159,6 +159,32 @@ int main(void) {
        to tell a link boot from its own), the sound's bias at its middle, POSTFLG */
     CHECK(agb_read16(&board, 0x04000000) == 0x0080 && agb_read16(&board, 0x04000134) == 0x8000);
     CHECK(agb_read16(&board, 0x04000088) == 0x0200 && agb_read8(&board, 0x04000300) == 1);
+    /* the registers answer at their own addresses only: a store past them, as a debug port a test ROM writes to on an
+       emulator, leaves IE and DISPCNT alone and a read there gives the open bus; the memory control at 0x04000800, at
+       each 64 KiB, keeps what was written */
+    agb_write16(&board, 0x04000200, 0x0001);
+    agb_write16(&board, 0x04FFF600, 0x654D);
+    agb_write8(&board, 0x04000600, 0x44);
+    agb_write32(&board, 0x04000400, 0x12345678);
+    board.open_bus = 0xE3A01234;
+    if (agb_read16(&board, 0x04000200) != 0x0001 || agb_read16(&board, 0x04000000) != 0x0080 ||
+        agb_read16(&board, 0x04FFF600) != 0x1234 || agb_read32(&board, 0x04000400) != 0x12341234) {
+        fprintf(stderr,
+                "agb_board: stores past the registers left IE 0x%04X (0x0001) and DISPCNT 0x%04X (0x0080); "
+                "0x04FFF600 reads 0x%04X (0x1234), 0x04000400 0x%08X (0x12341234)\n",
+                agb_read16(&board, 0x04000200), agb_read16(&board, 0x04000000), agb_read16(&board, 0x04FFF600),
+                agb_read32(&board, 0x04000400));
+        return 1;
+    }
+    CHECK(agb_read32(&board, 0x04000800) == 0x0D000020);
+    agb_write32(&board, 0x04000800, 0x0E000020);
+    agb_write8(&board, 0x04120801, 0x01);
+    if (agb_read32(&board, 0x04FF0800) != 0x0E000120 || agb_read16(&board, 0x04000000) != 0x0080) {
+        fprintf(stderr, "agb_board: the memory control reads 0x%08X, not 0x0E000120, and DISPCNT 0x%04X (0x0080)\n",
+                agb_read32(&board, 0x04FF0800), agb_read16(&board, 0x04000000));
+        return 1;
+    }
+    agb_write16(&board, 0x04000200, 0);
     CHECK(!agb_board_insert(&board, rom, ROM_SIZE, error, sizeof error));
     CHECK(board.has_cartridge);
     const AgbCartridge* cartridge = &board.cartridge;

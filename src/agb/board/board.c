@@ -19,6 +19,7 @@ void agb_board_init(AgbBoard* board) {
     board->apu.soundbias = 0x200;
     board->ppu.bgpa[2] = board->ppu.bgpd[2] = board->ppu.bgpa[3] = board->ppu.bgpd[3] = 0x100;
     board->io[0x300 >> 1] = 1;
+    board->memcnt[0] = 0x0020, board->memcnt[1] = 0x0D00; /* GBATEK's 0x0D000020: 256 KiB of EWRAM, 2 wait states */
     /* the BIOS's boot ends on line 126, 919 cycles into it, where mGBA's machine starts the cartridge when it skips the
        BIOS (line 0x7E, its first horizontal blank at cycle 1008 of the line 120 cycles away, then 31 cycles of its reset
        code): a game that turns its interrupts on as it boots meets the first vertical blank 34 lines later, not 160 */
@@ -73,8 +74,16 @@ static int io_open(uint32_t byte) {
            (byte >= 0xA0 && byte <= 0xA6) || (byte >= 0xB0 && byte <= 0xDE && (byte - 0xB0) % 12 < 8);
 }
 
+/* The window decodes its registers at 0x04000000-0x040003FE and the internal memory control at 0x04000800, repeated
+   every 64 KiB (GBATEK, "Internal Memory Control"). Nothing else answers there: a read gives the open bus and a write
+   goes nowhere, as mGBA's GBAIORead and GBAIOWrite have it past GBA_REG_MAX. A register's address with the window's
+   other bits set is not that register */
+static int io_unused(uint32_t address) { return (address & 0xFFFFFF) >= 0x400 && (address & 0xFFFC) != 0x800; }
+
 uint16_t agb_io_read16(AgbBoard* board, uint32_t address) {
     uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1), byte = offset * 2;
+    if (io_unused(address)) return (uint16_t)board->open_bus;
+    if ((address & 0xFFFFFF) >= 0x400) return board->memcnt[address >> 1 & 1];
     if (io_open(byte)) return (uint16_t)board->open_bus;                   /* its low half, as GBAIORead gives it */
     if (byte >= 0xB8 && byte <= 0xDC && (byte - 0xB0) % 12 == 8) return 0; /* DMAxCNT_L */
     if (byte <= 0x5F) return agb_ppu_read(board, byte);
@@ -130,6 +139,13 @@ static void sio_write(AgbBoard* board, uint16_t value) {
 
 void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value, uint16_t mask) {
     uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1), byte = offset * 2;
+    if (io_unused(address)) return;
+    if ((address & 0xFFFFFF) >= 0x400) {
+        /* kept as written: the wait states and the RAM it switches are not the board's */
+        uint16_t* half = &board->memcnt[address >> 1 & 1];
+        *half = (uint16_t)((value & mask) | (*half & ~mask));
+        return;
+    }
     if (byte == 0x202) {
         board->irq_if &= (uint16_t)~(value & mask); /* one bits acknowledge the interrupt flags of the lanes written */
         return;
