@@ -4736,6 +4736,10 @@ msgid "Removed games not kept: %s could not be written (%s)."
 msgstr ""
 
 #: src/gui/main.c
+msgid "the dump or folder its RomFS is extracted from, which its settings do not name"
+msgstr "o dump ou a pasta de onde a RomFS dele é extraída, que as configurações dele não nomeiam"
+
+#: src/gui/main.c
 #, c-format
 msgid "Locate...: the folder picker could not open: %s"
 msgstr ""

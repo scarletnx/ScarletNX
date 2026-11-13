@@ -229,6 +229,49 @@ static void source_missing(void) {
         assert(!snx_remove_tree(data));
         free(data);
     }
+    { /* #2110: its ExeFS extracted into its _data beside a RomFS that is not whole, which the driver extracts again
+         from its dump: a copy that stopped (romfs.copying), an extraction that stopped (its .extracting) or none,
+         missing while the dump is gone, and not once it is back; a whole one plays from its extraction. A game whose
+         .ini names no dump is missing all the same with such a RomFS, the file said as "" */
+        char *data = snx_path_join(nx, "0100ABCD12340000_data"), *own_exefs = snx_path_join(data, "exefs");
+        char *romfs = snx_path_join(data, "romfs"), *copying = snx_path_join(data, "romfs.copying");
+        char* marker = snx_path_join(nx, "0100ABCD12340000.extracting");
+        char *unnamed = game_made(dir, "0100ABCD44440000", "[Game]\n"),
+             *other = program_of(unnamed, "0100ABCD44440000");
+        char* other_data = snx_path_join(unnamed, "0100ABCD44440000_data");
+        char *other_exefs = snx_path_join(other_data, "exefs"),
+             *other_copying = snx_path_join(other_data, "romfs.copying");
+        assert(!snx_mkdirs(own_exefs) && !snx_mkdirs(romfs));
+        put(own_exefs, "main", "main");
+        assert(!gui_game_source_missing(program, NULL, NULL, 0));
+        assert(!snx_mkdirs(copying) && gui_game_source_missing(program, NULL, out, sizeof out) && !strcmp(out, dump));
+        assert(!snx_remove_tree(copying) && !snx_write_file(marker, "", 0));
+        assert(gui_game_source_missing(program, NULL, out, sizeof out) && !strcmp(out, dump));
+        assert(!snx_remove_tree(marker) && !snx_remove_tree(romfs));
+        assert(gui_game_source_missing(program, NULL, out, sizeof out) && !strcmp(out, dump));
+        put(dir, "game.nsp", "dump");
+        assert(!gui_game_source_missing(program, NULL, NULL, 0));
+        assert(!remove(dump) && !snx_remove_tree(data));
+        assert(!snx_mkdirs(other_exefs) && !snx_mkdirs(other_copying));
+        put(other_exefs, "main", "main");
+        assert(gui_game_source_missing(other, NULL, out, sizeof out) && !out[0]);
+        assert(!snx_remove_tree(other_copying));
+        {
+            char* other_romfs = snx_path_join(other_data, "romfs");
+            assert(!snx_mkdirs(other_romfs) && !gui_game_source_missing(other, NULL, NULL, 0));
+            free(other_romfs);
+        }
+        free(data);
+        free(own_exefs);
+        free(romfs);
+        free(copying);
+        free(marker);
+        free(unnamed);
+        free(other);
+        free(other_data);
+        free(other_exefs);
+        free(other_copying);
+    }
     assert(!gui_game_source_missing(dump, NULL, NULL, 0) && !gui_game_source_missing(nx, NULL, NULL, 0));
     { /* its source an extracted game's folder: gone, then there */
         char* folder_ini = snx_format("[Game]\nsource=%s\n", extracted);
