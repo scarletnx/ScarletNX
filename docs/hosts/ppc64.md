@@ -157,7 +157,7 @@ No CI job builds it. Its tests, the Linux runtime's (`gnuabi_*`, `endian`, `cas1
 `ctest --preset linux-ppc64-cross`.
 
 Arch POWER's big-endian glibc is ELFv2, as LLD links it. Its preset (`linux-ppc64-elfv2-cross`, `SNX_PPC64_ELFV2`)
-builds for ELFv2 with `-mabi=elfv2` and the Linux runtime alone. Its system root is pkgforge's Arch image of the
+builds for ELFv2 with `-mabi=elfv2`, every runtime and the launcher. Its system root is pkgforge's Arch image of the
 architecture with LLVM and GCC's runtime installed into it, as the `appimage-cross` job makes it. The runtime's own
 code generator takes its ABI from the runtime itself (`_CALL_ELF`, `new_ir` in `ir.c`), as LLVMs differ in which
 ABI their `powerpc64-*-linux-gnu` picks: Debian's 19 ELFv1, Arch POWER's 22 ELFv2.
