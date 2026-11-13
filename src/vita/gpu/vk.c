@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/vk.h"
+#include "common/gpu/vk/present_fx.h"
 #include "common/utilities/window_icon.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -11,8 +13,12 @@ static struct {
     /* the presenter's copy of the framebuffer, which the swapchain image is blitted from */
     VkImage frame;
     VkDeviceMemory frame_memory;
+    VkImageView frame_view; /* the upscaler's and the anti aliasing's source */
     uint32_t frame_width, frame_height;
     VkImageLayout frame_layout;
+    /* the upscaler and the anti aliasing (common/gpu/vk/present_fx.h) as the settings say; none while both are Off */
+    SnxFxConfig fx_config;
+    SnxFx* fx;
 } g;
 
 VitaVk* vita_vk(void) { return g.up ? &g.vk : NULL; }
@@ -110,6 +116,30 @@ static bool swapchain_make(VitaVk* v) {
                                .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 544})};
     return snx_vk_swapchain_make(v->phys, v->device, &info, &v->swap);
 }
+static void fx_log(const char* text) { fprintf(stderr, "scarletnx-vita: %s\n", text); }
+/* the upscaler and the anti aliasing the settings ask for, said once, and their effects made where either is on */
+static void fx_init(VitaVk* v) {
+    char said[512];
+    SnxFxConfig* c = &g.fx_config;
+    if (snx_fx_settings(c, g_settings.upscaler, g_settings.upscaler_sharpness, g_settings.anti_aliasing, said,
+                        sizeof said))
+        fprintf(stderr, "scarletnx-vita: settings: %s\n", said);
+    if (c->upscaler != SNX_FX_UPSCALE_OFF || c->aa != SNX_FX_AA_OFF) {
+        g.fx = snx_fx_create(v->phys, v->device, VK_NULL_HANDLE, VITA_VK_SLOTS, fx_log);
+        if (g.fx)
+            snx_fx_set_sharpness(g.fx, c->sharpness);
+        else {
+            fprintf(stderr,
+                    "scarletnx-vita: upscaler=%s and anti_aliasing=%s: their passes could not be made on this "
+                    "device, so the frame shows with both off\n",
+                    snx_fx_upscale_key(c->upscaler), snx_fx_aa_key(c->aa));
+            c->upscaler = SNX_FX_UPSCALE_OFF;
+            c->aa = SNX_FX_AA_OFF;
+        }
+    }
+    fprintf(stderr, "scarletnx-vita: upscaler %s, anti aliasing %s\n", snx_fx_upscale_label(c->upscaler),
+            snx_fx_aa_label(c->aa));
+}
 bool vita_vk_init(const char* title, char* error, size_t error_size) {
     VitaVk* v = &g.vk;
     if (g.up) return true;
@@ -148,6 +178,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     }
     g.up = true;
     if (v->host.surface && !swapchain_make(v)) fprintf(stderr, "scarletnx-vita: no swapchain for the window yet\n");
+    fx_init(v);
     return true;
 }
 void vita_vk_free(void) {
@@ -155,6 +186,8 @@ void vita_vk_free(void) {
     if (v->device) {
         vkDeviceWaitIdle(v->device);
         snx_vk_swapchain_free(v->device, &v->swap);
+        snx_fx_destroy(g.fx);
+        if (g.frame_view) vkDestroyImageView(v->device, g.frame_view, NULL);
         if (g.frame) vkDestroyImage(v->device, g.frame, NULL);
         if (g.frame_memory) vkFreeMemory(v->device, g.frame_memory, NULL);
         for (unsigned i = 0; i < VITA_VK_SLOTS; ++i)
@@ -166,7 +199,9 @@ void vita_vk_free(void) {
     }
     snx_vk_window_close(&v->host);
     memset(v, 0, sizeof *v);
-    g.frame = VK_NULL_HANDLE, g.frame_memory = VK_NULL_HANDLE, g.frame_width = g.frame_height = 0;
+    g.frame = VK_NULL_HANDLE, g.frame_memory = VK_NULL_HANDLE, g.frame_view = VK_NULL_HANDLE;
+    g.frame_width = g.frame_height = 0;
+    g.fx = NULL;
     g.up = false;
 }
 uint64_t vita_vk_poll(void) { return g.up ? snx_vk_ring_poll(&g.vk.ring) : 0; }
@@ -200,9 +235,10 @@ static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from,
 static bool frame_image(VitaVk* v, uint32_t width, uint32_t height) {
     if (g.frame && g.frame_width == width && g.frame_height == height) return true;
     vkDeviceWaitIdle(v->device);
+    if (g.frame_view) vkDestroyImageView(v->device, g.frame_view, NULL);
     if (g.frame) vkDestroyImage(v->device, g.frame, NULL);
     if (g.frame_memory) vkFreeMemory(v->device, g.frame_memory, NULL);
-    g.frame = VK_NULL_HANDLE, g.frame_memory = VK_NULL_HANDLE;
+    g.frame = VK_NULL_HANDLE, g.frame_memory = VK_NULL_HANDLE, g.frame_view = VK_NULL_HANDLE;
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
                             .format = VK_FORMAT_R8G8B8A8_UNORM,
@@ -211,7 +247,8 @@ static bool frame_image(VitaVk* v, uint32_t width, uint32_t height) {
                             .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                     VK_IMAGE_USAGE_SAMPLED_BIT,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     if (vkCreateImage(v->device, &ii, NULL, &g.frame) != VK_SUCCESS) return false;
     VkMemoryRequirements req;
@@ -221,8 +258,14 @@ static bool frame_image(VitaVk* v, uint32_t width, uint32_t height) {
                                .memoryTypeIndex = vita_vk_memory_type(req.memoryTypeBits,
                                                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
     if (ai.memoryTypeIndex == UINT32_MAX) ai.memoryTypeIndex = vita_vk_memory_type(req.memoryTypeBits, 0);
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                .image = g.frame,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
     if (vkAllocateMemory(v->device, &ai, NULL, &g.frame_memory) != VK_SUCCESS ||
-        vkBindImageMemory(v->device, g.frame, g.frame_memory, 0) != VK_SUCCESS)
+        vkBindImageMemory(v->device, g.frame, g.frame_memory, 0) != VK_SUCCESS ||
+        vkCreateImageView(v->device, &vi, NULL, &g.frame_view) != VK_SUCCESS)
         return false;
     g.frame_width = width, g.frame_height = height;
     g.frame_layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -251,10 +294,32 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                               .imageExtent = {width, height, 1}};
     vkCmdCopyBufferToImage(cb, buffer, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-    image_barrier(cb, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                  VK_ACCESS_2_TRANSFER_READ_BIT);
-    g.frame_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    /* the frame scaled to the window, its aspect kept */
+    uint32_t w = v->swap.extent.width, h = v->swap.extent.height;
+    uint32_t sw = w, sh = (uint32_t)((uint64_t)w * height / width);
+    if (sh > h) sh = h, sw = (uint32_t)((uint64_t)h * width / height);
+    int32_t x = (int32_t)(w - sw) / 2, y = (int32_t)(h - sh) / 2;
+    /* through the upscaler and the anti aliasing where either is on, into an image of the rectangle's size */
+    SnxFxImage fx = {0};
+    bool effects = false;
+    if (g.fx && sw && sh) {
+        image_barrier(cb, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        g.frame_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        effects = snx_fx_render(g.fx, cb, slot, g.frame_view, width, height, 0, 0, width, height, 0, sw, sh,
+                                g.fx_config.upscaler, g.fx_config.aa, &fx);
+    }
+    if (!effects) {
+        image_barrier(cb, g.frame,
+                      g.frame_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                          ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                          : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        g.frame_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    }
     VkImage target = v->swap.images[index];
     image_barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -264,17 +329,13 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
     image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                   VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    /* the frame scaled to the window, its aspect kept */
-    uint32_t w = v->swap.extent.width, h = v->swap.extent.height;
-    uint32_t sw = w, sh = (uint32_t)((uint64_t)w * height / width);
-    if (sh > h) sh = h, sw = (uint32_t)((uint64_t)h * width / height);
-    int32_t x = (int32_t)(w - sw) / 2, y = (int32_t)(h - sh) / 2;
-    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                        .srcOffsets = {{0, 0, 0}, {(int32_t)width, (int32_t)height, 1}},
-                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                        .dstOffsets = {{x, y, 0}, {x + (int32_t)sw, y + (int32_t)sh, 1}}};
-    vkCmdBlitImage(cb, g.frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                   &blit, VK_FILTER_LINEAR);
+    VkImageBlit blit = {
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcOffsets = {{0, 0, 0}, {(int32_t)(effects ? fx.width : width), (int32_t)(effects ? fx.height : height), 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffsets = {{x, y, 0}, {x + (int32_t)sw, y + (int32_t)sh, 1}}};
+    vkCmdBlitImage(cb, effects ? fx.image : g.frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, effects ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
     image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
     submit_with(v->acquired[slot], v->rendered[index]);
