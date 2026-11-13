@@ -2912,12 +2912,14 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
        the device flushes f16 subnormals); a product or partial sum past 65504 is an infinity. The driver's matrix
        unit (hmma_coop) is the exact way to that speed and it is off where the driver has no VK_KHR_cooperative_matrix */
     int packed = !mixed && g_shader_hmma_f16 && g_shader_float16;
-    u32 t_v2h = 0, zero2 = 0;
+    u32 t_v2h = 0, start2 = 0;
     if (mixed || packed) {
-        u32 t_f16 = spv_emit_type_float(&c->e, 16), z16 = spv_emit_constant_u32(&c->e, t_f16, 0);
         spv_emit_capability(&c->e, SPV_CAPABILITY_FLOAT16);
-        t_v2h = spv_emit_type_vector(&c->e, t_f16, 2);
-        zero2 = spv_emit_constant_vec2(&c->e, t_v2h, z16, z16);
+        t_v2h = spv_emit_type_vector(&c->e, spv_emit_type_float(&c->e, 16), 2);
+    }
+    if (packed) { /* -0, the sum's identity, and +0 in one half where C is RZ: the console adds that +0 */
+        u32 t_f16 = spv_emit_type_float(&c->e, 16), neg = spv_emit_constant_u32(&c->e, t_f16, 0x8000u);
+        start2 = spv_emit_constant_vec2(&c->e, t_v2h, rc < SM86_RZ ? neg : spv_emit_constant_u32(&c->e, t_f16, 0), neg);
     }
     if (mixed) {
         spv_emit_capability(&c->e, 6912 /* DotProductFloat16AccFloat32VALVE */);
@@ -2927,7 +2929,7 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
     u32 pacc[2][2] = {{0, 0}, {0, 0}};    /* packed: the f16 half sums of the same, C's not in them yet */
     if (packed) {
         for (u32 i = 0; i < 2; i++)
-            for (u32 j = 0; j < 2; j++) pacc[i][j] = zero2;
+            for (u32 j = 0; j < 2; j++) pacc[i][j] = start2;
     } else {
         for (u32 i = 0; i < 2; i++) {
             if (f32) {

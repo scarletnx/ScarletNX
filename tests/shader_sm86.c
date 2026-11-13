@@ -3980,8 +3980,8 @@ static double hmma_half(u32 h) {
 }
 /* an element: the exact set's n / 4 for n in -6..6 (every product and sum exact in f16 and f32); the rounded set's
    full mantissas, row 3 of A subnormal; the special set's signed zeros, subnormals, the largest finite, infinities
-   and NaNs among ordinary values */
-enum { HM_EXACT, HM_ROUNDED, HM_SPECIAL };
+   and NaNs among ordinary values. The zeros set (hmma_inputs) is products of zero only, of either sign */
+enum { HM_EXACT, HM_ROUNDED, HM_SPECIAL, HM_ZEROS };
 static u32 hmma_element(u32* seed, int set, int tiny) {
     *seed = *seed * 1664525u + 1013904223u;
     u32 r = *seed, sign = r >> 31 << 15;
@@ -4015,6 +4015,14 @@ static void hmma_inputs(HmmaMats* m, u32* in, int set) {
         for (u32 n = 0; n < 8; n++) m->b[k][n] = (u16)hmma_element(&seed, set, 0);
     for (u32 r = 0; r < 16; r++)
         for (u32 n = 0; n < 8; n++) m->c[r][n] = (u16)hmma_element(&seed, set, 0);
+    if (set == HM_ZEROS) /* A's zeros a sign a row, B's ordinary values a sign every two columns, C's zeros of both:
+                            each output's products are all +0 or all -0, with a C of either sign */
+        for (u32 r = 0; r < 16; r++)
+            for (u32 k = 0; k < 16; k++) {
+                m->a[r][k] = (u16)((r & 1) << 15);
+                if (r < 8) m->b[k][r] = (u16)((r >> 1 & 1) << 15 | 0x3c00u | k);
+                m->c[r][k & 7] = (u16)((((r >> 1) ^ k) & 1) << 15);
+            }
     for (u32 l = 0; l < 32; l++) {
         u32 g = l / 4, t = l % 4, *q = in + l * 8;
         q[0] = m->a[g][2 * t] | (u32)m->a[g][2 * t + 1] << 16;
@@ -4129,9 +4137,9 @@ static int hmma_match(u32 got, int f32, u32 j, double want, double tol, int kind
    lane gathers B, as pairs of lanes share it (g_shader_hmma_pairs) and through a warp's slot of shared memory
    (g_shader_hmma_stage), with and without the quads and the mixed dot product, and without it in half sums
    (g_shader_hmma_f16): on the exact set every output is the sum's bits; on the rounded one within an f32 sum's error,
-   or the half sums' (hmma_expect); on the special one infinities, NaNs and the sign of zero follow IEEE's sum of the
-   terms in any order, but where the half sums can overflow. And the forms agree with each other: bit for bit on the
-   exact set, the same kinds on the others */
+   or the half sums' (hmma_expect); on the special and zeros ones infinities, NaNs and the sign of zero follow IEEE's
+   sum of the terms in any order, but where the half sums can overflow. And the forms agree with each other: bit for
+   bit on the exact set, the same kinds on the others */
 static void test_warp_matrix_values(const char* dir) {
     u8 code[16 * 48] = {0};
     u32 n = hmma_program(code);
@@ -4139,7 +4147,7 @@ static void test_warp_matrix_values(const char* dir) {
         pairs_was = g_shader_hmma_pairs, stage_was = g_shader_hmma_stage, half_was = g_shader_hmma_f16;
     static HmmaMats mats;
     static u32 in[32 * 8], out[3][32 * HMMA_OUT];
-    for (int set = HM_EXACT; set <= HM_SPECIAL; set++) {
+    for (int set = HM_EXACT; set <= HM_ZEROS; set++) {
         hmma_inputs(&mats, in, set);
         for (int quad = 0; quad < 2; quad++)
             for (int mixed = 0; mixed < 2; mixed++)
