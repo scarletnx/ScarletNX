@@ -1406,6 +1406,15 @@ static int tex_copy_pending(Surf* t) {
 static int tex_rehash(Surf* t) {
     t->gw = gpu_mem_generation();
     if (tex_copy_pending(t)) return 1;
+    /* The GPU wrote its bytes in place and that write is still pending: its content is new, so the upload is due
+       whatever the bytes hash to. Loading them reads them on the CPU (mem_hash's gmem_ptr), which waits for the
+       GPU to finish the write: a title's video frames are four such textures a frame, and those waits were a third
+       of its frame. The upload itself stages them on the GPU (stage_bl through vk_guest_read's copy), no wait.
+       t->hash keeps what it had, so the first later whole check loads the texture once more before it settles */
+    if (vk_uma_pending(t->gva, t->size) && !t->sparse && !t->piecewise) {
+        tex_upload(t);
+        return 1;
+    }
     u64 hh = tex_hash(t);
     /* a sparse texture whose mapped levels changed: memory bound for the new ones, which are loaded */
     int rebound = t->sparse && tex_bind(t) != 0;
@@ -1458,7 +1467,9 @@ void vk_tex_note_writeback(Surf* t) {
     /* its image is guest memory's bytes as written back. Where write tracking watches that memory, tex_check asks it
        and hashes only a texture it says the CPU wrote, which then loads anyway: no hash now, 0, which a check by its
        contents takes as changed. Hashing every write-back's texels took a tenth of the GPU thread in an Ounce game */
-    t->hash = tex_tracked(t) ? 0 : tex_hash(t);
+    /* 0, a check that takes it as changed, when the GPU's write to it is still pending too: hashing its bytes would
+       read them on the CPU and wait for that write, and the load that follows is on the GPU (stage_bl's copy) */
+    t->hash = tex_tracked(t) || vk_uma_pending(t->gva, t->size) ? 0 : tex_hash(t);
     t->gw = gpu_mem_generation();
     t->wseen = vk_ww_now();
     t->checked = g_vk_present;
@@ -2696,7 +2707,8 @@ texture_from_memory:
     t->wseen = vk_ww_now();
     t->gw = gpu_mem_generation();
     /* a piecewise one's stays 0: none of its bytes are read. A sparse one's is of its mapped runs */
-    if (!t->piecewise) t->hash = tex_hash(t);
+    /* as vk_tex_note_writeback: a GPU write pending over its bytes is a change, and reading them to hash them waits */
+    if (!t->piecewise) t->hash = vk_uma_pending(t->gva, t->size) ? 0 : tex_hash(t);
     t->checked = g_vk_present;
     t->next_check = g_vk_present + 4;
     const int loaded = t->piecewise ? tex_load_pieces(t) : tex_upload(t);
