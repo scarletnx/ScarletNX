@@ -92,6 +92,9 @@ static struct {
     /* allocations given memory of their own since the last report, by DM_OWN_*: each is a call to the driver on the
        thread that asked */
     u64 own_why[4];
+    /* requests that found no memory since the last report: all of them, those no larger than the free space inside
+       the capped heap's blocks then (no one run held them), and the largest */
+    u64 failed, failed_room, failed_max;
     int coherent;  /* every memory type the CPU maps is coherent: a flush has nothing to do */
     u32 since;     /* requests since the driver's budgets were asked */
     u64 block_bytes[VK_MAX_MEMORY_HEAPS], allocated[VK_MAX_MEMORY_HEAPS];
@@ -563,6 +566,17 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
     bits = req->memoryTypeBits;
     for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type))
         *mem = alloc_in((u32)type, req, want, DM_OWN_LAST, buf, img, &res);
+    if (!*mem) {
+        u64 room = 0;
+        for (u32 i = 0; i < g_devmem.nblock; i++) {
+            const Block* k = &g_devmem.block[i];
+            if (k->mem && !k->own && (int)g_devmem.mp.memoryTypes[k->type].heapIndex == g_devmem.main_heap)
+                room += (u64)(k->free.units - k->free.used) * DM_UNIT;
+        }
+        g_devmem.failed++;
+        g_devmem.failed_room += req->size <= room;
+        if (req->size > g_devmem.failed_max) g_devmem.failed_max = req->size;
+    }
     if (*mem && info) info_of(*mem, info);
     pm_unlock(&g_devmem.lk);
     return *mem ? VK_SUCCESS : res;
@@ -724,6 +738,8 @@ void vk_devmem_log(void) {
         k[b->type][b->image].used += (u64)b->free.used * DM_UNIT;
         if (b->allocs && piece > k[b->type][b->image].largest) k[b->type][b->image].largest = piece;
     }
+    u64 failed = g_devmem.failed, failed_room = g_devmem.failed_room, failed_max = g_devmem.failed_max;
+    g_devmem.failed = g_devmem.failed_room = g_devmem.failed_max = 0;
     u64 made = g_devmem.ahead.made, asked = g_devmem.ahead.asked;
     u64 why[4] = {g_devmem.own_why[0], g_devmem.own_why[1], g_devmem.own_why[2], g_devmem.own_why[3]};
     g_devmem.ahead.made = g_devmem.ahead.asked = 0;
@@ -735,6 +751,10 @@ void vk_devmem_log(void) {
             "block\n",
             (unsigned long long)why[DM_OWN_SIZE], (unsigned long long)why[DM_OWN_MUST],
             (unsigned long long)why[DM_OWN_RATHER], (unsigned long long)why[DM_OWN_LAST]);
+    if (failed)
+        LOG("vulkan: %llu requests for device memory found none since the last report, %llu of them no larger than "
+            "the free space inside the GPU heap's blocks; the largest was %.1f MB\n",
+            (unsigned long long)failed, (unsigned long long)failed_room, (double)failed_max / 1048576.0);
     if (made || asked)
         LOG("vulkan: device memory blocks since the last report: %llu made ahead of their first request, %llu made "
             "by a request on its own thread\n",
