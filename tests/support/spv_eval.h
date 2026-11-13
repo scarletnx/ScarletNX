@@ -28,6 +28,7 @@ typedef struct {
     uint32_t image_size[64][3]; /* what a size query of the sampled image at each binding answers; its levels are 1 */
     uint32_t fetched[64][3];    /* the coordinates of the last OpImageFetch of the image at each binding */
     int killed;                 /* the invocation ended with OpKill or OpTerminateInvocation */
+    int helper;                 /* the invocation is a fragment's helper: OpIsHelperInvocationEXT answers true */
     uint32_t shuffle_id;        /* the invocation the last OpGroupNonUniformShuffle read from (its Id operand) */
     uint32_t steps_max;         /* 0: 1000000 */
     uint32_t push[20];          /* the push constant block's words */

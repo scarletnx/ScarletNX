@@ -655,6 +655,11 @@ static const char* run(Ev* e, uint32_t entry_at) {
                 e->env->emitted_tasks++;
                 return NULL;
             case 5380: e->env->killed = 1; break; /* demoted: it runs on, its outputs dropped */
+            case 5381:                            /* IsHelperInvocationEXT: a helper the test made, or one demoted */
+                r->kind = K_VALUE;
+                r->type = t;
+                r->v = (Val){{e->env->helper || e->env->killed}};
+                break;
             case 333:                             /* Elect */
             case 334:                             /* All */
             case 335:                             /* Any */
