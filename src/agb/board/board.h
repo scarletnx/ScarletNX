@@ -82,6 +82,7 @@ typedef struct AgbBoard {
     uint16_t irq_ie, irq_if, irq_ime;
     uint32_t cpu_halted;       /* the CPU waits for an interrupt (Halt) */
     uint32_t held_cycles;      /* the cycles the bus was busy since the CPU last ran (a DMA's), which it waits out */
+    uint32_t sio_cycles;       /* the cycles left of the serial transfer SIOCNT started, 0 with none */
     uint32_t counted_cycles;   /* while counting is set, the cycles of the accesses through agb_read and agb_write */
     uint8_t counting;
     uint16_t keys;             /* the keypad's keys held, KEYINPUT's bits set (the register reads them inverted) */
@@ -110,6 +111,8 @@ uint32_t agb_board_entry(const AgbBoard* board);
    0xFFFF a halfword, 0x00FF or 0xFF00 a byte: the other lane keeps the register as written. */
 uint16_t agb_io_read16(AgbBoard* board, uint32_t address);
 void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value, uint16_t mask);
+/* The serial port's transfer, which ends after its time with no partner's data */
+void agb_sio_step(AgbBoard* board, uint32_t cycles);
 /* Devices request interrupts here. */
 void agb_irq_request(AgbBoard* board, uint32_t mask);
 /* The keypad's keys held now (KEYINPUT's bits set): KEYCNT's interrupt when its keys meet its condition */
