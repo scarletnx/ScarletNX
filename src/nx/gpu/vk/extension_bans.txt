@@ -72,7 +72,7 @@ OpConvertSToF | off | turnip | * | any | * | truncates a 32-bit signed integer i
 OpConvertUToF | off | turnip | * | any | * | truncates a 32-bit unsigned integer it converts to a float, where the console rounds to nearest even (seen on an Adreno 610) | edenprobe's intmath suite on an Adreno 610 phone (2026-11-11) | edenprobe:intmath: an unsigned integer converts to the nearest float, ties to even | 2026-11-11 broken on 26.2.99 (Adreno 610) | -
 
 # Presentation
-VK_KHR_present_id2 | off | nvidia | < 595.0.0 | any | * | hangs games at their first frames with present_id2 and present_wait2 (590.48, with Smooth Motion on) | DXVK dxvk_device_info.cpp:610, issue 5507 | new:edenprobe:a windowed run with frame_pacing=2 | never | -
+VK_KHR_present_id2 | off | nvidia | < 595.0.0 | any | * | hangs games at their first frames with present_id2 and present_wait2 (590.48, with Smooth Motion on) | DXVK dxvk_device_info.cpp:610, issue 5507 | new:edenprobe:a windowed run with frame_pacing_mode=3 | never | -
 
 # Subgroup operations by stage (device.c: the stage leaves the ones whose programs the translator gives ballot, shuffle
 # and arithmetic, and a program of it that votes or shuffles runs each invocation as lane 0 alone)

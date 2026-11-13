@@ -11966,8 +11966,8 @@ static void render_pad(App* app) {
                              : "",
          rgb(app->editor.note[0] ? theme->failure : theme->soft), keys);
 }
-/* a resolution past 4x, under 0.5x, or one that is no whole number: its row flashes in the warning colour and the
-   foot says why, for a moment; one that is no whole number says Eden's line as well */
+/* a resolution scale past 4x, under 0.5x (but 0, Auto), or one that is no whole number: its row flashes in the
+   warning colour and the foot says why, for a moment; one that is no whole number says Eden's line as well */
 static void resolution_warn(App* app, int why, int experimental) {
     const char* base = why == 0 ? snx_tr("Over 4x: this takes a lot of GPU memory, and a game may slow down or crash. "
                                          "Beyond this, severe graphical issues may occur")
@@ -11975,7 +11975,7 @@ static void resolution_warn(App* app, int why, int experimental) {
                                           "graphical issues may occur")
                                  : "";
     app->warn_until = now_ms(app) + GUI_WARN_MS;
-    snprintf(app->warn_key, sizeof app->warn_key, "%s", "resolution");
+    snprintf(app->warn_key, sizeof app->warn_key, "%s", "resolution_scale");
     if (experimental)
         snprintf(app->editor.note, sizeof app->editor.note, "%s%s%s", base, base[0] ? ". " : "",
                  snx_tr("Non-standard resolution, experimental."));
@@ -12034,13 +12034,13 @@ static void editor_key(App* app, GuiKey key) {
         app->editor.object == (char*)app->settings.values) {
         int row = setting_of(app, app->editor.row);
         const char* setting = row >= 0 && row < app->settings.count ? app->settings.values[row].key : NULL;
-        if (setting && !strcmp(setting, "resolution")) {
-            const char* chosen = gui_settings_value(&app->settings, "resolution");
+        if (setting && !strcmp(setting, "resolution_scale")) {
+            const char* chosen = gui_settings_value(&app->settings, "resolution_scale");
             double value = chosen ? strtod(chosen, NULL) : 0;
             int whole = value == (double)(long long)value;
             if (value > 4.0)
                 resolution_warn(app, 0, !whole);
-            else if (value < 0.5)
+            else if (value < 0.5 && value > 0)
                 resolution_warn(app, 1, !whole);
             else if (!whole) /* any scale in the range that is no whole number */
                 resolution_warn(app, 2, 1);

@@ -616,6 +616,62 @@ static void vk_descriptors_old(void) {
     }
 }
 
+int options_frame_pacing_old(const char* old) {
+    if (!strcmp(old, "0")) return 1;
+    if (!strcmp(old, "2")) return 3;
+    if (!strcmp(old, "1")) return -1;
+    return -2;
+}
+/* frame_pacing, deprecated for frame_pacing_mode, read while the file and the command line give the new key none */
+static void frame_pacing_old(void) {
+    static const char* const words[] = {"Auto", "Timer", "Display", "Display and hold"};
+    const char* old = ini_deprecated_value("frame_pacing");
+    char now[4];
+    int v;
+    if (!old || override_of("frame_pacing_mode") || store_find("frame_pacing_mode")) return;
+    v = options_frame_pacing_old(old);
+    if (v == -2)
+        WARN("settings: frame_pacing=%s, deprecated, is none of 0, 1 and 2: frame_pacing_mode takes its default, 0 "
+             "(Auto) (docs/user/deprecations.md)\n",
+             old);
+    else if (v == -1)
+        WARN("settings: frame_pacing=%s, deprecated, was its default: frame_pacing_mode takes its own, 0 (Auto), %d "
+             "(%s) for now (docs/user/deprecations.md)\n",
+             old, SNX_FRAME_PACING_AUTO, words[SNX_FRAME_PACING_AUTO]);
+    else {
+        snprintf(now, sizeof now, "%d", v);
+        store_put("frame_pacing_mode", now);
+        WARN("settings: frame_pacing=%s, deprecated, is frame_pacing_mode=%d (%s) now (docs/user/deprecations.md)\n",
+             old, v, words[v]);
+    }
+}
+int options_resolution_old(const char* old) {
+    char* end;
+    double d = strtod(old, &end);
+    while (*end == ' ' || *end == '\t') end++;
+    if (end == old || *end || !(d >= 0.25 && d <= 16)) return -2;
+    return d == 1 ? -1 : 1;
+}
+/* resolution, deprecated for resolution_scale, read while the file and the command line give resolution_scale none */
+static void resolution_old(void) {
+    const char* old = ini_deprecated_value("resolution");
+    int v;
+    if (!old || override_of("resolution_scale") || store_find("resolution_scale")) return;
+    v = options_resolution_old(old);
+    if (v == -2)
+        WARN("settings: resolution=%s, deprecated, is no scale from 0.25 to 16: resolution_scale takes its default, 0 "
+             "(Auto) (docs/user/deprecations.md)\n",
+             old);
+    else if (v == -1)
+        WARN("settings: resolution=%s, deprecated, was its default: resolution_scale takes its own, 0 (Auto), the "
+             "console's 1x unless the GPU's memory is short (docs/user/deprecations.md)\n",
+             old);
+    else {
+        store_put("resolution_scale", old);
+        WARN("settings: resolution=%s, deprecated, is resolution_scale=%s now (docs/user/deprecations.md)\n", old, old);
+    }
+}
+
 static void say_deprecated(void) {
     const char* keys[STORE_MAX];
     char line[2048];
@@ -701,6 +757,8 @@ void ini_open(const char* path) {
     memory_fit_old();
     astc_bc_old();
     vk_descriptors_old();
+    frame_pacing_old();
+    resolution_old();
     n = pending_take(taken);
     say_deprecated();
     apply_all();

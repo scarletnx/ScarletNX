@@ -354,12 +354,12 @@ static u64 due_at(u64 seq, u64 period_ns, u64 refresh, u64 now, int* late) {
     return due;
 }
 
-/* With frame_pacing 2, where the swapchain can, every game frame is held until the refresh it is due at (due_at):
+/* With frame_pacing_mode 3, where the swapchain can, every game frame is held until the refresh it is due at (due_at):
    from half a refresh before, so the refresh after the time is it, wherever the time falls within a step of the
    grid */
 u64 vk_display_target(u64 period_ns) {
     u64 refresh = backend_display_refresh_ns(), now = plat_ns(), due = 0;
-    int pacing = __atomic_load_n(&g_settings.frame_pacing, __ATOMIC_RELAXED), late = 0;
+    int pacing = snx_frame_pacing(), late = 0;
     pm_lock(&g_dc.lock);
     g_dc.seq++;
     if (pacing >= 2 && g_vk.sc_hold && __atomic_load_n(&g_dc.fifo, __ATOMIC_RELAXED))
@@ -396,7 +396,7 @@ void vk_display_fifo(int fifo) { __atomic_store_n(&g_dc.fifo, fifo, __ATOMIC_REL
 int vk_display_wait(u64 deadline_ns, u64* refresh_ns) {
     int r = 1;
     if (!__atomic_load_n(&g_dc.started, __ATOMIC_ACQUIRE) || !__atomic_load_n(&g_dc.fifo, __ATOMIC_RELAXED)) return -1;
-    if (!__atomic_load_n(&g_settings.frame_pacing, __ATOMIC_RELAXED)) return -1;
+    if (!snx_frame_pacing()) return -1;
     *refresh_ns = backend_display_refresh_ns();
     pm_lock(&g_dc.lock);
     /* the game's frames presented, all displayed where they are held until their refresh: a frame released then has

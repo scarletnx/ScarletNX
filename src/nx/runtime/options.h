@@ -51,6 +51,37 @@ int options_astc_bc_old(const char* old);
    which are -1, vk_descriptors_mode's default, as 0 was vk_descriptors's own until 3 was, and every game's .ini had
    written its default; -2 for a value that is not a whole number from 0 to 3 */
 int options_vk_descriptors_old(const char* old, int given);
+/* Graphics' Autos, Liz's answer of 2026-11-08: anisotropy's 0 is 1, the game's own filtering; frame_pacing_mode's 0 is
+   2, Display; resolution_scale's 0 the console's 1x, lower only where the GPU's memory budget as the game starts is
+   too small for it, never by the window's size. A 2 GB GT 1030 plays most games at 1x, so the steps sit under half of
+   that: 0.75 under SNX_RESOLUTION_AUTO_MB, 0.5 under half of it; a budget not known (0) keeps 1x */
+#define SNX_ANISOTROPY_AUTO    1
+#define SNX_FRAME_PACING_AUTO  2
+#define SNX_RESOLUTION_AUTO_MB 1024
+static inline float snx_resolution_auto(unsigned long long budget) {
+    return !budget || budget >= (SNX_RESOLUTION_AUTO_MB << 20) ? 1.0f
+           : budget >= (SNX_RESOLUTION_AUTO_MB << 19)          ? 0.75f
+                                                               : 0.5f;
+}
+/* frame_pacing_mode as the pacing in effect: 0 a timer, 1 the display, 2 the display and the frames held (its 1 to 3,
+   and Auto's) */
+static inline int snx_frame_pacing(void) {
+    int mode = __atomic_load_n(&g_settings.frame_pacing, __ATOMIC_RELAXED);
+    return (mode ? mode : SNX_FRAME_PACING_AUTO) - 1;
+}
+/* the scale render targets are made at for resolution_scale given and the memory budget as the device starts: Auto's
+   for 0, 0.25 for one past 0 and under it, the least scale, else the one given */
+static inline float snx_resolution_scale(float given, unsigned long long budget) {
+    return given == 0.0f ? snx_resolution_auto(budget) : given < 0.25f ? 0.25f : given;
+}
+/* frame_pacing's value old as frame_pacing_mode's (0 Auto, 1 Timer, 2 Display, 3 Display and hold): 0 is 1, 2 is 3; 1
+   is -1, frame_pacing_mode's default Auto, as 1 was frame_pacing's own, which every game's .ini had written; -2 for
+   any other value */
+int options_frame_pacing_old(const char* old);
+/* resolution's value old as resolution_scale's (0 Auto, 0.25 to 16 the scale): 1 is -1, resolution_scale's default
+   Auto, as 1 was resolution's own, which every game's .ini had written; another of 0.25 to 16 the same (1); -2 for
+   any other value */
+int options_resolution_old(const char* old);
 /* the path ini_open read, "" before it */
 const char* ini_file(void);
 /* about once a second, from the main loop. final: at exit, where an edit still being saved is left for the next start

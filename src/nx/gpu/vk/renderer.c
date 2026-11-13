@@ -186,10 +186,35 @@ static void vkr_mapping_end(void) {
 /* 0 when Vulkan can't run here */
 static int vkr_start(void) {
     if (!vk_init()) return 0;
-    g_vk_scale = g_settings.resolution_scale;       /* the .ini keeps resolution within 0.25 to 16 (options.c) */
+    { /* resolution_scale, 0 to 16 in the .ini; Auto by the memory budget as the device starts, never the window's */
+        u64 usage = 0, budget = 0;
+        vk_mem_use(&usage, &budget);
+        g_vk_scale = snx_resolution_scale(g_settings.resolution_scale, budget);
+        if (g_settings.resolution_scale > 0.0f && g_vk_scale != g_settings.resolution_scale)
+            WARN("vulkan: resolution_scale=%g is under 0.25, the least scale: it takes %.2f\n",
+                 (double)g_settings.resolution_scale, (double)g_vk_scale);
+        else if (g_settings.resolution_scale == 0.0f && !budget)
+            LOG("vulkan: resolution_scale=0 (Auto) is %.2fx, the console's: heap %d's budget is not known\n",
+                (double)g_vk_scale, vk_mem_heap());
+        else if (g_settings.resolution_scale == 0.0f)
+            LOG("vulkan: resolution_scale=0 (Auto) is %.2fx: heap %d's budget is %llu MB as the device starts, %s %d "
+                "MB\n",
+                (double)g_vk_scale, vk_mem_heap(), (unsigned long long)(budget >> 20),
+                g_vk_scale == 1.0f ? "at least" : "under",
+                g_vk_scale == 0.5f ? SNX_RESOLUTION_AUTO_MB / 2 : SNX_RESOLUTION_AUTO_MB);
+    }
     g_vk_anisotropy = g_settings.anisotropic_filtering; /* the sampler table keeps what it makes: anisotropy applies at start */
+    if (!g_vk_anisotropy) {
+        g_vk_anisotropy = SNX_ANISOTROPY_AUTO;
+        LOG("vulkan: anisotropy=0 (Auto) is %d: textures are filtered as the game asks\n", g_vk_anisotropy);
+    }
     if (g_vk_anisotropy > 1 && !g_vk.feat.samplerAnisotropy)
         LOG("vulkan: this GPU has no anisotropic filtering, so anisotropy=%d does nothing\n", g_vk_anisotropy);
+    if (!g_settings.frame_pacing)
+        LOG("vulkan: frame_pacing_mode=0 (Auto) is %d (%s)\n", SNX_FRAME_PACING_AUTO,
+            SNX_FRAME_PACING_AUTO == 2   ? "Display"
+            : SNX_FRAME_PACING_AUTO == 3 ? "Display and hold"
+                                         : "Timer");
     if (g_vk_scale != 1.0f) LOG("vulkan: render targets at %.2fx\n", g_vk_scale);
     vk_cmd_init();
     vk_render_upload_cache_reset();

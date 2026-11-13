@@ -35,7 +35,8 @@ int main(void) {
            !ini_deprecated("astc_background"));
     assert(!strcmp(ini_deprecated("press_at"), "now script, whose press_at:press is the same press") &&
            !ini_deprecated("press_len") && !ini_deprecated("script"));
-    assert(!ini_deprecated("resolution") && !ini_deprecated("controls") && !ini_deprecated(""));
+    assert(!ini_deprecated("resolution_scale") && !ini_deprecated("controls") && !ini_deprecated(""));
+    assert(!strcmp(ini_deprecated("resolution"), "now resolution_scale, whose 0 is Auto, and 0.25 to 16 the scale"));
     /* the section, word for word */
     f = tmpfile();
     assert(f);

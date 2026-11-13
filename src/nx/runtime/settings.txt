@@ -206,11 +206,14 @@ setting Stats corner
 
 table g_graphics_ini
 setting Resolution scale
-    key resolution
-    float 0.25 16
-    default 1
+    key resolution_scale
+    float 0 16
+    default 0
     startup
-    help The scale of the game's 3D rendering, 0.25 to 16: 1 = the console's, 2 = double, 0.5 = half
+    help The scale of the game's 3D rendering: 0 = Auto, the console's (1) unless the GPU's memory budget is under 1024
+    help MB as the game starts (0.75 under it, 0.5 under 512 MB), never by the window's size; 0.25 to 16 = that scale,
+    help 1 the console's, 2 double, 0.5 half. It takes the place of resolution, whose 1 was the default
+    help (docs/user/deprecations.md)
 setting Shadows
     key shadows
     int 0 1
@@ -226,22 +229,25 @@ setting Vsync
     help 1 = images wait for the display's refresh, so nothing tears; 0 = the newest is shown at the next refresh
     help the display allows, else at once
 setting Frame pacing
-    key frame_pacing
-    int 0 2
-    default 1
-    words Timer|Display|Display and hold
-    help With VSync and fps_limit=game: 0 = the game's frames are paced by a timer; 1 = the game's next frame also
-    help waits until the frame before is on the display (VK_KHR_present_wait or VK_GOOGLE_display_timing), so frames
-    help don't queue for it; 2 = and a game that asks for two refreshes or more a frame has each frame held until its
-    help refresh where the display can say when (VK_EXT_present_timing or VK_GOOGLE_display_timing), so its frames
-    help are shown evenly. Where the display can't do one, the one before it
+    key frame_pacing_mode
+    int 0 3
+    default 0
+    words Auto|Timer|Display|Display and hold
+    help With VSync and fps_limit=game: 0 = Auto, which is 2 for now; 1 = Timer, the game's frames paced by a timer;
+    help 2 = Display, the game's next frame also waits until the frame before is on the display (VK_KHR_present_wait or
+    help VK_GOOGLE_display_timing), so frames don't queue for it; 3 = Display and hold, and a game that asks for two
+    help refreshes or more a frame has each frame held until its refresh where the display can say when
+    help (VK_EXT_present_timing or VK_GOOGLE_display_timing), so its frames are shown evenly. Where the display can't do
+    help one, the one before it. It takes the place of frame_pacing, whose 0 is 1, 1 (its default) Auto and 2 is 3
+    help (docs/user/deprecations.md)
 setting Anisotropic filtering
     key anisotropy
     int 0 16
     default 0
     startup
-    words Game's|#x
-    help 0 = textures filtered as the game asks, 2 to 16 = sharper surfaces seen at an angle
+    words Auto|Game's|#x
+    help 0 = Auto, which is 1 for now: textures filtered as the game asks; 1 = as the game asks; 2 to 16 = sharper
+    help surfaces seen at an angle
 setting Game HDR
     key hdr_game
     label Game HDR output

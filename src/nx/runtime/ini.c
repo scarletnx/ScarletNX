@@ -315,7 +315,7 @@ static const struct {
                       {"touch_controls_opacity", "the on-screen controls are opaque"},
                       {"modo_tv", "now docked"},
                       {"idioma", "now language"},
-                      {"resolucion", "now resolution"},
+                      {"resolucion", "now resolution_scale"},
                       {"sombras", "now shadows"},
                       {"perfil", "now profile"},
                       {"gamepad_buttons", "now gamepad_swap_ab; gamepad_map always applies"},
@@ -337,6 +337,8 @@ static const struct {
                       {"astc_background_threads", "astc_background's CPU threads are gone: the GPU encodes alone"},
                       {"press", "now script, whose press_at:press is the same press"},
                       {"press_at", "now script, whose press_at:press is the same press"},
+                      {"frame_pacing", "now frame_pacing_mode, whose 0 is Auto, and 1 to 3 frame_pacing's 0 to 2"},
+                      {"resolution", "now resolution_scale, whose 0 is Auto, and 0.25 to 16 the scale"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;
