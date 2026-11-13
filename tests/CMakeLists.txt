@@ -68,6 +68,8 @@ if(SNX_TEST_SANITIZERS)
         scarletnx-vita snx_vita_program snx_vita_loader snx_vita_usse snx-vita-usse
         # the GBA board and its runner
         scarletnx-agb snx_agb_program
+        # the DS board, its picture on the GPU and its runner
+        scarletnx-nds snx_nds_gpu snx_nds_program
         # the Switch driver's entry, which scarletnx runs as it runs the others
         snx_switch_program
         # the menu, its splash, icon and pads

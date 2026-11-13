@@ -29,3 +29,8 @@ if(BUILD_TESTING)
     add_test(NAME nds_vk COMMAND snx-test-nds-vk)
     set_tests_properties(nds_vk PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 endif()
+
+if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
+    snx_test_sanitize(snx_test_nds_image snx-test-nds-board snx-test-nds-cpu snx-test-nds-vk)
+    snx_sanitizer_path()
+endif()
