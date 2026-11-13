@@ -5158,6 +5158,29 @@ static void missing_file(App* app, const char* dir) {
     free(moved_dir);
     free(dump);
 }
+/* a bare NCCH at path: a 3DS game's file as gui_ctr_title reads it, its program ID and product code */
+static void ncch_file(const char* path, uint64_t id, const char* code) {
+    unsigned char h[0x200] = {0};
+    memcpy(h + 0x100, "NCCH", 4);
+    for (int i = 0; i < 8; ++i) h[0x118 + i] = (unsigned char)(id >> (8 * i));
+    memcpy(h + 0x150, code, strlen(code));
+    assert(!snx_write_file(path, h, sizeof h));
+}
+#ifndef _WIN32 /* the Vita game's test, which links its dumped folder */
+/* folder/sce_sys/param.sfo naming the dumped Vita game's TITLE_ID, id (nine characters) */
+static void sfo_file(const char* folder, const char* id) {
+    unsigned char sfo[64] = {0};
+    char* path = snx_path_join(folder, "sce_sys/param.sfo");
+    const unsigned char fields[] = {0x00, 0x50, 0x53, 0x46, 0x01, 0x01, 0,    0,    36, 0, 0, 0, 48, 0, 0, 0,
+                                    1,    0,    0,    0,    0,    0,    0x04, 0x02, 10, 0, 0, 0, 16, 0, 0, 0};
+    memcpy(sfo, fields, sizeof fields);
+    memcpy(sfo + 36, "TITLE_ID", 9);
+    memcpy(sfo + 48, id, strlen(id) + 1);
+    fixture_file(folder, "sce_sys/param.sfo", "");
+    assert(!snx_write_file(path, sfo, sizeof sfo));
+    free(path);
+}
+#endif
 /* the program of the made game named name in app's games, its .ini (in its folder) holding ini: as a 3DS or a Vita
    driver leaves one. Its folder into *folder, owned */
 static char* console_game(const App* app, const char* name, const char* ini, char** folder) {
@@ -5173,9 +5196,10 @@ static char* console_game(const App* app, const char* name, const char* ini, cha
     return program;
 }
 /* A 3DS game whose file is not there, nor its extraction or a decrypted copy: its row says so and Enter asks; Locate...
-   refuses a file that is no 3DS game, said with the file it keeps, and takes a .cia, which the .ini in its folder names
-   from then on. A Vita game made from a dumped folder that went away: Enter asks, naming where its app/ pointed;
-   Locate... takes the dumped folder where it is now, its app/ linked to it and its update beside it as patch/ */
+   refuses a file that is no 3DS game, said with the file it keeps, and another game's, both titles said, and takes its
+   own, which the .ini in its folder names from then on. A Vita game made from a dumped folder that went away: Enter
+   asks, naming where its app/ pointed; Locate... refuses another game's dumped folder and takes its own where it is
+   now, its app/ linked to it and its update beside it as patch/ */
 static void missing_consoles(App* app, const char* dir) {
     char *cia = snx_path_join(dir, "ctr game.cia"), *moved = snx_path_join(dir, "moved ctr.cia");
     char *notes = snx_path_join(dir, "ctr notes.txt"),
@@ -5193,7 +5217,18 @@ static void missing_consoles(App* app, const char* dir) {
     want = snx_format("%s is no 3DS game (.cia, .cci, .3ds, .cxi): 0004000000030000 keeps %s", notes, cia);
     assert(!strcmp(app->message, want));
     free(want);
-    assert(!snx_write_file(moved, "cia", 3));
+    ncch_file(moved, 0x0004000000040000ull, "CTR-P-WXYZ"); /* another game's */
+    focus_game(app, "0004000000030000");
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    locate_answer(app, program, moved);
+    want = snx_format("Not taken: %s is 0004000000040000 (CTR-P-WXYZ), and 0004000000030000 was made from "
+                      "0004000000030000; it keeps %s",
+                      moved, cia);
+    assert(!strcmp(app->message, want));
+    free(want);
+    ncch_file(moved, 0x0004000000030000ull, "CTR-P-ABCD");
     focus_game(app, "0004000000030000");
     key(app, SDLK_RETURN);
     key(app, SDLK_DOWN);
@@ -5217,12 +5252,22 @@ static void missing_consoles(App* app, const char* dir) {
         patch_link = snx_path_join(folder, "patch");
         assert(!snx_mkdirs(dumped) && !snx_symlink(dumped, app_link) && !snx_remove_tree(dumped));
         assert(!snx_mkdirs(sfo) && !snx_mkdirs(update));
-        fixture_file(now, "sce_sys/param.sfo", "sfo");
+        sfo_file(now, "PCSE00001"); /* another game's */
         fixture_file(update, "eboot.bin", "eboot");
         focus_game(app, "PCSE00000");
         assert(app->games_missing[listed_at(app, "PCSE00000")]);
         key(app, SDLK_RETURN);
         missing_box(app, dumped);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        locate_answer(app, program, now);
+        want =
+            snx_format("Not taken: %s is PCSE00001, and PCSE00000 was made from PCSE00000; it keeps %s", now, dumped);
+        assert(!strcmp(app->message, want));
+        free(want);
+        sfo_file(now, "PCSE00000");
+        focus_game(app, "PCSE00000");
+        key(app, SDLK_RETURN);
         key(app, SDLK_DOWN);
         key(app, SDLK_RETURN);
         locate_answer(app, program, now);
@@ -5249,6 +5294,114 @@ static void missing_consoles(App* app, const char* dir) {
     free(notes);
     free(moved);
     free(cia);
+}
+/* the menu's message is want, the one it is said when not */
+static bool message_is(const App* app, const char* want) {
+    if (!strcmp(app->message, want)) return true;
+    fprintf(stderr, "gui_sdl.c: the message is \"%s\", not \"%s\"\n", app->message, want);
+    return false;
+}
+/* Locate... for a Switch game named by its title ID: the dump picked is asked of its driver (-x --icon's title.ini),
+   the answer waited for; another game's refused, both IDs said, one whose title the driver did not say refused, said,
+   and the game's own taken. For a GBA game: a ROM whose hash is not the one its map names refused, its header's code
+   and title said, and the ROM it was made from taken */
+static void locate_titles(App* app, const char* dir) {
+    char *old = snx_path_join(dir, "title old.nsp"), *other = snx_path_join(dir, "title other.nsp");
+    char *right = snx_path_join(dir, "title right.nsp"), *mute = snx_path_join(dir, "title mute.nsp");
+    char *ini = snx_format("[Game]\nsource=%s\n", old), *folder, *source, *want;
+    char* cache_was = getenv("XDG_CACHE_HOME") ? snx_strdup(getenv("XDG_CACHE_HOME")) : NULL;
+    char *cache = snx_path_join(dir, "titles cache"), *program;
+    int recorded = 0;
+    set_env("XDG_CACHE_HOME", cache); /* the dumps' title.ini goes in the menu's cache */
+    program = console_game(app, "0100ABCD99990000", ini, &folder);
+    assert(!snx_write_file(other, "title=0100ABCD88880000\ngame=0100ABCD88880000\n", 46));
+    assert(!snx_write_file(right, "title=0100ABCD99990000\ngame=0100ABCD99990000\n", 46));
+    assert(!snx_write_file(mute, "dump", 4)); /* the fake driver says no title of it */
+    go_tab(app, GUI_TAB_GAMES);
+    for (int i = 0; i < 3; ++i) {
+        const char* picked = i == 0 ? other : i == 1 ? mute : right;
+        focus_game(app, "0100ABCD99990000");
+        key(app, SDLK_RETURN);
+        missing_box(app, old);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        locate_answer(app, program, picked);
+        want = snx_format("Locate...: reading the title of %s", picked);
+        assert(!strcmp(app->message, want) && app->reading_game && !strcmp(app->reading_file, picked));
+        free(want);
+        dump_icons_pass(&app->dump_icons); /* the driver's answer */
+        pump(app);
+        assert(!app->reading_game);
+        want = i == 0   ? snx_format("Not taken: %s is 0100ABCD88880000, and 0100ABCD99990000 was made from "
+                                     "0100ABCD99990000; it keeps %s",
+                                     other, old)
+               : i == 1 ? snx_format("Not taken: the title of %s does not read (the driver said nothing of its "
+                                     "title); 0100ABCD99990000 keeps %s",
+                                     mute, old)
+                        : snx_format("0100ABCD99990000 plays from %s now.", right);
+        assert(message_is(app, want));
+        free(want);
+    }
+    source = snx_game_source(folder, "0100ABCD99990000", &recorded);
+    assert(recorded && !strcmp(source, right));
+    free(source);
+    made_gone(app, folder);
+    free(program);
+    free(ini);
+    { /* a GBA game, by the hash its map names */
+        unsigned char rom[0x200] = {0};
+        char *lost = snx_path_join(dir, "agb lost.gba"), *same = snx_path_join(dir, "agb same.gba");
+        char *another = snx_path_join(dir, "agb other.gba"), *map, *file;
+        uint64_t hash;
+        memcpy(rom + 0xA0, "TESTGAME", 8);
+        memcpy(rom + 0xAC, "ATST", 4);
+        hash = snx_fnv1a(SNX_FNV_BASIS, rom, sizeof rom);
+        assert(!snx_write_file(same, rom, sizeof rom));
+        memcpy(rom + 0xA0, "OTHERGAME", 9);
+        memcpy(rom + 0xAC, "AOTH", 4);
+        assert(!snx_write_file(another, rom, sizeof rom));
+        ini = snx_format("[Game]\nsource=%s\nsystem=gba\n", lost);
+        program = console_game(app, "agb lost", ini, &folder);
+        map = snx_format("snx-agb-code 3 7 %016llX\n", (unsigned long long)hash);
+        fixture_file(folder, "agb lost_code.map", map);
+        for (int i = 0; i < 2; ++i) {
+            focus_game(app, "agb lost");
+            key(app, SDLK_RETURN);
+            missing_box(app, lost);
+            key(app, SDLK_DOWN);
+            key(app, SDLK_RETURN);
+            locate_answer(app, program, i ? same : another);
+            want = i ? snx_format("agb lost plays from %s now.", same)
+                     : snx_format("Not taken: %s is AOTH (OTHERGAME), hashed %016llX, and agb lost was made from the "
+                                  "ROM hashed %016llX; it keeps %s",
+                                  another, (unsigned long long)snx_fnv1a(SNX_FNV_BASIS, rom, sizeof rom),
+                                  (unsigned long long)hash, lost);
+            assert(message_is(app, want));
+            free(want);
+        }
+        file = snx_format("%s/agb lost.ini", folder);
+        source = snx_ini_value(file, "source");
+        assert(source && !strcmp(source, same));
+        free(source);
+        free(file);
+        made_gone(app, folder);
+        assert(!remove(same) && !remove(another));
+        free(program);
+        free(map);
+        free(ini);
+        free(another);
+        free(same);
+        free(lost);
+    }
+    assert(!remove(other) && !remove(right) && !remove(mute));
+    set_env("XDG_CACHE_HOME", cache_was);
+    assert(!snx_path_exists(cache) || !snx_remove_tree(cache)); /* XDG's alone: elsewhere the menu's own folder */
+    free(cache);
+    free(cache_was);
+    free(mute);
+    free(right);
+    free(other);
+    free(old);
 }
 int main(int argc, char** argv) {
 #ifdef _WIN32
@@ -16198,6 +16351,7 @@ int main(int argc, char** argv) {
     relist_keeps_scroll(&app, temporary);
     missing_file(&app, temporary);
     missing_consoles(&app, temporary);
+    locate_titles(&app, temporary);
     recompile_queue(&app);
 #ifdef SNX_XDG /* the last of the test: SDL keeps the picker it found from then on */
     pickers_asked(&app, temporary, self);

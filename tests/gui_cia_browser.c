@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gui/browser.h"
+#include "gui/title.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
 #include <assert.h>
@@ -12,6 +14,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef SNX_TEST_ZSTD
+#include <zstd.h>
+#endif
 
 /* gui_games_group's made: b.nsp is the dump of a game recompiled already */
 static bool made_b(const char* path, const void* user) {
@@ -317,6 +322,150 @@ static void source_missing(void) {
     free(dump);
     free(dir);
     puts("PASS a made game whose file to play from is not there, of each console, and one taken off the list");
+}
+/* little and big endian stores of a fixture's fields */
+static void le(unsigned char* at, uint64_t value, int bytes) {
+    for (int i = 0; i < bytes; ++i) at[i] = (unsigned char)(value >> (8 * i));
+}
+static void be(unsigned char* at, uint64_t value, int bytes) {
+    for (int i = 0; i < bytes; ++i) at[i] = (unsigned char)(value >> (8 * (bytes - 1 - i)));
+}
+/* an NCCH header at h: its program ID and product code */
+static void ncch_at(unsigned char* h, uint64_t id, const char* code) {
+    memcpy(h + 0x100, "NCCH", 4);
+    le(h + 0x118, id, 8);
+    memcpy(h + 0x150, code, strlen(code));
+}
+/* path holding size bytes of data */
+static void write_bytes(const char* path, const unsigned char* data, size_t size) {
+    assert(!snx_write_file(path, data, size));
+}
+/* What a game's file is, from its own header (gui/title.h): a 3DS game's title ID and product code from a bare NCCH, a
+   cartridge image's game partition, a CIA's TMD (the code from its first content, none when that is not in the clear),
+   a bundle's game and a z3ds file's; a file that is none of them, why said. A dumped Vita game's TITLE_ID. A GBA ROM's
+   game code, title and hash, and the hash its game's map names */
+static void titles_read(void) {
+    char *dir = snx_temp_dir(NULL), *path = snx_path_join(dir, "game"), code[24], why[256];
+    unsigned char* data = (unsigned char*)calloc(1, 0x8000);
+    uint64_t id = 0;
+    assert(dir && data);
+    /* a bare NCCH */
+    ncch_at(data, 0x0004000000ABCD00ull, "CTR-P-ABCD");
+    write_bytes(path, data, 0x200);
+    assert(gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && id == 0x0004000000ABCD00ull &&
+           !strcmp(code, "CTR-P-ABCD") && !why[0]);
+    /* a cartridge image: its game partition 0 at 0x4000 */
+    memset(data, 0, 0x8000);
+    memcpy(data + 0x100, "NCSD", 4);
+    le(data + 0x120, 0x4000 / 0x200, 4);
+    le(data + 0x124, 1, 4);
+    ncch_at(data + 0x4000, 0x0004000000BBBB00ull, "CTR-P-BBBB");
+    write_bytes(path, data, 0x4200);
+    assert(gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && id == 0x0004000000BBBB00ull &&
+           !strcmp(code, "CTR-P-BBBB"));
+#ifdef SNX_TEST_ZSTD
+    { /* the same in a z3ds file: its header, then the image as zstd */
+        size_t room = ZSTD_compressBound(0x4200), packed;
+        unsigned char* z = (unsigned char*)calloc(1, 0x20 + room);
+        assert(z);
+        packed = ZSTD_compress(z + 0x20, room, data, 0x4200, 3);
+        assert(!ZSTD_isError(packed));
+        memcpy(z, "Z3DS", 4);
+        z[8] = 1;
+        le(z + 0xA, 0x20, 2);
+        le(z + 0x10, packed, 8);
+        le(z + 0x18, 0x4200, 8);
+        write_bytes(path, z, 0x20 + packed);
+        id = 0;
+        assert(gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && id == 0x0004000000BBBB00ull &&
+               !strcmp(code, "CTR-P-BBBB"));
+        free(z);
+    }
+#endif
+    { /* a CIA: the title from its TMD (RSA-2048 SHA-256, body at 0x140), the code from its first content */
+        const size_t tmd = 0x2DC0, content = 0x3940;
+        memset(data, 0, 0x8000);
+        le(data, 0x2020, 4);
+        le(data + 8, 0xA00, 4);
+        le(data + 12, 0x350, 4);
+        le(data + 16, 0xB64, 4);
+        le(data + 24, 0x200, 8);
+        be(data + tmd, 0x10004, 4);
+        be(data + tmd + 0x140 + 0x4C, 0x0004000000CCCC00ull, 8);
+        ncch_at(data + content, 0x0004000000CCCC00ull, "CTR-P-CCCC");
+        write_bytes(path, data, content + 0x200);
+        assert(gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && id == 0x0004000000CCCC00ull &&
+               !strcmp(code, "CTR-P-CCCC"));
+        ncch_at(data + content, 0x0004000000DDDD00ull,
+                "CTR-P-DDDD"); /* another title's content: its code not this one's */
+        write_bytes(path, data, content + 0x200);
+        assert(gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && id == 0x0004000000CCCC00ull && !code[0]);
+        memset(data + content, 0x5A, 0x200); /* its content encrypted: the title alone */
+        write_bytes(path, data, content + 0x200);
+        assert(gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && id == 0x0004000000CCCC00ull && !code[0]);
+        { /* in a bundle, a ustar archive whose first game entry is it */
+            unsigned char* tar = (unsigned char*)calloc(1, 0x200 + content + 0x200 + 0x400);
+            assert(tar);
+            memset(data + content, 0, 0x200);
+            ncch_at(data + content, 0x0004000000CCCC00ull, "CTR-P-CCCC");
+            strcpy((char*)tar, "game.cia");
+            snprintf((char*)tar + 124, 12, "%011o", (unsigned)(content + 0x200));
+            tar[156] = '0';
+            memcpy(tar + 257, "ustar", 5);
+            memcpy(tar + 0x200, data, content + 0x200);
+            write_bytes(path, tar, 0x200 + content + 0x200 + 0x400);
+            assert(gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && id == 0x0004000000CCCC00ull &&
+                   !strcmp(code, "CTR-P-CCCC"));
+            free(tar);
+        }
+    }
+    write_bytes(path, (const unsigned char*)"not a game", 10);
+    assert(!gui_ctr_title(path, &id, code, sizeof code, why, sizeof why) && !id && strstr(why, "no CIA"));
+    { /* a dumped Vita game's param.sfo: one string, TITLE_ID */
+        unsigned char sfo[64] = {0};
+        char *folder = snx_path_join(dir, "vita/sce_sys"), *game = snx_path_join(dir, "vita"), title[32];
+        le(sfo, 0x46535000u, 4);
+        le(sfo + 4, 0x101, 4);
+        le(sfo + 8, 36, 4);
+        le(sfo + 12, 48, 4);
+        le(sfo + 16, 1, 4);
+        le(sfo + 22, 0x0204, 2);
+        le(sfo + 24, 10, 4);
+        le(sfo + 28, 16, 4);
+        memcpy(sfo + 36, "TITLE_ID", 9);
+        memcpy(sfo + 48, "PCSE00000", 10);
+        assert(!snx_mkdirs(folder) && !gui_vita_title(game, title, sizeof title) && !title[0]);
+        put(folder, "param.sfo", "x");
+        assert(!gui_vita_title(game, title, sizeof title));
+        free(folder);
+        folder = snx_path_join(dir, "vita/sce_sys/param.sfo");
+        write_bytes(folder, sfo, sizeof sfo);
+        assert(gui_vita_title(game, title, sizeof title) && !strcmp(title, "PCSE00000"));
+        free(game);
+        free(folder);
+    }
+    { /* a GBA ROM's header and hash, and the hash its game's map names */
+        char gba_code[5], title[13], *map;
+        uint64_t hash = 0, made = 0;
+        memset(data, 0, 0x8000);
+        memcpy(data + 0xA0, "TESTGAME", 8);
+        memcpy(data + 0xAC, "ATST", 4);
+        write_bytes(path, data, 0x200);
+        assert(gui_gba_title(path, gba_code, title, &hash, why, sizeof why) && !strcmp(gba_code, "ATST") &&
+               !strcmp(title, "TESTGAME") && hash == snx_fnv1a(SNX_FNV_BASIS, data, 0x200));
+        write_bytes(path, data, 0x40);
+        assert(!gui_gba_title(path, gba_code, title, &hash, why, sizeof why) && strstr(why, "too short"));
+        assert(!gui_gba_made_from(dir, "agb", &made) && !made);
+        map = snx_format("snx-agb-code 3 7 %016llX\n00000000 0 1 0 snx_agb_1\n", (unsigned long long)0x1234ABCDull);
+        put(dir, "agb_code.map", map);
+        assert(gui_gba_made_from(dir, "agb", &made) && made == 0x1234ABCDull);
+        free(map);
+    }
+    assert(!snx_remove_tree(dir));
+    free(data);
+    free(path);
+    free(dir);
+    puts("PASS what a game's file is, from its own header");
 }
 int main(void) {
     GuiGames games = {0};
@@ -859,6 +1008,7 @@ int main(void) {
     }
     addon_items();
     source_missing();
+    titles_read();
     /* a game whose dump carries no control.nacp: the launcher shows the name the driver recorded for it, not the title
        ID the folder is named by */
     {
