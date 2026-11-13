@@ -2309,6 +2309,8 @@ void vk_compute_land(void); /* pending compute results into guest memory, now */
 u64 vk_compute_put_aside(void);
 void vk_compute_wait(u64 value);                     /* until the compute batch is done (any thread, without vk_lock) */
 void vk_compute_progress(u64* submitted, u64* done); /* the last batch and the last done (any thread) */
+/* the batch that holds the dispatches recorded so far: the one being recorded, else the last submitted (vk_lock held) */
+u64 vk_compute_number(void);
 void vk_compute_land_through(u64 value);             /* the batches up to it, done, land (vk_lock) */
 void vk_compute_before_write(u64 gva, u64 size);     /* gpu.c's g_gpu_before_write */
 void vk_compute_mem_need(u64 a, u64 n);              /* a read of [a, a + n): land results there first */

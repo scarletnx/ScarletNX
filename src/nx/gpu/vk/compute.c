@@ -732,6 +732,7 @@ u64 vk_compute_put_aside(void) {
 void vk_compute_wait(u64 value) {
     if (value) cs_wait(value);
 }
+u64 vk_compute_number(void) { return g_cval + (g_recording ? 1 : 0); }
 void vk_compute_progress(u64* submitted, u64* done) {
     *submitted = __atomic_load_n(&g_cval, __ATOMIC_RELAXED);
     *done = 0;
