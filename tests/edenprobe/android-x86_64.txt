@@ -1,5 +1,5 @@
 # edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/dev/edenprobe.md)
-# build: v0.13.0
+# build: v0.15.0
 # mode: quick
 bionic: /proc/self shows the package, the library and app_process64
 bionic: a SIGUSR1 handler runs on raise, and a blocked signal waits as pending
@@ -54,6 +54,9 @@ reference: 4-bit weights 7, 8 and 13 unquantize to 29, 35 and 56
 reference: 5-bit weights 3 and 21 unquantize to 6 and 44
 reference: EAC indices run down each column
 reference: ETC2 RGBA alpha is base plus modifier times multiplier, clamped
+reference: ETC2 RGBA alpha with a multiplier of nought is its base
+reference: ETC2 pixel indices run down the columns
+reference: RGBA base and offset endpoints with a negative sum swap, blue contracted, alpha with them
 reference: a 3-level weight is 0, 32 or 64
 reference: a 4x4 BC4 array's levels are one gob each and a layer is three
 reference: a 64x64 BC4 array uses two-gob tiles on level 0 and one-gob tiles below
@@ -68,7 +71,9 @@ reference: a draw texture from texel -2 carries 0xffffe000 as its source x
 reference: a draw texture of 16 by 16 at (40, 24) is twelve words from 0x420
 reference: a flipped, layered, scaled or padded copy puts each texel where worked out by hand
 reference: a friend profile is read at the offsets the guest reads it at
+reference: a group of quints cut after two values takes its missing bits as nought
 reference: a line loop's closing side is judged drawn, a line strip's clear, and a quad's diagonal clear when drawn as lines
+reference: a luminance base 0xe7 and offset 0xff run from 0xf9 to a clamped 0xff
 reference: a margin holds back the pixels an edge runs through
 reference: a missed restart in the topology suite's strips and fans draws pixels the cases judge clear
 reference: a moved rectangle lands at its offset and nothing else changes
@@ -89,6 +94,7 @@ reference: a rectangle to a pixel's centre covers 0x5 of the standard four
 reference: a region's pixels sample the texel whose centre they sit on
 reference: a render enable is 0x20030554, the address high word first, the mode
 reference: a result code reads as the platform prints it
+reference: a see-through ETC2 punch-through H block is transparent at index 2
 reference: a see-through ETC2 punch-through block has no modifier at index 0
 reference: a self-signed root names itself as issuer and the certificate it signed does not
 reference: a serialised addrinfo list reads back entry by entry to its sentinel
@@ -103,10 +109,13 @@ reference: adding the source at full weight to nothing gives the source back
 reference: alpha to coverage with alpha to one is the inline word 0x8011054f
 reference: an EAC multiplier of nought adds the bare modifier
 reference: an EAC texel is base * 8 + 4 plus modifier * multiplier * 8, clamped
+reference: an ETC2 H mode base that is equal is not smaller, and red alone does not order two
 reference: an ETC2 H mode distance index takes its last bit from the base order
 reference: an ETC2 T mode paint colour is base 2 plus the distance, clamped
 reference: an ETC2 block's own bytes sampled as RGBA8 read as an upload of the block
 reference: an ETC2 planar block starts from its origin colour
+reference: an ETC2 planar colour of six bits repeats its top two bits below
+reference: an ETC2 second base of 31 or 0 is still inside the range
 reference: an HTTP response head says where its body is and when it is whole
 reference: an RGBA8 texel read as R32_Uint and rotated is its word least significant first
 reference: an address length recvfrom left unset is not answered with
@@ -242,6 +251,7 @@ reference: sched: svcSleepThread(0) must keep the core, and the cores answer Q2 
 reference: sched: the chain passes when its end runs at 44, and fails one level deep
 reference: sched: the owner's drop back is read from the order, and Q1 from its priority
 reference: service: a closed decoder passes only when the next one opens
+reference: service: a silence packet passes only as 960 samples of nought a channel
 reference: service: acc-app passes every user qualified and a thumbnail checked
 reference: service: account passes 52 answering what 51 answers
 reference: service: am passes a save size that reads back as ExtendSaveData asked
@@ -265,6 +275,7 @@ reference: service: aoc passes none listed, lists that fit their room and the ba
 reference: service: apm passes a configuration kept per mode and the boost mode's
 reference: service: auddev passes a volume read back as set
 reference: service: auddev passes the active output among those listed
+reference: service: audin passes none or each named, inside the room given
 reference: service: audout passes one output opened, buffers held and given back
 reference: service: bsd-local passes the answers of a BSD stack
 reference: service: csrng passes two buffers written whole and apart
@@ -276,6 +287,7 @@ reference: service: fsdir passes the one file listed once
 reference: service: fsp passes a temporary storage whose last marker is gone
 reference: service: hid passes npad entries doubled and one apart
 reference: service: hwopus passes 24 decoders and the 25th refused out of decoders
+reference: service: hwopus through the SDK passes 24 decoders and the 25th OutOfResource
 reference: service: ipc passes the controller's answers and a Close
 reference: service: ldn passes a monitor that comes and takes this process
 reference: service: ldn passes a station with nothing near and nothing to join
@@ -288,7 +300,9 @@ reference: service: ldn passes the address in host order and the network's confi
 reference: service: ldn passes the network asked, with this console as node 0
 reference: service: mii passes the six default Miis
 reference: service: nfp passes 25 answering what 3 answers
+reference: service: ngc in hooks mode passes a clean name found clean and left as it was
 reference: service: ngc passes a clean name found clean and given back
+reference: service: pctl passes only nothing restricted, communication free, level 0
 reference: service: pl passes six loaded fonts behind the decrypted magic
 reference: service: pl passes the six in order of priority, each as told
 reference: service: profile passes a 256x256 JPEG of the size told
@@ -296,6 +310,7 @@ reference: service: profile passes one base twice, of the user, by a name
 reference: service: profile passes the user found and nobody made up
 reference: service: renderer passes a renderer stopped, started and stopped
 reference: service: renderer passes its parameters and two settings kept
+reference: service: sdk passes a tail call that reaches what a call reaches
 reference: service: set passes reden's language codes and fails what strays from them
 reference: service: set-sys passes settings read back as set and flags put back
 reference: service: sm's refusal of a bad name passes 0xc15 alone
@@ -304,6 +319,7 @@ reference: service: time passes a steady clock one or two seconds on
 reference: service: time passes a user clock its context's offset past steady
 reference: service: time passes the device's rule dating as the service's own
 reference: service: time passes the epoch and the known time dated under UTC
+reference: service: time-perm in hooks mode passes the SDK's clock setters refused
 reference: service: time-perm passes every write time:u asks refused
 reference: service: time-snap passes a snapshot of the user clock and its span
 reference: service: time-zone passes names listed, the location and a date back
@@ -377,24 +393,40 @@ reference: the net file's report line, and whether it says the machine is online
 reference: the offset viewport halves the triangle and moves it
 reference: the placeholder is replaced everywhere, and a name that will not fit is refused
 reference: the power of two's allowance grows with its argument
+reference: the reference decodes the ETC2 H-equal block as Mesa does
+reference: the reference decodes the ETC2 H-green block as Mesa does
 reference: the reference decodes the ETC2 H-high block as Mesa does
 reference: the reference decodes the ETC2 H-low block as Mesa does
 reference: the reference decodes the ETC2 T block as Mesa does
+reference: the reference decodes the ETC2 columns block as Mesa does
 reference: the reference decodes the ETC2 differential block as Mesa does
+reference: the reference decodes the ETC2 edge-high block as Mesa does
+reference: the reference decodes the ETC2 edge-low block as Mesa does
 reference: the reference decodes the ETC2 individual block as Mesa does
 reference: the reference decodes the ETC2 planar block as Mesa does
+reference: the reference decodes the ETC2 planar-bits block as Mesa does
 reference: the reference decodes the ETC2 pta-diff block as Mesa does
+reference: the reference decodes the ETC2 pta-h block as Mesa does
 reference: the reference decodes the ETC2 pta-planar block as Mesa does
 reference: the reference decodes the ETC2 pta-t block as Mesa does
 reference: the reference decodes the ETC2 rgba block as Mesa does
+reference: the reference decodes the ETC2 rgba-flat block as Mesa does
+reference: the reference decodes the contract13 block as ARM's decoder does
+reference: the reference decodes the cutquints block as ARM's decoder does
+reference: the reference decodes the cuttrits block as ARM's decoder does
 reference: the reference decodes the dual block as ARM's decoder does
+reference: the reference decodes the dual4 block as ARM's decoder does
 reference: the reference decodes the error block as ARM's decoder does
+reference: the reference decodes the grid10x6 block as ARM's decoder does
+reference: the reference decodes the grid6x10 block as ARM's decoder does
 reference: the reference decodes the hdrfirst block as ARM's decoder does
 reference: the reference decodes the infill12 block as ARM's decoder does
 reference: the reference decodes the infill8 block as ARM's decoder does
+reference: the reference decodes the lumdelta block as ARM's decoder does
 reference: the reference decodes the part2 block as ARM's decoder does
 reference: the reference decodes the part3 block as ARM's decoder does
 reference: the reference decodes the part4 block as ARM's decoder does
+reference: the reference decodes the part6x5 block as ARM's decoder does
 reference: the reference decodes the picture's 12x12 blocks to FP16 as ARM's decoder does
 reference: the reference decodes the picture's 12x12 blocks to eight bits as ARM's decoder does
 reference: the reference decodes the picture's 4x4 blocks to FP16 as ARM's decoder does
@@ -410,12 +442,15 @@ reference: the reference decodes the q32even block as ARM's decoder does
 reference: the reference decodes the q32odd block as ARM's decoder does
 reference: the reference decodes the quinte block as ARM's decoder does
 reference: the reference decodes the quintw block as ARM's decoder does
+reference: the reference decodes the reserved block as ARM's decoder does
 reference: the reference decodes the trite block as ARM's decoder does
 reference: the reference decodes the tritw block as ARM's decoder does
 reference: the reference decodes the void block as ARM's decoder does
+reference: the reference decodes the weightbits block as ARM's decoder does
 reference: the reference's addition is the one a float would have done
 reference: the reference's multiplication is the one a float would have done
 reference: the reference's multiply and add rounds once, not twice
+reference: the rounding modes round where the first two never do, ties among them
 reference: the runtime's transcendentals give the answers written down here
 reference: the shifts clamp their count to 32 and the sweep reaches past it
 reference: the sign-in wait ends only on the answer a signed in session gives
@@ -432,6 +467,7 @@ reference: the topology suite's quads, quad strip, polygon and fan cover exactly
 reference: the triangle whose left edge it is takes the shared centres
 reference: the two right shifts differ exactly on the values with the top bit set
 reference: the vertex suite's layouts give hand-worked floats and its vertices read where worked out by hand
+reference: the wide multiplies agree with 64 bit products, and catch a lost high half
 reference: three copies across the target still miss every texel boundary
 reference: touch: a lifted finger is followed by states with no touch for half a second
 reference: touch: a prompt waits out a finger already down, then takes the next tap
@@ -704,6 +740,7 @@ support: the walk from the overview to a case and back lands where it should
 support: the widest mode goes into the journal whole and a launch goes on in it
 support: the word fatal changes nothing, and the mode line says so once
 support: the word hang asks for the cases that hang, and only beside retry for both
+support: the word hooks asks the services through the SDK's functions, a word of the key
 support: the word listen asks for the listening sequence and the audio family
 support: the word noprogress turns the running screen off and nothing else
 support: the word notime turns the timing passes off and says so
