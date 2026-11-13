@@ -334,9 +334,10 @@ int vk_tc_dma_remap(VkCommandBuffer cb, const GpuDmaOp* o, u32 lines, VkBuffer i
                   .const_a = o->const_a,
                   .const_b = o->const_b,
                   .line_out = o->line_out};
-    /* the input range covers every line's bytes (a fill reads none: a word of it still binds) */
-    u64 in_size =
-        in_low + (lines ? (u64)(in_pitch < 0 ? -in_pitch : in_pitch) * (lines - 1) + o->line_in : 0) + 4 - in_off;
+    /* the input range covers every line's bytes and stops there, where a buffer made for the copy's source ends (a
+       fill reads none: a word of it still binds) */
+    u64 in_size = in_low + (lines ? (u64)(in_pitch < 0 ? -in_pitch : in_pitch) * (lines - 1) + o->line_in : 0) - in_off;
+    if (in_size < 4) in_size = 4;
     return tc_dispatch(cb, &p, (units + 63) / 64, lines, 1, in, in_off, (in_size + 3) & ~3ull, out, out_off,
                        out_at + (u64)out_pitch * lines - out_off);
 }
