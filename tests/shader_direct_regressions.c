@@ -1356,6 +1356,67 @@ static void hfma2_immediate(void) {
     }
 }
 
+/* An F32 operand of a half instruction (HADD2 R0, R7.F32, RZ, or HADD2 R0, RZ, c[0][0]) gives the F16 that rounds to
+   nearest even: 65520 and past it an infinity of its sign, as yuzu, Eden and Ryujinx convert it and
+   vulkan_texture_half.inc expects; below it the value rounds into the range. A NaN made an F16 is +0, as Eden makes
+   it, so R1 = R0 - R0 is 0 for an infinity too (a frac of a coordinate past the range). Run on the CPU
+   (support/spv_eval.c), the halves read as an integer render target's bits */
+static void half_f32_operand_range(void) {
+    static const struct {
+        u32 operand, halves;
+        const char* what;
+    } cases[] = {
+        {0x4b979000u, 0x7c007c00u, "19865600 is an infinity"},
+        {0x477ff000u, 0x7c007c00u, "65520, the tie past 65504, rounds to an infinity"},
+        {0xcf000000u, 0xfc00fc00u, "-2147483648 is a negative infinity"},
+        {0x477fef00u, 0x7bff7bffu, "65519 rounds to 65504"},
+        {0x477fe000u, 0x7bff7bffu, "65504 stays 65504"},
+        {0x3f800000u, 0x3c003c00u, "1 stays 1"},
+        {0x7f800000u, 0x7c007c00u, "an infinity stays an infinity"},
+        {0x7fc00000u, 0x00000000u, "a NaN becomes +0, as Eden converts it to an F16"},
+    };
+    const u64 hadd2_f32 = 0x5D10000000070000ull | 7ull << 8 | 255ull << 20 | 1ull << 47; /* HADD2 R0, R7.F32, RZ */
+    const u64 hadd2_cbuf = 0x7A80000000070000ull | 255ull << 8;                          /* HADD2 R0, RZ, c[0][0] */
+    const u64 hadd2_sub = 0x5D10000000070001ull | 1ull << 31;                            /* HADD2 R1, R0, -R0 */
+    for (size_t k = 0; k < 2 * sizeof cases / sizeof *cases; k++) {
+        size_t i = k / 2;
+        int cbuf = k % 2;
+        const u64 program[] = {mov32i(7, cases[i].operand), cbuf ? hadd2_cbuf : hadd2_f32, hadd2_sub};
+        ShaderInfo info = {0};
+        size_t words = 0, slots;
+        u64* code = guest_program(program, 3, NULL, &slots);
+        if (!code) return;
+        set_sph(code, 18, 0xf);
+        info.rt_int_mask = 1;
+        u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 1, 1, 1, 1);
+        free(code);
+        check_translated(spv, &info, "HADD2 of an F32 operand translates");
+        if (!spv) continue;
+        SpvEvalEnv env = {0};
+        float one[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+        u32 scale[4];
+        memcpy(scale, one, sizeof one);
+        u32 constants[4] = {cases[i].operand, 0, 0, 0};
+        env.ubo[SNX_VKB_RS] = scale;
+        env.ubo_words[SNX_VKB_RS] = 4;
+        env.ubo[SNX_VKB_CB] = constants;
+        env.ubo_words[SNX_VKB_CB] = 4;
+        const char* why = spv_eval(spv, words, &env);
+        u32 halves = env.out[0][0], difference = env.out[0][1];
+        int nan = (cases[i].halves & 0x7c00u) == 0x7c00u && (cases[i].halves & 0x3ffu);
+        int same = nan ? (halves & 0x7c00u) == 0x7c00u && (halves & 0x3ffu) && (halves >> 16 & 0x7c00u) == 0x7c00u &&
+                             (halves >> 16 & 0x3ffu)
+                       : halves == cases[i].halves;
+        if (why || !same || difference)
+            fprintf(stderr, "HADD2 R0, %s with %08x: %s, R0 = %08x (%08x expected), R0 - R0 = %08x\n",
+                    cbuf ? "RZ, c[0][0]" : "R7.F32, RZ", cases[i].operand, why ? why : "ran", halves, cases[i].halves,
+                    difference);
+        check(!why && same, cases[i].what);
+        check(!why && !difference, "R0 - R0 is 0, Inf - Inf too (a NaN made an F16 is +0)");
+        free(spv);
+    }
+}
+
 static void fragment_storage_images(void) {
     /* the same store and atomic on 2D array surfaces (bits 33-35 set to 4), as Pokemon Legends Z-A's fragment
        programs write them (issue #440): the layer in the coordinates' third register */
@@ -6061,6 +6122,7 @@ int main(int argc, char** argv) {
     f2f_half_rounding();
     saturate_nan();
     hfma2_immediate();
+    half_f32_operand_range();
     tlds_fp16();
     scaled_texel_fetch();
     query_only_volume();
