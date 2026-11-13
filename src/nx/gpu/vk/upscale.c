@@ -24,6 +24,10 @@ static struct {
     VkImageView view;
     int fresh; /* the image has no layout yet, and the history nothing */
     u64 last;  /* plat_ns at the last dispatch */
+    /* the last setup that failed: not tried again (each evaluation, usually one a frame) until one of these changes */
+    u32 failed_render[2], failed_out[2], failed_flags;
+    VkFormat failed_format;
+    int failed;
 } g_upscale;
 
 /* the FSR input conventions setting's bits (settings.txt) */
@@ -53,11 +57,25 @@ static void release(void) {
     g_upscale.view = VK_NULL_HANDLE;
 }
 
+/* a setup for these that failed, kept so it isn't tried again: 0 */
+static int setup_failed(const u32 render[2], const u32 out[2], u32 flags, VkFormat format) {
+    memcpy(g_upscale.failed_render, render, sizeof g_upscale.failed_render);
+    memcpy(g_upscale.failed_out, out, sizeof g_upscale.failed_out);
+    g_upscale.failed_flags = flags;
+    g_upscale.failed_format = format;
+    g_upscale.failed = 1;
+    return 0;
+}
+
 /* the context and our output image for these sizes, flags and format: 1 when there */
 static int ready(const u32 render[2], const u32 out[2], u32 flags, VkFormat format) {
     if (g_upscale.fsr && !memcmp(g_upscale.render, render, sizeof g_upscale.render) &&
         !memcmp(g_upscale.out, out, sizeof g_upscale.out) && g_upscale.flags == flags && g_upscale.format == format)
         return 1;
+    if (g_upscale.failed && !memcmp(g_upscale.failed_render, render, sizeof g_upscale.failed_render) &&
+        !memcmp(g_upscale.failed_out, out, sizeof g_upscale.failed_out) && g_upscale.failed_flags == flags &&
+        g_upscale.failed_format == format)
+        return 0;
     release();
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
@@ -70,7 +88,7 @@ static int ready(const u32 render[2], const u32 out[2], u32 flags, VkFormat form
                             .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    if (!vk_image_create(&ii, &g_upscale.image, &g_upscale.memory)) return 0;
+    if (!vk_image_create(&ii, &g_upscale.image, &g_upscale.memory)) return setup_failed(render, out, flags, format);
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                 .image = g_upscale.image,
                                 .viewType = VK_IMAGE_VIEW_TYPE_2D,
@@ -79,20 +97,22 @@ static int ready(const u32 render[2], const u32 out[2], u32 flags, VkFormat form
     if (!VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &g_upscale.view))) {
         vk_image_destroy(g_upscale.image, g_upscale.memory);
         g_upscale.image = VK_NULL_HANDLE;
-        return 0;
+        return setup_failed(render, out, flags, format);
     }
     SnxFsr2Info info = {g_vk.phys, g_vk.dev, {render[0], render[1]}, {out[0], out[1]}, flags};
     u64 started = plat_ns();
     g_upscale.fsr = snx_fsr2_create(&info);
     if (!g_upscale.fsr) {
-        LOG("vulkan: FSR 2 can't be set up for %ux%u to %ux%u (FSR error %#x): DLSS evaluations are a filtered copy\n",
-            render[0], render[1], out[0], out[1], (u32)snx_fsr2_error());
+        LOG_LIMIT(4, "vulkan: FSR 2 can't be set up for %ux%u to %ux%u (FSR error %#x): DLSS evaluations are a filtered "
+                     "copy\n",
+                  render[0], render[1], out[0], out[1], (u32)snx_fsr2_error());
         vkDestroyImageView(g_vk.dev, g_upscale.view, NULL);
         vk_image_destroy(g_upscale.image, g_upscale.memory);
         g_upscale.image = VK_NULL_HANDLE;
         g_upscale.view = VK_NULL_HANDLE;
-        return 0;
+        return setup_failed(render, out, flags, format);
     }
+    g_upscale.failed = 0;
     memcpy(g_upscale.render, render, sizeof g_upscale.render);
     memcpy(g_upscale.out, out, sizeof g_upscale.out);
     g_upscale.flags = flags;
