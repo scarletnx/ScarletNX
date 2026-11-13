@@ -38,6 +38,11 @@ int main(void) {
     assert(s.runs == 3 && s.covered == 30);
     assert(s.granules[0] == 2 && s.granules[1] == 1);
 
+    /* a piece that ends where a granule ends counts no granule after it */
+    VkRange g[2] = {{0, 64 * KIB}, {4 * MIB - 64 * KIB, 64 * KIB}};
+    vk_range_shape(g, 2, gran, &s);
+    assert(s.runs == 2 && s.granules[0] == 2 && s.granules[1] == 2);
+
     /* identical ranges: all but one copy is held again */
     VkRange c[3] = {{MIB, 256}, {MIB, 256}, {MIB, 256}};
     vk_range_shape(c, 3, gran, &s);
@@ -68,6 +73,10 @@ int main(void) {
     assert(vk_range_inside(j, nj, 130, 200) == 30 + 30); /* [130, 160) and [300, 330) */
     assert(vk_range_inside(j, nj, 340, ~0ull) == 10 && vk_range_inside(j, nj, 350, 5) == 0);
     assert(vk_range_join(j, 0) == 0 && vk_range_inside(j, 0, 0, 100) == 0);
+    /* ranges at the end of the address space are cut there, and join */
+    VkRange w[2] = {{~0ull - 8, 100}, {~0ull - 16, 64}};
+    assert(vk_range_join(w, 2) == 1 && w[0].start == ~0ull - 16 && w[0].len == 16);
+    assert(vk_range_inside(w, 1, ~0ull - 12, 64) == 12);
 
     puts("vk_range_shape: ok");
     return 0;
