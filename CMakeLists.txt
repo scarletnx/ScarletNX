@@ -301,6 +301,7 @@ if(Vulkan-Headers_ADDED)
     install(DIRECTORY "${Vulkan-Headers_SOURCE_DIR}/LICENSES" DESTINATION ${licenses}/Vulkan-Headers)
 endif()
 install(FILES "${volk_SOURCE_DIR}/LICENSE.md" DESTINATION ${licenses}/volk)
+install(FILES "${FidelityFX-FSR2_SOURCE_DIR}/LICENSE.txt" DESTINATION ${licenses}/FidelityFX-FSR2)
 # renderdoc_app.h's license is the comment at the top of the header
 file(READ "${renderdoc_app_SOURCE_DIR}/renderdoc_app.h" renderdoc_app)
 string(FIND "${renderdoc_app}" "*/" renderdoc_app_end)

@@ -1,0 +1,33 @@
+--- a/vk/ffx_fsr2_vk.cpp
++++ b/vk/ffx_fsr2_vk.cpp
+@@ -452,13 +452,18 @@
+     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+ 
+     uint32_t bestCandidate = UINT32_MAX;
++    // ScarletNX: the device-local type kept when every one is host-visible too (lavapipe, some integrated GPUs)
++    uint32_t visibleCandidate = UINT32_MAX;
+ 
+     for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+         if ((memRequirements.memoryTypeBits & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & requestedProperties)) {
+ 
+             // if just device-local memory is requested, make sure this is the invisible heap to prevent over-subscribing the local heap
+-            if (requestedProperties == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT && (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
++            if (requestedProperties == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT && (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
++                if (visibleCandidate == UINT32_MAX)
++                    visibleCandidate = i;
+                 continue;
++            }
+ 
+             bestCandidate = i;
+             outProperties = memProperties.memoryTypes[i].propertyFlags;
+@@ -469,6 +474,10 @@
+         }
+     }
+ 
++    if (bestCandidate == UINT32_MAX && visibleCandidate != UINT32_MAX) {
++        bestCandidate = visibleCandidate;
++        outProperties = memProperties.memoryTypes[visibleCandidate].propertyFlags;
++    }
+     return bestCandidate;
+ }
+ 
