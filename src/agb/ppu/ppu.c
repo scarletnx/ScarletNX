@@ -160,14 +160,16 @@ void agb_ppu_write(AgbBoard* board, uint32_t offset, uint16_t value) {
 
 /* ---- timing ---- */
 
-/* the cycle of a line the horizontal blank starts at */
-#define AGB_HBLANK_DOT 960
+/* the cycle of a line the horizontal blank starts at, its flag and its DMA, the interrupt a cycle later (NanoBoyAdvance's
+   PPU.cc; mGBA's video.c has 1008): the 960 cycles of the visible dots and 47 more. mGBA's suite's misc-edge.c polls the
+   flag on the console in steps of 8 cycles and finds it rising 1004 cycles after it falls, where 960 gave 957 */
+#define AGB_HBLANK_DOT 1007
 
 uint64_t agb_ppu_next_irq(const AgbBoard* board) {
     const AgbPpu* ppu = &board->ppu;
     uint64_t at = UINT64_MAX, line_end = board->now + (AGB_SCANLINE_CYCLES - ppu->dot);
     if ((ppu->dispstat & 0x10) && (board->irq_ie & AGB_IRQ_HBLANK))
-        at = ppu->dot < AGB_HBLANK_DOT ? board->now + (AGB_HBLANK_DOT - ppu->dot) : line_end + AGB_HBLANK_DOT;
+        at = (ppu->dot < AGB_HBLANK_DOT ? board->now + (AGB_HBLANK_DOT - ppu->dot) : line_end + AGB_HBLANK_DOT) + 1;
     /* the vertical blank and the line match start a line: the lines from the next to that one */
     if ((ppu->dispstat & 0x08) && (board->irq_ie & AGB_IRQ_VBLANK)) {
         uint64_t lines = (AGB_SCREEN_HEIGHT - 1u - ppu->vcount + AGB_FRAME_LINES) % AGB_FRAME_LINES;
@@ -199,7 +201,7 @@ void agb_ppu_step(AgbBoard* board, uint32_t cycles) {
                 render_line(board, ppu->vcount);
                 agb_dma_event(board, AGB_DMA_HBLANK);
             }
-            if (ppu->dispstat & 0x10) agb_irq_raise(board, AGB_IRQ_HBLANK, at);
+            if (ppu->dispstat & 0x10) agb_irq_raise(board, AGB_IRQ_HBLANK, at + 1);
         } else {
             ppu->dot = 0;
             ppu->dispstat &= (uint16_t)~2u;

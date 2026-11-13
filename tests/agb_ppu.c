@@ -38,10 +38,11 @@ int main(void) {
 
     /* timing: VCOUNT walks the visible lines into the blank, and DISPSTAT reports both */
     agb_ppu_write(&board, 0x004, 0x0008 | (160 << 8)); /* vblank interrupt on, match line 160 */
-    agb_ppu_step(&board, 960);                         /* the first line's visible dots are over */
-    CHECK(agb_ppu_read(&board, 0x006) == 0);
+    agb_ppu_step(&board, 1006);                        /* the horizontal blank's flag rises 1007 cycles into a line */
+    CHECK(agb_ppu_read(&board, 0x006) == 0 && !(agb_ppu_read(&board, 0x004) & 2));
+    agb_ppu_step(&board, 1);
     CHECK(agb_ppu_read(&board, 0x004) & 2); /* the horizontal blank runs to the end of the line */
-    agb_ppu_step(&board, AGB_SCANLINE_CYCLES * 159 + 272);
+    agb_ppu_step(&board, AGB_SCANLINE_CYCLES * 159 + 225);
     CHECK(agb_ppu_read(&board, 0x006) == 160);
     CHECK(agb_ppu_read(&board, 0x004) & 1); /* the vertical blank */
     CHECK(agb_ppu_read(&board, 0x004) & 4); /* the line matches the target */

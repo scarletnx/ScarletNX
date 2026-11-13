@@ -95,7 +95,7 @@ if(BUILD_TESTING)
     # they reach today, named with the issue that keeps them there, and fail at any other
     if(Python3_Interpreter_FOUND AND mgba-suite_SOURCE_DIR)
         foreach(section IN ITEMS memory io_read timing timer_count_up timer_irq shifter carry multiply_long bios_math
-                                 dma sio_read sio_timing misc_edge:3:2058)
+                                 dma sio_read sio_timing misc_edge:4:2058)
             string(REPLACE ":" ";" parts "${section}")
             list(GET parts 0 name)
             set(expect)
