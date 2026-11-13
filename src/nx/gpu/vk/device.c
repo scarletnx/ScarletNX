@@ -92,6 +92,8 @@ static void oom_report(VkResult r) {
             (unsigned long long)(b[h].allocated_bytes >> 20),
             (unsigned long long)(mp->memoryHeaps[h].size >> 20));
     LOG("vulkan: out of memory with %u descriptor pools\n", vk_desc_pools());
+    vk_ledger_owners(); /* who holds it */
+    vk_own_log();       /* and what of the kept results is in use, what waits freed in the pool */
 }
 
 /* Each heap and the descriptor pools in one part of a line, for a low memory warning from a thread that never calls
