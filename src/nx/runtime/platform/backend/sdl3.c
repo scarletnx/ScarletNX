@@ -1198,6 +1198,16 @@ static void hotkey(int action) {
             toast(text);
             break;
         }
+        case HOTKEY_UPSCALER: /* for the run: the .ini keeps its own */
+        case HOTKEY_ANTI_ALIASING: {
+            const char* now = g_renderer->step_effect ? g_renderer->step_effect(action == HOTKEY_ANTI_ALIASING) : NULL;
+            char text[64];
+            if (!now) break;
+            snprintf(text, sizeof text, "%s: %s", action == HOTKEY_UPSCALER ? "Upscaler" : "Anti aliasing", now);
+            toast(text);
+            LOG("%s, for this run\n", text);
+            break;
+        }
         default: break;
     }
 }
