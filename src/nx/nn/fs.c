@@ -91,6 +91,7 @@
 #define SYM_UTF16_NAME_MAX     "_ZN2nn2fs26GetUtf16EntryNameLengthMaxEPbPmPKc"
 #define SYM_COMMIT_OPT         "_ZN2nn2fs6CommitEPKcRKNS0_12CommitOptionE"
 #define SYM_COMMIT_SAVE        "_ZN2nn2fs14CommitSaveDataEPKc"
+#define SYM_COMMIT_NAMES       "_ZN2nn2fs6CommitEPKPKci"
 #define SYM_READ_CACHE_LIST    "_ZN2nn2fs20ReadCacheStorageListEPiPNS0_16CacheStorageInfoENS0_22CacheStorageListHandleEi"
 #define SYM_CLOSE_CACHE_LIST   "_ZN2nn2fs21CloseCacheStorageListENS0_22CacheStorageListHandleE"
 
@@ -111,6 +112,7 @@ enum {
     R_NEGATIVE_SIZE = FSR(6062),
     R_NULL_ARGUMENT = FSR(6063),
     R_BAD_MOUNT_NAME = FSR(6065),
+    R_COMMIT_NAME_COUNT = FSR(6071), /* Commit of more mounts than COMMIT_NAMES_MAX */
     R_BAD_OPEN_MODE = FSR(6072),
     R_BAD_DIR_MODE = FSR(6074),
     R_READ_ONLY = FSR(6364),       /* the RomFS refuses a change of its tree */
@@ -1509,15 +1511,9 @@ u32 nnfs_get_file_time_stamp_raw(CPU* c, u64 stamp, u64 path) {
     return time_stamp(c, SYM_TIME_STAMP_RAW, "GetFileTimeStampRawForDebug", stamp, path, 1);
 }
 
-/* a commit of a native mount: a save writes its note, and the RomFS has nothing to commit */
-static u32 commit(CPU* c, const char* symbol, const char* function, u64 name) {
-    pm_lock(&g_nnfs.lock);
-    int m = mount_named(name ? gstr(c, name) : NULL);
+/* a commit of native mount m (lock held): a save writes its note, and the RomFS has nothing to commit */
+static u32 commit_mount(int m) {
     u32 r = 0;
-    if (m < 0) {
-        pm_unlock(&g_nnfs.lock);
-        return (u32)sdk_own(c, symbol);
-    }
     if (g_hle.nnfs.mounts[m].kind == MOUNT_SAVE) {
         const FsData* fs = &g_hle.fs.fss[g_hle.nnfs.mounts[m].fss];
         fs_lock();
@@ -1528,6 +1524,16 @@ static u32 commit(CPU* c, const char* symbol, const char* function, u64 name) {
             fs_root_commit(fs->root, (int)fs->noted);
         fs_unlock();
     }
+    return r;
+}
+static u32 commit(CPU* c, const char* symbol, const char* function, u64 name) {
+    pm_lock(&g_nnfs.lock);
+    int m = mount_named(name ? gstr(c, name) : NULL);
+    if (m < 0) {
+        pm_unlock(&g_nnfs.lock);
+        return (u32)sdk_own(c, symbol);
+    }
+    u32 r = commit_mount(m);
     pm_unlock(&g_nnfs.lock);
     return done(function, r);
 }
@@ -1537,6 +1543,30 @@ u32 nnfs_commit_option(CPU* c, u64 name, u64 option) {
     return commit(c, SYM_COMMIT_OPT, "Commit", name);
 }
 u32 nnfs_commit_save_data(CPU* c, u64 name) { return commit(c, SYM_COMMIT_SAVE, "CommitSaveData", name); }
+
+/* Commit(names, count), the mounts the SDK commits together, at most COMMIT_NAMES_MAX of them: the array checked
+   first, then the count, which may be 0. Each native mount commits as Commit does, in the order given; the console
+   commits them in one go, and here a commit that fails comes after the ones before it are made. A name the native
+   layer did not mount runs the SDK's own code for the whole call */
+#define COMMIT_NAMES_MAX 10
+u32 nnfs_commit_names(CPU* c, u64 names, i32 count) {
+    int m[COMMIT_NAMES_MAX];
+    u32 r = 0;
+    if (!names) return done("Commit", R_NULL_ARGUMENT);
+    if ((u32)count > COMMIT_NAMES_MAX) return done("Commit", R_COMMIT_NAME_COUNT);
+    pm_lock(&g_nnfs.lock);
+    for (i32 k = 0; k < count; k++) {
+        u64 name = snx_ld_le64(hook_host(c, names + 8 * (u64)k));
+        m[k] = mount_named(name ? gstr(c, name) : NULL);
+        if (m[k] < 0) {
+            pm_unlock(&g_nnfs.lock);
+            return (u32)sdk_own(c, SYM_COMMIT_NAMES);
+        }
+    }
+    for (i32 k = 0; k < count && !r; k++) r = commit_mount(m[k]);
+    pm_unlock(&g_nnfs.lock);
+    return done("Commit", r);
+}
 
 /* ---- save data and cache storage that the console makes through am and the file system service. The host's folders
    take what a game writes, so nothing is ever missing space: a save and a cache storage are made when they are

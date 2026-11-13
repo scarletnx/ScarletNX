@@ -8,7 +8,8 @@
    the handle and the bytes read take 8 bytes of the game's memory in the first and 4 in the second, and a handle
    the SDK made goes back to the SDK's own code in both. A file's time stamps on a save's mount, MountHost's
    refusal in both games, and IsMounted, which a native mount answers. The RomFS of the program at an index: this
-   program's, answered natively, and with "other-program" the stop for another program's */
+   program's, answered natively, and with "other-program" the stop for another program's. Commit of several mounts,
+   and with "commit-null" and "commit-eleven" its stops on no array and on more than 10 mounts */
 #include "nx/nn/fs.c"
 #include "hle/hook/hooks.hook.inc" /* fs.hook's table, and a 32-bit game's */
 #include <stdarg.h>
@@ -209,9 +210,9 @@ int g_program; /* main.c's: the game's own program unless a check says another *
 static unsigned own_runs;
 static u64 own_answer = 0x77;
 static char own_symbol[96];
-static const char* site_symbol[12];
+static const char* site_symbol[16];
 u64 hook_site(const char* symbol) {
-    for (u64 i = 0; i < 12; i++) {
+    for (u64 i = 0; i < 16; i++) {
         if (!site_symbol[i]) site_symbol[i] = symbol;
         if (site_symbol[i] == symbol || !strcmp(site_symbol[i], symbol)) return 0x1000 + 4 * i;
     }
@@ -271,6 +272,8 @@ static void image_with_file(u8* b) {
 #define RESULT   0x200u /* a result's place, 0xee before each call */
 #define HAS_AT   0x220u
 #define CACHE 0x400u
+#define NAMES    0x700u /* an array of mount names */
+#define OTHER    0x740u /* a mount name the native layer does not know */
 static void text(u32 at, const char* s) { strcpy((char*)mem + at, s); }
 static void outs(void) { memset(mem + RESULT, 0xee, 0x40); }
 
@@ -280,9 +283,11 @@ int main(int argc, char** argv) {
     nnfs_init();
     image(game_image, 4);
     image(data_image_bytes, 12);
-    if (argc > 1 && !strcmp(argv[1], "other-program")) { /* the RomFS of a program that is not this one: the stop */
-        nnfs_query_mount_rom_cache_size_program(c, RESULT, 1);
-        puts("nn_fs: the RomFS of another program was answered");
+    if (argc > 1) { /* the stops: the RomFS of a program that is not this one, a Commit of no array or of 11 mounts */
+        if (!strcmp(argv[1], "other-program")) nnfs_query_mount_rom_cache_size_program(c, RESULT, 1);
+        if (!strcmp(argv[1], "commit-null")) nnfs_commit_names(c, 0, 1);
+        if (!strcmp(argv[1], "commit-eleven")) nnfs_commit_names(c, NAMES, 11);
+        printf("nn_fs: %s was answered\n", argv[1]);
         return 1;
     }
 
@@ -298,6 +303,27 @@ int main(int argc, char** argv) {
     commit_result = FSR(1);
     CHECK(nnfs_commit(c, NAME) == FSR(1) && abort_needed(FSR(6457)) && !abort_needed(FSR(1)));
     commit_result = 0;
+    /* several mounts committed at once, through fs.hook's table: each native one as Commit commits it, its Result the
+       call's; none for a count of 0; a name the native layer did not mount runs the SDK's own code for all of them */
+    {
+        u32 versions[HOOK_KEYS] = {0};
+        int first, k = hook_select(&hook_table, SYM_COMMIT_NAMES, versions, &first);
+        CHECK(k >= 0 && !strcmp(hook_handler[k], "nnfs_commit_names"));
+        text(OTHER, "other");
+        snx_st_le64(mem + NAMES, NAME), snx_st_le64(mem + NAMES + 8, OTHER);
+        committed = NULL;
+        c->x[0] = NAMES, c->x[1] = 1, c->x[30] = 0x9000, c->pc = 0;
+        hook_fn[k](c, 0);
+        CHECK(c->x[0] == 0 && c->pc == 0x9000 && committed == save_root && committed_journaled);
+        committed = NULL;
+        CHECK(nnfs_commit_names(c, NAMES, 0) == 0 && committed == NULL);
+        commit_result = FSR(1);
+        CHECK(nnfs_commit_names(c, NAMES, 1) == FSR(1));
+        commit_result = 0;
+        committed = NULL;
+        CHECK(nnfs_commit_names(c, NAMES, 2) == 0x77 && own(SYM_COMMIT_NAMES, 1) && committed == NULL);
+        own_runs = 0; /* the counts below are of their own calls */
+    }
     nnfs_unmount(c, NAME);
     save_given = 0;
     CHECK(nnfs_mount_cache_storage(c, NAME) == 0);
