@@ -47,9 +47,13 @@ typedef struct SnxArmCodegenOptions {
     uint32_t abi;
     SnxArmProfile profile;
     SnxArmMemoryMode memory;
-    /* the ARM7TDMI's bus cycles: where, past the pointer its blocks get, the runtime keeps a const SnxArmBusCosts* and
-       the uint32_t its loads and stores add to (arm.h's SnxArmBusCosts). 0 and 0 count none; another profile takes none */
-    uint32_t bus_costs, bus_cycles;
+    /* the ARM7TDMI's trace, for a runtime that times its blocks itself: where, past the pointer its blocks get, it keeps
+       a uint32_t per instruction of the longest block it compiles and a bit per instruction after it (skipped). An
+       instruction's slot, by its offset from the block's start (halfwords in Thumb, words in ARM), gets its load's or
+       store's address (a multiple one's lowest), or its multiplier (ARM's Rs, Thumb's Rd); the bit is set when a
+       conditional instruction whose time depends on running did not run (any but a data processing one with no
+       register shift that leaves the PC alone). 0 traces nothing; another profile takes none */
+    uint32_t trace, skipped;
 } SnxArmCodegenOptions;
 LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const uint32_t* words, size_t count,
                                    uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options);

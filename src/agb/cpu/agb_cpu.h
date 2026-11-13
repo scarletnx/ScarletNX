@@ -6,6 +6,7 @@
 #define SNX_AGB_CPU_H
 #include "common/cpu/arm/arm.h"
 #include "agb/cpu/recomp.h"
+#include "agb/cpu/timing.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -13,13 +14,18 @@ typedef struct AgbBoard AgbBoard;
 typedef struct {
     SnxArmCPU arm;
     AgbBoard* board; /* the machine the bus hook serves */
-    /* the bus cycles of the recompiled blocks' loads and stores (arm.h's SnxArmBusCosts): the table of the running
-       block's code region, which the block reads, and the cycles it adds up, which the machine loop takes after it */
-    const SnxArmBusCosts* bus_costs;
-    uint32_t bus_cycles;
-    /* each code region's table, made for the WAITCNT costs_waitcnt says (0x10000 before any) */
-    uint32_t costs_waitcnt;
-    SnxArmBusCosts costs[16];
+    /* the running block's trace (llvm.h's SnxArmCodegenOptions): per instruction unit its access's address or its
+       multiplier, and a bit for each conditional one that did not run, which the machine loop clears before it */
+    uint32_t trace[AGB_BLOCK_MAX];
+    uint32_t skipped[AGB_BLOCK_MAX / 32];
+    /* the time the CPU takes on the bus (timing.h): the wait states for WAITCNT, and the bus with the running block's
+       replay, which the bus hook moves on to an I/O register's access and the machine loop to the block's end */
+    AgbWaits waits;
+    AgbReplay replay;
+    uint32_t block_pc, block_thumb, in_block; /* the running block */
+    uint32_t advanced;  /* the cycles of the running block the board has run already, up to an I/O access */
+    uint32_t yield_end; /* the unit after the instruction whose write ended the running block early, else 0 */
+    uint32_t note;      /* the trace slot of the instruction the machine interprets, which its transfer fills */
     /* the banked registers of the ARM7TDMI's modes: usr and sys share one bank */
     uint32_t banked_r13[6], banked_r14[6], spsr[6];
     uint32_t fiq_r8[5], usr_r8[5]; /* the ARM7TDMI banks r8 to r12 in FIQ mode */
