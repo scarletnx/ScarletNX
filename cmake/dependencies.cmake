@@ -234,7 +234,7 @@ if(SNX_JEMALLOC)
     include("${PROJECT_SOURCE_DIR}/cmake/jemalloc.cmake")
 endif()
 
-if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
+if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR SNX_BUILD_NDS OR snx_vita_runtime OR
    (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
     # the system's package is named VulkanHeaders
     snx_cpm_local_package(NAME Vulkan-Headers VERSION 1.4.367 FIND_PACKAGE_ARGUMENTS "NAMES VulkanHeaders CONFIG"
@@ -397,7 +397,7 @@ endif()
 option(SNX_SYSTEM_SDL3 "Use the system's SDL3 from find_package, not CPM's pinned source build"
        ${snx_sdl3_system_default})
 if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR snx_vita_runtime OR SNX_BUILD_AGB OR
-   (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
+   SNX_BUILD_NDS OR (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
     if(SNX_SYSTEM_SDL3)
         snx_system_sdl3()
     else()

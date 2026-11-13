@@ -363,7 +363,8 @@ bool gui_game_source_missing(const char* path, const char* work, char* out, size
     name = snx_strdup(snx_path_leaf(folder));
     switch (snx_game_system(folder, name)) {
         case SNX_SYSTEM_SWITCH: file = switch_missing(folder, name); break;
-        case SNX_SYSTEM_GBA: file = gba_missing(folder, name); break;
+        case SNX_SYSTEM_GBA:
+        case SNX_SYSTEM_NDS: file = gba_missing(folder, name); break; /* a card image, named as a ROM is */
         case SNX_SYSTEM_3DS: file = ctr_missing(folder, name, work); break;
         case SNX_SYSTEM_VITA: file = vita_missing(folder); break;
     }

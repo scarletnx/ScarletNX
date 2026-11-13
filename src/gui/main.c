@@ -16808,7 +16808,7 @@ static MissingKind missing_kind(const char* program, const char* file) {
     system = snx_game_system(folder, name);
     free(name);
     free(folder);
-    if (system == SNX_SYSTEM_GBA) return MISSING_ROM;
+    if (system == SNX_SYSTEM_GBA || system == SNX_SYSTEM_NDS) return MISSING_ROM;
     if (system == SNX_SYSTEM_3DS) return MISSING_CTR;
     if (system == SNX_SYSTEM_VITA) return MISSING_VITA;
     for (size_t i = 0; file && i < SDL_arraysize(dumps); ++i)
