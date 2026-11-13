@@ -460,6 +460,52 @@ static int drop_extraction(const char* data, const char* source, int recorded, c
     if (rc) snx_error("cannot take the extraction away from %s", data);
     return rc;
 }
+/* A game's RomFS that Extract dump keeps in its data folder and that is not whole (snx_romfs_state): extracted again
+   from the dump it was made from, as a start of that dump extracts it (<name>.extracting saying so until it ends), what
+   a copy that stopped left taken away first, a line saying why. A dump with no RomFS leaves romfs/ empty, so the next
+   start does not extract it again. With no dump named (source=), or one that is not there, the game does not start:
+   what it needs said. 0 for a whole RomFS or one extracted again */
+static int romfs_again(const char** command, const char* folder, const char* name, const SnxPaths* paths) {
+    SnxRomfs state = snx_romfs_state(folder, name);
+    char *base, *data, *source, *stopped, *disk, *extracting, *ini;
+    int recorded = 0, rc;
+    if (state == SNX_ROMFS_WHOLE) return 0;
+    base = snx_path_join(folder, name);
+    data = snx_format("%s_data", base);
+    source = snx_game_source(folder, name, &recorded);
+    if (!recorded || !source) {
+        ini = snx_game_ini(folder, name);
+        rc = snx_error("the game's RomFS in %s is not whole: %s. Its settings %s name no dump (source=) to extract it "
+                       "from: play the game's dump or folder once, or pick it with Locate... in its box in Games",
+                       data, snx_romfs_why(state), ini ? ini : "(no path)");
+        free(ini);
+    } else if (!source_there(source))
+        rc = snx_error("the game's RomFS in %s is not whole: %s, and the %s it is extracted from, %s, is not there: "
+                       "put it back, or pick it with Locate... in its box in Games",
+                       data, snx_romfs_why(state), snx_source_kind(source), source);
+    else {
+        printf("The game's RomFS in %s is not whole: %s. It is extracted again from %s\n", data, snx_romfs_why(state),
+               source);
+        stopped = snx_path_join(data, "romfs.copying");
+        disk = snx_path_join(data, "romfs");
+        extracting = snx_format("%s.extracting", base);
+        rc = ((snx_path_exists(stopped) || snx_is_link(stopped)) && snx_remove_tree(stopped)) ||
+             extract_game(command, source, NULL, data, "exefs", extracting, paths, 0);
+        if (!rc && !snx_is_dir(disk)) {
+            rc = snx_mkdirs(disk);
+            if (!rc)
+                printf("%s holds no RomFS: %s is left empty, so the next start does not extract it again\n", source,
+                       disk);
+        }
+        free(stopped);
+        free(disk);
+        free(extracting);
+    }
+    free(source);
+    free(data);
+    free(base);
+    return rc;
+}
 /* The game's RomFS where Extract to tmpfs wants it before it runs. On: its extraction in snx_tmpfs_work, the copy in
    its data folder taken away, and <name>.tmpfs in its folder saying so. Off: a game with that file gets its RomFS back
    in its data folder, and the extraction in tmpfs is taken away. Extracted again, straight where it goes, from the dump
@@ -487,6 +533,8 @@ static int ensure_romfs(const char** command, const char* folder, const char* na
         rc = extract_game(command, source, NULL, data, "exefs", extracting, paths, 0);
         if (rc) goto done;
     }
+    /* the game's own on disk: a copy that stopped, or none, extracted again */
+    if (!tmpfs && !strcmp(name, snx_path_leaf(folder)) && (rc = romfs_again(command, folder, name, paths))) goto done;
     text = snx_read_file(npdm, &size);
     work = text ? snx_tmpfs_work(snx_npdm_title(text, size)) : NULL;
     free(text);
@@ -1308,7 +1356,11 @@ made:
         goto done;
     }
     if (flags & (SNX_RECOMP | PLAY_PREPARE)) {
-        rc = 0;
+        /* R with Extract dump: the game's RomFS whole on disk for the start after it, or what it needs said */
+        rc = (flags & SNX_RECOMP) && extract && !tmpfs && !nro && !addon && folder && name &&
+                     !strcmp(name, snx_path_leaf(folder))
+                 ? romfs_again(command, folder, name, paths)
+                 : 0;
         goto done;
     }
     rc = nro      ? 0
