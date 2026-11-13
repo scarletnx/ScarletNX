@@ -114,6 +114,7 @@ static struct {
     u32 itook;
     u64 made; /* chunks and big buffers made since the start (statistics, tests) */
     u32 recycles; /* frame slots recycled since the start (tests) */
+    u64 submits[VK_SUB_N]; /* submissions since the start, by why (statistics, tests) */
 } g_cmd;
 
 static Frame g_fr[VK_FRAMES];
@@ -861,6 +862,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     vk_rec_submit(up, cb, w, nw, s, xs ? 2u : 1u);
     memset(g_after, 0, sizeof g_after);
     __atomic_store_n(&g_gval, g_gval + 1, __ATOMIC_RELAXED); /* read by the stall report too */
+    g_cmd.submits[why]++;
     g_sub_ns = plat_ns();
     f->recording = 0;
     f->icb++;
@@ -1085,6 +1087,7 @@ u64 vk_ring_made(void) { return g_cmd.made; }
 u64 vk_submit_number(void) { return g_gval + 1; }
 u32 vk_cb_begun(void) { return g_cb_begun; }
 u32 vk_frame_recycles(void) { return g_cmd.recycles; }
+u64 vk_submits(int why) { return g_cmd.submits[why]; }
 u64 vk_last_submit(void) { return g_gval; }
 VkSemaphore vk_gfx_timeline(void) { return g_gsem; }
 void vk_submit_progress(u64* submitted, u64* done) {
