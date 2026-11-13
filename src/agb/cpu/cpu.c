@@ -582,6 +582,9 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
             cpu->arm.r[n] = up ? base + 0x40 : base - 0x40;
             return 0;
         }
+        /* with the PC in a load's list the S bit is an exception return, and the registers are the mode's own */
+        int user = sbit && !(load && (list >> 15 & 1));
+        uint32_t pc = 0;
         for (unsigned i = 0; i < 16; ++i) count += list >> i & 1;
         uint32_t adjusted = up ? base + count * 4 : base - count * 4;
         uint32_t start = up ? base + (pre ? 4 : 0) : adjusted + (pre ? 0 : 4);
@@ -590,7 +593,7 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
             uint32_t address = start + index++ * 4;
             if (load) {
                 uint32_t value = agb_read32(board, address);
-                if (sbit && i != 15) {
+                if (user) {
                     /* the user bank, whichever mode the machine is in */
                     if (i == 13 || i == 14) {
                         if (bank_index(cpu->arm.cpsr)) (i == 13 ? cpu->banked_r13 : cpu->banked_r14)[0] = value;
@@ -600,10 +603,9 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
                         cpu->usr_r8[i - 8] = value;
                     else
                         cpu->arm.r[i] = value;
-                } else if (i == 15) {
-                    if (sbit) exception_return(cpu);
-                    cpu->arm.r[15] = value & ~(uint32_t)1;
-                } else
+                } else if (i == 15)
+                    pc = value;
+                else
                     cpu->arm.r[i] = value;
             } else {
                 uint32_t value;
@@ -624,9 +626,14 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
                 agb_write32(board, address, value);
             }
         }
-        /* the writeback is lost when a load brings the base in the list: the loaded value stands */
+        /* the writeback is lost when a load brings the base in the list: the loaded value stands. It goes to the
+           base of the mode the instruction ran in: an exception return changes the mode after it, as mGBA's LDM does */
         if (wb && !(load && (list >> n & 1))) cpu->arm.r[n] = adjusted;
-        if (!(load && (list >> 15 & 1))) cpu->arm.r[15] += 4;
+        if (load && (list >> 15 & 1)) {
+            if (sbit) exception_return(cpu);
+            cpu->arm.r[15] = pc & ~(uint32_t)1;
+        } else
+            cpu->arm.r[15] += 4;
         return 0;
     }
     if ((word & 0x0C000000) == 0 && (word >> 28) != 15) return data_quirk(cpu, word);
