@@ -1938,7 +1938,7 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
         target_compile_definitions(snx-test-overlay PRIVATE SNX_TRACY=1)
     endif()
     snx_test_target(snx-test-overlay 11)
-    target_link_libraries(snx-test-overlay PRIVATE scarletnx-common snx_splash m SDL3::SDL3)
+    target_link_libraries(snx-test-overlay PRIVATE scarletnx-common snx_splash m SDL3::SDL3 snx_notice)
     target_include_directories(snx-test-overlay PRIVATE "${PROJECT_BINARY_DIR}/generated")
     add_test(NAME overlay COMMAND snx-test-overlay)
 endif()
@@ -1965,6 +1965,13 @@ if(TARGET SDL3::SDL3) # the keys' names are SDL's
     snx_test_target(snx-test-hotkeys 11)
     target_link_libraries(snx-test-hotkeys PRIVATE SDL3::SDL3)
     add_test(NAME hotkeys COMMAND snx-test-hotkeys)
+    # the notice of the windows with no menu of their own (common/utilities/notice.c): the Switch's notice's letters,
+    # place and colours
+    add_executable(snx-test-notice notice.c)
+    snx_test_target(snx-test-notice 99)
+    target_link_libraries(snx-test-notice PRIVATE snx_notice)
+    target_include_directories(snx-test-notice PRIVATE "${PROJECT_BINARY_DIR}/generated") # the theme's colours
+    add_test(NAME notice COMMAND snx-test-notice)
     # the hints every program sets before its SDL video starts (common/utilities/sdl_desktop.h)
     add_executable(snx-test-sdl-desktop-hints sdl_desktop_hints.c)
     snx_test_target(snx-test-sdl-desktop-hints 11)
@@ -4071,6 +4078,13 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         target_link_libraries(snx-test-vk-ring-uploads PRIVATE snx_vk_common)
         add_test(NAME vk_ring_uploads COMMAND snx-test-vk-ring-uploads)
         set_tests_properties(vk_ring_uploads PROPERTIES SKIP_RETURN_CODE 77)
+        # a window's notice copied over its image after the picture's transfers (common/gpu/vk/notice.c), on whatever
+        # device there is
+        add_executable(snx-test-vk-notice vk_notice.c "${volk_SOURCE_DIR}/volk.c")
+        snx_test_target(snx-test-vk-notice 99)
+        target_link_libraries(snx-test-vk-notice PRIVATE snx_vk_common)
+        add_test(NAME vk_notice COMMAND snx-test-vk-notice)
+        set_tests_properties(vk_notice PROPERTIES SKIP_RETURN_CODE 77)
     endif()
     add_executable(snx-test-vk-uma-budget vk_uma_budget.c)
     snx_test_target(snx-test-vk-uma-budget 99)

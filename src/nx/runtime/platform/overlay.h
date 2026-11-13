@@ -7,11 +7,13 @@
    drag follows), Capture frame while RenderDoc is in the game (the renderer's capture), and Exit */
 #ifndef SNX_OVERLAY_H
 #define SNX_OVERLAY_H
+#include "common/utilities/notice.h"
 #include "nx/runtime/platform/ui.h"
 
-#define OVERLAY_COLS     40 /* the panel, in cells of the 8x16 font: the narrowest */
-#define OVERLAY_COLS_MAX 72 /* and the widest, as far as three quarters of the picture let it */
-#define OVERLAY_ROWS     16 /* the tallest page's: the others are as tall as their items */
+/* the 3DS's, the Vita's and the GBA's notices are drawn as this menu's (common/utilities/notice.h) */
+#define OVERLAY_COLS        SNX_MENU_COLS   /* the panel, in cells of the 8x16 font: the narrowest */
+#define OVERLAY_COLS_MAX    SNX_NOTICE_COLS /* and the widest, as far as three quarters of the picture let it */
+#define OVERLAY_ROWS        SNX_MENU_ROWS   /* the tallest page's: the others are as tall as their items */
 /* a slider's columns where its row has them: the knob's travel a column a step of Volume's twenty, and the knob's own */
 #define OVERLAY_SLIDER_COLS 21
 /* what a menu action leaves to its caller: the save state ones for the slot overlay_slot names; the keyboard's box
@@ -100,7 +102,7 @@ void overlay_pointers_reset(void);
 void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns);
 /* a notification of one line in the picture's corner for SNX_OVERLAY_TOAST_MS from now_ns: a save state saved or
    loaded, a screenshot taken. Under ui_lock */
-#define SNX_OVERLAY_TOAST_MS 3000
+#define SNX_OVERLAY_TOAST_MS SNX_NOTICE_MS
 void overlay_toast(const char* text, u64 now_ns);
 /* the toast of a save state saved to slot (its words, "slot 2"), "Saved over" one that held a state (over) */
 void overlay_state_saved(const char* slot, int over, u64 now_ns);
