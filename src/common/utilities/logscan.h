@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* A game's log read as a summary: which build ran which game on which GPU, how the run ended (a crash, svcBreak, an
-   unhandled exception, BRK, an instruction the recompiler cannot run, an undefined one, a fatal error, or nothing
-   logged), the game function it ended in, the service commands the runtime doesn't implement, what else it missed
-   (shaders, GPU methods, macros, SVCs, guest code the recompiler missed), warnings, and a signature, the same for
-   every log that failed the same way.
+   unhandled exception, BRK, an instruction the recompiler cannot run, a fatal error, or nothing logged), the game
+   function it ended in, the service commands the runtime doesn't implement, what else it missed (shaders, GPU
+   methods, macros, SVCs, guest code the recompiler missed), warnings, and a signature, the same for every log that
+   failed the same way.
 
    It reads a game's .log and the launcher's Share Log file (its game log section). What it writes is meant for public
    reports: paths under a home folder become ~, a line is cut at SNX_LOGSCAN_LINE bytes, and the crash report's code
@@ -37,8 +37,7 @@ enum {
     SNX_LOG_SVCBREAK,
     SNX_LOG_EXCEPTION,
     SNX_LOG_BRK,
-    SNX_LOG_UNDEFINED,      /* an instruction the recompiler cannot run */
-    SNX_LOG_GAME_UNDEFINED, /* an undefined instruction, which the console's CPU cannot run either */
+    SNX_LOG_UNDEFINED, /* an instruction the recompiler cannot run */
     SNX_LOG_THREAD_STOPPED,
     SNX_LOG_HOST_ABORT,
     SNX_LOG_FATAL
