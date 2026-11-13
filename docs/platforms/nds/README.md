@@ -158,6 +158,9 @@ and their pages are mapped again where they go:
 
 The mirrors of the palettes, the OAM and the VRAM spaces past each one's first copy are plain memory, not mirrors.
 
+The two TCMs are the processor's own. A DMA channel is on the bus and does not see them: below main memory it
+writes nothing and reads zeros, and under the DTCM it has main memory (`src/nds/board/dma.c`).
+
 ## The ARM7's services
 
 `src/nds/hle/pxi.c` is the ARM7's side of the FIFO, ported from melonDS's high-level ARM7. A word the game sends
