@@ -381,6 +381,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     int has_stack = 0, has_pexit = 0, has_conditional_exit = 0;
     int needs_local = 0, needs_shared = 0, needs_subgroup = 0, needs_atomic_cas = 0, lane_used = 0, needs_quad = 0;
     int votes = 0, swizzle_lanes = 0; /* VOTE or SHFL; FSWZADD whose lanes take different modes */
+    int quad_reads = 0;               /* a fragment program's SHFL within its quad that reads another pixel of it */
     int needs_gather_extended = 0;
     int fp32_flush = 0, fp32_preserve = 0;
     u32 out_reg = 0;
@@ -1482,6 +1483,10 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         if (op->id == O_KIL) has_discard = 1;
         if (op->id == O_VOTE || op->id == O_SHFL) needs_subgroup = votes = 1;
         if (op->id == O_SHFL && stage == ST_FS && g_shader_quad && shader_shfl_quad(insn[i], NULL)) needs_quad = 1;
+        if (op->id == O_SHFL && stage == ST_FS) {
+            u8 dir[4];
+            if (shader_shfl_quad_lanes(insn[i], dir, NULL) && (dir[0] | dir[1] | dir[2] | dir[3])) quad_reads = 1;
+        }
         /* FSWZADD's lanes in a quad are the subgroup's, as SHFL's are, when they don't all do the same */
         if (op->id == O_FSWZADD && shader_fswzadd_lanes(insn[i], B(insn[i], 28, 2)) != 15)
             needs_subgroup = swizzle_lanes = 1;
@@ -1498,13 +1503,26 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
        runs each invocation as a warp whose only active lane is lane 0, as the console runs a batch of one vertex or
        primitive: its ballot is its own bit, VOTE.ALL and VOTE.ANY are its predicate, VOTE.EQ is true, and SHFL keeps
        its own value, which is the console's for its own lane or one out of range and as good as any for a lane
-       that runs nothing. Control programs keep the subgroup: their invocations are the lanes of one warp together */
-    int lone_lane = votes && !swizzle_lanes && !can_subgroup && (stage == ST_VS || stage == ST_TES || stage == ST_GS);
-    int lane_model = (!needs_subgroup || lone_lane) && stage != ST_FS && stage != ST_CS;
+       that runs nothing. Control programs keep the subgroup: their invocations are the lanes of one warp together.
+       A fragment program that votes, shuffles, reads its lane or swizzles across its quad, on a device without
+       subgroups in the fragment stage, runs each invocation as one lane alone too, the lane of its place in its 2x2
+       quad (DirectCtx.quad_lane, from FragCoord): its ballot is that lane's bit, the votes are its predicate,
+       FSWZADD takes the mode of its place, a SHFL within the quad reads the other pixel's register through fine
+       derivatives (emit_thread.c's quad_read; dFdx and dFdy are SHFL.BFLY then FSWZADD on the console) and any other
+       SHFL keeps its own value. Those reads take every pixel of the quad in step, as derivatives do */
+    int quad_lane = stage == ST_FS && !can_subgroup && (votes || swizzle_lanes || lane_used);
+    int lone_lane = quad_lane ||
+                    (votes && !swizzle_lanes && !can_subgroup && (stage == ST_VS || stage == ST_TES || stage == ST_GS));
+    int lane_model = quad_lane || ((!needs_subgroup || lone_lane) && stage != ST_FS && stage != ST_CS);
     int lane_is_invocation = lane_model && stage == ST_TCS;
     if (lane_used && lane_is_invocation) invocation_used = 1;
     if (lane_used && !lane_model) needs_subgroup = 1;
     if (lone_lane) needs_subgroup = 0;
+    if (quad_lane) {
+        needs_quad = 0;
+        needs_fragcoord = 1;
+        if (quad_reads) needs_derivatives = 1;
+    }
     if (needs_f16 && (g_shader_half_rounding & 2)) needs_f64 = 1;
     if (!has_exit) return direct_reject(si, "missing exit");
     if (has_pexit && has_conditional_exit) return direct_reject(si, "conditional EXIT with PEXIT token");
@@ -2633,6 +2651,22 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                                    spv_emit_load(&c->emit, vec4, fragcoord), layer, live);
     }
     /* in the function's first block, so that every read has them */
+    if (quad_lane) {
+        u32 parity[2];
+        for (u32 k = 0; k < 2; k++) {
+            u32 pixel = spv_emit_unary(&c->emit, SPV_OP_CONVERT_F_TO_U, c->u32_type,
+                                       shader_input_component(c, vec4, fragcoord, c->f32_type, k));
+            parity[k] = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, pixel, shader_u32(c, 1));
+            c->quad_sign[k] =
+                spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type,
+                                 spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type, parity[k], c->zero),
+                                 spv_emit_constant_f32(&c->emit, c->f32_type, -1.0f),
+                                 spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f));
+        }
+        c->quad_lane = spv_emit_binary(
+            &c->emit, SPV_OP_BITWISE_OR, c->u32_type, parity[0],
+            spv_emit_binary(&c->emit, SPV_OP_SHIFT_LEFT_LOGICAL, c->u32_type, parity[1], shader_u32(c, 1)));
+    }
     u32 frag_ndc[2] = {0, 0}, pv_weight[2] = {0, 0};
     if (needs_frag_ndc) shader_frag_ndc(c, fragcoord, vec4, push, push_pointer, frag_ndc);
     if (pv_mask) shader_frag_weights(c, vec4, pv_position, pv_flat, frag_ndc, pv_weight);
@@ -2894,7 +2928,10 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             if (shader_flow_has_cc(op) && B(w, 0, 5) != 15)
                 condition = cc_and(c, condition, shader_cc_test(c, B(w, 0, 5)));
             if (skip_helper) condition = cc_and(c, condition, cc_not(c, shader_lane_dead(c)));
-            if (shader_pure_op(op) && !skip_helper && !(shader_flow_has_cc(op) && B(w, 0, 5) != 15))
+            /* a fragment's lone-lane VOTE and SHFL change nothing but their writes either, and a SHFL's reads
+               through derivatives want every pixel of the quad in step, whose guards may differ */
+            if ((shader_pure_op(op) || (quad_lane && (op == O_VOTE || op == O_SHFL))) && !skip_helper &&
+                !(shader_flow_has_cc(op) && B(w, 0, 5) != 15))
                 c->guard = condition;
             else {
                 u32 execute = spv_emit_id(&c->emit);

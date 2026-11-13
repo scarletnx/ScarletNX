@@ -895,9 +895,11 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             right = shader_float_ftz(c, right);
         }
         u32 lane = 0;
-        if (shader_fswzadd_lanes(w, B(w, 28, 2)) != 15)
-            lane = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
-                                   shader_input(c, c->u32_type, c->subgroup_lane_input), shader_u32(c, 3));
+        if (shader_fswzadd_lanes(w, B(w, 28, 2)) != 15) /* without subgroups, the place FragCoord gives */
+            lane = c->quad_lane
+                       ? c->quad_lane
+                       : spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
+                                         shader_input(c, c->u32_type, c->subgroup_lane_input), shader_u32(c, 3));
         /* pick[k]: whether this lane's mode is k + 1, where some lanes' are and others' aren't */
         u32 masks[3] = {shader_fswzadd_lanes(w, 1), shader_fswzadd_lanes(w, 2), shader_fswzadd_lanes(w, 3)};
         u32 pick[3] = {0, 0, 0};

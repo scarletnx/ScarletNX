@@ -551,8 +551,9 @@ static void log_subgroups(u32 size, VkSubgroupFeatureFlags operations, VkShaderS
         (unsigned)operations, (unsigned)stages, with[0] ? with : "no",
         g_vk_subgroup_stages || !stages ? "" : ", as they need 32 lanes or more, ballot, shuffle and arithmetic");
     if (without[0])
-        LOG("vulkan: %s programs have no subgroup: a vertex, evaluation or geometry one among them that votes or "
-            "shuffles runs each invocation as lane 0 alone, and a control, fragment or compute one is not translated\n",
+        LOG("vulkan: %s programs have no subgroup: a vertex, evaluation, geometry or fragment one among them that "
+            "votes or shuffles runs each invocation as one lane alone (a fragment's reads within its quad through fine "
+            "derivatives), and a control or compute one is not translated\n",
             without);
 }
 

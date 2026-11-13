@@ -208,6 +208,8 @@ enum {
     SPV_OP_DPDX = 207,
     SPV_OP_DPDY = 208,
     SPV_OP_FWIDTH = 209,
+    SPV_OP_DPDX_FINE = 210,
+    SPV_OP_DPDY_FINE = 211,
     SPV_OP_EMIT_VERTEX = 218,
     SPV_OP_END_PRIMITIVE = 219,
     SPV_OP_CONTROL_BARRIER = 224,
@@ -311,6 +313,7 @@ enum {
     SPV_CAPABILITY_SAMPLED_BUFFER = 46,
     SPV_CAPABILITY_IMAGE_BUFFER = 47,
     SPV_CAPABILITY_IMAGE_QUERY = 50,
+    SPV_CAPABILITY_DERIVATIVE_CONTROL = 51,
     SPV_CAPABILITY_TRANSFORM_FEEDBACK = 53,
     SPV_CAPABILITY_STORAGE_IMAGE_READ_WITHOUT_FORMAT = 55,
     SPV_CAPABILITY_STORAGE_IMAGE_WRITE_WITHOUT_FORMAT = 56,
@@ -560,6 +563,8 @@ uint32_t spv_emit_bitfield_insert(SpvEmitter* e, uint32_t u32_type, uint32_t bas
 uint32_t spv_emit_fcompare(SpvEmitter* e, uint32_t bool_type, uint32_t condition, uint32_t left, uint32_t right);
 uint32_t spv_emit_bool_binary(SpvEmitter* e, uint32_t bool_type, uint32_t op, uint32_t left, uint32_t right);
 uint32_t spv_emit_derivative(SpvEmitter* e, uint32_t f32_type, uint32_t value, int y_axis);
+/* OpDPdxFine or OpDPdyFine of a float or vector of floats, and the DerivativeControl capability they need */
+uint32_t spv_emit_derivative_fine(SpvEmitter* e, uint32_t type, uint32_t value, int y_axis);
 uint32_t spv_emit_glsl_unary(SpvEmitter* e, uint32_t f32_type, uint32_t import, SpvGlsl450Op op, uint32_t value);
 uint32_t spv_emit_glsl_binary(SpvEmitter* e, uint32_t f32_type, uint32_t import, SpvGlsl450Op op, uint32_t left,
                               uint32_t right);

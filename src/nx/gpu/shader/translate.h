@@ -85,6 +85,11 @@ typedef struct {
     u32 wlog;
     u8 wlog_mark[16];
     int quad; /* quad operations are declared: shader_shfl_quad's SHFL are ones */
+    /* A fragment program run as one lane alone, where the stage has no subgroup: its place in its 2x2 quad (x's parity
+       in bit 0, y's in bit 1, from FragCoord, as Vulkan groups the pixels of a fine derivative) and, for each axis,
+       1.0 where the other pixel of its pair along it comes after it and -1.0 where before (emit_thread.c's
+       quad_read). 0 in other programs */
+    u32 quad_lane, quad_sign[2];
     /* A fragment program with flow discards nothing inside its loop: a KIL or a failed alpha test sets this bool,
        an EXIT ends the loop for the lane, and the lane is discarded after it. A demote or a kill in the loop lets a
        driver drop a quad's remaining helpers from execution while they still hold the loop open: AMD's Windows
@@ -198,6 +203,7 @@ int shader_writes_reg(u64 w, int op, u32 reg);
 u32 shader_direct_pred_writes(u64 w, int op);
 u32 shader_next_instruction(u32 index, u32 limit);
 int shader_shfl_quad(u64 w, u32* lane);
+int shader_shfl_quad_lanes(u64 w, u8 dir[4], u32* valid);
 u32 shader_fswzadd_lanes(u64 w, u32 mode);
 int shader_predicate_comparison(int op);
 int shader_writes_predicate(u64 w, int op, u32 p);
