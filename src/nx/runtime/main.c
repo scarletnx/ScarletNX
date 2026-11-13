@@ -1498,6 +1498,7 @@ int snx_main(int argc, char** argv) {
     nnpl_init();
     nv_init();
     romfs_init();
+    g_shader_hmma_f16 = g_settings.hmma_in_half_floats; /* before the first program is translated */
     gpu_init();
     {
         char addons[256];

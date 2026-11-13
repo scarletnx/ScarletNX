@@ -3815,6 +3815,13 @@ static u32 spv_count(const u32* words, size_t count, u32 op) {
     for (size_t i = 5; i < count && words[i] >> 16; i += words[i] >> 16) found += (words[i] & 0xffff) == op;
     return found;
 }
+/* how many of the module's GLSL extended instructions are the one numbered inst */
+static u32 spv_count_glsl(const u32* words, size_t count, u32 inst) {
+    u32 found = 0;
+    for (size_t i = 5; i < count && words[i] >> 16; i += words[i] >> 16)
+        found += (words[i] & 0xffff) == 12 && words[i] >> 16 >= 4 && words[i + 4] == inst;
+    return found;
+}
 /* whether a module decorates a variable as the built-in */
 static int spv_has_builtin(const u32* words, size_t count, u32 builtin) {
     for (size_t i = 5; i < count && words[i] >> 16; i += words[i] >> 16)
@@ -3825,7 +3832,8 @@ static int spv_has_builtin(const u32* words, size_t count, u32 builtin) {
    product: A's 48 reads are quad broadcasts or shuffles, B's 48, LDSM's 4 and MOVM's 2 stay shuffles, and each pair
    of products is an OpFDot2MixAcc32VALVE (96) or an OpDot. B's registers are OR'd with hmma_zero's zero, which
    compares NumWorkgroups.x with 0. With g_shader_hmma_pairs B's reads are 24 shuffles and their 24 xors of 4, and A's
-   96 (two quad lanes, one picked, for each of the 48) */
+   96 (two quad lanes, one picked, for each of the 48). With g_shader_hmma_f16 and no mixed dot product, the OpDots
+   are f16 OpFmas (96) */
 static void test_warp_matrix(const char* dir) {
     u8 code[16 * 8] = {0};
     static const u32 hmma[4][4] = {{16, 14, 0x08}, {20, 24, 0x18}, {28, 255, 0x00}, {32, 36, 0x10}};
@@ -3852,36 +3860,48 @@ static void test_warp_matrix(const char* dir) {
     put(code, n++, exit_insn());
     put(code, n, bra(n, n, 7, 0));
     n++;
-    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, pairs_was = g_shader_hmma_pairs;
+    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, pairs_was = g_shader_hmma_pairs,
+        f16_was = g_shader_hmma_f16;
     int coop_was = g_shader_hmma_coop, tile_was = g_shader_hmma_coop_tile;
     for (int pairs = 0; pairs < 2; pairs++)
         for (int quad = 0; quad < 2; quad++)
-            for (int mixed = 0; mixed < 2; mixed++) {
-                g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_hmma_pairs = pairs;
-                ShaderInfo si = {0};
-                si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
-                si.shared_size = 1024;
-                size_t count = 0;
-                u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
-                CHECK(spv != NULL);
-                if (!spv) continue;
-                u32 quads = spv_count(spv, count, 365), shuffles = spv_count(spv, count, 345);
-                u32 xors = spv_count(spv, count, 346), mixes = spv_count(spv, count, 6916);
-                u32 dots = spv_count(spv, count, 148), a_reads = pairs ? 96u : 48u, b_reads = pairs ? 24u : 48u;
-                u32 want_quads = quad ? a_reads : 0, want_shuffles = (quad ? 0 : a_reads) + b_reads + 6;
-                CHECK(quads == want_quads && shuffles == want_shuffles && xors == (pairs ? 24u : 0u));
-                CHECK(mixes == (mixed ? 96u : 0u) && dots == (mixed ? 0u : 96u));
-                CHECK(spv_has_builtin(spv, count, 24) && spv_count(spv, count, 170 /* OpIEqual */) >= 1);
-                if (quads != want_quads || shuffles != want_shuffles || mixes != (mixed ? 96u : 0u))
-                    fprintf(stderr,
-                            "warp matrix, pairs %d, quad %d, mixed %d: %u quad broadcasts (%u wanted), %u shuffles "
-                            "(%u), %u xors, %u mixed dots, %u dots\n",
-                            pairs, quad, mixed, quads, want_quads, shuffles, want_shuffles, xors, mixes, dots);
-                char name[32];
-                snprintf(name, sizeof name, "warp_matrix%d%d%d", pairs, quad, mixed);
-                CHECK(keep_module(dir, name, spv, count));
-                free(spv);
-            }
+            for (int mixed = 0; mixed < 2; mixed++)
+                for (int f16 = 0; f16 < 2; f16++) {
+                    /* the halves' products and sums (the hmma_f16 setting) are the f32 dots' place, two products an
+                       OpFma, where the mixed dot product is not */
+                    g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_hmma_pairs = pairs;
+                    g_shader_hmma_f16 = f16;
+                    int packed = !mixed && f16 && g_shader_float16;
+                    ShaderInfo si = {0};
+                    si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+                    si.shared_size = 1024;
+                    size_t count = 0;
+                    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+                    CHECK(spv != NULL);
+                    if (!spv) continue;
+                    u32 quads = spv_count(spv, count, 365), shuffles = spv_count(spv, count, 345);
+                    u32 xors = spv_count(spv, count, 346), mixes = spv_count(spv, count, 6916);
+                    u32 dots = spv_count(spv, count, 148), fmas = spv_count_glsl(spv, count, 50 /* Fma */);
+                    u32 a_reads = pairs ? 96u : 48u, b_reads = pairs ? 24u : 48u;
+                    u32 want_quads = quad ? a_reads : 0, want_shuffles = (quad ? 0 : a_reads) + b_reads + 6;
+                    CHECK(quads == want_quads && shuffles == want_shuffles && xors == (pairs ? 24u : 0u));
+                    CHECK(fmas == (packed ? 96u : 0u));
+                    CHECK(mixes == (mixed ? 96u : 0u) && dots == (mixed || packed ? 0u : 96u));
+                    CHECK(spv_has_builtin(spv, count, 24) && spv_count(spv, count, 170 /* OpIEqual */) >= 1);
+                    if (quads != want_quads || shuffles != want_shuffles || mixes != (mixed ? 96u : 0u) ||
+                        fmas != (packed ? 96u : 0u))
+                        fprintf(stderr,
+                                "warp matrix, pairs %d, quad %d, mixed %d, f16 %d: %u quad broadcasts (%u wanted), "
+                                "%u shuffles (%u), %u xors, %u mixed dots, %u dots, %u fmas\n",
+                                pairs, quad, mixed, f16, quads, want_quads, shuffles, want_shuffles, xors, mixes, dots,
+                                fmas);
+                    char name[32];
+                    snprintf(name, sizeof name, "warp_matrix%d%d%d%d", pairs, quad, mixed, f16);
+                    CHECK(keep_module(dir, name, spv, count));
+                    free(spv);
+                }
+    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_hmma_pairs = pairs_was;
+    g_shader_hmma_f16 = f16_was;
     /* staged (g_shader_hmma_stage): A and B through the warp's slot of shared memory, so the only shuffles are LDSM's
        4 and MOVM's 2, no quad broadcast even where the stage has them, and two subgroup barriers an HMMA */
     int stage_was = g_shader_hmma_stage;
