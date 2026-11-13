@@ -548,6 +548,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                                         c->sampler[slot], coord,
                                                         level < 255 ? reg_read_as(c, level, i32_type)
                                                                     : spv_emit_constant_u32(&c->emit, i32_type, 0));
+        sample = shader_predraw_read(c, slot, sample);
         u32 mask = B(w, 31, 4), target = d;
         for (u32 k = 0; k < 4; k++)
             if (mask & (1u << k)) {
@@ -680,6 +681,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                                                c->sampler[slot], coord, reg_read(c, b))
                                  : spv_emit_image_fetch(&c->emit, texture_vec4[slot], c->sampled_type[slot],
                                                         c->sampler[slot], coord, lod);
+        sample = shader_predraw_read(c, slot, sample);
         if (texture_scalar[slot] == c->f32_type && !B(w, 59, 1)) {
             u32 regs[4], comps[4], halves[4];
             int outputs = shader_texs_outputs(w, regs, comps);
@@ -725,6 +727,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         sample = reduce ? shader_minmax_direct(c, texture_vec4[slot], c->sampled_type[slot], c->sampler[slot], uv,
                                                array, 0, 0, reduce)
                         : shader_sample_dref(c, si, slot, texture_vec4[slot], uv, dref, explicit_lod, lod);
+        sample = shader_predraw_read(c, slot, sample);
         shader_texs_store(c, w, sample, texture_scalar[slot], shadow, i32_type, vec2, zero_f);
     } else if (op == O_TEX || op == O_TEX_B) {
         int bindless = op == O_TEX_B;
@@ -856,6 +859,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                           .array = (int)array};
             sample = varying_offset ? texture_offset_dispatch(sampling, varying_offset, 0, offset_known, offset_value)
                                     : texture_offset_sample(&sampling, offset, dynamic_offset);
+            sample = shader_predraw_read(c, slot, sample);
             if (dc_func >= 0)
                 sample = (indexed_dc ? shader_dc_compare_indexed : shader_dc_compare)(
                     c, indexed_dc ? slot : dc_func, dref, spv_emit_vec4_extract(&c->emit, c->f32_type, sample, 0));

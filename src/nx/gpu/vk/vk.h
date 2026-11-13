@@ -2008,7 +2008,7 @@ const char* vk_corpus_dir(void);
 int vk_cb_reads_hold(const VkCbReads* reads, VkCbReader read);
 typedef struct VkSh {
     u64 hash;
-    u32 mask[26]; /* vk_shader_get's masks, including the geometry passthrough skip mask */
+    u32 mask[SH_KEY_WORDS]; /* vk_shader_get's masks, including the geometry passthrough skip mask */
     int stage;
     VkCbReads cbr;
     ShaderInfo si;
@@ -2025,7 +2025,7 @@ typedef struct VkSh {
     struct VkSh* next;
 } VkSh;
 /* Generated graphics modules share the persistent shader/pipeline ownership and cache. Caller holds vk_lock. */
-VkSh* vk_shader_generated_find(u64 hash, int stage, const u32 mask[26]);
+VkSh* vk_shader_generated_find(u64 hash, int stage, const u32 mask[SH_KEY_WORDS]);
 void vk_shader_generated_record(VkSh* shader, const u32* spv, size_t words, const u8* source, u32 bytes);
 
 /* the pipeline layout whose sets have no texture array bindings: compute's, and the one push constants go through
@@ -2074,11 +2074,14 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
                     const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint);
 /* vk_shader_get with a fragment program's configuration (SH_FS_CONFIG_MASK) or a vertex program's position copy
    (fs_config), and a fragment program's min/max textures (minmax: the first SH_MINMAX_SLOTS slots of
-   ShaderInfo.tex_minmax_mask, then theirs of tex_minmax_max from bit SH_MINMAX_SLOTS on) */
+   ShaderInfo.tex_minmax_mask, then theirs of tex_minmax_max from bit SH_MINMAX_SLOTS on), and a fragment program's
+   ShaderInfo.predraw_slots (predraw). early: the fragment program declares early fragment tests though the guest
+   didn't ask, where they give the same result (a pre-draw capture's stores would otherwise stop the GPU's early
+   depth culling) */
 VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                        u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                        const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint,
-                       u32 fs_config, u32 minmax);
+                       u32 fs_config, u32 minmax, u64 predraw, int early);
 /* An Ounce's task or mesh program at gva (stage ST_TS or ST_MS), with the fields of its key k: vk_shader_get with the
    fields in the key's words, and the per-primitive SPH that k names read from the program's code area. A fragment
    program drawn after a mesh program takes the generics that it writes per primitive (ShaderInfo.prim_mask) in the

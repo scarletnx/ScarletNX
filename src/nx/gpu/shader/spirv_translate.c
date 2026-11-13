@@ -256,6 +256,68 @@ static const u8 mixed_invariant_ops[O__COUNT] = {
     [O_PCNT] = 1, [O_CONT] = 1, [O_CAL] = 1, [O_RET] = 1, [O_PRET] = 1, [O_PEXIT] = 1, [O_KIL] = 1,
 };
 
+/* The pre-draw capture (ShaderInfo.predraw_slots, vk/predraw.c), in the program's first block. In the interlock, the
+   draw's first fragment at the pixel (its stamp is not the draw's number, push word 26) fetches each slot's texel
+   there, which no fragment of the draw has written yet, into the slot's side image as bits, and stamps the pixel. It
+   keeps what it fetched, and the others take the side images' texels. Every read of those slots returns them
+   (DirectCtx.predraw). The slots are 2D color textures of one sample, read at the own pixel only, so the fetch at
+   gl_FragCoord's pixel is their read. Helper lanes store nothing, and a lane that a later test or discard drops took
+   only what the pixel held. (A fetch before the interlock, for a shorter section, cost the same on an RTX 4090) */
+static void predraw_prologue(DirectCtx* c, u64 slots, u32 i32, u32 vec4, u32 fragcoord, u32 push, u32 stamp,
+                             u32 stamp_type, const u32* side, u32 side_type, const u32* texture_vec4) {
+    SpvEmitter* e = &c->emit;
+    u32 uvec4 = spv_emit_type_vec4(e, c->u32_type);
+    u32 position = spv_emit_load(e, vec4, fragcoord);
+    u32 x = spv_emit_unary(e, SPV_OP_CONVERT_F_TO_S, i32, spv_emit_vec4_extract(e, c->f32_type, position, 0));
+    u32 y = spv_emit_unary(e, SPV_OP_CONVERT_F_TO_S, i32, spv_emit_vec4_extract(e, c->f32_type, position, 1));
+    u32 xy = SPV(e, SPV_OP_COMPOSITE_CONSTRUCT, spv_emit_type_vec2(e, i32), x, y);
+    u32 pointer = SPV(e, SPV_OP_ACCESS_CHAIN, spv_emit_type_pointer(e, SPV_STORAGE_PUSH_CONSTANT, c->u32_type), push,
+                      shader_u32(c, 3), shader_u32(c, 2));
+    u32 draw = spv_emit_load(e, c->u32_type, pointer);
+    spv_emit_void_op(e, SPV_OP_BEGIN_INVOCATION_INTERLOCK_EXT, NULL, 0);
+    u32 old = spv_emit_vec4_extract(e, c->u32_type, spv_emit_image_read(e, uvec4, stamp_type, stamp, xy), 0);
+    u32 fresh = spv_emit_binary(e, SPV_OP_I_NOT_EQUAL, c->bool_type, old, draw);
+    /* the first fragment keeps what it fetched, the others read what it stored */
+    u32 take = spv_emit_id(e), keep = spv_emit_id(e), done = spv_emit_id(e);
+    u32 fetched[SH_PREDRAW_MAX], stored[SH_PREDRAW_MAX], k = 0;
+    spv_emit_selection_merge(e, done);
+    spv_emit_branch_conditional(e, fresh, take, keep);
+    spv_emit_label(e, take);
+    for (int slot = 0; slot < SH_MAXTEX; slot++) {
+        if (!(slots >> slot & 1)) continue;
+        u32 texel = spv_emit_image_fetch(e, texture_vec4[slot], c->sampled_type[slot], c->sampler[slot], xy,
+                                         spv_emit_constant_u32(e, i32, 0));
+        fetched[k] = texture_vec4[slot] == uvec4 ? texel : spv_emit_unary(e, SPV_OP_BITCAST, uvec4, texel);
+        spv_emit_image_write(e, side_type, side[k], xy, fetched[k]);
+        k++;
+    }
+    u32 stamped[4] = {draw, c->zero, c->zero, c->zero};
+    spv_emit_image_write(e, stamp_type, stamp, xy, spv_emit_vec4_construct(e, uvec4, stamped));
+    spv_emit_branch(e, done);
+    spv_emit_label(e, keep);
+    for (u32 j = 0; j < k; j++) stored[j] = spv_emit_image_read(e, uvec4, side_type, side[j], xy);
+    spv_emit_branch(e, done);
+    spv_emit_label(e, done);
+    k = 0;
+    for (int slot = 0; slot < SH_MAXTEX; slot++) {
+        if (!(slots >> slot & 1)) continue;
+        u32 bits = spv_emit_phi2(e, uvec4, fetched[k], take, stored[k], keep);
+        k++;
+        c->predraw[slot] = texture_vec4[slot] == uvec4 ? bits : spv_emit_unary(e, SPV_OP_BITCAST, texture_vec4[slot], bits);
+    }
+    spv_emit_void_op(e, SPV_OP_END_INVOCATION_INTERLOCK_EXT, NULL, 0);
+}
+/* the texture slots a pre-draw capture can serve (ShaderInfo.tex_predraw_mask) of those read at the own pixel: plain
+   2D color textures of one sample, not raw, indexed, compared or reduced */
+static u64 predraw_capable(const ShTex* textures, int count, const ShaderInfo* si) {
+    u64 slots = 0;
+    for (int k = 0; k < count && k < SH_MAXTEX; k++)
+        if (textures[k].type == 1 && !textures[k].array && !textures[k].shadow &&
+            !(textures[k].flags & (1 | 2 | SNX_TEX_INDEXED)) && !(si->tex_dc_color_mask >> k & 1) &&
+            !(si->tex_minmax_mask >> k & 1))
+            slots |= 1ull << k;
+    return slots;
+}
 /* A fragment program's plain 2D sample (no offset, depth reference or level other than 0) at a perspective generic's
    (x / w, y / w), or at those mapped onto [0, 1] as clip space maps (ShaderInfo.screen_ndc), the same generic and
    mapping as the program's other such samples (*screen_in, -1 before the first, and *ndc): it reads the fragment's own
@@ -1779,6 +1841,17 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     if (si->late_depth) {
         needs_fragcoord = needs_frontface = needs_coverage = needs_demote = 1;
     }
+    /* the pre-draw capture's slots (ShaderInfo.predraw_slots): each read only at the own pixel, and its own interlock,
+       which is the program's one */
+    u64 predraw = stage == ST_FS ? si->predraw_slots : 0;
+    if (predraw) {
+        u64 own = tex_read & ~tex_elsewhere & ~(tex_screen & tex_uv);
+        if ((predraw & ~(own & predraw_capable(textures, texture_count, si))) || advanced_blend || si->late_depth ||
+            (si->advanced_blend_mask & SH_CAPTURE_TILED) || snx_popcount64(predraw) > SH_PREDRAW_MAX ||
+            image_info.nimg + 1 + (int)snx_popcount64(predraw) > 8)
+            return direct_reject_with_buffers(si, "pre-draw capture interface", pop_targets, gb_at);
+        needs_fragcoord = 1;
+    }
     if (stage == ST_FS && (si->advanced_blend_mask & SH_CAPTURE_TILED)) {
         needs_fragcoord = 1;
         if (si->advanced_blend_mask & SH_BLEND_ARRAY) layer_input_used = 1;
@@ -1884,6 +1957,10 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     if (post_depth_coverage) {
         spv_emit_extension(&c->emit, "SPV_KHR_post_depth_coverage");
         spv_emit_capability(&c->emit, SPV_CAPABILITY_SAMPLE_MASK_POST_DEPTH_COVERAGE);
+    }
+    if (predraw) {
+        spv_emit_extension(&c->emit, "SPV_EXT_fragment_shader_interlock");
+        spv_emit_capability(&c->emit, SPV_CAPABILITY_FRAGMENT_SHADER_PIXEL_INTERLOCK_EXT);
     }
     if (advanced_blend || si->late_depth) {
         spv_emit_extension(&c->emit, "SPV_EXT_fragment_shader_interlock");
@@ -2335,6 +2412,20 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         depth_buffer = shader_depth_stencil_declare(&c->emit, c->u32_type, shader_vk_set(ST_FS), SNX_VKB_CAPTURE);
         interfaces[count++] = depth_buffer;
     }
+    u32 predraw_stamp = 0, predraw_stamp_type = 0, predraw_side[SH_PREDRAW_MAX] = {0}, predraw_side_type = 0;
+    if (predraw) {
+        u32 set = shader_vk_set(ST_FS), binding = SNX_VKB_IMG + (u32)image_info.nimg;
+        predraw_stamp = spv_emit_storage_image(&c->emit, c->u32_type, set, binding, SPV_DIM_2D, 0, 33 /* R32ui */,
+                                               &predraw_stamp_type);
+        spv_emit_decorate(&c->emit, predraw_stamp, SPV_DECORATION_COHERENT, NULL, 0);
+        interfaces[count++] = predraw_stamp;
+        for (u32 k = 0; k < snx_popcount64(predraw); k++) {
+            predraw_side[k] = spv_emit_storage_image(&c->emit, c->u32_type, set, binding + 1 + k, SPV_DIM_2D, 0,
+                                                     30 /* Rgba32ui */, &predraw_side_type);
+            spv_emit_decorate(&c->emit, predraw_side[k], SPV_DECORATION_COHERENT, NULL, 0);
+            interfaces[count++] = predraw_side[k];
+        }
+    }
     u32 blend_image = 0, blend_image_type = 0;
     if (advanced_blend) {
         int array = !!(si->advanced_blend_mask & SH_BLEND_ARRAY);
@@ -2504,13 +2595,13 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     }
     u32 push = 0, push_pointer = 0;
     if ((stage == ST_FS && ((target & 15) || capture_output || needs_point_coord || needs_texel_scale || needs_frag_y ||
-                            needs_frag_ndc)) ||
+                            needs_frag_ndc || predraw)) ||
         position_fix || needs_instance || base_vertex || (point_size && !point_size_used)) {
         /* the fragment stage's uvec4: its scaled textures (shader_scaled_fetch) and the window's origin
            (shader_frag_y_origin). After it, each at its own member whichever the program reads: at byte 80 the draw's
            viewport (shader_frag_ndc), at 96 the scaled textures of the size drawn to (vk/render.c's own_size), at 112
            the capture's words */
-        if (stage == ST_FS && (needs_frag_ndc || capture_output || needs_texel_scale)) {
+        if (stage == ST_FS && (needs_frag_ndc || capture_output || needs_texel_scale || predraw)) {
             u32 members[5] = {vec4, vec4_u32, vec4, vec4_u32, vec4_u32}, offsets[5] = {16, 32, 80, 96, 112};
             u32 structure = spv_emit_type_struct(&c->emit, members, offsets, 5);
             spv_emit_decorate(&c->emit, structure, SPV_DECORATION_BLOCK, NULL, 0);
@@ -2576,7 +2667,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     }
     if (stage == ST_CS) spv_emit_local_size(&c->emit, fn, si->cs_local[0], si->cs_local[1], si->cs_local[2]);
     if (stage == ST_FS) spv_emit_fragment_origin_upper_left(&c->emit, fn);
-    if (advanced_blend || si->late_depth)
+    if (advanced_blend || si->late_depth || predraw)
         spv_emit_execution_mode(&c->emit, fn, SPV_MODE_PIXEL_INTERLOCK_ORDERED_EXT, 0, 0);
     if (post_depth_coverage) spv_emit_execution_mode(&c->emit, fn, SPV_MODE_POST_DEPTH_COVERAGE, 0, 0);
     if (stage == ST_FS && (si->early_fragment_tests || si->coverage_early_tests ||
@@ -2692,6 +2783,9 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         shader_capture_tile_mark(&c->emit, c->f32_type, c->u32_type, c->bool_type, capture_tiles,
                                    spv_emit_load(&c->emit, vec4, fragcoord), layer, live);
     }
+    if (predraw)
+        predraw_prologue(c, predraw, i32_type, vec4, fragcoord, push, predraw_stamp, predraw_stamp_type, predraw_side,
+                         predraw_side_type, texture_vec4);
     /* in the function's first block, so that every read has them */
     if (quad_lane) {
         u32 parity[2];
@@ -3102,11 +3196,14 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     tex_elsewhere |= tex_screen & tex_uv;
     next.tex_own_pixel_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & ~tex_screen & ~tex_uv : 0;
     next.tex_screen_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & tex_screen : 0;
+    next.predraw_slots = predraw;
     next.screen_in = next.tex_screen_mask ? (u32)screen_in : 0;
     next.screen_ndc = next.tex_screen_mask ? (u32)screen_ndc : 0;
     next.tex_uv_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & tex_uv : 0;
     next.uv_in = next.tex_uv_mask ? (u32)uv_in : 0;
     next.tex_unread_mask = tex_asked & ~tex_read;
+    next.tex_predraw_mask = (next.tex_own_pixel_mask | next.tex_screen_mask | next.tex_uv_mask) &
+                            predraw_capable(textures, texture_count, si);
     if (stage == ST_VS) next.screen_out_mask = shader_direct_screen_out(flow, &next.screen_out_yneg_mask);
     if (stage == ST_VS) next.uv_out_mask = shader_direct_uv_out(flow, &next.uv_out_yneg_mask);
     if (stage == ST_VS) next.pos_out_mask = shader_direct_position_out(flow);

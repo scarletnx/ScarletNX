@@ -123,7 +123,7 @@ VkSh* vk_tess_passthrough(u32 vertices, const VkSh* vertex, const VkSh* evaluati
         LOG_LIMIT(2, "vulkan: evaluation-only control shader exceeds the device's interface limits\n");
         return NULL;
     }
-    u32 key[26] = {0x54435350, vertices, attributes, point_size, clip_mask, 1};
+    u32 key[SH_KEY_WORDS] = {0x54435350, vertices, attributes, point_size, clip_mask, 1};
     u64 hash = vk_hash(key, sizeof key);
     VkSh* cached = vk_shader_generated_find(hash, ST_TCS, key);
     if (cached) return cached;
