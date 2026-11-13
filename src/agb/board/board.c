@@ -284,7 +284,8 @@ void agb_board_keys(AgbBoard* board, uint16_t held) {
 void agb_irq_raise(AgbBoard* board, uint32_t mask, uint64_t at) {
     int was = irq_line(board);
     board->irq_if |= (uint16_t)mask;
-    board->cpu_halted = 0; /* any raised flag wakes a halted CPU */
+    /* a halted CPU waits while IE and IF share no interrupt (GBATEK's HALTCNT), whatever IME says */
+    if (board->irq_ie & board->irq_if & 0x3FFF) board->cpu_halted = 0;
     if (!was && irq_line(board)) board->irq_at = at + 3;
 }
 

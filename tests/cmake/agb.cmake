@@ -94,8 +94,8 @@ if(BUILD_TESTING)
     # each section of mGBA's suite a test, labelled mgba-suite: the ones short of all their results pass at the count
     # they reach today, named with the issue that keeps them there, and fail at any other
     if(Python3_Interpreter_FOUND AND mgba-suite_SOURCE_DIR)
-        foreach(section IN ITEMS memory io_read timing timer_count_up:934:2099 timer_irq shifter carry multiply_long
-                                 bios_math dma sio_read sio_timing:0:2057 misc_edge:3:2058)
+        foreach(section IN ITEMS memory io_read timing timer_count_up timer_irq shifter carry multiply_long bios_math
+                                 dma sio_read sio_timing:0:2057 misc_edge:3:2058)
             string(REPLACE ":" ";" parts "${section}")
             list(GET parts 0 name)
             set(expect)
