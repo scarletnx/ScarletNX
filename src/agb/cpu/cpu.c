@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "agb/cpu/agb_cpu.h"
 #include "agb/bios/bios.h"
+#include "agb/bios/bios_time.h"
 #include "agb/board/board.h"
 #include <stdio.h>
 #include <string.h>
@@ -305,6 +306,26 @@ static uint32_t irq_return(AgbBoard* board, AgbCpu* cpu) {
 
 /* ---- software interrupts and the privileged residue ---- */
 
+/* the bus a BIOS call runs on, its stacks where the CPU's mode in cpsr has them now (bios_time.h) */
+static AgbBiosClock bios_clock(AgbCpu* cpu, uint32_t cpsr) {
+    int bank = bank_index(cpsr);
+    waits_now(cpu, cpu->board);
+    AgbBiosClock clock = {.bus = &cpu->replay.bus,
+                          .waits = &cpu->waits,
+                          .prefetch = prefetch_on(cpu->board),
+                          .svc_sp = bank == 3 ? cpu->arm.r[13] : cpu->banked_r13[3],
+                          .sys_sp = bank == 0 ? cpu->arm.r[13] : cpu->banked_r13[0]};
+    return clock;
+}
+
+/* the caller a call that waits returns to, from the frame the BIOS's entry keeps on the supervisor stack (swi_enter):
+   its address and whether it runs Thumb */
+static uint32_t waiting_caller(AgbCpu* cpu, int* thumb) {
+    uint32_t frame = bank_index(cpu->arm.cpsr) == 3 ? cpu->arm.r[13] : cpu->banked_r13[3];
+    *thumb = (agb_read32(cpu->board, frame) & SNX_ARM_T) != 0;
+    return agb_read32(cpu->board, frame + 12);
+}
+
 /* SoftReset, as the BIOS runs it: the top 0x200 bytes of IWRAM (the stacks, the BIOS's flags and its IRQ vector)
    cleared, r0 to r12 zero, the irq and svc stacks set with their lr and spsr cleared, then system mode in ARM state
    from EWRAM's start when the byte at 0x03007FFA asks for it (a game that copied a program there, as multiboot does),
@@ -349,8 +370,14 @@ static void swi_enter(AgbBoard* board, AgbCpu* cpu) {
 
 /* The other half, at AGB_BIOS_SWI_RETURN: r2 and lr come back, then what the supervisor stack holds, and the caller
    resumes */
-static void swi_return(AgbBoard* board, AgbCpu* cpu) {
+static void swi_return(AgbBoard* board, AgbCpu* cpu, int halted) {
     uint32_t sp = cpu->arm.r[13], caller, back;
+    if (halted) { /* Halt's return once woken, then the BIOS's way out (bios_time.h) */
+        int thumb;
+        uint32_t to = waiting_caller(cpu, &thumb);
+        AgbBiosClock clock = bios_clock(cpu, cpu->arm.cpsr);
+        cpu->bios_held += agb_bios_halt_leave(&clock, to, thumb);
+    }
     cpu->arm.r[2] = agb_read32(board, sp);
     cpu->arm.r[14] = agb_read32(board, sp + 4);
     cpu->arm.r[13] = sp + 8;
@@ -383,8 +410,13 @@ static uint32_t intr_check(AgbBoard* board, AgbCpu* cpu) {
 /* IntrWait's loop, at AGB_BIOS_INTR_WAIT: over once a handler flagged an interrupt it waits for, when r4 and its
    return come back from the caller's stack; else it halts for the next interrupt */
 static void intr_wait(AgbBoard* board, AgbCpu* cpu) {
+    int thumb, done;
+    uint32_t to = waiting_caller(cpu, &thumb);
+    AgbBiosClock clock = bios_clock(cpu, cpu->arm.cpsr);
     cpu->arm.r[14] = AGB_BIOS_INTR_WAIT + 4;
-    if (!intr_check(board, cpu)) {
+    done = intr_check(board, cpu) != 0;
+    cpu->bios_held += agb_bios_intr_check(&clock, to, thumb, done); /* its look at the flags, and halt or return */
+    if (!done) {
         board->cpu_halted = 1;
         return;
     }
@@ -408,6 +440,10 @@ static uint32_t open_bus_at(AgbBoard* board, uint32_t pc, int thumb) {
 static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb) {
     AgbBoard* board = sink->board;
     uint32_t number = thumb ? syndrome & 0xFF : (syndrome >> 16) & 0xFF;
+    /* the BIOS's own time (bios_time.h): its code for the call from the vector on, with the caller's stacks as the
+       call finds them; back is the address after the SWI, where the call returns */
+    uint32_t back = cpu->arm.r[15], source = cpu->arm.r[0], destination = cpu->arm.r[1], control = cpu->arm.r[2];
+    AgbBiosClock clock = bios_clock(cpu, cpu->arm.cpsr);
     /* what the BIOS's own reads of nothing give: the code after the call, which mGBA's HLE BIOS runs inside */
     board->open_bus = open_bus_at(board, cpu->arm.r[15] - (thumb ? 2u : 4u), thumb);
     board->bios_prefetch = AGB_BIOS_PREFETCH_SWI;
@@ -418,6 +454,7 @@ static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb)
     if (number == AGB_SWI_HALT || number == AGB_SWI_STOP) {
         /* halted inside the BIOS, r2 zero and the I/O base in r12 as its routine has them: the interrupt that wakes
            the machine is taken there, then the call returns */
+        cpu->bios_held += agb_bios_halt(&clock, back, number);
         swi_enter(board, cpu);
         cpu->arm.r[2] = 0;
         cpu->arm.r[12] = 0x04000000;
@@ -433,6 +470,7 @@ static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb)
            meanwhile may use */
         if (number == AGB_SWI_VBLANK_INTR_WAIT) cpu->arm.r[0] = cpu->arm.r[1] = 1;
         int discard = cpu->arm.r[0] != 0;
+        cpu->bios_held += agb_bios_intr_wait(&clock, back, number, number == AGB_SWI_VBLANK_INTR_WAIT, discard);
         swi_enter(board, cpu);
         cpu->arm.r[13] -= 8;
         agb_write32(board, cpu->arm.r[13], cpu->arm.r[4]);
@@ -448,13 +486,19 @@ static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb)
         }
         return;
     }
-    /* the BIOS's routine takes its time: its entry and return (45 cycles, as mGBA's HLE BIOS counts them) and the
-       memory it streams through, which the CPU spends before its next instruction */
+    /* the routine runs at once; its time is its code's (CpuSet, CpuFastSet), a stall in mGBA's loop for the math and
+       LZ77, or the BIOS's entry and return with what the routine counted (the memory it streamed through) */
     board->counting = 1;
     board->counted_cycles = 0;
     int ran = agb_bios_call(board, number, cpu->arm.r);
     board->counting = 0;
-    board->held_cycles += 45 + board->counted_cycles;
+    if ((number == AGB_SWI_CPU_SET || number == AGB_SWI_CPU_FAST_SET) && source >= 0x02000000u)
+        cpu->bios_held += agb_bios_cpu_set(&clock, back, thumb, number, source, destination, control);
+    else if ((number >= AGB_SWI_DIV && number <= AGB_SWI_ARCTAN2) || number == AGB_SWI_LZ77_UNCOMP_WRAM ||
+             number == AGB_SWI_LZ77_UNCOMP_VRAM)
+        cpu->bios_held += agb_bios_stalled(&clock, back, thumb, number, board->counted_cycles);
+    else
+        cpu->bios_held += agb_bios_direct(&clock, back, thumb, board->counted_cycles);
     if (ran < 0) {
         cpu->unknown_swi = number;
         cpu->unknown_swi_at = cpu->arm.r[15] - (thumb ? 2u : 4u); /* the PC is past the instruction already */
@@ -811,6 +855,13 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
         /* the CPU waits while a DMA holds the bus: the time its transfers took passes before the next instruction, up
            to this run's end, the rest in the next run's, so a run ends where the machine's frame does and gives a
            frame's sound. A DMA that ran while the CPU was halted took none of the CPU's time */
+        /* the BIOS's code for its call takes its time first, as the CPU runs it */
+        if (cpu->bios_held) {
+            uint32_t room = cycles - sink.elapsed, spent = cpu->bios_held < room ? cpu->bios_held : room;
+            cpu->bios_held -= spent;
+            advance(cpu, &sink, spent);
+            continue;
+        }
         if (board->held_cycles && board->cpu_halted) board->held_cycles = 0;
         if (board->held_cycles) {
             uint32_t room = cycles - sink.elapsed, held = board->held_cycles < room ? board->held_cycles : room;
@@ -848,9 +899,8 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
             advance(cpu, &sink, irq_return(board, cpu));
             continue;
         }
-        if (cpu->arm.r[15] == AGB_BIOS_HALT) cpu->arm.r[15] = AGB_BIOS_SWI_RETURN; /* Halt awake: bx lr */
-        if (cpu->arm.r[15] == AGB_BIOS_SWI_RETURN) {
-            swi_return(board, cpu);
+        if (cpu->arm.r[15] == AGB_BIOS_HALT || cpu->arm.r[15] == AGB_BIOS_SWI_RETURN) { /* Halt awake: bx lr */
+            swi_return(board, cpu, cpu->arm.r[15] == AGB_BIOS_HALT);
             continue;
         }
         /* IntrWait awake with no interrupt it may take: the BIOS's loop goes round */

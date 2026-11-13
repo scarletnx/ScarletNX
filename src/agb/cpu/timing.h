@@ -69,6 +69,9 @@ void agb_waits(AgbWaits* waits, uint32_t waitcnt);
    position it has passed already changes nothing */
 uint32_t agb_replay_to(AgbReplay* replay, const AgbWaits* waits, int prefetch, const AgbBlockRun* run, uint32_t unit,
                        int32_t access);
+/* The time code the machine runs in the CPU's stead takes (the BIOS's): run's instructions up to unit, on bus, which
+   it leaves as they leave it */
+uint32_t agb_code_time(AgbBus* bus, const AgbWaits* waits, int prefetch, const AgbBlockRun* run, uint32_t units);
 /* The cycles of one access the CPU makes outside a recompiled block (the BIOS's, an interrupt's entry): a data access
    of width bytes at address, write or read, sequential to the last or not, with the prefetch unit moving meanwhile */
 uint32_t agb_bus_data(AgbBus* bus, const AgbWaits* waits, int prefetch, uint32_t address, unsigned width, int write,

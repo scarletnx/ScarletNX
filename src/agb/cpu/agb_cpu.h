@@ -26,6 +26,9 @@ typedef struct {
     uint32_t advanced;  /* the cycles of the running block the board has run already, up to an I/O access */
     uint32_t yield_end; /* the unit after the instruction whose write ended the running block early, else 0 */
     uint32_t note;      /* the trace slot of the instruction the machine interprets, which its transfer fills */
+    /* the cycles of the BIOS's code for the call it is in (agb/bios/bios_time.h), which pass before the CPU's next
+       instruction, over runs when they are long */
+    uint32_t bios_held;
     /* the banked registers of the ARM7TDMI's modes: usr and sys share one bank */
     uint32_t banked_r13[6], banked_r14[6], spsr[6];
     uint32_t fiq_r8[5], usr_r8[5]; /* the ARM7TDMI banks r8 to r12 in FIQ mode */
