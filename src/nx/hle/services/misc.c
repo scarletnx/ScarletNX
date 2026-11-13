@@ -231,9 +231,24 @@ static int nn_streamplay_IUserShimScopedObject_GetHidSharedMemory(SvcObj* self,
     R_UNLESS(*memory, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
+/* An IFriendService's completion event (u[0], its id), one for the session. The SDK's asynchronous functions
+   (EnsureFriendListAvailable, GetProfileList and the like, read in SDK 19.3) open a session of their own, take its
+   event with command 0, send their one request from a thread of theirs, keep its result, and the game waits on the
+   event, or polls AsyncContext::HasDone, which reads it, for the request to end. Every request here ends as it is
+   answered, so each one but command 0 signals the event as it returns */
+static void friend_service_destroy(SvcObj* o) { kobj_unref(kobj_at((u32)o->u[0])); }
+static int friend_service_dispatch(SvcObj* o, IpcCtx* c) {
+    int r = nn_friends_detail_ipc_IFriendService_dispatch(o, c);
+    if (c->cmd != 0) ev_signal((u32)o->u[0]);
+    return r;
+}
 static int nn_friends_detail_ipc_IServiceCreator_CreateFriendService(SvcObj* self, SvcObj** service) {
     (void)self;
-    *service = nn_friends_detail_ipc_IFriendService_new();
+    SvcObj* o = nn_friends_detail_ipc_IFriendService_new();
+    o->u[0] = owned_event("friend completion");
+    o->destroy = friend_service_destroy;
+    o->dispatch = friend_service_dispatch;
+    *service = o;
     R_SUCCEED();
 }
 static int nn_friends_detail_ipc_IServiceCreator_CreateNotificationService(SvcObj* self, const nn_account_Uid* uid,
@@ -248,8 +263,9 @@ static int nn_friends_detail_ipc_IServiceCreator_CreateDaemonSuspendSessionServi
     R_SUCCEED();
 }
 static int nn_friends_detail_ipc_IFriendService_GetCompletionEvent(SvcObj* self, u32* event) {
-    (void)self;
-    return new_event(event, "friend completion", 0);
+    *event = ev_handle((u32)self->u[0]);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
+    R_SUCCEED();
 }
 /* nobody is a friend, and the list of none is always there to read */
 static int nn_friends_detail_ipc_IFriendService_CheckFriendListAvailability(SvcObj* self, const nn_account_Uid* uid,
@@ -1529,5 +1545,5 @@ SvcObj* new_spl(void) { return nn_spl_detail_IGeneralInterface_new(); }
 SvcObj* new_btmu(void) { return nn_btm_IBtmUser_new(); }
 SvcObj* new_olsc(void) { return nn_olsc_srv_IOlscServiceForApplication_new(); }
 /* the functions a save state may hold of this file (state_fns.h) */
-STATE_FN_TABLE(g_misc_state_fns,
-               STATE_FN("misc", nfc_user_destroy));
+STATE_FN_TABLE(g_misc_state_fns, STATE_FN("misc", nfc_user_destroy), STATE_FN("misc", friend_service_destroy),
+               STATE_FN("misc", friend_service_dispatch));
