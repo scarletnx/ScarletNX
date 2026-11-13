@@ -4446,6 +4446,10 @@ msgid "Shortcuts"
 msgstr "快捷键"
 
 #: src/gui/main.c
+msgid "Out of memory"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
 msgstr "游戏要启动其程序 %d（%s），但它尚未生成：重新编译游戏以生成其程序"
