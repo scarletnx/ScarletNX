@@ -100,6 +100,39 @@ static uint16_t io_readable(uint32_t byte) {
     return 0xFFFF;
 }
 
+/* The serial port's mode: RCNT's bits 15-14 pick general purpose (10) or JOY Bus (11), else SIOCNT's bits 13-12 the
+   normal 8 bit, normal 32 bit, multi-player or UART one */
+enum { SIO_NORMAL8, SIO_NORMAL32, SIO_MULTI, SIO_UART, SIO_GPIO, SIO_JOY };
+static int sio_mode(const AgbBoard* board) {
+    uint16_t rcnt = board->io[0x134 >> 1];
+    if (rcnt & 0x8000) return rcnt & 0x4000 ? SIO_JOY : SIO_GPIO;
+    return board->io[0x128 >> 1] >> 12 & 3;
+}
+
+/* The serial registers as the console reads them back with no cable (the suite's sio-read.c): the data halfwords only
+   in the modes that have them, SIOCNT without its unused bits, RCNT's lines at the levels the idle port gives them
+   (in general purpose mode the ones written), JOYCNT's interrupt enable and flags, JOY_TRANS reading 0 */
+static uint16_t sio_read(AgbBoard* board, uint32_t byte, uint32_t offset) {
+    int mode = sio_mode(board);
+    uint16_t value = board->io[offset];
+    switch (byte) {
+        case 0x120:
+        case 0x122: return mode == SIO_NORMAL32 || mode == SIO_MULTI ? value : 0;
+        case 0x124:
+        case 0x126: return mode == SIO_MULTI ? value : 0;
+        case 0x128: return value & (mode == SIO_UART ? 0x7FAF : 0x7F8F);
+        case 0x12A: return mode == SIO_UART ? 0 : value;
+        case 0x134: {
+            static const uint16_t lines[] = {0x5, 0x5, 0xF, 0xF, 0x0, 0xC};
+            return (uint16_t)((value & 0xC1F0) | (mode == SIO_GPIO ? value & 0xF : lines[mode]));
+        }
+        case 0x140: return value & 0x0047;
+        case 0x154:
+        case 0x156: return 0;
+        default: return value;
+    }
+}
+
 /* the register's value as the devices hold it */
 static uint16_t io_value(AgbBoard* board, uint32_t byte, uint32_t offset) {
     if (byte <= 0x5F) return agb_ppu_read(board, byte);
@@ -110,6 +143,8 @@ static uint16_t io_value(AgbBoard* board, uint32_t byte, uint32_t offset) {
     if (byte == 0x200) return board->irq_ie;
     if (byte == 0x202) return board->irq_if;
     if (byte == 0x208) return board->irq_ime;
+    if ((byte >= 0x120 && byte <= 0x12A) || byte == 0x134 || byte == 0x140 || (byte >= 0x150 && byte <= 0x158))
+        return sio_read(board, byte, offset);
     return board->io[offset];
 }
 
@@ -212,6 +247,10 @@ void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value, uint16_t 
         sio_write(board, value);
         return;
     }
+    /* what the port received is not the CPU's to write: the multi-player words and JOY_RECV; JOYCNT's flags clear
+       where a one is written */
+    if ((byte >= 0x120 && byte <= 0x126 && sio_mode(board) == SIO_MULTI) || byte == 0x150 || byte == 0x152) return;
+    if (byte == 0x140) value = (uint16_t)((board->io[offset] & 0x0007 & ~value) | (value & 0x0040));
     board->io[offset] = value;
 }
 
