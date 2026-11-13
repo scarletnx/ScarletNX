@@ -79,15 +79,17 @@ void snx_fx_set_fp16(SnxFx* fx, int on);
 /* whether the frames snx_fx_render is given hold linear light (read through an sRGB view): FXAA then judges an edge
    by the luma the display shows. 0, values as encoded, until set */
 void snx_fx_set_light(SnxFx* fx, int linear);
+/* whether the caller's window scales a frame in sharp pixels (the 3DS's), as the upscaler Off then scales it before
+   the anti-aliasing: 0, smooth (the Switch's and the Vita's), until set */
+void snx_fx_set_off_sharp(SnxFx* fx, int sharp);
 
 /* Auto anti-aliasing: 1 where the shown rectangle is at least 1.25 times the rendered frame in each direction, so
    the upscale makes its edges visible, and where it is not smaller (a downscale already smooths). */
 int snx_fx_aa_auto(uint32_t render_w, uint32_t render_h, uint32_t shown_w, uint32_t shown_h);
 
 /* The shown crop of src (img_w by img_h) through the filter and the anti-aliasing asked, into an image of out_w by
-   out_h, or of the crop's own size where the upscaler is Off and FXAA or SMAA run, which the caller scales as it
-   scales the frame: 1 with *out set (its size in it), 0 when neither runs (the caller keeps its own blit, a smooth one
-   for any filter but Off).
+   out_h: 1 with *out set, 0 when neither runs (the caller keeps its own blit, a smooth one for any filter but Off).
+   With the upscaler Off and anti-aliasing on, the crop is scaled as snx_fx_set_off_sharp says, then smoothed.
    What runs: an upscaler where the crop grows, the bilinear copy where it does not; NIS where it grows twice at most,
    else FSR 1; Auto as snx_fx_aa_auto says; SSAA where the device holds the image 2 or 4 times as large, else the
    step under it. The log says what runs and why it is not what was asked, once each time that changes. slot is the
