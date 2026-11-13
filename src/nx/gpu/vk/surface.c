@@ -1373,10 +1373,10 @@ void vk_rt_flush(u64 gva) { vk_surf_flush(vk_rt_find(gva), NULL); }
    compute program every frame, four waits and four landings a frame. Their images keep their pixels, older than
    memory's (the publish stamps the bytes written), so they load memory's before they are used again, as after a
    flush */
-static void publish_span(const Surf* s, VkOwnRes* r, u64 at, u64 n);
-/* With r (s's publish), r is published over each one's bytes once all are retired: publishing one flushes the
-   pending targets over it (vk_rt_before_write_cpu) */
-static void rt_retire_over(u64 gva, u64 size, const Surf* s, VkOwnRes* r) {
+static void publish_span(const Surf* s, VkOwnRes* r, u64 base, u64 at, u64 n);
+/* With r (s's publish, its byte 0 s's span's byte base), r is published over each one's bytes once all are retired:
+   publishing one flushes the pending targets over it (vk_rt_before_write_cpu) */
+static void rt_retire_over(u64 gva, u64 size, const Surf* s, VkOwnRes* r, u64 base) {
     Surf *local[16], **list;
     u32 count;
     if (!pend_hit_va(&g_rt_pages, gva, size)) return;
@@ -1386,7 +1386,7 @@ static void rt_retire_over(u64 gva, u64 size, const Surf* s, VkOwnRes* r) {
             Surf* t = list[i];
             if (t->gva < gva || t->gva + rt_bytes(t) > gva + size) continue; /* vk_rt_overlay flushed those */
             if (pass) {
-                publish_span(s, r, t->gva - s->gva, rt_bytes(t));
+                publish_span(s, r, base, t->gva - s->gva, rt_bytes(t));
                 continue;
             }
             t->mem_wgen = t->wgen;
@@ -1394,16 +1394,17 @@ static void rt_retire_over(u64 gva, u64 size, const Surf* s, VkOwnRes* r) {
         }
     if (list != local) free(list);
 }
-/* r's bytes [at, at + n) of s's span published over the guest memory there, a run of it at a time (an unmapped page
-   takes no write), and stamped written */
-static void publish_span(const Surf* s, VkOwnRes* r, u64 at, u64 n) {
+/* bytes [at, at + n) of s's span published over the guest memory there from r, whose byte 0 is the span's byte base
+   (0, or a band's first: publish_bands), a run of it at a time (an unmapped page takes no write), and stamped
+   written */
+static void publish_span(const Surf* s, VkOwnRes* r, u64 base, u64 at, u64 n) {
     for (u64 off = at, end = at + n; off < end;) {
         u64 cpu = 0, k = gmmu_run(s->gva + off, end - off, &cpu);
         if (!k) {
             k = 0x1000 - ((s->gva + off) & 0xFFF);
             if (k > end - off) k = end - off;
         } else
-            vk_own_publish(cpu, k, r, off);
+            vk_own_publish(cpu, k, r, off - base);
         off += k;
     }
     gpu_mem_written(s->gva + at, n);
@@ -1416,10 +1417,10 @@ static void publish_span(const Surf* s, VkOwnRes* r, u64 at, u64 n) {
 static void publish_own(const Surf* s, VkOwnRes* r, u64 size) {
     u64 own = rt_layer_bytes(s);
     if (surf_volume(s) || s->layers < 2 || own >= s->layer_size) {
-        publish_span(s, r, 0, size);
+        publish_span(s, r, 0, 0, size);
         return;
     }
-    for (u32 i = 0; i < s->layers; i++) publish_span(s, r, (u64)i * s->layer_size, own);
+    for (u32 i = 0; i < s->layers; i++) publish_span(s, r, 0, (u64)i * s->layer_size, own);
 }
 /* A storage image's results kept on the GPU (docs/layers/gpu/ownership.md), as the DMA engine's destination is: its span
    staged as the GPU sees it into a buffer of its own (the bytes between its texels keep theirs), its texels laid out
@@ -1432,6 +1433,55 @@ static void publish_own(const Surf* s, VkOwnRes* r, u64 size) {
 static int surf_publishable(const Surf* s) {
     return s->bl || (!(s->pitch % s->f.bpp) && s->type != VK_IMAGE_VIEW_TYPE_3D &&
                      (s->layers == 1 || s->layer_size == (u64)s->pitch * guest_h(s)));
+}
+/* A block linear target of one layer over what one owner may hold (g_vk.alloc_cap), published a band of rows of blocks
+   at a time (flush_parts' bands), each band an owner of its own over its bytes: the CPU's access lands the band it
+   touches, and no page of the span is let go before its bytes are there. Written back in parts, a 512 MiB target's
+   span was let go when the write-back took it (its watch found by own_acquire) and written over a second after, and
+   a read on another thread meanwhile took the bytes from before (#2094). 0 when a band can't be, with the bands
+   before it published: the caller writes the target back, over them */
+static int publish_bands(Surf* s, u64 size, u32 mem_wgen, u64 gw0) {
+    u64 limit = g_vk.alloc_cap / VK_PART_SHARE;
+    u32 h = guest_h(s), pitch = (guest_w(s) * s->f.bpp + 15) & ~15u;
+    u32 band = 8u << bl_height(h, s->bh), rows = (u32)(limit / pitch) / band * band;
+    if (!rows && (u64)band * pitch <= g_vk.alloc_cap) rows = band; /* a row of blocks is the least a band takes */
+    if (!rows) return 0;
+    for (u32 y = 0; y < h; y += rows) {
+        FlushPart part = {0, 1, y, h - y < rows ? h - y : rows};
+        VkBlMove m = rt_bl_move(s, pitch);
+        u64 at, hi;
+        m.y0 = y;
+        m.rows = part.rows;
+        vk_bl_range(&m, &at, &hi); /* the band's rows of blocks: at in the span, hi - at bytes */
+        if (hi > size) hi = size;
+        VkOwnRes* r = vk_own_res_new(hi - at, VK_OWN_BY_TARGET);
+        if (!r) return 0;
+        if (!vk_guest_read_device(s->gva + at, hi - at, r->buf, 0)) {
+            vk_own_res_unref(r);
+            return 0;
+        }
+        s->mem_wgen = s->wgen; /* the other targets over the band, under s's pixels */
+        vk_rt_overlay(s->gva + at, hi - at, r->buf, 0);
+        s->mem_wgen = mem_wgen;
+        VkCommandBuffer cb = vk_cmd();
+        vk_all_barrier(cb);
+        if (!flush_record(cb, s, r->buf, 0, &part)) {
+            vk_own_res_unref(r);
+            return 0;
+        }
+        vk_all_barrier(cb);
+        s->mem_wgen = s->wgen;
+        rt_retire_over(s->gva + at, hi - at, s, r, at); /* r holds the band: its byte 0 is the span's byte at */
+        publish_span(s, r, at, at, hi - at);
+        s->mem_wgen = mem_wgen;
+        vk_own_res_unref(r);
+    }
+    s->mem_wgen = s->wgen;
+    s->pub_serial = 0; /* no one owner holds it */
+    flush_rebase(s, size, 0, gw0);
+    vk_surf_relist(s);
+    if (!s->is_rt) vk_tex_note_writeback(s);
+    return 1;
 }
 int vk_surf_publish(Surf* s) {
     u64 size = flush_bytes(s);
@@ -1448,6 +1498,11 @@ int vk_surf_publish(Surf* s) {
     u32 kept = cpu_newer(s, size, &newer);
     u64 gw0 = gpu_mem_generation(), kat = 0, kbytes = 0;
     VkBuffer kbuf = VK_NULL_HANDLE;
+    /* over one owner: in bands when nothing the CPU wrote since the draws has to stay over the pixels (cpu_newer), a
+       single 2D layer that packs no depth; else the caller writes it back */
+    if (size > g_vk.alloc_cap)
+        return s->bl && !kept && s->layers == 1 && !surf_volume(s) && !depth_packs(s) &&
+               publish_bands(s, size, mem_wgen, gw0);
     r = vk_own_res_new(size, VK_OWN_BY_TARGET);
     if (!r) return 0;
     /* straight into the buffer that becomes the span's owner, as the copy engine's destinations go (dma.c): the bytes
@@ -1495,7 +1550,7 @@ int vk_surf_publish(Surf* s) {
     if (kept) vk_all_barrier(cb);
     /* The buffer now holds this image, and the targets under it: publishing it must not flush them again */
     s->mem_wgen = s->wgen;
-    rt_retire_over(s->gva, size, s, r);
+    rt_retire_over(s->gva, size, s, r, 0);
     publish_own(s, r, size);
     s->pub_serial = __atomic_load_n(&r->serial, __ATOMIC_ACQUIRE);
     vk_own_res_unref(r);
@@ -1542,7 +1597,7 @@ int vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
         s->mem_wgen = s->wgen; /* a target goes over nothing of its own */
         if (vk_rt_overlay(s->gva, size, r->buf, 0)) vk_all_barrier(vk_cmd());
         s->mem_wgen = mem_wgen;
-        rt_retire_over(s->gva, size, NULL, NULL);
+        rt_retire_over(s->gva, size, NULL, NULL, 0);
         vk_own_publish(cpu, size, r, 0);
         if (span_owner(cpu, size, &k->off) != r) { /* landed instead (unified memory over it) */
             vk_own_res_unref(r);
