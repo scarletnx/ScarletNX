@@ -323,6 +323,31 @@ static void test_process_memory_two_views(void) {
     test_handle = NULL;
 }
 
+/* A patch written through the whole view and a hook through the page, in one line before its flush: on the console
+   both land in the same page, so the code and every view keep both */
+static void test_process_memory_two_copies_one_line(void) {
+    KObj process = {0};
+    u64 src = HEAP_BASE + 0x1000, whole = STACK_BASE + 0x20000, page = STACK_BASE + 0x40000, code;
+    process.type = KO_PROCESS;
+    process.refs = 1;
+    test_handle = &process;
+    CHECK(mem_map(src, 0x2000, MS_CODE, PERM_RX) == 0);
+    memset(GP(src), 0, 0x2000);
+    CHECK(svc_map_process_memory(whole, 0x1234, src, 0x2000) == 0);
+    CHECK(svc_map_process_memory(page, 0x1234, src + 0x1000, 0x1000) == 0);
+    gw32(whole + 0x11C0, 0xD503201F); /* bytes 0 to 3 of the line */
+    gw32(page + 0x1E0, 0x17FFFFF0);   /* bytes 32 to 35 of the same line */
+    CHECK(svc_code_line(src + 0x11C0, &code) == 1 && code == src + 0x11C0);
+    CHECK(gr32(src + 0x11C0) == 0xD503201F && gr32(src + 0x11E0) == 0x17FFFFF0);
+    CHECK(gr32(whole + 0x11E0) == 0x17FFFFF0 && gr32(page + 0x1C0) == 0xD503201F);
+    CHECK(svc_code_line(src + 0x11C0, &code) == 0);
+    CHECK(svc_unmap_process_memory(page, 0x1234, src + 0x1000, 0x1000) == 0);
+    CHECK(svc_unmap_process_memory(whole, 0x1234, src, 0x2000) == 0);
+    CHECK(gr32(src + 0x11C0) == 0xD503201F && gr32(src + 0x11E0) == 0x17FFFFF0);
+    CHECK(mem_unmap(src, 0x2000) == 0);
+    test_handle = NULL;
+}
+
 /* shared memory: the service's pointer and every guest mapping are the same pages */
 static void test_shared_memory(void) {
     KShmem* s = kshmem_new(0x2000, "test");
@@ -594,6 +619,7 @@ int main(int argc, char** argv) {
     if (copies) {
         test_process_memory_copies();
         test_process_memory_two_views();
+        test_process_memory_two_copies_one_line();
         CHECK(mapping_depth == 0);
         printf("memory alias copies: %u checks passed\n", checks);
         return 0;

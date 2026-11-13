@@ -552,12 +552,12 @@ u32 svc_unmap_process_memory(u64 dst, u32 process, u64 src, u64 size) {
 
    Several views can show the same code at once: exlaunch keeps a view of each module's whole code, and maps one more
    page of it for each hook it writes. On the console they are all the same pages. Without the pool each view is a
-   copy, so a write through one of them is in that copy only: every view of the line is read, a line one of them
-   changed goes into the code, and then every copy and snapshot gets the code as it is now, as one page would show
+   copy, so a write through one of them is in that copy only: every view of the line is read, the bytes each of them
+   changed go into the code, and then every copy and snapshot gets the code as it is now, as one page would show
    it. Reading only the first view that showed the line missed a hook written through a later one (TotK's UltraCam:
    its nnMain hook, which mounts the SD card, never ran) */
 int svc_code_line(u64 addr, u64* code) {
-    int i, r = 0, found = 0, copies = !mem_pool_active();
+    int i, j, r = 0, found = 0, copies = !mem_pool_active();
     u64 line;
     addr &= ~(u64)63;
     line = addr;
@@ -571,13 +571,23 @@ int svc_code_line(u64 addr, u64* code) {
     }
     *code = line;
     /* views are whole pages, so a view that shows any of the line shows all 64 bytes of it */
-    if (copies)
-        for (i = 0; i < KCODEVIEW_MAX; i++) { /* what any copy wrote goes into the code */
+    if (copies) {
+        u8* to = GP(line);
+        for (i = 0; i < KCODEVIEW_MAX; i++) { /* the bytes each copy wrote go into the code */
             const KCodeView* v = &g_hle.svcmem.views[i];
             u64 at = line - v->src;
+            const u8* view;
             if (!v->size || at >= v->size) continue;
-            if (!v->snap || memcmp(v->snap + at, GP(v->dst + at), 64)) memcpy(GP(v->src + at), GP(v->dst + at), 64);
+            view = GP(v->dst + at);
+            if (!v->snap) { /* nothing kept to compare with: all of it */
+                memcpy(to, view, 64);
+                continue;
+            }
+            /* by byte, as two copies may each change a part of the line before one flush */
+            for (j = 0; j < 64; j++)
+                if (view[j] != v->snap[at + j]) to[j] = view[j];
         }
+    }
     for (i = 0; i < KCODEVIEW_MAX; i++) { /* the code against what each view kept, and each copy made the code */
         KCodeView* v = &g_hle.svcmem.views[i];
         u64 at = line - v->src;
