@@ -371,11 +371,15 @@ interface nn::bcat::detail::ipc::INotifierService {
 interface nn::bcat::detail::ipc::IDeliveryTaskSuspensionService {
 }
 
-# ================================================================ nim:eca: the shop, never reached
+# ================================================================ nim:eca: the shop, with no server behind it
 interface nn::nim::detail::IShopServiceAccessServerInterface is nim:eca {
     [0] CreateServerInterface(pid, u64 size, handle<copy, transfer_memory> transfer_memory)
         -> object<nn::nim::detail::IShopServiceAccessServer> server;
     @stub [4] IsLargeResourceAvailable(pid) -> b8 available;
+    # the same server, with the same arguments: SDK 19.3 opens it with this command for one of its proxy's two
+    # request cancel policies and with command 0 for the other
+    [5] CreateServerInterface2(pid, u64 size, handle<copy, transfer_memory> transfer_memory)
+        -> object<nn::nim::detail::IShopServiceAccessServer> server;
 }
 interface nn::nim::detail::IShopServiceAccessServer {
     [0] CreateAccessorInterface(u8 type) -> object<nn::nim::detail::IShopServiceAccessor> accessor;

@@ -1765,11 +1765,19 @@ static void test_olsc(void) {
     svcobj_unref(olsc);
 }
 
-/* nim:eca: the server a game opens on its transfer memory and the accessor it takes from it, then whether large
-   resources are available */
+/* nim:eca: the server a game opens on its transfer memory, by either command, and the accessor it takes from it,
+   then whether large resources are available */
 static void test_nim(void) {
     SvcObj *nim = new_nim(), *server;
     Request r;
+    request(&r, 5); /* the other cancel policy's */
+    argument64(&r, 8, 0x100000);
+    r.c.has_pid = 1;
+    r.c.ncopy = 1;
+    r.c.copy_h[0] = 0x1234;
+    call(nim, &r);
+    CHECK(r.c.nout_objs == 1 && !strcmp(r.c.out_objs[0]->name, "nn::nim::detail::IShopServiceAccessServer"));
+    svcobj_unref(r.c.out_objs[0]);
     request(&r, 0);
     argument64(&r, 8, 0x100000); /* the transfer memory's size, after the pid's slot */
     r.c.has_pid = 1;
