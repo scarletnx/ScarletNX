@@ -312,18 +312,17 @@ static int run(const uint32_t* m, size_t words, uint32_t x, uint32_t y, uint32_t
     }
     return stores;
 }
-/* the next number of a fixed sequence (xorshift32), so that every run makes the same modules */
-static uint32_t g_seed = 0x2545f491u;
-static uint32_t next(void) {
-    g_seed ^= g_seed << 13;
-    g_seed ^= g_seed >> 17;
-    g_seed ^= g_seed << 5;
-    return g_seed;
+/* the next number of a fixed sequence (xorshift32) from *seed, so that every run makes the same modules */
+static uint32_t next(uint32_t* seed) {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 17;
+    *seed ^= *seed << 5;
+    return *seed;
 }
 /* a mask of up to four bits at random places: the bits of a value the module does not know */
-static uint32_t unknown_bits(void) {
-    uint32_t mask = 0, n = next() % 5;
-    for (uint32_t k = 0; k < n; k++) mask |= 1u << (next() % 32);
+static uint32_t unknown_bits(uint32_t* seed) {
+    uint32_t mask = 0, n = next(seed) % 5;
+    for (uint32_t k = 0; k < n; k++) mask |= 1u << (next(seed) % 32);
     return mask;
 }
 /* m before and after the pass store the same values for every x within the bits of xs and every y within those of
@@ -1182,26 +1181,33 @@ int main(void) {
                                        S_LESS_THAN,
                                        U_LESS_THAN_EQUAL,
                                        S_LESS_THAN_EQUAL};
+        uint32_t seed = 0x2545f491u;
         int failed = 0, folded = 0;
         const int rounds = 4000;
         for (int round = 0; round < rounds && failed < 5; round++) {
-            uint32_t xs = unknown_bits(), ys = unknown_bits(), k[10];
+            uint32_t xs = unknown_bits(&seed), ys = unknown_bits(&seed), k[10];
             /* (x & xs) | known 1s outside xs, the same of y, the 1s as many as a quarter, half or three quarters of
                the bits, or none, and xs and ys sometimes low or high bits only (a product's low zeros, a field's
                high ones); then shift amounts, field offsets and counts, masks */
-            if (next() % 4 == 0) xs &= next() % 2 ? 0xffffu : 0xffff0000u;
-            if (next() % 4 == 0) ys = next() % 2 ? ys << 4 : ys >> 4;
+            if (next(&seed) % 4 == 0) xs &= next(&seed) % 2 ? 0xffffu : 0xffff0000u;
+            if (next(&seed) % 4 == 0) ys = next(&seed) % 2 ? ys << 4 : ys >> 4;
             k[0] = xs;
-            k[1] = next() & ~xs & (next() % 4 == 0 ? 0 : next() % 3 == 0 ? next() & next() : next() | next());
+            k[1] = next(&seed) & ~xs &
+                   (next(&seed) % 4 == 0   ? 0
+                    : next(&seed) % 3 == 0 ? next(&seed) & next(&seed)
+                                           : next(&seed) | next(&seed));
             k[2] = ys;
-            k[3] = next() & ~ys & (next() % 4 == 0 ? 0 : next() % 3 == 0 ? next() & next() : next() | next());
-            uint32_t count = next() % 33, offset = next() % (33 - count);
-            k[4] = next() % 32;
+            k[3] = next(&seed) & ~ys &
+                   (next(&seed) % 4 == 0   ? 0
+                    : next(&seed) % 3 == 0 ? next(&seed) & next(&seed)
+                                           : next(&seed) | next(&seed));
+            uint32_t count = next(&seed) % 33, offset = next(&seed) % (33 - count);
+            k[4] = next(&seed) % 32;
             k[5] = offset;
             k[6] = count;
-            k[7] = next() & (next() | next());
-            k[8] = next() % 4 ? next() : k[1] ^ k[3];
-            k[9] = next() % 2 ? 1u << (next() % 32) : (next() & 0xff) << (next() % 24);
+            k[7] = next(&seed) & (next(&seed) | next(&seed));
+            k[8] = next(&seed) % 4 ? next(&seed) : k[1] ^ k[3];
+            k[9] = next(&seed) % 2 ? 1u << (next(&seed) % 32) : (next(&seed) & 0xff) << (next(&seed) % 24);
             begin_with(&m, k, 10);
             put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)(P + 8), (uint32_t)X, (uint32_t)KA);
             put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P, (uint32_t)(P + 8), (uint32_t)KB);
@@ -1210,9 +1216,9 @@ int main(void) {
             uint32_t ids[3] = {(uint32_t)R, (uint32_t)R + 1, (uint32_t)R + 2}, prev = (uint32_t)P;
             int bool_result = 0;
             for (int level = 0; level < 2 && !bool_result; level++) {
-                uint32_t op = ops[next() % (sizeof ops / sizeof *ops)], id = ids[level];
+                uint32_t op = ops[next(&seed) % (sizeof ops / sizeof *ops)], id = ids[level];
                 /* the other operand: Q, P itself, a constant, or the field or shift amounts */
-                uint32_t other = next() % 4 == 0 ? prev : next() % 3 == 0 ? (uint32_t)KA + 8 : (uint32_t)Q;
+                uint32_t other = next(&seed) % 4 == 0 ? prev : next(&seed) % 3 == 0 ? (uint32_t)KA + 8 : (uint32_t)Q;
                 if (op == SHIFT_LEFT_LOGICAL || op == SHIFT_RIGHT_LOGICAL || op == SHIFT_RIGHT_ARITHMETIC)
                     put(&m, op, 4, (uint32_t)U, id, prev, (uint32_t)KA + 4);
                 else if (op == BIT_FIELD_U_EXTRACT || op == BIT_FIELD_S_EXTRACT)
