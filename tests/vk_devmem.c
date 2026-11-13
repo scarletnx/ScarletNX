@@ -81,11 +81,13 @@ typedef struct {
 #define DRV_ASK ((VkStructureType)0x7ffe0001)
 static struct {
     PMutex lk; /* the driver's calls come from every thread */
+    PCond cv;
     VkPhysicalDeviceMemoryProperties mp;
     u64 budget[VK_MAX_MEMORY_HEAPS], room[VK_MAX_MEMORY_HEAPS], used[VK_MAX_MEMORY_HEAPS], peak[VK_MAX_MEMORY_HEAPS];
     DrvMem mem[MEMS];
     DrvRes res[RES];
     u32 mems, allocations, no_alone; /* no_alone: it has no memory for a resource alone */
+    u32 hold_free, free_waits;       /* a free waits while hold_free is set, and says so */
     u64 gran, atom;
     VkMappedMemoryRange range; /* the last one flushed or invalidated */
     u32 ranges;
@@ -130,6 +132,10 @@ void VKAPI_CALL vk_ledger_free(VkDevice dev, VkDeviceMemory mem, const VkAllocat
     (void)dev, (void)cb;
     u32 m = (u32)(uintptr_t)mem;
     pm_lock(&g_drv.lk);
+    while (g_drv.hold_free) {
+        g_drv.free_waits = 1;
+        pc_wait(&g_drv.cv, &g_drv.lk, -1);
+    }
     CHECK(m && m <= MEMS && g_drv.mem[m - 1].live);
     for (u32 i = 0; i < RES; i++) CHECK(!g_drv.res[i].live || g_drv.res[i].mem != m); /* nothing is bound to it */
     g_drv.used[drv_heap(g_drv.mem[m - 1].type)] -= g_drv.mem[m - 1].size;
@@ -613,8 +619,8 @@ static void worker(void* arg) {
     pc_signal(&g_work.cv);
     pm_unlock(&g_work.lk);
 }
-/* the allocator's thread has made the block it was asked for and given back what it had to */
-static void ahead_wait(void) {
+/* the allocator's thread has made the block it was asked for and given back what it had to: or `until` is set */
+static void ahead_wait(const u32* until) {
     pm_lock(&g_work.lk);
     for (u32 tries = 0;; tries++) {
         u32 blocks = 0;
@@ -623,7 +629,7 @@ static void ahead_wait(void) {
         for (u32 h = 0; h < VK_MAX_MEMORY_HEAPS; h++) blocks += g_devmem.blocks[h];
         pm_unlock(&g_devmem.lk);
         pm_lock(&g_drv.lk);
-        int done = idle && blocks == g_drv.mems; /* a free on its way is still the driver's */
+        int done = until ? *until != 0 : idle && blocks == g_drv.mems; /* a free on its way is still the driver's */
         pm_unlock(&g_drv.lk);
         if (done) break;
         CHECK(tries < 20000);
@@ -631,16 +637,54 @@ static void ahead_wait(void) {
     }
     pm_unlock(&g_work.lk);
 }
+/* The block that the thread was asked for and has not begun counts in the heap's use: requests that fill the heap
+   meanwhile leave room for it, and the heap stays under its cap when the thread makes it. The thread is kept from it
+   in the driver's free of an allocation of system memory */
+static void check_ahead_cap(u64 budget) {
+    enum { CAP = 512 };
+    static Held held[CAP];
+    Held first, own;
+    DevMemWant gpu = {.at = DM_DEVICE}, mine = {.at = DM_HOST, .mapped = 1, .own = 1};
+    u32 n = 0;
+    CHECK(make(0, 4 * MIB, 4096, ~0u, 0, gpu, &first) == VK_SUCCESS);
+    ahead_wait(NULL); /* the next block of the kind is there */
+    CHECK(make(0, MIB, 4096, ~0u, 0, mine, &own) == VK_SUCCESS && drv_heap(own.info.type) == 1);
+    pm_lock(&g_drv.lk);
+    g_drv.hold_free = 1;
+    pm_unlock(&g_drv.lk);
+    unmake(&own);
+    ahead_wait(&g_drv.free_waits);
+    while (n < CAP && make(0, 4 * MIB, 4096, ~0u, 0, gpu, &held[n]) == VK_SUCCESS)
+        if (drv_heap(held[n++].info.type) != 0) break; /* the heap is full: this one went to the window */
+    pm_lock(&g_devmem.lk);
+    CHECK(g_devmem.ahead.want && !g_devmem.ahead.busy && heap_capped(0));
+    CHECK(g_devmem.mp.memoryTypes[g_devmem.ahead.type].heapIndex == 0);
+    pm_unlock(&g_devmem.lk);
+    CHECK(n && n < CAP && g_drv.used[0] <= budget - 256 * MIB);
+    pm_lock(&g_drv.lk);
+    g_drv.hold_free = g_drv.free_waits = 0;
+    pc_broadcast(&g_drv.cv);
+    pm_unlock(&g_drv.lk);
+    ahead_wait(NULL);
+    CHECK(g_drv.peak[0] <= budget - 256 * MIB && g_drv.used[0] > budget - 256 * MIB - 64 * MIB);
+    unmake(&first);
+    while (n) unmake(&held[--n]);
+    ahead_wait(NULL);
+    check_counts(0);
+}
 static void check_threads(void) {
+    const u64 budget = GIB;
     g_threads = 1;
-    device(0, 1024, 64, GIB);
+    device(0, 1024, 64, budget);
     CHECK(g_devmem.ahead.on);
     pc_init(&g_work.cv);
+    pc_init(&g_drv.cv);
+    check_ahead_cap(budget);
     for (u32 i = 0; i < WORKERS; i++) CHECK(plat_thread(worker, (void*)(uintptr_t)i, 0) == 0);
     pm_lock(&g_work.lk);
     while (g_work.done < WORKERS) pc_wait(&g_work.cv, &g_work.lk, -1);
     pm_unlock(&g_work.lk);
-    ahead_wait();
+    ahead_wait(NULL);
     CHECK(g_devmem.ahead.made); /* it made blocks ahead of their requests */
     check_counts(0);
 }
