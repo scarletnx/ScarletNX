@@ -96,7 +96,7 @@ static const struct {
             {GUI_ICON_MONITOR, HOTKEY_FULLSCREEN, NULL, "fullscreen"}, /* with its second key */
             {GUI_ICON_ACTIVITY, HOTKEY_STATS, NULL, "stats off/on"},
             {GUI_ICON_IMAGE, HOTKEY_CAPTURE, NULL, "capture a frame"}, /* while RenderDoc is in the process */
-            {GUI_ICON_POINTER, HOTKEY_MOUSE, NULL, "let the mouse go, hold it"},
+            {GUI_ICON_POINTER, HOTKEY_MOUSE, NULL, "Joy-Con mouse on/off"},
             {GUI_ICON_LOG_OUT, HOTKEY_QUIT, NULL, "quit the game"},
             {GUI_ICON_MONITOR, HOTKEY_TV_MODE, NULL, "TV on/off/auto"},
             {GUI_ICON_GAMEPAD, -1, "X, Space", "A"},
@@ -115,11 +115,11 @@ enum { KEYS_COUNT = sizeof KEYS / sizeof *KEYS };
 static u32 g_changes;
 static void changed(void) { __atomic_add_fetch(&g_changes, 1, __ATOMIC_RELEASE); }
 /* RenderDoc in the process, which shows the capture key's row (overlay_keys_extra), and the debugger's name */
-static int keys_capture, keys_mouse; /* keys_mouse: a game holds the mouse (overlay_keys_mouse) */
+static int keys_capture, keys_mouse; /* keys_mouse: the mouse key's row shows (overlay_keys_mouse) */
 static char keys_debugger[32];
 /* KEYS' row i's keys into out (n bytes): the game's buttons', or the runtime key's as set with what goes with it,
    fullscreen's two together. 0 for a row that doesn't show: a runtime key with none, the capture key's without
-   RenderDoc, the mouse key's while no game holds the mouse */
+   RenderDoc, the mouse key's while it is no way in and no game holds the mouse */
 static int keys_text(int i, char* out, size_t n) {
     const char *key = KEYS[i].action < 0 ? "" : hotkey_text(KEYS[i].action),
                *also = KEYS[i].action == HOTKEY_FULLSCREEN ? hotkey_text(HOTKEY_FULLSCREEN_2) : KEYS[i].key;

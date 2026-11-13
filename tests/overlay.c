@@ -304,12 +304,12 @@ static void keys_page(void) {
     overlay_scroll(-100);
     /* with RenderDoc in the process, the capture key's row right after F12's; a debugger, its paragraph; neither by
        default */
-    assert(!shows("capture a frame") && !shows("Debugger") && !shows("let the mouse go, hold it"));
-    overlay_keys_mouse(1); /* a game holds the mouse: its key's row, Ctrl+G by default */
+    assert(!shows("capture a frame") && !shows("Debugger") && !shows("Joy-Con mouse on/off"));
+    overlay_keys_mouse(1); /* the way in (game_mouse at Hotkey), or a game holds the mouse: its row, Ctrl+G */
     draw();
     for (i = 0; i < KEYS_TRACY_ROWS; ++i) overlay_scroll(1); /* the client's row is one further down */
     draw();
-    assert(shows_as("Ctrl+G", 0, light) && shows("let the mouse go, hold it"));
+    assert(shows_as("Ctrl+G", 0, light) && shows("Joy-Con mouse on/off"));
     for (i = 0; i < KEYS_TRACY_ROWS; ++i) overlay_scroll(-1);
     overlay_keys_mouse(0);
     overlay_keys_extra(1, "gdb");

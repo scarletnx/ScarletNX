@@ -125,8 +125,10 @@ static struct {
     SnxUiQuad fatal_quads[4096];
     int fps_was; /* the limit the fps hotkey took off, to put back (0 for none yet: the game's pace) */
     /* The mouse is held for the game while it plays with it: a Joy-Con on a table has no window's edge to stop at. The
-       menu takes it back, and hotkey_mouse (Ctrl+G) lets it go until the game's mouse mode ends or the key again */
-    int mouse_let_go, mouse_held;
+       menu takes it back. With game_mouse at Hotkey (the default) the mouse reaches the game, and is held, only while
+       hotkey_mouse (Ctrl+G) has declared mouse mode, until the key again. At Auto it always reaches the game, and the
+       key lets it go until the game's mouse mode ends or the key again. mouse_fed: it reached the game last time */
+    int mouse_let_go, mouse_declared, mouse_held, mouse_fed;
     u64 script_was;                 /* the scripted buttons of the last poll: a Home press opens or closes the menu */
     u32 previous_ids[SNX_GAMEPADS]; /* the pad video_poll last saw in each slot */
 } g_sdl3;
@@ -1113,7 +1115,7 @@ static void toast(const char* text) {
 }
 /* a runtime key's action, which the game's menu's F1 page lists (overlay.c's keys_row) with the game's buttons of
    keymap: a binding changed here changes there. The menu's is menu_event's */
-static void mouse_let_go(void);
+static void mouse_key(void);
 static void hotkey(int action) {
     switch (action) {
         case HOTKEY_HELP: /* the game's menu on its page of keys, over the game as the menu is, fullscreen or not */
@@ -1122,7 +1124,7 @@ static void hotkey(int action) {
             {
                 char debugger[SNX_DEBUGGER_NAME];
                 overlay_keys_extra(g_renderer->capture(0), snx_debugger(debugger, sizeof debugger) ? debugger : "");
-                overlay_keys_mouse(hid_mouse_mode());
+                overlay_keys_mouse(!g_settings.joy_con_mouse || hid_mouse_mode()); /* at Hotkey, the way in */
             }
             overlay_keys();
             ui_unlock();
@@ -1181,7 +1183,7 @@ static void hotkey(int action) {
             title_paused(game_paused());
             break;
         case HOTKEY_CAPTURE: g_renderer->capture(1); break;
-        case HOTKEY_MOUSE: mouse_let_go(); break;
+        case HOTKEY_MOUSE: mouse_key(); break;
         case HOTKEY_QUIT: /* asked twice: a first press only warns */
             if (hotkey_quit_press(plat_ns()))
                 g_quit = 1;
@@ -1400,17 +1402,42 @@ static void touch_finger(const SDL_Event* e) {
                                                    : TOUCH_UP,
               finger_id(&e->tfinger), picture, px, py);
 }
-/* hotkey_mouse: the mouse let go, or held again; what it held comes up with it */
-static void mouse_let_go(void) {
-    g_sdl3.mouse_let_go = !g_sdl3.mouse_let_go;
+/* whether the mouse reaches the game as its Joy-Con mouse: at Hotkey while mouse mode is declared, at Auto while it
+   isn't let go */
+static int mouse_to_game(void) { return g_settings.joy_con_mouse ? !g_sdl3.mouse_let_go : g_sdl3.mouse_declared; }
+/* the mouse stops reaching the game (the key, or game_mouse changed): what it held comes up, and its motion not yet
+   taken is dropped */
+static void mouse_fed_update(void) {
+    int fed = mouse_to_game();
+    if (fed == g_sdl3.mouse_fed) return;
+    g_sdl3.mouse_fed = fed;
+    if (fed) return;
+    HidMouse* m = &g_hle.hid.mouse;
     pm_lock(&g_host.hid.input_lock);
-    g_hle.hid.mouse.buttons = 0;
+    m->dx = m->dy = m->wheel = 0;
+    m->buttons = 0;
     pm_unlock(&g_host.hid.input_lock);
+}
+/* hotkey_mouse: at Hotkey, mouse mode declared or ended, at Auto the mouse let go or held again */
+static void mouse_key(void) {
+    if (g_settings.joy_con_mouse) {
+        g_sdl3.mouse_let_go = !g_sdl3.mouse_let_go;
+    } else {
+        g_sdl3.mouse_declared = !g_sdl3.mouse_declared;
+        if (g_sdl3.mouse_declared)
+            LOG("input: mouse mode declared, the mouse goes to the game as its Joy-Con mouse until hotkey_mouse=%s\n",
+                hotkey_text(HOTKEY_MOUSE));
+        else
+            LOG("input: mouse mode ended, the mouse no longer reaches the game\n");
+    }
+    mouse_fed_update();
 }
 static void mouse_hold_update(void) {
     int mode = g_sdl3.win && hid_mouse_mode();
     if (!mode) g_sdl3.mouse_let_go = 0;
-    int want = mode && !g_sdl3.mouse_let_go && !overlay_shown() && !vpad_editing() && !overlay_keyboard_shown();
+    mouse_fed_update();
+    int game = g_settings.joy_con_mouse ? mode && !g_sdl3.mouse_let_go : g_sdl3.win && g_sdl3.mouse_declared;
+    int want = game && !overlay_shown() && !vpad_editing() && !overlay_keyboard_shown();
     if (want == g_sdl3.mouse_held) return;
     g_sdl3.mouse_held = want;
     if (!SDL_SetWindowRelativeMouseMode(g_sdl3.win, want))
@@ -1418,12 +1445,14 @@ static void mouse_hold_update(void) {
     else if (!want)
         LOG("input: the mouse is let go\n");
     else
-        LOG("input: the mouse is held for the game, and hotkey_mouse=%s lets it go\n", hotkey_text(HOTKEY_MOUSE));
+        LOG("input: the mouse is held for the game, and hotkey_mouse=%s %s\n", hotkey_text(HOTKEY_MOUSE),
+            g_settings.joy_con_mouse ? "lets it go" : "ends mouse mode");
 }
-/* the mouse as an Ounce game's Joy-Con in mouse mode (hid_mouse_update): what it moved, under input_lock */
+/* the mouse as an Ounce game's Joy-Con in mouse mode (hid_mouse_update): what it moved, under input_lock. Nothing
+   while it doesn't reach the game (mouse_to_game) */
 static void game_mouse(const SDL_Event* e) {
     HidMouse* m = &g_hle.hid.mouse;
-    if (g_sdl3.mouse_let_go) return;
+    if (!mouse_to_game()) return;
     pm_lock(&g_host.hid.input_lock);
     if (e->type == SDL_EVENT_MOUSE_MOTION) {
         if (e->motion.which != SDL_TOUCH_MOUSEID) {

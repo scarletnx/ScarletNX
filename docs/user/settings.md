@@ -236,6 +236,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `gamepad_background` | `0` | `1` keeps gamepads playing while the window is not focused |
 | `gamepad_joycon_pair` | `1` | `1` plays a left and right Joy-Con together, `0` separately. Restart the game after changing it |
 | `gamepad_assign` | `1` | How controllers take players. `0`, manual: as each player's `gamepad_p<N>_device` names it, the next to connect where it names none. `1`, as a console's (Eden's Modern Console): each controller that connects takes the lowest free player, one that leaves keeps its player 45 seconds and takes it back when it returns, the game pauses once a player's controller has been gone 3 seconds (until it returns, or + is let go on another controller to go on without it), and a notice says each controller that joins or leaves, with its player ([Playing](usage.md#playing)) |
+| `game_mouse` | `0` | How the mouse reaches an Ounce game as its Joy-Con mouse. `0`, Hotkey: nothing reaches the game until `hotkey_mouse` (Ctrl+G) declares mouse mode, which holds the mouse and gives its motion, buttons and wheel to the game, and a second press ends it. `1`, Auto: the mouse always reaches the game, held while the game plays with it, and `hotkey_mouse` lets it go |
 | `gamepad_p<N>_device` (N from 1 to 8) | empty | Player N's controller: empty takes the next to connect, else its SDL GUID as the log names it, `/2` after it for the second of two alike |
 | `gamepad_p<N>_connected` | `1` | `0`: the game never sees player N. It always sees player 1, which the keyboard drives |
 | `gamepad_p<N>_type` | `0` | The controller the game sees for player N: `0` as it is, `1` Pro Controller, `2` two Joy-Cons, `3` a left Joy-Con, `4` a right one |
@@ -267,7 +268,7 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 | `hotkey_fullscreen_2` | `Alt+Return` | A second key that switches fullscreen |
 | `hotkey_stats` | `F12` | Turns `stats` on and off |
 | `hotkey_capture` | `Ctrl+Shift+F12` | Captures the next frame with RenderDoc while RenderDoc is in the game (`renderdoc`) |
-| `hotkey_mouse` | `Ctrl+G` | Lets the mouse go from a game that holds it (an Ounce game's Joy-Con mouse mode), and holds it again |
+| `hotkey_mouse` | `Ctrl+G` | With `game_mouse` at `0`, declares an Ounce game's Joy-Con mouse mode, and ends it. At `1`, lets the mouse go from a game that holds it, and holds it again |
 | `hotkey_quit` | `Escape` | Quits the game: a first press warns, and a second within 3 seconds quits |
 | `hotkey_tv_mode` | `Ctrl+D` | Steps the TV mode round On, Off and Auto for the run, as the game's menu's **TV mode** row does; `docked` keeps the `.ini`'s choice |
 
