@@ -3,7 +3,7 @@
 /* gui/gpu_driver_fetch.c: a repository's releases from GitHub's list of them, its latest marked as GitHub marks it,
    titled by name or by tag and ordered as Eden orders them; the assets each has, those with no link to download left
    out, a GPU maker's own marked; GitHub's own error said; NX-Mali's release, as GitHub lists it; and the
-   recommendation by GPU name, Eden's by Adreno model and NX-Mali by Mali model (while GUI_DRIVER_MALI_RECOMMENDED),
+   recommendation by GPU name, Eden's by Adreno model and NX-Mali by Mali model,
    found among a repository's releases */
 #include "gui/gpu_driver_fetch.h"
 #include <assert.h>
@@ -79,9 +79,10 @@ int main(void) {
         assert(r.count == 1 && r.assets_count == 1 && !strcmp(r.releases[0].title, "NX-Mali 0.0.1") &&
                r.releases[0].latest && !gui_driver_assets(&r)[0].proprietary &&
                !strcmp(gui_driver_assets(&r)[0].name, "NX-Mali_0.0.1.zip"));
-        /* recommended on a Mali it drives only with the switch on; on an Adreno or another Mali never */
-        assert(gui_driver_recommended_release("Mali-G615 MC6", 5, &r) == (GUI_DRIVER_MALI_RECOMMENDED ? 0 : -1));
-        assert(gui_driver_recommended_release("Mali-G710 MC10", 5, &r) == -1 &&
+        /* its latest recommended on a Mali it gives 1.3; on one it gives 1.1, and on an Adreno, never */
+        assert(gui_driver_recommended_release("Mali-G615 MC6", 5, &r) == 0 &&
+               gui_driver_recommended_release("Mali-G710 MC10", 5, &r) == 0);
+        assert(gui_driver_recommended_release("Mali-G78 MC14", 5, &r) == -1 &&
                gui_driver_recommended_release("Adreno (TM) 740", 5, &r) == -1);
         gui_driver_releases_free(&r);
     }
@@ -102,21 +103,17 @@ int main(void) {
            !strcmp(gui_driver_recommended("Adreno (TM) A32"), "KIMCHI Latest") &&
            !strcmp(gui_driver_recommended(""), "Unsupported") &&
            !strcmp(gui_driver_recommended("Adreno (TM) 950"), "Unsupported"));
-    /* the Malis NX-Mali names as its own, recommended only with the switch on; other Malis never, and an Adreno of the
-       G615's number by Adreno's table */
+    /* NX-Mali on the Malis it gives Vulkan 1.3 (its command-stream parts); not on those it gives 1.1, nor on one it
+       does not drive, and an Adreno of the G615's number by Adreno's table */
     {
-        static const char* const driven[] = {"Mali-G52",
-                                             "Mali-G57 MC2",
-                                             "Mali-G68 MC4",
-                                             "Mali-G77 MC9",
-                                             "Mali-G78AE",
-                                             "Mali-G615 MC6",
-                                             "Mali-G715-Immortalis MC11"};
-        for (size_t i = 0; i < sizeof driven / sizeof *driven; ++i)
-            assert(!strcmp(gui_driver_recommended(driven[i]), GUI_DRIVER_MALI_RECOMMENDED ? "NX-Mali" : "Unsupported"));
-        assert(!strcmp(gui_driver_recommended("Mali-G710 MC10"), "Unsupported") &&
-               !strcmp(gui_driver_recommended("Mali-G76 MC4"), "Unsupported") &&
-               !strcmp(gui_driver_recommended("Mali-G610 MC6"), "Unsupported") &&
+        static const char* const at_13[] = {"Mali-G610 MC6", "Mali-G615 MC6", "Mali-G710 MC10",
+                                            "Mali-G715-Immortalis MC11"};
+        static const char* const at_11[] = {"Mali-G52", "Mali-G57 MC2", "Mali-G68 MC4", "Mali-G77 MC9", "Mali-G78AE"};
+        for (size_t i = 0; i < sizeof at_13 / sizeof *at_13; ++i)
+            assert(!strcmp(gui_driver_recommended(at_13[i]), "NX-Mali"));
+        for (size_t i = 0; i < sizeof at_11 / sizeof *at_11; ++i)
+            assert(!strcmp(gui_driver_recommended(at_11[i]), "Unsupported"));
+        assert(!strcmp(gui_driver_recommended("Mali-G76 MC4"), "Unsupported") &&
                !strcmp(gui_driver_recommended("Adreno (TM) 615"), "Mr. Purple EOL-24.3.4"));
     }
     /* the recommendation among a repository's releases: by a part of its tag, else its latest; another repository's,
