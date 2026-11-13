@@ -13,6 +13,7 @@ int vk_present_quad(Surf* source, VkImage destination, VkFormat format, VkExtent
 typedef struct {
     VkDescriptorSet set;
     VkImageView view;  /* what set samples */
+    int light;         /* view is an sRGB view: what it samples is linear light */
     u32 width, height; /* its image's size, which source_rect is a part of */
 } SnxPresentSource;
 int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw, SnxPresentSource* out);

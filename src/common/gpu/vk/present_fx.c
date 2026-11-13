@@ -50,6 +50,7 @@ struct SnxFx {
     int sharpness;    /* upscaler_sharpness: 0 the softest, 100 the sharpest */
     uint32_t max_dim; /* the device's largest 2D image side */
     int fp16;
+    int light; /* the frames given hold linear light (snx_fx_set_light) */
     int fmt_checked, fmt_ok;
     VkFormat fmt;
     VkSampler sampler;
@@ -707,6 +708,10 @@ void snx_fx_set_fp16(SnxFx* fx, int on) {
     if (fx) fx->fp16 = on != 0;
 }
 
+void snx_fx_set_light(SnxFx* fx, int linear) {
+    if (fx) fx->light = linear != 0;
+}
+
 /* ---- a copy, for the filters that are not a filter ---- */
 
 static void record_copy(SnxFx* fx, VkCommandBuffer cb, VkDescriptorSet set, VkImageView src, uint32_t image_w,
@@ -783,12 +788,12 @@ static void record_fsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView
 /* ---- anti aliasing ---- */
 
 static void record_fxaa(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, FxImage* src, FxImage* dst) {
-    float rcp[4] = {1.0f / (float)src->width, 1.0f / (float)src->height, 0, 0};
+    uint32_t flags[4] = {fx->light ? 1u : 0u, 0, 0, 0}; /* fxaa.frag's */
     bind_combined(fx, fx->fxaa_set[slot], src->view, 0);
     fx_barrier(fx, cb, dst->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    fx_draw(cb, dst->view, fx->fxaa, fx->pl1, dst->width, dst->height, fx->fxaa_set[slot], rcp, sizeof rcp,
+    fx_draw(cb, dst->view, fx->fxaa, fx->pl1, dst->width, dst->height, fx->fxaa_set[slot], flags, sizeof flags,
             VK_ATTACHMENT_LOAD_OP_DONT_CARE);
     fx_barrier(fx, cb, dst->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
