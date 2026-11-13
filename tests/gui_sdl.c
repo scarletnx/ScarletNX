@@ -5304,7 +5304,8 @@ static bool message_is(const App* app, const char* want) {
 /* Locate... for a Switch game named by its title ID: the dump picked is asked of its driver (-x --icon's title.ini),
    the answer waited for; another game's refused, both IDs said, one whose title the driver did not say refused, said,
    and the game's own taken. For a GBA game: a ROM whose hash is not the one its map names refused, its header's code
-   and title said, and the ROM it was made from taken */
+   and title said, with the code its .ini recorded beside the hash it was made from (none in a .ini from before code=),
+   and the ROM it was made from taken */
 static void locate_titles(App* app, const char* dir) {
     char *old = snx_path_join(dir, "title old.nsp"), *other = snx_path_join(dir, "title other.nsp");
     char *right = snx_path_join(dir, "title right.nsp"), *mute = snx_path_join(dir, "title mute.nsp");
@@ -5364,22 +5365,28 @@ static void locate_titles(App* app, const char* dir) {
         program = console_game(app, "agb lost", ini, &folder);
         map = snx_format("snx-agb-code 3 7 %016llX\n", (unsigned long long)hash);
         fixture_file(folder, "agb lost_code.map", map);
-        for (int i = 0; i < 2; ++i) {
+        file = snx_format("%s/agb lost.ini", folder);
+        /* a .ini from before code= says the hash alone; one with it, the code beside the hash */
+        for (int i = 0; i < 3; ++i) {
+            if (i == 1) assert(!snx_ini_record(file, "code", "ATST"));
             focus_game(app, "agb lost");
             key(app, SDLK_RETURN);
             missing_box(app, lost);
             key(app, SDLK_DOWN);
             key(app, SDLK_RETURN);
-            locate_answer(app, program, i ? same : another);
-            want = i ? snx_format("agb lost plays from %s now.", same)
-                     : snx_format("Not taken: %s is AOTH (OTHERGAME), hashed %016llX, and agb lost was made from the "
-                                  "ROM hashed %016llX; it keeps %s",
-                                  another, (unsigned long long)snx_fnv1a(SNX_FNV_BASIS, rom, sizeof rom),
-                                  (unsigned long long)hash, lost);
+            locate_answer(app, program, i == 2 ? same : another);
+            want = i == 2 ? snx_format("agb lost plays from %s now.", same)
+                   : i    ? snx_format("Not taken: %s is AOTH (OTHERGAME), hashed %016llX, and agb lost was made from "
+                                       "ATST, hashed %016llX; it keeps %s",
+                                       another, (unsigned long long)snx_fnv1a(SNX_FNV_BASIS, rom, sizeof rom),
+                                       (unsigned long long)hash, lost)
+                          : snx_format("Not taken: %s is AOTH (OTHERGAME), hashed %016llX, and agb lost was made from "
+                                       "the ROM hashed %016llX; it keeps %s",
+                                       another, (unsigned long long)snx_fnv1a(SNX_FNV_BASIS, rom, sizeof rom),
+                                       (unsigned long long)hash, lost);
             assert(message_is(app, want));
             free(want);
         }
-        file = snx_format("%s/agb lost.ini", folder);
         source = snx_ini_value(file, "source");
         assert(source && !strcmp(source, same));
         free(source);

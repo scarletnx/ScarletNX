@@ -5359,6 +5359,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s, hashed %016llX"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "the ROM hashed %016llX"
 msgstr ""
 
