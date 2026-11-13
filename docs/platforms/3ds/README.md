@@ -406,14 +406,24 @@ Implemented:
   than charged to application FCRAM. The limited kernel personality reports
   version 2.58 and the memory mode the title runs in, with its regions' sizes: an
   Old 3DS takes the mode the ExHeader names (0, 64 MiB for the application; 2, 96;
-  3, 80; 4, 72; 5, 32) and a New 3DS mode 6 (124 MiB) for every title, as Azahar
-  launches them. An ExHeader naming mode 1 or one above 5 is refused. The New 3DS's
-  178 MiB mode, resource-limit capabilities and kernel/firmware configuration
-  fields are not modeled.
+  3, 80; 4, 72; 5, 32), as Azahar launches them. A New 3DS lays out mode 6, or mode 7
+  (178 MiB for the application) for a title whose New 3DS system mode (ExHeader
+  0x20D) is 2. A title that names a New 3DS mode gets all of mode 6's 124 MiB; a
+  legacy one (New 3DS mode 0) gets its Old 3DS mode's share of it, which the
+  configuration page reports and the heap enforces, as the console's process
+  manager limits it (Azahar's UpdateReportedMemory). An ExHeader naming mode 1 or
+  one above 5 is refused. Resource-limit capabilities and kernel/firmware
+  configuration fields are not modeled. The run prints the share and the linear
+  heap's address.
 - ControlMemory (`0x01`) validates page ranges/permissions and supports commit,
   free and protect of owned heap/linear allocations. Normal heap uses explicit
   VAs in `0x08000000..0x10000000` and may span discontiguous physical holes.
-  Linear memory is physically contiguous with `PA = VA - 0x14000000 + 0x20000000`.
+  Linear memory is physically contiguous with `PA = VA - base + 0x20000000`, the
+  base `0x14000000`, or `0x30000000` for a title whose ExHeader names kernel 2.44
+  (`0x22C`, system 8.0.0) or later, as Azahar places it: the old base leaves no room
+  for mode 7's 178 MiB below VRAM's mapping at `0x1F000000`. GetProcessInfo type 20
+  gives the process's base. Shared memory a service makes, and the system font, stay
+  at their old linear address, as Azahar maps them.
   Recycled pages are zeroed. Requests are preflighted and failed publication is
   rolled back. MAP and UNMAP alias the application's own heap (an UNMAP that does
   not match a MAP returns `0xD8E007F5`), the region bits of the operation are
@@ -1160,9 +1170,6 @@ phase that reworks its area:
 - F3 (kernel and IPC, with the services retail titles use):
   - Every reply writes back all 64 command words, where the console copies only
     the reply's length (to be checked on hardware).
-  - GetProcessInfo type 20 always gives the old linear heap's offset. Azahar picks
-    `0x30000000` for kernels from `0x22C` by the ExHeader's descriptor, while the
-    configuration page reports `0x23A`.
   - A wait-all that succeeds at once writes -1 to r1 where Azahar leaves it, and a
     timed arbiter wait that is signaled leaves the timeout result in r0 in Azahar.
     What the console does in both cases is unknown.

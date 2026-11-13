@@ -276,8 +276,10 @@ int main(void) {
         assert(snx_ctr_query(p->space, CTR_CONFIG, NULL, &permissions) == SNX_CTR_MEM_OK && permissions == 1);
         assert(ctr_word(p, CTR_CONFIG) == 0x023a0000);
         assert(ctr_word(p, CTR_CONFIG + 0x40) == p->app_limit);
-        assert((uint64_t)ctr_word(p, CTR_CONFIG + 0x40) + ctr_word(p, CTR_CONFIG + 0x44) +
-                   ctr_word(p, CTR_CONFIG + 0x48) ==
+        /* the regions fill FCRAM, but on a New 3DS a legacy title is told only its Old 3DS mode's share of the first
+           (mode 6's 0x7c00000) */
+        uint64_t first = model == SNX_CTR_NEW && !image.new3ds_mode ? 0x7c00000u : ctr_word(p, CTR_CONFIG + 0x40);
+        assert(first + ctr_word(p, CTR_CONFIG + 0x44) + ctr_word(p, CTR_CONFIG + 0x48) ==
                snx_ctr_profile((SnxCtrModel)model)->fcram_size);
         assert(snx_ctr_write_ram(p->space, CTR_CONFIG, "x", 1) == SNX_CTR_MEM_PERMISSION);
         assert(snx_ctr_fetch(p->space, CTR_CONFIG, code, 4) == SNX_CTR_MEM_PERMISSION);
@@ -325,7 +327,7 @@ int main(void) {
         memory(p, 3, CTR_HEAP, p->app_limit, 3, 0xc8601bf3u);
         memory(p, 1, 0x100000, 4096, 0, 0xe0e01bf5u);
         assert(used(p) == baseline);
-        uint32_t linear = memory(p, 0x10003, 0, 8192, 3, 0), pa;
+        uint32_t linear = memory(p, 0x10003, 0, 8192, 3, 0), pa = 0;
         assert(snx_ctr_query(p->space, linear, &pa, NULL) == SNX_CTR_MEM_OK);
         assert(linear - CTR_LINEAR == pa - CTR_PHYS_BASE && !ctr_word(p, linear));
         memory(p, 0x10003, linear, 4096, 3, 0xe0a01bf5u);
@@ -500,31 +502,60 @@ int main(void) {
         assert(snx_ctr_dispatch(&module, p, 10, &executed) == SNX_CTR_RUN_BLOCKED && !executed && r[15] == pc);
         snx_ctr_process_free(p);
     }
-    /* The system mode a title asks for: an Old 3DS gives its regions (APPLICATION, SYSTEM, BASE), a New 3DS mode 6's
-       whatever Old 3DS mode the title names. The configuration page names the mode and the regions, and the heap
-       commits the whole APPLICATION region and not a page more */
+    /* The system mode a title asks for: an Old 3DS gives the regions (APPLICATION, SYSTEM, BASE) of its Old 3DS mode,
+       whatever New 3DS mode it names. A New 3DS lays out mode 6, or mode 7 (178 MiB) for a title whose New 3DS system
+       mode is 2; a legacy title (New 3DS mode 0) gets its Old 3DS mode's share of mode 6's APPLICATION region. The
+       configuration page names the mode and the regions, and the heap commits the whole share and not a page more */
     static const uint32_t regions[6][3] = {{0x4000000, 0x2c00000, 0x1400000}, {0, 0, 0},
                                            {0x6000000, 0x0c00000, 0x1400000}, {0x5000000, 0x1c00000, 0x1400000},
                                            {0x4800000, 0x2400000, 0x1400000}, {0x2000000, 0x4c00000, 0x1400000}};
-    static const uint32_t new_regions[3] = {0x7c00000, 0x6400000, 0x2000000};
-    for (unsigned mode = 0; mode < 6; ++mode) {
-        SnxCtrImage moded = image;
-        moded.system_mode = mode;
-        if (mode == 1) {
-            assert(!snx_ctr_process_new(&moded, SNX_CTR_OLD) && !snx_ctr_process_new(&moded, SNX_CTR_NEW));
-            continue;
+    static const uint32_t new_regions[2][3] = {{0x7c00000, 0x6400000, 0x2000000}, {0xb200000, 0x2e00000, 0x2000000}};
+    for (unsigned mode = 0; mode < 6; ++mode)
+        for (unsigned n3ds = 0; n3ds < 4; ++n3ds) {
+            SnxCtrImage moded = image;
+            moded.system_mode = mode;
+            moded.new3ds_mode = n3ds;
+            moded.kernel_caps[27] = 0xfc00022cu; /* kernel 2.44: the linear heap at 0x30000000, room for mode 7 */
+            if (mode == 1) {
+                assert(!snx_ctr_process_new(&moded, SNX_CTR_OLD) && !snx_ctr_process_new(&moded, SNX_CTR_NEW));
+                continue;
+            }
+            for (unsigned model = 0; model < 2; ++model) {
+                SnxCtrProcess* p = snx_ctr_process_new(&moded, (SnxCtrModel)model);
+                assert(p);
+                bool old = model == SNX_CTR_OLD;
+                const uint32_t* layout = old ? regions[mode] : new_regions[n3ds == 2];
+                uint32_t share = !old && n3ds == 0 ? regions[mode][0] : layout[0];
+                assert((ctr_word(p, CTR_CONFIG + 0x30) & 0xff) == (old ? mode : n3ds == 2 ? 7u : 6u));
+                assert(ctr_word(p, CTR_CONFIG + 0x40) == share);
+                for (unsigned i = 1; i < 3; ++i) assert(ctr_word(p, CTR_CONFIG + 0x40 + i * 4) == layout[i]);
+                /* the share through the linear heap, which mode 7's 178 MiB needs: the normal heap's addresses
+                   span 128 MiB */
+                uint32_t rest = share - used(p), linear = memory(p, 0x10003, 0, rest, 3, 0);
+                assert(linear >= CTR_LINEAR_NEW && linear + rest <= CTR_LINEAR_NEW + share && used(p) == share);
+                memory(p, 0x10003, 0, 4096, 3, 0xc8601bf3u);
+                snx_ctr_process_free(p);
+            }
         }
-        for (unsigned model = 0; model < 2; ++model) {
-            SnxCtrProcess* p = snx_ctr_process_new(&moded, (SnxCtrModel)model);
-            assert(p);
-            const uint32_t* expected = model == SNX_CTR_OLD ? regions[mode] : new_regions;
-            assert((ctr_word(p, CTR_CONFIG + 0x30) & 0xff) == (model == SNX_CTR_OLD ? mode : 6));
-            for (unsigned i = 0; i < 3; ++i) assert(ctr_word(p, CTR_CONFIG + 0x40 + i * 4) == expected[i]);
-            uint32_t rest = expected[0] - used(p);
-            assert(memory(p, 3, CTR_HEAP, rest, 3, 0) == CTR_HEAP && used(p) == expected[0]);
-            memory(p, 3, CTR_HEAP + rest, 4096, 3, 0xc8601bf3u);
-            snx_ctr_process_free(p);
-        }
+    /* the linear heap's place by the kernel version the ExHeader names: before 2.44 (0x22c) at 0x14000000, from it at
+       0x30000000, and GetProcessInfo 20 gives FCRAM's physical address less it */
+    static const uint32_t versions[4][2] = {
+        {0, CTR_LINEAR}, {0xfc00022bu, CTR_LINEAR}, {0xfc00022cu, CTR_LINEAR_NEW}, {0xfc000250u, CTR_LINEAR_NEW}};
+    for (unsigned v = 0; v < 4; ++v) {
+        SnxCtrImage versioned = image;
+        versioned.kernel_caps[27] = versions[v][0];
+        SnxCtrProcess* p = snx_ctr_process_new(&versioned, SNX_CTR_NEW);
+        assert(p && p->linear_base == versions[v][1]);
+        uint32_t linear = memory(p, 0x10003, 0, 8192, 3, 0), pa = 0;
+        assert(linear >= versions[v][1] && snx_ctr_query(p->space, linear, &pa, NULL) == SNX_CTR_MEM_OK);
+        assert(linear - versions[v][1] == pa - CTR_PHYS_BASE);
+        ctr_put(p, linear + 4, 0x5eed1234u);
+        assert(ctr_word(p, linear + 4) == 0x5eed1234u);
+        uint32_t* r = p->cpu.state.cpu.r;
+        r[1] = 0xffff8001u; /* the process itself */
+        r[2] = 20;
+        assert(snx_ctr_svc(p, 0x2b) == SNX_CTR_SVC_RETURN && !r[0] && r[1] == CTR_PHYS_BASE - versions[v][1]);
+        snx_ctr_process_free(p);
     }
     puts(
         "CTR kernel objects, stale handles, resource exhaustion, checked memory and truthful arbitration/waits passed");

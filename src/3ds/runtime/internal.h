@@ -18,7 +18,8 @@
 #define CTR_TLS_BYTES      (CTR_THREAD_LIMIT * 512u) /* one 512-byte TLS slot per thread from SNX_CTR_INITIAL_TLS */
 #define CTR_HEAP           0x08000000u
 #define CTR_HEAP_END       0x10000000u
-#define CTR_LINEAR         0x14000000u
+#define CTR_LINEAR         0x14000000u /* the linear heap of a title for a kernel before 2.44 */
+#define CTR_LINEAR_NEW     0x30000000u /* and of one for 2.44 (system 8.0.0) or later, room for 256 MiB */
 #define CTR_PROCESS_HANDLE 0xffff8001u
 #define CTR_THREAD_HANDLE  0xffff8000u
 /* Physical page ownership, not a replacement for the checked page controller. */
@@ -258,6 +259,9 @@ struct SnxCtrProcess {
     SnxCtrAddressSpace* space;
     SnxCtrCpu cpu;
     uint32_t physical_next, physical_end, app_limit, physical_shared;
+    /* where the process's linear heap starts, CTR_LINEAR or CTR_LINEAR_NEW by the kernel version its ExHeader
+       names (Azahar Process::GetLinearHeapAreaAddress): page n of FCRAM is linear_base + n * 4096 */
+    uint32_t linear_base;
     CtrSharedMap shared_maps[8]; /* MapMemoryBlock registrations, kernel ordered */
     /* ControlMemory MAP pairs: target mirrors the heap pages at source; both stay out of FREE and PROTECT until the
        matching UNMAP (Azahar's Aliased and Alias memory states) */
