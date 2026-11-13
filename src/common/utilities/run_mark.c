@@ -49,9 +49,11 @@ static long long name_pid(const char* name) {
     }
     return pid ? pid : -1;
 }
-/* the mark name of folder, when no program holds it: given to seen, then deleted. One held, and one gone since the
-   folder was read (its program ended), are left */
-static void stale(const char* folder, const char* name, void (*seen)(void* data, const SnxRunMark* mark), void* data) {
+/* the mark name of folder, when no program holds it: given to seen, then deleted, unless look; with look a held one
+   is given too, held set. One held (without look), and one gone since the folder was read (its program ended), are
+   left */
+static void stale(const char* folder, const char* name, void (*seen)(void* data, const SnxRunMark* mark), void* data,
+                  int look) {
     long long pid = name_pid(name);
     SnxRunMark mark = {0};
     char reason[256], *path, *text = NULL, *left = NULL, *end;
@@ -62,19 +64,20 @@ static void stale(const char* folder, const char* name, void (*seen)(void* data,
     if (pid < 0) return;
     path = snx_path_join(folder, name);
     held = snx_lock_existing(path, &lock);
-    if (held > 0 || (held < 0 && errno == ENOENT)) {
+    if ((held > 0 && !look) || (held < 0 && errno == ENOENT)) {
         free(path);
         return;
     }
     if (held < 0)
         left = snx_format("%s cannot be opened (%s)", path, snx_os_error(reason, sizeof reason));
-    else {
+    else if (!held) {
         bytes = snx_read_file(path, &size);
         if (!bytes) text = snx_format("(its text cannot be read: %s)", snx_os_error(reason, sizeof reason));
-        if (remove(path)) left = snx_format("%s cannot be deleted (%s)", path, snx_os_error(reason, sizeof reason));
+        if (!look && remove(path))
+            left = snx_format("%s cannot be deleted (%s)", path, snx_os_error(reason, sizeof reason));
         snx_unlock_file(lock); /* after the delete: until then, no other start takes it too */
     }
-    mark.text = held < 0 ? NULL : text ? text : bytes ? (const char*)bytes : "";
+    mark.text = held ? NULL : text ? text : bytes ? (const char*)bytes : "";
     if (bytes) { /* snx_read_file ends what it reads with a 0: its first line, then the time */
         end = strchr((char*)bytes, '\n');
         if (end) {
@@ -85,11 +88,25 @@ static void stale(const char* folder, const char* name, void (*seen)(void* data,
     }
     mark.pid = pid;
     mark.left = left;
+    mark.held = held > 0;
     seen(data, &mark);
     free(left);
     free(text);
     free(bytes);
     free(path);
+}
+int snx_run_mark_look(const char* folder, void (*seen)(void* data, const SnxRunMark* mark), void* data, char* why,
+                      size_t why_size) {
+    char reason[256], **names = NULL;
+    size_t count = 0, i;
+    if (why_size) why[0] = 0;
+    if (snx_list_dir(folder, &names, &count)) {
+        snprintf(why, why_size, "%s cannot be read (%s)", folder, snx_os_error(reason, sizeof reason));
+        return -1;
+    }
+    for (i = 0; i < count; ++i) stale(folder, names[i], seen, data, 1);
+    snx_free_strings(names, count);
+    return 0;
 }
 int snx_run_mark_start(const char* folder, void (*seen)(void* data, const SnxRunMark* mark), void* data, char* why,
                        size_t why_size) {
@@ -106,7 +123,7 @@ int snx_run_mark_start(const char* folder, void (*seen)(void* data, const SnxRun
         snprintf(why, why_size, "%s cannot be read (%s)", folder, snx_os_error(reason, sizeof reason));
         return -1;
     }
-    for (i = 0; i < count; ++i) stale(folder, names[i], seen, data);
+    for (i = 0; i < count; ++i) stale(folder, names[i], seen, data, 0);
     snx_free_strings(names, count);
     name = snx_format(RUN_MARK "-%lld", own_pid());
     path = snx_path_join(folder, name);

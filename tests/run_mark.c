@@ -2,8 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* A start's mark (common/utilities/run_mark.h): made held at a start, deleted at the end; another start finds one no
    program holds, says its text, pid and start, and deletes it, and leaves one held, other files and a mark being made;
-   the older iOS app's logs/.running; a folder longer than the 1024 bytes the iOS mark had. On POSIX, a child that ends
-   with exit() leaves none, one that ends with _exit (a kill, a crash) leaves its own for the next start */
+   the older iOS app's logs/.running; a folder longer than the 1024 bytes the iOS mark had. A look at a folder's marks
+   gives each, held or not, and deletes none. On POSIX, a child that ends with exit() leaves none, one that ends with
+   _exit (a kill, a crash) leaves its own for the next start */
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L /* fork and waitpid, which strict C99 leaves undeclared */
 #endif
@@ -33,7 +34,7 @@ static void check(int good, const char* expression, int line) {
 
 /* what a start found, a copy of the last mark said and how many */
 typedef struct {
-    int count, opened;
+    int count, opened, held;
     long long pid, started;
     char text[256], left[2048];
 } Seen;
@@ -41,6 +42,7 @@ static void seen(void* data, const SnxRunMark* mark) {
     Seen* s = (Seen*)data;
     ++s->count;
     s->opened = mark->text != NULL;
+    s->held += mark->held;
     s->pid = mark->pid;
     s->started = mark->started;
     snprintf(s->text, sizeof s->text, "%s", mark->text ? mark->text : "");
@@ -132,6 +134,35 @@ static void found(const char* folder) {
     free(held);
 }
 
+/* a look gives each mark, the held one with held set and no text, the others as a start would, and deletes none: a
+   launcher's at those of a game it started, which the game's next start says */
+static void looked(const char* folder) {
+    Seen s = {0};
+    char why[2048], *held = snx_path_join(folder, ".running-616161"), *missing = snx_path_join(folder, "missing");
+    intptr_t lock;
+    write_text(folder, ".running-616161", "pid 616161, started 2026-11-12 20:18:25\n1762989505\n");
+    CHECK(!snx_lock_file(held, &lock));
+    write_text(folder, ".running-19590.new", "pid 19590, started 2026-11-12 20:18:25\n1762989505\n");
+    CHECK(snx_run_mark_look(folder, seen, &s, why, sizeof why) == 0 && !why[0]);
+    CHECK(s.count == 1 && s.held == 1 && s.pid == 616161 && !s.opened && !s.left[0]);
+    snx_unlock_file(lock);
+    write_text(folder, ".running-19590", "pid 19590, started 2026-11-12 20:18:25\n1762989505\n");
+    s.count = s.held = 0;
+    CHECK(snx_run_mark_look(folder, seen, &s, why, sizeof why) == 0 && s.count == 2 && !s.held);
+    CHECK(there(folder, ".running-19590") && there(folder, ".running-616161") && there(folder, ".running-19590.new"));
+    /* both again, as nothing was deleted; then the start that says and deletes them */
+    s.count = 0;
+    CHECK(snx_run_mark_look(folder, seen, &s, why, sizeof why) == 0 && s.count == 2);
+    s.count = 0;
+    CHECK(snx_run_mark_start(folder, seen, &s, why, sizeof why) == 0 && s.count == 2);
+    CHECK(!there(folder, ".running-19590") && !there(folder, ".running-616161"));
+    snx_run_mark_end();
+    /* a folder that is not there: said */
+    CHECK(snx_run_mark_look(missing, seen, &s, why, sizeof why) < 0 && strstr(why, missing));
+    free(missing);
+    free(held);
+}
+
 /* a folder past the 1024 bytes the iOS mark's path had: its mark is made and deleted there. Where the system takes no
    such path (Windows without its long paths), the start says the whole path */
 static void long_folder(const char* root) {
@@ -208,6 +239,7 @@ int main(void) {
     CHECK(!snx_mkdirs(folder));
     made_and_ended(folder);
     found(folder);
+    looked(folder);
     long_folder(root);
 #ifndef _WIN32
     g_held[0] = root;
