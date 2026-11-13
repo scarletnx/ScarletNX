@@ -1856,8 +1856,11 @@ void nds_gpu3d_vblank(NdsBoard* board)
             execute_command(g, g->waiting[done].command, g->waiting[done].param);
             ++done;
         }
-        memmove(g->waiting, g->waiting + done, (g->waiting_count - done) * sizeof *g->waiting);
-        g->waiting_count -= done;
+        if (done) /* the queue is allocated at its first command: none ran, nothing to move */
+        {
+            memmove(g->waiting, g->waiting + done, (g->waiting_count - done) * sizeof *g->waiting);
+            g->waiting_count -= done;
+        }
     }
     (void)nds_gpu3d_irq(board);
 }
