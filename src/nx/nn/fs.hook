@@ -29,6 +29,7 @@ hook _ZN2nn2fs17MountCacheStorageEPKc(const char* name) -> u32 = nnfs_mount_cach
 hook _ZN2nn2fs17MountCacheStorageEPKci(const char* name, i32 index) -> u32 = nnfs_mount_cache_storage_index
 hook _ZN2nn2fs21MountTemporaryStorageEPKc(const char* name) -> u32 = nnfs_mount_temporary_storage
 hook _ZN2nn2fs7UnmountEPKc(const char* name) = nnfs_unmount a32 @version(< 1.0.0)
+hook _ZN2nn2fs9IsMountedEPKc(const char* name) -> bool = nnfs_is_mounted
 hook _ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci(addr handle, const char* path, i32 mode) -> u32 = nnfs_open_file a32 @version(< 1.0.0)
 hook _ZN2nn2fs9CloseFileENS0_10FileHandleE(addr h) = nnfs_close_file a32 @version(< 1.0.0)
 hook _ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm(u64* read, u64 h, i64 offset, addr buffer, u64 size) -> u32 = nnfs_read_file

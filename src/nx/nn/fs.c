@@ -81,6 +81,7 @@
 #define SYM_TIME_STAMP_RAW     "_ZN2nn2fs27GetFileTimeStampRawForDebugEPNS0_16FileTimeStampRawEPKc"
 #define SYM_COMMIT             "_ZN2nn2fs6CommitEPKc"
 #define SYM_IS_PATH_MOUNTED    "_ZN2nn2fs13IsPathMountedEPKc"
+#define SYM_IS_MOUNTED         "_ZN2nn2fs9IsMountedEPKc"
 #define SYM_PATH_MAX           "_ZN2nn2fs16GetPathLengthMaxEPmPKc"
 #define SYM_ENTRY_NAME_MAX     "_ZN2nn2fs21GetEntryNameLengthMaxEPmPKc"
 #define SYM_UTF16_PATH_MAX     "_ZN2nn2fs21GetUtf16PathLengthMaxEPbPmPKc"
@@ -813,6 +814,16 @@ u32 nnfs_mount_cache_storage_index(CPU* c, u64 name, i32 index) {
 }
 u32 nnfs_mount_temporary_storage(CPU* c, u64 name) {
     return mount_save(c, "MountTemporaryStorage", name, g_nobody, SAVE_TEMPORARY, 0, 0);
+}
+
+/* IsMounted: a native mount's name is mounted, though the SDK's own table never holds it (a game that asks before it
+   opens a file would refuse every file of the mount); any other name is that table's to answer */
+int nnfs_is_mounted(CPU* c, u64 name) {
+    pm_lock(&g_nnfs.lock);
+    int m = mount_named(name ? gstr(c, name) : NULL);
+    pm_unlock(&g_nnfs.lock);
+    if (m >= 0) return 1;
+    return (int)(sdk_own(c, SYM_IS_MOUNTED) & 1);
 }
 
 void nnfs_unmount(CPU* c, u64 name) {

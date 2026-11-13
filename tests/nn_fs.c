@@ -6,8 +6,8 @@
    any other; and a system archive mounted by its data id, with the cache size its tables need. Then a file of that
    archive opened, read and closed by a 64-bit game and by a 32-bit one through its table's adapters (fs.hook's a32):
    the handle and the bytes read take 8 bytes of the game's memory in the first and 4 in the second, and a handle
-   the SDK made goes back to the SDK's own code in both. A file's time stamps on a save's mount, and MountHost's
-   refusal in both games */
+   the SDK made goes back to the SDK's own code in both. A file's time stamps on a save's mount, MountHost's
+   refusal in both games, and IsMounted, which a native mount answers */
 #include "nx/nn/fs.c"
 #include "hle/hook/hooks.hook.inc" /* fs.hook's table, and a 32-bit game's */
 #include <stdio.h>
@@ -174,8 +174,10 @@ void fatal(const char* fmt, ...) {
     exit(1);
 }
 
-/* ---- hook.c's: each function is hooked somewhere, and the SDK's own code answers 0x77, counted by its symbol */
+/* ---- hook.c's: each function is hooked somewhere, and the SDK's own code answers own_answer (0x77 unless a check
+   sets another), counted by its symbol */
 static unsigned own_runs;
+static u64 own_answer = 0x77;
 static char own_symbol[96];
 static const char* site_symbol[12];
 u64 hook_site(const char* symbol) {
@@ -188,7 +190,7 @@ u64 hook_site(const char* symbol) {
 void hook_run_original(CPU* c, u64 addr) {
     own_runs++;
     snprintf(own_symbol, sizeof own_symbol, "%s", site_symbol[(addr - 0x1000) / 4]);
-    c->x[0] = 0x77;
+    c->x[0] = own_answer;
 }
 static int own(const char* symbol, unsigned runs) { return own_runs == runs && !strcmp(own_symbol, symbol); }
 /* a 32-bit game's: the own code of the function its thread is in, which answers 0x78 */
@@ -454,6 +456,27 @@ int main(void) {
     /* MountHost there: the name and the folder in r0 and r1, the same refusal, nothing of the SDK's run */
     CHECK(call32("_ZN2nn2fs9MountHostEPKcS2_", NAME, PATH, 0, 0, 0, 0, 0) == FSR(1) && own_runs32 == 1);
     g_arm_mod = NULL;
+
+    /* IsMounted: a native mount's name is mounted, with nothing of the SDK's run, as its own table (which answers 0
+       here) never holds a native mount; any other name, and the name once unmounted, are that table's */
+    {
+        unsigned runs = own_runs;
+        int hooked = 0;
+        for (int i = 0; i < HOOK_COUNT; i++)
+            hooked |= !strcmp(hook_symbol[i], SYM_IS_MOUNTED) && !strcmp(hook_handler[i], "nnfs_is_mounted");
+        CHECK(hooked);
+        own_answer = 0;
+        text(NAME, "rom2");
+        CHECK(nnfs_is_mounted(c, NAME) == 0 && own(SYM_IS_MOUNTED, runs + 1));
+        CHECK(nnfs_mount_rom_name(c, NAME) == 0);
+        CHECK(nnfs_is_mounted(c, NAME) == 1 && own_runs == runs + 1);
+        text(PATH, "aoc");
+        CHECK(nnfs_is_mounted(c, PATH) == 0 && own(SYM_IS_MOUNTED, runs + 2));
+        CHECK(nnfs_is_mounted(c, 0) == 0 && own(SYM_IS_MOUNTED, runs + 3));
+        nnfs_unmount(c, NAME);
+        CHECK(nnfs_is_mounted(c, NAME) == 0 && own(SYM_IS_MOUNTED, runs + 4));
+        own_answer = 0x77;
+    }
     printf("nn_fs: %u checks passed\n", checks);
     return 0;
 }
