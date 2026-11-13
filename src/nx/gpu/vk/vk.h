@@ -1518,6 +1518,14 @@ u64 vk_bc7_strip_blocks(void); /* the BC7 blocks vk_bc7_encode_kept makes at onc
 /* the image levels (or regions of them) uploaded as BC7 so far, the levels the BC7 cache gave (here or between frames),
    their bytes, and the bytes they would have taken as RGBA8 */
 void vk_astc_stats(u64* levels, u64* hits, u64* bytes, u64* rgba8_bytes);
+/* An ASTC texture whose blocks hold no more than BC1, BC4 or BC5 do (gpu/texture/astc_kind.h; texture.c picks it under
+   astc_mode's Auto) is held in that format, uploaded straight to it by vk_astc_upload (astc_bcn.comp), no RGBA8 image
+   before it: its encoders are a pass each, near the decoder's cost. vk_astc_bcn: 1, 4 or 5 for such a texture's image
+   format, BC1 (RGBA, sRGB or not), BC4 or BC5 (UNORM), 0 for any other; vk_astc_bcn_name its name. vk_astc_bcn_stats:
+   the levels (or regions) uploaded as BC1, BC4 and BC5 so far, their bytes and what they would take as RGBA8 */
+u32 vk_astc_bcn(VkFormat f);
+const char* vk_astc_bcn_name(u32 kind);
+void vk_astc_bcn_stats(u64 levels[3], u64 bytes[3], u64 rgba8_bytes[3]);
 /* The BC7 cache of ASTC levels (astc.c over bc7_cache.c). vk_astc_cache_open: the cache of this game and device in the
    file at path, its records' version made of the encoder's (and the decoder's) SPIR-V, VK_BC7_ENCODER_VERSION and the
    GPU and its driver (pipeline.c, where the GPU samples BCn but not ASTC). vk_astc_cached: a level of w x h texels and

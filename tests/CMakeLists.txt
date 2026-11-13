@@ -3142,6 +3142,14 @@ add_executable(snx-test-astc-bc7-glsl glsl/astc_bc7_glsl.cpp glsl/astc_bc7_cpu.c
 snx_test_target(snx-test-astc-bc7-glsl 23)
 target_include_directories(snx-test-astc-bc7-glsl PRIVATE glsl)
 add_test(NAME astc_bc7_glsl COMMAND snx-test-astc-bc7-glsl)
+# astc_bcn.comp's GLSL, ASTC blocks straight into BC4, BC5 and BC1 ones for the textures whose blocks hold no more
+# (gpu/texture/astc_kind.h), run on the CPU (tests/glsl/glsl.hpp): what each loses against the CPU decoder's texels,
+# held to the floor measured; --measure FILE.astc... gives each file's format and loss beside BC7's. No GPU needed
+add_executable(snx-test-astc-bcn-glsl glsl/astc_bcn_glsl.cpp glsl/astc_bcn_cpu.cpp glsl/astc_bc7_cpu.cpp support/astc.c
+               support/bcn.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c") # g_gob_native
+snx_test_target(snx-test-astc-bcn-glsl 23)
+target_include_directories(snx-test-astc-bcn-glsl PRIVATE glsl)
+add_test(NAME astc_bcn_glsl COMMAND snx-test-astc-bcn-glsl)
 # the ASTC 4x4 encoder's GLSL (BCn encoded again as ASTC) run on the CPU (tests/glsl/glsl.hpp), its blocks decoded by
 # the CPU's ASTC decoder: no GPU needed
 add_executable(snx-test-astc-encode-glsl glsl/astc_encode_glsl.cpp glsl/astc_encode_cpu.cpp glsl/bcn_astc_cpu.cpp
