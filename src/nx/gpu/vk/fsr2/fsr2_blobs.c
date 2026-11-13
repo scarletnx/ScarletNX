@@ -7,7 +7,6 @@
    buffers with their bindings: read here from the module itself, the variables of descriptor set 1 by their names */
 #include "nx/gpu/vk/fsr2/fsr2_spv.h"
 #include <stdlib.h>
-#include <string.h>
 #include "vk/shaders/ffx_fsr2_shaders_vk.h"
 
 enum { KIND_NONE, KIND_SAMPLED, KIND_STORAGE, KIND_UNIFORM, KINDS };
@@ -75,8 +74,7 @@ Fsr2ShaderBlobVK fsr2GetPermutationBlobByIndexVK(FfxFsr2Pass pass, uint32_t opti
                  (options & FSR2_SHADER_PERMUTATION_LOW_RES_MOTION_VECTORS ? 2u : 0) |
                  (options & FSR2_SHADER_PERMUTATION_JITTER_MOTION_VECTORS ? 4u : 0) |
                  (options & FSR2_SHADER_PERMUTATION_DEPTH_INVERTED ? 8u : 0);
-    Fsr2ShaderBlobVK blob;
-    memset(&blob, 0, sizeof blob);
+    Fsr2ShaderBlobVK blob = {0};
     if ((uint32_t)pass >= 9) return blob;
     const SnxFsr2Spv* spv = &snx_fsr2_spv[pass][k];
     Bound* b = &g_fsr2_bound[pass][k];

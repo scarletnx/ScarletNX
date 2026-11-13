@@ -1267,16 +1267,12 @@ void nvn_CommandBufferEvaluateDlss(CPU* c, u64 cb, u64 n, u64 p) {
         sx0 += kx, sw -= kx + kx2, dx0 += kx * s + move[0], dw = sw * s;
         sy0 += ky, sh -= ky + ky2, dy0 += ky * s + move[1], dh = sh * s;
     }
-    static const size_t part[NVN_DLSS_TEXTURES] = {
-        offsetof(NvnDlssParameters, input),  offsetof(NvnDlssParameters, output), offsetof(NvnDlssParameters, motion),
-        offsetof(NvnDlssParameters, depth),  offsetof(NvnDlssParameters, bias),   offsetof(NvnDlssParameters, exposure)};
+    const NvnTexturePair pairs[NVN_DLSS_TEXTURES] = {q.input, q.output, q.motion, q.depth, q.bias, q.exposure};
     u64 payload = rec(c, cb, OP_DLSS, SNAP_OFF(NvnPDlss) + NVN_DLSS_TEXTURES * NVN_TEX_SNAP, COST_RECORD);
     NvnPDlss* d = (NvnPDlss*)(void*)GP(payload);
     for (int i = 0; i < NVN_DLSS_TEXTURES; i++) {
-        NvnTexturePair pair;
-        memcpy(&pair, (const u8*)&q + part[i], sizeof pair);
-        d->tex[i] = tex_snap(payload, SNAP_OFF(NvnPDlss), i, pair.texture);
-        copy_view(&d->view[i], &d->has_view[i], pair.texture ? pair.view : 0);
+        d->tex[i] = tex_snap(payload, SNAP_OFF(NvnPDlss), i, pairs[i].texture);
+        copy_view(&d->view[i], &d->has_view[i], pairs[i].texture ? pairs[i].view : 0);
     }
     d->reset = q.history_reset;
     memcpy(d->jitter, q.jitter, sizeof d->jitter);
