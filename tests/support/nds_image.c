@@ -84,23 +84,32 @@ static void put32(unsigned char* at, uint32_t value) {
     for (unsigned i = 0; i < 4; ++i) at[i] = (unsigned char)(value >> (i * 8));
 }
 
-bool nds_test_image(const char* path, const uint32_t* words, size_t count) {
-    enum { PROGRAM = 0x8000, SIZE = 0x10000 };
+bool nds_test_card(const char* path, uint32_t offset, const char* code, const unsigned char* program, uint32_t size) {
+    enum { SIZE = 0x10000 };
     unsigned char* image = calloc(1, SIZE);
-    if (!image || count * 4 > SIZE - PROGRAM) {
+    if (!image || offset < 0x4000 || offset > SIZE || size > SIZE - offset) {
         free(image);
         return false;
     }
     memcpy(image, "SNXTEST", 7);
-    memcpy(image + 12, "TEST", 4);
-    put32(image + 0x20, PROGRAM);          /* the ARM9 program's place in the image */
+    memcpy(image + 12, code, 4);
+    put32(image + 0x20, offset);           /* the ARM9 program's place in the image */
     put32(image + 0x24, NDS_TEST_ADDRESS); /* its entry */
     put32(image + 0x28, NDS_TEST_ADDRESS); /* where it is loaded */
-    put32(image + 0x2C, count * 4 < 0x800 ? 0x800u : (uint32_t)(count * 4));
-    for (size_t i = 0; i < count; ++i) put32(image + PROGRAM + i * 4, words[i]);
+    put32(image + 0x2C, size < 0x800 ? 0x800u : size);
+    memcpy(image + offset, program, size);
     FILE* f = fopen(path, "wb");
     bool ok = f && fwrite(image, 1, SIZE, f) == SIZE;
     if (f) ok = !fclose(f) && ok;
     free(image);
+    return ok;
+}
+
+bool nds_test_image(const char* path, const uint32_t* words, size_t count) {
+    unsigned char* program = count <= 0x2000 ? malloc(count * 4 + 1) : NULL;
+    if (!program) return false;
+    for (size_t i = 0; i < count; ++i) put32(program + i * 4, words[i]);
+    bool ok = nds_test_card(path, 0x8000, "TEST", program, (uint32_t)(count * 4));
+    free(program);
     return ok;
 }

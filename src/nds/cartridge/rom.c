@@ -4,8 +4,10 @@
    parameters the start code reads are the SDK's, as the code of every game shows them: the autoload list, the
    compressed program's end and the two words that end them (0xDEC00621, 0x2106C0DE). */
 #include "nds/cartridge/rom.h"
+#include "nds/cartridge/key1.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/zip.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,30 +84,42 @@ static uint32_t module_params(const NdsRom* rom) {
         if (at && at + 0x24 <= rom->arm9_size) return at; /* the parameters' start */
     }
     for (uint32_t at = 0; at + 8 <= rom->arm9_size && at < 0x4000; at += 4)
-        if (word(rom, rom->arm9_offset + at) == NDS_NITROCODE && word(rom, rom->arm9_offset + at + 4) == 0x2106C0DEu)
+        if (snx_ld_le32(rom->program + at) == NDS_NITROCODE && snx_ld_le32(rom->program + at + 4) == 0x2106C0DEu)
             return at >= 0x1C ? at - 0x1C : 0;
     return 0;
 }
 
-static bool load_program(NdsRom* rom, char* error, size_t error_size) {
-    uint32_t params = module_params(rom), size = rom->arm9_size, ends = 0;
-    if (params && params + 0x18 <= size) ends = word(rom, rom->arm9_offset + params + 0x14);
-    if (params && params + 0x1C <= size) rom->sdk_version = word(rom, rom->arm9_offset + params + 0x18);
+/* the ARM9 program as memory holds it, its secure area's first 2 KiB as the firmware leaves them (secure: NULL when the
+   image has them so) */
+static bool load_program(NdsRom* rom, const unsigned char* secure, char* error, size_t error_size) {
+    uint32_t size = rom->arm9_size;
+    rom->program = malloc(size);
+    if (!rom->program) {
+        snprintf(error, error_size, "out of memory");
+        return false;
+    }
+    memcpy(rom->program, rom->data + rom->arm9_offset, size);
+    if (secure) memcpy(rom->program, secure, NDS_KEY1_SECURE); /* arm9_size >= 0x800: nds_rom_open */
+    uint32_t params = module_params(rom), ends = 0;
+    if (params && params + 0x18 <= size) ends = snx_ld_le32(rom->program + params + 0x14);
+    if (params && params + 0x1C <= size) rom->sdk_version = snx_ld_le32(rom->program + params + 0x18);
     uint32_t compressed = ends > rom->arm9_address && ends - rom->arm9_address <= size ? ends - rom->arm9_address : 0;
-    uint32_t whole = compressed ? nds_blz_size(rom->data + rom->arm9_offset, compressed) : 0;
+    uint32_t whole = compressed ? nds_blz_size(rom->program, compressed) : 0;
     if (compressed && !whole) {
         snprintf(error, error_size, "the ARM9 program says it is compressed up to 0x%08X, and has no footer there",
                  ends);
         return false;
     }
-    if (whole < size) whole = size;
-    rom->program = malloc(whole ? whole : 1);
-    if (!rom->program) {
-        snprintf(error, error_size, "out of memory");
-        return false;
-    }
-    memset(rom->program, 0, whole);
-    memcpy(rom->program, rom->data + rom->arm9_offset, size);
+    if (whole > size) {
+        unsigned char* grown = realloc(rom->program, whole);
+        if (!grown) {
+            snprintf(error, error_size, "out of memory");
+            return false;
+        }
+        memset(grown + size, 0, whole - size);
+        rom->program = grown;
+    } else
+        whole = size;
     if (compressed) {
         if (!nds_blz(rom->program, compressed, whole)) {
             snprintf(error, error_size, "the ARM9 program's compressed stream is damaged");
@@ -173,7 +187,74 @@ static bool load_overlays(NdsRom* rom, char* error, size_t error_size) {
     return true;
 }
 
-bool nds_rom_open(NdsRom* rom, const char* path, char* error, size_t error_size) {
+/* The DS's ARM7 BIOS at bios7 (NULL: none can be named) mapped into bios: true when it is the console's, else false
+   with why not, the end of a sentence about an image's secure area */
+static bool bios7_open(PFileMap* bios, const char* bios7, char* why, size_t why_size) {
+    char reason[256];
+    uint32_t crc = 0;
+    if (!bios7)
+        snprintf(why, why_size,
+                 ", and no data folder could be named to read the DS's ARM7 BIOS from (%u bytes, CRC-32 0x%08X)",
+                 NDS_BIOS7_SIZE, NDS_BIOS7_CRC32);
+    else if (!snx_is_file(bios7))
+        snprintf(why, why_size,
+                 ": install your DS's ARM7 BIOS at %s (%u bytes, CRC-32 0x%08X; Install Keys puts it there) and it is "
+                 "decrypted as the game is read",
+                 bios7, NDS_BIOS7_SIZE, NDS_BIOS7_CRC32);
+    else if (plat_file_map(bios, bios7))
+        snprintf(why, why_size, ", and the DS's ARM7 BIOS at %s cannot be read: %s", bios7,
+                 snx_os_error(reason, sizeof reason));
+    else if (bios->size != NDS_BIOS7_SIZE)
+        snprintf(why, why_size,
+                 ", and %s is not the DS's ARM7 BIOS that decrypts it: it has %llu bytes, the BIOS %u (CRC-32 0x%08X)",
+                 bios7, (unsigned long long)bios->size, NDS_BIOS7_SIZE, NDS_BIOS7_CRC32);
+    else if ((crc = snx_crc32(bios->data, NDS_BIOS7_SIZE)) != NDS_BIOS7_CRC32)
+        snprintf(why, why_size,
+                 ", and %s is not the DS's ARM7 BIOS that decrypts it: its CRC-32 is 0x%08X, the BIOS's 0x%08X", bios7,
+                 crc, NDS_BIOS7_CRC32);
+    else
+        return true;
+    if (bios->data) plat_file_unmap(bios);
+    return false;
+}
+
+/* The first 2 KiB of a program at 0x4000 to 0x7FFF, its secure area's, which the card holds encrypted with KEY1 and the
+   firmware decrypts with the key in the DS's ARM7 BIOS. 1 when the image has them as memory holds them: decrypted with
+   the ID the firmware destroys once it checked it, left zero, or a homebrew program's code. 0 with them as the firmware
+   leaves them in secure: decrypted with the ID kept, or encrypted and decrypted here with the BIOS at bios7. -1 with
+   why not in error */
+static int secure_area(const NdsRom* rom, const char* path, const char* bios7, unsigned char* secure, char* error,
+                       size_t error_size) {
+    const unsigned char* area = rom->data + rom->arm9_offset;
+    uint32_t first = snx_ld_le32(area);
+    if (first == NDS_SECURE_DESTROYED || first == 0) return 1;
+    memcpy(secure, area, NDS_KEY1_SECURE);
+    bool decrypted = !memcmp(area, "encryObj", 8);
+    /* a homebrew program starts with code: an ARM branch, a load, a move */
+    bool code = (first >> 24) == 0xEA || (first >> 24) == 0xE5 || (first >> 24) == 0xE3 || (first >> 24) == 0xE1;
+    PFileMap bios = {0};
+    char why[640] = "";
+    if (!decrypted && bios7_open(&bios, bios7, why, sizeof why)) {
+        decrypted = nds_key1_secure_decrypt(secure, bios.data + NDS_KEY1_TABLE_AT, snx_ld_le32(rom->data + 12));
+        if (!decrypted)
+            snprintf(why, sizeof why,
+                     ", and the DS's ARM7 BIOS at %s does not decrypt it with the game code %s: its ID reads %02X %02X "
+                     "%02X %02X %02X %02X %02X %02X, not encryObj. The image is damaged there",
+                     bios7, rom->code, secure[0], secure[1], secure[2], secure[3], secure[4], secure[5], secure[6],
+                     secure[7]);
+        plat_file_unmap(&bios);
+    }
+    if (decrypted) { /* the firmware's check passes, and destroys the ID */
+        snx_st_le32(secure, NDS_SECURE_DESTROYED);
+        snx_st_le32(secure + 4, NDS_SECURE_DESTROYED);
+        return 0;
+    }
+    if (code) return 1;
+    snprintf(error, error_size, "%s has its secure area encrypted, as the card holds it%s", path, why);
+    return -1;
+}
+
+bool nds_rom_open(NdsRom* rom, const char* path, const char* bios7, char* error, size_t error_size) {
     *rom = (NdsRom){0};
     if (plat_file_map(&rom->map, path) || !rom->map.data) {
         char why[256];
@@ -208,19 +289,9 @@ bool nds_rom_open(NdsRom* rom, const char* path, char* error, size_t error_size)
         snprintf(error, error_size, "%s is not an NDS card image: its header names a program outside it", path);
         goto fail;
     }
-    /* the first 2 KiB of a program at 0x4000 are encrypted on the card (KEY1), with the console's key. A dump has
-       them decrypted, starting with 0xE7FFDEFF twice, which the firmware puts there once it checked them */
-    if (rom->arm9_offset < 0x8000 && word(rom, rom->arm9_offset) != 0xE7FFDEFFu && word(rom, rom->arm9_offset) != 0) {
-        uint32_t first = word(rom, rom->arm9_offset);
-        /* a homebrew program starts with code: an ARM branch or a load */
-        if ((first >> 24) != 0xEA && (first >> 24) != 0xE5 && (first >> 24) != 0xE3 && (first >> 24) != 0xE1) {
-            snprintf(error, error_size,
-                     "%s has its secure area encrypted, as the card holds it: decrypt the dump first (the key is the "
-                     "console's)",
-                     path);
-            goto fail;
-        }
-    }
+    unsigned char secure[NDS_KEY1_SECURE];
+    int plain = rom->arm9_offset < 0x8000 ? secure_area(rom, path, bios7, secure, error, error_size) : 1;
+    if (plain < 0) goto fail;
     {
         /* the chip ID a card of this size answers with, as melonDS makes it: a Macronix one */
         uint32_t id = 0xC2;
@@ -230,7 +301,7 @@ bool nds_rom_open(NdsRom* rom, const char* path, char* error, size_t error_size)
             id |= (uint32_t)(0x100 - (rom->size >> 28)) << 8;
         rom->chip_id = id;
     }
-    if (!load_program(rom, error, error_size) || !load_overlays(rom, error, error_size)) {
+    if (!load_program(rom, plain ? NULL : secure, error, error_size) || !load_overlays(rom, error, error_size)) {
         if (error_size && !error[0]) snprintf(error, error_size, "out of memory");
         goto fail;
     }

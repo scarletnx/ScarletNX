@@ -7,6 +7,7 @@
 #include "nds/runtime/main.h"
 #include "common/utilities/endian.h"
 #include "nds/aot/nds_module.h"
+#include "nds/cartridge/key1.h"
 #include "nds/board/nds.h"
 #include "nds/cpu/nds_cpu.h"
 #include "nds/cpu/recomp.h"
@@ -104,6 +105,19 @@ bool snx_nds_game_name(const char* argv0) {
     free(exe);
     free(folder);
     return nds;
+}
+
+/* the DS's ARM7 BIOS an encrypted secure area is decrypted with: bios7.bin of the data folder, where Install Keys puts
+   it. The run's (--data), else for an image named the program's (snx_data_dir, as its game's folder is made in), else
+   the one the game's folder is in (snx_menu_dir, as a game finds its launcher's files). NULL when none can be named */
+static char* bios7_path(const char* argv0, const char* data, const char* folder, bool image) {
+    char *exe = !data && image ? snx_executable(argv0) : NULL, *dir = exe ? snx_dirname(exe) : NULL;
+    char* home = data ? snx_strdup(data) : image ? snx_data_dir(dir) : snx_menu_dir(folder, SNX_USER_DATA);
+    char* path = home ? snx_path_join(home, NDS_BIOS7_FILE) : NULL;
+    free(home);
+    free(dir);
+    free(exe);
+    return path;
 }
 
 static void save_load(NdsBoard* board, const char* path, const char* rom_path) {
@@ -230,6 +244,7 @@ int snx_nds_main(int argc, char** argv) {
     size_t press_count = 0;
     char error[512] = {0};
     char *name = NULL, *folder = NULL, *module = NULL, *hints = NULL, *save = NULL, *image = NULL, *ini = NULL;
+    char* bios7 = NULL;
     int status = 1;
     if (path) {
         name = game_name(path);
@@ -249,7 +264,8 @@ int snx_nds_main(int argc, char** argv) {
     if (!image && ini && !(image = snx_ini_value(ini, "source")))
         fprintf(stderr, "scarletnx-nds: %s names no image: source= in %s\n", folder, ini);
     if (!image || !folder || !name) goto done;
-    if (!nds_rom_open(&rom, image, error, sizeof error)) {
+    bios7 = bios7_path(argv[0], data, folder, path != NULL);
+    if (!nds_rom_open(&rom, image, bios7, error, sizeof error)) {
         fprintf(stderr, "scarletnx-nds: %s\n", error);
         goto done;
     }
@@ -425,6 +441,7 @@ done:
     free(module);
     free(ini);
     free(image);
+    free(bios7);
     free(folder);
     free(name);
     free(own);

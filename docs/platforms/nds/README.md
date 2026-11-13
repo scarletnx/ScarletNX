@@ -6,6 +6,7 @@
 
 * [Layers](#layers)
 * [Playing](#playing)
+* [The secure area](#the-secure-area)
 * [Status](#status)
 * [What runs and what is answered](#what-runs-and-what-is-answered)
 * [The compiled module](#the-compiled-module)
@@ -19,8 +20,10 @@
 
 `scarletnx-nds` is the DS system type. It takes a card image (`.nds`), compiles the game's ARM9 code ahead
 of time into a native module, as the 3DS driver compiles a title's, and runs it on a board whose every other part is
-answered at a high level: there is no ARM7 processor, no BIOS and no firmware in the emulator, and none is read. The
-picture is drawn on the GPU with Vulkan. Nothing of it is drawn or copied a pixel at a time on the CPU.
+answered at a high level: there is no ARM7 processor, no BIOS and no firmware in the emulator. Of the console's, only
+the ARM7 BIOS the player installs is read, for the key to a card image whose secure area is still encrypted
+([The secure area](#the-secure-area)). The picture is drawn on the GPU with Vulkan. Nothing of it is drawn or copied a
+pixel at a time on the CPU.
 
 ```sh
 cmake -S . -B build/nds -DSNX_BUILD_NX=OFF -DSNX_BUILD_NDS=ON
@@ -79,11 +82,33 @@ there. The copy plays its game alone, and `scarletnx-nds --game=recompiled/<name
 the module again without playing, starting from the hints. A `<image>.sav` beside the image, which another emulator
 keeps, is read once, when the folder has none.
 
+## The secure area
+
+A card holds the first 2 KiB of its secure area, the start of an ARM9 program at 0x4000 to 0x7FFF, encrypted with
+KEY1: Blowfish over the table at 0x30 of the DS's ARM7 BIOS, keyed by the game code (GBATEK's "DS Encryption by
+Gamecode/Idcode (KEY1)"). The firmware decrypts them as it boots the card, checks that they start with the ID
+`encryObj` and writes 0xE7FFDEFF twice over it. Most dumps hold them decrypted already, the ID destroyed, or kept and
+then destroyed by the loader as the firmware does. An image that holds them as the card does is decrypted as it is
+read, on every run, with the player's ARM7 BIOS (`src/nds/cartridge/key1.c`):
+
+- The BIOS is `bios7.bin` in the data folder: the run's (`--data`); else, for an image named, the program's (a
+  portable copy's, else the user's); else, for `--game` and a game's copy, the one the game's folder is in. The
+  launcher's **Install Keys** puts it there from its NDS row ([the menu](../../user/gui.md)).
+- It must be the console's: 16384 bytes, CRC-32 0x1280F0D5, the one melonDS knows. Another file is refused, the error
+  saying its size, or its CRC-32 and the BIOS's.
+- Without it the image is refused, the error naming the path to install it at, with the size and the CRC-32. An area
+  that does not decrypt to `encryObj` with the image's game code is refused too, the error giving the 8 bytes it read
+  instead: the image is damaged there.
+
+An area that starts with code (a homebrew program at 0x4000) or with zeros (the SDK's way to leave it out) needs no
+BIOS. Neither the image nor the BIOS is copied: the decrypted 2 KiB are in the program the loader keeps in memory, the
+one the module is compiled from.
+
 ## Status
 
 | Part | State |
 | --- | --- |
-| Card image | done: the header, the ARM9 program and the overlays, each decompressed. An image with its secure area still encrypted is refused |
+| Card image | done: the header, the ARM9 program and the overlays, each decompressed. An image with its secure area still encrypted is decrypted with the player's ARM7 BIOS, and refused without it ([The secure area](#the-secure-area)) |
 | ARM9 | done: ARMv5TE through the block compiler's ARM946E-S profile, ahead of time and at run time, CP15, the modes and their banked registers |
 | Memory, DMA, timers, divider, square root, interrupts | done |
 | BIOS | done but for the calls that read through the game's own functions, which read memory instead |
@@ -300,6 +325,7 @@ file and the revision they came from:
 - `src/nds/hle/pxi.c`: `HLE_Retail/IPC.cpp` of the `melonHLE` branch at `b42e2f4`.
 - `src/nds/hle/sound.c`: `HLE_Retail/Sound_Nitro.cpp` of the same branch.
 - `src/nds/audio/spu.c`: `SPU.cpp` at `497aa6c` (the channels' formats and the mixer's arithmetic).
+- `src/nds/cartridge/key1.c`: the KEY1 functions and `DecryptSecureArea` of `NDSCart.cpp` at `497aa6c`.
 - `src/nds/board/memory.c` (where each VRAM bank goes), `board.c` (the state a game starts in), `io.c` (the divider's
   corner cases) and `lcd.c` (the reference points, the windows' flags) follow `GPU.cpp`, `GPU2D.cpp` and `NDS.cpp`.
 

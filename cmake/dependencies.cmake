@@ -423,8 +423,9 @@ endif()
 
 # libdeflate (MIT), every deflate the project writes or reads: the titles a control.nacp keeps in deflate
 # (src/common/utilities/common.c, so every build), the launcher's Share Log (src/gui/logzip.c), the Vita driver's VPK
-# members and compressed eboot segments (src/vita/loader/inflate.c), and their CRC-32. Its library without gzip, from
-# its own sources; it picks the CPU's SIMD loops at run time
+# members and compressed eboot segments (src/vita/loader/inflate.c), and their CRC-32, a file's too (snx_crc32 in
+# src/common/utilities/zip.c: the DS's ARM7 BIOS). Its library without gzip, from its own sources; it picks the CPU's
+# SIMD loops at run time
 CPMAddPackage(NAME libdeflate VERSION 1.26
               URL https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.26.tar.gz
               URL_HASH SHA256=bba03fffc5538576213675ce6968fcff6ce2e67d82e4d5febea2d05f9f13cf85
