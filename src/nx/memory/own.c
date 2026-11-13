@@ -33,7 +33,9 @@
    that finds watches on its pages asks the producer to publish its result there first (OwnHooks' resolve), with the
    producer's lock held and no mark taken. Then the watches left there go, and the owners the publish made land as any
    other. The thread that held the producer's lock before cannot wait for that publish: it drops the watches and reads
-   the CPU's bytes, as it would with no watch. In place, a watch's pages each get a shadow when it arms them */
+   the CPU's bytes, as it would with no watch. Their bytes are owed then (owe): the producer watches them again when
+   that thread lets go of its lock (own_owed_take), so the next CPU access still asks it for its result. In place, a watch's
+   pages each get a shadow when it arms them */
 #include "common/utilities/bits.h"
 #include <stdlib.h>
 #include <string.h>
@@ -430,28 +432,54 @@ static void unwatch(u64 lo, u64 hi, int whole, u64* keep) {
         c = b;
     }
 }
-/* the watches on [lo, hi), found by a landing with the producer's lock held and no mark taken: the producer publishes
-   its result over them (unless this thread held its lock before, busy), then every watch on [lo, hi) goes whole. Its
-   pages widen keep, which the landing lets go of when it is done (unwatch). A watch is an entry per run of pool pages,
-   and its pages come into the pool at different times (an owner's own_begin moves its own first): the watch entries
-   that continue the ones on [lo, hi) are the same watch, and are answered and go with them */
-static void watch_hit(u64 lo, u64 hi, int busy, u64* keep) {
-    pm_lock(&g_own.lk);
-    u32 i = first_after_nl(lo), first = g_own.nown, last = 0;
-    for (; i < g_own.nown && g_own.ent[i].lo < hi; i++)
+/* [lo, hi) widened to the whole watches on it. A watch is an entry for each run of pool pages, and its pages come into
+   the pool at different times (an owner's own_begin moves its own first): the watch entries that continue the ones on
+   [lo, hi) are the same watch. Under g_own.lk */
+static void watch_span_nl(u64* lo, u64* hi) {
+    u32 i = first_after_nl(*lo), first = g_own.nown, last = 0;
+    for (; i < g_own.nown && g_own.ent[i].lo < *hi; i++)
         if (!g_own.ent[i].res) {
             if (first == g_own.nown) first = i;
             last = i;
         }
-    if (first < g_own.nown) {
-        while (first && !g_own.ent[first - 1].res && g_own.ent[first - 1].hi == g_own.ent[first].lo) first--;
-        while (last + 1 < g_own.nown && !g_own.ent[last + 1].res && g_own.ent[last + 1].lo == g_own.ent[last].hi)
-            last++;
-        if (g_own.ent[first].lo < lo) lo = g_own.ent[first].lo;
-        if (g_own.ent[last].hi > hi) hi = g_own.ent[last].hi;
+    if (first == g_own.nown) return;
+    while (first && !g_own.ent[first - 1].res && g_own.ent[first - 1].hi == g_own.ent[first].lo) first--;
+    while (last + 1 < g_own.nown && !g_own.ent[last + 1].res && g_own.ent[last + 1].lo == g_own.ent[last].hi) last++;
+    if (g_own.ent[first].lo < *lo) *lo = g_own.ent[first].lo;
+    if (g_own.ent[last].hi > *hi) *hi = g_own.ent[last].hi;
+}
+/* watched bytes [lo, hi) whose watch goes with no publish, by a thread that held the producer's lock before: the
+   producer watches them again when that thread lets go of its lock (own_owed_take). A span that touches an owed one
+   joins it. When the list is full, the last span grows to take it in: that watches more targets, never fewer */
+static void owe(u64 lo, u64 hi) {
+    pm_lock(&g_own.lk);
+    u32 i = 0, n = g_own.nowed;
+    while (i < n && (g_own.owed[i][1] < lo || g_own.owed[i][0] > hi)) i++;
+    if (i == n && n < OWN_OWED_MAX) {
+        g_own.owed[n][0] = lo;
+        g_own.owed[n][1] = hi;
+        __atomic_store_n(&g_own.nowed, n + 1, __ATOMIC_RELEASE);
+    } else {
+        if (i == n) i = n - 1;
+        if (lo < g_own.owed[i][0]) g_own.owed[i][0] = lo;
+        if (hi > g_own.owed[i][1]) g_own.owed[i][1] = hi;
     }
     pm_unlock(&g_own.lk);
-    if (!busy && g_own.hooks.resolve) g_own.hooks.resolve(lo, hi - lo);
+}
+/* the watches on [lo, hi), found by a landing with the producer's lock held and no mark taken: the producer publishes
+   its result over them, then every watch on them goes whole. A thread that held the producer's lock before (busy)
+   cannot wait for a publish there: their bytes are owed instead. Their pages widen keep, which the landing lets go of
+   when it is done (unwatch) */
+static void watch_hit(u64 lo, u64 hi, int busy, u64* keep) {
+    pm_lock(&g_own.lk);
+    watch_span_nl(&lo, &hi);
+    pm_unlock(&g_own.lk);
+    if (g_own.hooks.resolve) {
+        if (busy)
+            owe(lo, hi);
+        else
+            g_own.hooks.resolve(lo, hi - lo);
+    }
     unwatch(lo, hi, 1, keep);
 }
 
@@ -666,12 +694,14 @@ static void own_fault(u8* p, int write, u32 tid) {
     if (tid && g_own.hooks.busy_tid && tid == g_own.hooks.busy_tid()) {
         int fault_state = plat_thread_in_fault(tid);
         if (fault_state != 0) {
-            /* only watches there: they go, and the thread reads the CPU's bytes, as with no watch (own_watch) */
+            /* only watches there: they go, and the thread reads the CPU's bytes, as with no watch. The page is owed:
+               the holder watches the targets over it again when it lets go of its lock (own_watch) */
             pm_lock(&g_own.lk);
             u32 i = next_real_nl(first_after_nl(page), page + g_own.page);
             int real = i < g_own.nown && g_own.ent[i].lo < page + g_own.page;
             pm_unlock(&g_own.lk);
             if (!real) {
+                if (g_own.hooks.resolve) owe(page, page + g_own.page);
                 unwatch(page, page + g_own.page, 1, NULL);
                 return;
             }
@@ -1014,6 +1044,21 @@ int own_watched(u64 addr, u64 size) {
     }
     pm_unlock(&g_own.lk);
     return all;
+}
+
+int own_owed_take(u64* addr, u64* size) {
+    int any = 0;
+    if (!__atomic_load_n(&g_own.nowed, __ATOMIC_ACQUIRE)) return 0;
+    pm_lock(&g_own.lk);
+    u32 n = g_own.nowed;
+    if (n) {
+        *addr = g_own.owed[n - 1][0];
+        *size = g_own.owed[n - 1][1] - g_own.owed[n - 1][0];
+        __atomic_store_n(&g_own.nowed, n - 1, __ATOMIC_RELEASE);
+        any = 1;
+    }
+    pm_unlock(&g_own.lk);
+    return any;
 }
 
 void own_unwatch(u64 addr, u64 size) {

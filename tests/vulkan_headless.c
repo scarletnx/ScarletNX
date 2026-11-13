@@ -5624,6 +5624,7 @@ static void rt_clear_rect(GpuChannel* ch, u64 gva, const float color[4], const u
    are those of the CPU reference (support/dma_ref.c) laying the same picture out over the same memory, padding
    included. A target drawn over three releases and never read is armed once, never published, and lands nothing. One
    that is watched can be sampled, and the GPU thread's reads of its memory see the CPU's bytes and do not fault */
+static int check_rt_watch_holder(void);
 #define WATCH_A  (HEAP_BASE + 0x1000000)
 #define WATCH_GA 0x3A0000000ull
 static int check_rt_watch(void) {
@@ -5719,6 +5720,71 @@ static int check_rt_watch(void) {
     vk_rt_before_write(WATCH_GA, 0x200000); /* the targets go back to memory before it does */
     vk_unlock();
     CHECK(mem_unmap(WATCH_A, 0x200000) == 0);
+    free(ch);
+    return check_rt_watch_holder();
+}
+/* The holder of vk_lock touches a watched target's page: its own_acquire (gmem_ptr), and its direct read, which faults
+   and which the trap thread answers. Neither can wait for a publish there, so each drops the watch and reads the CPU's
+   bytes. Its vk_unlock watches the target again (vk_rt_watch_owed), with no copy, and the read of a thread without the
+   lock publishes it and gets the GPU's pixels. Before, that thread read the CPU's bytes until the target was drawn and
+   released again. The renderer's own reads are no CPU asking for the target: drawn again, it is watched at the next
+   release, not published */
+#define HOLD_A  (HEAP_BASE + 0x7000000)
+#define HOLD_GA 0x3A0400000ull
+static int check_rt_watch_holder(void) {
+    const u64 targets[2] = {0, 0x80000}; /* through own_acquire, then through a fault */
+    const float blue[4] = {0, 0, 1, 1};
+    static const u8 px_blue[4] = {0, 0, 255, 255};
+    u8 got[64];
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    CHECK(mem_map(HOLD_A, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(HOLD_GA, HOLD_A, 0x200000);
+    memset(GP(HOLD_A), 0x11, 0x200000);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    vk_rt_publish_drawn();
+    vk_unlock();
+    for (int k = 0; k < 2; k++) rt_clear_rect(ch, HOLD_GA + targets[k], blue, NULL);
+    vk_lock();
+    vk_rt_publish_drawn();
+    vk_unlock();
+    for (int k = 0; k < 2; k++) {
+        const u64 t = targets[k];
+        CHECK(own_watched(HOLD_A + t, 0x1000));
+        VkRtWatchStats w0 = g_vk_rt_watch;
+        u64 lands = own_landings();
+        vk_lock();
+        if (!k) {
+            u8* p = gmem_ptr(HOLD_GA + t, sizeof got);
+            CHECK(p != NULL);
+            memcpy(got, p, sizeof got);
+        } else
+            memcpy(got, GP(HOLD_A + t), sizeof got);
+        CHECK(all_bytes(got, sizeof got, 0x11) && !own_watched(HOLD_A + t, 1));
+        vk_unlock();
+        /* watched again, with nothing published or landed */
+        CHECK(own_watched(HOLD_A + t, 0x1000) && own_lookup(HOLD_A + t, 0x1000, NULL, 0) == 0);
+        CHECK(g_vk_rt_watch.hits == w0.hits && g_vk_rt_watch.arms == w0.arms + 1 && own_landings() == lands);
+        if (!k) { /* drawn again: watched at the release, not published (no cpu_asked from the renderer's own reads) */
+            rt_clear_rect(ch, HOLD_GA + t, blue, NULL);
+            vk_lock();
+            vk_rt_publish_drawn();
+            vk_unlock();
+            CHECK(g_vk_rt_watch.publishes == w0.publishes && own_watched(HOLD_A + t, 0x1000));
+        }
+        /* this thread holds no lock now: its read faults, publishes the target and lands the GPU's pixels. The trap
+           thread does that work while the copy waits, so the compiler must not read the counters before the copy */
+        memcpy(got, GP(HOLD_A + t), sizeof got);
+        __atomic_signal_fence(__ATOMIC_SEQ_CST);
+        CHECK(g_vk_rt_watch.hits == w0.hits + 1 && own_landings() > lands && !own_trapped(HOLD_A + t, 0x1000));
+        for (u32 i = 0; i < sizeof got; i += 4) CHECK(!memcmp(got + i, px_blue, 4));
+    }
+    puts("render target watch: the holder of vk_lock touched watched pages, and the CPU read the GPU's pixels");
+    vk_lock();
+    vk_rt_before_write(HOLD_GA, 0x200000);
+    vk_unlock();
+    CHECK(mem_unmap(HOLD_A, 0x200000) == 0);
     free(ch);
     return 0;
 }

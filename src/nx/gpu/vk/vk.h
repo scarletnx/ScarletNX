@@ -1112,6 +1112,10 @@ void vk_rt_publish_drawn(void);
 /* own.c's resolve: the CPU touched watched guest memory [cpu, cpu + size): the targets pending there are published
    over it (vk_lock held, by a thread that did not hold it before) */
 void vk_rt_watch_hit(u64 cpu, u64 size);
+/* the outermost vk_unlock's, with the lock still held: the targets pending over the watched bytes that this hold read
+   with no publish (own.c owes them, own_owed_take) are watched again (rt_watch), so the CPU's next access publishes
+   them. It copies nothing, and does not count as the CPU asking for them (cpu_asked) */
+void vk_rt_watch_owed(void);
 /* the watches that releases armed over targets, the CPU accesses that published them, and the targets that releases
    published at once because the CPU read them lately: the statistics, and the tests */
 typedef struct {

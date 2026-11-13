@@ -11,6 +11,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
+#include "nx/memory/own.h"
 #include "nx/gpu/vk/vertex_input.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/descriptors.h"
@@ -52,6 +53,9 @@ static void vk_let_go(void) {
     vk_release_events();
 }
 void vk_unlock(void) {
+    /* watched bytes that this hold read with no publish (own.c owes them): the targets over them are watched again
+       before the lock goes, and the next CPU access publishes them */
+    if (t_vkdepth == 1 && own_owed_any()) vk_rt_watch_owed();
     if (!--t_vkdepth) vk_let_go();
 }
 int vk_trylock(void) {

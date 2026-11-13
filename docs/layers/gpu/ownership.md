@@ -84,8 +84,17 @@ pending target and only drops the watch.
 
 The thread that held `vk_lock` before it touched a watched page (the GPU thread, which reads guest memory in a draw's
 setup) cannot wait for a publish. Its `own_acquire`, or its fault on a page with only watches on it, drops the watches
-and reads the CPU's bytes, as it did before there were watches. That is not fatal, as a fault on a real owner is. The
-readers that test for trapped pages before a direct read see watches: `gmem_r32` and the ASTC content hash through
+and reads the CPU's bytes, as it did before there were watches. That is not fatal, as a fault on a real owner is.
+own.c owes the bytes of those watches (`own_owed_take`), and the outermost `vk_unlock` of that thread watches the
+targets that are pending over them again (`vk_rt_watch_owed`, through `rt_watch`). So the next CPU access publishes
+them and lands their pixels, where before the watch was gone until the target was drawn and released again. A watch
+copies nothing: a publish at the unlock copied each target into a buffer of its own, which stayed until the CPU touched
+it, and that may never come. The renderer's own reads do not set `cpu_asked`, as they are not the CPU asking for the
+target: a draw's setup that reads memory under a target each frame would publish it at each release. Eden keeps the
+protection of an image until it is flushed. Here a gap stays for the rest of that hold: another thread that reads the
+bytes before the hold ends gets the CPU's bytes, as a page has one protection for all threads.
+
+The readers that test for trapped pages before a direct read see watches: `gmem_r32` and the ASTC content hash through
 `own_hash`, `guest_held` and the staging ring choice through `own_trapped`. Both test whole host pages, so they also
 see the edge pages that an owner shares. When a target
 over watched bytes cannot be published, the write-back (`vk_surf_flush`) drops its watch before it writes memory. A
