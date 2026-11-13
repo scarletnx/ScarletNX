@@ -331,6 +331,13 @@ int snx_abort_requested(void);
 /* the memory this process is charged for now, in bytes: its footprint on macOS and iOS, its resident set on Linux,
    Android and FreeBSD, its working set on Windows; 0 where the system does not tell */
 SnxU64 snx_footprint(void);
+/* A recompile's progress, a line for each unit, the form every driver prints and the launcher reads
+   (gui/steps.c): unit `done` of `count` finished, "  compiled block 3/40: code_002, <label> (4.2 s)", or "(cached)" */
+void snx_report_unit(size_t done, size_t count, const char* name, const char* label, int cached, double seconds);
+/* snx_report_unit's line, into out: the unit's place, name and label, then cached, or its time and the memory the
+   process holds when used tells it (0: the system does not) */
+void snx_unit_line(char* out, size_t size, size_t done, size_t count, const char* name, const char* label, int cached,
+                   double seconds, SnxU64 used);
 /* the processor time this process has used, every thread's together, in ns; 0 where the system does not tell */
 SnxU64 snx_process_cpu_ns(void);
 #define SNX_DEBUGGER_NAME 32 /* a debugger's name, as snx_debugger gives it, with its NUL */
