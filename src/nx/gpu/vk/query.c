@@ -326,7 +326,12 @@ u64 vk_query_peek(u32 ci, u64 first, u64 end) {
    took about 20 submits, and between them the device waited for our GPU thread to record the next one: the times
    between its reports were 6 to 12 ms, its whole frame. On the console the GPU runs behind the CPU and is seldom idle.
    So the time a report carries is the device's busy time: each command buffer has a timestamp at its start and at
-   its end (vk_query_cb_begin, vk_query_cb_end), and the time between two submits is left out.
+   its end (vk_query_cb_begin, vk_query_cb_end), and the time between two submits is left out. The device may write
+   a command buffer's first timestamp (top of the pipe) while the submit before it still runs, so their times overlap:
+   each submit counts from the later of its start and the end of the submits before it. Else the time a submit waits
+   for the submits before it would count as its own busy time too. A submit that waits on a semaphore of the display
+   (the present's, renderer.c) or of another engine isn't counted: its first timestamp may run before the wait, and
+   the present's pass is the display's work, not the game's.
 
    That busy time is put on the guest's clock: the first one read is the guest time when it is read, and each one
    after it is that time plus the busy time since. A time later than the guest time when it is read (a paused guest
@@ -350,6 +355,8 @@ static struct {
     u64 next, copied; /* timestamps written, and those whose copies are recorded */
     u64 subs, folded; /* the submits in g_ts, and those added to busy */
     u64 busy;         /* the device's busy time in the submits folded, in nanoseconds */
+    int ran;
+    u64 ran_to; /* the device's time when the submits folded ended (ran: one has) */
     int anchored;
     u64 abusy, ans; /* the busy time that is the guest time ans */
 } g_t;
@@ -419,12 +426,21 @@ static u64 stamp_ns(u64 a, u64 b) {
     if (d > mask / 2) return 0;
     return (u64)((double)d * (double)g_vk.props.limits.timestampPeriod);
 }
+/* the device's time a submit that began at device time begin counts from: the end of the submits before it, when
+   they ran past its begin */
+static u64 stamp_from(u64 begin) { return g_t.ran && stamp_ns(begin, g_t.ran_to) ? g_t.ran_to : begin; }
 /* the busy times of the submits before submit sub (they are done) added to g_t.busy */
 static void stamp_fold(u64 sub) {
     vk_devmem_invalidate(g_tmem, 0, VK_WHOLE_SIZE);
-    for (; g_t.folded < g_t.subs && g_ts[g_t.folded % SN].sub < sub; g_t.folded++)
-        if (g_ts[g_t.folded % SN].ended)
-            g_t.busy += stamp_ns(stamp_dev(g_ts[g_t.folded % SN].begin), stamp_dev(g_ts[g_t.folded % SN].end));
+    for (; g_t.folded < g_t.subs && g_ts[g_t.folded % SN].sub < sub; g_t.folded++) {
+        if (!g_ts[g_t.folded % SN].ended) continue;
+        u64 from = stamp_from(stamp_dev(g_ts[g_t.folded % SN].begin)), end = stamp_dev(g_ts[g_t.folded % SN].end);
+        if (!g_t.ran || stamp_ns(g_t.ran_to, end)) {
+            g_t.busy += stamp_ns(from, end);
+            g_t.ran = 1;
+            g_t.ran_to = end;
+        }
+    }
 }
 void vk_query_cb_begin(VkCommandBuffer cb) {
     if (!g_tpool) return;
@@ -437,8 +453,9 @@ void vk_query_cb_begin(VkCommandBuffer cb) {
     g_ts[g_t.subs % SN].ended = 0;
     g_t.subs++;
 }
-void vk_query_cb_end(VkCommandBuffer cb) {
+void vk_query_cb_end(VkCommandBuffer cb, int waits) {
     if (!g_tpool || g_t.subs == g_t.folded || g_ts[(g_t.subs - 1) % SN].sub != vk_submit_number()) return;
+    if (waits) return; /* its first timestamp ran before the wait: not counted (ended stays 0) */
     g_ts[(g_t.subs - 1) % SN].end = stamp_write(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     g_ts[(g_t.subs - 1) % SN].ended = 1;
 }
@@ -462,7 +479,7 @@ u64 vk_query_stamp_ticks(u64 stamp) {
     stamp_fold(sub);
     u64 busy = g_t.busy;
     if (g_t.folded < g_t.subs && g_ts[g_t.folded % SN].sub == sub) /* the time in its own submit */
-        busy += stamp_ns(stamp_dev(g_ts[g_t.folded % SN].begin), stamp_dev(stamp));
+        busy += stamp_ns(stamp_from(stamp_dev(g_ts[g_t.folded % SN].begin)), stamp_dev(stamp));
     u64 ns = now + 1; /* not anchored yet: anchored below */
     if (g_t.anchored) {
         if (busy >= g_t.abusy)

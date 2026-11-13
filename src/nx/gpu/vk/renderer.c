@@ -585,6 +585,10 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
     int recreate = 0;
     if (shown && (src || !game) && (g_vk.swapchain || (!tried && vk_swapchain_create(kind)))) {
         if (src) hdr_metadata(hdr);
+        /* The game's work recorded so far goes now, without the wait for the swapchain image: in the present's own
+           submission it waited for the display's image, up to a refresh, and that time showed in the game's GPU
+           timestamps (query.c) */
+        vk_submit_split();
         VkCommandBuffer cb = vk_cmd(); /* waits for this frame slot, so its acquire semaphore is free */
         VkSemaphore acq = g_acquired[vk_frame_id() % VK_FRAMES];
         /* no wait: vk_lock is held (guest threads mapping memory take it too), and the game's pace is present_pace's.

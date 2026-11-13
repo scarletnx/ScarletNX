@@ -1919,7 +1919,7 @@ int vk_query_stamp(u64 gva, int top, u64 ticks);
 u64 vk_query_stamp_ticks(u64 stamp);
 /* a command buffer of the frame begun (cmd.c's vk_cmd), and ending before its submit: the device's busy time */
 void vk_query_cb_begin(VkCommandBuffer cb);
-void vk_query_cb_end(VkCommandBuffer cb);
+void vk_query_cb_end(VkCommandBuffer cb, int waits); /* waits: on a semaphore of another queue or the display */
 /* writes the n counts of reports not performed yet into buf, whose bytes from off on were read at their at: 1, or 0
    when they can't be counted on the GPU (the caller then reads the reports performed) */
 int vk_query_counts(VkBuffer buf, u64 off, const SamplesCount* counts, u32 n);

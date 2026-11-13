@@ -1015,7 +1015,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     g_rec_unsafe++;
     Frame* f = &g_fr[g_cur];
     VkCommandBuffer cb = vk_cmd(); /* a submit with nothing recorded still has to wait and signal */
-    vk_query_cb_end(cb);           /* the device's busy time ends here (query.c) */
+    vk_query_cb_end(cb, xw || g_after[0].semaphore); /* the device's busy time ends here (query.c) */
     vk_query_flush(cb);            /* the samples-passed counts of the passes ended (query.c) */
     vk_buf_host_barrier(cb, g_gval + 1);
     VkCommandBuffer up = VK_NULL_HANDLE;
