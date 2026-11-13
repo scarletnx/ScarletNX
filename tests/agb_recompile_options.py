@@ -3,8 +3,9 @@
 # Copyright 2026 the ScarletNX contributors
 """The recompile's options every driver shares (common/utilities/cli.h), on the GBA runner: -O is the module's
 level, --keep-ir keeps its IR in <name>_build, -q says no progress, --jit-only plays with no module, --jit-cache names
-the map of the blocks runs reached that the recompile starts from, and --jobs and --chunk, which one module compiled
-whole has nothing to give, are said. A ROM made here puts 42 in r5 and spins (mov r5, #42; b .)."""
+the map of the blocks runs reached that the recompile starts from, and --jobs, --chunk and the launcher's Gentle
+--aot_threads_most=N, which one module compiled whole has nothing to give, are said. A ROM made here puts 42 in r5 and
+spins (mov r5, #42; b .)."""
 
 import argparse
 import pathlib
@@ -82,6 +83,9 @@ def main():
         check(f'scarletnx-agb: --jit-cache {missing}: cannot read {missing}' in text, 'a missing map not said', text)
         text = run('bad', '-r', '-O9', status=2)
         check('scarletnx-agb: -O 9: not 0, 1, 2, 3, s or z' in text, '-O9 not refused', text)
+        # the launcher's Gentle queue gives every driver --aot_threads=0 and --aot_threads_most=N: both said
+        text = run('gentle', '-r', '--aot_threads=0', '--aot_threads_most=4')
+        check("aot_threads_most=4: a ROM's code is one module, compiled on 1 thread" in text, 'Gentle refused', text)
     if failures:
         sys.exit('agb_recompile_options:\n' + '\n'.join(failures))
     print('agb_recompile_options: ok')
