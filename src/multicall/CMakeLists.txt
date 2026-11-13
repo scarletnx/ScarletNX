@@ -15,7 +15,7 @@ if(ANDROID)
 else()
     add_executable(scarletnx main.c)
 endif()
-# linked as C++: VMA, LLVM and the demangler need the C++ runtime. It goes in the build folder itself, where the
+# linked as C++: LLVM and the demangler need the C++ runtime. It goes in the build folder itself, where the
 # driver and CI look for it
 set_target_properties(scarletnx PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX
                       RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}" LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
