@@ -77,11 +77,13 @@ set(snx_ffmpeg_args
     --nm=${CMAKE_NM}
     # FFmpeg's own warnings stay out of the build output
     --extra-cflags=-w)
-# FFmpeg finds dav1d with pkg-config: only in the folder it was installed to, never a dav1d of the system's
+# FFmpeg finds dav1d with pkg-config: only in the folder it was installed to, never a dav1d of the system's, and
+# without the PKG_CONFIG_SYSROOT_DIR a Linux cross preset builds with, which would put the system root in front of
+# that folder's paths
 set(snx_ffmpeg_env "")
 if(snx_dav1d_ready)
     list(APPEND snx_ffmpeg_args --enable-libdav1d --enable-decoder=libdav1d --pkg-config-flags=--static)
-    set(snx_ffmpeg_env "PKG_CONFIG_LIBDIR=${snx_dav1d_pkgconfig}" "PKG_CONFIG_PATH=")
+    set(snx_ffmpeg_env --unset=PKG_CONFIG_SYSROOT_DIR "PKG_CONFIG_LIBDIR=${snx_dav1d_pkgconfig}" "PKG_CONFIG_PATH=")
 endif()
 if(snx_ffmpeg_images)
     # the Android driver's BitmapFactory and Bitmap.compress (src/android/hwui/image.c), and libswscale for their pixel
