@@ -85,6 +85,7 @@ enum { SM86_K_FIX = 0, SM86_K_ALU = 1, SM86_K_UALU = 2 };
     X(UP2UR, UALU, "UP2UR")                                                                                            \
     X(PLOP3, FIX, "PLOP3")                                                                                             \
     X(UPLOP3, FIX, "UPLOP3")                                                                                           \
+    X(PSETP, FIX, "PSETP")                                                                                             \
     X(CS2R, FIX, "CS2R")                                                                                               \
     X(S2R, FIX, "S2R")                                                                                                 \
     X(S2UR, FIX, "S2UR")                                                                                               \
