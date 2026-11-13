@@ -14,6 +14,12 @@ if(BUILD_TESTING)
     target_compile_options(snx-test-nds-board PRIVATE -Wall -Wextra -Werror)
     set_target_properties(snx-test-nds-board PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX)
     add_test(NAME nds_board COMMAND snx-test-nds-board)
+    # the card's secure area: KEY1 over a table of the test's own, and the ARM7 BIOS the loader decrypts it with
+    add_executable(snx-test-nds-key1 "${PROJECT_SOURCE_DIR}/tests/nds_key1.c")
+    target_link_libraries(snx-test-nds-key1 PRIVATE scarletnx-nds snx_test_nds_image snx_zip)
+    target_compile_options(snx-test-nds-key1 PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(snx-test-nds-key1 PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX)
+    add_test(NAME nds_key1 COMMAND snx-test-nds-key1)
     # the machine end to end: a program compiled at run time, then ahead of time into a module and run from it
     add_executable(snx-test-nds-cpu "${PROJECT_SOURCE_DIR}/tests/nds_cpu.c")
     target_link_libraries(snx-test-nds-cpu PRIVATE snx_nds_program snx_test_nds_image)
@@ -31,6 +37,6 @@ if(BUILD_TESTING)
 endif()
 
 if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
-    snx_test_sanitize(snx_test_nds_image snx-test-nds-board snx-test-nds-cpu snx-test-nds-vk)
+    snx_test_sanitize(snx_test_nds_image snx-test-nds-board snx-test-nds-key1 snx-test-nds-cpu snx-test-nds-vk)
     snx_sanitizer_path()
 endif()

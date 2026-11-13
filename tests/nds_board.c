@@ -287,7 +287,7 @@ int main(void) {
     char* image = snx_path_join(dir, "test.nds");
     CHECK(image && nds_test_image(image, nds_test_program, nds_test_program_words));
     NdsRom rom;
-    if (!nds_rom_open(&rom, image, error, sizeof error)) {
+    if (!nds_rom_open(&rom, image, NULL, error, sizeof error)) {
         fprintf(stderr, "%s\n", error);
         return 1;
     }
