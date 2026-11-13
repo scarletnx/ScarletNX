@@ -1004,7 +1004,8 @@ static int binary_op(uint32_t op) {
         case SPV_OP_SHIFT_RIGHT_LOGICAL:
         case SPV_OP_S_DIV:
         case SPV_OP_S_GREATER_THAN:
-        case SPV_OP_U_LESS_THAN: return 1;
+        case SPV_OP_U_LESS_THAN:
+        case SPV_OP_VECTOR_TIMES_SCALAR: return 1;
         default: return 0;
     }
 }
@@ -1088,6 +1089,13 @@ uint32_t spv_emit_bool_binary(SpvEmitter* e, uint32_t bool_type, uint32_t op, ui
 uint32_t spv_emit_derivative(SpvEmitter* e, uint32_t f32_type, uint32_t value, int y_axis) {
     uint32_t id = spv_emit_id(e);
     EMIT(&e->functions, y_axis ? SPV_OP_DPDY : SPV_OP_DPDX, f32_type, id, value);
+    return id;
+}
+
+uint32_t spv_emit_derivative_fine(SpvEmitter* e, uint32_t type, uint32_t value, int y_axis) {
+    uint32_t id = spv_emit_id(e);
+    spv_emit_capability(e, SPV_CAPABILITY_DERIVATIVE_CONTROL);
+    EMIT(&e->functions, y_axis ? SPV_OP_DPDY_FINE : SPV_OP_DPDX_FINE, type, id, value);
     return id;
 }
 

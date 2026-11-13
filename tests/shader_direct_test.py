@@ -170,7 +170,8 @@ def main():
             *(Path(directory) / f'rect_{i}.spv' for i in range(3)),
             *(Path(directory) / f'minmax_{i}.spv' for i in range(2)),
             *(Path(directory) / f'window_{i}.spv' for i in range(3)),
-            *(Path(directory) / f'lone_lane_{i}.spv' for i in range(9)),
+            *(Path(directory) / f'lone_lane_{i}.spv' for i in range(12)),
+            *(Path(directory) / f'quad_read_{i}.spv' for i in range(3)),
         )
         subprocess.run([args.regressions, directory], check=True)
         for fixture in (path, vertex, abs_fragment, stack_fragment, subgroup, *fixtures):

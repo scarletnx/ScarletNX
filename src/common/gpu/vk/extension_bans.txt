@@ -81,7 +81,7 @@ ClipDistance | warn | qualcomm | * | any | * | fails to make a pipeline whose ev
 VK_KHR_present_id2 | off | nvidia | < 595.0.0 | any | * | hangs games at their first frames with present_id2 and present_wait2 (590.48, with Smooth Motion on) | DXVK dxvk_device_info.cpp:610, issue 5507 | new:edenprobe:a windowed run with frame_pacing=2 | never | -
 
 # Subgroup operations by stage (device.c: the stage leaves the ones whose programs the translator gives ballot, shuffle
-# and arithmetic, and a program of it that votes or shuffles runs each invocation as lane 0 alone)
+# and arithmetic, and a program of it that votes or shuffles runs each invocation as one lane alone)
 VK_SHADER_STAGE_GEOMETRY_BIT | off | turnip | * | any | * | lists the geometry stage for subgroup operations (supportedStages) and gives wrong ballot and shuffle results there, which lost a game's meshes and textures; Qualcomm's own driver does not list the stage | Eden PR 4344 (b846577037, 2026-09-01) | new:headless:a geometry shader's ballot and shuffle results read back | never | -
 
 # Shuffles whose index differs between lanes (device.c: an SM86 HMMA takes A and B through shared memory, its gathers
