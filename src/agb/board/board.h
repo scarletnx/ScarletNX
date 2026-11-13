@@ -87,6 +87,7 @@ typedef struct AgbBoard {
     uint32_t bios_prefetch;    /* the opcode the BIOS fetched last, what reads of the BIOS return */
     uint32_t open_bus;         /* the opcode the CPU fetched last, as its last read through the bus hook gave it */
     uint16_t io[AGB_IO_COUNT]; /* the I/O register file; devices claim registers here */
+    uint16_t memcnt[2];        /* the internal memory control at 0x04000800, its two halfwords as written */
     int has_cartridge;
     uint32_t multiboot_size; /* a multiboot program's bytes at EWRAM's start; 0 with a cartridge */
     uint64_t multiboot_hash; /* the program's FNV-1a, which names its recompiled code as a ROM's hash does */
