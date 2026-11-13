@@ -285,31 +285,39 @@ static void write_pending(bool wait) {
 }
 /* The blit rectangle of a screen in swapchain pixels: in one window the pair scaled to fit and centred, each screen
    centred across the layout; in its own window the screen scaled to fit and centred. False before a layout and a
-   swapchain exist. */
+   swapchain exist. The axes scale apart by no more than screen_stretch percent beyond the fitting one, so a tall
+   phone's screen is used more at a slight stretch: 0 keeps the console's shape */
+static void screen_scale(double width, double height, VkExtent2D e, double* sx, double* sy) {
+    double fit_x = e.width / width, fit_y = e.height / height;
+    double fit = fit_x < fit_y ? fit_x : fit_y;
+    double most = fit * (1 + (double)g_settings.ctr_screen_stretch / 100.0);
+    *sx = fit_x < most ? fit_x : most;
+    *sy = fit_y < most ? fit_y : most;
+}
 static bool screen_rect(unsigned screen, VkOffset2D rect[2]) {
     const Frame* frames = g_present.frames;
     unsigned window = g_present.separate ? screen : 0;
     VkExtent2D e = g_present.swap[window].extent;
     if (g_present.separate) {
         const Frame* f = &frames[screen];
+        double sx, sy, x, y;
         if (!f->width || !f->height || !e.width || !e.height) return false;
-        double scale = (double)e.width / f->width < (double)e.height / f->height ? (double)e.width / f->width
-                                                                                 : (double)e.height / f->height;
-        double x = (e.width - f->width * scale) / 2, y = (e.height - f->height * scale) / 2;
+        screen_scale(f->width, f->height, e, &sx, &sy);
+        x = (e.width - f->width * sx) / 2, y = (e.height - f->height * sy) / 2;
         rect[0] = (VkOffset2D){(int32_t)x, (int32_t)y};
-        rect[1] = (VkOffset2D){(int32_t)(x + f->width * scale), (int32_t)(y + f->height * scale)};
+        rect[1] = (VkOffset2D){(int32_t)(x + f->width * sx), (int32_t)(y + f->height * sy)};
         return true;
     }
     uint32_t layout_w = snx_max_u32(frames[0].width, frames[1].width);
     uint32_t layout_h = frames[0].height + frames[1].height;
     if (!layout_w || !layout_h || !e.width || !e.height) return false;
-    double scale = (double)e.width / layout_w < (double)e.height / layout_h ? (double)e.width / layout_w
-                                                                            : (double)e.height / layout_h;
     const Frame* f = &frames[screen];
-    double x = (e.width - layout_w * scale) / 2 + (layout_w - f->width) * scale / 2;
-    double y = (e.height - layout_h * scale) / 2 + (screen ? frames[0].height * scale : 0);
+    double sx, sy, x, y;
+    screen_scale(layout_w, layout_h, e, &sx, &sy);
+    x = (e.width - layout_w * sx) / 2 + (layout_w - f->width) * sx / 2;
+    y = (e.height - layout_h * sy) / 2 + (screen ? frames[0].height * sy : 0);
     rect[0] = (VkOffset2D){(int32_t)x, (int32_t)y};
-    rect[1] = (VkOffset2D){(int32_t)(x + f->width * scale), (int32_t)(y + f->height * scale)};
+    rect[1] = (VkOffset2D){(int32_t)(x + f->width * sx), (int32_t)(y + f->height * sy)};
     return true;
 }
 /* The touch screen's pixel under a pointer at x and y, in the window's points as SDL reports them. The blit's own scale
