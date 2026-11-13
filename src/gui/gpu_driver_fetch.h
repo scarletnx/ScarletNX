@@ -17,7 +17,7 @@ typedef struct {
     int gpu;          /* the GPU its drivers are for */
     unsigned min;     /* the oldest release recommended, by its title's version, parts a thousand apart (0.0.3: 3) */
 } GuiDriverRepo;
-#define GUI_DRIVER_REPOS 7
+#define GUI_DRIVER_REPOS 8
 extern const GuiDriverRepo gui_driver_repos[GUI_DRIVER_REPOS];
 
 typedef struct {
