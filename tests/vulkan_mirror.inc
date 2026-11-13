@@ -319,7 +319,10 @@ static int check_mirror(void) {
     CHECK(!check_mirror_fold(cpu, gva, 1));
     /* With the device's memory short, the granules no binding took for 600 presents give their memory back
        (vk_mirror_trim): a program's write there lands first, and the next binding has guest memory's bytes, that
-       write among them. With memory to spare, or bound lately, they stay */
+       write among them. With memory to spare, or bound lately, they stay. Short is a budget of one byte, on any
+       device. To spare is the device's to give: the use the trim reads is the driver's count of the heap, so that
+       half is checked only where the count is under three quarters of the budget before the trims and after them
+       (the trim acts at four fifths), and says the numbers where it is not */
     {
         u64 gr0, gr, hv, pages, landed, overflows;
         u32 room, present = g_vk_present;
@@ -330,10 +333,19 @@ static int check_mirror(void) {
         vk_finish();
         vk_mirror_stats(&gr0, &hv, &pages, &landed, &overflows, &room);
         CHECK(gr0);
+        u64 usage, budget, usage_after, budget_after;
+        vk_mem_use(&usage, &budget);
         g_vk_present += 601;
         for (u32 i = 0; i < 32; i++) vk_mirror_trim(); /* memory to spare: nothing goes */
+        vk_mem_use(&usage_after, &budget_after);
         vk_mirror_stats(&gr, &hv, &pages, &landed, &overflows, &room);
-        CHECK(gr == gr0);
+        if (usage < budget / 4 * 3 && usage_after < budget_after / 4 * 3)
+            CHECK(gr == gr0);
+        else
+            printf("mirror: memory to spare is not checked here: %llu of %llu MiB budgeted in use before the trims and "
+                   "%llu of %llu after them, where the check needs under three quarters\n",
+                   (unsigned long long)(usage >> 20), (unsigned long long)(budget >> 20),
+                   (unsigned long long)(usage_after >> 20), (unsigned long long)(budget_after >> 20));
         u64 cap = vk_mem_budget_cap(1); /* a budget of one byte: short */
         g_vk_present += 601;
         CHECK(vk_mirror_slice(gva, len, &buf, &off)); /* this one bound now: it stays */
