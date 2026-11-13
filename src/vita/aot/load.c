@@ -71,6 +71,11 @@ static size_t unique(uint32_t* keys, size_t count) {
 }
 uint32_t* vita_hints_read(const char* folder, size_t* count) {
     char* path = vita_game_file(folder, VITA_HINTS_SUFFIX);
+    uint32_t* hints = vita_hints_read_file(path, count);
+    free(path);
+    return hints;
+}
+uint32_t* vita_hints_read_file(const char* path, size_t* count) {
     FILE* f = path ? fopen(path, "r") : NULL;
     uint32_t* hints = NULL;
     size_t capacity = 0;
@@ -85,7 +90,6 @@ uint32_t* vita_hints_read(const char* folder, size_t* count) {
         hints[(*count)++] = value;
     }
     if (f) fclose(f);
-    free(path);
     *count = unique(hints, *count);
     return hints;
 }

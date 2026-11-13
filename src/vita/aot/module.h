@@ -4,6 +4,7 @@
 #define SNX_VITA_MODULE_H
 #include "common/cpu/arm/arm.h"
 #include "vita/loader/image.h"
+#include "common/utilities/cli.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -72,9 +73,15 @@ bool vita_module_current(const char* path, const VitaImage* image);
    caller's to free); and the file written with keys (sorted in place): how many it holds, each once, SIZE_MAX when it
    can't be written */
 uint32_t* vita_hints_read(const char* folder, size_t* count);
+/* the same from the file at path, another game folder's */
+uint32_t* vita_hints_read_file(const char* path, size_t* count);
 size_t vita_hints_write(const char* folder, uint32_t* keys, size_t count);
 /* folder's file named after folder with suffix (recompiled/PCSE00001/PCSE00001_code.so), the caller's to free */
 char* vita_game_file(const char* folder, const char* suffix);
-/* Compiles image into folder's module, seeded with the hints there. 0, or 1 with error filled */
-int vita_aot_compile(const char* folder, const VitaImage* image, char* error, size_t error_size);
+/* Compiles image into folder's module, seeded with the hints there, at the setting opt's level (-O) and as asked
+   (NULL: nothing asked): --chunk's instructions to a chunk (512 blocks without), --jit-cache's list of the blocks a run
+   compiled for the game's own hints, no blocks for --jit-only, each module's IR in <title ID>_build for --keep-ir, no
+   progress for -q. 0, or 1 with error filled */
+int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRecompile* asked, char* error,
+                     size_t error_size);
 #endif

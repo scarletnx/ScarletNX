@@ -144,11 +144,13 @@ static LLVMValueRef emit(LLVMModuleRef module, const VitaImage* image, uint32_t 
     free(input);
     return fn;
 }
-static bool discover(Discovery* d, const char* folder, char* error, size_t error_size) {
+/* the blocks the image's entries reach, and the hints' (the blocks runs compiled at run time) at the path hints names */
+static bool discover(Discovery* d, const char* hints_path, bool quiet, char* error, size_t error_size) {
     const VitaImage* image = d->image;
     size_t hint_count = 0, refused = 0;
-    uint32_t* hints = vita_hints_read(folder, &hint_count);
-    if (hint_count) printf("Seeding discovery with %zu blocks earlier runs compiled at run time\n", hint_count);
+    uint32_t* hints = vita_hints_read_file(hints_path, &hint_count);
+    if (hint_count && !quiet)
+        printf("Seeding discovery with %zu blocks earlier runs compiled at run time\n", hint_count);
     queue_pointer(d, image->module_start);
     if (image->module_stop) queue_pointer(d, image->module_stop);
     for (size_t i = 0; i < image->seed_count; ++i) queue_pointer(d, image->seeds[i]);
@@ -185,7 +187,7 @@ static bool discover(Discovery* d, const char* folder, char* error, size_t error
         snprintf(error, error_size, "out of memory discovering the code");
         return false;
     }
-    printf("Discovered %zu blocks (%zu addresses were not code)\n", d->count, refused);
+    if (!quiet) printf("Discovered %zu blocks (%zu addresses were not code)\n", d->count, refused);
     return true;
 }
 static int by_key(const void* a, const void* b) {
@@ -193,6 +195,20 @@ static int by_key(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 
+/* the module's IR as the backend made it, before its passes, as dir/id.ll (--keep-ir) */
+static bool save_ir(LLVMModuleRef mod, const char* dir, const char* id, char* error, size_t size) {
+    char *text = LLVMPrintModuleToString(mod), *file = snx_format("%s.ll", id);
+    char* path = file ? snx_path_join(dir, file) : NULL;
+    bool ok = path && !snx_write_file(path, text, strlen(text));
+    if (!ok) {
+        char why[256];
+        snprintf(error, size, "cannot save the IR of %s in %s: %s", id, dir, snx_os_error(why, sizeof why));
+    }
+    LLVMDisposeMessage(text);
+    free(file);
+    free(path);
+    return ok;
+}
 /* a module made for this machine as the backend makes the Switch's (ir.c): the target, CPU and ABI the helpers
    (armlib.c) are compiled for, which the module is linked with */
 static LLVMModuleRef new_module(SnxIr* ir) {
@@ -230,6 +246,10 @@ static Stub* stubs_make(const VitaImage* image, size_t* count) {
 typedef struct {
     const VitaImage* image;
     const Block* blocks;
+    const size_t* starts; /* chunk i is blocks starts[i] to starts[i + 1] */
+    char opt;             /* the -O letter */
+    const char* keep_ir;  /* where each chunk's IR goes, NULL for nowhere */
+    bool quiet;
     SnxLinkInput* objects; /* chunk i's object */
     const Stub* stubs;     /* the import stubs by key */
     size_t stub_count;
@@ -452,8 +472,7 @@ static void stub_block(SnxIr* ir, LLVMModuleRef mod, LLVMValueRef fn, uint32_t i
 }
 static bool chunk(SnxIr* ir, Work* w, unsigned index, char* error, size_t size) {
     LLVMModuleRef mod = new_module(ir);
-    size_t begin = (size_t)index * CHUNK_BLOCKS, end = begin + CHUNK_BLOCKS;
-    if (end > w->count) end = w->count;
+    size_t begin = w->starts[index], end = w->starts[index + 1];
     bool ok = true;
     LLVMValueRef* fns = calloc(end - begin + 1, sizeof *fns);
     if (!fns) {
@@ -493,14 +512,17 @@ static bool chunk(SnxIr* ir, Work* w, unsigned index, char* error, size_t size) 
     }
     free(fns);
     unsigned char* object = NULL;
-    ok = ok && !snx_ir_module_object(ir, mod, '1', &object, &w->objects[index].size, error, size);
+    char id[24];
+    snprintf(id, sizeof id, "blocks_%03u", index);
+    ok = ok && (!w->keep_ir || save_ir(mod, w->keep_ir, id, error, size)) &&
+         !snx_ir_module_object(ir, mod, w->opt, &object, &w->objects[index].size, error, size);
     w->objects[index].data = object;
     LLVMDisposeModule(mod);
     return ok;
 }
 static void worker(Work* w) {
     char error[512] = "";
-    SnxIr* ir = snx_ir_new("vita-aot", '1', error, sizeof error);
+    SnxIr* ir = snx_ir_new("vita-aot", w->opt, error, sizeof error);
     bool ok = ir != NULL;
     for (;;) {
         work_lock(w);
@@ -513,7 +535,8 @@ static void worker(Work* w) {
         if (i >= w->chunks) break;
         ok = chunk(ir, w, i, error, sizeof error);
         work_lock(w);
-        if (ok) printf("Compiled %u/%u chunks of blocks\n", ++w->finished, w->chunks);
+        if (ok) ++w->finished;
+        if (ok && !w->quiet) printf("Compiled %u/%u chunks of blocks\n", w->finished, w->chunks);
         work_unlock(w);
     }
     snx_ir_free(ir);
@@ -537,7 +560,7 @@ static bool compile_chunks(Work* w) {
     if (note[0]) fprintf(stderr, "scarletnx-vita: %s\n", note);
     if (jobs > w->chunks) jobs = w->chunks;
     if (jobs < 1) jobs = 1;
-    printf("Compiling %u chunks of blocks on %u threads\n", w->chunks, jobs);
+    if (!w->quiet) printf("Compiling %u chunks of blocks on %u threads\n", w->chunks, jobs);
 #ifdef _WIN32
     HANDLE* threads = calloc(jobs, sizeof *threads);
     InitializeCriticalSection(&w->lock);
@@ -572,7 +595,7 @@ static bool compile_chunks(Work* w) {
 }
 /* The index: the sorted keys, each one's block, and the descriptor (VitaModule) the runtime looks up */
 static bool index_object(SnxIr* ir, const VitaImage* image, const Block* blocks, size_t count, SnxLinkInput* output,
-                         char* error, size_t size) {
+                         const char* keep_ir, char* error, size_t size) {
     LLVMContextRef c = ir->ctx;
     LLVMModuleRef mod = new_module(ir);
     LLVMTargetDataRef layout = LLVMGetModuleDataLayout(mod);
@@ -625,7 +648,8 @@ static bool index_object(SnxIr* ir, const VitaImage* image, const Block* blocks,
             LLVMSetInitializer(global, LLVMConstNamedStruct(structure, fields, 10));
             LLVMSetGlobalConstant(global, 1);
             unsigned char* object = NULL;
-            ok = !snx_ir_module_object(ir, mod, '0', &object, &output->size, error, size);
+            ok = (!keep_ir || save_ir(mod, keep_ir, "index", error, size)) &&
+                 !snx_ir_module_object(ir, mod, '0', &object, &output->size, error, size);
             output->data = object;
         }
     } else
@@ -637,30 +661,73 @@ static bool index_object(SnxIr* ir, const VitaImage* image, const Block* blocks,
 }
 /* The module: the blocks' chunks, the index and the helpers they call (armlib.c), linked by the backend's own linker
    into the shared library the runtime loads (load.c), which exports the descriptor alone */
-int vita_aot_compile(const char* folder, const VitaImage* image, char* error, size_t error_size) {
+/* where each chunk starts in blocks, + count after the last, into starts (count + 1 of them at most): chunk
+   instructions to a chunk, whole blocks, or CHUNK_BLOCKS blocks for 0. The chunks' count */
+static unsigned cut_chunks(const Block* blocks, size_t count, int chunk, size_t* starts) {
+    unsigned chunks = 0;
+    size_t at = 0;
+    while (at < count) {
+        starts[chunks++] = at;
+        if (chunk) {
+            size_t instructions = 0;
+            do instructions += blocks[at++].units;
+            while (at < count && instructions < (size_t)chunk);
+        } else
+            at = count - at > CHUNK_BLOCKS ? at + CHUNK_BLOCKS : count;
+    }
+    starts[chunks] = count;
+    return chunks;
+}
+int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRecompile* asked, char* error,
+                     size_t error_size) {
     Discovery d = {.image = image};
     Work work = {0};
     SnxIr* ir = NULL;
     SnxLinkInput* objects = NULL;
     SnxLinkOutput linked = {NULL, 0};
     unsigned char* armlib = NULL;
-    size_t armlib_size = 0;
-    char *target = NULL, *staged = NULL;
+    size_t armlib_size = 0, *starts = NULL;
+    char *target = NULL, *staged = NULL, *kept = NULL, *recorded = NULL;
     Stub* stubs = NULL;
     const char* exports[1] = {"snx_vita_module_v1"};
     unsigned files = 0;
     int result = 1;
+    const char opt = g_settings.optimization_level[0]; /* the setting opt's, which -O sets */
+    bool quiet = asked && asked->quiet;
     if (error_size) error[0] = 0;
     if (snx_ir_init(error, error_size)) goto done;
-    if (!discover(&d, folder, error, error_size)) goto done;
+    /* --keep-ir's folder, <title ID>_build, as a Switch game's */
+    if (asked && asked->keep_ir) {
+        kept = vita_game_file(folder, "_build");
+        if (!kept || snx_mkdirs(kept)) {
+            char why[256];
+            snprintf(error, error_size, "cannot make the folder of the IR --keep-ir keeps, %s: %s",
+                     kept ? kept : "(out of memory)", snx_os_error(why, sizeof why));
+            goto done;
+        }
+    }
+    if (asked && asked->jit_only) { /* a module of no blocks: the run-time compiler compiles every one it reaches */
+        if (!quiet) puts("No code ahead of time (--jit-only): the run-time compiler compiles every block");
+    } else {
+        /* the blocks earlier runs compiled at run time: the game's own record, or another --jit-cache names */
+        recorded = asked && asked->jit_cache ? snx_strdup(asked->jit_cache) : vita_game_file(folder, VITA_HINTS_SUFFIX);
+        if (asked && asked->jit_cache && !snx_is_file(recorded)) {
+            snprintf(error, error_size,
+                     "--jit-cache %s: no such file, a list of the blocks a run compiled (<title ID>%s)",
+                     asked->jit_cache, VITA_HINTS_SUFFIX);
+            goto done;
+        }
+        if (!discover(&d, recorded, quiet, error, error_size)) goto done;
+    }
     qsort(d.blocks, d.count, sizeof *d.blocks, by_key);
-    if (!(ir = snx_ir_new("vita-aot", '1', error, error_size))) goto done;
+    if (!(ir = snx_ir_new("vita-aot", opt, error, error_size))) goto done;
     target = vita_game_file(folder, VITA_MODULE_SUFFIX);
     staged = target ? snx_format("%s.tmp", target) : NULL;
-    unsigned chunks = (unsigned)((d.count + CHUNK_BLOCKS - 1) / CHUNK_BLOCKS);
+    starts = malloc((d.count + 1) * sizeof *starts);
+    unsigned chunks = starts ? cut_chunks(d.blocks, d.count, asked ? asked->chunk : 0, starts) : 0;
     files = chunks + 2; /* the helpers, the index, the chunks */
     objects = calloc(files, sizeof *objects);
-    if (!objects || !staged) {
+    if (!objects || !staged || !starts) {
         snprintf(error, error_size, "out of memory");
         goto done;
     }
@@ -671,14 +738,23 @@ int vita_aot_compile(const char* folder, const VitaImage* image, char* error, si
         snprintf(error, error_size, "out of memory");
         goto done;
     }
-    work = (Work){.image = image, .blocks = d.blocks, .objects = objects + 2, .count = d.count, .chunks = chunks,
-                  .stubs = stubs, .stub_count = work.stub_count};
+    work = (Work){.image = image,
+                  .blocks = d.blocks,
+                  .starts = starts,
+                  .opt = opt,
+                  .keep_ir = kept,
+                  .quiet = quiet,
+                  .objects = objects + 2,
+                  .count = d.count,
+                  .chunks = chunks,
+                  .stubs = stubs,
+                  .stub_count = work.stub_count};
     if (chunks && !compile_chunks(&work)) {
         snprintf(error, error_size, "%s", work.error);
         goto done;
     }
-    if (!index_object(ir, image, d.blocks, d.count, &objects[1], error, error_size)) goto done;
-    if (snx_ir_armlib_object('1', &armlib, &armlib_size, error, error_size)) goto done;
+    if (!index_object(ir, image, d.blocks, d.count, &objects[1], kept, error, error_size)) goto done;
+    if (snx_ir_armlib_object(opt, &armlib, &armlib_size, error, error_size)) goto done;
     objects[0].data = armlib, objects[0].size = armlib_size;
     if (snx_link(objects, files, exports, 1, snx_path_leaf(target), &linked, error, error_size)) goto done;
     if (snx_write_file(staged, linked.data, linked.size) || plat_replace_file(staged, target)) {
@@ -687,7 +763,7 @@ int vita_aot_compile(const char* folder, const VitaImage* image, char* error, si
         (void)remove(staged);
         goto done;
     }
-    printf("Compiled %zu blocks into %s\n", d.count, target);
+    if (!quiet) printf("Compiled %zu blocks into %s\n", d.count, target);
     result = 0;
 done:
     if (objects)
@@ -698,6 +774,9 @@ done:
     free(linked.data);
     free(staged);
     free(target);
+    free(starts);
+    free(kept);
+    free(recorded);
     free(d.blocks);
     free(d.set);
     free(d.work);
