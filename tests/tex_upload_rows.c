@@ -640,6 +640,16 @@ VkResult vk_devmem_image(const VkImageCreateInfo* ii, const DevMemWant* ai, VkIm
     (void)ii, (void)ai, (void)img, (void)mem;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 }
+/* tex_tag asks where a sampled texture's memory is, for the report of a stopped GPU: no image has memory here */
+void vk_devmem_info(DevMem mem, DevMemInfo* info) {
+    (void)mem;
+    *info = (DevMemInfo){0};
+}
+const VkPhysicalDeviceMemoryProperties* vk_devmem_props(void) {
+    static const VkPhysicalDeviceMemoryProperties none = {0};
+    return &none;
+}
+int vk_mem_heap(void) { return 0; }
 int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes) {
     (void)ii, (void)img, (void)mem, (void)owner, (void)bytes;
     return 0;
