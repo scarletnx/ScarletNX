@@ -115,7 +115,8 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-linux-${{ matrix.arch }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-linux-${{ matrix.arch }}-
-      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with
+      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with. meson: dav1d's build
+      # (cmake/dav1d.cmake), FFmpeg's AV1 decoder; without it AV1 movies play black
       # llvm: llvm-config and LLVM-C for the recompiler (llvm-libs alone has no headers). gdb: the gdbserver gdbstub_native drives. jq: scripts/pr-builds.sh, which pr_builds tests. Mirrors drop a connection now
       # and then (pkgforge's for aarch64 most), so each pacman install is tried 3 times, 5 s apart. -Syuu, not -Syu: an
       # image can be built ahead of its repo (pkgforge's of 2026-11-12 had openssl 4 against Arch Linux ARM's 3.6.5,
@@ -123,7 +124,7 @@ jobs:
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syuu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang spirv-tools jdk21-openjdk && break
+            pacman -Syuu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang spirv-tools jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -442,10 +443,11 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-linux-x86_64-${{ steps.week.outputs.week }}
           restore-keys: pacman-linux-x86_64-
+      # meson: dav1d's build (cmake/dav1d.cmake), as in the linux job
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang spirv-tools jdk21-openjdk && break
+            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang spirv-tools jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -597,7 +599,8 @@ jobs:
           86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
           EOF
       # llvm: Clang's own, and the opt of the LLVM settings; the runtime links LLVM's libraries statically (below).
-      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with.
+      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with. meson: dav1d's build
+      # (cmake/dav1d.cmake), as in the linux job.
       # get-debloated-pkgs reads its release from api.github.com: unauthenticated, a runner's shared address gets
       # GitHub's 60 requests an hour and the script's 403, so it takes the job's token for those requests. Pinning its
       # release would still read api.github.com, and its own wait on a 403 ends after 5 tries
@@ -606,7 +609,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang spirv-tools jdk21-openjdk && break
+            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang spirv-tools jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -1191,7 +1194,8 @@ jobs:
             echo "SNX_DEPS_CACHE=$ws/.cache/deps"
             echo "SNX_CCACHE_START=$(date +%s)"
           } >> "$GITHUB_ENV"
-      # llvm-mingw alone has no LLVM development libraries. Do not mix its C++ runtime with another LLVM build.
+      # llvm-mingw alone has no LLVM development libraries. Do not mix its C++ runtime with another LLVM build. meson:
+      # dav1d's build (cmake/dav1d.cmake), as in the linux job
       - name: Install Clang, LLVM development files and FFmpeg build tools
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
@@ -1210,6 +1214,7 @@ jobs:
             mingw-w64-clang-x86_64-lld
             mingw-w64-clang-x86_64-cmake
             mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-meson
             mingw-w64-clang-x86_64-nasm
             mingw-w64-clang-x86_64-pkgconf
             mingw-w64-clang-x86_64-python
@@ -1226,6 +1231,7 @@ jobs:
           make --version
           perl --version
           nasm --version
+          meson --version
           spirv-val --version
           spirv-dis --version
       - name: Build the runtime and pinned dependencies
