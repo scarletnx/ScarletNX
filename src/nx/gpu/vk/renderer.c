@@ -860,7 +860,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             char cs_why[256];
             u64 cs_skipped = vk_cs_skipped(cs_why, sizeof cs_why);
             LOG("vulkan: %llu draws, %llu skipped (%llu mesh draws, %llu skipped); %llu dispatches in %llu batches "
-                "(%llu ms waiting), %llu skipped%s; "
+                "(%llu ms waiting, %llu a network's pass stood in for), %llu skipped%s; "
                 "%llu finishes (%llu ms); %llu reads past queued releases (%llu samples counts written on the GPU); "
                 "%llu descriptor sets written, %llu reused (%u descriptor pools, %llu sets with texture arrays taken "
                 "from them); "
@@ -869,7 +869,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 (unsigned long long)(g_vk_mesh_draws - g_vk_mesh_drawn), (unsigned long long)g_vk_dispatches,
                 (unsigned long long)g_vk_cs_batches,
                 (unsigned long long)(atomic_load_explicit(&g_vk_cs_wait_ns, memory_order_relaxed) / 1000000),
-                (unsigned long long)cs_skipped, cs_why, (unsigned long long)g_vk_finishes,
+                (unsigned long long)g_cs_standins, (unsigned long long)cs_skipped, cs_why, (unsigned long long)g_vk_finishes,
                 (unsigned long long)(g_vk_finish_ns / 1000000),
                 (unsigned long long)atomic_load_explicit(&g_vk_release_forwards, memory_order_relaxed),
                 (unsigned long long)atomic_load_explicit(&g_vk_counts_on_gpu, memory_order_relaxed),
