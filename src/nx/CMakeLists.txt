@@ -203,6 +203,14 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_mode6_dot_s
                TARGET vulkan1.3 DEFINES SNX_BC7_FAST=2 SNX_BC7_DOT=1)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_quick_dot_spv HEADER nx/gpu/texture/astc_bc7_spv.h
                TARGET vulkan1.3 DEFINES SNX_BC7_FAST=3 SNX_BC7_DOT=1)
+# ASTC blocks straight into BC1, BC4 or BC5 blocks, for the textures whose blocks hold no more than one of them
+# (gpu/texture/astc_kind.h, gpu/vk/astc.c): one build each
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bcn.comp NAME astc_bc1_spv HEADER nx/gpu/texture/astc_bcn_spv.h
+               DEFINES SNX_BCN_KIND=1)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bcn.comp NAME astc_bc4_spv HEADER nx/gpu/texture/astc_bcn_spv.h
+               DEFINES SNX_BCN_KIND=4)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bcn.comp NAME astc_bc5_spv HEADER nx/gpu/texture/astc_bcn_spv.h
+               DEFINES SNX_BCN_KIND=5)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/blocklinear.comp NAME blocklinear_spv HEADER nx/gpu/texture/blocklinear_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_spv HEADER nx/gpu/texture/texconv_spv.h)
 # its ETC2 build: BCn encoded again as ETC2 and EAC, for a GPU that samples those and not BCn (gpu/vk/texconv.c)

@@ -47,6 +47,7 @@
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/texture/astc_spv.h" /* compiled from astc.comp by the build (cmake/glsl.cmake) */
 #include "nx/gpu/texture/astc_bc7_spv.h" /* compiled from astc_bc7.comp, in each of the encoder's builds */
+#include "nx/gpu/texture/astc_bcn_spv.h" /* compiled from astc_bcn.comp: BC1, BC4 and BC5 */
 #include "nx/gpu/texture/blocklinear_spv.h"
 #include "nx/gpu/texture/astc_bc.h"
 #include "nx/runtime/options.h"
@@ -91,6 +92,12 @@ typedef struct {
     /* image levels (or regions of them) uploaded as BC7, those the cache gave, their bytes, and what they would have
        taken as RGBA8 (vk_astc_stats) */
     u64 bc7_levels, bc7_hits, bc7_bytes, bc7_rgba8_bytes;
+    /* astc_bcn.comp's builds, BC1, BC4 and BC5 (vk_astc_bcn), each made on its first use, which share the BC7
+       encoder's layout and scratch buffer; the levels (or regions) each took, their bytes and RGBA8's
+       (vk_astc_bcn_stats) */
+    VkShaderModule bcn_modules[3];
+    VkPipeline bcn_pipes[3];
+    u64 bcn_levels[3], bcn_bytes[3], bcn_rgba8_bytes[3];
     /* the encoder's dispatches (vk_astc_dispatches) */
     u64 bc7_dispatches;
     /* encodes' blocks copied into the readback ring, each until its submission is done (vk_astc_frame_done), and
@@ -257,6 +264,38 @@ static VkPipeline bc7_pipe(u32 build, u32 pass) {
         fatal("vulkan: cannot create the BC7 encoder's %s build", bc7_builds[dot][build][pass].name);
     vk_texture_pipeline_made(plat_ns() - started);
     return g_astc.bc7_pipes[build][pass];
+}
+
+/* The BCn format an ASTC texture whose blocks hold no more than it is held in (gpu/texture/astc_kind.h, texture.c):
+   1 BC1, 4 BC4, 5 BC5; 0 any other format */
+u32 vk_astc_bcn(VkFormat f) {
+    return f == VK_FORMAT_BC1_RGBA_UNORM_BLOCK || f == VK_FORMAT_BC1_RGBA_SRGB_BLOCK ? 1u
+           : f == VK_FORMAT_BC4_UNORM_BLOCK                                          ? 4u
+           : f == VK_FORMAT_BC5_UNORM_BLOCK                                          ? 5u
+                                                                                     : 0u;
+}
+/* astc_bcn.comp's build of kind (1, 4 or 5), made the first time it is asked for, in the BC7 encoder's layout: its
+   two buffers are the BC7 encoder's first two, the work list a third it leaves alone */
+static const struct {
+    const u32* code;
+    const u64* size;
+    const char* name;
+} bcn_builds[3] = {{astc_bc1_spv, &astc_bc1_spv_size, "BC1"},
+                   {astc_bc4_spv, &astc_bc4_spv_size, "BC4"},
+                   {astc_bc5_spv, &astc_bc5_spv_size, "BC5"}};
+static u32 bcn_slot(u32 kind) { return kind == 1 ? 0u : kind == 4 ? 1u : 2u; }
+const char* vk_astc_bcn_name(u32 kind) { return bcn_builds[bcn_slot(kind)].name; }
+static VkPipeline bcn_pipe(u32 kind) {
+    const u32 k = bcn_slot(kind);
+    if (g_astc.bcn_pipes[k]) return g_astc.bcn_pipes[k];
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, bcn_builds[k].code, *bcn_builds[k].size, &g_astc.bcn_modules[k])))
+        fatal("vulkan: cannot load the ASTC to %s shader", bcn_builds[k].name);
+    u64 started = plat_ns();
+    if (!VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_astc.bc7_layout, g_astc.bcn_modules[k], NULL,
+                                      &g_astc.bcn_pipes[k])))
+        fatal("vulkan: cannot create the ASTC to %s pipeline", bcn_builds[k].name);
+    vk_texture_pipeline_made(plat_ns() - started);
+    return g_astc.bcn_pipes[k];
 }
 
 /* The cache's version: whatever changes the blocks the same ASTC bytes become, other than what each key holds. The
@@ -608,6 +647,13 @@ void vk_astc_stats(u64* levels, u64* hits, u64* bytes, u64* rgba8_bytes) {
     *rgba8_bytes = g_astc.bc7_rgba8_bytes;
 }
 u64 vk_astc_rgba8_bytes(void) { return g_astc.rgba8_bytes; }
+void vk_astc_bcn_stats(u64 levels[3], u64 bytes[3], u64 rgba8_bytes[3]) {
+    for (int k = 0; k < 3; k++) {
+        levels[k] = g_astc.bcn_levels[k];
+        bytes[k] = g_astc.bcn_bytes[k];
+        rgba8_bytes[k] = g_astc.bcn_rgba8_bytes[k];
+    }
+}
 u64 vk_astc_dispatches(void) { return g_astc.bc7_dispatches; }
 
 static VkPipeline astc_pipeline(u32 bw, u32 bh) {
@@ -782,6 +828,34 @@ static void bc7_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 build, u3
     }
     bc7_time_end(cb, pair, (u64)cx * cy * nz * 16);
     g_astc.bc7_dispatches++;
+    scratch_barrier(cb, g_astc.bc7_scratch, USE_WRITE, 0, USE_COPY);
+}
+
+/* A strip's ASTC blocks straight into BC1, BC4 or BC5 blocks (kind 1, 4 or 5) by astc_bcn.comp, an invocation a 4x4
+   block, as bc7_transcode lays them out, into the BC7 encoder's scratch buffer from its start: one pass, as the
+   encoders have no search to split */
+static void bcn_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 kind, u32 w, u32 height, u32 nx, u32 n, u32 nz,
+                          u32 bw, u32 bh, u32 srgb) {
+    const u32 cx = (w + 3) / 4, cy = (height + 3) / 4;
+    const AstcBc7Params p = {w,
+                             height,
+                             nx,
+                             n,
+                             srgb,
+                             bw,
+                             bh,
+                             (262144u + bw - 1) / bw,
+                             (262144u + bh - 1) / bh,
+                             (1024u + bw / 2) / (bw - 1),
+                             (1024u + bh / 2) / (bh - 1),
+                             0};
+    scratch_barrier(cb, g_astc.bc7_scratch, USE_COPY, 0, USE_WRITE);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, bcn_pipe(kind));
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_astc.bc7_layout, 0, 1, &set, 0, NULL);
+    rec_CmdPushConstants(cb, g_astc.bc7_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+    vk_ck(cb, VK_CK_BC7, cx, cy, nz, bw << 8 | bh);
+    vk_gpuprof_tag(VK_PROF_BC7);
+    rec_CmdDispatch(cb, (cx + 63) / 64, cy, nz);
     scratch_barrier(cb, g_astc.bc7_scratch, USE_WRITE, 0, USE_COPY);
 }
 
@@ -1275,6 +1349,10 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
     vk_astc_forget(t, level); /* what this writes is not the background's to overwrite */
     astc_init();
     const int bc7 = t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK;
+    /* BC1, BC4 or BC5 for a texture whose blocks hold no more (texture.c): 4x4 blocks as BC7's, 8 or 16 bytes */
+    const u32 bcn = vk_astc_bcn(t->f.vk), bcn_bytes = bcn == 5 ? 16u : 8u;
+    const int blocks4 = bc7 || bcn;
+    if (bcn) bc7_init();
     if (bc7) {
         bc7_init();
         if (g_astc.bc7_queued.blocks && g_astc.bc7_queued.until <= vk_last_submit()) {
@@ -1286,14 +1364,18 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
     }
     const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
     u32 bw = t->f.bw, bh = t->f.bh;
-    /* the region's origin on its blocks, and on BC7's too: on multiples of lcm(bw, 4) and lcm(bh, 4) */
-    const u32 mx = bc7 ? bw * 4 / (bw % 4 ? bw % 2 ? 1 : 2 : 4) : bw;
-    const u32 my = bc7 ? bh * 4 / (bh % 4 ? bh % 2 ? 1 : 2 : 4) : bh;
+    /* the region's origin on its blocks, and on the 4x4 blocks' too: on multiples of lcm(bw, 4) and lcm(bh, 4) */
+    const u32 mx = blocks4 ? bw * 4 / (bw % 4 ? bw % 2 ? 1 : 2 : 4) : bw;
+    const u32 my = blocks4 ? bh * 4 / (bh % 4 ? bh % 2 ? 1 : 2 : 4) : bh;
     if (x % mx || y0 % my) {
         LOG_LIMIT(1,
                   "vulkan: a %ux%u region at (%u, %u) of a %ux%u ASTC texture held as %s is not decoded: a region "
                   "starts on multiples of (%u, %u)\n",
-                  w, h, x, y0, bw, bh, bc7 ? "BC7" : "RGBA8", mx, my);
+                  w, h, x, y0, bw, bh,
+                  bc7   ? "BC7"
+                  : bcn ? vk_astc_bcn_name(bcn)
+                        : "RGBA8",
+                  mx, my);
         return 0;
     }
     u32 nx = (w + bw - 1) / bw, ny = (h + bh - 1) / bh;
@@ -1301,7 +1383,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
     /* BC7: blocks a row, and the ASTC block rows a strip is a multiple of, so that each strip starts on a row of
        whole 4x4 blocks (bh of 5 is four of them, 6 two). A strip's blocks take no more bytes than its texels, but a
        whole slice smaller than a block can, so slices are counted by both */
-    const u32 cx = (w + 3) / 4, unit = !bc7 || bh % 4 == 0 ? 1 : bh % 2 == 0 ? 2 : 4;
+    const u32 cx = (w + 3) / 4, unit = !blocks4 || bh % 4 == 0 ? 1 : bh % 2 == 0 ? 2 : 4;
     const u64 slice_blocks = (u64)cx * ((h + 3) / 4) * 16;
     /* the input is staging memory and a storage buffer range */
     u64 in_cap = lim->maxStorageBufferRange < g_vk.alloc_cap ? lim->maxStorageBufferRange : g_vk.alloc_cap;
@@ -1311,7 +1393,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
         /* whole slices */
         u64 by_out = g_astc.cap / ((u64)w * h * 4), by_in = in_cap / (row_in * ny);
         slices = (u32)(by_out < by_in ? by_out : by_in);
-        if (bc7 && g_astc.cap / slice_blocks < slices) slices = (u32)(g_astc.cap / slice_blocks);
+        if (blocks4 && g_astc.cap / slice_blocks < slices) slices = (u32)(g_astc.cap / slice_blocks);
         if (slices > lim->maxComputeWorkGroupCount[2]) slices = lim->maxComputeWorkGroupCount[2];
         if (slices > depth) slices = depth;
         nrows = ny;
@@ -1332,13 +1414,15 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
         if (slices > sh->gran.depth) slices = sh->gran.depth;
     }
     if (bw < 4 || bw > 12 || bh < 4 || bh > 12 || !nrows || nx > lim->maxComputeWorkGroupCount[0] || w > 16384 ||
-        h > 16384 || (bc7 && (u64)nrows * bh / 4 + 1 > lim->maxComputeWorkGroupCount[1])) {
+        h > 16384 || (blocks4 && (u64)nrows * bh / 4 + 1 > lim->maxComputeWorkGroupCount[1])) {
         LOG_LIMIT(1, "vulkan: a %ux%u ASTC texture exceeds the device's limits (left out)\n", w, h);
         return 0;
     }
-    const int srgb = t->f.vk == VK_FORMAT_R8G8B8A8_SRGB || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK;
+    const int srgb = t->f.vk == VK_FORMAT_R8G8B8A8_SRGB || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK ||
+                     t->f.vk == VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
     const int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
-    VkPipeline pipe = bc7 ? VK_NULL_HANDLE : astc_pipeline(bw, bh);
+    VkPipeline pipe = blocks4 ? VK_NULL_HANDLE : astc_pipeline(bw, bh);
+    if (bcn) g_astc.bcn_levels[bcn_slot(bcn)]++;
     u32 bc7_build = 0;
     /* the BC7 cache: a whole level's blocks from it, or the encode's copied into the readback ring as well as into the
        image, a strip at a time in its place in the level, for vk_astc_frame_done to put in it. A very large level's
@@ -1403,8 +1487,8 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
             const u32 cy = (height + 3) / 4;
             VkDescriptorSet set = VK_NULL_HANDLE;
             if (rows(ctx, &cb, z, nz, y, n, &input, &offset))
-                set = bc7 ? bc7_buffers(input, offset, size, (u64)cx * cy * nz * 16)
-                          : two_buffers(input, offset, size, g_astc.scratch, texels);
+                set = blocks4 ? bc7_buffers(input, offset, size, (u64)cx * cy * nz * (bc7 ? 16u : bcn_bytes))
+                              : two_buffers(input, offset, size, g_astc.scratch, texels);
             if (!set) {
                 LOG_LIMIT(1, "vulkan: out of staging memory for a %ux%u ASTC texture (left out)\n", w, h);
                 if (job) bg_job_free(job);
@@ -1417,8 +1501,12 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
                 rec_CmdCopyBuffer(cb, input, job->snap, 1, &snap);
             }
             /* and into the blocks the texture keeps for its BC7 image, made between frames */
-            if (!bc7 && t->bc7.kept) keep_strip(cb, t, level, x / bw, y0 / bh + y, layered ? layer + z : is3d ? z : layer,
-                                                input, offset, nx, n, nz);
+            if (!blocks4 && t->bc7.kept)
+                keep_strip(cb, t, level, x / bw, y0 / bh + y,
+                           layered ? layer + z
+                           : is3d  ? z
+                                   : layer,
+                           input, offset, nx, n, nz);
             VkBuffer from = g_astc.scratch;
             u32 row_texels = 0, image_rows = 0;
             if (bc7) {
@@ -1435,6 +1523,13 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
                 image_rows = cy * 4;
                 g_astc.bc7_bytes += (u64)cx * cy * nz * 16;
                 g_astc.bc7_rgba8_bytes += texels;
+            } else if (bcn) {
+                bcn_transcode(cb, set, bcn, w, height, nx, n, nz, bw, bh, (u32)srgb);
+                from = g_astc.bc7_scratch;
+                row_texels = cx * 4;
+                image_rows = cy * 4;
+                g_astc.bcn_bytes[bcn_slot(bcn)] += (u64)cx * cy * nz * bcn_bytes;
+                g_astc.bcn_rgba8_bytes[bcn_slot(bcn)] += texels;
             } else {
                 /* Submission makes the flushed host staging writes visible. Scratch
                    reuse also needs a WAR dependency on the preceding image copy,

@@ -448,7 +448,10 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_fast_b_dot_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_mode6_dot_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_quick_dot_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc1_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc4_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc5_spv.c"
         "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/astc_bc7_cpu.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/glsl/astc_bcn_cpu.cpp"
         "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_etc2_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_astc_cpu.cpp"
         "${PROJECT_SOURCE_DIR}/tests/glsl/blit_convert_cpu.cpp")
     target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
