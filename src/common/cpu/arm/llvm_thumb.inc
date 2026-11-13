@@ -360,7 +360,10 @@ static int thumb_instruction(ArmIR* a, const SnxThumb* t) {
             return 0;
         }
         case TH_IMM8: thumb_imm8(a, t); return 0;
-        case TH_ALU: thumb_alu(a, t, 0); return 0;
+        case TH_ALU:
+            if (a->trace && t->op == ALU_MUL) trace_value(a, treg(a, t->rd)); /* the multiplier, whose bytes time it */
+            thumb_alu(a, t, 0);
+            return 0;
         case TH_HI:
             if (t->op == 3) { /* BX / BLX register */
                 LLVMValueRef target = treg(a, t->rm);
@@ -486,10 +489,11 @@ LLVMValueRef snx_thumb_llvm_block_ex(LLVMModuleRef module, const char* name, con
     if (options) {
         a.profile = options->profile;
         a.memory = options->memory;
-        a.bus_costs = options->bus_costs;
-        a.bus_cycles = options->bus_cycles;
+        a.trace = options->trace;
+        a.skipped = options->skipped;
     }
     a.thumb = 1;
+    a.start = pc;
     block_begin(&a, module, name, pc);
     if (!hosted(&a)) {
         require(&a, cmp(&a, LLVMIntNE, band(&a, GET(&a, cpsr), c32(&a, SNX_ARM_T)), c32(&a, 0)), SNX_ARM_BAD_ENTRY,

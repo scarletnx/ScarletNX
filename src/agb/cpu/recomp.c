@@ -16,14 +16,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define AGB_RECOMP_ABI 10  /* a map's block names its module function, or none ("-") for a hint */
-#define AGB_BLOCK_MAX  256 /* words compiled per block at most */
+#define AGB_RECOMP_ABI 11 /* a map's block names its module function, or none ("-") for a hint */
 
-/* the ARM7TDMI's rules (arm.h) on the flat window: the A57 default would run the ROM as ARMv8-A. Its loads and stores
-   count their bus cycles into the machine's CPU (agb_cpu.h), whose first member is the one the blocks get */
+/* the ARM7TDMI's rules (arm.h) on the flat window: the A57 default would run the ROM as ARMv8-A. Its blocks leave the
+   trace their time is replayed from (agb/cpu/timing.h) in the machine's CPU (agb_cpu.h), whose first member is the one
+   they get */
 static const SnxArmCodegenOptions agb_codegen = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM7TDMI,
-                                                 SNX_ARM_MEMORY_FLAT, offsetof(AgbCpu, bus_costs),
-                                                 offsetof(AgbCpu, bus_cycles)};
+                                                 SNX_ARM_MEMORY_FLAT, offsetof(AgbCpu, trace),
+                                                 offsetof(AgbCpu, skipped)};
 _Static_assert(offsetof(AgbCpu, arm) == 0, "the blocks' CPU is the machine's first member");
 
 void agb_recomp_init(AgbRecomp* recomp, const char* base) {

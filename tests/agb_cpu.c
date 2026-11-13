@@ -483,12 +483,14 @@ int main(void) {
         }
     }
     {
-        /* the time an instruction takes on the cartridge, as mGBA counts it, with WAITCNT 0x4317 (the first access
-           of a halfword 4 cycles, the next ones 2) or 0x0317, the same without the prefetch buffer: each instruction
-           its fetch, 2, the prefetch buffer or not; a branch taken 6 more, refilling the pipeline (4 + 2), one not taken
-           none; a load or store 1 + its wait states, a load 1 more, and the fetch after it non-sequential, 2 more, or,
-           with the prefetch buffer and the data not on the cartridge, up to 9 cycles hidden while it fetches ahead.
-           Each loop runs 50 turns in 50 times its cycles */
+        /* the time an instruction takes on the cartridge, with WAITCNT 0x4317 (the first access of a halfword 4
+           cycles, the next ones 2) or 0x0317, the same without the prefetch unit: each instruction its fetch, 2; a
+           branch taken refills the pipeline, 4 + 2; a load or store 1 + its wait states, a load 1 more, and the fetch
+           after it non-sequential. With the prefetch unit the cartridge reads on while the CPU works elsewhere, and an
+           opcode it holds costs 1: a load from IWRAM hides its fetches, one from EWRAM (6 cycles) lets the unit run
+           3 halfwords ahead, and the refill stops it as it ends a read, 1 more. As mGBA's suite measures the console (its
+           timing.c), NanoBoyAdvance's model (agb/cpu/timing.c). Each loop runs 50 turns in 50 times its cycles */
+        int loops_wrong = 0;
         static const struct {
             uint32_t pc, waitcnt, r2, cycles;
         } loop[] = {
@@ -496,34 +498,80 @@ int main(void) {
             {0x08000200, 0x0317, 0, 2 + 2 + 6},              /* the same: the buffer saves no fetch of its own */
             {0x08000210, 0x4317, 0x03000000, 6 + 6 + 0},     /* ldr from IWRAM: 1 + 1 hidden */
             {0x08000210, 0x0317, 0x03000000, 6 + 6 + 2 + 2}, /* ldr from IWRAM: 1 + 1, then a non-sequential fetch */
-            {0x08000210, 0x4317, 0x02000000, 6 + 6 + 0},     /* ldr from EWRAM: 6 + 1 hidden */
+            {0x08000210, 0x4317, 0x02000000, 7 + 9 + 1 + 1}, /* refill 1 + 4 + 2, ldr 2 + 6 + 1, two held */
             {0x08000210, 0x0317, 0x02000000, 6 + 6 + 7 + 2}, /* ldr from EWRAM: 6 + 1 */
             {0x08000210, 0x4317, 0x08000000, 6 + 6 + 7 + 2}, /* ldr from the cartridge: 6 + 1, nothing hidden */
             {0x08000220, 0x4317, 0, 2 + 2 + 2 + 6},          /* adds, beq not taken, then b on its own */
-            {0x08000230, 0x4317, 0, 8 + 6 + 0 + 0},          /* push and pop of 4 words on IWRAM, hidden */
+            {0x08000230, 0x4317, 0, 6 + 6 + 6 + 1 + 1},      /* refill, push 2 + 4, pop 1 + 4 + 1, two held */
             {0x08000230, 0x0317, 0, 8 + 6 + 6 + 7},          /* push 4 + 2, pop 4 + 1 + 2 */
         };
         for (size_t i = 0; i < sizeof loop / sizeof loop[0]; ++i) {
             agb_write16(&board, 0x04000204, (uint16_t)loop[i].waitcnt);
-            cpu.arm.r[0] = 0;
             cpu.arm.r[2] = loop[i].r2;
             cpu.arm.r[13] = 0x03007E00;
             cpu.arm.r[15] = loop[i].pc;
             cpu.arm.cpsr = 0x9F | SNX_ARM_T;
-            cpu.over = 0;
             board.cpu_halted = 0;
             board.held_cycles = 0;
+            /* four turns first, which leave the bus as each turn's branch back does, the prefetch unit's opcodes
+               from the loop before taken */
+            for (int warm = 0; warm < 4; ++warm)
+                CHECK(!agb_cpu_run(&board, &cpu, &recomp, 1, audio, AGB_APU_RATE, NULL, error, sizeof error));
+            cpu.arm.r[0] = 0;
+            cpu.over = 0;
             CHECK(!agb_cpu_run(&board, &cpu, &recomp, 50 * loop[i].cycles, audio, AGB_APU_RATE, NULL, error,
                                sizeof error));
-            if (cpu.arm.r[0] != 50 || cpu.over)
+            if (cpu.arm.r[0] != 50 || cpu.over) {
                 fprintf(stderr,
                         "agb_cpu: the loop at 0x%08X with WAITCNT 0x%04X, r2 0x%08X: %u turns in %u cycles, "
                         "%u over, not 50 of %u\n",
                         loop[i].pc, loop[i].waitcnt, loop[i].r2, cpu.arm.r[0], 50 * loop[i].cycles, cpu.over,
                         loop[i].cycles);
-            CHECK(cpu.arm.r[0] == 50 && !cpu.over);
+                ++loops_wrong;
+            }
         }
+        CHECK(!loops_wrong);
         agb_write16(&board, 0x04000204, 0);
+    }
+    {
+        /* a timer read inside a block counts the instructions before it in that block, as the console's does: started
+           by a store and read four instructions of a cycle each later in IWRAM, it has counted 4 (the store reaches it
+           a cycle after its write, and it counts from the cycle after that), then 10 more: the first ldrh's internal
+           cycle, a multiply by 0x12345 (its fetch and three cycles of its multiplier), an ldr from IWRAM (fetch, data,
+           internal cycle) and the second ldrh's fetch and access */
+        static const uint32_t code[] = {
+            0xE5801000, /* str r1, [r0]: TM0CNT_L and _H, on at a prescaler of 1 */
+            0xE1A00000, /* mov r0, r0 */
+            0xE1A00000, /* mov r0, r0 */
+            0xE1A00000, /* mov r0, r0 */
+            0xE1A00000, /* mov r0, r0 */
+            0xE1D020B0, /* ldrh r2, [r0] */
+            0xE0050594, /* mul r5, r4, r5 */
+            0xE5976000, /* ldr r6, [r7] */
+            0xE1D030B0, /* ldrh r3, [r0] */
+            0xE1C080B2, /* strh r8, [r0, #2]: off */
+            0xEAFFFFFE, /* b . */
+        };
+        for (uint32_t i = 0; i < sizeof code / sizeof code[0]; ++i) agb_write32(&board, 0x03004000 + i * 4, code[i]);
+        cpu.arm.r[0] = 0x04000100;
+        cpu.arm.r[1] = 0x00800000;
+        cpu.arm.r[4] = 3;
+        cpu.arm.r[5] = 0x12345;
+        cpu.arm.r[7] = 0x03004000;
+        cpu.arm.r[8] = 0;
+        cpu.arm.r[15] = 0x03004000;
+        cpu.arm.cpsr = 0x9F;
+        cpu.over = 0;
+        board.cpu_halted = 0;
+        board.held_cycles = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 64, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        if (cpu.arm.r[2] != 4 || cpu.arm.r[3] != 4 + 10) {
+            fprintf(stderr,
+                    "agb_cpu: a timer started in a block reads %u four instructions on, not 4, and %u after a "
+                    "multiply and a load, not 14\n",
+                    cpu.arm.r[2], cpu.arm.r[3]);
+            return 1;
+        }
     }
     /* the instructions after the interpreted ones start blocks the discovery step did not see: they were compiled as
        the run reached them, and saving the run keeps them, in the map as hints (the module as it was, at once) */

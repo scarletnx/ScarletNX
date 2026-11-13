@@ -8,6 +8,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define AGB_BLOCK_MAX 256 /* the instruction units a block holds at most: words in ARM, halfwords in Thumb */
+
 typedef struct AgbBoard AgbBoard;
 typedef struct {
     uint32_t pc;

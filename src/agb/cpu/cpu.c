@@ -60,13 +60,60 @@ static void exception_return(AgbCpu* cpu) {
     cpu->arm.cpsr = saved;
 }
 
+/* the board's devices run for the given cycles of the CPU's */
+static void devices(AgbBoard* board, uint32_t cycles) {
+    agb_ppu_step(board, cycles);
+    agb_timer_step(board, cycles);
+    agb_save_step(board, cycles);
+    agb_sio_step(board, cycles);
+}
+
+/* the wait states for the WAITCNT the board has: turning the prefetch unit off makes its next fetch a first one */
+static void waits_now(AgbCpu* cpu, const AgbBoard* board) {
+    uint32_t waitcnt = board->io[0x204 >> 1];
+    if (cpu->waits.waitcnt == waitcnt) return;
+    if ((cpu->waits.waitcnt & 0x4000) && !(waitcnt & 0x4000)) cpu->replay.bus.was_disabled = 1;
+    agb_waits(&cpu->waits, waitcnt);
+}
+
+/* the running block's replay moved on to the instruction at unit, up to its data access `access` (timing.h), and the
+   cycles from the block's start to there */
+static uint32_t replay(AgbCpu* cpu, uint32_t unit, int32_t access) {
+    const AgbBoard* board = cpu->board;
+    waits_now(cpu, board);
+    AgbBlockRun run = {.code = cpu->arm.mem + cpu->block_pc,
+                       .pc = cpu->block_pc,
+                       .thumb = cpu->block_thumb,
+                       .trace = cpu->trace,
+                       .skipped = cpu->skipped,
+                       .next = cpu->arm.r[15],
+                       .next_thumb = (cpu->arm.cpsr & SNX_ARM_T) != 0};
+    return agb_replay_to(&cpu->replay, &cpu->waits, board->io[0x204 >> 1] >> 14 & 1, &run, unit, access);
+}
+
+/* The board catches up with the running block at an access to an I/O register: its devices run for the time the
+   block's instructions took up to that access, so a timer or the display read there, or a timer started there, is as
+   the console has it then */
+static void catch_up(AgbCpu* cpu, uint32_t address) {
+    uint32_t unit = (cpu->arm.r[15] - cpu->block_pc) >> (cpu->block_thumb ? 1 : 2);
+    if (unit >= AGB_BLOCK_MAX) return;
+    /* a multiple transfer's word: its place from the lowest, which the trace holds */
+    uint32_t word = ((address & ~3u) - (cpu->trace[unit] & ~3u)) >> 2;
+    uint32_t cycles = replay(cpu, unit, word < 16 ? (int32_t)word : 0);
+    if (cycles <= cpu->advanced) return;
+    devices(cpu->board, cycles - cpu->advanced);
+    cpu->advanced = cycles;
+}
+
 /* The bus hook the recompiled blocks call for the regions with bus rules a plain access cannot follow:
    the I/O window, the palette, OAM and the save memory, and the stores to the cartridge's ROM, which the board drops.
    This keeps the 1 KiB mirrors, the byte write widths and the register side effects correct while generated code
    runs at memory speed elsewhere. The machine's CPU state is its first member. */
 static uint32_t bus(SnxArmCPU* arm, uint32_t address, uint32_t size_write, uint32_t value) {
-    AgbBoard* board = ((AgbCpu*)arm)->board;
+    AgbCpu* cpu = (AgbCpu*)arm;
+    AgbBoard* board = cpu->board;
     unsigned bytes = size_write & 0xFF;
+    if (cpu->in_block && (address >> 24) == 0x04) catch_up(cpu, address);
     if (!(size_write & 0x100)) board->open_bus = value; /* a read's value: the open bus (llvm.c's open_bus) */
     if (size_write & 0x200) {
         /* LDRSH: the ARM7TDMI quirk reads a sign extended byte at an odd address */
@@ -83,7 +130,9 @@ static uint32_t bus(SnxArmCPU* arm, uint32_t address, uint32_t size_write, uint3
             agb_write32(board, address, value);
         /* a DMA the write started holds the bus: the block ends after this instruction, and the next one runs once
            the CPU waited it out (agb_cpu_run), as the console's does */
-        return board->held_cycles != held;
+        if (board->held_cycles == held) return 0;
+        cpu->yield_end = ((arm->r[15] - cpu->block_pc) >> (cpu->block_thumb ? 1 : 2)) + 1;
+        return 1;
     }
     return bytes == 1 ? agb_read8(board, address) : bytes == 2 ? agb_read16(board, address)
                                                              : agb_read32(board, address);
@@ -108,20 +157,33 @@ void agb_cpu_init(AgbCpu* cpu, AgbBoard* board, uint8_t* map) {
     cpu->over =
         (uint32_t)((board->ppu.vcount + AGB_FRAME_LINES - AGB_SCREEN_HEIGHT) % AGB_FRAME_LINES) * AGB_SCANLINE_CYCLES +
         board->ppu.dot;
-    cpu->costs_waitcnt = 0x10000;    /* none made yet: the first block's run makes them */
-    cpu->bus_costs = &cpu->costs[0]; /* a block run on its own reads one, all zero */
+    agb_waits(&cpu->waits, board->io[0x204 >> 1]);
+    cpu->replay.done = AGB_REPLAY_FETCH;
 }
 
-static void advance(AgbCpu* cpu, AgbSink* sink, uint32_t cycles) {
+/* the sound for cycles of the run, which the run counts */
+static void sound(AgbSink* sink, uint32_t cycles) {
     AgbBoard* board = sink->board;
-    (void)cpu;
-    agb_ppu_step(board, cycles);
-    agb_timer_step(board, cycles);
-    agb_save_step(board, cycles);
-    agb_sio_step(board, cycles);
     if (sink->audio && sink->written < sink->capacity)
         sink->written += agb_apu_run(board, cycles, sink->audio + sink->written * 2, sink->capacity - sink->written);
     sink->elapsed += cycles;
+}
+
+/* the machine's time passes outside the CPU's instructions: a DMA's, a halt's */
+static void advance(AgbCpu* cpu, AgbSink* sink, uint32_t cycles) {
+    (void)cpu;
+    devices(sink->board, cycles);
+    sound(sink, cycles);
+}
+
+/* the running block's time up to its replay's end: what the board has not run of it yet, and the sound of it all */
+static void block_time(AgbCpu* cpu, AgbSink* sink, uint32_t cycles, uint32_t* charged) {
+    if (cycles > cpu->advanced) {
+        devices(sink->board, cycles - cpu->advanced);
+        cpu->advanced = cycles;
+    }
+    sound(sink, cycles - *charged);
+    *charged = cycles;
 }
 
 /* ---- interrupts ---- */
@@ -469,6 +531,7 @@ static int transfer_quirk(AgbBoard* board, AgbCpu* cpu, uint32_t word, unsigned 
     uint32_t base = n == 15 ? cpu->arm.r[15] + 8 : cpu->arm.r[n];
     uint32_t adjusted = up ? base + offset : base - offset;
     uint32_t address = pre ? adjusted : base, value = 0, mis;
+    cpu->trace[cpu->note] = address;
     if (load) {
         address &= ~(uint32_t)(bytes - 1); /* the single transfer reads the aligned unit and rotates */
         value = bytes == 1   ? agb_read8(board, address)
@@ -500,6 +563,7 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
         /* the ARM7TDMI quirk: an empty register list transfers R15 and moves the base by 0x40 */
         if ((word & 0xF000) == 0xC000 && !(word & 0xFF)) {
             uint32_t base = cpu->arm.r[word >> 8 & 7];
+            cpu->trace[cpu->note] = base;
             if (word & 0x0800) {
                 cpu->arm.r[15] = agb_read32(board, base) & ~(uint32_t)1;
             } else {
@@ -545,6 +609,7 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
     if ((word & 0x0fb00ff0) == 0x01000090) { /* SWP and SWPB */
         uint32_t address = operand(cpu, word >> 16 & 15), held = cpu->arm.r[word & 15];
         unsigned rd = word >> 12 & 15, mis;
+        cpu->trace[cpu->note] = address;
         if (word & (1u << 22)) {
             cpu->arm.r[rd] = agb_read8(board, address);
             agb_write8(board, address, (uint8_t)held);
@@ -587,6 +652,7 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
             /* the empty list transfers R15 where the first of 16 registers would go, and moves the base by
                0x40 in its direction */
             uint32_t address = up ? base + (pre ? 4 : 0) : base - 0x40 + (pre ? 0 : 4);
+            cpu->trace[cpu->note] = address;
             if (load)
                 cpu->arm.r[15] = agb_read32(board, address) & ~(uint32_t)1;
             else {
@@ -602,6 +668,7 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
         for (unsigned i = 0; i < 16; ++i) count += list >> i & 1;
         uint32_t adjusted = up ? base + count * 4 : base - count * 4;
         uint32_t start = up ? base + (pre ? 4 : 0) : adjusted + (pre ? 0 : 4);
+        cpu->trace[cpu->note] = start;
         for (unsigned i = 0; i < 16; ++i) {
             if (!(list >> i & 1)) continue;
             uint32_t address = start + index++ * 4;
@@ -654,45 +721,6 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
     return -1;
 }
 
-/* The bus costs of the loads and stores of code running from each region (arm.h's SnxArmBusCosts), for the WAITCNT
-   the board has, as mGBA counts them (gba/memory.c: GBALoad*, GBAStore*, GBAMemoryStall): a first access 1 + its wait
-   states, each next word of a multiple one 1 + a sequential word's, then the fetch after it a non-sequential one. With
-   the prefetch buffer on, code on the cartridge has its next halfwords fetched while the CPU reaches other memory: the
-   instruction's time there hides up to that many fetches, 8 at most (1 + 8 sequential wait states), and its fetch
-   after it is one of them */
-static void bus_costs(AgbCpu* cpu, const AgbBoard* board) {
-    int prefetch = (board->io[0x204 >> 1] & 0x4000) != 0;
-    for (unsigned code = 0; code < 16; ++code) {
-        SnxArmBusCosts* c = &cpu->costs[code];
-        int n = (int)agb_access_cycles(board, code << 24, 16, 0) - 1,
-            s = (int)agb_access_cycles(board, code << 24, 16, 1) - 1;
-        int cartridge = code >= 0x8 && code <= 0xD;
-        for (unsigned region = 0; region < 16; ++region) {
-            c->nonseq[region][0] = (uint8_t)agb_access_cycles(board, region << 24, 8, 0);
-            c->nonseq[region][1] = (uint8_t)agb_access_cycles(board, region << 24, 16, 0);
-            c->nonseq[region][2] = c->nonseq[region][3] = (uint8_t)agb_access_cycles(board, region << 24, 32, 0);
-            c->seq[region] = (uint8_t)agb_access_cycles(board, region << 24, 32, 1);
-            c->adjust[region] = (int8_t)(cartridge && prefetch && region < 0x8 ? -(1 + 8 * s) : n - s);
-        }
-    }
-    cpu->costs_waitcnt = board->io[0x204 >> 1];
-}
-
-/* The cycles a block took, as mGBA counts an instruction's: each its fetch, 1 + a sequential access's wait states
-   (GBATEK's memory timings by region and WAITCNT), whatever the prefetch buffer; a jump to next (a branch taken, not
-   the instruction after the block) a refill of the pipeline there, a non-sequential and a sequential fetch and two
-   cycles; and what its loads and stores counted (bus_costs) */
-static uint32_t block_cycles(AgbCpu* cpu, const AgbBoard* board, const AgbBlock* block, uint32_t next) {
-    unsigned width = block->thumb ? 16 : 32;
-    uint32_t fallthrough = block->pc + (uint32_t)block->instructions * (width / 8);
-    uint32_t cycles = (uint32_t)block->instructions * agb_access_cycles(board, block->pc, width, 1) + cpu->bus_cycles;
-    unsigned next_width = cpu->arm.cpsr & SNX_ARM_T ? 16 : 32;
-    if (next != fallthrough)
-        cycles += agb_access_cycles(board, next, next_width, 0) + agb_access_cycles(board, next, next_width, 1);
-    cpu->bus_cycles = 0;
-    return cycles;
-}
-
 int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles, int16_t* audio,
                 uint32_t audio_capacity, uint32_t* audio_written, char* error, size_t error_size) {
     AgbSink sink = {board, audio, audio_capacity, 0, cpu->over};
@@ -742,20 +770,35 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
         const AgbBlock* block =
             agb_recomp_lookup(recomp, board, cpu->arm.r[15], (cpu->arm.cpsr & SNX_ARM_T) != 0, error, error_size);
         if (!block) return -1;
-        if (cpu->costs_waitcnt != board->io[0x204 >> 1]) bus_costs(cpu, board);
-        cpu->bus_costs = &cpu->costs[block->pc >> 24 & 0xF];
-        cpu->bus_cycles = 0;
+        /* the block runs, then its time is replayed from what it left (timing.h): up to the instruction a DMA's start
+           ended it after, or the one it stopped at for the machine to interpret, else all of it */
+        unsigned shift = block->thumb ? 1 : 2;
+        uint32_t charged = 0, end;
+        cpu->block_pc = block->pc;
+        cpu->block_thumb = block->thumb;
+        cpu->advanced = cpu->yield_end = 0;
+        memset(cpu->skipped, 0, sizeof cpu->skipped);
+        cpu->replay.cycles = cpu->replay.unit = 0;
+        cpu->replay.done = AGB_REPLAY_FETCH;
         cpu->arm.exit = SNX_ARM_OK;
+        cpu->in_block = 1;
         block->fn(&cpu->arm);
-        advance(cpu, &sink, block_cycles(cpu, board, block, cpu->arm.r[15]));
+        cpu->in_block = 0;
+        end = cpu->arm.exit == SNX_ARM_UNDEFINED ? (cpu->arm.r[15] - block->pc) >> shift
+              : cpu->yield_end                   ? cpu->yield_end
+                                                 : block->instructions;
+        block_time(cpu, &sink, replay(cpu, end, AGB_REPLAY_WHOLE), &charged);
         if (cpu->arm.exit == SNX_ARM_SVC)
             handle_swi(cpu, &sink, cpu->arm.syndrome, block->thumb);
         else if (cpu->arm.exit == SNX_ARM_UNDEFINED) {
+            cpu->trace[end] = 0; /* what its transfer reaches, if it has one, interpret notes */
+            cpu->note = end;
             if (interpret(board, cpu, cpu->arm.syndrome, block->thumb)) {
                 snprintf(error, error_size, "unimplemented instruction 0x%08X at 0x%08X", cpu->arm.syndrome,
                          cpu->arm.r[15]);
                 return -1;
             }
+            block_time(cpu, &sink, replay(cpu, end + 1, AGB_REPLAY_WHOLE), &charged);
         } else if (cpu->arm.exit != SNX_ARM_OK) {
             snprintf(error, error_size, "the recompiled ROM stopped (exit %u) at 0x%08X (syndrome 0x%08X)",
                      cpu->arm.exit, cpu->arm.r[15], cpu->arm.syndrome);
