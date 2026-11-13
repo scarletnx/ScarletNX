@@ -332,8 +332,21 @@ static void raster_key(void) {
     mx_draw_raster_key(r, &k);
     CHECK(k.polygon == DS_POLYGON_LINE && k.provoking_last == 0);
     r[0x36B] = 0x1B02;
+    for (u32 i = 0; i < 4; i++) r[0x3EF + i] = 0xFFFF; /* every sample, as a channel starts */
     mx_draw_raster_key(r, &k);
     CHECK(k.polygon == DS_POLYGON_FILL && !k.alpha_to_coverage && !k.alpha_to_one && k.sample_mask == ~0u);
+    /* 0x3EF-0x3F2: a mask for each pixel of a 2x2 quad, 16 bits each; one when they agree, else the samples any
+       leaves */
+    for (u32 i = 0; i < 4; i++) r[0x3EF + i] = 0x10002; /* sample 1, and a bit past the 16 */
+    mx_draw_raster_key(r, &k);
+    CHECK(k.sample_mask == 2);
+    for (u32 i = 0; i < 4; i++) r[0x3EF + i] = 1u << i;
+    mx_draw_raster_key(r, &k);
+    CHECK(k.sample_mask == 0xF);
+    for (u32 i = 0; i < 4; i++) r[0x3EF + i] = 0;
+    mx_draw_raster_key(r, &k);
+    CHECK(k.sample_mask == 0);
+    for (u32 i = 0; i < 4; i++) r[0x3EF + i] = 0xFFFF;
     /* 0x54F: alpha to coverage in bit 0, alpha to one in bit 4 */
     r[0x54F] = 0x11;
     mx_draw_raster_key(r, &k);

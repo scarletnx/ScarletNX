@@ -96,7 +96,14 @@ void mme_run(GpuChannel* ch, u32 idx, u32 np) { (void)ch, (void)idx, (void)np; }
 void mme_upload_ptr(GpuChannel* ch, u32 v) { (void)ch, (void)v; }
 void mme_upload(GpuChannel* ch, u32 v) { (void)ch, (void)v; }
 void mme_bind(GpuChannel* ch, u32 v) { (void)ch, (void)v; }
-void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+static char said[256]; /* the last line the code under test logged */
+void logf_(int lvl, const char* fmt, ...) {
+    va_list args;
+    (void)lvl;
+    va_start(args, fmt);
+    vsnprintf(said, sizeof said, fmt, args);
+    va_end(args);
+}
 
 /* ------------------------------------------------ the cases */
 static GpuChannel ch;
@@ -257,6 +264,16 @@ int main(void) {
             fprintf(stderr, "FAIL: reset selector %x for report %x\n", reset_pairs[i].reset, reset_pairs[i].report);
             failures++;
         }
+    }
+
+    /* a draw whose quad's pixels have sample masks that differ (0x3EF-0x3F2) says so, with the mask every pixel takes */
+    render_enable(0, 1);
+    for (u32 i = 0; i < 4; i++) maxwell3d_method(&ch, 0x3EF + i, 1u << i, 1);
+    said[0] = 0;
+    drawn();
+    if (!strstr(said, "(0001 0002 0004 0008): each pixel takes 000f")) {
+        fprintf(stderr, "FAIL: a draw under differing sample masks logged \"%s\"\n", said);
+        failures++;
     }
 
     if (failures) return 1;
