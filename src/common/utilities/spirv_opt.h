@@ -32,9 +32,11 @@ size_t spv_opt_dead_code(uint32_t* module, size_t words);
    Before an instruction is looked up it is folded, when it makes a 32-bit integer or a boolean: on constants (no
    specialization constant) to their result, and to an operand or a constant when one operand decides (x + 0, x * 1,
    x & 0, x - x, true && x); a difference of two terms of one value, each y + k, k + y, y - k or y as the instruction
-   that makes it reads, is the difference of their constants ((y + k1) - (y + k2) is k1 - k2); of any type, a
-   select on a constant or of one value twice, and a bitcast to its operand's type or back from a bitcast, are that
-   operand. An operand stands for the instruction only with the
+   that makes it reads, is the difference of their constants ((y + k1) - (y + k2) is k1 - k2); an && or || of two
+   tests against zero where one implies the other is the one implying it (&&) or implied (||): s != 0 implies t != 0
+   when s is t, an & of t, t an | of s, or s an & and t an | of one operand ((x & m) != 0 implies x != 0), and s == 0
+   implies t == 0 the other way round; of any type, a select on a constant or of one value twice, and a bitcast to
+   its operand's type or back from a bitcast, are that operand. An operand stands for the instruction only with the
    instruction's type. A constant the module does not declare is declared before the first function under the
    instruction's own id, in the room the instruction left: the module never grows. Float arithmetic, divisions,
    shifts by 32 or more and decorated instructions are not folded.

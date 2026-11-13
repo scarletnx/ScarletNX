@@ -365,12 +365,58 @@ static uint32_t term(const uint32_t* module, uint32_t x, uint32_t bound, const u
     return b;
 }
 
+/* p as a test of a 32-bit integer against 0: that integer, with *zero 1 for == 0 and 0 for != 0, from the OpIEqual or
+   OpINotEqual of it and a zero (on either side) that makes p, or from the OpLogicalNot of one; else 0 */
+static uint32_t zero_test(const uint32_t* module, uint32_t p, uint32_t bound, const uint8_t* is,
+                          const uint32_t* type_of, const uint32_t* value, const uint32_t* def, const uint32_t* sign,
+                          uint32_t* zero) {
+    const uint32_t* w = made_by(module, p, 4, def, sign);
+    uint32_t flip = 0;
+    if (w && (w[0] & 0xffff) == SPV_OP_LOGICAL_NOT && w[3] < bound) {
+        p = w[3];
+        flip = 1;
+    }
+    w = made_by(module, p, 5, def, sign);
+    uint32_t op = w ? w[0] & 0xffff : 0, a = w && w[3] < bound ? w[3] : 0, b = w && w[4] < bound ? w[4] : 0;
+    if ((op != SPV_OP_I_EQUAL && op != SPV_OP_I_NOT_EQUAL) || !a || !b) return 0;
+    int za = is[a] & SPV_OPT_CONSTANT && is[type_of[a]] & SPV_OPT_INT && !value[a];
+    int zb = is[b] & SPV_OPT_CONSTANT && is[type_of[b]] & SPV_OPT_INT && !value[b];
+    uint32_t s = zb ? a : za ? b : 0;
+    if (!s || !(is[type_of[s]] & SPV_OPT_INT)) return 0;
+    *zero = (op == SPV_OP_I_EQUAL) ^ flip;
+    return s;
+}
+
+/* whether every bit of the integer p that may be 1 is 1 in q: p is q, p is an & of q, q an | of p, or p an & and q an
+   | of one operand */
+static int bits_within(const uint32_t* module, uint32_t p, uint32_t q, const uint32_t* def, const uint32_t* sign) {
+    const uint32_t *both = made_by(module, p, 5, def, sign), *either = made_by(module, q, 5, def, sign);
+    if (p == q) return 1;
+    if (both && (both[0] & 0xffff) != SPV_OP_BITWISE_AND) both = NULL;
+    if (either && (either[0] & 0xffff) != SPV_OP_BITWISE_OR) either = NULL;
+    if (both && (both[3] == q || both[4] == q)) return 1;
+    if (either && (either[3] == p || either[4] == p)) return 1;
+    return both && either &&
+           (both[3] == either[3] || both[3] == either[4] || both[4] == either[3] || both[4] == either[4]);
+}
+
+/* whether the boolean p implies q, both tests against 0: s != 0 implies t != 0 when the bits of s are within t's,
+   and s == 0 implies t == 0 when t's are within s's ((x & m) != 0 implies x != 0) */
+static int implies(const uint32_t* module, uint32_t p, uint32_t q, uint32_t bound, const uint8_t* is,
+                   const uint32_t* type_of, const uint32_t* value, const uint32_t* def, const uint32_t* sign) {
+    uint32_t zp, zq, sp = zero_test(module, p, bound, is, type_of, value, def, sign, &zp);
+    uint32_t sq = sp ? zero_test(module, q, bound, is, type_of, value, def, sign, &zq) : 0;
+    if (!sq || zp != zq) return 0;
+    return zp ? bits_within(module, sq, sp, def, sign) : bits_within(module, sp, sq, def, sign);
+}
+
 /* What the instruction at w always equals, when its type is a 32-bit integer or the boolean and its operands say so
    (they were replaced already), beyond what known_bits computes of it (an integer whose bits are all known):
    SPV_OPT_FOLD_VALUE with the constant's bits in *out for a product of two constants, a difference of two terms of
    one value ((y + k1) - (y + k2) is k1 - k2, x - x is 0), x ^ x and the logical instructions on constants (false && x,
    true || x); SPV_OPT_FOLD_ID with an operand in *out when the others leave it as it is (x + 0, x - 0, x | 0, x ^ 0,
-   x << 0, x * 1, x & x, x | x, true && x, false || x, x && x), only when that operand has the instruction's type. Of any type: a select whose condition is
+   x << 0, x * 1, x & x, x | x, true && x, false || x, x && x) or when one operand of an && or || implies the other (p
+   && q is p, p || q is q), only when that operand has the instruction's type. Of any type: a select whose condition is
    a constant or whose two values are one id, and a bitcast to the type its operand has, or of a bitcast from that
    type. module is for the instructions that make the operands, def[] says where, and an instruction with a
    decoration (sign[]) is read as a value of no known form; is, type_of and value are by id. */
@@ -456,6 +502,10 @@ static uint32_t fold(const uint32_t* module, const uint32_t* w, uint32_t width, 
             return SPV_OPT_FOLD_VALUE;
         }
         if (!x && a == b) x = a;
+        if (!x && a && b) /* p implies q: p && q is p, p || q is q */
+            x = implies(module, a, b, bound, is, type_of, value, def, sign)   ? either ? b : a
+                : implies(module, b, a, bound, is, type_of, value, def, sign) ? either ? a : b
+                                                                              : 0;
         if (!x || type_of[x] != t) return SPV_OPT_FOLD_NONE;
         *out = x;
         return SPV_OPT_FOLD_ID;

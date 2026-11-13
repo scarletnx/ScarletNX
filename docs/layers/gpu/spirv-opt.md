@@ -85,6 +85,10 @@ integers of either sign and booleans, on constants that are no specialization co
 - a difference of two terms of one value (spirv-opt's merge of an add and a sub): each operand read as `y + k`,
   `k + y`, `y - k` or `y` itself from the instruction that makes it, `(y + k1) - (y + k2)` is `k1 - k2`. The
   instruction that makes an operand counts only undecorated;
+- an `&&` or `||` of two tests against zero where one implies the other: `p && q` is `p` and `p || q` is `q` when
+  `p` implies `q`. A test is `s != 0` or `s == 0`, the zero on either side, or the `!` of one; `s != 0` implies
+  `t != 0` when every bit of `s` that may be 1 is a bit of `t`: `s` is `t`, an `&` of `t`, `t` an `|` of `s`, or `s` an
+  `&` and `t` an `|` of one operand; `s == 0` implies `t == 0` the other way round;
 - one operand that leaves the other: `x + 0`, `x - 0`, `x | 0`, `x ^ 0`, a shift by 0, `x * 1`, `x & x`, `x | x`,
   `true && x`, `false || x`, `x && x`, `x || x`, with the constant on either side of what commutes (`x & ~0` by its
   known bits);
@@ -98,7 +102,8 @@ instruction left, so a module never grows. Float arithmetic, divisions and a dec
 
 On the Maxwell translator's modules: `x + 0` for a register's offset, masks and shifts of immediates, selects on a
 constant condition, and bitcasts there and back; an address less its base (`(y + 192) - y`), whose shifts and sums
-the known bits then fold.
+the known bits then fold; and a predicate made of a masked register, `(x & m) != 0 || !(x == 0)`, which is
+`!(x == 0)`.
 
 ## Known bits
 
@@ -158,6 +163,6 @@ that never read them.
   modules at random (a fixed sequence) of values with a few unknown bits, runs each before and after the pass on
   every value of those bits, and checks they store the same. 2000 modules of differences of terms at random run the
   same way on values of x and y that take in the module's constants, their complements and negations, and numbers
-  at random.
+  at random. So do 2000 modules of tests against zero.
 - `vulkan_headless`, `check_translation_dead_code` and `check_translation_values`: the runtime's module is the
   translator's with the passes run, and the device takes it.
