@@ -2592,6 +2592,58 @@ static void test_global_pointer(const char* dir) {
     free(spv);
 }
 
+/* The pieces of a 64-bit division by a reciprocal, as one game's exposure program has it (the quotient of
+   4239360 / 20480 came out 728513 with any of these read otherwise, and 207 with all three):
+   - IADD3.X with a negated source adds its complement, ~x (the + 1 of the negation is the low word's carry);
+   - IMAD.HI is the high word of a * b + c, and its carry out goes to the predicate at 81-83;
+   - IMAD.X with a negated addend adds its complement.
+   R10:R11 = -(R1:R2) by IADD3 RZ, -R1, RZ (carry P0) and IADD3.X RZ, ~R2, RZ, P0; R12 = IMAD.HI R3, R4, R5 with
+   the carry in P1; R13 = IMAD.X RZ, RZ, ~R6, P1 */
+static void test_wide_carries(const char* dir) {
+    u8 code[16 * 14] = {0};
+    put(code, 0, mov_imm(1, 0));
+    put(code, 1, mov_imm(2, 0xfffffdc0));
+    put(code, 2, mov_imm(3, 0xffffffff));
+    put(code, 3, mov_imm(4, 0xffffffff));
+    put(code, 4, mov_imm(5, 0xffffffff));
+    put(code, 5, mov_imm(6, 0x00000010));
+    Word m = alu(0x010, 1, 10, 255); /* IADD3 R10, RZ, -R1, RZ, P0 */
+    set(&m, 32, 8, 1), set(&m, 63, 1, 1), set(&m, 64, 8, 255);
+    set(&m, 81, 3, 0), set(&m, 84, 3, 7), set(&m, 87, 4, 7), set(&m, 77, 4, 7);
+    put(code, 6, m);
+    m = alu(0x010, 1, 11, 255); /* IADD3.X R11, RZ, ~R2, RZ, P0, !PT */
+    set(&m, 32, 8, 2), set(&m, 63, 1, 1), set(&m, 64, 8, 255), set(&m, 74, 1, 1);
+    set(&m, 81, 3, 7), set(&m, 84, 3, 7), set(&m, 87, 4, 0), set(&m, 77, 4, 0xf);
+    put(code, 7, m);
+    m = alu(0x027, 1, 12, 3); /* IMAD.HI.U32 R12, R3, R4, R5, P1 */
+    set(&m, 32, 8, 4), set(&m, 64, 8, 5), set(&m, 81, 3, 1), set(&m, 84, 3, 7), set(&m, 87, 4, 7);
+    put(code, 8, m);
+    m = alu(0x024, 1, 13, 255); /* IMAD.X R13, RZ, RZ, ~R6, P1 */
+    set(&m, 32, 8, 255), set(&m, 64, 8, 6), set(&m, 74, 1, 1), set(&m, 75, 1, 1);
+    set(&m, 81, 3, 7), set(&m, 84, 3, 7), set(&m, 87, 4, 1);
+    put(code, 9, m);
+    put(code, 10, ast(0x70, 10, 4));
+    put(code, 11, exit_insn());
+    put(code, 12, bra(12, 12, 7, 0));
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    SpvEvalEnv env = {0};
+    int ran = run_stage(ST_VS, code, 13, vsph, &env);
+    /* -(0xfffffdc0:0) = 0x240:0; 0xffffffff^2 + 0xffffffff = 0xffffffff:0, no carry; ~0x10 + 0 */
+    int ok = ran && env.position[0] == 0 && env.position[1] == 0x240 && env.position[2] == 0xffffffffu &&
+             env.position[3] == 0xffffffefu;
+    CHECK(ok);
+    if (!ok)
+        fprintf(stderr, "wide carries: ran %d, %x %x %x %x\n", ran, env.position[0], env.position[1], env.position[2],
+                env.position[3]);
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 13 * 16, ST_VS, vsph, &si, &count);
+    CHECK(spv != NULL);
+    if (spv) CHECK(keep_module(dir, "wide_carries", spv, count));
+    free(spv);
+}
+
 /* LDG.E.64 (the uniform form) into dst from [UR + imm], RZ the register */
 static Word ldg_uniform64(u32 dst, u32 ur, u32 imm) {
     Word x = fix(0x981);
@@ -4585,6 +4637,7 @@ int main(int argc, char** argv) {
     test_float64_fallback_scale(dir);
     test_flow_operand(dir);
     test_global_pointer(dir);
+    test_wide_carries(dir);
     test_global_indirect(dir);
     test_global_table(dir);
     test_global_table_cells(dir);
