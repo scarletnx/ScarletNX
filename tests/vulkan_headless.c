@@ -5186,6 +5186,67 @@ static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, 
     }
     return bad;
 }
+/* A target over what one owner may hold, published (a watched page touched by the CPU): an owner a band of rows of
+   blocks over its span, each landing when the CPU touches it, rather than a write-back that let the span's pages go
+   before writing them over a second later (a 512 MiB RGBA16F one, edenprobe's tex8k, read on another thread
+   meanwhile: #2094). A block linear RGBA16F target of 256x128, 256 KiB, loaded from guest memory holding a pattern,
+   its red cleared to 0.25 alone, and published under a cap of 64 KiB: the publish takes it, owners hold its bytes in
+   more than one band, and every byte read from guest memory is where the guest's layout has it, red 0.25 and the
+   pattern in the others (each band's owner read from its own start). The publish refused it, and the caller wrote it
+   back */
+/* flush_pattern with no half NaN or infinity: an odd byte, a half's high one, has its exponent under 31 */
+static u8 band_pattern(u64 i) { return i % 2 ? flush_pattern(i) & 0x3B : flush_pattern(i); }
+static int check_publish_bands(void) {
+    const u64 cpu = HEAP_BASE + 0xC00000, gva = 0xB000000ull, cap = g_vk.alloc_cap;
+    const u32 w = 256, h = 128, bpp = 8;
+    const u64 size = (u64)w * bpp * h;
+    CHECK(mem_map(cpu, 0x100000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, 0x100000);
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    u8* got = malloc(size);
+    CHECK(ch && got);
+    u32* r = ch->r3d;
+    for (u64 i = 0; i < size; i++) GP(cpu)[i] = band_pattern(i);
+    r[0x487] = 1;
+    r[0x200] = (u32)(gva >> 32);
+    r[0x201] = (u32)gva;
+    r[0x202] = w;
+    r[0x203] = h;
+    r[0x204] = 0xCA; /* R16G16B16A16_FLOAT */
+    r[0x205] = 0;    /* block linear, 1 GOB a block */
+    r[0x206] = 1;
+    r[0x207] = (u32)(size >> 2);
+    float colour[4] = {0.25f, 0, 0, 0};
+    memcpy(&r[0x360], colour, sizeof colour);
+    engine_clear(ch, 1 << 2); /* red alone */
+    vk_render_end();
+    Surf* t = vk_rt_find(gva);
+    CHECK(t);
+    vk_lock();
+    g_vk.alloc_cap = 64 << 10;
+    int published = vk_surf_publish(t);
+    g_vk.alloc_cap = cap;
+    vk_unlock();
+    int owners = own_traps() ? own_lookup(cpu, size, NULL, 0) : 2;
+    if (!published || owners < 2) {
+        fprintf(stderr, "a target over one owner: published %d, %d owners over its span\n", published, owners);
+        return 1;
+    }
+    CHECK(!gmem_read(gva, got, size));
+    for (u64 i = 0; i < size; i++) { /* a texel's first two bytes are its red, as 0.25 is 0x3400 */
+        u8 want = i % 8 == 0 ? 0x00 : i % 8 == 1 ? 0x34 : band_pattern(i);
+        if (got[i] != want) {
+            fprintf(stderr, "a target published in bands: byte %llu holds %02x, not %02x\n", (unsigned long long)i,
+                    got[i], want);
+            return 1;
+        }
+    }
+    free(got);
+    free(ch);
+    CHECK(mem_unmap(cpu, 0x100000) == 0);
+    printf("A target over one owner is published a band at a time, %d owners, and lands whole\n", owners);
+    return 0;
+}
 static int check_flush_parts(void) {
     const u64 cpu = HEAP_BASE + 0xC00000, gva = 0xB000000ull;
     CHECK(mem_map(cpu, 0x100000, MS_NORMAL, PERM_RW) == 0);
@@ -7524,6 +7585,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_dma_bands());
     CHECK(!check_dma_bands_frames());
     CHECK(!check_flush_parts());
+    CHECK(!check_publish_bands());
     CHECK(!check_vic_bands());
     CHECK(!check_dma_texture());
     CHECK(!check_sparse_volume());
