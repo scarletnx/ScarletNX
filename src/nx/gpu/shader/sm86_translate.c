@@ -5730,6 +5730,34 @@ static void memory_handles(Ctx* c) {
    buffer, and a program finds the lights of a pixel with FLO on a mask, then an IMAD of that index by the record's
    size makes the LDC's address, c[bank][x * stride + base + offset]. So the texture is chosen for each pixel, from
    an array, and the table's elements are stride bytes apart, whatever the stride (they aren't a power of two) */
+/* The instruction that makes the address register of a table's LDC, x * stride + base by constants: an IMAD without
+   .X; the low word of a left SHF by a constant (x << s: stride 1 << s, base 0), as another game's material and light
+   tables are indexed, 4, 8 and 16 bytes apart; or a LEA of the low word, without the negation or the carry in
+   ((x << s) + base, its b a constant). 0 where it is none of them */
+static int handle_table_index(Ctx* c, int m, u32* stride, u32* base) {
+    if (m < 0) return 0;
+    const Sm86Insn* w = &c->in[m];
+    u32 s = 0;
+    *stride = 0, *base = 0;
+    if (w->op == SM86_IMAD) {
+        if (sm86_field(w, 74, 1) || !src_const(c, (u32)m, &w->b, stride) || !src_const(c, (u32)m, &w->c, base))
+            return 0;
+    } else if (w->op == SM86_SHF || w->op == SM86_USHF) {
+        /* bit 76: right; bit 80: the high word. Under 32, the low word is the same for a 64-bit shift */
+        if (sm86_field(w, 76, 1) || sm86_field(w, 80, 1) || !src_const(c, (u32)m, &w->b, &s) || s < 2 || s > 15)
+            return 0;
+        *stride = 1u << s;
+    } else if (w->op == SM86_LEA) {
+        /* bit 72: the negation; bit 74: .X; bit 80: .HI. A carry out predicate changes nothing of the sum */
+        s = sm86_field(w, 75, 5);
+        if (sm86_field(w, 72, 1) || sm86_field(w, 74, 1) || sm86_field(w, 80, 1) || s < 2 || s > 15 ||
+            !src_const(c, (u32)m, &w->b, base))
+            return 0;
+        *stride = 1u << s;
+    } else
+        return 0;
+    return *stride && *stride <= 0xffff;
+}
 static void prepare_handles(Ctx* c) {
     memory_handles(c);
     for (u32 i = 0; i < c->n && !c->failed; i++) {
@@ -5770,9 +5798,7 @@ static void prepare_handles(Ctx* c) {
                 u32 stride = 0, base = 0, count = SNX_TEX_ARRAY;
                 if (!g_shader_texture_arrays || c->stage == ST_CS) {
                     fail(c, "TEX.B of a table of handles, without texture arrays");
-                } else if (!mul || mul->op != SM86_IMAD || sm86_field(mul, 74, 1) ||
-                           !src_const(c, (u32)m, &mul->b, &stride) || !src_const(c, (u32)m, &mul->c, &base) ||
-                           !stride || stride > 0xffff) {
+                } else if (!handle_table_index(c, m, &stride, &base)) {
                     fail(c, "TEX.B of a table of handles, indexed by %s",
                          mul ? sm86_ops[mul->op].name : "several writes");
                 } else {
