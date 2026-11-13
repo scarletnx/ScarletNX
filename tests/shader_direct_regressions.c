@@ -5410,6 +5410,84 @@ static u32* flow_lod_spirv(const u64* instructions, int count, int can_subgroup,
     free(code);
     return result;
 }
+/* FSETP P<predicate>, PT, RZ, c[3][word]: whether 0 < the constant, which the test sets as it runs */
+static u64 fsetp_cbuf3(u32 predicate, u32 word) {
+    return (0x4bb1838c30f7ff07ull & ~(0x3fffull << 20) & ~(7ull << 3)) | (u64)word << 20 | (u64)predicate << 3;
+}
+/* A TEX.B whose handle the writes don't agree on, run on the CPU (support/spv_eval.c): the x of its sample, each
+   slot's texel 1 + the word of the constant buffer handle it was bound for (1 for c[2][0], 2 for c[2][4]), 0 when
+   none was chosen. c2 is bank 2's first words, c3 bank 3's (the predicates' constants) */
+static int chosen_sample(const u64* program, int count, const u32 c2[4], const u32 c3[4], ShaderInfo* info, float* x,
+                         const char** why) {
+    size_t words = 0, slots;
+    u64* code = guest_program(program, count, NULL, &slots);
+    *why = "out of memory";
+    if (!code) return 0;
+    set_sph(code, 18, 0xf);
+    memset(info, 0, sizeof *info);
+    u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, info, &words, 1, 1, 1, 1);
+    free(code);
+    *why = info->first_unsupported;
+    if (!spv || info->unsupported) {
+        free(spv);
+        return 0;
+    }
+    SpvEvalEnv env = {0};
+    float one[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+    u32 scale[4], bank2[4], bank3[4];
+    memcpy(scale, one, sizeof one);
+    memcpy(bank2, c2, sizeof bank2);
+    memcpy(bank3, c3, sizeof bank3);
+    env.ubo[SNX_VKB_RS] = scale;
+    env.ubo_words[SNX_VKB_RS] = 4;
+    env.ubo[SNX_VKB_CB + 2] = bank2;
+    env.ubo_words[SNX_VKB_CB + 2] = 4;
+    env.ubo[SNX_VKB_CB + 3] = bank3;
+    env.ubo_words[SNX_VKB_CB + 3] = 4;
+    for (int slot = 0; slot < info->ntex && SNX_VKB_TEX + slot < 64; slot++) {
+        float texel = 1.0f + (float)info->tex[slot].cbuf_off;
+        memcpy(&env.texel[SNX_VKB_TEX + slot][0], &texel, 4);
+    }
+    env.steps_max = 100000;
+    *why = spv_eval(spv, words, &env);
+    free(spv);
+    memcpy(x, &env.out[0][0], 4);
+    return !*why;
+}
+/* A TEX.B that chooses among the constant buffer handles that reach it keeps the sample of the one whose word the
+   register holds when it runs: c[2][0] under P0, c[2][4] under !P0, and under P1 a value from elsewhere (MOV32I
+   0x777), which is c[2][0]'s texture when c[2][0] holds 0x777 and zeros when no candidate does */
+static void tex_b_chosen_handle(void) {
+    const u64 tex_b = 0xdeb8000000070000ull | (2ull << 28) | (1ull << 37) | (6ull << 20) | (1ull << 31); /* R0.x */
+    const u64 under_p0 = ~(0xfull << 16), not_p0 = 8ull << 16;
+    const u64 load = 0x4c98078800070006ull, other_load = 0x4c98078800170006ull; /* MOV R6, c[2][0] / c[2][4] */
+    const u64 elsewhere = (mov32i(6, 0x777) & under_p0) | 1ull << 16;           /* @P1 MOV32I R6, 0x777 */
+    const u64 program[] = {
+        fsetp_cbuf3(0, 0), fsetp_cbuf3(1, 1), load & under_p0, (other_load & under_p0) | not_p0, elsewhere, tex_b};
+    static const struct {
+        u32 c2[4], c3[4];
+        float x;
+        const char* what;
+    } cases[] = {
+        {{0x00100001u, 0x00200002u}, {0x3f800000u, 0}, 1.0f, "under P0 the sample is c[2][0]'s"},
+        {{0x00100001u, 0x00200002u}, {0, 0}, 2.0f, "under !P0 the sample is c[2][4]'s"},
+        {{0x777u, 0x00200002u},
+         {0, 0x3f800000u},
+         1.0f,
+         "a value from elsewhere equal to c[2][0]'s word is its texture"},
+        {{0x00100001u, 0x00200002u}, {0, 0x3f800000u}, 0.0f, "a value from elsewhere equal to no candidate's reads 0"},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        ShaderInfo info;
+        const char* why;
+        float x = -1.0f;
+        int ran = chosen_sample(program, 6, cases[i].c2, cases[i].c3, &info, &x, &why);
+        if (!ran || x != cases[i].x)
+            fprintf(stderr, "TEX.B chosen handle case %zu: %s, %d slots, x %g (%g expected)\n", i, ran ? "ran" : why,
+                    info.ntex, (double)x, (double)cases[i].x);
+        check(ran && info.ntex == 2 && x == cases[i].x, cases[i].what);
+    }
+}
 /* A fragment program's loop ends for a helper lane after SH_HELPER_LOOP_ROUNDS back-edges, and runs as written for the
    other lanes: a loop with no way out but EXIT kills the helper, a loop with a BRK lets it on past the loop, and the
    dispatch loop of a program with calls ends for it. Run on the CPU (support/spv_eval.c) as a helper and as a lane
@@ -6175,6 +6253,7 @@ int main(int argc, char** argv) {
     shfl_predicate();
     lone_lane_forms();
     fragment_flow_derivatives();
+    tex_b_chosen_handle();
     helper_loop_exit();
     feedback_own_pixel();
     feedback_screen_uv();
