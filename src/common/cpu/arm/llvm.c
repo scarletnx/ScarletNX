@@ -510,8 +510,10 @@ static LLVMValueRef readmem(ArmIR* a, LLVMValueRef addr, unsigned bytes, int sig
     LLVMBuildBr(a->b, done);
     LLVMPositionBuilderAtEnd(a->b, io);
     {
-        LLVMValueRef args[4] = {a->cpu, aligned, c32(a, (sign && bytes == 2 && arm7tdmi(a) ? 0x200 : 0) | bytes),
-                                open_bus(a)};
+        /* the ARM7TDMI's hook takes the whole address: its LDRSH at an odd one reads the byte there, and the GBA's save
+           memory, on an 8 bit bus, the byte it names; the hook aligns the rest itself */
+        LLVMValueRef args[4] = {a->cpu, arm7tdmi(a) ? addr : aligned,
+                                c32(a, (sign && bytes == 2 && arm7tdmi(a) ? 0x200 : 0) | bytes), open_bus(a)};
         incoming[1] = LLVMBuildCall2(a->b, io_type(a), fn, args, 4, "");
         from[1] = io;
     }
