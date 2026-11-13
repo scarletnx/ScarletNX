@@ -54,7 +54,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('runner')
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix='snx-agb-keys-') as temporary:
+    # Windows can still hold the runner open after a passed run (WinError 32 on its removal)
+    with tempfile.TemporaryDirectory(prefix='snx-agb-keys-', ignore_cleanup_errors=True) as temporary:
         work = pathlib.Path(temporary)
         (work / 'keys.gba').write_bytes(rom())
         cases = [
