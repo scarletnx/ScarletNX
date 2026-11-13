@@ -482,11 +482,16 @@ extern int g_shader_hmma_pairs;
 /* the way a compute program's HMMA takes with the flags above, in words for the log, into out (n bytes) */
 void shader_hmma_way(char* out, size_t n);
 /* an SM86 HMMA off the cooperative matrices takes A and B from the other lanes through shared memory, a slot a warp,
-   where the device's compute subgroups have no quad operations and every A read would be a shuffle as well: Turnip
-   on an Adreno 610 runs a shuffle as a loop, and its HMMA bench ran 35 times faster so (684.9 ms a dispatch to
-   19.6). Where they have quads the shuffles stay: staged, an Adreno 830 ran 5.4 and an RX 6700 XT 2.2 times slower.
-   The device's maxComputeSharedMemorySize, else 0 (offline) */
+   where the driver compiles a shuffle whose index differs between lanes into a loop over the distinct indices (an
+   "off" line on OpGroupNonUniformShuffle in vk/extension_bans.txt: Turnip, whose Adreno 610 ran the HMMA bench 35
+   times faster so, 684.9 ms a dispatch to 19.6). Where the shuffles are the hardware's they stay: staged, an Adreno
+   830 ran 5.4 and an RX 6700 XT 2.2 times slower. The device's maxComputeSharedMemorySize, else 0 (offline) */
 extern int g_shader_hmma_stage;
+/* g_shader_hmma_pairs and g_shader_hmma_stage from what vk/device.c reads of the device: subgroup operations in
+   compute (subgroups), RADV with subgroups of 32 a pipeline can require (radv_warp32: its xor of 4 is a DPP move
+   where a shuffle at any other index is a permute through LDS), an "off" line on OpGroupNonUniformShuffle that holds
+   for its driver (shuffle_loops), and its maxComputeSharedMemorySize */
+void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int shared_max);
 /* The device may flush f16 subnormals (no shaderDenormPreserveFloat16), as Turnip on an Adreno 610 does in
    PackHalf2x16: an SM86 program packs its halves below 2^-14 exactly then (sm86_translate.c's pack_half). 0 offline */
 extern int g_shader_half_flush;

@@ -2673,6 +2673,10 @@ static u32 quad_read(Ctx* c, u32 value, u32 g4, u32 p) {
     return warp_read(c, value, spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, g4, cu(c, p)));
 }
 static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, bits); }
+void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int shared_max) {
+    g_shader_hmma_stage = subgroups && shuffle_loops ? shared_max : 0;
+    g_shader_hmma_pairs = subgroups && radv_warp32 && !g_shader_hmma_stage;
+}
 void shader_hmma_way(char* out, size_t n) {
     const char* how = g_shader_hmma_stage ? "A and B through a warp's slot of shared memory"
                       : g_shader_hmma_pairs && g_shader_quad_compute

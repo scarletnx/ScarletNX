@@ -490,6 +490,15 @@ static void check_shipped(void) {
         {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 2u, 99u), 0, SNX_VK_BAN_ANDROID, "OpConvertUToF", 1, "Turnip"},
         {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0, SNX_VK_BAN_ANDROID, "OpConvertSToF", 0, NULL},
         {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0, SNX_VK_BAN_LINUX, "OpConvertUToF", 0, NULL},
+        /* the shuffle whose index differs between lanes: a loop on Turnip, the phones' Adreno 610 among its GPUs; the
+           Adreno 830's own driver and RADV shuffle in hardware */
+        {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 2u, 99u), 0x6010000, SNX_VK_BAN_ANDROID, "OpGroupNonUniformShuffle", 1,
+         "Turnip"},
+        {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 0u, 0u), 0x43050a01, SNX_VK_BAN_LINUX, "OpGroupNonUniformShuffle", 1,
+         "Turnip"},
+        {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0x44050a01, SNX_VK_BAN_ANDROID,
+         "OpGroupNonUniformShuffle", 0, NULL},
+        {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0x73df, SNX_VK_BAN_LINUX, "OpGroupNonUniformShuffle", 0, NULL},
     };
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         char what[400];

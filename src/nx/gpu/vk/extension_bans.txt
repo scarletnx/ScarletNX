@@ -84,6 +84,10 @@ VK_KHR_present_id2 | off | nvidia | < 595.0.0 | any | * | hangs games at their f
 # and arithmetic, and a program of it that votes or shuffles runs each invocation as lane 0 alone)
 VK_SHADER_STAGE_GEOMETRY_BIT | off | turnip | * | any | * | lists the geometry stage for subgroup operations (supportedStages) and gives wrong ballot and shuffle results there, which lost a game's meshes and textures; Qualcomm's own driver does not list the stage | Eden PR 4344 (b846577037, 2026-09-01) | new:headless:a geometry shader's ballot and shuffle results read back | never | -
 
+# Shuffles whose index differs between lanes (device.c: an SM86 HMMA takes A and B through shared memory, its gathers
+# being such shuffles; SHFL and the other warp instructions keep them)
+OpGroupNonUniformShuffle | off | turnip | * | any | * | compiles a shuffle whose index differs between invocations into a loop, a hardware shuffle for each distinct index, as many as 32 for an HMMA's gather: an Adreno 610 ran the HMMA bench 35 times faster staged through shared memory (684.9 ms a dispatch to 19.6), where Qualcomm's driver on an Adreno 830 and RADV ran it 5.4 and 2.2 times slower so; no feature or property says it | Mesa's src/freedreno/ir3/ir3_lower_subgroups.c (make_shuffle_uniform, main of 2026-11-04: every Adreno with shfl); ScarletNX #2037 | new:headless:an HMMA program's dispatch timed gathered and staged, as shader_sm86_gpu's SNX_HMMA_BENCH does | 2026-11-13 a loop on 26.2.99 (Adreno 610) | -
+
 # Descriptors (without heaps, graphics descriptors use buffers or sets)
 VK_EXT_descriptor_heap | off | amd-proprietary | * | any | * | crashes a game at start with descriptor heaps (Adrenalin 26.7.1 on an RX 7900 XTX) | DXVK 076922bd24 (2026-09-19), issue 5837 | headless:--vk_descriptors_mode=3 | never | -
 VK_EXT_descriptor_heap | warn | nvidia | < 595.84.0 | any | * | runs descriptor heaps slower than its later drivers do | DXVK dxvk_device_info.cpp:506 (b5fadf8e5a, 2026-06-18) | new:headless:--bench-descriptors under vk_descriptors_mode=3 against vk_descriptors_mode=1 | never | -

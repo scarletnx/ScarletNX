@@ -4201,6 +4201,45 @@ static void test_hmma_way(void) {
     g_shader_hmma_pairs = pairs_was, g_shader_hmma_stage = stage_was, g_shader_hmma_coop = coop_was;
 }
 
+/* the HMMA forms vk/device.c chooses (shader_hmma_choose) for the devices measured: the Adreno 610 on Turnip, whose
+   shuffles at a lane's own index loop (the OpGroupNonUniformShuffle line of extension_bans.txt holds there, as
+   tests/vk_extension_bans.c checks), stages A and B; the Adreno 830 on its own driver keeps each lane's shuffles;
+   RADV with subgroups of 32 shares B by pairs of lanes, its quads in compute or not: missing quads are no reason to
+   stage, as RADV staged ran 2.2 times slower */
+static void test_hmma_choose(void) {
+    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16,
+        pairs_was = g_shader_hmma_pairs, stage_was = g_shader_hmma_stage, coop_was = g_shader_hmma_coop;
+    static const struct {
+        const char* device;
+        int quad, mixed, radv_warp32, shuffle_loops;
+        const char* want;
+    } cases[] = {
+        {"Adreno 610, Turnip", 0, 0, 0, 1,
+         "A and B through a warp's slot of shared memory, the products unpacked to f32"},
+        {"Adreno 830, Qualcomm's driver", 1, 0, 0, 0,
+         "A by quad broadcasts, B by shuffles, the products unpacked to f32"},
+        {"RX 6700 XT, RADV", 1, 1, 1, 0,
+         "A by quad broadcasts, B shared by pairs of lanes, the products by the mixed dot product into f32"},
+        {"RX 6700 XT, RADV, no quads in compute", 0, 1, 1, 0,
+         "A by shuffles, B shared by pairs of lanes, the products by the mixed dot product into f32"},
+    };
+    for (size_t k = 0; k < sizeof cases / sizeof *cases; k++) {
+        g_shader_quad_compute = cases[k].quad, g_shader_mixed_dot = cases[k].mixed, g_shader_float16 = 1;
+        g_shader_hmma_coop = 0;
+        shader_hmma_choose(1, cases[k].radv_warp32, cases[k].shuffle_loops, 65536);
+        char way[256];
+        shader_hmma_way(way, sizeof way);
+        if (strcmp(way, cases[k].want))
+            fprintf(stderr, "HMMA on the %s: \"%s\", wanted \"%s\"\n", cases[k].device, way, cases[k].want);
+        CHECK(!strcmp(way, cases[k].want));
+        CHECK(g_shader_hmma_stage == (cases[k].shuffle_loops ? 65536 : 0));
+    }
+    shader_hmma_choose(0, 1, 1, 65536); /* no subgroup operations in compute: no form of hmma's runs */
+    CHECK(!g_shader_hmma_stage && !g_shader_hmma_pairs);
+    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
+    g_shader_hmma_pairs = pairs_was, g_shader_hmma_stage = stage_was, g_shader_hmma_coop = coop_was;
+}
+
 /* the memory model a module declares (OpMemoryModel's: 1 GLSL450, 3 Vulkan), whether it declares a capability, and
    how many OpDecorates of a decoration it has */
 static u32 spv_memory_model(const u32* words, size_t count) {
@@ -4428,6 +4467,7 @@ int main(int argc, char** argv) {
     test_warp_matrix_values(dir);
     test_warp_matrix_flush(dir);
     test_hmma_way();
+    test_hmma_choose();
     test_warp_matrix_coop(dir);
     test_ftz_modes(dir);
     if (failures) {

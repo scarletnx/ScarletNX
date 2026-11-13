@@ -1356,14 +1356,14 @@ static int create_device(void) {
                              ? (int)g_vk.props.limits.maxComputeSharedMemorySize
                              : 0;
     f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_shader_hmma_coop != 0;
-    /* RADV makes a shuffle's xor of 4 a DPP move from GFX10, the devices with subgroups of 32, and a shuffle at any
-       other index a permute through LDS: an RX 6700 XT's HMMA bench (SNX_HMMA_BENCH) ran 9.7% faster */
-    g_shader_hmma_pairs = p12.driverID == VK_DRIVER_ID_MESA_RADV && g_vk.has_cs_warp32;
-    /* HMMA's A and B through shared memory where compute has no quad operations: every A read would be a shuffle too */
-    g_shader_hmma_stage = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) && !g_shader_quad_compute
-                              ? (int)g_vk.props.limits.maxComputeSharedMemorySize
-                              : 0;
-    if (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) {
+    /* HMMA off the matrix unit: pairs of lanes on RADV with subgroups of 32 (an RX 6700 XT's HMMA bench ran 9.7%
+       faster), and A and B through shared memory where the driver loops for a shuffle whose index differs between
+       lanes, which no feature or property tells, so the table does */
+    int compute_subgroups = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+    shader_hmma_choose(compute_subgroups, p12.driverID == VK_DRIVER_ID_MESA_RADV && g_vk.has_cs_warp32,
+                       vk_ban("OpGroupNonUniformShuffle", compute_subgroups, ban_say) != 0,
+                       (int)g_vk.props.limits.maxComputeSharedMemorySize);
+    if (compute_subgroups) {
         char way[256];
         shader_hmma_way(way, sizeof way);
         LOG("vulkan: an SM86 compute program's HMMA: %s\n", way);
