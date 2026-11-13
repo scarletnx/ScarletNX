@@ -36,7 +36,7 @@ typedef struct {
     uint16_t vcount;
     uint32_t dot;                                               /* cycles into the current scanline */
     uint32_t framebuffer[AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT]; /* 0xAABBGGRR words, one scanline at a time */
-    uint8_t lcd;      /* gba_color: 0 the colours as written (raw), 1 as the original GBA's screen shows them (gba) */
+    uint8_t lcd;      /* gba_color: 1 as the original GBA's screen shows the colours (gba), 0 as written (raw) */
     AgbScanline scan; /* the line being drawn */
 } AgbPpu;
 

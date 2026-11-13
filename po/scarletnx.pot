@@ -6604,7 +6604,7 @@ msgid "Colors"
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "The colors a GBA game shows. Raw = as the game writes them, the same as mGBA without a shader. GBA screen = as the original GBA's unlit screen showed them: the game's colors, painted strong for that screen, come out softer and darker (near's color emulation article, Talarubi's formula)"
+msgid "The colors a GBA game shows. GBA screen = as the original GBA's unlit screen showed them: the game's colors, painted strong for that screen, come out softer and darker (near's color emulation article, Talarubi's formula). Raw = as the game writes them, the same as mGBA without a shader"
 msgstr ""
 
 #: src/nx/runtime/settings.txt

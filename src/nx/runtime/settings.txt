@@ -1974,10 +1974,10 @@ setting GBA colors
     label Colors
     key gba_color
     text 8
-    default raw
-    words raw=Raw|gba=GBA screen
-    help The colors a GBA game shows. Raw = as the game writes them, the same as mGBA without a shader. GBA screen =
-    help as the original GBA's unlit screen showed them: the game's colors, painted strong for that screen, come out
-    help softer and darker (near's color emulation article, Talarubi's formula)
+    default gba
+    words gba=GBA screen|raw=Raw
+    help The colors a GBA game shows. GBA screen = as the original GBA's unlit screen showed them: the game's colors,
+    help painted strong for that screen, come out softer and darker (near's color emulation article, Talarubi's
+    help formula). Raw = as the game writes them, the same as mGBA without a shader
 
 section GBA: g_gba_ini    launcher

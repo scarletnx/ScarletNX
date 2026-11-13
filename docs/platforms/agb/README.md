@@ -67,7 +67,10 @@ R, its left stick the D-pad. `--script ms:hex,...` presses keys unattended, as t
 3DS and Vita drivers take it: each press at its time in ms from the start of the
 run, by the console's frames (the same with a window or without), its keys in
 KEYINPUT's bits (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down,
-100 R, 200 L), held for `--press_len=` ms (300).
+100 R, 200 L), held for `--press_len=` ms (300). `--gba_color=gba` (the default)
+shows the colours as the original GBA's unlit screen did, near's color emulation
+formula; `--gba_color=raw` as the game writes them, as mGBA without a shader
+(Settings > GBA > Colors).
 
 The game's folder is `recompiled/<name>/` of the data folder (`--data`, else the
 user's), named after the ROM's file, or `<name>/` of `--outdir`, or the folder
