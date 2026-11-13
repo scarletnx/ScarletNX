@@ -186,7 +186,9 @@ typedef struct {
     /* statistics */
     u64 hits, hit_bytes, misses, imports, import_bytes, import_ns, failed, dropped, quiesces, waits;
     u64 written_bytes, barriers, out_waits, published;
-    u64 wait_by[8]; /* out_waits by the call site that asked (g_wait_why) */
+    u64 wait_by[4]; /* out_waits by the caller of wait_out_why: region, mem-need, mem-need-cpu, front-write */
+    u64 imp_why[6]; /* why imp_get made no import: chunked, unmade over imports, unmapped, over the cap, refused
+                       before, table full */
     char apart0[UMA_LINE];
     /* mem.c's hook writes these too */
     PMutex lk;         /* a leaf, under vk_lock or mem.c's lock: the dead flags, and the imports for write tracking */
@@ -921,7 +923,6 @@ static int imp_can(u64 lo, u64 hi) {
 }
 /* the import that holds guest memory [cpu, cpu + len), made if there is none: its index, or ~0 for none (the range is
    copied) */
-static u64 g_imp_why[6]; /* why an import could not be made, for the statistics */
 static u32 imp_get(u64 cpu, u64 len) {
     u32 i = imp_find(cpu);
     if (i < g_uma.nimp && g_uma.imp[i].cpu <= cpu && cpu + len <= g_uma.imp[i].cpu + g_uma.imp[i].size) return i;
@@ -929,7 +930,7 @@ static u32 imp_get(u64 cpu, u64 len) {
        which the driver maps already: a range across its edge is copied */
     u64 lo = cpu & ~(UMA_WINDOW - 1), hi = (cpu + len + UMA_WINDOW - 1) & ~(UMA_WINDOW - 1);
     if ((g_uma.nchunk && chunk_meets(lo, hi)) || (g_uma.nview && view_meets(lo, hi))) {
-        g_imp_why[0]++;
+        g_uma.imp_why[0]++;
         return ~0u;
     }
     u32 first = imp_find(lo), last = first;
@@ -942,19 +943,19 @@ static u32 imp_get(u64 cpu, u64 len) {
        no page trapped: the range's own pages where the windows are not all of it */
     if (!imp_can(lo, hi)) {
         if (last > first) {
-            g_imp_why[1]++;
+            g_uma.imp_why[1]++;
             return ~0u;
         }
         lo = cpu & ~(g_uma.align - 1);
         hi = (cpu + len + g_uma.align - 1) & ~(g_uma.align - 1);
         if (!imp_can(lo, hi)) {
-            g_imp_why[2]++;
+            g_uma.imp_why[2]++;
             return ~0u;
         }
     }
     u64 cap = g_uma.migrate && g_vk.alloc_cap > UMA_REGION_MAX ? UMA_REGION_MAX : g_vk.alloc_cap;
     if (hi - lo > cap || failed(lo, hi)) {
-        g_imp_why[hi - lo > cap ? 3 : 4]++;
+        g_uma.imp_why[hi - lo > cap ? 3 : 4]++;
         return ~0u;
     }
     if (g_uma.nimp - (last - first) >= UMA_MAX) { /* full: the least recently used goes */
@@ -962,7 +963,7 @@ static u32 imp_get(u64 cpu, u64 len) {
         for (u32 k = 1; k < g_uma.nimp; k++)
             if ((i32)(g_uma.imp[k].used - g_uma.imp[old].used) < 0) old = k;
         imp_let_go(old);
-        g_imp_why[5]++;
+        g_uma.imp_why[5]++;
         return ~0u; /* the indexes moved: the next lookup makes it */
     }
     /* the regions the new one takes over: the writes in place still pending in them land in their buffers first, as
@@ -1150,12 +1151,8 @@ static u64 newest_out(u64 cpu, u64 n) {
         if (g_uma.out[k].cpu < cpu + n && cpu < g_uma.out[k].cpu + g_uma.out[k].len) return g_uma.out[k].sub;
     return 0;
 }
-/* the four callers of wait_out, by which one asks: the stats name the one whose drains cost the frame */
-static const char* const g_wait_why[] = {"region", "mem-need", "mem-need-cpu", "front-write"};
-static void wait_out_why(u64 sub, int why);
 /* until the GPU has done that submit, its writes landed through it: the one being recorded is submitted first */
 static void wait_out_why(u64 sub, int why) {
-    (void)why;
     if (!sub) return;
     __atomic_add_fetch(&g_uma.wait_by[why], 1, __ATOMIC_RELAXED);
     g_uma.out_waits++;
@@ -1374,13 +1371,14 @@ void vk_uma_frame(void) {
         (unsigned long long)g_uma.wait_by[3]);
     LOG("vulkan:   imports declined: %llu chunked, %llu unmade over imports, %llu unmapped, %llu over the cap, %llu "
         "refused before, %llu table full\n",
-        (unsigned long long)g_imp_why[0], (unsigned long long)g_imp_why[1], (unsigned long long)g_imp_why[2],
-        (unsigned long long)g_imp_why[3], (unsigned long long)g_imp_why[4], (unsigned long long)g_imp_why[5]);
-    for (int i = 0; i < 6; i++) g_imp_why[i] = 0;
+        (unsigned long long)g_uma.imp_why[0], (unsigned long long)g_uma.imp_why[1],
+        (unsigned long long)g_uma.imp_why[2], (unsigned long long)g_uma.imp_why[3],
+        (unsigned long long)g_uma.imp_why[4], (unsigned long long)g_uma.imp_why[5]);
+    memset(g_uma.imp_why, 0, sizeof g_uma.imp_why);
     g_uma.hits = g_uma.hit_bytes = g_uma.misses = g_uma.imports = g_uma.import_bytes = g_uma.import_ns = g_uma.failed =
         g_uma.dropped = g_uma.quiesces = g_uma.waits = g_uma.written_bytes = g_uma.barriers = g_uma.out_waits =
             g_uma.published = g_uma.chunks_made = g_uma.chunks_gone = 0;
-    for (int i = 0; i < 8; i++) g_uma.wait_by[i] = 0;
+    memset(g_uma.wait_by, 0, sizeof g_uma.wait_by);
     __atomic_store_n(&g_uma.hazards, 0, __ATOMIC_RELAXED);
 }
 /* Guest memory [cpu, cpu + size) (size ~0: all of it) is about to be trapped (a GPU result published over it,
