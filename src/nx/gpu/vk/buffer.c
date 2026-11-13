@@ -3504,6 +3504,22 @@ static int range_owned(u64 gva, u64 len) {
     return 0;
 }
 int vk_buf_owned(u64 gva, u64 len) { return range_owned(gva, len); }
+/* the first byte of [gva, gva + len) on a page that GPU-owned bytes or a watch are on (range_owned), or gva + len */
+static u64 range_first_owned(u64 gva, u64 len) {
+    if (!own_any()) return gva + len;
+    for (u64 o = 0; o < len;) {
+        u64 cpu = 0, n = gmmu_run(gva + o, len - o, &cpu);
+        if (!n) {
+            n = 0x1000 - ((gva + o) & 0xFFF);
+            if (n > len - o) n = len - o;
+        } else {
+            u64 at = own_first_trapped(cpu, n);
+            if (at < cpu + n) return gva + o + (at - cpu);
+        }
+        o += n;
+    }
+    return gva + len;
+}
 u64 vk_buf_ahead(void) { return g_buffer.ahead; }
 /* A range over bytes the GPU holds, with nothing landed. One owner holding it whole is bound where it is, as a dispatch
    binds it (compute.c res_bind): every write to an owner's buffer is recorded outside rendering passes and followed by
@@ -3959,6 +3975,13 @@ static int win_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
         if (copy_stats_on()) g_win_made++;
     }
     g_win[slot].used = g_vk_present;
+    /* A window over GPU-owned or watched pages (a render target's, own_watch) goes to buf_get_owned, which copies it
+       whole again at every submission, the CPU's bytes staged and the owners' copied on the GPU. A range with none of
+       those pages of its own is bound alone, where the cache keeps its bytes. In one game a 4 MiB vertex range of an
+       indirect draw shared a 64 MiB window with a watched target: 125 copies of the window a present, 7.9 GB, and
+       1.6 frames a second */
+    if (!range_owned(gva, len) && range_owned(g_win[slot].start, g_win[slot].end - g_win[slot].start))
+        return buf_get(gva, len, buf, off, 0, vk_stage_align(), IN_NO);
     if (!buf_get(g_win[slot].start, g_win[slot].end - g_win[slot].start, buf, &at, 0, vk_stage_align(), IN_NO))
         return 0;
     /* a binding's offset must be a multiple of the device's alignment: a range that would land off it is copied
@@ -3978,6 +4001,12 @@ int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off) {
    align: the elements' */
 int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     if (vk_uma() && buf_get(gva, len, buf, off, 0, align, IN_ONLY)) return 1;
+    /* Its length is a guess, up to the game's limit. A range that starts in the CPU's bytes ends before the first
+       page the GPU's bytes or a watched target are on: the elements of one draw do not run on into a target's memory,
+       and those pages made the range a copy at every submission (buf_get_owned). In one game a 4 MiB index range ran
+       72 KB into a watched target, 8 copies of its 64 MiB window a present */
+    u64 first = range_first_owned(gva, len);
+    if (first > gva && first < gva + len) len = first - gva;
     return win_get(gva, len, align, buf, off);
 }
 /* A draw looks its buffers up one after another, and each lookup waited on two cache misses in a row, its index slot

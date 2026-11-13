@@ -1030,6 +1030,19 @@ int own_trapped(u64 addr, u64 size) {
     return any;
 }
 
+u64 own_first_trapped(u64 addr, u64 size) {
+    u64 lo = addr & ~(g_own.page - 1), hi = (addr + size + g_own.page - 1) & ~(g_own.page - 1), at = addr + size;
+    if (!size || !own_any() || !region_owned(lo, hi)) return at;
+    pm_lock(&g_own.lk);
+    u32 i = first_after_nl(lo);
+    if (i < g_own.nown && g_own.ent[i].lo < hi) { /* the entries are in address order: the first is the lowest */
+        u64 page = g_own.ent[i].lo & ~(g_own.page - 1);
+        at = page > addr ? page : addr;
+    }
+    pm_unlock(&g_own.lk);
+    return at;
+}
+
 void own_acquire(u64 addr, u64 size) {
     if (!size || !own_any()) return;
     land_pages(addr & ~(g_own.page - 1), (addr + size + g_own.page - 1) & ~(g_own.page - 1), OWN_BY_RUNTIME);
