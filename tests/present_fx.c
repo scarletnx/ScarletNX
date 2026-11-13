@@ -895,6 +895,7 @@ int main(int argc, char** argv) {
                     {SNX_FX_UPSCALE_NIS, SNX_FX_AA_OFF, "NIS"},
                     {SNX_FX_UPSCALE_SGSR, SNX_FX_AA_OFF, "SGSR"},
                     {SNX_FX_UPSCALE_BILINEAR, SNX_FX_AA_FXAA, "bilinear and FXAA"},
+                    {SNX_FX_UPSCALE_OFF, SNX_FX_AA_FXAA, "FXAA"},
                     {SNX_FX_UPSCALE_OFF, SNX_FX_AA_SMAA, "SMAA"},
                     {SNX_FX_UPSCALE_OFF, SNX_FX_AA_SSAA2, "SSAA 2x"}};
         static const unsigned char flat[3] = {100, 150, 200};
@@ -920,14 +921,18 @@ int main(int argc, char** argv) {
             uint64_t serial;
             unsigned char* got;
             uint32_t bad = 0, first = 0;
+            /* the upscaler off, FXAA and SMAA give the crop at its own size */
+            int own =
+                runs[r].filter == SNX_FX_UPSCALE_OFF && (runs[r].aa == SNX_FX_AA_FXAA || runs[r].aa == SNX_FX_AA_SMAA);
+            uint32_t gw = own ? cw : ow, gh = own ? ch : oh;
             CHECK(snx_fx_render(fx, cb, 0, framed.view, iw, ih, cx, cy, cw, ch, 0, ow, oh, runs[r].filter, runs[r].aa,
                                 &out));
             serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
             CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
-            CHECK(out.width == ow && out.height == oh);
-            got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ow, oh);
+            CHECK(out.width == gw && out.height == gh);
+            got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, gw, gh);
             CHECK(got);
-            for (uint32_t i = 0; i < ow * oh; ++i)
+            for (uint32_t i = 0; i < gw * gh; ++i)
                 for (int c = 0; c < 3; ++c)
                     if (abs((int)got[(size_t)i * 4 + c] - (int)flat[c]) > 1) {
                         if (!bad++) first = i;
@@ -937,7 +942,7 @@ int main(int argc, char** argv) {
                 fprintf(stderr,
                         "present_fx: %s over a %ux%u crop of a %ux%u frame: %u of %u pixels took the frame outside it, "
                         "the first (%u, %u) = %u %u %u where the crop is %u %u %u\n",
-                        runs[r].name, cw, ch, iw, ih, bad, ow * oh, first % ow, first / ow, got[(size_t)first * 4],
+                        runs[r].name, cw, ch, iw, ih, bad, gw * gh, first % gw, first / gw, got[(size_t)first * 4],
                         got[(size_t)first * 4 + 1], got[(size_t)first * 4 + 2], flat[0], flat[1], flat[2]);
             free(got);
             CHECK(!bad);

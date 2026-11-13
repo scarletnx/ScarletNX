@@ -422,8 +422,10 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
         .srcOffsets = {{0, 0, 0}, {(int32_t)(effects ? fx.width : width), (int32_t)(effects ? fx.height : height), 1}},
         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
         .dstOffsets = {{x, y, 0}, {x + (int32_t)sw, y + (int32_t)sh, 1}}};
+    /* the effects' image at the rectangle's size is copied, at the frame's own (anti aliasing alone) it is scaled */
     vkCmdBlitImage(cb, effects ? fx.image : g.frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, effects ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                   effects && fx.width == sw && fx.height == sh ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
     (void)snx_vk_notice_record(g.notice_vk, cb, slot, target, v->swap.format.format, w, h,
                                snx_display_percent(v->host.window ? SDL_GetWindowDisplayScale(v->host.window) : 0.0f),
                                &g.notice, SDL_GetTicksNS(), notice_log);

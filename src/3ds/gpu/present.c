@@ -569,7 +569,8 @@ static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen, un
             image_barrier(cb, f->image, f->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
             f->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         }
-        /* the effects' image is the rectangle's size; an upscaler that did not run leaves the smooth scale */
+        /* the effects' image at the rectangle's size is copied; at the frame's own (anti aliasing alone, the upscaler
+           off) it is scaled in sharp pixels, as the frame is; an upscaler that did not run leaves the smooth scale */
         VkImageBlit blit = {
             .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
             .srcOffsets = {{0, 0, 0},
@@ -578,7 +579,9 @@ static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen, un
             .dstOffsets = {{rect[0].x, rect[0].y, 0}, {rect[1].x, rect[1].y, 1}}};
         vkCmdBlitImage(cb, effects ? fx.image : f->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
-                       effects || c->upscaler == SNX_FX_UPSCALE_OFF ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+                       (effects && fx.width == shown_w && fx.height == shown_h) || c->upscaler == SNX_FX_UPSCALE_OFF
+                           ? VK_FILTER_NEAREST
+                           : VK_FILTER_LINEAR);
     }
     /* the notice over the window it was asked in: the screen's own, or the one both share */
     unsigned shown = g_present.separate ? screen : 0;

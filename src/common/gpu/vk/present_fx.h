@@ -85,7 +85,9 @@ void snx_fx_set_light(SnxFx* fx, int linear);
 int snx_fx_aa_auto(uint32_t render_w, uint32_t render_h, uint32_t shown_w, uint32_t shown_h);
 
 /* The shown crop of src (img_w by img_h) through the filter and the anti aliasing asked, into an image of out_w by
-   out_h: 1 with *out set, 0 when neither runs (the caller keeps its own blit, a smooth one for any filter but Off).
+   out_h, or of the crop's own size where the upscaler is Off and FXAA or SMAA run, which the caller scales as it
+   scales the frame: 1 with *out set (its size in it), 0 when neither runs (the caller keeps its own blit, a smooth one
+   for any filter but Off).
    What runs: an upscaler where the crop grows, the bilinear copy where it does not; NIS where it grows twice at most,
    else FSR 1; Auto as snx_fx_aa_auto says; SSAA where the device holds the image 2 or 4 times as large, else the
    step under it. The log says what runs and why it is not what was asked, once each time that changes. slot is the
