@@ -12,6 +12,7 @@ static struct {
 } g_spirv_emit = {0x00010600};
 
 void spv_emit_set_version(uint32_t version) { g_spirv_emit.version = version; }
+uint32_t spv_emit_version(void) { return g_spirv_emit.version; }
 
 /* s at a capacity of at least need words: doubled from 512 (a small shader's section, so most grow once or never)
    until it holds them. Out of line, so the test that calls it stays small enough to be inlined everywhere */
