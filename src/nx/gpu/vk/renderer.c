@@ -1255,6 +1255,7 @@ static void vkr_reset(void) {
     vk_surf_forget_all();
     vk_buf_forget_all();
     vk_query_forget_all();
+    vk_upscale_forget();
     if (g_cpu_img) {
         vk_defer_image(g_cpu_img->img, g_cpu_img->mem, VK_NULL_HANDLE, g_cpu_img->att);
         free(g_cpu_img);
