@@ -37,6 +37,7 @@ public class GameActivity extends SDLActivity {
             // the runtime then reads the keys from the data folder only
         }
         super.onCreate(state);
+        keepOutput();
         registerPowerReceiver();
     }
 
@@ -53,6 +54,24 @@ public class GameActivity extends SDLActivity {
             return;
         }
         super.setOrientationBis(w, h, resizable, hint);
+    }
+
+    /** The run's output in the log the launcher reads (state/last-run.log): a game's process has no terminal, and a
+     *  driver that stops before its window, or an SVC it cannot serve, says so there and nowhere else. The stream
+     *  stays open for the process's life, so the descriptors it copies stay the file's */
+    private static java.io.FileOutputStream runLog;
+
+    private void keepOutput() {
+        try {
+            java.io.File file = new java.io.File(getFilesDir(), ".scarletnx/state/last-run.log");
+            java.io.File folder = file.getParentFile();
+            if (folder != null && !folder.isDirectory() && !folder.mkdirs()) return;
+            runLog = new java.io.FileOutputStream(file, false);
+            Os.dup2(runLog.getFD(), 1);
+            Os.dup2(runLog.getFD(), 2);
+        } catch (Exception e) {
+            runLog = null; // then the output is lost, as it was before
+        }
     }
 
     private void registerPowerReceiver() {
