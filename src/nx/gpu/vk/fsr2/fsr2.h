@@ -21,7 +21,6 @@ enum {
     SNX_FSR2_DISPLAY_MOTION = 2, /* the motion vectors are at the output's size, not the render's */
     SNX_FSR2_JITTERED_MOTION = 4, /* the motion vectors include the jitter */
     SNX_FSR2_INVERTED_DEPTH = 8, /* depth 1 is the near plane */
-    SNX_FSR2_INFINITE_DEPTH = 16,
     SNX_FSR2_AUTO_EXPOSURE = 32  /* FSR computes the exposure: no exposure image is given */
 };
 typedef struct {
@@ -59,8 +58,6 @@ typedef struct {
 SnxFsr2* snx_fsr2_create(const SnxFsr2Info* info); /* NULL when the device can't run it */
 void snx_fsr2_destroy(SnxFsr2* f);                 /* the device idle of f's commands */
 int snx_fsr2_dispatch(SnxFsr2* f, const SnxFsr2Dispatch* d); /* 1 when recorded */
-/* the format's FSR surface format known: an image of another format can't be given */
-int snx_fsr2_format(VkFormat format);
 /* FSR's own error code (FfxErrorCode) of the last call that failed */
 int snx_fsr2_error(void);
 #ifdef __cplusplus

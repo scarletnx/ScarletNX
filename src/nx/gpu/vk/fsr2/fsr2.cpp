@@ -12,23 +12,14 @@
 struct SnxFsr2 {
     FfxFsr2Context context;
     void* scratch;
-    SnxFsr2Info info;
 };
 
 static int g_snx_fsr2_error;
 int snx_fsr2_error(void) { return g_snx_fsr2_error; }
 
-int snx_fsr2_format(VkFormat format) {
-    /* the backend's own table, which it keeps to itself: a resource of the format, described (no context is read) */
-    FfxResource r = ffxGetTextureResourceVK(NULL, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, 1, format, NULL,
-                                            FFX_RESOURCE_STATE_COMPUTE_READ);
-    return r.description.format != FFX_SURFACE_FORMAT_UNKNOWN;
-}
-
 SnxFsr2* snx_fsr2_create(const SnxFsr2Info* info) {
     SnxFsr2* f = (SnxFsr2*)calloc(1, sizeof *f);
     if (!f) return NULL;
-    f->info = *info;
     size_t size = ffxFsr2GetScratchMemorySizeVK(info->physical);
     f->scratch = calloc(1, size);
     FfxFsr2ContextDescription d;
@@ -48,7 +39,6 @@ SnxFsr2* snx_fsr2_create(const SnxFsr2Info* info) {
               (info->flags & SNX_FSR2_DISPLAY_MOTION ? FFX_FSR2_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS : 0) |
               (info->flags & SNX_FSR2_JITTERED_MOTION ? FFX_FSR2_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION : 0) |
               (info->flags & SNX_FSR2_INVERTED_DEPTH ? FFX_FSR2_ENABLE_DEPTH_INVERTED : 0) |
-              (info->flags & SNX_FSR2_INFINITE_DEPTH ? FFX_FSR2_ENABLE_DEPTH_INFINITE : 0) |
               (info->flags & SNX_FSR2_AUTO_EXPOSURE ? FFX_FSR2_ENABLE_AUTO_EXPOSURE : 0) |
               FFX_FSR2_ENABLE_DYNAMIC_RESOLUTION; /* a dispatch's render size may be any up to render_max */
     if ((g_snx_fsr2_error = (int)ffxFsr2ContextCreate(&f->context, &d)) != FFX_OK) {
