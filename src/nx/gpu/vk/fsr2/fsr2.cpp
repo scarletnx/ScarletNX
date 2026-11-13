@@ -77,7 +77,8 @@ int snx_fsr2_dispatch(SnxFsr2* f, const SnxFsr2Dispatch* s) {
     d.output = image(f, &s->output, L"snx_fsr2_output", FFX_RESOURCE_STATE_UNORDERED_ACCESS);
     d.jitterOffset.x = s->jitter[0];
     d.jitterOffset.y = s->jitter[1];
-    /* FSR's scale brings a vector to render pixels too (it divides by the render size itself) */
+    /* FSR divides the scale by the motion vectors' own size (ffx_fsr2.cpp's motionVectorScale): the render size, or
+       the output size with display resolution motion vectors. So the scale brings a vector to pixels of that size */
     d.motionVectorScale.x = s->motion_scale[0];
     d.motionVectorScale.y = s->motion_scale[1];
     d.renderSize.width = s->render[0];
