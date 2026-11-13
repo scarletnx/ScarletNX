@@ -5343,6 +5343,73 @@ static u32* flow_lod_spirv(const u64* instructions, int count, int can_subgroup,
     free(code);
     return result;
 }
+/* A fragment program's loop ends for a helper lane after SH_HELPER_LOOP_ROUNDS back-edges, and runs as written for the
+   other lanes: a loop with no way out but EXIT kills the helper, a loop with a BRK lets it on past the loop, and the
+   dispatch loop of a program with calls ends for it. Run on the CPU (support/spv_eval.c) as a helper and as a lane
+   that is not one; a vertex program and a fragment program without loops don't ask whether a lane is a helper */
+static void helper_loop_exit(void) {
+    enum { IS_HELPER = 5381 };
+    /* @P1 BRA to the EXIT at 4, then a loop of @P0 EXIT and a BRA back to it: P0 and P1 are never set, and the
+       loop's only way out is its EXIT */
+    const u64 endless[] = {flow_bra(0, 4, 1), mov32i(0, 1), 0xe30000000000000full, flow_bra(3, 2, 7)};
+    const u64 pbk = 0xe2a000000007000full | (u64)((flow_word(3) - flow_word(1)) * 8) << 20;  /* PBK to 3 */
+    const u64 breaks[] = {pbk, 0xe34000000000000full, flow_bra(2, 1, 7), mov32i(0, 0x1234)}; /* @P0 BRK */
+    const u64 cal = 0xe260000000070040ull | (u64)((flow_word(2) - flow_word(1)) * 8) << 20;  /* CAL 2 */
+    const u64 called[] = {cal, EXIT, flow_bra(2, 2, 7), 0xe32000000007000full};              /* RET */
+    const struct {
+        const u64* instructions;
+        int count, killed;
+        u32 out;
+        const char* what;
+    } cases[] = {
+        {endless, 4, 1, 0, "a helper in a loop no lane leaves but by EXIT ends there"},
+        {breaks, 4, 0, 0x1234, "a helper in a loop with a BRK goes on past the loop"},
+        {called, 4, 0, 0, "a helper in the dispatch loop of a program with calls leaves it"},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        ShaderInfo info = {0};
+        size_t words = 0, slots;
+        u64* code = guest_program(cases[i].instructions, cases[i].count, NULL, &slots);
+        if (!code) return;
+        set_sph(code, 18, 0xf);
+        info.rt_int_mask = 1;
+        u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 1, 1, 1, 1);
+        free(code);
+        check_translated(spv, &info, "a fragment program with a loop translates");
+        if (!spv) continue;
+        for (int helper = 1; helper >= 0; helper--) {
+            SpvEvalEnv env = {0};
+            float one[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+            u32 scale[4];
+            memcpy(scale, one, sizeof one);
+            env.ubo[SNX_VKB_RS] = scale;
+            env.ubo_words[SNX_VKB_RS] = 4;
+            env.helper = helper;
+            env.steps_max = 32u * 65536u; /* room for a helper's 65536 back-edges (SH_HELPER_LOOP_ROUNDS) */
+            const char* why = spv_eval(spv, words, &env);
+            int ended = !why && env.killed == cases[i].killed && (!cases[i].out || env.out[0][0] == cases[i].out);
+            if (helper ? !ended : !why)
+                fprintf(stderr, "helper loop case %zu as %s: %s, killed %d, R0 %08x\n", i,
+                        helper ? "a helper" : "a lane that is not one", why ? why : "ended", env.killed, env.out[0][0]);
+            check(helper ? ended : why && !strcmp(why, "too many steps"),
+                  helper ? cases[i].what : "a lane that is not a helper runs the loop as written");
+        }
+        free(spv);
+    }
+    const u64 straight[] = {mov32i(0, 1)};
+    for (int stage = 0; stage < 2; stage++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* spv = translate(stage ? straight : endless, stage ? 1 : 4, stage ? ST_FS : ST_VS, &info, &words, 1);
+        check_translated(spv, &info,
+                         stage ? "a fragment program without loops translates" : "a vertex loop translates");
+        if (spv)
+            check(count_opcode(spv, words, IS_HELPER, 0xffffffffu) == 0,
+                  stage ? "a fragment program without loops doesn't count back-edges"
+                        : "a vertex program's loop doesn't count back-edges");
+        free(spv);
+    }
+}
 /* A fragment program with flow and a sample that takes its level from derivatives, on a device whose subgroups leave
    the fragment stage out (Turnip on an Adreno 610 lists compute only, llvmpipe's have 8 lanes): the program's own
    branches and loops as structured constructs, with no subgroup operation and no dispatch loop, and
@@ -6040,6 +6107,7 @@ int main(int argc, char** argv) {
     shfl_predicate();
     lone_lane_forms();
     fragment_flow_derivatives();
+    helper_loop_exit();
     feedback_own_pixel();
     feedback_screen_uv();
     texture_unread_slots();

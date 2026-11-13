@@ -29,6 +29,7 @@ typedef struct {
     uint32_t fetched[64][3];    /* the coordinates of the last OpImageFetch of the image at each binding */
     uint32_t gather[64][4][4];  /* what an OpImageGather of each component of the image at each binding returns */
     int killed;                 /* the invocation ended with OpKill or OpTerminateInvocation */
+    int helper;                 /* the invocation is a fragment's helper: OpIsHelperInvocationEXT answers true */
     uint32_t shuffle_id;        /* the invocation the last OpGroupNonUniformShuffle read from (its Id operand) */
     uint32_t steps_max;         /* 0: 1000000 */
     uint32_t push[20];          /* the push constant block's words */
