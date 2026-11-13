@@ -91,6 +91,9 @@ typedef struct AgbBoard {
     uint16_t irq_ie, irq_if, irq_ime;
     uint32_t cpu_halted;       /* the CPU waits for an interrupt (Halt) */
     uint32_t held_cycles;      /* the cycles the bus was busy since the CPU last ran (a DMA's), which it waits out */
+    /* where those cycles first reached the cartridge, whose prefetch unit that stops: the cycles before it, plus 1 (0
+       when they did not) */
+    uint32_t held_cartridge;
     uint32_t sio_cycles;       /* the cycles left of the serial transfer SIOCNT started, 0 with none */
     uint32_t counted_cycles;   /* while counting is set, the cycles of the accesses through agb_read and agb_write */
     uint8_t counting;

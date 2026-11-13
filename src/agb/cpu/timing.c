@@ -57,9 +57,11 @@ void agb_waits(AgbWaits* waits, uint32_t waitcnt) {
 
 static int cartridge(uint32_t address) { return address >= 0x08000000u && address < 0x0E000000u; }
 
-/* cycles pass on the bus: the prefetch unit, while it works, reads on until it holds its fill */
+/* cycles pass on the bus: the prefetch unit, while it works, reads on until it holds its fill, and a DMA started comes
+   nearer */
 static uint32_t step(AgbBus* bus, int prefetch, int32_t cycles) {
     AgbPrefetch* p = &bus->prefetch;
+    if (bus->dma_in) bus->dma_in = cycles >= bus->dma_in ? 0 : (uint8_t)(bus->dma_in - cycles);
     if (p->active) {
         p->countdown -= cycles;
         while (p->countdown <= 0) {
@@ -133,32 +135,81 @@ static int32_t plain_cycles(const AgbWaits* waits, uint32_t address, unsigned wi
     return width == 4 ? waits->wait32[0][page] : waits->wait16[0][page];
 }
 
-/* a cartridge access is sequential when it follows the last in order, unless it starts a 128 KiB page */
-static int in_sequence(uint32_t address, int sequential) { return sequential && (address & 0x1FFFF); }
+/* a cartridge access is sequential when it follows the last in order, unless it starts a 128 KiB page or the last was a
+   DMA's */
+static int in_sequence(const AgbBus* bus, uint32_t address, int sequential) {
+    return sequential && (address & 0x1FFFF) && !bus->after_dma;
+}
+
+void agb_bus_dma(AgbBus* bus, uint32_t cycles, uint32_t cartridge_at) {
+    if (cartridge_at && !bus->dma_cartridge) bus->dma_cartridge = bus->dma_cycles + cartridge_at;
+    bus->dma_cycles += cycles;
+    bus->dma_in = 2;
+}
+
+void agb_bus_waited(AgbBus* bus, int prefetch, uint32_t cycles, uint32_t cartridge_at) {
+    if (cartridge_at && cartridge_at <= cycles) {
+        step(bus, prefetch, (int32_t)cartridge_at - 1);
+        bus->prefetch.active = 0;
+        step(bus, prefetch, (int32_t)(cycles - cartridge_at + 1));
+    } else
+        step(bus, prefetch, (int32_t)cycles);
+    bus->after_dma = 1;
+}
+
+/* the DMA started takes the bus before the CPU's access, once it has started */
+static uint32_t dma_first(AgbBus* bus, int prefetch, uint32_t pc) {
+    uint32_t total = 0, cycles = bus->dma_cycles;
+    if (!cycles || bus->dma_in) return 0;
+    if (bus->dma_cartridge) {
+        /* the cycles before its first access there, then the stop of the prefetch unit that access makes */
+        total = step(bus, prefetch, (int32_t)bus->dma_cartridge - 1) + stop(bus, prefetch, pc);
+        cycles -= bus->dma_cartridge - 1;
+    }
+    bus->dma_cycles = 0;
+    bus->dma_cartridge = 0;
+    bus->after_dma = 1;
+    return total + step(bus, prefetch, (int32_t)cycles);
+}
 
 uint32_t agb_bus_fetch(AgbBus* bus, const AgbWaits* waits, int prefetch, uint32_t address, unsigned width,
                        int sequential) {
-    if (!cartridge(address)) return step(bus, prefetch, plain_cycles(waits, address, width));
-    int s = in_sequence(address, sequential);
-    uint32_t page = address >> 24 & 0xF;
-    return cartridge_access(bus, waits, prefetch, address, width, 1,
-                            width == 2 ? waits->wait16[s][page] : waits->wait32[s][page], address);
+    uint32_t total = dma_first(bus, prefetch, address), page = address >> 24 & 0xF;
+    int s = in_sequence(bus, address, sequential);
+    bus->parallel = 0;
+    bus->after_dma = 0;
+    if (!cartridge(address)) return total + step(bus, prefetch, plain_cycles(waits, address, width));
+    return total + cartridge_access(bus, waits, prefetch, address, width, 1,
+                                    width == 2 ? waits->wait16[s][page] : waits->wait32[s][page], address);
 }
 
 uint32_t agb_bus_data(AgbBus* bus, const AgbWaits* waits, int prefetch, uint32_t address, unsigned width, int write,
                       int sequential, uint32_t pc) {
-    uint32_t page = address >> 24;
-    if (page >= 0xE && page <= 0xF) return stop(bus, prefetch, pc) + step(bus, prefetch, waits->wait16[0][0xE]);
-    if (!cartridge(address)) return step(bus, prefetch, plain_cycles(waits, address, width));
-    int s = in_sequence(address, sequential);
+    uint32_t total = dma_first(bus, prefetch, pc), page = address >> 24;
+    int s = in_sequence(bus, address, sequential);
+    bus->parallel = 0;
+    bus->after_dma = 0;
+    if (page >= 0xE && page <= 0xF) return total + stop(bus, prefetch, pc) + step(bus, prefetch, waits->wait16[0][0xE]);
+    if (!cartridge(address)) return total + step(bus, prefetch, plain_cycles(waits, address, width));
     int32_t cycles = width == 4 ? waits->wait32[s][page] : waits->wait16[s][page];
-    if (write) return stop(bus, prefetch, pc) + step(bus, prefetch, cycles);
-    return cartridge_access(bus, waits, prefetch, address, width, 0, cycles, pc);
+    if (write) return total + stop(bus, prefetch, pc) + step(bus, prefetch, cycles);
+    return total + cartridge_access(bus, waits, prefetch, address, width, 0, cycles, pc);
 }
 
-uint32_t agb_bus_idle(AgbBus* bus, int prefetch, uint32_t cycles) {
+/* internal cycles: one that meets the DMA started lets it run, and the ones after it overlap it */
+uint32_t agb_bus_idle(AgbBus* bus, int prefetch, uint32_t cycles, uint32_t pc) {
     uint32_t total = 0;
-    for (uint32_t i = 0; i < cycles; ++i) total += step(bus, prefetch, 1);
+    for (uint32_t i = 0; i < cycles; ++i) {
+        if (bus->dma_cycles && !bus->dma_in) {
+            uint32_t length = bus->dma_cycles;
+            total += dma_first(bus, prefetch, pc);
+            bus->parallel = length;
+        }
+        if (bus->parallel)
+            --bus->parallel;
+        else
+            total += step(bus, prefetch, 1);
+    }
     return total;
 }
 
@@ -363,7 +414,7 @@ uint32_t agb_replay_to(AgbReplay* replay, const AgbWaits* waits, int prefetch, c
             }
             unsigned idle = before_data(&op, trace);
             if (idle) {
-                replay->cycles += agb_bus_idle(bus, prefetch, idle);
+                replay->cycles += agb_bus_idle(bus, prefetch, idle, pc + 2 * width);
                 bus->sequential = 0;
             }
             replay->done = 0;
@@ -381,7 +432,7 @@ uint32_t agb_replay_to(AgbReplay* replay, const AgbWaits* waits, int prefetch, c
             continue;
         }
         /* the rest of it: an internal cycle after a load's data, the pipeline refilled after a branch */
-        if (after_data(&op)) replay->cycles += agb_bus_idle(bus, prefetch, 1);
+        if (after_data(&op)) replay->cycles += agb_bus_idle(bus, prefetch, 1, pc + 2 * width);
         if (op.kind == OP_SWI || op.reload) {
             uint32_t target = op.kind == OP_SWI ? 0x08 : run->next;
             unsigned next_width = op.kind == OP_SWI || !run->next_thumb ? 4 : 2;

@@ -629,6 +629,12 @@ int main(void) {
     agb_write32(&board, 0x040000D8, 0x02000100);
     agb_write32(&board, 0x040000DC, 0x80000004);
     CHECK(board.held_cycles == 26);
+    /* only the first access on the cartridge is a first one: four words from it to it, 2 + (6 + 4) + 3 x (4 + 4) */
+    board.held_cycles = 0;
+    agb_write32(&board, 0x040000D4, 0x08000000);
+    agb_write32(&board, 0x040000D8, 0x08000100);
+    agb_write32(&board, 0x040000DC, 0x84000004);
+    CHECK(board.held_cycles == 36);
     board.held_cycles = 0;
     agb_write16(&board, 0x04000204, 0);
     agb_write16(&board, 0x040000C6, 0xB640); /* DMA1CNT_H: the sound FIFO's timing, repeat, 32 bits */

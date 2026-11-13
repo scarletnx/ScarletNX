@@ -32,6 +32,13 @@ typedef struct {
     AgbPrefetch prefetch;
     uint8_t sequential;   /* the CPU's next opcode fetch follows its last one in sequence */
     uint8_t was_disabled; /* WAITCNT turned the prefetch unit off: the next cartridge fetch is nonsequential */
+    /* a DMA the CPU started: its cycles, which take the bus at the CPU's first access once the cycles till it starts
+       ran out, whether it reaches the cartridge (which stops the prefetch unit), and whether the bus's last access was
+       a DMA's (the CPU's next one on the cartridge is then a first one) */
+    uint32_t dma_cycles, dma_cartridge; /* the cycles before it reaches the cartridge, plus 1 (0: it does not) */
+    uint8_t dma_in, after_dma;
+    /* internal cycles the CPU spends while a DMA it met in one runs: free, up to the DMA's length */
+    uint32_t parallel;
 } AgbBus;
 
 /* a block's replay: where it is, the bus as it leaves it there, and the cycles from the block's start to there */
@@ -66,8 +73,16 @@ uint32_t agb_replay_to(AgbReplay* replay, const AgbWaits* waits, int prefetch, c
    of width bytes at address, write or read, sequential to the last or not, with the prefetch unit moving meanwhile */
 uint32_t agb_bus_data(AgbBus* bus, const AgbWaits* waits, int prefetch, uint32_t address, unsigned width, int write,
                       int sequential, uint32_t pc);
-/* an opcode fetch at address, width bytes, sequential to the last or not; idle: internal cycles */
+/* an opcode fetch at address, width bytes, sequential to the last or not; idle: internal cycles of the instruction at
+   pc */
 uint32_t agb_bus_fetch(AgbBus* bus, const AgbWaits* waits, int prefetch, uint32_t address, unsigned width,
                        int sequential);
-uint32_t agb_bus_idle(AgbBus* bus, int prefetch, uint32_t cycles);
+uint32_t agb_bus_idle(AgbBus* bus, int prefetch, uint32_t cycles, uint32_t pc);
+/* a DMA of cycles the CPU started, which takes the bus 2 cycles on (GBATEK; NanoBoyAdvance's DMA.cc), reaching the
+   cartridge after cartridge - 1 of them (0: never) */
+void agb_bus_dma(AgbBus* bus, uint32_t cycles, uint32_t cartridge);
+/* the CPU waited out cycles of a DMA a device started: the prefetch unit ran on meanwhile, up to where the DMA reached
+   the cartridge (after cartridge - 1 of them; 0: never), which stops it, and the CPU's next access there is a first
+   one */
+void agb_bus_waited(AgbBus* bus, int prefetch, uint32_t cycles, uint32_t cartridge);
 #endif
