@@ -55,6 +55,28 @@ static inline void test_ctr_vk_extensions(int* argc, char** argv) {
 /* once the device started: the path given (1 the copy, 2 in place) is the one it took, else the test ends, status 1;
    a device that can take the RAM neither way works on a copy in its host-visible memory, which answers for 1 and not
    for 2, where the test has nothing to check */
+/* Whether the test runs on a New 3DS (--new3ds among its arguments, which test_ctr_model takes out) */
+static inline bool* test_ctr_new3ds(void) {
+    static bool on;
+    return &on;
+}
+/* --new3ds read and taken out of argv: the model the test's board is made with, a New 3DS's with it, else an Old
+   3DS's */
+static inline SnxCtrModel test_ctr_model(int* argc, char** argv) {
+    int kept = 1;
+    for (int i = 1; i < *argc; ++i) {
+        if (!strcmp(argv[i], "--new3ds"))
+            *test_ctr_new3ds() = true;
+        else
+            argv[kept++] = argv[i];
+    }
+    *argc = kept;
+    argv[kept] = NULL;
+    return *test_ctr_new3ds() ? SNX_CTR_NEW : SNX_CTR_OLD;
+}
+/* pa, an address in an Old 3DS's FCRAM, moved 128 MB up on a New 3DS: into the half of FCRAM only it has */
+static inline uint32_t test_ctr_fcram(uint32_t pa) { return *test_ctr_new3ds() ? pa + 0x08000000u : pa; }
+
 static inline void test_ctr_vk_memory_taken(int given) {
     if (given <= 0) return;
     if (snx_ctr_vk_shadow()) {

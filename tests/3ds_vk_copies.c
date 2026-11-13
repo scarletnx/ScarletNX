@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SOURCE 0x20200000u /* FCRAM */
+#define SOURCE test_ctr_fcram(0x20200000u) /* FCRAM, its upper half on a New 3DS */
 #define DEST   0x18100000u /* VRAM */
 #define PARTLY 0x18200000u
 #define LATER  0x18300000u
@@ -58,9 +58,10 @@ static void gpu_copy(uint32_t from, uint32_t to, uint32_t size) {
     }
 }
 int main(int argc, char** argv) {
+    SnxCtrModel model = test_ctr_model(&argc, argv);
     int vk_memory = test_ctr_vk_memory(&argc, argv);
     uint32_t* pattern = g_copies.pattern;
-    SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
+    SnxCtrMemory* m = snx_ctr_memory_new(model);
     char why[512];
     if (!m) return 1;
     if (!snx_ctr_vk_init(m, why, sizeof why)) {
