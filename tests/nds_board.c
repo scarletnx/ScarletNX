@@ -140,6 +140,10 @@ static void test_bios(NdsBoard* board) {
     r[0] = (uint32_t)-100, r[1] = 7;
     CHECK(!nds_bios_call(board, NDS_SWI_DIV, r, &cycles));
     CHECK((int32_t)r[0] == -14 && (int32_t)r[1] == -2 && r[3] == 14);
+    /* the smallest quotient: its size is 0x80000000 too, which a signed negation cannot give */
+    r[0] = 0x80000000u, r[1] = 1;
+    CHECK(!nds_bios_call(board, NDS_SWI_DIV, r, &cycles));
+    CHECK(r[0] == 0x80000000u && r[1] == 0 && r[3] == 0x80000000u);
     r[0] = 1000000;
     CHECK(!nds_bios_call(board, NDS_SWI_SQRT, r, &cycles) && r[0] == 1000);
     /* the CRC of "123456789" from 0xFFFF: 0x4B37 */
