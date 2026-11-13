@@ -592,6 +592,7 @@ static int check_stats_gpu_time(void) {
     VkBuffer buf[2];
     VmaAllocation mem[2];
     u64 stamps, busy, copied, t0, wall, vram, budget;
+    int ours;
     int was = g_settings.stats;
     for (int i = 0; i < 2; i++) CHECK(vk_buffer_create(g_vk.vma, &bci, &aci, &buf[i], &mem[i], &info) == VK_SUCCESS);
     g_settings.stats = 0;
@@ -645,10 +646,26 @@ static int check_stats_gpu_time(void) {
     busy = vk_gpuprof_busy_ns() - busy;
     printf("stats off and on within a frame, 50 ms between its command buffers: busy %.3f ms\n", (double)busy / 1e6);
     CHECK(busy < 25000000);
-    vk_mem_driver_use(&vram, &budget);
+    vk_mem_driver_use(&vram, &budget, &ours);
     printf("stats: video memory %llu of %llu MiB (VK_EXT_memory_budget %s)\n", (unsigned long long)(vram >> 20),
            (unsigned long long)(budget >> 20), g_vk.has_budget ? "on" : "off");
-    CHECK(g_vk.has_budget ? vram && budget : !vram && !budget);
+    CHECK(vram && budget && ours == !g_vk.has_budget);
+    {
+        /* as on a driver without the extension (Qualcomm's): VMA's blocks on the heap and the heap's size, never its
+           80% guess */
+        int had = g_vk.has_budget;
+        const VkPhysicalDeviceMemoryProperties* mp;
+        VmaBudget b[VK_MAX_MEMORY_HEAPS];
+        g_vk.has_budget = 0;
+        vk_mem_driver_use(&vram, &budget, &ours);
+        g_vk.has_budget = had;
+        vmaGetMemoryProperties(g_vk.vma, &mp);
+        vmaGetHeapBudgets(g_vk.vma, b);
+        printf("stats without the budget: ours %llu of the heap's %llu MiB\n", (unsigned long long)(vram >> 20),
+               (unsigned long long)(budget >> 20));
+        CHECK(ours && vram && vram == b[vk_mem_heap()].statistics.blockBytes &&
+              budget == mp->memoryHeaps[vk_mem_heap()].size);
+    }
 done:
     g_settings.stats = was;
     vk_finish();

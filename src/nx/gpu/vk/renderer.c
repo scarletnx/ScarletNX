@@ -717,7 +717,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             if (__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) { /* read only while the box shows */
                 gpu.busy_ns = vk_gpuprof_busy_ns();
                 gpu.timed = vk_gpuprof_timed();
-                vk_mem_driver_use(&gpu.vram, &gpu.vram_budget);
+                vk_mem_driver_use(&gpu.vram, &gpu.vram_budget, &gpu.vram_ours);
             }
             stats_frame(now_ns, &gpu);
         }

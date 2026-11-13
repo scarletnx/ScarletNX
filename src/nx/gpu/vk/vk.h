@@ -436,8 +436,8 @@ void vk_mem_use(u64* usage, u64* budget);
 int vk_mem_heap(void); /* that heap's index */
 u64 vk_mem_budget_cap(u64 bytes); /* vk_budget_mb's cap set to bytes (0: none), the one it had back */
 /* that heap's use by this process and its budget as the driver tells them (VK_EXT_memory_budget), for the stats box;
-   0 and 0 without the extension */
-void vk_mem_driver_use(u64* usage, u64* budget);
+   without the extension, *ours set: what the process took from the heap and the heap's size */
+void vk_mem_driver_use(u64* usage, u64* budget, int* ours);
 void vk_mem_present(void);
 u32 vk_present_before(u64 ago_ns, u32 presents);
 
