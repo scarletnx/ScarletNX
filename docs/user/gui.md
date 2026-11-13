@@ -845,6 +845,13 @@ the themes shipped beside the launcher, which it finds when the launcher started
 YoRHa. So does a runtime built without the launcher, which on Android is every runtime: the launcher is the app's
 own library there, and the game's runtime can't ask it.
 
+The same screen shows when a collection's program starts another (a game picked in the collection's menu;
+`transition_screen = 1`, the default): in the new program's window from a quarter second after it opens until the game
+draws, with the game's name, `(Program N)` for a program other than the collection's menu and the game's cover, its
+steps and bar only while there are shaders to prepare. While no window is open between the two programs, the
+launcher's run screen shows that program's page in the run look, whatever the theme's `layout`: the name,
+`(Program N)`, the cover, and the recompile of a program not made, with its bar.
+
 A theme is also a folder holding a `theme.ini`, the folder's name its id, in
 `themes/` in that same folder or in `themes/` beside the GUI; the first one found
 wins, and a folder named like a built-in replaces it. The built-ins are such files, and
