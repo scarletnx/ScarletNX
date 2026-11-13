@@ -7,10 +7,13 @@ static int check_layered_surface_loads(void)
 	static const struct {
 		u32 format, component_type, pixel;
 		int raw;
+		u32 bytes; /* of a texel */
 	} cases[] = {
-		{0x0f, 4, 0x12345678, 0}, {0x0f, 3, 0xffffffde, 0}, {0x0f, 7, 0xbf400000, 0},
-		{0x08, 4, 0xaa996655, 0}, {0x08, 3, 0x44cd22ef, 0},
-		{0x0f, 7, 0xbe800000, 1}, {0x08, 2, 0x87654321, 1},
+		{0x0f, 4, 0x12345678, 0, 4}, {0x0f, 3, 0xffffffde, 0, 4}, {0x0f, 7, 0xbf400000, 0, 4},
+		{0x08, 4, 0xaa996655, 0, 4}, {0x08, 3, 0x44cd22ef, 0, 4},
+		{0x0f, 7, 0xbe800000, 1, 4}, {0x08, 2, 0x87654321, 1, 4},
+		/* a raw load of an R32G32 texel reads its first word (an exposure kept in a 1x1 R32G32 texture) */
+		{0x04, 7, 0x3f800001, 1, 8},
 	};
 	const u64 address = 0x700000000ull;
 	const u64 cbuf = address + 0x20000, descriptors = address + 0x21000, samplers = address + 0x22000;
@@ -64,7 +67,9 @@ static int check_layered_surface_loads(void)
 					u64 level0 = 512u * (dim == 5 ? 4 : 1);
 					u64 stride = level0 + 512u * (dim == 5 ? 2 : 1) + 512u;
 					u64 start = (base ? level0 : 0) + (dim == 4 ? stride : 0);
-					u64 input_offset = start + bl_offset(4, 1, dim == 5 ? 1 : 0, (8u >> base) * 4, 4u >> base, 0, 0);
+					u32 texel = cases[c].bytes;
+					u64 input_offset =
+						start + bl_offset(texel, 1, dim == 5 ? 1 : 0, (8u >> base) * texel, 4u >> base, 0, 0);
 					u64 output_offset = start + bl_offset(8, 1, dim == 5 ? 1 : 0, (8u >> base) * 4, 4u >> base, 0, 0);
 
 					memcpy(output_tic, tic, sizeof(tic));
