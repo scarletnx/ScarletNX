@@ -801,6 +801,11 @@ static void test_watch(void) {
     CHECK(own_watch(a + 0x1100, 0x2000) == 0);
     CHECK(own_lookup(a, 0x10000, o, 4) == 0 && own_any());
     CHECK(own_trapped(a + 0x1000, 1) && own_trapped(a + 0x30FF, 1) && !own_trapped(a + 0x4000, 0x1000));
+    /* the first trapped byte (own_first_trapped, where vk_buf_get_window_input ends a range): the watch's first page,
+       the range's own start on a trapped page, and the range's end where none is */
+    CHECK(own_first_trapped(a, 0x10000) == a + 0x1000 && own_first_trapped(a + 0x800, 0x1000) == a + 0x1000);
+    CHECK(own_first_trapped(a + 0x1800, 0x100) == a + 0x1800);
+    CHECK(own_first_trapped(a, 0x800) == a + 0x800 && own_first_trapped(a + 0x4000, 0x1000) == a + 0x5000);
     CHECK(own_watched(a + 0x1100, 0x2000) && !own_watched(a + 0x1000, 0x2100) && !own_watched(a + 0x8000, 4));
     CHECK(own_hash(a, 0x10000, &h) == 1 && h != 0);
     CHECK(own_stage(a, sizeof buf, buf, o, 4) == 0);
@@ -843,6 +848,7 @@ static void test_watch(void) {
     /* a watch and an owner on one page: the watch goes into the gap before the owner, and leaves it whole. A read of
        the owner's page answers the watch first (whole, its other page too), then lands the owner */
     CHECK(own_begin(a + 0xB400, 0x800, r, 0) == 0);
+    CHECK(own_first_trapped(a + 0xA000, 0x2000) == a + 0xB000); /* an owner's page */
     CHECK(own_watch(a + 0xA800, 0x1400) == 0);
     CHECK(own_lookup(a + 0xA000, 0x2000, o, 4) == 1 && o[0].addr == a + 0xB400 && o[0].size == 0x800);
     CHECK(own_watched(a + 0xA800, 0xC00) && !own_watched(a + 0xA800, 0xD00) && !own_watched(a + 0xBC00, 0x200));
