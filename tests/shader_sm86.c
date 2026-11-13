@@ -2675,6 +2675,87 @@ static void test_instance_id(const char* dir) {
     free(spv);
 }
 
+/* F2I.U64.F32 into the pair dst, dst + 1, and I2F.F32.U64 from the pair src, src + 1, with a rounding mode (78-79) */
+static Word f2i_u64(u32 dst, u32 src, u32 mode) {
+    Word x = alu(0x111, 1, dst, 255);
+    set(&x, 32, 8, src), set(&x, 75, 2, 3), set(&x, 78, 2, mode), set(&x, 84, 2, 2);
+    return x;
+}
+static Word i2f_u64(u32 dst, u32 src, u32 mode) {
+    Word x = alu(0x112, 1, dst, 255);
+    set(&x, 32, 8, src), set(&x, 75, 2, 2), set(&x, 78, 2, mode), set(&x, 84, 2, 3);
+    return x;
+}
+/* a vertex program that sets R1 to R4 to v, runs ops and writes R10 to R13 as the position's four words, into out */
+static int run_words(const u32 v[4], const Word* ops, u32 nops, u32 out[4]) {
+    u8 code[16 * 12] = {0};
+    u32 n = 0;
+    for (u32 k = 0; k < 4; k++) put(code, n++, mov_imm(1 + k, v[k]));
+    for (u32 k = 0; k < nops; k++) put(code, n++, ops[k]);
+    put(code, n++, ast(0x70, 10, 4));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    SpvEvalEnv env = {0};
+    int ran = run_stage(ST_VS, code, n + 1, vsph, &env);
+    memcpy(out, env.position, sizeof env.position);
+    return ran;
+}
+/* F2I.U64.F32.TRUNC saturates, a NaN and what is under 0 give 0; I2F.F32.U64 rounds to the nearest (0), down (1), up
+   (2) and toward zero (3). The edges: 2^64 - 2^40, the largest float under 2^64, which the conversion is clamped to;
+   2^64 and up; 2^24 + 1 and 2^24 + 3, whose nearest floats are under and over them; 2^64 - 1, whose nearest is 2^64 */
+static void test_u64_conversions(void) {
+    static const struct {
+        u32 in[4], out[4];
+    } f2i[] = {
+        {{0x5f7fffffu, 0x7fc00000u}, {0, 0xffffff00u, 0, 0}},           /* 2^64 - 2^40, NaN */
+        {{0x5f800000u, 0xbfc00000u}, {0xffffffffu, 0xffffffffu, 0, 0}}, /* 2^64, -1.5 */
+        {{0x7f800000u, 0xff800000u}, {0xffffffffu, 0xffffffffu, 0, 0}}, /* +inf, -inf */
+        {{0x4f800001u, 0x4079999au}, {0x200, 1, 3, 0}},                 /* 2^32 + 512, 3.9 */
+    };
+    static const struct {
+        u32 in[4], out[4];
+    } i2f[] = {
+        {{0x01000001u, 0}, {0x4b800000u, 0x4b800000u, 0x4b800001u, 0x4b800000u}},           /* 2^24 + 1 */
+        {{0x01000003u, 0}, {0x4b800002u, 0x4b800001u, 0x4b800002u, 0x4b800001u}},           /* 2^24 + 3 */
+        {{0xffffffffu, 0xffffffffu}, {0x5f800000u, 0x5f7fffffu, 0x5f800000u, 0x5f7fffffu}}, /* 2^64 - 1 */
+        {{0, 0}, {0, 0, 0, 0}},
+    };
+    const Word f2i_ops[2] = {f2i_u64(10, 1, 3), f2i_u64(12, 2, 3)};
+    const Word i2f_ops[4] = {i2f_u64(10, 1, 0), i2f_u64(11, 1, 1), i2f_u64(12, 1, 2), i2f_u64(13, 1, 3)};
+    for (u32 i = 0; i < sizeof f2i / sizeof f2i[0]; i++) {
+        u32 out[4] = {0};
+        int ok = run_words(f2i[i].in, f2i_ops, 2, out) && !memcmp(out, f2i[i].out, sizeof out);
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "F2I.U64 of %08x, %08x: %08x:%08x, %08x:%08x\n", f2i[i].in[0], f2i[i].in[1], out[1], out[0],
+                    out[3], out[2]);
+    }
+    for (u32 i = 0; i < sizeof i2f / sizeof i2f[0]; i++) {
+        u32 out[4] = {0};
+        int ok = run_words(i2f[i].in, i2f_ops, 4, out) && !memcmp(out, i2f[i].out, sizeof out);
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "I2F.U64 of %08x%08x: %08x %08x %08x %08x\n", i2f[i].in[1], i2f[i].in[0], out[0], out[1],
+                    out[2], out[3]);
+    }
+    /* the signed form is refused by name */
+    Word f2s = f2i_u64(10, 1, 3);
+    set(&f2s, 72, 1, 1);
+    u8 code[16 * 3] = {0};
+    put(code, 0, f2s);
+    put(code, 1, exit_insn());
+    put(code, 2, bra(2, 2, 7, 0));
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 3 * 16, ST_VS, vsph, &si, &count);
+    CHECK(!spv && strstr(si.first_unsupported, "F2I.64 of sizes 2, 3, signed 1"));
+    free(spv);
+}
+
 /* LDG.E.64 (the uniform form) into dst from [UR + imm], RZ the register */
 static Word ldg_uniform64(u32 dst, u32 ur, u32 imm) {
     Word x = fix(0x981);
@@ -4670,6 +4751,7 @@ int main(int argc, char** argv) {
     test_global_pointer(dir);
     test_wide_carries(dir);
     test_instance_id(dir);
+    test_u64_conversions();
     test_global_indirect(dir);
     test_global_table(dir);
     test_global_table_cells(dir);
