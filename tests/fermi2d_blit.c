@@ -8,10 +8,16 @@
    the renderer's blit asked once, and the render target over the destination reloaded once. Between float formats:
    half floats to floats and back for every half and the rounding of floats to halves (half.c, the reference
    texconv.glsl's TC_BLIT_FLOAT is held to), and a pitch linear RGBA32F source into a block linear RGBA16F window, the
-   renderer's blit asked with the conversion */
+   renderer's blit asked with the conversion. Between other color formats, as edenprobe's copy suite blits them:
+   RGBA8 into BGRA8, RGB565 and RGBA16F and RGBA16F into RGBA8, channels of nought and full, the blit asked with the
+   pixel conversion and run through its shader's CPU build (blit_convert_cpu.cpp), each pixel held to what the format
+   holds: red and blue swapped, red in the top five bits of the 565 word, one as 0x3c00. They copied the bytes (RGBA8
+   and BGRA8) or were not done */
 #include "nx/gpu/maxwell/fermi2d.c"
 #include "support/fermi2d_ref.h"
 #include "support/half.h"
+#include "blit_convert_cpu.h"
+#include "common/utilities/endian.h"
 
 static unsigned checks;
 #define CHECK(x)                                                                                                       \
@@ -52,7 +58,7 @@ int gmem_write(u64 gva, const void* src, u64 size) {
     gmem_write_raw(gva, src, size);
     return 0;
 }
-u32 gpu_color_bpp(u32 format) { return format == 0xC0 ? 16 : format == 0xCA ? 8 : 4; }
+u32 gpu_color_bpp(u32 format) { return format == 0xC0 ? 16 : format == 0xCA ? 8 : format == 0xE8 ? 2 : 4; }
 int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
              double sdy) {
     (void)s, (void)d, (void)dx, (void)dy, (void)dw, (void)dh, (void)sx, (void)sy, (void)sdx, (void)sdy;
@@ -63,9 +69,28 @@ static void reloaded(u64 gva) {
     (void)gva;
     reloads++;
 }
+/* a pixel conversion's blit (GPU_BLIT_CONVERT) a pixel at a time through the shader's CPU build: the pixel the tables
+   name staged with a one entry column and row table, its converted bytes written where the destination has them */
+static u32 last_fmt;
+static void blit_convert_ref(const GpuBlit* b) {
+    u32 bd = GPU_BLIT_DST_BPP(b);
+    for (u32 y = b->y0; y < b->y1; y++)
+        for (u32 x = b->x0; x < b->x1; x++) {
+            u8 in[32] = {0}, out[16] = {0};
+            u32 sx = b->scol[x - b->x0], sy = b->srow[y - b->y0];
+            CHECK(!b->src.bl && !b->dst.bl && b->bpp <= 16 && bd <= 12);
+            gmem_read_raw(b->src.addr + (u64)sy * b->src.pitch + (u64)sx * b->bpp, in, b->bpp);
+            blit_convert_cpu(b->fmt, bd, 1, in, sizeof in, 0, 16, 16, 20, out, 16);
+            gmem_write_raw(b->dst.addr + (u64)y * b->dst.pitch + (u64)x * bd, out, bd);
+        }
+}
 static int blit_ref(const GpuBlit* b) {
     blits++;
-    blit_mem_ref(b);
+    last_fmt = b->fmt;
+    if (b->fmt & GPU_BLIT_CONVERT_BIT)
+        blit_convert_ref(b);
+    else
+        blit_mem_ref(b);
     return 1;
 }
 static const Renderer stand_in = {.name = "stand-in", .rt_reload = reloaded, .blit_mem = blit_ref};
@@ -212,12 +237,72 @@ static void convert(void) {
             }
 }
 
+/* ------------------------------------------------ between other color formats */
+/* pixel (x, y) of a 4x4 RGBA8 source: red full in odd columns, green in columns 2 and 3, blue in odd rows, alpha in
+   rows 2 and 3, as edenprobe's CopyFullTexel */
+static int full(u32 x, u32 y, u32 k) { return k == 0 ? x & 1 : k == 1 ? x & 2 : k == 2 ? y & 1 : y & 2; }
+/* the 4x4 source of format sf, pitch linear, blitted 1:1 into a pitch linear destination of format df */
+static void formats_blit(u32 sf, u32 sb, u32 df, u32 db) {
+    static GpuChannel ch;
+    memset(&ch, 0, sizeof ch);
+    memset(mem, 0xEE, sizeof mem);
+    for (u32 y = 0; y < 4; y++)
+        for (u32 x = 0; x < 4; x++)
+            for (u32 k = 0; k < 4; k++) {
+                u8* p = mem + SRC + y * 64 + x * sb;
+                if (sb == 4)
+                    p[k] = full(x, y, k) ? 0xFF : 0;
+                else
+                    snx_st_le16(p + 2 * k, full(x, y, k) ? 0x3C00 : 0);
+            }
+    surface(&ch, 0x80, DST, 4, 4);
+    surface(&ch, 0x8C, SRC, 4, 4);
+    u32* r = ch.r2d;
+    r[0x80] = df, r[0x81] = 1, r[0x85] = 64; /* pitch linear, 64 bytes a row */
+    r[0x8C] = sf, r[0x8D] = 1, r[0x91] = 64;
+    r[0x223] = 1;
+    r[0x22E] = 4;
+    r[0x22F] = 4;
+    r[0x231] = 1; /* du/dx 1.0 */
+    r[0x233] = 1;
+    blits = reloads = 0;
+    fermi2d_method(&ch, 0x237, 0);
+    CHECK(blits == 1 && reloads == 1);
+    CHECK((last_fmt & GPU_BLIT_CONVERT_BIT) && GPU_PIXEL_BYTES(last_fmt >> 16 & 0xFFFF) == db);
+}
+static void formats(void) {
+    formats_blit(0xD5, 4, 0xCF, 4); /* RGBA8 into BGRA8: blue first, red third */
+    for (u32 y = 0; y < 4; y++)
+        for (u32 x = 0; x < 4; x++) {
+            const u8* p = mem + DST + y * 64 + x * 4;
+            CHECK(p[0] == (full(x, y, 2) ? 0xFF : 0) && p[1] == (full(x, y, 1) ? 0xFF : 0) &&
+                  p[2] == (full(x, y, 0) ? 0xFF : 0) && p[3] == (full(x, y, 3) ? 0xFF : 0));
+        }
+    formats_blit(0xD5, 4, 0xE8, 2); /* RGBA8 into R5G6B5: red the top five bits */
+    for (u32 y = 0; y < 4; y++)
+        for (u32 x = 0; x < 4; x++) {
+            u32 want =
+                (full(x, y, 0) ? 0x1Fu << 11 : 0) | (full(x, y, 1) ? 0x3Fu << 5 : 0) | (full(x, y, 2) ? 0x1Fu : 0);
+            CHECK(snx_ld_le16(mem + DST + y * 64 + x * 2) == want);
+        }
+    formats_blit(0xD5, 4, 0xCA, 8); /* RGBA8 into RGBA16F: full is one */
+    for (u32 y = 0; y < 4; y++)
+        for (u32 x = 0; x < 4; x++)
+            for (u32 k = 0; k < 4; k++)
+                CHECK(snx_ld_le16(mem + DST + y * 64 + x * 8 + 2 * k) == (full(x, y, k) ? 0x3C00 : 0));
+    formats_blit(0xCA, 8, 0xD5, 4); /* RGBA16F into RGBA8: one is full */
+    for (u32 y = 0; y < 4; y++)
+        for (u32 x = 0; x < 4; x++)
+            for (u32 k = 0; k < 4; k++) CHECK(mem[DST + y * 64 + x * 4 + k] == (full(x, y, k) ? 0xFF : 0));
+}
+
 int main(void) {
     whole();
     window();
     odd_source();
     halves();
     convert();
+    formats();
     printf("fermi2d_blit: %u checks passed\n", checks);
     return 0;
 }

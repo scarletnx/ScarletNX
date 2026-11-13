@@ -2342,9 +2342,11 @@ add_executable(snx-test-vp9-rebuild vp9_rebuild.cpp "${PROJECT_SOURCE_DIR}/src/n
 snx_test_target(snx-test-vp9-rebuild 23)
 add_test(NAME vp9_rebuild COMMAND snx-test-vp9-rebuild)
 # the 2D engine's blit in guest memory (fermi2d.c, dma.c's bl_span_ptr): block linear scaling, an odd window, the
-# renderer's hooks once a blit
-add_executable(snx-test-fermi2d-blit fermi2d_blit.c support/fermi2d_ref.c support/half.c)
+# renderer's hooks once a blit; conversions between color formats through the shader's CPU build
+add_executable(snx-test-fermi2d-blit fermi2d_blit.c support/fermi2d_ref.c support/half.c glsl/blit_convert_cpu.cpp)
 snx_test_target(snx-test-fermi2d-blit 23)
+target_include_directories(snx-test-fermi2d-blit PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/glsl")
+set_target_properties(snx-test-fermi2d-blit PROPERTIES LINKER_LANGUAGE CXX)
 add_test(NAME fermi2d_blit COMMAND snx-test-fermi2d-blit)
 # vic.c's CPU composition, through vic_execute, with a renderer that declines the GPU
 add_executable(snx-test-vic-compose vic_compose.c support/vic_ref.c)
