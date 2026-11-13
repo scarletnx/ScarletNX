@@ -129,6 +129,35 @@ UNDEFINED = (
 """
 )
 
+# a word no Arm CPU runs, which the game placed to stop itself (runtime/rtapi.c's rt_undef): pinned on the game's place,
+# past the SDK's abort when it stopped there
+GAME_UNDEFINED = (
+    HEADER
+    + """[   4.00]
+*** The game ran undefined instruction e7ffdefe at 861c85c, which the console's CPU cannot run either ***
+[   4.00]   the call at 861c858 (d63f0100) returned to it: x0 to x18 hold what that call left
+[   4.00]   x8 = 0000000000000000  x9 = 00000000000007e5  x10= 000000000000001a  x11= 000000000000000a
+[   4.00]   pc=861c85c lr=861c85c sp=137ebd8c90 fp=137ebd8e00 tls=13800e7200
+[   4.00]   pc <main+61885c>  lr <main+61885c>
+[   4.00]    #0 861c85c <main+61885c>
+[   4.00]    #1 974d400 <_ZN7android15NuCachedSource27onFetchEv+a8>
+[   4.01] FATAL: The game ran an undefined instruction (e7ffdefe at 861c85c), \
+which the console's CPU cannot run either. See the .log for details.
+"""
+)
+SDK_UNDEFINED = (
+    HEADER
+    + """[   4.00]
+*** The game ran undefined instruction e7ffdefe at 9d5eaf4, which the console's CPU cannot run either ***
+[   4.00]   pc <_ZN2nn4diag6detail19InvokeAbortObserverERKNS0_9AbortInfoE+54>
+[   4.00]    #0 9d5eaf4 <_ZN2nn4diag6detail19InvokeAbortObserverERKNS0_9AbortInfoE+54>
+[   4.00]    #1 9d5eb8c <_ZN2nn4diag6detail10VAbortImplEv+a0>
+[   4.00]    #2 8040568 <_ZN4Game4LoadEv+20>
+[   4.01] FATAL: The game ran an undefined instruction (e7ffdefe at 9d5eaf4), \
+which the console's CPU cannot run either. See the .log for details.
+"""
+)
+
 # a call through a pointer that holds 0 (runtime/rtapi.c's rt_miss): pinned on its caller, the code at lr kept out
 MISSED_CALL = (
     HEADER
@@ -366,6 +395,18 @@ def main():
     u = scan(UNDEFINED)
     check(u['outcome'] == 'unsupported instruction' and u['failure']['set'] == 'A64', 'A64 undefined instruction')
     check(u['signature'] == 'unsupported A64 instruction ce62c820', u['signature'])
+    g = scan(GAME_UNDEFINED)
+    check(
+        g['outcome'] == 'undefined instruction'
+        and (g['failure']['set'], g['failure']['word'], g['failure']['address']) == ('A64', 'e7ffdefe', '861c85c'),
+        f"the game's undefined instruction: {g['outcome']} {g['failure']}",
+    )
+    check(g['signature'] == 'undefined A64 instruction e7ffdefe in 0100AAAABBBB0000 main+61885c', g['signature'])
+    sdk = scan(SDK_UNDEFINED)
+    check(
+        sdk['signature'] == 'undefined A64 instruction e7ffdefe in _ZN4Game4LoadEv',
+        f'past the abort: {sdk["signature"]}',
+    )
 
     m = scan(MISSED_CALL)
     check(

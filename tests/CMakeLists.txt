@@ -1732,6 +1732,12 @@ add_executable(snx-test-rtapi-miss rtapi_miss.c "${PROJECT_SOURCE_DIR}/src/nx/ru
 snx_test_target(snx-test-rtapi-miss 23)
 target_link_libraries(snx-test-rtapi-miss PRIVATE snx_nx_flags snx_settings_runtime)
 add_test(NAME rtapi_miss COMMAND snx-test-rtapi-miss)
+# rt_undef (runtime/rtapi.c): an undefined instruction is the game's, one an Arm CPU runs the recompiler's, and a call
+# just before it that came back is named
+add_executable(snx-test-rtapi-undef rtapi_undef.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/rtapi.c")
+snx_test_target(snx-test-rtapi-undef 23)
+target_link_libraries(snx-test-rtapi-undef PRIVATE snx_nx_flags snx_settings_runtime)
+add_test(NAME rtapi_undef COMMAND snx-test-rtapi-undef)
 
 add_executable(snx-test-ini-deprecated ini_deprecated.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-ini-deprecated 11)
