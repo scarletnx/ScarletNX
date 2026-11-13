@@ -171,12 +171,10 @@ static void gp_stamp(VkCommandBuffer cb, VkPipelineStageFlags2 stage, VkQueryPoo
 static GpSlot* gp_slot(void) {
     u32 s = vk_frame_slot();
     if (!g_slot[s]) {
-        /* A driver may refuse a pool this size: MoltenVK's Metal counter sample buffer takes 32768 bytes, so 4096 of
-           the 8-byte timestamps, and its refusal turned the whole profile off for the run. The size is halved until it
-           is taken, and a smaller pool reports fewer passes a frame rather than nothing */
-        /* MoltenVK's timestamps live in a Metal counter sample buffer of at most 32768 bytes, so 4096 of them: with a
-           larger pool it still creates one and then emulates every timestamp, which reads as 0.00 ms per pass and says
-           nothing. 16384 was that, so a portability driver gets a size that fits */
+        /* A driver may refuse a pool this size, and its refusal turned the whole profile off for the run: the size is
+           halved until one is taken, and a smaller pool times fewer passes a frame rather than none. MoltenVK takes a
+           pool larger than its Metal counter sample buffer (32768 bytes, 4096 timestamps) and then emulates every
+           timestamp, which reads as 0.00 ms a pass: a portability driver starts at 4096 */
         u32 count = g_vk.has_portability ? 4096 : GP_QUERIES;
         GpSlot* g = calloc(1, sizeof *g);
         VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY, refused = VK_SUCCESS;
