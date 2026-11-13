@@ -61,7 +61,9 @@ static void dma_transfer(AgbBoard* board, int index, int fifo) {
         }
     }
     channel->source_now = source;
-    if (channel->control & AGB_DMA_REPEAT) {
+    /* repeat only takes a channel that waits for its moment (a blank, a FIFO): one that started at once ends, its
+       enable bit clear for the next start, as mGBA's GBADMAService has it */
+    if ((channel->control & AGB_DMA_REPEAT) && (channel->control & AGB_DMA_TIMING)) {
         /* the destination reloads in increment-reload mode, and never moves in FIFO mode */
         channel->destination_now = fifo                    ? channel->destination
                                    : destination_mode == 3 ? channel->destination
