@@ -597,14 +597,40 @@ static int al_freed(void) {
 /* (h) The BC7 cache (astc.c over bc7_cache.c): the levels the encoder makes go into it once their frames are done, and
    a second texture of the same bytes, the header's twin at another address, takes them from it in its first frame
    with no encode: whole at once, its blocks the CPU encoder's of its RGBA8 texels */
-#define AL_CACHE_PATH "vulkan_headless_test.vkbc7"
+/* A BC7 cache file in this run's own folder (g_cachedir, main's snx_temp_dir): every headless variant opens one, a few
+   at a time under ctest -j, and a file of the tests' shared working folder is in use by the other run, which then
+   runs without a cache. al_cache_open refuses a path outside that folder, naming both */
+static void al_cache_path(char* path, size_t size, const char* name) { snprintf(path, size, "%s%s", g_cachedir, name); }
+static int al_cache_in_run(const char* path) {
+    size_t n = strlen(g_cachedir);
+    return n && !strncmp(path, g_cachedir, n) && path[n];
+}
+static int al_cache_open(const char* path) {
+    if (!al_cache_in_run(path)) {
+        fprintf(stderr, "vulkan_headless: the BC7 cache %s is outside this run's folder %s\n", path, g_cachedir);
+        return 1;
+    }
+    remove(path);
+    vk_astc_cache_open(path);
+    return 0;
+}
+/* the guard itself: a bare name (the working folder's), another folder and the folder alone are refused */
+static int al_cache_guard(void) {
+    char path[sizeof g_cachedir + 32];
+    al_cache_path(path, sizeof path, "guard.vkbc7");
+    CHECK(al_cache_in_run(path));
+    CHECK(!al_cache_in_run("guard.vkbc7") && !al_cache_in_run("/guard.vkbc7") && !al_cache_in_run(g_cachedir));
+    printf("ASTC as BC7 between frames: BC7 cache files only in the run's folder %s\n", g_cachedir);
+    return 0;
+}
 static int al_cached(void) {
     static const AlCase c = {"ASTC 8x8 256x256, cached", NVN_FORMAT_RGBA_ASTC_8x8, 256, 256, 1, 0};
     AlTex x;
     u64 levels, hits, hits2, bytes, rgba8, reads, stored, stored2, restarts, file, size = 0;
     int over;
-    remove(AL_CACHE_PATH);
-    vk_astc_cache_open(AL_CACHE_PATH);
+    char cache[sizeof g_cachedir + 32];
+    al_cache_path(cache, sizeof cache, "vulkan_headless_test.vkbc7");
+    CHECK(!al_cache_open(cache));
     vk_bc7_cache_stats(&reads, &stored, &restarts, &file);
     Surf* t = al_make(&x, &c, 7);
     CHECK(t && t->bc7.queued && t->bc7.keyed == (1u << x.tex.d.levels) - 1);
@@ -637,7 +663,7 @@ static int al_cached(void) {
                c.name, x.tex.d.levels);
     free(rgba);
     vk_bc7_cache_close();
-    remove(AL_CACHE_PATH);
+    remove(cache);
     al_free(&x);
     return failed;
 }
@@ -662,7 +688,8 @@ static int check_astc_later(void) {
         return 0;
     }
     later_drain(); /* what the checks before left to the encoder */
-    int failed = al_frames();
+    int failed = al_cache_guard();
+    failed |= al_frames();
     failed |= al_layers_again();
     failed |= al_written_between();
     static const AlCase layers = {"ASTC 4x4 128x128, 40 layers", NVN_FORMAT_RGBA_ASTC_4x4, 128, 128, 40, 0},
