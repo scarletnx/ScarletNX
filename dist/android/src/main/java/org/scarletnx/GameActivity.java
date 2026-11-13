@@ -40,6 +40,21 @@ public class GameActivity extends SDLActivity {
         registerPowerReceiver();
     }
 
+    /** A console of two screens, held as the console is: the top screen above the bottom one, across the phone's
+     *  width. SDL asks this when it makes the window, with the application's SDL_ORIENTATIONS, which is the landscape
+     *  a Switch or GBA game wants; a two-screen game locks the window to portrait instead (src/3ds/gpu/present.c
+     *  stacks the screens) */
+    @Override
+    public void setOrientationBis(int w, int h, boolean resizable, String hint) {
+        String[] args = getIntent().getStringArrayExtra("args");
+        if (args != null && args.length > 0 && args[0] != null &&
+            (args[0].equals("scarletnx-3ds") || args[0].equals("scarletnx-nds"))) {
+            setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
+            return;
+        }
+        super.setOrientationBis(w, h, resizable, hint);
+    }
+
     private void registerPowerReceiver() {
         IntentFilter filter = new IntentFilter();
         filter.addAction(Intent.ACTION_POWER_CONNECTED);
