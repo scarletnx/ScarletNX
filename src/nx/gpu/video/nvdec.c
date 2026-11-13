@@ -662,6 +662,7 @@ static void vp9_job(NvdecCtx* d, const u32* r, u8* st) {
 #define VP8_KEY_HEADER_SIZE 10u
 #define VP8_MAX_VERSION     7u
 #define VP8_MAX_FIRST_PART  0x7FFFFu
+#define VP8_MAX_FRAME_STRIDE (UINT32_MAX / VP8_FRAME_STRIDE_UNIT) /* the largest whose bytes fit a u32 */
 static const u8 vp8_start_code[3] = {0x9D, 0x01, 0x2A};
 /* the chunk of a frame NVDEC decodes (Eden's VP8::ComposeFrame) into out, which holds VP8_KEY_HEADER_SIZE: its
    length. show_frame is always set, since NVDEC writes a hidden picture into its surface too and the game picks what
@@ -683,7 +684,7 @@ static void vp8_job(NvdecCtx* d, const u32* r, u8* st) {
     u64 info = nvdec_offset_address(r[NVDEC_PICTURE_INFO_OFFSET]);
     u64 frame = nvdec_offset_address(r[NVDEC_FRAME_BITSTREAM_OFFSET]);
     const u8 *s = iova_ptr(info, VP8_PICTURE_INFO_SIZE), *body;
-    u32 w, h, mbs, len, version, first_part, surface_format, pitch_y, pitch_c, hn;
+    u32 w, h, mbs, len, version, first_part, surface_format, stride_y, stride_c, min_y, min_c, hn;
     u64 luma_offset, chroma_offset;
     u8 hdr[VP8_KEY_HEADER_SIZE];
     int key, e;
@@ -742,13 +743,17 @@ static void vp8_job(NvdecCtx* d, const u32* r, u8* st) {
     }
     /* checked once the frame is decoded, so the frames after it still have it to predict from */
     surface_format = s[VP8_SURFACE_FORMAT];
-    pitch_y = rd32(s, VP8_FRAME_STRIDE_LUMA);
-    pitch_c = rd32(s, VP8_FRAME_STRIDE_CHROMA);
-    if (h264_tile_format(surface_format) || pitch_y < w || pitch_c < (w + 1) / 2 * 2) {
+    stride_y = rd32(s, VP8_FRAME_STRIDE_LUMA);
+    stride_c = rd32(s, VP8_FRAME_STRIDE_CHROMA);
+    min_y = (w + VP8_FRAME_STRIDE_UNIT - 1) / VP8_FRAME_STRIDE_UNIT;
+    min_c = ((w + 1) / 2 * 2 + VP8_FRAME_STRIDE_UNIT - 1) / VP8_FRAME_STRIDE_UNIT;
+    if (h264_tile_format(surface_format) || stride_y < min_y || stride_c < min_c || stride_y > VP8_MAX_FRAME_STRIDE ||
+        stride_c > VP8_MAX_FRAME_STRIDE) {
         WARN_LIMIT(4,
-                   "video: a %ux%u VP8 picture in tile format %u, rows of %u and %u bytes, isn't written: block "
-                   "linear (0) only, rows of %u and %u bytes at least\n",
-                   w, h, h264_tile_format(surface_format), pitch_y, pitch_c, w, (w + 1) / 2 * 2);
+                   "video: a %ux%u VP8 picture in tile format %u, frame strides of %u and %u (%u bytes each), isn't "
+                   "written: block linear (0) only, strides of %u to %u and of %u to %u\n",
+                   w, h, h264_tile_format(surface_format), stride_y, stride_c, VP8_FRAME_STRIDE_UNIT, min_y,
+                   VP8_MAX_FRAME_STRIDE, min_c, VP8_MAX_FRAME_STRIDE);
         job_fail(d, st, mbs);
         return;
     }
@@ -760,8 +765,8 @@ static void vp8_job(NvdecCtx* d, const u32* r, u8* st) {
                   (unsigned long long)nvdec_offset_address(chroma_offset));
     t.luma = nvdec_offset_address((u64)r[NVDEC_SURFACE_LUMA_OFFSETS + VP8_SURFACE_CURRENT] + luma_offset);
     t.chroma = nvdec_offset_address((u64)r[NVDEC_SURFACE_CHROMA_OFFSETS + VP8_SURFACE_CURRENT] + chroma_offset);
-    t.pitch_y = pitch_y;
-    t.pitch_c = pitch_c;
+    t.pitch_y = stride_y * VP8_FRAME_STRIDE_UNIT;
+    t.pitch_c = stride_c * VP8_FRAME_STRIDE_UNIT;
     t.bh = h264_gob_height(surface_format) + 1; /* gob_height counts from 2 GOBs */
     t.w = w;
     t.h = h;

@@ -105,11 +105,13 @@ enum {
     VP8_SURFACE_FORMAT = 0x3E,    /* u8: tile_format bits 0-1, gob_height bits 2-4, as H.264's */
     VP8_FIRST_PART_SIZE = 0x40,   /* the first partition's bytes: the frame header and the modes */
     VP8_VLD_BUFFER_SIZE = 0x48,   /* the frame's bytes at frame_bitstream_offset */
-    VP8_FRAME_STRIDE_LUMA = 0x4C, /* frame_stride[2] */
+    VP8_FRAME_STRIDE_LUMA = 0x4C, /* frame_stride[2], in VP8_FRAME_STRIDE_UNIT bytes */
     VP8_FRAME_STRIDE_CHROMA = 0x50,
     VP8_LUMA_FRAME_OFFSET = 0x5C,  /* Offset */
     VP8_CHROMA_FRAME_OFFSET = 0x68 /* Offset */
 };
+/* a 1280-wide movie's picture info gives frame strides of 80 */
+#define VP8_FRAME_STRIDE_UNIT 16u
 /* the surfaces a VP8 job names (Eden's Vp8SurfaceIndex): its references, then the picture it decodes */
 enum { VP8_SURFACE_LAST, VP8_SURFACE_GOLDEN, VP8_SURFACE_ALTREF, VP8_SURFACE_CURRENT };
 

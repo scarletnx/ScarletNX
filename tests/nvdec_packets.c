@@ -93,13 +93,15 @@ static void fixture(void) {
     memset(setup + 0x1c0, 16, 6 * 16 + 2 * 64);
     memset(memory + 0x4000, 0xcc, 0x2000);
 }
-static void status_is(int failed) {
-    CHECK(rd32(memory, 0x3000) == (failed ? 0u : 1u));
-    CHECK(rd32(memory, 0x3004) == (failed ? 1u : 0u));
+/* mbs: the job's macroblocks, which the status counts as decoded or in error */
+static void status_is_mbs(int failed, u32 mbs) {
+    CHECK(rd32(memory, 0x3000) == (failed ? 0u : mbs));
+    CHECK(rd32(memory, 0x3004) == (failed ? mbs : 0u));
     CHECK(rd32(memory, 0x300c) == (u32)failed);
     if (failed)
         for (unsigned i = 0x4000; i < MEMORY; ++i) CHECK(memory[i] == 0xcc);
 }
+static void status_is(int failed) { status_is_mbs(failed, 1); }
 static void pixels_are(u8 y, u8 u, u8 v) {
     status_is(0);
     for (unsigned row = 0; row < 16; ++row)
@@ -185,7 +187,7 @@ static Event next_event(char call, AVCodecContext* c) {
     }
     return e;
 }
-static void run(NvdecCtx* d, const Event* script, unsigned n, int headers, int failed) {
+static void run_mbs(NvdecCtx* d, const Event* script, unsigned n, int headers, int failed, u32 mbs) {
     events = script;
     event_count = n;
     event_at = sends = 0;
@@ -194,10 +196,15 @@ static void run(NvdecCtx* d, const Event* script, unsigned n, int headers, int f
     memset(memory + 0x4000, 0xcc, 0x2000);
     nvdec_execute(d, regs);
     CHECK(event_at == event_count);
-    status_is(failed);
+    status_is_mbs(failed, mbs);
     if (failed) CHECK(!d->cur_new && !d->cur->buf[0] && !d->last_hdr_n);
 }
+static void run(NvdecCtx* d, const Event* script, unsigned n, int headers, int failed) {
+    run_mbs(d, script, n, headers, failed, 1);
+}
 #define RUN(d, script, headers, failed) run(d, script, sizeof(script) / sizeof *(script), headers, failed)
+#define RUN_MBS(d, script, headers, failed, mbs)                                                                       \
+    run_mbs(d, script, sizeof(script) / sizeof *(script), headers, failed, mbs)
 const AVCodec* avcodec_find_decoder(int id) {
     static AVCodec codec;
     CHECK(id == AV_CODEC_ID_H264 || id == AV_CODEC_ID_VP8 || id == AV_CODEC_ID_VP9);
@@ -475,8 +482,8 @@ static void vp8_setup(int key, u32 version, u32 first_part, u32 len, u32 w, u32 
     setup[VP8_VERSION] = (u8)version;
     put32(VP8_FIRST_PART_SIZE, first_part);
     put32(VP8_VLD_BUFFER_SIZE, len);
-    put32(VP8_FRAME_STRIDE_LUMA, 64);
-    put32(VP8_FRAME_STRIDE_CHROMA, 64);
+    put32(VP8_FRAME_STRIDE_LUMA, 64 / VP8_FRAME_STRIDE_UNIT); /* rows of 64 bytes */
+    put32(VP8_FRAME_STRIDE_CHROMA, 64 / VP8_FRAME_STRIDE_UNIT);
     for (u32 i = 0; i < 16; i++) stream[i] = (u8)(0xA0 + i);
 }
 #ifndef SNX_TEST_REAL_FFMPEG
@@ -568,16 +575,21 @@ static void vp8_tests(void) {
     vp8_setup(1, 0, 2, 5, 16, 16);
     setup[VP8_SURFACE_FORMAT] = 1; /* pitch linear */
     RUN(d, good, 0, 1);
-    logged("a 16x16 VP8 picture in tile format 1, rows of 64 and 64 bytes, isn't written: block linear (0) only, rows "
-           "of 16 and 16 bytes at least");
+    logged("a 16x16 VP8 picture in tile format 1, frame strides of 4 and 4 (16 bytes each), isn't written: block "
+           "linear (0) only, strides of 1 to 268435455 and of 1 to 268435455");
     vp8_setup(1, 0, 2, 5, 16, 16);
-    put32(VP8_FRAME_STRIDE_LUMA, 15);
+    put32(VP8_FRAME_STRIDE_CHROMA, 0);
     RUN(d, good, 0, 1);
-    logged("in tile format 0, rows of 15 and 64 bytes, isn't written");
+    logged("in tile format 0, frame strides of 4 and 0 (16 bytes each), isn't written");
+    vp8_setup(1, 0, 2, 5, 17, 16); /* 17 pixels need 2 strides of 16 bytes, and are 2 macroblocks */
+    put32(VP8_FRAME_STRIDE_LUMA, 1);
+    RUN_MBS(d, good, 0, 1, 2);
+    logged("a 17x16 VP8 picture in tile format 0, frame strides of 1 and 4 (16 bytes each), isn't written: block "
+           "linear (0) only, strides of 2 to 268435455 and of 2 to 268435455");
     vp8_setup(1, 0, 2, 5, 16, 16);
-    put32(VP8_FRAME_STRIDE_CHROMA, 15);
+    put32(VP8_FRAME_STRIDE_LUMA, VP8_MAX_FRAME_STRIDE + 1); /* its bytes would wrap to 0 */
     RUN(d, good, 0, 1);
-    logged("in tile format 0, rows of 64 and 15 bytes, isn't written");
+    logged("frame strides of 268435456 and 4 (16 bytes each), isn't written");
     vp8_setup(1, 0, 2, 5, 16, 16);
     regs[NVDEC_SURFACE_LUMA_OFFSETS + VP8_SURFACE_CURRENT] = 0;
     RUN(d, good, 0, 1);
