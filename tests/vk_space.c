@@ -71,6 +71,27 @@ static int check_exact(void) {
     space_give(&s, a, 3);
     space_give(&s, c, 4);
     CHECK(s.nrun == 1 && s.largest == 16);
+    /* the shortest run that holds a request, though a longer one comes first: runs of 6, 2, 3 and 2 units */
+    CHECK(space_take(&s, 16, 1, &a) && a == 0);
+    space_give(&s, 0, 6);
+    space_give(&s, 7, 2);
+    space_give(&s, 10, 3);
+    space_give(&s, 14, 2);
+    CHECK(s.nrun == 4 && s.largest == 6);
+    CHECK(space_take(&s, 3, 1, &a) && a == 10); /* not the 6 units at 0 */
+    CHECK(space_take(&s, 2, 1, &c) && c == 7);  /* the lowest of two runs of one size */
+    /* the 2 units at 14 and the 6 at 0 both hold 1 unit at a multiple of 2: the shorter run has it */
+    CHECK(space_take(&s, 1, 2, &d) && d == 14);
+    space_give(&s, d, 1);
+    /* a shorter run that does not hold it at its alignment is passed over: 2 units at a multiple of 8 */
+    CHECK(space_take(&s, 2, 8, &e) && e == 0 && s.nrun == 2 && s.run[0].at == 2 && s.run[0].n == 4);
+    space_give(&s, a, 3);
+    space_give(&s, c, 2);
+    space_give(&s, e, 2);
+    space_give(&s, 6, 1);
+    space_give(&s, 9, 1);
+    space_give(&s, 13, 1);
+    CHECK(!s.used && s.nrun == 1 && s.largest == 16);
     space_destroy(&s);
     CHECK(!s.run);
     return 0;
@@ -86,6 +107,27 @@ static int fits(const u8* map, u32 units, u32 n, u32 align) {
     return 0;
 }
 
+/* where space.h says a request goes: the shortest free run of the map that holds n units at a multiple of align,
+   the lowest of equals. 0 when no run holds them */
+static int shortest(const u8* map, u32 units, u32 n, u32 align, u32* at) {
+    u32 best_n = 0;
+    for (u32 a = 0; a < units;) {
+        u32 len = 0;
+        if (map[a]) {
+            a++;
+            continue;
+        }
+        while (a + len < units && !map[a + len]) len++;
+        u32 first = (a + align - 1) / align * align;
+        if (first - a <= len && len - (first - a) >= n && (!best_n || len < best_n)) {
+            best_n = len;
+            *at = first;
+        }
+        a += len;
+    }
+    return best_n != 0;
+}
+
 static int check_random(u32 units, u32 rounds, int exact) {
     Space s;
     u8* map = calloc(units, 1);
@@ -98,7 +140,10 @@ static int check_random(u32 units, u32 rounds, int exact) {
         if (take) {
             u32 big = units / 4 ? units / 4 : 1;
             u32 want = 1 + rnd() % (rnd() % 8 ? 64 : big), align = 1u << (rnd() % 6), at = 0;
+            u32 model_at = 0;
+            int model = exact && shortest(map, units, want, align, &model_at);
             int got = space_take(&s, want, align, &at);
+            if (exact) CHECK(got == model && (!got || at == model_at)); /* the run space.h names, and no other */
             if (!got) {
                 if (exact) CHECK(!fits(map, units, want, align)); /* refused only when nothing holds it */
                 continue;
