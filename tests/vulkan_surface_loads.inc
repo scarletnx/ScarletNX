@@ -2,6 +2,45 @@
  * Copyright 2026 the ScarletNX contributors
  */
 
+/* A compute program behind an NVN header with its magic and a size of 0 (one game's headers are all so) that is longer
+   than 64 KiB: an SSY to an EXIT 66 KiB on, NOPs between, and the next program's header after it. The runtime reads
+   the window whole and cuts it at that header, so the program is translated and its dispatch runs. In the surface
+   loads' mapping, past the programs they use */
+static int check_unsized_compute_program(u64 address, GpuChannel *channel, const u32 *qmd)
+{
+	const u64 program = address + 0x5000, header = program - 0x100;
+	const u32 last = 0x10800 / 8 + 1; /* the EXIT's word, 66 KiB on: not a scheduling word */
+	const u32 next = ((last + 1) * 8 + 0xff) & ~0xffu;
+	u8 *code = calloc(next + 16, 1);
+	u64 dispatches = g_vk_dispatches;
+
+	CHECK(code);
+	for (u32 i = 0; i <= last; i++) {
+		u64 w = !(i % 4) ? 0x001f8000fc0007e0ull
+			: i == 1 ? 0xe290000000000000ull | (u64)(((last - 2) * 8) & 0xffffff) << 20 /* SSY to the EXIT */
+			: i == last ? 0xe30000000007000full
+			: 0x50b0000000070f00ull; /* NOP */
+		snx_st_le64(code + 8 * i, w);
+	}
+	snx_st_le32(code + next, 0x12345679); /* the next program's header */
+	CHECK(!gmem_write(header, (const u8[16]){0x79, 0x56, 0x34, 0x12}, 16));
+	CHECK(!gmem_write(program, code, next + 16));
+	free(code);
+	vk_lock();
+	{
+		DispatchState d;
+		mx_dispatch_state(qmd, channel->rcomp, program, &d);
+		vk_dispatch(&d);
+	}
+	vk_unlock();
+	if (g_vk_dispatches != dispatches + 1)
+		fprintf(stderr, "a 66 KiB compute program behind a header of size 0: %llu dispatches\n",
+			(unsigned long long)(g_vk_dispatches - dispatches));
+	CHECK(g_vk_dispatches == dispatches + 1);
+	puts("unsized compute header: a 66 KiB program is read whole and cut at the next program's header");
+	return 0;
+}
+
 static int check_layered_surface_loads(void)
 {
 	static const struct {
@@ -163,6 +202,7 @@ static int check_layered_surface_loads(void)
 		CHECK(strstr(text, expected));
 	}
 	printf("array and volume surface loads: %u formatted/raw round-trips checked\n", count);
+	CHECK(!check_unsized_compute_program(address, channel, qmd));
 	free(channel);
 	return 0;
 }
