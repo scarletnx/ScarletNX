@@ -20057,8 +20057,8 @@ typedef enum { TITLE_SAME, TITLE_OTHER, TITLE_UNREAD, TITLE_ASKED } TitleSaid;
    said into found and expected (or why it does not read into why): a Switch dump's as its driver read it (title.ini of
    its icon's folder, asked for when it has none yet), an extracted game's from its main.npdm, a 3DS game's from its
    container (gui_ctr_title), a Vita game's TITLE_ID, each to the title ID its game's folder is named by; a GBA ROM's
-   header and hash, to the hash its game's map names (gui_gba_made_from). A game named by no title, and a GBA game with
-   no map, have nothing to compare with */
+   header and hash, to the hash its game's map names (gui_gba_made_from) and the code its .ini recorded. A game named by
+   no title, and a GBA game with no map, have nothing to compare with */
 static TitleSaid missing_title(App* app, const char* program, MissingKind kind, const char* path, char* found,
                                size_t found_size, char* expected, size_t expected_size, char* why, size_t why_size) {
     char *folder, *name, code[24] = "", title[13] = "", id[32] = "";
@@ -20069,11 +20069,18 @@ static TitleSaid missing_title(App* app, const char* program, MissingKind kind, 
     if (kind == MISSING_ROM) {
         uint64_t made = 0, hash = 0;
         if (gui_gba_made_from(folder, name, &made)) {
+            /* the game code its driver recorded (code=), said beside the hash; a .ini from before it has none */
+            char *ini = snx_format("%s/%s.ini", folder, name), *made_code = ini ? snx_ini_value(ini, "code") : NULL;
             if (!gui_gba_title(path, code, title, &hash, why, why_size))
                 said = TITLE_UNREAD;
             else if (hash != made)
                 said = TITLE_OTHER;
-            snprintf(expected, expected_size, snx_tr("the ROM hashed %016llX"), (unsigned long long)made);
+            if (made_code && made_code[0])
+                snprintf(expected, expected_size, snx_tr("%s, hashed %016llX"), made_code, (unsigned long long)made);
+            else
+                snprintf(expected, expected_size, snx_tr("the ROM hashed %016llX"), (unsigned long long)made);
+            free(made_code);
+            free(ini);
             snprintf(found, found_size, snx_tr("%s (%s), hashed %016llX"), code[0] ? code : "?", title[0] ? title : "?",
                      (unsigned long long)hash);
         }
