@@ -188,6 +188,8 @@ int agb_map_init(AgbMap* map, AgbBoard* board, char* error, size_t error_size) {
     board->memory.vram = map->base + 0x06000000;
     board->memory.oam = map->base + 0x07000000;
     board->memory.sram = map->base + 0x0E000000;
+    board->memory.rom = board->has_cartridge ? map->base + 0x08000000 : NULL;
+    board->memory.rom_windows = map->mirrored ? 1 : 3;
     board->memory.owned = 0;
     map->adopted = 1;
     return 0;

@@ -24,6 +24,10 @@ typedef struct AgbBoard AgbBoard;
 typedef struct {
    uint8_t *ewram, *iwram, *palette, *vram, *oam, *sram;
    int owned; /* the buffers are this board's, not the flat map's */
+   /* the cartridge window at 0x08000000 as recompiled code reads it, the flat map's (NULL without one), and the windows
+      that hold a copy of their own from it, 32 MiB apart: 1 where one memory sits behind all three */
+   uint8_t* rom;
+   uint32_t rom_windows;
 } AgbMemory;
 
 void agb_memory_init(AgbMemory* memory);
