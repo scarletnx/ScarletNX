@@ -3,6 +3,7 @@
 #include "vita/gpu/vk.h"
 #include "common/gpu/vk/extension_bans.h"
 #include "common/gpu/vk/extension_commands.h"
+#include "common/gpu/vk/notice.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
 #include <stdio.h>
@@ -16,6 +17,9 @@ static struct {
     VkDeviceMemory frame_memory;
     uint32_t frame_width, frame_height;
     VkImageLayout frame_layout;
+    /* a line over the game for a few seconds, as a Switch game shows one (common/gpu/vk/notice.h) */
+    SnxNotice notice;
+    SnxVkNotice* notice_vk;
 } g;
 
 VitaVk* vita_vk(void) { return g.up ? &g.vk : NULL; }
@@ -221,6 +225,11 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
         vita_vk_free();
         return false;
     }
+    if (!(g.notice_vk = snx_vk_notice_create(v->phys, v->device, VITA_VK_SLOTS))) {
+        snprintf(error, error_size, "out of memory for the window's notices");
+        vita_vk_free();
+        return false;
+    }
     g.up = true;
     if (v->host.surface && !swapchain_make(v)) fprintf(stderr, "scarletnx-vita: no swapchain for the window yet\n");
     return true;
@@ -230,6 +239,7 @@ void vita_vk_free(void) {
     if (v->device) {
         vkDeviceWaitIdle(v->device);
         snx_vk_swapchain_free(v->device, &v->swap);
+        snx_vk_notice_destroy(g.notice_vk);
         if (g.frame) vkDestroyImage(v->device, g.frame, NULL);
         if (g.frame_memory) vkFreeMemory(v->device, g.frame_memory, NULL);
         for (unsigned i = 0; i < VITA_VK_SLOTS; ++i)
@@ -242,8 +252,12 @@ void vita_vk_free(void) {
     snx_vk_window_close(&v->host);
     memset(v, 0, sizeof *v);
     g.frame = VK_NULL_HANDLE, g.frame_memory = VK_NULL_HANDLE, g.frame_width = g.frame_height = 0;
+    g.notice_vk = NULL;
     g.up = false;
 }
+static void notice_log(const char* text) { fprintf(stderr, "scarletnx-vita: %s\n", text); }
+void vita_vk_notice(const char* text) { snx_notice_show(&g.notice, text, SDL_GetTicksNS()); }
+const char* vita_vk_notice_text(void) { return snx_notice_shown(&g.notice, SDL_GetTicksNS()) ? g.notice.text : ""; }
 uint64_t vita_vk_poll(void) { return g.up ? snx_vk_ring_poll(&g.vk.ring) : 0; }
 bool vita_vk_wait(uint64_t serial) { return !g.up || snx_vk_ring_wait(&g.vk.ring, serial, UINT64_MAX); }
 VkCommandBuffer vita_vk_commands(void) { return snx_vk_ring_commands(&g.vk.ring); }
@@ -350,6 +364,9 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
                         .dstOffsets = {{x, y, 0}, {x + (int32_t)sw, y + (int32_t)sh, 1}}};
     vkCmdBlitImage(cb, g.frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                    &blit, VK_FILTER_LINEAR);
+    (void)snx_vk_notice_record(g.notice_vk, cb, slot, target, v->swap.format.format, w, h,
+                               snx_display_percent(v->host.window ? SDL_GetWindowDisplayScale(v->host.window) : 0.0f),
+                               &g.notice, SDL_GetTicksNS(), notice_log);
     image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
     submit_with(v->acquired[slot], v->rendered[index]);
