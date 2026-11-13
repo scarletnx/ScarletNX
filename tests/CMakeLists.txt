@@ -56,7 +56,7 @@ if(SNX_TEST_SANITIZERS)
         snx_driver snx_nx_module snx_driver_llvm hactool_lib snx_setup snx_settings snx_settings_runtime snx_build_info
         snx-test-build-info
         # the Switch runtime: its components, the shader translator and the Vulkan backend
-        scarletnx snx_core snx_kernel snx_hle snx_video snx_gpu snx_platform snx_shader snx_vk
+        scarletnx snx_core snx_kernel snx_hle snx_video snx_gpu snx_platform snx_shader snx_vk snx_fsr2
         # the GNU ABI runtime and its kernel
         scarletnx-gnuabi scarletnx-gnuabi-kernel
         # the Android app driver: its DEX translator, its program and the native bridge
