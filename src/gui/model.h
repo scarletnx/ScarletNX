@@ -69,7 +69,7 @@ void gui_driver_absent(int item, const char* load, const char* file, char* out, 
    stays first: it keeps things as they are), and whether its second choice takes a second press */
 enum { GUI_CONFIRM_KEEP, GUI_CONFIRM_ABORT };
 typedef enum {
-    GUI_ASK_ABORT,   /* a running run's, when ask_abort says to ask */
+    GUI_ASK_ABORT,   /* a running run's, before ESC or its ESC line aborts it */
     GUI_ASK_EXIT,    /* leaving the menu on a computer */
     GUI_ASK_DEEP,    /* a folder picked with folders in it: are their games listed too */
     GUI_ASK_OUTSIDE, /* a folder picked in Folders outside the app's own storage, which Android slows */
