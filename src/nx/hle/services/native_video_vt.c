@@ -78,8 +78,7 @@ static void vt_seq(VtBits* b, VtSeq* s) {
     (void)vt_f(b, 1); /* still_picture */
     u32 reduced = vt_f(b, 1);
     if (reduced) {
-        s->level = vt_f(b, 5);
-        s->tier = s->level > 7 ? vt_f(b, 1) : 0;
+        s->level = vt_f(b, 5); /* and no tier bit: a reduced header's seq_tier is 0 (AV1 5.5.1) */
     } else {
         u32 timing = vt_f(b, 1), model = 0, delay_len = 0;
         if (timing) {
