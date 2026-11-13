@@ -1590,6 +1590,7 @@ static int check_index_draws(void) {
     CHECK(index_program(address + 0x10000, fragment, 5, 1));
     u32* r = channel->r3d;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 1; /* as reset_3d starts a channel */
+    all_samples(r);
     r[0x582] = (u32)(address >> 32);
     r[0x583] = (u32)address;
     r[0x850] = 1;

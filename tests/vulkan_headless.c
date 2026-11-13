@@ -5369,6 +5369,12 @@ static int check_blit_bands(void) {
     return 0;
 }
 
+/* the sample masks (SET_MULTISAMPLE_SAMPLE_MASK) as reset_3d starts a channel, every sample: a test's channel starts
+   zeroed, and a mask of 0 keeps its draws off their targets */
+static void all_samples(u32* r) {
+    for (u32 i = 0; i < 4; i++) r[MAXWELL3D_SAMPLE_MASK + i] = 0xFFFF;
+}
+
 /* a block linear A8B8G8R8 target of w by h at gva (blocks 2^bh GOBs high) cleared to red or blue */
 static void rt_clear_format(GpuChannel* ch, u64 gva, u32 w, u32 h, u32 bh, int blue, u32 format) {
     u32* r = ch->r3d;

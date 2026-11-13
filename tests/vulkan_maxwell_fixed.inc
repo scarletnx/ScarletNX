@@ -43,6 +43,7 @@ static int mx_fixed_channel(u32 id, u64 gpu, u64 cpu, GpuChannel** made) {
     r[0x3fd] = r[0x3fe] = 8u << 16;
     r[0x680] = 0x1111;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 1;
+    all_samples(r);
     memcpy(&r[MAXWELL3D_POINT_SIZE], &one, sizeof one);
     memcpy(r + 0x280, transform, sizeof transform);
     r[0x458] = 1u << 21 | 7u << 27;
