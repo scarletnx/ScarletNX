@@ -41,6 +41,7 @@ enum { AGB_DMA_VBLANK, AGB_DMA_HBLANK, AGB_DMA_FIFO_A, AGB_DMA_FIFO_B };
 
 typedef struct {
     uint32_t source, destination, source_now, destination_now;
+    uint32_t latch; /* the last unit the channel read, which a read of nothing (the BIOS, below EWRAM) moves again */
     uint16_t count, control;
 } AgbDmaChannel;
 

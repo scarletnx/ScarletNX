@@ -36,16 +36,18 @@ static void dma_transfer(AgbBoard* board, int index, int fifo) {
     for (uint32_t i = 0; i < count; ++i) {
         board->held_cycles += agb_access_cycles(board, source, word ? 32 : 16, i > 0) +
                               agb_access_cycles(board, destination, word ? 32 : 16, i > 0);
+        /* the channel reads nothing below EWRAM (the BIOS, the unused space): it moves the unit it read last again,
+           a halfword in both halves of its latch (mGBA's GBADMAService, the console's in its suite's dma.c) */
         if (word) {
-            uint32_t value = agb_read32(board, source);
-            agb_write32(board, destination, value);
+            if (source >= 0x02000000) channel->latch = agb_read32(board, source);
+            agb_write32(board, destination, channel->latch);
         } else {
-            uint16_t value = agb_read16(board, source);
+            if (source >= 0x02000000) channel->latch = agb_read16(board, source) * 0x00010001u;
             /* a request to the EEPROM: the halfwords left say where its block's number ends */
             if ((destination >> 24 & 0x0F) == 0x0D && agb_save_eeprom(board))
-                agb_eeprom_write(board, value, count - i);
+                agb_eeprom_write(board, (uint16_t)channel->latch, count - i);
             else
-                agb_write16(board, destination, value);
+                agb_write16(board, destination, (uint16_t)(channel->latch >> (destination & 2) * 8));
         }
         switch (source_mode) {
             case 0: source += (uint32_t)step; break;
@@ -79,11 +81,16 @@ void agb_dma_write(AgbBoard* board, uint32_t offset, uint16_t value) {
     int part, index = channel_of(offset, &part);
     if (index < 0 || index > 3) return;
     AgbDmaChannel* channel = &board->dma[index];
+    /* the addresses' widths (GBATEK, DMA Transfers): DMA0 reads only the console's own memory, 27 bits, the others
+       28; DMA3 writes 28 bits, the others 27. DMA0 pointed at the cartridge reads the BIOS's addresses so */
+    uint32_t source_mask = index ? 0x0FFFFFFF : 0x07FFFFFF, destination_mask = index == 3 ? 0x0FFFFFFF : 0x07FFFFFF;
     switch (part) {
-        case 0x0: channel->source = (channel->source & 0xFFFF0000) | value; return;
-        case 0x2: channel->source = (channel->source & 0x0000FFFF) | (uint32_t)value << 16; return;
-        case 0x4: channel->destination = (channel->destination & 0xFFFF0000) | value; return;
-        case 0x6: channel->destination = (channel->destination & 0x0000FFFF) | (uint32_t)value << 16; return;
+        case 0x0: channel->source = ((channel->source & 0xFFFF0000) | value) & source_mask; return;
+        case 0x2: channel->source = ((channel->source & 0x0000FFFF) | (uint32_t)value << 16) & source_mask; return;
+        case 0x4: channel->destination = ((channel->destination & 0xFFFF0000) | value) & destination_mask; return;
+        case 0x6:
+            channel->destination = ((channel->destination & 0x0000FFFF) | (uint32_t)value << 16) & destination_mask;
+            return;
         case 0x8: channel->count = value; return;
         case 0xA: {
             int was = channel->control & AGB_DMA_ENABLE;
