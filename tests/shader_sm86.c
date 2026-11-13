@@ -7,6 +7,7 @@
 #include "nx/gpu/shader/sm86.h"
 #include "common/utilities/endian.h"
 #include "support/spv_eval.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -3844,6 +3845,236 @@ static void test_warp_matrix(const char* dir) {
     g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was;
 }
 
+/* ---- HMMA's values on the evaluator's subgroup of 32 lanes (spv_eval_subgroup) ---- */
+
+/* the eight HMMAs of hmma_program: destination, C (255: RZ), the variant at bits 72-90 (8 16816.F16, 0x18 16816.F32,
+   0 1688.F16, 0x10 1688.F32), all of A at R8, B at R12. R14-R15 is an f16 C; R20 and R40 are earlier HMMAs' D */
+static const u32 hmma_cases[8][3] = {{16, 255, 0x08}, {18, 14, 0x08}, {20, 255, 0x18}, {36, 20, 0x18},
+                                     {40, 255, 0x10}, {44, 14, 0x00}, {46, 255, 0x00}, {48, 40, 0x10}};
+#define HMMA_OUT 24u /* each lane's output words: the cases' D registers in order */
+/* S2R R0, TID.X; R1 = 32 R0; R8-R15 from c[1][R1 + 4k] (A, B, C as PTX's mma.sync lays them out); the eight HMMAs;
+   their D registers stored at shared [96 R0 + 4k] */
+static u32 hmma_program(u8* code) {
+    u32 n = 0;
+    Word x = fix(0x919); /* S2R R0, TID.X */
+    set(&x, 72, 8, 0x21);
+    put(code, n++, x);
+    x = alu(0x024, 4, 1, 0); /* IMAD R1, R0, 32, RZ */
+    set(&x, 32, 32, 32);
+    set(&x, 64, 8, 255);
+    put(code, n++, x);
+    x = alu(0x024, 4, 2, 0); /* IMAD R2, R0, 96, RZ */
+    set(&x, 32, 32, HMMA_OUT * 4);
+    set(&x, 64, 8, 255);
+    put(code, n++, x);
+    for (u32 k = 0; k < 8; k++) put(code, n++, ldc(8 + k, 1, 1, 4 * k, 4));
+    for (u32 k = 0; k < 8; k++) {
+        x = fix(0x23c);
+        set(&x, 16, 8, hmma_cases[k][0]);
+        set(&x, 24, 8, 8);
+        set(&x, 32, 8, 12);
+        set(&x, 64, 8, hmma_cases[k][1]);
+        set(&x, 72, 19, hmma_cases[k][2]);
+        put(code, n++, x);
+    }
+    u32 out = 0;
+    for (u32 k = 0; k < 8; k++)
+        for (u32 r = 0; r < (hmma_cases[k][2] & 0x10 ? 4u : 2u); r++) {
+            x = fix(0x388); /* STS [R2 + 4 out], D + r */
+            set(&x, 24, 8, 2);
+            set(&x, 32, 8, hmma_cases[k][0] + r);
+            set(&x, 40, 24, 4 * out++);
+            set(&x, 73, 3, 4);
+            put(code, n++, x);
+        }
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    return n + 1;
+}
+/* an f16's value, subnormals, infinities and NaNs too */
+static double hmma_half(u32 h) {
+    double m = (double)(h & 0x3ffu);
+    u32 e = h >> 10 & 31;
+    double v = e == 31 ? (m ? NAN : INFINITY) : e ? ldexp(1024.0 + m, (int)e - 25) : ldexp(m, -24);
+    return h & 0x8000u ? -v : v;
+}
+/* an element: the exact set's n / 4 for n in -6..6 (every product and sum exact in f16 and f32); the rounded set's
+   full mantissas, row 3 of A subnormal; the special set's signed zeros, subnormals, the largest finite, infinities
+   and NaNs among ordinary values */
+enum { HM_EXACT, HM_ROUNDED, HM_SPECIAL };
+static u32 hmma_element(u32* seed, int set, int tiny) {
+    *seed = *seed * 1664525u + 1013904223u;
+    u32 r = *seed, sign = r >> 31 << 15;
+    if (set == HM_EXACT) {
+        int n = (int)(r >> 24) % 13 - 6;
+        u32 h = 0, a = (u32)(n < 0 ? -n : n); /* a / 4 as an f16 */
+        if (a) {
+            u32 e = a >= 4 ? 2 : a >= 2 ? 1 : 0; /* a / 4 = 2^(e - 2) (a / 2^e) */
+            h = (13 + e) << 10 | ((a << (10 - e)) & 0x3ffu);
+        }
+        return (n < 0 ? 0x8000u : 0) | h;
+    }
+    u32 m = r >> 8 & 0x3ffu;
+    if (set == HM_SPECIAL) {
+        static const u16 odd[8] = {0x0000, 0x0001, 0x03ff, 0x7bff, 0x7c00, 0x7e00, 0x7d01, 0x0000};
+        if ((r >> 4 & 7) == 0) return sign | odd[r >> 12 & 7]; /* one in 8 */
+    }
+    if (tiny) return sign | (m | 1); /* a subnormal: m 2^-24 */
+    return sign | (15u - (r >> 20 & 1)) << 10 | m;
+}
+/* The lanes' inputs for one warp (in: 8 words each) and, by output word and half, the terms its sum adds (the 16 or 8
+   products, and C where it is the input's) */
+typedef struct {
+    u16 a[16][16], b[16][8], c[16][8];
+} HmmaMats;
+static void hmma_inputs(HmmaMats* m, u32* in, int set) {
+    u32 seed = set == HM_EXACT ? 0x2545f491u : set == HM_ROUNDED ? 0x9e3779b9u : 0x85ebca6bu;
+    for (u32 r = 0; r < 16; r++)
+        for (u32 k = 0; k < 16; k++) m->a[r][k] = (u16)hmma_element(&seed, set, set == HM_ROUNDED && r == 3);
+    for (u32 k = 0; k < 16; k++)
+        for (u32 n = 0; n < 8; n++) m->b[k][n] = (u16)hmma_element(&seed, set, 0);
+    for (u32 r = 0; r < 16; r++)
+        for (u32 n = 0; n < 8; n++) m->c[r][n] = (u16)hmma_element(&seed, set, 0);
+    for (u32 l = 0; l < 32; l++) {
+        u32 g = l / 4, t = l % 4, *q = in + l * 8;
+        q[0] = m->a[g][2 * t] | (u32)m->a[g][2 * t + 1] << 16;
+        q[1] = m->a[g + 8][2 * t] | (u32)m->a[g + 8][2 * t + 1] << 16;
+        q[2] = m->a[g][2 * t + 8] | (u32)m->a[g][2 * t + 9] << 16;
+        q[3] = m->a[g + 8][2 * t + 8] | (u32)m->a[g + 8][2 * t + 9] << 16;
+        q[4] = m->b[2 * t][g] | (u32)m->b[2 * t + 1][g] << 16;
+        q[5] = m->b[2 * t + 8][g] | (u32)m->b[2 * t + 9][g] << 16;
+        q[6] = m->c[g][2 * t] | (u32)m->c[g][2 * t + 1] << 16;
+        q[7] = m->c[g + 8][2 * t] | (u32)m->c[g + 8][2 * t + 1] << 16;
+    }
+}
+/* the program's 32 lanes on the evaluator (out: HMMA_OUT words a lane), translated as the flags are: 0 when the
+   translation or the evaluator fails */
+static int hmma_run(const u8* code, u32 n, const u32* in, u32* out, const char* dir, const char* keep) {
+    ShaderInfo si = {0};
+    si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+    si.shared_size = (int)(32 * HMMA_OUT * 4);
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    if (!spv) {
+        fprintf(stderr, "warp matrix values: not translated: %s\n", si.first_unsupported);
+        return 0;
+    }
+    if (keep) CHECK(keep_module(dir, keep, spv, count));
+    static u32 bank1[256];
+    memcpy(bank1, in, 32 * 8 * 4);
+    static SpvEvalEnv env[32];
+    memset(env, 0, sizeof env);
+    for (u32 l = 0; l < 32; l++) {
+        env[l].ubo[SNX_VKB_CB + 1] = bank1;
+        env[l].ubo_words[SNX_VKB_CB + 1] = 256;
+        env[l].builtin[27][0] = env[l].builtin[29][0] = env[l].builtin[41][0] = l; /* LocalInvocationId.x, Index */
+        env[l].builtin[24][0] = env[l].builtin[24][1] = env[l].builtin[24][2] = 1; /* NumWorkgroups */
+    }
+    const char* why = spv_eval_subgroup(spv, count, env, 32);
+    free(spv);
+    if (why || env[0].shared_words < 32 * HMMA_OUT) {
+        fprintf(stderr, "warp matrix values: the evaluator stops at %s (%u shared words)\n", why ? why : "nothing",
+                env[0].shared_words);
+        return 0;
+    }
+    memcpy(out, env[0].shared, 32 * HMMA_OUT * 4);
+    return 1;
+}
+/* What output word w's half j (0 for an f32) of lane l should be: the sum of its products and C (where C is the
+   input's, or twice the sum where C is the device's own D of the same products), in double. *tol is how far an f32
+   sum of n terms may be, n + 1 roundings of their magnitudes (and an f16 D's own rounding); *kind 0 a finite value, 1
+   +inf, 2 -inf, 3 NaN, by IEEE's rules for a sum of those terms in any order; *zero_sign the sign of an all-zero sum
+   (-0 only where every term is -0), else -1 */
+static double hmma_expect(const HmmaMats* m, u32 l, u32 w, u32 j, double* tol, int* kind, int* zero_sign) {
+    u32 at = 0, k = 0;
+    for (; k < 8; k++) {
+        u32 words = hmma_cases[k][2] & 0x10 ? 4u : 2u;
+        if (w < at + words) break;
+        at += words;
+    }
+    u32 v = hmma_cases[k][2], f32 = v >> 4 & 1, kk = v & 8 ? 16 : 8, e = w - at, g = l / 4, t = l % 4;
+    u32 row = f32 ? g + 8 * (e >> 1) : g + 8 * e, col = 2 * t + (f32 ? e & 1 : j);
+    int twice = hmma_cases[k][1] != 255 && hmma_cases[k][1] != 14, has_c = hmma_cases[k][1] == 14;
+    double sum = 0, mag = 0;
+    int pos_inf = 0, neg_inf = 0, nan = 0, all_neg_zero = 1, all_zero = 1;
+    for (u32 i = 0; i <= kk; i++) {
+        double term;
+        if (i < kk)
+            term = hmma_half(m->a[row][i]) * hmma_half(m->b[i][col]);
+        else if (has_c)
+            term = hmma_half(m->c[row][col]);
+        else
+            term = 0; /* RZ: +0 */
+        if (twice && i < kk) term *= 2;
+        nan |= isnan(term), pos_inf |= term == INFINITY, neg_inf |= term == -INFINITY;
+        all_zero &= term == 0, all_neg_zero &= term == 0 && signbit(term);
+        if (isfinite(term)) sum += term, mag += fabs(term);
+    }
+    *kind = nan || (pos_inf && neg_inf) ? 3 : pos_inf ? 1 : neg_inf ? 2 : 0;
+    *zero_sign = all_zero ? all_neg_zero : -1;
+    *tol = ldexp((double)kk + 2, -24) * mag * (twice ? 3 : 1) + 1e-30;
+    if (!f32) *tol += ldexp(fabs(sum), -10) + ldexp(1, -24);
+    return sum;
+}
+/* whether half j of word got (an f32 word: j 0, its bits) is what hmma_expect says */
+static int hmma_match(u32 got, int f32, u32 j, double want, double tol, int kind, int zero_sign, int bits) {
+    double v;
+    if (f32)
+        v = (double)u2f(got);
+    else
+        v = hmma_half(got >> 16 * j & 0xffffu);
+    if (kind == 3) return isnan(v);
+    if (kind) return v == (kind == 1 ? INFINITY : -INFINITY);
+    if (!f32 && fabs(want) >= 65520.0 - tol) return isinf(v) || fabs(v - want) <= tol; /* an f16 D overflows */
+    if (zero_sign >= 0) return v == 0 && (int)(signbit(v) != 0) == zero_sign;
+    if (bits) return v == want;
+    return fabs(v - want) <= tol;
+}
+/* HMMA (16816 and 1688, F16 and F32 D, C from RZ, an f16 input or an earlier D) on the evaluator's 32 lanes, with and
+   without the quads and the mixed dot product: on the exact set every output is the sum's bits; on the rounded one
+   within an f32 sum's error; on the special one infinities, NaNs and the sign of zero follow IEEE's sum of the terms
+   in any order */
+static void test_warp_matrix_values(const char* dir) {
+    u8 code[16 * 48] = {0};
+    u32 n = hmma_program(code);
+    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16;
+    static HmmaMats mats;
+    static u32 in[32 * 8], out[32 * HMMA_OUT];
+    for (int set = HM_EXACT; set <= HM_SPECIAL; set++) {
+        hmma_inputs(&mats, in, set);
+        for (int quad = 0; quad < 2; quad++)
+            for (int mixed = 0; mixed < 2; mixed++) {
+                g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_float16 = 1;
+                char keep[32];
+                snprintf(keep, sizeof keep, "warp_values%d%d", quad, mixed);
+                int ran = hmma_run(code, n, in, out, dir, set == HM_EXACT ? keep : NULL);
+                g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
+                CHECK(ran);
+                if (!ran) return;
+                u32 bad = 0;
+                for (u32 l = 0; l < 32; l++)
+                    for (u32 w = 0; w < HMMA_OUT; w++) {
+                        u32 got = out[l * HMMA_OUT + w], at = 0, k = 0;
+                        for (; k < 8 && w >= at + (hmma_cases[k][2] & 0x10 ? 4u : 2u); k++)
+                            at += hmma_cases[k][2] & 0x10 ? 4u : 2u;
+                        int f32 = hmma_cases[k][2] >> 4 & 1;
+                        for (u32 j = 0; j < (f32 ? 1u : 2u); j++) {
+                            double tol;
+                            int kind, zero_sign;
+                            double want = hmma_expect(&mats, l, w, j, &tol, &kind, &zero_sign);
+                            if (hmma_match(got, f32, j, want, tol, kind, zero_sign, set == HM_EXACT)) continue;
+                            if (bad++ < 8)
+                                fprintf(stderr,
+                                        "warp matrix values (set %d, quad %d, mixed %d): lane %u word %u half %u is "
+                                        "0x%08x, expected %.9g within %.3g (kind %d)\n",
+                                        set, quad, mixed, l, w, j, got, want, tol, kind);
+                        }
+                    }
+                CHECK(bad == 0);
+            }
+    }
+}
+
 /* the memory model a module declares (OpMemoryModel's: 1 GLSL450, 3 Vulkan), whether it declares a capability, and
    how many OpDecorates of a decoration it has */
 static u32 spv_memory_model(const u32* words, size_t count) {
@@ -4068,6 +4299,7 @@ int main(int argc, char** argv) {
     test_fragment_unfed(dir);
     test_uses_isbe();
     test_warp_matrix(dir);
+    test_warp_matrix_values(dir);
     test_warp_matrix_coop(dir);
     test_ftz_modes(dir);
     if (failures) {
