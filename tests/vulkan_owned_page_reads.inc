@@ -138,7 +138,7 @@ static int owned_word(void) {
     CHECK(owner && !owned_test_fill(owner->buf, 0, 16, 0x77));
     vk_own_publish_owned(cpu + 0x800, 16, owner, 0);
     CHECK(own_lookup(cpu + 0x800, 16, NULL, 0) == 1);
-    const int direct = !g_cs_any && !g_gfx_any && !g_gfx_img_any && !g_uma_any && !g_gpu_releases;
+    const int direct = !g_cs_any && !g_gfx_any && !g_gfx_img_any && !g_uma_any && !g_mir_any && !g_gpu_releases;
     u64 lands = own_landings();
     u32 got = gmem_r32(gva + 0x10);
     int kept = own_lookup(cpu + 0x800, 16, NULL, 0) == 1, landed = own_landings() != lands;
