@@ -5437,6 +5437,22 @@ static void tex_b_chosen_handle(void) {
                     info.ntex, (double)x, (double)cases[i].x);
         check(ran && info.ntex == 2 && x == cases[i].x, cases[i].what);
     }
+    /* what the log says of a program that chooses (vk/pipeline.c): how many TEX.B do, and the first one's place,
+       handle register and candidates; nothing for a TEX.B with one handle */
+    const u64 one_handle[] = {load, tex_b};
+    for (int one = 0; one < 2; one++) {
+        ShaderInfo info;
+        const char* why;
+        float x;
+        const char* note = one ? "" : "TEX.B at 88, R6: c[2][0x0], c[2][0x4]";
+        int ran = one ? chosen_sample(one_handle, 2, cases[0].c2, cases[0].c3, 0, &info, &x, &why)
+                      : chosen_sample(program, 6, cases[0].c2, cases[0].c3, 0, &info, &x, &why);
+        if (!ran || info.chosen_tex != (u32)!one || strcmp(info.chosen_why, note))
+            fprintf(stderr, "TEX.B note: %s, %u choosing, \"%s\" (\"%s\" expected)\n", ran ? "ran" : why,
+                    info.chosen_tex, info.chosen_why, note);
+        check(ran && info.chosen_tex == (u32)!one && !strcmp(info.chosen_why, note),
+              one ? "a TEX.B with one handle leaves no note" : "the note names the TEX.B, its register and candidates");
+    }
     /* In a loop with a BRK (so the reaching definitions aren't known), the write after the TEX.B that the loop carries
        back to it is a candidate too: the first round samples c[2][0] or c[2][4] by P0, the second c[2][8], and P1,
        set in the first round, ends the loop after the second sample */

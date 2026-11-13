@@ -391,6 +391,9 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         if (sph[19] & 2u) used[out_reg + 1] = 1;
     }
     int has_exit = 0, mixed_sample_invariant = stage == ST_FS;
+    /* the TEX.B instructions that choose among constant buffer handles, and the first one (ShaderInfo.chosen_tex) */
+    u32 chosen_tex = 0;
+    char chosen_why[sizeof si->chosen_why] = {0};
     for (u32 i = 11; i < n; i++) {
         if (!IDX_OK(i)) continue;
         const Op* op = flow->op[i];
@@ -1245,6 +1248,12 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                                                                                          cand_off, SH_HANDLE_CANDIDATES)
                                                        : 1;
             if (!candidates) return shader_untracked_handle(si, "texture", insn, i, b);
+            if (bindless && !handle_count && chosen_tex++ == 0) {
+                int at = snprintf(chosen_why, sizeof chosen_why, "TEX.B at %x, R%u:", i * 8, b);
+                for (int cand = 0; cand < candidates && at > 0 && (size_t)at < sizeof chosen_why; cand++)
+                    at += snprintf(chosen_why + at, sizeof chosen_why - (size_t)at, "%s c[%u][0x%x]", cand ? "," : "",
+                                   cand_bank[cand], cand_off[cand] * 4);
+            }
             int type = B(insn[i], 28, 3) >> 1;
             int array = B(insn[i], 28, 1), shadow = B(insn[i], 50, 1);
             int read_slot = -1;
@@ -2971,6 +2980,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     free(gb_at);
     ShaderInfo next = {0};
     next.stage = stage;
+    next.chosen_tex = chosen_tex;
+    memcpy(next.chosen_why, chosen_why, sizeof next.chosen_why);
     next.flow_base = si->flow_base;
     next.advanced_blend = si->advanced_blend;
     next.advanced_blend_mask = si->advanced_blend_mask;

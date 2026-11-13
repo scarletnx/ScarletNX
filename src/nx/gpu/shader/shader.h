@@ -264,6 +264,11 @@ typedef struct {
     u32 nmemh;
     u32 memh_none;     /* texture instructions whose handle from memory is SH_PROBE_NONE, */
     char memh_why[64]; /* and why the first is */
+    /* TEX.B instructions whose handle the writes don't agree on, which sample each constant buffer handle that reaches
+       them and keep the sample of the one whose word the register holds (shader_direct_handle_candidates): a handle
+       equal to none of them samples zeros, which the log says once a program, naming the first such TEX.B */
+    u32 chosen_tex;
+    char chosen_why[96]; /* "TEX.B at <byte offset>, R<handle>: c[<bank>][<byte>], ..." */
     u32 spec;          /* the specialization constants the module declares: bit SH_SPEC_ of each */
 } ShaderInfo;
 /* A fragment module's specialization constants, by SpecId: state a draw has before its program runs, which the
