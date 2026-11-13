@@ -495,6 +495,10 @@ void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int s
 /* The device may flush f16 subnormals (no shaderDenormPreserveFloat16), as Turnip on an Adreno 610 does in
    PackHalf2x16: an SM86 program packs its halves below 2^-14 exactly then (sm86_translate.c's pack_half). 0 offline */
 extern int g_shader_half_flush;
+/* The tile that device's cooperative matrices come in, when it has them: 16 for an M by N by K of 16x16x16, which
+   RADV offers, 8 for Metal's simdgroup_matrix of 8x8x8, which a MoltenVK with VK_KHR_cooperative_matrix reports
+   (hmma_coop). One SM86 HMMA is four 8x8x8 products there and one 16x16x16 otherwise */
+extern int g_shader_hmma_coop_tile;
 /* the most mesh workgroups one task workgroup can launch (maxMeshWorkGroupCount[0] and maxMeshWorkGroupTotalCount,
    the less of them): a task program's count, read from its payload's header, is clamped to it, as a count past it is
    undefined behavior that can hang the GPU. 0 offline: not clamped */

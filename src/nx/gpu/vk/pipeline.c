@@ -12,6 +12,7 @@
 #include "nx/runtime/options.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/shader/shader.h"
+#include "common/utilities/spirv_emit.h" /* SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR, the scanner's */
 #include "nx/gpu/shader/sm86.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -349,7 +350,7 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
         if (width == 2 && spv[at + 1] == 5283 && !g_vk.has_mesh) return "meshShader is unavailable";
         if (width == 2 && spv[at + 1] == 6912 && !g_shader_mixed_dot)
             return "shaderMixedFloatDotProductFloat16AccFloat32 is unavailable";
-        if (width == 2 && (spv[at + 1] == 6022 || spv[at + 1] == 5345 || spv[at + 1] == 5346) && !g_shader_hmma_coop)
+        if (width == 2 && (spv[at + 1] == SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR || spv[at + 1] == 5345 || spv[at + 1] == 5346) && !g_shader_hmma_coop)
             return "cooperativeMatrix or the Vulkan memory model is unavailable";
         if (width == 2 && spv[at + 1] == 6033 && !g_shader_float_atomic_add)
             return "shaderBufferFloat32AtomicAdd is unavailable";
