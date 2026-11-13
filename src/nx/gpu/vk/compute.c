@@ -946,6 +946,10 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
                                                  warp ? 32 : 0, warp && lx % 32 == 0, &p->p)))
         p->failed = 1;
     free(spv);
+    /* as a draw's program says it (pipeline.c): the textures a compute program samples as none */
+    if (!p->failed && p->si.memh_none)
+        LOG_LIMIT(64, "vulkan: compute %016llx samples %u texture%s as none, whose handles no dispatch gives (%s)\n",
+                  (unsigned long long)key, p->si.memh_none, p->si.memh_none == 1 ? "" : "s", p->si.memh_why);
     if (!p->failed)
         LOG_LIMIT(12, "vulkan: compute %016llx ready: block %ux%ux%u, %d global buffers, %d textures, %d images\n",
                   (unsigned long long)key, lx, ly, lz, p->si.ngbuf, p->si.ntex, p->si.nimg);
