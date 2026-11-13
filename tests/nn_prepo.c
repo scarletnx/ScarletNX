@@ -5,7 +5,9 @@
    refuses an event id that is empty, too long or has a character past 0-9, a-z and _, and leaves the report then;
    a save starts the report's buffer again (de 00 00, or nothing in a buffer under 3 bytes); and SDK 20 lets 900 saves
    through in any 90 minutes, a save past them succeeding with the report left as it is. Then a 32-bit game's table:
-   the six hooks for the 32-bit SDK read and none for another, and Save on that SDK's report of 4-byte fields */
+   the six hooks for the 32-bit SDK read and none for another, and Save on that SDK's report of 4-byte fields. Then
+   AddSessionId for the SDKs read from 10: the SDK's own PlayReport::Add of 8 zero bytes under the key, below the
+   caller's stack, its Result given back and the stack as it was */
 #include "nx/nn/prepo.c"
 #include "hle/hook/hooks.hook.inc" /* prepo.hook's table and adapters, and a 32-bit game's */
 #include <stdio.h>
@@ -39,6 +41,21 @@ void hook_run_original(CPU* c, u64 addr) {
 void fatal(const char* fmt, ...) {
     fprintf(stderr, "fatal: %s\n", fmt);
     exit(1);
+}
+/* the SDK's PlayReport::Add(key, Any64BitId), which AddSessionId runs: where the game has it, and each call's
+   arguments, its stack pointer and the 8 bytes its id points at then */
+#define ADD_AT 0x7100u
+static struct {
+    unsigned calls;
+    u64 fn, a[4], sp, id;
+} added;
+u64 kernel_find_symbol_exact(const char* name) { return !strcmp(name, PREPO_SYM_ADD_ID) ? ADD_AT : 0; }
+void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
+    added.calls++;
+    added.fn = fn, added.a[0] = a0, added.a[1] = a1, added.a[2] = a2, added.a[3] = a3;
+    added.sp = c->x[31];
+    added.id = snx_ld_le64(c->mem + a2);
+    c->x[0] = 0x2a81; /* a Result of the SDK's Add, which AddSessionId hands on */
 }
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
@@ -246,6 +263,33 @@ int main(void) {
             test_ns += 1000000000ull;
         }
         CHECK(g_hle.prepo.saved == 0); /* Send's limit is its own, not Save's */
+    }
+
+    /* AddSessionId from SDK 10, as each SDK read has it: the SDK's own Add(key, Any64BitId) of the id 0, the 8 bytes
+       below the caller's stack pointer with the stack pointer there during the call and back after it; none before */
+    {
+        static const char add_id[] = "_ZN2nn5prepo12AddSessionIdEPNS0_10PlayReportEPKc";
+        static const u32 with_add_id[] = {0x0a0400, 0x0c0309, 0x0d0300, 0x0e0300,
+                                          0x100200, 0x120302, 0x130303, 0x140506};
+        static const u32 without[] = {0x080201, 0x090100};
+        u32 versions[HOOK_KEYS] = {0};
+        for (unsigned i = 0; i < sizeof without / sizeof without[0]; i++) {
+            versions[HOOK_SDK] = without[i];
+            CHECK(hook_select(&hook_table, add_id, versions, &first) == -2);
+        }
+        for (unsigned i = 0; i < sizeof with_add_id / sizeof with_add_id[0]; i++) {
+            versions[HOOK_SDK] = with_add_id[i];
+            int k = hook_select(&hook_table, add_id, versions, &first);
+            CHECK(k >= 0 && !strcmp(hook_handler[k], "nnprepo_add_session_id"));
+            memset(mem + 0x7c0, 0xee, 0x40);
+            added.calls = 0;
+            c->x[0] = REPORT, c->x[1] = 0x200, c->x[31] = 0x800, c->x[30] = 0x1234, c->pc = 0;
+            hook_fn[k](c, 0);
+            CHECK(added.calls == 1 && added.fn == ADD_AT && added.a[0] == REPORT && added.a[1] == 0x200);
+            CHECK(added.a[2] == 0x7f0 && added.sp == 0x7f0 && added.id == 0 && mem[0x7f8] == 0xee &&
+                  mem[0x7ef] == 0xee);
+            CHECK(c->x[0] == 0x2a81 && c->x[31] == 0x800 && c->pc == 0x1234);
+        }
     }
 
     /* the limit of SDK 10 on: the saves so far, then up to 900 in the 90 minutes; the 901st succeeds and leaves the report */

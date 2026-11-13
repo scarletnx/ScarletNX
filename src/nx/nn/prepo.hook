@@ -3,9 +3,10 @@
 #
 # The native nn::prepo (prepo.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
 # nn::prepo: the play reports, with no prepo:u session. The report is built in the game's buffer by the SDK's own
-# code. Save, Send, RequestImmediateTransmission and GetTransmissionStatus are what reach the service. The report's layout
-# and Save's limit are those of the SDKs read: no limit in 3.5.0 to 8.2.1, the limit from 10.4.0, the buffer at 0x20
-# through 13.3.5 and at 0x28 from 16.2.0. SDK 9, 14 and 15 were not read: they have no hook and keep their own code
+# code. Save, Send, AddSessionId, RequestImmediateTransmission and GetTransmissionStatus are what a game has reach the
+# service. The report's layout and Save's limit are those of the SDKs read: no limit in 3.5.0 to 8.2.1, the limit from
+# 10.4.0, the buffer at 0x20 through 13.3.5 and at 0x28 from 16.2.0. SDK 9, 14 and 15 were not read: they have no hook
+# and keep their own code
 family nn_prepo
 struct nn::prepo::PlayReport @version(< 14.0.0) { addr buffer @0x20; u64 capacity @0x28; u64 used @0x30 } size 0x38
 struct nn::prepo::PlayReport @version(>= 16.0.0) { addr buffer @0x28; u64 capacity @0x30; u64 used @0x38 } size 0x40
@@ -19,6 +20,9 @@ struct nn::prepo::PlayReport @version(>= 16.0.0) { addr buffer @0x28; u64 capaci
 # SDK's own finished one. Read in SDK 16.2, 18.3, 19.3 and 20.5; no older SDK of the dumps here exports it
 struct nn::prepo::AsyncContext @version(>= 16.0.0) { addr object @0x0; u32 result @0x8 } size 0x10
 @version(>= 16.0.0) hook _ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE(addr report, addr uid) = nnprepo_send uses nn::prepo::PlayReport, nn::prepo::AsyncContext
+# AddSessionId, which asks the session for the system's session id and adds the report's own id under the key. Read in
+# SDK 10.4, 12.3, 13.3, 14.3, 16.2, 18.3, 19.3 and 20.5, each alike; no older SDK of the dumps here exports it
+@version(>= 10.0.0) hook _ZN2nn5prepo12AddSessionIdEPNS0_10PlayReportEPKc(addr report, addr key) -> u32 = nnprepo_add_session_id
 hook _ZN2nn5prepo28RequestImmediateTransmissionEv() -> u32 = nnprepo_request_immediate_transmission a32 @version(< 1.0.0)
 hook _ZN2nn5prepo21GetTransmissionStatusEPNS0_18TransmissionStatusE(addr status) -> u32 = nnprepo_get_transmission_status a32 @version(< 1.0.0)
 # what nn::prepo::Initialize and the library's first use end in: the session's start, and its end
