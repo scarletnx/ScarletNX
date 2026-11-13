@@ -79,8 +79,9 @@ static void dma_decode_launch(const u32* r, u32 v, DmaOp* o) {
     dma_operand(&o->dst, r, gpu_packed_va(r[MAXWELL_DMA_OFFSET_OUT_UPPER], r[MAXWELL_DMA_OFFSET_OUT_LOWER]), dst_bl,
                 r[MAXWELL_DMA_PITCH_OUT], MAXWELL_DMA_DST_PARAMS, elem_out);
 }
-/* the bytes of a pitch linear operand's lines */
-static u64 dma_pitch_span(const DmaSide* s, u32 lines, u32 line) { return (u64)s->pitch * (lines - 1) + line; }
+/* the guest address of a pitch linear operand's lowest byte, and the bytes its lines span from there */
+static u64 dma_pitch_low(const DmaSide* s, u32 lines) { return s->addr + (u64)gpu_dma_low(s, lines); }
+static u64 dma_pitch_span(const DmaSide* s, u32 lines, u32 line) { return gpu_dma_span(s, lines, line); }
 
 /* ------------------------------------------------------------ copies of linear sources made at submission */
 /* The console's copy engine reads a source microseconds after the submission, while the GPU thread may run the copy
@@ -146,7 +147,7 @@ void dma_snap_launch(u32 channel, u64 job_id, u32 launch_index, const u32* r, u3
     /* read once, into memory the GPU reads in place where the renderer has it: the copy reads it from there */
     if (g_renderer_up && g_renderer->snap_alloc) data = g_renderer->snap_alloc(len, &id);
     if (!data) data = (u8*)malloc((size_t)len);
-    if (data) gmem_read_raw(o.src.addr, data, len);
+    if (data) gmem_read_raw(dma_pitch_low(&o.src, o.lines), data, len);
     pm_lock(&g_dma.lk);
     if (!data) {
         g_dma.bytes -= len;
@@ -248,11 +249,11 @@ static void dma_launch_copy(GpuChannel* ch, const DmaOp* o, u32 launch) {
     u8* snap = NULL;
     u64 id = 0;
     if (dma_linear_source(o)) {
-        u64 gen = 0, len = dma_pitch_span(&o->src, o->lines, o->line_in);
+        u64 gen = 0, len = dma_pitch_span(&o->src, o->lines, o->line_in), low = dma_pitch_low(&o->src, o->lines);
         snap = snap_take(ch->id, ch->dma_job_id, launch, o->src.addr, len, &gen, &id);
         if (snap) {
-            gmem_need(o->src.addr, len); /* pending GPU results over the source land, and count as writes */
-            if (gpu_mem_dirty_since(gen, o->src.addr, len)) {
+            gmem_need(low, len); /* pending GPU results over the source land, and count as writes */
+            if (gpu_mem_dirty_since(gen, low, len)) {
                 snap_release(snap, id);
                 snap = NULL;
                 id = 0;

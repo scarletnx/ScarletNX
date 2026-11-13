@@ -149,9 +149,10 @@ static DmaNeeds dma_needs(const GpuDmaOp* o) {
     u64 hi;
     n.sv = o->src.bl ? side_rows(&o->src, lines) : lines;
     n.dv = o->dst.bl ? side_rows(&o->dst, lines) : lines;
-    if (!o->fill && !o->src.bl)
-        n.sspan = (u64)o->src.pitch * (lines - 1) + o->line_in;
-    else if (!o->fill) { /* its columns even with no line in the surface: those read as zeros, as wide */
+    if (!o->fill && !o->src.bl) { /* from its lowest line: the last one when the pitch steps down */
+        n.sspan = gpu_dma_span(&o->src, lines, o->line_in);
+        n.slo = (u64)gpu_dma_low(&o->src, lines);
+    } else if (!o->fill) { /* its columns even with no line in the surface: those read as zeros, as wide */
         side_cols(&o->src, o->line_in, &n.sx0, &n.sgobs);
         if (n.sv) {
             VkBlMove m = {o->src.wb, o->src.h, o->src.bh, o->src.bd, o->src.oy, n.sv, o->src.z, 1, 16};
@@ -162,7 +163,8 @@ static DmaNeeds dma_needs(const GpuDmaOp* o) {
         }
     }
     if (!o->dst.bl) {
-        n.dlen = n.drun = (u64)o->dst.pitch * (lines - 1) + o->line_out;
+        n.dlen = n.drun = gpu_dma_span(&o->dst, lines, o->line_out);
+        n.dlo = (u64)gpu_dma_low(&o->dst, lines);
         n.druns = 1;
     } else if (n.dv) {
         VkBlMove m = {o->dst.wb, o->dst.h, o->dst.bh, o->dst.bd, o->dst.oy, n.dv, o->dst.z, 1, 16};
@@ -252,8 +254,8 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
     vk_all_barrier(cb);
     /* the lines in: the source's rows (block linear: their GOB columns taken apart, rows past its surface zero) */
     VkBuffer ib = sb;
-    u64 iat = sat;
-    u32 ip = o->src.pitch;
+    u64 iat = sat - need->slo; /* line 0, above the lowest when the pitch steps down */
+    i64 ip = gpu_dma_pitch(&o->src);
     int ok = 1;
     if (!o->fill && o->src.bl) {
         VkBlMove m = {pa, o->src.h, o->src.bh, o->src.bd, o->src.oy, sv, o->src.z, 1, pa, (o->src.wb + 63) / 64};
@@ -281,8 +283,9 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
     }
     /* where the lines out go: the destination's rows (block linear: its tiles taken apart) */
     VkBuffer tb = d->buf;
-    u64 tat = 0;
-    u32 tp = o->dst.pitch, tl = dv;
+    u64 tat = 0 - need->dlo;
+    i64 tp = gpu_dma_pitch(&o->dst);
+    u32 tl = dv;
     if (o->dst.bl) {
         ok = ok && vk_bl_move(cb, &md, 0, d->buf, 0, scr, at_b);
         tb = scr;
@@ -354,18 +357,22 @@ u32 vk_band(const VkBands* b, u32 y, u32 left, u64* most) {
    destination's bands end on its rows of blocks (8 << bh rows), so each block is read and written back by one band.
    Lines [y, y + lines) of o as a copy of their own: a pitch linear side's start y lines on, a block linear one's
    origin y rows down */
+/* the bytes from a pitch linear side's lowest to the lowest of its lines [y, y + lines) */
+static u64 band_low(const GpuDmaSide* s, u32 all, u32 y, u32 lines) {
+    return (u64)(y * gpu_dma_pitch(s) + gpu_dma_low(s, lines) - gpu_dma_low(s, all));
+}
 static GpuDmaOp dma_band(const GpuDmaOp* o, u32 y, u32 lines) {
     GpuDmaOp b = *o;
     b.lines = lines;
     if (o->src.bl)
         b.src.oy += y;
     else if (!o->fill)
-        b.src.addr += (u64)y * o->src.pitch;
+        b.src.addr += (u64)(y * gpu_dma_pitch(&o->src));
     if (o->dst.bl)
         b.dst.oy += y;
     else
-        b.dst.addr += (u64)y * o->dst.pitch;
-    if (o->snap) b.snap = o->snap + (u64)y * o->src.pitch;
+        b.dst.addr += (u64)(y * gpu_dma_pitch(&o->dst));
+    if (o->snap) b.snap = o->snap + band_low(&o->src, o->lines, y, lines);
     return b;
 }
 static u64 most_of(const DmaNeeds* n) {
@@ -393,7 +400,7 @@ static int dma_bands(const GpuDmaOp* o) {
         GpuDmaOp b = dma_band(o, y, lines);
         if (most > bands.cap) return dma_fail(&b, "needs more than an allocation may be:", most);
         DmaNeeds n = dma_needs(&b);
-        if (!dma(&b, &n, o->fill || o->src.bl ? 0 : (u64)y * o->src.pitch)) return 0;
+        if (!dma(&b, &n, o->fill || o->src.bl ? 0 : band_low(&o->src, o->lines, y, lines))) return 0;
         if (lines < o->lines) g_dma.bands++;
         if (y + lines < o->lines) vk_frame_check(); /* the next band may record in the other slot (cmd.c) */
     }

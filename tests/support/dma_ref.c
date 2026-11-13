@@ -18,10 +18,10 @@
 /* the bytes block linear addressing moves at once: the run of a GOB's row bl_offset keeps contiguous */
 #define BL_RUN_BYTES 16u
 
-/* the bytes an operand's lines span in guest memory: pitch linear, its lines pitch apart; block linear, every block
-   of its slices up to z */
+/* the bytes an operand's lines span in guest memory, from its lowest (gpu_dma_low): pitch linear, its lines pitch
+   apart, down when the pitch is negative; block linear, every block of its slices up to z */
 static u64 span_of(const GpuDmaSide* s, u32 lines, u32 line) {
-    if (!s->bl) return (u64)s->pitch * (lines - 1) + line;
+    if (!s->bl) return gpu_dma_span(s, lines, line);
     u64 gobs_x = ((u64)s->wb + MAXWELL_GOB_SIZE_X - 1) >> MAXWELL_GOB_SIZE_X_SHIFT;
     u64 rows = ((((u64)s->h + MAXWELL_GOB_SIZE_Y - 1) >> MAXWELL_GOB_SIZE_Y_SHIFT) + (1u << s->bh) - 1) >> s->bh;
     return gobs_x * rows * ((u64)MAXWELL_GOB_SIZE << (s->bh + s->bd)) * ((u64)(s->z >> s->bd) + 1);
@@ -51,18 +51,20 @@ static void read_block_linear(const GpuDmaSide* s, u32 lines, u32 line, u8* buf)
         }
     }
 }
-/* lines of line bytes of an operand into buf (line bytes apart). from: a copy of a pitch linear operand */
+/* lines of line bytes of an operand into buf (line bytes apart). from: a copy of a pitch linear operand, from its
+   lowest byte */
 static void ref_read(const GpuDmaSide* s, u32 lines, u32 line, const u8* from, u8* buf) {
     u32 y;
     if (from) {
-        for (y = 0; y < lines; y++) memcpy(buf + (u64)y * line, from + (u64)y * s->pitch, line);
+        for (y = 0; y < lines; y++)
+            memcpy(buf + (u64)y * line, from + (u64)(y * gpu_dma_pitch(s) - gpu_dma_low(s, lines)), line);
         return;
     }
     if (s->bl) {
         read_block_linear(s, lines, line, buf);
         return;
     }
-    for (y = 0; y < lines; y++) gmem_read_raw(s->addr + (u64)y * s->pitch, buf + (u64)y * line, line);
+    for (y = 0; y < lines; y++) gmem_read_raw(s->addr + (u64)(y * gpu_dma_pitch(s)), buf + (u64)y * line, line);
 }
 /* buf's lines into an operand, by its layout; block linear lines past the surface are dropped */
 static void ref_write(const GpuDmaSide* s, u32 lines, u32 line, const u8* buf) {
@@ -70,7 +72,7 @@ static void ref_write(const GpuDmaSide* s, u32 lines, u32 line, const u8* buf) {
     for (y = 0; y < lines; y++) {
         const u8* src = buf + (u64)y * line;
         if (!s->bl) {
-            gmem_write_raw(s->addr + (u64)y * s->pitch, src, line);
+            gmem_write_raw(s->addr + (u64)(y * gpu_dma_pitch(s)), src, line);
             continue;
         }
         if (s->oy + y >= s->h) break;
@@ -79,7 +81,7 @@ static void ref_write(const GpuDmaSide* s, u32 lines, u32 line, const u8* buf) {
             gmem_write_raw(s->addr + bl_line_offset(s, y, x), src + x, k);
         }
     }
-    gpu_mem_written(s->addr, span_of(s, lines, line));
+    gpu_mem_written(s->bl ? s->addr : s->addr + (u64)gpu_dma_low(s, lines), span_of(s, lines, line));
 }
 /* the remap (Eden's RemapConst): each destination component from a source component, constant A or B, or left as
    it is (NO_WRITE). A source component the source doesn't have writes 0 */

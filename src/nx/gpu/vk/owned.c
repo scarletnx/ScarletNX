@@ -872,16 +872,16 @@ void vk_all_barrier(VkCommandBuffer cb) {
     VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
     rec_CmdPipelineBarrier2(cb, &d);
 }
-void vk_copy_rows(VkCommandBuffer cb, VkBuffer src, u64 src_at, u32 src_pitch, VkBuffer dst, u64 dst_at,
-                  u32 dst_pitch, u32 row_bytes, u32 rows) {
+void vk_copy_rows(VkCommandBuffer cb, VkBuffer src, u64 src_at, i64 src_pitch, VkBuffer dst, u64 dst_at, i64 dst_pitch,
+                  u32 row_bytes, u32 rows) {
     VkBufferCopy c[64];
     u32 y = 0;
     if (!row_bytes) return;
     while (y < rows) {
         u32 n = 0;
         for (; y < rows && n < sizeof c / sizeof *c; y++, n++) {
-            c[n].srcOffset = src_at + (u64)y * src_pitch;
-            c[n].dstOffset = dst_at + (u64)y * dst_pitch;
+            c[n].srcOffset = src_at + (u64)(y * src_pitch);
+            c[n].dstOffset = dst_at + (u64)(y * dst_pitch);
             c[n].size = row_bytes;
         }
         rec_CmdCopyBuffer(cb, src, dst, n, c);

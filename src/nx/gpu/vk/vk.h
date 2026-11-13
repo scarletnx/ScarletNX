@@ -1338,8 +1338,9 @@ int vk_guest_owned_whole(u64 gva, u64 size, u64* tag);
 int vk_guest_owned_by(u64 gva, u64 size, u64 serial);
 /* everything recorded so far done before what follows reads or writes what it did (the engines' steps) */
 void vk_all_barrier(VkCommandBuffer cb);
-/* rows rows of row_bytes from src (rows src_pitch apart) over dst's rows (dst_pitch apart), a region a row */
-void vk_copy_rows(VkCommandBuffer cb, VkBuffer src, u64 src_at, u32 src_pitch, VkBuffer dst, u64 dst_at, u32 dst_pitch,
+/* rows rows of row_bytes from src (rows src_pitch apart) over dst's rows (dst_pitch apart), a region a row; a negative
+   pitch steps down from row 0's offset */
+void vk_copy_rows(VkCommandBuffer cb, VkBuffer src, u64 src_at, i64 src_pitch, VkBuffer dst, u64 dst_at, i64 dst_pitch,
                   u32 row_bytes, u32 rows);
 
 /* texconv.c: a format the host can't take as it is (f->conv but ASTC, and packed depth and stencil), converted on the
@@ -1376,7 +1377,7 @@ u64 vk_tc_spirv_bytes(u32 mode);
 /* the DMA copy engine's remap (gpu.h's GpuDmaOp) of lines lines: each line in at in_at + y * in_pitch (bytes, any
    alignment), out at out_at + y * out_pitch (words), which holds the destination's own bytes already for the
    components that keep them. 0 past the device's limits */
-int vk_tc_dma_remap(VkCommandBuffer cb, const GpuDmaOp* o, u32 lines, VkBuffer in, u64 in_at, u32 in_pitch,
+int vk_tc_dma_remap(VkCommandBuffer cb, const GpuDmaOp* o, u32 lines, VkBuffer in, u64 in_at, i64 in_pitch,
                     VkBuffer out, u64 out_at, u32 out_pitch);
 /* the 2D blit's gather (gpu.h's GpuBlit): rows rows of nb bytes into out at out_at (rows out_pitch bytes apart, a
    multiple of 4), pixels of bpp bytes from source rows in_pitch bytes apart at src_at in in, through the column and

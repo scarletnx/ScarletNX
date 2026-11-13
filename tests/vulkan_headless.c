@@ -2640,7 +2640,8 @@ static int dma_case(GpuDmaOp o) {
    takes those bytes, not guest memory's, which changed after (the program freed its source), and lets go of them */
 static int dma_snap_case(GpuDmaOp o) {
     GpuDmaOp g = o, c = o;
-    u64 span = (u64)o.src.pitch * (o.lines - 1) + o.line_in, id = 0, held = vk_snap_bytes();
+    u64 span = gpu_dma_span(&o.src, o.lines, o.line_in), id = 0, held = vk_snap_bytes();
+    u64 low = o.src.addr + (u64)gpu_dma_low(&o.src, o.lines); /* the snapshot holds the span from its lowest byte */
     for (int k = 0; k < 2; k++) {
         u8* t = GP(k ? DMA_B : DMA_A);
         for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 31 + (i >> 9) * 5 + 1);
@@ -2649,12 +2650,12 @@ static int dma_snap_case(GpuDmaOp o) {
     c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
     u8* snap = g_renderer->snap_alloc(span, &id);
     CHECK(snap && id && vk_snap_bytes() == held + span);
-    memcpy(snap, GP(DMA_A) + o.src.addr, span);
-    for (u64 i = 0; i < span; i++) GP(DMA_A)[o.src.addr + i] ^= 0x5A; /* guest memory changes after the read */
+    memcpy(snap, GP(DMA_A) + low, span);
+    for (u64 i = 0; i < span; i++) GP(DMA_A)[low + i] ^= 0x5A; /* guest memory changes after the read */
     g.snap = snap;
     g.snap_id = id;
     CHECK(g_renderer->dma_copy(&g));
-    for (u64 i = 0; i < span; i++) GP(DMA_A)[o.src.addr + i] ^= 0x5A; /* the same again, for the comparison */
+    for (u64 i = 0; i < span; i++) GP(DMA_A)[low + i] ^= 0x5A; /* the same again, for the comparison */
     dma_copy_ref(&c);
     guest_done(DMA_A, DMA_SPAN);
     CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN));
@@ -4725,6 +4726,59 @@ static int check_dma(void) {
     o.src = pitch_side(0x3000, 90);
     o.dst = bl_side(0x80000, 256, 16, 0, 5, 1);
     CHECK(!dma_case(o));
+    return 0;
+}
+
+/* A copy with FlipY, as NVN records one: a pitch linear side whose pitch register is negative steps down, line k at
+   addr + k * pitch (pitch a signed 32-bit number). Into a block linear surface from such a source, and read at
+   submission; out of one into such a destination; pitch linear to pitch linear with both stepping down, with the
+   remap, and in bands of lines under a lowered cap. Each against the CPU reference, and the first also against where
+   the lines must be: the source's line k from 64 bytes a line below its address. They were sized as 64 GiB (the pitch
+   read as 4294967232): "needs more than an allocation may be", and nothing was copied */
+static int check_dma_flip(void) {
+    const u32 down = (u32)-64, line = 48, lines = 16;
+    const u64 top = 0x8000; /* line 0 of the source: lines 1 to 15 below it */
+    GpuDmaOp o = {0};
+    o.multi = 1;
+    o.width = o.line_in = o.line_out = line;
+    o.lines = lines;
+    o.src = pitch_side(top, down);
+    o.dst = pitch_side(0x80000, line);
+    CHECK(!dma_case(o));
+    for (u32 k = 0; k < lines; k++) /* line k of the destination is the source's line k, 64 * k bytes down */
+        if (memcmp(GP(DMA_A) + 0x80000 + (u64)k * line, GP(DMA_A) + top - (u64)k * 64, line)) {
+            fprintf(stderr, "dma flip: line %u of the destination is not the source's from %llx\n", k,
+                    (unsigned long long)(top - (u64)k * 64));
+            return 1;
+        }
+    CHECK(!dma_snap_case(o));
+    o.dst = bl_side(0xA0000, 64, 16, 1, 16, 0); /* a texture with FlipY from a buffer */
+    CHECK(!dma_case(o));
+    CHECK(!dma_snap_case(o));
+    o.src = bl_side(0x2000, 64, 16, 1, 0, 0); /* a buffer with FlipY from a texture */
+    o.dst = pitch_side(0x90000 + 15 * 80, (u32)-80);
+    CHECK(!dma_case(o));
+    o.src = pitch_side(top, down); /* both down, B and R swapped */
+    o.remap = o.shuffle = 1;
+    o.cs = 1, o.ns = 4, o.nd = 4;
+    o.sel[0] = 2, o.sel[1] = 1, o.sel[2] = 0, o.sel[3] = 3;
+    o.width = line / 4;
+    CHECK(!dma_case(o));
+    CHECK(!dma_snap_case(o));
+    o.remap = o.shuffle = 0; /* in bands of 4 lines of 4 KiB, each band's snapshot bytes from its own lowest line */
+    o.width = o.line_in = o.line_out = 4096;
+    o.src = pitch_side(0x40000, (u32)-8192);
+    o.dst = pitch_side(0x80000, (u32)-4096);
+    o.dst.addr += 15 * 4096;
+    const u64 cap = g_vk.alloc_cap;
+    g_vk.alloc_cap = 64 << 10;
+    u64 bands = 0, copies, bytes, after;
+    vk_dma_stats(&copies, &bands, &bytes);
+    int failed = dma_case(o) || dma_snap_case(o);
+    vk_dma_stats(&copies, &after, &bytes);
+    g_vk.alloc_cap = cap;
+    CHECK(!failed && after > bands);
+    printf("DMA copies with a negative pitch (FlipY) step down from their address\n");
     return 0;
 }
 
@@ -7331,6 +7385,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_vic_chain(shot));
     CHECK(!check_nvdec_vic());
     CHECK(!check_dma());
+    CHECK(!check_dma_flip());
     CHECK(!check_dma_owners());
     CHECK(!check_dma_bands());
     CHECK(!check_dma_bands_frames());
