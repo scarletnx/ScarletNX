@@ -1895,7 +1895,8 @@ snx_test_target(snx-test-collection-programs 99)
 target_link_libraries(snx-test-collection-programs PRIVATE scarletnx-common)
 add_test(NAME collection_programs COMMAND snx-test-collection-programs)
 
-# a start's mark (common/utilities/run_mark.c): made, ended, said by the next start, a held one left, a long folder
+# a start's mark (common/utilities/run_mark.c): made, ended, said by the next start, a held one left, a long folder,
+# a look that deletes none
 add_executable(snx-test-run-mark run_mark.c)
 snx_test_target(snx-test-run-mark 99)
 target_link_libraries(snx-test-run-mark PRIVATE scarletnx-common)

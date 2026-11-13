@@ -18,6 +18,7 @@ typedef struct {
     long long pid;     /* its program's, from its name; from its text for logs/.running, an older iOS app's mark */
     long long started; /* its program's start, in seconds since 1970; 0 when the mark does not say */
     const char* left;  /* NULL once it is deleted, else why it is not: its path and the system's reason */
+    int held;          /* snx_run_mark_look's alone: a program holds it, its start going on; its text NULL */
 } SnxRunMark;
 
 /* The marks of folder that no program holds, each given to seen with data and then deleted (one that cannot be
@@ -26,6 +27,12 @@ typedef struct {
    cannot be read or this process's mark cannot be made. folder may be of any length */
 int snx_run_mark_start(const char* folder, void (*seen)(void* data, const SnxRunMark* mark), void* data, char* why,
                        size_t why_size);
+/* The marks of folder, held or not, each given to seen with data and none deleted: a launcher's look at those of a
+   game it started, beside the game's log, which the game's next start says and deletes. A held one has held set and
+   no text; one that cannot be opened to tell has no text and left saying why. 0, or -1 with why (the path and the
+   system's reason) when the folder cannot be read */
+int snx_run_mark_look(const char* folder, void (*seen)(void* data, const SnxRunMark* mark), void* data, char* why,
+                      size_t why_size);
 /* 1 while this process holds its mark */
 int snx_run_mark_held(void);
 /* This process's mark deleted and let go, at an exit that ends it: from any thread, the first call alone doing it. A
