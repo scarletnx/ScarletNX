@@ -1258,7 +1258,9 @@ static void frame_check(void) {
     /* a fresh frame has recorded nothing, and its counts are still its last use's until frame_recycle: ending it
        would only move on to the slot whose work was just submitted, and wait for it */
     if (f->fresh) return;
-    u64 rings = frame_rings(f), cap = frame_ring_cap(rings);
+    /* the cap that the stream's bytes are held to counts them too: they are memory the caches budget as the rings
+       are, and a frame whose bytes all go through the stream has rings below the two chunks that ask the budget */
+    u64 rings = frame_rings(f), cap = frame_ring_cap(rings + g_cmd.stream_since);
     if (rings >= cap) {
         LOG_LIMIT(
             4,
