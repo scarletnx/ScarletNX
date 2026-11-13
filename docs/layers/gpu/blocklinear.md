@@ -63,7 +63,9 @@ reference; RGBA8 out, 16 bit channels for BC4 and BC5, RGBA16F for BC6H), and vi
 (`SNX_TC_ETC2`, a pipeline of its own) encodes BCn blocks again as ETC2 and EAC where the device samples those
 ([BCn without BCn](bcn.md)). Its conversion build (`SNX_TC_CONVERT`, a pipeline of its own too) runs the 2D engine's
 blits between pixel formats (`pixel_convert.glsl`): an Adreno 610's stock compiler fails to link the plain build with
-them inside ("PSEUDOIMUL32 must not be seen here") and links each part. An invocation owns whole output words (a pair of 2 byte texels, a texel, four depth texels whose
+them inside ("PSEUDOIMUL32 must not be seen here") and links each part. Its NV12 build (`SNX_TC_NV12`) interleaves a
+CPU decoded picture's U and V rows alone: a movie's first picture makes it with the renderer held, and the plain build
+took an Adreno 610's compiler 1.7 s there. An invocation owns whole output words (a pair of 2 byte texels, a texel, four depth texels whose
 stencil bytes make one word, or a block), and output rows are padded to them, so no two invocations write one word.
 The copies into the image take the padding through `bufferRowLength`.
 

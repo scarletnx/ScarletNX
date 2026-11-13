@@ -198,6 +198,10 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_astc_c_spv HE
 # plain build (gpu/vk/texconv.c)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_convert_spv HEADER nx/gpu/texture/texconv_spv.h
                DEFINES SNX_TC_CONVERT)
+# and its NV12 build: a CPU decoded picture's chroma interleaved, which a movie's first picture needs and the plain
+# build is a long compile for on a slow GPU (gpu/vk/texconv.c)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_nv12_spv HEADER nx/gpu/texture/texconv_spv.h
+               DEFINES SNX_TC_NV12)
 snx_glsl_spirv(snx_vk SOURCE gpu/video/vic.comp NAME vic_spv HEADER nx/gpu/video/vic_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/video/vic.comp NAME vic_unaligned_spv HEADER nx/gpu/video/vic_spv.h
                DEFINES VIC_UNALIGNED)

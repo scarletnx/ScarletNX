@@ -649,7 +649,20 @@ uint tc_index(uint j) {
     return j;
 }
 
-#if defined(SNX_TC_CONVERT)
+#if defined(SNX_TC_NV12)
+/* The NV12 build: TC_NV12_UV alone, a CPU decoded picture's U and V rows interleaved, U first, four pairs an
+   invocation. A pipeline of its own, made for a movie's first picture with the renderer held: the plain build took
+   an Adreno 610's compiler 1.7 s there */
+void main() {
+    uint u = gl_GlobalInvocationID.x;
+    if (u >= units) return;
+    uint row = gl_GlobalInvocationID.y, out_at = out_bias + row * out_pitch;
+    uint u4 = src[in_bias + row * in_pitch + u], v4 = src[st_bias + row * st_pitch + u];
+    dst[out_at + 2u * u] = (u4 & 0xFFu) | ((v4 & 0xFFu) << 8) | ((u4 & 0xFF00u) << 8) | ((v4 & 0xFF00u) << 16);
+    dst[out_at + 2u * u + 1u] =
+        ((u4 >> 16) & 0xFFu) | ((v4 >> 8) & 0xFF00u) | ((u4 >> 8) & 0xFF0000u) | (v4 & 0xFF000000u);
+}
+#elif defined(SNX_TC_CONVERT)
 /* The conversion build: TC_BLIT_CONVERT alone, a row of the blit's rectangle a word an invocation. A pipeline of its
    own, as an Adreno 610's stock compiler refuses the plain build with it ("PSEUDOIMUL32 must not be seen here") and
    links each half */
@@ -898,12 +911,7 @@ void main() {
     /* the row of units (texels, or blocks for ETC2, EAC and BCn) of all the dispatch's slices */
     uint row = gl_GlobalInvocationID.z * rows + gl_GlobalInvocationID.y;
     uint in_at = in_bias + row * in_pitch, out_at = out_bias + row * out_pitch;
-    if (mode == TC_NV12_UV) {
-        uint u4 = src[in_at + u], v4 = src[st_bias + row * st_pitch + u];
-        dst[out_at + 2u * u] = (u4 & 0xFFu) | ((v4 & 0xFFu) << 8) | ((u4 & 0xFF00u) << 8) | ((v4 & 0xFF00u) << 16);
-        dst[out_at + 2u * u + 1u] =
-            ((u4 >> 16) & 0xFFu) | ((v4 >> 8) & 0xFF00u) | ((u4 >> 8) & 0xFF0000u) | (v4 & 0xFF000000u);
-    } else if (mode >= TC_BC1) {
+    if (mode >= TC_BC1) {
         bool small = mode == TC_BC1 || mode == TC_BC4 || mode == TC_BC4_SNORM; /* 8 byte blocks */
         bc_block(in_at + u * (small ? 2u : 4u), out_bias + row * 4u * out_pitch, u);
     } else if (mode >= TC_VI_RGBX8888) {

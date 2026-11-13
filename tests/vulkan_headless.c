@@ -24,6 +24,7 @@
 #include "nx/gpu/maxwell/maxwell_3d_regs.h"
 #include "nx/gpu/maxwell/gob.h"
 #include "nx/gpu/texture/blocklinear.h"
+#include "nx/gpu/texture/texconv_modes.glsl"
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_tex.h"
@@ -2553,6 +2554,9 @@ static int check_nvdec_vic(void) {
     CHECK(!nvdec_vic_case(54, 40, 128, 48, 2, 0)); /* a wider surface than the picture */
     CHECK(!nvdec_vic_case(53, 41, 256, 48, 0, 1)); /* pitch linear: odd sizes, padding columns and rows kept */
     CHECK(!nvdec_vic_case(2, 2, 256, 4, 0, 1));    /* pitch linear: one chroma pair, padding rows */
+    /* a CPU picture's chroma interleave compiles a small build of the conversion shader, not the plain one, whose
+       compile held the renderer 1.7 s at a movie's first picture on a slow GPU */
+    CHECK(vk_tc_spirv_bytes(TC_NV12_UV) * 8 < vk_tc_spirv_bytes(TC_RGBA4));
     /* each case lands its three ranges when read, nothing before */
     CHECK(!own_traps() || own_landings() <= lands + 15);
     return 0;

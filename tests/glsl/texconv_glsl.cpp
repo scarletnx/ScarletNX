@@ -50,8 +50,20 @@ struct Conv : Invocation {
 #include "nx/gpu/texture/texconv_modes.glsl"
 #include "nx/gpu/texture/texconv.glsl"
 };
+// its NV12 build (SNX_TC_NV12), which alone takes TC_NV12_UV
+#define SNX_TC_NV12
+struct ConvNv12 : Invocation {
+    uint mode, units, rows, in_pitch, out_pitch, st_pitch, in_bias, out_bias, st_bias, zfloat;
+    uint remap, const_a, const_b, line_out;
+    const leuint* src;
+    leuint* dst;
+#include "nx/gpu/texture/texconv_modes.glsl"
+#include "nx/gpu/texture/texconv.glsl"
+};
+#undef SNX_TC_NV12
 } // namespace texconv_shader
 using texconv_shader::Conv;
+using texconv_shader::ConvNv12;
 
 static unsigned failures;
 #define CHECK(c, ...)                                                                                                  \
@@ -201,14 +213,14 @@ static void vi_frames() {
     }
 }
 
-// NVDEC's chroma: U and V rows interleaved, U first, in rows of whole words
+// NVDEC's chroma: U and V rows interleaved, U first, in rows of whole words, by the NV12 build
 static void nv12_uv() {
     const uint32_t pairs = 13, rows = 5, in_pitch = 16, out_pitch = 32;
     std::vector<glsl::leuint> in(in_pitch / 4 * rows * 2), out(out_pitch / 4 * rows, 0xDEADBEEFu);
     for (auto& x : in) x = random_word();
     const uint8_t* ub = (const uint8_t*)in.data();
     const uint8_t* vb = ub + in_pitch * rows;
-    glsl::dispatch<Conv>(glsl::uvec3(1, rows, 1), glsl::uvec3(64, 1, 1), [&](Conv& c) {
+    glsl::dispatch<ConvNv12>(glsl::uvec3(1, rows, 1), glsl::uvec3(64, 1, 1), [&](ConvNv12& c) {
         c.mode = 20;
         c.units = (pairs + 3) / 4;
         c.rows = rows;
