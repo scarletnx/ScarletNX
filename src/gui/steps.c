@@ -43,6 +43,7 @@ static void line(GuiSteps* steps, const char* s, uint64_t now) {
     GuiStep* last = current(steps);
     uint32_t before = steps->serial;
     unsigned value, total;
+    int program;
     const char* block = strstr(s, "compiled block ");
     if (block && last && !strcmp(last->label, "RECOMPILE") &&
         sscanf(block, "compiled block %u/%u", &value, &total) == 2) {
@@ -81,7 +82,13 @@ static void line(GuiSteps* steps, const char* s, uint64_t now) {
     }
     else if (prefix(s, "Ready "))
         begin(steps, SNX_TR_NOOP("READY"), s + 6, strlen(s + 6), now);
-    else if (prefix(s, "vulkan: ") && !steps->gpu && strstr(s, ", Vulkan ")) {
+    else if (prefix(s, "The game starts its program ") && sscanf(s, "The game starts its program %d,", &program) == 1) {
+        char number[16];
+        snprintf(number, sizeof number, "%d", program);
+        begin(steps, SNX_TR_NOOP("PROGRAM"), number, strlen(number), now);
+        steps->switching = current(steps)->serial;
+        steps->program = program;
+    } else if (prefix(s, "vulkan: ") && !steps->gpu && strstr(s, ", Vulkan ")) {
         /* the first device line: "vulkan: <device> [(<driver>)], Vulkan <version>, ..."; a later "(" is not the
            device's */
         const char* device = s + 8;
@@ -91,6 +98,8 @@ static void line(GuiSteps* steps, const char* s, uint64_t now) {
         begin(steps, SNX_TR_NOOP("GPU"), device, (size_t)(end - device), now);
         steps->gpu = 1;
     }
+    /* the program's window covers the screen now */
+    if (prefix(s, "video: a window of ")) steps->switching = 0;
     if (steps->serial == before) note(steps, s, now); /* not a step of its own: a line of the current one */
 }
 void gui_steps_feed(GuiSteps* steps, const char* data, size_t size, uint64_t now_ms) {
