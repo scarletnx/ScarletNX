@@ -713,9 +713,24 @@ jobs:
       - name: Install Unicorn
         if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
         run: *unicorn
+      # The linux job's compiler cache and dependency builds from main, where it builds x86-64's test and headless
+      # trees: this job's own hold the AppImage's tree alone, not the headless tree's FFmpeg nor its compiles. Read
+      # after the dependency builds are named and saved above, which keep only the AppImage's
+      - if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        uses: actions/cache/restore@v5
+        with:
+          path: .cache/ccache
+          key: ccache-linux-x86_64-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-linux-x86_64-
+      - if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        uses: actions/cache/restore@v5
+        with:
+          path: .cache/deps
+          key: deps-linux-x86_64-${{ github.run_id }}
+          restore-keys: deps-linux-x86_64-
       # The linux job's test options on the same tree, and its headless tree with this job's LLVM: the A64 disassembler
       # stays out, as in the AppImage, so on a pull request its tests run on x86-64 in the sanitizers' job alone, and
-      # on AArch64 in the linux job
+      # on AArch64 in the linux job. The compiler cache's counts are this build's, zeroed by the trim above
       - name: Build the tests and the headless Vulkan tree
         if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
         run: |
@@ -725,6 +740,7 @@ jobs:
             -DLLVM_DIR="$PWD/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/headless --parallel "$(getconf _NPROCESSORS_ONLN)"
+          ccache --show-stats
       - name: Test headless Vulkan and NX runtime
         if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
         run: *headless-tests
