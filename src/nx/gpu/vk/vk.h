@@ -170,7 +170,8 @@ typedef struct {
     int has_minmax_swizzle;
     int has_shader_draw_parameters; /* shaders take an instance's ID from BaseInstance (spirv_translate.c) */
     int has_draw_indirect_count;    /* drawIndirectCount: an indirect draw's count from the GPU's memory */
-    u64 alloc_cap;                  /* the most one device memory allocation may be (memory.c) */
+    u64 alloc_cap;                  /* the most one device memory allocation may be (memory.c): it comes down when
+                                       the driver gives less at once (vk_alloc_cap_lower) */
     u64 max_buffer_size;            /* the biggest buffer the device makes (maintenance4's maxBufferSize) */
     int sparse; /* sparseBinding on the graphics queue: images bigger than alloc_cap are bound in pieces */
     /* sparse residency of 2D or 3D images too, what isn't bound reading as zeros: a texture with holes in its mapping
@@ -1326,6 +1327,9 @@ int vk_own_init(void);
 void vk_own_log(void); /* statistics: the kept results in use, and the freed buffers in the pool */
 /* once a present, with nothing of a draw being set up: the freed buffers no result took for a while go, and when
    device memory is short the results left alone longest land in guest memory, a few a present (owned.c) */
+/* memory.c: size bytes of system memory in one allocation found none with room in the heap: 1 when g_vk.alloc_cap
+   came down for it, and the caller asks again within the cap */
+int vk_alloc_cap_lower(u64 size);
 void vk_own_trim(void);
 /* at a job's start (a dispatch, a copy), nothing of it set up: with device memory short, the submission being recorded
    ends when it holds freed result buffers the job's results could take (owned.c) */

@@ -289,6 +289,9 @@ static int arena_fit(u64 need) {
     if (g_ar) vk_defer_buffer(g_ar, g_ar_mem); /* draws may still read it */
     u64 cap = g_ar_want;
     while (cap < need) cap *= 2;
+    /* no allocation is bigger than the driver gives (memory.c): an arena that holds the dispatch within that, not the
+       next power of two, which found no memory */
+    if (cap > g_vk.alloc_cap && need <= g_vk.alloc_cap) cap = g_vk.alloc_cap;
     u32 fam[2] = {g_vk.gfx_family, g_vk.compute_family};
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                               .size = cap,
@@ -304,7 +307,17 @@ static int arena_fit(u64 need) {
     DevMemInfo info;
     g_ar = VK_NULL_HANDLE;
     g_ar_cap = 0;
-    if (!VK_OK(vk_buffer_create(&bci, &aci, &g_ar, &g_ar_mem, &info))) return 0;
+    /* one the driver has no memory for in one allocation, though the heap has: again within what it gives, while
+       that holds the dispatch (memory.c) */
+    VkResult made;
+    while ((made = vk_buffer_create(&bci, &aci, &g_ar, &g_ar_mem, &info)) != VK_SUCCESS) {
+        if (!vk_alloc_cap_lower(cap) || need > g_vk.alloc_cap) {
+            VK_OK(made); /* said, with what holds the memory */
+            g_ar = VK_NULL_HANDLE;
+            return 0;
+        }
+        bci.size = cap = g_vk.alloc_cap;
+    }
     vk_mem_track(g_ar_mem, VK_OWN_ARENA);
     g_ar_ptr = info.ptr;
     g_ar_cap = cap;
