@@ -1327,6 +1327,9 @@ void vk_own_log(void); /* statistics: the kept results in use, and the freed buf
 /* once a present, with nothing of a draw being set up: the freed buffers no result took for a while go, and when
    device memory is short the results left alone longest land in guest memory, a few a present (owned.c) */
 void vk_own_trim(void);
+/* at a job's start (a dispatch, a copy), nothing of it set up: with device memory short, the submission being recorded
+   ends when it holds freed result buffers the job's results could take (owned.c) */
+void vk_own_room(void);
 /* guest memory [cpu, cpu + size) watched for the CPU (own_watch), as vk_own_publish traps an owner's: 0, or -1 where it
    can't be (no traps, memory an import holds, memory not in the pool). vk_lock held */
 int vk_own_watch(u64 cpu, u64 size);

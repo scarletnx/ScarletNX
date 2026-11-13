@@ -414,6 +414,7 @@ int vk_dma_copy(const GpuDmaOp* o) {
     }
     vk_lock();
     g_dma.copies++;
+    vk_own_room();
     r = dma_bands(o);
     if (o->snap_id) vk_defer_call(snap_free_later, (void*)(uintptr_t)o->snap_id); /* after its frame's work */
     vk_unlock();
