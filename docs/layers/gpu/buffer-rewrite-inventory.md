@@ -17,6 +17,7 @@ comments that the new code must keep.
 * [Memory limits and the trim](#memory-limits-and-the-trim)
 * [Mappings and locks](#mappings-and-locks)
 * [Comments that this list leaves out](#comments-that-this-list-leaves-out)
+* [State of the rewrite](#state-of-the-rewrite)
 
 ## How to use this list
 
@@ -1512,3 +1513,24 @@ These comments are in the same files, but they are about code that the rewrite d
 - The descriptor pools and the profiler zones in `cmd.c` and `compute.c`.
 
 If a later step of #1714 moves one of these, read its comments then.
+
+## State of the rewrite
+
+The plan of issue #1714 has six steps, and step 1 is the gate for the others: a step goes ahead only when the
+measurement shows the problem that it removes. This is what each step has in the code, and what stays open with the
+number that decided it. The numbers are from an RTX 2080 with one Switch game in its city and one Ounce game in a
+race, in November 2026.
+
+| Step | In the code | Open |
+| --- | --- | --- |
+| 1. Measure | The byte ledger (`ledger.c`), the texture census (`tex_census.c`, `tex_report.c`), the statistics of the page cache, the rings and the allocator, and this list. | A Tracy capture of the slow frames of the Switch game. It needs a machine with no other load. |
+| 2. Cap the pools | A trim of the kept results (`owned.c`), of the mirror's granules (`mirror.c`) and of the write logs (`writelog.c`) when memory is short. A limit of bytes and of age on the retired compute arenas (`compute.c`). | Nothing that the ledger shows. |
+| 3. Texture lifetime and target | M16 and M16a: the textures that the game ended go first, by the end of their texture object or, with no texture objects, by their unmap. The trim keeps a fixed head below the budget. Sparse blocks that show the same memory share an allocation. | A target taken from the bytes used over the last seconds. The Switch game loads textures again when they go early with memory to spare, so the trim acts only near the budget. A smaller host format for ASTC is separate work. |
+| 4. Page-keyed read cache | `pagespace.c`, on by default, with sparse buffers or with slabs where the device has none (`vk_buffer_slabs=1` forces slabs). | The windows and the buffers for one range stay. A host with no write tracking and a device that shares memory with the CPU still use them. |
+| 5. Stream rings | `vk_stream_upload` in `cmd.c` carries the bytes that work recorded at once reads, in chunks that no frame owns (`vk_stream_ring=0` gives the frame's rings). | The other rings keep their frame slot: a draw's data, the results that the CPU reads back, and the bytes that a holder keeps past a submission. Each such holder would have to stamp its region at each use. The rings hold 128 to 176 MiB at the median in the two games. |
+| 6. Results onto the pages | A draw writes in place in the page cache with `vk_buffer_pages=2`. | The other kinds of result, and the removal of the paths that compose them. The gate is a wait in a draw for a result, and the two games show none: 0 waits in 600 presents. The write in place kept 1,200 to 1,800 of 180,000 bindings in the Switch game, which writes those pages with its CPU in each frame, and the Ounce game does not reach it. |
+
+Two costs that the plan lists show in the Ounce game's race and have no step that removes them yet. Its draws whose
+storage bindings share a page go through a page atlas: 64 draws a present, with 5.6 MB copied before the draws and
+2.8 MB read back. Its results that land by a compare took 20 MB of compares a present, of which 0.1% changed. Its
+GPU heap is full in the race, so the trim and the allocator work at the budget whatever the caches do.
