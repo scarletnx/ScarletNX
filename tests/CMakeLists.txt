@@ -1900,6 +1900,12 @@ snx_test_target(snx-test-collection-programs 99)
 target_link_libraries(snx-test-collection-programs PRIVATE scarletnx-common)
 add_test(NAME collection_programs COMMAND snx-test-collection-programs)
 
+# the rows of a program a collection's program started (common/utilities/program_start.c), the runtime's screen and
+# the launcher's page: each one known, each one not known as "?", a row a screen can't say left out
+add_executable(snx-test-program-start program_start.c "${PROJECT_SOURCE_DIR}/src/common/utilities/program_start.c")
+snx_test_target(snx-test-program-start 99)
+add_test(NAME program_start COMMAND snx-test-program-start)
+
 # a start's mark (common/utilities/run_mark.c): made, ended, said by the next start, a held one left, a long folder,
 # a look that deletes none
 add_executable(snx-test-run-mark run_mark.c)

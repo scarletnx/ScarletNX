@@ -42,6 +42,9 @@ int fs_aoc_has(u64 id);
 /* the checked DLCs the game plays with, those found extracted or read from their dumps, in addons= order, into *ids:
    their count */
 size_t fs_dlcs(const u64** ids);
+/* the programs of this program's application, as its dump read in place says them (GetProgramIndexForAccessLog's
+   count when it knows it): -1 when no dump says */
+int fs_program_count(void);
 u8* fs_read_file(const char* path, u64* size);    /* malloc'd, or NULL */
 /* a file of the game's HtmlDocument content (the pages its web applet shows), by its path under html-document/,
    malloc'd: NULL when the game has no dump open, or the dump no such content or file */

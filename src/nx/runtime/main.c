@@ -7,6 +7,7 @@
 #include "common/cpu/recompiler/llvm/gdb_jit.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/utilities/build_info.h"
+#include "common/utilities/program_start.h"
 #include "common/utilities/cli.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/ascii.h"
@@ -1065,6 +1066,23 @@ static SnxNext g_next;
 static int g_next_taken;
 static unsigned long g_next_serial; /* the one taken's, which the next hand-over follows */
 static char g_next_why[512];
+/* ---- the screen of a program a collection's program started (transition_screen): the loading screen in the
+   launcher's look, the game's name and "(Program N)" in its head, what is known of the program as its steps (the
+   facts program_start.h lists) and the game's cover in its top right corner, from a quarter second after the window
+   opens until the game's first frame, the window black meanwhile without it */
+#if defined(__ANDROID__) /* no Esc there: back opens the menu, whose Exit quits */
+#define SWITCH_FOOT "Back: menu."
+#else
+#define SWITCH_FOOT "Esc twice: quit."
+#endif
+static struct {
+    SnxRunTheme theme;
+    int on, themed, rows; /* themed: the launcher's theme read, else YoRHa's built in; rows: row's count */
+    u64 opened, up;       /* plat_ns(): the window's opening, and the screen's (0 while it has not shown) */
+    char title[96];
+    SnxProgramStart facts; /* what the hand-over said (handover_give), then the rest (switch_start) */
+    SnxStartRow row[SNX_START_ROWS];
+} g_switch;
 /* g_exedir as a folder's path, without its last separator */
 static void exe_folder(char* out, size_t size) {
     size_t n;
@@ -1101,6 +1119,15 @@ static void handover_give(void) {
              "all the same\n",
              g_next.index, g_exename, g_program, g_next.previous);
     am_handover_in(g_program, g_next_taken > 0 ? &g_next : NULL);
+    snx_program_start_unknown(&g_switch.facts);
+    if (g_next_taken > 0) { /* for the screen of a program started so (switch_start) */
+        size_t i;
+        g_switch.facts.previous = g_next.previous;
+        g_switch.facts.user_kept = g_next.context != 0;
+        g_switch.facts.storages = (int)g_next.count;
+        g_switch.facts.storage_bytes = 0;
+        for (i = 0; i < g_next.count; i++) g_switch.facts.storage_bytes += g_next.size[i];
+    }
     if (g_next_taken > 0) g_next_serial = g_next.serial;
     if (g_next_taken > 0)
         LOG("game: program %d, started by program %d: %u storage%s in the user channel, its open user %s\n", g_program,
@@ -1150,20 +1177,51 @@ static void handover_write(void) {
     snx_next_free(&next);
 }
 
-/* ---- the screen of a program a collection's program started (transition_screen): the loading screen in the
-   launcher's look, with the game's name, the program's number and the game's cover, from a quarter second after the
-   window opens until the game's first frame, the window black meanwhile without it */
-#if defined(__ANDROID__) /* no Esc there: back opens the menu, whose Exit quits */
-#define SWITCH_FOOT "Back: menu."
-#else
-#define SWITCH_FOOT "Esc twice: quit."
-#endif
-static struct {
-    SnxRunTheme theme;
-    int on, themed; /* themed: the launcher's theme read, else YoRHa's built in */
-    u64 opened, up; /* plat_ns(): the window's opening, and the screen's (0 while it has not shown) */
-    char title[96];
-} g_switch;
+/* what else is known of this program for its screen, into g_switch.facts, then its rows: its index and its
+   application's count, the user it plays as, the game's version and its update's, the DLCs that play, the GPU, its
+   title ID (after its game's in its name, <game>_<ID>[v<version>]) and ScarletNX's build; "" or -1 for what is not
+   known, which the rows say as "?" */
+static void switch_facts(void) {
+    SnxProgramStart* f = &g_switch.facts;
+    const SnxUser* u = snx_users_selected();
+    const char *name = g_renderer->device_name ? g_renderer->device_name() : NULL, *own = g_exename, *at;
+    const u64* ids;
+    size_t count = fs_dlcs(&ids), i, n;
+    u64 base = am_aoc_base_id();
+    SnxU64 id = 0;
+    f->program = g_program;
+    f->programs = fs_program_count();
+    if (u) {
+        snprintf(f->user, sizeof f->user, "%s", u->nickname);
+        f->user_number = snx_users_selected_number();
+    }
+    am_display_version_of(f->version); /* "" when the game says none: "?" on the screen */
+    f->updated = g_addon != 0;
+    at = strrchr(own, '_');
+    if (g_addon && at && (at = strchr(at, 'v')) != NULL) snprintf(f->update, sizeof f->update, "%s", at);
+    f->dlcs = (int)count;
+    for (i = 0, f->dlc[0] = 0; i < count && i < 4; i++) {
+        n = strlen(f->dlc);
+        if (ids[i] > base && ids[i] - base < 0x800)
+            snprintf(f->dlc + n, sizeof f->dlc - n, "%sDLC %u", n ? ", " : "", (unsigned)(ids[i] - base));
+        else
+            snprintf(f->dlc + n, sizeof f->dlc - n, "%sDLC %016llX", n ? ", " : "", (unsigned long long)ids[i]);
+    }
+    n = strlen(f->dlc);
+    if (count > 4) snprintf(f->dlc + n, sizeof f->dlc - n, " and %u more", (unsigned)(count - 4));
+    if (name) snprintf(f->gpu, sizeof f->gpu, "%s", name);
+    if (!strcmp(own, g_gamename)) { /* the game's own program: its name is its ID (an NRO's is none) */
+        if (!snx_title_parse(own, &id)) id = 0;
+    } else if ((at = strrchr(own, '_')) != NULL && strlen(at + 1) >= 16) {
+        char digits[17];
+        memcpy(digits, at + 1, 16);
+        digits[16] = 0;
+        if (!snx_title_parse(digits, &id)) id = 0;
+    }
+    f->title_id = id;
+    snprintf(f->build, sizeof f->build, "%s", snx_build_info());
+    g_switch.rows = snx_program_start_rows(f, g_switch.row);
+}
 /* after the window opens: whether this program was started by a hand-over (the system's start and Play have none),
    and for one the launcher's theme and the game's cover, its icon.jpg in the game's own data folder (a collection's
    other programs have none of their own), each said when it is not there or does not draw */
@@ -1194,6 +1252,7 @@ static void switch_start(const char* title) {
     ui_lock();
     bad = prepare_screen_cover(jpeg, size);
     ui_unlock();
+    switch_facts();
     if (!jpeg)
         LOG("transition: %s is not there: program %d's screen shows no cover\n", path, g_program);
     else if (bad)
@@ -1210,7 +1269,7 @@ static void switch_tick(void) {
     waited = (now - g_switch.opened) / 1000000u;
     if (__atomic_load_n(&g_frames, __ATOMIC_RELAXED)) {
         ui_lock();
-        prepare_screen_switch(NULL, NULL, -1, NULL, 0);
+        prepare_screen_switch(NULL, NULL, -1, NULL, 0, NULL, 0);
         ui_unlock();
         g_switch.on = 0;
         if (g_switch.up)
@@ -1226,8 +1285,8 @@ static void switch_tick(void) {
     if (waited < 250) return;
     if (!g_switch.up) g_switch.up = now;
     ui_lock();
-    prepare_screen_switch(g_switch.themed ? &g_switch.theme : NULL, g_switch.title, g_program, SWITCH_FOOT,
-                          now / 1000000u);
+    prepare_screen_switch(g_switch.themed ? &g_switch.theme : NULL, g_switch.title, g_program, g_switch.row,
+                          g_switch.rows, SWITCH_FOOT, now / 1000000u);
     ui_unlock();
     if (g_renderer->refresh) g_renderer->refresh();
 }

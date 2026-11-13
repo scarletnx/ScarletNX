@@ -16,6 +16,8 @@ void svc_vi_init(void);
 void svc_pl_init(void);
 /* the game's display version from its control.nacp ("1.0.0" without one), terminated, for the log's header */
 void am_display_version(char version[16]);
+/* the same, the control.nacp's alone: 0 with version "" when it has none (no "1.0.0" in its place) */
+int am_display_version_of(char version[16]);
 /* the sizes of the game's save data of a type (nn::fs::SaveDataType: 1 an account's, 3 the device's), as the system made
    it: what ExtendSaveData gave it, else the NACP's, 64 MiB each without a NACP. 0 and 0 for another type with a NACP */
 void am_save_data_size(u8 type, i64* normal_size, i64* journal_size);

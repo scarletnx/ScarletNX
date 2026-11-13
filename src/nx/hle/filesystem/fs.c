@@ -2133,6 +2133,9 @@ static int nn_fssrv_sf_IFileSystemProxy_IsSdCardAccessible(SvcObj* self, u8* acc
     *accessible = 1;
     R_SUCCEED();
 }
+int fs_program_count(void) {
+    return g_hle.fs.dfs && g_hle.fs.dump.programs > g_program ? (int)g_hle.fs.dump.programs : -1;
+}
 /* this program's index and its application's programs: those of the dump read in place, else as many as reach its
    index (a program count of 0 doesn't happen on the console) */
 static int nn_fssrv_sf_IFileSystemProxy_GetProgramIndexForAccessLog(SvcObj* self, u32* program_index,

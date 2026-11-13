@@ -161,8 +161,9 @@ setting Transition screen
     startup
     words Off|On
     help 1 = when a program of a collection starts another (a game picked in its menu), the new program's window shows
-    help the loading screen, with the game's name, the program's number and the game's cover, from a quarter second
-    help after it opens until the game draws, and the launcher's run screen shows it while no window is open
+    help the loading screen from a quarter second after it opens until the game draws: the game's name and cover, and
+    help what is known of the program as its steps (its number, the program that started it, the user, the version, the
+    help DLCs, the GPU, its title ID, the build). The launcher's run screen shows it while no window is open
 setting Language
     key language
     int 0 17
