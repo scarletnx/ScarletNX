@@ -58,6 +58,12 @@ int main(void) {
     assert(!vk_tex_evicted_take(e, in_set(9, 0)) && !vk_tex_evicted_take(e, in_set(9, 1)));
     assert(vk_tex_evicted_take(e, in_set(9, 2)) && vk_tex_evicted_take(e, in_set(9, 3)));
     assert(vk_tex_evicted_take(e, in_set(9, 10)) && vk_tex_evicted_take(e, in_set(9, 11)));
+    /* the way one leaves is the one the next key takes: the oldest stays, with a set that was full */
+    for (u32 i = 0; i < VK_TEX_EVICTED_WAYS; i++) vk_tex_evicted_add(e, in_set(10, i));
+    assert(vk_tex_evicted_take(e, in_set(10, 2)));
+    vk_tex_evicted_add(e, in_set(10, 10));
+    assert(vk_tex_evicted_take(e, in_set(10, 0)) && vk_tex_evicted_take(e, in_set(10, 1)));
+    assert(vk_tex_evicted_take(e, in_set(10, 3)) && vk_tex_evicted_take(e, in_set(10, 10)));
     for (u32 s = 0; s < VK_TEX_EVICTED_SETS; s++) /* all taken: the table is empty again */
         for (u32 w = 0; w < VK_TEX_EVICTED_WAYS; w++) assert(!e->hash[s][w]);
     free(e);
