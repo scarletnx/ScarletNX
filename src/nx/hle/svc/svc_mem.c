@@ -554,8 +554,7 @@ u32 svc_unmap_process_memory(u64 dst, u32 process, u64 src, u64 size) {
    page of it for each hook it writes. On the console they are all the same pages. Without the pool each view is a
    copy, so a write through one of them is in that copy only: every view of the line is read, the bytes each of them
    changed go into the code, and then every copy and snapshot gets the code as it is now, as one page would show
-   it. Reading only the first view that showed the line missed a hook written through a later one (TotK's UltraCam:
-   its nnMain hook, which mounts the SD card, never ran) */
+   it */
 int svc_code_line(u64 addr, u64* code) {
     int i, j, r = 0, found = 0, copies = !mem_pool_active();
     u64 line;

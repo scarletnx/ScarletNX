@@ -308,7 +308,7 @@ static void test_process_memory_two_views(void) {
     test_handle = &process;
     CHECK(mem_map(src, 0x2000, MS_CODE, PERM_RX) == 0);
     memset(GP(src), 0, 0x2000);
-    gw32(src + 0x11E0, 0x14000004); /* a function of one branch, as TotK's nnMain is */
+    gw32(src + 0x11E0, 0x14000004); /* a function of one branch, which the hook replaces */
     CHECK(svc_map_process_memory(whole, 0x1234, src, 0x2000) == 0);
     CHECK(svc_map_process_memory(page, 0x1234, src + 0x1000, 0x1000) == 0);
     gw32(page + 0x1E0, 0x17FFFFF0); /* the hook's branch, through the page */
