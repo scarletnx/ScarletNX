@@ -66,10 +66,11 @@ int gui_mali_model(const char* gpu_name);
    GPU */
 int gui_xclipse_model(const char* gpu_name);
 /* the driver recommended for the GPU of that Vulkan name, as the page says it: Eden's for an Adreno model ("GameHub
-   Adreno 8xx"), NX-Mali for a Mali it gives Vulkan 1.3, RADV Xclipse for an Xclipse it drives; "Unsupported" for
-   none */
+   Adreno 8xx"), NX-Mali 0.0.3 for a Mali it gives Vulkan 1.3, RADV Xclipse for an Xclipse it drives; "Unsupported"
+   for none */
 const char* gui_driver_recommended(const char* gpu_name);
 /* that driver among repository repo's releases (gui_driver_repos' index), listed in list: its index there, -1 when the
-   recommendation is another repository's, none, or a release list does not have */
+   recommendation is another repository's, none, a release list does not have, or one older than the version it
+   needs (NX-Mali's 0.0.3, read from the release's title) */
 int gui_driver_recommended_release(const char* gpu_name, int repo, const GuiDriverReleases* list);
 #endif

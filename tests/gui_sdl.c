@@ -3100,8 +3100,8 @@ static void gpu_drivers(App* app, const char* temporary) {
     free(bad);
 }
 /* Download Driver's network, the test's own: each repository's releases (one failing as GitHub's rate limit does,
-   NX-Mali's as GitHub lists its first, radv-xclipse's as it lists its three newest), and the package a release's asset
-   is; the lists asked for counted */
+   NX-Mali's as GitHub lists its 0.0.2 or, past mali_new, a 0.0.3 named the same way, radv-xclipse's as it lists its
+   three newest), and the package a release's asset is; the lists asked for counted */
 static struct {
     char* zip; /* the package's bytes */
     size_t zip_size;
@@ -3110,6 +3110,7 @@ static struct {
     char* radv_zip; /* radv-xclipse's Android package's */
     size_t radv_zip_size;
     int lists, mali_lists, radv_lists; /* the releases asked for: every repository's, NX-Mali's, radv-xclipse's */
+    int mali_new;                      /* NX-Mali's release 0.0.3, not 0.0.2 */
 } g_fake_net;
 static int fake_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size) {
     const char* body = "[]";
@@ -3119,12 +3120,17 @@ static int fake_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse*
     if (strstr(url, "https://api.github.com/repos/")) ++g_fake_net.lists;
     if (strstr(url, "/repos/Slopinator99/NX-Mali/releases")) {
         ++g_fake_net.mali_lists;
-        body = "[{\"tag_name\": \"beta\", \"name\": \"NX-Mali 0.0.1\", \"prerelease\": false,"
-               " \"body\": \"First release of the WIP driver for Mali devices\","
-               " \"published_at\": \"2026-11-13T15:57:50Z\", \"assets\": [{\"name\": \"NX-Mali_0.0.1.zip\","
-               " \"size\": 4404914, \"browser_download_url\":"
-               " \"https://example.invalid/NX-Mali_0.0.1.zip\"}]}]";
-    } else if (!strcmp(url, "https://example.invalid/NX-Mali_0.0.1.zip")) {
+        body = g_fake_net.mali_new ? "[{\"tag_name\": \"beta\", \"name\": \"NX-Mali 0.0.3\", \"prerelease\": false,"
+                                     " \"body\": \"Vulkan 1.3 on Mali-G615 (CSF)\","
+                                     " \"published_at\": \"2026-11-14T12:00:00Z\", \"assets\": [{\"name\":"
+                                     " \"NX-Mali_0.0.3.zip\", \"size\": 4646207, \"browser_download_url\":"
+                                     " \"https://example.invalid/NX-Mali_0.0.3.zip\"}]}]"
+                                   : "[{\"tag_name\": \"beta\", \"name\": \"NX-Mali 0.0.2\", \"prerelease\": false,"
+                                     " \"body\": \"Vulkan 1.3 on Mali-G615 (CSF), built on malisx2 0.5.0.\","
+                                     " \"published_at\": \"2026-11-13T19:32:45Z\", \"assets\": [{\"name\":"
+                                     " \"NX-Mali_0.0.2.zip\", \"size\": 4646207, \"browser_download_url\":"
+                                     " \"https://example.invalid/NX-Mali_0.0.2.zip\"}]}]";
+    } else if (!strcmp(url, "https://example.invalid/NX-Mali_0.0.3.zip")) {
         out->body = (char*)malloc(g_fake_net.mali_zip_size + 1);
         memcpy(out->body, g_fake_net.mali_zip, g_fake_net.mali_zip_size);
         out->size = g_fake_net.mali_zip_size;
@@ -3396,17 +3402,18 @@ static void gba_covers(App* app, const char* rom, const char* folder, const char
 /* GPU Drivers > Download Driver on a phone with an Adreno GPU, against the test's network: Eden's five lists fetched
    as the page opens, NX-Mali's not, one repository's failure said, a GPU maker's own marked in its release's box, a
    download failing said, and a package downloaded, added and picked. Then on a phone with a Mali GPU: NX-Mali's list
-   alone, its latest recommended, its package (meta.json as its first release's) downloaded, added and picked. Then
+   alone, its 0.0.2 listed without the mark, its 0.0.3 recommended, and that package (meta.json's fields as 0.0.2's)
+   downloaded, added and picked. Then
    on a phone with an Xclipse GPU: radv-xclipse's list alone, titled by tag, its latest recommended, its Android
    package alone in the release's box, not its builds for Linux and for Bannerlator, and that package (meta.json as
    its v1.9.0's) downloaded, added and picked */
 static void download_driver(App* app, const char* temporary) {
     char* zip = driver_zip(temporary, "turnip.zip");
     char* mali_zip = package_zip(
-        temporary, "NX-Mali_0.0.1.zip",
-        "{\"name\": \"NX-Mali 0.0.1\", \"description\": \"NX-Mali 0.0.1: Vulkan driver for Arm Mali-G615 (kbase/CSF)\","
+        temporary, "NX-Mali_0.0.3.zip",
+        "{\"name\": \"NX-Mali 0.0.3\", \"description\": \"NX-Mali 0.0.3: Vulkan driver for Arm Mali (kbase).\","
         " \"author\": \"NX-Mali contributors, based on bmdhacks/malisx2\", \"vendor\": \"NX-Mali\","
-        " \"driverVersion\": \"0.0.1\", \"minApi\": 29, \"libraryName\": \"libvulkan_nxmali.so\"}",
+        " \"driverVersion\": \"0.0.3\", \"minApi\": 29, \"libraryName\": \"libvulkan_nxmali.so\"}",
         "libvulkan_nxmali.so");
     char* radv_zip = package_zip(
         temporary, "radv-xclipse-27.0.0-devel-cc87fdf.zip",
@@ -3510,11 +3517,12 @@ static void download_driver(App* app, const char* temporary) {
     app->driver_off = 0;
     change_answer(app, GUI_ASK_DRIVER, true); /* back to none, for what follows */
     assert(!app->packages_count && !app->gpu_driver[0]);
-    /* a phone with a Mali GPU NX-Mali gives Vulkan 1.3: its list alone fetched, one box, the latest release
-       recommended; its package downloaded, added and picked */
+    /* a phone with a Mali GPU NX-Mali gives Vulkan 1.3: its list alone fetched, one box; its 0.0.2, the release
+       before the features 1.2 and 1.3 require, listed without the mark */
     app->gpu_host = host_mali;
     snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", "Mali-G615 MC6");
     g_fake_net.lists = 0;
+    g_fake_net.mali_new = 0;
     open_drivers(app, NULL, NULL, 0);
     assert(!app->drivers_form.value[1][0] && !form_row_off(app, &app->editor, 1));
     app->editor.row = 1; /* Download Driver */
@@ -3523,11 +3531,25 @@ static void download_driver(App* app, const char* temporary) {
     pump_until(app, &app->fetching);
     assert(g_fake_net.lists == 1 && g_fake_net.mali_lists == 1 && !g_fake_net.radv_lists &&
            app->fetch_state[5] == GUI_FETCH_LISTED);
+    assert(app->fetch_groups == 1 && gui_editor_rows(&app->editor) == 1 &&
+           !strcmp(app->fetch_label[0], "NX-Mali 0.0.2") && !strcmp(app->fetch_form.value[0], "Latest"));
+    assert(!strcmp(app->editor.note, "GPU: Mali-G615 MC6. Recommended: NX-Mali 0.0.3."));
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_DRIVERS);
+    /* its 0.0.3: the latest release recommended; its package downloaded, added and picked */
+    g_fake_net.lists = g_fake_net.mali_lists = 0;
+    g_fake_net.mali_new = 1;
+    app->editor.row = 1; /* Download Driver */
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_FETCH);
+    pump_until(app, &app->fetching);
+    assert(g_fake_net.lists == 1 && g_fake_net.mali_lists == 1 && !g_fake_net.radv_lists &&
+           app->fetch_state[5] == GUI_FETCH_LISTED);
     assert(app->fetch_groups == 1 && !strcmp(app->fetch_title[0], "NX-Mali: 1 release") &&
            gui_editor_rows(&app->editor) == 1 && app->fetch_repo[0] == 5 && !app->fetch_group[0] &&
-           !app->fetch_release[0] && !strcmp(app->fetch_label[0], "NX-Mali 0.0.1"));
+           !app->fetch_release[0] && !strcmp(app->fetch_label[0], "NX-Mali 0.0.3"));
     assert(!strcmp(app->fetch_form.value[0], "Latest, Recommended"));
-    assert(!strcmp(app->editor.note, "GPU: Mali-G615 MC6. Recommended: NX-Mali."));
+    assert(!strcmp(app->editor.note, "GPU: Mali-G615 MC6. Recommended: NX-Mali 0.0.3."));
     render(app);
     assert(grouped_entries(app) == 2);
     {
@@ -3536,13 +3558,13 @@ static void download_driver(App* app, const char* temporary) {
     }
     key(app, SDLK_RETURN);
     assert(app->picks_shown && app->picks_of == GUI_PICKS_ASSET && app->picks.count == 1 &&
-           strstr(pick_label(app, 0), "NX-Mali_0.0.1.zip, ") && !strstr(pick_label(app, 0), "proprietary"));
+           strstr(pick_label(app, 0), "NX-Mali_0.0.3.zip, ") && !strstr(pick_label(app, 0), "proprietary"));
     key(app, SDLK_RETURN);
     pump_until(app, &app->downloading);
-    assert(app->form == GUI_FORM_DRIVERS && app->packages_count == 1 && !strcmp(app->packages[0].id, "NX-Mali_0.0.1") &&
-           !strcmp(app->gpu_driver, "NX-Mali_0.0.1") && !strcmp(app->drivers_form.value[1], "(*)"));
-    assert(strstr(app->editor.note, "Added NX-Mali 0.0.1 (0.0.1), in gpu_drivers/NX-Mali_0.0.1. GPU driver for every "
-                                    "game: NX-Mali 0.0.1"));
+    assert(app->form == GUI_FORM_DRIVERS && app->packages_count == 1 && !strcmp(app->packages[0].id, "NX-Mali_0.0.3") &&
+           !strcmp(app->gpu_driver, "NX-Mali_0.0.3") && !strcmp(app->drivers_form.value[1], "(*)"));
+    assert(strstr(app->editor.note, "Added NX-Mali 0.0.3 (0.0.3), in gpu_drivers/NX-Mali_0.0.3. GPU driver for every "
+                                    "game: NX-Mali 0.0.3"));
     /* a Mali it gives only Vulkan 1.1: listed, not recommended */
     snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", "Mali-G78 MC14");
     app->editor.row = 2; /* Download Driver, under the package */
