@@ -70,7 +70,9 @@ and plays its sound test.
 | Guest memory's writes: the pages the renderer copied to the GPU (textures, color surfaces, the framebuffer) write-protected, a fault marking a page written and letting the write through, so unchanged memory isn't copied again (`mprotect` or `VirtualProtect`, and the fault handler) | `src/vita/runtime/watch.c` |
 | Keyboard, mouse (touch), gamepads and scripted presses (`--script=ms:hex,...`, SceCtrl's button bits, each held for `--press_len=` ms) | `src/vita/platform/input.c` |
 
-Esc twice within 3 seconds ends the game, a first press warning on the terminal.
+Esc twice within 3 seconds ends the game, a first press warning on the terminal and in a line over the game, as a
+Switch game's notices show. The Switch's `hotkey_upscaler` (Ctrl+U) and `hotkey_anti_aliasing` (Ctrl+Shift+A) step
+the upscaler and the anti-aliasing for the run, the new mode said there too.
 
 The driver's settings (`--key=value`) are the `g_vita_debug_ini` table of `src/nx/runtime/settings.txt`: `vita_hle_trace` prints each import call,
 `vita_jit_trace` each block compiled at run time, `vita_gxm_trace` each scene and draw (and why a draw was
