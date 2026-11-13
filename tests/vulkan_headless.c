@@ -3098,6 +3098,17 @@ static int alias_read(VkImage img, const VkSparseShape* sh, u32 b, u32* texel) {
    wide, pages 0 and 1 of one key, page 2 of another, page 3 of none. Pages 0 and 1 share memory, and page 1 has page
    0's texels without a load; page 1 takes page 2's key and reads page 2's; page 0 let go frees its memory, which no
    page has any more; page 2 let go leaves its memory to page 1 */
+/* whether the device makes the image with blocks that share memory: what memory.c asks of it for its images
+   (sparse_alias_supported) */
+static int alias_expected(const VkImageCreateInfo* ii) {
+    VkImageFormatProperties ip;
+    return g_vk.feat.sparseResidencyAliased && g_settings.sparse_texture_sharing &&
+           vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, ii->format, ii->imageType, ii->tiling, ii->usage,
+                                                    ii->flags | VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
+                                                        VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT |
+                                                        VK_IMAGE_CREATE_SPARSE_ALIASED_BIT,
+                                                    &ip) == VK_SUCCESS;
+}
 static int alias_bricks(void) {
     VkResidentShape rs;
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -3121,6 +3132,7 @@ static int alias_bricks(void) {
     u32 texel = 0;
     CHECK(vk_image_resident(img, want, keys, 4, &bytes) && bytes == need && bytes);
     const int aliased = want[1] == 1; /* page 1 has page 0's memory */
+    CHECK(aliased == alias_expected(&ii)); /* where the device shares, the pages of a key do */
     block = bytes / (aliased ? 3 : 4);
     CHECK(want[0] == 2 && want[2] == 2 && want[3] == 2 && bytes == block * (aliased ? 3 : 4));
     alias_layout(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -3179,7 +3191,7 @@ static int check_sparse_alias(void) {
     }
     const VkSparseShape* sh = vk_image_sparse_shape(img);
     CHECK(sh && sh->per_layer > 41 && sh->tail_first == 1);
-    const int shares = g_vk.feat.sparseResidencyAliased != 0; /* asked of this format too (memory.c) */
+    const int shares = alias_expected(&ii);
     u8* bits = calloc(sh->per_layer / 8 + 1, 1);
     u64* keys = calloc(sh->per_layer, sizeof *keys);
     CHECK(bits && keys);
@@ -3191,11 +3203,12 @@ static int check_sparse_alias(void) {
     CHECK(vk_image_sparse_need(img, bits, keys) && vk_image_sparse_bind(img, bits, keys, &bytes) == 1);
     u32 blocks = vk_image_bound_blocks(img), mems = vk_image_bound_memory(img);
     int aliased = mems < blocks;
-    if (blocks != 7 || (mems != 3 && mems != 7) || (shares && !aliased && mems != 7))
-        fprintf(stderr, "sparse alias: %u blocks have memory, on %u allocations: 7 on 3 (or on 7 where the device "
-                        "shares none) expected\n",
-                blocks, mems);
-    CHECK(blocks == 7 && (mems == 3 || mems == 7) && bytes && !(bytes % mems));
+    if (blocks != 7 || mems != (shares ? 3u : 7u))
+        fprintf(stderr,
+                "sparse alias: %u blocks have memory, on %u allocations: 7 on %u expected, as the device "
+                "shares %s\n",
+                blocks, mems, shares ? 3u : 7u, shares ? "memory between blocks" : "none");
+    CHECK(blocks == 7 && mems == (shares ? 3u : 7u) && bytes && !(bytes % mems));
     block = bytes / mems;
     CHECK(!vk_image_sparse_need(img, bits, keys) && vk_image_sparse_bind(img, bits, keys, &bytes) == 0);
     u32 texel = 0;
