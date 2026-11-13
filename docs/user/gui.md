@@ -197,27 +197,19 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   a folder of `gpu_drivers/` of the user's data folder named after the zip; a refusal says what is wrong, with the
   value. A
   package's box has **Use** and **Remove** (Del removes too), which asks first; one added is picked where packages
-  load. **Download Driver** lists, from GitHub, the releases of the driver repositories for the device's GPU: on an
-  Adreno those Eden's driver fetcher lists (Mr. Purple Turnip, GameHub Adreno 8xx, KIMCHI Turnip, Weab-Chan
-  Freedreno, Whitebelyash Turnip), on a Mali [NX-Mali](https://github.com/Slopinator99/NX-Mali), on an Xclipse
-  [RADV Xclipse](https://github.com/JimVulkan/radv-xclipse), its releases titled by their tags. They are fetched as
-  it opens, with the GPU and the driver recommended for it: on an Adreno Eden's, but T30 on an Adreno 605 to 613
-  (EOL-24.3.4 gives those Vulkan 1.0); on a Mali NX-Mali 0.0.3 or newer, the first to report the features Vulkan 1.2
-  and 1.3 require (the version its release's title says; an older release is listed without the mark), where it says
-  Vulkan 1.3 (the G610, G615, G710 and G715), none on the older ones, where it says 1.1 and ScarletNX needs 1.3, or
-  1.2 with the extensions 1.3 took in; on an Xclipse RADV Xclipse's latest release where it drives the GPU, at Vulkan
-  1.4 (the 530, 540, 550, 920, 940, 950 and 960). A repository that failed says why, and Enter fetches the lists again.
-  A release's box lists its downloads with their sizes, a GPU maker's own drivers (every GameHub one, and one named
-  Qualcomm) marked *proprietary, no license*, and only RADV Xclipse's Android package (`radv-xclipse-<version>.zip`),
-  not its builds for Linux under Termux (`-glibc-`) and for Bannerlator's Wayland mode (`-wayland-`); the one picked is
-  downloaded, its progress in the note, and added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with
-  an Adreno GPU (`/dev/kgsl-3d0`), a Mali GPU (`/dev/mali0`) or an Xclipse GPU (a render node of the `amdgpu` kernel
-  driver in `/dev/dri`; RADV Xclipse's package asks Android 14): the page's first line says what this device is and,
-  anywhere else, why games there use the system driver. There the packages, Download Driver and Add Driver are greyed,
-  each row saying what the device lacks (*Android only*, *Unsupported GPU*...) and Enter the whole line; a package's box
-  still opens for its Remove, its Use refused with that line. A game whose package does not load stops, saying why, and
-  so does one whose package lists no Vulkan device, a driver for another GPU. Under them, **edenprobe Mode** (Quick, the
-  default: `notime cpu graphics hooks`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
+  load. **Download Driver** lists the GitHub releases for the device's GPU: Eden's five repositories on an Adreno,
+  [NX-Mali](https://github.com/Slopinator99/NX-Mali) on a Mali, radv-xclipse's Android zips on an Xclipse; the one
+  recommended for its model is marked, a GPU maker's own *proprietary, no license*, and the one picked is downloaded
+  and added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU
+  (`/dev/kgsl-3d0`), a Mali
+  GPU (`/dev/mali0`) or an Xclipse GPU (a render node of the `amdgpu` kernel driver in `/dev/dri`, for [RADV's port to
+  it](https://github.com/JimVulkan/radv-xclipse), whose package asks Android 14): the page's first line says what this
+  device is and, anywhere else, why games there use the system driver. There the packages, Download Driver and Add
+  Driver are greyed, each row saying what the device lacks (*Android only*, *Unsupported GPU*...) and Enter
+  the whole line; a package's box still opens for its Remove, its Use refused with that line. A
+  game whose package does not load stops, saying why, and so does one whose package lists no Vulkan device, a driver
+  for another GPU. Under them, **edenprobe Mode** (Quick, the default:
+  `notime cpu graphics hooks`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
   [edenprobe](../dev/edenprobe.md)'s probes as a game with the GPU driver picked here, from `probe/edenprobe.nro` of the
   Logs folder, in a data folder of its own there (`probe/.scarletnx`: none of your settings, saves or users) with the
   default settings, and the build as edenprobe's machine (`machine=scarletnx@<commit>`), whose ban list then skips the
