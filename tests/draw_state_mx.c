@@ -346,6 +346,10 @@ static void raster_key(void) {
     for (u32 i = 0; i < 4; i++) r[0x3EF + i] = 0;
     mx_draw_raster_key(r, &k);
     CHECK(k.sample_mask == 0);
+    r[0x3ED] = 1; /* raster samples of their own, which the mask is over: it stays all */
+    mx_draw_raster_key(r, &k);
+    CHECK(k.sample_mask == ~0u);
+    r[0x3ED] = 0;
     for (u32 i = 0; i < 4; i++) r[0x3EF + i] = 0xFFFF;
     /* 0x54F: alpha to coverage in bit 0, alpha to one in bit 4 */
     r[0x54F] = 0x11;
