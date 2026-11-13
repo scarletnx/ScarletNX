@@ -1403,14 +1403,18 @@ static void toast_draw(SnxUiList* l, int sw, int sh, const float* stats) {
     x += ui_text_backed(l, x, y, s, toast, UI_PAGE);
     ui_text_backed(l, x, y, s, " ", UI_PAGE);
 }
-/* the slot whose thumbnail shows beside the save states' pages: the one in focus on the list, or the page's */
+/* the slot whose thumbnail shows beside the save states' pages: the one in focus on the list, or the page's. Given
+   again when the layer's picture is no longer the one it gave (the loading screen's cover took it meanwhile) */
 static void aside_draw(SnxUiList* l, const SnxOverlayRect* r) {
-    static u32 gen;
+    static u32 gen, given;
     static int at = -1;
     int slot = page == PAGE_STATES ? (focus < nslots ? focus : -1) : slot_at;
     float e = r->w / (float)(SNX_UI_IMAGE_W / 2); /* the scale: a pixel of it */
-    if (slot != at || gen != slots_gen) {
+    u32 version;
+    ui_image_get(&version);
+    if (slot != at || gen != slots_gen || version != given) {
         ui_image_set(slot >= 0 ? slots[slot].thumb : NULL);
+        ui_image_get(&given);
         at = slot;
         gen = slots_gen;
     }

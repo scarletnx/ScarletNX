@@ -23,6 +23,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/stats.h"
+#include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
@@ -987,6 +988,11 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
         g_last_y = (u32)((u64)src->sh * y0 / src->h);
         g_last_w = (u32)((u64)src->sw * x1 / src->w) - g_last_x;
         g_last_h = (u32)((u64)src->sh * y1 / src->h) - g_last_y;
+    }
+    if (prepare_screen_shown()) { /* a program switch's screen gives way before the game's frame takes its layer */
+        ui_lock();
+        prepare_screen_game_drew();
+        ui_unlock();
     }
     show(src, &hdr, x1 - x0, y1 - y0, transform, 1, released_ns, period_ns, shown_syncpt);
     __atomic_store_n(&g_shown_ns, plat_ns(), __ATOMIC_RELAXED);

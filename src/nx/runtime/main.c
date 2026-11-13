@@ -679,6 +679,7 @@ void snx_save_before_exit(void) {
 /* ---- the frontend's loop ---- */
 
 static void handover_write(void); /* ExecuteProgram's hand-over, written as the program ends */
+static void switch_tick(void);    /* a program switch's screen (transition_screen), each pass before the first frame */
 
 /* this long without a new frame is worth a line and a dump; and without progress on the shader loading screen, a
    line (prepare_wait) */
@@ -811,6 +812,7 @@ static void frontend_loop(void) {
         }
         if (++tick % 60 == 0) ini_poll(0);
         frontend_frame();
+        switch_tick();
         SNX_ZONE_END(z_frontend);
 #if defined(SNX_TRACY)
         SNX_PLOT("guest memory", used_memory());
@@ -957,6 +959,7 @@ static void prepare_wait(const char* title) {
                  (unsigned long long)(STALL_NS / 1000000000u), p.files_seen, p.files, p.programs_done, p.programs,
                  p.pipes_made, p.pipes, p.loaded ? "read" : "still being read");
         }
+        switch_tick();
         n = prepare_screen_steps(&p, st, began, now / 1000000u);
         if (now - t0 >= 250000000ull && n && backend_window_shown()) { /* not for a headless run */
             char* dir = !themed && snx_menu_run_theme ? backend_launcher_folder() : NULL;
@@ -1145,6 +1148,88 @@ static void handover_write(void) {
             next.context ? "stored" : "not stored", path, g_gamename, folder, next.program);
     free(path);
     snx_next_free(&next);
+}
+
+/* ---- the screen of a program a collection's program started (transition_screen): the loading screen in the
+   launcher's look, with the game's name, the program's number and the game's cover, from a quarter second after the
+   window opens until the game's first frame, the window black meanwhile without it */
+#if defined(__ANDROID__) /* no Esc there: back opens the menu, whose Exit quits */
+#define SWITCH_FOOT "Back: menu."
+#else
+#define SWITCH_FOOT "Esc twice: quit."
+#endif
+static struct {
+    SnxRunTheme theme;
+    int on, themed; /* themed: the launcher's theme read, else YoRHa's built in */
+    u64 opened, up; /* plat_ns(): the window's opening, and the screen's (0 while it has not shown) */
+    char title[96];
+} g_switch;
+/* after the window opens: whether this program was started by a hand-over (the system's start and Play have none),
+   and for one the launcher's theme and the game's cover, its icon.jpg in the game's own data folder (a collection's
+   other programs have none of their own), each said when it is not there or does not draw */
+static void switch_start(const char* title) {
+    char folder[sizeof g_exedir], path[sizeof g_exedir + 320];
+    unsigned char* jpeg;
+    size_t size = 0;
+    int bad;
+    if (g_next_taken <= 0 || !backend_window_shown()) return; /* started by no other program, or headless */
+    if (!g_settings.transition_screen) {
+        LOG("transition: transition_screen=0: program %d's window stays black until the game draws\n", g_program);
+        return;
+    }
+    g_switch.on = 1;
+    g_switch.opened = plat_ns();
+    snprintf(g_switch.title, sizeof g_switch.title, "%s", title);
+    {
+        char* dir = snx_menu_run_theme ? backend_launcher_folder() : NULL;
+        if (dir) {
+            snx_menu_run_theme(dir, &g_switch.theme);
+            g_switch.themed = g_switch.theme.ink != g_switch.theme.page; /* else the YoRHa theme's, built in */
+        }
+        free(dir);
+    }
+    exe_folder(folder, sizeof folder);
+    if (snx_path_format(path, sizeof path, "%s/%s_data/icon.jpg", folder, g_gamename)) return;
+    jpeg = snx_is_file(path) ? (unsigned char*)snx_read_file(path, &size) : NULL;
+    ui_lock();
+    bad = prepare_screen_cover(jpeg, size);
+    ui_unlock();
+    if (!jpeg)
+        LOG("transition: %s is not there: program %d's screen shows no cover\n", path, g_program);
+    else if (bad)
+        WARN("transition: %s does not draw as a JPEG (%zu bytes): program %d's screen shows no cover\n", path, size,
+             g_program);
+    free(jpeg);
+}
+/* the screen up from a quarter second after the window opened, its dots turning, until the game's first frame (the
+   renderer takes it away before it draws that frame, prepare_screen_game_drew): said, with how long it showed */
+static void switch_tick(void) {
+    u64 now, waited;
+    if (!g_switch.on) return;
+    now = plat_ns();
+    waited = (now - g_switch.opened) / 1000000u;
+    if (__atomic_load_n(&g_frames, __ATOMIC_RELAXED)) {
+        ui_lock();
+        prepare_screen_switch(NULL, NULL, -1, NULL, 0);
+        ui_unlock();
+        g_switch.on = 0;
+        if (g_switch.up)
+            LOG("transition: program %d's screen shown for %llu ms, until the game's first frame %llu ms after the "
+                "window opened\n",
+                g_program, (unsigned long long)((now - g_switch.up) / 1000000u), (unsigned long long)waited);
+        else
+            LOG("transition: program %d's screen not shown: the game drew %llu ms after the window opened, within a "
+                "quarter second\n",
+                g_program, (unsigned long long)waited);
+        return;
+    }
+    if (waited < 250) return;
+    if (!g_switch.up) g_switch.up = now;
+    ui_lock();
+    prepare_screen_switch(g_switch.themed ? &g_switch.theme : NULL, g_switch.title, g_program, SWITCH_FOOT,
+                          now / 1000000u);
+    ui_unlock();
+    if (g_renderer->refresh) g_renderer->refresh();
 }
 
 int snx_main(int argc, char** argv) {
@@ -1347,6 +1432,7 @@ int snx_main(int argc, char** argv) {
         if (addons[0]) LOG("game: played with %s\n", addons);
         video_init(title, addons);
     }
+    switch_start(title);
     /* the log's line on the host's power state, and the mode docked's Auto picks, before the game's first thread */
     options_tv_mode_start();
     if (g_settings.profiler) {
