@@ -132,6 +132,32 @@ static void cores(SnxCtrProcess* p) {
     assert(snx_ctr_dispatch(&module, p, UINT64_C(100000000), &executed) == SNX_CTR_RUN_EXIT);
     assert(finished == 1 && p->current_thread == 2);
 }
+/* A block that asks for the tick (an SVC that never blocks) and loops on itself, until its 64th goes on to the end */
+static unsigned ticks;
+static void tick_block(SnxArmCPU* cpu) {
+    cpu->r[15] = ++ticks < 64 ? 0x100010 : 0x100008;
+    cpu->exit = SNX_ARM_SVC;
+    cpu->syndrome = 0x28;
+}
+/* An SVC inside a core's slice keeps the turn on that core: the main thread's 64 SVCs take little more than one slice
+   of the busy thread on the other core, where passing the turn at each SVC gave the busy one a slice per SVC (64
+   slices). A New 3DS game's audio thread, many SVCs a frame, fell behind that way while core 0 spun, and never let
+   another thread of its core run */
+static void slices(SnxCtrProcess* p) {
+    static SnxArmBlock arm[1024], thumb[2048];
+    arm[0] = spin_block; /* 0x100000 */
+    arm[2] = exit_block; /* 0x100008 */
+    arm[4] = tick_block; /* 0x100010 */
+    SnxCtrModule module = {.text_address = 0x100000, .text_bytes = 4096, .arm_blocks = arm, .thumb_blocks = thumb};
+    uint32_t busy = svc(p, 8, 0x20, 0x100000, 0, SNX_CTR_STACK_TOP - 0x1000, 1, SNX_CTR_SVC_RETURN);
+    assert(!p->cpu.state.cpu.r[0] && p->objects[snx_ctr_handle_object(p, busy)].data.thread.core == 1);
+    p->cpu.state.cpu.r[15] = 0x100010;
+    finished = ticks = 0;
+    uint64_t executed = 0;
+    assert(snx_ctr_dispatch(&module, p, UINT64_C(100000000), &executed) == SNX_CTR_RUN_EXIT);
+    assert(finished == 1 && ticks == 64 && p->current_thread == 2);
+    assert(executed < 4u * SNX_CTR_POLL_BLOCKS);
+}
 int main(void) {
     unsigned char code[0x3000] = {0};
     SnxCtrImage image = ctr_image(code, sizeof code, 4096);
@@ -343,6 +369,10 @@ int main(void) {
         p = snx_ctr_process_new(&image, (SnxCtrModel)model);
         assert(p);
         cores(p);
+        snx_ctr_process_free(p);
+        p = snx_ctr_process_new(&image, (SnxCtrModel)model);
+        assert(p);
+        slices(p);
         snx_ctr_process_free(p);
     }
     puts(
