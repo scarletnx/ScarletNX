@@ -435,9 +435,8 @@ typedef struct App {
     bool log_due; /* the last run ended abnormally, not by ESC, and its log is not saved since: Share Log blinks */
     char row_text[700]; /* the text of the row a list of ui.txt asked for last, until it is drawn (get_row_info) */
     char pick_text[96]; /* a picks box's choice with its mark, "(*) Subfolders" (pick_label) */
-    GuiConfirm confirm; /* the question before a run is aborted, when ask_abort says to ask it */
+    GuiConfirm confirm; /* the question shown: before a run is aborted, the app closed, a folder used... */
     int choices_of;     /* whose choices ui.txt's scene Choices draws or hits now (GuiChoicesOf) */
-    bool ask_abort;     /* ESC asks first: on a phone it is Back, an edge swipe easily made by mistake */
     int native;
     /* the run's transition_screen: a collection's program switch shows its page (steps_draw) */
     bool transition;
@@ -2073,6 +2072,14 @@ static void run_console(App* app, const GuiPlace* p, int* cols, int* rows) {
    ended, the status under them; the file in the tips, the ESC line where the keys go, as the theme's prompt frames it */
 static void run_place(App* app, GuiPlace* p) {
     place_screen(app, p, snx_tr(SAY_ABORT), GUI_SHOWS_STATUS | GUI_SHOWS_WIDE | GUI_SHOWS_SIDE);
+}
+/* whether render pixel row y is on a run's ESC line, which a click or a tap presses as ESC: the console layout's foot,
+   the loading screen's last row */
+static bool run_foot_at(App* app, float y) {
+    GuiPlace p;
+    if (app->theme.run == GUI_RUN_STEPS) return (int)(y / (float)(16 * app->scale)) == app->rows - 1;
+    run_place(app, &p);
+    return y >= (float)p.keys.y && y < (float)(p.keys.y + p.keys.h);
 }
 static void job_console_size(App* app, int* cols, int* rows);
 static void size_shown(const App* app, char* out, size_t n);
@@ -18182,8 +18189,8 @@ static const char* queue_game(const App* app) {
     int i = app->queue_focus;
     return i >= 0 && i < app->queue.count ? gui_queue_listed(&app->queue, i) : NULL;
 }
-/* a key on the Compile tab: Up and Down go over the queue, Enter plays one that ended well, ESC aborts the one
-   running (asked first where ask_abort says so) or goes back to Games, a line that ended seen and gone with it */
+/* a key on the Compile tab: Up and Down go over the queue, Enter plays one that ended well, ESC asks to abort the one
+   running or goes back to Games, a line that ended seen and gone with it */
 static void queue_key(App* app, GuiKey key) {
     int i = app->queue_focus, n = app->queue.count;
     if (!n) return;
@@ -18192,12 +18199,9 @@ static void queue_key(App* app, GuiKey key) {
         app->queue_focus = (i + (key == GUI_UP ? n - 1 : 1)) % n;
     else if (key == GUI_SELECT)
         queue_play(app);
-    else if (key == GUI_CANCEL && app->queue.job[i].state == GUI_JOB_RUNNING) {
-        if (app->ask_abort)
-            gui_confirm_open(&app->confirm, GUI_ASK_ABORT, false);
-        else
-            job_abort(app);
-    } else if (key == GUI_CANCEL) {
+    else if (key == GUI_CANCEL && app->queue.job[i].state == GUI_JOB_RUNNING)
+        gui_confirm_open(&app->confirm, GUI_ASK_ABORT, false);
+    else if (key == GUI_CANCEL) {
         char* game = snx_strdup(gui_queue_listed(&app->queue, i)); /* its line may go */
         if (app->queue.job[i].state >= GUI_JOB_OK) queue_drop(app, i);
         app->message[0] = 0;
@@ -20156,11 +20160,17 @@ static bool on_slider(App* app, float window_x, float window_y) {
     return !app->confirm.shown && size_picking(app) &&
            SDL_RenderCoordinatesFromWindow(app->renderer, window_x, window_y, &x, &y) && slider_at(app, x, y) >= 0;
 }
+static void cancel(App* app);
 static void pointer(App* app, float window_x, float window_y, bool click, bool touch) {
     float x, y;
     bool picking = app->editing && app->editor.picking;
     if ((app->menu.running && !app->confirm.shown) || app->finished) {
-        app->hovering = false; /* a run's foot presses nothing */
+        app->hovering = false;
+        if (click) { /* its ESC line is ESC, running and ended alike, as a tap there is */
+            layout(app);
+            if (SDL_RenderCoordinatesFromWindow(app->renderer, window_x, window_y, &x, &y) && run_foot_at(app, y))
+                cancel(app);
+        }
         return;
     }
     layout(app);
@@ -20526,14 +20536,13 @@ static void picked(App* app, const char* uri) {
         drop(app, path, false);
     free(path);
 }
-/* ESC: a run is aborted, or asked about first when ask_abort says so; anything else goes back */
+/* ESC: a run asks before it is aborted, as one key by mistake would lose its work (a compile, a RomFS copy cut half
+   way), and an abort under way takes nothing more; anything else goes back */
 static void cancel(App* app) {
     if (!app->menu.running)
         menu_key(app, GUI_CANCEL);
-    else if (app->ask_abort && !app->aborting)
+    else if (!app->aborting)
         gui_confirm_open(&app->confirm, GUI_ASK_ABORT, false);
-    else
-        abort_run(app);
 }
 /* a finger's id, the pen's apart: SDL gives a pen's touch the id 1 on every platform, the id Android and Wayland
    give a first finger and any finger may have, and no real finger's id sets bit 63 */
@@ -20601,7 +20610,7 @@ static void scroll(App* app, GuiKey key) {
 /* a finger lifted at x, y (0 to 1 across the window) that scrolled nothing: a tap clicks there, is ESC on a finished
    run and on a running one's ESC line */
 static void touch(App* app, float x, float y) {
-    float dx = x - app->finger_x, dy = y - app->finger_y, rx, ry;
+    float dx = x - app->finger_x, dy = y - app->finger_y;
     int w, h;
     if (SDL_fabsf(dx) > 0.03f || SDL_fabsf(dy) > 0.03f) return; /* a drag, no tap */
     if (app->finished) {
@@ -20609,21 +20618,6 @@ static void touch(App* app, float x, float y) {
         return;
     }
     SDL_GetWindowSize(app->window, &w, &h);
-    if (app->confirm.shown) {
-        pointer(app, x * (float)w, y * (float)h, true, true);
-        return;
-    }
-    if (app->menu.running) {
-        GuiPlace p;
-        layout(app);
-        if (!SDL_RenderCoordinatesFromWindow(app->renderer, x * (float)w, y * (float)h, &rx, &ry)) return;
-        if (app->theme.run != GUI_RUN_STEPS) { /* the foot the ESC line is in */
-            run_place(app, &p);
-            if (ry >= (float)p.keys.y && ry < (float)(p.keys.y + p.keys.h)) cancel(app);
-        } else if ((int)(ry / (float)(16 * app->scale)) == app->rows - 1) /* the loading screen's last row */
-            cancel(app);
-        return;
-    }
     pointer(app, x * (float)w, y * (float)h, true, true);
 }
 #ifdef SDL_PLATFORM_ANDROID
@@ -21299,7 +21293,6 @@ static bool initialize(App* app, const char* self) {
     if (self) app->self = snx_strdup(self);
     app->theme = *gui_theme_builtin("yorha"); /* every platform's look until Settings > App picks another */
 #ifdef SDL_PLATFORM_ANDROID
-    app->ask_abort = true;
     gui_android_start();
     /* back is ESC here: without this it would close the app */
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");

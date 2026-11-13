@@ -456,6 +456,32 @@ static void press_key_at(int line, App* app, const char* key, int col, bool tap,
         mouse_px(app, x, y, true);
 }
 static void touch_box(App* app, GuiRect b) { tap_px(app, b.x + b.w / 2, b.y + b.h / 2); }
+/* a click, or a tap, on the middle of a run's ESC line: the console layout's foot, a loading screen's last row */
+static void press_esc_line(App* app, bool tap) {
+    int x, y;
+    layout(app);
+    if (app->theme.run == GUI_RUN_STEPS) {
+        x = 20 * 8 * app->scale;
+        y = (app->rows - 1) * 16 * app->scale + 8 * app->scale;
+    } else {
+        GuiPlace p;
+        run_place(app, &p);
+        x = p.keys.x + p.keys.w / 2;
+        y = p.keys.y + p.keys.h / 2;
+    }
+    if (tap)
+        tap_px(app, x, y);
+    else
+        mouse_px(app, x, y, true);
+}
+/* the question asked before a run is aborted, on Continue, answered Abort */
+static void abort_yes(App* app) {
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ABORT && app->confirm.selected == GUI_CONFIRM_KEEP &&
+           !app->aborting);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown);
+}
 /* a Library row's start as it shows path, whole or cut in its middle (gui_path_fit): the marker, the root and the first
    folder, which it always keeps */
 static void row_start(const char* path, char* out, size_t size) {
@@ -565,12 +591,12 @@ static void finish(App* app, int status) {
     shows_foot(app, "Press [ESC] to return to menu", red);
     app->theme.prompt = gui_theme_builtin(app->theme.id)->prompt;
     for (int i = 0; i < 3; ++i) pump(app);
-    mouse_px(app, 4, 4, true); /* A completed process still requires ESC acknowledgement. */
+    mouse_px(app, 4, 4, true); /* an ended run waits for ESC: a click off its ESC line, or another key, goes nowhere */
     key(app, SDLK_DOWN);
     key(app, SDLK_RETURN);
     key(app, SDLK_SPACE);
     assert(!app->menu.running && app->finished && app->menu.selected == selected);
-    key(app, SDLK_ESCAPE);
+    press_esc_line(app, false); /* a click on that line is ESC, as a tap there is */
     assert(!app->menu.running && !app->finished && app->menu.view == GUI_LOAD_NONE);
     assert(!app->menu.quit && !app->message[0] && app->has_output);
     /* the item the run was started from has the focus again */
@@ -3603,6 +3629,7 @@ static void run_edenprobe(App* app, const char* temporary) {
         Uint64 until = SDL_GetTicks() + 3000;
         while (!snx_is_file(launches) && SDL_GetTicks() < until) SDL_Delay(5); /* its report begun */
         key(app, SDLK_ESCAPE);
+        abort_yes(app);
         while (app->menu.running && SDL_GetTicks() < until) {
             pump(app);
             SDL_Delay(5);
@@ -4259,7 +4286,8 @@ static void recompile_queue(App* app) {
     key(app, SDLK_ESCAPE);
     assert(app->menu.view == GUI_LOAD_GAMES && !app->queue.count && tab_count(app) == GUI_TAB_RECOMPILE);
     app->log_due = false;
-    /* ESC on the one running aborts it, its line gone with it, the next one starting, the one after it waiting */
+    /* ESC on the one running asks, then aborts it, its line gone with it, the next one starting, the one after it
+       waiting */
     focus_game(app, names[0]);
     key(app, SDLK_R);
     go_tab(app, GUI_TAB_GAMES);
@@ -4273,6 +4301,7 @@ static void recompile_queue(App* app) {
     app->queue_focus = 0;
     job_started(app);
     key(app, SDLK_ESCAPE);
+    abort_yes(app);
     for (Uint64 until = SDL_GetTicks() + 10000; app->queue.count == 3 && SDL_GetTicks() < until;) {
         pump(app);
         SDL_Delay(2);
@@ -4284,6 +4313,7 @@ static void recompile_queue(App* app) {
     for (int left = 1; left >= 0; --left) { /* the others aborted too, one after the other; the tab goes with them */
         job_started(app);
         key(app, SDLK_ESCAPE);
+        abort_yes(app);
         for (Uint64 until = SDL_GetTicks() + 10000; app->queue.count > left && SDL_GetTicks() < until;) {
             pump(app);
             SDL_Delay(2);
@@ -10411,8 +10441,10 @@ int main(int argc, char** argv) {
         key(&app, SDLK_ESCAPE);
         assert(!app.confirm.shown && app.menu.running && !app.closing_ms && !app.aborting);
     }
+    key(&app, SDLK_ESCAPE); /* asked first on every platform: one key by mistake would lose the run */
+    assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ABORT && app.menu.running && !app.aborting);
     Uint64 started = SDL_GetTicks();
-    key(&app, SDLK_ESCAPE);
+    abort_yes(&app);
     assert(app.aborting && SDL_GetTicks() - started < 1000);
     render(&app);
     shows(&app, "Aborting...", red);
@@ -10421,7 +10453,8 @@ int main(int argc, char** argv) {
     render(&app);
     shows_foot(&app, "[ Aborting... ]", red); /* where the keys go */
     app.theme.prompt = gui_theme_builtin(app.theme.id)->prompt;
-    key(&app, SDLK_ESCAPE); /* Repeated ESC while reaping is harmless. */
+    key(&app, SDLK_ESCAPE); /* Repeated ESC while reaping is harmless: no question either */
+    assert(!app.confirm.shown);
     while (app.menu.running && SDL_GetTicks() - started < 2000) {
         pump(&app);
         SDL_Delay(5);
@@ -10431,7 +10464,7 @@ int main(int argc, char** argv) {
     assert(!strcmp(app.message, "Aborted with ESC."));
     render(&app);
     shows_half(&app, "Aborted with ESC.", red); /* in the tips */
-    /* a finger on a running run's ESC line aborts it, anywhere else it does nothing */
+    /* a finger or a click on a running run's ESC line asks to abort it, anywhere else it does nothing */
     assert(!snx_write_file(hung, "", 0));
     launch(&app, snx_strdup(hung), false);
     for (until = SDL_GetTicks() + 5000, ready = false; !ready && SDL_GetTicks() < until; SDL_Delay(5)) {
@@ -10449,11 +10482,21 @@ int main(int argc, char** argv) {
         assert(!p.stacked && p.side.x == p.list.x + p.list.w + cw && p.side.w >= 24 * cw &&
                SDL_abs(p.list.w * 2 - p.side.w * 3) <= 5);
         touch_box(&app, p.list); /* the output: nothing */
-        assert(app.menu.running && !app.aborting);
+        point(&app, p.list, true);
+        assert(app.menu.running && !app.aborting && !app.confirm.shown);
+        press_esc_line(&app, false); /* the mouse on the foot asks as a finger there does */
+        assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ABORT && !app.aborting);
+        key(&app, SDLK_ESCAPE); /* Continue */
+        assert(!app.confirm.shown && app.menu.running && !app.aborting);
         app.theme = *gui_theme_builtin("yorha"); /* a loading screen's ESC line is its last row */
         tap_px(&app, 20 * cw, 3 * ch + ch / 2);
-        assert(!app.aborting);
+        mouse_px(&app, 20 * cw, 3 * ch + ch / 2, true);
+        assert(!app.aborting && !app.confirm.shown);
+        mouse_px(&app, 20 * cw, (app.rows - 1) * ch + ch / 2, true);
+        assert(app.confirm.shown && !app.aborting);
+        key(&app, SDLK_ESCAPE);
         tap_px(&app, 20 * cw, (app.rows - 1) * ch + ch / 2);
+        abort_yes(&app);
         assert(app.aborting);
         app.theme = *gui_theme_builtin("default");
     }
@@ -10502,15 +10545,15 @@ int main(int argc, char** argv) {
         app.clock = 0;
         app.message[0] = 0;
     }
-    /* where ESC is a back gesture made by mistake (ask_abort, Android's) it asks first: ESC again, a click off the box
-       or Continue leave the run going; Abort aborts it. The ESC line's tap asks too, and a held key answers nothing */
+    /* ESC asks first on every platform (a phone's Back is an edge swipe easily made by mistake): ESC again, a click off
+       the box or Continue leave the run going; Abort aborts it. The ESC line's tap asks too, and a held key answers
+       nothing */
     {
         int pass;
         GuiRect r;
         GuiChoices l;
         GuiPlace p;
         SDL_Event held;
-        app.ask_abort = true;
         for (pass = 0; pass < 2; ++pass) {
             assert(!snx_write_file(hung, "", 0));
             launch(&app, snx_strdup(hung), false);
@@ -10614,7 +10657,6 @@ int main(int argc, char** argv) {
         assert(!app.menu.running && app.finished && app.abnormal_exit && !app.confirm.shown);
         key(&app, SDLK_ESCAPE);
         assert(!app.finished && !app.confirm.shown);
-        app.ask_abort = false;
     }
     free(hung);
 
@@ -14167,6 +14209,7 @@ int main(int argc, char** argv) {
             r = foot_room(&app, p.keys, app.theme.footer_box);
             foot_px_is(&app, r.x + r.w - (int)strlen(SAY_ABORT) * 8 * foot_scale(&app), r.y, SAY_ABORT, red, black);
             touch_box(&app, p.keys);
+            abort_yes(&app);
             assert(app.aborting);
             for (until = SDL_GetTicks() + 3000; app.menu.running && SDL_GetTicks() < until; SDL_Delay(5)) pump(&app);
             assert(!app.menu.running && !app.finished);
