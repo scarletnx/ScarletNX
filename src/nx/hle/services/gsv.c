@@ -749,7 +749,11 @@ static int nn_vi2_IVi2Session_GetBufferMaxResolution(SvcObj* self, const u8* req
     u64 name = snx_ld_le64(request);
     (void)self;
     R_UNLESS(vi2_display(name), SNX_RC_VI2_NOT_FOUND);
-    *resolution = 1; /* 1280x720 */
+    /* One bit for the largest picture the display takes: 1 = 1280x720, 2 = 1920x1080, 4 = 2560x1440, 8 = 3840x2160
+       (one game sizes its upscaler's output and its window's crop by it: 1280x720, 1920x1080 and 2560x1440 for the
+       first three, its own most for 8, and 1280x720 for any other value). In its dock the console is on a TV, taken
+       as a 3840x2160 one; in the hand its own screen is 1920x1080 */
+    *resolution = snx_tv_mode() ? 8 : 2;
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_GetDisplayState107(SvcObj* self, const u8* request, u64* a, u64* b, u64* c) {
