@@ -17,10 +17,11 @@ BOUNDARIES = {
     '3ds': {'3ds', 'common'},
     'vita': {'vita', 'common'},
     'agb': {'agb', 'common'},
+    'nds': {'nds', 'common'},
     # GLSL ES into SPIR-V: the C library only, for any backend to link
     'glslc': {'glslc'},
     # scarletnx's main, every driver the build has: their entries, by the name it runs under
-    'multicall': {'multicall', 'nx', 'gnuabi', '3ds', 'vita', 'agb', 'gui', 'common'},
+    'multicall': {'multicall', 'nx', 'gnuabi', '3ds', 'vita', 'agb', 'nds', 'gui', 'common'},
 }
 INCLUDE = re.compile(r'^\s*#\s*include\s*(["<])([^">]+)[">]', re.MULTILINE)
 
@@ -301,6 +302,7 @@ def check_graph(graph):
                 'scarletnx-gnuabi',
                 'scarletnx-3ds',
                 'scarletnx-agb',
+                'scarletnx-nds',
                 'snx_ctr_board',
                 'snx_ctr_memory',
                 'snx_ctr_loader',
@@ -330,6 +332,14 @@ def check_graph(graph):
         ),
         ('snx_ctr_program', ('scarletnx-nx', 'scarletnx-gnuabi', 'scarletnx-agb', 'snx_driver', 'snx_nx_module')),
         ('snx_agb_program', ('scarletnx-nx', 'scarletnx-gnuabi', 'scarletnx-3ds', 'snx_driver', 'snx_nx_module')),
+        (
+            'scarletnx-nds',
+            ('scarletnx-nx', 'scarletnx-gnuabi', 'scarletnx-3ds', 'scarletnx-agb', 'snx_ctr_board', 'snx_driver', 'snx_nx_module'),
+        ),
+        (
+            'snx_nds_program',
+            ('scarletnx-nx', 'scarletnx-gnuabi', 'scarletnx-3ds', 'scarletnx-agb', 'snx_driver', 'snx_nx_module'),
+        ),
         (
             'snx_switch_program',
             ('scarletnx-gnuabi', 'scarletnx-3ds', 'scarletnx-agb', 'snx_ctr_board', 'snx_ctr_memory', 'snx_ctr_loader'),
@@ -507,6 +517,7 @@ def check_target_sources(repo, build):
                 'scarletnx-nx': 'nx',
                 'scarletnx-gnuabi': 'gnuabi',
                 'scarletnx-agb': 'agb',
+                'scarletnx-nds': 'nds',
             }.get(entry['name'])
             target = json.loads((reply / entry['jsonFile']).read_text(encoding='utf-8'))
             directory = (repo / target.get('paths', {}).get('source', '')).resolve()
