@@ -1622,6 +1622,14 @@ u64 vk_mem_trimmed(void); /* statistics: the bytes vk_mem_trim freed */
 void vk_astc_auto_trimmed(u64 usage, u64 left, u64 budget, int force);
 void vk_astc_auto_present(void);
 void vk_astc_auto_say(void);
+/* the system's word that its memory runs short (why, its words), from any thread; at the renderer's next present
+   (vk_mem_release_run, under vk_lock) the caches free all they can make again that the last two presents didn't use,
+   whatever the budget, and four presents later the log says how much went and how far the renderer's memory blocks
+   went down (vk_memory_blocks) */
+void vk_mem_release_ask(const char* why);
+void vk_mem_release_run(void);
+/* the releases run so far, and what the last freed (textures, buffers, render targets) */
+u32 vk_mem_release_stats(u64 by[3]);
 /* vk_image_create for a surface of the caches, with room made for it first (vk_mem_trim). When no memory is found, a
    forced trim makes room for later, and images as big fail at once for the rest of the present: render targets and
    images the GPU writes (owner with VK_OWN_WRITTEN) counted apart from the others. bytes: the device memory it takes */

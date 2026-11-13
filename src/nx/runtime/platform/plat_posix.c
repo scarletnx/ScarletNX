@@ -109,6 +109,9 @@ static void sdl_thread_end(void) { SDL_CleanupTLS(); }
 static _Atomic int g_power_changed;
 void plat_power_mark_changed(void) { atomic_store_explicit(&g_power_changed, 1, memory_order_release); }
 int plat_power_take_change(void) { return atomic_exchange_explicit(&g_power_changed, 0, memory_order_acq_rel); }
+#if !defined(__ANDROID__)
+int plat_trim_level_take(void) { return -1; } /* Android's alone */
+#endif
 #if defined(__linux__) && !defined(__ANDROID__)
 /* The kernel's uevents on NETLINK_KOBJECT_UEVENT: a power_supply change (the charger in or out) marks the change. The
    thread blocks in recv, so nothing polls the state */
@@ -156,6 +159,15 @@ JNIEXPORT void JNICALL Java_org_scarletnx_GameActivity_nativePowerChanged(JNIEnv
     plat_power_mark_changed();
 }
 int plat_power_watch(void) { return 0; } /* the receiver is registered with the activity */
+/* GameActivity's onTrimMemory, with its level, before SDL's low memory event that carries none */
+static _Atomic int g_trim_level = -1;
+JNIEXPORT void JNICALL Java_org_scarletnx_GameActivity_nativeTrimMemory(JNIEnv* env, jobject thiz, jint level);
+JNIEXPORT void JNICALL Java_org_scarletnx_GameActivity_nativeTrimMemory(JNIEnv* env, jobject thiz, jint level) {
+    (void)env;
+    (void)thiz;
+    atomic_store_explicit(&g_trim_level, (int)level, memory_order_release);
+}
+int plat_trim_level_take(void) { return atomic_exchange_explicit(&g_trim_level, -1, memory_order_acq_rel); }
 #elif defined(__APPLE__) && TARGET_OS_IPHONE
 /* iOS's battery state notification is in apple.m, which the app links */
 [[gnu::weak]] extern int snx_apple_power_watch(void);
