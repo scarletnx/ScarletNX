@@ -159,6 +159,10 @@ SoftReset starts the machine again from EWRAM or the cartridge, as the byte at
 0x03007FFA says. Halt and Stop halt the machine until an interrupt, and
 IntrWait and VBlankIntrWait until the game's handler flags it in the BIOS's
 flags at 0x03007FF8. SoundBias and the sound driver's calls are known stubs.
+Each call takes the time the code of mGBA's HLE BIOS takes for it, replayed on
+the same bus (`bios/bios_time.c`): its dispatch, the math's and LZ77's stall,
+CpuSet's and CpuFastSet's loops, Halt, and IntrWait, whose return comes 5 cycles
+later on the console.
 
 Angles are turns in 16 bits, the way the BIOS counts them, and the affine matrix
 drops the low byte of the rotation angle, giving 256 steps around the circle.
@@ -202,10 +206,13 @@ the banked register state. Software interrupts go to the HLE BIOS and
 interrupts follow the entry and return the BIOS stub performs. The board starts
 with the registers as the BIOS leaves them (forced blank, the serial port's
 general purpose mode, the sound's bias at its middle, POSTFLG), which a game reads
-to tell a link boot from its own. Recompiled blocks are charged two cycles per
-instruction, and the waits and the save memory width rules are approximations
-documented divergences; a serial transfer ends at once, where mGBA waits for its
-time.
+to tell a link boot from its own. A block's time is replayed from the trace it
+leaves (`cpu/timing.c`, NanoBoyAdvance's model of the bus): each fetch, load and
+store at its region's wait states from WAITCNT, the cartridge's prefetch unit
+and the internal cycles. An access to the I/O window first runs the board up to
+its own cycle, so a timer read, a DMA or an interrupt lands inside the block
+where the console has it; near an interrupt the block runs an instruction at a
+time. The save memory width rules are approximations.
 
 ## The ROM header
 

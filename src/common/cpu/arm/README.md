@@ -186,7 +186,9 @@ keeps the Thumb state. Accesses to the regions whose top byte is 0x00, 0x01, 0x0
 BIOS, the I/O window, the palette, VRAM, OAM and the save memory) call `SnxArmCPU.io` when it is set: reads pass the
 width (0x200 | 2 for LDRSH)
 and return the value, writes pass 0x100 | width and the value. No other profile reads `io`. `tests/arm7tdmi_test.py`
-runs each rule under both profiles.
+runs each rule under both profiles. With the options' `trace` set, a block leaves what its time depends on for the
+board to replay (`src/agb/cpu/timing.c`): per instruction, its load's or store's address (a multiple one's lowest) or
+its multiplier, and a bit for each conditional one that did not run.
 
 ## Opt-in ARM946E-S profile
 
