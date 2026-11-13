@@ -270,6 +270,10 @@ int snx_agb_main(int argc, char** argv) {
             free(name);
             return 1;
         }
+        if (board.has_cartridge && board.cartridge.checksum != board.cartridge.checksum_title)
+            printf("The ROM header's checksum is 0x%02X and its title block sums to 0x%02X: it runs, as mGBA runs it, "
+                   "where the console's BIOS stops\n",
+                   board.cartridge.checksum, board.cartridge.checksum_title);
         base = snx_format("%s/%s_code", folder, name);
         save = snx_format("%s/%s.sav", folder, name);
         if (agb_map_init(&map, &board, error, sizeof error)) {

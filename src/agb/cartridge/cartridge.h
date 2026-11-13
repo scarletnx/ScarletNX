@@ -19,10 +19,13 @@ typedef struct {
     uint8_t unit, device, version;
     uint32_t entry;    /* 0x00: the ARM branch word the header starts with */
     uint32_t entry_to; /* the branch target as a ROM offset */
+    /* 0xBD, the header's complement check, and what its title block sums to: a cartridge whose two differ runs, as
+       mGBA runs it, where the console's BIOS stops; the runner says both */
+    uint8_t checksum, checksum_title;
 } AgbCartridge;
 
-/* Parses a ROM image kept in memory: returns 0, or -1 with a message when the image is not a GBA ROM. The image is
-   copied. */
+/* Parses a ROM image kept in memory: returns 0, or -1 with a message when the image is not a GBA ROM (no ARM branch
+   at its start, or no fixed 0x96 byte, mGBA's own test). The image is copied. */
 int agb_cartridge_load(AgbCartridge* cartridge, const void* image, size_t size, char* error, size_t error_size);
 void agb_cartridge_unload(AgbCartridge* cartridge);
 /* The bytes of each cartridge window the image repeats over: a 1 MiB image four times, as mGBA has the 1 MiB

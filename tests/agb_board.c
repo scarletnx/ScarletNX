@@ -98,20 +98,44 @@ int main(void) {
     CHECK(strstr(error, "32 MiB"));
     make_rom(rom);
     rom[3] = 0x00;
+    rom[0xBD] ^= 0x40;
     CHECK(agb_board_insert(&board, rom, ROM_SIZE, error, sizeof error));
-    CHECK(strstr(error, "branch"));
+    CHECK(strstr(error, "ROM header starts with 0x0000002E, not an ARM branch"));
+    /* a whole header over no program, the data cartridge another console's game reads, and a flash memory's image,
+       erased where a header would be: each refused saying what it is */
+    make_rom(rom);
+    memset(rom, 0xFF, 4);
+    CHECK(agb_board_insert(&board, rom, ROM_SIZE, error, sizeof error));
+    CHECK(strstr(error, "ROM header (title \"TESTGAME\", code BZVE) is whole, but its first word is 0xFFFFFFFF, not an "
+                        "ARM branch: a data cartridge a game reads, not a GBA program"));
+    {
+        uint8_t* flash = (uint8_t*)malloc(0x20000);
+        CHECK(flash);
+        memset(flash, 0xFF, 0x20000);
+        flash[0x10000] = 0x12;
+        CHECK(agb_board_insert(&board, flash, 0x20000, error, sizeof error));
+        free(flash);
+        CHECK(strstr(error, "ROM image of 131072 bytes starts with 0xFFFFFFFF and its header is erased, all 0xFF: a "
+                            "flash memory's image"));
+    }
     make_rom(rom);
     rom[0xB2] = 0x00;
     fix_checksum(rom);
     CHECK(agb_board_insert(&board, rom, ROM_SIZE, error, sizeof error));
-    CHECK(strstr(error, "0x96"));
-    make_rom(rom);
-    rom[0xBD] ^= 0x40;
-    CHECK(agb_board_insert(&board, rom, ROM_SIZE, error, sizeof error));
-    CHECK(strstr(error, "checksum"));
+    CHECK(strstr(error, "ROM header's byte 0xB2 is 0x00, not the fixed 0x96"));
 
     /* a rejected insert leaves the accepted cartridge in place */
     CHECK(board.has_cartridge && !strcmp(board.cartridge.title, "TEST"));
+
+    /* a header whose checksum is not its title block's runs, as mGBA runs it, where the console's BIOS stops: the
+       cartridge keeps both for the runner to say */
+    make_rom(rom);
+    {
+        uint8_t title = rom[0xBD];
+        rom[0xBD] ^= 0x40;
+        CHECK(!agb_board_insert(&board, rom, ROM_SIZE, error, sizeof error));
+        CHECK(board.cartridge.checksum == (uint8_t)(title ^ 0x40) && board.cartridge.checksum_title == title);
+    }
 
     /* the BIOS reads as the opcode it fetched last, at the read's lane, and ignores writes */
     CHECK(agb_read32(&board, 0x00000000) == AGB_BIOS_PREFETCH_BOOT);
