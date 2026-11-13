@@ -73,11 +73,11 @@ static void al_level(const AlTex* x, u32 l, u32* w, u32* h, u32* d) {
     *h = x->c->h >> l ? x->c->h >> l : 1;
     *d = x->c->d3 ? (x->c->d >> l ? x->c->d >> l : 1) : 1;
 }
-/* the bytes of level l of a layer: RGBA8 texels or BC7 blocks */
-static u64 al_level_bytes(const AlTex* x, u32 l, int bc7) {
+/* the bytes of level l of a layer: RGBA8 texels (block 0), or 4x4 blocks of block bytes each (BC7's 16) */
+static u64 al_level_bytes(const AlTex* x, u32 l, u32 block) {
     u32 w, h, d;
     al_level(x, l, &w, &h, &d);
-    return bc7 ? (u64)((w + 3) / 4) * ((h + 3) / 4) * 16 * d : (u64)w * h * 4 * d;
+    return block ? (u64)((w + 3) / 4) * ((h + 3) / 4) * block * d : (u64)w * h * 4 * d;
 }
 static u32 al_layers(const AlTex* x) { return x->c->d3 ? 1 : x->c->d; }
 /* every level of every layer of t's image, read back, level after level, layer after layer; malloc'd, its bytes in
@@ -86,6 +86,8 @@ static u32 al_layers(const AlTex* x) { return x->c->d3 ? 1 : x->c->d; }
    another's. They are what the BC7 image is made from, so what its blocks are held to (al_expect) */
 static u8* al_image(const AlTex* x, Surf* t, u64* size) {
     const int bc7 = t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK;
+    /* the bytes of a 4x4 block: BC7's, BC5's 16, BC1's and BC4's 8 (vk_astc_bcn); 0 for RGBA8 texels */
+    const u32 block = bc7 || vk_astc_bcn(t->f.vk) == 5 ? 16u : vk_astc_bcn(t->f.vk) ? 8u : 0u;
     const u32 n = al_layers(x) * x->tex.d.levels;
     VkBufferImageCopy* c = calloc(n, sizeof *c);
     VkBuffer buffer;
@@ -99,10 +101,10 @@ static u8* al_image(const AlTex* x, Surf* t, u64* size) {
             c[k++] = (VkBufferImageCopy){.bufferOffset = at,
                                          .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, layer, 1},
                                          .imageExtent = {w, h, d}};
-            at += al_level_bytes(x, l, bc7);
+            at += al_level_bytes(x, l, block);
         }
     vk_lock();
-    const u64 kept = bc7 ? 0 : t->bc7.kept_bytes;
+    const u64 kept = block ? 0 : t->bc7.kept_bytes;
     u8* back = vk_readback_buffer(at + kept, &buffer);
     u8* out = back ? malloc((size_t)(at + kept)) : NULL;
     if (out) {
@@ -138,7 +140,7 @@ static u8* al_image(const AlTex* x, Surf* t, u64* size) {
 static u8* al_expect(const AlTex* x, const u8* rgba, u32 bw, u32 bh, u64* size) {
     u64 bytes = 0, texels = 0, to = 0;
     for (u32 l = 0; l < x->tex.d.levels; l++) {
-        bytes += al_level_bytes(x, l, 1);
+        bytes += al_level_bytes(x, l, 16);
         texels += al_level_bytes(x, l, 0);
     }
     bytes *= al_layers(x);
@@ -153,7 +155,7 @@ static u8* al_expect(const AlTex* x, const u8* rgba, u32 bw, u32 bh, u64* size) 
             const u64 slice = (u64)((w + bw - 1) / bw) * ((h + bh - 1) / bh) * 16;
             astc_bc7_cpu(vk_bc7_build(w, h, d), kept + level_at + layer * slice, w, h, d, bw, bh, 0, out + to);
             level_at += slice * (x->c->d3 ? d : al_layers(x));
-            to += al_level_bytes(x, l, 1);
+            to += al_level_bytes(x, l, 16);
         }
     }
     *size = bytes;
@@ -187,12 +189,12 @@ static void al_fill(AlTex* x) {
         snx_st_le32(GP(x->cpu) + i * 4, i % 4 ? x->rng : (x->rng & ~2047u) | (u32)(i / 4 & 2047));
     }
 }
-/* case c's texture, its memory filled, at index's place: the header, its twin's at AL_TWIN past it, made by astc_mode 2
-   (BC7) */
-static Surf* al_make(AlTex* x, const AlCase* c, u32 index) {
+/* case c's header at index's place, its twin's at AL_TWIN past it, both over memory span `span` (AL_SPAN each, 16 of
+   them), mapped: 1 when not */
+static int al_place(AlTex* x, const AlCase* c, u32 index, u32 span) {
     memset(x, 0, sizeof *x);
     x->c = c;
-    x->cpu = AL_CPU + index * AL_SPAN;
+    x->cpu = AL_CPU + span * AL_SPAN;
     x->rng = 0x2545f491u + index;
     x->tex.d.target = c->d3 ? NVN_TEXTURE_TARGET_3D : c->d > 1 ? NVN_TEXTURE_TARGET_2D_ARRAY : NVN_TEXTURE_TARGET_2D;
     x->tex.d.format = c->format;
@@ -210,11 +212,16 @@ static Surf* al_make(AlTex* x, const AlCase* c, u32 index) {
         !nvn_tic_encode(&twin, NULL, 0, 0, x->twin) || mem_map(x->cpu, AL_SPAN, MS_NORMAL, PERM_RW)) {
         fprintf(stderr, "ASTC as BC7 between frames, %s: %llu bytes, or no header, or no memory\n", c->name,
                 (unsigned long long)x->lay.size);
-        return NULL;
+        return 1;
     }
-    al_fill(x);
     gmmu_map(x->tex.gpu, x->cpu, AL_SPAN);
     gmmu_map(twin.gpu, x->cpu, AL_SPAN);
+    return 0;
+}
+/* case c's texture, its memory filled, at index's place (al_place), made by astc_mode 2 (BC7) */
+static Surf* al_make(AlTex* x, const AlCase* c, u32 index) {
+    if (al_place(x, c, index, index)) return NULL;
+    al_fill(x);
     vk_lock();
     Surf* t = vk_tex_from_tic(x->tic);
     vk_unlock();

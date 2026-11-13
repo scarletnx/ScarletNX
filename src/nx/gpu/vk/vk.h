@@ -1526,6 +1526,29 @@ void vk_astc_stats(u64* levels, u64* hits, u64* bytes, u64* rgba8_bytes);
 u32 vk_astc_bcn(VkFormat f);
 const char* vk_astc_bcn_name(u32 kind);
 void vk_astc_bcn_stats(u64 levels[3], u64 bytes[3], u64 rgba8_bytes[3]);
+/* What astc_mode's Auto found an ASTC texture's blocks to hold, read from their endpoint modes as it is made (texture.c,
+   gpu/texture/astc_kind.h): the BCn format they take (luminance in sRGB BC1, as BC4 has no sRGB), or why none does
+   and the texture is held as Auto holds the rest (colour with alpha, colour on more than one line a 4x4 block,
+   luminance with alpha in sRGB, which BC5 has not, the error colour or HDR, or memory the CPU can't read as one run
+   there) */
+enum {
+    VK_ASTC_KIND_BC4,
+    VK_ASTC_KIND_BC5,
+    VK_ASTC_KIND_BC1,
+    VK_ASTC_KIND_SRGB_GREY,
+    VK_ASTC_KIND_COLOUR_ALPHA,
+    VK_ASTC_KIND_LINES,
+    VK_ASTC_KIND_SRGB_ALPHA,
+    VK_ASTC_KIND_OTHER,
+    VK_ASTC_KIND_UNREAD,
+    VK_ASTC_KIND_N
+};
+/* a texture's blocks read in ns of the CPU's time: as it is made (again 0), or loaded whole again while held as BC1, BC4
+   or BC5 (1 the same format, 2 another); vk_astc_kind_name: what the log calls an outcome; vk_astc_kind_say: their
+   counts, the time and the memory, with the stats every 600 presents */
+void vk_astc_kind_seen(int outcome, u64 ns, int again);
+const char* vk_astc_kind_name(int outcome);
+void vk_astc_kind_say(void);
 /* The BC7 cache of ASTC levels (astc.c over bc7_cache.c). vk_astc_cache_open: the cache of this game and device in the
    file at path, its records' version made of the encoder's (and the decoder's) SPIR-V, VK_BC7_ENCODER_VERSION and the
    GPU and its driver (pipeline.c, where the GPU samples BCn but not ASTC). vk_astc_cached: a level of w x h texels and

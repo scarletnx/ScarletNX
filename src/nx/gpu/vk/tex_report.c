@@ -146,7 +146,13 @@ static void census_texture(void* ctx, const Surf* t) {
     /* an ASTC texture the device samples as it is: one row for all its block sizes, which the ASTC sums tell apart */
     const int native = is_astc(t->f.vk);
     vk_tex_formats_add(&c->formats, (u32)(native ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK : t->f.vk), t->bytes);
-    const int held = is_bc7(t->f.vk) ? VK_ASTC_AS_BC7 : VK_ASTC_AS_RGBA8; /* one decoded: format.c's TA */
+    /* one decoded: format.c's TA, or texture.c's BC1, BC4 or BC5 by its blocks' kind */
+    const u32 bcn = t->f.conv == VKC_ASTC ? vk_astc_bcn(t->f.vk) : 0;
+    const int held = is_bc7(t->f.vk) ? VK_ASTC_AS_BC7
+                     : bcn == 1      ? VK_ASTC_AS_BC1
+                     : bcn == 4      ? VK_ASTC_AS_BC4
+                     : bcn == 5      ? VK_ASTC_AS_BC5
+                                     : VK_ASTC_AS_RGBA8;
     if (native || t->f.conv == VKC_ASTC)
         vk_astc_sizes_add(&c->astc, t->f.bw, t->f.bh, native ? VK_ASTC_AS_ASTC : held, t->bytes);
     if (!t->sparse && !t->bricks) return;
@@ -215,7 +221,7 @@ static void line_add(char* line, size_t size, size_t* at, const char* fmt, ...) 
 
 /* the sums by host format, the most bytes first, and by ASTC block size */
 static void formats_log(Census* c) {
-    static const char* const as_name[VK_ASTC_AS_N] = {"BC7", "RGBA8", "ASTC"};
+    static const char* const as_name[VK_ASTC_AS_N] = {"BC7", "RGBA8", "ASTC", "BC1", "BC4", "BC5"};
     char line[768], name[24];
     size_t at = 0;
     VkTexFormatRow rest = c->formats.other;
@@ -237,7 +243,9 @@ static void formats_log(Census* c) {
         for (u32 bh = 0; bh < VK_ASTC_SIDES; bh++) {
             const u64* b = c->astc.bytes[bw][bh];
             const char* join = "";
-            if (!b[VK_ASTC_AS_BC7] && !b[VK_ASTC_AS_RGBA8] && !b[VK_ASTC_AS_ASTC]) continue;
+            u64 any = 0;
+            for (u32 as = 0; as < VK_ASTC_AS_N; as++) any |= b[as];
+            if (!any) continue;
             line_add(line, sizeof line, &at, "%s %ux%u", at ? "," : "", bw + 4, bh + 4);
             for (u32 as = 0; as < VK_ASTC_AS_N; as++) {
                 if (!b[as]) continue;
