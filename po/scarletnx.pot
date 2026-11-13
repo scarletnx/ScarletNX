@@ -4443,6 +4443,10 @@ msgid "Shortcuts"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Out of memory"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
 msgstr ""
