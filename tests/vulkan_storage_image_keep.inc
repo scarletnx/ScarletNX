@@ -114,6 +114,7 @@ static GpuChannel* imgkeep_channel(u64 address, u64 pool) {
     r[0x3fd] = r[0x3fe] = 4u << 16;
     r[0x680] = 0x1111;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 1;
+    all_samples(r);
     memcpy(r + 0x280, transform, sizeof transform);
     r[0x458] = 1u << 21 | 7u << 27; /* RGBA32F */
     r[0x700] = 0x1000 | 16;

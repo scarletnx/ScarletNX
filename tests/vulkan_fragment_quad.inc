@@ -214,6 +214,7 @@ static int check_fragment_quad(void) {
     r[0x3fd] = r[0x3fe] = QUAD_SIDE << 16;
     r[0x680] = 0x1111;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 1;
+    all_samples(r);
     const float transform[6] = {QUAD_SIDE / 2, QUAD_SIDE / 2, 0.5f, QUAD_SIDE / 2, QUAD_SIDE / 2, 0.5f};
     memcpy(r + 0x280, transform, sizeof transform);
     r[0x458] = 1u << 21 | 7u << 27;

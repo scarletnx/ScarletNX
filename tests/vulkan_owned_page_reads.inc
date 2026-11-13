@@ -90,6 +90,7 @@ static int owned_constant_buffers(void) {
     r[0x3fd] = r[0x3fe] = 4u << 16;
     r[0x680] = 0x1111;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 0;
+    all_samples(r);
     memcpy(r + 0x280, transform, sizeof transform);
     channel->ds.owner = channel->id;
     CHECK(!cbown_case(channel, 0x3000, 0x3100, 0x11111111, 0x5a, 0x5a5a5a5a, "an owner in the bytes it binds"));

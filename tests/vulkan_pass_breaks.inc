@@ -422,6 +422,7 @@ static GpuChannel* pb_channel(void) {
     }
     u32* r = ch->r3d;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 1; /* as reset_3d starts a channel */
+    all_samples(r);
     r[0x582] = (u32)(PB_GVA >> 32);
     r[0x583] = (u32)PB_GVA;
     r[0x850] = 1;
