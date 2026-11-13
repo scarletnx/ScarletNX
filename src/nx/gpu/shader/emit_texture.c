@@ -745,7 +745,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                              ? shader_direct_handle_candidates(t->flow, i, b, cand_bank, cand_off, SH_HANDLE_CANDIDATES)
                              : 1;
         int choose = bindless && !handle_count;
-        u32 handle = choose ? reg_read(c, b) : 0, chosen = 0, chosen_type = 0, sample = 0;
+        u32 handle = choose ? reg_read(c, b) : 0, chosen = 0, sample = 0;
         int chosen_slot = -1;
         for (int cand = 0; cand < candidates; cand++) {
             if (choose) {
@@ -868,21 +868,21 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                           sample);
             }
             if (choose) {
-                /* the first candidate's result type is the instruction's: one of another kind (an integer texture
-               beside float ones) can't be the same texture as it, so it is left out */
-                u32 type_of = shadow ? c->f32_type : texture_vec4[slot];
+                /* each candidate's sample as the bits the registers take, so that an integer texture and a float one
+                   are chosen alike (a depth compare's is a float of every candidate) */
+                u32 kept_type = shadow ? c->f32_type : vec4_u32;
                 if (chosen_slot < 0) {
-                    u32 zero = spv_emit_constant_u32(&c->emit, shadow ? c->f32_type : texture_scalar[slot], 0);
+                    u32 zero = spv_emit_constant_u32(&c->emit, shadow ? c->f32_type : c->u32_type, 0);
                     chosen =
-                        shadow ? zero : spv_emit_constant_vec4(&c->emit, type_of, (u32[4]){zero, zero, zero, zero});
-                    chosen_type = type_of;
+                        shadow ? zero : spv_emit_constant_vec4(&c->emit, kept_type, (u32[4]){zero, zero, zero, zero});
                     chosen_slot = slot;
                 }
-                if (type_of == chosen_type) {
-                    u32 word = shader_cbuf_read_dynamic(c, bank, shader_u32(c, off * 4));
-                    u32 match = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, handle, word);
-                    chosen = spv_emit_ternary(&c->emit, SPV_OP_SELECT, chosen_type, match, sample, chosen);
-                }
+                u32 bits = shadow || texture_vec4[slot] == vec4_u32
+                               ? sample
+                               : spv_emit_unary(&c->emit, SPV_OP_BITCAST, vec4_u32, sample);
+                u32 word = shader_cbuf_read_dynamic(c, bank, shader_u32(c, off * 4));
+                u32 match = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, handle, word);
+                chosen = spv_emit_ternary(&c->emit, SPV_OP_SELECT, kept_type, match, bits, chosen);
             }
         }
         if (choose) {
@@ -896,7 +896,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                     reg_write_as(c, dst, component == 3 ? spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f) : sample,
                                  c->f32_type);
                 else
-                    shader_texture_write(c, dst, sample, texture_scalar[slot], component);
+                    shader_texture_write(c, dst, sample, choose ? c->u32_type : texture_scalar[slot], component);
                 if (dst < 255) dst++;
             }
     } else if (op == O_TXD || op == O_TXD_B) {

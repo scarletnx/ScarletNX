@@ -5355,15 +5355,17 @@ static u64 fsetp_cbuf3(u32 predicate, u32 word) {
 }
 /* A TEX.B whose handle the writes don't agree on, run on the CPU (support/spv_eval.c): the x of its sample, each
    slot's texel 1 + the word of the constant buffer handle it was bound for (1 for c[2][0], 2 for c[2][4]), 0 when
-   none was chosen. c2 is bank 2's first words, c3 bank 3's (the predicates' constants) */
-static int chosen_sample(const u64* program, int count, const u32 c2[4], const u32 c3[4], ShaderInfo* info, float* x,
-                         const char** why) {
+   none was chosen. c2 is bank 2's first words, c3 bank 3's (the predicates' constants), int_mask the slots of
+   integer textures (ShaderInfo.tex_int_mask) */
+static int chosen_sample(const u64* program, int count, const u32 c2[4], const u32 c3[4], u64 int_mask,
+                         ShaderInfo* info, float* x, const char** why) {
     size_t words = 0, slots;
     u64* code = guest_program(program, count, NULL, &slots);
     *why = "out of memory";
     if (!code) return 0;
     set_sph(code, 18, 0xf);
     memset(info, 0, sizeof *info);
+    info->tex_int_mask = int_mask;
     u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, info, &words, 1, 1, 1, 1);
     free(code);
     *why = info->first_unsupported;
@@ -5405,22 +5407,31 @@ static void tex_b_chosen_handle(void) {
         fsetp_cbuf3(0, 0), fsetp_cbuf3(1, 1), load & under_p0, (other_load & under_p0) | not_p0, elsewhere, tex_b};
     static const struct {
         u32 c2[4], c3[4];
+        u64 int_mask;
         float x;
         const char* what;
     } cases[] = {
-        {{0x00100001u, 0x00200002u}, {0x3f800000u, 0}, 1.0f, "under P0 the sample is c[2][0]'s"},
-        {{0x00100001u, 0x00200002u}, {0, 0}, 2.0f, "under !P0 the sample is c[2][4]'s"},
+        {{0x00100001u, 0x00200002u}, {0x3f800000u, 0}, 0, 1.0f, "under P0 the sample is c[2][0]'s"},
+        {{0x00100001u, 0x00200002u}, {0, 0}, 0, 2.0f, "under !P0 the sample is c[2][4]'s"},
         {{0x777u, 0x00200002u},
          {0, 0x3f800000u},
+         0,
          1.0f,
          "a value from elsewhere equal to c[2][0]'s word is its texture"},
-        {{0x00100001u, 0x00200002u}, {0, 0x3f800000u}, 0.0f, "a value from elsewhere equal to no candidate's reads 0"},
+        {{0x00100001u, 0x00200002u},
+         {0, 0x3f800000u},
+         0,
+         0.0f,
+         "a value from elsewhere equal to no candidate's reads 0"},
+        /* c[2][0] an integer texture's handle, c[2][4] a float one's: each is kept with the bits it samples */
+        {{0x00100001u, 0x00200002u}, {0x3f800000u, 0}, 1, 1.0f, "an integer texture's sample is kept as its bits"},
+        {{0x00100001u, 0x00200002u}, {0, 0}, 1, 2.0f, "a float texture beside an integer one is kept too"},
     };
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         ShaderInfo info;
         const char* why;
         float x = -1.0f;
-        int ran = chosen_sample(program, 6, cases[i].c2, cases[i].c3, &info, &x, &why);
+        int ran = chosen_sample(program, 6, cases[i].c2, cases[i].c3, cases[i].int_mask, &info, &x, &why);
         if (!ran || x != cases[i].x)
             fprintf(stderr, "TEX.B chosen handle case %zu: %s, %d slots, x %g (%g expected)\n", i, ran ? "ran" : why,
                     info.ntex, (double)x, (double)cases[i].x);
@@ -5440,7 +5451,7 @@ static void tex_b_chosen_handle(void) {
         ShaderInfo info;
         const char* why;
         float x = -1.0f;
-        int ran = chosen_sample(looped, 9, words3, c3, &info, &x, &why);
+        int ran = chosen_sample(looped, 9, words3, c3, 0, &info, &x, &why);
         if (!ran || x != 3.0f || info.ntex != 3)
             fprintf(stderr, "TEX.B in a loop with P0 %u: %s, %d slots, x %g after the second round (3 expected)\n", p0,
                     ran ? "ran" : why, info.ntex, (double)x);
@@ -5456,7 +5467,7 @@ static void tex_b_chosen_handle(void) {
     ShaderInfo info;
     const char* why;
     float x = -1.0f;
-    int ran = chosen_sample(after, 7, words3, c3, &info, &x, &why);
+    int ran = chosen_sample(after, 7, words3, c3, 0, &info, &x, &why);
     if (!ran || x != 1.0f || info.ntex != 2)
         fprintf(stderr, "TEX.B before a BRK: %s, %d slots, x %g (1 expected)\n", ran ? "ran" : why, info.ntex,
                 (double)x);
