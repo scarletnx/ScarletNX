@@ -37,6 +37,16 @@ int snx_extracted_game(const char* path);
 char* snx_extracted_part(const char* path, int romfs);
 /* what a game's source= names, for a line about it: "folder" for an extracted game, there or not, else "dump" */
 const char* snx_source_kind(const char* source);
+/* The RomFS Extract dump keeps in the data folder of the game name in folder (<name>_data/romfs/), as a start and a
+   recompile check it: SNX_ROMFS_EXTRACTING when an extraction into it stopped before it ended and left
+   <name>.extracting in folder (it writes its files under their own names), SNX_ROMFS_STOPPED when a copy of it stopped
+   and left romfs.copying beside it, SNX_ROMFS_MISSING when exefs/ is there and romfs/ is not, else SNX_ROMFS_WHOLE:
+   romfs/ there, or none kept there (no exefs/: the game read in place; an NRO's exefs/main.nro or romfs.bin; Extract
+   to tmpfs, <name>.tmpfs) */
+typedef enum { SNX_ROMFS_WHOLE, SNX_ROMFS_EXTRACTING, SNX_ROMFS_STOPPED, SNX_ROMFS_MISSING } SnxRomfs;
+SnxRomfs snx_romfs_state(const char* folder, const char* name);
+/* the state, for a line: why a RomFS that is not whole is not ("" for SNX_ROMFS_WHOLE) */
+const char* snx_romfs_why(SnxRomfs state);
 
 /* the console a game's folder plays, as system= in [Game] of the .ini in it, <folder>/<name>.ini, says: the launcher
    picks the driver, the options and what R does by it, and cmake/deploy.cmake the runtime it copies there. A folder

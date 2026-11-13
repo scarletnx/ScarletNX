@@ -979,6 +979,46 @@ int main(int argc, char** argv) {
         free(romfs);
     }
     run(exe, repo, dump, log, 0, "G", NULL);
+    { /* #2110: a made game's RomFS in its data folder that is not whole, its program played (as the launcher plays
+         it) or made again (R) with Extract dump: a copy that stopped (romfs.copying beside an empty romfs/), an
+         extraction that stopped (its .extracting, as it writes its files under their own names) and no romfs/ each
+         extracted again from its dump, said; with no dump named, neither runs the game, the file it needs said */
+        char *own = snx_path_join(repo, "recompiled/Test game"), *data = snx_path_join(own, "Test game_data");
+        char *romfs = snx_path_join(data, "romfs"), *copying = snx_path_join(data, "romfs.copying");
+        char *part = snx_path_join(copying, "part"), *whole = snx_path_join(romfs, "data");
+        char* ini = snx_game_ini(own, "Test game");
+        CHECK(ini && !snx_remove_tree(romfs) && !snx_mkdirs(romfs) && !snx_mkdirs(copying) &&
+              !snx_write_file(part, "part", 4));
+        run(exe, repo, game, log, 0, "EG", "a copy of it stopped before it ended (romfs.copying is left)");
+        CHECK(snx_is_file(whole) && !snx_path_exists(copying) && !snx_is_file(extracting));
+        CHECK(!snx_remove_tree(whole) && !snx_write_file(extracting, "", 0));
+        run(exe, repo, game, log, 0, "EG", "an extraction of it stopped before it ended (its .extracting is left)");
+        CHECK(snx_is_file(whole) && !snx_is_file(extracting));
+        CHECK(!snx_remove_tree(romfs));
+        run(exe, repo, game, log, 0, "EG", "its exefs/ is there and its romfs/ is not. It is extracted again from");
+        CHECK(snx_is_file(whole));
+        set_env("SNX_WORKFLOW_FLAGS", "-r");
+        CHECK(!snx_remove_tree(romfs));
+        run(exe, repo, game, log, 0, "RE", "It is extracted again from");
+        CHECK(snx_is_file(whole));
+        CHECK(!snx_remove_tree(romfs) && !snx_ini_drop(ini, "source"));
+        run(exe, repo, game, log, 1, "R", "name no dump (source=) to extract it from");
+        set_env("SNX_WORKFLOW_FLAGS", "");
+        run(exe, repo, game, log, 1, "", "name no dump (source=) to extract it from");
+        CHECK(!snx_path_exists(romfs));
+        CHECK(!snx_record_source(own, "Test game", dump));
+        run(exe, repo, game, log, 0, "EG", NULL);
+        CHECK(snx_is_file(whole));
+        free(own);
+        free(data);
+        free(romfs);
+        free(copying);
+        free(part);
+        free(whole);
+        free(ini);
+        puts("PASS #2110: a made game's RomFS cut by a stopped copy or extraction, or gone, extracted again from its "
+             "dump at its start and its R, and neither run without a dump named");
+    }
     CHECK(!snx_remove_tree(game));
     run(exe, repo, dump, log, 0, "RG", NULL);
     set_env("SNX_WORKFLOW_FAIL", "G");
