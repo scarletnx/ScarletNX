@@ -63,7 +63,8 @@ static uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags want) {
     fprintf(stderr, "FAIL no memory type\n");
     exit(1);
 }
-static SnxFsr2Image image(VkFormat format, uint32_t w, uint32_t h, VkImageUsageFlags usage) {
+/* an image and its view, its memory in *memory */
+static SnxFsr2Image image(VkFormat format, uint32_t w, uint32_t h, VkImageUsageFlags usage, VkDeviceMemory* memory) {
     SnxFsr2Image i = {VK_NULL_HANDLE, VK_NULL_HANDLE, format, w, h};
     VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
@@ -79,9 +80,8 @@ static SnxFsr2Image image(VkFormat format, uint32_t w, uint32_t h, VkImageUsageF
     VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                .allocationSize = req.size,
                                .memoryTypeIndex = memory_type(req.memoryTypeBits, 0)};
-    VkDeviceMemory memory;
-    VK_CHECK(vkAllocateMemory(G.device, &ai, NULL, &memory));
-    VK_CHECK(vkBindImageMemory(G.device, i.image, memory, 0));
+    VK_CHECK(vkAllocateMemory(G.device, &ai, NULL, memory));
+    VK_CHECK(vkBindImageMemory(G.device, i.image, *memory, 0));
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                 .image = i.image,
                                 .viewType = VK_IMAGE_VIEW_TYPE_2D,
@@ -194,6 +194,20 @@ static int device(void) {
     return 1;
 }
 
+/* everything device() made, so that the sanitizers' leak check sees what FSR and the driver keep alone */
+static void teardown(void) {
+    if (G.device) {
+        VK_CHECK(vkDeviceWaitIdle(G.device));
+        if (G.mapped) vkUnmapMemory(G.device, G.staging_memory);
+        vkDestroyBuffer(G.device, G.staging, NULL);
+        vkFreeMemory(G.device, G.staging_memory, NULL);
+        vkDestroyFence(G.device, G.fence, NULL);
+        vkDestroyCommandPool(G.device, G.pool, NULL);
+        vkDestroyDevice(G.device, NULL);
+    }
+    if (G.instance) vkDestroyInstance(G.instance, NULL);
+}
+
 static void ppm(const char* name, const float* rgb, int channels) {
     const char* dir = getenv("SNX_TEST_FSR2_OUT");
     char path[1024];
@@ -220,12 +234,13 @@ static int run(double sign, float sharpness, float* out) {
         return 0;
     }
     VkImageUsageFlags in = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    SnxFsr2Image color = image(VK_FORMAT_R32G32B32A32_SFLOAT, RW, RH, in);
-    SnxFsr2Image depth = image(VK_FORMAT_R32_SFLOAT, RW, RH, in);
-    SnxFsr2Image motion = image(VK_FORMAT_R16G16_SFLOAT, RW, RH, in);
-    SnxFsr2Image output = image(VK_FORMAT_R32G32B32A32_SFLOAT, OW, OH,
-                                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    VkDeviceMemory memory[4];
+    SnxFsr2Image color = image(VK_FORMAT_R32G32B32A32_SFLOAT, RW, RH, in, &memory[0]);
+    SnxFsr2Image depth = image(VK_FORMAT_R32_SFLOAT, RW, RH, in, &memory[1]);
+    SnxFsr2Image motion = image(VK_FORMAT_R16G16_SFLOAT, RW, RH, in, &memory[2]);
+    SnxFsr2Image output =
+        image(VK_FORMAT_R32G32B32A32_SFLOAT, OW, OH,
+              VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, &memory[3]);
     int ok = 1;
     /* depth one plane, no motion */
     for (int i = 0; i < RW * RH; i++) G.mapped[i] = 0.5f;
@@ -274,6 +289,12 @@ static int run(double sign, float sharpness, float* out) {
     memcpy(out, G.mapped, (size_t)OW * OH * 4 * sizeof(float));
     VK_CHECK(vkDeviceWaitIdle(G.device));
     snx_fsr2_destroy(f);
+    const SnxFsr2Image* made[4] = {&color, &depth, &motion, &output};
+    for (int k = 0; k < 4; k++) {
+        vkDestroyImageView(G.device, made[k]->view, NULL);
+        vkDestroyImage(G.device, made[k]->image, NULL);
+        vkFreeMemory(G.device, memory[k], NULL);
+    }
     return ok;
 }
 
@@ -297,6 +318,7 @@ int main(void) {
     static float sharp[OW * OH * 4];
     if (!device()) {
         printf("no Vulkan device that can run FSR 2: skipped\n");
+        teardown();
         return 77;
     }
     /* the scene at the output's size, 4x4 samples a pixel */
@@ -328,7 +350,10 @@ int main(void) {
                 bilinear[(y * OW + x) * 3 + c] = (float)v;
             }
         }
-    if (!run(1, 0, fsr) || !run(-1, 0, other) || !run(1, 0.8f, sharp)) return 1;
+    if (!run(1, 0, fsr) || !run(-1, 0, other) || !run(1, 0.8f, sharp)) {
+        teardown();
+        return 1;
+    }
     int finite, finite_other, finite_sharp, finite_bilinear, failures = 0;
     double mean, mean_other, mean_sharp, mean_bilinear;
     double e_bilinear = difference(bilinear, 3, reference, &finite_bilinear, &mean_bilinear);
@@ -356,5 +381,6 @@ int main(void) {
     CHECK(e < e_bilinear * 0.8);     /* the history resolves what one frame's filter can't */
     CHECK(e < e_other);              /* and only with the jitter's sign right */
     if (!failures) printf("ok\n");
+    teardown();
     return failures ? 1 : 0;
 }
