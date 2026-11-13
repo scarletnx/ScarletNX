@@ -60,7 +60,7 @@ memory.
 screen, scaled by whole steps when it is resized, with the console's sound and
 its 59.73 frames a second. `-f` (or `--fullscreen=1`) starts it fullscreen, and F11
 switches. Esc twice within 3 seconds closes it, a first press warning on the
-terminal. The keyboard is the Switch runtime's: the arrows are the D-pad, X or
+terminal and in a line over the game, as a Switch game's notices show. The keyboard is the Switch runtime's: the arrows are the D-pad, X or
 Space A, Z B, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are
 where the console has them (A east, B south), its shoulders and triggers L and
 R, its left stick the D-pad. `--script ms:hex,...` presses keys unattended, as the

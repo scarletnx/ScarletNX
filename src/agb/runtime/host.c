@@ -4,6 +4,7 @@
 #include "common/utilities/sdl_desktop.h"
 #include "agb/apu/apu.h"
 #include "agb/ppu/ppu.h"
+#include "common/utilities/notice.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/quit_key.h"
 #include "common/utilities/window_icon.h"
@@ -30,6 +31,11 @@ struct AgbHost {
     uint16_t keyboard, buttons; /* the keys the keyboard and the gamepads hold */
     uint64_t due;               /* when the next frame goes on screen, SDL_GetTicksNS's */
     uint64_t quit_by;           /* a second Esc before this closes the window (common/utilities/quit_key.h) */
+    /* a line over the game for a few seconds, as a Switch game shows one (common/utilities/notice.h): Esc's first
+       press. Its band's texture, made again for another size */
+    SnxNotice notice;
+    SDL_Texture* notice_texture;
+    int notice_w, notice_h, notice_failed;
 };
 
 uint16_t agb_host_key(int scancode) {
@@ -136,6 +142,7 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
 void agb_host_close(AgbHost* host) {
     if (!host) return;
     if (host->audio) SDL_DestroyAudioStream(host->audio);
+    if (host->notice_texture) SDL_DestroyTexture(host->notice_texture);
     if (host->texture) SDL_DestroyTexture(host->texture);
     if (host->renderer) SDL_DestroyRenderer(host->renderer);
     if (host->window) SDL_DestroyWindow(host->window);
@@ -152,8 +159,8 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: open = false; break;
             case SDL_EVENT_GAMEPAD_ADDED: SDL_OpenGamepad(event.gdevice.which); break;
             case SDL_EVENT_KEY_DOWN:
-                /* Esc twice closes the window, a first one warning on the terminal; not with Ctrl, Alt or the system
-                   key */
+                /* Esc twice closes the window, a first one warning on the terminal and over the game; not with Ctrl,
+                   Alt or the system key */
                 if (event.key.key == SDLK_ESCAPE && !event.key.repeat &&
                     !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
                     char warning[64];
@@ -163,6 +170,7 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
                     }
                     snx_quit_warning(warning, sizeof warning, "Esc");
                     fprintf(stderr, "scarletnx-agb: %s\n", warning);
+                    snx_notice_show(&host->notice, warning, SDL_GetTicksNS());
                     break;
                 }
                 if (event.key.scancode == SDL_SCANCODE_F11 && !event.key.repeat)
@@ -179,11 +187,48 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
     return open;
 }
 
-void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* samples, uint32_t count) {
+/* the notice over the frame, in the window's own pixels: the logical presentation that scales the screen is off for
+   it. A texture that cannot be made is said once, and the notice shows on the terminal alone */
+static void notice_draw(AgbHost* host) {
+    int sw, sh, rect[4], pitch;
+    void* pixels;
+    if (!snx_notice_shown(&host->notice, SDL_GetTicksNS()) || host->notice_failed ||
+        !SDL_GetCurrentRenderOutputSize(host->renderer, &sw, &sh))
+        return;
+    int scale = snx_notice_scale(sw, sh, snx_display_percent(SDL_GetWindowDisplayScale(host->window)));
+    if (!snx_notice_rect(&host->notice, sw, sh, scale, rect)) return;
+    if (!host->notice_texture || host->notice_w != rect[2] || host->notice_h != rect[3]) {
+        if (host->notice_texture) SDL_DestroyTexture(host->notice_texture);
+        host->notice_texture =
+            SDL_CreateTexture(host->renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, rect[2], rect[3]);
+        host->notice_w = rect[2];
+        host->notice_h = rect[3];
+    }
+    if (!host->notice_texture || !SDL_LockTexture(host->notice_texture, NULL, &pixels, &pitch)) {
+        fprintf(stderr, "scarletnx-agb: the notice over the game cannot be drawn (%s): it shows here alone\n",
+                SDL_GetError());
+        host->notice_failed = 1;
+        return;
+    }
+    snx_notice_pixels(&host->notice, scale, 0, rect, pixels, (size_t)pitch);
+    SDL_UnlockTexture(host->notice_texture);
+    SDL_FRect at = {(float)rect[0], (float)rect[1], (float)rect[2], (float)rect[3]};
+    SDL_SetRenderLogicalPresentation(host->renderer, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
+    SDL_RenderTexture(host->renderer, host->notice_texture, NULL, &at);
+    SDL_SetRenderLogicalPresentation(host->renderer, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT,
+                                     SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
+}
+
+void agb_host_draw(AgbHost* host, const uint32_t* framebuffer) {
     SDL_UpdateTexture(host->texture, NULL, framebuffer, AGB_SCREEN_WIDTH * 4);
     SDL_SetRenderDrawColor(host->renderer, 0, 0, 0, 255);
     SDL_RenderClear(host->renderer);
     SDL_RenderTexture(host->renderer, host->texture, NULL, NULL);
+    notice_draw(host);
+}
+
+void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* samples, uint32_t count) {
+    agb_host_draw(host, framebuffer);
     SDL_RenderPresent(host->renderer);
     if (host->audio && SDL_GetAudioStreamQueued(host->audio) < (int)(QUEUED_FRAMES * count * 4))
         SDL_PutAudioStreamData(host->audio, samples, (int)(count * 4));
