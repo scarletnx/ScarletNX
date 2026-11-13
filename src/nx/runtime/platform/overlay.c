@@ -1379,11 +1379,13 @@ static const char* pads_hint(char* out, size_t size) {
     return out;
 }
 /* the notification: a band of one row in the picture's top left corner, which is its letters, backed (ui.h's
-   UI_BACKED) by the layer's ink, between a blank cell at either end: nothing is drawn under them */
+   UI_BACKED) by the layer's ink, between a blank cell at either end: nothing is drawn under them. Its letters are the
+   stats box's and showcase's (stats_scale), the other text over a running game, not the menu's that stops it */
 static void toast_draw(SnxUiList* l, int sw, int sh, const float* stats) {
     int px, py, s;
     float cw, ch, x, y, w;
     overlay_place(sw, sh, &px, &py, &s);
+    s = stats_scale(s);
     cw = 8.0f * (float)s;
     ch = 16.0f * (float)s;
     x = cw;
