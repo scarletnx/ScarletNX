@@ -2,7 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* The polygon mode Line and Point on a device without them (fillModeNonSolid off): the renderer draws a list of each
    primitive's sides or vertices instead (render.c draw_edges, edge_indices), which must draw what the device's own
-   mode draws, where it has one, and not the filled polygons the pipeline takes. A rectangle of corners on pixel
+   mode draws, where it has one, and not the filled polygons the pipeline takes. On every device quads, quad strips
+   and polygons drawn as lines go as that list too, without the diagonals of the triangles Vulkan draws them as;
+   with face culling they keep the device's mode, which culls. A rectangle of corners on pixel
    centres, (2.5, 3.5) to (13.5, 11.5) of a 16x16 target, drawn green over blue in every topology the 3D engine has
    for polygons, from vertex numbers, 16-bit and inline indices, through a base vertex and over a restart. Its outline
    is what a list of its four sides draws, as lines: quads and polygons drawn as lines show it, with no diagonal */
@@ -62,9 +64,9 @@ static int pl_same(const char* what, const u8* px, const u8* want) {
 }
 
 /* The draws the list stands in for. native: the images the device's own polygon mode drew of the rectangle as two
-   triangles, as lines and as points; NULL where it has none */
+   triangles, as lines and as points; NULL where it has none. mode: whether the device's mode is on for these */
 static int pl_cases(GpuChannel* channel, u64 target, u64 indices, u64 args, const u8* outline, const u8* filled,
-                    const u8* native_lines, const u8* native_points) {
+                    const u8* native_lines, const u8* native_points, int mode) {
     u8 px[PL_BYTES];
     /* strip: the same two triangles as (1 2 0) and its second turned, (0 2 3); quad_strip: the quad (0 1 2 3) */
     const u32 two[6] = {0, 1, 2, 0, 2, 3}, strip[4] = {1, 2, 0, 3}, quad_strip[4] = {0, 1, 3, 2},
@@ -112,12 +114,13 @@ static int pl_cases(GpuChannel* channel, u64 target, u64 indices, u64 args, cons
     CHECK(!pl_draw(channel, target, &call, PL_LINE, px));
     channel->r3d[0x591] = 0;
     CHECK(!pl_same("a polygon restarting as lines", px, outline));
-    /* an indirect fan: the CPU hasn't its count, so it is drawn filled, which the log says */
+    /* an indirect fan: the CPU hasn't its count, so it is drawn by the device's mode, or filled, which the log says */
     const u32 record[4] = {4, 1, 0, 0}; /* count, instances, first vertex, base instance */
     CHECK(!put_words(args, record, 4));
     call = (DrawCall){.topology = 6, .count = 1, .instances = 1, .indirect = args, .draw_count = 1, .stride = 16};
     CHECK(!pl_draw(channel, target, &call, PL_LINE, px));
-    CHECK(!pl_same("an indirect fan as lines, filled", px, filled));
+    CHECK(!pl_same(mode ? "an indirect fan as lines" : "an indirect fan as lines, filled", px,
+                   mode ? native_lines : filled));
     return 0;
 }
 
@@ -201,11 +204,27 @@ static int check_polygon_lines(void) {
         CHECK(!pl_draw(channel, target, &call, PL_LINE, lines));
         CHECK(!pl_draw(channel, target, &call, PL_POINT, points));
     }
+    if (had) {
+        CHECK(!pl_cases(channel, target, indices, args, outline, filled, lines, points, 1));
+        /* face culling of the face the rectangle doesn't show: a quad as lines keeps the device's mode, which would
+           cull it, and with it the diagonal */
+        u8 px[PL_BYTES];
+        CHECK(!index_buffer(channel, indices, two, 6, 2, ~0u));
+        channel->r3d[0x646] = 1;
+        channel->r3d[0x648] = 0x405; /* back */
+        CHECK(!pl_draw(channel, target, &call, PL_FILL, px));
+        if (pl_green(px) != pl_green(filled)) channel->r3d[0x648] = 0x404; /* the rectangle's back is shown: front */
+        DrawCall quad = {.topology = 7, .count = 4, .instances = 1};
+        CHECK(!pl_draw(channel, target, &quad, PL_LINE, px));
+        channel->r3d[0x646] = 0;
+        CHECK(!pl_same("a quad as lines with face culling", px, lines));
+    }
     g_vk.feat.fillModeNonSolid = VK_FALSE; /* a device with no polygon mode but fill, as PanVK on Bifrost */
-    int failed = pl_cases(channel, target, indices, args, outline, filled, had ? lines : NULL, had ? points : NULL);
+    int failed = pl_cases(channel, target, indices, args, outline, filled, had ? lines : NULL, had ? points : NULL, 0);
     g_vk.feat.fillModeNonSolid = had;
     CHECK(!failed);
-    printf("polygon lines: polygons drawn as lines and points without the device's polygon modes checked (%s)\n",
+    printf("polygon lines: quads and polygons drawn as their outline, and polygons drawn as lines and points without "
+           "the device's polygon modes, checked (%s)\n",
            had ? "against the device's own" : "the device has none to compare with");
     free(channel);
     return 0;

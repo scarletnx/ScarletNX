@@ -3631,16 +3631,20 @@ static int quad_indices_cpu(const DrawCall* dc, int inline_indices, u64 ia, u32 
 }
 /* Whether a draw goes as a list of lines or points made of its primitives (polygon_edges.h, edge_indices) instead of
    as Vulkan draws its topology: polygons in the polygon mode Line or Point where the device has no mode but fill
-   (fillModeNonSolid). Lines and points take no face culling and no depth bias, which the log says when the draw asks
-   for either. Only where the vertex program's primitives are the ones drawn (no stage after it, no mesh program),
-   none are captured (transform feedback takes the polygons) and the draw is direct (the CPU makes the list: an indirect
-   draw's count is the GPU's); the others are drawn filled, and logged */
+   (fillModeNonSolid), and on every device quads, quad strips and polygons drawn as lines, whose outline the device's
+   mode would cross with the diagonals of the triangles they become. Lines and points take no face culling and no
+   depth bias: where the device has the mode, a draw that asks for either keeps it, diagonals and all, and elsewhere
+   the log says the list takes neither. Only where the vertex program's primitives are the ones drawn (no stage after
+   it, no mesh program), none are captured (transform feedback takes the polygons) and the draw is direct (the CPU
+   makes the list: an indirect draw's count is the GPU's); the others are drawn as before, and logged */
 static int draw_edges(const DsState* ds, const DrawCall* dc, const DrawShaders* sh) {
     u32 t = sh->topology, mode = ds->rkey.polygon;
-    int after = sh->tcs || sh->tes || sh->gs || sh->mesh;
-    if (mode == DS_POLYGON_FILL || g_vk.feat.fillModeNonSolid || (!after && (t < 4 || t > 9)))
+    int after = sh->tcs || sh->tes || sh->gs || sh->mesh, native = g_vk.feat.fillModeNonSolid != 0;
+    int outline = !after && t >= 7 && t <= 9 && mode == DS_POLYGON_LINE;
+    if (mode == DS_POLYGON_FILL || (native && !outline) || (!after && (t < 4 || t > 9)))
         return 0; /* filled, or drawn by the device's mode, or points and lines, which take no polygon mode */
     const char *name = mode == DS_POLYGON_LINE ? "Line" : "Point", *as = mode == DS_POLYGON_LINE ? "lines" : "points";
+    const char* what = t == 7 ? "quads" : t == 8 ? "a quad strip" : "a polygon";
     if (after) {
         LOG_LIMIT(1,
                   "vulkan: the device has no polygon mode %s (fillModeNonSolid): the polygons of a draw with "
@@ -3649,36 +3653,54 @@ static int draw_edges(const DsState* ds, const DrawCall* dc, const DrawShaders* 
         return 0;
     }
     if (sh->xfb_on || dc->indirect) {
-        LOG_LIMIT(1,
-                  "vulkan: the device has no polygon mode %s (fillModeNonSolid): polygons drawn as %s %s are drawn "
-                  "filled\n",
-                  name, as, sh->xfb_on ? "and captured by transform feedback" : "by an indirect draw");
+        const char* why = sh->xfb_on ? "and captured by transform feedback" : "by an indirect draw";
+        if (native)
+            LOG_LIMIT(1, "vulkan: %s drawn as lines %s show the diagonals of the triangles they are drawn as\n", what,
+                      why);
+        else
+            LOG_LIMIT(1,
+                      "vulkan: the device has no polygon mode %s (fillModeNonSolid): polygons drawn as %s %s are drawn "
+                      "filled\n",
+                      name, as, why);
         return 0;
     }
     int culled = ds->dyn.cull != DS_CULL_NONE, biased = ds->dyn.bias_on >> (mode == DS_POLYGON_POINT ? 0 : 1) & 1;
+    const char* taken = culled && biased ? "face culling and no depth bias" : culled ? "face culling" : "depth bias";
+    if ((culled || biased) && native) {
+        LOG_LIMIT(1,
+                  "vulkan: %s drawn as lines with %s show the diagonals of the triangles they are drawn as: a list of "
+                  "their sides would take no %s\n",
+                  what,
+                  culled && biased ? "face culling and a depth bias"
+                  : culled         ? "face culling"
+                                   : "a depth bias",
+                  taken);
+        return 0;
+    }
     if (culled || biased)
         LOG_LIMIT(1,
                   "vulkan: the device has no polygon mode %s (fillModeNonSolid): polygons drawn as %s go as a list of "
                   "%s, which takes no %s\n",
-                  name, as, as,
-                  culled && biased ? "face culling and no depth bias"
-                  : culled         ? "face culling"
-                                   : "depth bias");
+                  name, as, as, taken);
     return 1;
+}
+/* what a draw draw_edges would draw as a list is drawn as when edge_indices can't make the list */
+static const char* edges_instead(void) {
+    return g_vk.feat.fillModeNonSolid ? "with the diagonals of its triangles" : "filled";
 }
 /* The list draw_edges draws a direct draw's count indices from first as (polygon_edges.h), made here into the staging
    ring and drawn indexed: from the guest's indices (isz bytes each), the draw's inline ones, or its vertex numbers
    counted from its first (the draw's vertex offset then). 1 with *n indices at *buf and *off; 0 when the CPU hasn't
    the guest's indices without waiting for the GPU (a result of its own over them), or they're more than EDGE_VERTICES:
-   the draw is drawn as its topology then, logged; -1 when staging fails */
+   the draw is drawn as before then (edges_instead), logged; -1 when staging fails */
 #define EDGE_VERTICES (1u << 20)
 static int edge_indices(const DsState* ds, const DrawCall* dc, int indexed, u32 isz, u32 first, u32 count, u32 topology,
                         int points, VkBuffer* buf, u64* off, u32* n) {
     SnxEdgeIndices in = {0};
+    const char* as = points ? "points" : "lines";
     if (count > EDGE_VERTICES) {
         LOG_LIMIT(1, "vulkan: a draw of %u vertices is past the %u the CPU makes into %s: drawn %s\n", count,
-                  EDGE_VERTICES, points ? "points" : "lines",
-                  g_vk.feat.fillModeNonSolid ? "as its topology" : "filled");
+                  EDGE_VERTICES, as, edges_instead());
         return 0;
     }
     if (indexed == 3)
@@ -3689,8 +3711,8 @@ static int edge_indices(const DsState* ds, const DrawCall* dc, int indexed, u32 
         /* as draw_last_vertex reads them: landing what the GPU holds there takes a submit and a wait */
         if (vk_buf_pending(a, len) || vk_uma_pending(a, len) || vk_compute_gpu_src(a, len, &held, &at) ||
             vk_buf_owned(a, len)) {
-            LOG_LIMIT(1, "vulkan: a draw whose indices the GPU wrote isn't made into %s on the CPU: drawn %s\n",
-                      points ? "points" : "lines", g_vk.feat.fillModeNonSolid ? "as its topology" : "filled");
+            LOG_LIMIT(1, "vulkan: a draw whose indices the GPU wrote isn't made into %s on the CPU: drawn %s\n", as,
+                      edges_instead());
             return 0;
         }
         vk_compute_mem_need(a, len);
@@ -3700,8 +3722,7 @@ static int edge_indices(const DsState* ds, const DrawCall* dc, int indexed, u32 
             LOG_LIMIT(1,
                       "vulkan: a draw's %u indices at %llx aren't in one run of memory, which the CPU makes into %s: "
                       "drawn %s\n",
-                      count, (unsigned long long)a, points ? "points" : "lines",
-                      g_vk.feat.fillModeNonSolid ? "as its topology" : "filled");
+                      count, (unsigned long long)a, as, edges_instead());
             return 0;
         }
     }
