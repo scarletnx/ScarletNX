@@ -3,12 +3,8 @@
 /* Each input vertex has its own position and generic color. The evaluation program selects one input and emits
    a point. Fixed positive levels generate that point, and zero outer levels cull the patch. Exact positions and
    colors catch a control stage that forwards the wrong input vertex or attribute. */
-static int nvn_tess_pixels(const DsState* state, const DrawCall* call, DrawOwner* owner, u64 target, u32 vertex,
-                           int visible) {
-    DrawClear clear = {.color_mask = 15, .color = {0, 0, 0x3f800000, 0x3f800000}};
-    vk_render_clear(state, &clear, owner);
-    vk_render_draw(state, call, owner);
-    vk_render_end();
+/* whether the 8x8 RGBA32F target holds the bits of want at pixel at (64: none) and the blue clear elsewhere */
+static int tess_pixels(u64 target, u32 at, const u32 want[4]) {
     Surf* surface = vk_rt_find(target);
     VkBuffer buffer;
     u8* pixels = vk_readback_buffer(8 * 8 * 16, &buffer);
@@ -20,22 +16,27 @@ static int nvn_tess_pixels(const DsState* state, const DrawCall* call, DrawOwner
     vk_finish();
     vk_readback_ready();
     for (u32 i = 0; i < 64; i++) {
-        u32 expected[4] = {0, 0, 0x3f800000, 0x3f800000};
-        if (visible && i == 4 * 8 + 2 + vertex * 2) {
-            expected[2] = 0;
-            expected[vertex] = 0x3f800000;
-            expected[3] = 0x3f000000;
-        }
+        const u32 clear[4] = {0, 0, 0x3f800000, 0x3f800000}, *expected = i == at ? want : clear;
         for (u32 c = 0; c < 4; c++) {
             u32 value = snx_ld_le32(pixels + i * 16 + c * 4);
             if (value != expected[c]) {
-                fprintf(stderr, "NVN tessellation vertex%u visible%d pixel(%u,%u) component%u: %08x expected %08x\n",
-                        vertex, visible, i % 8, i / 8, c, value, expected[c]);
+                fprintf(stderr, "tessellation pixel(%u,%u) component%u: %08x expected %08x\n", i % 8, i / 8, c, value,
+                        expected[c]);
                 CHECK(0);
             }
         }
     }
     return 0;
+}
+static int nvn_tess_pixels(const DsState* state, const DrawCall* call, DrawOwner* owner, u64 target, u32 vertex,
+                           int visible) {
+    DrawClear clear = {.color_mask = 15, .color = {0, 0, 0x3f800000, 0x3f800000}};
+    u32 want[4] = {0, 0, 0, 0x3f000000};
+    want[vertex] = 0x3f800000;
+    vk_render_clear(state, &clear, owner);
+    vk_render_draw(state, call, owner);
+    vk_render_end();
+    return tess_pixels(target, visible ? 4 * 8 + 2 + vertex * 2 : 64, want);
 }
 
 static int check_nvn_default_tessellation(void) {
@@ -118,6 +119,25 @@ static int check_nvn_default_tessellation(void) {
         for (u32 i = 0; i < 6; i++) call.tess_levels[i] = 2;
         CHECK(!nvn_tess_pixels(&channel->ds, &call, &channel->owner, target, vertex_index, 1));
     }
+    /* The 3D engine's own draw takes the levels from its registers (0x0C9-0x0CE, outer then inner), which an
+       evaluation program reads back: outer 0, inner 0 and outer 2 as the color of input vertex 0's point. Read as
+       1, the levels the renderer kept for every 3D engine draw, they drew (1, 1, 1) */
+    const u64 levels[] = {storage_mov(4, 0),          evaluation[1], evaluation[2],
+                          0xefd87f808007ff00ull, /* ALD.P R0, a[0x000] */
+                          0xefd87f808107ff01ull, /* ALD.P R1, a[0x010] */
+                          0xefd87f808087ff02ull, /* ALD.P R2, a[0x008] */
+                          storage_mov(3, 0x3f000000), evaluation[4], 0xe30000000007000full};
+    const f32 set[6] = {3, 4, 5, 6, 7, 8};
+    CHECK(mesh_program(gpu + 0x6000, levels, 9, 0));
+    g_renderer->method_barrier(5);
+    memcpy(r + MAXWELL3D_TESS_LEVELS, set, sizeof set);
+    r[0x831] = 0x6000;
+    DrawClear clear = {.color_mask = 15, .color = {0, 0, 0x3f800000, 0x3f800000}};
+    vk_render_clear(&channel->ds, &clear, &channel->owner);
+    channel->r3d_dirty = ~0u;
+    r3d_draw(channel, 0, 14, 0, 3, 0, 0, 1);
+    vk_render_end();
+    CHECK(!tess_pixels(target, 4 * 8 + 2, (const u32[4]){0x40400000, 0x40e00000, 0x40a00000, 0x3f000000}));
     if (g_vk.feat.shaderClipDistance && g_vk.feat.shaderTessellationAndGeometryPointSize) {
         /* Different producer/consumer clip indices must still have matching eight-element interfaces. */
         for (u32 read_last = 0; read_last < 2; read_last++)

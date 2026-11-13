@@ -29,6 +29,9 @@ enum {
     MAXWELL3D_INVALIDATE_SHADER_CACHE = 0x087,
     MAXWELL3D_SYNC_INFO = 0x0B2,
     MAXWELL3D_TESSELLATION = 0x0C8,
+    /* SET_TESSELLATION_LOD: the levels of a patch drawn without a control program, the four outer then the two
+       inner (0x0CD), floats */
+    MAXWELL3D_TESS_LEVELS = 0x0C9,
     MAXWELL3D_RASTERIZE_ENABLE = 0x0DF,
     /* transform_feedback.buffers[4]: 8 words each, start_offset the fifth (open-gpu-doc's
        SET_STREAM_OUT_BUFFER_LOAD_WRITE_POINTER) */

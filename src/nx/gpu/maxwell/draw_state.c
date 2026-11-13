@@ -333,12 +333,14 @@ void mx_draw_index(const u32* r, DsIndex* x) {
 
 /* CLEAR_SURFACE's word v: bit 0 depth, 1 stencil, 2-5 the RGBA mask, 6-9 the color slot, 10-20 the layer. The
    color at 0x360-0x363, depth 0x364, stencil 0x368 */
-/* SET_POINT_SIZE (0x546), the size of a point whose program writes none, which a channel starts at 1 (reset_3d); and
-   SET_DEPTH_BOUNDS_TEST (0x66F) with its bounds (0x3E7, 0x3E8), which keeps a sample whose depth buffer holds a value
-   inside them, both ends included */
+/* SET_POINT_SIZE (0x546), the size of a point whose program writes none, and the tessellation levels (0x0C9-0x0CE)
+   of a patch drawn without a control program, which a channel starts at 1 (reset_3d); and SET_DEPTH_BOUNDS_TEST
+   (0x66F) with its bounds (0x3E7, 0x3E8), which keeps a sample whose depth buffer holds a value inside them, both ends
+   included */
 void mx_draw_fixed(const u32* r, DrawCall* dc) {
-    dc->state_flags |= DS_DRAW_POINT_SIZE;
+    dc->state_flags |= DS_DRAW_POINT_SIZE | DS_DRAW_TESS_LEVELS;
     memcpy(&dc->point_size, &r[MAXWELL3D_POINT_SIZE], sizeof dc->point_size);
+    memcpy(dc->tess_levels, &r[MAXWELL3D_TESS_LEVELS], sizeof dc->tess_levels);
     if (r[MAXWELL3D_DEPTH_BOUNDS_ENABLE] & 1) {
         dc->state_flags |= DS_DRAW_DEPTH_BOUNDS;
         memcpy(dc->depth_bounds, &r[MAXWELL3D_DEPTH_BOUNDS], sizeof dc->depth_bounds);
