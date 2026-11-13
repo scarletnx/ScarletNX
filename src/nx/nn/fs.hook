@@ -94,6 +94,8 @@ hook _ZN2nn2fs21GetUtf16PathLengthMaxEPbPmPKc(bool* has, u64* out, const char* p
 hook _ZN2nn2fs26GetUtf16EntryNameLengthMaxEPbPmPKc(bool* has, u64* out, const char* path) -> u32 = nnfs_get_utf16_entry_name_length_max
 hook _ZN2nn2fs6CommitEPKc(const char* name) -> u32 = nnfs_commit
 hook _ZN2nn2fs6CommitEPKcRKNS0_12CommitOptionE(const char* name, addr option) -> u32 = nnfs_commit_option
+# several mounts at once, from SDK 6 (read in 13.3 and 20.5)
+hook _ZN2nn2fs6CommitEPKPKci(addr names, i32 count) -> u32 = nnfs_commit_names
 hook _ZN2nn2fs14CommitSaveDataEPKc(const char* name) -> u32 = nnfs_commit_save_data a32 @version(< 1.0.0)
 hook _ZN2nn2fs17MountAddOnContentEPKciPvm(const char* name, i32 index, addr cache, u64 cache_size) -> u32 = nnfs_mount_add_on_content
 @version(< 1.0.0) a32 hook _ZN2nn2fs17MountAddOnContentEPKciPvj(const char* name, i32 index, addr cache, usize cache_size) -> u32 = nnfs_mount_add_on_content
