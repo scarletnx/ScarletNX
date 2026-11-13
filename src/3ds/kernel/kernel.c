@@ -423,12 +423,12 @@ uint32_t snx_ctr_kernel_memory(SnxCtrProcess* p, uint32_t op, uint32_t va, uint3
     }
     /* FREE leaves what is not plain private memory alone; PROTECT reprotects any of it, as Azahar's ReprotectRange */
     if ((op == 1 && held(p, va, size)) || (op == 6 && snx_ctr_ldr_held(p, va, size))) return INVALID_STATE;
-    uint32_t base = linear ? CTR_LINEAR : CTR_HEAP;
-    uint32_t end = linear ? CTR_LINEAR + p->app_limit : CTR_HEAP_END;
+    uint32_t base = linear ? p->linear_base : CTR_HEAP;
+    uint32_t end = linear ? p->linear_base + p->app_limit : CTR_HEAP_END;
     if (op != 3) {
-        if (va >= CTR_LINEAR && va < CTR_LINEAR + p->app_limit) {
-            base = CTR_LINEAR;
-            end = CTR_LINEAR + p->app_limit;
+        if (va >= p->linear_base && va < p->linear_base + p->app_limit) {
+            base = p->linear_base;
+            end = p->linear_base + p->app_limit;
             linear = true;
         }
     }
@@ -442,7 +442,7 @@ uint32_t snx_ctr_kernel_memory(SnxCtrProcess* p, uint32_t op, uint32_t va, uint3
         if (!plan) return OUT_OF_MEMORY;
         if (linear) {
             if (va) {
-                first = (va - CTR_LINEAR) / 4096;
+                first = (va - p->linear_base) / 4096;
                 for (uint32_t i = first; i < first + pages; ++i)
                     if (p->physical_owner[i]) {
                         free(plan);
@@ -462,7 +462,7 @@ uint32_t snx_ctr_kernel_memory(SnxCtrProcess* p, uint32_t op, uint32_t va, uint3
                     return OUT_OF_HEAP;
                 }
             }
-            va = CTR_LINEAR + first * 4096;
+            va = p->linear_base + first * 4096;
             for (uint32_t i = 0; i < pages; ++i) plan[i] = first + i;
         } else {
             /* Ordinary heap pages need not be physically contiguous. */
@@ -1052,7 +1052,7 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
             else if (type == 0 || type == 2)
                 value = memory_used(p);
             else if (type == 20) /* FCRAM's physical address less the linear heap's virtual one */
-                value = (uint32_t)(CTR_PHYS_BASE - CTR_LINEAR);
+                value = (uint32_t)(CTR_PHYS_BASE - p->linear_base);
             else if (type >= 21 && type <= 23)
                 result = NOT_IMPLEMENTED; /* QTM, as in Azahar */
             else if (type == 0x10000)

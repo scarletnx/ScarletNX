@@ -126,16 +126,21 @@ SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) 
     const SnxCtrProfile* profile = snx_ctr_profile(model);
     /* The APPLICATION, SYSTEM and BASE regions of FCRAM for each system mode, as Azahar lays them out
        (kernel/memory.cpp, memory_region_sizes): an Old 3DS launches a title in the mode its ExHeader names, and a New
-       3DS in its mode 6 whatever Old 3DS mode the title names (core.cpp, Load). Mode 1 is none */
+       3DS in its mode 6, or 7 (178 MiB) for a title whose New 3DS system mode asks for it (core.cpp, Load). Mode 1 is
+       none */
     static const uint32_t old_modes[6][3] = {{0x4000000, 0x2c00000, 0x1400000}, {0, 0, 0},
                                              {0x6000000, 0x0c00000, 0x1400000}, {0x5000000, 0x1c00000, 0x1400000},
                                              {0x4800000, 0x2400000, 0x1400000}, {0x2000000, 0x4c00000, 0x1400000}};
-    static const uint32_t new_mode[3] = {0x7c00000, 0x6400000, 0x2000000};
+    static const uint32_t new_modes[2][3] = {{0x7c00000, 0x6400000, 0x2000000}, {0xb200000, 0x2e00000, 0x2000000}};
     if (!image || !image->code || !profile || !image->stack_size || image->stack_size > 0x800000 ||
         image->system_mode > 5 || !old_modes[image->system_mode][0])
         return NULL;
-    const uint32_t* regions = model == SNX_CTR_OLD ? old_modes[image->system_mode] : new_mode;
-    uint32_t app_limit = regions[0];
+    bool mode7 = model == SNX_CTR_NEW && image->new3ds_mode == 2;
+    const uint32_t* regions = model == SNX_CTR_OLD ? old_modes[image->system_mode] : new_modes[mode7];
+    /* A legacy title (New 3DS system mode 0) on a New 3DS: mode 6's layout, and of it the share its Old 3DS mode gives,
+       as the process manager limits it (3dbrew NCCH/Extended Header, Flag2; Azahar UpdateReportedMemory) */
+    uint32_t app_limit =
+        model == SNX_CTR_NEW && image->new3ds_mode == 0 ? old_modes[image->system_mode][0] : regions[0];
     SnxCtrProcess* p = calloc(1, sizeof *p + app_limit / 4096);
     if (!p) return NULL;
     p->app_limit = app_limit;
@@ -200,9 +205,11 @@ SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) 
     config[0x10] = config[0x64] = 2;
     config[0x18] = config[0x68] = 0x50;
     config[0x19] = config[0x69] = 0xf4;
-    config[0x30] = model == SNX_CTR_OLD ? (unsigned char)image->system_mode : 6;
+    config[0x30] = model == SNX_CTR_OLD ? (unsigned char)image->system_mode : mode7 ? 7 : 6;
+    /* APPMEMALLOC is the application's share, SYSMEMALLOC and BASEMEMALLOC the mode's */
+    const uint32_t reported[3] = {app_limit, regions[1], regions[2]};
     for (unsigned i = 0; i < 3; ++i)
-        for (unsigned j = 0; j < 4; ++j) config[0x40 + i * 4 + j] = (unsigned char)(regions[i] >> (j * 8));
+        for (unsigned j = 0; j < 4; ++j) config[0x40 + i * 4 + j] = (unsigned char)(reported[i] >> (j * 8));
     if (snx_ctr_write_ram(p->space, CTR_CONFIG, config, sizeof config) != SNX_CTR_MEM_OK ||
         snx_ctr_protect(p->space, CTR_CONFIG, 4096, SNX_CTR_READ) != SNX_CTR_MEM_OK)
         goto fail;
@@ -225,6 +232,13 @@ SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) 
         goto fail;
     snx_ctr_shared_page_time(p);
     if (!special_mappings(p, image->kernel_caps)) goto fail;
+    /* the kernel release version descriptor (bits 20 to 31 0b1111111xxxxx; the version its low 16 bits, major in
+       the high byte): from 2.44 (0x22c), system 8.0.0, the linear heap moved to 0x30000000, as Azahar places
+       it, which leaves room for a New 3DS's larger modes. No descriptor is an old kernel */
+    uint32_t kernel_version = 0;
+    for (unsigned i = 0; i < 28; ++i)
+        if (((image->kernel_caps[i] >> 20) & 0xfe0) == 0xfc0) kernel_version = image->kernel_caps[i] & 0xffff;
+    p->linear_base = kernel_version >= 0x22c ? CTR_LINEAR_NEW : CTR_LINEAR;
     return p;
 fail:
     snx_ctr_process_free(p);
