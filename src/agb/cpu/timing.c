@@ -393,6 +393,13 @@ static unsigned before_data(const AgbOp* op, uint32_t trace) {
 }
 static unsigned after_data(const AgbOp* op) { return op->kind == OP_LOAD || op->kind == OP_SWAP; }
 
+uint32_t agb_code_time(AgbBus* bus, const AgbWaits* waits, int prefetch, const AgbBlockRun* run, uint32_t units) {
+    AgbReplay replay = {.bus = *bus, .done = AGB_REPLAY_FETCH};
+    uint32_t cycles = agb_replay_to(&replay, waits, prefetch, run, units, AGB_REPLAY_WHOLE);
+    *bus = replay.bus;
+    return cycles;
+}
+
 uint32_t agb_replay_to(AgbReplay* replay, const AgbWaits* waits, int prefetch, const AgbBlockRun* run, uint32_t unit,
                        int32_t access) {
     unsigned width = run->thumb ? 2 : 4;

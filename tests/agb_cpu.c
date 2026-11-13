@@ -317,24 +317,40 @@ int main(void) {
         }
     }
     {
-        /* a BIOS call takes its entry and return, 45 cycles, and the memory it streams through: CpuSet of 64 words from
-           EWRAM to EWRAM, 64 reads and writes of 6 cycles, holds the CPU 813 cycles before the add after it runs */
-        agb_write32(&board, 0x03000900, 0xEF0B0000); /* swi 0x0B0000: CpuSet */
-        agb_write32(&board, 0x03000904, 0xE2855001); /* add r5, r5, #1 */
-        agb_write32(&board, 0x03000908, 0xEAFFFFFD); /* b 0x03000904 */
-        cpu.arm.r[0] = 0x02001000;
-        cpu.arm.r[1] = 0x02002000;
-        cpu.arm.r[2] = 64 | 1u << 26;
-        cpu.arm.r[5] = 0;
+        /* a BIOS call takes the console's time, its code's as mGBA's HLE BIOS runs it: CpuFastSet of 256 words from
+           EWRAM to EWRAM, called from IWRAM between a timer's start and its read, reads 3397, as mGBA's suite measures
+           the console (timing.c, "CpuSet", ARM/IWRAM) */
+        static const uint32_t code[] = {
+            0xE59F0030, /* ldr r0, [pc, #48]: TM0CNT_L */
+            0xE59F1030, /* ldr r1, [pc, #48]: on, a prescaler of 1 */
+            0xE5801000, /* str r1, [r0] */
+            0xE1A04000, /* mov r4, r0 */
+            0xE1A05001, /* mov r5, r1 */
+            0xE3A00402, /* mov r0, #0x02000000 */
+            0xE3A01402, /* mov r1, #0x02000000 */
+            0xE3A02C01, /* mov r2, #0x100 */
+            0xEF0C0000, /* swi 0x0C0000: CpuFastSet */
+            0xE1A00004, /* mov r0, r4 */
+            0xE1A01005, /* mov r1, r5 */
+            0xE1D020B0, /* ldrh r2, [r0] */
+            0xE1C010B2, /* strh r1, [r0, #2]: off */
+            0xEAFFFFFE, /* b . */
+            0x04000100, 0x00800000,
+        };
+        for (uint32_t i = 0; i < sizeof code / sizeof code[0]; ++i) agb_write32(&board, 0x03000900 + i * 4, code[i]);
+        cpu.arm.r[2] = 0;
         cpu.arm.r[15] = 0x03000900;
         cpu.arm.cpsr = 0x9F;
         cpu.over = 0;
         board.cpu_halted = 0;
         board.held_cycles = 0;
-        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 800, audio, AGB_APU_RATE, NULL, error, sizeof error));
-        CHECK(cpu.arm.r[5] == 0);
-        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 100, audio, AGB_APU_RATE, NULL, error, sizeof error));
-        CHECK(cpu.arm.r[5] > 0);
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 4000, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        if (cpu.arm.r[2] != 3397) {
+            fprintf(stderr,
+                    "agb_cpu: CpuFastSet of 256 words took %u cycles from the timer's start to its read, not 3397\n",
+                    cpu.arm.r[2]);
+            goto done;
+        }
     }
     {
         /* the cartridge's ROM takes no writes: a word, a halfword, a byte and an STM into the literal pool at 0xF0 leave
