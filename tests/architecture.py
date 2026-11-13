@@ -246,6 +246,32 @@ def check_window_pixels(repo):
     return errors
 
 
+DYNAMIC_DESCRIPTOR = re.compile(r'\bVK_DESCRIPTOR_TYPE_(UNIFORM|STORAGE)_BUFFER_DYNAMIC\b')
+
+
+def check_dynamic_descriptors(repo):
+    """no descriptor of src/nx is a dynamic buffer: the NX runtime gives Turnip's reserved descriptor set back as a fifth
+    one (gpu_driver_load.c's turnip_sets), and that set is where Turnip keeps dynamic buffers, which then read as zeros.
+    A switch's case naming the type, as a recorder copying any descriptor write does, is no use of it"""
+    errors = []
+    for path in sorted((repo / 'src/nx').rglob('*')):
+        if path.suffix not in {'.c', '.h', '.cpp', '.hpp', '.inc'}:
+            continue
+        source = without_comments(path.read_text(encoding='utf-8', errors='replace'))
+        shown = path.relative_to(repo).as_posix()
+        for match in DYNAMIC_DESCRIPTOR.finditer(source):
+            line_start = source.rfind('\n', 0, match.start()) + 1
+            if re.match(r'\s*case\s*$', source[line_start : match.start()]):
+                continue
+            line = source.count('\n', 0, match.start()) + 1
+            errors.append(
+                f'{shown}:{line}: {match.group(0)}: Turnip keeps dynamic buffers in the descriptor set the runtime takes '
+                "back for a fifth (gpu_driver_load.c's turnip_sets), so they read as zeros there. Bind the whole "
+                'buffer and give the shader its offset (ui.c and ui.vert do it with a push constant)'
+            )
+    return errors
+
+
 def check_graph(graph):
     source = graph.read_text(encoding='utf-8')
     nodes = {
@@ -747,6 +773,7 @@ def main():
         + check_environment(args.repo.resolve())
         + check_window_pixels(args.repo.resolve())
         + check_state_fns(args.repo.resolve())
+        + check_dynamic_descriptors(args.repo.resolve())
     )
     if args.build:
         graph = args.build.resolve() / 'architecture-targets.dot'
