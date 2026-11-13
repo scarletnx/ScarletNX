@@ -301,7 +301,10 @@ static uint32_t lone_access(const AgbBoard* board, uint32_t address, unsigned wi
 static void bios_lz77_uncomp(AgbBoard* board, uint32_t regs[16], int halfwords) {
     uint8_t counting = board->counting;
     board->counting = 0; /* each access counted below as a lone one */
-    uint32_t source = regs[0], destination = regs[1], size = agb_read32(board, source) >> 8, written = 0;
+    uint32_t source = regs[0];
+    /* the header's word as the BIOS's LDR reads it: an unaligned source turns it round, as the ARM7TDMI does */
+    uint32_t header = agb_read32(board, source), turn = (source & 3) * 8;
+    uint32_t destination = regs[1], size = (turn ? header >> turn | header << (32 - turn) : header) >> 8, written = 0;
     uint32_t cycles = 20 + lone_access(board, source, 32, 1);
     unsigned width = halfwords ? 16 : 8;
     uint16_t held = 0;

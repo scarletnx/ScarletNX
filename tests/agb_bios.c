@@ -191,6 +191,23 @@ int main(void) {
     CHECK(!memcmp(&board.memory.vram[0], "ABCBCBCB", 8));
 
     {
+        /* an unaligned source: the header's word is the LDR's, turned round by the misalignment, and the data follow 4
+           bytes on. 0x00041000 from 0x02000101 reads 0x10000410: 4 bytes, not the 0x000410 of the word as it lies */
+        agb_write32(&board, 0x02000100, 0x00041000);
+        agb_write8(&board, 0x02000105, 0x00); /* four literals */
+        memcpy(&board.memory.ewram[0x106], "WXYZ", 4);
+        agb_write8(&board, 0x02020004, 0x5A); /* past the output */
+        memset(regs, 0, sizeof(regs));
+        regs[0] = 0x02000101;
+        regs[1] = 0x02020000;
+        CHECK(call(regs, AGB_SWI_LZ77_UNCOMP_WRAM) == 0);
+        if (memcmp(&board.memory.ewram[0x20000], "WXYZ", 4) || board.memory.ewram[0x20004] != 0x5A) {
+            fprintf(stderr, "agb_bios: LZ77 from 0x02000101 wrote %.4s and 0x%02X past it, not WXYZ and 0x5A\n",
+                    (const char*)&board.memory.ewram[0x20000], board.memory.ewram[0x20004]);
+            return 1;
+        }
+    }
+    {
         /* the BIOS's own time beside the memory it moves, the cycles mGBA's HLE BIOS counts for its loops: Div 4 in, 13 a
            step for each bit the numerator is wider, 7 out; Sqrt and ArcTan their steps and multiplies; ArcTan2 11 on an
            axis; the LZ77 above 20 to start, 14 a step, 18 a unit, 10 a byte copied (4 more for VRAM), each access a
