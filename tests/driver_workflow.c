@@ -1450,17 +1450,22 @@ int main(int argc, char** argv) {
            nothing made from the _data; and an .ini that names none says so */
         set_env("SNX_WORKFLOW_FLAGS", "-r");
         {
-            char* ini = snx_game_ini(own, "Test game");
+            /* the dump as the .ini records it: resolved, under /private/var on macOS where the test names /var */
+            char *ini = snx_game_ini(own, "Test game"), *recorded = snx_game_source(own, "Test game", NULL), *kept;
+            size_t kept_size;
             char* said =
                 snx_format("Test game_data, and the dump it was made from, %s, is not there: put it back, or make the "
                            "game again from its dump (its .ini: %s)",
-                           dump, ini);
+                           recorded, ini);
             run(exe, repo, game, log, 1, "", said);
-            CHECK(!snx_write_file(ini, "[Game]\n", 7));
+            kept = (char*)snx_read_file(ini, &kept_size);
+            CHECK(kept && !snx_write_file(ini, "[Game]\n", 7));
             free(said);
             said = snx_format("keeps no ExeFS in Test game_data, and its .ini %s names no dump (source=)", ini);
             run(exe, repo, game, log, 1, "", said);
-            CHECK(!snx_record_source(own, "Test game", dump));
+            CHECK(!snx_write_file(ini, kept, kept_size));
+            free(kept);
+            free(recorded);
             { /* an ExeFS where the loader reads one, not exefs/ (ExeFS/, as another tool names it): made from it */
                 char *data = snx_path_join(own, "Test game_data"), *exefs = snx_path_join(data, "ExeFS"),
                      *main = snx_path_join(exefs, "main");
