@@ -95,6 +95,24 @@ enum {
 /* the probability table at vp9_prob_tab_buffer_offset (nvdec_vp9EntropyProbs_t) */
 #define VP9_PROB_TABLE_SIZE 0xEA0u
 
+/* VP8PictureInfo (nvdec_vp8_pic_s), at picture_info_offset, by byte offset */
+#define VP8_PICTURE_INFO_SIZE 0xC0u
+enum {
+    VP8_FRAME_WIDTH = 0x38,       /* u16, the frame's own size */
+    VP8_FRAME_HEIGHT = 0x3A,      /* u16 */
+    VP8_KEY_FRAME = 0x3C,         /* u8 */
+    VP8_VERSION = 0x3D,           /* u8 */
+    VP8_SURFACE_FORMAT = 0x3E,    /* u8: tile_format bits 0-1, gob_height bits 2-4, as H.264's */
+    VP8_FIRST_PART_SIZE = 0x40,   /* the first partition's bytes: the frame header and the modes */
+    VP8_VLD_BUFFER_SIZE = 0x48,   /* the frame's bytes at frame_bitstream_offset */
+    VP8_FRAME_STRIDE_LUMA = 0x4C, /* frame_stride[2] */
+    VP8_FRAME_STRIDE_CHROMA = 0x50,
+    VP8_LUMA_FRAME_OFFSET = 0x5C,  /* Offset */
+    VP8_CHROMA_FRAME_OFFSET = 0x68 /* Offset */
+};
+/* the surfaces a VP8 job names (Eden's Vp8SurfaceIndex): its references, then the picture it decodes */
+enum { VP8_SURFACE_LAST, VP8_SURFACE_GOLDEN, VP8_SURFACE_ALTREF, VP8_SURFACE_CURRENT };
+
 /* nvdec_status_s at frame_stats_offset: four u32, named as NVIDIA's Tegra headers name them */
 #define NVDEC_STATUS_SIZE 16u
 enum {

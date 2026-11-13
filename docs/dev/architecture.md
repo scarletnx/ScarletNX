@@ -304,7 +304,7 @@ covers hooks in code the game maps itself (NROs), which only the JIT runs.
 | `hle/services/`, `hle/filesystem/` | Services, nvdrv, guest filesystem services |
 | `gpu/` and `gpu/nvn/` | Guest memory as the GPU sees it, the GPU thread, NVN (loader, objects, command buffers, replay), shaders, Vulkan renderer |
 | `gpu/maxwell/` | The Maxwell front end for programs that write their own command buffers: the 3D, compute, 2D, DMA and inline-to-memory engines, the macro interpreter, the registers as the draw state, the last GPU write to each page |
-| `gpu/video/` | host1x, NVDEC H.264 and VP9 decoding through FFmpeg, VIC |
+| `gpu/video/` | host1x, NVDEC H.264, VP8 and VP9 decoding through FFmpeg, VIC |
 | `runtime/platform/` | Host APIs, SDL3/headless, input, screenshots, timed exit, the in-game menu, the shader loading screen |
 
 The host layer that every driver shares is `src/common/platform/`: threads (`thread.h`, `thread_spawn.c`) and the

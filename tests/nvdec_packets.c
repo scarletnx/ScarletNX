@@ -1,9 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Compile the production implementation with either the isolated FFmpeg double (default CTest target),
-   or real FFmpeg headers/libraries and -DSNX_TEST_REAL_FFMPEG for synthetic I_PCM decode coverage. */
+   or real FFmpeg headers/libraries and -DSNX_TEST_REAL_FFMPEG for synthetic I_PCM decode coverage and a VP8 clip. */
 #include "nx/gpu/video/nvdec.c"
 #include "support/nvdec_ref.h"
+#ifdef SNX_TEST_REAL_FFMPEG
+#include <libavutil/md5.h>
+#endif
 
 static unsigned checks;
 #define CHECK(x)                                                                                                       \
@@ -26,10 +29,20 @@ static u8* const big = arena + MEMORY;
 static u32 regs[0x1000 / 4];
 static u8* const setup = memory + 0x1000;
 static u8* const stream = memory + 0x2000;
+static char last_log[512]; /* the last line nvdec.c logged */
 void logf_(int level, const char* fmt, ...) {
+    va_list ap;
     (void)level;
-    (void)fmt;
+    va_start(ap, fmt);
+    vsnprintf(last_log, sizeof last_log, fmt, ap);
+    va_end(ap);
 }
+#ifndef SNX_TEST_REAL_FFMPEG
+static void logged(const char* want) {
+    if (!strstr(last_log, want)) fprintf(stderr, "logged \"%s\", not \"%s\"\n", last_log, want);
+    CHECK(strstr(last_log, want) != NULL);
+}
+#endif
 /* the renderer lays the picture out on the GPU; here the reference does it in guest memory (nvdec_ref.c) */
 static int write_ref(const NvdecPic* p) {
     nvdec_write_ref(p);
@@ -158,6 +171,8 @@ static unsigned event_count, event_at, sends;
 static int expected_headers, alloc_fail, ref_fail;
 static const u8* retry_data;
 static int retry_size;
+static const u8* want_packet; /* set: the packet the decoder must get, byte for byte */
+static int want_size;
 static u8 planes[384];
 static Event next_event(char call, AVCodecContext* c) {
     CHECK(event_at < event_count);
@@ -185,7 +200,7 @@ static void run(NvdecCtx* d, const Event* script, unsigned n, int headers, int f
 #define RUN(d, script, headers, failed) run(d, script, sizeof(script) / sizeof *(script), headers, failed)
 const AVCodec* avcodec_find_decoder(int id) {
     static AVCodec codec;
-    CHECK(id == AV_CODEC_ID_H264 || id == AV_CODEC_ID_VP9);
+    CHECK(id == AV_CODEC_ID_H264 || id == AV_CODEC_ID_VP8 || id == AV_CODEC_ID_VP9);
     return &codec;
 }
 AVCodecContext* avcodec_alloc_context3(const AVCodec* codec) {
@@ -222,7 +237,10 @@ int avcodec_send_packet(AVCodecContext* c, const AVPacket* p) {
     CHECK(p != NULL);
     padding_is_zero(p);
     ++sends;
-    CHECK((p->size > 4 && p->data[4] == 0x67) == expected_headers);
+    if (want_packet)
+        CHECK(p->size == want_size && !memcmp(p->data, want_packet, (size_t)want_size));
+    else
+        CHECK((p->size > 4 && p->data[4] == 0x67) == expected_headers);
     if (retry_data) CHECK(p->data == retry_data && p->size == retry_size);
     Event e = next_event('S', c);
     if (e.result == AVERROR(EAGAIN)) {
@@ -434,13 +452,224 @@ static void vp9_tests(void) {
     failed_untouched();
     CHECK(d->app == 9 && d->dec && d->dec->opaque == d && d->vp9);
     CHECK(d->dec->thread_type == FF_THREAD_SLICE && d->dec->thread_count == 4);
-    regs[0x200 / 4] = 5;
+    regs[0x200 / 4] = 7; /* H.265 */
     memset(memory + 0x3000, 0, 16);
     nvdec_execute(d, regs);
     failed_untouched();
     CHECK(d->app == 9 && d->dec);
     nvdec_free(d);
 }
+
+/* VP8 jobs: NVDEC takes the frame without its first bytes (RFC 6386 9.1), which the picture info carries; the job
+   puts them back, and the picture goes into surface 3, the current one, at the picture info's frame offset */
+static void vp8_setup(int key, u32 version, u32 first_part, u32 len, u32 w, u32 h) {
+    fixture();
+    memset(setup, 0, VP8_PICTURE_INFO_SIZE);
+    regs[NVDEC_SET_CODEC_ID] = NVDEC_CODEC_VP8;
+    regs[NVDEC_SURFACE_LUMA_OFFSETS] = regs[NVDEC_SURFACE_CHROMA_OFFSETS] = 0; /* surface 0 isn't mapped */
+    regs[NVDEC_SURFACE_LUMA_OFFSETS + VP8_SURFACE_CURRENT] = 0x40;
+    regs[NVDEC_SURFACE_CHROMA_OFFSETS + VP8_SURFACE_CURRENT] = 0x50;
+    snx_st_le16(setup + VP8_FRAME_WIDTH, (u16)w);
+    snx_st_le16(setup + VP8_FRAME_HEIGHT, (u16)h);
+    setup[VP8_KEY_FRAME] = (u8)key;
+    setup[VP8_VERSION] = (u8)version;
+    put32(VP8_FIRST_PART_SIZE, first_part);
+    put32(VP8_VLD_BUFFER_SIZE, len);
+    put32(VP8_FRAME_STRIDE_LUMA, 64);
+    put32(VP8_FRAME_STRIDE_CHROMA, 64);
+    for (u32 i = 0; i < 16; i++) stream[i] = (u8)(0xA0 + i);
+}
+#ifndef SNX_TEST_REAL_FFMPEG
+static u8 vp8_want[VP8_KEY_HEADER_SIZE + 16];
+/* the decoder must get these header bytes, then the job's len bytes of frame */
+static void vp8_expect(const char* hdr, u32 hn, u32 len) {
+    memcpy(vp8_want, hdr, hn);
+    memcpy(vp8_want + hn, stream, len);
+    want_packet = vp8_want;
+    want_size = (int)(hn + len);
+}
+/* refused before the decoder sees it, saying why: no packet, the status says failed, the surfaces keep their bytes */
+static void vp8_refused(NvdecCtx* d, const char* why) {
+    last_log[0] = 0;
+    events = NULL;
+    event_count = event_at = sends = 0;
+    memset(memory + 0x3000, 0, 16);
+    memset(memory + 0x4000, 0xcc, 0x2000);
+    nvdec_execute(d, regs);
+    CHECK(!sends);
+    failed_untouched();
+    CHECK(!d->cur_new && !d->cur->buf[0]);
+    logged(why);
+}
+static void vp8_tests(void) {
+    const Event good[] = {{'S', 0, 1}, {'R', AVERROR(EAGAIN), 0}};
+    const Event send_bad[] = {{'S', AVERROR_INVALIDDATA, 1}};
+    const Event no_new[] = {{'S', 0, 0}, {'R', AVERROR(EAGAIN), 0}};
+    u8 h[VP8_KEY_HEADER_SIZE];
+    /* the tag's fields, little endian: key frame 0 in bit 0, version 1-3, show_frame 4, first partition 5-23 */
+    CHECK(vp8_frame_header(1, 0, 2, 16, 16, h) == 10 && !memcmp(h, "\x50\x00\x00\x9d\x01\x2a\x10\x00\x10\x00", 10));
+    CHECK(vp8_frame_header(1, 3, 0x12345, 1920, 1080, h) == 10 &&
+          !memcmp(h, "\xb6\x68\x24\x9d\x01\x2a\x80\x07\x38\x04", 10));
+    CHECK(vp8_frame_header(0, 7, 0x7FFFF, 0, 0, h) == 3 && !memcmp(h, "\xff\xff\xff", 3));
+    CHECK(vp8_frame_header(0, 0, 0, 0, 0, h) == 3 && !memcmp(h, "\x11\x00\x00", 3));
+
+    NvdecCtx* d = nvdec_new();
+    CHECK(d != NULL);
+    vp8_setup(1, 0, 2, 5, 16, 16);
+    vp8_expect("\x50\x00\x00\x9d\x01\x2a\x10\x00\x10\x00", 10, 5);
+    RUN(d, good, 0, 0);
+    pixels_are(81, 90, 240);
+    CHECK(d->app == NVDEC_CODEC_VP8 && d->dec && !d->vp9 && d->dec->thread_count == 1);
+    vp8_setup(0, 3, 4, 4, 16, 16); /* an inter frame: the tag alone; a first partition as long as the frame */
+    vp8_expect("\x97\x00\x00", 3, 4);
+    RUN(d, good, 0, 0);
+    pixels_are(81, 90, 240);
+    vp8_setup(0, 0, 2, 5, 16, 16); /* the frame offsets, 8 << 8 bytes, into surfaces 0x800 bytes lower */
+    regs[NVDEC_SURFACE_LUMA_OFFSETS + VP8_SURFACE_CURRENT] = 0x38;
+    regs[NVDEC_SURFACE_CHROMA_OFFSETS + VP8_SURFACE_CURRENT] = 0x48;
+    put32(VP8_LUMA_FRAME_OFFSET, 8);
+    put32(VP8_CHROMA_FRAME_OFFSET, 8);
+    vp8_expect("\x51\x00\x00", 3, 5);
+    RUN(d, good, 0, 0);
+    pixels_are(81, 90, 240);
+    logged("VP8 pictures go 800 and 800 bytes into their surfaces");
+    want_packet = NULL;
+
+    /* jobs NVDEC can't decode never reach the decoder */
+    vp8_setup(1, 0, 2, 5, 16, 16);
+    regs[NVDEC_PICTURE_INFO_OFFSET] = 0;
+    vp8_refused(d, "a VP8 job's picture info at 0 isn't mapped");
+    const struct {
+        u32 version, first_part, len, w, h;
+        const char* why;
+    } bad[] = {
+        {0, 0, 0, 16, 16, "a 16x16 frame of 0 bytes isn't decoded: NVDEC takes 1 to 4096 pixels a side, 1 to 16777216"},
+        {0, 2, MAX_STREAM + 1, 16, 16, "a 16x16 frame of 16777217 bytes isn't decoded"},
+        {0, 2, 5, 0, 16, "a 0x16 frame of 5 bytes isn't decoded"},
+        {0, 2, 5, 16, 0, "a 16x0 frame of 5 bytes isn't decoded"},
+        {0, 2, 5, MAX_DIM + 1, 16, "a 4097x16 frame of 5 bytes isn't decoded"},
+        {0, 2, 5, 16, MAX_DIM + 1, "a 16x4097 frame of 5 bytes isn't decoded"},
+        {VP8_MAX_VERSION + 1, 2, 5, 16, 16,
+         "version 8, first partition 2 of 5 bytes, isn't a frame's: versions 0 to 7"},
+        {0, 6, 5, 16, 16, "version 0, first partition 6 of 5 bytes, isn't a frame's"},
+        {0, VP8_MAX_FIRST_PART + 1, VP8_MAX_FIRST_PART + 1, 16, 16,
+         "first partition 524288 of 524288 bytes, isn't a frame's: versions 0 to 7, a first partition within the frame, "
+         "of 524287 bytes at most"}};
+    for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++) {
+        vp8_setup(1, bad[i].version, bad[i].first_part, bad[i].len, bad[i].w, bad[i].h);
+        vp8_refused(d, bad[i].why);
+    }
+    vp8_setup(1, 0, 2, 5, 16, 16);
+    regs[NVDEC_FRAME_BITSTREAM_OFFSET] = MEMORY >> 8; /* the frame past guest memory */
+    vp8_refused(d, "a VP8 job's frame of 5 bytes at 6000 isn't mapped");
+
+    /* decoded, so later frames can predict from it, but not written: the surface's layout or its rows, or no
+       surface 3 */
+    vp8_setup(1, 0, 2, 5, 16, 16);
+    setup[VP8_SURFACE_FORMAT] = 1; /* pitch linear */
+    RUN(d, good, 0, 1);
+    logged("a 16x16 VP8 picture in tile format 1, rows of 64 and 64 bytes, isn't written: block linear (0) only, rows "
+           "of 16 and 16 bytes at least");
+    vp8_setup(1, 0, 2, 5, 16, 16);
+    put32(VP8_FRAME_STRIDE_LUMA, 15);
+    RUN(d, good, 0, 1);
+    logged("in tile format 0, rows of 15 and 64 bytes, isn't written");
+    vp8_setup(1, 0, 2, 5, 16, 16);
+    put32(VP8_FRAME_STRIDE_CHROMA, 15);
+    RUN(d, good, 0, 1);
+    logged("in tile format 0, rows of 64 and 15 bytes, isn't written");
+    vp8_setup(1, 0, 2, 5, 16, 16);
+    regs[NVDEC_SURFACE_LUMA_OFFSETS + VP8_SURFACE_CURRENT] = 0;
+    RUN(d, good, 0, 1);
+    logged("NVDEC surface 0/5000 isn't mapped");
+    /* the decoder refuses the frame, or starts no picture, while the last job's picture is still held */
+    vp8_setup(1, 0, 2, 5, 16, 16);
+    RUN(d, send_bad, 0, 1);
+    RUN(d, good, 0, 0);
+    RUN(d, no_new, 0, 1);
+    logged("a VP8 job started no picture");
+    /* the channel goes on decoding after each */
+    RUN(d, good, 0, 0);
+    pixels_are(81, 90, 240);
+    nvdec_free(d);
+}
+#else
+/* A 40x24 clip that libvpx 1.15.2's vpxenc made from a gradient with a block that moves (profile 0, a key frame and two
+   inter frames), each frame without the bytes NVDEC takes in the picture info, and the MD5 of each picture as I420
+   that libvpx's vpxdec gives. Every picture decodes through its job into surface 3, wider and higher than it */
+static const u8 vp8_clip[] = {
+    /* frame 0: key, first partition 51 of 200 bytes */
+    0x0c, 0x47, 0x08, 0x85, 0x85, 0x88, 0x85, 0x84, 0x88, 0x2c, 0x02, 0x02, 0x75, 0xbb, 0x09, 0x14, 0xc4, 0xc8, 0xf0,
+    0x12, 0x80, 0xef, 0x33, 0x11, 0x0f, 0xe3, 0xe3, 0xbe, 0xcc, 0x1b, 0x46, 0xbe, 0xe4, 0x32, 0xd5, 0x8a, 0xd7, 0x06,
+    0xdf, 0x92, 0x96, 0x46, 0x64, 0xfa, 0x9f, 0x16, 0x36, 0xbd, 0x6d, 0xca, 0x00, 0xfe, 0xe8, 0xf1, 0x87, 0xdb, 0x04,
+    0xbd, 0xc3, 0xac, 0x67, 0x0f, 0x8b, 0x0a, 0x75, 0x28, 0xe9, 0x29, 0x9d, 0xb1, 0xed, 0xe8, 0xde, 0x14, 0x2e, 0xb0,
+    0x26, 0x4c, 0x03, 0x17, 0x2b, 0x19, 0xca, 0x71, 0xed, 0xc6, 0x8b, 0xb2, 0x31, 0x30, 0x6d, 0x44, 0xa6, 0x6e, 0xe7,
+    0x36, 0x6b, 0x79, 0x8a, 0x41, 0x9a, 0xa5, 0xdf, 0x6b, 0x09, 0xc6, 0xba, 0xd3, 0x70, 0xdc, 0x67, 0xfb, 0xac, 0x9b,
+    0x68, 0x60, 0x63, 0xc8, 0xf2, 0x16, 0xf4, 0x8b, 0xee, 0xe8, 0x4e, 0x8e, 0x12, 0xc1, 0xce, 0xec, 0xdf, 0xc2, 0x31,
+    0xa2, 0x06, 0x90, 0xe3, 0x0e, 0x4d, 0x33, 0x18, 0x50, 0x98, 0xd7, 0xdf, 0x28, 0x06, 0x8e, 0x92, 0xbc, 0x2d, 0x5c,
+    0x2d, 0x7a, 0x94, 0x8d, 0x67, 0x59, 0xa3, 0xfa, 0x93, 0x88, 0x0e, 0x0f, 0xf3, 0x2f, 0xf7, 0x0b, 0x1d, 0xe2, 0x7a,
+    0x9a, 0xaf, 0xdf, 0x3a, 0x06, 0xcd, 0x6c, 0x31, 0x4c, 0x0c, 0x3b, 0x83, 0xef, 0x8a, 0xb8, 0x0a, 0xb3, 0xfe, 0xcf,
+    0x99, 0xfe, 0xa5, 0x26, 0x03, 0x14, 0x67, 0xda, 0xfa, 0x00,
+    /* frame 1: inter, first partition 19 of 108 bytes */
+    0x1f, 0x11, 0x60, 0x00, 0x18, 0x02, 0x10, 0x04, 0x5d, 0xd1, 0x5d, 0xe8, 0x82, 0x11, 0x78, 0x5e, 0x70, 0xc3, 0x00,
+    0xfe, 0x5b, 0xe4, 0x7a, 0xf2, 0x40, 0xb3, 0x74, 0x14, 0x87, 0xeb, 0xd4, 0xdf, 0x5c, 0x23, 0x8c, 0xad, 0x7d, 0x7b,
+    0xa5, 0x34, 0xda, 0x34, 0x1f, 0xb5, 0x09, 0x0a, 0x5a, 0xf2, 0x2c, 0x60, 0x8c, 0x37, 0x01, 0xe4, 0xd1, 0xde, 0x18,
+    0x24, 0x17, 0x2b, 0xdc, 0x88, 0x57, 0xf4, 0x66, 0x8d, 0x3b, 0x0f, 0x1a, 0xc1, 0x61, 0x8b, 0xa9, 0xc8, 0x94, 0xd2,
+    0x12, 0x03, 0x5f, 0x93, 0x17, 0xe8, 0x76, 0x40, 0x00, 0x00, 0x59, 0x5f, 0xb8, 0x6e, 0xb9, 0x96, 0xc2, 0x5f, 0x4d,
+    0xa3, 0x7d, 0x3a, 0xa9, 0xd2, 0xa7, 0x5d, 0x30, 0xac, 0x15, 0x2b, 0xdc, 0x00,
+    /* frame 2: inter, first partition 21 of 106 bytes */
+    0x1e, 0x11, 0x60, 0x00, 0x18, 0x05, 0x8b, 0xa8, 0x20, 0x07, 0xfc, 0x07, 0x53, 0xfc, 0x26, 0x5a, 0x3a, 0x0f, 0x0e,
+    0x84, 0x30, 0xfe, 0xa6, 0x62, 0x0d, 0x4e, 0x1e, 0x02, 0x8c, 0x52, 0xae, 0xcb, 0x2b, 0x93, 0xbd, 0x21, 0x63, 0xdf,
+    0x7b, 0x14, 0x3a, 0xda, 0x8b, 0x2e, 0xbe, 0xa1, 0x89, 0xef, 0xae, 0xc4, 0xa0, 0x7c, 0xf6, 0x2a, 0xd9, 0xed, 0xdf,
+    0x75, 0xf1, 0x8e, 0x66, 0x87, 0x68, 0x92, 0x90, 0x3a, 0x2a, 0x3e, 0xfc, 0x10, 0xbf, 0xbe, 0x50, 0x9f, 0xaf, 0x5b,
+    0x65, 0xd1, 0xf7, 0x39, 0xfc, 0xc2, 0xe6, 0x30, 0x26, 0x90, 0x00, 0x0d, 0x27, 0x25, 0xf3, 0xe5, 0xe1, 0xdd, 0x37,
+    0xe2, 0xb5, 0x29, 0xff, 0xb5, 0x0e, 0x40, 0x45, 0x66, 0x20, 0x00};
+static const struct {
+    int key;
+    u32 first_part, size;
+    const char* md5;
+} vp8_frames[] = {{1, 51, 200, "521ee8e0e7ad82845bb103be268befbf"},
+                  {0, 19, 108, "81cf3565f96cb3c08ef3681ece98326b"},
+                  {0, 21, 106, "405a4ed57874c06b8a2c01d83694bc27"}};
+#define VP8_CLIP_W 40u
+#define VP8_CLIP_H 24u
+static void vp8_tests(void) {
+    static u8 i420[VP8_CLIP_W * VP8_CLIP_H * 3 / 2];
+    const u32 cw = VP8_CLIP_W / 2, ch = VP8_CLIP_H / 2, mbs = 3 * 2;
+    u32 at = 0;
+    NvdecCtx* d = nvdec_new();
+    CHECK(d != NULL);
+    CHECK(sizeof vp8_clip == 200 + 108 + 106);
+    for (unsigned i = 0; i < sizeof vp8_frames / sizeof *vp8_frames; i++) {
+        u8 sum[16];
+        char hex[33];
+        vp8_setup(vp8_frames[i].key, 0, vp8_frames[i].first_part, vp8_frames[i].size, VP8_CLIP_W, VP8_CLIP_H);
+        memcpy(stream, vp8_clip + at, vp8_frames[i].size);
+        at += vp8_frames[i].size;
+        memset(memory + 0x4000, 0xcc, 0x2000);
+        nvdec_execute(d, regs);
+        CHECK(rd32(memory, 0x3000) == mbs && rd32(memory, 0x300c) == 0);
+        /* the surfaces back to I420: luma rows, then the interleaved chroma pairs split */
+        for (u32 y = 0; y < VP8_CLIP_H; y++) memcpy(i420 + y * VP8_CLIP_W, memory + 0x4000 + y * 64, VP8_CLIP_W);
+        for (u32 y = 0; y < ch; y++)
+            for (u32 x = 0; x < cw; x++) {
+                i420[VP8_CLIP_W * VP8_CLIP_H + y * cw + x] = memory[0x5000 + y * 64 + 2 * x];
+                i420[VP8_CLIP_W * VP8_CLIP_H + cw * ch + y * cw + x] = memory[0x5000 + y * 64 + 2 * x + 1];
+            }
+        /* nothing past the picture: the luma rows' 41st byte, the row under the last, the chroma rows' tail */
+        CHECK(memory[0x4000 + VP8_CLIP_W] == 0xcc && memory[0x4000 + VP8_CLIP_H * 64] == 0xcc);
+        CHECK(memory[0x5000 + 2 * cw] == 0xcc && memory[0x5000 + ch * 64] == 0xcc);
+        av_md5_sum(sum, i420, sizeof i420);
+        for (int k = 0; k < 16; k++) snprintf(hex + 2 * k, 3, "%02x", sum[k]);
+        if (strcmp(hex, vp8_frames[i].md5))
+            fprintf(stderr, "VP8 frame %u: MD5 %s, libvpx's %s\n", i, hex, vp8_frames[i].md5);
+        CHECK(!strcmp(hex, vp8_frames[i].md5));
+    }
+    CHECK(at == sizeof vp8_clip);
+    nvdec_free(d);
+}
+#endif
+
 /* a 15x15 picture into a 16x16 surface: its last chroma pair and row, of one pixel each, are written too */
 static void odd_size_test(void) {
     static u8 y[15 * 15], u[8 * 8], v[8 * 8];
@@ -510,6 +739,7 @@ int main(void) {
     block_linear_test();
     submission_tests();
     vp9_tests();
+    vp8_tests();
     printf("NVDEC packets: %u checks passed (%s)\n", checks, av_version_info());
     return 0;
 }
