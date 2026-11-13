@@ -859,6 +859,9 @@ VkFmt vk_tic_format_3d(u32 w0, int srgb);
 int vk_format_storage_write(VkFormat f);
 /* whether a sampler may take the least or greatest of the texels its linear filter reads of f (min/max reduction) */
 int vk_format_minmax_filter(VkFormat f);
+/* the header component (its swizzle's 2 R or 3 G) a depth and stencil texture format keeps its stencil in, 0 for none;
+   and whether a header's first component is that one: a view of the stencil */
+u32 vk_tic_stencil_component(u32 format);
 int vk_tic_reads_stencil(const u32* tic);
 /* sRGB and linear views of the same bytes: the twin of a color format, or the format itself when it has none */
 VkFormat vk_srgb_as(VkFormat f, int srgb);

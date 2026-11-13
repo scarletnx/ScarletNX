@@ -1650,7 +1650,14 @@ static VkComponentMapping tex_map(const Surf* t, const u32* tic) {
             m[k] = m[k] == VK_COMPONENT_SWIZZLE_R   ? VK_COMPONENT_SWIZZLE_B
                    : m[k] == VK_COMPONENT_SWIZZLE_B ? VK_COMPONENT_SWIZZLE_R
                                                     : m[k];
-    if (t->f.depth) { /* depth in r, g and b, alpha 1 */
+    if (t->f.depth && t->f.stencil && vk_tic_reads_stencil(tic)) { /* the stencil view's R where the header names
+                                                                        the stencil, its constants, nought for depth */
+        u32 sc = vk_tic_stencil_component(tic[0] & 0x7F);
+        for (int k = 0; k < 4; k++) {
+            u32 c = (tic[0] >> (19 + 3 * k)) & 7;
+            m[k] = c == sc ? VK_COMPONENT_SWIZZLE_R : c >= 6 ? VK_COMPONENT_SWIZZLE_ONE : VK_COMPONENT_SWIZZLE_ZERO;
+        }
+    } else if (t->f.depth) { /* depth in r, g and b, alpha 1 */
         m[0] = m[1] = m[2] = VK_COMPONENT_SWIZZLE_R;
         m[3] = VK_COMPONENT_SWIZZLE_ONE;
     }
