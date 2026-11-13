@@ -1061,20 +1061,9 @@ int vk_gfx_image_unrecorded(const Surf* s); /* s has a write-back whose copy isn
 void vk_gfx_image_mem_need(u64 gva, u64 size);
 void vk_gfx_image_guest_need(u64 cpu, u64 size); /* by guest memory (size ~0: all of it) */
 int vk_gfx_image_pending(u64 gva, u64 size);
-/* the same, but for the entries of self: its own writes are in self, which a texture of self samples as they are */
-int vk_gfx_image_pending_besides(u64 gva, u64 size, const Surf* self);
-/* the entries added so far, and pages they gained by a GMMU change: unchanged, no entry is pending where none was */
-u64 vk_gfx_image_adds(void);
 void vk_gfx_image_land(void);
-/* at a release: the storage images' write-backs recorded, to land once their submit is done (vk_lock). A kept one
-   whose span the CPU hasn't touched stays kept, its image published when something needs its bytes */
+/* at a release: the storage images' write-backs recorded, to land once their submit is done (vk_lock) */
 void vk_gfx_image_put_aside(void);
-/* the CPU is about to touch guest memory [cpu, cpu + size) (own.c's landing): the kept storage images a release
-   passed over there published first (vk_lock) */
-void vk_gfx_image_cpu_need(u64 cpu, u64 size);
-/* a draw reads [gva, gva + size) as a buffer (buffer.c buf_get): the kept storage images a release passed over there
-   published first, as their owner holds the bytes from before their draws (vk_lock) */
-void vk_gfx_image_read_need(u64 gva, u64 size);
 /* a recorded write-back waits to land (unsubmitted: in the submit being recorded) */
 int vk_gfx_image_in_flight(int unsubmitted);
 /* the submissions up to sub are done: the write-backs recorded in them land (cmd.c's landing, vk_lock) */
@@ -1097,8 +1086,6 @@ int vk_surf_publish(Surf* s);
    NULL when they couldn't be read back) */
 int vk_surf_keep_begin(Surf* s, VkImageKeep* k);
 int vk_surf_keep_end(Surf* s, const VkImageKeep* k, u8** original);
-/* k's owner still owns s's span whole: the CPU hasn't touched it since the bind (vk_lock) */
-int vk_surf_keep_whole(const Surf* s, const VkImageKeep* k);
 /* a release: the pitch-linear color targets drawn since the last one published, for the CPU to read. The block linear
    color targets drawn since then, which the CPU reads only now and then, are watched (own_watch): the CPU's first
    access publishes them (vk_rt_watch_hit). One the CPU read lately is published at once, as the pitch-linear ones */

@@ -224,16 +224,11 @@ int pend_hit_guest(const PendPages* t, u64 a, u64 size) {
 /* GPU pages from gva on show guest pages from cpu on now: each takes their count */
 static void remap_piece(void* ctx, u64 gva, u64 cpu, u64 n) {
     PendPages* t = ctx;
-    int gained = 0;
     for (u64 k = 0; k < n >> 12; k++) {
         u64 c = (cpu >> 12) + k;
         u32 v = c < TABLE_PAGES ? leaf_count(t->leaf, c) : 0;
         if (v) leaf_set(t->gpu, (gva >> 12) + k, v);
-        gained |= v != 0;
     }
-    /* a GPU page that shows a counted guest page now is one more that a lookup by GPU address meets: what kept a
-       miss while adds stayed the same checks again */
-    count_add(t, gained);
 }
 void pend_remap(u64 gva, u64 size) {
     u64 r[4];
