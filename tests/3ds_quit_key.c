@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The 3DS window's Esc (gpu/present.c), as SDL sends it: a first press only warns and a second closes the window; held
-   with Ctrl, Alt or the system key it is no press, nor is a key's repeat. The presenter pumps SDL's events with no
-   device or window, so none is opened */
+/* The 3DS window's Esc (gpu/present.c), as SDL sends it: a first press only warns, over the game too, and a second
+   closes the window; held with Ctrl, Alt or the system key it is no press, nor is a key's repeat. The presenter pumps
+   SDL's events with no device or window, so none is opened */
 #include "3ds/gpu/present.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define CHECK(e)                                                                                                       \
     do {                                                                                                               \
@@ -31,9 +32,11 @@ static bool esc(SDL_Keymod mod, bool repeat) {
 
 int main(void) {
     CHECK(SDL_Init(SDL_INIT_EVENTS));
-    CHECK(!snx_ctr_present_closed());
+    CHECK(!snx_ctr_present_closed() && !strcmp(snx_ctr_present_notice(), ""));
     CHECK(!esc(SDL_KMOD_LCTRL, false) && !esc(SDL_KMOD_LALT, false) && !esc(SDL_KMOD_LGUI, false));
+    CHECK(!strcmp(snx_ctr_present_notice(), "")); /* no press, no notice */
     CHECK(!esc(SDL_KMOD_NONE, false)); /* the first: a warning */
+    CHECK(!strcmp(snx_ctr_present_notice(), "Press Esc again within 3 seconds to quit"));
     CHECK(!esc(SDL_KMOD_NONE, true) && !esc(SDL_KMOD_LCTRL, false));
     CHECK(esc(SDL_KMOD_NONE, false)); /* the second */
     SDL_Quit();
