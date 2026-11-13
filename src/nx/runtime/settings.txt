@@ -909,6 +909,22 @@ setting TV mode shortcut
     set hotkey_set
     help The key, as hotkey_help's, that steps the TV mode round On, Off and Auto while the game runs, as the game's
     help menu's TV mode row does: for this run, docked keeps the .ini's choice
+setting Upscaler shortcut
+    key hotkey_upscaler
+    text 64
+    default Ctrl+U
+    label Upscaler
+    set hotkey_set
+    help The key, as hotkey_help's, that steps the upscaler round Off, Bilinear, AMD FSR 1, NVIDIA NIS and Qualcomm
+    help SGSR while the game runs: for this run, upscaler keeps the .ini's choice
+setting Anti aliasing shortcut
+    key hotkey_anti_aliasing
+    text 64
+    default Ctrl+Shift+A
+    label Anti aliasing
+    set hotkey_set
+    help The key, as hotkey_help's, that steps the anti aliasing round Off, Auto, FXAA, SMAA, SSAA 2x and SSAA 4x while
+    help the game runs: for this run, anti_aliasing keeps the .ini's choice
 
 table g_network_ini
 setting Network

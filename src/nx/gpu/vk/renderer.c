@@ -1329,5 +1329,6 @@ const Renderer vk_renderer = {
     .save = vk_pipeline_save,
     .release_window = vk_window_release,
     .prepare = vk_pipeline_prepare,
+    .step_effect = vk_present_quad_effects_step,
 };
 const Renderer* g_renderer = &vk_renderer;
