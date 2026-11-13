@@ -2419,11 +2419,12 @@ static Surf* tex_from_tic(const u32* tic, int raw, int use) {
         d *= 6;
     VkFmt f = vk_tic_format(tic[0], srgb);
     if (raw) {
-        /* SULD.D.32 takes texel coordinates and reads a texel's 32 bits, whatever the header's components are (one
-           game's post-processing reads its A2B10G10R10 targets and R32 masks this way): any color format of 4-byte
-           texels stored as they are, viewed as R32_UINT */
-        if (f.bpp != 4 || f.bw != 1 || f.conv || f.depth) return NULL;
-        f.vk = VK_FORMAT_R32_UINT;
+        /* SULD.D.32 takes texel coordinates and reads a texel's first 32 bits, whatever the header's components are
+           (one game's post-processing reads its A2B10G10R10 targets and R32 masks this way, another reads the R of
+           its 1x1 R32G32 exposure): any color format of 4-, 8- or 16-byte texels stored as they are, viewed as
+           R32_UINT, R32G32_UINT or R32G32B32A32_UINT, whose first component the program reads */
+        if ((f.bpp != 4 && f.bpp != 8 && f.bpp != 16) || f.bw != 1 || f.conv || f.depth) return NULL;
+        f.vk = f.bpp == 4 ? VK_FORMAT_R32_UINT : f.bpp == 8 ? VK_FORMAT_R32G32_UINT : VK_FORMAT_R32G32B32A32_UINT;
         f.is_int = 1;
         f.sint = 0;
     }
