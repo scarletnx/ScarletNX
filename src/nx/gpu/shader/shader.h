@@ -201,6 +201,14 @@ typedef struct {
        generic as its position mapped onto [0, 1] (screen_out_mask), or as the position itself for screen_ndc
        (pos_out_mask), and the draw's viewport covers the target (vk/render.c) */
     u64 tex_screen_mask;
+    /* FS: the own-pixel, screen and uv slots (above) that a pre-draw capture can serve: plain 2D color reads, no depth
+       compare, no samples, no layers, not indexed */
+    u64 tex_predraw_mask;
+    /* FS key: the slots that read their target as it was before the draw. At the program's start, in an interlock, the
+       draw's first fragment at a pixel fetches each into a side image and stamps the pixel with the draw's number
+       (vk/predraw.c), and every read of those slots takes the side image's value. Overlapping primitives of one draw
+       then read what was there before the draw, as the console's texture cache gives them, and never each other */
+    u64 predraw_slots;
     u32 screen_in;
     /* FS: how those samples take screen_in: 0 at its (x / w, y / w), the vertex stage mapping it (screen_out_mask); 1
        at (x / w / 2 + 1/2, y / w / 2 + 1/2) and 2 at (x / w / 2 + 1/2, -y / w / 2 + 1/2), the program mapping the
@@ -363,6 +371,11 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 }
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs has room for */
 #define SH_MINMAX_SLOTS    15 /* slots a fragment program's key has room for in tex_minmax_mask (vk/pipeline.c) */
+/* the words of a shader's key (vk_shader_get's mask). A fragment program's words 26 and 27 are its predraw_slots */
+#define SH_KEY_WORDS       28
+/* the slots a pre-draw capture serves at most (ShaderInfo.predraw_slots): its stamp image and a side image for each,
+   in the fragment stage's storage image bindings after the program's own */
+#define SH_PREDRAW_MAX     7
 /* Each stage has a descriptor set (shader_vk_set), its bindings grouped by kind. */
 #define SNX_VKB_CB       0                         /* 18 constant buffers */
 #define SNX_VKB_SSBO     18                        /* 16 global memory buffers */

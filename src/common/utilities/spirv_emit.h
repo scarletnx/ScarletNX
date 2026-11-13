@@ -660,6 +660,8 @@ void spv_emit_label(SpvEmitter* e, uint32_t label);
 uint32_t spv_emit_function_variable(SpvEmitter* e, uint32_t pointer_type);
 uint32_t spv_emit_function_variable_init(SpvEmitter* e, uint32_t pointer_type, uint32_t initial_value);
 uint32_t spv_emit_load(SpvEmitter* e, uint32_t result_type, uint32_t pointer);
+/* OpPhi of two values: a when control came from block from_a, b from from_b */
+uint32_t spv_emit_phi2(SpvEmitter* e, uint32_t result_type, uint32_t a, uint32_t from_a, uint32_t b, uint32_t from_b);
 /* The common forms: an instruction of op, its result type, a new id and one, two or three operands, the id returned.
    unary takes OpFConvert (a float of one width to another), the conversions between floats and integers, OpBitcast,
    OpNot, OpBitReverse, OpBitCount, OpLogicalNot, OpFNegate, OpIsNan and OpReadClockKHR (its operand the scope);

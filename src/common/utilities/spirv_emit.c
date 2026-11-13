@@ -836,6 +836,12 @@ uint32_t spv_emit_function_variable_init(SpvEmitter* e, uint32_t pointer_type, u
     return id;
 }
 
+uint32_t spv_emit_phi2(SpvEmitter* e, uint32_t result_type, uint32_t a, uint32_t from_a, uint32_t b, uint32_t from_b) {
+    uint32_t id = spv_emit_id(e);
+    EMIT(&e->functions, SPV_OP_PHI, result_type, id, a, from_a, b, from_b);
+    return id;
+}
+
 uint32_t spv_emit_load(SpvEmitter* e, uint32_t result_type, uint32_t pointer) {
     uint32_t id = spv_emit_id(e);
     EMIT(&e->functions, SPV_OP_LOAD, result_type, id, pointer);

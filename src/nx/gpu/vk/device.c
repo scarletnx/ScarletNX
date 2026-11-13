@@ -1868,13 +1868,15 @@ static int create_device(void) {
         g_vk.compute_family != g_vk.gfx_family ? " (separate family)"
         : second                               ? " (a second queue)"
                                                : " (the graphics queue)");
-    if (g_vk.has_feedback)
-        LOG("vulkan: draws sample the color targets they render to in place (attachment feedback loops, %s, %s)\n",
+    /* in place only through the pre-draw capture (vk/predraw.c), which needs the interlock */
+    if (g_vk.has_feedback && g_vk.has_fragment_interlock && g_vk.feat.fragmentStoresAndAtomics)
+        LOG("vulkan: draws sample the color targets they render to in place, each pixel as it was before the draw "
+            "(attachment feedback loops, %s, %s, and a pre-draw capture in a fragment interlock)\n",
             g_vk.has_feedback_dynamic ? "enabled by dynamic state" : "enabled per pipeline",
             g_vk.has_local_read ? "ordered by barriers within the pass" : "ordered by beginning the pass again");
     else
-        LOG("vulkan: draws that sample a color target they render to read a copy of it (no attachment feedback "
-            "loops)\n");
+        LOG("vulkan: draws that sample a color target they render to read a copy of it (no %s)\n",
+            g_vk.has_feedback ? "fragment shader interlock" : "attachment feedback loops");
     vk_bans_unclaimed(ban_say); /* a ban on something nothing here asked about, said rather than dropped */
     return 1;
 }

@@ -55,7 +55,7 @@
 typedef struct {
     u64 hash, qh, qh_a;
     u32 stage, clen, clen_a, ncbr, nspv, flags;
-    u32 mask[26];
+    u32 mask[SH_KEY_WORDS];
     ShaderInfo si;
 } PfShader;
 /* a source record: this, then ncbr constant buffer reads ({idx, off, ok, v}), ncode bytes of the program as the
@@ -66,7 +66,7 @@ typedef struct {
 typedef struct {
     u64 hash, qh, qh_a;
     u32 stage, clen, clen_a, ncbr, ncode, flags;
-    u32 mask[26];
+    u32 mask[SH_KEY_WORDS];
 } PfSource;
 /* a pipeline record: this, then keylen bytes of the PipeKey with its module handles zeroed. sh: the shaders' record
    numbers (from 1; 0 for none) in the order vs, tcs, tes, gs, fs, and check: those records' checks */

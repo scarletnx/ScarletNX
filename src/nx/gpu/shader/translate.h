@@ -99,6 +99,9 @@ typedef struct {
        shader_helper_loop_exit reads it */
     u32 helper_rounds;
     u32 blend_end;     /* one final fragment epilogue, reached after all guest control flow and alpha tests */
+    /* each slot's texel as its pre-draw capture took it at the program's start (ShaderInfo.predraw_slots), 0 for a slot
+       read as usual: shader_predraw_read gives it for the slot's reads */
+    u32 predraw[SH_MAXTEX];
     u32 primitive_base; /* capture slices preserve the original fragment PrimitiveId through push constants */
     u32 branch_cond;   /* with structured flow, the condition of the branch that ends the block, 0 for always */
     u32 branch_target; /* and the word a BRX that ends it goes to */
@@ -110,6 +113,11 @@ typedef struct {
 #define SH_SMALL_U32 64u
 
 /* the u32 constant of value: a small one from c->small_u32, after the emitter makes it the first time */
+/* a read of texture slot slot, or the texel its pre-draw capture took (DirectCtx.predraw), which every read of such a
+   slot returns: they are all at the own pixel */
+static inline u32 shader_predraw_read(const DirectCtx* c, int slot, u32 read) {
+    return slot >= 0 && slot < SH_MAXTEX && c->predraw[slot] ? c->predraw[slot] : read;
+}
 static inline u32 shader_u32(DirectCtx* c, u32 value) {
     if (value >= SH_SMALL_U32) return spv_emit_constant_u32(&c->emit, c->u32_type, value);
     if (!c->small_u32[value]) c->small_u32[value] = spv_emit_constant_u32(&c->emit, c->u32_type, value);

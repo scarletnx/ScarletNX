@@ -8,10 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-static u64 draw_texture_hash(int stage, const u32 mask[26]) {
+static u64 draw_texture_hash(int stage, const u32 mask[SH_KEY_WORDS]) {
     return snx_fnv1a(snx_fnv_step(SNX_FNV_BASIS, (u32)stage), mask, 26 * sizeof *mask);
 }
-static VkSh* register_shader(int stage, const u32 mask[26], u32* code, size_t words, const ShaderInfo* info) {
+static VkSh* register_shader(int stage, const u32 mask[SH_KEY_WORDS], u32* code, size_t words, const ShaderInfo* info) {
     if (!code || !words) { free(code); return NULL; }
     u64 hash = draw_texture_hash(stage, mask);
     VkSh* shader = vk_shader_generated_find(hash, stage, mask);
@@ -33,7 +33,7 @@ static VkSh* register_shader(int stage, const u32 mask[26], u32* code, size_t wo
 }
 VkSh* vk_draw_texture_vertex(void) {
     /* A fixed identity key also finds a module loaded from this build's pipeline file. */
-    u32 mask[26] = {0x44545653, 1};
+    u32 mask[SH_KEY_WORDS] = {0x44545653, 1};
     u64 hash = draw_texture_hash(ST_VS, mask);
     VkSh* cached = vk_shader_generated_find(hash, ST_VS, mask);
     if (cached) return cached;
@@ -85,7 +85,7 @@ static int no_constants(u32 bank, u32 offset, u32* value) {
 }
 VkSh* vk_draw_texture_fragment(u32 texture_int, u32 texture_signed, u32 target_int, u32 target_signed,
                                 u64 advanced_blend, u32 advanced_mask) {
-    u32 mask[26] = {texture_int, 0, texture_signed, 0, target_int, target_signed};
+    u32 mask[SH_KEY_WORDS] = {texture_int, 0, texture_signed, 0, target_int, target_signed};
     mask[6] = 0x44544653;
     mask[21] = (u32)advanced_blend; mask[22] = (u32)(advanced_blend >> 32); mask[23] = advanced_mask;
     VkSh* cached = vk_shader_generated_find(draw_texture_hash(ST_FS, mask), ST_FS, mask);
