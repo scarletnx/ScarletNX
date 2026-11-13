@@ -41,9 +41,9 @@ const char* snx_source_kind(const char* source);
 /* the console a game's folder plays, as system= in [Game] of the .ini in it, <folder>/<name>.ini, says: the launcher
    picks the driver, the options and what R does by it, and cmake/deploy.cmake the runtime it copies there. A folder
    an older version made says none: a 3DS one's .ini has model=, a Vita one holds ux0/, any other is a Switch game's */
-typedef enum { SNX_SYSTEM_SWITCH, SNX_SYSTEM_3DS, SNX_SYSTEM_VITA, SNX_SYSTEM_GBA } SnxSystem;
+typedef enum { SNX_SYSTEM_SWITCH, SNX_SYSTEM_3DS, SNX_SYSTEM_VITA, SNX_SYSTEM_GBA, SNX_SYSTEM_NDS } SnxSystem;
 SnxSystem snx_game_system(const char* folder, const char* name);
-/* system='s word for each: "switch", "3ds", "vita", "gba" */
+/* system='s word for each: "switch", "3ds", "vita", "gba", "nds" */
 const char* snx_system_word(SnxSystem system);
 /* system= in [Game] of the .ini in the game's folder, <folder>/<name>.ini, as the 3DS and Vita drivers keep theirs: the
    file made when there is none. 0, or nonzero with a line saying why */
