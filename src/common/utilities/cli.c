@@ -3,6 +3,9 @@
 /* The common options of the drivers (cli.h): their table, the match of an argument against it, and their help */
 #include "common/utilities/cli.h"
 #include "common/utilities/common.h"
+#include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -45,6 +48,24 @@ static const CliOption options[SNX_CLI_COUNT] = {
                         "the buttons)"},
     [SNX_CLI_FULLSCREEN] = {"--fullscreen", 'f', NULL, NULL, NULL, "Start fullscreen, for this run (=0: windowed)"},
     [SNX_CLI_HEADLESS] = {"--headless", 'H', NULL, NULL, NULL, "Run without a window"},
+    [SNX_CLI_OPT] = {"--opt", 'O', NULL, "LEVEL", "a level",
+                     "LLVM's optimization of the code it compiles: 0, 1, 2, 3, s or z (default: the\n"
+                     "setting opt, 2)"},
+    [SNX_CLI_JOBS] = {"--jobs", 0, NULL, "N", "a whole number",
+                      "The threads compiling the game's code, the setting aot_threads: 1 to 1024, or 0\n"
+                      "(the default), Auto"},
+    [SNX_CLI_CHUNK] = {"--chunk", 0, NULL, "N", "a whole number",
+                       "The instructions of a unit of code compiled at once, whole functions or blocks\n"
+                       "(the platform's page says its default)"},
+    [SNX_CLI_JIT_CACHE] = {"--jit-cache", 0, NULL, "PATH", "a path",
+                           "The run-time compiler's record of the game's code, which the recompile starts\n"
+                           "from (the platform's page says what it is)"},
+    [SNX_CLI_JIT_ONLY] = {"--jit-only", 0, "--interp-only", NULL, NULL,
+                          "Compile no code ahead of time: the run-time compiler compiles all of it"},
+    [SNX_CLI_KEEP_IR] = {"--keep-ir", 0, "--keep-c", NULL, NULL,
+                         "Save the code the recompile generates, LLVM IR, in <the game's folder>/\n"
+                         "<its name>_build"},
+    [SNX_CLI_QUIET] = {"--quiet", 'q', NULL, NULL, NULL, "Say no progress of the recompile"},
     [SNX_CLI_HELP] = {"--help", 'h', NULL, NULL, NULL, "Show this help"},
 };
 
@@ -64,7 +85,8 @@ static int find(const char* arg, int* old) {
     for (int id = 1; id < SNX_CLI_COUNT; ++id) {
         const CliOption* o = &options[id];
         if (arg[1] != '-') {
-            if (o->letter && arg[1] == o->letter && !arg[2]) return id;
+            /* a letter alone, or one that takes a value with it after (-O2) */
+            if (o->letter && arg[1] == o->letter && (!arg[2] || o->value)) return id;
         } else if (named(arg, o->name))
             return id;
         else if (named(arg, o->old)) {
@@ -82,7 +104,9 @@ int snx_cli_match(int argc, char** argv, int* i, unsigned accepted, const char* 
     int id = find(arg, &old);
     if (!id) return 0;
     const CliOption* o = &options[id];
-    int length = (int)name_length(arg);
+    /* -O2's value after the letter, which the name in a message leaves out */
+    const char* attached = arg[1] != '-' && arg[2] ? arg + 2 : NULL;
+    int length = attached ? 2 : (int)name_length(arg);
     if (!(accepted & SNX_CLI_BIT(id))) {
         snprintf(error, size, "%s does not take %.*s", program, length, arg);
         return SNX_CLI_REFUSED;
@@ -106,15 +130,34 @@ int snx_cli_match(int argc, char** argv, int* i, unsigned accepted, const char* 
         return id;
     }
     /* a value apart is the next argument, unless that is an option: the value was left out */
-    const char* value = equal              ? equal + 1
+    const char* value = equal                                     ? equal + 1
+                        : attached                                ? attached
                         : *i + 1 < argc && argv[*i + 1][0] != '-' ? argv[*i + 1]
-                                                                   : NULL;
+                                                                  : NULL;
     if (!value || !*value) {
         snprintf(error, size, "%s: %.*s requires %s", program, length, arg, o->needs);
         return SNX_CLI_ERROR;
     }
-    if (!equal) ++*i;
+    if (!equal && !attached) ++*i;
     out->value = value;
+    if (id == SNX_CLI_OPT && (strlen(value) != 1 || !strchr("0123sz", value[0]))) {
+        snprintf(error, size, "%s: %.*s %s: not 0, 1, 2, 3, s or z", program, length, arg, value);
+        return SNX_CLI_ERROR;
+    }
+    if (id == SNX_CLI_JOBS || id == SNX_CLI_CHUNK) {
+        char* end;
+        long most = id == SNX_CLI_JOBS ? 1024 : INT_MAX, least = id == SNX_CLI_JOBS ? 0 : 1;
+        errno = 0;
+        long n = strtol(value, &end, 10);
+        if (errno || *end || !isdigit((unsigned char)value[0]) || n < least || n > most) {
+            if (id == SNX_CLI_JOBS)
+                snprintf(error, size, "%s: --jobs %s: not a whole number from 0 (Auto) to 1024", program, value);
+            else
+                snprintf(error, size, "%s: --chunk %s: not a whole number of instructions from 1", program, value);
+            return SNX_CLI_ERROR;
+        }
+        out->number = (double)n;
+    }
     if (id == SNX_CLI_SECONDS && !snx_parse_seconds(value, &out->number)) {
         snprintf(error, size, "%s: --seconds requires a positive number, not %s", program, value);
         return SNX_CLI_ERROR;
@@ -137,6 +180,7 @@ void snx_cli_init(SnxCli* cli, const char* program, unsigned accepted) {
     cli->accepted = accepted;
     cli->fullscreen = -1;
     cli->frames = -1;
+    cli->jobs = -1;
 }
 int snx_cli_take(SnxCli* cli, int argc, char** argv, int* i, char* error, size_t size) {
     SnxCliArg arg;
@@ -148,6 +192,10 @@ int snx_cli_take(SnxCli* cli, int argc, char** argv, int* i, char* error, size_t
         cli->seconds = arg.number;
     else if (id == SNX_CLI_FRAMES)
         cli->frames = (long)arg.number;
+    else if (id == SNX_CLI_JOBS)
+        cli->jobs = (int)arg.number;
+    else if (id == SNX_CLI_CHUNK)
+        cli->chunk = (int)arg.number;
     else if (id == SNX_CLI_UPDATE) {
         /* at most one for each argument */
         if (!cli->updates) cli->updates = (const char**)snx_alloc((size_t)argc * sizeof *cli->updates);
@@ -195,8 +243,8 @@ char** snx_cli_joined(int argc, char** argv, unsigned ids, int* joined_argc) {
             end = i;
             break;
         }
-        if (id && (ids & SNX_CLI_BIT(id)) && options[id].value && !strchr(argv[i], '=') && i + 1 < argc &&
-            argv[i + 1][0] != '-') {
+        if (id && (ids & SNX_CLI_BIT(id)) && options[id].value && argv[i][1] == '-' && !strchr(argv[i], '=') &&
+            i + 1 < argc && argv[i + 1][0] != '-') {
             text += strlen(argv[i]) + 1 + strlen(argv[i + 1]) + 1;
             ++i;
         }
@@ -205,8 +253,8 @@ char** snx_cli_joined(int argc, char** argv, unsigned ids, int* joined_argc) {
     char* at = (char*)(joined + argc + 1);
     for (int i = 0; i < argc; ++i) {
         int old, id = i && i < end ? find(argv[i], &old) : 0;
-        if (id && (ids & SNX_CLI_BIT(id)) && options[id].value && !strchr(argv[i], '=') && i + 1 < argc &&
-            argv[i + 1][0] != '-') {
+        if (id && (ids & SNX_CLI_BIT(id)) && options[id].value && argv[i][1] == '-' && !strchr(argv[i], '=') &&
+            i + 1 < argc && argv[i + 1][0] != '-') {
             joined[count++] = at;
             at += sprintf(at, "%s=%s", argv[i], argv[i + 1]) + 1;
             ++i;

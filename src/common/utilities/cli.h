@@ -26,7 +26,15 @@ typedef enum {
     SNX_CLI_SCRIPT,            /* --script SPEC */
     SNX_CLI_FULLSCREEN,        /* -f, --fullscreen[=0|1] */
     SNX_CLI_HEADLESS,          /* -H, --headless */
-    SNX_CLI_HELP,              /* -h, --help */
+    /* the recompile's, each driver's that compiles a game's code */
+    SNX_CLI_OPT,       /* -O LEVEL, -OLEVEL, --opt LEVEL: LLVM's level, the setting opt */
+    SNX_CLI_JOBS,      /* --jobs N: the setting aot_threads */
+    SNX_CLI_CHUNK,     /* --chunk N: the instructions of a unit */
+    SNX_CLI_JIT_CACHE, /* --jit-cache PATH: the run-time compiler's record of the game's code */
+    SNX_CLI_JIT_ONLY,  /* --jit-only (--interp-only) */
+    SNX_CLI_KEEP_IR,   /* --keep-ir (--keep-c) */
+    SNX_CLI_QUIET,     /* -q, --quiet */
+    SNX_CLI_HELP,      /* -h, --help */
     SNX_CLI_COUNT
 } SnxCliId;
 /* an option's bit in a driver's mask of the options it takes */
@@ -36,8 +44,16 @@ typedef enum {
 #define SNX_CLI_ERROR   (-1)
 #define SNX_CLI_REFUSED (-2)
 
-/* a common option as given: its id, its value (the text after = or the next argument, "1" or "0" for -f and
-   --fullscreen=0|1, NULL for another flag) and that value as a number for --seconds and --frames */
+/* the recompile's options of the table, the mask of a driver that takes them all */
+#define SNX_CLI_RECOMPILE_OPTIONS                                                                                      \
+    (SNX_CLI_BIT(SNX_CLI_OPT) | SNX_CLI_BIT(SNX_CLI_JOBS) | SNX_CLI_BIT(SNX_CLI_CHUNK) |                               \
+     SNX_CLI_BIT(SNX_CLI_JIT_CACHE) | SNX_CLI_BIT(SNX_CLI_JIT_ONLY) | SNX_CLI_BIT(SNX_CLI_KEEP_IR) |                   \
+     SNX_CLI_BIT(SNX_CLI_QUIET))
+
+/* a common option as given: its id, its value (the text after = or the next argument, or after -O's letter, "1" or
+   "0" for -f and --fullscreen=0|1, NULL for another flag) and that value as a number for --seconds, --frames, --jobs
+   and --chunk. -O's level is one of 0, 1, 2, 3, s and z, --jobs a whole number from 0 (Auto) to 1024 and --chunk one
+   from 1, or the match is SNX_CLI_ERROR naming the value given */
 typedef struct {
     SnxCliId id;
     const char* value;
@@ -56,10 +72,13 @@ int snx_cli_match(int argc, char** argv, int* i, unsigned accepted, const char* 
 typedef struct {
     const char* program;
     unsigned accepted;
-    unsigned flags;                   /* the bits of the flags given: -x, --extract-container, -r, -H, -h */
+    unsigned flags;                   /* the bits of the flags given: -x, --extract-container, -r, -H, -h, --jit-only,
+                                         --keep-ir, -q */
     int fullscreen;                   /* 1 or 0 for -f and --fullscreen=0|1, -1 for not given */
     double seconds;                   /* --seconds, 0 for none */
     long frames;                      /* --frames, -1 for none */
+    int jobs;                         /* --jobs, -1 for none */
+    int chunk;                        /* --chunk, 0 for none */
     const char* value[SNX_CLI_COUNT]; /* the last value of each path or text option: --game, --data, --shot ... */
     const char** updates;             /* each --update, as given (argv's), update_count of them */
     int update_count;
