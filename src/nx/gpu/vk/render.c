@@ -2471,10 +2471,13 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         int guest = stage != ST_FS && t && t->is_rt && (t->sw != t->w || t->sh != t->h);
         if (guest) t = vk_tex_from_tic_guest(x->tic, 0);
         if (st->flags & 1) t = stage != ST_FS ? vk_tex_from_tic_guest(x->tic, 1) : vk_tex_from_tic_raw(x->tic);
-        /* a raw load's header without 4-byte texels, or no header at all, reads zeros through the null view, as a
-           missing texture does: the draw still runs (it was dropped, from one game's movie and gameplay passes) */
+        /* a raw load's header without 4-, 8- or 16-byte texels, or no header at all, reads zeros through the null
+           view, as a missing texture does: the draw still runs (it was dropped, from one game's movie and gameplay
+           passes) */
         if ((st->flags & 1) && !t)
-            LOG_LIMIT(1, "vulkan: a raw surface load's header %08x %08x %08x has no 32-bit view: it reads zeros\n",
+            LOG_LIMIT(1,
+                      "vulkan: a raw surface load's header %08x %08x %08x names no texture of 4-, 8- or 16-byte color "
+                      "texels stored as they are: it reads zeros\n",
                       x->tic[0], x->tic[2], x->tic[4]);
         VkImageViewType want = vk_tex_view_type(st);
         int num = st->flags & 1                                    ? 1
