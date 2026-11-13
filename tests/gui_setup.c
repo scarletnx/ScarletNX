@@ -3,7 +3,8 @@
 /* The launcher's setup (gui/main.c's setup_*) on the real renderer and its events, in a home of its own: the pages a
    first start goes through and what each writes (a portable copy, the language, the games and dumps folders, the keys,
    the first user), what it refuses, the user's page with users.ini there, the fixed uid kept for its saves, a notice
-   alone after an update, --debug, the question's place as options-dialog says, and Skip */
+   alone after an update, --debug, the question's place as options-dialog says, Skip, and the Last Run page of a run
+   the menu did not see end */
 #include <SDL3/SDL.h>
 /* the keyboards main.c asks for: SDL keeps no count, and one asked for and dropped in a frame stays up on Android */
 static int keyboards;
@@ -1516,6 +1517,174 @@ static void test_start_scale(App* app) {
 
 /* name set (NULL: unset) where getenv reads it as well as SDL: on Windows the C runtime keeps a copy of its own, which
    SDL_setenv_unsafe leaves naming the real user's folders */
+/* the F8's answer for its game's process on 2026-11-12, as MainActivity.exitFields writes it */
+#define F8_LOW_MEMORY                                                                                                  \
+    "reason=3\nsaid=low memory\nprocess=org.scarletnx:game\nstatus=0\nimportance=100 foreground\npss=5138022\n"        \
+    "rss=1992704\ndescription=\n"
+/* a run the menu started and did not see end, as it kept it beside its run log: program's (its state folder holding a
+   log written since, headed name, and with mark a start's mark no program holds), the probe's folder for Run
+   edenprobe. The record's path, owned */
+static char* stopped_run(App* app, const char* program, const char* name, const char* probe, bool mark) {
+    char *record = gui_last_run_path(app->run_log), *folder = snx_dirname(program), why[1024], text[256];
+    char *state = snx_user_path(folder, SNX_USER_STATE), *log = join(state, snx_path_leaf(folder)), *with;
+    GuiLastRun run = {0};
+    SDL_Time now = 0;
+    assert(record);
+    assert(SDL_GetCurrentTime(&now));
+    run.program = (char*)program;
+    run.name = (char*)snx_path_leaf(program);
+    run.probe = (char*)probe;
+    run.started = (long long)(now / SDL_NS_PER_SECOND) - 60;
+    run.cases = -1;
+    run.launch = 1;
+    assert(!gui_last_run_write(record, &run, why, sizeof why));
+    with = snx_format("%s.log", log);
+    snprintf(text, sizeof text, "[   0.00] log: written to the game's log\n[   0.00] ScarletNX - %s\n", name);
+    put(with, text);
+    if (mark) {
+        char* at = join(state, ".running-19590");
+        snprintf(text, sizeof text, "pid 19590, started 2026-11-12 20:18:25\n%lld\n", run.started + 1);
+        put(at, text);
+        free(at);
+    }
+    free(with);
+    free(log);
+    free(state);
+    free(folder);
+    return record;
+}
+/* the run the menu did not see end, Last Run: a game Android stopped for its memory, a page first that says what ran,
+   when it started, Android's reason, its process's PSS and RSS and its log, OK alone; Run edenprobe without its
+   summary, Continue (going on with it from its journal once the setup is done) and Not Now; one that reached its
+   summary, its counts in a box; a game that ended with an exit, or still runs, nothing but the log's line; with
+   --no-setup none, the record read all the same. setup.ini written by none */
+static void test_last_run(App* app) {
+    char *config = config_of(app), *file = join(config, "setup.ini"), *before;
+    char *folder = join(app->games_dir, "testgame"), *program = join(folder, "testgame");
+    char *probe = join(app->state_dir, "probe"), *game = join(probe, ".scarletnx/recompiled/edenprobe/edenprobe");
+    char *card = join(probe, ".scarletnx/recompiled/edenprobe/edenprobe_data/sdmc/edenprobe"), *record, *at, *state;
+    char *last = join(card, "last-run"), *report = join(card, "runs/abc1234/report.jsonl");
+    snx_setup_skip = 0;
+    before = text_of(config, "setup.ini");
+    app->system_said = F8_LOW_MEMORY;
+    /* a game: the page alone, OK; the record gone as it is read */
+    record = stopped_run(app, program, "A Test Game", NULL, true);
+    last_run_look(app);
+    assert(!snx_path_exists(record) && app->stopped_due && app->stopped_end.how == RUN_CUT);
+    assert(app->stopped_end.pid == 19590 && !strcmp(app->stopped_end.name, "A Test Game"));
+    setup_start(app);
+    assert(app->setup_on && app->setup_count == 1 && page(app) == SETUP_STOPPED && app->setup_choice.count == 1);
+    assert(!strcmp(choice_label(app), "OK") && !setup_skips(app));
+    render(app);
+    shows(app, "Android stopped A Test Game", rgb(app->theme.page));
+    shows(app, "Last Run", rgb(head_ink(app)));
+    shows(app, "A Test Game", rgb(app->theme.ink));
+    shows(app, "Android stopped it: low memory", rgb(app->theme.ink));
+    shows(app, "PSS 4.9 GB, RSS 1.9 GB", rgb(app->theme.ink));
+    shows(app, "testgame.log", rgb(app->theme.ink));
+    hides(app, "Continue", rgb(app->theme.ink));
+    {
+        static const char* const rows[] = {"OK"};
+        static const char* const icons[] = {ICON_CHECK};
+        rows_show(app, rows, icons, 1, "OK", NULL, NULL);
+    }
+    key(app, SDLK_RETURN);
+    assert(!app->setup_on && !app->stopped_due);
+    at = text_of(config, "setup.ini");
+    assert(before ? at && !strcmp(at, before) : !at); /* the page writes nothing */
+    free(at);
+    free(record);
+    /* the same game ended with an exit (its mark gone), or still running (its mark held): the log's line alone */
+    record = stopped_run(app, program, "A Test Game", NULL, false);
+    state = snx_user_path(folder, SNX_USER_STATE);
+    at = join(state, ".running-19590");
+    remove(at);
+    last_run_look(app);
+    assert(!snx_path_exists(record) && !app->stopped_due && app->stopped_end.how == RUN_ENDED);
+    free(record);
+    record = stopped_run(app, program, "A Test Game", NULL, false);
+    {
+        intptr_t lock;
+        put(at, "pid 19591, started 2026-11-12 20:30:00\n1762990200\n");
+        assert(!snx_lock_file(at, &lock));
+        last_run_look(app);
+        assert(!app->stopped_due && app->stopped_end.how == RUN_GOES);
+        snx_unlock_file(lock);
+    }
+    remove(at);
+    free(at);
+    free(state);
+    free(record);
+    /* Run edenprobe's launch Android stopped before its summary: Continue in focus, Not Now; the cases so far */
+    put(last, "runs/abc1234\n");
+    put(report, "{\"type\":\"note\",\"text\":\"edenprobe 0.9.0 (abc1234) starting\"}\n"
+                "{\"type\":\"case\",\"suite\":\"cpu\",\"name\":\"a\",\"result\":\"pass\"}\n"
+                "{\"type\":\"case\",\"suite\":\"cpu\",\"name\":\"b\",\"result\":\"pass\"}\n"
+                "{\"type\":\"case\",\"suite\":\"tex8k\",\"name\":\"c\",\"result\":\"pass\"}\n");
+    for (int go_on = 0; go_on < 2; ++go_on) {
+        record = stopped_run(app, game, "edenprobe", probe, true);
+        last_run_look(app);
+        setup_start(app);
+        assert(app->setup_on && page(app) == SETUP_STOPPED && app->setup_choice.count == 2);
+        assert(!strcmp(choice_label(app), "Continue") && !setup_skips(app));
+        render(app);
+        shows(app, "Android stopped edenprobe", rgb(app->theme.page));
+        shows(app, "Continue goes on from its journal: 3 cases so far", rgb(app->theme.ink));
+        {
+            static const char* const rows[] = {"Continue", "Not Now"};
+            static const char* const icons[] = {ICON_PLAY, ICON_X};
+            rows_show(app, rows, icons, 2, "Continue", NULL, NULL);
+        }
+        if (!go_on) key(app, SDLK_DOWN);
+        app->editor.note[0] = 0;
+        key(app, SDLK_RETURN);
+        assert(!app->setup_on && !app->stopped_go_on);
+        if (go_on) { /* probe_start's Continue: here the NRO it needs, as GPU Drivers' Continue says, over the menu */
+            char* nro = join(probe, "edenprobe.nro");
+            at = snx_format("Run edenprobe needs %s", nro);
+            free(nro);
+            assert(!strncmp(app->editor.note, at, strlen(at)) && app->confirm.shown &&
+                   app->confirm.ask == GUI_ASK_ERROR && !strcmp(app->error_line, app->editor.note));
+            app->confirm.shown = false;
+            free(at);
+        } else
+            assert(!app->editor.note[0] && !app->probe_launch);
+        free(record);
+    }
+    /* one that reached its summary: no page, its counts in a box, as its end would have shown them */
+    put(report, "{\"type\":\"note\",\"text\":\"edenprobe 0.9.0 (abc1234) starting\"}\n"
+                "{\"type\":\"case\",\"suite\":\"cpu\",\"name\":\"a\",\"result\":\"pass\"}\n"
+                "{\"type\":\"summary\",\"passed\":1,\"failed\":0,\"skipped\":0,\"crashed\":0}\n");
+    record = stopped_run(app, game, "edenprobe", probe, false);
+    last_run_look(app);
+    assert(!app->stopped_due && app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR);
+    assert(!strncmp(app->error_line, "edenprobe 0.9.0 (abc1234): 1 passed, 0 failed, 0 skipped, 0 crashed. ", 69));
+    app->confirm.shown = false;
+    free(record);
+    /* --no-setup: no page; the record read and gone all the same, the log saying it */
+    record = stopped_run(app, program, "A Test Game", NULL, true);
+    snx_setup_skip = 1;
+    last_run_look(app);
+    setup_start(app);
+    assert(!app->setup_on && !snx_path_exists(record));
+    snx_setup_skip = 0;
+    app->stopped_due = false;
+    free(record);
+    app->system_said = NULL;
+    assert(!snx_remove_tree(probe) && !snx_remove_tree(folder));
+    free(before);
+    free(report);
+    free(last);
+    free(card);
+    free(game);
+    free(probe);
+    free(program);
+    free(folder);
+    free(file);
+    free(config);
+    puts("PASS Last Run: a game Android stopped, Run edenprobe's Continue and Not Now, its summary's box");
+}
+
 static void set_env(const char* name, const char* value) {
 #ifdef _WIN32
     assert(!_putenv_s(name, value ? value : ""));
@@ -1556,6 +1725,7 @@ int main(void) {
     test_users(&app);
     test_notice(&app);
     test_clean_notice(&app);
+    test_last_run(&app);
     test_old_files(&app);
     test_saves_one_page(&app);
     test_data_saves(&app);

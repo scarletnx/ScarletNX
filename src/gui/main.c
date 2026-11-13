@@ -39,6 +39,7 @@
 #include "gui/model.h"
 #include "gui/place.h"
 #include "gui/probe.h"
+#include "gui/last_run.h"
 #include "gui/queue.h"
 #include "gui/ui.h" /* generated from ui.txt by tools/uigen */
 #include "gui/gui_process.h"
@@ -341,6 +342,16 @@ typedef struct {
     } slot[GUI_GLYPH_SLOTS];
     uint16_t slot_of[]; /* each wide letter's slot plus one, 0 while it has none (gui_wide_letter) */
 } GuiFontSlots;
+/* how a run ended that the menu did not see end (Last Run, gui/last_run.h): RUN_ENDED with an exit, or before its game
+   wrote a log; RUN_GOES, its game still runs; RUN_CUT, its game did not end with an exit */
+enum { RUN_ENDED, RUN_GOES, RUN_CUT };
+typedef struct {
+    char* log; /* the game's log written since the run started; NULL for none */
+    int how;
+    long long pid, pid_started; /* RUN_CUT's: its process and that process's start, seconds since 1970 (0: unknown) */
+    GuiSystemEnd system;        /* RUN_CUT's: what the system says of that process's end */
+    char name[128];             /* the game as its log's head names it, else as the menu kept it */
+} RunEnd;
 typedef struct App {
     SDL_Window* window;
     SDL_Renderer* renderer;
@@ -817,7 +828,7 @@ typedef struct App {
        each step setup.ini has left */
     bool setup_on;
     SnxSetup setup; /* setup.ini as it was read, a newer one's numbers kept when it is written */
-    int setup_pages[SNX_SETUP_STEPS + 2], setup_count, setup_page;
+    int setup_pages[SNX_SETUP_STEPS + 3], setup_count, setup_page;
     GuiChoice setup_choice; /* the page's choices, the one in focus */
     int setup_top;          /* the notice shown, one a page: the last one's OK goes on; the old files' folder */
     /* what Clean Old Settings would take, as the last notice found it (-1 before), and its Clean Now done: its box
@@ -841,6 +852,19 @@ typedef struct App {
     char setup_why[512];
     bool setup_save;  /* the Appearance changed, kept in app.ini once done (a portable copy's, when that is picked) */
     bool setup_moved; /* the data folder a portable copy's: what older versions left is looked for again */
+    /* Last Run (gui/last_run.h): the run going as the record beside the run log keeps it (written: the record is
+       there); and the run a start found the menu had not seen end, its page among the setup's while due, Continue
+       going on with Run edenprobe once the setup is done */
+    GuiLastRun run_kept, stopped;
+    bool run_kept_written;
+    RunEnd stopped_end;
+    int stopped_cases; /* Run edenprobe's report's cases so far */
+    bool stopped_due, stopped_go_on;
+    bool mark_unended;       /* the launcher's last start did not end with an exit (mark_start) */
+    const char* system_said; /* the tests': the system's answer to every end asked (exitFields' lines); NULL asks it */
+    long long oom_before;    /* the kernel's OOM kills as the run started (gui_oom_kills), -1 where none are kept */
+    char oom_file[1024];     /* where they are counted */
+    const char* oom_events;  /* the tests': a memory.events read in place of the menu's cgroup's; NULL reads it */
 #ifdef SDL_PLATFORM_ANDROID
     bool hidden;     /* behind other apps: nothing is drawn, a run is still read */
     bool play_later; /* a game made ready while hidden, which opens once the menu shows */
@@ -6319,23 +6343,27 @@ static int recompile_tab(const App* app, char* out, size_t size) {
     snprintf(out, size, "%s", failed ? snx_tr("Compile FAILED") : ok ? snx_tr("Compile OK") : snx_tr("Compile"));
     return failed ? GUI_TAB_FAILED : ok ? GUI_TAB_OK : GUI_TAB_GOES;
 }
-/* the tabs while the setup shows: its pages, the notices' then each step's, numbered, then what older versions left */
-enum { SETUP_NOTICE = SNX_SETUP_STEPS, SETUP_LEFT }; /* a page's: a step's, the notices' or the old files' */
+/* the tabs while the setup shows: its pages, the notices' then each step's, numbered, then what older versions left.
+   A page's kind: a step's, the notices', the old files' or the Last Run's */
+enum { SETUP_NOTICE = SNX_SETUP_STEPS, SETUP_LEFT, SETUP_STOPPED };
 static const char* const setup_step_names[SNX_SETUP_STEPS] = {SNX_TR_NOOP("Appearance"), SNX_TR_NOOP("Install"),
                                                               SNX_TR_NOOP("Folders"), SNX_TR_NOOP("Keys"),
                                                               SNX_TR_NOOP("User")};
 /* each step's icon in its tab, before its name where its number was (the page's head says it, 1/5): the tabs keep
-   the width they had; the notices' and the old files' after them, the latter Move Old Files' */
-static const unsigned setup_step_icons[SNX_SETUP_STEPS + 2] = {
-    GUI_ICON_PALETTE, GUI_ICON_HARD_DRIVE_DOWNLOAD, GUI_ICON_FOLDER, GUI_ICON_KEY_ROUND, GUI_ICON_USER,
-    GUI_ICON_INFO,    GUI_ICON_FOLDER_INPUT};
+   the width they had; the notices', the old files' (Move Old Files') and the Last Run's after them */
+static const unsigned setup_step_icons[SNX_SETUP_STEPS + 3] = {
+    GUI_ICON_PALETTE, GUI_ICON_HARD_DRIVE_DOWNLOAD, GUI_ICON_FOLDER,  GUI_ICON_KEY_ROUND, GUI_ICON_USER,
+    GUI_ICON_INFO,    GUI_ICON_FOLDER_INPUT,        GUI_ICON_ACTIVITY};
 static int tab_count(const App* app) {
     if (app->setup_on && !app->editing) return app->setup_count;
     return app->queue.count ? GUI_TABS : GUI_TAB_RECOMPILE;
 }
-/* page i's number among the steps, from 1; 0 for the notices' and the old files' */
+/* page i's number among the steps, from 1; 0 for the notices', the old files' and the Last Run's */
 static int setup_number(const App* app, int i) {
-    return app->setup_pages[i] >= SETUP_NOTICE ? 0 : i + (app->setup_pages[0] != SETUP_NOTICE);
+    int k, n = 0;
+    if (app->setup_pages[i] >= SETUP_NOTICE) return 0;
+    for (k = 0; k <= i; ++k) n += app->setup_pages[k] < SETUP_NOTICE;
+    return n;
 }
 static void tab_label(const App* app, int i, char* out, size_t size) {
     if ((!app->setup_on || app->editing) && i == GUI_TAB_RECOMPILE)
@@ -6346,9 +6374,10 @@ static void tab_label(const App* app, int i, char* out, size_t size) {
         char icon[4];
         gui_icon_utf8(setup_step_icons[app->setup_pages[i]], icon);
         snprintf(out, size, "%s %s", icon,
-                 app->setup_pages[i] == SETUP_NOTICE ? snx_tr("Notice")
-                 : app->setup_pages[i] == SETUP_LEFT ? snx_tr("Old Files")
-                                                     : snx_tr(setup_step_names[app->setup_pages[i]]));
+                 app->setup_pages[i] == SETUP_NOTICE    ? snx_tr("Notice")
+                 : app->setup_pages[i] == SETUP_LEFT    ? snx_tr("Old Files")
+                 : app->setup_pages[i] == SETUP_STOPPED ? snx_tr("Last Run")
+                                                        : snx_tr(setup_step_names[app->setup_pages[i]]));
     }
 }
 /* the columns tab i's name takes: the Compile tab's as many as its longest, so the head stays put as it changes */
@@ -8905,7 +8934,7 @@ static void mark_said(void* data, const SnxRunMark* mark) {
 }
 /* this launcher's start's mark (run_mark.h) in its log's folder, after each start that left its own there unended is
    said; moving it, from the folder Logs was before */
-static void mark_start(const App* app, bool moving) {
+static void mark_start(App* app, bool moving) {
     char *folder = log_folder(app), why[1024];
     bool any = false;
     snx_run_mark_end();
@@ -8913,6 +8942,7 @@ static void mark_start(const App* app, bool moving) {
         gui_log("start mark: %s: the next start cannot tell whether this one ended with an exit",
                 folder ? why : "no log folder");
     if (!any && !moving) gui_log("last start: ended with an exit, or none before");
+    if (!moving) app->mark_unended = any;
     free(folder);
 }
 #define GUI_RUN_LOGS 8 /* launchers open at once on one Logs folder, each with run logs of its own */
@@ -10027,7 +10057,7 @@ static void picks_key(App* app, GuiKey key);
 static void open_fetch(App* app);
 static void probe_start(App* app, bool continuing);
 static void probe_clear(App* app);
-static void probe_after(App* app);
+static void probe_after(App* app, const RunEnd* end);
 static void probe_back(App* app);
 static void driver_select(App* app, int r) {
     /* Download Driver or Add Driver greyed: why, its help's words; a greyed package's box opens, for its Remove */
@@ -12681,6 +12711,274 @@ static void form_pointer(App* app, float x, float y) {
     }
     form_rows_pointer(app, &f, x, y, UI_HIT_CLICK);
 }
+/* ---- Last Run (gui/last_run.h): the run going kept beside its run log until the menu sees it end; a start that finds
+   one did not, and says how that run ended on the setup's Last Run page ---- */
+static bool game_run_log(const char* name, const char* file);
+#if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS)
+static char* run_named_log(const char* run_log, bool* ran);
+#endif
+static void probe_start(App* app, bool continuing);
+/* the run that starts kept: program the game's it plays where the menu starts that itself (a phone; NULL where the
+   run's output names its log), name what the menu calls it; Run edenprobe's folder, cases and launch with it. Written
+   beside the run log; a failure said in the launcher log, as a start after this one cannot say how the run ended */
+static void run_keep(App* app, const char* program, const char* name) {
+    char *path = gui_last_run_path(app->run_log), why[1200];
+    SDL_Time now = 0;
+    gui_last_run_free(&app->run_kept);
+    SDL_GetCurrentTime(&now);
+    app->run_kept.started = (long long)(now / SDL_NS_PER_SECOND);
+    app->run_kept.program = program ? snx_strdup(program) : NULL;
+    app->run_kept.name = snx_strdup(name ? name : "");
+    app->run_kept.probe = app->probe_launch && app->probe_folder ? snx_strdup(app->probe_folder) : NULL;
+    app->run_kept.cases = app->run_kept.probe ? app->probe_cases : -1;
+    app->run_kept.launch = app->run_kept.probe ? app->probe_launch : 0;
+    app->run_kept_written = path && !gui_last_run_write(path, &app->run_kept, why, sizeof why);
+    if (path && !app->run_kept_written) gui_log("last run: %s: the next start cannot say how this run ended", why);
+    free(path);
+}
+/* the run's end seen: its record deleted */
+static void run_forget(App* app) {
+    char *path = app->run_kept_written ? gui_last_run_path(app->run_log) : NULL, reason[256];
+    if (path && snx_path_exists(path) && remove(path))
+        gui_log("last run: %s cannot be deleted (%s): the next start says this run again", path,
+                snx_os_error(reason, sizeof reason));
+    app->run_kept_written = false;
+    free(path);
+}
+/* a computer's run that ended by SIGKILL (status 128 + 9) while the kernel's OOM kills of the menu's memory cgroup
+   (or the system's) went up since it started: the out-of-memory killer ended it, said with the counts and where they
+   are, and the memory the run held at the last look, into out. False where none are kept, or for another end */
+static bool oom_said(const App* app, int status, char* out, size_t size) {
+    char file[sizeof app->oom_file], held[32] = "?";
+    long long after;
+    if (status != 128 + 9 || app->oom_before < 0) return false;
+    after = gui_oom_kills(app->oom_events, file, sizeof file);
+    if (after <= app->oom_before || strcmp(file, app->oom_file)) return false;
+    if (app->usage.available) gui_size_text(held, sizeof held, app->usage.memory_bytes);
+    snprintf(out, size,
+             snx_tr("the kernel's out-of-memory killer ended it (oom_kill %lld to %lld in %s), and it held %s"),
+             app->oom_before, after, file, held);
+    return true;
+}
+/* the newest log of the game named name in its state folder (game_run_log), owned; NULL for none */
+static char* game_log_in(const char* folder, const char* name) {
+    char **files = NULL, *newest = NULL;
+    size_t count = 0, i;
+    SDL_Time time = 0;
+    if (!folder || snx_list_dir(folder, &files, &count)) return NULL;
+    for (i = 0; i < count; ++i) {
+        SDL_PathInfo info;
+        char* path = game_run_log(name, files[i]) ? snx_path_join(folder, files[i]) : NULL;
+        if (path && SDL_GetPathInfo(path, &info) && info.type == SDL_PATHTYPE_FILE &&
+            (!newest || info.modify_time > time)) {
+            free(newest);
+            newest = path;
+            path = NULL;
+            time = info.modify_time;
+        }
+        free(path);
+    }
+    snx_free_strings(files, count);
+    return newest;
+}
+/* the state folder of the game whose program is program, as its runtime takes it (nx/runtime/main.c's game_dirs): the
+   one <program>.folders records when it is there, else its folder's (snx_user_path); owned */
+static char* game_state_of(const char* program) {
+    char *record = snx_format("%s.folders", program), *text, *key, *value, *state = NULL, *folder;
+    size_t size = 0;
+    SnxIni ini;
+    text = (char*)snx_read_file(record, &size);
+    if (text) snx_ini_start(&ini, text);
+    while (text && !state && snx_ini_next(&ini, &key, &value))
+        if (!strcmp(key, "state") && snx_is_dir(value)) state = snx_strdup(value);
+    free(text);
+    free(record);
+    if (state) return state;
+    folder = snx_dirname(program);
+    state = folder ? snx_user_path(folder, SNX_USER_STATE) : NULL;
+    free(folder);
+    return state;
+}
+/* the game's log of run, written since it started: the one its output named (a computer's run, in the run log), else
+   the newest of its program's in the program's state folder, where the runtime writes it; owned, NULL for none */
+static char* run_game_log(const App* app, const GuiLastRun* run) {
+    char* log = NULL;
+    SDL_PathInfo info;
+#if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS)
+    bool ran;
+    if (!run->program && app->run_log) log = run_named_log(app->run_log, &ran);
+#else
+    (void)app;
+#endif
+    if (!log && run->program) {
+        char *folder = snx_dirname(run->program), *state = game_state_of(run->program);
+        log = folder ? game_log_in(state, snx_path_leaf(folder)) : NULL;
+        free(state);
+        free(folder);
+    }
+    if (log && (!SDL_GetPathInfo(log, &info) || info.modify_time < (SDL_Time)run->started * SDL_NS_PER_SECOND)) {
+        free(log);
+        log = NULL;
+    }
+    return log;
+}
+/* the game as its log's head names it ("ScarletNX - <name>", the runtime's first lines), into out: false for none */
+static bool log_named(const char* log, char* out, size_t size) {
+    static const char head[] = "] ScarletNX - ";
+    char line[512];
+    FILE* f = snx_fopen(log, "rb");
+    for (int i = 0; f && i < 16 && fgets(line, sizeof line, f); ++i) {
+        char* at = strstr(line, head);
+        if (!at) continue;
+        at += sizeof head - 1;
+        at[strcspn(at, "\r\n")] = 0;
+        snprintf(out, size, "%s", at);
+        fclose(f);
+        return out[0] != 0;
+    }
+    if (f) fclose(f);
+    return false;
+}
+#ifndef SDL_PLATFORM_IOS /* there the game runs under the launcher's mark */
+/* a mark beside the game's log (run_mark.h): one held is a start of the game still going; one that no program holds
+   and that started since the run did is the run's game, which did not end with an exit (the newest of them) */
+typedef struct {
+    long long since;
+    RunEnd* end;
+} RunMarks;
+static void run_mark_seen(void* data, const SnxRunMark* mark) {
+    RunMarks* m = (RunMarks*)data;
+    if (mark->held) {
+        if (m->end->how == RUN_ENDED) m->end->how = RUN_GOES;
+        return;
+    }
+    if (!mark->text || (mark->started && mark->started < m->since)) return; /* another run's, before this one */
+    if (m->end->how == RUN_CUT && mark->started <= m->end->pid_started) return;
+    m->end->how = RUN_CUT;
+    m->end->pid = mark->pid;
+    m->end->pid_started = mark->started;
+}
+#endif
+/* how run ended, which the menu did not see, into end (run_end_free): its game's log since it started, the mark of
+   that start beside it, and what the system says of that process's end */
+static void run_end_of(App* app, const GuiLastRun* run, RunEnd* end) {
+    char* system = NULL;
+    memset(end, 0, sizeof *end);
+    end->how = RUN_ENDED;
+    snprintf(end->name, sizeof end->name, "%s", run->name ? run->name : "");
+    end->log = run_game_log(app, run);
+    if (end->log) log_named(end->log, end->name, sizeof end->name);
+#ifdef SDL_PLATFORM_IOS /* the game ran in the launcher's process, under its mark */
+    end->how = app->mark_unended ? RUN_CUT : RUN_ENDED;
+#else
+    if (end->log) {
+        char *folder = snx_dirname(end->log), why[1100];
+        RunMarks marks = {run->started, end};
+        if (!folder || snx_run_mark_look(folder, run_mark_seen, &marks, why, sizeof why))
+            gui_log("last run: %s: whether its game ended with an exit is unknown", folder ? why : end->log);
+        free(folder);
+    }
+#endif
+    if (end->how != RUN_CUT) return;
+    if (app->system_said) system = snx_strdup(app->system_said);
+#ifdef SDL_PLATFORM_ANDROID
+    else
+        system = gui_android_exit_fields(end->pid, end->pid_started);
+#endif
+    gui_system_end_read(system, &end->system);
+    free(system);
+    if (!end->system.known && !app->system_said) /* what this system's ends may be, as the launcher log's mark says */
+        snprintf(end->system.none, sizeof end->system.none, "%s",
+#ifdef SDL_PLATFORM_IOS
+                 snx_tr("the system ended it: a crash, its memory limit (jetsam), or a close from the app switcher")
+#elif defined(SDL_PLATFORM_ANDROID)
+                 end->system.none
+#else
+                 snx_tr("a crash (whose report ends its log), a kill (by the system for its memory, or by the user) or "
+                        "a power loss, which the system does not name")
+#endif
+        );
+}
+static void run_end_free(RunEnd* end) {
+    free(end->log);
+    end->log = NULL;
+}
+/* how a run that did not end with an exit ended, in a line: what the system says (Android stopped it: low memory,
+   and the process's details), else what it may have been where the system names none */
+static void end_words(const RunEnd* end, char* out, size_t size) {
+    const GuiSystemEnd* s = &end->system;
+    char details[512];
+    if (!s->known) {
+        snprintf(out, size, "%s", s->none);
+        return;
+    }
+    snprintf(details, sizeof details, snx_tr("%s, status %d, importance %s"), s->process, s->status, s->importance);
+    snprintf(out, size,
+             gui_system_stopped(s->reason) ? snx_tr("Android stopped it: %s (%s%s%s)")
+                                           : snx_tr("Android says %s (%s%s%s)"),
+             s->said, details, s->description[0] ? ": " : "", s->description);
+}
+/* the memory its process held as it ended, as the system says it: ? for what it does not */
+static void end_memory(const RunEnd* end, char* out, size_t size) {
+    char pss[32] = "?", rss[32] = "?";
+    if (end->system.pss >= 0) gui_size_text(pss, sizeof pss, (uint64_t)end->system.pss << 10);
+    if (end->system.rss >= 0) gui_size_text(rss, sizeof rss, (uint64_t)end->system.rss << 10);
+    snprintf(out, size, snx_tr("PSS %s, RSS %s"), pss, rss);
+}
+/* a run's start, seconds since 1970, as local time into out ("2026-11-12 20:18:25"); ? when the system cannot say */
+static void run_when(long long started, char* out, size_t size) {
+    SDL_DateTime dt;
+    if (SDL_TimeToDateTime((SDL_Time)started * SDL_NS_PER_SECOND, &dt, true))
+        snprintf(out, size, "%04d-%02d-%02d %02d:%02d:%02d", dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+    else
+        snprintf(out, size, "?");
+}
+/* the start's look at the run the menu started last and did not see end: said in the launcher log; a game that did not
+   end with an exit, or Run edenprobe left without its summary, the Last Run page (setup_start); Run edenprobe that
+   reached its summary, its counts in a box, as its end would have shown them */
+static void last_run_look(App* app) {
+    char *path = gui_last_run_path(app->run_log), why[1200], words[1100], when[32] = "?", launch[96] = "";
+    GuiLastRun run;
+    GuiProbeReport r;
+    int taken = path ? gui_last_run_take(path, &run, why, sizeof why) : 0;
+    free(path);
+    if (taken < 0) gui_log("last run: %s", why);
+    if (taken < 0 && !run.started) {
+        gui_last_run_free(&run);
+        return;
+    }
+    if (!taken) return;
+    app->stopped_due = false;
+    run_when(run.started, when, sizeof when);
+    gui_last_run_free(&app->stopped);
+    run_end_free(&app->stopped_end);
+    run_end_of(app, &run, &app->stopped_end);
+    end_words(&app->stopped_end, words, sizeof words);
+    if (run.probe) /* the probe's launch, and its cases before it */
+        snprintf(launch, sizeof launch, " (launch %d, %d cases before it)", run.launch, SDL_max(run.cases, 0));
+    gui_log("last run: %s%s, started %s, whose end this launcher did not see: %s%s%s", app->stopped_end.name, launch,
+            when,
+            app->stopped_end.how == RUN_CUT    ? "it did not end with an exit: "
+            : app->stopped_end.how == RUN_GOES ? "it still runs"
+                                               : "it ended with an exit, or before its game wrote a log",
+            app->stopped_end.how == RUN_CUT ? words : "",
+            app->stopped_end.log ? ""
+            : run.program        ? ", no log of it since it started"
+                                 : "");
+    app->stopped = run;
+    app->stopped_cases = run.probe && gui_probe_read(run.probe, &r) ? r.cases : 0;
+    if (run.probe && gui_probe_read(run.probe, &r) && r.summary) { /* its end's box, which no one showed */
+        char said[700], *report = gui_probe_report(run.probe);
+        gui_probe_said(&r, said, sizeof said);
+        snprintf(app->error_line, sizeof app->error_line, snx_tr("%s. The report: %s"), said, report ? report : "?");
+        gui_log("%s", app->error_line);
+        gui_confirm_open(&app->confirm, GUI_ASK_ERROR, false);
+        free(report);
+    } else if (run.probe) /* without its summary, the relaunch that went on after it gone with the menu: Continue */
+        app->stopped_due = app->stopped_end.how != RUN_GOES;
+    else
+        app->stopped_due = app->stopped_end.how == RUN_CUT;
+}
 /* ---- the setup a first start goes through (common/utilities/setup.h), in place of the menu: a page at a time, the
    notices of what older versions did, then each step setup.ini has left. Its boxes say what the page is about, its
    question and choices come as the theme's options-dialog places them, its tip in the foot. What a step does is done
@@ -12743,12 +13041,17 @@ static void closing_start(App* app) {
 }
 static int setup_page_of(const App* app) { return app->setup_pages[app->setup_page]; }
 static int setup_steps(const App* app) {
-    return app->setup_count - (app->setup_pages[0] == SETUP_NOTICE) -
-           (app->setup_count && app->setup_pages[app->setup_count - 1] == SETUP_LEFT);
+    int k, n = 0;
+    for (k = 0; k < app->setup_count; ++k) n += app->setup_pages[k] < SETUP_NOTICE;
+    return n;
 }
-/* the first page shows Skip after its own choices (setup_choice.count of them): every page left taken as its defaults
-   have it (setup_skip); the old files' alone have their own Not Now */
-static int setup_skips(const App* app) { return app->setup_page == 0 && setup_page_of(app) != SETUP_LEFT; }
+/* the first page past the Last Run's shows Skip after its own choices (setup_choice.count of them): every page left
+   taken as its defaults have it (setup_skip); the old files' alone have their own Not Now, and the Last Run's comes
+   before any it would take */
+static int setup_skips(const App* app) {
+    return app->setup_page == (app->setup_pages[0] == SETUP_STOPPED) && setup_page_of(app) != SETUP_LEFT &&
+           setup_page_of(app) != SETUP_STOPPED;
+}
 /* the old files' pages show */
 static bool left_page(const App* app) { return app->setup_on && setup_page_of(app) == SETUP_LEFT; }
 /* a portable copy's folder beside the program (snx_portable_dir), and whether it is there: owned */
@@ -12840,12 +13143,15 @@ typedef enum {
     SETUP_DOES_OK,
     SETUP_DOES_NOT_NOW,
     SETUP_DOES_SKIP,
+    SETUP_DOES_CONTINUE,
     SETUP_DOES_CLEAN,
     SETUP_DOES_MOVE,
     SETUP_DOES_DELETE
 } SetupDoes;
 static SetupDoes setup_does(const App* app, int i) {
     int page = setup_page_of(app), list[SNX_NOTICES], backs = app->setup_top > 0;
+    if (page == SETUP_STOPPED) /* Run edenprobe's Continue and Not Now, a game's OK */
+        return app->stopped.probe ? (i == 0 ? SETUP_DOES_CONTINUE : SETUP_DOES_NOT_NOW) : SETUP_DOES_OK;
     if (page != SETUP_NOTICE && page != SETUP_LEFT) return SETUP_DOES_OTHER;
     if (setup_skips(app) && i == app->setup_choice.count) return SETUP_DOES_SKIP;
     if (page == SETUP_LEFT && app->left_did) return SETUP_DOES_OK;
@@ -12878,9 +13184,9 @@ static int setup_order_row(const App* app, int choice) {
 }
 /* the icon before a choice by what it does (SetupDoes' order): the verb's in F1's box (key_icon), and that of Settings >
    App's row that does the same (Clean Old Settings, Move Old Files); none for another page's */
-static const unsigned setup_icons[] = {GUI_ICON_NONE, GUI_ICON_ARROW_LEFT,   GUI_ICON_CHECK,  GUI_ICON_CHECK,
-                                       GUI_ICON_X,    GUI_ICON_SKIP_FORWARD, GUI_ICON_ERASER, GUI_ICON_FOLDER_INPUT,
-                                       GUI_ICON_TRASH};
+static const unsigned setup_icons[] = {
+    GUI_ICON_NONE,         GUI_ICON_ARROW_LEFT, GUI_ICON_CHECK,  GUI_ICON_CHECK,        GUI_ICON_X,
+    GUI_ICON_SKIP_FORWARD, GUI_ICON_PLAY,       GUI_ICON_ERASER, GUI_ICON_FOLDER_INPUT, GUI_ICON_TRASH};
 /* a SetupDoes added takes its icon here, in its place */
 typedef char snx_setup_icons[SDL_arraysize(setup_icons) == SETUP_DOES_DELETE + 1 ? 1 : -1];
 /* what the choice on row i (setup_order) does; SETUP_DOES_OTHER between the groups */
@@ -13001,6 +13307,9 @@ static void setup_enter(App* app) {
             app->setup_choice.count = 2; /* Keep, Overwrite */
             if (!app->setup_written) setup_type(app);
             break;
+        case SETUP_STOPPED: /* Continue, in focus, and Not Now for Run edenprobe; OK for a game */
+            app->setup_choice.count = app->stopped.probe ? 2 : 1;
+            break;
         case SETUP_LEFT: /* what an older version left, a folder a page, looked for now */
             app->left_did = 0;
             left_behind(app);
@@ -13032,8 +13341,11 @@ static void setup_start(App* app) {
     app->clean_inis_found = app->clean_keys_found = -1;
     app->setup_cleaned = false;
     app->left_did = 0;
+    if (!snx_setup_skip && app->stopped_due) app->setup_pages[app->setup_count++] = SETUP_STOPPED; /* first */
     if (snx_setup_skip || !file) {
         free(file);
+        app->setup_on = app->setup_count > 0;
+        if (app->setup_on) setup_enter(app);
         scale_keep(app);
         return;
     }
@@ -13083,6 +13395,22 @@ static void setup_finish(App* app) {
         }
     }
     free(file);
+    app->stopped_due = false;
+    if (app->stopped_go_on) { /* the Last Run's Continue, the setup done; what stops it said over the menu, where GPU
+                                 Drivers' note is not */
+        app->stopped_go_on = false;
+        app->editor.note[0] = 0;
+        probe_start(app, true);
+        if (!app->probe_launch && !app->confirm.shown) {
+            char said[sizeof app->editor.note + 64];
+            if (app->editor.note[0])
+                snprintf(said, sizeof said, "%s", app->editor.note);
+            else
+                snprintf(said, sizeof said, snx_tr("Continue: %s holds no run of edenprobe left before its summary"),
+                         app->stopped.probe ? app->stopped.probe : "?");
+            say_failure(app, said);
+        }
+    }
     layout(app);
 }
 static void setup_next(App* app) {
@@ -13250,6 +13578,15 @@ static void setup_take(App* app) {
             notice_choices(app, back);
             return;
         }
+        case SETUP_STOPPED: /* Continue goes on with Run edenprobe once the setup is done; Not Now leaves it to GPU
+                               Drivers' Continue */
+            app->stopped_go_on = setup_does(app, choice) == SETUP_DOES_CONTINUE;
+            if (app->stopped.probe)
+                gui_log("last run: %s", app->stopped_go_on ? "Continue: edenprobe goes on from its journal"
+                                                           : "Not Now: Settings > App > GPU Drivers' Continue goes on "
+                                                             "with it later");
+            setup_next(app);
+            return;
         case SETUP_LEFT: { /* a folder a page; on the last Move All (asked), Delete All (asked, pressed twice) or Not Now,
                               which keeps them for Settings > App > Move Old Files; OK after either */
             int backs = app->setup_top > 0 && !app->left_did;
@@ -13452,6 +13789,7 @@ static int setup_labels(const App* app, const char** labels) {
                                 SNX_TR_NOOP("OK"),
                                 clean[1],
                                 SNX_TR_NOOP("Skip"),
+                                SNX_TR_NOOP("Continue"),
                                 clean[0],
                                 left[0],
                                 left[1]};
@@ -13472,6 +13810,15 @@ static const char* setup_question(const App* app, char* out, size_t size) {
         case SETUP_NOTICE:
             return app->setup.version ? snx_tr("Changed since the last version") : snx_tr("Changed in older versions");
         case SETUP_LEFT: return snx_tr(SAY_LEFT_TITLE);
+        case SETUP_STOPPED:
+            snprintf(out, size,
+                     app->stopped_end.how == RUN_CUT && app->stopped_end.system.known &&
+                             gui_system_stopped(app->stopped_end.system.reason)
+                         ? snx_tr("Android stopped %s")
+                     : app->stopped.probe ? snx_tr("%s stopped before its summary")
+                                          : snx_tr("%s stopped"),
+                     app->stopped_end.name);
+            return out;
         case SNX_SETUP_LANGUAGE: return snx_tr("Appearance");
         case SNX_SETUP_INSTALL: return snx_tr("Install Type");
         case SNX_SETUP_FOLDERS: return snx_tr("Folders");
@@ -13492,6 +13839,9 @@ static const char* setup_tip(const App* app) {
     switch (setup_page_of(app)) {
         case SETUP_NOTICE: return snx_tr("Tip: --no-setup skips the setup");
         case SETUP_LEFT: return snx_tr("Tip: Settings > App > Move Old Files moves them later");
+        case SETUP_STOPPED:
+            return app->stopped.probe ? snx_tr("Tip: Settings > App > GPU Drivers' Continue goes on with it later")
+                                      : snx_tr("Tip: Share Log sends the game's log");
         case SNX_SETUP_LANGUAGE: return snx_tr("Tip: games keep their own language: Settings > Display > Language");
         case SNX_SETUP_INSTALL: return snx_tr("Tip: a portable copy is a folder you can copy");
         case SNX_SETUP_FOLDERS: return snx_tr("Tip: Settings > App > Folders changes them");
@@ -13505,11 +13855,12 @@ static const char* setup_keys_said(const App* app) {
     if (setup_page_of(app) == SNX_SETUP_LANGUAGE && app->setup_row == GUI_APPEARANCE_NEXT)
         return app->setup_page ? SAY_SETUP_ON : SAY_SETUP_ON_FIRST;
     if (setup_page_of(app) == SNX_SETUP_LANGUAGE) return app->setup_page ? SAY_SETUP_LOOK : SAY_SETUP_LOOK_FIRST;
-    return app->setup_typing                    ? SAY_SETUP_TYPING
-           : setup_page_of(app) == SETUP_NOTICE ? SAY_SETUP_NOTICE
-           : setup_page_of(app) == SETUP_LEFT   ? SAY_SETUP_LEFT
-           : app->setup_page                    ? SAY_SETUP
-                                                : SAY_SETUP_FIRST;
+    return app->setup_typing                     ? SAY_SETUP_TYPING
+           : setup_page_of(app) == SETUP_NOTICE  ? SAY_SETUP_NOTICE
+           : setup_page_of(app) == SETUP_STOPPED ? SAY_SETUP_NOTICE
+           : setup_page_of(app) == SETUP_LEFT    ? SAY_SETUP_LEFT
+           : app->setup_page                     ? SAY_SETUP
+                                                 : SAY_SETUP_FIRST;
 }
 /* the row of the page's choice drawn in focus (setup_order): the Appearance's choices only while the focus is on them,
    not on a row; -1 for none */
@@ -13752,6 +14103,41 @@ static void setup_notices_box(App* app, GuiRect r) {
         setup_entries_box(app, r, head, lines, k, &app->cleaned);
     else
         setup_box(app, r, head, lines, k);
+}
+/* the Last Run page's box: the run, when it started, how it ended and the memory its process held as the system says
+   them, its game's log; for Run edenprobe the cases so far, which Continue goes on after */
+static void setup_stopped_box(App* app, GuiRect r) {
+    static const char* const said[] = {SNX_TR_NOOP("started"), SNX_TR_NOOP("end"), SNX_TR_NOOP("memory"),
+                                       SNX_TR_NOOP("log")};
+    const RunEnd* end = &app->stopped_end;
+    char text[6][1300], pad[64], value[1100], shown[1024];
+    const char* lines[6];
+    int k = 0, cols = setup_cols(said, 4, 2);
+#define STOPPED_LINE(...) (snprintf(text[k], sizeof text[k], __VA_ARGS__), lines[k] = text[k], ++k)
+    STOPPED_LINE("%s%s", app->theme.marker, end->name);
+    run_when(app->stopped.started, value, sizeof value);
+    STOPPED_LINE("    %s%s", setup_pad(pad, sizeof pad, said[0], cols), value);
+    if (end->how == RUN_CUT)
+        end_words(end, value, sizeof value);
+    else
+        snprintf(value, sizeof value, "%s", snx_tr("it ended with an exit, or before its game wrote a log"));
+    STOPPED_LINE("    %s%s", setup_pad(pad, sizeof pad, said[1], cols), value);
+    if (end->how == RUN_CUT) {
+        end_memory(end, value, sizeof value);
+        STOPPED_LINE("    %s%s", setup_pad(pad, sizeof pad, said[2], cols), value);
+    }
+    snx_home_short(end->log ? end->log : "", shown, sizeof shown);
+    STOPPED_LINE("    %s%s", setup_pad(pad, sizeof pad, said[3], cols),
+                 end->log ? shown : snx_tr("none since it started"));
+    if (app->stopped.probe) {
+        snprintf(value, sizeof value,
+                 app->stopped_cases == 1 ? snx_tr("Continue goes on from its journal: %d case so far")
+                                         : snx_tr("Continue goes on from its journal: %d cases so far"),
+                 app->stopped_cases);
+        STOPPED_LINE("  %s", value);
+    }
+#undef STOPPED_LINE
+    setup_box(app, r, snx_tr("Last Run"), lines, k);
 }
 /* lines a row each in text from its top, all when they fit; else as many as fit but one roll a line every
    GUI_SETUP_ROWS_MS to the last and back, an arrow at text's right while some are above or under them and a scroll bar
@@ -14060,6 +14446,7 @@ static void setup_panes(App* app, GuiRect r) {
     switch (setup_page_of(app)) {
         case SETUP_NOTICE: setup_notices_box(app, r); break;
         case SETUP_LEFT: setup_left_box(app, r); break;
+        case SETUP_STOPPED: setup_stopped_box(app, r); break;
         case SNX_SETUP_LANGUAGE: {
             GuiAppearanceBoxes a;
             appearance_boxes(app, r, &a);
@@ -14499,6 +14886,7 @@ static int play_as(App* app, const char* asked, bool next) {
     SDL_GetCurrentTime(&app->played_at);
     ok = gui_android_play(argv, app->message, sizeof(app->message));
     if (ok) app->playing = true; /* the queue's recompile goes gently until the menu shows again */
+    if (ok) run_keep(app, game, snx_path_leaf(game));
     app->run_started_ms = SDL_max(now_ms(app), 1);
     if (debug_log(app))
         run_said(app, "run", ok ? "starts in the game's activity, a process of its own" : app->message, 0);
@@ -14557,9 +14945,10 @@ static bool next_program(App* app) {
     return ok;
 }
 static char* newest_log(const App* app);
-/* the game activity has ended: a failure its log shows (a crash, an error) stays on the run's screen, as a game that
-   fails on a computer does, with Share Log blinking. The game's own error screen shows no crash */
-static void game_end(App* app) {
+/* the game activity has ended: a failure its log shows (a crash, an error), or an end its log cannot show (ended:
+   Android's kill of a game that did not end with an exit), stays on the run's screen, as a game that fails on a
+   computer does, with Share Log blinking. The game's own error screen shows no crash */
+static void game_end(App* app, const RunEnd* ended) {
     char *log = newest_log(app), what[1024], lines[4096];
     SDL_PathInfo info;
     int end = -1;
@@ -14574,13 +14963,18 @@ static void game_end(App* app) {
         snprintf(said, sizeof said, "ended, %s: %s", end >= 0 ? "its log says" : "its log unread", what);
         run_said(app, "run", said, app->run_started_ms);
     }
-    if (end == SNX_LOG_NONE) {
+    if (end == SNX_LOG_NONE && ended->how == RUN_CUT) { /* its log says nothing of it: Android's kill, a signal */
+        char memory[64];
+        end_words(ended, what, sizeof what);
+        end_memory(ended, memory, sizeof memory);
+        snprintf(what + strlen(what), sizeof what - strlen(what), "; %s", memory);
+    } else if (end == SNX_LOG_NONE) {
         free(log);
         return;
     }
     gui_steps_reset(&app->steps); /* the steps that made it ready ended well: under the failure they read as its end */
     gui_console_init(&app->console, app->cols - 2, app->rows - 8);
-    if (end > 0) gui_console_feed(&app->console, lines, strlen(lines));
+    if (end >= 0 && lines[0]) gui_console_feed(&app->console, lines, strlen(lines));
     snprintf(app->message, sizeof app->message, snx_tr("The game stopped: %s"), what);
     gui_log("%s", app->message);
     app->finished = app->abnormal_exit = app->log_due = true;
@@ -14659,6 +15053,7 @@ static int play(App* app, const char* asked) {
     if (freedreno) argv[n++] = freedreno;
     argv[n] = NULL;
     if (debug_log(app)) run_said(app, "run", "starts in this process once the menu closes", 0);
+    run_keep(app, game, snx_path_leaf(game));
     gui_apple_play(argv);
     free(driver);
     free(freedreno);
@@ -15500,7 +15895,9 @@ static void pump(App* app) {
         recent_name(app, "LAUNCH");
         int status;
         if (gui_process_finished(app->process, &status)) {
+            char oom[512];
             app->menu.running = false;
+            run_forget(app);
             if (debug_log(app)) {
                 char what[64];
                 run_said(app, "run", run_ended(what, sizeof what, app->aborting, status), app->run_started_ms);
@@ -15523,6 +15920,9 @@ static void pump(App* app) {
             app->menu.view = GUI_LOAD_NONE;
             if (app->aborting)
                 snprintf(app->message, sizeof(app->message), "%s", snx_tr("Aborted with ESC."));
+            else if (app->abnormal_exit && oom_said(app, status, oom, sizeof oom))
+                snprintf(app->message, sizeof(app->message), snx_tr("Program ended abnormally (status %d): %s."),
+                         status, oom);
             else if (app->abnormal_exit)
                 snprintf(app->message, sizeof(app->message), snx_tr("Program ended abnormally (status %d)."), status);
             else
@@ -15538,7 +15938,7 @@ static void pump(App* app) {
                 probe_back(app);
             }
 #if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS)
-            if (app->probe_launch) probe_after(app);
+            if (app->probe_launch) probe_after(app, NULL);
 #else
             if (app->probe_launch && app->abnormal_exit) { /* its screen says why, the menu after it */
                 app->probe_launch = 0;
@@ -15586,11 +15986,15 @@ static void pump(App* app) {
         if (ready(app)) leave_run(app);
     }
     if (app->played && !app->hidden) {
+        RunEnd end;
         app->played = false;
+        run_end_of(app, &app->run_kept, &end); /* its game's mark and what Android says, before the next one starts */
+        run_forget(app);
         if (app->probe_launch)
-            probe_after(app);
+            probe_after(app, &end);
         else if (!next_program(app))
-            game_end(app); /* a collection's program starting another ended well */
+            game_end(app, &end); /* a collection's program starting another ended well */
+        run_end_free(&end);
     }
 #endif
 #ifdef SDL_PLATFORM_ANDROID
@@ -16303,6 +16707,10 @@ static bool run_start(App* app, const char* const* argv, char* file, bool native
     bool started = gui_process_start(app->process, argv, app->message, sizeof(app->message));
     app->run_started_ms = SDL_max(now_ms(app), 1);
     if (debug_log(app)) run_said(app, "run", started ? "starts" : app->message, 0);
+    if (started) { /* its record, and the kernel's OOM kills so far */
+        run_keep(app, NULL, app->probe_launch ? "edenprobe" : file ? snx_path_leaf(file) : "");
+        app->oom_before = gui_oom_kills(app->oom_events, app->oom_file, sizeof app->oom_file);
+    }
     if (started && app->run_log) {
         size_t k;
         if (app->run_out) fclose(app->run_out);
@@ -16721,12 +17129,12 @@ static void probe_clear(App* app) {
     free(folder);
     drivers_show(app, app->editor.row);
 }
-/* a launch of the probe ended (its game's process, or on Android its game's activity): launched again while it adds
-   cases and has no summary, GUI_PROBE_RELAUNCHES times at most, as edenprobe's journal goes on after the case it ended
-   inside; else its counts in a box, over the menu */
-static void probe_after(App* app) {
+/* a launch of the probe ended (its game's process, or on Android its game's activity, end saying how where the menu
+   looked: NULL elsewhere): launched again while it adds cases and has no summary, GUI_PROBE_RELAUNCHES times at most,
+   as edenprobe's journal goes on after the case it ended inside; else its counts in a box, over the menu */
+static void probe_after(App* app, const RunEnd* end) {
     GuiProbeReport r;
-    char said[700], *report;
+    char said[700], *report, words[1100] = "";
     if (!gui_probe_read(app->probe_folder, &r)) { /* the run's lines say why, on its screen or in the log */
         app->probe_launch = 0;
         app->probe_row = -1; /* its screen stays, the menu after it */
@@ -16734,9 +17142,15 @@ static void probe_after(App* app) {
         say_failure(app, app->message);
         return;
     }
+    if (end && end->how == RUN_CUT) {
+        words[0] = ' ';
+        words[1] = '(';
+        end_words(end, words + 2, sizeof words - 3);
+        snprintf(words + strlen(words), sizeof words - strlen(words), ")");
+    }
     if (!r.summary && r.cases > app->probe_cases && app->probe_launch <= GUI_PROBE_RELAUNCHES) {
-        gui_log("edenprobe: launch %d ended before the summary, cases so far %d; launching again", app->probe_launch,
-                r.cases);
+        gui_log("edenprobe: launch %d ended before the summary%s, cases so far %d; launching again", app->probe_launch,
+                words, r.cases);
         app->probe_cases = r.cases;
         app->probe_launch++;
         probe_launch(app);
@@ -20137,6 +20551,12 @@ static void forget(App* app) {
     gui_android_ran(NULL); /* the run goes with the menu */
 #endif
     gui_process_destroy(app->process);
+#if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS) /* a phone's game plays on past the menu */
+    run_forget(app);                                             /* the run, if any, ended with the menu */
+#endif
+    gui_last_run_free(&app->run_kept);
+    gui_last_run_free(&app->stopped);
+    run_end_free(&app->stopped_end);
     watch_stop(app);
     dump_icons_stop(app);
     SDL_DestroyTexture(app->icon_loading);
@@ -20366,7 +20786,8 @@ int snx_gui_main(const char* self) {
     }
     open_files(&app); /* here, not in initialize(), so the tests keep their own */
     mark_start(&app, false);
-    left_behind(&app); /* what an older version left: the setup's last pages, Old Files */
+    last_run_look(&app); /* a run whose end the last start did not see: the setup's first page, Last Run */
+    left_behind(&app);   /* what an older version left: the setup's last pages, Old Files */
     setup_start(&app);
     app.games_fresh = true;
     watch_start(&app);

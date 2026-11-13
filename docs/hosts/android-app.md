@@ -87,7 +87,9 @@ recompiles on the phone, then the game opens.
 - **How the last start ended.** The menu's log, and a game's of the game's last run, say a start that did not end
   with an exit ([GUI](../user/gui.md)), with the reason Android 11 and later keep for that process (ApplicationExitInfo): `low
   memory`, `crash native`, `user requested`, `signaled` and the others, the process, its status, its importance and
-  the memory it held, and the system's own words. Android 10 and earlier keep none, and the line says so. At Debug's
+  the memory it held, and the system's own words. Android 10 and earlier keep none, and the line says so. The menu
+  asks the same of the game's process when a game it started ends, and on its next start when it was ended with the
+  game: the setup's Last Run page, or the run's screen, says it ([GUI](../user/gui.md#setup)). At Debug's
   Log level 2 the menu's log also has a `state:` line at its start and at each change of the thermal status (Android
   10 and later) and of Battery Saver.
 

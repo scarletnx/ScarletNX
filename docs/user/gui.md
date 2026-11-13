@@ -218,7 +218,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   followed by another, up to 16, which goes on after the case it ended inside (edenprobe's screen that asks first goes
   on by itself after ten seconds), while each adds cases; ESC ends it. At the end a box says the
   counts and the suites that failed or crashed, and where the report is. A next press after a whole run starts it
-  over; after one that stopped inside a case (an iOS app ends with its game), it goes on. **Freedreno Settings** sets
+  over; after one that stopped inside a case (an iOS app ends with its game), it goes on. A run whose launches ended
+  with the menu (Android's low memory killer ends the menu first, then the game) is offered again at the next start,
+  on the setup's Last Run page ([Setup](#setup)). **Freedreno Settings** sets
   Mesa's Freedreno and Turnip
   variables (`TU_DEBUG`, `FD_MESA_DEBUG`, `IR3_SHADER_DEBUG`, `FD_RD_DUMP`...) every game starts with: Eden's presets
   first (Debug - CPU Memory, `TU_DEBUG=sysmem`, and the others), a row a variable set (a press, or Del, takes it out),
@@ -412,7 +414,14 @@ two; left out, none), `probe_mode` (edenprobe Mode's `quick`, the default, or `f
   system says of it (on Android 11 and later the reason it keeps for that process, [Android host](../hosts/android-app.md); elsewhere
   the system names none). The mark is `.running-<pid>` beside the log, made at the start, held while the launcher
   runs and deleted at its exit, Logs moving it; a game keeps its own beside its log, which the game's next start says
-  the same way. The start also gives the data folder's disk, `disk: 51200 MiB free of 953344 MiB` (on iOS the
+  the same way. The run going is kept beside its run log too, `last-run.ini` beside `last-run.log`, from its start
+  until the menu sees it end: a start that finds one did not see it end, says so (`last run: edenprobe, started
+  2026-11-12 20:18:25, whose end this launcher did not see: it did not end with an exit: Android stopped it: low memory
+  (...)`) and shows the setup's Last Run page ([Setup](#setup)) for a game that did not end with an exit. On Linux a
+  run the kernel's out-of-memory killer ends (SIGKILL, while the OOM kills of the launcher's memory cgroup, its
+  `memory.events`, or else of the system, `/proc/vmstat`, went up) says it on its screen: `Program ended abnormally
+  (status 137): the kernel's out-of-memory killer ended it (oom_kill 3 to 4 in /sys/fs/cgroup/.../memory.events), and
+  it held 14.2 GB`, the memory at the Status box's last look. The start also gives the data folder's disk, `disk: 51200 MiB free of 953344 MiB` (on iOS the
   banner's, [macOS and iOS](../hosts/apple.md)). Debug's Log level at 2 adds a line at each start and end of a run and of a recompile,
   with its status, its time and the disk then (`run: ended, status 7, after 12.3 s; disk: ...`); and on Android and
   the Apple apps each change of the thermal state and of the low power mode (Android's Battery Saver), `state: thermal
@@ -524,6 +533,21 @@ moved away goes, and with none left the setup goes on. With nothing else due the
 - **User**: with `users/users.ini` there, its users with their pictures and uids, then Keep or Overwrite, which asks
   first (the file is kept as `users.ini.old`); without one, or to overwrite it, the nickname typed (`Player` to start with; Backspace takes a letter out) and Enter. A nickname
   the rooms' rule refuses is said, and the page stays.
+
+**Last Run** comes first when the menu did not see the last run end: on Android the low memory killer ends the menu,
+cached behind the game, and then the game, and the app comes back with neither (on iOS the system ends the app the
+game runs in). Its box says what ran and when it started, how it ended as the system says it (on Android 11 and later
+the reason Android keeps for the game's process, `Android stopped it: low memory (org.scarletnx:game, status 0,
+importance 100 foreground)`, the question then `Android stopped <game>`; elsewhere what it may have been), the memory
+that process held (`PSS 4.9 GB, RSS 1.9 GB`, `?` for what the system does not say) and the game's log. Run edenprobe
+left before its summary has **Continue**, in focus, which goes on with it from its journal once the setup is done, as
+GPU Drivers' Continue does, and **Not Now**, which leaves it to that row; one that reached its summary shows its counts
+in a box instead. A game has OK alone, and the page comes only for one that did not end with an exit, its own mark left
+beside its log: one that ended with an exit, or that still runs, is said in the launcher log alone. The page writes
+nothing to `setup.ini`, the setup's Skip comes on the page after it, and `--no-setup` leaves it out. When the menu
+stays and only the game's process is ended, the run's screen says it as it says a crash, `The game stopped: Android
+stopped it: low memory (...); PSS 4.9 GB, RSS 1.9 GB` with Share Log blinking, and Run edenprobe's next launch goes on
+as after any launch that ends before the summary, the launcher log saying how the last one ended.
 
 Once the last page is done the menu opens, `setup.ini` written. After an update that brings a notice, the setup
 shows that notice alone (1/1), with OK, before the menu. `scarletnx --no-setup` opens the menu with no
