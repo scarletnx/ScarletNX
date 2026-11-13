@@ -72,18 +72,20 @@ static void lru_unlink(Surf* s) {
 static u64 g_touched;
 /* The textures whose last texture object the game ended (ended_collect), newest first. Nothing draws with one again
    unless the game makes an object at its address, and its pixels are in memory still or they are not (lossless): a
-   trim takes these before any texture the game still has, whatever their age */
+   trim takes these before any texture the game still has, whatever their age. Linked both ways: with memory to spare
+   nothing trims it, and one game's list held 22,000 textures. The idle eviction (vk_tex_frame) takes the oldest, at
+   its far end, and a walk to each from the head cost 100 to 190 ms in a present that evicted a few thousand */
 static Surf* g_ended;
 static u64 g_ended_freed; /* bytes of them a trim took, for its log */
 static void ended_unlink(Surf* s) {
     if (!s->ended) return;
-    for (Surf** pp = &g_ended; *pp; pp = &(*pp)->ended_next)
-        if (*pp == s) {
-            *pp = s->ended_next;
-            break;
-        }
+    if (s->ended_prev)
+        s->ended_prev->ended_next = s->ended_next;
+    else
+        g_ended = s->ended_next;
+    if (s->ended_next) s->ended_next->ended_prev = s->ended_prev;
     s->ended = 0;
-    s->ended_next = NULL;
+    s->ended_prev = s->ended_next = NULL;
 }
 void vk_surf_touch(Surf* s) {
     if (s->ended) ended_unlink(s); /* used: the game has an object there again */
@@ -2317,7 +2319,9 @@ static void ended_collect(void) {
                 if (s->gva == gva[i] && !s->is_rt && !s->ended && s->lru) {
                     s->ended = 1;
                     s->ended_at = g_vk_present;
+                    s->ended_prev = NULL;
                     s->ended_next = g_ended;
+                    if (g_ended) g_ended->ended_prev = s;
                     g_ended = s;
                 }
         if (n < 256) break;

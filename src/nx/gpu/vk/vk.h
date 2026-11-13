@@ -971,7 +971,7 @@ typedef struct Surf {
        since: in surface.c's list of those, which a trim takes first */
     u8 ended;
     u32 ended_at; /* the present the cache learned of it */
-    struct Surf* ended_next;
+    struct Surf *ended_prev, *ended_next;
     u64 bytes;
     int took_drawn; /* textures: pixels copied from render targets since the last upload (memory may not have them) */
     /* storage images: the serial of the owner the last publish put over its texels (vk_surf_publish), 0 before one.
