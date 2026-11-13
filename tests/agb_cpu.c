@@ -376,6 +376,39 @@ int main(void) {
         }
     }
     {
+        /* a cartridge clock's GPIO port: halfword stores from recompiled code reach it, and its registers read back in
+           the flat window the code reads the cartridge from. Direction 7 and data 5 (SCK and chip select high) */
+        static const uint32_t code[] = {
+            0xE59F0020, /* ldr r0, [pc, #32]: 0x080000C4 */
+            0xE3A01001, /* mov r1, #1 */
+            0xE1C010B4, /* strh r1, [r0, #4]: control, the port reads back */
+            0xE3A01007, /* mov r1, #7 */
+            0xE1C010B2, /* strh r1, [r0, #2]: direction */
+            0xE3A01005, /* mov r1, #5 */
+            0xE1C010B0, /* strh r1, [r0]: data */
+            0xE1D030B0, /* ldrh r3, [r0] */
+            0xE1D040B2, /* ldrh r4, [r0, #2] */
+            0xEAFFFFFE, /* b . */
+            0x080000C4,
+        };
+        for (uint32_t i = 0; i < sizeof code / sizeof code[0]; ++i) agb_write32(&board, 0x03000F00 + i * 4, code[i]);
+        agb_gpio_reset(&board, 1);
+        cpu.arm.r[3] = cpu.arm.r[4] = 0xFFFF;
+        cpu.arm.r[15] = 0x03000F00;
+        cpu.arm.cpsr = 0x9F;
+        cpu.over = 0;
+        board.cpu_halted = 0;
+        board.held_cycles = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 200, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        if (cpu.arm.r[3] != 5 || cpu.arm.r[4] != 7) {
+            fprintf(stderr, "agb_cpu: the GPIO port reads data 0x%X and direction 0x%X after the stores, not 5 and 7\n",
+                    cpu.arm.r[3], cpu.arm.r[4]);
+            goto done;
+        }
+        agb_gpio_reset(&board, 0);
+        memset(map.base + 0x080000C4, 0, 6); /* the image's bytes there */
+    }
+    {
         /* an S-bit write to the PC in system mode, which has no SPSR, sets the flags and keeps the mode, as mGBA does: a
            game's code ran on with the CPSR's mode 0 after one. orrs pc, pc, #0 jumps two words on with N and Z clear */
         agb_write32(&board, 0x03000C00, 0xE39FF000); /* orrs pc, pc, #0 */

@@ -10,6 +10,7 @@
 #include "agb/cpu/recomp.h"
 #include "agb/runtime/host.h"
 #include "agb/runtime/main.h"
+#include "common/platform/time.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/cli.h"
 #include "common/utilities/common.h"
@@ -379,6 +380,8 @@ int snx_agb_main(int argc, char** argv) {
             if (host && !agb_host_poll(host, &keys)) break;
             keys |= (uint16_t)snx_script_held(presses, press_count, (double)frame * FRAME_MS, (uint32_t)press_len);
             agb_board_keys(&board, keys);
+            /* a cartridge's clock keeps the host's local time, as the console's keeps its own on the cartridge's battery */
+            board.gpio.clock = plat_unix_time() + plat_tz_offset() - AGB_RTC_EPOCH;
             if (agb_cpu_run(&board, &cpu, &recomp, AGB_SCANLINE_CYCLES * AGB_FRAME_LINES, audio, AGB_APU_RATE, &written,
                             error, sizeof error)) {
                 fprintf(stderr, "scarletnx-agb: %s\n", error);

@@ -24,6 +24,7 @@ void agb_board_init(AgbBoard* board) {
        code): a game that turns its interrupts on as it boots meets the first vertical blank 34 lines later, not 160 */
     board->ppu.vcount = AGB_BOOT_LINE;
     board->ppu.dot = AGB_BOOT_DOT;
+    agb_gpio_reset(board, 0);
 }
 
 int agb_board_insert(AgbBoard* board, const void* image, size_t size, char* error, size_t error_size) {
@@ -33,6 +34,7 @@ int agb_board_insert(AgbBoard* board, const void* image, size_t size, char* erro
     board->cartridge = cartridge;
     board->has_cartridge = 1;
     agb_save_reset(board, agb_save_detect((const uint8_t*)image, size));
+    agb_gpio_reset(board, agb_gpio_detect((const uint8_t*)image, size));
     return 0;
 }
 

@@ -49,6 +49,26 @@ typedef struct {
     uint32_t counter, cycles;
 } AgbTimer;
 
+/* The cartridge's GPIO port (GBATEK "GBA Cart I/O Port (GPIO)"): its data, direction (a bit set: the console drives that
+   pin) and control (bit 0: the port reads back, else it reads zeros) registers sit in the ROM's header. The cartridges
+   with the real-time clock wire it there: pin 0 its clock (SCK), pin 1 its data (SIO), pin 2 its chip select */
+enum { AGB_GPIO_DATA = 0xC4, AGB_GPIO_DIRECTION = 0xC6, AGB_GPIO_CONTROL = 0xC8 };
+/* the seconds from 1970-01-01 to 2000-01-01, where the clock's years start */
+#define AGB_RTC_EPOCH INT64_C(946684800)
+
+typedef struct {
+    uint8_t rtc;     /* the cartridge has the clock: its ROM carries the clock library's tag (agb_gpio_detect) */
+    uint8_t touched; /* a write reached the port: view stands over the ROM's bytes at 0xC4 to 0xC9 */
+    uint8_t latch, pins, direction, readable;
+    uint8_t view[6];
+    /* the clock's serial transfer: the command byte it took, the byte in transfer, its bits so far, the bytes left, and
+       the SCK and SIO it last saw and drove */
+    uint8_t command, active, bits, count, left, sck, sio;
+    uint8_t control; /* the clock's status register: bit 6 its 24 hour mode */
+    uint8_t time[7]; /* what a command latched, BCD: year, month, day, weekday, hour, minute, second */
+    int64_t clock;   /* the local time the clock reads, seconds from 2000-01-01 00:00: the runner keeps it */
+} AgbGpio;
+
 typedef struct AgbBoard {
     AgbCartridge cartridge;
     AgbMemory memory;
@@ -57,6 +77,7 @@ typedef struct AgbBoard {
     AgbSave save;
     AgbDmaChannel dma[4];
     AgbTimer timer[4];
+    AgbGpio gpio;
     uint16_t irq_ie, irq_if, irq_ime;
     uint32_t cpu_halted;       /* the CPU waits for an interrupt (Halt) */
     uint32_t held_cycles;      /* the cycles the bus was busy since the CPU last ran (a DMA's), which it waits out */
@@ -101,4 +122,9 @@ void agb_timer_write(AgbBoard* board, uint32_t offset, uint16_t value);
 uint16_t agb_timer_read(AgbBoard* board, uint32_t offset);
 uint16_t agb_timer_written(AgbBoard* board, uint32_t offset); /* as written: TMxCNT_L's reload, not its counter */
 void agb_timer_step(AgbBoard* board, uint32_t cycles);
+/* The cartridge's GPIO port and clock (gpio.c): 1 when the image carries the clock library's tag; the port as a
+   cartridge starts it, with the clock or without; a halfword store at the port, 1 when the port took it */
+int agb_gpio_detect(const uint8_t* image, size_t size);
+void agb_gpio_reset(AgbBoard* board, int rtc);
+int agb_gpio_write(AgbBoard* board, uint32_t address, uint16_t value);
 #endif

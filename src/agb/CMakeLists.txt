@@ -14,7 +14,7 @@ if(NOT TARGET snx_arm_llvm)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" agb-arm-backend)
 endif()
 
-add_library(scarletnx-agb STATIC board/board.c board/memory.c board/dma.c board/timers.c board/save.c
+add_library(scarletnx-agb STATIC board/board.c board/memory.c board/dma.c board/timers.c board/save.c board/gpio.c
                                  cartridge/cartridge.c bios/bios.c ppu/ppu.c apu/apu.c cpu/memmap.c cpu/recomp.c
                                  cpu/cpu.c)
 set_target_properties(scarletnx-agb PROPERTIES OUTPUT_NAME scarletnx-agb-runtime C_STANDARD 23 C_STANDARD_REQUIRED ON)
