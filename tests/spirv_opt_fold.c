@@ -395,7 +395,9 @@ int main(void) {
     check(instruction(6, 3, 77, STAYS, 0, 0, 134, U, 2, KA, KB, 0), "a division stays");
     check(instruction(6, 3, 77, STAYS, 0, 0, 137, U, 2, KA, KB, 0), "a remainder stays");
     check(instruction(6, 3, 2, STAYS, 0, 0, BIT_FIELD_INSERT, U, 3, KA, KB, KC), "a field insert of three stays");
-    check(instruction(6, 3, 2, STAYS, 0, 0, I_ADD, U, 3, KA, KB, KC), "a sum with a third operand stays");
+    check(instruction(6, 3, 2, STAYS, 0, 0, I_ADD, U, 3, KA, KB, KC) &&
+              instruction(6, 3, 2, STAYS, 0, 0, I_ADD, U, 3, X, U0, KC),
+          "a sum with a third operand stays");
     check(instruction(6, 3, 2, STAYS, 0, 0, 129, U, 2, KA, KB, 0), "a float sum stays");
     /* one operand */
     check(instruction(5, 0, 0, VALUE, U, 0xfffffffa, NOT, U, 1, KA, 0, 0), "the complement of a constant");
@@ -452,6 +454,8 @@ int main(void) {
             check(instruction(pairs[p][0], pairs[p][1], 77, VALUE, BOOL, comparisons[k].truth[p], comparisons[k].op,
                               BOOL, 2, KA, KB, 0),
                   "a comparison of two constants is true or false");
+    check(instruction(5, 5, 77, STAYS, 0, 0, U_GREATER_THAN_EQUAL, BOOL, 1, ONES, 0, 0),
+          "a comparison of one operand stays");
     check(instruction(5, 5, 77, STAYS, 0, 0, I_EQUAL, BOOL, 2, X, KB, 0) &&
               instruction(5, 5, 77, STAYS, 0, 0, I_EQUAL, BOOL, 2, KA, X, 0) &&
               instruction(5, 5, 77, STAYS, 0, 0, I_EQUAL, BOOL, 2, X, Y, 0),
@@ -595,6 +599,9 @@ int main(void) {
     check(instruction(5, 3, 77, IS, 0, XF, SELECT, F, 3, XB, XF, XF), "a select of one value twice is the value");
     check(instruction(5, 3, 77, IS, 0, KA, SELECT, U, 3, YES, KA, X), "a select may be a constant");
     check(instruction(5, 3, 77, STAYS, 0, 0, SELECT, U, 3, XB, X, Y), "a select on a value stays");
+    check(instruction(5, 3, 77, STAYS, 0, 0, SELECT, U, 3, NO, X, 0x7fffffff) &&
+              instruction(5, 3, 77, STAYS, 0, 0, SELECT, U, 3, YES, 0x7fffffff, X),
+          "a select of an operand past the bound stays");
     check(instruction(5, 3, 77, STAYS, 0, 0, SELECT, U, 3, U1, X, Y), "a select on an integer constant stays");
     check(instruction(5, 3, 77, STAYS, 0, 0, SELECT, S, 3, YES, X, XS), "a select is not a value of another type");
     check(instruction(5, 3, 77, IS, 0, XS, SELECT, S, 3, NO, X, XS), "the value it picks is the one that counts");
@@ -796,6 +803,7 @@ int main(void) {
               instruction(5, 3, 77, STAYS, 0, 0, I_ADD, U, 2, KA, YES, 0) &&
               instruction(5, 3, 77, STAYS, 0, 0, I_ADD, U, 2, YES, KA, 0) &&
               instruction(5, 3, 77, STAYS, 0, 0, NOT, U, 1, YES, 0, 0) &&
+              instruction(5, 3, 77, STAYS, 0, 0, I_MUL, U, 2, YES, KA, 0) &&
               instruction(5, 3, 2, STAYS, 0, 0, BIT_FIELD_U_EXTRACT, U, 3, KA, KB, YES) &&
               instruction(5, 3, 77, STAYS, 0, 0, I_EQUAL, BOOL, 2, KA, YES, 0) &&
               instruction(5, 3, 77, STAYS, 0, 0, BITCAST, S, 1, YES, 0, 0),
@@ -1066,14 +1074,14 @@ int main(void) {
     }
     /* the constant on the left of an and; a constant the pass made, whose bits it knows; a decorated instruction */
     {
-        const uint32_t k[] = {0xf0, 0xff, 0x70, 0x81, 0x0f, 0x0e};
-        begin_with(&m, k, 6);
+        const uint32_t k[] = {0xf0, 0xff, 0x70, 0x81, 0x0f, 0x0e, 0x13, 0xe00};
+        begin_with(&m, k, 8);
         put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
         put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)KB, (uint32_t)P);
         put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
         end(&m);
         check(outcome(&m, 5, IS, 0, P), "0xff & (x & 0xf0) is x & 0xf0");
-        begin_with(&m, k, 6);
+        begin_with(&m, k, 8);
         put(&m, I_ADD, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)KC, (uint32_t)KD); /* 0xf1, which no constant is */
         put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)Q);
         put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)P, (uint32_t)KF);
@@ -1083,7 +1091,7 @@ int main(void) {
         left = spv_opt_values(o.words, o.count);
         check(constant(&o, left, Q, U, 0xf1) && stored(&o, left, 0) == U0,
               "x & (0x70 + 0x81) & 0x0e is 0: the sum made a constant whose bits are known");
-        begin_with(&m, k, 6);
+        begin_with(&m, k, 8);
         put(&m, I_ADD, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)KC, (uint32_t)KD);
         put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)Q);
         put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)P, (uint32_t)U1);
@@ -1092,8 +1100,23 @@ int main(void) {
         o = m;
         left = spv_opt_values(o.words, o.count);
         check(stored(&o, left, 0) == U1, "and (x | (0x70 + 0x81)) & 1 is 1");
+        begin_with(&m, k, 8);
+        put(&m, I_MUL, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)KE, (uint32_t)(KF + 1)); /* 0x0f * 0x13, no constant */
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)Q);
+        put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)P, (uint32_t)(KF + 2));
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
+        end(&m);
+        o = m;
+        left = spv_opt_values(o.words, o.count);
+        check(constant(&o, left, Q, U, 0x11d) && stored(&o, left, 0) == U0,
+              "x & (0x0f * 0x13) & 0xe00 is 0: the product made a constant whose bits are known");
+        m.words[m.count - 2 - 3 - 5 - 5] = 5u << 16 | BITWISE_OR; /* x | 0x11d */
+        m.words[m.count - 2 - 3 - 5 + 4] = (uint32_t)U1;
+        o = m;
+        left = spv_opt_values(o.words, o.count);
+        check(stored(&o, left, 0) == U1, "and (x | 0x11d) & 1 is 1");
         /* a xor: of a known 1 with a 1 is 0, of a known 1 with a 0 is 1 */
-        begin_with(&m, k, 6);
+        begin_with(&m, k, 8);
         put(&m, BITWISE_OR, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KE);
         put(&m, BITWISE_XOR, 4, (uint32_t)U, (uint32_t)Q, (uint32_t)P, (uint32_t)KE);
         put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)Q, (uint32_t)KE);
@@ -1103,7 +1126,7 @@ int main(void) {
         m.words[m.count - 2 - 3 - 5 - 5 + 4] = (uint32_t)KA;
         check(outcome(&m, 5, VALUE, U, 0x0f), "(x | 0x0f) ^ 0xf0 has them 1");
         Module d;
-        begin_with(&m, k, 6);
+        begin_with(&m, k, 8);
         put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)P, (uint32_t)X, (uint32_t)KA);
         put(&m, BITWISE_AND, 4, (uint32_t)U, (uint32_t)R, (uint32_t)P, (uint32_t)KE);
         put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)R);
