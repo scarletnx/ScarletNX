@@ -47,7 +47,8 @@ static void usage(FILE* out) {
           "  --press_len=MS         How long each scripted press is held (default 300)\n"
           "  --registers            Print the CPU's registers when the run ends\n"
           "  --aot_threads=N        The threads a recompile may take (0 to 1024), as the other drivers': a ROM's code\n"
-          "                         is one module, which compiles on 1 thread whatever N, and the recompile says so\n"
+          "                         is one module, which compiles on 1 thread whatever N, and the recompile says so;\n"
+          "                         --aot_threads_most=N the same\n"
           "\n"
           "On the GBA, a ROM's code is one module, compiled on 1 thread as one unit: --jobs and --chunk change\n"
           "nothing, which the recompile says. -O is the module's level (default 2, the setting opt's), --jit-cache\n"
@@ -163,7 +164,7 @@ int snx_agb_main(int argc, char** argv) {
     setvbuf(stderr, NULL, _IONBF, 0);
     const char* path = NULL;
     long press_len = 300;
-    const char* threads = NULL; /* --aot_threads=, as given */
+    const char *threads = NULL, *most = NULL; /* --aot_threads= and --aot_threads_most=, as given */
     char opt = '2';             /* the setting opt's default, or -O's */
     int registers = 0;
     SnxCli cli;
@@ -189,15 +190,17 @@ int snx_agb_main(int argc, char** argv) {
                 snx_cli_free(&cli);
                 return 2;
             }
-        } else if (!strncmp(argv[i], "--aot_threads=", 14)) {
+        } else if (!strncmp(argv[i], "--aot_threads=", 14) || !strncmp(argv[i], "--aot_threads_most=", 19)) {
+            /* the launcher's Gentle queue gives every driver both */
+            const char* value = strchr(argv[i], '=') + 1;
             char* end;
-            long n = strtol(argv[i] + 14, &end, 10);
-            if (end == argv[i] + 14 || *end || n < 0 || n > 1024) {
-                fprintf(stderr, "scarletnx-agb: aot_threads=%s is not a whole number from 0 to 1024\n", argv[i] + 14);
+            long n = strtol(value, &end, 10);
+            if (end == value || *end || n < 0 || n > 1024) {
+                fprintf(stderr, "scarletnx-agb: %s is not a whole number from 0 to 1024\n", argv[i] + 2);
                 snx_cli_free(&cli);
                 return 2;
             }
-            threads = argv[i] + 14;
+            *(argv[i][13] == '=' ? &threads : &most) = argv[i] + 2;
         } else if (!strcmp(argv[i], "--registers"))
             registers = 1;
         else if (!strcmp(argv[i], "--"))
@@ -346,7 +349,8 @@ int snx_agb_main(int argc, char** argv) {
                 printf("Recompiling %s\n", path);
             /* the queue's and a script's --aot_threads=, --jobs and --chunk, which every driver takes: nothing here to
                give them to */
-            if (threads) printf("aot_threads=%s: a ROM's code is one module, compiled on 1 thread\n", threads);
+            if (threads) printf("%s: a ROM's code is one module, compiled on 1 thread\n", threads);
+            if (most) printf("%s: a ROM's code is one module, compiled on 1 thread\n", most);
             if (jobs >= 0) printf("--jobs %d: a ROM's code is one module, compiled on 1 thread\n", jobs);
             if (asked.chunk) printf("--chunk %d: a ROM's code is one module, compiled as one unit\n", asked.chunk);
             error[0] = 0;
