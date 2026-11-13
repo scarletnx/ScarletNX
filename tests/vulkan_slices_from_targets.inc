@@ -3,7 +3,9 @@
 /* Textures whose levels or Z slices a game draws through 2D render targets over their memory (texture.c's
    tex_take_drawn): an RGBA8 volume a slice at a time through RGBA8 targets; a BC4 volume a slice at a time through
    RGBA16UI targets of a texel a block, as a game compresses its noise volumes; and a 2D BC4 texture through one such
-   target. Each slice or level holds its target's texel, not memory's zeros */
+   target. Each slice or level holds its target's texel, not memory's zeros, at the guest's size: at a resolution scale
+   of 1, and of 2, where each target's image is twice the guest's size and a target of another format than the
+   texture's goes through an image of its own format at the guest's size */
 #define ST_GPU  0x8a8000000ull
 #define ST_CPU  (HEAP_BASE + 0x12c00000)
 #define ST_SPAN 0x80000ull
@@ -88,18 +90,21 @@ static int check_slices_from_targets(void) {
     CHECK(mem_map(ST_CPU, ST_SPAN, MS_NORMAL, PERM_RW) == 0);
     memset(GP(ST_CPU), 0, ST_SPAN);
     gmmu_map(ST_GPU, ST_CPU, ST_SPAN);
-    g_vk_scale = 1.0f;
-    CHECK(!st_case(ch, "an RGBA8 volume from RGBA8 targets", ST_GPU, rgba8, 16, 16, 1, 1, 0xD5, 4));
-    if (bc4_3d) CHECK(!st_case(ch, "a BC4 volume from RGBA16UI targets", ST_GPU + 0x10000, bc4, 64, 64, 4, 1, 0xC9, 8));
-    if (bc4_2d)
-        CHECK(!st_case(ch, "a BC4 texture from an RGBA16UI target", ST_GPU + 0x20000, bc4, 64, 64, 4, 0, 0xC9, 8));
+    for (u32 k = 0; k < 2; k++) { /* each scale's targets at addresses of their own */
+        u64 at = ST_GPU + k * 0x30000;
+        g_vk_scale = k ? 2.0f : 1.0f;
+        CHECK(!st_case(ch, "an RGBA8 volume from RGBA8 targets", at, rgba8, 16, 16, 1, 1, 0xD5, 4));
+        if (bc4_3d) CHECK(!st_case(ch, "a BC4 volume from RGBA16UI targets", at + 0x10000, bc4, 64, 64, 4, 1, 0xC9, 8));
+        if (bc4_2d)
+            CHECK(!st_case(ch, "a BC4 texture from an RGBA16UI target", at + 0x20000, bc4, 64, 64, 4, 0, 0xC9, 8));
+    }
     g_vk_scale = scale;
     vk_lock();
     vk_rt_before_write(ST_GPU, ST_SPAN); /* the targets go back to memory before it does */
     vk_unlock();
     CHECK(mem_unmap(ST_CPU, ST_SPAN) == 0);
     free(ch);
-    printf("slices from targets: %s\n",
+    printf("slices from targets, at resolution scales 1 and 2: %s\n",
            bc4_3d && bc4_2d ? "an RGBA8 volume, a BC4 volume and a BC4 texture from RGBA16UI targets each hold their "
                               "targets' texels"
                             : "an RGBA8 volume holds its targets' texels (BC4 images unavailable)");
