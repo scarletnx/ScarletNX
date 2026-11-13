@@ -44,7 +44,7 @@ def read_ppm(path):
     if header[0] != b'P6' or header[1] != b'%d %d' % (WIDTH, HEIGHT) or header[2] != b'255':
         raise ValueError('not a 240x160 frame: %s' % path)
     pixels = header[3]
-    return [[tuple(pixels[(y * WIDTH + x) * 3:(y * WIDTH + x) * 3 + 3]) for x in range(WIDTH)] for y in range(HEIGHT)]
+    return [[tuple(pixels[(y * WIDTH + x) * 3 : (y * WIDTH + x) * 3 + 3]) for x in range(WIDTH)] for y in range(HEIGHT)]
 
 
 def runs(row):
@@ -98,7 +98,9 @@ def main():
     parser.add_argument('name', choices=sorted(ROMS))
     args = parser.parse_args()
     path, check = ROMS[args.name]
-    with tempfile.TemporaryDirectory(prefix='snx-agb-') as work:
+    # Windows can still hold arm.exe open for a moment after the run has ended and its checks passed: the folder's
+    # removal then fails with WinError 32, which must not turn a passed test red
+    with tempfile.TemporaryDirectory(prefix='snx-agb-', ignore_cleanup_errors=True) as work:
         work = pathlib.Path(work)
         rom = work / pathlib.Path(path).name
         shutil.copyfile(pathlib.Path(args.tests) / path, rom)
@@ -148,7 +150,7 @@ def main():
         header = rom.read_bytes()[0xAC:0xB0]
         code = ''.join(itertools.takewhile(lambda c: ' ' <= c < '\x7f', (chr(b) for b in header)))
         if 'code=%s\n' % code not in ini:
-            sys.exit('%s: its .ini does not say code=%s, the header\'s game code:\n%s' % (args.name, code, ini))
+            sys.exit("%s: its .ini does not say code=%s, the header's game code:\n%s" % (args.name, code, ini))
         if args.name == 'arm' and 'added to the hints' in run.stdout:
             # the blocks the run compiled are in the map as hints ('-'), the module left as it was; a run that
             # reaches them again adds none, and a recompile (-r) builds every one of them into the module
