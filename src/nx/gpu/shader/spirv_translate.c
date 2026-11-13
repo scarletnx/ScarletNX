@@ -1651,10 +1651,13 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                 u32 descriptor = (u32)(current - 1);
                 for (; slot < ngbuf && gbuf_off[slot] != descriptor; slot++) {}
                 if (slot == ngbuf) {
-                    if (ngbuf == 16) {
+                    /* the last slot holds the shared memory where it is spilled (SH_SHARED_SPILL) */
+                    if (ngbuf == (needs_shared && si->shared_spill ? SH_SHARED_SPILL : 16)) {
                         free(gb_at);
                         free(pop_targets);
-                        return direct_reject(si, "global buffer count");
+                        return direct_reject(si, needs_shared && si->shared_spill
+                                                     ? "global buffer count, with the shared memory in a buffer"
+                                                     : "global buffer count");
                     }
                     gbuf_off[ngbuf++] = descriptor;
                 }
@@ -2285,7 +2288,9 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         local_input = spv_emit_builtin_input_vec3(&c->emit, vec3_u32, SPV_BUILT_IN_LOCAL_INVOCATION_ID);
         interfaces[count++] = local_input;
     }
-    if (needs_group_id) {
+    /* shared memory in a buffer: a block's part is at its place in the grid (shader_shared_pointer) */
+    int shared_spill = needs_shared && si->shared_spill;
+    if (needs_group_id || shared_spill) {
         group_input = spv_emit_builtin_input_vec3(&c->emit, vec3_u32, SPV_BUILT_IN_WORKGROUP_ID);
         interfaces[count++] = group_input;
     }
@@ -2473,13 +2478,28 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                 interfaces[count++] = xo.buffer[b];
             }
     }
-    u32 shared_array = 0, shared_element_pointer = 0, shared_words = 0;
+    u32 shared_array = 0, shared_element_pointer = 0, shared_words = 0, shared_groups = 0;
     if (needs_shared) {
         shared_words = ((u32)si->shared_size + 3) / 4;
-        u32 array_type = spv_emit_type_array_u32(&c->emit, c->u32_type, shared_words);
-        u32 pointer_type = spv_emit_type_workgroup_pointer(&c->emit, array_type);
-        shared_element_pointer = spv_emit_type_workgroup_pointer(&c->emit, c->u32_type);
-        shared_array = spv_emit_workgroup_variable(&c->emit, pointer_type);
+        if (shared_spill) { /* global buffer slot SH_SHARED_SPILL, the grid's size to place a block's part */
+            if (!gbuf_struct) {
+                gbuf_struct = spv_emit_type_struct_one(&c->emit, spv_emit_type_runtime_array(&c->emit, c->u32_type, 4));
+                c->gbuf_pointer = spv_emit_type_storage_pointer(&c->emit, c->u32_type);
+            }
+            shared_element_pointer = c->gbuf_pointer;
+            shared_array =
+                spv_emit_storage_buffer(&c->emit, gbuf_struct, shader_vk_set(stage), SNX_VKB_SSBO + SH_SHARED_SPILL);
+            spv_emit_decorate(&c->emit, shared_array, SPV_DECORATION_COHERENT, NULL, 0);
+            shared_groups = spv_emit_builtin_input_vec3(&c->emit, vec3_u32, SPV_BUILT_IN_NUM_WORKGROUPS);
+            interfaces[count++] = shared_groups;
+            /* UniformMemory: its barriers and atomics order the buffer */
+            c->emit.shared_semantics = SPV_MEMORY_SEMANTICS_UNIFORM_MEMORY;
+        } else {
+            u32 array_type = spv_emit_type_array_u32(&c->emit, c->u32_type, shared_words);
+            u32 pointer_type = spv_emit_type_workgroup_pointer(&c->emit, array_type);
+            shared_element_pointer = spv_emit_type_workgroup_pointer(&c->emit, c->u32_type);
+            shared_array = spv_emit_workgroup_variable(&c->emit, pointer_type);
+        }
         interfaces[count++] = shared_array;
     }
     u32 push = 0, push_pointer = 0;
@@ -2869,6 +2889,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         .shared_words = shared_words,
         .shared_element_pointer = shared_element_pointer,
         .shared_array = shared_array,
+        .shared_groups = shared_groups,
         .push = push,
         .push_pointer = push_pointer,
         .local_words = local_words,
@@ -3057,6 +3078,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     next.primitive_split_safe = stage == ST_VS && !votes && !needs_subgroup && !lane_used && !needs_clock;
     memcpy(next.cs_local, si->cs_local, sizeof next.cs_local);
     next.shared_size = si->shared_size;
+    next.shared_spill = si->shared_spill;
     next.attr_int_mask = si->attr_int_mask;
     next.attr_sint_mask = si->attr_sint_mask;
     next.clip_enable = si->clip_enable;
