@@ -2162,7 +2162,11 @@ static void rt_watch(Surf* s) {
         if (!n) {
             n = 0x1000 - ((s->gva + off) & 0xFFF);
             if (n > size - off) n = size - off;
-        } else if (!own_watched(cpu, n)) {
+        } else if (!own_covered(cpu, n)) {
+            /* Armed only where no owner or watch is yet: an owner's trap is a watch too (OwnHooks' refresh), and over
+               one own_watch arms nothing. Asked of watches alone, a run under an owner was armed again at each
+               release: one game's 864x480 depth target, drawn between its occlusion reports, 1,700 times a present, about
+               10 ms of each (31 fps with this, 25 without) */
             /* memory an import holds (unified memory): the publish copies in place, with no trap */
             if (vk_own_watch(cpu, n) && vk_uma_held(cpu, n)) {
                 rt_publish_now(s);

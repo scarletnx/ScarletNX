@@ -1047,6 +1047,22 @@ int own_watched(u64 addr, u64 size) {
     return all;
 }
 
+int own_covered(u64 addr, u64 size) {
+    u64 c = addr, end = addr + size;
+    int all = 1;
+    if (!size || !own_any() || !region_owned(addr, end)) return 0;
+    pm_lock(&g_own.lk);
+    for (u32 i = first_after_nl(addr); c < end; i++) {
+        if (i >= g_own.nown || g_own.ent[i].lo > c || g_own.ent[i].landing) {
+            all = 0;
+            break;
+        }
+        c = g_own.ent[i].hi;
+    }
+    pm_unlock(&g_own.lk);
+    return all;
+}
+
 int own_owed_take(u64* addr, u64* size) {
     int any = 0;
     if (!__atomic_load_n(&g_own.nowed, __ATOMIC_ACQUIRE)) return 0;
