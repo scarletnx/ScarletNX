@@ -68,6 +68,28 @@ static uint64_t code_hash(AgbBoard* board, uint32_t pc, int thumb, size_t count)
     }
 }
 
+/* The ARM words a block is built from at pc, and how many of them it may take: in RAM, up to a store through r15 into
+   the code past the two instructions the ARM7TDMI has fetched by then, which runs as written on the console (GBATEK's
+   ARM CPU Instruction Prefetch). The block ends after the store, and the next dispatch builds the code that is there
+   now. A store into the two fetched instructions leaves them as they were, and the cartridge's code never changes */
+static size_t arm_words(AgbBoard* board, uint32_t pc, uint32_t* words) {
+    for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j) words[j] = agb_read32(board, pc + j * 4);
+    if (fixed(pc)) return AGB_BLOCK_MAX;
+    for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j) {
+        uint32_t w = words[j], at = pc + j * 4, offset;
+        if ((w >> 28) == 0xF || (w >> 16 & 0xF) != 15 || !(w & 1u << 24)) continue; /* NV, another base, post-index */
+        if ((w & 0x0E100000) == 0x04000000)
+            offset = w & 0xFFF; /* STR, STRB with an immediate offset */
+        else if ((w & 0x0E5000F0) == 0x004000B0)
+            offset = (w >> 4 & 0xF0) | (w & 0xF); /* STRH with an immediate offset */
+        else
+            continue;
+        uint32_t target = w & 1u << 23 ? at + 8 + offset : at + 8 - offset;
+        if (target >= at + 12 && target < pc + AGB_BLOCK_MAX * 4) return j + 1;
+    }
+    return AGB_BLOCK_MAX;
+}
+
 static void* module_symbol(void* handle, size_t index) {
     char* name = block_name(index);
     void* symbol = name ? plat_dl_sym(handle, name) : NULL;
@@ -287,8 +309,8 @@ static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t e
             fn = snx_thumb_llvm_block_ex(module, name, words, AGB_BLOCK_MAX, block->pc, &consumed, &agb_codegen);
         } else {
             uint32_t words[AGB_BLOCK_MAX];
-            for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j) words[j] = agb_read32(board, block->pc + j * 4);
-            fn = snx_arm_llvm_block_ex(module, name, words, AGB_BLOCK_MAX, block->pc, &consumed, &agb_codegen);
+            size_t count = arm_words(board, block->pc, words);
+            fn = snx_arm_llvm_block_ex(module, name, words, count, block->pc, &consumed, &agb_codegen);
         }
         if (!fn || !consumed) {
             snprintf(error, error_size, "the ARM recompiler rejected the block at 0x%08X", block->pc);
@@ -380,8 +402,8 @@ static int compile_block(AgbRecomp* recomp, AgbBoard* board, AgbBlock* block, ch
         block->fn = snx_arm_exec_compile_ex(recomp->exec, words, AGB_BLOCK_MAX, block->pc, 1, &agb_codegen, &consumed);
     } else {
         uint32_t words[AGB_BLOCK_MAX];
-        for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j) words[j] = agb_read32(board, block->pc + j * 4);
-        block->fn = snx_arm_exec_compile_ex(recomp->exec, words, AGB_BLOCK_MAX, block->pc, 0, &agb_codegen, &consumed);
+        size_t count = arm_words(board, block->pc, words);
+        block->fn = snx_arm_exec_compile_ex(recomp->exec, words, count, block->pc, 0, &agb_codegen, &consumed);
     }
     if (!block->fn || !consumed) {
         snprintf(error, error_size, "the ARM recompiler rejected the block at 0x%08X", block->pc);
