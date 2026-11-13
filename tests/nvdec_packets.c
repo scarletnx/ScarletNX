@@ -594,6 +594,10 @@ static void vp8_tests(void) {
     regs[NVDEC_SURFACE_LUMA_OFFSETS + VP8_SURFACE_CURRENT] = 0;
     RUN(d, good, 0, 1);
     logged("NVDEC surface 0/5000 isn't mapped");
+    vp8_setup(1, 0, 2, 5, 16, 16); /* the largest stride passes its check; rows of 4294967280 bytes, no surface */
+    put32(VP8_FRAME_STRIDE_LUMA, VP8_MAX_FRAME_STRIDE);
+    RUN(d, good, 0, 1);
+    logged("NVDEC surface 4000/5000 isn't mapped");
     /* the decoder refuses the frame, or starts no picture, while the last job's picture is still held */
     vp8_setup(1, 0, 2, 5, 16, 16);
     RUN(d, send_bad, 0, 1);

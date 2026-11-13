@@ -374,9 +374,8 @@ static int write_pic(const AVFrame* f, const PicOut* t) {
     if (!p.w || !p.h) return 0;
     /* the surfaces mapped for their whole block linear extent: whole GOBs wide, whole blocks high */
     gob_rows = 1u << (GOB_HEIGHT_LOG2 + t->bh); /* a block's rows */
-    p.ext_y = (u64)((t->pitch_y + GOB_WIDTH - 1) / GOB_WIDTH * GOB_WIDTH) *
-              ((t->h + gob_rows - 1) / gob_rows * gob_rows);
-    p.ext_c = (u64)((t->pitch_c + GOB_WIDTH - 1) / GOB_WIDTH * GOB_WIDTH) *
+    p.ext_y = ((u64)t->pitch_y + GOB_WIDTH - 1) / GOB_WIDTH * GOB_WIDTH * ((t->h + gob_rows - 1) / gob_rows * gob_rows);
+    p.ext_c = ((u64)t->pitch_c + GOB_WIDTH - 1) / GOB_WIDTH * GOB_WIDTH *
               (((t->h + 1) / 2 + gob_rows - 1) / gob_rows * gob_rows);
     py = iova_ptr(t->luma, p.ext_y);
     pc = iova_ptr(t->chroma, p.ext_c);
