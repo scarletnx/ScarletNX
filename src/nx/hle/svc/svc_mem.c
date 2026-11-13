@@ -586,19 +586,21 @@ int svc_code_line(u64 addr, u64* code) {
     /* views are whole pages, so a view that shows any of the line shows all 64 bytes of it */
     if (copies) {
         u8* to = GP(line);
+        u8 before[64];
         for (i = 0; i < KCODEVIEW_MAX; i++) { /* the bytes each copy wrote go into the code */
             const KCodeView* v = &g_hle.svcmem.views[i];
             u64 at = line - v->src;
-            const u8* view;
+            const u8 *view, *kept;
             if (!v->size || at >= v->size) continue;
+            if (!found) memcpy(before, to, 64);
+            found = 1;
             view = GP(v->dst + at);
-            if (!v->snap) { /* nothing kept to compare with: all of it */
-                memcpy(to, view, 64);
-                continue;
-            }
+            /* nothing kept to compare with: what differs from the code as the flush found it, so a stale copy doesn't
+               undo what another view wrote */
+            kept = v->snap ? v->snap + at : before;
             /* by byte, as two copies may each change a part of the line before one flush */
             for (j = 0; j < 64; j++)
-                if (view[j] != v->snap[at + j]) to[j] = view[j];
+                if (view[j] != kept[j]) to[j] = view[j];
         }
     }
     for (i = 0; i < KCODEVIEW_MAX; i++) { /* the code against what each view kept, and each copy made the code */
