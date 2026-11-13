@@ -145,7 +145,10 @@ uint32_t agb_bios_intr_check(const AgbBiosClock* clock, uint32_t back, int thumb
     if (!done)
         return run(clock, intr_wait, VBLANK_INTR_WAIT, 12, 7, trace, 1u << 4, VBLANK_INTR_WAIT + 11 * 4, 0) +
                run(clock, intr_wait, VBLANK_INTR_WAIT, 11, 1, halt_trace, 0, 0, 0);
-    return run(clock, intr_wait, VBLANK_INTR_WAIT, 12, 8, trace, 1u << 6, LEAVE, 0) +
+    /* the console's IntrWait returns 5 cycles after this code would (its look at the flags a call of its own): mGBA's
+       suite's timers.c, which with them finds 934 of its 936 counts the console's, 828 without */
+    return agb_bus_idle(clock->bus, clock->prefetch, 5, VECTOR) +
+           run(clock, intr_wait, VBLANK_INTR_WAIT, 12, 8, trace, 1u << 6, LEAVE, 0) +
            agb_bios_leave(clock, back, thumb);
 }
 
