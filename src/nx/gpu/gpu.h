@@ -187,6 +187,20 @@ typedef struct {
     u64 addr;
 } Surf2D;
 
+/* A temporal upscale: the frame's color at the render size with its depth and motion vectors, onto the output at out
+   from out_base. jitter: the camera's offset in render pixels (the picture moved by +jitter). motion_scale brings a
+   motion vector to render pixels. flags: the DLSS network's builder flags, taken as NGX's feature bits (1 HDR, 2
+   motion vectors at the render size, 4 motion vectors that include the jitter, 8 inverted depth, 0x40 auto exposure) */
+typedef struct {
+    Surf2D color, depth, motion, exposure, reactive, output;
+    int has_exposure, has_reactive;
+    u32 render[2], out[2];
+    i32 out_base[2];
+    f32 jitter[2], motion_scale[2], pre_exposure;
+    int reset;
+    u32 flags;
+} GpuUpscale;
+
 /* the VIC composition (gpu/video/vic.c): a surface plane as VIC addresses it (pitch linear rows or block linear
    GOBs), a slot's resolved rectangles and color matrix, and a job's planes and slots. The renderer's vic_compose
    runs the composition as a compute shader (gpu/vk/vic.c); when it returns 0 the caller composes in guest memory */

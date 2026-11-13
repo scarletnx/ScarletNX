@@ -1222,17 +1222,18 @@ void nvn_CommandBufferCopyTextureToTexture(CPU* c, u64 cb, u64 s, u64 sv, u64 sr
     memcpy(&r->dr, GP(dr), sizeof r->dr);
     r->flags = flags;
 }
-/* nvnCommandBufferEvaluateDlss with no upscaler (nvn_dlss.c): the input color's subrectangle copied onto the output's
-   with a linear filter, as CopyTextureToTexture scales. The input's size is the parameters' subrectangle size, else
-   the network's render size; the output's is the network's output size, else the output texture's. Depth, motion
-   vectors and exposure go unused; the jitter moves the copy (below) */
+/* nvnCommandBufferEvaluateDlss (nvn_dlss.c): one OP_DLSS record, which the renderer's upscaler takes (the DLSS upscaler
+   setting: FSR 2, gpu/vk/upscale.c) with the color, depth, motion vectors, exposure, jitter and reset the game gives.
+   Where none runs (the setting, a renderer without one, inputs it can't take), the stand-in: the input color's
+   subrectangle copied onto the output's with a linear filter, as CopyTextureToTexture scales, the jitter moving the
+   copy (below). The input's size is the parameters' subrectangle size, else the network's render size; the output's
+   is the network's output size, else the output texture's */
 void nvn_CommandBufferEvaluateDlss(CPU* c, u64 cb, u64 n, u64 p) {
     const NvnDlssParameters q = *NVN_OBJ(const NvnDlssParameters, p);
     const NvnDlssNetwork* o = NVN_OBJ(const NvnDlssNetwork, n);
     i32 in_w = q.input_size[0] > 0 ? q.input_size[0] : o->render[0];
     i32 in_h = q.input_size[1] > 0 ? q.input_size[1] : o->render[1];
     i32 out_w = o->output[0], out_h = o->output[1];
-    NvnPCopyT2T* r;
     if (!q.input.texture || !q.output.texture) {
         LOG_LIMIT(4, "nvn: DLSS evaluation without an input or output texture: nothing copied\n");
         return;
@@ -1267,19 +1268,35 @@ void nvn_CommandBufferEvaluateDlss(CPU* c, u64 cb, u64 n, u64 p) {
             sy0 += ky, sh -= ky + ky2, dy0 += ky * s + move[1], dh = sh * s;
         }
     }
+    static const size_t part[NVN_DLSS_TEXTURES] = {
+        offsetof(NvnDlssParameters, input),  offsetof(NvnDlssParameters, output), offsetof(NvnDlssParameters, motion),
+        offsetof(NvnDlssParameters, depth),  offsetof(NvnDlssParameters, bias),   offsetof(NvnDlssParameters, exposure)};
+    u64 payload = rec(c, cb, OP_DLSS, SNAP_OFF(NvnPDlss) + NVN_DLSS_TEXTURES * NVN_TEX_SNAP, COST_RECORD);
+    NvnPDlss* d = (NvnPDlss*)(void*)GP(payload);
+    for (int i = 0; i < NVN_DLSS_TEXTURES; i++) {
+        NvnTexturePair pair;
+        memcpy(&pair, (const u8*)&q + part[i], sizeof pair);
+        d->tex[i] = tex_snap(payload, SNAP_OFF(NvnPDlss), i, pair.texture);
+        copy_view(&d->view[i], &d->has_view[i], pair.texture ? pair.view : 0);
+    }
+    d->reset = q.history_reset;
+    memcpy(d->jitter, q.jitter, sizeof d->jitter);
+    memcpy(d->motion_scale, q.motion_scale, sizeof d->motion_scale);
+    d->pre_exposure = q.pre_exposure;
+    d->flags = o->builder_flags;
+    d->in[0] = in_w, d->in[1] = in_h, d->out[0] = out_w, d->out[1] = out_h;
+    memcpy(d->base, q.base, sizeof d->base);
     if (move[0] || move[1]) {
         /* the whole output first, as it is: the moved copy leaves a strip at an edge, and a target written in part
            is not the upscaler's output, which is all new each frame */
-        r = copy_t2t(c, cb, q.input.texture, q.input.view, q.output.texture, q.output.view);
-        r->sr = (NVNcopyRegion){q.base[0][0], q.base[0][1], 0, in_w, in_h, 1};
-        r->dr = (NVNcopyRegion){q.base[4][0], q.base[4][1], 0, out_w, out_h, 1};
-        r->flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT;
+        d->sr[0] = (NVNcopyRegion){q.base[0][0], q.base[0][1], 0, in_w, in_h, 1};
+        d->dr[0] = (NVNcopyRegion){q.base[4][0], q.base[4][1], 0, out_w, out_h, 1};
+        d->n_copies = 1;
     }
-    r = copy_t2t(c, cb, q.input.texture, q.input.view, q.output.texture, q.output.view);
-    r->sr = (NVNcopyRegion){sx0, sy0, 0, sw, sh, 1};
-    r->dr = (NVNcopyRegion){dx0, dy0, 0, dw, dh, 1};
-    r->flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT;
-    LOG_LIMIT(4, "nvn: DLSS evaluation copied %dx%d at (%d, %d) to %dx%d at (%d, %d)\n", in_w, in_h, q.base[0][0],
+    d->sr[d->n_copies] = (NVNcopyRegion){sx0, sy0, 0, sw, sh, 1};
+    d->dr[d->n_copies] = (NVNcopyRegion){dx0, dy0, 0, dw, dh, 1};
+    d->n_copies++;
+    LOG_LIMIT(4, "nvn: DLSS evaluation of %dx%d at (%d, %d) to %dx%d at (%d, %d)\n", in_w, in_h, q.base[0][0],
               q.base[0][1], out_w, out_h, q.base[4][0], q.base[4][1]);
 }
 /* a multisample resolve of the whole texture, recorded as a copy (nxnative's) */

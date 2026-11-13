@@ -330,6 +330,12 @@ static int vkr_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, in
     vk_unlock();
     return r; /* 0: the front end copies through memory, with the renderer's rt_flush and rt_reload around it */
 }
+static int vkr_upscale(const GpuUpscale* u) {
+    vk_lock();
+    int result = vk_upscale(u);
+    vk_unlock();
+    return result;
+}
 static int vkr_blit_filter(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy,
                            double sdx, double sdy, int linear) {
     vk_lock();
@@ -1274,6 +1280,7 @@ const Renderer vk_renderer = {
     .method_barrier = vkr_method_barrier,
     .blit = vkr_blit,
     .blit_filter = vkr_blit_filter,
+    .upscale = vkr_upscale,
     .vic_compose = vkr_vic_compose,
     .nvdec_write = vkr_nvdec_write,
     .nvdec_hw_device = vkr_nvdec_hw_device,

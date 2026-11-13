@@ -5,6 +5,7 @@
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "gpu/nvn/nvn.hook.h"
+#include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include <string.h>
 
@@ -257,14 +258,18 @@ void nvn_DlssNetworkBuilderGetTextureIDs(CPU* c, u64 b, u64 ids) {
 }
 
 /* ============================================================ network: a stand-in for the upscaler */
-/* No network runs: an evaluation is a filtered copy of the input color's subrectangle onto the output's
-   (nvn_cmd.c's nvn_CommandBufferEvaluateDlss). The render sizes the driver answers come from a backend this runtime
+/* No network runs: an evaluation goes to the renderer's upscaler (FSR 2, the DLSS upscaler setting), or is a filtered
+   copy of the input color's subrectangle onto the output's (nvn_cmd.c's nvn_CommandBufferEvaluateDlss, nvn_copy.c's
+   OP_DLSS). The render sizes the driver answers come from a backend this runtime
    doesn't have, so they are taken from the method as NGX's quality modes scale the output: the driver's methods are
    assumed to number them as NGX does (0 performance, 1 balanced, 2 quality, 3 ultra performance, 4 ultra quality,
    5 DLAA), any other is performance's half. The largest render size is the output's, the smallest a third of it */
 static void render_sizes(i32 width, i32 height, i32 method, i32 out[3][2]) {
     static const i32 scale[6][2] = {{1, 2}, {58, 100}, {2, 3}, {1, 3}, {77, 100}, {1, 1}};
+    /* the DLSS render size setting: FSR 2's own quality modes in place of the game's (1/1.5, 1/1.7, 1/2, 1/3) */
+    static const i32 set[6][2] = {{0, 0}, {1, 1}, {2, 3}, {10, 17}, {1, 2}, {1, 3}};
     const i32* s = method >= 0 && method < 6 ? scale[method] : scale[0];
+    if (g_settings.dlss_render_size > 0 && g_settings.dlss_render_size < 6) s = set[g_settings.dlss_render_size];
     out[0][0] = (i32)(((i64)width * s[0] + s[1] / 2) / s[1]);
     out[0][1] = (i32)(((i64)height * s[0] + s[1] / 2) / s[1]);
     out[1][0] = width;
@@ -319,8 +324,8 @@ int nvn_DlssNetworkInitialize(CPU* c, u64 n, u64 b) {
     o->output[0] = o->output_max[0] = o->size[0] = s->width;
     o->output[1] = o->output_max[1] = o->size[1] = s->height;
     network_sizes(o);
-    LOG("nvn: DLSS network %llx: output %dx%d, method %d, preset %d, flags %#x; no upscaler runs, an evaluation "
-        "is a filtered copy (render size %dx%d, from %dx%d to %dx%d)\n",
+    LOG("nvn: DLSS network %llx: output %dx%d, method %d, preset %d, flags %#x; no network runs, an evaluation "
+        "is FSR 2's or a filtered copy (render size %dx%d, from %dx%d to %dx%d)\n",
         (unsigned long long)n, s->width, s->height, s->method, s->preset, (u32)s->flags, o->render[0], o->render[1],
         o->render_min[0], o->render_min[1], o->render_max[0], o->render_max[1]);
     return 1;

@@ -1116,6 +1116,8 @@ int vk_gfx_image_holds(const Surf* s); /* s has a storage result waiting to land
    1, or 0 when it can't */
 int vk_depth_pack_mode(u32 zeta);
 int vk_depth_pack(VkCommandBuffer cb, const Surf* s, u32 layer, VkBuffer buf, u64 at, u32 pitch);
+/* upscale.c: renderer.h's upscale (a DLSS evaluation through FSR 2), under vk_lock: 1 when the output was written */
+int vk_upscale(const GpuUpscale* u);
 u64 vk_surf_guest_size(const Surf* s);
 int vk_surf_can_writeback(const Surf* s);
 void vk_surf_flush(Surf* s, const u8* original); /* original preserves newer guest writes for storage images */
