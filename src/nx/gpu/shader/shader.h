@@ -479,6 +479,8 @@ extern int g_shader_hmma_coop;
    (sm86_translate.c's hmma). RADV with subgroups of 32 (GFX10 on): half of the B permutes through LDS become DPP
    moves. 0 offline */
 extern int g_shader_hmma_pairs;
+/* the way a compute program's HMMA takes with the flags above, in words for the log, into out (n bytes) */
+void shader_hmma_way(char* out, size_t n);
 /* an SM86 HMMA off the cooperative matrices takes A and B from the other lanes through shared memory, a slot a warp,
    where the device's compute subgroups have no quad operations and every A read would be a shuffle as well: Turnip
    on an Adreno 610 runs a shuffle as a loop, and its HMMA bench ran 35 times faster so (684.9 ms a dispatch to
