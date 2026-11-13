@@ -179,6 +179,7 @@ typedef struct {
        pipeline flag, and ordered within the pass by a barrier there (dynamicRenderingLocalRead) or else by beginning
        the pass again */
     int has_feedback, has_feedback_dynamic, has_local_read;
+    int feedback_mode; /* VK_FEEDBACK_*: how a draw reads a color target it writes, at its own pixel (device.c) */
     /* VK_EXT_conditional_rendering: a render enable comparing a samples-passed count not known yet with zero
        predicates its draws on the GPU (gpu/vk/query.c) instead of waiting for the count */
     int has_cond_render;
@@ -971,6 +972,7 @@ typedef struct Surf {
     struct Surf* crop;
     u32 crop_gen;
     u64 crop_epoch; /* a snapshot's g_vk_texture_epoch when it was last copied (vk_rt_snapshot) */
+    u8 predraw;     /* a copy in crop that is a feedback draw's save attachment of set predraw - 1 (vk_rt_save) */
     struct Surf* next;
     /* the recency list it is in (surface.c): textures, render targets (parked ones too), or none (copies, the CPU
        frame), with the device memory its image takes. A list runs from the least recently used to the most */
@@ -1052,6 +1054,7 @@ int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch); /
 /* a copy of a target, for a draw that samples it while writing it. pixels: the target's pixels are brought into the
    copy; 0 for a program that only asks the texture's size or levels, which takes the copy as it is */
 Surf* vk_rt_snapshot(Surf* rt, int pixels);
+Surf* vk_rt_save(Surf* rt, u32 set);
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest presents from that memory */
 /* a render target read where its guest memory is (a texture, a present): reload it if the GPU wrote its memory */
 void vk_rt_note_read(Surf* s);
@@ -2365,6 +2368,14 @@ extern u64 g_vk_targets_kept;
    through a copy instead (gpu/vk/render.c); the times a target's pixels were copied into a copy of it, for those draws
    and for textures that read a target as another size or format (gpu/vk/texture.c) */
 extern u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies, g_vk_rt_copy_writes;
+/* g_vk.feedback_mode, from the device's features and vendor (device.c): in place (attachment feedback loops), the
+   two draws of render.c predraw_run, or in place with the pre-draw capture in a fragment interlock (vk/predraw.c) */
+#define VK_FEEDBACK_IN_PLACE  0
+#define VK_FEEDBACK_PREDRAW   1
+#define VK_FEEDBACK_INTERLOCK 2
+extern u64 g_vk_predraws;        /* feedback draws drawn two times (render.c predraw_run) */
+extern u64 g_vk_predraw_refused; /* and those that stayed in place, which the log says why of */
+void vk_predraw_report(void);   /* logs the counts of each reason (render.c) */
 /* rendering passes begun; clears recorded as vkCmdClearAttachments; attachments a pass began by clearing (its load
    op) and by loading as DONT_CARE */
 extern u64 g_vk_passes, g_vk_clear_cmds, g_vk_clear_loads, g_vk_dontcare_loads;

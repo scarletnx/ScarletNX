@@ -118,3 +118,57 @@ VkSh* vk_draw_texture_fragment(u32 texture_int, u32 texture_signed, u32 target_i
     free(reads.r);
     return register_shader(ST_FS, mask, spirv, words, &info);
 }
+VkSh* vk_predraw_fragment(u32 count, u32 slots, u32 ints, u32 sints) {
+    if (!count || (u32)snx_popcount64(slots) != count || slots >> DS_TARGETS_MAX) return NULL;
+    u32 mask[SH_KEY_WORDS] = {count, slots, ints, sints};
+    mask[6] = 0x44525053;
+    VkSh* cached = vk_shader_generated_find(draw_texture_hash(ST_FS, mask), ST_FS, mask);
+    if (cached) return cached;
+    /* IPA and F2I.TRUNC of the position put the own pixel in R20 and R21, then a TLD.LZ for each texture into
+       R4k to R4k+3. The header's output map enables the color slots in slots, and the outputs take the
+       registers in that order. The translator finds that each fetch reads the own pixel (tex_own_pixel_mask), so the
+       renderer samples the target in place */
+    u8 code[80 + 8 * 16] = {0};
+    snx_st_le64(code + 24, 0xff);
+    u32 omap = 0;
+    u32 slot[DS_TARGETS_MAX], c = 0; /* the k-th slot from the lowest takes fetch k */
+    for (u32 j = 0; j < DS_TARGETS_MAX; j++)
+        if (slots >> j & 1) {
+            slot[c++] = j;
+            omap |= 15u << (4 * j);
+        }
+    snx_st_le64(code + 72, omap);
+    u64 operations[4 + DS_TARGETS_MAX + 1];
+    u32 n = 0;
+    operations[n++] = 0xe003ff870ff7ff00ull | 20;                 /* IPA R20, a[0x70] */
+    operations[n++] = 0xe003ff874ff7ff00ull | 21;                 /* IPA R21, a[0x74] */
+    operations[n++] = 0x5cb0118000070a00ull | 20ull << 20 | 20;   /* F2I.TRUNC R20, R20 */
+    operations[n++] = 0x5cb0118000070a00ull | 21ull << 20 | 21;   /* F2I.TRUNC R21, R21 */
+    for (u32 k = 0; k < count; k++)                                /* TLD.LZ R4k, R20, 2D */
+        operations[n++] = 0xdc00000000000000ull | 7ull << 51 | 0xfull << 31 | 2ull << 28 |
+                          (u64)(SNX_PREDRAW_HANDLE + k) << 36 | 0xffull << 20 | 7ull << 16 | 20ull << 8 | (4 * k);
+    operations[n++] = 0xe30000000007000full;                       /* EXIT */
+    u32 at = 10;
+    for (u32 i = 0; i < n; i++) {
+        if (!(i % 3)) snx_st_le64(code + 8 * at++, 0x001f8000fc0007e0ull);
+        snx_st_le64(code + 8 * at++, operations[i]);
+    }
+    u32 tex_int = 0, tex_sint = 0, rt_int = 0, rt_sint = 0;
+    for (u32 k = 0; k < count; k++) {
+        if (ints >> k & 1) {
+            tex_int |= 1u << k;
+            rt_int |= 1u << slot[k];
+        }
+        if (sints >> k & 1) {
+            tex_sint |= 1u << k;
+            rt_sint |= 1u << slot[k];
+        }
+    }
+    ShaderInfo info = {.tex_int_mask = tex_int, .tex_sint_mask = tex_sint, .rt_int_mask = rt_int,
+                       .rt_sint_mask = rt_sint};
+    VkCbReads reads = {0};
+    size_t words = 0;
+    u32* spirv = vk_translate_spirv(code, 8 * at, ST_FS, &info, &words, no_constants, &reads);
+    free(reads.r);
+    return register_shader(ST_FS, mask, spirv, words, &info);
+}
