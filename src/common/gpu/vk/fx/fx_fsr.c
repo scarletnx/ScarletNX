@@ -7,13 +7,17 @@
 
 #define A_CPU    1
 #define A_STATIC static inline
+/* ffx_a.h's CPU helpers return restrict pointers, a qualifier a return type ignores (-Wextra's -Wignored-qualifiers) */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wignored-qualifiers"
 #include "common/gpu/vk/fx/ffx_a.h"
 #include "common/gpu/vk/fx/ffx_fsr1.h"
+#pragma clang diagnostic pop
 
 #include "common/gpu/vk/fx/fx_fsr.h"
 
-void snx_fx_fsr_easu_con(uint32_t con[4][4], float input_w, float input_h, float image_w, float image_h,
-                             float output_w, float output_h, float offset_x, float offset_y) {
+void snx_fx_fsr_easu_con(uint32_t con[4][4], float input_w, float input_h, float image_w, float image_h, float output_w,
+                         float output_h, float offset_x, float offset_y) {
     AU1 c0[4], c1[4], c2[4], c3[4];
     int i;
     FsrEasuConOffset(c0, c1, c2, c3, input_w, input_h, image_w, image_h, output_w, output_h, offset_x, offset_y);
