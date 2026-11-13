@@ -1206,6 +1206,19 @@ static void test_raw_romfs(SvcObj* proxy) {
     dispatch(storage, &r, 0);
     CHECK(!memcmp(GP(0x5000), expected + 2, sizeof expected - 2));
     CHECK(GP(0x5000)[sizeof expected - 2] == 0xcc);
+    /* a read that goes on where the thread's last one on this storage ended waits a console's time for its bytes; one
+       that starts elsewhere waits nothing */
+    {
+        int64_t before = test_slept_ns;
+        for (u64 off = 0; off < 16; off += 8) {
+            request(&r, 0);
+            argument64(&r, 0, off);
+            argument64(&r, 8, 8);
+            output_buffer(&r, 8);
+            dispatch(storage, &r, 0);
+        }
+        CHECK(test_slept_ns - before == (int64_t)(8 * 1000000000ull / FS_PACE_BYTES_PER_S));
+    }
     svcobj_unref(storage);
     /* OpenDataStorageWithProgramIndex (205): index 0 is this program's RomFS, another index fails with no storage */
     request(&r, 205);
