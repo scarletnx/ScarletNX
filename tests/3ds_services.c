@@ -324,9 +324,16 @@ int main(void) {
         ctr_request(p, query, 1);
         ctr_send(p, ptm, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 2) == model);
-        uint32_t config[] = {0x8180040, 1};
-        ctr_request(p, config, 2);
-        ctr_send(p, ptm, SNX_CTR_SVC_UNSUPPORTED, 0);
+        /* ConfigureNew3DSCPU: a New 3DS takes its L2 cache and 804 MHz clock (bits 0 and 1), an Old 3DS stops at
+           either, and another bit stops on both; no mode is taken on both */
+        uint32_t config[] = {0x8180040, 0};
+        for (uint32_t mode = 1; mode <= 4; ++mode) {
+            config[1] = mode;
+            ctr_request(p, config, 2);
+            bool taken = model == SNX_CTR_NEW && mode <= 3;
+            ctr_send(p, ptm, taken ? SNX_CTR_SVC_RETURN : SNX_CTR_SVC_UNSUPPORTED, 0);
+            if (taken) assert(!ctr_command_word(p, 1));
+        }
         config[1] = 0;
         ctr_request(p, config, 2);
         ctr_send(p, ptm, SNX_CTR_SVC_RETURN, 0);

@@ -1076,7 +1076,11 @@ The offline compiler (`src/3ds/aot/compiler.c`, part of the driver) has its own
 ARM11/checked codegen options; shared A57 emission and CPU ABI defaults remain unchanged.
 
 The tick domain remains 268,111,856 Hz, with 4,481,136 base ticks per frame, as
-in Azahar. New 3DS CPU scaling is a separate future scheduler concern. Interrupts
+in Azahar. The game's code runs natively, so a New 3DS's 804 MHz clock and L2 cache
+have nothing to change: ptm:sysm's ConfigureNew3DSCPU takes them on a New 3DS (said
+once), and the tick counter keeps its rate, as on the console. On an Old 3DS, or with
+a bit it does not know, the command stops. Threads on cores 2 and 3 share the one
+serialized scheduler with the others. Interrupts
 are delivered at the scheduler's deadlines (vblank, DSP frames, timers), paced by
 the host clock rather than by guest cycles. There is no ARM9 emulation or boot ROM. Synthetic CIAs and
 the supplied SuperTux startup execute natively, not complete games/retail titles.
