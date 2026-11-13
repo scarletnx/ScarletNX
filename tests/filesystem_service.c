@@ -2848,6 +2848,48 @@ int main(int argc, char** argv) {
         return 0;
     }
 #endif
+    /* #2110: a console game's data folder whose own RomFS a copy (romfs.copying beside it) or an extraction (its
+       .extracting beside the game) that stopped left, and one with no RomFS at all, end the start in a fatal, the
+       folder in the log line before it; a whole one starts */
+    if (argc == 4 && (!strcmp(argv[3], "romfs-copying") || !strcmp(argv[3], "romfs-extracting") ||
+                      !strcmp(argv[3], "romfs-none") || !strcmp(argv[3], "romfs-whole"))) {
+        const char* how = argv[3] + 6;
+        jmp_buf jump;
+        int stopped;
+        CHECK(!snx_mkdirs("cut-data/0100000000AB0000_data/exefs") &&
+              !snx_write_file("cut-data/0100000000AB0000_data/exefs/main", "main", 4));
+        if (strcmp(how, "none"))
+            CHECK(!snx_mkdirs("cut-data/0100000000AB0000_data/romfs") &&
+                  !snx_write_file("cut-data/0100000000AB0000_data/romfs/a.bin", "a", 1));
+        if (!strcmp(how, "copying")) CHECK(!snx_mkdirs("cut-data/0100000000AB0000_data/romfs.copying"));
+        if (!strcmp(how, "extracting")) CHECK(!snx_write_file("cut-data/0100000000AB0000.extracting", "", 0));
+        strcpy(g_exedir, "cut-data/");
+        strcpy(g_gamename, "0100000000AB0000");
+        strcpy(g_datadir, "cut-data/0100000000AB0000_data/");
+        fs_init(NULL, NULL);
+        test_scans_allowed = 0;
+        svc_fs_init();
+        test_fatal_text[0] = 0;
+        test_fatal_jump = &jump;
+        stopped = setjmp(jump);
+        if (!stopped) romfs_init();
+        test_fatal_jump = NULL;
+        if (!strcmp(how, "whole")) {
+            CHECK(!stopped && !test_fatal_text[0] && g_hle.fs.nrfiles == 1);
+            cleanup_service();
+        } else if (!strcmp(how, "none"))
+            CHECK(stopped && !strcmp(test_fatal_text, "The game has no RomFS: started from the launcher or scarletnx "
+                                                      "with Extract dump, it is extracted from the game's dump before "
+                                                      "the game starts"));
+        else
+            CHECK(stopped && !strcmp(test_fatal_text, "The game's RomFS is a copy that stopped before it ended: "
+                                                      "started from the launcher or scarletnx with Extract dump, it "
+                                                      "is extracted again from the game's dump"));
+        free(g_mem);
+        printf("PASS %u checks: a data folder's RomFS %s\n", test_checks,
+               !strcmp(how, "whole") ? "whole starts" : "cut short or missing stops the start");
+        return 0; /* a fatal left the tree locked: nothing more of it */
+    }
     /* source= an extracted game's folder, outside the data folder: its ExeFS and RomFS read where they are, read-only;
        one that is not there is said to be a folder, with the settings that name it */
     if (argc == 4 && (!strcmp(argv[3], "folder-source") || !strcmp(argv[3], "folder-gone"))) {

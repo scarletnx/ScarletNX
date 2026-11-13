@@ -1057,6 +1057,18 @@ void romfs_init(void) {
     RNode* root;
     size_t i;
     int image = 0;
+    char own[sizeof g_datadir + 16], copying[sizeof g_datadir + 16],
+        extracting[sizeof g_exedir + sizeof g_gamename + 16];
+    /* the data folder's own RomFS, when a copy (romfs.copying beside it) or an extraction (<name>.extracting beside the
+       game) into it stopped before it ended: not all of it, though under its own name */
+    if (snprintf(own, sizeof own, "%sromfs", g_datadir) < (int)sizeof own && snx_is_dir(own) &&
+        snprintf(copying, sizeof copying, "%sromfs.copying", g_datadir) < (int)sizeof copying &&
+        snprintf(extracting, sizeof extracting, "%s%s.extracting", g_exedir, g_gamename) < (int)sizeof extracting &&
+        (snx_path_exists(copying) || snx_is_file(extracting))) {
+        LOG("RomFS: %s is not all of it: %s is there\n", own, snx_path_exists(copying) ? copying : extracting);
+        fatal("The game's RomFS is a copy that stopped before it ended: started from the launcher or scarletnx with "
+              "Extract dump, it is extracted again from the game's dump");
+    }
     if (!fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs.bin", &node) && !node->is_dir) {
         if (node->fd >= 0)
             g_hle.fs.rimage = node;
@@ -1088,8 +1100,13 @@ void romfs_init(void) {
         LOG("RomFS: none in the game's dump\n");
     } else {
         LOG("RomFS: none in %s\n", g_datadir);
-        if (fs_tree_lookup(&g_hle.fs.tree, NULL, "exefs/main.nro", &node))
+        if (fs_tree_lookup(&g_hle.fs.tree, NULL, "exefs/main.nro", &node)) {
             WARN("Extract the game's RomFS into %sromfs/ before running it\n", g_datadir);
+            /* a console game reads its RomFS before its first frame: without it, it stops later on what it asks next */
+            if (game_title())
+                fatal("The game has no RomFS: started from the launcher or scarletnx with Extract dump, it is "
+                      "extracted from the game's dump before the game starts");
+        }
     }
     if (!folder && !g_hle.fs.nmromfs) {
         pm_unlock(&g_hle.fs.tree.lock);
