@@ -149,7 +149,28 @@ snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/d
 include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
 # vk_hash (gpu/vk/cmd.c); the device setup the 3DS and the Vita share (src/common/gpu/vk); the shader file's units
 # (gpu/vk/pipeline_file.c)
-target_link_libraries(snx_vk PUBLIC snx_xxhash snx_vk_common PRIVATE snx_zstd)
+target_link_libraries(snx_vk PUBLIC snx_xxhash snx_vk_common snx_fsr2 PRIVATE snx_zstd)
+# AMD FidelityFX Super Resolution 2.2.1 (cmake/dependencies.cmake): AMD's library and Vulkan backend as they are
+# (C++, third-party flags, gpu/vk/fsr2/fsr2_compat.h before them for the MSVC names they use), with our shader blobs
+# (gpu/vk/fsr2/fsr2_blobs.c over the passes cmake/fsr2_shaders.cmake compiles) and C interface (gpu/vk/fsr2/fsr2.cpp)
+set(snx_fsr2_spv "${PROJECT_BINARY_DIR}/generated/spirv/fsr2_spv.c")
+file(GLOB snx_fsr2_shader_sources CONFIGURE_DEPENDS "${snx_fsr2_api_dir}/shaders/*.glsl" "${snx_fsr2_api_dir}/shaders/*.h")
+add_custom_command(OUTPUT "${snx_fsr2_spv}"
+    COMMAND "${CMAKE_COMMAND}" "-DGLSLANG=${SNX_GLSLANG}" "-DSPIRV_OPT=${SNX_SPIRV_OPT}" "-DSPIRV_VAL=${SNX_SPIRV_VAL}"
+            "-DSHADERS=${snx_fsr2_api_dir}/shaders" "-DWORK=${PROJECT_BINARY_DIR}/generated/spirv/fsr2"
+            "-DOUT=${snx_fsr2_spv}" -P "${PROJECT_SOURCE_DIR}/cmake/fsr2_shaders.cmake"
+    DEPENDS "${PROJECT_SOURCE_DIR}/cmake/fsr2_shaders.cmake" ${snx_fsr2_shader_sources}
+    COMMENT "Compiling FSR 2.2.1's passes to SPIR-V"
+    VERBATIM)
+set(snx_fsr2_amd "${snx_fsr2_api_dir}/ffx_fsr2.cpp" "${snx_fsr2_api_dir}/ffx_assert.cpp"
+                 "${snx_fsr2_api_dir}/vk/ffx_fsr2_vk.cpp")
+add_library(snx_fsr2 STATIC ${snx_fsr2_amd} gpu/vk/fsr2/fsr2_blobs.c gpu/vk/fsr2/fsr2.cpp "${snx_fsr2_spv}")
+set_target_properties(snx_fsr2 PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_compile_definitions(snx_fsr2 PRIVATE VK_NO_PROTOTYPES FFX_GCC)
+target_include_directories(snx_fsr2 PRIVATE "${snx_fsr2_api_dir}" "${PROJECT_SOURCE_DIR}/src")
+set_source_files_properties(${snx_fsr2_amd} PROPERTIES COMPILE_OPTIONS
+                            "${snx_third_party_flags};-include;${CMAKE_CURRENT_SOURCE_DIR}/gpu/vk/fsr2/fsr2_compat.h")
+target_link_libraries(snx_fsr2 PUBLIC snx_vk_common)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc.comp NAME astc_spv HEADER nx/gpu/texture/astc_spv.h)
 # ASTC blocks straight into BC7 blocks, for a GPU that samples BC7 and not ASTC (gpu/vk/astc.c), in the encoder's
 # builds: the full one; the fast one, every mode only where mode 6 is not close, for large levels; mode 6 alone for the
