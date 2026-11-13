@@ -27,8 +27,13 @@ target_compile_options(scarletnx-agb PRIVATE -Wall -Wextra -Werror)
 # the runner: the board in a window, with sound and the keypad (runtime/host.c), SDL here and never in the board. Its
 # command line goes beside every GBA game (recompiled/<name>/<name>, its .ini saying system=gba), and reads the
 # settings it takes by their names on a command line (snx_settings' settings_arg)
-add_library(snx_agb_program STATIC runtime/host.c runtime/main.c)
+add_library(snx_agb_program STATIC runtime/host.c runtime/main.c runtime/vk.c "${volk_SOURCE_DIR}/volk.c")
 target_link_libraries(snx_agb_program PUBLIC scarletnx-agb SDL3::SDL3 snx_window_icon snx_pad_sdl snx_build_info
                       snx_settings snx_notice)
+# the window through Vulkan (runtime/vk.c), as the other consoles' windows; volk's loader compiled here, as every
+# frontend does
+target_link_libraries(snx_agb_program PUBLIC snx_vk_common Vulkan::Headers)
+target_include_directories(snx_agb_program PUBLIC "${volk_SOURCE_DIR}")
+set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
 set_target_properties(snx_agb_program PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
 include("${PROJECT_SOURCE_DIR}/tests/cmake/agb.cmake") # its tests
