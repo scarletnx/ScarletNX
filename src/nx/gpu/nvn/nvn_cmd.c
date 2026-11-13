@@ -1249,24 +1249,23 @@ void nvn_CommandBufferEvaluateDlss(CPU* c, u64 cb, u64 n, u64 p) {
        edge so both rectangles keep whole pixels, and the output's edge keeps what it had there */
     i32 sx0 = q.base[0][0], sy0 = q.base[0][1], dx0 = q.base[4][0], dy0 = q.base[4][1];
     i32 sw = in_w, sh = in_h, dw = out_w, dh = out_h, move[2] = {0, 0};
-    {
-        static const float f[2] = {-1, -1}; /* measured: the picture moves by +jitter, so the copy goes back by it */
-        if (in_w > 0 && in_h > 0 && out_w % in_w == 0 && out_h % in_h == 0 && out_w / in_w == out_h / in_h &&
-            out_w / in_w > 1 && (f[0] != 0 || f[1] != 0)) {
-            i32 s = out_w / in_w;
-            for (u32 a = 0; a < 2; a++) {
-                float m = q.jitter[a] * f[a] * (float)s;
-                i32 d = (i32)(m < 0 ? m - 0.5f : m + 0.5f);
-                if (d > s) d = s;
-                if (d < -s) d = -s;
-                move[a] = d;
-            }
-            /* per axis: k input pixels cut at the start when it moves back, k2 at the end when forward */
-            i32 kx = move[0] < 0 ? (-move[0] + s - 1) / s : 0, kx2 = move[0] > 0 ? (move[0] + s - 1) / s : 0;
-            i32 ky = move[1] < 0 ? (-move[1] + s - 1) / s : 0, ky2 = move[1] > 0 ? (move[1] + s - 1) / s : 0;
-            sx0 += kx, sw -= kx + kx2, dx0 += kx * s + move[0], dw = sw * s;
-            sy0 += ky, sh -= ky + ky2, dy0 += ky * s + move[1], dh = sh * s;
+    if (in_w > 0 && in_h > 0 && out_w % in_w == 0 && out_h % in_h == 0 && out_w / in_w == out_h / in_h &&
+        out_w / in_w > 1) {
+        i32 s = out_w / in_w;
+        for (u32 a = 0; a < 2; a++) {
+            /* measured: the picture moves by +jitter, so the copy goes back by it. Clamped to [-s, s] as a float, so
+               the conversion stays defined with a NaN or a huge jitter from the game */
+            float m = -q.jitter[a] * (float)s;
+            if (m != m) m = 0;
+            if (m > (float)s) m = (float)s;
+            if (m < -(float)s) m = -(float)s;
+            move[a] = (i32)(m < 0 ? m - 0.5f : m + 0.5f);
         }
+        /* per axis: k input pixels cut at the start when it moves back, k2 at the end when forward */
+        i32 kx = move[0] < 0 ? (-move[0] + s - 1) / s : 0, kx2 = move[0] > 0 ? (move[0] + s - 1) / s : 0;
+        i32 ky = move[1] < 0 ? (-move[1] + s - 1) / s : 0, ky2 = move[1] > 0 ? (move[1] + s - 1) / s : 0;
+        sx0 += kx, sw -= kx + kx2, dx0 += kx * s + move[0], dw = sw * s;
+        sy0 += ky, sh -= ky + ky2, dy0 += ky * s + move[1], dh = sh * s;
     }
     static const size_t part[NVN_DLSS_TEXTURES] = {
         offsetof(NvnDlssParameters, input),  offsetof(NvnDlssParameters, output), offsetof(NvnDlssParameters, motion),
