@@ -35,10 +35,12 @@ foreach(case "--aot_threads=abc|aot_threads=abc is not a whole number from 0 to 
 endforeach()
 # AOT pack build: a prepared game, recompiled with the cache the launcher names. --jit-cache and
 # --hook-direct-calls are the recompiler's, not extra dump inputs; before this case the automatic
-# preparation check took them for game arguments and stopped with "accepts one dump file".
+# preparation check took them for game arguments and stopped with "accepts one dump file". Its _data
+# keeps an ExeFS, as a game made from its extraction's does (empty: the recompiler's own check answers);
+# with none and no dump the driver stops before the recompiler (driver_workflow)
 set(aot "${dir}/aot")
 set(aot_game "${aot}/0100000000000000")
-file(MAKE_DIRECTORY "${aot_game}" "${aot_game}/0100000000000000_data")
+file(MAKE_DIRECTORY "${aot_game}" "${aot_game}/0100000000000000_data/exefs")
 file(WRITE "${aot_game}/0100000000000000" "")
 file(WRITE "${aot}/profile.jitcache" "")
 execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY SDL_VIDEO_DRIVER=dummy

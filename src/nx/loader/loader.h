@@ -191,6 +191,9 @@ int snx_nro_icon(const char* path, unsigned char** icon, size_t* size, char* err
 void snx_free_module(SnxModuleImage* module);
 /* data NULL with size 0 gives the defaults of a program without an NPDM */
 int snx_parse_npdm(const unsigned char* data, size_t size, SnxNpdm* npdm, char* error, size_t error_size);
+/* The folder of entry that holds its ExeFS's main, where the loader reads one: exefs/, ExeFS/ or entry itself. NULL
+   for none */
+char* snx_exefs_folder(const char* entry);
 /* The NPDM snx_load_program would use for entry, without loading any module: an NRO's (the defaults), the ExeFS's
    main.npdm, or the defaults when it has none */
 int snx_load_npdm(const char* entry, SnxNpdm* npdm, char* error, size_t error_size);

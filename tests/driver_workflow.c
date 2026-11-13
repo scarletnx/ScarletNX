@@ -1461,6 +1461,20 @@ int main(int argc, char** argv) {
             said = snx_format("keeps no ExeFS in Test game_data, and its .ini %s names no dump (source=)", ini);
             run(exe, repo, game, log, 1, "", said);
             CHECK(!snx_record_source(own, "Test game", dump));
+            { /* an ExeFS where the loader reads one, not exefs/ (ExeFS/, as another tool names it): made from it */
+                char *data = snx_path_join(own, "Test game_data"), *exefs = snx_path_join(data, "ExeFS"),
+                     *main = snx_path_join(exefs, "main");
+                CHECK(!snx_mkdirs(exefs) && !snx_write_file(main, "", 0));
+                set_env("SNX_WORKFLOW_SOURCE", data);
+                set_env("SNX_WORKFLOW_NAMED", "Test game");
+                run(exe, repo, game, log, 0, "R", NULL);
+                set_env("SNX_WORKFLOW_SOURCE", "");
+                set_env("SNX_WORKFLOW_NAMED", "");
+                CHECK(!snx_remove_tree(exefs));
+                free(main);
+                free(exefs);
+                free(data);
+            }
             free(said);
             free(ini);
         }

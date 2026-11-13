@@ -1109,17 +1109,23 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
             /* made from its dump read in place, else from what its _data keeps: a game whose _data keeps no ExeFS has
                only its dump to be made again from, and without it nothing to make it from */
             source = kept ? NULL : snx_game_source(folder, name, &recorded);
-            if (!kept && !source_there(source)) { /* said if it has to be made again (made:) */
-                char* ini = snx_game_ini(folder, name);
-                unmakeable = recorded
-                                 ? snx_format("%s keeps no ExeFS in %s_data, and the %s it was made from, %s, is not "
-                                              "there: put it back, or make the game again from its dump (its .ini: "
-                                              "%s)",
-                                              input, name, snx_source_kind(source), source, ini)
-                                 : snx_format("%s keeps no ExeFS in %s_data, and its .ini %s names no dump "
-                                              "(source=): make the game again from its dump",
-                                              input, name, ini);
-                free(ini);
+            if (!kept && !source_there(source)) {
+                char *data = snx_format("%s_data", base), *readable = snx_exefs_folder(data);
+                if (!readable) { /* nor where the loader reads one (ExeFS/, main beside the rest): said if it has to
+                                    be made again (made:) */
+                    char* ini = snx_game_ini(folder, name);
+                    unmakeable = recorded
+                                     ? snx_format("%s keeps no ExeFS in %s_data, and the %s it was made from, %s, is "
+                                                  "not there: put it back, or make the game again from its dump (its "
+                                                  ".ini: %s)",
+                                                  input, name, snx_source_kind(source), source, ini)
+                                     : snx_format("%s keeps no ExeFS in %s_data, and its .ini %s names no dump "
+                                                  "(source=): make the game again from its dump",
+                                                  input, name, ini);
+                    free(ini);
+                }
+                free(readable);
+                free(data);
                 free(source);
                 source = NULL;
             }
