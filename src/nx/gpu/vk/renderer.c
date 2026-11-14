@@ -50,9 +50,11 @@ static void vkr_before_write(u64 gva, u64 size) {
     if (size) vk_release_need(gva, size);
     vk_buf_before_write(gva, size);
     if (size) vk_uma_before_write(gva, size); /* what reads it in place runs first */
-    if (size)
+    if (size) {
+        g_vk_finish_who = "a guest write to a target's memory";
         vk_gfx_image_mem_need(gva, size);
-    else
+        g_vk_finish_who = NULL;
+    } else
         vk_gfx_image_land();
     vk_compute_before_write(gva, size);
     vk_rt_before_write(gva, size);
@@ -73,7 +75,9 @@ static void vkr_gfx_mem_need(u64 gva, u64 size) {
     vk_mirror_mem_need(gva, size); /* the GPU mirror's programs' writes there landed */
     vk_buf_mem_need(gva, size);
     vk_uma_mem_need(gva, size); /* the in-place writes there done */
+    g_vk_finish_who = "a read of guest memory a target covers";
     vk_gfx_image_mem_need(gva, size);
+    g_vk_finish_who = NULL;
 }
 /* the GPU range a mapping change is changing, from its begin to its end (size 0 for a change of guest memory) */
 static u64 g_mapping_gva, g_mapping_size;
@@ -351,8 +355,10 @@ static int vkr_dma_copy(const GpuDmaOp* o) { return vk_dma_copy(o); }         /*
 static int vkr_blit_mem(const GpuBlit* b) { return vk_blit_mem(b); }          /* it takes vk_lock */
 static void vkr_rt_flush(u64 gva) {
     vk_lock();
+    g_vk_finish_who = "the front end's flush of a target";
     vk_gfx_image_mem_need(gva, 1);
     vk_rt_flush(gva);
+    g_vk_finish_who = NULL;
     vk_unlock();
 }
 static void vkr_rt_reload(u64 gva) {
@@ -927,11 +933,11 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             own_landings_by(by);
             LOG("vulkan: GPU-owned guest memory landed for the CPU %llu times (%llu for the runtime's own access, "
                 "%llu for a read of the game's code, %llu for a write of it), render targets written back for an "
-                "engine %llu times; block linear targets watched %llu times, published for a CPU access %llu times "
-                "and at a release %llu times\n",
+                "engine %llu times, %llu dropped for a guest write over all of them; block linear targets watched "
+                "%llu times, published for a CPU access %llu times and at a release %llu times\n",
                 (unsigned long long)own_landings(), (unsigned long long)by[OWN_BY_RUNTIME],
                 (unsigned long long)by[OWN_BY_READ], (unsigned long long)by[OWN_BY_WRITE],
-                (unsigned long long)g_vk_rt_readbacks,
+                (unsigned long long)g_vk_rt_readbacks, (unsigned long long)g_vk_rt_dropped,
                 (unsigned long long)g_vk_rt_watch.arms, (unsigned long long)g_vk_rt_watch.hits,
                 (unsigned long long)g_vk_rt_watch.publishes);
         }
