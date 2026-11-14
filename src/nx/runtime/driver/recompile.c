@@ -106,30 +106,6 @@ char* snx_own_runtime(const SnxPaths* paths) {
     return NULL;
 #endif
 }
-#ifdef _WIN32
-/* Windows finds a program's DLLs next to it: the game's folder gets those next to the runtime (the zip's LLVM), or
-   it does not start. Links where the disk takes them, so each game does not hold copies */
-static int copy_dlls(const char* run, const char* out) {
-    char **names = NULL, *from = snx_dirname(run), *src, *dst;
-    size_t i, count = 0, n;
-    int rc = snx_list_dir(from, &names, &count);
-    for (i = 0; !rc && i < count; ++i) {
-        n = strlen(names[i]);
-        if (n < 4 || names[i][n - 4] != '.' || tolower((unsigned char)names[i][n - 3]) != 'd' ||
-            tolower((unsigned char)names[i][n - 2]) != 'l' || tolower((unsigned char)names[i][n - 1]) != 'l')
-            continue;
-        src = snx_path_join(from, names[i]);
-        dst = snx_path_join(out, names[i]);
-        /* a new one linked, else copied; one there already copied over when it differs (a newer zip's) */
-        rc = snx_is_file(src) && (snx_path_exists(dst) || snx_link_file(src, dst)) && snx_copy_file(src, dst);
-        free(src);
-        free(dst);
-    }
-    snx_free_strings(names, count);
-    free(from);
-    return rc;
-}
-#endif
 int snx_deploy_runtime(const char* run, const char* exe) {
     char* tmp = snx_format("%s.tmp", exe);
     int rc;
@@ -137,7 +113,7 @@ int snx_deploy_runtime(const char* run, const char* exe) {
     char* folder = snx_dirname(exe); /* what a program loads from its own folder goes beside it before it does */
 #endif
 #ifdef _WIN32
-    rc = copy_dlls(run, folder);
+    rc = snx_copy_dlls(run, folder, 1);
     if (rc) snx_error("cannot copy the runtime's DLLs to %s", folder);
     if (rc) {
         free(folder);

@@ -329,6 +329,29 @@ static int same_bytes(const char* a, const char* b) {
     if (y) fclose(y);
     return same;
 }
+#ifdef _WIN32
+/* Links where the disk takes them, so each game does not hold copies of the DLLs */
+int snx_copy_dlls(const char* runtime, const char* folder, int all) {
+    char **names = NULL, *from = snx_dirname(runtime), *src, *dst;
+    size_t count = 0;
+    int rc = snx_list_dir(from, &names, &count);
+    for (size_t i = 0; !rc && i < count; ++i) {
+        if (!snx_ends_with_nocase(names[i], ".dll")) continue;
+        src = snx_path_join(from, names[i]);
+        dst = snx_path_join(folder, names[i]);
+        /* a new one linked, else copied; one there already copied over when it differs (a newer zip's): with all, else
+           only when its size differs (a copy that stopped midway) */
+        int keep = !all && snx_path_exists(dst) && snx_file_size(dst) == snx_file_size(src);
+        if (snx_is_file(src) && !keep)
+            rc = (snx_path_exists(dst) || snx_link_file(src, dst)) && snx_copy_file(src, dst);
+        free(src);
+        free(dst);
+    }
+    snx_free_strings(names, count);
+    free(from);
+    return rc;
+}
+#endif
 int snx_place_runtime(const char* runtime, const char* copy, char* error, size_t error_size) {
     char *own = snx_absolute(runtime), *mine = snx_absolute(copy), *staged = snx_format("%s.tmp", copy), why[256];
     int rc = 0;
@@ -345,6 +368,19 @@ int snx_place_runtime(const char* runtime, const char* copy, char* error, size_t
             rc = -1;
         }
     }
+#ifdef _WIN32
+    /* Windows finds a program's DLLs next to it: the copy gets those next to the runtime (the package's LLVM), or it
+       does not start. All of them when the runtime was placed, else the ones the folder lacks or holds at another
+       size */
+    if (rc >= 0 && strcmp(own, mine)) {
+        char* folder = snx_dirname(mine);
+        if (!folder || snx_copy_dlls(own, folder, rc == 1)) {
+            snprintf(error, error_size, "cannot copy the runtime's DLLs to %s", folder ? folder : mine);
+            rc = -1;
+        }
+        free(folder);
+    }
+#endif
     free(staged);
     free(mine);
     free(own);

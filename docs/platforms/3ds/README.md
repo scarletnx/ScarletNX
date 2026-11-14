@@ -42,8 +42,9 @@ A game's folder is a folder of the data folder's `recompiled/`, named after its 
 ID as a Switch game's is named (`recompiled/0004000000123400/`). It holds the compiled
 module (`<title ID>_code.so`, `_code.dll` on Windows), the blocks runs compiled at
 run time (`<title ID>.hints`), the game's state (`sdmc/`, `savedata/`, frames,
-audio), the 48x48 icon (`icon.rgba`, when the game has an SMDH), `<title ID>.ini`
-and a copy of the runtime named `<title ID>`. The `.ini`
+audio), the 48x48 icon (`icon.rgba`, when the game has an SMDH), `<title ID>.ini`,
+a copy of the runtime named `<title ID>` and, on Windows, the DLLs beside that
+runtime, which the copy loads. The `.ini`
 names the game (`source=`), the console (`model=`) and the system (`system=3ds`),
 which the launcher and a build's deploy pick the driver by. Running the copy plays the
 game, as a Switch game's copy does: `recompiled/<title ID>/<title ID> --seconds=60
@@ -747,8 +748,8 @@ extraction would where it reads it (a CIA's content table, the NCCH and ExHeader
 metadata). A launch that reads the game where it lies skips the SHA-256 of each content and of each ExeFS file; an
 extraction checks those too. The game's ExeFS files and its RomFS (level 3, the image the game reads)
 are then read where they lie in the mapping, and only the decompressed `.code` is copied into memory. The game's
-folder keeps its module, its copy of the runtime, its icon (`icon.rgba`) and its state alone: `sdmc/` and the frames
-and audio it writes. An extraction an earlier
+folder keeps its module, its copy of the runtime, the DLLs beside that copy on Windows, its icon (`icon.rgba`) and
+its state alone: `sdmc/` and the frames and audio it writes. An extraction an earlier
 `--extract-container` left there is taken away, its compiled module and saves kept. The image's identity is the same
 either way, so a module compiled in one mode loads in the other. The manifest records which container the game came
 from (`container=`, and `overlay=1` when it is a cartridge's update), which the image loader ignores.

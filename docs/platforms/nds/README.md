@@ -76,9 +76,10 @@ ITCM and main memory's range, 0x01FF8000 to 0x02FFFFFF, when the run ends.
 
 The game's folder is `recompiled/<name>/` of the data folder (`--data`, else the user's), named after the image's
 file, or `<name>/` of `--outdir`, or the folder `--output` names. It holds the module (`<name>_code.so`), the blocks
-runs compiled at run time (`<name>.hints`), the save (`<name>.sav`), a copy of the runtime named after the game and
-`<name>.ini`, whose `source=` names the image and `system=nds` the console. The image stays where it is and is read
-there. The copy plays its game alone, and `scarletnx-nds --game=recompiled/<name>` plays it the same way. `-r` compiles
+runs compiled at run time (`<name>.hints`), the save (`<name>.sav`), a copy of the runtime named after the game, the
+DLLs beside it on Windows, which the copy loads, and `<name>.ini`, whose `source=` names the image and `system=nds`
+the console. The image stays where it is and is read there. The copy plays its game alone, and
+`scarletnx-nds --game=recompiled/<name>` plays it the same way. `-r` compiles
 the module again without playing, starting from the hints. A `<image>.sav` beside the image, which another emulator
 keeps, is read once, when the folder has none.
 

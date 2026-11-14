@@ -60,8 +60,16 @@ const char* snx_system_word(SnxSystem system);
 int snx_record_system(const char* folder, const char* name, SnxSystem system);
 /* The game folder's copy of the runtime, which plays the game from then on: runtime copied to copy, through a
    temporary file and a rename (a copy that is running keeps its old file), when copy is missing or another build's;
-   nothing when runtime is copy. 1 when it copied, 0 when nothing had to, -1 with error saying why */
+   nothing when runtime is copy. On Windows the DLLs beside runtime go beside copy too (snx_copy_dlls): all of them when
+   it copied the runtime, else the ones the folder lacks or holds at another size. 1 when it copied the runtime, 0 when
+   it did not (it may still have added DLLs), -1 with error saying why */
 int snx_place_runtime(const char* runtime, const char* copy, char* error, size_t error_size);
+#ifdef _WIN32
+/* The DLLs beside the runtime, linked or copied into folder, where Windows finds them for the
+   program. With all, one that folder holds already is copied over when it differs, else only
+   when its size differs. 0, or nonzero */
+int snx_copy_dlls(const char* runtime, const char* folder, int all);
+#endif
 /* addons=: the game's updates and DLCs played with it, their entries (snx_addon_name: a title ID, an update's with
    its version), a comma between two. The most a list holds */
 #define SNX_ADDONS_MAX 2048
