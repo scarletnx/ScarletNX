@@ -203,6 +203,15 @@ int hook_routed(const char* name) {
     return lo < r->count && r->names[lo] == hash;
 }
 
+/* the families whose handlers run only where the runtime has what they run on: alloc the host allocator's arena in
+   guest memory (alloc.c), and a 64-bit game's registers and pointers. The reason a family is off for, NULL when it
+   may be installed */
+static const char* family_unready(const char* family) {
+    int alloc = !strcmp(family, "alloc");
+    if (alloc && g_arm_mod) return "its handlers are for 64-bit games";
+    if (alloc && !alloc_ready()) return "the host allocator has no arena in guest memory this run";
+    return NULL;
+}
 int hook_family_off(const char* family) {
     return !g_settings.native_hooks || family_listed(g_settings.hook_families_off, family);
 }
@@ -293,9 +302,13 @@ static void install_a32(void) {
     u64 addr;
     u32 i, count = 0, nmods = g_arm_mod->nmods, sdk[HOOK_MODULES];
     unsigned char off[HOOK_FAMILIES + 1] = {0}, missed[HOOK32_COUNT + 1] = {0}, said[HOOK32_COUNT + 1] = {0};
-    for (i = 0; i < HOOK_FAMILIES; i++)
+    for (i = 0; i < HOOK_FAMILIES; i++) {
+        const char* why = family_unready(hook_family_name[i]);
         if ((off[i] = (unsigned char)family_listed(g_settings.hook_families_off, hook_family_name[i])) != 0)
             LOG("hooks: the %s family is off (hooks_off)\n", hook_family_name[i]);
+        else if (why)
+            off[i] = 1, LOG("hooks: the %s family is off: %s\n", hook_family_name[i], why);
+    }
     module_versions(mods, nmods, sdk);
     for (i = 0; kernel_symbol(i, &addr, &name); i++) {
         u32 versions[HOOK_KEYS] = {0};
@@ -364,6 +377,9 @@ void hook_install(void) {
     for (i = 0; i < HOOK_FAMILIES; i++)
         if ((off[i] = (unsigned char)family_listed(g_settings.hook_families_off, hook_family_name[i])) != 0)
             LOG("hooks: the %s family is off (hooks_off)\n", hook_family_name[i]);
+        else if (family_unready(hook_family_name[i]))
+            off[i] = 1, LOG("hooks: the %s family is off: %s\n", hook_family_name[i],
+                            family_unready(hook_family_name[i]));
         else if (!strcmp(hook_family_name[i], LINKER_FAMILY) && !linker_links())
             off[i] = 1; /* nn::ro is the SDK's own while the game's linker runs: linker.c said why */
         else if (family_listed(g_settings.hook_families_verified, hook_family_name[i]))

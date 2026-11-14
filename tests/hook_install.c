@@ -174,3 +174,5 @@ int main(void) {
     puts("hook_install: passed");
     return 0;
 }
+/* hook.c asks whether the alloc family has its arena (alloc.c, not linked here): it hasn't */
+int alloc_ready(void) { return 0; }
