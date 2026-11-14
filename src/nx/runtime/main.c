@@ -1442,7 +1442,8 @@ int snx_main(int argc, char** argv) {
     free(title_keys);
     keys = title_keys = NULL;
 #ifdef MODULE_PACK
-    g_settings.log_level = 2; /* a phone's log is the only way to see what a run did: everything, until it is steadier */
+    /* a phone's log is the only way to see what a run did: everything, until it is steadier. log=3 asks for more */
+    if (g_settings.log_level < 2) g_settings.log_level = 2;
 #endif
     mem_init();
     if (!g_settings.memory_fit_mode) { /* Auto, before the game allocates: what the process holds is the runtime's */

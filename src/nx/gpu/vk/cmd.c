@@ -15,6 +15,7 @@
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
+#include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/texture_arrays.h"
 #include "nx/gpu/vk/uma_budget.h"
@@ -473,7 +474,13 @@ static void frame_recycle(Frame* f) {
     dead_free(f);
     g_dead_bytes -= f->dead_bytes;
     f->dead_bytes = 0;
-    vkResetCommandPool(g_vk.dev, f->pool, 0);
+    {
+        /* the slot's command memory given back for its next use, timed: a phone spends about half a millisecond a frame
+           here, and resetting each buffer in place measured no better (0.39 ms) */
+        VkResourceScope scope = vk_resource_begin();
+        vkResetCommandPool(g_vk.dev, f->pool, 0);
+        vk_resource_end(VK_RESOURCE_CMD_RESET, scope);
+    }
     /* the pools stay, reset: a frame's draws fill several, and making them again every frame costs. Only those the
        slot's recent uses never reached go */
     vk_desc_pools_keep(f->pool_d, &f->npool, &f->pool_peak, &f->pool_uses, f->took);
