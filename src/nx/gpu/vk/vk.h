@@ -163,6 +163,9 @@ typedef struct {
     int geometry_streams_lines_triangles;
     u32 image_slots[5], buffer_image_slots[5]; /* descriptor capacity by shader stage, after the pipeline-wide limit */
     int has_border_color;       /* VK_EXT_custom_border_color */
+    /* VK_EXT_image_view_min_lod: a view sampled no finer than a level, as a texture too big for the device's memory
+       is (texture.c resident_floor) */
+    int has_view_min_lod;
     u32 border_color_max;       /* maxCustomBorderColorSamplers: past it, samplers take the nearest built-in color */
     int has_mirror_clamp;       /* samplerMirrorClampToEdge: VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE */
     /* filterMinmaxImageComponentMapping: a min/max sampler reads a view of any swizzle. Without it the view's r must
@@ -170,7 +173,8 @@ typedef struct {
     int has_minmax_swizzle;
     int has_shader_draw_parameters; /* shaders take an instance's ID from BaseInstance (spirv_translate.c) */
     int has_draw_indirect_count;    /* drawIndirectCount: an indirect draw's count from the GPU's memory */
-    u64 alloc_cap;                  /* the most one device memory allocation may be (memory.c) */
+    u64 alloc_cap;                  /* the most one device memory allocation may be (memory.c): it comes down when
+                                       the driver gives less at once (vk_alloc_cap_lower) */
     u64 max_buffer_size;            /* the biggest buffer the device makes (maintenance4's maxBufferSize) */
     int sparse; /* sparseBinding on the graphics queue: images bigger than alloc_cap are bound in pieces */
     /* sparse residency of 2D or 3D images too, what isn't bound reading as zeros: a texture with holes in its mapping
@@ -998,6 +1002,9 @@ typedef struct Surf {
        tails of them: 0, 1 for all the layers, or one a layer */
     u32 bricks, brick_bytes, tail_first, tails;
     VkExtent3D grain;
+    /* such a texture's finest level with memory, its views sampled no finer (texture.c resident_floor): 0 but where
+       the device's memory has no room for all it maps */
+    u32 lod_floor;
     /* textures: an image with sparse residency, memory bound only for the levels that guest memory maps
        (gpu/vk/texture.c tex_bind). mem is VK_NULL_HANDLE, and bytes counts the memory bound now */
     u8 sparse;
@@ -1237,6 +1244,12 @@ void vk_mem_trim(u64 extra, int force);
 /* the use past which vk_mem_trim frees, for a budget: the budget less a head (surface.c's trim_head, a 16th of the
    budget from 128 to 256 MiB, a quarter of it at most) */
 u64 vk_mem_trim_start(u64 budget);
+/* an image of the caches that found no memory: textures bound by tiles (texture.c resident_floor) made a level
+   coarser, the biggest first, until about need bytes go. Once a present: what they release goes when the frame is
+   done. The bytes released (surface.c) */
+u64 vk_tex_shed(u64 need);
+int vk_tex_can_coarsen(const Surf* t); /* texture.c: t is such a texture with a coarser level to go to */
+u64 vk_tex_coarser(Surf* t);           /* texture.c: t a level coarser, the bytes that released */
 u64 vk_mem_trimmed(void); /* statistics: the bytes vk_mem_trim freed */
 /* astc_mode's Auto follows the memory (gpu/texture/astc_bc.h): vk_astc_auto_trimmed, at the end of each trim that ran,
    with the use it counted (an allocation's extra bytes in it), what it left (the use less what it freed, an
@@ -1248,8 +1261,9 @@ void vk_astc_auto_trimmed(u64 usage, u64 left, u64 budget, int force);
 void vk_astc_auto_present(void);
 void vk_astc_auto_say(void);
 /* vk_image_create for a surface of the caches, with room made for it first (vk_mem_trim). When no memory is found, a
-   forced trim makes room for later, and images as big fail at once for the rest of the present. bytes: the device
-   memory it takes */
+   forced trim makes room for later, and images as big fail at once for the rest of the present: render targets and
+   images the GPU writes (owner with VK_OWN_WRITTEN) counted apart from the others. bytes: the device memory it takes */
+#define VK_OWN_WRITTEN 0x100u
 int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes);
 /* the device memory a surface of the caches takes now: an image whose memory follows its mapping grows and shrinks */
 void vk_surf_bytes(Surf* s, u64 bytes);
@@ -1288,6 +1302,7 @@ void vk_bl_barrier(VkCommandBuffer cb, int before);
    counts again from 0: what a test sees of a request the buffer already held */
 VkBuffer vk_bl_scratch(u64 size, u64* cap);
 u64 vk_bl_scratch_asked(void);
+void vk_bl_scratch_trim(void); /* once a present: the scratch buffer goes when it is far bigger than asked lately */
 
 /* owned.c: guest memory the GPU holds (memory/own.c, docs/layers/gpu/ownership.md). An engine's result (VIC's planes, a
    DMA copy's destination, a 2D blit's, inline-to-memory) is a resource: a device-local buffer in the guest's own
@@ -1306,6 +1321,7 @@ typedef struct VkOwnRes {
                     (vk_own_trim) */
     u8 borrowed; /* buf is another's (the GPU mirror's): letting go of the last reference frees only this record */
     u8 by;       /* VK_OWN_BY_*: what made it, for the statistics */
+    u8 host;     /* buf is in system memory, for want of the device's: not pooled when it is let go */
 } VkOwnRes;
 /* what makes a kept result: a dispatch, a draw that writes guest memory, a copy engine, the video engines, a render
    target written back */
@@ -1326,7 +1342,16 @@ int vk_own_init(void);
 void vk_own_log(void); /* statistics: the kept results in use, and the freed buffers in the pool */
 /* once a present, with nothing of a draw being set up: the freed buffers no result took for a while go, and when
    device memory is short the results left alone longest land in guest memory, a few a present (owned.c) */
+/* memory.c: size bytes of system memory in one allocation found none with room in the heap: 1 when g_vk.alloc_cap
+   came down for it, and the caller asks again within the cap */
+int vk_alloc_cap_lower(u64 size);
 void vk_own_trim(void);
+/* at a job's start (a dispatch, a copy), nothing of it set up: with device memory short, the submission being recorded
+   ends when it holds freed result buffers the job's results could take (owned.c) */
+void vk_own_room(void);
+/* for another owner that found no device memory: the pool's free buffers go back to the heap, those the GPU still
+   uses in a submission it has waited for first when none is free. 1 when the heap got memory back (vk_lock held) */
+int vk_own_make_room(void);
 /* guest memory [cpu, cpu + size) watched for the CPU (own_watch), as vk_own_publish traps an owner's: 0, or -1 where it
    can't be (no traps, memory an import holds, memory not in the pool). vk_lock held */
 int vk_own_watch(u64 cpu, u64 size);
@@ -2309,6 +2334,8 @@ void vk_compute_land(void); /* pending compute results into guest memory, now */
 u64 vk_compute_put_aside(void);
 void vk_compute_wait(u64 value);                     /* until the compute batch is done (any thread, without vk_lock) */
 void vk_compute_progress(u64* submitted, u64* done); /* the last batch and the last done (any thread) */
+/* the batch that holds the dispatches recorded so far: the one being recorded, else the last submitted (vk_lock held) */
+u64 vk_compute_number(void);
 void vk_compute_land_through(u64 value);             /* the batches up to it, done, land (vk_lock) */
 void vk_compute_before_write(u64 gva, u64 size);     /* gpu.c's g_gpu_before_write */
 void vk_compute_mem_need(u64 a, u64 n);              /* a read of [a, a + n): land results there first */

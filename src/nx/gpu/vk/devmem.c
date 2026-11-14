@@ -45,6 +45,7 @@ typedef struct {
     u32 type;
     u32 allocs;
     u8 image, own; /* image: for images only, where they cannot share a block with buffers (g_devmem.apart) */
+    u8 reserve;    /* the reserve (vk_devmem_reserve): taken only while vk_devmem_reserve_use says, never let go */
 } Block;
 /* an allocation: DevMem is its index plus one */
 typedef struct {
@@ -72,6 +73,7 @@ static struct {
     u64 full_frame[VK_MAX_MEMORY_TYPES], full_gave[VK_MAX_MEMORY_TYPES];
     u64 gave[VK_MAX_MEMORY_HEAPS];
     int main_heap; /* the largest heap of the GPU's own memory: the one DM_MARGIN is kept free of */
+    int use_reserve; /* requests may take the reserve's memory now (vk_devmem_reserve_use) */
     /* The thread that makes the next block ahead of its first request, and gives memory back to the driver. A call
        to the driver for a block took 1 to 48 ms in one game's race and up to 600 ms while it loaded, on the thread
        that asked, which was the renderer's. It makes one block at a time: want is the next, busy the one it is at */
@@ -461,6 +463,7 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
             for (u32 i = 0; i < g_devmem.nblock; i++) {
                 const Block* k = &g_devmem.block[i];
                 if (!k->mem || k->own || k->type != type || k->image != image) continue;
+                if (k->reserve && !g_devmem.use_reserve) continue;
                 u32 room = k->free.units - k->free.used, piece = k->free.largest;
                 if (room < from_room || (room == from_room && i < from_i)) continue; /* tried */
                 if (piece >= units && piece >= align_units && room < least) {
@@ -588,6 +591,29 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
 VkResult vk_devmem_alloc(const VkMemoryRequirements* req, const DevMemWant* want, DevMem* mem, DevMemInfo* info) {
     return alloc(req, want, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, mem, info);
 }
+/* The reserve: a block of the GPU's memory for render targets alone, which the rest leave alone. On a GPU of 2 GB,
+   Mario Kart World's depth targets found no memory for hundreds of presents as its race loaded: what the trim freed
+   was the driver's again only once the frame was done, and other requests took it first. Its draws were skipped, and
+   its auto-exposure, fed those frames, went to nothing: the scene stayed black for a minute or for the run. Made where
+   the device's heap is 4 GiB or less; images only take it (g_devmem.apart), and only within vk_devmem_reserve_use */
+void vk_devmem_reserve(u64 size, u32 type_bits) {
+    pm_lock(&g_devmem.lk);
+    const DevMemWant want = {.at = DM_DEVICE, .image = 1};
+    int type = type_pick(type_bits, &want);
+    VkResult res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    u32 slot = type < 0 ? 0 : block_new((u32)type, size, g_devmem.apart, (u32)(size / DM_UNIT), VK_NULL_HANDLE,
+                                        VK_NULL_HANDLE, &res);
+    if (slot) g_devmem.block[slot - 1].reserve = 1;
+    pm_unlock(&g_devmem.lk);
+    if (slot)
+        LOG("vulkan: %llu MB of the GPU's memory held back for render targets that find none\n",
+            (unsigned long long)(size >> 20));
+}
+void vk_devmem_reserve_use(int on) {
+    pm_lock(&g_devmem.lk);
+    g_devmem.use_reserve = on;
+    pm_unlock(&g_devmem.lk);
+}
 void vk_devmem_free(DevMem m) {
     if (!m) return;
     pm_lock(&g_devmem.lk);
@@ -602,7 +628,7 @@ void vk_devmem_free(DevMem m) {
     if (!--k->allocs) {
         /* an empty block stays when it is the only empty one of its kind and the heap is within its budget */
         int keep = !k->own;
-        if (keep) {
+        if (keep && !k->reserve) {
             u64 budget = heap_budget(heap);
             if (g_devmem.block_bytes[heap] > budget) keep = 0;
             for (u32 i = 0; keep && i < g_devmem.nblock; i++) {

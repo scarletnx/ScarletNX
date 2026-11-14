@@ -675,11 +675,12 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem
     return 0;
 }
 /* images with memory only where it is bound: of the shape g_res.shape gives (none while its block is 0 texels), their
-   pages bound as vk_image_resident is asked, each 64 KiB, those it gives memory marked 2 as memory.c marks them */
+   pages bound as vk_image_resident is asked, each 64 KiB, those it gives memory marked 2 as memory.c marks them. With
+   a cap, a bind of more pages than it finds no memory and changes nothing */
 static struct {
     VkResidentShape shape;
     u8 bound[128];
-    u32 pages;
+    u32 pages, cap;
 } g_res;
 int vk_resident_shape(const VkImageCreateInfo* ii, VkResidentShape* s) {
     (void)ii;
@@ -700,6 +701,9 @@ int vk_image_resident(VkImage img, u8* want, const u64* keys, u32 n, u64* bytes)
     (void)img, (void)keys;
     *bytes = 0;
     if (n > sizeof g_res.bound) return 0;
+    u32 want_n = 0;
+    for (u32 i = 0; i < n; i++) want_n += want[i] != 0;
+    if (g_res.cap && want_n > g_res.cap) return 0;
     g_res.pages = n;
     for (u32 i = 0; i < n; i++) {
         if (want[i] && !g_res.bound[i]) want[i] = 2;
@@ -731,6 +735,7 @@ int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32
 }
 void vk_surf_bytes(Surf* s, u64 bytes) { s->bytes = bytes; }
 void vk_mem_trim(u64 extra, int force) { (void)extra, (void)force; }
+void vk_mem_use(u64* usage, u64* budget) { *usage = 0, *budget = 1ull << 30; }
 /* the block linear layout: GOBs of 64 bytes by 8 rows in blocks of 1 << bh by 1 << bd GOBs, gob_w of them across a
    row of blocks, the GOB's 16 byte groups in their order */
 static u64 bl_offset_g(u32 x, u32 y, u32 z, u32 gob_w, u32 h, u32 bh_log2, u32 bd_log2) {
@@ -1339,6 +1344,50 @@ static void check_resident_layers(void) {
     g_map.count = 0;
     g_res.shape = (VkResidentShape){{0, 0, 0}, 0, 0};
 }
+/* The texture of check_resident_layers, its tile 1 of level 0, level 1 and both mip tails mapped: 4 pages, where the
+   device has memory for 3. The bind finds none, level 0 goes (resident_floor), and the other 3 are bound, the
+   texture sampled from level 1 on. With room again the next bind takes level 0 back */
+static void check_resident_floor(void) {
+    Surf t = tex(256, 256, 1, 9, 4, 4, 0, 1);
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    t.tile_w = 3;
+    t.layers = 2;
+    t.layer_size = bl_layer_size(256, 256, 1, &t.f, 4, 0, 3, 9);
+    for (u32 l = 0; l < 9; l++) t.size += bl_level_size(256, 256, 1, &t.f, 4, 0, 3, l, NULL, NULL);
+    t.size += t.layer_size;
+    g_res.shape = (VkResidentShape){{128, 128, 1}, 2, 2};
+    CHECK(resident_image(&t, &ii) && t.bricks == 5 && t.tail_first == 2);
+    g_map.count = 3;
+    g_map.gva[0] = GVA + 0x10000, g_map.n[0] = 0x10000;  /* layer 0, level 0, tile 1 */
+    g_map.gva[1] = GVA + 0x40000, g_map.n[1] = 0x20000;  /* layer 0, level 1 and its tail */
+    g_map.gva[2] = GVA + 0xB0000, g_map.n[2] = 0x10000;  /* layer 1's tail */
+    g_vk.has_view_min_lod = 1;
+    g_res.cap = 3;
+    u8 want[12] = {0};
+    CHECK(resident_bind_mapped(&t, want) && t.lod_floor == 1);
+    static const u8 floored[12] = {0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1};
+    CHECK(!memcmp(g_res.bound, floored, 12));
+    CHECK(!want[1] && want[4] == 2 && want[10] == 2 && want[11] == 2);
+    /* without the extension the bind is all or nothing */
+    g_vk.has_view_min_lod = 0;
+    t.lod_floor = 0;
+    memset(want, 0, sizeof want);
+    CHECK(!resident_bind_mapped(&t, want) && t.lod_floor == 0);
+    /* room again: level 0 back */
+    g_vk.has_view_min_lod = 1;
+    t.lod_floor = 1;
+    g_res.cap = 0;
+    memset(want, 0, sizeof want);
+    CHECK(resident_bind_mapped(&t, want) && t.lod_floor == 0 && g_res.bound[1] && want[1] == 2 && want[4] == 1);
+    /* another image short of memory (vk_tex_shed): a level coarser releases level 0's page, and there is no coarser
+       level with bricks to go to after it */
+    t.bytes = 4 * 0x10000;
+    CHECK(vk_tex_coarser(&t) == 0x10000 && t.lod_floor == 1 && !g_res.bound[1] && g_res.bound[4]);
+    CHECK(!vk_tex_can_coarsen(&t) && vk_tex_coarser(&t) == 0);
+    g_vk.has_view_min_lod = 0;
+    g_map.count = 0;
+    g_res.shape = (VkResidentShape){{0, 0, 0}, 0, 0};
+}
 /* call c of the ASTC upload (astc_calls) is the region w x h at (x, y) of level l of t, layer 0, and its blocks in
    astc_out those of that region in guest memory, laid out as the level is */
 static void check_astc_call(const Surf* t, u32 c, u32 x, u32 y, u32 w, u32 h, u32 l) {
@@ -1917,6 +1966,7 @@ int main(void) {
     check_pitch_linear_changes();
     check_astc_changes();
     check_resident_layers();
+    check_resident_floor();
     check_resident_astc();
     check_hash_runs();
     printf("tex_upload_rows: %u checks passed\n", checks);

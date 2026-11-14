@@ -758,10 +758,33 @@ static void resident_keys(const Surf* t, const u64* ukey, u64* dkey) {
         }
     for (u32 i = t->layers * t->bricks; i < resident_pages(t); i++) dkey[i] = 0;
 }
+/* The levels of such a texture finer than floor, in dev (the order vk_image_resident takes), left without memory.
+   Mario Kart World's terrain is two 8192x8192 arrays of 68 layers with memory where the game maps its tiles: 429 MB
+   of BC6H, and 109 MB of ASTC 8x8 that is 429 MB as the BC7 it is held as (four times its two bits a texel). On a GPU
+   of 2 GB, whose budget is 1,360 MB, neither bind found memory, and the draws that sample them were skipped. The game
+   maps its levels from 3 on whole and its finer ones where it looks, each a quarter of the one before: without level
+   0 the two are 340 MB, without levels 0 and 1 210 MB. So where a texture's bind finds no memory, its finest levels
+   go one at a time until it finds some (resident_bind_mapped), and its views are sampled no finer than the first
+   level left (VK_EXT_image_view_min_lod, tex_view): a texture of half the resolution where the game asked for the
+   full one, in place of none. A later bind takes one level back while the heap has room for it. Without the
+   extension the bind is all or nothing, as before */
+static void resident_floor(const Surf* t, u8* dev, u32 floor) {
+    const VkExtent3D g = t->grain;
+    const u32 d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1;
+    u32 at = 0;
+    for (u32 layer = 0; layer < t->layers; layer++)
+        for (u32 l = 0; l < t->tail_first; l++) {
+            const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, ld = d3 >> l ? d3 >> l : 1;
+            const u32 n = (lw + g.width - 1) / g.width * ((lh + g.height - 1) / g.height) *
+                          ((ld + g.depth - 1) / g.depth);
+            if (l < floor) memset(dev + at, 0, n);
+            at += n;
+        }
+}
 /* such a texture's pages bound where memory maps any of their bytes and released where it maps none
    (vk_image_resident: what isn't bound reads as zeros, as the holes do), the ones bound set in want (resident_pages of
-   them, zeroed; 2 where the memory is new). 1 when they all are */
-static int resident_bind_mapped(Surf* t, u8* want) {
+   them, zeroed; 2 where the memory is new). 1 when they all are. finer: the bind may take a level back */
+static int resident_bind_at(Surf* t, u8* want, int finer_ok) {
     u32 pages = resident_pages(t);
     u64 bytes;
     /* without memory for the keys each block takes memory of its own, as before them */
@@ -778,16 +801,68 @@ static int resident_bind_mapped(Surf* t, u8* want) {
     const int stacked = resident_order(t, want, dev, 0);
     if (!stacked) memcpy(dev, want, pages);
     if (dkey) resident_keys(t, ukey, dkey);
+    /* the floor it had (resident_floor), or one level finer where the heap has that much room to spare: a fifth of
+       its budget left after it */
+    u32 floor = t->lod_floor;
+    u8* finer = floor && finer_ok ? malloc(pages) : NULL;
+    if (finer) {
+        u64 usage, budget;
+        vk_mem_use(&usage, &budget);
+        memcpy(finer, dev, pages);
+        resident_floor(t, finer, floor - 1);
+        if (usage + vk_image_resident_need(t->img, finer, dkey, pages) <= budget / 5 * 4) floor--;
+        free(finer);
+    }
+    if (floor) resident_floor(t, dev, floor);
     /* room made under the budget for the memory the bind takes: none for a block that joins the memory of its key */
     u64 need = vk_image_resident_need(t->img, dev, dkey, pages);
     if (need) vk_mem_trim(need, 0);
     int ok = vk_image_resident(t->img, dev, dkey, pages, &bytes);
+    /* no memory for it: the finest levels go, one at a time, until it has (resident_floor). Their pages are released
+       before the coarser ones are bound */
+    u8* fresh = NULL; /* the pages a try gave memory, which a later one finds bound (2 in dev: to be loaded) */
+    while (!ok && g_vk.has_view_min_lod && floor + 1 < t->tail_first && (fresh || (fresh = calloc(pages, 1)))) {
+        for (u32 i = 0; i < pages; i++) fresh[i] |= dev[i] == 2;
+        resident_floor(t, dev, ++floor);
+        ok = vk_image_resident(t->img, dev, dkey, pages, &bytes);
+    }
+    if (fresh) {
+        for (u32 i = 0; i < pages; i++)
+            if (fresh[i] && dev[i]) dev[i] = 2;
+        free(fresh);
+    }
+    if (ok && floor != t->lod_floor) {
+        LOG_LIMIT(16, "vulkan: a %ux%ux%u texture of %u levels is sampled from level %u on, the device's memory short "
+                      "of the finer ones\n", t->w, t->h, t->layers, t->levels, floor);
+        t->lod_floor = floor;
+    }
     if (!stacked || !resident_order(t, want, dev, 1)) memcpy(want, dev, pages);
     free(dev);
     free(ukey);
     free(dkey);
     vk_surf_bytes(t, bytes);
     return ok;
+}
+static int resident_bind_mapped(Surf* t, u8* want) { return resident_bind_at(t, want, 1); }
+/* Another image that found no memory (vk_tex_shed): such a texture one level coarser, its finest level's memory
+   released once the GPU is done with it. A page the bind gave memory (the game mapped it since) has no texels yet:
+   the texture loads whole at its next use. The bytes it released */
+u64 vk_tex_coarser(Surf* t) {
+    if (!vk_tex_can_coarsen(t)) return 0;
+    const u64 was = t->bytes;
+    u8* want = calloc(resident_pages(t), 1);
+    if (!want) return 0;
+    t->lod_floor++;
+    if (!resident_bind_at(t, want, 0)) t->upload_valid = 0;
+    for (u32 i = 0; i < resident_pages(t); i++)
+        if (want[i] == 2) t->upload_valid = 0;
+    free(want);
+    LOG_LIMIT(16, "vulkan: a %ux%ux%u texture of %u levels is sampled from level %u on, for another image's memory\n",
+              t->w, t->h, t->layers, t->levels, t->lod_floor);
+    return was > t->bytes ? was - t->bytes : 0;
+}
+int vk_tex_can_coarsen(const Surf* t) {
+    return t->bricks && t->img && g_vk.has_view_min_lod && t->lod_floor + 1 < t->tail_first;
 }
 static int tex_patch_range(Upload* u, u64 a, u64 b);
 /* such a texture's upload: its pages bound where it is mapped (resident_bind_mapped), then each bound brick staged as
@@ -1697,9 +1772,11 @@ static int resident_image(Surf* t, const VkImageCreateInfo* ii) {
 
 /* a texture of w by h pixels, with the samples of the sample layout msaa (DS_MSAA_, canonical). holes: its memory has
    holes in its mapping, and it takes memory only where it is mapped where the device can: a 3D volume of one level in
-   bricks (resident_image), another block-linear texture in the device's sparse blocks (tex_bind) */
+   bricks (resident_image), another block-linear texture in the device's sparse blocks (tex_bind). written: a storage
+   image, which vk_cache_image_create counts with the render targets (VK_OWN_WRITTEN) */
 static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, VkImageViewType type, VkFmt f, u32 fkey,
-                        u32 bl, u32 bh, u32 bd, u32 tile_w, u32 pitch, u64 layer_size, u32 msaa, int holes) {
+                        u32 bl, u32 bh, u32 bd, u32 tile_w, u32 pitch, u64 layer_size, u32 msaa, int holes,
+                        int written) {
     /* a multisampled one is loaded by drawing its samples from the guest's layout of them, through a view of their
        raw bytes (gpu/vk/msaa.c) */
     VkFormat raw = msaa ? vk_raw_format(f.bpp) : VK_FORMAT_UNDEFINED;
@@ -1763,7 +1840,8 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
                       w, h, layers * d3, levels, (int)ii.format,
                       !sparse ? "no sparse residency for it here, or it is not block linear, or it is multisampled"
                               : "the device makes no such image with sparse residency, or it is under 4 MiB");
-        if (!vk_cache_image_create(&ii, &t->img, &t->mem, VK_OWN_TEXTURE, &t->bytes)) {
+        if (!vk_cache_image_create(&ii, &t->img, &t->mem, VK_OWN_TEXTURE | (written ? VK_OWN_WRITTEN : 0),
+                                   &t->bytes)) {
             free(t);
             return NULL;
         }
@@ -2956,7 +3034,8 @@ texture_from_memory:
             f.vk = astc_kind_vk(outcome, srgb);
         }
     }
-    Surf* t = tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, tile_w, pitch, stride, msaa, holes);
+    Surf* t =
+        tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, tile_w, pitch, stride, msaa, holes, storage);
     if (!t) return NULL;
     t->size = sz;
     /* loaded whole, a pitch linear or an ASTC one takes its changes in pieces (an ASTC one's holes decode as memory's
@@ -3017,6 +3096,9 @@ static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkCom
     stencil = stencil && s->f.stencil;
     u64 key = (u64)type | (u64)map->r << 4 | (u64)map->g << 8 | (u64)map->b << 12 | (u64)map->a << 16 | (u64)fmt << 20 |
               (u64)stencil << 60 | (u64)(levels != s->levels) << 61 | (u64)(storage != 0) << 62;
+    /* a texture whose finest levels have no memory (resident_floor) sampled no finer than its first with it */
+    const u32 floor = !storage && s->lod_floor < levels ? s->lod_floor : 0;
+    key |= (u64)floor << 51;
     for (int i = 0; i < s->nsv; i++)
         if (s->sv[i].key == key) return s->sv[i].v;
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -3032,6 +3114,9 @@ static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkCom
     VkImageViewUsageCreateInfo vu = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
                                      .usage = storage ? VK_IMAGE_USAGE_STORAGE_BIT : VK_IMAGE_USAGE_SAMPLED_BIT};
     vi.pNext = &vu;
+    VkImageViewMinLodCreateInfoEXT ml = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_MIN_LOD_CREATE_INFO_EXT,
+                                         .minLod = (float)floor};
+    if (floor) vu.pNext = &ml;
     VkImageView v;
     if (!VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &v))) return VK_NULL_HANDLE;
     if (s->nsv == (int)(sizeof s->sv / sizeof s->sv[0])) { /* full: drop the oldest */

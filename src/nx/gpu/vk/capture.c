@@ -379,7 +379,9 @@ static VkPipeline capture_pipeline(u64 blend, u32 flags, u32 coverage) {
                                                   .pName = "main"},
                                         .layout = g_capture.layout};
     VkPipeline pipeline = VK_NULL_HANDLE;
+    int entered = snx_vk_compile_enter();
     VkResult result = vkCreateComputePipelines(g_vk.dev, VK_NULL_HANDLE, 1, &info, NULL, &pipeline);
+    snx_vk_compile_leave(entered);
     vkDestroyShaderModule(g_vk.dev, module, NULL);
     if (!VK_OK(result)) return VK_NULL_HANDLE;
     g_capture.pipelines[g_capture.count++] = (CapturePipeline){blend, flags, coverage, pipeline};
@@ -398,7 +400,9 @@ int vk_capture_finalize_tiles(VkCapture* capture) {
         VkComputePipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
             .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                        .module = module, .pName = "main"}, .layout = g_capture.layout};
+        int entered = snx_vk_compile_enter();
         VkResult result = vkCreateComputePipelines(g_vk.dev, VK_NULL_HANDLE, 1, &info, NULL, &g_capture.finalize);
+        snx_vk_compile_leave(entered);
         vkDestroyShaderModule(g_vk.dev, module, NULL);
         if (!VK_OK(result)) return 0;
     }
@@ -558,7 +562,9 @@ static VkPipeline mixed_pipeline(const MixedKey* key) {
         .pMultisampleState = &multisample, .pDepthStencilState = &depth, .pColorBlendState = &blend,
         .pDynamicState = &dynamic, .layout = g_capture.mixed_layout};
     VkPipeline pipeline = VK_NULL_HANDLE;
+    int entered = snx_vk_compile_enter();
     VkResult result = vkCreateGraphicsPipelines(g_vk.dev, VK_NULL_HANDLE, 1, &info, NULL, &pipeline);
+    snx_vk_compile_leave(entered);
     vkDestroyShaderModule(g_vk.dev, fragment, NULL);
     if (!VK_OK(result)) return VK_NULL_HANDLE;
     g_capture.mixed[g_capture.mixed_count++] = (MixedPipeline){*key, pipeline};

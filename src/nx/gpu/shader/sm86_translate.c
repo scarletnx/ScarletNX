@@ -1918,6 +1918,7 @@ static int may_write(const Sm86Insn* in, u32 r) {
         case SM86_R2UR:
         case SM86_PLOP3:
         case SM86_UPLOP3:
+        case SM86_PSETP:
         case SM86_UVOTE:
         case SM86_ISETP:
         case SM86_FSETP:
@@ -3321,6 +3322,12 @@ static u32 system_value(Ctx* c, u32 sr) {
                 return c->zero;
             }
             return cu(c, 1u << 8 | 1u << 16);
+        case 0x1e:
+        case 0x1f:
+            /* SR_WSCALEFACTOR_XY and SR_WSCALEFACTOR_Z (NAK's numbering): the factors of clip space w scaling, by
+               which one game's vertex programs scale w before they test the position against it (FMUL by the
+               register, then FSETP, then PSETP). The runtime sets no w scaling, which is a factor of 1 */
+            return cu(c, 0x3f800000u);
         default: fail(c, "S2R system register 0x%x", sr); return c->zero;
     }
 }
@@ -4149,6 +4156,16 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             if (q < SM86_PT) pwr(c, q, lut3(c, lut1, c->t_bool, x, y, z, c->true_v, c->false_v), u);
             return;
         }
+        case SM86_PSETP: {
+            /* PSETP as a vertex's cull test (sm86.decode): how it combines its predicates isn't known, and in the
+               programs seen the predicate it writes only ends the vertex program early, its outputs unwritten. Never
+               culled, the vertex is drawn as without the test, and the rasterizer clips what is outside. Refused,
+               every draw of such a program was skipped */
+            u32 p = sm86_field(in, 81, 3), q = sm86_field(in, 84, 3);
+            if (p < SM86_PT) pwr(c, p, c->false_v, 0);
+            if (q < SM86_PT) pwr(c, q, c->false_v, 0);
+            return;
+        }
         case SM86_CS2R: {
             if (sm86_field(in, 72, 8) != 0xff) {
                 fail(c, "CS2R of system register 0x%x", sm86_field(in, 72, 8));
@@ -4676,12 +4693,31 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         }
         case SM86_LDC: {
             u32 type = sm86_field(in, 73, 3), bank = sm86_field(in, 54, 5), off = sm86_field(in, 38, 16);
-            u32 r = sm86_field(in, 24, 8);
-            if (sm86_field(in, 78, 2) || type > 5) {
-                fail(c, "LDC of type %u, mode %u", type, sm86_field(in, 78, 2));
+            u32 r = sm86_field(in, 24, 8), mode = sm86_field(in, 78, 2);
+            if ((mode != 0 && mode != 2) || type > 5) {
+                fail(c, "LDC of type %u, mode %u", type, mode);
                 return;
             }
             u32 index = r < SM86_RZ ? rd(c, r) : 0;
+            if (mode == 2 && index) {
+                /* NAK's LdcMode::IndexedSegmented (.IS): the register holds the bank past the instruction's in its
+                   upper half and the byte offset in its lower half, as NAK packs them with PRMT for a bank known only
+                   at run time. A select over the banks from the instruction's on (an unbound one reads zeros). One
+                   game's vertex program that draws its frame into the window reads a record of bank 1 for each
+                   vertex, c[(VertexId << 5) + 0x10000 + 8] */
+                u32 seg = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, index, cu(c, 16));
+                u32 low = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, index, cu(c, 0xffff));
+                for (u32 w = 0; w < (type == 5 ? 2u : 1u); w++) {
+                    u32 v = c->zero;
+                    for (u32 b = bank; b < 18; b++) {
+                        u32 here = type < 4 ? cbuf_subword(c, b, off, low, type) : cbuf_load(c, b, off + 4 * w, low);
+                        u32 is = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, seg, cu(c, b - bank));
+                        v = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, is, here, v);
+                    }
+                    if (in->dst + w < SM86_RZ) wr(c, in->dst + w, v);
+                }
+                return;
+            }
             if (c->handle && c->handle[c->cur].var) { /* the element of the table of handles this reads */
                 const TexHandle* h = &c->handle[c->cur];
                 u32 at = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32,
@@ -5459,7 +5495,8 @@ static int mh_may_write(const Sm86Insn* in, int file, u32 r) {
             case SM86_FSETP:
             case SM86_DSETP:
             case SM86_HSETP2: return uk == u && (p81 || p84);
-            case SM86_PLOP3: return !u && (p81 || p84);
+            case SM86_PLOP3:
+            case SM86_PSETP: return !u && (p81 || p84);
             case SM86_UPLOP3: return u && (p81 || p84);
             case SM86_LEA:
             case SM86_ULEA:

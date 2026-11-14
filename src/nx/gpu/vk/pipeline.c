@@ -1657,6 +1657,13 @@ static void* pipe_tail(PipeInfo* o, int robust) {
     }
     return &o->fi;
 }
+/* a pipeline made alone where the driver needs it (snx_vk_compile_serial) */
+#define COMPILED(call)                                                                                                 \
+    do {                                                                                                               \
+        int entered_ = snx_vk_compile_enter();                                                                         \
+        call;                                                                                                          \
+        snx_vk_compile_leave(entered_);                                                                                \
+    } while (0)
 static VkPipeline pipe_create(const Pipe* e, int* hit) {
     PipeInfo o;
     pipe_info(&e->k, e->fs, &o);
@@ -1695,7 +1702,7 @@ static VkPipeline pipe_create(const Pipe* e, int* hit) {
         gi.layout = VK_NULL_HANDLE;
     }
     VkPipeline p = VK_NULL_HANDLE;
-    VK_OK(vkCreateGraphicsPipelines(g_vk.dev, g_pipeline.pcache, 1, &gi, NULL, &p));
+    COMPILED(VK_OK(vkCreateGraphicsPipelines(g_vk.dev, g_pipeline.pcache, 1, &gi, NULL, &p)));
     *hit = (o.made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     if (*hit) __atomic_add_fetch(e->prewarm ? &g_pipeline.pf.hits : &g_pipeline.pipe_hits, 1, __ATOMIC_RELAXED);
     return p;
@@ -1870,7 +1877,7 @@ static VkPipeline lib_create(const PipeLib* l, int* hit) {
         break;
     }
     VkPipeline p = VK_NULL_HANDLE;
-    VK_OK(vkCreateGraphicsPipelines(g_vk.dev, cache, 1, &gi, NULL, &p));
+    COMPILED(VK_OK(vkCreateGraphicsPipelines(g_vk.dev, cache, 1, &gi, NULL, &p)));
     *hit = (o.made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     return p;
 }
@@ -1940,7 +1947,7 @@ static VkPipeline gpl_link(const Pipe* e, int lto, int* hit) {
                  (lto ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0),
         .layout = e->layout};
     VkPipeline p = VK_NULL_HANDLE;
-    VK_OK(vkCreateGraphicsPipelines(g_vk.dev, lto ? g_pipeline.pcache : VK_NULL_HANDLE, 1, &gi, NULL, &p));
+    COMPILED(VK_OK(vkCreateGraphicsPipelines(g_vk.dev, lto ? g_pipeline.pcache : VK_NULL_HANDLE, 1, &gi, NULL, &p)));
     *hit = (made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     return p;
 }

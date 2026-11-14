@@ -5,6 +5,7 @@
 #endif
 #include "common/gpu/vk/vk_common.h"
 #include "common/platform/file.h"
+#include "common/platform/thread.h"
 #include "common/utilities/common.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -406,6 +407,17 @@ VkResult snx_vk_shader_module(VkDevice dev, const uint32_t* words, size_t size, 
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = size, .pCode = words};
     return vkCreateShaderModule(dev, &info, NULL, out);
 }
+static PMutex g_compile = PMUTEX_INIT;
+static int g_compile_serial;
+void snx_vk_compile_serial(int on) { __atomic_store_n(&g_compile_serial, on != 0, __ATOMIC_RELEASE); }
+int snx_vk_compile_enter(void) {
+    if (!__atomic_load_n(&g_compile_serial, __ATOMIC_ACQUIRE)) return 0;
+    pm_lock(&g_compile);
+    return 1;
+}
+void snx_vk_compile_leave(int entered) {
+    if (entered) pm_unlock(&g_compile);
+}
 static VkResult module_pipeline(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout, VkShaderModule module,
                                 const VkSpecializationInfo* spec, uint32_t subgroup, bool full, VkPipeline* out) {
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo size = {
@@ -421,7 +433,10 @@ static VkResult module_pipeline(VkDevice dev, VkPipelineCache cache, VkPipelineL
                   .pName = "main",
                   .pSpecializationInfo = spec},
         .layout = layout};
-    return vkCreateComputePipelines(dev, cache, 1, &info, NULL, out);
+    int entered = snx_vk_compile_enter();
+    VkResult r = vkCreateComputePipelines(dev, cache, 1, &info, NULL, out);
+    snx_vk_compile_leave(entered);
+    return r;
 }
 VkResult snx_vk_module_pipeline(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout, VkShaderModule module,
                                 const VkSpecializationInfo* spec, VkPipeline* out) {

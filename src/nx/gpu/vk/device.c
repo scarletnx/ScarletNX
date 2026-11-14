@@ -92,6 +92,8 @@ static void oom_report(VkResult r) {
             (unsigned long long)(b[h].allocated_bytes >> 20),
             (unsigned long long)(mp->memoryHeaps[h].size >> 20));
     LOG("vulkan: out of memory with %u descriptor pools\n", vk_desc_pools());
+    vk_ledger_owners(); /* who holds it */
+    vk_own_log();       /* and what of the kept results is in use, what waits freed in the pool */
 }
 
 /* Each heap and the descriptor pools in one part of a line, for a low memory warning from a thread that never calls
@@ -890,6 +892,7 @@ static int create_device(void) {
         g_vk.advanced_blend_caps.available = snx_vk_extensions_has(&e, VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
         g_vk.has_fragment_interlock = snx_vk_extensions_has(&e, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
+        g_vk.has_view_min_lod = snx_vk_extensions_has(&e, VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
         has_shader_clock = snx_vk_extensions_has(&e, VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
         has_descriptor_buffer = snx_vk_extensions_has(&e, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
         has_descriptor_heap = snx_vk_extensions_has(&e, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
@@ -1032,6 +1035,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT};
     VkPhysicalDeviceCustomBorderColorFeaturesEXT fbc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
+    VkPhysicalDeviceImageViewMinLodFeaturesEXT fminlod = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT};
     VkPhysicalDeviceTransformFeedbackFeaturesEXT fxfb = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
     VkPhysicalDeviceBlendOperationAdvancedFeaturesEXT qadvanced = {
@@ -1142,6 +1147,7 @@ static int create_device(void) {
                            !core13 || has_eds2 ? &qeds2 : NULL,
                            g_vk.has_divisor ? &fdiv : NULL,
                            g_vk.has_border_color ? &fbc : NULL,
+                           g_vk.has_view_min_lod ? &fminlod : NULL,
                            g_vk.has_xfb ? &fxfb : NULL,
                            g_vk.advanced_blend_caps.available ? &qadvanced : NULL,
                            g_vk.has_fragment_interlock ? &qinterlock : NULL,
@@ -1223,6 +1229,8 @@ static int create_device(void) {
             has_list_restart ? "VK_EXT_primitive_topology_list_restart without its list feature"
                              : "no VK_EXT_primitive_topology_list_restart");
     g_vk.has_barycentric = has_barycentric && qbarycentric.fragmentShaderBarycentric;
+    /* NVIDIA's compiler deadlocked with pipelines made on several threads at once (snx_vk_compile_serial) */
+    snx_vk_compile_serial(p12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY);
     if (p12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
         LOG("vulkan: fragment inputs are the driver's interpolation (NVIDIA's keeps the console's precision)\n");
     else if (g_vk.has_barycentric)
@@ -1350,6 +1358,7 @@ static int create_device(void) {
         g_vk.advanced_blend_caps.all_operations = advanced.advancedBlendAllOperations;
     }
     g_vk.has_border_color = g_vk.has_border_color && fbc.customBorderColors && fbc.customBorderColorWithoutFormat;
+    g_vk.has_view_min_lod = g_vk.has_view_min_lod && fminlod.minLod;
     if (g_vk.has_border_color) { /* how many samplers may have a custom border color: as few as 32 */
         VkPhysicalDeviceCustomBorderColorPropertiesEXT cbp = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT};
@@ -1594,6 +1603,12 @@ static int create_device(void) {
             .customBorderColorWithoutFormat = VK_TRUE};
         chain = &fbc;
         ext[next++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
+    }
+    if (g_vk.has_view_min_lod) {
+        fminlod = (VkPhysicalDeviceImageViewMinLodFeaturesEXT){
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT, .pNext = chain, .minLod = VK_TRUE};
+        chain = &fminlod;
+        ext[next++] = VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME;
     }
     if (g_vk.has_xfb) {
         fxfb = (VkPhysicalDeviceTransformFeedbackFeaturesEXT){
@@ -1910,6 +1925,33 @@ static int create_device(void) {
     /* the renderer's own allocator (devmem.c): its blocks are 64 MiB at most, and no more than the cap */
     if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)) return 0;
     __atomic_store_n(&g_devmem_ready, 1, __ATOMIC_RELEASE);
+    { /* a GPU of 4 GiB or less: memory held back for render targets (devmem.c vk_devmem_reserve) */
+        VkPhysicalDeviceMemoryProperties mp;
+        vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+        u64 most = 0;
+        for (u32 h = 0; h < mp.memoryHeapCount; h++)
+            if ((mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && mp.memoryHeaps[h].size > most)
+                most = mp.memoryHeaps[h].size;
+        /* the memory types a depth target may take */
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .imageType = VK_IMAGE_TYPE_2D,
+                                .format = VK_FORMAT_D32_SFLOAT,
+                                .extent = {64, 64, 1},
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        VkImage probe;
+        if (g_vk.mem_model != VK_MEM_UMA && most <= (4ull << 30) &&
+            vkCreateImage(g_vk.dev, &ii, NULL, &probe) == VK_SUCCESS) {
+            VkMemoryRequirements req;
+            vkGetImageMemoryRequirements(g_vk.dev, probe, &req);
+            vkDestroyImage(g_vk.dev, probe, NULL);
+            vk_devmem_reserve(64ull << 20, req.memoryTypeBits);
+        }
+    }
     if (g_vk.has_descriptor_heaps && !vk_descriptor_heaps_init(&g_vk.descriptor_heap_props)) {
         g_vk.has_descriptor_heaps = 0;
         g_vk.has_descriptor_heap_support = 0;
