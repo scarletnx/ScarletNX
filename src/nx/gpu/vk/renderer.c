@@ -1076,22 +1076,27 @@ static void vkr_refresh(void) {
 /* a part of a surface (x, y, w x h), blitted to RGBA8 at dw x dh, scaled on the GPU, and read back: the pixels, good
    until the next readback, or NULL */
 /* With no device memory for surf_read's image (a game that fills the GPU's: Mario Kart World on 2 GB got no
-   screenshot after its first, and the driver puts no such image in system memory): an RGBA8 surface read as it is,
-   where nothing is scaled or turned. NULL for any other */
+   screenshot after its first, and the driver puts no such image in system memory): an RGBA8 surface's part read as
+   it is, its pixels taken nearest to the size asked on the CPU. NULL where it is turned, or of another format */
 static const u8* surf_read_direct(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u32 dw, u32 dh) {
-    if (transform || dw != w || dh != h || s->msaa != DS_MSAA_1X1 || s->sw != s->w || s->sh != s->h ||
+    static u8* sized;
+    static u64 sized_cap;
+    if (transform || s->msaa != DS_MSAA_1X1 ||
         (s->f.vk != VK_FORMAT_R8G8B8A8_UNORM && s->f.vk != VK_FORMAT_R8G8B8A8_SRGB))
         return NULL;
+    /* x, y, w and h are in the image's own pixels (a scaled target's, as presents keep them) */
+    const u32 sx = x, sy = y, sw = w, sh = h;
+    if (!sw || !sh || sx + sw > s->sw || sy + sh > s->sh) return NULL;
     VkBuffer buf;
-    u8* p = vk_readback_buffer((u64)w * h * 4, &buf);
+    u8* p = vk_readback_buffer((u64)sw * sh * 4, &buf);
     if (!p) return NULL;
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy c = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                           .imageOffset = {(i32)x, (i32)y, 0},
-                           .imageExtent = {w, h, 1}};
+                           .imageOffset = {(i32)sx, (i32)sy, 0},
+                           .imageExtent = {sw, sh, 1}};
     rec_CmdCopyImageToBuffer(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -1102,7 +1107,18 @@ static const u8* surf_read_direct(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 trans
     rec_CmdPipelineBarrier2(cb, &di);
     vk_finish();
     vk_readback_ready();
-    return p;
+    if (sw == dw && sh == dh) return p;
+    const u64 need = (u64)dw * dh * 4;
+    if (need > sized_cap) {
+        u8* n = realloc(sized, need);
+        if (!n) return NULL;
+        sized = n;
+        sized_cap = need;
+    }
+    for (u32 j = 0; j < dh; j++)
+        for (u32 i = 0; i < dw; i++)
+            memcpy(sized + ((u64)j * dw + i) * 4, p + ((u64)(j * sh / dh) * sw + i * sw / dw) * 4, 4);
+    return sized;
 }
 static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u32 dw, u32 dh) {
     /* blit to an RGBA8 image, whatever the target's format, then read that back. sRGB to sRGB, so the bytes stay
