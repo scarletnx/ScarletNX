@@ -887,7 +887,7 @@ static void bc7_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 build, u3
 }
 
 /* A strip's ASTC blocks straight into BC1, BC4 or BC5 blocks (kind 1, 4 or 5) by astc_bcn.comp, an invocation a 4x4
-   block, as bc7_transcode lays them out, into the BC7 encoder's scratch buffer from its start: one pass, as the
+   block (an ASTC block, for a footprint of whole 4x4 blocks), as bc7_transcode lays them out, into the BC7 encoder's scratch buffer from its start: one pass, as the
    encoders have no search to split */
 static void bcn_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 kind, u32 w, u32 height, u32 nx, u32 n, u32 nz,
                           u32 bw, u32 bh, u32 srgb) {
@@ -910,7 +910,11 @@ static void bcn_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 kind, u32
     rec_CmdPushConstants(cb, g_astc.bc7_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
     vk_ck(cb, VK_CK_BC7, cx, cy, nz, bw << 8 | bh);
     vk_gpuprof_tag(VK_PROF_BC7);
-    rec_CmdDispatch(cb, (cx + 63) / 64, cy, nz);
+    /* a footprint of whole 4x4 blocks: an invocation an ASTC block, which makes the blocks inside it (astc_bcn.glsl) */
+    if ((bw | bh) % 4 == 0)
+        rec_CmdDispatch(cb, (nx + 63) / 64, n, nz);
+    else
+        rec_CmdDispatch(cb, (cx + 63) / 64, cy, nz);
     scratch_barrier(cb, g_astc.bc7_scratch, USE_WRITE, 0, USE_COPY);
 }
 
