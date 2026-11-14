@@ -796,7 +796,7 @@ static void test_widths(void) {
 /* --dump-modules: the images and the index tools/moduledump.py reads */
 static void test_dump(const char* root) {
     static const char expected[] = "program 1 1\nmodule rtld 8000000 1000 400\nsymbol 20 10 2 entry\n"
-                                   "module main 8001000 1000 400\n";
+                                   "import imported\nmodule main 8001000 1000 400\n";
     char error[256], *out, *path;
     unsigned char* text;
     size_t size;
