@@ -88,6 +88,11 @@ int main(void) {
     /* div_t packed in x0, ldiv_t's remainder in x1 */
     assert(libc_div(c, 7, -2) == ((u32)-3 | (u64)1 << 32));
     assert(libc_ldiv(c, 17, 5) == 3 && c->x[1] == 2);
+    /* the guest's sdiv where the host's division traps: a divisor of 0 gives 0 and the dividend as the remainder, the
+       lowest value over -1 gives itself and 0 */
+    assert(libc_div(c, 7, 0) == (u64)7 << 32 && libc_div(c, INT32_MIN, -1) == (u32)INT32_MIN);
+    assert(libc_ldiv(c, -9, 0) == 0 && c->x[1] == (u64)-9);
+    assert(libc_ldiv(c, INT64_MIN, -1) == INT64_MIN && c->x[1] == 0);
     assert(libc_htonl(c, 0x11223344) == 0x44332211 && libc_htons(c, 0x1122) == 0x2211);
     /* qsort and bsearch through the guest's comparison */
     i32 v[6] = {5, -1, 3, 9, 0, 3};

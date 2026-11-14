@@ -249,7 +249,9 @@ f32 libc_strtof(CPU* c, u64 s, u64 end) {
     return v;
 }
 
-/* ---- integer arithmetic. div's div_t (two ints) comes back in x0, ldiv's ldiv_t (two longs) in x0 and x1 */
+/* ---- integer arithmetic. div's div_t (two ints) comes back in x0, ldiv's ldiv_t (two longs) in x0 and x1. Their
+   quotient is the guest's sdiv's (cpu.h's sdiv32 and sdiv64): 0 for a divisor of 0, and the dividend back for the
+   lowest value over -1, where the host's division traps */
 i32 libc_abs(CPU* c, i32 v) {
     (void)c;
     return abs(v);
@@ -264,13 +266,13 @@ i64 libc_llabs(CPU* c, i64 v) {
 }
 u64 libc_div(CPU* c, i32 n, i32 d) {
     (void)c;
-    div_t r = div(n, d);
-    return (u32)r.quot | (u64)(u32)r.rem << 32;
+    i32 q = sdiv32(n, d);
+    return (u32)q | (u64)((u32)n - (u32)q * (u32)d) << 32;
 }
 i64 libc_ldiv(CPU* c, i64 n, i64 d) {
-    ldiv_t r = ldiv((long)n, (long)d);
-    c->x[1] = (u64)r.rem;
-    return r.quot;
+    i64 q = sdiv64(n, d);
+    c->x[1] = (u64)n - (u64)q * (u64)d;
+    return q;
 }
 i32 libc_ffs(CPU* c, i32 v) {
     (void)c;
