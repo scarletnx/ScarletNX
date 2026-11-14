@@ -327,11 +327,11 @@ int alloc_vector_shape(u64 addr) {
                 furthest = t;
             ends = !(w >> 31);
         } else if ((w & 0xFF000010u) == 0x54000000u || (w & 0x7E000000u) == 0x34000000u) { /* b.cond, cbz, cbnz */
-            t = a + (u64)(i64)((i32)(w << 8) >> 13 << 2);
+            t = a + ((u64)(i64)((i32)(w << 8) >> 13) << 2);
             if (t <= a) return 0;
             if (t > furthest) furthest = t;
         } else if ((w & 0x7E000000u) == 0x36000000u) { /* tbz, tbnz */
-            t = a + (u64)(i64)((i32)(w << 13) >> 18 << 2);
+            t = a + ((u64)(i64)((i32)(w << 13) >> 18) << 2);
             if (t <= a) return 0;
             if (t > furthest) furthest = t;
         } else if ((w & 0xFFFFFC1Fu) == 0xD65F0000u) { /* ret */
