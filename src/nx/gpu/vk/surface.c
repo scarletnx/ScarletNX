@@ -1781,9 +1781,20 @@ int vk_rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at) {
                 continue;
             }
         }
-        /* reaching past the range, or its copy refused: written back to guest memory, the copy keeping the bytes
-           the caller read. A target past the range is mostly one whose memory a smaller surface took over since, and
-           the program's writes there are newer than its pixels */
+        /* reaching past the range, or its copy refused: published (a copy into an owner on the GPU, no wait), as a
+           release does and as rt_before_cpu does before a producer's publish, or written back where it can't be, the
+           copy keeping the bytes the caller read either way. What the caller publishes over the overlap goes over that
+           owner after it. Not nested: an overlay inside that publish writes such a target back. Written back always,
+           it was a readback, a wait for the GPU and a landing, once a frame in one game's compute pass. A target past
+           the range is mostly one whose memory a smaller surface took over since, and the program's writes there are
+           newer than its pixels */
+        static int nested;
+        if (!nested) {
+            nested = 1;
+            const int published = vk_surf_publish(s);
+            nested = 0;
+            if (published) continue;
+        }
         g_vk_rt_readbacks++;
         vk_surf_flush(s, NULL);
     }
