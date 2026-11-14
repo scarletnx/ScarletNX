@@ -2,8 +2,10 @@
    Copyright 2026 the ScarletNX contributors */
 /* alloc.c's arena in a program that links jemalloc as scarletnx does (whole, unexported): the family is ready, says
    it found jemalloc's functions as the program's own, and malloc, calloc, realloc, operator new aligned and free run
-   in the window above the layout, in guest memory the test reserves, a block of a page or more at a page; a pointer
-   the arena didn't make goes to the function's own code */
+   in the window above the layout, in guest memory the test reserves, a block of a page or more at a page. A pointer
+   that is no block the arena handed out goes to the function's own code: one outside the window, a piece of a region
+   the game carved from an arena block, a block given back already; and the table of blocks stays right as many come
+   and go (built with LIVE_BITS 8) */
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
 #include "nx/loader/module_abi.h"
@@ -11,6 +13,7 @@
 #include "nx/runtime/loader.h"
 #include <assert.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -37,8 +40,16 @@ static char g_log[512];
 
 u64 kernel_find_symbol_exact(const char* name) { return (void)name, 0; }
 void hook_run_original(CPU* c, u64 addr) {
-    (void)c, (void)addr;
+    (void)addr;
     g_original++;
+    c->x[0] = 777; /* what the function's own code returned */
+}
+void fatal(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+    abort();
 }
 void logf_(int level, const char* format, ...) {
     va_list args;
@@ -96,6 +107,28 @@ int main(void) {
     assert(g_original == 1);
     alloc_free(&c, 0);
     assert(g_original == 1);
+    /* a piece of a region the game's own allocator carved out of an arena block: in the window, but no block the arena
+       handed out, so the function's own code takes it, and the block stays whole */
+    u64 region = alloc_malloc(&c, 0x10000);
+    memset(g_mem + region, 0x5A, 0x10000);
+    alloc_delete(&c, region + 0x100);
+    assert(g_original == 2 && alloc_realloc(&c, region + 0x200, 64) == 777 && g_original == 3);
+    assert(g_mem[region] == 0x5A && g_mem[region + 0xFFFF] == 0x5A);
+    /* the block itself goes back once; then it is no block of the arena's any more */
+    alloc_free(&c, region);
+    assert(g_original == 3);
+    alloc_free(&c, region);
+    assert(g_original == 4);
+    /* blocks coming and going many times over the table's size (LIVE_BITS is 8 here, 256 slots): its tombstones are
+       cleared, so a pointer it doesn't hold is still found absent */
+    for (int round = 0; round < 40; round++) {
+        u64 held[150];
+        for (int i = 0; i < 150; i++) held[i] = alloc_malloc(&c, 16 + (u64)((round * 7 + i) % 64) * 16);
+        for (int i = 0; i < 150; i++) alloc_free(&c, held[i]);
+    }
+    assert(g_original == 4);
+    alloc_free(&c, region + 0x300);
+    assert(g_original == 5);
     puts("PASS the alloc family's arena: jemalloc found in the program, allocations in the window, a foreign pointer's "
          "own code");
     return 0;

@@ -11,6 +11,7 @@
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 int alloc_vector_shape(u64 addr);
@@ -33,6 +34,10 @@ void hook_run_original(CPU* c, u64 addr) {
     g_original++;
 }
 void logf_(int level, const char* format, ...) { (void)level, (void)format; }
+void fatal(const char* format, ...) { /* alloc.c's table of blocks full, which no case here reaches */
+    (void)format;
+    abort();
+}
 u64 mem_find_free(u64 lo, u64 hi, u64 size, u64 align) { return (void)lo, (void)hi, (void)size, (void)align, 0; }
 int mem_map(u64 addr, u64 size, u32 state, u32 perm) { return (void)addr, (void)size, (void)state, (void)perm, -1; }
 int mem_unmap(u64 addr, u64 size) { return (void)addr, (void)size, 0; }

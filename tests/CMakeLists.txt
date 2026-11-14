@@ -1388,7 +1388,9 @@ if(SNX_JEMALLOC AND NOT WIN32)
     target_include_directories(snx-test-alloc-arena PRIVATE "${PROJECT_SOURCE_DIR}/src")
     target_link_libraries(snx-test-alloc-arena PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,snx_jemalloc>")
     snx_hookgen(snx-test-alloc-arena SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    target_compile_definitions(snx-test-alloc-arena PRIVATE LIVE_BITS=8) # a table that fills in a few hundred blocks
     add_test(NAME alloc_arena COMMAND snx-test-alloc-arena)
+    set_tests_properties(alloc_arena PROPERTIES TIMEOUT 60)
 endif()
 # the C library's functions on guest memory (src/nx/hle/hook/libc_std.c): guest addresses back from pointers into an
 # argument, end pointers, strtok's place, div_t and ldiv_t, errno, qsort and bsearch through the guest's comparison
