@@ -4,6 +4,7 @@
 #include "nx/runtime/rtapi.h"
 #include "common/utilities/endian.h"
 #include "nx/hle/hle.h"
+#include "nx/hle/hook/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/clock.h"
@@ -88,6 +89,10 @@ void rt_missed_report(CPU* c, u64 pc, const char* why) {
 static void rt_miss(CPU* c, u64 pc) {
     GuestFn f = nce_slot(NULL);
     if (f) {
+        f(c, pc);
+        return;
+    }
+    if ((f = hook_trampoline(pc)) != NULL) { /* a mod's call of an original that a native hook answers */
         f(c, pc);
         return;
     }

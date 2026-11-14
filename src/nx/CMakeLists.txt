@@ -50,7 +50,7 @@ snx_svcgen(snx_kernel)
 snx_component(hle hle/services/services.c hle/services/audren.c hle/services/audren_dsp.c hle/services/sm.c hle/services/am.c hle/services/gsv.c hle/services/native_video.c hle/services/native_video_core.c hle/services/native_video_decoder.c hle/services/set.c  hle/services/acc.c hle/services/users.c hle/services/audio.c
               hle/services/misc.c hle/services/ldr.c hle/services/network/bsd.c hle/services/network/dns.c
               hle/services/network/nifm.c hle/services/network/ssl.c hle/services/network/ldn.c hle/services/network/room.c hle/filesystem/fs.c hle/services/hid.c hle/services/hid_motion.c hle/services/hid_touch.c hle/services/vi.c hle/services/nvdrv.c
-              hle/hook/hook.c hle/hook/jump.c hle/hook/libc.c hle/hook/diag.c hle/hook/codec.c hle/hook/audio_stream.c hle/hook/verify.c hle/hook/version.c
+              hle/hook/hook.c hle/hook/jump.c hle/hook/ext_skyline.c hle/hook/libc.c hle/hook/diag.c hle/hook/codec.c hle/hook/audio_stream.c hle/hook/verify.c hle/hook/version.c
               nn/ro.c nn/fs.c nn/time.c nn/pl.c nn/pl_font.c nn/pctl.c nn/nsd.c nn/ngc.c nn/prepo.c
               nn/audio.c nn/audio_renderer.c nn/codec.c)
 # the shared fonts' stand-ins (cmake/shared_fonts.cmake), which nn/pl.c hands out
@@ -65,6 +65,9 @@ endif()
 # (patches/*.hook), whose handlers are the .c files beside them
 include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
 snx_hookgen(snx_hle A32_MARKED)
+# the native hooks of mods' trampolines (hle/hook/ext_skyline.hooks), a table of their own for ext_skyline.c
+snx_hookgen(snx_hle SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hle/hook/ext_skyline.hooks" PREFIX skyline
+            NAME hle/hook/ext_skyline.hooks)
 file(GLOB snx_patch_handlers CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.c")
 target_sources(snx_hle PRIVATE ${snx_patch_handlers})
 # the IPC interfaces of the services (docs/platforms/nx/ipc.md): their dispatchers are generated, the handlers are in the services'

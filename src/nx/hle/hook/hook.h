@@ -162,8 +162,17 @@ typedef struct {
     GuestFn orig[HOOK_SITES]; /* its recompiled code, which its slot held */
     u8 stale[HOOK_SITES];     /* atomic: the game changed the function's code (a mod's patch), so orig is stale */
     GuestFn fn[HOOK_SITES];   /* what its slot holds now: the hook's adapter, or verify mode's check */
-    u32 word[HOOK_SITES];     /* the function's first 4 bytes at hook_install, which a mod's hook writes over */
-    u8 invalid[HOOK_SITES];   /* atomic: the game changed them, so the native hook is off (hook_restore) */
+    /* the function's first 20 bytes at hook_install (fewer at the end of the code): the first 4, which a mod's hook
+       writes over, are compared; all of them find the mod's trampoline */
+    u32 head[HOOK_SITES][5];
+    u8 invalid[HOOK_SITES]; /* atomic: the game changed them, so the native hook is off (hook_restore) */
+    u32 sdk[HOOK_SITES];    /* the SDK version of the module that exports it, which picks its ext_skyline hook */
+    /* once invalidated: its ext_skyline hook's adapter and handler (NULL for none), and the mod's trampoline that
+       adapter runs at, 0 until it first runs (hook_trampoline) */
+    GuestFn ext[HOOK_SITES];
+    const char* ext_handler[HOOK_SITES];
+    u64 tramp[HOOK_SITES];
+    u32 ext_count; /* atomic: the sites with an ext_skyline hook, so a miss looks for no trampoline in a game with none */
     /* verify mode: which scratch slots are taken (bit i, atomic), and each site's calls that agreed, differed and
        were skipped (atomic) */
     u32 verify_taken;
@@ -199,12 +208,22 @@ void hook_restore(u64 addr, u64 size);
 /* the sad path of an invalidated native hook, where its adapter jumps with the arguments its call left: runs the
    game's code now at entry, which is what a call of the function runs from then on */
 void hook_invalidated(CPU* RESTRICT c, u64 entry);
+/* A dispatch miss at pc (rtapi.c's rt_miss): when pc is the trampoline a mod's loader keeps for a function whose
+   native hook it invalidated (the function's first 1, 4 or 5 instructions, then a jump back to the one after them) and
+   ext_skyline.hooks has a hook for that function, the hook's adapter, which takes pc's slot: the mod's call of the
+   original runs the native handler. NULL for any other pc */
+GuestFn hook_trampoline(u64 pc);
+/* ext_skyline.c's: the adapter of ext_skyline.hooks's hook of symbol for a module of SDK version sdk, and its
+   handler's name; NULL when it has none */
+GuestFn hook_ext_skyline(const char* symbol, u32 sdk, const char** handler);
 /* what the dispatch slot of addr holds for a hooked function, its handler's adapter or verify mode's check, for as
    long as the game runs; NULL when addr isn't hooked, or its native hook was invalidated */
 GuestFn hook_function(u64 addr);
 /* the recompiled code of the function at addr when it is hooked, for a handler that hands a case back to it with the
    CPU as the function's call left it; NULL when addr isn't hooked. Once the game changed the function's code, the
-   JIT's code of what is there now: the AOT code is stale, and leaves for the dispatch slot, which holds the hook */
+   JIT's code of what is there now: the AOT code is stale, and leaves for the dispatch slot, which holds the hook. Once
+   a mod's trampoline of it took an ext_skyline hook, the JIT's code of that trampoline: the SDK's own code, entered
+   through the instructions the mod moved there (hook_run_original enters it there) */
 GuestFn hook_original(u64 addr);
 /* the symbol of the function hooked at addr, and the name of the runtime's handler that runs it in *handler; NULL when
    addr isn't hooked. Reads only the sites hook_install wrote before the game's first thread, so the crash report may

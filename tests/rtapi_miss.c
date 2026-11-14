@@ -3,11 +3,13 @@
 /* rt_miss (src/nx/runtime/rtapi.c), RtAPI.miss: what a pc that snx_lookup finds no code for runs. Under NCE the game's
    code runs natively, no slot holds it and no JIT runs, so the runtime's own calls into it (an NVN command buffer's
    memory callback, run as nvn_cmd.c's guest_call runs it) take the native code that an empty slot means (nce_slot),
-   and return to the caller's link register. Without NCE the JIT compiles the function and runs it. The rest of the
-   runtime is faked here: the JIT, the kernel's core and block calls, and NCE's runs of native code */
+   and return to the caller's link register. Without NCE the JIT compiles the function and runs it, unless the pc is a
+   mod's trampoline that a native hook takes (hook.c's hook_trampoline), whose adapter runs instead. The rest of the
+   runtime is faked here: the JIT, the hooks, the kernel's core and block calls, and NCE's runs of native code */
 #include "nx/runtime/rtapi.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/hle.h"
+#include "nx/hle/hook/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/guest_jit.h"
@@ -31,10 +33,11 @@ static void check(int condition, const char* what) {
 
 #define CALLBACK_PC 0x8000100ull /* the game's function the runtime calls: no slot holds it */
 #define RETURN_PC   0x8000200ull /* the NVN call's return address, where the callback returns */
+#define TRAMP_PC    0x8000300ull /* a mod's trampoline that an ext_skyline hook takes */
 
 /* what ran: the native code (its pc and the link register it returned to), the JIT's code, the JIT's lookups */
 static struct {
-    int nce, native, jitted, asked;
+    int nce, native, jitted, asked, hooked;
     u64 native_pc, native_lr;
 } g_t;
 
@@ -46,6 +49,14 @@ static void native(CPU* c, u64 entry) {
     c->pc = c->x[30];
 }
 GuestFn nce_slot(GuestFn f) { return f || !g_t.nce ? f : native; }
+
+/* hook.c's: the adapter of the trampoline at TRAMP_PC, back to the caller's link register */
+static void ext_adapter(CPU* c, u64 pc) {
+    (void)pc;
+    g_t.hooked++;
+    c->pc = c->x[30];
+}
+GuestFn hook_trampoline(u64 pc) { return pc == TRAMP_PC ? ext_adapter : NULL; }
 
 /* the JIT: code for any pc while NCE is off, none under NCE (main.c starts no JIT then) */
 static void jitted(CPU* c, u64 pc) {
@@ -163,6 +174,13 @@ int main(void) {
     check(g_t.asked == 1 && g_t.jitted == 1, "without NCE the JIT compiles the callback and runs it");
     check(g_t.native == 0, "without NCE no native code runs");
     check(c.pc == RETURN_PC, "without NCE the callback returns to the NVN call's return");
+
+    /* a mod's trampoline that a native hook takes: its adapter runs, and the JIT is not asked */
+    memset(&g_t, 0, sizeof g_t);
+    c.x[30] = RETURN_PC;
+    call(&c, TRAMP_PC);
+    check(g_t.hooked == 1 && g_t.asked == 0 && g_t.jitted == 0, "a trampoline a hook takes runs the hook's adapter");
+    check(c.pc == RETURN_PC, "the trampoline's adapter returns to the call's return");
 
     if (failures) return 1;
     printf("rtapi_miss: ok\n");

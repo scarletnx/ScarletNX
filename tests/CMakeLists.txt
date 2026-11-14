@@ -1230,14 +1230,17 @@ target_link_libraries(snx-test-hook-jump PRIVATE scarletnx-common) # jump.c flus
 target_include_directories(snx-test-hook-jump PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME hook_jump COMMAND snx-test-hook-jump)
 # a native hook the game invalidates (src/nx/hle/hook/hook.c): its adapter rewritten into a jump to the game's code, on
-# this test's own x86_64 code; skipped on another host
+# this test's own x86_64 code, and the mod's trampolines that an ext_skyline hook (tests/hook/ext_skyline.hooks) takes;
+# skipped on another host
 add_executable(snx-test-hook-invalidated hook_invalidated.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/ext_skyline.c")
 snx_test_target(snx-test-hook-invalidated 23)
 target_link_libraries(snx-test-hook-invalidated PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-invalidated PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_service_swipc(snx-test-hook-invalidated)
 snx_hookgen(snx-test-hook-invalidated SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook" A32_MARKED)
+snx_hookgen(snx-test-hook-invalidated SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/ext_skyline.hooks" PREFIX skyline
+            NAME hle/hook/ext_skyline.hooks)
 add_test(NAME hook_invalidated COMMAND snx-test-hook-invalidated)
 set_tests_properties(hook_invalidated PROPERTIES SKIP_RETURN_CODE 77)
 # hook_install over a full table (src/nx/hle/hook/hook.c), the spec written here with as many hooks as tools/hookgen
