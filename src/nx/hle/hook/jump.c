@@ -4,6 +4,7 @@
    encoder's bytes are checked on any host (tests/hook_jump.c), against what llvm-mc disassembles them to, and IA-64's
    against GNU objdump's, as clang has no IA-64 target yet */
 #include "nx/hle/hook/jump.h"
+#include "common/utilities/common.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -248,7 +249,7 @@ static int code_write(uintptr_t p, const u8* bytes, size_t n, char* why, size_t 
         return -1;
     }
     memcpy((void*)p, bytes, n);
-    FlushInstructionCache(GetCurrentProcess(), (void*)p, n);
+    snx_vm_flush_code((void*)p, n);
     if (!VirtualProtect((void*)p, n, old, &back)) {
         snprintf(why, why_size,
                  "VirtualProtect of %zu bytes at %p back to %lu was refused (error %lu): the code stays "
@@ -265,7 +266,7 @@ static int code_write(uintptr_t p, const u8* bytes, size_t n, char* why, size_t 
         return -1;
     }
     memcpy((void*)p, bytes, n);
-    __builtin___clear_cache((char*)p, (char*)(p + n));
+    snx_vm_flush_code((void*)p, n);
     if (mprotect((void*)lo, hi - lo, PROT_READ | PROT_EXEC)) {
         snprintf(why, why_size,
                  "mprotect of %zu bytes at %p back to read and execute was refused: %s: the code "
