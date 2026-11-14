@@ -1923,6 +1923,36 @@ static void subroutine_calls(void) {
     }
 }
 
+static int adjacent_brx_tables(u32 bank, u32 offset, u32* value) {
+    static const u32 table[4] = {0, 0, 0, 16}; /* c[0][0]: the first BRX's two entries, c[0][8]: the second's */
+    if (bank || offset >= sizeof table) return 0;
+    *value = table[offset / 4];
+    return 1;
+}
+
+/* Two switches without the IMNMX clamp whose tables lie one after the other, as one game's compute program lays out
+   seven: the first table ends where the second starts. Its entries count from the same base, so read on, the second
+   table's last entry lands in the second switch's code (word 15), which the first switch's cases never reach */
+static void brx_adjacent_tables(void) {
+    u64 code[32] = {0};
+    for (u32 i = 10; i < 32; i += 4) code[i] = SCHED;
+    code[11] = 0xef94000000070001ull; /* LDC.B32 R1, c[0][R0] */
+    code[12] = 0xe25000000007010full; /* BRX R1 */
+    code[13] = EXIT;
+    code[15] = 0xef94000000870002ull; /* LDC.B32 R2, c[0][R0 + 8] */
+    code[16] = 0xe25000000007020full; /* BRX R2 */
+    code[17] = EXIT;
+    code[19] = EXIT;
+    u32 targets[64];
+    int (*old)(u32, u32, u32*) = g_shader_cb_read;
+    g_shader_cb_read = adjacent_brx_tables;
+    int first = shader_brx_targets(code, 12, 20, targets, 64);
+    check(first == 2 && targets[0] == 13 && targets[1] == 13, "a jump table ends where the next one in its bank starts");
+    int second = shader_brx_targets(code, 16, 20, targets, 64);
+    check(second == 2 && targets[0] == 17 && targets[1] == 19, "the last jump table runs to its first invalid entry");
+    g_shader_cb_read = old;
+}
+
 static void brx_length(void) {
     u64 code[64] = {0};
     code[10] = 0x001F8000FC0007E0ull;
@@ -6497,6 +6527,7 @@ int main(int argc, char** argv) {
     dc_color_compare();
     unfed_fragment_input();
     brx_length();
+    brx_adjacent_tables();
     subroutine_calls();
     invalid_ldc_bank();
     cbuf_integer_loads();

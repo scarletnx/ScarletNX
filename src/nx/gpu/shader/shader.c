@@ -264,18 +264,9 @@ static int clamped_entries(const u64* words, u32 count, u32 load) {
     return (int)B(w, 20, 19) + 1;
 }
 
-/* The targets of the BRX at index, read from its jump table through g_shader_cb_read: up to max_targets, or -1 when
-   the table can't be found or read. The table address comes from the 32-bit LDC that last wrote the BRX's register,
-   whose value the BRX reads on every path (def_reaches). With the clamp idiom every entry it allows has to be a
-   valid target; without it the valid entries up to the first invalid one are taken. */
-int shader_brx_targets(const u64* words, u32 index, u32 count, u32* targets, int max_targets) {
-    u64 brx, load;
-    u32 bank;
-    i32 offset, imm;
-    int at, exact, limit, k, n = 0;
-    if (!g_shader_cb_read || index >= count || !IDX_OK(index) || max_targets <= 0) return -1;
-    brx = words[index];
-    at = find_writer(words, index, B(brx, 8, 8), 0);
+static int brx_table(const u64* words, u32 index, u32 count, u32* bank, i32* offset) {
+    u64 brx = words[index], load;
+    int at = find_writer(words, index, B(brx, 8, 8), 0);
     if (at < 0) return -1;
     load = words[at];
     /* entries are word offsets: a load of another size reads them wrong. Mode 0 is the plain c[bank][reg + offset] */
@@ -283,12 +274,35 @@ int shader_brx_targets(const u64* words, u32 index, u32 count, u32* targets, int
         B(load, 44, 2) != 0)
         return -1;
     if (!def_reaches(words, count, (u32)at, index, B(brx, 8, 8))) return -1;
+    *bank = B(load, 36, 5);
+    *offset = snx_sext32(B(load, 20, 16), 16);
+    return at;
+}
+/* The targets of the BRX at index, read from its jump table through g_shader_cb_read: up to max_targets, or -1 when
+   the table can't be found or read. The table address comes from the 32-bit LDC that last wrote the BRX's register,
+   whose value the BRX reads on every path (def_reaches). With the clamp idiom every entry it allows has to be a
+   valid target; without it the valid entries up to the first invalid one, or to the next BRX table in the bank, are
+   taken. */
+int shader_brx_targets(const u64* words, u32 index, u32 count, u32* targets, int max_targets) {
+    u32 bank;
+    i32 offset, imm;
+    int at, exact, limit, k, n = 0;
+    if (!g_shader_cb_read || index >= count || !IDX_OK(index) || max_targets <= 0) return -1;
+    at = brx_table(words, index, count, &bank, &offset);
+    if (at < 0) return -1;
     exact = clamped_entries(words, count, (u32)at);
     if (exact > max_targets) return -1;
     limit = exact ? exact : max_targets < 64 ? max_targets : 64;
-    bank = B(load, 36, 5);
-    offset = snx_sext32(B(load, 20, 16), 16);
-    imm = snx_sext32(B(brx, 20, 24), 24);
+    for (u32 j = 11; !exact && j < count; j++) {
+        const Op* other = IDX_OK(j) && j != index ? decode(words[j]) : NULL;
+        u32 other_bank;
+        i32 other_offset;
+        if (!other || other->id != O_BRX || brx_table(words, j, count, &other_bank, &other_offset) < 0 ||
+            other_bank != bank || other_offset <= offset)
+            continue;
+        if ((other_offset - offset) / 4 < limit) limit = (other_offset - offset) / 4;
+    }
+    imm = snx_sext32(B(words[index], 20, 24), 24);
     for (k = 0; k < limit; k++) {
         long long addr = (long long)offset + 4LL * k, rel;
         u32 value;
