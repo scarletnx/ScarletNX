@@ -12,8 +12,9 @@
    game's own allocator made before its functions were hooked or through a path no hook covers, goes to the hooked
    function's own code (hook_run_original), which made it.
 
-   jemalloc's functions are looked up at run time (dlsym): a build without it (SNX_JEMALLOC=OFF, Windows, the unit
-   tests' programs) has no arena, and hook_install leaves the family's functions to the game's own code
+   jemalloc's functions are the program's own where it links jemalloc (weak references, as an executable exports only
+   the C library's names of them), else looked up at run time (dlsym, je_ names on macOS): a build without it
+   (SNX_JEMALLOC=OFF, Windows) has no arena, and hook_install leaves the family's functions to the game's own code
    (alloc_ready). A 36-bit game, whose address space leaves no window, keeps its own too */
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
@@ -109,6 +110,15 @@ static bool extent_merge(ExtentHooks* h, void* a, size_t na, void* b, size_t nb,
 static ExtentHooks g_hooks = {extent_alloc, extent_dalloc, extent_destroy, NULL, NULL, NULL, NULL, extent_split,
                               extent_merge};
 
+#if defined(__ELF__)
+/* cmake/jemalloc.cmake links jemalloc whole and unprefixed into the program, which exports only SNX_JEMALLOC_EXPORTS:
+   dlsym's RTLD_DEFAULT doesn't see these. Weak, so a program without jemalloc links and finds them NULL */
+extern void* mallocx(size_t size, int flags) __attribute__((weak));
+extern void* rallocx(void* p, size_t size, int flags) __attribute__((weak));
+extern void dallocx(void* p, int flags) __attribute__((weak));
+extern size_t sallocx(const void* p, int flags) __attribute__((weak));
+extern int mallctl(const char* name, void* old, size_t* oldlen, void* new_value, size_t newlen) __attribute__((weak));
+#endif
 #if !defined(_WIN32)
 static void* sym(const char* name) {
     void* p = dlsym(RTLD_DEFAULT, name);
@@ -130,13 +140,24 @@ static void arena_make(void) {
         LOG("hooks: the alloc family is off: the address space leaves no window for the host allocator's arena\n");
         return;
     }
-    *(void**)&g_alloc.mallocx = sym("mallocx");
-    *(void**)&g_alloc.rallocx = sym("rallocx");
-    *(void**)&g_alloc.dallocx = sym("dallocx");
-    *(void**)&g_alloc.sallocx = sym("sallocx");
-    *(void**)&g_alloc.mallctl = sym("mallctl");
+    const char* how = "the program's own";
+#if defined(__ELF__)
+    if (mallocx && rallocx && dallocx && sallocx && mallctl) {
+        g_alloc.mallocx = mallocx, g_alloc.rallocx = rallocx, g_alloc.dallocx = dallocx, g_alloc.sallocx = sallocx;
+        g_alloc.mallctl = mallctl;
+    }
+#endif
+    if (!g_alloc.mallctl) {
+        how = "found by dlsym";
+        *(void**)&g_alloc.mallocx = sym("mallocx");
+        *(void**)&g_alloc.rallocx = sym("rallocx");
+        *(void**)&g_alloc.dallocx = sym("dallocx");
+        *(void**)&g_alloc.sallocx = sym("sallocx");
+        *(void**)&g_alloc.mallctl = sym("mallctl");
+    }
     if (!g_alloc.mallocx || !g_alloc.rallocx || !g_alloc.dallocx || !g_alloc.sallocx || !g_alloc.mallctl) {
-        LOG("hooks: the alloc family is off: the program's malloc isn't jemalloc\n");
+        LOG("hooks: the alloc family is off: jemalloc's mallocx, rallocx, dallocx, sallocx and mallctl are neither the "
+            "program's own nor found by dlsym (a build without jemalloc, SNX_JEMALLOC=OFF)\n");
         return;
     }
     g_alloc.lo = lo;
@@ -150,7 +171,7 @@ static void arena_make(void) {
     }
     g_alloc.flags = ALLOC_ARENA(arena) | ALLOC_TCACHE_NONE;
     g_alloc.ready = 1;
-    LOG("hooks: malloc and new run the host's jemalloc, arena %u, in guest memory from %llx to %llx\n", arena,
+    LOG("hooks: malloc and new run the host's jemalloc (%s), arena %u, in guest memory from %llx to %llx\n", how, arena,
         (unsigned long long)g_alloc.lo, (unsigned long long)g_alloc.hi);
 }
 #endif
