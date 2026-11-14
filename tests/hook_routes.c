@@ -49,6 +49,8 @@ static void test_runtime_list(void) {
     assert(snx_hook_routed("memcpy") && snx_hook_routed("memset") && snx_hook_routed("nvnQueueSubmitCommands"));
     assert(snx_hook_routed("nvnBootstrapLoader") && snx_hook_routed("nvnDeviceGetProcAddress"));
     assert(!snx_hook_routed("strxfrm") && !snx_hook_routed("") && !snx_hook_routed("memcpy2"));
+    /* not srand48 and lrand48: drand48, erand48, seed48 and the rest run the SDK's code on the seed they share */
+    assert(!snx_hook_routed("srand48") && !snx_hook_routed("lrand48"));
     /* a pattern routes every symbol it matches */
     assert(snx_hook_routed("_ZNSt3__113__vector_baseImNS_9allocatorImEEED2Ev"));
     assert(snx_hook_routed("_ZNSt3__113__vector_baseI8SLOTLOOTNS_9allocatorIS1_EEED2Ev"));

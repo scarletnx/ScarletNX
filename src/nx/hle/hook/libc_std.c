@@ -8,10 +8,10 @@
    guest's, which __errno_location, the SDK's own, finds for the calling thread.
 
    The character classes and conversions are the C locale's, which the SDK's libc is in and the host is too (the
-   runtime never calls setlocale). rand, srand, rand_r and lrand48 are musl's generators, which the SDK's are, with a
-   state of their own apart from the runtime's. qsort and bsearch call the game's comparison
-   function for each comparison the host's makes (hook_guest_call). The family is off on Windows, whose C library
-   lacks half of these and has another RAND_MAX */
+   runtime never calls setlocale). rand, srand and rand_r are musl's generators, which the SDK's are, with a state of
+   their own apart from the runtime's; srand48 and lrand48 stay the SDK's code, as drand48 and the rest share their
+   seed. qsort and bsearch call the game's comparison function for each comparison the host's makes
+   (hook_guest_call). The family is off on Windows, whose C library lacks half of these and has another RAND_MAX */
 #define _GNU_SOURCE /* glibc's strcasestr */
 #include "nx/hle/hook/hook.h"
 #include "common/utilities/bits.h"
@@ -37,10 +37,6 @@ static char* strcasestr(const char* s, const char* sub) {
     for (size_t n = strlen(sub); *s; s++)
         if (!_strnicmp(s, sub, n)) return (char*)s;
     return *sub ? NULL : (char*)s;
-}
-static long nrand48(unsigned short x[3]) {
-    (void)x;
-    return rand();
 }
 #else
 #include <strings.h>
@@ -334,9 +330,8 @@ u32 libc_htons(CPU* c, u32 v) {
 }
 
 /* ---- pseudo-random numbers, musl's: rand's 64-bit LCG, which srand seeds with seed - 1 and a program that never calls
-   it starts at 0; rand_r's 32-bit one, tempered; lrand48's 48-bit one, from 0 until srand48 */
+   it starts at 0; rand_r's 32-bit one, tempered */
 static u64 g_rand;
-static unsigned short g_rand48[3];
 i32 libc_rand(CPU* c) {
     (void)c;
     u64 s = __atomic_load_n(&g_rand, __ATOMIC_RELAXED) * 6364136223846793005ull + 1;
@@ -355,16 +350,6 @@ i32 libc_rand_r(CPU* c, u64 seed) {
     x ^= x << 15 & 0xEFC60000u;
     x ^= x >> 18;
     return (i32)(x / 2);
-}
-i64 libc_lrand48(CPU* c) {
-    (void)c;
-    return nrand48(g_rand48);
-}
-void libc_srand48(CPU* c, i64 seed) {
-    (void)c;
-    g_rand48[0] = 0x330e;
-    g_rand48[1] = (unsigned short)seed;
-    g_rand48[2] = (unsigned short)(seed >> 16);
 }
 
 /* ---- qsort and bsearch: the host's, comparing through the game's function. The thread's context for the
