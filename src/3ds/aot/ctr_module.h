@@ -74,15 +74,17 @@ bool snx_ctr_module_current(const char* path, const SnxCtrImage* image);
 char* snx_ctr_game_file(const char* directory, const char* suffix);
 /* The title's module (snx_ctr_game_file's SNX_CTR_MODULE_SUFFIX) is compiled when it is missing, when it doesn't match the
    image (an older build, a changed .code), or when SNX_CTR_RECOMPILE asks, then run unless SNX_CTR_COMPILE_ONLY: until
-   the game exits or its window closes, for limit blocks when limit is not 0, or for seconds when it is above 0. The title is the extraction in
-   directory, or with game the game read where it lies, directory then its state folder. The module is
-   trusted as code the driver compiled itself, never as a sandbox. */
+   the game exits or its window closes, for limit blocks when limit is not 0, for seconds when it is above 0, or for
+   frames decoded when frames_limit is not UINT64_MAX (0 ends the run before a frame). headless starts no window,
+   audio device or gamepad; shot, when not NULL, is the path the last frame of both screens is saved to as the run
+   ends. The title is the extraction in directory, or with game the game read where it lies, directory then its state
+   folder. The module is trusted as code the driver compiled itself, never as a sandbox. */
 enum { SNX_CTR_RECOMPILE = 1, SNX_CTR_COMPILE_ONLY = 2 };
 /* ipc_stubs: the services whose unknown commands answer success instead of stopping when the ctr_auto_stub_ipc setting
    is off (snx_ctr_ipc_stub_mask). runtime: the program copied into the folder as the game's own once its module is
    ready (snx_ctr_game_file's name, .exe on Windows), NULL for none. asked: the recompile's options (ctr_compile.h),
    NULL for none */
 int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel model, uint64_t limit, double seconds,
-                    unsigned flags, uint32_t ipc_stubs, const char* runtime, const SnxCliRecompile* asked, char* error,
-                    size_t error_size);
+                    uint64_t frames, bool headless, const char* shot, unsigned flags, uint32_t ipc_stubs,
+                    const char* runtime, const SnxCliRecompile* asked, char* error, size_t error_size);
 #endif

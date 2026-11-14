@@ -25,7 +25,8 @@
 #include <string.h>
 #include <time.h>
 
-#define SNX_CTR_RUN_SLICE 1000000u
+#define SNX_CTR_RUN_SLICE   1000000u
+#define SNX_CTR_FRAME_SLICE 16384u /* a --frames run polls its count often enough to stop on the frame it asked for */
 
 /* whose an event is: a service's that signals it, or the game's own */
 static const char* event_owner(const SnxCtrProcess* p, uint32_t id) {
@@ -196,13 +197,13 @@ static void game_metadata(const char* directory, const SnxCtrSource* game, char*
     free(ini);
 }
 int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel model, uint64_t limit, double seconds,
-                    unsigned flags, uint32_t ipc_stubs, const char* runtime, const SnxCliRecompile* asked, char* error,
-                    size_t error_size) {
+                    uint64_t frames_limit, bool headless, const char* shot, unsigned flags, uint32_t ipc_stubs,
+                    const char* runtime, const SnxCliRecompile* asked, char* error, size_t error_size) {
     SnxCtrImage image = {0};
     SnxCtrProcess* process = NULL;
     SnxCtrJit* jit = NULL;
     SnxCtrNative native = {0};
-    char *module_path = NULL, *frames = NULL, *wav = NULL, title[192];
+    char *module_path = NULL, *frame_dir = NULL, *wav = NULL, title[192];
     int result = 1;
     if (!(game ? snx_ctr_image_from_source(game, &image, error, error_size)
               : snx_ctr_image_load(directory, &image, error, error_size)))
@@ -262,10 +263,10 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
     }
     /* Vulkan-only presentation: real frames land in <output>/frames as PPM.
        Without a Vulkan loader/device no frame is shown or fabricated. */
-    frames = snx_path_join(directory, "frames");
-    if (!snx_is_dir(frames) && plat_mkdir(frames)) {
+    frame_dir = snx_path_join(directory, "frames");
+    if (!snx_is_dir(frame_dir) && plat_mkdir(frame_dir)) {
         char why[256];
-        snprintf(error, error_size, "cannot create %s: %s", frames, snx_os_error(why, sizeof why));
+        snprintf(error, error_size, "cannot create %s: %s", frame_dir, snx_os_error(why, sizeof why));
         goto done;
     }
     /* the game's name, else its title ID, in the window's title; nothing is added to a 3DS game yet (no update or DLC
@@ -277,35 +278,45 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
            snx_build_log_line(), id);
     snx_run_log_line(run, (long long)time(NULL));
     printf("%s\n", run);
-    if (!snx_ctr_present_init(process->memory, frames))
-        printf("No Vulkan device: no frames will be drawn, shown or saved\n");
-    else {
+    if (!snx_ctr_present_init(process->memory, frame_dir, headless)) {
+        printf("The presenter did not start: no frames will be drawn, shown or saved\n");
+        if (frames_limit != UINT64_MAX && frames_limit > 0) {
+            snprintf(error, error_size, "--frames needs a Vulkan presenter");
+            result = 1;
+            goto done;
+        }
+    } else {
         snx_ctr_vk_pipeline_cache_open(directory); /* before the first draw */
         snx_ctr_present_title(process->title[0] ? process->title : id, "");
-        /* the Switch's fullscreen=1, but for a timed or budgeted test run, as for a Switch game */
-        if (g_settings.fullscreen && !(seconds > 0) && !limit) snx_ctr_present_fullscreen();
+        /* the Switch's fullscreen=1, but for a timed, frame-limited or budgeted test run, as for a Switch game */
+        if (g_settings.fullscreen && !(seconds > 0) && !limit && frames_limit == UINT64_MAX && !headless)
+            snx_ctr_present_fullscreen();
     }
     /* the DSP's output plays on the default device, and its first two minutes go to <output>/audio.wav */
     wav = snx_path_join(directory, "audio.wav");
-    if (!snx_ctr_audio_init(wav)) printf("No audio output: the DSP's frames will not be heard or saved\n");
-    snx_ctr_input_init(); /* the scripted presses count from here */
-    /* Runs until the game exits or its window is closed, as a Switch game does, or for the --max-blocks budget. The
-       dispatch goes in slices so the window's events are seen between them */
+    if (!snx_ctr_audio_init(wav, headless)) printf("No audio output: the DSP's frames will not be heard or saved\n");
+    snx_ctr_input_init(headless); /* the scripted presses count from here */
+    /* Runs until the game exits or its window is closed, as a Switch game does, or for the --max-blocks, --seconds
+       or --frames budget. The dispatch goes in slices so the window's events are seen between them */
     uint64_t executed = 0;
-    bool closed = false, timed = false;
+    bool closed = false, timed = false, ran_frames = frames_limit == 0;
     double deadline = seconds > 0 ? snx_seconds() + seconds : 0;
-    SnxCtrRunResult state;
+    SnxCtrRunResult state = SNX_CTR_RUN_BUDGET;
     printf("Running ARM11 static AOT%s\n", snx_ctr_space_base(process->space) ? " in a flat 4 GiB space" : "");
     /* a host fault in the flat space is the guest's data abort, reported with the block it happened in */
     ctr_host_faults(snx_ctr_space_base(process->space), &snx_ctr_process_cpu(process)->r[15], track_fault,
                     process->space);
-    for (;;) {
-        uint64_t slice = SNX_CTR_RUN_SLICE, n = 0;
+    for (; !ran_frames;) {
+        uint64_t slice = frames_limit != UINT64_MAX ? SNX_CTR_FRAME_SLICE : SNX_CTR_RUN_SLICE, n = 0;
         if (limit && limit - executed < slice) slice = limit - executed;
         state = snx_ctr_dispatch(native.module, process, slice, &n);
         executed += n;
         if (state != SNX_CTR_RUN_BUDGET || (limit && executed >= limit)) break;
         if ((closed = snx_ctr_present_closed())) break;
+        if (frames_limit != UINT64_MAX && snx_ctr_present_frames() >= frames_limit) {
+            ran_frames = true;
+            break;
+        }
         if ((timed = deadline && snx_seconds() >= deadline)) break;
     }
     SnxArmCPU* cpu = snx_ctr_process_cpu(process);
@@ -316,8 +327,12 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         else
             printf("Guest ExitProcess: r0=%" PRIu32 " blocks=%" PRIu64 "\n", cpu->r[0], executed);
         result = 0;
-    } else if (closed || timed) {
-        printf("%s: blocks=%" PRIu64 "\n", closed ? "Closed" : "Ran its time", executed);
+    } else if (closed || timed || ran_frames) {
+        printf("%s: blocks=%" PRIu64 "\n",
+               closed       ? "Closed"
+               : ran_frames ? "Ran its frames"
+                            : "Ran its time",
+               executed);
         report_threads(process);
         result = 0;
     } else if (process->stopped[0]) { /* a service ended it, and says why */
@@ -342,6 +357,14 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         if (hinted) printf(", %zu new in the title's hints, which a recompile (-r) starts from", hinted);
         putchar('\n');
     }
+    if (shot) { /* the last frame of both screens, before the presenter goes */
+        if (snx_ctr_present_shot(shot))
+            printf("Wrote the screen to %s\n", shot);
+        else {
+            fprintf(stderr, "scarletnx-3ds: cannot write the screen to %s\n", shot);
+            if (!result) result = 1;
+        }
+    }
     if (!result) puts("Exit."); /* a run that ended well says so last, as every driver's */
 done:
     ctr_host_faults(NULL, NULL, NULL, NULL);
@@ -351,7 +374,7 @@ done:
     snx_ctr_input_free();
     snx_ctr_process_free(process);
     free(wav);
-    free(frames);
+    free(frame_dir);
     snx_ctr_native_close(&native);
     free(module_path);
     snx_ctr_image_free(&image);

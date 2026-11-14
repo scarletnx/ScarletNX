@@ -127,7 +127,7 @@ int main(int argc, char** argv) {
     for (unsigned model = 0; model < 2; ++model) {
         SnxCtrProcess* p = snx_ctr_process_new(&image, (SnxCtrModel)model);
         assert(p);
-        if (!snx_ctr_present_init(p->memory, argv[1])) {
+        if (!snx_ctr_present_init(p->memory, argv[1], false)) {
             assert(!model);
             snx_ctr_process_free(p);
             gx_without_device(&image); /* and with the reason this host's start gave */

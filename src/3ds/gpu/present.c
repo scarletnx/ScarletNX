@@ -5,8 +5,9 @@
    image, and the window's swapchain shows both screens, the top one above the bottom one as on the console, each
    keeping its shape (frame_layout). With separate screens each one has its own window and fills it. Nothing of the
    frame passes through the CPU. The frame dumps (the first eight, then each screen's latest about once a second, in
-   frame_dir) and the tests' hashes are the one readback: the shader writes those frames' RGBA pixels to a
-   host-visible buffer as well, and a latest dump is written once the GPU is done, without a wait for it. The 3DS framebuffer is 240x400/320 portrait, one 240-pixel row per screen column from
+   frame_dir), the tests' hashes and --shot read a frame back: the shader writes those frames' RGBA pixels to a
+   host-visible buffer as well, and a latest dump is written once the GPU is done, without a wait for it. --shot copies
+   each screen's image at its render scale into a buffer of its own. The 3DS framebuffer is 240x400/320 portrait, one 240-pixel row per screen column from
    the left, each row from the bottom of the screen up (libctru's console draws pixel (x, y) at x * 240 + 239 - y);
    the window and the dumps show it that way round. A 3D render scaled by its screen's resolution setting is drawn
    from its render target while the GPU keeps that newer than memory. */
@@ -26,11 +27,18 @@
 #include "common/platform/file.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define MAX_SIDE 1024u /* the largest framebuffer side presented */
+
+static volatile sig_atomic_t g_quit; /* a headless run's Ctrl+C or SIGTERM */
+static void quit_signal(int signal_number) {
+    (void)signal_number;
+    g_quit = 1;
+}
 
 typedef struct {
     VkImage image;
@@ -62,6 +70,8 @@ static struct {
     } pending;
     unsigned bottom_alone; /* bottom screen frames since the window last showed, the top screen showing none */
     uint64_t decoded[2];   /* each screen's frames decoded */
+    uint64_t
+        console_frames; /* the console's frames: the top screen's, or the bottom's until the first top screen frame */
     uint64_t unshown;      /* the shows that found every image of their window on the display */
     uint64_t quit_by;      /* a second Esc before this closes the window (common/utilities/quit_key.h) */
     SDL_FingerID finger;   /* the finger holding the touch screen, while one does (by_finger) */
@@ -154,30 +164,42 @@ static bool semaphores(const SnxCtrVk* v, const VkSemaphoreCreateInfo* si) {
                 return false;
     return true;
 }
-bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
+bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir, bool headless) {
     if (g_present.up) return true;
     /* a finger and the mouse each reach the touch screen once, as on the Switch (backend/sdl3.c): SDL would also send
        each as the other, and a pen as both (it stays a finger) */
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
     SDL_SetHint(SDL_HINT_PEN_MOUSE_EVENTS, "0");
-    char why[1024];
-    if (!snx_ctr_vk_init(memory, why, sizeof why)) {
-        fprintf(stderr, "3ds gpu: %s\n", why);
-        return false;
+    /* Headless starts no SDL video, audio or gamepad, so it installs the signal handler itself: Ctrl+C and SIGTERM
+       end the run with its report, --shot and a finalised WAV */
+    if (headless) {
+        g_quit = 0;
+        signal(SIGINT, quit_signal);
+        signal(SIGTERM, quit_signal);
     }
+    char why[1024];
+    if (!snx_ctr_vk_init(memory, headless, why, sizeof why)) {
+        fprintf(stderr, "3ds gpu: %s\n", why);
+        memset(&g_present, 0, sizeof g_present);
+        return false; /* the signal handlers stay for a headless run with no Vulkan device */
+    }
+    /* the device is up: from here the presenter's free unwinds a partial start too */
+    g_present.up = 1;
     const SnxCtrVk* v = snx_ctr_vk();
     g_present.frame_dir = frame_dir;
     g_present.separate = g_settings.ctr_separate_screens && v->second && v->second_surface;
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = (VkDeviceSize)MAX_SIDE * MAX_SIDE * 4,
-                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     if (!snx_ctr_vk_compute(snx_ctr_present_spv, snx_ctr_present_spv_size / 4, 2, 2, 36, &g_present.decode) ||
         !frame_make(&g_present.source_dummy, 1, 1, 1) ||
-        vkCreateBuffer(v->device, &bi, NULL, &g_present.readback) != VK_SUCCESS)
+        vkCreateBuffer(v->device, &bi, NULL, &g_present.readback) != VK_SUCCESS) {
+        snx_ctr_present_free();
         return false;
+    }
     VkMemoryRequirements req;
     vkGetBufferMemoryRequirements(v->device, g_present.readback, &req);
     /* host-cached where the device has it: the host reads these frames */
@@ -193,8 +215,10 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     if (type == UINT32_MAX || vkAllocateMemory(v->device, &ai, NULL, &g_present.readback_memory) != VK_SUCCESS ||
         vkBindBufferMemory(v->device, g_present.readback, g_present.readback_memory, 0) != VK_SUCCESS ||
         vkMapMemory(v->device, g_present.readback_memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS ||
-        !semaphores(v, &si))
+        !semaphores(v, &si)) {
+        snx_ctr_present_free();
         return false;
+    }
     g_present.readback_view = mapped;
     image_barrier(snx_ctr_vk_commands(), g_present.source_dummy.image, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_GENERAL);
@@ -210,7 +234,6 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
                                                       : "at once, tearing (immediate)",
                 g_settings.vsync);
     }
-    g_present.up = 1;
     return true;
 }
 void snx_ctr_present_title(const char* name, const char* addons) {
@@ -254,12 +277,13 @@ static bool dump_due(unsigned screen) {
 static void write_ppm(unsigned screen, unsigned width, unsigned height, const unsigned char* rgba) {
     bool latest = g_present.dumps >= 8;
     char path[1024], staged[1040];
-    if (latest)
-        snprintf(path, sizeof path, "%s/frame-%u-latest.ppm", g_present.frame_dir, screen);
-    else
-        snprintf(path, sizeof path, "%s/frame-%u-%02u.ppm", g_present.frame_dir, screen, g_present.dumps);
-    snx_path_native(path);
-    snprintf(staged, sizeof staged, "%s.partial", path);
+    if (latest) {
+        if (snx_path_format(path, sizeof path, "%s/frame-%u-latest.ppm", g_present.frame_dir, screen)) return;
+        if (snx_path_format(staged, sizeof staged, "%s.partial", path)) return;
+    } else {
+        if (snx_path_format(path, sizeof path, "%s/frame-%u-%02u.ppm", g_present.frame_dir, screen, g_present.dumps))
+            return;
+    }
     FILE* file = fopen(latest ? staged : path, "wb");
     if (!file) return;
     /* the landscape rows are the framebuffer's columns from its last, each column's pixels a framebuffer row apart */
@@ -434,9 +458,10 @@ static void pump(void) {
         snx_ctr_input_event(&event); /* the gamepads connected and gone */
     }
 }
-/* SDL turns SIGINT and SIGTERM into a quit event too, so this is also how Ctrl+C ends a run, with or without a window
-   (the audio output initializes SDL's events) */
+/* SDL turns SIGINT and SIGTERM into a quit event in a windowed run. A headless run installs its own handler, since it
+   starts no SDL subsystem, and this is how Ctrl+C ends it with its report, --shot and a finalised WAV */
 bool snx_ctr_present_closed(void) {
+    if (g_quit) g_present.closed = 1;
     if (SDL_WasInit(SDL_INIT_EVENTS)) pump();
     return g_present.closed;
 }
@@ -604,6 +629,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     }
     pump();
     if (!ok) return false;
+    if (screen == 0 || !g_present.decoded[0]) ++g_present.console_frames;
     if (latest) {
         g_present.pending.active = true;
         g_present.pending.serial = recording;
@@ -619,6 +645,127 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
         if (dump) write_ppm(screen, width, height, rgba);
     }
     return true;
+}
+uint64_t snx_ctr_present_frames(void) { return g_present.up ? g_present.console_frames : 0; }
+/* a host-visible buffer a shot copies a frame into, sized for that frame */
+typedef struct {
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    unsigned char* map;
+} ShotBuffer;
+static bool shot_buffer_make(SnxCtrVk* v, VkDeviceSize size, ShotBuffer* b) {
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                             .size = size,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    *b = (ShotBuffer){0};
+    if (vkCreateBuffer(v->device, &bi, NULL, &b->buffer) != VK_SUCCESS) return false;
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(v->device, b->buffer, &req);
+    uint32_t type = snx_ctr_vk_memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                                                   VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    if (type == UINT32_MAX)
+        type = snx_ctr_vk_memory_type(req.memoryTypeBits,
+                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkMemoryAllocateInfo ai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size, .memoryTypeIndex = type};
+    if (type == UINT32_MAX || vkAllocateMemory(v->device, &ai, NULL, &b->memory) != VK_SUCCESS ||
+        vkBindBufferMemory(v->device, b->buffer, b->memory, 0) != VK_SUCCESS ||
+        vkMapMemory(v->device, b->memory, 0, VK_WHOLE_SIZE, 0, (void**)&b->map) != VK_SUCCESS) {
+        if (b->memory) vkFreeMemory(v->device, b->memory, NULL);
+        if (b->buffer) vkDestroyBuffer(v->device, b->buffer, NULL);
+        *b = (ShotBuffer){0};
+        return false;
+    }
+    return true;
+}
+static void shot_buffer_free(SnxCtrVk* v, ShotBuffer* b) {
+    if (b->map) vkUnmapMemory(v->device, b->memory);
+    if (b->memory) vkFreeMemory(v->device, b->memory, NULL);
+    if (b->buffer) vkDestroyBuffer(v->device, b->buffer, NULL);
+    *b = (ShotBuffer){0};
+}
+/* A screen's decoded frame (an RGBA image on the device) into rgba, width * height * 4 bytes; false when the screen
+   has no frame or the GPU lost it */
+static bool read_frame(unsigned screen, VkBuffer target, unsigned char* map, unsigned char* rgba, unsigned* width,
+                       unsigned* height) {
+    Frame* f = &g_present.frames[screen];
+    *width = *height = 0;
+    if (!f->image || !f->width || !f->height) return false;
+    VkCommandBuffer cb = snx_ctr_vk_commands();
+    if (!cb) return false;
+    snx_ctr_vk_compute_barrier(cb); /* after the GPU's last work, and any write to this buffer */
+    image_barrier(cb, f->image, f->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    f->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    VkBufferImageCopy region = {.bufferOffset = 0,
+                                .bufferRowLength = 0,
+                                .bufferImageHeight = 0,
+                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .imageOffset = {0, 0, 0},
+                                .imageExtent = {f->width, f->height, 1}};
+    vkCmdCopyImageToBuffer(cb, f->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, 1, &region);
+    if (!snx_ctr_vk_finish()) return false;
+    memcpy(rgba, map, (size_t)f->width * f->height * 4);
+    *width = f->width;
+    *height = f->height;
+    return true;
+}
+bool snx_ctr_present_shot(const char* path) {
+    if (!g_present.up || !path || !path[0]) return false;
+    write_pending(true);
+    SnxCtrVk* v = snx_ctr_vk();
+    unsigned char* screens[2] = {NULL, NULL};
+    unsigned width[2] = {0, 0}, height[2] = {0, 0};
+    VkDeviceSize bytes = 0;
+    for (unsigned screen = 0; screen < 2; ++screen) {
+        Frame* f = &g_present.frames[screen];
+        if (f->image && (VkDeviceSize)f->width * f->height * 4 > bytes) bytes = (VkDeviceSize)f->width * f->height * 4;
+    }
+    ShotBuffer shot = {0};
+    bool ok = bytes && shot_buffer_make(v, bytes, &shot);
+    if (ok) snx_ctr_vk_render_close(); /* a draw may have left its rendering pass open */
+    for (unsigned screen = 0; screen < 2 && ok; ++screen) {
+        Frame* f = &g_present.frames[screen];
+        if (!f->image) continue;
+        screens[screen] = malloc((size_t)f->width * f->height * 4);
+        ok = screens[screen] &&
+             read_frame(screen, shot.buffer, shot.map, screens[screen], &width[screen], &height[screen]);
+    }
+    shot_buffer_free(v, &shot);
+    unsigned layout_w = width[0] > width[1] ? width[0] : width[1];
+    unsigned layout_h = height[0] + height[1];
+    if (ok && layout_w && layout_h) {
+        unsigned char* canvas = calloc((size_t)layout_w * layout_h, 4);
+        ok = canvas != NULL;
+        if (ok) {
+            unsigned y = 0;
+            for (unsigned screen = 0; screen < 2; ++screen) {
+                if (!screens[screen]) continue;
+                unsigned x = (layout_w - width[screen]) / 2;
+                for (unsigned row = 0; row < height[screen]; ++row)
+                    memcpy(canvas + ((size_t)(y + row) * layout_w + x) * 4,
+                           screens[screen] + (size_t)row * width[screen] * 4, (size_t)width[screen] * 4);
+                y += height[screen];
+            }
+            char staged[1040], native[1024];
+            if (snx_path_format(native, sizeof native, "%s", path) ||
+                snx_path_format(staged, sizeof staged, "%s.partial", native))
+                ok = false;
+            else {
+                FILE* file = fopen(staged, "wb");
+                ok = file && !snx_ppm_write(file, layout_w, layout_h, canvas, 4, (ptrdiff_t)layout_w * 4, SNX_PPM_RGBA);
+                if (file && fclose(file)) ok = false;
+                if (ok)
+                    ok = !plat_replace_file(staged, native);
+                else
+                    remove(staged);
+            }
+            free(canvas);
+        }
+    }
+    for (unsigned screen = 0; screen < 2; ++screen) free(screens[screen]);
+    return ok && layout_w && layout_h;
 }
 void snx_ctr_present_report(void) {
     if (!g_present.up) return;
@@ -638,7 +785,10 @@ void snx_ctr_present_report(void) {
            copies, (unsigned long long)t.traps);
 }
 void snx_ctr_present_free(void) {
-    if (!g_present.up) return;
+    if (!g_present.up) {
+        memset(&g_present, 0, sizeof g_present);
+        return; /* a headless run keeps its signal handlers until the process ends */
+    }
     write_pending(true);
     const SnxCtrVk* v = snx_ctr_vk();
     vkDeviceWaitIdle(v->device);
@@ -651,6 +801,7 @@ void snx_ctr_present_free(void) {
             if (g_present.acquire[screen][i]) vkDestroySemaphore(v->device, g_present.acquire[screen][i], NULL);
             if (g_present.presented[screen][i]) vkDestroySemaphore(v->device, g_present.presented[screen][i], NULL);
         }
+    if (g_present.readback_view) vkUnmapMemory(v->device, g_present.readback_memory);
     if (g_present.readback) vkDestroyBuffer(v->device, g_present.readback, NULL);
     if (g_present.readback_memory) vkFreeMemory(v->device, g_present.readback_memory, NULL);
     snx_ctr_vk_compute_free(&g_present.decode);

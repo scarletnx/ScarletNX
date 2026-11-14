@@ -6,10 +6,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 /* The shown framebuffers, on the GPU (present.c). init brings up the 3DS's Vulkan device on memory (vk/vk.h) with a
-   window when it can make one; without a Vulkan device that can, it fails and nothing is shown. The 3DS display's
-   Separate screens setting gives each screen its own window. frame_dir receives bounded PPM dumps (the 3DS framebuffer
-   is 240x400/320 portrait, shown rotated 90 degrees clockwise, like the console's landscape screens). */
-bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir);
+   window when it can make one; headless starts no SDL video and makes no window or surface, whatever display the host
+   has. Without a Vulkan device that can, it fails and nothing is shown. The 3DS display's Separate screens setting
+   gives each screen its own window. frame_dir receives bounded PPM dumps (the 3DS framebuffer is 240x400/320 portrait,
+   shown rotated 90 degrees clockwise, like the console's landscape screens). */
+bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir, bool headless);
 /* The window's title, as a Switch game's: the game's name, what it is played with in parentheses when anything (an
    update, DLC), then the build ("ScarletNX <branch> <commit> (<compiler>, <OS> <arch>)"); and the program's icon */
 void snx_ctr_present_title(const char* name, const char* addons);
@@ -29,6 +30,12 @@ bool snx_ctr_present_separate(void);
    FNV-1a hash of the decoded RGBA pixels in the framebuffer's order (the tests'): that frame is read back */
 bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigned height, unsigned format,
                            unsigned pitch, uint64_t* hash);
+/* The console's frames decoded so far: each top screen frame, or each bottom screen frame until the first top screen frame */
+uint64_t snx_ctr_present_frames(void);
+/* The last frame of both screens into exactly path as one PPM, the top above the bottom as the window shows them, on
+   black. A screen that never decoded is absent. The GPU is waited for; false when the file cannot be written or no
+   frame was decoded */
+bool snx_ctr_present_shot(const char* path);
 /* A line for the run's summary on the standard output: each screen's frames decoded, and what the GPU's work took of
    the RAM (vk_render.h's snx_ctr_vk_traffic). Nothing before init */
 void snx_ctr_present_report(void);

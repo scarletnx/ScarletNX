@@ -8,6 +8,7 @@
 #include "3ds/services/hid.h"
 #include "snx_settings.h"
 #include "support/3ds_guest.h"
+#include <SDL3/SDL.h>
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -17,7 +18,8 @@ int main(void) {
     /* A and Start from the start, then nothing: each held for the press length */
     strcpy(g_settings.ctr_script, "0:9,100000:1");
     g_settings.press_length = 60000;
-    snx_ctr_input_init();
+    snx_ctr_input_init(true);
+    assert(!SDL_WasInit(SDL_INIT_GAMEPAD));
     SnxCtrProcess* p = snx_ctr_process_new(&image, SNX_CTR_OLD);
     assert(p);
     uint32_t session = 0;

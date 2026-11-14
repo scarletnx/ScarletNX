@@ -87,7 +87,7 @@ int main(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
     sdl_real_pads_hide();
     CHECK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD));
-    snx_ctr_input_init();
+    snx_ctr_input_init(false);
     unsigned char code[0x3000] = {0};
     SnxCtrImage image = ctr_image(code, sizeof code, 0x1000);
     SnxCtrProcess* p = snx_ctr_process_new(&image, SNX_CTR_OLD);
