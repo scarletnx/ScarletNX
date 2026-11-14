@@ -6,8 +6,8 @@
    channel doesn't; a release the CPU writes and a syncpoint incremented off the GPU thread end waits; a stream
    resumes in the middle of a method batch, of a job's entries, and of a macro; and a wait nothing ends times out. A
    new channel's render enable override starts at USE_RENDER_ENABLE, as Eden's does. With the argument split,
-   gpu_queue.c's renderer thread runs the queue's records, and the front end's constant buffer upload waits in the
-   queue behind the work before it.
+   gpu_queue.c's renderer thread runs the queue's records, the front end's constant buffer upload waits in the queue
+   behind the work before it, and the front end reads its own writes still queued.
    Each mark is a ClearBuffers value the stand-in renderer records; the platform's locks are pthreads */
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/gpu_queue.h"
@@ -371,7 +371,8 @@ static void expect(int ok, const char* what) {
 #define FAST 500000000ull /* a wait an event ends, well short of the 1 and 2 s timeouts */
 
 /* ------------------------------------------------ gpu_split=1: gpu_queue.c's renderer thread runs the records */
-#define CBUF (SEM + 0x300) /* a word of a constant buffer */
+#define CBUF  (SEM + 0x300) /* a word of a constant buffer */
+#define EVENT (SEM + 0x200) /* an NVN event's word */
 /* a record that holds the renderer thread until the front end opens the gate: what the front end queues after it
    stays queued while the front end goes on */
 static void renderer_held(const void* arg, u64 bytes) {
@@ -397,6 +398,21 @@ static void cb_upload(void* arg) {
     cb_before_run = snx_le32(*((u32*)guest + CBUF / 4));
     open_gate();
 }
+/* on the GPU thread, the front end: two adds of 1 to the event's word as nvn_replay.c's effects() makes them (the word
+   as the stream sees it, plus 1, written through the release path), the renderer thread behind both */
+static void two_event_adds(void* arg) {
+    (void)arg;
+    pthread_mutex_lock(&gate_lock);
+    gate_open = 0;
+    pthread_mutex_unlock(&gate_lock);
+    gq_call(renderer_held, NULL, 0);
+    for (int i = 0; i < 2; i++) {
+        u8 v[4];
+        snx_st_le32(v, gmem_r32(EVENT) + 1);
+        gpu_release_write(EVENT, v, sizeof v);
+    }
+    open_gate();
+}
 static int split_main(void) {
     g_settings.gpu_split = 1;
     cpu_store(CBUF, 3);
@@ -406,6 +422,14 @@ static int split_main(void) {
     u32 word = snx_le32(*((u32*)guest + CBUF / 4));
     expect(cb_before_run == 3, "a constant buffer upload reached memory before the renderer thread ran its record");
     expect(marks_are((u32[]){0x991}, 1) && word == 9, "the constant buffer upload's record did not run");
+    cpu_store(EVENT, 5);
+    gpu_call(two_event_adds, NULL, NULL, 0);
+    gpu_call(called, (void*)(uintptr_t)0x990, NULL, 0);
+    wait_marks(2);
+    word = snx_le32(*((u32*)guest + EVENT / 4));
+    if (word != 7) fprintf(stderr, "the event's word is %u after two adds of 1 to 5 (7 expected)\n", word);
+    expect(marks_are((u32[]){0x991, 0x990}, 2) && word == 7,
+           "two adds on the front end, the renderer thread behind: the second reads the first's queued write");
     if (!failures) printf("gpu_park split: ok\n");
     return failures != 0;
 }
