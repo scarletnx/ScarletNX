@@ -226,15 +226,17 @@ int main(void) {
         }
     }
 
-    /* Send through prepo.hook, for the SDKs that have it (16 on): the context the caller passes in x8 comes back
-       finished, with no object and success, its padding left; the report has no buffer after it; an older SDK's
-       module gets no hook */
+    /* Send through prepo.hook, for the SDKs that can have it (15 on, as the session's SendReportWithUser): the context
+       the caller passes in x8 comes back finished, with no object and success, its padding left; the report has no
+       buffer after it; an older SDK's module gets no hook */
     {
         static const char send[] = PREPO_SYM_SEND;
-        static const u32 with_send[] = {0x100200, 0x120302, 0x130303, 0x140503};
+        static const u32 with_send[] = {0x0f0000, 0x0f0302, 0x100200, 0x120302, 0x130303, 0x140503};
         u32 versions[HOOK_KEYS] = {0};
         int k = -1;
         versions[HOOK_SDK] = 0x0d0305;
+        CHECK(hook_select(&hook_table, send, versions, &first) == -2);
+        versions[HOOK_SDK] = 0x0e0300;
         CHECK(hook_select(&hook_table, send, versions, &first) == -2);
         for (unsigned i = 0; i < sizeof with_send / sizeof with_send[0]; i++) {
             versions[HOOK_SDK] = with_send[i];
@@ -264,13 +266,14 @@ int main(void) {
         CHECK(g_hle.prepo.saved == 0); /* Send's limit is its own, not Save's */
     }
 
-    /* AddSessionId from SDK 10, as each SDK read has it: the SDK's own Add(key, Any64BitId) of the id 0, the 8 bytes
-       below the caller's stack pointer with the stack pointer there during the call and back after it; none before */
+    /* AddSessionId from SDK 9 (the session's GetSystemSessionId), as each SDK read has it: the SDK's own Add(key,
+       Any64BitId) of the id 0, the 8 bytes below the caller's stack pointer with the stack pointer there during the
+       call and back after it; none before */
     {
         static const char add_id[] = "_ZN2nn5prepo12AddSessionIdEPNS0_10PlayReportEPKc";
-        static const u32 with_add_id[] = {0x0a0400, 0x0c0309, 0x0d0300, 0x0e0300,
-                                          0x100200, 0x120302, 0x130303, 0x140506};
-        static const u32 without[] = {0x080201, 0x090100};
+        static const u32 with_add_id[] = {0x090000, 0x090301, 0x0a0400, 0x0c0309, 0x0d0300,
+                                          0x0e0300, 0x100200, 0x120302, 0x130303, 0x140506};
+        static const u32 without[] = {0x080201, 0x08ffff};
         u32 versions[HOOK_KEYS] = {0};
         for (unsigned i = 0; i < sizeof without / sizeof without[0]; i++) {
             versions[HOOK_SDK] = without[i];
