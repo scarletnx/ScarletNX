@@ -2100,6 +2100,14 @@ VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k);
 /* whether the constant buffer words s's translation read still hold in ds's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s);
+/* counts the translations put in the shader table: after a new one, vk_shader_get can give another translation of
+   a program than it gave before */
+u32 vk_shader_fold_gen(void);
+/* whether no other translation of s's program folds more constant buffer words than s (cb_fold.h) */
+int vk_shader_fold_top(const VkSh* s);
+/* whether s is the translation of its program that vk_shader_get takes for ds: it holds, and no translation that
+   folds more words holds. For a caller that kept s, where vk_shader_fold_top(s) is 0 */
+int vk_shader_chosen(const DsState* ds, const VkSh* s);
 /* a draw's vertex layout: attributes by location and the bindings they read, as a pipeline's vertex input state
    holds them or vkCmdSetVertexInputEXT sets them */
 typedef struct {

@@ -1318,6 +1318,13 @@ VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k) 
     return vk_shader_get(ds, gva, 0, stage, w0 | (u64)w1 << 32, w2 | (u64)w3 << 32, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 0,
                          0, 0, 0);
 }
+u32 vk_shader_fold_gen(void) { return g_pipeline.fold_gen; }
+int vk_shader_fold_top(const VkSh* s) { return sh_fold_top(s); }
+int vk_shader_chosen(const DsState* ds, const VkSh* s) {
+    g_pipeline.sh_ds = ds;
+    g_pipeline.sh_bind = sh_bind_stage(s->stage);
+    return sh_holder(s->hash, s->stage, s->mask, s->clen, s->qh, s->clen_a, s->qh_a) == s;
+}
 /* whether the constant buffer words s's translation read (BRX jump tables) still hold in ds's bound buffers, as
    vk_shader_get checks them on each hit */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s) {
