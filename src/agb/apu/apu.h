@@ -41,7 +41,7 @@ void agb_apu_write(AgbBoard* board, uint32_t offset, uint16_t value);
 uint32_t agb_apu_run(AgbBoard* board, uint32_t cycles, int16_t* stereo, uint32_t capacity);
 /* Queues the bytes of a FIFO write (the direct sound DMA stores here). */
 void agb_apu_fifo_write(AgbBoard* board, int fifo, const void* bytes, uint32_t size);
-/* timer 0 or 1 overflowed: each FIFO SOUNDCNT_H puts on it takes its next sample, and asks its DMA for more once 16
-   bytes or fewer are left */
-void agb_apu_timer_overflow(AgbBoard* board, int timer);
+/* timer 0 or 1 overflowed at the board's cycle at: each FIFO SOUNDCNT_H puts on it takes its next sample, and asks its
+   DMA for more once 16 bytes or fewer are left */
+void agb_apu_timer_overflow(AgbBoard* board, int timer, uint64_t at);
 #endif

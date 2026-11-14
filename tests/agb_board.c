@@ -671,13 +671,13 @@ int main(void) {
     agb_write32(&board, 0x040000DC, 0x12400002); /* the vertical blank, repeat, halfwords, a fixed destination */
     agb_write16(&board, 0x040000DE, (uint16_t)(agb_read16(&board, 0x040000DE) | 0x8000));
     agb_write16(&board, 0x040000DC, 4);
-    agb_dma_event(&board, AGB_DMA_VBLANK);
+    agb_dma_event(&board, AGB_DMA_VBLANK, board.now);
     if (agb_read16(&board, 0x02000400) != 1) {
         fprintf(stderr, "agb_board: the first blank's DMA ends at halfword %u, not 1\n",
                 agb_read16(&board, 0x02000400));
         return 1;
     }
-    agb_dma_event(&board, AGB_DMA_VBLANK);
+    agb_dma_event(&board, AGB_DMA_VBLANK, board.now);
     if (agb_read16(&board, 0x02000400) != 5) {
         fprintf(stderr, "agb_board: the repeat ends at halfword %u, not 5\n", agb_read16(&board, 0x02000400));
         return 1;

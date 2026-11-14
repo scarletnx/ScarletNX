@@ -199,7 +199,7 @@ void agb_ppu_step(AgbBoard* board, uint32_t cycles) {
             ppu->dispstat |= 2;
             if (ppu->vcount < AGB_SCREEN_HEIGHT) {
                 render_line(board, ppu->vcount);
-                agb_dma_event(board, AGB_DMA_HBLANK);
+                agb_dma_event(board, AGB_DMA_HBLANK, at);
             }
             if (ppu->dispstat & 0x10) agb_irq_raise(board, AGB_IRQ_HBLANK, at + 1);
         } else {
@@ -220,7 +220,7 @@ void agb_ppu_step(AgbBoard* board, uint32_t cycles) {
                     ppu->bgy_line[i] = ppu->bgy[i];
                 }
                 if (ppu->dispstat & 8) agb_irq_raise(board, AGB_IRQ_VBLANK, at);
-                agb_dma_event(board, AGB_DMA_VBLANK);
+                agb_dma_event(board, AGB_DMA_VBLANK, at);
             }
             if (!ppu->vcount) ppu->dispstat &= (uint16_t)~1u;
             if (ppu->vcount == (ppu->dispstat >> 8)) {

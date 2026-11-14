@@ -93,11 +93,11 @@ uint32_t agb_access_cycles(const AgbBoard* board, uint32_t address, unsigned wid
 /* Where the console decodes nothing a read gives the open bus, the opcode the CPU fetched last at the read's lane, and a
    write goes nowhere, as mGBA's GBALoadBad and its stores have it: past the BIOS up to EWRAM, and past the 28 bits it
    decodes (GBATEK's 10000000-FFFFFFFF). A game's table lookup that goes past its data lands there */
-static int unused(uint32_t address) { return address >> 28 || (address >= AGB_BIOS_SIZE && address < 0x02000000); }
+int agb_unmapped(uint32_t address) { return address >> 28 || (address >= AGB_BIOS_SIZE && address < 0x02000000); }
 
 uint8_t agb_read8(AgbBoard* board, uint32_t address) {
     if (board->counting) board->counted_cycles += agb_access_cycles(board, address, 8, 1);
-    if (unused(address)) return (uint8_t)(board->open_bus >> (address & 3) * 8);
+    if (agb_unmapped(address)) return (uint8_t)(board->open_bus >> (address & 3) * 8);
     if ((address >> 24) == 0x04) return (uint8_t)(agb_io_read16(board, address & 0x0FFFFFFE) >> ((address & 1) * 8));
     if ((address >> 24) >= 0x0E) return agb_save_read8(board, address);
     if (is_bios(address)) return (uint8_t)(board->bios_prefetch >> (address & 3) * 8);
@@ -108,7 +108,7 @@ uint8_t agb_read8(AgbBoard* board, uint32_t address) {
 
 uint16_t agb_read16(AgbBoard* board, uint32_t address) {
     if (board->counting) board->counted_cycles += agb_access_cycles(board, address, 16, 1);
-    if (unused(address)) return (uint16_t)(board->open_bus >> (address & 2) * 8);
+    if (agb_unmapped(address)) return (uint16_t)(board->open_bus >> (address & 2) * 8);
     /* the save memory sits on an 8 bit bus: a wider read returns the byte the whole address names, twice (the suite's
        memory.c, SRAM unaligned loads, on the console) */
     if ((address >> 24) >= 0x0E) return (uint16_t)(agb_save_read8(board, address) * 0x0101u);
@@ -123,7 +123,7 @@ uint16_t agb_read16(AgbBoard* board, uint32_t address) {
 
 uint32_t agb_read32(AgbBoard* board, uint32_t address) {
     if (board->counting) board->counted_cycles += agb_access_cycles(board, address, 32, 1);
-    if (unused(address)) return board->open_bus;
+    if (agb_unmapped(address)) return board->open_bus;
     if ((address >> 24) >= 0x0E) return agb_save_read8(board, address) * 0x01010101u;
     address &= 0x0FFFFFFC;
     if ((address >> 24) == 0x04)
@@ -138,7 +138,7 @@ uint32_t agb_read32(AgbBoard* board, uint32_t address) {
 
 void agb_write8(AgbBoard* board, uint32_t address, uint8_t value) {
     if (board->counting) board->counted_cycles += agb_access_cycles(board, address, 8, 1);
-    if (unused(address)) return;
+    if (agb_unmapped(address)) return;
     if ((address >> 24) == 0x04) {
         agb_io_write16(board, address & 0x0FFFFFFE, (uint16_t)(value * 0x0101u), address & 1 ? 0xFF00 : 0x00FF);
         return;
@@ -166,7 +166,7 @@ void agb_write8(AgbBoard* board, uint32_t address, uint8_t value) {
 
 void agb_write16(AgbBoard* board, uint32_t address, uint16_t value) {
     if (board->counting) board->counted_cycles += agb_access_cycles(board, address, 16, 1);
-    if (unused(address)) return;
+    if (agb_unmapped(address)) return;
     if ((address >> 24) >= 0x0E) {
         /* the save memory is 8 bits wide: a wider store puts one lane's byte down */
         agb_save_write8(board, address, (uint8_t)(value >> ((address & 1) * 8)));
@@ -188,7 +188,7 @@ void agb_write16(AgbBoard* board, uint32_t address, uint16_t value) {
 
 void agb_write32(AgbBoard* board, uint32_t address, uint32_t value) {
     if (board->counting) board->counted_cycles += agb_access_cycles(board, address, 32, 1);
-    if (unused(address)) return;
+    if (agb_unmapped(address)) return;
     if ((address >> 24) >= 0x0E) {
         agb_save_write8(board, address, (uint8_t)(value >> ((address & 3) * 8)));
         return;
