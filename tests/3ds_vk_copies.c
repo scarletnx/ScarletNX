@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
     SnxCtrMemory* m = snx_ctr_memory_new(model);
     char why[512];
     if (!m) return 1;
-    if (!snx_ctr_vk_init(m, why, sizeof why)) {
+    if (!snx_ctr_vk_init(m, false, why, sizeof why)) {
         printf("no Vulkan device (%s): the RAM's copy unchecked\n", why);
         snx_ctr_memory_free(m);
         return 77;

@@ -2675,6 +2675,34 @@ static void test_instance_id(const char* dir) {
     free(spv);
 }
 
+/* A vertex program's read of bank 0's base instance (c[0][0x644], which the console's driver writes for it) takes the
+   draw's BaseInstance: the bank the program gets did not hold it (#2175). Checked by the decorations, as
+   test_instance_id is */
+static void test_base_instance_word(const char* dir) {
+    u8 code[16 * 4] = {0};
+    Word x = alu(0x002, 5, 0, 255); /* MOV R0 = c[0x0][0x644] */
+    set(&x, 38, 16, 0x644), set(&x, 54, 5, 0), set(&x, 72, 4, 0xf);
+    put(code, 0, x);
+    put(code, 1, ast(0x70, 0, 1));
+    put(code, 2, exit_insn());
+    put(code, 3, bra(3, 3, 7, 0));
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 4 * 16, ST_VS, vsph, &si, &count);
+    CHECK(spv != NULL);
+    int base_instance = 0;
+    for (size_t at = 5; spv && at < count && (spv[at] >> 16);) { /* OpDecorate x BuiltIn BaseInstance */
+        if ((spv[at] & 0xffff) == 71 && (spv[at] >> 16) == 4 && spv[at + 2] == 11 && spv[at + 3] == 4425)
+            base_instance = 1;
+        at += spv[at] >> 16;
+    }
+    CHECK(base_instance);
+    if (spv) CHECK(keep_module(dir, "base_instance_word", spv, count));
+    free(spv);
+}
+
 /* F2I.U64.F32 into the pair dst, dst + 1, and I2F.F32.U64 from the pair src, src + 1, with a rounding mode (78-79) */
 static Word f2i_u64(u32 dst, u32 src, u32 mode) {
     Word x = alu(0x111, 1, dst, 255);
@@ -4861,6 +4889,7 @@ int main(int argc, char** argv) {
     test_global_pointer(dir);
     test_wide_carries(dir);
     test_instance_id(dir);
+    test_base_instance_word(dir);
     test_u64_conversions();
     test_global_indirect(dir);
     test_global_table(dir);

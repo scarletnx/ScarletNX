@@ -73,11 +73,11 @@ static void al_level(const AlTex* x, u32 l, u32* w, u32* h, u32* d) {
     *h = x->c->h >> l ? x->c->h >> l : 1;
     *d = x->c->d3 ? (x->c->d >> l ? x->c->d >> l : 1) : 1;
 }
-/* the bytes of level l of a layer: RGBA8 texels or BC7 blocks */
-static u64 al_level_bytes(const AlTex* x, u32 l, int bc7) {
+/* the bytes of level l of a layer: RGBA8 texels (block 0), or 4x4 blocks of block bytes each (BC7's 16) */
+static u64 al_level_bytes(const AlTex* x, u32 l, u32 block) {
     u32 w, h, d;
     al_level(x, l, &w, &h, &d);
-    return bc7 ? (u64)((w + 3) / 4) * ((h + 3) / 4) * 16 * d : (u64)w * h * 4 * d;
+    return block ? (u64)((w + 3) / 4) * ((h + 3) / 4) * block * d : (u64)w * h * 4 * d;
 }
 static u32 al_layers(const AlTex* x) { return x->c->d3 ? 1 : x->c->d; }
 /* every level of every layer of t's image, read back, level after level, layer after layer; malloc'd, its bytes in
@@ -86,6 +86,8 @@ static u32 al_layers(const AlTex* x) { return x->c->d3 ? 1 : x->c->d; }
    another's. They are what the BC7 image is made from, so what its blocks are held to (al_expect) */
 static u8* al_image(const AlTex* x, Surf* t, u64* size) {
     const int bc7 = t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK;
+    /* the bytes of a 4x4 block: BC7's, BC5's 16, BC1's and BC4's 8 (vk_astc_bcn); 0 for RGBA8 texels */
+    const u32 block = bc7 || vk_astc_bcn(t->f.vk) == 5 ? 16u : vk_astc_bcn(t->f.vk) ? 8u : 0u;
     const u32 n = al_layers(x) * x->tex.d.levels;
     VkBufferImageCopy* c = calloc(n, sizeof *c);
     VkBuffer buffer;
@@ -99,10 +101,10 @@ static u8* al_image(const AlTex* x, Surf* t, u64* size) {
             c[k++] = (VkBufferImageCopy){.bufferOffset = at,
                                          .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, layer, 1},
                                          .imageExtent = {w, h, d}};
-            at += al_level_bytes(x, l, bc7);
+            at += al_level_bytes(x, l, block);
         }
     vk_lock();
-    const u64 kept = bc7 ? 0 : t->bc7.kept_bytes;
+    const u64 kept = block ? 0 : t->bc7.kept_bytes;
     u8* back = vk_readback_buffer(at + kept, &buffer);
     u8* out = back ? malloc((size_t)(at + kept)) : NULL;
     if (out) {
@@ -138,7 +140,7 @@ static u8* al_image(const AlTex* x, Surf* t, u64* size) {
 static u8* al_expect(const AlTex* x, const u8* rgba, u32 bw, u32 bh, u64* size) {
     u64 bytes = 0, texels = 0, to = 0;
     for (u32 l = 0; l < x->tex.d.levels; l++) {
-        bytes += al_level_bytes(x, l, 1);
+        bytes += al_level_bytes(x, l, 16);
         texels += al_level_bytes(x, l, 0);
     }
     bytes *= al_layers(x);
@@ -153,7 +155,7 @@ static u8* al_expect(const AlTex* x, const u8* rgba, u32 bw, u32 bh, u64* size) 
             const u64 slice = (u64)((w + bw - 1) / bw) * ((h + bh - 1) / bh) * 16;
             astc_bc7_cpu(vk_bc7_build(w, h, d), kept + level_at + layer * slice, w, h, d, bw, bh, 0, out + to);
             level_at += slice * (x->c->d3 ? d : al_layers(x));
-            to += al_level_bytes(x, l, 1);
+            to += al_level_bytes(x, l, 16);
         }
     }
     *size = bytes;
@@ -187,12 +189,12 @@ static void al_fill(AlTex* x) {
         snx_st_le32(GP(x->cpu) + i * 4, i % 4 ? x->rng : (x->rng & ~2047u) | (u32)(i / 4 & 2047));
     }
 }
-/* case c's texture, its memory filled, at index's place: the header, its twin's at AL_TWIN past it, made by astc_mode 2
-   (BC7) */
-static Surf* al_make(AlTex* x, const AlCase* c, u32 index) {
+/* case c's header at index's place, its twin's at AL_TWIN past it, both over memory span `span` (AL_SPAN each, 16 of
+   them), mapped: 1 when not */
+static int al_place(AlTex* x, const AlCase* c, u32 index, u32 span) {
     memset(x, 0, sizeof *x);
     x->c = c;
-    x->cpu = AL_CPU + index * AL_SPAN;
+    x->cpu = AL_CPU + span * AL_SPAN;
     x->rng = 0x2545f491u + index;
     x->tex.d.target = c->d3 ? NVN_TEXTURE_TARGET_3D : c->d > 1 ? NVN_TEXTURE_TARGET_2D_ARRAY : NVN_TEXTURE_TARGET_2D;
     x->tex.d.format = c->format;
@@ -210,11 +212,16 @@ static Surf* al_make(AlTex* x, const AlCase* c, u32 index) {
         !nvn_tic_encode(&twin, NULL, 0, 0, x->twin) || mem_map(x->cpu, AL_SPAN, MS_NORMAL, PERM_RW)) {
         fprintf(stderr, "ASTC as BC7 between frames, %s: %llu bytes, or no header, or no memory\n", c->name,
                 (unsigned long long)x->lay.size);
-        return NULL;
+        return 1;
     }
-    al_fill(x);
     gmmu_map(x->tex.gpu, x->cpu, AL_SPAN);
     gmmu_map(twin.gpu, x->cpu, AL_SPAN);
+    return 0;
+}
+/* case c's texture, its memory filled, at index's place (al_place), made by astc_mode 2 (BC7) */
+static Surf* al_make(AlTex* x, const AlCase* c, u32 index) {
+    if (al_place(x, c, index, index)) return NULL;
+    al_fill(x);
     vk_lock();
     Surf* t = vk_tex_from_tic(x->tic);
     vk_unlock();
@@ -594,6 +601,53 @@ static int al_freed(void) {
     return 0;
 }
 
+/* (i) The encoder's fast build is timed on the GPU for astc_quick_mtexels (astc.c bc7_time_begin), its transcodes of a
+   megatexel or more alone. A 1024x1024 ASTC 8x8 texture held as BC7 at load (g_vk.astc_at_load, astc_mode=3's) adds,
+   once its submission is done, its first level's texels, one dispatch of a megatexel, and some time within the wall
+   time, where the graphics queue writes timestamps (nothing where it writes none); its smaller levels add nothing. The
+   size of a very large level follows the sums, and is the setting's own with vk_astc_quick_measure(0) */
+static int al_timed(void) {
+    static const AlCase c = {"ASTC 8x8 1024x1024 at load, timed", NVN_FORMAT_RGBA_ASTC_8x8, 1024, 1024, 1, 0};
+    const int at_load = g_vk.astc_at_load;
+    AlTex x;
+    u64 ns0, t0, ns1, t1;
+    later_drain(); /* nothing of the checks before encodes beside it */
+    vk_lock();
+    vk_finish();
+    vk_unlock();
+    vk_astc_quick_texels(&ns0, &t0);
+    const u64 wall0 = plat_ns();
+    g_vk.astc_at_load = 1;
+    Surf* t = al_make(&x, &c, 9);
+    g_vk.astc_at_load = at_load;
+    CHECK(t && t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK && !t->bc7_later);
+    vk_lock();
+    vk_finish(); /* its submission done: its timestamps read */
+    vk_unlock();
+    const u64 wall = plat_ns() - wall0; /* the GPU's time of the dispatch fits in it */
+    const u64 size = vk_astc_quick_texels(&ns1, &t1), want = g_vk.gfx_timestamp_bits ? 1ull << 20 : 0;
+    if (t1 - t0 != want || (want && (ns1 <= ns0 || ns1 - ns0 > wall)) ||
+        size != snx_astc_quick_texels(g_settings.astc_quick_mtexels, ns1, t1)) {
+        fprintf(stderr,
+                "ASTC as BC7 at load, %s: %llu texels timed in %llu ns, not %llu%s; very large from %llu texels where "
+                "the sums give %llu\n",
+                c.name, (unsigned long long)(t1 - t0), (unsigned long long)(ns1 - ns0), (unsigned long long)want,
+                want ? " in some time within the wall time" : " (no timestamps)", (unsigned long long)size,
+                (unsigned long long)snx_astc_quick_texels(g_settings.astc_quick_mtexels, ns1, t1));
+        return 1;
+    }
+    const int had = vk_astc_quick_measure(0);
+    const u64 as_set = vk_astc_quick_texels(&ns1, &t1);
+    CHECK(had && !vk_astc_quick_measure(had));
+    CHECK(as_set == snx_astc_quick_texels(g_settings.astc_quick_mtexels, 0, 0));
+    printf("ASTC as BC7 at load, %s: a level of a megatexel timed in %.2f ms of the GPU, %.2f ns a texel, its smaller "
+           "levels not; very large levels from %.1f megatexels (astc_quick_mtexels=%d)\n",
+           c.name, (double)(ns1 - ns0) / 1e6, want ? (double)(ns1 - ns0) / (double)want : 0.0, (double)size / (1 << 20),
+           g_settings.astc_quick_mtexels);
+    al_free(&x);
+    return 0;
+}
+
 /* (h) The BC7 cache (astc.c over bc7_cache.c): the levels the encoder makes go into it once their frames are done, and
    a second texture of the same bytes, the header's twin at another address, takes them from it in its first frame
    with no encode: whole at once, its blocks the CPU encoder's of its RGBA8 texels */
@@ -668,6 +722,106 @@ static int al_cached(void) {
     return failed;
 }
 
+/* (j) astc_mode's Auto follows the GPU's memory (gpu/texture/astc_bc.h, device.c): Exact while the caches have room,
+   so a texture loads RGBA8 and stays out of the encoder's queue. A trim, with the budget lowered to the caches' use (as
+   vk_budget_mb lowers it), turns it to BC7: the next texture is queued for the encoder as it loads, and the game's BC7
+   cache opens at the next present, which keeps BC7 with no more room than the trim left. The first, loaded Exact with
+   its memory unchanged since, is marked at the switch and read again from memory at its first use of a later present
+   (vk_tex_later_exact): queued then, its blocks kept, and made BC7 by the encoder's frames, the RGBA8 texels it showed
+   before; the switch's band takes at least the three quarters of its RGBA8 bytes that encode frees. A fourth, loaded
+   Exact too but whose memory changed before the switch, stays Exact: its check loads it again first, whether the
+   switch marked it or not (write tracking may not have taken that write in yet). A present with the budget back, its room under the
+   trim's start past what the trim left, turns it to Exact again, and the third texture loads RGBA8 */
+static int al_auto(void) {
+    static const AlCase c = {"ASTC 8x8 256x256, Auto", NVN_FORMAT_RGBA_ASTC_8x8, 256, 256, 1, 0};
+    const SnxAstcAuto had = g_vk.astc_auto;
+    AlTex xa, xb, xc, xe;
+    u64 usage, budget, reads, stored, restarts, file0, file, size = 0;
+    g_settings.astc_mode = 0;
+    g_vk.astc_auto = (SnxAstcAuto){0, 0, 0};
+    vk_bc7_cache_stats(&reads, &stored, &restarts, &file0);
+    Surf* a = al_make(&xa, &c, 10);
+    CHECK(a && a->f.vk == VK_FORMAT_R8G8B8A8_UNORM && !a->bc7_later && !vk_astc_bc7());
+    u64 shown_size = 0;
+    u8* shown = al_image(&xa, a, &shown_size); /* its RGBA8 texels, no blocks kept */
+    const u64 a_bytes = a->bytes;
+    CHECK(shown);
+    Surf* e = al_make(&xe, &c, 13);
+    CHECK(e && e->f.vk == VK_FORMAT_R8G8B8A8_UNORM && !e->bc7_later);
+    al_fill(&xe); /* its memory written since it loaded, as the game writes it, and nothing loaded it again yet */
+    g_renderer->mem_may_have_changed();
+    g_vk_present++; /* a trim of its own present: none has run dry in it */
+    vk_mem_use(&usage, &budget);
+    const u64 cap = vk_mem_budget_cap(usage);
+    vk_lock();
+    vk_mem_trim(0, 0);
+    vk_unlock();
+    const SnxAstcAuto trimmed = g_vk.astc_auto;
+    const int a_marked = a->bc7_reread && !a->bc7_later && !a->bc7.queued && trimmed.band >= a_bytes - a_bytes / 4,
+              e_marked = e->bc7_reread;
+    Surf* b = al_make(&xb, &c, 11);
+    vk_lock();
+    vk_astc_auto_present();
+    vk_unlock();
+    const int kept = g_vk.astc_auto.bc7;
+    const u64 band = g_vk.astc_auto.band;
+    vk_bc7_cache_stats(&reads, &stored, &restarts, &file);
+    g_renderer->mem_may_have_changed();
+    g_vk_present++; /* the first use of the two since the switch */
+    vk_lock();
+    const int a_again = vk_tex_from_tic(xa.tic) == a && a->bc7_later && a->bc7.queued && a->bc7.kept &&
+                        !a->bc7_reread && a->f.vk == VK_FORMAT_R8G8B8A8_UNORM,
+              e_exact = vk_tex_from_tic(xe.tic) == e && !e->bc7_later && !e->bc7.queued && !e->bc7.kept &&
+                        e->f.vk == VK_FORMAT_R8G8B8A8_UNORM;
+    vk_unlock();
+    /* read again: the same RGBA8 texels, and now the blocks it keeps after them, which the encoder makes BC7 */
+    u8* rgba = a_again ? al_image(&xa, a, &size) : NULL;
+    const int same = rgba && size == shown_size && a->bc7.kept_bytes && !memcmp(rgba, shown, shown_size);
+    vk_mem_budget_cap(cap);
+    vk_lock();
+    vk_astc_auto_present();
+    vk_unlock();
+    const SnxAstcAuto back = g_vk.astc_auto;
+    Surf* d = al_make(&xc, &c, 12);
+    int failed = !trimmed.bc7 || trimmed.switches != 1 || !b || !b->bc7_later || !b->bc7.queued || !a_marked ||
+                 !a_again || !same || !e_exact || !kept || (!file0 && !file) || back.bc7 || back.switches != 2 ||
+                 back.band != band || !d || d->bc7_later || d->f.vk != VK_FORMAT_R8G8B8A8_UNORM;
+    if (failed)
+        fprintf(
+            stderr,
+            "astc_mode's Auto: after a trim under a budget of %llu MB, BC7 %d after %llu switches (a band of %llu "
+            "MB), the first texture marked %d and read again at its next use %d (its texels the same %d), the one whose memory changed "
+            "marked %d and Exact at its next use %d, the next held as BC7 later %d, queued %d, kept at a present "
+            "%d, the BC7 cache %llu bytes; with the budget back BC7 %d after %llu switches, the third texture held "
+            "as BC7 later %d\n",
+            (unsigned long long)(usage >> 20), trimmed.bc7, (unsigned long long)trimmed.switches,
+            (unsigned long long)(trimmed.band >> 20), a_marked, a_again, same, e_marked, e_exact, b ? b->bc7_later : -1,
+            b ? b->bc7.queued : -1, kept, (unsigned long long)file, back.bc7, (unsigned long long)back.switches,
+            d ? d->bc7_later : -1);
+    later_drain();
+    if (!failed && a->f.vk != VK_FORMAT_BC7_UNORM_BLOCK) {
+        fprintf(stderr, "astc_mode's Auto: the texture loaded RGBA8 before the trim is format %d after the encoder\n",
+                (int)a->f.vk);
+        failed = 1;
+    }
+    if (!failed) failed = al_differ(&xa, "loaded Exact, read again and made BC7 once Auto turned", a, rgba);
+    if (!failed)
+        printf("astc_mode's Auto: RGBA8 with room; a trim under a budget of %llu MB made the next texture BC7, and the "
+               "one loaded before it too once read again, between frames, while one whose memory changed stayed RGBA8 "
+               "(the trim left %llu MB under its start); the budget back made the third RGBA8 again\n",
+               (unsigned long long)(usage >> 20), (unsigned long long)(trimmed.band >> 20));
+    free(rgba);
+    free(shown);
+    if (!file0) vk_bc7_cache_close(); /* the game's, which the present opened: the checks after have none */
+    g_vk.astc_auto = had;
+    g_settings.astc_mode = 2;
+    al_free(&xa);
+    al_free(&xb);
+    al_free(&xc);
+    al_free(&xe);
+    return failed;
+}
+
 static int check_astc_later(void) {
     const int had = g_settings.astc_mode;
     u32 tic[8];
@@ -700,7 +854,9 @@ static int check_astc_later(void) {
     failed |= al_hot();
     failed |= al_hot_pieces();
     failed |= al_freed();
+    failed |= al_timed();
     failed |= al_cached();
+    failed |= al_auto();
     g_settings.astc_mode = had;
     return failed;
 }

@@ -1,14 +1,17 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
-   Where the DSP's frames go: the default playback device through SDL3, and a WAV recording of the first two minutes,
-   like the presenter's frame snapshots, so an unattended run can be listened to afterwards. */
+   Where the DSP's frames go: the default playback device through SDL3, and a WAV recording of the first two minutes
+   at the console's sample rate, like the presenter's frame snapshots, so an unattended run can be listened to
+   afterwards. The recording is in the console's time, not the host's, which is what a player hears at the default
+   pace. */
 #ifndef SNX_CTR_AUDIO_OUTPUT_H
 #define SNX_CTR_AUDIO_OUTPUT_H
 #include "3ds/audio/dsp.h"
 #include <stdbool.h>
 
-/* Opens the device and the recording (either may be missing, NULL wav_path records nothing). False when neither */
-bool snx_ctr_audio_init(const char* wav_path);
+/* Opens the device and the recording (either may be missing, NULL wav_path records nothing). headless starts no audio
+   device: only the recording is kept. False when neither */
+bool snx_ctr_audio_init(const char* wav_path, bool headless);
 /* Before init, or with no output, the frame is dropped. The CSND samples waiting are mixed into it */
 void snx_ctr_audio_frame(const int16_t frame[SNX_CTR_DSP_SAMPLES][2]);
 /* CSND's frames (services/csnd.c) mixed into the DSP's, as Azahar's DspInterface mixes them (mix.c): a CSND frame

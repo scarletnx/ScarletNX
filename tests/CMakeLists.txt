@@ -413,8 +413,11 @@ if(TARGET snx_ctr_board)
     # the stand-in shaders (shaders/standin.vert and standin.frag) given every draw they draw, against the CPU
     # reference
     add_test(NAME 3ds_vk_draw_stand_in COMMAND snx-test-3ds-vk-draw --ctr_stand_in=2)
+    # the presented screens outside the validation harness, so every host runs that path
+    add_test(NAME 3ds_vk_draw_present COMMAND snx-test-3ds-vk-draw --present)
     set_tests_properties(3ds_vk_draw 3ds_vk_draw_async 3ds_vk_draw_pipelines 3ds_vk_draw_async_pipelines
-                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_stand_in PROPERTIES SKIP_RETURN_CODE 77)
+                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_stand_in 3ds_vk_draw_present
+                         PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's copy of the RAM, page by page: what is copied in and back, and when, and every byte where it belongs
     add_executable(snx-test-3ds-vk-copies 3ds_vk_copies.c)
     snx_test_target(snx-test-3ds-vk-copies 11)
@@ -501,9 +504,9 @@ if(TARGET snx_ctr_board)
         endforeach()
     endif()
     set_tests_properties(${snx_tests} PROPERTIES SKIP_RETURN_CODE 77)
-    # the two windows and the per-screen render scales: one window always, Separate screens, a minimized window and a
-    # window whose images the display holds when the host has a window; the dumps stay the framebuffer's own size
-    # whatever the scale
+    # the two windows and the per-screen render scales: one window always, Separate screens, a minimized window, a
+    # window whose images the display holds, and a headless run; the dumps stay the framebuffer's own size whatever
+    # the scale
     add_executable(snx-test-3ds-windows 3ds_windows.c)
     snx_test_target(snx-test-3ds-windows 11)
     target_link_libraries(snx-test-3ds-windows PRIVATE snx_ctr_gpu)
@@ -514,8 +517,11 @@ if(TARGET snx_ctr_board)
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-minimized" --minimize)
     add_test(NAME 3ds_windows_no_image
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-no-image" --no-image)
+    add_test(NAME 3ds_windows_headless
+             COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-headless" --headless)
     set_tests_properties(3ds_windows 3ds_windows_separate PROPERTIES SKIP_RETURN_CODE 77)
-    set_tests_properties(3ds_windows_minimized 3ds_windows_no_image PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    set_tests_properties(3ds_windows_minimized 3ds_windows_no_image 3ds_windows_headless
+                         PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
     # the transfer engine alone: fills, display transfers, texture copies against hand-written goldens
     add_executable(snx-test-3ds-transfer 3ds_transfer.c)
     snx_test_target(snx-test-3ds-transfer 11)
@@ -619,7 +625,9 @@ if(SNX_TEST_SANITIZERS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_library(snx-test-vulkan-drivers-kept MODULE vulkan_drivers_kept.c)
     target_compile_options(snx-test-vulkan-drivers-kept PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(snx-test-vulkan-drivers-kept PRIVATE ${CMAKE_DL_LIBS})
-    foreach(snx_test 3ds_gsp_gpu 3ds_static_pipeline 3ds_extract)
+    foreach(snx_test 3ds_gsp_gpu 3ds_gsp_gpu_copy 3ds_gsp_gpu_in_place 3ds_static_pipeline 3ds_extract
+                     3ds_vk_transfer 3ds_vk_copies 3ds_vk_ram 3ds_vk_y2r 3ds_vk_draw 3ds_vk_draw_present
+                     3ds_vk_pipeline_cache 3ds_vk_shader_object 3ds_vk_import_error 3ds_windows 3ds_windows_headless)
         if(TEST ${snx_test})
             set_property(TEST ${snx_test} APPEND PROPERTY ENVIRONMENT
                          "LD_PRELOAD=$<TARGET_FILE:snx-test-vulkan-drivers-kept>")
@@ -2425,7 +2433,8 @@ endif()
 if(NOT SNX_TOOLS_ONLY)
     # tex_upload (gpu/vk/texture.c) into the staging buffer: block-linear rows against the layout, mip levels, 3D,
     # pitch linear, a converted format; a format uploaded as it is needs no level-sized buffer
-    add_executable(snx-test-tex-upload-rows tex_upload_rows.c tracy_stubs.c)
+    add_executable(snx-test-tex-upload-rows tex_upload_rows.c tracy_stubs.c
+                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c") # g_gob_native, which astc_kind.h reads
     snx_test_target(snx-test-tex-upload-rows 23)
     target_compile_definitions(snx-test-tex-upload-rows PRIVATE SNX_TEST_DEVMEM_STUBS=1)
     target_link_libraries(snx-test-tex-upload-rows PRIVATE snx_nx_flags)
@@ -3142,6 +3151,14 @@ add_executable(snx-test-astc-bc7-glsl glsl/astc_bc7_glsl.cpp glsl/astc_bc7_cpu.c
 snx_test_target(snx-test-astc-bc7-glsl 23)
 target_include_directories(snx-test-astc-bc7-glsl PRIVATE glsl)
 add_test(NAME astc_bc7_glsl COMMAND snx-test-astc-bc7-glsl)
+# astc_bcn.comp's GLSL, ASTC blocks straight into BC4, BC5 and BC1 ones for the textures whose blocks hold no more
+# (gpu/texture/astc_kind.h), run on the CPU (tests/glsl/glsl.hpp): what each loses against the CPU decoder's texels,
+# held to the floor measured; --measure FILE.astc... gives each file's format and loss beside BC7's. No GPU needed
+add_executable(snx-test-astc-bcn-glsl glsl/astc_bcn_glsl.cpp glsl/astc_bcn_cpu.cpp glsl/astc_bc7_cpu.cpp support/astc.c
+               support/bcn.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c") # g_gob_native
+snx_test_target(snx-test-astc-bcn-glsl 23)
+target_include_directories(snx-test-astc-bcn-glsl PRIVATE glsl)
+add_test(NAME astc_bcn_glsl COMMAND snx-test-astc-bcn-glsl)
 # the ASTC 4x4 encoder's GLSL (BCn encoded again as ASTC) run on the CPU (tests/glsl/glsl.hpp), its blocks decoded by
 # the CPU's ASTC decoder: no GPU needed
 add_executable(snx-test-astc-encode-glsl glsl/astc_encode_glsl.cpp glsl/astc_encode_cpu.cpp glsl/bcn_astc_cpu.cpp
@@ -3243,6 +3260,12 @@ add_test(NAME texconv_glsl COMMAND snx-test-texconv-glsl)
 add_executable(snx-test-astc-blocks astc_blocks.c support/astc.c)
 snx_test_target(snx-test-astc-blocks 23)
 add_test(NAME astc_blocks COMMAND snx-test-astc-blocks)
+# what an ASTC block can hold, read from its endpoint modes (gpu/texture/astc_kind.h), against the CPU decoder's
+# texels for random blocks of every mode; a level's kind through its layout; the BCn format each kind takes
+add_executable(snx-test-astc-kind astc_kind.c support/astc.c
+               "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c") # g_gob_native, which the layout reads
+snx_test_target(snx-test-astc-kind 99)
+add_test(NAME astc_kind COMMAND snx-test-astc-kind)
 
 add_executable(snx-test-nvn-command-gap nvn_command_gap.c support/nvn_command_gap.c)
 snx_test_target(snx-test-nvn-command-gap 23)

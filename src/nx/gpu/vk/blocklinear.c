@@ -29,6 +29,7 @@ static struct {
     VkBuffer scratch;
     DevMem mem;
     u64 cap, asked;
+    u64 recent; /* the most asked since vk_bl_scratch_trim last looked */
 } g_blocklinear;
 
 static void bl_init(void) {
@@ -46,6 +47,22 @@ static void bl_init(void) {
     vkDestroyShaderModule(g_vk.dev, module, NULL); /* the pipeline doesn't need it once made */
 }
 
+/* The scratch buffer stays as big as the most asked of it, and in Mario Kart World on a GPU of 2 GB one target's load
+   of 144 MB made it 256 MB for the rest of the run, where the DMA engine's moves after it asked 64 MB at most: a
+   fifth of the device's budget held for nothing while its depth targets and storage images found no memory. Once a
+   present with the heap past four fifths of its budget, one more than twice the most asked of it since the last
+   present goes, and the next move makes one of the size it asks */
+void vk_bl_scratch_trim(void) {
+    const u64 recent = g_blocklinear.recent;
+    g_blocklinear.recent = 0;
+    if (!g_blocklinear.scratch || g_blocklinear.cap <= (4ull << 20) || g_blocklinear.cap / 2 <= recent) return;
+    u64 usage, budget;
+    vk_mem_use(&usage, &budget);
+    if (usage < budget / 5 * 4) return;
+    vk_defer_buffer(g_blocklinear.scratch, g_blocklinear.mem); /* once the frame's work that may use it is done */
+    g_blocklinear.scratch = VK_NULL_HANDLE;
+    g_blocklinear.cap = 0;
+}
 u64 vk_bl_scratch_asked(void) {
     u64 asked = g_blocklinear.asked;
     g_blocklinear.asked = 0;
@@ -53,6 +70,7 @@ u64 vk_bl_scratch_asked(void) {
 }
 VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
     if (size > g_blocklinear.asked) g_blocklinear.asked = size;
+    if (size > g_blocklinear.recent) g_blocklinear.recent = size;
     *cap_out = g_blocklinear.cap;
     if (size <= g_blocklinear.cap) return g_blocklinear.scratch;
     if (size > g_vk.alloc_cap) return VK_NULL_HANDLE;

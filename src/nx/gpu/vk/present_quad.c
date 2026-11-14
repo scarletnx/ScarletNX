@@ -86,7 +86,10 @@ static VkPipeline pipeline(VkFormat format) {
                                           .pColorBlendState = &blend, .pDynamicState = &dynamic,
                                           .layout = g_present_quad.layout};
     VkPipeline result;
-    if (!VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &info, NULL, &result))) return VK_NULL_HANDLE;
+    int entered = snx_vk_compile_enter();
+    int ok = VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &info, NULL, &result));
+    snx_vk_compile_leave(entered);
+    if (!ok) return VK_NULL_HANDLE;
     if (g_present_quad.count == g_present_quad.capacity) {
         u32 capacity = g_present_quad.capacity ? g_present_quad.capacity * 2 : 4;
         void* grown = capacity > UINT32_MAX / sizeof *g_present_quad.pipelines ? NULL

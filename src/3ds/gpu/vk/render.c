@@ -239,10 +239,6 @@ typedef struct {
     uint8_t scaled, pad[3]; /* the vertex stand-in's: integer attributes in scaled formats, which it reads as floats */
 } ObjectState;
 
-typedef struct {
-    uint32_t lighting[24][256], fog[128], noise[128], color_map[128], alpha_map[128], color[256], diff[256];
-} LutSource;
-
 static struct {
     bool made, failed;
     SnxCtrVkCompute color, depth, texture;
@@ -295,7 +291,7 @@ static struct {
     VkDeviceSize vs_at, vs_data_at;
     SnxCtrFsUniforms fs_data;
     VkDeviceSize fs_at;
-    LutSource lut_source;
+    uint64_t lut_writes; /* the LUTs' writes at the last upload */
     VkBufferView lut_views[3];
     /* the vertex program's hash, kept until another upload */
     const SnxCtrPica* hashed_pica;
@@ -1816,16 +1812,9 @@ static SnxCtrPicaResult descriptors(const SnxCtrPica* p, const SnxCtrFsConfig* f
         }
     }
     free(fs_data);
-    LutSource* source = (LutSource*)malloc(sizeof *source);
-    if (!source) return SNX_CTR_PICA_UNSUPPORTED;
-    memcpy(source->lighting, p->lighting_lut, sizeof source->lighting);
-    memcpy(source->fog, p->fog_lut, sizeof source->fog);
-    memcpy(source->noise, p->proctex_noise, sizeof source->noise);
-    memcpy(source->color_map, p->proctex_color_map, sizeof source->color_map);
-    memcpy(source->alpha_map, p->proctex_alpha_map, sizeof source->alpha_map);
-    memcpy(source->color, p->proctex_color, sizeof source->color);
-    memcpy(source->diff, p->proctex_color_diff, sizeof source->diff);
-    if (ok && (!g.lut_uploaded || memcmp(source, &g.lut_source, sizeof *source))) {
+    /* the tables are read where the PICA keeps them: a write of one is counted, and until the count moves the last
+       upload still holds them, so a draw copies and compares nothing */
+    if (ok && (!g.lut_uploaded || g_pica_lut_writes != g.lut_writes)) {
         VkDeviceSize lf, rg, rgba;
         ok = ring(SNX_CTR_FS_LUT_LF * 8, &lf) && ring(SNX_CTR_FS_LUT_RG * 8, &rg) &&
              ring(SNX_CTR_FS_LUT_RGBA * 16, &rgba);
@@ -1837,11 +1826,10 @@ static SnxCtrPicaResult descriptors(const SnxCtrPica* p, const SnxCtrFsConfig* f
                  texel_view(rgba, SNX_CTR_FS_LUT_RGBA * 16, VK_FORMAT_R32G32B32A32_SFLOAT, &g.lut_views[2]);
         }
         if (ok) {
-            g.lut_source = *source;
             g.lut_uploaded = true;
+            g.lut_writes = g_pica_lut_writes;
         }
     }
-    free(source);
     float attributes[17][4];
     memcpy(attributes, p->default_attributes, sizeof p->default_attributes);
     memset(attributes[ZERO_SLOT], 0, sizeof attributes[ZERO_SLOT]);

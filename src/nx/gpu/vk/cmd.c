@@ -109,6 +109,7 @@ typedef struct {
     u32 big;    /* a buffer for a request bigger than a chunk */
     u32 bar;    /* made for the output ring's share of the window (bar_room) and in device memory the CPU maps: on a
                    GPU that shares system memory every buffer is in such memory, asked for there or not */
+    u32 spilled; /* the device ring's, in system memory for want of the device's: gone once its slot is done */
 } Chunk;
 static struct {
     Chunk* chunk;
@@ -118,6 +119,7 @@ static struct {
                                                  the one being recorded */
     u32 itook;
     u64 made; /* chunks and big buffers made since the start (statistics, tests) */
+    u64 spilled; /* the device ring's chunks made in system memory since the start, for want of the device's */
     u32 recycles; /* frame slots recycled since the start (tests) */
     /* The stream: the chunk it hands out of (plus one) and the bytes handed out of that. Its chunks are no frame's:
        each has the number of a submission, and is handed out again once that submission is done */
@@ -558,8 +560,9 @@ void vk_stage_report(void) {
                        (unsigned long long)(g_xfer[r][XFER_MAPPED] >> 20),
                        (unsigned long long)(g_xfer[r][XFER_DEVICE] >> 20));
     LOG("vulkan: ring MB over 600 presents (in host/mapped device/device memory):%s; the rings hold %llu MiB, %llu "
-        "buffers made for them in all\n",
-        line, (unsigned long long)(vk_ring_bytes() >> 20), (unsigned long long)g_cmd.made);
+        "buffers made for them in all, %llu of the device ring's in system memory for want of the device's\n",
+        line, (unsigned long long)(vk_ring_bytes() >> 20), (unsigned long long)g_cmd.made,
+        (unsigned long long)g_cmd.spilled);
     memset(g_xfer, 0, sizeof g_xfer);
     for (u32 i = 0; i < DEVICE_SITES && g_device_sites[i].file; i++) {
         const char* f = strrchr(g_device_sites[i].file, '/');
@@ -614,7 +617,26 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
         g_cmd.chunk = grown;
         g_cmd.capchunk = cap;
     }
-    if (!VK_OK(vk_buffer_create(&bci, &aci, &buf, &mem, &info))) return 0;
+    /* The device ring's chunk without device memory: the kept results' pool gives back what it can (owned.c), and then
+       the chunk is made in system memory, which the GPU reads and writes across the bus. What stages through the ring
+       then still happens: without a chunk a copy engine's copy was skipped ("could not stage its source"), and the
+       texture or the buffer it fills kept the bytes it had */
+    u32 spilled = 0;
+    VkResult made = vk_buffer_create(&bci, &aci, &buf, &mem, &info);
+    if (made != VK_SUCCESS && ring == XRING_DEVICE && g_vk.mem_model != VK_MEM_UMA) {
+        if (vk_own_make_room()) made = vk_buffer_create(&bci, &aci, &buf, &mem, &info);
+        if (made != VK_SUCCESS) {
+            aci.at = DM_HOST;
+            made = vk_buffer_create(&bci, &aci, &buf, &mem, &info);
+            spilled = made == VK_SUCCESS;
+            g_cmd.spilled += spilled;
+            if (spilled)
+                LOG_LIMIT(1, "vulkan: no device memory for a chunk of the device ring (%llu MiB): it is in system "
+                             "memory until its frame is done, as each one is that finds none\n",
+                          (unsigned long long)(size >> 20));
+        }
+    }
+    if (!VK_OK(made)) return 0;
     vk_mem_track(mem, VK_OWN_STAGING);
     if (ring == XRING_STAGE && !g_cmd.stage_told) {
         const VkPhysicalDeviceMemoryProperties* mp;
@@ -633,7 +655,8 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
                              .ring = ring,
                              .in = xfer_where(&info),
                              .slot = slot,
-                             .bar = bar && xfer_where(&info) == XFER_MAPPED};
+                             .bar = bar && xfer_where(&info) == XFER_MAPPED,
+                             .spilled = spilled};
     g_cmd.made++;
     return i + 1;
 }
@@ -836,7 +859,7 @@ static void pool_recycle(Frame* f) {
             held[c->ring][c->big]++;
             continue;
         }
-        if ((!c->big && c->size != size) || (c->bar && !bar_room(budget, 0, 0)))
+        if ((!c->big && c->size != size) || (c->bar && !bar_room(budget, 0, 0)) || c->spilled)
             chunk_destroy(c);
         else {
             if (c->slot) c->freed = g_frame_id;

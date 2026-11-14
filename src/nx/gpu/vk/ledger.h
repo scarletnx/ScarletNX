@@ -47,6 +47,9 @@ VkResult VKAPI_CALL vk_ledger_allocate(VkDevice dev, const VkMemoryAllocateInfo*
 void VKAPI_CALL vk_ledger_free(VkDevice dev, VkDeviceMemory mem, const VkAllocationCallbacks* cb);
 /* one owner's bytes now, for a caller that budgets it: device, host, heap */
 void vk_ledger_owner(u32 owner, u64* device, u64* host, u64* heap);
+/* each owner that holds something, a few a line of the log (any thread): the bytes of devmem.c's under an owner. The
+   out-of-memory report says them too, as a run may end before the first report */
+u64 vk_ledger_owners(void);
 /* the report (renderer.c, every 600 presents): each owner that holds something, what devmem.c holds beside them, and
    the driver's allocations since the last report */
 void vk_ledger_log(void);

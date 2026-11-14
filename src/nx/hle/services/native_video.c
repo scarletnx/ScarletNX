@@ -11,6 +11,7 @@
 #include "nx/hle/services/native_video.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
+#include "nx/memory/own.h"
 #include "nx/gpu/video/host1x.h" /* ffmpeg_log_init */
 #include "nx/gpu/video/vic_regs.h"
 #include "nx/runtime/options.h"
@@ -207,10 +208,36 @@ static void rgb_matrix(VicSlot* s, const AVFrame* f) {
     s->clamp_lo = 0;
     s->clamp_hi = 1023;
 }
-/* the picture written into its image on the GPU, as NVDEC's pictures are (the renderer's nvdec_write, pitch linear):
-   FFmpeg's planar rows are staged and the GPU interleaves the chroma, or a picture Vulkan Video decoded is copied out
-   of its GPU image, and the image is published over guest memory, which the game's CPU reads
-   (ReadDecoderOutputImageNv12) land. 1 when written */
+/* An NV12 image's picture written by the CPU into guest memory: FFmpeg's planar rows, the chroma interleaved, or a
+   semi-planar picture's rows as they are. The image's earlier picture lands first if the GPU still holds it, and what
+   is built from its bytes on the GPU (textures, buffers) takes the new ones.
+
+   The game's CPU reads every picture (the SDK's ReadUserImageNv12 and ReadDecoderOutputImageNv12): written on the GPU
+   and published there, as NVDEC's, each picture went to the GPU and came back at the read, the read waiting for the
+   GPU. One game's movie player then had its pictures at 8 to 15 a second for a movie of 30, each late, dropped them
+   all, and the intro stayed black */
+static void image_write_cpu(const NvdecPic* pic, u64 cpu, u64 bytes) {
+    /* 4:2:0 chroma of an odd size covers the last column and row too, as nvdec.c's rows on the GPU do */
+    const u32 pairs = (pic->w + 1) / 2, rows = (pic->h + 1) / 2;
+    own_acquire(cpu, bytes);
+    for (u32 r = 0; r < pic->h; r++)
+        memcpy(GP(pic->luma + (u64)r * pic->pitch_y), pic->plane[0] + (i64)r * pic->stride[0], pic->w);
+    for (u32 r = 0; r < rows; r++) {
+        u8* o = GP(pic->chroma + (u64)r * pic->pitch_c);
+        if (pic->semi)
+            memcpy(o, pic->plane[1] + (i64)r * pic->stride[1], 2 * pairs);
+        else
+            for (u32 k = 0; k < pairs; k++) {
+                o[2 * k] = pic->plane[1][(i64)r * pic->stride[1] + k];
+                o[2 * k + 1] = pic->plane[2][(i64)r * pic->stride[2] + k];
+            }
+    }
+    gpu_mem_written_cpu(cpu, bytes);
+}
+/* the picture written into its image: an NV12 image's software picture by the CPU (image_write_cpu); else on the GPU,
+   as NVDEC's pictures are (the renderer's nvdec_write, pitch linear): FFmpeg's planar rows are staged and the GPU
+   interleaves the chroma, or a picture Vulkan Video decoded is copied out of its GPU image, and the image is published
+   over guest memory, where the game's CPU reads land it. 1 when written */
 int native_video_image_write(const NativeVideoPool* p, u32 id, const AVFrame* f) {
     const NativeVideoLayout* l = &p->layout;
     u32 w = (u32)f->width, h = (u32)f->height;
@@ -254,6 +281,10 @@ int native_video_image_write(const NativeVideoPool* p, u32 id, const AVFrame* f)
             pic.plane[i] = f->data[i];
             pic.stride[i] = f->linesize[i];
         }
+    }
+    if (nv12 && !hw) {
+        image_write_cpu(&pic, cpu, l->image_bytes);
+        return 1;
     }
     if (!g_renderer->nvdec_write(&pic)) return 0;
     if (nv12) return 1;

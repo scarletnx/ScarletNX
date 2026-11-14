@@ -91,9 +91,10 @@ uint8_t snx_ctr_vk_target_scale(unsigned width, unsigned height);
 /* The device and the window (unless headless or none can be made), with memory's RAM regions its buffers: imported,
    or, when the driver refuses that, the RAM moved into the device's memory, or, when it cannot take it either, a copy
    of it in the device's host-visible memory, which the CPU keeps in step with the board's own (render.c). Each says so
-   on the standard error. Before the guest runs, as the move copies the RAM. False, with the reason in error, when the
-   host has no Vulkan device that can: Vulkan 1.3, 8-bit storage buffers and dynamic rendering */
-bool snx_ctr_vk_init(SnxCtrMemory* memory, char* error, size_t error_size);
+   on the standard error. Before the guest runs, as the move copies the RAM. With headless no SDL video starts and no
+   window or surface is made, whatever display the host has; frames go to the dumps and --shot. False, with the reason in
+   error, when the host has no Vulkan device that can: Vulkan 1.3, 8-bit storage buffers and dynamic rendering */
+bool snx_ctr_vk_init(SnxCtrMemory* memory, bool headless, char* error, size_t error_size);
 void snx_ctr_vk_free(void);
 /* why the last snx_ctr_vk_init failed, without the device's name, which its error adds ("; device <name>, driver
    <name> <info>") once one was chosen; "" when it made the device. A run that ends for want of the device ends with
