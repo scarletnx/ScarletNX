@@ -24,6 +24,7 @@ typedef struct {
 } ClockRate;
 ClockRate clock_rate(void);
 u64 guest_gpu_ticks(void); /* the GPU's 19.2 MHz timestamps, which the NVN handlers convert back to nanoseconds */
+u64 guest_gpu_ticks_at(u64 ns); /* the same, at guest time ns */
 
 /* The guest clock in the host's virtual counter (CNTVCT_EL0), as NCE's stubs read it with no outcall (nce_patch.c):
    the clock's nanoseconds are cnt * mul_hi + (cnt * mul_lo >> 64) - origin, and words is the address of its two words,

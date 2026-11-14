@@ -257,6 +257,12 @@ static int vkr_samples_report(u32 owner, u64 gva, u32 len, u64 ticks) {
     vk_unlock();
     return r;
 }
+static int vkr_stamp_report(u64 gva, int top, u64 ticks) {
+    vk_lock();
+    int r = vk_query_stamp(gva, top, ticks);
+    vk_unlock();
+    return r;
+}
 static void vkr_method_barrier(int kind)
 {
 	/* a fragment barrier, and the 3D engine's texture data cache invalidation (kind 2), make earlier draws' writes
@@ -579,6 +585,10 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
     int recreate = 0;
     if (shown && (src || !game) && (g_vk.swapchain || (!tried && vk_swapchain_create(kind)))) {
         if (src) hdr_metadata(hdr);
+        /* The game's work recorded so far goes now, without the wait for the swapchain image: in the present's own
+           submission it waited for the display's image, up to a refresh, and that time showed in the game's GPU
+           timestamps (query.c) */
+        vk_submit_split();
         VkCommandBuffer cb = vk_cmd(); /* waits for this frame slot, so its acquire semaphore is free */
         VkSemaphore acq = g_acquired[vk_frame_id() % VK_FRAMES];
         /* no wait: vk_lock is held (guest threads mapping memory take it too), and the game's pace is present_pace's.
@@ -1320,6 +1330,7 @@ const Renderer vk_renderer = {
     .samples_reset = vkr_samples_reset,
     .samples_enable = vkr_samples_enable,
     .samples_report = vkr_samples_report,
+    .stamp_report = vkr_stamp_report,
     .stream_end = vk_release_submit,
     .present_buffer = vkr_present_buffer,
     .present_hdr = vkr_present_hdr,

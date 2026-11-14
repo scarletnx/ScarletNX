@@ -1934,6 +1934,9 @@ void vk_release_incr(u32 id);
 /* a samples-passed report: len bytes at gva (4, or 16 with ticks after the count), the count of query.c's counter's
    segments [first, end), once the GPU has done the submit being recorded */
 void vk_release_samples(u64 gva, u32 len, u32 counter, u64 first, u64 end, u64 ticks);
+/* a timestamp report: len bytes at gva (16: a zero, then the ticks), the time of query.c's timestamp stamp, once the
+   GPU has done the submit being recorded. ticks: the replay's time, kept where the queue performs it unread */
+void vk_release_stamp(u64 gva, u32 len, u64 stamp, u64 ticks);
 void vk_release_queued(u64* n, u64* gate, u64* cgate); /* the queue's length and its oldest's gates (any thread) */
 void vk_release_submit(void); /* the GPFIFO submission ended or waits: a release gated on the recording submits */
 /* Counts the points after which a draw must see in its textures what earlier draws wrote: the guest's texture barriers
@@ -1982,6 +1985,13 @@ int vk_query_report(u32 owner, u64 gva, u32 len, u64 ticks);
 /* a report performed (release.c): the count of counter's segments [first, end) */
 u64 vk_query_value(u32 counter, u64 first, u64 end);
 u64 vk_query_peek(u32 counter, u64 first, u64 end); /* the same, out of order, changing nothing */
+/* a timestamp report at gva (renderer.h stamp_report): 0 where the device writes no timestamps. vk_query_stamp_ticks:
+   the guest's GPU ticks (clock.h guest_gpu_ticks) of timestamp stamp, whose copy has run */
+int vk_query_stamp(u64 gva, int top, u64 ticks);
+u64 vk_query_stamp_ticks(u64 stamp);
+/* a command buffer of the frame begun (cmd.c's vk_cmd), and ending before its submit: the device's busy time */
+void vk_query_cb_begin(VkCommandBuffer cb);
+void vk_query_cb_end(VkCommandBuffer cb, int waits); /* waits: on a semaphore of another queue or the display */
 /* writes the n counts of reports not performed yet into buf, whose bytes from off on were read at their at: 1, or 0
    when they can't be counted on the GPU (the caller then reads the reports performed) */
 int vk_query_counts(VkBuffer buf, u64 off, const SamplesCount* counts, u32 n);

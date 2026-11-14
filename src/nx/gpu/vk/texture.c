@@ -1931,7 +1931,11 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
     }
     return c;
 }
-static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) { return rt_copy(rt, w, h, as, 0, 1, 0); }
+/* A texture that reads part of a target (a frame's corner of it, or rows a few pixels narrower than its aligned
+   width), or its bytes in another format. The copy is made again only after a texture barrier, as vk_rt_snapshot's:
+   one game's full-screen pass read its 800x448 target as 792x448 through each of its draws to it, and the copy before
+   each draw (210 a frame) took about 10 ms of the GPU. Its GPU timer then held its render size down there */
+static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) { return rt_copy(rt, w, h, as, 0, 1, 1); }
 /* A scaled color target for a program whose texels are the guest's (a compute program, whose fetches, size queries
    and stored images count them, or a stage before the fragment's): its top-left w x h at the guest's size, in as when
    not NULL. NULL for a multisampled or depth target, a format that can't be blitted or a copy that found no memory,
