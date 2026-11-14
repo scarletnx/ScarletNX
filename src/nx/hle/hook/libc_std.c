@@ -76,14 +76,21 @@ static size_t lcat(char* d, const char* s, size_t n) {
 #define G(p)  ((u64)((const u8*)(p) - (const u8*)hook_host(c, 0)))
 #define GN(p) ((p) ? G(p) : 0)
 
-/* errno: musl numbers like Linux, as the net stack's guest errno values do (common/network/abi/errno.inc). A number
-   with no name in the list passes through unchanged. */
+/* errno: musl numbers like Linux, as the net stack's guest errno values do (common/network/abi/errno.inc). The C
+   library sets a few the net stack never reports; they are listed here. A number with no name passes through. */
+#define LIBC_ERRNOS(X)                                                                                                 \
+    X(NOEXEC, 8) X(XDEV, 18) X(TXTBSY, 26) X(MLINK, 31) X(DEADLK, 35) X(NOLCK, 37) X(NOTEMPTY, 39) X(IDRM, 43)       \
+        X(NOLINK, 67) X(PROTO, 71) X(MULTIHOP, 72) X(BADMSG, 74) X(OWNERDEAD, 130) X(NOTRECOVERABLE, 131)
 int libc_errno_musl(int host) {
 #ifndef _WIN32
 #define SNX_NET_ERRNO(name, value)                                                                                     \
     if (host == E##name) return value;
 #include "common/network/abi/errno.inc"
     if (host == EWOULDBLOCK) return 11;
+#define TO_MUSL(name, value)                                                                                           \
+    if (host == E##name) return value;
+    LIBC_ERRNOS(TO_MUSL)
+#undef TO_MUSL
 #endif
     return host;
 }
@@ -92,6 +99,10 @@ int libc_errno_host(int musl) {
 #define SNX_NET_ERRNO(name, value)                                                                                     \
     if (musl == value) return E##name;
 #include "common/network/abi/errno.inc"
+#define TO_HOST(name, value)                                                                                           \
+    if (musl == value) return E##name;
+    LIBC_ERRNOS(TO_HOST)
+#undef TO_HOST
 #endif
     return musl;
 }
