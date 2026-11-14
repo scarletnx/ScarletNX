@@ -636,6 +636,24 @@ static void index_count_past_ram(SnxCtrMemory* m) {
     free(s);
 }
 
+/* A draw recorded again into the target a submission left open, after a wait for that submission, with the same
+   uniforms and LUTs: its uploads and LUT views must be the new recording's, not the retired slot's */
+static void draw_after_submit(SnxCtrMemory* m) {
+    static unsigned char color[W * H * 4], sw[W * H * 4], gpu[W * H * 4];
+    Scene* s = triangle_scene("a draw after a submission", 4);
+    random_fill(color, sizeof color);
+    setup(m, s, color, color); /* no depth target */
+    bool a = record(m, s, &software) && record(m, s, &software);
+    snx_ctr_phys_read(m, COLOR, sw, sizeof sw);
+    setup(m, s, color, color);
+    /* no CPU access between the two: the target stays open, so only the second draw's own setup opens the next
+       recording */
+    bool b = record(m, s, &vulkan) && snx_ctr_vk_finish() && record(m, s, &vulkan) && snx_ctr_vk_finish();
+    snx_ctr_phys_read(m, COLOR, gpu, sizeof gpu);
+    if (drew(s, a, b)) compare(s, sw, gpu, NULL, NULL);
+    free(s);
+}
+
 static void commands_after_draw(SnxCtrMemory* m) {
     y2r_after_draw(m);
     transfer_after_draw(m);
@@ -1274,6 +1292,7 @@ static void all_scenes(SnxCtrMemory* m) {
     draw_after_index_copy(m);
     index_count_past_ram(m);
     shadows(m);
+    draw_after_submit(m);
 }
 
 typedef struct {
@@ -1287,6 +1306,7 @@ static const Mode modes[] = {{"--present", "the presented screens", screens},
                              {"--after-draw", "the commands after a draw", presented_after_draw},
                              {"--texture-after-draw", "the textures after a draw", texture_after_draw},
                              {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy},
+                             {"--draw-after-submit", "a draw after a submission", draw_after_submit},
                              {"--async", "the draws with async_pipelines", async_pipelines},
                              {"--pipeline-cache", "the pipeline cache kept between runs", pipeline_cache},
                              {"--shadow", "the shadow maps", shadows}};
