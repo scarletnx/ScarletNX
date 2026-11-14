@@ -361,6 +361,23 @@ int main(void) {
               !board.save.dirty);
     }
 
+    /* VRAM's 128 KiB window ends in a mirror of its sprite half, 0x06018000 to 0x0601FFFF: in the bitmap modes its
+       first 16 KiB would fold onto the bitmap's 0x06010000 to 0x06013FFF, which takes neither writes nor reads from
+       there (mGBA's and NanoBoyAdvance's VRAM), so a game's copy of 128 KiB leaves the bitmap's last rows whole */
+    agb_write16(&board, 0x04000000, 0x0403); /* mode 3 */
+    agb_write32(&board, 0x06010000, 0x11223344);
+    agb_write32(&board, 0x06018000, 0);
+    agb_write16(&board, 0x06018002, 0);
+    agb_write8(&board, 0x06018001, 0);
+    CHECK(agb_read32(&board, 0x06010000) == 0x11223344 && agb_read32(&board, 0x06018000) == 0 &&
+          agb_read16(&board, 0x06018000) == 0 && agb_read8(&board, 0x06018000) == 0);
+    agb_write32(&board, 0x06014000, 0x55667788); /* the sprites' own 16 KiB: mirrored as in every mode */
+    agb_write32(&board, 0x0601C004, 0x99AABBCC);
+    CHECK(agb_read32(&board, 0x0601C000) == 0x55667788 && agb_read32(&board, 0x06014004) == 0x99AABBCC);
+    agb_write16(&board, 0x04000000, 0x0000); /* mode 0: the whole mirror is the sprites' */
+    agb_write32(&board, 0x06018000, 0xDDEEFF00);
+    CHECK(agb_read32(&board, 0x06010000) == 0xDDEEFF00 && agb_read32(&board, 0x06018000) == 0xDDEEFF00);
+
     /* the cartridge windows hold the image once, and past it the bus still holds address / 2 */
     CHECK(agb_read32(&board, 0x08000000) == board.cartridge.entry);
     CHECK(agb_read16(&board, 0x08000000 + ROM_SIZE) == ROM_SIZE / 2);

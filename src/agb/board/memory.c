@@ -39,12 +39,18 @@ static uint32_t vram_offset(uint32_t address) {
     return offset;
 }
 
+/* the window's mirror of the sprites' VRAM (its last 32 KiB) folds its first 16 KiB onto the bitmap in the bitmap
+   modes, which takes no access from there: writes go nowhere and reads give 0, as mGBA and NanoBoyAdvance have it */
+static int vram_mirror_off(const AgbBoard* board, uint32_t address) {
+    return (address & 0x1C000) == 0x18000 && (board->ppu.dispcnt & 7) >= 3;
+}
+
 static uint8_t* region8(AgbBoard* board, uint32_t address) {
     switch (address >> 24) {
         case 0x02: return board->memory.ewram + (address & (AGB_EWRAM_SIZE - 1));
         case 0x03: return board->memory.iwram + (address & (AGB_IWRAM_SIZE - 1));
         case 0x05: return board->memory.palette + (address & (AGB_PALETTE_SIZE - 1));
-        case 0x06: return board->memory.vram + vram_offset(address);
+        case 0x06: return vram_mirror_off(board, address) ? NULL : board->memory.vram + vram_offset(address);
         case 0x07: return board->memory.oam + (address & (AGB_OAM_SIZE - 1));
         case 0x0E:
         case 0x0F: return board->memory.sram + (address & (AGB_SRAM_SIZE - 1));
