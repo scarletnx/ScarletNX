@@ -7,7 +7,11 @@
 
    Each call reaches the renderer as a record of gpu_queue.c, in its order: the draw's inline indices are a copy, the
    renderer's side keeps its own DrawOwner with the front end's predicate and capture starts, and the calls without a
-   result keep their arguments */
+   result keep their arguments. The render enable is decided on the renderer's side, in the record's place.
+
+   With the argument split, gpu_split's renderer thread runs the records: a draw that the front end queued reads the
+   state as it was at the draw, while the front end has gone on and changed it */
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +39,16 @@ int gpu_on_thread(void) { return 1; }
 int gmem_write_now(u64 gva, const void* src, u64 size) { return (void)gva, (void)src, (int)size; }
 void gpu_release_write_now(u64 gva, const void* data, u32 len) { (void)gva, (void)data, (void)len; }
 void gpu_i2m_block_now(const GpuI2m* t) { (void)t; }
+void gmem_read_quiet(u64 gva, void* dst, u64 size) { (void)gva, memset(dst, 0, (size_t)size); }
+/* maxwell/engines.c's render enable, as the renderer's side asks it: one owner decided, the others not */
+static u32 re_owner = ~0u, re_pred;
+static int re_off, re_resets;
+int gpu_render_state(u32 owner, u32* pred) {
+    if (owner != re_owner) return -1;
+    *pred = re_pred;
+    return re_off;
+}
+void gpu_render_states_reset(void) { re_resets++; }
 
 /* the renderer's calls in their order, one letter each, and their arguments */
 static char order[64];
@@ -236,6 +250,32 @@ static void test_records(void) {
 }
 
 /* the calls without a result, in their order with the draws */
+/* the render enable, decided on the renderer's side: the draws and clears of an owner it turns off are skipped, and
+   the others take its predicate */
+static void test_render_enable(void) {
+    DrawOwner own = {0};
+    DrawCall dc = {0};
+    new_state(&b, 0x50, 0x55);
+    re_owner = 0x50;
+    re_off = 1;
+    int draws = ndraw, clears = nclear;
+    gpu_draw(&b, &dc, &own);
+    gpu_clear(&b, &(DrawClear){0}, &own);
+    CHECK(ndraw == draws && nclear == clears, "an owner's draws were not skipped while its render enable is off");
+    gpu_draw(&a, &dc, &own);
+    CHECK(ndraw == draws + 1, "another owner's draw was skipped");
+    re_off = 0;
+    re_pred = 6;
+    own.pred = 0;
+    gpu_draw(&b, &dc, &own);
+    CHECK(ndraw == draws + 2 && seen_own_v.pred == 6, "a draw did not take its render enable's predicate (%u)",
+          seen_own_v.pred);
+    re_owner = ~0u;
+    int resets = re_resets;
+    gpu_draw_states_reset();
+    CHECK(re_resets == resets + 1, "a state load did not drop the render enable's decisions");
+}
+
 static void test_calls(void) {
     DrawOwner own = {0};
     DrawCall dc = {0};
@@ -258,10 +298,69 @@ static void test_calls(void) {
     CHECK(gpu_renderer_now() == g_renderer, "gpu_renderer_now is not the renderer");
 }
 
-int main(void) {
+/* ------------------------------------------------ gpu_split=1: the renderer thread runs the records */
+static pthread_mutex_t gate_lk = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t gate_cv = PTHREAD_COND_INITIALIZER;
+static int gate_open, gate_held;
+/* a record that holds the renderer thread until the front end opens the gate */
+static void held(const void* arg, u64 bytes) {
+    (void)arg, (void)bytes;
+    pthread_mutex_lock(&gate_lk);
+    gate_held = 1;
+    pthread_cond_broadcast(&gate_cv);
+    while (!gate_open) pthread_cond_wait(&gate_cv, &gate_lk);
+    pthread_mutex_unlock(&gate_lk);
+}
+static u8 split_seen[4];
+static u32 split_n;
+static pthread_t split_thread;
+static void r_split_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
+    (void)dc, (void)o;
+    if (split_n < 4) split_seen[split_n++] = B(*ds, blend);
+    split_thread = pthread_self();
+}
+static const Renderer split_renderer = {.name = "split", .draw = r_split_draw};
+static int split_main(void) {
+    DrawOwner own = {0};
+    DrawCall dc = {0};
+    g_settings.gpu_split = 1;
+    g_renderer = &split_renderer;
+    new_state(&a, 1, 0x10);
+    gq_call(held, NULL, 0); /* the ring and the renderer thread start here */
+    pthread_mutex_lock(&gate_lk);
+    while (!gate_held) pthread_cond_wait(&gate_cv, &gate_lk);
+    pthread_mutex_unlock(&gate_lk);
+    /* the front end goes on while the renderer thread is held: each draw reads the state of its own time */
+    gpu_draw(&a, &dc, &own);
+    B(a, blend) = 0x20;
+    a.gen[DS_BLEND] = gen_next++;
+    gpu_draw(&a, &dc, &own);
+    B(a, blend) = 0x30;
+    a.gen[DS_BLEND] = gen_next++;
+    CHECK(split_n == 0, "a draw ran while the renderer thread was held");
+    pthread_mutex_lock(&gate_lk);
+    gate_open = 1;
+    pthread_cond_broadcast(&gate_cv);
+    pthread_mutex_unlock(&gate_lk);
+    gq_drain();
+    CHECK(split_n == 2 && split_seen[0] == 0x10 && split_seen[1] == 0x20,
+          "the renderer thread's draws read %u states: %#x %#x, not 0x10 0x20", split_n, split_seen[0], split_seen[1]);
+    CHECK(!pthread_equal(split_thread, pthread_self()), "the draws ran on the front end's thread");
+    if (failed) {
+        fprintf(stderr, "gpu_records split: %d of %d checks failed\n", failed, checks);
+        return 1;
+    }
+    printf("gpu_records split: %d checks passed\n", checks);
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1 && !strcmp(argv[1], "split")) return split_main();
+    g_settings.gpu_split = 0; /* the records run on this thread, as they are queued */
     test_copy();
     test_dispatch();
     test_records();
+    test_render_enable();
     test_calls();
     if (failed) {
         fprintf(stderr, "gpu_records: %d of %d checks failed\n", failed, checks);
