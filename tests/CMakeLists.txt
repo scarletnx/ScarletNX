@@ -1821,7 +1821,7 @@ snx_hookgen(snx-test-nvn-commands SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn
 add_test(NAME nvn_commands COMMAND snx-test-nvn-commands)
 # nvn's constant banks and sprite origin against the game's driver: nvn_draw_init, a program's bind
 # and a draw's dynamic state, through the public records
-add_executable(snx-test-nvn-draw-banks nvn_draw_banks.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_draw.c"
+add_executable(snx-test-nvn-draw-banks nvn_draw_banks.c "${PROJECT_SOURCE_DIR}/tests/support/gpu_front_stub.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_draw.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
 snx_test_target(snx-test-nvn-draw-banks gnu23)
 target_include_directories(snx-test-nvn-draw-banks PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -1871,7 +1871,7 @@ target_include_directories(snx-test-nvn-queue-lifetime PRIVATE "${PROJECT_SOURCE
 add_test(NAME nvn_queue_lifetime COMMAND snx-test-nvn-queue-lifetime)
 # the NVN functions of API 53 and 55 nvn took over last, by family: records and their replay into the draw
 # state (nvn_cmd.c, nvn_draw.c), the objects' getters and setters (nvn_object.c) and the queue and window (nvn_queue.c)
-add_executable(snx-test-nvn-names nvn_names.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmd.c"
+add_executable(snx-test-nvn-names nvn_names.c "${PROJECT_SOURCE_DIR}/tests/support/gpu_front_stub.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmd.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_draw.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_object.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_queue.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tex.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c"
@@ -4064,13 +4064,20 @@ add_executable(snx-test-audren-host audren_host.c)
 snx_test_target(snx-test-audren-host gnu23)
 add_test(NAME audren_host COMMAND snx-test-audren-host)
 
-add_executable(snx-test-render-enable render_enable.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
+# gpu/renderer.c's side of the front end with a stand-in renderer and no device: the copy of each draw state that the
+# renderer reads, and what the front end counts and holds back
+add_executable(snx-test-gpu-records gpu_records.c)
+snx_test_target(snx-test-gpu-records gnu23)
+target_include_directories(snx-test-gpu-records PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME gpu_records COMMAND snx-test-gpu-records)
+
+add_executable(snx-test-render-enable render_enable.c "${PROJECT_SOURCE_DIR}/tests/support/gpu_front_stub.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
 snx_test_target(snx-test-render-enable gnu23)
 add_test(NAME render_enable COMMAND snx-test-render-enable)
 
-add_executable(snx-test-draw-state-groups draw_state_groups.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
+add_executable(snx-test-draw-state-groups draw_state_groups.c "${PROJECT_SOURCE_DIR}/tests/support/gpu_front_stub.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
 snx_test_target(snx-test-draw-state-groups gnu23)
@@ -4080,13 +4087,13 @@ add_executable(snx-test-clear-flags clear_flags.c)
 snx_test_target(snx-test-clear-flags gnu23)
 add_test(NAME clear_flags COMMAND snx-test-clear-flags)
 
-add_executable(snx-test-instance-array instance_array.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
+add_executable(snx-test-instance-array instance_array.c "${PROJECT_SOURCE_DIR}/tests/support/gpu_front_stub.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
 snx_test_target(snx-test-instance-array gnu23)
 add_test(NAME instance_array COMMAND snx-test-instance-array)
 
-add_executable(snx-test-draw-texture draw_texture.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
+add_executable(snx-test-draw-texture draw_texture.c "${PROJECT_SOURCE_DIR}/tests/support/gpu_front_stub.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
 snx_test_target(snx-test-draw-texture gnu23)
@@ -4105,7 +4112,7 @@ if(UNIX)
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/dma.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c"
-        support/dma_ref.c own_stub.c)
+        support/dma_ref.c support/gpu_front_stub.c own_stub.c)
     snx_test_target(snx-test-gpu-park gnu23)
     target_link_libraries(snx-test-gpu-park PRIVATE scarletnx-common) # gpu.c says why a thread did not start
         add_test(NAME gpu_park COMMAND snx-test-gpu-park)
