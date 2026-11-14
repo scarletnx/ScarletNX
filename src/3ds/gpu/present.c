@@ -640,6 +640,10 @@ void snx_ctr_present_report(void) {
 void snx_ctr_present_free(void) {
     if (!g_present.up) return;
     write_pending(true);
+    /* The open recording is handed to the GPU before anything its commands name is freed: vkDeviceWaitIdle below
+       waits for what was submitted, not for that recording, and the buffers, pipelines and layouts freed under it
+       would leave the GPU reading memory that is gone (a gfxhub page fault and a ring reset at the run's end) */
+    (void)snx_ctr_vk_finish();
     const SnxCtrVk* v = snx_ctr_vk();
     vkDeviceWaitIdle(v->device);
     for (unsigned screen = 0; screen < 2; ++screen)
