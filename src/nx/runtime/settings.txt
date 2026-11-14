@@ -1413,7 +1413,7 @@ setting Vulkan recording thread
 setting GPU split
     key gpu_split
     int 0 1
-    default 0
+    default 1
     startup
     words Off|On
     help 1 = the renderer sets up draws on a thread of its own, while the GPU thread reads the game's commands ahead
