@@ -39,6 +39,7 @@ void logf_(int lvl, const char* fmt, ...) {
 }
 
 #define PATH "bc7_cache_test.vkbc7"
+#define IDX  PATH ".idx"
 static unsigned checks;
 #define CHECK(x)                                                                                                       \
     do {                                                                                                               \
@@ -47,6 +48,7 @@ static unsigned checks;
             fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x);                                                    \
             vk_bc7_cache_close();                                                                                      \
             remove(PATH);                                                                                              \
+            remove(IDX);                                                                                               \
             exit(1);                                                                                                   \
         }                                                                                                              \
     } while (0)
@@ -112,13 +114,14 @@ static u8* blocks(u64 n, u32 seed) {
     for (u64 i = 0; i < n; i++) p[i] = (u8)((i * 2654435761u + seed) >> 13);
     return p;
 }
-static u64 file_size(void) {
-    FILE* f = fopen(PATH, "rb");
+static u64 size_of(const char* path) {
+    FILE* f = fopen(path, "rb");
     if (!f || fseek(f, 0, SEEK_END)) return 0;
     long n = ftell(f);
     fclose(f);
     return n < 0 ? 0 : (u64)n;
 }
+static u64 file_size(void) { return size_of(PATH); }
 /* the record's blocks read back the same */
 static int reads_as(const u64 key[2], const u8* p, u64 n) {
     u8* back = malloc((size_t)n);
@@ -133,6 +136,7 @@ static void file(void) {
     const u64 na = 48, nb = (5u << 20) / 2 + 16, nc = 4096; /* one piece, three, one */
     u8 *a = blocks(na, 1), *b = blocks(nb, 2), *c = blocks(nc, 3);
     remove(PATH);
+    remove(IDX);
     CHECK(vk_bc7_cache_open(PATH, v1, 64u << 20));
     CHECK(!vk_bc7_cache_find(ka));
     vk_bc7_cache_put(ka, a, na);
@@ -204,7 +208,27 @@ static void file(void) {
         CHECK(reads_as(k, a + i % 32, 16));
     }
     vk_bc7_cache_close();
+    /* the index file: an entry a record, in the file's order. Gone, or of another version, the records' headers are
+       read and it is written anew; each record is found either way */
+    const u64 idx_size = size_of(IDX);
+    CHECK(idx_size == BC7_HEAD + 3001ull * 32);
+    for (int damage = 0; damage < 2; damage++) {
+        if (!damage)
+            remove(IDX);
+        else {
+            f = fopen(IDX, "r+b");
+            CHECK(f && !fseek(f, 20, SEEK_SET) && fputc(0x5a, f) != EOF && !fclose(f));
+        }
+        CHECK(vk_bc7_cache_open(PATH, v1, 64u << 20));
+        CHECK(size_of(IDX) == idx_size && reads_as(kc, c, nc));
+        for (u64 i = 0; i < 3000; i += 7) {
+            const u64 k[2] = {i * 0x9E3779B97F4A7C15ull, i};
+            CHECK(reads_as(k, a + i % 32, 16));
+        }
+        vk_bc7_cache_close();
+    }
     remove(PATH);
+    remove(IDX);
     free(a);
     free(b);
     free(c);
