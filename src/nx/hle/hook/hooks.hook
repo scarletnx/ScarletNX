@@ -202,6 +202,11 @@ hook _ZdlPvmSt11align_val_t(addr p) = alloc_delete
 hook _ZdaPvmSt11align_val_t(addr p) = alloc_delete
 hook _ZdlPvSt11align_val_tRKSt9nothrow_t(addr p) = alloc_delete
 hook _ZdaPvSt11align_val_tRKSt9nothrow_t(addr p) = alloc_delete
+# std::vector<T>'s storage with std::allocator<T> (NS_9allocatorIS1_EE for a T of the game's, NS_9allocatorImEE for a
+# built-in one), for a T with nothing to destroy: every such instance of the template's destructor is the same code,
+# which alloc_vector_shape checks the function is before the hook takes it
+hook _ZNSt3__113__vector_baseI*NS_9allocatorI*EEED1Ev(addr self) = alloc_vector_free check alloc_vector_shape
+hook _ZNSt3__113__vector_baseI*NS_9allocatorI*EEED2Ev(addr self) = alloc_vector_free check alloc_vector_shape
 
 # the C++ library's mutexes, condition variable, clocks and sleep (sync.c): the host's own, by the guest object's
 # address. Not timed_mutex, shared_timed_mutex or condition_variable_any, whose templates the game inlines over their

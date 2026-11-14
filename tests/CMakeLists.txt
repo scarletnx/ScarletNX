@@ -1284,6 +1284,15 @@ snx_test_target(snx-test-diag-abort 11) # log.h has _Thread_local
 target_include_directories(snx-test-diag-abort PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-diag-abort SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
 add_test(NAME diag_abort COMMAND snx-test-diag-abort)
+# std::vector's storage hook (src/nx/hle/hook/alloc.c): the destructor shapes alloc_vector_shape takes and leaves, and
+# alloc_vector_free's empty vector and foreign pointer
+if(NOT WIN32)
+    add_executable(snx-test-alloc-vector alloc_vector.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/alloc.c")
+    snx_test_target(snx-test-alloc-vector 11)
+    target_include_directories(snx-test-alloc-vector PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    snx_hookgen(snx-test-alloc-vector SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    add_test(NAME alloc_vector COMMAND snx-test-alloc-vector)
+endif()
 # the C library's functions on guest memory (src/nx/hle/hook/libc_std.c): guest addresses back from pointers into an
 # argument, end pointers, strtok's place, div_t and ldiv_t, errno, qsort and bsearch through the guest's comparison
 if(NOT WIN32)
