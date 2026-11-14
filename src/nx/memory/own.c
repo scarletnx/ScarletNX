@@ -63,22 +63,35 @@ static int region_owned(u64 lo, u64 hi) {
 }
 
 /* ---------------------------------------------------------------- in place (no mirror) */
-/* the shadows (OwnState's shadow, own.h): the CPU's bytes of trapped pages where there is no mirror */
-static u32 shadow_at_nl(u64 page) {
-    u32 lo = 0, hi = g_own.nshadow;
-    while (lo < hi) {
-        u32 mid = (lo + hi) / 2;
-        if (g_own.shadow[mid].page < page)
-            lo = mid + 1;
-        else
-            hi = mid;
-    }
-    return lo;
-}
+/* the shadows (OwnState's shadow, own.h): the CPU's bytes of trapped pages where there is no mirror, by page */
+#define SHADOW_LEAF (1u << OWN_SHADOW_LEAF_SHIFT)
+static u32 page_shift(void) { return snx_ctz64(g_own.page); }
 static u8* slot_bytes(u32 slot) { return g_own.slab + (size_t)slot * g_own.page; }
+/* page's entry in the table (its slot + 1, 0 for none), made with its leaf when make is set: NULL where there is no
+   leaf for it */
+static u32* shadow_entry_nl(u64 page, int make) {
+    const u64 pn = page >> page_shift(), l = pn >> OWN_SHADOW_LEAF_SHIFT;
+    if (!g_own.shadow) {
+        if (!make) return NULL;
+        g_own.shadow_leaves = ((AS_SIZE >> page_shift()) + SHADOW_LEAF - 1) >> OWN_SHADOW_LEAF_SHIFT;
+        g_own.shadow = (u32**)calloc((size_t)g_own.shadow_leaves, sizeof *g_own.shadow);
+        g_own.shadow_n = (u32*)calloc((size_t)g_own.shadow_leaves, sizeof *g_own.shadow_n);
+        if (!g_own.shadow || !g_own.shadow_n) fatal("Out of memory for the map of GPU-owned memory");
+    }
+    if (l >= g_own.shadow_leaves) {
+        if (make) fatal("memory: a shadow for page %llx, past the address space", (unsigned long long)page);
+        return NULL;
+    }
+    if (!g_own.shadow[l]) {
+        if (!make) return NULL;
+        if (!(g_own.shadow[l] = (u32*)calloc(SHADOW_LEAF, sizeof **g_own.shadow)))
+            fatal("Out of memory for the map of GPU-owned memory");
+    }
+    return &g_own.shadow[l][pn & (SHADOW_LEAF - 1)];
+}
 static const u8* shadow_get_nl(u64 page) {
-    u32 i = shadow_at_nl(page);
-    return i < g_own.nshadow && g_own.shadow[i].page == page ? slot_bytes(g_own.shadow[i].slot) : NULL;
+    const u32* e = shadow_entry_nl(page, 0);
+    return e && *e ? slot_bytes(*e - 1) : NULL;
 }
 static u32 slot_take_nl(void) {
     if (g_own.nfree) return g_own.slot_free[--g_own.nfree];
@@ -95,40 +108,36 @@ static u32 slot_take_nl(void) {
     return g_own.slot_top++;
 }
 /* the n pages page[] (sorted, apart), with bytes[i * g_own.page] as page[i]'s, as their shadows: a page with one keeps it,
-   from when it was first armed. One pass over the table, as a watch adds its pages at once */
+   from when it was first armed */
 static void shadow_add_nl(const u64* page, const u8* bytes, u32 n) {
-    u32 fresh = 0, i = 0;
     for (u32 j = 0; j < n; j++) {
-        while (i < g_own.nshadow && g_own.shadow[i].page < page[j]) i++;
-        if (i == g_own.nshadow || g_own.shadow[i].page != page[j]) fresh++;
-    }
-    if (!fresh) return;
-    if (g_own.nshadow + fresh > g_own.capshadow) {
-        u32 cap = g_own.capshadow ? g_own.capshadow : 64;
-        while (cap < g_own.nshadow + fresh) cap *= 2;
-        Shadow* t = (Shadow*)realloc(g_own.shadow, sizeof *t * (size_t)cap);
-        if (!t) fatal("Out of memory for the map of GPU-owned memory");
-        g_own.shadow = t;
-        g_own.capshadow = cap;
-    }
-    /* merged from the end, so no entry moves twice */
-    u32 k = g_own.nshadow + fresh;
-    i = g_own.nshadow;
-    for (u32 j = n; j-- > 0;) {
-        while (i && g_own.shadow[i - 1].page > page[j]) g_own.shadow[--k] = g_own.shadow[--i];
-        if (i && g_own.shadow[i - 1].page == page[j]) continue;
-        u32 slot = slot_take_nl();
+        u32* e = shadow_entry_nl(page[j], 1);
+        if (*e) continue;
+        const u32 slot = slot_take_nl();
         memcpy(slot_bytes(slot), bytes + (size_t)j * g_own.page, (size_t)g_own.page);
-        g_own.shadow[--k] = (Shadow){.page = page[j], .slot = slot};
+        *e = slot + 1;
+        g_own.shadow_n[(page[j] >> page_shift()) >> OWN_SHADOW_LEAF_SHIFT]++;
+        g_own.nshadow++;
     }
-    g_own.nshadow += fresh;
 }
-/* the pages [lo, hi) let go: their shadows go, and their slots are free */
+/* the pages [lo, hi) let go: their shadows go, and their slots are free. A leaf with none is skipped whole */
 static void shadow_drop_nl(u64 lo, u64 hi) {
-    u32 i = shadow_at_nl(lo), j = i;
-    while (j < g_own.nshadow && g_own.shadow[j].page < hi) g_own.slot_free[g_own.nfree++] = g_own.shadow[j++].slot;
-    memmove(&g_own.shadow[i], &g_own.shadow[j], sizeof *g_own.shadow * (size_t)(g_own.nshadow - j));
-    g_own.nshadow -= j - i;
+    const u32 sh = page_shift();
+    for (u64 pn = (lo + g_own.page - 1) >> sh, end = (hi + g_own.page - 1) >> sh; g_own.nshadow && pn < end;) {
+        const u64 l = pn >> OWN_SHADOW_LEAF_SHIFT;
+        u64 stop = (l + 1) << OWN_SHADOW_LEAF_SHIFT;
+        if (l >= g_own.shadow_leaves) break;
+        if (stop > end) stop = end;
+        for (u32* leaf = g_own.shadow_n[l] ? g_own.shadow[l] : NULL; leaf && pn < stop; pn++) {
+            u32* e = &leaf[pn & (SHADOW_LEAF - 1)];
+            if (!*e) continue;
+            g_own.slot_free[g_own.nfree++] = *e - 1;
+            *e = 0;
+            g_own.nshadow--;
+            if (!--g_own.shadow_n[l]) break;
+        }
+        pn = stop;
+    }
     if (g_own.nshadow) return;
     free(g_own.slab); /* none left: the slab goes, as a burst of watches made it big */
     free(g_own.slot_free);

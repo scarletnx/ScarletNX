@@ -215,6 +215,41 @@ static void land_and_replace(void) {
     verify_regions();
 }
 
+/* The shadows (in place, where there is no mirror) by page: pages on both sides of a leaf's end, a page added again keeps
+   the bytes it had when first armed, a drop takes the pages from its first whole one up to its end and no other, a slot
+   let go is taken again, and once none is left the slab goes and a page takes a shadow again */
+static void shadow_pages(void) {
+    const u64 page = g_own.page, base = (3ull << OWN_SHADOW_LEAF_SHIFT) * page - 2 * page;
+    const u64 pages[4] = {base, base + page, base + 2 * page, base + 3 * page};
+    u8* bytes = malloc((size_t)(4 * page));
+    CHECK(bytes != NULL);
+    for (u32 i = 0; i < 4; i++) memset(bytes + i * page, 0x10 + i, (size_t)page);
+    shadow_add_nl(pages, bytes, 4);
+    CHECK(g_own.nshadow == 4 && g_own.slot_top == 4);
+    for (u32 i = 0; i < 4; i++) {
+        const u8* s = shadow_get_nl(pages[i]);
+        CHECK(s && s[0] == 0x10 + i && s[page - 1] == 0x10 + i);
+    }
+    CHECK(!shadow_get_nl(base - page) && !shadow_get_nl(base + 4 * page) && !shadow_get_nl(base + 64 * page));
+    memset(bytes, 0x55, (size_t)(4 * page));
+    shadow_add_nl(pages + 1, bytes, 2);
+    CHECK(g_own.nshadow == 4 && shadow_get_nl(pages[1])[0] == 0x11 && shadow_get_nl(pages[2])[0] == 0x12);
+    shadow_drop_nl(base + page + 1, base + 3 * page); /* the third page only: the second is not whole in it */
+    CHECK(g_own.nshadow == 3 && shadow_get_nl(pages[1]) && !shadow_get_nl(pages[2]) && shadow_get_nl(pages[3]));
+    shadow_add_nl(pages + 2, bytes, 1);
+    CHECK(g_own.nshadow == 4 && g_own.slot_top == 4 && shadow_get_nl(pages[2])[0] == 0x55);
+    CHECK(shadow_get_nl(pages[0])[0] == 0x10 && shadow_get_nl(pages[3])[0] == 0x13);
+    shadow_drop_nl(0, base + 2 * page); /* the first leaf's two */
+    CHECK(g_own.nshadow == 2 && !shadow_get_nl(pages[0]) && !shadow_get_nl(pages[1]) && g_own.slab);
+    shadow_drop_nl(base + 2 * page, AS_SIZE);
+    CHECK(!g_own.nshadow && !g_own.slab && !g_own.slot_top && !shadow_get_nl(pages[2]) && !shadow_get_nl(pages[3]));
+    shadow_add_nl(pages + 3, bytes, 1);
+    CHECK(g_own.nshadow == 1 && g_own.slot_top == 1 && shadow_get_nl(pages[3])[0] == 0x55);
+    shadow_drop_nl(pages[3], pages[3] + page);
+    CHECK(!g_own.nshadow && !g_own.slab);
+    free(bytes);
+}
+
 static u64 now_ns(void) {
     struct timespec ts;
     CHECK(timespec_get(&ts, TIME_UTC) == TIME_UTC);
@@ -268,11 +303,15 @@ int main(int argc, char** argv) {
     differential_cuts();
     watch_walk_bound();
     land_and_replace();
+    shadow_pages();
     if (argc == 2 && !strcmp(argv[1], "--bench")) benchmark();
     else CHECK(argc == 1);
     printf("memory_own_cut: %u checks passed\n", checks);
     free(g_own.ent);
     free(g_own.region);
+    for (u64 l = 0; g_own.shadow && l < g_own.shadow_leaves; l++) free(g_own.shadow[l]);
+    free(g_own.shadow);
+    free(g_own.shadow_n);
     free(g_mem);
     return 0;
 }
