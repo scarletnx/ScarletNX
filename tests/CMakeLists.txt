@@ -514,8 +514,21 @@ if(TARGET snx_ctr_board)
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-minimized" --minimize)
     add_test(NAME 3ds_windows_no_image
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-no-image" --no-image)
+    # the plain test is a smoke test: the validation run below is what fails without each image's own semaphore
+    add_test(NAME 3ds_windows_submissions
+             COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-submissions" --submissions)
     set_tests_properties(3ds_windows 3ds_windows_separate PROPERTIES SKIP_RETURN_CODE 77)
-    set_tests_properties(3ds_windows_minimized 3ds_windows_no_image PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    set_tests_properties(3ds_windows_minimized 3ds_windows_no_image 3ds_windows_submissions PROPERTIES
+                         SKIP_RETURN_CODE 77 TIMEOUT 60)
+    if(NOT WIN32 AND Python3_Interpreter_FOUND)
+        # under Khronos validation, with SDL's offscreen window: a swapchain with no display, as on CI
+        add_test(NAME 3ds_windows_submissions_validation
+                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                     $<TARGET_FILE:snx-test-3ds-windows>
+                     "${CMAKE_CURRENT_BINARY_DIR}/window-frames-submissions-validation" --submissions)
+        set_tests_properties(3ds_windows_submissions_validation PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+                             ENVIRONMENT SDL_VIDEO_DRIVER=offscreen)
+    endif()
     # the transfer engine alone: fills, display transfers, texture copies against hand-written goldens
     add_executable(snx-test-3ds-transfer 3ds_transfer.c)
     snx_test_target(snx-test-3ds-transfer 11)

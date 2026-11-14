@@ -3,8 +3,9 @@
    The 3DS's two windows and its per-screen render scales (present.c, vk/device.c). A run whose window the
    host cannot make, as CI's, checks that the setting costs nothing and the dumps stay the framebuffer's own
    size. A run with a window checks that Separate screens gives each screen its own swapchain (--separate), that
-   a window minimized and restored gets its swapchain back (--minimize), and that a frame never waits for an image of
-   the window while the display holds them all (--no-image). */
+   a window minimized and restored gets its swapchain back (--minimize), that the frames presented between other
+   submissions each signal their image's own semaphore (--submissions), and that a frame never waits for an image
+   of the window while the display holds them all (--no-image). */
 #include "3ds/gpu/present.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/memory/ctr_memory.h"
@@ -18,6 +19,7 @@
 #define TOP (FCRAM + 0x00100000u)
 #define BOTTOM (FCRAM + 0x00400000u)
 #define PHASE_FRAMES 4 /* each screen's frames while the window is minimized, and again once it is restored */
+#define SUBMISSION_FRAMES 24 /* frame pairs, a submission after every second one */
 
 /* --no-image's stand-ins for the driver's acquire and present, and what they saw */
 static struct {
@@ -135,12 +137,39 @@ static int no_image(void) {
     return ok ? 0 : 1;
 }
 
+/* --submissions: the ring moves to its next slot at every submission, so with other submissions between presents a
+   slot no longer follows the image it presents. A present's semaphore is free again only once its image is acquired
+   again: the validation runner fails the run when one is signaled while the swapchain may still wait on it */
+static int submissions(void) {
+    g_windows.present = vkQueuePresentKHR;
+    vkQueuePresentKHR = counted_present;
+    bool ok = true;
+    for (unsigned i = 0; ok && i < SUBMISSION_FRAMES; ++i) {
+        ok = present_pair();
+        if (ok && i % 2) {
+            /* the open recording (or an empty one), submitted: the next present takes the next slot */
+            (void)snx_ctr_vk_commands();
+            ok = snx_ctr_vk_finish();
+        }
+    }
+    vkQueuePresentKHR = g_windows.present;
+    if (ok && g_windows.presents < SUBMISSION_FRAMES / 2) { /* a display that holds its images: too few to check */
+        printf("%-24s skipped: %u presents in %u frame pairs\n", "presents and submissions", g_windows.presents,
+               SUBMISSION_FRAMES);
+        return 77;
+    }
+    printf("%-24s %s: %u frame pairs, %u presents\n", "presents and submissions", ok ? "ok" : "FAIL", SUBMISSION_FRAMES,
+           g_windows.presents);
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char** argv)
 {
     const char* dir = argc > 1 ? argv[1] : ".";
     bool separate = argc > 2 && !strcmp(argv[2], "--separate");
     bool minimized = argc > 2 && !strcmp(argv[2], "--minimize");
     bool held = argc > 2 && !strcmp(argv[2], "--no-image");
+    bool between = argc > 2 && !strcmp(argv[2], "--submissions");
     char stale[1024];
     if (snx_mkdirs(dir)) return 1;
     for (unsigned screen = 0; screen < 2; ++screen)
@@ -172,16 +201,17 @@ int main(int argc, char** argv)
         snx_ctr_memory_free(m);
         return 77;
     }
-    if ((separate || minimized || held) && !snx_ctr_present_windowed()) {
+    if ((separate || minimized || held || between) && !snx_ctr_present_windowed()) {
         printf("no window on this host: %s cannot be checked here\n", separate    ? "the separate windows"
                                                                       : minimized ? "a minimized window"
-                                                                                  : "a window with no image free");
+                                                                      : held      ? "a window with no image free"
+                                                                                  : "presents between submissions");
         snx_ctr_present_free();
         snx_ctr_memory_free(m);
         return 77;
     }
-    if (minimized || held) {
-        int result = minimized ? minimize_restore() : no_image();
+    if (minimized || held || between) {
+        int result = minimized ? minimize_restore() : held ? no_image() : submissions();
         snx_ctr_present_free();
         snx_ctr_memory_free(m);
         return result;
