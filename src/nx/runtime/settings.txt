@@ -1389,6 +1389,7 @@ setting NVN storage ordering
     startup
     words Conservative|Explicit|Deferred
     help NVN draws use their explicit storage barriers, allowing independent writes through overlapping views.
+    help Draws from command buffers the game writes itself use their Maxwell barriers in the same way at 1 and 2.
     help Deferred records the ordering requirement and emits a Vulkan barrier at the next dependent buffer use.
     help 0 keeps conservative per-draw dependencies for comparisons or command recordings from older builds.
 setting Descriptor buffers
@@ -1400,9 +1401,7 @@ setting Descriptor buffers
     help 3, Automatic, is 2 on a GPU that shares the system's memory (an integrated one, a phone's) and 0 on one with
     help memory of its own. 2: graphics descriptors in heaps where the device has them, else buffers, else sets.
     help 1 uses descriptor buffers where supported, else sets. A heap draw whose resource cannot be encoded uses
-    help buffers or sets. Compute keeps its own descriptor pools. With buffers or heaps in use, the guest's fragment
-    help barriers are skipped, which the tracking of targets and buffers orders. 0 = descriptor sets for graphics
-    help too, and every fragment barrier
+    help buffers or sets. Compute keeps its own descriptor pools. 0 = descriptor sets for graphics too
 setting Vulkan recording thread
     key vk_record
     int 0 1

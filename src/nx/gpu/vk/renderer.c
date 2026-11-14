@@ -284,16 +284,18 @@ static void vkr_method_barrier(int kind)
 	 * sampled while it is drawn gets one in the pass after this barrier
 	 * (vk_render_fragment_barrier, feedback_order), and
 	 * draws that read results of earlier ones get one there (buffer.c
-	 * gfx_gpu_src). Ended here, the pass ended about 120 times a frame in one
-	 * game's open world. Writes that none of those track (stores into guest
-	 * memory read in place) are not covered yet, so it is skipped only where
-	 * the device runs graphics descriptor buffers or heaps, which the
-	 * vk_descriptors_mode setting asks for: a device that has neither draws with
-	 * descriptor sets and keeps every fragment barrier.
+	 * gfx_gpu_src, which every buffer binding goes through: a copy, a writable
+	 * view and a read in place). The texture data cache invalidation (kind 2)
+	 * orders the same reads. The descriptors' form (sets, buffers or heaps)
+	 * changes none of this. Ended here, the pass ended about 120 times a frame
+	 * in one game's open world, and with the invalidation that follows each of
+	 * its fragment barriers, its GPU was 3 ms a frame longer in barrier gaps.
 	 */
-	if (kind == 0 && (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)) {
+	if (kind == 0 || kind == 2) {
 		vk_lock();
 		vk_render_fragment_barrier();
+		/* the storage writes before it, which later draws' writes no longer order (render.c stage_set_) */
+		vk_buf_order_request(0);
 		vk_unlock();
 		return;
 	}

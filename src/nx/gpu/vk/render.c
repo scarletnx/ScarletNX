@@ -1194,6 +1194,29 @@ static u32 tex_handle(const DsState* ds, int stage, u32 tcb, const ShaderInfo* s
     if (si->tex[i].flags & SNX_TEX_MEMORY) return memh_handle(ds, stage, si, i);
     return tex_handle_cb(ds, stage, tcb, &si->tex[i]);
 }
+/* a slot whose handle is one word of the texture bank tcb (tex_handle_cb's first word, and no second one) */
+static int tex_handle_plain(const ShTex* st, u32 tcb) {
+    return !(st->flags & SNX_TEX_MEMORY) && !(st->bindless && st->bl2) && (!st->bindless || (st->bl_cbuf & 31) == tcb);
+}
+#define TEX_HANDLE_SPAN 256 /* words of the texture bank read at once */
+/* the handles of si's first n texture slots, as tex_handle gives them: those in the texture bank in guest memory read
+   in one read of the words they span. A read of a word there took the general path of guest memory (its pending
+   results' lock, the queued releases, the owners) once for each texture of each draw: in one game half of the
+   fragment textures' keying, about 0.1 us a draw */
+static void tex_handles(const DsState* ds, int stage, u32 tcb, const ShaderInfo* si, int n, u32* out) {
+    u32 lo = ~0u, hi = 0, words[TEX_HANDLE_SPAN];
+    for (int i = 0; i < n; i++)
+        if (tex_handle_plain(&si->tex[i], tcb)) {
+            if (si->tex[i].cbuf_off < lo) lo = si->tex[i].cbuf_off;
+            if (si->tex[i].cbuf_off > hi) hi = si->tex[i].cbuf_off;
+        }
+    u64 a = tcb < DS_CBUFS ? ds->bind.cb_addr[stage][tcb] : 0;
+    int span = lo <= hi && hi - lo < TEX_HANDLE_SPAN && a && !ds_cb_inline(ds, stage, tcb).bytes;
+    if (span) gmem_read(a + (u64)lo * 4, words, ((u64)hi - lo + 1) * 4);
+    for (int i = 0; i < n; i++)
+        out[i] = span && tex_handle_plain(&si->tex[i], tcb) ? snx_ld_le32((const u8*)&words[si->tex[i].cbuf_off - lo])
+                                                             : tex_handle(ds, stage, tcb, si, i);
+}
 
 /* a texture binding of a draw: the headers its handle names, and the texture */
 typedef struct {
@@ -1619,9 +1642,11 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
     u32 nd = 0;
     *fk = (FsKey){.rm = rt_int, .rs = rt_sint, .unfed = s0->si.in_mask & ~last_out};
     int nt = s0->si.ntex > SH_MAXTEX ? SH_MAXTEX : s0->si.ntex;
+    u32 handles[SH_MAXTEX];
+    tex_handles(ds, 4, ds->bind.tex_bank, &s0->si, nt, handles);
     for (int i = 0; i < nt; i++) {
         const ShTex* st = &s0->si.tex[i];
-        tex_resolve(ds, tex_handle(ds, 4, ds->bind.tex_bank, &s0->si, i), &res[i]);
+        tex_resolve(ds, handles[i], &res[i]);
         if (!(st->flags & (SNX_TEX_INDEXED | 1)) && vk_tic_unnormalized(res[i].tic) == 1) fk->rect |= 1ull << i;
         /* a texture only a TXQ names: a 2D query until the header says what it is (a 3D query answers its depth,
            which a 2D slot can't bind) */
@@ -2606,7 +2631,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         if (!root_get(ds, sz, &b, &o)) return VK_NULL_HANDLE;
         dw_buffer(&d, set, SNX_VKB_ROOT, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, sz);
     }
-    int ordered = !(ds->owner & 0x80000000u) || !g_settings.nvn_storage_ordering;
+    /* Two draws' stores to one buffer are not ordered on the console: a game orders them with a barrier
+       (WAIT_FOR_IDLE, FRAGMENT_BARRIER and the texture data cache invalidation of Maxwell, NVN's barriers), and
+       method_barrier gives each of those. A read of an earlier draw's writes still gets its barrier here. One game
+       draws about 600 times a frame into one result buffer, and each of those draws ended the pass for a barrier
+       before it. nvn_storage_order 0 keeps that order for comparisons */
+    int ordered = !g_settings.nvn_storage_ordering;
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
         const VkDrawGbuf* gb = &draw->b[stage][i];
         u64 addr = gb->addr;
@@ -2693,6 +2723,9 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         !tex_tables_set(ds, stage, s, table_first, table_count, rt, zt, n,
                         images->sampled_general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &d, set))
         return VK_NULL_HANDLE;
+    /* a stage fs_key didn't key: its handles in one read (tex_handles) */
+    u32 handles[SH_MAXTEX];
+    if (!res && nt) tex_handles(ds, stage, tcb, &s->si, nt, handles);
     for (int i = 0; i < nt; i++) {
         ShTex* st = &s->si.tex[i];
         if (st->flags & SNX_TEX_INDEXED) continue;
@@ -2709,6 +2742,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         int predrawn = g_predraw.phase == 1 && stage == ST_FS && predraw_k < g_predraw.n;
         u32 handle = predrawn                ? g_predraw.tex[predraw_k].handle
                      : res && res[i].have ? res[i].handle
+                     : !res               ? handles[i]
                                           : tex_handle(ds, stage, tcb, &s->si, i);
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
