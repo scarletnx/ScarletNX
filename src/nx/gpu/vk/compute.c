@@ -21,6 +21,7 @@
 #include "common/utilities/spirv_emit.h" /* SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR, the scanner's */
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "common/platform/thread.h" /* plat_thread_note */
 #include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
@@ -961,9 +962,14 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
     /* subgroups of 32 for one that reads other lanes (cs_reads_lanes), whole where the block's x is whole subgroups (as
        Vulkan asks of the flag) */
     int warp = g_vk.has_cs_warp32 && cs_reads_lanes(spv, nw);
+    /* the crash report's note while the driver compiles it (plat_thread_note) */
+    plat_thread_note("making the compute pipeline %016llx (%zu KB of SPIR-V, a block of %ux%ux%u, %u bytes of shared "
+                     "memory)",
+                     (unsigned long long)key, nw / 256, lx, ly, lz, (unsigned)p->si.shared_size);
     if (!VK_OK(snx_vk_compute_pipeline_subgroups(g_vk.dev, vk_pipeline_cache(), g_vk.cs_playout, spv, (size_t)nw * 4,
                                                  warp ? 32 : 0, warp && lx % 32 == 0, &p->p)))
         p->failed = 1;
+    plat_thread_note_clear();
     free(spv);
     /* as a draw's program says it (pipeline.c): the textures a compute program samples as none */
     if (!p->failed && p->si.memh_none)

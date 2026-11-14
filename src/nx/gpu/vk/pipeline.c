@@ -1652,6 +1652,7 @@ static void* pipe_tail(PipeInfo* o, int robust) {
     }
     return &o->fi;
 }
+static void pipe_note(const char* what, u64 h, const VkShaderModule modules[5], const PipeKey* k);
 static VkPipeline pipe_create(const Pipe* e, int* hit) {
     PipeInfo o;
     pipe_info(&e->k, e->fs, &o);
@@ -1690,7 +1691,10 @@ static VkPipeline pipe_create(const Pipe* e, int* hit) {
         gi.layout = VK_NULL_HANDLE;
     }
     VkPipeline p = VK_NULL_HANDLE;
+    const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
+    pipe_note("making the graphics pipeline", e->h, modules, &e->k);
     VK_OK(vkCreateGraphicsPipelines(g_vk.dev, g_pipeline.pcache, 1, &gi, NULL, &p));
+    plat_thread_note_clear();
     *hit = (o.made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     if (*hit) __atomic_add_fetch(e->prewarm ? &g_pipeline.pf.hits : &g_pipeline.pipe_hits, 1, __ATOMIC_RELAXED);
     return p;
@@ -1793,6 +1797,14 @@ static void stages_text(const VkShaderModule modules[5], char* stages, size_t n)
             at += (size_t)snprintf(stages + at, n - at, ", %s (a runtime shader)", names[s]);
     }
 }
+/* The crash report's note of a pipeline the driver makes now (plat_thread_note), set right before the call and cleared
+   right after it: a driver that crashes compiling one says only its own offset, which names no shader */
+static void pipe_note(const char* what, u64 h, const VkShaderModule modules[5], const PipeKey* k) {
+    char stages[320], state[PLAT_THREAD_NOTE_SIZE];
+    stages_text(modules, stages, sizeof stages);
+    vk_pipe_key_text(k, state, sizeof state);
+    plat_thread_note("%s %016llx%s; %s", what, (unsigned long long)h, stages, state);
+}
 static void slow_say(const char* what, const VkShaderModule modules[5], u64 ns, int hit) {
     char stages[320];
     if (ns < PIPE_SLOW_NS) return;
@@ -1865,7 +1877,15 @@ static VkPipeline lib_create(const PipeLib* l, int* hit) {
         break;
     }
     VkPipeline p = VK_NULL_HANDLE;
+    const u32 i = l->part == VK_PART_VI ? 0 : l->part == VK_PART_PR ? 1 : l->part == VK_PART_FS ? 2 : 3;
+    const VkShaderModule modules[5] = {i == 1 ? l->src.vs : VK_NULL_HANDLE, i == 1 ? l->src.tcs : VK_NULL_HANDLE,
+                                       i == 1 ? l->src.tes : VK_NULL_HANDLE, i == 1 ? l->src.gs : VK_NULL_HANDLE,
+                                       i == 2 ? l->fs : VK_NULL_HANDLE};
+    char what[64];
+    snprintf(what, sizeof what, "making the %s pipeline library", g_part_names[i]);
+    pipe_note(what, l->h, modules, &l->src);
     VK_OK(vkCreateGraphicsPipelines(g_vk.dev, cache, 1, &gi, NULL, &p));
+    plat_thread_note_clear();
     *hit = (o.made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     return p;
 }
@@ -1935,7 +1955,11 @@ static VkPipeline gpl_link(const Pipe* e, int lto, int* hit) {
                  (lto ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0),
         .layout = e->layout};
     VkPipeline p = VK_NULL_HANDLE;
+    const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
+    pipe_note(lto ? "making the optimized graphics pipeline, from libraries," : "linking the graphics pipeline", e->h,
+              modules, &e->k);
     VK_OK(vkCreateGraphicsPipelines(g_vk.dev, lto ? g_pipeline.pcache : VK_NULL_HANDLE, 1, &gi, NULL, &p));
+    plat_thread_note_clear();
     *hit = (made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     return p;
 }
