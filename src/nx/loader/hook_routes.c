@@ -17,6 +17,8 @@ int snx_hook_routed(const char* name) {
         else
             hi = middle;
     }
+    for (size_t i = 0; i < HOOK_ROUTE_PATTERNS; ++i)
+        if (snx_hook_glob(hook_route_names[hook_route_patterns[i]], name)) return 1;
     return 0;
 }
 
