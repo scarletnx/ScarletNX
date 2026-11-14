@@ -238,6 +238,10 @@ void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx) {
     for (int list = kind; list <= kind + LRU_AGED; list += LRU_AGED)
         for (u32 r = g_rows.lists[list].head; r; r = g_rows.lru[r].next) fn(ctx, g_rows.surf[r]);
 }
+void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx) {
+    for (int list = VK_LRU_TEX; list <= VK_LRU_TEX + LRU_AGED; list += LRU_AGED)
+        for (u32 r = g_rows.lists[list].head; r; r = g_rows.lru[r].next) fn(g_rows.surf[r], ctx);
+}
 static _Thread_local int g_rt_flushing;
 u32 g_vk_surf_epoch;
 static u32 g_surf_bucket_epoch[SURFH];
@@ -715,7 +719,11 @@ static int rt_load_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 off, u32 
                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
                                .imageExtent = {s->w, s->h, 1}};
         DevMem tm;
-        VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : vk_unscaled_image(s, 1, &tm);
+        const int scaled = s->sw != s->w || s->sh != s->h;
+        VkImage t = scaled ? vk_unscaled_image(s, 1, &tm) : VK_NULL_HANDLE;
+        /* no memory for the image of the guest's size: never a copy of that size into the scaled one, which went
+           past its edge and faulted the GPU's copy engine (Xid 39) in Mario Kart World at resolution=0.5 */
+        if (scaled && !t) return 0;
         if (!t)
             rec_CmdCopyBufferToImage(cb, buf, s->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
         else {
@@ -959,8 +967,9 @@ static FlushPart flush_whole(const Surf* s) {
     return w;
 }
 /* part's pixels of s copied into buf at at, in rows of pitch bytes, a layer (or a 3D image's slice) after another. A
-   packed depth layer goes whole (flush_parts gives it whole rows) */
-static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pitch, const FlushPart* part) {
+   packed depth layer goes whole (flush_parts gives it whole rows). 0 when a scaled one found no memory for the image
+   of the guest's size it goes through */
+static int flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pitch, const FlushPart* part) {
     u64 slice = (u64)pitch * part->rows;
     u32 depth = s->type == VK_IMAGE_VIEW_TYPE_3D ? s->depth3d : 1; /* a 3D image's slices in one copy */
     if (s->msaa) { /* the part's samples drawn into the guest's layout of them a layer at a time, copied from there */
@@ -974,7 +983,7 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
                 .imageExtent = {guest_w(s), part->rows, 1}};
             rec_CmdCopyImageToBuffer(cb, grid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
         }
-        return;
+        return 1;
     }
     vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -989,7 +998,9 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
                                .imageOffset = {0, (i32)part->y, 0},
                                .imageExtent = {s->w, part->rows, depth}};
         DevMem tm;
-        VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : vk_unscaled_image(s, 1, &tm);
+        const int scaled = s->sw != s->w || s->sh != s->h;
+        VkImage t = scaled ? vk_unscaled_image(s, 1, &tm) : VK_NULL_HANDLE;
+        if (scaled && !t) return 0; /* as rt_load_copy: never a copy of the guest's size out of the scaled image */
         if (!t)
             rec_CmdCopyImageToBuffer(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
         else {
@@ -1005,6 +1016,7 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
             vk_defer_image(t, tm, VK_NULL_HANDLE, VK_NULL_HANDLE);
         }
     }
+    return 1;
 }
 /* part of a block linear target's pixels into buf at at in the guest's layout: the image copied into the scratch
    buffer and swizzled from there into buf, a layer at layer_size from the last (a band of rows: its rows of blocks,
@@ -1021,7 +1033,7 @@ static int flush_swizzle(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, cons
                   (unsigned long long)s->gva, (unsigned long long)need);
         return 0;
     }
-    flush_copy(cb, s, scratch, 0, pitch, part);
+    if (!flush_copy(cb, s, scratch, 0, pitch, part)) return 0;
     vk_bl_barrier(cb, 1);
     for (u32 i = 0; i < moves; i++)
         if (!vk_bl_move(cb, &m, 1, buf, at + (u64)i * s->layer_size, scratch, (u64)i * pitch * part->rows)) return 0;
@@ -1036,10 +1048,7 @@ static int flush_swizzle(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, cons
 static int flush_record(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const FlushPart* part) {
     u32 row = guest_w(s) * s->f.bpp, pitch = (row + 15) & ~15u;
     u64 limit = g_vk.alloc_cap / VK_PART_SHARE, first, lo, hi;
-    if (!s->bl) {
-        flush_copy(cb, s, buf, at, row, part);
-        return 1;
-    }
+    if (!s->bl) return flush_copy(cb, s, buf, at, row, part);
     if ((u64)pitch * part->rows * part->layers <= limit || surf_volume(s) || depth_packs(s) ||
         (!s->msaa && (s->sw != s->w || s->sh != s->h)))
         return flush_swizzle(cb, s, buf, at, part);
@@ -1607,8 +1616,15 @@ int vk_surf_publish(Surf* s) {
     if (!r) return 0;
     /* straight into the buffer that becomes the span's owner, as the copy engine's destinations go (dma.c): the bytes
        the GPU owns there are copied on the GPU, and only the CPU's cross the bus, once. Staged in host memory, the span
-       went out and came back several times, 12 to 14 MB a frame in one game */
-    if (!vk_guest_read_device(s->gva, size, r->buf, 0)) {
+       went out and came back several times, 12 to 14 MB a frame in one game. The flush below writes the image's own
+       bytes into the span, so the copy is thrown away where the span is the image whole (no bytes past a row, no rows
+       past the image, one layer) and the CPU wrote none of it: the picture before the picture. A layout with padding
+       keeps its bytes, and the copy is what brings them; so does a layer's span with room after it, which the copy
+       leaves as it found it (publish_own writes each layer's own bytes only) */
+    u64 row = (u64)guest_w(s) * s->f.bpp;
+    int covers_all = s->bl && s->layers == 1 && !surf_volume(s) && kept == 0 &&
+                     bl_size((u32)row, guest_h(s), s->bh) == row * guest_h(s);
+    if (!covers_all && !vk_guest_read_device(s->gva, size, r->buf, 0)) {
         vk_own_res_unref(r);
         return 0;
     }
@@ -1635,9 +1651,7 @@ int vk_surf_publish(Surf* s) {
     cb = vk_cmd();
     vk_all_barrier(cb);
     FlushPart whole = flush_whole(s);
-    if (!s->bl)
-        flush_copy(cb, s, r->buf, 0, s->pitch, &whole);
-    else if (!flush_record(cb, s, r->buf, 0, &whole)) {
+    if (!(s->bl ? flush_record(cb, s, r->buf, 0, &whole) : flush_copy(cb, s, r->buf, 0, s->pitch, &whole))) {
         vk_own_res_unref(r);
         return 0;
     }
@@ -2437,9 +2451,9 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
 }
 
 /* ------------------------------------------------------------ the budget */
-/* A trim that found the images short of memory, where ASTC textures are held as RGBA8 (astc_mode=1, Exact, or Auto with
-   the budget for it at start) on a GPU that samples BCn but not ASTC: the log suggests astc_mode=2 (BC7) once a run,
-   with the numbers (snx_astc_bc_suggest).
+/* A trim that found the images short of memory, where ASTC textures are held as RGBA8 by astc_mode=1 (Exact; Auto makes
+   them BC7 by itself, vk_astc_auto_trimmed) on a GPU that samples BCn but not ASTC: the log suggests astc_mode=2 (BC7)
+   once a run, with the numbers (snx_astc_bc_suggest).
    Short: an image allocation found no memory (force), the caches left past their budget once all that could go went,
    or the working set evicted (what the last eight presents used, the trim's second step), which the next frames load
    again: a game held slow by eviction */
@@ -2450,7 +2464,7 @@ static void astc_bc_suggest(int force, u64 extra, u64 usage, u64 budget, u64 fre
               : working       ? SNX_ASTC_SHORT_WORKING_SET
                               : SNX_ASTC_SHORT_NONE;
     char said[128];
-    if (!snx_astc_bc_suggest(vk_astc_bc7(), g_vk.astc_bc7_could, 0, astc, why)) return;
+    if (!snx_astc_bc_suggest(vk_astc_bc7() || g_settings.astc_mode == 0, g_vk.astc_bc7_could, 0, astc, why)) return;
     if (why == SNX_ASTC_SHORT_NO_MEMORY)
         snprintf(said, sizeof said, "an image of %llu MB found no memory", (unsigned long long)(extra >> 20));
     else if (why == SNX_ASTC_SHORT_PAST_BUDGET)
@@ -2566,7 +2580,31 @@ static u64 trim_head(u64 budget) {
 static u32 g_forced;    /* the present a failed allocation last forced a trim (+1) */
 static u32 g_oom;       /* the present an image allocation last found no memory (+1) */
 static u64 g_oom_bytes; /* the smallest size that found none in that present */
+static u32 g_oom_target; /* the same of render targets */
+static u64 g_oom_target_bytes;
 u64 vk_mem_trimmed(void) { return g_trimmed; }
+u64 vk_mem_trim_start(u64 budget) { return budget - trim_head(budget); }
+/* The caches' trim takes only what the last presents didn't use, and on a GPU of 2 GB Mario Kart World's working set
+   didn't fit: its depth targets found no memory, and most of its draws were skipped. Its terrain textures, bound by
+   tiles, are the memory that can give way without a hole: a level coarser, a quarter of the bytes */
+u64 vk_tex_shed(u64 need) {
+    static u32 at;
+    if (at == g_vk_present + 1) return 0;
+    at = g_vk_present + 1;
+    u64 freed = 0;
+    while (freed < need) {
+        Surf* big = NULL;
+        for (int l = VK_LRU_TEX; l <= VK_LRU_TEX + LRU_AGED; l += LRU_AGED)
+            for (u32 r = g_rows.lists[l].head; r; r = g_rows.lru[r].next) {
+                Surf* t = g_rows.surf[r];
+                if (vk_tex_can_coarsen(t) && (!big || t->bytes > big->bytes)) big = t;
+            }
+        u64 got = big ? vk_tex_coarser(big) : 0;
+        if (!got) break;
+        freed += got;
+    }
+    return freed;
+}
 void vk_mem_trim(u64 extra, int force) {
     u64 usage, budget, need = 0;
     if (force) {
@@ -2582,7 +2620,7 @@ void vk_mem_trim(u64 extra, int force) {
     if (force) { /* the allocation's size, less what evictions before it are releasing already */
         u64 gone = vk_deferred_bytes();
         need = extra > gone ? extra - gone : 0;
-    } else if (usage + head <= budget)
+    } else if (usage <= vk_mem_trim_start(budget))
         return;
     SNX_ZONE_V(z, "vk mem trim", force);
     /* What goes first is what can be had again without loss: textures (loaded again from memory), own buffers (copied
@@ -2649,6 +2687,7 @@ void vk_mem_trim(u64 extra, int force) {
         vk_bc1_tight("the caches stay past their budget after a trim");
     else if (working)
         vk_bc1_tight("a trim took textures and targets the last eight presents used");
+    vk_astc_auto_trimmed(usage, snx_astc_trim_left(usage, extra, freed, force), budget, force);
     if (short_of) g_trim_dry = g_vk_present + 1;
     if (freed || short_of)
         LOG_LIMIT(20,
@@ -2691,14 +2730,29 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem
                   (unsigned long long)(*bytes >> 20), (unsigned long long)(heap >> 20));
         return 0;
     }
-    /* one as big found no memory this present: neither will this one (what was freed meanwhile is released when the
-       frame is done). Its draws go without it until the next present */
-    if (g_oom == g_vk_present + 1 && *bytes >= g_oom_bytes) return 0;
+    /* one as big of its kind found no memory this present: neither will this one (what was freed meanwhile is released
+       when the frame is done). Its draws go without it until the next present. Render targets are counted apart: in
+       Mario Kart World on a GPU of 2 GB, textures of 66 KB to 1.6 MB found none in each present, and its depth targets
+       of 2 to 8 MB, refused for them, skipped 500,000 draws in a minute and a half where 220 found no memory. So are
+       the images its compute programs store to (VK_OWN_WRITTEN), whose loss is a dispatch's results: refused about
+       20 times for each that found no memory, and each refusal skipped the dispatch */
+    const int target = owner == VK_OWN_TARGET || (owner & VK_OWN_WRITTEN);
+    owner &= ~VK_OWN_WRITTEN;
+    u32* oom = target ? &g_oom_target : &g_oom;
+    u64* oom_bytes = target ? &g_oom_target_bytes : &g_oom_bytes;
+    if (*oom == g_vk_present + 1 && *bytes >= *oom_bytes) return 0;
     vk_mem_trim(*bytes, 0);
     if (vk_image_create_r(ii, img, mem, owner, &res)) return 1;
+    if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY && target) { /* the memory held back for it (vk_devmem_reserve) */
+        vk_devmem_reserve_use(1);
+        int ok = vk_image_create_r(ii, img, mem, owner, &res);
+        vk_devmem_reserve_use(0);
+        if (ok) return 1;
+    }
     if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
-        if (g_oom != g_vk_present + 1 || *bytes < g_oom_bytes) g_oom_bytes = *bytes;
-        g_oom = g_vk_present + 1;
+        if (*oom != g_vk_present + 1 || *bytes < *oom_bytes) *oom_bytes = *bytes;
+        *oom = g_vk_present + 1;
+        vk_tex_shed(*bytes);
         vk_mem_trim(*bytes, 1); /* room for it by the time it is asked for again, a present or two later */
     }
     return 0;

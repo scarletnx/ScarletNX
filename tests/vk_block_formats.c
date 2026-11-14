@@ -122,7 +122,7 @@ static void device(int astc, int etc2, int bc, int native_astc, int native_etc2,
     g_settings.native_bc = native_bc;
     g_settings.astc_mode = 1; /* Exact: ASTC decoded stays RGBA8, which needs no memory budget here */
     g_settings.bcn_astc = 0;  /* BCn as ETC2: at its default of 1 the BCn checks below would take ASTC 4x4 */
-    g_vk.astc_auto_bc7 = 0;
+    g_vk.astc_auto.bc7 = 0;
     vk_blocks_want(&have, &g_vk.feat);
     g_test.n = 0;
     vk_blocks_say();

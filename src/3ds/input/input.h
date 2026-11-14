@@ -40,8 +40,9 @@ union SDL_Event;
    nothing; a control sent to a button the 3DS has none of (L3, R3) sends nothing, and is said. It lasts past
    snx_ctr_input_free, as a setting does */
 void snx_ctr_input_map(const char* text);
-/* The gamepads and the script: from now on scripted presses count their time */
-void snx_ctr_input_init(void);
+/* The gamepads and the script: from now on scripted presses count their time. headless opens no gamepad: only the
+   script's presses reach the game */
+void snx_ctr_input_init(bool headless);
 /* An event of the presenter's window pump: a gamepad connected or gone */
 void snx_ctr_input_event(const union SDL_Event* event);
 /* The presenter's pointer: a press on the touch screen at x and y in its pixels, or a release */

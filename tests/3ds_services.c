@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/runtime/internal.h"
 #include "3ds/ipc/ctr_ipc.h"
+#include "3ds/services/apt.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/users.h"
 #include "support/3ds_guest.h"
@@ -181,6 +182,7 @@ static void check_shared_font(SnxCtrProcess* p, uint32_t srv, uint32_t apt) {
 int main(void) {
     unsigned char code[0x3000] = {0};
     SnxCtrImage image = ctr_image(code, sizeof code, 4096);
+    image.title_id = 0x0004000012345600ull; /* a title of this test's own, so GetAppletInfo's two words differ */
     for (unsigned model = 0; model < 2; ++model) {
         SnxCtrProcess* p = snx_ctr_process_new(&image, (SnxCtrModel)model);
         assert(p);
@@ -309,6 +311,78 @@ int main(void) {
         ctr_request(p, receive, 3);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 1) == 0xc8a0cfef && p->apt_phase == 4);
+        /* GetAppletInfo (0x6) and PreloadLibraryApplet (0x16): a game preloads the library applet it will start, then
+           polls the applet's information until it is registered and loaded. A preload of an applet the runtime does
+           not have answers as an unknown command does, which the default auto-stub answers with success, and leaves
+           the slot free; one of a slot already taken is AlreadyExists (AppletManager::PreloadLibraryApplet,
+           CreateHLEApplet) */
+        uint32_t info[] = {0x60040, 0x402};
+        ctr_request(p, info, 2);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x60040 &&
+               ctr_command_word(p, 1) == 0xc880cffa /* NotFound, Applet, NotFound, Status */);
+        uint32_t preload[] = {0x160040, 0x406}; /* the error applet, which the runtime does not have */
+        ctr_request(p, preload, 2);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0); /* the unknown-command path: the auto-stub's success */
+        assert(ctr_command_word(p, 0) == 0x160040 && !ctr_command_word(p, 1) && !p->apt_library);
+        preload[1] = 0x402;
+        ctr_request(p, preload, 2);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x160040 && !ctr_command_word(p, 1) && p->apt_library == 0x402);
+        ctr_request(p, info, 2);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x601c0 && !ctr_command_word(p, 1));
+        assert(ctr_command_word(p, 2) == (uint32_t)image.title_id);
+        assert(ctr_command_word(p, 3) == (uint32_t)(image.title_id >> 32));
+        assert(ctr_command_word(p, 4) == 1 && ctr_command_word(p, 5) == 1 && ctr_command_word(p, 6) == 1 &&
+               ctr_command_word(p, 7) == 1); /* media, registered, loaded and AppletPos::Library */
+        info[1] = 0x400;                     /* the group the registered library applet answers under */
+        ctr_request(p, info, 2);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x601c0 && ctr_command_word(p, 5) == 1 && ctr_command_word(p, 6) == 1 &&
+               ctr_command_word(p, 7) == 1);
+        preload[1] = 0x401; /* the slot is taken: AlreadyExists, whichever applet is asked for */
+        ctr_request(p, preload, 2);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x160040 &&
+               ctr_command_word(p, 1) == 0xc8a0cffc /* AlreadyExists, Applet, InvalidState, Status */ &&
+               p->apt_library == 0x402);
+        /* a preloaded applet closed, then prepared again: registered afresh, and not loaded */
+        snx_ctr_apt_library_closed(p);
+        info[1] = 0x402;
+        ctr_request(p, info, 2);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x60040 &&
+               ctr_command_word(p, 1) == 0xc880cffa /* NotFound, Applet, NotFound, Status */);
+        uint32_t prepare[] = {0x180040, 0x402};
+        ctr_request(p, prepare, 2);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x180040 && !ctr_command_word(p, 1));
+        ctr_request(p, info, 2);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x601c0 && ctr_command_word(p, 5) == 1 && !ctr_command_word(p, 6));
+        info[1] = 0x300; /* the application: registered from its Initialize on, and never preloaded */
+        ctr_request(p, info, 2);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x601c0 && ctr_command_word(p, 5) == 1 && !ctr_command_word(p, 6) &&
+               !ctr_command_word(p, 7)); /* registered, not loaded, no attributes */
+        info[1] = 0x406;                 /* the applet the runtime does not have, after its preload was refused */
+        ctr_request(p, info, 2);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x60040 &&
+               ctr_command_word(p, 1) == 0xc880cffa /* NotFound, Applet, NotFound, Status */);
+        info[1] = 0x4ff; /* an id no applet has */
+        ctr_request(p, info, 2);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x60040 &&
+               ctr_command_word(p, 1) == 0xc880cffa /* NotFound, Applet, NotFound, Status */);
+        uint32_t wordless[] = {0x60000};
+        ctr_request(p, wordless, 1);
+        /* one word is each command's whole form */
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, SNX_CTR_IPC_BAD_DESCRIPTOR);
+        wordless[0] = 0x160000;
+        ctr_request(p, wordless, 1);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, SNX_CTR_IPC_BAD_DESCRIPTOR);
         uint32_t query[] = {0x1020000};
         ctr_request(p, query, 1);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);

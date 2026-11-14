@@ -116,6 +116,58 @@ static int av1_image_black(u32 w, u32 h) {
             if (GP(AV1_IMAGE + pool.layout.chroma_offset + (u64)y * pool.layout.pitch)[x] != 128) return 0;
     return 1;
 }
+/* A software picture of an odd size in an NV12 video image, written by the CPU (native_video.c's image_write_cpu), from
+   a planar picture and from a semi-planar one: its 4:2:0 chroma covers the last column and the last row, as FFmpeg's
+   planes do. Run with the others, in a mapping of its own past the heap */
+#define NV12_ODD_CPU  (HEAP_BASE + 0x9400000)
+#define NV12_ODD_SPAN 0x10000u
+static int check_video_nv12_odd(void) {
+    const u32 w = 17, h = 9, pairs = (w + 1) / 2, rows = (h + 1) / 2;
+    const u32 pref[16] = {0, 1, (w - 1) | (h - 1) << 16};
+    NativeVideoPool pool = {.first = 1, .count = 1, .memory = 1, .cpu = NV12_ODD_CPU};
+    u64 size = 0;
+    CHECK(!nvideo_layout(pref, 1, &pool.layout, &size) && size <= NV12_ODD_SPAN);
+    CHECK(mem_map(NV12_ODD_CPU, NV12_ODD_SPAN, MS_NORMAL, PERM_RW) == 0);
+    for (int semi = 0; semi < 2; semi++) {
+        AVFrame* f = av_frame_alloc();
+        CHECK(f);
+        f->format = semi ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
+        f->width = (int)w;
+        f->height = (int)h;
+        CHECK(av_frame_get_buffer(f, 0) == 0);
+        for (u32 y = 0; y < h; y++)
+            for (u32 x = 0; x < w; x++) f->data[0][(size_t)y * (size_t)f->linesize[0] + x] = (u8)(y * w + x);
+        for (u32 y = 0; y < rows; y++)
+            for (u32 k = 0; k < pairs; k++) {
+                u8* u = semi ? f->data[1] + (size_t)y * (size_t)f->linesize[1] + 2 * k
+                             : f->data[1] + (size_t)y * (size_t)f->linesize[1] + k;
+                u8* v = semi ? u + 1 : f->data[2] + (size_t)y * (size_t)f->linesize[2] + k;
+                *u = (u8)(0x80 + y * pairs + k);
+                *v = (u8)(0x10 + y * pairs + k);
+            }
+        memset(GP(NV12_ODD_CPU), 0xff, pool.layout.image_bytes);
+        int wrote = native_video_image_write(&pool, pool.first, f);
+        av_frame_free(&f);
+        CHECK(wrote);
+        guest_done(NV12_ODD_CPU, pool.layout.image_bytes);
+        for (u32 y = 0; y < h; y++)
+            for (u32 x = 0; x < w; x++) CHECK(GP(NV12_ODD_CPU + (u64)y * pool.layout.pitch)[x] == (u8)(y * w + x));
+        for (u32 y = 0; y < rows; y++) {
+            const u8* row = GP(NV12_ODD_CPU + pool.layout.chroma_offset + (u64)y * pool.layout.pitch);
+            for (u32 k = 0; k < pairs; k++)
+                if (row[2 * k] != (u8)(0x80 + y * pairs + k) || row[2 * k + 1] != (u8)(0x10 + y * pairs + k)) {
+                    fprintf(stderr,
+                            "vulkan_headless: a %ux%u %s picture's chroma row %u pair %u is %02x %02x in its NV12 "
+                            "image, not %02x %02x\n",
+                            w, h, semi ? "semi-planar" : "planar", y, k, row[2 * k], row[2 * k + 1],
+                            (u8)(0x80 + y * pairs + k), (u8)(0x10 + y * pairs + k));
+                    return 1;
+                }
+        }
+    }
+    CHECK(mem_unmap(NV12_ODD_CPU, NV12_ODD_SPAN) == 0);
+    return 0;
+}
 /* the vector at path (its list at list_path) through a decoder opened with hw (the device for Vulkan Video, taken
    over; NULL for none), fed as the service's pump feeds it: a packet when it asks for one, then the end of the
    stream. Every picture has its packet's timestamp and the list's MD5 (the stand-in's: black), and none is missing */

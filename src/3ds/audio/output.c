@@ -4,6 +4,7 @@
 #include "3ds/board/clock.h"
 #include "common/utilities/endian.h"
 #include <SDL3/SDL.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -12,13 +13,16 @@
    than letting the latency grow */
 #define MAX_QUEUED  (SNX_CTR_DSP_RATE * 4u / 5u) /* 200 ms */
 #define WAV_LIMIT   (SNX_CTR_DSP_RATE * 4u * 120u)
+#define WAV_HEADER_EVERY (SNX_CTR_DSP_RATE * 4u * 2u) /* two seconds: a killed run still has a playable file */
 
 static struct {
     SDL_AudioStream* stream;
     FILE* wav;
-    uint32_t wav_bytes;
+    char path[1024];
+    uint32_t wav_bytes, wav_header_at;
     int pace; /* the clock's pace the device plays at (board/clock.h): the console's until a frame finds another */
-} o;
+    int put_failed;
+} g_output;
 
 static void wav_header(uint32_t data_bytes) {
     /* RIFF, a 16-byte fmt chunk (PCM, 2 channels, 16 bits, 4-byte frames), then the data */
@@ -31,24 +35,36 @@ static void wav_header(uint32_t data_bytes) {
     snx_st_le32(h + 24, SNX_CTR_DSP_RATE);
     snx_st_le32(h + 28, SNX_CTR_DSP_RATE * 4);
     snx_st_le32(h + 40, data_bytes);
-    if (fseek(o.wav, 0, SEEK_SET) || fwrite(h, sizeof h, 1, o.wav) != 1 || fseek(o.wav, 0, SEEK_END)) {
-        fclose(o.wav);
-        o.wav = NULL;
+    if (fseek(g_output.wav, 0, SEEK_SET) || fwrite(h, sizeof h, 1, g_output.wav) != 1 ||
+        fseek(g_output.wav, 0, SEEK_END)) {
+        fprintf(stderr, "3ds audio: cannot write the recording %s: %s\n", g_output.path, strerror(errno));
+        fclose(g_output.wav);
+        g_output.wav = NULL;
     }
 }
-bool snx_ctr_audio_init(const char* wav_path) {
-    if (o.stream || o.wav) return true;
-    if (SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+bool snx_ctr_audio_init(const char* wav_path, bool headless) {
+    if (g_output.stream || g_output.wav) return true;
+    if (!headless && SDL_InitSubSystem(SDL_INIT_AUDIO)) {
         SDL_AudioSpec spec = {SDL_AUDIO_S16LE, 2, (int)SNX_CTR_DSP_RATE};
-        o.stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
-        if (o.stream && !SDL_ResumeAudioStreamDevice(o.stream)) {
-            SDL_DestroyAudioStream(o.stream);
-            o.stream = NULL;
+        g_output.stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+        if (g_output.stream && !SDL_ResumeAudioStreamDevice(g_output.stream)) {
+            SDL_DestroyAudioStream(g_output.stream);
+            g_output.stream = NULL;
         }
-        if (!o.stream) SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        if (!g_output.stream) {
+            fprintf(stderr, "3ds audio: no audio device: %s\n", SDL_GetError());
+            SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        }
     }
-    if (wav_path && (o.wav = fopen(wav_path, "wb")) != NULL) wav_header(0);
-    return o.stream || o.wav;
+    if (wav_path) {
+        snprintf(g_output.path, sizeof g_output.path, "%s", wav_path);
+        g_output.wav = fopen(wav_path, "wb");
+        if (g_output.wav)
+            wav_header(0);
+        else
+            fprintf(stderr, "3ds audio: cannot write %s: %s\n", wav_path, strerror(errno));
+    }
+    return g_output.stream || g_output.wav;
 }
 void snx_ctr_audio_frame(const int16_t frame[SNX_CTR_DSP_SAMPLES][2]) {
     int16_t mixed[SNX_CTR_DSP_SAMPLES][2];
@@ -63,43 +79,54 @@ void snx_ctr_audio_frame(const int16_t frame[SNX_CTR_DSP_SAMPLES][2]) {
     /* the frames come at the clock's pace (fps_limit): the device plays them at it, the pitch with it, and with no
        limit none is played, as they come faster than any device plays them */
     int pace = snx_ctr_clock_pace();
-    if (o.stream && pace != o.pace) {
+    if (g_output.stream && pace != g_output.pace) {
         char limit[16];
         snx_ctr_clock_text(pace, limit, sizeof limit);
         if (pace == SNX_CTR_PACE_NONE)
             fprintf(stderr, "3ds audio: fps_limit=%s runs the game as fast as it goes: its sound is not played\n",
                     limit);
-        else if (!SDL_SetAudioStreamFrequencyRatio(o.stream, (float)snx_ctr_clock_rate()))
+        else if (!SDL_SetAudioStreamFrequencyRatio(g_output.stream, (float)snx_ctr_clock_rate()))
             fprintf(stderr, "3ds audio: fps_limit=%s: the device cannot play at %.3f times the rate: %s\n", limit,
                     snx_ctr_clock_rate(), SDL_GetError());
         else
             fprintf(stderr, "3ds audio: fps_limit=%s: the sound plays at %.3f times its rate\n", limit,
                     snx_ctr_clock_rate());
-        o.pace = pace;
+        g_output.pace = pace;
     }
-    if (o.stream && pace != SNX_CTR_PACE_NONE && SDL_GetAudioStreamQueued(o.stream) < (int)MAX_QUEUED)
-        (void)SDL_PutAudioStreamData(o.stream, bytes, (int)sizeof bytes);
-    if (o.wav && o.wav_bytes < WAV_LIMIT) {
-        if (fwrite(bytes, sizeof bytes, 1, o.wav) == 1) {
-            o.wav_bytes += sizeof bytes;
+    if (g_output.stream && pace != SNX_CTR_PACE_NONE && SDL_GetAudioStreamQueued(g_output.stream) < (int)MAX_QUEUED &&
+        !SDL_PutAudioStreamData(g_output.stream, bytes, (int)sizeof bytes) && !g_output.put_failed) {
+        fprintf(stderr, "3ds audio: the device stopped taking its frames: %s\n", SDL_GetError());
+        g_output.put_failed = 1;
+    }
+    if (g_output.wav && g_output.wav_bytes < WAV_LIMIT) {
+        if (fwrite(bytes, sizeof bytes, 1, g_output.wav) == 1) {
+            g_output.wav_bytes += sizeof bytes;
+            if (g_output.wav_bytes - g_output.wav_header_at >= WAV_HEADER_EVERY) {
+                wav_header(g_output.wav_bytes);
+                g_output.wav_header_at = g_output.wav_bytes;
+            }
         } else {
-            fclose(o.wav);
-            o.wav = NULL;
+            fprintf(stderr, "3ds audio: cannot write the recording %s: %s\n", g_output.path, strerror(errno));
+            wav_header(g_output.wav_bytes);
+            if (g_output.wav) fclose(g_output.wav);
+            g_output.wav = NULL;
         }
     }
 }
 void snx_ctr_audio_free(void) {
     snx_ctr_audio_mix_reset();
-    if (o.stream) {
-        SDL_DestroyAudioStream(o.stream);
+    if (g_output.stream) {
+        SDL_DestroyAudioStream(g_output.stream);
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
     }
-    if (o.wav) {
-        wav_header(o.wav_bytes);
-        if (o.wav) fclose(o.wav);
+    if (g_output.wav) {
+        wav_header(g_output.wav_bytes);
+        if (g_output.wav) fclose(g_output.wav);
     }
-    o.stream = NULL;
-    o.wav = NULL;
-    o.wav_bytes = 0;
-    o.pace = SNX_CTR_PACE_CONSOLE;
+    g_output.stream = NULL;
+    g_output.wav = NULL;
+    g_output.path[0] = 0;
+    g_output.wav_bytes = g_output.wav_header_at = 0;
+    g_output.pace = SNX_CTR_PACE_CONSOLE;
+    g_output.put_failed = 0;
 }

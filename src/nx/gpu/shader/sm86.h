@@ -85,6 +85,7 @@ enum { SM86_K_FIX = 0, SM86_K_ALU = 1, SM86_K_UALU = 2 };
     X(UP2UR, UALU, "UP2UR")                                                                                            \
     X(PLOP3, FIX, "PLOP3")                                                                                             \
     X(UPLOP3, FIX, "UPLOP3")                                                                                           \
+    X(PSETP, FIX, "PSETP")                                                                                             \
     X(CS2R, FIX, "CS2R")                                                                                               \
     X(S2R, FIX, "S2R")                                                                                                 \
     X(S2UR, FIX, "S2UR")                                                                                               \
@@ -150,6 +151,9 @@ enum { SM86_K_FIX = 0, SM86_K_ALU = 1, SM86_K_UALU = 2 };
     X(ISBEWR, FIX, "ISBEWR")                                                                                           \
     X(PIXLD, FIX, "PIXLD")                                                                                             \
     X(OUT, ALU, "OUT")                                                                                                 \
+    X(LEPC, FIX, "LEPC")                                                                                               \
+    X(STUB_SET, FIX, "0x357 (the exit stub's address)")                                                                \
+    X(STUB_END, FIX, "0x957 (the exit stub's end)")                                                                    \
     X(TEX, FIX, "TEX")                                                                                                 \
     X(TEX_B, FIX, "TEX.B")                                                                                             \
     X(TLD, FIX, "TLD")                                                                                                 \

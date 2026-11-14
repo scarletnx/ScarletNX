@@ -14,14 +14,18 @@
 #include "3ds/gpu/vk/vk_render.h"
 #include "3ds/gpu/vk/vk_transfer.h"
 #include "3ds/gpu/vk/vk_y2r.h"
+#include "3ds/input/input.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/platform/file.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
+#include "support/3ds_sdl_events.h"
 #include "support/3ds_vk_path.h"
+#include "support/frame_dump.h"
 #include "support/thread_nice.h"
 #include "snx_settings.h"
+#include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +55,9 @@ static uint32_t g_fcram = 0x20000000u, g_vram = 0x18000000u, g_vertices = 0x2011
 #define RELOAD_AT    (COLOR + (H - 2) * W * 4) /* the tiled guest buffer's last two 8x8 tiles, a corner of the target */
 #define RELOAD_SPAN  (2 * W * 4)
 #define POISON       0xa5
+#define SCALED_FB     (FCRAM + 0x400000u) /* a top screen framebuffer that display transfers fill */
+#define ROTATE_FB     (FCRAM + 0x480000u) /* the other of the two a game alternates a screen's picture between */
+#define SCALED_COPY   (FCRAM + 0x500000u) /* the same bytes, which nothing kept at a render scale holds */
 /* PICA registers of texture unit 0 and the first TEV stage, the colour buffer, and the vertex count and offset */
 #define TEX_MAIN     0x080
 #define TEX0_SIZE    0x082
@@ -63,6 +70,7 @@ static uint32_t g_fcram = 0x20000000u, g_vram = 0x18000000u, g_vertices = 0x2011
 #define VERTEX_OFFSET 0x22a
 
 static int failures;
+static int skips; /* checks that found nothing to run, which ctest has to see as 77 and not as a pass */
 static uint32_t seed = 0x3d5u;
 static uint32_t next(void) {
     seed = seed * 1664525u + 1013904223u;
@@ -459,7 +467,7 @@ static void pixels(unsigned char guest[16], unsigned char decoded[16], const uns
 /* what present.c starts a frame's hash from: the decimal digits of SNX_FNV_BASIS without the last one */
 #define PRESENT_HASH_BASIS 1469598103934665603ull
 static void present_screens(SnxCtrMemory* m, bool after_draw) {
-    if (!snx_ctr_present_init(m, NULL)) {
+    if (!snx_ctr_present_init(m, NULL, false)) {
         ++failures;
         return;
     }
@@ -636,6 +644,24 @@ static void index_count_past_ram(SnxCtrMemory* m) {
     free(s);
 }
 
+/* A draw recorded again into the target a submission left open, after a wait for that submission, with the same
+   uniforms and LUTs: its uploads and LUT views must be the new recording's, not the retired slot's */
+static void draw_after_submit(SnxCtrMemory* m) {
+    static unsigned char color[W * H * 4], sw[W * H * 4], gpu[W * H * 4];
+    Scene* s = triangle_scene("a draw after a submission", 4);
+    random_fill(color, sizeof color);
+    setup(m, s, color, color); /* no depth target */
+    bool a = record(m, s, &software) && record(m, s, &software);
+    snx_ctr_phys_read(m, COLOR, sw, sizeof sw);
+    setup(m, s, color, color);
+    /* no CPU access between the two: the target stays open, so only the second draw's own setup opens the next
+       recording */
+    bool b = record(m, s, &vulkan) && snx_ctr_vk_finish() && record(m, s, &vulkan) && snx_ctr_vk_finish();
+    snx_ctr_phys_read(m, COLOR, gpu, sizeof gpu);
+    if (drew(s, a, b)) compare(s, sw, gpu, NULL, NULL);
+    free(s);
+}
+
 static void commands_after_draw(SnxCtrMemory* m) {
     y2r_after_draw(m);
     transfer_after_draw(m);
@@ -688,8 +714,19 @@ static void async_pipelines(SnxCtrMemory* m) {
 /* the pipeline cache kept between runs: a draw's pipeline goes into the file named for the driver, in the folder's
    shader_cache, and a write that fails, onto a folder in the file's place, is made again by the next one */
 static void pipeline_cache(SnxCtrMemory* m) {
+    if (snx_ctr_vk()->shader_object) {
+        printf("%-24s skipped: draws bind shader objects, so no pipeline cache is made\n", "pipeline cache");
+        return;
+    }
     static unsigned char start[W * H * 4], none[W * H * 4], gpu[W * H * 4], gpu_depth[W * H * 4];
-    const char* folder = "3ds_vk_draw_pipeline_cache";
+    char* base = snx_temp_dir(NULL);
+    char* folder = base ? snx_path_join(base, "pipeline-cache") : NULL;
+    if (!folder) {
+        printf("pipeline cache: no temporary folder: FAIL\n");
+        ++failures;
+        free(base);
+        return;
+    }
     (void)snx_remove_tree(folder);
     (void)plat_mkdir(folder); /* the game's folder, where the renderer makes shader_cache */
     g_settings.vulkan_pipeline_cache = 1;
@@ -728,10 +765,357 @@ static void pipeline_cache(SnxCtrMemory* m) {
     free(data);
     free(s);
     (void)snx_remove_tree(folder);
+    (void)snx_remove_tree(base);
+    free(folder);
+    free(base);
 }
 static void presented_after_draw(SnxCtrMemory* m) {
     present_screens(m, true);
     commands_after_draw(m);
+}
+/* A frame of GSP's colour formats (present.h, transfer.h's order) drawn at a render scale above 1 is shown from its
+   target: the presenter takes the target of the frame's own format and stores nothing to the RAM. The PICA's
+   colour buffer format register (0x117) has another order: RGB5A1 2, RGB565 3 */
+static void scaled_present(SnxCtrMemory* m) {
+    static const struct {
+        const char* name;
+        unsigned pica, gsp;
+    } cases[] = {{"an RGB565 frame at 2x", 3, SNX_CTR_PIX_RGB565}, {"an RGB5A1 frame at 2x", 2, SNX_CTR_PIX_RGB5A1}};
+    if (!snx_ctr_present_init(m, NULL, false)) {
+        ++failures;
+        return;
+    }
+    g_settings.ctr_top_resolution = 2;
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
+        uint32_t at = COLOR + (uint32_t)i * 0x40000u;
+        Scene* s = scene(cases[i].name, cases[i].pica, 0xff);
+        /* the top screen's framebuffer, 240 x 400: a target the top screen's render scale takes */
+        put(&s->list, 0x041, f24(240 / 2.0f));
+        put(&s->list, 0x043, f24(400 / 2.0f));
+        put(&s->list, 0x11e, 240 | (400 - 1) << 12 | 1u << 24);
+        put(&s->list, 0x11d, at / 8);
+        triangles(s, 4);
+        array_draw(s);
+        list_end(&s->list);
+        setup_clear(m, s);
+        bool ok = record(m, s, &vulkan); /* the target drawn, newer than the RAM */
+        SnxCtrVkTraffic before = snx_ctr_vk_traffic();
+        ok = ok && snx_ctr_present_frame(0, at, 240, 400, cases[i].gsp, 240 * 2, NULL);
+        uint64_t stored = snx_ctr_vk_traffic().written - before.written;
+        ok = ok && snx_ctr_vk_finish();
+        bool pass = ok && stored == 0;
+        printf("%-24s %llu bytes stored to the RAM by the present: %s\n", s->name, (unsigned long long)stored,
+               pass ? "ok" : "FAIL");
+        if (!pass) ++failures;
+        free(s);
+    }
+    g_settings.ctr_top_resolution = 1;
+}
+/* a scene of random triangles over a target of width x height, its rows from the top as games have them, or from the
+   bottom */
+static Scene* scaled_scene(const char* name, unsigned width, unsigned height, bool from_top) {
+    Scene* s = scene(name, 0, 0xff);
+    put(&s->list, 0x11e, width | (height - 1) << 12 | (from_top ? 1u << 24 : 0));
+    put(&s->list, 0x041, f24((float)width / 2.0f));
+    put(&s->list, 0x043, f24((float)height / 2.0f));
+    triangles(s, 6);
+    array_draw(s);
+    list_end(&s->list);
+    return s;
+}
+/* A target of width x height (rows from the top or not) drawn at twice the console's scale and copied from its row
+   first to SCALED_FB by a display transfer of out_size and flags, which leaves a 240-pixel framebuffer of rows rows in
+   the transfer's output format at row of it: the presenter's lookup gives a copy at the transfer's scale and origin,
+   and the frame is the picture the same bytes make decoded from memory. Geometry only: the copy and the 1x decode of
+   one target differ by its quantisation alone, so this does not tell the copy from memory's own picture */
+static void scaled_case(SnxCtrMemory* m, const char* dir, const char* name, unsigned width, unsigned height,
+                        bool from_top, unsigned first, uint32_t out_size, uint32_t flags, unsigned row, unsigned rows,
+                        unsigned index) {
+    static const unsigned char clear[480 * 400 * 4];
+    static unsigned char frame[240 * 400 * 4];
+    Scene* s = scaled_scene(name, width, height, from_top);
+    setup_clear(m, s);
+    snx_ctr_phys_write(m, COLOR, clear, (size_t)width * height * 4);
+    SnxCtrDisplayTransfer dt = {width | height << 16, out_size, flags};
+    unsigned format = flags >> SNX_CTR_XFER_OUT_FORMAT & 7, pitch = 240 * snx_ctr_pixel_bytes(format);
+    uint32_t fb = SCALED_FB + row * pitch, bytes = pitch * rows;
+    SnxCtrVkScaled scaled = {0};
+    bool ok = record(m, s, &vulkan) &&
+              snx_ctr_vk_display_transfer(&dt, COLOR + first * width * 4, SCALED_FB) == SNX_CTR_XFER_OK;
+    bool kept = ok && snx_ctr_vk_target_image(fb, 240, rows, format, pitch, &scaled) && scaled.scale == 2 &&
+                scaled.x == 0 && scaled.y == row;
+    ok = ok && snx_ctr_present_frame(0, fb, 240, rows, format, pitch, NULL) && snx_ctr_vk_finish();
+    ok = ok && snx_ctr_phys_read(m, fb, frame, bytes) == SNX_CTR_MEM_OK &&
+         snx_ctr_phys_write(m, SCALED_COPY, frame, bytes) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_present_frame(0, SCALED_COPY, 240, rows, format, pitch, NULL);
+    unsigned w[2] = {0}, h[2] = {0}, off = 0;
+    unsigned char* shown = test_ctr_frame_dump(dir, 0, index, &w[0], &h[0]);
+    unsigned char* memory = test_ctr_frame_dump(dir, 0, index + 1, &w[1], &h[1]);
+    bool same = shown && memory && w[0] == rows && h[0] == 240 && w[1] == rows && h[1] == 240;
+    for (size_t i = 0; same && i < (size_t)rows * 240; ++i) {
+        unsigned d = 0;
+        for (unsigned c = 0; c < 3; ++c) {
+            unsigned a = shown[i * 3 + c], b = memory[i * 3 + c], e = a > b ? a - b : b - a;
+            if (e > d) d = e;
+        }
+        off += d > 8;
+    }
+    bool pass = ok && kept && same && off <= rows * 240 / 25;
+    printf("%-24s the copy's scale and origin: %s, %5u pixels off the memory's picture: %s\n", name, kept ? "ok" : "no",
+           off, pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+    free(shown);
+    free(memory);
+    free(s);
+}
+/* A target drawn at a render scale and copied to a framebuffer by display transfers is shown at that scale, with the
+   picture its memory has, until a draw or a fill changes the framebuffer. The presenter numbers its first eight dumps
+   only (present.c), two a case, so four cases fit */
+static void scaled_transfer(SnxCtrMemory* m) {
+    char* dir = snx_temp_dir(NULL);
+    if (!dir) {
+        ++failures;
+        return;
+    }
+    int top = g_settings.ctr_top_resolution;
+    g_settings.ctr_top_resolution = 2;
+    if (!snx_ctr_present_init(m, dir, false)) {
+        ++failures;
+        g_settings.ctr_top_resolution = top;
+        free(dir);
+        return;
+    }
+    uint32_t rgb565 = SNX_CTR_PIX_RGB565 << SNX_CTR_XFER_OUT_FORMAT, whole = 240 | 400u << 16;
+    scaled_case(m, dir, "a scaled transfer", 240, 400, true, 0, whole, 0, 0, 400, 0);
+    scaled_case(m, dir, "a scaled flipped transfer", 240, 400, true, 0, whole, SNX_CTR_XFER_FLIP, 0, 400, 2);
+    scaled_case(m, dir, "a scaled 2:1 transfer", 480, 400, false, 0, 480 | 400u << 16, 1u << SNX_CTR_XFER_SCALE_SHIFT,
+                0, 400, 4);
+    scaled_case(m, dir, "a scaled RGB565 part", 240, 400, true, 80, 240 | 320u << 16, rgb565, 16, 304, 6);
+    /* the last case's copy, then a draw over it; the same copy again, then a fill over it */
+    uint32_t part = SCALED_FB + 16 * 240 * 2;
+    SnxCtrVkScaled scaled = {0};
+    Scene* over = scene("a draw over it", 0, 0xff);
+    put(&over->list, FB_COLOR_ADDR, SCALED_FB / 8);
+    triangles(over, 4);
+    array_draw(over);
+    list_end(&over->list);
+    snx_ctr_phys_write(m, VERTICES, over->vertices, sizeof over->vertices);
+    snx_ctr_phys_write(m, LIST, over->list.w, over->list.n * 4);
+    bool ok = record(m, over, &vulkan);
+    bool drawn = ok && !snx_ctr_vk_target_image(part, 240, 304, SNX_CTR_PIX_RGB565, 240 * 2, &scaled);
+    SnxCtrDisplayTransfer dt = {whole, 240 | 320u << 16, rgb565};
+    ok = ok && snx_ctr_vk_display_transfer(&dt, COLOR + 80 * 240 * 4, SCALED_FB) == SNX_CTR_XFER_OK;
+    bool again = ok && snx_ctr_vk_target_image(part, 240, 304, SNX_CTR_PIX_RGB565, 240 * 2, &scaled);
+    ok = ok && snx_ctr_vk_fill(SCALED_FB, 0x1000, 0, SNX_CTR_FILL_32BIT | 1) == SNX_CTR_XFER_OK;
+    bool filled = !snx_ctr_vk_target_image(part, 240, 304, SNX_CTR_PIX_RGB565, 240 * 2, &scaled);
+    ok = ok && snx_ctr_vk_finish();
+    bool pass = ok && drawn && again && filled;
+    printf("%-24s the scaled image dropped: %s, kept again: %s, dropped after a fill: %s: %s\n", over->name,
+           drawn ? "yes" : "no", again ? "yes" : "no", filled ? "yes" : "no", pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+    free(over);
+    g_settings.ctr_top_resolution = top;
+    (void)snx_remove_tree(dir);
+    free(dir);
+}
+/* A display transfer's destination whose bytes the guest changes after it: the presenter shows the picture at the
+   render scale while the framebuffer's memory still holds the transfer's bytes, and the memory's own pixel where it
+   does not. A byte before the framebuffer is in its first page; a byte of a pixel makes that pixel the memory's, and
+   a byte of the next pixel, its first byte equal to the copy's, tells a compare of the first byte from a full one */
+static void scaled_verify(SnxCtrMemory* m) {
+    static const unsigned char clear[240 * 400 * 4];
+    static const unsigned char red[2] = {0x00, 0xf8}; /* RGB565 red */
+    static unsigned char frame[240 * 320 * 2];
+    char* dir = snx_temp_dir(NULL);
+    if (!dir) {
+        ++failures;
+        return;
+    }
+    int top = g_settings.ctr_top_resolution;
+    g_settings.ctr_top_resolution = 2;
+    if (!snx_ctr_present_init(m, dir, false)) {
+        ++failures;
+        g_settings.ctr_top_resolution = top;
+        free(dir);
+        return;
+    }
+    Scene* s = scaled_scene("a changed destination", 240, 400, true);
+    setup_clear(m, s);
+    snx_ctr_phys_write(m, COLOR, clear, sizeof clear);
+    SnxCtrDisplayTransfer dt = {240 | 400u << 16, 240 | 320u << 16, SNX_CTR_PIX_RGB565 << SNX_CTR_XFER_OUT_FORMAT};
+    unsigned pitch = 240 * 2, row = 16, rows = 304, bytes = pitch * rows;
+    uint32_t fb = SCALED_FB + row * pitch;
+    bool ok = record(m, s, &vulkan) &&
+              snx_ctr_vk_display_transfer(&dt, COLOR + 80 * 240 * 4, SCALED_FB) == SNX_CTR_XFER_OK &&
+              snx_ctr_present_frame(0, fb, 240, rows, SNX_CTR_PIX_RGB565, pitch, NULL);
+    /* the same bytes from another address: the memory's own picture */
+    ok = ok && snx_ctr_phys_read(m, fb, frame, bytes) == SNX_CTR_MEM_OK &&
+         snx_ctr_phys_write(m, SCALED_COPY, frame, bytes) == SNX_CTR_MEM_OK &&
+         snx_ctr_present_frame(0, SCALED_COPY, 240, rows, SNX_CTR_PIX_RGB565, pitch, NULL);
+    SnxCtrVkScaled scaled = {0};
+    bool kept = snx_ctr_vk_target_image(fb, 240, rows, SNX_CTR_PIX_RGB565, pitch, &scaled) && scaled.scale == 2 &&
+                scaled.kept != VK_NULL_HANDLE;
+    /* a byte of the destination before the framebuffer, in the framebuffer's first page: the copy stays */
+    unsigned char white[2] = {0xff, 0xff};
+    ok = ok && snx_ctr_phys_write(m, fb - 2, white, sizeof white) == SNX_CTR_MEM_OK &&
+         snx_ctr_present_frame(0, fb, 240, rows, SNX_CTR_PIX_RGB565, pitch, NULL);
+    bool kept_page =
+        snx_ctr_vk_target_image(fb, 240, rows, SNX_CTR_PIX_RGB565, pitch, &scaled) && scaled.kept != VK_NULL_HANDLE;
+    /* a pixel of the framebuffer: that pixel shows the memory, the rest the copy */
+    ok = ok && snx_ctr_phys_write(m, fb, red, sizeof red) == SNX_CTR_MEM_OK &&
+         snx_ctr_present_frame(0, fb, 240, rows, SNX_CTR_PIX_RGB565, pitch, NULL);
+    bool kept_pixel =
+        snx_ctr_vk_target_image(fb, 240, rows, SNX_CTR_PIX_RGB565, pitch, &scaled) && scaled.kept != VK_NULL_HANDLE;
+    /* one byte of the next pixel, its first byte equal to the copy's: a compare of the first byte alone would keep the
+       copy's colour, a full one shows the memory's */
+    unsigned char one = (unsigned char)(frame[3] ^ 0xff);
+    ok = ok && snx_ctr_phys_write(m, fb + 3, &one, sizeof one) == SNX_CTR_MEM_OK &&
+         snx_ctr_present_frame(0, fb, 240, rows, SNX_CTR_PIX_RGB565, pitch, NULL);
+    bool kept_one =
+        snx_ctr_vk_target_image(fb, 240, rows, SNX_CTR_PIX_RGB565, pitch, &scaled) && scaled.kept != VK_NULL_HANDLE;
+    ok = ok && snx_ctr_phys_read(m, fb, frame, bytes) == SNX_CTR_MEM_OK &&
+         snx_ctr_phys_write(m, SCALED_COPY, frame, bytes) == SNX_CTR_MEM_OK &&
+         snx_ctr_present_frame(0, SCALED_COPY, 240, rows, SNX_CTR_PIX_RGB565, pitch, NULL);
+    ok = snx_ctr_vk_finish() && ok;
+    unsigned w[6] = {0}, h[6] = {0};
+    unsigned char* before = test_ctr_frame_dump(dir, 0, 0, &w[0], &h[0]);
+    unsigned char* memory = test_ctr_frame_dump(dir, 0, 1, &w[1], &h[1]);
+    unsigned char* page = test_ctr_frame_dump(dir, 0, 2, &w[2], &h[2]);
+    unsigned char* pixel = test_ctr_frame_dump(dir, 0, 3, &w[3], &h[3]);
+    unsigned char* one_copy = test_ctr_frame_dump(dir, 0, 4, &w[4], &h[4]);
+    unsigned char* one_memory = test_ctr_frame_dump(dir, 0, 5, &w[5], &h[5]);
+    bool same = before && memory && page && pixel && one_copy && one_memory;
+    for (unsigned i = 0; same && i < 6; ++i) same = w[i] == rows && h[i] == 240;
+    unsigned copy_off = 0, page_off = 0, pixel_off = 0;
+    bool red_ok = true;
+    for (size_t i = 0; same && i < (size_t)rows * 240; ++i) {
+        const unsigned char *a = &before[i * 3], *b = &memory[i * 3], *p = &page[i * 3], *q = &pixel[i * 3];
+        copy_off += a[0] != b[0] || a[1] != b[1] || a[2] != b[2];
+        page_off += a[0] != p[0] || a[1] != p[1] || a[2] != p[2];
+        if (a[0] != q[0] || a[1] != q[1] || a[2] != q[2]) {
+            ++pixel_off;
+            red_ok = red_ok && q[0] == 255 && q[1] == 0 && q[2] == 0;
+        }
+    }
+    unsigned one_off = 0;
+    bool one_ok = true;
+    for (size_t i = 0; same && i < (size_t)rows * 240; ++i) {
+        const unsigned char *p = &pixel[i * 3], *c = &one_copy[i * 3], *q = &one_memory[i * 3];
+        if (p[0] != c[0] || p[1] != c[1] || p[2] != c[2]) {
+            ++one_off;
+            one_ok = one_ok && c[0] == q[0] && c[1] == q[1] && c[2] == q[2];
+        }
+    }
+    /* not the memory's picture, the page's write leaves it alone, and the framebuffer's own byte is the memory's
+       colour */
+    bool pass = ok && kept && kept_page && kept_pixel && kept_one && same && copy_off > 0 && page_off == 0 &&
+                pixel_off == 1 && red_ok && one_off == 1 && one_ok;
+    printf("%-24s kept after a page byte %s, after a framebuffer byte %s, after one of the next %s; pixels off the "
+           "memory: %u; off the copy: page %u, pixel %u; the one-byte pixel's frame equal to the memory: %s: %s\n",
+           s->name, kept_page ? "yes" : "no", kept_pixel ? "yes" : "no", kept_one ? "yes" : "no", copy_off, page_off,
+           pixel_off, one_ok ? "yes" : "no", pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+    free(before);
+    free(memory);
+    free(page);
+    free(pixel);
+    free(one_copy);
+    free(one_memory);
+    free(s);
+    g_settings.ctr_top_resolution = top;
+    (void)snx_remove_tree(dir);
+    free(dir);
+}
+/* The screens' layout takes each frame at the console's size (screen_rect): a top screen drawn at 2x above a bottom one
+   presented at 1x is laid out as the console's 400x240 over 320x240, so at a 600x720 window the pair is 1.5x and fills
+   it, the bottom screen 480x360 at (60, 360), and a press on its own pixel (160, 220) is window (300, 690). A layout at
+   the frames' own sizes would take the top screen at its 800x480 frame, scale the 800x720 pair to 0.75 and centre its
+   600x540, the bottom screen 240x180 at (180, 450): the press would be below its 630 edge and miss */
+static void scaled_layout(SnxCtrMemory* m) {
+    if (!snx_ctr_vk()->host.window) {
+        printf("%-24s no window to lay the screens out in: skipped\n", "the screens' layout");
+        ++skips;
+        return;
+    }
+    if (!snx_ctr_present_init(m, NULL, false) || !snx_ctr_present_windowed()) {
+        printf("%-24s the presenter has no window to show the screens in: skipped\n", "the screens' layout");
+        ++skips;
+        return;
+    }
+    SDL_Window* window = snx_ctr_vk()->host.window;
+    SDL_WindowID id = SDL_GetWindowID(window);
+    int w = 0, h = 0;
+    if (!SDL_GetWindowSize(window, &w, &h) || w != 600 || h != 720) {
+        printf("%-24s the fixture needs the presenter's 600x720 window, not %dx%d: skipped\n", "the screens' layout", w,
+               h);
+        ++skips;
+        return;
+    }
+    int top = g_settings.ctr_top_resolution;
+    g_settings.ctr_top_resolution = 2;
+    static const unsigned char clear[240 * 400 * 4];
+    Scene* s = scaled_scene("the screens' layout", 240, 400, true);
+    setup_clear(m, s);
+    snx_ctr_phys_write(m, COLOR, clear, sizeof clear);
+    bool ok = record(m, s, &vulkan);
+    /* the top screen from its target at the render scale, the bottom one from memory at the console's */
+    ok = ok && snx_ctr_present_frame(1, SCALED_COPY, 240, 320, SNX_CTR_PIX_RGBA8, 240 * 4, NULL) &&
+         snx_ctr_present_frame(0, COLOR, 240, 400, SNX_CTR_PIX_RGBA8, 240 * 4, NULL);
+    SnxCtrVkScaled scaled = {0};
+    bool at_scale =
+        ok && snx_ctr_vk_target_image(COLOR, 240, 400, SNX_CTR_PIX_RGBA8, 240 * 4, &scaled) && scaled.scale == 2;
+    /* at a 600x720 window the console's pair is 1.5x: the bottom screen 480x360 at (60, 360), its pixel (160, 220)
+       across the window at (300, 690), below the 630 edge of a layout at the frames' own sizes */
+    event_mouse(SDL_EVENT_MOUSE_BUTTON_DOWN, id, 300, 690);
+    SnxCtrInput in;
+    snx_ctr_input_read(&in);
+    event_mouse(SDL_EVENT_MOUSE_BUTTON_UP, id, 300, 690);
+    bool touched = in.touch && in.touch_x == 160 && in.touch_y == 220;
+    bool pass = at_scale && touched;
+    printf("%-24s the top at %ux; a press on the bottom screen's pixel (160, 220) %s, the touch (%u, %u): %s\n",
+           s->name, scaled.scale, in.touch ? "touched it" : "missed it", in.touch_x, in.touch_y, pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+    free(s);
+    g_settings.ctr_top_resolution = top;
+}
+/* A game alternates a screen's picture between two framebuffers of one size: a display transfer fills one while the
+   other is shown, so the copy the presenter looks up must be the destination's and not the last transfer's. A GPU
+   engine's write over one drops its copy alone, and a transfer into it again keeps its own slot */
+static void scaled_rotating(SnxCtrMemory* m) {
+    static const unsigned char clear[240 * 400 * 4];
+    int top = g_settings.ctr_top_resolution;
+    g_settings.ctr_top_resolution = 2;
+    const uint32_t fb[2] = {SCALED_FB, ROTATE_FB};
+    unsigned pitch = 240 * 2, rows = 400;
+    SnxCtrDisplayTransfer dt = {240 | 400u << 16, 240 | rows << 16, SNX_CTR_PIX_RGB565 << SNX_CTR_XFER_OUT_FORMAT};
+    Scene* s = scaled_scene("rotating destinations", 240, 400, true);
+    snx_ctr_phys_write(m, COLOR, clear, sizeof clear);
+    snx_ctr_phys_write(m, VERTICES, s->vertices, sizeof s->vertices);
+    snx_ctr_phys_write(m, LIST, s->list.w, s->list.n * 4);
+    bool ok = record(m, s, &vulkan);
+    for (unsigned n = 0; n < 2; ++n) ok = ok && snx_ctr_vk_display_transfer(&dt, COLOR, fb[n]) == SNX_CTR_XFER_OK;
+    SnxCtrVkScaled first[2] = {0}, after[2] = {0};
+    bool kept = ok && snx_ctr_vk_target_image(fb[0], 240, rows, SNX_CTR_PIX_RGB565, pitch, &first[0]) &&
+                snx_ctr_vk_target_image(fb[1], 240, rows, SNX_CTR_PIX_RGB565, pitch, &first[1]);
+    /* a fill over the first destination drops its copy, and the second one's stays */
+    ok = ok && snx_ctr_vk_fill(fb[0], 0x1000, 0, SNX_CTR_FILL_32BIT | 1) == SNX_CTR_XFER_OK;
+    bool dropped = ok && !snx_ctr_vk_target_image(fb[0], 240, rows, SNX_CTR_PIX_RGB565, pitch, &after[0]);
+    /* a transfer into it again, while another slot is free: its own copy comes back */
+    ok = ok && snx_ctr_vk_display_transfer(&dt, COLOR, fb[0]) == SNX_CTR_XFER_OK;
+    bool kept_again = ok && snx_ctr_vk_target_image(fb[0], 240, rows, SNX_CTR_PIX_RGB565, pitch, &after[0]) &&
+                      snx_ctr_vk_target_image(fb[1], 240, rows, SNX_CTR_PIX_RGB565, pitch, &after[1]);
+    ok = ok && snx_ctr_vk_finish();
+    bool same_slot = kept_again && after[0].view == first[0].view;
+    bool origins = kept && !first[0].x && !first[0].y && !first[1].x && !first[1].y && kept_again && !after[0].x &&
+                   !after[0].y && !after[1].x && !after[1].y;
+    bool pass = ok && kept && dropped && kept_again && first[0].scale == 2 && first[1].scale == 2 &&
+                after[0].scale == 2 && after[1].scale == 2 && origins && same_slot;
+    printf("%-24s both destinations kept at 2x, one dropped by a fill: %s, both kept after a transfer into it: %s, "
+           "the same image: %s: %s\n",
+           s->name, dropped ? "yes" : "no", kept_again ? "yes" : "no", same_slot ? "yes" : "no", pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+    free(s);
+    g_settings.ctr_top_resolution = top;
 }
 
 /* Shadow maps (Azahar's sw_framebuffer.cpp DrawShadowMapPixel and sw_rasterizer.cpp TextureColor): the colour buffer
@@ -1112,8 +1496,7 @@ static void all_scenes(SnxCtrMemory* m) {
     {
         Scene* s = scene("indexed 16-bit", 0, 0xff);
         triangles(s, 8);
-        uint16_t* idx = (uint16_t*)s->indices;
-        for (unsigned i = 0; i < 30; ++i) idx[i] = (uint16_t)(next() % s->vertex_count);
+        for (unsigned i = 0; i < 30; ++i) snx_st_le16(s->indices + i * 2, (uint16_t)(next() % s->vertex_count));
         put(&s->list, 0x227, (INDICES - VERTICES) | 1u << 31);
         put(&s->list, 0x228, 30);
         put(&s->list, SNX_PICA_TRIGGER_DRAW_INDEXED, 1);
@@ -1261,6 +1644,7 @@ static void all_scenes(SnxCtrMemory* m) {
     draw_after_index_copy(m);
     index_count_past_ram(m);
     shadows(m);
+    draw_after_submit(m);
 }
 
 typedef struct {
@@ -1271,9 +1655,15 @@ typedef struct {
 static const Mode scenes = {NULL, "the scenes", all_scenes};
 /* the validation runs record only the commands under test */
 static const Mode modes[] = {{"--present", "the presented screens", screens},
+                             {"--scaled-present", "the frames shown from scaled targets", scaled_present},
+                             {"--scaled-transfer", "the scaled targets' transfers", scaled_transfer},
+                             {"--scaled-rotating", "the rotating destinations", scaled_rotating},
+                             {"--scaled-verify", "a destination whose bytes the guest changed", scaled_verify},
+                             {"--scaled-layout", "the screens' layout at different render scales", scaled_layout},
                              {"--after-draw", "the commands after a draw", presented_after_draw},
                              {"--texture-after-draw", "the textures after a draw", texture_after_draw},
                              {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy},
+                             {"--draw-after-submit", "a draw after a submission", draw_after_submit},
                              {"--async", "the draws with async_pipelines", async_pipelines},
                              {"--pipeline-cache", "the pipeline cache kept between runs", pipeline_cache},
                              {"--shadow", "the shadow maps", shadows}};
@@ -1304,7 +1694,7 @@ int main(int argc, char** argv) {
     SnxCtrMemory* m = snx_ctr_memory_new(g_model);
     char why[256];
     if (!m) return 1;
-    if (!snx_ctr_vk_init(m, why, sizeof why)) {
+    if (!snx_ctr_vk_init(m, false, why, sizeof why)) {
         printf("no Vulkan device (%s): GPU draw checks skipped\n", why);
         snx_ctr_memory_free(m);
         return 77;
@@ -1318,5 +1708,5 @@ int main(int argc, char** argv) {
     snx_ctr_vk_free();
     snx_ctr_memory_free(m);
     printf("3ds vk draw: %s %s the CPU reference\n", mode->what, failures ? "differ from" : "agree with");
-    return failures != 0;
+    return failures != 0 ? 1 : skips != 0 ? 77 : 0;
 }

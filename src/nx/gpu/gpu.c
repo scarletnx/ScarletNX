@@ -104,12 +104,14 @@ void gmem_write_raw(u64 gva, const void* src, u64 size) { copy_runs(gva, NULL, (
 /* whether anything the renderer holds may cover [gva, gva + size): one lookup where each hook below makes its own */
 static int mem_pending(u64 gva, u64 size) { return !g_renderer->mem_pending || g_renderer->mem_pending(gva, size); }
 void gmem_need(u64 gva, u64 size) {
-    if ((__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) || g_cs_any || g_gfx_any || g_gfx_img_any || g_uma_any) &&
+    if ((__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) || g_cs_any || g_gfx_any || g_gfx_img_any || g_uma_any ||
+         g_mir_any) &&
         !mem_pending(gva, size))
         return;
     if (!size) return;
     if (g_cs_any && g_renderer->cs_mem_need) g_renderer->cs_mem_need(gva, size);
-    if ((g_gfx_any || g_gfx_img_any || g_uma_any) && g_renderer->gfx_mem_need) g_renderer->gfx_mem_need(gva, size);
+    if ((g_gfx_any || g_gfx_img_any || g_uma_any || g_mir_any) && g_renderer->gfx_mem_need)
+        g_renderer->gfx_mem_need(gva, size);
     if (__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) && g_renderer->release_need)
         g_renderer->release_need(gva, size);
 }
@@ -121,7 +123,8 @@ void gmem_before_write(u64 gva, u64 size) {
 int gmem_read(u64 gva, void* dst, u64 size) {
     if (gq_forward(gva, dst, size)) return 0; /* the front end's own write, not yet in memory */
     gq_read_wait(gva, size); /* the front end's writes queued over it */
-    if ((__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) || g_cs_any || g_gfx_any || g_gfx_img_any || g_uma_any) &&
+    if ((__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) || g_cs_any || g_gfx_any || g_gfx_img_any || g_uma_any ||
+         g_mir_any) &&
         !mem_pending(gva, size))
         return copy_runs(gva, (u8*)dst, NULL, size) ? 0 : -1;
     /* a queued release's payload is known: the stream reads it without waiting for the work before it, as the console's
@@ -132,7 +135,7 @@ int gmem_read(u64 gva, void* dst, u64 size) {
         if (r > 0) return 0;
         if (r < 0) g_renderer->release_need(gva, size);
         if (g_cs_any) g_renderer->cs_mem_need(gva, size);
-        if (g_gfx_any || g_gfx_img_any || g_uma_any) g_renderer->gfx_mem_need(gva, size);
+        if (g_gfx_any || g_gfx_img_any || g_uma_any || g_mir_any) g_renderer->gfx_mem_need(gva, size);
         gmem_read_raw(gva, dst, size);
         return 0;
     }
@@ -189,7 +192,7 @@ u32 gmem_r32(u64 gva) {
        result, over any guest memory, take the general path below, and so does a word on a host page the GPU owns
        bytes of: the page is trapped, and the caller may hold the renderer's lock, which its landing needs */
     u64 cpu = 0, owners = 0;
-    if (!g_cs_any && !g_gfx_any && !g_gfx_img_any && !g_uma_any &&
+    if (!g_cs_any && !g_gfx_any && !g_gfx_img_any && !g_uma_any && !g_mir_any &&
         !__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) && gmmu_run(gva, 4, &cpu) == 4 &&
         !own_hash(cpu, 4, &owners))
         return snx_ld_le32(GP(cpu));
@@ -199,7 +202,8 @@ u32 gmem_r32(u64 gva) {
 }
 const u8* gmem_cpu_bytes(u64 gva, u64 size) {
     u64 cpu = 0, owners = 0;
-    if ((__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) || g_cs_any || g_gfx_any || g_gfx_img_any || g_uma_any) &&
+    if ((__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) || g_cs_any || g_gfx_any || g_gfx_img_any || g_uma_any ||
+         g_mir_any) &&
         mem_pending(gva, size))
         return NULL;
     if (!size || gmmu_run(gva, size, &cpu) != size || own_hash(cpu, size, &owners)) return NULL;

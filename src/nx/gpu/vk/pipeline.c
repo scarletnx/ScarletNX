@@ -129,6 +129,8 @@ static struct {
     /* The caches live in shader_cache/ of the game's cache folder (g_cachedir), wherever the runtime was started
        from */
     char cache_dir[1100], pcache_path[1200];
+    /* the BC7 cache's file while it is still to open (vk_pipeline_bc7_cache), empty once opened */
+    char bc7_cache[1200];
     char driver_tag[SNX_VK_DRIVER_TAG]; /* the driver's, whose files of the cache these are (snx_vk_driver_tag) */
     int pcache_dirty;        /* pipelines made since the cache was last written (atomic: it is saved outside vk_lock) */
     u64 pcache_used;         /* plat_ns when a pipeline last went into the cache (atomic) */
@@ -267,6 +269,11 @@ static struct {
                 .pj_lock = PMUTEX_INIT,
                 .plib = {.lock = PMUTEX_INIT}};
 static void pcache_note(void);
+void vk_pipeline_bc7_cache(void) {
+    if (!g_pipeline.bc7_cache[0]) return;
+    vk_astc_cache_open(g_pipeline.bc7_cache);
+    g_pipeline.bc7_cache[0] = 0;
+}
 #if defined(SNX_TRACY)
 /* the stages' names, for the shader translate zone's text */
 static const char* const vk_tracy_stage[] = {"vert", "tess ctrl", "tess eval", "geom", "frag", "comp", "task", "mesh"};
@@ -748,13 +755,11 @@ void vk_pipeline_init(void) {
     if (!g_vk_playout) fatal("vulkan: cannot create shader pipeline layout");
     snprintf(g_pipeline.cache_dir, sizeof g_pipeline.cache_dir, "%sshader_cache", g_cachedir);
     plat_mkdir(g_pipeline.cache_dir);
-    /* the BC7 blocks of earlier ASTC encodes, where ASTC textures are held as BC7 (astc.c) */
-    if (vk_astc_bc7()) {
-        char bc7[1200];
-        snprintf(bc7, sizeof bc7, "%s/%s.vkbc7", g_pipeline.cache_dir, g_exename);
-        snx_path_native(bc7);
-        vk_astc_cache_open(bc7);
-    }
+    /* the BC7 blocks of earlier ASTC encodes, where ASTC textures are held as BC7 (astc.c): opened now, or by
+       astc_mode's Auto once it holds them as BC7 (vk_astc_auto_present) */
+    snprintf(g_pipeline.bc7_cache, sizeof g_pipeline.bc7_cache, "%s/%s.vkbc7", g_pipeline.cache_dir, g_exename);
+    snx_path_native(g_pipeline.bc7_cache);
+    if (vk_astc_bc7()) vk_pipeline_bc7_cache();
     /* each driver's files apart: a game run with the system's driver, then a package's (gpu_driver), then the
        system's again keeps the first one's */
     snx_vk_driver_tag(g_pipeline.driver_tag, sizeof g_pipeline.driver_tag, g_vk.driver_id, g_vk.props.vendorID,
@@ -931,6 +936,7 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[SH_KEY_WORDS],
         si->clip_enable = mask[6];
         if (stage == ST_GS) {
             memcpy(si->gp_skip_mask, mask + 12, sizeof si->gp_skip_mask);
+            si->rt_sint_mask = mask[5]; /* the generics the stage before writes */
         } else {
             si->tex_rect_mask = mask[12] | (u64)mask[13] << 32;
             shader_query_hint_unpack(mask + 14, si->tex_query_hint);
@@ -1652,6 +1658,13 @@ static void* pipe_tail(PipeInfo* o, int robust) {
     }
     return &o->fi;
 }
+/* a pipeline made alone where the driver needs it (snx_vk_compile_serial) */
+#define COMPILED(call)                                                                                                 \
+    do {                                                                                                               \
+        int entered_ = snx_vk_compile_enter();                                                                         \
+        call;                                                                                                          \
+        snx_vk_compile_leave(entered_);                                                                                \
+    } while (0)
 static VkPipeline pipe_create(const Pipe* e, int* hit) {
     PipeInfo o;
     pipe_info(&e->k, e->fs, &o);
@@ -1690,7 +1703,7 @@ static VkPipeline pipe_create(const Pipe* e, int* hit) {
         gi.layout = VK_NULL_HANDLE;
     }
     VkPipeline p = VK_NULL_HANDLE;
-    VK_OK(vkCreateGraphicsPipelines(g_vk.dev, g_pipeline.pcache, 1, &gi, NULL, &p));
+    COMPILED(VK_OK(vkCreateGraphicsPipelines(g_vk.dev, g_pipeline.pcache, 1, &gi, NULL, &p)));
     *hit = (o.made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     if (*hit) __atomic_add_fetch(e->prewarm ? &g_pipeline.pf.hits : &g_pipeline.pipe_hits, 1, __ATOMIC_RELAXED);
     return p;
@@ -1865,7 +1878,7 @@ static VkPipeline lib_create(const PipeLib* l, int* hit) {
         break;
     }
     VkPipeline p = VK_NULL_HANDLE;
-    VK_OK(vkCreateGraphicsPipelines(g_vk.dev, cache, 1, &gi, NULL, &p));
+    COMPILED(VK_OK(vkCreateGraphicsPipelines(g_vk.dev, cache, 1, &gi, NULL, &p)));
     *hit = (o.made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     return p;
 }
@@ -1935,7 +1948,7 @@ static VkPipeline gpl_link(const Pipe* e, int lto, int* hit) {
                  (lto ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0),
         .layout = e->layout};
     VkPipeline p = VK_NULL_HANDLE;
-    VK_OK(vkCreateGraphicsPipelines(g_vk.dev, lto ? g_pipeline.pcache : VK_NULL_HANDLE, 1, &gi, NULL, &p));
+    COMPILED(VK_OK(vkCreateGraphicsPipelines(g_vk.dev, lto ? g_pipeline.pcache : VK_NULL_HANDLE, 1, &gi, NULL, &p)));
     *hit = (made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     return p;
 }

@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
     SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
     char why[512];
     if (!m) return 1;
-    if (!snx_ctr_vk_init(m, why, sizeof why)) {
+    if (!snx_ctr_vk_init(m, false, why, sizeof why)) {
         printf("no Vulkan device (%s): pipeline cache checks skipped\n", why);
         snx_ctr_memory_free(m);
         return 77;
@@ -65,6 +65,12 @@ int main(int argc, char** argv) {
     /* a pipeline made with it, written, and read back whole */
     SnxCtrVkCompute fill = {0};
     CHECK(snx_ctr_vk_compute(snx_ctr_fill_spv, snx_ctr_fill_spv_size / 4, 1, 0, 16, &fill));
+    if (!fill.layout) {
+        snx_ctr_vk_free();
+        snx_ctr_memory_free(m);
+        free(path);
+        return 1;
+    }
     VkPipeline made = VK_NULL_HANDLE;
     CHECK(snx_vk_compute_pipeline(dev, cache, fill.layout, snx_ctr_fill_spv, snx_ctr_fill_spv_size, &made) ==
           VK_SUCCESS);

@@ -2090,7 +2090,8 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
         }
         /* geometry, else tessellation evaluation, else control, else vertex: the driver's order */
         stage = ounce_section(control) ? stage11(data, control) : gr32(control + 0x714);
-        if (gr32(control + 8) >= 7 && GP(control)[0x7c0]) subroutine_mask |= 1u << stage;
+        /* not an Ounce section's, which is 0xd8 bytes: the byte was another section's, or past the mapping's end */
+        if (!ounce_section(control) && gr32(control + 8) >= 7 && GP(control)[0x7c0]) subroutine_mask |= 1u << stage;
         if (stage == NVN_SHADER_STAGE_TESS_CONTROL) tess_controls[0] = control;
         if (stage == NVN_SHADER_STAGE_TESS_EVALUATION) tess_controls[1] = control;
         if (stage == NVN_SHADER_STAGE_FRAGMENT && !ounce_section(control)) fragment = control;

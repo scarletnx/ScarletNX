@@ -25,6 +25,7 @@
 #include "support/bcn.h"
 #include "bc7_cpu.h"
 #include "astc_bc7_cpu.h"
+#include "astc_bcn_cpu.h"
 #include "bcn_etc2_cpu.h"
 #include "blit_convert_cpu.h"
 #include "nx/runtime/platform/log.h"
@@ -41,6 +42,7 @@ u64 g_vk_cs_wait_value;
 static unsigned errors;
 /* uma.c isn't here: no guest memory read in place for cmd.c's draws to settle */
 void vk_uma_settle(u64 ended) { (void)ended; }
+int vk_own_make_room(void) { return 0; } /* no kept results here: the device ring finds no room in their pool */
 /* Synthetic upload sources have no guest GPU mappings, ownership or pending in-place writes. */
 OwnState g_own;
 int vk_uma_pending(u64 gva, u64 size) { (void)gva; (void)size; return 0; }
@@ -236,6 +238,7 @@ static void init(void) {
     while (family < n && !(families[family].queueFlags & VK_QUEUE_COMPUTE_BIT)) family++;
     if (family == n) fatal("no compute queue\n");
     int sparse_queue = (families[family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) != 0;
+    g_vk.gfx_timestamp_bits = families[family].timestampValidBits; /* the encoder's timing, as device.c sets it */
     free(families);
     VkPhysicalDeviceFeatures have;
     vkGetPhysicalDeviceFeatures(g_vk.phys, &have);
@@ -504,14 +507,22 @@ static void both_modes(u32 bw, u32 bh) {
    compares each level's blocks with the CPU decoder's texels encoded by the same encoder run on the CPU
    (tests/glsl/bc7_cpu.cpp): the strips that start on whole 4x4 blocks, the second dispatch and the copy of the
    blocks, byte for byte */
-static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layers, u32 levels) {
-    const VkFormat format = srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
+/* ASTC uploaded straight into blocks of kind (7 BC7, else astc_bcn.comp's 1 BC1, 4 BC4 or 5 BC5) on the GPU, the
+   bytes held to the same shader run on the CPU over the same blocks */
+static void run_blocks(u32 kind, u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layers, u32 levels) {
+    const VkFormat format = kind == 1   ? (srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK)
+                            : kind == 4 ? VK_FORMAT_BC4_UNORM_BLOCK
+                            : kind == 5 ? VK_FORMAT_BC5_UNORM_BLOCK
+                            : srgb      ? VK_FORMAT_BC7_SRGB_BLOCK
+                                        : VK_FORMAT_BC7_UNORM_BLOCK;
+    const char* name = kind == 1 ? "BC1" : kind == 4 ? "BC4" : kind == 5 ? "BC5" : "BC7";
+    const u32 block_bytes = kind == 1 || kind == 4 ? 8 : 16;
     VkImageFormatProperties props;
     if (!g_vk.feat.textureCompressionBC ||
         vkGetPhysicalDeviceImageFormatProperties(
             g_vk.phys, format, depth > 1 ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 0, &props) != VK_SUCCESS) {
-        printf("SKIP ASTC as BC7 %ux%u image=%ux%ux%u: the device has no such BC7 image\n", bw, bh, w, h, depth);
+        printf("SKIP ASTC as %s %ux%u image=%ux%ux%u: the device has no such image\n", name, bw, bh, w, h, depth);
         return;
     }
     Surf t = {
@@ -525,7 +536,7 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
-    if (!vk_image_create(&ii, &t.img, &t.mem)) fatal("cannot create a %ux%ux%u BC7 image\n", w, h, depth);
+    if (!vk_image_create(&ii, &t.img, &t.mem)) fatal("cannot create a %ux%ux%u %s image\n", w, h, depth, name);
     barrier(t.img, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
             VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     u8** blocks = calloc((size_t)layers * levels, sizeof *blocks);
@@ -536,7 +547,7 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
             Level lv = {b, (lw + bw - 1) / bw, (lh + bh - 1) / bh, NULL, 2, ld > 1};
             if (!(g_batch_layers && layers > 1 && depth == 1) &&
                 !vk_astc_upload(vk_cmd(), &t, 0, 0, lw, lh, ld, l, layer, level_rows, &lv, NULL))
-                fatal("BC7 upload failed\n");
+                fatal("%s upload failed\n", name);
         }
     if (g_batch_layers && layers > 1 && depth == 1) upload_layers(&t, blocks, w, h, layers, levels, bw, bh);
     barrier(t.img, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -545,7 +556,7 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
         for (u32 l = 0; l < levels; l++) {
             u32 lw = w >> l ? w >> l : 1, lh = h >> l ? h >> l : 1, ld = depth >> l ? depth >> l : 1;
             u32 nx = (lw + bw - 1) / bw, ny = (lh + bh - 1) / bh;
-            u64 size = (u64)((lw + 3) / 4) * ((lh + 3) / 4) * 16 * ld;
+            u64 size = (u64)((lw + 3) / 4) * ((lh + 3) / 4) * block_bytes * ld;
             VkBuffer readback;
             u8* actual = vk_readback_buffer(size, &readback);
             if (!actual) fatal("no readback buffer of %llu bytes\n", (unsigned long long)size);
@@ -558,22 +569,28 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
             u8* expected = malloc(size);
             (void)nx, (void)ny;
             /* the level's build of the shader, run on the CPU over the same blocks */
-            astc_bc7_cpu(vk_bc7_build(lw, lh, ld), blocks[layer * levels + l], lw, lh, ld, bw, bh, srgb, expected);
+            if (kind == 7)
+                astc_bc7_cpu(vk_bc7_build(lw, lh, ld), blocks[layer * levels + l], lw, lh, ld, bw, bh, srgb, expected);
+            else
+                astc_bcn_cpu(kind, blocks[layer * levels + l], lw, lh, ld, bw, bh, srgb, expected);
             for (u64 i = 0; i < size; i++)
                 if (actual[i] != expected[i])
-                    fatal("ASTC as BC7 %ux%u srgb=%d %ux%ux%u level %u layer %u: byte %llu (block %llu) expected %u "
+                    fatal("ASTC as %s %ux%u srgb=%d %ux%ux%u level %u layer %u: byte %llu (block %llu) expected %u "
                           "got %u\n",
-                          bw, bh, srgb, lw, lh, ld, l, layer, (unsigned long long)i, (unsigned long long)(i / 16),
-                          expected[i], actual[i]);
+                          name, bw, bh, srgb, lw, lh, ld, l, layer, (unsigned long long)i,
+                          (unsigned long long)(i / block_bytes), expected[i], actual[i]);
             free(texels);
             free(expected);
             free(blocks[layer * levels + l]);
         }
     free(blocks);
     vk_image_destroy(t.img, t.mem);
-    printf("PASS ASTC as BC7 %ux%u srgb=%d image=%ux%ux%u layers=%u mips=%u\n", bw, bh, srgb, w, h, depth, layers,
+    printf("PASS ASTC as %s %ux%u srgb=%d image=%ux%ux%u layers=%u mips=%u\n", name, bw, bh, srgb, w, h, depth, layers,
            levels);
     fflush(stdout);
+}
+static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layers, u32 levels) {
+    run_blocks(7, bw, bh, srgb, w, h, depth, layers, levels);
 }
 
 typedef struct {
@@ -789,11 +806,15 @@ static u8* bench_blocks(BenchSource* src, u32 w, u32 h) {
     return b;
 }
 static void bench(u32 w, u32 h, int runs, BenchSource src) {
-    const VkFormat formats[2] = {VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_BC7_SRGB_BLOCK};
+    /* RGBA8 and BC7, then BC1, BC4 and BC5, which a texture whose blocks hold no more takes (texture.c), on the same
+       blocks: the time is the decode's and the encoder's whatever the blocks hold */
+    const VkFormat formats[5] = {VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_BC7_SRGB_BLOCK, VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
+                                 VK_FORMAT_BC4_UNORM_BLOCK, VK_FORMAT_BC5_UNORM_BLOCK};
+    static const char* const names[5] = {"RGBA8", "BC7", "BC1", "BC4", "BC5"};
     u8* b = bench_blocks(&src, w, h);
-    for (int fi = 0; fi < 2; fi++) {
+    for (int fi = 0; fi < 5; fi++) {
         if (fi && !g_vk.feat.textureCompressionBC) {
-            puts("BENCH BC7: the device samples no BCn");
+            printf("BENCH %s: the device samples no BCn\n", names[fi]);
             continue;
         }
         Surf t = {.w = w,
@@ -815,12 +836,11 @@ static void bench(u32 w, u32 h, int runs, BenchSource src) {
         if (t.mem) {
             DevMemInfo allocation;
             vk_devmem_info(t.mem, &allocation);
-            printf("BENCH memory %s %ux%u: %llu bytes\n", fi ? "BC7" : "RGBA8", w, h,
-                   (unsigned long long)allocation.size);
+            printf("BENCH memory %s %ux%u: %llu bytes\n", names[fi], w, h, (unsigned long long)allocation.size);
         } else {
             VkMemoryRequirements requirements;
             vkGetImageMemoryRequirements(g_vk.dev, t.img, &requirements);
-            printf("BENCH memory %s %ux%u: %llu bytes required across pieces\n", fi ? "BC7" : "RGBA8", w, h,
+            printf("BENCH memory %s %ux%u: %llu bytes required across pieces\n", names[fi], w, h,
                    (unsigned long long)requirements.size);
         }
         barrier(t.img, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -834,9 +854,9 @@ static void bench(u32 w, u32 h, int runs, BenchSource src) {
                 fatal("bench upload failed\n");
             vk_finish();
             double s = (plat_ns() - t0) / 1e9;
-            printf("BENCH ASTC %ux%u as %s %ux%u (BC7 build %u): %.1f ms, %.0f Mtexels/s, %.2f M BC7 blocks/s, %llu "
+            printf("BENCH ASTC %ux%u as %s %ux%u (BC7 build %u): %.1f ms, %.0f Mtexels/s, %.2f M 4x4 blocks/s, %llu "
                    "internal pipelines (%.1f ms)\n",
-                   src.bw, src.bh, fi ? "BC7" : "RGBA8", w, h, vk_bc7_build(w, h, 1), s * 1e3, (double)w * h / s / 1e6,
+                   src.bw, src.bh, names[fi], w, h, vk_bc7_build(w, h, 1), s * 1e3, (double)w * h / s / 1e6,
                    (double)((w + 3) / 4) * ((h + 3) / 4) / s / 1e6,
                    (unsigned long long)(g_texture_pipelines.count - count),
                    (double)(g_texture_pipelines.ns - pipeline_ns) / 1e6);
@@ -1178,10 +1198,87 @@ out:
 }
 static void background_cases(void) {
     g_vk_astc_hit_ns = ~0ull; /* the test's frame never ends, so its hits' time adds up: unbounded but where 0 */
+    vk_astc_quick_measure(0); /* the levels sit just past the setting's megatexel, whatever this GPU's speed */
     static const CacheCase cases[] = {
         {4, 4, 0, 1030, 1030, 1, 1}, {6, 6, 1, 1540, 700, 1, 1}, {4, 4, 1, 260, 260, 1, 16}};
     for (u32 i = 0; i < sizeof cases / sizeof cases[0]; i++)
         background_case(&cases[i]);
+    vk_astc_quick_measure(1);
+}
+
+/* The size from which a level held as BC7 at load is very large follows the encoder's time here (astc_quick_mtexels,
+   gpu/texture/astc_bc.h snx_astc_quick_texels). A 1536x768 level (1.125 megatexels) with the quick encode off (0)
+   takes the fast build, one transcode, timed between two timestamps where the queue writes them: its texels go into
+   the sums. With 2 megatexels the setting's start, another takes the fast build at once while the setting's size
+   holds (vk_astc_quick_measure(0)), and the quick build once the times say the GPU is twice as slow as the Radeon 890M
+   the setting stands for (50 ns a texel over 2^50 texels, past all the GPU's own): the size is a megatexel then. Its
+   quick strip and its background's pieces, each under a megatexel, add nothing to the sums */
+static void quick_timed_case(void) {
+    static const CacheCase c = {4, 4, 0, 1536, 768, 1, 1};
+    u8* blocks = blocks_new(c.w, c.h, 1, c.bw, c.bh);
+    u64 ns0, texels0, ns, texels, took;
+    VkAstcBackground b0, b;
+    remove(CACHE_PATH);
+    vk_astc_cache_open(CACHE_PATH);
+    g_settings.astc_quick_mtexels = 0;
+    g_settings.astc_background = 1;
+    vk_astc_quick_texels(&ns0, &texels0);
+    u8* got = cache_upload(&c, blocks, &took, 1);
+    if (!got) {
+        printf("SKIP very large levels by the time measured: the device has no such BC7 image\n");
+        goto out;
+    }
+    free(got);
+    vk_astc_quick_texels(&ns, &texels);
+    /* one transcode for the level where its RGBA8 measure fits the encoder's scratch (astc.c's astc_upload); under a
+       smaller allocation cap (astc_vulkan_pieces' 4 MB) it goes in strips each under a megatexel, which go untimed */
+    const int one_strip = (u64)c.w * c.h * 4 <= vk_bc7_strip_blocks() * 16;
+    const u64 want = g_vk.gfx_timestamp_bits && one_strip ? (u64)c.w * c.h : 0;
+    if (texels - texels0 != want || (want && ns <= ns0))
+        fatal("very large levels: a %ux%u level's fast build timed over %llu texels in %llu ns\n", c.w, c.h,
+              (unsigned long long)(texels - texels0), (unsigned long long)(ns - ns0));
+    printf("very large levels: a %ux%u level's fast build, %s, took %.2f ms of the GPU, %.2f ns a texel\n", c.w, c.h,
+           one_strip ? "one transcode" : "in strips under a megatexel, untimed", (double)(ns - ns0) / 1e6,
+           texels > texels0 ? (double)(ns - ns0) / (double)(texels - texels0) : 0.0);
+    g_settings.astc_quick_mtexels = 2;
+    vk_astc_quick_measure(0);
+    blocks[5] ^= 0x40; /* another level each time: no hit of the one before */
+    vk_astc_background_stats(&b0);
+    free(cache_upload(&c, blocks, &took, 1));
+    vk_astc_background_stats(&b);
+    if (b.quick != b0.quick)
+        fatal("very large levels: a %ux%u level under the setting's 2 megatexels was encoded quickly\n", c.w, c.h);
+    vk_astc_quick_measure(1);
+    vk_astc_quick_timed(50ull << 50, 1ull << 50);
+    const u64 size = vk_astc_quick_texels(&ns, &texels);
+    if (size != snx_astc_quick_texels(2, ns, texels) || size > (1ull << 20) + (1ull << 10) ||
+        size < (1ull << 20) - (1ull << 10))
+        fatal("very large levels: %llu texels at %llu ns over %llu texels, not about a megatexel\n",
+              (unsigned long long)size, (unsigned long long)ns, (unsigned long long)texels);
+    blocks[7] ^= 0x10;
+    vk_astc_background_stats(&b0);
+    vk_astc_quick_texels(&ns0, &texels0);
+    free(cache_upload(&c, blocks, &took, 1));
+    vk_astc_background_stats(&b);
+    vk_astc_quick_texels(&ns, &texels);
+    if (b.quick != b0.quick + 1 || b.made != b0.made + 1)
+        fatal("very large levels: the %ux%u level past the %llu texels measured was %llu quick, %llu to the "
+              "background\n",
+              c.w, c.h, (unsigned long long)size, (unsigned long long)(b.quick - b0.quick),
+              (unsigned long long)(b.made - b0.made));
+    if (texels != texels0)
+        fatal("very large levels: the quick build and the background's pieces of a %ux%u level were timed over %llu "
+              "texels, none of them the fast build of a megatexel\n",
+              c.w, c.h, (unsigned long long)(texels - texels0));
+    printf("PASS very large levels by the time measured: a %ux%u level the fast build at 2 megatexels as set, the "
+           "quick build at the %.2f megatexels the times give\n",
+           c.w, c.h, (double)size / (1 << 20));
+out:
+    g_settings.astc_quick_mtexels = 0;
+    g_settings.astc_background = 0;
+    vk_bc7_cache_close();
+    remove(CACHE_PATH);
+    free(blocks);
 }
 
 /* --bench: the BC7 cache's costs for one w x h level of random 8x8 blocks: an encode with its blocks read back and
@@ -2043,9 +2140,23 @@ int main(int argc, char** argv) {
     run_bc7(6, 6, 0, 17, 13, 1, 6, 5);
     run_bc7(5, 5, 1, 97, 61, 1, 4, 2);
     run_bc7(8, 8, 0, 96, 96, 1, 144, 3);
+    run_blocks(4, 6, 6, 0, 17, 13, 1, 6, 5);
+    run_blocks(5, 5, 5, 0, 97, 61, 1, 4, 2);
     g_batch_layers = 0;
+    /* ASTC straight into BC1, BC4 and BC5 (astc_bcn.comp, for the textures whose blocks hold no more), the same
+       strips as BC7's: footprints that step 4, 2 and 1 block rows, sizes off both blocks, mips and layers, sRGB BC1,
+       and many strips (more under ctest's --vk_max_allocation_mb=4) */
+    for (u32 kind = 1; kind <= 5; kind += kind == 1 ? 3 : 1) {
+        run_blocks(kind, 4, 4, 0, 97, 61, 1, 1, 1);
+        run_blocks(kind, 5, 5, kind == 1, 97, 61, 1, 1, 1);
+        run_blocks(kind, 6, 6, 0, 17, 13, 1, 6, 5);
+        run_blocks(kind, 8, 5, kind == 1, 17, 13, 1, 6, 5);
+        run_blocks(kind, 12, 12, 0, 131, 77, 1, 1, 3);
+        run_blocks(kind, 8, 8, kind == 1, 2051, 1101, 1, 1, 1);
+    }
     cache_cases();
     background_cases();
+    quick_timed_case();
     /* a region uploaded again: inside the level, at its right and bottom edges, as BC7 and as RGBA8, footprints that
        step 1, 2 and 4 blocks to a 4x4 BC7 block, and a BC7 region off those blocks */
     run_region(4, 4, 1, 97, 61, 2, 1, 3, 2);

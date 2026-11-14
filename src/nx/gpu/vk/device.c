@@ -92,6 +92,8 @@ static void oom_report(VkResult r) {
             (unsigned long long)(b[h].allocated_bytes >> 20),
             (unsigned long long)(mp->memoryHeaps[h].size >> 20));
     LOG("vulkan: out of memory with %u descriptor pools\n", vk_desc_pools());
+    vk_ledger_owners(); /* who holds it */
+    vk_own_log();       /* and what of the kept results is in use, what waits freed in the pool */
 }
 
 /* Each heap and the descriptor pools in one part of a line, for a low memory warning from a thread that never calls
@@ -469,36 +471,95 @@ static void mesh_choose(int has_ext, const VkPhysicalDeviceMeshShaderFeaturesEXT
         LOG("vulkan: mesh draws use VK_EXT_mesh_shader%s\n",
             g_vk.has_task ? " with task shaders" : ", without task shaders");
 }
-/* How the ASTC textures the GPU decodes are held, where it samples BCn but not ASTC (astc_mode, gpu/texture/astc_bc.h):
-   Auto takes BC7 or Exact by the budget of the heap images go to as the device starts, which the line says with its
-   numbers. vk_mem_use's budget is the one the caches keep within: the driver's, or vk_budget_mb where that is lower */
+/* How the ASTC textures the GPU decodes are held, where it samples BCn but not ASTC (astc_mode, gpu/texture/astc_bc.h).
+   Auto, for a program that is not an Ounce one, follows the room of the heap images go to as the game runs
+   (vk_astc_auto_trimmed, vk_astc_auto_present); its line says the budget and the use it starts from. vk_mem_use's
+   budget is the one the caches keep within: the driver's, or vk_budget_mb where that is lower. Without
+   VK_EXT_memory_budget both numbers are devmem.c's own, the blocks it took for the use and 80% of the heap's size for
+   the budget, which see nothing other programs take: Auto follows those, and its line says so */
+static const char g_astc_exact[] = "decoded to RGBA8, exact, in four times BC7's memory",
+                  g_astc_bc7[] = "decoded to RGBA8 at once and encoded again as BC7 between frames, a quarter of "
+                                 "RGBA8's memory";
 static void astc_choose(void) {
-    static const char exact[] = "decoded to RGBA8, exact, in four times BC7's memory",
-                      bc7[] = "decoded to RGBA8 at once and encoded again as BC7 between frames, a quarter of RGBA8's "
-                              "memory";
     u64 usage = 0, budget = 0;
     if (g_vk.feat.textureCompressionASTC_LDR) return; /* sampled as the game's blocks */
     if (g_settings.astc_mode == 1) {
-        LOG("vulkan: astc_mode=1 (Exact): ASTC textures are %s\n", exact);
+        LOG("vulkan: astc_mode=1 (Exact): ASTC textures are %s\n", g_astc_exact);
         return;
     }
     if (!g_vk.feat.textureCompressionBC) return; /* RGBA8, which vk_blocks_say's line says */
-    vk_mem_use(&usage, &budget);
-    g_vk.astc_auto_bc7 = g_shader_sm86 || snx_astc_auto_bc7(budget);
+    g_vk.astc_auto = (SnxAstcAuto){g_shader_sm86, 0, 0};
     g_vk.astc_at_load = g_settings.astc_mode == 3 || (g_settings.astc_mode == 0 && g_shader_sm86);
     if (g_settings.astc_mode == 0 && g_shader_sm86)
         LOG("vulkan: astc_mode=0 (Auto): an Ounce program: ASTC textures are encoded as BC7 as they load, a quarter of "
             "RGBA8's memory (BC7 at load)\n");
-    else if (g_settings.astc_mode == 0)
-        LOG("vulkan: astc_mode=0 (Auto): heap %d's budget is %llu MB as the device starts, %s %llu MB: ASTC textures "
-            "are %s (%s)\n",
-            vk_mem_heap(), (unsigned long long)(budget >> 20), g_vk.astc_auto_bc7 ? "under" : "at least",
-            SNX_ASTC_EXACT_MB, g_vk.astc_auto_bc7 ? bc7 : exact, g_vk.astc_auto_bc7 ? "BC7" : "Exact");
-    else if (g_settings.astc_mode == 3)
+    else if (g_settings.astc_mode == 0) {
+        vk_mem_use(&usage, &budget);
+        LOG("vulkan: astc_mode=0 (Auto): ASTC textures that load are %s while heap %d has room, and BC7 from the first "
+            "trim of its caches, past %llu of the %llu MB budgeted, until the room under that is more than any "
+            "trim has left: %llu MB in use as the device starts%s\n",
+            g_astc_exact, vk_mem_heap(), (unsigned long long)(vk_mem_trim_start(budget) >> 20),
+            (unsigned long long)(budget >> 20), (unsigned long long)(usage >> 20),
+            g_vk.has_budget ? ""
+                            : "; the driver has no VK_EXT_memory_budget, so these are the renderer's own numbers, "
+                              "its memory blocks for the use and 80% of the heap's size for the budget, blind to what "
+                              "other programs take");
+    } else if (g_settings.astc_mode == 3)
         LOG("vulkan: astc_mode=3 (BC7 at load): ASTC textures are encoded as BC7 as they load, a quarter of RGBA8's "
             "memory\n");
     else
-        LOG("vulkan: astc_mode=2 (BC7): ASTC textures are %s\n", bc7);
+        LOG("vulkan: astc_mode=2 (BC7): ASTC textures are %s\n", g_astc_bc7);
+}
+/* Auto follows the memory here: astc_mode 0, a program that is not an Ounce one, ASTC decoded where BC7 is sampled */
+static int astc_auto_follows(void) {
+    return g_settings.astc_mode == 0 && !g_shader_sm86 && !g_vk.feat.textureCompressionASTC_LDR &&
+           g_vk.feat.textureCompressionBC;
+}
+/* the use and the budget of a switch's line: "U of B MB budgeted in use, R MB free", or past it */
+static void astc_room(char* out, size_t size, u64 usage, u64 budget) {
+    if (usage <= budget)
+        snprintf(out, size, "%llu of %llu MB budgeted in use, %llu MB free", (unsigned long long)(usage >> 20),
+                 (unsigned long long)(budget >> 20), (unsigned long long)((budget - usage) >> 20));
+    else
+        snprintf(out, size, "%llu MB in use, %llu MB past the %llu budgeted", (unsigned long long)(usage >> 20),
+                 (unsigned long long)((usage - budget) >> 20), (unsigned long long)(budget >> 20));
+}
+void vk_astc_auto_trimmed(u64 usage, u64 left, u64 budget, int force) {
+    char room[160];
+    const u64 mark = vk_mem_trim_start(budget);
+    if (!astc_auto_follows() || !snx_astc_auto_trimmed(&g_vk.astc_auto, left, mark)) return;
+    u32 held = 0;
+    u64 held_bytes = 0;
+    vk_tex_later_exact(&held, &held_bytes);
+    snx_astc_auto_converted(&g_vk.astc_auto, held_bytes);
+    astc_room(room, sizeof room, usage, budget);
+    LOG("vulkan: astc_mode=0 (Auto): ASTC textures are BC7 from now on, %s, and the %u held as RGBA8 (%llu MB) whose "
+        "memory is unchanged too, read again at their next use: heap %d has %s, %s the %llu MB where its caches' trim "
+        "starts%s\n",
+        g_astc_bc7, held, (unsigned long long)(held_bytes >> 20), vk_mem_heap(), room, usage > mark ? "past" : "under",
+        (unsigned long long)(mark >> 20), force ? ", and an image found no memory" : "");
+}
+void vk_astc_auto_present(void) {
+    char room[160];
+    u64 usage, budget;
+    if (!astc_auto_follows() || !g_vk.astc_auto.bc7) return;
+    vk_pipeline_bc7_cache();
+    vk_mem_use(&usage, &budget);
+    const u64 mark = vk_mem_trim_start(budget);
+    if (!snx_astc_auto_room(&g_vk.astc_auto, usage, mark)) return;
+    astc_room(room, sizeof room, usage, budget);
+    LOG("vulkan: astc_mode=0 (Auto): ASTC textures that load from now on are Exact again: heap %d has %s, %llu MB "
+        "under the %llu MB where its caches' trim starts, more than the %llu MB the trims of this run left under it "
+        "at most\n",
+        vk_mem_heap(), room, (unsigned long long)((mark - usage) >> 20), (unsigned long long)(mark >> 20),
+        (unsigned long long)(g_vk.astc_auto.band >> 20));
+}
+void vk_astc_auto_say(void) {
+    if (!astc_auto_follows()) return;
+    LOG("vulkan: astc_mode=0 (Auto): ASTC textures that load now are %s, after %llu switches; the trims left at most "
+        "%llu MB under where they start\n",
+        g_vk.astc_auto.bc7 ? "BC7" : "Exact", (unsigned long long)g_vk.astc_auto.switches,
+        (unsigned long long)(g_vk.astc_auto.band >> 20));
 }
 
 /* a line of the extension bans (extension_bans.h) for the log */
@@ -831,6 +892,7 @@ static int create_device(void) {
         g_vk.advanced_blend_caps.available = snx_vk_extensions_has(&e, VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
         g_vk.has_fragment_interlock = snx_vk_extensions_has(&e, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
+        g_vk.has_view_min_lod = snx_vk_extensions_has(&e, VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
         has_shader_clock = snx_vk_extensions_has(&e, VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
         has_descriptor_buffer = snx_vk_extensions_has(&e, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
         has_descriptor_heap = snx_vk_extensions_has(&e, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
@@ -973,6 +1035,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT};
     VkPhysicalDeviceCustomBorderColorFeaturesEXT fbc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
+    VkPhysicalDeviceImageViewMinLodFeaturesEXT fminlod = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT};
     VkPhysicalDeviceTransformFeedbackFeaturesEXT fxfb = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
     VkPhysicalDeviceBlendOperationAdvancedFeaturesEXT qadvanced = {
@@ -1083,6 +1147,7 @@ static int create_device(void) {
                            !core13 || has_eds2 ? &qeds2 : NULL,
                            g_vk.has_divisor ? &fdiv : NULL,
                            g_vk.has_border_color ? &fbc : NULL,
+                           g_vk.has_view_min_lod ? &fminlod : NULL,
                            g_vk.has_xfb ? &fxfb : NULL,
                            g_vk.advanced_blend_caps.available ? &qadvanced : NULL,
                            g_vk.has_fragment_interlock ? &qinterlock : NULL,
@@ -1164,6 +1229,8 @@ static int create_device(void) {
             has_list_restart ? "VK_EXT_primitive_topology_list_restart without its list feature"
                              : "no VK_EXT_primitive_topology_list_restart");
     g_vk.has_barycentric = has_barycentric && qbarycentric.fragmentShaderBarycentric;
+    /* NVIDIA's compiler deadlocked with pipelines made on several threads at once (snx_vk_compile_serial) */
+    snx_vk_compile_serial(p12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY);
     if (p12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
         LOG("vulkan: fragment inputs are the driver's interpolation (NVIDIA's keeps the console's precision)\n");
     else if (g_vk.has_barycentric)
@@ -1291,6 +1358,7 @@ static int create_device(void) {
         g_vk.advanced_blend_caps.all_operations = advanced.advancedBlendAllOperations;
     }
     g_vk.has_border_color = g_vk.has_border_color && fbc.customBorderColors && fbc.customBorderColorWithoutFormat;
+    g_vk.has_view_min_lod = g_vk.has_view_min_lod && fminlod.minLod;
     if (g_vk.has_border_color) { /* how many samplers may have a custom border color: as few as 32 */
         VkPhysicalDeviceCustomBorderColorPropertiesEXT cbp = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT};
@@ -1535,6 +1603,12 @@ static int create_device(void) {
             .customBorderColorWithoutFormat = VK_TRUE};
         chain = &fbc;
         ext[next++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
+    }
+    if (g_vk.has_view_min_lod) {
+        fminlod = (VkPhysicalDeviceImageViewMinLodFeaturesEXT){
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT, .pNext = chain, .minLod = VK_TRUE};
+        chain = &fminlod;
+        ext[next++] = VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME;
     }
     if (g_vk.has_xfb) {
         fxfb = (VkPhysicalDeviceTransformFeedbackFeaturesEXT){
@@ -1851,6 +1925,33 @@ static int create_device(void) {
     /* the renderer's own allocator (devmem.c): its blocks are 64 MiB at most, and no more than the cap */
     if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)) return 0;
     __atomic_store_n(&g_devmem_ready, 1, __ATOMIC_RELEASE);
+    { /* a GPU of 4 GiB or less: memory held back for render targets (devmem.c vk_devmem_reserve) */
+        VkPhysicalDeviceMemoryProperties mp;
+        vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+        u64 most = 0;
+        for (u32 h = 0; h < mp.memoryHeapCount; h++)
+            if ((mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && mp.memoryHeaps[h].size > most)
+                most = mp.memoryHeaps[h].size;
+        /* the memory types a depth target may take */
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .imageType = VK_IMAGE_TYPE_2D,
+                                .format = VK_FORMAT_D32_SFLOAT,
+                                .extent = {64, 64, 1},
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        VkImage probe;
+        if (g_vk.mem_model != VK_MEM_UMA && most <= (4ull << 30) &&
+            vkCreateImage(g_vk.dev, &ii, NULL, &probe) == VK_SUCCESS) {
+            VkMemoryRequirements req;
+            vkGetImageMemoryRequirements(g_vk.dev, probe, &req);
+            vkDestroyImage(g_vk.dev, probe, NULL);
+            vk_devmem_reserve(64ull << 20, req.memoryTypeBits);
+        }
+    }
     if (g_vk.has_descriptor_heaps && !vk_descriptor_heaps_init(&g_vk.descriptor_heap_props)) {
         g_vk.has_descriptor_heaps = 0;
         g_vk.has_descriptor_heap_support = 0;

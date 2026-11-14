@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
     SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
     char why[256];
     if (!m) return 1;
-    if (!snx_ctr_vk_init(m, why, sizeof why)) {
+    if (!snx_ctr_vk_init(m, false, why, sizeof why)) {
         printf("no Vulkan device (%s): shader object checks skipped\n", why);
         snx_ctr_memory_free(m);
         return 77;
@@ -54,6 +54,12 @@ int main(int argc, char** argv) {
     /* the fill shader as a compute shader object, of its set and push constants */
     SnxCtrVkCompute fill = {0};
     CHECK(snx_ctr_vk_compute(snx_ctr_fill_spv, snx_ctr_fill_spv_size / 4, 1, 0, 16, &fill));
+    if (!fill.layout || !fill.set) {
+        snx_ctr_vk_free();
+        snx_ctr_memory_free(m);
+        free(path);
+        return 1;
+    }
     VkPushConstantRange push = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
     VkShaderCreateInfoEXT info = {.sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
                                   .stage = VK_SHADER_STAGE_COMPUTE_BIT,
@@ -96,8 +102,9 @@ int main(int argc, char** argv) {
     snx_vk_shader_binaries_load(&again, path, &loaded);
     size_t again_size = 0;
     const void* kept = snx_vk_shader_binary(&again, key, &again_size);
+    const void* mine = snx_vk_shader_binary(&b, key, &size);
     CHECK(loaded == size && again.count == 1 && kept && again_size == size);
-    CHECK(kept && !memcmp(kept, snx_vk_shader_binary(&b, key, &size), size));
+    CHECK(mine && !memcmp(kept, mine, size));
 
     /* the same shader from the binary: no compile */
     VkShaderEXT second = VK_NULL_HANDLE;
@@ -131,9 +138,10 @@ int main(int argc, char** argv) {
     /* a cut file: none of it taken */
     size_t whole_size = 0;
     unsigned char* whole = snx_read_file(path, &whole_size);
-    CHECK(whole && whole_size == saved);
+    bool cut = whole && whole_size == saved && whole_size > 24;
+    CHECK(cut);
     /* the binary's last bytes gone */
-    CHECK(whole && !snx_write_file(path, whole, whole_size - 24));
+    if (cut) CHECK(!snx_write_file(path, whole, whole_size - 24));
     snx_vk_shader_binaries_init(&foreign, v->shader_binary_uuid, v->shader_binary_version);
     snx_vk_shader_binaries_load(&foreign, path, &loaded);
     CHECK(loaded == 0 && foreign.count == 0);
@@ -142,8 +150,10 @@ int main(int argc, char** argv) {
 
     /* the renderer's own: <folder>/shader_cache, where vk_shaders.<driver tag>.bin goes */
     g_settings.vulkan_pipeline_cache = 1;
-    snx_ctr_vk_pipeline_cache_open(dir);
     char* cache_dir = snx_path_join(dir, "shader_cache");
+    CHECK(cache_dir);
+    if (cache_dir) (void)snx_remove_tree(cache_dir);
+    snx_ctr_vk_pipeline_cache_open(dir);
     CHECK(snx_is_dir(cache_dir));
 
     vkDestroyShaderEXT(dev, first, NULL);

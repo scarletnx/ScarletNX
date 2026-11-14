@@ -10,6 +10,7 @@
 #include "3ds/runtime/internal.h"
 #include "common/utilities/endian.h"
 #include "support/3ds_guest.h"
+#include "support/3ds_stub.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -24,30 +25,6 @@
 static unsigned char code[0x3000];
 static void put(uint32_t address, const uint32_t* words, unsigned count) {
     for (unsigned i = 0; i < count; ++i) snx_st_le32(code + (address - CODE) + 4 * i, words[i]);
-}
-/* A stub of the SDK's shape for a command of only its header with one word out (header in r0's MOV, as imm8 rotated):
-   push {r4, r5, lr}; r5 = the out parameter; r4 = TLS; the header at TLS + 0x80, r4 moved there; the handle from the
-   global the literal names; the SVC; a transport error returns it, else the reply's word 2 goes out and its result
-   back */
-static void stub(uint32_t at, uint32_t mov_header) {
-    const uint32_t words[] = {
-        0xe92d4030u, /* push {r4, r5, lr} */
-        0xe1a05000u, /* mov r5, r0 */
-        0xee1d4f70u, /* mrc p15, 0, r4, c13, c0, 3 */
-        mov_header,  /* mov r0, #header */
-        0xe5a40080u, /* str r0, [r4, #0x80]! */
-        0xe59f001cu, /* ldr r0, [pc, #0x1c]: the literal below */
-        0xe5900000u, /* ldr r0, [r0] */
-        0xef000032u, /* svc 0x32 */
-        0xe2101102u, /* ands r1, r0, #0x80000000 */
-        0x4a000002u, /* bmi to the pop */
-        0xe5940008u, /* ldr r0, [r4, #8] */
-        0xe5850000u, /* str r0, [r5] */
-        0xe5940004u, /* ldr r0, [r4, #4] */
-        0xe8bd8030u, /* pop {r4, r5, pc} */
-        HANDLE_GLOBAL,      /* the handle's global */
-    };
-    put(at, words, sizeof words / sizeof *words);
 }
 /* the SDK's GX command enqueue (aot/hook.c's), its calls to getter and trigger */
 static const uint32_t enqueue[] = {
@@ -85,10 +62,10 @@ int main(void) {
     /* the stubs: GetGyroscopeLowRawToDpsCoefficient (0x00150000), the same command with a normal word it doesn't
        take (0x00150040: the kernel's bad descriptor), a stub that sets the static buffer descriptors at TLS + 0x180
        before its SVC, one that passes its TLS pointer to another function, and one that calls out */
-    stub(CODE + 0x000, 0xe3a00815u);  /* mov r0, #0x150000 */
-    stub(CODE + 0x100, 0xe3a00815u);
+    ctr_stub(code, 0x000, 0xe3a00815u, HANDLE_GLOBAL); /* mov r0, #0x150000 */
+    ctr_stub(code, 0x100, 0xe3a00815u, HANDLE_GLOBAL);
     const uint32_t bad[] = {0xe59f0028u}; /* ldr r0, [pc, #0x28]: the header from a literal after the handle's */
-    stub(CODE + 0x200, 0);
+    ctr_stub(code, 0x200, 0, HANDLE_GLOBAL);
     put(CODE + 0x200 + 3 * 4, bad, 1);
     put(CODE + 0x200 + 15 * 4, (const uint32_t[]){0x00150040u}, 1);
     const uint32_t statics[] = {
@@ -128,7 +105,7 @@ int main(void) {
     /* the GSP handle's getter, a TriggerCmdReqQueue stub, the enqueue calling them, and an enqueue whose trigger is
        another command's stub, which is not the SDK's */
     put(CODE + 0x600, (const uint32_t[]){0xe59f0000u, 0xe12fff1eu, HANDLE_GLOBAL}, 3);
-    stub(CODE + 0x700, 0xe3a00703u); /* mov r0, #0xc0000 */
+    ctr_stub(code, 0x700, 0xe3a00703u, HANDLE_GLOBAL); /* mov r0, #0xc0000 */
     put_enqueue(CODE + 0x800, CODE + 0x600, CODE + 0x700);
     put_enqueue(CODE + 0x900, CODE + 0x600, CODE);
     /* libctru's svcSendSyncRequest after the BX LR of the function before it: its caller filled the TLS buffer */

@@ -98,10 +98,17 @@ SnxCtrXferResult snx_ctr_vk_display_transfer(const SnxCtrDisplayTransfer* t, uin
                          skew};
     snx_ctr_vk_sync(input, (uint32_t)in_bytes, false); /* the draws over its input stored first */
     snx_ctr_vk_sync(output, (uint32_t)out_bytes, true);
+    /* a target's tiles into a framebuffer */
+    bool target = !skew && !(flags & (SNX_CTR_XFER_LINEAR | SNX_CTR_XFER_NO_SWIZZLE));
     VkCommandBuffer cb = snx_ctr_vk_commands();
     snx_ctr_vk_compute_barrier(cb);
     bind(cb, &g_transfer.display, w, 2, push, sizeof push);
     vkCmdDispatch(cb, (push[3] + 7) / 8, (push[4] + 7) / 8, 1);
+    if (target)
+        /* input, output, the input's width, the output's width and height, the input's and output's formats, the
+           horizontal and vertical reduction, and the flip */
+        snx_ctr_vk_target_transfer(input, output, in_w, push[3], push[4], in_fmt, out_fmt, scaling != 0, scaling == 2,
+                                   (flags & SNX_CTR_XFER_FLIP) != 0);
     return SNX_CTR_XFER_OK;
 }
 

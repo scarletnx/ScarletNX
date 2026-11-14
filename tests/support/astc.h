@@ -13,5 +13,9 @@
    color, opaque magenta. srgb nonzero decodes in the specification's sRGB mode, for SRGB images (LDR color
    endpoints expand as (e << 8) | 0x80, and R, G and B are the top 8 bits of the interpolated value) */
 void astc_decode_image(const u8* src, u32 w, u32 h, u32 bw, u32 bh, u8* dst, int srgb);
+/* the endpoints of each partition of one block, A, R, G and B in [0, 255], as the decode makes them, and how many
+   partitions: 0 where it makes none (a void extent, or the error colour from its header), for the tests of
+   gpu/texture/astc_kind.h */
+u32 astc_block_endpoints(const u8 in[16], u32 bw, u32 bh, int ends[4][2][4]);
 
 #endif

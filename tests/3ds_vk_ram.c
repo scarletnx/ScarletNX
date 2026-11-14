@@ -53,7 +53,7 @@ static void expect(const unsigned char* got, const unsigned char* want, size_t s
    RAM */
 static int start(int vk_memory) {
     char why[1024];
-    if (snx_ctr_vk_init(g_m, why, sizeof why)) {
+    if (snx_ctr_vk_init(g_m, false, why, sizeof why)) {
         test_ctr_vk_memory_taken(vk_memory);
         if (snx_ctr_vk_shadow()) { /* the guest's bytes are not the buffer's: this test's premise is that they are */
             printf("the RAM is a copy in the device's host-visible memory: the buffer is not the guest's memory\n");
@@ -88,6 +88,7 @@ int main(int argc, char** argv) {
     assert(snx_ctr_write(s, 0x100000, before, sizeof before) == SNX_CTR_MEM_OK);
     int started = start(vk_memory);
     if (started) {
+        snx_ctr_vk_free();
         snx_ctr_space_free(s);
         snx_ctr_memory_free(g_m);
         return started;
@@ -103,8 +104,15 @@ int main(int argc, char** argv) {
     expect(got, fill, sizeof fill, "the fill through the API");
     assert(snx_ctr_read(s, 0x200200, got, sizeof fill) == SNX_CTR_MEM_OK);
     expect(got, fill, sizeof fill, "the fill through the read-only alias");
-    expect(region(0x20000000u) + (g_page - 0x20000000u) + 0x200, fill, sizeof fill,
-           "the fill in the host's view of FCRAM");
+    unsigned char* fcram = region(0x20000000u);
+    if (!fcram) {
+        fprintf(stderr, "no FCRAM region in the memory profile\n");
+        snx_ctr_vk_free();
+        snx_ctr_space_free(s);
+        snx_ctr_memory_free(g_m);
+        return 1;
+    }
+    expect(fcram + (g_page - 0x20000000u) + 0x200, fill, sizeof fill, "the fill in the host's view of FCRAM");
     unsigned checks = 4;
     if (base) {
         expect(base + 0x100200, fill, sizeof fill, "the fill in the flat space");
@@ -127,7 +135,11 @@ int main(int argc, char** argv) {
     ++checks;
     /* a device made again takes the RAM again */
     started = start(vk_memory);
-    assert(!started);
+    if (started) {
+        snx_ctr_space_free(s);
+        snx_ctr_memory_free(g_m);
+        return started;
+    }
     gpu_copy(g_page, g_other + 0x800, sizeof before);
     assert(snx_ctr_phys_read(g_m, g_other + 0x800, got, sizeof before) == SNX_CTR_MEM_OK);
     expect(got, before, sizeof before, "the second device's copy of the guest's bytes");

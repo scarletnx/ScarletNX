@@ -1,8 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
+#include "3ds/aot/ctr_hook.h"
 #include "3ds/aot/ctr_module.h"
+#include "3ds/ipc/ctr_ipc.h"
 #include "3ds/memory/host.h"
+#include "3ds/runtime/internal.h"
 #include "common/utilities/common.h"
+#include "support/3ds_stub.h"
 #include <openssl/evp.h>
 #include <assert.h>
 #include <stdio.h>
@@ -27,6 +31,16 @@ static void stop(SnxArmCPU* c) {
     c->exit = SNX_ARM_SVC;
     c->syndrome = 3;
 }
+static uint32_t compiled_pc;
+static bool compiled_thumb, compiled_stale;
+/* the run-time compiler a process has when it lacks a block: it records the ask and answers with the block to run */
+static SnxArmBlock compiled_block(void* compiler, uint32_t pc, bool thumb, bool stale) {
+    (void)compiler;
+    compiled_pc = pc;
+    compiled_thumb = thumb;
+    compiled_stale = stale;
+    return advance;
+}
 static void restart(SnxArmCPU* c) {
     c->r[15] = 0x100000;
     c->cpsr = 0x10;
@@ -44,7 +58,7 @@ int main(void) {
     unsigned char ex[0x800] = {0}, code[0x3000] = {0};
     put(ex + 0x10, 0x100000);
     put(ex + 0x14, 1);
-    put(ex + 0x18, 8);
+    put(ex + 0x18, 0x1000);
     put(ex + 0x1c, 0x4000);
     put(ex + 0x20, 0x200000);
     put(ex + 0x24, 1);
@@ -55,6 +69,8 @@ int main(void) {
     put(ex + 0x3c, 0x1000);
     put(code, 0xe3a0002a);
     put(code + 4, 0xef000003);
+    /* the SDK's IPC stub at 0x100100: a SYSTEM session's request makes the hook decline, so its call is the block's */
+    ctr_stub(code, 0x100, 0xe3a00815u, 0x300000);
     memcpy(code + 0x1000, "READONLY", 8);
     memcpy(code + 0x2000, "DATA", 4);
     /* a refused extraction names the path: a folder that is not there, then one without its ExHeader */
@@ -82,7 +98,7 @@ int main(void) {
     assert(snx_ctr_image_load(root, &other, error, sizeof error));
     assert(!memcmp(image.identity, other.identity, 32));
     snx_ctr_image_free(&other);
-    SnxArmBlock arm[] = {advance, stop}, thumb[] = {advance, stop, NULL, NULL};
+    SnxArmBlock arm[0x400] = {advance, stop}, thumb[0x800] = {advance, stop};
     SnxCtrModule m = {.magic = SNX_CTR_MODULE_MAGIC,
                       .abi = SNX_CTR_MODULE_ABI,
                       .descriptor_size = sizeof m,
@@ -95,9 +111,9 @@ int main(void) {
                       .memory_mode = snx_ctr_module_memory(),
                       .pointer_size = sizeof(void*),
                       .text_address = 0x100000,
-                      .text_bytes = 8,
-                      .arm_count = 2,
-                      .thumb_count = 4,
+                      .text_bytes = 0x1000,
+                      .arm_count = 0x400,
+                      .thumb_count = 0x800,
                       .arm_blocks = arm,
                       .thumb_blocks = thumb};
     memcpy(m.image_identity, image.identity, 32);
@@ -168,6 +184,32 @@ int main(void) {
         c->r[15] = 0x200000;
         assert(snx_ctr_dispatch(&m, p, 4, &executed) == SNX_CTR_RUN_FAULT && c->exit == SNX_ARM_PREFETCH_ABORT &&
                !calls);
+        restart(c);
+        /* an address the tables lack: the run-time compiler makes the block, which then runs as any other does */
+        p->compile = compiled_block;
+        c->r[15] += 8;
+        assert(snx_ctr_dispatch(&m, p, 1, &executed) == SNX_CTR_RUN_BUDGET && executed == 1 && calls == 1);
+        assert(c->r[15] == 0x10000c && compiled_pc == 0x100008 && !compiled_thumb && !compiled_stale);
+        p->compile = NULL;
+        restart(c);
+        /* a hook that declines leaves the call to the game's block: the entry the cold lookup keeps holds the hook
+           alone, so the second call, a cache hit, must find the block again before it runs it */
+        uint32_t session;
+        assert(!snx_ctr_session_create(p, SNX_CTR_SERVICE_SYSTEM, &session));
+        unsigned char handle[4];
+        put(handle, session);
+        assert(snx_ctr_write(s, 0x300000, handle, sizeof handle) == SNX_CTR_MEM_OK);
+        p->hooks = snx_ctr_hooks_find(p, NULL, 0);
+        assert(p->hooks && snx_ctr_hook_at(p->hooks, 0x100100));
+        arm[(0x100100 - 0x100000) / 4] = advance; /* the static table's block at the stub */
+        restart(c);
+        c->r[15] = 0x100100;
+        assert(snx_ctr_dispatch(&m, p, 1, &executed) == SNX_CTR_RUN_BUDGET && executed == 1 && calls == 1);
+        c->r[15] = 0x100100;
+        c->cpsr = 0x10;
+        c->exit = c->syndrome = 0;
+        assert(snx_ctr_dispatch(&m, p, 1, &executed) == SNX_CTR_RUN_BUDGET && executed == 1 && calls == 2);
+        assert(c->r[15] == 0x100104);
         restart(c);
         assert(snx_ctr_protect(s, 0x100000, 4096, 1) == SNX_CTR_MEM_OK);
         assert(snx_ctr_dispatch(&m, p, 4, &executed) == SNX_CTR_RUN_FAULT && c->exit == SNX_ARM_PREFETCH_ABORT &&

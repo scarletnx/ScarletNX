@@ -174,6 +174,36 @@ static void holds(void) {
     CHECK(!vk_cb_reads_hold(&table, reader), "and stop holding with their word");
 }
 
+/* a bank's reads next to each other, checked from one range of the bytes they span: no word through the reader while
+   the range is there, and each word through it where the GPU holds bytes of the span or a read lies past the bank */
+static void batched_reads(void) {
+    VkCbRead r[3] = {{2, 8, VK_CB_READ, 7}, {2, 4, VK_CB_READ, 11}, {2, 20, VK_CB_READ, 13}};
+    VkCbReads reads = {r, 3};
+    memset(g_test.bank, 0, sizeof g_test.bank);
+    set(1, 11);
+    set(2, 7);
+    set(5, 13);
+    g_test.reads = g_test.ranges = 0;
+    CHECK(vk_cb_folds_hold(&reads, reader, bytes) && g_test.reads == 0 && g_test.ranges == 1 && g_test.range_off == 4 &&
+              g_test.range_size == 20,
+          "a bank's reads hold from one range of the bytes they span, none through the word reader");
+    set(5, 14);
+    CHECK(!vk_cb_folds_hold(&reads, reader, bytes), "and stop holding with the last word of the range");
+    set(5, 13);
+    set(1, 12);
+    CHECK(!vk_cb_folds_hold(&reads, reader, bytes), "or with its first");
+    set(1, 11);
+    g_test.held = 12; /* between two reads: the span is the GPU's */
+    g_test.reads = 0;
+    CHECK(vk_cb_folds_hold(&reads, reader, bytes) && g_test.reads == 3,
+          "bytes the GPU holds in the span: each word through the reader, which lands them");
+    g_test.held = ~0u;
+    r[2] = (VkCbRead){2, WORDS * 4, VK_CB_UNBOUND, 0}; /* past the bank: the range has no such bytes */
+    g_test.reads = 0;
+    CHECK(vk_cb_folds_hold(&reads, reader, bytes) && g_test.reads == 3,
+          "a read past the bank: each word through the reader, and the one past it holds unbound");
+}
+
 static void more(void) {
     VkCbRead r[3] = {{2, 0, VK_CB_FOLD, 0}, {2, 4, VK_CB_LOAD, 0}, {2, 8, VK_CB_LOAD, 0}};
     VkCbRead agrees[2] = {{2, 4, VK_CB_FOLD, ONE}, {2, 8, VK_CB_LOAD, 0}};
@@ -233,6 +263,7 @@ int main(void) {
     values();
     notes();
     holds();
+    batched_reads();
     more();
     modes();
     printf("vk_cb_fold: %u checks, %u failed\n", g_test.checks, g_test.failures);

@@ -57,6 +57,13 @@ u64 hook_memset(CPU* c, u64 dst, i32 value, u64 size) {
     (void)c, (void)value, (void)size;
     return dst;
 }
+/* gs.c's, not reached here */
+u32 gs_read_user_image_nv12(CPU* c, u64 dst_y, u64 size_y, u64 pitch_y, u64 dst_uv, u64 size_uv, u64 pitch_uv,
+                            u64 desc, u64 src) {
+    (void)c, (void)dst_y, (void)size_y, (void)pitch_y, (void)dst_uv, (void)size_uv, (void)pitch_uv, (void)desc,
+        (void)src;
+    return 0;
+}
 /* codec.c's and audio_stream.c's, none reached here */
 u32 audio_open_stream_event(CPU* c, u64 stream, u64 event, u64 work, u64 size, u64 device, u64 format, i32 capacity,
                             i32 threshold) {

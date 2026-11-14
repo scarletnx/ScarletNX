@@ -2527,12 +2527,13 @@ static Word iadd3(u32 dst, u32 a, u32 b) {
     return x;
 }
 /* Pointers from memory, as one game's vertex program that clears indirect draws: R2 is the buffer that c[0][0x110]
-   holds (0x1_0000_1000), whose words 0-5 are three pointers. The first, base + 0x40, is inside it: the STG through
-   it writes word 0x12 and the LDG reads word 0x10. The second, below the base, and the third, base + 0x1_0000_0040
-   (the same low word of the difference), are in no buffer: the STG is dropped and the LDG reads 0. The pointers are
-   read at R14 = R2 + R15 (0), which isn't the base itself: an address the program computes, which global_dynamic
-   compares with its buffers (an LDG.64 at the base itself plus an offset names a buffer of its own:
-   test_global_indirect) */
+   holds (0x1_0000_1000), whose words 0-5 are three pointers. The pointers are read at R14 = R2 + R15 (0), which isn't
+   the base itself: an address the program computes, so the buffer is a pointer table (SH_GBUF_TABLE_SSBO) whose
+   windows the renderer binds, and the accesses through its pointers compare their address with the buffer and with
+   each window (global_dynamic). The first pointer, base + 0x40, is inside the buffer: the STG through it writes word
+   0x12 and the LDG reads word 0x10. The third, 0x2_0000_1040, is in window 0 (which the test binds as the renderer
+   would): the STG through it writes that window's word 3. The second, below the base, is in no buffer: the LDG reads
+   0. The accesses reach 16 bytes past a pointer (ShaderInfo.table_reach) */
 static void test_global_pointer(const char* dir) {
     u8 code[16 * 18] = {0};
     Word m = alu(0x002, 5, 2, 255);
@@ -2561,35 +2562,81 @@ static void test_global_pointer(const char* dir) {
     put(code, 17, bra(17, 17, 7, 0));
     u32 vsph[32] = {0};
     vsph[0] = sph0(1, 1);
-    static u32 bank0[1024], buffer[64];
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 18 * 16, ST_VS, vsph, &si, &count);
+    int table = -1, window = -1;
+    for (int i = 0; spv && i < si.ngbuf; i++) {
+        if (si.gbuf_cbuf_off[i] == 0x110) table = i;
+        if (si.gbuf_cbuf_off[i] == SH_GBUF_TABLE_SSBO_KEY(0x110, 0)) window = i;
+    }
+    CHECK(spv && si.ngbuf == 16 && table >= 0 && window >= 0 && si.table_reach == 0x10);
+    if (spv) CHECK(keep_module(dir, "global_pointer", spv, count));
+    free(spv);
+    if (table < 0 || window < 0) return;
+    static u32 bank0[1024], buffer[64], win[16], mbase[64];
     bank0[0x110 / 4] = 0x1000;
     bank0[0x114 / 4] = 1;
     buffer[0] = 0x1040, buffer[1] = 1;
     buffer[2] = 0x0f00, buffer[3] = 1;
     buffer[4] = 0x1040, buffer[5] = 2;
     buffer[0x10] = 0x1234;
+    /* window 0's base and length at its buffer's slot (SNX_VKB_MBASE) */
+    mbase[4 * window] = 0x1040, mbase[4 * window + 1] = 2, mbase[4 * window + 2] = sizeof win;
     SpvEvalEnv env = {0};
     env.ubo[SNX_VKB_CB] = bank0;
     env.ubo_words[SNX_VKB_CB] = 1024;
-    env.ubo[SNX_VKB_SSBO] = buffer;
-    env.ubo_words[SNX_VKB_SSBO] = 64;
+    env.ubo[SNX_VKB_SSBO + table] = buffer;
+    env.ubo_words[SNX_VKB_SSBO + table] = 64;
+    env.ubo[SNX_VKB_SSBO + window] = win;
+    env.ubo_words[SNX_VKB_SSBO + window] = 16;
+    env.ubo[SNX_VKB_MBASE] = mbase;
+    env.ubo_words[SNX_VKB_MBASE] = 64;
     /* a draw's page table of its buffers (SNX_VKB_SMAP): each one bound whole, with no atlas */
     static u32 smap[48];
     for (u32 k = 0; k < 16; k++) smap[k] = ~0u;
     env.ubo[SNX_VKB_SMAP] = smap;
     env.ubo_words[SNX_VKB_SMAP] = 48;
     int ran = run_stage(ST_VS, code, 18, vsph, &env);
-    int ok = ran && buffer[0x12] == 7 && buffer[0x13] == 0 && env.position[0] == 0x1234 && env.position[1] == 0;
+    int ok = ran && buffer[0x12] == 7 && buffer[0x13] == 0 && win[3] == 9 && env.position[0] == 0x1234 &&
+             env.position[1] == 0;
     CHECK(ok);
     if (!ok)
-        fprintf(stderr, "global pointer: words %x %x, position %x %x\n", buffer[0x12], buffer[0x13], env.position[0],
-                env.position[1]);
-    ShaderInfo si = {0};
-    size_t count = 0;
-    u32* spv = sm86_to_spirv(code, 18 * 16, ST_VS, vsph, &si, &count);
-    CHECK(spv && si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x110 && (si.gbuf_wmask & 1));
-    if (spv) CHECK(keep_module(dir, "global_pointer", spv, count));
-    free(spv);
+        fprintf(stderr, "global pointer: words %x %x, window %x, position %x %x\n", buffer[0x12], buffer[0x13], win[3],
+                env.position[0], env.position[1]);
+    /* The draw binds the table and the window in one atlas of pages (SNX_VKB_SMAP: page 0 the table's 64 words, page
+       1 the window's 16), each binding the whole atlas of 2048 words. The third pointer, 0x1_0000_1400, is 1 KiB past
+       the table's base: within the atlas's length but past the table's own words, so it is the window's. Checked
+       against the atlas's length, the table took it and the store went nowhere */
+    static u32 atlas[2048], amap[50];
+    memset(atlas, 0, sizeof atlas);
+    atlas[0] = 0x1040, atlas[1] = 1;
+    atlas[2] = 0x0f00, atlas[3] = 1;
+    atlas[4] = 0x1400, atlas[5] = 1;
+    atlas[0x10] = 0x1234;
+    for (u32 k = 0; k < 16; k++) amap[k] = ~0u;
+    amap[table] = 48, amap[16 + table] = 0, amap[32 + table] = 64;
+    amap[window] = 49, amap[16 + window] = 0, amap[32 + window] = 16;
+    amap[48] = 0, amap[49] = 1;
+    memset(mbase, 0, sizeof mbase);
+    mbase[4 * window] = 0x1400, mbase[4 * window + 1] = 1, mbase[4 * window + 2] = 64;
+    env = (SpvEvalEnv){0};
+    env.ubo[SNX_VKB_CB] = bank0;
+    env.ubo_words[SNX_VKB_CB] = 1024;
+    env.ubo[SNX_VKB_SSBO + table] = atlas;
+    env.ubo_words[SNX_VKB_SSBO + table] = 2048;
+    env.ubo[SNX_VKB_SSBO + window] = atlas;
+    env.ubo_words[SNX_VKB_SSBO + window] = 2048;
+    env.ubo[SNX_VKB_MBASE] = mbase;
+    env.ubo_words[SNX_VKB_MBASE] = 64;
+    env.ubo[SNX_VKB_SMAP] = amap;
+    env.ubo_words[SNX_VKB_SMAP] = 50;
+    ran = run_stage(ST_VS, code, 18, vsph, &env);
+    ok = ran && atlas[0x12] == 7 && atlas[1024 + 3] == 9 && env.position[0] == 0x1234 && env.position[1] == 0;
+    CHECK(ok);
+    if (!ok)
+        fprintf(stderr, "global pointer in an atlas: words %x, window %x, position %x %x\n", atlas[0x12],
+                atlas[1024 + 3], env.position[0], env.position[1]);
 }
 
 /* The pieces of a 64-bit division by a reciprocal, as one game's exposure program has it (the quotient of
@@ -2672,6 +2719,34 @@ static void test_instance_id(const char* dir) {
     }
     CHECK(instance_index && base_instance);
     if (spv) CHECK(keep_module(dir, "instance_id", spv, count));
+    free(spv);
+}
+
+/* A vertex program's read of bank 0's base instance (c[0][0x644], which the console's driver writes for it) takes the
+   draw's BaseInstance: the bank the program gets did not hold it (#2175). Checked by the decorations, as
+   test_instance_id is */
+static void test_base_instance_word(const char* dir) {
+    u8 code[16 * 4] = {0};
+    Word x = alu(0x002, 5, 0, 255); /* MOV R0 = c[0x0][0x644] */
+    set(&x, 38, 16, 0x644), set(&x, 54, 5, 0), set(&x, 72, 4, 0xf);
+    put(code, 0, x);
+    put(code, 1, ast(0x70, 0, 1));
+    put(code, 2, exit_insn());
+    put(code, 3, bra(3, 3, 7, 0));
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 4 * 16, ST_VS, vsph, &si, &count);
+    CHECK(spv != NULL);
+    int base_instance = 0;
+    for (size_t at = 5; spv && at < count && (spv[at] >> 16);) { /* OpDecorate x BuiltIn BaseInstance */
+        if ((spv[at] & 0xffff) == 71 && (spv[at] >> 16) == 4 && spv[at + 2] == 11 && spv[at + 3] == 4425)
+            base_instance = 1;
+        at += spv[at] >> 16;
+    }
+    CHECK(base_instance);
+    if (spv) CHECK(keep_module(dir, "base_instance_word", spv, count));
     free(spv);
 }
 
@@ -3990,6 +4065,291 @@ static void test_mesh_refused(void) {
     refused(code, 3, ST_TS, sph, k, "task payload of 0x4 bytes");
 }
 
+/* A passthrough geometry program as a culling program has it, of a triangle: the exit stub's setup (LEPC, 0x357),
+   SR_INVOCATION_INFO, then ALD.64 R2, a[0x80], R2 of vertex 1 through ISBERD (the destination its own vertex register),
+   the pair into generic 1.xy and the invocation info into generic 1.z, then the viewport mask and EXIT. The
+   evaluator runs it: the input triangle comes out once (3 vertices, 1 primitive), each vertex's position and generic 0
+   from the input arrays, as the skip mask forwards them (of generics 0 and 1 that it forwards, the vertex program
+   writes 0 and 2), and generic 1 as the program wrote it on every vertex, past each EmitVertex. A viewport mask of 0
+   emits nothing. An emit of its own (OUT) is refused in a passthrough program, and SR_INVOCATION_INFO outside a
+   geometry program */
+static u32 geometry_program(u8* code, u32 viewport_mask) {
+    u32 n = 0;
+    Word x = fix(0x34e); /* LEPC R4 */
+    set(&x, 16, 8, 4);
+    put(code, n++, x);
+    x = fix(0x357);
+    set(&x, 24, 8, 4);
+    put(code, n++, x);
+    x = fix(0x919); /* S2R R6, SR_INVOCATION_INFO */
+    set(&x, 16, 8, 6);
+    set(&x, 72, 8, 0x1d);
+    put(code, n++, x);
+    put(code, n++, mov_imm(2, 1));
+    put(code, n++, isbe_insn(0, 2, 2, 0, 0, 0, 0, 0)); /* ISBERD R2, [R2] */
+    x = fix(0x321);                                    /* ALD.64 R2, a[0x80], R2 */
+    set(&x, 16, 8, 2);
+    set(&x, 24, 8, 255);
+    set(&x, 32, 8, 2);
+    set(&x, 40, 10, 0x80);
+    set(&x, 74, 2, 1);
+    put(code, n++, x);
+    put(code, n++, ast(0x90, 2, 2));
+    put(code, n++, ast(0x98, 6, 1));
+    put(code, n++, mov_imm(5, viewport_mask));
+    x = ast(0x3a0, 5, 1);
+    set(&x, 64, 8, 0); /* the output handle, R0 */
+    put(code, n++, x);
+    put(code, n++, exit_insn());
+    put(code, n++, fix(0x957));
+    put(code, n, bra(n, n, 7, 0));
+    return n + 1;
+}
+static void test_geometry(const char* dir) {
+    u8 code[16 * 16] = {0};
+    u32 n = geometry_program(code, 1);
+    u32 sph[32] = {0};
+    sph[0] = sph0(1, 4) | 1u << 24; /* passthrough */
+    sph[3] = 7u << 24;              /* a triangle strip */
+    sph[4] = 1;
+    ShaderInfo si = {0};
+    si.rt_int_mask = 3;
+    si.rt_sint_mask = 5; /* the vertex program writes generics 0 and 2 */
+    for (u32 w = 0; w < 8; w++) si.gp_skip_mask[w] = 0xffffffffu;
+    si.gp_skip_mask[0] = 0x0fffffffu; /* the position */
+    si.gp_skip_mask[1] = 0xffffff00u; /* generics 0 and 1 */
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_GS, sph, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "geometry: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(spv_declares(spv, count, 2 /* Geometry */));
+    CHECK(si.in_mask == 1 && si.out_mask == 3);
+    CHECK(keep_module(dir, "gs", spv, count));
+    for (u32 culled = 0; culled < 2; culled++) {
+        if (culled) {
+            free(spv);
+            n = geometry_program(code, 0);
+            ShaderInfo again = si;
+            again.in_mask = again.out_mask = 0;
+            spv = sm86_to_spirv(code, n * 16, ST_GS, sph, &again, &count);
+            if (!spv) break;
+        }
+        static SpvEvalEnv env;
+        memset(&env, 0, sizeof env);
+        for (u32 v = 0; v < 3; v++)
+            for (u32 k = 0; k < 4; k++) {
+                env.gs_in[32][4 * v + k] = f2u(0.25f * (float)(v + 1) + (float)k);
+                env.gs_in[0][4 * v + k] = f2u(10.0f * (float)(v + 1) + (float)k);
+            }
+        env.builtin[7][0] = 42; /* PrimitiveId */
+        const char* why = spv_eval(spv, count, &env);
+        if (why) fprintf(stderr, "geometry: the evaluator stops at %s\n", why);
+        CHECK(!why);
+        if (culled) {
+            CHECK(env.emitted == 0 && env.primitives == 0);
+            continue;
+        }
+        CHECK(env.emitted == 3 && env.primitives == 1);
+        int ok = 1;
+        for (u32 v = 0; v < 3 && v < env.emitted; v++) {
+            const u32(*o)[4] = env.vertex[v];
+            for (u32 k = 0; k < 4; k++)
+                ok &= o[32][k] == env.gs_in[32][4 * v + k] && o[0][k] == env.gs_in[0][4 * v + k];
+            /* vertex 1's generic 0.x and .y, though the ALD's destination is its vertex register */
+            ok &= o[1][0] == env.gs_in[0][4] && o[1][1] == env.gs_in[0][5] && o[1][2] == 3u << 16 && o[33][0] == 42;
+            if (!ok)
+                fprintf(stderr, "geometry: vertex %u generic 1 %08x %08x %08x, position.x %08x, id %u\n", v, o[1][0],
+                        o[1][1], o[1][2], o[32][0], o[33][0]);
+        }
+        CHECK(ok);
+    }
+    free(spv);
+    /* a point size store: the GeometryPointSize capability where the device has it, else no point size at all */
+    u8 ps[16 * 4] = {0};
+    put(ps, 0, mov_imm(1, f2u(2.0f)));
+    put(ps, 1, ast(0x6c, 1, 1));
+    put(ps, 2, exit_insn());
+    put(ps, 3, bra(3, 3, 7, 0));
+    int had = g_shader_stage_point_size;
+    for (int feature = 0; feature < 2; feature++) {
+        g_shader_stage_point_size = feature;
+        ShaderInfo p = si;
+        spv = sm86_to_spirv(ps, 4 * 16, ST_GS, sph, &p, &count);
+        CHECK(spv && spv_declares(spv, count, 24 /* GeometryPointSize */) == feature && p.writes_point_size == feature);
+        if (spv && feature) CHECK(keep_module(dir, "gs_point_size", spv, count));
+        free(spv);
+    }
+    g_shader_stage_point_size = had;
+    ShaderInfo base = {0};
+    base.rt_int_mask = 3;
+    Word x = alu(0x124, 1, 255, 255); /* OUT.EMIT RZ, RZ, RZ */
+    set(&x, 78, 2, 1);
+    put(code, 1, x);
+    refused(code, n, ST_GS, sph, base, "OUT emits in a passthrough geometry program");
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    u8 vs[16 * 3] = {0};
+    x = fix(0x919);
+    set(&x, 72, 8, 0x1d);
+    put(vs, 0, x);
+    put(vs, 1, exit_insn());
+    put(vs, 2, bra(2, 2, 7, 0));
+    refused(vs, 3, ST_VS, vsph, (ShaderInfo){0}, "S2R system register 0x1d outside a geometry program");
+}
+
+/* the literal of the module's execution mode, ~0 where it has the mode with none, 0 where it lacks the mode */
+static u32 spv_mode(const u32* words, size_t count, u32 mode) {
+    u32 at[16];
+    u32 n = spv_find(words, count, 16 /* OpExecutionMode */, at, 16);
+    for (u32 k = 0; k < n; k++)
+        if (words[at[k] + 2] == mode) return words[at[k]] >> 16 > 3 ? words[at[k] + 3] : ~0u;
+    return 0;
+}
+/* input vertex v's position, component k, as the geometry tests below give it, and as it comes out with the depth fix
+   (the push constant's y not 0: z becomes (z + w) / 2) */
+static u32 gs_position(u32 v, u32 k, int fixed) {
+    float base = 0.25f * (float)(v + 1);
+    return f2u(k == 2 && fixed ? ((base + 2.0f) + (base + 3.0f)) * 0.5f : base + (float)k);
+}
+/* A geometry program that emits its own vertices, as the console runs one from its SPH (not passthrough): a triangle
+   in, each of its vertices out with OUT.EMIT, its position (with the depth fix: the program is the last before the
+   rasterizer) and generic 0 read by ALD through ISBERD, then OUT.CUT. The module takes the SPH's output topology (a
+   triangle strip), output vertices (3) and invocations (2). With the viewport mask 0 written first, it emits
+   nothing */
+static u32 geometry_emit_program(u8* code, int culled) {
+    u32 n = 0;
+    if (culled) {
+        put(code, n++, mov_imm(9, 0));
+        put(code, n++, ast(0x3a0, 9, 1));
+    }
+    for (u32 v = 0; v < 3; v++) {
+        put(code, n++, mov_imm(2, v));
+        put(code, n++, isbe_insn(0, 2, 2, 0, 0, 0, 0, 0)); /* ISBERD R2, [R2] */
+        Word x = fix(0x321);                               /* ALD.128 R4, a[0x70], R2 */
+        set(&x, 16, 8, 4);
+        set(&x, 24, 8, 255);
+        set(&x, 32, 8, 2);
+        set(&x, 40, 10, 0x70);
+        set(&x, 74, 2, 3);
+        put(code, n++, x);
+        put(code, n++, ast(0x70, 4, 4));
+        x = fix(0x321); /* ALD R8, a[0x80], R2 */
+        set(&x, 16, 8, 8);
+        set(&x, 24, 8, 255);
+        set(&x, 32, 8, 2);
+        set(&x, 40, 10, 0x80);
+        put(code, n++, x);
+        put(code, n++, ast(0x80, 8, 1));
+        x = alu(0x124, 1, 0, 0); /* OUT.EMIT R0, R0, R0 */
+        set(&x, 78, 2, 1);
+        put(code, n++, x);
+    }
+    Word x = alu(0x124, 1, 0, 0); /* OUT.CUT R0, R0, R0 */
+    set(&x, 78, 2, 2);
+    put(code, n++, x);
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    return n + 1;
+}
+static void test_geometry_emit(const char* dir) {
+    u8 code[16 * 32] = {0};
+    u32 sph[32] = {0};
+    sph[0] = sph0(1, 4);
+    sph[2] = 2u << 24; /* two invocations */
+    sph[3] = 7u << 24; /* a triangle strip */
+    sph[4] = 3;
+    for (int culled = 0; culled < 2; culled++) {
+        u32 n = geometry_emit_program(code, culled);
+        ShaderInfo si = {0};
+        si.rt_int_mask = 3;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_GS, sph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "geometry emit: %s\n", si.first_unsupported);
+            return;
+        }
+        CHECK(spv_mode(spv, count, 22 /* Triangles */) && spv_mode(spv, count, 29 /* OutputTriangleStrip */) &&
+              spv_mode(spv, count, 26 /* OutputVertices */) == 3 && spv_mode(spv, count, 0 /* Invocations */) == 2);
+        if (!culled) CHECK(keep_module(dir, "gs_emit", spv, count));
+        static SpvEvalEnv env;
+        memset(&env, 0, sizeof env);
+        for (u32 v = 0; v < 3; v++)
+            for (u32 k = 0; k < 4; k++) {
+                env.gs_in[32][4 * v + k] = gs_position(v, k, 0);
+                env.gs_in[0][4 * v + k] = f2u(10.0f * (float)(v + 1) + (float)k);
+            }
+        env.push[1] = f2u(1.0f);
+        const char* why = spv_eval(spv, count, &env);
+        free(spv);
+        if (why) fprintf(stderr, "geometry emit: the evaluator stops at %s\n", why);
+        CHECK(!why);
+        int ok = env.emitted == (culled ? 0u : 3u) && env.primitives == 1;
+        for (u32 v = 0; ok && v < env.emitted; v++)
+            for (u32 k = 0; k < 4; k++)
+                ok &= env.vertex[v][32][k] == gs_position(v, k, 1) && env.vertex[v][0][0] == env.gs_in[0][4 * v];
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "geometry emit%s: %u vertices, %u primitives; vertex 1 position.z %08x generic 0.x %08x\n",
+                    culled ? " culled" : "", env.emitted, env.primitives, env.vertex[1][32][2], env.vertex[1][0][0]);
+    }
+}
+/* A passthrough program of a primitive with adjacency emits the primitive itself, with the depth fix: of lines with
+   adjacency, input vertices 1 and 2 as a line strip, of triangles with adjacency, vertices 0, 2 and 4 as a triangle
+   strip */
+static void test_geometry_adjacency(void) {
+    u8 code[16 * 16] = {0};
+    u32 n = geometry_program(code, 1);
+    u32 sph[32] = {0};
+    sph[0] = sph0(1, 4) | 1u << 24;
+    sph[4] = 1;
+    for (u32 in = 4; in <= 6; in += 2) {
+        ShaderInfo si = {0};
+        si.rt_int_mask = in;
+        si.rt_sint_mask = 1;
+        for (u32 w = 0; w < 8; w++) si.gp_skip_mask[w] = 0xffffffffu;
+        si.gp_skip_mask[0] = 0x0fffffffu; /* the position */
+        si.gp_skip_mask[1] = 0xfffffff0u; /* generic 0 */
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_GS, sph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "geometry adjacency: %s\n", si.first_unsupported);
+            return;
+        }
+        u32 out = in / 2;
+        CHECK(spv_mode(spv, count, in == 4 ? 21 /* InputLinesAdjacency */ : 23 /* InputTrianglesAdjacency */) &&
+              spv_mode(spv, count, in == 4 ? 28 /* OutputLineStrip */ : 29 /* OutputTriangleStrip */) &&
+              spv_mode(spv, count, 26 /* OutputVertices */) == out);
+        static SpvEvalEnv env;
+        memset(&env, 0, sizeof env);
+        for (u32 v = 0; v < in; v++)
+            for (u32 k = 0; k < 4; k++) {
+                env.gs_in[32][4 * v + k] = gs_position(v, k, 0);
+                env.gs_in[0][4 * v + k] = f2u(10.0f * (float)(v + 1) + (float)k);
+            }
+        env.push[1] = f2u(1.0f);
+        const char* why = spv_eval(spv, count, &env);
+        free(spv);
+        if (why) fprintf(stderr, "geometry adjacency: the evaluator stops at %s\n", why);
+        CHECK(!why);
+        int ok = env.emitted == out && env.primitives == 1;
+        for (u32 v = 0; ok && v < out; v++) {
+            u32 from = in == 4 ? v + 1 : 2 * v;
+            for (u32 k = 0; k < 4; k++)
+                ok &= env.vertex[v][32][k] == gs_position(from, k, 1) &&
+                      env.vertex[v][0][k] == env.gs_in[0][4 * from + k];
+        }
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "geometry adjacency of %u: %u vertices, %u primitives, vertex 0 position.x %08x .z %08x\n",
+                    in, env.emitted, env.primitives, env.vertex[0][32][0], env.vertex[0][32][2]);
+    }
+}
+
 /* A fragment program's inputs that its draw's mesh program writes per primitive (ShaderInfo.prim_mask) are
    PerPrimitiveEXT, and the others are not */
 static void test_fragment_per_primitive(const char* dir) {
@@ -4861,6 +5221,7 @@ int main(int argc, char** argv) {
     test_global_pointer(dir);
     test_wide_carries(dir);
     test_instance_id(dir);
+    test_base_instance_word(dir);
     test_u64_conversions();
     test_global_indirect(dir);
     test_global_table(dir);
@@ -4882,6 +5243,9 @@ int main(int argc, char** argv) {
     test_mesh_after_task(dir);
     test_mesh_output_bytes();
     test_mesh_refused();
+    test_geometry(dir);
+    test_geometry_emit(dir);
+    test_geometry_adjacency();
     test_fragment_per_primitive(dir);
     test_fragment_unfed(dir);
     test_uses_isbe();
