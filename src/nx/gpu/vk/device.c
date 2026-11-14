@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/shading_rate.h"
 #include "nx/runtime/main.h"
@@ -120,10 +121,16 @@ void vk_lock(void) {
         }
         vk_took();
         atomic_store_explicit(&g_vk_site, site, memory_order_relaxed);
+        /* With gpu_split, the front end calls the renderer once the queue is empty (gpu_renderer_now). A guest memory
+           write in that call went to the queue, and a big one waited for the renderer thread to run the queue first,
+           with this lock held. The writes queued before it waited for this lock in gmem_before_write: one game's
+           NVN copies locked up so at random. Under the lock this thread is the renderer, and its writes go to memory */
+        gq_direct(1);
     }
 }
 /* lets go of this thread's last hold, then signals the event slots its releases under it reached */
 static void vk_let_go(void) {
+    gq_direct(0);
     atomic_store_explicit(&g_vk_owner, 0, memory_order_relaxed);
     if (atomic_load_explicit(&g_vk_waiting, memory_order_seq_cst))
         atomic_store_explicit(&g_vk_baton, 1, memory_order_release);
