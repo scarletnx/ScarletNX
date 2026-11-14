@@ -100,6 +100,7 @@ void gmem_read_raw(u64 gva, void* dst, u64 size) {
     gq_read_wait(gva, size);
     copy_runs(gva, (u8*)dst, NULL, size);
 }
+void gmem_read_quiet(u64 gva, void* dst, u64 size) { copy_runs(gva, (u8*)dst, NULL, size); }
 void gmem_write_raw(u64 gva, const void* src, u64 size) { copy_runs(gva, NULL, (const u8*)src, size); }
 /* whether anything the renderer holds may cover [gva, gva + size): one lookup where each hook below makes its own */
 static int mem_pending(u64 gva, u64 size) { return !g_renderer->mem_pending || g_renderer->mem_pending(gva, size); }
@@ -130,6 +131,7 @@ void gmem_before_write(u64 gva, u64 size) {
     if (size && g_gpu_before_write) g_gpu_before_write(gva, size);
 }
 int gmem_read(u64 gva, void* dst, u64 size) {
+    if (gq_forward(gva, dst, size)) return 0; /* the front end's own write, not yet in memory */
     gq_read_wait(gva, size); /* the front end's writes queued over it */
     if ((atomic_load_explicit(&g_gpu_releases, memory_order_acquire) ||
          atomic_load_explicit(&g_cs_any, memory_order_relaxed) ||
@@ -177,7 +179,19 @@ int gmem_write(u64 gva, const void* src, u64 size) {
     return gmem_write_now(gva, src, size);
 }
 int gmem_write_now(u64 gva, const void* src, u64 size) { return gmem_write_by(gva, src, size, GPU_WRITE_RUNTIME, 0, 0); }
+/* A constant buffer upload goes in its place in the queue, as gmem_write's writes do: a draw queued before it reads
+   the constant buffer as it was. Written at once on the front end, it skipped the queue, and the renderer thread's
+   draws read the values of uploads that came after them. One game's scene drew grey blocks and a broken HUD. Only the
+   record's run (gmem_write_cb_now) writes, and it keeps the upload's own stamp (gpu_mem_written_cb) */
 int gmem_write_cb(u64 gva, const void* src, u64 size) {
+    if (!size) return 0;
+    if (gq_queues()) {
+        gq_write_cb(gva, src, size);
+        return 0;
+    }
+    return gmem_write_cb_now(gva, src, size);
+}
+int gmem_write_cb_now(u64 gva, const void* src, u64 size) {
     int all;
     if (!size) return 0;
     gmem_before_write(gva, size);
@@ -215,8 +229,12 @@ u32 gmem_r32(u64 gva) {
     /* the common read, a word the CPU alone wrote: no queued release, pending result or owner holds it, so guest
        memory has its bytes and the general path's checks and landing are skipped. A release's payload and a pending
        result, over any guest memory, take the general path below, and so does a word on a host page the GPU owns
-       bytes of: the page is trapped, and the caller may hold the renderer's lock, which its landing needs */
+       bytes of: the page is trapped, and the caller may hold the renderer's lock, which its landing needs. The front
+       end's own writes still queued for the renderer's side come first (gpu_queue.c): from memory, an NVN event's add
+       (nvn_replay.c's FX_ADD) added to the word from before the add queued ahead of it */
     u64 cpu = 0, owners = 0;
+    u8 b[4] = {0};
+    if (gq_forward(gva, b, 4)) return snx_ld_le32(b);
     if (!atomic_load_explicit(&g_cs_any, memory_order_relaxed) &&
         !atomic_load_explicit(&g_gfx_any, memory_order_relaxed) &&
         !atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) &&
@@ -225,7 +243,6 @@ u32 gmem_r32(u64 gva) {
         !atomic_load_explicit(&g_gpu_releases, memory_order_acquire) && gmmu_run(gva, 4, &cpu) == 4 &&
         !own_hash(cpu, 4, &owners))
         return snx_ld_le32(GP(cpu));
-    u8 b[4] = {0};
     gmem_read(gva, b, 4);
     return snx_ld_le32(b);
 }
@@ -827,6 +844,7 @@ typedef struct GpuItem GpuItem;
 struct GpuItem {
     GpuItem* next;
     void (*fn)(void*);  /* set for a call */
+    int renderer;       /* the call runs on the renderer's side (gpu_call_renderer) */
     int (*poll)(void*); /* a cooperative call; zero yields without blocking another lane */
     u32 lane;
     void* arg;
@@ -930,8 +948,21 @@ static void stream_stop(GpuChannel* ch) {
     r3d_pending_flush();
     if (g_renderer->stream_end) gpu_stream_end();
 }
+/* the syncpoint value a submission promised, against the one its increments reached: after them, on the renderer's
+   side */
+static void job_check_run(const void* arg, u64 bytes) {
+    u32 c[2];
+    (void)bytes;
+    memcpy(c, arg, sizeof c);
+    u32 v = g_renderer->release_value_at_least ? g_renderer->release_value_at_least(c[0])
+            : g_renderer->release_value        ? g_renderer->release_value(c[0])
+                                               : syncpt_read(c[0]);
+    if ((i32)(v - c[1]) < 0)
+        WARN_LIMIT(8, "gpu: channel %u ended a submission at syncpoint value %u, short of the %u it promised\n", c[0],
+                   v, c[1]);
+}
 static void job_end(const GpuItem* j, GpuChannel* ch) {
-    u32 i, v;
+    u32 i;
     SNX_ZONE_V(z, "gpu job end", j->chan);
     r3d_const_flush(ch);
     r3d_pending_flush();
@@ -942,12 +973,8 @@ static void job_end(const GpuItem* j, GpuChannel* ch) {
     dma_snap_finish(j->chan, j->id);
     for (i = 0; i < j->incs; i++) stream_incr(j->chan);
     if (g_renderer->stream_end) gpu_stream_end();
-    v = g_renderer->release_value_at_least ? gpu_renderer_now()->release_value_at_least(j->chan)
-        : g_renderer->release_value        ? gpu_renderer_now()->release_value(j->chan)
-                                           : syncpt_read(j->chan);
-    if ((i32)(v - j->expect) < 0)
-        WARN_LIMIT(8, "gpu: channel %u ended a submission at syncpoint value %u, short of the %u it promised\n",
-                   j->chan, v, j->expect);
+    u32 check[2] = {j->chan, j->expect};
+    gq_call(job_check_run, check, sizeof check);
 }
 /* runs a job on the GPU thread, the queue unlocked: 1 when it ran to its end, 0 when it waits */
 static int run_job(GpuItem* j) {
@@ -1032,6 +1059,19 @@ static u32 runnable(void) {
     return n;
 }
 static int g_qmissed; /* under g_qlk: a poll of the pass running returned 0 */
+/* a call of gpu_call_renderer, as a record of the queue */
+typedef struct {
+    void (*fn)(void*);
+    void* arg;
+} CallRecord;
+static void call_record_run(const void* arg, u64 bytes) {
+    CallRecord c;
+    (void)bytes;
+    memcpy(&c, arg, sizeof c);
+    SNX_ZONE(z_call, "gpu call");
+    c.fn(c.arg);
+    SNX_ZONE_END(z_call);
+}
 /* one pass over the queue, its lock held (dropped while an item runs): 1 when something ran. *wake is the time to
    look again at the waits */
 static int run_pass(i64* wake) {
@@ -1081,11 +1121,16 @@ static int run_pass(i64* wake) {
                 g_qhead = it->next;
             if (g_qtail == it) g_qtail = prev;
             pm_unlock(&g_qlk);
-            gq_drain(); /* a call may read or change what the queued records touch */
             if (g_renderer->ready) gpu_ready();
-            SNX_ZONE(z_call, "gpu call");
-            it->fn(it->arg);
-            SNX_ZONE_END(z_call);
+            if (it->renderer) {
+                CallRecord c = {it->fn, it->arg};
+                gq_call(call_record_run, &c, sizeof c);
+            } else {
+                gq_drain(); /* a call may read or change what the queued records touch */
+                SNX_ZONE(z_call, "gpu call");
+                it->fn(it->arg);
+                SNX_ZONE_END(z_call);
+            }
             item_free(it);
             pm_lock(&g_qlk);
             return 1;
@@ -1288,7 +1333,7 @@ void gpu_poll_stats(GpuPollStats* s) {
     *s = g_qpstat;
     pm_unlock(&g_qlk);
 }
-void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
+static void call_queue(void (*fn)(void*), void* arg, const u32* chans, u32 nchans, int renderer) {
     GpuItem* it = (GpuItem*)calloc(1, sizeof *it);
     if (!it) fatal("gpu: out of memory queueing a call\n");
     it->fn = fn;
@@ -1296,10 +1341,15 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
     if (nchans > 4) nchans = 4;
     if (nchans) memcpy(it->chans, chans, nchans * sizeof *chans);
     it->nchans = nchans;
+    it->renderer = renderer;
     pm_lock(&g_qlk);
     queue_init();
     queue_append(it);
     pm_unlock(&g_qlk);
+}
+void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) { call_queue(fn, arg, chans, nchans, 0); }
+void gpu_call_renderer(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
+    call_queue(fn, arg, chans, nchans, 1);
 }
 void gpu_call_poll(int (*fn)(void*), void* arg, u32 lane) {
     if (lane >= 64 || !fn) fatal("gpu: invalid cooperative call lane %u\n", lane);
