@@ -70,12 +70,15 @@ int main(void) {
     assert(libc_strlen(c, s) == 12 && libc_strcmp(c, s, s) == 0 && libc_strcasecmp(c, s, put(0x2200, "HELLO, WORLD")) == 0);
     assert(libc_stpcpy(c, 0x3000, s) == 0x3000 + 12 && !strcmp((char*)g_mem + 0x3000, "hello, world"));
     assert(libc_strlcpy(c, 0x3100, s, 6) == 12 && !strcmp((char*)g_mem + 0x3100, "hello"));
-    /* strtok's place, and strtok_r's in the guest's pointer */
+    /* strtok's place, and strtok_r's in the guest's pointer: none before the first string (musl's NULL, where glibc
+       reads through it), and NULL again once the string is used up */
+    assert(libc_strtok(c, 0, put(0x2300, " ")) == 0);
     u64 t = put(0x4000, "a b  c");
     assert(libc_strtok(c, t, put(0x2300, " ")) == t && libc_strtok(c, 0, 0x2300) == t + 2 &&
            libc_strtok(c, 0, 0x2300) == t + 5 && libc_strtok(c, 0, 0x2300) == 0);
     t = put(0x4100, "x,y");
     assert(libc_strtok_r(c, t, put(0x2400, ","), 0x4200) == t && libc_strtok_r(c, 0, 0x2400, 0x4200) == t + 2);
+    assert(snx_ld_le64(g_mem + 0x4200) == 0 && libc_strtok_r(c, 0, 0x2400, 0x4200) == 0);
     /* numbers: the end pointer, and errno on overflow */
     u64 n = put(0x5000, "  -42xyz");
     assert(libc_strtol(c, n, 0x5100, 10) == -42 && snx_ld_le64(g_mem + 0x5100) == n + 5);
@@ -122,6 +125,13 @@ int main(void) {
         static const u32 a[] = {'A', 0xC9, 0}, b[] = {'a', 0xE9, 0};
         for (int i = 0; i < 3; i++) snx_st_le32(g_mem + 0x7200 + 4 * i, a[i]), snx_st_le32(g_mem + 0x7300 + 4 * i, b[i]);
         assert(libc_wcscasecmp(c, 0x7200, 0x7300) == 0 && libc_wcscmp(c, 0x7200, 0x7300) < 0);
+        /* wcstok as strtok_r: nothing before a string, and the place NULL once it is used up */
+        static const u32 ws[] = {'a', ' ', 'b', 0}, wsep[] = {' ', 0};
+        for (int i = 0; i < 4; i++) snx_st_le32(g_mem + 0x7400 + 4 * i, ws[i]);
+        for (int i = 0; i < 2; i++) snx_st_le32(g_mem + 0x7500 + 4 * i, wsep[i]);
+        assert(libc_wcstok(c, 0, 0x7500, 0x7600) == 0);
+        assert(libc_wcstok(c, 0x7400, 0x7500, 0x7600) == 0x7400 && libc_wcstok(c, 0, 0x7500, 0x7600) == 0x7408);
+        assert(snx_ld_le64(g_mem + 0x7600) == 0 && libc_wcstok(c, 0, 0x7500, 0x7600) == 0);
     } else
         puts("SKIP the wide functions: no UTF-8 locale on this host");
     assert(libc_fpclassifyf(c, 0.0f) == 2 && libc_fpclassifyf(c, 1.0f) == 4 && libc_fpclassifyf(c, __builtin_nanf("")) == 0);
