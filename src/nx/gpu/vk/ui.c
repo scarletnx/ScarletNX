@@ -241,7 +241,9 @@ static int pipeline_make(VkFormat format) {
         spec.space = g_vk.sc_space;
         spec.white = (f32)snx_hdr_paper_white(g_settings.hdr_paper_white);
         ba = i == UI_SPARSE && blend ? blended : (VkPipelineColorBlendAttachmentState){.colorWriteMask = 0xF};
+        int entered = snx_vk_compile_enter();
         ok = VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipes[i]));
+        snx_vk_compile_leave(entered);
     }
     if (vs) vkDestroyShaderModule(g_vk.dev, vs, NULL);
     if (fs) vkDestroyShaderModule(g_vk.dev, fs, NULL);
