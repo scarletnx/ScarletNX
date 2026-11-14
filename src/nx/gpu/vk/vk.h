@@ -367,6 +367,8 @@ typedef struct {
 } VkSparseShape;
 int vk_sparse_supported(const VkImageCreateInfo* ii);
 int vk_image_create_sparse(const VkImageCreateInfo* ii, VkImage* img);
+/* the same from min bytes of memory, where vk_image_create_sparse takes 4 MiB (texture.c's shed textures) */
+int vk_image_create_sparse_min(const VkImageCreateInfo* ii, VkImage* img, u64 min);
 const VkSparseShape* vk_image_sparse_shape(VkImage img); /* NULL for an image without sparse residency */
 int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* bytes);
 u64 vk_image_sparse_need(VkImage img, const u8* bits, const u64* keys);
