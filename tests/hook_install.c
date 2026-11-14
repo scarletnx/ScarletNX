@@ -109,6 +109,10 @@ void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
 /* hook.c takes its invalidation lock only when a hooked function's code changed */
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
+/* ext_skyline.c's: no hook for a mod's trampoline */
+GuestFn hook_ext_skyline(const char* symbol, u32 sdk, const char** handler) {
+    return (void)symbol, (void)sdk, (void)handler, NULL;
+}
 void fatal(const char* fmt, ...) {
     fprintf(stderr, "fatal: %s\n", fmt);
     exit(1);
