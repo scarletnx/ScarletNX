@@ -207,6 +207,18 @@ int hook_family_off(const char* family) {
     return !g_settings.native_hooks || family_listed(g_settings.hook_families_off, family);
 }
 
+int hook_states_refused(char* why, size_t whysize) {
+    const HostHook* h = &g_host.hook;
+    u32 i;
+    for (i = 0; i < h->count; i++)
+        if (!__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE) &&
+            !strcmp(hook_family_name[hook_family[h->hook[i]]], "cond_var")) {
+            snprintf(why, whysize, "save states need native_cond_var=0 (it is %d)", g_settings.native_cond_var);
+            return -1;
+        }
+    return 0;
+}
+
 /* which calls the module sends through the dispatch slots, once */
 static void routes_say(void) {
     const SnxRoutes* r = g_routes;

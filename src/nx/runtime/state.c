@@ -210,6 +210,7 @@ static void header_make(SnxStateHeader* h) {
 }
 int state_check(const SnxStateHeader* h, char* why, size_t whysize) {
     char stamp[sizeof h->stamp];
+    if (hook_states_refused(why, whysize)) return -1;
     game_stamp(stamp, sizeof stamp);
     return snx_state_fits(h, g_hle.kernel.title_id, stamp, why, whysize);
 }
@@ -651,6 +652,7 @@ static int heap_put(StateIo* io, u32 kind, u32 slot, const void* p, u64 n) {
 /* what the state can't hold: a game with these going is refused a save, as nothing could make them again */
 static int savable(char* why, size_t whysize) {
     u32 i, k;
+    if (hook_states_refused(why, whysize)) return -1;
     for (i = 0; i < BSD_MAX; i++)
         for (k = 0; k < BSD_MAX_FD; k++)
             if (g_hle.bsd.bsds[i].fd[k].s) {

@@ -1267,6 +1267,16 @@ setting Hook families verified
     help every call: the function's own code runs on copies of the memory it writes, then the handler on the game's,
     help and the log names each call whose result, registers or bytes differ (docs/platforms/nx/hooks.md). Slow: for checking a
     help hook, never for playing. Empty: none
+setting Native cond var
+    key native_cond_var
+    label Native condition variables
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = the game's std::condition_variable and std::mutex wait on the host's own (hle/hook/hooks.hook's cond_var
+    help family), and save states are refused, as a state can't hold a thread waiting there. 0 = the game's own code
+    help waits, and save states can be taken and loaded
 setting Shader corpus
     key shader_corpus
     text 1024

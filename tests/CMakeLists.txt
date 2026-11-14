@@ -1284,6 +1284,16 @@ target_include_directories(snx-test-hook-install PRIVATE "${PROJECT_SOURCE_DIR}/
 snx_service_swipc(snx-test-hook-install)
 snx_hookgen(snx-test-hook-install SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook" A32_MARKED)
 add_test(NAME hook_install COMMAND snx-test-hook-install)
+# native_cond_var (src/nx/hle/hook/family.c, hook.c) over tests/hook/states.hook: the cond_var family's hooks at 1, the
+# game's own wait at 0, and save states refused while the host's wait runs, by a message naming the setting's value
+add_executable(snx-test-hook-states hook_states.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
+snx_test_target(snx-test-hook-states 23)
+target_link_libraries(snx-test-hook-states PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
+target_include_directories(snx-test-hook-states PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_service_swipc(snx-test-hook-states)
+snx_hookgen(snx-test-hook-states SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/states.hook" A32_MARKED)
+add_test(NAME hook_states COMMAND snx-test-hook-states)
 # the jumps written over an invalidated native hook's start (src/nx/hle/hook/jump.c), every architecture's bytes
 # against what llvm-mc disassembles them to, on any host
 add_executable(snx-test-hook-jump hook_jump.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
