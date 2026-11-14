@@ -150,6 +150,9 @@ enum { SM86_K_FIX = 0, SM86_K_ALU = 1, SM86_K_UALU = 2 };
     X(ISBEWR, FIX, "ISBEWR")                                                                                           \
     X(PIXLD, FIX, "PIXLD")                                                                                             \
     X(OUT, ALU, "OUT")                                                                                                 \
+    X(LEPC, FIX, "LEPC")                                                                                               \
+    X(STUB_SET, FIX, "0x357 (the exit stub's address)")                                                                \
+    X(STUB_END, FIX, "0x957 (the exit stub's end)")                                                                    \
     X(TEX, FIX, "TEX")                                                                                                 \
     X(TEX_B, FIX, "TEX.B")                                                                                             \
     X(TLD, FIX, "TLD")                                                                                                 \

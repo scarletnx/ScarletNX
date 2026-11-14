@@ -931,6 +931,7 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[SH_KEY_WORDS],
         si->clip_enable = mask[6];
         if (stage == ST_GS) {
             memcpy(si->gp_skip_mask, mask + 12, sizeof si->gp_skip_mask);
+            si->rt_sint_mask = mask[5]; /* the generics the stage before writes */
         } else {
             si->tex_rect_mask = mask[12] | (u64)mask[13] << 32;
             shader_query_hint_unpack(mask + 14, si->tex_query_hint);

@@ -395,6 +395,13 @@ OUT          ---- 001 100100100
 OUT          ---- 100 100100100
 OUT          ---- 101 100100100
 OUT          ---- 110 100100100
+# LEPC (0x34e): the address of its own instruction into a register pair (CuAssembler's sm_86 record "LEPC R128"). A
+# geometry program that ends through an exit stub adds the stub's offset to it and hands the sum to 0x357, which sets
+# where EXIT goes on; the stub runs OUT and 0x957 before its own EXIT (nxnative's notes on one game's geometry
+# program, MIT). No public table names 0x357 or 0x957
+LEPC         ---- 001 101001110
+STUB_SET     ---- 001 101010111
+STUB_END     ---- 100 101010111
 # textures and surfaces: the handle in a constant buffer, or bindless (.B, in a register)
 TEX          ---- 101 101100000
 TEX_B        ---- 001 101100001

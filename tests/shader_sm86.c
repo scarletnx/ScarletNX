@@ -2527,12 +2527,13 @@ static Word iadd3(u32 dst, u32 a, u32 b) {
     return x;
 }
 /* Pointers from memory, as one game's vertex program that clears indirect draws: R2 is the buffer that c[0][0x110]
-   holds (0x1_0000_1000), whose words 0-5 are three pointers. The first, base + 0x40, is inside it: the STG through
-   it writes word 0x12 and the LDG reads word 0x10. The second, below the base, and the third, base + 0x1_0000_0040
-   (the same low word of the difference), are in no buffer: the STG is dropped and the LDG reads 0. The pointers are
-   read at R14 = R2 + R15 (0), which isn't the base itself: an address the program computes, which global_dynamic
-   compares with its buffers (an LDG.64 at the base itself plus an offset names a buffer of its own:
-   test_global_indirect) */
+   holds (0x1_0000_1000), whose words 0-5 are three pointers. The pointers are read at R14 = R2 + R15 (0), which isn't
+   the base itself: an address the program computes, so the buffer is a pointer table (SH_GBUF_TABLE_SSBO) whose
+   windows the renderer binds, and the accesses through its pointers compare their address with the buffer and with
+   each window (global_dynamic). The first pointer, base + 0x40, is inside the buffer: the STG through it writes word
+   0x12 and the LDG reads word 0x10. The third, 0x2_0000_1040, is in window 0 (which the test binds as the renderer
+   would): the STG through it writes that window's word 3. The second, below the base, is in no buffer: the LDG reads
+   0. The accesses reach 16 bytes past a pointer (ShaderInfo.table_reach) */
 static void test_global_pointer(const char* dir) {
     u8 code[16 * 18] = {0};
     Word m = alu(0x002, 5, 2, 255);
@@ -2561,35 +2562,81 @@ static void test_global_pointer(const char* dir) {
     put(code, 17, bra(17, 17, 7, 0));
     u32 vsph[32] = {0};
     vsph[0] = sph0(1, 1);
-    static u32 bank0[1024], buffer[64];
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 18 * 16, ST_VS, vsph, &si, &count);
+    int table = -1, window = -1;
+    for (int i = 0; spv && i < si.ngbuf; i++) {
+        if (si.gbuf_cbuf_off[i] == 0x110) table = i;
+        if (si.gbuf_cbuf_off[i] == SH_GBUF_TABLE_SSBO_KEY(0x110, 0)) window = i;
+    }
+    CHECK(spv && si.ngbuf == 16 && table >= 0 && window >= 0 && si.table_reach == 0x10);
+    if (spv) CHECK(keep_module(dir, "global_pointer", spv, count));
+    free(spv);
+    if (table < 0 || window < 0) return;
+    static u32 bank0[1024], buffer[64], win[16], mbase[64];
     bank0[0x110 / 4] = 0x1000;
     bank0[0x114 / 4] = 1;
     buffer[0] = 0x1040, buffer[1] = 1;
     buffer[2] = 0x0f00, buffer[3] = 1;
     buffer[4] = 0x1040, buffer[5] = 2;
     buffer[0x10] = 0x1234;
+    /* window 0's base and length at its buffer's slot (SNX_VKB_MBASE) */
+    mbase[4 * window] = 0x1040, mbase[4 * window + 1] = 2, mbase[4 * window + 2] = sizeof win;
     SpvEvalEnv env = {0};
     env.ubo[SNX_VKB_CB] = bank0;
     env.ubo_words[SNX_VKB_CB] = 1024;
-    env.ubo[SNX_VKB_SSBO] = buffer;
-    env.ubo_words[SNX_VKB_SSBO] = 64;
+    env.ubo[SNX_VKB_SSBO + table] = buffer;
+    env.ubo_words[SNX_VKB_SSBO + table] = 64;
+    env.ubo[SNX_VKB_SSBO + window] = win;
+    env.ubo_words[SNX_VKB_SSBO + window] = 16;
+    env.ubo[SNX_VKB_MBASE] = mbase;
+    env.ubo_words[SNX_VKB_MBASE] = 64;
     /* a draw's page table of its buffers (SNX_VKB_SMAP): each one bound whole, with no atlas */
     static u32 smap[48];
     for (u32 k = 0; k < 16; k++) smap[k] = ~0u;
     env.ubo[SNX_VKB_SMAP] = smap;
     env.ubo_words[SNX_VKB_SMAP] = 48;
     int ran = run_stage(ST_VS, code, 18, vsph, &env);
-    int ok = ran && buffer[0x12] == 7 && buffer[0x13] == 0 && env.position[0] == 0x1234 && env.position[1] == 0;
+    int ok = ran && buffer[0x12] == 7 && buffer[0x13] == 0 && win[3] == 9 && env.position[0] == 0x1234 &&
+             env.position[1] == 0;
     CHECK(ok);
     if (!ok)
-        fprintf(stderr, "global pointer: words %x %x, position %x %x\n", buffer[0x12], buffer[0x13], env.position[0],
-                env.position[1]);
-    ShaderInfo si = {0};
-    size_t count = 0;
-    u32* spv = sm86_to_spirv(code, 18 * 16, ST_VS, vsph, &si, &count);
-    CHECK(spv && si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x110 && (si.gbuf_wmask & 1));
-    if (spv) CHECK(keep_module(dir, "global_pointer", spv, count));
-    free(spv);
+        fprintf(stderr, "global pointer: words %x %x, window %x, position %x %x\n", buffer[0x12], buffer[0x13], win[3],
+                env.position[0], env.position[1]);
+    /* The draw binds the table and the window in one atlas of pages (SNX_VKB_SMAP: page 0 the table's 64 words, page
+       1 the window's 16), each binding the whole atlas of 2048 words. The third pointer, 0x1_0000_1400, is 1 KiB past
+       the table's base: within the atlas's length but past the table's own words, so it is the window's. Checked
+       against the atlas's length, the table took it and the store went nowhere */
+    static u32 atlas[2048], amap[50];
+    memset(atlas, 0, sizeof atlas);
+    atlas[0] = 0x1040, atlas[1] = 1;
+    atlas[2] = 0x0f00, atlas[3] = 1;
+    atlas[4] = 0x1400, atlas[5] = 1;
+    atlas[0x10] = 0x1234;
+    for (u32 k = 0; k < 16; k++) amap[k] = ~0u;
+    amap[table] = 48, amap[16 + table] = 0, amap[32 + table] = 64;
+    amap[window] = 49, amap[16 + window] = 0, amap[32 + window] = 16;
+    amap[48] = 0, amap[49] = 1;
+    memset(mbase, 0, sizeof mbase);
+    mbase[4 * window] = 0x1400, mbase[4 * window + 1] = 1, mbase[4 * window + 2] = 64;
+    env = (SpvEvalEnv){0};
+    env.ubo[SNX_VKB_CB] = bank0;
+    env.ubo_words[SNX_VKB_CB] = 1024;
+    env.ubo[SNX_VKB_SSBO + table] = atlas;
+    env.ubo_words[SNX_VKB_SSBO + table] = 2048;
+    env.ubo[SNX_VKB_SSBO + window] = atlas;
+    env.ubo_words[SNX_VKB_SSBO + window] = 2048;
+    env.ubo[SNX_VKB_MBASE] = mbase;
+    env.ubo_words[SNX_VKB_MBASE] = 64;
+    env.ubo[SNX_VKB_SMAP] = amap;
+    env.ubo_words[SNX_VKB_SMAP] = 50;
+    ran = run_stage(ST_VS, code, 18, vsph, &env);
+    ok = ran && atlas[0x12] == 7 && atlas[1024 + 3] == 9 && env.position[0] == 0x1234 && env.position[1] == 0;
+    CHECK(ok);
+    if (!ok)
+        fprintf(stderr, "global pointer in an atlas: words %x, window %x, position %x %x\n", atlas[0x12],
+                atlas[1024 + 3], env.position[0], env.position[1]);
 }
 
 /* The pieces of a 64-bit division by a reciprocal, as one game's exposure program has it (the quotient of
@@ -3990,6 +4037,141 @@ static void test_mesh_refused(void) {
     refused(code, 3, ST_TS, sph, k, "task payload of 0x4 bytes");
 }
 
+/* A passthrough geometry program as a culling program has it, of a triangle: the exit stub's setup (LEPC, 0x357),
+   SR_INVOCATION_INFO, then ALD.64 R2, a[0x80], R2 of vertex 1 through ISBERD (the destination its own vertex register),
+   the pair into generic 1.xy and the invocation info into generic 1.z, then the viewport mask and EXIT. The
+   evaluator runs it: the input triangle comes out once (3 vertices, 1 primitive), each vertex's position and generic 0
+   from the input arrays, as the skip mask forwards them (of generics 0 and 1 that it forwards, the vertex program
+   writes 0 and 2), and generic 1 as the program wrote it on every vertex, past each EmitVertex. A viewport mask of 0
+   emits nothing. An emit of its own (OUT) is refused in a passthrough program, and SR_INVOCATION_INFO outside a
+   geometry program */
+static u32 geometry_program(u8* code, u32 viewport_mask) {
+    u32 n = 0;
+    Word x = fix(0x34e); /* LEPC R4 */
+    set(&x, 16, 8, 4);
+    put(code, n++, x);
+    x = fix(0x357);
+    set(&x, 24, 8, 4);
+    put(code, n++, x);
+    x = fix(0x919); /* S2R R6, SR_INVOCATION_INFO */
+    set(&x, 16, 8, 6);
+    set(&x, 72, 8, 0x1d);
+    put(code, n++, x);
+    put(code, n++, mov_imm(2, 1));
+    put(code, n++, isbe_insn(0, 2, 2, 0, 0, 0, 0, 0)); /* ISBERD R2, [R2] */
+    x = fix(0x321);                                    /* ALD.64 R2, a[0x80], R2 */
+    set(&x, 16, 8, 2);
+    set(&x, 24, 8, 255);
+    set(&x, 32, 8, 2);
+    set(&x, 40, 10, 0x80);
+    set(&x, 74, 2, 1);
+    put(code, n++, x);
+    put(code, n++, ast(0x90, 2, 2));
+    put(code, n++, ast(0x98, 6, 1));
+    put(code, n++, mov_imm(5, viewport_mask));
+    x = ast(0x3a0, 5, 1);
+    set(&x, 64, 8, 0); /* the output handle, R0 */
+    put(code, n++, x);
+    put(code, n++, exit_insn());
+    put(code, n++, fix(0x957));
+    put(code, n, bra(n, n, 7, 0));
+    return n + 1;
+}
+static void test_geometry(const char* dir) {
+    u8 code[16 * 16] = {0};
+    u32 n = geometry_program(code, 1);
+    u32 sph[32] = {0};
+    sph[0] = sph0(1, 4) | 1u << 24; /* passthrough */
+    sph[3] = 7u << 24;              /* a triangle strip */
+    sph[4] = 1;
+    ShaderInfo si = {0};
+    si.rt_int_mask = 3;
+    si.rt_sint_mask = 5; /* the vertex program writes generics 0 and 2 */
+    for (u32 w = 0; w < 8; w++) si.gp_skip_mask[w] = 0xffffffffu;
+    si.gp_skip_mask[0] = 0x0fffffffu; /* the position */
+    si.gp_skip_mask[1] = 0xffffff00u; /* generics 0 and 1 */
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_GS, sph, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "geometry: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(spv_declares(spv, count, 2 /* Geometry */));
+    CHECK(si.in_mask == 1 && si.out_mask == 3);
+    CHECK(keep_module(dir, "gs", spv, count));
+    for (u32 culled = 0; culled < 2; culled++) {
+        if (culled) {
+            free(spv);
+            n = geometry_program(code, 0);
+            ShaderInfo again = si;
+            again.in_mask = again.out_mask = 0;
+            spv = sm86_to_spirv(code, n * 16, ST_GS, sph, &again, &count);
+            if (!spv) break;
+        }
+        static SpvEvalEnv env;
+        memset(&env, 0, sizeof env);
+        for (u32 v = 0; v < 3; v++)
+            for (u32 k = 0; k < 4; k++) {
+                env.gs_in[32][4 * v + k] = f2u(0.25f * (float)(v + 1) + (float)k);
+                env.gs_in[0][4 * v + k] = f2u(10.0f * (float)(v + 1) + (float)k);
+            }
+        env.builtin[7][0] = 42; /* PrimitiveId */
+        const char* why = spv_eval(spv, count, &env);
+        if (why) fprintf(stderr, "geometry: the evaluator stops at %s\n", why);
+        CHECK(!why);
+        if (culled) {
+            CHECK(env.emitted == 0 && env.primitives == 0);
+            continue;
+        }
+        CHECK(env.emitted == 3 && env.primitives == 1);
+        int ok = 1;
+        for (u32 v = 0; v < 3 && v < env.emitted; v++) {
+            const u32(*o)[4] = env.vertex[v];
+            for (u32 k = 0; k < 4; k++)
+                ok &= o[32][k] == env.gs_in[32][4 * v + k] && o[0][k] == env.gs_in[0][4 * v + k];
+            /* vertex 1's generic 0.x and .y, though the ALD's destination is its vertex register */
+            ok &= o[1][0] == env.gs_in[0][4] && o[1][1] == env.gs_in[0][5] && o[1][2] == 3u << 16 && o[33][0] == 42;
+            if (!ok)
+                fprintf(stderr, "geometry: vertex %u generic 1 %08x %08x %08x, position.x %08x, id %u\n", v, o[1][0],
+                        o[1][1], o[1][2], o[32][0], o[33][0]);
+        }
+        CHECK(ok);
+    }
+    free(spv);
+    /* a point size store: the GeometryPointSize capability where the device has it, else no point size at all */
+    u8 ps[16 * 4] = {0};
+    put(ps, 0, mov_imm(1, f2u(2.0f)));
+    put(ps, 1, ast(0x6c, 1, 1));
+    put(ps, 2, exit_insn());
+    put(ps, 3, bra(3, 3, 7, 0));
+    int had = g_shader_stage_point_size;
+    for (int feature = 0; feature < 2; feature++) {
+        g_shader_stage_point_size = feature;
+        ShaderInfo p = si;
+        spv = sm86_to_spirv(ps, 4 * 16, ST_GS, sph, &p, &count);
+        CHECK(spv && spv_declares(spv, count, 24 /* GeometryPointSize */) == feature && p.writes_point_size == feature);
+        if (spv && feature) CHECK(keep_module(dir, "gs_point_size", spv, count));
+        free(spv);
+    }
+    g_shader_stage_point_size = had;
+    ShaderInfo base = {0};
+    base.rt_int_mask = 3;
+    Word x = alu(0x124, 1, 255, 255); /* OUT.EMIT RZ, RZ, RZ */
+    set(&x, 78, 2, 1);
+    put(code, 1, x);
+    refused(code, n, ST_GS, sph, base, "OUT emits in a passthrough geometry program");
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    u8 vs[16 * 3] = {0};
+    x = fix(0x919);
+    set(&x, 72, 8, 0x1d);
+    put(vs, 0, x);
+    put(vs, 1, exit_insn());
+    put(vs, 2, bra(2, 2, 7, 0));
+    refused(vs, 3, ST_VS, vsph, (ShaderInfo){0}, "S2R system register 0x1d outside a geometry program");
+}
+
 /* A fragment program's inputs that its draw's mesh program writes per primitive (ShaderInfo.prim_mask) are
    PerPrimitiveEXT, and the others are not */
 static void test_fragment_per_primitive(const char* dir) {
@@ -4882,6 +5064,7 @@ int main(int argc, char** argv) {
     test_mesh_after_task(dir);
     test_mesh_output_bytes();
     test_mesh_refused();
+    test_geometry(dir);
     test_fragment_per_primitive(dir);
     test_fragment_unfed(dir);
     test_uses_isbe();

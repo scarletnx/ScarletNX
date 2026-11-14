@@ -2430,6 +2430,54 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
     return 1;
 }
 
+/* the words of global buffer desc's descriptor (SH_GBUF_*) into v: NVN's descriptors in cbuf 0 (the address and the
+   size), or one of the program's own constant buffers (a bare address) */
+static void gbuf_words(const DsState* ds, int stage, u32 desc, u32 v[3]) {
+    DsCbBlock in = ds_cb_inline(ds, stage, SH_GBUF_BANK(desc));
+    u64 cb = in.bytes ? 0 : ds->bind.cb_addr[stage][SH_GBUF_BANK(desc)];
+    if (cb && SH_GBUF_BANK(desc)) vk_buf_mem_need(cb + SH_GBUF_OFFSET(desc), 8);
+    if (cb) { /* words of a constant buffer, not a header: a pending write there is waited for */
+        gmem_read(cb + SH_GBUF_OFFSET(desc), v, SH_GBUF_BANK(desc) ? 8 : 12);
+        snx_le32_array(v, SH_GBUF_BANK(desc) ? 2 : 3);
+    }
+    for (u32 w = 0; in.bytes && w < (SH_GBUF_BANK(desc) ? 2u : 3u); w++)
+        v[w] = ds_inline_word(in, SH_GBUF_OFFSET(desc) + 4 * w);
+}
+/* The windows of the pointer table in the storage buffer whose descriptor is parent (SH_GBUF_TABLE_SSBO), as many as
+   the program has for it: the buffer's words, read from guest memory (its first 1 MiB, where a pending write is
+   waited for), are the pointers, and each window binds ShaderInfo.table_reach bytes past those in it. Two runs are
+   joined only where the memory between them is all mapped: a draw's window is copied as one range. One game's reset
+   of its terrain's records reads 1485 of the 15000 pointers in its table, which only the first 4 KiB held 512 of */
+#define TABLE_SSBO_MAX (1u << 20)
+static void table_ssbo_windows(const DsState* ds, const VkSh* sh, int stage, u32 parent, u64* base, u32* len) {
+    u32 windows = 0, v[3] = {0, 0, 0};
+    for (int i = 0; i < sh->si.ngbuf && i < 16; i++)
+        windows += SH_GBUF_TABLE_SSBO(sh->si.gbuf_cbuf_off[i]) && SH_GBUF_PARENT(sh->si.gbuf_cbuf_off[i]) == parent;
+    if (windows > SH_GBUF_TABLE_MAX) windows = SH_GBUF_TABLE_MAX;
+    u64 addr = 0;
+    gbuf_words(ds, stage, parent, v);
+    u32 bytes = vk_gbuf_desc(sh->stage, parent, v, &addr) & ~7u, n = 0;
+    if (bytes > TABLE_SSBO_MAX) bytes = TABLE_SSBO_MAX;
+    /* the words read into a buffer kept from draw to draw (draws hold vk_lock), through gmem_read, which takes the
+       table's runs of guest memory wherever they are and reads what isn't mapped as zero */
+    static u64* words;
+    static u32 words_size;
+    if (addr && bytes > words_size) {
+        u64* grown = realloc(words, bytes);
+        if (grown) words = grown, words_size = bytes;
+    }
+    if (addr && bytes && bytes <= words_size) {
+        vk_buf_mem_need(addr, bytes);
+        gmem_read(addr, words, bytes);
+        for (n = 0; n < bytes / 8; n++) words[n] = snx_ld_le64(words + n);
+    }
+    u32 runs = vk_pointer_windows(words, n, windows, sh->si.table_reach, 1, base, len);
+    if (runs)
+        LOG_LIMIT(1,
+                  "vulkan: a program's pointer table in memory has %u runs of mapped memory that its %u windows can't "
+                  "hold: the pointers in the others reach nothing\n",
+                  runs, windows);
+}
 /* the global memory each stage of the draw reads or writes, sh[] by stage (vertex, the tessellation stages, geometry,
    fragment) */
 static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* const sh[VK_DRAW_STAGES]) {
@@ -2440,24 +2488,29 @@ static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* cons
         u64 cb0 = ds_cb_inline(ds, stage, 0).bytes ? 0 : ds->bind.cb_addr[stage][0];
         draw->n[s] = sh[s]->si.ngbuf < 16 ? sh[s]->si.ngbuf : 16;
         if (cb0 && draw->n[s]) vk_buf_mem_need(cb0, 0x610);
+        u32 table = 0; /* the parent + 1 whose windows tw_ holds */
+        u64 tw_base[SH_GBUF_TABLE_MAX];
+        u32 tw_len[SH_GBUF_TABLE_MAX];
         for (int i = 0; i < draw->n[s]; i++) {
             VkDrawGbuf* b = &draw->b[s][i];
             u32 v[3] = {0, 0, 0}, desc = sh[s]->si.gbuf_cbuf_off[i];
+            b->writable = (sh[s]->si.gbuf_wmask >> i) & 1;
+            if (SH_GBUF_TABLE_SSBO(desc)) { /* a window of a pointer table in memory, its base in SNX_VKB_MBASE */
+                if (table != SH_GBUF_PARENT(desc) + 1) {
+                    table_ssbo_windows(ds, sh[s], stage, SH_GBUF_PARENT(desc), tw_base, tw_len);
+                    table = SH_GBUF_PARENT(desc) + 1;
+                }
+                b->addr = tw_base[SH_GBUF_TABLE_WINDOW(desc)];
+                b->size = (tw_len[SH_GBUF_TABLE_WINDOW(desc)] + 3) & ~3u;
+                b->bare = 1;
+                continue;
+            }
             /* the constant buffer holding the address (SH_GBUF_*): NVN's descriptors in cbuf 0, or one of the
                program's own. An indirect buffer's is its parent's, which vk_gbuf_desc follows to the pointer, and it
                takes the memory mapped from there, as a bare address does */
-            DsCbBlock in = ds_cb_inline(ds, stage, SH_GBUF_BANK(desc));
-            u64 cb = in.bytes ? 0 : ds->bind.cb_addr[stage][SH_GBUF_BANK(desc)];
-            if (cb && SH_GBUF_BANK(desc)) vk_buf_mem_need(cb + SH_GBUF_OFFSET(desc), 8);
-            if (cb) { /* words of a constant buffer, not a header: a pending write there is waited for */
-                gmem_read(cb + SH_GBUF_OFFSET(desc), v, SH_GBUF_BANK(desc) ? 8 : 12);
-                snx_le32_array(v, SH_GBUF_BANK(desc) ? 2 : 3);
-            }
-            for (u32 w = 0; in.bytes && w < (SH_GBUF_BANK(desc) ? 2u : 3u); w++)
-                v[w] = ds_inline_word(in, SH_GBUF_OFFSET(desc) + 4 * w);
+            gbuf_words(ds, stage, desc, v);
             b->size = vk_gbuf_desc(sh[s]->stage, desc, v, &b->addr);
             b->bare = SH_GBUF_BANK(desc) != 0 || SH_GBUF_INDIRECT(desc);
-            b->writable = (sh[s]->si.gbuf_wmask >> i) & 1;
         }
     }
 }
@@ -2621,6 +2674,25 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                         : vk_buf_copy(0, size, &b, &o);
         if (!ok) return VK_NULL_HANDLE;
         dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o, gb->aliased ? gb->range : size);
+    }
+    /* each pointer table window's base and length, at its buffer's slot: 16 vec4 of words (SNX_VKB_MBASE, which is
+       the fragment stage's SNX_VKB_RS: the translator makes no table for a fragment program) */
+    u32 mb[64] = {0}, tables = 0;
+    for (int i = 0; i < s->si.ngbuf && i < 16; i++)
+        if (SH_GBUF_TABLE(s->si.gbuf_cbuf_off[i])) {
+            mb[4 * i] = (u32)draw->b[stage][i].addr;
+            mb[4 * i + 1] = (u32)(draw->b[stage][i].addr >> 32);
+            mb[4 * i + 2] = draw->b[stage][i].size;
+            tables = 1;
+        }
+    if (tables) {
+        VkBuffer mbase;
+        u64 mo;
+        u8* p = vk_stage(sizeof mb, vk_stage_align(), &mbase, &mo);
+        if (!p) return VK_NULL_HANDLE;
+        memcpy(p, mb, sizeof mb);
+        snx_le32_array(p, sizeof mb / 4); /* the shader reads the words little-endian */
+        dw_buffer(&d, set, SNX_VKB_MBASE, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, mbase, mo, sizeof mb);
     }
     if (s->si.ngbuf)
         dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, draw->map_buf[stage], draw->map_off[stage],
@@ -3398,8 +3470,12 @@ static int draw_shaders(const DsState* ds, u32 topology, int mesh, DrawShaders* 
                  : NULL;
     if (tes_on && !tcs_on)
         o->tcs = vk_tess_passthrough(ds->rkey.patch_vertices ? ds->rkey.patch_vertices : 1, o->vs, o->tes);
+    /* the generics the stage before writes, which an SM86 passthrough program forwards (and no others). A Maxwell
+       program doesn't read them: 0 keeps its key one for each program */
+    const VkSh* before = tes_on ? o->tes : o->vs;
+    u32 before_out = g_shader_sm86 && before && !before->failed ? before->si.out_mask : 0;
     o->gs = gs_on ? vk_shader_get(ds, p->code[4], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, p->tess_params),
-                                  0, clip, 0, 0, 0, 0, xfb_key ? xfb : NULL, NULL, 0, 0, 0, 0)
+                                  before_out, clip, 0, 0, 0, 0, xfb_key ? xfb : NULL, NULL, 0, 0, 0, 0)
                   : NULL;
     VkSh** middle[3] = {&o->tcs, &o->tes, &o->gs};
     for (int i = 0; i < 3; i++) {
