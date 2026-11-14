@@ -336,7 +336,7 @@ static const char* res_name(u32 k) {
         [VK_RESOURCE_BUFFER_MAINTENANCE] = "buffer maintenance",
         [VK_RESOURCE_BUFFER_CACHE_BUILD] = "buffer cache build",
         [VK_RESOURCE_CMD_RESET] = "command resets"};
-    return k < VK_RESOURCE_N ? names[k] : "?";
+    return k < VK_RESOURCE_N && names[k] ? names[k] : "?";
 }
 static int vkr_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
                     double sdy) {
