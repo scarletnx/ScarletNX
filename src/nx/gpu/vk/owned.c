@@ -384,7 +384,21 @@ VkOwnRes* vk_own_res_new(u64 size, u32 by) {
         u64 usage, budget;
         vk_mem_use(&usage, &budget);
         if (usage + want > budget / 5 * 4 && own_pool_await(want)) e = own_pool_take(want);
-        if (!e.buf)
+        /* A copy engine's result with the heap past four fifths of its budget: in system memory from the start. They
+           are a game's streamed bytes, which a texture's load reads once, over the bus: in Mario Kart World on a GPU
+           of 2 GB, 2,000 tile results took 370 MB of the GPU's memory as its race loaded, and its render targets and
+           storage images found none */
+        if (!e.buf && by == VK_OWN_BY_COPY && usage + want > budget / 5 * 4 && g_vk.mem_model != VK_MEM_UMA) {
+            ai.at = DM_HOST;
+            made = vk_buffer_create(&bi, &ai, &r->buf, &r->mem, NULL) == VK_SUCCESS;
+            ai.at = DM_DEVICE;
+            if (made) {
+                r->host = 1;
+                g_owned.spilled++;
+                g_owned.spilled_bytes += want;
+            }
+        }
+        if (!e.buf && !made)
             made = vk_buffer_create(&bi, &ai, &r->buf, &r->mem, NULL) == VK_SUCCESS ||
                    (own_pool_drop() && vk_buffer_create(&bi, &ai, &r->buf, &r->mem, NULL) == VK_SUCCESS);
         if (!e.buf && !made && own_pool_await(want)) e = own_pool_take(want);
