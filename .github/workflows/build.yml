@@ -586,16 +586,16 @@ jobs:
       # The action pins its own setup script only: the tools that script downloads are pinned here to a commit of
       # Anylinux-AppImages, and checked against their SHA-256 below
       - name: Install the packaging tools
-        uses: pkgforge-dev/anylinux-setup-action@b2d1ce4216f71162e00ae58fa11ee9aeb723d0d5 # v5
+        uses: pkgforge-dev/anylinux-setup-action@ba7321e11074f9e387a0634e653d09b115d576cd # v6
         env:
-          QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/c28bb80743106fdf08cb10fb27d19d9932eb0865/useful-tools/quick-sharun.sh
-          DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/c28bb80743106fdf08cb10fb27d19d9932eb0865/useful-tools/get-debloated-pkgs.sh
-          MAKE_AUR_PACKAGE: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/c28bb80743106fdf08cb10fb27d19d9932eb0865/useful-tools/make-aur-package.sh
+          QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/quick-sharun.sh
+          DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/get-debloated-pkgs.sh
+          MAKE_AUR_PACKAGE: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/make-aur-package.sh
       - name: Check the packaging tools
         run: |
           sha256sum -c <<'EOF'
-          4ce6946b8d6c9d0f472d41ad533e920132de66ec58d1e3445ea4f1d27376eec7  /usr/local/bin/quick-sharun
-          c8880a7e2f0a47b68ed5ae34e1b7aeecc2e5b3a55f3583b0b43d9818a15dbe8b  /usr/local/bin/get-debloated-pkgs
+          0aea2f589658e5db1659a6ccb8d29546c4e03028f1e29b37c6450cece917249a  /usr/local/bin/quick-sharun
+          d215f7676785f1a1bb8784e69085d66c1df81488ef31f1ba7198325a5be05130  /usr/local/bin/get-debloated-pkgs
           86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
           EOF
       # llvm: Clang's own, and the opt of the LLVM settings; the runtime links LLVM's libraries statically (below).
@@ -775,12 +775,12 @@ jobs:
     timeout-minutes: 180
     continue-on-error: true
     env:
-      QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/c28bb80743106fdf08cb10fb27d19d9932eb0865/useful-tools/quick-sharun.sh
-      QUICK_SHARUN_SHA: 4ce6946b8d6c9d0f472d41ad533e920132de66ec58d1e3445ea4f1d27376eec7
-      APPIMAGETOOL_URL: https://github.com/pkgforge-dev/appimagetool/releases/download/0.5.3/appimagetool-full-x86_64-linux
-      APPIMAGETOOL_SHA: 9a6fd46ee6bc5910e7acfa68f9d8090f3751e956840b90304ef57d64321a530d
-      DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/c28bb80743106fdf08cb10fb27d19d9932eb0865/useful-tools/get-debloated-pkgs.sh
-      DEBLOATED_PACKAGES_SHA: c8880a7e2f0a47b68ed5ae34e1b7aeecc2e5b3a55f3583b0b43d9818a15dbe8b
+      QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/quick-sharun.sh
+      QUICK_SHARUN_SHA: 0aea2f589658e5db1659a6ccb8d29546c4e03028f1e29b37c6450cece917249a
+      APPIMAGETOOL_URL: https://github.com/pkgforge-dev/appimagetool/releases/download/0.5.6/appimagetool-full-x86_64-linux
+      APPIMAGETOOL_SHA: a92214d831d234d1be31699657c572799e5c8417c9abf129e2f748cc9c612f85
+      DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/get-debloated-pkgs.sh
+      DEBLOATED_PACKAGES_SHA: d215f7676785f1a1bb8784e69085d66c1df81488ef31f1ba7198325a5be05130
     strategy:
       fail-fast: false
       # A pull request builds big-endian ppc64's alone; ppc64le, riscv64 and loongarch64 build where a nightly can
@@ -923,8 +923,8 @@ jobs:
           [ -n "$LINUX_ONLY" ] || debloated="mesa-nano $debloated"
           get-debloated-pkgs $debloated
           EOF
-      # The build machine's packaging tool: quick-sharun makes the AppImage, and this appimagetool compresses natively
-      # and takes the target's runtime from APPIMAGE_ARCH
+      # The build machine's packaging tool: quick-sharun makes the AppImage, and this appimagetool compresses natively,
+      # takes the target's runtime from APPIMAGE_ARCH, and resolves mkdwarfs for this machine rather than the target's
       - name: Install the packaging tools
         run: |
           docker exec -i -e QUICK_SHARUN -e QUICK_SHARUN_SHA -e APPIMAGETOOL_URL -e APPIMAGETOOL_SHA build sh -s <<'EOF'
@@ -934,20 +934,6 @@ jobs:
           chmod +x /usr/local/bin/quick-sharun /usr/local/bin/appimagetool
           printf '%s  %s\n' "$QUICK_SHARUN_SHA" /usr/local/bin/quick-sharun \
                            "$APPIMAGETOOL_SHA" /usr/local/bin/appimagetool | sha256sum -c
-          EOF
-      # appimagetool takes a mkdwarfs on PATH before the target's it would fetch, and qemu runs that one: this is the
-      # x86-64 build of the DwarFS release appimagetool pins, checked against the SHA-256 it pins
-      - name: Install this machine's mkdwarfs
-        env:
-          MKDWARFS: https://github.com/mhx/dwarfs/releases/download/v0.15.6/dwarfs-universal-0.15.6-Linux-x86_64
-        run: |
-          docker exec -i -e MKDWARFS build sh -s <<'EOF'
-          set -eu
-          curl -fsSL --retry 15 --retry-delay 20 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/dwarfs-universal "$MKDWARFS"
-          echo '50891c38ba359db8271819a6cbf6aaa8068681523f0c4f2b8242007a45edaa28  /usr/local/bin/dwarfs-universal' |
-            sha256sum -c
-          chmod +x /usr/local/bin/dwarfs-universal
-          ln -sf dwarfs-universal /usr/local/bin/mkdwarfs
           EOF
       # The build machine's: Clang and LLD build for the target (cmake/cross.cmake) and LLVM's libraries for it
       # (scripts/linux-llvm.sh), ccache caches the compiles, glslang builds the shaders, qemu-user runs the target's
