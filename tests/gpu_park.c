@@ -5,9 +5,12 @@
    waits for; the waiting channel's later jobs, and the calls that name it, stay behind it while a call naming another
    channel doesn't; a release the CPU writes and a syncpoint incremented off the GPU thread end waits; a stream
    resumes in the middle of a method batch, of a job's entries, and of a macro; and a wait nothing ends times out. A
-   new channel's render enable override starts at USE_RENDER_ENABLE, as Eden's does.
+   new channel's render enable override starts at USE_RENDER_ENABLE, as Eden's does. With the argument split,
+   gpu_queue.c's renderer thread runs the queue's records, and the front end's constant buffer upload waits in the
+   queue behind the work before it.
    Each mark is a ClearBuffers value the stand-in renderer records; the platform's locks are pthreads */
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/renderer.h"
 #include "support/dma_ref.h"
@@ -367,10 +370,51 @@ static void expect(int ok, const char* what) {
 }
 #define FAST 500000000ull /* a wait an event ends, well short of the 1 and 2 s timeouts */
 
+/* ------------------------------------------------ gpu_split=1: gpu_queue.c's renderer thread runs the records */
+#define CBUF (SEM + 0x300) /* a word of a constant buffer */
+/* a record that holds the renderer thread until the front end opens the gate: what the front end queues after it
+   stays queued while the front end goes on */
+static void renderer_held(const void* arg, u64 bytes) {
+    (void)arg, (void)bytes;
+    held_call(NULL);
+}
+static void open_gate(void) {
+    pthread_mutex_lock(&gate_lock);
+    gate_open = 1;
+    pthread_cond_broadcast(&gate_cv);
+    pthread_mutex_unlock(&gate_lock);
+}
+/* on the GPU thread, the front end: a constant buffer upload (LOAD_CONSTANT_BUFFER's gmem_write_cb) with the renderer
+   thread behind it. A draw queued before it must read the word from before it, so memory keeps it until the record
+   runs */
+static u32 cb_before_run;
+static void cb_upload(void* arg) {
+    (void)arg;
+    gq_call(renderer_held, NULL, 0);
+    u8 v[4];
+    snx_st_le32(v, 9);
+    gmem_write_cb(CBUF, v, sizeof v);
+    cb_before_run = snx_le32(*((u32*)guest + CBUF / 4));
+    open_gate();
+}
+static int split_main(void) {
+    g_settings.gpu_split = 1;
+    cpu_store(CBUF, 3);
+    gpu_call(cb_upload, NULL, NULL, 0);
+    gpu_call(called, (void*)(uintptr_t)0x991, NULL, 0); /* a call runs once every record queued before it ran */
+    wait_marks(1);
+    u32 word = snx_le32(*((u32*)guest + CBUF / 4));
+    expect(cb_before_run == 3, "a constant buffer upload reached memory before the renderer thread ran its record");
+    expect(marks_are((u32[]){0x991}, 1) && word == 9, "the constant buffer upload's record did not run");
+    if (!failures) printf("gpu_park split: ok\n");
+    return failures != 0;
+}
+
 /* tests/support/gpu_front_stub.c: the renderer side's decision on draws and clears, which engines.c's render enable
    makes */
 extern int (*g_stub_render_state)(u32 owner, u32* pred);
-int main(void) {
+int main(int argc, char** argv) {
+    if (argc > 1 && !strcmp(argv[1], "split")) return split_main();
     g_stub_render_state = gpu_render_state;
     /* the front stub runs draws and clears on the GPU thread as they come, so gpu_queue.c's records (DMA copies,
        writes) run there too, in their order with them: on a renderer thread of their own they ran after the clears

@@ -34,7 +34,8 @@ void fatal(const char* fmt, ...) {
 static int on_thread = 1;
 int gpu_on_thread(void) { return on_thread; }
 
-/* what ran, in its order: the kind (W write, R release, I block linear upload), the address and a hash of the bytes */
+/* what ran, in its order: the kind (W write, C constant buffer upload, R release, I block linear upload), the address
+   and a hash of the bytes */
 typedef struct {
     char kind;
     u64 gva, size, hash;
@@ -57,6 +58,11 @@ static void note(char kind, u64 gva, const void* p, u64 n) {
     if (t_gq_run && gq_queues()) queued_in_run++; /* a record runs, so its writes go to memory */
     if (nran < RAN_MAX) ran[nran++] = (Ran){kind, gva, n, fnv(p, n)};
     if (!pthread_equal(pthread_self(), front)) off_front++;
+}
+int gmem_write_cb_now(u64 gva, const void* src, u64 size) {
+    note('C', gva, src, size);
+    if (gva + size <= sizeof mem) memcpy(mem + gva, src, (size_t)size);
+    return 0;
 }
 int gmem_write_now(u64 gva, const void* src, u64 size) {
     note('W', gva, src, size);
@@ -93,6 +99,12 @@ static void put_write(u64 gva, u64 n, u32 seed) {
     want[nwant++] = (Ran){'W', gva, n, fnv(buf, n)};
     gq_write(gva, buf, n);
     memset(buf, 0xEE, (size_t)n); /* the queue keeps its own copy */
+}
+static void put_cb(u64 gva, u64 n, u32 seed) {
+    fill(buf, n, seed);
+    want[nwant++] = (Ran){'C', gva, n, fnv(buf, n)};
+    gq_write_cb(gva, buf, n);
+    memset(buf, 0xEE, (size_t)n);
 }
 static void put_release(u64 gva, u32 v) {
     u8 b[4] = {(u8)v, (u8)(v >> 8), (u8)(v >> 16), (u8)(v >> 24)};
@@ -186,6 +198,11 @@ static int split_main(void) {
           "a read past a queued write did not take memory's bytes for the rest");
     /* a read of bytes that no queued write covers neither waits nor forwards */
     CHECK(gq_forward(0x3000, got, 4) == 0, "a read of bytes no write covers was forwarded");
+    u8 e4[4] = {0xE3, 0xE3, 0xE3, 0xE3};
+    want[nwant++] = (Ran){'C', 0x2000, 4, fnv(e4, 4)};
+    gq_write_cb(0x2000, e4, 4);
+    memset(got, 0, sizeof got);
+    CHECK(gq_forward(0x2000, got, 4) == 1 && got[0] == 0xE3, "a queued constant buffer upload was not forwarded");
     gq_read_wait(0x3000, 4);
     CHECK(nran == 0, "a read of bytes no write covers waited for the renderer thread");
     /* a read of a queued write's bytes waits for that write */
@@ -257,16 +274,20 @@ int main(int argc, char** argv) {
     on_thread = 1;
     CHECK(gq_queues(), "the front end's thread does not queue");
 
-    /* the three kinds in their order */
+    /* the four kinds in their order */
+    u64 f;
     put_write(0x10000, 64, 1);
     put_release(0x20000, 0x12345678);
     put_i2m(0x30000, 300, 2, 0x30000, 0x4000);
     put_write(0x10010, 8, 3);
+    put_cb(0x10020, 8, 9);
+    f = g_gq.queued;
+    CHECK(g_gq.written[gq_slot(0x10)] == f, "a constant buffer upload did not mark its page");
     check_log("kinds");
 
     /* each page a write covers has its fence, and only those */
     put_write(0x41FF0, 0x2020, 4); /* pages 0x41 to 0x44 */
-    u64 f = g_gq.queued;
+    f = g_gq.queued;
     for (u64 p = 0x41; p <= 0x44; p++)
         CHECK(g_gq.written[gq_slot(p)] == f, "page %#llx of a write has fence %llu, not %llu", (unsigned long long)p,
               (unsigned long long)g_gq.written[gq_slot(p)], (unsigned long long)f);
