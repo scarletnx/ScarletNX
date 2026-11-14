@@ -11,13 +11,15 @@
    A thread that waits (a lock someone holds, a condition variable, a sleep) leaves its core first, as a waiting SVC
    does (hook_wait_begin): the core's other threads run meanwhile, the holder among them.
 
-   The clocks are the host's too, system_clock's and steady_clock's now: a timed wait's deadline, which the game makes
-   from them, is then on the host's clock, and waits as long as it says */
+   steady_clock's now is the game's clock (guest_ns), as the SDK's reads it through clock_gettime's CLOCK_MONOTONIC and
+   nn::os's system tick: it stops while the game is paused and takes a save state's time, as every other clock of the
+   game does. system_clock's now is the host's real time, which is all __do_timed_wait compares a deadline with */
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
 #include "common/platform/thread.h"
 #include "common/platform/time.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
 #include <stdlib.h>
 
@@ -173,14 +175,14 @@ void sync_cond_timed_wait(CPU* c, u64 cv, u64 lk, i64 ns) {
     hook_wait_end();
 }
 
-/* ---- the clocks: system_clock's microseconds since 1970, steady_clock's nanoseconds */
+/* ---- the clocks: system_clock's microseconds since 1970, steady_clock's nanoseconds of the game's clock */
 i64 sync_system_now(CPU* c) {
     (void)c;
     return plat_unix_ns() / 1000;
 }
 i64 sync_steady_now(CPU* c) {
     (void)c;
-    return (i64)plat_ns();
+    return (i64)guest_ns();
 }
 /* this_thread::sleep_for: the duration's nanoseconds at d, slept off the core */
 void sync_sleep_for(CPU* c, u64 d) {
