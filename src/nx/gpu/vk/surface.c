@@ -1479,14 +1479,14 @@ void vk_surf_flush(Surf* s, const u8* original) {
 void vk_rt_flush(u64 gva) { vk_surf_flush(vk_rt_find(gva), NULL); }
 /* The pending targets wholly in [gva, gva + size), whose pixels vk_rt_overlay copied into a buffer about to be
    published over those bytes: guest memory (its owner) has them from then on, so they are pending no more. Left
-   pending, publishing the buffer flushed each again (vk_rt_before_write_cpu), a wait for the GPU and its readback, and
-   the landing of the bytes' last owner under it: one game draws four 32x32 targets of 256 KB and writes them with a
-   compute program every frame, four waits and four landings a frame. Their images keep their pixels, older than
-   memory's (the publish stamps the bytes written), so they load memory's before they are used again, as after a
-   flush */
+   pending, publishing the buffer took each again (vk_rt_before_publish_cpu, a write-back then: a wait for the GPU and
+   its readback), and the landing of the bytes' last owner under it: one game draws four 32x32 targets of 256 KB and
+   writes them with a compute program every frame, four waits and four landings a frame. Their images keep their
+   pixels, older than memory's (the publish stamps the bytes written), so they load memory's before they are used
+   again, as after a flush */
 static void publish_span(const Surf* s, VkOwnRes* r, u64 base, u64 at, u64 n);
 /* With r (s's publish, its byte 0 s's span's byte base), r is published over each one's bytes once all are retired:
-   publishing one flushes the pending targets over it (vk_rt_before_write_cpu) */
+   publishing one publishes the pending targets over it first (vk_rt_before_publish_cpu) */
 static void rt_retire_over(u64 gva, u64 size, const Surf* s, VkOwnRes* r, u64 base) {
     Surf *local[16], **list;
     u32 count;
@@ -1815,21 +1815,30 @@ void vk_rt_before_write(u64 gva, u64 size) {
     vk_unlock();
 }
 
-/* A producer can replace image memory through another GPU address. Land every
-   older image over that backing before publishing the new owner, so a later
-   partial image read cannot write its old pixels over the producer's result. */
-void vk_rt_before_write_cpu(u64 cpu, u64 size) {
+/* A producer can replace image memory through another GPU address. Every older image over that backing goes to
+   guest memory before the new owner does, so a later partial image read cannot write its old pixels over the
+   producer's result: published (publish) or written back */
+static void rt_before_cpu(u64 cpu, u64 size, int publish) {
     Surf* local[16];
     RtPendingList pending = {local, 0, 16};
     if (!size || g_rt_flushing) return;
     vk_lock();
     g_rt_flushing = 1;
     gmmu_aliases(cpu, size, rt_pending_alias, &pending);
-    for (u32 i = 0; i < pending.count; i++) vk_surf_flush(pending.surfaces[i], NULL);
+    for (u32 i = 0; i < pending.count; i++)
+        if (!publish || !vk_surf_publish(pending.surfaces[i])) vk_surf_flush(pending.surfaces[i], NULL);
     if (pending.surfaces != local) free(pending.surfaces);
     g_rt_flushing = 0;
     vk_unlock();
 }
+/* Before a writer of guest memory on the CPU (the mirror's land_entry): written back, as its write follows at once and
+   a publish would trap the pages again between its own_acquire and its write */
+void vk_rt_before_write_cpu(u64 cpu, u64 size) { rt_before_cpu(cpu, size, 0); }
+/* Before a producer's owner goes over [cpu, cpu + size) (own_publish): the older targets there are published, as a
+   release's are (rt_publish_now), their spans copied into owners on the GPU that the producer's owner then replaces
+   where they meet, with no wait. Written back, each was a readback, a wait for the GPU and the landing of the owners
+   under it: one game publishes targets over memory that other targets alias, 7 such write-backs a frame */
+void vk_rt_before_publish_cpu(u64 cpu, u64 size) { rt_before_cpu(cpu, size, 1); }
 
 static void zt_restore(Surf* s);
 /* Another format over the same bytes: one game draws its scene to an sRGB target and the overlay over it to a UNORM

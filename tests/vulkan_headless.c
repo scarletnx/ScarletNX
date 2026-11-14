@@ -6387,7 +6387,9 @@ static int check_rt_overlap(void) {
     o.dst = pitch_side(DMA_GA + 0x10000, 512);
     o.width = o.line_in = o.line_out = 512;
     o.lines = 1;
+    u64 finishes = g_vk_finishes;
     CHECK(g_renderer->dma_copy(&o));
+    CHECK(g_vk_finishes == finishes); /* the target under the copy's result published, not written back with a wait */
     o.src = pitch_side(alias + 0x1000, 512);
     o.dst = pitch_side(DMA_GA + 0x40000, 512);
     CHECK(g_renderer->dma_copy(&o));
