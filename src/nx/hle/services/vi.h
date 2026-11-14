@@ -14,7 +14,7 @@
 /* a swap interval of 0 or less: a multiple of this many vsyncs a second (vi_vsync_period), from 0 down to the least */
 #define VI_UNLOCKED_HZ  120
 #define VI_INTERVAL_MIN (-3)
-#define VI_UNLIMITED_HZ 1000 /* the vsyncs a second with fps_limit 0 (no limit) */
+#define VI_NO_LIMIT_VSYNC_HZ 1000 /* the vsyncs a second with fps_limit 0 (no limit), not a swap interval's */
 u64 vi_vsync_period(void); /* ns from one vsync to the next, as the shown layer's swap interval asks */
 void vi_vsync_tick(void);  /* one display refresh: signals the vsync event */
 /* ---- HLE state in g_hle (hle.h) */

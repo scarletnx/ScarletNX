@@ -797,21 +797,27 @@ static void rate_plots(const RatePlot* p, unsigned n, u64 now_ns) {
     last_ns = now_ns;
 }
 #endif
-/* The display's vsyncs (vi_vsync_tick) up to until, from the one due at at, on their own schedule: a swap interval
-   of 0 or less asks for more of them than the loop's 60 a second. The loop sleeps between them. A vsync late by more
-   than its period (a long tick) is signalled once, and the schedule starts again from it, with no burst to catch up.
-   The game's input and its vsync are guest work, which a pause holds back. The next vsync's time */
+/* The display's vsync due at at (vi_vsync_tick), and the time of the next, vi_vsync_period after it. A vsync late by
+   more than its period (a long tick) is signalled once, and the schedule starts again from it, with no burst to catch
+   up. A vsync is guest work, which a pause holds back */
+static u64 vsync_signal(u64 at, int paused) {
+    if (!paused) vi_vsync_tick();
+    u64 step = vi_vsync_period(), done = plat_ns();
+    return at + step > done ? at + step : done + step;
+}
+/* The loop's sleep until its next tick, with the vsyncs due before it signalled on their own schedule: a swap interval
+   of 0 or less, or fps_limit, asks for more of them than the loop's 60 a second. A vsync due at the tick or after it
+   is left to the tick, which signals it after the input, as the loop did when the vsync was its own: a game that wakes
+   on the vsync reads the input of that tick. The next vsync's time */
 static u64 vsync_until(u64 until, u64 at, int paused) {
     for (;;) {
         u64 now = plat_ns();
-        if (at > until) {
+        if (at >= until) {
             if (until > now) plat_sleep_ns((i64)(until - now));
             return at;
         }
         if (at > now) plat_sleep_ns((i64)(at - now));
-        if (!paused) vi_vsync_tick();
-        u64 step = vi_vsync_period(), done = plat_ns();
-        at = at + step > done ? at + step : done + step;
+        at = vsync_signal(at, paused);
     }
 }
 static void frontend_loop(void) {
@@ -823,7 +829,8 @@ static void frontend_loop(void) {
         SNX_ZONE(z_frontend, "frontend tick");
         video_poll();
         options_tv_mode_update();
-        /* the game's input is guest work, which a pause holds back with the rest (and its vsync, vsync_until) */
+        /* the game's input and its display's vsync are guest work, which a pause holds back with the rest. The vsync
+           due at this tick comes after the input; those between ticks come in vsync_until */
         paused = game_paused();
         if (!paused) {
             SNX_ZONE(z_hid, "hid update");
@@ -831,6 +838,7 @@ static void frontend_loop(void) {
             SNX_ZONE_VALUE(z_hid, states);
             SNX_ZONE_END(z_hid);
         }
+        if (plat_ns() >= vsync) vsync = vsync_signal(vsync, paused);
         if (++tick % 60 == 0) ini_poll(0);
         frontend_frame();
         switch_tick();

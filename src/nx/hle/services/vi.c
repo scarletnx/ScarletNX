@@ -70,12 +70,13 @@ static int vi_layer_open(u64 layer_id, int first) {
         g_hle.vi.layer[free_i].event = owned_event("vi:buffer queue");
         ev_signal(g_hle.vi.layer[free_i].event);
     }
-    g_hle.vi.layer[free_i].layer_id = layer_id;
+    /* the interval and the id atomic: vi_vsync_period reads them without the lock */
+    __atomic_store_n(&g_hle.vi.layer[free_i].interval, 1, __ATOMIC_RELAXED); /* until its first frame says another */
+    __atomic_store_n(&g_hle.vi.layer[free_i].layer_id, layer_id, __ATOMIC_RELAXED);
     g_hle.vi.layer[free_i].width = VI_WIDTH;
     g_hle.vi.layer[free_i].height = VI_HEIGHT;
     g_hle.vi.layer[free_i].format = 1; /* RGBA8888 */
     g_hle.vi.layer[free_i].max_buffer_count = 2; /* and SetBufferCount's answer for a window that never asks */
-    g_hle.vi.layer[free_i].interval = 1;         /* until its first frame says otherwise */
     return free_i + 1;
 }
 /* CloseLayer and DestroyStrayLayer: the layer's buffer queue goes, and its place is free for the next layer opened.
@@ -86,9 +87,9 @@ static void vi_layer_close(u64 layer_id) {
     for (i = 0; i < VI_LAYERS; i++) {
         ViLayer* l = &g_hle.vi.layer[i];
         if (l->layer_id != layer_id) continue;
-        l->layer_id = 0;
+        __atomic_store_n(&l->layer_id, 0, __ATOMIC_RELAXED);
         l->connected = 0;
-        l->interval = 0;
+        __atomic_store_n(&l->interval, 1, __ATOMIC_RELAXED); /* not 0, which is a rate of its own */
         l->max_buffer_count = 2;
         l->gen++;
         memset(l->slot, 0, sizeof l->slot);
@@ -273,7 +274,7 @@ static void vi_queue(ViLayer* l, int slot, const u8* in, ParcelOut* out) {
     memcpy(s->crop, crop, sizeof crop);
     s->transform = transform;
     s->state = SLOT_QUEUED;
-    l->interval = interval;
+    __atomic_store_n(&l->interval, interval, __ATOMIC_RELAXED);
     for (i = 0; i < VI_SLOTS; i++) pending += l->slot[i].state == SLOT_QUEUED;
     parcel_w32(out, l->width);
     parcel_w32(out, l->height);
@@ -743,15 +744,17 @@ static int nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(SvcObj*
    that rate here too, and every other interval the display's 60.
 
    fps_limit other than game sets the rate, as the yuzu family's speed limit scales it: a number is that many vsyncs a
-   second, and 0 (no limit) VI_UNLIMITED_HZ, so a game that waits for the vsync event once a frame or more never waits
-   long. A game that counts vsyncs as its time then runs faster than on the console, as a measure of its frame rate
-   with no limit asks */
+   second, and 0 (no limit) VI_NO_LIMIT_VSYNC_HZ, so a game that waits for the vsync event once a frame or more never
+   waits long. A game that counts vsyncs as its time then runs faster than on the console, as a measure of its frame
+   rate with no limit asks. The interval is clamped here too, as vi_queue clamps it, so that no value makes the period
+   0 */
 u64 vi_vsync_period(void) {
     const ViLayer* l = &g_hle.vi.layer[VI_SHOWN];
     int fps = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED);
-    if (fps != SNX_FPS_GAME) return 1000000000u / (u64)(fps > 0 ? fps : VI_UNLIMITED_HZ);
+    if (fps != SNX_FPS_GAME) return 1000000000u / (u64)(fps > 0 ? fps : VI_NO_LIMIT_VSYNC_HZ);
     i32 interval = __atomic_load_n(&l->interval, __ATOMIC_RELAXED);
     if (!__atomic_load_n(&l->layer_id, __ATOMIC_RELAXED) || interval > 0) return 1000000000u / VI_REFRESH_HZ;
+    if (interval < VI_INTERVAL_MIN) interval = VI_INTERVAL_MIN;
     return 1000000000u / (VI_UNLOCKED_HZ * (u64)(1 - interval));
 }
 /* one of the display's vsyncs, vi_vsync_period apart (the main loop): the vsync event, and the mode and hotplug
@@ -764,7 +767,6 @@ void vi_vsync_tick(void) {
         ev_signal(g_hle.vi.mode_changed);
         ev_signal(g_hle.vi.hotplug);
     }
-    gsv_vsync_tick(); /* the Ounce VI2 session's groups */
 }
 
 static SvcObj* new_vi_u(void) { return nn_visrv_sf_IApplicationRootService_new(); }
