@@ -280,6 +280,14 @@ function's arguments, or a field added into a struct's tail padding: for those t
 | 18 | a program's modules lie one after another, as the console's loader lays them (`src/nx/loader/loader.h`); the contract is as it was |
 | 19 | the route list names the SDK functions the runtime answers natively (nn::fs, time, pl, ngc, nsd, prepo, codec): a module made before calls the SDK's own code, which opens services no longer served; the contract is as it was |
 
+ScarletNX's version is the sum of `SNX_ABI` and the other numbers recompiled code and its runtime agree on (the 32-bit
+modules', the 3DS, GBA, DS and Vita ones', the route list's, the NRO tables'), which `cmake/version_parts.cmake`
+lists, with the numbers named like them that it leaves out and why. Each only rises, so the version rises by one with
+each bump. The build writes it into `snx_version.h` (`cmake/version.cmake`), the window titles and the logs' build
+line carry it, and `cmake -DSRC=. -P cmake/version.cmake` prints it. `ctest -R version_` fails when that header is not
+what the tree's numbers make, when a part no longer reads as one number or does not raise the version by one, and
+when a `#define` of a name ending in `_ABI`, or in `_VERSION` with a number, is in neither of the file's lists.
+
 #### Code the game patches
 
 Mods for Atmosphère (Skyline, exlaunch) hook a game by writing branches into its code through a writable view of it
