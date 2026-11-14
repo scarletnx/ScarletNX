@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include <stdlib.h>
+#include "common/utilities/bits.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
@@ -67,13 +68,37 @@ static void leaves_add(PendLeaf** leaf, u64 first, u64 last, int delta) {
         PendLeaf* l = leaf[li];
         if (!l && !(l = leaf[li] = calloc(1, sizeof *l))) fatal("vulkan: out of memory for pending result pages");
         i64 pages = 0;
-        for (u32 i = (u32)(p % LEAF_PAGES), e = (u32)(stop % LEAF_PAGES); i <= e; i++) {
+        for (u32 i = (u32)(p % LEAF_PAGES), e = (u32)(stop % LEAF_PAGES); i <= e;) {
+            if (!(i & 63u) && i + 63u <= e) {
+                /* a whole group of 64 pages: the counts in one pass the compiler vectorizes, the group's bits (a page
+                   with a count) from the counts after it, and the pages that gained or lost one from the bits. Page
+                   by page, one game's 16 MiB windows of storage written in place (4096 pages each, about 500 a
+                   present, in four tables, added and taken away) made this half of its GPU thread */
+                u32* c = &l->count[i];
+                const u64 was = l->group[i / 64];
+                u64 now = ~0ull;
+                if (delta > 0)
+                    for (u32 k = 0; k < 64; k++) c[k] += (u32)delta;
+                else {
+                    u64 zero = 0;
+                    for (u32 k = 0; k < 64; k++) {
+                        c[k] += (u32)delta;
+                        zero |= (u64)(c[k] == 0) << k;
+                    }
+                    now = ~zero;
+                }
+                l->group[i / 64] = now;
+                pages += (i64)snx_popcount64(now) - (i64)snx_popcount64(was);
+                i += 64;
+                continue;
+            }
             const u32 before = l->count[i], v = (u32)((i64)before + delta);
             l->count[i] = v;
             if (!before != !v) {
                 l->group[i / 64] ^= 1ull << (i & 63u);
                 pages += v ? 1 : -1;
             }
+            i++;
         }
         l->pages = (u32)((i64)l->pages + pages);
         p = stop + 1;
