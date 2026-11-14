@@ -104,11 +104,13 @@ int main(void) {
     assert(libc_bsearch(c, 0x6100, 0x6000, 6, 4, CMP_FN) == 0x6000 + 20);
     snx_st_le32(g_mem + 0x6100, 4);
     assert(libc_bsearch(c, 0x6100, 0x6000, 6, 4, CMP_FN) == 0);
-    /* rand's range is the guest's RAND_MAX, and srand repeats its sequence */
-    libc_srand(c, 7);
-    i32 r0 = libc_rand(c);
-    libc_srand(c, 7);
-    assert(libc_rand(c) == r0 && r0 >= 0);
+    /* the SDK's sequences, musl's: rand's from its start (as srand(1)) and from srand(42), rand_r's, lrand48's */
+    assert(libc_rand(c) == 0 && libc_rand(c) == 740882966 && libc_rand(c) == 1616430695);
+    libc_srand(c, 42);
+    assert(libc_rand(c) == 311430560 && libc_rand(c) == 131117839);
+    snx_st_le32(g_mem + 0x6200, 1);
+    assert(libc_rand_r(c, 0x6200) == 1993684161 && snx_ld_le32(g_mem + 0x6200) == 1103527590);
+    assert(libc_lrand48(c) == 0 && libc_lrand48(c) == 2116118);
     /* wide strings, 32-bit characters: guest addresses back, and Unicode's classes and case as musl's */
     if (libc_wide_ready()) {
         static const u32 w[] = {'h', 'i', 0x4E00, ' ', '4', '2', 0};

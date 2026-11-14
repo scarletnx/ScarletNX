@@ -8,8 +8,8 @@
    guest's, which __errno_location, the SDK's own, finds for the calling thread.
 
    The character classes and conversions are the C locale's, which the SDK's libc is in and the host is too (the
-   runtime never calls setlocale). rand and srand are the host's random and srandom, whose RAND_MAX is the guest's
-   (2^31 - 1), with a state of their own apart from the runtime's. qsort and bsearch call the game's comparison
+   runtime never calls setlocale). rand, srand, rand_r and lrand48 are musl's generators, which the SDK's are, with a
+   state of their own apart from the runtime's. qsort and bsearch call the game's comparison
    function for each comparison the host's makes (hook_guest_call). The family is off on Windows, whose C library
    lacks half of these and has another RAND_MAX */
 #define _GNU_SOURCE /* glibc's strcasestr */
@@ -38,19 +38,8 @@ static char* strcasestr(const char* s, const char* sub) {
         if (!_strnicmp(s, sub, n)) return (char*)s;
     return *sub ? NULL : (char*)s;
 }
-static long random(void) { return rand(); }
-static void srandom(unsigned s) { srand(s); }
-static char* initstate(unsigned s, char* state, size_t n) {
-    (void)state, (void)n;
-    srand(s);
-    return NULL;
-}
 static long nrand48(unsigned short x[3]) {
     (void)x;
-    return rand();
-}
-static int rand_r(unsigned* s) {
-    (void)s;
     return rand();
 }
 #else
@@ -330,31 +319,28 @@ u32 libc_htons(CPU* c, u32 v) {
     return __builtin_bswap16((u16)v);
 }
 
-/* ---- pseudo-random numbers: the host's random() and nrand48, states of their own */
-static unsigned short g_rand48[3] = {0x330e, 0, 0};
-static char g_random_state[256];
-static int g_random_init;
-static void random_init(void) {
-    if (!g_random_init) { /* seed 1, as a program's that never calls srand starts */
-        initstate(1, g_random_state, sizeof g_random_state);
-        g_random_init = 1;
-    }
-}
+/* ---- pseudo-random numbers, musl's: rand's 64-bit LCG, which srand seeds with seed - 1 and a program that never calls
+   it starts at 0; rand_r's 32-bit one, tempered; lrand48's 48-bit one, from 0 until srand48 */
+static u64 g_rand;
+static unsigned short g_rand48[3];
 i32 libc_rand(CPU* c) {
     (void)c;
-    random_init();
-    return (i32)random();
+    u64 s = __atomic_load_n(&g_rand, __ATOMIC_RELAXED) * 6364136223846793005ull + 1;
+    __atomic_store_n(&g_rand, s, __ATOMIC_RELAXED);
+    return (i32)(s >> 33);
 }
 void libc_srand(CPU* c, u32 seed) {
     (void)c;
-    if (!g_random_init) random_init();
-    srandom(seed);
+    __atomic_store_n(&g_rand, (u64)(seed - 1), __ATOMIC_RELAXED);
 }
 i32 libc_rand_r(CPU* c, u64 seed) {
-    unsigned s = snx_ld_le32(hook_host(c, seed));
-    int r = rand_r(&s);
-    snx_st_le32(hook_host(c, seed), s);
-    return r;
+    u32 x = snx_ld_le32(hook_host(c, seed)) * 1103515245u + 12345u;
+    snx_st_le32(hook_host(c, seed), x);
+    x ^= x >> 11;
+    x ^= x << 7 & 0x9D2C5680u;
+    x ^= x << 15 & 0xEFC60000u;
+    x ^= x >> 18;
+    return (i32)(x / 2);
 }
 i64 libc_lrand48(CPU* c) {
     (void)c;
