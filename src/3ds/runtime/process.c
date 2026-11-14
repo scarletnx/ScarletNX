@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/runtime/internal.h"
 #include "3ds/aot/ctr_hook.h"
+#include "3ds/aot/ctr_module.h"
 #include "3ds/board/clock.h"
 #include "3ds/loader/smdh.h"
 #include "common/utilities/endian.h"
@@ -97,6 +98,7 @@ void snx_ctr_shared_page_time(SnxCtrProcess* p) {
 }
 void snx_ctr_process_free(SnxCtrProcess* p) {
     if (!p) return;
+    snx_ctr_dispatch_forget();
     snx_ctr_hooks_free(p->hooks);
     snx_ctr_uds_close(p);
     if (p->gsp.pica) snx_ctr_pica_free(p->gsp.pica);

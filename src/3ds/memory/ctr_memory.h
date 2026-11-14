@@ -59,6 +59,8 @@ SnxCtrMemResult snx_ctr_query(const SnxCtrAddressSpace* space, uint32_t va, uint
    Every successful write or mapping/protection change advances it. Saturates
    at UINT64_MAX, after which exclusive stores must fail conservatively. */
 uint64_t snx_ctr_memory_epoch(const SnxCtrAddressSpace* space);
+/* bumped by every mapping or permission change of the space */
+uint64_t snx_ctr_space_map_epoch(const SnxCtrAddressSpace* space);
 /* RAM transfers may be unaligned and span pages, after preflighting the ENTIRE
    range. MMIO transfers may not span pages or mix with RAM. No flat host pointer
    is exported. The CPU adapter owns instruction-specific alignment rules. */
@@ -69,6 +71,7 @@ SnxCtrMemResult snx_ctr_fetch(SnxCtrAddressSpace* space, uint32_t va, void* outp
    rather than collapsing LDM/STM or paired accesses into one device access. */
 /* No-copy full-range RAM preflight, including all requested permissions. */
 SnxCtrMemResult snx_ctr_check_ram(SnxCtrAddressSpace* space, uint32_t va, size_t size, unsigned permissions);
+SnxCtrMemResult snx_ctr_check_exec(SnxCtrAddressSpace* space, uint32_t va, size_t size);
 SnxCtrMemResult snx_ctr_read_ram(SnxCtrAddressSpace* space, uint32_t va, void* output, size_t size);
 SnxCtrMemResult snx_ctr_write_ram(SnxCtrAddressSpace* space, uint32_t va, const void* input, size_t size);
 /* Bus-master (GPU, DMA) access by physical address: the whole nonempty range inside one RAM, VRAM or DSP RAM

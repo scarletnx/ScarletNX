@@ -64,6 +64,24 @@ bool snx_ctr_aot_mark_stale(SnxCtrProcess* process, uint32_t address, uint32_t s
         process->aot_stale[window / 32] |= 1u << (window % 32);
     return true;
 }
+/* The block an address ran, kept from the static tables: a direct-mapped cache, because the same few thousand
+   addresses come back every frame and each costs the hook table's bit test, the text's bounds and the tables' load.
+   Only an entry the tables hold is kept: one the run-time compiler made can be remade when its text changes. */
+#define BLOCK_CACHE 16384u
+typedef struct {
+    uint32_t key;     /* the address with the Thumb bit, 0 for an empty entry */
+    uint32_t unused;
+    uintptr_t target; /* the block, or the hook with its low bit set: both are aligned */
+} BlockCache;
+static BlockCache g_blocks[BLOCK_CACHE];
+static uint64_t g_blocks_epoch; /* the space's mappings the entries were checked under */
+static const SnxCtrModule* g_blocks_module;
+static const SnxCtrProcess* g_blocks_process;
+/* a process or module that goes takes its blocks with it: the next dispatch starts the cache empty */
+void snx_ctr_dispatch_forget(void) {
+    g_blocks_module = NULL;
+    g_blocks_process = NULL;
+}
 SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, uint64_t limit, uint64_t* executed) {
     if (!executed) return SNX_CTR_RUN_FAULT;
     *executed = 0;
@@ -72,53 +90,113 @@ SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, 
     SnxCtrRunResult stop;
     uint32_t since_poll = 0;
     if (!scheduled(process, &stop, false, &since_poll)) return stop;
-    while (*executed < limit) {
+    SnxCtrAddressSpace* space = snx_ctr_process_space(process);
+    uint64_t map_epoch = snx_ctr_space_map_epoch(space);
+    if (g_blocks_module != m || g_blocks_process != process) { /* a new module's or process's blocks */
+        memset(g_blocks, 0, sizeof g_blocks);
+        g_blocks_module = m;
+        g_blocks_process = process;
+        g_blocks_epoch = map_epoch;
+    }
+    /* the entries' execute checks hold while the space's mappings do: a change makes them all stale */
+    if (g_blocks_epoch != map_epoch) {
+        memset(g_blocks, 0, sizeof g_blocks);
+        g_blocks_epoch = map_epoch;
+    }
+    bool cacheable = !process->aot_stale;
+    uint64_t count = 0;
+    while (count < limit) {
         if (process->reclaim) process->reclaim(process->compiler);
         /* Every block returns here, so a loop that makes no SVC still reaches the scheduler: due vblanks, audio frames,
            timers and timeouts are delivered, and a thread they wake with a better priority takes the core, as the
            interrupt would preempt it on the console */
-        if (++since_poll == SNX_CTR_POLL_BLOCKS && !scheduled(process, &stop, false, &since_poll)) return stop;
+        if (++since_poll == SNX_CTR_POLL_BLOCKS && !scheduled(process, &stop, false, &since_poll)) {
+            *executed += count;
+            return stop;
+        }
         uint32_t pc = cpu->r[15];
         bool thumb = !!(cpu->cpsr & SNX_ARM_T);
-        unsigned width = thumb ? 2 : 4;
-        if (pc & (width - 1)) {
-            cpu->exit = SNX_ARM_ALIGNMENT;
-            cpu->syndrome = pc;
-            return SNX_CTR_RUN_FAULT;
-        }
+        uint32_t key = pc | (uint32_t)thumb;
+        BlockCache* entry = &g_blocks[((pc >> 2) ^ (thumb ? BLOCK_CACHE / 2 : 0)) & (BLOCK_CACHE - 1)];
+        /* a block of the tables at this address, run again within the space's same mappings: its page's execute
+           permission was checked when the entry was made, and only a mapping change can take it away */
+        bool cached = cacheable && key && entry->key == key;
         /* a function the runtime runs itself (aot/ctr_hook.h), unless a CRO's relocation rewrote its text. It
            reschedules as an SVC does when it woke a thread, which can be one that takes the core now */
-        const struct SnxCtrHook* hook = process->hooks && !thumb ? snx_ctr_hook_at(process->hooks, pc) : NULL;
-        if (hook && !window_marked(process, pc - m->text_address)) {
+        const struct SnxCtrHook* hook = NULL;
+        SnxArmBlock block = NULL;
+        bool compiled = false;
+        if (cached) {
+            uintptr_t target = entry->target;
+            if (target & 1)
+                hook = (const struct SnxCtrHook*)(target & ~(uintptr_t)1);
+            else
+                block = (SnxArmBlock)target;
+        } else {
+            unsigned width = thumb ? 2 : 4;
+            if (pc & (width - 1)) {
+                cpu->exit = SNX_ARM_ALIGNMENT;
+                cpu->syndrome = pc;
+                *executed += count;
+                return SNX_CTR_RUN_FAULT;
+            }
+            /* an address the tables do not hold, or one whose page may have changed: the console faults on a prefetch
+               into a page it cannot run, and a game can take that permission away */
+            if (snx_ctr_check_exec(space, pc, width) != SNX_CTR_MEM_OK) {
+                cpu->exit = SNX_ARM_PREFETCH_ABORT;
+                cpu->syndrome = pc;
+                *executed += count;
+                return SNX_CTR_RUN_FAULT;
+            }
+            bool from_table = false;
+            hook = process->hooks && !thumb ? snx_ctr_hook_at(process->hooks, pc) : NULL;
+            if (hook && window_marked(process, pc - m->text_address)) hook = NULL;
+            if (pc >= m->text_address && (uint64_t)pc + width <= (uint64_t)m->text_address + m->text_bytes &&
+                !window_marked(process, pc - m->text_address)) {
+                uint32_t index = (pc - m->text_address) / width;
+                block = thumb ? m->thumb_blocks[index] : m->arm_blocks[index];
+                from_table = block != NULL;
+            }
+            /* code the static discovery didn't reach (an indirect target, a module loaded at run time) compiles now */
+            if (!block && process->compile)
+                compiled = (block = process->compile(process->compiler, pc, thumb, false)) != NULL;
+            if (!block && !hook) {
+                cpu->exit = SNX_ARM_BACKEND_UNSUPPORTED;
+                cpu->syndrome = pc;
+                *executed += count;
+                return SNX_CTR_RUN_UNSUPPORTED;
+            }
+            if (!process->aot_stale && (from_table || (hook && !block)))
+                *entry = (BlockCache){key, 0,
+                                      hook ? (uintptr_t)hook | (uintptr_t)1 : (uintptr_t)block};
+        }
+        if (hook) {
             uint64_t sequence = process->sched_seq;
             SnxCtrHookResult ran = snx_ctr_hook_run(process, cpu, hook);
             if (ran == SNX_CTR_HOOK_DONE) {
-                ++*executed;
-                if (process->sched_seq != sequence && !scheduled(process, &stop, true, &since_poll)) return stop;
+                ++count;
+                uint64_t epoch = snx_ctr_space_map_epoch(space);
+                if (epoch != map_epoch) {
+                    memset(g_blocks, 0, sizeof g_blocks);
+                    map_epoch = g_blocks_epoch = epoch;
+                }
+                cacheable = !process->aot_stale;
+                if (process->sched_seq != sequence && !scheduled(process, &stop, true, &since_poll)) {
+                    *executed += count;
+                    return stop;
+                }
                 continue;
             }
-            if (ran == SNX_CTR_HOOK_STOP)
+            if (ran == SNX_CTR_HOOK_STOP) {
+                *executed += count;
                 return cpu->exit == SNX_ARM_BACKEND_UNSUPPORTED ? SNX_CTR_RUN_UNSUPPORTED : SNX_CTR_RUN_FAULT;
-        }
-        unsigned char instruction[4];
-        if (snx_ctr_fetch(snx_ctr_process_space(process), pc, instruction, width) != SNX_CTR_MEM_OK) {
-            cpu->exit = SNX_ARM_PREFETCH_ABORT;
-            cpu->syndrome = pc;
-            return SNX_CTR_RUN_FAULT;
-        }
-        SnxArmBlock block = NULL;
-        if (pc >= m->text_address && (uint64_t)pc + width <= (uint64_t)m->text_address + m->text_bytes &&
-            !window_marked(process, pc - m->text_address)) {
-            uint32_t index = (pc - m->text_address) / width;
-            block = thumb ? m->thumb_blocks[index] : m->arm_blocks[index];
-        }
-        /* code the static discovery didn't reach (an indirect target, a module loaded at run time) compiles now */
-        bool compiled = !block && process->compile;
-        if (compiled) block = process->compile(process->compiler, pc, thumb, false);
-        if (!block) {
-            cpu->exit = SNX_ARM_BACKEND_UNSUPPORTED;
-            cpu->syndrome = pc;
-            return SNX_CTR_RUN_UNSUPPORTED;
+            }
+            if (!block) { /* the hook declined and the discovery found no block there */
+                cpu->exit = SNX_ARM_BACKEND_UNSUPPORTED;
+                cpu->syndrome = pc;
+                *executed += count;
+                return SNX_CTR_RUN_UNSUPPORTED;
+            }
         }
         /* a hosted block (SNX_ARM_MEMORY_HOSTED, llvm.h) takes its entry state from this loop: r15 and CPSR.T chose the
            block, exit and syndrome are clear (the context of a thread that blocked in an SVC comes back with them
@@ -128,10 +206,11 @@ SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, 
         if (thumb && snx_arm_itstate(cpu->cpsr)) {
             cpu->exit = SNX_ARM_IT_ENTRY;
             cpu->syndrome = snx_arm_itstate(cpu->cpsr);
+            *executed += count;
             return SNX_CTR_RUN_FAULT;
         }
         block(cpu);
-        ++*executed;
+        ++count;
         if (cpu->exit == SNX_ARM_OK) continue;
         /* the bytes a compiled block was made from changed under it: it stopped before the first changed instruction,
            which compiles anew from where it stopped, and the block is made again the next time it is entered. A
@@ -146,26 +225,48 @@ SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, 
         if (cpu->exit == SNX_ARM_SVC) {
             uint32_t before[4] = {cpu->r[0], cpu->r[1], cpu->r[2], cpu->r[3]}, thread = process->current_thread;
             SnxCtrSvcResult result = snx_ctr_svc(process, cpu->syndrome);
+            uint64_t epoch = snx_ctr_space_map_epoch(space);
+            if (epoch != map_epoch) {
+                memset(g_blocks, 0, sizeof g_blocks);
+                map_epoch = g_blocks_epoch = epoch;
+            }
+            cacheable = !process->aot_stale;
             if (g_settings.ctr_svc_trace && result == SNX_CTR_SVC_RETURN &&
                 (g_settings.ctr_svc_trace > 1 || (cpu->r[0] >> 31)))
                 fprintf(stderr,
                         "3ds svc trace: thread %u svc 0x%02x at 0x%08x (0x%08x 0x%08x 0x%08x 0x%08x) -> 0x%08x 0x%08x\n",
                         (unsigned)thread, (unsigned)cpu->syndrome, cpu->r[15] - (thumb ? 2u : 4u), before[0], before[1],
                         before[2], before[3], cpu->r[0], cpu->r[1]);
-            if (result == SNX_CTR_SVC_EXIT) return SNX_CTR_RUN_EXIT;
+            if (result == SNX_CTR_SVC_EXIT) {
+                *executed += count;
+                return SNX_CTR_RUN_EXIT;
+            }
             if (result == SNX_CTR_SVC_BLOCKED) {
-                if (!scheduled(process, &stop, true, &since_poll)) return stop;
+                if (!scheduled(process, &stop, true, &since_poll)) {
+                    *executed += count;
+                    return stop;
+                }
                 continue;
             }
-            if (result == SNX_CTR_SVC_UNSUPPORTED) return SNX_CTR_RUN_UNSUPPORTED;
+            if (result == SNX_CTR_SVC_UNSUPPORTED) {
+                *executed += count;
+                return SNX_CTR_RUN_UNSUPPORTED;
+            }
             cpu->exit = SNX_ARM_OK;
             cpu->syndrome = 0;
-            if (!scheduled(process, &stop, true, &since_poll)) return stop;
+            if (!scheduled(process, &stop, true, &since_poll)) {
+                *executed += count;
+                return stop;
+            }
             continue;
         }
-        if (cpu->exit == SNX_ARM_BACKEND_UNSUPPORTED || cpu->exit == SNX_ARM_CODE_CHANGED)
+        if (cpu->exit == SNX_ARM_BACKEND_UNSUPPORTED || cpu->exit == SNX_ARM_CODE_CHANGED) {
+            *executed += count;
             return SNX_CTR_RUN_UNSUPPORTED;
+        }
+        *executed += count;
         return SNX_CTR_RUN_FAULT;
     }
+    *executed += count;
     return SNX_CTR_RUN_BUDGET;
 }
