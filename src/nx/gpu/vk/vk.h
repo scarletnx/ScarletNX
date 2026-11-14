@@ -1261,8 +1261,9 @@ void vk_astc_auto_trimmed(u64 usage, u64 left, u64 budget, int force);
 void vk_astc_auto_present(void);
 void vk_astc_auto_say(void);
 /* vk_image_create for a surface of the caches, with room made for it first (vk_mem_trim). When no memory is found, a
-   forced trim makes room for later, and images as big fail at once for the rest of the present. bytes: the device
-   memory it takes */
+   forced trim makes room for later, and images as big fail at once for the rest of the present: render targets and
+   images the GPU writes (owner with VK_OWN_WRITTEN) counted apart from the others. bytes: the device memory it takes */
+#define VK_OWN_WRITTEN 0x100u
 int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes);
 /* the device memory a surface of the caches takes now: an image whose memory follows its mapping grows and shrinks */
 void vk_surf_bytes(Surf* s, u64 bytes);

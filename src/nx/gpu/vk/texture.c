@@ -1772,9 +1772,11 @@ static int resident_image(Surf* t, const VkImageCreateInfo* ii) {
 
 /* a texture of w by h pixels, with the samples of the sample layout msaa (DS_MSAA_, canonical). holes: its memory has
    holes in its mapping, and it takes memory only where it is mapped where the device can: a 3D volume of one level in
-   bricks (resident_image), another block-linear texture in the device's sparse blocks (tex_bind) */
+   bricks (resident_image), another block-linear texture in the device's sparse blocks (tex_bind). written: a storage
+   image, which vk_cache_image_create counts with the render targets (VK_OWN_WRITTEN) */
 static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, VkImageViewType type, VkFmt f, u32 fkey,
-                        u32 bl, u32 bh, u32 bd, u32 tile_w, u32 pitch, u64 layer_size, u32 msaa, int holes) {
+                        u32 bl, u32 bh, u32 bd, u32 tile_w, u32 pitch, u64 layer_size, u32 msaa, int holes,
+                        int written) {
     /* a multisampled one is loaded by drawing its samples from the guest's layout of them, through a view of their
        raw bytes (gpu/vk/msaa.c) */
     VkFormat raw = msaa ? vk_raw_format(f.bpp) : VK_FORMAT_UNDEFINED;
@@ -1838,7 +1840,8 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
                       w, h, layers * d3, levels, (int)ii.format,
                       !sparse ? "no sparse residency for it here, or it is not block linear, or it is multisampled"
                               : "the device makes no such image with sparse residency, or it is under 4 MiB");
-        if (!vk_cache_image_create(&ii, &t->img, &t->mem, VK_OWN_TEXTURE, &t->bytes)) {
+        if (!vk_cache_image_create(&ii, &t->img, &t->mem, VK_OWN_TEXTURE | (written ? VK_OWN_WRITTEN : 0),
+                                   &t->bytes)) {
             free(t);
             return NULL;
         }
@@ -3031,7 +3034,8 @@ texture_from_memory:
             f.vk = astc_kind_vk(outcome, srgb);
         }
     }
-    Surf* t = tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, tile_w, pitch, stride, msaa, holes);
+    Surf* t =
+        tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, tile_w, pitch, stride, msaa, holes, storage);
     if (!t) return NULL;
     t->size = sz;
     /* loaded whole, a pitch linear or an ASTC one takes its changes in pieces (an ASTC one's holes decode as memory's
