@@ -110,6 +110,10 @@ typedef struct {
     u32 vertex_words, primitive_words; /* the output words of a vertex and of a primitive (omap_words) */
     u32 prim_attr[32];                 /* a mesh program's per-primitive generic outputs */
     int soft_ftz;                      /* FTZ instructions flush their operands and results here (sm86_to_spirv_ftz) */
+    /* a write of register cap_reg while cap_on is kept in cap_val (cap_n of them) instead of stored: the halves of a
+       complementary pair (pair_partner), which become one select */
+    int cap_on;
+    u32 cap_reg, cap_val, cap_n;
     int failed;
 } Ctx;
 
@@ -161,6 +165,11 @@ static u32 pack_half(Ctx* c, u32 pair) {
 
 static u32 rd(Ctx* c, u32 r) { return r >= SM86_RZ ? c->zero : spv_emit_load(&c->e, c->t_u32, c->reg[r]); }
 static void wr(Ctx* c, u32 r, u32 v) {
+    if (c->cap_on && r == c->cap_reg) {
+        c->cap_val = v;
+        c->cap_n++;
+        return;
+    }
     if (r < SM86_RZ) spv_emit_store(&c->e, c->reg[r], v);
 }
 static u32 urd(Ctx* c, u32 r) { return r >= SM86_URZ ? c->zero : spv_emit_load(&c->e, c->t_u32, c->ureg[r]); }
@@ -6284,6 +6293,72 @@ static void mesh_layout(Ctx* c) {
     c->isbe_map_words = 4 + 3u * m->max_primitives;
 }
 
+/* A complementary pair: a guarded write of register R, then another of R under the opposite guard of the same
+   predicate, @!P R = a ... @P R = b (or the reverse), which the compiler makes of a SEL. As two guarded writes, each
+   in its own selection, an optimizer folds them into select(P, b, select(!P, a, R)), and NVIDIA's compiler (621.24)
+   made of one game's vertex program with such a pair code that faulted the GPU at an invalid instruction pointer
+   (and crashed in its compiler on variants of it). As one select of the two values, R = P ? b : a, the program
+   computes the same: the halves are ALU writes of R alone, which may run without their guard. The instructions
+   between may not read or write R, nor write P, and are ALU writes of their own that read only their a, b and c */
+static int pair_op(const Sm86Insn* in) {
+    switch (in->op) {
+        case SM86_MOV:
+        case SM86_FADD:
+        case SM86_FMUL:
+        case SM86_FFMA:
+        case SM86_SEL:
+        case SM86_FSEL:
+        case SM86_IMAD:
+        case SM86_IABS: return 1;
+        default: return 0;
+    }
+}
+/* whether one of the sources the instruction reads (the decoder fills a and c for every ALU form) is register r */
+static int pair_reads(const Sm86Insn* in, u32 r) {
+    const Sm86Src* used[3] = {&in->a, &in->b, &in->c};
+    switch (in->op) {
+        case SM86_MOV:
+        case SM86_IABS: used[0] = used[2] = NULL; break;
+        case SM86_FMUL:
+        case SM86_SEL:
+        case SM86_FSEL: used[2] = NULL; break;
+        case SM86_FADD:
+            used[1] = second(in);
+            used[2] = NULL;
+            break;
+        default: break; /* FFMA, IMAD, IADD3, LOP3: all three */
+    }
+    for (int k = 0; k < 3; k++)
+        if (used[k] && used[k]->kind == SM86_SRC_REG && used[k]->reg == r) return 1;
+    return 0;
+}
+/* the instruction that completes the pair the guarded instruction i starts, in the body that ends at end; 0 for none */
+static u32 pair_partner(const Sm86Insn* insn, u32 i, u32 end) {
+    const Sm86Insn* a = &insn[i];
+    if (!pair_op(a) || a->pred >= SM86_PT || sm86_has_cond(a) || a->dst >= SM86_RZ) return 0;
+    for (u32 k = i + 1; k < end && k <= i + 32; k++) {
+        const Sm86Insn* b = &insn[k];
+        if (sm86_never(b)) continue;
+        if (pair_op(b) && b->dst == a->dst && b->pred == a->pred && b->pred_not != a->pred_not && !sm86_has_cond(b))
+            return k;
+        if (!(pair_op(b) || b->op == SM86_IADD3 || b->op == SM86_LOP3) || sm86_has_cond(b) || may_write(b, a->dst) ||
+            pair_reads(b, a->dst) || mh_may_write(b, MH_P, a->pred))
+            return 0;
+    }
+    return 0;
+}
+/* the value instruction i writes to its destination, computed where it stands but not stored */
+static u32 pair_value(Ctx* c, const Sm86Insn* in, u32 i) {
+    c->cap_on = 1;
+    c->cap_reg = in->dst;
+    c->cap_n = 0;
+    c->cur = i;
+    emit_insn(c, in);
+    c->cap_on = 0;
+    if (c->cap_n != 1 && !c->failed)
+        fail(c, "%s wrote R%u %u times in a pair", sm86_ops[in->op].name, in->dst, c->cap_n);
+    return c->cap_val;
+}
 u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count) {
     return sm86_to_spirv_ftz(code, bytes, stage, sph, si, word_count, SH_FTZ_EMULATE);
 }
@@ -6474,6 +6549,10 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         if (!se.label) abort();
         se.used = (u8*)(se.label + 4 * (size_t)st->nscopes + 2 * (size_t)st->ntokens + 1);
         if (st->uses_flag) se.flag = spv_emit_function_variable_init(e, reg_ptr, c->zero);
+        /* pair_partner's pairs: the first half's value, kept for the second, which writes the select */
+        u32* pair_first = calloc((size_t)n + 1, sizeof *pair_first);
+        u32* pair_value_of = calloc((size_t)n + 1, sizeof *pair_value_of);
+        if (!pair_first || !pair_value_of) abort();
         if (stage == ST_VS) {
             u32 parts[4] = {cf(c, 0.0f), cf(c, 0.0f), cf(c, 0.0f), cf(c, 1.0f)};
             u32 empty = spv_emit_constant_vec4(e, c->t_v4f, parts);
@@ -6511,6 +6590,20 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                     se.open = 0;
                     break;
                 }
+                if (!always && pair_first[i]) { /* a pair's second half: R = its guard ? its value : the first's */
+                    u32 b = pair_value(c, in, i);
+                    if (!c->failed)
+                        wr(c, in->dst, spv_emit_ternary(e, SPV_OP_SELECT, c->t_u32, guard(c, in), b, pair_value_of[i]));
+                    continue;
+                }
+                if (!always && in->op != SM86_EXIT) {
+                    u32 j = pair_partner(insn, i, se.body_end);
+                    if (j) {
+                        pair_value_of[j] = pair_value(c, in, i);
+                        pair_first[j] = i + 1;
+                        continue;
+                    }
+                }
                 u32 merge = 0;
                 if (!always) {
                     u32 cond = guard(c, in), then = spv_emit_id(e);
@@ -6535,6 +6628,8 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             spv_emit_return(e);
         }
         spv_emit_function_end(e);
+        free(pair_first);
+        free(pair_value_of);
         free(se.label);
         int mesh = stage == ST_TS || stage == ST_MS;
         if (!c->failed && mesh) {
