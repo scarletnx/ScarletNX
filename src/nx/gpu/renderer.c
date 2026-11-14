@@ -35,10 +35,32 @@ _Alignas(64) _Atomic int g_mir_any;
    The capture buffers whose start the front end set (xfb_reload) go with the next record, and the renderer's side
    takes them in: the renderer clears them in its own copy as their capture starts over */
 #define DS_COPIES 8
+/* The inline group (DsState.inl) is 35 KB, and one NVN game changed a few of its bytes before most draws: each record
+   sent the whole group, about 25 KB a draw on average, 1.8 GB a second through the queue, which was full most of the
+   time. A front end that knows the bytes it changed names them (gpu_ds_inline_changed), and the record carries those
+   ranges in place of the group (DS_PATCHES at most), where the slot holds the state as it was last sent */
+#define DS_PATCHES 16
+typedef struct {
+    u32 off, len; /* bytes of the inline group, 4-aligned */
+} DsPatch;
+/* The inline group in a record is DsState.inl and, after it, each block's own generation (inl_gen, root_gen), which
+   the renderer keeps a block's staged copy by. A record of ranges carries those generations whole after its ranges
+   (DS_INLINE_GENS bytes): a block whose bytes a range changed would else keep the generation the renderer staged its
+   old bytes under */
+#define DS_INLINE_GENS (offsetof(DsState, gen) - offsetof(DsState, inl) - sizeof(DsInline))
+static_assert(offsetof(DsState, inl_gen) >= offsetof(DsState, inl) + sizeof(DsInline) &&
+                  offsetof(DsState, root_gen) + sizeof(u64) <= offsetof(DsState, gen),
+              "the inline blocks' generations follow the inline group");
 static struct {
     const DsState* src; /* the front end's state, NULL for an unused slot */
     u32 used;           /* g_ds_sent_use when last asked for: the slot used longest ago makes room */
     u64 gen[DS_GENS];   /* the generations sent to the renderer's side */
+    /* the inline group's ranges changed since the last record, and the generation the last of them made: they stand
+       for the group only while it is still the state's (no change that named no range came after), and while no range
+       was lost (over) */
+    DsPatch patch[DS_PATCHES];
+    u32 npatch, over;
+    u64 patch_gen;
 } g_ds_sent[DS_COPIES];
 static u32 g_ds_sent_use;
 static struct {
@@ -55,7 +77,7 @@ static const char* const g_ds_group_name[DS_GENS] = {"programs", "vertex format"
                                                       "transform feedback", "targets", "dynamic", "viewports",
                                                       "vertex buffers", "index", "bindings", "inline",
                                                       "target formats"};
-enum { DR_DRAW, DR_CLEAR, DR_TEXTURE, DR_DISCARD };
+enum { DR_DRAW, DR_CLEAR, DR_TEXTURE, DR_DISCARD, DR_XFB };
 /* a record of a call with a draw state: then the bytes of the groups in groups, in their order, then indices words */
 typedef struct {
     u32 kind;    /* DR_ */
@@ -66,12 +88,18 @@ typedef struct {
     u32 reload;  /* capture buffers whose start the front end set since the last record */
     u32 owner;   /* DsState.owner */
     u32 indices; /* the inline index words after the groups */
+    u32 npatch;  /* the inline group's ranges after the groups, each a DsPatch and its bytes, in place of the group */
+    u32 pad;
     u64 gen[DS_GENS];
     union {
         DrawCall dc;
         DrawClear c;
         DrawTexture t;
         u32 targets;
+        struct {
+            u64 control;
+            u32 what, stride;
+        } xfb;
     } call;
 } DsRecord;
 /* the renderer's side: the record into its copy, then the renderer's call */
@@ -88,6 +116,18 @@ static void ds_run(const void* arg, u64 bytes) {
             memcpy((u8*)c + g_ds_group_at[g], p, n);
             p += n;
         }
+    for (u32 i = 0; i < r.npatch; i++) {
+        DsPatch pt;
+        memcpy(&pt, p, sizeof pt);
+        p += sizeof pt;
+        if (pt.off > sizeof c->inl || pt.len > sizeof c->inl - pt.off) fatal("gpu: a draw record's patch is out of range\n");
+        memcpy((u8*)&c->inl + pt.off, p, pt.len);
+        p += pt.len;
+    }
+    if (r.npatch) { /* the blocks' generations, which the group's own bytes would have brought */
+        memcpy((u8*)&c->inl + sizeof c->inl, p, DS_INLINE_GENS);
+        p += DS_INLINE_GENS;
+    }
     c->owner = r.owner;
     memcpy(c->gen, r.gen, sizeof c->gen);
     /* a render enable of the 3D engine is decided on this side (maxwell/engines.c): its draws and clears are skipped
@@ -97,7 +137,10 @@ static void ds_run(const void* arg, u64 bytes) {
     own->pred = pred;
     own->xfb_reload = (u8)(own->xfb_reload | r.reload);
     if ((u64)(p - (const u8*)arg) + (u64)r.indices * 4 > bytes) fatal("gpu: a draw record is short\n");
-    if (off == 1 && (r.kind == DR_DRAW || r.kind == DR_CLEAR)) return;
+    /* an owner's draws off: its draws, clears, textures and discards are skipped, as the front ends skipped them
+       when they decided. A discard waits for no predicate: the draws it would keep may run */
+    if (off == 1 && r.kind != DR_XFB) return;
+    if (r.kind == DR_DISCARD && pred) return;
     switch (r.kind) {
         case DR_DRAW: {
             DrawCall dc = r.call.dc;
@@ -107,7 +150,16 @@ static void ds_run(const void* arg, u64 bytes) {
             break;
         }
         case DR_CLEAR: g_renderer->clear(c, &r.call.c, own); break;
-        case DR_TEXTURE: g_renderer->draw_texture(c, &r.call.t); break;
+        case DR_TEXTURE: {
+            DrawTexture t = r.call.t;
+            if (off >= 0) t.owner.pred = pred;
+            g_renderer->draw_texture(c, &t);
+            break;
+        }
+        case DR_XFB:
+            if (!g_renderer->xfb_control(c->owner, r.call.xfb.control, r.call.xfb.what, r.call.xfb.stride, own))
+                LOG_LIMIT(4, "gpu: transform-feedback control operation %u could not run\n", r.call.xfb.what);
+            break;
         default: g_renderer->discard(c, r.call.targets); break;
     }
 }
@@ -132,8 +184,20 @@ static void ds_queue(u32 kind, const DsState* ds, DrawOwner* o, const void* call
             groups |= 1u << g;
             bytes += g_ds_group_at[g + 1] - g_ds_group_at[g];
         }
+    /* the inline group's changed ranges in its place, where they hold all its change since the last record */
+    u32 npatch = 0;
+    if ((groups >> DS_INLINE & 1) && !fresh && !g_ds_sent[at].over && g_ds_sent[at].npatch &&
+        g_ds_sent[at].patch_gen == ds->gen[DS_INLINE]) {
+        u64 patched = 0;
+        for (u32 i = 0; i < g_ds_sent[at].npatch; i++) patched += sizeof(DsPatch) + g_ds_sent[at].patch[i].len;
+        if (patched < sizeof ds->inl / 2) {
+            groups &= ~(1u << DS_INLINE);
+            bytes += patched - sizeof ds->inl; /* DS_INLINE_GENS of the group's bytes stay: they go after the ranges */
+            npatch = g_ds_sent[at].npatch;
+        }
+    }
     u8* p = (u8*)gq_call_begin(ds_run, bytes);
-    DsRecord r = {kind, at, groups, fresh, o ? o->pred : 0, o ? o->xfb_reload : 0, ds->owner, nindices};
+    DsRecord r = {kind, at, groups, fresh, o ? o->pred : 0, o ? o->xfb_reload : 0, ds->owner, nindices, npatch, 0};
     memcpy(r.gen, ds->gen, sizeof r.gen);
     memcpy(&r.call, call, call_bytes);
     memcpy(p, &r, sizeof r);
@@ -144,8 +208,20 @@ static void ds_queue(u32 kind, const DsState* ds, DrawOwner* o, const void* call
             memcpy(p, (const u8*)ds + g_ds_group_at[g], n);
             p += n;
         }
+    for (u32 i = 0; i < npatch; i++) {
+        const DsPatch* pt = &g_ds_sent[at].patch[i];
+        memcpy(p, pt, sizeof *pt);
+        p += sizeof *pt;
+        memcpy(p, (const u8*)&ds->inl + pt->off, pt->len);
+        p += pt->len;
+    }
+    if (npatch) {
+        memcpy(p, (const u8*)&ds->inl + sizeof ds->inl, DS_INLINE_GENS);
+        p += DS_INLINE_GENS;
+    }
     if (nindices) memcpy(p, indices, (size_t)nindices * 4);
     memcpy(g_ds_sent[at].gen, ds->gen, sizeof ds->gen);
+    g_ds_sent[at].npatch = g_ds_sent[at].over = 0;
     if (o) o->xfb_reload = 0; /* the renderer's side has them now */
     gq_call_end();
     /* draw_state_check: a group whose bytes changed under the same generation would draw the old bytes. The copy is
@@ -180,6 +256,40 @@ void gpu_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) {
 void gpu_draw_texture(const DsState* ds, const DrawTexture* t) {
     if (g_renderer->draw_texture) ds_queue(DR_TEXTURE, ds, NULL, t, sizeof *t, NULL, 0);
 }
+void gpu_xfb_control(const DsState* ds, DrawOwner* o, u64 control, u32 what, u32 stride) {
+    if (!g_renderer->xfb_control) return;
+    struct {
+        u64 control;
+        u32 what, stride;
+    } x = {control, what, stride};
+    ds_queue(DR_XFB, ds, o, &x, sizeof x, NULL, 0);
+}
+void gpu_ds_inline_changed(const DsState* ds, u64 before, u32 off, u32 len) {
+    u32 at = 0;
+    while (at < DS_COPIES && g_ds_sent[at].src != ds) at++;
+    if (at == DS_COPIES) return; /* not sent yet: its first record takes the whole state */
+    /* the change before this one must have named its ranges too, or been sent: else these can't stand for the group */
+    if (before != g_ds_sent[at].gen[DS_INLINE] && (!g_ds_sent[at].npatch || before != g_ds_sent[at].patch_gen))
+        g_ds_sent[at].over = 1;
+    g_ds_sent[at].patch_gen = ds->gen[DS_INLINE];
+    if (g_ds_sent[at].over || !len) return;
+    u32 lo = off & ~3u, hi = (off + len + 3) & ~3u;
+    if (hi > sizeof ds->inl) hi = sizeof ds->inl;
+    for (u32 i = 0; i < g_ds_sent[at].npatch; i++) { /* one that overlaps or touches it takes it in */
+        DsPatch* pt = &g_ds_sent[at].patch[i];
+        if (lo <= pt->off + pt->len && pt->off <= hi) {
+            u32 end = pt->off + pt->len > hi ? pt->off + pt->len : hi;
+            if (lo < pt->off) pt->off = lo;
+            pt->len = end - pt->off;
+            return;
+        }
+    }
+    if (g_ds_sent[at].npatch == DS_PATCHES) {
+        g_ds_sent[at].over = 1;
+        return;
+    }
+    g_ds_sent[at].patch[g_ds_sent[at].npatch++] = (DsPatch){lo, hi - lo};
+}
 void gpu_discard(const DsState* ds, u32 targets) {
     if (g_renderer->discard) ds_queue(DR_DISCARD, ds, NULL, &targets, sizeof targets, NULL, 0);
 }
@@ -206,6 +316,7 @@ void gpu_draw_states_reset(void) {
 
 /* The renderer's calls without a result that the front end makes often: each a record in its place in the queue */
 enum { RC_BARRIER, RC_STREAM_INCR, RC_STREAM_END, RC_READY, RC_STREAM_RUN, RC_SAMPLES_RESET, RC_SAMPLES_ENABLE,
+       RC_MEM_SEEN, RC_MEM_CHANGED,
        RC_PREDICATE_DROP };
 typedef struct {
     u32 op; /* RC_ */
@@ -223,6 +334,8 @@ static void call_run(const void* arg, u64 bytes) {
         case RC_STREAM_RUN: g_renderer->stream_run((int)c.a); break;
         case RC_SAMPLES_RESET: g_renderer->samples_reset(c.a); break;
         case RC_SAMPLES_ENABLE: g_renderer->samples_enable(c.a, (int)c.b); break;
+        case RC_MEM_SEEN: g_renderer->mem_seen(); break;
+        case RC_MEM_CHANGED: g_renderer->mem_may_have_changed(); break;
         default: g_renderer->render_predicate_drop(c.a); break;
     }
 }
@@ -238,6 +351,14 @@ void gpu_stream_incr(u32 id) {
 }
 void gpu_stream_end(void) {
     if (g_renderer->stream_end) call_queue(RC_STREAM_END, 0, 0);
+}
+/* the renderer takes in the CPU's writes so far (renderer.h mem_seen, else mem_may_have_changed) after the work queued
+   before it. Later than the front end asked, so its checks see more writes as new, never fewer. A drain at each
+   wait (gpu_renderer_now) stopped the front end at every wait of a command buffer: one NVN game ran the two threads
+   in turn, at 47 frames a second against 61 on one thread */
+void gpu_mem_seen(void) {
+    if (g_renderer->mem_seen) call_queue(RC_MEM_SEEN, 0, 0);
+    else if (g_renderer->mem_may_have_changed) call_queue(RC_MEM_CHANGED, 0, 0);
 }
 void gpu_ready(void) {
     if (g_renderer->ready) call_queue(RC_READY, 0, 0);

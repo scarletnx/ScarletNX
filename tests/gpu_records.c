@@ -7,7 +7,9 @@
 
    Each call reaches the renderer as a record of gpu_queue.c, in its order: the draw's inline indices are a copy, the
    renderer's side keeps its own DrawOwner with the front end's predicate and capture starts, and the calls without a
-   result keep their arguments. The render enable is decided on the renderer's side, in the record's place.
+   result keep their arguments. The render enable is decided on the renderer's side, in the record's place. A front
+   end that names the inline bytes it changed (gpu_ds_inline_changed) sends only those, while the ranges chain from the
+   generation the renderer's side has, are at most 16 and less than half of the group.
 
    With the argument split, gpu_split's renderer thread runs the records: a draw that the front end queued reads the
    state as it was at the draw, while the front end has gone on and changed it */
@@ -60,6 +62,10 @@ static void called(char c, u32 a, u32 b) {
 }
 
 /* the stand-in renderer: what each call saw */
+static int nxfb, nseen_mem;
+static DrawOwner* xfb_own;
+static u64 xfb_control_seen;
+static u32 tex_pred;
 static DsState seen_ds;
 static const DsState* seen_ptr;
 static int ndraw, nclear, ntex, ndiscard, ndispatch;
@@ -84,7 +90,7 @@ static void r_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) {
     called('c', 0, 0);
 }
 static void r_texture(const DsState* ds, const DrawTexture* t) {
-    (void)t;
+    tex_pred = t->owner.pred;
     seen_ptr = ds, seen_ds = *ds, ntex++;
 }
 static void r_discard(const DsState* ds, u32 targets) {
@@ -95,6 +101,12 @@ static void r_dispatch(const DispatchState* d) {
     (void)d;
     flushes_at_dispatch = flushes, ndispatch++;
 }
+static int r_xfb(u32 owner, u64 control, u32 what, u32 stride, DrawOwner* o) {
+    (void)owner, (void)what, (void)stride;
+    xfb_own = o, xfb_control_seen = control, nxfb++;
+    return 1;
+}
+static void r_mem_seen(void) { nseen_mem++; }
 static void r_barrier(int kind) { called('b', (u32)kind, 0); }
 static void r_incr(u32 id) { called('i', id, 0); }
 static void r_end(void) { called('e', 0, 0); }
@@ -116,7 +128,9 @@ static const Renderer stand_in = {.name = "stand-in",
                                   .stream_run = r_run,
                                   .samples_reset = r_reset,
                                   .samples_enable = r_enable,
-                                  .render_predicate_drop = r_drop};
+                                  .render_predicate_drop = r_drop,
+                                  .xfb_control = r_xfb,
+                                  .mem_seen = r_mem_seen};
 const Renderer* g_renderer = &stand_in;
 
 static int failed, checks;
@@ -250,6 +264,88 @@ static void test_records(void) {
     CHECK(seen_own_v.xfb_reload == 0, "after a state load, the renderer's owner did not start over");
 }
 
+/* the inline group's changed ranges in place of the group. The test also changes a byte it doesn't name: the copy
+   gets it only when the record carries the whole group */
+#define INL(s, off) (((u8*)&(s).inl)[off])
+static void inline_draw(DsState* s) {
+    DrawOwner own = {0};
+    gpu_draw(s, &(DrawCall){0}, &own);
+}
+static u64 inline_change(DsState* s, u32 off, u32 len, u8 v) {
+    u64 before = s->gen[DS_INLINE];
+    memset((u8*)&s->inl + off, v, len);
+    s->gen[DS_INLINE] = gen_next++;
+    return before;
+}
+static void test_inline_patches(void) {
+    new_state(&b, 0x60, 0x66);
+    inline_draw(&b); /* sent whole */
+    /* two ranges, chained, and a byte not named */
+    u64 g0 = inline_change(&b, 0x10, 8, 0x01);
+    gpu_ds_inline_changed(&b, g0, 0x10, 8);
+    u64 g1 = inline_change(&b, 0x2001, 3, 0x02);
+    gpu_ds_inline_changed(&b, g1, 0x2001, 3);
+    INL(b, 0x400) = 0x03;
+    inline_draw(&b);
+    CHECK(INL(seen_ds, 0x10) == 0x01 && INL(seen_ds, 0x17) == 0x01 && INL(seen_ds, 0x2001) == 0x02 &&
+              INL(seen_ds, 0x2003) == 0x02,
+          "the named ranges did not reach the renderer's copy");
+    CHECK(INL(seen_ds, 0x400) == 0x66, "the record carried the whole inline group, not its changed ranges");
+    CHECK(seen_ds.gen[DS_INLINE] == b.gen[DS_INLINE], "the copy did not take the inline group's generation");
+    /* a block's own generation goes with the ranges: the renderer keeps a block's staged copy by it, and one left
+       behind would draw the block's old bytes */
+    u64 g3 = inline_change(&b, 0x10, 8, 0x07);
+    b.inl_gen[0][0] = gen_next++;
+    b.inl_gen[1][4] = gen_next++;
+    b.root_gen = gen_next++;
+    gpu_ds_inline_changed(&b, g3, 0x10, 8);
+    inline_draw(&b);
+    CHECK(INL(seen_ds, 0x10) == 0x07 && INL(seen_ds, 0x400) == 0x66, "the range did not go as a range");
+    CHECK(!memcmp(seen_ds.inl_gen, b.inl_gen, sizeof b.inl_gen) && seen_ds.root_gen == b.root_gen,
+          "a record of ranges left the inline blocks' generations behind");
+    /* a range that follows no generation the renderer's side has: the whole group */
+    INL(b, 0x400) = 0x66;
+    inline_change(&b, 0x20, 4, 0x04);
+    u64 g2 = inline_change(&b, 0x30, 4, 0x05); /* the change from g2's own generation, not the one sent */
+    gpu_ds_inline_changed(&b, g2, 0x30, 4);
+    INL(b, 0x400) = 0x06;
+    inline_draw(&b);
+    CHECK(INL(seen_ds, 0x400) == 0x06 && INL(seen_ds, 0x20) == 0x04, "a break in the chain did not send the group");
+    /* 17 ranges apart: the whole group */
+    u64 from = b.gen[DS_INLINE];
+    for (u32 i = 0; i < 17; i++) {
+        inline_change(&b, 0x800 + 0x40 * i, 4, (u8)(0x10 + i));
+        gpu_ds_inline_changed(&b, from, 0x800 + 0x40 * i, 4);
+        from = b.gen[DS_INLINE];
+    }
+    INL(b, 0x400) = 0x07;
+    inline_draw(&b);
+    CHECK(INL(seen_ds, 0x400) == 0x07, "17 ranges apart did not send the group");
+    /* 17 ranges that touch: one patch */
+    from = b.gen[DS_INLINE];
+    for (u32 i = 0; i < 17; i++) {
+        inline_change(&b, 0x1000 + 4 * i, 4, (u8)(0x30 + i));
+        gpu_ds_inline_changed(&b, from, 0x1000 + 4 * i, 4);
+        from = b.gen[DS_INLINE];
+    }
+    INL(b, 0x400) = 0x08;
+    inline_draw(&b);
+    CHECK(INL(seen_ds, 0x400) == 0x07 && INL(seen_ds, 0x1040) == 0x40 && INL(seen_ds, 0x1000) == 0x30,
+          "ranges that touch did not go as one patch");
+    /* half of the group or more: the whole group */
+    from = b.gen[DS_INLINE];
+    u32 half = (u32)sizeof b.inl / 2;
+    inline_change(&b, 0, half, 0x09);
+    gpu_ds_inline_changed(&b, from, 0, half);
+    inline_draw(&b);
+    CHECK(INL(seen_ds, 0x400) == 0x09 && !memcmp(&seen_ds.inl, &b.inl, sizeof b.inl),
+          "a change of half the group did not send the group");
+    /* a byte changed with no range named: the whole group */
+    inline_change(&b, 0x3000, 1, 0x0A);
+    inline_draw(&b);
+    CHECK(!memcmp(&seen_ds.inl, &b.inl, sizeof b.inl), "a change with no range named did not send the group");
+}
+
 /* the calls without a result, in their order with the draws */
 /* the render enable, decided on the renderer's side: the draws and clears of an owner it turns off are skipped, and
    the others take its predicate */
@@ -271,6 +367,26 @@ static void test_render_enable(void) {
     gpu_draw(&b, &dc, &own);
     CHECK(ndraw == draws + 2 && seen_own_v.pred == 6, "a draw did not take its render enable's predicate (%u)",
           seen_own_v.pred);
+    /* an owner whose draws are off: its textures and discards are skipped too, and its capture control runs */
+    re_off = 1;
+    int texs = ntex, discards = ndiscard;
+    gpu_draw_texture(&b, &(DrawTexture){0});
+    gpu_discard(&b, 1);
+    CHECK(ntex == texs && ndiscard == discards, "a texture draw or a discard ran while its owner's draws are off");
+    int xfbs = nxfb;
+    gpu_xfb_control(&b, &own, 0x1234, 1, 16);
+    CHECK(nxfb == xfbs + 1 && xfb_control_seen == 0x1234, "a capture control did not run while the draws are off");
+    CHECK(xfb_own && xfb_own != &own, "a capture control ran with the front end's DrawOwner, not the renderer's");
+    /* on, with a predicate: a texture draw takes it, and a discard waits for none, so it is skipped */
+    re_off = 0;
+    re_pred = 6;
+    gpu_draw_texture(&b, &(DrawTexture){0});
+    CHECK(ntex == texs + 1 && tex_pred == 6, "a texture draw did not take its render enable's predicate (%u)", tex_pred);
+    gpu_discard(&b, 1);
+    CHECK(ndiscard == discards, "a discard ran under a predicate");
+    re_pred = 0;
+    gpu_discard(&b, 1);
+    CHECK(ndiscard == discards + 1, "a discard did not run with no predicate");
     re_owner = ~0u;
     int resets = re_resets;
     gpu_draw_states_reset();
@@ -297,6 +413,10 @@ static void test_calls(void) {
                                    {0, 0}, {0, 0}};
     CHECK(norder == 9 && !memcmp(args, want, sizeof want), "a call's arguments did not arrive");
     CHECK(gpu_renderer_now() == g_renderer, "gpu_renderer_now is not the renderer");
+    int seen = nseen_mem;
+    gpu_mem_seen();
+    gq_drain();
+    CHECK(nseen_mem == seen + 1, "gpu_mem_seen did not reach the renderer's mem_seen");
 }
 
 /* ------------------------------------------------ gpu_split=1: the renderer thread runs the records */
@@ -364,6 +484,7 @@ int main(int argc, char** argv) {
     test_dispatch();
     test_records();
     test_render_enable();
+    test_inline_patches();
     test_calls();
     if (failed) {
         fprintf(stderr, "gpu_records: %d of %d checks failed\n", failed, checks);
