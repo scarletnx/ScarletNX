@@ -3,7 +3,11 @@
 /* gpu/renderer.c's side of the front end, with no device: the renderer reads a copy of each front end's draw state
    (DsState), which takes only the groups whose generation moved. A change that the front end makes after a call does
    not reach the copy that the call gave. gpu_draw counts the draws for the made-up counters, and gpu_dispatch flushes
-   a merged draw before a dispatch with compute_dispatches */
+   a merged draw before a dispatch with compute_dispatches.
+
+   Each call reaches the renderer as a record of gpu_queue.c, in its order: the draw's inline indices are a copy, the
+   renderer's side keeps its own DrawOwner with the front end's predicate and capture starts, and the calls without a
+   result keep their arguments */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,19 +23,50 @@ void logf_(int lvl, const char* fmt, ...) {
 }
 static int flushes;
 void r3d_pending_flush(void) { flushes++; }
+void fatal(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    exit(1);
+}
+/* gpu.c's side of the queue: this test is the front end's thread, and writes nothing */
+int gpu_on_thread(void) { return 1; }
+int gmem_write_now(u64 gva, const void* src, u64 size) { return (void)gva, (void)src, (int)size; }
+void gpu_release_write_now(u64 gva, const void* data, u32 len) { (void)gva, (void)data, (void)len; }
+void gpu_i2m_block_now(const GpuI2m* t) { (void)t; }
+
+/* the renderer's calls in their order, one letter each, and their arguments */
+static char order[64];
+static u32 norder;
+static u32 args[64][2];
+static void called(char c, u32 a, u32 b) {
+    if (norder < 63) args[norder][0] = a, args[norder][1] = b, order[norder++] = c;
+}
 
 /* the stand-in renderer: what each call saw */
 static DsState seen_ds;
 static const DsState* seen_ptr;
 static int ndraw, nclear, ntex, ndiscard, ndispatch;
 static u32 seen_targets;
+static DrawOwner* seen_own;
+static DrawOwner seen_own_v;
+static u32 seen_index[8], seen_nindex;
+static const u32* seen_index_ptr;
 static void r_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
-    (void)dc, (void)o;
     seen_ptr = ds, seen_ds = *ds, ndraw++;
+    seen_own = o, seen_own_v = *o;
+    seen_index_ptr = dc->inline_indices;
+    seen_nindex = dc->indexed == 3 && dc->inline_indices ? dc->first + dc->count : 0;
+    for (u32 i = 0; i < seen_nindex && i < 8; i++) seen_index[i] = dc->inline_indices[i];
+    o->xfb_reload = 0; /* the renderer starts the capture over, in its own copy */
+    called('d', 0, 0);
 }
 static void r_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) {
-    (void)c, (void)o;
+    (void)c;
     seen_ptr = ds, seen_ds = *ds, nclear++;
+    seen_own_v = *o;
+    called('c', 0, 0);
 }
 static void r_texture(const DsState* ds, const DrawTexture* t) {
     (void)t;
@@ -45,12 +80,28 @@ static void r_dispatch(const DispatchState* d) {
     (void)d;
     flushes_at_dispatch = flushes, ndispatch++;
 }
+static void r_barrier(int kind) { called('b', (u32)kind, 0); }
+static void r_incr(u32 id) { called('i', id, 0); }
+static void r_end(void) { called('e', 0, 0); }
+static void r_ready(void) { called('r', 0, 0); }
+static void r_run(int on) { called('u', (u32)on, 0); }
+static void r_reset(u32 owner) { called('s', owner, 0); }
+static void r_enable(u32 owner, int on) { called('n', owner, (u32)on); }
+static void r_drop(u32 pred) { called('p', pred, 0); }
 static const Renderer stand_in = {.name = "stand-in",
                                   .draw = r_draw,
                                   .clear = r_clear,
                                   .draw_texture = r_texture,
                                   .discard = r_discard,
-                                  .dispatch = r_dispatch};
+                                  .dispatch = r_dispatch,
+                                  .method_barrier = r_barrier,
+                                  .stream_incr = r_incr,
+                                  .stream_end = r_end,
+                                  .ready = r_ready,
+                                  .stream_run = r_run,
+                                  .samples_reset = r_reset,
+                                  .samples_enable = r_enable,
+                                  .render_predicate_drop = r_drop};
 const Renderer* g_renderer = &stand_in;
 
 static int failed, checks;
@@ -73,6 +124,7 @@ static u64 gen_next = 1;
 static void new_state(DsState* s, u32 owner, u8 fill) {
     memset(s, fill, sizeof *s);
     s->owner = owner;
+    s->pad = 0; /* no group holds it: a record sends the groups, the owner and the generations */
     for (u32 g = 0; g < DS_GENS; g++) s->gen[g] = gen_next++;
 }
 
@@ -130,7 +182,8 @@ static void test_copy(void) {
     gpu_draw(&a, &dc, &own);
     /* the programs and the inline group, which changed above under their generations */
     CHECK(logged == 2, "draw_state_check logged %d groups, not the two changed under their generations", logged);
-    CHECK(!memcmp(&seen_ds, &a, sizeof a), "draw_state_check did not make the copy equal to the state");
+    gpu_draw(&a, &dc, &own);
+    CHECK(!memcmp(&seen_ds, &a, sizeof a), "draw_state_check did not send the state whole after a difference");
     g_settings.draw_state_check = 0;
 }
 
@@ -146,9 +199,70 @@ static void test_dispatch(void) {
     CHECK(flushes == 1, "a dispatch flushed a merged draw without compute_dispatches");
 }
 
+/* the records of a draw: the indices and the owner */
+static void test_records(void) {
+    DrawOwner own = {0};
+    u32 idx[6] = {10, 11, 12, 13, 14, 15};
+    DrawCall dc = {.indexed = 3, .inline_indices = idx, .first = 1, .count = 4};
+    new_state(&a, 3, 0x33);
+    own.pred = 7;
+    own.xfb_reload = 5;
+    gpu_draw(&a, &dc, &own);
+    CHECK(seen_nindex == 5 && !memcmp(seen_index, idx, 5 * 4), "the draw's inline indices did not arrive");
+    CHECK(seen_index_ptr != idx, "the renderer reads the front end's indices, not a copy");
+    CHECK(seen_own != &own, "the renderer writes the front end's DrawOwner, not its own");
+    CHECK(seen_own_v.pred == 7 && seen_own_v.xfb_reload == 5,
+          "the owner's predicate %u or capture starts %u did not arrive", seen_own_v.pred, seen_own_v.xfb_reload);
+    CHECK(own.xfb_reload == 0, "the front end keeps capture starts that the renderer's side took");
+    /* the renderer's own owner: the predicate follows the front end's, and a clear leaves the capture starts to the
+       next draw */
+    own.pred = 0;
+    own.xfb_reload = 2;
+    gpu_clear(&a, &(DrawClear){0}, &own);
+    CHECK(seen_own_v.pred == 0, "the clear's owner kept an old predicate");
+    CHECK(own.xfb_reload == 2, "a clear took the capture starts, which go with the next draw");
+    dc.indexed = 0;
+    gpu_draw(&a, &dc, &own);
+    CHECK(seen_own_v.xfb_reload == 2, "the capture starts did not reach the draw after a clear (%u)",
+          seen_own_v.xfb_reload);
+    /* a state load: each state is sent whole and each owner starts over */
+    seen_own->xfb_reload = 9;
+    gpu_draw_states_reset();
+    B(a, blend) = 0x44; /* under its generation: only a whole state brings it */
+    own.xfb_reload = 0;
+    gpu_draw(&a, &dc, &own);
+    CHECK(B(seen_ds, blend) == 0x44, "after a state load, the state was not sent whole");
+    CHECK(seen_own_v.xfb_reload == 0, "after a state load, the renderer's owner did not start over");
+}
+
+/* the calls without a result, in their order with the draws */
+static void test_calls(void) {
+    DrawOwner own = {0};
+    DrawCall dc = {0};
+    norder = 0;
+    gpu_method_barrier(3);
+    gpu_stream_incr(17);
+    gpu_draw(&a, &dc, &own);
+    gpu_samples_reset(0x80000001u);
+    gpu_samples_enable(0x80000002u, 1);
+    gpu_stream_run(1);
+    gpu_predicate_drop(99);
+    gpu_ready();
+    gpu_stream_end();
+    gq_drain();
+    order[norder] = 0;
+    CHECK(!strcmp(order, "bidsnupre"), "the calls reached the renderer as %s", order);
+    static const u32 want[9][2] = {{3, 0}, {17, 0}, {0, 0}, {0x80000001u, 0}, {0x80000002u, 1}, {1, 0}, {99, 0},
+                                   {0, 0}, {0, 0}};
+    CHECK(norder == 9 && !memcmp(args, want, sizeof want), "a call's arguments did not arrive");
+    CHECK(gpu_renderer_now() == g_renderer, "gpu_renderer_now is not the renderer");
+}
+
 int main(void) {
     test_copy();
     test_dispatch();
+    test_records();
+    test_calls();
     if (failed) {
         fprintf(stderr, "gpu_records: %d of %d checks failed\n", failed, checks);
         return 1;

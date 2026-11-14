@@ -107,8 +107,8 @@ static void inl_wrote(NvnDraw* d, const u8* p, u32 n) {
 }
 
 void nvn_draw_free(NvnDraw* d) {
-    if (d->own.pred && g_renderer->render_predicate_drop) g_renderer->render_predicate_drop(d->own.pred);
-    if (d->samples && g_renderer->samples_enable) g_renderer->samples_enable(d->ds.owner, 0);
+    if (d->own.pred && g_renderer->render_predicate_drop) gpu_predicate_drop(d->own.pred);
+    if (d->samples && g_renderer->samples_enable) gpu_samples_enable(d->ds.owner, 0);
 }
 
 void nvn_draw_init(NvnDraw* d, u32 owner) {
@@ -1118,7 +1118,7 @@ static void render_enable(NvnDraw* d, const NvnPRenderCond* r) {
     u32 pred = 0;
     int known;
     if (d->own.pred) {
-        g_renderer->render_predicate_drop(d->own.pred);
+        gpu_predicate_drop(d->own.pred);
         d->own.pred = 0;
     }
     if (r->mode >= 2) {
@@ -1126,7 +1126,7 @@ static void render_enable(NvnDraw* d, const NvnPRenderCond* r) {
         return;
     }
     d->render_off = 0;
-    known = g_renderer->render_predicate ? g_renderer->render_predicate(r->address, r->mode == 0, &pred) : -1;
+    known = g_renderer->render_predicate ? gpu_renderer_now()->render_predicate(r->address, r->mode == 0, &pred) : -1;
     if (known >= 0) {
         d->render_off = !known;
         if (known == 2) {
@@ -1147,11 +1147,11 @@ int nvn_draw_samples(NvnDraw* d, u64 address, u64 ticks) {
     /* The console's counter always runs, so a report needs no reset first. One game reports at an address and 16 bytes
        on, around a depth pass, then draws its colour only when the two differ: it never resets */
     if (!d->samples && g_renderer->samples_enable && g_renderer->samples_reset) {
-        g_renderer->samples_enable(d->ds.owner, 1);
-        g_renderer->samples_reset(d->ds.owner);
+        gpu_samples_enable(d->ds.owner, 1);
+        gpu_samples_reset(d->ds.owner);
         d->samples = 1;
     }
-    return d->samples && g_renderer->samples_report && g_renderer->samples_report(d->ds.owner, address, 16, ticks);
+    return d->samples && g_renderer->samples_report && gpu_renderer_now()->samples_report(d->ds.owner, address, 16, ticks);
 }
 
 /* ClearTexture: the region of the texture, a color target of its own, cleared within a scissor of the region, a
@@ -1276,7 +1276,7 @@ static void draw_texture(NvnDraw* d, u64 payload) {
 /* The bound shading rate image given to the renderer again, with the palettes: an id for the draws after it */
 static void rate_update(NvnDraw* d, int new_image) {
     d->rate_in.new_image = new_image;
-    d->rate = d->rate_in.addr && g_renderer->shading_rate ? g_renderer->shading_rate(&d->rate_in) : 0;
+    d->rate = d->rate_in.addr && g_renderer->shading_rate ? gpu_renderer_now()->shading_rate(&d->rate_in) : 0;
 }
 /* OP_RATE_IMAGE: the texture's header (TIC), as a texture pool would hold it, which the renderer looks up as a draw's
    texture: the texels the GPU wrote last, wherever the renderer keeps them. 0 with none bound */
@@ -1555,13 +1555,13 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             if (g_settings.nvn_storage_ordering) {
                 if (bits & (NVN_BARRIER_ORDER_PRIMITIVES_BIT | NVN_BARRIER_ORDER_FRAGMENTS_BIT |
                             NVN_BARRIER_ORDER_FRAGMENTS_TILED_BIT | NVN_BARRIER_ORDER_INDIRECT_DATA_BIT))
-                    g_renderer->method_barrier(6);
+                    gpu_method_barrier(6);
                 else if (bits & NVN_BARRIER_INVALIDATE_SHADER_BIT)
-                    g_renderer->method_barrier(7);
+                    gpu_method_barrier(7);
             }
-            if (bits & NVN_BARRIER_INVALIDATE_SHADER_BIT) g_renderer->method_barrier(5);
+            if (bits & NVN_BARRIER_INVALIDATE_SHADER_BIT) gpu_method_barrier(5);
             if (bits & (NVN_BARRIER_ORDER_FRAGMENTS_BIT | NVN_BARRIER_INVALIDATE_TEXTURE_BIT))
-                g_renderer->method_barrier(0);
+                gpu_method_barrier(0);
             return 1;
         }
         case OP_CLEAR_TEX: clear_texture(d, payload); return 1;
@@ -1587,7 +1587,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             }
             if (what < 0 || what > 3) return 1;
             if (g_renderer->xfb_control &&
-                !g_renderer->xfb_control(d->ds.owner, r->control, (u32)what, d->xfb.stride[0], &d->own))
+                !gpu_renderer_now()->xfb_control(d->ds.owner, r->control, (u32)what, d->xfb.stride[0], &d->own))
                 LOG_LIMIT(4, "nvn: transform-feedback control operation %d could not run\n", what);
             d->tf_on = what == 0 || what == 3;
             if (what == 0) d->own.xfb_reload = 15;
@@ -1597,8 +1597,8 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
         case OP_RESET_COUNTER:
             /* samples passed counts the queue's draws from here; the other counters count nothing yet */
             if (gr64(payload) == NVN_COUNTER_TYPE_SAMPLES_PASSED && g_renderer->samples_reset) {
-                if (!d->samples && g_renderer->samples_enable) g_renderer->samples_enable(d->ds.owner, 1);
-                g_renderer->samples_reset(d->ds.owner);
+                if (!d->samples && g_renderer->samples_enable) gpu_samples_enable(d->ds.owner, 1);
+                gpu_samples_reset(d->ds.owner);
                 d->samples = 1;
             }
             return 1;
