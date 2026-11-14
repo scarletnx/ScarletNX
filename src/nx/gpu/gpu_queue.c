@@ -12,12 +12,12 @@
 #include <string.h>
 #include "nx/runtime/platform/log.h"
 
-enum { GQ_WRITE, GQ_RELEASE, GQ_I2M_BLOCK };
+enum { GQ_WRITE, GQ_RELEASE, GQ_I2M_BLOCK, GQ_CALL };
 typedef struct {
     u32 kind;  /* GQ_ */
     u32 bytes; /* the record's bytes, this header and its payload */
     u64 fence; /* its sequence number */
-    u64 gva;   /* the write's address */
+    u64 gva;   /* the write's address (GQ_CALL: its function) */
     u64 size;  /* its bytes after the header (GQ_I2M_BLOCK: the upload's GpuUploadRegs, then its bytes) */
 } GqRecord;
 #define GQ_RING       (8u << 20)
@@ -27,6 +27,10 @@ typedef struct {
 #define GQ_SLOT_BITS  16
 static struct {
     u8* ring;
+    GqRecord* open; /* the call between gq_call_begin and gq_call_end, in the ring */
+    void* big;      /* or its bytes outside it, too many for the ring: the call runs from there */
+    GqFn big_fn;
+    u64 big_bytes;
     u64 head, tail; /* bytes put in and taken out, from the start: modulo GQ_RING in the ring */
     u64 queued;     /* the fence of the last record put in */
     u64 done;       /* the fence of the last record that ran */
@@ -53,6 +57,12 @@ static void gq_run(const GqRecord* r) {
             t.inner_buffer = (u8*)payload + sizeof t.regs;
             t.copy_size = (u32)(r->size - sizeof t.regs);
             gpu_i2m_block_now(&t);
+            break;
+        }
+        case GQ_CALL: {
+            GqFn fn;
+            memcpy(&fn, &r->gva, sizeof fn);
+            fn(payload, r->size);
             break;
         }
         default: fatal("gpu: queue record of kind %u\n", r->kind);
@@ -131,4 +141,35 @@ void gq_read_wait(u64 gva, u64 size) {
     for (u64 p = first; p <= last; p++)
         if (g_gq.written[gq_slot(p)] > need) need = g_gq.written[gq_slot(p)];
     if (need > __atomic_load_n(&g_gq.done, __ATOMIC_ACQUIRE)) gq_take();
+}
+void* gq_call_begin(GqFn fn, u64 bytes) {
+    u64 at = 0;
+    memcpy(&at, &fn, sizeof fn);
+    g_gq.open = gq_put(GQ_CALL, at, bytes);
+    if (g_gq.open) return g_gq.open + 1;
+    /* too big for the ring: its bytes on the heap, and the call runs after every record before it */
+    g_gq.big = malloc(bytes ? (size_t)bytes : 1);
+    if (!g_gq.big) fatal("gpu: out of memory for a queued call of %llu bytes\n", (unsigned long long)bytes);
+    g_gq.big_fn = fn;
+    g_gq.big_bytes = bytes;
+    return g_gq.big;
+}
+void gq_call_end(void) {
+    if (g_gq.open) {
+        GqRecord* r = g_gq.open;
+        g_gq.open = NULL;
+        gq_commit(r);
+        return;
+    }
+    gq_drain();
+    t_gq_run = 1;
+    g_gq.big_fn(g_gq.big, g_gq.big_bytes);
+    t_gq_run = 0;
+    free(g_gq.big);
+    g_gq.big = NULL;
+}
+void gq_call(GqFn fn, const void* arg, u64 bytes) {
+    void* p = gq_call_begin(fn, bytes);
+    if (bytes) memcpy(p, arg, (size_t)bytes);
+    gq_call_end();
 }

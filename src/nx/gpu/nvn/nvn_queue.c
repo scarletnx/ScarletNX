@@ -525,7 +525,7 @@ static u64 present_period(const NvnWindow* o, int* paced) {
     if (o->interval <= 0) return 0;
     period = (u64)o->interval * 1000000000ull / VI_REFRESH_HZ;
     /* asked without waiting: whether the renderer can tell, and the refresh */
-    if (!g_renderer->display_wait || g_renderer->display_wait(0, &refresh) < 0) return period;
+    if (!g_renderer->display_wait || gpu_renderer_now()->display_wait(0, &refresh) < 0) return period;
     *paced = 1;
     return present_display_period(period, refresh);
 }

@@ -78,7 +78,7 @@ void compute_method(GpuChannel* ch, u32 m, u32 v, int last) {
         case KEPLER_COMPUTE_INVALIDATE_SHADER_CACHES:
         case KEPLER_COMPUTE_INVALIDATE_SHADER_CACHES_NO_WFI:
             if ((v & KEPLER_COMPUTE_INVALIDATE_INSTRUCTION) && g_renderer->method_barrier)
-                g_renderer->method_barrier(BARRIER_SHADER_INSTRUCTION_INVALIDATE);
+                gpu_method_barrier(BARRIER_SHADER_INSTRUCTION_INVALIDATE);
             break;
         case KEPLER_COMPUTE_LAUNCH: launch(ch); break;
         case KEPLER_COMPUTE_REPORT_SEMAPHORE_QUERY: /* the report semaphore, the 3D engine's */

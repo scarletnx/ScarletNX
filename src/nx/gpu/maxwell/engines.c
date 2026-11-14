@@ -134,7 +134,7 @@ static void counter_reset(GpuChannel* ch, u32 v) {
     for (s = 0; s < REPORT_COUNT; s++)
         if (mask & REPORT_BIT(s)) ch->counter_base[s] = g_draws;
     ch->counter_reset |= mask;
-    if (v == CLEAR_REPORT_ZPASS_PIXEL_COUNT && g_renderer->samples_reset) g_renderer->samples_reset(ch->ds.owner);
+    if (v == CLEAR_REPORT_ZPASS_PIXEL_COUNT && g_renderer->samples_reset) gpu_samples_reset(ch->ds.owner);
     if (!mask) LOG_LIMIT(8, "gpu: counter reset %x\n", v);
 }
 /* made-up counts: three vertices a draw for vertices generated, this many for the others */
@@ -151,7 +151,7 @@ static void counter_report(GpuChannel* ch, u64 a, u32 sel, u32 payload, int one)
     }
     if ((sel == REPORT_ZPASS_PIXEL_COUNT64 || sel == REPORT_ZPASS_PIXEL_COUNT) &&
         (ch->counter_reset & REPORT_BIT(sel)) && g_renderer->samples_report &&
-        g_renderer->samples_report(ch->ds.owner, a, one ? 4 : MAXWELL3D_REPORT_BYTES, gpu_ticks())) {
+        gpu_renderer_now()->samples_report(ch->ds.owner, a, one ? 4 : MAXWELL3D_REPORT_BYTES, gpu_ticks())) {
         madeup_set(a, 0);
         return;
     }
@@ -202,7 +202,7 @@ static void render_enable_update(GpuChannel* ch) {
         return;
     }
     if (ch->owner.pred) {
-        g_renderer->render_predicate_drop(ch->owner.pred);
+        gpu_predicate_drop(ch->owner.pred);
         ch->owner.pred = 0;
     }
     switch (r[MAXWELL3D_RENDER_ENABLE_OVERRIDE] & MAXWELL3D_RENDER_ENABLE_OVERRIDE_MASK) {
@@ -229,7 +229,7 @@ static void render_enable_update(GpuChannel* ch) {
                     /* NVN's occlusion test, a count against zero: while the count isn't known the GPU compares, and
                        the draws wait for it there. Reading it here waited for the GPU to run everything recorded
                        until then, with the GPU idle meanwhile (renderer.h render_predicate) */
-                    known = g_renderer->render_predicate ? g_renderer->render_predicate(a, equal, &pred) : -1;
+                    known = g_renderer->render_predicate ? gpu_renderer_now()->render_predicate(a, equal, &pred) : -1;
                     if (known >= 0) {
                         on = known != 0;
                         if (known == 2) ch->owner.pred = pred;
@@ -400,7 +400,7 @@ static int keeps_draw(const u32* r, u32 m, u32 v) {
     }
 }
 static void barrier(int kind) {
-    if (g_renderer->method_barrier) g_renderer->method_barrier(kind);
+    if (g_renderer->method_barrier) gpu_method_barrier(kind);
 }
 /* a macro call (MAXWELL3D_MACRO_REGISTERS_START up: the even method starts a call, the odd one takes more
    parameters): it runs at the batch's last word */
@@ -645,7 +645,7 @@ static void method_acts(GpuChannel* ch, u32 m, u32 v, int last) {
             if (!sync_info_rop_writes_done(v))
                 LOG_LIMIT(4, "gpu: SyncInfo %08x without bit 20 doesn't increment\n", v);
             else if (g_renderer->stream_incr)
-                g_renderer->stream_incr(sync_info_sync_point(v));
+                gpu_stream_incr(sync_info_sync_point(v));
             break;
         case MAXWELL3D_INVALIDATE_SHADER_CACHE:
         case MAXWELL3D_INVALIDATE_SHADER_CACHE_NO_WFI:
@@ -669,7 +669,7 @@ static void method_acts(GpuChannel* ch, u32 m, u32 v, int last) {
         case MAXWELL3D_INVALIDATE_SAMPLER_CACHE_NO_WFI:
         case MAXWELL3D_INVALIDATE_TEXTURE_HEADER_CACHE_NO_WFI: barrier(BARRIER_DESCRIPTOR_CACHE); break;
         case MAXWELL3D_ZPASS_PIXEL_COUNT_ENABLE: /* the samples-passed counter counts while it is enabled */
-            if (g_renderer->samples_enable) g_renderer->samples_enable(ch->ds.owner, zpass_pixel_count_enable(v));
+            if (g_renderer->samples_enable) gpu_samples_enable(ch->ds.owner, zpass_pixel_count_enable(v));
             break;
         case MAXWELL3D_CLEAR_REPORT_VALUE: counter_reset(ch, v); break;
         case MAXWELL3D_RENDER_ENABLE_MODE:

@@ -300,7 +300,7 @@ void nvn_state_install(NvnStaged* s) {
     for (i = 0; i < NVN_QUEUES; i++) {
         const NvnDraw* d = &g_nvn.replay.q[i].d;
         if (g_nvn.replay.q[i].syncpt && d->own.pred && g_renderer->render_predicate_drop)
-            g_renderer->render_predicate_drop(d->own.pred);
+            gpu_predicate_drop(d->own.pred);
     }
     for (i = 0; i < NVN_JOBS; i++) free(g_nvn.replay.jobs[i].snapshot);
     heap_free(&g_nvn);

@@ -284,7 +284,7 @@ void r3d_draw_texture(GpuChannel* ch) {
 }
 int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
              double sdy) {
-    return g_renderer->blit ? g_renderer->blit(s, d, dx, dy, dw, dh, sx, sy, sdx, sdy) : 0;
+    return g_renderer->blit ? gpu_renderer_now()->blit(s, d, dx, dy, dw, dh, sx, sy, sdx, sdy) : 0;
 }
 
 /* ------------------------------------------------------------ constant buffers */

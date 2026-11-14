@@ -145,7 +145,7 @@ void dma_snap_launch(u32 channel, u64 job_id, u32 launch_index, const u32* r, u3
     pm_unlock(&g_dma.lk);
     gen = gpu_mem_generation(); /* before the read: a GPU write after it shows */
     /* read once, into memory the GPU reads in place where the renderer has it: the copy reads it from there */
-    if (g_renderer_up && g_renderer->snap_alloc) data = g_renderer->snap_alloc(len, &id);
+    if (g_renderer_up && g_renderer->snap_alloc) data = gpu_renderer_now()->snap_alloc(len, &id);
     if (!data) data = (u8*)malloc((size_t)len);
     if (data) gmem_read_raw(dma_pitch_low(&o.src, o.lines), data, len);
     pm_lock(&g_dma.lk);
@@ -238,10 +238,10 @@ static void dma_copy(const DmaOp* o, u8* from, u64 id) {
                    o->lines, o->line_out, (unsigned long long)o->dst.addr);
         return;
     }
-    if (!g_renderer->dma_copy(&op))
+    if (!gpu_renderer_now()->dma_copy(&op))
         WARN_LIMIT(4, "gpu: the GPU could not do a DMA copy of %u lines of %u bytes to %llx: nothing is copied\n",
                    o->lines, o->line_out, (unsigned long long)o->dst.addr);
-    if (g_renderer->rt_reload) g_renderer->rt_reload(o->dst.addr);
+    if (g_renderer->rt_reload) gpu_renderer_now()->rt_reload(o->dst.addr);
 }
 /* The copy of a launch (the first half of Eden's MaxwellDMA::Launch): a linear source's submission-time bytes when
    the GPU hasn't written the source since, else guest memory's */

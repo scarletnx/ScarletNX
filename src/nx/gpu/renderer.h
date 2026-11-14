@@ -246,6 +246,19 @@ void gpu_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o);
 void gpu_draw_texture(const DsState* ds, const DrawTexture* t);
 void gpu_discard(const DsState* ds, u32 targets);
 void gpu_dispatch(const DispatchState* d);
+/* the state's copies start over after a state load (gpu.c) */
+void gpu_draw_states_reset(void);
+/* the renderer's calls without a result, queued in their order */
+void gpu_method_barrier(int kind);
+void gpu_stream_incr(u32 id);
+void gpu_stream_end(void);
+void gpu_ready(void);
+void gpu_stream_run(int on);
+void gpu_samples_reset(u32 owner);
+void gpu_samples_enable(u32 owner, int on);
+void gpu_predicate_drop(u32 pred);
+/* the renderer for any other call of the front end: after every queued record */
+const Renderer* gpu_renderer_now(void);
 extern _Atomic int g_cs_any;      /* compute results are pending somewhere */
 extern _Atomic int g_gfx_any;     /* graphics storage-buffer results are pending somewhere */
 extern _Atomic int g_gfx_img_any; /* graphics storage-image results are pending somewhere */

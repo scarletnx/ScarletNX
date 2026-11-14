@@ -1320,7 +1320,7 @@ target_include_directories(snx-test-nvn-advanced-blend PRIVATE "${PROJECT_SOURCE
 target_link_libraries(snx-test-nvn-advanced-blend PRIVATE m)
 add_test(NAME nvn_advanced_blend COMMAND snx-test-nvn-advanced-blend)
 # nvn's copies between textures of two formats: the 2D engine's converting blit, as the game's driver copies
-add_executable(snx-test-nvn-copy-formats nvn_copy_formats.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_copy.c"
+add_executable(snx-test-nvn-copy-formats nvn_copy_formats.c "${PROJECT_SOURCE_DIR}/tests/support/gpu_front_stub.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_copy.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
 snx_test_target(snx-test-nvn-copy-formats 11)
 target_include_directories(snx-test-nvn-copy-formats PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -1328,7 +1328,7 @@ target_link_libraries(snx-test-nvn-copy-formats PRIVATE m)
 snx_hookgen(snx-test-nvn-copy-formats SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
 add_test(NAME nvn_copy_formats COMMAND snx-test-nvn-copy-formats)
 # a window's present transform against the game's driver: lower left is queued to vi flipped
-add_executable(snx-test-nvn-present-flip nvn_present_flip.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_queue.c"
+add_executable(snx-test-nvn-present-flip nvn_present_flip.c "${PROJECT_SOURCE_DIR}/tests/support/gpu_front_stub.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_queue.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
 snx_test_target(snx-test-nvn-present-flip 11)
 target_include_directories(snx-test-nvn-present-flip PRIVATE "${PROJECT_SOURCE_DIR}/src")

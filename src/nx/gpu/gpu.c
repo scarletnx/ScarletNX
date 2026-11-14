@@ -319,12 +319,12 @@ void gpu_mem_changed(u64 cpu_addr, u64 len) {
     if (g_gpu_mem_changed) g_gpu_mem_changed(cpu_addr, len);
 }
 static void may_have_changed(void) {
-    if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
+    if (g_renderer->mem_may_have_changed) gpu_renderer_now()->mem_may_have_changed();
 }
 /* a syncpoint increment of the stream, after the work before it */
 static void stream_incr(u32 id) {
     if (g_renderer->stream_incr) {
-        g_renderer->stream_incr(id);
+        gpu_stream_incr(id);
         return;
     }
     gpu_signal_point();
@@ -636,7 +636,7 @@ static void process_fence_action(GpuChannel* ch, u32 v) {
     /* results in flight land before the stream waits on something else (the CPU may read them before it increments
        the syncpoint): a wait already met is none, and stalls nothing */
     gpu_park(ch, GPU_PARK_SYNCPOINT, id, ch->puller[PULLER_SYNCPOINT_PAYLOAD], 1);
-    if (ch->park && g_renderer->before_syncwait) g_renderer->before_syncwait();
+    if (ch->park && g_renderer->before_syncwait) gpu_renderer_now()->before_syncwait();
 }
 /* Eden's CallPullerMethod: a method below NonPullerMethods, kept in the puller's registers */
 static void puller_method(GpuChannel* ch, u32 sub, u32 m, u32 v) {
@@ -866,7 +866,7 @@ static void stream_stop(GpuChannel* ch) {
     SNX_ZONE(z, "gpu stream stop");
     r3d_const_flush(ch);
     r3d_pending_flush();
-    if (g_renderer->stream_end) g_renderer->stream_end();
+    if (g_renderer->stream_end) gpu_stream_end();
 }
 static void job_end(const GpuItem* j, GpuChannel* ch) {
     u32 i, v;
@@ -879,8 +879,8 @@ static void job_end(const GpuItem* j, GpuChannel* ch) {
     if (!g_renderer->stream_incr) gpu_signal_point();
     dma_snap_finish(j->chan, j->id);
     for (i = 0; i < j->incs; i++) stream_incr(j->chan);
-    if (g_renderer->stream_end) g_renderer->stream_end();
-    v = g_renderer->release_value ? g_renderer->release_value(j->chan) : syncpt_read(j->chan);
+    if (g_renderer->stream_end) gpu_stream_end();
+    v = g_renderer->release_value ? gpu_renderer_now()->release_value(j->chan) : syncpt_read(j->chan);
     if ((i32)(v - j->expect) < 0)
         WARN_LIMIT(8, "gpu: channel %u ended a submission at syncpoint value %u, short of the %u it promised\n",
                    j->chan, v, j->expect);
@@ -896,7 +896,7 @@ static int run_job(GpuItem* j) {
             gpu_park(ch, GPU_PARK_FENCE, j->wait_id, j->wait_val, 1);
             if (ch->park) {
                 __atomic_store_n(&g_run_at, GPU_AT_SYNCWAIT, __ATOMIC_RELAXED);
-                if (g_renderer->before_syncwait) g_renderer->before_syncwait(); /* as at SYNCPOINTB */
+                if (g_renderer->before_syncwait) gpu_renderer_now()->before_syncwait(); /* as at SYNCPOINTB */
                 __atomic_store_n(&g_run_at, GPU_AT_BETWEEN, __ATOMIC_RELAXED);
             }
             if (ch->park) {
@@ -1010,7 +1010,7 @@ static int run_pass(i64* wake) {
             if (g_qtail == it) g_qtail = prev;
             pm_unlock(&g_qlk);
             gq_drain(); /* a call may read or change what the queued records touch */
-            if (g_renderer->ready) g_renderer->ready();
+            if (g_renderer->ready) gpu_ready();
             SNX_ZONE(z_call, "gpu call");
             it->fn(it->arg);
             SNX_ZONE_END(z_call);
@@ -1034,16 +1034,16 @@ static int run_pass(i64* wake) {
             g_qparked[it->chan] = 0;
         }
         pm_unlock(&g_qlk);
-        if (g_renderer->ready) g_renderer->ready();
+        if (g_renderer->ready) gpu_ready();
         __atomic_store_n(&g_run_since, plat_ns(), __ATOMIC_RELAXED);
         __atomic_store_n(&g_run_chan, it->chan + 1, __ATOMIC_RELEASE);
         {
             SNX_ZONE_C(z, "gpu job", 0x4a7fb5);
             SNX_ZONE_VALUE(z, it->chan);
             SNX_ZONE_TEXT(z, "channel %u", it->chan);
-            if (g_renderer->stream_run) g_renderer->stream_run(1);
+            if (g_renderer->stream_run) gpu_stream_run(1);
             done = run_job(it);
-            if (g_renderer->stream_run) g_renderer->stream_run(0);
+            if (g_renderer->stream_run) gpu_stream_run(0);
             SNX_ZONE_END(z);
         }
 
@@ -1125,7 +1125,7 @@ void gpu_report_stall(void) {
                  sp ? syncpt_read((u32)addr) : gmem_r32(addr));
         }
     }
-    if (g_renderer && g_renderer->report_stall) g_renderer->report_stall();
+    if (g_renderer && g_renderer->report_stall) g_renderer->report_stall(); /* the watchdog's thread: it reads, it doesn't wait */
 }
 static void gpu_thread(void* arg) {
     (void)arg;
@@ -1213,7 +1213,7 @@ static void hold_here(void* arg) {
     u64 held;
     u32 c;
     (void)arg;
-    if (g_renderer->idle) g_renderer->idle();
+    if (g_renderer->idle) gpu_renderer_now()->idle();
     pm_lock(&g_qlk);
     if (g_hold_want) {
         g_hold_at = 1;
@@ -1408,14 +1408,14 @@ void gpu_channel_close(u32 channel) {
     pm_unlock(&g_qlk);
     dma_snap_reset(channel);
     if (ch) {
-        if (ch->owner.pred) g_renderer->render_predicate_drop(ch->owner.pred);
+        if (ch->owner.pred) gpu_predicate_drop(ch->owner.pred);
         free(ch->inline_indices);
         free(ch->i2m.inner_buffer);
         free(ch);
     }
 }
 void gpu_release_retire(u32 channel) {
-    if (g_renderer->release_retire) g_renderer->release_retire(channel);
+    if (g_renderer->release_retire) gpu_renderer_now()->release_retire(channel);
 }
 
 /* ------------------------------------------------------------ save states */
@@ -1575,6 +1575,7 @@ GpuStaged* gpu_state_parse(StateIo* io) {
         for (u32 g = 0; g < DS_GENS; g++) ch->ds.gen[g] = ds_generation_next();
         ch->owner.pred = 0;        /* the predicate was the renderer's: draws run until the next render enable */
         ch->owner.xfb_started = 0; /* the byte counters were the renderer's */
+        gpu_draw_states_reset();   /* and so are its copies of the states and owners */
     }
     if (io_get32(io, &n)) goto bad;
     for (i = 0; i < n; i++) {
