@@ -160,7 +160,10 @@ int gmem_write_now(u64 gva, const void* src, u64 size) {
     gpu_mem_written(gva, size);
     return all ? 0 : -1;
 }
-/* in its place in the queue as gmem_write's: a draw queued before it reads the constant buffer as it was */
+/* A constant buffer upload goes in its place in the queue, as gmem_write's writes do: a draw queued before it reads
+   the constant buffer as it was. Written at once on the front end, it skipped the queue, and the renderer thread's
+   draws read the values of uploads that came after them. One game's scene drew grey blocks and a broken HUD. Only the
+   record's run (gmem_write_cb_now) writes, and it keeps the upload's own stamp (gpu_mem_written_cb) */
 int gmem_write_cb(u64 gva, const void* src, u64 size) {
     if (!size) return 0;
     if (gq_queues()) {
