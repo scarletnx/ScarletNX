@@ -5,6 +5,7 @@
    restart indices other than all ones, in strips. Vertices 0 to 3 are a red quad over the whole target and 4 to 7 a
    green one, so a quad drawn from the wrong vertices shows red, and a strip that takes its restart index (2, the red
    quad's top right corner) for a vertex draws a second triangle with red in it */
+#include <math.h>
 
 /* a program at address of count instructions (a scheduling word before every three), a fragment program's header
    taking a screen-linear RGBA input when fragment is set, or one with perspective when it is 2 */
@@ -1569,6 +1570,11 @@ static int feedback_upload(u64 target, const u8* pixels) {
     vk_surf_touch(surface);
     return 1;
 }
+/* an 8-bit value as an sRGB view reads it, rounded to 8 bits */
+static u8 feedback_srgb_read(u8 v) {
+    double c = v / 255.0, linear = c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+    return (u8)(linear * 255.0 + 0.5);
+}
 /* Two feedback draws over the whole 4x4 target between the game's texture barriers, as own_target_case draws one
    (vk/predraw.c, render.c feedback_order). Each round uploads the target's own colors, puts a barrier before the two
    draws and reads the target back. With the interlock's capture (the mode NVIDIA's GPUs take, forced where the device
@@ -1579,7 +1585,10 @@ static int feedback_upload(u64 target, const u8* pixels) {
    draws of predraw_run, and in place where alpha to coverage keeps those off, each draw reads the draws before it:
    the save draw of the second is ordered after the first's writes, one order more than its save attachments' two,
    and the second in place is ordered too, each order a feedback barrier or the pass begun again. The two draws that
-   swap leave the target as uploaded */
+   swap leave the target as uploaded. A capture holds the texel as its draw's header and sampler read it, so a draw
+   that reads the target through others captures it again: where the first draw writes back what it read, a second
+   through a header that swaps red and green, which its program swaps back, leaves the target as uploaded, and a
+   second whose sampler reads sRGB (the header asks in both) leaves it decoded */
 static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) {
     const u64 vertex_at = address + 0x9000, plain_at = address + 0x9200, swap_at = address + 0x9400,
               other = address + 0x9800, pool = address + 0x1F000, samplers = pool + 0x100, cbuf = pool + 0x200;
@@ -1611,17 +1620,20 @@ static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) 
     static const struct {
         int interlock;        /* the capture, else the device's two draws */
         u8 swaps[2];          /* each draw's program swaps red and green */
+        u8 header, srgb;      /* the second draw's header swaps them; its sampler reads sRGB (both headers ask) */
         u8 other;             /* the second draw renders to and samples the other target */
         u8 barrier, coverage; /* a fragment barrier between the draws; alpha to coverage on */
-        u8 ends;              /* the pixels end as uploaded (0) or swapped (1) */
+        u8 ends;              /* the pixels end as uploaded (0), swapped (1) or read as sRGB (2) */
         u32 orders, predraws; /* without the interlock: the orders between the draws and those drawn two times */
         const char* name;
     } rounds[] = {
-        {1, {1, 1}, 0, 0, 0, 1, 0, 0, "two draws read the target as it was at the barrier"},
-        {1, {1, 1}, 0, 1, 0, 0, 0, 0, "a barrier between: the second reads the first's writes"},
-        {1, {1, 1}, 1, 0, 0, 0, 0, 0, "the second to another target captures that one"},
-        {0, {1, 1}, 0, 0, 0, 0, 3, 2, "drawn two times each: the second's save draw after the first's writes"},
-        {0, {1, 1}, 0, 0, 1, 0, 1, 0, "in place (alpha to coverage): the second after the first's writes"},
+        {1, {1, 1}, 0, 0, 0, 0, 0, 1, 0, 0, "two draws read the target as it was at the barrier"},
+        {1, {1, 1}, 0, 0, 0, 1, 0, 0, 0, 0, "a barrier between: the second reads the first's writes"},
+        {1, {1, 1}, 0, 0, 1, 0, 0, 0, 0, 0, "the second to another target captures that one"},
+        {1, {0, 1}, 1, 0, 0, 0, 0, 0, 0, 0, "the second through a header that swaps red and green"},
+        {1, {0, 0}, 0, 1, 0, 0, 0, 2, 0, 0, "the second through a sampler that reads sRGB"},
+        {0, {1, 1}, 0, 0, 0, 0, 0, 0, 3, 2, "drawn two times each: the second's save draw after the first's writes"},
+        {0, {1, 1}, 0, 0, 0, 0, 1, 0, 1, 0, "in place (alpha to coverage): the second after the first's writes"},
     };
     int interlock = g_vk.has_feedback && g_vk.has_fragment_interlock && g_vk.feat.fragmentStoresAndAtomics,
         two_draws = g_vk.has_feedback && g_vk.has_local_read, mode = g_vk.feedback_mode;
@@ -1655,7 +1667,8 @@ static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) 
         if (rounds[round].interlock ? !interlock : !two_draws) continue;
         ran++;
         g_vk.feedback_mode = rounds[round].interlock ? VK_FEEDBACK_INTERLOCK : VK_FEEDBACK_PREDRAW;
-        for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+        for (u32 i = 0; i < 8; i++)
+            snx_st_le32(bytes + i * 4, i == 4 && rounds[round].srgb ? tic[4] | 1u << 22 : tic[i]);
         CHECK(!gmem_write(pool + 96, bytes, 32));
         memset(bytes, 0, 32);
         CHECK(!gmem_write(samplers, bytes, 32));
@@ -1675,6 +1688,16 @@ static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) 
             orders = g_vk_fb_barriers + g_vk_passes + 1, predraws = g_vk_predraws;
             for (u32 d = 0; ok && d < 2; d++) {
                 if (d && rounds[round].barrier) g_renderer->method_barrier(0);
+                if (d && rounds[round].header) { /* red read from green and green from red */
+                    for (u32 i = 0; i < 8; i++)
+                        snx_st_le32(bytes + i * 4, i ? tic[i] : (tic[0] & ~(0x3Fu << 19)) | 3u << 19 | 2u << 22);
+                    ok = !gmem_write(pool + 96, bytes, 32);
+                }
+                if (d && rounds[round].srgb) { /* the sampler's sRGB conversion */
+                    memset(bytes, 0, 32);
+                    snx_st_le32(bytes, 1u << 13);
+                    ok = !gmem_write(samplers, bytes, 32);
+                }
                 if (d && rounds[round].other) { /* bound and sampled in place of the target, with no barrier */
                     rt_clear(channel, other, 4, 4, 0, 1);
                     ok = feedback_upload(other, swapped);
@@ -1729,7 +1752,12 @@ static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) 
             u8 want[4];
             memcpy(want, initial + i * 4, 4);
             if (rounds[round].ends == 1) want[0] = initial[i * 4 + 1], want[1] = initial[i * 4];
-            if (memcmp(out + i * 4, want, 4)) {
+            int off = 0;
+            for (u32 c = 0; c < 4; c++) {
+                if (rounds[round].ends == 2 && c < 3) want[c] = feedback_srgb_read(initial[i * 4 + c]);
+                off |= abs(out[i * 4 + c] - want[c]) > (rounds[round].ends == 2); /* the decoding's rounding */
+            }
+            if (off) {
                 fprintf(stderr, "feedback intervals, %s: pixel (%u, %u) is %u %u %u %u, expected %u %u %u %u\n",
                         rounds[round].name, i & 3, i >> 2, out[i * 4], out[i * 4 + 1], out[i * 4 + 2], out[i * 4 + 3],
                         want[0], want[1], want[2], want[3]);

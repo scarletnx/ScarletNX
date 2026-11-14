@@ -4976,12 +4976,17 @@ retry:
             return;
         }
         /* the captured slots' targets, in the order of their side images (shader/spirv_translate.c
-           predraw_prologue) */
+           predraw_prologue), and what else decides the texel a slot fetches from its target: the header's swizzle
+           (tex_map) and the sRGB reading (tex_srgb) */
         const Surf* targets[SH_PREDRAW_MAX];
-        u32 ntargets = 0;
+        u32 views[SH_PREDRAW_MAX], ntargets = 0;
         for (int i = 0; i < SH_MAXTEX && ntargets < SH_PREDRAW_MAX; i++)
-            if (fs->si.predraw_slots >> i & 1) targets[ntargets++] = res && res[i].have ? res[i].t : NULL;
-        predraw = vk_predraw_next(targets, ntargets);
+            if (fs->si.predraw_slots >> i & 1) {
+                const TexRes* x = res && res[i].have ? &res[i] : NULL;
+                views[ntargets] = x ? (x->tic[0] >> 19 & 0xFFFu) | (u32)tex_srgb(x->tic, x->tsc) << 12 : 0;
+                targets[ntargets++] = x ? x->t : NULL;
+            }
+        predraw = vk_predraw_next(targets, views, ntargets);
     }
     int zt_ro = 0;
     u32 fb = 0;
