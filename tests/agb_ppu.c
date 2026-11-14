@@ -98,6 +98,18 @@ int main(void) {
     CHECK(pixel(0, 0) == PIX(0, 0, 0));
     CHECK(pixel(4, 0) == PIX(31, 0, 0));
     agb_ppu_write(&board, 0x010, 0);
+    /* a tile whose data would sit past the backgrounds' 64 KiB (char base 3: tile 0x200 at 4 bits a pixel, 0x100 at 8)
+       draws nothing, as mGBA's renderer has it, not the tile 64 KiB below it (tile 0, red above) */
+    for (int i = 0; i < 1024; ++i) agb_write16(&board, 0x0600F800 + (uint32_t)i * 2, 0x1200);
+    agb_ppu_write(&board, 0x008, 0x1F0C);
+    run_frame();
+    CHECK(pixel(0, 0) == PIX(0, 0, 0));
+    for (int i = 0; i < 1024; ++i) agb_write16(&board, 0x0600F800 + (uint32_t)i * 2, 0x0100);
+    agb_ppu_write(&board, 0x008, 0x1F8C);
+    run_frame();
+    CHECK(pixel(0, 0) == PIX(0, 0, 0));
+    for (int i = 0; i < 1024; ++i) agb_write16(&board, 0x0600F800 + (uint32_t)i * 2, 0x1000);
+    agb_ppu_write(&board, 0x008, 0x1F00);
 
     /* OBJ: an 8x8 sprite over the background */
     agb_write16(&board, 0x05000202, 0x7C00); /* OBJ palette 1: blue */
