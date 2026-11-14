@@ -30,101 +30,202 @@
 #include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/state_io.h"
 
-#define SURFH 4096
-static Surf* g_surfh[SURFH];
-/* The recency lists, from the least recently used to the most: textures (VK_LRU_TEX) and render targets (VK_LRU_RT,
+/* The table of surfaces, one row each, as columns indexed by row (a struct of arrays). Row 0 is none: its columns stay
+   zero, so a surface without a row (a copy, the CPU frame) is in no list. A surface has a row from the time it enters
+   the table (row_take) until it is freed (surf_free). The hash chains, the recency lists and the list of ended
+   textures link rows by u32 index, so a walk of one reads these dense columns, and a Surf only when it needs that
+   surface's own state. A free row's hnext is the next free row.
+
+   The recency lists, from the least recently used to the most: textures (VK_LRU_TEX) and render targets (VK_LRU_RT,
    parked ones too), each with a second list (LRU_AGED + its own) of the old ones whose pixels would be lost if they
    went (lossless below), moved there as an eviction that takes only lossless ones passes them. Each stays in the
    order of last use: what is moved comes from the old end of the first list, older than all left there. A surface
    used again goes back to the recent end of the first. Both render target lists together are every real target, for
-   overlapping guest-memory writes (vk_rt_before_write) */
+   overlapping guest-memory writes (vk_rt_before_write).
+
+   The list of ended textures, newest first: those whose last texture object the game ended (ended_collect), or, in a
+   game with no texture objects, whose first page it unmapped (remapped_collect). Nothing draws with one again unless
+   the game makes an object at its address (maps it again), and its pixels are in memory still or they are not
+   (lossless): a trim takes these before any texture the game still has, whatever their age. Linked both ways:
+   with memory to spare nothing trims it, and one game's list held 22,000 textures. The idle eviction (vk_tex_frame)
+   takes the oldest, at its far end, and a walk to each from the head cost 100 to 190 ms in a present that evicted a
+   few thousand */
+#define SURFH    4096
 #define LRU_AGED 2
+#define NLISTS   5
+typedef struct {
+    u32 prev, next;
+} RowLink;
+typedef struct {
+    u32 head, tail;
+} RowList;
 static struct {
-    Surf *head, *tail;
-} g_lru[5];
+    /* the columns, in one block that rows_grow carves */
+    Surf** surf;    /* the surface of the row */
+    u64* touched;   /* when it last went to the recent end of its recency list: ties of last_used in the lists' order */
+    RowLink* lru;   /* its links in its recency list */
+    RowLink* ended; /* its links in the list of ended textures */
+    u32* hnext;     /* the next row of its hash chain, or of the free rows */
+    u32* ended_at;  /* the present the cache learned that its texture object ended */
+    u8* list;       /* its recency list: VK_LRU_TEX, VK_LRU_RT, either + LRU_AGED, or VK_LRU_NONE */
+    /* 0, or why it is in the list of ended textures: 1, the game ended its last texture object and made none there
+       since; 2, in a game with no texture objects, its first page was unmapped and nothing was mapped there since */
+    u8* ended_by;
+    u32 cap;        /* rows in the columns */
+    u32 top;        /* the highest row ever taken */
+    u32 free;       /* the first free row below top */
+    u32 hash[SURFH];
+    RowList lists[NLISTS];
+    RowList ended_list;
+    u64 clock; /* the last touched value given */
+} g_rows;
+/* the columns with room for twice the rows, all in one block */
+static void rows_grow(void) {
+    u32 cap = g_rows.cap ? g_rows.cap * 2 : 1024;
+    const size_t row_bytes = sizeof(Surf*) + sizeof(u64) + 2 * sizeof(RowLink) + 2 * sizeof(u32) + 2 * sizeof(u8);
+    if (cap <= g_rows.cap || cap > (size_t)-1 / row_bytes) fatal("vulkan: too many surfaces for the table");
+    char* block = (char*)calloc(cap, row_bytes);
+    if (!block) fatal("vulkan: out of memory for the table of surfaces");
+    /* each column at a multiple of its type's size: the 8-byte ones first, then the 4-byte ones, then the bytes */
+    Surf** surf = (Surf**)block;
+    u64* touched = (u64*)(surf + cap);
+    RowLink* lru = (RowLink*)(touched + cap);
+    RowLink* ended = lru + cap;
+    u32* hnext = (u32*)(ended + cap);
+    u32* ended_at = hnext + cap;
+    u8* list = (u8*)(ended_at + cap);
+    u8* ended_by = list + cap;
+    u32 n = g_rows.cap;
+    if (n) {
+        memcpy(surf, g_rows.surf, n * sizeof *surf);
+        memcpy(touched, g_rows.touched, n * sizeof *touched);
+        memcpy(lru, g_rows.lru, n * sizeof *lru);
+        memcpy(ended, g_rows.ended, n * sizeof *ended);
+        memcpy(hnext, g_rows.hnext, n * sizeof *hnext);
+        memcpy(ended_at, g_rows.ended_at, n * sizeof *ended_at);
+        memcpy(list, g_rows.list, n);
+        memcpy(ended_by, g_rows.ended_by, n);
+    }
+    free(g_rows.surf); /* the old block: its first column starts it */
+    g_rows.surf = surf;
+    g_rows.touched = touched;
+    g_rows.lru = lru;
+    g_rows.ended = ended;
+    g_rows.hnext = hnext;
+    g_rows.ended_at = ended_at;
+    g_rows.list = list;
+    g_rows.ended_by = ended_by;
+    g_rows.cap = cap;
+}
+/* r at the end of q, the first of q, or before at (0: at the end) */
+static void link_before(RowLink* l, RowList* q, u32 r, u32 at) {
+    l[r].next = at;
+    l[r].prev = at ? l[at].prev : q->tail;
+    if (l[r].prev)
+        l[l[r].prev].next = r;
+    else
+        q->head = r;
+    if (at)
+        l[at].prev = r;
+    else
+        q->tail = r;
+}
+static void link_out(RowLink* l, RowList* q, u32 r) {
+    if (l[r].prev)
+        l[l[r].prev].next = l[r].next;
+    else
+        q->head = l[r].next;
+    if (l[r].next)
+        l[l[r].next].prev = l[r].prev;
+    else
+        q->tail = l[r].prev;
+    l[r] = (RowLink){0};
+}
+static u32 hkey(u64 a) { return (u32)((a >> 8) ^ (a >> 20)) & (SURFH - 1); }
+/* s into the table: a row, at the head of its address's hash chain */
+static void row_take(Surf* s) {
+    u32 r = g_rows.free;
+    if (r)
+        g_rows.free = g_rows.hnext[r];
+    else {
+        if (g_rows.top + 1 >= g_rows.cap) rows_grow();
+        r = ++g_rows.top;
+    }
+    g_rows.surf[r] = s;
+    s->row = r;
+    u32 k = hkey(s->gva);
+    g_rows.hnext[r] = g_rows.hash[k];
+    g_rows.hash[k] = r;
+}
+/* s out of its hash chain: in no lookup, its row still held */
+static void row_unhash(const Surf* s) {
+    for (u32* at = &g_rows.hash[hkey(s->gva)]; *at; at = &g_rows.hnext[*at])
+        if (*at == s->row) {
+            *at = g_rows.hnext[s->row];
+            break;
+        }
+}
+/* s's row free again, all zero (s is out of every list and chain) */
+static void row_drop(Surf* s) {
+    u32 r = s->row;
+    g_rows.surf[r] = NULL;
+    g_rows.touched[r] = 0;
+    g_rows.ended_at[r] = 0;
+    g_rows.list[r] = g_rows.ended_by[r] = 0;
+    g_rows.hnext[r] = g_rows.free;
+    g_rows.free = r;
+    s->row = 0;
+}
 static struct {
     u32 n;
     u64 bytes;
 } g_held[3];         /* by VK_LRU_TEX or VK_LRU_RT: the surfaces and their memory */
 static u32 g_parked; /* render targets parked */
-static int lru_kind(const Surf* s) { return s->lru > LRU_AGED ? s->lru - LRU_AGED : s->lru; }
-static void lru_link(Surf* s, int list) {
-    s->lru = list;
-    s->lru_next = NULL;
-    s->lru_prev = g_lru[list].tail;
-    if (s->lru_prev)
-        s->lru_prev->lru_next = s;
-    else
-        g_lru[list].head = s;
-    g_lru[list].tail = s;
+static int lru_kind(u32 r) { return g_rows.list[r] > LRU_AGED ? g_rows.list[r] - LRU_AGED : g_rows.list[r]; }
+static void lru_link(u32 r, int list) {
+    g_rows.list[r] = (u8)list;
+    link_before(g_rows.lru, &g_rows.lists[list], r, 0);
 }
-static void lru_unlink(Surf* s) {
-    int list = s->lru;
-    if (s->lru_prev)
-        s->lru_prev->lru_next = s->lru_next;
-    else
-        g_lru[list].head = s->lru_next;
-    if (s->lru_next)
-        s->lru_next->lru_prev = s->lru_prev;
-    else
-        g_lru[list].tail = s->lru_prev;
-    s->lru = VK_LRU_NONE;
+static void lru_unlink(u32 r) {
+    link_out(g_rows.lru, &g_rows.lists[g_rows.list[r]], r);
+    g_rows.list[r] = VK_LRU_NONE;
 }
-static u64 g_touched;
-/* The textures whose last texture object the game ended (ended_collect), newest first. Nothing draws with one again
-   unless the game makes an object at its address, and its pixels are in memory still or they are not (lossless): a
-   trim takes these before any texture the game still has, whatever their age. Linked both ways: with memory to spare
-   nothing trims it, and one game's list held 22,000 textures. The idle eviction (vk_tex_frame) takes the oldest, at
-   its far end, and a walk to each from the head cost 100 to 190 ms in a present that evicted a few thousand */
-static Surf* g_ended;
-static u64 g_ended_freed; /* bytes of them a trim took, for its log */
-static void ended_unlink(Surf* s) {
-    if (!s->ended) return;
-    if (s->ended_prev)
-        s->ended_prev->ended_next = s->ended_next;
-    else
-        g_ended = s->ended_next;
-    if (s->ended_next) s->ended_next->ended_prev = s->ended_prev;
-    s->ended = 0;
-    s->ended_prev = s->ended_next = NULL;
+static u64 g_ended_freed; /* bytes of ended textures a trim took, for its log */
+static void ended_unlink(u32 r) {
+    if (!g_rows.ended_by[r]) return;
+    link_out(g_rows.ended, &g_rows.ended_list, r);
+    g_rows.ended_by[r] = 0;
 }
 void vk_surf_touch(Surf* s) {
-    if (s->ended) ended_unlink(s); /* used: the game has an object there again */
+    u32 r = s->row;
+    if (r) ended_unlink(r); /* used: the game has an object there again */
     if (s->last_used == g_vk_present) return;
     s->last_used = g_vk_present;
-    if (!s->lru) return;
-    s->touched = ++g_touched;
-    int kind = lru_kind(s);
-    lru_unlink(s);
-    lru_link(s, kind);
+    if (!r || !g_rows.list[r]) return;
+    g_rows.touched[r] = ++g_rows.clock;
+    int kind = lru_kind(r);
+    lru_unlink(r);
+    lru_link(r, kind);
 }
 static int lossless(const Surf* s);
 /* s's pixels can be had again now (written back, loaded, or left undefined) and are taken out of the aged list, else
    a lossless eviction wouldn't find it and the idle one would keep it for five minutes. Into its first list in order
    of last use: near the old end, as everything there was used after everything aged, past only the others relisted */
 void vk_surf_relist(Surf* s) {
-    if (s->lru <= LRU_AGED || !lossless(s)) return;
-    int kind = lru_kind(s);
-    Surf* at = g_lru[kind].head; /* the first used after s */
-    while (at && (i32)((u32)at->last_used - (u32)s->last_used) <= 0) at = at->lru_next;
-    lru_unlink(s);
-    s->lru = kind;
-    s->touched = ++g_touched; /* past the others of its last_used */
-    s->lru_next = at;
-    s->lru_prev = at ? at->lru_prev : g_lru[kind].tail;
-    if (s->lru_prev)
-        s->lru_prev->lru_next = s;
-    else
-        g_lru[kind].head = s;
-    if (at)
-        at->lru_prev = s;
-    else
-        g_lru[kind].tail = s;
+    u32 r = s->row;
+    if (!r || g_rows.list[r] <= LRU_AGED || !lossless(s)) return;
+    int kind = lru_kind(r);
+    u32 at = g_rows.lists[kind].head; /* the first used after s */
+    while (at && (i32)((u32)g_rows.surf[at]->last_used - (u32)s->last_used) <= 0) at = g_rows.lru[at].next;
+    lru_unlink(r);
+    g_rows.list[r] = (u8)kind;
+    g_rows.touched[r] = ++g_rows.clock; /* past the others of its last_used */
+    link_before(g_rows.lru, &g_rows.lists[kind], r, at);
 }
 static void lru_add(Surf* s, int kind) {
     s->last_used = g_vk_present;
-    s->touched = ++g_touched;
-    lru_link(s, kind);
+    g_rows.touched[s->row] = ++g_rows.clock;
+    lru_link(s->row, kind);
     g_held[kind].n++;
     g_held[kind].bytes += s->bytes;
 }
@@ -135,10 +236,9 @@ void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked) {
 }
 void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx) {
     for (int list = kind; list <= kind + LRU_AGED; list += LRU_AGED)
-        for (const Surf* s = g_lru[list].head; s; s = s->lru_next) fn(ctx, s);
+        for (u32 r = g_rows.lists[list].head; r; r = g_rows.lru[r].next) fn(ctx, g_rows.surf[r]);
 }
 static _Thread_local int g_rt_flushing;
-static u32 hkey(u64 a) { return (u32)((a >> 8) ^ (a >> 20)) & (SURFH - 1); }
 u32 g_vk_surf_epoch;
 static u32 g_surf_bucket_epoch[SURFH];
 u32 vk_surf_epoch_at(u64 gva) { return g_surf_bucket_epoch[hkey(gva)]; }
@@ -345,9 +445,7 @@ static Surf* surf_create_(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 
                                             .usage = usage & ~VK_IMAGE_USAGE_STORAGE_BIT};
     if ((usage & VK_IMAGE_USAGE_STORAGE_BIT) && storage_format != f.vk) vi.pNext = &view_usage;
     VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &s->att));
-    u32 k = hkey(gva);
-    s->next = g_surfh[k];
-    g_surfh[k] = s;
+    row_take(s);
     surf_changed(gva);
     if (is_rt) lru_add(s, VK_LRU_RT);
     return s;
@@ -383,11 +481,10 @@ VkImageView vk_rt_attachment(Surf* s, int srgb_write) {
     return s->att_linear;
 }
 
-Surf* vk_surf_first(u64 gva) { return g_surfh[hkey(gva)]; }
+Surf* vk_surf_first(u64 gva) { return g_rows.surf ? g_rows.surf[g_rows.hash[hkey(gva)]] : NULL; }
+Surf* vk_surf_next(const Surf* s) { return g_rows.surf[g_rows.hnext[s->row]]; }
 void vk_surf_add(Surf* s) {
-    u32 k = hkey(s->gva);
-    s->next = g_surfh[k];
-    g_surfh[k] = s;
+    row_take(s);
     surf_changed(s->gva);
     lru_add(s, VK_LRU_TEX);
 }
@@ -498,7 +595,7 @@ static void rtx_del(u64 gva) {
 }
 Surf* vk_rt_find(u64 gva) {
     if (g_rtx_failed) {
-        for (Surf* s = g_surfh[hkey(gva)]; s; s = s->next)
+        for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
             if (s->gva == gva && s->is_rt) return s;
         return NULL;
     }
@@ -1211,7 +1308,7 @@ static u32 rt_pending_over(u64 gva, u64 size, Surf** local, u32 nlocal, Surf*** 
     u32 n = 0, cap = nlocal;
     /* the live targets that can reach gva, from the index, or every target the lists keep */
     u32 at = g_rts_failed ? 0 : rts_lower(gva > g_rts_span ? gva - g_rts_span : 0);
-    Surf* walk = g_rts_failed ? g_lru[VK_LRU_RT].head : NULL;
+    u32 walk = g_rts_failed ? g_rows.lists[VK_LRU_RT].head : 0;
     int lru = VK_LRU_RT;
     for (;;) {
         Surf* s;
@@ -1219,10 +1316,10 @@ static u32 rt_pending_over(u64 gva, u64 size, Surf** local, u32 nlocal, Surf*** 
             if (at >= g_nrts || g_rts[at]->gva >= gva + size) break;
             s = g_rts[at++];
         } else {
-            while (!walk && lru < VK_LRU_RT + LRU_AGED) walk = g_lru[lru += LRU_AGED].head;
+            while (!walk && lru < VK_LRU_RT + LRU_AGED) walk = g_rows.lists[lru += LRU_AGED].head;
             if (!walk) break;
-            s = walk;
-            walk = walk->lru_next;
+            s = g_rows.surf[walk];
+            walk = g_rows.lru[walk].next;
         }
         if ((s->gva >> 63) || s->gva >= gva + size || s->gva + rt_bytes(s) <= gva || !flush_bytes(s)) continue;
         if (n == cap) {
@@ -1782,7 +1879,7 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
     VkFmt layout_fmt = depth ? vk_zt_format(fmt) : vk_rt_format(fmt);
     u64 min_layer_size = bl ? bl_size(gw * layout_fmt.bpp, gh, bh) : (u64)pitch * gh;
     if (layer_size < min_layer_size) layer_size = min_layer_size;
-    for (Surf* s = g_surfh[hkey(gva)]; s; s = s->next)
+    for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
         if (s->gva == gva && s->is_rt && s->w == w && s->h == h && s->fkey == fkey && s->bl == bl && s->bh == bh &&
             s->pitch == pitch && s->layers == layers && s->layer_size == layer_size && s->bd == bd &&
             s->volume == volume && s->msaa == msaa) {
@@ -1795,12 +1892,12 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
        dynamic resolution does every frame in some games) */
     Surf* cur = depth ? NULL : vk_rt_find(gva);
     int cur_fresh = cur && cur->w == w && cur->h == h && cur->layers == layers && !volume && vk_rt_drawn_fresh(cur);
-    for (Surf* s = g_surfh[hkey(gva)]; s; s = s->next)
+    for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
         if (s->gva == (gva | 1ull << 63) && s->is_rt && s->w == w && s->h == h && s->fkey == fkey && s->bl == bl &&
             s->bh == bh && s->pitch == pitch && s->layers == layers && s->layer_size == layer_size && s->bd == bd &&
             s->volume == volume && s->msaa == msaa && !parked)
             parked = s;
-    for (Surf* s = g_surfh[hkey(gva)]; s; s = s->next)
+    for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
         if (s->gva == gva && s->is_rt) {
             rt_pages(s, -1);
             rtx_del(gva);
@@ -1888,7 +1985,7 @@ static void rt_cpu_at(void* ctx, u64 gva, u64 n) {
 static int rt_cpu_better(const Surf* s, int exact, const Surf* best, int best_exact) {
     if (!best || exact != best_exact) return !best || exact > best_exact;
     i32 d = (i32)((u32)s->last_used - (u32)best->last_used);
-    return d > 0 || (d == 0 && s->touched > best->touched);
+    return d > 0 || (d == 0 && g_rows.touched[s->row] > g_rows.touched[best->row]);
 }
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h) {
     Surf* best = NULL;
@@ -1915,7 +2012,8 @@ Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h) {
         return best && best->layout != VK_IMAGE_LAYOUT_UNDEFINED ? best : NULL;
     }
     for (int list = VK_LRU_RT + LRU_AGED; list >= VK_LRU_RT; list -= LRU_AGED)
-        for (Surf* s = g_lru[list].head; s; s = s->lru_next) {
+        for (u32 r = g_rows.lists[list].head; r; r = g_rows.lru[r].next) {
+            Surf* s = g_rows.surf[r];
             if (s->f.depth || s->msaa || (s->gva >> 63) || s->layout == VK_IMAGE_LAYOUT_UNDEFINED ||
                 gmmu_translate(s->gva) != cpu_addr)
                 continue;
@@ -2206,14 +2304,18 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
 /* a surface's image and views go when the frame being recorded is done (descriptors in it may name them), the BC7
    image being made for it too */
 static void surf_free(Surf* s) {
-    ended_unlink(s);
+    const u32 r = s->row;
     vk_tex_later_forget(s);
     surf_changed(s->gva);
     vk_astc_forget(s, ~0u); /* the background encodes of its levels stop writing into it */
-    if (s->lru) {
-        g_held[lru_kind(s)].n--;
-        g_held[lru_kind(s)].bytes -= s->bytes;
-        lru_unlink(s);
+    if (r) {
+        ended_unlink(r);
+        if (g_rows.list[r]) {
+            g_held[lru_kind(r)].n--;
+            g_held[lru_kind(r)].bytes -= s->bytes;
+            lru_unlink(r);
+        }
+        row_drop(s);
     }
     if (s->is_rt) rt_pages(s, -1);
     if (s->gva >> 63) g_parked--;
@@ -2252,13 +2354,9 @@ static int lossless(const Surf* s) {
 }
 /* s out of the table and freed, with its copies (gpu/vk/texture.c rt_crop): the device memory that releases */
 static u64 surf_evict(Surf* s) {
-    if (s->lru && lru_kind(s) == VK_LRU_TEX) vk_tex_evicted(s); /* statistics: one made again later is counted */
+    if (s->row && lru_kind(s->row) == VK_LRU_TEX) vk_tex_evicted(s); /* statistics: one made again later counts */
     if (s->is_rt && !(s->gva >> 63)) rtx_del(s->gva);
-    for (Surf** pp = &g_surfh[hkey(s->gva)]; *pp; pp = &(*pp)->next)
-        if (*pp == s) {
-            *pp = s->next;
-            break;
-        }
+    if (s->row) row_unhash(s);
     u64 bytes = s->bytes;
     for (Surf *c = s->crop, *n; c; c = n) {
         n = c->next;
@@ -2285,8 +2383,9 @@ static u64 surf_reclaim(int kind, u32 before, u64 want, int lossy) {
     u64 freed = 0;
     u32 passed = 0;
     if (lossy)
-        for (Surf *s = g_lru[kind + LRU_AGED].head, *n; s && freed < want && passed < 512; s = n) {
-            n = s->lru_next;
+        for (u32 r = g_rows.lists[kind + LRU_AGED].head, n; r && freed < want && passed < 512; r = n) {
+            n = g_rows.lru[r].next;
+            Surf* s = g_rows.surf[r];
             if ((i32)((u32)s->last_used - before) >= 0) break;
             if (lossy == VK_RECLAIM_IDLE && keeps_drawn(s)) continue;
             if (vk_gfx_image_holds(s))
@@ -2294,12 +2393,13 @@ static u64 surf_reclaim(int kind, u32 before, u64 want, int lossy) {
             else
                 freed += surf_evict(s);
         }
-    for (Surf *s = g_lru[kind].head, *n; s && freed < want && passed < 512; s = n) {
-        n = s->lru_next;
+    for (u32 r = g_rows.lists[kind].head, n; r && freed < want && passed < 512; r = n) {
+        n = g_rows.lru[r].next;
+        Surf* s = g_rows.surf[r];
         if ((i32)((u32)s->last_used - before) >= 0) break;
         if (!lossy && !lossless(s)) { /* out of the way of the next lossless eviction, held or not, in order */
-            lru_unlink(s);
-            lru_link(s, kind + LRU_AGED);
+            lru_unlink(r);
+            lru_link(r, kind + LRU_AGED);
         } else if (lossy == VK_RECLAIM_IDLE && keeps_drawn(s))
             continue;
         else if (vk_gfx_image_holds(s))
@@ -2320,8 +2420,9 @@ u64 vk_surf_reclaim(int kind, u32 before, u64 want, int lossy) {
 static u64 rt_reclaim_superseded(u32 before, u64 want) {
     u64 freed = 0;
     for (int lru = VK_LRU_RT + LRU_AGED; lru >= VK_LRU_RT && freed < want; lru -= LRU_AGED)
-        for (Surf *s = g_lru[lru].head, *n; s && freed < want; s = n) {
-            n = s->lru_next;
+        for (u32 r = g_rows.lists[lru].head, n; r && freed < want; r = n) {
+            n = g_rows.lru[r].next;
+            Surf* s = g_rows.surf[r];
             if ((i32)((u32)s->last_used - before) >= 0) break;
             if (s->layout != VK_IMAGE_LAYOUT_UNDEFINED && rt_superseded(s) && !vk_gfx_image_holds(s))
                 freed += surf_evict(s);
@@ -2383,23 +2484,28 @@ void vk_surf_mapping_changed(u64 gva, u64 size) {
         g_remapped.size[g_remapped.n++] = size;
     }
 }
-static int ended_live(const Surf* s) {
-    return s->ended == 2 ? gmmu_translate(s->gva) != 0 : gpu_texture_live(s->gva);
+static int ended_live(u32 r) {
+    const u64 gva = g_rows.surf[r]->gva;
+    return g_rows.ended_by[r] == 2 ? gmmu_translate(gva) != 0 : gpu_texture_live(gva);
+}
+/* row r at the head of the list of ended textures, ended as `by` says */
+static void ended_link(u32 r, u8 by) {
+    g_rows.ended_by[r] = by;
+    g_rows.ended_at[r] = g_vk_present;
+    link_before(g_rows.ended, &g_rows.ended_list, r, g_rows.ended_list.head);
 }
 /* the textures in those ranges whose first page is mapped no more go on the list of the ended */
 static void remapped_collect(void) {
     if (!g_remapped.n && !g_remapped.all) return;
     for (int list = VK_LRU_TEX; list <= VK_LRU_TEX + LRU_AGED; list += LRU_AGED)
-        for (Surf* s = g_lru[list].head; s; s = s->lru_next) {
+        for (u32 r = g_rows.lists[list].head; r; r = g_rows.lru[r].next) {
+            const Surf* s = g_rows.surf[r];
             int in = g_remapped.all;
             for (u32 i = 0; i < g_remapped.n && !in; i++)
                 in = s->gva < g_remapped.gva[i] + g_remapped.size[i] &&
                      g_remapped.gva[i] < s->gva + (s->size ? s->size : 1);
-            if (!in || s->is_rt || s->ended || gmmu_translate(s->gva)) continue;
-            s->ended = 2;
-            s->ended_at = g_vk_present;
-            s->ended_next = g_ended;
-            g_ended = s;
+            if (!in || s->is_rt || g_rows.ended_by[r] || gmmu_translate(s->gva)) continue;
+            ended_link(r, 2);
         }
     g_remapped.n = 0;
     g_remapped.all = 0;
@@ -2410,15 +2516,10 @@ static void ended_collect(void) {
     remapped_collect();
     for (u32 n; (n = gpu_textures_ended(gva, 256));) {
         for (u32 i = 0; i < n; i++)
-            for (Surf* s = g_surfh[hkey(gva[i])]; s; s = s->next)
-                if (s->gva == gva[i] && !s->is_rt && !s->ended && s->lru) {
-                    s->ended = 1;
-                    s->ended_at = g_vk_present;
-                    s->ended_prev = NULL;
-                    s->ended_next = g_ended;
-                    if (g_ended) g_ended->ended_prev = s;
-                    g_ended = s;
-                }
+            for (u32 r = g_rows.hash[hkey(gva[i])]; r; r = g_rows.hnext[r]) {
+                const Surf* s = g_rows.surf[r];
+                if (s->gva == gva[i] && !s->is_rt && !g_rows.ended_by[r] && g_rows.list[r]) ended_link(r, 1);
+            }
         if (n < 256) break;
     }
 }
@@ -2426,11 +2527,12 @@ static void ended_collect(void) {
    address the game made an object since is a texture as any other */
 static u64 ended_reclaim(u64 want, u32 before) {
     u64 freed = 0;
-    for (Surf *s = g_ended, *n; s && freed < want; s = n) {
-        n = s->ended_next;
-        if (ended_live(s))
-            ended_unlink(s);
-        else if ((i32)((u32)s->last_used - before) < 0 && (i32)(s->ended_at - before) < 0 && lossless(s) &&
+    for (u32 r = g_rows.ended_list.head, n; r && freed < want; r = n) {
+        n = g_rows.ended[r].next;
+        Surf* s = g_rows.surf[r];
+        if (ended_live(r))
+            ended_unlink(r);
+        else if ((i32)((u32)s->last_used - before) < 0 && (i32)(g_rows.ended_at[r] - before) < 0 && lossless(s) &&
                  !vk_gfx_image_holds(s))
             freed += surf_evict(s);
     }
@@ -2445,7 +2547,7 @@ u64 vk_surf_ended_freed(void) { return g_ended_freed; }
    where it loads 49 */
 void vk_surf_ended_frame(void) {
     ended_collect();
-    if (!g_ended) return;
+    if (!g_rows.ended_list.head) return;
     u64 usage, budget;
     vk_mem_use(&usage, &budget);
     if (usage >= budget / 5 * 4) ended_reclaim(~0ull, vk_present_before(2000000000ull, 30));
@@ -2559,7 +2661,10 @@ void vk_mem_trim(u64 extra, int force) {
 }
 
 void vk_surf_bytes(Surf* s, u64 bytes) {
-    if (s->lru) g_held[lru_kind(s)].bytes = g_held[lru_kind(s)].bytes - s->bytes + bytes;
+    if (s->row && g_rows.list[s->row]) {
+        const int kind = lru_kind(s->row);
+        g_held[kind].bytes = g_held[kind].bytes - s->bytes + bytes;
+    }
     s->bytes = bytes;
 }
 
@@ -2981,7 +3086,7 @@ int vk_blit2d_filter(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, i
 void vk_surf_forget_all(void) {
     u32 k;
     for (k = 0; k < SURFH; k++)
-        while (g_surfh[k]) surf_evict(g_surfh[k]);
+        while (g_rows.hash[k]) surf_evict(g_rows.surf[g_rows.hash[k]]);
 }
 
 /* a save state's save: every render target whose pixels memory doesn't hold yet writes them back, so the state's guest
@@ -2996,12 +3101,12 @@ u32 vk_rt_flush_all(void) {
     Surf** all;
     /* gathered first: a write-back moves its target in the lists */
     for (list = VK_LRU_RT; list <= VK_LRU_RT + LRU_AGED; list += LRU_AGED)
-        for (Surf* s = g_lru[list].head; s; s = s->lru_next) n += flush_wanted(s);
+        for (u32 r = g_rows.lists[list].head; r; r = g_rows.lru[r].next) n += flush_wanted(g_rows.surf[r]);
     if (!n || !(all = (Surf**)malloc(sizeof *all * n))) return 0;
     n = 0;
     for (list = VK_LRU_RT; list <= VK_LRU_RT + LRU_AGED; list += LRU_AGED)
-        for (Surf* s = g_lru[list].head; s; s = s->lru_next)
-            if (flush_wanted(s)) all[n++] = s;
+        for (u32 r = g_rows.lists[list].head; r; r = g_rows.lru[r].next)
+            if (flush_wanted(g_rows.surf[r])) all[n++] = g_rows.surf[r];
     for (i = 0; i < n; i++) vk_surf_flush(all[i], NULL);
     free(all);
     return n;
@@ -3061,17 +3166,19 @@ int vk_zt_save(StateIo* io) {
     VkBuffer buf;
     u8* p;
     for (list = VK_LRU_RT; list <= VK_LRU_RT + LRU_AGED; list += LRU_AGED)
-        for (Surf* s = g_lru[list].head; s; s = s->lru_next)
+        for (u32 row = g_rows.lists[list].head; row; row = g_rows.lru[row].next) {
+            const Surf* s = g_rows.surf[row];
             if (zt_saved(s)) {
                 n++;
                 total += (u64)s->sw * s->sh * s->layers * (zt_depth_bytes(s->f.vk) + (zt_stencil(s->f.vk) ? 1u : 0u));
             }
+        }
     if (!n) return io_put32(io, 0);
     if (!(all = (Surf**)malloc(sizeof *all * n))) return -1;
     n = 0;
     for (list = VK_LRU_RT; list <= VK_LRU_RT + LRU_AGED; list += LRU_AGED)
-        for (Surf* s = g_lru[list].head; s; s = s->lru_next)
-            if (zt_saved(s)) all[n++] = s;
+        for (u32 row = g_rows.lists[list].head; row; row = g_rows.lru[row].next)
+            if (zt_saved(g_rows.surf[row])) all[n++] = g_rows.surf[row];
     if (!(p = vk_readback_buffer(total, &buf))) {
         free(all);
         return -1;

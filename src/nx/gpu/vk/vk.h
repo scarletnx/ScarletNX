@@ -930,7 +930,6 @@ typedef struct Surf {
     VkPipelineStageFlags2 stage;
     VkAccessFlags2 access;
     u64 last_used;
-    u64 touched; /* when it last went to the recent end of its recency list: ties of last_used in the lists' order */
     u32 wgen;    /* render targets: bumped when drawn to */
     u64 wseq;    /* when its image last changed, counted across surfaces: of two over the same bytes, the higher
                        holds them (vk_surf_wrote) */
@@ -978,18 +977,11 @@ typedef struct Surf {
     u32 crop_gen;
     u64 crop_epoch; /* a snapshot's g_vk_texture_epoch when it was last copied (vk_rt_snapshot) */
     u8 predraw;     /* a copy in crop that is a feedback draw's save attachment of set predraw - 1 (vk_rt_save) */
-    struct Surf* next;
-    /* the recency list it is in (surface.c): textures, render targets (parked ones too), or none (copies, the CPU
-       frame), with the device memory its image takes. A list runs from the least recently used to the most */
-    int lru;
-    struct Surf *lru_prev, *lru_next;
-    /* textures: the game ended the last texture object at its address (gpu/guest_textures.h) and made none there
-       since (1), or, in a game with no texture objects, unmapped its first page and mapped nothing there since (2):
-       in surface.c's list of those, which a trim takes first */
-    u8 ended;
-    u32 ended_at; /* the present the cache learned of it */
-    struct Surf *ended_prev, *ended_next;
-    u64 bytes;
+    struct Surf* next; /* copies: the next copy of the same render target */
+    /* its row in surface.c's table, 0 when it is in none (copies, the CPU frame). The row holds its hash chain, its
+       recency list and its place in the list of ended textures */
+    u32 row;
+    u64 bytes; /* the device memory its image takes */
     int took_drawn; /* textures: pixels copied from render targets since the last upload (memory may not have them) */
     /* storage images: the serial of the owner the last publish put over its texels (vk_surf_publish), 0 before one.
        Bytes that owner still holds are the image's own (texture.c pieces_published) */
@@ -1196,7 +1188,9 @@ void vk_rt_reload(u64 gva);
    target parked or taken back), so what was found there can be kept until it changes */
 extern u32 g_vk_surf_epoch;
 u32 vk_surf_epoch_at(u64 gva); /* the same, for the surfaces of gva's bucket of the table only */
+/* the surfaces of gva's bucket of the table: vk_surf_first, then vk_surf_next until NULL */
 Surf* vk_surf_first(u64 gva);
+Surf* vk_surf_next(const Surf* s);
 void vk_surf_add(Surf* s); /* a texture, into the table and the textures' recency list */
 /* s used now: last_used is this present, and it moves to the recent end of its list */
 void vk_surf_touch(Surf* s);

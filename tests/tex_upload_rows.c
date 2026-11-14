@@ -544,6 +544,10 @@ Surf* vk_surf_first(u64 gva) {
     (void)gva;
     return NULL;
 }
+Surf* vk_surf_next(const Surf* s) {
+    (void)s;
+    return NULL;
+}
 VkFmt vk_tic_format(u32 w0, int srgb) {
     (void)w0, (void)srgb;
     return (VkFmt){0};
