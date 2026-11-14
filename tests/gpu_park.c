@@ -5,9 +5,11 @@
    waits for; the waiting channel's later jobs, and the calls that name it, stay behind it while a call naming another
    channel doesn't; a release the CPU writes and a syncpoint incremented off the GPU thread end waits; a stream
    resumes in the middle of a method batch, of a job's entries, and of a macro; and a wait nothing ends times out. A
-   new channel's render enable override starts at USE_RENDER_ENABLE, as Eden's does.
+   new channel's render enable override starts at USE_RENDER_ENABLE, as Eden's does. With the argument split,
+   gpu_queue.c's renderer thread runs the queue's records, and the front end reads its own writes still queued.
    Each mark is a ClearBuffers value the stand-in renderer records; the platform's locks are pthreads */
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/renderer.h"
 #include "support/dma_ref.h"
@@ -350,10 +352,48 @@ static void expect(int ok, const char* what) {
 }
 #define FAST 500000000ull /* a wait an event ends, well short of the 1 and 2 s timeouts */
 
+/* ------------------------------------------------ gpu_split=1: gpu_queue.c's renderer thread runs the records */
+#define EVENT (SEM + 0x200) /* an NVN event's word */
+/* a record that holds the renderer thread until the front end opens the gate: what the front end queues after it
+   stays queued while the front end goes on */
+static void renderer_held(const void* arg, u64 bytes) {
+    (void)arg, (void)bytes;
+    held_call(NULL);
+}
+/* on the GPU thread, the front end: two adds of 1 to the event's word as nvn_replay.c's effects() makes them (the word
+   as the stream sees it, plus 1, written through the release path), the renderer thread behind both */
+static void two_event_adds(void* arg) {
+    (void)arg;
+    gq_call(renderer_held, NULL, 0);
+    for (int i = 0; i < 2; i++) {
+        u8 v[4];
+        snx_st_le32(v, gmem_r32(EVENT) + 1);
+        gpu_release_write(EVENT, v, sizeof v);
+    }
+    pthread_mutex_lock(&gate_lock);
+    gate_open = 1;
+    pthread_cond_broadcast(&gate_cv);
+    pthread_mutex_unlock(&gate_lock);
+}
+static int split_main(void) {
+    g_settings.gpu_split = 1;
+    cpu_store(EVENT, 5);
+    gpu_call(two_event_adds, NULL, NULL, 0);
+    gpu_call(called, (void*)(uintptr_t)0x990, NULL, 0); /* a call runs once every record queued before it ran */
+    wait_marks(1);
+    u32 word = snx_le32(*((u32*)guest + EVENT / 4));
+    if (word != 7) fprintf(stderr, "the event's word is %u after two adds of 1 to 5 (7 expected)\n", word);
+    expect(marks_are((u32[]){0x990}, 1) && word == 7,
+           "two adds on the front end, the renderer thread behind: the second reads the first's queued write");
+    if (!failures) printf("gpu_park split: ok\n");
+    return failures != 0;
+}
+
 /* tests/support/gpu_front_stub.c: the renderer side's decision on draws and clears, which engines.c's render enable
    makes */
 extern int (*g_stub_render_state)(u32 owner, u32* pred);
-int main(void) {
+int main(int argc, char** argv) {
+    if (argc > 1 && !strcmp(argv[1], "split")) return split_main();
     g_stub_render_state = gpu_render_state;
     /* the front stub runs draws and clears on the GPU thread as they come, so gpu_queue.c's records (DMA copies,
        writes) run there too, in their order with them: on a renderer thread of their own they ran after the clears
