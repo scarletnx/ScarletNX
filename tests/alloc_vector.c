@@ -42,6 +42,7 @@ static u32 b(i64 off) { return 0x14000000u | (u32)(off >> 2 & 0x3FFFFFF); }
 static u32 bl(i64 off) { return 0x94000000u | (u32)(off >> 2 & 0x3FFFFFF); }
 static u32 cbz(i64 off) { return 0xB4000000u | (u32)(off >> 2 & 0x7FFFF) << 5; }
 static u32 bcond(int cond, i64 off) { return 0x54000000u | (u32)(off >> 2 & 0x7FFFF) << 5 | (u32)cond; }
+static u32 tbz(i64 off) { return 0x36000000u | (u32)(off >> 2 & 0x3FFF) << 5; }
 #define RET 0xD65F03C0u
 #define NOP 0xD503201Fu /* the loads, stores and arithmetic, which the check doesn't read */
 #define BLR 0xD63F0100u /* blr x8 */
@@ -89,6 +90,13 @@ int main(void) {
     put(NOP), put(NOP), put(cbz(5 * 4)), put(NOP), put(NOP), put(bcond(1, -8)),
         put(b(DELETE - (i64)at)), put(RET);
     assert(!alloc_vector_shape(0x400));
+    /* the same loops by cbz and tbz back, whose offsets are negative too */
+    at = 0x480;
+    put(NOP), put(cbz(-4)), put(b(DELETE - (i64)at)), put(RET);
+    assert(!alloc_vector_shape(0x480));
+    at = 0x4C0;
+    put(NOP), put(tbz(-4)), put(b(DELETE - (i64)at)), put(RET);
+    assert(!alloc_vector_shape(0x4C0));
     /* a call of something else before delete */
     at = 0x500;
     put(NOP), put(bl(OTHER - (i64)at)), put(b(DELETE - (i64)at));
