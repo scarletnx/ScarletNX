@@ -6989,6 +6989,10 @@ static int run_headless(int argc, char** argv) {
             free(copy);
             free(text);
         }
+    /* the checks read each draw's counts and pixels right after the draw is made, on this thread: the renderer's side
+       runs here too unless an argument asks for its thread (--gpu_split=1), where a draw is done only once that
+       thread has taken it */
+    g_settings.gpu_split = 0;
     /* the runtime's startup flags (-H), its settings as it takes them (--vk_memory=2, --memory_traps=2,
        --vertex_input_dynamic_state=off), and the benchmarks'. Any other argument stops the run: one dropped unsaid ran
        the checks without it */
