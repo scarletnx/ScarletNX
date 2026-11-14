@@ -3354,6 +3354,7 @@ if(UNIX)
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/dma.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c"
         support/dma_ref.c support/gpu_front_stub.c own_stub.c)
     snx_test_target(snx-test-gpu-park 23)
+    target_compile_definitions(snx-test-gpu-park PRIVATE SNX_TEST_GPU_QUEUE) # the real gq_call, not the stub's
     target_link_libraries(snx-test-gpu-park PRIVATE scarletnx-common) # gpu.c says why a thread did not start
         add_test(NAME gpu_park COMMAND snx-test-gpu-park)
     set_tests_properties(gpu_park PROPERTIES TIMEOUT 30) # a deadlock in the queue would otherwise hang ctest

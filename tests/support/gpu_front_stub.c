@@ -55,6 +55,8 @@ void gpu_predicate_drop(u32 pred) {
     if (g_renderer->render_predicate_drop) g_renderer->render_predicate_drop(pred);
 }
 const Renderer* gpu_renderer_now(void) { return g_renderer; }
-/* gpu_queue.c's call record, which this test doesn't link: the call runs at once, as the queue runs it without
-   gpu_split */
+/* gpu_queue.c's call record, for a test that doesn't link it (SNX_TEST_GPU_QUEUE says one does): the call runs at
+   once, as the queue runs it without gpu_split */
+#ifndef SNX_TEST_GPU_QUEUE
 void gq_call(GqFn fn, const void* arg, u64 bytes) { fn(arg, bytes); }
+#endif
