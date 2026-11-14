@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# the native hook of a mod's trampoline for tests/hook_invalidated.c: answer's, with its native hook's handler
+family ext_skyline
+hook answer(u32 a) -> u32 = test_answer
