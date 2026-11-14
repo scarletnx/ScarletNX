@@ -51,6 +51,12 @@ void gpu_samples_reset(u32 owner) {
 void gpu_samples_enable(u32 owner, int on) {
     if (g_renderer->samples_enable) g_renderer->samples_enable(owner, on);
 }
+void gpu_mem_seen(void) {
+    if (g_renderer->mem_seen)
+        g_renderer->mem_seen();
+    else if (g_renderer->mem_may_have_changed)
+        g_renderer->mem_may_have_changed();
+}
 void gpu_predicate_drop(u32 pred) {
     if (g_renderer->render_predicate_drop) g_renderer->render_predicate_drop(pred);
 }
