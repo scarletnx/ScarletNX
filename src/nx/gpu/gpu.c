@@ -30,6 +30,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/gpu_queue.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/maxwell/inline_to_memory_regs.h"
@@ -94,7 +95,10 @@ static int copy_runs(u64 gva, u8* in, const u8* out, u64 size) {
     }
     return all;
 }
-void gmem_read_raw(u64 gva, void* dst, u64 size) { copy_runs(gva, (u8*)dst, NULL, size); }
+void gmem_read_raw(u64 gva, void* dst, u64 size) {
+    gq_read_wait(gva, size);
+    copy_runs(gva, (u8*)dst, NULL, size);
+}
 void gmem_write_raw(u64 gva, const void* src, u64 size) { copy_runs(gva, NULL, (const u8*)src, size); }
 /* whether anything the renderer holds may cover [gva, gva + size): one lookup where each hook below makes its own */
 static int mem_pending(u64 gva, u64 size) { return !g_renderer->mem_pending || g_renderer->mem_pending(gva, size); }
@@ -114,6 +118,7 @@ void gmem_before_write(u64 gva, u64 size) {
     if (size && g_gpu_before_write) g_gpu_before_write(gva, size);
 }
 int gmem_read(u64 gva, void* dst, u64 size) {
+    gq_read_wait(gva, size); /* the front end's writes queued over it */
     if ((__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) || g_cs_any || g_gfx_any || g_gfx_img_any || g_uma_any) &&
         !mem_pending(gva, size))
         return copy_runs(gva, (u8*)dst, NULL, size) ? 0 : -1;
@@ -132,7 +137,17 @@ int gmem_read(u64 gva, void* dst, u64 size) {
     gmem_need(gva, size);
     return copy_runs(gva, (u8*)dst, NULL, size) ? 0 : -1;
 }
+/* the front end's write goes into the queue (gpu_queue.c), in its order with the draws: 0 then, as what isn't mapped
+   is known only when it runs */
 int gmem_write(u64 gva, const void* src, u64 size) {
+    if (!size) return 0;
+    if (gq_queues()) {
+        gq_write(gva, src, size);
+        return 0;
+    }
+    return gmem_write_now(gva, src, size);
+}
+int gmem_write_now(u64 gva, const void* src, u64 size) {
     int all;
     if (!size) return 0;
     gmem_before_write(gva, size);
@@ -145,6 +160,7 @@ int gmem_write(u64 gva, const void* src, u64 size) {
 u8* gmem_ptr_untracked(u64 gva, u64 size) {
     u64 cpu = 0;
     if (!size) size = 1;
+    gq_read_wait(gva, size);
     if (gmmu_run(gva, size, &cpu) != size) return NULL;
     if (own_any()) own_acquire(cpu, size);
     return GP(cpu);
@@ -152,6 +168,7 @@ u8* gmem_ptr_untracked(u64 gva, u64 size) {
 u8* gmem_host(u64 gva, u64 size) {
     u64 cpu = 0;
     if (!size) size = 1;
+    gq_read_wait(gva, size);
     return gmmu_run(gva, size, &cpu) == size ? GP(cpu) : NULL;
 }
 /* the results pending over the bytes land first: landing them can make them GPU-owned again (the GPU mirror's
@@ -159,6 +176,7 @@ u8* gmem_host(u64 gva, u64 size) {
 u8* gmem_ptr(u64 gva, u64 size) {
     u64 cpu = 0;
     if (!size) size = 1;
+    gq_read_wait(gva, size);
     if (gmmu_run(gva, size, &cpu) != size) return NULL;
     gmem_need(gva, size);
     return gmem_ptr_untracked(gva, size);
@@ -283,6 +301,13 @@ void gpu_signal_point(void) {
     if (g_gpu_before_write) g_gpu_before_write(0, 0);
 }
 void gpu_release_write(u64 gva, const void* data, u32 len) {
+    if (gq_queues()) {
+        gq_release(gva, data, len);
+        return;
+    }
+    gpu_release_write_now(gva, data, len);
+}
+void gpu_release_write_now(u64 gva, const void* data, u32 len) {
     if (g_renderer->release_write) {
         g_renderer->release_write(gva, data, len);
         return;
@@ -368,13 +393,28 @@ static void upload_linear(const GpuI2m* t) {
 /* ProcessData's block linear destination (Eden's SwizzleSubrect): the lines into the rectangle at (x, y) of slice
    layer. The rows of blocks the lines fall in take the hooks once, then the lines go as 16 byte runs or less (none
    crosses one of a GOB's 16 byte runs) without them, then the write is recorded once */
-static void upload_block_linear(const GpuI2m* t) {
-    const GpuUploadRegs* u = &t->regs;
-    u32 bh = u->dest.block_height, bd = u->dest.block_depth, line, x;
+/* the bytes of the destination its rows of blocks span, from the surface's start */
+static void i2m_block_span(const GpuUploadRegs* u, u64* lo, u64* hi) {
+    u32 bh = u->dest.block_height, bd = u->dest.block_depth;
     u64 row_of_blocks = bl_gobs_x(u->dest.width) * bl_block_size(bh, bd); /* bytes */
     u64 slab = (u64)(u->dest.layer >> bd) * bl_block_rows(u->dest.height, bh) * row_of_blocks;
-    u64 lo = slab + ((u64)(u->dest.y >> GOB_SIZE_Y_SHIFT) >> bh) * row_of_blocks;
-    u64 hi = slab + ((((u64)(u->dest.y + u->line_count - 1) >> GOB_SIZE_Y_SHIFT) >> bh) + 1) * row_of_blocks;
+    *lo = slab + ((u64)(u->dest.y >> GOB_SIZE_Y_SHIFT) >> bh) * row_of_blocks;
+    *hi = slab + ((((u64)(u->dest.y + u->line_count - 1) >> GOB_SIZE_Y_SHIFT) >> bh) + 1) * row_of_blocks;
+}
+static void upload_block_linear(const GpuI2m* t) {
+    if (gq_queues()) {
+        u64 lo, hi;
+        i2m_block_span(&t->regs, &lo, &hi);
+        gq_i2m_block(t, t->regs.dest.address + lo, hi - lo);
+        return;
+    }
+    gpu_i2m_block_now(t);
+}
+void gpu_i2m_block_now(const GpuI2m* t) {
+    const GpuUploadRegs* u = &t->regs;
+    u32 bh = u->dest.block_height, bd = u->dest.block_depth, line, x;
+    u64 lo, hi;
+    i2m_block_span(u, &lo, &hi);
     gmem_before_write(u->dest.address + lo, hi - lo);
     for (line = 0; line < u->line_count; line++) {
         u64 row = bl_yz(u->dest.y + line, u->dest.layer, u->dest.width, u->dest.height, bh, bd);
@@ -761,6 +801,7 @@ static int g_hold_want, g_hold_at; /* a game pause asked the GPU thread to hold,
 /* for the stall report: whether this is the GPU thread, the channel whose job runs (its id + 1, 0 between jobs) and
    since when, and the blocking wait it is in (gpu_wait_note) */
 static _Thread_local int t_gpu;
+int gpu_on_thread(void) { return t_gpu; }
 static u32 g_run_chan;
 static u64 g_run_since;
 static const char* g_wait_what;
@@ -968,6 +1009,7 @@ static int run_pass(i64* wake) {
                 g_qhead = it->next;
             if (g_qtail == it) g_qtail = prev;
             pm_unlock(&g_qlk);
+            gq_drain(); /* a call may read or change what the queued records touch */
             if (g_renderer->ready) g_renderer->ready();
             SNX_ZONE(z_call, "gpu call");
             it->fn(it->arg);
