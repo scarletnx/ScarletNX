@@ -288,3 +288,66 @@ hook _ZN2nn5audio28GetInputStreamFreeFrameCountEPKNS0_15InputStreamTypeE(addr st
 hook _ZN2nn5audio32GetInputStreamCapacityFrameCountEPKNS0_15InputStreamTypeE(addr stream) -> i32 = audio_input_capacity_frames
 hook _ZN2nn5audio15ReadInputStreamEPNS0_15InputStreamTypeEPvi(addr stream, addr data, i32 frames) -> i32 = audio_read_input
 hook _ZN2nn5audio24GetInputStreamStatisticsEPNS0_15InputStreamTypeEb(addr stream, bool reset) = audio_stream_statistics
+
+# std::string, libc++'s basic_string<char, char_traits<char>, allocator<char>> (libcxx_string.c): the members main
+# imports or exports across the games, on the object's own layout, its buffers from the guest's operator new. Not
+# another char_traits or allocator, whose code is the game's; not a 32-bit game's, whose layout differs
+family string
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev(addr self) = string_drop
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED2Ev(addr self) = string_drop
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm(addr self, const char* s, u64 n) = string_init
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm(addr self, const char* s, u64 n, u64 reserve) = string_init_reserve
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEmc(addr self, u64 n, u8 ch) = string_init_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initIPKcEENS_9enable_ifIXsr21__is_forward_iteratorIT_EE5valueEvE4typeESA_SA_(addr self, const char* first, const char* last) = string_init_range
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initIPcEENS_9enable_ifIXsr21__is_forward_iteratorIT_EE5valueEvE4typeES9_S9_(addr self, const char* first, const char* last) = string_init_range
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1B6v15007IDnEEPKc(addr self, const char* s) = string_from_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2B6v15007IDnEEPKc(addr self, const char* s) = string_from_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1B7v170006ILi0EEEPKc(addr self, const char* s) = string_from_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2B7v170006ILi0EEEPKc(addr self, const char* s) = string_from_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_(addr self, addr str) = string_copy
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2ERKS5_(addr self, addr str) = string_copy
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_RKS4_(addr self, addr str, addr alloc) = string_copy_alloc
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2ERKS5_RKS4_(addr self, addr str, addr alloc) = string_copy_alloc
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_mmRKS4_(addr self, addr str, u64 pos, u64 n, addr alloc) = string_copy_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2ERKS5_mmRKS4_(addr self, addr str, u64 pos, u64 n, addr alloc) = string_copy_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEaSERKS5_(addr self, addr str) -> addr = string_assign_string
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEaSEc(addr self, u8 ch) -> addr = string_assign_char
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc(addr self, const char* s) -> addr = string_assign_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKcm(addr self, const char* s, u64 n) -> addr = string_assign
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEmc(addr self, u64 n, u8 ch) -> addr = string_assign_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignERKS5_mm(addr self, addr str, u64 pos, u64 n) -> addr = string_assign_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc(addr self, const char* s) -> addr = string_append_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm(addr self, const char* s, u64 n) -> addr = string_append
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEmc(addr self, u64 n, u8 ch) -> addr = string_append_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendERKS5_mm(addr self, addr str, u64 pos, u64 n) -> addr = string_append_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE9push_backEc(addr self, u8 ch) = string_push_back
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6resizeEmc(addr self, u64 n, u8 ch) = string_resize
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7reserveEm(addr self, u64 n) = string_reserve
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmPKc(addr self, u64 pos, const char* s) -> addr = string_insert_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmPKcm(addr self, u64 pos, const char* s, u64 n) -> addr = string_insert
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmmc(addr self, u64 pos, u64 n, u8 ch) -> addr = string_insert_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmRKS5_mm(addr self, u64 pos, addr str, u64 pos2, u64 n) -> addr = string_insert_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertENS_11__wrap_iterIPKcEEc(addr self, addr at, u8 ch) -> addr = string_insert_at
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertIPhEENS_9enable_ifIXaasr21__is_forward_iteratorIT_EE5valuesr38__libcpp_string_gets_noexcept_iteratorIS9_EE5valueENS_11__wrap_iterIPcEEE4typeENSA_IPKcEES9_S9_(addr self, addr at, const u8* first, const u8* last) -> addr = string_insert_range
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5eraseEmm(addr self, u64 pos, u64 n) -> addr = string_erase
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmPKc(addr self, u64 pos, u64 n1, const char* s) -> addr = string_replace_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmPKcm(addr self, u64 pos, u64 n1, const char* s, u64 n2) -> addr = string_replace
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmmc(addr self, u64 pos, u64 n1, u64 n2, u8 ch) -> addr = string_replace_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmRKS5_mm(addr self, u64 pos, u64 n1, addr str, u64 pos2, u64 n2) -> addr = string_replace_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE9__grow_byEmmmmmm(addr self, u64 old_cap, u64 delta_cap, u64 old_size, u64 n_copy, u64 n_del, u64 n_add) = string_grow_by
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE21__grow_by_and_replaceEmmmmmmPKc(addr self, u64 old_cap, u64 delta_cap, u64 old_size, u64 n_copy, u64 n_del, u64 n_add, const char* s) = string_grow_by_and_replace
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE2atEm(addr self, u64 n) -> addr = string_at
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE2atEm(addr self, u64 n) -> addr = string_at
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4copyEPcmm(addr self, char* dst, u64 n, u64 pos) -> u64 = string_copy_out
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEPKc(addr self, const char* s) -> i32 = string_compare_cstr
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEmmPKc(addr self, u64 pos, u64 n1, const char* s) -> i32 = string_compare_sub_cstr
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEmmPKcm(addr self, u64 pos, u64 n1, const char* s, u64 n2) -> i32 = string_compare_sub
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEmmRKS5_mm(addr self, u64 pos1, u64 n1, addr str, u64 pos2, u64 n2) -> i32 = string_compare_sub_sub
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm(addr self, u8 ch, u64 pos) -> u64 = string_find_char
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEcm(addr self, u8 ch, u64 pos) -> u64 = string_rfind_char
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_rfind
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE13find_first_ofEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find_first_of
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE12find_last_ofEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find_last_of
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE17find_first_not_ofEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find_first_not_of
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE16find_last_not_ofEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find_last_not_of
