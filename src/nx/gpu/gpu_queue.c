@@ -234,19 +234,39 @@ void gq_i2m_block(const GpuI2m* t, u64 at, u64 size) {
     gq_recent_add(at, size, r->fence, g_gq.head, 0);
     gq_commit(r);
 }
+/* the highest fence of a queued write over a page of [gva, gva + size), or higher where pages share a slot */
+static u64 gq_written(u64 gva, u64 size) {
+    u64 first = gva >> 12, last = (gva + size - 1) >> 12, need = 0;
+    if (last - first >= (1u << GQ_SLOT_BITS)) last = first + (1u << GQ_SLOT_BITS) - 1;
+    for (u64 p = first; p <= last; p++)
+        if (g_gq.written[gq_slot(p)] > need) need = g_gq.written[gq_slot(p)];
+    return need;
+}
 /* the front end's read of [gva, gva + size): 1 when dst took its bytes from a queued write, else after the waits it
    needs memory holds them. dst NULL: only the waits */
 static int gq_read(u64 gva, void* dst, u64 size) {
     if (!size || !gq_queues()) return 0;
     u64 done = __atomic_load_n(&g_gq.done, __ATOMIC_ACQUIRE);
     if (done == g_gq.queued) return 0;
+    /* no write over these pages that hasn't run: nothing to wait for or forward. Else no write newer than need is
+       over these bytes, so the scans below start at the newest write of fence need or lower. Each read scanned
+       every write not run before (thousands while the renderer thread is behind), and that was about half of the
+       front end's time in one game */
+    u64 need = gq_written(gva, size);
+    if (need <= done) return 0;
     if (g_gq_lost <= done) { /* the list holds every write not run yet: the newest over these bytes decides */
-        u32 n = g_gq_recent_n < GQ_RECENT ? g_gq_recent_n : GQ_RECENT;
+        u32 n = g_gq_recent_n < GQ_RECENT ? g_gq_recent_n : GQ_RECENT, skip = 0, hi = n;
+        /* the fences in the list grow with its order: skip, the count of the newest entries above need */
+        while (skip < hi) {
+            u32 mid = skip + (hi - skip) / 2;
+            if (g_gq_recent[(g_gq_recent_n - 1 - mid) % GQ_RECENT].fence > need) skip = mid + 1;
+            else hi = mid;
+        }
         /* every write over the bytes still in the ring: memory's bytes, then each write's over them, oldest first.
            One game builds each compute launch's description from several small writes just before the launch */
         if (dst && size <= 4096) {
             u32 over[64], nover = 0, all = 1;
-            for (u32 i = 0; i < n; i++) {
+            for (u32 i = skip; i < n; i++) {
                 u32 k = (g_gq_recent_n - 1 - i) % GQ_RECENT;
                 const GqRecent* e = &g_gq_recent[k];
                 if (e->fence <= done) break;
@@ -269,7 +289,7 @@ static int gq_read(u64 gva, void* dst, u64 size) {
                 return 1;
             }
         }
-        for (u32 i = 0; i < n; i++) {
+        for (u32 i = skip; i < n; i++) {
             const GqRecent* e = &g_gq_recent[(g_gq_recent_n - 1 - i) % GQ_RECENT];
             if (e->fence <= done) break;
             if (gva >= e->gva + e->size || e->gva >= gva + size) continue;
@@ -284,11 +304,7 @@ static int gq_read(u64 gva, void* dst, u64 size) {
         }
         return 0;
     }
-    u64 first = gva >> 12, last = (gva + size - 1) >> 12, need = 0;
-    if (last - first >= (1u << GQ_SLOT_BITS)) last = first + (1u << GQ_SLOT_BITS) - 1;
-    for (u64 p = first; p <= last; p++)
-        if (g_gq.written[gq_slot(p)] > need) need = g_gq.written[gq_slot(p)];
-    if (need) gq_wait(gq_done_by, need);
+    gq_wait(gq_done_by, need);
     return 0;
 }
 void gq_read_wait(u64 gva, u64 size) { gq_read(gva, NULL, size); }

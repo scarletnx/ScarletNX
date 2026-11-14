@@ -7,7 +7,8 @@
 
    With the argument split, gpu_split's renderer thread runs the records: the front end goes on while it is behind, a
    read of the front end waits only for a queued write over its bytes, and a read that queued writes cover takes their
-   bytes over memory's with no wait */
+   bytes over memory's with no wait. A read takes the fence of the newest write over its pages from written[] first,
+   and looks in the list of recent writes only from that fence down */
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -198,6 +199,29 @@ static int split_main(void) {
     CHECK(mem[0x1008] == 0xBB && mem[0x1000] == 0xAA, "after the wait, memory lacks the queued writes");
     pthread_join(opener, NULL);
     check_log("split reads");
+
+    /* written[] decides first: an entry of the list newer than the fence of its pages is not over them. The test
+       moves the newest entry over other pages, which a real write never does, to see which entries a read looks at */
+    hold();
+    u8 c4[4] = {0xC1, 0xC1, 0xC1, 0xC1}, d4[4] = {0xD2, 0xD2, 0xD2, 0xD2};
+    memset(mem + 0x5000, 0x11, 4);
+    memset(mem + 0x7000, 0x11, 4);
+    want[nwant++] = (Ran){'W', 0x5000, 4, fnv(c4, 4)};
+    gq_write(0x5000, c4, 4);
+    want[nwant++] = (Ran){'W', 0x6000, 4, fnv(d4, 4)};
+    gq_write(0x6000, d4, 4);
+    GqRecent* newest = &g_gq_recent[(g_gq_recent_n - 1) % GQ_RECENT];
+    GqRecent keep = *newest;
+    newest->gva = 0x5000;
+    memset(got, 0, sizeof got);
+    CHECK(gq_forward(0x5000, got, 4) == 1 && got[0] == 0xC1,
+          "a read took a list entry newer than the fence of its pages (%#x)", got[0]);
+    newest->gva = 0x7000;
+    memset(got, 0, sizeof got);
+    CHECK(gq_forward(0x7000, got, 4) == 0, "a read of pages with no queued write looked in the list");
+    *newest = keep;
+    open_gate();
+    check_log("split pages first");
 
     /* many records of many sizes, with the renderer thread held at times: the ring wraps several times */
     off_front = 0;
