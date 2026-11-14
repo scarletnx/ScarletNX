@@ -722,9 +722,9 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             }
             if (d > slowest_ns) slowest_ns = d;
         }
-        /* log_level 2: the CPU work a resource category takes over 600 presents, which is where a steady scene's
+        /* log_level 3: the CPU work a resource category takes over 600 presents, which is where a steady scene's
            time goes: a slow frame's line only says what one frame did */
-        if (g_settings.log_level >= 2 && g_vk_present % 600 == 599) {
+        if (g_settings.log_level >= 3 && g_vk_present % 600 == 599) {
             static VkResourceStats res_was;
             for (u32 k = 0; k < VK_RESOURCE_N; k++) {
                 u64 ns = resource_is.ns[k] - res_was.ns[k], n = resource_is.calls[k] - res_was.calls[k];

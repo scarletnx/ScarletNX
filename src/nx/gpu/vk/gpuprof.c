@@ -178,8 +178,11 @@ int vk_gpuprof_calibrated(void) {
 static int gp_on(void) {
     if (g_on < 0) {
         char say[640];
-        g_on = vk_gpuprof_setting(g_settings.gpu_profile, g_vk.props.limits.timestampComputeAndGraphics,
-                                  g_vk.has_portability, g_vk.props.deviceName, say, sizeof say);
+        /* log=3's counters are the same work as the setting's: the CPU's per resource, and the GPU's a pass */
+        int by_log = g_settings.log_level >= 3, asked = g_settings.gpu_profile || by_log;
+        g_on = vk_gpuprof_setting(asked, by_log && !g_settings.gpu_profile ? "log=3" : "vk_gpu_profile",
+                                  g_vk.props.limits.timestampComputeAndGraphics, g_vk.has_portability,
+                                  g_vk.props.deviceName, say, sizeof say);
         if (say[0]) WARN("%s\n", say);
     }
     if (g_dead) return 0;

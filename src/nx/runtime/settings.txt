@@ -939,9 +939,11 @@ setting FSR input conventions
     help that include the jitter, 32 = FSR's own exposure, 64 = HDR color input. For a game whose picture smears
 setting Log level
     key log
-    int 0 2
+    int 0 3
     default 1
-    help The log's detail, 0 to 2: 2 logs everything, which slows the game down
+    help The log's detail, 0 to 3: 2 logs everything, which slows the game down. 3 also logs the profiler's counters
+    help every window: the CPU work each kind of resource takes a frame, and the GPU's time in each pass, which needs
+    help the device's timestamps and is vk_gpu_profile's work
 setting Emulated cores
     key emulated_cores
     int 0 1
