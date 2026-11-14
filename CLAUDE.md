@@ -21,6 +21,10 @@ rules that sessions get wrong, and it points to the skills that hold the procedu
 - **A build is not a test.** To verify a runtime change, run the game (`snx-run` skill) through the scene that the
   change affects. The commit tells what you ran. If a change fixes a crash, run the game enough times to show that
   the game does not crash again. One good run does not prove the fix of an intermittent crash.
+- **A change made for speed starts with a profile.** The `snx-profile` skill gives what to read before touching code:
+  the runtime's own counters, a `plat_ns` timer around the phase, the GPU's timestamps where the host has them, and the
+  sampler for the host. Five changes were written here from a mechanism that sounded right and were each disproved by
+  their own instrumentation, so measure first and cut what the counter names.
 - **Find the mechanism.** A fix explains why the game does what it does. It tells what the game or SDK code expects
   (`tools/disasm.py`), and what the runtime gave it instead. Do not tune delays, add retries or add special cases for
   a title ID. Syncpoints above 127 "worked" for a whole session while they overwrote the heap of the game.
@@ -171,6 +175,8 @@ The skills in `.claude/skills/`:
   message.
 - `snx-run`: how to run the game with no user: scripted input, screenshots, logs, and repeat runs for intermittent
   bugs.
+- `snx-profile`: where a frame's time goes, before changing code: the runtime's counters, a phase timer, the GPU's
+  timestamps and the Metal host's substitute, and each host's sampler (Windows, Linux, macOS, iOS).
 - `snx-crash`: from a crash report or `svcBreak` to the mechanism, with the symbol and disassembly tools.
 - `snx-service`: how to implement or fix an HLE service for what the SDK code of the game expects.
 - `snx-code-quality`: the C rules of RFC #142 (strict ISO C99, no redundant state, one allocation for each owner)
