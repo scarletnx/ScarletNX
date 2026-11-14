@@ -14,7 +14,12 @@
 
    A module the program loads while it runs (an NRO, through nn::ro) is linked when it is loaded, against the modules
    before it in their order, and the words of those modules that nothing defined until then take its definitions.
-   When it is unloaded, each word of the others that points into it is 0 again, a PLT slot its lazy value */
+   When it is unloaded, each word of the others that points into it is 0 again. A PLT slot that points into it goes
+   back to its lazy value in a game's own linker, and lazy binding binds it again at its next call, among the modules
+   loaded then (PLT0 calls the binder the linker puts in the PLT's GOT). The runtime puts no binder there: the slot is
+   bound at once among the modules left, to the same definition, since a module loaded later comes after them in
+   their order. A slot whose name none of them defines takes its lazy value, and the next module loaded that defines
+   the name gives it its definition */
 #ifndef SNX_NX_RELOCATE_H
 #define SNX_NX_RELOCATE_H
 #include "common/utilities/common.h"
@@ -56,9 +61,11 @@ int snx_relocate(SnxRelocModule* modules, size_t count, SnxRelocCounts* counts, 
 int snx_relocate_added(SnxRelocModule* modules, size_t count, SnxRelocCounts* counts, char* error, size_t error_size);
 
 /* modules[gone] is about to be unloaded: in every other module, a word relocated with a symbol that holds an address
-   inside it becomes 0, a PLT slot the lazy value of its module. *words: how many. 0, or -1 said in error */
-int snx_relocate_removed(const SnxRelocModule* modules, size_t count, size_t gone, SnxU64* words, char* error,
-                         size_t error_size);
+   inside it becomes 0, and a PLT slot the address of its symbol among the other modules by the rule above, or the
+   lazy value of its module when none of them defines it. *words: how many held an address inside it, *rebound: the
+   slots of them bound again. 0, or -1 said in error */
+int snx_relocate_removed(SnxRelocModule* modules, size_t count, size_t gone, SnxU64* words, SnxU64* rebound,
+                         char* error, size_t error_size);
 
 /* How modules' images differ from their data at the words that are relocated, for modules snx_relocate linked into a
    copy: words the relocated words compared, lazy the PLT slots the image still holds the lazy value of (not bound

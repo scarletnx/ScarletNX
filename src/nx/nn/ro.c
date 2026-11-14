@@ -107,7 +107,8 @@ void nnro_unregister_module_info(CPU* c, u64 info) {
     snx_st_le32(hook_host(c, info + INFO_STATE), 0);
 }
 /* flag asks for each PLT slot bound at its first call or at once: the runtime's linker binds them at once either
-   way. check: the game loads the module for no other to bind to */
+   way, and binds a slot again at once when the NRO it pointed into is unloaded (relocate.h). check: the game loads the
+   module for no other to bind to */
 u32 nnro_load_module_check(CPU* c, u64 module, u64 image, u64 buffer, u64 size, i32 flag, int check) {
     const u8* nro = hook_host(c, image);
     u64 base = 0, mod0;
