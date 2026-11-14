@@ -539,7 +539,12 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     /* Unified memory, over memory an import holds: the result is copied there on the GPU, in stream order, with no
        owner and no trap (each trap let go of the imports over its pages, and the next use made them again). Older
        owners of the bytes go: they are written over whole */
-    if (in_place && vk_uma_held(cpu, size)) {
+    /* Over an import, the result is copied there on the GPU with no owner and no trap, which is what vk_uma_held asks.
+       It answered false for every span that had none, and on a host with no traps there is nothing below to own it: the
+       span landed as own_land's readback, waiting for the queue to drain before the CPU needs one byte of it. Such a
+       host takes the import instead, which bind makes (vk_uma_publish). A host with traps keeps the owner its pages
+       give: the guard asks for it first, as before */
+    if (in_place && (!own_traps() || vk_uma_held(cpu, size))) {
         own_drop(cpu, size);
         if (vk_uma_publish(cpu, size, r->buf, off)) return;
     }

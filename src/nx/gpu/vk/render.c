@@ -132,6 +132,9 @@ void vk_pass_ends_log(void) {
     for (u32 i = 0; i < PASS_SITES && g_pass_ends[i].file; i++) g_pass_ends[i].n = 0;
 }
 
+/* Whether a rendering pass is open: a copy cannot be recorded in one, and ending it here would break the pass a frame's
+   draws share (vk_uma_publish leaves the range to land as before instead) */
+int vk_render_open(void) { return g_rp.open; }
 void vk_render_end_at(const char* file, int line) {
     if (!g_rp.open) return;
     if (g_rp.clears) rp_record(); /* clears with nothing drawn after them still clear */
