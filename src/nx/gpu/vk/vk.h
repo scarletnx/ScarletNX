@@ -163,6 +163,9 @@ typedef struct {
     int geometry_streams_lines_triangles;
     u32 image_slots[5], buffer_image_slots[5]; /* descriptor capacity by shader stage, after the pipeline-wide limit */
     int has_border_color;       /* VK_EXT_custom_border_color */
+    /* VK_EXT_image_view_min_lod: a view sampled no finer than a level, as a texture too big for the device's memory
+       is (texture.c resident_floor) */
+    int has_view_min_lod;
     u32 border_color_max;       /* maxCustomBorderColorSamplers: past it, samplers take the nearest built-in color */
     int has_mirror_clamp;       /* samplerMirrorClampToEdge: VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE */
     /* filterMinmaxImageComponentMapping: a min/max sampler reads a view of any swizzle. Without it the view's r must
@@ -999,6 +1002,9 @@ typedef struct Surf {
        tails of them: 0, 1 for all the layers, or one a layer */
     u32 bricks, brick_bytes, tail_first, tails;
     VkExtent3D grain;
+    /* such a texture's finest level with memory, its views sampled no finer (texture.c resident_floor): 0 but where
+       the device's memory has no room for all it maps */
+    u32 lod_floor;
     /* textures: an image with sparse residency, memory bound only for the levels that guest memory maps
        (gpu/vk/texture.c tex_bind). mem is VK_NULL_HANDLE, and bytes counts the memory bound now */
     u8 sparse;

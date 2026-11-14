@@ -892,6 +892,7 @@ static int create_device(void) {
         g_vk.advanced_blend_caps.available = snx_vk_extensions_has(&e, VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
         g_vk.has_fragment_interlock = snx_vk_extensions_has(&e, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
+        g_vk.has_view_min_lod = snx_vk_extensions_has(&e, VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
         has_shader_clock = snx_vk_extensions_has(&e, VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
         has_descriptor_buffer = snx_vk_extensions_has(&e, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
         has_descriptor_heap = snx_vk_extensions_has(&e, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
@@ -1034,6 +1035,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT};
     VkPhysicalDeviceCustomBorderColorFeaturesEXT fbc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
+    VkPhysicalDeviceImageViewMinLodFeaturesEXT fminlod = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT};
     VkPhysicalDeviceTransformFeedbackFeaturesEXT fxfb = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
     VkPhysicalDeviceBlendOperationAdvancedFeaturesEXT qadvanced = {
@@ -1144,6 +1147,7 @@ static int create_device(void) {
                            !core13 || has_eds2 ? &qeds2 : NULL,
                            g_vk.has_divisor ? &fdiv : NULL,
                            g_vk.has_border_color ? &fbc : NULL,
+                           g_vk.has_view_min_lod ? &fminlod : NULL,
                            g_vk.has_xfb ? &fxfb : NULL,
                            g_vk.advanced_blend_caps.available ? &qadvanced : NULL,
                            g_vk.has_fragment_interlock ? &qinterlock : NULL,
@@ -1352,6 +1356,7 @@ static int create_device(void) {
         g_vk.advanced_blend_caps.all_operations = advanced.advancedBlendAllOperations;
     }
     g_vk.has_border_color = g_vk.has_border_color && fbc.customBorderColors && fbc.customBorderColorWithoutFormat;
+    g_vk.has_view_min_lod = g_vk.has_view_min_lod && fminlod.minLod;
     if (g_vk.has_border_color) { /* how many samplers may have a custom border color: as few as 32 */
         VkPhysicalDeviceCustomBorderColorPropertiesEXT cbp = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT};
@@ -1596,6 +1601,12 @@ static int create_device(void) {
             .customBorderColorWithoutFormat = VK_TRUE};
         chain = &fbc;
         ext[next++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
+    }
+    if (g_vk.has_view_min_lod) {
+        fminlod = (VkPhysicalDeviceImageViewMinLodFeaturesEXT){
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT, .pNext = chain, .minLod = VK_TRUE};
+        chain = &fminlod;
+        ext[next++] = VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME;
     }
     if (g_vk.has_xfb) {
         fxfb = (VkPhysicalDeviceTransformFeedbackFeaturesEXT){

@@ -758,6 +758,29 @@ static void resident_keys(const Surf* t, const u64* ukey, u64* dkey) {
         }
     for (u32 i = t->layers * t->bricks; i < resident_pages(t); i++) dkey[i] = 0;
 }
+/* The levels of such a texture finer than floor, in dev (the order vk_image_resident takes), left without memory.
+   Mario Kart World's terrain is two 8192x8192 arrays of 68 layers with memory where the game maps its tiles: 429 MB
+   of BC6H, and 109 MB of ASTC 8x8 that is 429 MB as the BC7 it is held as (four times its two bits a texel). On a GPU
+   of 2 GB, whose budget is 1,360 MB, neither bind found memory, and the draws that sample them were skipped. The game
+   maps its levels from 3 on whole and its finer ones where it looks, each a quarter of the one before: without level
+   0 the two are 340 MB, without levels 0 and 1 210 MB. So where a texture's bind finds no memory, its finest levels
+   go one at a time until it finds some (resident_bind_mapped), and its views are sampled no finer than the first
+   level left (VK_EXT_image_view_min_lod, tex_view): a texture of half the resolution where the game asked for the
+   full one, in place of none. A later bind takes one level back while the heap has room for it. Without the
+   extension the bind is all or nothing, as before */
+static void resident_floor(const Surf* t, u8* dev, u32 floor) {
+    const VkExtent3D g = t->grain;
+    const u32 d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1;
+    u32 at = 0;
+    for (u32 layer = 0; layer < t->layers; layer++)
+        for (u32 l = 0; l < t->tail_first; l++) {
+            const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, ld = d3 >> l ? d3 >> l : 1;
+            const u32 n = (lw + g.width - 1) / g.width * ((lh + g.height - 1) / g.height) *
+                          ((ld + g.depth - 1) / g.depth);
+            if (l < floor) memset(dev + at, 0, n);
+            at += n;
+        }
+}
 /* such a texture's pages bound where memory maps any of their bytes and released where it maps none
    (vk_image_resident: what isn't bound reads as zeros, as the holes do), the ones bound set in want (resident_pages of
    them, zeroed; 2 where the memory is new). 1 when they all are */
@@ -778,10 +801,41 @@ static int resident_bind_mapped(Surf* t, u8* want) {
     const int stacked = resident_order(t, want, dev, 0);
     if (!stacked) memcpy(dev, want, pages);
     if (dkey) resident_keys(t, ukey, dkey);
+    /* the floor it had (resident_floor), or one level finer where the heap has that much room to spare: a fifth of
+       its budget left after it */
+    u32 floor = t->lod_floor;
+    u8* finer = floor ? malloc(pages) : NULL;
+    if (finer) {
+        u64 usage, budget;
+        vk_mem_use(&usage, &budget);
+        memcpy(finer, dev, pages);
+        resident_floor(t, finer, floor - 1);
+        if (usage + vk_image_resident_need(t->img, finer, dkey, pages) <= budget / 5 * 4) floor--;
+        free(finer);
+    }
+    if (floor) resident_floor(t, dev, floor);
     /* room made under the budget for the memory the bind takes: none for a block that joins the memory of its key */
     u64 need = vk_image_resident_need(t->img, dev, dkey, pages);
     if (need) vk_mem_trim(need, 0);
     int ok = vk_image_resident(t->img, dev, dkey, pages, &bytes);
+    /* no memory for it: the finest levels go, one at a time, until it has (resident_floor). Their pages are released
+       before the coarser ones are bound */
+    u8* fresh = NULL; /* the pages a try gave memory, which a later one finds bound (2 in dev: to be loaded) */
+    while (!ok && g_vk.has_view_min_lod && floor + 1 < t->tail_first && (fresh || (fresh = calloc(pages, 1)))) {
+        for (u32 i = 0; i < pages; i++) fresh[i] |= dev[i] == 2;
+        resident_floor(t, dev, ++floor);
+        ok = vk_image_resident(t->img, dev, dkey, pages, &bytes);
+    }
+    if (fresh) {
+        for (u32 i = 0; i < pages; i++)
+            if (fresh[i] && dev[i]) dev[i] = 2;
+        free(fresh);
+    }
+    if (ok && floor != t->lod_floor) {
+        LOG_LIMIT(16, "vulkan: a %ux%ux%u texture of %u levels is sampled from level %u on, the device's memory short "
+                      "of the finer ones\n", t->w, t->h, t->layers, t->levels, floor);
+        t->lod_floor = floor;
+    }
     if (!stacked || !resident_order(t, want, dev, 1)) memcpy(want, dev, pages);
     free(dev);
     free(ukey);
@@ -3017,6 +3071,9 @@ static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkCom
     stencil = stencil && s->f.stencil;
     u64 key = (u64)type | (u64)map->r << 4 | (u64)map->g << 8 | (u64)map->b << 12 | (u64)map->a << 16 | (u64)fmt << 20 |
               (u64)stencil << 60 | (u64)(levels != s->levels) << 61 | (u64)(storage != 0) << 62;
+    /* a texture whose finest levels have no memory (resident_floor) sampled no finer than its first with it */
+    const u32 floor = !storage && s->lod_floor < levels ? s->lod_floor : 0;
+    key |= (u64)floor << 51;
     for (int i = 0; i < s->nsv; i++)
         if (s->sv[i].key == key) return s->sv[i].v;
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -3032,6 +3089,9 @@ static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkCom
     VkImageViewUsageCreateInfo vu = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
                                      .usage = storage ? VK_IMAGE_USAGE_STORAGE_BIT : VK_IMAGE_USAGE_SAMPLED_BIT};
     vi.pNext = &vu;
+    VkImageViewMinLodCreateInfoEXT ml = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_MIN_LOD_CREATE_INFO_EXT,
+                                         .minLod = (float)floor};
+    if (floor) vu.pNext = &ml;
     VkImageView v;
     if (!VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &v))) return VK_NULL_HANDLE;
     if (s->nsv == (int)(sizeof s->sv / sizeof s->sv[0])) { /* full: drop the oldest */
