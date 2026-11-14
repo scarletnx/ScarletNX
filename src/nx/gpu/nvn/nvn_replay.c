@@ -453,7 +453,13 @@ static int run(void* arg) {
                                            g_nvn.replay.shown);
             else /* no display to reach */
                 syncpt_incr(g_nvn.replay.shown);
-            stream_incr(q->syncpt); /* shown: the window's texture comes free (nvn_WindowAcquireTexture) */
+            /* shown: the window's texture comes free (nvn_WindowAcquireTexture). The present's drain left the queue
+               empty, so the renderer's increment runs here, in the same order, without one more hand-off to its
+               thread before the game has its texture again */
+            if (g_renderer->stream_incr)
+                gpu_renderer_now()->stream_incr(q->syncpt);
+            else
+                syncpt_incr(q->syncpt);
             g_nvn.replay.present_walked = j->present_order;
             break;
         }
