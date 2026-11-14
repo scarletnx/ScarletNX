@@ -343,10 +343,7 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                    far hold them, and the checks after the wait take them in. A new epoch at each wait had the write
                    tracking scan the game's memory again 31 times a frame in one game, the GPU thread a fifth of its
                    time */
-                if (g_renderer->mem_seen)
-                    gpu_renderer_now()->mem_seen();
-                else if (g_renderer->mem_may_have_changed)
-                    gpu_renderer_now()->mem_may_have_changed();
+                gpu_mem_seen();
             }
             j->cursor[level].previous = op;
             j->cursor[level].pc = h.op & NVN_REC_LAST ? 0 : pc + h.size;

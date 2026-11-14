@@ -60,6 +60,10 @@ static void called(char c, u32 a, u32 b) {
 }
 
 /* the stand-in renderer: what each call saw */
+static int nxfb, nseen_mem;
+static DrawOwner* xfb_own;
+static u64 xfb_control_seen;
+static u32 tex_pred;
 static DsState seen_ds;
 static const DsState* seen_ptr;
 static int ndraw, nclear, ntex, ndiscard, ndispatch;
@@ -84,7 +88,7 @@ static void r_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) {
     called('c', 0, 0);
 }
 static void r_texture(const DsState* ds, const DrawTexture* t) {
-    (void)t;
+    tex_pred = t->owner.pred;
     seen_ptr = ds, seen_ds = *ds, ntex++;
 }
 static void r_discard(const DsState* ds, u32 targets) {
@@ -95,6 +99,12 @@ static void r_dispatch(const DispatchState* d) {
     (void)d;
     flushes_at_dispatch = flushes, ndispatch++;
 }
+static int r_xfb(u32 owner, u64 control, u32 what, u32 stride, DrawOwner* o) {
+    (void)owner, (void)what, (void)stride;
+    xfb_own = o, xfb_control_seen = control, nxfb++;
+    return 1;
+}
+static void r_mem_seen(void) { nseen_mem++; }
 static void r_barrier(int kind) { called('b', (u32)kind, 0); }
 static void r_incr(u32 id) { called('i', id, 0); }
 static void r_end(void) { called('e', 0, 0); }
@@ -116,7 +126,9 @@ static const Renderer stand_in = {.name = "stand-in",
                                   .stream_run = r_run,
                                   .samples_reset = r_reset,
                                   .samples_enable = r_enable,
-                                  .render_predicate_drop = r_drop};
+                                  .render_predicate_drop = r_drop,
+                                  .xfb_control = r_xfb,
+                                  .mem_seen = r_mem_seen};
 const Renderer* g_renderer = &stand_in;
 
 static int failed, checks;
@@ -271,6 +283,26 @@ static void test_render_enable(void) {
     gpu_draw(&b, &dc, &own);
     CHECK(ndraw == draws + 2 && seen_own_v.pred == 6, "a draw did not take its render enable's predicate (%u)",
           seen_own_v.pred);
+    /* an owner whose draws are off: its textures and discards are skipped too, and its capture control runs */
+    re_off = 1;
+    int texs = ntex, discards = ndiscard;
+    gpu_draw_texture(&b, &(DrawTexture){0});
+    gpu_discard(&b, 1);
+    CHECK(ntex == texs && ndiscard == discards, "a texture draw or a discard ran while its owner's draws are off");
+    int xfbs = nxfb;
+    gpu_xfb_control(&b, &own, 0x1234, 1, 16);
+    CHECK(nxfb == xfbs + 1 && xfb_control_seen == 0x1234, "a capture control did not run while the draws are off");
+    CHECK(xfb_own && xfb_own != &own, "a capture control ran with the front end's DrawOwner, not the renderer's");
+    /* on, with a predicate: a texture draw takes it, and a discard waits for none, so it is skipped */
+    re_off = 0;
+    re_pred = 6;
+    gpu_draw_texture(&b, &(DrawTexture){0});
+    CHECK(ntex == texs + 1 && tex_pred == 6, "a texture draw did not take its render enable's predicate (%u)", tex_pred);
+    gpu_discard(&b, 1);
+    CHECK(ndiscard == discards, "a discard ran under a predicate");
+    re_pred = 0;
+    gpu_discard(&b, 1);
+    CHECK(ndiscard == discards + 1, "a discard did not run with no predicate");
     re_owner = ~0u;
     int resets = re_resets;
     gpu_draw_states_reset();
@@ -297,6 +329,10 @@ static void test_calls(void) {
                                    {0, 0}, {0, 0}};
     CHECK(norder == 9 && !memcmp(args, want, sizeof want), "a call's arguments did not arrive");
     CHECK(gpu_renderer_now() == g_renderer, "gpu_renderer_now is not the renderer");
+    int seen = nseen_mem;
+    gpu_mem_seen();
+    gq_drain();
+    CHECK(nseen_mem == seen + 1, "gpu_mem_seen did not reach the renderer's mem_seen");
 }
 
 /* ------------------------------------------------ gpu_split=1: the renderer thread runs the records */
