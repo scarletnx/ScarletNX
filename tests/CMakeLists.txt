@@ -1361,6 +1361,15 @@ if(NOT WIN32)
     snx_hookgen(snx-test-alloc-vector SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
     add_test(NAME alloc_vector COMMAND snx-test-alloc-vector)
 endif()
+# the sync family's clocks (src/nx/hle/hook/sync.c) against the game's (src/nx/runtime/clock.c): steady_clock stopped
+# by a pause and set by a state's load, system_clock the host's
+add_executable(snx-test-sync-clock sync_clock.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/sync.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/runtime/clock.c")
+snx_test_target(snx-test-sync-clock 11)
+target_include_directories(snx-test-sync-clock PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx-test-sync-clock PRIVATE scarletnx-platform)
+snx_hookgen(snx-test-sync-clock SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+add_test(NAME sync_clock COMMAND snx-test-sync-clock)
 # the alloc family's arena (src/nx/hle/hook/alloc.c) in a program that links jemalloc as scarletnx does, whole and
 # unexported: ready, and its allocations in the guest's window above the layout
 if(SNX_JEMALLOC AND NOT WIN32)
