@@ -219,6 +219,9 @@ u64 hook_site(const char* symbol);
    between the two, and counts as stopped for a pause, as a waiting SVC (sync.c has them) */
 void hook_wait_begin(void);
 void hook_wait_end(void);
+/* family.c: why the family's hooks can't run in this process (a 32-bit game, a host without what its handlers run
+   on), NULL when they can: hook_install leaves such a family's functions to the game's code, and says why */
+const char* hook_family_unready(const char* family);
 /* alloc.c: the host allocator's arena in guest memory is made (made at the first call): 0 without one, and the alloc
    family is then off */
 int alloc_ready(void);
