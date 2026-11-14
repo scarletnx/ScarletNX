@@ -1350,7 +1350,8 @@ static void adapter(const Entry* e, int index) {
     range_text(&e->range, range, sizeof range);
     out("/* %s, %s */\n", h->symbol, range);
     out("static void %s_fn_%d(CPU* RESTRICT c, u64 entry) {\n", prefix, index);
-    out("    (void)entry;\n");
+    /* the hooked function's own address, for a handler that hands a case to its own code (hook_run_original) */
+    out("    c->pc = entry;\n");
     out("    ");
     switch (h->ret) {
         case T_VOID: break;
