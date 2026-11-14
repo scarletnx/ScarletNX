@@ -2631,6 +2631,46 @@ u64 vk_tex_shed(u64 need) {
     }
     return freed;
 }
+/* Textures sparse for their levels (texture.c's shed) a level coarser, the least recently used first, a level each,
+   until want bytes go: their finest level's memory, three quarters of what they hold, where an eviction took all of
+   it and the next use loaded it all again. Those the present being recorded uses too, but for one a draw recorded and
+   not yet submitted holds: the bind goes before the next submission, which a recorded draw would be in, sampling a
+   level with no memory. A submitted draw is safe: the bind waits for the work submitted before it (memory.c). The
+   working set itself has to give way: on a GPU of 2 GB Mario Kart World's frames used more than the budget, and a
+   trim that took only what two presents hadn't used freed nothing. The bytes released */
+#define SHED_PER_TRIM 64 /* the textures a trim makes coarser at most: each is a sparse bind */
+static u32 g_shed_at; /* the present a level last gave way (+1) */
+static u64 tex_shed_lru(u32 before, u64 want) {
+    u64 freed = 0;
+    u32 n_shed = 0;
+    for (int l = VK_LRU_TEX; l <= VK_LRU_TEX + LRU_AGED && freed < want && n_shed < SHED_PER_TRIM; l += LRU_AGED)
+        for (u32 r = g_rows.lists[l].head, n; r && freed < want && n_shed < SHED_PER_TRIM; r = n) {
+            n = g_rows.lru[r].next;
+            Surf* t = g_rows.surf[r];
+            if (before && (i32)((u32)t->last_used - before) >= 0) break;
+            if (t->shed && vk_tex_can_coarsen(t) && !vk_gfx_image_holds(t)) freed += vk_tex_coarser(t), n_shed++;
+        }
+    if (n_shed) g_shed_at = g_vk_present + 1;
+    return freed;
+}
+/* Once a present, while the heap has room: shed textures the last 120 presents used a level finer again, the most
+   recently used first, a few at a time. Only once 300 presents have gone with no level given way and under seven
+   tenths of the budget (vk_tex_finer then takes one only where a fifth of it is left after): taken back as soon as there
+   was room, levels came and went again frame after frame */
+void vk_tex_refine_frame(void) {
+    u64 usage, budget;
+    if (g_shed_at && g_vk_present + 1 - g_shed_at < 300) return;
+    vk_mem_use(&usage, &budget);
+    if (usage >= budget / 10 * 7) return;
+    const u32 since = vk_present_before(0, 120);
+    u32 took = 0, looked = 0;
+    for (u32 r = g_rows.lists[VK_LRU_TEX].tail, p; r && took < 4 && looked < 256; r = p, looked++) {
+        p = g_rows.lru[r].prev;
+        Surf* t = g_rows.surf[r];
+        if ((i32)((u32)t->last_used - since) < 0) break;
+        if (t->shed && t->lod_floor) took += (u32)vk_tex_finer(t);
+    }
+}
 void vk_mem_trim(u64 extra, int force) {
     u64 usage, budget, need = 0;
     if (force) {
@@ -2678,6 +2718,16 @@ void vk_mem_trim(u64 extra, int force) {
         if (want < need) want = need;
         /* under the budget's pressure, after two presents: a draw recorded before the object ended may hold one */
         const u64 got = want ? ended_reclaim(want, vk_present_before(0, 2)) : 0;
+        by[0] += got;
+        freed += got;
+    }
+    /* then the textures sparse for their levels, a level each, down to the first step's mark: what the steps would
+       evict, smaller and still there */
+    {
+        const u64 low = budget - steps[0].mark * (head / 2), left = usage > freed ? usage - freed : 0;
+        u64 want = left > low ? left - low : 0;
+        if (want < need) want = need;
+        const u64 got = want ? tex_shed_lru(0, want) : 0;
         by[0] += got;
         freed += got;
     }

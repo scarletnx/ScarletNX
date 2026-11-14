@@ -300,6 +300,13 @@ void vk_tex_report_log(void) {
             (unsigned long long)(g_tex_report.reloads - g_tex_report.reported),
             (unsigned long long)g_tex_report.evictions);
     g_tex_report.reported = g_tex_report.reloads;
+    u64 shed_made, shed_bytes, shed_coarser, shed_finer;
+    vk_tex_shed_stats(&shed_made, &shed_bytes, &shed_coarser, &shed_finer);
+    if (shed_made)
+        LOG("vulkan: %llu textures made sparse for their levels (texture_shed, %llu MB whole); %llu levels given way for "
+            "room, %llu taken back\n",
+            (unsigned long long)shed_made, MB(shed_bytes), (unsigned long long)shed_coarser,
+            (unsigned long long)shed_finer);
     const u64 *idle = g_tex_report.idle, *back = g_tex_report.back;
     if (idle[0] | idle[1] | idle[2] | idle[3] | back[0] | back[1] | back[2] | back[3])
         LOG("vulkan: since the last report the cache evicted %llu textures unused for under 60 presents, %llu for 60 "

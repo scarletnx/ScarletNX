@@ -1024,6 +1024,10 @@ typedef struct Surf {
     /* textures: an image with sparse residency, memory bound only for the levels that guest memory maps
        (gpu/vk/texture.c tex_bind). mem is VK_NULL_HANDLE, and bytes counts the memory bound now */
     u8 sparse;
+    /* textures: sparse for its levels alone (texture.c tex_create's shed): mapped whole, with every level from
+       lod_floor on bound, its finest going where the device's memory runs short (vk_tex_coarser) and coming back
+       when it has room (vk_tex_finer) */
+    u8 shed;
     /* depth targets: undefined but for draws and clears predicated on the GPU, which may not have run, so they count
        as no draw (render.c zt_written) */
     int pred_undefined;
@@ -1269,6 +1273,13 @@ u64 vk_mem_trim_start(u64 budget);
 u64 vk_tex_shed(u64 need);
 int vk_tex_can_coarsen(const Surf* t); /* texture.c: t is such a texture with a coarser level to go to */
 u64 vk_tex_coarser(Surf* t);           /* texture.c: t a level coarser, the bytes that released */
+/* texture.c: a shed texture a level finer where the heap has room for it (a fifth of the budget left after it), its
+   next use loading it again: 1 when it took one */
+int vk_tex_finer(Surf* t);
+/* surface.c: once a present, shed textures used lately a level finer while the heap has room */
+void vk_tex_refine_frame(void);
+/* texture.c: the shed textures made, their bytes as made whole, and the levels shed and taken back so far */
+void vk_tex_shed_stats(u64* made, u64* bytes, u64* coarser, u64* finer);
 u64 vk_mem_trimmed(void); /* statistics: the bytes vk_mem_trim freed */
 /* astc_mode's Auto follows the memory (gpu/texture/astc_bc.h): vk_astc_auto_trimmed, at the end of each trim that ran,
    with the use it counted (an allocation's extra bytes in it), what it left (the use less what it freed, an
