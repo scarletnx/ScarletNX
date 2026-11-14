@@ -180,4 +180,5 @@ float snx_ctr_f24(uint32_t raw);
 float snx_ctr_pica_float(uint32_t hex, unsigned m, unsigned e);
 /* PICA multiplication: infinity times zero is zero, not NaN */
 float snx_ctr_pica_mul(float a, float b);
+extern uint64_t g_pica_lut_writes;
 #endif

@@ -247,10 +247,12 @@ static SnxCtrPicaResult special(SnxCtrPica* p, SnxCtrMemory* memory, uint32_t id
         uint32_t *config = &p->regs[SNX_PICA_LIGHTING_LUT_CONFIG], index = *config & 0xff, type = (*config >> 8) & 31;
         if (type < 24) p->lighting_lut[type][index] = value;
         *config = (*config & ~0xffu) | ((index + 1) & 0xff);
+        ++g_pica_lut_writes;
     } else if (id >= SNX_PICA_FOG_LUT_DATA && id < SNX_PICA_FOG_LUT_DATA + 8) {
         uint32_t* offset = &p->regs[SNX_PICA_FOG_LUT_OFFSET];
         p->fog_lut[(*offset & 0xffff) % 128] = value;
         *offset = (*offset & ~0xffffu) | ((*offset + 1) & 0xffff);
+        ++g_pica_lut_writes;
     } else if (id >= SNX_PICA_PROCTEX_LUT_DATA && id < SNX_PICA_PROCTEX_LUT_DATA + 8) {
         uint32_t *config = &p->regs[SNX_PICA_PROCTEX_LUT_CONFIG], index = *config & 0xff;
         switch ((*config >> 8) & 15) {
@@ -262,6 +264,7 @@ static SnxCtrPicaResult special(SnxCtrPica* p, SnxCtrMemory* memory, uint32_t id
             default: break;
         }
         *config = (*config & ~0xffu) | ((index + 1) & 0xff);
+        ++g_pica_lut_writes;
     }
     /* gpu_mode needs nothing */
     return SNX_CTR_PICA_OK;
@@ -272,6 +275,9 @@ static SnxCtrPicaResult end_vertices(SnxCtrPica* p, SnxCtrMemory* memory, const 
     return host && host->vertices_end ? host->vertices_end(p, memory) : SNX_CTR_PICA_OK;
 }
 
+/* bumped by every write of a LUT's data: the renderer uploads the tables when it changes, instead of copying and
+   comparing them at every draw */
+uint64_t g_pica_lut_writes;
 SnxCtrPicaResult snx_ctr_pica_write(SnxCtrPica* p, SnxCtrMemory* memory, uint32_t id, uint32_t value, uint32_t mask,
                                     const SnxCtrPicaHost* host, bool* stop) {
     if (id >= SNX_CTR_PICA_REGS) return SNX_CTR_PICA_OK; /* writes past the register file do nothing */
