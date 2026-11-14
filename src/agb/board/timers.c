@@ -55,7 +55,7 @@ static void overflow(AgbBoard* board, int index, uint64_t at) {
     AgbTimer* timer = &board->timer[index];
     timer->counter = timer->reload;
     timer->since = at;
-    if (index < 2) agb_apu_timer_overflow(board, index); /* the sound FIFOs play at timer 0's or 1's rate */
+    if (index < 2) agb_apu_timer_overflow(board, index, at); /* the sound FIFOs play at timer 0's or 1's rate */
     if (timer->control & AGB_TIMER_IRQ) agb_irq_raise(board, AGB_IRQ_TIMER(index), at);
     if (index < 3 && (board->timer[index + 1].control & AGB_TIMER_ENABLE) &&
         (board->timer[index + 1].control & AGB_TIMER_CASCADE)) {

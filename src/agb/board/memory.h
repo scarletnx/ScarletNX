@@ -49,4 +49,6 @@ uint32_t agb_access_cycles(const AgbBoard* board, uint32_t address, unsigned wid
 /* The byte a cartridge window read gets past the image: the cartridge drives no data, and the bus still
    holds the halfword address the cartridge latched, address / 2. */
 uint8_t agb_rom_open_bus8(uint32_t address);
+/* 1 where the console decodes nothing, whose reads give the open bus: past the BIOS up to EWRAM, and past 28 bits */
+int agb_unmapped(uint32_t address);
 #endif

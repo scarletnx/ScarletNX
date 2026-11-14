@@ -753,6 +753,44 @@ int main(void) {
         }
     }
     {
+        /* A read of nothing gets the unit an H-blank DMA moved when the DMA took the bus between the read's fetch and the
+           read itself, else the opcode at $+8 (mGBA's suite's misc-edge.c, DMA Prefetch: the console reads 0xDEAD0000).
+           The loop takes 11 cycles a turn, which no line's 1232 and the DMA's 4 divide, so the DMA's cycle moves through
+           its turns line after line */
+        static const uint32_t code[] = {
+            0xE1A00000, /* 0x900 nop */
+            0xE1A00000, /* 0x904 nop */
+            0xE1A00000, /* 0x908 nop */
+            0xE1A00000, /* 0x90C nop */
+            0xE5910000, /* 0x910 ldr r0, [r1]: r1 = 0x10000000 */
+            0xE1500002, /* 0x914 cmp r0, r2: r2 = 0x0AFFFFF8, the opcode at 0x918 */
+            0x0AFFFFF8, /* 0x918 beq 0x900 */
+            0xEAFFFFFE, /* 0x91C b . */
+        };
+        uint32_t written = 0;
+        for (uint32_t i = 0; i < sizeof code / sizeof code[0]; ++i) agb_write32(&board, 0x03000900 + i * 4, code[i]);
+        agb_write32(&board, 0x03000A00, 0xDEAD0000);
+        agb_write32(&board, 0x040000D4, 0x03000A00); /* DMA3SAD */
+        agb_write32(&board, 0x040000D8, 0x03000A04); /* DMA3DAD */
+        /* one word a line, both addresses fixed, repeating at each H-blank */
+        agb_write32(&board, 0x040000DC, 0xA7400001);
+        cpu.arm.r[0] = 0;
+        cpu.arm.r[1] = 0x10000000;
+        cpu.arm.r[2] = 0x0AFFFFF8;
+        cpu.arm.r[15] = 0x03000900;
+        cpu.arm.cpsr = 0x9F;
+        board.cpu_halted = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2 * 280896, audio, AGB_APU_RATE, &written, error, sizeof error));
+        agb_write32(&board, 0x040000DC, 0);
+        if (cpu.arm.r[0] != 0xDEAD0000 || cpu.arm.r[15] != 0x0300091C) {
+            fprintf(
+                stderr,
+                "agb_cpu: a read of nothing after an H-blank DMA gave 0x%08X at pc 0x%08X, not 0xDEAD0000 at 0x0300091C\n",
+                cpu.arm.r[0], cpu.arm.r[15]);
+            return 1;
+        }
+    }
+    {
         /* SMULLS and UMULLS set C as the ARM7TDMI's Booth multiplier leaves it, which the console's results in mGBA's
            suite (multiply-long.c) show: operands, then the flags of each */
         static const uint32_t code[] = {

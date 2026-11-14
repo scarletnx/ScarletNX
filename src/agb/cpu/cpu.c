@@ -106,6 +106,32 @@ static void catch_up(AgbCpu* cpu, uint32_t address) {
     cpu->advanced = cycles;
 }
 
+/* A read where the console decodes nothing gets what the bus carried last (NanoBoyAdvance's Bus.cc, ReadOpenBus): the
+   unit a DMA moved when that DMA took the bus after the CPU's access before this one began (the instruction's fetch, or
+   its data access before), so none of the CPU's came between them; else the opcode the block passes. The board catches
+   up with the block to the read's start for it */
+static void dma_on_bus(AgbCpu* cpu, uint32_t address) {
+    AgbBoard* board = cpu->board;
+    uint32_t unit = (cpu->arm.r[15] - cpu->block_pc) >> (cpu->block_thumb ? 1 : 2), before, start;
+    if (unit >= AGB_BLOCK_MAX) return;
+    uint32_t word = ((address & ~3u) - (cpu->trace[unit] & ~3u)) >> 2;
+    int32_t access = word < 16 ? (int32_t)word : 0;
+    /* the cycles from the block's start to the access before this one, then to this one */
+    if (!access) {
+        before = replay(cpu, unit, AGB_REPLAY_WHOLE);
+        start = replay(cpu, unit, AGB_REPLAY_FETCH);
+    } else {
+        before = replay(cpu, unit, access > 1 ? access - 2 : AGB_REPLAY_FETCH);
+        start = replay(cpu, unit, access - 1);
+    }
+    if (start > cpu->advanced) {
+        devices(board, start - cpu->advanced);
+        cpu->advanced = start;
+    }
+    uint64_t origin = board->now - cpu->advanced; /* the board's cycle the block started at */
+    if (board->dma_bus_at > origin + before && board->dma_bus_at <= origin + start) board->open_bus = board->dma_bus;
+}
+
 /* a write that may raise an interrupt soon or let one through: to a timer's control, DISPSTAT, IE, IME or SIOCNT */
 static int interrupt_write(uint32_t address, unsigned bytes) {
     static const uint16_t registers[] = {0x004, 0x102, 0x106, 0x10A, 0x10E, 0x128, 0x200, 0x208};
@@ -126,6 +152,7 @@ static uint32_t bus(SnxArmCPU* arm, uint32_t address, uint32_t size_write, uint3
     unsigned bytes = size_write & 0xFF;
     if (cpu->in_block && (address >> 24) == 0x04) catch_up(cpu, address);
     if (!(size_write & 0x100)) board->open_bus = value; /* a read's value: the open bus (llvm.c's open_bus) */
+    if (cpu->in_block && !(size_write & 0x100) && agb_unmapped(address)) dma_on_bus(cpu, address);
     if (size_write & 0x200) {
         /* LDRSH: the ARM7TDMI quirk reads a sign extended byte at an odd address */
         if (address & 1) return (uint32_t)(int32_t)(int8_t)agb_read8(board, address);

@@ -104,6 +104,10 @@ typedef struct AgbBoard {
     uint16_t keys;             /* the keypad's keys held, KEYINPUT's bits set (the register reads them inverted) */
     uint32_t bios_prefetch;    /* the opcode the BIOS fetched last, what reads of the BIOS return */
     uint32_t open_bus;         /* the opcode the CPU fetched last, as its last read through the bus hook gave it */
+    /* the unit a DMA put on the bus last, which a read of nothing gets while that DMA was the bus's last user, and the
+       cycle it took the bus: 2 after the event that started it (GBATEK, DMA Transfers; NanoBoyAdvance's DMA.cc) */
+    uint32_t dma_bus;
+    uint64_t dma_bus_at;
     uint16_t io[AGB_IO_COUNT]; /* the I/O register file; devices claim registers here */
     uint16_t memcnt[2];        /* the internal memory control at 0x04000800, its two halfwords as written */
     int has_cartridge;
@@ -144,7 +148,8 @@ void agb_board_keys(AgbBoard* board, uint16_t held);
 void agb_dma_write(AgbBoard* board, uint32_t offset, uint16_t value);
 uint16_t agb_dma_read(AgbBoard* board, uint32_t offset);
 uint16_t agb_dma_written(AgbBoard* board, uint32_t offset); /* as written: the addresses a read gives as 0 */
-void agb_dma_event(AgbBoard* board, int event);
+/* an event that starts the DMAs waiting for it, at the board's cycle at */
+void agb_dma_event(AgbBoard* board, int event, uint64_t at);
 void agb_timer_write(AgbBoard* board, uint32_t offset, uint16_t value);
 uint16_t agb_timer_read(AgbBoard* board, uint32_t offset);
 uint16_t agb_timer_written(AgbBoard* board, uint32_t offset); /* as written: TMxCNT_L's reload, not its counter */

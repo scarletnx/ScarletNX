@@ -316,12 +316,12 @@ static void mix_sample(AgbBoard* board, int16_t* left, int16_t* right) {
     *right = (int16_t)(r * 48);
 }
 
-void agb_apu_timer_overflow(AgbBoard* board, int timer) {
+void agb_apu_timer_overflow(AgbBoard* board, int timer, uint64_t at) {
     AgbApu* apu = &board->apu;
     for (int fifo = 0; fifo < 2; ++fifo) {
         if ((int)(apu->soundcnt_h >> (10 + fifo * 4) & 1) != timer) continue; /* bits 10 and 14: its timer */
         apu->fifo_sample[fifo] = (int8_t)fifo_pop(apu, fifo);
-        if (apu->fifo_count[fifo] <= 16) agb_dma_event(board, fifo ? AGB_DMA_FIFO_B : AGB_DMA_FIFO_A);
+        if (apu->fifo_count[fifo] <= 16) agb_dma_event(board, fifo ? AGB_DMA_FIFO_B : AGB_DMA_FIFO_A, at);
     }
 }
 

@@ -24,7 +24,7 @@ static uint32_t units(const AgbBoard* board, int index) {
     return count ? count : (index == 3 ? 0x10000u : 0x4000u);
 }
 
-static void dma_transfer(AgbBoard* board, int index, int fifo) {
+static void dma_transfer(AgbBoard* board, int index, int fifo, uint64_t at) {
     AgbDmaChannel* channel = &board->dma[index];
     uint32_t count = channel->count_now;
     int word = channel->control & AGB_DMA_WORD, step = word ? 4 : 2;
@@ -87,6 +87,8 @@ static void dma_transfer(AgbBoard* board, int index, int fifo) {
         }
     }
     board->held_cycles += cycles;
+    board->dma_bus = channel->latch;
+    board->dma_bus_at = at + 2;
     channel->source_now = source;
     /* repeat only takes a channel that waits for its moment (a blank, a FIFO): one that started at once ends, its
        enable bit clear for the next start, as mGBA's GBADMAService has it */
@@ -126,7 +128,7 @@ void agb_dma_write(AgbBoard* board, uint32_t offset, uint16_t value) {
             if (!was && (value & AGB_DMA_ENABLE)) {
                 channel->count_now = units(board, index);
                 int timing = value >> 12 & 3;
-                if (!timing) dma_transfer(board, index, 0);
+                if (!timing) dma_transfer(board, index, 0, board->now);
             }
             return;
         }
@@ -156,17 +158,17 @@ uint16_t agb_dma_read(AgbBoard* board, uint32_t offset) {
     return 0;
 }
 
-void agb_dma_event(AgbBoard* board, int event) {
+void agb_dma_event(AgbBoard* board, int event, uint64_t at) {
     for (int index = 0; index < 4; ++index) {
         AgbDmaChannel* channel = &board->dma[index];
         int timing = channel->control >> 12 & 3;
         if (!(channel->control & AGB_DMA_ENABLE)) continue;
-        if (event == AGB_DMA_VBLANK && timing == 1) dma_transfer(board, index, 0);
-        if (event == AGB_DMA_HBLANK && timing == 2) dma_transfer(board, index, 0);
+        if (event == AGB_DMA_VBLANK && timing == 1) dma_transfer(board, index, 0, at);
+        if (event == AGB_DMA_HBLANK && timing == 2) dma_transfer(board, index, 0, at);
         if (timing == 3 && (index == 1 || index == 2)) {
             uint32_t target = channel->destination_now & 0x0FFFFFFC;
-            if (event == AGB_DMA_FIFO_A && target == 0x040000A0) dma_transfer(board, index, 1);
-            if (event == AGB_DMA_FIFO_B && target == 0x040000A4) dma_transfer(board, index, 1);
+            if (event == AGB_DMA_FIFO_A && target == 0x040000A0) dma_transfer(board, index, 1, at);
+            if (event == AGB_DMA_FIFO_B && target == 0x040000A4) dma_transfer(board, index, 1, at);
         }
     }
 }
