@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 
+from ctr_fixtures import cia
+
 
 def main():
     # absolute, not resolved: scarletnx-3ds may be a link to scarletnx, which runs the driver its name says
@@ -26,7 +28,7 @@ def main():
     # the common options' lines, as every driver shows them (common/utilities/cli.h), and the 3DS's own after
     assert 'Common options, each value given as --option VALUE or --option=VALUE:' in help_text
     assert '\n  --update PATH          An update or a DLC' in help_text and '\n3DS options:' in help_text
-    assert '--headless' not in help_text and '--frames' not in help_text
+    assert '\n  --frames N' in help_text and '\n  --shot PATH' in help_text and '\n  -H, --headless' in help_text
     assert '--recomp' in help_text and '--extract' in help_text and 'scarletnx-3ds-aot' not in help_text
     assert '--extract-container' in help_text and 'read where it lies' in help_text
     assert '--ctr_separate_windows=1' in help_text and '--ctr_top_resolution=2' in help_text
@@ -48,7 +50,9 @@ def main():
     run(['--output'], 2, 'requires a directory')
     run(['--repo'], 2, 'requires a directory')
     run(['--data=', '--board-info'], 2, 'scarletnx-3ds: --data requires a directory')
-    run(['--headless', '--board-info'], 2, 'scarletnx-3ds does not take --headless')
+    run(['--headless', '--board-info'], 0, 'Old 3DS')
+    run(['--headless', '--frames', '1', '--board-info'], 2, 'Usage:')  # a frame limit is a run's
+    run(['--shot', 'out.ppm', '--board-info'], 2, 'Usage:')  # a shot is a run's too
     run(['--board-info', '--data=.', '-f', '--script', '100:1'], 0, 'Old 3DS')  # both forms, --script is ctr_script
     run(['--board-info', '--repo', '.'], 0, 'Old 3DS')  # --repo is a global data-directory option
     run(['--board-info', '-x'], 2, 'Usage:')
@@ -187,8 +191,26 @@ def main():
             banner_path.write_bytes(b'not a CIA')
             run([str(banner_path)], 2, 'control characters')
             banner_path.unlink()
-        assert sorted(p.name for p in root.iterdir()) == ['--game.cia', 'game with spaces;literal.CIA', 'game.cci', 'game.nsp']
-    print('3DS driver CLI, malformed-input diagnostics and no output side effects passed')
+        # the new headless and frame-limit options reach the run: a synthetic title that exits at once, with --frames 0
+        # so the run ends before it needs a presented frame (and a Vulkan device)
+        run_game = root / 'headless.cia'
+        run_game.write_bytes(cia())
+        (root / 'home').mkdir()
+        env = {**os.environ, 'HOME': str(root / 'home'), 'USERPROFILE': str(root / 'home')}
+        p = subprocess.run(
+            [str(driver), '-H', '--frames', '0', '--data', str(root / 'data'), str(run_game)],
+            capture_output=True,
+            text=True,
+            cwd=root,
+            timeout=120,
+            env=env,
+        )
+        output = p.stdout + p.stderr
+        assert p.returncode == 0 and 'Ran its frames: blocks=0' in output, (p.returncode, output)
+        assert sorted(p.name for p in root.iterdir()) == [
+            '--game.cia', 'data', 'game with spaces;literal.CIA', 'game.cci', 'game.nsp', 'headless.cia', 'home'
+        ]
+    print('3DS driver CLI, malformed-input diagnostics, headless run and no output side effects passed')
 
 
 if __name__ == '__main__':

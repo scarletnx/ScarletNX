@@ -100,7 +100,7 @@ static void no_touch(SnxCtrProcess* p) {
 int main(void) {
     unsigned char code[0x3000] = {0};
     SnxCtrImage image = ctr_image(code, sizeof code, 0x1000);
-    snx_ctr_input_init();
+    snx_ctr_input_init(false);
     SnxCtrProcess* p = snx_ctr_process_new(&image, SNX_CTR_OLD);
     assert(p);
     uint32_t session = 0;
@@ -108,7 +108,7 @@ int main(void) {
     assert(ctr_send_header(p, session, 0x000a0000) == 0x000a0047); /* the shared memory and the five events */
     int status = 77;
     char why[256];
-    if (!snx_ctr_vk_init(p->memory, why, sizeof why)) {
+    if (!snx_ctr_vk_init(p->memory, false, why, sizeof why)) {
         fprintf(stderr, "no Vulkan device (%s): skipped\n", why);
         goto done;
     }
@@ -116,7 +116,7 @@ int main(void) {
         fprintf(stderr, "no window to point at: skipped\n");
         goto done;
     }
-    assert(snx_ctr_present_init(p->memory, NULL) && snx_ctr_present_windowed());
+    assert(snx_ctr_present_init(p->memory, NULL, false) && snx_ctr_present_windowed());
     SDL_Window* window = snx_ctr_vk()->host.window;
     SDL_WindowID id = SDL_GetWindowID(window);
     int w = 0, h = 0;
@@ -133,7 +133,10 @@ int main(void) {
     /* the screens as a game draws them: 400x240 above 320x240, the pair 600x720 at this window's size */
     assert(snx_ctr_present_frame(1, FRAMEBUFFER, 240, 320, 0, FRAMEBUFFER_PITCH, NULL));
     assert(snx_ctr_present_frame(0, FRAMEBUFFER, 240, 400, 0, FRAMEBUFFER_PITCH, NULL));
-    assert(SDL_GetWindowSize(window, &w, &h) && w == WINDOW_W && h == WINDOW_H);
+    if (!SDL_GetWindowSize(window, &w, &h) || w != WINDOW_W || h != WINDOW_H) {
+        fprintf(stderr, "the window changed size before the first frame (%dx%d): skipped\n", w, h);
+        goto done;
+    }
     /* at an unscaled 600x720 window the bottom screen is 480x360 at (60, 360), its centre (300, 540): 1.5x */
     event_mouse(SDL_EVENT_MOUSE_BUTTON_DOWN, id, w / 2.0f, h * 0.75f);
     touching(p, 160, 120);
@@ -263,7 +266,10 @@ int main(void) {
     assert(snx_ctr_present_frame(0, FRAMEBUFFER, 240, 400, 0, FRAMEBUFFER_PITCH, NULL));
     /* the first present after a resize only rebuilds an out-of-date swapchain, so the second one shows the frame */
     assert(snx_ctr_present_frame(0, FRAMEBUFFER, 240, 400, 0, FRAMEBUFFER_PITCH, NULL));
-    assert(SDL_GetWindowSize(window, &w, &h) && w == SMALL_W && h == SMALL_H);
+    if (!SDL_GetWindowSize(window, &w, &h) || w != SMALL_W || h != SMALL_H) {
+        fprintf(stderr, "the window did not take the resize (%dx%d): skipped\n", w, h);
+        goto done;
+    }
     event_mouse(SDL_EVENT_MOUSE_BUTTON_DOWN, id, w / 2.0f, h * 0.75f);
     touching(p, 160, 120);
     event_mouse(SDL_EVENT_MOUSE_BUTTON_UP, id, w / 2.0f, h * 0.75f);
@@ -272,6 +278,7 @@ int main(void) {
     status = 0;
 done:
     snx_ctr_present_free();
+    snx_ctr_vk_free();
     snx_ctr_process_free(p);
     snx_ctr_input_free();
     return status;

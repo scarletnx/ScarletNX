@@ -35,14 +35,15 @@
 one (`.bcci`, `.bcxi`, `.bcia`), or a z3ds one (`.zcci`, `.zcxi`, `.zcia`) — through
 **offline static AOT -> native module -> checked ARM/Thumb execution**,
 with the compiler built into the driver. A launch reuses a finished extraction
-and module and runs until the game exits or its window closes (or for `--seconds N`,
-after which it reports where each thread is).
+and module and runs until the game exits or its window closes (or for `--seconds N` or
+`--frames N`, after which it reports where each thread is).
 
 A game's folder is a folder of the data folder's `recompiled/`, named after its title
 ID as a Switch game's is named (`recompiled/0004000000123400/`). It holds the compiled
 module (`<title ID>_code.so`, `_code.dll` on Windows), the blocks runs compiled at
 run time (`<title ID>.hints`), the game's state (`sdmc/`, `savedata/`, frames,
-audio), `<title ID>.ini` and a copy of the runtime named `<title ID>`. The `.ini`
+audio), the 48x48 icon (`icon.rgba`, when the game has an SMDH), `<title ID>.ini`
+and a copy of the runtime named `<title ID>`. The `.ini`
 names the game (`source=`), the console (`model=`) and the system (`system=3ds`),
 which the launcher and a build's deploy pick the driver by. Running the copy plays the
 game, as a Switch game's copy does: `recompiled/<title ID>/<title ID> --seconds=60
@@ -54,9 +55,10 @@ names another folder of games, and `--output DIR` the game's folder itself. A ga
 an older version kept in `work/3ds/<the game's name>` moves into its new folder the
 first time it is played, its module and hints renamed.
 
-`scarletnx-3ds` takes the [common options](../../user/usage.md#common-options) but
-`--frames`, `--shot` and `-H`, each value as `--option VALUE` or `--option=VALUE`.
-Its `--script` is the setting `ctr_script`, and `-f` the setting `fullscreen`. Of the recompile's, `-O` is the level of
+`scarletnx-3ds` takes the [common options](../../user/usage.md#common-options), each value as `--option VALUE` or
+`--option=VALUE`. Its `--script` is the setting `ctr_script`, `-f` the setting `fullscreen`, `--frames N` ends the run
+after N decoded frames and `--shot PATH` writes the last frame of both screens as one PPM to exactly PATH. `-H`
+(`--headless`) starts no SDL video, audio or gamepad subsystem and opens no window, whatever display the host has. Of the recompile's, `-O` is the level of
 the static blocks and their helpers (the setting `opt`, 2), `--chunk N` puts N instructions in a chunk (512 blocks
 without it), `--jit-cache` names another game folder's `<title ID>.hints`, `--jit-only` makes a module of no blocks
 and `--keep-ir` keeps each chunk's IR in `<title ID>_build`. A recompile says a line for each chunk, as the Switch's
@@ -138,7 +140,7 @@ and a half minutes on six cores (the chunks compile in parallel).
 A commercial title, decrypted this way, runs its startup
 (cfg, FS with its save data, APT, and the system services the runtime answers
 generically), creates its save data and stops at its first prompt for the A
-button, drawn through the PICA renderer. Input is the next gap.
+button, drawn through the PICA renderer. Input, audio and the kernel are implemented.
 
 The GPU's work runs on one Vulkan device (`src/3ds/gpu/vk/`), which needs Vulkan
 1.3 and 8-bit storage buffers. The board's RAM regions reach it in one of three ways: imported
@@ -198,8 +200,8 @@ index data are read where the GPU works (in place, or its copy), except in a dra
 geometry shaders run on the CPU (see below). `tests/3ds_vk_draw.c` holds the draws to the
 software renderer they replaced, which stays as their reference. The shown
 framebuffers are decoded and turned to the landscape screen by a compute shader
-straight from guest memory into the window's swapchain; the frame dumps are the
-one readback.
+straight from guest memory into the window's swapchain; the frame dumps, `--shot`
+and the tests' hashes are the readbacks.
 
 What the GPU makes stays on it, and guest memory catches up only when something
 reads it. A render target's images are kept, and loaded from guest memory by a compute
@@ -287,17 +289,18 @@ thread's core, priority, pc, what it waits on (whose event it is) and the return
 addresses on its stack, how long the process sat idle, and its most frequent SVCs.
 
 SuperTux runs past `main` and its RomFS reads. It draws its title and loading
-screens through a software port of Azahar's PICA pipeline (command processor,
-shader interpreter, rasterizer, texturing, combiners, lighting) and plays its
-title music through a port of Azahar's HLE DSP. A run of about 2 billion native
+screens through the Vulkan renderer, a port of Azahar's PICA pipeline (command
+processor, shader units, rasterizer, texturing, combiners, lighting), and plays
+its title music through a port of Azahar's HLE DSP. The software port of the
+shader units and vertex processing stays as the CPU reference of the GPU draws. A run of about 2 billion native
 blocks presented frames until it was ended. It is **not playable** yet:
 
 - Input is the pad and a finger or the mouse's left button on the touch screen.
   The sensors are a gamepad's accelerometer and gyroscope, else at rest (`hid:USER`,
   below).
-- The music has a gap after every rendered frame, because rendering and presenting
-  run inside the guest's GSP call.
-- Procedural textures still stop the run explicitly.
+- The music plays through the HLE DSP, and procedural textures run through the
+  Vulkan renderer. The software renderer kept for the CPU reference still stops on
+  a procedural texture.
 
 The [parity roadmap](#parity-roadmap-azahar) lists the remaining work, and the
 [SuperTux integration target](supertux.md) holds the pinned input.
@@ -315,7 +318,7 @@ validation and cache/resume. Initial stage 3a adds a SwIPC-derived CTR generator
 checked transport and bounded service sessions. Initial 3b adds the minimal
 APT/thread/event/mutex/PTM/HID startup personality and ARM11 UADD8/SEL.
 The HLE DSP, the software PICA renderer and the F1 kernel work since then are
-described below. Full HLE/IPC, input and the other peripherals remain pending. No
+described below. Full HLE/IPC and the other peripherals remain pending. No
 firmware, keys, title assets or Azahar CPU engine are included.
 
 Implemented:
@@ -374,14 +377,14 @@ Implemented:
   The link is the LLVM backend's own (`src/common/cpu/recompiler/llvm/link.c`),
   with the helpers the blocks call (`armlib.c`), as the Switch's 32-bit modules
   are: an ELF shared object, a PE DLL or a Mach-O dylib, without a C compiler.
-  There is no runtime discovery/compilation. Uncovered targets stop explicitly.
+  A block the static discovery misses compiles at run time through the ARM JIT; with `--jit-only` every block does.
 - Homebrew `.data` byte counts including BSS are accepted only if subtracting
   BSS fits initialized pages; BSS never becomes required input `.code` bytes.
   All segment/expansion bounds and content hashes are still checked.
 - Native loader/dispatcher checks ABI, ISA, memory mode, CPU sizes, table counts
   and image identity. It dispatches on PC + CPSR.T, enforces execution permission
   and a block budget, and reports missing entries, faults and unsupported SVCs.
-  The runtime and generated modules do **not** link LLVM or an interpreter/JIT.
+  The static module does not link LLVM; the run-time compiler does, when a block needs it.
 
 ### Kernel-bootstrap subset (2b4)
 
@@ -460,7 +463,7 @@ TLS command words; `0x35` identifies the actual process root. A separate SwIPC
 `srv:` supports client registration and service lookup with real session
 ownership. Initial 3b adds a one-application APT startup lifecycle, real recursive
 lock/events, serialized thread contexts/waits/wakeups, PTM base/model queries
-and HID handles/read-only mapping. HID sampling is not implemented. FS supports
+and HID handles/read-only mapping. HID sampling is implemented as described below. FS supports
 PID/SDK initialization, read-only SelfNCCH RomFS OpenFileDirectly, and the
 read-write SDMC archive (9) on the title's folder: OpenArchive, OpenFile,
 CloseArchive, CreateFile, DeleteFile, CreateDirectory, DeleteDirectory, Rename,
@@ -468,7 +471,8 @@ OpenDirectory, and FSFILE Read, Write, GetSize, SetSize and Close. Archive token
 are FS-private monotonic 64-bit identifiers, not kernel handles. 32 live bindings
 are allowed and stale IDs never revive. NX and CTR share `common/filesystem/`
 indexing, immutable file mappings and fallback opens, not their IPC protocols or
-RomFS metadata. Only extracted `romfs/` is exposed, with no original container reads.
+RomFS metadata. The extracted `romfs/` is used when there is an extraction; otherwise the
+source NCCH's level-3 image is read where it lies.
 Save data (4) and ExtSaveData (6, in `sdmc/Nintendo 3DS/<id0>/<id1>/extdata/`, and the
 shared 7, in `nand/data/<id0>/extdata/`, as the console lays them out) are on the
 title's folder too, and so is another title's save data (0x567890B2 and 0x567890B4, in
@@ -521,7 +525,7 @@ swapped with B by `gamepad_swap_ab`, with its left stick the circle pad and its 
 one the C-stick past `gamepad_deadzone`, all three the Switch's settings, and the
 scripted presses of `--script=ms:hex,...` (`ctr_script`), in the pad's bits (1 A,
 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down, 100 R, 200 L, 400 X,
-800 Y), each held for `press_len` ms. The touch entries follow a finger or the
+800 Y, 4000 ZL, 8000 ZR), each held for `press_len` ms. The touch entries follow a finger or the
 mouse's left button pressed on the bottom screen, as the Switch's `touch` says (`2`
 both, `1` fingers, `0` neither), one at a time: the first pressed holds the screen
 until it lets go. The accelerometer and gyroscope are the first gamepad whose motion
@@ -645,20 +649,29 @@ the window scales the larger image to its size. The Switch's `vsync` picks how t
 window shows its images, as for a Switch game: `1` each at the display's refresh
 (FIFO), `0` the newest at the next refresh (mailbox) or at once (immediate), and the
 run says at start which it got. Its `fullscreen=1` starts the window fullscreen (the
-top screen's, with Separate screens), but for a `--seconds` or `--max-blocks` run,
+top screen's, with Separate screens), but for a `--seconds`, `--frames` or `--max-blocks` run,
 and F11 or Alt+Enter switches the window it is pressed in, as on the Switch;
 Alt+Enter does not press Start. Esc twice within 3 seconds closes the game, a first
 press warning on the terminal. The Switch's `anisotropy` (2 to 16) filters a
 mipmapped texture the game filters linearly anisotropically, held to the device's most,
 and the run says at start the value in effect. Bounded PPM snapshots land in
-`<output>/frames` in every mode. Without a display the window path is
-unavailable and frames are only recorded; without a Vulkan device the presenter
-reports unavailability and no frame is fabricated.
+`<output>/frames` in every mode. `-H` (`--headless`) starts no SDL video, audio or
+gamepad subsystem and makes no window, `VkSurfaceKHR` or swapchain, whatever display
+the host has: frames still decode and are dumped, `audio.wav` still records, and
+`--script` still presses. A gamepad is not read in this mode. Without a display the
+window path is unavailable and frames are only recorded; without a Vulkan device the
+presenter reports unavailability and no frame is fabricated. `--frames N` ends the run
+after N decoded frames, and a frame limit above 0 needs a Vulkan device (`--frames 0` ends before any frame is
+decoded). `--seconds N` counts N
+host seconds, which are the console's seconds at the default pace, and `--shot PATH`
+writes the last frame of both screens as one PPM to exactly PATH, the top above the
+bottom as the window shows them.
 
 The separate windows and the two render resolutions are checked by `3ds_windows`: each
 screen takes its own setting's scale and no other's, both screens present, and the PPM
 dumps stay the framebuffer's own size whatever the scale. With Separate screens on, that
-test fails unless both windows present, and it skips where the host makes no window (CI).
+test skips unless the device presents to both windows, and it skips where the host makes no
+window (CI).
 A window minimized and restored gets its swapchain back, checked by `3ds_windows_minimized`
 (it skips where the host keeps the swapchain or does not minimize). On Windows a minimized
 window's surface is 0x0 and no swapchain can be made at that size, so the first frame after
@@ -667,7 +680,9 @@ A frame takes a window image only if one is free at once, as the Switch's and th
 presenters do: while the display holds them all (FIFO behind, a locked or remote session)
 the frame is not shown, the game runs on, and the run's report counts those frames.
 `3ds_windows_no_image` checks that no frame waits, that a held frame is still decoded and
-that frames show again once an image is free.
+that frames show again once an image is free. `3ds_windows_headless` starts the presenter
+with no window even where the host has a display, and checks that both screens still
+decode, their dumps are written, and `--shot`'s two-screen PPM is made.
 The RAM is one shared mapping (a memfd on Linux), so that every guest view of a page is the
 same memory, and some drivers will not import it (`VK_EXT_external_memory_host`): RADV
 imports a host pointer as an amdgpu user pointer of private anonymous memory only, and its
@@ -696,7 +711,8 @@ When none of the three ways is there, the 3DS device does not start, and its err
 three reasons (which call refused which region, the `VkResult`), then the device and driver.
 The CPU side, the AOT modules and the settings still run; the game ends at its first GX
 command that needs the GPU (a command list, fill, display transfer or texture copy), with
-that error as the run's last line. `3ds_vk_ram` checks the RAM on whatever device imports it or
+that error as the run's last line. A `--frames N` run with N above 0 ends at its start
+instead, saying that the frame limit needs a Vulkan presenter. `3ds_vk_ram` checks the RAM on whatever device imports it or
 holds it as its own memory (a device that keeps a copy skips it, its buffer not being the
 guest's): what the guest wrote reaches the GPU, a GPU fill shows in every guest view, a store
 through the flat space reaches the GPU, and the RAM outlives the device; `3ds_memory_adopt`
@@ -727,10 +743,12 @@ except for unknown commands and services, which answer success as a Switch game'
 do unless `--ctr_auto_stub_ipc=0` asks for the console's answers.
 
 By default nothing of the game is extracted. `scarletnx-3ds game` maps the game read-only and checks it as the
-extraction would (a CIA's content table and its every content's SHA-256, the NCCH and ExHeader hashes, each ExeFS file's
-hash, the RomFS superblock and its metadata). The game's ExeFS files and its RomFS (level 3, the image the game reads)
+extraction would where it reads it (a CIA's content table, the NCCH and ExHeader hashes, the RomFS superblock and its
+metadata). A launch that reads the game where it lies skips the SHA-256 of each content and of each ExeFS file; an
+extraction checks those too. The game's ExeFS files and its RomFS (level 3, the image the game reads)
 are then read where they lie in the mapping, and only the decompressed `.code` is copied into memory. The game's
-folder keeps its module, its copy of the runtime and its state alone: `sdmc/` and the frames and audio it writes. An extraction an earlier
+folder keeps its module, its copy of the runtime, its icon (`icon.rgba`) and its state alone: `sdmc/` and the frames
+and audio it writes. An extraction an earlier
 `--extract-container` left there is taken away, its compiled module and saves kept. The image's identity is the same
 either way, so a module compiled in one mode loads in the other. The manifest records which container the game came
 from (`container=`, and `overlay=1` when it is a cartridge's update), which the image loader ignores.
@@ -806,8 +824,8 @@ as a title that names the 124 MiB New 3DS mode runs on both. The run says so, an
 `.ini` keeps the choice. `--board-info` prints physical regions without allocating RAM.
 `--ipc-stubs L`, with `--ctr_auto_stub_ipc=0`, still answers the unknown commands of
 the services in L (`all`, or a comma list of `srv`, `fs`, `apt`, `ptm`, `hid`, `gsp`,
-`cfg`, `dsp`, `system`, `am`) with success instead of stopping. Given more than once,
-the lists add up. It only changes a
+`cfg`, `dsp`, `system`, `am`, `y2r`, `ldr`, `ir`, `irrst`, `mic`, `cam`, `csnd`) with
+success instead of stopping. Given more than once, the lists add up. It only changes a
 run, so it is refused with `--board-info`, `-x` and `-r`.
 `--icon --out DIR` writes the game's SMDH icon as RGBA into DIR (`icon.rgba`, what the
 launcher draws a dump's row by), with `-x` and `--data` as the launcher asks for it, and
@@ -817,7 +835,7 @@ status**. When the last thread ends with ExitThread the driver prints
 `Guest's last thread exited` instead. Exit codes:
 
 - 0: help/info, extract-only, compile-only (`-r`) or icon-only (`--icon`) success, a
-  guest that exited or a window that was closed.
+  guest that exited, a window that was closed, or a run that ended at `--seconds` or `--frames`.
 - 1: malformed data, IO or limit failure, ABI mismatch or guest fault.
 - 2: invalid CLI arguments or a missing/non-game file path.
 - 3: unsupported format, ISA or SVC, a failed compile, the text-size cap, a
@@ -890,9 +908,10 @@ word-multiple declared text length. Text-page padding beyond declared text has
 no static entry, even if its page is executable: it compiles at run time, as any
 code the static graph lacks does. The static graph is bounded by the text itself
 (each instruction slot is visited once in each instruction set). Objects together
-are capped at 1 GiB and the linked module at 1 GiB, and only the module is kept in
-`native/`. Tiny-image code uses O2, and larger-image chunks use O1, with 512
-entries per LLVM module, compiled by a worker per host core.
+are capped at 1 GiB and the linked module at 1 GiB, and only the module is kept,
+beside the game as `<title ID>_code.so`. The code uses the setting `opt` (`-O`, 2)
+and 512 blocks per LLVM module, compiled on the `aot_threads` threads (75% of the
+physical cores by default).
 
 ### Build and test
 
@@ -1089,7 +1108,8 @@ Remaining requirements beyond the initial native bootstrap pipeline:
    discovery/chunking for larger images. Its full-geometry pointer tables permit
    NULL slots; the ABI and CPU layouts are unchanged. Improve computed-target
    coverage beyond the current pointer heuristics and 128-word PC-relative ADD
-   window. Add validated resume/cache and scheduling. No interpreter/runtime JIT.
+   window. Add validated resume/cache and scheduling. Blocks that the static discovery
+   misses compile at run time through the ARM JIT.
 4. Keep all CTR code under `src/3ds/`, with only `common` dependencies. Extract
    reusable host FS/tree operations from NX into common rather than linking the
    NX kernel/services/Maxwell runtime into CTR. Keep 3DS archive IDs, permissions,
