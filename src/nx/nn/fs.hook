@@ -123,6 +123,9 @@ hook _ZN2nn2fs6detail18IsEnabledAccessLogEv() -> bool = nnfs_is_enabled_access_l
 hook _ZN2nn2fs6detail18IsEnabledAccessLogEj(u32 mask) -> bool = nnfs_is_enabled_access_log_mask
 hook _ZN2nn2fs16IsSdCardInsertedEv() -> bool = nnfs_is_sd_card_inserted a32 @version(< 1.0.0)
 hook _ZN2nn2fs11MountSdCardEPKc(const char* name) -> u32 = nnfs_mount_sd_card a32 @version(< 1.0.0)
+# the same mount under its debug name, which mods' loaders call (read in 0.12.16 and 3.5, where it calls MountSdCard,
+# and in 10.4, 12.3 and 20.5, where it is MountSdCard's steps with the access log, which stays off here)
+hook _ZN2nn2fs19MountSdCardForDebugEPKc(const char* name) -> u32 = nnfs_mount_sd_card_for_debug a32 @version(< 1.0.0)
 hook _ZN2nn2fs13MountHostRootEv() -> u32 = nnfs_mount_host_root a32 @version(< 1.0.0)
 hook _ZN2nn2fs13MountHostRootERKNS0_15MountHostOptionE(addr option) -> u32 = nnfs_mount_host_root_option
 # MountHost opens a folder of the host PC, through the same service command as the root: refused the same way. The
