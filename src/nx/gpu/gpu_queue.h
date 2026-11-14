@@ -20,6 +20,13 @@ void gq_i2m_block(const GpuI2m* t, u64 at, u64 size);
 void gq_read_wait(u64 gva, u64 size);
 /* every queued record done, for the front end's points that need the whole renderer side */
 void gq_drain(void);
+/* A call of the renderer's side: fn runs with a copy of the bytes the front end puts at the pointer that
+   gq_call_begin returns, in the call's place in the queue. The front end fills them, then calls gq_call_end */
+typedef void (*GqFn)(const void* arg, u64 bytes);
+void* gq_call_begin(GqFn fn, u64 bytes);
+void gq_call_end(void);
+/* a call with arg's bytes as they are */
+void gq_call(GqFn fn, const void* arg, u64 bytes);
 
 /* the work of each record, and the front end's thread, in gpu.c */
 int gpu_on_thread(void);
