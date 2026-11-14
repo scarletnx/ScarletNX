@@ -76,9 +76,10 @@ The game's folder is `recompiled/<name>/` of the data folder (`--data`, else the
 user's), named after the ROM's file, or `<name>/` of `--outdir`, or the folder
 `--output` names. It holds the
 module, the save (`<name>.sav`), a copy of the runtime named after the game
-(`<name>`, `<name>.exe` on Windows) and `<name>.ini`, whose `source=` names the
-ROM and `system=gba` the console the launcher plays it with, as a 3DS or Vita
-game's folder does; the ROM's folder stays as it is. The copy plays its game
+(`<name>`, `<name>.exe` on Windows), the DLLs beside that copy on Windows, which
+the copy loads, and `<name>.ini`, whose `source=` names the ROM and `system=gba`
+the console the launcher plays it with, as a 3DS or Vita game's folder does;
+the ROM's folder stays as it is. The copy plays its game
 alone, from the ROM its `.ini` names, and `scarletnx-agb --game=recompiled/<name>`
 plays it the same way; `-r` compiles the module again without playing. A build
 copies its runner beside every GBA game again (`cmake/deploy.cmake`), which it
