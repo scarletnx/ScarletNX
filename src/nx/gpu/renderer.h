@@ -256,6 +256,8 @@ void gpu_ready(void);
 void gpu_stream_run(int on);
 void gpu_samples_reset(u32 owner);
 void gpu_samples_enable(u32 owner, int on);
+/* the renderer's mem_seen, or mem_may_have_changed where it has none, as the stream goes on after a wait */
+void gpu_mem_seen(void);
 void gpu_predicate_drop(u32 pred);
 /* the renderer's side: 1 when owner's draws are off, 0 when on (with *pred the GPU's predicate, 0 for none), -1 when
    no render enable of the 3D engine decided it (maxwell/engines.c); and every decision dropped */

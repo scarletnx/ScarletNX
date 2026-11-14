@@ -95,6 +95,8 @@ static int blit_ref(const GpuBlit* b) {
 }
 static const Renderer stand_in = {.name = "stand-in", .rt_reload = reloaded, .blit_mem = blit_ref};
 const Renderer* g_renderer = &stand_in;
+/* gpu/renderer.c's, which fermi2d.c asks for the renderer its blit goes to */
+const Renderer* gpu_renderer_now(void) { return g_renderer; }
 int g_renderer_up = 1;
 void logf_(int lvl, const char* fmt, ...) {
     (void)lvl;

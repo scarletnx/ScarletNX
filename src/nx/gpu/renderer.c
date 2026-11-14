@@ -127,7 +127,14 @@ static void ds_queue(u32 kind, const DsState* ds, DrawOwner* o, const void* call
             bytes += g_ds_group_at[g + 1] - g_ds_group_at[g];
         }
     u8* p = (u8*)gq_call_begin(ds_run, bytes);
-    DsRecord r = {kind, at, groups, fresh, o ? o->pred : 0, o ? o->xfb_reload : 0, ds->owner, nindices};
+    DsRecord r = {.kind = kind,
+                  .slot = at,
+                  .groups = groups,
+                  .fresh = fresh,
+                  .pred = o ? o->pred : 0,
+                  .reload = o ? o->xfb_reload : 0,
+                  .owner = ds->owner,
+                  .indices = nindices};
     memcpy(r.gen, ds->gen, sizeof r.gen);
     memcpy(&r.call, call, call_bytes);
     memcpy(p, &r, sizeof r);
@@ -200,7 +207,7 @@ void gpu_draw_states_reset(void) {
 
 /* The renderer's calls without a result that the front end makes often: each a record in its place in the queue */
 enum { RC_BARRIER, RC_STREAM_INCR, RC_STREAM_END, RC_READY, RC_STREAM_RUN, RC_SAMPLES_RESET, RC_SAMPLES_ENABLE,
-       RC_PREDICATE_DROP };
+       RC_MEM_SEEN, RC_PREDICATE_DROP };
 typedef struct {
     u32 op; /* RC_ */
     u32 a, b;
@@ -217,6 +224,12 @@ static void call_run(const void* arg, u64 bytes) {
         case RC_STREAM_RUN: g_renderer->stream_run((int)c.a); break;
         case RC_SAMPLES_RESET: g_renderer->samples_reset(c.a); break;
         case RC_SAMPLES_ENABLE: g_renderer->samples_enable(c.a, (int)c.b); break;
+        case RC_MEM_SEEN:
+            if (g_renderer->mem_seen)
+                g_renderer->mem_seen();
+            else
+                g_renderer->mem_may_have_changed();
+            break;
         default: g_renderer->render_predicate_drop(c.a); break;
     }
 }
@@ -244,6 +257,9 @@ void gpu_samples_reset(u32 owner) {
 }
 void gpu_samples_enable(u32 owner, int on) {
     if (g_renderer->samples_enable) call_queue(RC_SAMPLES_ENABLE, owner, (u32)on);
+}
+void gpu_mem_seen(void) {
+    if (g_renderer->mem_seen || g_renderer->mem_may_have_changed) call_queue(RC_MEM_SEEN, 0, 0);
 }
 void gpu_predicate_drop(u32 pred) {
     if (g_renderer->render_predicate_drop) call_queue(RC_PREDICATE_DROP, pred, 0);

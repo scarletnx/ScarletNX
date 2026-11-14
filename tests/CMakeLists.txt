@@ -1347,7 +1347,7 @@ snx_decodetree(snx-test-nvn-nvrm-sync OUTPUT decode-sm86.inc DECODE "${PROJECT_S
 target_link_libraries(snx-test-nvn-nvrm-sync PRIVATE m)
 snx_hookgen(snx-test-nvn-nvrm-sync SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
 add_test(NAME nvn_nvrm_sync COMMAND snx-test-nvn-nvrm-sync)
-add_executable(snx-test-nvn-queue-lifetime nvn_queue_lifetime.c
+add_executable(snx-test-nvn-queue-lifetime nvn_queue_lifetime.c "${PROJECT_SOURCE_DIR}/tests/support/gpu_front_stub.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_replay.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hle.c"
     own_stub.c)
@@ -1355,6 +1355,18 @@ snx_test_target(snx-test-nvn-queue-lifetime 11)
 add_dependencies(snx-test-nvn-queue-lifetime snx_settings)
 target_include_directories(snx-test-nvn-queue-lifetime PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/settingsgen")
 add_test(NAME nvn_queue_lifetime COMMAND snx-test-nvn-queue-lifetime)
+# the replay with gpu_split's renderer thread: a fence and a present reach the renderer after the draws before them
+# (its platform stand-ins are pthreads)
+if(UNIX)
+    add_executable(snx-test-nvn-replay-split nvn_replay_split.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_replay.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hle.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/renderer.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gpu_queue.c" own_stub.c)
+    snx_test_target(snx-test-nvn-replay-split 23)
+    add_dependencies(snx-test-nvn-replay-split snx_settings)
+    target_include_directories(snx-test-nvn-replay-split PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/settingsgen")
+    add_test(NAME nvn_replay_split COMMAND snx-test-nvn-replay-split)
+    set_tests_properties(nvn_replay_split PROPERTIES TIMEOUT 30) # a wait in the queue that never ends would hang ctest
+endif()
 # the NVN functions of API 53 and 55 nvn took over last, by family: records and their replay into the draw
 # state (nvn_cmd.c, nvn_draw.c), the objects' getters and setters (nvn_object.c) and the queue and window (nvn_queue.c)
 add_executable(snx-test-nvn-names nvn_names.c "${PROJECT_SOURCE_DIR}/tests/support/gpu_front_stub.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmd.c"
@@ -3369,9 +3381,13 @@ if(UNIX)
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/dma.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c"
         support/dma_ref.c support/gpu_front_stub.c own_stub.c)
     snx_test_target(snx-test-gpu-park 23)
+    target_compile_definitions(snx-test-gpu-park PRIVATE SNX_TEST_GPU_QUEUE) # the real gq_call, not the stub's
     target_link_libraries(snx-test-gpu-park PRIVATE scarletnx-common) # gpu.c says why a thread did not start
         add_test(NAME gpu_park COMMAND snx-test-gpu-park)
     set_tests_properties(gpu_park PROPERTIES TIMEOUT 30) # a deadlock in the queue would otherwise hang ctest
+    # the same queue with gpu_split's renderer thread running its records
+    add_test(NAME gpu_park_split COMMAND snx-test-gpu-park split)
+    set_tests_properties(gpu_park_split PROPERTIES TIMEOUT 30)
 endif()
 
 # the shader programs a game ships, found in containers built by the test (gpu/shader/shipped.c)

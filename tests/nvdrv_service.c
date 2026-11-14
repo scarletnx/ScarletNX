@@ -187,6 +187,8 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
     test_gpu.ncall_chans = nchans;
     fn(arg); /* the GPU thread has nothing queued before it */
 }
+/* a present's call (nv_gpu_call_after), on the renderer's side: as gpu_call here */
+void gpu_call_renderer(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) { gpu_call(fn, arg, chans, nchans); }
 void gpu_channel_close(u32 channel) { test_gpu.closed_channel = channel; }
 void gpu_release_retire(u32 channel) { (void)channel; }
 void gpu_kick(void) { test_gpu.kicks++; }
