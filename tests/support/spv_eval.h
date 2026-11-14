@@ -46,6 +46,12 @@ typedef struct {
     int set_outputs, emitted_tasks;
     uint32_t* arrays[34];
     uint32_t array_words[34];
+    /* a geometry program: its input arrays' words (up to 6 vertices of a vec4) by location, 32 for Position; and each
+       vertex it emits (the first 8), its outputs by location, then 32 for Position and 33 for PrimitiveId, with the
+       counts of OpEmitVertex and OpEndPrimitive */
+    uint32_t gs_in[33][6 * 4];
+    uint32_t vertex[8][34][4];
+    uint32_t emitted, primitives;
 } SpvEvalEnv;
 /* Runs the module's first entry point: NULL when it returned, else why it stopped (a static string) */
 const char* spv_eval(const uint32_t* words, size_t count, SpvEvalEnv* env);

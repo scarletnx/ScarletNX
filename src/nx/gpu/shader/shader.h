@@ -86,7 +86,16 @@ static inline int shader_same_indexed_kind(const ShTex* tex, u64 int_mask, u64 s
    of them, the next from the lowest past that one's end, and so on (vk/compute.c). The program reads each window's
    base from the uniform buffer at SNX_VKB_MBASE, the 64-bit base at the window's buffer slot. One game's culling
    programs keep the lists they fill, their counts and their draws' records in such a table in cbuf 4: 20 pointers
-   into 12 mappings */
+   into 12 mappings.
+   A graphics program (not a fragment one, whose SNX_VKB_RS is the resolution scale) may load a pointer from one of its
+   storage buffers at an offset it computes (LDG.64 of an address made from the buffer's base): a pointer table in
+   memory (SH_GBUF_TABLE_SSBO, bit 29 of a table's key), whose words are the storage buffer's that the constant buffer
+   word of bits 0-20 holds (SH_GBUF_PARENT). The renderer reads that buffer from guest memory as it binds the draw and
+   makes the windows of its words as the dispatch's of a bank (vk/render.c). One game's vertex program resets its
+   terrain's indirect draw records, 96 points a frame, each through a pointer it loads from such a table by its vertex
+   index */
+#define SH_GBUF_TABLE_SSBO(d)              (SH_GBUF_TABLE(d) && ((d) >> 29 & 1u))
+#define SH_GBUF_TABLE_SSBO_KEY(parent, w) (1u << 30 | 1u << 29 | (u32)(w) << 21 | (u32)(parent))
 #define SH_GBUF_TABLE(d)           (((d) >> 30) == 1u)
 #define SH_GBUF_TABLE_KEY(bank, w) (1u << 30 | (u32)(w) << 21 | (u32)(bank) << 16)
 #define SH_GBUF_TABLE_WINDOW(d)    ((d) >> 21 & 15u)
@@ -153,6 +162,10 @@ typedef struct {
        program loads a pointer from and then reaches memory through: the renderer binds the memory those pointers
        point to as the table's own (vk/compute.c's table_windows) */
     u32 table_cells;
+    /* the bytes past each pointer of a storage buffer's pointer table (SH_GBUF_TABLE_SSBO) that the program reaches
+       through it, at most: a window binds no more past its last pointer. 0 where an access adds an offset it computes
+       (the memory mapped from the pointer on, as a bare address's) */
+    u32 table_reach;
     int unsupported;            /* instructions or forms translation refused */
     char first_unsupported[96]; /* the longest: an untracked handle with its writer's constant (93 bytes) */
     u32 cs_local[3];
@@ -178,7 +191,8 @@ typedef struct {
     u32 img_int_mask, img_sint_mask; /* key: formatted storage images with unsigned/signed integer components */
     /* FS key: textures of integer formats and their signed ones. rt_int_mask and rt_sint_mask are FS's integer
        render targets; for TES rt_int_mask holds the tessellation parameters (register 0xC8), for GS the input
-       primitive's vertex count */
+       primitive's vertex count, and rt_sint_mask the generics the stage before writes (an SM86 passthrough program
+       forwards no others) */
     u64 tex_int_mask, tex_sint_mask;
     u32 rt_int_mask, rt_sint_mask;
     u32 gp_skip_mask[8];           /* GS key: POST_VTG_SHADER_ATTRIB_SKIP_MASK, a bit per scalar attribute */
