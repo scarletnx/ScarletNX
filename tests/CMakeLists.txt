@@ -1895,7 +1895,7 @@ target_include_directories(snx-test-nvn-advanced-blend PRIVATE "${PROJECT_SOURCE
 target_link_libraries(snx-test-nvn-advanced-blend PRIVATE m)
 add_test(NAME nvn_advanced_blend COMMAND snx-test-nvn-advanced-blend)
 # nvn's copies between textures of two formats: the 2D engine's converting blit, as the game's driver copies
-add_executable(snx-test-nvn-copy-formats nvn_copy_formats.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_copy.c"
+add_executable(snx-test-nvn-copy-formats nvn_copy_formats.c "${PROJECT_SOURCE_DIR}/tests/support/gpu_front_stub.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_copy.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
 snx_test_target(snx-test-nvn-copy-formats gnu23)
 target_include_directories(snx-test-nvn-copy-formats PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -1903,7 +1903,7 @@ target_link_libraries(snx-test-nvn-copy-formats PRIVATE m)
 snx_hookgen(snx-test-nvn-copy-formats SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
 add_test(NAME nvn_copy_formats COMMAND snx-test-nvn-copy-formats)
 # a window's present transform against the game's driver: lower left is queued to vi flipped
-add_executable(snx-test-nvn-present-flip nvn_present_flip.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_queue.c"
+add_executable(snx-test-nvn-present-flip nvn_present_flip.c "${PROJECT_SOURCE_DIR}/tests/support/gpu_front_stub.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_queue.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
 snx_test_target(snx-test-nvn-present-flip gnu23)
 target_include_directories(snx-test-nvn-present-flip PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -4231,8 +4231,9 @@ add_test(NAME audio_clock COMMAND snx-test-audio-clock)
 
 # gpu/renderer.c's side of the front end with a stand-in renderer and no device: the copy of each draw state that the
 # renderer reads, and what the front end counts and holds back
-add_executable(snx-test-gpu-records gpu_records.c)
+add_executable(snx-test-gpu-records gpu_records.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gpu_queue.c")
 snx_test_target(snx-test-gpu-records gnu23)
+target_compile_options(snx-test-gpu-records PRIVATE -Wno-missing-field-initializers) # renderer.c's records, as -Wextra sees them
 target_include_directories(snx-test-gpu-records PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME gpu_records COMMAND snx-test-gpu-records)
 
