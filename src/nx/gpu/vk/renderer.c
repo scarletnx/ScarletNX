@@ -1357,6 +1357,7 @@ const Renderer vk_renderer = {
     .release_need = vk_release_need,
     .release_read = vk_release_read,
     .release_value = vk_release_value,
+    .release_value_at_least = vk_release_value_at_least,
     .render_predicate = vk_render_predicate,
     .render_predicate_drop = vk_render_predicate_drop,
     .release_retire = vk_release_retire,
