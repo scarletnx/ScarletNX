@@ -244,7 +244,7 @@ int main(void) {
     return 0;
 }
 
-/* the alloc family's handlers (alloc.c), which the table names and this test never calls */
+/* the alloc and sync families' handlers (alloc.c, sync.c), which the table names and this test never calls */
 int alloc_ready(void) { return 0; }
 u64 alloc_malloc(CPU* c, u64 size) { (void)c, (void)size; return 0; }
 u64 alloc_calloc(CPU* c, u64 n, u64 size) { (void)c, (void)n, (void)size; return 0; }
@@ -262,3 +262,18 @@ u64 alloc_new_aligned_nothrow(CPU* c, u64 size, u64 align, u64 nothrow) {
     return 0;
 }
 void alloc_delete(CPU* c, u64 p) { (void)c, (void)p; }
+void sync_mutex_lock(CPU* c, u64 m) { (void)c, (void)m; }
+int sync_mutex_try_lock(CPU* c, u64 m) { (void)c, (void)m; return 0; }
+void sync_mutex_unlock(CPU* c, u64 m) { (void)c, (void)m; }
+void sync_drop(CPU* c, u64 o) { (void)c, (void)o; }
+void sync_recursive_init(CPU* c, u64 m) { (void)c, (void)m; }
+void sync_recursive_lock(CPU* c, u64 m) { (void)c, (void)m; }
+int sync_recursive_try_lock(CPU* c, u64 m) { (void)c, (void)m; return 0; }
+void sync_recursive_unlock(CPU* c, u64 m) { (void)c, (void)m; }
+void sync_cond_notify_one(CPU* c, u64 cv) { (void)c, (void)cv; }
+void sync_cond_notify_all(CPU* c, u64 cv) { (void)c, (void)cv; }
+void sync_cond_wait(CPU* c, u64 cv, u64 lk) { (void)c, (void)cv, (void)lk; }
+void sync_cond_timed_wait(CPU* c, u64 cv, u64 lk, i64 ns) { (void)c, (void)cv, (void)lk, (void)ns; }
+i64 sync_system_now(CPU* c) { (void)c; return 0; }
+i64 sync_steady_now(CPU* c) { (void)c; return 0; }
+void sync_sleep_for(CPU* c, u64 d) { (void)c, (void)d; }

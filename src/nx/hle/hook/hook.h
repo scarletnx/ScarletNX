@@ -215,6 +215,10 @@ void hook_orig_stale(GuestFn f);
 /* where the hook of symbol (a symbol, or an address hook's key as hookgen writes it, BUILDID:OFFSET) was installed:
    the function's guest address, the first one for a symbol several modules export; 0 when it wasn't */
 u64 hook_site(const char* symbol);
+/* A handler that waits on the host (a mutex someone holds, a condition variable, a sleep): its thread leaves its core
+   between the two, and counts as stopped for a pause, as a waiting SVC (sync.c has them) */
+void hook_wait_begin(void);
+void hook_wait_end(void);
 /* alloc.c: the host allocator's arena in guest memory is made (made at the first call): 0 without one, and the alloc
    family is then off */
 int alloc_ready(void);
