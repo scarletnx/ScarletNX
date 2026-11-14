@@ -184,14 +184,16 @@ static unsigned char* word_at(const SnxRelocModule* m, SnxU64 target) {
 }
 
 /* refused: the name of the first symbol that a closed module's definition would take, of module refused_in, the
-   closed one refused_by */
+   closed one refused_by. gone: a module about to be unloaded, which defines nothing any more (count for none), the
+   words of the others that pointed into it and the PLT slots of those bound again */
 typedef struct {
     SnxRelocModule* modules;
     const Tables* tables;
     size_t count;
     SnxRelocCounts* counts;
     const char* refused;
-    size_t refused_in, refused_by;
+    size_t refused_in, refused_by, gone;
+    SnxU64 pointed, rebound;
 } Linker;
 
 /* The address of the module's symbol: 1 with it in *address, or 0 when nothing defines it, *weak saying whether it
@@ -213,6 +215,7 @@ static int resolve(Linker* l, size_t module, SnxU64 symbol, SnxU64* address, int
         return def != NULL;
     }
     for (i = 0; i < l->count; ++i) {
+        if (i == l->gone) continue;
         def = find(&l->tables[i], *name);
         if (!def || ELF64_ST_BIND(def->info) == STB_LOCAL) continue;
         if (l->modules[i].closed && i != module) {
@@ -312,6 +315,7 @@ static int link_from(SnxRelocModule* modules, size_t count, size_t first, SnxRel
     l.tables = tables;
     l.count = count;
     l.counts = counts;
+    l.gone = count;
     for (i = first; i < count; ++i) {
         modules[i].lazy = 0;
         modules[i].init = tables[i].init ? modules[i].base + tables[i].init : 0;
@@ -334,36 +338,42 @@ int snx_relocate_added(SnxRelocModule* modules, size_t count, SnxRelocCounts* co
     return link_from(modules, count, count ? count - 1 : 0, counts, error, error_size);
 }
 
-typedef struct {
-    const SnxRelocModule* modules;
-    size_t gone;
-    SnxU64* words;
-} Reverter;
-
-static void revert_one(void* user, size_t module, int kind, SnxU64 target, SnxU64 symbol, SnxU64 addend) {
-    Reverter* r = (Reverter*)user;
-    const SnxRelocModule *m = &r->modules[module], *gone = &r->modules[r->gone];
+/* a word of another module than the one about to be unloaded that points into it: 0, and a PLT slot bound to what its
+   name binds to among the modules left, which lazy binding would give it at its next call. A slot whose name none of
+   them defines takes the lazy value */
+static void unlink_one(void* user, size_t module, int kind, SnxU64 target, SnxU64 symbol, SnxU64 addend) {
+    Linker* l = (Linker*)user;
+    const SnxRelocModule *m = &l->modules[module], *gone = &l->modules[l->gone];
     unsigned char* p = word_at(m, target);
-    (void)symbol, (void)addend;
+    SnxU64 address = 0;
+    const char* name;
+    int weak;
     if ((kind != SYMBOLIC && kind != SLOT) || !p || snx_ld_le64(p) - gone->base >= gone->size) return;
-    snx_st_le64(p, kind == SLOT ? m->lazy : 0);
-    ++*r->words;
+    ++l->pointed;
+    if (kind == SLOT && resolve(l, module, symbol, &address, &weak, &name)) {
+        snx_st_le64(p, address + addend);
+        ++l->rebound;
+    } else
+        snx_st_le64(p, kind == SLOT ? m->lazy : 0);
 }
 
-int snx_relocate_removed(const SnxRelocModule* modules, size_t count, size_t gone, SnxU64* words, char* error,
-                         size_t error_size) {
-    Reverter r;
+int snx_relocate_removed(SnxRelocModule* modules, size_t count, size_t gone, SnxU64* words, SnxU64* rebound,
+                         char* error, size_t error_size) {
+    Tables* tables;
+    Linker l = {0};
     size_t i;
-    *words = 0;
-    r.modules = modules;
-    r.gone = gone;
-    r.words = words;
-    for (i = 0; i < count; ++i) {
-        Tables t;
-        if (i == gone) continue;
-        if (read_tables(&modules[i], &t, error, error_size)) return -1;
-        walk(&modules[i], &t, i, revert_one, &r);
-    }
+    *words = *rebound = 0;
+    tables = read_all(modules, count, error, error_size);
+    if (!tables) return -1;
+    l.modules = modules;
+    l.tables = tables;
+    l.count = count;
+    l.gone = gone;
+    for (i = 0; i < count; ++i)
+        if (i != gone) walk(&modules[i], &tables[i], i, unlink_one, &l);
+    free(tables);
+    *words = l.pointed;
+    *rebound = l.rebound;
     return 0;
 }
 
