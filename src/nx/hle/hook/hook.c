@@ -267,10 +267,10 @@ static void routes_say(void) {
             (unsigned)r->count, (unsigned long long)r->list, (unsigned long long)own, (unsigned)snx_hook_route_count());
 }
 
-/* the function at addr, of a module of SDK version sdk (0 for unknown), given entry k's adapter, or verify mode's
-   check. With every site taken the game stops: its function would run the SDK's own code beside the hooks of its
+/* the function at addr, of a module of SDK version sdk (0 for unknown) that ends at end, given entry k's adapter, or
+   verify mode's check. With every site taken the game stops: its function would run the SDK's own code beside the hooks of its
    family, which keep the family's state natively */
-static void hook_put(int k, u64 addr, u32 sdk, const char* name, const unsigned char verify[]) {
+static void hook_put(int k, u64 addr, u32 sdk, u64 end, const char* name, const unsigned char verify[]) {
     HostHook* h = &g_host.hook;
     GuestFn* slot;
     int i;
@@ -283,7 +283,8 @@ static void hook_put(int k, u64 addr, u32 sdk, const char* name, const unsigned 
     h->addr[h->count] = addr;
     h->orig[h->count] = nce_slot(*slot);
     h->fn[h->count] = verify[hook_family[k]] && hook_verify[k].pure ? verify_fn : hook_fn[k];
-    for (i = 0; i < 5; i++) h->head[h->count][i] = addr + 4 * i + 4 <= g_code_hi ? first_word(addr + 4 * i) : 0;
+    /* within its module: a function at the end of the last one has no mapped bytes after it */
+    for (i = 0; i < 5; i++) h->head[h->count][i] = addr + 4 * i + 4 <= end ? first_word(addr + 4 * i) : 0;
     h->invalid[h->count] = 0;
     h->sdk[h->count] = sdk;
     h->ext[h->count] = NULL;
@@ -316,7 +317,7 @@ static void hook_put_addresses(const unsigned char off[], const unsigned char ve
                 continue;
             }
             if (off[hook_family[k]] || site_of(addr) >= 0) continue;
-            hook_put(k, addr, 0, hook_symbol[k], verify);
+            hook_put(k, addr, 0, mi->base + mi->size, hook_symbol[k], verify);
             LOG("hook: %s at %llx (%s+%llx) runs %s\n", hook_symbol[k], (unsigned long long)addr, mi->name,
                 (unsigned long long)offset, hook_handler[k]);
         }
@@ -458,7 +459,7 @@ void hook_install(void) {
             said[k] = 1;
             continue;
         }
-        hook_put(k, addr, versions[HOOK_SDK], name, verify);
+        hook_put(k, addr, versions[HOOK_SDK], g_mod->mods[m].base + g_mod->mods[m].size, name, verify);
         if (strcmp(hook_symbol[k], name)) {
             LOG("hook: %s at %llx runs %s (%s)\n", name, (unsigned long long)addr, hook_handler[k], hook_symbol[k]);
             continue;
