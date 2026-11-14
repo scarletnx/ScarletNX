@@ -1984,6 +1984,7 @@ extern u64 g_vk_dset_new, g_vk_dset_reused; /* statistics: descriptor sets writt
 extern u64 g_vk_itable_uploads, g_vk_itable_reused, g_vk_itable_bytes; /* indexed uniform staging statistics */
 void vk_render_upload_cache_reset(void); /* renderer start: invalidate staging addresses from an earlier device */
 u32 vk_release_value(u32 id);
+u32 vk_release_value_at_least(u32 id);
 /* the event slots the syncpoint increments this thread performed under vk_lock reached, signaled (nvdrv.c's
    syncpt_events): the outermost vk_unlock's, after the lock goes */
 void vk_release_events(void);
