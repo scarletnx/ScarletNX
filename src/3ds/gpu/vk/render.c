@@ -40,6 +40,9 @@
 #define TRIANGLES_AT_ONCE (RING_PART / 4 / sizeof(SnxCtrVertex[3]))
 #define TEXTURES  512 /* textures kept decoded */
 #define TARGETS   32  /* render targets kept */
+/* A display transfer's destinations kept: SHOWN images of a destination's size at the render scale, and the bytes each
+   transfer wrote, with no byte cap: about 1.5 GB at scale 16 for 240x400 RGBA8 ones, and 6 MB more for those bytes */
+#define SHOWN             16
 #define SPANS     4096 /* the memory spans a submission reads or writes, re-levelled when it is done */
 #define PIPE_JOBS         64   /* the pipelines or shader objects the workers have in hand at once (async_pipelines) */
 #define WORKERS           32   /* pipeline_threads's most */
@@ -121,6 +124,21 @@ typedef struct {
     Image image;
     uint64_t used;
 } Texture;
+/* A display transfer's destination (snx_ctr_vk_target_transfer): width x height pixels in format (transfer.h's) at pa,
+   the image of the source target's region the transfer copied, at the target's render scale, with the rows in memory's
+   order, and the bytes the transfer wrote, which the presenter compares the framebuffer's memory with */
+typedef struct {
+    uint32_t pa, span; /* the destination, and its bytes in memory */
+    uint32_t width, height;
+    uint32_t scale;
+    bool flip;
+    uint8_t format;
+    bool valid;
+    Image image;
+    VkBuffer kept; /* the transfer's bytes, sized by span */
+    VkDeviceMemory kept_memory;
+    uint64_t used;
+} Shown;
 /* Where the GPU's work is on a copy of the RAM (vk.h), how a page's copy stands against the RAM: stale (the CPU wrote
    the RAM since, or nothing was copied yet), the same, or newer (the GPU wrote the copy since). The work is only ever on
    the copy: a stale page is copied in before the GPU reads or writes it, a newer one copied out before the CPU touches
@@ -279,6 +297,7 @@ static struct {
     uint8_t rendering;
     Texture textures[TEXTURES];
     unsigned texture_count;
+    Shown shown[SHOWN];
     PageState* pages; /* every RAM page of the device's regions, in their order */
     uint32_t page_count;
     Span* spans[SNX_CTR_VK_SLOTS]; /* what each slot's submission reads or writes */
@@ -812,13 +831,15 @@ static void dead_free(Dead* d) {
     if (d->buffer) vkDestroyBuffer(device(), d->buffer, NULL);
     if (d->memory) vkFreeMemory(device(), d->memory, NULL);
 }
-/* an image or buffer the recordings in flight, the open one included, may still use: destroyed when they are done */
+/* an image or buffer the recordings in flight, the open one included, may still use: destroyed when they are done.
+   The image or the buffer may be absent */
 static void bury(Image* image, VkBuffer* buffer, VkDeviceMemory* memory) {
-    Dead d = {*image, buffer ? *buffer : VK_NULL_HANDLE, memory ? *memory : VK_NULL_HANDLE, snx_ctr_vk_serial()};
-    *image = (Image){0};
+    Dead d = {image ? *image : (Image){0}, buffer ? *buffer : VK_NULL_HANDLE, memory ? *memory : VK_NULL_HANDLE,
+              snx_ctr_vk_serial()};
+    if (image) *image = (Image){0};
     if (buffer) *buffer = VK_NULL_HANDLE;
     if (memory) *memory = VK_NULL_HANDLE;
-    if (!d.image.image && !d.buffer) return;
+    if (!d.image.image && !d.buffer && !d.memory) return;
     if (g.dead_count == g.dead_capacity) {
         size_t n = g.dead_capacity ? g.dead_capacity * 2 : 32;
         Dead* grown = (Dead*)realloc(g.dead, n * sizeof *grown);
@@ -907,10 +928,23 @@ static void drop_textures(uint32_t pa, uint64_t size) {
         if (over) set_texture(t, false);
     }
 }
-/* what was kept of [pa, pa + size) is stale (memory changed under it): textures dropped, targets' images to be loaded
-   again. A dirty one was stored before */
-static void stale(uint32_t pa, uint64_t size) {
+/* what was kept of [pa, pa + size) dropped: its textures, and the display transfer copies that show it */
+static void drop_kept(uint32_t pa, uint64_t size) {
     drop_textures(pa, size);
+    for (unsigned i = 0; i < SHOWN; ++i)
+        if (g.shown[i].valid && overlaps(pa, size, g.shown[i].pa, g.shown[i].span)) g.shown[i].valid = false;
+}
+/* which writer made [pa, pa + size) stale: the engine's write drops the display transfer copies of the range, the
+   CPU's keeps their bytes for the presenter's compare */
+typedef enum { SNX_CTR_STALE_ENGINE, SNX_CTR_STALE_CPU } SnxCtrStaleWriter;
+/* what was kept of [pa, pa + size) is stale (memory changed under it): what drop_kept drops for a GPU engine's write,
+   or the textures alone for the CPU's (the display transfer copies' bytes stay, for the presenter's compare), and
+   targets' images to be loaded again. A dirty one was stored before */
+static void stale(uint32_t pa, uint64_t size, SnxCtrStaleWriter writer) {
+    if (writer == SNX_CTR_STALE_ENGINE)
+        drop_kept(pa, size);
+    else
+        drop_textures(pa, size);
     for (unsigned i = 0; i < g.target_count; ++i) {
         Target* t = &g.targets[i];
         bool color = overlaps(pa, size, t->key.color_pa, color_span(&t->key));
@@ -923,13 +957,16 @@ static void stale(uint32_t pa, uint64_t size) {
         }
     }
 }
-static bool target_images(Target* t, uint32_t width, uint32_t height) {
+/* a target's images; a scaled one's colour image is read by a display transfer's blit */
+static bool target_images(Target* t, uint32_t width, uint32_t height, bool scaled) {
     VkDeviceSize pixels = (VkDeviceSize)width * height;
     VkDeviceSize alignment = snx_ctr_vk()->properties.limits.minStorageBufferOffsetAlignment;
     if (alignment < 4) alignment = 4;
     t->stencil_at = (pixels * 4 + alignment - 1) / alignment * alignment;
     if (!image_new(VK_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT, &t->color))
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+                       (scaled ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0),
+                   &t->color))
         return false;
     if (!image_new(g.depth_format, width, height, 1, 1,
                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
@@ -971,7 +1008,7 @@ static Target* target_find(const TargetKey* k) {
         bury(&t->depth, &t->scratch, &t->scratch_memory);
     }
     *t = (Target){0};
-    if (!target_images(t, k->width * k->scale, k->height * k->scale)) return NULL;
+    if (!target_images(t, k->width * k->scale, k->height * k->scale, k->scale > 1)) return NULL;
     t->key = *k;
     if (t == &g.targets[g.target_count]) ++g.target_count;
     return t;
@@ -1004,25 +1041,135 @@ static SnxCtrPicaResult target_open(const TargetKey* k) {
     g.open = (unsigned)(t - g.targets) + 1;
     return SNX_CTR_PICA_OK;
 }
-/* A dirty colour target kept over the shown framebuffer: the presenter draws from its image, at the render scale,
-   instead of decoding the framebuffer the target has not stored yet. format is transfer.h's colour format, which the
-   target must have; a target at the console's scale is not used, because its image holds the draws' unquantised
-   colours. Null when no such target is kept. */
-bool snx_ctr_vk_target_image(uint32_t pa, unsigned width, unsigned height, unsigned format, VkImageView* view,
-                             unsigned* scale, unsigned* flip) {
+/* The slot for a display transfer's destination: the one that destination has (its image can be used again), one
+   whose image another destination left, or the least used of SHOWN */
+static Shown* shown_slot(uint32_t pa) {
+    Shown *any = NULL, *empty = NULL;
+    for (unsigned i = 0; i < SHOWN; ++i) {
+        Shown* s = &g.shown[i];
+        if (s->pa == pa) return s;
+        if (s->valid) continue;
+        if (s->image.image) {
+            if (!any) any = s;
+        } else if (!empty)
+            empty = s;
+    }
+    if (empty) return empty;
+    if (any) return any;
+    Shown* least = &g.shown[0];
+    for (unsigned i = 1; i < SHOWN; ++i)
+        if (g.shown[i].used < least->used) least = &g.shown[i];
+    return least;
+}
+/* An image at a render scale above the console's that holds the framebuffer width x height pixels at pa, pitch bytes
+   a row, which the presenter shows instead of decoding memory: a colour target kept there at the framebuffer's size,
+   or the copy a display transfer made into a destination that holds the framebuffer at that pitch. format is
+   transfer.h's colour format, the framebuffer's and the target's; a destination's is the transfer's output format,
+   which can differ from the target's. A target at the console's scale is not taken, because its image holds the draws'
+   unquantised colours. Marks what it finds as used. False when no such image is kept */
+bool snx_ctr_vk_target_image(uint32_t pa, unsigned width, unsigned height, unsigned format, unsigned pitch,
+                             SnxCtrVkScaled* scaled) {
     if (!g.made) return false;
-    for (unsigned i = 0; i < g.target_count; ++i) {
-        Target* t = &g.targets[i];
-        if (t->key.color_pa == pa && t->key.width == width && t->key.height == height &&
-            t->key.color_format == format && t->key.scale > 1 && (t->color_dirty || t->color_valid) && t->color.view) {
-            *view = t->color.view;
-            *scale = t->key.scale;
-            *flip = t->key.flip;
-            t->used = snx_ctr_vk_serial();
-            return true;
+    uint32_t bytes = snx_ctr_pixel_bytes(format);
+    if (pitch == width * bytes)
+        for (unsigned i = 0; i < g.target_count; ++i) {
+            Target* t = &g.targets[i];
+            if (t->key.color_pa == pa && t->key.width == width && t->key.height == height &&
+                t->key.color_format == format && t->key.scale > 1 && (t->color_dirty || t->color_valid) &&
+                t->color.view) {
+                *scaled = (SnxCtrVkScaled){.view = t->color.view, .scale = t->key.scale, .flip = t->key.flip};
+                t->used = snx_ctr_vk_serial();
+                return true;
+            }
         }
+    for (unsigned i = 0; i < SHOWN; ++i) {
+        Shown* s = &g.shown[i];
+        if (!s->valid || !s->kept || s->format != format || pitch != s->width * bytes || pa < s->pa) continue;
+        uint32_t at = pa - s->pa;
+        uint32_t column = at % pitch / bytes, row = at / pitch; /* the framebuffer's origin in the destination */
+        /* the address is a whole pixel of the destination's row, and the framebuffer fits its columns and rows */
+        if (at % pitch % bytes || column + width > s->width || row + height > s->height) continue;
+        s->used = snx_ctr_vk_serial();
+        *scaled = (SnxCtrVkScaled){.view = s->image.view,
+                                   .scale = s->scale,
+                                   .flip = s->flip,
+                                   .x = column,
+                                   .y = row,
+                                   .kept = s->kept,
+                                   .kept_at = at};
+        return true;
     }
     return false;
+}
+/* A display transfer's destination kept at the source target's render scale: the target's region the transfer read,
+   blitted into the destination's image, which the presenter shows for a framebuffer inside the destination
+   (snx_ctr_vk_target_image), and the bytes the dispatch wrote to the destination, which the presenter compares the
+   framebuffer's memory with. Recorded after the dispatch, so the copy reads what it wrote. A target at the console's
+   scale keeps nothing: its image holds the draws' unquantised colours */
+void snx_ctr_vk_target_transfer(uint32_t input, uint32_t output, unsigned in_width, unsigned width, unsigned height,
+                                unsigned in_format, unsigned out_format, unsigned hs, unsigned vs, bool flip) {
+    if (!g.made) return;
+    uint32_t columns = width << hs, rows = height << vs;
+    const Target* t = NULL;
+    uint32_t first = 0;
+    for (unsigned i = 0; i < g.target_count && !t; ++i) {
+        const Target* u = &g.targets[i];
+        if (u->key.scale <= 1 || input < u->key.color_pa || u->key.width != in_width ||
+            u->key.color_format != in_format || !(u->color_dirty || u->color_valid) || !u->color.image)
+            continue;
+        /* the input may start whole rows of 8x8 tiles into the target: games draw both screens into one target and
+           copy each screen's rows */
+        uint32_t strip = u->key.width * 8 * color_bytes(u->key.color_format), at = input - u->key.color_pa;
+        if (at % strip || columns > u->key.width || at / strip * 8 + rows > u->key.height) continue;
+        t = u;
+        first = at / strip * 8;
+    }
+    if (!t) return;
+    uint32_t scale = t->key.scale, image_width = width * scale, image_height = height * scale;
+    uint32_t span = width * height * snx_ctr_pixel_bytes(out_format);
+    Shown* s = shown_slot(output);
+    VkCommandBuffer cb = snx_ctr_vk_commands();
+    end_rendering(); /* neither a new image's barrier nor a blit is recorded inside a target's pass */
+    s->valid = false;
+    if (s->image.image && (s->image.width != image_width || s->image.height != image_height))
+        bury(&s->image, &s->kept, &s->kept_memory);
+    if (!s->image.image && !image_new(VK_FORMAT_R8G8B8A8_UNORM, image_width, image_height, 1, 1,
+                                      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, &s->image))
+        return;
+    if (!s->kept || s->span != span) { /* one buffer per destination, sized by its bytes in memory */
+        bury(NULL, &s->kept, &s->kept_memory);
+        if (!buffer_new(span, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &s->kept, &s->kept_memory))
+            return;
+    }
+    /* memory's row m is the target image's row m, or its row height - 1 - m when the target is not flipped */
+    uint32_t top = (t->key.flip ? first : t->key.height - (first + rows)) * scale;
+    bool reversed = (t->key.flip == 0) != flip;
+    VkImageBlit blit = {
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcOffsets = {{0, (int32_t)top, 0}, {(int32_t)(columns * scale), (int32_t)(top + rows * scale), 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffsets = {{0, reversed ? (int32_t)image_height : 0, 0},
+                       {(int32_t)image_width, reversed ? 0 : (int32_t)image_height, 1}}};
+    snx_ctr_vk_barrier(cb);
+    vkCmdBlitImage(cb, t->color.image, VK_IMAGE_LAYOUT_GENERAL, s->image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &blit,
+                   hs || vs ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+    snx_ctr_vk_barrier(cb);
+    SnxCtrVkWindow w;
+    uint32_t inside;
+    if (!snx_ctr_vk_window(output, span, &w, &inside)) return;
+    VkBufferCopy copy = {w.offset + inside, 0, span}; /* the dispatch's bytes, before the memory changes again */
+    vkCmdCopyBuffer(cb, w.buffer, s->kept, 1, &copy);
+    snx_ctr_vk_barrier(cb);
+    s->pa = output;
+    s->span = span;
+    s->width = width;
+    s->height = height;
+    s->scale = scale;
+    s->flip = true; /* the copy's rows are in memory's order */
+    s->format = (uint8_t)out_format;
+    s->used = snx_ctr_vk_serial();
+    s->valid = true;
 }
 /* The run of pages around pa (256 at most on each side, in its region) whose copy is newer than the RAM copied back to
    it, and waited for: the same from then on. One CPU access to what the GPU wrote takes what is around it too, a frame
@@ -1059,7 +1206,7 @@ static void copy_out(uint32_t pa) {
 void snx_ctr_vk_sync(uint32_t pa, uint32_t size, bool write) {
     if (!size || !snx_ctr_vk()) return;
     if (g.made && !store_over(pa, size)) fprintf(stderr, "3ds gpu: a render target could not be stored\n");
-    if (write) stale(pa, size);
+    if (write) stale(pa, size, SNX_CTR_STALE_ENGINE); /* a GPU engine writes it: the copies no longer match */
     gpu_uses(pa, size, write);
 }
 void snx_ctr_vk_track(void* context, uint32_t pa, SnxCtrTrackLevel level) {
@@ -1079,7 +1226,7 @@ void snx_ctr_vk_track(void* context, uint32_t pa, SnxCtrTrackLevel level) {
         if (page && page->read) (void)snx_ctr_vk_wait(page->read, UINT64_MAX);
         if (page && page->copy == COPY_NEWER) /* the GPU wrote it and its level is not raised yet: its bytes land */
             copy_out(pa);
-        stale(pa, 4096);
+        stale(pa, 4096, SNX_CTR_STALE_CPU); /* the CPU writes it: the copies stay, for the compare */
         if (page && page->copy == COPY_SAME) page->copy = COPY_STALE;
     }
     levels(pa, 4096);
@@ -2378,15 +2525,15 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
         vkCmdDrawIndexed(cb, count, 1, 0, 0, 0);
     } else
         vkCmdDraw(cb, count, 1, source == ARRAYS ? r[VERTEX_OFFSET] : 0, 0);
-    /* drawn into: newer than memory, which is the GPU's until the target is stored, and the textures made from that
-       memory stale */
+    /* drawn into: newer than memory, which is the GPU's until the target is stored, and what was kept of that memory
+       (textures, display transfer copies) stale */
     t->used = snx_ctr_vk_serial();
     if ((k.color_mask || k.shadow) && !t->color_dirty) {
-        drop_textures(t->key.color_pa, color_span(&t->key));
+        drop_kept(t->key.color_pa, color_span(&t->key));
         set_color(t, t->color_valid, true);
     }
     if (depth && k.depth_write && ((om >> 12 & 1) || k.stencil_on) && !t->depth_dirty) {
-        drop_textures(t->key.depth_pa, depth_span(&t->key));
+        drop_kept(t->key.depth_pa, depth_span(&t->key));
         set_depth(t, t->depth_valid, true);
     }
     return SNX_CTR_PICA_OK;
@@ -2669,6 +2816,11 @@ void snx_ctr_vk_render_free(void) {
     free(g.pages);
     for (unsigned i = 0; i < g.texture_count; ++i) image_free(&g.textures[i].image);
     for (unsigned i = 0; i < g.target_count; ++i) target_free(&g.targets[i]);
+    for (unsigned i = 0; i < SHOWN; ++i) {
+        image_free(&g.shown[i].image);
+        if (g.shown[i].kept) vkDestroyBuffer(d, g.shown[i].kept, NULL);
+        if (g.shown[i].kept_memory) vkFreeMemory(d, g.shown[i].kept_memory, NULL);
+    }
     for (size_t i = 0; i < g.pipe_count; ++i) vkDestroyPipeline(d, g.pipes[i].pipeline, NULL);
     for (size_t i = 0; i < g.vs_count; ++i) {
         if (g.vs[i].module) vkDestroyShaderModule(d, g.vs[i].module, NULL);

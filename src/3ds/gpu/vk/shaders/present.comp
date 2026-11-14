@@ -3,34 +3,67 @@
 // A shown framebuffer, read where the guest has it, decoded and turned to the console's landscape screen: the
 // framebuffer is 240-pixel portrait rows, its row x the screen's column x and its pixel width - 1 - y the screen's
 // row y. The frame goes to the window's image, and, when asked, its RGBA pixels in the framebuffer's own order to a
-// buffer the host reads (frame dumps, the tests' hashes). A render target the GPU has not stored holds the frame at
-// its render scale instead: source is that image, and the host's readback stays at the framebuffer's own size.
+// buffer the host reads (frame dumps, the tests' hashes). A render target the GPU has not stored, or a display
+// transfer's copy of one, holds the frame at its render scale instead: source is that image, the frame's first pixel
+// at (x, y) of it, and the host's readback stays at the framebuffer's own size. A copy also holds the bytes the
+// transfer wrote (kept): where the framebuffer's memory still is those bytes its pixel is the copy's, and where the
+// guest changed them it is the memory's own.
 #version 450
 #extension GL_EXT_shader_8bit_storage : require
 #extension GL_GOOGLE_include_directive : require
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(std430, set = 0, binding = 0) readonly buffer In { uint8_t SRC[]; };
 layout(std430, set = 0, binding = 1) writeonly buffer Out { uint8_t DST[]; };
-layout(set = 0, binding = 2, rgba8) uniform writeonly image2D frame;
-layout(set = 0, binding = 3, rgba8) uniform readonly image2D source;
+layout(std430, set = 0, binding = 2) readonly buffer Kept { uint8_t KEPT[]; };
+layout(set = 0, binding = 3, rgba8) uniform writeonly image2D frame;
+layout(set = 0, binding = 4, rgba8) uniform readonly image2D source;
 layout(push_constant) uniform Present {
     uint offset, format, pitch, width, height, readback; // width: the framebuffer's row (240), height its rows
-    uint from_target, flip, scale;
+    uint from_target, flip, scale, x, y, compare, kept_at; // x, y: the frame's first pixel in source, in console pixels
 };
 #include "pixel.glsl"
 void main() {
     uint column = gl_GlobalInvocationID.x, row = gl_GlobalInvocationID.y; // the framebuffer's pixel, row
     uint s = max(scale, 1u);
     if (from_target != 0u) {
-        uint image_width = width * s, image_height = height * s;
-        if (column >= image_width || row >= image_height) return;
-        uvec4 c = uvec4(round(imageLoad(source, ivec2(int(column), int(row))) * 255.0));
-        uint x = flip != 0u ? row : image_height - 1u - row, y = image_width - 1u - column;
-        imageStore(frame, ivec2(int(x), int(y)), vec4(c) / 255.0);
-        if (readback != 0u && column % s == 0u && row % s == 0u) {
-            uint at = ((row / s) * width + column / s) * 4u;
-            DST[at] = uint8_t(c.r), DST[at + 1u] = uint8_t(c.g), DST[at + 2u] = uint8_t(c.b),
-            DST[at + 3u] = uint8_t(c.a);
+        if (compare != 0u) {
+            // one invocation per console pixel: its bytes compared once, then the block it shows
+            if (column >= width || row >= height) return;
+            uint mem_row = flip != 0u ? row : height - 1u - row;
+            uint mem_at = offset + mem_row * pitch + column * pixel_bytes(format);
+            uint kept_row = kept_at + mem_row * pitch + column * pixel_bytes(format);
+            bool same = true;
+            for (uint i = 0u; i < pixel_bytes(format); ++i)
+                same = same && uint(SRC[mem_at + i]) == uint(KEPT[kept_row + i]);
+            uint at_x = column * s + x * s, at_y = row * s + y * s;
+            uvec4 c = same ? uvec4(round(imageLoad(source, ivec2(int(at_x), int(at_y))) * 255.0))
+                           : decode(format, mem_at);
+            if (readback != 0u) {
+                uint at = (mem_row * width + column) * 4u;
+                DST[at] = uint8_t(c.r), DST[at + 1u] = uint8_t(c.g), DST[at + 2u] = uint8_t(c.b),
+                DST[at + 3u] = uint8_t(c.a);
+            }
+            for (uint row_in = 0u; row_in < s; ++row_in) {
+                uint sy = row * s + row_in, wx = flip != 0u ? sy : height * s - 1u - sy;
+                for (uint column_in = 0u; column_in < s; ++column_in) {
+                    uint sx = column * s + column_in, wy = width * s - 1u - sx;
+                    uvec4 c_in = same
+                                     ? uvec4(round(imageLoad(source, ivec2(int(sx + x * s), int(sy + y * s))) * 255.0))
+                                     : c;
+                    imageStore(frame, ivec2(int(wx), int(wy)), vec4(c_in) / 255.0);
+                }
+            }
+        } else {
+            uint image_width = width * s, image_height = height * s;
+            if (column >= image_width || row >= image_height) return;
+            uvec4 c = uvec4(round(imageLoad(source, ivec2(int(column + x * s), int(row + y * s))) * 255.0));
+            uint wx = flip != 0u ? row : image_height - 1u - row, wy = image_width - 1u - column;
+            imageStore(frame, ivec2(int(wx), int(wy)), vec4(c) / 255.0);
+            if (readback != 0u && column % s == 0u && row % s == 0u) {
+                uint at = ((row / s) * width + column / s) * 4u;
+                DST[at] = uint8_t(c.r), DST[at + 1u] = uint8_t(c.g), DST[at + 2u] = uint8_t(c.b),
+                DST[at + 3u] = uint8_t(c.a);
+            }
         }
     } else {
         if (column >= width || row >= height) return;
