@@ -1706,9 +1706,10 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
            has no guest memory in its staging either, so a reader of it composes too */
         (match->org || !match->no_input) && (!writable || match->org || g_bind_log) &&
         (!writable || match->frame == vk_submit_number() || out_take_into_submit(match))) {
-        /* Maxwell bindings retain conservative read/write ordering. NVN permits overlapping draws and supplies
-           storage dependencies through explicit barriers; a writable view alone does not create a dependency.
-           Read-only consumers and new submissions retain their automatic visibility checks. */
+        /* Draws may overlap, and the game supplies their storage dependencies through explicit barriers (render.c
+           stage_set_): a writable view alone does not create a dependency, unless the setting asks for the
+           conservative order (ordered). Read-only consumers and new submissions retain their automatic visibility
+           checks. */
         u64 work = g_vk_drawn + g_vk_dispatches;
         int new_write = match->written > g_buffer.order.visible;
         /* A writable binding below stamps the next generation before its draw is recorded. Later bindings of
