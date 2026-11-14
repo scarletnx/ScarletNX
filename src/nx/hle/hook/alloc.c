@@ -19,6 +19,7 @@
 #include "hle/hook/hooks.hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
+#include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
 #include <stdbool.h>
 #include <string.h>
@@ -261,3 +262,84 @@ u64 alloc_new_aligned_nothrow(CPU* c, u64 size, u64 align, u64 nothrow) {
 }
 /* every operator delete: what the sized and aligned ones say more, the arena knows already */
 void alloc_delete(CPU* c, u64 p) { give(c, p); }
+
+/* ============================================================ std::vector's storage */
+/* std::__vector_base<T, std::allocator<T>>::~__vector_base() of a T with nothing to destroy, which every such T
+   compiles to: begin = this->__begin_; if (begin) { this->__end_ = begin; operator delete(begin); }. A pointer the
+   arena didn't make goes to the function's own code, as the registers left it */
+void alloc_vector_free(CPU* c, u64 self) {
+    u64 begin = snx_ld_le64(hook_host(c, self));
+    void* q = own(begin);
+    if (!begin) return;
+    if (!q) {
+        hook_run_original(c, c->pc);
+        return;
+    }
+    snx_st_le64(hook_host(c, self + 8), begin);
+    g_alloc.dallocx(q, g_alloc.flags);
+}
+
+/* whether a module's image holds the size bytes at guest address a */
+static int in_module(u64 a, u64 size) {
+    for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
+        if (a >= g_mod->mods[i].base && a - g_mod->mods[i].base + size <= g_mod->mods[i].size) return 1;
+    return 0;
+}
+/* whether a call to t calls operator delete: t is its entry, or a PLT stub (adrp x16; ldr x17, [x16, #off];
+   add x16, x16, #off; br x17) whose GOT entry holds it */
+static int calls_delete(u64 t) {
+    static const char* const names[] = {"_ZdlPv", "_ZdlPvm"};
+    u64 got;
+    u32 w[4];
+    for (int i = 0; i < 2; i++) {
+        u64 fn = kernel_find_symbol_exact(names[i]);
+        if (fn && fn == t) return 1;
+    }
+    if (!in_module(t, 16)) return 0;
+    for (int i = 0; i < 4; i++) w[i] = snx_ld_le32(GP(t + 4 * (u64)i));
+    if ((w[0] & 0x9F00001Fu) != 0x90000010u || (w[1] & 0xFFC003FFu) != 0xF9400211u || w[3] != 0xD61F0220u) return 0;
+    got = (t & ~0xFFFull) + ((u64)(i64)((i32)(((w[0] >> 5 & 0x7FFFF) << 2 | (w[0] >> 29 & 3)) << 11) >> 11) << 12) +
+          ((w[1] >> 10 & 0xFFF) << 3);
+    if (!in_module(got, 8)) return 0;
+    u64 to = snx_ld_le64(GP(got));
+    for (int i = 0; i < 2; i++)
+        if (to && to == kernel_find_symbol_exact(names[i])) return 1;
+    return 0;
+}
+/* the check of alloc_vector_free's pattern: the function at addr is the destructor of a T with nothing to destroy,
+   which has no loop (no branch back), and calls nothing but operator delete, once (a call or a tail call). One that
+   destroys its elements loops over them, and is left to its own code */
+int alloc_vector_shape(u64 addr) {
+    u64 a, furthest = addr;
+    int deletes = 0;
+    if (!in_module(addr, 4)) return 0;
+    for (a = addr; a < addr + 64 * 4 && in_module(a, 4); a += 4) {
+        u32 w = snx_ld_le32(GP(a));
+        u64 t;
+        int ends = 0;
+        if ((w & 0x7C000000u) == 0x14000000u) { /* b, bl */
+            t = a + (u64)(i64)((i32)(w << 6) >> 4);
+            if (calls_delete(t))
+                deletes++;
+            else if ((w >> 31) || t <= a)
+                return 0; /* a call of something else, or a loop */
+            else if (t > furthest)
+                furthest = t;
+            ends = !(w >> 31);
+        } else if ((w & 0xFF000010u) == 0x54000000u || (w & 0x7E000000u) == 0x34000000u) { /* b.cond, cbz, cbnz */
+            t = a + (u64)(i64)((i32)(w << 8) >> 13 << 2);
+            if (t <= a) return 0;
+            if (t > furthest) furthest = t;
+        } else if ((w & 0x7E000000u) == 0x36000000u) { /* tbz, tbnz */
+            t = a + (u64)(i64)((i32)(w << 13) >> 18 << 2);
+            if (t <= a) return 0;
+            if (t > furthest) furthest = t;
+        } else if ((w & 0xFFFFFC1Fu) == 0xD65F0000u) { /* ret */
+            ends = 1;
+        } else if ((w & 0xFE000000u) == 0xD6000000u || (w & 0xFF000000u) == 0xD4000000u) {
+            return 0; /* br, blr, an exception */
+        }
+        if (ends && a >= furthest) return deletes == 1;
+    }
+    return 0;
+}
