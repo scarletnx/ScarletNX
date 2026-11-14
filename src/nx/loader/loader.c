@@ -1709,6 +1709,7 @@ int snx_dump_loaded(const SnxProgram* program, const char* outdir, char* error, 
             fprintf(f, "symbol %llx %llx %llx %s\n", (unsigned long long)m->symbols[j].value,
                     (unsigned long long)m->symbols[j].size, (unsigned long long)m->symbols[j].type,
                     m->symbols[j].name);
+        for (j = 0; j < m->import_count; ++j) fprintf(f, "import %s\n", m->imports[j]);
         for (; k < nmatch && match[k].addr < m->base + m->size; ++k)
             fprintf(f, "match %llx %u %s\n", (unsigned long long)(match[k].addr - m->base), (unsigned)match[k].words,
                     program->modules[st.sdk].symbols[match[k].symbol].name);
