@@ -114,6 +114,9 @@ static CPU cpu32;
 static u8 mem32[0x100];
 CPU* hook_a32_cpu(SnxArmCPU* arm) { return (void)arm, &cpu32; }
 void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+/* hook.c takes its invalidation lock only when a hooked function's code changed */
+void pm_lock(PMutex* m) { (void)m; }
+void pm_unlock(PMutex* m) { (void)m; }
 void fatal(const char* fmt, ...) {
     fprintf(stderr, "fatal: %s\n", fmt);
     exit(1);

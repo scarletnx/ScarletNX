@@ -106,6 +106,9 @@ int snx_hook_key_at(const char* name, const unsigned char build_id[32], SnxU64* 
     return (void)name, (void)build_id, (void)offset, 0;
 }
 void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+/* hook.c takes its invalidation lock only when a hooked function's code changed */
+void pm_lock(PMutex* m) { (void)m; }
+void pm_unlock(PMutex* m) { (void)m; }
 void fatal(const char* fmt, ...) {
     fprintf(stderr, "fatal: %s\n", fmt);
     exit(1);

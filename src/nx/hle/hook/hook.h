@@ -162,6 +162,8 @@ typedef struct {
     GuestFn orig[HOOK_SITES]; /* its recompiled code, which its slot held */
     u8 stale[HOOK_SITES];     /* atomic: the game changed the function's code (a mod's patch), so orig is stale */
     GuestFn fn[HOOK_SITES];   /* what its slot holds now: the hook's adapter, or verify mode's check */
+    u32 word[HOOK_SITES];     /* the function's first 4 bytes at hook_install, which a mod's hook writes over */
+    u8 invalid[HOOK_SITES];   /* atomic: the game changed them, so the native hook is off (hook_restore) */
     /* verify mode: which scratch slots are taken (bit i, atomic), and each site's calls that agreed, differed and
        were skipped (atomic) */
     u32 verify_taken;
@@ -187,11 +189,18 @@ void hook_install(void);
 int hook_routed(const char* name);
 /* whether the settings turn the hooks of family off: hooks=0, or hooks_off names it */
 int hook_family_off(const char* family);
-/* puts the hooks in [addr, addr + size) back in their slots after the JIT dropped what was compiled there
-   (jit_code_invalidate), where the function is still executable code */
+/* After the JIT dropped what was compiled in [addr, addr + size) (jit_code_invalidate): a hooked function whose first
+   4 bytes the game changed there (a mod's hook over its start; a change further in is not looked at) is the game's
+   from then on. Its native hook is invalidated: its adapter's own host code is rewritten into a jump to
+   hook_invalidated (jump.h), so that every call still reaching it (an NRO's import, the JIT's direct call) runs the
+   game's code, and a warning names it; the game stops when the system refuses to make that code writable. Every
+   other hook in the range, where its function is still executable code, goes back in its slot */
 void hook_restore(u64 addr, u64 size);
+/* the sad path of an invalidated native hook, where its adapter jumps with the arguments its call left: runs the
+   game's code now at entry, which is what a call of the function runs from then on */
+void hook_invalidated(CPU* RESTRICT c, u64 entry);
 /* what the dispatch slot of addr holds for a hooked function, its handler's adapter or verify mode's check, for as
-   long as the game runs; NULL when addr isn't hooked */
+   long as the game runs; NULL when addr isn't hooked, or its native hook was invalidated */
 GuestFn hook_function(u64 addr);
 /* the recompiled code of the function at addr when it is hooked, for a handler that hands a case back to it with the
    CPU as the function's call left it; NULL when addr isn't hooked. Once the game changed the function's code, the

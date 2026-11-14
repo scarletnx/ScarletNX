@@ -4,6 +4,7 @@
    version of the module that exports each, each match's dispatch slot given the adapter of the entry for that
    version */
 #include "nx/hle/hook/hook.h"
+#include "nx/hle/hook/jump.h"
 #include "nx/runtime/nce/nce.h"
 #include "common/utilities/bits.h"
 #include "nx/hle/hle.h"
@@ -16,6 +17,7 @@
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
+#include "common/platform/thread.h"
 #include "hle/hook/hooks.hook.h"
 #include "hle/hook/hooks.hook.inc"
 
@@ -110,6 +112,13 @@ static int site_of(u64 addr) {
     return -1;
 }
 
+/* the first 4 bytes of the game's code at a: one A64 or A32 instruction, or two Thumb ones */
+static u32 first_word(u64 a) {
+    u32 w;
+    memcpy(&w, GP(a), 4);
+    return w;
+}
+
 /* a scratch slot of verify mode's, -1 when every one is taken */
 static int verify_claim(void) {
     u32* taken = &g_host.hook.verify_taken;
@@ -137,6 +146,10 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
     u16 k;
     if (i < 0) { /* not a site: cannot happen, as only hook_install puts this in a slot */
         fatal("hook verify: no hook at %llx", (unsigned long long)entry);
+    }
+    if (__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE)) { /* the handler is the game's code now */
+        hook_invalidated(c, entry);
+        return;
     }
     k = h->hook[i];
     memcpy(args, c->x, sizeof args);
@@ -226,6 +239,8 @@ static void hook_put(int k, u64 addr, const char* name, const unsigned char veri
     h->addr[h->count] = addr;
     h->orig[h->count] = nce_slot(*slot);
     h->fn[h->count] = verify[hook_family[k]] && hook_verify[k].pure ? verify_fn : hook_fn[k];
+    h->word[h->count] = first_word(addr);
+    h->invalid[h->count] = 0;
     __atomic_store_n(slot, h->fn[h->count], __ATOMIC_RELEASE);
     nce_slot_taken(addr, hook_family_name[hook_family[k]]);
     jit_slot_taken(addr, h->fn[h->count]);
@@ -393,22 +408,81 @@ void hook_install(void) {
     LOG("hooks: %u of the game's functions run the runtime's handlers\n", h->count);
 }
 
+/* turns off the native hook of site i, whose function's first 4 bytes the game changed, and with it every site and
+   entry whose adapter is the same code. Under g_invalidate_lock */
+static PMutex g_invalidate_lock = PMUTEX_INIT;
+static void hook_invalidate(u32 i) {
+    HostHook* h = &g_host.hook;
+    GuestFn adapter = hook_fn[h->hook[i]];
+    char why[320];
+    u32 j;
+    int r, k;
+    __atomic_store_n(&h->stale[i], 1, __ATOMIC_RELEASE); /* its own code is what the game put there */
+    __atomic_store_n(&h->invalid[i], 1, __ATOMIC_RELEASE);
+    for (j = 0; j < h->count; j++) /* an adapter another site's invalidation already rewrote */
+        if (j != i && hook_fn[h->hook[j]] == adapter && __atomic_load_n(&h->invalid[j], __ATOMIC_ACQUIRE)) break;
+    if (j == h->count && (r = snx_hook_jump_patch(adapter, hook_invalidated, why, sizeof why)) != 0) {
+        if (r < 0)
+            fatal("hooks: the game changed the first instruction of %s at %llx, which %s answers natively (a mod's "
+                  "hook), and the native hook could not be turned off, so the game's code would never run: %s",
+                  hook_symbol[h->hook[i]], (unsigned long long)h->addr[i], hook_handler[h->hook[i]], why);
+        WARN("hooks: %s\n", why);
+    }
+    WARN("hooks: the game changed the first instruction of %s at %llx from %08x to %08x, which %s answered natively: "
+         "a mod's hook. That native hook is off from here, and the game's code runs, the SDK's own code included "
+         "wherever it calls it\n",
+         hook_symbol[h->hook[i]], (unsigned long long)h->addr[i], snx_le32(h->word[i]),
+         snx_le32(first_word(h->addr[i])), hook_handler[h->hook[i]]);
+    /* the other sites of its adapter: their code did not change, so their slots run it, their own */
+    for (j = 0; j < h->count; j++)
+        if (j != i && hook_fn[h->hook[j]] == adapter && !__atomic_load_n(&h->invalid[j], __ATOMIC_ACQUIRE)) {
+            __atomic_store_n(&h->invalid[j], 1, __ATOMIC_RELEASE);
+            __atomic_store_n(&g_disp[(h->addr[j] - g_code_lo) >> 2], h->orig[j], __ATOMIC_RELEASE);
+            WARN("hooks: %s at %llx shares that native hook's code, so it runs its own code from here too\n",
+                 hook_symbol[h->hook[j]], (unsigned long long)h->addr[j]);
+        }
+    for (k = 0; k < HOOK_COUNT; k++) /* an entry whose adapter the linker folded into the same code */
+        if (k != h->hook[i] && hook_fn[k] == adapter)
+            WARN("hooks: the native hook of %s is the same code, so it is off too wherever it is installed\n",
+                 hook_symbol[k]);
+}
+
+void hook_invalidated(CPU* RESTRICT c, u64 entry) {
+    GuestFn own;
+    if (site_of(entry) < 0)
+        fatal("hooks: an invalidated native hook was called for %llx, where no hook was installed",
+              (unsigned long long)entry);
+    own = hook_original(entry);
+    if (!own)
+        fatal("hooks: the native hook at %llx is off, and nothing compiles the game's code there: the JIT is off",
+              (unsigned long long)entry);
+    own(c, entry);
+}
+
 void hook_restore(u64 addr, u64 size) {
-    const HostHook* h = &g_host.hook;
+    HostHook* h = &g_host.hook;
     MemBlock block;
+    u64 end = size > ~(u64)0 - addr ? ~(u64)0 : addr + size;
     u32 i;
     for (i = 0; i < h->count; i++) {
         u64 a = h->addr[i];
-        if (a < addr || a - addr >= size) continue;
+        if (a < addr || a >= end) continue;
         mem_query(a, &block);
         if (block.state == MS_FREE || !(block.perm & PERM_X)) continue; /* no longer code: the hook goes with it */
+        /* its first 4 bytes alone, which every mod's hook writes over: a change further in is not looked at */
+        if (!__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE) && first_word(a) != h->word[i]) {
+            pm_lock(&g_invalidate_lock);
+            if (!__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE)) hook_invalidate(i);
+            pm_unlock(&g_invalidate_lock);
+        }
+        if (__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE)) continue; /* its slot is the game's code's */
         __atomic_store_n(&g_disp[(a - g_code_lo) >> 2], h->fn[i], __ATOMIC_RELEASE);
     }
 }
 
 GuestFn hook_function(u64 addr) {
     int i = site_of(addr);
-    return i < 0 ? NULL : g_host.hook.fn[i];
+    return i < 0 || __atomic_load_n(&g_host.hook.invalid[i], __ATOMIC_ACQUIRE) ? NULL : g_host.hook.fn[i];
 }
 
 GuestFn hook_original(u64 addr) {
