@@ -257,15 +257,22 @@ static int direct_pred_origin(const ShFlow* f, u32 index, u32 floor, u32 guard, 
 /* Two locally computed guards can have different predicate registers or have
    been saved and restored. Equal compares are equivalent only while their
    register operands retain their values. Constant buffers are read-only. */
+static int direct_forward_only(const ShFlow* f, u32 def, u32 use);
+static int direct_pred_written(const ShFlow* f, u32 lo, u32 hi, u32 pred);
 static int direct_same_guard(const ShFlow* f, u32 floor, u32 definition, u32 use) {
     const u64* insn = f->insn;
-    u32 ai = 0, bi = 0;
-    int a = direct_pred_origin(f, definition, floor, B(insn[definition], 16, 4), &ai, 0);
+    u32 ai = 0, bi = 0, earlier = definition < floor, guard = B(insn[use], 16, 4);
+    if (earlier && B(insn[definition], 16, 4) == guard && (guard & 7) != 7 &&
+        !direct_pred_written(f, definition, use, guard & 7) && direct_forward_only(f, definition, use))
+        return 1;
+    int a = direct_pred_origin(f, definition, earlier ? f->block_start[definition] : floor, B(insn[definition], 16, 4),
+                               &ai, 0);
     int b = direct_pred_origin(f, use, floor, B(insn[use], 16, 4), &bi, 0);
     if (a == -1 || b == -1 || ai != bi) return 0;
-    if (a == b) return 1;
+    if (a == b && !earlier) return 1;
     if (a < 0 || b < 0) return 0;
     if ((insn[a] & ~63ull) != (insn[b] & ~63ull)) return 0;
+    if (earlier && !direct_forward_only(f, (u32)a, use)) return 0;
     const Op* op = f->op[a];
     u32 lhs = B(insn[a], 8, 8), rhs = op->id == O_ISETP_R ? B(insn[a], 20, 8) : 255;
     u32 lo = (u32)(a < b ? a : b), hi = (u32)(a > b ? a : b);

@@ -1626,6 +1626,54 @@ static void guarded_handle_merges(void) {
     free(code);
 }
 
+/* One game's compute program loads a surface handle under P5 = ISETP(R33), then sets P5 again from another register,
+   branches around a block on P6, and stores under P6 = ISETP(R33) once more: the same compare of the same register,
+   unwritten between, so the store's lanes are the load's. The instruction i lies at word 11 + i + i / 3 */
+static void recomputed_guard_handle(void) {
+    const u64 isetp_p5_r33 = 0x376b03fffff7212full, isetp_p6_r17 = 0x376b03fffff71137ull;
+    const u64 isetp_p5_r1 = 0x376b03fffff7012full, isetp_p6_r33 = 0x376b03fffff72137ull;
+    const u64 load_p5 = 0x4c98078804850013ull; /* @P5 MOV R19, c[0x2][0x120] */
+    const u64 load_r4 = 0x4c98078804870004ull; /* MOV R4, c[0x2][0x120] */
+    const u64 skip = 0xe2400000000e000full | (24ull << 20); /* @!P6 BRA, word 16 to word 20 */
+    const u64 store_r4 = unguarded(0xeb20020200f700a8ull, 8, 0, 4);
+    const u64 store_p6 = (unguarded(0xeb20098200f60d18ull, 8, 0, 19) & ~(0xfull << 16)) | 6ull << 16;
+    const u64 exit_ = 0xe30000000007000full;
+    const u64 program[] = {isetp_p5_r33, isetp_p6_r17, load_p5, isetp_p5_r1, skip,
+                           load_r4,      store_r4,     isetp_p6_r33, store_p6, exit_};
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code = translate(program, 10, ST_CS, &info, &words, 1);
+    check_translated(code, &info, "a store under a guard computed again as its handle's load was reads that handle");
+    check(code && info.nimg >= 1 && info.img[0].bl_cbuf == 2 && info.img[0].cbuf_off == 0x120 / 4,
+          "the store under the recomputed guard binds c[0x2][0x120]");
+    free(code);
+    u64 variant[10];
+    memcpy(variant, program, sizeof variant);
+    variant[5] = 0x4c98078804870021ull; /* MOV R33, c[0x2][0x120] in the skipped block */
+    code = translate(variant, 10, ST_CS, &info, &words, 1);
+    check_refused(code, &info, "untracked surface handle", "a compare of a register written between is another guard");
+    free(code);
+    memcpy(variant, program, sizeof variant);
+    variant[7] = isetp_p6_r17;
+    code = translate(variant, 10, ST_CS, &info, &words, 1);
+    check_refused(code, &info, "untracked surface handle", "a compare of another register is another guard");
+    free(code);
+    /* the same program's other store: P5 itself, unwritten from the load to the store across the branch */
+    const u64 store_p5 = (store_p6 & ~(0xfull << 16)) | 5ull << 16;
+    const u64 kept[] = {isetp_p5_r33, isetp_p6_r17, load_p5, isetp_p6_r17, skip,
+                        load_r4,      store_r4,     isetp_p6_r33, store_p5, exit_};
+    code = translate(kept, 10, ST_CS, &info, &words, 1);
+    check_translated(code, &info, "a store under the predicate its handle was loaded under, kept across a branch");
+    check(code && info.nimg >= 1 && info.img[0].bl_cbuf == 2 && info.img[0].cbuf_off == 0x120 / 4,
+          "the store under the kept predicate binds c[0x2][0x120]");
+    free(code);
+    memcpy(variant, kept, sizeof variant);
+    variant[5] = isetp_p5_r1; /* P5 set again in the skipped block */
+    code = translate(variant, 10, ST_CS, &info, &words, 1);
+    check_refused(code, &info, "untracked surface handle", "a predicate written on the way is another guard");
+    free(code);
+}
+
 static void volume_surface_atomics(void) {
     const u64 operations[] = {0xea40020a00870009ull, 0xea48020a20870009ull, 0xeb50020a00070008ull,
                               0xeb50020a01170008ull};
@@ -6475,6 +6523,7 @@ int main(int argc, char** argv) {
     immediate_sampler_handle();
     constant_buffers_past_the_limit();
     guarded_handle_merges();
+    recomputed_guard_handle();
     volume_surface_atomics();
     surface_atomic_operations();
     draw_buffer_surfaces();
