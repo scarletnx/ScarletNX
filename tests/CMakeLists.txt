@@ -424,6 +424,45 @@ if(TARGET snx_ctr_board)
                      $<TARGET_FILE:snx-test-3ds-vk-draw> --scaled-present)
         set_tests_properties(3ds_vk_draw_scaled_present_validation PROPERTIES SKIP_RETURN_CODE 77)
     endif()
+    # a target at a render scale and a display transfer's copy of it, which the presenter shows for a framebuffer in
+    # the destination
+    add_test(NAME 3ds_vk_draw_scaled_transfer COMMAND snx-test-3ds-vk-draw --scaled-transfer)
+    # two destinations a screen alternates between: the copy the presenter looks up is the destination's own, and a
+    # write over one drops its copy alone
+    add_test(NAME 3ds_vk_draw_scaled_rotating COMMAND snx-test-3ds-vk-draw --scaled-rotating)
+    # a destination the CPU writes after the transfer: the presenter compares the memory's bytes with the copy's
+    add_test(NAME 3ds_vk_draw_scaled_verify COMMAND snx-test-3ds-vk-draw --scaled-verify)
+    set_tests_properties(3ds_vk_draw_scaled_transfer 3ds_vk_draw_scaled_rotating 3ds_vk_draw_scaled_verify
+                         PROPERTIES SKIP_RETURN_CODE 77)
+    if(NOT WIN32 AND Python3_Interpreter_FOUND)
+        # the copies' blits, lookups and compare, under Khronos validation
+        add_test(NAME 3ds_vk_draw_scaled_transfer_validation
+                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                     $<TARGET_FILE:snx-test-3ds-vk-draw> --scaled-transfer)
+        add_test(NAME 3ds_vk_draw_scaled_rotating_validation
+                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                     $<TARGET_FILE:snx-test-3ds-vk-draw> --scaled-rotating)
+        add_test(NAME 3ds_vk_draw_scaled_verify_validation
+                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                     $<TARGET_FILE:snx-test-3ds-vk-draw> --scaled-verify)
+        set_tests_properties(3ds_vk_draw_scaled_transfer_validation 3ds_vk_draw_scaled_rotating_validation
+                             3ds_vk_draw_scaled_verify_validation PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+    # the scaled modes again on each path the GPU's work can take to the RAM (vk.h)
+    foreach(snx_path copy in_place)
+        set(snx_value 1)
+        if(snx_path STREQUAL "in_place")
+            set(snx_value 2)
+        endif()
+        set(snx_tests "")
+        foreach(snx_mode scaled-present scaled-transfer scaled-rotating scaled-verify)
+            string(REPLACE "-" "_" snx_name "${snx_mode}")
+            add_test(NAME 3ds_vk_draw_${snx_name}_${snx_path}
+                     COMMAND snx-test-3ds-vk-draw --${snx_mode} --vk_memory=${snx_value})
+            list(APPEND snx_tests 3ds_vk_draw_${snx_name}_${snx_path})
+        endforeach()
+        set_tests_properties(${snx_tests} PROPERTIES SKIP_RETURN_CODE 77)
+    endforeach()
     set_tests_properties(3ds_vk_draw 3ds_vk_draw_async 3ds_vk_draw_pipelines 3ds_vk_draw_async_pipelines
                          3ds_vk_draw_pipeline_cache 3ds_vk_draw_stand_in 3ds_vk_draw_present 3ds_vk_draw_scaled_present
                          PROPERTIES SKIP_RETURN_CODE 77)
