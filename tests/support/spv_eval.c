@@ -721,6 +721,22 @@ static const char* run(Ev* e) {
                 break;
             case 224: /* OpControlBarrier, OpMemoryBarrier: the invocation is alone */
             case 225: break;
+            case 218: /* OpEmitVertex: the outputs as they are, by location, then Position (32) and PrimitiveId (33) */
+                for (uint32_t id = 0; id < e->bound; id++) {
+                    const Id* v = &e->ids[id];
+                    Block* b = &e->blocks[v->block];
+                    if (v->kind != K_VAR || v->sclass != 3 || !b->words) continue;
+                    uint32_t slot = v->location ? v->location - 1 : v->builtin == 0 + 1 ? 32
+                                                                 : v->builtin == 7 + 1   ? 33
+                                                                                         : 34;
+                    uint32_t words = b->n < 4 ? b->n : 4;
+                    if (e->env->emitted < 8 && slot < 34) memcpy(e->env->vertex[e->env->emitted][slot], b->words, words * 4);
+                    /* the emit leaves every output undefined: a program that relies on one after it reads this */
+                    for (uint32_t k = 0; k < b->n; k++) b->words[k] = 0xdeadbeefu;
+                }
+                e->env->emitted++;
+                break;
+            case 219: e->env->primitives++; break; /* OpEndPrimitive */
             case 5295: /* OpSetMeshOutputsEXT */
                 e->env->mesh_outputs[0] = (uint32_t)e->ids[in[1]].v.c[0];
                 e->env->mesh_outputs[1] = (uint32_t)e->ids[in[2]].v.c[0];
@@ -922,9 +938,15 @@ static const char* ev_open(Ev* e, const uint32_t* w, size_t count, SpvEvalEnv* e
                 why = "out of memory";
                 break;
             }
-            if (sc == 1 && v->builtin && v->builtin - 1 < 64)
+            /* an input array (a geometry program's, one element for each vertex of the input primitive) takes its
+               words from gs_in: the generic's location, or 32 for Position */
+            int array = e->ids[pointee].op == 28;
+            uint32_t gs = array && v->builtin == 0 + 1 ? 32 : array && v->location ? v->location - 1 : 33;
+            if (sc == 1 && gs < 33)
+                memcpy(m, env->gs_in[gs], (n < 6 * 4 ? n : 6 * 4) * 4);
+            else if (sc == 1 && v->builtin && v->builtin - 1 < 64)
                 memcpy(m, env->builtin[v->builtin - 1], (n < 4 ? n : 4) * 4);
-            if (sc == 1 && !v->builtin && v->location && v->location - 1 < 32)
+            else if (sc == 1 && !v->builtin && v->location && v->location - 1 < 32)
                 memcpy(m, env->in[v->location - 1], (n < 4 ? n : 4) * 4);
             if (sc == 9) memcpy(m, env->push, (n < 20 ? n : 20) * 4);
             if (sc == 5402) memcpy(m, env->payload, (n < 1024 ? n : 1024) * 4); /* TaskPayloadWorkgroupEXT */

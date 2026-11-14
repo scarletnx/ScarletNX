@@ -590,21 +590,94 @@ static void cs_land(void) {
 /* The windows a dispatch binds for a pointer table in constant buffer bank (SH_GBUF_TABLE), base[w] and len[w] for
    each of windows: the bank's 64-bit words that map are its pointers, and so are the 64-bit words at the cells
    (ShaderInfo.table_cells, bit k: the 8 bytes at 8 * k) of the memory each of them points to, which the program loads
-   pointers from. Each run of memory mapped from the lowest pointer not in an earlier run (at most 16 MiB, as
-   vk_gbuf_desc binds a bare address) holds those below its end. With more runs than windows, the two runs closest
-   together are bound as one, the memory between them too, until they fit: copy_runs reads what isn't mapped as zero.
-   A window the table has no run for has base 0, with the 16 bytes an unbound buffer gets. One game's culling programs
-   keep 20 pointers in cbuf 4, in 11 runs over two stretches of about 2 MiB, and one of them has 9 buffer slots left
-   for them. Four of those pointers are to records whose first 8 bytes point to the instances of a kind of plant,
-   which the program reads through them */
+   pointers from. vk_pointer_windows makes the windows: copy_runs reads what isn't mapped between two runs it joined as
+   zero. One game's culling programs keep 20 pointers in cbuf 4, in 11 runs over two stretches of about 2 MiB, and one
+   of them has 9 buffer slots left for them. Four of those pointers are to records whose first 8 bytes point to the
+   instances of a kind of plant, which the program reads through them */
 static int u64_order(const void* a, const void* b) {
     u64 x = *(const u64*)a, y = *(const u64*)b;
     return x < y ? -1 : x > y;
 }
 static int table_pointer(u64 x) { return x && !(x & 3) && !(x >> 40); } /* the GPU's addresses have 40 bits */
+typedef struct {
+    u64 from, to;
+    u32 parent, lo, hi; /* the group it is in (run_root), and a group's first and last runs */
+} PtrRun;
+typedef struct {
+    u64 gap;
+    u32 k;
+} RunGap;
+static int gap_order(const void* a, const void* b) {
+    const RunGap *x = a, *y = b;
+    return x->gap < y->gap ? -1 : x->gap > y->gap ? 1 : (x->k > y->k) - (x->k < y->k);
+}
+static u32 run_root(PtrRun* r, u32 k) {
+    while (r[k].parent != k) k = r[k].parent = r[r[k].parent].parent;
+    return k;
+}
+/* the runs and gaps of vk_pointer_windows, kept from call to call: its callers (a dispatch's and a draw's binding)
+   hold vk_lock */
+static void* g_ptr_scratch;
+static size_t g_ptr_scratch_size;
+u32 vk_pointer_windows(u64* v, u32 n, u32 windows, u32 reach, int whole, u64* base, u32* len) {
+    u32 runs = 0, m = 0;
+    for (u32 w = 0; w < windows; w++) base[w] = 0, len[w] = 16;
+    for (u32 i = 0; i < n; i++)
+        if (table_pointer(v[i])) v[m++] = v[i];
+    if (!m) return 0;
+    qsort(v, m, sizeof *v, u64_order);
+    size_t need = (size_t)m * (sizeof(PtrRun) + sizeof(RunGap));
+    if (need > g_ptr_scratch_size) {
+        void* grown = realloc(g_ptr_scratch, need);
+        if (!grown) return m;
+        g_ptr_scratch = grown;
+        g_ptr_scratch_size = need;
+    }
+    PtrRun* r = g_ptr_scratch;
+    RunGap* gaps = (RunGap*)(r + m);
+    reach = (reach + 3) & ~3u;
+    for (u32 i = 0; i < m;) {
+        u64 cpu = 0, run = gmmu_run(v[i], 16u << 20, &cpu) & ~3ull;
+        if (!run) { /* no memory there: a word that is no pointer */
+            i++;
+            continue;
+        }
+        u64 end = v[i] + run;
+        PtrRun* at = &r[runs];
+        *at = (PtrRun){v[i], reach && reach < run ? v[i] + reach : end, runs, runs, runs};
+        runs++;
+        for (; i < m && v[i] < at->to; i++)
+            if (reach && v[i] + reach > at->to) at->to = v[i] + reach < end ? v[i] + reach : end;
+    }
+    /* the closest runs joined first, as one window of at most 16 MiB (with whole, only over mapped memory), until
+       they fit: each run a group, joined to its neighbour across the smallest gaps */
+    u32 groups = runs;
+    for (u32 k = 0; k + 1 < runs; k++) gaps[k] = (RunGap){r[k + 1].from - r[k].to, k};
+    qsort(gaps, runs ? runs - 1 : 0, sizeof *gaps, gap_order);
+    for (u32 g = 0; g + 1 < runs && groups > windows; g++) {
+        u32 k = gaps[g].k, a = run_root(r, k), b = run_root(r, k + 1);
+        u64 cpu = 0, span = r[r[b].hi].to - r[r[a].lo].from;
+        if (span > (16u << 20) || (whole && gaps[g].gap && gmmu_run(r[k].to, gaps[g].gap, &cpu) < gaps[g].gap))
+            continue;
+        r[b].parent = a;
+        r[a].hi = r[b].hi;
+        groups--;
+    }
+    u32 w = 0;
+    for (u32 k = 0; k < runs; k++) {
+        u32 root = run_root(r, k);
+        if (r[root].lo != k) continue; /* inside a group: its first run stands for it */
+        if (w < windows) {
+            base[w] = r[k].from;
+            len[w] = (u32)(r[r[root].hi].to - r[k].from);
+        }
+        w++;
+    }
+    return groups > windows ? runs : 0;
+}
 static void table_windows(u32 bank, u32 cells, u32 windows, u64* base, u32* len) {
-    u64 v[512], from[64], to[64];
-    u32 n = 0, runs = 0, unused;
+    u64 v[512];
+    u32 n = 0, unused;
     for (u32 w = 0; w < windows; w++) base[w] = 0, len[w] = 16;
     if (bank >= QMD_NUM_CONST_BUFFERS) return;
     /* a bank a pending write in place covers isn't in g_cb yet (g_cb_later): the windows are made of its words, so it
@@ -625,36 +698,12 @@ static void table_windows(u32 bank, u32 cells, u32 windows, u64* base, u32* len)
             u64 x = snx_le32(q[0]) | (u64)snx_le32(q[1]) << 32;
             if (table_pointer(x)) v[n++] = x;
         }
-    qsort(v, n, sizeof *v, u64_order);
-    for (u32 i = 0; i < n && runs < 64;) {
-        u64 cpu = 0, run = gmmu_run(v[i], 16u << 20, &cpu) & ~3ull;
-        if (!run) { /* no memory there: a word that is no pointer */
-            i++;
-            continue;
-        }
-        from[runs] = v[i];
-        to[runs++] = v[i] + run;
-        while (i < n && v[i] < to[runs - 1]) i++;
-    }
-    while (runs > windows) { /* the two runs closest together, as one window of at most 16 MiB */
-        u32 best = runs;
-        for (u32 k = 0; k + 1 < runs; k++)
-            if (to[k + 1] - from[k] <= (16u << 20) && (best == runs || from[k + 1] - to[k] < from[best + 1] - to[best]))
-                best = k;
-        if (best == runs) break;
-        to[best] = to[best + 1] > to[best] ? to[best + 1] : to[best];
-        for (u32 k = best + 1; k + 1 < runs; k++) from[k] = from[k + 1], to[k] = to[k + 1];
-        runs--;
-    }
-    if (runs > windows)
+    u32 runs = vk_pointer_windows(v, n, windows, 0, 0, base, len);
+    if (runs)
         LOG_LIMIT(1,
                   "vulkan: a compute program's pointer table in constant buffer %u has %u runs of mapped memory "
                   "that its %u windows can't hold: the pointers in the others read 0\n",
                   bank, runs, windows);
-    for (u32 w = 0; w < runs && w < windows; w++) {
-        base[w] = from[w];
-        len[w] = (u32)(to[w] - from[w]);
-    }
 }
 /* A descriptor can fail after its inputs were copied into the arena. No command references those inputs yet. */
 static void cs_abandon_binding(u8* originals[8]) {

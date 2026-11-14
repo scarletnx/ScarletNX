@@ -2246,6 +2246,14 @@ int vk_compute_pending(u64 a, u64 n);                /* a pending result covers 
 u64 vk_compute_adds(void);
 /* a pending compute result covering [gva, gva + len): the arena buffer and offset to read it from on the GPU */
 int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off);
+/* The windows of a pointer table (SH_GBUF_TABLE), base[w] and len[w] for each of windows, from the n words at v (which
+   it sorts; those that can't be the GPU's addresses are no pointers): each run of memory mapped from the lowest
+   pointer not in an earlier run (at most 16 MiB, as vk_gbuf_desc binds a bare address, or reach bytes past each
+   pointer in it where reach isn't 0) holds those below its end. With more runs than windows, the two runs closest
+   together are bound as one, the memory between them too (with whole, only where that is all mapped), until they
+   fit. A window the table has no run for has base 0, with the 16 bytes an unbound buffer gets. Returns 0, or the runs
+   found where the windows can't hold them */
+u32 vk_pointer_windows(u64* v, u32 n, u32 windows, u32 reach, int whole, u64* base, u32* len);
 extern VkSemaphore g_vk_csem;  /* timeline semaphore the compute queue signals */
 extern u64 g_vk_cs_wait_value; /* the value graphics work waits for before reading compute results */
 extern u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns; /* statistics */

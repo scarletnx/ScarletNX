@@ -4,12 +4,15 @@
    it, and reports the opcodes the decoder knows and the ones it does not, with their counts. With --translate it
    also translates each complete program (sm86_to_spirv), and with --validate it runs spirv-val on the modules.
 
-   Usage: snx-sm86 DUMP [--sph HEADER] [--task T,P | --mesh T,P,A,V,R[,S]] [--translate] [--validate] [--out DIR]
-                   [--verbose]
+   Usage: snx-sm86 DUMP [--sph HEADER] [--task T,P | --mesh T,P,A,V,R[,S] | --geometry V[,G]] [--translate]
+                   [--validate] [--out DIR] [--verbose]
    --sph: DUMP is one program that the sm86_dump setting wrote, HEADER its .sph file (a compute one has none)
    --task, --mesh: with --sph, DUMP is a task or mesh program, with the fields of its NVN control section (ShMesh):
    T invocations, P payload bytes, A 1 after a task program, V and R the most vertices and primitives, S the byte
    offset in DUMP of the per-primitive SPH (none without it). The program ends at the BRA to itself after its code
+   --geometry: a geometry program takes an input primitive of V vertices (the draw's, 3 without it), and the stage
+   before it writes the generics of mask G (bit g for generic g, in hexadecimal; all of them without it), which a
+   passthrough program forwards
    The dump is game data: keep it, and what --out writes, out of the repository. */
 #include "nx/gpu/shader/sm86.h"
 #include "common/utilities/endian.h"
@@ -77,6 +80,7 @@ int main(int argc, char** argv) {
     int translate = 0, check = 0, verbose = 0, list = 0, mesh_stage = -1;
     ShMesh mesh = {0};
     long prim_sph_at = -1;
+    unsigned gs_vertices = 3, gs_generics = 0xffffffffu;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--out") && i + 1 < argc)
             out = argv[++i];
@@ -103,6 +107,8 @@ int main(int argc, char** argv) {
             if (got < 6) prim_sph_at = -1;
             mesh_stage = ST_MS;
             mesh = (ShMesh){(u16)t, (u16)pl, (u16)v, (u16)r, (u8)a, 3, 0, {0}};
+        } else if (!strcmp(argv[i], "--geometry") && i + 1 < argc) {
+            if (sscanf(argv[++i], "%u,%x", &gs_vertices, &gs_generics) < 1) return 2;
         } else if (argv[i][0] != '-' && !path)
             path = argv[i];
         else {
@@ -187,6 +193,7 @@ int main(int argc, char** argv) {
         if (!translate || !pr->complete) continue;
         ShaderInfo si = {0};
         si.mesh = mesh;
+        if (pr->stage == ST_GS) si.rt_int_mask = gs_vertices, si.rt_sint_mask = gs_generics;
         u32 sph[32] = {0};
         if (sph_path)
             memcpy(sph, dumped_sph, sizeof sph);

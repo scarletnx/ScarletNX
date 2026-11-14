@@ -58,6 +58,11 @@ typedef struct {
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
     u32 point_coord, front_facing, primitive_id;
+    /* a geometry program: its input position (an array of the input primitive's vertices, as its in_attr are), its
+       PrimitiveId in and out (passthrough), the viewport mask it writes (a Function variable, 1 until written) and
+       whether its SPH asks for passthrough */
+    u32 position_in, primitive_id_in, primitive_id_out, viewport_mask;
+    int passthrough;
     /* a fragment program at a resolution scale: SNX_VKB_RS's vec4 (scale_component) and the fragment stage's push
        constants, whose uvec4s mark the textures bound to scaled render targets (scaled_slot) */
     u32 scale, scale_ptr, scaled_push;
@@ -87,6 +92,11 @@ typedef struct {
     u32 dyn_keys[16], ndyn_keys; /* the keys an address may be one of where they met (track_conflict) */
     u32 table_banks;             /* the banks whose pointer tables (SH_GBUF_TABLE) addresses come from */
     u32 table_cells;             /* ShaderInfo.table_cells */
+    /* the storage buffers whose words are pointer tables (SH_GBUF_TABLE_SSBO), by their keys: a register's table is
+       TAB_SSBO + its index there. Those addresses come from, a bit each, and the bytes the accesses reach past a
+       pointer (ShaderInfo.table_reach), or reach_open where one adds an offset it computes */
+    u32 table_ssbo[4], ntable_ssbo, table_ssbo_used, table_reach;
+    int table_reach_open;
     u32 pairs[8][2], npairs; /* the two constant buffer bases of an address that adds both (track_step) */
     u32* jump_first; /* by instruction, the first of the BRAs and BRX that go to it in jump_from (n + 1 words), and */
     u32* jump_from;  /* those instructions: made the first time reg_const_at needs them (flow_sources) */
@@ -763,6 +773,43 @@ static u32 attr_load(Ctx* c, u32 addr) {
     fail(c, "attribute load 0x%x", addr);
     return c->zero;
 }
+/* the vertices of a geometry program's input primitive: the renderer's key (pipeline.c), as spirv_translate.c reads
+   it */
+static u32 gs_vertices(const Ctx* c) { return c->si->rt_int_mask; }
+/* a geometry program's input at address addr (the position or a generic) as an array of the input primitive's
+   vertices, made on its first use: 0 for another address */
+static u32 gs_input_var(Ctx* c, u32 addr) {
+    if (addr >= 0x70 && addr < 0x80) {
+        if (!c->position_in) {
+            c->position_in = spv_emit_interface_variable(&c->e, SPV_STORAGE_INPUT, c->t_v4f, c->t_u32, gs_vertices(c),
+                                                         SPV_BUILT_IN_POSITION, 0, 0);
+            add_interface(c, c->position_in);
+        }
+        return c->position_in;
+    }
+    if (addr < 0x80 || addr >= 0x280) return 0;
+    u32 i = (addr - 0x80) >> 4;
+    if (!c->in_attr[i]) {
+        c->in_attr[i] = spv_emit_interface_variable(&c->e, SPV_STORAGE_INPUT, c->t_v4f, c->t_u32, gs_vertices(c),
+                                                    SPV_NOT_BUILTIN, i, 0);
+        add_interface(c, c->in_attr[i]);
+        c->si->in_mask |= 1u << i;
+    }
+    return c->in_attr[i];
+}
+/* ALD's attribute at byte address addr of a geometry program's input vertex: the register value that ISBERD handed
+   on, the vertex's index in the input primitive (isbe), kept within the primitive */
+static u32 gs_attr_load(Ctx* c, u32 addr, u32 vertex) {
+    u32 var = gs_input_var(c, addr);
+    if (!var) {
+        fail(c, "geometry attribute load 0x%x", addr);
+        return c->zero;
+    }
+    u32 index = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_U_MIN, vertex, cu(c, gs_vertices(c) - 1));
+    return to_u(c, spv_emit_load(&c->e, c->t_f32,
+                                 spv_emit_interface_scalar_pointer(&c->e, SPV_STORAGE_INPUT, c->t_f32, var, index,
+                                                                   cu(c, (addr >> 2) & 3))));
+}
 /* the vertex output a generic or position address names (a legacy varying's generic), made on its first use: 0 for
    another address */
 static u32 output_var(Ctx* c, u32 addr) {
@@ -787,8 +834,14 @@ static void attr_store(Ctx* c, u32 addr, u32 bits) {
         fail(c, "attribute store in a fragment or compute program");
         return;
     }
-    if (c->stage != ST_VS) {
+    if (c->stage != ST_VS && c->stage != ST_GS) {
         fail(c, "attribute store of stage %d", c->stage);
+        return;
+    }
+    if (c->stage == ST_GS && addr == 0x3a0) {
+        /* the viewport mask: the primitive goes to viewport 0 where bit 0 is set, and to none where the mask is 0
+           (a culling program's passthrough). The emits test it (gs_emit, gs_passthrough) */
+        spv_emit_store(&c->e, c->viewport_mask, bits);
         return;
     }
     if (addr == 0x5c) {
@@ -796,7 +849,11 @@ static void attr_store(Ctx* c, u32 addr, u32 bits) {
            a pixel, is what the translation gives without it */
         return;
     } else if (addr == 0x6c) {
+        /* a geometry program's point size needs GeometryPointSize, which the device may lack: then it is 1, as the
+           Maxwell translator leaves it (spirv_translate.c declares the output only with g_shader_stage_point_size) */
+        if (c->stage == ST_GS && !g_shader_stage_point_size) return;
         if (!c->point_size) {
+            if (c->stage == ST_GS) spv_emit_capability(&c->e, SPV_CAPABILITY_GEOMETRY_POINT_SIZE);
             c->point_size = spv_emit_point_size_output(&c->e, c->t_f32);
             add_interface(c, c->point_size);
         }
@@ -811,6 +868,82 @@ static void attr_store(Ctx* c, u32 addr, u32 bits) {
     }
     spv_emit_store(&c->e, spv_emit_interface_scalar_pointer(&c->e, SPV_STORAGE_OUTPUT, c->t_f32, var, 0, cu(c, k)),
                    to_f(c, bits));
+}
+/* whether a geometry program's primitive goes to viewport 0: bit 0 of the mask it wrote, 1 where it wrote none */
+static u32 gs_viewport_on(Ctx* c) {
+    u32 bit = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, spv_emit_load(&c->e, c->t_u32, c->viewport_mask),
+                              cu(c, 1));
+    return spv_emit_binary(&c->e, SPV_OP_I_NOT_EQUAL, c->t_bool, bit, c->zero);
+}
+/* OUT's emit: the vertex of the outputs written so far, with the depth fix where the program is the last before the
+   rasterizer, unless the viewport mask sends the primitive to no viewport */
+static void gs_emit(Ctx* c) {
+    u32 on = gs_viewport_on(c), then = spv_emit_id(&c->e), merge = spv_emit_id(&c->e);
+    spv_emit_selection_merge(&c->e, merge);
+    spv_emit_branch_conditional(&c->e, on, then, merge);
+    spv_emit_label(&c->e, then);
+    if (c->position && !(c->si->clip_enable & SNX_SH_NOT_LAST)) vertex_depth_fix(c);
+    spv_emit_emit_vertex(&c->e);
+    spv_emit_branch(&c->e, merge);
+    spv_emit_label(&c->e, merge);
+}
+/* A passthrough program's end, as spirv_translate.c's shader_geometry_passthrough has it: the hardware emits the
+   input primitive once when the program ends, each output component that POST_VTG_SHADER_ATTRIB_SKIP_MASK does not
+   skip (gp_skip_mask, a bit for each scalar: the position at 28, generic a at 32 + 4 a) taken from the input vertex,
+   the others as the program wrote them, and the primitive's number. EmitVertex leaves every output undefined, so each
+   output the program wrote is saved first and stored again for each vertex. A viewport mask of 0 drops the primitive:
+   one game's culling program writes its surviving triangles to memory and passes them on to its depth prepass so */
+static void gs_passthrough(Ctx* c) {
+    SpvEmitter* e = &c->e;
+    u32 n = gs_vertices(c), count = n == 4 ? 2 : n == 6 ? 3 : n;
+    u32 out[33] = {0}, in[33] = {0}, saved[33] = {0}, mask[33] = {0};
+    u32 parts[4] = {cf(c, 0.0f), cf(c, 0.0f), cf(c, 0.0f), cf(c, 1.0f)};
+    u32 empty = spv_emit_constant_vec4(e, c->t_v4f, parts);
+    for (u32 a = 0; a < 33; a++) {
+        u32 attr = a ? 32 + 4 * (a - 1) : 28, addr = a ? 0x80 + 16 * (a - 1) : 0x70;
+        mask[a] = (~c->si->gp_skip_mask[attr / 32] >> (attr % 32)) & 15;
+        /* a generic the stage before doesn't write (rt_sint_mask) is undefined there and here alike: none of NVN's
+           draws sets the skip mask, and its 32 generics went past the device's geometry components */
+        if (a && !(c->si->rt_sint_mask >> (a - 1) & 1)) mask[a] = 0;
+        int written = a ? c->out_attr[a - 1] != 0 : c->position != 0;
+        if (!mask[a] && !written) continue;
+        out[a] = output_var(c, addr);
+        if (mask[a]) in[a] = gs_input_var(c, addr);
+        saved[a] = written ? spv_emit_load(e, c->t_v4f, out[a]) : empty;
+    }
+    u32 size = c->point_size ? spv_emit_load(e, c->t_f32, c->point_size) : 0;
+    if (!c->primitive_id_in) {
+        c->primitive_id_in = spv_emit_builtin_input_u32(e, c->t_u32, SPV_BUILT_IN_PRIMITIVE_ID);
+        add_interface(c, c->primitive_id_in);
+        c->primitive_id_out = spv_emit_interface_variable(e, SPV_STORAGE_OUTPUT, c->t_u32, c->t_u32, 0,
+                                                          SPV_BUILT_IN_PRIMITIVE_ID, 0, 0);
+        add_interface(c, c->primitive_id_out);
+    }
+    u32 id = spv_emit_load(e, c->t_u32, c->primitive_id_in);
+    u32 on = gs_viewport_on(c), then = spv_emit_id(e), merge = spv_emit_id(e);
+    spv_emit_selection_merge(e, merge);
+    spv_emit_branch_conditional(e, on, then, merge);
+    spv_emit_label(e, then);
+    for (u32 v = 0; v < count; v++) {
+        u32 index = cu(c, n == 4 ? v + 1 : n == 6 ? v * 2 : v);
+        for (u32 a = 0; a < 33; a++) {
+            if (!out[a]) continue;
+            u32 value = saved[a];
+            for (u32 k = 0; k < 4; k++)
+                if (mask[a] >> k & 1) {
+                    u32 p = spv_emit_interface_scalar_pointer(e, SPV_STORAGE_INPUT, c->t_f32, in[a], index, cu(c, k));
+                    value = spv_emit_vec4_insert(e, c->t_v4f, value, spv_emit_load(e, c->t_f32, p), k);
+                }
+            spv_emit_store(e, out[a], value);
+        }
+        if (c->point_size) spv_emit_store(e, c->point_size, size);
+        spv_emit_store(e, c->primitive_id_out, id);
+        if (c->position && !(c->si->clip_enable & SNX_SH_NOT_LAST)) vertex_depth_fix(c);
+        spv_emit_emit_vertex(e);
+    }
+    spv_emit_end_primitive(e);
+    spv_emit_branch(e, merge);
+    spv_emit_label(e, merge);
 }
 
 /* ---- global and shared memory ---- */
@@ -880,7 +1013,21 @@ static void mark_written(Ctx* c, u32 key, u32 offset, u32 bytes) {
    or an indirect buffer's pointer at its cell in its parent buffer, which the program loaded itself (the renderer binds
    the memory from the pointer it reads there). The low word, or with wide the 64-bit address. 0 when it can't */
 static u32 mem_ptr(Ctx* c, u32 buffer, u32 address, u32 word);
+static u32 gbuf_bytes(Ctx* c, u32 buffer);
 static u32 mem_word_load(Ctx* c, u32 buffer, u32 ptr);
+/* the buffer slot of a pointer table's window (SH_GBUF_TABLE), with SNX_VKB_MBASE made: ~0 when it has none */
+static u32 table_slot(Ctx* c, u32 key) {
+    int slot = -1;
+    for (int i = 0; i < c->si->ngbuf; i++)
+        if (c->si->gbuf_cbuf_off[i] == key) slot = i;
+    if (slot < 0) return ~0u;
+    if (!c->mbase) {
+        c->mbase = spv_emit_uniform_vec4_array(&c->e, c->t_v4u, c->t_u32, c->t_u32, (u32)shader_vk_set(c->stage),
+                                               SNX_VKB_MBASE, 16, &c->cbuf_ptr);
+        add_interface(c, c->mbase);
+    }
+    return (u32)slot;
+}
 static u32 gbuf_base(Ctx* c, u32 key, int wide) {
     u32 parent = SH_GBUF_PARENT(key);
     if (SH_GBUF_BANK(parent) >= 18) { /* the renderer reads the base from a bound bank (vk/render.c) */
@@ -888,20 +1035,12 @@ static u32 gbuf_base(Ctx* c, u32 key, int wide) {
         return 0;
     }
     if (SH_GBUF_TABLE(key)) { /* the window's base, at its buffer's slot of SNX_VKB_MBASE */
-        int slot = -1;
-        for (int i = 0; i < c->si->ngbuf; i++)
-            if (c->si->gbuf_cbuf_off[i] == key) slot = i;
-        if (slot < 0) return 0;
-        if (!c->mbase) {
-            c->mbase = spv_emit_uniform_vec4_array(&c->e, c->t_v4u, c->t_u32, c->t_u32, (u32)shader_vk_set(c->stage),
-                                                   SNX_VKB_MBASE, 16, &c->cbuf_ptr);
-            add_interface(c, c->mbase);
-        }
-        u32 low =
-            spv_emit_uniform_component(&c->e, c->cbuf_ptr, c->mbase, c->zero, cu(c, (u32)slot), c->zero, c->t_u32);
+        u32 slot = table_slot(c, key);
+        if (slot == ~0u) return 0;
+        u32 low = spv_emit_uniform_component(&c->e, c->cbuf_ptr, c->mbase, c->zero, cu(c, slot), c->zero, c->t_u32);
         return wide ? pair64(c, low,
-                             spv_emit_uniform_component(&c->e, c->cbuf_ptr, c->mbase, c->zero, cu(c, (u32)slot),
-                                                        cu(c, 1), c->t_u32))
+                             spv_emit_uniform_component(&c->e, c->cbuf_ptr, c->mbase, c->zero, cu(c, slot), cu(c, 1),
+                                                        c->t_u32))
                     : low;
     }
     if (SH_GBUF_INDIRECT(key)) {
@@ -1001,8 +1140,13 @@ static void global_dynamic(Ctx* c, const Sm86Insn* in, int kind, u32 opcode, int
         u32 base = gbuf_base(c, keys[k], 1);
         if (!base) return;
         u32 relative = op2(c, SPV_OP_I_SUB, u64_type(c), address, base);
-        u32 length = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
-                                     SPV(&c->e, SPV_OP_ARRAY_LENGTH, c->t_u32, buffer, 0), cu(c, 2));
+        /* the candidate's own bytes: a window's length at SNX_VKB_MBASE, else the binding's. A draw that binds its
+           buffers as one atlas of pages (gbuf_word_index) gives every binding the atlas's array length, and the first
+           candidate took every address: its logical words are in SNX_VKB_SMAP */
+        u32 length = SH_GBUF_TABLE(keys[k])
+                         ? spv_emit_uniform_component(&c->e, c->cbuf_ptr, c->mbase, c->zero,
+                                                      cu(c, table_slot(c, keys[k])), cu(c, 2), c->t_u32)
+                         : gbuf_bytes(c, buffer);
         u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, relative, to64(c, length));
         u32 then = spv_emit_id(&c->e), other = spv_emit_id(&c->e);
         merges[k] = spv_emit_id(&c->e);
@@ -1050,6 +1194,16 @@ typedef struct {
 } TrackState;
 #define TRACK_KEYS offsetof(TrackState, rsrc)
 static int key_indirect(u32 key) { return key && SH_GBUF_INDIRECT(key - 1); }
+/* a register's table (TrackState's rtab): a bank's + 1 (SH_GBUF_TABLE), or TAB_SSBO + a storage buffer's index in
+   table_ssbo (SH_GBUF_TABLE_SSBO), made on its first use: 0 past the fourth */
+enum { TAB_SSBO = 33 };
+static u32 table_ssbo_id(Ctx* c, u32 key) {
+    for (u32 i = 0; i < c->ntable_ssbo; i++)
+        if (c->table_ssbo[i] == key) return TAB_SSBO + i;
+    if (c->ntable_ssbo == 4) return 0;
+    c->table_ssbo[c->ntable_ssbo] = key;
+    return TAB_SSBO + c->ntable_ssbo++;
+}
 /* where two keys meet (a predicated write over the register's key, or two paths): an indirect key against another
    key takes neither, and the address is then compared with each at run time (global_dynamic), which the two are
    candidates of. Two constant buffer keys keep track_globals's own rules */
@@ -1128,13 +1282,28 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
         c->addr_key[2 * n1 + i] = (ur < SM86_URZ && s->udyn[ur]) || (reg < SM86_RZ && s->rdyn[reg]);
         c->addr_key[3 * n1 + i] = ur < SM86_URZ && s->upair[ur] ? s->upair[ur] : reg < SM86_RZ ? s->rpair[reg] : 0;
         u32 tab = ur < SM86_URZ && s->utab[ur] ? s->utab[ur] : reg < SM86_RZ ? s->rtab[reg] : 0;
-        if (tab) c->table_banks |= 1u << (tab - 1);
+        /* the address is one of the table's words itself, plus the offset: the pairs an LDG.64 or .128 loads there
+           are its target's cells, and a storage buffer table's pointer reaches the offset's bytes */
+        int table_word = ur < SM86_URZ ? reg >= SM86_RZ && s->utabx[ur] : reg < SM86_RZ && s->rtabx[reg];
+        if (tab >= TAB_SSBO) {
+            /* the bytes the access reaches past the table's pointer: at its immediate offset where the address is
+               the pointer itself, an LDG's, STG's or RED's size (bits 73-75: 8, 16, 32, 64 or 128 bits) or an
+               atomic's 8 bytes at most */
+            u32 type = sm86_field(in, 73, 3), imm = sm86_field(in, 40, 24);
+            u32 bytes = op == SM86_ATOMG || op == SM86_ATOMG_NOU || op == SM86_RED ? 8
+                        : type < 2                                               ? 1
+                        : type < 4                                               ? 2
+                        : type == 4                                              ? 4
+                        : type == 5                                              ? 8
+                                                                                 : 16;
+            c->table_ssbo_used |= 1u << (tab - TAB_SSBO);
+            if (table_word && !(imm & 0x800000u) && imm + bytes > c->table_reach) c->table_reach = imm + bytes;
+            if (!table_word || (imm & 0x800000u)) c->table_reach_open = 1;
+        } else if (tab)
+            c->table_banks |= 1u << (tab - 1);
         /* an address loaded from the memory a table's word points to: the renderer binds where those cells point
            too (ShaderInfo.table_cells) */
         c->table_cells |= (ur < SM86_URZ ? s->ucell[ur] : 0) | (reg < SM86_RZ ? s->rcell[reg] : 0);
-        /* the address is one of the table's words itself, plus the offset: the pairs an LDG.64 or .128 loads there
-           are its target's cells */
-        int table_word = ur < SM86_URZ ? reg >= SM86_RZ && s->utabx[ur] : reg < SM86_RZ && s->rtabx[reg];
         if (op == SM86_LDG || op == SM86_LDG_NOU || op == SM86_ATOMG || op == SM86_ATOMG_NOU) {
             /* the words loaded are data: one, or two or four for an LDG.64 or .128, from memory */
             u32 type = sm86_field(in, 73, 3), words = op == SM86_ATOMG || op == SM86_ATOMG_NOU ? 1
@@ -1150,13 +1319,21 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
             if (words >= 2 && (op == SM86_LDG || op == SM86_LDG_NOU) && k && !key_indirect(k) && exact &&
                 SH_GBUF_PARENT(k - 1) == k - 1 && !(imm & 7) && imm + 8 * (words / 2 - 1) <= SH_GBUF_CELL_MAX)
                 cell = (k - 1) | 1u << 31 | imm / 8 << 21;
-            int cells = table_word && words >= 2 && (op == SM86_LDG || op == SM86_LDG_NOU) && !(imm & 7) &&
-                        imm + 8 * (words / 2 - 1) < 8 * 32;
+            /* An LDG.64 of an address made from a storage buffer's base with an offset the program computes, in a
+               graphics program but a fragment one: each pair is a pointer from the buffer's table
+               (SH_GBUF_TABLE_SSBO), whose windows the addresses made from it are compared with */
+            u32 ssbo = 0;
+            int graphics = c->stage == ST_VS || c->stage == ST_TCS || c->stage == ST_TES || c->stage == ST_GS;
+            if (!cell && graphics && words >= 2 && (op == SM86_LDG || op == SM86_LDG_NOU) && k && !exact &&
+                !key_indirect(k) && !SH_GBUF_TABLE(k - 1) && SH_GBUF_PARENT(k - 1) == k - 1 && !(imm & 7))
+                ssbo = table_ssbo_id(c, k - 1);
+            int cells = !ssbo && tab < TAB_SSBO && table_word && words >= 2 &&
+                        (op == SM86_LDG || op == SM86_LDG_NOU) && !(imm & 7) && imm + 8 * (words / 2 - 1) < 8 * 32;
             for (u32 w = 0; w < words && in->dst + w < SM86_RZ; w++) {
                 u32 key = cell && !(w & 1) ? (cell + (w / 2 << 21)) + 1 : 0;
                 track_write(c, s, 0, in->dst + w, key, key != 0, !key, (u16)op, always);
-                s->rtab[in->dst + w] = cells ? (u8)tab : 0;
-                s->rtabx[in->dst + w] = 0;
+                s->rtab[in->dst + w] = ssbo ? (u8)ssbo : cells ? (u8)tab : 0;
+                s->rtabx[in->dst + w] = ssbo && !(w & 1);
                 s->rcell[in->dst + w] = cells ? 1u << (imm + 4 * (w & ~1u)) / 8 : 0;
             }
         }
@@ -1413,9 +1590,11 @@ static int track_globals(Ctx* c) {
             }
     }
     /* each pointer table's windows: the buffer slots the program's other buffers leave, shared among its tables */
-    if (ok && c->table_banks) {
+    if (ok && (c->table_banks || c->table_ssbo_used)) {
         c->si->table_cells = c->table_cells;
-        u32 others[16], nothers = 0, ntables = snx_popcount64(c->table_banks);
+        c->si->table_reach = c->table_reach_open ? 0 : c->table_reach;
+        u32 others[16], nothers = 0,
+                        ntables = snx_popcount64(c->table_banks) + snx_popcount64(c->table_ssbo_used);
         for (u32 i = 0; i < n + c->ndyn_keys + 2 * c->npairs; i++) {
             u32 key = i < n                   ? c->addr_key[i]
                       : i < n + c->ndyn_keys ? c->dyn_keys[i - n] + 1
@@ -1430,6 +1609,9 @@ static int track_globals(Ctx* c) {
         for (u32 b = 0; b < 18; b++)
             for (u32 w = 0; (c->table_banks >> b & 1) && w < windows && c->ndyn_keys < 16; w++)
                 c->dyn_keys[c->ndyn_keys++] = SH_GBUF_TABLE_KEY(b, w);
+        for (u32 t = 0; t < c->ntable_ssbo; t++)
+            for (u32 w = 0; (c->table_ssbo_used >> t & 1) && w < windows && c->ndyn_keys < 16; w++)
+                c->dyn_keys[c->ndyn_keys++] = SH_GBUF_TABLE_SSBO_KEY(c->table_ssbo[t], w);
     }
     free(s);
     free(reached);
@@ -1480,8 +1662,8 @@ static u32 smap_word(Ctx* c, u32 index) {
    buffer's pages, as shader_gbuf_word_index reads it for Maxwell's programs. One game's culling programs have their
    counters in the last page of their instances every other frame, and read unmapped there, whole objects came and went.
    A dispatch binds each buffer whole, and has no table */
-static u32 gbuf_word_index(Ctx* c, u32 buffer, u32 word) {
-    if (c->stage == ST_CS) return word;
+/* the slot of a global buffer's variable, and SNX_VKB_SMAP made (graphics stages only) */
+static u32 smap_slot(Ctx* c, u32 buffer) {
     u32 slot = 0;
     while (slot < 15 && c->gbuf[slot] != buffer) slot++;
     if (!c->smap) {
@@ -1490,6 +1672,11 @@ static u32 gbuf_word_index(Ctx* c, u32 buffer, u32 word) {
             (u32)shader_vk_set(c->stage), SNX_VKB_SMAP);
         add_interface(c, c->smap);
     }
+    return slot;
+}
+static u32 gbuf_word_index(Ctx* c, u32 buffer, u32 word) {
+    if (c->stage == ST_CS) return word;
+    u32 slot = smap_slot(c, buffer);
     u32 first = smap_word(c, cu(c, slot)), offset = smap_word(c, cu(c, 16 + slot)),
         count = smap_word(c, cu(c, 32 + slot));
     u32 none = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, first, cu(c, ~0u));
@@ -1505,6 +1692,17 @@ static u32 gbuf_word_index(Ctx* c, u32 buffer, u32 word) {
     mapped = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
                               spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, word, count), mapped, cu(c, ~0u));
     return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, none, word, mapped);
+}
+/* A global buffer's bytes as the program sees them: the array's length where it is bound whole, and in an atlas of
+   pages its own words that SNX_VKB_SMAP gives, as gbuf_word_index takes them */
+static u32 gbuf_bytes(Ctx* c, u32 buffer) {
+    u32 bound = SPV(&c->e, SPV_OP_ARRAY_LENGTH, c->t_u32, buffer, 0);
+    if (c->stage != ST_CS) {
+        u32 slot = smap_slot(c, buffer);
+        u32 none = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, smap_word(c, cu(c, slot)), cu(c, ~0u));
+        bound = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, none, bound, smap_word(c, cu(c, 32 + slot)));
+    }
+    return spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, bound, cu(c, 2));
 }
 /* a word of global (buffer), shared (buffer 0) or local (MEM_LOCAL) memory at the byte address. An address past
    the local memory wraps in it, as spirv_translate.c keeps Maxwell's LDL and STL in theirs */
@@ -1762,6 +1960,16 @@ static void isbe(Ctx* c, const Sm86Insn* in) {
         access = sm86_field(in, 76, 2), skew = sm86_field(in, 78, 1), output = sm86_field(in, 79, 1);
     int fixed = base == SM86_RZ, b32 = size == 2, attr = access == 3;
     const ShMesh* m = &c->si->mesh;
+    if (c->stage == ST_GS) {
+        /* a geometry program's ISBERD names a vertex of its input primitive for ALD: the register's value as it is,
+           the vertex's index (as on Maxwell, nxnative's notes) */
+        if (write || imm || size || access || skew || output) {
+            fail(c, "%s of a geometry program, not the vertex form", sm86_ops[in->op].name);
+            return;
+        }
+        wr(c, in->dst, fixed ? c->zero : rd(c, base));
+        return;
+    }
     if (!task && !mesh) {
         fail(c, "%s outside a task or mesh program", sm86_ops[in->op].name);
         return;
@@ -1913,6 +2121,8 @@ static int may_write(const Sm86Insn* in, u32 r) {
         case SM86_BMOV_B:
         case SM86_BMOV_BI:
         case SM86_BMOV_BL:
+        case SM86_STUB_SET:
+        case SM86_STUB_END:
         case SM86_ISBEWR: return 0;
         case SM86_TEX:
         case SM86_TEX_B:
@@ -3248,6 +3458,7 @@ static u32 ipa_input(Ctx* c, u32 i, u32 k, u32 loc, u32 freq) {
    not, as nouveau's nvc0_fp_assign_output_slots has it from Kepler on) */
 static void epilogue(Ctx* c) {
     if (c->stage == ST_VS && c->position && !(c->si->clip_enable & SNX_SH_NOT_LAST)) vertex_depth_fix(c);
+    if (c->stage == ST_GS && c->passthrough) gs_passthrough(c);
     if (c->stage != ST_FS) return;
     u32 target = c->sph[18], reg = 0;
     for (u32 rt = 0; rt < 8; rt++) {
@@ -3273,6 +3484,15 @@ static void epilogue(Ctx* c) {
 /* an S2R system register */
 static u32 system_value(Ctx* c, u32 sr) {
     switch (sr) {
+        case 0x1d:
+            /* SR_INVOCATION_INFO of a geometry program: the input primitive's vertices in bits 16-23 and the
+               primitive's index in the batch (bits 0-7) 0, which makes the index the program builds for ISBERD the
+               vertex's (emit_thread.c has Maxwell's the same) */
+            if (c->stage != ST_GS) {
+                fail(c, "S2R system register 0x1d outside a geometry program");
+                return c->zero;
+            }
+            return cu(c, gs_vertices(c) << 16);
         case 0x00: /* LANEID */
             spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
             return builtin_u32(c, &c->lane_id, SPV_BUILT_IN_SUBGROUP_LOCAL_INVOCATION_ID);
@@ -3530,6 +3750,35 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_BSYNC:
         case SM86_BREAK: /* it takes its lanes out of a convergence barrier and goes on: the BRA after it leaves */
         case SM86_WARPSYNC: return;
+        case SM86_LEPC:
+            /* the instruction's address, which only the exit stub's setup reads (STUB_SET) */
+            if (in->dst < SM86_RZ) wr(c, in->dst, cu(c, 16 * c->cur));
+            if (in->dst + 1u < SM86_RZ) wr(c, in->dst + 1u, c->zero);
+            return;
+        case SM86_STUB_SET:
+        case SM86_STUB_END:
+            /* A geometry program's exit stub: STUB_SET sets where EXIT goes on, and the stub's OUT finishes the
+               output. An invocation here has nothing left to finish when it ends (SPIR-V ends each primitive at the
+               invocation's end), so EXIT ends it and the stub does not run */
+            if (c->stage != ST_GS) fail(c, "%s outside a geometry program", sm86_ops[op].name);
+            return;
+        case SM86_OUT: {
+            /* OUT: bits 78-79 emit (1), cut (2) or both, 0 the final one (nothing here); the new output handle Rd
+               is the old one, Ra (nxnative's notes) */
+            if (c->stage != ST_GS) {
+                fail(c, "OUT outside a geometry program");
+                return;
+            }
+            u32 type = sm86_field(in, 78, 2);
+            if (type && c->passthrough) {
+                fail(c, "OUT emits in a passthrough geometry program");
+                return;
+            }
+            if (type & 1) gs_emit(c);
+            if (type & 2) spv_emit_end_primitive(&c->e);
+            if (in->dst < SM86_RZ) wr(c, in->dst, src_int(c, &in->a));
+            return;
+        }
         case SM86_BMOV_R:
             /* BMOV.32 R, B reads a convergence barrier, which the structured translation does not keep. Into RZ (a
                BMOV.32.CLEAR RZ, B0 before the BSSY B0 of an NVN vertex program) it changes nothing computed */
@@ -4726,14 +4975,23 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_AST: {
             u32 addr = sm86_field(in, 40, 10), comps = sm86_field(in, 74, 2) + 1;
             u32 vtx = sm86_field(in, op == SM86_ALD ? 32 : 64, 8);
-            if (sm86_field(in, 24, 8) != SM86_RZ || vtx != SM86_RZ || sm86_field(in, 76, 2) ||
+            /* a geometry program's ALD names its input vertex in the register at 32 (from ISBERD), and its AST the
+               output vertex's handle at 64 (from OUT), which SPIR-V's emits stand in for */
+            int geometry = c->stage == ST_GS;
+            if (sm86_field(in, 24, 8) != SM86_RZ || (vtx != SM86_RZ && !geometry) || sm86_field(in, 76, 2) ||
                 (op == SM86_ALD && sm86_field(in, 79, 1))) {
                 fail(c, "%s indexed, of a patch or of an output", sm86_ops[op].name);
                 return;
             }
+            /* the vertex index read once: the destination may be its register, as Maxwell's ALD reads it first */
+            u32 vertex = geometry && op == SM86_ALD && vtx < SM86_RZ ? rd(c, vtx) : c->zero;
             for (u32 k = 0; k < comps; k++) {
                 if (op == SM86_ALD) {
-                    if (in->dst < SM86_RZ) wr(c, in->dst + k, attr_load(c, addr + 4 * k));
+                    if (in->dst >= SM86_RZ) continue;
+                    if (geometry)
+                        wr(c, in->dst + k, gs_attr_load(c, addr + 4 * k, vertex));
+                    else
+                        wr(c, in->dst + k, attr_load(c, addr + 4 * k));
                 } else {
                     u32 data = sm86_field(in, 32, 8);
                     attr_store(c, addr + 4 * k, rd(c, data >= SM86_RZ ? data : data + k));
@@ -5988,7 +6246,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                  "a tessellation control program with no invocation (the passthrough takes its place)");
         return NULL;
     }
-    if (stage != ST_VS && stage != ST_FS && stage != ST_CS && stage != ST_TS && stage != ST_MS) {
+    if (stage != ST_VS && stage != ST_GS && stage != ST_FS && stage != ST_CS && stage != ST_TS && stage != ST_MS) {
         si->unsupported++;
         snprintf(si->first_unsupported, sizeof si->first_unsupported, "stage %d", stage);
         sm86_debug_dump("program", code, bytes, sph, si->first_unsupported);
@@ -6014,6 +6272,19 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     if (sph)
         for (u32 i = 0; i < 20; i++) si->sph[i] = sph[i];
     if (stage == ST_TS || stage == ST_MS) mesh_layout(c);
+    if (stage == ST_GS) {
+        /* the input primitive (the renderer's key), and the SPH's passthrough (word 0 bit 24), output topology (word
+           3, bits 24-27), output vertices (word 4, bits 0-11) and invocations (word 2, bits 24-31), checked as
+           spirv_translate.c checks Maxwell's */
+        u32 vertices = gs_vertices(c), topology = (sph[3] >> 24) & 15;
+        c->passthrough = sph[0] >> 24 & 1;
+        if (vertices != 1 && vertices != 2 && vertices != 3 && vertices != 4 && vertices != 6)
+            fail(c, "a geometry input primitive of %u vertices", vertices);
+        else if (!c->passthrough && topology != 1 && topology != 6 && topology != 7)
+            fail(c, "geometry output topology %u", topology);
+        else if ((sph[4] & 0xfff) > 256 || (sph[2] >> 24) > 32)
+            fail(c, "%u geometry output vertices or %u invocations", sph[4] & 0xfff, sph[2] >> 24);
+    }
     sm86_load(code, n, words);
     u32 top = 0;
     for (u32 i = 0; i < n; i++) {
@@ -6133,6 +6404,10 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             c->upred[p] = spv_emit_function_variable_init(e, pred_ptr, c->false_v);
         }
         prepare_handles(c);
+        if (stage == ST_GS) {
+            spv_emit_capability(e, SPV_CAPABILITY_GEOMETRY);
+            c->viewport_mask = spv_emit_function_variable_init(e, reg_ptr, cu(c, 1));
+        }
         /* a vertex program's outputs, made before its code: every exit's depth fix sees the position, and each
            starts as (0, 0, 0, 1), which the console gives the components a program doesn't write (spirv_translate.c
            does the same for Maxwell's). One game's full screen passes write only the position's x and y, and with
@@ -6227,6 +6502,25 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                                    : stage == ST_MS ? SPV_STAGE_MESH
                                                     : (SpvShaderStage)stage;
             spv_emit_entry_str(e, model, fn, "main", c->interfaces, c->ninterfaces);
+            if (stage == ST_GS) {
+                /* the input primitive, the output topology (a passthrough program's the input's) and vertices, and
+                   the invocations of each input primitive, as spirv_translate.c gives Maxwell's */
+                u32 vertices = gs_vertices(c), topology = (c->sph[3] >> 24) & 15, invocations = c->sph[2] >> 24;
+                if (c->passthrough) topology = vertices == 1 ? 1 : vertices == 2 || vertices == 4 ? 6 : 7;
+                spv_emit_execution_mode(e, fn,
+                                        vertices == 1   ? 19
+                                        : vertices == 2 ? 20
+                                        : vertices == 4 ? 21
+                                        : vertices == 6 ? 23
+                                                        : 22,
+                                        0, 0);
+                spv_emit_execution_mode(e, fn, topology == 1 ? 27 : topology == 6 ? 28 : 29, 0, 0);
+                spv_emit_execution_mode(e, fn, SPV_MODE_OUTPUT_VERTICES, 1,
+                                        c->passthrough         ? (vertices == 4 ? 2 : vertices == 6 ? 3 : vertices)
+                                        : c->sph[4] & 0xfff ? c->sph[4] & 0xfff
+                                                            : 1);
+                spv_emit_execution_mode(e, fn, SPV_MODE_INVOCATIONS, 1, invocations ? invocations : 1);
+            }
             if (stage == ST_FS) spv_emit_fragment_origin_upper_left(e, fn);
             if (stage == ST_FS && c->depth) spv_emit_fragment_depth_replacing(e, fn);
             if (stage == ST_CS) {
