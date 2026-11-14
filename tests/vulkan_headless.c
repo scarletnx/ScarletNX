@@ -7767,6 +7767,7 @@ static int run_headless(int argc, char** argv) {
     }
 #endif
     CHECK(!check_video_decode_gate());
+    CHECK(!check_video_nv12_odd());
     CHECK(g_renderer->method_barrier);
     u32 epoch = vk_ww_epoch();
     u64 finishes = g_vk_finishes;

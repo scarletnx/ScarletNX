@@ -217,15 +217,17 @@ static void rgb_matrix(VicSlot* s, const AVFrame* f) {
    GPU. One game's movie player then had its pictures at 8 to 15 a second for a movie of 30, each late, dropped them
    all, and the intro stayed black */
 static void image_write_cpu(const NvdecPic* pic, u64 cpu, u64 bytes) {
+    /* 4:2:0 chroma of an odd size covers the last column and row too, as nvdec.c's rows on the GPU do */
+    const u32 pairs = (pic->w + 1) / 2, rows = (pic->h + 1) / 2;
     own_acquire(cpu, bytes);
     for (u32 r = 0; r < pic->h; r++)
         memcpy(GP(pic->luma + (u64)r * pic->pitch_y), pic->plane[0] + (i64)r * pic->stride[0], pic->w);
-    for (u32 r = 0; r < pic->h / 2; r++) {
+    for (u32 r = 0; r < rows; r++) {
         u8* o = GP(pic->chroma + (u64)r * pic->pitch_c);
         if (pic->semi)
-            memcpy(o, pic->plane[1] + (i64)r * pic->stride[1], pic->w & ~1u);
+            memcpy(o, pic->plane[1] + (i64)r * pic->stride[1], 2 * pairs);
         else
-            for (u32 k = 0; k < pic->w / 2; k++) {
+            for (u32 k = 0; k < pairs; k++) {
                 o[2 * k] = pic->plane[1][(i64)r * pic->stride[1] + k];
                 o[2 * k + 1] = pic->plane[2][(i64)r * pic->stride[2] + k];
             }
