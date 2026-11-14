@@ -31,9 +31,12 @@ _Atomic int g_cs_any, g_gfx_any, g_gfx_img_any, g_uma_any;
 int g_renderer_up = 1;
 u64 g_draws;
 /* GPU addresses are guest ones, 0 unmapped, but for two GPU pages mapped apart (0xA000 at 0x3000, 0xB000 at 0x5000):
-   a pushbuffer across them isn't contiguous, and is copied */
+   a pushbuffer across them isn't contiguous, and is copied. FAR_GPU shows 0x6000 from another 2 MiB of GPU addresses
+   than 0x6000's own, which the record of constant buffer uploads tells apart (maxwell3d.c's g_wcb) */
+#define FAR_GPU 0x800000ull
 u64 gmmu_translate(u64 gva) {
     if (gva >= 0xA000 && gva < 0xC000) return (gva < 0xB000 ? 0x3000 : 0x5000) + (gva & 0xFFF);
+    if (gva >= FAR_GPU && gva < FAR_GPU + 0x1000) return 0x6000 + (gva & 0xFFF);
     return gva < sizeof guest ? gva : 0;
 }
 /* the run of gva's guest memory, as nvdrv's walks its table */
@@ -48,7 +51,8 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
 /* nvdrv.c's index of mappings by guest address, by brute force over the translation above (from the middle of each
    page, as page 0 translates to 0) */
 void gmmu_aliases(u64 cpu, u64 size, void (*fn)(void* ctx, u64 gva, u64 n), void* ctx) {
-    for (u64 p = 0; p < (sizeof guest + 0xFFF) >> 12; p++) {
+    for (u64 i = 0, pages = (sizeof guest + 0xFFF) >> 12; i <= pages; i++) {
+        u64 p = i < pages ? i : FAR_GPU >> 12; /* the GPU pages below the guest's size, then FAR_GPU's */
         u64 c = gmmu_translate((p << 12) + 0x800) & ~0xFFFull, a = c > cpu ? c : cpu;
         u64 b = c + 0x1000 < cpu + size ? c + 0x1000 : cpu + size;
         if (gmmu_translate((p << 12) + 0x800) && a < b) fn(ctx, (p << 12) + (a - c), b - a);
@@ -376,6 +380,46 @@ int main(void) {
         expect(gpu_mem_dirty_since(g, 0x3000, 0x1000) && !gpu_mem_dirty_since(g, 0xA000, 0x1000) &&
                    !gpu_mem_dirty_since(g, 0x4000, 0x1000),
                "a mapping change dirties its own GPU pages alone");
+    }
+
+    /* Constant buffer uploads (gpu_mem_written_cb, gmem_write_cb) stamp their pages as any write does. A question whose
+       baseline is after every write of another kind is answered "not written" without the tables where no upload
+       touched its 2 MiB granules of GPU addresses (maxwell3d.c's g_wcb), so each kind of write here has granules of
+       its own: uploads 0x400000, other writes 0x600000 (both unmapped), an upload's other GPU address FAR_GPU, and an
+       upload across 0xE00000 */
+    {
+        u64 g = gpu_mem_generation();
+        gpu_mem_written_cb(0x400010, 8);
+        expect(gpu_mem_dirty_since(g, 0x400000, 0x1000) && gpu_mem_dirty_since(g, 0x3FF000, 0x2000),
+               "an upload dirties its page, and a range from the granule before it into its own");
+        expect(!gpu_mem_dirty_since(g, 0x401000, 0x1000) && !gpu_mem_dirty_since(g, 0x600000, 0x1000) &&
+                   !gpu_mem_dirty_since(g, 0x3000, 0x1000),
+               "and no other page, in its granule or another");
+        g = gpu_mem_generation();
+        gpu_mem_written(0x600010, 4);
+        expect(gpu_mem_dirty_since(g, 0x600000, 0x1000), "a write after the upload dirties its page");
+        g = gpu_mem_generation();
+        gpu_mem_remapped(0x600000, 0x1000);
+        expect(gpu_mem_dirty_since(g, 0x600000, 0x1000), "so does a mapping change after it");
+        g = gpu_mem_generation();
+        gpu_mem_written_cpu(0x6000, 4);
+        expect(gpu_mem_dirty_since(g, FAR_GPU, 0x1000), "and a write of guest memory, at the GPU page far from it");
+        g = gpu_mem_generation();
+        gpu_mem_written_all();
+        expect(gpu_mem_dirty_since(g, 0x600000, 0x1000) && gpu_mem_dirty_since(g, 0xC00000, 4),
+               "and a save state's load, everywhere");
+        g = gpu_mem_generation();
+        const u32 word = 0x12345678;
+        expect(!gmem_write_cb(0x6010, &word, 4) && !memcmp((const u8*)guest + 0x6010, &word, 4),
+               "gmem_write_cb lands an upload's bytes");
+        expect(gpu_mem_dirty_since(g, 0x6000, 0x1000) && gpu_mem_dirty_since(g, FAR_GPU, 0x1000),
+               "and dirties each GPU page showing them, in another granule too");
+        expect(!gpu_mem_dirty_since(g, 0x7000, 0x1000) && !gpu_mem_dirty_since(g, 0x600000, 0x1000),
+               "and no other page");
+        g = gpu_mem_generation();
+        gpu_mem_written_cb(0xDFFFF8, 16);
+        expect(gpu_mem_dirty_since(g, 0xDFF000, 0x1000) && gpu_mem_dirty_since(g, 0xE00000, 8),
+               "an upload across two granules dirties its pages in both");
     }
 
     /* NVN temporarily forces rendering in passthrough mode, then replays the default override without ever
