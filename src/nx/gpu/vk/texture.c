@@ -1416,10 +1416,18 @@ static int astc_kind_outcome(u32 kind, int srgb, int unread) {
                                                                  : VK_ASTC_KIND_SRGB_ALPHA;
 }
 /* the image format of an outcome that has one: BC4 and BC5 UNORM (there is no sRGB BC4 or BC5), BC1 as sRGB or not */
+/* Opaque colour that BC1 holds only roughly (more than one line in a 4x4 block: VK_ASTC_KIND_LINES), held as BC1
+   all the same, half BC7's bytes: astc_lines_bc1=2, or its Auto (0) once the images have run short of memory
+   (g_vk.bc1_tight); Never (1) by default. Half of Mario Kart World's ASTC textures are such, and on a GPU of 2 GB its race needs more than
+   the budget: the cache evicted and made again 5,000 to 7,000 textures in 4 minutes */
+static int astc_lines_bc1(void) {
+    return g_settings.astc_lines_bc1 == 2 || (g_settings.astc_lines_bc1 == 0 && g_vk.bc1_tight);
+}
 static VkFormat astc_kind_vk(int outcome, int srgb) {
     return outcome == VK_ASTC_KIND_BC4   ? VK_FORMAT_BC4_UNORM_BLOCK
            : outcome == VK_ASTC_KIND_BC5 ? VK_FORMAT_BC5_UNORM_BLOCK
-           : outcome == VK_ASTC_KIND_BC1 || outcome == VK_ASTC_KIND_SRGB_GREY
+           : outcome == VK_ASTC_KIND_BC1 || outcome == VK_ASTC_KIND_SRGB_GREY ||
+                   (outcome == VK_ASTC_KIND_LINES && astc_lines_bc1())
                ? (srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK)
                : VK_FORMAT_UNDEFINED;
 }
