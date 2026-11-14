@@ -200,7 +200,21 @@ static u32 root_var(Ctx* c, u32 end) {
 }
 /* the word at byte offset off of a bank, plus the register value index when it isn't 0. A root table's bytes are
    past those of the tables before it, and an index stays in the tables */
+static u32 push_component(Ctx* c, u32 k);
+static u32 builtin_u32(Ctx* c, u32* var, u32 builtin);
 static u32 cbuf_load(Ctx* c, u32 bank, u32 off, u32 index) {
+    /* The draw's base instance, which the console's driver writes into bank 0 for a vertex program to add to its
+       instance ID (counted from 0, attr_load): BaseInstance less what the draw's first instance adds to the base
+       instance (push.x), the GPU's own for an indirect draw; without draw parameters push.x is the base instance. The
+       bank an Ounce program reads did not hold it, and a racing game's instanced cactus took other instances'
+       transforms (#2175) */
+    if (c->stage == ST_VS && bank == 0 && !index && off == SH_CB0_BASE_INSTANCE) {
+        u32 push = to_u(c, push_component(c, 0));
+        if (!g_shader_draw_parameters) return push;
+        spv_emit_draw_parameters_capability(&c->e);
+        return spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32,
+                               builtin_u32(c, &c->base_instance, SPV_BUILT_IN_BASE_INSTANCE), push);
+    }
     u32 root = bank >= SH_ROOT_BANK && bank < SH_ROOT_BANK + SH_ROOT_TABLES;
     u32 elements = root ? SH_ROOT_BYTES / 16 : 4096;
     if (root) off += (bank - SH_ROOT_BANK) * SH_ROOT_TABLE;
