@@ -1193,6 +1193,7 @@ add_test(NAME hook_adapters COMMAND snx-test-hook-adapters)
 add_executable(snx-test-hook-install-a32 hook_install_a32.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
                "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
 snx_test_target(snx-test-hook-install-a32 23)
+target_link_libraries(snx-test-hook-install-a32 PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-install-a32 PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_service_swipc(snx-test-hook-install-a32)
 snx_hookgen(snx-test-hook-install-a32 SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/a32_marked.hook" A32_MARKED)
@@ -1216,6 +1217,7 @@ add_test(NAME hook_address COMMAND snx-test-hook-address)
 add_executable(snx-test-hook-install hook_install.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
                "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
 snx_test_target(snx-test-hook-install 23)
+target_link_libraries(snx-test-hook-install PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-install PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_service_swipc(snx-test-hook-install)
 snx_hookgen(snx-test-hook-install SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook" A32_MARKED)
@@ -1224,6 +1226,7 @@ add_test(NAME hook_install COMMAND snx-test-hook-install)
 # against what llvm-mc disassembles them to, on any host
 add_executable(snx-test-hook-jump hook_jump.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
 snx_test_target(snx-test-hook-jump 23)
+target_link_libraries(snx-test-hook-jump PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-jump PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME hook_jump COMMAND snx-test-hook-jump)
 # a native hook the game invalidates (src/nx/hle/hook/hook.c): its adapter rewritten into a jump to the game's code, on
@@ -1231,6 +1234,7 @@ add_test(NAME hook_jump COMMAND snx-test-hook-jump)
 add_executable(snx-test-hook-invalidated hook_invalidated.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
                "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
 snx_test_target(snx-test-hook-invalidated 23)
+target_link_libraries(snx-test-hook-invalidated PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-invalidated PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_service_swipc(snx-test-hook-invalidated)
 snx_hookgen(snx-test-hook-invalidated SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook" A32_MARKED)
@@ -1247,6 +1251,7 @@ file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/hook/full.hook" CONTENT "${fu
 add_executable(snx-test-hook-sites hook_sites.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
                "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
 snx_test_target(snx-test-hook-sites 23)
+target_link_libraries(snx-test-hook-sites PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-sites PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_service_swipc(snx-test-hook-sites)
 snx_hookgen(snx-test-hook-sites SPEC "${CMAKE_CURRENT_BINARY_DIR}/hook/full.hook" A32_MARKED)
