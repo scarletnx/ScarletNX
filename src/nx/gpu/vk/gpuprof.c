@@ -43,6 +43,7 @@ typedef struct {
     u16 q0, q1; /* the Tracy query ids its begin and end went out with, 0 when it emitted none */
     u64 ep; /* the connection the begin went out on: an end or a time from another one is dropped */
     u32 qi; /* its begin's timestamp in the slot's pool, its end's the one after */
+    u32 nsub; /* the slot's submissions at its begin: another count than the pass before's puts a submit between */
 } GpPass;
 #define GP_SUBS 512 /* submissions per frame slot: cmd.c's slots take at most 128 */
 typedef struct {
@@ -76,13 +77,18 @@ static GpKey g_key[GP_KEYS];
 static u64 g_pass_ns, g_span_ns, g_frames, g_lost;
 static u64 g_draws_at_begin;
 static void gp_ops_done(GpOps* o, const u64* ts, double period, int ctx);
-/* the gaps between passes by what was recorded in them: dispatches, else copies, else barriers, else nothing (the
-   GPU waiting for the next submission or a semaphore) */
-static const char* const g_gap_name[4] = {"with dispatches", "with copies", "with barriers only", "with nothing"};
+/* the gaps between two passes of one submission by what was recorded in them: dispatches, else copies, else barriers,
+   else nothing. A gap from a pass of one submission to a pass of a later one is counted apart, whatever it holds: its
+   time is mostly the queue's wait for the CPU to submit the later one. Counted by its commands, the copies of results
+   for the host at each submit (vk_buf_host_barrier) put that wait in the copy gaps: one game's buffer copy gaps were
+   4.1 ms a frame that way, and are 0.25 ms inside submissions */
+#define GP_GAPS 5
+static const char* const g_gap_name[GP_GAPS] = {"with dispatches", "with copies", "with barriers only", "with nothing",
+                                                "across a submit (the queue's wait for it too)"};
 /* the same gaps and idle sums as plots, for a --tracy run whose vk_gpu_profile leaves the log lines out */
-static const char* const g_gap_plot[4] = {"gpu gap: dispatches", "gpu gap: copies", "gpu gap: barriers",
-                                          "gpu gap: nothing"};
-static u64 g_gap_ns[4], g_gaps[4];
+static const char* const g_gap_plot[GP_GAPS] = {"gpu gap: dispatches", "gpu gap: copies", "gpu gap: barriers",
+                                                "gpu gap: nothing", "gpu gap: across a submit"};
+static u64 g_gap_ns[GP_GAPS], g_gaps[GP_GAPS];
 static u64 g_x_at_end, g_b_at_end, g_d_at_end, g_k_at_end[3], g_bytes_at_end;
 /* the copy gaps by their mix: buffer copies only, with buffer-image copies, with image copies or blits */
 static const char* const g_mix_name[3] = {"buffer copies only", "with buffer-image copies", "with image copies"};
@@ -415,6 +421,7 @@ void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt) {
     const Surf* s = rt ? rt : zt;
     GpPass* p = &g->pass[g->npass];
     p->qi = g->ops.used;
+    p->nsub = g->nsub;
     p->gva = s ? s->gva : 0;
     p->w = s ? s->w : 0;
     p->h = s ? s->h : 0;
@@ -629,7 +636,7 @@ void vk_gpuprof_frame_done(u32 slot) {
     gp_idle(g, ts, period);
     for (u32 i = 1; i < g->npass; i++) {
         const GpPass* p = &g->pass[i];
-        int c = p->dispatches ? 0 : p->xfers ? 1 : p->barriers ? 2 : 3;
+        int c = p->nsub != g->pass[i - 1].nsub ? 4 : p->dispatches ? 0 : p->xfers ? 1 : p->barriers ? 2 : 3;
         u64 gns = (u64)((double)(ts[p->qi] - ts[g->pass[i - 1].qi + 1]) * period);
         g_gap_ns[c] += gns;
         g_gaps[c]++;
@@ -731,7 +738,7 @@ static int key_cmp(const void* a, const void* b) {
 static void gp_plots(void) {
     u64 now = plat_ns(), presents = (u32)(g_vk_present - g_present0), wall = now - g_t0;
     double f = g_frames ? (double)g_frames : 1.0;
-    for (int c = 0; c < 4; c++) SNX_PLOT(g_gap_plot[c], (double)g_gap_ns[c] / 1e6 / f);
+    for (int c = 0; c < GP_GAPS; c++) SNX_PLOT(g_gap_plot[c], (double)g_gap_ns[c] / 1e6 / f);
     for (int c = 0; c < IDLE_N; c++)
         SNX_PLOT(g_idle_plot[c], presents ? (double)g_idle_ns[c] / 1e6 / (double)presents : 0.0);
     if (g_t0 && wall) SNX_PLOT("gpu busy", 100.0 * (double)g_busy_ns / (double)wall);
@@ -762,7 +769,7 @@ static void gp_report(void) {
         "untimed\n",
         (unsigned long long)g_frames, (double)g_pass_ns / 1e6 / (double)g_frames,
         (double)g_span_ns / 1e6 / (double)g_frames, (unsigned long long)g_lost);
-    for (int c = 0; c < 4; c++)
+    for (int c = 0; c < GP_GAPS; c++)
         if (g_gaps[c])
             LOG("vulkan: GPU   gaps %s: %.2f ms a frame, %llu of them\n", g_gap_name[c],
                 (double)g_gap_ns[c] / 1e6 / (double)g_frames, (unsigned long long)g_gaps[c]);
