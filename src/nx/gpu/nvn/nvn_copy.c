@@ -98,8 +98,8 @@ static void launch(const GpuDmaOp* o) {
         LOG_LIMIT(4, "nvn: a copy before the renderer started, skipped\n");
         return;
     }
-    if (!g_renderer->dma_copy(o)) LOG_LIMIT(4, "nvn: the GPU could not do a copy, skipped\n");
-    if (g_renderer->rt_reload) g_renderer->rt_reload(o->dst.addr);
+    if (!gpu_renderer_now()->dma_copy(o)) LOG_LIMIT(4, "nvn: the GPU could not do a copy, skipped\n");
+    if (g_renderer->rt_reload) gpu_renderer_now()->rt_reload(o->dst.addr);
 }
 /* lines of a region w texels wide and h high on the plane */
 static void region_lines(const TexPlane* p, i32 w, i32 h, GpuDmaOp* o) {
@@ -135,10 +135,10 @@ static void copy_buffer_mirrored(const GpuDmaOp* o, u32 bpb, int to_tex, u32 fla
     b.src.ox = b.src.oy = b.dst.ox = b.dst.oy = 0;
     b.scol = table;
     b.srow = table + columns;
-    if (!g_renderer_up || !g_renderer->blit_mem || !g_renderer->blit_mem(&b))
+    if (!g_renderer_up || !g_renderer->blit_mem || !gpu_renderer_now()->blit_mem(&b))
         LOG_LIMIT(4, "nvn: the GPU could not mirror a buffer/texture copy\n");
     else if (g_renderer->rt_reload)
-        g_renderer->rt_reload(b.dst.addr);
+        gpu_renderer_now()->rt_reload(b.dst.addr);
 }
 
 /* between a buffer at buf and a texture's region, either way (to_tex: the buffer is the source) */
@@ -349,10 +349,10 @@ static int copy_memory(const NvnPCopyT2T* r, const TexPlane* source, const TexPl
                      .srow = table + columns};
         tex_side(source, 0, 0, source_slice(r, k), &b.src);
         tex_side(destination, 0, 0, r->dr.zoffset + k, &b.dst);
-        if (!g_renderer_up || !g_renderer->blit_mem || !g_renderer->blit_mem(&b))
+        if (!g_renderer_up || !g_renderer->blit_mem || !gpu_renderer_now()->blit_mem(&b))
             LOG_LIMIT(4, "nvn: the GPU could not gather a volume copy\n");
         else if (g_renderer->rt_reload)
-            g_renderer->rt_reload(b.dst.addr);
+            gpu_renderer_now()->rt_reload(b.dst.addr);
     }
     return 1;
 }
@@ -375,12 +375,12 @@ static int blit_gpu(const NvnPCopyT2T* r, i32 k, Surf2D* s, Surf2D* d, u32* bs, 
     /* Unscaled pixels of the same format retain the existing fast path: use an image already drawn there, else
        let DMA copy the bytes. Creating an image solely for an ordinary upload/copy would add needless work. */
     if (sdx == 1.0 && sdy == 1.0 && s->format == d->format && g_renderer->blit)
-        return g_renderer->blit(s, d, r->dr.xoffset, r->dr.yoffset, r->dr.width, r->dr.height, sx, sy, sdx, sdy);
+        return gpu_renderer_now()->blit(s, d, r->dr.xoffset, r->dr.yoffset, r->dr.width, r->dr.height, sx, sy, sdx, sdy);
     if (g_renderer->blit_filter)
-        return g_renderer->blit_filter(s, d, r->dr.xoffset, r->dr.yoffset, r->dr.width, r->dr.height, sx, sy, sdx, sdy,
+        return gpu_renderer_now()->blit_filter(s, d, r->dr.xoffset, r->dr.yoffset, r->dr.width, r->dr.height, sx, sy, sdx, sdy,
                                        !!(r->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT));
     return g_renderer->blit &&
-           g_renderer->blit(s, d, r->dr.xoffset, r->dr.yoffset, r->dr.width, r->dr.height, sx, sy, sdx, sdy);
+           gpu_renderer_now()->blit(s, d, r->dr.xoffset, r->dr.yoffset, r->dr.width, r->dr.height, sx, sy, sdx, sdy);
 }
 /* A copy between textures' regions with scaling, conversion or axis reversal. The renderer's image path applies
    the explicit filter flag; its memory gather provides nearest sampling when no image path can take the source. */
@@ -446,10 +446,10 @@ static void blit_texture(const NvnPCopyT2T* r) {
         b.bpp = bs;
         b.scol = tab;
         b.srow = tab + n;
-        if (!g_renderer->blit_mem(&b))
+        if (!gpu_renderer_now()->blit_mem(&b))
             LOG_LIMIT(4, "nvn: the GPU could not do a texture blit, skipped\n");
         else if (g_renderer->rt_reload)
-            g_renderer->rt_reload(d.addr);
+            gpu_renderer_now()->rt_reload(d.addr);
     }
 }
 /* between two textures' regions of the same size and block bytes */
@@ -590,7 +590,7 @@ static int dlss_upscale(const NvnPDlss* r) {
     u.reset = r->reset;
     u.flags = (u32)r->flags;
     if (r->in[0] <= 0 || r->in[1] <= 0 || r->out[0] <= 0 || r->out[1] <= 0) return 0;
-    return g_renderer->upscale(&u);
+    return gpu_renderer_now()->upscale(&u);
 }
 /* n bytes at dst filled with the 32-bit value, as the DMA engine fills: its remap writes constant A into every
    component, reading nothing */
@@ -745,13 +745,13 @@ static void texel_read(void* arg) {
     const TexelRead* r = (const TexelRead*)arg;
     copy_buffer_texture(&r->c.r, &r->c.t, 0, r->c.stride, NULL);
     if (g_renderer->stream_incr) /* once the copy is done */
-        g_renderer->stream_incr(r->syncpt);
+        gpu_stream_incr(r->syncpt);
     else
         syncpt_incr(r->syncpt);
     /* The renderer holds a stream's releases until the stream stops (release.c), and this call runs between jobs,
        where no job's end lets them go. Held, the increment waited for the next job, which the waiting thread was
        often the one to submit: the game stopped with the releases queued and the GPU idle */
-    if (g_renderer->stream_end) g_renderer->stream_end();
+    if (g_renderer->stream_end) gpu_stream_end();
 }
 void nvn_read_texels(u64 t, u64 v, u64 region, u64 dst, i64 row, i64 image) {
     TexelRead r;
