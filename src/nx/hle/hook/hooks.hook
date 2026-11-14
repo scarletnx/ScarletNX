@@ -70,6 +70,32 @@ hook _ZdaPvmSt11align_val_t(addr p) = alloc_delete
 hook _ZdlPvSt11align_val_tRKSt9nothrow_t(addr p) = alloc_delete
 hook _ZdaPvSt11align_val_tRKSt9nothrow_t(addr p) = alloc_delete
 
+# the C++ library's mutexes, condition variable, clocks and sleep (sync.c): the host's own, by the guest object's
+# address. Not timed_mutex, shared_timed_mutex or condition_variable_any, whose templates the game inlines over their
+# members
+family sync
+hook _ZNSt3__15mutex4lockEv(addr m) = sync_mutex_lock
+hook _ZNSt3__15mutex8try_lockEv(addr m) -> bool = sync_mutex_try_lock
+hook _ZNSt3__15mutex6unlockEv(addr m) = sync_mutex_unlock
+hook _ZNSt3__15mutexD1Ev(addr m) = sync_drop
+hook _ZNSt3__15mutexD2Ev(addr m) = sync_drop
+hook _ZNSt3__115recursive_mutexC1Ev(addr m) = sync_recursive_init
+hook _ZNSt3__115recursive_mutexC2Ev(addr m) = sync_recursive_init
+hook _ZNSt3__115recursive_mutexD1Ev(addr m) = sync_drop
+hook _ZNSt3__115recursive_mutexD2Ev(addr m) = sync_drop
+hook _ZNSt3__115recursive_mutex4lockEv(addr m) = sync_recursive_lock
+hook _ZNSt3__115recursive_mutex8try_lockEv(addr m) -> bool = sync_recursive_try_lock
+hook _ZNSt3__115recursive_mutex6unlockEv(addr m) = sync_recursive_unlock
+hook _ZNSt3__118condition_variable10notify_oneEv(addr cv) = sync_cond_notify_one
+hook _ZNSt3__118condition_variable10notify_allEv(addr cv) = sync_cond_notify_all
+hook _ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE(addr cv, addr lock) = sync_cond_wait
+hook _ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEENS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE(addr cv, addr lock, i64 ns) = sync_cond_timed_wait
+hook _ZNSt3__118condition_variableD1Ev(addr cv) = sync_drop
+hook _ZNSt3__118condition_variableD2Ev(addr cv) = sync_drop
+hook _ZNSt3__16chrono12system_clock3nowEv() -> i64 = sync_system_now
+hook _ZNSt3__16chrono12steady_clock3nowEv() -> i64 = sync_steady_now
+hook _ZNSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE(addr duration) = sync_sleep_for
+
 # nn::diag (diag.c): the SDK's abort, which every one of its NN_ABORT overloads ends in, logged with what the SDK passed
 # it, then its own code, which stops the game as it would
 family diag

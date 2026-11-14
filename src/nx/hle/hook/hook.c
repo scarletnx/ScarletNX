@@ -204,11 +204,11 @@ int hook_routed(const char* name) {
 }
 
 /* the families whose handlers run only where the runtime has what they run on: alloc the host allocator's arena in
-   guest memory (alloc.c), and a 64-bit game's registers and pointers. The reason a family is off for, NULL when it
-   may be installed */
+   guest memory (alloc.c), and both it and sync 64-bit games' registers and pointers. The reason a family is off for,
+   NULL when it may be installed */
 static const char* family_unready(const char* family) {
-    int alloc = !strcmp(family, "alloc");
-    if (alloc && g_arm_mod) return "its handlers are for 64-bit games";
+    int alloc = !strcmp(family, "alloc"), sync = !strcmp(family, "sync");
+    if ((alloc || sync) && g_arm_mod) return "its handlers are for 64-bit games";
     if (alloc && !alloc_ready()) return "the host allocator has no arena in guest memory this run";
     return NULL;
 }
