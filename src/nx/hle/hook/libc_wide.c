@@ -172,14 +172,12 @@ f32 libc_wcstof(CPU* c, u64 s, u64 end) {
 }
 #else
 /* the table names them, and the family is off on this host: never called */
-#define STUB(T, name, ...)                                                                                             \
-    T name(CPU* c, __VA_ARGS__) {                                                                                      \
-        (void)c;                                                                                                       \
-        return 0;                                                                                                      \
-    }
-#define STUB1(T, name, A)          STUB(T, name, A a)
-#define STUB2(T, name, A, B)       STUB(T, name, A a, B b)
-#define STUB3(T, name, A, B, C)    STUB(T, name, A a, B b, C d)
+#define STUB1(T, name, A)                                                                                              \
+    T name(CPU* c, A a) { return (void)c, (void)a, (T)0; }
+#define STUB2(T, name, A, B)                                                                                           \
+    T name(CPU* c, A a, B b) { return (void)c, (void)a, (void)b, (T)0; }
+#define STUB3(T, name, A, B, C)                                                                                        \
+    T name(CPU* c, A a, B b, C d) { return (void)c, (void)a, (void)b, (void)d, (T)0; }
 STUB1(u64, libc_wcslen, u64)
 STUB2(u64, libc_wcsnlen, u64, u64)
 STUB2(i32, libc_wcscmp, u64, u64)
