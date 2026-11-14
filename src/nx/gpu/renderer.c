@@ -84,9 +84,14 @@ static void ds_run(const void* arg, u64 bytes) {
         }
     c->owner = r.owner;
     memcpy(c->gen, r.gen, sizeof c->gen);
-    own->pred = r.pred;
+    /* a render enable of the 3D engine is decided on this side (maxwell/engines.c): its draws and clears are skipped
+       while it turns them off, and they take its predicate */
+    u32 pred = r.pred;
+    int off = gpu_render_state(r.owner, &pred);
+    own->pred = pred;
     own->xfb_reload = (u8)(own->xfb_reload | r.reload);
     if ((u64)(p - (const u8*)arg) + (u64)r.indices * 4 > bytes) fatal("gpu: a draw record is short\n");
+    if (off == 1 && (r.kind == DR_DRAW || r.kind == DR_CLEAR)) return;
     switch (r.kind) {
         case DR_DRAW: {
             DrawCall dc = r.call.dc;
@@ -186,6 +191,7 @@ void gpu_dispatch(const DispatchState* d) {
 /* the front end's states were replaced (a state load): each is sent whole again, and each owner starts over */
 void gpu_draw_states_reset(void) {
     gq_drain();
+    gpu_render_states_reset();
     for (u32 i = 0; i < DS_COPIES; i++) {
         g_ds_sent[i].src = NULL;
         g_ds_copy[i].own = (DrawOwner){0};

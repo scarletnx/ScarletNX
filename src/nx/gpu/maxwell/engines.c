@@ -11,6 +11,7 @@
    draw or clear does with the state is maxwell3d.c's and the renderer's. Register names are maxwell_3d_regs.h's:
    method indices (byte offset / 4) */
 #include "nx/gpu/maxwell/engines_int.h"
+#include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/maxwell/maxwell_3d_regs.h"
 
 /* ------------------------------------------------------------ the file's state */
@@ -68,7 +69,8 @@ u64 gpu_ticks(void) {
 /* ------------------------------------------------------------ made-up counter values */
 /* Counter reports other than samples passed after its reset carry made-up values, and a condition comparing them
    could skip a draw the game needs: a render enable over an address that last got one draws. The last MADEUP_N such
-   addresses; a release or a real count written there takes it out */
+   addresses; a release or a real count written there takes it out. The table is the renderer's side's: the reports
+   are written there in their order (report_run), and the render enable reads it there (render_enable_run) */
 static int madeup_has(u64 a) {
     u32 i;
     for (i = 0; i < MADEUP_N; i++)
@@ -87,16 +89,37 @@ static void madeup_set(u64 a, int made) {
 
 /* ------------------------------------------------------------ report semaphores */
 /* a report's write: one word (short_query), or the value as 64 bits and the timestamp (Eden's StampQueryResult) */
-static void report_write(u64 a, u64 value, int one) {
-    u8 d[MAXWELL3D_REPORT_BYTES]; /* guest memory's bytes, little-endian */
-    if (one) {
-        snx_st_le32(d, (u32)value);
-        gpu_release_write(a, d, 4);
-    } else {
-        snx_st_le64(d, value);
-        snx_st_le64(d + 8, gpu_ticks());
-        gpu_release_write(a, d, MAXWELL3D_REPORT_BYTES);
+/* A report, on the renderer's side in its place in the queue: samples passed counted by the renderer when the
+   counter was reset (counted) and the renderer counts it, else value. made: value is a made-up count. The front end
+   takes the timestamp, which its clock gives (gpu_ticks), and goes on without a wait: one game asked the renderer for
+   about 70 counts a frame, and the front end waited for every queued record each time */
+typedef struct {
+    u64 a, value, ticks;
+    u32 one, made, counted, owner;
+} ReportWrite;
+static void report_run(const void* arg, u64 bytes) {
+    ReportWrite w;
+    (void)bytes;
+    memcpy(&w, arg, sizeof w);
+    if (w.counted && g_renderer->samples_report &&
+        g_renderer->samples_report(w.owner, w.a, w.one ? 4 : MAXWELL3D_REPORT_BYTES, w.ticks)) {
+        madeup_set(w.a, 0);
+        return;
     }
+    u8 d[MAXWELL3D_REPORT_BYTES]; /* guest memory's bytes, little-endian */
+    if (w.one) {
+        snx_st_le32(d, (u32)w.value);
+        gpu_release_write(w.a, d, 4);
+    } else {
+        snx_st_le64(d, w.value);
+        snx_st_le64(d + 8, w.ticks);
+        gpu_release_write(w.a, d, MAXWELL3D_REPORT_BYTES);
+    }
+    madeup_set(w.a, (int)w.made);
+}
+static void report_queue(u64 a, u64 value, int one, int made, int counted, u32 owner) {
+    ReportWrite w = {a, value, gpu_ticks(), (u32)one, (u32)made, (u32)counted, owner};
+    gq_call(report_run, &w, sizeof w);
 }
 #define REPORT_BIT(r) (1u << (r))
 /* the counters a CLEAR_REPORT_VALUE resets, as REPORT_BIT of their reports */
@@ -145,23 +168,17 @@ static void counter_reset(GpuChannel* ch, u32 v) {
 static void counter_report(GpuChannel* ch, u64 a, u32 sel, u32 payload, int one) {
     u64 v;
     if (sel == REPORT_PAYLOAD) {
-        report_write(a, payload, one);
-        madeup_set(a, 0);
+        report_queue(a, payload, one, 0, 0, 0);
         return;
     }
-    if ((sel == REPORT_ZPASS_PIXEL_COUNT64 || sel == REPORT_ZPASS_PIXEL_COUNT) &&
-        (ch->counter_reset & REPORT_BIT(sel)) && g_renderer->samples_report &&
-        gpu_renderer_now()->samples_report(ch->ds.owner, a, one ? 4 : MAXWELL3D_REPORT_BYTES, gpu_ticks())) {
-        madeup_set(a, 0);
-        return;
-    }
+    int counted = (sel == REPORT_ZPASS_PIXEL_COUNT64 || sel == REPORT_ZPASS_PIXEL_COUNT) &&
+                  (ch->counter_reset & REPORT_BIT(sel));
     u64 per_draw = sel == REPORT_VERTICES_GENERATED ? MADEUP_VERTICES_PER_DRAW : MADEUP_COUNT;
     if (ch->counter_reset & REPORT_BIT(sel))
         v = (g_draws - ch->counter_base[sel]) * per_draw;
     else
         v = sel == REPORT_VERTICES_GENERATED ? g_draws * MADEUP_VERTICES_PER_DRAW : MADEUP_COUNT;
-    report_write(a, v, one);
-    madeup_set(a, 1);
+    report_queue(a, v, one, 1, counted, ch->ds.owner); /* made up unless the renderer counts it */
 }
 void query_get(GpuChannel* ch, u32* r, int base, u32 v) {
     u64 a = gpu_packed_va(r[base], r[base + 1]);
@@ -171,10 +188,7 @@ void query_get(GpuChannel* ch, u32* r, int base, u32 v) {
         LOG_LIMIT(4, "gpu: report semaphore reduction %u is not emulated: the payload is written as it is\n",
                   report_semaphore_reduction_op(v));
     switch (report_semaphore_operation(v)) {
-        case REPORT_SEMAPHORE_OPERATION_RELEASE:
-            report_write(a, payload, one);
-            madeup_set(a, 0);
-            break;
+        case REPORT_SEMAPHORE_OPERATION_RELEASE: report_queue(a, payload, one, 0, 0, 0); break;
         case REPORT_SEMAPHORE_OPERATION_ACQUIRE:
             gpu_park(ch, GPU_PARK_REPORT, a, payload,
                      report_semaphore_comparison(v) == REPORT_SEMAPHORE_COMPARISON_GREATER_OR_EQUAL);
@@ -188,63 +202,114 @@ void query_get(GpuChannel* ch, u32* r, int base, u32 v) {
 
 /* ------------------------------------------------------------ render enable */
 /* Decided when the mode or the override is written, as Eden's ProcessQueryCondition, and kept until one of them is
-   written again */
-static void render_enable_update(GpuChannel* ch) {
-    const u32* r = ch->r3d;
-    u64 a = gpu_packed_va(r[MAXWELL3D_RENDER_ENABLE_ADDRESS_HIGH], r[MAXWELL3D_RENDER_ENABLE_ADDRESS_LOW]);
-    u32 mode = r[MAXWELL3D_RENDER_ENABLE_MODE] & MAXWELL3D_RENDER_ENABLE_MODE_MASK, pred = 0;
-    int on = 1, known;
-    if (gpu_channel_verify(ch)) { /* no report to read: a conditional enable draws, as the live replay's does */
-        u32 o = r[MAXWELL3D_RENDER_ENABLE_OVERRIDE] & MAXWELL3D_RENDER_ENABLE_OVERRIDE_MASK;
-        ch->render_off = o == MAXWELL3D_RENDER_ENABLE_OVERRIDE_NEVER_RENDER ||
-                         (o != MAXWELL3D_RENDER_ENABLE_OVERRIDE_ALWAYS_RENDER && mode == MAXWELL3D_RENDER_ENABLE_FALSE);
-        (void)a;
-        return;
+   written again. The decision is the renderer's side's, in its place in the queue (gpu_queue.c): it reads the reports
+   as the work before it left them, and it holds the decision and the predicate for the owner's draws
+   (gpu_render_state). The front end goes on without a wait: one game's occlusion tests asked about 180 times a frame,
+   and the front end waited for every queued record each time */
+typedef struct {
+    u32 owner, override, mode;
+    u32 pad;
+    u64 a;
+} RenderEnable;
+/* the renderer's side: each owner's decision and predicate, which only it reads and writes */
+#define RENDER_OWNERS 16
+typedef struct {
+    u32 owner;
+    int used, off;
+    u32 pred; /* the GPU's predicate (renderer.h render_predicate), 0 for none */
+} RenderOwner;
+static RenderOwner g_render[RENDER_OWNERS];
+static int render_owner(u32 owner) {
+    int at = 0;
+    while (at < RENDER_OWNERS && !(g_render[at].used && g_render[at].owner == owner)) at++;
+    if (at < RENDER_OWNERS) return at;
+    for (at = 0; at < RENDER_OWNERS && g_render[at].used; at++) {}
+    if (at == RENDER_OWNERS) { /* every slot taken: the first one's owner draws as without a render enable */
+        at = 0;
+        if (g_render[0].pred && g_renderer->render_predicate_drop) g_renderer->render_predicate_drop(g_render[0].pred);
     }
-    if (ch->owner.pred) {
-        gpu_predicate_drop(ch->owner.pred);
-        ch->owner.pred = 0;
+    g_render[at] = (RenderOwner){owner, 1, 0, 0};
+    return at;
+}
+static void render_enable_run(const void* arg, u64 bytes) {
+    RenderEnable e;
+    (void)bytes;
+    memcpy(&e, arg, sizeof e);
+    int at = render_owner(e.owner), on = 1;
+    u32 pred = 0;
+    if (g_render[at].pred) {
+        if (g_renderer->render_predicate_drop) g_renderer->render_predicate_drop(g_render[at].pred);
+        g_render[at].pred = 0;
     }
-    switch (r[MAXWELL3D_RENDER_ENABLE_OVERRIDE] & MAXWELL3D_RENDER_ENABLE_OVERRIDE_MASK) {
+    switch (e.override) {
         case MAXWELL3D_RENDER_ENABLE_OVERRIDE_ALWAYS_RENDER: on = 1; break;
         case MAXWELL3D_RENDER_ENABLE_OVERRIDE_NEVER_RENDER: on = 0; break;
         default:
-            switch (mode) {
+            switch (e.mode) {
                 case MAXWELL3D_RENDER_ENABLE_FALSE: on = 0; break;
                 case MAXWELL3D_RENDER_ENABLE_TRUE: on = 1; break;
                 case MAXWELL3D_RENDER_ENABLE_CONDITIONAL: { /* both words of the report's value set */
                     u32 w[2];
-                    gmem_read(a, w, 8);
-                    on = madeup_has(a) || (w[0] && w[1]);
+                    gmem_read(e.a, w, 8);
+                    on = madeup_has(e.a) || (w[0] && w[1]);
                     break;
                 }
                 case MAXWELL3D_RENDER_ENABLE_IF_EQUAL: /* two reports' values (their stamps don't count) */
                 case MAXWELL3D_RENDER_ENABLE_IF_NOT_EQUAL: {
                     u64 x, y;
-                    int equal = mode == MAXWELL3D_RENDER_ENABLE_IF_EQUAL;
-                    if (madeup_has(a) || madeup_has(a + MAXWELL3D_REPORT_BYTES)) {
+                    int equal = e.mode == MAXWELL3D_RENDER_ENABLE_IF_EQUAL, known;
+                    if (madeup_has(e.a) || madeup_has(e.a + MAXWELL3D_REPORT_BYTES)) {
                         on = 1;
                         break;
                     }
                     /* NVN's occlusion test, a count against zero: while the count isn't known the GPU compares, and
                        the draws wait for it there. Reading it here waited for the GPU to run everything recorded
                        until then, with the GPU idle meanwhile (renderer.h render_predicate) */
-                    known = g_renderer->render_predicate ? gpu_renderer_now()->render_predicate(a, equal, &pred) : -1;
+                    known = g_renderer->render_predicate ? g_renderer->render_predicate(e.a, equal, &pred) : -1;
                     if (known >= 0) {
                         on = known != 0;
-                        if (known == 2) ch->owner.pred = pred;
+                        if (known == 2) g_render[at].pred = pred;
                         break;
                     }
-                    gmem_read(a, &x, 8);
-                    gmem_read(a + MAXWELL3D_REPORT_BYTES, &y, 8);
+                    gmem_read(e.a, &x, 8);
+                    gmem_read(e.a + MAXWELL3D_REPORT_BYTES, &y, 8);
                     on = (x == y) == equal;
                     break;
                 }
-                default: LOG_LIMIT(4, "gpu: render enable mode %u draws\n", mode); break;
+                default: LOG_LIMIT(4, "gpu: render enable mode %u draws\n", e.mode); break;
             }
             break;
     }
-    ch->render_off = !on;
+    g_render[at].off = !on;
+}
+int gpu_render_state(u32 owner, u32* pred) {
+    for (int at = 0; at < RENDER_OWNERS; at++)
+        if (g_render[at].used && g_render[at].owner == owner) {
+            *pred = g_render[at].pred;
+            return g_render[at].off;
+        }
+    return -1;
+}
+void gpu_render_states_reset(void) {
+    for (int at = 0; at < RENDER_OWNERS; at++) {
+        if (g_render[at].pred && g_renderer->render_predicate_drop) g_renderer->render_predicate_drop(g_render[at].pred);
+        g_render[at].used = 0;
+        g_render[at].pred = 0;
+    }
+}
+static void render_enable_update(GpuChannel* ch) {
+    const u32* r = ch->r3d;
+    u64 a = gpu_packed_va(r[MAXWELL3D_RENDER_ENABLE_ADDRESS_HIGH], r[MAXWELL3D_RENDER_ENABLE_ADDRESS_LOW]);
+    u32 mode = r[MAXWELL3D_RENDER_ENABLE_MODE] & MAXWELL3D_RENDER_ENABLE_MODE_MASK;
+    u32 o = r[MAXWELL3D_RENDER_ENABLE_OVERRIDE] & MAXWELL3D_RENDER_ENABLE_OVERRIDE_MASK;
+    if (gpu_channel_verify(ch)) { /* no report to read: a conditional enable draws, as the live replay's does */
+        ch->render_off = o == MAXWELL3D_RENDER_ENABLE_OVERRIDE_NEVER_RENDER ||
+                         (o != MAXWELL3D_RENDER_ENABLE_OVERRIDE_ALWAYS_RENDER && mode == MAXWELL3D_RENDER_ENABLE_FALSE);
+        return;
+    }
+    RenderEnable e = {ch->ds.owner, o, mode, 0, a};
+    gq_call(render_enable_run, &e, sizeof e);
+    ch->render_off = 0; /* the renderer's side skips the draws (gpu_render_state) */
 }
 
 /* ------------------------------------------------------------ draws */

@@ -147,7 +147,10 @@ static void expect(int want, const char* what) {
     }
 }
 
+/* tests/support/gpu_front_stub.c: the renderer side's decision, applied to the draws and clears */
+extern int (*g_stub_render_state)(u32 owner, u32* pred);
 int main(void) {
+    g_stub_render_state = gpu_render_state;
     expect(1, "a fresh channel draws");
     render_enable(0, 0);
     expect(0, "FALSE skips");

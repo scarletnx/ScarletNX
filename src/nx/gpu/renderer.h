@@ -257,6 +257,10 @@ void gpu_stream_run(int on);
 void gpu_samples_reset(u32 owner);
 void gpu_samples_enable(u32 owner, int on);
 void gpu_predicate_drop(u32 pred);
+/* the renderer's side: 1 when owner's draws are off, 0 when on (with *pred the GPU's predicate, 0 for none), -1 when
+   no render enable of the 3D engine decided it (maxwell/engines.c); and every decision dropped */
+int gpu_render_state(u32 owner, u32* pred);
+void gpu_render_states_reset(void);
 /* the renderer for any other call of the front end: after every queued record */
 const Renderer* gpu_renderer_now(void);
 extern _Atomic int g_cs_any;      /* compute results are pending somewhere */

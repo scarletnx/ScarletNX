@@ -18,6 +18,9 @@ void gq_release(u64 gva, const void* data, u32 len);
 void gq_i2m_block(const GpuI2m* t, u64 at, u64 size);
 /* the front end's read of [gva, gva + size): it waits for the fences of the writes queued over those pages */
 void gq_read_wait(u64 gva, u64 size);
+/* the front end's read served from the newest queued write that holds all of [gva, gva + size): 1 when it did, and
+   the read needs no wait. 0 when no such write is queued */
+int gq_forward(u64 gva, void* dst, u64 size);
 /* every queued record done, for the front end's points that need the whole renderer side */
 void gq_drain(void);
 /* A call of the renderer's side: fn runs with a copy of the bytes the front end puts at the pointer that
@@ -31,6 +34,8 @@ void gq_call(GqFn fn, const void* arg, u64 bytes);
 /* the work of each record, and the front end's thread, in gpu.c */
 int gpu_on_thread(void);
 int gmem_write_now(u64 gva, const void* src, u64 size);
+/* guest memory read as it is, with no wait and nothing landed */
+void gmem_read_quiet(u64 gva, void* dst, u64 size);
 void gpu_release_write_now(u64 gva, const void* data, u32 len);
 void gpu_i2m_block_now(const GpuI2m* t);
 
