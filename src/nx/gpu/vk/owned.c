@@ -82,6 +82,7 @@ static void land_sharing(VkBufferCreateInfo* bi, u32 fam[2]) {
 #define OWN_IDLE     120 /* presents a result or a freed buffer is left alone before vk_own_trim takes it */
 #define OWN_IDLE_SHORT 8 /* presents a freed buffer is left alone while device memory is short */
 #define OWN_LAND_MAX 16  /* results landed at one present */
+#define OWN_LAND_SHORT 256 /* results landed at one present with device memory past its budget */
 typedef struct {
     VkBuffer buf;
     DevMem mem;
@@ -270,11 +271,27 @@ void vk_own_log(void) {
    them by then (a texture is built from its tile within a frame or two), and a later read finds the bytes in guest
    memory. A landing is a round trip to the GPU, so only a few land a present, here at the frame's boundary where no
    draw is being set up. With memory to spare nothing lands. The freed buffers of the pool are no one's bytes: one
-   that no result took for OWN_IDLE presents goes at any time */
+   that no result took for OWN_IDLE presents goes at any time.
+
+   With device memory past its budget that was too little: on a GPU of 2 GB the same game's 1,930 tile results held
+   770 MB from its boot, the caches had nothing left to free, its shadow maps' depth targets found no memory and 94% of
+   its draws were skipped, at 4 presents a second, where 16 results every fourth present land in minutes. Past the
+   budget the trim runs at each present, takes the results left alone for OWN_IDLE_SHORT presents, the oldest first,
+   and lands up to OWN_LAND_SHORT of them, as many as bring the heap back to four fifths of its budget. Results in
+   system memory (vk_own_res_new's last resort) stay: landing them frees nothing of the GPU's */
+typedef struct {
+    u64 addr, size;
+    u32 used;
+} OwnPick;
+static int pick_older(const void* a, const void* b) {
+    i32 d = (i32)(((const OwnPick*)a)->used - ((const OwnPick*)b)->used);
+    return (d > 0) - (d < 0);
+}
 void vk_own_trim(void) {
-    if (g_vk_present % 4) return;
     u64 usage, budget;
     vk_mem_use(&usage, &budget);
+    const int past = usage >= budget;
+    if (g_vk_present % 4 && !past) return;
     /* with device memory short a free buffer waits OWN_IDLE_SHORT presents for a result, not OWN_IDLE: at ten presents
        a second the pool held 120 to 230 MB for twelve seconds that the heap had no room without */
     const u32 idle = usage < budget / 5 * 4 ? OWN_IDLE : OWN_IDLE_SHORT;
@@ -295,35 +312,34 @@ void vk_own_trim(void) {
     if (!g_owned.traps || !n || usage < budget / 5 * 4) return; /* four fifths: before the caches' trim starts */
     u32 max = n + 64; /* more than there are: a publish may add some before the lookup */
     OwnRange* r = malloc((size_t)max * sizeof *r);
-    if (!r) return;
-    struct {
-        u64 addr, size;
-        u32 used;
-    } pick[OWN_LAND_MAX];
+    OwnPick* pick = malloc((size_t)max * sizeof *pick);
+    if (!r || !pick) {
+        free(r);
+        free(pick);
+        return;
+    }
+    const u32 alone = past ? OWN_IDLE_SHORT : OWN_IDLE, most = past ? OWN_LAND_SHORT : OWN_LAND_MAX;
     u32 np = 0, k = own_lookup(0, 1ull << 48, r, max);
     u64 now = vk_submit_number();
     for (u32 i = 0; i < k && i < max; i++) {
         const VkOwnRes* o = (const VkOwnRes*)r[i].res;
-        /* not one of another's buffer (the mirror's), nor one whose writes are still being recorded */
-        if (!o || o->borrowed || (u32)(g_vk_present - o->used) < OWN_IDLE || o->written >= now) continue;
-        u32 at = np;
-        if (np == OWN_LAND_MAX) { /* full: in place of the one used last, if this one is older */
-            at = 0;
-            for (u32 j = 1; j < np; j++)
-                if ((i32)(pick[j].used - pick[at].used) > 0) at = j;
-            if ((i32)(o->used - pick[at].used) >= 0) continue;
-        } else
-            np++;
-        pick[at].addr = r[i].addr;
-        pick[at].size = r[i].size;
-        pick[at].used = o->used;
+        /* not one of another's buffer (the mirror's), nor one whose writes are still being recorded, nor one in system
+           memory */
+        if (!o || o->borrowed || o->host || (u32)(g_vk_present - o->used) < alone || o->written >= now) continue;
+        pick[np++] = (OwnPick){r[i].addr, r[i].size, o->used};
     }
     free(r);
-    for (u32 i = 0; i < np; i++) { /* a landing takes its whole pages: one picked beside another may be gone by now */
+    qsort(pick, np, sizeof *pick, pick_older);
+    /* past the budget: as many bytes as the heap is over four fifths of it */
+    u64 want = past ? usage - budget / 5 * 4 : ~0ull, got = 0;
+    for (u32 i = 0; i < np && i < most && got < want; i++) {
+        /* a landing takes its whole pages: one picked beside another may be gone by now */
         own_acquire(pick[i].addr, pick[i].size);
+        got += pick[i].size;
         g_owned.trim_landed++;
         g_owned.trim_bytes += pick[i].size;
     }
+    free(pick);
 }
 
 VkOwnRes* vk_own_res_new(u64 size, u32 by) {
