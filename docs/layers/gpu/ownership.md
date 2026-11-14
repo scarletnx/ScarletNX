@@ -299,6 +299,14 @@ On a device with both extensions, the `[Debug]` setting `uma_memory` compares th
 place: 0 auto (imported, and moved only without the first extension and with `vk_memory=2`), 1 imported only (copied
 without the first), 2 moved into AHardwareBuffers only, under auto as well (copied without the second).
 
+In place, the startup setting `uma_copies` says whether vertices, indices and constant buffers are read there too:
+0 auto, 1 in place, 2 copied. Auto copies them on amdgpu's drivers (RADV, AMDVLK, AMD's on Linux), which look up the
+pages of every user-pointer buffer of a submission's list again at each submission, so that each import costs every
+submission (`vk_uma_imports_dear`). One game's battle map held about 260 MB of imports, 160 MB of them for vertices,
+indices and constant buffers, and made about 380 submissions a present: its recording thread spent 70% of a core in
+the kernel. A range a write in place is pending over stays in place, as do a dispatch's storage ranges and what the
+GPU writes. The headless Vulkan checks of the in-place path take `uma_copies=1`.
+
 With resizable BAR, the staging ring of streamed uploads goes in device-local memory that the CPU maps
 (`vk_stage_upload`, within the heap's budget): the CPU's sequential writes cross the bus once, and every draw that
 reads them reads local memory. With a small BAR the ring stays in host memory (the window is shared with the whole

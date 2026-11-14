@@ -433,6 +433,70 @@ static int check_uma(void) {
     return 0;
 }
 
+/* uma_copies (gpu/vk/uma.c's vk_uma_imports_dear): 2 copies a vertex range and a constant buffer, so no import is made
+   for them and the GPU reads the bytes of the binding; 1 reads them in place, a CPU write after the binding included;
+   0 copies them on amdgpu's drivers only, where each import costs every submission. A range a write in place is
+   pending over stays in place either way (buffer.c's IN_DEAR) */
+static int check_uma_copies(void) {
+    const u64 gva = 0x7400000, cpu = HEAP_BASE + 0x3400000, span = 0x10000;
+    const int was = g_settings.guest_buffers_copied;
+    VkBuffer b, rb;
+    u64 off;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+#if defined(__linux__)
+    const int linux_amd = g_vk.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;
+#else
+    const int linux_amd = 0;
+#endif
+    g_settings.guest_buffers_copied = 0;
+    const int amd =
+        g_vk.driver_id == VK_DRIVER_ID_MESA_RADV || g_vk.driver_id == VK_DRIVER_ID_AMD_OPEN_SOURCE || linux_amd;
+    CHECK(vk_uma_imports_dear() == amd);
+    CHECK(mem_map(cpu, span, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, span);
+    memset(GP(cpu), 0x11, (size_t)span);
+    u8* result = vk_readback_buffer(512, &rb);
+    CHECK(result);
+    /* copied: no import, and the bytes of the binding */
+    g_settings.guest_buffers_copied = 2;
+    CHECK(vk_uma_imports_dear() == 1);
+    vk_lock();
+    CHECK(vk_buf_get_input(gva + 0x100, 256, 4, &b, &off));
+    CHECK(vk_uma_imports(cpu, span) == 0);
+    memset(GP(cpu) + 0x100, 0x5a, 256); /* after the binding: not in the copy */
+    VkBufferCopy c = {off, 0, 256};
+    rec_CmdCopyBuffer(vk_cmd(), b, rb, 1, &c);
+    CHECK(vk_buf_get_uniform(gva + 0x1000, 256, &b, &off));
+    CHECK(vk_uma_imports(cpu, span) == 0);
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 256; i++) CHECK(result[i] == 0x11);
+    vk_unlock();
+    /* in place: the import, and the write after the binding */
+    g_settings.guest_buffers_copied = 1;
+    CHECK(vk_uma_imports_dear() == 0);
+    vk_lock();
+    CHECK(vk_buf_get_input(gva + 0x2000, 256, 4, &b, &off));
+    CHECK(vk_uma_imports(cpu + 0x2000, 256) == 1);
+    memset(GP(cpu) + 0x2000, 0x6b, 256);
+    c = (VkBufferCopy){off, 256, 256};
+    rec_CmdCopyBuffer(vk_cmd(), b, rb, 1, &c);
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 256; i < 512; i++) CHECK(result[i] == 0x6b);
+    vk_unlock();
+    g_settings.guest_buffers_copied = was;
+    CHECK(mem_unmap(cpu, span) == 0);
+    g_renderer->mem_may_have_changed();
+    printf("in place: uma_copies copies vertices and constant buffers at 2 (and at 0 on amdgpu: %d), reads them in "
+           "place at 1\n",
+           amd);
+    return 0;
+}
+
 /* Overflow blocks remain live through submission, then return with their slot. */
 static int check_staging_overflow(void) {
     VkBuffer seen[VK_FRAMES][3] = {{0}};
@@ -7058,6 +7122,10 @@ static int run_headless(int argc, char** argv) {
             free(copy);
             free(text);
         }
+    /* the checks of guest memory read in place bind vertices and constant buffers there, as the runtime did before
+       uma_copies, whose auto copies them on amdgpu (vk_uma_imports_dear): in place unless the command line says
+       otherwise (--uma_copies=0 or 2), and check_uma_copies takes each value itself */
+    g_settings.guest_buffers_copied = 1;
     /* the runtime's startup flags (-H), its settings as it takes them (--vk_memory=2, --memory_traps=2,
        --vertex_input_dynamic_state=off), and the benchmarks'. Any other argument stops the run: one dropped unsaid ran
        the checks without it */
@@ -7550,11 +7618,12 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "placed_view") && ++ran) CHECK(!check_uma_placed_view());
         if (!strcmp(name, "logged_back") && ++ran) CHECK(!check_uma_logged_back());
         if (!strcmp(name, "trapped_window") && ++ran) CHECK(!check_uma_trapped_window());
+        if (!strcmp(name, "copies") && ++ran) CHECK(!check_uma_copies());
         if (!ran) {
             fprintf(stderr,
                     "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, migrate, way, region_writes, "
                     "region_merge, writes, feedback, publish, dispatch, texture_pending, dispatch_constants, "
-                    "dispatch_table, header_words, placed, placed_view, logged_back or trapped_window\n",
+                    "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window or copies\n",
                     name);
             return 2;
         }
@@ -7582,6 +7651,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_logged_back());
         CHECK(!check_uma_page_changes());
         CHECK(!check_uma());
+        CHECK(!check_uma_copies());
         CHECK(!check_uma_way());
         CHECK(!check_uma_migrate());
         CHECK(!check_uma_region_writes());
@@ -7808,6 +7878,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_rt_watch());
     CHECK(!check_zt_watch());
     CHECK(!check_uma());
+    CHECK(!check_uma_copies());
     CHECK(!check_uma_way());
     CHECK(!check_uma_migrate());
     CHECK(!check_uma_region_writes());
