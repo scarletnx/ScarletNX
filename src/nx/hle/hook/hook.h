@@ -225,6 +225,10 @@ const char* hook_family_unready(const char* family);
 /* libc_std.c: errno of the calling guest thread set to e (POSIX's number), through the SDK's __errno_location; 0
    leaves it. libc_wide.c: the host has what the libc_wide family runs on (a 32-bit wchar_t and a UTF-8 locale) */
 void libc_set_errno(CPU* c, int e);
+int libc_get_errno(CPU* c); /* the guest thread's errno, as the host's number */
+/* errno's number on the host and in musl (the SDK's C library, Linux's numbers), each from the other */
+int libc_errno_musl(int host);
+int libc_errno_host(int musl);
 int libc_wide_ready(void);
 /* alloc.c: the host allocator's arena in guest memory is made (made at the first call): 0 without one, and the alloc
    family is then off */
