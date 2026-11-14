@@ -138,9 +138,9 @@ snx_decodetree(snx_shader OUTPUT decode-sm86.inc DECODE "${CMAKE_CURRENT_SOURCE_
                OPTIONS -w 16 --static-decode=decode_sm86)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/writelog.c gpu/vk/mirror.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/xfb.c gpu/vk/display.c gpu/vk/compute.c
-                 gpu/vk/pending_pages.c gpu/vk/checkpoints.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/ledger.c gpu/vk/pagespace.c gpu/vk/range_shape.c gpu/vk/tex_census.c gpu/vk/tex_report.c gpu/vk/resource_stats.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/bc7_cache.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/vk/hdr_swapchain.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/devmem.c gpu/vk/space.c gpu/vk/gpuprof.c gpu/vk/uma.c
-                 gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/pipeline_parts.c
-                 gpu/vk/draw_texture.c gpu/vk/draw_texture_shader.c gpu/vk/tess_passthrough.c gpu/vk/varying_geometry.c gpu/vk/present_quad.c gpu/vk/capture.c gpu/vk/depth_shadow.c
+                 gpu/vk/pending_pages.c gpu/vk/checkpoints.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/upscale.c gpu/vk/memory.c gpu/vk/ledger.c gpu/vk/pagespace.c gpu/vk/range_shape.c gpu/vk/tex_census.c gpu/vk/tex_report.c gpu/vk/resource_stats.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/bc7_cache.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/vk/hdr_swapchain.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/devmem.c gpu/vk/space.c gpu/vk/gpuprof.c gpu/vk/uma.c
+                 gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/pipeline_parts.c gpu/vk/cb_fold.c
+                 gpu/vk/draw_texture.c gpu/vk/draw_texture_shader.c gpu/vk/tess_passthrough.c gpu/vk/varying_geometry.c gpu/vk/present_quad.c gpu/vk/capture.c gpu/vk/depth_shadow.c gpu/vk/predraw.c
                  "${volk_SOURCE_DIR}/volk.c")
 # the ASTC decoder's, the block linear deswizzle and swizzle's, the texture conversions', the VIC composition's and
 # the render enable predicates' SPIR-V, compiled from their GLSL at build time (cmake/glsl.cmake). The VIC shader is
@@ -149,7 +149,28 @@ snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/d
 include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
 # vk_hash (gpu/vk/cmd.c); the device setup the 3DS and the Vita share (src/common/gpu/vk); the shader file's units
 # (gpu/vk/pipeline_file.c)
-target_link_libraries(snx_vk PUBLIC snx_xxhash snx_vk_common PRIVATE snx_zstd)
+target_link_libraries(snx_vk PUBLIC snx_xxhash snx_vk_common snx_fsr2 PRIVATE snx_zstd)
+# AMD FidelityFX Super Resolution 2.2.1 (cmake/dependencies.cmake): AMD's library and Vulkan backend as they are
+# (C++, third-party flags, gpu/vk/fsr2/fsr2_compat.h before them for the MSVC names they use), with our shader blobs
+# (gpu/vk/fsr2/fsr2_blobs.c over the passes cmake/fsr2_shaders.cmake compiles) and C interface (gpu/vk/fsr2/fsr2.cpp)
+set(snx_fsr2_spv "${PROJECT_BINARY_DIR}/generated/spirv/fsr2_spv.c")
+file(GLOB snx_fsr2_shader_sources CONFIGURE_DEPENDS "${snx_fsr2_api_dir}/shaders/*.glsl" "${snx_fsr2_api_dir}/shaders/*.h")
+add_custom_command(OUTPUT "${snx_fsr2_spv}"
+    COMMAND "${CMAKE_COMMAND}" "-DGLSLANG=${SNX_GLSLANG}" "-DSPIRV_OPT=${SNX_SPIRV_OPT}" "-DSPIRV_VAL=${SNX_SPIRV_VAL}"
+            "-DSHADERS=${snx_fsr2_api_dir}/shaders" "-DWORK=${PROJECT_BINARY_DIR}/generated/spirv/fsr2"
+            "-DOUT=${snx_fsr2_spv}" -P "${PROJECT_SOURCE_DIR}/cmake/fsr2_shaders.cmake"
+    DEPENDS "${PROJECT_SOURCE_DIR}/cmake/fsr2_shaders.cmake" ${snx_fsr2_shader_sources}
+    COMMENT "Compiling FSR 2.2.1's passes to SPIR-V"
+    VERBATIM)
+set(snx_fsr2_amd "${snx_fsr2_api_dir}/ffx_fsr2.cpp" "${snx_fsr2_api_dir}/ffx_assert.cpp"
+                 "${snx_fsr2_api_dir}/vk/ffx_fsr2_vk.cpp")
+add_library(snx_fsr2 STATIC ${snx_fsr2_amd} gpu/vk/fsr2/fsr2_blobs.c gpu/vk/fsr2/fsr2.cpp "${snx_fsr2_spv}")
+set_target_properties(snx_fsr2 PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_compile_definitions(snx_fsr2 PRIVATE VK_NO_PROTOTYPES FFX_GCC)
+target_include_directories(snx_fsr2 PRIVATE "${snx_fsr2_api_dir}" "${PROJECT_SOURCE_DIR}/src")
+set_source_files_properties(${snx_fsr2_amd} PROPERTIES COMPILE_OPTIONS
+                            "${snx_third_party_flags};-include;${CMAKE_CURRENT_SOURCE_DIR}/gpu/vk/fsr2/fsr2_compat.h")
+target_link_libraries(snx_fsr2 PUBLIC snx_vk_common)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc.comp NAME astc_spv HEADER nx/gpu/texture/astc_spv.h)
 # ASTC blocks straight into BC7 blocks, for a GPU that samples BC7 and not ASTC (gpu/vk/astc.c), in the encoder's
 # builds: the full one; the fast one, every mode only where mode 6 is not close, for large levels; mode 6 alone for the

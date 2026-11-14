@@ -175,8 +175,9 @@ end:
     return order;
 }
 
-/* SnxIr.bound: the function the BR at address reaches once it is bound, 0 for none */
-static SnxU64 bound_at(void* user, SnxU64 address) {
+/* SnxIr.bound: the function the BR at address reaches once it is bound, 0 for none, and whether its slot may hold
+   another */
+static SnxU64 bound_at(void* user, SnxU64 address, int* guard) {
     const Queue* q = (const Queue*)user;
     size_t lo = 0, hi = q->bound_count;
     while (lo < hi) {
@@ -186,7 +187,9 @@ static SnxU64 bound_at(void* user, SnxU64 address) {
         else
             hi = middle;
     }
-    return lo < q->bound_count && q->bound[lo].at == address ? q->bound[lo].target : 0;
+    if (lo == q->bound_count || q->bound[lo].at != address) return 0;
+    *guard = q->bound[lo].guard;
+    return q->bound[lo].target;
 }
 /* SnxIr.direct: nonzero for a target the module imports, which its snx_aot_<target> calls */
 static SnxU64 imported(void* user, SnxU64 target) {

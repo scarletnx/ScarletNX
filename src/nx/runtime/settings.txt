@@ -211,6 +211,27 @@ setting Resolution scale
     default 1
     startup
     help The scale of the game's 3D rendering, 0.25 to 16: 1 = the console's, 2 = double, 0.5 = half
+setting DLSS upscaler
+    key dlss_upscaler
+    int 0 1
+    default 1
+    words Filtered copy|FSR 2
+    help What a Switch 2 game's DLSS evaluations run, as this runtime has no DLSS: 1 = AMD FidelityFX Super Resolution
+    help 2.2 (a temporal upscaler, on any GPU), 0 = a filtered copy of the frame (cheaper, soft, and the picture shakes
+    help with the game's camera jitter). FSR 2 falls back to the copy where it can't run
+setting DLSS render size
+    key dlss_render_size
+    int 0 5
+    default 0
+    words Game's|Native|Quality|Balanced|Performance|Ultra performance
+    startup
+    help The size a Switch 2 game is told to render at before its DLSS evaluation: 0 = what the game's own DLSS mode
+    help asks, 1 = the output's size (sharpest, slowest), 2 = 1/1.5, 3 = 1/1.7, 4 = 1/2, 5 = 1/3 of it (fastest)
+setting FSR sharpness
+    key fsr_sharpness
+    float 0 1
+    default 0
+    help The sharpening FSR 2 applies after upscaling (RCAS), 0 to 1: 0 = none, and no sharpening pass runs
 setting Shadows
     key shadows
     int 0 1
@@ -909,6 +930,13 @@ setting User uid
     help them; empty is its [user1] ("Player" without one). A uid no user has stops the game
 
 table g_debug_ini
+setting FSR input conventions
+    key fsr_input_conventions
+    int 0 255
+    default 0
+    help Reverses what the runtime takes a game's DLSS inputs to mean when it gives them to FSR 2, a bit each:
+    help 1 = the jitter's sign in x, 2 = in y, 4 = the motion vectors' sign, 8 = inverted depth, 16 = motion vectors
+    help that include the jitter, 32 = FSR's own exposure, 64 = HDR color input. For a game whose picture smears
 setting Log level
     key log
     int 0 2
@@ -1333,10 +1361,27 @@ setting Buffer pages
     default 1
     startup
     words Off|Read|Read and write
-    help 1 = keeps the guest memory that draws read by page, in sparse buffers: ranges that overlap share their bytes,
-    help and a range that did not change is not copied again. 2 = also keeps what a draw writes to guest memory there,
-    help on the GPU, until the game's CPU code touches it. 0 = by the range each draw asks for. It needs a GPU with
-    help sparse buffers and working write tracking, and stays off without them
+    help 1 = keeps the guest memory that draws read by page, in sparse buffers, or in slabs on a GPU with none:
+    help ranges that overlap share their bytes, and a range that did not change is not copied again. 2 = also keeps
+    help what a draw writes to guest memory there, on the GPU, until the game's CPU code touches it (sparse buffers
+    help only). 0 = by the range each draw asks for. It needs working write tracking, and stays off without it
+setting Stream ring
+    key vk_stream_ring
+    int 0 1
+    default 1
+    startup
+    words Frame rings|Stream
+    help 1 = the bytes that a copy or a draw recorded at once reads (texture uploads, the page cache's pages, the
+    help buffer cache's copies) go through chunks that are free again when that work is done. 0 = through the
+    help frame's rings, which come back when the frame's slot does
+setting Buffer page slabs
+    key vk_buffer_slabs
+    int 0 1
+    default 0
+    startup
+    words Auto|Slabs
+    help 1 = Buffer pages keeps its bytes in slabs, buffers with all their memory, on every GPU: the way of a GPU
+    help with no sparse buffers, for testing. 0 = slabs only on such a GPU
 setting NVN storage ordering
     key nvn_storage_order
     int 0 2
@@ -1769,6 +1814,7 @@ setting @VK_EXT_sample_locations
 setting @VK_EXT_shader_atomic_float
 setting @VK_EXT_shader_demote_to_helper_invocation
 setting @VK_EXT_shader_object
+setting @VK_EXT_subgroup_size_control
 setting @VK_EXT_transform_feedback
 setting @VK_EXT_vertex_attribute_divisor
 setting @VK_EXT_vertex_input_dynamic_state
@@ -1970,5 +2016,14 @@ setting GBA covers
     help box from libretro-thumbnails, downloaded as the game is made: the ROM's CRC-32 names the game in
     help libretro-database's No-Intro list, and the box under that name goes in the game's folder as icon.png. A ROM the
     help list does not have, or a game with no box there, keeps Wimsy and its row says which name was looked for
+setting GBA colors
+    label Colors
+    key gba_color
+    text 8
+    default gba
+    words gba=GBA screen|raw=Raw
+    help The colors a GBA game shows. GBA screen = as the original GBA's unlit screen showed them: the game's colors,
+    help painted strong for that screen, come out softer and darker (near's color emulation article, Talarubi's
+    help formula). Raw = as the game writes them, the same as mGBA without a shader
 
 section GBA: g_gba_ini    launcher

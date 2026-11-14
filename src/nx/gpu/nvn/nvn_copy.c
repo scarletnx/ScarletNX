@@ -109,8 +109,8 @@ static void region_lines(const TexPlane* p, i32 w, i32 h, GpuDmaOp* o) {
     o->line_in = o->line_out = o->width;
 }
 
-/* A reversed buffer row order cannot be represented by the DMA interface's unsigned pitch. Gather the same
-   rectangle on the GPU, once per slice, while preserving the destination's bytes outside the rectangle. */
+/* A mirrored copy, columns or rows, as a gather of the same rectangle on the GPU, once per slice, while preserving the
+   destination's bytes outside the rectangle: a copy engine launch reverses no columns. */
 static void copy_buffer_mirrored(const GpuDmaOp* o, u32 bpb, int to_tex, u32 flags) {
     GpuBlit b = {.src = o->src, .dst = o->dst, .bpp = bpb};
     u32 columns = o->width / bpb;
@@ -550,6 +550,48 @@ static void copy_buffer_buffer(u64 src, u64 dst, u64 n) {
     }
 }
 
+/* A DLSS evaluation given to the renderer's upscaler (renderer.h's upscale): 1 when it wrote the output. The color,
+   the depth and the motion vectors must be render targets the renderer holds, drawn from their corner (a
+   subrectangle elsewhere isn't taken) */
+static int dlss_upscale(const NvnPDlss* r) {
+    GpuUpscale u = {0};
+    u32 bpp;
+    if (!g_renderer_up || !g_renderer->upscale) return 0;
+    if (!r->tex[NVN_DLSS_DEPTH] || !r->tex[NVN_DLSS_MOTION]) {
+        LOG_LIMIT(1, "nvn: a DLSS evaluation without depth or motion vectors: the filtered copy stands in\n");
+        return 0;
+    }
+    if (r->base[0][0] || r->base[0][1] || r->base[1][0] || r->base[1][1] || r->base[2][0] || r->base[2][1]) {
+        LOG_LIMIT(1, "nvn: a DLSS evaluation of inputs away from their textures' corner: the filtered copy stands in\n");
+        return 0;
+    }
+    if (!surf2d(r->tex[NVN_DLSS_INPUT], &r->view[NVN_DLSS_INPUT], r->has_view[NVN_DLSS_INPUT], 0, &u.color, &bpp) ||
+        !surf2d(r->tex[NVN_DLSS_OUTPUT], &r->view[NVN_DLSS_OUTPUT], r->has_view[NVN_DLSS_OUTPUT], 0, &u.output, &bpp) ||
+        !surf2d(r->tex[NVN_DLSS_DEPTH], &r->view[NVN_DLSS_DEPTH], r->has_view[NVN_DLSS_DEPTH], 0, &u.depth, &bpp) ||
+        !surf2d(r->tex[NVN_DLSS_MOTION], &r->view[NVN_DLSS_MOTION], r->has_view[NVN_DLSS_MOTION], 0, &u.motion, &bpp)) {
+        LOG_LIMIT(1, "nvn: a DLSS evaluation's textures aren't surfaces the renderer takes: the filtered copy stands "
+                     "in\n");
+        return 0;
+    }
+    u.has_exposure = r->tex[NVN_DLSS_EXPOSURE] &&
+                     surf2d(r->tex[NVN_DLSS_EXPOSURE], &r->view[NVN_DLSS_EXPOSURE], r->has_view[NVN_DLSS_EXPOSURE], 0,
+                            &u.exposure, &bpp);
+    u.has_reactive = r->tex[NVN_DLSS_BIAS] && !r->base[3][0] && !r->base[3][1] &&
+                     surf2d(r->tex[NVN_DLSS_BIAS], &r->view[NVN_DLSS_BIAS], r->has_view[NVN_DLSS_BIAS], 0, &u.reactive,
+                            &bpp);
+    u.render[0] = (u32)r->in[0], u.render[1] = (u32)r->in[1];
+    u.render_max[0] = r->render_max[0] > 0 ? (u32)r->render_max[0] : 0;
+    u.render_max[1] = r->render_max[1] > 0 ? (u32)r->render_max[1] : 0;
+    u.out[0] = (u32)r->out[0], u.out[1] = (u32)r->out[1];
+    u.out_base[0] = r->base[4][0], u.out_base[1] = r->base[4][1];
+    memcpy(u.jitter, r->jitter, sizeof u.jitter);
+    memcpy(u.motion_scale, r->motion_scale, sizeof u.motion_scale);
+    u.pre_exposure = r->pre_exposure;
+    u.reset = r->reset;
+    u.flags = (u32)r->flags;
+    if (r->in[0] <= 0 || r->in[1] <= 0 || r->out[0] <= 0 || r->out[1] <= 0) return 0;
+    return g_renderer->upscale(&u);
+}
 /* n bytes at dst filled with the 32-bit value, as the DMA engine fills: its remap writes constant A into every
    component, reading nothing */
 static void fill_buffer(u64 dst, u64 n, u32 value) {
@@ -610,6 +652,26 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
             memcpy(&s, GP(r.src), NVN_TEX_SNAP);
             memcpy(&d, GP(r.dst), NVN_TEX_SNAP);
             copy_texture_texture(&r, &s, &d);
+            return 1;
+        }
+        case OP_DLSS: {
+            NvnPDlss r;
+            memcpy(&r, GP(payload), sizeof r);
+            if (!r.tex[NVN_DLSS_INPUT] || !r.tex[NVN_DLSS_OUTPUT]) return 1;
+            if (dlss_upscale(&r)) return 1;
+            /* no upscaler took it: the stand-in copies */
+            NvnTexture s = {0}, d = {0};
+            memcpy(&s, GP(r.tex[NVN_DLSS_INPUT]), NVN_TEX_SNAP);
+            memcpy(&d, GP(r.tex[NVN_DLSS_OUTPUT]), NVN_TEX_SNAP);
+            for (u32 k = 0; k < r.n_copies && k < 2; k++) {
+                NvnPCopyT2T copy = {0};
+                copy.src = r.tex[NVN_DLSS_INPUT], copy.dst = r.tex[NVN_DLSS_OUTPUT];
+                copy.sv = r.view[NVN_DLSS_INPUT], copy.dv = r.view[NVN_DLSS_OUTPUT];
+                copy.has_sv = r.has_view[NVN_DLSS_INPUT], copy.has_dv = r.has_view[NVN_DLSS_OUTPUT];
+                copy.sr = r.sr[k], copy.dr = r.dr[k];
+                copy.flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT;
+                copy_texture_texture(&copy, &s, &d);
+            }
             return 1;
         }
     }

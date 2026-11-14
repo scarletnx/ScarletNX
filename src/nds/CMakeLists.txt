@@ -12,11 +12,11 @@ if(NOT TARGET snx_arm_llvm)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" nds-arm-backend)
 endif()
 
-add_library(scarletnx-nds STATIC cartridge/rom.c board/board.c board/memory.c board/io.c board/lcd.c board/dma.c
-                                 board/timers.c board/card.c bios/bios.c hle/pxi.c hle/sound.c audio/spu.c cpu/cpu.c cpu/recomp.c
-                                 gpu/gpu3d.c gpu/present.c)
+add_library(scarletnx-nds STATIC cartridge/rom.c cartridge/key1.c board/board.c board/memory.c board/io.c board/lcd.c
+                                 board/dma.c board/timers.c board/card.c bios/bios.c hle/pxi.c hle/sound.c audio/spu.c
+                                 cpu/cpu.c cpu/recomp.c gpu/gpu3d.c gpu/present.c)
 set_target_properties(scarletnx-nds PROPERTIES OUTPUT_NAME scarletnx-nds-runtime C_STANDARD 11 C_STANDARD_REQUIRED ON)
-target_link_libraries(scarletnx-nds PUBLIC scarletnx-common snx_arm_llvm snx_llvm)
+target_link_libraries(scarletnx-nds PUBLIC scarletnx-common snx_arm_llvm snx_llvm PRIVATE snx_zip) # the BIOS's CRC-32
 target_compile_options(scarletnx-nds PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 
 # the Vulkan device: the 2D engines' frame, the 3D engine's picture and the window. volk.c is compiled into each

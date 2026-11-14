@@ -219,7 +219,12 @@ static void cs_init(void) {
 
 /* a bigger arena; only between batches, nothing points into it then */
 static u64 g_ar_want = 8ull << 20; /* doubles when a batch fills the arena, up to 64 MB */
-/* arenas draws read from: reused once the frames that read them are done */
+/* Arenas draws read from: reused once the frames that read them are done. They are kept by bytes, ARENA_KEEP or
+   twice what a batch's arena is wanted at where that is more (128 MiB once the arenas grew to 64 MiB), and one at
+   least: eight were kept whatever their size, up to 512 MiB of host memory after a burst. A game's frame takes
+   three or four of 8 MiB in turn, which the bytes hold. One no batch took for ARENA_IDLE frames goes too */
+#define ARENA_IDLE 600u
+#define ARENA_KEEP (64ull << 20)
 static struct {
     VkBuffer b;
     DevMem m;
@@ -227,14 +232,34 @@ static struct {
     u64 cap, frame;
 } g_retired[8];
 static int g_nretired;
+static void retired_drop(int i) {
+    vk_defer_buffer(g_retired[i].b, g_retired[i].m);
+    memmove(g_retired + i, g_retired + i + 1, sizeof g_retired[0] * (size_t)(g_nretired - i - 1));
+    g_nretired--;
+}
+/* the list within its bytes, its count and its age: the oldest go first, the newest stays */
+static void retired_trim(void) {
+    u64 bytes = 0;
+    for (int i = 0; i < g_nretired; i++) bytes += g_retired[i].cap;
+    const u64 keep = 2 * g_ar_want > ARENA_KEEP ? 2 * g_ar_want : ARENA_KEEP;
+    while (g_nretired > 1 && (bytes > keep || g_nretired == 8)) {
+        bytes -= g_retired[0].cap;
+        retired_drop(0);
+    }
+    for (int i = 0; i < g_nretired - 1;)
+        if (g_retired[i].frame + ARENA_IDLE <= vk_frame_id())
+            retired_drop(i);
+        else
+            i++;
+}
+static void retired_add(VkBuffer b, DevMem m, u8* p, u64 cap, u64 frame) {
+    if (g_nretired == 8) retired_drop(0); /* full: the oldest goes for good */
+    g_retired[g_nretired++] = (typeof(g_retired[0])){b, m, p, cap, frame};
+    retired_trim();
+}
 static void arena_retire(void) {
     if (!g_ar) return;
-    if (g_nretired == 8) { /* full: the oldest goes for good */
-        vk_defer_buffer(g_retired[0].b, g_retired[0].m);
-        memmove(g_retired, g_retired + 1, sizeof g_retired[0] * 7);
-        g_nretired--;
-    }
-    g_retired[g_nretired++] = (typeof(g_retired[0])){g_ar, g_ar_mem, g_ar_ptr, g_ar_cap, vk_frame_id()};
+    retired_add(g_ar, g_ar_mem, g_ar_ptr, g_ar_cap, vk_frame_id());
     g_ar = VK_NULL_HANDLE;
 }
 /* the original bytes beside the arena, as big as it: batches put aside swap theirs with the current one's */
@@ -289,6 +314,73 @@ static u64 arena_alloc(u64 size) {
     u64 al = vk_stage_align(), at = (g_ar_used + al - 1) & ~(al - 1);
     g_ar_used = at + size;
     return at;
+}
+
+/* The storage buffers that hold the shared memory of programs that ask for more than the device gives
+   (ShaderInfo.shared_spill), a dispatch's blocks' parts one after another: one for the dispatches recorded on the
+   graphics queue's command buffer and one for the compute batch's, so the two queues never share one, each grown to the
+   most a dispatch of its queue needed */
+static struct {
+    VkBuffer b;
+    DevMem m;
+    u64 cap;
+} g_spill[2];
+
+static void cs_land(void);
+/* The buffer for a dispatch of the grid's blocks, each its program's shared_size in words, on queue gfx: 0 when it
+   can't have one, an indirect dispatch's grid being the GPU's alone, or more than an allocation may be. A bigger one
+   replaces the old once the work that may use it is done: the compute batch landed, the frames through
+   vk_defer_buffer */
+static int cs_spill(const CsPipe* p, int indirect, u32 gx, u32 gy, u32 gz, int gfx, VkDescriptorBufferInfo* out) {
+    u64 block = ((u64)p->si.shared_size + 3) & ~3ull, need = (u64)gx * gy * gz * block;
+    if (indirect) {
+        LOG_LIMIT(4,
+                  "vulkan: compute %016llx's shared memory is a storage buffer's, which an indirect dispatch can't "
+                  "size (its grid is the GPU's): skipped\n",
+                  (unsigned long long)p->key);
+        return 0;
+    }
+    /* the descriptor's range is all of it: no more than the device binds as one storage buffer, nor allocates */
+    u64 range = g_vk.props.limits.maxStorageBufferRange, most = range < g_vk.alloc_cap ? range : g_vk.alloc_cap;
+    if (need > most) {
+        LOG_LIMIT(4,
+                  "vulkan: compute %016llx's shared memory for %ux%ux%u blocks of %llu bytes is %llu bytes, past the "
+                  "%llu a storage buffer may be (maxStorageBufferRange %llu, an allocation %llu): skipped\n",
+                  (unsigned long long)p->key, gx, gy, gz, (unsigned long long)block, (unsigned long long)need,
+                  (unsigned long long)most, (unsigned long long)range, (unsigned long long)g_vk.alloc_cap);
+        return 0;
+    }
+    if (need > g_spill[gfx].cap) {
+        if (g_spill[gfx].b) {
+            if (!gfx) cs_land(); /* the batch's dispatches that use it */
+            vk_defer_buffer(g_spill[gfx].b, g_spill[gfx].m);
+            g_spill[gfx].b = VK_NULL_HANDLE;
+            g_spill[gfx].cap = 0;
+        }
+        u64 cap = 1ull << 20;
+        while (cap < need) cap *= 2;
+        if (cap > g_vk.alloc_cap) cap = need;
+        u32 fam[2] = {g_vk.gfx_family, g_vk.compute_family};
+        VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                  .size = cap,
+                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                  .sharingMode =
+                                      fam[0] != fam[1] ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+                                  .queueFamilyIndexCount = fam[0] != fam[1] ? 2 : 0,
+                                  .pQueueFamilyIndices = fam};
+        DevMemWant aci = {.at = DM_DEVICE};
+        if (!VK_OK(vk_buffer_create(&bci, &aci, &g_spill[gfx].b, &g_spill[gfx].m, NULL))) {
+            g_spill[gfx].b = VK_NULL_HANDLE;
+            LOG_LIMIT(
+                4, "vulkan: no memory for %llu bytes of shared memory in a storage buffer: compute %016llx skipped\n",
+                (unsigned long long)cap, (unsigned long long)p->key);
+            return 0;
+        }
+        vk_mem_track(g_spill[gfx].m, VK_OWN_ARENA);
+        g_spill[gfx].cap = cap;
+    }
+    *out = (VkDescriptorBufferInfo){g_spill[gfx].b, 0, need};
+    return 1;
 }
 
 static GpOp g_op[VK_GP_OPS];
@@ -366,13 +458,7 @@ static void cs_write_back(DevMem mem, const u8* ar, const u8* org, const CsOut* 
 /* an arena whose batch has landed: draws that read it may still run (gfx), so it waits for their frame like the
    arenas draws read; one they didn't read is free now */
 static void cs_arena_done(VkBuffer b, DevMem m, u8* p, u64 cap, int gfx) {
-    if (g_nretired == 8) { /* full: the oldest goes for good */
-        vk_defer_buffer(g_retired[0].b, g_retired[0].m);
-        memmove(g_retired, g_retired + 1, sizeof g_retired[0] * 7);
-        g_nretired--;
-    }
-    g_retired[g_nretired++] = (typeof(g_retired[0])){
-        b, m, p, cap, gfx || vk_frame_id() < VK_FRAMES ? vk_frame_id() : vk_frame_id() - VK_FRAMES};
+    retired_add(b, m, p, cap, gfx || vk_frame_id() < VK_FRAMES ? vk_frame_id() : vk_frame_id() - VK_FRAMES);
 }
 static void cs_any_update(void) {
     int any = g_nout > 0;
@@ -748,8 +834,12 @@ static int cs_replay_read(u32 idx, u32 off, u32* out);
 static int cs_reads_lanes(const u32* spv, size_t words) {
     for (size_t at = 5; at < words;) {
         u32 width = spv[at] >> 16;
-        if (!width || at + width > words || (spv[at] & 0xffffu) != 17) break; /* past the OpCapability ones */
-        if (width == 2 && ((spv[at + 1] >= 61 && spv[at + 1] <= 68) || spv[at + 1] == SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR)) return 1;
+        if (!width || at + width > words || (spv[at] & 0xffffu) != SPV_OP_CAPABILITY)
+            break; /* past the OpCapability ones */
+        if (width == 2 && ((spv[at + 1] >= SPV_CAPABILITY_GROUP_NON_UNIFORM &&
+                            spv[at + 1] <= SPV_CAPABILITY_GROUP_NON_UNIFORM_QUAD) ||
+                           spv[at + 1] == SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR))
+            return 1;
         at += width;
     }
     return 0;
@@ -760,8 +850,8 @@ static int cs_uses_shared(const u32* spv, size_t words) {
     for (size_t at = 5; at < words;) {
         u32 width = spv[at] >> 16;
         if (!width || at + width > words) break;
-        if ((spv[at] & 0xffffu) == 59 && width >= 4 && spv[at + 3] == 4) return 1;
-        if ((spv[at] & 0xffffu) == 54) break; /* OpFunction: the variables of the module come before */
+        if ((spv[at] & 0xffffu) == SPV_OP_VARIABLE && width >= 4 && spv[at + 3] == SPV_STORAGE_WORKGROUP) return 1;
+        if ((spv[at] & 0xffffu) == SPV_OP_FUNCTION) break; /* OpFunction: the variables of the module come before */
         at += width;
     }
     return 0;
@@ -809,8 +899,9 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
     if (shm && g_shader_sm86) shm = (shm + 255u) & ~255u;
     p->si.shared_size = (int)shm;
     /* A block may ask for more shared memory than the device gives (48 KiB on the console, 32 KiB on Adreno 6xx to
-       8xx). The program then gets the device's size when no access of it can reach past that, and is skipped
-       otherwise: an access past the array would read and write another word */
+       8xx, Bifrost's PanVK and lavapipe). The program then gets the device's size when no access of it can reach past
+       that, and otherwise its shared memory goes to a storage buffer (ShaderInfo.shared_spill, cs_spill), a block's
+       part at its place in the grid: an access past the array would read and write another word */
     u32 shared_max = g_vk.props.limits.maxComputeSharedMemorySize, shared, reach;
     if (shm > shared_max) {
         if (!shader_shared_fit(code, CS_WINDOW, p->si.cs_local, shm, shared_max, &shared, &reach)) {
@@ -820,16 +911,16 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
             else
                 snprintf(upto, sizeof upto, "%u bytes", reach);
             LOG("vulkan: compute %016llx asks for %u bytes of shared memory, past this GPU's %u, and its accesses may "
-                "reach %s: its dispatches are skipped\n",
-                (unsigned long long)key, shm, shared_max, upto);
-            p->failed = 1;
-            p->shared_past = 1;
-            return p;
+                "reach %s: its shared memory is a storage buffer's, %u bytes for each block of a dispatch\n",
+                (unsigned long long)key, shm, shared_max, upto, (shm + 3u) & ~3u);
+            p->si.shared_spill = 1;
+            p->shared_past = 1; /* a translation that can't spill it is skipped under that reason */
+        } else {
+            LOG("vulkan: compute %016llx asks for %u bytes of shared memory, past this GPU's %u; its accesses reach %u "
+                "bytes at most, so it gets %u\n",
+                (unsigned long long)key, shm, shared_max, reach, shared);
+            p->si.shared_size = (int)shared;
         }
-        LOG("vulkan: compute %016llx asks for %u bytes of shared memory, past this GPU's %u; its accesses reach %u "
-            "bytes at most, so it gets %u\n",
-            (unsigned long long)key, shm, shared_max, reach, shared);
-        p->si.shared_size = (int)shared;
     }
     p->si.img_int_mask = k.image;
     p->si.img_sint_mask = k.image_sint;
@@ -874,6 +965,10 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
                                                  warp ? 32 : 0, warp && lx % 32 == 0, &p->p)))
         p->failed = 1;
     free(spv);
+    /* as a draw's program says it (pipeline.c): the textures a compute program samples as none */
+    if (!p->failed && p->si.memh_none)
+        LOG_LIMIT(64, "vulkan: compute %016llx samples %u texture%s as none, whose handles no dispatch gives (%s)\n",
+                  (unsigned long long)key, p->si.memh_none, p->si.memh_none == 1 ? "" : "s", p->si.memh_why);
     if (!p->failed)
         LOG_LIMIT(12, "vulkan: compute %016llx ready: block %ux%ux%u, %d global buffers, %d textures, %d images\n",
                   (unsigned long long)key, lx, ly, lz, p->si.ngbuf, p->si.ntex, p->si.nimg);
@@ -1493,6 +1588,13 @@ void vk_dispatch(const DispatchState* d) {
     }
     VkOwnRes* made[16] = {0};
     deferred = deferred || resident;
+    /* shared memory in a storage buffer: the one of the queue it records on, before the batch's chains are worked out
+       (a bigger buffer for the compute queue lands the batch first) */
+    VkDescriptorBufferInfo spill = {0};
+    if (p->si.shared_spill && !cs_spill(p, d->indirect != 0, gx, gy, gz, gfx || resident, &spill)) {
+        g_cs_skips[CS_SKIP_SHARED]++;
+        return;
+    }
     /* a read-only input inside a pending result of this batch is read from the arena on the GPU, after a barrier
        (multi-pass skinning reads what the pass before wrote); any other overlap lands the results first */
     i64 chain[16];
@@ -2067,6 +2169,16 @@ rebind:
             pend_add(&g_pages, bimg[i].gva, bimg[i].bytes, 1);
         }
     }
+    if (spill.buffer) {
+        bi[nw] = spill;
+        w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = SNX_VKB_SSBO + SH_SHARED_SPILL,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                       .pBufferInfo = &bi[nw]};
+        nw++;
+    }
     if (gfx || resident) {
         vk_render_end();
         cb = vk_cmd();
@@ -2082,6 +2194,18 @@ rebind:
     }
     vkUpdateDescriptorSets(g_vk.dev, nw, w, 0, NULL);
     if (resident) vk_all_barrier(cb); /* the copies into its buffers, and earlier work on them, before it */
+    /* its queue's shared memory buffer, after the dispatch before that used it */
+    if (spill.buffer) {
+        VkMemoryBarrier2 smb = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
+        VkDependencyInfo sdi = {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &smb};
+        rec_CmdPipelineBarrier2(cb, &sdi);
+    }
     if (chained) {
         VkMemoryBarrier2 cmb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                                 .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,

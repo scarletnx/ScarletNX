@@ -79,6 +79,7 @@ static int check_kept_shader_invalidation(GpuChannel *channel, u64 address,
 	r[0x3fe] = 4u << 16;
 	r[0x680] = 0x1111;
 	r[MAXWELL3D_RASTERIZE_ENABLE] = 1; /* as reset_3d starts a channel */
+	all_samples(r);
 	memcpy(r + 0x280, transform, sizeof(transform));
 	channel->r3d_dirty = ~0u;
 	vk_lock();

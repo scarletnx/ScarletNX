@@ -919,6 +919,12 @@ msgstr "点击此框（或按 Enter）打开文件选择器"
 msgid "Ctrl+V: paste. ESC: back."
 msgstr "Ctrl+V: 粘贴. ESC: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: console. Ctrl+V: paste. ESC: back."
+msgstr "上/下: 主机. Ctrl+V: 粘贴. ESC: 返回."
+
 #: src/gui/main.c
 msgid "Pick or drop a keys file"
 msgstr "选取或拖入密钥文件"
@@ -1138,6 +1144,12 @@ msgstr "X: 即时存档."
 #, snx-keys
 msgid "A: pick a file. B: back."
 msgstr "A: 选取文件. B: 返回."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: console. A: pick a file. B: back."
+msgstr "十字键: 主机. A: 选取文件. B: 返回."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1531,6 +1543,50 @@ msgstr "...失败"
 #: src/gui/main.c
 msgid "...OK"
 msgstr "...成功"
+
+#: src/gui/main.c src/gui/steps.c
+msgid "PROGRAM"
+msgstr ""
+
+#: src/gui/main.c
+msgid "STARTED BY"
+msgstr ""
+
+#: src/gui/main.c
+msgid "USER"
+msgstr ""
+
+#: src/gui/main.c
+msgid "VERSION"
+msgstr ""
+
+#: src/gui/main.c
+msgid "DLC"
+msgstr ""
+
+#: src/gui/main.c
+msgid "HANDED OVER"
+msgstr ""
+
+#: src/gui/main.c src/gui/steps.c
+msgid "GPU"
+msgstr "GPU"
+
+#: src/gui/main.c
+msgid "TITLE ID"
+msgstr ""
+
+#: src/gui/main.c src/gui/steps.c
+msgid "BUILD"
+msgstr "构建"
+
+#: src/gui/main.c src/gui/steps.c
+msgid "RECOMPILE"
+msgstr "重新编译"
+
+#: src/gui/main.c
+msgid "Program"
+msgstr ""
 
 #: src/gui/main.c
 msgid "Aborting..."
@@ -2496,6 +2552,14 @@ msgid "%zu game(s)"
 msgstr "%zu 个游戏"
 
 #: src/gui/main.c
+msgid "Installed"
+msgstr "已安装"
+
+#: src/gui/main.c
+msgid "Not installed"
+msgstr "未安装"
+
+#: src/gui/main.c
 #, c-format
 msgid "Installs to: %s"
 msgstr "安装到：%s"
@@ -2506,16 +2570,8 @@ msgstr "没有主文件夹"
 
 #: src/gui/main.c
 #, c-format
-msgid "3DS keys to: %s"
-msgstr "3DS 密钥安装到：%s"
-
-#: src/gui/main.c
-msgid "Installed"
-msgstr "已安装"
-
-#: src/gui/main.c
-msgid "Not installed"
-msgstr "未安装"
+msgid "The DS's ARM7 BIOS: %u bytes, CRC-32 0x%08X"
+msgstr "DS 的 ARM7 BIOS：%u 字节，CRC-32 0x%08X"
 
 #: src/gui/main.c
 #, c-format
@@ -3135,10 +3191,6 @@ msgid "Not in this build"
 msgstr "此构建中没有"
 
 #: src/gui/main.c
-msgid "Adreno only"
-msgstr "仅 Adreno"
-
-#: src/gui/main.c
 #, c-format
 msgid "No Vulkan loader: %s"
 msgstr "没有 Vulkan 加载器：%s"
@@ -3198,12 +3250,8 @@ msgid "Download Driver"
 msgstr "下载驱动"
 
 #: src/gui/main.c
-msgid "The driver repositories Eden lists hold drivers for Adreno GPUs. An Xclipse GPU's driver, RADV, is added from its zip with Add Driver"
-msgstr "Eden 列出的驱动仓库提供 Adreno GPU 的驱动。Xclipse GPU 的驱动 RADV 需用「添加驱动」从其 zip 添加"
-
-#: src/gui/main.c
-msgid "The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded and added as Add Driver adds a zip. A GPU maker's own drivers are marked proprietary, no license"
-msgstr "来自 GitHub 的 Eden 所列驱动仓库的发布版本：选中的版本会被下载，并像「添加驱动」添加 zip 一样添加。GPU 厂商自己的驱动标为专有、无许可证"
+msgid "Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's marked proprietary, no license), NX-Mali and FristOneRR's PanVK for a Mali, RADV for an Xclipse. One picked is downloaded and added as Add Driver adds a zip"
+msgstr "来自 GitHub 发布版本的驱动：Adreno 用 Turnip 和 GPU 厂商自己的驱动（厂商的标为专有、无许可证），Mali 用 NX-Mali 和 FristOneRR 的 PanVK，Xclipse 用 RADV。选中的会被下载，并像「添加驱动」添加 zip 一样添加"
 
 #: src/gui/main.c
 msgid "Add Driver"
@@ -4692,6 +4740,10 @@ msgid "Removed games not kept: %s could not be written (%s)."
 msgstr ""
 
 #: src/gui/main.c
+msgid "the dump or folder its RomFS is extracted from, which its settings do not name"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Locate...: the folder picker could not open: %s"
 msgstr ""
@@ -4963,12 +5015,24 @@ msgid "M opens the mods and cheats of a recompiled Switch game in focus."
 msgstr "M 打开选中的已重编译 Switch 游戏的模组和金手指。"
 
 #: src/gui/main.c
+msgid "Cannot install bios7.bin: APPDATA is not set"
+msgstr "无法安装 bios7.bin：APPDATA 未设置"
+
+#: src/gui/main.c
+msgid "Cannot install bios7.bin: HOME is not set"
+msgstr "无法安装 bios7.bin：HOME 未设置"
+
+#: src/gui/main.c
 msgid "Cannot install aes_keys.txt: neither USERPROFILE nor HOME is set"
 msgstr "无法安装 aes_keys.txt：USERPROFILE 和 HOME 都未设置"
 
 #: src/gui/main.c
 msgid "Cannot install aes_keys.txt: HOME is not set"
 msgstr "无法安装 aes_keys.txt：HOME 未设置"
+
+#: src/gui/main.c
+msgid "bios7.bin installed: encrypted NDS games can be decrypted now."
+msgstr "bios7.bin 已安装：现在可以解密加密的 NDS 游戏了。"
 
 #: src/gui/main.c
 msgid "aes_keys.txt installed: encrypted 3DS games can be decrypted now."
@@ -4984,8 +5048,34 @@ msgid "Cannot install %s: %s"
 msgstr "无法安装 %s：%s"
 
 #: src/gui/main.c
-msgid "Please drop a readable file named prod.keys or aes_keys.txt."
-msgstr "请拖入名为 prod.keys 或 aes_keys.txt 的可读文件。"
+#, c-format
+msgid "%s is not the DS's ARM7 BIOS: it has %zu bytes, the BIOS %u (CRC-32 0x%08X)."
+msgstr "%s 不是 DS 的 ARM7 BIOS：它有 %zu 字节，BIOS 为 %u 字节（CRC-32 0x%08X）。"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not the DS's ARM7 BIOS: its CRC-32 is 0x%08X, the BIOS's 0x%08X."
+msgstr "%s 不是 DS 的 ARM7 BIOS：它的 CRC-32 是 0x%08X，BIOS 的是 0x%08X。"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s could not be read, or has over %d bytes: the DS's ARM7 BIOS has %u."
+msgstr "无法读取 %s，或它超过 %d 字节：DS 的 ARM7 BIOS 有 %u 字节。"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s could not be read, or has over %d bytes."
+msgstr "无法读取 %s，或它超过 %d 字节。"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not prod.keys, aes_keys.txt or the DS's ARM7 BIOS."
+msgstr "%s 不是 prod.keys、aes_keys.txt 或 DS 的 ARM7 BIOS。"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not a file."
+msgstr "%s 不是文件。"
 
 #: src/gui/main.c
 #, c-format
@@ -5648,24 +5738,12 @@ msgid "EXTRACT"
 msgstr "提取"
 
 #: src/gui/steps.c
-msgid "RECOMPILE"
-msgstr "重新编译"
-
-#: src/gui/steps.c
-msgid "BUILD"
-msgstr "构建"
-
-#: src/gui/steps.c
 msgid "LAUNCH"
 msgstr "启动"
 
 #: src/gui/steps.c
 msgid "READY"
 msgstr "就绪"
-
-#: src/gui/steps.c
-msgid "GPU"
-msgstr "GPU"
 
 #: src/gui/steps.c
 msgid "--:-- left"
@@ -6567,8 +6645,35 @@ msgid "The picture a GBA game made from a ROM shows in Games. None = Wimsy, as a
 msgstr ""
 
 #: src/nx/runtime/settings.txt
+msgid "GBA colors"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "Colors"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "The colors a GBA game shows. GBA screen = as the original GBA's unlit screen showed them: the game's colors, painted strong for that screen, come out softer and darker (near's color emulation article, Talarubi's formula). Raw = as the game writes them, the same as mGBA without a shader"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "3DS keys to: %s"
+#~ msgstr "3DS 密钥安装到：%s"
+
+#~ msgid "Please drop a readable file named prod.keys or aes_keys.txt."
+#~ msgstr "请拖入名为 prod.keys 或 aes_keys.txt 的可读文件。"
+
+#~ msgid "Adreno only"
+#~ msgstr "仅 Adreno"
+
+#~ msgid "The driver repositories Eden lists hold drivers for Adreno GPUs. An Xclipse GPU's driver, RADV, is added from its zip with Add Driver"
+#~ msgstr "Eden 列出的驱动仓库提供 Adreno GPU 的驱动。Xclipse GPU 的驱动 RADV 需用「添加驱动」从其 zip 添加"
+
+#~ msgid "The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded and added as Add Driver adds a zip. A GPU maker's own drivers are marked proprietary, no license"
+#~ msgstr "来自 GitHub 的 Eden 所列驱动仓库的发布版本：选中的版本会被下载，并像「添加驱动」添加 zip 一样添加。GPU 厂商自己的驱动标为专有、无许可证"
 
 #~ msgid "Runs a GBA ROM on the emulated AGB board"
 #~ msgstr "在模拟的 AGB 主板上运行 GBA ROM"

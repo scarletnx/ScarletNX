@@ -18,7 +18,8 @@
 #define CTR_TLS_BYTES      (CTR_THREAD_LIMIT * 512u) /* one 512-byte TLS slot per thread from SNX_CTR_INITIAL_TLS */
 #define CTR_HEAP           0x08000000u
 #define CTR_HEAP_END       0x10000000u
-#define CTR_LINEAR         0x14000000u
+#define CTR_LINEAR         0x14000000u /* the linear heap of a title for a kernel before 2.44 */
+#define CTR_LINEAR_NEW     0x30000000u /* and of one for 2.44 (system 8.0.0) or later, room for 256 MiB */
 #define CTR_PROCESS_HANDLE 0xffff8001u
 #define CTR_THREAD_HANDLE  0xffff8000u
 /* Physical page ownership, not a replacement for the checked page controller. */
@@ -258,6 +259,10 @@ struct SnxCtrProcess {
     SnxCtrAddressSpace* space;
     SnxCtrCpu cpu;
     uint32_t physical_next, physical_end, app_limit, physical_shared;
+    /* where the process's linear heap starts, CTR_LINEAR or CTR_LINEAR_NEW by the kernel version its ExHeader
+       names (Azahar Process::GetLinearHeapAreaAddress): page n of FCRAM is linear_base + n * 4096 */
+    uint32_t linear_base;
+    unsigned char cpu_configured; /* ptm:sysm ConfigureNew3DSCPU asked for a New 3DS CPU mode, which was said */
     CtrSharedMap shared_maps[8]; /* MapMemoryBlock registrations, kernel ordered */
     /* ControlMemory MAP pairs: target mirrors the heap pages at source; both stay out of FREE and PROTECT until the
        matching UNMAP (Azahar's Aliased and Alias memory states) */
@@ -267,8 +272,10 @@ struct SnxCtrProcess {
     CtrObject objects[CTR_OBJECTS];
     CtrHandle handles[CTR_HANDLES];
     uint32_t last_svc, current_thread;
-    /* the cores take turns on the one host thread: the one the next scheduling serves, and each one's thread last run */
+    /* the cores take turns on the one host thread: the one the next scheduling serves, and each one's thread last run.
+       stay_on_core asks the next scheduling to serve the core last served first, as an SVC inside its slice does */
     uint32_t next_core, core_thread[4];
+    unsigned char stay_on_core;
     uint32_t last_ipc_service, last_ipc_header;
     /* why a service ended the run, when one did (a GX command with no GPU): the run's last line; "" otherwise */
     char stopped[832];

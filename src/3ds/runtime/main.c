@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/board/board.h"
+#include "3ds/loader/ctr_image.h"
 #include "3ds/loader/ctr_loader.h"
 #include "3ds/loader/smdh.h"
 #include "3ds/aot/ctr_module.h"
@@ -53,7 +54,9 @@ static void usage(FILE* out) {
     snx_cli_help(out, ctr_cli);
     fputs(
         "3DS options:\n"
-        "  --model old|new        The console to model (default old)\n"
+        "  --model old|new        The console to model. Without it, the one the game was played on before; on its\n"
+        "                         first run a New 3DS for a game that is New 3DS exclusive or asks for the New\n"
+        "                         3DS's 178 MiB memory mode, an Old 3DS for any other\n"
         "  --board-info           Print the board of the console --model names, and stop\n"
         "  --icon                 Write the game's SMDH icon as RGBA into --out DIR (icon.rgba, what Games draws),\n"
         "                         with -x and --data as the launcher asks for it\n"
@@ -450,8 +453,9 @@ bool snx_ctr_title_name(const char* path) {
    makes its games (snx_recompiled_game, which an older version's games/ still serves). Resolved, NULL with a line saying
    why */
 /* What the game's .ini (<folder>/<title ID>.ini) says: the game it plays (source=), *source the caller's, NULL
-   without one, and the console (model=), *model kept without one. False only when it cannot be read */
-static bool read_game_ini(const char* folder, char** source, SnxCtrModel* model) {
+   without one, and the console (model=), *model kept without one, *named (when given) whether it names one. False
+   only when it cannot be read */
+static bool read_game_ini_model(const char* folder, char** source, SnxCtrModel* model, bool* named) {
     char *path = snx_ctr_game_file(folder, ".ini"), *key, *value;
     size_t size;
     char* text = path ? (char*)snx_read_file(path, &size) : NULL;
@@ -463,11 +467,29 @@ static bool read_game_ini(const char* folder, char** source, SnxCtrModel* model)
         if (!strcmp(key, "source") && *value) {
             free(*source);
             *source = snx_strdup(value);
-        } else if (!strcmp(key, "model") && (!strcmp(value, "old") || !strcmp(value, "new")))
+        } else if (!strcmp(key, "model") && (!strcmp(value, "old") || !strcmp(value, "new"))) {
             *model = !strcmp(value, "old") ? SNX_CTR_OLD : SNX_CTR_NEW;
+            if (named) *named = true;
+        }
     free(text);
     free(path);
     return read;
+}
+static bool read_game_ini(const char* folder, char** source, SnxCtrModel* model) {
+    return read_game_ini_model(folder, source, model, NULL);
+}
+/* The console a game played for the first time runs on, when --model names none: a New 3DS for a title its icon data
+   marks New 3DS exclusive, which an Old 3DS refuses, or whose ExHeader asks for the 178 MiB memory mode, which only a
+   New 3DS has; else an Old 3DS. *why says what asked for a New 3DS, NULL for an Old 3DS */
+static SnxCtrModel model_of(const SnxCtrSource* source, const char** why) {
+    uint64_t size = 0;
+    const unsigned char* icon = snx_ctr_source_exefs(source, "icon", &size);
+    *why = NULL;
+    if (icon && snx_ctr_smdh_new3ds_only(icon, (size_t)size))
+        *why = "its icon data marks it a New 3DS exclusive";
+    else if (snx_ctr_exheader_new3ds_memory(snx_ctr_source_exheader(source)))
+        *why = "its ExHeader asks for the New 3DS's 178 MiB memory mode";
+    return *why ? SNX_CTR_NEW : SNX_CTR_OLD;
 }
 /* whether a line of the game's .ini sets one of the keys this file writes, which the new values replace */
 static bool game_ini_own_line(const char* line, size_t n) {
@@ -1060,10 +1082,15 @@ int snx_ctr_main(int argc, char** argv) {
         if (folder) move_old_folder(old, folder);
     }
     free(old);
-    if (folder && !model_set) { /* the console the game was played on before, when --model names none */
+    if (folder && !model_set) {
+        /* the console the game was played on before, when --model names none; for its first run, the one it asks for */
         char* recorded = NULL;
-        (void)read_game_ini(folder, &recorded, &model);
+        bool named = false;
+        (void)read_game_ini_model(folder, &recorded, &model, &named);
         free(recorded);
+        const char* why = NULL;
+        if (!named) model = model_of(source, &why);
+        if (why) printf("Played on a New 3DS: %s (--model old to try an Old 3DS)\n", why);
     }
     bool made = folder && !extract_only && !snx_is_link(folder) && !snx_mkdirs(folder);
     /* the folder names the game the player picked, not the decrypted copy an encrypted one leaves in the cache: a

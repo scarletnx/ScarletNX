@@ -66,6 +66,7 @@ static int bench_nvn_storage(int ordering, u32 draws, u32 rounds) {
     r[0x286] = 0x6420; r[0x3fd] = r[0x3fe] = 4u << 16;
     r[0x680] = 0x1111;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 0;
+    all_samples(r);
     memcpy(r + 0x280, transform, sizeof transform);
     r[0x458] = 1u << 21 | 7u << 27;
     r[0x700] = 0x1000 | 16;

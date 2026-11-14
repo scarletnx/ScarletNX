@@ -125,6 +125,14 @@
 		android.row_height = 48px
 	}
 }
+# the keys screen's consoles under its box's head, a row each: a file picked is the one in focus's, and a file dropped
+# is too unless its name says another's
+[scene]Keys {
+	[list]Rows {
+		max_rows = 8
+		android.row_height = 48px
+	}
+}
 # the box of a game's save states, which S on Games opens: a row each, the focused one's picture beside the box
 [scene]States {
 	[list]Rows {

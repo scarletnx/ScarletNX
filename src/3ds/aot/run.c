@@ -246,6 +246,8 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         goto done;
     }
     process->ipc_stubs = ipc_stubs;
+    printf("Memory: %u MiB for the application, its linear heap at 0x%08x\n", process->app_limit >> 20,
+           process->linear_base);
     if (g_settings.ctr_hooks) {
         char found[256];
         process->hooks = snx_ctr_hooks_find(process, found, sizeof found);

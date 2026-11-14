@@ -127,15 +127,23 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   compiled first, and its recent row shows at once. An APK in a games or dumps folder shows in Games, and Enter runs
   it the same way. R on it says that it runs as it is. See [Android apps](../platforms/android-apps/README.md).
 - **Install Keys**, immediately after the five load entries, blinks red (the theme's `failure` colour, at its
-  `blink_ms`) while no keys are in use, the Switch's or the 3DS's. It prompts you to
+  `blink_ms`) while no keys are in use, the Switch's or the 3DS's. Its screen has a row for each console's file,
+  **Switch** `prod.keys`, **3DS** `aes_keys.txt` and **NDS** `bios7.bin`, each *Installed* or *Not installed*: Up and
+  Down (a pad's D-pad) go over them, a click on one picks its file, and under them the row in focus says where its
+  file goes (*Installs to*). It prompts you to
   pick a keys file (a click on the blinking **[ Pick or drop a keys file ]** in the middle of
-  the screen, the theme's `[prompt]`, or Enter), drop it, or paste its path with Ctrl+V. The file's name says which
-  console's keys it is: a `prod.keys` is the Switch's and is installed to `~/.switch/prod.keys` (or
+  the screen, the theme's `[prompt]`, or Enter), drop it, or paste its path with Ctrl+V. A file picked is the row in
+  focus's; one dropped or pasted goes by its name: a `prod.keys` is the Switch's and is installed to
+  `~/.switch/prod.keys` (or
   `%USERPROFILE%\.switch\prod.keys` on Windows; on Linux, in the user's data folder, it is put there
   instead, `~/.local/share/scarletnx/prod.keys`, which the driver reads before
   `~/.switch`, and names the keys of `~/.switch` it would use until then), and an `aes_keys.txt` is the 3DS's, installed
-  to `~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows), where the 3DS driver reads it. The screen shows both
-  destinations, *Installs to* for the Switch's and *3DS keys to* for the 3DS's. Only **encrypted** 3DS files need the
+  to `~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows), where the 3DS driver reads it. Any other file is the
+  DS's ARM7 BIOS when it is named `bios7.bin`, has 16384 bytes or the NDS row has the focus: it is installed as
+  `bios7.bin` in the data folder (`~/.local/share/scarletnx/bios7.bin`, `%APPDATA%\scarletnx\bios7.bin` on Windows)
+  when its CRC-32 is 0x1280F0D5, the console's, and refused otherwise, the screen saying its size or its CRC-32 and the
+  BIOS's. `scarletnx-nds` decrypts with it a card image whose secure area is still encrypted
+  ([The DS](../platforms/nds/README.md#the-secure-area)). Only **encrypted** 3DS files need the
   3DS keys: a decrypted or homebrew 3DS game runs without an `aes_keys.txt`. It creates the
   folder if needed. Existing keys trigger the bright-red warning
   **Keys already setup. This will overwrite the previous ones**. The screen then says what the try
@@ -197,20 +205,16 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   a folder of `gpu_drivers/` of the user's data folder named after the zip; a refusal says what is wrong, with the
   value. A
   package's box has **Use** and **Remove** (Del removes too), which asks first; one added is picked where packages
-  load. **Download Driver** lists, from GitHub, the releases of the driver repositories Eden's driver fetcher lists
-  (Mr. Purple Turnip, GameHub Adreno 8xx, KIMCHI Turnip, Weab-Chan Freedreno, Whitebelyash Turnip), fetched as it
-  opens, with the GPU and the driver Eden recommends for it, but T30 on an Adreno 605 to 613 (EOL-24.3.4 gives
-  those Vulkan 1.0); a repository that failed says why, and Enter fetches the
-  lists again. A release's box lists its downloads with their sizes, a GPU maker's own drivers (every GameHub one, and
-  one named Qualcomm) marked *proprietary, no license*; the one picked is downloaded, its progress in the note, and
-  added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU (`/dev/kgsl-3d0`), a Mali
+  load. **Download Driver** lists the GitHub releases for the device's GPU: Eden's five repositories on an Adreno,
+  [NX-Mali](https://github.com/Slopinator99/NX-Mali) on a Mali, radv-xclipse's Android zips on an Xclipse; the one
+  recommended for its model is marked, a GPU maker's own *proprietary, no license*, and the one picked is downloaded
+  and added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU
+  (`/dev/kgsl-3d0`), a Mali
   GPU (`/dev/mali0`) or an Xclipse GPU (a render node of the `amdgpu` kernel driver in `/dev/dri`, for [RADV's port to
   it](https://github.com/JimVulkan/radv-xclipse), whose package asks Android 14): the page's first line says what this
   device is and, anywhere else, why games there use the system driver. There the packages, Download Driver and Add
   Driver are greyed, each row saying what the device lacks (*Android only*, *Unsupported GPU*...) and Enter
-  the whole line; a package's box still opens for its Remove, its Use refused with that line. On an Xclipse or a
-  Mali GPU Download Driver alone is greyed, as those repositories hold Adreno's drivers: its package is added
-  from its zip. A
+  the whole line; a package's box still opens for its Remove, its Use refused with that line. A
   game whose package does not load stops, saying why, and so does one whose package lists no Vulkan device, a driver
   for another GPU. Under them, **edenprobe Mode** (Quick, the default:
   `notime cpu graphics hooks`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
@@ -309,7 +313,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   nothing of a dump is extracted: the game's `.ini` records the dump, the recompile reads the ExeFS from it, and the
   game reads its ExeFS and RomFS out of the dump on the fly, decrypting them as it reads ([Usage](usage.md)). A CIA
   is read the same way. On, a dump is extracted as before, into the game's folder or with *Extract to tmpfs* into
-  tmpfs, which implies it. Turning it off again takes a game's extraction away on its next run.
+  tmpfs, which implies it; an extracted game's folder is read in place all the same, and copied only into tmpfs. Turning it off again takes a game's extraction away on its next run.
   **Optimization level** (0, 1, 2, 3 or z, 2 by default) is LLVM's level for the game's code, **AOT threads** the
   threads compiling it (0, the default Auto: the machine's cores with a quarter left free, the physical cores
   where it says them, at most 75%, so a recompile does not make the computer stutter), **Unit cache limit** the GB
@@ -611,7 +615,9 @@ cannot be read is named and the others still listed.
   **Recompile** recompiles it where it is, as R does, and Back does neither.
 - A made game whose file to play from is not there is greyed and says `(file not found)` after its name, in the list
   and in Recent Games, and the side box names the file (*Not found:* and its path), as each driver plays it: a Switch
-  game read from its dump in place (`source=` in its `.ini`; its ExeFS not extracted into its `<name>_data`), a GBA
+  game read from its dump in place (`source=` in its `.ini`; its ExeFS not extracted into its `<name>_data`, or its
+  RomFS there cut by a stopped extraction or copy, or not there, which its next start extracts again from that dump:
+  a game whose `.ini` names none says *Not found: the dump or folder its RomFS is extracted from*), a GBA
   game, whose ROM its driver reads at every run, a 3DS game (`source=` in the `.ini` of its folder), unless its folder
   holds its extraction (`exheader.bin`) or the extractions' folder a copy the 3DS driver decrypted
   (`3ds/<name>.decrypted.<extension>`), and a Vita game made from a dumped game's folder, which its `app/` links. A Vita

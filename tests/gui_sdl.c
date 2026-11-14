@@ -6,6 +6,7 @@
 #define SNX_SCREEN_TEST "gui_sdl.c"
 #include "gui_screen.h"
 #include "support/sdl_real_pads.h"
+#include "support/crc_forge.h"
 #include "common/cpu/aarch64/cpu.h" /* SNX_ABI, which a save state names */
 #include <assert.h>
 #include <miniz.h> /* Share Log's zip, read back */
@@ -456,6 +457,32 @@ static void press_key_at(int line, App* app, const char* key, int col, bool tap,
         mouse_px(app, x, y, true);
 }
 static void touch_box(App* app, GuiRect b) { tap_px(app, b.x + b.w / 2, b.y + b.h / 2); }
+/* a click, or a tap, on the middle of a run's ESC line: the console layout's foot, a loading screen's last row */
+static void press_esc_line(App* app, bool tap) {
+    int x, y;
+    layout(app);
+    if (app->theme.run == GUI_RUN_STEPS) {
+        x = 20 * 8 * app->scale;
+        y = (app->rows - 1) * 16 * app->scale + 8 * app->scale;
+    } else {
+        GuiPlace p;
+        run_place(app, &p);
+        x = p.keys.x + p.keys.w / 2;
+        y = p.keys.y + p.keys.h / 2;
+    }
+    if (tap)
+        tap_px(app, x, y);
+    else
+        mouse_px(app, x, y, true);
+}
+/* the question asked before a run is aborted, on Continue, answered Abort */
+static void abort_yes(App* app) {
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ABORT && app->confirm.selected == GUI_CONFIRM_KEEP &&
+           !app->aborting);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown);
+}
 /* a Library row's start as it shows path, whole or cut in its middle (gui_path_fit): the marker, the root and the first
    folder, which it always keeps */
 static void row_start(const char* path, char* out, size_t size) {
@@ -565,12 +592,12 @@ static void finish(App* app, int status) {
     shows_foot(app, "Press [ESC] to return to menu", red);
     app->theme.prompt = gui_theme_builtin(app->theme.id)->prompt;
     for (int i = 0; i < 3; ++i) pump(app);
-    mouse_px(app, 4, 4, true); /* A completed process still requires ESC acknowledgement. */
+    mouse_px(app, 4, 4, true); /* an ended run waits for ESC: a click off its ESC line, or another key, goes nowhere */
     key(app, SDLK_DOWN);
     key(app, SDLK_RETURN);
     key(app, SDLK_SPACE);
     assert(!app->menu.running && app->finished && app->menu.selected == selected);
-    key(app, SDLK_ESCAPE);
+    press_esc_line(app, false); /* a click on that line is ESC, as a tap there is */
     assert(!app->menu.running && !app->finished && app->menu.view == GUI_LOAD_NONE);
     assert(!app->menu.quit && !app->message[0] && app->has_output);
     /* the item the run was started from has the focus again */
@@ -2913,8 +2940,8 @@ static char* driver_zip(const char* temporary, const char* name) {
 /* Settings > App > GPU Drivers. On a desktop: its rows, this device said, Download Driver and Add Driver greyed, each
    saying Android only on its row and why as its help and on Enter, with no page and no picker; a package left in the
    folder greyed too, its box's Use refused saying why, its Remove asked first. On a phone with an Xclipse GPU: the
-   page saying so, Download Driver greyed for its Adreno drivers, a package added and picked. On a phone with a Mali
-   GPU: the page naming its node, the same row greyed. On a phone with another GPU: greyed as a desktop, saying which
+   page saying so, nothing greyed, a package added and picked. On a phone with a Mali GPU: the page naming its node,
+   nothing greyed. On a phone with another GPU: greyed as a desktop, saying which
    GPUs, the package removed by Del. Then Freedreno Settings: a preset applied,
    a variable Freedreno does not read refused, and Save keeping them in app.ini */
 static void gpu_drivers(App* app, const char* temporary) {
@@ -2997,37 +3024,25 @@ static void gpu_drivers(App* app, const char* temporary) {
     assert(!app->confirm.shown);
     assert(!snx_path_exists(package) && !app->packages_count &&
            !strcmp(app->editor.note, "Removed gpu_drivers/Turnip_v32"));
-    /* a phone with an Xclipse GPU: packages load, the page saying its GPU and render node; Download Driver alone
-       greyed, as its repositories hold Adreno's drivers, saying to add the zip; a package added is picked */
+    /* a phone with an Xclipse GPU: packages load, the page saying its GPU and render node; a package added is
+       picked */
     app->gpu_host = host_xclipse;
     open_drivers(app, NULL, NULL, 0);
     assert(!strcmp(app->editor.note, "This device: Android API 34, arm64, Xclipse GPU (/dev/dri/renderD128, kernel "
                                      "driver amdgpu): custom drivers load."));
-    assert(gui_editor_rows(&app->editor) == 5 && !strcmp(app->drivers_form.value[1], "Adreno only") &&
-           !app->drivers_form.value[2][0] && form_row_off(app, &app->editor, 1) && !form_row_off(app, &app->editor, 2));
-    app->editor.row = 1;
-    key(app, SDLK_RETURN);
-    assert(app->form == GUI_FORM_DRIVERS && strstr(app->editor.note, "RADV, is added from its zip with Add Driver"));
+    assert(gui_editor_rows(&app->editor) == 5 && !app->drivers_form.value[1][0] && !form_row_off(app, &app->editor, 1));
     driver_picked(app, zip, NULL, false);
     assert(app->packages_count == 1 && !strcmp(app->gpu_driver, "Turnip_v32") &&
            !strcmp(app->drivers_form.value[1], "(*)") && !form_row_off(app, &app->editor, 1));
     assert(!strcmp(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/Turnip_v32. GPU driver for "
                                      "every game: Turnip test"));
-    render(app);
-    shows(app, "Adreno only", rgb(app->theme.soft));
-    /* a phone with a Mali GPU: packages load, the page naming its node; Download Driver alone greyed, as its
-       repositories hold Adreno's drivers */
+    /* a phone with a Mali GPU: packages load, the page naming its node */
     app->gpu_host = host_mali;
     open_drivers(app, NULL, NULL, 0);
     assert(!strcmp(app->editor.note, "This device: Android API 36, arm64, Mali GPU (/dev/mali0 or /dev/mali): "
                                      "custom drivers load."));
     assert(gui_editor_rows(&app->editor) == 6 && !strcmp(app->drivers_form.value[1], "(*)") &&
-           !strcmp(app->drivers_form.value[2], "Adreno only") && !app->drivers_form.value[3][0] &&
-           !form_row_off(app, &app->editor, 1) && form_row_off(app, &app->editor, 2) &&
-           !form_row_off(app, &app->editor, 3));
-    app->editor.row = 2; /* Download Driver */
-    key(app, SDLK_RETURN);
-    assert(app->form == GUI_FORM_DRIVERS && strstr(app->editor.note, "hold drivers for Adreno GPUs"));
+           !app->drivers_form.value[2][0] && !form_row_off(app, &app->editor, 2));
     /* a phone with another GPU: the package, Download Driver and Add Driver greyed, saying which GPUs load one; Del
        still removes the package, the launcher's pick going back to the System driver */
     app->gpu_host = host_other;
@@ -3101,17 +3116,24 @@ static void gpu_drivers(App* app, const char* temporary) {
     free(bad);
 }
 /* Download Driver's network, the test's own: each repository's releases (one failing as GitHub's rate limit does),
-   and the package a release's asset is */
+   counted, and the package a release's asset is */
 static struct {
     char* zip; /* the package's bytes */
     size_t zip_size;
+    int lists;
 } g_fake_net;
 static int fake_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size) {
     const char* body = "[]";
     memset(out, 0, sizeof *out);
     snprintf(out->url, sizeof out->url, "%s", url);
     out->status = 200;
-    if (strstr(url, "/repos/MrPurple666/purple-turnip/releases"))
+    g_fake_net.lists += !strncmp(url, "https://api.github.com/", 23);
+    if (strstr(url, "/repos/JimVulkan/radv-xclipse/releases"))
+        body = "[{\"tag_name\": \"v1.9.0\", \"name\": \"RADV Xclipse\", \"prerelease\": false, \"assets\": ["
+               " {\"name\": \"radv-xclipse-27.0.0-devel-cc87fdf.zip\", \"browser_download_url\":"
+               " \"https://example.invalid/turnip.zip\"}, {\"name\": \"radv-xclipse-glibc-27.0.0-devel-cc87fdf.zip\","
+               " \"browser_download_url\": \"https://example.invalid/glibc.zip\"}]}]";
+    else if (strstr(url, "/repos/MrPurple666/purple-turnip/releases"))
         body = "[{\"tag_name\": \"T30\", \"name\": \"Turnip T30\", \"prerelease\": false, \"body\": \"Notes\","
                " \"published_at\": \"2026-08-17T12:38:01Z\", \"assets\": [{\"name\": \"turnip.zip\", \"size\": 300,"
                " \"browser_download_url\": \"https://example.invalid/turnip.zip\"}, {\"name\": \"gone.zip\","
@@ -3348,7 +3370,8 @@ static void gba_covers(App* app, const char* rom, const char* folder, const char
 }
 /* GPU Drivers > Download Driver on a phone with an Adreno GPU, against the test's network: the lists fetched as the
    page opens, one repository's failure said, a GPU maker's own marked in its release's box, a download failing said,
-   and a package downloaded, added and picked */
+   and a package downloaded, added and picked. On an Xclipse: radv-xclipse's list alone, recommended on a 940, its
+   Android zip alone in its box, downloaded and added */
 static void download_driver(App* app, const char* temporary) {
     char* zip = driver_zip(temporary, "turnip.zip");
     SnxGpuDriverHost was = app->gpu_host;
@@ -3375,7 +3398,7 @@ static void download_driver(App* app, const char* temporary) {
     assert(app->fetch_state[4] == GUI_FETCH_LISTED && !app->fetch_lists[4].count);
     assert(strstr(app->editor.note, "GPU: ") && strstr(app->editor.note, "Recommended: "));
     render(app); /* as Folders: a box a repository, its title over its rows */
-    assert(grouped_entries(app) == gui_editor_rows(&app->editor) + GUI_DRIVER_REPOS);
+    assert(grouped_entries(app) == gui_editor_rows(&app->editor) + 5); /* Eden's five */
     for (i = 0; i < (size_t)gui_editor_rows(&app->editor); ++i) {
         int group;
         assert(grouped_entry_row(app, grouped_entry(app, (int)i), &group) == (int)i && group == app->fetch_repo[i]);
@@ -3441,6 +3464,20 @@ static void download_driver(App* app, const char* temporary) {
     app->driver_off = 0;
     change_answer(app, GUI_ASK_DRIVER, true); /* back to none, for what follows */
     assert(!app->packages_count && !app->gpu_driver[0]);
+    app->gpu_host = host_xclipse;
+    snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", "Samsung Xclipse 940");
+    g_fake_net.lists = 0;
+    key(app, SDLK_RETURN); /* Download Driver */
+    pump_until(app, &app->fetching);
+    assert(g_fake_net.lists == 1 && app->fetch_groups == 1 && !strcmp(app->fetch_label[0], "v1.9.0") &&
+           !strcmp(app->fetch_form.value[0], "Latest, Recommended"));
+    key(app, SDLK_RETURN);
+    assert(app->picks.count == 1 && strstr(pick_label(app, 0), "radv-xclipse-27.0.0-devel-cc87fdf.zip, "));
+    key(app, SDLK_RETURN);
+    pump_until(app, &app->downloading);
+    assert(app->packages_count == 1 && !strcmp(app->gpu_driver, "radv-xclipse-27.0.0-devel-cc87fdf"));
+    app->driver_off = 0;
+    change_answer(app, GUI_ASK_DRIVER, true);
     app->gpu_host = was;
     key(app, SDLK_ESCAPE);
     assert(app->form == GUI_FORM_APP);
@@ -3603,6 +3640,7 @@ static void run_edenprobe(App* app, const char* temporary) {
         Uint64 until = SDL_GetTicks() + 3000;
         while (!snx_is_file(launches) && SDL_GetTicks() < until) SDL_Delay(5); /* its report begun */
         key(app, SDLK_ESCAPE);
+        abort_yes(app);
         while (app->menu.running && SDL_GetTicks() < until) {
             pump(app);
             SDL_Delay(5);
@@ -3662,9 +3700,13 @@ static void game_gpu_driver(App* app) {
     addons_open(app, game, title, true);
     assert(!app->addons_driver_off && !strcmp(app->addons_driver, "GPU Driver: Global (System driver)"));
     app->addons_focus = row;
+    app->drivers_continue = app->drivers_clear = 0; /* a launcher that never opened its own GPU Drivers page */
     key(app, SDLK_RETURN);
     assert(!app->addons_shown && app->editing && app->form == GUI_FORM_DRIVERS && app->drivers_game &&
            gui_editor_rows(&app->editor) == 4 && !strcmp(app->drivers_form.value[0], "(*)"));
+    info = (UiRowInfo){0}; /* Global is no Clear Crash List: not in its red */
+    assert(app->drivers_continue == -1 && app->drivers_clear == -1 &&
+           ui_form_side_rows_get_row_info(app, 0, 0, &info) && !(info.attr & UI_ATTR_DANGER));
     assert(strstr(app->editor.note, ": its own GPU driver. This device: "));
     app->editor.row = 1; /* System driver, its own */
     key(app, SDLK_RETURN);
@@ -3673,8 +3715,9 @@ static void game_gpu_driver(App* app) {
     option = gui_run_option("gpu_driver", ini, "Turnip_v32");
     assert(!option); /* its own pick: the run reads it */
     app->editor.row = 0;
-    key(app, SDLK_RETURN);
-    assert(!snx_ini_has(ini, "gpu_driver") && !strcmp(app->drivers_form.value[0], "(*)"));
+    key(app, SDLK_RETURN); /* Global again: taken as the pick, never edenprobe's Continue nor its Clear Crash List */
+    assert(!snx_ini_has(ini, "gpu_driver") && !strcmp(app->drivers_form.value[0], "(*)") && !app->confirm.shown &&
+           !app->probe_launch && strstr(app->editor.note, ": the GPU driver for every game (System driver)"));
     option = gui_run_option("gpu_driver", ini, "Turnip_v32");
     assert(option && !strcmp(option, "--gpu_driver=Turnip_v32"));
     free(option);
@@ -4259,7 +4302,8 @@ static void recompile_queue(App* app) {
     key(app, SDLK_ESCAPE);
     assert(app->menu.view == GUI_LOAD_GAMES && !app->queue.count && tab_count(app) == GUI_TAB_RECOMPILE);
     app->log_due = false;
-    /* ESC on the one running aborts it, its line gone with it, the next one starting, the one after it waiting */
+    /* ESC on the one running asks, then aborts it, its line gone with it, the next one starting, the one after it
+       waiting */
     focus_game(app, names[0]);
     key(app, SDLK_R);
     go_tab(app, GUI_TAB_GAMES);
@@ -4273,6 +4317,7 @@ static void recompile_queue(App* app) {
     app->queue_focus = 0;
     job_started(app);
     key(app, SDLK_ESCAPE);
+    abort_yes(app);
     for (Uint64 until = SDL_GetTicks() + 10000; app->queue.count == 3 && SDL_GetTicks() < until;) {
         pump(app);
         SDL_Delay(2);
@@ -4284,6 +4329,7 @@ static void recompile_queue(App* app) {
     for (int left = 1; left >= 0; --left) { /* the others aborted too, one after the other; the tab goes with them */
         job_started(app);
         key(app, SDLK_ESCAPE);
+        abort_yes(app);
         for (Uint64 until = SDL_GetTicks() + 10000; app->queue.count > left && SDL_GetTicks() < until;) {
             pump(app);
             SDL_Delay(2);
@@ -6195,12 +6241,128 @@ int main(int argc, char** argv) {
         ctr_event.drop.data = wrong;
         app.menu.view = GUI_LOAD_KEYS;
         event(&app, &ctr_event);
-        assert(!snx_is_file(app.keys3_path) && strstr(app.message, "prod.keys or aes_keys.txt"));
+        assert(!snx_is_file(app.keys3_path) &&
+               strstr(app.message, "is not prod.keys, aes_keys.txt or the DS's ARM7 BIOS"));
         keys_outcome(&app, false);
         app.menu.view = GUI_LOAD_NONE;
         free(wrong);
         free(source_3ds);
         free(ctr_dir);
+    }
+    /* the DS's ARM7 BIOS, the NDS row of the same screen: a file of the BIOS's size, or named bios7.bin, or any picked
+       on that row, is checked by its size and CRC-32 and installed as bios7.bin where scarletnx-nds reads it; another is
+       refused, saying what it has and what the BIOS has. A file of the test's own with the BIOS's CRC-32 stands for it */
+    {
+        char *bios7 = snx_path_join(temporary, "data-folder-" NDS_BIOS7_FILE),
+             *named = snx_path_join(temporary, "bios7.bin");
+        char *source = snx_path_join(temporary, "biosnds7.rom"), *game = snx_path_join(temporary, "game.nds"), *said;
+        unsigned char* bios = (unsigned char*)calloc(1, NDS_BIOS7_SIZE);
+        size_t bios_size;
+        unsigned char* installed_bios;
+        GuiPickBoxes k;
+        assert(bios && !snx_write_file(source, bios, NDS_BIOS7_SIZE) && !snx_write_file(named, bios, 100) &&
+               !snx_write_file(game, bios, 200));
+        free(app.bios7_path);
+        app.bios7_path = bios7;
+        app.menu.view = GUI_LOAD_KEYS;
+        app.keys_of = GUI_KEYS_SWITCH;
+        drop(&app, source, false); /* the BIOS's size, on the Switch's row: the NDS row's, and not the console's */
+        said = snx_format("%s is not the DS's ARM7 BIOS: its CRC-32 is 0x%08X, the BIOS's 0x1280F0D5.", source,
+                          snx_crc32(bios, NDS_BIOS7_SIZE));
+        assert(app.keys_of == GUI_KEYS_NDS && !strcmp(app.message, said) && !snx_is_file(bios7));
+        free(said);
+        keys_outcome(&app, false);
+        app.menu.view = GUI_LOAD_KEYS;
+        app.keys_of = GUI_KEYS_3DS;
+        drop(&app, named, false); /* its name: the NDS row's whatever its size */
+        said = snx_format("%s is not the DS's ARM7 BIOS: it has 100 bytes, the BIOS 16384 (CRC-32 0x1280F0D5).", named);
+        assert(app.keys_of == GUI_KEYS_NDS && !strcmp(app.message, said) && !snx_is_file(bios7));
+        free(said);
+        keys_outcome(&app, false);
+        app.menu.view = GUI_LOAD_KEYS;
+        app.keys_of = GUI_KEYS_SWITCH;
+        drop(&app, game, false); /* neither, on another row: no console's */
+        said = snx_format("%s is not prod.keys, aes_keys.txt or the DS's ARM7 BIOS.", game);
+        assert(app.keys_of == GUI_KEYS_SWITCH && !strcmp(app.message, said));
+        free(said);
+        keys_outcome(&app, false);
+        app.menu.view = GUI_LOAD_KEYS;
+        app.keys_of = GUI_KEYS_NDS;
+        drop(&app, game, false); /* on the NDS row, it is checked as the BIOS */
+        said = snx_format("%s is not the DS's ARM7 BIOS: it has 200 bytes, the BIOS 16384 (CRC-32 0x1280F0D5).", game);
+        assert(!strcmp(app.message, said));
+        free(said);
+        keys_outcome(&app, false);
+        crc_forge(bios, NDS_BIOS7_SIZE, NDS_BIOS7_CRC32);
+        assert(snx_crc32(bios, NDS_BIOS7_SIZE) == NDS_BIOS7_CRC32 && !snx_write_file(source, bios, NDS_BIOS7_SIZE));
+        app.menu.view = GUI_LOAD_KEYS;
+        app.bios7_path = NULL; /* no data folder: the variable it is named from */
+        drop(&app, source, false);
+#ifdef _WIN32
+        assert(!strcmp(app.message, "Cannot install bios7.bin: APPDATA is not set"));
+#else
+        assert(!strcmp(app.message, "Cannot install bios7.bin: HOME is not set"));
+#endif
+        keys_outcome(&app, false);
+        app.bios7_path = bios7;
+        app.menu.view = GUI_LOAD_KEYS;
+        app.keys_of = GUI_KEYS_SWITCH;
+        drop(&app, source, false);
+        installed_bios = snx_read_file(bios7, &bios_size);
+        assert(strstr(app.message, "bios7.bin installed") && installed_bios && bios_size == NDS_BIOS7_SIZE &&
+               !memcmp(installed_bios, bios, bios_size));
+        free(installed_bios);
+        keys_outcome(&app, true);
+        /* the rows: Up and Down go over the consoles, and the one in focus says where its file goes */
+        key(&app, SDLK_RETURN);
+        assert(app.menu.view == GUI_LOAD_KEYS && app.keys_of == GUI_KEYS_NDS);
+        app.keys_of = GUI_KEYS_SWITCH;
+        render(&app);
+        shows(&app, "Switch  prod.keys", yellow);
+        shows(&app, "3DS     aes_keys.txt  Not installed", rgb(app.theme.ink));
+        shows(&app, "NDS     bios7.bin     Installed", rgb(app.theme.ink));
+        shows(&app, "Installs to: ", rgb(app.theme.ink)); /* the path's own length wraps it or not */
+        assert(keys_place(&app, app.keys_of) == app.keys_path);
+        key(&app, SDLK_UP); /* the first: nothing above it */
+        assert(app.keys_of == GUI_KEYS_SWITCH);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_DOWN); /* the last: nothing under it */
+        assert(app.keys_of == GUI_KEYS_NDS && app.menu.view == GUI_LOAD_KEYS);
+        render(&app);
+        assert(keys_place(&app, app.keys_of) == bios7);
+        shows(&app, "The DS's ARM7 BIOS: 16384 bytes, CRC-32 0x1280F0D5", rgb(app.theme.soft));
+        shows(&app, "Keys installed here: installing again replaces them", rgb(app.theme.failure));
+        { /* Up/Down's sentence, which F1's box says as it says every screen's arrows */
+            char keys_said_here[1024];
+            assert(strstr(screen_said(&app, true, keys_said_here, sizeof keys_said_here), "Up/Down: console."));
+        }
+        /* the pointer on a row takes the focus to it (a click picks its file then, as Enter does: the system's picker,
+           which the menu's checks further on open first) */
+        pick_boxes(&app, &k);
+        {
+            GuiRect row = ui_keys_row(k.rects, app.scale, UI_KEYS_ROWS, GUI_KEYS_3DS);
+            screen_pointer(&app, (float)(row.x + 4), (float)(row.y + row.h / 2), false, false);
+            assert(app.keys_of == GUI_KEYS_3DS && app.menu.view == GUI_LOAD_KEYS && !app.picked);
+        }
+        /* a document (Android's picker) has no name: on the NDS row it is the BIOS */
+        app.keys_of = GUI_KEYS_NDS;
+        assert(!snx_remove_tree(bios7));
+        install_keys_document(&app, source);
+        installed_bios = snx_read_file(bios7, &bios_size);
+        assert(app.keys_ok && installed_bios && bios_size == NDS_BIOS7_SIZE);
+        free(installed_bios);
+        app.menu.view = GUI_LOAD_KEYS;
+        install_keys_document(&app, game);
+        assert(!app.keys_ok && strstr(app.message, "it has 200 bytes"));
+        app.menu.view = GUI_LOAD_NONE;
+        app.keys_of = GUI_KEYS_SWITCH;
+        app.keys_done = 0;
+        app.message[0] = 0;
+        free(bios);
+        free(game);
+        free(source);
+        free(named);
     }
     free(switch_dir);
     free(source_keys);
@@ -6357,7 +6519,8 @@ int main(int argc, char** argv) {
     /* ESC goes back to the groups, on the one it came from */
     key(&app, SDLK_ESCAPE);
     assert(app.editing && app.form == GUI_FORM_SETTINGS && app.editor.row == 1);
-    /* GBA's, after Launch: Covers, None by default, then Box art (libretro-thumbnails), Del back to None */
+    /* GBA's, after Launch: Covers, None by default, then Box art (libretro-thumbnails), Del back to None; Colors,
+       GBA screen by default, then Raw, Del back to GBA screen */
     {
         char line[64];
         key(&app, SDLK_DOWN);
@@ -6365,7 +6528,7 @@ int main(int argc, char** argv) {
         shows(&app, "- " ICON_GAMEPAD " GBA", yellow);
         shows_half(&app, "Covers", normal); /* the group's help names its setting */
         key(&app, SDLK_RETURN);
-        assert(app.form == GUI_FORM_GROUP && app.group == 2 && app.editor.count == 1);
+        assert(app.form == GUI_FORM_GROUP && app.group == 2 && app.editor.count == 2);
         render(&app);
         shows(&app, "GBA", normal);
         snprintf(line, sizeof line, "- %-8s %s", "Covers", "None [default]"); /* no row of it opens a page: no gutter */
@@ -6378,6 +6541,17 @@ int main(int argc, char** argv) {
         shows(&app, line, yellow);
         key(&app, SDLK_DELETE);
         assert(setting_is(&app, "gba_covers", NULL));
+        key(&app, SDLK_DOWN);
+        render(&app);
+        snprintf(line, sizeof line, "- %-8s %s", "Colors", "GBA screen [default]");
+        shows(&app, line, yellow);
+        key(&app, SDLK_RIGHT);
+        assert(setting_is(&app, "gba_color", "raw"));
+        render(&app);
+        snprintf(line, sizeof line, "- %-8s %s", "Colors", "Raw *");
+        shows(&app, line, yellow);
+        key(&app, SDLK_DELETE);
+        assert(setting_is(&app, "gba_color", NULL));
         key(&app, SDLK_ESCAPE);
         assert(app.form == GUI_FORM_SETTINGS && app.editor.row == 2);
     }
@@ -10399,8 +10573,10 @@ int main(int argc, char** argv) {
         key(&app, SDLK_ESCAPE);
         assert(!app.confirm.shown && app.menu.running && !app.closing_ms && !app.aborting);
     }
+    key(&app, SDLK_ESCAPE); /* asked first on every platform: one key by mistake would lose the run */
+    assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ABORT && app.menu.running && !app.aborting);
     Uint64 started = SDL_GetTicks();
-    key(&app, SDLK_ESCAPE);
+    abort_yes(&app);
     assert(app.aborting && SDL_GetTicks() - started < 1000);
     render(&app);
     shows(&app, "Aborting...", red);
@@ -10409,7 +10585,8 @@ int main(int argc, char** argv) {
     render(&app);
     shows_foot(&app, "[ Aborting... ]", red); /* where the keys go */
     app.theme.prompt = gui_theme_builtin(app.theme.id)->prompt;
-    key(&app, SDLK_ESCAPE); /* Repeated ESC while reaping is harmless. */
+    key(&app, SDLK_ESCAPE); /* Repeated ESC while reaping is harmless: no question either */
+    assert(!app.confirm.shown);
     while (app.menu.running && SDL_GetTicks() - started < 2000) {
         pump(&app);
         SDL_Delay(5);
@@ -10419,7 +10596,7 @@ int main(int argc, char** argv) {
     assert(!strcmp(app.message, "Aborted with ESC."));
     render(&app);
     shows_half(&app, "Aborted with ESC.", red); /* in the tips */
-    /* a finger on a running run's ESC line aborts it, anywhere else it does nothing */
+    /* a finger or a click on a running run's ESC line asks to abort it, anywhere else it does nothing */
     assert(!snx_write_file(hung, "", 0));
     launch(&app, snx_strdup(hung), false);
     for (until = SDL_GetTicks() + 5000, ready = false; !ready && SDL_GetTicks() < until; SDL_Delay(5)) {
@@ -10437,11 +10614,21 @@ int main(int argc, char** argv) {
         assert(!p.stacked && p.side.x == p.list.x + p.list.w + cw && p.side.w >= 24 * cw &&
                SDL_abs(p.list.w * 2 - p.side.w * 3) <= 5);
         touch_box(&app, p.list); /* the output: nothing */
-        assert(app.menu.running && !app.aborting);
+        point(&app, p.list, true);
+        assert(app.menu.running && !app.aborting && !app.confirm.shown);
+        press_esc_line(&app, false); /* the mouse on the foot asks as a finger there does */
+        assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ABORT && !app.aborting);
+        key(&app, SDLK_ESCAPE); /* Continue */
+        assert(!app.confirm.shown && app.menu.running && !app.aborting);
         app.theme = *gui_theme_builtin("yorha"); /* a loading screen's ESC line is its last row */
         tap_px(&app, 20 * cw, 3 * ch + ch / 2);
-        assert(!app.aborting);
+        mouse_px(&app, 20 * cw, 3 * ch + ch / 2, true);
+        assert(!app.aborting && !app.confirm.shown);
+        mouse_px(&app, 20 * cw, (app.rows - 1) * ch + ch / 2, true);
+        assert(app.confirm.shown && !app.aborting);
+        key(&app, SDLK_ESCAPE);
         tap_px(&app, 20 * cw, (app.rows - 1) * ch + ch / 2);
+        abort_yes(&app);
         assert(app.aborting);
         app.theme = *gui_theme_builtin("default");
     }
@@ -10490,15 +10677,15 @@ int main(int argc, char** argv) {
         app.clock = 0;
         app.message[0] = 0;
     }
-    /* where ESC is a back gesture made by mistake (ask_abort, Android's) it asks first: ESC again, a click off the box
-       or Continue leave the run going; Abort aborts it. The ESC line's tap asks too, and a held key answers nothing */
+    /* ESC asks first on every platform (a phone's Back is an edge swipe easily made by mistake): ESC again, a click off
+       the box or Continue leave the run going; Abort aborts it. The ESC line's tap asks too, and a held key answers
+       nothing */
     {
         int pass;
         GuiRect r;
         GuiChoices l;
         GuiPlace p;
         SDL_Event held;
-        app.ask_abort = true;
         for (pass = 0; pass < 2; ++pass) {
             assert(!snx_write_file(hung, "", 0));
             launch(&app, snx_strdup(hung), false);
@@ -10602,7 +10789,6 @@ int main(int argc, char** argv) {
         assert(!app.menu.running && app.finished && app.abnormal_exit && !app.confirm.shown);
         key(&app, SDLK_ESCAPE);
         assert(!app.finished && !app.confirm.shown);
-        app.ask_abort = false;
     }
     free(hung);
 
@@ -14155,6 +14341,7 @@ int main(int argc, char** argv) {
             r = foot_room(&app, p.keys, app.theme.footer_box);
             foot_px_is(&app, r.x + r.w - (int)strlen(SAY_ABORT) * 8 * foot_scale(&app), r.y, SAY_ABORT, red, black);
             touch_box(&app, p.keys);
+            abort_yes(&app);
             assert(app.aborting);
             for (until = SDL_GetTicks() + 3000; app.menu.running && SDL_GetTicks() < until; SDL_Delay(5)) pump(&app);
             assert(!app.menu.running && !app.finished);

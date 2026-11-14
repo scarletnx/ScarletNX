@@ -20,6 +20,8 @@
 #include "common/cpu/aarch64/cpu.h" /* SNX_ABI, which the games this build's driver makes are stamped with */
 #include "common/utilities/state_header.h"
 #include "common/utilities/demangle.h"
+#include "common/utilities/zip.h" /* snx_crc32: the DS's ARM7 BIOS, checked before it is installed */
+#include "nds/cartridge/key1.h"   /* the BIOS's file, size and CRC-32, as scarletnx-nds reads it */
 #include "common/utilities/logscan.h"
 #include "common/utilities/run_mark.h"
 #include "gui/aot.h"
@@ -162,8 +164,12 @@ enum {
     GUI_LIST_APPEARANCE,
     GUI_LIST_QUEUE,
     GUI_LIST_STATES,
+    GUI_LIST_KEYS,
     GUI_LISTS
 };
+/* the keys screen's consoles, a row each (ui.txt's scene Keys), in the menu's order: whose file each takes, where it
+   goes and whether it is there are keys_file, keys_place and keys_there */
+enum { GUI_KEYS_SWITCH, GUI_KEYS_3DS, GUI_KEYS_NDS, GUI_KEYS_CONSOLES };
 /* a scene list drawn this frame (ui_bar): its rows' area, a finger's to scroll, and its scroll bar's track and thumb
    (empty while its rows all show), the rows it has and shows from first, kept in App's firsts[list] */
 typedef struct {
@@ -421,6 +427,8 @@ typedef struct App {
     uint64_t loads_key;
     Uint64 loads_at;
     char *cwd, *file, *games_dir, *keys_path, *keys3_path;
+    char* bios7_path; /* the DS's ARM7 BIOS in the data folder: scarletnx-nds decrypts secure areas with it */
+    int keys_of;      /* the keys screen's console in focus (GUI_KEYS_*): the one a file picked is for */
     char*
         data_dir; /* recompiled/, dumps/, work/ and themes/: the driver's too, which gets it as --repo (snx_data_dir) */
     char* checkout;       /* a build tree's menu's checkout (snx_checkout), where an older version kept games/ */
@@ -435,9 +443,8 @@ typedef struct App {
     bool log_due; /* the last run ended abnormally, not by ESC, and its log is not saved since: Share Log blinks */
     char row_text[700]; /* the text of the row a list of ui.txt asked for last, until it is drawn (get_row_info) */
     char pick_text[96]; /* a picks box's choice with its mark, "(*) Subfolders" (pick_label) */
-    GuiConfirm confirm; /* the question before a run is aborted, when ask_abort says to ask it */
+    GuiConfirm confirm; /* the question shown: before a run is aborted, the app closed, a folder used... */
     int choices_of;     /* whose choices ui.txt's scene Choices draws or hits now (GuiChoicesOf) */
-    bool ask_abort;     /* ESC asks first: on a phone it is Back, an edge swipe easily made by mistake */
     int native;
     /* the run's transition_screen: a collection's program switch shows its page (steps_draw) */
     bool transition;
@@ -704,9 +711,10 @@ typedef struct App {
     GuiThemeKey fetch_keys[GUI_FETCH_ROWS];
     char fetch_label[GUI_FETCH_ROWS][180];
     char fetch_title[GUI_DRIVER_REPOS][240]; /* each repository's box's head */
+    int fetch_groups;                        /* how many boxes */
     bool fetch_open[GUI_DRIVER_REPOS];       /* its box every release, not its latest and recommended alone */
     char fetch_about[GUI_FETCH_ROWS][900];
-    int fetch_repo[GUI_FETCH_ROWS], fetch_release[GUI_FETCH_ROWS];
+    int fetch_repo[GUI_FETCH_ROWS], fetch_release[GUI_FETCH_ROWS], fetch_group[GUI_FETCH_ROWS];
     char asset_labels[GUI_FETCH_ASSETS][240];
     const char* asset_picks[GUI_FETCH_ASSETS + 1];
     char download_name[160], download_said[400];
@@ -953,6 +961,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #else
 #define SAY_KEYS_HOW SNX_TR_KEYS("Pick a keys file.")
 #endif
+#define SAY_KEYS_CONSOLES SAY_KEYS_HOW /* a finger taps a console's row */
 #define SAY_KEYS_WAIT SNX_TR_NOOP("Pick a keys file")
 #define SAY_PICK_BOX  SNX_TR_NOOP("tap the box to open the file picker")
 #define SAY_FILE_WAIT SNX_TR_NOOP("Pick a file")
@@ -1034,6 +1043,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_GAMES_STATES SNX_TR_KEYS("S: save states.")
 #define SAY_PICK_BOX     SNX_TR_NOOP("click the box (or Enter) to open the file picker")
 #define SAY_KEYS_HOW     SNX_TR_KEYS("Ctrl+V: paste. ESC: back.")
+#define SAY_KEYS_CONSOLES SNX_TR_KEYS("Up/Down: console. Ctrl+V: paste. ESC: back.")
 #define SAY_KEYS_WAIT    SNX_TR_NOOP("Pick or drop a keys file")
 #define SAY_FILE_WAIT    SNX_TR_NOOP("Pick or drop a file")
 #define SAY_DONE         SNX_TR_NOOP("Press [ESC] to return to menu")
@@ -1079,6 +1089,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_PAD_GAMES_AOT        SNX_TR_KEYS("R3: AOT pack.")
 #define SAY_PAD_GAMES_STATES     SNX_TR_KEYS("X: save states.")
 #define SAY_PAD_KEYS_HOW         SNX_TR_KEYS("A: pick a file. B: back.")
+#define SAY_PAD_KEYS_CONSOLES    SNX_TR_KEYS("D-pad: console. A: pick a file. B: back.")
 #define SAY_PAD_EDITOR           SNX_TR_KEYS("D-pad: key, change. A: edit. B: back.")
 #define SAY_PAD_PICKER           SNX_TR_KEYS("D-pad: row, step 1. LT/RT: step 16. A: OK. B: cancel.")
 #define SAY_PAD_SETTINGS         SNX_TR_KEYS("D-pad: setting, change. A: type. B: back.")
@@ -1401,16 +1412,37 @@ static char* device_keys_path(const App* app) {
     free(dir);
     return path;
 }
-/* the keys a driver reads: the Switch's installed here, else with the user's data folder the ones in ~/.switch, else
-   the 3DS's in ~/.3ds; NULL when none */
-static char* keys_in_use(const App* app) {
+/* the Switch's keys its driver reads: those installed here, else with the user's data folder the ones in ~/.switch;
+   NULL when none */
+static char* switch_keys_in_use(const App* app) {
     if (app->keys_path && snx_is_file(app->keys_path)) return snx_strdup(app->keys_path);
 #ifdef SNX_XDG
     char* home = installed(app) ? home_keys_path() : NULL;
     if (home && snx_is_file(home)) return home;
     free(home);
 #endif
-    return snx_ctr_keys_found();
+    return NULL;
+}
+/* the keys a driver reads: the Switch's, else the 3DS's in ~/.3ds; NULL when none */
+static char* keys_in_use(const App* app) {
+    char* in_use = switch_keys_in_use(app);
+    return in_use ? in_use : snx_ctr_keys_found();
+}
+/* the keys screen's consoles, as the menu's loads name them */
+static const char* const keys_consoles[GUI_KEYS_CONSOLES] = {"Switch", "3DS", "NDS"};
+/* the file the keys screen's console takes, by the name its driver reads it by */
+static const char* keys_file(int console) {
+    return console == GUI_KEYS_SWITCH ? "prod.keys" : console == GUI_KEYS_3DS ? "aes_keys.txt" : NDS_BIOS7_FILE;
+}
+/* where it is installed: NULL when no folder can be named (no home) */
+static const char* keys_place(const App* app, int console) {
+    return console == GUI_KEYS_SWITCH ? app->keys_path : console == GUI_KEYS_3DS ? app->keys3_path : app->bios7_path;
+}
+/* the console's file its driver reads, installed or, the Switch's, found in ~/.switch; NULL when none */
+static char* keys_there(const App* app, int console) {
+    const char* place = keys_place(app, console);
+    if (console == GUI_KEYS_SWITCH) return switch_keys_in_use(app);
+    return place && snx_is_file(place) ? snx_strdup(place) : NULL;
 }
 /* the footer from row: the usage, then the working folder, which recompiled/ and themes/ are found in. The theme's bar
    style puts them on a band of ink over rows rows, its plain one in soft and ink; a rule above when it says so */
@@ -2009,6 +2041,7 @@ static void place_screen(App* app, GuiPlace* p, const char* keys, int shows);
 static const char* shown_keys(const App* app, char* out, size_t size);
 static void aot_status_update(App* app);
 static void side_focus_update(App* app);
+static const char* missing_name(const char* file);
 static void missing_read(App* app);
 /* a screen's keys, Tab's after them; the key back of a screen whose own keys do not say it; F1's, last in a foot */
 #define SAY_TAB SNX_TR_KEYS("Tab: screen. F2: side box.")
@@ -2072,6 +2105,14 @@ static void run_console(App* app, const GuiPlace* p, int* cols, int* rows) {
    ended, the status under them; the file in the tips, the ESC line where the keys go, as the theme's prompt frames it */
 static void run_place(App* app, GuiPlace* p) {
     place_screen(app, p, snx_tr(SAY_ABORT), GUI_SHOWS_STATUS | GUI_SHOWS_WIDE | GUI_SHOWS_SIDE);
+}
+/* whether render pixel row y is on a run's ESC line, which a click or a tap presses as ESC: the console layout's foot,
+   the loading screen's last row */
+static bool run_foot_at(App* app, float y) {
+    GuiPlace p;
+    if (app->theme.run == GUI_RUN_STEPS) return (int)(y / (float)(16 * app->scale)) == app->rows - 1;
+    run_place(app, &p);
+    return y >= (float)p.keys.y && y < (float)(p.keys.y + p.keys.h);
 }
 static void job_console_size(App* app, int* cols, int* rows);
 static void size_shown(const App* app, char* out, size_t n);
@@ -3361,6 +3402,7 @@ static unsigned key_icon(const char* key, const char* what) {
                  {"folder", GUI_ICON_MOVE},
                  {"user", GUI_ICON_MOVE},
                  {"queue", GUI_ICON_MOVE},
+                 {"console", GUI_ICON_MOVE},
                  {"scroll", GUI_ICON_MOVE},
                  {"page", GUI_ICON_MOVE},
                  {"move, change", GUI_ICON_MOVE},
@@ -3498,9 +3540,10 @@ static const char* screen_keys(const App* app, bool help, char* out, size_t size
                    : app->form == GUI_FORM_FREEDRENO ? SAY_PAD_FREEDRENO
                                                      : SAY_PAD_SETTINGS;
         else
-            keys = app->menu.view == GUI_LOAD_GAMES ? SAY_PAD_GAMES
-                   : pick_screen(app)               ? SAY_PAD_KEYS_HOW
-                                                    : SAY_PAD_MENU;
+            keys = app->menu.view == GUI_LOAD_GAMES  ? SAY_PAD_GAMES
+                   : app->menu.view == GUI_LOAD_KEYS ? SAY_PAD_KEYS_CONSOLES
+                   : pick_screen(app)                ? SAY_PAD_KEYS_HOW
+                                                     : SAY_PAD_MENU;
         if (app->editing && app->form == GUI_FORM_FOLDERS) folders_said(app, true, parts, &n);
         if (!app->editing && app->menu.view == GUI_LOAD_GAMES) games_said(app, true, parts, &n);
         if (!app->editing && folder_pick_screen(app)) said_add(parts, &n, SAY_PAD_PICK_FOLDER);
@@ -3523,6 +3566,8 @@ static const char* screen_keys(const App* app, bool help, char* out, size_t size
                                                      : SAY_SETTINGS;
         else if (app->menu.view == GUI_LOAD_GAMES)
             keys = games_grid(app) ? SAY_GAMES_GRID : SAY_GAMES;
+        else if (app->menu.view == GUI_LOAD_KEYS)
+            keys = SAY_KEYS_CONSOLES;
         else if (pick_screen(app))
             keys = SAY_KEYS_HOW;
         if (app->editing && app->form == GUI_FORM_FOLDERS) folders_said(app, false, parts, &n);
@@ -7710,30 +7755,72 @@ static void prompt_in(App* app, GuiRect r, int y, GuiPromptLine line, const char
 typedef struct {
     GuiPlace place;
     int prompt; /* the waiting line's pixel row */
+    /* the keys screen's: its consoles' rows under the box's head (ui.txt's scene Keys), and the pixel row under them */
+    GuiRect rects[UI_KEYS_ITEMS];
+    UiList lists[UI_KEYS_ITEMS];
+    int below;
 } GuiPickBoxes;
 static void pick_boxes(App* app, GuiPickBoxes* k) {
     char keys[256];
+    int s = app->scale, y, h;
+    GuiRect r;
     place_screen(app, &k->place, shown_keys(app, keys, sizeof keys), GUI_SHOWS_TABS);
     k->prompt = k->place.list.y + k->place.list.h / 2;
+    memset(k->lists, 0, sizeof k->lists);
+    memset(k->rects, 0, sizeof k->rects);
+    y = k->place.list.y + head_h(app) + 2 * s; /* where pane() starts its text */
+    k->below = y;
+    if (app->menu.view != GUI_LOAD_KEYS) return;
+    r = inner(app, k->place.list);
+    h = rows_h(ui_keys_layout, ui_keys_row, k->rects, UI_KEYS_ROWS, s, GUI_KEYS_CONSOLES);
+    h = SDL_min(h, SDL_max(0, k->place.list.y + k->place.list.h - y - 2 * s));
+    ui_keys_layout(gui_rect(r.x, y, r.w, h), s, k->rects);
+    k->lists[UI_KEYS_ROWS].focus = (size_t)app->keys_of;
+    list_follow(app, GUI_LIST_KEYS, ui_keys_follow, ui_keys_row, k->rects, UI_KEYS_ROWS, GUI_KEYS_CONSOLES,
+                &k->lists[UI_KEYS_ROWS]);
+    k->below = y + h + cell_h(app) / 2;
+}
+/* a console's row: its name, the file it takes and whether it is installed */
+bool ui_keys_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
+    const char* place;
+    (void)width;
+    if (row >= GUI_KEYS_CONSOLES) return false;
+    place = keys_place(app, (int)row);
+    snprintf(app->row_text, sizeof app->row_text, "%-6s  %-12s  %s", keys_consoles[row], keys_file((int)row),
+             place && snx_is_file(place) ? snx_tr("Installed") : snx_tr("Not installed"));
+    info->label = app->row_text;
+    return true;
+}
+/* a row under the pointer takes the focus, its console's place shown under the rows; a click on it opens the picker
+   for its file, as Enter does */
+void ui_keys_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
+    if (row >= GUI_KEYS_CONSOLES) return;
+    if (app->keys_of != (int)row) app->keys_done = 0; /* the last try's outcome was another console's */
+    app->keys_of = (int)row;
+    if (hit & UI_HIT_CLICK) menu_key(app, GUI_SELECT);
 }
 static void draw_pick(App* app) {
     GuiPickBoxes k;
     GuiRect r;
     bool keys = app->menu.view == GUI_LOAD_KEYS;
-    char line[1100], hints_line[256], *in_use = keys ? keys_in_use(app) : NULL;
+    char line[1100], hints_line[256], *in_use = keys ? keys_there(app, app->keys_of) : NULL;
+    const char* place = keys ? keys_place(app, app->keys_of) : NULL;
     int y;
     pick_boxes(app, &k);
     chrome(app, &k.place);
     y = pane(app, k.place.list, snx_tr(entry_text(keys ? GUI_KEYS : app->menu.active)));
     r = inner(app, k.place.list);
     r = gui_rect(r.x, y, r.w, r.y + r.h - y);
-    if (keys) {
-        snprintf(line, sizeof line, snx_tr("Installs to: %s"),
-                 app->keys_path ? app->keys_path : snx_tr("No home folder"));
+    if (keys) { /* the consoles, then where the one in focus's file goes */
+        ui_keys_draw(app, k.rects, app->scale, k.lists);
+        y = k.below;
+        snprintf(line, sizeof line, snx_tr("Installs to: %s"), place ? place : snx_tr("No home folder"));
         y += wrap_in(app, r, r.x, y, line, 1, rgb(app->theme.ink)) * cell_h(app);
-        snprintf(line, sizeof line, snx_tr("3DS keys to: %s"),
-                 app->keys3_path ? app->keys3_path : snx_tr("No home folder"));
-        y += wrap_in(app, r, r.x, y, line, 1, rgb(app->theme.ink)) * cell_h(app);
+        if (app->keys_of == GUI_KEYS_NDS) { /* the one file it is: scarletnx-nds refuses another */
+            snprintf(line, sizeof line, snx_tr("The DS's ARM7 BIOS: %u bytes, CRC-32 0x%08X"), NDS_BIOS7_SIZE,
+                     NDS_BIOS7_CRC32);
+            y += wrap_in(app, r, r.x, y, line, 0, rgb(app->theme.soft)) * cell_h(app);
+        }
     }
     if (keys && keys_left(app)) { /* what the last try did, and when the menu comes back */
         GuiRgb said = app->keys_ok ? app->theme.focus : app->theme.failure;
@@ -7751,7 +7838,7 @@ static void draw_pick(App* app) {
             in_use = NULL;
         }
     }
-    if (in_use && app->keys_path && !strcmp(in_use, app->keys_path))
+    if (in_use && place && !strcmp(in_use, place))
         y += wrap_in(app, r, r.x, y, snx_tr("Keys installed here: installing again replaces them"), 0,
                      rgb(app->theme.failure)) *
              cell_h(app);
@@ -8878,6 +8965,8 @@ static void places_apply(App* app) {
     free(app->keys_path);
     app->keys_path = device_keys_path(app);
     if (!app->keys3_path) app->keys3_path = snx_ctr_keys_path(); /* the 3DS driver's, ~/.3ds/aes_keys.txt */
+    free(app->bios7_path);
+    app->bios7_path = snx_path_join(app->data_dir, NDS_BIOS7_FILE); /* where scarletnx-nds reads it (bios7_path) */
 }
 static const char* place_path(const App* app, int place) {
     return place == GUI_PLACE_DATA    ? app->data_dir
@@ -9881,10 +9970,10 @@ static const char* drivers_lack(App* app) {
            : lack == SNX_GPU_DRIVER_OLD_ANDROID ? snx_tr("Needs Android 9")
                                                 : snx_tr("Not in this build");
 }
-/* the same for Download Driver, whose repositories hold drivers for Adreno GPUs alone */
-static const char* fetch_lack(App* app) {
-    const char* lack = drivers_lack(app);
-    return lack ? lack : drivers_host(app)->kgsl ? NULL : snx_tr("Adreno only");
+/* this device's GPU as GuiDriverRepo's gpu, -1 for one no package drives */
+static int fetch_gpu(App* app) {
+    const SnxGpuDriverHost* host = drivers_host(app);
+    return host->kgsl ? GUI_DRIVER_ADRENO : host->mali ? GUI_DRIVER_MALI : host->amdgpu ? GUI_DRIVER_XCLIPSE : -1;
 }
 /* the system's Vulkan driver, as GPU Drivers' System driver row says it: asked once, an instance and no device */
 static void vk_system_ask(App* app) {
@@ -9958,6 +10047,9 @@ static int drivers_fill(App* app) {
     size_t i, shown = SDL_min(app->packages_count, (size_t)GUI_DRIVERS_SHOWN);
     int r = 0;
     memset(f, 0, sizeof *f);
+    /* the launcher's page shows them; a game's page has none, and a row a game's page shares a number with is no
+       edenprobe row (an App starts zeroed: Global would be Continue and Clear Crash List) */
+    app->drivers_continue = app->drivers_clear = -1;
     if (ini) {
         own = snx_ini_has(ini, "gpu_driver") ? snx_ini_value(ini, "gpu_driver") : NULL;
         picked = snx_ini_has(ini, "gpu_driver") ? (own ? own : "") : NULL;
@@ -10001,16 +10093,12 @@ static int drivers_fill(App* app) {
     snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Download Driver"));
     if (lack)
         snx_gpu_driver_loads(drivers_host(app), app->drivers_about[r], sizeof app->drivers_about[r]);
-    else if (fetch_lack(app))
-        snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
-                 snx_tr("The driver repositories Eden lists hold drivers for Adreno GPUs. An Xclipse GPU's driver, "
-                        "RADV, is added from its zip with Add Driver"));
     else
         snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
-                 snx_tr("The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded "
-                        "and added as Add Driver adds a zip. A GPU maker's own drivers are marked proprietary, no "
-                        "license"));
-    snprintf(f->value[r], sizeof f->value[r], "%s", fetch_lack(app) ? fetch_lack(app) : "");
+                 snx_tr("Drivers from GitHub releases: Turnip and a GPU maker's own for an Adreno (the maker's "
+                        "marked proprietary, no license), NX-Mali and FristOneRR's PanVK for a Mali, RADV for an "
+                        "Xclipse. One picked is downloaded and added as Add Driver adds a zip"));
+    snprintf(f->value[r], sizeof f->value[r], "%s", lack ? lack : "");
     app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
                                     sizeof f->value[0], app->drivers_about[r]);
     ++r;
@@ -10042,7 +10130,6 @@ static int drivers_fill(App* app) {
                         "own with the default settings, %s; then their counts"),
                  folder ? folder : "?");
         app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
-        app->drivers_continue = app->drivers_clear = -1;
         if (folder && probe_unfinished(folder, app->drivers_about[r + 1], sizeof app->drivers_about[0])) {
             app->drivers_continue = ++r;
             snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Continue"));
@@ -10068,11 +10155,10 @@ static int driver_of(const App* app, int r) {
     int i = r - app->drivers_base;
     return i >= 0 && i < (int)SDL_min(app->packages_count, (size_t)GUI_DRIVERS_SHOWN) ? i : -1;
 }
-/* a GPU Drivers row greyed: a package, Download Driver and Add Driver where no package loads, Download Driver where
-   its repositories hold no driver for the GPU */
+/* a GPU Drivers row greyed: a package, Download Driver and Add Driver where no package loads */
 static bool driver_row_off(App* app, int r) {
-    if (r == app->drivers_tail) return fetch_lack(app) != NULL;
-    return (driver_of(app, r) >= 0 || r == app->drivers_tail + 1) && drivers_lack(app) != NULL;
+    return (driver_of(app, r) >= 0 || r == app->drivers_tail || r == app->drivers_tail + 1) &&
+           drivers_lack(app) != NULL;
 }
 /* the page's note: this device's line (snx_gpu_driver_loads), whose game, the packages not listed */
 static void drivers_note(App* app) {
@@ -10318,14 +10404,15 @@ static void driver_select(App* app, int r) {
         driver_use(app, r);
 }
 
-/* ---- GPU Drivers > Download Driver: the releases of Eden's driver repositories (gui/gpu_driver_fetch.h), fetched
-   from GitHub as the page opens, as Eden's driver fetcher fetches them; a release's asset picked is downloaded and
-   added as Add Driver adds a zip ---- */
+/* ---- GPU Drivers > Download Driver: the releases of the driver repositories for this device's GPU
+   (gui/gpu_driver_fetch.h), fetched from GitHub as the page opens, as Eden's driver fetcher fetches them; a release's
+   asset picked is downloaded and added as Add Driver adds a zip ---- */
 enum { GUI_FETCH_EVENT_LIST, GUI_FETCH_EVENT_PROGRESS, GUI_FETCH_EVENT_DONE };
 /* the fetch thread's answer for a repository, or the download's, an event's data1 the main thread frees */
 typedef struct {
     int repo;
     int failed;
+    int last; /* the fetch's last repository */
     SnxHttpsResponse r;
     char why[700];
     char name[160]; /* a download's asset */
@@ -10334,6 +10421,7 @@ typedef struct {
 typedef struct {
     GuiHttpsGet get;
     Uint32 event;
+    int gpu; /* the GPU whose repositories it fetches */
     char url[600];
     char name[160];
     unsigned long long said; /* the bytes the last progress event said */
@@ -10346,15 +10434,21 @@ static void fetch_push(Uint32 event, int code, void* data) {
     e.user.data1 = data;
     if (!SDL_PushEvent(&e)) free(data); /* the queue is full or SDL is going: the answer is lost with it */
 }
-/* the five repositories' releases, one after the other: GitHub's rate limit counts each request */
+/* the GPU's repositories' releases, one after the other: GitHub's rate limit counts each request */
 static int SDLCALL fetch_run(void* data) {
     GuiFetchJob* job = (GuiFetchJob*)data;
-    for (int i = 0; i < GUI_DRIVER_REPOS; ++i) {
-        GuiFetchAnswer* a = (GuiFetchAnswer*)calloc(1, sizeof *a);
+    int last = -1;
+    for (int i = 0; i < GUI_DRIVER_REPOS; ++i)
+        if (gui_driver_repos[i].gpu == job->gpu) last = i;
+    for (int i = 0; i <= last; ++i) {
+        GuiFetchAnswer* a;
         SnxHttpsOptions o = {"application/vnd.github+json", 30, 8ull << 20, 0, NULL, NULL};
         char url[300];
+        if (gui_driver_repos[i].gpu != job->gpu) continue;
+        a = (GuiFetchAnswer*)calloc(1, sizeof *a);
         if (!a) continue;
         a->repo = i;
+        a->last = i == last;
         snprintf(url, sizeof url, "https://api.github.com/repos/%s/releases", gui_driver_repos[i].path);
         a->failed = job->get(url, &o, &a->r, a->why, sizeof a->why) != 0;
         if (!a->failed && a->r.status != 200) {
@@ -10439,23 +10533,25 @@ static void fetch_release_row(App* app, int r, int repo, int k, int recommended)
                                               : "",
               about, repo, k);
 }
-/* the page's rows, as Eden's fetcher folds each repository: its latest and the release Eden recommends for this GPU,
+/* the page's rows, as Eden's fetcher folds each repository of the GPU's: its latest and the release recommended for it,
    then More, which opens every release (Less closing them again); else one row saying its list loads, failed (Select
    fetches it again) or has none. Its title over them (fetch_entries) */
 static int fetch_fill(App* app) {
-    int r = 0, model = gui_adreno_model(app->vk_gpu);
+    int r = 0, gpu = fetch_gpu(app), model = gui_gpu_model(app->vk_gpu);
     memset(&app->fetch_form, 0, sizeof app->fetch_form);
+    app->fetch_groups = 0;
     for (int i = 0; i < GUI_DRIVER_REPOS && r + 3 <= GUI_FETCH_ROWS; ++i) {
+        if (gui_driver_repos[i].gpu != gpu) continue;
         const GuiDriverReleases* list = &app->fetch_lists[i];
         int listed = app->fetch_state[i] == GUI_FETCH_LISTED, failed = app->fetch_state[i] == GUI_FETCH_FAILED;
         int recommended = listed ? gui_driver_recommended_release(model, i, list) : -1, latest = -1, shown = 0;
-        char more[64];
+        char more[64], *title = app->fetch_title[app->fetch_groups++];
         if (listed)
-            snprintf(app->fetch_title[i], sizeof app->fetch_title[i],
+            snprintf(title, sizeof app->fetch_title[0],
                      list->count == 1 ? snx_tr("%s: %zu release") : snx_tr("%s: %zu releases"),
                      gui_driver_repos[i].name, list->count);
         else
-            snprintf(app->fetch_title[i], sizeof app->fetch_title[i], "%s", gui_driver_repos[i].name);
+            snprintf(title, sizeof app->fetch_title[0], "%s", gui_driver_repos[i].name);
         if (!listed || !list->count) {
             fetch_row(app, r++,
                       listed   ? snx_tr("No releases")
@@ -10486,22 +10582,26 @@ static int fetch_fill(App* app) {
             fetch_row(app, r++, more, "", gui_driver_repos[i].path, i, GUI_FETCH_MORE);
         }
     }
+    for (int k = 0, group = -1; k < r; ++k) {
+        if (!k || app->fetch_repo[k] != app->fetch_repo[k - 1]) ++group;
+        app->fetch_group[k] = group;
+    }
     return r;
 }
 /* Download Driver's screen, as Folders': each repository's title over its rows, a box each (grouped_frames). The
-   list's entries, row r's, and entry e's row (-1 a title, its repository in *group) */
+   list's entries, row r's, and entry e's row (-1 a title, its box in *group) */
 static int fetch_entries(const App* app) {
     int rows = gui_editor_rows(&app->editor);
-    return rows ? rows + app->fetch_repo[rows - 1] + 1 : 0;
+    return rows ? rows + app->fetch_group[rows - 1] + 1 : 0;
 }
-static int fetch_entry(const App* app, int r) { return r + app->fetch_repo[r] + 1; }
+static int fetch_entry(const App* app, int r) { return r + app->fetch_group[r] + 1; }
 static int fetch_entry_row(const App* app, int e, int* group) {
     int r, rows = gui_editor_rows(&app->editor);
     *group = -1;
     for (r = 0; r < rows; ++r) {
-        *group = app->fetch_repo[r];
+        *group = app->fetch_group[r];
         if (fetch_entry(app, r) == e) return r;
-        if (fetch_entry(app, r) - 1 == e && (!r || app->fetch_repo[r - 1] != app->fetch_repo[r])) return -1;
+        if (fetch_entry(app, r) - 1 == e && (!r || app->fetch_group[r - 1] != app->fetch_group[r])) return -1;
     }
     return -1;
 }
@@ -10518,11 +10618,11 @@ static int grouped_entry_row(const App* app, int e, int* group) {
     return app->form == GUI_FORM_FETCH ? fetch_entry_row(app, e, group) : folder_entry_row(app, e, group);
 }
 static int grouped_groups(const App* app) {
-    return app->form == GUI_FORM_FETCH ? GUI_DRIVER_REPOS : GUI_FOLDER_GROUPS + 1;
+    return app->form == GUI_FORM_FETCH ? app->fetch_groups : GUI_FOLDER_GROUPS + 1;
 }
-/* the page's note: the GPU and the driver Eden recommends for it, then what the last answer or press did */
+/* the page's note: the GPU and the driver recommended for it, then what the last answer or press did */
 static void fetch_head(App* app, char* out, size_t size) {
-    int model = gui_adreno_model(app->vk_gpu);
+    int model = gui_gpu_model(app->vk_gpu);
     snprintf(out, size, snx_tr("GPU: %s. Recommended: %s."), app->vk_gpu[0] ? app->vk_gpu : snx_tr("not known"),
              snx_tr(gui_driver_recommended(model)));
 }
@@ -10556,6 +10656,7 @@ static void open_fetch(App* app) {
             app->fetch_error[i][0] = 0;
         }
         job = (GuiFetchJob*)calloc(1, sizeof *job);
+        if (job) job->gpu = fetch_gpu(app);
         app->fetching = job && fetch_start(app, fetch_run, "driver lists", job);
     }
     fetch_show(app, 0, app->downloading ? app->download_said : "");
@@ -10647,7 +10748,7 @@ static void fetch_answer(App* app, int code, void* data) {
             app->fetch_state[i] = GUI_FETCH_FAILED;
             gui_log("Download Driver: %s: %s", gui_driver_repos[i].path, app->fetch_error[i]);
         }
-        if (i == GUI_DRIVER_REPOS - 1) app->fetching = false;
+        if (a->last) app->fetching = false;
         free(a->r.body);
         if (here) fetch_show(app, app->editor.row, app->downloading ? app->download_said : "");
     } else {
@@ -16536,7 +16637,7 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
         return;
     }
     if (app->picks_of == GUI_PICKS_MISSING) { /* the file, whole */
-        snprintf(out, size, snx_tr("Not found: %s"), app->missing_file ? app->missing_file : "?");
+        snprintf(out, size, snx_tr("Not found: %s"), missing_name(app->missing_file));
         return;
     }
     if (app->picks_of == GUI_PICKS_THEME) { /* the line says what the box is: YoRHa's tab names it, the default's
@@ -16817,7 +16918,24 @@ static MissingKind missing_kind(const char* program, const char* file) {
     if (system == SNX_SYSTEM_VITA) return MISSING_VITA;
     for (size_t i = 0; file && i < SDL_arraysize(dumps); ++i)
         if (snx_ends_with_nocase(file, dumps[i])) return MISSING_DUMP;
+    if (file && !file[0]) { /* none named: a folder when a copy of its RomFS stopped, which only a folder's leaves */
+        char stopped[SNX_PATH_SIZE];
+        bool copy;
+        game_where(program, &folder, &name);
+        copy = !snx_path_format(stopped, sizeof stopped, "%s/%s_data/romfs.copying", folder, name) &&
+               snx_path_exists(stopped);
+        free(name);
+        free(folder);
+        return copy ? MISSING_FOLDER : MISSING_DUMP;
+    }
     return MISSING_FOLDER;
+}
+/* the file a made game plays from, for a line: what gui_game_source_missing says of a game whose RomFS the driver has
+   no file named to extract again from ("") said so */
+static const char* missing_name(const char* file) {
+    return !file     ? "?"
+           : file[0] ? file
+                     : snx_tr("the dump or folder its RomFS is extracted from, which its settings do not name");
 }
 /* what the game whose program is at program plays from, as its driver has it named: a Switch game's source= (or its
    older link's own path), a GBA or 3DS game's source= in the .ini of its folder, where a Vita game's app/ links (its
@@ -16906,7 +17024,7 @@ static void missing_remove(App* app) {
     snprintf(app->message, sizeof app->message,
              snx_tr("%s is off Games: %s is not found. Its folder %s stays, and Games lists it again once that file is "
                     "back."),
-             shown ? shown : program, file ? file : "?", folder ? folder : "?");
+             shown ? shown : program, missing_name(file), folder ? folder : "?");
     recent_note(app);
     free(folder);
     free(shown);
@@ -17497,6 +17615,7 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     /* the GBA's window, and the DS's, starts fullscreen as a Switch game's does; a compile opens none */
     if ((app->menu.selected == GUI_GBA || app->menu.selected == GUI_NDS) && !make) n += gui_settings_one(s, "fullscreen", argv + n);
+    if (app->menu.selected == GUI_GBA && !make) n += gui_settings_gba(s, argv + n); /* its screen's colors */
     /* the picked extractions folder, which Extract to tmpfs leaves for the temporary one, and a Switch dump read in
        place (Extract dump off) has no use for */
     if (folders && app->place[GUI_PLACE_WORK] && app->menu.selected == GUI_SWITCH && !nro_file(absolute) &&
@@ -18163,8 +18282,8 @@ static const char* queue_game(const App* app) {
     int i = app->queue_focus;
     return i >= 0 && i < app->queue.count ? gui_queue_listed(&app->queue, i) : NULL;
 }
-/* a key on the Compile tab: Up and Down go over the queue, Enter plays one that ended well, ESC aborts the one
-   running (asked first where ask_abort says so) or goes back to Games, a line that ended seen and gone with it */
+/* a key on the Compile tab: Up and Down go over the queue, Enter plays one that ended well, ESC asks to abort the one
+   running or goes back to Games, a line that ended seen and gone with it */
 static void queue_key(App* app, GuiKey key) {
     int i = app->queue_focus, n = app->queue.count;
     if (!n) return;
@@ -18173,12 +18292,9 @@ static void queue_key(App* app, GuiKey key) {
         app->queue_focus = (i + (key == GUI_UP ? n - 1 : 1)) % n;
     else if (key == GUI_SELECT)
         queue_play(app);
-    else if (key == GUI_CANCEL && app->queue.job[i].state == GUI_JOB_RUNNING) {
-        if (app->ask_abort)
-            gui_confirm_open(&app->confirm, GUI_ASK_ABORT, false);
-        else
-            job_abort(app);
-    } else if (key == GUI_CANCEL) {
+    else if (key == GUI_CANCEL && app->queue.job[i].state == GUI_JOB_RUNNING)
+        gui_confirm_open(&app->confirm, GUI_ASK_ABORT, false);
+    else if (key == GUI_CANCEL) {
         char* game = snx_strdup(gui_queue_listed(&app->queue, i)); /* its line may go */
         if (app->queue.job[i].state >= GUI_JOB_OK) queue_drop(app, i);
         app->message[0] = 0;
@@ -18356,7 +18472,9 @@ static void side_focus_update(App* app) {
     app->debug_path = path ? snx_strdup(path) : NULL;
     app->debug_checked = now_ms(app);
     game_debug(app, path, 1, app->debug_focus, sizeof app->debug_focus);
-    gui_game_source_missing(path, app->work_dir, app->missing_focus, sizeof app->missing_focus);
+    if (gui_game_source_missing(path, app->work_dir, app->missing_focus, sizeof app->missing_focus) &&
+        !app->missing_focus[0])
+        snprintf(app->missing_focus, sizeof app->missing_focus, "%s", missing_name(""));
 }
 static int aot_focus_game(App* app, AotFocus* f) {
     size_t row = app->browser.selected, head = app->browser.head;
@@ -18570,9 +18688,20 @@ static void keys_result(App* app, bool ok) {
     app->keys_ok = ok;
     app->keys_done = now_ms(app) ? now_ms(app) : 1;
 }
-static void keys_write(App* app, const char* data, size_t size, bool ctr) {
+/* the console's file (GUI_KEYS_*) installed where its driver reads it */
+static void keys_write(App* app, const char* data, size_t size, int console) {
     char why[256];
-    const char* path = ctr ? app->keys3_path : app->keys_path;
+    const char* path = keys_place(app, console);
+    bool ctr = console == GUI_KEYS_3DS;
+    if (!path && console == GUI_KEYS_NDS) { /* places_apply's: no data folder, snx_user_data_dir's variable unset */
+#ifdef _WIN32
+        snprintf(app->message, sizeof(app->message), "%s", snx_tr("Cannot install bios7.bin: APPDATA is not set"));
+#else
+        snprintf(app->message, sizeof(app->message), "%s", snx_tr("Cannot install bios7.bin: HOME is not set"));
+#endif
+        keys_result(app, false);
+        return;
+    }
     if (!path) { /* snx_keys_dir's: the variables it reads are unset */
 #ifdef _WIN32
         snprintf(app->message, sizeof(app->message), "%s",
@@ -18590,29 +18719,73 @@ static void keys_write(App* app, const char* data, size_t size, bool ctr) {
     bool ok = !snx_keys_put(path, data, size, why, sizeof why);
     if (ok)
         snprintf(app->message, sizeof(app->message), "%s",
-                 ctr ? snx_tr("aes_keys.txt installed: encrypted 3DS games can be decrypted now.")
-                     : snx_tr("prod.keys installed: games can be extracted now."));
+                 console == GUI_KEYS_NDS ? snx_tr("bios7.bin installed: encrypted NDS games can be decrypted now.")
+                 : ctr                   ? snx_tr("aes_keys.txt installed: encrypted 3DS games can be decrypted now.")
+                                         : snx_tr("prod.keys installed: games can be extracted now."));
     else
         snprintf(app->message, sizeof(app->message), snx_tr("Cannot install %s: %s"), path, why);
     keys_result(app, ok); /* the keys' screen says it whole in its box */
+}
+/* file's bytes installed as the DS's ARM7 BIOS when they are the console's, as scarletnx-nds takes it: else refused,
+   saying what the file has and what the BIOS has */
+static void bios7_write(App* app, const char* file, const char* data, size_t size) {
+    uint32_t crc = snx_crc32(data, size);
+    if (size != NDS_BIOS7_SIZE)
+        snprintf(app->message, sizeof(app->message),
+                 snx_tr("%s is not the DS's ARM7 BIOS: it has %zu bytes, the BIOS %u (CRC-32 0x%08X)."), file, size,
+                 NDS_BIOS7_SIZE, NDS_BIOS7_CRC32);
+    else if (crc != NDS_BIOS7_CRC32)
+        snprintf(app->message, sizeof(app->message),
+                 snx_tr("%s is not the DS's ARM7 BIOS: its CRC-32 is 0x%08X, the BIOS's 0x%08X."), file, crc,
+                 NDS_BIOS7_CRC32);
+    else {
+        keys_write(app, data, size, GUI_KEYS_NDS);
+        return;
+    }
+    keys_result(app, false);
+}
+/* file, picked or dropped as the DS's ARM7 BIOS, could not be read whole */
+static void bios7_unread(App* app, const char* file) {
+    snprintf(app->message, sizeof(app->message),
+             snx_tr("%s could not be read, or has over %d bytes: the DS's ARM7 BIOS has %u."), file, SNX_GUI_KEYS_MAX,
+             NDS_BIOS7_SIZE);
+    keys_result(app, false);
 }
 static void install_keys(App* app, const char* source) {
     const char* name = source ? snx_path_leaf(source) : NULL;
     char* data = NULL;
     size_t size = 0;
-    bool ctr = false;
-    /* the name says which console's keys: the same file can only be the Switch's (prod.keys) or the 3DS's (aes_keys.txt),
-       each installed where its driver reads them */
-    if (source && snx_is_file(source)) {
-        ctr = !strcmp(name, "aes_keys.txt");
-        if (!strcmp(name, "prod.keys") || ctr) data = keys_read(source, &size);
+    int console = -1;
+    /* the name says which console's keys: prod.keys the Switch's, aes_keys.txt the 3DS's, each installed where its
+       driver reads them. Another file is the DS's ARM7 BIOS when it is named so, has the BIOS's size, or is picked on
+       the NDS row: dumps name it bios7.bin, biosnds7.rom or otherwise */
+    if (source && snx_is_file(source))
+        console =
+            !strcmp(name, "prod.keys")      ? GUI_KEYS_SWITCH
+            : !strcmp(name, "aes_keys.txt") ? GUI_KEYS_3DS
+            : !strcmp(name, NDS_BIOS7_FILE) || snx_file_size(source) == NDS_BIOS7_SIZE || app->keys_of == GUI_KEYS_NDS
+                ? GUI_KEYS_NDS
+                : -1;
+    if (console >= 0) {
+        app->keys_of = console; /* its row shows where it went, or why not */
+        data = keys_read(source, &size);
     }
-    if (!data) {
-        snprintf(app->message, sizeof(app->message), "%s",
-                 snx_tr("Please drop a readable file named prod.keys or aes_keys.txt."));
+    if (!data && console == GUI_KEYS_NDS)
+        bios7_unread(app, source);
+    else if (!data) {
+        if (console >= 0)
+            snprintf(app->message, sizeof(app->message), snx_tr("%s could not be read, or has over %d bytes."), source,
+                     SNX_GUI_KEYS_MAX);
+        else
+            snprintf(app->message, sizeof(app->message),
+                     source && snx_is_file(source) ? snx_tr("%s is not prod.keys, aes_keys.txt or the DS's ARM7 BIOS.")
+                                                   : snx_tr("%s is not a file."),
+                     source ? source : "?");
         keys_result(app, false);
-    } else
-        keys_write(app, data, size, ctr);
+    } else if (console == GUI_KEYS_NDS)
+        bios7_write(app, source, data, size);
+    else
+        keys_write(app, data, size, console);
     free(data);
 }
 /* what a picked file that cannot be used says, for the platform's picker: Android's documents, a desktop's files */
@@ -18629,17 +18802,20 @@ static void install_keys(App* app, const char* source) {
 #define SAY_PICK_UNREAD SNX_TR_NOOP("Pick the file from this computer's storage (%s).")
 #endif
 /* keys the picker gave as a document of an app's (Android's), read through it: a path to it may be one this app cannot
-   read, or there is none (Downloads by number, #280). With no name to go by, its text has to be a prod.keys' */
+   read, or there is none (Downloads by number, #280). With no name to go by, it is the file of the row in focus */
 static void install_keys_document(App* app, const char* uri) {
     size_t size = 0;
     char* data = keys_read(uri, &size);
-    if (!data)
-        snprintf(app->message, sizeof(app->message), snx_tr(SAY_KEYS_UNREAD), uri);
-    else if (!gui_keys_text(data, size))
-        snprintf(app->message, sizeof(app->message), snx_tr(SAY_KEYS_NOT), uri);
-    else
-        keys_write(app, data, size, false); /* a document has no name: its text has to be a prod.keys' */
-    if (!data || !gui_keys_text(data, size)) keys_result(app, false);
+    if (app->keys_of == GUI_KEYS_NDS && data)
+        bios7_write(app, uri, data, size);
+    else if (app->keys_of == GUI_KEYS_NDS)
+        bios7_unread(app, uri);
+    else if (data && gui_keys_text(data, size))
+        keys_write(app, data, size, app->keys_of);
+    else {
+        snprintf(app->message, sizeof(app->message), snx_tr(data ? SAY_KEYS_NOT : SAY_KEYS_UNREAD), uri);
+        keys_result(app, false);
+    }
     free(data);
 }
 /* a file dropped or picked on a load whose name says another console's (Android's picker shows every file): refused,
@@ -19596,6 +19772,12 @@ static void menu_key(App* app, GuiKey key) {
         }
         return;
     }
+    if (app->menu.view == GUI_LOAD_KEYS && (key == GUI_UP || key == GUI_DOWN)) { /* another console's row */
+        int to = SDL_clamp(app->keys_of + (key == GUI_UP ? -1 : 1), 0, GUI_KEYS_CONSOLES - 1);
+        if (to != app->keys_of) app->keys_done = 0; /* the last try's outcome was another console's */
+        app->keys_of = to;
+        return;
+    }
     if (pick_screen(app) && key != GUI_SELECT && key != GUI_CANCEL) return; /* nothing there to move to */
     /* a load whose driver is not there opens no screen: it says which driver, looked for again now (#640) */
     if (key == GUI_SELECT && app->menu.view == GUI_LOAD_NONE && !app->menu.running &&
@@ -19829,7 +20011,16 @@ static void screen_pointer(App* app, float x, float y, bool click, bool touch) {
     }
     if (pick_screen(app)) {
         GuiPickBoxes k;
+        size_t row;
+        uint32_t hit;
         pick_boxes(app, &k);
+        if (app->menu.view == GUI_LOAD_KEYS) { /* a console's row: its file picked */
+            hit = ui_keys_hit(app, k.rects, app->scale, k.lists, (int)x, (int)y, click ? UI_HIT_CLICK : 0, &i, &row);
+            if (hit) {
+                ui_keys_act(app, i, row, hit);
+                return;
+            }
+        }
         if (click && y >= (float)k.place.list.y && y < (float)(k.place.list.y + k.place.list.h) &&
             x >= (float)k.place.list.x && x < (float)(k.place.list.x + k.place.list.w))
             menu_key(app, GUI_SELECT); /* the box the waiting line is in */
@@ -20135,11 +20326,17 @@ static bool on_slider(App* app, float window_x, float window_y) {
     return !app->confirm.shown && size_picking(app) &&
            SDL_RenderCoordinatesFromWindow(app->renderer, window_x, window_y, &x, &y) && slider_at(app, x, y) >= 0;
 }
+static void cancel(App* app);
 static void pointer(App* app, float window_x, float window_y, bool click, bool touch) {
     float x, y;
     bool picking = app->editing && app->editor.picking;
     if ((app->menu.running && !app->confirm.shown) || app->finished) {
-        app->hovering = false; /* a run's foot presses nothing */
+        app->hovering = false;
+        if (click) { /* its ESC line is ESC, running and ended alike, as a tap there is */
+            layout(app);
+            if (SDL_RenderCoordinatesFromWindow(app->renderer, window_x, window_y, &x, &y) && run_foot_at(app, y))
+                cancel(app);
+        }
         return;
     }
     layout(app);
@@ -20505,14 +20702,13 @@ static void picked(App* app, const char* uri) {
         drop(app, path, false);
     free(path);
 }
-/* ESC: a run is aborted, or asked about first when ask_abort says so; anything else goes back */
+/* ESC: a run asks before it is aborted, as one key by mistake would lose its work (a compile, a RomFS copy cut half
+   way), and an abort under way takes nothing more; anything else goes back */
 static void cancel(App* app) {
     if (!app->menu.running)
         menu_key(app, GUI_CANCEL);
-    else if (app->ask_abort && !app->aborting)
+    else if (!app->aborting)
         gui_confirm_open(&app->confirm, GUI_ASK_ABORT, false);
-    else
-        abort_run(app);
 }
 /* a finger's id, the pen's apart: SDL gives a pen's touch the id 1 on every platform, the id Android and Wayland
    give a first finger and any finger may have, and no real finger's id sets bit 63 */
@@ -20580,7 +20776,7 @@ static void scroll(App* app, GuiKey key) {
 /* a finger lifted at x, y (0 to 1 across the window) that scrolled nothing: a tap clicks there, is ESC on a finished
    run and on a running one's ESC line */
 static void touch(App* app, float x, float y) {
-    float dx = x - app->finger_x, dy = y - app->finger_y, rx, ry;
+    float dx = x - app->finger_x, dy = y - app->finger_y;
     int w, h;
     if (SDL_fabsf(dx) > 0.03f || SDL_fabsf(dy) > 0.03f) return; /* a drag, no tap */
     if (app->finished) {
@@ -20588,21 +20784,6 @@ static void touch(App* app, float x, float y) {
         return;
     }
     SDL_GetWindowSize(app->window, &w, &h);
-    if (app->confirm.shown) {
-        pointer(app, x * (float)w, y * (float)h, true, true);
-        return;
-    }
-    if (app->menu.running) {
-        GuiPlace p;
-        layout(app);
-        if (!SDL_RenderCoordinatesFromWindow(app->renderer, x * (float)w, y * (float)h, &rx, &ry)) return;
-        if (app->theme.run != GUI_RUN_STEPS) { /* the foot the ESC line is in */
-            run_place(app, &p);
-            if (ry >= (float)p.keys.y && ry < (float)(p.keys.y + p.keys.h)) cancel(app);
-        } else if ((int)(ry / (float)(16 * app->scale)) == app->rows - 1) /* the loading screen's last row */
-            cancel(app);
-        return;
-    }
     pointer(app, x * (float)w, y * (float)h, true, true);
 }
 #ifdef SDL_PLATFORM_ANDROID
@@ -21278,7 +21459,6 @@ static bool initialize(App* app, const char* self) {
     if (self) app->self = snx_strdup(self);
     app->theme = *gui_theme_builtin("yorha"); /* every platform's look until Settings > App picks another */
 #ifdef SDL_PLATFORM_ANDROID
-    app->ask_abort = true;
     gui_android_start();
     /* back is ESC here: without this it would close the app */
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
@@ -21418,6 +21598,7 @@ static void forget(App* app) {
     gui_themes_free(&app->themes);
     free(app->keys_path);
     free(app->keys3_path);
+    free(app->bios7_path);
     free(app->recent_file);
     snx_free_strings(app->removed, app->removed_count);
     free(app->removed_file);

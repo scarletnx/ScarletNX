@@ -85,6 +85,11 @@ typedef struct {
     u32 wlog;
     u8 wlog_mark[16];
     int quad; /* quad operations are declared: shader_shfl_quad's SHFL are ones */
+    /* A fragment program run as one lane alone, where the stage has no subgroup: its place in its 2x2 quad (x's parity
+       in bit 0, y's in bit 1, from FragCoord, as Vulkan groups the pixels of a fine derivative) and, for each axis,
+       1.0 where the other pixel of its pair along it comes after it and -1.0 where before (emit_thread.c's
+       quad_read). 0 in other programs */
+    u32 quad_lane, quad_sign[2];
     /* A fragment program with flow discards nothing inside its loop: a KIL or a failed alpha test sets this bool,
        an EXIT ends the loop for the lane, and the lane is discarded after it. A demote or a kill in the loop lets a
        driver drop a quad's remaining helpers from execution while they still hold the loop open: AMD's Windows
@@ -94,6 +99,9 @@ typedef struct {
        shader_helper_loop_exit reads it */
     u32 helper_rounds;
     u32 blend_end;     /* one final fragment epilogue, reached after all guest control flow and alpha tests */
+    /* each slot's texel as its pre-draw capture took it at the program's start (ShaderInfo.predraw_slots), 0 for a slot
+       read as usual: shader_predraw_read gives it for the slot's reads */
+    u32 predraw[SH_MAXTEX];
     u32 primitive_base; /* capture slices preserve the original fragment PrimitiveId through push constants */
     u32 branch_cond;   /* with structured flow, the condition of the branch that ends the block, 0 for always */
     u32 branch_target; /* and the word a BRX that ends it goes to */
@@ -105,6 +113,11 @@ typedef struct {
 #define SH_SMALL_U32 64u
 
 /* the u32 constant of value: a small one from c->small_u32, after the emitter makes it the first time */
+/* a read of texture slot slot, or the texel its pre-draw capture took (DirectCtx.predraw), which every read of such a
+   slot returns: they are all at the own pixel */
+static inline u32 shader_predraw_read(const DirectCtx* c, int slot, u32 read) {
+    return slot >= 0 && slot < SH_MAXTEX && c->predraw[slot] ? c->predraw[slot] : read;
+}
 static inline u32 shader_u32(DirectCtx* c, u32 value) {
     if (value >= SH_SMALL_U32) return spv_emit_constant_u32(&c->emit, c->u32_type, value);
     if (!c->small_u32[value]) c->small_u32[value] = spv_emit_constant_u32(&c->emit, c->u32_type, value);
@@ -198,6 +211,7 @@ int shader_writes_reg(u64 w, int op, u32 reg);
 u32 shader_direct_pred_writes(u64 w, int op);
 u32 shader_next_instruction(u32 index, u32 limit);
 int shader_shfl_quad(u64 w, u32* lane);
+int shader_shfl_quad_lanes(u64 w, u8 dir[4], u32* valid);
 u32 shader_fswzadd_lanes(u64 w, u32 mode);
 int shader_predicate_comparison(int op);
 int shader_writes_predicate(u64 w, int op, u32 p);
@@ -640,6 +654,7 @@ typedef struct {
     u32 shared_words;
     u32 shared_element_pointer;
     u32 shared_array;
+    u32 shared_groups; /* NumWorkgroups where the shared memory is in a buffer (ShaderInfo.shared_spill), else 0 */
     u32 push;
     u32 push_pointer;
     u32 local_words;

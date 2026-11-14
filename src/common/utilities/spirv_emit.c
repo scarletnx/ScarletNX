@@ -12,6 +12,7 @@ static struct {
 } g_spirv_emit = {0x00010600};
 
 void spv_emit_set_version(uint32_t version) { g_spirv_emit.version = version; }
+uint32_t spv_emit_version(void) { return g_spirv_emit.version; }
 
 /* s at a capacity of at least need words: doubled from 512 (a small shader's section, so most grow once or never)
    until it holds them. Out of line, so the test that calls it stays small enough to be inlined everywhere */
@@ -513,10 +514,10 @@ uint32_t spv_emit_push_vec4(SpvEmitter* e, uint32_t vec4_type, uint32_t f32_type
     put(&e->types, structure);
     put(&e->types, vec4_type);
     if (second_type) put(&e->types, second_type);
-    uint32_t pointer = spv_emit_type_pointer(e, 9, structure); /* PushConstant */
+    uint32_t pointer = spv_emit_type_pointer(e, SPV_STORAGE_PUSH_CONSTANT, structure);
     uint32_t variable = spv_emit_id(e);
     EMIT(&e->types, SPV_OP_VARIABLE, pointer, variable, 9);
-    *component_pointer_type = spv_emit_type_pointer(e, 9, f32_type);
+    *component_pointer_type = spv_emit_type_pointer(e, SPV_STORAGE_PUSH_CONSTANT, f32_type);
     return variable;
 }
 
@@ -528,7 +529,7 @@ uint32_t spv_emit_push_component_f32(SpvEmitter* e, uint32_t pointer_type, uint3
 }
 
 static uint32_t output_vec4(SpvEmitter* e, uint32_t vec4_type, uint32_t decoration, uint32_t value) {
-    uint32_t pointer_type = spv_emit_type_pointer(e, 3, vec4_type); /* Output */
+    uint32_t pointer_type = spv_emit_type_pointer(e, SPV_STORAGE_OUTPUT, vec4_type);
     uint32_t id = spv_emit_id(e);
     EMIT(&e->decorations, SPV_OP_DECORATE, id, decoration, value);
     EMIT(&e->types, SPV_OP_VARIABLE, pointer_type, id, 3); /* Output */
@@ -540,7 +541,7 @@ uint32_t spv_emit_output_vec4(SpvEmitter* e, uint32_t vec4_type, uint32_t locati
 }
 
 uint32_t spv_emit_private_variable(SpvEmitter* e, uint32_t type) {
-    uint32_t pointer_type = spv_emit_type_pointer(e, 6, type); /* Private */
+    uint32_t pointer_type = spv_emit_type_pointer(e, SPV_STORAGE_PRIVATE, type);
     uint32_t id = spv_emit_id(e);
     EMIT(&e->types, SPV_OP_VARIABLE, pointer_type, id, 6);
     return id;
@@ -553,7 +554,8 @@ uint32_t spv_emit_output_component(SpvEmitter* e, uint32_t type, uint32_t locati
 }
 
 void spv_emit_xfb_capture(SpvEmitter* e, uint32_t variable, uint32_t buffer, uint32_t stride, uint32_t offset) {
-    static const uint32_t decorations[3] = {36, 37, 35}; /* XfbBuffer, XfbStride, Offset */
+    static const uint32_t decorations[3] = {SPV_DECORATION_XFB_BUFFER, SPV_DECORATION_XFB_STRIDE,
+                                            SPV_DECORATION_OFFSET};
     uint32_t values[3] = {buffer, stride, offset};
     for (uint32_t i = 0; i < 3; i++) {
         EMIT(&e->decorations, SPV_OP_DECORATE, variable, decorations[i], values[i]);
@@ -578,7 +580,7 @@ uint32_t spv_emit_clip_distance_output(SpvEmitter* e, uint32_t f32_type, uint32_
     uint32_t length_id = spv_emit_constant_u32(e, u32_type, length);
     uint32_t array_type = spv_emit_id(e);
     EMIT(&e->types, SPV_OP_TYPE_ARRAY, array_type, f32_type, length_id);
-    uint32_t pointer_type = spv_emit_type_pointer(e, 3, array_type);
+    uint32_t pointer_type = spv_emit_type_pointer(e, SPV_STORAGE_OUTPUT, array_type);
     uint32_t id = spv_emit_id(e);
     EMIT(&e->decorations, SPV_OP_DECORATE, id, 11, 3); /* BuiltIn */ /* ClipDistance */
     EMIT(&e->types, SPV_OP_VARIABLE, pointer_type, id, 3); /* Output */
@@ -591,7 +593,7 @@ uint32_t spv_emit_frag_depth_output(SpvEmitter* e, uint32_t f32_type) {
 }
 
 static uint32_t input_vec4(SpvEmitter* e, uint32_t vec4_type, uint32_t decoration, uint32_t value) {
-    uint32_t pointer_type = spv_emit_type_pointer(e, 1, vec4_type); /* Input */
+    uint32_t pointer_type = spv_emit_type_pointer(e, SPV_STORAGE_INPUT, vec4_type);
     uint32_t id = spv_emit_id(e);
     EMIT(&e->decorations, SPV_OP_DECORATE, id, decoration, value);
     EMIT(&e->types, SPV_OP_VARIABLE, pointer_type, id, 1); /* Input */
@@ -672,14 +674,14 @@ void spv_emit_execution_mode(SpvEmitter* e, uint32_t function, uint32_t mode, in
     if (has_operand) put(&e->execution_modes, operand);
 }
 
-void spv_emit_emit_vertex(SpvEmitter* e) { instruction(&e->functions, 218, 1); /* OpEmitVertex */ }
+void spv_emit_emit_vertex(SpvEmitter* e) { instruction(&e->functions, SPV_OP_EMIT_VERTEX, 1); }
 
-void spv_emit_end_primitive(SpvEmitter* e) { instruction(&e->functions, 219, 1); /* OpEndPrimitive */ }
+void spv_emit_end_primitive(SpvEmitter* e) { instruction(&e->functions, SPV_OP_END_PRIMITIVE, 1); }
 
 void spv_emit_patch_barrier(SpvEmitter* e, uint32_t u32_type) {
     /* as GLSL's barrier() in a tessellation control shader: Workgroup execution, Invocation memory scope and no
        semantics, which still orders the outputs written before it for the patch's other invocations */
-    instruction(&e->functions, 224, 4); /* OpControlBarrier */
+    instruction(&e->functions, SPV_OP_CONTROL_BARRIER, 4);
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 2));
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 4));
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 0));
@@ -720,7 +722,8 @@ static uint32_t sampled_image_type(SpvEmitter* e, uint32_t scalar_type, uint32_t
                                    int multisample) {
     assert(type <= 3 && (array == 0 || array == 1) && (shadow == 0 || shadow == 1));
     /* 0 1D, 1 2D, 2 3D, 3 cube; Sampled, of an unknown format */
-    return spv_emit_type_sampled_image(e, spv_emit_type_image(e, scalar_type, type, shadow, array, multisample, 1, 0));
+    return spv_emit_type_sampled_image(
+        e, spv_emit_type_image(e, scalar_type, type, shadow, array, multisample, 1, SPV_IMAGE_FORMAT_UNKNOWN));
 }
 /* the image type of a sampled image type */
 static uint32_t image_of(const SpvEmitter* e, uint32_t sampled_type) {
@@ -736,7 +739,7 @@ uint32_t spv_emit_sampler_image(SpvEmitter* e, uint32_t scalar_type, uint32_t se
                                 int array, int shadow, int multisample, uint32_t* sampled_type) {
     assert(sampled_type);
     *sampled_type = sampled_image_type(e, scalar_type, type, array, shadow, multisample);
-    uint32_t pointer = spv_emit_type_pointer(e, 0, *sampled_type); /* UniformConstant */
+    uint32_t pointer = spv_emit_type_pointer(e, SPV_STORAGE_UNIFORM_CONSTANT, *sampled_type);
     uint32_t sampler = spv_emit_id(e);
     EMIT(&e->decorations, SPV_OP_DECORATE, sampler, 34, set); /* DescriptorSet */
     EMIT(&e->decorations, SPV_OP_DECORATE, sampler, 33, binding); /* Binding */
@@ -750,7 +753,7 @@ uint32_t spv_emit_storage_image(SpvEmitter* e, uint32_t scalar_type, uint32_t se
     if (!format) spv_emit_capability(e, SPV_CAPABILITY_STORAGE_IMAGE_WRITE_WITHOUT_FORMAT);
     if (type == 5) spv_emit_capability(e, SPV_CAPABILITY_IMAGE_BUFFER); /* a storage texel buffer */
     *image_type = spv_emit_type_image(e, scalar_type, type, 0, array, 0, 2, format);
-    uint32_t pointer = spv_emit_type_pointer(e, 0, *image_type);
+    uint32_t pointer = spv_emit_type_pointer(e, SPV_STORAGE_UNIFORM_CONSTANT, *image_type);
     uint32_t variable = spv_emit_id(e);
     EMIT(&e->decorations, SPV_OP_DECORATE, variable, 34, set); /* DescriptorSet */
     EMIT(&e->decorations, SPV_OP_DECORATE, variable, 33, binding); /* Binding */
@@ -761,22 +764,22 @@ uint32_t spv_emit_storage_image(SpvEmitter* e, uint32_t scalar_type, uint32_t se
 void spv_emit_image_write(SpvEmitter* e, uint32_t image_type, uint32_t image_variable, uint32_t coordinates,
                           uint32_t texel) {
     uint32_t image = spv_emit_load(e, image_type, image_variable);
-    EMIT(&e->functions, 99, image, coordinates, texel); /* OpImageWrite */
+    EMIT(&e->functions, SPV_OP_IMAGE_WRITE, image, coordinates, texel);
 }
 
 uint32_t spv_emit_image_read(SpvEmitter* e, uint32_t result_type, uint32_t image_type, uint32_t image_variable,
                              uint32_t coordinates) {
     uint32_t image = spv_emit_load(e, image_type, image_variable);
     uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, 98, result_type, id, image, coordinates); /* OpImageRead */
+    EMIT(&e->functions, SPV_OP_IMAGE_READ, result_type, id, image, coordinates);
     return id;
 }
 
 uint32_t spv_emit_image_texel_pointer(SpvEmitter* e, uint32_t scalar_type, uint32_t image_variable,
                                       uint32_t coordinates, uint32_t sample) {
-    uint32_t pointer_type = spv_emit_type_pointer(e, 11, scalar_type); /* Image storage class */
+    uint32_t pointer_type = spv_emit_type_pointer(e, SPV_STORAGE_IMAGE, scalar_type); /* Image storage class */
     uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, 60, pointer_type, id, image_variable, coordinates, sample); /* OpImageTexelPointer */
+    EMIT(&e->functions, SPV_OP_IMAGE_TEXEL_POINTER, pointer_type, id, image_variable, coordinates, sample);
     return id;
 }
 
@@ -790,7 +793,7 @@ uint32_t spv_emit_sampler_image_array_ex(SpvEmitter* e, uint32_t scalar_type, ui
     uint32_t length = spv_emit_constant_u32(e, u32_type, count);
     uint32_t array_type = spv_emit_id(e);
     EMIT(&e->types, SPV_OP_TYPE_ARRAY, array_type, *sampled_type, length);
-    uint32_t pointer = spv_emit_type_pointer(e, 0, array_type); /* UniformConstant */
+    uint32_t pointer = spv_emit_type_pointer(e, SPV_STORAGE_UNIFORM_CONSTANT, array_type);
     uint32_t variable = spv_emit_id(e);
     EMIT(&e->decorations, SPV_OP_DECORATE, variable, 34, set); /* DescriptorSet */
     EMIT(&e->decorations, SPV_OP_DECORATE, variable, 33, binding); /* Binding */
@@ -802,7 +805,7 @@ uint32_t spv_emit_sampler_image_array_ex(SpvEmitter* e, uint32_t scalar_type, ui
 uint32_t spv_emit_sampler_array_element(SpvEmitter* e, uint32_t sampled_type, uint32_t array_variable, uint32_t index) {
     uint32_t id = spv_emit_id(e);
     instruction(&e->functions, SPV_OP_ACCESS_CHAIN, 5);
-    put(&e->functions, spv_emit_type_pointer(e, 0, sampled_type));
+    put(&e->functions, spv_emit_type_pointer(e, SPV_STORAGE_UNIFORM_CONSTANT, sampled_type));
     put(&e->functions, id);
     put(&e->functions, array_variable);
     put(&e->functions, index);
@@ -833,6 +836,12 @@ uint32_t spv_emit_function_variable_init(SpvEmitter* e, uint32_t pointer_type, u
     return id;
 }
 
+uint32_t spv_emit_phi2(SpvEmitter* e, uint32_t result_type, uint32_t a, uint32_t from_a, uint32_t b, uint32_t from_b) {
+    uint32_t id = spv_emit_id(e);
+    EMIT(&e->functions, SPV_OP_PHI, result_type, id, a, from_a, b, from_b);
+    return id;
+}
+
 uint32_t spv_emit_load(SpvEmitter* e, uint32_t result_type, uint32_t pointer) {
     uint32_t id = spv_emit_id(e);
     EMIT(&e->functions, SPV_OP_LOAD, result_type, id, pointer);
@@ -847,8 +856,8 @@ static uint32_t binary(SpvEmitter* e, uint32_t opcode, uint32_t result_type, uin
 }
 
 uint32_t spv_emit_atomic_u32(SpvEmitter* e, uint32_t u32_type, uint32_t opcode, uint32_t pointer, uint32_t value) {
-    assert(opcode == SPV_OP_ATOMIC_EXCHANGE || opcode == SPV_OP_ATOMIC_I_ADD || opcode == 236 ||
-           opcode == SPV_OP_ATOMIC_U_MIN || opcode == 238 || opcode == SPV_OP_ATOMIC_U_MAX ||
+    assert(opcode == SPV_OP_ATOMIC_EXCHANGE || opcode == SPV_OP_ATOMIC_I_ADD || opcode == SPV_OP_ATOMIC_S_MIN ||
+           opcode == SPV_OP_ATOMIC_U_MIN || opcode == SPV_OP_ATOMIC_S_MAX || opcode == SPV_OP_ATOMIC_U_MAX ||
            opcode == SPV_OP_ATOMIC_AND || opcode == SPV_OP_ATOMIC_OR || opcode == SPV_OP_ATOMIC_XOR);
     uint32_t id = spv_emit_id(e);
     instruction(&e->functions, opcode, 7);
@@ -867,10 +876,14 @@ uint32_t spv_emit_memory_semantics(const SpvEmitter* e, uint32_t semantics) {
     if (semantics & 0xc) semantics |= 0x2000; /* Release, AcquireRelease: MakeAvailable */
     return semantics;
 }
+/* the storage class bit of shared memory's semantics (SpvEmitter.shared_semantics) */
+static uint32_t shared_class(const SpvEmitter* e) {
+    return e->shared_semantics ? e->shared_semantics : SPV_MEMORY_SEMANTICS_WORKGROUP_MEMORY;
+}
 uint32_t spv_emit_atomic_shared_u32(SpvEmitter* e, uint32_t u32_type, uint32_t opcode, uint32_t pointer,
                                     uint32_t value) {
-    assert(opcode == SPV_OP_ATOMIC_EXCHANGE || opcode == SPV_OP_ATOMIC_I_ADD || opcode == 236 ||
-           opcode == SPV_OP_ATOMIC_U_MIN || opcode == 238 || opcode == SPV_OP_ATOMIC_U_MAX ||
+    assert(opcode == SPV_OP_ATOMIC_EXCHANGE || opcode == SPV_OP_ATOMIC_I_ADD || opcode == SPV_OP_ATOMIC_S_MIN ||
+           opcode == SPV_OP_ATOMIC_U_MIN || opcode == SPV_OP_ATOMIC_S_MAX || opcode == SPV_OP_ATOMIC_U_MAX ||
            opcode == SPV_OP_ATOMIC_AND || opcode == SPV_OP_ATOMIC_OR || opcode == SPV_OP_ATOMIC_XOR);
     uint32_t id = spv_emit_id(e);
     instruction(&e->functions, opcode, 7);
@@ -879,14 +892,16 @@ uint32_t spv_emit_atomic_shared_u32(SpvEmitter* e, uint32_t u32_type, uint32_t o
     put(&e->functions, pointer);
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 2));     /* Workgroup scope */
     /* AcquireRelease | WorkgroupMemory */
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, spv_emit_memory_semantics(e, 0x108)));
+    put(&e->functions,
+        spv_emit_constant_u32(e, u32_type,
+                              spv_emit_memory_semantics(e, SPV_MEMORY_SEMANTICS_ACQUIRE_RELEASE | shared_class(e))));
     put(&e->functions, value);
     return id;
 }
 
 uint32_t spv_emit_atomic_load_u32(SpvEmitter* e, uint32_t u32_type, uint32_t pointer) {
     uint32_t id = spv_emit_id(e);
-    instruction(&e->functions, 227, 6); /* OpAtomicLoad */
+    instruction(&e->functions, SPV_OP_ATOMIC_LOAD, 6);
     put(&e->functions, u32_type);
     put(&e->functions, id);
     put(&e->functions, pointer);
@@ -896,7 +911,7 @@ uint32_t spv_emit_atomic_load_u32(SpvEmitter* e, uint32_t u32_type, uint32_t poi
 }
 
 void spv_emit_atomic_store_u32(SpvEmitter* e, uint32_t u32_type, uint32_t pointer, uint32_t value) {
-    instruction(&e->functions, 228, 5); /* OpAtomicStore */
+    instruction(&e->functions, SPV_OP_ATOMIC_STORE, 5);
     put(&e->functions, pointer);
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 1)); /* Device scope */
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 0)); /* Relaxed */
@@ -905,28 +920,32 @@ void spv_emit_atomic_store_u32(SpvEmitter* e, uint32_t u32_type, uint32_t pointe
 
 uint32_t spv_emit_atomic_load_shared_u32(SpvEmitter* e, uint32_t u32_type, uint32_t pointer) {
     uint32_t id = spv_emit_id(e);
-    instruction(&e->functions, 227, 6); /* OpAtomicLoad */
+    instruction(&e->functions, SPV_OP_ATOMIC_LOAD, 6);
     put(&e->functions, u32_type);
     put(&e->functions, id);
     put(&e->functions, pointer);
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 2));     /* Workgroup scope */
     /* Acquire | WorkgroupMemory */
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, spv_emit_memory_semantics(e, 0x102)));
+    put(&e->functions, spv_emit_constant_u32(
+                           e, u32_type, spv_emit_memory_semantics(e, SPV_MEMORY_SEMANTICS_ACQUIRE | shared_class(e))));
     return id;
 }
 
 uint32_t spv_emit_atomic_compare_exchange_shared_u32(SpvEmitter* e, uint32_t u32_type, uint32_t pointer,
                                                      uint32_t desired, uint32_t expected) {
     uint32_t id = spv_emit_id(e);
-    instruction(&e->functions, 230, 9); /* OpAtomicCompareExchange */
+    instruction(&e->functions, SPV_OP_ATOMIC_COMPARE_EXCHANGE, 9);
     put(&e->functions, u32_type);
     put(&e->functions, id);
     put(&e->functions, pointer);
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 2));     /* Workgroup scope */
     /* AcquireRelease | WorkgroupMemory */
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, spv_emit_memory_semantics(e, 0x108)));
+    put(&e->functions,
+        spv_emit_constant_u32(e, u32_type,
+                              spv_emit_memory_semantics(e, SPV_MEMORY_SEMANTICS_ACQUIRE_RELEASE | shared_class(e))));
     /* Acquire | WorkgroupMemory */
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, spv_emit_memory_semantics(e, 0x102)));
+    put(&e->functions, spv_emit_constant_u32(
+                           e, u32_type, spv_emit_memory_semantics(e, SPV_MEMORY_SEMANTICS_ACQUIRE | shared_class(e))));
     put(&e->functions, desired);
     put(&e->functions, expected);
     return id;
@@ -935,7 +954,7 @@ uint32_t spv_emit_atomic_compare_exchange_shared_u32(SpvEmitter* e, uint32_t u32
 uint32_t spv_emit_atomic_compare_exchange_u32(SpvEmitter* e, uint32_t u32_type, uint32_t pointer, uint32_t desired,
                                               uint32_t expected) {
     uint32_t id = spv_emit_id(e);
-    instruction(&e->functions, 230, 9); /* OpAtomicCompareExchange */
+    instruction(&e->functions, SPV_OP_ATOMIC_COMPARE_EXCHANGE, 9);
     put(&e->functions, u32_type);
     put(&e->functions, id);
     put(&e->functions, pointer);
@@ -948,11 +967,14 @@ uint32_t spv_emit_atomic_compare_exchange_u32(SpvEmitter* e, uint32_t u32_type, 
 }
 
 void spv_emit_control_barrier(SpvEmitter* e, uint32_t u32_type) {
-    instruction(&e->functions, 224, 4);                            /* OpControlBarrier */
+    instruction(&e->functions, SPV_OP_CONTROL_BARRIER, 4);
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 2));     /* Workgroup execution scope */
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 2));     /* Workgroup memory scope */
-    /* AcquireRelease | WorkgroupMemory */
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, spv_emit_memory_semantics(e, 0x108)));
+    /* AcquireRelease | WorkgroupMemory, and UniformMemory where a storage buffer holds the shared memory */
+    put(&e->functions, spv_emit_constant_u32(e, u32_type,
+                                             spv_emit_memory_semantics(e, SPV_MEMORY_SEMANTICS_ACQUIRE_RELEASE |
+                                                                              SPV_MEMORY_SEMANTICS_WORKGROUP_MEMORY |
+                                                                              shared_class(e))));
 }
 void spv_emit_memory_barrier(SpvEmitter* e, uint32_t u32_type, uint32_t scope, uint32_t semantics) {
     instruction(&e->functions, SPV_OP_MEMORY_BARRIER, 3);
@@ -1004,7 +1026,8 @@ static int binary_op(uint32_t op) {
         case SPV_OP_SHIFT_RIGHT_LOGICAL:
         case SPV_OP_S_DIV:
         case SPV_OP_S_GREATER_THAN:
-        case SPV_OP_U_LESS_THAN: return 1;
+        case SPV_OP_U_LESS_THAN:
+        case SPV_OP_VECTOR_TIMES_SCALAR: return 1;
         default: return 0;
     }
 }
@@ -1034,7 +1057,22 @@ uint32_t spv_emit_ternary(SpvEmitter* e, uint32_t op, uint32_t result_type, uint
 }
 
 uint32_t spv_emit_fcompare(SpvEmitter* e, uint32_t bool_type, uint32_t condition, uint32_t left, uint32_t right) {
-    static const uint32_t opcode[16] = {0, 184, 180, 188, 186, 182, 190, 0, 0, 185, 181, 189, 187, 183, 191, 0};
+    static const uint32_t opcode[16] = {0,
+                                        SPV_OP_F_ORD_LESS_THAN,
+                                        SPV_OP_F_ORD_EQUAL,
+                                        SPV_OP_F_ORD_LESS_THAN_EQUAL,
+                                        SPV_OP_F_ORD_GREATER_THAN,
+                                        SPV_OP_F_ORD_NOT_EQUAL,
+                                        SPV_OP_F_ORD_GREATER_THAN_EQUAL,
+                                        0,
+                                        0,
+                                        SPV_OP_F_UNORD_LESS_THAN,
+                                        SPV_OP_F_UNORD_EQUAL,
+                                        SPV_OP_F_UNORD_LESS_THAN_EQUAL,
+                                        SPV_OP_F_UNORD_GREATER_THAN,
+                                        SPV_OP_F_UNORD_NOT_EQUAL,
+                                        SPV_OP_F_UNORD_GREATER_THAN_EQUAL,
+                                        0};
     assert(condition < 16);
     if (condition == 0 || condition == 15) return spv_emit_constant_bool(e, bool_type, condition == 15);
     if (condition == 7 || condition == 8) {
@@ -1091,6 +1129,13 @@ uint32_t spv_emit_derivative(SpvEmitter* e, uint32_t f32_type, uint32_t value, i
     return id;
 }
 
+uint32_t spv_emit_derivative_fine(SpvEmitter* e, uint32_t type, uint32_t value, int y_axis) {
+    uint32_t id = spv_emit_id(e);
+    spv_emit_capability(e, SPV_CAPABILITY_DERIVATIVE_CONTROL);
+    EMIT(&e->functions, y_axis ? SPV_OP_DPDY_FINE : SPV_OP_DPDX_FINE, type, id, value);
+    return id;
+}
+
 uint32_t spv_emit_glsl_unary(SpvEmitter* e, uint32_t f32_type, uint32_t import, SpvGlsl450Op op, uint32_t value) {
     uint32_t id = spv_emit_id(e);
     EMIT(&e->functions, SPV_OP_EXT_INST, f32_type, id, import, (uint32_t)op, value);
@@ -1123,7 +1168,7 @@ uint32_t spv_emit_subgroup_ballot(SpvEmitter* e, uint32_t vec4_type, uint32_t u3
     instruction(&e->functions, SPV_OP_GROUP_NON_UNIFORM_BALLOT, 5);
     put(&e->functions, vec4_type);
     put(&e->functions, id);
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, 3)); /* Subgroup scope */
+    put(&e->functions, spv_emit_constant_u32(e, u32_type, SPV_SCOPE_SUBGROUP)); /* Subgroup scope */
     put(&e->functions, predicate);
     return id;
 }
@@ -1131,11 +1176,11 @@ uint32_t spv_emit_subgroup_ballot(SpvEmitter* e, uint32_t vec4_type, uint32_t u3
 /* the smallest value among the subgroup's active invocations (OpGroupNonUniformUMin, Reduce) */
 uint32_t spv_emit_subgroup_umin_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value) {
     uint32_t id = spv_emit_id(e);
-    instruction(&e->functions, 354, 6); /* OpGroupNonUniformUMin */
+    instruction(&e->functions, SPV_OP_GROUP_NON_UNIFORM_U_MIN, 6);
     put(&e->functions, u32_type);
     put(&e->functions, id);
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, 3)); /* Subgroup scope */
-    put(&e->functions, 0);                                     /* Reduce */
+    put(&e->functions, spv_emit_constant_u32(e, u32_type, SPV_SCOPE_SUBGROUP)); /* Subgroup scope */
+    put(&e->functions, SPV_GROUP_OPERATION_REDUCE);
     put(&e->functions, value);
     return id;
 }
@@ -1146,7 +1191,7 @@ uint32_t spv_emit_subgroup_shuffle_u32(SpvEmitter* e, uint32_t u32_type, uint32_
     instruction(&e->functions, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE, 6);
     put(&e->functions, u32_type);
     put(&e->functions, id);
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, 3)); /* Subgroup scope */
+    put(&e->functions, spv_emit_constant_u32(e, u32_type, SPV_SCOPE_SUBGROUP)); /* Subgroup scope */
     put(&e->functions, value);
     put(&e->functions, lane);
     return id;
@@ -1157,7 +1202,7 @@ uint32_t spv_emit_subgroup_quad_u32(SpvEmitter* e, uint32_t u32_type, uint32_t v
     instruction(&e->functions, swap ? SPV_OP_GROUP_NON_UNIFORM_QUAD_SWAP : SPV_OP_GROUP_NON_UNIFORM_QUAD_BROADCAST, 6);
     put(&e->functions, u32_type);
     put(&e->functions, id);
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, 3)); /* Subgroup scope */
+    put(&e->functions, spv_emit_constant_u32(e, u32_type, SPV_SCOPE_SUBGROUP)); /* Subgroup scope */
     put(&e->functions, value);
     put(&e->functions, operand);
     return id;
@@ -1219,7 +1264,7 @@ uint32_t spv_emit_sample2d_lod(SpvEmitter* e, uint32_t result_type, uint32_t sam
     put(&e->functions, image);
     put(&e->functions, coordinates);
     if (depth_reference) put(&e->functions, depth_reference);
-    put(&e->functions, 2); /* ImageOperands Lod */
+    put(&e->functions, SPV_IMAGE_OPERANDS_LOD); /* ImageOperands Lod */
     put(&e->functions, lod);
     return id;
 }
@@ -1255,7 +1300,7 @@ uint32_t spv_emit_image_query_levels(SpvEmitter* e, uint32_t u32_type, uint32_t 
     EMIT(&e->functions, SPV_OP_IMAGE, image_type, image, sampled);
     if (e->nonuniform_count && is_nonuniform(e, sampled)) nonuniform(e, image);
     uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, 106, u32_type, id, image); /* OpImageQueryLevels */
+    EMIT(&e->functions, SPV_OP_IMAGE_QUERY_LEVELS, u32_type, id, image);
     return id;
 }
 
@@ -1294,7 +1339,7 @@ uint32_t spv_emit_image_gather_ex(SpvEmitter* e, uint32_t vec4_type, uint32_t sa
     put(&e->functions, coordinates);
     put(&e->functions, dref ? dref : component);
     if (offset) {
-        put(&e->functions, 16); /* ImageOperands Offset */
+        put(&e->functions, SPV_IMAGE_OPERANDS_OFFSET); /* ImageOperands Offset */
         put(&e->functions, offset);
     }
     return id;
@@ -1322,8 +1367,9 @@ uint32_t spv_emit_sample_image_min_lod(SpvEmitter* e, uint32_t result_type, uint
                                        uint32_t coordinates, uint32_t depth_reference, uint32_t mode, uint32_t level,
                                        uint32_t offset, int dynamic_offset, uint32_t min_lod) {
     assert(!min_lod || mode != 1);
-    if (min_lod) spv_emit_capability(e, 42); /* MinLod */
-    if (offset && dynamic_offset) spv_emit_capability(e, 25); /* Offset requires ImageGatherExtended. */
+    if (min_lod) spv_emit_capability(e, SPV_CAPABILITY_MIN_LOD);
+    if (offset && dynamic_offset)
+        spv_emit_capability(e, SPV_CAPABILITY_IMAGE_GATHER_EXTENDED); /* Offset requires ImageGatherExtended. */
     uint32_t image = spv_emit_load(e, sampled_type, sampler);
     uint32_t id = spv_emit_id(e);
     uint32_t operands = mode == 1 ? 2 : mode == 2 ? 1 : 0;
@@ -1350,8 +1396,9 @@ uint32_t spv_emit_sample_image_min_lod(SpvEmitter* e, uint32_t result_type, uint
 uint32_t spv_emit_sample_grad_offset(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
                                      uint32_t coordinates, uint32_t dx, uint32_t dy, uint32_t offset,
                                      int dynamic_offset, uint32_t min_lod) {
-    if (min_lod) spv_emit_capability(e, 42); /* MinLod */
-    if (offset && dynamic_offset) spv_emit_capability(e, 25); /* Offset requires ImageGatherExtended. */
+    if (min_lod) spv_emit_capability(e, SPV_CAPABILITY_MIN_LOD);
+    if (offset && dynamic_offset)
+        spv_emit_capability(e, SPV_CAPABILITY_IMAGE_GATHER_EXTENDED); /* Offset requires ImageGatherExtended. */
     uint32_t image = spv_emit_load(e, sampled_type, sampler);
     uint32_t id = spv_emit_id(e);
     instruction(&e->functions, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, 8 + !!offset + !!min_lod);

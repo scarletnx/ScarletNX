@@ -42,12 +42,20 @@ enum { AGB_DMA_VBLANK, AGB_DMA_HBLANK, AGB_DMA_FIFO_A, AGB_DMA_FIFO_B };
 typedef struct {
     uint32_t source, destination, source_now, destination_now;
     uint32_t latch; /* the last unit the channel read, which a read of nothing (the BIOS, below EWRAM) moves again */
+    /* the units its transfer moves: DMAxCNT_L as the enable bit found it, which a repeat takes again at its end, so a
+       count written while the channel waits is the next repeat's */
+    uint32_t count_now;
     uint16_t count, control;
 } AgbDmaChannel;
 
+/* A timer counts at the CPU's clock, through its prescaler, from the cycle it started (since); a write reaches it a
+   cycle after the CPU's store (GBATEK, Timer Registers; NanoBoyAdvance's Timer.cc): the values waiting and when they
+   land, 0 for none */
 typedef struct {
-    uint16_t reload, control;
-    uint32_t counter, cycles;
+    uint16_t reload, control; /* TMxCNT_L's reload and TMxCNT_H as the timer has taken them */
+    uint16_t next_reload, next_control;
+    uint32_t counter; /* its count at since */
+    uint64_t since, reload_at, control_at;
 } AgbTimer;
 
 /* The cartridge's GPIO port (GBATEK "GBA Cart I/O Port (GPIO)"): its data, direction (a bit set: the console drives that
@@ -79,9 +87,17 @@ typedef struct AgbBoard {
     AgbDmaChannel dma[4];
     AgbTimer timer[4];
     AgbGpio gpio;
+    uint64_t now; /* the cycles the board has run since it started: the clock the timers keep and count by */
     uint16_t irq_ie, irq_if, irq_ime;
+    /* the cycle the CPU's interrupt line rose for the interrupts IME, IE and IF let through now: 3 after the flag or
+       the write that let them through (NanoBoyAdvance's IRQ.cc), which the CPU takes at the first instruction from
+       then on */
+    uint64_t irq_at;
     uint32_t cpu_halted;       /* the CPU waits for an interrupt (Halt) */
     uint32_t held_cycles;      /* the cycles the bus was busy since the CPU last ran (a DMA's), which it waits out */
+    /* where those cycles first reached the cartridge, whose prefetch unit that stops: the cycles before it, plus 1 (0
+       when they did not) */
+    uint32_t held_cartridge;
     uint32_t sio_cycles;       /* the cycles left of the serial transfer SIOCNT started, 0 with none */
     uint32_t counted_cycles;   /* while counting is set, the cycles of the accesses through agb_read and agb_write */
     uint8_t counting;
@@ -113,8 +129,14 @@ uint16_t agb_io_read16(AgbBoard* board, uint32_t address);
 void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value, uint16_t mask);
 /* The serial port's transfer, which ends after its time with no partner's data */
 void agb_sio_step(AgbBoard* board, uint32_t cycles);
-/* Devices request interrupts here. */
+/* Devices request interrupts here: now, or at the cycle at of the board's clock */
 void agb_irq_request(AgbBoard* board, uint32_t mask);
+void agb_irq_raise(AgbBoard* board, uint32_t mask, uint64_t at);
+/* the first cycle from now on the CPU's interrupt line may rise for an interrupt IE lets through, IME aside: a timer's
+   overflow, the display's blank or line, the serial transfer's end; UINT64_MAX for none. An earlier one is possible
+   (a count-up timer's), a later one never */
+uint64_t agb_board_next_irq(const AgbBoard* board);
+uint64_t agb_timer_next_irq(const AgbBoard* board);
 /* The keypad's keys held now (KEYINPUT's bits set): KEYCNT's interrupt when its keys meet its condition */
 void agb_board_keys(AgbBoard* board, uint16_t held);
 
@@ -126,6 +148,8 @@ void agb_dma_event(AgbBoard* board, int event);
 void agb_timer_write(AgbBoard* board, uint32_t offset, uint16_t value);
 uint16_t agb_timer_read(AgbBoard* board, uint32_t offset);
 uint16_t agb_timer_written(AgbBoard* board, uint32_t offset); /* as written: TMxCNT_L's reload, not its counter */
+/* the board's clock runs on by cycles, and the timers with it: their overflows and the writes that reached them, in
+   the order of their cycles */
 void agb_timer_step(AgbBoard* board, uint32_t cycles);
 /* The cartridge's GPIO port and clock (gpio.c): 1 when the image carries the clock library's tag; the port as a
    cartridge starts it, with the clock or without; a halfword store at the port, 1 when the port took it */

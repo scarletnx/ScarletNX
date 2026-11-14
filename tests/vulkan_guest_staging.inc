@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Check actual ring selection and GPU-observed bytes. Device-local input must stay on the GPU without landing;
-   ordinary CPU input must use the upload ring rather than the mapped device-memory window. */
+   ordinary CPU input must use the stream's host memory (the upload ring with vk_stream_ring=0) rather than the mapped
+   device-memory window. */
 static int guest_staging_read(u64 gva, u32 bytes, int gpu, u8 value) {
     VkBuffer expected, staged, readback;
     u64 expected_at, at;
     u8* probe = gpu ? vk_stage(16, vk_stage_align(), &expected, &expected_at)
-                    : vk_stage_upload(16, vk_stage_align(), &expected, &expected_at);
+                    : vk_stream_upload(16, vk_stage_align(), &expected, &expected_at);
     CHECK(probe);
     u8* input = vk_stage_guest_input(gva, bytes, bytes, &staged, &at);
     CHECK(input && staged == expected && at > expected_at);
@@ -64,5 +65,88 @@ static int check_guest_staging(void) {
     vk_unlock();
     CHECK(!mem_unmap(cpu, span * 2));
     puts("Guest input staging selects the CPU/GPU rings and preserves exact bytes");
+    return 0;
+}
+
+/* The stream's chunks are no frame's (cmd.c's vk_stream_upload): one is handed out again once the submission after
+   the one that read its bytes is done, and not before. Two chunks' worth with no submission between them are two
+   buffers. After two submissions both are handed out again, and no buffer is made */
+static int check_stream_ring(void) {
+    if (!g_settings.stream_ring) {
+        puts("stream ring: skipped with vk_stream_ring=0");
+        return 0;
+    }
+    const u64 chunk = vk_stage_chunk();
+    VkBuffer first, second, again[2];
+    u64 off;
+    vk_lock();
+    vk_finish();
+    vk_frame_next();
+    const u64 recorded = vk_submit_number();
+    CHECK(vk_stream_upload(chunk, 16, &first, &off) && !off);
+    CHECK(vk_stream_upload(chunk, 16, &second, &off) && !off && second != first);
+    vk_finish(); /* the submission that read them, then the one after it */
+    vk_cmd();
+    vk_finish();
+    CHECK(vk_submit_number() >= recorded + 2);
+    const u64 made = vk_ring_made();
+    CHECK(vk_stream_upload(chunk, 16, &again[0], &off) && !off);
+    CHECK(vk_stream_upload(chunk, 16, &again[1], &off) && !off);
+    const int same = (again[0] == first && again[1] == second) || (again[0] == second && again[1] == first);
+    const u64 made_after = vk_ring_made();
+    vk_finish();
+    vk_unlock();
+    if (!same || made_after != made) {
+        fprintf(stderr,
+                "stream ring: two chunks handed out after their work was done are %s the two from before, and %llu "
+                "buffers were made for them (none expected)\n",
+                same ? "" : "not", (unsigned long long)(made_after - made));
+        return 1;
+    }
+    puts("stream ring: two chunks busy at once are two buffers, and both are handed out again once their work is done");
+    return 0;
+}
+
+/* An upload splits its submission between the bytes it staged and the commands that read them, and more than once
+   (texture.c's encode_rows: a level of BCn blocks encoded again reads one staged piece from up to 16 submissions).
+   A chunk staged before two splits is still read by what the upload records after them: with both splits' work
+   done it is not handed out again. Once the submission after the last split is done, it is */
+static int check_stream_split(void) {
+    if (!g_settings.stream_ring) {
+        puts("stream ring across splits: skipped with vk_stream_ring=0");
+        return 0;
+    }
+    const u64 chunk = vk_stage_chunk();
+    VkBuffer staged, cur, next, later;
+    u64 off;
+    vk_lock();
+    vk_finish();
+    vk_frame_next();
+    /* two chunks, as the one the stream hands out of is never handed out again */
+    CHECK(vk_stream_upload(chunk, 16, &staged, &off) && !off);
+    CHECK(vk_stream_upload(chunk, 16, &cur, &off) && !off && cur != staged);
+    vk_submit_split();
+    vk_cmd();
+    vk_submit_split();
+    vk_wait_submit(vk_last_submit());
+    vk_cmd(); /* where the upload records the commands that read the first chunk */
+    CHECK(vk_stream_upload(chunk, 16, &next, &off) && !off);
+    const int early = next == staged;
+    vk_finish(); /* those commands, then the submission after them */
+    vk_cmd();
+    vk_finish();
+    const u64 made = vk_ring_made();
+    CHECK(vk_stream_upload(chunk, 16, &later, &off) && !off);
+    const u64 made_after = vk_ring_made();
+    vk_finish();
+    vk_unlock();
+    if (early || made_after != made) {
+        fprintf(stderr,
+                "stream ring: a chunk staged before two splits of an upload was %shanded out again before the "
+                "commands recorded after them went, and %llu buffers were made once they were done (none expected)\n",
+                early ? "" : "not ", (unsigned long long)(made_after - made));
+        return 1;
+    }
+    puts("stream ring: a chunk staged before an upload's splits stays until the commands after them are done");
     return 0;
 }

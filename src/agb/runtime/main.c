@@ -46,6 +46,8 @@ static void usage(FILE* out) {
     fputs("AGB options:\n"
           "  --press_len=MS         How long each scripted press is held (default 300)\n"
           "  --registers            Print the CPU's registers when the run ends\n"
+          "  --gba_color=gba|raw    The screen's colours: gba as the original GBA's unlit screen shows them\n"
+          "                         (default), raw as the game writes them\n"
           "  --aot_threads=N        The threads a recompile may take (0 to 1024), as the other drivers': a ROM's code\n"
           "                         is one module, which compiles on 1 thread whatever N, and the recompile says so;\n"
           "                         --aot_threads_most=N the same\n"
@@ -167,6 +169,7 @@ int snx_agb_main(int argc, char** argv) {
     const char *threads = NULL, *most = NULL; /* --aot_threads= and --aot_threads_most=, as given */
     char opt = '2';             /* the setting opt's default, or -O's */
     int registers = 0;
+    int lcd = 1; /* --gba_color: the original GBA's screen colours, raw the game's (settings.txt's gba_color) */
     SnxCli cli;
     snx_cli_init(&cli, "scarletnx-agb", agb_cli);
     for (int i = 1; i < argc; ++i) {
@@ -201,6 +204,14 @@ int snx_agb_main(int argc, char** argv) {
                 return 2;
             }
             *(argv[i][13] == '=' ? &threads : &most) = argv[i] + 2;
+        } else if (!strncmp(argv[i], "--gba_color=", 12)) {
+            const char* value = argv[i] + 12;
+            if (strcmp(value, "raw") && strcmp(value, "gba")) {
+                fprintf(stderr, "scarletnx-agb: --gba_color=%s is not raw or gba\n", value);
+                snx_cli_free(&cli);
+                return 2;
+            }
+            lcd = !strcmp(value, "gba");
         } else if (!strcmp(argv[i], "--registers"))
             registers = 1;
         else if (!strcmp(argv[i], "--"))
@@ -273,6 +284,7 @@ int snx_agb_main(int argc, char** argv) {
         }
         path = rom;
         agb_board_init(&board);
+        agb_ppu_lcd(&board, lcd);
         if (!multiboot_rom(path) && agb_board_insert(&board, image, length, error, sizeof error)) {
             fprintf(stderr, "scarletnx-agb: %s: %s\n", path, error);
             free(image);

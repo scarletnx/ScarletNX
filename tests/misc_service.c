@@ -933,6 +933,33 @@ static void test_mm_full(void) {
     svcobj_unref(mm);
 }
 
+/* friends: a session's completion event is one for the session, unsignaled when the SDK takes it with command 0,
+   and signaled as the request the SDK's asynchronous function sends on the session returns (here the check of the
+   friend list's cache, which the game waits on at boot); it goes with the session */
+static void test_friends(void) {
+    SvcObj *creator = new_friend(), *svc = NULL;
+    Request r;
+    CHECK(nn_friends_detail_ipc_IServiceCreator_CreateFriendService(creator, &svc) == 0 && svc);
+    request(&r, 0);
+    call(svc, &r);
+    CHECK(r.c.nout_copy == 1);
+    KEvent* e = (KEvent*)handle_object(r.c.out_copy[0]);
+    CHECK(e->o.type == KO_EVENT && !e->signaled);
+    request(&r, 0);
+    call(svc, &r);
+    CHECK(r.c.nout_copy == 1 && (KEvent*)handle_object(r.c.out_copy[0]) == e && !e->signaled);
+    request(&r, 10120);
+    argument64(&r, 0, g_user_id[0]), argument64(&r, 8, g_user_id[1]);
+    call(svc, &r);
+    CHECK(r.c.out_size >= 1 && r.c.out[0] == 1 && e->signaled);
+    close_handles();
+    int kobjs = (int)test_kobjs;
+    CHECK(e->o.refs == 1); /* the session's own */
+    svcobj_unref(svc);
+    svcobj_unref(creator);
+    CHECK((int)test_kobjs == kobjs - 1);
+}
+
 /* nfp and nfc with no NFC device: the state follows Initialize and Finalize, the availability event is one per
    IUser, and the device commands fail */
 static void test_nfp(void) {
@@ -1738,11 +1765,19 @@ static void test_olsc(void) {
     svcobj_unref(olsc);
 }
 
-/* nim:eca: the server a game opens on its transfer memory and the accessor it takes from it, then whether large
-   resources are available */
+/* nim:eca: the server a game opens on its transfer memory, by either command, and the accessor it takes from it,
+   then whether large resources are available */
 static void test_nim(void) {
     SvcObj *nim = new_nim(), *server;
     Request r;
+    request(&r, 5); /* the other cancel policy's */
+    argument64(&r, 8, 0x100000);
+    r.c.has_pid = 1;
+    r.c.ncopy = 1;
+    r.c.copy_h[0] = 0x1234;
+    call(nim, &r);
+    CHECK(r.c.nout_objs == 1 && !strcmp(r.c.out_objs[0]->name, "nn::nim::detail::IShopServiceAccessServer"));
+    svcobj_unref(r.c.out_objs[0]);
     request(&r, 0);
     argument64(&r, 8, 0x100000); /* the transfer memory's size, after the pid's slot */
     r.c.has_pid = 1;
@@ -1781,6 +1816,7 @@ int main(void) {
     test_apm();
     test_ntc();
     test_mm_full();
+    test_friends();
     test_nfp();
     test_acc_select();
     test_nfp_filter();

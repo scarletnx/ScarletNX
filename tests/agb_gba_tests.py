@@ -112,6 +112,7 @@ def main():
                 '--frames=%d' % args.frames,
                 '--shot=%s' % shot,
                 '--registers',
+                '--gba_color=raw',  # the display ROMs' checks read the palette's colours as written
                 '--outdir',
                 str(work),
                 str(rom),

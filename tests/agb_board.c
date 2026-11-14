@@ -514,6 +514,7 @@ int main(void) {
     agb_write16(&board, 0x04000100, 0x1234); /* TM0CNT_L sets the reload, and reads as the counter */
     board.timer[0].counter = 0xABCD;
     agb_write8(&board, 0x04000100, 0x56);
+    agb_timer_step(&board, 1); /* a timer takes a write a cycle after it */
     CHECK(board.timer[0].reload == 0x1256);
     /* timer 0 has no timer before it: its count-up bit does nothing and it counts the clock, as a game that sets that
        bit and plays its sound FIFOs at timer 0's rate needs; timer 1's counts timer 0's overflows */
@@ -521,10 +522,11 @@ int main(void) {
     agb_write16(&board, 0x04000104, 0xFFFE);
     agb_write16(&board, 0x04000106, 0x0084); /* timer 1 on, counting up */
     agb_write16(&board, 0x04000102, 0x0084); /* timer 0 on, its count-up bit set */
-    agb_timer_step(&board, 0x100);
-    CHECK(board.timer[0].counter == 0xFF00 && board.timer[1].counter == 0xFFFF);
+    /* the write lands a cycle later and the count starts a cycle after that */
+    agb_timer_step(&board, 0x102);
+    CHECK(agb_read16(&board, 0x04000100) == 0xFF00 && agb_read16(&board, 0x04000104) == 0xFFFF);
     agb_timer_step(&board, 0x80);
-    CHECK(board.timer[0].counter == 0xFF80 && board.timer[1].counter == 0xFFFF);
+    CHECK(agb_read16(&board, 0x04000100) == 0xFF80 && agb_read16(&board, 0x04000104) == 0xFFFF);
     agb_write16(&board, 0x04000102, 0x0000);
     agb_write16(&board, 0x04000106, 0x0000);
     agb_write16(&board, 0x040000B0, 0x1234); /* DMA0SAD, write-only */
@@ -541,32 +543,55 @@ int main(void) {
     agb_write8(&board, 0x04000001, 0x01);
     CHECK(board.ppu.dispcnt == 0x0103);
 
-    /* SIOCNT with no cable plugged: the multi-player mode says a child (SI) and a ready line (SD), and a transfer stays
-       busy for its time (mGBA's, which the console's start bit read right after shows in its suite's sio-read.c), then
-       ends with no partner's words and the serial interrupt; the normal mode's SI is pulled up */
+    /* a halted CPU waits while IE and IF share no interrupt: a blank's flag with only a timer's enabled leaves it
+       halted, the timer's wakes it */
+    board.irq_if = 0;
+    agb_write16(&board, 0x04000200, AGB_IRQ_TIMER(1)); /* IE */
+    board.cpu_halted = 1;
+    agb_irq_request(&board, AGB_IRQ_VBLANK);
+    CHECK(board.cpu_halted);
+    agb_irq_request(&board, AGB_IRQ_TIMER(1));
+    CHECK(!board.cpu_halted);
+    agb_write16(&board, 0x04000200, 0);
+    board.irq_if = 0;
+
+    /* SIOCNT with no cable plugged: the multi-player mode says a child (SI) and a ready line (SD), and its transfer
+       waits for a parent that never comes, its start bit set (the console's in its suite's sio-read.c and sio-timing.c,
+       which times out); the normal mode's SI is pulled up, and its transfer on the internal clock ends 2 cycles past
+       its bits with no partner's word and the serial interrupt, one on the external clock never */
     agb_write16(&board, 0x04000134, 0x0000); /* RCNT: the serial modes */
     board.irq_if = 0;
     agb_write16(&board, 0x04000128, 0x2003); /* multi-player, 115200 bauds */
     CHECK((agb_read16(&board, 0x04000128) & 0x000C) == 0x000C);
     agb_write16(&board, 0x04000128, 0x6083); /* start, the interrupt asked for */
-    CHECK((agb_read16(&board, 0x04000128) & 0x0080) && !(board.irq_if & AGB_IRQ_SERIAL));
-    agb_sio_step(&board, 3139);
-    CHECK(agb_read16(&board, 0x04000128) & 0x0080);
-    agb_sio_step(&board, 1);
-    CHECK(!(agb_read16(&board, 0x04000128) & 0x0080) && agb_read16(&board, 0x04000120) == 0);
-    CHECK(board.irq_if & AGB_IRQ_SERIAL);
-    board.irq_if = 0;
-    agb_write16(&board, 0x04000128, 0x0001); /* normal 8 bit mode, internal clock at 256 KiHz */
-    CHECK(agb_read16(&board, 0x04000128) & 0x0004);
-    agb_write16(&board, 0x04000128, 0x0081); /* start, no interrupt: 8 bits of 64 cycles */
-    if (!(agb_read16(&board, 0x04000128) & 0x0080) || board.sio_cycles != 512) {
+    agb_sio_step(&board, 1u << 20);
+    if (!(agb_read16(&board, 0x04000128) & 0x0080) || (board.irq_if & AGB_IRQ_SERIAL)) {
         fprintf(stderr,
-                "agb_board: a normal 8 bit transfer reads SIOCNT 0x%04X and takes %u cycles, not busy for 512\n",
+                "agb_board: a multi-player child's transfer reads SIOCNT 0x%04X and IF 0x%04X 2^20 cycles on, "
+                "not still busy with no interrupt\n",
+                agb_read16(&board, 0x04000128), board.irq_if);
+        return 1;
+    }
+    agb_write16(&board, 0x04000128, 0x0000); /* normal 8 bit mode, external clock */
+    CHECK(agb_read16(&board, 0x04000128) & 0x0004);
+    agb_write16(&board, 0x04000128, 0x4080); /* start, the interrupt asked for: no clock comes */
+    agb_sio_step(&board, 1u << 20);
+    CHECK((agb_read16(&board, 0x04000128) & 0x0080) && !(board.irq_if & AGB_IRQ_SERIAL));
+    agb_write16(&board, 0x04000128, 0x0001); /* the internal clock at 256 KiHz, the start bit cleared */
+    agb_write16(&board, 0x0400012A, 0x00EF); /* SIODATA8, which no partner's byte replaces: 0 */
+    agb_write16(&board, 0x04000128, 0x4081); /* start: 8 bits of 64 cycles */
+    if (!(agb_read16(&board, 0x04000128) & 0x0080) || board.sio_cycles != 514) {
+        fprintf(stderr,
+                "agb_board: a normal 8 bit transfer reads SIOCNT 0x%04X and takes %u cycles, not busy for 514\n",
                 agb_read16(&board, 0x04000128), board.sio_cycles);
         return 1;
     }
-    agb_sio_step(&board, 512);
-    CHECK(!(agb_read16(&board, 0x04000128) & 0x0080) && !(board.irq_if & AGB_IRQ_SERIAL));
+    agb_sio_step(&board, 513);
+    CHECK((agb_read16(&board, 0x04000128) & 0x0080) && !(board.irq_if & AGB_IRQ_SERIAL));
+    agb_sio_step(&board, 1);
+    CHECK(!(agb_read16(&board, 0x04000128) & 0x0080) && (board.irq_if & AGB_IRQ_SERIAL));
+    CHECK(agb_read16(&board, 0x0400012A) == 0);
+    board.irq_if = 0;
     {
         /* each serial register written all ones in each mode reads back what the console keeps (mGBA's suite's
            sio-read.c): the data halfwords only where the mode has them, SIOCNT and RCNT without their unused bits and
@@ -627,11 +652,43 @@ int main(void) {
     agb_write32(&board, 0x040000D8, 0x02000100);
     agb_write32(&board, 0x040000DC, 0x80000004);
     CHECK(board.held_cycles == 26);
+    /* only the first access on the cartridge is a first one: four words from it to it, 2 + (6 + 4) + 3 x (4 + 4) */
+    board.held_cycles = 0;
+    agb_write32(&board, 0x040000D4, 0x08000000);
+    agb_write32(&board, 0x040000D8, 0x08000100);
+    agb_write32(&board, 0x040000DC, 0x84000004);
+    CHECK(board.held_cycles == 36);
     board.held_cycles = 0;
     agb_write16(&board, 0x04000204, 0);
     agb_write16(&board, 0x040000C6, 0xB640); /* DMA1CNT_H: the sound FIFO's timing, repeat, 32 bits */
     CHECK(board.dma[1].control == 0xB640 && !board.dma[0].control && !board.dma[2].control);
     CHECK(agb_read16(&board, 0x040000C6) == 0xB640);
+    /* a channel takes its count as it starts: one written while it waits for its blank is the next repeat's, as the
+       suite's misc-edge.c finds on the console (two halfwords, then four) */
+    for (uint32_t i = 0; i < 8; ++i) agb_write16(&board, 0x02000300 + i * 2, (uint16_t)i);
+    agb_write32(&board, 0x040000D4, 0x02000300);
+    agb_write32(&board, 0x040000D8, 0x02000400);
+    agb_write32(&board, 0x040000DC, 0x12400002); /* the vertical blank, repeat, halfwords, a fixed destination */
+    agb_write16(&board, 0x040000DE, (uint16_t)(agb_read16(&board, 0x040000DE) | 0x8000));
+    agb_write16(&board, 0x040000DC, 4);
+    agb_dma_event(&board, AGB_DMA_VBLANK);
+    if (agb_read16(&board, 0x02000400) != 1) {
+        fprintf(stderr, "agb_board: the first blank's DMA ends at halfword %u, not 1\n",
+                agb_read16(&board, 0x02000400));
+        return 1;
+    }
+    agb_dma_event(&board, AGB_DMA_VBLANK);
+    if (agb_read16(&board, 0x02000400) != 5) {
+        fprintf(stderr, "agb_board: the repeat ends at halfword %u, not 5\n", agb_read16(&board, 0x02000400));
+        return 1;
+    }
+    agb_write16(&board, 0x040000DE, 0);
+    /* DMA0 to DMA2 count 14 bits: 0xC001 is one unit */
+    agb_write16(&board, 0x02000502, 0xFFFF);
+    agb_write32(&board, 0x040000B0, 0x02000302);
+    agb_write32(&board, 0x040000B4, 0x02000500);
+    agb_write32(&board, 0x040000B8, 0x8000C001);
+    CHECK(agb_read16(&board, 0x02000500) == 1 && agb_read16(&board, 0x02000502) == 0xFFFF);
     agb_board_destroy(&board);
     CHECK(!board.has_cartridge && !board.cartridge.data);
 

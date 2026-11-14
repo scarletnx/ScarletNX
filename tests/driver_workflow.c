@@ -257,6 +257,18 @@ int snx_deploy_runtime(const char* run, const char* exe) {
     free(tmp);
     return rc;
 }
+/* recompile.c's --dump-modules of an XCI or NSP read in place: the dump and folder it was given, and the data folder
+   it finds the keys in */
+static char *dumped, *dumped_into, *dumped_repo;
+int snx_dump_modules_of_dump(const char* dump, const SnxPaths* paths, const char* outdir) {
+    free(dumped);
+    free(dumped_into);
+    free(dumped_repo);
+    dumped = snx_strdup(dump);
+    dumped_into = snx_strdup(outdir);
+    dumped_repo = paths->repo ? snx_strdup(paths->repo) : NULL;
+    return strstr(dump, "unreadable") ? -1 : 0; /* a dump it cannot read: -1, said */
+}
 /* recompile.c's: a setting of the recompile, from the generated tables */
 const IniOpt* snx_recompile_setting(const char* key) {
     const IniOpt* o = ini_find(g_recompile_ini, key);
@@ -870,6 +882,45 @@ int main(int argc, char** argv) {
     exe = snx_executable(argv[0]);
     root = snx_temp_dir(NULL);
     CHECK(exe && root);
+    { /* --dump-modules: an XCI or NSP (any case) goes to the in-place reader, with the data folder a run uses for its
+         keys, or the one --data (--repo, before or after) names; an extracted program that is not there to the
+         loader, which says what it looked for; an option it does not take, and a third name, refused; the reader's
+         -1 is the run's status 1, never the -1 that says no mode took the arguments */
+        char program[] = "scarletnx", flag[] = "--dump-modules", nsp[] = "Some Game [v0].NsP", into[] = "dumped";
+        char data[] = "--data", repo_flag[] = "--repo", update[] = "--update", bogus[] = "--bogus", third[] = "x";
+        char bad[] = "unreadable.nsp";
+        char* nsp_args[] = {program, flag, nsp, into, NULL};
+        char* given = snx_path_join(root, "given data");
+        char* data_args[] = {program, flag, nsp, into, data, given, NULL};
+        char* repo_args[] = {program, flag, repo_flag, given, nsp, into, NULL};
+        char* folder = snx_path_join(root, "no game here");
+        char* folder_args[] = {program, flag, folder, into, NULL};
+        char* update_args[] = {program, flag, update, nsp, nsp, into, NULL};
+        char* bogus_args[] = {program, flag, nsp, into, bogus, NULL};
+        char* third_args[] = {program, flag, nsp, into, third, NULL};
+        char* bad_args[] = {program, flag, bad, into, NULL};
+        CHECK(!snx_mkdirs(given));
+        CHECK(snx_driver(4, nsp_args) == 0 && dumped && !strcmp(dumped, nsp) && !strcmp(dumped_into, into) &&
+              dumped_repo && dumped_repo[0] && strcmp(dumped_repo, given));
+        CHECK(snx_driver(6, data_args) == 0 && !strcmp(dumped, nsp) && dumped_repo && !strcmp(dumped_repo, given));
+        free(dumped_repo);
+        dumped_repo = NULL;
+        CHECK(snx_driver(6, repo_args) == 0 && !strcmp(dumped, nsp) && dumped_repo && !strcmp(dumped_repo, given));
+        CHECK(snx_driver(4, bad_args) == 1 && !strcmp(dumped, bad));
+        free(dumped);
+        dumped = NULL;
+        CHECK(snx_driver(4, folder_args) != 0 && !dumped);
+        CHECK(snx_driver(6, update_args) != 0 && !dumped);
+        CHECK(snx_driver(5, bogus_args) != 0 && !dumped);
+        CHECK(snx_driver(5, third_args) != 0 && !dumped);
+        free(dumped_into);
+        free(dumped_repo);
+        dumped_into = dumped_repo = NULL;
+        free(folder);
+        free(given);
+        puts("PASS --dump-modules reads an XCI or NSP in place with the data folder's keys or --data's, an extracted "
+             "program through the loader, and refuses what it does not take");
+    }
     keys = snx_path_join(root, "provided prod.keys");
     title_keys = snx_path_join(root, "provided title.keys");
     CHECK(!snx_write_file(keys, "header_key = 00112233\n", strlen("header_key = 00112233\n")) &&
@@ -928,6 +979,46 @@ int main(int argc, char** argv) {
         free(romfs);
     }
     run(exe, repo, dump, log, 0, "G", NULL);
+    { /* #2110: a made game's RomFS in its data folder that is not whole, its program played (as the launcher plays
+         it) or made again (R) with Extract dump: a copy that stopped (romfs.copying beside an empty romfs/), an
+         extraction that stopped (its .extracting, as it writes its files under their own names) and no romfs/ each
+         extracted again from its dump, said; with no dump named, neither runs the game, the file it needs said */
+        char *own = snx_path_join(repo, "recompiled/Test game"), *data = snx_path_join(own, "Test game_data");
+        char *romfs = snx_path_join(data, "romfs"), *copying = snx_path_join(data, "romfs.copying");
+        char *part = snx_path_join(copying, "part"), *whole = snx_path_join(romfs, "data");
+        char* ini = snx_game_ini(own, "Test game");
+        CHECK(ini && !snx_remove_tree(romfs) && !snx_mkdirs(romfs) && !snx_mkdirs(copying) &&
+              !snx_write_file(part, "part", 4));
+        run(exe, repo, game, log, 0, "EG", "a copy of it stopped before it ended (romfs.copying is left)");
+        CHECK(snx_is_file(whole) && !snx_path_exists(copying) && !snx_is_file(extracting));
+        CHECK(!snx_remove_tree(whole) && !snx_write_file(extracting, "", 0));
+        run(exe, repo, game, log, 0, "EG", "an extraction of it stopped before it ended (its .extracting is left)");
+        CHECK(snx_is_file(whole) && !snx_is_file(extracting));
+        CHECK(!snx_remove_tree(romfs));
+        run(exe, repo, game, log, 0, "EG", "its exefs/ is there and its romfs/ is not. It is extracted again from");
+        CHECK(snx_is_file(whole));
+        set_env("SNX_WORKFLOW_FLAGS", "-r");
+        CHECK(!snx_remove_tree(romfs));
+        run(exe, repo, game, log, 0, "RE", "It is extracted again from");
+        CHECK(snx_is_file(whole));
+        CHECK(!snx_remove_tree(romfs) && !snx_ini_drop(ini, "source"));
+        run(exe, repo, game, log, 1, "R", "name no dump (source=) to extract it from");
+        set_env("SNX_WORKFLOW_FLAGS", "");
+        run(exe, repo, game, log, 1, "", "name no dump (source=) to extract it from");
+        CHECK(!snx_path_exists(romfs));
+        CHECK(!snx_record_source(own, "Test game", dump));
+        run(exe, repo, game, log, 0, "EG", NULL);
+        CHECK(snx_is_file(whole));
+        free(own);
+        free(data);
+        free(romfs);
+        free(copying);
+        free(part);
+        free(whole);
+        free(ini);
+        puts("PASS #2110: a made game's RomFS cut by a stopped copy or extraction, or gone, extracted again from its "
+             "dump at its start and its R, and neither run without a dump named");
+    }
     CHECK(!snx_remove_tree(game));
     run(exe, repo, dump, log, 0, "RG", NULL);
     set_env("SNX_WORKFLOW_FAIL", "G");
@@ -1450,22 +1541,28 @@ int main(int argc, char** argv) {
            nothing made from the _data; and an .ini that names none says so */
         set_env("SNX_WORKFLOW_FLAGS", "-r");
         {
-            /* the dump as the .ini records it: resolved, under /private/var on macOS where the test names /var */
+            /* the dump as the .ini records it, and the .ini as the driver names it from the game's folder resolved:
+               both under /private/var on macOS, where the test names /var */
             char *ini = snx_game_ini(own, "Test game"), *recorded = snx_game_source(own, "Test game", NULL), *kept;
+            char *real = snx_absolute(own), *shown = real ? snx_game_ini(real, "Test game") : NULL;
             size_t kept_size;
-            char* said =
+            char* said;
+            CHECK(shown != NULL);
+            said =
                 snx_format("Test game_data, and the dump it was made from, %s, is not there: put it back, or make the "
                            "game again from its dump (its .ini: %s)",
-                           recorded, ini);
+                           recorded, shown);
             run(exe, repo, game, log, 1, "", said);
             kept = (char*)snx_read_file(ini, &kept_size);
             CHECK(kept && !snx_write_file(ini, "[Game]\n", 7));
             free(said);
-            said = snx_format("keeps no ExeFS in Test game_data, and its .ini %s names no dump (source=)", ini);
+            said = snx_format("keeps no ExeFS in Test game_data, and its .ini %s names no dump (source=)", shown);
             run(exe, repo, game, log, 1, "", said);
             CHECK(!snx_write_file(ini, kept, kept_size));
             free(kept);
             free(recorded);
+            free(shown);
+            free(real);
             { /* an ExeFS where the loader reads one, not exefs/ (ExeFS/, as another tool names it): made from it */
                 char *data = snx_path_join(own, "Test game_data"), *exefs = snx_path_join(data, "ExeFS"),
                      *main = snx_path_join(exefs, "main");
@@ -1554,16 +1651,26 @@ int main(int argc, char** argv) {
         CHECK(records_dump(own, "0100ABCD12345000", source));
         run(exe, repo, source, log, 0, "G", NULL);
         run(exe, repo, program, log, 0, "G", NULL);
+        /* Extract dump on: the folder read in place all the same (its RomFS can take gigabytes a copy doubles, #2110);
+           what an older start copied, or a copy or an extraction of it that stopped left, taken away, said */
         set_env("SNX_WORKFLOW_EXTRACT", "1");
-        run(exe, repo, source, log, 0, "EG", NULL);
-        CHECK(snx_is_dir(exefs));
+        run(exe, repo, source, log, 0, "G", NULL);
+        CHECK(!snx_path_exists(exefs) && !snx_path_exists(romfs));
         {
-            char* copied = snx_path_join(romfs, "data");
-            CHECK(snx_is_file(copied));
+            char *main = snx_path_join(exefs, "main"), *copied = snx_path_join(romfs, "data");
+            char *copying = snx_path_join(data, "romfs.copying"), *extracting = snx_format("%s.extracting", program);
+            CHECK(!snx_mkdirs(exefs) && !snx_write_file(main, "main", 4) && !snx_mkdirs(romfs) &&
+                  !snx_write_file(copied, "cut", 3) && !snx_mkdirs(copying) && !snx_write_file(extracting, "", 0));
+            run(exe, repo, program, log, 0, "G", "the game reads it from its folder");
+            CHECK(!snx_path_exists(exefs) && !snx_path_exists(romfs) && !snx_path_exists(copying) &&
+                  !snx_path_exists(extracting));
+            free(main);
             free(copied);
+            free(copying);
+            free(extracting);
         }
         set_env("SNX_WORKFLOW_EXTRACT", "");
-        run(exe, repo, program, log, 0, "G", "the game reads it from its folder");
+        run(exe, repo, program, log, 0, "G", NULL);
         CHECK(!snx_path_exists(exefs) && !snx_path_exists(romfs));
         CHECK(!rename(source, moved));
         run(exe, repo, program, log, 1, "", "cannot read the game from its folder");

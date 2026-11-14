@@ -353,6 +353,21 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
                  6fbbf5176ff4fd2024f9d150c889477f6b45ece4ac5e45d51286e32f8b13a6f2)
     include("${PROJECT_SOURCE_DIR}/cmake/shared_fonts.cmake")
 
+    # AMD FidelityFX Super Resolution 2.2.1 (MIT), the temporal upscaler the Ounce's DLSS evaluations run through
+    # (src/nx/gpu/vk/fsr2, gpu/nvn/nvn_dlss.c): its library and Vulkan backend's sources and its GLSL passes, which the
+    # build compiles (cmake/fsr2_shaders.cmake). The archive's prebuilt tools (tools/sc, Windows programs) are not used
+    CPMAddPackage(NAME FidelityFX-FSR2 VERSION 2.2.1
+                  URL https://github.com/GPUOpen-Effects/FidelityFX-FSR2/archive/refs/tags/v2.2.1.tar.gz
+                  URL_HASH SHA256=4d7261ef054b071de83c7d201f6850c274226bd3025f4a2274ef4968343bd534
+                  DOWNLOAD_ONLY YES)
+    # A copy of its library with one patch (cmake/fsr2-memory-types.patch): the backend takes device-local memory only
+    # from a type that is not host-visible, and found none where every device-local type is (lavapipe, some integrated
+    # GPUs), so no context could be made there
+    include("${PROJECT_SOURCE_DIR}/cmake/patched_copy.cmake")
+    set(snx_fsr2_api_dir "${PROJECT_BINARY_DIR}/fsr2-api")
+    snx_patched_copy(SOURCE "${FidelityFX-FSR2_SOURCE_DIR}/src/ffx-fsr2-api" DEST "${snx_fsr2_api_dir}"
+                     PATCHES "${PROJECT_SOURCE_DIR}/cmake/fsr2-memory-types.patch"
+                     FILES vk/ffx_fsr2_vk.cpp e25f2e7a5ed1faa7a439c4cac0582212b738eac75174f95371accaf2c6552f7e)
     # RenderDoc's in-application API, one header (renderdoc, gpu/vk/renderdoc.c), from the release tag
     snx_cpm_file(renderdoc_app 1.46
                  https://raw.githubusercontent.com/baldurk/renderdoc/v1.46/renderdoc/api/app/renderdoc_app.h
@@ -423,8 +438,9 @@ endif()
 
 # libdeflate (MIT), every deflate the project writes or reads: the titles a control.nacp keeps in deflate
 # (src/common/utilities/common.c, so every build), the launcher's Share Log (src/gui/logzip.c), the Vita driver's VPK
-# members and compressed eboot segments (src/vita/loader/inflate.c), and their CRC-32. Its library without gzip, from
-# its own sources; it picks the CPU's SIMD loops at run time
+# members and compressed eboot segments (src/vita/loader/inflate.c), and their CRC-32, a file's too (snx_crc32 in
+# src/common/utilities/zip.c: the DS's ARM7 BIOS). Its library without gzip, from its own sources; it picks the CPU's
+# SIMD loops at run time
 CPMAddPackage(NAME libdeflate VERSION 1.26
               URL https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.26.tar.gz
               URL_HASH SHA256=bba03fffc5538576213675ce6968fcff6ce2e67d82e4d5febea2d05f9f13cf85

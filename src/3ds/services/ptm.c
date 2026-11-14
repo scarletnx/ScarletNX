@@ -30,9 +30,19 @@ static uint32_t snx_ctr_ptm_CheckNew3DS(SnxCtrIpc* c, uint32_t* is_new) {
     return 0;
 }
 static uint32_t snx_ctr_ptm_ConfigureNew3DSCPU(SnxCtrIpc* c, uint32_t configuration) {
-    /* The board implements only its base-rate ARM11 configuration, without
-       accelerated L2/804-MHz modes. Requesting that existing configuration is
-       idempotent; any request to enable an unimplemented mode stops. */
-    if (configuration) c->state = SNX_CTR_IPC_UNSUPPORTED;
+    /* A New 3DS's CPU modes: bit 0 its L2 cache, bit 1 its 804 MHz clock (3dbrew, ExHeader Flag1, which NS hands
+       here). The game's code runs natively at the host's speed and the tick counter keeps its 268 MHz on the console
+       too, so both are taken with nothing to change, and said once. An Old 3DS has neither, and another bit is unknown:
+       those stop */
+    bool new_3ds = snx_ctr_memory_profile(c->process->memory)->model == SNX_CTR_NEW;
+    if (configuration && (!new_3ds || configuration > 3)) {
+        c->state = SNX_CTR_IPC_UNSUPPORTED;
+        return 0;
+    }
+    if (configuration && !c->process->cpu_configured) {
+        printf("New 3DS CPU mode asked for:%s%s (the game runs at the host's speed)\n",
+               configuration & 2 ? " 804 MHz" : "", configuration & 1 ? " L2 cache" : "");
+        c->process->cpu_configured = 1;
+    }
     return 0;
 }

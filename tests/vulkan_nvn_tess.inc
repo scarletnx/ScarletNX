@@ -88,6 +88,7 @@ static int check_nvn_default_tessellation(void) {
     r[0x3fd] = r[0x3fe] = 8u << 16;
     r[0x680] = 0x1111;
     r[MAXWELL3D_RASTERIZE_ENABLE] = 1;
+    all_samples(r);
     memcpy(r + 0x280, transform, sizeof transform);
     for (u32 stream = 0; stream < 2; stream++) {
         u64 source = stream ? color : position;

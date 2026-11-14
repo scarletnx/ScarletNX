@@ -63,6 +63,10 @@ typedef struct {
        barriers' and atomics' acquire and release semantics then also make memory visible and available, as GLSL450
        implies, and spv_emit_load_nonprivate and spv_emit_store_nonprivate access memory other invocations share */
     int vulkan_memory_model;
+    /* the memory semantics' storage class bit of "shared" memory, for the shared atomics and the control barrier: 0 for
+       WorkgroupMemory, or UniformMemory (0x40) for a program whose shared memory a storage buffer holds (a block that
+       asks for more than the device gives, vk/compute.c), so that its barriers and atomics order that buffer's words */
+    uint32_t shared_semantics;
     /* known's index: open addressing on a power of two, each slot an entry of known plus one (0 free), at most half
        full, so finding one asks a slot or two, not every type and constant made; its size follows from known_count */
     uint32_t* known_slots;
@@ -120,8 +124,10 @@ enum {
     SPV_OP_LOAD = 61,
     SPV_OP_STORE = 62,
     SPV_OP_ACCESS_CHAIN = 65,
+    SPV_OP_ARRAY_LENGTH = 68,
     SPV_OP_DECORATE = 71,
     SPV_OP_MEMBER_DECORATE = 72,
+    SPV_OP_VECTOR_EXTRACT_DYNAMIC = 77,
     SPV_OP_VECTOR_SHUFFLE = 79,
     SPV_OP_COMPOSITE_CONSTRUCT = 80,
     SPV_OP_COMPOSITE_EXTRACT = 81,
@@ -188,11 +194,17 @@ enum {
     SPV_OP_U_LESS_THAN_EQUAL = 178,
     SPV_OP_S_LESS_THAN_EQUAL = 179,
     SPV_OP_F_ORD_EQUAL = 180,
+    SPV_OP_F_UNORD_EQUAL = 181,
+    SPV_OP_F_ORD_NOT_EQUAL = 182,
     SPV_OP_F_UNORD_NOT_EQUAL = 183,
     SPV_OP_F_ORD_LESS_THAN = 184,
+    SPV_OP_F_UNORD_LESS_THAN = 185,
     SPV_OP_F_ORD_GREATER_THAN = 186,
+    SPV_OP_F_UNORD_GREATER_THAN = 187,
     SPV_OP_F_ORD_LESS_THAN_EQUAL = 188,
+    SPV_OP_F_UNORD_LESS_THAN_EQUAL = 189,
     SPV_OP_F_ORD_GREATER_THAN_EQUAL = 190,
+    SPV_OP_F_UNORD_GREATER_THAN_EQUAL = 191,
     SPV_OP_SHIFT_RIGHT_LOGICAL = 194,
     SPV_OP_SHIFT_RIGHT_ARITHMETIC = 195,
     SPV_OP_SHIFT_LEFT_LOGICAL = 196,
@@ -208,11 +220,16 @@ enum {
     SPV_OP_DPDX = 207,
     SPV_OP_DPDY = 208,
     SPV_OP_FWIDTH = 209,
+    SPV_OP_DPDX_FINE = 210,
+    SPV_OP_DPDY_FINE = 211,
     SPV_OP_EMIT_VERTEX = 218,
     SPV_OP_END_PRIMITIVE = 219,
+    SPV_OP_EMIT_STREAM_VERTEX = 220,
+    SPV_OP_END_STREAM_PRIMITIVE = 221,
     SPV_OP_CONTROL_BARRIER = 224,
     SPV_OP_MEMORY_BARRIER = 225,
     SPV_OP_ATOMIC_LOAD = 227,
+    SPV_OP_ATOMIC_STORE = 228,
     SPV_OP_ATOMIC_EXCHANGE = 229,
     SPV_OP_ATOMIC_COMPARE_EXCHANGE = 230,
     SPV_OP_ATOMIC_I_ADD = 234,
@@ -234,12 +251,27 @@ enum {
     SPV_OP_RETURN = 253,
     SPV_OP_RETURN_VALUE = 254,
     SPV_OP_UNREACHABLE = 255,
+    SPV_OP_GROUP_NON_UNIFORM_ALL = 334,
+    SPV_OP_GROUP_NON_UNIFORM_ANY = 335,
+    SPV_OP_GROUP_NON_UNIFORM_ALL_EQUAL = 336,
     SPV_OP_GROUP_NON_UNIFORM_BALLOT = 339,
     SPV_OP_GROUP_NON_UNIFORM_SHUFFLE = 345,
+    SPV_OP_GROUP_NON_UNIFORM_SHUFFLE_XOR = 346,
+    SPV_OP_GROUP_NON_UNIFORM_I_ADD = 349,
+    SPV_OP_GROUP_NON_UNIFORM_S_MIN = 353,
     SPV_OP_GROUP_NON_UNIFORM_U_MIN = 354,
+    SPV_OP_GROUP_NON_UNIFORM_S_MAX = 356,
+    SPV_OP_GROUP_NON_UNIFORM_U_MAX = 357,
+    SPV_OP_GROUP_NON_UNIFORM_BITWISE_AND = 359,
+    SPV_OP_GROUP_NON_UNIFORM_BITWISE_OR = 360,
+    SPV_OP_GROUP_NON_UNIFORM_BITWISE_XOR = 361,
     SPV_OP_GROUP_NON_UNIFORM_QUAD_BROADCAST = 365,
     SPV_OP_GROUP_NON_UNIFORM_QUAD_SWAP = 366,
     SPV_OP_READ_CLOCK_KHR = 5056,
+    SPV_OP_EMIT_MESH_TASKS_EXT = 5294,
+    SPV_OP_SET_MESH_OUTPUTS_EXT = 5295,
+    SPV_OP_BEGIN_INVOCATION_INTERLOCK_EXT = 5364,
+    SPV_OP_END_INVOCATION_INTERLOCK_EXT = 5365,
     SPV_OP_DEMOTE_TO_HELPER_INVOCATION = 5380,
     SPV_OP_IS_HELPER_INVOCATION = 5381,
     /* SPV_KHR_cooperative_matrix: the matrix unit's, an SM86 program's HMMA (sm86_translate.c's hmma_coop) */
@@ -247,7 +279,9 @@ enum {
     SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR = 4457,
     SPV_OP_COOPERATIVE_MATRIX_STORE_KHR = 4458,
     SPV_OP_COOPERATIVE_MATRIX_MUL_ADD_KHR = 4459,
-    SPV_OP_COOPERATIVE_MATRIX_LENGTH_KHR = 4460
+    SPV_OP_COOPERATIVE_MATRIX_LENGTH_KHR = 4460,
+    SPV_OP_ATOMIC_F_ADD_EXT = 6035,
+    SPV_OP_F_DOT2_MIX_ACC32_VALVE = 6916
 };
 enum {
     SPV_STORAGE_UNIFORM_CONSTANT = 0,
@@ -269,8 +303,13 @@ enum {
     SPV_DECORATION_NO_PERSPECTIVE = 13,
     SPV_DECORATION_FLAT = 14,
     SPV_DECORATION_PATCH = 15,
+    SPV_DECORATION_CENTROID = 16,
     SPV_DECORATION_INVARIANT = 18,
+    SPV_DECORATION_ALIASED = 20,
+    SPV_DECORATION_COHERENT = 23,
     SPV_DECORATION_NON_WRITABLE = 24,
+    SPV_DECORATION_NON_READABLE = 25,
+    SPV_DECORATION_STREAM = 29,
     SPV_DECORATION_LOCATION = 30,
     SPV_DECORATION_COMPONENT = 31,
     SPV_DECORATION_BINDING = 33,
@@ -279,60 +318,147 @@ enum {
     SPV_DECORATION_XFB_BUFFER = 36,
     SPV_DECORATION_XFB_STRIDE = 37,
     SPV_DECORATION_NO_CONTRACTION = 42,
+    SPV_DECORATION_INPUT_ATTACHMENT_INDEX = 43,
+    SPV_DECORATION_PER_PRIMITIVE_EXT = 5271,
+    SPV_DECORATION_PER_VERTEX_KHR = 5285,
     SPV_DECORATION_NON_UNIFORM = 5300
 };
 enum {
     SPV_BUILT_IN_POSITION = 0,
     SPV_BUILT_IN_POINT_SIZE = 1,
     SPV_BUILT_IN_CLIP_DISTANCE = 3,
+    SPV_BUILT_IN_PRIMITIVE_ID = 7,
+    SPV_BUILT_IN_INVOCATION_ID = 8,
     SPV_BUILT_IN_LAYER = 9,
     SPV_BUILT_IN_FRAG_COORD = 15,
     SPV_BUILT_IN_FRONT_FACING = 17,
     SPV_BUILT_IN_SAMPLE_ID = 18,
-    SPV_BUILT_IN_FRAG_DEPTH = 22
+    SPV_BUILT_IN_FRAG_DEPTH = 22,
+    SPV_BUILT_IN_HELPER_INVOCATION = 23,
+    SPV_BUILT_IN_NUM_WORKGROUPS = 24,
+    SPV_BUILT_IN_WORKGROUP_ID = 26,
+    SPV_BUILT_IN_LOCAL_INVOCATION_ID = 27,
+    SPV_BUILT_IN_LOCAL_INVOCATION_INDEX = 29,
+    SPV_BUILT_IN_SUBGROUP_ID = 40,
+    SPV_BUILT_IN_SUBGROUP_LOCAL_INVOCATION_ID = 41,
+    SPV_BUILT_IN_VERTEX_INDEX = 42,
+    SPV_BUILT_IN_INSTANCE_INDEX = 43,
+    SPV_BUILT_IN_BASE_VERTEX = 4424,
+    SPV_BUILT_IN_BASE_INSTANCE = 4425,
+    SPV_BUILT_IN_PRIMITIVE_TRIANGLE_INDICES_EXT = 5296
 };
 enum {
+    SPV_MODE_INVOCATIONS = 0,
     SPV_MODE_ORIGIN_UPPER_LEFT = 7,
+    SPV_MODE_EARLY_FRAGMENT_TESTS = 9,
+    SPV_MODE_POINT_MODE = 10,
     SPV_MODE_XFB = 11,
     SPV_MODE_DEPTH_REPLACING = 12,
     SPV_MODE_LOCAL_SIZE = 17,
+    SPV_MODE_TRIANGLES = 22,
+    SPV_MODE_OUTPUT_VERTICES = 26,
+    SPV_MODE_OUTPUT_TRIANGLE_STRIP = 29,
+    SPV_MODE_POST_DEPTH_COVERAGE = 4446,
     SPV_MODE_DENORM_PRESERVE = 4459,
     SPV_MODE_DENORM_FLUSH_TO_ZERO = 4460,         /* SPV_KHR_float_controls, its operand the width */
     SPV_MODE_SIGNED_ZERO_INF_NAN_PRESERVE = 4461, /* SPV_KHR_float_controls, its operand the width */
-    SPV_MODE_ROUNDING_RTE = 4462
+    SPV_MODE_ROUNDING_RTE = 4462,
+    SPV_MODE_OUTPUT_PRIMITIVES_EXT = 5270,
+    SPV_MODE_OUTPUT_TRIANGLES_EXT = 5298,
+    SPV_MODE_PIXEL_INTERLOCK_ORDERED_EXT = 5366,
+    SPV_MODE_MAXIMALLY_RECONVERGES_KHR = 6023
 };
 enum {
     SPV_CAPABILITY_SHADER = 1,
+    SPV_CAPABILITY_GEOMETRY = 2,
+    SPV_CAPABILITY_TESSELLATION = 3,
     SPV_CAPABILITY_FLOAT16 = 9,
     SPV_CAPABILITY_FLOAT64 = 10,
     SPV_CAPABILITY_INT64 = 11,
+    SPV_CAPABILITY_TESSELLATION_POINT_SIZE = 23,
+    SPV_CAPABILITY_GEOMETRY_POINT_SIZE = 24,
     SPV_CAPABILITY_IMAGE_GATHER_EXTENDED = 25,
+    SPV_CAPABILITY_STORAGE_IMAGE_MULTISAMPLE = 27,
     SPV_CAPABILITY_CLIP_DISTANCE = 32,
+    SPV_CAPABILITY_SAMPLE_RATE_SHADING = 35,
+    SPV_CAPABILITY_INPUT_ATTACHMENT = 40,
+    SPV_CAPABILITY_MIN_LOD = 42,
     SPV_CAPABILITY_SAMPLED_BUFFER = 46,
     SPV_CAPABILITY_IMAGE_BUFFER = 47,
+    SPV_CAPABILITY_IMAGE_MS_ARRAY = 48,
     SPV_CAPABILITY_IMAGE_QUERY = 50,
+    SPV_CAPABILITY_DERIVATIVE_CONTROL = 51,
     SPV_CAPABILITY_TRANSFORM_FEEDBACK = 53,
+    SPV_CAPABILITY_GEOMETRY_STREAMS = 54,
     SPV_CAPABILITY_STORAGE_IMAGE_READ_WITHOUT_FORMAT = 55,
     SPV_CAPABILITY_STORAGE_IMAGE_WRITE_WITHOUT_FORMAT = 56,
     SPV_CAPABILITY_GROUP_NON_UNIFORM = 61,
+    SPV_CAPABILITY_GROUP_NON_UNIFORM_VOTE = 62,
     SPV_CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC = 63,
     SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT = 64,
     SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE = 65,
+    SPV_CAPABILITY_GROUP_NON_UNIFORM_CLUSTERED = 67,
     SPV_CAPABILITY_GROUP_NON_UNIFORM_QUAD = 68,
     SPV_CAPABILITY_SHADER_LAYER = 69,
     SPV_CAPABILITY_DRAW_PARAMETERS = 4427,
+    SPV_CAPABILITY_SAMPLE_MASK_POST_DEPTH_COVERAGE = 4447,
     SPV_CAPABILITY_DENORM_PRESERVE = 4464,
     SPV_CAPABILITY_DENORM_FLUSH_TO_ZERO = 4465,
     SPV_CAPABILITY_SIGNED_ZERO_INF_NAN_PRESERVE = 4466,
     SPV_CAPABILITY_ROUNDING_RTE = 4467,
     SPV_CAPABILITY_SHADER_CLOCK_KHR = 5055,
+    SPV_CAPABILITY_MESH_SHADING_EXT = 5283,
+    SPV_CAPABILITY_FRAGMENT_BARYCENTRIC_KHR = 5284,
     SPV_CAPABILITY_SHADER_NON_UNIFORM = 5301,
     SPV_CAPABILITY_SAMPLED_IMAGE_ARRAY_NON_UNIFORM_INDEXING = 5307,
+    SPV_CAPABILITY_VULKAN_MEMORY_MODEL = 5345,
+    SPV_CAPABILITY_VULKAN_MEMORY_MODEL_DEVICE_SCOPE = 5346,
+    SPV_CAPABILITY_FRAGMENT_SHADER_PIXEL_INTERLOCK_EXT = 5378,
     SPV_CAPABILITY_DEMOTE_TO_HELPER_INVOCATION = 5379,
-    SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR = 6022
+    SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR = 6022,
+    SPV_CAPABILITY_ATOMIC_FLOAT32_ADD_EXT = 6033,
+    SPV_CAPABILITY_DOT_PRODUCT_FLOAT16_ACC_FLOAT32_VALVE = 6912
 };
+/* an OpSelectionMerge's control */
+enum { SPV_SELECTION_CONTROL_NONE = 0 };
+/* an OpLoopMerge's control */
+enum { SPV_LOOP_CONTROL_NONE = 0 };
+/* memory semantics, bits to be or-ed */
+enum {
+    SPV_MEMORY_SEMANTICS_RELAXED = 0x0,
+    SPV_MEMORY_SEMANTICS_ACQUIRE = 0x2,
+    SPV_MEMORY_SEMANTICS_ACQUIRE_RELEASE = 0x8,
+    SPV_MEMORY_SEMANTICS_UNIFORM_MEMORY = 0x40,
+    SPV_MEMORY_SEMANTICS_WORKGROUP_MEMORY = 0x100,
+    SPV_MEMORY_SEMANTICS_ATOMIC_COUNTER_MEMORY = 0x400,
+    SPV_MEMORY_SEMANTICS_IMAGE_MEMORY = 0x800
+};
+/* an image instruction's operands, bits */
+enum {
+    SPV_IMAGE_OPERANDS_BIAS = 0x1,
+    SPV_IMAGE_OPERANDS_LOD = 0x2,
+    SPV_IMAGE_OPERANDS_GRAD = 0x4,
+    SPV_IMAGE_OPERANDS_OFFSET = 0x10,
+    SPV_IMAGE_OPERANDS_SAMPLE = 0x40
+};
+/* scopes: an OpControlBarrier's, a group operation's, an atomic's */
+enum { SPV_SCOPE_DEVICE = 1, SPV_SCOPE_SUBGROUP = 3 };
+/* memory access operands, bits */
+enum { SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER = 0x20 };
+/* an OpTypeImage's format */
+enum { SPV_IMAGE_FORMAT_UNKNOWN = 0 };
+/* a group operation's kind */
+enum { SPV_GROUP_OPERATION_REDUCE = 0, SPV_GROUP_OPERATION_CLUSTERED_REDUCE = 3 };
+/* a cooperative matrix type's use */
+enum {
+    SPV_COOPERATIVE_MATRIX_USE_MATRIX_A_KHR = 0,
+    SPV_COOPERATIVE_MATRIX_USE_MATRIX_B_KHR = 1,
+    SPV_COOPERATIVE_MATRIX_USE_MATRIX_ACCUMULATOR_KHR = 2
+};
+/* a cooperative matrix load's or store's layout */
+enum { SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR = 0, SPV_COOPERATIVE_MATRIX_LAYOUT_COLUMN_MAJOR_KHR = 1 };
 /* image dimensions: OpTypeImage's Dim */
-enum { SPV_DIM_1D = 0, SPV_DIM_2D = 1, SPV_DIM_3D = 2, SPV_DIM_CUBE = 3, SPV_DIM_BUFFER = 5 };
+enum { SPV_DIM_1D = 0, SPV_DIM_2D = 1, SPV_DIM_3D = 2, SPV_DIM_CUBE = 3, SPV_DIM_BUFFER = 5, SPV_DIM_SUBPASS_DATA = 6 };
 /* the GLSL.std.450 instructions */
 typedef enum {
     SPV_GLSL_ROUND = 1,
@@ -346,6 +472,7 @@ typedef enum {
     SPV_GLSL_FRACT = 10,
     SPV_GLSL_SIN = 13,
     SPV_GLSL_COS = 14,
+    SPV_GLSL_TANH = 21,
     SPV_GLSL_POW = 26,
     SPV_GLSL_EXP = 27,
     SPV_GLSL_LOG = 28,
@@ -373,6 +500,8 @@ typedef enum {
     SPV_GLSL_CROSS = 68,
     SPV_GLSL_NORMALIZE = 69,
     SPV_GLSL_REFLECT = 71,
+    SPV_GLSL_FIND_S_MSB = 74,
+    SPV_GLSL_FIND_U_MSB = 75,
     SPV_GLSL_N_MIN = 79,
     SPV_GLSL_N_MAX = 80,
     SPV_GLSL_N_CLAMP = 81
@@ -382,6 +511,8 @@ void spv_emit_init(SpvEmitter* e, size_t estimated_function_words);
 /* the SPIR-V version of the modules spv_emit_init starts from then on: 0x00010600 (1.6) until it is set. A Vulkan 1.2
    device takes 1.5 at most */
 void spv_emit_set_version(uint32_t version);
+/* that version */
+uint32_t spv_emit_version(void);
 void spv_emit_destroy(SpvEmitter* e);
 uint32_t spv_emit_id(SpvEmitter* e);
 /* the GLSL.std.450 import, made on the first call */
@@ -529,6 +660,8 @@ void spv_emit_label(SpvEmitter* e, uint32_t label);
 uint32_t spv_emit_function_variable(SpvEmitter* e, uint32_t pointer_type);
 uint32_t spv_emit_function_variable_init(SpvEmitter* e, uint32_t pointer_type, uint32_t initial_value);
 uint32_t spv_emit_load(SpvEmitter* e, uint32_t result_type, uint32_t pointer);
+/* OpPhi of two values: a when control came from block from_a, b from from_b */
+uint32_t spv_emit_phi2(SpvEmitter* e, uint32_t result_type, uint32_t a, uint32_t from_a, uint32_t b, uint32_t from_b);
 /* The common forms: an instruction of op, its result type, a new id and one, two or three operands, the id returned.
    unary takes OpFConvert (a float of one width to another), the conversions between floats and integers, OpBitcast,
    OpNot, OpBitReverse, OpBitCount, OpLogicalNot, OpFNegate, OpIsNan and OpReadClockKHR (its operand the scope);
@@ -560,6 +693,8 @@ uint32_t spv_emit_bitfield_insert(SpvEmitter* e, uint32_t u32_type, uint32_t bas
 uint32_t spv_emit_fcompare(SpvEmitter* e, uint32_t bool_type, uint32_t condition, uint32_t left, uint32_t right);
 uint32_t spv_emit_bool_binary(SpvEmitter* e, uint32_t bool_type, uint32_t op, uint32_t left, uint32_t right);
 uint32_t spv_emit_derivative(SpvEmitter* e, uint32_t f32_type, uint32_t value, int y_axis);
+/* OpDPdxFine or OpDPdyFine of a float or vector of floats, and the DerivativeControl capability they need */
+uint32_t spv_emit_derivative_fine(SpvEmitter* e, uint32_t type, uint32_t value, int y_axis);
 uint32_t spv_emit_glsl_unary(SpvEmitter* e, uint32_t f32_type, uint32_t import, SpvGlsl450Op op, uint32_t value);
 uint32_t spv_emit_glsl_binary(SpvEmitter* e, uint32_t f32_type, uint32_t import, SpvGlsl450Op op, uint32_t left,
                               uint32_t right);

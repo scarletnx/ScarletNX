@@ -30,7 +30,8 @@ typedef struct {
     uint32_t offset; /* what a Thumb32 LDREX or STREX adds to its base (TH_A32's .rd); A32's add nothing */
     SnxArmProfile profile;
     SnxArmMemoryMode memory;
-    uint32_t bus_costs, bus_cycles; /* SnxArmCodegenOptions': 0 counts no bus cycles */
+    uint32_t trace, skipped; /* SnxArmCodegenOptions': 0 traces nothing */
+    uint32_t start;          /* the block's first instruction's address, which a trace slot counts from */
     LLVMValueRef transfer_base, transfer_buffer;
     unsigned transfer_bytes, transfer_operation;
     LLVMValueRef yield; /* ARM7TDMI: what the bus hook's writes returned, ORed: nonzero ends the block (yield_check) */
@@ -45,8 +46,8 @@ static int options_valid(const SnxArmCodegenOptions* o) {
                     o->memory == SNX_ARM_MEMORY_FLAT)) &&
                   (o->memory == SNX_ARM_MEMORY_FLAT || o->memory == SNX_ARM_MEMORY_CHECKED ||
                    o->memory == SNX_ARM_MEMORY_HOSTED) &&
-                  ((!o->bus_costs && !o->bus_cycles) || (o->profile == SNX_ARM_PROFILE_ARM7TDMI && o->bus_costs &&
-                                                         o->bus_cycles && o->bus_costs != o->bus_cycles)));
+                  ((!o->trace && !o->skipped) ||
+                   (o->profile == SNX_ARM_PROFILE_ARM7TDMI && o->trace && o->skipped && o->trace != o->skipped)));
 }
 /* llvm.h: flat memory in a window of 2^32 guest addresses with a guard after it, the cpu private to the running block,
    and the entry state seen to by the dispatch loop */
@@ -358,29 +359,14 @@ static void instruction_fetch(ArmIR* a, uint32_t encoded, unsigned bytes) {
     value = host_order(a, value, bytes);
     require(a, cmp(a, LLVMIntEQ, value, LLVMConstInt(type, encoded, 0)), SNX_ARM_CODE_CHANGED, c32(a, a->pc));
 }
-/* the bus cycles of a load or store (SnxArmBusCosts), once for the instruction: its first access by addr's region and
-   its width, each next word of a multiple one a sequential word, a load's internal cycle and the region's adjustment,
-   never below none */
-static void bus_charge(ArmIR* a, LLVMValueRef addr, unsigned bytes, int write, int multi) {
-    unsigned words = multi ? (bytes / 4 ? bytes / 4 : 1) : 1, width = multi || bytes == 4 ? 2 : bytes == 2 ? 1 : 0;
-    LLVMValueRef costs = get(a, a->bus_costs, a->ptr), region = band(a, lsr(a, addr, 24), c32(a, 15)), raw, adjusted;
-    LLVMValueRef at[3] = {z64(a, add(a, c32(a, (uint32_t)offsetof(SnxArmBusCosts, nonseq) + width), shl(a, region, 2))),
-                          z64(a, add(a, c32(a, (uint32_t)offsetof(SnxArmBusCosts, seq)), region)),
-                          z64(a, add(a, c32(a, (uint32_t)offsetof(SnxArmBusCosts, adjust)), region))};
-    LLVMValueRef cost[3];
-    for (int i = 0; i < 3; ++i)
-        cost[i] = LLVMBuildLoad2(a->b, a->i8, LLVMBuildGEP2(a->b, a->i8, costs, &at[i], 1, ""), "");
-    raw = add(a, LLVMBuildZExt(a->b, cost[0], a->i32, ""), c32(a, !write));
-    if (words > 1)
-        raw = add(a, raw, LLVMBuildMul(a->b, LLVMBuildZExt(a->b, cost[1], a->i32, ""), c32(a, words - 1), ""));
-    adjusted = add(a, raw, LLVMBuildSExt(a->b, cost[2], a->i32, ""));
-    adjusted = LLVMBuildSelect(a->b, cmp(a, LLVMIntSLT, adjusted, c32(a, 0)), c32(a, 0), adjusted, "");
-    put(a, a->bus_cycles, add(a, get(a, a->bus_cycles, a->i32), adjusted));
+/* the instruction's trace slot (llvm.h's SnxArmCodegenOptions) gets value */
+static void trace_value(ArmIR* a, LLVMValueRef value) {
+    put(a, a->trace + ((a->pc - a->start) >> (a->thumb ? 1 : 2)) * 4, value);
 }
 static void transfer_begin(ArmIR* a, LLVMValueRef addr, unsigned bytes, unsigned alignment, int write, int multi) {
     if (a->memory != SNX_ARM_MEMORY_CHECKED) {
         bounds(a, addr, bytes, alignment);
-        if (a->bus_cycles) bus_charge(a, addr, bytes, write, multi);
+        if (a->trace) trace_value(a, addr);
         return;
     }
     if (alignment > 1)
@@ -1309,7 +1295,10 @@ static int instruction(ArmIR* a, SnxA32Kind kind) {
         }
         case SNX_A32_MUL:
         case SNX_A32_MULL:
-        case SNX_A32_MLS: multiply(a, kind); break;
+        case SNX_A32_MLS:
+            if (a->trace) trace_value(a, reg(a, (w >> 8) & 15)); /* the multiplier, whose bytes time it */
+            multiply(a, kind);
+            break;
         case SNX_A32_MULH: halfword_multiply(a); break;
         case SNX_A32_EXCLUSIVE:
             if (a->memory == SNX_ARM_MEMORY_CHECKED)
@@ -1370,6 +1359,12 @@ static int instruction(ArmIR* a, SnxA32Kind kind) {
     return 0;
 }
 
+/* an ARM7TDMI instruction whose time depends on whether its condition held (SnxArmCodegenOptions' skipped): any but a
+   data processing one with an immediate or an immediate shift that leaves the PC alone */
+static int timed_condition(uint32_t w) {
+    int plain = (w & 0x0C000000) == 0 && ((w & 1u << 25) || !(w & 0x10));
+    return !plain || (w >> 12 & 15) == 15;
+}
 LLVMValueRef snx_arm_llvm_block(LLVMModuleRef module, const char* name, const uint32_t* words, size_t count,
                                 uint32_t pc, size_t* consumed) {
     return snx_arm_llvm_block_ex(module, name, words, count, pc, consumed, NULL);
@@ -1385,9 +1380,10 @@ LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const
     if (options) {
         a.profile = options->profile;
         a.memory = options->memory;
-        a.bus_costs = options->bus_costs;
-        a.bus_cycles = options->bus_cycles;
+        a.trace = options->trace;
+        a.skipped = options->skipped;
     }
+    a.start = pc;
     block_begin(&a, module, name, pc);
     if (!hosted(&a)) {
         require(&a, cmp(&a, LLVMIntEQ, band(&a, GET(&a, cpsr), c32(&a, SNX_ARM_T)), c32(&a, 0)), SNX_ARM_BAD_ENTRY,
@@ -1412,6 +1408,10 @@ LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const
         }
         LLVMPositionBuilderAtEnd(a.b, skip);
         setreg(&a, 15, c32(&a, a.pc + 4));
+        if (a.skipped && a.word >> 28 != 14 && timed_condition(a.word)) {
+            uint32_t at = a.skipped + (uint32_t)(i >> 5) * 4;
+            put(&a, at, bor(&a, get(&a, at, a.i32), c32(&a, 1u << (i & 31))));
+        }
         LLVMBuildBr(a.b, next);
         LLVMPositionBuilderAtEnd(a.b, next);
         if (stop) {

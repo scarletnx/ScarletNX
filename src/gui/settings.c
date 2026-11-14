@@ -519,6 +519,14 @@ size_t gui_settings_java_home(GuiSettings* s, const char** argv) {
     argv[0] = s->values[i].option;
     return 1;
 }
+size_t gui_settings_gba(GuiSettings* s, const char** argv) {
+    int i = find(s, "gba_color");
+    const char* value = i < s->own ? picked(s, i) : NULL;
+    if (!value) return 0;
+    snprintf(s->values[i].option, sizeof s->values[i].option, "--gba_color=%s", value);
+    argv[0] = s->values[i].option;
+    return 1;
+}
 size_t gui_settings_one(GuiSettings* s, const char* key, const char** argv) {
     int i = find(s, key);
     if (i < s->own || i >= s->count || !picked(s, i)) return 0;

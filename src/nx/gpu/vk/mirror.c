@@ -220,7 +220,7 @@ static int up_end(Up* u) {
     if (u->n) {
         VkBuffer sb;
         u64 so;
-        u8* sp = vk_stage_upload(u->used, 16, &sb, &so);
+        u8* sp = vk_stream_upload(u->used, 16, &sb, &so); /* read by the copy recorded below, and no more */
         if (sp) {
             memcpy(sp, u->data, u->used);
             for (u32 i = 0; i < u->n; i++) u->r[i].srcOffset += so;

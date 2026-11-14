@@ -254,6 +254,32 @@ static void test_geometry(NdsBoard* board) {
     CHECK(p->vertices[1]->final_position[0] == 192 && p->vertices[2]->final_position[1] == 48);
 }
 
+/* the matrix stack's sums of 20.12 products (multiplies and translate): a row and a column of the words
+   -2^31, -2^31, 2^31 - 1 and 1 sum to 3 2^62 - 2^32 + 2, past int64_t, and the entry is that sum's bits 12 to 43 as
+   the 64-bit wrap leaves them, 0xFFF00000 (and 0xFFF00000 again without the 1). In the texture matrix, which the
+   clip matrix does not read */
+static void load_column(NdsBoard* board, uint32_t c0, uint32_t c1, uint32_t c2, uint32_t c3) {
+    for (uint32_t k = 0; k < 16; k++) gx(board, 0x16, k == 0 ? c0 : k == 4 ? c1 : k == 8 ? c2 : k == 12 ? c3 : 0);
+}
+
+static void test_matrices(NdsBoard* board) {
+    const NdsGpu3D* g = nds_gpu3d_state(board);
+    const uint32_t lo = 0x80000000u, hi = 0x7FFFFFFFu;
+    gx(board, 0x10, 3);
+    load_column(board, lo, lo, hi, 1);
+    for (uint32_t k = 0; k < 16; k++) gx(board, 0x18, k == 0 || k == 1 ? lo : k == 2 ? hi : k == 3 ? 1 : 0);
+    CHECK((uint32_t)g->tex_matrix[0] == 0xFFF00000u);
+    load_column(board, lo, lo, hi, 0);
+    for (uint32_t k = 0; k < 12; k++) gx(board, 0x19, k == 0 || k == 1 ? lo : k == 2 ? hi : 0);
+    CHECK((uint32_t)g->tex_matrix[0] == 0xFFF00000u);
+    load_column(board, lo, lo, hi, 0);
+    for (uint32_t k = 0; k < 9; k++) gx(board, 0x1A, k == 0 || k == 1 ? lo : k == 2 ? hi : 0);
+    CHECK((uint32_t)g->tex_matrix[0] == 0xFFF00000u);
+    load_column(board, lo, lo, hi, 5);
+    gx(board, 0x1C, lo), gx(board, 0x1C, lo), gx(board, 0x1C, hi);
+    CHECK((uint32_t)g->tex_matrix[12] == 0xFFF00005u);
+}
+
 int main(void) {
     char error[512] = "";
     char* dir = snx_temp_dir(NULL);
@@ -261,7 +287,7 @@ int main(void) {
     char* image = snx_path_join(dir, "test.nds");
     CHECK(image && nds_test_image(image, nds_test_program, nds_test_program_words));
     NdsRom rom;
-    if (!nds_rom_open(&rom, image, error, sizeof error)) {
+    if (!nds_rom_open(&rom, image, NULL, error, sizeof error)) {
         fprintf(stderr, "%s\n", error);
         return 1;
     }
@@ -275,6 +301,7 @@ int main(void) {
     test_bios(board);
     test_arm7(board);
     test_geometry(board);
+    test_matrices(board);
     nds_board_free(board);
     free(board);
     nds_rom_close(&rom);

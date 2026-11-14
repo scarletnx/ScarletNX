@@ -187,6 +187,22 @@ typedef struct {
     u64 addr;
 } Surf2D;
 
+/* A temporal upscale: the frame's color at the render size with its depth and motion vectors, onto the output at out
+   from out_base. jitter: the camera's offset in render pixels (the picture moved by +jitter). motion_scale brings a
+   motion vector to pixels of the motion vectors' size: render pixels, or output pixels for vectors at the output's
+   size (DLSS without flag 2). flags: the DLSS network's builder flags, taken as NGX's feature bits (1 HDR, 2 motion
+   vectors at the render size, 4 motion vectors that include the jitter, 8 inverted depth, 0x40 auto exposure).
+   render_max: the largest render size a dynamic resolution may give (the network's), 0 when not known */
+typedef struct {
+    Surf2D color, depth, motion, exposure, reactive, output;
+    int has_exposure, has_reactive;
+    u32 render[2], out[2], render_max[2];
+    i32 out_base[2];
+    f32 jitter[2], motion_scale[2], pre_exposure;
+    int reset;
+    u32 flags;
+} GpuUpscale;
+
 /* the VIC composition (gpu/video/vic.c): a surface plane as VIC addresses it (pitch linear rows or block linear
    GOBs), a slot's resolved rectangles and color matrix, and a job's planes and slots. The renderer's vic_compose
    runs the composition as a compute shader (gpu/vk/vic.c); when it returns 0 the caller composes in guest memory */
@@ -233,17 +249,31 @@ typedef struct NvdecPic {
     int semi;
 } NvdecPic;
 /* A launch of the DMA copy engine (maxwell/dma.c), for the renderer, which does it on the GPU: lines of width
-   elements from src to dst, each side pitch linear (rows pitch bytes apart from addr) or block linear (a surface wb
-   bytes wide and h rows high, blocks 2^bh GOBs high and 2^bd deep, slice z, from the origin ox bytes in, oy rows
-   down; rows from h on read as zero and take no writes). With remap, an element is ns components of cs bytes in and
-   nd out, component k of it from sel[k] (0-3 a source component, 4 constant A, 5 constant B, 6 and 7 the
+   elements from src to dst, each side pitch linear (rows pitch bytes apart from addr: the register is a signed 32-bit
+   number, and a negative one steps down, line k at addr + k * pitch, as a copy with FlipY does) or block linear (a
+   surface wb bytes wide and h rows high, blocks 2^bh GOBs high and 2^bd deep, slice z, from the origin ox bytes in,
+   oy rows down; rows from h on read as zero and take no writes). With remap, an element is ns components of cs bytes
+   in and nd out, component k of it from sel[k] (0-3 a source component, 4 constant A, 5 constant B, 6 and 7 the
    destination's own bytes); fill: nothing is read. snap: the source's bytes as read at submission (pitch linear, its
-   span), or NULL; snap_id: nonzero when they are the renderer's (Renderer.snap_alloc), which dma_copy takes over */
+   span from its lowest byte, gpu_dma_low), or NULL; snap_id: nonzero when they are the renderer's
+   (Renderer.snap_alloc), which dma_copy takes over */
 typedef struct {
     u64 addr;
     int bl;
     u32 pitch, wb, h, z, bh, bd, ox, oy;
 } GpuDmaSide;
+/* a pitch linear side's step from a line to the next, in bytes */
+static inline i64 gpu_dma_pitch(const GpuDmaSide* s) { return (i32)s->pitch; }
+/* where a pitch linear side's lines of line bytes start, from addr: 0, or (lines - 1) * pitch when the pitch steps
+   down; and the bytes they span from there */
+static inline i64 gpu_dma_low(const GpuDmaSide* s, u32 lines) {
+    i64 p = gpu_dma_pitch(s);
+    return p < 0 && lines ? p * (i64)(lines - 1) : 0;
+}
+static inline u64 gpu_dma_span(const GpuDmaSide* s, u32 lines, u32 line) {
+    i64 p = gpu_dma_pitch(s);
+    return lines ? (u64)(p < 0 ? -p : p) * (lines - 1) + line : 0;
+}
 typedef struct {
     int multi, remap, fill, shuffle, keep;
     u32 cs, ns, nd, sel[4], const_a, const_b;
@@ -304,6 +334,10 @@ u8* gmem_ptr_untracked(u64 gva, u64 size);
 u8* gmem_host(u64 gva, u64 size);
 /* a word of guest memory as a number (little-endian there) */
 u32 gmem_r32(u64 gva);
+/* the host address of [gva, gva + size) to read, when the CPU alone holds those bytes and they are contiguous. NULL
+   where a queued release, a pending result or an owner on the GPU may hold some of them, which gmem_read lands to
+   read: for a reader that can do without the bytes */
+const u8* gmem_cpu_bytes(u64 gva, u64 size);
 void gmem_w32(u64 gva, u32 v);
 /* the byte offset of (x_bytes, y, z) in a block linear surface width_bytes wide and height rows high, with blocks of
    2^bh_log2 GOBs high and 2^bd_log2 deep (the caller shrinks them for small surfaces, as the hardware does). The

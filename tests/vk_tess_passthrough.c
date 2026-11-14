@@ -24,7 +24,7 @@ void logf_(int level, const char* format, ...) {
     (void)level;
     (void)format;
 }
-VkSh* vk_shader_generated_find(u64 hash, int stage, const u32 mask[26]) {
+VkSh* vk_shader_generated_find(u64 hash, int stage, const u32 mask[SH_KEY_WORDS]) {
     (void)hash; (void)stage; (void)mask; return NULL;
 }
 void vk_shader_generated_record(VkSh* shader, const u32* spv, size_t words, const u8* source, u32 bytes) {

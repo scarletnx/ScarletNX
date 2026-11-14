@@ -43,6 +43,7 @@ enum {
     XRING_BACK,     /* storage results the GPU copies back for the CPU to read (vk_stage_back) */
     XRING_DEVICE,   /* made and read by the GPU alone, in device memory (vk_stage_device) */
     XRING_READBACK, /* vk_readback_buffer's, no frame's */
+    XRING_STREAM,   /* bytes the CPU fills for work recorded at once, no frame's (vk_stream_upload) */
     XRING_N
 };
 #define FRAME_RINGS XRING_READBACK
@@ -76,6 +77,8 @@ typedef struct {
     /* descriptor pools, reset when the frame is reused and kept */
     VkDescriptorPool pool_d[64];
     int npool, ipool; /* pool_d[ipool] is the one allocating; the ones after it are reset and waiting */
+    int took, pool_peak; /* the pools this use allocated from, the most of this window's uses (vk_desc_pools_keep) */
+    u32 pool_uses;
     /* sets allocated ahead, a batch per layout at a time: most draws make a new set, and the driver's allocation cost
        is mostly per call */
     struct {
@@ -101,6 +104,7 @@ typedef struct {
     u32 ring;   /* the ring it serves: an XRING_ index */
     u32 in;     /* where its memory is: an XFER_ index */
     u32 slot;   /* the frame slot it is handed out to, plus one; 0 while in the pool */
+    u64 sub;    /* the stream's: the submission whose end frees it (stream_take) */
     u32 flush;  /* written by the CPU and not flushed since (flushed at the next submit) */
     u32 big;    /* a buffer for a request bigger than a chunk */
     u32 bar;    /* made for the output ring's share of the window (bar_room) and in device memory the CPU maps: on a
@@ -115,6 +119,11 @@ static struct {
     u32 itook;
     u64 made; /* chunks and big buffers made since the start (statistics, tests) */
     u32 recycles; /* frame slots recycled since the start (tests) */
+    /* The stream: the chunk it hands out of (plus one) and the bytes handed out of that. Its chunks are no frame's:
+       each has the number of a submission, and is handed out again once that submission is done */
+    u32 stream_cur;
+    u64 stream_used;
+    u64 stream_since; /* the bytes it handed out since the last submit (frame_check) */
     u64 submits[VK_SUB_N]; /* submissions since the start, by why (statistics, tests) */
     u32 stage_told; /* the staging ring's memory type is in the log */
 } g_cmd;
@@ -465,9 +474,12 @@ static void frame_recycle(Frame* f) {
     g_dead_bytes -= f->dead_bytes;
     f->dead_bytes = 0;
     vkResetCommandPool(g_vk.dev, f->pool, 0);
-    /* the pools stay, reset: a frame's draws fill several, and making them again every frame costs */
+    /* the pools stay, reset: a frame's draws fill several, and making them again every frame costs. Only those the
+       slot's recent uses never reached go */
+    vk_desc_pools_keep(f->pool_d, &f->npool, &f->pool_peak, &f->pool_uses, f->took);
     for (int i = 0; i < f->npool; i++) vkResetDescriptorPool(g_vk.dev, f->pool_d[i], 0);
     f->ipool = 0;
+    f->took = 0;
     memset(f->spare, 0, sizeof f->spare);
     vk_devmem_frame(); /* the driver's budgets, asked again */
     pool_recycle(f);
@@ -537,7 +549,7 @@ static struct {
     u64 n, bytes;
 } g_device_sites[DEVICE_SITES];
 void vk_stage_report(void) {
-    static const char* const ring[XRING_N] = {"staging", "output", "back", "device", "readback"};
+    static const char* const ring[XRING_N] = {"staging", "output", "back", "device", "readback", "stream"};
     char line[512];
     int at = 0;
     for (u32 r = 0; r < XRING_N; r++)
@@ -633,7 +645,7 @@ static void chunk_destroy(Chunk* c) {
 }
 /* host writes to a chunk of the staging or output ring, made visible to the GPU at the next submit */
 static void chunk_written(Chunk* c) {
-    if ((c->ring == XRING_STAGE || c->ring == XRING_OUTPUT) && !c->flush) {
+    if ((c->ring == XRING_STAGE || c->ring == XRING_OUTPUT || c->ring == XRING_STREAM) && !c->flush) {
         c->flush = 1;
         g_cmd.unflushed++;
     }
@@ -694,6 +706,111 @@ static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
     g_cmd.chunk[here - 1].slot = slot;
     return here;
 }
+/* The stream (step 5 of the buffer and budget plan). A frame's rings come back with its slot, so a frame that
+   draws long without a present kept every chunk it filled, and ended early to give them back (frame_check). Most of
+   what the rings carry is read by work recorded at once: a texture's or a target's bytes from guest memory, the pages
+   the page cache takes, the ranges the buffer cache copies for one submission. Those go through the stream: a chunk
+   has the number of the submission after the one being recorded when it last handed out bytes, and is handed out
+   again once that submission is done, whatever the frame. One submission later than the bytes' own, as a wait in
+   the middle of an upload (astc.c's queue) submits between a strip's bytes and the commands that read them, and
+   later by each split an upload makes after that (stream_carry). A busy
+   chunk means another chunk, never a wait. A request bigger than a chunk gets a buffer of its size in whole MiB,
+   not of the next doubled size. A chunk no request took for STREAM_IDLE frames goes, a big buffer after
+   STREAM_BIG_IDLE: the stream holds what the last frames' busiest moment took */
+#define STREAM_IDLE     32u
+#define STREAM_BIG_IDLE 8u
+static u64 stream_done(void) {
+    u64 done = 0;
+    if (g_gsem) VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done));
+    return done;
+}
+/* a chunk of the stream of size bytes, or a big buffer of size or more (big), that no work reads: the pool's best
+   (pool_before), else a new one. Its entry's index plus one, 0 when none could be made */
+static u32 stream_take(u64 size, int big) {
+    const u64 done = stream_done();
+    u32 pick = 0;
+    for (u32 i = 0; i < g_cmd.nchunk; i++) {
+        const Chunk* c = &g_cmd.chunk[i];
+        if (!c->buf || c->ring != XRING_STREAM || i + 1 == g_cmd.stream_cur || c->sub > done) continue;
+        if ((int)c->big != big || (big ? c->size < size : c->size != size)) continue;
+        if (!pick || pool_before(c, &g_cmd.chunk[pick - 1])) pick = i + 1;
+    }
+    if (!pick && (pick = chunk_new(XRING_STREAM, size, 0, 0))) g_cmd.chunk[pick - 1].big = (u32)big;
+    return pick;
+}
+/* the stream's chunks that went unused: once a frame slot is recycled */
+static void stream_trim(void) {
+    u64 done = 0;
+    int asked = 0;
+    for (u32 i = 0; i < g_cmd.nchunk; i++) {
+        Chunk* c = &g_cmd.chunk[i];
+        if (!c->buf || c->ring != XRING_STREAM || i + 1 == g_cmd.stream_cur) continue;
+        if (g_frame_id - c->freed < (c->big ? STREAM_BIG_IDLE : STREAM_IDLE)) continue;
+        if (!asked) {
+            done = stream_done();
+            asked = 1;
+        }
+        if (c->sub <= done) chunk_destroy(c);
+    }
+}
+u8* vk_stream_upload(u64 size, u64 align, VkBuffer* buf, u64* off) {
+    if (!g_settings.stream_ring) return vk_stage_upload(size, align, buf, off);
+    vk_cmd(); /* a frame is being recorded: the bytes' readers go in its commands */
+    if (align < 16) align = 16;
+    if (size > g_vk.alloc_cap) return NULL; /* no allocation is bigger (memory.c) */
+    u32 at_chunk;
+    u64 at = 0;
+    if (size > chunk_size()) {
+        const u64 mib = 1ull << 20, whole = (size + mib - 1) & ~(mib - 1);
+        if (!(at_chunk = stream_take(whole < g_vk.alloc_cap ? whole : g_vk.alloc_cap, 1))) return NULL;
+    } else {
+        at = (g_cmd.stream_used + align - 1) & ~(align - 1);
+        if (!g_cmd.stream_cur || at + size > g_cmd.chunk[g_cmd.stream_cur - 1].size) {
+            const u32 next = stream_take(chunk_size(), 0);
+            if (!next) return NULL;
+            g_cmd.stream_cur = next;
+            at = 0;
+        }
+        at_chunk = g_cmd.stream_cur;
+        g_cmd.stream_used = at + size;
+    }
+    Chunk* c = &g_cmd.chunk[at_chunk - 1];
+    c->sub = vk_submit_number() + 1;
+    c->freed = g_frame_id; /* when it was last used: stream_trim */
+    chunk_written(c);
+    if (at + size > c->handed) c->handed = at + size;
+    g_xfer[XRING_STREAM][c->in] += size;
+    g_cmd.stream_since += c->big ? c->size : size;
+    *buf = c->buf;
+    *off = at;
+    return c->ptr + at;
+}
+/* After a split (vk_submit_split): the chunks that the submission it ended could read are read by the one recording
+   now too, so they stay until the one after it is done. A split is an upload's own, between the bytes it staged and
+   the commands that read them, and an upload makes one after another: a level of BCn blocks encoded again goes to the
+   GPU in up to 16 submissions (texture.c's encode_rows), each of which reads the bytes staged before the first.
+   Without this the second split left those bytes in a chunk that the next request took */
+static void stream_carry(void) {
+    for (u32 i = 0; i < g_cmd.nchunk; i++) {
+        Chunk* c = &g_cmd.chunk[i];
+        if (c->buf && c->ring == XRING_STREAM && c->sub >= g_gval) c->sub = g_gval + 2;
+    }
+}
+/* the stream's chunks that work not yet done reads: their bytes, and the oldest of their submissions that is on the
+   queue (0: none is) */
+static u64 stream_busy(u64* oldest) {
+    const u64 done = stream_done();
+    u64 bytes = 0;
+    *oldest = 0;
+    for (u32 i = 0; i < g_cmd.nchunk; i++) {
+        const Chunk* c = &g_cmd.chunk[i];
+        if (!c->buf || c->ring != XRING_STREAM || c->sub <= done) continue;
+        bytes += c->size;
+        if (c->sub <= g_gval && (!*oldest || c->sub < *oldest)) *oldest = c->sub;
+    }
+    return bytes;
+}
+
 /* The slot's chunks and big buffers back to the pool, once its work is done; the pool then keeps no more of a ring's
    chunks, and of its big buffers, than the most a frame of the last VK_POOL_FRAMES took (a chunk at least, as a ring
    kept its smallest size) for each slot, less what the other slots hold, the longest unused going first: a slot whose
@@ -714,7 +831,7 @@ static void pool_recycle(Frame* f) {
     memset(g_cmd.took[g_cmd.itook], 0, sizeof g_cmd.took[g_cmd.itook]);
     for (u32 i = 0; i < g_cmd.nchunk; i++) {
         Chunk* c = &g_cmd.chunk[i];
-        if (!c->buf) continue;
+        if (!c->buf || c->ring >= FRAME_RINGS) continue; /* the stream's are no slot's (stream_trim) */
         if (c->slot && c->slot != slot) {
             held[c->ring][c->big]++;
             continue;
@@ -741,6 +858,7 @@ static void pool_recycle(Frame* f) {
             }
     memset(f->ring, 0, sizeof f->ring);
     f->filled = 0;
+    stream_trim();
 }
 
 /* size bytes of the frame's ring at *off of *buf, the chunk's memory in *mem: the chunk, NULL when none could be had.
@@ -835,7 +953,7 @@ u8* vk_stage_guest_input(u64 gva, u64 source_size, u64 bytes, VkBuffer* buf, u64
             }
             o += n;
         }
-    return gpu ? vk_stage(bytes, vk_stage_align(), buf, off) : vk_stage_upload(bytes, vk_stage_align(), buf, off);
+    return gpu ? vk_stage(bytes, vk_stage_align(), buf, off) : vk_stream_upload(bytes, vk_stage_align(), buf, off);
 }
 
 /* The staging ring can be device-local memory behind the BAR, where every CPU read crosses PCIe uncached: comparing
@@ -867,6 +985,7 @@ int vk_stage_device_at(const char* file, int line, u64 size, u64 align, VkBuffer
 /* the host writes to the chunks the staging and output rings hand out of, and to those they filled and the frame's
    big buffers since the last submit, made visible to the GPU */
 static void rings_flush(const Frame* f) {
+    g_cmd.stream_since = 0;
     for (u32 r = XRING_STAGE; r <= XRING_OUTPUT; r++)
         if (f->ring[r].cur) vk_devmem_flush(g_cmd.chunk[f->ring[r].cur - 1].mem, 0, VK_WHOLE_SIZE);
     for (u32 i = 0; g_cmd.unflushed && i < g_cmd.nchunk; i++)
@@ -1004,9 +1123,12 @@ void vk_submit_open(void) {
     if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_READBACK);
 }
 /* vk_submit_open's, counted apart. It takes what the next submission waits for (vk_submit_after's, the sparse binds
-   made since the last), as any submission does */
+   made since the last), as any submission does. It ends a submission in the middle of an upload, so the stream's
+   bytes that the ended one could read go on with the upload (stream_carry) */
 void vk_submit_split(void) {
-    if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_SPLIT);
+    if (!g_fr[g_cur].recording) return;
+    submit(NULL, NULL, 0, VK_SUB_SPLIT);
+    stream_carry();
 }
 /* vk_submit_open's for a piece of a background encode (astc.c), counted apart. It takes what the next submission waits
    for (vk_submit_after's, the sparse binds made since the last), as any submission does */
@@ -1136,7 +1258,9 @@ static void frame_check(void) {
     /* a fresh frame has recorded nothing, and its counts are still its last use's until frame_recycle: ending it
        would only move on to the slot whose work was just submitted, and wait for it */
     if (f->fresh) return;
-    u64 rings = frame_rings(f), cap = frame_ring_cap(rings);
+    /* the cap that the stream's bytes are held to counts them too: they are memory the caches budget as the rings
+       are, and a frame whose bytes all go through the stream has rings below the two chunks that ask the budget */
+    u64 rings = frame_rings(f), cap = frame_ring_cap(rings + g_cmd.stream_since);
     if (rings >= cap) {
         LOG_LIMIT(
             4,
@@ -1145,6 +1269,15 @@ static void frame_check(void) {
         vk_frame_next();
     } else if (f->icb >= 128 || f->ipool >= 32 || vk_rec_frame_sets(g_cur) >= 32 * 1024 || !vk_descriptors_room(g_cur))
         vk_frame_next();
+    else if (g_cmd.stream_since >= cap) {
+        /* The stream wrote a frame's worth since the last submit: what was recorded goes to the GPU, so its chunks
+           come free, and the frame goes on. Past twice that in chunks still read, this waits for the oldest of them:
+           the stream never waits where it hands bytes out (a draw's setup), and a copy in bands, with no draw
+           between them, would take a chunk a band without end (the 1365 MiB above) */
+        u64 oldest;
+        submit(NULL, NULL, 1, VK_SUB_PERIODIC);
+        if (stream_busy(&oldest) >= 2 * cap && oldest) vk_wait_submit(oldest);
+    }
     else if (f->recording && plat_ns() - g_sub_ns >= SUBMIT_EVERY_NS)
         submit(NULL, NULL, 1, VK_SUB_PERIODIC);
 }
@@ -1205,6 +1338,27 @@ VkDescriptorPool vk_desc_pool_new(u32 array_sets) {
     return p;
 }
 u32 vk_desc_pools(void) { return __atomic_load_n(&g_desc_pools, __ATOMIC_RELAXED); }
+/* Each window of VK_DESC_POOL_USES uses of a slot, the pools past the most one of them took are destroyed (one stays):
+   the slot's work is done when it is reset, so no set of them is in use. A pool's memory is made whole when it is
+   (Qualcomm's: 98 MiB a frame's pool), and a load's burst of sets left pools its steady frames never reach */
+void vk_desc_pools_keep(VkDescriptorPool* pools, int* npool, int* peak, u32* uses, int took) {
+    int keep, n0 = *npool;
+    if (took > *peak) *peak = took;
+    if (++*uses < VK_DESC_POOL_USES) return;
+    keep = *peak > 1 ? *peak : 1;
+    while (*npool > keep) {
+        vkDestroyDescriptorPool(g_vk.dev, pools[--*npool], NULL);
+        pools[*npool] = VK_NULL_HANDLE;
+        __atomic_sub_fetch(&g_desc_pools, 1, __ATOMIC_RELAXED);
+    }
+    if (*npool < n0)
+        LOG_LIMIT(20,
+                  "vulkan: %d of a frame slot's %d descriptor pools went, none of its last %d uses reaching them: %u "
+                  "pools left in all\n",
+                  n0 - *npool, n0, VK_DESC_POOL_USES, vk_desc_pools());
+    *uses = 0;
+    *peak = 0;
+}
 static u64 g_desc_array_sets; /* sets of the arrays layouts taken from the frames' pools, for the statistics */
 void vk_desc_taken(VkDescriptorSetLayout layout, u32 n) {
     if (n && vk_dslayout_arrays(layout)) __atomic_add_fetch(&g_desc_array_sets, n, __ATOMIC_RELAXED);
@@ -1233,6 +1387,7 @@ static u32 desc_alloc_n(Frame* f, VkDescriptorSetLayout layout, VkDescriptorSet*
         VkResult r = vkAllocateDescriptorSets(g_vk.dev, &ai, sets);
         if (r == VK_SUCCESS) {
             vk_desc_taken(layout, count);
+            if (f->ipool + 1 > f->took) f->took = f->ipool + 1;
             return count;
         }
         if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL) {

@@ -61,6 +61,50 @@ static int check_trim_working_set(void) {
     return 0;
 }
 
+/* In a game with no texture objects, the unmap of a texture's memory is the sign that the game ended it (surface.c
+   remapped_collect): two textures at two GPU ranges over the same guest memory, made in one present and unused for
+   six. One's range is unmapped. A trim that wants everything takes that one and leaves the other. It runs before any
+   texture object is made: with objects, their ends are the sign */
+static int check_trim_unmapped(void) {
+    const u64 gone_gva = TRIM_GVA + 0x100000, kept_gva = TRIM_GVA + 0x200000;
+    u32 gone_tic[8], kept_tic[8];
+    u64 usage, budget;
+    CHECK(!gpu_textures_added());
+    gmmu_map(gone_gva, TRIM_CPU, 0x10000);
+    gmmu_map(kept_gva, TRIM_CPU, 0x10000);
+    trim_tic(gone_tic, gone_gva);
+    trim_tic(kept_tic, kept_gva);
+    vk_lock();
+    g_vk_present = 500; /* what the check before left goes first, so the counts below are these two textures' */
+    vk_mem_use(&usage, &budget);
+    vk_mem_trim(budget, 0);
+    const u32 held = trim_textures();
+    CHECK(vk_tex_from_tic(gone_tic) && vk_tex_from_tic(kept_tic) && trim_textures() == held + 2);
+    vk_unlock();
+    g_vk_present = 503;
+    gmmu_space_unmap(gone_gva, 0x10000);
+    vk_lock();
+    vk_surf_ended_frame(); /* the cache learns of it; with memory to spare it frees nothing */
+    CHECK(trim_textures() == held + 2);
+    g_vk_present = 506;
+    vk_mem_trim(budget, 0);
+    const u32 left = trim_textures();
+    CHECK(vk_tex_from_tic(kept_tic));
+    const u32 with_kept = trim_textures();
+    g_vk_present = 530;
+    vk_mem_trim(budget, 0); /* for the checks after: the other gone too */
+    vk_unlock();
+    if (left != held + 1 || with_kept != left) {
+        fprintf(stderr,
+                "trim: %u textures held three presents after one of two lost its mapping, %u before the two (one "
+                "more expected), and %u with the mapped one found again (as many expected)\n",
+                left, held, with_kept);
+        return 1;
+    }
+    printf("trim: with no texture objects, a texture whose memory the game unmapped goes first\n");
+    return 0;
+}
+
 /* A texture whose texture object the game ended goes first (surface.c ended_reclaim): two textures made in one
    present, with an object each at its address (gpu/guest_textures.h), unused for six presents, fewer than the eight
    that the working set is kept for. One's object ends. A trim that wants everything takes that one and leaves the
@@ -118,5 +162,77 @@ static int check_trim_ended(void) {
     }
     if (failed) return 1;
     printf("trim: a texture whose object the game ended goes first, and stays when an object is made there again\n");
+    return 0;
+}
+
+/* The trim keeps a fixed headroom under the budget (surface.c trim_head): a sixteenth of it, 128 MiB at least and
+   256 MiB at most, never more than a quarter. Two textures unused for nine presents, one of them with its object
+   ended six presents ago, under a budget set 1 GiB over what is in use. With the use one headroom and a half under
+   the budget a trim takes neither, not even the ended one: more than the headroom is free. With the use a quarter of
+   the headroom under the budget it takes both: the working set goes to stay half a headroom under the budget. The
+   use is the caches' own count plus the bytes the trim is told an allocation needs (its first argument). That count
+   is the driver's, of every process on a driver that shares the system's memory, so the budget is set from it here,
+   and where the driver's own budget leaves less room than the check needs it says so and checks nothing */
+static int check_trim_headroom(void) {
+    const u64 ended_gva = TRIM_GVA + 0x4000, live_gva = TRIM_GVA + 0xC000, mib = 1ull << 20;
+    u32 ended_tic[8], live_tic[8];
+    u64 usage, budget;
+    trim_tic(ended_tic, ended_gva);
+    trim_tic(live_tic, live_gva);
+    gpu_texture_add(ended_gva, 0x4000);
+    gpu_texture_add(live_gva, 0x4000);
+    vk_lock();
+    const u32 held = trim_textures();
+    g_vk_present = 400;
+    Surf* ended = vk_tex_from_tic(ended_tic);
+    Surf* live = vk_tex_from_tic(live_tic);
+    g_vk_present += 3;
+    gpu_texture_remove(ended_gva);
+    vk_surf_ended_frame(); /* the cache learns of the end; with memory to spare it frees nothing */
+    const u32 made = trim_textures();
+    g_vk_present += 6;
+    vk_mem_use(&usage, &budget);
+    const u64 cap = vk_mem_budget_cap(usage + 1024 * mib);
+    vk_mem_use(&usage, &budget);
+    u64 head = budget / 16;
+    if (head < 128 * mib) head = 128 * mib;
+    if (head > 256 * mib) head = 256 * mib;
+    if (head > budget / 4) head = budget / 4;
+    const u64 room = budget > usage ? budget - usage : 0;
+    u32 spare = 0, tight = 0;
+    const int checked = room >= head + head / 2;
+    if (checked) {
+        vk_mem_trim(room - (head + head / 2), 0);
+        spare = trim_textures();
+        g_vk_present += 1;
+        vk_mem_use(&usage, &budget);
+        vk_mem_trim(budget - usage - head / 4, 0);
+        tight = trim_textures();
+    }
+    vk_mem_budget_cap(cap);
+    g_vk_present += 20; /* for the checks after: both gone, and no object at either address */
+    vk_mem_use(&usage, &budget);
+    vk_mem_trim(budget, 0);
+    vk_unlock();
+    gpu_texture_remove(live_gva);
+    if (!checked) { /* the driver's own budget is under the one asked for: the host's memory is that full */
+        printf("trim: the headroom is not checked here: %llu MiB are free under a budget of %llu MiB, and the check "
+               "needs %llu MiB free\n",
+               (unsigned long long)(room >> 20), (unsigned long long)(budget >> 20),
+               (unsigned long long)((head + head / 2) >> 20));
+        return 0;
+    }
+    if (!ended || !live || made != held + 2 || spare != held + 2 || tight != held) {
+        fprintf(stderr,
+                "trim: of two textures unused for nine presents (%u held before them, %u with them), under a "
+                "headroom of %llu MiB a trim with %llu MiB free left %u (both expected: %u), and one with %llu MiB "
+                "free left %u (neither expected: %u)\n",
+                held, made, (unsigned long long)(head >> 20), (unsigned long long)((head + head / 2) >> 20), spare,
+                held + 2, (unsigned long long)((head / 4) >> 20), tight, held);
+        return 1;
+    }
+    printf("trim: with one headroom and a half free under the budget (%llu MiB) a trim takes nothing, and with a "
+           "quarter of it free the textures unused for eight presents go\n",
+           (unsigned long long)((head + head / 2) >> 20));
     return 0;
 }

@@ -86,7 +86,9 @@ static void usage(void) {
     puts("  --build-dir DIR        Override this build's build directory\n"
          "  --dump-modules PROGRAM DIR\n"
          "                         Write an extracted program's (or an NRO's) modules as laid out\n"
-         "                         in guest memory into DIR, for tools/symbols.py and tools/disasm.py");
+         "                         in guest memory into DIR, for tools/symbols.py and tools/disasm.py;\n"
+         "                         an XCI or NSP of a game or an update is read in place, with the\n"
+         "                         keys of the data folder (--data)");
     puts("  --scan-log LOG... [--format json|markdown] [--name NAME]\n"
          "                         Summarize a game's log or the launcher's Share Log file: the build,\n"
          "                         the game, how the run ended and where, unimplemented services");
@@ -458,6 +460,63 @@ static int drop_extraction(const char* data, const char* source, int recorded, c
     if (rc) snx_error("cannot take the extraction away from %s", data);
     return rc;
 }
+/* A game's RomFS that Extract dump keeps in its data folder and that is not whole (snx_romfs_state): extracted again
+   from the dump it was made from, as a start of that dump extracts it (<name>.extracting saying so until it ends), what
+   a copy that stopped left taken away first, a line saying why; made from an extracted game's folder, read from there
+   in place, what a copy left taken away. A dump with no RomFS leaves romfs/ empty, so the next start does not extract
+   it again. With no dump named (source=), or one that is not there, the game does not start: what it needs said. 0 for
+   a whole RomFS, or one extracted again or read in place */
+static int romfs_again(const char** command, const char* folder, const char* name, const SnxPaths* paths) {
+    SnxRomfs state = snx_romfs_state(folder, name);
+    char *base, *data, *source, *stopped, *disk, *extracting, *ini;
+    int recorded = 0, rc;
+    if (state == SNX_ROMFS_WHOLE) return 0;
+    base = snx_path_join(folder, name);
+    data = snx_format("%s_data", base);
+    source = snx_game_source(folder, name, &recorded);
+    if (!recorded || !source) {
+        ini = snx_game_ini(folder, name);
+        rc = snx_error("the game's RomFS in %s is not whole: %s. Its settings %s name no dump (source=) to extract it "
+                       "from: play the game's dump or folder once, or pick it with Locate... in its box in Games",
+                       data, snx_romfs_why(state), ini ? ini : "(no path)");
+        free(ini);
+    } else if (!source_there(source))
+        rc = snx_error("the game's RomFS in %s is not whole: %s, and the %s it is extracted from, %s, is not there: "
+                       "put it back, or pick it with Locate... in its box in Games",
+                       data, snx_romfs_why(state), snx_source_kind(source), source);
+    else if (snx_extracted_game(source)) { /* read in place: what the copy left taken away */
+        char *npdm = snx_path_join(data, "exefs/main.npdm"), *marker = snx_format("%s.tmpfs", base);
+        extracting = snx_format("%s.extracting", base);
+        printf("The game's RomFS in %s is not whole: %s. The game reads it from its folder %s\n", data,
+               snx_romfs_why(state), source);
+        rc = drop_extraction(data, source, recorded, npdm, marker) ||
+             (snx_is_file(extracting) && snx_remove_tree(extracting));
+        free(npdm);
+        free(marker);
+        free(extracting);
+    } else {
+        printf("The game's RomFS in %s is not whole: %s. It is extracted again from %s\n", data, snx_romfs_why(state),
+               source);
+        stopped = snx_path_join(data, "romfs.copying");
+        disk = snx_path_join(data, "romfs");
+        extracting = snx_format("%s.extracting", base);
+        rc = ((snx_path_exists(stopped) || snx_is_link(stopped)) && snx_remove_tree(stopped)) ||
+             extract_game(command, source, NULL, data, "exefs", extracting, paths, 0);
+        if (!rc && !snx_is_dir(disk)) {
+            rc = snx_mkdirs(disk);
+            if (!rc)
+                printf("%s holds no RomFS: %s is left empty, so the next start does not extract it again\n", source,
+                       disk);
+        }
+        free(stopped);
+        free(disk);
+        free(extracting);
+    }
+    free(source);
+    free(data);
+    free(base);
+    return rc;
+}
 /* The game's RomFS where Extract to tmpfs wants it before it runs. On: its extraction in snx_tmpfs_work, the copy in
    its data folder taken away, and <name>.tmpfs in its folder saying so. Off: a game with that file gets its RomFS back
    in its data folder, and the extraction in tmpfs is taken away. Extracted again, straight where it goes, from the dump
@@ -476,8 +535,12 @@ static int ensure_romfs(const char** command, const char* folder, const char* na
     size_t size;
     int rc = !source; /* its path did not fit, said */
     if (rc) goto done;
-    if (!extract) { /* read in place: what an extraction left, here or in tmpfs, taken away */
+    /* read in place: what an extraction left, here or in tmpfs, taken away; an extracted game's folder with Extract dump
+       too, but for Extract to tmpfs */
+    if (!extract || (!tmpfs && recorded && snx_extracted_game(source))) {
         rc = drop_extraction(data, source, recorded, npdm, marker = snx_format("%s.tmpfs", base));
+        /* an extraction that stopped: what it left is taken away with the rest */
+        if (!rc && extract && snx_is_file(extracting)) rc = snx_remove_tree(extracting);
         goto done;
     }
     exefs = snx_path_join(data, "exefs");
@@ -485,6 +548,8 @@ static int ensure_romfs(const char** command, const char* folder, const char* na
         rc = extract_game(command, source, NULL, data, "exefs", extracting, paths, 0);
         if (rc) goto done;
     }
+    /* the game's own on disk: a copy that stopped, or none, extracted again */
+    if (!tmpfs && !strcmp(name, snx_path_leaf(folder)) && (rc = romfs_again(command, folder, name, paths))) goto done;
     text = snx_read_file(npdm, &size);
     work = text ? snx_tmpfs_work(snx_npdm_title(text, size)) : NULL;
     free(text);
@@ -1028,7 +1093,7 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
     if (!prepared && !nro && !out) {
         SnxU64 title, version;
         char text[17], *data, *extracting, *exefs;
-        int fresh, extracted_game = dump && snx_extracted_game(dump);
+        int fresh, copied, extracted_game = dump && snx_extracted_game(dump);
         if (!dump || (!extracted_game && !snx_is_file(dump))) {
             if (dump && snx_is_dir(dump))
                 snx_error("%s is a folder whose exefs/ holds no main: neither a dump nor an extracted game", input);
@@ -1073,19 +1138,22 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
         extracting = snx_format("%s.extracting", base);
         exefs = snx_path_join(data, "exefs");
         /* extracted unless its game has its ExeFS, from a finished extraction; else its game made from the dump read
-           in place */
-        fresh = extract && (snx_is_file(extracting) || !snx_is_dir(exefs));
+           in place. An extracted game's folder is read in place with Extract dump too, as its RomFS can take
+           gigabytes a copy would double; only Extract to tmpfs copies it */
+        copied = extract && (tmpfs || !extracted_game);
+        fresh = copied && (snx_is_file(extracting) || !snx_is_dir(exefs));
         rc = fresh ? extract_game(command, dump, NULL, tmpfs ? work : data, "exefs", extracting, paths, 0)
                    : snx_mkdirs(folder);
-        source = snx_strdup(!extract ? dump : fresh && tmpfs ? work : data);
+        source = snx_strdup(!copied ? dump : fresh && tmpfs ? work : data);
         free(data);
         free(extracting);
         free(exefs);
         if (rc) goto done;
-        if (snx_record_source(folder, name, dump) && !extract) { /* read in place, from where its .ini says */
-            rc = snx_error("%s can't be read in place without it. Turn on Extract dump "
-                           "(--extract-container)",
-                           input);
+        if (snx_record_source(folder, name, dump) && !copied) { /* read in place, from where its .ini says */
+            rc = extracted_game ? snx_error("%s can't be read in place without it", input)
+                                : snx_error("%s can't be read in place without it. Turn on Extract dump "
+                                            "(--extract-container)",
+                                            input);
             goto done;
         }
         named = named_otherwise(source, name); /* a dump without a title ID of its own, named by its file */
@@ -1306,7 +1374,11 @@ made:
         goto done;
     }
     if (flags & (SNX_RECOMP | PLAY_PREPARE)) {
-        rc = 0;
+        /* R with Extract dump: the game's RomFS whole on disk for the start after it, or what it needs said */
+        rc = (flags & SNX_RECOMP) && extract && !tmpfs && !nro && !addon && folder && name &&
+                     !strcmp(name, snx_path_leaf(folder))
+                 ? romfs_again(command, folder, name, paths)
+                 : 0;
         goto done;
     }
     rc = nro      ? 0
@@ -1456,13 +1528,62 @@ static int container_path(const char* path) {
     for (i = 0; i <= size; ++i) lower[i] = (char)tolower((unsigned char)ext[i]);
     return !strcmp(lower, ".xci") || !strcmp(lower, ".nsp") || !strcmp(lower, ".dxci") || !strcmp(lower, ".dnsp");
 }
-/* --dump-modules PROGRAM DIR: each module's image and symbols, at the bases the runtime gives them (loader.h's
-   snx_dump_program has the format). Tools read game code through it */
-static int dump_modules(int argc, char** argv) {
-    char error[1024];
-    if (argc != 4) return snx_error("--dump-modules takes a program (an extracted game or an NRO) and a folder");
-    if (snx_dump_program(argv[2], argv[3], error, sizeof error)) return snx_error("%s", error);
+/* The data folder of a run: the one --data (--repo) names, else snx_data_dir's for the program in program_dir, made
+   when make is set and it is not there yet, else "." when none can be named. *found is the folder looked up, owned,
+   NULL when --data named one. 0, or nonzero said when the folder cannot be made */
+static int data_folder(const char* given, const char* program_dir, int make, const char** folder, char** found) {
+    *found = NULL;
+    if (given) {
+        *folder = given;
+        return 0;
+    }
+    *found = snx_data_dir(program_dir);
+    if (make && *found && snx_mkdirs(*found)) return snx_error("cannot create the data folder %s", *found);
+    *folder = *found ? *found : ".";
     return 0;
+}
+/* --dump-modules PROGRAM DIR [--data DIR]: each module's image and symbols, at the bases the runtime gives them
+   (loader.h's snx_dump_program has the format). Tools read game code through it. An XCI or NSP is read in place, with
+   the keys of the data folder, else ~/.switch */
+static int dump_modules(int argc, char** argv) {
+    const char *program = NULL, *outdir = NULL, *given = NULL, *repo;
+    char error[1024], *self, *dir, *found = NULL;
+    SnxPaths paths = {0};
+    SnxCliArg arg;
+    int i, rc;
+    for (i = 2; i < argc; ++i) {
+        int common =
+            snx_cli_match(argc, argv, &i, SNX_CLI_BIT(SNX_CLI_DATA), "--dump-modules", &arg, error, sizeof error);
+        if (common < 0) return snx_error("%s", error);
+        if (common == SNX_CLI_DATA)
+            given = arg.value;
+        else if (argv[i][0] == '-' && argv[i][1])
+            return snx_error("--dump-modules takes no %s: a program, a folder and --data DIR", argv[i]);
+        else if (!program)
+            program = argv[i];
+        else if (!outdir)
+            outdir = argv[i];
+        else
+            return snx_error("--dump-modules takes one program and one folder, and %s is a third", argv[i]);
+    }
+    if (!outdir)
+        return snx_error("--dump-modules takes a program (an extracted game, an NRO, or an XCI or NSP of a game or "
+                         "an update) and a folder");
+    if (!container_path(program)) {
+        if (snx_dump_program(program, outdir, error, sizeof error)) return snx_error("%s", error);
+        return 0;
+    }
+    self = snx_executable(argv[0]);
+    dir = self ? snx_dirname(self) : NULL;
+    rc = data_folder(given, dir, 0, &repo, &found); /* only its keys are read: nothing is made */
+    if (!rc) {
+        paths.repo = repo;
+        rc = snx_dump_modules_of_dump(program, &paths, outdir) ? 1 : 0;
+    }
+    free(found);
+    free(dir);
+    free(self);
+    return rc;
 }
 /* the setup in the terminal for the program at argv0: all of it, or what setup.ini has left. 0 once done */
 static int setup_run(const char* argv0, int all) {
@@ -1811,13 +1932,9 @@ int snx_driver(int argc, char** argv) {
     exe = self ? snx_dirname(self) : NULL;
     free(self);
     source = snx_checkout(SNX_SOURCE_DIR, build, exe);
-    if (!repo_given) {
-        data = snx_data_dir(exe);
-        if (data && snx_mkdirs(data)) {
-            result = snx_error("cannot create the data folder %s", data);
-            goto done;
-        }
-        repo = data ? data : ".";
+    if (data_folder(repo_given ? repo : NULL, exe, 1, &repo, &data)) {
+        result = 1;
+        goto done;
     }
     free(exe);
     exe = NULL;

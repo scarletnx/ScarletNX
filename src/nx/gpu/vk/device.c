@@ -422,29 +422,37 @@ static int coop_f16_f32(VkPhysicalDevice phys) {
     return tile;
 }
 
+/* The subgroup sizes a pipeline stage can require, where has says the device has them: Vulkan 1.3's, or a 1.2 device's
+   from VK_EXT_subgroup_size_control, one structure for both. All zero without; next is read with them */
+static VkPhysicalDeviceSubgroupSizeControlProperties subgroup_sizes(int has, void* next) {
+    VkPhysicalDeviceSubgroupSizeControlProperties sp = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES, .pNext = next};
+    VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &sp};
+    if (has) vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
+    sp.pNext = NULL;
+    return sp;
+}
 /* An Ounce's mesh draws (render.c): VK_EXT_mesh_shader's mesh stage, and its task stage when the device has one. The
    programs' lanes are a warp's (sm86.h), so both stages need a required subgroup size of 32 in full subgroups
-   (subgroupSizeControl, computeFullSubgroups, requiredSubgroupSizeStages). Without them, or with the experimental
-   mesh_draws setting off, the draws are skipped, and the log says why once */
+   (subgroupSizeControl, computeFullSubgroups, requiredSubgroupSizeStages: sizes says whether the device has them,
+   Vulkan 1.3's or VK_EXT_subgroup_size_control's). Without them, or with the experimental mesh_draws setting off, the
+   draws are skipped, and the log says why once */
 static void mesh_choose(int has_ext, const VkPhysicalDeviceMeshShaderFeaturesEXT* f,
-                        const VkPhysicalDeviceVulkan13Features* f13) {
+                        const VkPhysicalDeviceVulkan13Features* f13, int sizes) {
     VkPhysicalDeviceMeshShaderPropertiesEXT mp = {.sType =
                                                       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT};
-    VkPhysicalDeviceVulkan13Properties p13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES,
-                                              .pNext = has_ext ? &mp : NULL};
-    VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p13};
-    if (g_vk.api >= VK_API_VERSION_1_3) vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
+    VkPhysicalDeviceSubgroupSizeControlProperties sp = subgroup_sizes(sizes, has_ext ? &mp : NULL);
     const VkShaderStageFlags both = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT;
     const char* why = !g_settings.mesh_draws                                    ? "mesh_draws off (experimental)"
                       : !has_ext                                                ? "no VK_EXT_mesh_shader"
                       : !f->meshShader                                          ? "no meshShader"
                       : !f13->subgroupSizeControl || !f13->computeFullSubgroups ? "no subgroup size control"
-                      : p13.minSubgroupSize > 32 || p13.maxSubgroupSize < 32    ? "no subgroups of 32"
-                      : (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_MESH_BIT_EXT) == 0
+                      : sp.minSubgroupSize > 32 || sp.maxSubgroupSize < 32      ? "no subgroups of 32"
+                      : (sp.requiredSubgroupSizeStages & VK_SHADER_STAGE_MESH_BIT_EXT) == 0
                           ? "no required subgroup size in the mesh stage"
                           : NULL;
     g_vk.has_mesh = why == NULL;
-    g_vk.has_task = g_vk.has_mesh && f->taskShader && (p13.requiredSubgroupSizeStages & both) == both;
+    g_vk.has_task = g_vk.has_mesh && f->taskShader && (sp.requiredSubgroupSizeStages & both) == both;
     g_vk.mesh_stages = g_vk.has_mesh ? VK_SHADER_STAGE_MESH_BIT_EXT | (g_vk.has_task ? both : 0) : 0;
     u32 groups = g_vk.has_task ? mp.maxTaskWorkGroupCount[0] : mp.maxMeshWorkGroupCount[0];
     g_vk.mesh_groups_max = g_vk.has_mesh ? groups : 0;
@@ -551,8 +559,9 @@ static void log_subgroups(u32 size, VkSubgroupFeatureFlags operations, VkShaderS
         (unsigned)operations, (unsigned)stages, with[0] ? with : "no",
         g_vk_subgroup_stages || !stages ? "" : ", as they need 32 lanes or more, ballot, shuffle and arithmetic");
     if (without[0])
-        LOG("vulkan: %s programs have no subgroup: a vertex, evaluation or geometry one among them that votes or "
-            "shuffles runs each invocation as lane 0 alone, and a control, fragment or compute one is not translated\n",
+        LOG("vulkan: %s programs have no subgroup: a vertex, evaluation, geometry or fragment one among them that "
+            "votes or shuffles runs each invocation as one lane alone (a fragment's reads within its quad through fine "
+            "derivatives), and a control or compute one is not translated\n",
             without);
 }
 
@@ -765,6 +774,7 @@ static int create_device(void) {
     int has_gpl = 0, has_eds2 = 0, has_eds3 = 0; /* the extensions of pipeline libraries and their dynamic state */
     int has_depth_clip_control = 0;              /* and of the depth range as one of those states */
     int has_mesh = 0;
+    int has_size_control = 0; /* VK_EXT_subgroup_size_control, on a 1.2 device: 1.3 has it in its core */
     int has_mixed_dot = 0; /* VK_VALVE_shader_mixed_float_dot_product: HMMA's pairs of f16 products in one instruction */
     int has_coop = 0;      /* VK_KHR_cooperative_matrix: HMMA on the matrix unit (g_shader_hmma_coop) */
     /* VK_EXT_shader_atomic_float: RED.ADD.F32 in one instruction (g_shader_float_atomic_add) */
@@ -835,6 +845,7 @@ static int create_device(void) {
         has_provoking = snx_vk_extensions_has(&e, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
         has_mesh = snx_vk_extensions_has(&e, VK_EXT_MESH_SHADER_EXTENSION_NAME);
         has_mixed_dot = snx_vk_extensions_has(&e, VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME);
+        has_size_control = !core13 && snx_vk_extensions_has(&e, VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
         has_coop = snx_vk_extensions_has(&e, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
         has_list_restart = snx_vk_extensions_has(&e, VK_EXT_PRIMITIVE_TOPOLOGY_LIST_RESTART_EXTENSION_NAME);
         has_atomic_float = snx_vk_extensions_has(&e, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
@@ -986,6 +997,8 @@ static int create_device(void) {
     VkPhysicalDeviceMeshShaderFeaturesEXT qmesh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
     VkPhysicalDeviceVulkan11Features q11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceVulkan13Features q13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceSubgroupSizeControlFeatures qsize = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES};
     /* a 1.2 device's: those of vk12_extensions, which the 1.3 struct holds on a 1.3 one (and EDS's are core there) */
     VkPhysicalDeviceSynchronization2Features qsync2 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
@@ -1059,6 +1072,7 @@ static int create_device(void) {
                            &q11,
                            &q12,
                            core13 ? &q13 : NULL,
+                           has_size_control ? &qsize : NULL,
                            has_mesh ? &qmesh : NULL,
                            core13 ? NULL : &qsync2,
                            core13 ? NULL : &qrendering,
@@ -1107,6 +1121,9 @@ static int create_device(void) {
         q13.dynamicRendering = qrendering.dynamicRendering;
         q13.maintenance4 = qmaintenance4.maintenance4;
         q13.shaderDemoteToHelperInvocation = qdemote.shaderDemoteToHelperInvocation;
+        /* not needed to run: the mesh draws and the compute subgroups of 32 are left out without them */
+        q13.subgroupSizeControl = qsize.subgroupSizeControl;
+        q13.computeFullSubgroups = qsize.computeFullSubgroups;
         static const char* const names[] = {"synchronization2",     "dynamicRendering",
                                             "maintenance4",         "shaderDemoteToHelperInvocation",
                                             "extendedDynamicState", "extendedDynamicState2"};
@@ -1160,14 +1177,12 @@ static int create_device(void) {
             has_barycentric ? "VK_KHR_fragment_shader_barycentric without its feature"
                             : "no VK_KHR_fragment_shader_barycentric");
     g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
-    mesh_choose(has_mesh, &qmesh, &q13);
-    if (core13) { /* the subgroup sizes are Vulkan 1.3's, as mesh_choose reads them */
-        VkPhysicalDeviceVulkan13Properties p13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
-        VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p13};
-        vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
-        g_vk.has_cs_warp32 = q13.subgroupSizeControl && q13.computeFullSubgroups && p13.minSubgroupSize <= 32 &&
-                             p13.maxSubgroupSize >= 32 &&
-                             (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+    mesh_choose(has_mesh, &qmesh, &q13, core13 || has_size_control);
+    {
+        VkPhysicalDeviceSubgroupSizeControlProperties sizes = subgroup_sizes(core13 || has_size_control, NULL);
+        g_vk.has_cs_warp32 = q13.subgroupSizeControl && q13.computeFullSubgroups && sizes.minSubgroupSize <= 32 &&
+                             sizes.maxSubgroupSize >= 32 &&
+                             (sizes.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
     }
     {
         /* each draw's vertex layout as dynamic state, or a pipeline per layout: the setting, then the device and the
@@ -1454,10 +1469,20 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT,
         .pNext = &feds,
         .extendedDynamicState2 = VK_TRUE};
+    /* the subgroup sizes f13 asks for on a 1.3 device, from VK_EXT_subgroup_size_control, where they are used */
+    VkPhysicalDeviceSubgroupSizeControlFeatures fsize = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES,
+        .pNext = &feds2,
+        .subgroupSizeControl = f13.subgroupSizeControl,
+        .computeFullSubgroups = f13.computeFullSubgroups};
     if (!core13) {
         chain = &feds2;
         for (u32 i = 0; i < VK12_EXTENSIONS; i++) ext[next++] = vk12_extensions[i];
         ext[next++] = store_none_ext;
+        if (fsize.subgroupSizeControl) {
+            chain = &fsize;
+            ext[next++] = VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME;
+        }
     }
     VkPhysicalDeviceMaintenance8FeaturesKHR fmaintenance8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_8_FEATURES_KHR, .maintenance8 = VK_TRUE};
@@ -1867,6 +1892,32 @@ static int create_device(void) {
         g_vk.compute_family != g_vk.gfx_family ? " (separate family)"
         : second                               ? " (a second queue)"
                                                : " (the graphics queue)");
+    /* A draw that writes a target it samples at its own pixel gets the value from before the draw on the console.
+       In place, a later primitive of the draw can read what an earlier one wrote. On NVIDIA's GPUs with fragment
+       shader interlock, a capture in an interlock at the program's start saves the old pixel (vk/predraw.c). On the
+       others with dynamic rendering local read, the renderer draws the draw two times in one pass (render.c
+       predraw_run). Without both, the draw stays in place: a copy of the target before each such draw costs too much
+       (5 ms a frame outdoors on a desktop GPU).
+
+       Each feedback draw drawn two times takes one by-region barrier, which a GPU that renders in tiles keeps in its
+       tile memory with the save attachment. Measured in one game's room of G-buffer blend draws, GPU busy and
+       G-buffer pass a frame:
+         RTX 4090:          in place (specks) 8.1 / 2.00 ms, interlock 8.45 / 2.28 ms, two draws 9.2 / 3.23 ms
+         AMD's iGPU (26.10.1): in place (specks) 47.5 / 13.1 ms, interlock 59.1 / 27.7 ms, two draws 55.3 / 18.4 ms
+       AMD's interlock waits on more than the fragments that overlap, and costs more there than the barriers */
+    int nvidia = g_vk.props.vendorID == 0x10DE;
+    int interlock = nvidia && g_vk.has_feedback && g_vk.has_fragment_interlock && g_vk.feat.fragmentStoresAndAtomics;
+    g_vk.feedback_mode = interlock             ? VK_FEEDBACK_INTERLOCK
+                         : g_vk.has_local_read ? VK_FEEDBACK_PREDRAW
+                                               : VK_FEEDBACK_IN_PLACE;
+    LOG("vulkan: a draw that samples a target it writes at its own pixel %s (vendor %04x%s, fragment shader interlock "
+        "%s, dynamic rendering local read %s)\n",
+        g_vk.feedback_mode == VK_FEEDBACK_INTERLOCK ? "reads the pixel as it was before the draw, from a capture in "
+                                                      "a fragment interlock"
+        : g_vk.feedback_mode == VK_FEEDBACK_PREDRAW ? "is drawn two times, the first saving the target"
+                                                    : "reads the target in place",
+        g_vk.props.vendorID, nvidia ? ", NVIDIA: interlock where it has it" : ", not NVIDIA: two draws where it can",
+        g_vk.has_fragment_interlock ? "yes" : "no", g_vk.has_local_read ? "yes" : "no");
     if (g_vk.has_feedback)
         LOG("vulkan: draws sample the color targets they render to in place (attachment feedback loops, %s, %s)\n",
             g_vk.has_feedback_dynamic ? "enabled by dynamic state" : "enabled per pipeline",

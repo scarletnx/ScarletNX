@@ -45,9 +45,10 @@ typedef struct {
     uint64_t identity; /* FNV-1a over every region's hash, address and size: what a compiled module is of */
 } NdsRom;
 
-/* The image at path. False with the reason in error. An image whose secure area is still encrypted, as the card
-   holds it, is refused: the key is the console's */
-bool nds_rom_open(NdsRom* rom, const char* path, char* error, size_t error_size);
+/* The image at path. False with the reason in error. An image whose secure area is still encrypted, as the card holds
+   it, is decrypted with the key in the DS's ARM7 BIOS at bios7, which must be the console's (key1.h: its size and
+   CRC-32), and refused without it, the error saying where to install it (NULL: no place could be named) */
+bool nds_rom_open(NdsRom* rom, const char* path, const char* bios7, char* error, size_t error_size);
 void nds_rom_close(NdsRom* rom);
 /* The backwards LZ the SDK compresses programs and overlays with (MIi_UncompressBackward): compressed bytes at data,
    decompressed in place into capacity bytes. The decompressed size, 0 when the stream is not one */

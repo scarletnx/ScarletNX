@@ -32,4 +32,7 @@ bool snx_zip_stored_at(SnxZip* zip, uint32_t index, uint64_t* offset);
 unsigned char* snx_zip_member(const char* path, const char* name, size_t* size, char* error, size_t error_size);
 /* a member's name as a path inside a folder: relative, '/' between parts, no "." or ".." part and no drive */
 bool snx_zip_safe_name(const char* name);
+/* the CRC-32 a member is checked by, zlib's, of the size bytes at data: a file a console has is known by it too (the
+   DS's ARM7 BIOS, src/nds/cartridge/key1.h) */
+uint32_t snx_crc32(const void* data, size_t size);
 #endif

@@ -91,7 +91,7 @@ static void test_ldm_base_in_list(const char* dir) {
     char* image = snx_path_join(dir, "ldm.nds");
     CHECK(image && nds_test_image(image, ldm_program, sizeof ldm_program / sizeof *ldm_program));
     NdsRom rom;
-    CHECK(nds_rom_open(&rom, image, error, sizeof error));
+    CHECK(nds_rom_open(&rom, image, NULL, error, sizeof error));
     NdsBoard* board = calloc(1, sizeof *board);
     NdsCpu* cpu = calloc(1, sizeof *cpu);
     CHECK(board && cpu && nds_board_init(board, &rom, error, sizeof error));
@@ -121,7 +121,7 @@ int main(void) {
     CHECK(image && module);
     CHECK(nds_test_image(image, nds_test_program, nds_test_program_words));
     NdsRom rom;
-    if (!nds_rom_open(&rom, image, error, sizeof error)) {
+    if (!nds_rom_open(&rom, image, NULL, error, sizeof error)) {
         fprintf(stderr, "%s\n", error);
         return 1;
     }

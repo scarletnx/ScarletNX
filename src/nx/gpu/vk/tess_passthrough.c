@@ -15,24 +15,26 @@ u32* vk_tess_passthrough_spirv_full(u32 vertices, u32 attributes, int point_size
     SpvEmitter e;
     spv_emit_init(&e, 2048);
     spv_emit_shader_capability(&e);
-    spv_emit_capability(&e, 3); /* Tessellation */
+    spv_emit_capability(&e, SPV_CAPABILITY_TESSELLATION);
     u32 f32 = spv_emit_type_float(&e, 32), u32_type = spv_emit_type_u32(&e);
     u32 boolean = spv_emit_type_bool(&e), vec4 = spv_emit_type_vector(&e, f32, 4);
-    u32 input_ptr = spv_emit_type_pointer(&e, 1, vec4), output_ptr = spv_emit_type_pointer(&e, 3, vec4);
+    u32 input_ptr = spv_emit_type_pointer(&e, SPV_STORAGE_INPUT, vec4),
+        output_ptr = spv_emit_type_pointer(&e, SPV_STORAGE_OUTPUT, vec4);
     u32 interfaces[74], in[33] = {0}, out[33] = {0}, count = 0;
     for (u32 i = 0; i < 33; i++) {
         if (i && !(attributes & (1u << (i - 1)))) continue;
-        in[i] = spv_emit_interface_variable(&e, 1, vec4, u32_type, 32, i ? SPV_NOT_BUILTIN : 0, i ? i - 1 : 0, 0);
-        out[i] =
-            spv_emit_interface_variable(&e, 3, vec4, u32_type, vertices, i ? SPV_NOT_BUILTIN : 0, i ? i - 1 : 0, 0);
+        in[i] = spv_emit_interface_variable(&e, SPV_STORAGE_INPUT, vec4, u32_type, 32, i ? SPV_NOT_BUILTIN : 0,
+                                            i ? i - 1 : 0, 0);
+        out[i] = spv_emit_interface_variable(&e, SPV_STORAGE_OUTPUT, vec4, u32_type, vertices, i ? SPV_NOT_BUILTIN : 0,
+                                             i ? i - 1 : 0, 0);
         interfaces[count++] = in[i];
         interfaces[count++] = out[i];
     }
     u32 point_in = 0, point_out = 0, clips_in = 0, clips_out = 0;
     if (point_size) {
-        spv_emit_capability(&e, 23); /* TessellationPointSize */
-        point_in = spv_emit_interface_variable(&e, 1, f32, u32_type, 32, 1, 0, 0);
-        point_out = spv_emit_interface_variable(&e, 3, f32, u32_type, vertices, 1, 0, 0);
+        spv_emit_capability(&e, SPV_CAPABILITY_TESSELLATION_POINT_SIZE);
+        point_in = spv_emit_interface_variable(&e, SPV_STORAGE_INPUT, f32, u32_type, 32, 1, 0, 0);
+        point_out = spv_emit_interface_variable(&e, SPV_STORAGE_OUTPUT, f32, u32_type, vertices, 1, 0, 0);
         interfaces[count++] = point_in;
         interfaces[count++] = point_out;
     }
@@ -40,14 +42,14 @@ u32* vk_tess_passthrough_spirv_full(u32 vertices, u32 attributes, int point_size
     if (clip_count) {
         spv_emit_clip_distance_capability(&e);
         u32 array = spv_emit_type_array(&e, f32, clip_count);
-        clips_in = spv_emit_interface_variable(&e, 1, array, u32_type, 32, 3, 0, 0);
-        clips_out = spv_emit_interface_variable(&e, 3, array, u32_type, vertices, 3, 0, 0);
+        clips_in = spv_emit_interface_variable(&e, SPV_STORAGE_INPUT, array, u32_type, 32, 3, 0, 0);
+        clips_out = spv_emit_interface_variable(&e, SPV_STORAGE_OUTPUT, array, u32_type, vertices, 3, 0, 0);
         interfaces[count++] = clips_in;
         interfaces[count++] = clips_out;
     }
-    u32 outer = spv_emit_interface_variable(&e, 3, f32, u32_type, 4, 11, 0, 1);
-    u32 inner = spv_emit_interface_variable(&e, 3, f32, u32_type, 2, 12, 0, 1);
-    u32 invocation = spv_emit_builtin_input_u32(&e, u32_type, 8);
+    u32 outer = spv_emit_interface_variable(&e, SPV_STORAGE_OUTPUT, f32, u32_type, 4, 11, 0, 1);
+    u32 inner = spv_emit_interface_variable(&e, SPV_STORAGE_OUTPUT, f32, u32_type, 2, 12, 0, 1);
+    u32 invocation = spv_emit_builtin_input_u32(&e, u32_type, SPV_BUILT_IN_INVOCATION_ID);
     interfaces[count++] = outer;
     interfaces[count++] = inner;
     interfaces[count++] = invocation;
@@ -58,19 +60,20 @@ u32* vk_tess_passthrough_spirv_full(u32 vertices, u32 attributes, int point_size
     u32 void_type = spv_emit_type_void(&e), fn_type = spv_emit_type_function_void(&e, void_type);
     u32 fn = spv_emit_id(&e);
     spv_emit_entry_str(&e, ST_TCS, fn, "main", interfaces, count);
-    spv_emit_execution_mode(&e, fn, 26, 1, vertices); /* OutputVertices */
+    spv_emit_execution_mode(&e, fn, SPV_MODE_OUTPUT_VERTICES, 1, vertices);
     spv_emit_function_void(&e, void_type, fn, fn_type);
     spv_emit_label(&e, spv_emit_id(&e));
     u32 vertex = spv_emit_load(&e, u32_type, invocation);
     if (point_size) {
-        u32 in_ptr = spv_emit_type_pointer(&e, 1, f32), out_ptr = spv_emit_type_pointer(&e, 3, f32);
+        u32 in_ptr = spv_emit_type_pointer(&e, SPV_STORAGE_INPUT, f32),
+            out_ptr = spv_emit_type_pointer(&e, SPV_STORAGE_OUTPUT, f32);
         u32 value = spv_emit_load(&e, f32, SPV(&e, SPV_OP_ACCESS_CHAIN, in_ptr, point_in, vertex));
         spv_emit_store(&e, SPV(&e, SPV_OP_ACCESS_CHAIN, out_ptr, point_out, vertex), value);
     }
     for (u32 i = 0; i < clip_count; i++) {
         u32 index = spv_emit_constant_u32(&e, u32_type, i);
-        u32 source = spv_emit_interface_scalar_pointer(&e, 1, f32, clips_in, vertex, index);
-        u32 destination = spv_emit_interface_scalar_pointer(&e, 3, f32, clips_out, vertex, index);
+        u32 source = spv_emit_interface_scalar_pointer(&e, SPV_STORAGE_INPUT, f32, clips_in, vertex, index);
+        u32 destination = spv_emit_interface_scalar_pointer(&e, SPV_STORAGE_OUTPUT, f32, clips_out, vertex, index);
         spv_emit_store(&e, destination, spv_emit_load(&e, f32, source));
     }
     for (u32 i = 0; i < 33; i++) {
@@ -120,7 +123,7 @@ VkSh* vk_tess_passthrough(u32 vertices, const VkSh* vertex, const VkSh* evaluati
         LOG_LIMIT(2, "vulkan: evaluation-only control shader exceeds the device's interface limits\n");
         return NULL;
     }
-    u32 key[26] = {0x54435350, vertices, attributes, point_size, clip_mask, 1};
+    u32 key[SH_KEY_WORDS] = {0x54435350, vertices, attributes, point_size, clip_mask, 1};
     u64 hash = vk_hash(key, sizeof key);
     VkSh* cached = vk_shader_generated_find(hash, ST_TCS, key);
     if (cached) return cached;

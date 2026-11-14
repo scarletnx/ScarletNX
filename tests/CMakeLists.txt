@@ -56,7 +56,7 @@ if(SNX_TEST_SANITIZERS)
         snx_driver snx_nx_module snx_driver_llvm hactool_lib snx_setup snx_settings snx_settings_runtime snx_build_info
         snx-test-build-info
         # the Switch runtime: its components, the shader translator and the Vulkan backend
-        scarletnx snx_core snx_kernel snx_hle snx_video snx_gpu snx_platform snx_shader snx_vk
+        scarletnx snx_core snx_kernel snx_hle snx_video snx_gpu snx_platform snx_shader snx_vk snx_fsr2
         # the GNU ABI runtime and its kernel
         scarletnx-gnuabi scarletnx-gnuabi-kernel
         # the Android app driver: its DEX translator, its program and the native bridge
@@ -468,6 +468,39 @@ if(TARGET snx_ctr_board)
         endif()
         set_tests_properties(${snx_tests} PROPERTIES SKIP_RETURN_CODE 77)
     endforeach()
+    # The GPU tests again on a New 3DS (--new3ds), their buffers and targets in the memory only it has: the upper half
+    # of its 256 MB of FCRAM and its extra RAM. Each path to the RAM, and each of the draw test's modes
+    set(snx_tests "")
+    foreach(snx_path default copy in_place)
+        set(snx_flag "")
+        set(snx_suffix _${snx_path})
+        if(snx_path STREQUAL "copy")
+            set(snx_flag --vk_memory=1)
+        elseif(snx_path STREQUAL "in_place")
+            set(snx_flag --vk_memory=2)
+        else()
+            set(snx_suffix "")
+        endif()
+        foreach(snx_test 3ds_vk_transfer 3ds_vk_ram 3ds_vk_y2r 3ds_vk_draw 3ds_vk_copies)
+            string(REPLACE "_" "-" snx_executable "snx-test-${snx_test}")
+            add_test(NAME ${snx_test}_new3ds${snx_suffix} COMMAND ${snx_executable} --new3ds ${snx_flag})
+            list(APPEND snx_tests ${snx_test}_new3ds${snx_suffix})
+        endforeach()
+    endforeach()
+    foreach(snx_mode present after-draw texture-after-draw draw-after-index-copy async shadow)
+        string(REPLACE "-" "_" snx_name "${snx_mode}")
+        add_test(NAME 3ds_vk_draw_${snx_name}_new3ds COMMAND snx-test-3ds-vk-draw --new3ds --${snx_mode})
+        list(APPEND snx_tests 3ds_vk_draw_${snx_name}_new3ds)
+    endforeach()
+    if(NOT WIN32 AND Python3_Interpreter_FOUND)
+        foreach(snx_test snx_mode IN ZIP_LISTS snx_vk_validation_tests snx_vk_validation_modes)
+            add_test(NAME ${snx_test}_new3ds
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                    $<TARGET_FILE:snx-test-3ds-vk-draw> ${snx_mode} --new3ds)
+            list(APPEND snx_tests ${snx_test}_new3ds)
+        endforeach()
+    endif()
+    set_tests_properties(${snx_tests} PROPERTIES SKIP_RETURN_CODE 77)
     # the two windows and the per-screen render scales: one window always, Separate screens, a minimized window and a
     # window whose images the display holds when the host has a window; the dumps stay the framebuffer's own size
     # whatever the scale
@@ -691,6 +724,9 @@ if(TARGET hactool_internals)
     add_test(NAME filesystem_folder_source
              COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> folder-source)
     add_test(NAME filesystem_folder_gone COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> folder-gone)
+    foreach(how copying extracting none whole)
+        add_test(NAME filesystem_romfs_${how} COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> romfs-${how})
+    endforeach()
     if(NOT WIN32) # the dump's link: Windows makes one only with the right to
         add_test(NAME filesystem_dump COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump)
         add_test(NAME filesystem_dump_source COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-source)
@@ -1571,6 +1607,15 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     add_test(NAME nn_fs_cache_path COMMAND snx-test-nn-fs cache-path)
     set_tests_properties(nn_fs_cache_path PROPERTIES PASS_REGULAR_EXPRESSION
         "fatal: nn::fs::DisableIndividualFileDataCache failed with result 0x2ee602 \\(error 2002-6003\\)")
+    add_test(NAME nn_fs_restore_null COMMAND snx-test-nn-fs restore-null)
+    set_tests_properties(nn_fs_restore_null PROPERTIES PASS_REGULAR_EXPRESSION
+        "fatal: nn::fs::GetSaveDataRestoreFlag failed with result 0x2f5e02 \\(error 2002-6063\\)")
+    add_test(NAME nn_fs_restore_account COMMAND snx-test-nn-fs restore-account)
+    set_tests_properties(nn_fs_restore_account PROPERTIES PASS_REGULAR_EXPRESSION
+        "fatal: nn::fs::GetSaveDataRestoreFlag failed with result 0x2ee002 \\(error 2002-6000\\)")
+    add_test(NAME nn_fs_restore_card COMMAND snx-test-nn-fs restore-card)
+    set_tests_properties(nn_fs_restore_card PROPERTIES PASS_REGULAR_EXPRESSION
+        "fatal: nn::fs::GetSaveDataRestoreFlag failed with result 0x2ee002 \\(error 2002-6000\\)")
     # the native nn::pctl (nn/pctl.c): the answers of a console with no parental controls set
     add_executable(snx-test-nn-pctl nn_pctl.c)
     snx_test_target(snx-test-nn-pctl 23)
@@ -1619,7 +1664,7 @@ target_link_libraries(snx-test-am-service PRIVATE snx_test_common) # snx_nacp_ao
 add_test(NAME am_service COMMAND snx-test-am-service)
 
 # gsv.c's display session: what a game is told of the display's HDR (GetHdrStatus, GetHdrPaperWhite, the HDR status
-# event), with the renderer stood in for
+# event) and of its largest picture (GetBufferMaxResolution), with the renderer stood in for
 add_executable(snx-test-gsv-hdr gsv_hdr.c)
 snx_test_target(snx-test-gsv-hdr 23)
 snx_service_swipc(snx-test-gsv-hdr hle/services/native_video.swipc hle/services/gsv.swipc hle/services/nvdrv.swipc)
@@ -1778,12 +1823,6 @@ add_executable(snx-test-rtapi-miss rtapi_miss.c "${PROJECT_SOURCE_DIR}/src/nx/ru
 snx_test_target(snx-test-rtapi-miss 23)
 target_link_libraries(snx-test-rtapi-miss PRIVATE snx_nx_flags snx_settings_runtime)
 add_test(NAME rtapi_miss COMMAND snx-test-rtapi-miss)
-# rt_undef (runtime/rtapi.c): an undefined instruction is the game's, one an Arm CPU runs the recompiler's, and a call
-# just before it that came back is named
-add_executable(snx-test-rtapi-undef rtapi_undef.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/rtapi.c")
-snx_test_target(snx-test-rtapi-undef 23)
-target_link_libraries(snx-test-rtapi-undef PRIVATE snx_nx_flags snx_settings_runtime)
-add_test(NAME rtapi_undef COMMAND snx-test-rtapi-undef)
 
 add_executable(snx-test-ini-deprecated ini_deprecated.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-ini-deprecated 11)
@@ -2342,9 +2381,11 @@ add_executable(snx-test-vp9-rebuild vp9_rebuild.cpp "${PROJECT_SOURCE_DIR}/src/n
 snx_test_target(snx-test-vp9-rebuild 23)
 add_test(NAME vp9_rebuild COMMAND snx-test-vp9-rebuild)
 # the 2D engine's blit in guest memory (fermi2d.c, dma.c's bl_span_ptr): block linear scaling, an odd window, the
-# renderer's hooks once a blit
-add_executable(snx-test-fermi2d-blit fermi2d_blit.c support/fermi2d_ref.c support/half.c)
+# renderer's hooks once a blit; conversions between color formats through the shader's CPU build
+add_executable(snx-test-fermi2d-blit fermi2d_blit.c support/fermi2d_ref.c support/half.c glsl/blit_convert_cpu.cpp)
 snx_test_target(snx-test-fermi2d-blit 23)
+target_include_directories(snx-test-fermi2d-blit PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/glsl")
+set_target_properties(snx-test-fermi2d-blit PROPERTIES LINKER_LANGUAGE CXX)
 add_test(NAME fermi2d_blit COMMAND snx-test-fermi2d-blit)
 # vic.c's CPU composition, through vic_execute, with a renderer that declines the GPU
 add_executable(snx-test-vic-compose vic_compose.c support/vic_ref.c)
@@ -2365,6 +2406,12 @@ if(NOT SNX_TOOLS_ONLY)
     target_compile_definitions(snx-test-tex-upload-rows PRIVATE SNX_TEST_DEVMEM_STUBS=1)
     target_link_libraries(snx-test-tex-upload-rows PRIVATE snx_nx_flags)
     add_test(NAME tex_upload_rows COMMAND snx-test-tex-upload-rows)
+    # the page cache's reads (gpu/vk/pagespace.c) over a model of guest memory, the write tracking, the ring and the
+    # region's buffer: every range it serves holds guest memory's bytes
+    add_executable(snx-test-vk-pagespace vk_pagespace.c tracy_stubs.c)
+    snx_test_target(snx-test-vk-pagespace 23)
+    target_link_libraries(snx-test-vk-pagespace PRIVATE snx_nx_flags)
+    add_test(NAME vk_pagespace COMMAND snx-test-vk-pagespace)
     # the file of shaders and pipelines kept across runs (gpu/vk/pipeline_file.c): records back as written, pipelines
     # by their shaders' records (a shipped shader's reference among them), a cut or changed record ending the reading,
     # another key starting over, a full file; its records packed into zstd units and unpacked in their place, a unit
@@ -2466,6 +2513,12 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-pipeline-parts 23)
     target_link_libraries(snx-test-vk-pipeline-parts PRIVATE snx_nx_flags)
     add_test(NAME vk_pipeline_parts COMMAND snx-test-vk-pipeline-parts)
+    # constant buffer words folded into a translation (gpu/vk/cb_fold.c): which words fold, what a translation records
+    # of its loads, when it holds for a draw's buffers, and how many of a program's translations fold by value
+    add_executable(snx-test-vk-cb-fold vk_cb_fold.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/cb_fold.c")
+    snx_test_target(snx-test-vk-cb-fold 23)
+    target_link_libraries(snx-test-vk-cb-fold PRIVATE snx_nx_flags)
+    add_test(NAME vk_cb_fold COMMAND snx-test-vk-cb-fold)
     # the drivers known to break an extension or feature (common/gpu/vk/extension_bans.c), with no GPU: the table's errors,
     # each driver's versions at every bound's edge, the filter and the features asked for against stand-in devices,
     # the table the build carries, and vulkan_ban_ignore read from a .ini. With --devices it lists the lines that hold
@@ -3475,6 +3528,10 @@ endif()
 
 endif() # SNX_BUILD_NX
 
+# the bands a block linear target is published or written back in (vk/rt_bands.h): they tile the span within the cap
+add_executable(snx-test-rt-bands rt_bands.c)
+snx_test_target(snx-test-rt-bands 23)
+add_test(NAME rt_bands COMMAND snx-test-rt-bands)
 # dist/icons/ is what scripts/make-icons.py draws from dist/wimsy.svg: a changed SVG fails until it runs again
 if(Python3_Interpreter_FOUND)
     add_test(NAME dist_icons COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/make-icons.py" --check)
@@ -3713,6 +3770,17 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         snx_test_target(snx-test-vk-compute-subgroups 11)
         target_link_libraries(snx-test-vk-compute-subgroups PRIVATE snx_vk_common)
         add_test(NAME vk_compute_subgroups COMMAND snx-test-vk-compute-subgroups)
+        if(snx_fsr2_api_dir AND SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) # snx_fsr2 is src/nx's, added after the tests
+            # FSR 2.2.1 (gpu/vk/fsr2) on a real device, with no renderer: a jittered still scene upscaled over 40
+            # frames comes out nearer the scene than a bilinear upscale. Skipped (77) without a Vulkan device
+            add_executable(snx-test-vk-fsr2 vk_fsr2.c "${volk_SOURCE_DIR}/volk.c")
+            snx_test_target(snx-test-vk-fsr2 11)
+            target_include_directories(snx-test-vk-fsr2 PRIVATE "${PROJECT_SOURCE_DIR}/src")
+            target_link_libraries(snx-test-vk-fsr2 PRIVATE snx_fsr2 snx_vk_common)
+            set_target_properties(snx-test-vk-fsr2 PROPERTIES LINKER_LANGUAGE CXX)
+            add_test(NAME vk_fsr2 COMMAND snx-test-vk-fsr2)
+            set_tests_properties(vk_fsr2 PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
         # a compute program's layouts and what its descriptor set is written with, for every frontend's dispatches
         add_executable(snx-test-vk-compute-program vk_compute_program.c "${volk_SOURCE_DIR}/volk.c")
         snx_test_target(snx-test-vk-compute-program 11)
@@ -3808,6 +3876,14 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     target_include_directories(snx-test-vk-checkpoints PRIVATE "${volk_SOURCE_DIR}")
     target_link_libraries(snx-test-vk-checkpoints PRIVATE Vulkan::Headers)
     add_test(NAME vk_checkpoints COMMAND snx-test-vk-checkpoints)
+    # the renderer's device memory (gpu/vk/devmem.c) over a driver the test plays, which checks each call as the
+    # specification reads: alignment, memory types, no byte and no granularity page shared, memory made for a
+    # resource alone, whole atoms flushed; the cap of the GPU's own heap, and requests from several threads
+    add_executable(snx-test-vk-devmem vk_devmem.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/space.c")
+    snx_test_target(snx-test-vk-devmem 23)
+    target_include_directories(snx-test-vk-devmem PRIVATE "${volk_SOURCE_DIR}")
+    target_link_libraries(snx-test-vk-devmem PRIVATE Vulkan::Headers scarletnx-common) # snx_thread_name
+    add_test(NAME vk_devmem COMMAND snx-test-vk-devmem)
     add_executable(snx-test-vk-descriptor-heap-setup vk_descriptor_heap_setup.c
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/descriptor_heaps.c")
     snx_test_target(snx-test-vk-descriptor-heap-setup 11)

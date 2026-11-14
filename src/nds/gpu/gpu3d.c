@@ -75,31 +75,40 @@ static void matrix_load4x3(int32_t* m, const int32_t* s)
     m[12] = s[9]; m[13] = s[10]; m[14] = s[11]; m[15] = 0x1000;
 }
 
+/* sum >> 12 of a row of 20.12 products, in the 32 bits an entry keeps. Each product fits int64_t; the sum of two or
+   more of a game's words near 2^31 does not, and an int64_t sum past its range is undefined, so it is added as
+   uint64_t, which wraps: bits 12 to 43 of either sum are the entry */
+static int32_t fx_sum(int64_t p0, int64_t p1, int64_t p2, int64_t p3) {
+    return (int32_t)(uint32_t)(((uint64_t)p0 + (uint64_t)p1 + (uint64_t)p2 + (uint64_t)p3) >> 12);
+}
+
 static void matrix_mult4x4(int32_t* m, const int32_t* s)
 {
     int32_t tmp[16];
     memcpy(tmp, m, 16*4);
 
     // m = s*m
-    m[0] = ((int64_t)s[0]*tmp[0] + (int64_t)s[1]*tmp[4] + (int64_t)s[2]*tmp[8] + (int64_t)s[3]*tmp[12]) >> 12;
-    m[1] = ((int64_t)s[0]*tmp[1] + (int64_t)s[1]*tmp[5] + (int64_t)s[2]*tmp[9] + (int64_t)s[3]*tmp[13]) >> 12;
-    m[2] = ((int64_t)s[0]*tmp[2] + (int64_t)s[1]*tmp[6] + (int64_t)s[2]*tmp[10] + (int64_t)s[3]*tmp[14]) >> 12;
-    m[3] = ((int64_t)s[0]*tmp[3] + (int64_t)s[1]*tmp[7] + (int64_t)s[2]*tmp[11] + (int64_t)s[3]*tmp[15]) >> 12;
+    m[0] = fx_sum((int64_t)s[0] * tmp[0], (int64_t)s[1] * tmp[4], (int64_t)s[2] * tmp[8], (int64_t)s[3] * tmp[12]);
+    m[1] = fx_sum((int64_t)s[0] * tmp[1], (int64_t)s[1] * tmp[5], (int64_t)s[2] * tmp[9], (int64_t)s[3] * tmp[13]);
+    m[2] = fx_sum((int64_t)s[0] * tmp[2], (int64_t)s[1] * tmp[6], (int64_t)s[2] * tmp[10], (int64_t)s[3] * tmp[14]);
+    m[3] = fx_sum((int64_t)s[0] * tmp[3], (int64_t)s[1] * tmp[7], (int64_t)s[2] * tmp[11], (int64_t)s[3] * tmp[15]);
 
-    m[4] = ((int64_t)s[4]*tmp[0] + (int64_t)s[5]*tmp[4] + (int64_t)s[6]*tmp[8] + (int64_t)s[7]*tmp[12]) >> 12;
-    m[5] = ((int64_t)s[4]*tmp[1] + (int64_t)s[5]*tmp[5] + (int64_t)s[6]*tmp[9] + (int64_t)s[7]*tmp[13]) >> 12;
-    m[6] = ((int64_t)s[4]*tmp[2] + (int64_t)s[5]*tmp[6] + (int64_t)s[6]*tmp[10] + (int64_t)s[7]*tmp[14]) >> 12;
-    m[7] = ((int64_t)s[4]*tmp[3] + (int64_t)s[5]*tmp[7] + (int64_t)s[6]*tmp[11] + (int64_t)s[7]*tmp[15]) >> 12;
+    m[4] = fx_sum((int64_t)s[4] * tmp[0], (int64_t)s[5] * tmp[4], (int64_t)s[6] * tmp[8], (int64_t)s[7] * tmp[12]);
+    m[5] = fx_sum((int64_t)s[4] * tmp[1], (int64_t)s[5] * tmp[5], (int64_t)s[6] * tmp[9], (int64_t)s[7] * tmp[13]);
+    m[6] = fx_sum((int64_t)s[4] * tmp[2], (int64_t)s[5] * tmp[6], (int64_t)s[6] * tmp[10], (int64_t)s[7] * tmp[14]);
+    m[7] = fx_sum((int64_t)s[4] * tmp[3], (int64_t)s[5] * tmp[7], (int64_t)s[6] * tmp[11], (int64_t)s[7] * tmp[15]);
 
-    m[8] = ((int64_t)s[8]*tmp[0] + (int64_t)s[9]*tmp[4] + (int64_t)s[10]*tmp[8] + (int64_t)s[11]*tmp[12]) >> 12;
-    m[9] = ((int64_t)s[8]*tmp[1] + (int64_t)s[9]*tmp[5] + (int64_t)s[10]*tmp[9] + (int64_t)s[11]*tmp[13]) >> 12;
-    m[10] = ((int64_t)s[8]*tmp[2] + (int64_t)s[9]*tmp[6] + (int64_t)s[10]*tmp[10] + (int64_t)s[11]*tmp[14]) >> 12;
-    m[11] = ((int64_t)s[8]*tmp[3] + (int64_t)s[9]*tmp[7] + (int64_t)s[10]*tmp[11] + (int64_t)s[11]*tmp[15]) >> 12;
+    m[8] = fx_sum((int64_t)s[8] * tmp[0], (int64_t)s[9] * tmp[4], (int64_t)s[10] * tmp[8], (int64_t)s[11] * tmp[12]);
+    m[9] = fx_sum((int64_t)s[8] * tmp[1], (int64_t)s[9] * tmp[5], (int64_t)s[10] * tmp[9], (int64_t)s[11] * tmp[13]);
+    m[10] = fx_sum((int64_t)s[8] * tmp[2], (int64_t)s[9] * tmp[6], (int64_t)s[10] * tmp[10], (int64_t)s[11] * tmp[14]);
+    m[11] = fx_sum((int64_t)s[8] * tmp[3], (int64_t)s[9] * tmp[7], (int64_t)s[10] * tmp[11], (int64_t)s[11] * tmp[15]);
 
-    m[12] = ((int64_t)s[12]*tmp[0] + (int64_t)s[13]*tmp[4] + (int64_t)s[14]*tmp[8] + (int64_t)s[15]*tmp[12]) >> 12;
-    m[13] = ((int64_t)s[12]*tmp[1] + (int64_t)s[13]*tmp[5] + (int64_t)s[14]*tmp[9] + (int64_t)s[15]*tmp[13]) >> 12;
-    m[14] = ((int64_t)s[12]*tmp[2] + (int64_t)s[13]*tmp[6] + (int64_t)s[14]*tmp[10] + (int64_t)s[15]*tmp[14]) >> 12;
-    m[15] = ((int64_t)s[12]*tmp[3] + (int64_t)s[13]*tmp[7] + (int64_t)s[14]*tmp[11] + (int64_t)s[15]*tmp[15]) >> 12;
+    m[12] = fx_sum((int64_t)s[12] * tmp[0], (int64_t)s[13] * tmp[4], (int64_t)s[14] * tmp[8], (int64_t)s[15] * tmp[12]);
+    m[13] = fx_sum((int64_t)s[12] * tmp[1], (int64_t)s[13] * tmp[5], (int64_t)s[14] * tmp[9], (int64_t)s[15] * tmp[13]);
+    m[14] =
+        fx_sum((int64_t)s[12] * tmp[2], (int64_t)s[13] * tmp[6], (int64_t)s[14] * tmp[10], (int64_t)s[15] * tmp[14]);
+    m[15] =
+        fx_sum((int64_t)s[12] * tmp[3], (int64_t)s[13] * tmp[7], (int64_t)s[14] * tmp[11], (int64_t)s[15] * tmp[15]);
 }
 
 static void matrix_mult4x3(int32_t* m, const int32_t* s)
@@ -108,25 +117,27 @@ static void matrix_mult4x3(int32_t* m, const int32_t* s)
     memcpy(tmp, m, 16*4);
 
     // m = s*m
-    m[0] = ((int64_t)s[0]*tmp[0] + (int64_t)s[1]*tmp[4] + (int64_t)s[2]*tmp[8]) >> 12;
-    m[1] = ((int64_t)s[0]*tmp[1] + (int64_t)s[1]*tmp[5] + (int64_t)s[2]*tmp[9]) >> 12;
-    m[2] = ((int64_t)s[0]*tmp[2] + (int64_t)s[1]*tmp[6] + (int64_t)s[2]*tmp[10]) >> 12;
-    m[3] = ((int64_t)s[0]*tmp[3] + (int64_t)s[1]*tmp[7] + (int64_t)s[2]*tmp[11]) >> 12;
+    m[0] = fx_sum((int64_t)s[0] * tmp[0], (int64_t)s[1] * tmp[4], (int64_t)s[2] * tmp[8], 0);
+    m[1] = fx_sum((int64_t)s[0] * tmp[1], (int64_t)s[1] * tmp[5], (int64_t)s[2] * tmp[9], 0);
+    m[2] = fx_sum((int64_t)s[0] * tmp[2], (int64_t)s[1] * tmp[6], (int64_t)s[2] * tmp[10], 0);
+    m[3] = fx_sum((int64_t)s[0] * tmp[3], (int64_t)s[1] * tmp[7], (int64_t)s[2] * tmp[11], 0);
 
-    m[4] = ((int64_t)s[3]*tmp[0] + (int64_t)s[4]*tmp[4] + (int64_t)s[5]*tmp[8]) >> 12;
-    m[5] = ((int64_t)s[3]*tmp[1] + (int64_t)s[4]*tmp[5] + (int64_t)s[5]*tmp[9]) >> 12;
-    m[6] = ((int64_t)s[3]*tmp[2] + (int64_t)s[4]*tmp[6] + (int64_t)s[5]*tmp[10]) >> 12;
-    m[7] = ((int64_t)s[3]*tmp[3] + (int64_t)s[4]*tmp[7] + (int64_t)s[5]*tmp[11]) >> 12;
+    m[4] = fx_sum((int64_t)s[3] * tmp[0], (int64_t)s[4] * tmp[4], (int64_t)s[5] * tmp[8], 0);
+    m[5] = fx_sum((int64_t)s[3] * tmp[1], (int64_t)s[4] * tmp[5], (int64_t)s[5] * tmp[9], 0);
+    m[6] = fx_sum((int64_t)s[3] * tmp[2], (int64_t)s[4] * tmp[6], (int64_t)s[5] * tmp[10], 0);
+    m[7] = fx_sum((int64_t)s[3] * tmp[3], (int64_t)s[4] * tmp[7], (int64_t)s[5] * tmp[11], 0);
 
-    m[8] = ((int64_t)s[6]*tmp[0] + (int64_t)s[7]*tmp[4] + (int64_t)s[8]*tmp[8]) >> 12;
-    m[9] = ((int64_t)s[6]*tmp[1] + (int64_t)s[7]*tmp[5] + (int64_t)s[8]*tmp[9]) >> 12;
-    m[10] = ((int64_t)s[6]*tmp[2] + (int64_t)s[7]*tmp[6] + (int64_t)s[8]*tmp[10]) >> 12;
-    m[11] = ((int64_t)s[6]*tmp[3] + (int64_t)s[7]*tmp[7] + (int64_t)s[8]*tmp[11]) >> 12;
+    m[8] = fx_sum((int64_t)s[6] * tmp[0], (int64_t)s[7] * tmp[4], (int64_t)s[8] * tmp[8], 0);
+    m[9] = fx_sum((int64_t)s[6] * tmp[1], (int64_t)s[7] * tmp[5], (int64_t)s[8] * tmp[9], 0);
+    m[10] = fx_sum((int64_t)s[6] * tmp[2], (int64_t)s[7] * tmp[6], (int64_t)s[8] * tmp[10], 0);
+    m[11] = fx_sum((int64_t)s[6] * tmp[3], (int64_t)s[7] * tmp[7], (int64_t)s[8] * tmp[11], 0);
 
-    m[12] = ((int64_t)s[9]*tmp[0] + (int64_t)s[10]*tmp[4] + (int64_t)s[11]*tmp[8] + (int64_t)0x1000*tmp[12]) >> 12;
-    m[13] = ((int64_t)s[9]*tmp[1] + (int64_t)s[10]*tmp[5] + (int64_t)s[11]*tmp[9] + (int64_t)0x1000*tmp[13]) >> 12;
-    m[14] = ((int64_t)s[9]*tmp[2] + (int64_t)s[10]*tmp[6] + (int64_t)s[11]*tmp[10] + (int64_t)0x1000*tmp[14]) >> 12;
-    m[15] = ((int64_t)s[9]*tmp[3] + (int64_t)s[10]*tmp[7] + (int64_t)s[11]*tmp[11] + (int64_t)0x1000*tmp[15]) >> 12;
+    m[12] = fx_sum((int64_t)s[9] * tmp[0], (int64_t)s[10] * tmp[4], (int64_t)s[11] * tmp[8], (int64_t)0x1000 * tmp[12]);
+    m[13] = fx_sum((int64_t)s[9] * tmp[1], (int64_t)s[10] * tmp[5], (int64_t)s[11] * tmp[9], (int64_t)0x1000 * tmp[13]);
+    m[14] =
+        fx_sum((int64_t)s[9] * tmp[2], (int64_t)s[10] * tmp[6], (int64_t)s[11] * tmp[10], (int64_t)0x1000 * tmp[14]);
+    m[15] =
+        fx_sum((int64_t)s[9] * tmp[3], (int64_t)s[10] * tmp[7], (int64_t)s[11] * tmp[11], (int64_t)0x1000 * tmp[15]);
 }
 
 static void matrix_mult3x3(int32_t* m, const int32_t* s)
@@ -135,20 +146,20 @@ static void matrix_mult3x3(int32_t* m, const int32_t* s)
     memcpy(tmp, m, 12*4);
 
     // m = s*m
-    m[0] = ((int64_t)s[0]*tmp[0] + (int64_t)s[1]*tmp[4] + (int64_t)s[2]*tmp[8]) >> 12;
-    m[1] = ((int64_t)s[0]*tmp[1] + (int64_t)s[1]*tmp[5] + (int64_t)s[2]*tmp[9]) >> 12;
-    m[2] = ((int64_t)s[0]*tmp[2] + (int64_t)s[1]*tmp[6] + (int64_t)s[2]*tmp[10]) >> 12;
-    m[3] = ((int64_t)s[0]*tmp[3] + (int64_t)s[1]*tmp[7] + (int64_t)s[2]*tmp[11]) >> 12;
+    m[0] = fx_sum((int64_t)s[0] * tmp[0], (int64_t)s[1] * tmp[4], (int64_t)s[2] * tmp[8], 0);
+    m[1] = fx_sum((int64_t)s[0] * tmp[1], (int64_t)s[1] * tmp[5], (int64_t)s[2] * tmp[9], 0);
+    m[2] = fx_sum((int64_t)s[0] * tmp[2], (int64_t)s[1] * tmp[6], (int64_t)s[2] * tmp[10], 0);
+    m[3] = fx_sum((int64_t)s[0] * tmp[3], (int64_t)s[1] * tmp[7], (int64_t)s[2] * tmp[11], 0);
 
-    m[4] = ((int64_t)s[3]*tmp[0] + (int64_t)s[4]*tmp[4] + (int64_t)s[5]*tmp[8]) >> 12;
-    m[5] = ((int64_t)s[3]*tmp[1] + (int64_t)s[4]*tmp[5] + (int64_t)s[5]*tmp[9]) >> 12;
-    m[6] = ((int64_t)s[3]*tmp[2] + (int64_t)s[4]*tmp[6] + (int64_t)s[5]*tmp[10]) >> 12;
-    m[7] = ((int64_t)s[3]*tmp[3] + (int64_t)s[4]*tmp[7] + (int64_t)s[5]*tmp[11]) >> 12;
+    m[4] = fx_sum((int64_t)s[3] * tmp[0], (int64_t)s[4] * tmp[4], (int64_t)s[5] * tmp[8], 0);
+    m[5] = fx_sum((int64_t)s[3] * tmp[1], (int64_t)s[4] * tmp[5], (int64_t)s[5] * tmp[9], 0);
+    m[6] = fx_sum((int64_t)s[3] * tmp[2], (int64_t)s[4] * tmp[6], (int64_t)s[5] * tmp[10], 0);
+    m[7] = fx_sum((int64_t)s[3] * tmp[3], (int64_t)s[4] * tmp[7], (int64_t)s[5] * tmp[11], 0);
 
-    m[8] = ((int64_t)s[6]*tmp[0] + (int64_t)s[7]*tmp[4] + (int64_t)s[8]*tmp[8]) >> 12;
-    m[9] = ((int64_t)s[6]*tmp[1] + (int64_t)s[7]*tmp[5] + (int64_t)s[8]*tmp[9]) >> 12;
-    m[10] = ((int64_t)s[6]*tmp[2] + (int64_t)s[7]*tmp[6] + (int64_t)s[8]*tmp[10]) >> 12;
-    m[11] = ((int64_t)s[6]*tmp[3] + (int64_t)s[7]*tmp[7] + (int64_t)s[8]*tmp[11]) >> 12;
+    m[8] = fx_sum((int64_t)s[6] * tmp[0], (int64_t)s[7] * tmp[4], (int64_t)s[8] * tmp[8], 0);
+    m[9] = fx_sum((int64_t)s[6] * tmp[1], (int64_t)s[7] * tmp[5], (int64_t)s[8] * tmp[9], 0);
+    m[10] = fx_sum((int64_t)s[6] * tmp[2], (int64_t)s[7] * tmp[6], (int64_t)s[8] * tmp[10], 0);
+    m[11] = fx_sum((int64_t)s[6] * tmp[3], (int64_t)s[7] * tmp[7], (int64_t)s[8] * tmp[11], 0);
 }
 
 static void matrix_scale(int32_t* m, const int32_t* s)
@@ -171,10 +182,14 @@ static void matrix_scale(int32_t* m, const int32_t* s)
 
 static void matrix_translate(int32_t* m, const int32_t* s)
 {
-    m[12] += ((int64_t)s[0]*m[0] + (int64_t)s[1]*m[4] + (int64_t)s[2]*m[8]) >> 12;
-    m[13] += ((int64_t)s[0]*m[1] + (int64_t)s[1]*m[5] + (int64_t)s[2]*m[9]) >> 12;
-    m[14] += ((int64_t)s[0]*m[2] + (int64_t)s[1]*m[6] + (int64_t)s[2]*m[10]) >> 12;
-    m[15] += ((int64_t)s[0]*m[3] + (int64_t)s[1]*m[7] + (int64_t)s[2]*m[11]) >> 12;
+    m[12] = (int32_t)((uint32_t)m[12] +
+                      (uint32_t)fx_sum((int64_t)s[0] * m[0], (int64_t)s[1] * m[4], (int64_t)s[2] * m[8], 0));
+    m[13] = (int32_t)((uint32_t)m[13] +
+                      (uint32_t)fx_sum((int64_t)s[0] * m[1], (int64_t)s[1] * m[5], (int64_t)s[2] * m[9], 0));
+    m[14] = (int32_t)((uint32_t)m[14] +
+                      (uint32_t)fx_sum((int64_t)s[0] * m[2], (int64_t)s[1] * m[6], (int64_t)s[2] * m[10], 0));
+    m[15] = (int32_t)((uint32_t)m[15] +
+                      (uint32_t)fx_sum((int64_t)s[0] * m[3], (int64_t)s[1] * m[7], (int64_t)s[2] * m[11], 0));
 }
 
 static void update_clip_matrix(NdsGpu3D* g)

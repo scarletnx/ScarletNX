@@ -317,24 +317,40 @@ int main(void) {
         }
     }
     {
-        /* a BIOS call takes its entry and return, 45 cycles, and the memory it streams through: CpuSet of 64 words from
-           EWRAM to EWRAM, 64 reads and writes of 6 cycles, holds the CPU 813 cycles before the add after it runs */
-        agb_write32(&board, 0x03000900, 0xEF0B0000); /* swi 0x0B0000: CpuSet */
-        agb_write32(&board, 0x03000904, 0xE2855001); /* add r5, r5, #1 */
-        agb_write32(&board, 0x03000908, 0xEAFFFFFD); /* b 0x03000904 */
-        cpu.arm.r[0] = 0x02001000;
-        cpu.arm.r[1] = 0x02002000;
-        cpu.arm.r[2] = 64 | 1u << 26;
-        cpu.arm.r[5] = 0;
+        /* a BIOS call takes the console's time, its code's as mGBA's HLE BIOS runs it: CpuFastSet of 256 words from
+           EWRAM to EWRAM, called from IWRAM between a timer's start and its read, reads 3397, as mGBA's suite measures
+           the console (timing.c, "CpuSet", ARM/IWRAM) */
+        static const uint32_t code[] = {
+            0xE59F0030, /* ldr r0, [pc, #48]: TM0CNT_L */
+            0xE59F1030, /* ldr r1, [pc, #48]: on, a prescaler of 1 */
+            0xE5801000, /* str r1, [r0] */
+            0xE1A04000, /* mov r4, r0 */
+            0xE1A05001, /* mov r5, r1 */
+            0xE3A00402, /* mov r0, #0x02000000 */
+            0xE3A01402, /* mov r1, #0x02000000 */
+            0xE3A02C01, /* mov r2, #0x100 */
+            0xEF0C0000, /* swi 0x0C0000: CpuFastSet */
+            0xE1A00004, /* mov r0, r4 */
+            0xE1A01005, /* mov r1, r5 */
+            0xE1D020B0, /* ldrh r2, [r0] */
+            0xE1C010B2, /* strh r1, [r0, #2]: off */
+            0xEAFFFFFE, /* b . */
+            0x04000100, 0x00800000,
+        };
+        for (uint32_t i = 0; i < sizeof code / sizeof code[0]; ++i) agb_write32(&board, 0x03000900 + i * 4, code[i]);
+        cpu.arm.r[2] = 0;
         cpu.arm.r[15] = 0x03000900;
         cpu.arm.cpsr = 0x9F;
         cpu.over = 0;
         board.cpu_halted = 0;
         board.held_cycles = 0;
-        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 800, audio, AGB_APU_RATE, NULL, error, sizeof error));
-        CHECK(cpu.arm.r[5] == 0);
-        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 100, audio, AGB_APU_RATE, NULL, error, sizeof error));
-        CHECK(cpu.arm.r[5] > 0);
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 4000, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        if (cpu.arm.r[2] != 3397) {
+            fprintf(stderr,
+                    "agb_cpu: CpuFastSet of 256 words took %u cycles from the timer's start to its read, not 3397\n",
+                    cpu.arm.r[2]);
+            goto done;
+        }
     }
     {
         /* the cartridge's ROM takes no writes: a word, a halfword, a byte and an STM into the literal pool at 0xF0 leave
@@ -431,31 +447,38 @@ int main(void) {
         }
     }
     {
-        /* a DMA started by a store holds the bus before the next instruction runs, inside a block too: the block ends
-           after the store, so the VCOUNT read after it sees the line the copy ended on, 0x2000 words from EWRAM to
-           EWRAM, 12 cycles each and 2: 98306 cycles, 79 or 80 lines past the one read before it */
+        /* a DMA started by a store takes the bus 2 cycles after it, at the CPU's first access from then on, inside a
+           block too: an ldrh of VCOUNT right after the store reads it before the DMA (its fetch and its access start
+           0 and 1 cycles on, as mGBA's suite finds on the console), and the next one after it, the line the copy
+           ended on, 0x2000 words from EWRAM to EWRAM, 12 cycles each and 2: 98306 cycles, 79 or 80 lines on */
         static const uint32_t code[] = {
-            0xE59F0020, /* ldr r0, [pc, #32]: DMA3SAD */
-            0xE59F1020, /* ldr r1, [pc, #32]: the source */
+            0xE59F0024, /* ldr r0, [pc, #36]: DMA3SAD */
+            0xE59F1024, /* ldr r1, [pc, #36]: the source */
             0xE5801000, /* str r1, [r0] */
-            0xE59F101C, /* ldr r1, [pc, #28]: the destination */
+            0xE59F1020, /* ldr r1, [pc, #32]: the destination */
             0xE5801004, /* str r1, [r0, #4] */
             0xE1504CBE, /* ldrh r4, [r0, #-0xCE]: VCOUNT */
-            0xE59F1014, /* ldr r1, [pc, #20]: on, now, words, 0x2000 of them */
+            0xE59F1018, /* ldr r1, [pc, #24]: on, now, words, 0x2000 of them */
             0xE5801008, /* str r1, [r0, #8] */
-            0xE1505CBE, /* ldrh r5, [r0, #-0xCE]: VCOUNT */
+            0xE1506CBE, /* ldrh r6, [r0, #-0xCE]: VCOUNT, before the DMA */
+            0xE1505CBE, /* ldrh r5, [r0, #-0xCE]: VCOUNT, after it */
             0xEAFFFFFE, /* b . */
             0x040000D4, 0x02010000, 0x02020000, 0x84002000,
         };
         for (uint32_t i = 0; i < sizeof code / sizeof code[0]; ++i) agb_write32(&board, 0x03000D00 + i * 4, code[i]);
         agb_write32(&board, 0x02017FFC, 0x5A5AA5A5); /* the last word copied */
-        cpu.arm.r[4] = cpu.arm.r[5] = 0xFFFF;
+        cpu.arm.r[4] = cpu.arm.r[5] = cpu.arm.r[6] = 0xFFFF;
         cpu.arm.r[15] = 0x03000D00;
         cpu.arm.cpsr = 0x9F;
         cpu.over = 0;
         board.cpu_halted = 0;
         board.held_cycles = 0;
         CHECK(!agb_cpu_run(&board, &cpu, &recomp, 120000, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        if ((cpu.arm.r[6] + AGB_FRAME_LINES - cpu.arm.r[4]) % AGB_FRAME_LINES > 1) {
+            fprintf(stderr, "agb_cpu: VCOUNT %u before a DMA's start and %u right after it, not the same line\n",
+                    cpu.arm.r[4], cpu.arm.r[6]);
+            goto done;
+        }
         CHECK(agb_read32(&board, 0x02027FFC) == 0x5A5AA5A5);
         if ((cpu.arm.r[5] + AGB_FRAME_LINES - cpu.arm.r[4]) % AGB_FRAME_LINES < 79 ||
             (cpu.arm.r[5] + AGB_FRAME_LINES - cpu.arm.r[4]) % AGB_FRAME_LINES > 80) {
@@ -483,12 +506,14 @@ int main(void) {
         }
     }
     {
-        /* the time an instruction takes on the cartridge, as mGBA counts it, with WAITCNT 0x4317 (the first access
-           of a halfword 4 cycles, the next ones 2) or 0x0317, the same without the prefetch buffer: each instruction
-           its fetch, 2, the prefetch buffer or not; a branch taken 6 more, refilling the pipeline (4 + 2), one not taken
-           none; a load or store 1 + its wait states, a load 1 more, and the fetch after it non-sequential, 2 more, or,
-           with the prefetch buffer and the data not on the cartridge, up to 9 cycles hidden while it fetches ahead.
-           Each loop runs 50 turns in 50 times its cycles */
+        /* the time an instruction takes on the cartridge, with WAITCNT 0x4317 (the first access of a halfword 4
+           cycles, the next ones 2) or 0x0317, the same without the prefetch unit: each instruction its fetch, 2; a
+           branch taken refills the pipeline, 4 + 2; a load or store 1 + its wait states, a load 1 more, and the fetch
+           after it non-sequential. With the prefetch unit the cartridge reads on while the CPU works elsewhere, and an
+           opcode it holds costs 1: a load from IWRAM hides its fetches, one from EWRAM (6 cycles) lets the unit run
+           3 halfwords ahead, and the refill stops it as it ends a read, 1 more. As mGBA's suite measures the console (its
+           timing.c), NanoBoyAdvance's model (agb/cpu/timing.c). Each loop runs 50 turns in 50 times its cycles */
+        int loops_wrong = 0;
         static const struct {
             uint32_t pc, waitcnt, r2, cycles;
         } loop[] = {
@@ -496,34 +521,80 @@ int main(void) {
             {0x08000200, 0x0317, 0, 2 + 2 + 6},              /* the same: the buffer saves no fetch of its own */
             {0x08000210, 0x4317, 0x03000000, 6 + 6 + 0},     /* ldr from IWRAM: 1 + 1 hidden */
             {0x08000210, 0x0317, 0x03000000, 6 + 6 + 2 + 2}, /* ldr from IWRAM: 1 + 1, then a non-sequential fetch */
-            {0x08000210, 0x4317, 0x02000000, 6 + 6 + 0},     /* ldr from EWRAM: 6 + 1 hidden */
+            {0x08000210, 0x4317, 0x02000000, 7 + 9 + 1 + 1}, /* refill 1 + 4 + 2, ldr 2 + 6 + 1, two held */
             {0x08000210, 0x0317, 0x02000000, 6 + 6 + 7 + 2}, /* ldr from EWRAM: 6 + 1 */
             {0x08000210, 0x4317, 0x08000000, 6 + 6 + 7 + 2}, /* ldr from the cartridge: 6 + 1, nothing hidden */
             {0x08000220, 0x4317, 0, 2 + 2 + 2 + 6},          /* adds, beq not taken, then b on its own */
-            {0x08000230, 0x4317, 0, 8 + 6 + 0 + 0},          /* push and pop of 4 words on IWRAM, hidden */
+            {0x08000230, 0x4317, 0, 6 + 6 + 6 + 1 + 1},      /* refill, push 2 + 4, pop 1 + 4 + 1, two held */
             {0x08000230, 0x0317, 0, 8 + 6 + 6 + 7},          /* push 4 + 2, pop 4 + 1 + 2 */
         };
         for (size_t i = 0; i < sizeof loop / sizeof loop[0]; ++i) {
             agb_write16(&board, 0x04000204, (uint16_t)loop[i].waitcnt);
-            cpu.arm.r[0] = 0;
             cpu.arm.r[2] = loop[i].r2;
             cpu.arm.r[13] = 0x03007E00;
             cpu.arm.r[15] = loop[i].pc;
             cpu.arm.cpsr = 0x9F | SNX_ARM_T;
-            cpu.over = 0;
             board.cpu_halted = 0;
             board.held_cycles = 0;
+            /* four turns first, which leave the bus as each turn's branch back does, the prefetch unit's opcodes
+               from the loop before taken */
+            for (int warm = 0; warm < 4; ++warm)
+                CHECK(!agb_cpu_run(&board, &cpu, &recomp, 1, audio, AGB_APU_RATE, NULL, error, sizeof error));
+            cpu.arm.r[0] = 0;
+            cpu.over = 0;
             CHECK(!agb_cpu_run(&board, &cpu, &recomp, 50 * loop[i].cycles, audio, AGB_APU_RATE, NULL, error,
                                sizeof error));
-            if (cpu.arm.r[0] != 50 || cpu.over)
+            if (cpu.arm.r[0] != 50 || cpu.over) {
                 fprintf(stderr,
                         "agb_cpu: the loop at 0x%08X with WAITCNT 0x%04X, r2 0x%08X: %u turns in %u cycles, "
                         "%u over, not 50 of %u\n",
                         loop[i].pc, loop[i].waitcnt, loop[i].r2, cpu.arm.r[0], 50 * loop[i].cycles, cpu.over,
                         loop[i].cycles);
-            CHECK(cpu.arm.r[0] == 50 && !cpu.over);
+                ++loops_wrong;
+            }
         }
+        CHECK(!loops_wrong);
         agb_write16(&board, 0x04000204, 0);
+    }
+    {
+        /* a timer read inside a block counts the instructions before it in that block, as the console's does: started
+           by a store and read four instructions of a cycle each later in IWRAM, it has counted 4 (the store reaches it
+           a cycle after its write, and it counts from the cycle after that), then 10 more: the first ldrh's internal
+           cycle, a multiply by 0x12345 (its fetch and three cycles of its multiplier), an ldr from IWRAM (fetch, data,
+           internal cycle) and the second ldrh's fetch and access */
+        static const uint32_t code[] = {
+            0xE5801000, /* str r1, [r0]: TM0CNT_L and _H, on at a prescaler of 1 */
+            0xE1A00000, /* mov r0, r0 */
+            0xE1A00000, /* mov r0, r0 */
+            0xE1A00000, /* mov r0, r0 */
+            0xE1A00000, /* mov r0, r0 */
+            0xE1D020B0, /* ldrh r2, [r0] */
+            0xE0050594, /* mul r5, r4, r5 */
+            0xE5976000, /* ldr r6, [r7] */
+            0xE1D030B0, /* ldrh r3, [r0] */
+            0xE1C080B2, /* strh r8, [r0, #2]: off */
+            0xEAFFFFFE, /* b . */
+        };
+        for (uint32_t i = 0; i < sizeof code / sizeof code[0]; ++i) agb_write32(&board, 0x03004000 + i * 4, code[i]);
+        cpu.arm.r[0] = 0x04000100;
+        cpu.arm.r[1] = 0x00800000;
+        cpu.arm.r[4] = 3;
+        cpu.arm.r[5] = 0x12345;
+        cpu.arm.r[7] = 0x03004000;
+        cpu.arm.r[8] = 0;
+        cpu.arm.r[15] = 0x03004000;
+        cpu.arm.cpsr = 0x9F;
+        cpu.over = 0;
+        board.cpu_halted = 0;
+        board.held_cycles = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 64, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        if (cpu.arm.r[2] != 4 || cpu.arm.r[3] != 4 + 10) {
+            fprintf(stderr,
+                    "agb_cpu: a timer started in a block reads %u four instructions on, not 4, and %u after a "
+                    "multiply and a load, not 14\n",
+                    cpu.arm.r[2], cpu.arm.r[3]);
+            return 1;
+        }
     }
     /* the instructions after the interpreted ones start blocks the discovery step did not see: they were compiled as
        the run reached them, and saving the run keeps them, in the map as hints (the module as it was, at once) */
@@ -858,6 +929,128 @@ int main(void) {
                     (unsigned long long)compared[1], (unsigned long long)compared[0], AGB_LOOKUP_COMPARES);
             goto done;
         }
+    }
+    {
+        /* an interrupt is taken at the instruction the line rises in, not where the block would end: a timer started
+           at 0xFFF0 by a store counts from 2 cycles after it and overflows 16 later, the line rises 3 after that, and
+           the handler, entered after the 21st add of a cycle each, stores the adds it saw at 0x02000340, stops the timer
+           and acknowledges it */
+        static const uint32_t handler[] = {
+            0xE5865000, /* str r5, [r6] */
+            0xE3A01000, /* mov r1, #0 */
+            0xE2802C01, /* add r2, r0, #0x100 */
+            0xE1C210B2, /* strh r1, [r2, #2]: TM0CNT_H, off */
+            0xE3A01008, /* mov r1, #8 */
+            0xE2802C02, /* add r2, r0, #0x200 */
+            0xE1C210B2, /* strh r1, [r2, #2]: IF, timer 0 acknowledged */
+            0xE12FFF1E, /* bx lr */
+        };
+        for (uint32_t i = 0; i < sizeof handler / sizeof handler[0]; ++i)
+            agb_write32(&board, 0x03004200 + i * 4, handler[i]);
+        agb_write32(&board, 0x03004100, 0xE5801000);                                            /* str r1, [r0] */
+        for (uint32_t i = 1; i <= 40; ++i) agb_write32(&board, 0x03004100 + i * 4, 0xE2855001); /* add r5, r5, #1 */
+        agb_write32(&board, 0x03004100 + 41 * 4, 0xEAFFFFFE);                                   /* b . */
+        agb_write32(&board, 0x03007FFC, 0x03004200);
+        agb_write16(&board, 0x04000004, 0);      /* no display interrupt */
+        agb_write16(&board, 0x04000200, 0x0008); /* IE: timer 0 */
+        agb_write16(&board, 0x04000208, 0x0001);
+        board.irq_if = 0;
+        board.cpu_halted = 0;
+        board.held_cycles = 0;
+        agb_write32(&board, 0x02000340, 0xFFFFFFFF);
+        cpu.arm.r[0] = 0x04000100;
+        cpu.arm.r[1] = 0x00C0FFF0; /* reload 0xFFF0, on, its interrupt on */
+        cpu.arm.r[5] = 0;
+        cpu.arm.r[6] = 0x02000340;
+        cpu.arm.r[13] = 0x03007E00;
+        cpu.arm.r[15] = 0x03004100;
+        cpu.arm.cpsr = 0x1F;
+        cpu.over = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 400, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        if (agb_read32(&board, 0x02000340) != 21) {
+            fprintf(stderr, "agb_cpu: the timer's interrupt came after %u adds, not 21\n",
+                    agb_read32(&board, 0x02000340));
+            return 1;
+        }
+        agb_write16(&board, 0x04000208, 0);
+        agb_write16(&board, 0x04000200, 0);
+    }
+    {
+        /* a CPU woken in IntrWait takes the interrupt that woke it as one woken in Halt does, before IntrWait looks at
+           its flags: a handler that reads timer 0 sees the vertical blank after VBlankIntrWait and the next one after
+           Halt a frame apart, 280896 cycles (18752 in the timer's 16 bits); the caller reads it too, once
+           VBlankIntrWait returned */
+        static const uint32_t main_code[] = {
+            0xEF050000, /* swi 0x050000: VBlankIntrWait */
+            0xE59F1010, /* ldr r1, [pc, #16]: TM0CNT_L */
+            0xE1D120B0, /* ldrh r2, [r1] */
+            0xE59F300C, /* ldr r3, [pc, #12]: 0x02000360 */
+            0xE1C320B0, /* strh r2, [r3] */
+            0xEF020000, /* swi 0x020000: Halt */
+            0xEAFFFFFE, /* b . */
+            0x04000100, 0x02000360,
+        };
+        static const uint32_t handler[] = {
+            0xE2801C01, /* add r1, r0, #0x100 */
+            0xE1D120B0, /* ldrh r2, [r1]: TM0CNT_L */
+            0xE59F302C, /* ldr r3, [pc, #44]: 0x02000350, the count of reads */
+            0xE593C000, /* ldr r12, [r3] */
+            0xE28CC001, /* add r12, r12, #1 */
+            0xE583C000, /* str r12, [r3] */
+            0xE783210C, /* str r2, [r3, r12, lsl #2] */
+            0xE3A01001, /* mov r1, #1 */
+            0xE280CC02, /* add r12, r0, #0x200 */
+            0xE1CC10B2, /* strh r1, [r12, #2]: IF, the blank acknowledged */
+            0xE59F3010, /* ldr r3, [pc, #16]: the BIOS's flags */
+            0xE1D3C0B0, /* ldrh r12, [r3] */
+            0xE38CC001, /* orr r12, r12, #1 */
+            0xE1C3C0B0, /* strh r12, [r3]: the blank IntrWait waits for */
+            0xE12FFF1E, /* bx lr */
+            0x02000350, 0x03007FF8,
+        };
+        uint32_t written = 0;
+        for (uint32_t i = 0; i < sizeof main_code / sizeof main_code[0]; ++i)
+            agb_write32(&board, 0x03004400 + i * 4, main_code[i]);
+        for (uint32_t i = 0; i < sizeof handler / sizeof handler[0]; ++i)
+            agb_write32(&board, 0x03004480 + i * 4, handler[i]);
+        agb_write32(&board, 0x02000350, 0);
+        agb_write32(&board, 0x03007FFC, 0x03004480);
+        agb_write16(&board, 0x03007FF8, 0);
+        agb_write32(&board, 0x04000100, 0x00800000); /* timer 0 on from 0 at a prescaler of 1 */
+        agb_write16(&board, 0x04000004, 0x0008);     /* the vertical blank's interrupt */
+        agb_write16(&board, 0x04000200, 0x0001);
+        agb_write16(&board, 0x04000208, 0x0001);
+        board.irq_if = 0;
+        board.cpu_halted = 0;
+        board.held_cycles = 0;
+        cpu.arm.r[13] = 0x03007E00;
+        cpu.arm.r[15] = 0x03004400;
+        cpu.arm.cpsr = 0x1F;
+        cpu.over = 0;
+        for (int frame = 0; frame < 3; ++frame)
+            CHECK(!agb_cpu_run(&board, &cpu, &recomp, AGB_SCANLINE_CYCLES * AGB_FRAME_LINES, audio, AGB_APU_RATE,
+                               &written, error, sizeof error));
+        uint32_t reads = agb_read32(&board, 0x02000350);
+        uint32_t apart = (agb_read32(&board, 0x02000358) - agb_read32(&board, 0x02000354)) & 0xFFFF;
+        uint32_t back = (agb_read16(&board, 0x02000360) - agb_read32(&board, 0x02000354)) & 0xFFFF;
+        if (reads < 2 || apart != (AGB_SCANLINE_CYCLES * AGB_FRAME_LINES & 0xFFFF)) {
+            fprintf(stderr, "agb_cpu: %u reads of timer 0 by the blank's handler, the first two %u apart, not 18752\n",
+                    reads, apart);
+            return 1;
+        }
+        /* and the caller's read after VBlankIntrWait returns, 103 cycles after the handler's: the handler's rest and
+           return, the BIOS's, IntrWait's look at the flags and its return as the console takes them (5 cycles more
+           than mGBA's HLE BIOS code), the dispatch's way out and the caller's two loads */
+        if (back != 103) {
+            fprintf(stderr,
+                    "agb_cpu: VBlankIntrWait returned to its caller's read %u cycles after the handler's, not 103\n",
+                    back);
+            return 1;
+        }
+        agb_write16(&board, 0x04000208, 0);
+        agb_write16(&board, 0x04000200, 0);
+        agb_write16(&board, 0x04000004, 0);
+        agb_write16(&board, 0x04000102, 0);
     }
     {
         /* a DMA's interrupt is taken like any other: DMA 3's, with nothing else pending, enters the handler, which stores

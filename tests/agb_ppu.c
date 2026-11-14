@@ -38,10 +38,11 @@ int main(void) {
 
     /* timing: VCOUNT walks the visible lines into the blank, and DISPSTAT reports both */
     agb_ppu_write(&board, 0x004, 0x0008 | (160 << 8)); /* vblank interrupt on, match line 160 */
-    agb_ppu_step(&board, 960);                         /* the first line's visible dots are over */
-    CHECK(agb_ppu_read(&board, 0x006) == 0);
+    agb_ppu_step(&board, 1006);                        /* the horizontal blank's flag rises 1007 cycles into a line */
+    CHECK(agb_ppu_read(&board, 0x006) == 0 && !(agb_ppu_read(&board, 0x004) & 2));
+    agb_ppu_step(&board, 1);
     CHECK(agb_ppu_read(&board, 0x004) & 2); /* the horizontal blank runs to the end of the line */
-    agb_ppu_step(&board, AGB_SCANLINE_CYCLES * 159 + 272);
+    agb_ppu_step(&board, AGB_SCANLINE_CYCLES * 159 + 225);
     CHECK(agb_ppu_read(&board, 0x006) == 160);
     CHECK(agb_ppu_read(&board, 0x004) & 1); /* the vertical blank */
     CHECK(agb_ppu_read(&board, 0x004) & 4); /* the line matches the target */
@@ -507,6 +508,36 @@ int main(void) {
     run_frame();
     CHECK(board.dma[0].source_now == 0x02000000 + 160 * 2);
     agb_write16(&board, 0x040000BA, 0);
+    {
+        /* gba_color=gba: each colour as the original GBA's screen shows it, near's formula (gamma 4.0 in, the channels
+           mixed, 2.2 out, 255/280): white 252 238 242, red 232 53 111, blue 0 88 217, a middle grey 76 72 73, black
+           black; forced blank's white is that white; raw again the channels widened */
+        static const struct {
+            uint16_t color;
+            uint32_t lcd;
+        } colors[] = {{0x7FFF, 0xFFF2EEFC},
+                      {0x001F, 0xFF6F35E8},
+                      {0x7C00, 0xFFD95800},
+                      {0x4210, 0xFF49484C},
+                      {0x0000, 0xFF000000}};
+        agb_ppu_write(&board, 0x000, 0x0403);
+        for (int i = 0; i < 5; ++i) agb_write16(&board, 0x06000000 + (uint32_t)i * 2, colors[i].color);
+        agb_ppu_lcd(&board, 1);
+        run_frame();
+        for (int i = 0; i < 5; ++i)
+            if (pixel(i, 0) != colors[i].lcd) {
+                fprintf(stderr, "agb_ppu: gba_color=gba shows 0x%04X as 0x%08X, not 0x%08X\n", colors[i].color,
+                        pixel(i, 0), colors[i].lcd);
+                return 1;
+            }
+        agb_ppu_write(&board, 0x000, 0x0483); /* forced blank */
+        run_frame();
+        CHECK(pixel(0, 0) == 0xFFF2EEFC);
+        agb_ppu_write(&board, 0x000, 0x0403);
+        agb_ppu_lcd(&board, 0);
+        run_frame();
+        CHECK(pixel(0, 0) == PIX(31, 31, 31) && pixel(1, 0) == PIX(31, 0, 0) && pixel(3, 0) == PIX(16, 16, 16));
+    }
     agb_board_destroy(&board);
     puts("agb_ppu: ok");
     return 0;

@@ -89,6 +89,9 @@ typedef struct Renderer {
     /* the 2D engine: 1 when the renderer did the blit on the GPU, 0 to do it in guest memory */
     int (*blit)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
                 double sdy);
+    /* A temporal upscale (a Switch 2 game's DLSS evaluation, GpuUpscale): 1 when the renderer wrote the output, 0
+       for the front end's stand-in (a filtered copy). NULL in a renderer without one */
+    int (*upscale)(const GpuUpscale* u);
     /* NVN copies choose their filter explicitly; source steps can be negative to mirror an axis. */
     int (*blit_filter)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy,
                        double sdx, double sdy, int linear);

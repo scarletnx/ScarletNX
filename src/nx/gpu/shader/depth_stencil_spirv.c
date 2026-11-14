@@ -129,7 +129,8 @@ static uint32_t load_header(SpvEmitter* e, uint32_t u, uint32_t buffer, uint32_t
 uint32_t shader_depth_stencil_declare(SpvEmitter* e, uint32_t u32_type, uint32_t set, uint32_t binding) {
     uint32_t array = spv_emit_type_runtime_array(e, u32_type, 4);
     uint32_t buffer = spv_emit_storage_buffer(e, spv_emit_type_struct_one(e, array), set, binding);
-    spv_emit_decorate(e, buffer, 23, NULL, 0); /* Coherent: interlock memory dependency includes this buffer. */
+    spv_emit_decorate(e, buffer, SPV_DECORATION_COHERENT, NULL,
+                      0); /* Coherent: interlock memory dependency includes this buffer. */
     return buffer;
 }
 uint32_t shader_depth_stencil_coordinates(SpvEmitter* e, uint32_t f32, uint32_t u32_type, uint32_t boolean,

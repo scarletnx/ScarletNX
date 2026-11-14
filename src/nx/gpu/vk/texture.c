@@ -1406,6 +1406,15 @@ static int tex_copy_pending(Surf* t) {
 static int tex_rehash(Surf* t) {
     t->gw = gpu_mem_generation();
     if (tex_copy_pending(t)) return 1;
+    /* The GPU wrote its bytes in place and that write is still pending: its content is new, so the upload is due
+       whatever the bytes hash to. Loading them reads them on the CPU (mem_hash's gmem_ptr), which waits for the
+       GPU to finish the write: a title's video frames are four such textures a frame, and those waits were a third
+       of its frame. The upload itself stages them on the GPU (stage_bl through vk_guest_read's copy), no wait.
+       t->hash keeps what it had, so the first later whole check loads the texture once more before it settles */
+    if (vk_uma_pending(t->gva, t->size) && !t->sparse && !t->piecewise) {
+        tex_upload(t);
+        return 1;
+    }
     u64 hh = tex_hash(t);
     /* a sparse texture whose mapped levels changed: memory bound for the new ones, which are loaded */
     int rebound = t->sparse && tex_bind(t) != 0;
@@ -1458,7 +1467,9 @@ void vk_tex_note_writeback(Surf* t) {
     /* its image is guest memory's bytes as written back. Where write tracking watches that memory, tex_check asks it
        and hashes only a texture it says the CPU wrote, which then loads anyway: no hash now, 0, which a check by its
        contents takes as changed. Hashing every write-back's texels took a tenth of the GPU thread in an Ounce game */
-    t->hash = tex_tracked(t) ? 0 : tex_hash(t);
+    /* 0, a check that takes it as changed, when the GPU's write to it is still pending too: hashing its bytes would
+       read them on the CPU and wait for that write, and the load that follows is on the GPU (stage_bl's copy) */
+    t->hash = tex_tracked(t) || vk_uma_pending(t->gva, t->size) ? 0 : tex_hash(t);
     t->gw = gpu_mem_generation();
     t->wseen = vk_ww_now();
     t->checked = g_vk_present;
@@ -1706,11 +1717,13 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
     u32 cw = guest ? w : sw, ch = guest ? h : sh;
     for (Surf** pp = &rt->crop; *pp;) {
         Surf* x = *pp;
-        if (x->w == w && x->h == h && x->sw == cw && x->sh == ch && x->f.vk == f.vk)
+        if (!x->predraw && x->w == w && x->h == h && x->sw == cw && x->sh == ch && x->f.vk == f.vk)
             c = x;
         else if ((i32)(g_vk_present - (u32)x->last_used) > 60) {
             *pp = x->next;
             for (int i = 0; i < x->nsv; i++) vk_defer_image(VK_NULL_HANDLE, 0, x->sv[i].v, VK_NULL_HANDLE);
+            if (x->att) vk_defer_image(VK_NULL_HANDLE, 0, x->att, VK_NULL_HANDLE);
+            if (x->att_linear) vk_defer_image(VK_NULL_HANDLE, 0, x->att_linear, VK_NULL_HANDLE);
             vk_defer_image(x->img, x->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
             vk_defer_bytes(x->bytes);
             free(x);
@@ -1824,6 +1837,68 @@ static Surf* rt_guest(Surf* rt, u32 w, u32 h, const VkFmt* as) {
 Surf* vk_rt_snapshot(Surf* rt, int pixels) {
     if (!rt || rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) return rt;
     return rt_copy(rt, rt->w, rt->h, NULL, 0, pixels, 1);
+}
+
+/* The save attachment of a feedback draw that the renderer draws two times (render.c predraw_run): an image of the
+   format and size of the 2D color target rt, which the first draw writes with the values of rt from before the
+   draw, and which the second draw samples in place of rt. It is an attachment of the pass, in the feedback-loop
+   layout. set 0 or 1: the renderer uses two in turn where the pass has room. Kept in rt's list of copies, so it goes
+   with rt or after 60 presents unused. NULL when it can't be made */
+Surf* vk_rt_save(Surf* rt, u32 set) {
+    if (!rt || rt->f.depth || rt->msaa || rt->layers != 1 || rt->depth3d > 1 || !g_vk.has_feedback) return NULL;
+    Surf* c = NULL;
+    for (Surf* x = rt->crop; x && !c; x = x->next)
+        if (x->predraw == set + 1 && x->sw == rt->sw && x->sh == rt->sh && x->f.vk == rt->f.vk) c = x;
+    if (!c) {
+        c = calloc(1, sizeof *c);
+        if (!c) return NULL;
+        c->gva = rt->gva;
+        c->w = rt->w;
+        c->h = rt->h;
+        c->sw = rt->sw;
+        c->sh = rt->sh;
+        c->layers = c->levels = c->depth3d = 1;
+        c->f = rt->f;
+        c->fkey = rt->fkey;
+        c->type = VK_IMAGE_VIEW_TYPE_2D;
+        c->is_rt = 1; /* sampled like one; not in the table, so never found as one */
+        c->predraw = (u8)(set + 1);
+        c->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                  VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .imageType = VK_IMAGE_TYPE_2D,
+                                .format = rt->f.vk,
+                                .extent = {c->sw, c->sh, 1},
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = usage,
+                                .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        VkViewFormats vf;
+        vk_view_formats(&ii, &vf, VK_FORMAT_UNDEFINED);
+        if (!vk_cache_image_create(&ii, &c->img, &c->mem, VK_OWN_TEXTURE, &c->bytes)) {
+            free(c);
+            return NULL;
+        }
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                    .image = c->img,
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                    .format = rt->f.vk,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        if (!VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &c->att))) {
+            vk_defer_image(c->img, c->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            vk_defer_bytes(c->bytes);
+            free(c);
+            return NULL;
+        }
+        c->crop_gen = ~0u;
+        c->next = rt->crop;
+        rt->crop = c;
+    }
+    c->last_used = g_vk_present;
+    return c;
 }
 
 /* texture header type -> what the image is created as */
@@ -2696,7 +2771,8 @@ texture_from_memory:
     t->wseen = vk_ww_now();
     t->gw = gpu_mem_generation();
     /* a piecewise one's stays 0: none of its bytes are read. A sparse one's is of its mapped runs */
-    if (!t->piecewise) t->hash = tex_hash(t);
+    /* as vk_tex_note_writeback: a GPU write pending over its bytes is a change, and reading them to hash them waits */
+    if (!t->piecewise) t->hash = vk_uma_pending(t->gva, t->size) ? 0 : tex_hash(t);
     t->checked = g_vk_present;
     t->next_check = g_vk_present + 4;
     const int loaded = t->piecewise ? tex_load_pieces(t) : tex_upload(t);
@@ -3078,8 +3154,11 @@ static VkCommandBuffer copy_begin(Surf* s, Surf* t) {
 }
 /* the first count layers of s into t's level l at layer or Z slice dst, w x h: copied, or blitted from s's scaled
    size, nearest (sampling applies the texture's filter later). A blit into a 3D image takes one slice from layer 0, so
-   a scaled s goes into slices one at a time (count 1: layered targets take vk_unscaled_image's way there) */
-static void copy_layers(VkCommandBuffer cb, Surf* s, Surf* t, u32 l, u32 dst, u32 count, u32 w, u32 h, int z) {
+   a scaled s goes into slices one at a time (count 1: layered targets take vk_unscaled_image's way there). A blit
+   converts formats where a copy keeps the bits, and makes no compressed texels: a scaled s of another format than t's,
+   or one t's format can't take by blits, is blitted down to an image of its own format at the guest's size, whose bits
+   a copy then takes. 0 when that image can't be made */
+static int copy_layers(VkCommandBuffer cb, Surf* s, Surf* t, u32 l, u32 dst, u32 count, u32 w, u32 h, int z) {
     /* a region takes one aspect: a depth target's depth, and its stencil in a second region when it has one */
     VkImageSubresourceLayers from = {t->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, 0,
                                      z ? 1 : count};
@@ -3095,7 +3174,30 @@ static void copy_layers(VkCommandBuffer cb, Surf* s, Surf* t, u32 l, u32 dst, u3
         c[1].srcSubresource.aspectMask = c[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
         rec_CmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                          regions, c);
-        return;
+        return 1;
+    }
+    if (s->f.vk != t->f.vk || !can_blit(t->f.vk)) { /* a color format: depth takes its own format alone */
+        DevMem mid_memory = 0;
+        VkImage mid = vk_unscaled_image(s, count, &mid_memory);
+        if (!mid) return 0;
+        VkImageSubresourceLayers all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, count};
+        VkImageBlit down = {.srcSubresource = all,
+                            .srcOffsets = {{0, 0, 0}, {(i32)s->sw, (i32)s->sh, 1}},
+                            .dstSubresource = all,
+                            .dstOffsets = {{0, 0, 0}, {(i32)s->w, (i32)s->h, 1}}};
+        VkImageCopy bits = {
+            .srcSubresource = all, .dstSubresource = to, .dstOffset = {0, 0, dz}, .extent = {w, h, z ? count : 1}};
+        vk_barrier(cb, mid, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED,
+                   VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        rec_CmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, mid, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                         &down, VK_FILTER_NEAREST);
+        vk_barrier(cb, mid, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        rec_CmdCopyImage(cb, mid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                         &bits);
+        vk_defer_image(mid, mid_memory, VK_NULL_HANDLE, VK_NULL_HANDLE); /* freed once the frame is done */
+        return 1;
     }
     VkImageBlit b[2];
     b[0] = (VkImageBlit){.srcSubresource = from,
@@ -3106,6 +3208,7 @@ static void copy_layers(VkCommandBuffer cb, Surf* s, Surf* t, u32 l, u32 dst, u3
     b[1].srcSubresource.aspectMask = b[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
     rec_CmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                      regions, b, VK_FILTER_NEAREST);
+    return 1;
 }
 
 /* a texture whose layers, levels or 3D slices were drawn as render targets of their own is copied from those targets
@@ -3171,9 +3274,10 @@ static void tex_take_drawn(Surf* t) {
         if (s->f.depth != t->f.depth || s->f.stencil != t->f.stencil || s->f.bpp != t->f.bpp ||
             (t->f.depth && s->f.vk != t->f.vk) || copied_into(s, t) || s->msaa || t->msaa)
             continue;
-        /* a blit converts formats where a copy keeps the bits: a scaled target only into a texture of its own format */
+        /* a scaled target is blitted to the guest's size, into the texture or an image of its own format first
+           (copy_layers): one its format can't be blitted from stays */
         int scaled = s->sw != s->w || s->sh != s->h;
-        if (scaled && (s->f.vk != t->f.vk || !can_blit(t->f.vk))) continue;
+        if (scaled && !can_blit(s->f.vk)) continue;
         u64 off = s->gva - t->gva;
         if (t->type == VK_IMAGE_VIEW_TYPE_3D) {
             if (t->f.depth) continue;
@@ -3249,8 +3353,10 @@ static void tex_take_drawn(Surf* t) {
                     (lbd || source_size == slab) && vk_rt_drawn_fresh(s)) {
                     u64 z = ((off - lo) / slab << lbd) + (off - lo) % slab / step;
                     if (z < ld) {
-                        copy_layers(copy_begin(s, t), s, t, l, (u32)z, 1, lw, lh, 1);
-                        mark_copied(s, t);
+                        if (copy_layers(copy_begin(s, t), s, t, l, (u32)z, 1, lw, lh, 1))
+                            mark_copied(s, t);
+                        else
+                            settled = 0;
                         break;
                     }
                 }
@@ -3281,8 +3387,10 @@ static void tex_take_drawn(Surf* t) {
                 u32 count = 1;
                 if (s->layers > 1 && !s->volume && s->layer_size == stride) /* a volume's are GOB slices */
                     count = s->layers < t->layers - layer ? s->layers : t->layers - layer;
-                copy_layers(copy_begin(s, t), s, t, l, layer, count, lw, lh, 0);
-                mark_copied(s, t);
+                if (copy_layers(copy_begin(s, t), s, t, l, layer, count, lw, lh, 0))
+                    mark_copied(s, t);
+                else
+                    settled = 0;
                 break;
             }
             if (!t->bl) break;

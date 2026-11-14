@@ -312,8 +312,8 @@ uint Decoded(uint stored) {
 
 /* the stored value of n bits (its lowest the p-bit p when the shape has p-bits) that widens nearest to t, the lower on
    a tie. It is guess - 1 or guess without p-bits; with them guess when its parity is p, else guess - 1 or guess + 1:
-   two candidates, compared once (ucas: exhaustive equiv with the search of guess - 2 to guess + 2, over t 0 to 255, n 5
-   to 8, both p and with and without p-bits) */
+   two candidates, compared once (ucas: exhaustive equiv with the search of every stored value, over t 0 to 255, n 5 to
+   8, both p and with and without p-bits) */
 uint Quant(int t, uint p) {
 #if SNX_ASTC_ENC
     /* an ASTC end is kept as the 8 bits it decodes to (StoredBits is 8): the value its colour encoding holds nearest
@@ -329,8 +329,8 @@ uint Quant(int t, uint p) {
     int lo = sh_pk == 0u || other ? guess - 1 : guess;
     const int hi = other ? guess + 1 : guess;
     lo = lo < 0 ? hi : lo;
-    /* hi = top + 1 (guess = top of the wrong parity) widens past 255 and never wins, so it needs no clamp (ucas: the
-       function-level pass, exhaustive over Quant's every call) */
+    /* hi = top + 1 (guess = top of the wrong parity) widens past 255 and never wins, so it needs no clamp (ucas:
+       exhaustive over the same t, n, p and p-bits) */
     const int el = int(Widen(uint(lo), n)) - t, eh = int(Widen(uint(hi), n)) - t;
     return uint(abs(el) <= abs(eh) ? lo : hi);
 }

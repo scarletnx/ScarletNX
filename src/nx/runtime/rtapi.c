@@ -2,7 +2,6 @@
    Copyright 2026 the ScarletNX contributors */
 /* What generated code calls in the runtime (RtAPI), and the hints those calls record */
 #include "nx/runtime/rtapi.h"
-#include "common/cpu/aarch64/a64_decoder.h"
 #include "common/utilities/endian.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
@@ -25,10 +24,6 @@ static void rt_note_hint(u64 pc) { hints_add(pc); }
 
 /* the game cannot go on past either: what is needed to look into it, then the end */
 static void rt_undef(CPU* c, u64 pc, u32 w) {
-    SnxA64Insn insn;
-    SnxA64Flow flow;
-    u32 call;
-    int undefined;
     /* the code was compiled from a word memory no longer holds: written since, through a view of the code (a mod's
        hook trampoline, in a pool that was zeros when the game was recompiled). What was compiled from the page is
        dropped, and the thread's loop, which runs c->pc (pc) once the callers return, compiles what is there now */
@@ -40,32 +35,10 @@ static void rt_undef(CPU* c, u64 pc, u32 w) {
         jit_code_invalidate(pc & ~0xFFFull, 0x1000);
         return;
     }
-    /* a word no CPU the decoder knows runs (A64's reserved and unallocated encodings, SVE and SME, which no console
-       has, and the EL1 ones) stops the game on the console too: the SDK's abort places one to end it. Any other is an
-       instruction the recompiler lacks */
-    undefined = snx_a64_decode_word(w, SNX_A64_TARGET_MAX, &insn) == SNX_A64_OP_UNDEF;
-    if (undefined)
-        WARN("\n*** The game ran undefined instruction %08x at %llx, which the console's CPU cannot run either ***\n",
-             w, (unsigned long long)pc);
-    else
-        WARN("\n*** The game ran instruction %08x at %llx, which the recompiler cannot run ***\n", w,
-             (unsigned long long)pc);
-    /* lr at pc: a call came back to it, so x0 to x18 are what that callee left, not the call's operands (a call
-       through a register holding 0 never comes back: rt_missed_report ends the game at 0) */
-    if (c->x[30] == pc && pc >= 4 && mem_user_mapped(pc - 4, 4)) {
-        memcpy(&call, GP(pc - 4), 4);
-        call = snx_le32(call);
-        flow = snx_a64_flow(call, SNX_A64_TARGET_MAX);
-        if (flow == SNX_A64_FLOW_BL || flow == SNX_A64_FLOW_BLR)
-            WARN("  the call at %llx (%08x) returned to it: x0 to x18 hold what that call left\n",
-                 (unsigned long long)(pc - 4), call);
-    }
+    WARN("\n*** The game ran instruction %08x at %llx, which the recompiler cannot run ***\n", w,
+         (unsigned long long)pc);
     kernel_dump_regs(c);
     save_hints();
-    if (undefined)
-        fatal("The game ran an undefined instruction (%08x at %llx), which the console's CPU cannot run either. See "
-              "the .log for details.",
-              w, (unsigned long long)pc);
     fatal("The game ran an instruction the recompiler cannot run (%08x at %llx). See the .log for details.", w,
           (unsigned long long)pc);
 }

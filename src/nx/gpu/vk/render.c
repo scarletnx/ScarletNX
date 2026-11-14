@@ -45,6 +45,7 @@
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/runtime/platform/tracy.h"
+#include "nx/gpu/vk/predraw.h"
 
 static struct {
     Surf* rt[8];
@@ -80,6 +81,7 @@ static void rp_record(void) {
                           .pColorAttachments = g_rp.ca,
                           .pDepthAttachment = g_rp.zt ? &g_rp.za : NULL,
                           .pStencilAttachment = g_rp.zt && g_rp.zt->f.stencil ? &g_rp.zs : NULL};
+    vk_predraw_pass_begin(cb);
     vk_gpuprof_pass_begin(cb, g_rp.n ? g_rp.rt[0] : NULL, g_rp.zt);
     rec_CmdBeginRendering(cb, &ri);
     g_rp.begun = 1;
@@ -353,6 +355,7 @@ static int render_begin_empty_area(VkExtent2D ext, u32 layers) {
         return 1;
     vk_render_end();
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, ext}, .layerCount = layers};
+    vk_predraw_pass_begin(vk_cmd());
     vk_gpuprof_pass_begin(vk_cmd(), NULL, NULL);
     rec_CmdBeginRendering(vk_cmd(), &ri);
     g_rp.begun = 1;
@@ -546,7 +549,13 @@ static void xfb_bind_done(DrawOwner* o, const XfbBind* x) {
 static int feedback_order(u32 read, u32 write, int strict) {
     read &= g_rp.fb;
     write &= g_rp.fb;
-    u32 written = strict ? g_rp.fb_written : g_rp.due_written, sampled = strict ? g_rp.fb_read : g_rp.due_read;
+    /* a save attachment of a feedback draw drawn two times (predraw_run) is ordered at each use: its first draw
+       writes it and its second draw reads it, with no guest barrier between them */
+    u32 saves = 0;
+    for (u32 i = 0; i < g_rp.n; i++)
+        if (g_rp.rt[i] && g_rp.rt[i]->predraw) saves |= 1u << i;
+    u32 written = (strict ? g_rp.fb_written : g_rp.due_written) | (g_rp.fb_written & saves),
+        sampled = (strict ? g_rp.fb_read : g_rp.due_read) | (g_rp.fb_read & saves);
     if (!(read & written) && !(write & sampled)) return 1;
     if (!g_vk.has_local_read) {
         Surf* rt[8];
@@ -1204,6 +1213,68 @@ static Surf* capture_sample(Surf* texture) {
     if (!g_capture_draw.snapshot) g_capture_draw.snapshot = vk_rt_snapshot(texture, 1);
     return g_capture_draw.snapshot;
 }
+/* A feedback draw drawn two times (predraw_run). probe: the draw is a candidate, and stage_set_ records each
+   fragment texture it binds in place (in tex, n of them, with the textures in place in in_place). phase 1: the save
+   draw, whose fragment program fetches texture k of tex. phase 2: the guest's draw, whose textures in place read
+   save[k] in place of target[k] */
+static struct {
+    int probe, phase;
+    u32 n, in_place;
+    TexRes tex[DS_TARGETS_MAX];
+    Surf* target[DS_TARGETS_MAX];
+    /* the save attachments, sets of n, in color slots the guest binds no target to (slot): two sets where there is
+       room, used in turn by the feedback draws (parity), so the save draw of one draw writes the set that the draw
+       before it didn't read. wmask: the slots of the set that the save draw writes */
+    Surf* save[2][DS_TARGETS_MAX];
+    u8 slot[2][DS_TARGETS_MAX];
+    u32 sets, parity, wmask;
+    VkSh* fs; /* the save draw's fragment program */
+} g_predraw;
+u64 g_vk_predraws, g_vk_predraw_refused;
+/* why feedback draws stayed in place, counted by reason (each a literal) for vk_predraw_report, and the save draws
+   and guest draws whose target or save attachment was not sampled in place (read from a copy, and not ordered) */
+static struct {
+    const char* why[12];
+    u64 count[12];
+    u64 target_copied, save_copied;
+} g_predraw_stats;
+static void predraw_refuse(const char* why) {
+    g_vk_predraw_refused++;
+    u32 i = 0;
+    while (i < 12 && g_predraw_stats.why[i] && g_predraw_stats.why[i] != why) i++;
+    if (i == 12) return;
+    g_predraw_stats.why[i] = why;
+    if (!g_predraw_stats.count[i]++)
+        LOG("vulkan: a draw that samples a target it writes at its own pixel stays in place: it %s\n", why);
+}
+void vk_predraw_report(void) {
+    for (u32 i = 0; i < 12 && g_predraw_stats.why[i]; i++)
+        LOG("vulkan: %llu feedback draws stayed in place, each because it %s\n", (unsigned long long)g_predraw_stats.count[i],
+            g_predraw_stats.why[i]);
+    if (g_predraw_stats.target_copied || g_predraw_stats.save_copied)
+        LOG("vulkan: %llu save draws read their target from a copy, %llu guest draws read their save attachment from a "
+            "copy (not in place)\n",
+            (unsigned long long)g_predraw_stats.target_copied, (unsigned long long)g_predraw_stats.save_copied);
+}
+static void predraw_probe(u32 i, const TexRes* x, Surf* t) {
+    if (!g_predraw.probe || i >= 64) return;
+    g_predraw.in_place |= i < 32 ? 1u << i : 0;
+    if (i >= 32) g_predraw.probe = 0; /* the in-place mask takes 32 slots */
+    for (u32 k = 0; k < g_predraw.n; k++)
+        if (g_predraw.target[k] == t) return;
+    if (g_predraw.n == DS_TARGETS_MAX) {
+        g_predraw.probe = 0;
+        return;
+    }
+    g_predraw.tex[g_predraw.n] = *x;
+    g_predraw.target[g_predraw.n++] = t;
+}
+static Surf* predraw_sample(int i, Surf* t) {
+    if (g_predraw.phase != 2 || i >= 32 || !(g_predraw.in_place >> i & 1)) return t;
+    for (u32 k = 0; k < g_predraw.n; k++)
+        if (g_predraw.target[k] == t) return g_predraw.save[g_predraw.parity][k];
+    return t;
+}
 
 /* What a texture handle resolved to, kept while nothing it came from can have changed: the pools' addresses, the
    surface table at the texture's address (vk_surf_epoch_at: tex_from_tic looks nowhere else, and a texture's drawn
@@ -1416,17 +1487,25 @@ VkImageViewType vk_storage_image_type(const ShaderInfo* si, int i) {
                                     : VK_IMAGE_VIEW_TYPE_2D;
 }
 
+/* Whether a is an address of the GPU's address space. gmmu_run looks an address up by its low
+   GMMU_ADDRESS_SPACE_BITS, so a value above them aliases onto whatever is mapped at those bits */
+static int gbuf_address(u64 a) { return a && !(a >> GMMU_ADDRESS_SPACE_BITS); }
 /* An indirect buffer's address (SH_GBUF_INDIRECT): the 64-bit pointer at its cell, read from guest memory as the
    program loads it, a pending write there landed first. The cell is at the address its parent's constant buffer word
-   holds (v). A cell or a pointer with no memory mapped binds nothing (0) */
+   holds (v). A cell or a pointer with no memory mapped binds nothing (0), and so does a cell whose 8 bytes are no
+   address at all. One game's plant culling programs reach a buffer through a pointer at bytes 0x40 to 0x60 of a
+   block that, in their dispatches, holds the view's matrices. Two floats there whose bits 32 to 39 fell on mapped
+   memory passed for a pointer in a frame now and then: the program got 16 MiB at a nonsense, unaligned address, the
+   GPU mirror refused the dispatch for it (compute.c mirror_plan), and the plants' draws did not get that frame's
+   lists. Trees and bushes lost their leaves for one frame, a few times a minute */
 static u64 gbuf_pointer(u32 off, const u32* v) {
     u64 cell = (((u64)v[1] << 32) | v[0]) + SH_GBUF_CELL(off), cpu = 0;
     u32 w[2];
-    if (cell == SH_GBUF_CELL(off) || gmmu_run(cell, 8, &cpu) < 8) return 0;
+    if (cell == SH_GBUF_CELL(off) || !gbuf_address(cell) || gmmu_run(cell, 8, &cpu) < 8) return 0;
     vk_buf_mem_need(cell, 8);
     vk_gmem_words(cell, w, 2);
     u64 pointer = ((u64)w[1] << 32) | w[0];
-    return pointer && gmmu_run(pointer, 4, &cpu) ? pointer : 0;
+    return gbuf_address(pointer) && gmmu_run(pointer, 4, &cpu) ? pointer : 0;
 }
 u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr) {
     u32 size = v[2];
@@ -1436,6 +1515,7 @@ u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr) {
        An Ounce game's dispatches leave such an address in a slot, and the GPU mirror took no dispatch with one: each
        copied its written buffers on the CPU instead, about 230 MB a second of one race */
     *addr = SH_GBUF_INDIRECT(off) ? gbuf_pointer(off, v) : ((u64)v[1] << 32) | v[0];
+    if (!gbuf_address(*addr)) *addr = 0;
     if (!shader_gbuf_sized(stage, off)) {
         /* a bare address in the program's own constant buffer has no size beside it: the memory mapped from it on,
            whole words, to the cap below (Eden binds such a buffer to the end of its mapping, at most 8 MiB) */
@@ -1511,6 +1591,8 @@ static u32 vs_tex_variant(const DsState* ds, const VkSh* s, u32* signed_textures
 typedef struct {
     u64 tm, ts, dm, rect;
     u64 advanced_blend;
+    u64 predraw; /* the slots that read their target as it was before the draw (ShaderInfo.predraw_slots) */
+    u32 early;   /* vk_shader_get_ex's early */
     u32 advanced_mask, config;
     u32 rm, rs, df, unfed;
     u32 minmax;          /* the textures the program takes a min/max reduction of itself (vk_shader_get_ex's minmax) */
@@ -1594,11 +1676,11 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
 static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) {
     if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed && !fk->rect && !fk->queried && !fk->advanced_blend &&
-        !fk->advanced_mask && !fk->config && !fk->minmax)
+        !fk->advanced_mask && !fk->config && !fk->minmax && !fk->predraw && !fk->early)
         return s0;
     return vk_shader_get_ex(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, fk->prim, fk->dm, fk->df, fk->unfed,
                             fk->rect, NULL, fk->queried ? fk->query : NULL, fk->advanced_blend, fk->advanced_mask,
-                            fk->rm >> 8, fk->rs >> 8, fk->config, fk->minmax);
+                            fk->rm >> 8, fk->rs >> 8, fk->config, fk->minmax, fk->predraw, (int)fk->early);
 }
 /* whether slots a and b read their handles from the same words (tex_handle) */
 static int tex_same_handle(const ShTex* a, const ShTex* b) {
@@ -1650,7 +1732,14 @@ static VkComponentMapping tex_map(const Surf* t, const u32* tic) {
             m[k] = m[k] == VK_COMPONENT_SWIZZLE_R   ? VK_COMPONENT_SWIZZLE_B
                    : m[k] == VK_COMPONENT_SWIZZLE_B ? VK_COMPONENT_SWIZZLE_R
                                                     : m[k];
-    if (t->f.depth) { /* depth in r, g and b, alpha 1 */
+    if (t->f.depth && t->f.stencil && vk_tic_reads_stencil(tic)) { /* the stencil view's R where the header names
+                                                                        the stencil, its constants, nought for depth */
+        u32 sc = vk_tic_stencil_component(tic[0] & 0x7F);
+        for (int k = 0; k < 4; k++) {
+            u32 c = (tic[0] >> (19 + 3 * k)) & 7;
+            m[k] = c == sc ? VK_COMPONENT_SWIZZLE_R : c >= 6 ? VK_COMPONENT_SWIZZLE_ONE : VK_COMPONENT_SWIZZLE_ZERO;
+        }
+    } else if (t->f.depth) { /* depth in r, g and b, alpha 1 */
         m[0] = m[1] = m[2] = VK_COMPONENT_SWIZZLE_R;
         m[3] = VK_COMPONENT_SWIZZLE_ONE;
     }
@@ -2433,6 +2522,52 @@ static int screen_covers(const VkViewport* vp, const Surf* t) {
     return vp && vp->x == 0.0f && vp->width == w &&
            (vp->height > 0 ? vp->y == 0.0f && vp->height == h : vp->y == h && vp->height == -h);
 }
+/* The fragment program's samples at a generic's (x / w, y / w) read the own pixel's centre when the vertex program,
+   the last stage (plain: no tessellation, geometry or swizzle), writes that generic as the position mapped onto
+   [0, 1] with the y of the viewport's sign: stage_set_ checks the viewport covers the target. Its samples at a
+   generic's (x, y) do when the vertex program writes its position from that generic, [0, 1] mapped onto the viewport
+   with a w of 1, the y by the same sign. Samples at the x / w and y / w the fragment program maps onto [0, 1] itself
+   (screen_ndc) do when the vertex program writes the generic as the position itself, its y mapped the same way:
+   (w - y) / 2 and -y / w / 2 + 1/2 are one value. Not under a swizzle the program applies, which moves the position
+   and not the generic */
+static ScreenSlots screen_slots(const DsState* ds, const VkSh* fs, const VkSh* vs, int plain) {
+    ScreenSlots screen = {0};
+    if (!fs || !vs || !plain || vs->si.writes_viewport || !ds->vp.transform_on) return screen;
+    u32 ndc = fs->si.screen_ndc;
+    int by_w = fs->si.tex_screen_mask && ((ndc ? vs->si.pos_out_mask : vs->si.screen_out_mask) >> fs->si.screen_in & 1);
+    int by_uv = fs->si.tex_uv_mask && (vs->si.uv_out_mask >> fs->si.uv_in & 1);
+    int yneg = ndc ? ndc == 2 : (int)(vs->si.screen_out_yneg_mask >> fs->si.screen_in & 1);
+    if (by_w || by_uv) screen.vp = vk_viewport_from(&ds->dyn, &ds->vp, 0);
+    if (by_w && (yneg ? screen.vp.height < 0 : screen.vp.height > 0)) screen.slots |= fs->si.tex_screen_mask;
+    if (by_uv && ((vs->si.uv_out_yneg_mask >> fs->si.uv_in & 1) ? screen.vp.height < 0 : screen.vp.height > 0))
+        screen.slots |= fs->si.tex_uv_mask;
+    return screen;
+}
+/* The fragment program's slots that read one of the draw's color targets at the own pixel, each fragment taking what
+   the pixel held before the draw (ShaderInfo.predraw_slots, vk/predraw.c). Only a target the draw also writes: one it
+   only reads holds what was there before the draw at every fragment, and needs no capture. 0 where the device has no
+   fragment interlock or the program no room for the images: those slots read a copy of the target (stage_set_).
+   fres: the slots' textures (fs_key), screen: the slots sampled at the own pixel's centre, which the viewport has to
+   cover */
+static u64 predraw_choose(const DsState* ds, const VkSh* fs0, const TexRes* fres, Surf* const* rt, u32 n,
+                          const ScreenSlots* screen) {
+    if (!fs0 || g_vk.feedback_mode != VK_FEEDBACK_INTERLOCK) return 0; /* NVIDIA's interlock (device.c) */
+    u64 slots = 0;
+    int nt = fs0->si.ntex > SH_MAXTEX ? SH_MAXTEX : fs0->si.ntex;
+    for (int i = 0; i < nt; i++) {
+        const Surf* t = fres[i].have ? fres[i].t : NULL;
+        if (!t || !(fs0->si.tex_predraw_mask >> i & 1) || t->msaa || t->layers != 1 ||
+            t->layout == VK_IMAGE_LAYOUT_UNDEFINED)
+            continue;
+        if (!(fs0->si.tex_own_pixel_mask >> i & 1) && !((screen->slots >> i & 1) && screen_covers(&screen->vp, t)))
+            continue;
+        for (u32 j = 0; j < n; j++)
+            if (rt[j] == t && (ds->blend.mask[j] & ((fs0->si.sph[18] >> (j * 4)) & 15))) slots |= 1ull << i;
+    }
+    u32 count = snx_popcount64(slots);
+    if (count > SH_PREDRAW_MAX || (u32)fs0->si.nimg + 1 + count > g_vk.image_slots[ST_FS]) return 0;
+    return slots;
+}
 /* scaled: a bit for each texture slot bound to a scaled render target (shader_scaled_fetch in shader/emit_texture.c),
    and in scaled[1] the ones of those whose target has the size of the draw's (own_size) */
 /* screen: the slots sampled at the own pixel's centre where the draw's viewport covers their target (render_draw), NULL
@@ -2527,6 +2662,19 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                             .pImageInfo = &d.ii[binding]};
     }
+    /* the pre-draw capture's stamp and side images, after the program's own images (vk/predraw.c) */
+    for (u32 k = 0; stage == ST_FS && s->si.predraw_slots && k <= snx_popcount64(s->si.predraw_slots); k++) {
+        VkImageView view = vk_predraw_view(k);
+        if (!view) return VK_NULL_HANDLE;
+        u32 binding = SNX_VKB_IMG + (u32)s->si.nimg + k;
+        d.ii[binding] = (VkDescriptorImageInfo){VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
+        d.w[d.n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                            .dstSet = set,
+                                            .dstBinding = binding,
+                                            .descriptorCount = 1,
+                                            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                            .pImageInfo = &d.ii[binding]};
+    }
     u32 tcb = ds->bind.tex_bank;
     int nt = s->si.ntex > SH_MAXTEX ? SH_MAXTEX : s->si.ntex;
     int table_first[SH_INDEXED_TABLES] = {0}, table_count = 0;
@@ -2556,11 +2704,16 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         }
         /* the fragment stage's handle as fs_key read it from the same constant buffer in this draw, which the key it
            made was built from */
-        u32 handle = res && res[i].have ? res[i].handle : tex_handle(ds, stage, tcb, &s->si, i);
+        /* the save draw's fetch k takes the texture the guest's draw bound in place (predraw_run) */
+        u32 predraw_k = st->cbuf_off - SNX_PREDRAW_HANDLE;
+        int predrawn = g_predraw.phase == 1 && stage == ST_FS && predraw_k < g_predraw.n;
+        u32 handle = predrawn                ? g_predraw.tex[predraw_k].handle
+                     : res && res[i].have ? res[i].handle
+                                          : tex_handle(ds, stage, tcb, &s->si, i);
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
-        TexRes own, *x = res ? &res[i] : NULL;
-        if (!x || !x->have || x->handle != handle || (x->t && x->t->is_rt)) {
+        TexRes own, *x = predrawn ? &g_predraw.tex[predraw_k] : res ? &res[i] : NULL;
+        if (!predrawn && (!x || !x->have || x->handle != handle || (x->t && x->t->is_rt))) {
             x = &own;
             tex_resolve(ds, handle, x);
         }
@@ -2573,6 +2726,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                       "which its samples don't divide by the size: sampled as normalized\n",
                       i, stage, handle, (x->tic[4] >> 23) & 0xF);
         Surf* t = capture_sample(x->t);
+        if (stage == ST_FS) t = predraw_sample(i, t);
         /* a multisampled texture's program fetches its samples (flags bit 1), and an image of other samples than
            the program's reads zeros, as a missing texture does */
         int ms = (st->flags & 2) != 0;
@@ -2608,18 +2762,40 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         int depth_ro = t && t == zt && !ds->dyn.depth_write && !sten_w;
         /* the color slots t is bound to, when the fragment shader may sample it in place: only where each fragment
            reads its own pixel. Other pixels may be the draw's own writes already, in any order the GPU's tiles take,
-           where the guest's texture reads see what was there before the draw: those read a copy */
+           and so may the own pixel of a target the draw writes, where two primitives of the draw overlap: the guest's
+           texture reads see what was there before the draw. So a slot whose target the draw writes is read in place
+           only through the pre-draw capture (ShaderInfo.predraw_slots), and the others read a copy */
         u32 slots = 0;
         if (t && fb && g_vk.has_feedback && t->layout != VK_IMAGE_LAYOUT_UNDEFINED &&
             ((s->si.tex_own_pixel_mask >> i & 1) ||
-             (screen && (screen->slots >> i & 1) && screen_covers(&screen->vp, t))))
+             (screen && (screen->slots >> i & 1) && screen_covers(&screen->vp, t)))) {
+            u32 written = 0;
             for (u32 j = 0; j < n; j++)
-                if (rt[j] == t) slots |= 1u << j;
-        if (slots) {
+                if (rt[j] == t) {
+                    slots |= 1u << j;
+                    if (ds->blend.mask[j] & ((s->si.sph[18] >> (j * 4)) & 15)) written |= 1u << j;
+                }
+            /* with the interlock (g_vk.feedback_mode), a written slot without the capture reads a copy. The two draws
+               sample in place: the guest's draw reads the save attachment, which it doesn't write */
+            if (written && !(s->si.predraw_slots >> i & 1) && g_vk.feedback_mode == VK_FEEDBACK_INTERLOCK) slots = 0;
+        }
+        if (g_predraw.phase && stage == ST_FS && t && !slots) {
+            if (t->predraw) g_predraw_stats.save_copied++;
+            else if (predrawn) g_predraw_stats.target_copied++;
+        }
+        if (slots && predrawn) {
+            /* the save draw copies the target's texels as they are, through a view of the format its save attachment
+               is written in and none of the header's swizzle or sRGB reading: the guest's draw reads the save
+               attachment through the header's view, which applies them once */
+            const VkComponentMapping identity = {0};
+            view = vk_tex_view(t, want, ds->tgt.srgb_write && vk_srgb_as(t->f.vk, 0) != t->f.vk, &identity, 0);
+            if (view) *fb |= slots;
+        } else if (slots) {
             /* the guest reads the target's previous contents during a draw that writes it: in place, in a feedback
                loop */
             view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
             if (view) *fb |= slots;
+            if (view && stage == ST_FS) predraw_probe((u32)i, x, t);
         } else if (t && is_target(t, rt, zt, n) && !depth_ro) {
             /* The guest reads the target's previous contents during a draw that writes it. Without a feedback loop
                Vulkan can't bind one image for both uses here, so copy it before the draw starts and sample that
@@ -3141,6 +3317,13 @@ static int mesh_shaders(const DsState* ds, DrawShaders* o) {
     o->fs0 = (p->on >> 5 & 1)
                  ? vk_shader_get(ds, p->code[5], 0, ST_FS, 0, 0, 0, 0, o->prim, 0, 0, 0, 0, NULL, NULL, 0, 0, 0, 0)
                  : NULL;
+    if (o->fs0 && !o->fs0->failed && o->fs0->si.reads_primitive_id) {
+        /* the mesh translation writes no PrimitiveId, which the fragment program would read undefined */
+        LOG_LIMIT(4, "vulkan: a mesh draw whose fragment program at %llx reads the primitive's number, which the mesh "
+                     "program doesn't write (skipped)\n",
+                  (unsigned long long)p->code[5]);
+        return 0;
+    }
     rt_int_targets(&ds->tgt, &o->rt_int, &o->rt_sint);
     return 1;
 }
@@ -3302,7 +3485,7 @@ static VkSh* vs_position_copy(const DsState* ds, const VkSh* vs, u32 slot) {
     return vk_shader_get_ex(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, vs->mask[0] | (u64)vs->mask[1] << 32,
                             vs->mask[2] | (u64)vs->mask[3] << 32, vs->mask[4], vs->mask[5], vs->mask[6], 0, vs->mask[9],
                             vs->mask[10], vs->mask[12] | (u64)vs->mask[13] << 32, NULL, queried ? query : NULL, 0, 0,
-                            vs->mask[24] & 255, vs->mask[25], 1 + slot, 0);
+                            vs->mask[24] & 255, vs->mask[25], 1 + slot, 0, 0, 0);
 }
 /* stream s's address and bytes (to its limit, 0 when the limit is below) */
 static u64 stream_start(const DsVertexBuffers* b, u32 s) { return b->addr[s]; }
@@ -4027,6 +4210,116 @@ static int late_depth_supported(const DsState* ds, const DrawCall* dc, const Dra
 }
 
 /* a draw as a profiler zone, around its many ways out */
+/* Feedback draws without fragment shader interlock. A draw that samples a color target T at its own pixel and writes T
+   gets on the console the value of T from before the draw: its texture cache keeps it until a texture barrier. In
+   place (feedback_order), a later primitive of the draw can read what an earlier one of the same draw wrote, and no
+   barrier orders primitives inside one draw: one game's cobblestones had moving black and green specks from this.
+
+   So the draw is drawn two times in the same pass. The save draw has the same vertex stages and geometry, with the
+   depth, stencil and depth bounds tests off, so it covers each fragment that the guest's draw can have. Its fragment
+   program (vk_predraw_fragment) fetches T at the own pixel in place and writes it to S (vk_rt_save), an extra color
+   attachment of T's format. It writes nothing else, so all its fragments read T from before the draw. A by-region
+   barrier follows (feedback_order, strict for S), then the guest's draw, whose texture of T is S (predraw_sample).
+   The guest's draw does not read T, so the order of its primitives does not matter. Another barrier orders the reads
+   of S before the next save draw writes S. This needs dynamicRenderingLocalRead for the barriers inside the pass, and
+   neither interlock nor rasterization order attachment access. In a samples-passed query, the save draw ends the
+   query's open segment (vk_query_pass_end), so its samples are not counted: each such draw takes one more segment of
+   query.c's ring */
+static int predraw_enabled(void) { return g_vk.feedback_mode == VK_FEEDBACK_PREDRAW; }
+/* the slots of the pass that hold a target of the draw in two or its save: in the feedback-loop layout from the
+   save draw on, so the guest's draw keeps the pass */
+static u32 predraw_pass_slots(Surf* const* rt, u32 n) {
+    u32 slots = 0;
+    for (u32 i = 0; g_predraw.phase && i < n; i++)
+        for (u32 k = 0; k < g_predraw.n; k++)
+            if (rt[i] && (rt[i] == g_predraw.target[k] || rt[i]->predraw)) slots |= 1u << i;
+    return slots;
+}
+/* 1 when the draw writes a slot that holds a target it samples in place */
+static int predraw_writes_sampled(const DsState* ds, const VkSh* fs, Surf* const* rt, u32 n) {
+    for (u32 i = 0; i < n; i++)
+        for (u32 k = 0; k < g_predraw.n; k++)
+            if (rt[i] == g_predraw.target[k] && (ds->blend.mask[i] & (fs->si.sph[18] >> (i * 4) & 15))) return 1;
+    return 0;
+}
+/* 1 when the stages before the fragment's store nothing, which a draw done two times would store two times */
+static int predraw_pre_raster_pure(const VkSh* const stages[4]) {
+    for (u32 i = 0; i < 4; i++)
+        if (stages[i] && (stages[i]->si.nimg || stages[i]->si.gbuf_wmask)) return 0;
+    return 1;
+}
+/* 1 when the save draw can keep the guest draw's depth test, read-only: each fragment that passes in the guest's draw
+   then also passes against the depth from before the draw. That holds when the draw leaves depth as it was, and when
+   its writes only make a less or greater test stricter. Not when the fragment program writes its own depth */
+static int predraw_keeps_depth(const DsState* ds, const VkSh* fs) {
+    if (!ds->dyn.depth_test || (fs->si.sph[19] & 2u)) return 0;
+    VkCompareOp op = (VkCompareOp)ds->dyn.depth_cmp;
+    return !ds->dyn.depth_write || op == VK_COMPARE_OP_LESS || op == VK_COMPARE_OP_LESS_OR_EQUAL ||
+           op == VK_COMPARE_OP_GREATER || op == VK_COMPARE_OP_GREATER_OR_EQUAL || op == VK_COMPARE_OP_ALWAYS;
+}
+/* the save draw, then the guest's draw, with fs the guest's fragment program. free: the color slots the guest binds no
+   target to, where the save attachments go (a guest may bind 8 slots and leave some without a format). NULL when
+   done, else why the save draw wasn't drawn: the caller draws in place */
+static const char* predraw_run(const DsState* ds, const DrawCall* dc, DrawOwner* o, u32 free, const VkSh* fs) {
+    u32 m = g_predraw.n, ints = 0, sints = 0, room = g_vk.props.limits.maxColorAttachments;
+    if (room > DS_TARGETS_MAX) room = DS_TARGETS_MAX;
+    u8 slots[DS_TARGETS_MAX];
+    u32 c = 0;
+    for (u32 j = 0; j < room; j++)
+        if (free >> j & 1) slots[c++] = (u8)j;
+    if (c < m) {
+        static u8 said[DS_TARGETS_MAX + 1][DS_TARGETS_MAX + 1];
+        if (!said[c][m]++)
+            LOG("vulkan: a feedback draw samples %u of its targets in place, and its pass has %u color slots without "
+                "a target (of %u): it is drawn in place\n", m, c, room);
+        return "has no color slot left";
+    }
+    /* two sets where they fit: one by-region barrier for each feedback draw, not two. The save attachments of a set
+       take its slots from the lowest up, in the order of the save program's outputs */
+    g_predraw.sets = c >= 2 * m ? 2 : 1;
+    for (u32 s = 0; s < g_predraw.sets; s++)
+        for (u32 k = 0; k < m; k++) {
+            g_predraw.save[s][k] = vk_rt_save(g_predraw.target[k], s);
+            if (!g_predraw.save[s][k]) return "samples a target that has no save attachment (layered, multisampled)";
+            g_predraw.slot[s][k] = slots[s * m + k];
+        }
+    for (u32 k = 0; k < m; k++) {
+        if (g_predraw.target[k]->f.is_int) ints |= 1u << k;
+        if (g_predraw.target[k]->f.sint) sints |= 1u << k;
+    }
+    u32 parity = g_predraw.sets == 2 ? g_predraw.parity ^ 1 : 0;
+    g_predraw.wmask = 0;
+    for (u32 k = 0; k < m; k++) g_predraw.wmask |= 1u << g_predraw.slot[parity][k];
+    g_predraw.fs = vk_predraw_fragment(m, g_predraw.wmask, ints, sints);
+    if (!g_predraw.fs || g_predraw.fs->failed) return "has no save draw program (not translated)";
+    g_predraw.parity = parity;
+    static DsState pre; /* under the renderer's lock, as each draw is */
+    pre = *ds;
+    /* the tests stay where they pass a superset of the guest draw's fragments: fewer fragments to save */
+    int stencil_kept = !(ds->dyn.face[0].wmask & 0xFF) && !(ds->dyn.face[1].wmask & 0xFF) && !(fs->si.sph[19] & 2u);
+    if (!predraw_keeps_depth(ds, fs)) pre.dyn.depth_test = 0;
+    if (!stencil_kept) pre.dyn.stencil_test = 0;
+    pre.dyn.depth_write = pre.dyn.alpha_test = 0;
+    pre.rkey.alpha_to_coverage = pre.rkey.alpha_to_one = 0;
+    pre.blend.logic_op = 0;
+    memset(pre.blend.en, 0, sizeof pre.blend.en);
+    DrawCall call = *dc;
+    call.state_flags &= ~DS_DRAW_DEPTH_BOUNDS;
+    u64 drawn = g_vk_drawn;
+    g_predraw.phase = 1;
+    render_draw(&pre, &call, o, NULL);
+    int saved = g_vk_drawn != drawn;
+    if (saved) {
+        g_vk_drawn = drawn; /* the guest's draw is counted, not the save draw */
+        g_predraw.phase = 2;
+        render_draw(ds, dc, o, NULL);
+        if (g_vk_drawn != drawn) g_vk_predraws++;
+    }
+    g_predraw.phase = 0;
+    g_predraw.n = g_predraw.in_place = 0;
+    g_draw.sh.vs = NULL; /* the next draw keeps nothing of these two */
+    return saved ? NULL : "had its save draw skipped (the log says why above)";
+}
 void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     SNX_ZONE(z, "draw");
     int heaps = g_vk.has_descriptor_heaps;
@@ -4075,7 +4368,7 @@ static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o, con
                 "compare\n");
     }
     u32 initial_first = first, initial_count = count, draw_topo = topology;
-    int retries = 0, initial_indexed = indexed;
+    int retries = 0, initial_indexed = indexed, predraw_refused = 0;
 retry:
     vk_buf_writable_abort();
     indexed = initial_indexed;
@@ -4086,7 +4379,7 @@ retry:
     /* kept: the state the last draw made holds for this one, as far as each check below tells. Each part is made
        here when it doesn't (and when draw_state_check compares) */
     int capture = g_capture_draw.images != NULL;
-    int kept = !texture && !capture && draw_kept(ds, draw_topo, mesh, epoch);
+    int kept = !texture && !capture && !g_predraw.phase && draw_kept(ds, draw_topo, mesh, epoch);
     if (kept && g_draw.check) g_vk_draw_checked++;
     DrawShaders sh;
     if (kept) sh = g_draw.sh;
@@ -4173,6 +4466,36 @@ retry:
         rt[colors] = &g_capture_draw.images->valid;
         n = colors + 1;
     }
+    /* the save attachments of a feedback draw drawn two times, after the guest's slots (predraw_run). An ordinary draw
+       of the same pass keeps them, with nothing written to them, so the pass doesn't end for it */
+    if (g_predraw.phase) {
+        for (u32 s = 0; s < g_predraw.sets; s++)
+            for (u32 k = 0; k < g_predraw.n; k++) {
+                u32 j = g_predraw.slot[s][k];
+                rt[j] = g_predraw.save[s][k];
+                if (j + 1 > n) n = j + 1;
+            }
+    } else if (!capture && !texture && g_rp.open) {
+        /* the open pass differs from these targets only by save attachments in slots they leave empty */
+        int keep = 0;
+        for (u32 j = 0; j < DS_TARGETS_MAX; j++)
+            if (g_rp.rt[j] != rt[j]) {
+                if (rt[j] || !g_rp.rt[j] || !g_rp.rt[j]->predraw) {
+                    keep = 0;
+                    break;
+                }
+                keep = 1;
+            }
+        if (keep) {
+            for (u32 j = 0; j < DS_TARGETS_MAX; j++)
+                if (!rt[j]) rt[j] = g_rp.rt[j];
+            if (g_rp.n > n) n = g_rp.n;
+        }
+    }
+    int saves = 0;
+    for (u32 i = 0; i < n; i++)
+        if (rt[i] && rt[i]->predraw) saves = 1;
+    if (saves) kept = 0;
     u32 to_color = 0, shader_to_color = 0;
     if (dc->multisample_flags & DS_MS_COVERAGE_TO_COLOR) {
         u32 location = dc->coverage_to_color_output;
@@ -4312,6 +4635,15 @@ retry:
             fk.advanced_mask |= SH_ALPHA_COVERAGE | alpha_samples << 8;
             if (dc->multisample_flags & DS_MS_A2C_DITHER) fk.advanced_mask |= SH_ALPHA_COVERAGE_DITHER;
         }
+        /* overlapping primitives of the draw read what its targets held before it, not each other's writes */
+        if (!texture && !fk.advanced_blend && !late_depth && !capture && !varying_vs && !varying_gs) {
+            ScreenSlots early = screen_slots(ds, sh.fs0, sh.vs, !sh.tcs && !sh.tes && !sh.gs && !sh.swizzle);
+            fk.predraw = predraw_choose(ds, sh.fs0, fres, rt, n, &early);
+            /* the capture's stores would keep the GPU from culling hidden fragments early: where the guest's program
+               can't discard or write depth, early tests give the same result, and the hidden fragments capture
+               nothing a passing one wants */
+            fk.early = fk.predraw && blend_early_safe && !(sh.fs0->si.sph[19] & 3u);
+        }
         if (kept && memcmp(&fk, &g_draw.fkey, sizeof fk)) kept = 0;
         if (kept) fs = g_draw.fs;
         if (!kept || g_draw.check) {
@@ -4333,6 +4665,10 @@ retry:
         }
         if (!texture && fs && fs != sh.fs0) res = fs_slot_res(ds, sh.fs0, fres, fs, vres);
     }
+    if (g_predraw.phase == 1) {
+        fs = g_predraw.fs; /* the save draw's program, whose textures stage_set_ takes from g_predraw */
+        res = NULL;
+    }
     DrawShaders drawn = sh; /* the stages drawn: sh's, with a per-vertex pass's vertex or geometry program */
     if (varying_vs) drawn.vs = vs = last = varying_vs;
     if (varying_gs) drawn.gs = gs = last = varying_gs;
@@ -4353,7 +4689,9 @@ retry:
        without: a game's lighting passes may keep the whole G-buffer bound while they read some of it, which
        Maxwell allows, and Vulkan can't sample an attachment of the pass */
     VkExtent2D bound = target_extent(rt, zt, n); /* the render area should none of them stay */
-    if (fs)
+    /* not for the save draw (predraw_run, res NULL): it samples the targets it doesn't write in place, and its pass is
+       the guest draw's */
+    if (fs && res)
         for (u32 j = 0; j < n; j++) {
             if (!rt[j] || (((fs->si.sph[18] >> (j * 4)) & 15) && ds->blend.mask[j])) continue;
             for (int i = 0; i < (fs->si.ntex > SH_MAXTEX ? SH_MAXTEX : fs->si.ntex); i++)
@@ -4479,6 +4817,17 @@ retry:
             for (u32 i = 0; i < n; i++) {
                 memset(&made_k.blend[i], 0, sizeof made_k.blend[i]);
                 made_k.blend[i].mask = i + 1 == n ? 15 : fs->si.sph[18] >> (i * 4) & 15;
+            }
+        }
+        /* a save attachment: written only by the save draw, with no blend; and the save draw writes nothing else */
+        if (saves || g_predraw.phase == 1) {
+            if (g_predraw.phase == 1) made_k.logic_op = 0;
+            for (u32 i = 0; i < n; i++) {
+                int save = rt[i] && rt[i]->predraw;
+                if (!save && g_predraw.phase != 1) continue;
+                memset(&made_k.blend[i], 0, sizeof made_k.blend[i]);
+                made_k.blend[i].mask =
+                    save && g_predraw.phase == 1 && (g_predraw.wmask >> i & 1) ? 15 : 0;
             }
         }
         if (programmable_blend) {
@@ -4629,6 +4978,21 @@ retry:
         g_vk_skipped++;
         return;
     }
+    u32 predraw = 0; /* the draw's number for its pre-draw capture (vk/predraw.c), 0 for none */
+    if (fs && fs->si.predraw_slots) {
+        u32 w = 0, h = 0;
+        for (u32 j = 0; j < n; j++) {
+            if (rt[j] && rt[j]->sw > w) w = rt[j]->sw;
+            if (rt[j] && rt[j]->sh > h) h = rt[j]->sh;
+        }
+        if (!vk_predraw_reserve(w, h, snx_popcount64(fs->si.predraw_slots))) {
+            LOG_LIMIT(1, "vulkan: no images for the pre-draw capture of %ux%u: draws that read their targets are "
+                         "skipped\n", w, h);
+            g_vk_skipped++;
+            return;
+        }
+        predraw = vk_predraw_next();
+    }
     int zt_ro = 0;
     u32 fb = 0;
     u64 scaled[2] = {0};
@@ -4643,25 +5007,10 @@ retry:
         g_vk_skipped++;
         return;
     }
-    /* the fragment program's samples at a generic's (x / w, y / w) read the own pixel's centre when the vertex program,
-       the last stage, writes that generic as the position mapped onto [0, 1] with the y of the viewport's sign:
-       stage_set_ checks the viewport covers the target. Its samples at a generic's (x, y) do when the vertex program
-       writes its position from that generic, [0, 1] mapped onto the viewport with a w of 1, the y by the same sign.
-       Samples at the x / w and y / w the fragment program maps onto [0, 1] itself (screen_ndc) do when the vertex
-       program writes the generic as the position itself, its y mapped the same way: (w - y) / 2 and -y / w / 2 + 1/2
-       are one value. Not under a swizzle the program applies, which moves the position and not the generic */
-    ScreenSlots screen = {0};
-    if (fs && vs && !tcs && !tes && !sh.gs && !vs->si.writes_viewport && ds->vp.transform_on && !sh.swizzle) {
-        u32 ndc = fs->si.screen_ndc;
-        int by_w =
-            fs->si.tex_screen_mask && ((ndc ? vs->si.pos_out_mask : vs->si.screen_out_mask) >> fs->si.screen_in & 1);
-        int by_uv = fs->si.tex_uv_mask && (vs->si.uv_out_mask >> fs->si.uv_in & 1);
-        int yneg = ndc ? ndc == 2 : (int)(vs->si.screen_out_yneg_mask >> fs->si.screen_in & 1);
-        if (by_w || by_uv) screen.vp = vk_viewport_from(&ds->dyn, &ds->vp, 0);
-        if (by_w && (yneg ? screen.vp.height < 0 : screen.vp.height > 0)) screen.slots |= fs->si.tex_screen_mask;
-        if (by_uv && ((vs->si.uv_out_yneg_mask >> fs->si.uv_in & 1) ? screen.vp.height < 0 : screen.vp.height > 0))
-            screen.slots |= fs->si.tex_uv_mask;
-    }
+    ScreenSlots screen = screen_slots(ds, fs, vs, !tcs && !tes && !sh.gs && !sh.swizzle);
+    g_predraw.probe = !predraw_refused && !g_predraw.phase && !capture && !texture && !mesh && !programmable_blend && !late_depth &&
+                      !xfb_on && predraw_enabled();
+    if (!g_predraw.phase) g_predraw.n = g_predraw.in_place = 0; /* the two draws keep what the probe found */
     VkDescriptorSet vset =
         stage_set(ds, vs_bind, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images, NULL, &xfb_stores);
     VkDescriptorSet fset = fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, scaled, res, &storage, &images,
@@ -4690,6 +5039,38 @@ retry:
         }
         g_vk_skipped++;
         return;
+    }
+    /* a draw that samples, at its own pixel, a target that it writes: drawn two times, the first saving what the second
+       reads (predraw_run) */
+    if (g_predraw.probe) {
+        g_predraw.probe = 0;
+        const VkSh* staged_pre[] = {vs, tcs, tes, gs};
+        /* the slots the guest binds no target to (read_targets keeps the last answer: no lookup again) */
+        Surf* guest[8];
+        Surf* guest_zt;
+        u32 guest_n, free = 0;
+        read_targets(ds, guest, &guest_zt, &guest_n);
+        for (u32 j = 0; j < DS_TARGETS_MAX; j++)
+            if (!guest[j]) free |= 1u << j;
+        const char* why = !g_predraw.n || !fs || !predraw_writes_sampled(ds, fs, rt, n) ? NULL
+                          : !predraw_pre_raster_pure(staged_pre)                         ? "stores from its vertex stages"
+                          : dc->raster_samples                                           ? "has more raster samples"
+                          : dc->multisample_flags & DS_MS_COVERAGE_TO_COLOR              ? "writes coverage to color"
+                          : dc->advanced_blend[0]                                        ? "blends in advanced modes"
+                          : ds->rkey.alpha_to_coverage                                   ? "takes alpha to coverage"
+                                                                                         : "";
+        if (why && !*why) {
+            draw_images_discard(&images);
+            why = predraw_run(ds, dc, o, free, fs);
+            if (!why) return;
+            g_predraw.n = g_predraw.in_place = 0; /* drawn once, in place, as before */
+            predraw_refused = 1;
+        }
+        if (why) {
+            predraw_refuse(why);
+            if (predraw_refused) goto retry;
+        }
+        g_predraw.n = g_predraw.in_place = 0;
     }
     /* indices, up to the end of the index buffer (inclusive). What is made into other indices on the CPU (quads,
        8-bit indices, another restart index) is capped */
@@ -4886,6 +5267,8 @@ retry:
     /* kept for the next draw */
     if (kept)
         g_vk_draw_kept++;
+    else if (pipe && saves)
+        g_draw.sh.vs = NULL; /* a draw with save attachments keeps nothing for the next draw (it has other targets) */
     else if (pipe) {
         g_draw.topology = draw_topo;
         g_draw.epoch = epoch;
@@ -4941,7 +5324,7 @@ retry:
         int alias = 0;
         for (int i = 0; i < images.n; i++)
             if (vk_depth_shadow_aliases(zt, images.surf[i])) alias = 1;
-        for (int i = 0; fs && i < fs->si.ntex; i++)
+        for (int i = 0; fs && res && i < fs->si.ntex; i++)
             if (res[i].have && res[i].t &&
                 vk_depth_shadow_aliases(zt, res[i].t)) alias = 1;
         VkDescriptorBufferInfo actual;
@@ -4968,7 +5351,8 @@ retry:
     }
     if (programmable_blend ? !programmable_pass
         : !n && !zt ? !render_begin_empty()
-                    : !render_begin(rt, zt, n, zt_ro, ds->tgt.srgb_write, fb, bound) || !feedback_order(fb, writes, 0)) {
+                    : !render_begin(rt, zt, n, zt_ro, ds->tgt.srgb_write, fb | predraw_pass_slots(rt, n), bound) ||
+                          !feedback_order(fb, writes, 0)) {
         draw_images_discard(&images);
         if (late_depth) vk_depth_shadow_cancel();
         return;
@@ -5201,6 +5585,7 @@ retry:
        texture draw's rectangle and a varying pass's viewport */
     u32 own_words[2] = {(u32)scaled[1], (u32)(scaled[1] >> 32)};
     memcpy(&pc[24], own_words, sizeof own_words);
+    memcpy(&pc[26], &predraw, sizeof predraw); /* its z: the pre-draw capture's draw number */
     memcpy(&pc[11], &ds->dyn.clip_height, sizeof(u32));
     float point_size = (dc->state_flags & DS_DRAW_POINT_SIZE) ? dc->point_size : 1.0f;
     if (!g_vk.feat.largePoints || !(point_size > 0)) point_size = 1.0f;
@@ -5244,8 +5629,12 @@ retry:
     if (capture && !g_vk.has_descriptor_heaps)
         rec_CmdPushConstants(cb, layout, VK_PUSH_STAGES, 112, sizeof g_capture_draw.primitive, &g_capture_draw.primitive);
 
-    /* counted by the channel's samples-passed counter when it runs: the targets' samples, which the guest's are */
-    vk_query_draw(cb, ds->owner);
+    /* counted by the channel's samples-passed counter when it runs: the targets' samples, which the guest's are. Not
+       the save draw (predraw_run): it ends the open query, and the guest's draw after it begins another */
+    if (g_predraw.phase == 1)
+        vk_query_pass_end(cb);
+    else
+        vk_query_draw(cb, ds->owner);
     VkBuffer counters[4] = {g_xfb.buf, g_xfb.buf, g_xfb.buf, g_xfb.buf};
     u64 counter_base = xfb_counter_offset(ds->owner);
     VkDeviceSize counter_offs[4] = {counter_base, counter_base + 4, counter_base + 8, counter_base + 12};
@@ -5302,9 +5691,10 @@ retry:
     vk_buf_writable_commit();
     draw_images_commit(&images);
     feedback_done(fb, writes);
-    if (fb) g_vk_fb_draws++;
+    if (fb && g_predraw.phase != 1) g_vk_fb_draws++; /* the guest's draws: a save draw is the renderer's own */
+    if (predraw) vk_predraw_drawn();
     for (u32 i = 0; i < n; i++)
-        if ((writes >> i & 1) && !capture) target_written(g_rp.rt[i]);
+        if ((writes >> i & 1) && !capture && !g_rp.rt[i]->predraw) target_written(g_rp.rt[i]);
     if (programmable_blend && ds->blend.mask[0]) target_written(rt[0]);
     if (zt && !zt_ro &&
         (ds->dyn.depth_write ||

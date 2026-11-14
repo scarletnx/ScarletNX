@@ -263,3 +263,4 @@ bool snx_zip_safe_name(const char* name) {
     }
     return true;
 }
+uint32_t snx_crc32(const void* data, size_t size) { return (uint32_t)libdeflate_crc32(0, data, size); }

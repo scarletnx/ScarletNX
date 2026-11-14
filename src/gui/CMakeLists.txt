@@ -57,6 +57,8 @@ add_library(snx_gui_support STATIC aot.c model.c browser.c steps.c theme.c recen
             "${PROJECT_BINARY_DIR}/generated/gui_themes.c" "${PROJECT_BINARY_DIR}/generated/gui_glyphs.c"
             "${PROJECT_BINARY_DIR}/generated/gui_titles.c")
 target_link_libraries(snx_gui_support PUBLIC scarletnx-common snx_setup snx_i18n snx_settings snx_miniz PRIVATE snx_libdeflate)
+# Install Keys' check of the DS's ARM7 BIOS, its CRC-32 (snx_crc32, main.c)
+target_link_libraries(snx_gui_support PUBLIC snx_zip)
 # Download Driver's GitHub lists (gpu_driver_fetch.c), edenprobe's report (probe.c)
 target_link_libraries(snx_gui_support PRIVATE snx_yyjson)
 # a z3ds game's title (title.c), read from the start of its zstd stream, where the build has zstd

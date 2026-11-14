@@ -245,8 +245,11 @@ void mx_draw_blend(const u32* r, DsBlend* b) {
 }
 
 /* ANTI_ALIAS_ALPHA_CONTROL (0x54F, Eden's anti_alias_alpha_control): alpha to coverage in bit 0, alpha to one in
-   bit 4. The sample mask stays all samples: the 3D engine's per-pixel masks of a 2x2 quad (0x3EF-0x3F2) aren't
-   taken */
+   bit 4. SET_MULTISAMPLE_SAMPLE_MASK (0x3EF-0x3F2): the samples each pixel of a 2x2 quad may write, 16 bits each.
+   Vulkan's mask is one for every pixel: the four as one when they agree (deko3d writes one to all four), else the
+   samples any of them leaves (r3d_draw says so). All 16 is ~0, a mask of every sample. Under raster samples of its
+   own (SET_MULTISAMPLE_RASTER_ENABLE, 0x3ED) the mask is over those, which the renderer doesn't draw (#1895): it stays
+   all, so such a draw still covers its pixels */
 void mx_draw_raster_key(const u32* r, DsRasterKey* k) {
     u32 clip = (r[0x64F] >> 11) & 7;
     memset(k, 0, sizeof *k);
@@ -257,7 +260,9 @@ void mx_draw_raster_key(const u32* r, DsRasterKey* k) {
     k->alpha_to_coverage = r[0x54F] & 1;
     k->alpha_to_one = (r[0x54F] >> 4) & 1;
     k->patch_vertices = r[0x373];
-    k->sample_mask = ~0u;
+    u32 mask = 0;
+    for (u32 i = 0; i < 4; i++) mask |= r[MAXWELL3D_SAMPLE_MASK + i] & 0xFFFF;
+    k->sample_mask = mask == 0xFFFF || (r[MAXWELL3D_RASTER_SAMPLES_ENABLE] & 1) ? ~0u : mask;
     /* CONSERVATIVE_RASTER (0x452). Its dilation goes to a GPC register through a macro of NVN's (0x418800), which no
        3D register shows: taken as none */
     k->conservative = r[MAXWELL3D_CONSERVATIVE_RASTER] & 1;

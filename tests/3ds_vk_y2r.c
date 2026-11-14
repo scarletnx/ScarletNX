@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#define POOL     0x20100000u /* FCRAM pages handed out to the streams */
+#define POOL     test_ctr_fcram(0x20100000u) /* FCRAM pages handed out to the streams, its upper half on a New 3DS */
 #define MAX_SPAN 0x500000u
 static uint32_t seed = 0x2f1u;
 static uint32_t next(void) {
@@ -43,8 +43,9 @@ static uint32_t* place(SnxCtrMemory* m, uint32_t first, uint64_t span, unsigned 
     return pages;
 }
 int main(int argc, char** argv) {
+    SnxCtrModel model = test_ctr_model(&argc, argv);
     int vk_memory = test_ctr_vk_memory(&argc, argv);
-    SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
+    SnxCtrMemory* m = snx_ctr_memory_new(model);
     char why[256];
     assert(m);
     if (!snx_ctr_vk_init(m, why, sizeof why)) {

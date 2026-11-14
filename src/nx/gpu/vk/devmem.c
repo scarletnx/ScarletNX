@@ -116,10 +116,12 @@ static u64 heap_budget(u32 h) {
 /* a heap's use by every process: the driver's count then, and what this process took and gave back since (lock
    held) */
 static u64 heap_usage(u32 h) {
-    /* the block the thread ahead is making counts already */
-    u64 ahead = g_devmem.ahead.busy && g_devmem.mp.memoryTypes[g_devmem.ahead.type].heapIndex == h
-                    ? g_devmem.ahead.size
-                    : 0;
+    /* the block the thread ahead is making counts already, and so does the one it is asked for: the requests that
+       come before the thread begins leave it its room under the cap */
+    u64 ahead =
+        (g_devmem.ahead.busy || g_devmem.ahead.want) && g_devmem.mp.memoryTypes[g_devmem.ahead.type].heapIndex == h
+            ? g_devmem.ahead.size
+            : 0;
     if (!g_vk.has_budget) return g_devmem.block_bytes[h] + ahead;
     u64 use = g_devmem.drv_usage[h] + g_devmem.block_bytes[h] + ahead;
     return use > g_devmem.drv_blocks[h] ? use - g_devmem.drv_blocks[h] : 0;
@@ -562,6 +564,8 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
                 own = DM_OWN_RATHER;
         }
         *mem = alloc_in((u32)type, req, want, own, buf, img, &res);
+        /* a preference is not a need: when the driver has no memory for the resource alone, a block may have */
+        if (!*mem && own == DM_OWN_RATHER) *mem = alloc_in((u32)type, req, want, 0, buf, img, &res);
     }
     bits = req->memoryTypeBits;
     for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type))

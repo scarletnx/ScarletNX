@@ -406,14 +406,24 @@ Implemented:
   than charged to application FCRAM. The limited kernel personality reports
   version 2.58 and the memory mode the title runs in, with its regions' sizes: an
   Old 3DS takes the mode the ExHeader names (0, 64 MiB for the application; 2, 96;
-  3, 80; 4, 72; 5, 32) and a New 3DS mode 6 (124 MiB) for every title, as Azahar
-  launches them. An ExHeader naming mode 1 or one above 5 is refused. The New 3DS's
-  178 MiB mode, resource-limit capabilities and kernel/firmware configuration
-  fields are not modeled.
+  3, 80; 4, 72; 5, 32), as Azahar launches them. A New 3DS lays out mode 6, or mode 7
+  (178 MiB for the application) for a title whose New 3DS system mode (ExHeader
+  0x20D) is 2. A title that names a New 3DS mode gets all of mode 6's 124 MiB; a
+  legacy one (New 3DS mode 0) gets its Old 3DS mode's share of it, which the
+  configuration page reports and the heap enforces, as the console's process
+  manager limits it (Azahar's UpdateReportedMemory). An ExHeader naming mode 1 or
+  one above 5 is refused. Resource-limit capabilities and kernel/firmware
+  configuration fields are not modeled. The run prints the share and the linear
+  heap's address.
 - ControlMemory (`0x01`) validates page ranges/permissions and supports commit,
   free and protect of owned heap/linear allocations. Normal heap uses explicit
   VAs in `0x08000000..0x10000000` and may span discontiguous physical holes.
-  Linear memory is physically contiguous with `PA = VA - 0x14000000 + 0x20000000`.
+  Linear memory is physically contiguous with `PA = VA - base + 0x20000000`, the
+  base `0x14000000`, or `0x30000000` for a title whose ExHeader names kernel 2.44
+  (`0x22C`, system 8.0.0) or later, as Azahar places it: the old base leaves no room
+  for mode 7's 178 MiB below VRAM's mapping at `0x1F000000`. GetProcessInfo type 20
+  gives the process's base. Shared memory a service makes, and the system font, stay
+  at their old linear address, as Azahar maps them.
   Recycled pages are zeroed. Requests are preflighted and failed publication is
   rolled back. MAP and UNMAP alias the application's own heap (an UNMAP that does
   not match a MAP returns `0xD8E007F5`), the region bits of the operation are
@@ -787,8 +797,13 @@ A launch runs until the game exits or its window is closed, as a Switch game doe
 `--max-blocks N` stops it after N native blocks instead. A larger-image block may
 execute up to 32 instructions, so this is not a cycle or exact instruction budget.
 Each instruction still checks fetch, identity and permissions.
-`--model old|new` selects RAM backing (default Old), not a different ISA or
-compiler. `--board-info` prints physical regions without allocating RAM.
+`--model old|new` selects RAM backing, not a different ISA or compiler. Without it a
+game runs on the console its `.ini` names (`model=`), and on its first run on the one
+it asks for: a New 3DS when its SMDH marks it New 3DS exclusive (the flags at 0x2028,
+bit 12, which the Home Menu refuses on an Old 3DS) or its ExHeader names the New 3DS's
+178 MiB system mode (0x20D, mode 2), which only a New 3DS has; an Old 3DS otherwise,
+as a title that names the 124 MiB New 3DS mode runs on both. The run says so, and the
+`.ini` keeps the choice. `--board-info` prints physical regions without allocating RAM.
 `--ipc-stubs L`, with `--ctr_auto_stub_ipc=0`, still answers the unknown commands of
 the services in L (`all`, or a comma list of `srv`, `fs`, `apt`, `ptm`, `hid`, `gsp`,
 `cfg`, `dsp`, `system`, `am`) with success instead of stopping. Given more than once,
@@ -1089,7 +1104,11 @@ The offline compiler (`src/3ds/aot/compiler.c`, part of the driver) has its own
 ARM11/checked codegen options; shared A57 emission and CPU ABI defaults remain unchanged.
 
 The tick domain remains 268,111,856 Hz, with 4,481,136 base ticks per frame, as
-in Azahar. New 3DS CPU scaling is a separate future scheduler concern. Interrupts
+in Azahar. The game's code runs natively, so a New 3DS's 804 MHz clock and L2 cache
+have nothing to change: ptm:sysm's ConfigureNew3DSCPU takes them on a New 3DS (said
+once), and the tick counter keeps its rate, as on the console. On an Old 3DS, or with
+a bit it does not know, the command stops. Threads on cores 2 and 3 share the one
+serialized scheduler with the others. Interrupts
 are delivered at the scheduler's deadlines (vblank, DSP frames, timers), paced by
 the host clock rather than by guest cycles. There is no ARM9 emulation or boot ROM. Synthetic CIAs and
 the supplied SuperTux startup execute natively, not complete games/retail titles.
@@ -1155,9 +1174,6 @@ phase that reworks its area:
 - F3 (kernel and IPC, with the services retail titles use):
   - Every reply writes back all 64 command words, where the console copies only
     the reply's length (to be checked on hardware).
-  - GetProcessInfo type 20 always gives the old linear heap's offset. Azahar picks
-    `0x30000000` for kernels from `0x22C` by the ExHeader's descriptor, while the
-    configuration page reports `0x23A`.
   - A wait-all that succeeds at once writes -1 to r1 where Azahar leaves it, and a
     timed arbiter wait that is signaled leaves the timeout result in r0 in Azahar.
     What the console does in both cases is unknown.

@@ -176,10 +176,12 @@ static uint16_t io_written(AgbBoard* board, uint32_t byte, uint32_t offset) {
     return board->io[offset];
 }
 
-/* SIOCNT with no link cable plugged, as mGBA's machine without a link driver answers it: the multi-player mode's SI says
-   a child with no parent and SD that the line is ready, the normal modes' SI is pulled up. A transfer started keeps the
-   start bit set for the transfer's time (agb_sio_step), then ends with the data no partner sent, 0, and the serial
-   interrupt when SIOCNT asks for it. A game that looks for a partner finds none and plays alone */
+/* SIOCNT with no link cable plugged, as the console answers it (mGBA's suite's sio-read.c and sio-timing.c): the
+   multi-player mode's SI says a child with no parent and SD that the line is ready, the normal modes' SI is pulled up.
+   A transfer on the internal clock keeps the start bit set for its bits' time and 2 cycles more (agb_sio_step), then
+   ends with the data no partner sent, 0, and the serial interrupt when SIOCNT asks for it. One that waits for a
+   partner's clock, a multi-player child's or the normal modes' external one, keeps its start bit set and never ends,
+   as the console's times out */
 static void sio_write(AgbBoard* board, uint16_t value) {
     uint16_t old = board->io[0x128 >> 1], rcnt = board->io[0x134 >> 1];
     unsigned mode = ((rcnt & 0xC000) | (value & 0x3000)) >> 12;
@@ -190,12 +192,12 @@ static void sio_write(AgbBoard* board, uint16_t value) {
         value |= 0x0008; /* SD: ready */
     } else if (normal)
         value |= 0x0004; /* SI pulled up */
-    if ((multi || normal) && (value & 0x80) && !(old & 0x80)) {
-        /* mGBA's GBASIOTransferCycles with no partner: a multi-player word at its baud rate (bits 0-1), else 8 or 32
-           bits at 256 KiHz or, with bit 1, 2 MiHz */
-        static const uint32_t multi_cycles[4] = {31976, 8378, 5750, 3140};
-        board->sio_cycles = multi ? multi_cycles[value & 3] : (mode & 1 ? 32u : 8u) * (value & 2 ? 8u : 64u);
-    } else if (!(value & 0x80))
+    if (normal && (value & 0x81) == 0x81 && !(old & 0x80))
+        /* 8 or 32 bits at 256 KiHz or, with bit 1, 2 MiHz, and 2 cycles: mGBA's suite's sio-timing.c reads 633, 185,
+           2169 and 377 cycles on the console from its timer's start to its halt's end, each 2 more than the bits' time
+           gives, where the timer's start, the halt and the interrupt's entry pass its other tests */
+        board->sio_cycles = (mode & 1 ? 32u : 8u) * (value & 2 ? 8u : 64u) + 2;
+    else if (!(value & 0x80))
         board->sio_cycles = 0; /* the start bit cleared: the transfer stops */
     board->io[0x128 >> 1] = value;
 }
@@ -208,15 +210,14 @@ void agb_sio_step(AgbBoard* board, uint32_t cycles) {
     }
     board->sio_cycles = 0;
     uint16_t siocnt = board->io[0x128 >> 1];
-    if (sio_mode(board) == SIO_MULTI)
-        for (uint32_t r = 0x120; r <= 0x126; r += 2) board->io[r >> 1] = 0; /* no partner's word */
-    else {
-        board->io[0x12A >> 1] = 0; /* SIODATA8, and SIODATA32's halves */
-        board->io[0x120 >> 1] = board->io[0x122 >> 1] = 0;
-    }
+    board->io[0x12A >> 1] = 0; /* SIODATA8, and SIODATA32's halves */
+    board->io[0x120 >> 1] = board->io[0x122 >> 1] = 0;
     board->io[0x128 >> 1] = (uint16_t)(siocnt & ~0x0080);
     if (siocnt & 0x4000) agb_irq_request(board, AGB_IRQ_SERIAL);
 }
+
+/* the interrupt line: IME on and an interrupt both IE and IF hold */
+static int irq_line(const AgbBoard* board) { return (board->irq_ime & 1) && (board->irq_ie & board->irq_if & 0x3FFF); }
 
 void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value, uint16_t mask) {
     uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1), byte = offset * 2;
@@ -229,6 +230,17 @@ void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value, uint16_t 
     }
     if (byte == 0x202) {
         board->irq_if &= (uint16_t)~(value & mask); /* one bits acknowledge the interrupt flags of the lanes written */
+        return;
+    }
+    if (byte == 0x200 || byte == 0x208) {
+        /* the CPU's line rises 3 cycles after a write that lets a held interrupt through */
+        int was = irq_line(board);
+        if (mask != 0xFFFF) value = (uint16_t)((value & mask) | (io_written(board, byte, offset) & ~mask));
+        if (byte == 0x200)
+            board->irq_ie = value;
+        else
+            board->irq_ime = value & 1;
+        if (!was && irq_line(board)) board->irq_at = board->now + 3;
         return;
     }
     if (mask != 0xFFFF) value = (uint16_t)((value & mask) | (io_written(board, byte, offset) & ~mask));
@@ -246,14 +258,6 @@ void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value, uint16_t 
     }
     if (byte >= 0x100 && byte <= 0x10F) {
         agb_timer_write(board, byte, value);
-        return;
-    }
-    if (byte == 0x200) {
-        board->irq_ie = value;
-        return;
-    }
-    if (byte == 0x208) {
-        board->irq_ime = value & 1;
         return;
     }
     if (byte == 0x128) {
@@ -275,7 +279,22 @@ void agb_board_keys(AgbBoard* board, uint16_t held) {
         agb_irq_request(board, AGB_IRQ_KEYPAD);
 }
 
-void agb_irq_request(AgbBoard* board, uint32_t mask) {
+void agb_irq_raise(AgbBoard* board, uint32_t mask, uint64_t at) {
+    int was = irq_line(board);
     board->irq_if |= (uint16_t)mask;
-    board->cpu_halted = 0; /* any raised flag wakes a halted CPU */
+    /* a halted CPU waits while IE and IF share no interrupt (GBATEK's HALTCNT), whatever IME says */
+    if (board->irq_ie & board->irq_if & 0x3FFF) board->cpu_halted = 0;
+    if (!was && irq_line(board)) board->irq_at = at + 3;
+}
+
+void agb_irq_request(AgbBoard* board, uint32_t mask) { agb_irq_raise(board, mask, board->now); }
+
+uint64_t agb_board_next_irq(const AgbBoard* board) {
+    uint64_t at = agb_timer_next_irq(board), display = agb_ppu_next_irq(board);
+    if (display < at) at = display;
+    /* the serial transfer ends with its interrupt when SIOCNT asks for one */
+    if (board->sio_cycles && (board->io[0x128 >> 1] & 0x4000) && (board->irq_ie & AGB_IRQ_SERIAL) &&
+        board->now + board->sio_cycles < at)
+        at = board->now + board->sio_cycles;
+    return at == UINT64_MAX ? at : at + 3;
 }

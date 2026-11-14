@@ -82,7 +82,7 @@ int main(void) {
     char* image = dir ? snx_path_join(dir, "test.nds") : NULL;
     CHECK(image && nds_test_image(image, nds_test_program, nds_test_program_words));
     NdsRom rom;
-    CHECK(nds_rom_open(&rom, image, error, sizeof error));
+    CHECK(nds_rom_open(&rom, image, NULL, error, sizeof error));
     NdsBoard* board = calloc(1, sizeof *board);
     CHECK(board && nds_board_init(board, &rom, error, sizeof error));
     unsigned char* w = board->mem.base;

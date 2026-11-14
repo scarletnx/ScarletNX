@@ -29,9 +29,13 @@ bool snx_ctr_module_fields(const SnxCtrModule* m, const SnxCtrImage* image) {
 }
 /* Schedule a thread to run: false when none runs now, with the dispatch's result in stop. An idle wake (a vblank or
    an audio frame that woke nobody) ends the dispatch as a spent budget, so the caller can look at its window and
-   dispatch again; no thread ever running again is BLOCKED. */
-static bool scheduled(SnxCtrProcess* process, SnxCtrRunResult* stop) {
+   dispatch again; no thread ever running again is BLOCKED. An SVC or a hook inside a core's slice (stay) serves that
+   core first; the slice, blocks counted in *slice, starts again when the turn passes to another core or it ended. */
+static bool scheduled(SnxCtrProcess* process, SnxCtrRunResult* stop, bool stay, uint32_t* slice) {
+    uint32_t core = process->next_core;
+    process->stay_on_core = stay;
     SnxCtrSchedule s = snx_ctr_schedule(process);
+    if (!stay || process->next_core != core) *slice = 0;
     *stop = s == SNX_CTR_SCHED_IDLE ? SNX_CTR_RUN_BUDGET : SNX_CTR_RUN_BLOCKED;
     return s == SNX_CTR_SCHED_RUN;
 }
@@ -66,17 +70,14 @@ SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, 
     SnxArmCPU* cpu = snx_ctr_process_cpu(process);
     if (!cpu || !m) return SNX_CTR_RUN_FAULT;
     SnxCtrRunResult stop;
-    if (!scheduled(process, &stop)) return stop;
     uint32_t since_poll = 0;
+    if (!scheduled(process, &stop, false, &since_poll)) return stop;
     while (*executed < limit) {
         if (process->reclaim) process->reclaim(process->compiler);
         /* Every block returns here, so a loop that makes no SVC still reaches the scheduler: due vblanks, audio frames,
            timers and timeouts are delivered, and a thread they wake with a better priority takes the core, as the
            interrupt would preempt it on the console */
-        if (++since_poll == SNX_CTR_POLL_BLOCKS) {
-            since_poll = 0;
-            if (!scheduled(process, &stop)) return stop;
-        }
+        if (++since_poll == SNX_CTR_POLL_BLOCKS && !scheduled(process, &stop, false, &since_poll)) return stop;
         uint32_t pc = cpu->r[15];
         bool thumb = !!(cpu->cpsr & SNX_ARM_T);
         unsigned width = thumb ? 2 : 4;
@@ -93,7 +94,7 @@ SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, 
             SnxCtrHookResult ran = snx_ctr_hook_run(process, cpu, hook);
             if (ran == SNX_CTR_HOOK_DONE) {
                 ++*executed;
-                if (process->sched_seq != sequence && !scheduled(process, &stop)) return stop;
+                if (process->sched_seq != sequence && !scheduled(process, &stop, true, &since_poll)) return stop;
                 continue;
             }
             if (ran == SNX_CTR_HOOK_STOP)
@@ -153,13 +154,13 @@ SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, 
                         before[2], before[3], cpu->r[0], cpu->r[1]);
             if (result == SNX_CTR_SVC_EXIT) return SNX_CTR_RUN_EXIT;
             if (result == SNX_CTR_SVC_BLOCKED) {
-                if (!scheduled(process, &stop)) return stop;
+                if (!scheduled(process, &stop, true, &since_poll)) return stop;
                 continue;
             }
             if (result == SNX_CTR_SVC_UNSUPPORTED) return SNX_CTR_RUN_UNSUPPORTED;
             cpu->exit = SNX_ARM_OK;
             cpu->syndrome = 0;
-            if (!scheduled(process, &stop)) return stop;
+            if (!scheduled(process, &stop, true, &since_poll)) return stop;
             continue;
         }
         if (cpu->exit == SNX_ARM_BACKEND_UNSUPPORTED || cpu->exit == SNX_ARM_CODE_CHANGED)

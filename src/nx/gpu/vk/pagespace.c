@@ -39,12 +39,21 @@
    go of it, with the stamp its publish left on it (gpu_mem_written_cpu) telling it to take memory's bytes again.
 
    A granule's memory is bound in the batch of sparse binds that goes to the queue ahead of the next submission
-   (memory.c), so nothing waits for a fence. */
+   (memory.c), so nothing waits for a fence.
+
+   A device with no sparse buffers has slabs in the regions' place (the phones and Macs of the plan, and any device
+   with vk_buffer_slabs=1): a slab is a buffer with all its memory over a run of a region's granules, made for the
+   range that first asked for them. A range binds one buffer, so one whose granules are in no one slab gets a slab
+   over them and over every slab that held some of them: their bytes are copied into it on the GPU, and they go once
+   the work that bound them is done. A page's state is kept by granule either way, so everything above holds but
+   for the draws' writes in place, which a slab does not take: the owner of a granule is of its buffer, which a join
+   replaces. */
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pagespace.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
@@ -72,13 +81,21 @@
 /* the presents a granule's pages must go without a write of the CPU before a draw's result is kept on them: a page
    the game writes every frame would trap and land every frame, a wait for the GPU each time */
 #define PG_QUIET        120
+/* the most granules of one slab: a range and the slabs a join would bring past it are refused, and buffer.c copies the
+   range (128 MiB, two of the longest ranges) */
+#define PG_SLAB_MAX     2048u
+/* the granules a slab made over others grows by at each end, where no slab is: ranges come beside the ones before
+   them, and each one more was a join more (519 in 600 presents of one game's race, a buffer made and a rendering
+   pass ended each). 1 MiB in all at most, as Ryujinx caps a buffer's growth */
+#define PG_SLAB_GROW    8u
 /* what a page of a range asked for does: it holds memory's bytes, takes them (it had none, or older ones), or is the
    cache's own. PG_CPU and PG_GPU mark one that holds bytes for a look of its own: something on the range was written
    since the oldest of its pages was taken */
 enum { PG_CUR, PG_NEW, PG_OLD, PG_MINE, PG_OLD_CPU /* PG_OLD, by a write of the CPU */, PG_CPU = 0x10, PG_GPU = 0x20 };
 
 typedef struct {
-    DevMem mem;
+    DevMem mem;  /* a sparse region's granule: its memory */
+    u32 slab;    /* with slabs: the region's slab it is in, plus one */
     /* the owner its pages are published under once a draw wrote them (vk_pages_write), with a reference: NULL until
        then. A landing waits for the submission that last wrote this granule, not the region */
     VkOwnRes* own;
@@ -93,8 +110,20 @@ typedef struct {
     u16 ck_mask;        /* the pages the tracking found unwritten in ck_epoch: not asked again in it */
     u16 full;           /* the pages with bytes */
 } PgGran;
+/* a slab: a buffer with its memory over the granules [g0, g0 + n) of its region */
 typedef struct {
-    VkBuffer buf;
+    VkBuffer buf; /* VK_NULL_HANDLE: an entry no slab is in */
+    DevMem mem;
+    u32 g0, n;
+    /* the submission in which it took other slabs' bytes (a join). That copy is in the submission's own commands,
+       after the draws that read those slabs, so what its pages take in that submission is copied there too: the
+       upload commands run before all of them */
+    u64 late;
+} PgSlab;
+typedef struct {
+    VkBuffer buf; /* the sparse buffer, or none with slabs */
+    PgSlab* slab;
+    u32 nslab;
     PgGran* gran[PG_GRANULES];
 } PgRegion;
 
@@ -107,7 +136,9 @@ typedef struct {
     u64 lo, hi, work;
 } PgUse;
 static struct {
-    int on; /* -1 until vk_pages_on has decided */
+    int on;    /* -1 until vk_pages_on has decided */
+    int slabs; /* the regions' bytes are in slabs, not in sparse buffers */
+    u32 nslabs;
     VkMemoryRequirements req;
     PgRegion** region; /* by region of guest memory, NULL where no range was asked for */
     u32 regions, nregion, region_max;
@@ -138,35 +169,45 @@ static struct {
         u64 served, served_bytes, uploads, upload_bytes, refused[PG_NO_N], let_go;
         u64 patched, written, written_bytes, published, write_refused[PG_WNO_N], not_trapped, barriers, landed;
         u64 again, longs, long_ns; /* bound where they were; ranges past PG_PATCH_MIN looked at, and the time that took */
+        u64 joins, joined_bytes;   /* slabs made over others, and the bytes copied from those */
     } stats;
 } g_pages = {.on = -1};
 
-int vk_pages_keep(void) { return vk_pages_on() && g_settings.buffer_pages >= 2; }
+int vk_pages_keep(void) { return vk_pages_on() && !g_pages.slabs && g_settings.buffer_pages >= 2; }
 int vk_pages_on(void) {
     if (g_pages.on >= 0) return g_pages.on;
     g_pages.on = 0;
     if (!g_settings.buffer_pages) return 0;
     u64 space = g_vk.props.limits.sparseAddressSpaceSize;
     const char* why = vk_uma()                                      ? "memory shared with the CPU: read in place"
-                      : !g_vk.sparse                                ? "no sparse binding"
-                      : !g_vk.feat.sparseResidencyBuffer            ? "no sparse residency of buffers"
-                      : g_vk.max_buffer_size < PG_REGION            ? "buffers smaller than a region"
-                      : space / 8 < PG_REGION                       ? "too small an address space"
                       : vk_written_since(g_mem + AS_BASE, 1, 0) < 0 ? "no write tracking"
                                                                     : NULL;
     if (why) {
         LOG("vulkan: the buffer cache keeps guest memory by range, not by page (%s)\n", why);
         return 0;
     }
-    /* an eighth of the sparse address space at most: the mirror and the sparse textures have the rest */
-    g_pages.region_max = (u32)(space / 8 >> PG_REGION_SHIFT);
+    const char* slabs = g_settings.buffer_page_slabs         ? "vk_buffer_slabs=1"
+                        : !g_vk.sparse                       ? "no sparse binding"
+                        : !g_vk.feat.sparseResidencyBuffer   ? "no sparse residency of buffers"
+                        : g_vk.max_buffer_size < PG_REGION   ? "buffers smaller than a region"
+                        : space / 8 < PG_REGION              ? "too small an address space"
+                                                             : NULL;
+    g_pages.slabs = slabs != NULL;
     g_pages.regions = (u32)((AS_SIZE + PG_REGION - 1) >> PG_REGION_SHIFT);
+    /* an eighth of the sparse address space at most: the mirror and the sparse textures have the rest. A region of
+       slabs is a table alone */
+    g_pages.region_max = slabs ? g_pages.regions : (u32)(space / 8 >> PG_REGION_SHIFT);
     g_pages.region = calloc(g_pages.regions, sizeof *g_pages.region);
     if (!g_pages.region) return 0;
-    LOG("vulkan: the buffer cache keeps guest memory by page: sparse buffers of %llu GiB, %u at most, with memory in "
-        "granules of %llu KiB%s (vk_buffer_pages=%d)\n",
-        (unsigned long long)(PG_REGION >> 30), g_pages.region_max, (unsigned long long)(PG_SIZE >> 10),
-        g_settings.buffer_pages >= 2 ? ", and draws write guest memory there" : "", g_settings.buffer_pages);
+    if (slabs)
+        LOG("vulkan: the buffer cache keeps guest memory by page: in slabs, buffers over whole granules of %llu KiB "
+            "with all their memory (%s; vk_buffer_pages=%d)\n",
+            (unsigned long long)(PG_SIZE >> 10), slabs, g_settings.buffer_pages);
+    else
+        LOG("vulkan: the buffer cache keeps guest memory by page: sparse buffers of %llu GiB, %u at most, with memory "
+            "in granules of %llu KiB%s (vk_buffer_pages=%d)\n",
+            (unsigned long long)(PG_REGION >> 30), g_pages.region_max, (unsigned long long)(PG_SIZE >> 10),
+            g_settings.buffer_pages >= 2 ? ", and draws write guest memory there" : "", g_settings.buffer_pages);
     return g_pages.on = 1;
 }
 
@@ -175,17 +216,15 @@ static int refuse(u32 why) {
     return 0;
 }
 
-/* the region's buffer, made at its first range: NULL when the device makes no more */
-static PgRegion* region_get(u64 rg) {
-    if (g_pages.region[rg]) return g_pages.region[rg];
-    if (g_pages.nregion == g_pages.region_max) return NULL;
-    PgRegion* r = calloc(1, sizeof *r);
-    if (!r) return NULL;
-    u32 fam[2] = {g_vk.gfx_family, g_vk.compute_family};
-    VkBufferCreateInfo bci = {
+/* a buffer of guest memory's bytes: a region's sparse one, or a slab's with memory (flags 0). fam: two words that
+   live until the buffer is made */
+static VkBufferCreateInfo pg_buffer_info(VkBufferCreateFlags flags, u64 size, u32* fam) {
+    fam[0] = g_vk.gfx_family;
+    fam[1] = g_vk.compute_family;
+    return (VkBufferCreateInfo){
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT,
-        .size = PG_REGION,
+        .flags = flags,
+        .size = size,
         /* whatever a draw or a dispatch binds guest memory as, and a copy's source and destination (buffer.c's
            make_own_); what a draw writes there, transform feedback's captures too (owned.c vk_own_res_new); its
            address too where descriptors are written into buffers (descriptors.c vk_buffer_create) */
@@ -200,6 +239,20 @@ static PgRegion* region_get(u64 rg) {
         .sharingMode = fam[0] != fam[1] ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
         .queueFamilyIndexCount = fam[0] != fam[1] ? 2 : 0,
         .pQueueFamilyIndices = fam};
+}
+/* the region's buffer, made at its first range: NULL when the device makes no more. With slabs, its table alone */
+static PgRegion* region_get(u64 rg) {
+    if (g_pages.region[rg]) return g_pages.region[rg];
+    if (g_pages.nregion == g_pages.region_max) return NULL;
+    PgRegion* r = calloc(1, sizeof *r);
+    if (!r) return NULL;
+    if (g_pages.slabs) {
+        g_pages.nregion++;
+        return g_pages.region[rg] = r;
+    }
+    u32 fam[2];
+    VkBufferCreateInfo bci = pg_buffer_info(
+        VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT, PG_REGION, fam);
     if (!VK_OK(vkCreateBuffer(g_vk.dev, &bci, NULL, &r->buf))) {
         free(r);
         return NULL;
@@ -262,7 +315,7 @@ static void gran_drop(PgRegion* r, u64 g) {
 /* the copies recorded so far into r's buffer. In the submission's upload commands: after the work submitted before,
    which may read the old bytes, and before this submission's draws. Or (after) in its own commands, outside a
    rendering pass: after the draws recorded so far, which read the old bytes */
-static void runs_flush(const PgRegion* r, VkBuffer sb, VkBufferCopy* run, u32* n, int after) {
+static void runs_flush(VkBuffer dst, VkBuffer sb, VkBufferCopy* run, u32* n, int after) {
     if (!*n) return;
     VkCommandBuffer cb = after ? vk_cmd() : vk_cmd_upload(0);
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -272,13 +325,124 @@ static void runs_flush(const PgRegion* r, VkBuffer sb, VkBufferCopy* run, u32* n
                           .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT};
     VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
     rec_CmdPipelineBarrier2(cb, &d);
-    rec_CmdCopyBuffer(cb, sb, r->buf, *n, run);
+    rec_CmdCopyBuffer(cb, sb, dst, *n, run);
     b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT;
     rec_CmdPipelineBarrier2(cb, &d);
     *n = 0;
+}
+
+/* ---------------------------------------------------------------- slabs */
+/* the slab's buffer goes once the work that bound it is done, and its entry is free */
+static void slab_retire(PgSlab* k) {
+    vk_defer_buffer(k->buf, k->mem);
+    *k = (PgSlab){0};
+    g_pages.nslabs--;
+}
+/* A slab of r over the granules [g0, g1], and over every slab that has some of them: its index plus one, 0 when it
+   would pass PG_SLAB_MAX or memory has none. The others' bytes are copied into it after the draws recorded so far,
+   which bound them, and they go: every granule in it is of it from here on, those with no bytes yet too */
+static u32 slab_join(PgRegion* r, u64 g0, u64 g1, u64 sub) {
+    u64 lo = g0, hi = g1;
+    for (u64 g = g0; g <= g1; g++) {
+        const PgGran* q = r->gran[g];
+        if (!q) continue;
+        const PgSlab* k = &r->slab[q->slab - 1];
+        if (k->g0 < lo) lo = k->g0;
+        if (k->g0 + k->n - 1 > hi) hi = k->g0 + k->n - 1;
+        g = k->g0 + k->n - 1; /* past it */
+    }
+    if (hi - lo + 1 > PG_SLAB_MAX) return 0;
+    if (lo != g0 || hi != g1 || r->gran[g0]) { /* over others: room for the ranges that come beside it */
+        for (u32 k = 0; k < PG_SLAB_GROW && lo && !r->gran[lo - 1] && hi - lo + 1 < PG_SLAB_MAX; k++) lo--;
+        for (u32 k = 0; k < PG_SLAB_GROW && hi + 1 < PG_GRANULES && !r->gran[hi + 1] && hi - lo + 1 < PG_SLAB_MAX; k++)
+            hi++;
+    }
+    const u64 n = hi - lo + 1;
+    u32 at = 0;
+    while (at < r->nslab && r->slab[at].buf) at++;
+    if (at == r->nslab) {
+        PgSlab* grown = realloc(r->slab, ((size_t)r->nslab + 16) * sizeof *grown);
+        if (!grown) return 0;
+        memset(grown + r->nslab, 0, 16 * sizeof *grown);
+        r->slab = grown;
+        r->nslab += 16;
+    }
+    /* the granules it brings in that have no state yet, before anything is made: none is left half entered */
+    for (u64 g = lo; g <= hi; g++)
+        if (!r->gran[g] && !(r->gran[g] = calloc(1, sizeof(PgGran)))) {
+            for (u64 x = lo; x < g; x++)
+                if (!r->gran[x]->slab) {
+                    free(r->gran[x]);
+                    r->gran[x] = NULL;
+                }
+            return 0;
+        }
+    u32 fam[2];
+    VkBufferCreateInfo bci = pg_buffer_info(0, n << PG_SHIFT, fam);
+    DevMemWant want = {.at = DM_DEVICE};
+    PgSlab made = {.g0 = (u32)lo, .n = (u32)n};
+    if (!VK_OK(vk_buffer_create(&bci, &want, &made.buf, &made.mem, NULL))) {
+        for (u64 g = lo; g <= hi; g++)
+            if (!r->gran[g]->slab) {
+                free(r->gran[g]);
+                r->gran[g] = NULL;
+            }
+        return 0;
+    }
+    vk_mem_track(made.mem, VK_OWN_BUFFER);
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    for (u64 g = lo; g <= hi; g++) {
+        PgGran* q = r->gran[g];
+        if (!q->slab) { /* new here */
+            q->slab = at + 1;
+            g_pages.bound++;
+            continue;
+        }
+        PgSlab* old = &r->slab[q->slab - 1];
+        const u64 last = old->g0 + old->n - 1;
+        if (!cb) {
+            vk_render_end(); /* copies happen outside rendering passes */
+            cb = vk_cmd();
+            vk_all_barrier(cb);
+        }
+        const VkBufferCopy all = {0, (u64)(old->g0 - lo) << PG_SHIFT, (u64)old->n << PG_SHIFT};
+        rec_CmdCopyBuffer(cb, old->buf, made.buf, 1, &all);
+        g_pages.stats.joined_bytes += all.size;
+        for (u64 x = old->g0; x <= last; x++) r->gran[x]->slab = at + 1;
+        slab_retire(old);
+        g = last;
+    }
+    if (cb) {
+        vk_all_barrier(cb);
+        made.late = sub;
+        g_pages.stats.joins++;
+    }
+    r->slab[at] = made;
+    g_pages.nslabs++;
+    return at + 1;
+}
+/* the slab that holds the granules [g0, g1] of r, made or joined when none does: its index plus one, or 0 */
+static u32 slab_cover(PgRegion* r, u64 g0, u64 g1, u64 sub) {
+    const PgGran* q = r->gran[g0];
+    if (q) {
+        const PgSlab* k = &r->slab[q->slab - 1];
+        if (g1 < (u64)k->g0 + k->n) return q->slab;
+    }
+    return slab_join(r, g0, g1, sub);
+}
+/* slab at of r, which nothing read for a while, goes with its granules' state */
+static void slab_drop(PgRegion* r, u32 at) {
+    PgSlab* k = &r->slab[at];
+    for (u64 g = k->g0; g < (u64)k->g0 + k->n; g++) {
+        free(r->gran[g]);
+        r->gran[g] = NULL;
+    }
+    g_pages.bound -= k->n;
+    g_pages.stats.let_go += k->n;
+    slab_retire(k);
 }
 
 /* ---------------------------------------------------------------- the order of work in place */
@@ -360,6 +524,8 @@ typedef struct {
     u64 stale;   /* the pages that take bytes */
     u64 covered; /* the range's bytes that the cache owns already */
     int hot;   /* one of them was given out in this submission: they are copied after its draws */
+    VkBuffer buf; /* what the range binds (bring): the region's buffer, or its slab's */
+    u64 bias;     /* and where that buffer starts in the region: 0, or the slab's first granule's place */
     u8 take[PG_LEN_MAX / 4096 + 1]; /* PG_*, a page each */
 } PgAsk;
 static void cpu_note(void* user, u64 at, u64 n) {
@@ -506,8 +672,20 @@ static void gran_oldest(PgGran* q) {
 static int bring(PgAsk* a) {
     PgRegion* r = a->r;
     u64 p0 = a->p0, p1 = a->p1, left = a->stale, piece = 0, done = 0;
-    for (u64 g = p0 >> (PG_SHIFT - 12); g <= p1 >> (PG_SHIFT - 12); g++)
-        if (!gran_get(r, g)) return refuse(PG_NO_MEMORY);
+    a->buf = r->buf;
+    a->bias = 0;
+    if (g_pages.slabs) {
+        const u32 at = slab_cover(r, p0 >> (PG_SHIFT - 12), p1 >> (PG_SHIFT - 12), a->sub);
+        if (!at) return refuse(PG_NO_MEMORY);
+        const PgSlab* k = &r->slab[at - 1];
+        a->buf = k->buf;
+        a->bias = (u64)k->g0 << PG_SHIFT;
+        /* a slab that took others' bytes in this submission takes them in its own commands: what its pages take now
+           goes there too, after that copy */
+        if (k->late == a->sub) a->hot = 1;
+    } else
+        for (u64 g = p0 >> (PG_SHIFT - 12); g <= p1 >> (PG_SHIFT - 12); g++)
+            if (!gran_get(r, g)) return refuse(PG_NO_MEMORY);
     if (a->hot && left) {
         vk_render_end(); /* copies happen outside rendering passes */
         g_pages.stats.patched++;
@@ -538,10 +716,11 @@ static int bring(PgAsk* a) {
         if (t == PG_OLD_CPU) q->cpu_wrote = g_vk_present ? g_vk_present : 1;
         if (t == PG_NEW || t == PG_OLD || t == PG_OLD_CPU) {
             if (!piece) { /* the ring a piece at a time: a window's first use is tens of megabytes */
-                runs_flush(r, sb, run, &nrun, a->hot);
+                runs_flush(a->buf, sb, run, &nrun, a->hot);
                 piece = left < PG_STAGE ? left : PG_STAGE;
                 done = 0;
-                if (!(host = vk_stage_upload(piece << 12, vk_stage_align(), &sb, &so))) {
+                if (!(host = vk_stream_upload(piece << 12, vk_stage_align(), &sb, &so))) {
+                    q->ck_mask &= (u16)~(1u << k); /* not taken: the tracking is asked for it again */
                     if (took && q->full == PG_FULL) gran_oldest(q);
                     return refuse(PG_NO_MEMORY);
                 }
@@ -551,11 +730,11 @@ static int bring(PgAsk* a) {
             q->gw[k] = a->gnow;
             q->full |= (u16)(1u << k);
             took = 1;
-            if (nrun && run[nrun - 1].dstOffset + run[nrun - 1].size == p << 12)
+            if (nrun && run[nrun - 1].dstOffset + run[nrun - 1].size == (p << 12) - a->bias)
                 run[nrun - 1].size += 4096; /* touching the last: one copy */
             else {
-                if (nrun == PG_RUNS) runs_flush(r, sb, run, &nrun, a->hot);
-                run[nrun++] = (VkBufferCopy){so + (done << 12), p << 12, 4096};
+                if (nrun == PG_RUNS) runs_flush(a->buf, sb, run, &nrun, a->hot);
+                run[nrun++] = (VkBufferCopy){so + (done << 12), (p << 12) - a->bias, 4096};
             }
             done++;
             piece--;
@@ -563,7 +742,7 @@ static int bring(PgAsk* a) {
         }
         if (took && (p == p1 || k == PG_PAGES - 1) && q->full == PG_FULL) gran_oldest(q);
     }
-    runs_flush(r, sb, run, &nrun, a->hot);
+    runs_flush(a->buf, sb, run, &nrun, a->hot);
     if (a->stale) {
         g_pages.stats.uploads++;
         g_pages.stats.upload_bytes += a->stale << 12;
@@ -585,8 +764,8 @@ int vk_pages_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     order_use(lo, lo + len, 0, 0);
     g_pages.stats.served++;
     g_pages.stats.served_bytes += len;
-    *buf = a.r->buf;
-    *off = a.at;
+    *buf = a.buf;
+    *off = a.at - a.bias;
     return 1;
 }
 void vk_pages_read(u64 gva, u64 len) {
@@ -691,7 +870,13 @@ void vk_pages_frame(void) {
     for (u32 rg = part; rg < g_pages.regions; rg += 16) {
         PgRegion* r = g_pages.region[rg];
         if (!r) continue;
-        for (u64 g = 0; g < PG_GRANULES; g++) {
+        for (u32 at = 0; at < r->nslab; at++) { /* a slab goes whole, once none of its granules was read lately */
+            const PgSlab* k = &r->slab[at];
+            int idle = k->buf != VK_NULL_HANDLE;
+            for (u64 g = k->g0; idle && g < (u64)k->g0 + k->n; g++) idle = (i32)(r->gran[g]->used - before) < 0;
+            if (idle) slab_drop(r, at);
+        }
+        for (u64 g = 0; !g_pages.slabs && g < PG_GRANULES; g++) {
             const PgGran* q = r->gran[g];
             if (!q || (i32)(q->used - before) >= 0) continue;
             u64 cpu = ((u64)rg << PG_REGION_SHIFT) + (g << PG_SHIFT);
@@ -740,6 +925,11 @@ void vk_pages_log(void) {
         (unsigned long long)no[PG_NO_RUN], (unsigned long long)no[PG_NO_REGION], (unsigned long long)no[PG_NO_ALIGN],
         (unsigned long long)no[PG_NO_TRACK], (unsigned long long)no[PG_NO_OWNED], (unsigned long long)no[PG_NO_HOT],
         (unsigned long long)no[PG_NO_MEMORY]);
+    if (g_pages.slabs)
+        LOG("vulkan: page cache over 600 presents: %u slabs hold the granules; %llu made over others, with %.1f MB "
+            "copied from those\n",
+            g_pages.nslabs, (unsigned long long)g_pages.stats.joins,
+            (double)g_pages.stats.joined_bytes / 1048576.0);
     const u64* wno = g_pages.stats.write_refused;
     if (g_pages.owners || wno[PG_WNO_ASK] || wno[PG_WNO_CPU])
         LOG("vulkan: page cache, draws' results: %llu ranges written in place (%.1f MB), %llu refused as a read is "

@@ -49,7 +49,7 @@ typedef struct {
     u32 shared, shared_ptr, shared_words;
     u32 local, local_ptr, local_words; /* LDL and STL's memory: a Function array, made at the start */
     u32 in_attr[32], out_attr[32], position, point_size, fragcoord, color[8], depth;
-    u32 vertex_index, instance_index, local_id, group_id, lane_id;
+    u32 vertex_index, instance_index, base_instance, local_id, group_id, lane_id;
     u32 num_groups, hmma_count;  /* NumWorkgroups and the HMMAs so far, for hmma_zero */
     int coop;                    /* HMMA takes hmma_coop (coop_wanted), and the module the Vulkan memory model */
     u32 coop_slots, subgroup_id; /* hmma_coop's slots (Workgroup) and SubgroupId */
@@ -57,7 +57,7 @@ typedef struct {
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
-    u32 point_coord, front_facing;
+    u32 point_coord, front_facing, primitive_id;
     /* a fragment program at a resolution scale: SNX_VKB_RS's vec4 (scale_component) and the fragment stage's push
        constants, whose uvec4s mark the textures bound to scaled render targets (scaled_slot) */
     u32 scale, scale_ptr, scaled_push;
@@ -365,11 +365,15 @@ static u32 carry_in(Ctx* c, u32 field_lo, const Sm86Insn* in, int uniform) {
     u32 p = prd(c, sm86_field(in, field_lo, 3), sm86_field(in, field_lo + 3, 1), uniform);
     return spv_emit_ternary(&c->e, SPV_OP_SELECT, u64_type(c), p, c64(c, 1), c64(c, 0));
 }
-/* a source of a 64-bit sum: its two's complement as NAK's fold reads it, ~x + 1 in 33 bits */
-static u32 term64(Ctx* c, const Sm86Src* s) {
+/* a source of a 64-bit sum: its two's complement as NAK's fold reads it, ~x + 1 in 33 bits. With the carries in
+   (.X) the modifier is the complement alone, ~x (NAK's OpIAdd3X folds get_u32_bnot_src, and nvdisasm writes
+   IADD3.X R17, ~R17, ...): the low word's sum gave the + 1 as a carry. One game's 64-bit subtractions are
+   IADD3 a, b, -c then IADD3.X a', b', ~c', and with ~c' + 1 their high word was one too many */
+static u32 term64(Ctx* c, const Sm86Src* s, int x) {
     u32 v = src_bits(c, s);
     if (!s->neg || s->kind == SM86_SRC_IMM) return to64(c, v);
-    return op2(c, SPV_OP_I_ADD, u64_type(c), to64(c, spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, v)), c64(c, 1));
+    v = to64(c, spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, v));
+    return x ? v : op2(c, SPV_OP_I_ADD, u64_type(c), v, c64(c, 1));
 }
 
 /* ---- FTZ and the rounding modes ---- */
@@ -579,7 +583,7 @@ static u32 interp_mode(Ctx* c, u32 input) {
     return 2;
 }
 static void mesh_capability(Ctx* c) {
-    spv_emit_capability(&c->e, 5283 /* MeshShadingEXT */);
+    spv_emit_capability(&c->e, SPV_CAPABILITY_MESH_SHADING_EXT);
     spv_emit_extension(&c->e, "SPV_EXT_mesh_shader");
 }
 static u32 input_var(Ctx* c, u32 i) {
@@ -597,7 +601,7 @@ static u32 input_var(Ctx* c, u32 i) {
         add_interface(c, c->in_attr[i]);
         if (per_primitive) { /* a mesh program's output per primitive */
             mesh_capability(c);
-            spv_emit_decorate(&c->e, c->in_attr[i], 5271 /* PerPrimitiveEXT */, NULL, 0);
+            spv_emit_decorate(&c->e, c->in_attr[i], SPV_DECORATION_PER_PRIMITIVE_EXT, NULL, 0);
         }
         c->si->in_mask |= 1u << i;
     }
@@ -613,7 +617,7 @@ static u32 input_load(Ctx* c, u32 i, u32 k) {
     u32 var = input_var(c, i);
     int integer = c->stage == ST_VS && (c->si->attr_int_mask & (1u << i));
     u32 scalar = integer ? (c->si->attr_sint_mask & (1u << i) ? c->t_i32 : c->t_u32) : c->t_f32;
-    u32 ptr = spv_emit_interface_scalar_pointer(&c->e, 1, scalar, var, 0, cu(c, k));
+    u32 ptr = spv_emit_interface_scalar_pointer(&c->e, SPV_STORAGE_INPUT, scalar, var, 0, cu(c, k));
     return to_u(c, spv_emit_load(&c->e, scalar, ptr));
 }
 static u32 builtin_u32(Ctx* c, u32* var, u32 builtin) {
@@ -657,12 +661,12 @@ static u32 scaled_slot(Ctx* c, int slot, int own) {
     if (!c->scaled_push) {
         const u32 members[3] = {c->t_v4f, c->t_v4u, c->t_v4u}, offsets[3] = {16, 32, 96};
         u32 block = spv_emit_type_struct(&c->e, members, offsets, 3);
-        spv_emit_decorate(&c->e, block, 2, NULL, 0);         /* Block */
-        c->scaled_push = spv_emit_variable(&c->e, 9, block); /* 9: PushConstant */
+        spv_emit_decorate(&c->e, block, SPV_DECORATION_BLOCK, NULL, 0);
+        c->scaled_push = spv_emit_variable(&c->e, SPV_STORAGE_PUSH_CONSTANT, block);
         add_interface(c, c->scaled_push);
     }
-    u32 bits = spv_emit_push_component_f32(&c->e, spv_emit_type_pointer(&c->e, 9, c->t_u32), c->scaled_push,
-                                           cu(c, own ? 2 : 1), cu(c, slot >= 32), c->t_u32);
+    u32 bits = spv_emit_push_component_f32(&c->e, spv_emit_type_pointer(&c->e, SPV_STORAGE_PUSH_CONSTANT, c->t_u32),
+                                           c->scaled_push, cu(c, own ? 2 : 1), cu(c, slot >= 32), c->t_u32);
     u32 bit = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
                               spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, bits, cu(c, (u32)slot & 31)),
                               cu(c, 1));
@@ -738,10 +742,23 @@ static u32 frag_coord(Ctx* c, u32 k) {
 /* ALD's attribute at byte address addr, as bits */
 static u32 attr_load(Ctx* c, u32 addr) {
     if (addr >= 0x80 && addr < 0x280) return input_load(c, (addr - 0x80) >> 4, (addr >> 2) & 3);
-    if (c->stage == ST_VS && addr == 0x2f8) /* InstanceIndex counts from the base instance, the push constant's x */
-        return spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, builtin_u32(c, &c->instance_index, 43),
-                               to_u(c, push_component(c, 0)));
-    if (c->stage == ST_VS && addr == 0x2fc) return builtin_u32(c, &c->vertex_index, 42);
+    if (c->stage == ST_VS && addr == 0x2f8) {
+        /* The instance ID counts from 0 whatever the draw's base instance (the game's driver gives the program the
+           base instance apart, in c[0]), and Vulkan's InstanceIndex counts from firstInstance. Without draw
+           parameters the push constant's x is the base instance. With them it is what the draw's first instance adds
+           to the base instance (render.c), and BaseInstance gives the rest, an indirect draw's too, as the Maxwell
+           translator has it (emit_io.c). Less the push constant alone, a direct draw's instances counted from its
+           base instance there: one game's instanced buildings and trees took other instances' transforms */
+        u32 base = to_u(c, push_component(c, 0));
+        if (g_shader_draw_parameters) {
+            spv_emit_draw_parameters_capability(&c->e);
+            base = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32,
+                                   builtin_u32(c, &c->base_instance, SPV_BUILT_IN_BASE_INSTANCE), base);
+        }
+        return spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32,
+                               builtin_u32(c, &c->instance_index, SPV_BUILT_IN_INSTANCE_INDEX), base);
+    }
+    if (c->stage == ST_VS && addr == 0x2fc) return builtin_u32(c, &c->vertex_index, SPV_BUILT_IN_VERTEX_INDEX);
     if (c->stage == ST_FS && addr >= 0x70 && addr < 0x80) return to_u(c, frag_coord(c, (addr >> 2) & 3));
     fail(c, "attribute load 0x%x", addr);
     return c->zero;
@@ -792,7 +809,8 @@ static void attr_store(Ctx* c, u32 addr, u32 bits) {
         fail(c, "attribute store 0x%x", addr);
         return;
     }
-    spv_emit_store(&c->e, spv_emit_interface_scalar_pointer(&c->e, 3, c->t_f32, var, 0, cu(c, k)), to_f(c, bits));
+    spv_emit_store(&c->e, spv_emit_interface_scalar_pointer(&c->e, SPV_STORAGE_OUTPUT, c->t_f32, var, 0, cu(c, k)),
+                   to_f(c, bits));
 }
 
 /* ---- global and shared memory ---- */
@@ -802,8 +820,10 @@ static u32 gbuf_slot(Ctx* c, u32 key, int write) {
     for (int i = 0; i < c->si->ngbuf; i++)
         if (c->si->gbuf_cbuf_off[i] == key) slot = i;
     if (slot < 0) {
-        if (c->si->ngbuf >= 16) {
-            fail(c, "more than 16 global buffers");
+        /* the last slot holds the shared memory where it is in a buffer (SH_SHARED_SPILL) */
+        if (c->si->ngbuf >= (c->si->shared_spill ? SH_SHARED_SPILL : 16)) {
+            fail(c, c->si->shared_spill ? "more than 15 global buffers, with the shared memory in a buffer"
+                                        : "more than 16 global buffers");
             return 0;
         }
         slot = c->si->ngbuf++;
@@ -820,8 +840,8 @@ static u32 gbuf_slot(Ctx* c, u32 key, int write) {
            the compiler kept a value it had read, and a program waiting on its own store through the other buffer
            never finished: the GPU's context timed out. The Vulkan memory model (c->coop) has no Coherent: there the
            loads and stores are relaxed atomics instead (mem_word_load), which Mesa makes the same coherent accesses */
-        spv_emit_decorate(&c->e, c->gbuf[slot], 20 /* Aliased */, NULL, 0);
-        if (!c->coop) spv_emit_decorate(&c->e, c->gbuf[slot], 23 /* Coherent */, NULL, 0);
+        spv_emit_decorate(&c->e, c->gbuf[slot], SPV_DECORATION_ALIASED, NULL, 0);
+        if (!c->coop) spv_emit_decorate(&c->e, c->gbuf[slot], SPV_DECORATION_COHERENT, NULL, 0);
         add_interface(c, c->gbuf[slot]);
     }
     if (write)
@@ -982,7 +1002,7 @@ static void global_dynamic(Ctx* c, const Sm86Insn* in, int kind, u32 opcode, int
         if (!base) return;
         u32 relative = op2(c, SPV_OP_I_SUB, u64_type(c), address, base);
         u32 length = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
-                                     SPV(&c->e, 68 /* OpArrayLength */, c->t_u32, buffer, 0), cu(c, 2));
+                                     SPV(&c->e, SPV_OP_ARRAY_LENGTH, c->t_u32, buffer, 0), cu(c, 2));
         u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, relative, to64(c, length));
         u32 then = spv_emit_id(&c->e), other = spv_emit_id(&c->e);
         merges[k] = spv_emit_id(&c->e);
@@ -1418,16 +1438,37 @@ static int track_globals(Ctx* c) {
     free(start);
     return ok;
 }
+/* The shared memory: the workgroup's array, or where it is in a buffer (ShaderInfo.shared_spill), global buffer slot
+   SH_SHARED_SPILL, whose barriers and atomics then order that buffer (UniformMemory) */
 static u32 shared_var(Ctx* c) {
     if (!c->shared) {
         u32 bytes = c->si->shared_size > 0 ? (u32)c->si->shared_size : 16384u;
         c->shared_words = (bytes + 3) / 4;
-        u32 array = spv_emit_type_array_u32(&c->e, c->t_u32, c->shared_words);
-        c->shared = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
-        c->shared_ptr = spv_emit_type_workgroup_pointer(&c->e, c->t_u32);
+        if (c->si->shared_spill) {
+            u32 structure = spv_emit_type_struct_one(&c->e, spv_emit_type_runtime_array(&c->e, c->t_u32, 4));
+            c->shared_ptr = spv_emit_type_storage_pointer(&c->e, c->t_u32);
+            c->shared =
+                spv_emit_storage_buffer(&c->e, structure, (u32)shader_vk_set(c->stage), SNX_VKB_SSBO + SH_SHARED_SPILL);
+            spv_emit_decorate(&c->e, c->shared, SPV_DECORATION_COHERENT, NULL, 0);
+            c->e.shared_semantics = SPV_MEMORY_SEMANTICS_UNIFORM_MEMORY;
+        } else {
+            u32 array = spv_emit_type_array_u32(&c->e, c->t_u32, c->shared_words);
+            c->shared = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
+            c->shared_ptr = spv_emit_type_workgroup_pointer(&c->e, c->t_u32);
+        }
         add_interface(c, c->shared);
     }
     return c->shared;
+}
+/* where the shared memory is in a buffer, the first word of this block's part: its place in the grid (x, then y, then
+   z) times the program's words */
+static u32 shared_block_base(Ctx* c) {
+    u32 place = builtin_vec3(c, &c->group_id, SPV_BUILT_IN_WORKGROUP_ID, 2);
+    for (u32 k = 2; k-- > 0;)
+        place = spv_emit_iadd_u32(&c->e, c->t_u32, builtin_vec3(c, &c->group_id, SPV_BUILT_IN_WORKGROUP_ID, k),
+                                  spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, place,
+                                                  builtin_vec3(c, &c->num_groups, SPV_BUILT_IN_NUM_WORKGROUPS, k)));
+    return spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, place, cu(c, c->shared_words));
 }
 /* the buffer that names local memory to mem_ptr, mem_load and mem_store */
 #define MEM_LOCAL 0xffffffffu
@@ -1476,10 +1517,13 @@ static u32 mem_ptr(Ctx* c, u32 buffer, u32 address, u32 word) {
             spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, index, cu(c, c->local_words - 1)));
     if (buffer)
         return spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, buffer, c->zero, gbuf_word_index(c, buffer, index));
-    u32 last = cu(c, c->shared_words - 1);
+    u32 shared = shared_var(c), last = cu(c, c->shared_words - 1);
     index = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
                              spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, last, index), last, index);
-    return SPV(&c->e, SPV_OP_ACCESS_CHAIN, c->shared_ptr, shared_var(c), index);
+    if (c->si->shared_spill)
+        return spv_emit_storage_access_u32(&c->e, c->shared_ptr, shared, c->zero,
+                                           spv_emit_iadd_u32(&c->e, c->t_u32, shared_block_base(c), index));
+    return SPV(&c->e, SPV_OP_ACCESS_CHAIN, c->shared_ptr, shared, index);
 }
 /* an address in shared or local memory: the register at 24 times 1, 4, 8 or 16 (bits 78-79, NAK's OffsetStride), the
    uniform register ur (SM86_URZ for none) and the signed 24-bit offset */
@@ -1588,18 +1632,18 @@ static u32 atomic_fadd(Ctx* c, u32 buffer, u32 address, u32 data) {
             u32 structure = spv_emit_type_struct_one(&c->e, spv_emit_type_runtime_array(&c->e, c->t_f32, 4));
             c->gbuf_f32[slot] =
                 spv_emit_storage_buffer(&c->e, structure, (u32)shader_vk_set(c->stage), SNX_VKB_SSBO + slot);
-            spv_emit_decorate(&c->e, c->gbuf_f32[slot], 20 /* Aliased */, NULL, 0);
-            if (!c->coop) spv_emit_decorate(&c->e, c->gbuf_f32[slot], 23 /* Coherent */, NULL, 0);
+            spv_emit_decorate(&c->e, c->gbuf_f32[slot], SPV_DECORATION_ALIASED, NULL, 0);
+            if (!c->coop) spv_emit_decorate(&c->e, c->gbuf_f32[slot], SPV_DECORATION_COHERENT, NULL, 0);
             add_interface(c, c->gbuf_f32[slot]);
         }
         spv_emit_extension(&c->e, "SPV_EXT_shader_atomic_float_add");
-        spv_emit_capability(&c->e, 6033 /* AtomicFloat32AddEXT */);
+        spv_emit_capability(&c->e, SPV_CAPABILITY_ATOMIC_FLOAT32_ADD_EXT);
         u32 index =
             gbuf_word_index(c, buffer, spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, address, cu(c, 2)));
         u32 ptr = spv_emit_storage_access_u32(&c->e, spv_emit_type_storage_pointer(&c->e, c->t_f32), c->gbuf_f32[slot],
                                               c->zero, index);
-        return to_u(c, SPV(&c->e, 6035 /* OpAtomicFAddEXT */, c->t_f32, ptr, cu(c, 1) /* Device */,
-                           cu(c, 0) /* Relaxed */, to_f(c, data)));
+        return to_u(c, SPV(&c->e, SPV_OP_ATOMIC_F_ADD_EXT, c->t_f32, ptr, cu(c, SPV_SCOPE_DEVICE),
+                           cu(c, SPV_MEMORY_SEMANTICS_RELAXED), to_f(c, data)));
     }
     SpvEmitter* e = &c->e;
     u32 ptr = mem_ptr(c, buffer, address, 0), header = spv_emit_id(e), body = spv_emit_id(e), cont = spv_emit_id(e),
@@ -1691,7 +1735,7 @@ static u32 map_var(Ctx* c) { return isbe_var(c, &c->isbe_map, SPV_STORAGE_WORKGR
    program, or a mesh program without one, which counts from the draw's first group (the push constant's x, as bits).
    A mesh program after a task program reads its index in its task's launch */
 static u32 workgroup_index(Ctx* c) {
-    u32 id = builtin_vec3(c, &c->group_id, 26, 0);
+    u32 id = builtin_vec3(c, &c->group_id, SPV_BUILT_IN_WORKGROUP_ID, 0);
     if (c->stage == ST_MS && c->si->mesh.has_task) return id;
     /* an indirect draw's first group: the record's, in the uniform buffer at SNX_VKB_RS (SH_PUSH_GPU_MESH_FIRST) */
     if (!c->mesh_first) {
@@ -2523,16 +2567,20 @@ static void texture_query(Ctx* c, const Sm86Insn* in) {
         return;
     }
     u32 handle = sm86_field(in, 40, 19), bank = (handle >> 14) & 31, off = handle & 0x3fff;
-    int slot = in->op == SM86_TXQ_U ? (int)c->handle[c->cur].slot - 1 : -1; /* memory_handles' */
-    for (int i = 0; i < c->si->ntex && slot < 0 && in->op != SM86_TXQ_U; i++)
+    int mem = in->op == SM86_TXQ_U || in->op == SM86_TXQ_B;
+    int slot = mem ? (int)c->handle[c->cur].slot - 1 : -1; /* memory_handles' */
+    /* the level: a TXQ.B's is in the register after its handle's */
+    u32 level = sm86_field(in, 24, 8);
+    if (in->op == SM86_TXQ_B) level = level + 1 < SM86_RZ ? level + 1 : SM86_RZ;
+    for (int i = 0; i < c->si->ntex && slot < 0 && !mem; i++)
         if (c->si->tex[i].bl_cbuf == bank && c->si->tex[i].cbuf_off == off &&
             !(c->si->tex[i].flags & (SNX_TEX_INDEXED | SNX_TEX_MEMORY)))
             slot = i;
     /* a TLD of a multisampled 2D texture with the handle, anywhere in the program, names its view */
     u32 ms = 0;
-    for (u32 k = 0; k < c->n && slot < 0 && !ms && in->op != SM86_TXQ_U; k++)
+    for (u32 k = 0; k < c->n && slot < 0 && !ms && !mem; k++)
         ms = c->in[k].op == SM86_TLD && sm86_field(&c->in[k], 78, 1) && sm86_field(&c->in[k], 40, 19) == handle;
-    if (slot < 0 && in->op != SM86_TXQ_U) slot = tex_slot(c, bank, off * 4, 1, 0, 0, ms);
+    if (slot < 0 && !mem) slot = tex_slot(c, bank, off * 4, 1, 0, 0, ms);
     if (slot < 0) return;
     const ShTex* t = &c->si->tex[slot];
     ms = t->flags & 2;
@@ -2542,7 +2590,7 @@ static void texture_query(Ctx* c, const Sm86Insn* in) {
     /* a multisampled texture has one level, and its size takes none */
     u32 size = spv_emit_image_query_size_lod(
         &c->e, spv_emit_type_vector(&c->e, c->t_u32, dims), c->tex_sampled[slot], c->tex[slot],
-        ms ? 0 : spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, sm86_field(in, 24, 8))));
+        ms ? 0 : spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, level)));
     u32 v[4];
     for (u32 k = 0; k < 3; k++) v[k] = k < dims ? SPV(&c->e, SPV_OP_COMPOSITE_EXTRACT, c->t_u32, size, k) : cu(c, 1);
     if (t->type == 0) v[1] = cu(c, 1);
@@ -2596,7 +2644,7 @@ static void surface(Ctx* c, const Sm86Insn* in) {
         si->img[slot].bindless = 1;
         si->img[slot].bl_cbuf = (u8)bank;
         si->img[slot].kind = (u8)kind;
-        if (kind != 1) spv_emit_capability(&c->e, 55); /* StorageImageReadWithoutFormat */
+        if (kind != 1) spv_emit_capability(&c->e, SPV_CAPABILITY_STORAGE_IMAGE_READ_WITHOUT_FORMAT);
         c->img[slot] =
             spv_emit_storage_image(&c->e, image_scalar(c, kind), (u32)shader_vk_set(c->stage), SNX_VKB_IMG + (u32)slot,
                                    sdim == 0 ? 1 : sdim, (int)array, kind == 1 ? 33 : 0, &c->img_type[slot]);
@@ -2672,13 +2720,13 @@ static u32 warp_lane(Ctx* c) {
 static u32 warp_read(Ctx* c, u32 value, u32 j) {
     u32 own = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, ~31u));
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
-    return SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, c->t_u32, cu(c, 3), value,
+    return SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE, c->t_u32, cu(c, SPV_SCOPE_SUBGROUP), value,
                spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, own, j));
 }
 /* value as lane l ^ mask of the invocation's own 32 holds it, for lane l (mask below 32) */
 static u32 warp_xor(Ctx* c, u32 value, u32 mask) {
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
-    return SPV(&c->e, 346 /* OpGroupNonUniformShuffleXor */, c->t_u32, cu(c, 3), value, cu(c, mask));
+    return SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE_XOR, c->t_u32, cu(c, SPV_SCOPE_SUBGROUP), value, cu(c, mask));
 }
 /* value as lane 4g + p of the invocation's own 32 holds it, g4 = 4g for the reader's own g: a quad broadcast where the
    stage has quad operations, which AMD makes a DPP move where a shuffle goes through LDS. Vulkan's quad is four
@@ -2735,7 +2783,8 @@ const char* shader_hmma_f16_unused(void) {
 static u32 hmma_zero(Ctx* c) {
     u32 group = c->hmma_count++ / 8;
     if (c->stage != ST_CS) return 0;
-    u32 never = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, builtin_vec3(c, &c->num_groups, 24, 0), c->zero);
+    u32 never = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool,
+                                builtin_vec3(c, &c->num_groups, SPV_BUILT_IN_NUM_WORKGROUPS, 0), c->zero);
     return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, never, cu(c, group + 1), c->zero);
 }
 /* HMMA on the device's matrix unit (g_shader_hmma_coop): one OpCooperativeMatrixMulAddKHR of 16x16 f16 A and B into
@@ -2776,8 +2825,9 @@ static int coop_wanted(const Ctx* c) {
     return 0;
 }
 static void coop_barrier(Ctx* c) {
-    SPV_VOID(&c->e, 224 /* OpControlBarrier */, cu(c, 3), cu(c, 3),
-             cu(c, spv_emit_memory_semantics(&c->e, 0x108)) /* Subgroup, Subgroup, AcquireRelease | Workgroup */);
+    SPV_VOID(&c->e, SPV_OP_CONTROL_BARRIER, cu(c, SPV_SCOPE_SUBGROUP), cu(c, SPV_SCOPE_SUBGROUP),
+             cu(c, spv_emit_memory_semantics(&c->e, SPV_MEMORY_SEMANTICS_ACQUIRE_RELEASE |
+                                                        SPV_MEMORY_SEMANTICS_WORKGROUP_MEMORY)));
 }
 static u32 coop_ptr(Ctx* c, u32 index) {
     return SPV(&c->e, SPV_OP_ACCESS_CHAIN, spv_emit_type_workgroup_pointer(&c->e, c->t_u32), c->coop_slots, index);
@@ -2794,16 +2844,19 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
     spv_emit_extension(&c->e, "SPV_KHR_cooperative_matrix");
     u32 t_h = spv_emit_type_float(&c->e, 16);
     u32 tile = g_shader_hmma_coop_tile == 8 ? 8 : 16; /* Metal's simdgroup_matrix is 8x8x8, RADV's 16x16x16 */
-    u32 t_a = spv_emit_type_cooperative_matrix(&c->e, t_h, 3 /* Subgroup */, tile, tile, 0 /* MatrixAKHR */);
-    u32 t_b = spv_emit_type_cooperative_matrix(&c->e, t_h, 3, tile, tile, 1 /* MatrixBKHR */);
-    u32 t_acc = spv_emit_type_cooperative_matrix(&c->e, c->t_f32, 3, tile, tile, 2 /* MatrixAccumulatorKHR */);
+    u32 t_a = spv_emit_type_cooperative_matrix(&c->e, t_h, SPV_SCOPE_SUBGROUP, tile, tile,
+                                               SPV_COOPERATIVE_MATRIX_USE_MATRIX_A_KHR);
+    u32 t_b = spv_emit_type_cooperative_matrix(&c->e, t_h, SPV_SCOPE_SUBGROUP, tile, tile,
+                                               SPV_COOPERATIVE_MATRIX_USE_MATRIX_B_KHR);
+    u32 t_acc = spv_emit_type_cooperative_matrix(&c->e, c->t_f32, SPV_SCOPE_SUBGROUP, tile, tile,
+                                                 SPV_COOPERATIVE_MATRIX_USE_MATRIX_ACCUMULATOR_KHR);
     if (!c->coop_slots) {
         u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
         u32 array = spv_emit_type_array_u32(&c->e, c->t_u32, lanes / 32 * COOP_WORDS);
         c->coop_slots = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
         add_interface(c, c->coop_slots);
     }
-    u32 base = spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, builtin_u32(c, &c->subgroup_id, 40 /* SubgroupId */),
+    u32 base = spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, builtin_u32(c, &c->subgroup_id, SPV_BUILT_IN_SUBGROUP_ID),
                                cu(c, COOP_WORDS));
     u32 lane = warp_lane(c);
     u32 g8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
@@ -2830,13 +2883,15 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
     coop_barrier(c);
     u32 zero_acc = spv_emit_const_composite(&c->e, t_acc, (const u32[]){cf(c, 0.0f)}, 1);
     if (g_shader_hmma_coop_tile != 8) {
-        u32 ma = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a, coop_ptr(c, base), cu(c, 0) /* RowMajorKHR */,
-                     cu(c, 8), 0x20 /* NonPrivatePointer */);
-        u32 mb = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b, coop_ptr(c, coop_add(c, base, COOP_B)), cu(c, 1) /* ColumnMajorKHR */, cu(c, 8),
-                     0x20);
+        u32 ma =
+            SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a, coop_ptr(c, base),
+                cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 8), SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
+        u32 mb =
+            SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b, coop_ptr(c, coop_add(c, base, COOP_B)),
+                cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_COLUMN_MAJOR_KHR), cu(c, 8), SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
         u32 md = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_MUL_ADD_KHR, t_acc, ma, mb, zero_acc);
-        SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR, coop_ptr(c, coop_add(c, base, COOP_D)), md, cu(c, 0),
-                 cu(c, 16), 0x20);
+        SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR, coop_ptr(c, coop_add(c, base, COOP_D)), md,
+                 cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 16), SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
     } else {
         /* An 8x8x8 tile, as Metal's simdgroup_matrix is: the HMMA's 16x8x16 is two M halves of 8 rows, each the sum
            of the two K halves' products, so four products a .16816 (two a .1688, whose K is one half), the K halves'
@@ -2848,13 +2903,19 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
         for (u32 m = 0; m < 2; m++) {
             u32 acc8 = 0;
             for (u32 h = 0; h < halves; h++) {
-                u32 ma = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a, coop_ptr(c, coop_add(c, a_at2[m], half_at[h])), cu(c, 0), cu(c, 8),
-                             0x20);
-                u32 mb = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b, coop_ptr(c, coop_add(c, coop_add(c, base, COOP_B), half_at[h])),
-                             cu(c, 1), cu(c, 8), 0x20);
+                u32 ma =
+                    SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a, coop_ptr(c, coop_add(c, a_at2[m], half_at[h])),
+                        cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 8),
+                        SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
+                u32 mb = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b,
+                             coop_ptr(c, coop_add(c, coop_add(c, base, COOP_B), half_at[h])),
+                             cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_COLUMN_MAJOR_KHR), cu(c, 8),
+                             SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
                 acc8 = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_MUL_ADD_KHR, t_acc, ma, mb, acc8 ? acc8 : zero_acc);
             }
-            SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR, coop_ptr(c, d_at[m]), acc8, cu(c, 0), cu(c, 16), 0x20);
+            SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR, coop_ptr(c, d_at[m]), acc8,
+                     cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 16),
+                     SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
         }
     }
     coop_barrier(c);
@@ -2954,7 +3015,7 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
         start2 = spv_emit_constant_vec2(&c->e, t_v2h, rc < SM86_RZ ? neg : spv_emit_constant_u32(&c->e, t_f16, 0), neg);
     }
     if (mixed) {
-        spv_emit_capability(&c->e, 6912 /* DotProductFloat16AccFloat32VALVE */);
+        spv_emit_capability(&c->e, SPV_CAPABILITY_DOT_PRODUCT_FLOAT16_ACC_FLOAT32_VALVE);
         spv_emit_extension(&c->e, "SPV_VALVE_mixed_float_dot_product");
     }
     u32 acc[2][2];                        /* [row g, g + 8][column 2t, 2t + 1] */
@@ -2984,10 +3045,11 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
             c->stage_slots = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
             add_interface(c, c->stage_slots);
         }
-        u32 slot = spv_emit_binary(
-            &c->e, SPV_OP_I_MUL, c->t_u32,
-            spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, builtin_u32(c, &c->local_index, 29), cu(c, 5)),
-            cu(c, HMMA_STAGE_WORDS));
+        u32 slot = spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32,
+                                   spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32,
+                                                   builtin_u32(c, &c->local_index, SPV_BUILT_IN_LOCAL_INVOCATION_INDEX),
+                                                   cu(c, 5)),
+                                   cu(c, HMMA_STAGE_WORDS));
         u32 own_a = spv_emit_iadd_u32(&c->e, c->t_u32, slot,
                                       spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, lane, cu(c, 2)));
         u32 own_b = spv_emit_iadd_u32(
@@ -3049,10 +3111,10 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
                         pacc[i][j] = spv_emit_glsl_ternary(&c->e, t_v2h, c->glsl, SPV_GLSL_FMA, av[2 * h + i],
                                                            bv[j][h], pacc[i][j]);
                     else
-                        acc[i][j] = mixed ? SPV(&c->e, 6916 /* OpFDot2MixAcc32VALVE */, c->t_f32, av[2 * h + i],
-                                                bv[j][h], acc[i][j])
+                        acc[i][j] = mixed ? SPV(&c->e, SPV_OP_F_DOT2_MIX_ACC32_VALVE, c->t_f32, av[2 * h + i], bv[j][h],
+                                                acc[i][j])
                                           : op2(c, SPV_OP_F_ADD, c->t_f32, acc[i][j],
-                                                op2(c, 148 /* OpDot */, c->t_f32, av[2 * h + i], bv[j][h]));
+                                                op2(c, SPV_OP_DOT, c->t_f32, av[2 * h + i], bv[j][h]));
     }
     if (packed) { /* the half sums added into one f32, then C: the console's f32 sum up to the half sums' precision */
         for (u32 i = 0; i < 2; i++)
@@ -3155,7 +3217,7 @@ static u32 ballot32(Ctx* c, u32 pred) {
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT);
     u32 all = spv_emit_subgroup_ballot(&c->e, c->t_v4u, c->t_u32, pred);
     u32 half = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, system_value(c, 0), cu(c, 5));
-    return SPV(&c->e, 77 /* OpVectorExtractDynamic */, c->t_u32, all, half);
+    return SPV(&c->e, SPV_OP_VECTOR_EXTRACT_DYNAMIC, c->t_u32, all, half);
 }
 
 /* IPA of component k of generic input i: at the centroid (loc 1) or the default place, and with the program's
@@ -3166,7 +3228,7 @@ static u32 ipa_input(Ctx* c, u32 i, u32 k, u32 loc, u32 freq) {
         /* a variable has one location: centroid when any IPA of the input asks for it. An input that no stage
            before writes (in_unfed_mask) is a constant with no variable: a decoration of it named id 0, a module
            that spirv-val and the validation layer refuse */
-        spv_emit_decorate(&c->e, c->in_attr[i], 16 /* Centroid */, NULL, 0);
+        spv_emit_decorate(&c->e, c->in_attr[i], SPV_DECORATION_CENTROID, NULL, 0);
         c->centroid_mask |= 1u << i;
     }
     /* The hardware interpolates attr/w for a perspective input, and the program multiplies by w (the reciprocal of
@@ -3213,13 +3275,13 @@ static u32 system_value(Ctx* c, u32 sr) {
     switch (sr) {
         case 0x00: /* LANEID */
             spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
-            return builtin_u32(c, &c->lane_id, 41);
+            return builtin_u32(c, &c->lane_id, SPV_BUILT_IN_SUBGROUP_LOCAL_INVOCATION_ID);
         case 0x21:
         case 0x22:
-        case 0x23: return builtin_vec3(c, &c->local_id, 27, sr - 0x21);
+        case 0x23: return builtin_vec3(c, &c->local_id, SPV_BUILT_IN_LOCAL_INVOCATION_ID, sr - 0x21);
         case 0x25:
         case 0x26:
-        case 0x27: return builtin_vec3(c, &c->group_id, 26, sr - 0x25);
+        case 0x27: return builtin_vec3(c, &c->group_id, SPV_BUILT_IN_WORKGROUP_ID, sr - 0x25);
         case 0x38: /* EQMASK, LTMASK, LEMASK, GTMASK, GEMASK: of the lane in its 32 */
         case 0x39:
         case 0x3a:
@@ -3321,7 +3383,7 @@ static u32 mesh_outputs(Ctx* c, const u32* sph, u32 base, u32 element, u32 count
                 generic[i] = spv_emit_interface_variable(e, SPV_STORAGE_OUTPUT, c->t_v4f, c->t_u32, count,
                                                          SPV_NOT_BUILTIN, i, 0);
                 if (per_primitive) {
-                    spv_emit_decorate(e, generic[i], 5271 /* PerPrimitiveEXT */, NULL, 0);
+                    spv_emit_decorate(e, generic[i], SPV_DECORATION_PER_PRIMITIVE_EXT, NULL, 0);
                     spv_emit_flat(e, generic[i]); /* a per-primitive output is not interpolated */
                 }
                 add_interface(c, generic[i]);
@@ -3349,7 +3411,7 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     MeshLoop loop = {0};
     if (c->stage == ST_MS) loop.counter = spv_emit_function_variable(e, spv_emit_type_function_pointer(e, c->t_u32));
     loop.step = cu(c, m->threads);
-    u32 invocation = builtin_u32(c, &c->local_index, 29); /* LocalInvocationIndex */
+    u32 invocation = builtin_u32(c, &c->local_index, SPV_BUILT_IN_LOCAL_INVOCATION_INDEX);
     u32 first = spv_emit_binary(e, SPV_OP_I_EQUAL, c->t_bool, invocation, c->zero);
     u32 then = spv_emit_id(e), merge = spv_emit_id(e);
     spv_emit_selection_merge(e, merge);
@@ -3369,14 +3431,14 @@ static u32 mesh_entry(Ctx* c, u32 body) {
         /* within the device's limit: a count past it is undefined behavior, which can hang the GPU */
         if (g_shader_mesh_tasks_max)
             count = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, count, cu(c, g_shader_mesh_tasks_max));
-        SPV_VOID(e, 5294 /* OpEmitMeshTasksEXT */, count, cu(c, 1), cu(c, 1), payload_var(c));
+        SPV_VOID(e, SPV_OP_EMIT_MESH_TASKS_EXT, count, cu(c, 1), cu(c, 1), payload_var(c));
         spv_emit_function_end(e);
         return fn;
     }
     u32 map = map_var(c);
     u32 written = spv_emit_load(e, c->t_u32, isbe_ptr(c, map, SPV_STORAGE_WORKGROUP, cu(c, 3)));
     u32 primitives = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, written, cu(c, m->max_primitives));
-    SPV_VOID(e, 5295 /* OpSetMeshOutputsEXT */, cu(c, m->max_vertices), primitives);
+    SPV_VOID(e, SPV_OP_SET_MESH_OUTPUTS_EXT, cu(c, m->max_vertices), primitives);
     /* the vertices */
     if (c->vertex_words) {
         u32 v = loop_begin(c, &loop, invocation, cu(c, m->max_vertices));
@@ -3392,7 +3454,7 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     u32 p = loop_begin(c, &loop, invocation, primitives);
     u32 pointer = spv_emit_type_pointer(e, SPV_STORAGE_OUTPUT, c->t_v3u);
     u32 indices = spv_emit_interface_variable(e, SPV_STORAGE_OUTPUT, c->t_v3u, c->t_u32, m->max_primitives,
-                                              5296 /* PrimitiveTriangleIndicesEXT */, 0, 0);
+                                              SPV_BUILT_IN_PRIMITIVE_TRIANGLE_INDICES_EXT, 0, 0);
     add_interface(c, indices);
     u32 at = spv_emit_iadd_u32(e, c->t_u32, spv_emit_binary(e, SPV_OP_I_MUL, c->t_u32, p, cu(c, 3)), cu(c, 4)),
         index[3];
@@ -3447,8 +3509,8 @@ static void emit_insn_iadd3(Ctx* c, const Sm86Insn* in, int uniform, u32 p, u32 
         return;
     }
     /* the sum in 64 bits: its carries, and .X's two carries in */
-    u32 sum = op2(c, SPV_OP_I_ADD, u64_type(c), term64(c, &in->a), term64(c, &in->b));
-    sum = op2(c, SPV_OP_I_ADD, u64_type(c), sum, term64(c, &in->c));
+    u32 sum = op2(c, SPV_OP_I_ADD, u64_type(c), term64(c, &in->a, x), term64(c, &in->b, x));
+    sum = op2(c, SPV_OP_I_ADD, u64_type(c), sum, term64(c, &in->c, x));
     if (x) {
         sum = op2(c, SPV_OP_I_ADD, u64_type(c), sum, carry_in(c, 87, in, uniform));
         sum = op2(c, SPV_OP_I_ADD, u64_type(c), sum, carry_in(c, 77, in, uniform));
@@ -3660,7 +3722,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 case 4: v = spv_emit_binary(&c->e, SPV_OP_F_DIV, c->t_f32, cf(c, 1.0f), x); break;
                 case 5: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_INVERSE_SQRT, x); break;
                 case 8: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_SQRT, x); break;
-                case 9: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, (SpvGlsl450Op)21 /* Tanh */, x); break;
+                case 9: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_TANH, x); break;
                 default: fail(c, "MUFU function %u", fn); return;
             }
             dwr(c, in, half ? pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, v, cf(c, 0.0f))) : to_u(c, v));
@@ -3675,6 +3737,63 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 return;
             }
             dwr(c, in, pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, src_f(c, &in->b), cf(c, 0.0f))));
+            return;
+        }
+        case SM86_F2I64: {
+            /* F2I's fields (NAK), to a 64-bit integer: the register pair dst, dst + 1. One game's compute programs
+               have F2I.U64.F32.TRUNC, the only form here: the hardware saturates, and a NaN gives 0 */
+            u32 dsize = sm86_field(in, 75, 2), ssize = sm86_field(in, 84, 2);
+            if (dsize != 3 || ssize != 2 || sm86_field(in, 72, 1)) {
+                fail(c, "F2I.64 of sizes %u, %u, signed %u", ssize, dsize, sm86_field(in, 72, 1));
+                return;
+            }
+            static const u16 rounding[4] = {SPV_GLSL_ROUND_EVEN, SPV_GLSL_FLOOR, SPV_GLSL_CEIL, SPV_GLSL_TRUNC};
+            u32 x = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, rounding[sm86_field(in, 78, 2)], src_f(c, &in->b));
+            u32 nan = spv_emit_unary(&c->e, SPV_OP_IS_NAN, c->t_bool, x), t64 = u64_type(c);
+            u32 high = spv_emit_fcompare(&c->e, c->t_bool, 6, x, cf(c, 18446744073709551616.0f));
+            /* the largest float under 2^64 keeps the conversion in range where the result is not taken */
+            u32 clamped = spv_emit_glsl_binary(
+                &c->e, c->t_f32, c->glsl, SPV_GLSL_N_MIN,
+                spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_N_MAX, x, cf(c, 0.0f)),
+                cf(c, 18446742974197923840.0f));
+            u32 v = spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_U, t64, clamped);
+            v = spv_emit_ternary(&c->e, SPV_OP_SELECT, t64, high, c64(c, ~0ull), v);
+            v = spv_emit_ternary(&c->e, SPV_OP_SELECT, t64, nan, c64(c, 0), v);
+            wr(c, in->dst, lo32(c, v));
+            if (in->dst < SM86_RZ) wr(c, in->dst + 1, hi32(c, v));
+            return;
+        }
+        case SM86_I2F64: {
+            /* I2F's fields, from a 64-bit integer in the register pair b, b + 1: the same programs' I2F.F32.U64,
+               to the nearest and upward. The conversion rounds as the device does, so for a direction the result
+               is stepped to the float on the asked side of the integer when it is on the other */
+            u32 dsize = sm86_field(in, 75, 2), ssize = sm86_field(in, 84, 2), mode = sm86_field(in, 78, 2);
+            if (dsize != 2 || ssize != 3 || sm86_field(in, 74, 1) || in->b.kind != SM86_SRC_REG) {
+                fail(c, "I2F.64 of sizes %u, %u, signed %u", ssize, dsize, sm86_field(in, 74, 1));
+                return;
+            }
+            u32 t64 = u64_type(c), hi_reg = in->b.reg + 1 < SM86_RZ ? in->b.reg + 1 : SM86_RZ;
+            u32 x = pair64(c, rd(c, in->b.reg), rd(c, hi_reg));
+            u32 r = spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32, x);
+            if (mode) {
+                u32 big = spv_emit_fcompare(&c->e, c->t_bool, 6, r, cf(c, 18446744073709551616.0f));
+                u32 back = spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_U, t64,
+                                          spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_N_MIN, r,
+                                                               cf(c, 18446742974197923840.0f)));
+                u32 bits = to_u(c, r), step;
+                if (mode == 2) { /* up: under the integer, and not 2^64 itself */
+                    u32 under = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, back, x);
+                    step = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, under, cu(c, 1), c->zero);
+                    step = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, big, c->zero, step);
+                    r = to_f(c, spv_emit_iadd_u32(&c->e, c->t_u32, bits, step));
+                } else { /* down, toward zero: over the integer, as 2^64 is */
+                    u32 over = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, x, back);
+                    step = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, over, cu(c, 1), c->zero);
+                    step = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, big, cu(c, 1), step);
+                    r = to_f(c, spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, bits, step));
+                }
+            }
+            dwr(c, in, to_u(c, r));
             return;
         }
         case SM86_F2I: {
@@ -3812,9 +3931,13 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         }
         case SM86_UIMAD:
         case SM86_IMAD: {
-            /* .X (bit 74) adds the carry predicate at 87-90, as IADD3.X does */
+            /* .X (bit 74) adds the carry predicate at 87-90, as IADD3.X does, and as there a negated addend is then
+               its complement, ~c: one game's 64-bit division negates a high word with IMAD.X RZ, RZ, ~c, P */
             u32 v = spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, src_int(c, &in->a), src_int(c, &in->b));
-            v = spv_emit_iadd_u32(&c->e, c->t_u32, v, src_int(c, &in->c));
+            u32 addend = sm86_field(in, 74, 1) && in->c.neg && in->c.kind != SM86_SRC_IMM
+                             ? spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, src_bits(c, &in->c))
+                             : src_int(c, &in->c);
+            v = spv_emit_iadd_u32(&c->e, c->t_u32, v, addend);
             if (sm86_field(in, 74, 1))
                 v = spv_emit_iadd_u32(&c->e, c->t_u32, v,
                                       spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
@@ -3847,9 +3970,9 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                inverted. No 1 gives 0xffffffff, as FindUMsb's -1 */
             u32 x = src_bits(c, &in->b);
             if (sm86_field(in, 63, 1)) x = spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, x);
-            u32 bit = sm86_field(in, 73, 1) ? to_u(c, SPV_EXT(&c->e, c->t_i32, 74 /* FindSMsb */,
+            u32 bit = sm86_field(in, 73, 1) ? to_u(c, SPV_EXT(&c->e, c->t_i32, SPV_GLSL_FIND_S_MSB,
                                                               spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, x)))
-                                            : SPV_EXT(&c->e, c->t_u32, 75 /* FindUMsb */, x);
+                                            : SPV_EXT(&c->e, c->t_u32, SPV_GLSL_FIND_U_MSB, x);
             if (sm86_field(in, 74, 1))
                 bit = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
                                        spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, bit, cu(c, 0xffffffffu)), bit,
@@ -4070,7 +4193,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                          spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, id, cu(c, ~31u)),
                                          spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, j, cu(c, 31)));
             u32 value = rd(c, sm86_field(in, 24, 8));
-            u32 got = SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, c->t_u32, cu(c, 3), value, source);
+            u32 got = SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE, c->t_u32, cu(c, SPV_SCOPE_SUBGROUP), value, source);
             wr(c, in->dst, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, ok, got, value));
             pwr(c, sm86_field(in, 81, 3), ok, 0);
             return;
@@ -4081,7 +4204,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                (2, bits 72-73) of it into the predicate at 81-83. The ballot is of the invocation's 32 lanes */
             u32 pred = prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), 0), how = sm86_field(in, 72, 2);
             spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT);
-            spv_emit_capability(&c->e, 62 /* GroupNonUniformVote */);
+            spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_VOTE);
             u32 ballot = ballot32(c, pred);
             if (op == SM86_UVOTE)
                 uwr(c, sm86_field(in, 16, 6), ballot);
@@ -4092,10 +4215,10 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 return;
             }
             u32 vote = SPV(&c->e,
-                           how == 0   ? 334
-                           : how == 1 ? 335
-                                      : 336 /* All, Any, AllEqual */,
-                           c->t_bool, cu(c, 3), pred);
+                           how == 0   ? SPV_OP_GROUP_NON_UNIFORM_ALL
+                           : how == 1 ? SPV_OP_GROUP_NON_UNIFORM_ANY
+                                      : SPV_OP_GROUP_NON_UNIFORM_ALL_EQUAL /* All, Any, AllEqual */,
+                           c->t_bool, cu(c, SPV_SCOPE_SUBGROUP), pred);
             pwr(c, sm86_field(in, 81, 3), vote, op == SM86_UVOTE);
             return;
         }
@@ -4111,12 +4234,15 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 mask = c->zero;
             for (u32 j = 0; j < 32; j++) {
                 u32 lane = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, base, cu(c, j));
-                u32 same = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool,
-                                           SPV(&c->e, 345, c->t_u32, cu(c, 3), lo, lane), lo);
+                u32 same = spv_emit_binary(
+                    &c->e, SPV_OP_I_EQUAL, c->t_bool,
+                    SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE, c->t_u32, cu(c, SPV_SCOPE_SUBGROUP), lo, lane), lo);
                 if (pair)
                     same = op2(c, SPV_OP_LOGICAL_AND, c->t_bool, same,
                                spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool,
-                                               SPV(&c->e, 345, c->t_u32, cu(c, 3), hi, lane), hi));
+                                               SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE, c->t_u32,
+                                                   cu(c, SPV_SCOPE_SUBGROUP), hi, lane),
+                                               hi));
                 mask = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, mask,
                                        spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, same, cu(c, 1u << j), c->zero));
             }
@@ -4184,25 +4310,27 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_REDUX: {
             /* NAK's OpRedux: of the source over the invocation's 32 lanes, into a uniform register: 78-80 0 and, 1
                or, 2 xor, 3 sum, 4 min, 5 max, bit 73 signed. A clustered reduction of 32 keeps it to those lanes */
-            static const u16 ops[6] = {359, 360, 361, 349, 354, 357}; /* BitwiseAnd, Or, Xor, IAdd, UMin, UMax */
+            static const u16 ops[6] = {SPV_OP_GROUP_NON_UNIFORM_BITWISE_AND, SPV_OP_GROUP_NON_UNIFORM_BITWISE_OR,
+                                       SPV_OP_GROUP_NON_UNIFORM_BITWISE_XOR, SPV_OP_GROUP_NON_UNIFORM_I_ADD,
+                                       SPV_OP_GROUP_NON_UNIFORM_U_MIN,       SPV_OP_GROUP_NON_UNIFORM_U_MAX};
             u32 how = sm86_field(in, 78, 3), opcode;
             if (how > 5) {
                 fail(c, "REDUX operation %u", how);
                 return;
             }
             opcode = ops[how];
-            if (sm86_field(in, 73, 1) && how == 4) opcode = 353; /* SMin */
-            if (sm86_field(in, 73, 1) && how == 5) opcode = 356; /* SMax */
+            if (sm86_field(in, 73, 1) && how == 4) opcode = SPV_OP_GROUP_NON_UNIFORM_S_MIN;
+            if (sm86_field(in, 73, 1) && how == 5) opcode = SPV_OP_GROUP_NON_UNIFORM_S_MAX;
             spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC);
-            spv_emit_capability(&c->e, 67 /* GroupNonUniformClustered */);
-            u32 v = SPV(&c->e, opcode, c->t_u32, cu(c, 3), 3 /* ClusteredReduce */, rd(c, sm86_field(in, 24, 8)),
-                        cu(c, 32));
+            spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_CLUSTERED);
+            u32 v = SPV(&c->e, opcode, c->t_u32, cu(c, SPV_SCOPE_SUBGROUP), SPV_GROUP_OPERATION_CLUSTERED_REDUCE,
+                        rd(c, sm86_field(in, 24, 8)), cu(c, 32));
             uwr(c, sm86_field(in, 16, 6), v);
             return;
         }
         case SM86_MEMBAR:
             /* the device scope, for every scope: acquire and release of buffer, workgroup and image memory */
-            spv_emit_memory_barrier(&c->e, c->t_u32, 1, 0x8 | 0x40 | 0x100 | 0x800);
+            spv_emit_memory_barrier(&c->e, c->t_u32, SPV_SCOPE_DEVICE, 0x8 | 0x40 | 0x100 | 0x800);
             return;
         case SM86_UMOV: uwr(c, in->dst, src_bits(c, &in->b)); return;
         case SM86_ERRBAR: return;
@@ -4230,9 +4358,20 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             }
             chi = in->c.kind == SM86_SRC_UREG ? urd(c, creg >= SM86_URZ ? creg : creg + 1)
                                               : rd(c, creg >= SM86_RZ ? creg : creg + 1);
-            u32 sum =
-                op2(c, SPV_OP_I_ADD, t64, op2(c, SPV_OP_I_MUL, t64, a64, b64), pair64(c, src_bits(c, &in->c), chi));
+            u32 product = op2(c, SPV_OP_I_MUL, t64, a64, b64);
+            u32 sum = op2(c, SPV_OP_I_ADD, t64, product, pair64(c, src_bits(c, &in->c), chi));
             u32 d = in->dst;
+            /* the carry out of the 64-bit sum, in the predicate at 81-83 as IADD3's first (nvdisasm: IMAD.WIDE.U32
+               R14, P0, R10, R19, R14): one game's 64-bit division chains IMAD.WIDE ..., P0 into IMAD.X. With .X
+               (bit 74; nvdisasm: IMAD.WIDE.U32.X R6, RZ, R5, R6, P1) the carry predicate at 87-90 joins the sum */
+            u32 carry = op2(c, SPV_OP_U_LESS_THAN, c->t_bool, sum, product);
+            if (sm86_field(in, 74, 1)) {
+                u32 more = op2(c, SPV_OP_I_ADD, t64, sum, carry_in(c, 87, in, uniform));
+                carry = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_bool, carry, c->true_v,
+                                         op2(c, SPV_OP_U_LESS_THAN, c->t_bool, more, sum));
+                sum = more;
+            }
+            pwr(c, sm86_field(in, 81, 3), carry, uniform);
             dwr(c, in, lo32(c, sum));
             if (uniform && d < SM86_URZ)
                 uwr(c, d + 1, hi32(c, sum));
@@ -4241,9 +4380,13 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             return;
         }
         case SM86_IMAD_HI: {
-            /* the high word of a * b (bit 73 signed), plus c */
+            /* The high word of a * b + c (bit 73 signed): the addend goes into the 64-bit product, below the word
+               that is kept, and with .X the carry predicate at 87-90 with it; the carry out of the 64 bits goes to
+               the predicate at 81-83. One game's 64-bit division is written that way (IMAD.HI R8, R7, R11, R8 adds
+               the middle column's low word and hands its carry to P1): with the addend added to the high word
+               instead, 4239360 / 20480 came out 728513, and with this 207 (tools/div_model.py) */
             int is_signed = (int)sm86_field(in, 73, 1);
-            u32 t64 = u64_type(c), a32 = src_int(c, &in->a), b32 = src_int(c, &in->b), product;
+            u32 t64 = u64_type(c), a32 = src_int(c, &in->a), b32 = src_int(c, &in->b), product, addend;
             if (is_signed) {
                 u32 i64 = spv_emit_type_int64(&c->e, 1);
                 product = op2(c, SPV_OP_I_MUL, t64,
@@ -4253,15 +4396,23 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                               spv_emit_unary(&c->e, SPV_OP_BITCAST, t64,
                                              SPV(&c->e, SPV_OP_S_CONVERT, i64,
                                                  spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, b32))));
-            } else
+                addend = spv_emit_unary(&c->e, SPV_OP_BITCAST, t64,
+                                        SPV(&c->e, SPV_OP_S_CONVERT, i64,
+                                            spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, src_int(c, &in->c))));
+            } else {
                 product = op2(c, SPV_OP_I_MUL, t64, to64(c, a32), to64(c, b32));
-            u32 v = spv_emit_iadd_u32(&c->e, c->t_u32, hi32(c, product), src_int(c, &in->c));
-            if (sm86_field(in, 74, 1))
-                v = spv_emit_iadd_u32(&c->e, c->t_u32, v,
-                                      spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
-                                                       prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), 0),
-                                                       cu(c, 1), c->zero));
-            dwr(c, in, v);
+                addend = to64(c, src_int(c, &in->c));
+            }
+            u32 sum = op2(c, SPV_OP_I_ADD, t64, product, addend);
+            u32 carry = op2(c, SPV_OP_U_LESS_THAN, c->t_bool, sum, product);
+            if (sm86_field(in, 74, 1)) {
+                u32 more = op2(c, SPV_OP_I_ADD, t64, sum, carry_in(c, 87, in, uniform));
+                carry = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_bool, carry, c->true_v,
+                                         op2(c, SPV_OP_U_LESS_THAN, c->t_bool, more, sum));
+                sum = more;
+            }
+            if (!is_signed) pwr(c, sm86_field(in, 81, 3), carry, uniform);
+            dwr(c, in, hi32(c, sum));
             return;
         }
         case SM86_SGXT:
@@ -4608,7 +4759,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             else if (addr == 0x3fc) {
                 /* NAK's NAK_ATTR_FRONT_FACE: all ones for a front face, as spirv_translate.c reads Maxwell's */
                 if (!c->front_facing) {
-                    c->front_facing = spv_emit_builtin_input_u32(&c->e, c->t_bool, 17);
+                    c->front_facing = spv_emit_builtin_input_u32(&c->e, c->t_bool, SPV_BUILT_IN_FRONT_FACING);
                     add_interface(c, c->front_facing);
                 }
                 v = to_f(c, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
@@ -4618,11 +4769,25 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 /* NAK's NAK_ATTR_POINT_SPRITE_S and _T: PointCoord. The Maxwell path flips T with the sprite's
                    origin, a push constant of the fragment stage that this translation does not have */
                 if (!c->point_coord) {
-                    c->point_coord = spv_emit_interface_variable(&c->e, 1, c->t_v2f, c->t_u32, 0, 16, 0, 0);
+                    c->point_coord =
+                        spv_emit_interface_variable(&c->e, SPV_STORAGE_INPUT, c->t_v2f, c->t_u32, 0, 16, 0, 0);
                     add_interface(c, c->point_coord);
                 }
                 v = spv_emit_vec4_extract(&c->e, c->t_f32, spv_emit_load(&c->e, c->t_v2f, c->point_coord),
                                           (addr >> 2) & 1);
+            } else if (addr == 0x60 && c->stage == ST_FS && g_shader_geometry) {
+                /* NAK's NAK_ATTR_PRIMITIVE_ID: the primitive's number, an integer, its bits as they are. The
+                   builtin needs the Geometry capability in a fragment program */
+                if (!c->primitive_id) {
+                    /* the primitive's number with no geometry stage, or after the varying pass's (which writes it);
+                       a mesh program writes none, so a mesh draw with this program is refused at its link */
+                    c->si->reads_primitive_id = 1;
+                    c->primitive_id = spv_emit_builtin_input_u32(&c->e, c->t_u32, SPV_BUILT_IN_PRIMITIVE_ID);
+                    spv_emit_flat(&c->e, c->primitive_id);
+                    spv_emit_capability(&c->e, SPV_CAPABILITY_GEOMETRY);
+                    add_interface(c, c->primitive_id);
+                }
+                v = to_f(c, spv_emit_load(&c->e, c->t_u32, c->primitive_id));
             } else {
                 fail(c, "IPA of attribute 0x%x", addr);
                 return;
@@ -4674,6 +4839,14 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_TXD: texture_grad(c, in); return;
         case SM86_TLD: texel_fetch(c, in); return;
         case SM86_TXQ: texture_query(c, in); return;
+        case SM86_TXQ_B:
+            /* the handle from memory, as a TEX.B's (memory_handles) */
+            if (!c->handle || !c->handle[c->cur].slot) {
+                fail(c, "TXQ.B whose handle is not memory's");
+                return;
+            }
+            texture_query(c, in);
+            return;
         case SM86_SULD_P:
         case SM86_SUST_P:
         case SM86_SURED:
@@ -5276,6 +5449,9 @@ static int mh_may_write(const Sm86Insn* in, int file, u32 r) {
             case SM86_UPLOP3: return u && (p81 || p84);
             case SM86_LEA:
             case SM86_ULEA:
+            case SM86_IMAD_WIDE: /* their carry out */
+            case SM86_UIMAD_WIDE:
+            case SM86_IMAD_HI:
             case SM86_LOP3:
             case SM86_ULOP3: return uk == u && p81;
             case SM86_UVOTE: return u && p81;
@@ -5419,6 +5595,7 @@ static int mh_add(Ctx* c, u32 k, u32 reader) {
         case SM86_IMAD_WIDE:
         case SM86_UIMAD_WIDE:
             if (!mh_src(c, k, &in->a) || !mh_src(c, k, &in->b) || !mh_src(c, k, &in->c)) return 0;
+            if (sm86_field(in, 74, 1) && !mh_pred(c, k, u, 87)) return 0; /* .X: the carry predicate joins the sum */
             if (in->c.kind == SM86_SRC_REG) return mh_need(c, k, MH_R, in->c.reg >= SM86_RZ ? SM86_RZ : in->c.reg + 1);
             if (in->c.kind == SM86_SRC_UREG)
                 return mh_need(c, k, MH_UR, in->c.reg >= SM86_URZ ? SM86_URZ : in->c.reg + 1);
@@ -5540,6 +5717,11 @@ static u32 tex_b_handle_reg(const Sm86Insn* in) {
     u32 n0 = array + coords, n1 = 1 + (lod == 2 || lod == 3) + sm86_field(in, 76, 1) + sm86_field(in, 78, 1);
     return tex_operands(in, n0, n1, regs) ? regs[n0] : SM86_RZ;
 }
+/* the handle register of a TEX.B, or of a TXQ.B: its first source, the level in the register after it (NAK's OpTxq
+   with TexRef::Bindless) */
+static u32 handle_b_reg(const Sm86Insn* in) {
+    return in->op == SM86_TXQ_B ? sm86_field(in, 24, 8) : tex_b_handle_reg(in);
+}
 /* whether a TEX.B's handle is a constant buffer word's, which prepare_handles binds: a MOV of one, or an LDC. A handle
    with no one writer is memory_handles' too (one game's lights take theirs from memory in a loop, as a TEX.B's
    handle from an LDG was before), which then samples it as no texture */
@@ -5549,6 +5731,9 @@ static int tex_b_cbuf_handle(Ctx* c, u32 i, u32 reg) {
         k = reaching_write(c, (u32)k, c->in[k].b.reg);
     if (k < 0) return 0;
     const Sm86Insn* w = &c->in[k];
+    /* a compute program has no texture arrays, so a table's LDC (its address has a register) is tried as a handle
+       from memory: where every lane picks the same element, the dispatch's own, it is that texture; else none */
+    if (c->stage == ST_CS && w->op == SM86_LDC && sm86_field(w, 24, 8) < SM86_RZ) return 0;
     return (w->op == SM86_MOV && w->b.kind == SM86_SRC_CBUF && !w->b.bindless) || w->op == SM86_LDC;
 }
 /* The handles from memory: TEX, TLD, TLD4 and TXQ with the handle in a uniform register pair (URn the texture's word,
@@ -5559,8 +5744,8 @@ static void memory_handles(Ctx* c) {
     for (u32 i = 0; i < n; i++) {
         int op = c->in[i].op;
         any |= op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXQ_U ||
-               (op == SM86_TEX_B && tex_b_handle_reg(&c->in[i]) < SM86_RZ &&
-                !tex_b_cbuf_handle(c, i, tex_b_handle_reg(&c->in[i])));
+               ((op == SM86_TEX_B || op == SM86_TXQ_B) && handle_b_reg(&c->in[i]) < SM86_RZ &&
+                !tex_b_cbuf_handle(c, i, handle_b_reg(&c->in[i])));
     }
     if (!any) return;
     c->mh_mark = calloc((size_t)n + 1, 1);
@@ -5580,8 +5765,9 @@ static void memory_handles(Ctx* c) {
     for (u32 i = 0; i < n && !c->failed; i++) {
         const Sm86Insn* in = &c->in[i];
         int op = in->op, u = op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXQ_U;
-        u32 reg = op == SM86_TEX_B ? tex_b_handle_reg(in) : SM86_RZ;
-        if (!u && !(op == SM86_TEX_B && reg < SM86_RZ && !tex_b_cbuf_handle(c, i, reg))) continue;
+        int b = op == SM86_TEX_B || op == SM86_TXQ_B;
+        u32 reg = b ? handle_b_reg(in) : SM86_RZ;
+        if (!u && !(b && reg < SM86_RZ && !tex_b_cbuf_handle(c, i, reg))) continue;
         u32 ur = sm86_field(in, 40, 6), nmh = c->nmh, ndep = c->nmh_dep;
         if (u && ur + 1 >= SM86_URZ) {
             fail(c, "%s of UR%u", sm86_ops[op].name, ur);
@@ -5608,12 +5794,12 @@ static void memory_handles(Ctx* c) {
         for (u32 i = 0; i < n && !c->failed; i++) {
             const Sm86Insn* in = &c->in[i];
             int op = in->op, slot = -1;
-            if (probe[i][0] == ~0u || (op == SM86_TXQ_U) != (pass == 1)) continue;
-            if (op != SM86_TEX_U && op != SM86_TLD_U && op != SM86_TLD4_U && op != SM86_TXQ_U && op != SM86_TEX_B)
-                continue;
+            int query = op == SM86_TXQ_U || op == SM86_TXQ_B;
+            if (probe[i][0] == ~0u || query != (pass == 1)) continue;
+            if (op != SM86_TEX_U && op != SM86_TLD_U && op != SM86_TLD4_U && !query && op != SM86_TEX_B) continue;
             u32 tex = mh_final(c, probe[i][0]), smp = probe[i][1] == ~0u ? 0 : mh_final(c, probe[i][1]);
             int has_smp = probe[i][1] != ~0u;
-            if (op == SM86_TXQ_U) {
+            if (query) {
                 for (int k = 0; k < c->si->ntex && slot < 0; k++) {
                     const ShTex* t = &c->si->tex[k];
                     if ((t->flags & SNX_TEX_MEMORY) && t->cbuf_off == tex && t->bl2 == has_smp && t->bl2_off == smp)
@@ -5636,6 +5822,34 @@ static void memory_handles(Ctx* c) {
    buffer, and a program finds the lights of a pixel with FLO on a mask, then an IMAD of that index by the record's
    size makes the LDC's address, c[bank][x * stride + base + offset]. So the texture is chosen for each pixel, from
    an array, and the table's elements are stride bytes apart, whatever the stride (they aren't a power of two) */
+/* The instruction that makes the address register of a table's LDC, x * stride + base by constants: an IMAD without
+   .X; the low word of a left SHF by a constant (x << s: stride 1 << s, base 0), as another game's material and light
+   tables are indexed, 4, 8 and 16 bytes apart; or a LEA of the low word, without the negation or the carry in
+   ((x << s) + base, its b a constant). 0 where it is none of them */
+static int handle_table_index(Ctx* c, int m, u32* stride, u32* base) {
+    if (m < 0) return 0;
+    const Sm86Insn* w = &c->in[m];
+    u32 s = 0;
+    *stride = 0, *base = 0;
+    if (w->op == SM86_IMAD) {
+        if (sm86_field(w, 74, 1) || !src_const(c, (u32)m, &w->b, stride) || !src_const(c, (u32)m, &w->c, base))
+            return 0;
+    } else if (w->op == SM86_SHF || w->op == SM86_USHF) {
+        /* bit 76: right; bit 80: the high word. Under 32, the low word is the same for a 64-bit shift */
+        if (sm86_field(w, 76, 1) || sm86_field(w, 80, 1) || !src_const(c, (u32)m, &w->b, &s) || s < 2 || s > 15)
+            return 0;
+        *stride = 1u << s;
+    } else if (w->op == SM86_LEA) {
+        /* bit 72: the negation; bit 74: .X; bit 80: .HI. A carry out predicate changes nothing of the sum */
+        s = sm86_field(w, 75, 5);
+        if (sm86_field(w, 72, 1) || sm86_field(w, 74, 1) || sm86_field(w, 80, 1) || s < 2 || s > 15 ||
+            !src_const(c, (u32)m, &w->b, base))
+            return 0;
+        *stride = 1u << s;
+    } else
+        return 0;
+    return *stride && *stride <= 0xffff;
+}
 static void prepare_handles(Ctx* c) {
     memory_handles(c);
     for (u32 i = 0; i < c->n && !c->failed; i++) {
@@ -5675,10 +5889,10 @@ static void prepare_handles(Ctx* c) {
                 const Sm86Insn* mul = m >= 0 ? &c->in[m] : NULL;
                 u32 stride = 0, base = 0, count = SNX_TEX_ARRAY;
                 if (!g_shader_texture_arrays || c->stage == ST_CS) {
+                    /* a compute program's table doesn't come here: tex_b_cbuf_handle leaves its TEX.B to
+                       memory_handles, which gives it a slot (the dispatch's element, or none) or fails the program */
                     fail(c, "TEX.B of a table of handles, without texture arrays");
-                } else if (!mul || mul->op != SM86_IMAD || sm86_field(mul, 74, 1) ||
-                           !src_const(c, (u32)m, &mul->b, &stride) || !src_const(c, (u32)m, &mul->c, &base) ||
-                           !stride || stride > 0xffff) {
+                } else if (!handle_table_index(c, m, &stride, &base)) {
                     fail(c, "TEX.B of a table of handles, indexed by %s",
                          mul ? sm86_ops[mul->op].name : "several writes");
                 } else {
@@ -5871,8 +6085,8 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         c->coop = coop_wanted(c);
         if (c->coop) {
             e->vulkan_memory_model = 1;
-            spv_emit_capability(e, 5345 /* VulkanMemoryModel */);
-            spv_emit_capability(e, 5346 /* VulkanMemoryModelDeviceScope: the atomics' and MEMBAR.GPU's */);
+            spv_emit_capability(e, SPV_CAPABILITY_VULKAN_MEMORY_MODEL);
+            spv_emit_capability(e, SPV_CAPABILITY_VULKAN_MEMORY_MODEL_DEVICE_SCOPE);
         }
         c->glsl = spv_emit_glsl450_import(e);
         c->t_void = spv_emit_type_void(e);
@@ -6003,9 +6217,9 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             fn = mesh_entry(c, fn);
             spv_emit_local_size(e, fn, si->mesh.threads, 1, 1);
             if (stage == ST_MS) {
-                spv_emit_execution_mode(e, fn, 26 /* OutputVertices */, 1, si->mesh.max_vertices);
-                spv_emit_execution_mode(e, fn, 5270 /* OutputPrimitivesEXT */, 1, si->mesh.max_primitives);
-                spv_emit_execution_mode(e, fn, 5298 /* OutputTrianglesEXT */, 0, 0);
+                spv_emit_execution_mode(e, fn, SPV_MODE_OUTPUT_VERTICES, 1, si->mesh.max_vertices);
+                spv_emit_execution_mode(e, fn, SPV_MODE_OUTPUT_PRIMITIVES_EXT, 1, si->mesh.max_primitives);
+                spv_emit_execution_mode(e, fn, SPV_MODE_OUTPUT_TRIANGLES_EXT, 0, 0);
             }
         }
         if (!c->failed) {

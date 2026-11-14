@@ -57,6 +57,8 @@ enum {
     /* depth_bounds: the near bound, then the far, floats */
     MAXWELL3D_DEPTH_BOUNDS = 0x3E7,
     MAXWELL3D_COLOR_TARGET_MRT_ENABLE = 0x3EB,
+    MAXWELL3D_RASTER_SAMPLES_ENABLE = 0x3ED, /* SET_MULTISAMPLE_RASTER_ENABLE: raster samples apart from the target's */
+    MAXWELL3D_SAMPLE_MASK = 0x3EF, /* SET_MULTISAMPLE_SAMPLE_MASK: 4 words, a pixel of a 2x2 quad's 16 samples each */
     /* draw_texture (12 words, Eden's Regs::DrawTexture): its last, src_y0, starts it */
     MAXWELL3D_DRAW_TEXTURE = 0x420,
     MAXWELL3D_DRAW_TEXTURE_SRC_Y0 = 0x42B,

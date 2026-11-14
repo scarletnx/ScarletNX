@@ -157,6 +157,10 @@ typedef struct {
     char first_unsupported[96]; /* the longest: an untracked handle with its writer's constant (93 bytes) */
     u32 cs_local[3];
     int shared_size;
+    /* the shared memory lives in global buffer slot SH_SHARED_SPILL, not the workgroup's own: set by vk/compute.c where a
+       block asks for more than the device gives and its accesses may reach past that. Block b's shared_size bytes (in
+       words, rounded up) start at word b times them, b its place in the grid (x first) */
+    int shared_spill;
     u32 gbuf_wmask; /* global buffers the program writes */
     u32 gbuf_rmask; /* global buffers the program reads (a load or atomic: its input must be copied for them) */
     /* The program's write log (SNX_VKB_WPAGES, SH_WLOG_*): every store and atomic of a compute program to global
@@ -197,6 +201,14 @@ typedef struct {
        generic as its position mapped onto [0, 1] (screen_out_mask), or as the position itself for screen_ndc
        (pos_out_mask), and the draw's viewport covers the target (vk/render.c) */
     u64 tex_screen_mask;
+    /* FS: the own-pixel, screen and uv slots (above) that a pre-draw capture can serve: plain 2D color reads, no depth
+       compare, no samples, no layers, not indexed */
+    u64 tex_predraw_mask;
+    /* FS key: the slots that read their target as it was before the draw. At the program's start, in an interlock, the
+       draw's first fragment at a pixel fetches each into a side image and stamps the pixel with the draw's number
+       (vk/predraw.c), and every read of those slots takes the side image's value. Overlapping primitives of one draw
+       then read what was there before the draw, as the console's texture cache gives them, and never each other */
+    u64 predraw_slots;
     u32 screen_in;
     /* FS: how those samples take screen_in: 0 at its (x / w, y / w), the vertex stage mapping it (screen_out_mask); 1
        at (x / w / 2 + 1/2, y / w / 2 + 1/2) and 2 at (x / w / 2 + 1/2, -y / w / 2 + 1/2), the program mapping the
@@ -254,6 +266,9 @@ typedef struct {
        translation found (in out_mask too); and key (fragment programs), the inputs that the draw's mesh program
        writes per primitive, which the module declares PerPrimitiveEXT */
     u32 prim_mask;
+    /* a fragment program reads the primitive's number (PrimitiveId), which no mesh program here writes: a mesh draw
+       with it is skipped (vk/render.c), as the value would be undefined */
+    int reads_primitive_id;
     int mixed_sample_invariant; /* proof: guest FS values and discard decisions do not depend on an invocation */
     u32 late_depth; /* key: ordered GPU depth/stencil shadow operations after guest fragment code */
     u32 capture_outputs; /* key: capture validity location2..7; zero retains the original location1 interface */
@@ -359,6 +374,11 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 }
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs has room for */
 #define SH_MINMAX_SLOTS    15 /* slots a fragment program's key has room for in tex_minmax_mask (vk/pipeline.c) */
+/* the words of a shader's key (vk_shader_get's mask). A fragment program's words 26 and 27 are its predraw_slots */
+#define SH_KEY_WORDS       28
+/* the slots a pre-draw capture serves at most (ShaderInfo.predraw_slots): its stamp image and a side image for each,
+   in the fragment stage's storage image bindings after the program's own */
+#define SH_PREDRAW_MAX     7
 /* Each stage has a descriptor set (shader_vk_set), its bindings grouped by kind. */
 #define SNX_VKB_CB       0                         /* 18 constant buffers */
 #define SNX_VKB_SSBO     18                        /* 16 global memory buffers */
@@ -398,6 +418,9 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SNX_XFB_GBUF_MAX   11
 #define SNX_VKB_XFB_PARAMS (SNX_VKB_SSBO + SNX_XFB_GBUF_MAX)
 #define SNX_VKB_XFB        (SNX_VKB_XFB_PARAMS + 1)
+/* The global buffer slot a compute program's shared memory moves to (ShaderInfo.shared_spill): the last, so a program
+   that binds all 16 of its own can't */
+#define SH_SHARED_SPILL    15
 /* An indexed texture loads its handle with an LDC whose address has a register in it: one of SNX_TEX_ARRAY handles
    from cbuf_off on, each (1 << shift) bytes after the last, with the shift in bits 4-7 of ShTex.flags. */
 #define SNX_TEX_ARRAY    256
@@ -563,6 +586,20 @@ int shader_shared_fit(const u8* code, u32 max_bytes, const u32 local[3], u32 shm
 /* reads word off (bytes) of constant buffer idx for jump tables, into *out as a host number: 1 when it could. Set by
    whoever translates, NULL offline */
 extern int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
+/* Constant buffer words folded into a translation. A program loads most of its constant buffer words at constant
+   places (the bank and the offset in the instruction), and its draws mostly find the same words there. Where
+   whoever translates sets g_shader_cb_fold, each such load asks it for the word (bank idx, byte off): 1 with the
+   word in *out when the translation is to hold it as a constant, which then serves only the draws whose buffers
+   hold that word (vk/cb_fold.h); 0 for a load. NULL offline.
+   shader_cb_fold_value is which words are worth it, whatever their bank: zero, 1.0f and a whole number up to 255,
+   the words a driver drops a multiply, an add or a branch for. Of the loads one game's scene never changed in its
+   fragment programs they are a third, and they bring 85% of what all of them would in the instructions RADV
+   compiles (docs/layers/gpu/constant-buffer-folds.md) */
+extern int (*g_shader_cb_fold)(u32 idx, u32 off, u32* out);
+static inline int shader_cb_fold_value(u32 word) { return word < 256 || word == 0x3F800000u; }
+/* the translations of a program that fold by value (vk/cb_fold.h, vk_cb_fold_mode): the count past which one more
+   costs more translations than it folds words in the draws (the same doc's table) */
+#define SH_CB_FOLD_VARIANTS 2u
 /* The programs are SM86 (sm86.h), not Maxwell: an Ounce game's. nvn_direct sets it once, from the game's NVN API
    version, before the game's first draw */
 extern int g_shader_sm86;

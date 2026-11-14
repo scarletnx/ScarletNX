@@ -303,7 +303,7 @@ static void ret(Gen* g, bool value) {
 /* if (cond) {: the then block is placed, and the merge block returned for place() to close it */
 static uint32_t if_begin(Gen* g, uint32_t cond) {
     uint32_t then = spv_emit_id(g->s), merge = spv_emit_id(g->s);
-    SPV_VOID(g->s, SPV_OP_SELECTION_MERGE, merge, 0);
+    SPV_VOID(g->s, SPV_OP_SELECTION_MERGE, merge, SPV_SELECTION_CONTROL_NONE);
     SPV_VOID(g->s, SPV_OP_BRANCH_CONDITIONAL, cond, then, merge);
     g->open = false;
     place(g, then);
@@ -649,7 +649,7 @@ static void if_else(Decode* c, uint32_t cond, uint32_t dest, uint32_t num) {
     uint32_t else_offset = dest, endif_offset = else_offset + num;
     uint32_t then = spv_emit_id(g->s), merge = spv_emit_id(g->s);
     uint32_t otherwise = num ? spv_emit_id(g->s) : merge;
-    SPV_VOID(g->s, SPV_OP_SELECTION_MERGE, merge, 0);
+    SPV_VOID(g->s, SPV_OP_SELECTION_MERGE, merge, SPV_SELECTION_CONTROL_NONE);
     SPV_VOID(g->s, SPV_OP_BRANCH_CONDITIONAL, cond, then, otherwise);
     g->open = false;
     place(g, then);
@@ -683,7 +683,7 @@ static bool trans_LOOP(Decode* c, arg_LOOP* x) {
     place(g, header);
     uint32_t more = SPV(g->s, SPV_OP_U_LESS_THAN_EQUAL, g->t_bool, load(g, g->t_uint, counter),
                         extract(g, g->t_uint, i, 0));
-    SPV_VOID(g->s, SPV_OP_LOOP_MERGE, merge, next, 0);
+    SPV_VOID(g->s, SPV_OP_LOOP_MERGE, merge, next, SPV_LOOP_CONTROL_NONE);
     SPV_VOID(g->s, SPV_OP_BRANCH_CONDITIONAL, more, body, merge);
     g->open = false;
     place(g, body);
@@ -741,7 +741,7 @@ static void compile_labelled(Gen* g, const Sub* s) {
     uint32_t loop_merge = spv_emit_id(sp), fallback = spv_emit_id(sp);
     g->switch_merge = spv_emit_id(sp);
     place(g, header);
-    SPV_VOID(sp, SPV_OP_LOOP_MERGE, loop_merge, next, 0);
+    SPV_VOID(sp, SPV_OP_LOOP_MERGE, loop_merge, next, SPV_LOOP_CONTROL_NONE);
     jump(g, dispatch);
     place(g, dispatch);
     operands[0] = load(g, g->t_uint, g->jmp_to);
@@ -750,7 +750,7 @@ static void compile_labelled(Gen* g, const Sub* s) {
         operands[2 + 2 * k] = labels.items[k];
         operands[3 + 2 * k] = spv_emit_id(sp);
     }
-    SPV_VOID(sp, SPV_OP_SELECTION_MERGE, g->switch_merge, 0);
+    SPV_VOID(sp, SPV_OP_SELECTION_MERGE, g->switch_merge, SPV_SELECTION_CONTROL_NONE);
     spv_emit_void_op(sp, SPV_OP_SWITCH, operands, 2 + 2 * (size_t)labels.count);
     g->open = false;
     for (unsigned k = 0; k < labels.count && !g->fail; ++k) {

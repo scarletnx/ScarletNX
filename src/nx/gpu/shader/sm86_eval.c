@@ -66,11 +66,11 @@ static u32 ev_int(Ev* e, const Sm86Src* s) {
     u32 v = ev_bits(e, s);
     return s->neg && s->kind != SM86_SRC_IMM ? 0u - v : v;
 }
-/* a term of a 64-bit sum, as term64: ~x + 1 in 33 bits for a negated one */
-static u64 ev_term64(Ev* e, const Sm86Src* s) {
+/* a term of a 64-bit sum, as term64: ~x + 1 in 33 bits for a negated one, ~x alone with the carries in (.X) */
+static u64 ev_term64(Ev* e, const Sm86Src* s, int x) {
     u32 v = ev_bits(e, s);
     if (!s->neg || s->kind == SM86_SRC_IMM) return v;
-    return (u64)(u32)~v + 1;
+    return (u64)(u32)~v + (x ? 0 : 1);
 }
 static int ev_pred(Ev* e, u32 p, u32 negate, int uniform) {
     int v = p >= SM86_PT ? 1 : (uniform ? e->up : e->p)[p];
@@ -140,8 +140,9 @@ static int ev_step(Ev* e, const Sm86Insn* in) {
         case SM86_IADD3:
         case SM86_UIADD3: {
             u32 p = sm86_field(in, 81, 3), q = sm86_field(in, 84, 3);
-            u64 sum = ev_term64(e, &in->a) + ev_term64(e, &in->b) + ev_term64(e, &in->c);
-            if (sm86_field(in, 74, 1))
+            int x = (int)sm86_field(in, 74, 1);
+            u64 sum = ev_term64(e, &in->a, x) + ev_term64(e, &in->b, x) + ev_term64(e, &in->c, x);
+            if (x)
                 sum += (u64)ev_pred(e, sm86_field(in, 87, 3), sm86_field(in, 90, 1), uniform) +
                        (u64)ev_pred(e, sm86_field(in, 77, 3), sm86_field(in, 80, 1), uniform);
             ev_dwr(e, in, (u32)sum);
@@ -151,7 +152,10 @@ static int ev_step(Ev* e, const Sm86Insn* in) {
         }
         case SM86_IMAD:
         case SM86_UIMAD: {
-            u32 v = ev_int(e, &in->a) * ev_int(e, &in->b) + ev_int(e, &in->c);
+            /* with .X a negated addend is its complement, as IADD3.X's sources */
+            u32 addend = sm86_field(in, 74, 1) && in->c.neg && in->c.kind != SM86_SRC_IMM ? ~ev_bits(e, &in->c)
+                                                                                          : ev_int(e, &in->c);
+            u32 v = ev_int(e, &in->a) * ev_int(e, &in->b) + addend;
             if (sm86_field(in, 74, 1)) v += (u32)ev_pred(e, sm86_field(in, 87, 3), sm86_field(in, 90, 1), uniform);
             ev_dwr(e, in, v);
             return 1;
@@ -164,6 +168,13 @@ static int ev_step(Ev* e, const Sm86Insn* in) {
             u32 creg = in->c.reg, chi = in->c.kind == SM86_SRC_UREG ? (creg >= SM86_URZ ? 0 : e->ur[creg + 1])
                                                                     : (creg >= SM86_RZ ? 0 : e->r[creg + 1]);
             u64 sum = product + ((u64)chi << 32 | ev_bits(e, &in->c));
+            int carry = sum < product; /* the carry out, and .X's carry in, as the translation's */
+            if (sm86_field(in, 74, 1)) {
+                u64 more = sum + (u64)ev_pred(e, sm86_field(in, 87, 3), sm86_field(in, 90, 1), uniform);
+                carry |= more < sum;
+                sum = more;
+            }
+            ev_pwr(e, sm86_field(in, 81, 3), carry, uniform);
             ev_dwr(e, in, (u32)sum);
             if (uniform && in->dst < SM86_URZ)
                 ev_uwr(e, in->dst + 1, (u32)(sum >> 32));

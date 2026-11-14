@@ -18,9 +18,15 @@ static int channel_of(uint32_t offset, int* part) {
     return at < 4 * 12 ? (int)(at / 12) : -1;
 }
 
+/* DMAxCNT_L's units: 14 bits on DMA0 to DMA2, 16 on DMA3, zero the most (GBATEK, DMA Transfers) */
+static uint32_t units(const AgbBoard* board, int index) {
+    uint32_t count = board->dma[index].count & (index == 3 ? 0xFFFFu : 0x3FFFu);
+    return count ? count : (index == 3 ? 0x10000u : 0x4000u);
+}
+
 static void dma_transfer(AgbBoard* board, int index, int fifo) {
     AgbDmaChannel* channel = &board->dma[index];
-    uint32_t count = channel->count ? channel->count : (index == 3 ? 0x10000 : 0x4000);
+    uint32_t count = channel->count_now;
     int word = channel->control & AGB_DMA_WORD, step = word ? 4 : 2;
     int source_mode = channel->control >> 7 & 3, destination_mode = channel->control >> 5 & 3;
     uint32_t source = channel->source_now, destination = channel->destination_now;
@@ -30,12 +36,22 @@ static void dma_transfer(AgbBoard* board, int index, int fifo) {
         count = 4;
         destination_mode = 2;
     }
-    /* the bus is the DMA's until it ends: 2N + 2(n-1)S + 2I (4I when both ends are on the cartridge), which the CPU
-       waits out (agb_cpu_run) */
-    board->held_cycles += (source >> 27 & 1) && (destination >> 27 & 1) ? 4 : 2;
+    /* the bus is the DMA's until it ends, which the CPU waits out (agb_cpu_run): a cycle to start and one to end, and a
+       read and a write each unit, every access sequential but its first on the cartridge, and one past a 128 KiB page
+       there (NanoBoyAdvance's DMA.cc); a unit from below EWRAM reads nothing, a cycle */
+    uint32_t cycles = 2;
+    int first = 1;
     for (uint32_t i = 0; i < count; ++i) {
-        board->held_cycles += agb_access_cycles(board, source, word ? 32 : 16, i > 0) +
-                              agb_access_cycles(board, destination, word ? 32 : 16, i > 0);
+        int from_cartridge = source >= 0x08000000u, to_cartridge = destination >= 0x08000000u;
+        int read_next = !(first && from_cartridge), write_next = !(first && to_cartridge && !from_cartridge);
+        if (from_cartridge || to_cartridge) first = 0;
+        uint32_t read = source >= 0x02000000u
+                            ? agb_access_cycles(board, source, word ? 32 : 16, read_next && (source & 0x1FFFF))
+                            : 1;
+        /* its first access there, a cycle after its start and its first read elsewhere: counted from 1 */
+        if (!i && !board->held_cartridge && (from_cartridge || to_cartridge))
+            board->held_cartridge = board->held_cycles + (from_cartridge ? 2 : 2 + read);
+        cycles += read + agb_access_cycles(board, destination, word ? 32 : 16, write_next && (destination & 0x1FFFF));
         /* the channel reads nothing below EWRAM (the BIOS, the unused space): it moves the unit it read last again,
            a halfword in both halves of its latch (mGBA's GBADMAService, the console's in its suite's dma.c) */
         /* the unit's own address: the DMA drops the bits below its width (GBATEK), which the save memory's 8 bit
@@ -70,6 +86,7 @@ static void dma_transfer(AgbBoard* board, int index, int fifo) {
             default: break;
         }
     }
+    board->held_cycles += cycles;
     channel->source_now = source;
     /* repeat only takes a channel that waits for its moment (a blank, a FIFO): one that started at once ends, its
        enable bit clear for the next start, as mGBA's GBADMAService has it */
@@ -78,6 +95,7 @@ static void dma_transfer(AgbBoard* board, int index, int fifo) {
         channel->destination_now = fifo                    ? channel->destination
                                    : destination_mode == 3 ? channel->destination
                                                            : destination;
+        channel->count_now = units(board, index);
     } else {
         channel->control &= (uint16_t)~AGB_DMA_ENABLE;
         channel->destination_now = destination;
@@ -106,6 +124,7 @@ void agb_dma_write(AgbBoard* board, uint32_t offset, uint16_t value) {
             channel->source_now = channel->source;
             channel->destination_now = channel->destination;
             if (!was && (value & AGB_DMA_ENABLE)) {
+                channel->count_now = units(board, index);
                 int timing = value >> 12 & 3;
                 if (!timing) dma_transfer(board, index, 0);
             }

@@ -26,10 +26,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define FCRAM 0x20000000u
-#define VRAM 0x18000000u
+/* The board the scenes run on and where they put their buffers and targets: an Old 3DS's FCRAM and VRAM, or with
+   --new3ds a New 3DS's, every buffer and target in the upper half of FCRAM that only it has, the targets where VRAM
+   would be, and the vertices in its extra RAM (0x1f000000). The indices stay above the vertices: the PICA finds them
+   at the attributes' base plus a 28-bit offset */
+static SnxCtrModel g_model = SNX_CTR_OLD;
+static uint32_t g_fcram = 0x20000000u, g_vram = 0x18000000u, g_vertices = 0x20110000u;
+#define FCRAM         g_fcram
+#define VRAM          g_vram
 #define LIST (FCRAM + 0x100000u)
-#define VERTICES (FCRAM + 0x110000u)
+#define VERTICES      g_vertices
 #define INDICES (FCRAM + 0x118000u)
 #define TEXTURE (FCRAM + 0x120000u)
 #define COLOR VRAM
@@ -190,13 +196,21 @@ typedef struct {
 } Scene;
 
 /* the scene's memory as it starts: its data, a random colour target, a depth target at 0.5 with random stencil */
+/* the scene's buffers and the targets' first bytes in the board's memory: a write outside it ends the test, as the two
+   renderers would otherwise agree on what neither was given */
+static void put_in(SnxCtrMemory* m, uint32_t pa, const void* bytes, size_t size, const char* what) {
+    if (snx_ctr_phys_write(m, pa, bytes, size) != SNX_CTR_MEM_OK) {
+        fprintf(stderr, "the %s at 0x%08x are outside the board's memory\n", what, pa);
+        exit(1);
+    }
+}
 static void setup(SnxCtrMemory* m, const Scene* s, const unsigned char* color, const unsigned char* depth) {
-    snx_ctr_phys_write(m, VERTICES, s->vertices, sizeof s->vertices);
-    snx_ctr_phys_write(m, TEXTURE, s->texture, sizeof s->texture);
-    snx_ctr_phys_write(m, INDICES, s->indices, sizeof s->indices);
-    snx_ctr_phys_write(m, COLOR, color, W * H * 4);
-    snx_ctr_phys_write(m, DEPTH, depth, W * H * 4);
-    snx_ctr_phys_write(m, LIST, s->list.w, s->list.n * 4);
+    put_in(m, VERTICES, s->vertices, sizeof s->vertices, "vertices");
+    put_in(m, TEXTURE, s->texture, sizeof s->texture, "texture's texels");
+    put_in(m, INDICES, s->indices, sizeof s->indices, "indices");
+    put_in(m, COLOR, color, W * H * 4, "colour target's bytes");
+    put_in(m, DEPTH, depth, W * H * 4, "depth target's bytes");
+    put_in(m, LIST, s->list.w, s->list.n * 4, "command list's words");
 }
 static const SnxCtrPicaHost software = {NULL, NULL, snx_ctr_pica_draw, snx_ctr_pica_draw_immediate, NULL};
 static const SnxCtrPicaHost vulkan = {NULL, NULL, snx_ctr_vk_draw, snx_ctr_vk_vertex, snx_ctr_vk_vertices_end};
@@ -493,7 +507,7 @@ static void y2r_after_draw(SnxCtrMemory* m) {
     ok = ok && memcmp(before, expected, sizeof before) != 0;
     /* one page per stream, in FCRAM away from the draw target: 512, 256, 256 and 2048 bytes */
     static const unsigned char* const src[4] = {y, u, v, before};
-    static const uint32_t pages_at[4] = {FCRAM + 0x400000u, FCRAM + 0x401000u, FCRAM + 0x402000u, FCRAM + 0x403000u};
+    const uint32_t pages_at[4] = {FCRAM + 0x400000u, FCRAM + 0x401000u, FCRAM + 0x402000u, FCRAM + 0x403000u};
     for (unsigned i = 0; ok && i < 4; ++i) {
         memset(page, POISON, sizeof page);
         memcpy(page, src[i], (size_t)spans[i]);
@@ -1265,6 +1279,12 @@ static const Mode modes[] = {{"--present", "the presented screens", screens},
                              {"--shadow", "the shadow maps", shadows}};
 
 int main(int argc, char** argv) {
+    g_model = test_ctr_model(&argc, argv);
+    if (g_model == SNX_CTR_NEW) { /* the scenes in the memory only a New 3DS has */
+        g_fcram = 0x28000000u;
+        g_vram = 0x2c000000u;
+        g_vertices = 0x1f000000u;
+    }
     int vk_memory = test_ctr_vk_memory(&argc, argv);
     test_ctr_vk_extensions(&argc, argv);
     const Mode* mode = &scenes;
@@ -1281,7 +1301,7 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
-    SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
+    SnxCtrMemory* m = snx_ctr_memory_new(g_model);
     char why[256];
     if (!m) return 1;
     if (!snx_ctr_vk_init(m, why, sizeof why)) {
