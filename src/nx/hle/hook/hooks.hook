@@ -168,8 +168,9 @@ hook sscanf(addr s, addr fmt) -> i32 = libc_sscanf
 hook vsscanf(addr s, addr fmt, addr ap) -> i32 = libc_vsscanf
 
 # the C and C++ libraries' allocation functions (alloc.c): the host's jemalloc, in an arena of its own whose pages are
-# guest memory. A pointer the arena didn't make goes to the function's own code. Off without jemalloc, and in a game
-# whose address space has no room for the arena
+# guest memory. Only a block the arena handed out goes back to it: any other pointer, a piece of a region the game's
+# own allocator carved from an arena block among them, goes to the function's own code. Off without jemalloc, and in a
+# game whose address space has no room for the arena
 family alloc
 hook malloc(u64 size) -> addr = alloc_malloc
 hook calloc(u64 count, u64 size) -> addr = alloc_calloc
