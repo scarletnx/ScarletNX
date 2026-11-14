@@ -26,8 +26,9 @@ The root's `llvm-config` is a program of the target: `scripts/cross-llvm-config.
 machine its ELF header names (`qemu-riscv64`, `qemu-loongarch64`). The AppImages link LLVM statically instead, built
 for the architecture by `scripts/linux-llvm.sh riscv64 PREFIX` with `SNX_SYSROOT` set, and configured with
 `-DLLVM_DIR=PREFIX/lib/cmake/llvm -DSNX_LLVM_CONFIG=` ([Build](../dev/build.md#install--appimage)). CI packages them with
-this machine's `mkdwarfs`, as the target's compresses many times slower under qemu, and strips the target's files with
-`llvm-strip`, as this machine's `strip` knows its own architecture only.
+this machine's `appimagetool`, which resolves `mkdwarfs` for this machine too, as the target's compresses many times
+slower under qemu, and strips the target's files with `llvm-strip`, as this machine's `strip` knows its own
+architecture only.
 
 ## What differs from the other hosts
 
