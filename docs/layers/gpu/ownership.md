@@ -307,6 +307,13 @@ indices and constant buffers, and made about 380 submissions a present: its reco
 the kernel. A range a write in place is pending over stays in place, as do a dispatch's storage ranges and what the
 GPU writes. The headless Vulkan checks of the in-place path take `uma_copies=1`.
 
+In place, a compute dispatch with nothing staged for the host to read is not submitted on its own: it waits in the
+submission being recorded for the end of the game's GPU submission (`vk_release_submit`, at the end of each NVN job)
+or whatever submits first, as the console's GPU runs what a flush handed it. Submitted each, one game's battle map
+made 350 to 390 submissions a present by the GPU profiler, and 22 to 24 left so. A CPU read of a write in place
+still unsubmitted finishes all that was recorded, and the program whose write it waited for is submitted with each
+dispatch from then on (`vk_uma_read_soon`), as all were before. `check_uma_dispatch_open` checks the three cases.
+
 With resizable BAR, the staging ring of streamed uploads goes in device-local memory that the CPU maps
 (`vk_stage_upload`, within the heap's budget): the CPU's sequential writes cross the bus once, and every draw that
 reads them reads local memory. With a small BAR the ring stays in host memory (the window is shared with the whole

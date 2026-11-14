@@ -7620,6 +7620,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
         if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
         if (!strcmp(name, "dispatch") && ++ran) CHECK(!check_uma_dispatch());
+        if (!strcmp(name, "dispatch_open") && ++ran) CHECK(!check_uma_dispatch_open());
         if (!strcmp(name, "texture_pending") && ++ran) CHECK(!check_uma_texture_pending());
         if (!strcmp(name, "dispatch_constants") && ++ran) CHECK(!check_uma_dispatch_constants());
         if (!strcmp(name, "dispatch_table") && ++ran) CHECK(!check_uma_dispatch_table());
@@ -7630,11 +7631,12 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "trapped_window") && ++ran) CHECK(!check_uma_trapped_window());
         if (!strcmp(name, "copies") && ++ran) CHECK(!check_uma_copies());
         if (!ran) {
-            fprintf(stderr,
-                    "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, migrate, way, region_writes, "
-                    "region_merge, writes, feedback, publish, dispatch, texture_pending, dispatch_constants, "
-                    "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window or copies\n",
-                    name);
+            fprintf(
+                stderr,
+                "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, migrate, way, region_writes, "
+                "region_merge, writes, feedback, publish, dispatch, dispatch_open, texture_pending, dispatch_constants, "
+                "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window or copies\n",
+                name);
             return 2;
         }
         vk_pipeline_quiesce();
@@ -7652,6 +7654,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_feedback());
         CHECK(!check_uma_publish());
         CHECK(!check_uma_dispatch());
+        CHECK(!check_uma_dispatch_open());
         CHECK(!check_uma_texture_pending());
         CHECK(!check_uma_dispatch_constants());
         CHECK(!check_uma_dispatch_table());
@@ -7876,6 +7879,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_feedback());
     CHECK(!check_uma_publish());
     CHECK(!check_uma_dispatch());
+    CHECK(!check_uma_dispatch_open());
     CHECK(!check_uma_texture_pending());
     CHECK(!check_uma_dispatch_constants());
     CHECK(!check_uma_dispatch_table());

@@ -398,6 +398,11 @@ void vk_uma_before_write(u64 gva, u64 len);   /* the runtime writes GPU range [g
    as a pending result instead (buffer.c). vk_lock held */
 int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 void vk_uma_writes_commit(void);                         /* the draw or dispatch was recorded */
+/* the compute program whose writes vk_uma_writes_commit takes next, 0 for a draw's (compute.c sets it around the
+   commit); vk_uma_read_soon(prog): a CPU reader waited for its writes while they were unsubmitted, so its dispatches
+   go to the GPU at once */
+void vk_uma_writer(u64 prog);
+int vk_uma_read_soon(u64 prog);
 void vk_uma_writes_abort(void);                          /* it wasn't */
 void vk_uma_frame_done(u64 frame);                       /* that submit is done: its in-place writes are in memory */
 void vk_uma_host_barrier(VkCommandBuffer cb, u64 frame); /* at that submit's end: its writes visible to the host */
@@ -2363,6 +2368,9 @@ extern VkSemaphore g_vk_csem;  /* timeline semaphore the compute queue signals *
 extern u64 g_vk_cs_wait_value; /* the value graphics work waits for before reading compute results */
 extern u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns; /* statistics */
 extern u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because the CPU reads what they write */
+/* the submission a unified memory dispatch was left in for the stream's end to submit (vk_release_submit), and how many
+   were left so (statistics) */
+extern u64 g_vk_cs_open, g_vk_cs_left;
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
 int vk_uma_choose(int has_import, int has_ahb, int has_placed);
 void vk_uma_init(void); /* after it */
