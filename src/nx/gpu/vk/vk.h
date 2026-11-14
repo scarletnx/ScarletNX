@@ -2249,6 +2249,9 @@ int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off);
 extern VkSemaphore g_vk_csem;  /* timeline semaphore the compute queue signals */
 extern u64 g_vk_cs_wait_value; /* the value graphics work waits for before reading compute results */
 extern u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns; /* statistics */
+/* the storage images a compute dispatch last bound, by address (compute.c), which texture.c checks */
+extern u64 g_st_gva[8];
+extern void* g_st_surf[8];
 extern u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because the CPU reads what they write */
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
 int vk_uma_choose(int has_import, int has_ahb, int has_placed);

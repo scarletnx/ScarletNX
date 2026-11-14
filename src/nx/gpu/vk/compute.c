@@ -2007,6 +2007,9 @@ rebind:
                 continue;
             }
             Surf* t = vk_tex_from_tic_storage(tic);
+            { int q; /* kept for texture.c: the image this dispatch writes is the one a load would target */
+              for (q = 0; q < 7; q++) g_st_gva[q] = g_st_gva[q + 1], g_st_surf[q] = g_st_surf[q + 1];
+              g_st_gva[7] = t->gva; g_st_surf[7] = t; }
             u64 image_bytes;
             VkImageView view = vk_storage_image_view(t, &p->si, i, &image_bytes);
             if (!view) {

@@ -1403,7 +1403,32 @@ static int tex_copy_pending(Surf* t) {
     return 1;
 }
 /* the texture's memory hashed again, and loaded again when that changed: 1 if it did */
+u64 g_st_gva[8];
+void* g_st_surf[8];
+#define TEX_PIECES 256
+/* bytes of a texture to load, in order, those that meet joined. Past TEX_PIECES of them the two closest are joined
+   over the bytes between them, which loads more than changed and never less */
+typedef struct {
+    struct {
+        u64 at, n;
+    } piece[TEX_PIECES + 1]; /* the one added before two are joined */
+    u32 count;
+    int all; /* the whole texture */
+} TexPieces;
+
+static int tex_written_since(const Surf* t, u64 gva, TexPieces* p);
 static int tex_rehash(Surf* t) {
+    /* The image a compute dispatch bound as a storage image is the image this would load into (measured: the same
+       Surf* for all of a title's three written images). The dispatch wrote that image, so guest memory behind it is
+       its copy, not the other way round: hashing it and loading it back only returns what the image already holds. A
+       title's three 1080p and 1440p images cost 1.82 ms a frame doing that, and it was 82 to 118 frames a second */
+    for (int q = 0; q < 8; q++)
+        if (g_st_gva[q] == t->gva && g_st_surf[q] == (void*)t && t->upload_valid &&
+            tex_written_since(t, t->gva, NULL) == 0) {
+            t->gw = gpu_mem_generation();
+            t->hash = ~t->hash;
+            return 0;
+        }
     t->gw = gpu_mem_generation();
     if (tex_copy_pending(t)) return 1;
     /* The GPU wrote its bytes in place and that write is still pending: its content is new, so the upload is due
@@ -1925,16 +1950,6 @@ static VkImageViewType tic_view_type(u32 type, u32 d) {
    its memory: a write of a page of an 8192x8192 texture loads the blocks of that page, not its 256 MiB. A run of
    blocks of one row of blocks is the layout of a surface that row high and that run wide, which the GPU deswizzles
    into its place in the image */
-#define TEX_PIECES 256
-/* bytes of a texture to load, in order, those that meet joined. Past TEX_PIECES of them the two closest are joined
-   over the bytes between them, which loads more than changed and never less */
-typedef struct {
-    struct {
-        u64 at, n;
-    } piece[TEX_PIECES + 1]; /* the one added before two are joined */
-    u32 count;
-    int all; /* the whole texture */
-} TexPieces;
 static void pieces_add(TexPieces* p, u64 at, u64 n) {
     u32 i = p->count, j;
     if (!n || p->all) return;
