@@ -5459,6 +5459,59 @@ static void locate_titles(App* app, const char* dir) {
     free(other);
     free(old);
 }
+/* The game activity's arguments for each console (play_args, which play_as hands the activity): the driver's name
+   first where its driver is not the default, --game= the game's folder for a console (the Switch's its program), and
+   the console's settings alone. A refactor that drops these is what ran every game with the Switch's driver */
+static void check_play_args(App* app, const char* root) {
+    int was = app->menu.selected;
+    char* dir = snx_path_join(root, "play-args/0004000000076500");
+    char* prog = dir ? snx_path_join(dir, "0004000000076500") : NULL;
+    const char** argv = (const char**)snx_alloc(512 * sizeof(*argv));
+    PlayArgs own;
+    assert(dir && prog && argv && !snx_mkdirs(dir) && !snx_write_file(prog, "x", 1));
+    /* a 3DS game, the row naming its program: the driver first, its folder */
+    app->menu.selected = GUI_3DS;
+    assert(play_args(app, GUI_3DS, prog, argv, 512, &own) >= 2);
+    assert(!strcmp(argv[0], "scarletnx-3ds") && !strncmp(argv[1], "--game=", 7) && !strcmp(argv[1] + 7, dir));
+    play_args_free(&own);
+    /* the same game where the row names its folder: the folder still */
+    assert(play_args(app, GUI_3DS, dir, argv, 512, &own) >= 2);
+    assert(!strcmp(argv[0], "scarletnx-3ds") && !strncmp(argv[1], "--game=", 7) && !strcmp(argv[1] + 7, dir));
+    play_args_free(&own);
+    /* a GBA game: its driver, its folder */
+    app->menu.selected = GUI_GBA;
+    assert(play_args(app, GUI_GBA, prog, argv, 512, &own) >= 2);
+    assert(!strcmp(argv[0], "scarletnx-agb") && !strncmp(argv[1], "--game=", 7) && !strcmp(argv[1] + 7, dir));
+    play_args_free(&own);
+    /* the Switch: its driver is the default, so no name, and --game= is its program */
+    app->menu.selected = GUI_SWITCH;
+    assert(play_args(app, GUI_SWITCH, prog, argv, 512, &own) >= 1);
+    assert(!strncmp(argv[0], "--game=", 7) && !strcmp(argv[0] + 7, prog));
+    play_args_free(&own);
+    /* a 3DS setting goes to the 3DS and to no other console */
+    app->menu.selected = GUI_3DS;
+    if (gui_settings_set(settings_of(app), "ctr_screen_stretch", "15")) {
+        bool ctr = false, gba = false;
+        (void)play_args(app, GUI_3DS, dir, argv, 512, &own);
+        for (size_t i = 0; argv[i]; i++)
+            if (!strcmp(argv[i], "--ctr_screen_stretch=15")) ctr = true;
+        assert(ctr);
+        play_args_free(&own);
+        app->menu.selected = GUI_GBA;
+        (void)play_args(app, GUI_GBA, dir, argv, 512, &own);
+        for (size_t i = 0; argv[i]; i++)
+            if (!strcmp(argv[i], "--ctr_screen_stretch=15")) gba = true;
+        assert(!gba);
+        play_args_free(&own);
+        (void)gui_settings_set(settings_of(app), "ctr_screen_stretch", "0");
+    }
+    free(argv);
+    free(prog);
+    free(dir);
+    app->menu.selected = was;
+    puts("the game activity's arguments name each console's driver, its folder and its settings alone");
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
     snx_test_crash_said();
@@ -16564,6 +16617,7 @@ int main(int argc, char** argv) {
     assert(app.closing_ms && !app.menu.quit);
     event(&app, &e);
     assert(app.menu.quit);
+    check_play_args(&app, temporary);
     cleanup(&app);
     assert(!app.hid_held);
     assert(!snx_remove_tree(temporary));
