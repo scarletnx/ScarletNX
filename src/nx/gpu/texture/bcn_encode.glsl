@@ -239,6 +239,9 @@ uvec2 Bc1Block() {
     }
     Bc1Try(e0, e1);
     Bc1Try(f0, f1);
+    /* two rounds of least squares, each from the block the last left best: 0.05 dB more over a game's levels than
+       one, for a seventh more time */
+    Bc1Fit();
     Bc1Fit();
     return uvec2(bc1_c, bc1_idx);
 }
