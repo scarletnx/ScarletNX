@@ -394,6 +394,12 @@ static void test_heap32(void) {
     CHECK(svc_set_heap_size(3260 * MIB) == SNX_RC_SVC_OUT_OF_MEMORY);
     CHECK(svc_set_heap_size(1000 * MIB) == 0);
     CHECK(svc_set_heap_size(0) == 0);
+    /* a process that holds more than its heap region (a system resource past the 1 GiB) is told a total no smaller:
+       the SDK subtracts the two for the heap's size, and the part past the resource is what it has */
+    g_hle.kernel.sysres_size = 1100 * MIB;
+    CHECK(info(7) == 1123 * MIB && info(6) == 1123 * MIB);
+    CHECK(info(21) == 23 * MIB && info(22) == 23 * MIB);
+    g_hle.kernel.sysres_size = 0;
     g_layout = saved;
 }
 /* memory_fit: the game is told the budget the measure leaves, at most Memory (GB)'s and never less than the console's,
