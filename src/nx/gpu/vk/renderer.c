@@ -45,7 +45,22 @@ static u32 g_last_x, g_last_y, g_last_w, g_last_h;
 static u32 g_last_transform;
 /* vk_lock once around the hooks: each takes it again only as a depth count. Each took and dropped it on its own, and
    every drop let the lock go (vk_let_go) on the GPU thread's writes, the constant buffer uploads before most draws */
+/* Each hook below only lands what the renderer holds over the bytes and hasn't written to guest memory yet: buffer and
+   compute results, storage images, the mirror's writes, queued releases (all of them count their pages in g_pend_any),
+   render targets (g_rt_pages), and unified memory's imports. Where none covers the bytes, every hook does nothing, so
+   the write doesn't take vk_lock for them: the GPU thread's constant buffer uploads, 14,000 a frame of one or two words
+   in one game's town, took it and asked each hook in turn, about 43 ns each. The tables are read under pend_lock, as
+   vkr_mem_pending reads them: their changes take it too. A result added after the answer and before the write is the
+   race there was after vk_unlock below, before the write, too */
+static int before_write_needed(u64 gva, u64 size) {
+    if (!size || vk_uma()) return 1;
+    pend_lock();
+    int hit = pend_hit(&g_pend_any, gva, size) || vk_rt_pages_hit(gva, size);
+    pend_unlock();
+    return hit;
+}
 static void vkr_before_write(u64 gva, u64 size) {
+    if (!before_write_needed(gva, size)) return;
     vk_lock();
     if (size) vk_release_need(gva, size);
     vk_buf_before_write(gva, size);

@@ -45,6 +45,8 @@ int gmem_write(u64 gva, const void* src, u64 size) {
     memcpy(vram + (gva - VA), src, size);
     return 0;
 }
+/* a constant buffer upload: the same as any write here */
+int gmem_write_cb(u64 gva, const void* src, u64 size) { return gmem_write(gva, src, size); }
 u32 gmem_r32(u64 gva) {
     u8 b[4] = {0};
     gmem_read(gva, b, 4);
