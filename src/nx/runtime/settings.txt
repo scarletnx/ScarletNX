@@ -1389,6 +1389,7 @@ setting NVN storage ordering
     startup
     words Conservative|Explicit|Deferred
     help NVN draws use their explicit storage barriers, allowing independent writes through overlapping views.
+    help Draws from command buffers the game writes itself use their Maxwell barriers in the same way at 1 and 2.
     help Deferred records the ordering requirement and emits a Vulkan barrier at the next dependent buffer use.
     help 0 keeps conservative per-draw dependencies for comparisons or command recordings from older builds.
 setting Descriptor buffers

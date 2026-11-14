@@ -294,6 +294,8 @@ static void vkr_method_barrier(int kind)
 	if (kind == 0 && (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)) {
 		vk_lock();
 		vk_render_fragment_barrier();
+		/* the storage writes before it, which later draws' writes no longer order (render.c stage_set_) */
+		vk_buf_order_request(0);
 		vk_unlock();
 		return;
 	}

@@ -2606,7 +2606,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         if (!root_get(ds, sz, &b, &o)) return VK_NULL_HANDLE;
         dw_buffer(&d, set, SNX_VKB_ROOT, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, sz);
     }
-    int ordered = !(ds->owner & 0x80000000u) || !g_settings.nvn_storage_ordering;
+    /* Two draws' stores to one buffer are not ordered on the console: a game orders them with a barrier
+       (WAIT_FOR_IDLE, FRAGMENT_BARRIER and the texture data cache invalidation of Maxwell, NVN's barriers), and
+       method_barrier gives each of those. A read of an earlier draw's writes still gets its barrier here. One game
+       draws about 600 times a frame into one result buffer, and each of those draws ended the pass for a barrier
+       before it. nvn_storage_order 0 keeps that order for comparisons */
+    int ordered = !g_settings.nvn_storage_ordering;
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
         const VkDrawGbuf* gb = &draw->b[stage][i];
         u64 addr = gb->addr;
