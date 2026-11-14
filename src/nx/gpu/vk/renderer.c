@@ -740,6 +740,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         vk_tex_frame();
         vk_buf_frame();
         vk_own_trim(); /* before the caches' trim: what it lands is room the trim then need not make */
+        vk_bl_scratch_trim();
         vk_mem_trim(0, 0);
         vk_astc_auto_present(); /* after the trim: Exact again for astc_mode's Auto where the room is back */
         if (g_vk_present % 600 == 0) {

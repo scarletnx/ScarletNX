@@ -1302,6 +1302,7 @@ void vk_bl_barrier(VkCommandBuffer cb, int before);
    counts again from 0: what a test sees of a request the buffer already held */
 VkBuffer vk_bl_scratch(u64 size, u64* cap);
 u64 vk_bl_scratch_asked(void);
+void vk_bl_scratch_trim(void); /* once a present: the scratch buffer goes when it is far bigger than asked lately */
 
 /* owned.c: guest memory the GPU holds (memory/own.c, docs/layers/gpu/ownership.md). An engine's result (VIC's planes, a
    DMA copy's destination, a 2D blit's, inline-to-memory) is a resource: a device-local buffer in the guest's own
