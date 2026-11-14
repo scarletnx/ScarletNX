@@ -15,6 +15,7 @@
 #include "common/utilities/endian.h"
 #include "support/3ds_guest.h"
 #include "support/3ds_vk_path.h"
+#include "support/frame_dump.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,30 +27,24 @@ static uint64_t fnv(const unsigned char* bytes, size_t n) {
     for (size_t i = 0; i < n; ++i) hash = (hash ^ bytes[i]) * 1099511628211ull;
     return hash;
 }
-/* PPM pixels of the landscape screen a width x height RGBA framebuffer shows: the saved image has height columns
-   and width rows, screen (x, y) being framebuffer row x, pixel width - 1 - y (libctru's console addressing). */
-static void ppm_pixel(const unsigned char* ppm, size_t size, unsigned width, unsigned height, unsigned x, unsigned y,
+/* one pixel of an image of width x height, three bytes each, row after row */
+static void ppm_pixel(const unsigned char* ppm, unsigned width, unsigned height, unsigned x, unsigned y,
                       unsigned char out[3]) {
-    const char* header = "P6\n400 240\n255\n";
-    (void)width;
-    (void)height;
-    size_t at = strlen(header) + ((size_t)y * 400 + x) * 3;
-    assert(at + 3 <= size);
-    memcpy(out, ppm + at, 3);
+    assert(x < width && y < height);
+    memcpy(out, ppm + ((size_t)y * width + x) * 3, 3);
+}
+/* a top-screen frame dump, frame-0-<index>.ppm: the saved image is the landscape 400x240 rotation, and the caller
+   frees the pixels */
+static unsigned char* frame_dump(const char* dir, unsigned index, unsigned* width, unsigned* height) {
+    unsigned char* ppm = test_ctr_frame_dump(dir, 0, index, width, height);
+    assert(ppm && *width == 400 && *height == 240);
+    return ppm;
 }
 /* one pixel of a saved top-screen snapshot, frame-0-<index>.ppm */
 static void frame_pixel(const char* dir, unsigned index, unsigned x, unsigned y, unsigned char out[3]) {
-    char path[1024];
-    snprintf(path, sizeof path, "%s/frame-0-%02u.ppm", dir, index);
-    FILE* f = fopen(path, "rb");
-    assert(f);
-    fseek(f, 0, SEEK_END);
-    long length = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    unsigned char* ppm = malloc((size_t)length);
-    assert(ppm && length > 0 && fread(ppm, 1, (size_t)length, f) == (size_t)length);
-    fclose(f);
-    ppm_pixel(ppm, (size_t)length, 240, 400, x, y, out);
+    unsigned width = 0, height = 0;
+    unsigned char* ppm = frame_dump(dir, index, &width, &height);
+    ppm_pixel(ppm, width, height, x, y, out);
     free(ppm);
 }
 /* a whole RGBA8 (A, B, G, R) top framebuffer of one colour */
@@ -471,24 +466,14 @@ int main(int argc, char** argv) {
             /* The saved frame is the real Vulkan readback, rotated like the
                console screen: 400x240 landscape. Corners come from the exact
                framebuffer pattern. */
-            char path[1024];
-            snprintf(path, sizeof path, "%s/frame-0-00.ppm", argv[1]);
-            FILE* f = fopen(path, "rb");
-            assert(f);
-            fseek(f, 0, SEEK_END);
-            long length = ftell(f);
-            fseek(f, 0, SEEK_SET);
-            unsigned char* ppm = malloc((size_t)length);
-            assert(ppm && length > 0 && fread(ppm, 1, (size_t)length, f) == (size_t)length);
-            fclose(f);
-            const char* header = "P6\n400 240\n255\n";
-            assert(!memcmp(ppm, header, strlen(header)));
+            unsigned width = 0, height = 0;
+            unsigned char* ppm = frame_dump(argv[1], 0, &width, &height);
             unsigned char rgb[3];
-            ppm_pixel(ppm, (size_t)length, 240, 400, 0, 0, rgb); /* screen top-left: row 0, pixel 239 */
+            ppm_pixel(ppm, width, height, 0, 0, rgb); /* screen top-left: row 0, pixel 239 */
             assert(rgb[0] == 239 && rgb[1] == 0 && rgb[2] == 1);
-            ppm_pixel(ppm, (size_t)length, 240, 400, 399, 0, rgb); /* top-right: row 399, pixel 239 */
+            ppm_pixel(ppm, width, height, 399, 0, rgb); /* top-right: row 399, pixel 239 */
             assert(rgb[0] == 239 && rgb[1] == 143 && rgb[2] == 1);
-            ppm_pixel(ppm, (size_t)length, 240, 400, 0, 239, rgb); /* bottom-left: row 0, pixel 0 */
+            ppm_pixel(ppm, width, height, 0, 239, rgb); /* bottom-left: row 0, pixel 0 */
             assert(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 1);
             free(ppm);
             /* The libctru path posts framebuffers through the shared
@@ -511,16 +496,8 @@ int main(int argc, char** argv) {
             ctr_put(p, block + 28, 0);
             snx_ctr_gsp_vblank(p);
             assert(ctr_word(p, block + 0) == 0); /* applied */
-            snprintf(path, sizeof path, "%s/frame-0-01.ppm", argv[1]);
-            f = fopen(path, "rb");
-            assert(f);
-            fseek(f, 0, SEEK_END);
-            length = ftell(f);
-            fseek(f, 0, SEEK_SET);
-            ppm = malloc((size_t)length);
-            assert(ppm && length > 0 && fread(ppm, 1, (size_t)length, f) == (size_t)length);
-            fclose(f);
-            ppm_pixel(ppm, (size_t)length, 240, 400, 100, 100, rgb);
+            ppm = frame_dump(argv[1], 1, &width, &height);
+            ppm_pixel(ppm, width, height, 100, 100, rgb);
             assert(rgb[0] == 0x21 && rgb[1] == 0x43 && rgb[2] == 0x65);
             free(ppm);
             /* The LCD shows the left eye of the register pair shown_fb selects, whatever pair a swap writes:
