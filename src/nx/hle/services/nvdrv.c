@@ -746,7 +746,7 @@ void nv_gpu_call_after(u32 n, u32* id, const u32* val, void (*fn)(void*), void* 
         else
             id[i] = NV_FENCE_NO_SYNCPT; /* done with here */
     pm_lock(&g_host.nvdrv.submit_lk); /* after the submissions promising the fences left to the GPU thread */
-    gpu_call(fn, arg, chans, nchans);
+    gpu_call_renderer(fn, arg, chans, nchans); /* a present: it reads none of the front end's state */
     pm_unlock(&g_host.nvdrv.submit_lk);
 }
 /* a GPU channel's syncpoint, allocated on first use. Two ioctls on the fd at once may both allocate: the one that

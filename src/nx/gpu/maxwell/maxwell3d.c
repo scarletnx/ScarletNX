@@ -199,7 +199,7 @@ void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u
     if (verify)
         g_gpu_verify_draw(ch, &dc);
     else
-        g_renderer->draw(&ch->ds, &dc, &ch->owner);
+        gpu_draw(&ch->ds, &dc, &ch->owner);
 }
 /* guest memory without the renderer's hooks: only for the clear below, made while no renderer runs */
 static void raw_write(u64 gva, const u8* src, u32 n) {
@@ -271,7 +271,7 @@ void r3d_clear(GpuChannel* ch, u32 v) {
         DrawClear c;
         mx_draw_state_sync(ch);
         mx_draw_clear(ch->r3d, v, &c);
-        g_renderer->clear(&ch->ds, &c, &ch->owner);
+        gpu_clear(&ch->ds, &c, &ch->owner);
     }
 }
 /* DRAW_TEXTURE: not gated by the render enable here, the renderer reads its registers as Eden does */
@@ -280,11 +280,11 @@ void r3d_draw_texture(GpuChannel* ch) {
     DrawTexture t;
     mx_draw_state_sync(ch);
     mx_draw_texture(ch->r3d, &t);
-    g_renderer->draw_texture(&ch->ds, &t);
+    gpu_draw_texture(&ch->ds, &t);
 }
 int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
              double sdy) {
-    return g_renderer->blit ? g_renderer->blit(s, d, dx, dy, dw, dh, sx, sy, sdx, sdy) : 0;
+    return g_renderer->blit ? gpu_renderer_now()->blit(s, d, dx, dy, dw, dh, sx, sy, sdx, sdy) : 0;
 }
 
 /* ------------------------------------------------------------ constant buffers */

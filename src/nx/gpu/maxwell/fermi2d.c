@@ -157,11 +157,11 @@ static void f2d_blit_memory(const u32* r, const Surf2D* s, const Surf2D* d, cons
     if (!g_renderer_up || !g_renderer->blit_mem)
         WARN_LIMIT(4, "gpu: a 2D blit of %ux%u pixels to %llx before the renderer started: nothing is copied\n", n,
                    y1 - y0, (unsigned long long)b.dst.addr);
-    else if (!g_renderer->blit_mem(&b))
+    else if (!gpu_renderer_now()->blit_mem(&b))
         WARN_LIMIT(4, "gpu: the GPU could not do a 2D blit of %ux%u pixels to %llx: nothing is copied\n", n, y1 - y0,
                    (unsigned long long)b.dst.addr);
     else if (g_renderer->rt_reload)
-        g_renderer->rt_reload(d->addr);
+        gpu_renderer_now()->rt_reload(d->addr);
     free(tab);
 }
 /* a signed 32.32 fixed point value from its two registers, the fraction's word first */

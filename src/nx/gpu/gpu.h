@@ -412,6 +412,9 @@ void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, 
 /* calls fn(arg) on the GPU thread in order with the other calls, once the jobs queued before it on channels
    chans[0..nchans) (n at most 4) are done. Other channels' jobs, queued before or after it, don't hold it back */
 void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans);
+/* the same, for a call that reads none of the front end's state (a present): it runs on the renderer's side in its
+   place in the queue (gpu_queue.c), and the GPU thread goes on without a wait */
+void gpu_call_renderer(void (*fn)(void*), void* arg, const u32* chans, u32 nchans);
 /* Cooperative calls return 0 while waiting and 1 when complete. A lane's calls stay ordered; other lanes and
    ordinary calls can run while it waits. The callback owns its resume cursor. Lane is in [0,63]. */
 void gpu_call_poll(int (*fn)(void*), void* arg, u32 lane);

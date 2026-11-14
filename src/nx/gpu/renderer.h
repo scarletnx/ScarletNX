@@ -238,7 +238,31 @@ extern const Renderer* g_renderer;
 
 /* shared state (gpu/renderer.c) */
 extern int g_renderer_up; /* the renderer started */
-extern u64 g_draws;
+extern u64 g_draws; /* the draws given to the renderer (gpu_draw), for the counters a report makes up */
+/* the front end's draw and dispatch: what the front end counts and holds back is done here, on its side, and the
+   renderer's call does only the renderer's work */
+void gpu_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o);
+void gpu_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o);
+void gpu_draw_texture(const DsState* ds, const DrawTexture* t);
+void gpu_discard(const DsState* ds, u32 targets);
+void gpu_dispatch(const DispatchState* d);
+/* the state's copies start over after a state load (gpu.c) */
+void gpu_draw_states_reset(void);
+/* the renderer's calls without a result, queued in their order */
+void gpu_method_barrier(int kind);
+void gpu_stream_incr(u32 id);
+void gpu_stream_end(void);
+void gpu_ready(void);
+void gpu_stream_run(int on);
+void gpu_samples_reset(u32 owner);
+void gpu_samples_enable(u32 owner, int on);
+void gpu_predicate_drop(u32 pred);
+/* the renderer's side: 1 when owner's draws are off, 0 when on (with *pred the GPU's predicate, 0 for none), -1 when
+   no render enable of the 3D engine decided it (maxwell/engines.c); and every decision dropped */
+int gpu_render_state(u32 owner, u32* pred);
+void gpu_render_states_reset(void);
+/* the renderer for any other call of the front end: after every queued record */
+const Renderer* gpu_renderer_now(void);
 extern _Atomic int g_cs_any;      /* compute results are pending somewhere */
 extern _Atomic int g_gfx_any;     /* graphics storage-buffer results are pending somewhere */
 extern _Atomic int g_gfx_img_any; /* graphics storage-image results are pending somewhere */

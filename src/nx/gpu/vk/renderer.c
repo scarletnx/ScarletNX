@@ -227,10 +227,6 @@ static void vkr_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o)
     vk_unlock();
 }
 static void vkr_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
-    /* a draw predicated on the GPU (gpu.h render_pred) counts too: whether it runs isn't known here without the wait
-       the predicate is there to avoid, and the counters made up from this (maxwell/engines.c counter_report) only
-       stand in for what the console counts, growing with the work given */
-    g_draws++;
     vk_lock();
     vk_render_draw(ds, dc, o);
     vk_unlock();
@@ -362,7 +358,6 @@ static void vkr_rt_reload(u64 gva) {
 }
 static void vkr_dispatch(const DispatchState* d) {
     if (!g_settings.compute_dispatches) return;
-    r3d_pending_flush(); /* a merged draw the front end is holding comes first */
     vk_lock();
     vk_dispatch(d);
     vk_unlock();
