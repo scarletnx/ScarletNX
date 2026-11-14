@@ -1550,6 +1550,203 @@ static int own_target_case(GpuChannel* channel, u64 target, u64 address, int cli
                               : "in place, and through a copy under another viewport, sign or w");
     return 0;
 }
+
+/* the 4x4 target's pixels uploaded, under vk_lock */
+static int feedback_upload(u64 target, const u8* pixels) {
+    Surf* surface = vk_rt_find(target);
+    VkBuffer upload;
+    u64 offset;
+    u8* staged = surface ? vk_stage(64, 4, &upload, &offset) : NULL;
+    if (!staged) return 0;
+    memcpy(staged, pixels, 64);
+    vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkBufferImageCopy region = {
+        .bufferOffset = offset, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}};
+    rec_CmdCopyBufferToImage(vk_cmd(), upload, surface->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    vk_surf_wrote(surface);
+    vk_rt_drawn(surface);
+    vk_surf_touch(surface);
+    return 1;
+}
+/* Two feedback draws over the whole 4x4 target between the game's texture barriers, as own_target_case draws one
+   (vk/predraw.c, render.c feedback_order). Each round uploads the target's own colors, puts a barrier before the two
+   draws and reads the target back. With the interlock's capture (the mode NVIDIA's GPUs take, forced where the device
+   has an interlock), every draw of an interval reads the target as it was at the interval's barrier, the console's
+   texture cache keeping what it read until the next one: two draws that swap red and green leave it swapped, and
+   with a barrier between them as uploaded. A second draw to another target, uploaded with red and green swapped,
+   captures that one: it ends as the first was uploaded. Each draw samples in place, through no copy. With the two
+   draws of predraw_run, and in place where alpha to coverage keeps those off, each draw reads the draws before it:
+   the save draw of the second is ordered after the first's writes, one order more than its save attachments' two,
+   and the second in place is ordered too, each order a feedback barrier or the pass begun again. The two draws that
+   swap leave the target as uploaded */
+static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) {
+    const u64 vertex_at = address + 0x9000, plain_at = address + 0x9200, swap_at = address + 0x9400,
+              other = address + 0x9800, pool = address + 0x1F000, samplers = pool + 0x100, cbuf = pool + 0x200;
+    const u32 half = 0x3f000000u, two = 0x40000000u;
+    const u64 vertex[11] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
+                            0x0103f00000071006ull, /* MOV32I R6, 0.5 */
+                            0x0103f80000071007ull, /* MOV32I R7, 1.0 */
+                            OWN_FFMA(8, 0, 6, half, 0), OWN_FFMA(9, 1, 6, half, 0), OWN_FFMA(4, 8, 7, two, 1),
+                            OWN_FFMA(5, 9, 7, two, 1),  OWN_AST(0x70, 4, 2),        OWN_AST(0x80, 8, 2),
+                            0xe30000000007000full,      0xe30000000007000full};
+    const u64 swap[] = {0xe000000000070000ull | 0x20ull << 30 | 8, /* IPA R8, a[0x80] */
+                        0xe000000000070000ull | 0x21ull << 30 | 9, /* IPA R9, a[0x84] */
+                        /* TEX R0..3, R8, 2D, the handle at 0x7C: the target */
+                        0xc000000000000000ull | 0x1full << 36 | 0xfull << 31 | 2ull << 28 | 0xffull << 20 | 7ull << 16 |
+                            8ull << 8,
+                        0x5c98078000070004ull,              /* MOV R4, R0 */
+                        0x5c98078000070000ull | 1ull << 20, /* MOV R0, R1 */
+                        0x5c98078000070001ull | 4ull << 20, /* MOV R1, R4 */
+                        0xe30000000007000full};
+    const u64 plain[] = {swap[0], swap[1], swap[2], swap[6]}; /* writes back the texel it samples */
+    const u32 tic[8] = {0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                        (u32)target,
+                        (u32)(target >> 32) | 3u << 21,
+                        0,
+                        3 | 1u << 23, /* width 4, 2D */
+                        3 | 1u << 31, /* height 4, depth 1, normalized */
+                        0,
+                        0};
+    static const struct {
+        int interlock;        /* the capture, else the device's two draws */
+        u8 swaps[2];          /* each draw's program swaps red and green */
+        u8 other;             /* the second draw renders to and samples the other target */
+        u8 barrier, coverage; /* a fragment barrier between the draws; alpha to coverage on */
+        u8 ends;              /* the pixels end as uploaded (0) or swapped (1) */
+        u32 orders, predraws; /* without the interlock: the orders between the draws and those drawn two times */
+        const char* name;
+    } rounds[] = {
+        {1, {1, 1}, 0, 0, 0, 1, 0, 0, "two draws read the target as it was at the barrier"},
+        {1, {1, 1}, 0, 1, 0, 0, 0, 0, "a barrier between: the second reads the first's writes"},
+        {1, {1, 1}, 1, 0, 0, 0, 0, 0, "the second to another target captures that one"},
+        {0, {1, 1}, 0, 0, 0, 0, 3, 2, "drawn two times each: the second's save draw after the first's writes"},
+        {0, {1, 1}, 0, 0, 1, 0, 1, 0, "in place (alpha to coverage): the second after the first's writes"},
+    };
+    int interlock = g_vk.has_feedback && g_vk.has_fragment_interlock && g_vk.feat.fragmentStoresAndAtomics,
+        two_draws = g_vk.has_feedback && g_vk.has_local_read, mode = g_vk.feedback_mode;
+    if (!interlock && !two_draws) {
+        puts("feedback intervals: skipped, the device has no attachment feedback loops with an interlock or with "
+             "dynamic rendering local read");
+        return 0;
+    }
+    u8 bytes[256] = {0}, initial[64], swapped[64], out[64];
+    u32* r = channel->r3d;
+    CHECK(index_program(vertex_at, vertex, 11, 0));
+    CHECK(index_program(plain_at, plain, 4, 1));
+    CHECK(index_program(swap_at, swap, 7, 1));
+    snx_st_le32(bytes + 0x7C, 3); /* the handle at 0x7C: header 3, sampler 0 */
+    CHECK(!gmem_write(cbuf, bytes, 256));
+    for (u32 i = 0; i < 16; i++) {
+        const u8 color[4] = {(u8)(10 + 60 * (i & 3)), (u8)(20 + 50 * (i >> 2)), (u8)(100 + i), 255};
+        memcpy(initial + i * 4, color, 4);
+        memcpy(swapped + i * 4, color, 4);
+        swapped[i * 4] = color[1], swapped[i * 4 + 1] = color[0];
+    }
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 3;
+    r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 0;
+    r[0x48D] = 0;
+    r[0x982] = 2;
+    r[0x811] = (u32)(vertex_at - address);
+    DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    int ok = 1;
+    u32 ran = 0;
+    for (u32 round = 0; ok && round < sizeof rounds / sizeof *rounds; round++) {
+        if (rounds[round].interlock ? !interlock : !two_draws) continue;
+        ran++;
+        g_vk.feedback_mode = rounds[round].interlock ? VK_FEEDBACK_INTERLOCK : VK_FEEDBACK_PREDRAW;
+        for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+        CHECK(!gmem_write(pool + 96, bytes, 32));
+        memset(bytes, 0, 32);
+        CHECK(!gmem_write(samplers, bytes, 32));
+        r[0x54F] = rounds[round].coverage;
+        channel->ds.bind.cb_addr[4][2] = cbuf;
+        channel->ds.bind.cb_size[4][2] = 256;
+        u64 drawn = 0, loops = 0, through = 0, orders = 0, predraws = 0, read = rounds[round].other ? other : target;
+        VkBuffer readback;
+        u8* data = NULL;
+        vk_lock();
+        rt_clear(channel, target, 4, 4, 0, 1);
+        ok = feedback_upload(target, initial);
+        if (ok) {
+            g_renderer->method_barrier(0); /* NVN's ORDER_FRAGMENTS | INVALIDATE_TEXTURE */
+            /* the first draw begins a pass: each one begun after it orders what was drawn before it */
+            drawn = g_vk_drawn, loops = g_vk_fb_draws, through = g_vk_rt_copies,
+            orders = g_vk_fb_barriers + g_vk_passes + 1, predraws = g_vk_predraws;
+            for (u32 d = 0; ok && d < 2; d++) {
+                if (d && rounds[round].barrier) g_renderer->method_barrier(0);
+                if (d && rounds[round].other) { /* bound and sampled in place of the target, with no barrier */
+                    rt_clear(channel, other, 4, 4, 0, 1);
+                    ok = feedback_upload(other, swapped);
+                    for (u32 i = 0; i < 8; i++)
+                        snx_st_le32(bytes + i * 4, i == 1   ? (u32)other
+                                                   : i == 2 ? (u32)(other >> 32) | 3u << 21
+                                                            : tic[i]);
+                    ok = ok && !gmem_write(pool + 96, bytes, 32);
+                }
+                r[0x851] = (u32)((rounds[round].swaps[d] ? swap_at : plain_at) - address);
+                channel->r3d_dirty = ~0u; /* the registers were set directly */
+                mx_draw_state_sync(channel);
+                vk_render_draw(&channel->ds, &call, &channel->owner);
+            }
+            drawn = g_vk_drawn - drawn, loops = g_vk_fb_draws - loops, through = g_vk_rt_copies - through,
+            orders = g_vk_fb_barriers + g_vk_passes - orders, predraws = g_vk_predraws - predraws;
+            vk_render_end();
+            data = ok ? vk_readback_buffer(64, &readback) : NULL;
+        }
+        Surf* surface = vk_rt_find(read);
+        if (ok && data && surface) {
+            vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                        VK_ACCESS_2_TRANSFER_READ_BIT);
+            VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                      .imageExtent = {4, 4, 1}};
+            rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+            vk_finish();
+            vk_readback_ready();
+            memcpy(out, data, sizeof out);
+        } else
+            ok = 0;
+        vk_unlock();
+        channel->ds.bind.cb_addr[4][2] = 0;
+        channel->ds.bind.cb_size[4][2] = 0;
+        int counted =
+            drawn == 2 && loops == 2 && !through &&
+            (rounds[round].interlock || (orders == rounds[round].orders && predraws == rounds[round].predraws));
+        if (ok && !counted) {
+            char also[64] = "";
+            if (!rounds[round].interlock)
+                snprintf(also, sizeof also, ", %u orders, %u drawn two times", rounds[round].orders,
+                         rounds[round].predraws);
+            fprintf(stderr,
+                    "feedback intervals, %s: %llu draws, %llu in place, %llu through a copy, %llu orders between "
+                    "them (feedback barriers and passes begun again), %llu drawn two times; expected 2 draws, 2 in "
+                    "place, none through a copy%s\n",
+                    rounds[round].name, (unsigned long long)drawn, (unsigned long long)loops,
+                    (unsigned long long)through, (unsigned long long)orders, (unsigned long long)predraws, also);
+            ok = 0;
+        }
+        for (u32 i = 0; ok && i < 16; i++) {
+            u8 want[4];
+            memcpy(want, initial + i * 4, 4);
+            if (rounds[round].ends == 1) want[0] = initial[i * 4 + 1], want[1] = initial[i * 4];
+            if (memcmp(out + i * 4, want, 4)) {
+                fprintf(stderr, "feedback intervals, %s: pixel (%u, %u) is %u %u %u %u, expected %u %u %u %u\n",
+                        rounds[round].name, i & 3, i >> 2, out[i * 4], out[i * 4 + 1], out[i * 4 + 2], out[i * 4 + 3],
+                        want[0], want[1], want[2], want[3]);
+                ok = 0;
+            }
+        }
+    }
+    g_vk.feedback_mode = mode;
+    r[0x54F] = 0;
+    r[0x811] = 0;
+    r[0x851] = 0x10000; /* the harness's programs again */
+    CHECK(ok);
+    printf("feedback intervals: %u rounds, the interlock's capture %s, the two draws %s\n", ran,
+           interlock ? "checked" : "not checked (no interlock)",
+           two_draws ? "checked" : "not checked (no dynamic rendering local read)");
+    return 0;
+}
 #undef OWN_FFMA
 #undef OWN_AST
 #undef OWN_ALD
@@ -1640,6 +1837,7 @@ static int check_index_draws(void) {
     CHECK(!query_target_case(channel, target, address));
     CHECK(!own_target_case(channel, target, address, 0));
     CHECK(!own_target_case(channel, target, address, 1));
+    CHECK(!feedback_interval_case(channel, target, address));
     CHECK(!index_bound_cases(channel, target, indices, address + 0x1A000, address + 0x1C000));
     printf(
         "index draws: quads, widened and native 8-bit indices, restart indices and rewritten indices' bounds checked "
