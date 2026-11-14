@@ -197,6 +197,18 @@ u64 plat_ns(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (u64)ts.tv_sec * 1000000000ull + (u64)ts.tv_nsec;
 }
+#ifdef _WIN32 /* the platform's types hold Windows' own locks there (thread.h) */
+void pm_init(PMutex* m) { InitializeSRWLock(&m->l); }
+void pm_lock(PMutex* m) { AcquireSRWLockExclusive(&m->l); }
+void pm_unlock(PMutex* m) { ReleaseSRWLockExclusive(&m->l); }
+void pm_lock_announce(PMutex* m, const char* name) { (void)m, (void)name; }
+void pc_init(PCond* c) { InitializeConditionVariable(&c->c); }
+void pc_broadcast(PCond* c) { WakeAllConditionVariable(&c->c); }
+int pc_wait(PCond* c, PMutex* m, i64 ns) {
+    DWORD ms = ns < 0 ? INFINITE : (DWORD)((ns + 999999) / 1000000);
+    return !SleepConditionVariableSRW(&c->c, &m->l, ms, 0);
+}
+#else
 void pm_init(PMutex* m) { pthread_mutex_init(&m->l, NULL); }
 void pm_lock(PMutex* m) { pthread_mutex_lock(&m->l); }
 void pm_unlock(PMutex* m) { pthread_mutex_unlock(&m->l); }
@@ -220,6 +232,7 @@ int pc_wait(PCond* c, PMutex* m, i64 ns) {
     struct timespec ts = {(time_t)(t / 1000000000ull), (long)(t % 1000000000ull)};
     return pthread_cond_timedwait(&c->c, &m->l, &ts) != 0;
 }
+#endif
 static PThreadFn thread_fn;
 static void* thread_main(void* arg) {
     thread_fn(arg);

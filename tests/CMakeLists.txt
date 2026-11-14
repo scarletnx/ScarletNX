@@ -4071,6 +4071,13 @@ snx_test_target(snx-test-gpu-records gnu23)
 target_include_directories(snx-test-gpu-records PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME gpu_records COMMAND snx-test-gpu-records)
 
+# gpu/gpu_queue.c's ring with stand-ins for the work of its records, with no device and no gpu.c: the records run in
+# their order with their bytes, also when the ring wraps
+add_executable(snx-test-gpu-queue gpu_queue_records.c)
+snx_test_target(snx-test-gpu-queue gnu23)
+target_include_directories(snx-test-gpu-queue PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME gpu_queue COMMAND snx-test-gpu-queue)
+
 add_executable(snx-test-render-enable render_enable.c "${PROJECT_SOURCE_DIR}/tests/support/gpu_front_stub.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
@@ -4105,19 +4112,18 @@ target_link_libraries(snx-test-vk-draw-texture-blit PRIVATE m)
 add_test(NAME vk_draw_texture_blit COMMAND snx-test-vk-draw-texture-blit)
 
 # gpu.c's queue over the real puller, 3D engine and macros: a channel waiting on a semaphore, a syncpoint, a fence or
-# inside a macro lets the others run, and goes on where it stopped (its platform stand-ins are pthreads)
-if(UNIX)
-    add_executable(snx-test-gpu-park gpu_park.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gpu.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/dma.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c"
-        support/dma_ref.c support/gpu_front_stub.c own_stub.c)
-    snx_test_target(snx-test-gpu-park gnu23)
-    target_link_libraries(snx-test-gpu-park PRIVATE scarletnx-common) # gpu.c says why a thread did not start
-        add_test(NAME gpu_park COMMAND snx-test-gpu-park)
-    set_tests_properties(gpu_park PROPERTIES TIMEOUT 30) # a deadlock in the queue would otherwise hang ctest
-endif()
+# inside a macro lets the others run, and goes on where it stopped (its platform stand-ins are pthreads, and Windows'
+# own locks for the platform's types there)
+add_executable(snx-test-gpu-park gpu_park.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gpu.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gpu_queue.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/dma.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c"
+    support/dma_ref.c support/gpu_front_stub.c own_stub.c)
+snx_test_target(snx-test-gpu-park gnu23)
+target_link_libraries(snx-test-gpu-park PRIVATE scarletnx-common) # gpu.c says why a thread did not start
+add_test(NAME gpu_park COMMAND snx-test-gpu-park)
+set_tests_properties(gpu_park PROPERTIES TIMEOUT 30) # a deadlock in the queue would otherwise hang ctest
 
 # the shader programs a game ships, found in containers built by the test (gpu/shader/shipped.c)
 add_executable(snx-test-shipped-shaders shipped_shaders.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/shipped.c")
