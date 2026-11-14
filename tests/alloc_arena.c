@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* alloc.c's arena in a program that links jemalloc as scarletnx does (whole, unexported): the family is ready, says
    it found jemalloc's functions as the program's own, and malloc, calloc, realloc, operator new aligned and free run
-   in the window above the layout, in guest memory the test reserves; a pointer the arena didn't make goes to the
-   function's own code */
+   in the window above the layout, in guest memory the test reserves, a block of a page or more at a page; a pointer
+   the arena didn't make goes to the function's own code */
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
 #include "nx/loader/module_abi.h"
@@ -80,6 +80,16 @@ int main(void) {
     assert(q >= WINDOW && g_mem[q] == 0xAB && g_mem[q + 99] == 0xAB);
     u64 a = alloc_new_aligned(&c, 64, 4096);
     assert(a >= WINDOW && !(a & 4095));
+    /* a page or more starts at a page, as the SDK's allocator gives it: the kernel's transfer memory takes no other
+       (jemalloc alone offsets a large block within its first page) */
+    u64 big[4];
+    for (int i = 0; i < 4; i++) {
+        big[i] = alloc_malloc(&c, 0x800000);
+        assert(big[i] >= WINDOW && !(big[i] & 0xFFF));
+    }
+    q = alloc_realloc(&c, q, 300000);
+    assert(!(q & 0xFFF) && g_mem[q] == 0xAB && !(alloc_new(&c, 4096) & 0xFFF));
+    for (int i = 0; i < 4; i++) alloc_free(&c, big[i]);
     alloc_free(&c, q), alloc_free(&c, z), alloc_delete(&c, a);
     assert(!g_original);
     alloc_free(&c, 0x1000); /* the game's own allocator's: its own code */

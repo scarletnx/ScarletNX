@@ -194,9 +194,16 @@ static int lg(u64 align) {
     while (((u64)1 << l) < align) l++;
     return l;
 }
-/* size bytes at align (16 at least, as the guest's malloc gives), zeroed or not: 0 when there is no room */
-static u64 take(u64 size, u64 align, int zero) {
+/* the alignment of a block of size bytes: align, 16 at least as the guest's malloc gives, and a page for a page or
+   more, as the SDK's allocator starts such a block. Games hand those to the kernel, which takes whole pages (a game's
+   graphics init makes transfer memory of its malloc's 8 MiB), and jemalloc offsets a large block within its page */
+static u64 align_of(u64 size, u64 align) {
     if (align < 16) align = 16;
+    return size >= ALLOC_PAGE && align < ALLOC_PAGE ? ALLOC_PAGE : align;
+}
+/* size bytes at align (align_of's), zeroed or not: 0 when there is no room */
+static u64 take(u64 size, u64 align, int zero) {
+    align = align_of(size, align);
     return guest(g_alloc.mallocx(size ? (size_t)size : 1, g_alloc.flags | ALLOC_LG_ALIGN(lg(align)) |
                                                                (zero ? ALLOC_ZERO : 0)));
 }
@@ -225,7 +232,7 @@ u64 alloc_realloc(CPU* c, u64 p, u64 size) {
         hook_run_original(c, c->pc);
         return c->x[0];
     }
-    return guest(g_alloc.rallocx(q, size ? (size_t)size : 1, g_alloc.flags | ALLOC_LG_ALIGN(4)));
+    return guest(g_alloc.rallocx(q, size ? (size_t)size : 1, g_alloc.flags | ALLOC_LG_ALIGN(lg(align_of(size, 16)))));
 }
 void alloc_free(CPU* c, u64 p) { give(c, p); }
 u64 alloc_aligned(CPU* c, u64 align, u64 size) {
