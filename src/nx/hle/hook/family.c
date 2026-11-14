@@ -14,7 +14,8 @@ const char* hook_family_unready(const char* family) {
     if ((alloc || sync) && g_arm_mod) return "its handlers are for 64-bit games";
     if (alloc && !alloc_ready()) return "the host allocator has no arena in guest memory this run";
 #if defined(_WIN32)
-    if (!strcmp(family, "libc_str")) return "its handlers take the C library of a POSIX host";
+    if (!strcmp(family, "libc_str") || !strcmp(family, "libc_fmt"))
+        return "its handlers take the C library of a POSIX host";
 #endif
     if (!strcmp(family, "libc_wide") && !libc_wide_ready())
         return "the host has no 32-bit wchar_t or no UTF-8 locale for its handlers";

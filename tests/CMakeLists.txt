@@ -1278,7 +1278,8 @@ add_test(NAME hook_verify COMMAND snx-test-hook-verify)
 # nn::diag's abort hook (src/nx/hle/hook/diag.c) on a fake abort: the values it logs, then its own code run
 # libc_std.c too: the table names its handlers, which run on the host's C library alone
 add_executable(snx-test-diag-abort diag_abort.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/diag.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_std.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_wide.c")
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_std.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_wide.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_fmt.c")
 snx_test_target(snx-test-diag-abort 11) # log.h has _Thread_local
 target_include_directories(snx-test-diag-abort PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-diag-abort SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
@@ -1287,7 +1288,7 @@ add_test(NAME diag_abort COMMAND snx-test-diag-abort)
 # argument, end pointers, strtok's place, div_t and ldiv_t, errno, qsort and bsearch through the guest's comparison
 if(NOT WIN32)
     add_executable(snx-test-libc-std libc_std.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_std.c"
-                   "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_wide.c")
+                   "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_wide.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_fmt.c")
     snx_test_target(snx-test-libc-std 11)
     target_include_directories(snx-test-libc-std PRIVATE "${PROJECT_SOURCE_DIR}/src")
     snx_hookgen(snx-test-libc-std SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")

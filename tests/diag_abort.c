@@ -278,3 +278,4 @@ i64 sync_steady_now(CPU* c) { (void)c; return 0; }
 void sync_sleep_for(CPU* c, u64 d) { (void)c, (void)d; }
 /* libc_std.c's qsort and errno call into the guest, which this test never does */
 void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) { (void)c, (void)fn, (void)a0, (void)a1, (void)a2, (void)a3; }
+void hook_run_original(CPU* c, u64 addr) { (void)c, (void)addr; } /* libc_fmt.c's way out, never taken here */

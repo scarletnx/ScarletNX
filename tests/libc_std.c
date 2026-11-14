@@ -8,7 +8,9 @@
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
 #include <assert.h>
+#include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define ERRNO_AT 0x100u /* where the test's __errno_location says errno is */
@@ -27,6 +29,30 @@ void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
     assert(fn == CMP_FN);
     i32 a = (i32)snx_ld_le32(hook_host(c, a0)), b = (i32)snx_ld_le32(hook_host(c, a1));
     c->x[0] = (u64)(i64)((a > b) - (a < b));
+}
+/* the log's last line (libc_fmt.c's standard output), and the formats left to the function's own code */
+static char g_log[512];
+static int g_own_runs;
+void logf_(int level, const char* format, ...) {
+    va_list args;
+    (void)level;
+    va_start(args, format);
+    vsnprintf(g_log, sizeof g_log, format, args);
+    va_end(args);
+}
+void fatal(const char* format, ...) {
+    (void)format;
+    abort();
+}
+void hook_run_original(CPU* c, u64 addr) {
+    (void)addr;
+    g_own_runs++;
+    c->x[0] = 777;
+}
+static void set_f64(CPU* c, int r, f64 v) {
+    u64 bits;
+    memcpy(&bits, &v, 8);
+    c->v[r].d[0] = SNX_GUEST64(bits);
 }
 static u64 put(u64 at, const char* s) {
     memcpy(g_mem + at, s, strlen(s) + 1);
@@ -92,6 +118,49 @@ int main(void) {
     } else
         puts("SKIP the wide functions: no UTF-8 locale on this host");
     assert(libc_fpclassifyf(c, 0.0f) == 2 && libc_fpclassifyf(c, 1.0f) == 4 && libc_fpclassifyf(c, __builtin_nanf("")) == 0);
-    puts("PASS the C library's string, number and sorting functions on guest memory");
+    /* snprintf, a direct call: ints and a string in x3 on, a double in v0, the rest on the stack */
+    u64 f = put(0x8000, "%d|%5s|%.2f|%x|%lld|%c|%s|%p");
+    c->x[3] = (u64)-7, c->x[4] = put(0x8100, "ab"), c->x[5] = 255, c->x[6] = (u64)-123456789012ll, c->x[7] = 'Z';
+    set_f64(c, 0, 3.14159);
+    c->x[31] = 0x8800; /* the stack: a NULL string, then a pointer */
+    snx_st_le64(g_mem + 0x8800, 0);
+    snx_st_le64(g_mem + 0x8808, 0xdeadbeef);
+    i32 n2 = libc_snprintf(c, 0x9000, 64, f);
+    const char* want = "-7|   ab|3.14|ff|-123456789012|Z|(null)|0x00000000deadbeef";
+    assert(n2 == (i32)strlen(want) && !strcmp((char*)g_mem + 0x9000, want));
+    /* truncated to the size, the whole length returned */
+    assert(libc_snprintf(c, 0x9100, 4, put(0x8200, "hello")) == 5 && !strcmp((char*)g_mem + 0x9100, "hel"));
+    /* vsnprintf, through a va_list record: two ints from the general registers' save area, a double from the vector
+       registers', a long from the stack */
+    u64 ap = 0xA000, gr_top = 0xA200, vr_top = 0xA400;
+    snx_st_le64(g_mem + ap, 0xA600);       /* __stack */
+    snx_st_le64(g_mem + ap + 8, gr_top);   /* __gr_top */
+    snx_st_le64(g_mem + ap + 16, vr_top);  /* __vr_top */
+    snx_st_le32(g_mem + ap + 24, (u32)-16); /* __gr_offs: two left */
+    snx_st_le32(g_mem + ap + 28, (u32)-16); /* __vr_offs: one left */
+    snx_st_le64(g_mem + gr_top - 16, 11);
+    snx_st_le64(g_mem + gr_top - 8, 22);
+    f64 half = 0.5;
+    memcpy(g_mem + vr_top - 16, &half, 8);
+    snx_st_le64(g_mem + 0xA600, 33);
+    assert(libc_vsnprintf(c, 0x9200, 64, put(0x8300, "%d %d %g %ld"), ap) == 12 &&
+           !strcmp((char*)g_mem + 0x9200, "11 22 0.5 33"));
+    /* %n through the guest's pointer, and a numbered argument left to the function's own code */
+    c->x[3] = 0xB000;
+    assert(libc_snprintf(c, 0x9300, 64, put(0x8400, "abc%n")) == 3 && snx_ld_le32(g_mem + 0xB000) == 3);
+    assert(libc_snprintf(c, 0x9300, 64, put(0x8500, "%1$d")) == 777 && g_own_runs == 1);
+    /* sscanf through the guest's pointers */
+    c->x[2] = 0xB100, c->x[3] = 0xB200, c->x[4] = 0xB300, c->x[5] = 0xB400;
+    assert(libc_sscanf(c, put(0x8600, " 42 hello 2.5 ff"), put(0x8700, "%d %s %lf %x")) == 4);
+    f64 got;
+    memcpy(&got, g_mem + 0xB300, 8);
+    assert((i32)snx_ld_le32(g_mem + 0xB100) == 42 && !strcmp((char*)g_mem + 0xB200, "hello") && got == 2.5 &&
+           snx_ld_le32(g_mem + 0xB400) == 255);
+    c->x[2] = 0xB100;
+    assert(libc_sscanf(c, put(0x8600, "x"), put(0x8700, "%d")) == 0 && libc_sscanf(c, put(0x8600, ""), 0x8700) == -1);
+    /* printf: the log, a line at a time */
+    c->x[1] = 5;
+    assert(libc_printf(c, put(0x8800, "n=%d\n")) == 4 && !strcmp(g_log, "[game] n=5\n"));
+    puts("PASS the C library's string, number, formatting and sorting functions on guest memory");
     return 0;
 }
