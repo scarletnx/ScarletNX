@@ -149,7 +149,9 @@ static void line_dropped(u64 addr) {
 int main(int argc, char** argv) {
     static CPU c;
     int answer, copy;
-    GuestFn held;
+    /* read at each call as an import table is: an optimizer that knew the address would inline the adapter's code as
+       it was before the rewrite, which no call of the game's can */
+    GuestFn volatile held;
     const u8* adapter;
     unsigned i;
     (void)argc;
