@@ -62,9 +62,10 @@ typedef struct SnxRoutes {
    (common/cpu/arm/), each running to its next control transfer, which runtime/arm.c dispatches one after another.
    Being another symbol with a version of its own, it leaves SNX_ABI and 64-bit modules alone. abi comes first here
    too */
-/* "A3", the descriptor's version ('3': poll_offset) and SnxArmCPU's (SNX_ARM_ABI, which the 3DS, Vita and GBA code
-   share) */
-#define SNX_ARM_MODULE_ABI (0x41333300u | SNX_ARM_ABI)
+/* the descriptor's version (3: poll_offset) */
+#define SNX_ARM_MODULE_VERSION 3
+/* "A3", the descriptor's version as a digit and SnxArmCPU's (SNX_ARM_ABI, which the 3DS, Vita and GBA code share) */
+#define SNX_ARM_MODULE_ABI     (0x41330000u | ((0x30u + SNX_ARM_MODULE_VERSION) << 8) | SNX_ARM_ABI)
 typedef struct SnxArmModule {
     u32 abi;
     u32 nmods;
