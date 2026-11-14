@@ -12,13 +12,29 @@ static int cb_fold_word(VkCbBytes bytes, u32 idx, u32 off, u32* out) {
     return p != NULL;
 }
 
+/* the bytes of a bank that its reads span, which one range of bytes takes at most (vk_cb_folds_hold) */
+#define VK_CB_READ_SPAN 4096u
 int vk_cb_folds_hold(const VkCbReads* reads, VkCbReader read, VkCbBytes bytes) {
     const VkCbRead* r = reads->r;
     u32 i = 0;
-    for (; i < reads->n && r[i].ok <= VK_CB_READ; i++) {
-        u32 v = 0;
-        int ok = read(r[i].idx, r[i].off, &v);
-        if (!ok != (r[i].ok == VK_CB_UNBOUND) || (ok && v != r[i].v)) return 0;
+    while (i < reads->n && r[i].ok <= VK_CB_READ) {
+        /* a bank's reads next to each other: the words they span in one range of bytes where bytes gives it, as read
+           gives each of them then (in its buffer, nothing of the GPU's on it). Where it doesn't, each word through
+           read, which lands what the GPU holds or finds no buffer. Each word through read took the general path of
+           guest memory (its pending results' lock, the queued releases, the owners): one game's shaders read about
+           14 words a draw so */
+        u32 first = i, last = i, lo = r[i].off, hi = r[i].off;
+        while (last + 1 < reads->n && r[last + 1].ok <= VK_CB_READ && r[last + 1].idx == r[first].idx) {
+            last++;
+            if (r[last].off < lo) lo = r[last].off;
+            if (r[last].off > hi) hi = r[last].off;
+        }
+        const u8* p = last > first && hi - lo < VK_CB_READ_SPAN ? bytes(r[first].idx, lo, hi - lo + 4) : NULL;
+        for (; i <= last; i++) {
+            u32 v = 0;
+            int ok = p ? (v = snx_ld_le32(p + (r[i].off - lo)), 1) : read(r[i].idx, r[i].off, &v);
+            if (!ok != (r[i].ok == VK_CB_UNBOUND) || (ok && v != r[i].v)) return 0;
+        }
     }
     while (i < reads->n && r[i].ok == VK_CB_FOLD) {
         /* a bank's folds, in the order of their offsets: one range of bytes holds them all */
