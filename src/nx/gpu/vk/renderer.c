@@ -62,6 +62,11 @@ static void vkr_before_write(u64 gva, u64 size) {
    (pending_pages.h) */
 static int vkr_mem_pending(u64 gva, u64 size) {
     int hit;
+    /* every change of the tables holds vk_lock as well (pending_pages.h): a thread that holds it reads them as they
+       are. The renderer's thread asks this of the guest memory each draw reads, and took the tables' lock for it:
+       about 1.5% of its time in one game's busy scene was the system's code for that lock, and the game's threads
+       waited for it there */
+    if (vk_lock_held()) return pend_hit(&g_pend_any, gva, size);
     /* the tables' lock, not vk_lock: the game's threads ask this of each read they make through the GPU's address
        space (gmem_read), and waited here for vk_lock while the GPU thread held it across its waits for the GPU */
     pend_lock();
