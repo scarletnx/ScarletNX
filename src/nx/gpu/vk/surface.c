@@ -2654,15 +2654,24 @@ static u64 tex_shed_lru(u32 before, u64 want) {
     if (n_shed) g_shed_at = g_vk_present + 1;
     return freed;
 }
-/* Once a present, while the heap has room: shed textures the last 120 presents used a level finer again, the most
-   recently used first, a few at a time. Only once 300 presents have gone with no level given way and under seven
-   tenths of the budget (vk_tex_finer then takes one only where a fifth of it is left after): taken back as soon as there
-   was room, levels came and went again frame after frame */
+/* Once a present, the headroom of textures sparse for their levels (texture.c's shed). Memory let go comes back only
+   when the frames that could read it are done, and a request in the meantime finds none: on a GPU of 2 GB Mario Kart
+   World's frames used more than the budget, the trim ran when an allocation was already short, and the sparse blocks
+   of the textures it then loaded found no memory frame after frame. So while the heap's use, less what waits to be
+   freed, is past the budget less two of the trim's heads, those textures give up their finest level ahead of the
+   requests, the least recently used first. Under a head more below that, and once 300 presents have gone with no level
+   given way, the ones the last 120 presents used take a level back, a few at a time (vk_tex_finer) */
 void vk_tex_refine_frame(void) {
     u64 usage, budget;
-    if (g_shed_at && g_vk_present + 1 - g_shed_at < 300) return;
     vk_mem_use(&usage, &budget);
-    if (usage >= budget / 10 * 7) return;
+    const u64 head = trim_head(budget), pending = vk_deferred_bytes();
+    const u64 high = budget > 2 * head ? budget - 2 * head : 0, low = high > head ? high - head : 0;
+    const u64 use = usage > pending ? usage - pending : 0;
+    if (use > high) {
+        tex_shed_lru(0, use - high);
+        return;
+    }
+    if (use >= low || (g_shed_at && g_vk_present + 1 - g_shed_at < 300)) return;
     const u32 since = vk_present_before(0, 120);
     u32 took = 0, looked = 0;
     for (u32 r = g_rows.lists[VK_LRU_TEX].tail, p; r && took < 4 && looked < 256; r = p, looked++) {
