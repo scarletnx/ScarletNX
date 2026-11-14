@@ -9,6 +9,7 @@
    (vk_mem_trim, with the budget from gpu/vk/memory.c). */
 #include "nx/gpu/vk/descriptor_objects.h"
 #include "nx/gpu/vk/rt_bands.h"
+#include "nx/gpu/vk/rt_cover.h"
 #include "common/utilities/bits.h"
 #include <stdlib.h>
 #include <string.h>
@@ -1419,17 +1420,16 @@ static void flush_parts(Surf* s, u64 size, const u8* original) {
 }
 static void surf_flush_body(Surf* s, const u8* original);
 /* A flush waits for the GPU to reach the copies, so each is a round trip the guest's threads sit in: logged with the
-   target and the caller it came from (an offset into this file's function, named by a symbolizer) when it costs a
-   millisecond, since which of the paths asks for it decides whether the wait is needed then at all */
+   target and the reason a caller of vk_rt_before_write named (g_vk_finish_who) when it costs a millisecond, since
+   which of the paths asks for it decides whether the wait is needed then at all */
 static void surf_flush(Surf* s, const u8* original) {
     u64 t0 = plat_ns(), dt;
     u64 size = flush_bytes(s);
     surf_flush_body(s, original);
     dt = plat_ns() - t0;
     if (size && dt > 1000000)
-        LOG_LIMIT(24, "vulkan: a flush of %llu KB took %llu us, from +%llu\n", (unsigned long long)(size >> 10),
-                  (unsigned long long)(dt / 1000),
-                  (unsigned long long)((const char*)__builtin_return_address(0) - (const char*)surf_flush));
+        LOG_LIMIT(24, "vulkan: a flush of %llu KB took %llu us, for %s\n", (unsigned long long)(size >> 10),
+                  (unsigned long long)(dt / 1000), g_vk_finish_who ? g_vk_finish_who : "an unnamed caller");
 }
 static void surf_flush_body(Surf* s, const u8* original) {
     u64 size = flush_bytes(s);
@@ -1815,8 +1815,10 @@ void vk_rt_before_write(u64 gva, u64 size) {
             /* The write covers every byte of the target: the guest's bytes replace every pixel, so memory is the
                truth and the image has nothing of its own to give back. Flushing it would be a wait for the GPU to
                draw pixels the write is about to drop, 3 ms a round trip for the small targets a game replaces each
-               frame. The image is dropped instead, and its next use loads memory's (the write stamps the pages) */
-            if (!(s->gva >> 63) && s->gva >= gva && bytes <= s->gva + bytes - gva && s->gva + bytes <= gva + size) {
+               frame. The image is dropped instead: its layout goes undefined, so the next draw starts from none of it
+               (as a full overwrite does), and a read of it builds a texture from memory (texture.c), which the write
+               left as the truth. A write that covers part of a target still flushes it */
+            if (vk_rt_write_covers(s->gva, bytes, gva, size)) {
                 vk_render_end();
                 s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
                 s->draw_wseen = 0;

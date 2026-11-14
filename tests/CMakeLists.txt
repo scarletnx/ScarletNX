@@ -3556,6 +3556,10 @@ endif() # SNX_BUILD_NX
 add_executable(snx-test-rt-bands rt_bands.c)
 snx_test_target(snx-test-rt-bands 23)
 add_test(NAME rt_bands COMMAND snx-test-rt-bands)
+# whether a guest write covers a render target (vk/rt_cover.h): every byte from its first to its last, nothing wraps
+add_executable(snx-test-rt-cover rt_cover.c)
+snx_test_target(snx-test-rt-cover 23)
+add_test(NAME rt_cover COMMAND snx-test-rt-cover)
 # dist/icons/ is what scripts/make-icons.py draws from dist/wimsy.svg: a changed SVG fails until it runs again
 if(Python3_Interpreter_FOUND)
     add_test(NAME dist_icons COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/make-icons.py" --check)

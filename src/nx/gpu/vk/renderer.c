@@ -51,9 +51,10 @@ static void vkr_before_write(u64 gva, u64 size) {
     vk_buf_before_write(gva, size);
     if (size) vk_uma_before_write(gva, size); /* what reads it in place runs first */
     if (size) {
+        const char* was = g_vk_finish_who;
         g_vk_finish_who = "a guest write to a target's memory";
         vk_gfx_image_mem_need(gva, size);
-        g_vk_finish_who = NULL;
+        g_vk_finish_who = was;
     } else
         vk_gfx_image_land();
     vk_compute_before_write(gva, size);
@@ -75,9 +76,10 @@ static void vkr_gfx_mem_need(u64 gva, u64 size) {
     vk_mirror_mem_need(gva, size); /* the GPU mirror's programs' writes there landed */
     vk_buf_mem_need(gva, size);
     vk_uma_mem_need(gva, size); /* the in-place writes there done */
+    const char* was = g_vk_finish_who;
     g_vk_finish_who = "a read of guest memory a target covers";
     vk_gfx_image_mem_need(gva, size);
-    g_vk_finish_who = NULL;
+    g_vk_finish_who = was;
 }
 /* the GPU range a mapping change is changing, from its begin to its end (size 0 for a change of guest memory) */
 static u64 g_mapping_gva, g_mapping_size;
@@ -354,11 +356,12 @@ static void* vkr_nvdec_hw_device(u32 codec) { return vk_nvdec_hw_device(codec); 
 static int vkr_dma_copy(const GpuDmaOp* o) { return vk_dma_copy(o); }         /* it takes vk_lock */
 static int vkr_blit_mem(const GpuBlit* b) { return vk_blit_mem(b); }          /* it takes vk_lock */
 static void vkr_rt_flush(u64 gva) {
+    const char* was = g_vk_finish_who;
     vk_lock();
     g_vk_finish_who = "the front end's flush of a target";
     vk_gfx_image_mem_need(gva, 1);
     vk_rt_flush(gva);
-    g_vk_finish_who = NULL;
+    g_vk_finish_who = was;
     vk_unlock();
 }
 static void vkr_rt_reload(u64 gva) {
