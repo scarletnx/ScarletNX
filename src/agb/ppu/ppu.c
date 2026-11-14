@@ -259,10 +259,15 @@ static void text_bg(AgbBoard* board, uint32_t index, int y) {
         }
         int tx = entry & 0x400 ? 7 - (px & 7) : px & 7;
         uint8_t color;
-        if (bpp8)
-            color = board->memory.vram[(row + (uint32_t)tx) & 0xFFFF];
+        /* a tile whose data would lie past the backgrounds' 64 KiB of VRAM, in the sprites', draws nothing, as mGBA's
+           renderer has it (NanoBoyAdvance shows the display's last VRAM fetch there, which needs the fetches in the
+           console's order) */
+        if (row >= 0x10000)
+            color = 0;
+        else if (bpp8)
+            color = board->memory.vram[row + (uint32_t)tx];
         else {
-            uint8_t byte = board->memory.vram[(row + (uint32_t)tx / 2) & 0xFFFF];
+            uint8_t byte = board->memory.vram[row + (uint32_t)tx / 2];
             color = tx & 1 ? byte >> 4 : byte & 15;
             if (color) color |= (uint8_t)(entry >> 12) << 4;
         }
