@@ -1229,6 +1229,8 @@ static int create_device(void) {
             has_list_restart ? "VK_EXT_primitive_topology_list_restart without its list feature"
                              : "no VK_EXT_primitive_topology_list_restart");
     g_vk.has_barycentric = has_barycentric && qbarycentric.fragmentShaderBarycentric;
+    /* NVIDIA's compiler deadlocked with pipelines made on several threads at once (snx_vk_compile_serial) */
+    snx_vk_compile_serial(p12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY);
     if (p12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
         LOG("vulkan: fragment inputs are the driver's interpolation (NVIDIA's keeps the console's precision)\n");
     else if (g_vk.has_barycentric)

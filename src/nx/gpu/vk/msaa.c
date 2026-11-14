@@ -140,7 +140,10 @@ static VkPipeline ms_pipe(u32 kind, VkFormat format, VkSampleCountFlagBits sampl
                                        .layout = g_msaa.layout};
     VkPipeline p;
     u64 started = plat_ns();
-    if (!VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &pi, NULL, &p))) return VK_NULL_HANDLE;
+    int entered = snx_vk_compile_enter();
+    int ok = VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &pi, NULL, &p));
+    snx_vk_compile_leave(entered);
+    if (!ok) return VK_NULL_HANDLE;
     vk_texture_pipeline_made(plat_ns() - started);
     g_msaa.pipe[g_msaa.npipe++] = (MsPipe){kind, format, samples, p};
     return p;
