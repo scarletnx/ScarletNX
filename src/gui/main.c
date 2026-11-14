@@ -15216,6 +15216,48 @@ static char* play_program(App* app, const char* game, bool next) {
     return path ? path : snx_strdup(game);
 }
 #endif
+/* The game activity's arguments for item playing game, apart so tests/gui_sdl.c keeps each console's list: the driver's
+   name first where the console's driver is not the default, --game= the game's folder where its driver plays a folder
+   (the Switch's its program), the console's settings only, and the Switch's GPU driver and Freedreno variables. own
+   keeps the strings the caller frees with play_args_free */
+typedef struct {
+    char *option, *folder, *driver, *freedreno, *ini;
+} PlayArgs;
+[[maybe_unused]] static size_t play_args(App* app, int item, const char* game, const char** argv, size_t cap,
+                                          PlayArgs* own) {
+    GuiSettings* s = settings_of(app);
+    size_t n = 0;
+    own->option = own->folder = own->driver = own->freedreno = own->ini = NULL;
+    if (!game || cap < 3) return 0;
+    own->ini = game_ini_of(game);
+    own->driver = gui_run_option("gpu_driver", own->ini, app->gpu_driver);
+    own->freedreno = gui_run_option("freedreno_env", own->ini, app->freedreno);
+    /* the driver's --game names a game's folder, and the Switch's its program: the one a game's copy plays. A row
+       names the program in the folder, and the folder itself where it is the game */
+    if (item != GUI_SWITCH) own->folder = snx_is_file(game) ? snx_dirname(game) : snx_strdup(game);
+    own->option = snx_format("--game=%s", own->folder ? own->folder : game);
+    /* the Switch's driver is the default, so its name is left out; the others' name the driver the multicall starts */
+    const char* first = item == GUI_SWITCH ? NULL : gui_driver_name(item);
+    n = first ? 1 : 0;
+    if (n) argv[0] = first;
+    argv[n++] = own->option;
+    /* the settings the console's driver takes, as a run of it in a child gets (see run()): the Switch's all of the
+       launcher's, the 3DS's its own, and the others' none, whose drivers refuse a setting they do not have */
+    n += item == GUI_3DS     ? gui_settings_ctr_options(s, argv + n)
+         : item == GUI_SWITCH ? (size_t)gui_settings_options(s, 0, argv + n)
+                              : 0;
+    if (item == GUI_SWITCH && own->driver) argv[n++] = own->driver;
+    if (item == GUI_SWITCH && own->freedreno) argv[n++] = own->freedreno;
+    argv[n] = NULL;
+    return n;
+}
+[[maybe_unused]] static void play_args_free(PlayArgs* own) {
+    free(own->option);
+    free(own->folder);
+    free(own->driver);
+    free(own->freedreno);
+    free(own->ini);
+}
 #ifdef SDL_PLATFORM_ANDROID
 /* the hand-over's file of the game whose program is game, owned */
 static char* play_handover(const char* game) {
@@ -15229,36 +15271,16 @@ static char* play_handover(const char* game) {
 /* A game runs in the app's game activity, a process of its own: no child of this one gets a window */
 static int play_as(App* app, const char* asked, bool next) {
     GuiSettings* s = settings_of(app);
-    GuiDriverRun how;
-    char *game = play_program(app, asked, next), *folder = NULL, *option, *ini;
+    char *game = play_program(app, asked, next);
+    PlayArgs own;
+    const char** argv;
+    int ok;
     if (!game) {
         snprintf(app->message, sizeof app->message, "%s", snx_tr("Out of memory"));
         return 0;
     }
-    ini = game_ini_of(game);
-    /* the driver's --game names a game's folder, and the Switch's its program: the one a game's copy plays. A row
-       names the program in the folder, and the folder itself where it is the game */
-    if (app->menu.selected != GUI_SWITCH) folder = snx_is_file(game) ? snx_dirname(game) : snx_strdup(game);
-    option = snx_format("--game=%s", folder ? folder : game);
-    /* the launcher's GPU driver and Freedreno variables, where the game has none of its own */
-    char *driver = gui_run_option("gpu_driver", ini, app->gpu_driver),
-         *freedreno = gui_run_option("freedreno_env", ini, app->freedreno);
-    const char** argv = (const char**)snx_alloc((size_t)(s->count + 6) * sizeof(*argv));
-    size_t n;
-    int ok;
-    /* the activity's program is the multicall one, which picks its driver by the first argument (src/multicall): it
-       names the driver of a console whose driver is not the default, and the Switch's is the default */
-    n = driver_run(app, app->menu.selected, &how) && how.first ? 1 : 0;
-    if (n) argv[0] = how.first;
-    argv[n++] = option;
-    /* the settings the console's driver takes, as a run of it in a child gets (see run()): the Switch's all of the
-       launcher's, the 3DS's its own, and the others' none, whose drivers refuse a setting they do not have */
-    n += app->menu.selected == GUI_3DS     ? gui_settings_ctr_options(s, argv + n)
-         : app->menu.selected == GUI_SWITCH ? (size_t)gui_settings_options(s, 0, argv + n)
-                                            : 0;
-    if (app->menu.selected == GUI_SWITCH && driver) argv[n++] = driver;
-    if (app->menu.selected == GUI_SWITCH && freedreno) argv[n++] = freedreno;
-    argv[n] = NULL;
+    argv = (const char**)snx_alloc((size_t)(s->count + 6) * sizeof(*argv));
+    play_args(app, app->menu.selected, game, argv, (size_t)(s->count + 6), &own);
     SDL_GetCurrentTime(&app->played_at);
     ok = gui_android_play(argv, app->message, sizeof(app->message));
     if (ok) app->playing = true; /* the queue's recompile goes gently until the menu shows again */
@@ -15271,11 +15293,7 @@ static int play_as(App* app, const char* asked, bool next) {
         app->played_game = snx_strdup(game);
     }
     free(argv);
-    free(option);
-    free(driver);
-    free(freedreno);
-    free(ini);
-    free(folder);
+    play_args_free(&own);
     free(game);
     return ok;
 }
