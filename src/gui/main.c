@@ -15229,16 +15229,27 @@ static char* play_handover(const char* game) {
 /* A game runs in the app's game activity, a process of its own: no child of this one gets a window */
 static int play_as(App* app, const char* asked, bool next) {
     GuiSettings* s = settings_of(app);
-    char *game = play_program(app, asked, next), *option = snx_format("--game=%s", game), *ini = game_ini_of(game);
+    GuiDriverRun how;
+    char *game = play_program(app, asked, next), *folder = NULL, *option, *ini = game_ini_of(game);
+    /* the driver's --game names a game's folder, and the Switch's its program: the one a game's copy plays */
+    if (app->menu.selected != GUI_SWITCH) folder = snx_dirname(game);
+    option = snx_format("--game=%s", folder ? folder : game);
     /* the launcher's GPU driver and Freedreno variables, where the game has none of its own */
     char *driver = gui_run_option("gpu_driver", ini, app->gpu_driver),
          *freedreno = gui_run_option("freedreno_env", ini, app->freedreno);
-    const char** argv = (const char**)snx_alloc((size_t)(s->count + 5) * sizeof(*argv));
+    const char** argv = (const char**)snx_alloc((size_t)(s->count + 6) * sizeof(*argv));
     size_t n;
     int ok;
-    argv[0] = option;
-    n = 1 + (app->menu.selected == GUI_3DS ? gui_settings_ctr_options(s, argv + 1)
-                                            : gui_settings_options(s, 0, argv + 1));
+    /* the activity's program is the multicall one, which picks its driver by the first argument (src/multicall): it
+       names the driver of a console whose driver is not the default, and the Switch's is the default */
+    n = driver_run(app, app->menu.selected, &how) && how.first ? 1 : 0;
+    if (n) argv[0] = how.first;
+    argv[n++] = option;
+    /* the settings the console's driver takes, as a run of it in a child gets (see run()): the Switch's all of the
+       launcher's, the 3DS's its own, and the others' none, whose drivers refuse a setting they do not have */
+    n += app->menu.selected == GUI_3DS     ? gui_settings_ctr_options(s, argv + n)
+         : app->menu.selected == GUI_SWITCH ? (size_t)gui_settings_options(s, 0, argv + n)
+                                            : 0;
     if (app->menu.selected == GUI_SWITCH && driver) argv[n++] = driver;
     if (app->menu.selected == GUI_SWITCH && freedreno) argv[n++] = freedreno;
     argv[n] = NULL;
@@ -15258,6 +15269,7 @@ static int play_as(App* app, const char* asked, bool next) {
     free(driver);
     free(freedreno);
     free(ini);
+    free(folder);
     free(game);
     return ok;
 }
@@ -17480,6 +17492,22 @@ static void launch(App* app, char* absolute, bool prepared) {
             !gui_recent_add(&app->recent, absolute, GUI_SWITCH, true))
             recent_changed(app);
         free(run);
+        free(absolute);
+        free(game_option);
+        return;
+    }
+#endif
+#ifdef SDL_PLATFORM_ANDROID
+    /* A game of another console, and a Switch game in its own folder, that is already made plays in the game activity:
+       no child of the menu gets a window on a phone, where the driver ends with SDL's video. A run that makes the game
+       keeps the child, whose steps the run's screen shows */
+    if (!make && prepared) {
+        char* run = run_program(app, absolute, prepared);
+        if (play(app, run ? run : absolute) && app->recent_file &&
+            !gui_recent_add(&app->recent, absolute, app->menu.selected, true))
+            recent_changed(app);
+        free(run);
+        free(driver);
         free(absolute);
         free(game_option);
         return;

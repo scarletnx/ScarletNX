@@ -99,6 +99,12 @@ bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSw
         ok = format.format != VK_FORMAT_UNDEFINED;
     }
     VkExtent2D extent = ok ? snx_vk_swap_extent(&caps, info->window) : (VkExtent2D){0, 0};
+    /* Frames are drawn upright: a display held other than its own way (a phone held wide) has its compositor turn
+       them, where the surface's current transform would say they come turned already. The frames are landscape in a
+       landscape window, which is what the consoles' compositors show */
+    VkSurfaceTransformFlagBitsKHR transform =
+        ok && (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+                                                                                : caps.currentTransform;
     VkPresentModeKHR mode = present_mode(phys, info->surface, info->unsynced);
     VkSwapchainKHR made = VK_NULL_HANDLE;
     if (ok && extent.width && extent.height) {
@@ -111,7 +117,7 @@ bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSw
                                        .imageArrayLayers = 1,
                                        .imageUsage = info->usage,
                                        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
-                                       .preTransform = caps.currentTransform,
+                                       .preTransform = transform,
                                        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
                                        .presentMode = mode,
                                        .clipped = VK_TRUE,

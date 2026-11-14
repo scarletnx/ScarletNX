@@ -1645,6 +1645,14 @@ setting CTR bottom resolution
     startup
     help The scale of the bottom screen's 3D rendering, 1 to 16: 1 = the console's 320x240, 2 = 640x480. The screen
     help is scaled to its window
+setting CTR screen stretch
+    key ctr_screen_stretch
+    label Screen stretch
+    int 0 15
+    default 0
+    startup
+    help The percent the two screens may stretch beyond their shape to fill the window, both by the same amount: 0
+    help keeps the console's shape, 15 uses more of a tall phone's screen at a slight stretch
 
 # ---- the 3DS driver's (scarletnx-3ds --key=value), in no section of the game's .ini ----
 
