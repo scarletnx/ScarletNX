@@ -577,21 +577,29 @@ static VkDescriptorSet bc7_buffers(VkBuffer in, u64 in_off, u64 in_size, u64 out
     return set;
 }
 
-/* orders a use of the work list after the ones before: its head set (to 0), the passes' reads and writes of it, the
-   indirect dispatch's read of its head */
+/* orders a use of the work list after the ones before: 0 its head set (fills, the CLEAR stage) after the second
+   pass's reads of it; 1 the first pass, and the indirect dispatch that reads the head's 1s, after the fills; 2 the
+   second pass after the first's writes */
 static void work_barrier(VkCommandBuffer cb, int to) {
-    static const VkPipelineStageFlags2 stage[3] = {
-        VK_PIPELINE_STAGE_2_COPY_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+    static const VkPipelineStageFlags2 src_stage[3] = {
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT};
+    static const VkAccessFlags2 src_access[3] = {
+        VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
+    static const VkPipelineStageFlags2 dst_stage[3] = {
+        VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT};
-    static const VkAccessFlags2 access[3] = {
-        VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+    static const VkAccessFlags2 dst_access[3] = {
+        VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+            VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
         VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT};
-    const int from = to ? to - 1 : 2;
     VkBufferMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                                .srcStageMask = stage[from],
-                                .srcAccessMask = access[from],
-                                .dstStageMask = stage[to],
-                                .dstAccessMask = access[to],
+                                .srcStageMask = src_stage[to],
+                                .srcAccessMask = src_access[to],
+                                .dstStageMask = dst_stage[to],
+                                .dstAccessMask = dst_access[to],
                                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                 .buffer = g_astc.bc7_work,
@@ -629,8 +637,10 @@ static void bc7_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 build, u3
     const int two = bc7_passes(build) == 2;
     if (two) { /* no block listed, and 0 x 1 x 1 workgroups for the second pass, which the first raises */
         work_barrier(cb, 0);
-        rec_CmdFillBuffer(cb, g_astc.bc7_work, 0, BC7_WORK_HEAD, 0);
+        /* each word written once: fills without a barrier between them may land in any order */
+        rec_CmdFillBuffer(cb, g_astc.bc7_work, 0, 4, 0);
         rec_CmdFillBuffer(cb, g_astc.bc7_work, 4, 8, 1);
+        rec_CmdFillBuffer(cb, g_astc.bc7_work, 12, BC7_WORK_HEAD - 12, 0);
         work_barrier(cb, 1);
     }
     scratch_barrier(cb, g_astc.bc7_scratch, USE_COPY, 0, USE_WRITE);

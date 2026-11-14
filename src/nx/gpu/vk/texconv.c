@@ -221,19 +221,22 @@ static int tc_dispatch(VkCommandBuffer cb, const TcParams* p, u32 gx, u32 rows, 
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     VkDependencyInfo md = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     if (astc) { /* no block listed, and 0 x 1 x 1 workgroups for each later pass, which the passes before raise */
+        /* each word written once, as fills without a barrier between them may land in any order; fills are the
+           CLEAR stage, which a COPY barrier doesn't order; and the indirect dispatches read the 1s the fills wrote */
+        static const u32 head[][3] = {{0, 4, 0}, {4, 8, 1}, {12, 8, 0}, {20, 8, 1}, {28, TC_WORK_HEAD - 28, 0}};
         mb.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
         mb.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
                            VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
-        mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        mb.dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
         mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         rec_CmdPipelineBarrier2(cb, &md);
-        rec_CmdFillBuffer(cb, g_tc_work, 0, TC_WORK_HEAD, 0);
-        rec_CmdFillBuffer(cb, g_tc_work, 4, 8, 1);
-        rec_CmdFillBuffer(cb, g_tc_work, 20, 8, 1);
-        mb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        for (size_t i = 0; i < sizeof head / sizeof head[0]; i++)
+            rec_CmdFillBuffer(cb, g_tc_work, head[i][0], head[i][1], head[i][2]);
+        mb.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
         mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        mb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        mb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                           VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
         rec_CmdPipelineBarrier2(cb, &md);
     }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);

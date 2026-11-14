@@ -663,15 +663,14 @@ separate SPIRV-Tools is needed.
   alpha is the same, that R, G and B differ by at most one step, and that some do. They also cover images whose size
   is not a multiple of the block size, dispatch padding, five mip levels down to 1x1, six layers, 3D slices batched
   into strips, scratch chunking, frame reuse and staging ring growth. `astc_vulkan_pieces` runs it under a 4 MiB
-  allocation cap, so the bigger images are bound in pieces and read back in bands. No game files or window are
-  needed:
+  allocation cap, so the bigger images are bound in pieces and read back in bands. `astc_vulkan_sync` runs it under
+  the validation layer with its synchronization checks (`VK_LAYER_VALIDATE_SYNC=1`), an error each a failure: a
+  hazard there is a wrong result on a driver that runs commands abreast. It is skipped where the layer isn't installed.
+  No game files or window are needed:
 
   ```sh
   cmake -B build -DSNX_TEST_VULKAN=ON && cmake --build build --target snx-test-astc-vulkan
-  VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
-  VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
-  VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT \
-  ctest --test-dir build -R astc_vulkan
+  VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json ctest --test-dir build -R astc_vulkan
   ```
 
   Without the validation layer installed, the "zero validation errors" line only means that nothing reported an
