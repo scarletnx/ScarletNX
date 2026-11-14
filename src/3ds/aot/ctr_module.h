@@ -49,6 +49,9 @@ typedef enum {
    ever run again (no deadline and nothing left to signal). */
 SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* module, SnxCtrProcess* process, uint64_t limit,
                                  uint64_t* executed);
+/* The block cache the dispatch keeps is the process's and its module's: a process that goes clears it, so a new one at
+   the same address never runs the blocks of the old. */
+void snx_ctr_dispatch_forget(void);
 typedef struct {
     void* library;
     const SnxCtrModule* module;

@@ -52,6 +52,7 @@ struct SnxCtrAddressSpace {
        without one */
     unsigned char* base;
     uint8_t index; /* in the memory's spaces[], for a flat space */
+    uint64_t map_epoch; /* bumped by every mapping or permission change */
 };
 
 SnxCtrMemory* snx_ctr_memory_new(SnxCtrModel model) {
@@ -359,6 +360,7 @@ static void changed(SnxCtrMemory* m) {
     if (m->epoch != UINT64_MAX) ++m->epoch;
 }
 uint64_t snx_ctr_memory_epoch(const SnxCtrAddressSpace* s) { return s ? s->memory->epoch : 0; }
+uint64_t snx_ctr_space_map_epoch(const SnxCtrAddressSpace* s) { return s ? s->map_epoch : 0; }
 static bool valid_range(uint32_t va, uint32_t size) {
     return size && !((va | size) & 4095) && (uint64_t)va + size <= 0x100000000ull;
 }
@@ -402,6 +404,7 @@ SnxCtrMemResult snx_ctr_map(SnxCtrAddressSpace* s, uint32_t va, uint32_t pa, uin
                         tracked_permissions(s->memory->level[index], permissions));
         }
     changed(s->memory);
+    ++s->map_epoch;
     return SNX_CTR_MEM_OK;
 }
 /* the flat space's side of a protect or an unmap, over the runs of RAM pages in the range: an MMIO page was never
@@ -447,6 +450,7 @@ static SnxCtrMemResult change(SnxCtrAddressSpace* s, uint32_t va, uint32_t size,
         }
     }
     changed(s->memory);
+    ++s->map_epoch;
     return SNX_CTR_MEM_OK;
 }
 SnxCtrMemResult snx_ctr_protect(SnxCtrAddressSpace* s, uint32_t va, uint32_t size, unsigned permissions) {
@@ -469,6 +473,19 @@ static unsigned char* page_host(const SnxCtrMemory* m, const Page* p, uint32_t o
     const SnxCtrRegion* r = &m->profile->regions[i];
     *mmio = r->kind == SNX_CTR_MMIO;
     return *mmio ? NULL : m->backing[i] + (p->pa - r->base) + offset;
+}
+/* Whether the guest may run the bytes at va: the check a prefetch makes, without reading them. A block the static
+   tables hold needs no fetch, but the space's pages can lose their execute permission while the game runs, so its
+   page's permissions are still checked. */
+SnxCtrMemResult snx_ctr_check_exec(SnxCtrAddressSpace* s, uint32_t va, size_t size) {
+    if (!s || !size || size > 0x100000000ull - va) return SNX_CTR_MEM_INVALID;
+    if ((va & 4095) + size <= 4096) {
+        Page* p = page(s, va);
+        if (!p || !p->region) return SNX_CTR_MEM_UNMAPPED;
+        if (!(p->permissions & SNX_CTR_EXEC)) return SNX_CTR_MEM_PERMISSION;
+        return s->memory->profile->regions[p->region - 1].kind == SNX_CTR_MMIO ? SNX_CTR_MEM_DEVICE : SNX_CTR_MEM_OK;
+    }
+    return snx_ctr_check_ram(s, va, size, SNX_CTR_EXEC);
 }
 SnxCtrMemResult snx_ctr_check_ram(SnxCtrAddressSpace* s, uint32_t va, size_t size, unsigned access) {
     if (!s || !access || !permissions_valid(access) || size > 0x100000000ull - va) return SNX_CTR_MEM_INVALID;
