@@ -625,9 +625,9 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
        framebuffer, whose pixels it has not written yet */
     VkImageView source = g_present.source_dummy.view;
     unsigned scale = 1, flip = 1;
-    static const unsigned target_format[5] = {0, 1, 3, 2, 4}; /* GSP's colour formats to transfer.h's */
-    bool from_target = pitch == width * bytes && snx_ctr_vk_target_image(pa, width, height, target_format[format],
-                                                                        &source, &scale, &flip);
+    /* GSP's colour formats are in transfer.h's order, the targets' (present.h) */
+    bool from_target =
+        pitch == width * bytes && snx_ctr_vk_target_image(pa, width, height, format, &source, &scale, &flip);
     unsigned frame_width = height * scale, frame_height = width * scale;
     if (f->width != frame_width || f->height != frame_height) {
         snx_ctr_vk_finish();
