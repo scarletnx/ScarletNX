@@ -139,6 +139,10 @@ int snx_fx_upscale_next(int filter) {
     return filter >= 0 && filter + 1 < SNX_FX_UPSCALE_COUNT ? filter + 1 : SNX_FX_UPSCALE_OFF;
 }
 int snx_fx_aa_next(int aa) { return aa >= 0 && aa + 1 < SNX_FX_AA_COUNT ? aa + 1 : SNX_FX_AA_OFF; }
+void snx_fx_step_text(int which, int mode, char* out, size_t n) {
+    const char* label = which ? snx_fx_aa_label(mode) : snx_fx_upscale_label(mode);
+    snprintf(out, n, "%s: %s", which ? "Anti-aliasing" : "Upscaler", label ? label : "?");
+}
 
 /* a word the setting does not know, said after what said holds */
 static void unknown_word(char* said, size_t n, const char* key, const char* value, const char* const* words,

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/vk.h"
+#include "common/gpu/vk/notice.h"
 #include "common/gpu/vk/present_fx.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
@@ -19,6 +20,9 @@ static struct {
     /* the upscaler and the anti-aliasing (common/gpu/vk/present_fx.h) as the settings say; none while both are Off */
     SnxFxConfig fx_config;
     SnxFx* fx;
+    /* a line over the game for a few seconds, as a Switch game shows one (common/gpu/vk/notice.h) */
+    SnxNotice notice;
+    SnxVkNotice* notice_vk;
 } g;
 
 VitaVk* vita_vk(void) { return g.up ? &g.vk : NULL; }
@@ -117,14 +121,10 @@ static bool swapchain_make(VitaVk* v) {
     return snx_vk_swapchain_make(v->phys, v->device, &info, &v->swap);
 }
 static void fx_log(const char* text) { fprintf(stderr, "scarletnx-vita: %s\n", text); }
-/* the upscaler and the anti-aliasing the settings ask for, said once, and their effects made where either is on */
-static void fx_init(VitaVk* v) {
-    char said[512];
+/* the effects, where either is on and they are not made yet: both Off when they could not be, said */
+static void fx_make(VitaVk* v) {
     SnxFxConfig* c = &g.fx_config;
-    if (snx_fx_settings(c, g_settings.upscaler, g_settings.upscaler_sharpness, g_settings.anti_aliasing, said,
-                        sizeof said))
-        fprintf(stderr, "scarletnx-vita: settings: %s\n", said);
-    if (c->upscaler != SNX_FX_UPSCALE_OFF || c->aa != SNX_FX_AA_OFF) {
+    if (!g.fx && (c->upscaler != SNX_FX_UPSCALE_OFF || c->aa != SNX_FX_AA_OFF)) {
         g.fx = snx_fx_create(v->phys, v->device, VK_NULL_HANDLE, VITA_VK_SLOTS, fx_log);
         if (g.fx)
             snx_fx_set_sharpness(g.fx, c->sharpness);
@@ -137,8 +137,31 @@ static void fx_init(VitaVk* v) {
             c->aa = SNX_FX_AA_OFF;
         }
     }
+}
+/* the upscaler and the anti-aliasing the settings ask for, said once, and their effects made where either is on */
+static void fx_init(VitaVk* v) {
+    char said[512];
+    SnxFxConfig* c = &g.fx_config;
+    if (snx_fx_settings(c, g_settings.upscaler, g_settings.upscaler_sharpness, g_settings.anti_aliasing, said,
+                        sizeof said))
+        fprintf(stderr, "scarletnx-vita: settings: %s\n", said);
+    fx_make(v);
     fprintf(stderr, "scarletnx-vita: upscaler %s, anti-aliasing %s\n", snx_fx_upscale_label(c->upscaler),
             snx_fx_aa_label(c->aa));
+}
+void vita_vk_notice(const char* text) { snx_notice_show(&g.notice, text, SDL_GetTicksNS()); }
+const char* vita_vk_notice_text(void) { return snx_notice_shown(&g.notice, SDL_GetTicksNS()) ? g.notice.text : ""; }
+void vita_vk_shortcut(int which) {
+    SnxFxConfig* c = &g.fx_config;
+    char text[64];
+    if (which)
+        c->aa = snx_fx_aa_next(c->aa);
+    else
+        c->upscaler = snx_fx_upscale_next(c->upscaler);
+    if (g.up) fx_make(&g.vk); /* a device up: else none draws */
+    snx_fx_step_text(which, which ? c->aa : c->upscaler, text, sizeof text);
+    fprintf(stderr, "scarletnx-vita: %s, for this run\n", text);
+    vita_vk_notice(text);
 }
 bool vita_vk_init(const char* title, char* error, size_t error_size) {
     VitaVk* v = &g.vk;
@@ -176,6 +199,11 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
         vita_vk_free();
         return false;
     }
+    if (!(g.notice_vk = snx_vk_notice_create(v->phys, v->device, VITA_VK_SLOTS))) {
+        snprintf(error, error_size, "out of memory for the window's notices");
+        vita_vk_free();
+        return false;
+    }
     g.up = true;
     if (v->host.surface && !swapchain_make(v)) fprintf(stderr, "scarletnx-vita: no swapchain for the window yet\n");
     fx_init(v);
@@ -187,6 +215,7 @@ void vita_vk_free(void) {
         vkDeviceWaitIdle(v->device);
         snx_vk_swapchain_free(v->device, &v->swap);
         snx_fx_destroy(g.fx);
+        snx_vk_notice_destroy(g.notice_vk);
         if (g.frame_view) vkDestroyImageView(v->device, g.frame_view, NULL);
         if (g.frame) vkDestroyImage(v->device, g.frame, NULL);
         if (g.frame_memory) vkFreeMemory(v->device, g.frame_memory, NULL);
@@ -202,6 +231,7 @@ void vita_vk_free(void) {
     g.frame = VK_NULL_HANDLE, g.frame_memory = VK_NULL_HANDLE, g.frame_view = VK_NULL_HANDLE;
     g.frame_width = g.frame_height = 0;
     g.fx = NULL;
+    g.notice_vk = NULL;
     g.up = false;
 }
 uint64_t vita_vk_poll(void) { return g.up ? snx_vk_ring_poll(&g.vk.ring) : 0; }
@@ -338,6 +368,9 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
     vkCmdBlitImage(cb, effects ? fx.image : g.frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                    effects && fx.width == sw && fx.height == sh ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+    (void)snx_vk_notice_record(g.notice_vk, cb, slot, target, v->swap.format.format, w, h,
+                               snx_display_percent(v->host.window ? SDL_GetWindowDisplayScale(v->host.window) : 0.0f),
+                               &g.notice, SDL_GetTicksNS(), fx_log);
     image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
     submit_with(v->acquired[slot], v->rendered[index]);

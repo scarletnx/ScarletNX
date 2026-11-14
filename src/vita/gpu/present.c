@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/present.h"
 #include "common/utilities/common.h"
+#include "common/utilities/key_text.h"
 #include "common/utilities/quit_key.h"
 #include "vita/gpu/render.h"
 #include "vita/gpu/vk.h"
@@ -17,16 +18,32 @@ static struct {
     char* shot;
     bool video;
     uint64_t quit_by; /* a second Esc before this ends the game (common/utilities/quit_key.h) */
+    /* the keys that step the upscaler and the anti-aliasing for the run (the Switch's hotkey_upscaler and
+       hotkey_anti_aliasing), 0 for none */
+    unsigned shortcut_key[2], shortcut_mods[2];
+    bool shared_said;    /* both are one key, said once */
+    bool shortcuts_read; /* their keys read from the settings */
 } g_present;
 static volatile sig_atomic_t g_interrupted;
 static void on_signal(int signal) {
     (void)signal;
     g_interrupted = 1;
 }
+/* the shortcuts' keys from their settings, once: main.c refused a text that is no key already, keeping the default's */
+static void shortcuts_init(void) {
+    const char* const keys[2] = {g_settings.upscaler_shortcut, g_settings.anti_aliasing_shortcut};
+    char why[192];
+    if (g_present.shortcuts_read) return;
+    g_present.shortcuts_read = true;
+    for (unsigned i = 0; i < 2; ++i)
+        if (snx_key_parse(keys[i], &g_present.shortcut_key[i], &g_present.shortcut_mods[i], why, sizeof why))
+            printf("vita: %s=%s: %s: it has no key\n", i ? "hotkey_anti_aliasing" : "hotkey_upscaler", keys[i], why);
+}
 void vita_present_init(const char* title, const char* shot) {
     char error[256];
     if (!vita_vk_init(title, error, sizeof error)) printf("vita: no Vulkan device, nothing is drawn: %s\n", error);
     g_present.shot = shot && *shot ? strdup(shot) : NULL;
+    shortcuts_init();
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     vita_input_init();
@@ -44,13 +61,30 @@ bool vita_present_vblank(VitaProcess* p) {
     SDL_Event event;
     while (SDL_WasInit(SDL_INIT_EVENTS) && SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) return false;
-        /* Esc twice ends the game, a first one warning on the terminal; not with Ctrl, Alt or the system key */
+        /* the upscaler's and the anti-aliasing's shortcuts, as a Switch game's */
+        if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
+            shortcuts_init();
+            int also, which = snx_key_find(g_present.shortcut_key, g_present.shortcut_mods, 2, event.key.key,
+                                           snx_key_mods(event.key.mod), &also);
+            if (which >= 0) {
+                if (also >= 0 && !g_present.shared_said) {
+                    g_present.shared_said = true;
+                    printf("vita: %s is hotkey_upscaler's and hotkey_anti_aliasing's: it does %s's\n",
+                           g_settings.upscaler_shortcut, which ? "hotkey_anti_aliasing" : "hotkey_upscaler");
+                }
+                vita_vk_shortcut(which);
+                continue;
+            }
+        }
+        /* Esc twice ends the game, a first one warning on the terminal and over the game; not with Ctrl, Alt or the
+           system key */
         if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && !event.key.repeat &&
             !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
             char warning[64];
             if (snx_quit_press(&g_present.quit_by, SDL_GetTicksNS())) return false;
             snx_quit_warning(warning, sizeof warning, "Esc");
             printf("%s\n", warning);
+            vita_vk_notice(warning);
             continue;
         }
         vita_input_event(&event);
