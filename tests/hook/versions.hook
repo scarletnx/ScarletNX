@@ -27,3 +27,7 @@ hook any(addr p) -> u64 = test_any uses Plain
 # a gap between two ranges
 @version(> 1.0.0, <= 3.0.0) hook gap() = test_gap
 @version(>= 5.0.0) hook gap() = test_gap
+# patterns: an exact symbol before them, the first in strcmp order when two match, and a check
+hook vec_*_dtor(addr self) = test_vec check test_vec_check
+hook vec_int_dtor(addr self) = test_vec_int
+hook vec_i*(addr self) = test_vec_i
