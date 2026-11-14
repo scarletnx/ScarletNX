@@ -719,7 +719,11 @@ static int rt_load_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 off, u32 
                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
                                .imageExtent = {s->w, s->h, 1}};
         DevMem tm;
-        VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : vk_unscaled_image(s, 1, &tm);
+        const int scaled = s->sw != s->w || s->sh != s->h;
+        VkImage t = scaled ? vk_unscaled_image(s, 1, &tm) : VK_NULL_HANDLE;
+        /* no memory for the image of the guest's size: never a copy of that size into the scaled one, which went
+           past its edge and faulted the GPU's copy engine (Xid 39) in Mario Kart World at resolution=0.5 */
+        if (scaled && !t) return 0;
         if (!t)
             rec_CmdCopyBufferToImage(cb, buf, s->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
         else {
@@ -963,8 +967,9 @@ static FlushPart flush_whole(const Surf* s) {
     return w;
 }
 /* part's pixels of s copied into buf at at, in rows of pitch bytes, a layer (or a 3D image's slice) after another. A
-   packed depth layer goes whole (flush_parts gives it whole rows) */
-static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pitch, const FlushPart* part) {
+   packed depth layer goes whole (flush_parts gives it whole rows). 0 when a scaled one found no memory for the image
+   of the guest's size it goes through */
+static int flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pitch, const FlushPart* part) {
     u64 slice = (u64)pitch * part->rows;
     u32 depth = s->type == VK_IMAGE_VIEW_TYPE_3D ? s->depth3d : 1; /* a 3D image's slices in one copy */
     if (s->msaa) { /* the part's samples drawn into the guest's layout of them a layer at a time, copied from there */
@@ -978,7 +983,7 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
                 .imageExtent = {guest_w(s), part->rows, 1}};
             rec_CmdCopyImageToBuffer(cb, grid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
         }
-        return;
+        return 1;
     }
     vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -993,7 +998,9 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
                                .imageOffset = {0, (i32)part->y, 0},
                                .imageExtent = {s->w, part->rows, depth}};
         DevMem tm;
-        VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : vk_unscaled_image(s, 1, &tm);
+        const int scaled = s->sw != s->w || s->sh != s->h;
+        VkImage t = scaled ? vk_unscaled_image(s, 1, &tm) : VK_NULL_HANDLE;
+        if (scaled && !t) return 0; /* as rt_load_copy: never a copy of the guest's size out of the scaled image */
         if (!t)
             rec_CmdCopyImageToBuffer(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
         else {
@@ -1009,6 +1016,7 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
             vk_defer_image(t, tm, VK_NULL_HANDLE, VK_NULL_HANDLE);
         }
     }
+    return 1;
 }
 /* part of a block linear target's pixels into buf at at in the guest's layout: the image copied into the scratch
    buffer and swizzled from there into buf, a layer at layer_size from the last (a band of rows: its rows of blocks,
@@ -1025,7 +1033,7 @@ static int flush_swizzle(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, cons
                   (unsigned long long)s->gva, (unsigned long long)need);
         return 0;
     }
-    flush_copy(cb, s, scratch, 0, pitch, part);
+    if (!flush_copy(cb, s, scratch, 0, pitch, part)) return 0;
     vk_bl_barrier(cb, 1);
     for (u32 i = 0; i < moves; i++)
         if (!vk_bl_move(cb, &m, 1, buf, at + (u64)i * s->layer_size, scratch, (u64)i * pitch * part->rows)) return 0;
@@ -1040,10 +1048,7 @@ static int flush_swizzle(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, cons
 static int flush_record(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const FlushPart* part) {
     u32 row = guest_w(s) * s->f.bpp, pitch = (row + 15) & ~15u;
     u64 limit = g_vk.alloc_cap / VK_PART_SHARE, first, lo, hi;
-    if (!s->bl) {
-        flush_copy(cb, s, buf, at, row, part);
-        return 1;
-    }
+    if (!s->bl) return flush_copy(cb, s, buf, at, row, part);
     if ((u64)pitch * part->rows * part->layers <= limit || surf_volume(s) || depth_packs(s) ||
         (!s->msaa && (s->sw != s->w || s->sh != s->h)))
         return flush_swizzle(cb, s, buf, at, part);
@@ -1639,9 +1644,7 @@ int vk_surf_publish(Surf* s) {
     cb = vk_cmd();
     vk_all_barrier(cb);
     FlushPart whole = flush_whole(s);
-    if (!s->bl)
-        flush_copy(cb, s, r->buf, 0, s->pitch, &whole);
-    else if (!flush_record(cb, s, r->buf, 0, &whole)) {
+    if (!(s->bl ? flush_record(cb, s, r->buf, 0, &whole) : flush_copy(cb, s, r->buf, 0, s->pitch, &whole))) {
         vk_own_res_unref(r);
         return 0;
     }
