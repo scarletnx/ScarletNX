@@ -783,8 +783,8 @@ static void resident_floor(const Surf* t, u8* dev, u32 floor) {
 }
 /* such a texture's pages bound where memory maps any of their bytes and released where it maps none
    (vk_image_resident: what isn't bound reads as zeros, as the holes do), the ones bound set in want (resident_pages of
-   them, zeroed; 2 where the memory is new). 1 when they all are */
-static int resident_bind_mapped(Surf* t, u8* want) {
+   them, zeroed; 2 where the memory is new). 1 when they all are. finer: the bind may take a level back */
+static int resident_bind_at(Surf* t, u8* want, int finer_ok) {
     u32 pages = resident_pages(t);
     u64 bytes;
     /* without memory for the keys each block takes memory of its own, as before them */
@@ -804,7 +804,7 @@ static int resident_bind_mapped(Surf* t, u8* want) {
     /* the floor it had (resident_floor), or one level finer where the heap has that much room to spare: a fifth of
        its budget left after it */
     u32 floor = t->lod_floor;
-    u8* finer = floor ? malloc(pages) : NULL;
+    u8* finer = floor && finer_ok ? malloc(pages) : NULL;
     if (finer) {
         u64 usage, budget;
         vk_mem_use(&usage, &budget);
@@ -842,6 +842,27 @@ static int resident_bind_mapped(Surf* t, u8* want) {
     free(dkey);
     vk_surf_bytes(t, bytes);
     return ok;
+}
+static int resident_bind_mapped(Surf* t, u8* want) { return resident_bind_at(t, want, 1); }
+/* Another image that found no memory (vk_tex_shed): such a texture one level coarser, its finest level's memory
+   released once the GPU is done with it. A page the bind gave memory (the game mapped it since) has no texels yet:
+   the texture loads whole at its next use. The bytes it released */
+u64 vk_tex_coarser(Surf* t) {
+    if (!vk_tex_can_coarsen(t)) return 0;
+    const u64 was = t->bytes;
+    u8* want = calloc(resident_pages(t), 1);
+    if (!want) return 0;
+    t->lod_floor++;
+    if (!resident_bind_at(t, want, 0)) t->upload_valid = 0;
+    for (u32 i = 0; i < resident_pages(t); i++)
+        if (want[i] == 2) t->upload_valid = 0;
+    free(want);
+    LOG_LIMIT(16, "vulkan: a %ux%ux%u texture of %u levels is sampled from level %u on, for another image's memory\n",
+              t->w, t->h, t->layers, t->levels, t->lod_floor);
+    return was > t->bytes ? was - t->bytes : 0;
+}
+int vk_tex_can_coarsen(const Surf* t) {
+    return t->bricks && t->img && g_vk.has_view_min_lod && t->lod_floor + 1 < t->tail_first;
 }
 static int tex_patch_range(Upload* u, u64 a, u64 b);
 /* such a texture's upload: its pages bound where it is mapped (resident_bind_mapped), then each bound brick staged as

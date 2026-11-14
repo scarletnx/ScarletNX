@@ -2572,6 +2572,27 @@ static u32 g_oom;       /* the present an image allocation last found no memory 
 static u64 g_oom_bytes; /* the smallest size that found none in that present */
 u64 vk_mem_trimmed(void) { return g_trimmed; }
 u64 vk_mem_trim_start(u64 budget) { return budget - trim_head(budget); }
+/* The caches' trim takes only what the last presents didn't use, and on a GPU of 2 GB Mario Kart World's working set
+   didn't fit: its depth targets found no memory, and most of its draws were skipped. Its terrain textures, bound by
+   tiles, are the memory that can give way without a hole: a level coarser, a quarter of the bytes */
+u64 vk_tex_shed(u64 need) {
+    static u32 at;
+    if (at == g_vk_present + 1) return 0;
+    at = g_vk_present + 1;
+    u64 freed = 0;
+    while (freed < need) {
+        Surf* big = NULL;
+        for (int l = VK_LRU_TEX; l <= VK_LRU_TEX + LRU_AGED; l += LRU_AGED)
+            for (u32 r = g_rows.lists[l].head; r; r = g_rows.lru[r].next) {
+                Surf* t = g_rows.surf[r];
+                if (vk_tex_can_coarsen(t) && (!big || t->bytes > big->bytes)) big = t;
+            }
+        u64 got = big ? vk_tex_coarser(big) : 0;
+        if (!got) break;
+        freed += got;
+    }
+    return freed;
+}
 void vk_mem_trim(u64 extra, int force) {
     u64 usage, budget, need = 0;
     if (force) {
@@ -2705,6 +2726,7 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem
     if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
         if (g_oom != g_vk_present + 1 || *bytes < g_oom_bytes) g_oom_bytes = *bytes;
         g_oom = g_vk_present + 1;
+        vk_tex_shed(*bytes);
         vk_mem_trim(*bytes, 1); /* room for it by the time it is asked for again, a present or two later */
     }
     return 0;
