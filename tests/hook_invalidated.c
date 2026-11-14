@@ -233,3 +233,5 @@ int main(int argc, char** argv) {
     printf("hook_invalidated: passed, the warning: %s", warned);
     return 0;
 }
+/* hook.c asks whether the alloc family has its arena (alloc.c, not linked here): it hasn't */
+int alloc_ready(void) { return 0; }

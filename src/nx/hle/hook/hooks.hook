@@ -36,6 +36,40 @@ hook memcpy(void* dst out[size], const void* src in[size], u64 size) -> void* = 
 hook memmove(void* dst out[size], const void* src in[size], u64 size) -> void* = hook_memmove pure
 hook memset(void* dst out[size], i32 value, u64 size) -> void* = hook_memset pure
 
+# the C and C++ libraries' allocation functions (alloc.c): the host's jemalloc, in an arena of its own whose pages are
+# guest memory. A pointer the arena didn't make goes to the function's own code. Off without jemalloc, and in a game
+# whose address space has no room for the arena
+family alloc
+hook malloc(u64 size) -> addr = alloc_malloc
+hook calloc(u64 count, u64 size) -> addr = alloc_calloc
+hook realloc(addr p, u64 size) -> addr = alloc_realloc
+hook free(addr p) = alloc_free
+hook aligned_alloc(u64 align, u64 size) -> addr = alloc_aligned
+hook memalign(u64 align, u64 size) -> addr = alloc_aligned
+hook posix_memalign(addr out, u64 align, u64 size) -> i32 = alloc_posix_memalign
+hook strdup(const char* s) -> addr = alloc_strdup
+hook strndup(const char* s, u64 max) -> addr = alloc_strndup
+hook _Znwm(u64 size) -> addr = alloc_new
+hook _Znam(u64 size) -> addr = alloc_new
+hook _ZnwmSt11align_val_t(u64 size, u64 align) -> addr = alloc_new_aligned
+hook _ZnamSt11align_val_t(u64 size, u64 align) -> addr = alloc_new_aligned
+hook _ZnwmRKSt9nothrow_t(u64 size, addr nothrow) -> addr = alloc_new_nothrow
+hook _ZnamRKSt9nothrow_t(u64 size, addr nothrow) -> addr = alloc_new_nothrow
+hook _ZnwmSt11align_val_tRKSt9nothrow_t(u64 size, u64 align, addr nothrow) -> addr = alloc_new_aligned_nothrow
+hook _ZnamSt11align_val_tRKSt9nothrow_t(u64 size, u64 align, addr nothrow) -> addr = alloc_new_aligned_nothrow
+hook _ZdlPv(addr p) = alloc_delete
+hook _ZdaPv(addr p) = alloc_delete
+hook _ZdlPvm(addr p) = alloc_delete
+hook _ZdaPvm(addr p) = alloc_delete
+hook _ZdlPvRKSt9nothrow_t(addr p) = alloc_delete
+hook _ZdaPvRKSt9nothrow_t(addr p) = alloc_delete
+hook _ZdlPvSt11align_val_t(addr p) = alloc_delete
+hook _ZdaPvSt11align_val_t(addr p) = alloc_delete
+hook _ZdlPvmSt11align_val_t(addr p) = alloc_delete
+hook _ZdaPvmSt11align_val_t(addr p) = alloc_delete
+hook _ZdlPvSt11align_val_tRKSt9nothrow_t(addr p) = alloc_delete
+hook _ZdaPvSt11align_val_tRKSt9nothrow_t(addr p) = alloc_delete
+
 # nn::diag (diag.c): the SDK's abort, which every one of its NN_ABORT overloads ends in, logged with what the SDK passed
 # it, then its own code, which stops the game as it would
 family diag

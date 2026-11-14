@@ -243,3 +243,22 @@ int main(void) {
     puts("PASS null strings and no Result said so");
     return 0;
 }
+
+/* the alloc family's handlers (alloc.c), which the table names and this test never calls */
+int alloc_ready(void) { return 0; }
+u64 alloc_malloc(CPU* c, u64 size) { (void)c, (void)size; return 0; }
+u64 alloc_calloc(CPU* c, u64 n, u64 size) { (void)c, (void)n, (void)size; return 0; }
+u64 alloc_realloc(CPU* c, u64 p, u64 size) { (void)c, (void)p, (void)size; return 0; }
+void alloc_free(CPU* c, u64 p) { (void)c, (void)p; }
+u64 alloc_aligned(CPU* c, u64 align, u64 size) { (void)c, (void)align, (void)size; return 0; }
+i32 alloc_posix_memalign(CPU* c, u64 out, u64 align, u64 size) { (void)c, (void)out, (void)align, (void)size; return 0; }
+u64 alloc_strdup(CPU* c, u64 s) { (void)c, (void)s; return 0; }
+u64 alloc_strndup(CPU* c, u64 s, u64 max) { (void)c, (void)s, (void)max; return 0; }
+u64 alloc_new(CPU* c, u64 size) { (void)c, (void)size; return 0; }
+u64 alloc_new_aligned(CPU* c, u64 size, u64 align) { (void)c, (void)size, (void)align; return 0; }
+u64 alloc_new_nothrow(CPU* c, u64 size, u64 nothrow) { (void)c, (void)size, (void)nothrow; return 0; }
+u64 alloc_new_aligned_nothrow(CPU* c, u64 size, u64 align, u64 nothrow) {
+    (void)c, (void)size, (void)align, (void)nothrow;
+    return 0;
+}
+void alloc_delete(CPU* c, u64 p) { (void)c, (void)p; }

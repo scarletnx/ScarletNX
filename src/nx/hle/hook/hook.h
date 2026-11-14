@@ -215,10 +215,13 @@ void hook_orig_stale(GuestFn f);
 /* where the hook of symbol (a symbol, or an address hook's key as hookgen writes it, BUILDID:OFFSET) was installed:
    the function's guest address, the first one for a symbol several modules export; 0 when it wasn't */
 u64 hook_site(const char* symbol);
+/* alloc.c: the host allocator's arena in guest memory is made (made at the first call): 0 without one, and the alloc
+   family is then off */
+int alloc_ready(void);
 /* runs the hooked function at addr's own code, with the CPU as the call to it left it, until it returns to the call's
    return address (x30) with the call's stack, through the dispatch loop when its code leaves for code compiled apart:
    for a handler that does its work around the function's, as the function's own code then sees every call */
-void hook_run_original(CPU* c, u64 addr);
+void hook_run_original(CPU* c, u64 addr); /* a handler finds addr in c->pc, which its adapter sets */
 /* The same for a 32-bit game, from the handler of the hooked function its thread is in: the adapter runs with r15 at
    the function, so no address is given (a 32-bit SDK's symbol is often not the 64-bit one's). The function's own
    code runs with the registers and the stack as the call left them until it returns to the call's lr; its result
