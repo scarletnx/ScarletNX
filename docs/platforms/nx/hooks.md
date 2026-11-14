@@ -10,6 +10,7 @@
 * [Game patches: hooks by address](#game-patches-hooks-by-address)
 * [A game that rewrites a hooked function](#a-game-that-rewrites-a-hooked-function)
 * [A mod's call of the original](#a-mods-call-of-the-original)
+* [Verify mode](#verify-mode)
 * [Checking a hook](#checking-a-hook)
 * [What the guest profile showed](#what-the-guest-profile-showed)
 
@@ -343,6 +344,7 @@ reads the pc (`adr`, `adrp`, a literal load, a branch) is rewritten in the tramp
 that function's original stays the SDK's code. A hook of a detour no loader makes is never reached, so the file lists
 the known ones only, and its hooks change no route list.
 
+## Verify mode
 
 A handler has to do what its function does, and verify mode checks that it does, call by call, against the
 function's own recompiled code. The two can't both run on the game's live memory, since a side effect would happen
