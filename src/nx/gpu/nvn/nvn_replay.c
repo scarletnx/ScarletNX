@@ -199,7 +199,7 @@ static void snapshot(void* ctx, u32 op, u64 payload, u32 size) {
 /* a syncpoint increment once the renderer's work before it is done (gpu.c's stream_incr) */
 static void stream_incr(u32 id) {
     if (g_renderer->stream_incr)
-        g_renderer->stream_incr(id);
+        gpu_stream_incr(id);
     else
         syncpt_incr(id);
 }
@@ -329,7 +329,7 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                       j->cursor[level].previous);
             if (op == OP_WAIT_EVENT || op == OP_WAIT_SYNC) {
                 effects(q);
-                if (!j->waiting && g_renderer->stream_end) g_renderer->stream_end();
+                if (!j->waiting && g_renderer->stream_end) gpu_stream_end();
                 NvnReplayWait sync;
                 if (!wait_over(j, op, pc, h.size, &sync)) {
                     j->waiting = 1;
@@ -343,9 +343,9 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                    tracking scan the game's memory again 31 times a frame in one game, the GPU thread a fifth of its
                    time */
                 if (g_renderer->mem_seen)
-                    g_renderer->mem_seen();
+                    gpu_renderer_now()->mem_seen();
                 else if (g_renderer->mem_may_have_changed)
-                    g_renderer->mem_may_have_changed();
+                    gpu_renderer_now()->mem_may_have_changed();
             }
             j->cursor[level].previous = op;
             j->cursor[level].pc = h.op & NVN_REC_LAST ? 0 : pc + h.size;
@@ -408,7 +408,7 @@ static int settled(void) {
             gpu_kick();
             return 0;
         }
-        if (sync.syncpt && g_renderer->release_value && (i32)(g_renderer->release_value(sync.syncpt) - sync.value) >= 0)
+        if (sync.syncpt && g_renderer->release_value && (i32)(gpu_renderer_now()->release_value(sync.syncpt) - sync.value) >= 0)
             return 0;
     }
     return 1;
@@ -418,16 +418,16 @@ static int run(void* arg) {
     NvnReplayQueue* q = j->kind == JOB_SETTLE ? NULL : &g_nvn.replay.q[j->queue - 1]; /* JOB_SETTLE is no queue's */
     switch (j->kind) {
         case JOB_SUBMIT: {
-            if (g_renderer->stream_run) g_renderer->stream_run(1);
+            if (g_renderer->stream_run) gpu_stream_run(1);
             int done = replay_records(j, q);
             effects(q);
-            if (g_renderer->stream_run) g_renderer->stream_run(0);
+            if (g_renderer->stream_run) gpu_stream_run(0);
             if (!done) return 0;
             break;
         }
         case JOB_WAIT:
             if (!sync_over(&j->wait)) {
-                if (!j->waiting && g_renderer->stream_end) g_renderer->stream_end();
+                if (!j->waiting && g_renderer->stream_end) gpu_stream_end();
                 j->waiting = 1;
                 return 0;
             }
@@ -446,11 +446,11 @@ static int run(void* arg) {
             const NvnReplayPresent* p = &j->present;
             u64 cpu = p->gva ? gmmu_translate(p->gva) : 0;
             if (g_renderer_up && cpu) {
-                if (g_renderer->present_hdr) g_renderer->present_hdr(&p->hdr);
-                g_renderer->present_buffer(cpu, p->w, p->h, p->pitch, p->linear ? 0 : 3, p->bhl, p->fmt, p->crop,
+                if (g_renderer->present_hdr) gpu_renderer_now()->present_hdr(&p->hdr);
+                gpu_renderer_now()->present_buffer(cpu, p->w, p->h, p->pitch, p->linear ? 0 : 3, p->bhl, p->fmt, p->crop,
                                            p->transform, p->released_ns, p->period_ns, g_nvn.replay.shown);
             } else if (g_renderer_up) /* nothing to show: black, which still ends the renderer's frame */
-                g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 0, p->crop, 0, p->released_ns, p->period_ns,
+                gpu_renderer_now()->present_buffer(0, 0, 0, 0, 0, 0, 0, p->crop, 0, p->released_ns, p->period_ns,
                                            g_nvn.replay.shown);
             else /* no display to reach */
                 syncpt_incr(g_nvn.replay.shown);
@@ -461,7 +461,7 @@ static int run(void* arg) {
     }
     /* the stream stops here, as gpu.c's job_end: the renderer holds a stream's releases (its increments and writes)
        until then (release.c), and the game may now look at them */
-    if (g_renderer->stream_end) g_renderer->stream_end();
+    if (g_renderer->stream_end) gpu_stream_end();
     free(j->snapshot);
     j->snapshot = NULL;
     pm_lock(&g_nvn.replay.lock);
@@ -506,7 +506,7 @@ void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64* ready, u32* shown) {
     for (i = 0; i < n; i++) j->handles[i] = gr64(handles + 8 * (u64)i);
     /* what the CPU wrote before the submission is for its work to see: the renderer's caches check guest memory
        again (gpu.c does the same before a GPFIFO job) */
-    if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
+    if (g_renderer->mem_may_have_changed) gpu_renderer_now()->mem_may_have_changed();
     pm_lock(&g_nvn.replay.lock);
     /* Every header and nested call is still read: the guest can rewrite command memory between submissions.
        Only waits and fences affect promises, so ordinary records need no callback in this pass. */
