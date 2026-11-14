@@ -1729,7 +1729,7 @@ int nnfs_is_sd_card_inserted(CPU* c) {
     (void)c;
     return 1;
 }
-u32 nnfs_mount_sd_card(CPU* c, u64 name) {
+static u32 mount_sd_card(CPU* c, const char* function, u64 name) {
     pm_lock(&g_nnfs.lock);
     u32 r;
     const char* s = name ? gstr(c, name) : NULL;
@@ -1741,12 +1741,14 @@ u32 nnfs_mount_sd_card(CPU* c, u64 name) {
             g_hle.nnfs.mounts[m] = (NMount){0};
         else {
             mount_root_set(m, root, 0, 0);
-            LOG("nn::fs: MountSdCard(\"%s\") native\n", s);
+            LOG("nn::fs: %s(\"%s\") native\n", function, s);
         }
     }
     pm_unlock(&g_nnfs.lock);
-    return done("MountSdCard", r);
+    return done(function, r);
 }
+u32 nnfs_mount_sd_card(CPU* c, u64 name) { return mount_sd_card(c, "MountSdCard", name); }
+u32 nnfs_mount_sd_card_for_debug(CPU* c, u64 name) { return mount_sd_card(c, "MountSdCardForDebug", name); }
 /* a console has no host PC: the file system service refuses it, as the runtime's does */
 u32 nnfs_mount_host_root(CPU* c) {
     (void)c;

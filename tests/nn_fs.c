@@ -14,7 +14,8 @@
    them. A file's data cache on each kind of mount, and with "cache-null", "cache-small" and "cache-path" the stops on
    no buffer, a buffer smaller than the file and a path Disable cannot take. A save's Restore flag, clear on the
    device's save, and with "restore-null", "restore-account" and "restore-card" the stops on no place for it and on a
-   mount with no save attribute, an account's save and the SD card */
+   mount with no save attribute, an account's save and the SD card. The SD card under MountSdCardForDebug's name, in
+   both games, after which a folder made on it is native */
 #include "nx/nn/fs.c"
 #include "hle/hook/hooks.hook.inc" /* fs.hook's table, and a 32-bit game's */
 #include <stdarg.h>
@@ -127,8 +128,16 @@ u32 fs_save_commit(FsNode* work, int noted) {
     return commit_result;
 }
 void fs_root_commit(FsNode* root, int noted) { committed = root, committed_noted = noted, committed_journaled = 0; }
+/* the last folder made: its root and path */
+static FsNode* made_root;
+static char made_path[PATH_MAX_LEN + 1];
 u32 fs_root_create(FsNode* root, const char* path, i64 size, int dir) {
-    return (void)root, (void)path, (void)size, (void)dir, FSR(1);
+    if (dir) {
+        made_root = root;
+        snprintf(made_path, sizeof made_path, "%s", path);
+        return 0;
+    }
+    return (void)size, FSR(1);
 }
 u32 fs_root_remove(FsNode* root, const char* path, int dir, int recursive, int clean) {
     return (void)root, (void)path, (void)dir, (void)recursive, (void)clean, FSR(1);
@@ -587,7 +596,7 @@ int main(int argc, char** argv) {
     module32.nmods = 0;
     g_arm_mod = &module32;
     a.mem = mem, a.mem_size = sizeof mem;
-    CHECK(HOOK32_COUNT == 43);
+    CHECK(HOOK32_COUNT == 44);
     /* each for the one 32-bit SDK read, 0.12.16, alone: a 32-bit game of another SDK has no hook here */
     for (int i = 0; i < HOOK32_COUNT; i++)
         CHECK(hook32_key[i] == HOOK_SDK && hook32_lo[i] == 0 && hook32_hi[i] == 0x10000);
@@ -644,6 +653,12 @@ int main(int argc, char** argv) {
     CHECK(storages_open == 0 && own_runs32 == 1);
     /* MountHost there: the name and the folder in r0 and r1, the same refusal, nothing of the SDK's run */
     CHECK(call32("_ZN2nn2fs9MountHostEPKcS2_", NAME, PATH, 0, 0, 0, 0, 0) == FSR(1) && own_runs32 == 1);
+    /* the SD card under MountSdCardForDebug's name: the name in r0, the card mounted natively */
+    sd_there = 1;
+    CHECK(call32("_ZN2nn2fs19MountSdCardForDebugEPKc", NAME, 0, 0, 0, 0, 0, 0) == 0 && own_runs32 == 1);
+    CHECK(mount_named("ng") >= 0 && mount_root(mount_named("ng")) == sd_root);
+    call32("_ZN2nn2fs7UnmountEPKc", NAME, 0, 0, 0, 0, 0, 0);
+    sd_there = 0;
     g_arm_mod = NULL;
 
     /* IsMounted: a native mount's name is mounted, with nothing of the SDK's run, as its own table (which answers 0
@@ -686,6 +701,29 @@ int main(int argc, char** argv) {
         nnfs_unmount(c, NAME);
         CHECK(nnfs_get_save_data_restore_flag(c, RESULT, NAME) == 0x77 && own(SYM_RESTORE_FLAG, runs + 2));
         save_given = -1;
+    }
+    /* MountSdCardForDebug, through fs.hook's table, as a mod's loader calls it before it makes its folders: before it,
+       "sd" is no native mount, so a folder made there is the SDK's own code's, whose table has no "sd" either (a
+       game's stop on 2002-6905). After it the card is mounted under that name with nothing of the SDK's run, and the
+       folder is made on the card natively; the name mounted again is MountNameAlreadyExists, which the game gets */
+    {
+        u32 versions[HOOK_KEYS] = {0};
+        int first, k = hook_select(&hook_table, "_ZN2nn2fs19MountSdCardForDebugEPKc", versions, &first);
+        unsigned runs = own_runs;
+        CHECK(k >= 0 && !strcmp(hook_handler[k], "nnfs_mount_sd_card_for_debug"));
+        text(NAME, "sd");
+        text(PATH, "sd:/engage/mods");
+        CHECK(nnfs_create_directory(c, PATH) == 0x77 && own(SYM_CREATE_DIR, runs + 1) && !made_root);
+        sd_there = 1;
+        c->x[0] = NAME, c->x[30] = 0x9000, c->pc = 0;
+        hook_fn[k](c, 0);
+        CHECK(c->x[0] == 0 && c->pc == 0x9000 && own_runs == runs + 1);
+        CHECK(nnfs_create_directory(c, PATH) == 0 && made_root == sd_root && !strcmp(made_path, "/engage/mods"));
+        CHECK(nnfs_is_mounted(c, NAME) == 1 && own_runs == runs + 1);
+        CHECK(nnfs_mount_sd_card_for_debug(c, NAME) == R_MOUNT_EXISTS && own_runs == runs + 1);
+        nnfs_unmount(c, NAME);
+        CHECK(nnfs_create_directory(c, PATH) == 0x77 && own(SYM_CREATE_DIR, runs + 2));
+        sd_there = 0;
     }
     printf("nn_fs: %u checks passed\n", checks);
     return 0;
