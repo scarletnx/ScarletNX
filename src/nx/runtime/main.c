@@ -797,23 +797,39 @@ static void rate_plots(const RatePlot* p, unsigned n, u64 now_ns) {
     last_ns = now_ns;
 }
 #endif
+/* The display's vsyncs (vi_vsync_tick) up to until, from the one due at at, on their own schedule: a swap interval
+   of 0 or less asks for more of them than the loop's 60 a second. The loop sleeps between them. A vsync late by more
+   than its period (a long tick) is signalled once, and the schedule starts again from it, with no burst to catch up.
+   The game's input and its vsync are guest work, which a pause holds back. The next vsync's time */
+static u64 vsync_until(u64 until, u64 at, int paused) {
+    for (;;) {
+        u64 now = plat_ns();
+        if (at > until) {
+            if (until > now) plat_sleep_ns((i64)(until - now));
+            return at;
+        }
+        if (at > now) plat_sleep_ns((i64)(at - now));
+        if (!paused) vi_vsync_tick();
+        u64 step = vi_vsync_period(), done = plat_ns();
+        at = at + step > done ? at + step : done + step;
+    }
+}
 static void frontend_loop(void) {
     const u64 period = 1000000000u / VI_REFRESH_HZ;
-    u64 tick = 0, next = plat_ns(), now, changed = next, rate_at = next, resources_at = next;
+    u64 tick = 0, next = plat_ns(), now, changed = next, rate_at = next, resources_at = next, vsync = next;
     int frames = 0, stalls = 0, rate_frames = 0;
     while (!g_quit) {
         int shown, paused;
         SNX_ZONE(z_frontend, "frontend tick");
         video_poll();
         options_tv_mode_update();
-        /* the game's input and its display's vsync are guest work, which a pause holds back with the rest */
+        /* the game's input is guest work, which a pause holds back with the rest (and its vsync, vsync_until) */
         paused = game_paused();
         if (!paused) {
             SNX_ZONE(z_hid, "hid update");
             [[maybe_unused]] u64 states = hid_update();
             SNX_ZONE_VALUE(z_hid, states);
             SNX_ZONE_END(z_hid);
-            vi_vsync_tick();
         }
         if (++tick % 60 == 0) ini_poll(0);
         frontend_frame();
@@ -890,10 +906,8 @@ static void frontend_loop(void) {
         }
         /* paced at the display's rate, from a schedule: one far behind (a stop in the debugger) starts again */
         next += period;
-        if (now > next + 100000000u)
-            next = now;
-        else if (next > now)
-            plat_sleep_ns((i64)(next - now));
+        if (now > next + 100000000u) next = now;
+        vsync = vsync_until(next, vsync, paused);
     }
     ini_poll(1); /* the settings the game's menu changed, even over an edit of the file */
     snx_save_before_exit();
