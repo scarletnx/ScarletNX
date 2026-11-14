@@ -432,6 +432,11 @@ if(TARGET snx_ctr_board)
     add_test(NAME 3ds_vk_draw_scaled_verify COMMAND snx-test-3ds-vk-draw --scaled-verify)
     set_tests_properties(3ds_vk_draw_scaled_transfer 3ds_vk_draw_scaled_rotating 3ds_vk_draw_scaled_verify
                          PROPERTIES SKIP_RETURN_CODE 77)
+    # the screens laid out at the console's proportions whatever each render scale: a top screen at 2x above a bottom
+    # one at 1x, and a press on the bottom screen's pixel (160, 220) landing on it
+    add_test(NAME 3ds_vk_draw_scaled_layout COMMAND snx-test-3ds-vk-draw --scaled-layout)
+    set_tests_properties(3ds_vk_draw_scaled_layout PROPERTIES SKIP_RETURN_CODE 77
+                         ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
     if(NOT WIN32 AND Python3_Interpreter_FOUND)
         # the copies' blits, lookups and compare, under Khronos validation
         add_test(NAME 3ds_vk_draw_scaled_transfer_validation

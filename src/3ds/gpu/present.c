@@ -354,32 +354,37 @@ static void write_pending(bool wait) {
     write_ppm(g_present.pending.screen, g_present.pending.width, g_present.pending.height, g_present.readback_view);
 }
 /* The blit rectangle of a screen in swapchain pixels: in one window the pair scaled to fit and centred, each screen
-   centred across the layout; in its own window the screen scaled to fit and centred. False before a layout and a
-   swapchain exist. */
+   centred across the layout; in its own window the screen scaled to fit and centred. The layout takes each screen at
+   the console's size (its frame's size over its render scale), so screens at different scales keep the console's
+   proportions. False before a layout and a swapchain exist. */
 static bool screen_rect(unsigned screen, VkOffset2D rect[2]) {
     const Frame* frames = g_present.frames;
+    uint32_t width[2], height[2];
+    for (unsigned i = 0; i < 2; ++i) {
+        width[i] = frames[i].scale ? frames[i].width / frames[i].scale : 0;
+        height[i] = frames[i].scale ? frames[i].height / frames[i].scale : 0;
+    }
     unsigned window = g_present.separate ? screen : 0;
     VkExtent2D e = g_present.swap[window].extent;
     if (g_present.separate) {
-        const Frame* f = &frames[screen];
-        if (!f->width || !f->height || !e.width || !e.height) return false;
-        double scale = (double)e.width / f->width < (double)e.height / f->height ? (double)e.width / f->width
-                                                                                 : (double)e.height / f->height;
-        double x = (e.width - f->width * scale) / 2, y = (e.height - f->height * scale) / 2;
+        if (!width[screen] || !height[screen] || !e.width || !e.height) return false;
+        double scale = (double)e.width / width[screen] < (double)e.height / height[screen]
+                           ? (double)e.width / width[screen]
+                           : (double)e.height / height[screen];
+        double x = (e.width - width[screen] * scale) / 2, y = (e.height - height[screen] * scale) / 2;
         rect[0] = (VkOffset2D){(int32_t)x, (int32_t)y};
-        rect[1] = (VkOffset2D){(int32_t)(x + f->width * scale), (int32_t)(y + f->height * scale)};
+        rect[1] = (VkOffset2D){(int32_t)(x + width[screen] * scale), (int32_t)(y + height[screen] * scale)};
         return true;
     }
-    uint32_t layout_w = snx_max_u32(frames[0].width, frames[1].width);
-    uint32_t layout_h = frames[0].height + frames[1].height;
+    uint32_t layout_w = snx_max_u32(width[0], width[1]);
+    uint32_t layout_h = height[0] + height[1];
     if (!layout_w || !layout_h || !e.width || !e.height) return false;
     double scale = (double)e.width / layout_w < (double)e.height / layout_h ? (double)e.width / layout_w
                                                                             : (double)e.height / layout_h;
-    const Frame* f = &frames[screen];
-    double x = (e.width - layout_w * scale) / 2 + (layout_w - f->width) * scale / 2;
-    double y = (e.height - layout_h * scale) / 2 + (screen ? frames[0].height * scale : 0);
+    double x = (e.width - layout_w * scale) / 2 + (layout_w - width[screen]) * scale / 2;
+    double y = (e.height - layout_h * scale) / 2 + (screen ? height[0] * scale : 0);
     rect[0] = (VkOffset2D){(int32_t)x, (int32_t)y};
-    rect[1] = (VkOffset2D){(int32_t)(x + f->width * scale), (int32_t)(y + f->height * scale)};
+    rect[1] = (VkOffset2D){(int32_t)(x + width[screen] * scale), (int32_t)(y + height[screen] * scale)};
     return true;
 }
 /* The touch screen's pixel under a pointer at x and y, in the window's points as SDL reports them. The blit's own scale
