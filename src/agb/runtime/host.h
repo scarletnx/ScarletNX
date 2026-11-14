@@ -37,9 +37,12 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
 void agb_host_close(AgbHost* host);
 /* the events since the last call: the keys held after them (AGB_KEY_), false once the window is closed */
 bool agb_host_poll(AgbHost* host, uint16_t* keys);
-/* the 240x160 frame (RGBA, a byte each) drawn in the window, and over it a notice while one shows (Esc's first press,
-   common/utilities/notice.h), not shown yet: agb_host_frame's first part */
+/* with SDL's renderer (a host with no Vulkan window), the 240x160 frame (RGBA, a byte each) drawn in the window, and
+   over it a notice while one shows (Esc's first press, common/utilities/notice.h), not shown yet: agb_host_frame's
+   first part. Nothing with the Vulkan window, whose frames agb_host_frame draws and shows at once */
 void agb_host_draw(AgbHost* host, const uint32_t* framebuffer);
+/* the line over the game while it shows ("" when none does): Esc's first press, a shortcut's step */
+const char* agb_host_notice(const AgbHost* host);
 /* the frame drawn and shown, its count frames of stereo samples, then the wait to the next frame's time */
 void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* samples, uint32_t count);
 #endif

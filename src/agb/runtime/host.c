@@ -4,10 +4,13 @@
 #include "common/utilities/sdl_desktop.h"
 #include "agb/apu/apu.h"
 #include "agb/ppu/ppu.h"
+#include "agb/runtime/vk.h"
+#include "common/utilities/key_text.h"
 #include "common/utilities/notice.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/quit_key.h"
 #include "common/utilities/window_icon.h"
+#include "snx_settings.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +26,9 @@
 #define STICK_DEAD    16384
 
 struct AgbHost {
+    /* the screen through Vulkan (runtime/vk.c), with the upscaler and the anti-aliasing; SDL's renderer and its
+       texture where the host has no Vulkan window */
+    AgbVk* vk;
     SDL_Window* window;
     SDL_Renderer* renderer;
     SDL_Texture* texture;
@@ -36,6 +42,10 @@ struct AgbHost {
     SnxNotice notice;
     SDL_Texture* notice_texture;
     int notice_w, notice_h, notice_failed;
+    /* the keys that step the upscaler and the anti-aliasing for the run (the Switch's hotkey_upscaler and
+       hotkey_anti_aliasing), 0 for none, read at the first key */
+    unsigned shortcut_key[2], shortcut_mods[2];
+    bool shortcuts_read, shared_said;
 };
 
 uint16_t agb_host_key(int scancode) {
@@ -109,24 +119,41 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
         free(host);
         return NULL;
     }
-    if (!SDL_CreateWindowAndRenderer(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE,
-                                     SDL_WINDOW_RESIZABLE | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0), &host->window,
-                                     &host->renderer) ||
-        !(host->texture = SDL_CreateTexture(host->renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING,
-                                            AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT)) ||
-        !SDL_SetTextureScaleMode(host->texture, SDL_SCALEMODE_NEAREST) ||
-        !SDL_SetRenderLogicalPresentation(host->renderer, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT,
-                                          SDL_LOGICAL_PRESENTATION_INTEGER_SCALE)) {
+    /* the screen through Vulkan, as every other console's window, where the host has a Vulkan window; else SDL's
+       renderer, without the upscaler and the anti-aliasing, said */
+    {
+        char why[256];
+        host->vk = agb_vk_open(title, fullscreen, why, sizeof why);
+        if (!host->vk)
+            fprintf(
+                stderr,
+                "scarletnx-agb: no Vulkan window (%s): the screen shows through SDL's renderer, with no upscaler or "
+                "anti-aliasing\n",
+                why);
+    }
+    if (host->vk)
+        host->window = agb_vk_window(host->vk);
+    else if (!SDL_CreateWindowAndRenderer(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE,
+                                          SDL_WINDOW_RESIZABLE | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0),
+                                          &host->window, &host->renderer) ||
+             !(host->texture = SDL_CreateTexture(host->renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING,
+                                                 AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT)) ||
+             !SDL_SetTextureScaleMode(host->texture, SDL_SCALEMODE_NEAREST) ||
+             !SDL_SetRenderLogicalPresentation(host->renderer, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT,
+                                               SDL_LOGICAL_PRESENTATION_INTEGER_SCALE)) {
         snprintf(error, error_size, "cannot open the game's window: %s", SDL_GetError());
         agb_host_close(host);
         return NULL;
     }
-    /* each frame whole on screen, as the launcher presents its own */
-    if (!SDL_SetRenderVSync(host->renderer, 1))
-        fprintf(stderr,
-                "scarletnx-agb: the display refused vsync 1 (%s): frames go on screen with vsync 0 and may tear\n",
-                SDL_GetError());
-    snx_window_icon(host->window);
+    /* each frame whole on screen, as the launcher presents its own (the Vulkan window's images go at the display's
+       refresh too) */
+    if (!host->vk) {
+        if (!SDL_SetRenderVSync(host->renderer, 1))
+            fprintf(stderr,
+                    "scarletnx-agb: the display refused vsync 1 (%s): frames go on screen with vsync 0 and may tear\n",
+                    SDL_GetError());
+        snx_window_icon(host->window);
+    }
     snx_pad_map_position(&host->pad); /* A where the console has it, east */
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO) ||
         !(host->audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL)) ||
@@ -145,9 +172,42 @@ void agb_host_close(AgbHost* host) {
     if (host->notice_texture) SDL_DestroyTexture(host->notice_texture);
     if (host->texture) SDL_DestroyTexture(host->texture);
     if (host->renderer) SDL_DestroyRenderer(host->renderer);
-    if (host->window) SDL_DestroyWindow(host->window);
+    if (host->vk)
+        agb_vk_close(host->vk); /* its window with it */
+    else if (host->window)
+        SDL_DestroyWindow(host->window);
     free(host);
     SDL_Quit();
+}
+
+/* the upscaler's or the anti-aliasing's shortcut, as a Switch game's: the step for the run said over the game, or,
+   with SDL's renderer, that it has neither. 0 for another key */
+static int shortcut(AgbHost* host, const SDL_KeyboardEvent* key) {
+    int also, which;
+    char text[96];
+    if (!host->shortcuts_read) {
+        const char* const texts[2] = {g_settings.upscaler_shortcut, g_settings.anti_aliasing_shortcut};
+        host->shortcuts_read = true;
+        for (int i = 0; i < 2; ++i)
+            if (snx_key_parse(texts[i], &host->shortcut_key[i], &host->shortcut_mods[i], text, sizeof text))
+                fprintf(stderr, "scarletnx-agb: %s=%s: %s: it has no key\n",
+                        i ? "hotkey_anti_aliasing" : "hotkey_upscaler", texts[i], text);
+    }
+    which = snx_key_find(host->shortcut_key, host->shortcut_mods, 2, key->key, snx_key_mods(key->mod), &also);
+    if (which < 0) return 0;
+    if (also >= 0 && !host->shared_said) {
+        host->shared_said = true;
+        fprintf(stderr, "scarletnx-agb: %s is hotkey_upscaler's and hotkey_anti_aliasing's: it does %s's\n",
+                g_settings.upscaler_shortcut, which ? "hotkey_anti_aliasing" : "hotkey_upscaler");
+    }
+    if (host->vk)
+        agb_vk_step(host->vk, which, text, sizeof text);
+    else {
+        snprintf(text, sizeof text, "%s: Off, with no Vulkan window", which ? "Anti-aliasing" : "Upscaler");
+        fprintf(stderr, "scarletnx-agb: %s\n", text);
+    }
+    snx_notice_show(&host->notice, text, SDL_GetTicksNS());
+    return 1;
 }
 
 bool agb_host_poll(AgbHost* host, uint16_t* keys) {
@@ -159,6 +219,7 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: open = false; break;
             case SDL_EVENT_GAMEPAD_ADDED: SDL_OpenGamepad(event.gdevice.which); break;
             case SDL_EVENT_KEY_DOWN:
+                if (!event.key.repeat && shortcut(host, &event.key)) break;
                 /* Esc twice closes the window, a first one warning on the terminal and over the game; not with Ctrl,
                    Alt or the system key */
                 if (event.key.key == SDLK_ESCAPE && !event.key.repeat &&
@@ -220,6 +281,7 @@ static void notice_draw(AgbHost* host) {
 }
 
 void agb_host_draw(AgbHost* host, const uint32_t* framebuffer) {
+    if (!host->renderer) return; /* the Vulkan window's frames go through agb_host_frame */
     SDL_UpdateTexture(host->texture, NULL, framebuffer, AGB_SCREEN_WIDTH * 4);
     SDL_SetRenderDrawColor(host->renderer, 0, 0, 0, 255);
     SDL_RenderClear(host->renderer);
@@ -227,9 +289,17 @@ void agb_host_draw(AgbHost* host, const uint32_t* framebuffer) {
     notice_draw(host);
 }
 
+const char* agb_host_notice(const AgbHost* host) {
+    return snx_notice_shown(&host->notice, SDL_GetTicksNS()) ? host->notice.text : "";
+}
+
 void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* samples, uint32_t count) {
-    agb_host_draw(host, framebuffer);
-    SDL_RenderPresent(host->renderer);
+    if (host->vk)
+        (void)agb_vk_frame(host->vk, framebuffer, &host->notice); /* none free: the next frame goes */
+    else {
+        agb_host_draw(host, framebuffer);
+        SDL_RenderPresent(host->renderer);
+    }
     if (host->audio && SDL_GetAudioStreamQueued(host->audio) < (int)(QUEUED_FRAMES * count * 4))
         SDL_PutAudioStreamData(host->audio, samples, (int)(count * 4));
     uint64_t now = SDL_GetTicksNS();
