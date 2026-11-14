@@ -4200,6 +4200,156 @@ static void test_geometry(const char* dir) {
     refused(vs, 3, ST_VS, vsph, (ShaderInfo){0}, "S2R system register 0x1d outside a geometry program");
 }
 
+/* the literal of the module's execution mode, ~0 where it has the mode with none, 0 where it lacks the mode */
+static u32 spv_mode(const u32* words, size_t count, u32 mode) {
+    u32 at[16];
+    u32 n = spv_find(words, count, 16 /* OpExecutionMode */, at, 16);
+    for (u32 k = 0; k < n; k++)
+        if (words[at[k] + 2] == mode) return words[at[k]] >> 16 > 3 ? words[at[k] + 3] : ~0u;
+    return 0;
+}
+/* input vertex v's position, component k, as the geometry tests below give it, and as it comes out with the depth fix
+   (the push constant's y not 0: z becomes (z + w) / 2) */
+static u32 gs_position(u32 v, u32 k, int fixed) {
+    float base = 0.25f * (float)(v + 1);
+    return f2u(k == 2 && fixed ? ((base + 2.0f) + (base + 3.0f)) * 0.5f : base + (float)k);
+}
+/* A geometry program that emits its own vertices, as the console runs one from its SPH (not passthrough): a triangle
+   in, each of its vertices out with OUT.EMIT, its position (with the depth fix: the program is the last before the
+   rasterizer) and generic 0 read by ALD through ISBERD, then OUT.CUT. The module takes the SPH's output topology (a
+   triangle strip), output vertices (3) and invocations (2). With the viewport mask 0 written first, it emits
+   nothing */
+static u32 geometry_emit_program(u8* code, int culled) {
+    u32 n = 0;
+    if (culled) {
+        put(code, n++, mov_imm(9, 0));
+        put(code, n++, ast(0x3a0, 9, 1));
+    }
+    for (u32 v = 0; v < 3; v++) {
+        put(code, n++, mov_imm(2, v));
+        put(code, n++, isbe_insn(0, 2, 2, 0, 0, 0, 0, 0)); /* ISBERD R2, [R2] */
+        Word x = fix(0x321);                               /* ALD.128 R4, a[0x70], R2 */
+        set(&x, 16, 8, 4);
+        set(&x, 24, 8, 255);
+        set(&x, 32, 8, 2);
+        set(&x, 40, 10, 0x70);
+        set(&x, 74, 2, 3);
+        put(code, n++, x);
+        put(code, n++, ast(0x70, 4, 4));
+        x = fix(0x321); /* ALD R8, a[0x80], R2 */
+        set(&x, 16, 8, 8);
+        set(&x, 24, 8, 255);
+        set(&x, 32, 8, 2);
+        set(&x, 40, 10, 0x80);
+        put(code, n++, x);
+        put(code, n++, ast(0x80, 8, 1));
+        x = alu(0x124, 1, 0, 0); /* OUT.EMIT R0, R0, R0 */
+        set(&x, 78, 2, 1);
+        put(code, n++, x);
+    }
+    Word x = alu(0x124, 1, 0, 0); /* OUT.CUT R0, R0, R0 */
+    set(&x, 78, 2, 2);
+    put(code, n++, x);
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    return n + 1;
+}
+static void test_geometry_emit(const char* dir) {
+    u8 code[16 * 32] = {0};
+    u32 sph[32] = {0};
+    sph[0] = sph0(1, 4);
+    sph[2] = 2u << 24; /* two invocations */
+    sph[3] = 7u << 24; /* a triangle strip */
+    sph[4] = 3;
+    for (int culled = 0; culled < 2; culled++) {
+        u32 n = geometry_emit_program(code, culled);
+        ShaderInfo si = {0};
+        si.rt_int_mask = 3;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_GS, sph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "geometry emit: %s\n", si.first_unsupported);
+            return;
+        }
+        CHECK(spv_mode(spv, count, 22 /* Triangles */) && spv_mode(spv, count, 29 /* OutputTriangleStrip */) &&
+              spv_mode(spv, count, 26 /* OutputVertices */) == 3 && spv_mode(spv, count, 0 /* Invocations */) == 2);
+        if (!culled) CHECK(keep_module(dir, "gs_emit", spv, count));
+        static SpvEvalEnv env;
+        memset(&env, 0, sizeof env);
+        for (u32 v = 0; v < 3; v++)
+            for (u32 k = 0; k < 4; k++) {
+                env.gs_in[32][4 * v + k] = gs_position(v, k, 0);
+                env.gs_in[0][4 * v + k] = f2u(10.0f * (float)(v + 1) + (float)k);
+            }
+        env.push[1] = f2u(1.0f);
+        const char* why = spv_eval(spv, count, &env);
+        free(spv);
+        if (why) fprintf(stderr, "geometry emit: the evaluator stops at %s\n", why);
+        CHECK(!why);
+        int ok = env.emitted == (culled ? 0u : 3u) && env.primitives == 1;
+        for (u32 v = 0; ok && v < env.emitted; v++)
+            for (u32 k = 0; k < 4; k++)
+                ok &= env.vertex[v][32][k] == gs_position(v, k, 1) && env.vertex[v][0][0] == env.gs_in[0][4 * v];
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "geometry emit%s: %u vertices, %u primitives; vertex 1 position.z %08x generic 0.x %08x\n",
+                    culled ? " culled" : "", env.emitted, env.primitives, env.vertex[1][32][2], env.vertex[1][0][0]);
+    }
+}
+/* A passthrough program of a primitive with adjacency emits the primitive itself, with the depth fix: of lines with
+   adjacency, input vertices 1 and 2 as a line strip, of triangles with adjacency, vertices 0, 2 and 4 as a triangle
+   strip */
+static void test_geometry_adjacency(void) {
+    u8 code[16 * 16] = {0};
+    u32 n = geometry_program(code, 1);
+    u32 sph[32] = {0};
+    sph[0] = sph0(1, 4) | 1u << 24;
+    sph[4] = 1;
+    for (u32 in = 4; in <= 6; in += 2) {
+        ShaderInfo si = {0};
+        si.rt_int_mask = in;
+        si.rt_sint_mask = 1;
+        for (u32 w = 0; w < 8; w++) si.gp_skip_mask[w] = 0xffffffffu;
+        si.gp_skip_mask[0] = 0x0fffffffu; /* the position */
+        si.gp_skip_mask[1] = 0xfffffff0u; /* generic 0 */
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_GS, sph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "geometry adjacency: %s\n", si.first_unsupported);
+            return;
+        }
+        u32 out = in / 2;
+        CHECK(spv_mode(spv, count, in == 4 ? 21 /* InputLinesAdjacency */ : 23 /* InputTrianglesAdjacency */) &&
+              spv_mode(spv, count, in == 4 ? 28 /* OutputLineStrip */ : 29 /* OutputTriangleStrip */) &&
+              spv_mode(spv, count, 26 /* OutputVertices */) == out);
+        static SpvEvalEnv env;
+        memset(&env, 0, sizeof env);
+        for (u32 v = 0; v < in; v++)
+            for (u32 k = 0; k < 4; k++) {
+                env.gs_in[32][4 * v + k] = gs_position(v, k, 0);
+                env.gs_in[0][4 * v + k] = f2u(10.0f * (float)(v + 1) + (float)k);
+            }
+        env.push[1] = f2u(1.0f);
+        const char* why = spv_eval(spv, count, &env);
+        free(spv);
+        if (why) fprintf(stderr, "geometry adjacency: the evaluator stops at %s\n", why);
+        CHECK(!why);
+        int ok = env.emitted == out && env.primitives == 1;
+        for (u32 v = 0; ok && v < out; v++) {
+            u32 from = in == 4 ? v + 1 : 2 * v;
+            for (u32 k = 0; k < 4; k++)
+                ok &= env.vertex[v][32][k] == gs_position(from, k, 1) &&
+                      env.vertex[v][0][k] == env.gs_in[0][4 * from + k];
+        }
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "geometry adjacency of %u: %u vertices, %u primitives, vertex 0 position.x %08x .z %08x\n",
+                    in, env.emitted, env.primitives, env.vertex[0][32][0], env.vertex[0][32][2]);
+    }
+}
+
 /* A fragment program's inputs that its draw's mesh program writes per primitive (ShaderInfo.prim_mask) are
    PerPrimitiveEXT, and the others are not */
 static void test_fragment_per_primitive(const char* dir) {
@@ -5094,6 +5244,8 @@ int main(int argc, char** argv) {
     test_mesh_output_bytes();
     test_mesh_refused();
     test_geometry(dir);
+    test_geometry_emit(dir);
+    test_geometry_adjacency();
     test_fragment_per_primitive(dir);
     test_fragment_unfed(dir);
     test_uses_isbe();
