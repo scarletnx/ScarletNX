@@ -747,6 +747,44 @@ static void presented_after_draw(SnxCtrMemory* m) {
     present_screens(m, true);
     commands_after_draw(m);
 }
+/* A frame of GSP's colour formats (present.h, transfer.h's order) drawn at a render scale above 1 is shown from its
+   target: the presenter takes the target of the frame's own format and stores nothing to the RAM. The PICA's
+   colour buffer format register (0x117) has another order: RGB5A1 2, RGB565 3 */
+static void scaled_present(SnxCtrMemory* m) {
+    static const struct {
+        const char* name;
+        unsigned pica, gsp;
+    } cases[] = {{"an RGB565 frame at 2x", 3, SNX_CTR_PIX_RGB565}, {"an RGB5A1 frame at 2x", 2, SNX_CTR_PIX_RGB5A1}};
+    if (!snx_ctr_present_init(m, NULL, false)) {
+        ++failures;
+        return;
+    }
+    g_settings.ctr_top_resolution = 2;
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
+        uint32_t at = COLOR + (uint32_t)i * 0x40000u;
+        Scene* s = scene(cases[i].name, cases[i].pica, 0xff);
+        /* the top screen's framebuffer, 240 x 400: a target the top screen's render scale takes */
+        put(&s->list, 0x041, f24(240 / 2.0f));
+        put(&s->list, 0x043, f24(400 / 2.0f));
+        put(&s->list, 0x11e, 240 | (400 - 1) << 12 | 1u << 24);
+        put(&s->list, 0x11d, at / 8);
+        triangles(s, 4);
+        array_draw(s);
+        list_end(&s->list);
+        setup_clear(m, s);
+        bool ok = record(m, s, &vulkan); /* the target drawn, newer than the RAM */
+        SnxCtrVkTraffic before = snx_ctr_vk_traffic();
+        ok = ok && snx_ctr_present_frame(0, at, 240, 400, cases[i].gsp, 240 * 2, NULL);
+        uint64_t stored = snx_ctr_vk_traffic().written - before.written;
+        ok = ok && snx_ctr_vk_finish();
+        bool pass = ok && stored == 0;
+        printf("%-24s %llu bytes stored to the RAM by the present: %s\n", s->name, (unsigned long long)stored,
+               pass ? "ok" : "FAIL");
+        if (!pass) ++failures;
+        free(s);
+    }
+    g_settings.ctr_top_resolution = 1;
+}
 
 /* Shadow maps (Azahar's sw_framebuffer.cpp DrawShadowMapPixel and sw_rasterizer.cpp TextureColor): the colour buffer
    of a shadow pass holds one word per pixel, its bytes the depth from the most significant byte, then the strength */
@@ -1284,6 +1322,7 @@ typedef struct {
 static const Mode scenes = {NULL, "the scenes", all_scenes};
 /* the validation runs record only the commands under test */
 static const Mode modes[] = {{"--present", "the presented screens", screens},
+                             {"--scaled-present", "the frames shown from scaled targets", scaled_present},
                              {"--after-draw", "the commands after a draw", presented_after_draw},
                              {"--texture-after-draw", "the textures after a draw", texture_after_draw},
                              {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy},

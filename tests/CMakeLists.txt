@@ -415,8 +415,17 @@ if(TARGET snx_ctr_board)
     add_test(NAME 3ds_vk_draw_stand_in COMMAND snx-test-3ds-vk-draw --ctr_stand_in=2)
     # the presented screens outside the validation harness, so every host runs that path
     add_test(NAME 3ds_vk_draw_present COMMAND snx-test-3ds-vk-draw --present)
+    # a frame of GSP's RGB565 and RGB5A1 formats drawn at render scale 2 shows its target's image, as an RGBA8 one does
+    add_test(NAME 3ds_vk_draw_scaled_present COMMAND snx-test-3ds-vk-draw --scaled-present)
+    if(NOT WIN32 AND Python3_Interpreter_FOUND)
+        # the presenter's read of a scaled target, under Khronos validation
+        add_test(NAME 3ds_vk_draw_scaled_present_validation
+                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                     $<TARGET_FILE:snx-test-3ds-vk-draw> --scaled-present)
+        set_tests_properties(3ds_vk_draw_scaled_present_validation PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     set_tests_properties(3ds_vk_draw 3ds_vk_draw_async 3ds_vk_draw_pipelines 3ds_vk_draw_async_pipelines
-                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_stand_in 3ds_vk_draw_present
+                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_stand_in 3ds_vk_draw_present 3ds_vk_draw_scaled_present
                          PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's copy of the RAM, page by page: what is copied in and back, and when, and every byte where it belongs
     add_executable(snx-test-3ds-vk-copies 3ds_vk_copies.c)
