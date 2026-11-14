@@ -259,7 +259,7 @@ jobs:
       # As many at a time as the runner has cores, as each run keeps its shaders and frames in a folder of its own
       # (tests/vulkan_headless.c)
       - name: Test headless Vulkan and NX runtime
-        run: &headless-tests ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_headless_pipeline_library_whole|vulkan_headless_pipeline_library_linked|vulkan_headless_libraries_off|vulkan_headless_vk12|vulkan_headless_descriptor_buffers|vulkan_headless_vertex_input_off|vulkan_headless_uma|vulkan_headless_hot|vulkan_recorder|vulkan_tex_partial|vulkan_video_av1|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep|vulkan_nvn_savestate|vulkan_owned_page_reads|vulkan_owned_page_reads_protection)$' --output-on-failure --parallel "$(getconf _NPROCESSORS_ONLN)"
+        run: &headless-tests ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_headless_pipeline_library_whole|vulkan_headless_pipeline_library_linked|vulkan_headless_libraries_off|vulkan_headless_vk12|vulkan_headless_descriptor_buffers|vulkan_headless_vertex_input_off|vulkan_headless_uma|vulkan_headless_hot|vulkan_recorder|vulkan_tex_partial|vulkan_video_av1|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep|vulkan_nvn_savestate|vulkan_owned_page_reads|vulkan_owned_page_reads_protection|astc_vulkan_sync)$' --output-on-failure --parallel "$(getconf _NPROCESSORS_ONLN)"
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
         run: &abi-helpers clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
