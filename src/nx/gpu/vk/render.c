@@ -3290,6 +3290,15 @@ static struct {
     u32 topology;          /* the draw's argument, before tessellation makes it a patch list */
     u32 epoch;             /* vk_ww_epoch */
     u64 shader_generation; /* instruction invalidations also expire kept draws */
+    /* A program can have more than one translation, each with other constant buffer words folded (cb_fold.h), and
+       vk_shader_get takes the one that folds the most words of those that hold. A kept shader still holds when
+       another translation of its program starts to hold, because it doesn't read the words that the other folds. So
+       fold_gen is vk_shader_fold_gen before the draw looked up its shaders (no translation came since), and not_top
+       has a bit for each shader of used_shaders that another translation of its program folds more than. draw_kept
+       asks vk_shader_chosen for those. Without these checks, draw_state_check=1 found 0.22% of the kept draws in one
+       game's town with a fragment program that folded no word, where a lookup gave one that folded a word: the game
+       had set that word to the value the other translation folded */
+    u32 fold_gen, not_top;
     DrawShaders sh;        /* the rest holds when sh.vs is set */
     FsKey fkey;
     VkSh* fs;
@@ -3312,6 +3321,16 @@ static void draw_differs(const char* what) {
                "again (%llu draws checked)\n",
                what, (unsigned long long)g_vk_draw_checked);
 }
+/* the kept shaders that hold their constant buffer words: the stages, the fragment program and its variant */
+static void used_shaders(const VkSh* used[6]) {
+    const DrawShaders* s = &g_draw.sh;
+    used[0] = s->vs;
+    used[1] = s->tcs;
+    used[2] = s->tes;
+    used[3] = s->gs;
+    used[4] = s->fs0;
+    used[5] = g_draw.fs;
+}
 /* whether the vertex format f is, in what the kept state read of it, the one it was made from: the attributes the
    vertex program reads, the streams they name, and which of all 32 attributes are integers (they key the program) */
 static int vertex_format_holds(const DsVertexFormat* f, const DrawShaders* s) {
@@ -3333,10 +3352,11 @@ static int vertex_format_holds(const DsVertexFormat* f, const DrawShaders* s) {
     return 1;
 }
 /* whether the state kept in g_draw holds for this draw of ch, as far as what is checked before drawing tells */
-static int draw_kept(const DsState* ds, u32 topology, int mesh, u32 epoch) {
+static int draw_kept(const DsState* ds, u32 topology, int mesh, u32 epoch, u32 fold_gen) {
     const DrawShaders* s = &g_draw.sh;
     if (s->mesh != mesh) return 0;
     if (g_draw.shader_generation != g_vk.shader_generation) return 0;
+    if (g_draw.fold_gen != fold_gen) return 0; /* a translation came that a lookup may take over a kept one */
     if (g_draw.k.heaps != (u32)g_vk.has_descriptor_heaps) return 0;
     if (!s->vs || g_draw.ch_id != ds->owner || g_draw.topology != topology || g_draw.epoch != epoch) return 0;
     for (u32 i = 0; i < sizeof g_draw_groups; i++)
@@ -3349,9 +3369,15 @@ static int draw_kept(const DsState* ds, u32 topology, int mesh, u32 epoch) {
     if (s->xfb_on != xfb_wanted(ds->prog.xfb_on)) return 0; /* capture began or ended, or its counters were made */
     if (s->window_xy != !ds->vp.transform_on) return 0; /* the viewports' group keys no shader otherwise */
     if (s->swizzle != vk_viewport_swizzle_key(&ds->vp)) return 0;
-    const VkSh* used[6] = {s->vs, s->tcs, s->tes, s->gs, s->fs0, g_draw.fs};
-    for (int i = 0; i < 6; i++)
-        if (used[i] && used[i]->cbr.n && !vk_shader_cb_hold(ds, used[i])) return 0;
+    const VkSh* used[6];
+    used_shaders(used);
+    for (int i = 0; i < 6; i++) {
+        if (!used[i]) continue;
+        if (g_draw.not_top >> i & 1) {
+            if (!vk_shader_chosen(ds, used[i])) return 0;
+        } else if (used[i]->cbr.n && !vk_shader_cb_hold(ds, used[i]))
+            return 0;
+    }
     return 1;
 }
 static int draw_shaders_same(const DrawShaders* a, const DrawShaders* b) {
@@ -4461,11 +4487,11 @@ retry:
     first = initial_first;
     count = initial_count;
     u64 setup_frame = vk_submit_number();
-    u32 epoch = vk_ww_epoch();
+    u32 epoch = vk_ww_epoch(), fold_gen = vk_shader_fold_gen(); /* before a shader is looked up */
     /* kept: the state the last draw made holds for this one, as far as each check below tells. Each part is made
        here when it doesn't (and when draw_state_check compares) */
     int capture = g_capture_draw.images != NULL;
-    int kept = !texture && !capture && !g_predraw.phase && draw_kept(ds, draw_topo, mesh, epoch);
+    int kept = !texture && !capture && !g_predraw.phase && draw_kept(ds, draw_topo, mesh, epoch, fold_gen);
     if (kept && g_draw.check) g_vk_draw_checked++;
     DrawShaders sh;
     if (kept) sh = g_draw.sh;
@@ -5370,9 +5396,15 @@ retry:
         g_draw.topology = draw_topo;
         g_draw.epoch = epoch;
         g_draw.shader_generation = g_vk.shader_generation;
+        g_draw.fold_gen = fold_gen;
         g_draw.sh = sh;
         g_draw.fkey = fk;
         g_draw.fs = fs;
+        const VkSh* used[6];
+        used_shaders(used);
+        g_draw.not_top = 0;
+        for (int i = 0; i < 6; i++)
+            if (used[i] && !vk_shader_fold_top(used[i])) g_draw.not_top |= 1u << i;
         g_draw.tf = tf;
         if (pl != &g_draw.plan) g_draw.plan = *pl;
         if (k != &g_draw.k) g_draw.k = *k;
