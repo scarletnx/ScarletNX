@@ -401,7 +401,21 @@ void hook_install(void) {
                 text);
         }
         if (k < 0 || off[hook_family[k]]) continue;
+        if (hook_check[k] && !hook_check[k](addr)) {
+            LOG("hook: %s at %llx keeps its own code: %s finds another shape than %s's\n", name,
+                (unsigned long long)addr, hook_handler[k], hook_handler[k]);
+            continue;
+        }
+        if (strcmp(hook_symbol[k], name) && h->count == HOOK_SITES) {
+            if (!said[k]) LOG("hooks: no site left for %s, which %s matches, and the rest it matches\n", name, hook_symbol[k]);
+            said[k] = 1;
+            continue;
+        }
         hook_put(k, addr, name, verify);
+        if (strcmp(hook_symbol[k], name)) {
+            LOG("hook: %s at %llx runs %s (%s)\n", name, (unsigned long long)addr, hook_handler[k], hook_symbol[k]);
+            continue;
+        }
         if (hook_key[k] == HOOK_ANY || said[k]) {
             LOG("hook: %s at %llx runs %s\n", name, (unsigned long long)addr, hook_handler[k]);
             continue;

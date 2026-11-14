@@ -11,8 +11,25 @@
 #include "common/utilities/common.h"
 #include <stddef.h>
 
-/* whether the list names the symbol */
+/* whether the list names the symbol, or holds a pattern (hookgen's '*') that matches it */
 int snx_hook_routed(const char* name);
+/* whether name matches pattern, whose each '*' matches any run of characters (none too) */
+static inline int snx_hook_glob(const char* pattern, const char* name) {
+    const char *star = NULL, *resume = NULL;
+    while (*name) {
+        if (*pattern == '*')
+            star = ++pattern, resume = name; /* the run starts empty */
+        else if (*pattern == *name)
+            pattern++, name++;
+        else if (star)
+            pattern = star, name = ++resume; /* the last '*' takes one more character */
+        else
+            return 0;
+    }
+    while (*pattern == '*') pattern++;
+    return !*pattern;
+}
+
 /* the symbols, sorted by strcmp */
 size_t snx_hook_route_count(void);
 const char* snx_hook_route_name(size_t index);

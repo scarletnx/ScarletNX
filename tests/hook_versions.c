@@ -6,6 +6,7 @@
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
 #include "hle/hook/hooks.hook.inc"
+#include "nx/loader/hook_routes.h"
 #include <assert.h>
 #include <stdio.h>
 
@@ -25,6 +26,19 @@ void test_exact(CPU* c) {
     (void)c;
     saw("test_exact", NULL);
 }
+void test_vec(CPU* c, u64 self) {
+    (void)c, (void)self;
+    saw("test_vec", NULL);
+}
+void test_vec_int(CPU* c, u64 self) {
+    (void)c, (void)self;
+    saw("test_vec_int", NULL);
+}
+void test_vec_i(CPU* c, u64 self) {
+    (void)c, (void)self;
+    saw("test_vec_i", NULL);
+}
+int test_vec_check(u64 addr) { return addr == 0x1000; }
 void test_gap(CPU* c) {
     (void)c;
     saw("test_gap", NULL);
@@ -77,7 +91,7 @@ static int pick(const char* symbol, u32 sdk, u32 nvn) {
     versions[HOOK_NVN] = nvn;
     k = hook_select(&hook_table, symbol, versions, &first);
     if (k >= 0) {
-        assert(first >= 0 && first <= k && !strcmp(hook_symbol[first], symbol));
+        assert(first >= 0 && first <= k && snx_hook_glob(hook_symbol[first], symbol));
         seen_handler = NULL;
         seen_layout = NULL;
         c.mem = mem;
@@ -97,7 +111,7 @@ int main(void) {
     u32 none[HOOK_KEYS] = {0};
 
     /* the table: by symbol, then by version; lock's first range split at the struct's 9.0.0 */
-    assert(HOOK_COUNT == 10 && HOOK_FAMILIES == 2);
+    assert(HOOK_COUNT == 13 && HOOK_FAMILIES == 2);
     for (i = 1; i < HOOK_COUNT; i++) {
         int order = strcmp(hook_symbol[i - 1], hook_symbol[i]);
         assert(order < 0 || (order == 0 && hook_key[i - 1] == hook_key[i] && hook_hi[i - 1] <= hook_lo[i]));
@@ -174,6 +188,19 @@ int main(void) {
     /* a symbol no entry names */
     assert(hook_select(&hook_table, "missing", none, &first) == -1 && first == -1);
     assert(hook_select(&hook_table, "zzz", none, &first) == -1 && hook_select(&hook_table, "a", none, &first) == -1);
+    /* patterns: an exact entry first, then the first that matches in strcmp order ("vec_*_dtor" < "vec_i*") */
+    assert(snx_hook_glob("a*b*c", "abc") && snx_hook_glob("a*b*c", "axxbyybc") && !snx_hook_glob("a*b*c", "axxbyyb"));
+    assert(snx_hook_glob("*", "") && snx_hook_glob("a**", "a") && !snx_hook_glob("a*", "") && !snx_hook_glob("ab", "a"));
+    assert(HOOK_PATTERNS == 2 && hook_check[hook_patterns[0]] == test_vec_check && !hook_check[hook_patterns[1]]);
+    assert(hook_table.npatterns == 2 && !strcmp(hook_symbol[hook_patterns[0]], "vec_*_dtor"));
+    k = pick("vec_int_dtor", 0, 0);
+    assert(k >= 0 && !strcmp(hook_handler[k], "test_vec_int"));
+    k = pick("vec_ilong_dtor", 0, 0);
+    assert(k >= 0 && !strcmp(hook_handler[k], "test_vec"));
+    k = pick("vec_iota", 0, 0);
+    assert(k >= 0 && !strcmp(hook_handler[k], "test_vec_i"));
+    assert(pick("vec_", 0, 0) == -1);
+    assert(hook_check[k] == NULL && test_vec_check(0x1000) && !test_vec_check(0x2000));
     hook_version_text(text, sizeof text, HOOK_SDK, 0x140516);
     assert(!strcmp(text, "20.5.22"));
     hook_version_text(text, sizeof text, HOOK_SDK, 0);

@@ -93,6 +93,20 @@
    wraps with C code of its own, with no adapter, is named on a line of its own, `route SYMBOL`
    (gpu/nvn/nvn.hook's nvnBootstrapLoader).
 
+   Patterns. A '*' in a hook's symbol matches any run of characters (none too), so that one handler takes every
+   instance of a template that compiles to the same code:
+
+     hook _ZNSt3__113__vector_baseI*NS_9allocatorIS*_EEED2Ev(addr self) = alloc_vector_free check alloc_vector_shape
+
+   A symbol of the game's that a hook names exactly takes that hook; one that none does takes the first pattern, in
+   strcmp order, that matches it. The instances may not all compile alike (an element with a destructor of its own
+   adds a loop), so a pattern names its handler with '=', and may name a check after its uses: `check FN`, a function
+   `int FN(u64 addr)` that the header declares, which hook_install asks about each function the pattern matches,
+   with the function's entry, before it hooks it (0 leaves it to its own code). The table's <prefix>_check gives each
+   entry's (NULL for none), and hook_table's patterns the first entry of each pattern's symbol. A pattern holds for a
+   64-bit program only, and names its route as itself: --routes lists it after the symbols, and the recompiler routes
+   every symbol it matches.
+
    Address hooks. A function of one build of a game, which no symbol names, is hooked by its module's build ID and
    its offset in that module:
 
@@ -223,6 +237,8 @@ typedef struct {
 
 typedef struct {
     char symbol[MAX_NAME], handler[MAX_NAME]; /* an address hook's symbol is its key, BUILDID:OFFSET */
+    char check[MAX_NAME];                     /* its check (check FN), "" for none */
+    int pattern;                              /* its symbol holds a '*' */
     Arg args[MAX_ARGS];
     int nargs, line, family, nuses, pure, nbufs, at;
     int a32; /* FOR_A32_TOO: the declaration holds for a 32-bit program too (the word a32 after it); FOR_A32_ALONE: it
@@ -372,11 +388,13 @@ static const char* skip_space(const char* p) {
     while (*p == ' ' || *p == '\t') p++;
     return p;
 }
-/* a symbol or identifier into buf (letters, digits, _, and the . and $ a symbol may hold): the text after it */
+/* a symbol or identifier into buf (letters, digits, _, the . and $ a symbol may hold, and a pattern's * when what
+   is "symbol"): the text after it */
 static const char* word(const char* p, char* buf, int line, const char* what) {
     size_t n = 0;
+    int star = !strcmp(what, "symbol");
     p = skip_space(p);
-    while (isalnum((unsigned char)*p) || *p == '_' || *p == '.' || *p == '$') {
+    while (isalnum((unsigned char)*p) || *p == '_' || *p == '.' || *p == '$' || (star && *p == '*')) {
         if (n + 1 >= MAX_NAME) fail(line, "the %s is too long", what);
         buf[n++] = *p++;
     }
@@ -811,6 +829,8 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
         if (!is_identifier(h->handler)) fail(line, "'%s' can't name a handler", h->handler);
     } else {
         p = word(p, h->symbol, line, "symbol");
+        h->pattern = strchr(h->symbol, '*') != NULL;
+        if (h->pattern && alone) fail(line, "a pattern holds for a 64-bit program only: drop the a32");
     }
     p = expect(p, "(", line);
     p = skip_space(p);
@@ -847,6 +867,8 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
         if (!is_identifier(h->handler)) fail(line, "'%s' can't name a handler", h->handler);
         if (derived_handler(h->symbol, derived) && !strcmp(derived, h->handler))
             fail(line, "%s is the handler that %s names already: drop '= %s'", h->handler, h->symbol, h->handler);
+    } else if (h->pattern) {
+        fail(line, "a pattern names its handler: give one with '= HANDLER'");
     } else if (!derived_handler(h->symbol, h->handler)) {
         fail(line, "%s names no handler (no capital follows a part in lower case): give one with '= HANDLER'",
              h->symbol);
@@ -873,6 +895,12 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
             p++;
         }
     }
+    if (keyword(p, "check")) {
+        p = word(p + 5, h->check, line, "check");
+        if (!is_identifier(h->check)) fail(line, "'%s' can't name a check", h->check);
+        if (alone) fail(line, "a 32-bit program's hooks have no check: drop it");
+        p = skip_space(p);
+    }
     if (keyword(p, "pure")) {
         if (alone) fail(line, "verify mode checks no hook of a 32-bit program: drop pure");
         h->pure = 1;
@@ -883,6 +911,8 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
         if (h->nuses)
             fail(line, "a hook that holds for a 32-bit program too uses no struct, as a struct's layout is one "
                        "SDK's: declare the 32-bit program's with a32 before hook");
+        if (h->pattern) fail(line, "a pattern holds for a 64-bit program only: drop the a32");
+        if (h->check[0]) fail(line, "a 32-bit program's hooks have no check: drop the a32 or the check");
         h->a32 = FOR_A32_TOO;
         p = skip_space(p + 3);
         if (!strncmp(p, "@version", 8)) p = skip_space(parse_version(p + 8, &h->range32, line));
@@ -942,6 +972,7 @@ static void parse_family(const char* p, int line) {
 static void parse_route(const char* p, int line) {
     if (nroutes == MAX_ROUTES) fail(line, "more than %d route lines", MAX_ROUTES);
     p = word(p, routes[nroutes], line, "symbol");
+    if (strchr(routes[nroutes], '*')) fail(line, "a route line names one symbol: a pattern's hook routes itself");
     if (*skip_space(p)) fail(line, "unexpected text after the symbol");
     route_lines[nroutes++] = line;
 }
@@ -1480,7 +1511,7 @@ static void function_types(void) {
     for (i = 0; i < nhooks; i++) {
         const Hook* h = &hooks[i];
         char name[MAX_NAME];
-        if (h->at || h->a32 == FOR_A32_ALONE) continue;
+        if (h->at || h->pattern || h->a32 == FOR_A32_ALONE) continue;
         if (i && !strcmp(hooks[i - 1].symbol, h->symbol)) continue; /* its other versions take the same types */
         for (k = 0; h->symbol[k]; k++) name[k] = (char)toupper((unsigned char)h->symbol[k]);
         name[k] = 0;
@@ -1512,6 +1543,12 @@ static void write_header(const char* path) {
         for (j = 0; j < i && strcmp(hooks[j].handler, hooks[i].handler); j++) {
         }
         if (j == i) prototype(&hooks[i]);
+    }
+    for (i = 0; i < nhooks; i++) {
+        if (!hooks[i].check[0]) continue;
+        for (j = 0; j < i && strcmp(hooks[j].check, hooks[i].check); j++) {
+        }
+        if (j == i) out("int %s(u64 addr);\n", hooks[i].check);
     }
     if (include_name[0]) function_types();
     out("#endif\n");
@@ -1555,7 +1592,7 @@ static void table_a32(void) {
         out("\",\n");
     }
     out("    0};\n");
-    out("static const HookTable %s32_table = {%s32_COUNT, %s32_symbol, %s32_key, %s32_lo, %s32_hi};\n", prefix, upper,
+    out("static const HookTable %s32_table = {%s32_COUNT, %s32_symbol, %s32_key, %s32_lo, %s32_hi, 0, 0, 0};\n", prefix, upper,
         prefix, prefix, prefix, prefix);
 }
 
@@ -1639,8 +1676,23 @@ static void write_table(const char* path) {
     out("static const char* const %s_family_name[%s_FAMILIES + 1] = {\n", prefix, upper);
     for (i = 0; i < nfamilies; i++) out("    \"%s\",\n", families[i]);
     out("    0};\n");
-    out("static const HookTable %s_table = {%s_COUNT, %s_symbol, %s_key, %s_lo, %s_hi};\n", prefix, upper, prefix,
-        prefix, prefix, prefix);
+    out("/* each entry's check (check FN), NULL for none */\nstatic const HookCheck %s_check[%s_COUNT + 1] = {\n",
+        prefix, upper);
+    for (i = 0; i < nentries; i++)
+        out("    %s,\n", hooks[entries[i].hook].check[0] ? hooks[entries[i].hook].check : "0");
+    out("    0};\n/* the first entry of each pattern's symbol, in strcmp order */\n");
+    for (i = k = 0; i < nentries; i++)
+        k += hooks[entries[i].hook].pattern && (!i || strcmp(hooks[entries[i - 1].hook].symbol,
+                                                             hooks[entries[i].hook].symbol));
+    out("#define %s_PATTERNS %d\nstatic const u16 %s_patterns[%s_PATTERNS + 1] = {\n", upper, k, prefix, upper);
+    for (i = 0; i < nentries; i++)
+        if (hooks[entries[i].hook].pattern &&
+            (!i || strcmp(hooks[entries[i - 1].hook].symbol, hooks[entries[i].hook].symbol)))
+            out("    %d,\n", i);
+    out("    0};\n");
+    out("static const HookTable %s_table = {%s_COUNT, %s_symbol, %s_key, %s_lo, %s_hi, %s_PATTERNS, %s_patterns, "
+        "%s_check};\n",
+        prefix, upper, prefix, prefix, prefix, prefix, upper, prefix, prefix);
     if (a32 == A32_MARKED) table_a32();
     flush(path);
 }
@@ -1684,8 +1736,14 @@ static void write_routes(const char* path, char** specs, int nspecs) {
         "recompiler calls through their dispatch slots. Don't edit */\n");
     out("#define HOOK_ROUTE_COUNT %lu\n", (unsigned long)kept);
     out("static const char* const hook_route_names[HOOK_ROUTE_COUNT + 1] = {\n");
+    for (i = 0; i < kept; i++) out("    \"%s\",\n", names[i]);
+    out("    0};\n/* the patterns among them (a '*' matches any run of characters), by their index */\n");
+    for (i = count = 0; i < kept; i++) count += strchr(names[i], '*') != NULL;
+    out("#define HOOK_ROUTE_PATTERNS %lu\nstatic const unsigned short hook_route_patterns[HOOK_ROUTE_PATTERNS + 1] = "
+        "{\n",
+        (unsigned long)count);
     for (i = 0; i < kept; i++) {
-        out("    \"%s\",\n", names[i]);
+        if (strchr(names[i], '*')) out("    %lu,\n", (unsigned long)i);
         free(names[i]);
     }
     out("    0};\n");

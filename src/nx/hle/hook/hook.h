@@ -29,22 +29,29 @@
    unversioned hook's, which holds for every module. A version of 0 is unknown, and only HOOK_ANY holds for it */
 enum { HOOK_ANY, HOOK_SDK, HOOK_NVN, HOOK_KEYS };
 
+/* a hook's check (hookgen's check FN): whether the function at guest address addr, which the hook's pattern matched,
+   has the shape its handler does the work of; 0 leaves it to its own code */
+typedef int (*HookCheck)(u64 addr);
 /* a generated table (hookgen's <prefix>_table): its entries sorted by symbol and then by version, entry i for the
-   versions [lo[i], hi[i]) of key[i] */
+   versions [lo[i], hi[i]) of key[i]; patterns[0..npatterns) the first entry of each pattern's symbol (a '*' in it),
+   in strcmp order, and check[i] entry i's check or NULL (NULL for a 32-bit program's table) */
 typedef struct {
     u32 count;
     const char* const* symbol;
     const unsigned char* key;
     const u32* lo;
     const u32* hi;
+    u32 npatterns;
+    const u16* patterns;
+    const HookCheck* check;
 } HookTable;
 
 /* the version an SDK middleware label in bytes gives lib ("nnSdk" or "NVN"): the first "SDK MW+<vendor>+<vendor>SDK_"
    (or "...Sdk_") followed by lib, '-' and x_y_z, packed x << 16 | y << 8 | z; 0 when bytes holds none */
 u32 hook_label_version(const u8* bytes, size_t size, const char* lib);
 /* the entry of t for symbol whose versions hold the module's: versions[key] for each key (versions[HOOK_ANY]
-   unused). -1 when t has no entry for symbol, -2 when it has but none holds; *first is the symbol's first entry, or
-   -1 */
+   unused). A symbol no entry names takes the first pattern that matches it. -1 when t has no entry for symbol, -2
+   when it has but none holds; *first is the symbol's (or pattern's) first entry, or -1 */
 int hook_select(const HookTable* t, const char* symbol, const u32 versions[HOOK_KEYS], int* first);
 /* a version of key as the declarations write it (20.5.22, or 55.12 for NVN), "unknown" for 0 */
 void hook_version_text(char* out, size_t n, int key, u32 version);
