@@ -139,19 +139,26 @@ static void line_dropped(u64 addr) {
     hook_restore(addr & ~(u64)63, 64);
 }
 
-int main(int argc, char** argv) {
-    (void)argc;
-#if !defined(__x86_64__) && !defined(_M_X64)
-    (void)argv;
-    printf("hook_invalidated: skipped: the jump is proved on x86_64 alone, and this host is %s\n",
-           snx_hook_jump_host() ? snx_hook_jump_host() : "of no architecture with a jump");
-    return 77;
+/* the host whose jump the test runs; every host compiles the whole test, so that what only it reads is read there */
+#if defined(__x86_64__) || defined(_M_X64)
+#define JUMP_RUNS 1
 #else
+#define JUMP_RUNS 0
+#endif
+
+int main(int argc, char** argv) {
     static CPU c;
-    int answer = entry_of("answer"), copy = entry_of("copy");
+    int answer, copy;
     GuestFn held;
     const u8* adapter;
     unsigned i;
+    (void)argc;
+    if (!JUMP_RUNS) {
+        printf("hook_invalidated: skipped: the jump is proved on x86_64 alone, and this host is %s\n",
+               snx_hook_jump_host() ? snx_hook_jump_host() : "of no architecture with a jump");
+        return 77;
+    }
+    answer = entry_of("answer"), copy = entry_of("copy");
     for (i = 0; i < sizeof slots / sizeof slots[0]; i++) slots[i] = own_code;
     for (i = 0; i < 0x30; i++) guest[CODE + i] = (u8)(0xA0 + i); /* the three functions' code */
     c.mem = guest;
@@ -218,8 +225,9 @@ int main(int argc, char** argv) {
         munmap(p, 4096);
         close(fd);
     }
+#else
+    (void)argv;
 #endif
     printf("hook_invalidated: passed, the warning: %s", warned);
     return 0;
-#endif
 }
