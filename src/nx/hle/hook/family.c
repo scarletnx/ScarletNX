@@ -16,5 +16,7 @@ const char* hook_family_unready(const char* family) {
 #if defined(_WIN32)
     if (!strcmp(family, "libc_str")) return "its handlers take the C library of a POSIX host";
 #endif
+    if (!strcmp(family, "libc_wide") && !libc_wide_ready())
+        return "the host has no 32-bit wchar_t or no UTF-8 locale for its handlers";
     return NULL;
 }

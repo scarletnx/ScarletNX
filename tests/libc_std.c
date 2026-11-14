@@ -78,6 +78,20 @@ int main(void) {
     i32 r0 = libc_rand(c);
     libc_srand(c, 7);
     assert(libc_rand(c) == r0 && r0 >= 0);
+    /* wide strings, 32-bit characters: guest addresses back, and Unicode's classes and case as musl's */
+    if (libc_wide_ready()) {
+        static const u32 w[] = {'h', 'i', 0x4E00, ' ', '4', '2', 0};
+        for (int i = 0; i < 7; i++) snx_st_le32(g_mem + 0x7000 + 4 * i, w[i]);
+        assert(libc_wcslen(c, 0x7000) == 6 && libc_wcschr(c, 0x7000, 0x4E00) == 0x7008);
+        assert(libc_iswalpha(c, 0x4E00) && !libc_iswalpha(c, '4') && libc_towlower(c, 0xC9) == 0xE9);
+        assert(libc_towupper(c, 0x3B1) == 0x391); /* Greek alpha */
+        assert(libc_wcstol(c, 0x7010, 0x7100, 10) == 42 && snx_ld_le64(g_mem + 0x7100) == 0x7018);
+        static const u32 a[] = {'A', 0xC9, 0}, b[] = {'a', 0xE9, 0};
+        for (int i = 0; i < 3; i++) snx_st_le32(g_mem + 0x7200 + 4 * i, a[i]), snx_st_le32(g_mem + 0x7300 + 4 * i, b[i]);
+        assert(libc_wcscasecmp(c, 0x7200, 0x7300) == 0 && libc_wcscmp(c, 0x7200, 0x7300) < 0);
+    } else
+        puts("SKIP the wide functions: no UTF-8 locale on this host");
+    assert(libc_fpclassifyf(c, 0.0f) == 2 && libc_fpclassifyf(c, 1.0f) == 4 && libc_fpclassifyf(c, __builtin_nanf("")) == 0);
     puts("PASS the C library's string, number and sorting functions on guest memory");
     return 0;
 }

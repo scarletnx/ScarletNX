@@ -245,7 +245,6 @@ int main(void) {
 }
 
 /* the alloc and sync families' handlers (alloc.c, sync.c), which the table names and this test never calls */
-int alloc_ready(void) { return 0; }
 u64 alloc_malloc(CPU* c, u64 size) { (void)c, (void)size; return 0; }
 u64 alloc_calloc(CPU* c, u64 n, u64 size) { (void)c, (void)n, (void)size; return 0; }
 u64 alloc_realloc(CPU* c, u64 p, u64 size) { (void)c, (void)p, (void)size; return 0; }

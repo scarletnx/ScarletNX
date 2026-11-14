@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The C library's functions a game imports from its SDK (hooks.hook's libc_str family), run by the host's C library on
    guest memory: the string and memory functions, the character classes, the conversions of numbers, abs and div, the
-   floating point helpers, the byte order of the network, the pseudo-random numbers, qsort and bsearch. A function
+   floating point helpers (__fpclassifyf with musl's numbers, the SDK's C library being musl's), the byte order of the
+   network, the pseudo-random numbers, qsort and bsearch. A function
    that returns a pointer into its argument returns the guest address of the same byte; one that sets errno sets the
    guest's, which __errno_location, the SDK's own, finds for the calling thread.
 
@@ -76,7 +77,7 @@ static size_t lcat(char* d, const char* s, size_t n) {
 #define GN(p) ((p) ? G(p) : 0)
 
 /* errno of the calling guest thread, through the SDK's __errno_location: e when it is set, otherwise nothing */
-static void set_errno(CPU* c, int e) {
+void libc_set_errno(CPU* c, int e) {
     static u64 fn;
     if (!e) return;
     if (!fn) fn = kernel_find_symbol_exact("__errno_location");
@@ -185,7 +186,7 @@ f64 libc_atof(CPU* c, u64 s) { return atof(S(s)); }
         char* e;                                                                                                       \
         errno = 0;                                                                                                     \
         T v = (T)call(S(s), &e, base);                                                                                 \
-        set_errno(c, errno);                                                                                           \
+        libc_set_errno(c, errno);                                                                                           \
         if (end) snx_st_le64(hook_host(c, end), G(e));                                                                 \
         return v;                                                                                                      \
     }
@@ -198,7 +199,7 @@ f64 libc_strtod(CPU* c, u64 s, u64 end) {
     char* e;
     errno = 0;
     f64 v = strtod(S(s), &e);
-    set_errno(c, errno);
+    libc_set_errno(c, errno);
     if (end) snx_st_le64(hook_host(c, end), G(e));
     return v;
 }
@@ -206,7 +207,7 @@ f32 libc_strtof(CPU* c, u64 s, u64 end) {
     char* e;
     errno = 0;
     f32 v = strtof(S(s), &e);
-    set_errno(c, errno);
+    libc_set_errno(c, errno);
     if (end) snx_st_le64(hook_host(c, end), G(e));
     return v;
 }
@@ -265,6 +266,19 @@ f64 libc_modf(CPU* c, f64 v, u64 ip) {
     memcpy(&bits, &i, 8);
     snx_st_le64(hook_host(c, ip), bits);
     return r;
+}
+
+/* musl's fpclassify values (FP_NAN 0, FP_INFINITE 1, FP_ZERO 2, FP_SUBNORMAL 3, FP_NORMAL 4), which other C
+   libraries number otherwise */
+i32 libc_fpclassifyf(CPU* c, f32 v) {
+    (void)c;
+    switch (fpclassify(v)) {
+        case FP_NAN: return 0;
+        case FP_INFINITE: return 1;
+        case FP_ZERO: return 2;
+        case FP_SUBNORMAL: return 3;
+        default: return 4;
+    }
 }
 
 /* ---- the network's byte order, big-endian, from the guest's little-endian */

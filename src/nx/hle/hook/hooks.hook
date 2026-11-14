@@ -105,6 +105,7 @@ hook htonl(u32 v) -> u32 = libc_htonl
 hook ntohl(u32 v) -> u32 = libc_htonl
 hook htons(u32 v) -> u32 = libc_htons
 hook ntohs(u32 v) -> u32 = libc_htons
+hook __fpclassifyf(f32 v) -> i32 = libc_fpclassifyf
 hook rand() -> i32 = libc_rand
 hook srand(u32 seed) = libc_srand
 hook rand_r(addr seed) -> i32 = libc_rand_r
@@ -112,6 +113,45 @@ hook lrand48() -> i64 = libc_lrand48
 hook srand48(i64 seed) = libc_srand48
 hook qsort(addr base, u64 n, u64 size, addr compare) = libc_qsort
 hook bsearch(addr key, addr base, u64 n, u64 size, addr compare) -> addr = libc_bsearch
+
+# the C library's wide string functions (libc_wide.c): the host's, on guest memory, the character classes and case
+# Unicode's as the SDK's musl has them. Off where the host's wchar_t isn't 32 bits or it has no UTF-8 locale
+family libc_wide
+hook wcslen(addr s) -> u64 = libc_wcslen
+hook wcsnlen(addr s, u64 n) -> u64 = libc_wcsnlen
+hook wcscmp(addr a, addr b) -> i32 = libc_wcscmp
+hook wcsncmp(addr a, addr b, u64 n) -> i32 = libc_wcsncmp
+hook wcscasecmp(addr a, addr b) -> i32 = libc_wcscasecmp
+hook wcscpy(addr dst, addr src) -> addr = libc_wcscpy
+hook wcsncpy(addr dst, addr src, u64 n) -> addr = libc_wcsncpy
+hook wcscat(addr dst, addr src) -> addr = libc_wcscat
+hook wcsncat(addr dst, addr src, u64 n) -> addr = libc_wcsncat
+hook wcschr(addr s, u32 wc) -> addr = libc_wcschr
+hook wcsrchr(addr s, u32 wc) -> addr = libc_wcsrchr
+hook wcsstr(addr s, addr sub) -> addr = libc_wcsstr
+hook wcstok(addr s, addr delim, addr save) -> addr = libc_wcstok
+hook wmemchr(addr s, u32 wc, u64 n) -> addr = libc_wmemchr
+hook wmemcmp(addr a, addr b, u64 n) -> i32 = libc_wmemcmp
+hook wmemcpy(addr dst, addr src, u64 n) -> addr = libc_wmemcpy
+hook wmemmove(addr dst, addr src, u64 n) -> addr = libc_wmemmove
+hook wmemset(addr dst, u32 wc, u64 n) -> addr = libc_wmemset
+hook iswalnum(u32 wc) -> i32 = libc_iswalnum
+hook iswalpha(u32 wc) -> i32 = libc_iswalpha
+hook iswdigit(u32 wc) -> i32 = libc_iswdigit
+hook iswgraph(u32 wc) -> i32 = libc_iswgraph
+hook iswlower(u32 wc) -> i32 = libc_iswlower
+hook iswprint(u32 wc) -> i32 = libc_iswprint
+hook iswspace(u32 wc) -> i32 = libc_iswspace
+hook iswupper(u32 wc) -> i32 = libc_iswupper
+hook iswxdigit(u32 wc) -> i32 = libc_iswxdigit
+hook towlower(u32 wc) -> u32 = libc_towlower
+hook towupper(u32 wc) -> u32 = libc_towupper
+hook wcstol(addr s, addr end, i32 base) -> i64 = libc_wcstol
+hook wcstoul(addr s, addr end, i32 base) -> u64 = libc_wcstoul
+hook wcstoll(addr s, addr end, i32 base) -> i64 = libc_wcstoll
+hook wcstoull(addr s, addr end, i32 base) -> u64 = libc_wcstoull
+hook wcstod(addr s, addr end) -> f64 = libc_wcstod
+hook wcstof(addr s, addr end) -> f32 = libc_wcstof
 
 # the C and C++ libraries' allocation functions (alloc.c): the host's jemalloc, in an arena of its own whose pages are
 # guest memory. A pointer the arena didn't make goes to the function's own code. Off without jemalloc, and in a game
