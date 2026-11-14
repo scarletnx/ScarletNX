@@ -210,6 +210,8 @@ static void run_held(u32 k) {
     test_held_fn[k](test_held[k]);
     test_on_gpu = 0;
 }
+/* a present goes to the renderer through the same queue: the test sees it as a call of the GPU thread */
+void gpu_call_renderer(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) { gpu_call(fn, arg, chans, nchans); }
 void gpu_channel_close(u32 channel) { test_gpu.closed_channel = channel; }
 void gpu_release_retire(u32 channel) { (void)channel; }
 int gpu_release_wait(u32 id, u32 thresh, int block) {
