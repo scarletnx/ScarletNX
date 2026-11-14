@@ -58,6 +58,10 @@ typedef struct {
 
 /* after the device is made. bda: buffers may take device addresses */
 int vk_devmem_init(int bda);
+/* a block of size bytes held back for render targets, of a memory type in type_bits (an image's), taken only between
+   vk_devmem_reserve_use(1) and (0) */
+void vk_devmem_reserve(u64 size, u32 type_bits);
+void vk_devmem_reserve_use(int on);
 const VkPhysicalDeviceMemoryProperties* vk_devmem_props(void);
 
 /* memory for req. *info, when not NULL, says where it is */
