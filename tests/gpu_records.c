@@ -356,6 +356,8 @@ static int split_main(void) {
 }
 
 int main(int argc, char** argv) {
+    /* the draws are set up on the renderer thread unless a setting turns it off */
+    CHECK(g_settings.gpu_split == 1, "gpu_split is %d by default, not 1", g_settings.gpu_split);
     if (argc > 1 && !strcmp(argv[1], "split")) return split_main();
     g_settings.gpu_split = 0; /* the records run on this thread, as they are queued */
     test_copy();
