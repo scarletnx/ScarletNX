@@ -562,6 +562,11 @@ if(TARGET snx_ctr_board)
     add_executable(snx-test-3ds-windows 3ds_windows.c)
     snx_test_target(snx-test-3ds-windows 11)
     target_link_libraries(snx-test-3ds-windows PRIVATE snx_ctr_gpu)
+    # the one window's screen layouts: the rectangles for each, the pure geometry the presenter uses
+    add_executable(snx-test-3ds-layouts 3ds_layouts.c)
+    snx_test_target(snx-test-3ds-layouts 11)
+    target_link_libraries(snx-test-3ds-layouts PRIVATE snx_ctr_gpu)
+    add_test(NAME 3ds_layouts COMMAND snx-test-3ds-layouts)
     add_test(NAME 3ds_windows COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames")
     add_test(NAME 3ds_windows_separate
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-separate" --separate)

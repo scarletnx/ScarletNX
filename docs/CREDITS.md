@@ -73,6 +73,7 @@ a source keep that source's copyright lines and license, most with the revision 
 | `src/nx/runtime/driver/hactool/storage.c` and `storage.h` (the storages added to hactool) | LibHac, as Ryubing maintains it | MIT |
 | `src/nx/hle/filesystem/fs.c` (a save's commit: its last commit and working copy in the save's folder, the commit by two renames, the open that finishes a commit cut short) | LibHac's reading of the console's class (`FsSystem/DirectorySaveDataFileSystem.cs`, nnSdk 14.3.0), as Hyjinx carries it; none of its code | MIT |
 | `src/3ds/gpu/`, `src/3ds/audio/`, `src/3ds/services/dsp.c`, `src/3ds/services/cfg.c` (the config blocks' defaults), `src/3ds/services/hid.c` (HID's samples, their layout and pace) | Azahar (Citra) | GPL-2.0-or-later |
+| `src/3ds/gpu/present.c` (`snx_ctr_layout_rects`) | Azahar (Citra) at `11eceda5`; none of its code | GPL-2.0-or-later |
 | `src/3ds/services/fs.c` (another title's save data: the path's media and program ID, and the folder they name) | Azahar (Citra) at `6e42de8` (`core/file_sys/archive_other_savedata.cpp` and `archive_source_sd_savedata.cpp`; original code copyright 2014 to 2024 Citra Emulator Project / Azahar Emulator Project) | GPL-2.0-or-later |
 | `src/3ds/services/ldr.c` and `ldr.h` (ldr:ro), `cro.c` and `cro.h` (the CRO format, its relocations, imports and exports) | Azahar (Citra) at `a4b335e`: `src/core/hle/service/ldr_ro/ldr_ro.cpp` and `ldr_ro.h`, `cro_helper.cpp` and `cro_helper.h`; original code copyright 2014 to 2025 Citra Emulator Project / Azahar Emulator Project | GPL-2.0-or-later |
 | `src/3ds/services/font.c` (APT's shared font: the LZ11 decompression, the CFNT relocation and the address it is relocated to) | Azahar (Citra) at `a4b335e` (`core/hle/service/apt/apt.cpp`, `core/hle/service/apt/bcfnt/bcfnt.cpp`) | GPL-2.0-or-later |
@@ -129,6 +130,10 @@ a source keep that source's copyright lines and license, most with the revision 
 | The files of `src/android/framework/` whose header names the Android Open Source Project (exception messages, and parts of method bodies) | The Android Open Source Project's source of the same classes, as the Android SDK's sources for API level 36 carry it | Apache 2.0 ([text](../dist/licenses/AOSP/LICENSE.txt), [notice](../dist/licenses/AOSP/NOTICE.txt)) |
 | `src/android/framework/android/icu/text/PluralRules.java` (each language's cardinal plural rules) | Unicode CLDR (`common/supplemental/plurals.xml`, version 47, as OpenJDK carries it) | Unicode License v3 ([text](../dist/licenses/Unicode/LICENSE.txt)) |
 | `src/android/framework/org/xmlpull/v1/XmlPullParserException.java` (the message its constructor makes) | XmlPull's API (Stefan Haustein and Aleksander Slominski), as the Android Open Source Project carries it | Public domain |
+
+The one window's screen layouts in `src/3ds/gpu/present.c` (`snx_ctr_layout_rects`) follow Azahar's
+`LargeFrameLayout` and LayoutOption order at `11eceda5`, in `src/core/frontend/framebuffer_layout.cpp` (the large
+and side layouts) and `src/common/settings.h` (`LayoutOption`, `large_screen_proportion`).
 
 Dynarmic (0BSD) and its GPL-3.0-or-later fork were consulted for the recompiler's instruction semantics. No code was
 ported from them.

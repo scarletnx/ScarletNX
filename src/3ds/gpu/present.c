@@ -2,10 +2,10 @@
    Copyright 2026 the ScarletNX contributors
    The shown framebuffers, on the 3DS's Vulkan device (vk/device.c): a compute shader (vk/shaders/present.comp)
    reads each one where the guest has it in RAM, decodes it and turns it to the console's landscape screen in an
-   image, and the window's swapchain shows both screens, the top one above the bottom one as on the console, each
-   keeping its shape (frame_layout). With separate screens each one has its own window and fills it. Nothing of the
-   frame passes through the CPU. The frame dumps (the first eight, then each screen's latest about once a second, in
-   frame_dir) and the tests' hashes are the one readback: the shader writes those frames' RGBA pixels to a
+   image, and the window's swapchain shows the screens in the arrangement ctr_screen_layout picks, each keeping its
+   shape, the top one above the bottom one by default. With separate screens each one has its own window and fills it.
+   Nothing of the frame passes through the CPU. The frame dumps (the first eight, then each screen's latest about once
+   a second, in frame_dir) and the tests' hashes are the one readback: the shader writes those frames' RGBA pixels to a
    host-visible buffer as well, and a latest dump is written once the GPU is done, without a wait for it. The 3DS framebuffer is 240x400/320 portrait, one 240-pixel row per screen column from
    the left, each row from the bottom of the screen up (libctru's console draws pixel (x, y) at x * 240 + 239 - y);
    the window and the dumps show it that way round. A 3D render scaled by its screen's resolution setting is drawn
@@ -35,6 +35,9 @@
 #include <string.h>
 
 #define MAX_SIDE 1024u /* the largest framebuffer side presented */
+/* The large-screen layout's small screen, a quarter of its own size: Azahar's large_screen_proportion, four by default
+   (src/common/settings.h at 11eceda5) */
+#define LARGE_SCREEN_PROPORTION 4u
 
 typedef struct {
     VkImage image;
@@ -353,10 +356,86 @@ static void write_pending(bool wait) {
     g_present.pending.active = false;
     write_ppm(g_present.pending.screen, g_present.pending.width, g_present.pending.height, g_present.readback_view);
 }
-/* The blit rectangle of a screen in swapchain pixels: in one window the pair scaled to fit and centred, each screen
-   centred across the layout; in its own window the screen scaled to fit and centred. The layout takes each screen at
-   the console's size (its frame's size over its render scale), so screens at different scales keep the console's
-   proportions. False before a layout and a swapchain exist. */
+/* a screen's rectangle in the window's pixels: its top left corner and its size, truncated to whole pixels */
+static void set_rect(SnxCtrRect* r, double x, double y, double width, double height) {
+    *r = (SnxCtrRect){(int32_t)x, (int32_t)y, (int32_t)width, (int32_t)height};
+}
+/* no rectangle for a screen that has not presented (present.h's contract) */
+static void shown_rects(SnxCtrRects* rects, const bool shown[2]) {
+    if (!shown[0]) rects->top = (SnxCtrRect){0};
+    if (!shown[1]) rects->bottom = (SnxCtrRect){0};
+}
+bool snx_ctr_layout_rects(SnxCtrLayout layout, bool swap, uint32_t window_width, uint32_t window_height,
+                          SnxCtrScreens screens, SnxCtrRects* rects) {
+    if (!window_width || !window_height) return false;
+    rects->top = rects->bottom = (SnxCtrRect){0};
+    /* A screen with no frame has no size: it takes the console's size in the layout and gets no rectangle, so the
+       other one keeps the place both leave it, and the window does not go black while it has no frame */
+    const SnxCtrScreens console = {400, 240, 320, 240};
+    bool shown[2] = {screens.top_width && screens.top_height, screens.bottom_width && screens.bottom_height};
+    if (!shown[0]) screens.top_width = console.top_width;
+    if (!shown[0]) screens.top_height = console.top_height;
+    if (!shown[1]) screens.bottom_width = console.bottom_width;
+    if (!shown[1]) screens.bottom_height = console.bottom_height;
+    /* the settings' range keeps to the four (ini_read clamps); another caller's value is shown stacked */
+    if ((unsigned)layout >= SNX_CTR_LAYOUT_COUNT) layout = SNX_CTR_LAYOUT_STACKED;
+    if (layout == SNX_CTR_LAYOUT_SINGLE) {
+        /* the one screen, the top or with the swap the bottom, scaled to fit and centred */
+        uint32_t width = swap ? screens.bottom_width : screens.top_width;
+        uint32_t height = swap ? screens.bottom_height : screens.top_height;
+        double scale = (double)window_width / width < (double)window_height / height ? (double)window_width / width
+                                                                                     : (double)window_height / height;
+        set_rect(swap ? &rects->bottom : &rects->top, (window_width - width * scale) / 2,
+                 (window_height - height * scale) / 2, width * scale, height * scale);
+        shown_rects(rects, shown);
+        return true;
+    }
+    if (layout == SNX_CTR_LAYOUT_STACKED) {
+        /* one above the other in a box the wider screen's width by both heights, the box scaled to fit and centred,
+           each screen centred across it */
+        uint32_t width = snx_max_u32(screens.top_width, screens.bottom_width);
+        uint32_t height = screens.top_height + screens.bottom_height;
+        double scale = (double)window_width / width < (double)window_height / height ? (double)window_width / width
+                                                                                     : (double)window_height / height;
+        double x = (window_width - width * scale) / 2, y = (window_height - height * scale) / 2;
+        set_rect(&rects->top, x + (width - screens.top_width) * scale / 2, swap ? y + screens.bottom_height * scale : y,
+                 screens.top_width * scale, screens.top_height * scale);
+        set_rect(&rects->bottom, x + (width - screens.bottom_width) * scale / 2,
+                 swap ? y : y + screens.top_height * scale, screens.bottom_width * scale,
+                 screens.bottom_height * scale);
+        shown_rects(rects, shown);
+        return true;
+    }
+    /* The large screen and the side-by-side pair after Azahar's LargeFrameLayout at 11eceda5
+       (src/core/frontend/framebuffer_layout.cpp, GPL-2.0-or-later): the large screen at the console's size and the
+       small one at a quarter of its own size make one box, scaled to fit the window and centred, the large one at
+       the box's left and the small one touching it at the right, centred vertically on it (Azahar's MiddleRight).
+       Side by side gives the small one its whole size. A narrow or a tall window still leaves a rectangle for each */
+    uint32_t proportion = layout == SNX_CTR_LAYOUT_LARGE ? LARGE_SCREEN_PROPORTION : 1u;
+    uint32_t large_width = swap ? screens.bottom_width : screens.top_width;
+    uint32_t large_height = swap ? screens.bottom_height : screens.top_height;
+    uint32_t small_width = swap ? screens.top_width : screens.bottom_width;
+    uint32_t small_height = swap ? screens.top_height : screens.bottom_height;
+    double box_width = large_width + (double)small_width / proportion;
+    double scale = (double)window_width / box_width < (double)window_height / large_height
+                       ? (double)window_width / box_width
+                       : (double)window_height / large_height;
+    double x = (window_width - box_width * scale) / 2, y = (window_height - large_height * scale) / 2;
+    double large_px_width = large_width * scale, large_px_height = large_height * scale;
+    double small_px_width = small_width * scale / proportion, small_px_height = small_height * scale / proportion;
+    SnxCtrRect large, small;
+    set_rect(&large, x, y, large_px_width, large_px_height);
+    set_rect(&small, large.x + large.width, y + (large_px_height - small_px_height) / 2, small_px_width,
+             small_px_height);
+    rects->top = swap ? small : large;
+    rects->bottom = swap ? large : small;
+    shown_rects(rects, shown);
+    return true;
+}
+/* The blit rectangle of a screen in swapchain pixels: in one window the layout's (snx_ctr_layout_rects), in its own
+   window the screen scaled to fit and centred. The layout takes each screen at the console's size, its frame's size
+   over its render scale. False before a layout and a swapchain exist, and for a screen the layout leaves no rectangle:
+   the hidden one, or one with no frame yet */
 static bool screen_rect(unsigned screen, VkOffset2D rect[2]) {
     const Frame* frames = g_present.frames;
     uint32_t width[2], height[2];
@@ -376,15 +455,15 @@ static bool screen_rect(unsigned screen, VkOffset2D rect[2]) {
         rect[1] = (VkOffset2D){(int32_t)(x + width[screen] * scale), (int32_t)(y + height[screen] * scale)};
         return true;
     }
-    uint32_t layout_w = snx_max_u32(width[0], width[1]);
-    uint32_t layout_h = height[0] + height[1];
-    if (!layout_w || !layout_h || !e.width || !e.height) return false;
-    double scale = (double)e.width / layout_w < (double)e.height / layout_h ? (double)e.width / layout_w
-                                                                            : (double)e.height / layout_h;
-    double x = (e.width - layout_w * scale) / 2 + (layout_w - width[screen]) * scale / 2;
-    double y = (e.height - layout_h * scale) / 2 + (screen ? height[0] * scale : 0);
-    rect[0] = (VkOffset2D){(int32_t)x, (int32_t)y};
-    rect[1] = (VkOffset2D){(int32_t)(x + width[screen] * scale), (int32_t)(y + height[screen] * scale)};
+    SnxCtrScreens screens = {width[0], height[0], width[1], height[1]};
+    SnxCtrRects rects = {0};
+    if (!snx_ctr_layout_rects((SnxCtrLayout)g_settings.ctr_screen_layout, g_settings.ctr_screen_swap != 0, e.width,
+                              e.height, screens, &rects))
+        return false;
+    const SnxCtrRect* r = screen ? &rects.bottom : &rects.top;
+    if (r->width <= 0 || r->height <= 0) return false;
+    rect[0] = (VkOffset2D){r->x, r->y};
+    rect[1] = (VkOffset2D){r->x + r->width, r->y + r->height};
     return true;
 }
 /* The touch screen's pixel under a pointer at x and y, in the window's points as SDL reports them. The blit's own scale
@@ -491,10 +570,34 @@ static void shortcut(int which, SDL_WindowID window) {
     fprintf(stderr, "3ds gpu: %s, for this run\n", text);
     notice(text, window);
 }
+/* The one window's step for this run, said as a shortcut's is: the screen layout round its four (shift 0), the
+   screens' swap on and off (shift 1); with separate screens neither changes, and the line says so */
+static void layout_step(bool shift, SDL_WindowID window) {
+    char text[64], word[32];
+    if (g_present.separate) {
+        snprintf(text, sizeof text, "Separate screens: no layout to change");
+        fprintf(stderr, "3ds gpu: %s\n", text);
+        notice(text, window);
+        return;
+    }
+    if (shift) {
+        g_settings.ctr_screen_swap = !g_settings.ctr_screen_swap;
+        ini_word(ini_find(g_ctr_display_ini, "ctr_screen_swap"), g_settings.ctr_screen_swap, word, sizeof word);
+        snprintf(text, sizeof text, "Screen swap: %s", word);
+    } else {
+        if (++g_settings.ctr_screen_layout >= (int)SNX_CTR_LAYOUT_COUNT)
+            g_settings.ctr_screen_layout = SNX_CTR_LAYOUT_STACKED;
+        ini_word(ini_find(g_ctr_display_ini, "ctr_screen_layout"), g_settings.ctr_screen_layout, word, sizeof word);
+        snprintf(text, sizeof text, "Screen layout: %s%s", word, g_settings.ctr_screen_swap ? " (swapped)" : "");
+    }
+    fprintf(stderr, "3ds gpu: %s, for this run\n", text);
+    notice(text, window);
+}
 /* The window's own keys, as a Switch game's (backend/sdl3.c): F11, or Alt+Enter, switches the window it is pressed in
-   to fullscreen and back, F4 turns the FPS limit off and back on (board/clock.h), Esc twice closes it, a first one
-   warning on the terminal and over the game, and the upscaler's and the anti-aliasing's shortcuts step them; none
-   else with Ctrl or the system key, the desktop's, nor F4 or Esc with Alt */
+   to fullscreen and back, F4 turns the FPS limit off and back on (board/clock.h), Ctrl+F3 steps the one window's screen
+   layout and Ctrl+Shift+F3 turns the screens' swap on and off, Esc twice closes it, a first one warning on the terminal
+   and over the game, and the upscaler's and the anti-aliasing's shortcuts step them; none else with Ctrl or the
+   system key, the desktop's, nor F4 or Esc with Alt */
 static void key_event(const SDL_Event* event) {
     int also, which;
     if (event->type != SDL_EVENT_KEY_DOWN || event->key.repeat) return;
@@ -508,8 +611,13 @@ static void key_event(const SDL_Event* event) {
         shortcut(which, event->key.windowID);
         return;
     }
-    if (event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) return;
     bool alt = event->key.mod & SDL_KMOD_ALT;
+    /* the layout's: the one key a Ctrl reaches, while plain F3 is left alone */
+    if (event->key.key == SDLK_F3 && !alt && (event->key.mod & SDL_KMOD_CTRL) && !(event->key.mod & SDL_KMOD_GUI)) {
+        layout_step((event->key.mod & SDL_KMOD_SHIFT) != 0, event->key.windowID);
+        return;
+    }
+    if (event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) return;
     SDL_Window* window = SDL_GetWindowFromID(event->key.windowID);
     if (event->key.key == SDLK_ESCAPE && !alt) {
         if (snx_quit_press(&g_present.quit_by, SDL_GetTicksNS()))
@@ -563,10 +671,9 @@ static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, 
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0,
                          NULL, 1, &b);
 }
-/* The window's picture: in one window the top screen above the bottom one, which is centred under it (400 and 320
-   pixels wide, 240 high), the pair scaled as one to fit the swapchain's image and centred in it, the rest black; in
-   separate windows this screen alone, scaled to fit and centred. Scaled through the upscaler and the anti-aliasing
-   where either is on (slot: the recording's), else in sharp pixels */
+/* The window's picture: in one window both screens where the layout puts them (snx_ctr_layout_rects), the rest black;
+   in separate windows this screen alone, scaled to fit and centred. Each screen is drawn in its rectangle through its
+   upscaler and anti-aliasing where either is on (slot: the recording's), else in sharp pixels */
 static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen, unsigned slot) {
     image_barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkClearColorValue black = {.float32 = {0, 0, 0, 1}};

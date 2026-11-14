@@ -635,9 +635,12 @@ board FCRAM past the application pool.
 
 Presentation is **Vulkan only** (volk, with no linked Vulkan library):
 the device converts the guest framebuffers to RGBA8 and shows the landscape-
-rotated screens live in an SDL3 Vulkan window through a real swapchain, the top
-screen above the bottom one as on the console, the bottom one centred under it.
-The pair keeps its shape in a window of any size. The 3DS display's Separate
+rotated screens live in an SDL3 Vulkan window through a real swapchain, in the
+arrangement the 3DS display's Screen layout setting picks: the top screen above
+the bottom one as on the console, one screen alone, the large screen at the left
+with the other at its right at a quarter of that screen's own size, or side by side, each screen
+keeping its shape in a window of any size. Screen swap trades the screens' places,
+and picks the bottom screen in the one-screen layout. The 3DS display's Separate
 screens setting gives each screen a window of its own instead, which fills with
 that screen. Top screen resolution and Bottom screen resolution scale the 3D
 rendering of that screen, 1 to 16 times the console's 400x240 and 320x240, and
@@ -649,22 +652,29 @@ its pixels is shown from memory. The Switch's `vsync` picks how the
 window shows its images, as for a Switch game: `1` each at the display's refresh
 (FIFO), `0` the newest at the next refresh (mailbox) or at once (immediate), and the
 run says at start which it got. Its `fullscreen=1` starts the window fullscreen (the
-top screen's, with Separate screens), but for a `--seconds` or `--max-blocks` run,
-and F11 or Alt+Enter switches the window it is pressed in, as on the Switch;
+top screen's, with Separate screens), but for a `--seconds` or `--max-blocks` run.
+F11 or Alt+Enter switches the window it is pressed in, as on the Switch.
+Ctrl+F3 and Ctrl+Shift+F3 pick the one window's screen layout and the screens' swap.
 Alt+Enter does not press Start. Esc twice within 3 seconds closes the game, a first
 press warning on the terminal and in a line over the game, as a Switch game's notices show. The Switch's
-`hotkey_upscaler` (Ctrl+U) and `hotkey_anti_aliasing` (Ctrl+Shift+A) step the upscaler and the anti-aliasing for the
-run in the window they are pressed in, the new mode said there too. The Switch's `anisotropy` (2 to 16) filters a
-mipmapped texture the game filters linearly anisotropically, held to the device's most,
-and the run says at start the value in effect. Bounded PPM snapshots land in
-`<output>/frames` in every mode. Without a display the window path is
-unavailable and frames are only recorded; without a Vulkan device the presenter
-reports unavailability and no frame is fabricated.
+`hotkey_upscaler` (Ctrl+U) and `hotkey_anti_aliasing` (Ctrl+Shift+A) step the
+upscaler and the anti-aliasing for the run in the window they are pressed in,
+the new mode said there too, and either set to Ctrl+F3 or Ctrl+Shift+F3 wins
+that key from the layout. The Switch's `anisotropy` (2 to 16) filters a
+mipmapped texture the game filters linearly anisotropically, held to the
+device's most, and the run says at start the value in effect. Bounded PPM
+snapshots land in `<output>/frames` in every mode. Without a display the
+window path is unavailable and frames are only recorded; without a Vulkan
+device the presenter reports unavailability and no frame is fabricated.
 
 The separate windows and the two render resolutions are checked by `3ds_windows`: each
 screen takes its own setting's scale and no other's, both screens present, and the PPM
 dumps stay the framebuffer's own size whatever the scale. With Separate screens on, that
 test fails unless both windows present, and it skips where the host makes no window (CI).
+The one window's layouts are checked headless by `3ds_layouts`: every layout and the swap
+at 480x400, and a narrow window and a wide one where both screens still get a rectangle of
+their console's shape inside the window and over no part of the other, with a value
+past the four shown as stacked.
 A window minimized and restored gets its swapchain back, checked by `3ds_windows_minimized`
 (it skips where the host keeps the swapchain or does not minimize). On Windows a minimized
 window's surface is 0x0 and no swapchain can be made at that size, so the first frame after
