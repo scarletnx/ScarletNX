@@ -1283,9 +1283,9 @@ setting Native cond var
     default 1
     startup
     words Off|On
-    help 1 = the game's std::condition_variable and std::mutex wait on the host's own (hle/hook/hooks.hook's cond_var
-    help family), and save states are refused, as a state can't hold a thread waiting there. 0 = the game's own code
-    help waits, and save states can be taken and loaded
+    help 1 = the game's std::condition_variable, std::mutex and std::recursive_mutex wait on the host's own
+    help (hle/hook/hooks.hook's cond_var family), and save states are refused, as a state can't hold a thread waiting
+    help there. 0 = the game's own code waits, and save states can be taken and loaded
 setting Shader corpus
     key shader_corpus
     text 1024

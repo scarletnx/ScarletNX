@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* native_cond_var (src/nx/hle/hook/family.c, hook.c) over tests/hook/states.hook, with the runtime stubbed: at 1 the
    cond_var family's functions take its handlers and save states are refused with a message that names the setting
-   and its value; at 0 they keep their own code and states may be taken. hooks_off naming the family, or the game
-   changing the hooked function's code, leaves the game's wait too */
+   and its value; at 0 they keep their own code (the recursive mutex's with the condition variable's) and states may
+   be taken. hooks_off naming the family, or the game changing every hooked function's code, leaves the game's too */
 #include "nx/hle/hook/hook.c"
 #include "nx/hle/hook/family.c"
 #include <assert.h>
@@ -12,7 +12,9 @@
 #define CODE 0x1000u
 #define LOCK (CODE + 0x00)
 #define WAIT (CODE + 0x10)
+#define NOW  (CODE + 0x20)
 
+i64 test_now(CPU* c) { return (void)c, 0; }
 void test_lock(CPU* c, u64 m) { (void)c, (void)m; }
 void test_wait(CPU* c, u64 cv) { (void)c, (void)cv; }
 
@@ -25,7 +27,7 @@ static GuestFn slots[0x400];
 static const struct {
     const char* name;
     u64 addr;
-} symbols[] = {{"lock", LOCK}, {"wait", WAIT}};
+} symbols[] = {{"lock", LOCK}, {"wait", WAIT}, {"now", NOW}};
 int kernel_symbol(u32 i, u64* addr, const char** name) {
     if (i >= sizeof symbols / sizeof symbols[0]) return 0;
     *addr = symbols[i].addr, *name = symbols[i].name;
@@ -82,7 +84,8 @@ int alloc_ready(void) { return 0; }
 int libc_wide_ready(void) { return 0; }
 
 /* hook_install over fresh slots, with native_cond_var and hooks_off as given; 1 when the condition variable's
-   function took its hook */
+   function took its hook, which the recursive mutex's follows: a mutex the host holds is out of a state as a wait on
+   the host is */
 static int install(int native, const char* off) {
     unsigned i;
     memset(&g_host, 0, sizeof g_host);
@@ -91,7 +94,8 @@ static int install(int native, const char* off) {
     g_settings.native_cond_var = native;
     snprintf(g_settings.hook_families_off, sizeof g_settings.hook_families_off, "%s", off);
     hook_install();
-    assert(slots[(LOCK - CODE) >> 2] != own_code); /* the sync family stays native either way */
+    assert(slots[(NOW - CODE) >> 2] != own_code); /* the sync family stays native either way */
+    assert((slots[(LOCK - CODE) >> 2] != own_code) == (slots[(WAIT - CODE) >> 2] != own_code));
     return slots[(WAIT - CODE) >> 2] != own_code;
 }
 
@@ -103,9 +107,13 @@ int main(void) {
     memset(why, 0, sizeof why);
     assert(hook_states_refused(why, sizeof why) == -1);
     assert(!strcmp(why, "save states need native_cond_var=0 (it is 1)"));
-    /* the game changed the hooked function's code (a mod's hook): its own wait runs, and states may be taken */
+    /* the game changed the hooked functions' code (a mod's hook): the wait's own code alone leaves the host's mutex,
+       which still holds states back; with both its own, states may be taken */
     for (u32 i = 0; i < g_host.hook.count; i++)
         if (!strcmp(hook_symbol[g_host.hook.hook[i]], "wait")) g_host.hook.invalid[i] = 1;
+    assert(hook_states_refused(why, sizeof why) == -1);
+    for (u32 i = 0; i < g_host.hook.count; i++)
+        if (!strcmp(hook_symbol[g_host.hook.hook[i]], "lock")) g_host.hook.invalid[i] = 1;
     assert(hook_states_refused(why, sizeof why) == 0);
     /* emulated: the game's own wait, said with the value, and states may be taken */
     assert(install(0, "") == 0);
