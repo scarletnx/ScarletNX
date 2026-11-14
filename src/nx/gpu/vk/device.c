@@ -1925,6 +1925,33 @@ static int create_device(void) {
     /* the renderer's own allocator (devmem.c): its blocks are 64 MiB at most, and no more than the cap */
     if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)) return 0;
     __atomic_store_n(&g_devmem_ready, 1, __ATOMIC_RELEASE);
+    { /* a GPU of 4 GiB or less: memory held back for render targets (devmem.c vk_devmem_reserve) */
+        VkPhysicalDeviceMemoryProperties mp;
+        vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+        u64 most = 0;
+        for (u32 h = 0; h < mp.memoryHeapCount; h++)
+            if ((mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && mp.memoryHeaps[h].size > most)
+                most = mp.memoryHeaps[h].size;
+        /* the memory types a depth target may take */
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .imageType = VK_IMAGE_TYPE_2D,
+                                .format = VK_FORMAT_D32_SFLOAT,
+                                .extent = {64, 64, 1},
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        VkImage probe;
+        if (g_vk.mem_model != VK_MEM_UMA && most <= (4ull << 30) &&
+            vkCreateImage(g_vk.dev, &ii, NULL, &probe) == VK_SUCCESS) {
+            VkMemoryRequirements req;
+            vkGetImageMemoryRequirements(g_vk.dev, probe, &req);
+            vkDestroyImage(g_vk.dev, probe, NULL);
+            vk_devmem_reserve(64ull << 20, req.memoryTypeBits);
+        }
+    }
     if (g_vk.has_descriptor_heaps && !vk_descriptor_heaps_init(&g_vk.descriptor_heap_props)) {
         g_vk.has_descriptor_heaps = 0;
         g_vk.has_descriptor_heap_support = 0;

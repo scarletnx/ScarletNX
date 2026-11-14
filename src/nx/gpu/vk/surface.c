@@ -2736,6 +2736,12 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem
     if (*oom == g_vk_present + 1 && *bytes >= *oom_bytes) return 0;
     vk_mem_trim(*bytes, 0);
     if (vk_image_create_r(ii, img, mem, owner, &res)) return 1;
+    if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY && target) { /* the memory held back for it (vk_devmem_reserve) */
+        vk_devmem_reserve_use(1);
+        int ok = vk_image_create_r(ii, img, mem, owner, &res);
+        vk_devmem_reserve_use(0);
+        if (ok) return 1;
+    }
     if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
         if (*oom != g_vk_present + 1 || *bytes < *oom_bytes) *oom_bytes = *bytes;
         *oom = g_vk_present + 1;
