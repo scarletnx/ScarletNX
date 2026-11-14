@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The C++ library's mutexes, condition variable, clocks and sleep the game's SDK exports (hooks.hook's sync family),
-   run on the host's own: a std::mutex, std::recursive_mutex or std::condition_variable of the game's is a host mutex
+/* The C++ library's mutexes, condition variable, clocks and sleep the game's SDK exports (hooks.hook's sync family,
+   and its cond_var family for std::mutex and the condition variable, which native_cond_var=0 leaves to the game), run
+   on the host's own: a std::mutex, std::recursive_mutex or std::condition_variable of the game's is a host mutex
    or condition variable (PMutex, PCond: the host's pthreads, SRW locks on Windows) found by the guest object's
    address, made at its first use (std::mutex's constructor is the compiler's, inlined) and let go of at its
    destructor. The guest object's own bytes go unread and unwritten: every function that reads them is hooked, and

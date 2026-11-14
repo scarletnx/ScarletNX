@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# hooks for tests/hook_states.c: a recursive mutex's, which save states leave be, and a condition variable's, whose
+# family (cond_var) keeps them from being taken
+family sync
+hook lock(addr m) = test_lock
+family cond_var
+hook wait(addr cv) = test_wait

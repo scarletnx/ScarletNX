@@ -196,6 +196,10 @@ void hook_install(void);
 int hook_routed(const char* name);
 /* whether the settings turn the hooks of family off: hooks=0, or hooks_off names it */
 int hook_family_off(const char* family);
+/* why a save state can't be saved or loaded while the hooks run (state.c asks before either): a hook of the cond_var
+   family is installed, whose waits are the host's and so out of the state. -1 with the message in why, which names
+   native_cond_var and its value; 0 when states may be taken */
+int hook_states_refused(char* why, size_t whysize);
 /* After the JIT dropped what was compiled in [addr, addr + size) (jit_code_invalidate): a hooked function whose first
    4 bytes the game changed there (a mod's hook over its start; a change further in is not looked at) is the game's
    from then on. Its native hook is invalidated: its adapter's own host code is rewritten into a jump to
