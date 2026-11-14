@@ -1362,6 +1362,19 @@ static u32 astc_kind_of(u64 gva, u64 size, u32 w, u32 h, u32 d3, u32 layers, u32
     if (own_hash(cpu, size, &owners)) return SNX_ASTC_OTHER;
     *unread = 0;
     const u8* p = GP(cpu);
+    /* The same bytes read the same: a texture the cache evicted and the game uses again comes back with them. Reading
+       each block's endpoint modes and colours took a GT 1030's renderer most of each frame in Mario Kart World, whose
+       textures were evicted and made again by the hundred, under 2 frames a second; a hash of the bytes and of how
+       they are laid out is read at gigabytes a second */
+    static struct {
+        u64 key;
+        u32 kind;
+    } memo[4096];
+    u64 shape[8] = {(u64)w << 32 | h, (u64)d3 << 32 | layers, (u64)levels << 32 | f->bw << 8 | f->bh,
+                    (u64)bl << 48 | (u64)bh << 32 | (u64)bd << 16 | tile_w, pitch, layer_size, (u64)srgb, size};
+    const u64 key = (vk_hash(p, size) ^ vk_hash(shape, sizeof shape)) | 1;
+    const u32 slot = (u32)(key >> 52) & 4095;
+    if (memo[slot].key == key) return memo[slot].kind;
     u32 kind = 0;
     for (u32 layer = 0; layer < layers; layer++) {
         u64 at = (u64)layer * layer_size;
@@ -1373,10 +1386,13 @@ static u32 astc_kind_of(u64 gva, u64 size, u32 w, u32 h, u32 d3, u32 layers, u32
             const u32 gobs_x = bl ? bl_level_gobs_x(rowb, th, ld, bh, bd, tile_w) : 0;
             kind |= snx_astc_level_kind(p + at, size - at, tw, th, ld, bl ? 0 : pitch, gobs_x, lbh, lbd, f->bw, f->bh,
                                         srgb);
-            if (snx_astc_kind_done(kind, srgb)) return kind;
+            if (snx_astc_kind_done(kind, srgb)) goto done;
             at += lsz;
         }
     }
+done:
+    memo[slot].key = key;
+    memo[slot].kind = kind;
     return kind;
 }
 /* the log's name of a format an ASTC texture is held in */
