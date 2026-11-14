@@ -309,6 +309,8 @@ void vk_release_submit(void) {
     pm_unlock(&g_rlock);
     release_through(0, 0); /* those no GPU work holds */
     submit_through(gate);
+    if (g_vk_cs_open && g_vk_cs_open == vk_submit_number()) /* the dispatches compute.c left for the stream's end */
+        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
     vk_unlock();
 }
 void vk_release_samples(u64 gva, u32 len, u32 counter, u64 first, u64 end, u64 ticks) {

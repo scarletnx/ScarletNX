@@ -125,8 +125,10 @@ typedef struct {
 typedef struct {
     u64 cpu, len, sub;
 } Seen;
+#define UMA_SOON_N 512
 typedef struct {
     u64 gva, cpu, len, sub; /* the GPU writes guest memory [cpu, cpu + len) in place in submit sub */
+    u64 prog;               /* the compute program whose dispatch writes it (vk_uma_writer), 0 for a draw's */
 } Out;
 /* a window of the heap or physical memory that is GPU memory mapped where it is (placed maps, below) */
 typedef struct {
@@ -191,6 +193,11 @@ typedef struct {
     u64 wait_by[4]; /* out_waits by the caller of wait_out_why: region, mem-need, mem-need-cpu, front-write */
     u64 imp_why[6]; /* why imp_get made no import: chunked, unmade over imports, unmapped, over the cap, refused
                        before, table full */
+    u64 open_waits; /* of out_waits, those for writes still in the submission being recorded */
+    /* the programs whose dispatches go to the GPU at once (vk_uma_read_soon): open addressing, 0 for a free slot */
+    u64 soon[UMA_SOON_N];
+    u32 nsoon;
+    u64 writer; /* the program whose writes vk_uma_writes_commit takes (vk_uma_writer) */
     char apart0[UMA_LINE];
     /* mem.c's hook writes these too */
     PMutex lk;         /* a leaf, under vk_lock or mem.c's lock: the dead flags, and the imports for write tracking */
@@ -1127,7 +1134,7 @@ static void out_add(u64 gva, u64 cpu, u64 len) {
         g_uma.out = n;
         g_uma.capout = cap;
     }
-    g_uma.out[g_uma.nout++] = (Out){gva, cpu, len, vk_submit_number()};
+    g_uma.out[g_uma.nout++] = (Out){gva, cpu, len, vk_submit_number(), g_uma.writer};
     write_pages_stamp(&g_uma.written, cpu, len, g_uma.barrier_no + 1);
     pend_add_pages(&g_uma.out_pages, cpu >> 12, (cpu + len - 1) >> 12, 1);
     g_uma.written_bytes += len;
@@ -1166,20 +1173,45 @@ int vk_uma_pending_cpu(u64 cpu, u64 len) {
 }
 u64 vk_uma_out_adds(void) { return g_uma.out_pages.adds; }
 u64 vk_uma_out_waits(void) { return g_uma.out_waits; }
-/* the newest submit with an in-place write over guest memory [cpu, cpu + n), 0 for none */
-static u64 newest_out(u64 cpu, u64 n) {
-    for (u32 k = g_uma.nout; k-- > 0;)
-        if (g_uma.out[k].cpu < cpu + n && cpu < g_uma.out[k].cpu + g_uma.out[k].len) return g_uma.out[k].sub;
-    return 0;
+void vk_uma_writer(u64 prog) { g_uma.writer = prog; }
+/* whether a dispatch of prog goes to the GPU at once: a CPU reader waited for one of its writes while it was still in
+   the submission being recorded. A full table answers yes for every program, as before there was one */
+int vk_uma_read_soon(u64 prog) {
+    if (g_uma.nsoon == UMA_SOON_N) return 1;
+    for (u32 i = (u32)(prog % UMA_SOON_N), k = 0; k < UMA_SOON_N; k++, i = (i + 1) % UMA_SOON_N) {
+        if (g_uma.soon[i] == prog) return 1;
+        if (!g_uma.soon[i]) return 0;
+    }
+    return 1;
 }
-/* until the GPU has done that submit, its writes landed through it: the one being recorded is submitted first */
-static void wait_out_why(u64 sub, int why) {
-    if (!sub) return;
+static void read_soon_add(u64 prog) {
+    if (!prog || vk_uma_read_soon(prog)) return;
+    for (u32 i = (u32)(prog % UMA_SOON_N);; i = (i + 1) % UMA_SOON_N)
+        if (!g_uma.soon[i]) {
+            g_uma.soon[i] = prog;
+            g_uma.nsoon++;
+            return;
+        }
+}
+/* the newest in-place write over guest memory [cpu, cpu + n), NULL for none */
+static const Out* newest_out(u64 cpu, u64 n) {
+    for (u32 k = g_uma.nout; k-- > 0;)
+        if (g_uma.out[k].cpu < cpu + n && cpu < g_uma.out[k].cpu + g_uma.out[k].len) return &g_uma.out[k];
+    return NULL;
+}
+static const Out* newer_out(const Out* a, const Out* b) { return !b || (a && a->sub >= b->sub) ? a : b; }
+/* until the GPU has done o's submit, its writes landed through it: the one being recorded is submitted first, and o's
+   program is submitted at once from then on (compute.c), as a reader of its results comes before the stream's end */
+static void wait_out_why(const Out* o, int why) {
+    if (!o) return;
+    const u64 sub = o->sub;
     __atomic_add_fetch(&g_uma.wait_by[why], 1, __ATOMIC_RELAXED);
     g_uma.out_waits++;
-    if (sub > vk_last_submit())
+    if (sub > vk_last_submit()) {
+        g_uma.open_waits++;
+        read_soon_add(o->prog);
         vk_finish();
-    else {
+    } else {
         vk_wait_submit(sub);
         vk_land_through(sub);
     }
@@ -1188,33 +1220,33 @@ static void wait_out_why(u64 sub, int why) {
    a region's buffer is the guest's memory until then, and its readers are waited for by nobody (quiesce), as the buffer
    keeps the bytes they read; a write landing after the change would land in the buffer alone (vk_lock held) */
 static void region_writes_land(u64 lo, u64 hi) {
-    u64 newest = 0;
+    const Out* newest = NULL;
     if (!g_uma_any) return;
     for (u32 i = 0; i < g_uma.nimp; i++) {
         const Imp* m = &g_uma.imp[i];
         if (m->fd < 0 || m->cpu >= hi || lo >= m->cpu + m->size) continue;
-        u64 a = m->cpu > lo ? m->cpu : lo, b = m->cpu + m->size < hi ? m->cpu + m->size : hi, s = newest_out(a, b - a);
-        if (s > newest) newest = s;
+        u64 a = m->cpu > lo ? m->cpu : lo, b = m->cpu + m->size < hi ? m->cpu + m->size : hi;
+        newest = newer_out(newest, newest_out(a, b - a));
     }
     wait_out_why(newest, 0);
 }
 void vk_uma_mem_need(u64 gva, u64 len) {
-    u64 newest = 0;
+    const Out* newest = NULL;
     if (!g_uma_any || t_uma.gpu_reads || !len) return;
     vk_lock();
     if (pend_hit(&g_uma.out_pages, gva, len))
         for (u64 at = 0; at < len;) {
-            u64 cpu = 0, n = gmmu_run(gva + at, len - at, &cpu), s;
+            u64 cpu = 0, n = gmmu_run(gva + at, len - at, &cpu);
             if (!n) {
                 n = 0x1000 - ((gva + at) & 0xFFF);
                 if (n > len - at) n = len - at;
-            } else if ((s = newest_out(cpu, n)) > newest)
-                newest = s;
+            } else
+                newest = newer_out(newest, newest_out(cpu, n));
             at += n;
         }
     if (newest)
         LOG_LIMIT(20, "vulkan: a read of guest %llx + %llx waits for an in-place write of submit %llu (now %llu)\n",
-                  (unsigned long long)gva, (unsigned long long)len, (unsigned long long)newest,
+                  (unsigned long long)gva, (unsigned long long)len, (unsigned long long)newest->sub,
                   (unsigned long long)vk_last_submit());
     wait_out_why(newest, 1);
     vk_unlock();
@@ -1396,6 +1428,10 @@ void vk_uma_frame(void) {
         (unsigned long long)g_uma.imp_why[2], (unsigned long long)g_uma.imp_why[3],
         (unsigned long long)g_uma.imp_why[4], (unsigned long long)g_uma.imp_why[5]);
     memset(g_uma.imp_why, 0, sizeof g_uma.imp_why);
+    LOG("vulkan: dispatches left for the stream's end over 600 presents: %llu; waits for writes in place still "
+        "unsubmitted: %llu; programs whose dispatches go at once: %u\n",
+        (unsigned long long)g_vk_cs_left, (unsigned long long)g_uma.open_waits, g_uma.nsoon);
+    g_vk_cs_left = g_uma.open_waits = 0;
     g_uma.hits = g_uma.hit_bytes = g_uma.misses = g_uma.imports = g_uma.import_bytes = g_uma.import_ns = g_uma.failed =
         g_uma.dropped = g_uma.quiesces = g_uma.waits = g_uma.written_bytes = g_uma.barriers = g_uma.out_waits =
             g_uma.published = g_uma.chunks_made = g_uma.chunks_gone = 0;

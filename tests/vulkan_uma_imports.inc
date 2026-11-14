@@ -629,6 +629,74 @@ static int check_uma_dispatch(void) {
     return 0;
 }
 
+/* A dispatch with nothing staged for the host stays in the submission being recorded, and the end of the game's GPU
+   submission (stream_end) submits it. A CPU read of its store while it is still unsubmitted waits for all that was
+   recorded (a finish), and the program's dispatches go to the GPU at once from then on. The program stores 0x5eef
+   through an NVN descriptor in cbuf 0, as check_uma_dispatch's, so that a program of its own is learned here */
+static int check_uma_dispatch_open(void) {
+    const u64 code = 0x4e1000000ull + 0x100, code_cpu = HEAP_BASE + 0x780000;
+    const u64 cbuf = UMA_GQ + 0x1000, stored = UMA_GQ + 0x2000;
+    const u64 program[] = {
+        0x001f8000fc0007e0ull,  0x4c98078004470000ull, /* MOV R0, c[0][0x110]: the buffer's address, NVN's descriptor */
+        0x4c98078004570001ull,                         /* MOV R1, c[0][0x114] */
+        storage_mov(2, 0x5eef),                        /* MOV32I R2, 0x5eef */
+        0x001f8000fc0007e0ull,  0xeedc200000070002ull, /* STG.E [R0], R2 */
+        0xe30000000007000full};
+    const u32 descriptor[3] = {(u32)stored, (u32)(stored >> 32), 16};
+    u32 qmd[64] = {0};
+    DispatchState d;
+    u8 word[4];
+    int left[3], words[3];
+    u64 finishes[3];
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    GpuChannel* channel = calloc(1, sizeof *channel);
+    CHECK(channel);
+    CHECK(mem_map(UMA_Q, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GQ, UMA_Q, 0x200000);
+    gmmu_map(0x4e1000000ull, code_cpu, 0x10000);
+    memset(GP(UMA_Q), 0, 0x3000);
+    memcpy(GP(UMA_Q) + 0x1110, descriptor, sizeof descriptor);
+    CHECK(invalidate_write_code(code, program, sizeof program / sizeof *program));
+    qmd[QMD_GRID_DIM_X] = 1;
+    qmd[QMD_GRID_DIM_YZ] = 1 | 1u << 16;
+    qmd[QMD_BLOCK_DIM_X] = 1u << 16;
+    qmd[QMD_BLOCK_DIM_YZ] = 1 | 1u << 16;
+    qmd[QMD_CONST_BUFFER_ENABLE] = 1u;
+    qmd[QMD_CONST_BUFFER_CONFIG] = (u32)cbuf;
+    qmd[QMD_CONST_BUFFER_CONFIG + 1] = (u32)(cbuf >> 32) | 0x200u << 15;
+    for (int i = 0; i < 3; i++) {
+        memset(GP(UMA_Q) + 0x2000, 0, 4);
+        vk_lock();
+        const u64 was_left = g_vk_cs_left;
+        mx_dispatch_state(qmd, channel->rcomp, code, &d);
+        vk_dispatch(&d);
+        /* left in the submission being recorded (a periodic submit of earlier work may have come before it) */
+        left[i] = g_vk_cs_left == was_left + 1 && g_vk_cs_open == vk_submit_number();
+        vk_unlock();
+        if (i == 0) g_renderer->stream_end(); /* the stream's end submits the first: its read makes no finish */
+        finishes[i] = g_vk_finishes;
+        CHECK(!gmem_read(stored, word, sizeof word));
+        finishes[i] = g_vk_finishes - finishes[i];
+        words[i] = snx_ld_le32(word) == 0x5eef;
+    }
+    free(channel);
+    CHECK(mem_unmap(UMA_Q, 0x200000) == 0);
+    if (!left[0] || !left[1] || left[2] || finishes[0] || finishes[1] != 1 || finishes[2] || !words[0] || !words[1] ||
+        !words[2])
+        fprintf(stderr,
+                "dispatch left open: left %d %d %d (want 1 1 0), finishes at the read %llu %llu %llu (want 0 1 0), "
+                "stored %d %d %d\n",
+                left[0], left[1], left[2], (unsigned long long)finishes[0], (unsigned long long)finishes[1],
+                (unsigned long long)finishes[2], words[0], words[1], words[2]);
+    CHECK(left[0] && left[1] && !left[2] && !finishes[0] && finishes[1] == 1 && !finishes[2]);
+    CHECK(words[0] && words[1] && words[2]);
+    printf("in place: a dispatch waits for the stream's end, and a program read before then goes at once after\n");
+    return 0;
+}
+
 /* A linear texture over memory an engine's result is being written to in place (one game's exposure histogram, a
    64x1 texture one compute program fills and the next reads, in each frame): checked again, the texture takes the
    result from the import on the GPU, after the write, and nothing waits for the submit that writes it */

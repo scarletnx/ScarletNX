@@ -35,6 +35,7 @@ int vk_buf_pending_unsubmitted(void);
 void vk_submit(u64, u64, u64);
 u64 vk_last_submit(void);
 u64 vk_submit_number(void);
+extern u64 g_vk_cs_open; /* compute.c's: the submission a dispatch was left in for the stream's end */
 int vk_uma(void);
 u64 vk_uma_bound(void);
 void vk_rt_before_write(u64, u64);
@@ -302,6 +303,7 @@ void vk_query_pred_drop(u32 slot) {
 }
 u64 vk_last_submit(void) { return next_graphics; }
 u64 vk_submit_number(void) { return next_graphics + 1; }
+u64 g_vk_cs_open;
 /* uma.c: guest memory read in place, last by submit uma_bound */
 static int uma_on;
 static u64 uma_bound;
@@ -633,6 +635,15 @@ int main(void) {
     vk_release_drain();
     assert(!g_rpg[rix_find(g_rpg, RPG_N - 1, 4096)].key && !g_rpg[rix_find(g_rpg, RPG_N - 1, 0x7000)].key);
     assert(lock_depth == 0 && events_signaled == 3 && !events_due); /* payload writes signal nothing */
+    /* a dispatch left in the submission being recorded (compute.c on unified memory): the stream's end submits it,
+       once, and not one left in an earlier submission */
+    u64 submitted = submits;
+    g_vk_cs_open = vk_submit_number();
+    vk_release_submit();
+    assert(submits == submitted + 1);
+    vk_release_submit();
+    assert(submits == submitted + 1);
+    g_vk_cs_open = 0;
 	check_writeback_merge();
     return 0;
 }

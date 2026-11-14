@@ -118,6 +118,7 @@ static u64 g_cval;
 static int g_ar_gfx;
 static u64 g_org_cap;
 u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns;
+u64 g_vk_cs_open, g_vk_cs_left; /* vk.h */
 /* A program's window: 80 zero bytes in place of a header, then the bytes of its code that cs_read_code reads, and zeros
    after them. It takes as much code as a graphics program's window (pipeline.c's SH_CODE): an Ounce game has a
    compute program of 256,160 bytes. In a window of 64 KiB that program had no end, and each of its dispatches was
@@ -2349,7 +2350,9 @@ rebind:
            once, the GPU runs it while the stream goes on, and a reader of its results waits for that submit alone,
            not for the draws recorded after it: Pokemon Legends Z-A writes command lists with a dispatch and fetches
            them a little later (a GPFIFO entry with SYNC), once a frame */
+        vk_uma_writer(p->key);
         vk_buf_writable_commit();
+        vk_uma_writer(0);
         for (i = 0; i < p->si.nimg && i < 8; i++)
             if (bufimg_view[i]) vk_defer_buffer_view(bufimg_view[i]);
         /* the storage images' texels over their guest bytes, after the dispatch on the GPU */
@@ -2364,7 +2367,18 @@ rebind:
         /* Not one in the GPU mirror: its results land only where the CPU first touches them, and that read submits
            what is open (vk_mirror_mem_need's finish). Submitted each, one game's Ounce programs made about 300
            submissions a present, each with a harvest of the mirror, and the GPU idled between them */
-        if (!mir) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+        if (mir) return;
+        /* On unified memory a dispatch with nothing staged for the host waits in the submission being recorded for
+           the end of the game's GPU submission (vk_release_submit) or whatever submits first, as the console's GPU
+           runs what a flush handed it. Submitted each, one game's battle map made 350 to 390 submissions a present
+           by the GPU profiler, and 22 to 24 so. A program a CPU reader waited for while its writes were still
+           unsubmitted (vk_uma_read_soon) is submitted at once, as above */
+        if (vk_uma() && !vk_buf_pending_unsubmitted() && !vk_uma_read_soon(p->key)) {
+            g_vk_cs_open = vk_submit_number();
+            g_vk_cs_left++;
+            return;
+        }
+        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
         return;
     }
     /* results visible to the host */
