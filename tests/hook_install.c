@@ -78,6 +78,7 @@ void mem_query(u64 addr, MemBlock* b) {
 }
 GuestFn nce_slot(GuestFn f) { return f; }
 void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
+int nce_on(void) { return 0; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 GuestFn jit_code_now(u64 pc) { return (void)pc, NULL; }
 /* arm.c's: a 64-bit game has no 32-bit code */

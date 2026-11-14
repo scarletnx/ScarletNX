@@ -163,7 +163,9 @@ typedef struct {
     u8 stale[HOOK_SITES];     /* atomic: the game changed the function's code (a mod's patch), so orig is stale */
     GuestFn fn[HOOK_SITES];   /* what its slot holds now: the hook's adapter, or verify mode's check */
     u32 word[HOOK_SITES];     /* the function's first 4 bytes at hook_install, which a mod's hook writes over */
+    u32 next[HOOK_SITES];     /* its next 4 bytes, where the mod's trampoline goes on (0 past the code's end) */
     u8 invalid[HOOK_SITES];   /* atomic: the game changed them, so the native hook is off (hook_restore) */
+    u8 body[HOOK_SITES];      /* atomic: the slot of its second instruction holds its body adapter (hook_body_enter) */
     /* verify mode: which scratch slots are taken (bit i, atomic), and each site's calls that agreed, differed and
        were skipped (atomic) */
     u32 verify_taken;
@@ -199,6 +201,16 @@ void hook_restore(u64 addr, u64 size);
 /* the sad path of an invalidated native hook, where its adapter jumps with the arguments its call left: runs the
    game's code now at entry, which is what a call of the function runs from then on */
 void hook_invalidated(CPU* RESTRICT c, u64 entry);
+/* A mod's hook over a function's first instruction keeps a trampoline: that instruction, then a jump to the second.
+   When the first instruction only moves sp (a prologue: sub sp, sp, #n; a pre-indexed stp or str to [sp, #-n]!; or
+   nop and bti, which move nothing), 1 and in *sp_add what undoes it, the value to add to sp; else 0. Its stores below
+   sp are left, as the caller of the function never reads them */
+int hook_first_undo(u32 insn, u64* sp_add);
+/* the start of a body adapter (hookgen --bodies), in the dispatch slot of a hooked function's second instruction once
+   a mod's hook turned the native hook off: the mod's trampoline ran the function's first instruction and jumped here,
+   so this undoes it (hook_first_undo), and the adapter runs the handler as the function's call left the CPU. The
+   mod's call of the original function gets the runtime's answer, as a call without the mod would */
+void hook_body_enter(CPU* RESTRICT c, u64 entry);
 /* what the dispatch slot of addr holds for a hooked function, its handler's adapter or verify mode's check, for as
    long as the game runs; NULL when addr isn't hooked, or its native hook was invalidated */
 GuestFn hook_function(u64 addr);

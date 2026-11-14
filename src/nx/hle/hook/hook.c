@@ -240,7 +240,9 @@ static void hook_put(int k, u64 addr, const char* name, const unsigned char veri
     h->orig[h->count] = nce_slot(*slot);
     h->fn[h->count] = verify[hook_family[k]] && hook_verify[k].pure ? verify_fn : hook_fn[k];
     h->word[h->count] = first_word(addr);
+    h->next[h->count] = addr + 4 < g_code_hi ? first_word(addr + 4) : 0;
     h->invalid[h->count] = 0;
+    h->body[h->count] = 0;
     __atomic_store_n(slot, h->fn[h->count], __ATOMIC_RELEASE);
     nce_slot_taken(addr, hook_family_name[hook_family[k]]);
     jit_slot_taken(addr, h->fn[h->count]);
@@ -408,6 +410,74 @@ void hook_install(void) {
     LOG("hooks: %u of the game's functions run the runtime's handlers\n", h->count);
 }
 
+int hook_first_undo(u32 insn, u64* sp_add) {
+    u64 off;
+    u32 scale;
+    if (insn == 0xD503201Fu || (insn & 0xFFFFFF3Fu) == 0xD503241Fu) { /* nop, bti */
+        *sp_add = 0;
+        return 1;
+    }
+    if ((insn & 0xFF8003FFu) == 0xD10003FFu) { /* sub sp, sp, #imm12{, lsl #12} */
+        *sp_add = (u64)(insn >> 10 & 0xFFF) << (insn >> 22 & 1 ? 12 : 0);
+        return 1;
+    }
+    if ((insn & 0x3BC003E0u) == 0x298003E0u) { /* stp, pre-indexed, base sp */
+        u32 opc = insn >> 30, simd = insn >> 26 & 1;
+        if (simd ? opc == 3 : opc != 0 && opc != 2) return 0; /* not a store pair (stgp), or no such size */
+        scale = simd ? 2 + opc : 2 + (opc >> 1);
+        off = (u64)(insn >> 15 & 0x7F);
+        if (off & 0x40) off |= ~(u64)0x7F;
+        *sp_add = 0 - (off << scale);
+        return 1;
+    }
+    if ((insn & 0x3BE00FE0u) == 0x38000FE0u) { /* str (immediate), pre-indexed, base sp */
+        off = (u64)(insn >> 12 & 0x1FF);
+        if (off & 0x100) off |= ~(u64)0x1FF;
+        *sp_add = 0 - off;
+        return 1;
+    }
+    return 0;
+}
+
+void hook_body_enter(CPU* RESTRICT c, u64 entry) {
+    int i = site_of(entry - 4);
+    u64 add;
+    if (i < 0 || !hook_first_undo(snx_le32(g_host.hook.word[i]), &add))
+        fatal("hooks: a body adapter ran at %llx, which is no hooked function's second instruction with a first one "
+              "to undo",
+              (unsigned long long)entry);
+    c->x[31] += add;
+}
+
+/* after site i's native hook went off: the mod's trampoline, which runs the function's first instruction and jumps to
+   its second, reaches the handler there through a body adapter (hook_body_enter). Only when the first instruction
+   can be undone and the second is the one hook_install saw. Under g_invalidate_lock */
+static void body_install(u32 i) {
+    HostHook* h = &g_host.hook;
+    u64 at = h->addr[i] + 4, add;
+    const char* symbol = hook_symbol[h->hook[i]];
+    GuestFn body = hook_body[h->hook[i]], was;
+    if (nce_on()) {
+        WARN("hooks: the trampoline of the mod's hook of %s runs the SDK's own code, as NCE runs the guest's code at "
+             "%llx natively, past every slot\n",
+             symbol, (unsigned long long)at);
+        return;
+    }
+    if (at >= g_code_hi || !hook_first_undo(snx_le32(h->word[i]), &add) || first_word(at) != h->next[i]) {
+        WARN("hooks: a call of %s's original through the mod's trampoline runs the SDK's own code: its first "
+             "instruction %08x isn't one the runtime undoes, or the mod changed the second too\n",
+             symbol, snx_le32(h->word[i]));
+        return;
+    }
+    was = __atomic_exchange_n(&g_disp[(at - g_code_lo) >> 2], body, __ATOMIC_ACQ_REL);
+    jit_slot_taken(at, body);
+    __atomic_store_n(&h->body[i], 1, __ATOMIC_RELEASE);
+    WARN("hooks: a call of %s's original through the mod's trampoline (its first instruction %08x, then a jump to "
+         "%llx) runs %s from there%s\n",
+         symbol, snx_le32(h->word[i]), (unsigned long long)at, hook_handler[h->hook[i]],
+         was ? ", in place of the code compiled there" : "");
+}
+
 /* turns off the native hook of site i, whose function's first 4 bytes the game changed, and with it every site and
    entry whose adapter is the same code. Under g_invalidate_lock */
 static PMutex g_invalidate_lock = PMUTEX_INIT;
@@ -429,10 +499,10 @@ static void hook_invalidate(u32 i) {
         WARN("hooks: %s\n", why);
     }
     WARN("hooks: the game changed the first instruction of %s at %llx from %08x to %08x, which %s answered natively: "
-         "a mod's hook. That native hook is off from here, and the game's code runs, the SDK's own code included "
-         "wherever it calls it\n",
+         "a mod's hook. That native hook is off from here, and the game's code runs\n",
          hook_symbol[h->hook[i]], (unsigned long long)h->addr[i], snx_le32(h->word[i]),
          snx_le32(first_word(h->addr[i])), hook_handler[h->hook[i]]);
+    body_install(i);
     /* the other sites of its adapter: their code did not change, so their slots run it, their own */
     for (j = 0; j < h->count; j++)
         if (j != i && hook_fn[h->hook[j]] == adapter && !__atomic_load_n(&h->invalid[j], __ATOMIC_ACQUIRE)) {
@@ -466,6 +536,9 @@ void hook_restore(u64 addr, u64 size) {
     u32 i;
     for (i = 0; i < h->count; i++) {
         u64 a = h->addr[i];
+        /* a body adapter goes back in the slot of the second instruction, which the JIT dropped too */
+        if (a + 4 >= addr && a + 4 < end && __atomic_load_n(&h->body[i], __ATOMIC_ACQUIRE))
+            __atomic_store_n(&g_disp[(a + 4 - g_code_lo) >> 2], hook_body[h->hook[i]], __ATOMIC_RELEASE);
         if (a < addr || a >= end) continue;
         mem_query(a, &block);
         if (block.state == MS_FREE || !(block.perm & PERM_X)) continue; /* no longer code: the hook goes with it */

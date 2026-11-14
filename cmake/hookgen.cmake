@@ -73,9 +73,12 @@ function(snx_hookgen target)
     if(arg_SPEC)
         set(spec ${arg_SPEC})
     endif()
+    # the hook tables, which hle/hook/hook.c includes, take the body adapters (hookgen --bodies)
     set(prefix hook)
+    set(bodies --bodies)
     if(arg_PREFIX)
         set(prefix "${arg_PREFIX}")
+        set(bodies)
     endif()
     set(name hle/hook/hooks.hook)
     if(arg_NAME)
@@ -85,7 +88,7 @@ function(snx_hookgen target)
     set(out "${CMAKE_CURRENT_BINARY_DIR}/hookgen/${target}")
     add_custom_command(OUTPUT "${out}/${name}.h" "${out}/${name}.inc"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}/${dir}"
-        COMMAND snx-hookgen --prefix "${prefix}" ${a32} -I "${PROJECT_SOURCE_DIR}/src" --header "${out}/${name}.h"
+        COMMAND snx-hookgen --prefix "${prefix}" ${a32} ${bodies} -I "${PROJECT_SOURCE_DIR}/src" --header "${out}/${name}.h"
                 --out "${out}/${name}.inc" ${spec}
         DEPENDS snx-hookgen ${spec}
         COMMENT "Generating ${name}" VERBATIM)

@@ -298,9 +298,15 @@ function whose first 4 bytes changed has its native hook invalidated:
   it. A hook whose adapter is the same code (another site of the same entry, or an entry the linker folded into it) is
   named too, and runs its own code from then on.
 
-The game's code then runs as on the console, the SDK's own code included wherever it calls it: a mod's call of the
-original function through its trampoline runs the SDK's code of that function, which may reach a service only the
-native layer answers.
+The game's code then runs as on the console. A mod's call of the original function goes through its trampoline: the
+function's first instruction, then a jump to its second. The SDK's code from there can reach a service that only the
+native layer answers (`fsp-srv` for `nn::fs`), which stops the game. So when the first instruction only moves sp
+(`sub sp, sp, #n`, a pre-indexed `stp` or `str` to `[sp, #-n]!`, or `nop` and `bti`, which move nothing:
+`hook_first_undo`) and the second is still the one `hook_install` saw, the slot of the second instruction gets the
+hook's body adapter (hookgen `--bodies`). It gives back what the first instruction took from sp (`hook_body_enter`)
+and runs the handler, so the mod's call of the original gets the runtime's answer, as a call without the mod would.
+`hook_restore` puts it back when the JIT drops that line. A warning says which of the two the trampoline runs. Under
+NCE the trampoline's jump runs the guest's code natively, past every slot, so it runs the SDK's code.
 
 When the system refuses to make the adapter's code writable (`mprotect`, `VirtualProtect`), the game stops with the
 reason and the values, since the mod's code would never run.

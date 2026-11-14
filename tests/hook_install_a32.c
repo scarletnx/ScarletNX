@@ -135,6 +135,7 @@ u64 kmem_alloc(u64 size, u32 state, u32 perm) { return (void)size, (void)state, 
 void mem_query(u64 addr, MemBlock* b) { (void)addr, (void)b, not_reached(); }
 GuestFn nce_slot(GuestFn f) { return not_reached(), f; }
 void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what, not_reached(); }
+int nce_on(void) { return not_reached(), 0; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn, not_reached(); }
 GuestFn jit_code_now(u64 pc) { return (void)pc, not_reached(), NULL; }
 int linker_links(void) { return 0; }

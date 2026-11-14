@@ -6,7 +6,9 @@
    of its address taken before (as an NRO's import or the JIT's direct call holds one) runs the game's new code with
    the arguments of the call, its slot is left for the game's code, and a warning names it with both words. A change
    of a neighbour's code in the same cache line, which the JIT drops the same way, invalidates nothing, nor does a
-   change past the function's first 4 bytes, which are all that is compared. The system's refusal to make
+   change past the function's first 4 bytes, which are all that is compared. A function whose first instruction is a
+   prologue the runtime undoes gets a body adapter in the slot of its second, where the mod's trampoline jumps: it
+   gives sp back and answers as the handler. The system's refusal to make
    code writable is reported with its reason. Only x86_64 runs the jump: on another host the test is skipped (77) */
 #include "nx/hle/hook/hook.c"
 #include <assert.h>
@@ -82,6 +84,7 @@ void mem_query(u64 addr, MemBlock* b) {
 }
 GuestFn nce_slot(GuestFn f) { return f; }
 void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
+int nce_on(void) { return 0; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 GuestFn jit_code_now(u64 pc) { return pc == ANSWER ? game_answer : NULL; }
 SnxArmBlock* arm_slot(u32 addr, int thumb) { return (void)addr, (void)thumb, NULL; }
@@ -192,9 +195,13 @@ int main(int argc, char** argv) {
     line_dropped(ANSWER);
     assert(slots[(ANSWER - CODE) >> 2] == NULL && hook_function(ANSWER) == NULL);
     assert(slots[(COPY - CODE) >> 2] == hook_fn[copy] && hook_function(COPY) == hook_fn[copy]);
-    assert(warnings == 1 &&
+    /* and its first instruction moves no sp the runtime undoes, so a trampoline's jump to the second runs that code */
+    assert(warnings == 2 &&
            strstr(warned, "changed the first instruction of answer at 1010 from b3b2b1b0 to 14001234") &&
-           strstr(warned, "which test_answer answered natively"));
+           strstr(warned, "which test_answer answered natively") &&
+           strstr(warned, "original through the mod's trampoline runs the SDK's own code: its first instruction "
+                          "b3b2b1b0 isn't one the runtime undoes"));
+    assert(slots[(ANSWER + 4 - CODE) >> 2] == NULL);
     /* the adapter's own code now jumps to the sad path, after its landing pad when it has one */
     adapter = (const u8*)(uintptr_t)hook_fn[answer];
     if (!memcmp(adapter, "\xF3\x0F\x1E\xFA", 4)) adapter += 4;
@@ -208,7 +215,38 @@ int main(int argc, char** argv) {
     slots[(COPY - CODE) >> 2](&c, COPY);
     assert(copies == 1 && own_runs == 0 && c.pc == 0x9200);
     line_dropped(ANSWER);
-    assert(slots[(ANSWER - CODE) >> 2] == NULL && warnings == 1);
+    assert(slots[(ANSWER - CODE) >> 2] == NULL && warnings == 2);
+
+    /* copy starts with a prologue, sub sp, sp, #0x40, which hook_install saw. A mod's hook over it keeps a
+       trampoline that runs it and jumps to copy + 4: that slot gets the body adapter, which gives sp back and
+       answers as the handler, returning to the mod's code */
+    {
+        u64 add;
+        assert(g_host.hook.word[0] == snx_ld_le32(guest + COPY) && g_host.hook.next[0] == snx_ld_le32(guest + COPY + 4));
+        snx_st_le32(guest + COPY, 0x14000400u);
+        g_host.hook.word[0] = snx_ld_le32((const u8*)"\xFF\x03\x01\xD1"); /* as if hook_install saw the prologue */
+        line_dropped(COPY);
+        assert(slots[(COPY - CODE) >> 2] == NULL && slots[(COPY + 4 - CODE) >> 2] == hook_body[copy]);
+        assert(warnings == 4 && strstr(warned, "a call of copy's original through the mod's trampoline (its first "
+                                               "instruction d10103ff, then a jump to 1004) runs test_copy from there"));
+        c.x[0] = 0x777, c.x[30] = 0x9300, c.x[31] = 0x8000 - 0x40, c.pc = 0;
+        slots[(COPY + 4 - CODE) >> 2](&c, COPY + 4);
+        assert(copies == 2 && c.x[0] == 0x777 && c.x[31] == 0x8000 && c.pc == 0x9300);
+        /* the JIT drops the line again: the body adapter goes back in its slot, with no new warning */
+        line_dropped(COPY);
+        assert(slots[(COPY - CODE) >> 2] == NULL && slots[(COPY + 4 - CODE) >> 2] == hook_body[copy] && warnings == 4);
+        /* the other prologues it undoes, and an instruction it does not */
+        assert(hook_first_undo(0xA9BC7BFDu, &add) && add == 0x40);  /* stp x29, x30, [sp, #-0x40]! */
+        assert(hook_first_undo(0x6DBF27E8u, &add) && add == 0x10);  /* stp d8, d9, [sp, #-0x10]! */
+        assert(hook_first_undo(0xAD8007E0u, &add) && add == 0);     /* stp q0, q1, [sp, #0]! */
+        assert(hook_first_undo(0xF81F0FFEu, &add) && add == 0x10);  /* str x30, [sp, #-0x10]! */
+        assert(hook_first_undo(0xD14007FFu, &add) && add == 0x1000); /* sub sp, sp, #1, lsl #12 */
+        assert(hook_first_undo(0xD503245Fu, &add) && add == 0);     /* bti c */
+        assert(!hook_first_undo(0xD503233Fu, &add));                /* paciasp signs x30 */
+        assert(!hook_first_undo(0xA9407BFDu, &add));                /* ldp x29, x30, [sp] */
+        assert(!hook_first_undo(0x910003FDu, &add));                /* mov x29, sp */
+        assert(!hook_first_undo(0x69BF07E0u, &add));                /* stgp: not a store pair of registers */
+    }
 
 #if !defined(_WIN32)
     /* code the system refuses to make writable (a shared mapping of a file opened to read): nothing is written, and

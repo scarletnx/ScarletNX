@@ -74,7 +74,9 @@
    function's ret would, and the entries sorted by symbol and then by version (hook_symbol, hook_fn, hook_handler,
    hook_family (an index into hook_family_name), hook_key, hook_lo and hook_hi (the versions [lo, hi) of key,
    hook.h's HOOK_ANY for unversioned), hook_layouts (the variants it passes, for the log) and hook_table, the view
-   hook_select searches. It is strict C99 and depends on nothing, so a cross build can build it for the machine it
+   hook_select searches. With --bodies (the tables hook.c includes), each entry also gets a body adapter
+   (<prefix>_body_<index>, in <prefix>_body): the same call after hook_body_enter, for a mod's trampoline that jumps
+   to the function's second instruction once the native hook is off (hook.c). It is strict C99 and depends on nothing, so a cross build can build it for the machine it
    runs on (cmake/hookgen.cmake).
 
    Verify mode (verify.h). A hook says `pure` after its handler (and its uses) when its function depends on nothing but
@@ -125,9 +127,10 @@
    --a32's), _handler, _family, _key, _lo, _hi, _layouts and _table with <PREFIX>32_COUNT entries: the hooks marked
    a32 and the ones for a 32-bit program alone, which are in no other table and name no route.
 
-   Usage: hookgen [--prefix NAME] [--a32 | --a32-marked] [-I DIR]... --header OUT.h --out OUT.inc SPEC... (NAME,
-          hook by default, names the tables; --a32 adds an adapter for a 32-bit program to every entry,
-          <prefix>_a32, and --a32-marked a 32-bit program's own table instead, <prefix>32_table; each -I DIR a
+   Usage: hookgen [--prefix NAME] [--a32 | --a32-marked] [--bodies] [-I DIR]... --header OUT.h --out OUT.inc SPEC...
+          (NAME, hook by default, names the tables; --a32 adds an adapter for a 32-bit program to every entry,
+          <prefix>_a32, and --a32-marked a 32-bit program's own table instead, <prefix>32_table; --bodies adds the
+          body adapters, <prefix>_body; each -I DIR a
           folder to find the include line's header in; the specs are read one after another into one table, each
           with its own family lines, as hooks.hook and the game patches of src/nx/patches/ are)
           hookgen [-I DIR]... --routes OUT.inc SPEC... (the symbols that the hooks and route lines of every SPEC
@@ -1342,15 +1345,16 @@ static void argument(const Arg* a) {
     }
 }
 
-/* the adapter: a GuestFn that calls the handler and returns as the function's ret */
-static void adapter(const Entry* e, int index) {
+/* the adapter: a GuestFn that calls the handler and returns as the function's ret. body: the body adapter, which
+   first undoes the function's first instruction (hook_body_enter) */
+static void adapter(const Entry* e, int index, int body) {
     const Hook* h = &hooks[e->hook];
     char range[96];
     int i;
     range_text(&e->range, range, sizeof range);
-    out("/* %s, %s */\n", h->symbol, range);
-    out("static void %s_fn_%d(CPU* RESTRICT c, u64 entry) {\n", prefix, index);
-    out("    (void)entry;\n");
+    out("/* %s, %s%s */\n", h->symbol, range, body ? ", from its second instruction" : "");
+    out("static void %s_%s_%d(CPU* RESTRICT c, u64 entry) {\n", prefix, body ? "body" : "fn", index);
+    out(body ? "    hook_body_enter(c, entry);\n" : "    (void)entry;\n");
     out("    ");
     switch (h->ret) {
         case T_VOID: break;
@@ -1387,6 +1391,7 @@ static void adapter(const Entry* e, int index) {
    hooks that hold for it too and of those declared for it alone, each with such an adapter */
 enum { A32_ALL = 1, A32_MARKED };
 static int a32;
+static int bodies; /* --bodies */
 
 /* an argument's 32 or 64 bits under AAPCS32, as a u32 or u64 expression */
 static void a32_bits(const Arg* a) {
@@ -1587,7 +1592,11 @@ static void write_table(const char* path) {
         out("};\n");
     }
     if (nvariants) out("\n");
-    for (i = 0; i < nentries; i++) adapter(&entries[i], i);
+    for (i = 0; i < nentries; i++) adapter(&entries[i], i, 0);
+    if (bodies) {
+        out("\n/* the body adapters */\n");
+        for (i = 0; i < nentries; i++) adapter(&entries[i], i, 1);
+    }
     if (a32 == A32_ALL) {
         out("\n/* the adapters for a 32-bit program */\n");
         for (i = 0; i < nentries; i++) adapter_a32(&entries[i], i, "_a32");
@@ -1601,6 +1610,10 @@ static void write_table(const char* path) {
     for (i = 0; i < nentries; i++) out("    \"%s\",\n", hooks[entries[i].hook].handler);
     out("    0};\nstatic const GuestFn %s_fn[%s_COUNT + 1] = {\n", prefix, upper);
     for (i = 0; i < nentries; i++) out("    %s_fn_%d,\n", prefix, i);
+    if (bodies) {
+        out("    0};\nstatic const GuestFn %s_body[%s_COUNT + 1] = {\n", prefix, upper);
+        for (i = 0; i < nentries; i++) out("    %s_body_%d,\n", prefix, i);
+    }
     out("    0};\nstatic const unsigned char %s_family[%s_COUNT + 1] = {\n", prefix, upper);
     for (i = 0; i < nentries; i++) out("    %d,\n", hooks[entries[i].hook].family);
     out("    0};\nstatic const unsigned char %s_key[%s_COUNT + 1] = {\n", prefix, upper);
@@ -1709,6 +1722,8 @@ int main(int argc, char** argv) {
             a32 = A32_ALL;
         else if (!strcmp(argv[i], "--a32-marked"))
             a32 = A32_MARKED;
+        else if (!strcmp(argv[i], "--bodies"))
+            bodies = 1;
         else if (!strcmp(argv[i], "-I") && i + 1 < argc && ninclude_dirs < MAX_DIRS)
             include_dirs[ninclude_dirs++] = argv[++i];
         else if (argv[i][0] != '-' && nspecs < MAX_SPECS)
@@ -1724,7 +1739,8 @@ int main(int argc, char** argv) {
     if (!nspecs || (!header && !table)) {
         fprintf(
             stderr,
-            "usage: hookgen [--prefix NAME] [--a32 | --a32-marked] [-I DIR]... --header OUT.h --out OUT.inc SPEC...\n"
+            "usage: hookgen [--prefix NAME] [--a32 | --a32-marked] [--bodies] [-I DIR]... --header OUT.h --out OUT.inc "
+            "SPEC...\n"
             "       hookgen [-I DIR]... --routes OUT.inc SPEC...\n");
         return 2;
     }
