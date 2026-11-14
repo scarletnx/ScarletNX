@@ -121,6 +121,10 @@ static void report_queue(u64 a, u64 value, int one, int made, int counted, u32 o
     ReportWrite w = {a, value, gpu_ticks(), (u32)one, (u32)made, (u32)counted, owner};
     gq_call(report_run, &w, sizeof w);
 }
+void gpu_report_samples(u32 owner, u64 a, int counted, u64 value, u64 ticks) {
+    ReportWrite w = {a, value, ticks, 0, 0, (u32)counted, owner};
+    gq_call(report_run, &w, sizeof w);
+}
 #define REPORT_BIT(r) (1u << (r))
 /* the counters a CLEAR_REPORT_VALUE resets, as REPORT_BIT of their reports */
 static u32 reset_selectors(u32 v) {
@@ -219,6 +223,8 @@ typedef struct {
     u32 pred; /* the GPU's predicate (renderer.h render_predicate), 0 for none */
 } RenderOwner;
 static RenderOwner g_render[RENDER_OWNERS];
+/* RenderEnable.override of NVN's render enable (gpu_render_enable_nvn): its mode is NVN's */
+#define RENDER_ENABLE_NVN 0x80000000u
 static int render_owner(u32 owner) {
     int at = 0;
     while (at < RENDER_OWNERS && !(g_render[at].used && g_render[at].owner == owner)) at++;
@@ -240,6 +246,23 @@ static void render_enable_run(const void* arg, u64 bytes) {
     if (g_render[at].pred) {
         if (g_renderer->render_predicate_drop) g_renderer->render_predicate_drop(g_render[at].pred);
         g_render[at].pred = 0;
+    }
+    if (e.override == RENDER_ENABLE_NVN) {
+        /* modes 2 and 3: on and off. 0 and 1: on when the counts at a and a + 16 are equal, or differ, which the GPU
+           compares while the count isn't known (render_predicate) */
+        int equal = e.mode == 0, known = -1;
+        if (e.mode >= 2) on = e.mode == 2;
+        else if (g_renderer->render_predicate && (known = g_renderer->render_predicate(e.a, equal, &pred)) >= 0) {
+            on = known != 0;
+            if (known == 2) g_render[at].pred = pred;
+        } else {
+            u64 x = 0, y = 0;
+            gmem_read(e.a, &x, 8);
+            gmem_read(e.a + 16, &y, 8);
+            on = (x == y) == equal;
+        }
+        g_render[at].off = !on;
+        return;
     }
     switch (e.override) {
         case MAXWELL3D_RENDER_ENABLE_OVERRIDE_ALWAYS_RENDER: on = 1; break;
@@ -281,6 +304,10 @@ static void render_enable_run(const void* arg, u64 bytes) {
             break;
     }
     g_render[at].off = !on;
+}
+void gpu_render_enable_nvn(u32 owner, u32 mode, u64 a) {
+    RenderEnable e = {owner, RENDER_ENABLE_NVN, mode, 0, a};
+    gq_call(render_enable_run, &e, sizeof e);
 }
 int gpu_render_state(u32 owner, u32* pred) {
     for (int at = 0; at < RENDER_OWNERS; at++)

@@ -1065,33 +1065,15 @@ static void bind_state(NvnDraw* d, u64 payload) {
    address + 16 are equal, 1: when they differ), as the 3D engine's render enable (maxwell/engines.c): NVN's occlusion
    test, a samples-passed count against zero, compared by the GPU when the count isn't known yet */
 static void render_enable(NvnDraw* d, const NvnPRenderCond* r) {
-    u32 pred = 0;
-    int known;
+    /* the decision is the renderer's side's, in its place among the draws, which it skips there (gpu_render_state):
+       asking the renderer here waited for every record queued before it, and one game's occlusion tests asked about
+       26,000 times a second */
     if (d->own.pred) {
         gpu_predicate_drop(d->own.pred);
         d->own.pred = 0;
     }
-    if (r->mode >= 2) {
-        d->render_off = r->mode == 3;
-        return;
-    }
+    gpu_render_enable_nvn(d->ds.owner, r->mode, r->address);
     d->render_off = 0;
-    known = g_renderer->render_predicate ? gpu_renderer_now()->render_predicate(r->address, r->mode == 0, &pred) : -1;
-    if (known >= 0) {
-        d->render_off = !known;
-        if (known == 2) {
-            d->render_off = 0;
-            d->own.pred = pred;
-        }
-        return;
-    }
-    { /* counts the GPU can't compare for the renderer: read as the stream sees them, past the releases queued before
-         (gmem_read), as the 3D engine's render enable reads them */
-        u64 x = 0, y = 0;
-        gmem_read(r->address, &x, 8);
-        gmem_read(r->address + 16, &y, 8);
-        d->render_off = (x == y) != (r->mode == 0);
-    }
 }
 int nvn_draw_samples(NvnDraw* d, u64 address, u64 ticks) {
     /* The console's counter always runs, so a report needs no reset first. One game reports at an address and 16 bytes
@@ -1101,7 +1083,9 @@ int nvn_draw_samples(NvnDraw* d, u64 address, u64 ticks) {
         gpu_samples_reset(d->ds.owner);
         d->samples = 1;
     }
-    return d->samples && g_renderer->samples_report && gpu_renderer_now()->samples_report(d->ds.owner, address, 16, ticks);
+    /* the renderer's count, in its place among the draws, or the replay's made-up 1000 (nvn_replay.c) */
+    gpu_report_samples(d->ds.owner, address, d->samples, 1000, ticks);
+    return 1;
 }
 
 /* ClearTexture: the region of the texture, a color target of its own, cleared within a scissor of the region, a
@@ -1506,9 +1490,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
                 return 1;
             }
             if (what < 0 || what > 3) return 1;
-            if (g_renderer->xfb_control &&
-                !gpu_renderer_now()->xfb_control(d->ds.owner, r->control, (u32)what, d->xfb.stride[0], &d->own))
-                LOG_LIMIT(4, "nvn: transform-feedback control operation %d could not run\n", what);
+            gpu_xfb_control(&d->ds, &d->own, r->control, (u32)what, d->xfb.stride[0]);
             d->tf_on = what == 0 || what == 3;
             if (what == 0) d->own.xfb_reload = 15;
             d->dirty |= D_PROGRAMS;

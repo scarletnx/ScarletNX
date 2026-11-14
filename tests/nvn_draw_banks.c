@@ -27,6 +27,13 @@ u8* g_mem = memory; /* guest address a is memory + a */
 Settings g_settings;
 static Renderer g_none; /* a renderer with no draw: a draw only builds the state */
 const Renderer* g_renderer = &g_none;
+/* the render enable and the reports of the engines (maxwell/engines.c) */
+void gpu_render_enable_nvn(u32 owner, u32 mode, u64 a) { (void)owner, (void)mode, (void)a; }
+/* as the renderer's side runs a report (report_run): the renderer's count when the counter was reset */
+void gpu_report_samples(u32 owner, u64 a, int counted, u64 value, u64 ticks) {
+    (void)value;
+    if (counted && g_renderer->samples_report) g_renderer->samples_report(owner, a, 16, ticks);
+}
 void pm_init(PMutex* m) { (void)m; }
 int g_shader_sm86; /* shader.c's: Maxwell programs */
 int g_ounce;       /* main.c's: not an Ounce program */

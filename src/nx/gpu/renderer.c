@@ -55,7 +55,7 @@ static const char* const g_ds_group_name[DS_GENS] = {"programs", "vertex format"
                                                       "transform feedback", "targets", "dynamic", "viewports",
                                                       "vertex buffers", "index", "bindings", "inline",
                                                       "target formats"};
-enum { DR_DRAW, DR_CLEAR, DR_TEXTURE, DR_DISCARD };
+enum { DR_DRAW, DR_CLEAR, DR_TEXTURE, DR_DISCARD, DR_XFB };
 /* a record of a call with a draw state: then the bytes of the groups in groups, in their order, then indices words */
 typedef struct {
     u32 kind;    /* DR_ */
@@ -72,6 +72,10 @@ typedef struct {
         DrawClear c;
         DrawTexture t;
         u32 targets;
+        struct {
+            u64 control;
+            u32 what, stride;
+        } xfb;
     } call;
 } DsRecord;
 /* the renderer's side: the record into its copy, then the renderer's call */
@@ -97,7 +101,10 @@ static void ds_run(const void* arg, u64 bytes) {
     own->pred = pred;
     own->xfb_reload = (u8)(own->xfb_reload | r.reload);
     if ((u64)(p - (const u8*)arg) + (u64)r.indices * 4 > bytes) fatal("gpu: a draw record is short\n");
-    if (off == 1 && (r.kind == DR_DRAW || r.kind == DR_CLEAR)) return;
+    /* an owner's draws off: its draws, clears, textures and discards are skipped, as the front ends skipped them
+       when they decided. A discard waits for no predicate: the draws it would keep may run */
+    if (off == 1 && r.kind != DR_XFB) return;
+    if (r.kind == DR_DISCARD && pred) return;
     switch (r.kind) {
         case DR_DRAW: {
             DrawCall dc = r.call.dc;
@@ -107,7 +114,16 @@ static void ds_run(const void* arg, u64 bytes) {
             break;
         }
         case DR_CLEAR: g_renderer->clear(c, &r.call.c, own); break;
-        case DR_TEXTURE: g_renderer->draw_texture(c, &r.call.t); break;
+        case DR_TEXTURE: {
+            DrawTexture t = r.call.t;
+            if (off >= 0) t.owner.pred = pred;
+            g_renderer->draw_texture(c, &t);
+            break;
+        }
+        case DR_XFB:
+            if (!g_renderer->xfb_control(c->owner, r.call.xfb.control, r.call.xfb.what, r.call.xfb.stride, own))
+                LOG_LIMIT(4, "gpu: transform-feedback control operation %u could not run\n", r.call.xfb.what);
+            break;
         default: g_renderer->discard(c, r.call.targets); break;
     }
 }
@@ -180,6 +196,14 @@ void gpu_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) {
 void gpu_draw_texture(const DsState* ds, const DrawTexture* t) {
     if (g_renderer->draw_texture) ds_queue(DR_TEXTURE, ds, NULL, t, sizeof *t, NULL, 0);
 }
+void gpu_xfb_control(const DsState* ds, DrawOwner* o, u64 control, u32 what, u32 stride) {
+    if (!g_renderer->xfb_control) return;
+    struct {
+        u64 control;
+        u32 what, stride;
+    } x = {control, what, stride};
+    ds_queue(DR_XFB, ds, o, &x, sizeof x, NULL, 0);
+}
 void gpu_discard(const DsState* ds, u32 targets) {
     if (g_renderer->discard) ds_queue(DR_DISCARD, ds, NULL, &targets, sizeof targets, NULL, 0);
 }
@@ -206,6 +230,7 @@ void gpu_draw_states_reset(void) {
 
 /* The renderer's calls without a result that the front end makes often: each a record in its place in the queue */
 enum { RC_BARRIER, RC_STREAM_INCR, RC_STREAM_END, RC_READY, RC_STREAM_RUN, RC_SAMPLES_RESET, RC_SAMPLES_ENABLE,
+       RC_MEM_SEEN, RC_MEM_CHANGED,
        RC_PREDICATE_DROP };
 typedef struct {
     u32 op; /* RC_ */
@@ -223,6 +248,8 @@ static void call_run(const void* arg, u64 bytes) {
         case RC_STREAM_RUN: g_renderer->stream_run((int)c.a); break;
         case RC_SAMPLES_RESET: g_renderer->samples_reset(c.a); break;
         case RC_SAMPLES_ENABLE: g_renderer->samples_enable(c.a, (int)c.b); break;
+        case RC_MEM_SEEN: g_renderer->mem_seen(); break;
+        case RC_MEM_CHANGED: g_renderer->mem_may_have_changed(); break;
         default: g_renderer->render_predicate_drop(c.a); break;
     }
 }
@@ -238,6 +265,14 @@ void gpu_stream_incr(u32 id) {
 }
 void gpu_stream_end(void) {
     if (g_renderer->stream_end) call_queue(RC_STREAM_END, 0, 0);
+}
+/* the renderer takes in the CPU's writes so far (renderer.h mem_seen, else mem_may_have_changed) after the work queued
+   before it. Later than the front end asked, so its checks see more writes as new, never fewer. A drain at each
+   wait (gpu_renderer_now) stopped the front end at every wait of a command buffer: one NVN game ran the two threads
+   in turn, at 47 frames a second against 61 on one thread */
+void gpu_mem_seen(void) {
+    if (g_renderer->mem_seen) call_queue(RC_MEM_SEEN, 0, 0);
+    else if (g_renderer->mem_may_have_changed) call_queue(RC_MEM_CHANGED, 0, 0);
 }
 void gpu_ready(void) {
     if (g_renderer->ready) call_queue(RC_READY, 0, 0);
