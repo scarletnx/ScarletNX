@@ -65,7 +65,7 @@ void am_init(void) {
     ev_signal(g_hle.am.launchable_event);
 }
 
-/* The TV mode changed while the game runs (docked's Auto): the display resolution change event is signaled, and the
+/* The TV mode changed while the game runs (tv_mode's Auto): the display resolution change event is signaled, and the
    applet is told the performance mode changed, as a console that was put in its dock or taken out of it */
 void am_display_mode_changed(void) {
     pm_lock(&g_host.am.lock);

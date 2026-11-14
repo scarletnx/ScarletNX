@@ -12,6 +12,7 @@
 #include "nx/hle/services/hid.c"
 #include "nx/hle/services/misc.c"
 #include "nx/hle/hle.c"
+int g_opt_tv_mode = 1; /* the TV mode in effect, which options.c keeps: TV mode */
 
 u8* g_mem;
 const u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull};
@@ -696,10 +697,10 @@ static void test_hid(void) {
         check_npad_latest_sample(0, HO_HidNpadInternalState_full_key_lifo, g_hle.hid.samp);
     }
     CHECK(npad_style_at(8) == 1u << 1);
-    g_settings.tv_mode = 1;
+    g_opt_tv_mode = 1;
     hid_mode_changed();
     CHECK(npad_style_at(8) == 0);
-    g_settings.tv_mode = 0;
+    g_opt_tv_mode = 0;
     hid_update();
     CHECK(npad_style_at(8) == 1u << 1);
     /* the handheld Npad's full-key LIFO carries No1's state too */
@@ -1802,7 +1803,7 @@ static void test_nim(void) {
     svcobj_unref(nim);
 }
 int main(void) {
-    g_settings.tv_mode = 0; /* handheld, as the test was written for */
+    g_opt_tv_mode = 0; /* handheld, as the test was written for */
     hle_init();
     g_hle.kernel.title_id = 0x0100BF00112C0000ull; /* the title the test was written for */
     g_mem = calloc(1, 0x400000);                   /* caps' 1280x720 RGBA picture at 0x10000 */

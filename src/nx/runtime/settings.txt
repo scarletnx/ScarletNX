@@ -138,14 +138,16 @@ setting Save layout
 
 table g_display_ini
 setting TV mode
-    key docked
+    key tv_mode
     int 0 2
-    default 1
+    default 0
     startup
     set options_tv_mode_set
-    words Off|On|Auto
-    help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720), 2 = Auto: TV mode while the
-    help host is on its charger, handheld mode on its battery. Auto switches while the game runs
+    words Auto|Docked|Handheld
+    help 0 = Auto: on a computer, TV mode (the console in its dock) while it is on its charger or has no battery and
+    help handheld mode (1280x720) on its battery, switching while the game runs; on a phone or tablet, handheld mode on
+    help its own screen. 1 = Docked, TV mode; 2 = Handheld, handheld mode. It takes the place of docked, whose 1 was
+    help TV mode and 2 Auto (docs/user/deprecations.md)
 setting Fullscreen
     key fullscreen
     int 0 1
@@ -882,8 +884,8 @@ setting TV mode shortcut
     default Ctrl+D
     label TV mode
     set hotkey_set
-    help The key, as hotkey_help's, that steps the TV mode round On, Off and Auto while the game runs, as the game's
-    help menu's TV mode row does: for this run, docked keeps the .ini's choice
+    help The key, as hotkey_help's, that steps the TV mode round Docked, Handheld and Auto while the game runs, as the
+    help game's menu's TV mode row does: for this run, tv_mode keeps the .ini's choice
 
 table g_network_ini
 setting Network

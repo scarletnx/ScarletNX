@@ -313,7 +313,7 @@ static const struct {
                       {"lossless_path", "LSFG went with the OpenGL renderer"},
                       {"touch_controls", "now controls"},
                       {"touch_controls_opacity", "the on-screen controls are opaque"},
-                      {"modo_tv", "now docked"},
+                      {"modo_tv", "now tv_mode"},
                       {"idioma", "now language"},
                       {"resolucion", "now resolution"},
                       {"sombras", "now shadows"},
@@ -337,6 +337,7 @@ static const struct {
                       {"astc_background_threads", "astc_background's CPU threads are gone: the GPU encodes alone"},
                       {"press", "now script, whose press_at:press is the same press"},
                       {"press_at", "now script, whose press_at:press is the same press"},
+                      {"docked", "now tv_mode, whose 0 is Auto, 1 Docked (docked's 1) and 2 Handheld (docked's 0)"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;

@@ -279,7 +279,7 @@ static void keys_page(void) {
     for (i = 0; i < 40; ++i) assert(overlay_pad(down) == OVERLAY_NONE);
     draw();
     assert(shows("right stick") && shows_as("I, J, K, L", 0, light) && icon_drawn(GUI_ICON_JOYSTICK));
-    assert(shows_as("Ctrl+D", 0, light) && shows("TV on/off/auto")); /* the last runtime key's, after Esc's */
+    assert(shows_as("Ctrl+D", 0, light) && shows("TV/handheld/auto")); /* the last runtime key's, after Esc's */
     assert(!shows("\x19") && shows("\x18") && !shows("a screenshot"));
     overlay_scroll(-100);
     draw();
@@ -1030,18 +1030,18 @@ int main(void) {
     draw();
     assert(text_at(C - 3, 8, "On"));
     assert(tap(5, 3) == OVERLAY_NONE && !g_settings.stats);
-    /* TV mode: the choice in effect in docked's words, no page under it. A tap or a select steps it on and Left or
+    /* TV mode: the choice in effect in tv_mode's words, no page under it. A tap or a select steps it on and Left or
        Right either way, each press once: a direction held steps it no further, as each step docks or undocks the
        console under the game. Nothing goes to the .ini, the last key stored still Stats' */
-    assert(text_at(C - 3, 7, "On") && !text_at(C - 2, 7, ">"));
+    assert(text_at(C - 7, 7, "Docked") && !text_at(C - 2, 7, ">"));
     assert(tap(4, 3) == OVERLAY_NONE && tv.steps == 1 && tv.last == 1);
     draw();
-    assert(text_at(C - 5, 7, "Auto"));
+    assert(text_at(C - 9, 7, "Handheld"));
     assert(overlay_side(-1) == OVERLAY_NONE && tv.steps == 2 && tv.last == -1);
     assert(overlay_side_held(-1) == OVERLAY_NONE && overlay_side_held(1) == OVERLAY_NONE && tv.steps == 2);
     assert(overlay_select() == OVERLAY_NONE && tv.steps == 3 && tv.last == 1);
     draw();
-    assert(text_at(C - 3, 7, "On") && !strcmp(stored, "stats"));
+    assert(text_at(C - 7, 7, "Docked") && !strcmp(stored, "stats"));
     /* the page kept from frame to frame, laid out again for what changes elsewhere with no call of the menu's between:
        a setting a row shows (F12's Stats), the TV mode (its key), RenderDoc's capture */
     g_settings.stats = 1;
@@ -1050,13 +1050,13 @@ int main(void) {
     g_settings.stats = 0;
     draw();
     assert(text_at(C - 4, 8, "Off"));
-    tv.choice = 2;
+    tv.choice = 0;
     draw();
     assert(text_at(C - 5, 7, "Auto"));
     tv.choice = 1;
     can_capture = 1;
     draw();
-    assert(text_at(6, 9, "Capture frame") && text_at(C - 3, 7, "On"));
+    assert(text_at(6, 9, "Capture frame") && text_at(C - 7, 7, "Docked"));
     can_capture = 0;
     draw();
     assert(text_at(6, 9, "Exit"));

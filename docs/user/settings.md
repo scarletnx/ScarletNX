@@ -26,8 +26,8 @@ A game keeps its settings in its `.ini` (`recompiled/<id>/<id>.ini`), a section 
 Settings show a group for each section ([GUI launcher](gui.md)).
 
 `Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
-Restart for `docked` (`Auto` follows the host's power while the game runs, and `hotkey_tv_mode` and the game's menu's
-**TV mode** change the mode for the run), `fullscreen`, `transition_screen`, `language`, `resolution`,
+Restart for `tv_mode` (a computer's `Auto` follows its power while the game runs, and `hotkey_tv_mode` and the game's
+menu's **TV mode** change the mode for the run), `fullscreen`, `transition_screen`, `language`, `resolution`,
 `anisotropy`, `hdr_game`, `hdr_paperwhite`, `hdr_peak`, `memory_gb`, `memory_fit_mode`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
 `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `pipeline_libraries`, `prepare_shaders`, `compress_shader_cache`,
 `compress_prepared_shaders`, `jit_threads`, `vertex_input_dynamic_state`, `astc_mode`, every `vk_ext_*`, and
@@ -54,7 +54,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `docked` | `1` | `1` is TV mode, `0` handheld mode (1280x720), `2` Auto: TV mode while the host is on its charger, handheld mode on its battery. Auto switches while the game runs. `hotkey_tv_mode` (Ctrl+D) and the game's menu's **TV mode** step On, Off and Auto for the run, the `.ini`'s value as it was |
+| `tv_mode` | `0` | `0` (Auto) is, on a computer, TV mode while it is on its charger or has no battery and handheld mode (1280x720) on its battery, switching while the game runs; on a phone or tablet, handheld mode on its own screen. The log says what it picks and why. `1` (Docked) is TV mode, `2` (Handheld) handheld mode. It takes the place of `docked`, whose `1` was TV mode and `2` Auto ([Deprecations](deprecations.md)) `hotkey_tv_mode` (Ctrl+D) and the game's menu's **TV mode** step Docked, Handheld and Auto for the run, the `.ini`'s value as it was |
 | `fullscreen` | `0` | `1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets it for one run. F11 or Alt+Enter switches without changing it. A 3DS game takes it too (`--fullscreen=1`, not in `--seconds` or `--max-blocks` runs), with the same keys |
 | `transition_screen` | `1` | `1`: when a collection's program starts another (a game picked in its menu), the new program's window shows the loading screen from a quarter second after it opens until the game draws: the game's name and `(Program N)`, the game's cover, and as its steps the program's number, the one that started it, the user, the version and update, the DLCs, what was handed over, the GPU, the title ID and the build, `?` where not known. The launcher's run screen shows that program's page while no window is open (with the recompile of a program not made). `0`: the window stays black until the game draws, and the run screen shows the log |
 | `language` | `1` | The game's language, English (US). The `.ini` lists the others, `0` to `17`. One the runtime doesn't know is English (US) |
@@ -269,7 +269,7 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 | `hotkey_capture` | `Ctrl+Shift+F12` | Captures the next frame with RenderDoc while RenderDoc is in the game (`renderdoc`) |
 | `hotkey_mouse` | `Ctrl+G` | Lets the mouse go from a game that holds it (an Ounce game's Joy-Con mouse mode), and holds it again |
 | `hotkey_quit` | `Escape` | Quits the game: a first press warns, and a second within 3 seconds quits |
-| `hotkey_tv_mode` | `Ctrl+D` | Steps the TV mode round On, Off and Auto for the run, as the game's menu's **TV mode** row does; `docked` keeps the `.ini`'s choice |
+| `hotkey_tv_mode` | `Ctrl+D` | Steps the TV mode round Docked, Handheld and Auto for the run, as the game's menu's **TV mode** row does; `tv_mode` keeps the `.ini`'s choice |
 
 ## Network
 

@@ -98,7 +98,7 @@ static const struct {
             {GUI_ICON_IMAGE, HOTKEY_CAPTURE, NULL, "capture a frame"}, /* while RenderDoc is in the process */
             {GUI_ICON_POINTER, HOTKEY_MOUSE, NULL, "let the mouse go, hold it"},
             {GUI_ICON_LOG_OUT, HOTKEY_QUIT, NULL, "quit the game"},
-            {GUI_ICON_MONITOR, HOTKEY_TV_MODE, NULL, "TV on/off/auto"},
+            {GUI_ICON_MONITOR, HOTKEY_TV_MODE, NULL, "TV/handheld/auto"},
             {GUI_ICON_GAMEPAD, -1, "X, Space", "A"},
             {GUI_ICON_GAMEPAD, -1, "Z, C, V", "B, X, Y"},
             {GUI_ICON_GAMEPAD, -1, "Q, E", "L, R"},
@@ -301,8 +301,8 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
         static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Save states",   "Shortcuts",
                                                         "TV mode",     "Stats",          "Capture frame", "Exit"};
         snprintf(text, size, "%s", main_items[main_item(i)]);
-        if (main_item(i) == M_TV_MODE) /* the choice in effect, in docked's words: the .ini keeps its own */
-            ini_word(ini_find(g_display_ini, "docked"), options_tv_mode_choice(), value, vsize);
+        if (main_item(i) == M_TV_MODE) /* the choice in effect, in tv_mode's words: the .ini keeps its own */
+            ini_word(ini_find(g_display_ini, "tv_mode"), options_tv_mode_choice(), value, vsize);
         else if (main_item(i) < M_CAPTURE)
             snprintf(value, vsize, ">");
         return;

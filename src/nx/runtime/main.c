@@ -1507,7 +1507,7 @@ int snx_main(int argc, char** argv) {
         video_init(title, addons);
     }
     switch_start(title);
-    /* the log's line on the host's power state, and the mode docked's Auto picks, before the game's first thread */
+    /* the log's line on the host's power state, and the mode tv_mode's Auto picks, before the game's first thread */
     options_tv_mode_start();
     if (g_settings.profiler) {
 #if defined(_WIN32)

@@ -121,7 +121,7 @@ def main():
     run(['--board-info', '--shadows=0'], 2, 'unknown setting: --shadows=0')
     # and the Display table's fullscreen, never its others
     run(['--board-info', '--fullscreen=1'], 0, 'Old 3DS')
-    run(['--board-info', '--docked=0'], 2, 'unknown setting: --docked=0')
+    run(['--board-info', '--tv_mode=2'], 2, 'unknown setting: --tv_mode=2')
     # and the Performance table's fps_limit, read as the Switch reads it, a value not taken as given said
     out = run(['--board-info', '--fps_limit=120'], 0, 'Old 3DS')
     assert 'fps_limit' not in out, out

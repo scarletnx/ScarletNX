@@ -228,7 +228,7 @@ typedef struct {
     u32 msg_event;
     u32 sleep_lock_event; /* the sleep lock is granted at once, so this is signaled from the first request on */
     u32 launchable_event; /* library applets can be launched from the start */
-    u32 resolution_event; /* signaled when docked's Auto changes the display resolution while the game runs */
+    u32 resolution_event; /* signaled when tv_mode's Auto changes the display resolution while the game runs */
     SvcObj* user_channel[AM_USER_CHANNEL]; /* copies of the storages unpopped, the last one on top */
     u32 user_count;
     /* the application's programs (ExecuteProgram): this one's index, the one that started it (its index plus 1, 0 when

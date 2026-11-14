@@ -1,15 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* docked's Auto (runtime/options.c) over a faked host power source: the mode each state picks (the battery handheld,
+/* tv_mode's Auto (runtime/options.c) over a faked host power source: the mode each state picks (the battery handheld,
    the charger TV, a state that cannot be read TV), the log line that names both, am's and hid's change on a switch
    and on no other update, a change only when the watcher marks one, the 15 s query of a host with no watcher, and
-   Off and On never asking the host; the steps round On, Off and Auto of hotkey_tv_mode and the game's menu. And a key the .ini gives twice: the last line's value, and a line that names the
+   Docked and Handheld never asking the host; a phone's Auto handheld whatever its power; the steps round Docked, Handheld and Auto of hotkey_tv_mode and the game's menu. And a key the .ini gives twice: the last line's value, and a line that names the
    key and both values; and memory_fit, deprecated, read from an old .ini as memory_fit_mode while the file gives that
    one none, and the file written with memory_fit_mode and memory_fit under [Deprecated]. And controls_opacity and
    controls_alpha, deprecated, kept under [Deprecated], and the other keys settings.txt dropped. And vk_descriptors,
    deprecated: the
    default an older version wrote in every game's .ini is no pick, so the game runs Automatic and nothing is said over
-   its picture; a pick is carried to vk_descriptors_mode, and --vk_descriptors=N is this run's */
+   its picture; a pick is carried to vk_descriptors_mode, and --vk_descriptors=N is this run's. And docked, deprecated,
+   read as tv_mode: its 0 Handheld, its 2 Auto, its 1 the default every .ini had written, Auto */
 #include "common/utilities/common.h"
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h"
@@ -143,24 +144,27 @@ NO_SET(hotkey_set)
 
 #define POLL_NS (15ull * 1000000000ull)
 
-/* docked as the .ini or the command line gives it: ini_read, then its set function */
-static void docked(const char* v) {
-    const IniOpt* o = ini_find(g_display_ini, "docked");
+/* tv_mode as the .ini or the command line gives it: ini_read, then its set function */
+static void tv_mode(const char* v) {
+    const IniOpt* o = ini_find(g_display_ini, "tv_mode");
     CHECK(o && o->set == options_tv_mode_set);
     ini_read(o, v);
 }
-static int mode(void) { return __atomic_load_n(&g_settings.tv_mode, __ATOMIC_RELAXED); }
+static int mode(void) { return snx_tv_mode(); }
 
-/* Off and On are the mode, whatever the host's power: the host is never asked, nothing is watched or switched */
+/* Docked and Handheld are the mode, whatever the host's power: the host is never asked, nothing is watched or
+   switched. Auto's choice: a phone handheld whatever its power, a computer TV but on its battery */
 static void test_fixed(void) {
+    CHECK(!options_tv_mode_auto(1, 1) && !options_tv_mode_auto(1, 0) && !options_tv_mode_auto(1, -1));
+    CHECK(options_tv_mode_auto(0, 1) && !options_tv_mode_auto(0, 0) && options_tv_mode_auto(0, -1));
     g_test.on_charger = 0;
-    docked("1");
+    tv_mode("1");
     CHECK(mode() == 1);
     options_tv_mode_start();
     options_tv_mode_update();
     CHECK(mode() == 1);
     g_test.on_charger = 1;
-    docked("0");
+    tv_mode("2");
     CHECK(mode() == 0);
     g_test.changed = 1;
     options_tv_mode_start();
@@ -174,12 +178,12 @@ static void test_fixed(void) {
 static void test_auto_watched(void) {
     g_test.watch = 0;
     g_test.on_charger = 0;
-    docked("2");
+    tv_mode("0");
     CHECK(mode() == 0);
     CHECK(g_test.queries == 1);
     options_tv_mode_start();
     CHECK(mode() == 0);
-    CHECK(!strcmp(g_test.logged, "power: the host is on its battery: TV mode Auto picks handheld mode\n"));
+    CHECK(!strcmp(g_test.logged, "power: the host is on its battery: tv_mode=0 (Auto) picks handheld mode\n"));
     CHECK(g_test.am == 0 && g_test.hid == 0); /* the mode the game starts in is no change */
     /* the charger, which the watcher has not marked yet: nothing asks, nothing switches */
     g_test.on_charger = 1;
@@ -191,7 +195,7 @@ static void test_auto_watched(void) {
     options_tv_mode_update();
     CHECK(mode() == 1);
     CHECK(g_test.am == 1 && g_test.hid == 1);
-    CHECK(!strcmp(g_test.logged, "power: the host is on its charger: TV mode Auto picks TV mode\n"));
+    CHECK(!strcmp(g_test.logged, "power: the host is on its charger: tv_mode=0 (Auto) picks TV mode\n"));
     CHECK(!g_test.changed);
     options_tv_mode_update();
     CHECK(mode() == 1 && g_test.am == 1 && g_test.queries == 1);
@@ -200,19 +204,26 @@ static void test_auto_watched(void) {
     plat_power_mark_changed();
     options_tv_mode_update();
     CHECK(mode() == 0 && g_test.am == 2 && g_test.hid == 2);
-    CHECK(!strcmp(g_test.logged, "power: the host is on its battery: TV mode Auto picks handheld mode\n"));
+    CHECK(!strcmp(g_test.logged, "power: the host is on its battery: tv_mode=0 (Auto) picks handheld mode\n"));
     /* a state that cannot be read is TV mode, and says so */
     g_test.on_charger = -1;
     plat_power_mark_changed();
     options_tv_mode_update();
     CHECK(mode() == 1 && g_test.am == 3 && g_test.hid == 3);
-    CHECK(!strcmp(g_test.logged, "power: the host's power state cannot be read: TV mode Auto picks TV mode\n"));
+    CHECK(!strcmp(g_test.logged, "power: the host's power state cannot be read: tv_mode=0 (Auto) picks TV mode\n"));
     /* a mark with the same state: no switch, no line */
     {
         int lines = g_test.lines;
         plat_power_mark_changed();
         options_tv_mode_update();
         CHECK(mode() == 1 && g_test.am == 3 && g_test.lines == lines);
+    }
+    /* the choice stays Auto, which the log's line of settings off their default leaves out, whatever mode it picks */
+    {
+        char list[2048];
+        CHECK(g_settings.tv_mode == 0);
+        options_settings(list, sizeof list);
+        CHECK(!strstr(list, "tv_mode"));
     }
 }
 
@@ -224,7 +235,7 @@ static void test_auto_polled(void) {
     g_test.ns = 100 * POLL_NS;
     options_tv_mode_start();
     CHECK(mode() == 0 && g_test.am == 4 && g_test.hid == 4);
-    CHECK(!strcmp(g_test.logged, "power: the host is on its battery: TV mode Auto picks handheld mode\n"));
+    CHECK(!strcmp(g_test.logged, "power: the host is on its battery: tv_mode=0 (Auto) picks handheld mode\n"));
     queries = g_test.queries;
     g_test.on_charger = 1;
     g_test.ns += POLL_NS - 1;
@@ -233,35 +244,37 @@ static void test_auto_polled(void) {
     g_test.ns += 1;
     options_tv_mode_update();
     CHECK(mode() == 1 && g_test.queries == queries + 1 && g_test.am == 5 && g_test.hid == 5);
-    CHECK(!strcmp(g_test.logged, "power: the host is on its charger: TV mode Auto picks TV mode\n"));
+    CHECK(!strcmp(g_test.logged, "power: the host is on its charger: tv_mode=0 (Auto) picks TV mode\n"));
 }
 
-/* hotkey_tv_mode and the game's menu's TV mode row: round On, Off and Auto, and back the other way, in effect at once
-   and told to the services on the next update, once for each mode they had not heard of; Auto asks the host and says
-   what it picks, and asks the platform for its watcher only where none watches yet */
+/* hotkey_tv_mode and the game's menu's TV mode row: round Docked, Handheld and Auto, and back the other way, in effect
+   at once and told to the services on the next update, once for each mode they had not heard of; Auto asks the host and
+   says what it picks, and asks the platform for its watcher only where none watches yet */
 static void test_cycle(void) {
     char text[64];
     int am, hid, asked;
-    docked("1");
+    tv_mode("1");
     g_test.watch = 0; /* this host has a watcher, which the last test's had not */
     g_test.on_charger = 0;
     am = g_test.am;
     hid = g_test.hid;
     asked = g_test.asked;
     CHECK(options_tv_mode_choice() == 1 && mode() == 1);
-    /* On to Off: handheld mode at once, its line and the same words for the toast; the services hear of it on the
-       update, and once */
-    CHECK(options_tv_mode_step(1, text, sizeof text) == 0 && options_tv_mode_choice() == 0 && mode() == 0);
-    CHECK(!strcmp(text, "TV mode: Off (handheld mode)") && !strcmp(g_test.logged, "TV mode: Off (handheld mode)\n"));
+    /* Docked to Handheld: handheld mode at once, its line and the same words for the toast; the services hear of it on
+       the update, and once */
+    CHECK(options_tv_mode_step(1, text, sizeof text) == 2 && options_tv_mode_choice() == 2 && mode() == 0);
+    CHECK(!strcmp(text, "TV mode: Handheld (handheld mode)") &&
+          !strcmp(g_test.logged, "TV mode: Handheld (handheld mode)\n"));
     CHECK(g_test.am == am && g_test.hid == hid);
     options_tv_mode_update();
     CHECK(g_test.am == am + 1 && g_test.hid == hid + 1);
     options_tv_mode_update();
     CHECK(g_test.am == am + 1 && g_test.hid == hid + 1);
-    /* Off to Auto on the battery: the watcher asked for, the host read and said; handheld mode still, nothing to tell */
+    /* Handheld to Auto on the battery: the watcher asked for, the host read and said; handheld mode still, nothing to
+       tell */
     g_test.said[0] = 0;
-    CHECK(options_tv_mode_step(1, text, sizeof text) == 2 && mode() == 0 && g_test.asked == asked + 1);
-    CHECK(!strcmp(g_test.said, "power: the host is on its battery: TV mode Auto picks handheld mode\n"
+    CHECK(options_tv_mode_step(1, text, sizeof text) == 0 && mode() == 0 && g_test.asked == asked + 1);
+    CHECK(!strcmp(g_test.said, "power: the host is on its battery: tv_mode=0 (Auto) picks handheld mode\n"
                                "TV mode: Auto (handheld mode)\n"));
     CHECK(!strcmp(text, "TV mode: Auto (handheld mode)"));
     options_tv_mode_update();
@@ -271,20 +284,20 @@ static void test_cycle(void) {
     plat_power_mark_changed();
     options_tv_mode_update();
     CHECK(mode() == 1 && g_test.am == am + 2 && g_test.hid == hid + 2);
-    /* Auto to On, the mode it had: nothing to tell. On to Off and on to Auto before an update: TV mode again, which
-       the services never stopped hearing, and the watcher not asked twice */
+    /* Auto to Docked, the mode it had: nothing to tell. Docked to Handheld and on to Auto before an update: TV mode
+       again, which the services never stopped hearing, and the watcher not asked twice */
     CHECK(options_tv_mode_step(1, NULL, 0) == 1 && mode() == 1);
-    CHECK(options_tv_mode_step(1, NULL, 0) == 0 && mode() == 0);
-    CHECK(options_tv_mode_step(1, NULL, 0) == 2 && mode() == 1 && g_test.asked == asked + 1);
+    CHECK(options_tv_mode_step(1, NULL, 0) == 2 && mode() == 0);
+    CHECK(options_tv_mode_step(1, NULL, 0) == 0 && mode() == 1 && g_test.asked == asked + 1);
     options_tv_mode_update();
     CHECK(g_test.am == am + 2 && g_test.hid == hid + 2);
-    /* the other way: Auto, Off, On, Auto */
-    CHECK(options_tv_mode_step(-1, NULL, 0) == 0 && mode() == 0);
+    /* the other way: Auto, Handheld, Docked, Auto */
+    CHECK(options_tv_mode_step(-1, NULL, 0) == 2 && mode() == 0);
     CHECK(options_tv_mode_step(-1, NULL, 0) == 1 && mode() == 1);
-    CHECK(options_tv_mode_step(-1, NULL, 0) == 2 && mode() == 1);
+    CHECK(options_tv_mode_step(-1, NULL, 0) == 0 && mode() == 1);
     /* a text too small for the line: cut, ended */
     options_tv_mode_step(1, text, 9);
-    CHECK(!strcmp(text, "TV mode:") && !strcmp(g_test.logged, "TV mode: On (TV mode)\n"));
+    CHECK(!strcmp(text, "TV mode:") && !strcmp(g_test.logged, "TV mode: Docked (TV mode)\n"));
 }
 
 /* vk_memory at the top, in no section, and again in [Debug]: the second line's 0 is taken, and a line says so with
@@ -554,6 +567,44 @@ static int options_vk_descriptors_first(const char* which) {
     return 0;
 }
 
+/* docked (0 handheld, 1 TV, the default, 2 Auto) in an old .ini: 0 is tv_mode's Handheld (2), 2 its Auto (0), and 1 the
+   default every game's .ini had written, which leaves tv_mode at its own Auto. The file is written with tv_mode, and
+   docked under [Deprecated], which the next run does not read */
+static void test_docked_old(void) {
+    char *text, *again;
+    CHECK(options_docked_old("0") == 2 && options_docked_old("2") == 0 && options_docked_old("1") == -1);
+    CHECK(options_docked_old("3") == -2 && options_docked_old("on") == -2 && options_docked_old("") == -2);
+    g_test.write = 1;
+    text = open_ini("[Display]\ndocked=0\n"); /* a startup setting: the file's to read, the mode kept from the first */
+    CHECK(strstr(g_test.said,
+                 "settings: docked=0, deprecated, is tv_mode=2 (Handheld) now (docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\ntv_mode=2\n") && strstr(text, "\n[Deprecated]\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\ndocked=0\n"));
+    again = open_ini(text); /* the next run: tv_mode given, docked not read again */
+    CHECK(!strstr(g_test.said, "settings: docked=") && again && strstr(again, "\ntv_mode=2\n"));
+    free(again);
+    free(text);
+    text = open_ini("[Display]\ndocked=2\n");
+    CHECK(strstr(g_test.said, "settings: docked=2, deprecated, is tv_mode=0 (Auto) now (docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\ntv_mode=0\n"));
+    free(text);
+    text = open_ini("[Display]\ndocked=1\n");
+    CHECK(strstr(g_test.said, "settings: docked=1, deprecated, was its default: tv_mode takes its own, 0 (Auto), TV "
+                              "mode on a computer on its charger, handheld mode on its battery or on a phone "
+                              "(docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\ntv_mode=0\n"));
+    free(text);
+    text = open_ini("[Display]\ndocked=tv\n");
+    CHECK(strstr(g_test.said, "settings: docked=tv, deprecated, is none of 0, 1 and 2: tv_mode takes its default, 0 "
+                              "(Auto) (docs/user/deprecations.md)\n"));
+    free(text);
+    /* the new key given, the old one is not read */
+    text = open_ini("[Display]\ndocked=0\ntv_mode=1\n");
+    CHECK(!strstr(g_test.said, "settings: docked=") && text && strstr(text, "\ntv_mode=1\n"));
+    free(text);
+    g_test.write = 0;
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) return options_vk_descriptors_first(argv[1]);
     test_fixed();
@@ -568,6 +619,7 @@ int main(int argc, char** argv) {
     test_dropped_keys_old();
     test_vk_descriptors_old_default();
     test_vk_descriptors_old();
+    test_docked_old();
     printf("options_tv_mode: ok\n");
     return 0;
 }
