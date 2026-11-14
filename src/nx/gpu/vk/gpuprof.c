@@ -70,6 +70,38 @@ typedef struct {
     u64 ns, passes, draws;
 } GpKey;
 
+/* the passes that took the most, by what they had: their target, the draws in them and what was recorded in the gap
+   before them (copies, barriers, dispatches). A pass that costs milliseconds at a few thousand pixels is a stall or a
+   gap, not its pixels, and this says which of the three it was */
+#define GP_SLOW 8
+typedef struct {
+    u64 gva, ns;
+    u32 w, h, fmt, draws, xfers, barriers, dispatches;
+    u64 n;
+} GpSlow;
+static GpSlow g_slow[GP_SLOW];
+static void gp_slow(const GpPass* p, u64 ns) {
+    u32 worst = 0;
+    if (ns < 300000) return; /* under 0.3 ms says nothing about a frame */
+    for (u32 i = 0; i < GP_SLOW; i++) { /* the same pass again: summed with it */
+        GpSlow* s = &g_slow[i];
+        if (s->n && s->gva == p->gva && s->w == p->w && s->h == p->h && s->fmt == p->fmt && s->draws == p->draws &&
+            s->xfers == p->xfers && s->barriers == p->barriers && s->dispatches == p->dispatches) {
+            s->ns += ns, s->n++;
+            return;
+        }
+    }
+    for (u32 i = 0; i < GP_SLOW; i++) { /* the least of them, an empty one first, gives way to a pass that costs more */
+        const GpSlow* s = &g_slow[i];
+        if (!s->n) {
+            worst = i;
+            break;
+        }
+        if (!g_slow[worst].n || s->ns / s->n < g_slow[worst].ns / g_slow[worst].n) worst = i;
+    }
+    if (g_slow[worst].n && ns <= g_slow[worst].ns / g_slow[worst].n) return;
+    g_slow[worst] = (GpSlow){p->gva, ns, p->w, p->h, p->fmt, p->draws, p->xfers, p->barriers, p->dispatches, 1};
+}
 static int g_on = -1;
 static GpSlot* g_slot[VK_FRAMES];
 static GpKey g_key[GP_KEYS];
@@ -621,6 +653,7 @@ void vk_gpuprof_frame_done(u32 slot) {
         u64 ns = (u64)((double)(ts[p->qi + 1] - ts[p->qi]) * period);
         GpKey* k = gp_key(p);
         g_pass_ns += ns;
+        gp_slow(p, ns);
         if (!k) continue;
         k->ns += ns;
         k->passes++;
@@ -751,6 +784,7 @@ static void gp_report(void) {
         memset(g_gap_ns, 0, sizeof g_gap_ns);
         memset(g_gaps, 0, sizeof g_gaps);
         memset(g_key, 0, sizeof g_key);
+        memset(g_slow, 0, sizeof g_slow);
         g_pass_ns = g_span_ns = g_frames = g_lost = 0;
         gp_idle_report();
         return;
@@ -783,6 +817,15 @@ static void gp_report(void) {
             (unsigned long long)sorted[i].draws, (unsigned long long)sorted[i].gva, sorted[i].w, sorted[i].h,
             sorted[i].fmt);
     memset(g_key, 0, sizeof g_key);
+    for (u32 i = 0; i < GP_SLOW; i++) {
+        const GpSlow* s = &g_slow[i];
+        if (s->n)
+            LOG("vulkan: GPU   a pass of %.2f ms: target %llx %ux%u format %u, %u draws, gap before it %u copies, "
+                "%u barriers, %u dispatches (%llu of them a frame)\n",
+                (double)s->ns / 1e6 / (double)s->n, (unsigned long long)s->gva, s->w, s->h, s->fmt, s->draws,
+                s->xfers, s->barriers, s->dispatches, (unsigned long long)s->n / (unsigned long long)g_frames);
+    }
+    memset(g_slow, 0, sizeof g_slow);
     /* the dispatches by tag: compute programs by key (vulkan: compute KEY ready), and the renderer's own pipelines by
        their VK_PROF_* */
     if (g_disps) {
