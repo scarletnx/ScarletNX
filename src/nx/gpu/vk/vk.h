@@ -530,6 +530,9 @@ void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal);
 void vk_finish_at(const char* file, int line);
 #define vk_finish() vk_finish_at(__FILE__, __LINE__)
 void vk_finishes_log(void);
+/* who asked for what a finish lands (a guest write, a read of guest memory, ...), for vk_finishes_log's sites: set
+   by the renderer's hooks around vk_gfx_image_mem_need and the front end's flush, under vk_lock */
+extern const char* g_vk_finish_who;
 /* a save state's load (Renderer.reset): every surface, buffer and sample counter kept of the old guest memory goes */
 void vk_surf_forget_all(void);
 void vk_buf_forget_all(void);
@@ -1163,6 +1166,8 @@ int vk_rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at);
 /* whether vk_rt_overlay has a render target to record over [gva, gva + size) */
 int vk_rt_over(u64 gva, u64 size);
 extern u64 g_vk_rt_readbacks;
+/* render targets dropped instead of written back: the guest wrote every byte of them, so memory is the truth */
+extern u64 g_vk_rt_dropped;
 u64 vk_surf_flush_size(const Surf* s);
 void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at);
 /* keep: when non-NULL (and original is), the image's bytes as the landing leaves them, malloc'd, keep_size of them */

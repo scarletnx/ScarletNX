@@ -1151,6 +1151,7 @@ void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
                                          .value = signal, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
 }
 
+const char* g_vk_finish_who;
 u64 g_vk_finishes, g_vk_finish_ns;
 /* the finishes since the last stats by their call site (a file's literal and a line), with their time, under vk_lock
    as vk_finish is: one game made nine a frame, a round trip each with the GPU idle after it */
