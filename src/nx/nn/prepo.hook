@@ -14,13 +14,16 @@ struct nn::prepo::PlayReport @version(>= 15.0.0) { addr buffer @0x28; u64 capaci
 @version(>= 9.0.0) hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = nnprepo_save uses nn::prepo::PlayReport
 @version(< 9.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user_unlimited uses nn::prepo::PlayReport
 @version(>= 9.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user uses nn::prepo::PlayReport
-# Send, the report sent at once, which the SDK has from 16: its AsyncContext, which the caller passes in x8, is the
-# SDK's own finished one. Read in SDK 16.2, 18.3, 19.3 and 20.5; no older SDK of the dumps here exports it
-struct nn::prepo::AsyncContext @version(>= 16.0.0) { addr object @0x0; u32 result @0x8 } size 0x10
-@version(>= 16.0.0) hook _ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE(addr report, addr uid) = nnprepo_send uses nn::prepo::PlayReport, nn::prepo::AsyncContext
+# Send, the report sent at once: its AsyncContext, which the caller passes in x8, is the SDK's own finished one. Read
+# in SDK 16.2, 18.3, 19.3 and 20.5; no SDK 15 of the dumps here exports it, but the session's SendReportWithUser is
+# there from system version 15.0.0 (switchbrew), and with the session never opened (ipc::Initialize below) an SDK 15
+# Send left to its own code would ask a session that isn't there: taken as 16's, as 15's Save is 16's code
+struct nn::prepo::AsyncContext @version(>= 15.0.0) { addr object @0x0; u32 result @0x8 } size 0x10
+@version(>= 15.0.0) hook _ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE(addr report, addr uid) = nnprepo_send uses nn::prepo::PlayReport, nn::prepo::AsyncContext
 # AddSessionId, which asks the session for the system's session id and adds the report's own id under the key. Read in
-# SDK 10.4, 12.3, 13.3, 14.3, 16.2, 18.3, 19.3 and 20.5, each alike; no older SDK of the dumps here exports it
-@version(>= 10.0.0) hook _ZN2nn5prepo12AddSessionIdEPNS0_10PlayReportEPKc(addr report, addr key) -> u32 = nnprepo_add_session_id
+# SDK 10.4, 12.3, 13.3, 14.3, 16.2, 18.3, 19.3 and 20.5, each alike; no SDK 9 of the dumps here exports it, but the
+# session's GetSystemSessionId is there from system version 9.0.0 (switchbrew): from 9, for the reason Send is from 15
+@version(>= 9.0.0) hook _ZN2nn5prepo12AddSessionIdEPNS0_10PlayReportEPKc(addr report, addr key) -> u32 = nnprepo_add_session_id
 hook _ZN2nn5prepo28RequestImmediateTransmissionEv() -> u32 = nnprepo_request_immediate_transmission a32 @version(< 1.0.0)
 hook _ZN2nn5prepo21GetTransmissionStatusEPNS0_18TransmissionStatusE(addr status) -> u32 = nnprepo_get_transmission_status a32 @version(< 1.0.0)
 # what nn::prepo::Initialize and the library's first use end in: the session's start, and its end
