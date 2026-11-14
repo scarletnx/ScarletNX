@@ -105,6 +105,12 @@ void vk_texture_pipeline_made(u64 ns) {
 int vk_graphics_playout_is(VkPipelineLayout layout) { (void)layout; return 0; }
 /* no occlusion queries, and no guest memory for cmd.c's sampled hashes */
 void vk_query_flush(VkCommandBuffer cb) { (void)cb; }
+/* nor timestamp reports: cmd.c brackets each command buffer for their busy time (query.c) */
+void vk_query_cb_begin(VkCommandBuffer cb) { (void)cb; }
+void vk_query_cb_end(VkCommandBuffer cb, int waits) {
+    (void)cb;
+    (void)waits;
+}
 /* cmd.c's sampled hash reads guest memory this way: there is none here */
 void vk_guest_peek(u64 gva, void* dst, u64 size) {
     (void)gva;
