@@ -417,7 +417,8 @@ setting FPS limit
     default game
     set options_fps_set
     help game = the pace the game asks for, as on the console (60 FPS, or 30 for a game made for 30); 0 = no limit;
-    help 10 to 1000 = that many frames a second. F4 turns the limit off and on
+    help 10 to 1000 = that many frames a second. The display's vsync follows a limit other than game, so a game that
+    help counts vsyncs as its time runs faster or slower with it. F4 turns the limit off and on
 setting Memory (GB)
     key memory_gb
     int 0 12
