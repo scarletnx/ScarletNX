@@ -3575,8 +3575,10 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, 
     return 1;
 }
 /* inplace: IN_NO, the range is copied; IN_TRY, read in place in guest memory where it can be (uma.c), else copied;
-   IN_ONLY, in place or 0 (a window is copied instead) */
-enum { IN_NO, IN_TRY, IN_ONLY };
+   IN_ONLY, in place or 0 (a window is copied instead). With IN_DEAR (vertices, indices, windows and constant buffers):
+   copied where imports are dear (vk_uma_imports_dear), unless a write in place is pending over the range, whose bytes
+   only the import holds yet */
+enum { IN_NO, IN_TRY, IN_ONLY, IN_DEAR = 4 };
 /* the biggest copy engine's source that takes a buffer of its own at once (buf_get): a sixty-fourth of the budget */
 static u64 copy_src_at_once(void) {
     u64 usage, budget;
@@ -3676,11 +3678,13 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
     }
     /* no GPU result is pending over it: guest memory holds its bytes, which the GPU reads where they are on a device
        that shares memory with the CPU. Not GPU-owned bytes, which only the GPU holds */
-    if (inplace && vk_uma() && !range_owned(gva, len) && vk_uma_get(gva, len, align, buf, off)) {
+    if ((inplace & 3) && vk_uma() && !range_owned(gva, len) &&
+        !((inplace & IN_DEAR) && vk_uma_imports_dear() && !vk_uma_pending(gva, len)) &&
+        vk_uma_get(gva, len, align, buf, off)) {
         g_buf_kind = 16;
         return 1;
     }
-    if (inplace == IN_ONLY) return 0;
+    if ((inplace & 3) == IN_ONLY) return 0;
     /* The page cache (pagespace.c), which holds the bytes by guest page: a range it serves binds its region's buffer
        with no copy while its pages hold still, and takes no buffer of its own. GPU-owned bytes too where the cache
        is their owner, which a draw that wrote them in place made it (vk_pages_write): another owner's it refuses, and
@@ -3901,7 +3905,7 @@ int vk_buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off) {
    instead of composing it over guest memory. In one game 216,000 vertex buffer bindings in 600 frames were composed
    that way, each a copy of its range into staging and a GPU copy of the result over it */
 int vk_buf_get_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
-    return buf_get(gva, len, buf, off, 0, align, IN_TRY);
+    return buf_get(gva, len, buf, off, 0, align, IN_TRY | IN_DEAR);
 }
 
 /* Windows: guest ranges that storage buffers with no size of their own (a bare address in a program's constant buffer,
@@ -3994,14 +3998,14 @@ static int win_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
 }
 int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment;
-    if (vk_uma() && buf_get(gva, len, buf, off, 0, align, IN_ONLY)) return 1; /* no window needed in place */
+    if (vk_uma() && buf_get(gva, len, buf, off, 0, align, IN_ONLY | IN_DEAR)) return 1; /* no window needed in place */
     return win_get(gva, len, align, buf, off);
 }
 /* A vertex or index range whose extent isn't known (an indirect draw's: the GPU reads the count), in a window as a
    bare storage buffer's: a binding reads on to the window's end, and draws over the same memory share its copy.
    align: the elements' */
 int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
-    if (vk_uma() && buf_get(gva, len, buf, off, 0, align, IN_ONLY)) return 1;
+    if (vk_uma() && buf_get(gva, len, buf, off, 0, align, IN_ONLY | IN_DEAR)) return 1;
     /* Its length is a guess, up to the game's limit. A range that starts in the CPU's bytes ends before the first
        page the GPU's bytes or a watched target are on: the elements of one draw do not run on into a target's memory,
        and those pages made the range a copy at every submission (buf_get_owned). In one game a 4 MiB index range ran
@@ -4055,7 +4059,7 @@ int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off) {
 /* a constant buffer: read in place where it can be, as vertices are, but the pages the runtime wrote (uma.c's front,
    its constant buffer updates among them), which are copied as before */
 int vk_buf_get_uniform(u64 gva, u64 len, VkBuffer* buf, u64* off) {
-    return buf_get(gva, len, buf, off, 1, vk_stage_align(), IN_TRY);
+    return buf_get(gva, len, buf, off, 1, vk_stage_align(), IN_TRY | IN_DEAR);
 }
 int vk_buf_get_copy_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     return buf_get(gva, len, buf, off, 2, vk_stage_align(), IN_NO);

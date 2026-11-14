@@ -27,6 +27,8 @@
    unmapped, decommitted or trapped needs no wait, and goes with its last reader.
 
    What stays a copy, and why:
+   - Vertices, indices, windows and constant buffers where imports are dear (vk_uma_imports_dear, uma_copies: amdgpu
+     takes every import's pages again at each submission), unless a write in place is pending over them.
    - The pages the runtime wrote (front): constant buffers the GPU front end writes between draws (CONST_BUFFER_DATA,
      r3d_const_upload), on the CPU, when the GPU thread meets the method, and the rest of gmem_write's. A draw recorded
      before such a write, but that the GPU runs after it, would read the new bytes in place. The other constant buffers
@@ -215,6 +217,25 @@ static _Thread_local struct {
 } t_uma;
 
 int vk_uma(void) { return g_vk.mem_path == VK_MEM_PATH_UMA; }
+/* amdgpu looks up the pages of every user-pointer buffer in a submission's list again at each submission (the CS
+   ioctl), and RADV puts every buffer the device holds in that list: each submission costs the kernel time for all the
+   pages imported. One game's battle map held about 90 imports, 270 MB, and made about 380 submissions a present, one
+   per compute dispatch: about 0.2 ms each on the recording thread, 70% of a core, and the GPU idled through most of
+   each frame for them (8.5 frames a second on a Radeon 890M). Its vertex and index ranges held about 120 MB of those
+   imports and its constant buffers about 40 MB; copied as on a discrete GPU, 90 MB stayed and the map ran at 14.9.
+   What stays imported are the pages written in place and the dispatches' storage ranges, 16 MiB windows that are far
+   dearer copied (5 frames a second). AMD's driver on Windows has no amdgpu user pointers. uma_copies overrides it */
+int vk_uma_imports_dear(void) {
+    if (g_settings.guest_buffers_copied) return g_settings.guest_buffers_copied == 2; /* uma_copies */
+    switch (g_vk.driver_id) {
+        case VK_DRIVER_ID_MESA_RADV:
+        case VK_DRIVER_ID_AMD_OPEN_SOURCE: return 1;
+#if defined(__linux__)
+        case VK_DRIVER_ID_AMD_PROPRIETARY: return 1;
+#endif
+        default: return 0;
+    }
+}
 u64 vk_uma_bound(void) { return g_uma.bound; }
 
 /* ------------------------------------------------------------ the model */

@@ -383,6 +383,9 @@ int vk_uma_way(int want, int how, int model, int has_import, int has_ahb);
 void vk_uma_init(void); /* after it */
 int vk_uma(void);       /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
+/* 1 where the driver takes every import's pages again at each submission (amdgpu's user pointers): an import costs
+   every submission, and vertices, indices and constant buffers are copied instead (buffer.c) */
+int vk_uma_imports_dear(void);
 u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
 void vk_uma_frame(void);
 void vk_uma_forget_all(void);
