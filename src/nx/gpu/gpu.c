@@ -140,6 +140,14 @@ int gmem_write(u64 gva, const void* src, u64 size) {
     gpu_mem_written(gva, size);
     return all ? 0 : -1;
 }
+int gmem_write_cb(u64 gva, const void* src, u64 size) {
+    int all;
+    if (!size) return 0;
+    gmem_before_write(gva, size);
+    all = copy_runs(gva, NULL, (const u8*)src, size);
+    gpu_mem_written_cb(gva, size);
+    return all ? 0 : -1;
+}
 /* the host pointer of [gva, gva + size) when contiguous, what the GPU holds of it landed (memory/own.c): the caller
    reads or writes it on the CPU, maybe with the renderer's lock held */
 u8* gmem_ptr_untracked(u64 gva, u64 size) {

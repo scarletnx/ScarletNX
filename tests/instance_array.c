@@ -45,6 +45,8 @@ int gmem_read(u64 gva, void* dst, u64 size) {
     return 0;
 }
 int gmem_write(u64 gva, const void* src, u64 size) { return (void)gva, (void)src, (void)size, 0; }
+/* a constant buffer upload: the same as any write here */
+int gmem_write_cb(u64 gva, const void* src, u64 size) { return gmem_write(gva, src, size); }
 u32 gmem_r32(u64 gva) { return (void)gva, 0; }
 void gmem_w32(u64 gva, u32 v) { (void)gva, (void)v; }
 u64 gmmu_translate(u64 gva) { return gva; }
