@@ -1244,6 +1244,12 @@ void vk_mem_trim(u64 extra, int force);
 /* the use past which vk_mem_trim frees, for a budget: the budget less a head (surface.c's trim_head, a 16th of the
    budget from 128 to 256 MiB, a quarter of it at most) */
 u64 vk_mem_trim_start(u64 budget);
+/* an image of the caches that found no memory: textures bound by tiles (texture.c resident_floor) made a level
+   coarser, the biggest first, until about need bytes go. Once a present: what they release goes when the frame is
+   done. The bytes released (surface.c) */
+u64 vk_tex_shed(u64 need);
+int vk_tex_can_coarsen(const Surf* t); /* texture.c: t is such a texture with a coarser level to go to */
+u64 vk_tex_coarser(Surf* t);           /* texture.c: t a level coarser, the bytes that released */
 u64 vk_mem_trimmed(void); /* statistics: the bytes vk_mem_trim freed */
 /* astc_mode's Auto follows the memory (gpu/texture/astc_bc.h): vk_astc_auto_trimmed, at the end of each trim that ran,
    with the use it counted (an allocation's extra bytes in it), what it left (the use less what it freed, an

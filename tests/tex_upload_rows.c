@@ -1379,6 +1379,11 @@ static void check_resident_floor(void) {
     g_res.cap = 0;
     memset(want, 0, sizeof want);
     CHECK(resident_bind_mapped(&t, want) && t.lod_floor == 0 && g_res.bound[1] && want[1] == 2 && want[4] == 1);
+    /* another image short of memory (vk_tex_shed): a level coarser releases level 0's page, and there is no coarser
+       level with bricks to go to after it */
+    t.bytes = 4 * 0x10000;
+    CHECK(vk_tex_coarser(&t) == 0x10000 && t.lod_floor == 1 && !g_res.bound[1] && g_res.bound[4]);
+    CHECK(!vk_tex_can_coarsen(&t) && vk_tex_coarser(&t) == 0);
     g_vk.has_view_min_lod = 0;
     g_map.count = 0;
     g_res.shape = (VkResidentShape){{0, 0, 0}, 0, 0};
