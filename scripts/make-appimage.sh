@@ -58,10 +58,10 @@ fi
 
 # The runtime stays the AppImage's program (the desktop entry's Exec), so a copy named after a game runs that game.
 # Started bare it opens its launcher, which runs Switch games with it and the other drivers from beside it
-# (scarletnx-3ds, scarletnx-vita, scarletnx-agb, scarletnx-gnuabi). The Linux runtime alone has no launcher.
+# (scarletnx-3ds, scarletnx-vita, scarletnx-agb, scarletnx-nds, scarletnx-gnuabi). The Linux runtime alone has no launcher.
 if [ "$main" = scarletnx ]; then
     quick-sharun "$bin/scarletnx" "$bin/scarletnx-switch" "$bin/scarletnx-3ds" "$bin/scarletnx-vita" \
-        "$bin/scarletnx-agb" "$bin/scarletnx-gnuabi"
+        "$bin/scarletnx-agb" "$bin/scarletnx-nds" "$bin/scarletnx-gnuabi"
 else
     quick-sharun "$bin/scarletnx" "$bin/scarletnx-gnuabi"
 fi
@@ -76,7 +76,7 @@ if [ ! -d "$appdir/lib" ]; then
 fi
 # each driver the launcher runs, a name of scarletnx's (SNX_MULTICALL): sharun has to start it under its own name
 if [ "$main" = scarletnx ]; then
-    for program in scarletnx-3ds scarletnx-vita scarletnx-agb scarletnx-gnuabi; do
+    for program in scarletnx-3ds scarletnx-vita scarletnx-agb scarletnx-nds scarletnx-gnuabi; do
         out=$("$appdir/bin/$program" --help 2>&1 || true)
         if ! grep -q "^Usage: $program" <<<"$out"; then
             echo "The AppDir's bin/$program --help is not $program's. It printed:" >&2

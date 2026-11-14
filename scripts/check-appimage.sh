@@ -63,7 +63,7 @@ if ! grep -qF -- '--migrate takes nothing after it: extra' <<<"$out"; then
     exit 1
 fi
 # and it needs everything it runs beside it
-for program in scarletnx-3ds scarletnx-vita scarletnx-agb scarletnx-gnuabi; do
+for program in scarletnx-3ds scarletnx-vita scarletnx-agb scarletnx-nds scarletnx-gnuabi; do
     if [ ! -e "$APPDIR/bin/$program" ]; then
         echo "The AppImage has no bin/$program, which the launcher runs" >&2
         exit 1

@@ -524,9 +524,9 @@ working on the runtime.
 
 `scarletnx` is every driver the build has (`src/multicall`): each driver is a library with no `main` of its own,
 and the program, whichever drivers are on (`SNX_BUILD_NX` among them), runs the one its name says, so LLVM, SDL and
-the code the drivers share are in it once. `scarletnx-switch`, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-gnuabi`
-and `scarletnx-agb` are links to it on Linux and macOS, made in the build folder and installed. Windows, whose zips
-keep no links, installs `scarletnx.exe` alone, which takes a driver's name as its first argument
+the code the drivers share are in it once. `scarletnx-switch`, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-gnuabi`,
+`scarletnx-agb` and `scarletnx-nds` are links to it on Linux and macOS, made in the build folder and installed. Windows,
+whose zips keep no links, installs `scarletnx.exe` alone, which takes a driver's name as its first argument
 (`scarletnx.exe scarletnx-3ds ...`, how the launcher runs them); its build folder has hard links of those names, for
 the tests. Android's and iOS's apps start the program their own way; Android's menu runs a driver as Windows' does,
 its name first, through `libscarletnx-run.so`.
