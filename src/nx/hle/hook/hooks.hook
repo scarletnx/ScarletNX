@@ -153,6 +153,22 @@ hook wcstoull(addr s, addr end, i32 base) -> u64 = libc_wcstoull
 hook wcstod(addr s, addr end) -> f64 = libc_wcstod
 hook wcstof(addr s, addr end) -> f32 = libc_wcstof
 
+# the C library's formatted output and input (libc_fmt.c): each conversion the host's snprintf or sscanf, with the
+# guest's arguments (a direct call's registers and stack, or a va_list's record); the standard output the log. A
+# format with a conversion it doesn't take runs the function's own code. Off on Windows
+family libc_fmt
+hook snprintf(addr dst, u64 size, addr fmt) -> i32 = libc_snprintf
+hook vsnprintf(addr dst, u64 size, addr fmt, addr ap) -> i32 = libc_vsnprintf
+hook sprintf(addr dst, addr fmt) -> i32 = libc_sprintf
+hook vsprintf(addr dst, addr fmt, addr ap) -> i32 = libc_vsprintf
+hook printf(addr fmt) -> i32 = libc_printf
+hook vprintf(addr fmt, addr ap) -> i32 = libc_vprintf
+hook puts(addr s) -> i32 = libc_puts
+hook putchar(i32 ch) -> i32 = libc_putchar
+hook perror(addr s) = libc_perror
+hook sscanf(addr s, addr fmt) -> i32 = libc_sscanf
+hook vsscanf(addr s, addr fmt, addr ap) -> i32 = libc_vsscanf
+
 # the C and C++ libraries' allocation functions (alloc.c): the host's jemalloc, in an arena of its own whose pages are
 # guest memory. A pointer the arena didn't make goes to the function's own code. Off without jemalloc, and in a game
 # whose address space has no room for the arena

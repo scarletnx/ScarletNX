@@ -76,14 +76,40 @@ static size_t lcat(char* d, const char* s, size_t n) {
 #define G(p)  ((u64)((const u8*)(p) - (const u8*)hook_host(c, 0)))
 #define GN(p) ((p) ? G(p) : 0)
 
-/* errno of the calling guest thread, through the SDK's __errno_location: e when it is set, otherwise nothing */
-void libc_set_errno(CPU* c, int e) {
+/* errno: musl numbers like Linux, as the net stack's guest errno values do (common/network/abi/errno.inc). A number
+   with no name in the list passes through unchanged. */
+int libc_errno_musl(int host) {
+#ifndef _WIN32
+#define SNX_NET_ERRNO(name, value)                                                                                     \
+    if (host == E##name) return value;
+#include "common/network/abi/errno.inc"
+    if (host == EWOULDBLOCK) return 11;
+#endif
+    return host;
+}
+int libc_errno_host(int musl) {
+#ifndef _WIN32
+#define SNX_NET_ERRNO(name, value)                                                                                     \
+    if (musl == value) return E##name;
+#include "common/network/abi/errno.inc"
+#endif
+    return musl;
+}
+/* the address of the calling guest thread's errno, through the SDK's own __errno_location; 0 without one */
+static u64 errno_at(CPU* c) {
     static u64 fn;
-    if (!e) return;
     if (!fn) fn = kernel_find_symbol_exact("__errno_location");
-    if (!fn) return;
+    if (!fn) return 0;
     hook_guest_call(c, fn, 0, 0, 0, 0);
-    if (c->x[0]) snx_st_le32(hook_host(c, c->x[0]), (u32)e); /* POSIX's numbers, the SDK's and the host's alike */
+    return c->x[0];
+}
+void libc_set_errno(CPU* c, int e) {
+    u64 at;
+    if (e && (at = errno_at(c)) != 0) snx_st_le32(hook_host(c, at), (u32)libc_errno_musl(e));
+}
+int libc_get_errno(CPU* c) {
+    u64 at = errno_at(c);
+    return at ? libc_errno_host((int)snx_ld_le32(hook_host(c, at))) : 0;
 }
 
 /* ---- strings and memory */
