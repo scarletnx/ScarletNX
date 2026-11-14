@@ -27,6 +27,7 @@ public class GameActivity extends SDLActivity {
     private boolean powerReceiverRegistered;
 
     private native void nativePowerChanged();
+    private native void nativeTrimMemory(int level);
 
     /** HOME as the menu sets it (src/gui/android.c): a new process has none, and the keys are in its .switch/ */
     @Override
@@ -87,6 +88,15 @@ public class GameActivity extends SDLActivity {
         (ms since 1970, 0 when unknown), as UTF-8 */
     public byte[] exitReason(int pid, long since) {
         return Exits.of(this, pid, since).getBytes(StandardCharsets.UTF_8);
+    }
+
+    /** Android's word that memory runs short, with its level, before SDL passes the word on without it (SDLActivity's
+     *  onTrimMemory, SDL_EVENT_LOW_MEMORY): the runtime frees what it can make again and logs the level. Since Android
+     *  14 only TRIM_MEMORY_UI_HIDDEN and TRIM_MEMORY_BACKGROUND come, as the game leaves the screen */
+    @Override
+    public void onTrimMemory(int level) {
+        nativeTrimMemory(level);
+        super.onTrimMemory(level);
     }
 
     /** the runtime starts once per process: the next game gets a new one */

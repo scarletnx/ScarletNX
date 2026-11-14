@@ -1226,6 +1226,14 @@ void vk_surf_mapping_changed(u64 gva, u64 size);
    what is being released already, once a present */
 void vk_mem_trim(u64 extra, int force);
 u64 vk_mem_trimmed(void); /* statistics: the bytes vk_mem_trim freed */
+/* the system's word that its memory runs short (why, its words), from any thread; at the renderer's next present
+   (vk_mem_release_run, under vk_lock) the caches free all they can make again that the last two presents didn't use,
+   whatever the budget, and four presents later the log says how much went and how far the renderer's memory blocks
+   went down (vk_memory_blocks) */
+void vk_mem_release_ask(const char* why);
+void vk_mem_release_run(void);
+/* the releases run so far, and what the last freed (textures, buffers, render targets) */
+u32 vk_mem_release_stats(u64 by[3]);
 /* vk_image_create for a surface of the caches, with room made for it first (vk_mem_trim). When no memory is found, a
    forced trim makes room for later, and images as big fail at once for the rest of the present. bytes: the device
    memory it takes */
