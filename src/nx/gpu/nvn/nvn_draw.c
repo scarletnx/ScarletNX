@@ -706,6 +706,8 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
         /* the blocks that changed, and whether every one of them only in the base vertex and base instance words */
         u32 changed = 0;
         int base_only = 1;
+        /* the ranges copied, for the draw records (gpu_ds_inline_changed): bank0 and bank2 of each stage, and the root */
+        u32 rlo[2 * DS_GFX_STAGES + 1], rhi[2 * DS_GFX_STAGES + 1], nr = 0;
         for (u32 bank = 0; bank < 2; bank++) {
             u32 bytes = bank ? DS_INLINE_BANK2 : DS_INLINE_BANK0;
             for (s = 0; s < DS_GFX_STAGES; s++) {
@@ -718,6 +720,8 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
                         new_gen(&d->ds.inl_gen[bank][s]);
                         changed++;
                         base_only &= !bank && lo >= C0_BASE_VERTEX && hi <= C0_BASE_INSTANCE + 4;
+                        rlo[nr] = (u32)(kept - (u8*)&d->ds.inl);
+                        rhi[nr++] = (u32)(kept - (u8*)&d->ds.inl) + (hi - lo);
                     }
                 }
                 d->inl_lo[bank][s] = (u16)bytes;
@@ -732,12 +736,22 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
                 new_gen(&d->ds.root_gen);
                 changed++;
                 base_only = 0;
+                rlo[nr] = (u32)(kept - (u8*)&d->ds.inl);
+                rhi[nr++] = (u32)(kept - (u8*)&d->ds.inl) + (u32)(d->root_hi - d->root_lo);
             }
         }
         d->root_lo = DS_ROOT_BYTES;
         d->root_hi = 0;
         if (changed) {
+            /* each range follows the one before it: the first from the old generation, the others from the new one,
+               which the first named. The blocks' own generations (inl_gen, root_gen) go with the ranges in the
+               record (renderer.c ds_queue) */
+            u64 from = d->ds.gen[DS_INLINE];
             new_gen(&d->ds.gen[DS_INLINE]);
+            for (u32 i = 0; i < nr; i++) {
+                gpu_ds_inline_changed(&d->ds, from, rlo[i], rhi[i] - rlo[i]);
+                from = d->ds.gen[DS_INLINE];
+            }
             atomic_fetch_add_explicit(&g_nvn.draw.count[NVN_COUNT_INLINE_MOVED], 1, memory_order_relaxed);
             atomic_fetch_add_explicit(&g_nvn.draw.count[NVN_COUNT_BLOCKS], changed, memory_order_relaxed);
             if (base_only) atomic_fetch_add_explicit(&g_nvn.draw.count[NVN_COUNT_BASE_ONLY], 1, memory_order_relaxed);
@@ -1115,33 +1129,15 @@ static void bind_state(NvnDraw* d, u64 payload) {
    address + 16 are equal, 1: when they differ), as the 3D engine's render enable (maxwell/engines.c): NVN's occlusion
    test, a samples-passed count against zero, compared by the GPU when the count isn't known yet */
 static void render_enable(NvnDraw* d, const NvnPRenderCond* r) {
-    u32 pred = 0;
-    int known;
+    /* the decision is the renderer's side's, in its place among the draws, which it skips there (gpu_render_state):
+       asking the renderer here waited for every record queued before it, and one game's occlusion tests asked about
+       26,000 times a second */
     if (d->own.pred) {
         gpu_predicate_drop(d->own.pred);
         d->own.pred = 0;
     }
-    if (r->mode >= 2) {
-        d->render_off = r->mode == 3;
-        return;
-    }
+    gpu_render_enable_nvn(d->ds.owner, r->mode, r->address);
     d->render_off = 0;
-    known = g_renderer->render_predicate ? gpu_renderer_now()->render_predicate(r->address, r->mode == 0, &pred) : -1;
-    if (known >= 0) {
-        d->render_off = !known;
-        if (known == 2) {
-            d->render_off = 0;
-            d->own.pred = pred;
-        }
-        return;
-    }
-    { /* counts the GPU can't compare for the renderer: read as the stream sees them, past the releases queued before
-         (gmem_read), as the 3D engine's render enable reads them */
-        u64 x = 0, y = 0;
-        gmem_read(r->address, &x, 8);
-        gmem_read(r->address + 16, &y, 8);
-        d->render_off = (x == y) != (r->mode == 0);
-    }
 }
 int nvn_draw_samples(NvnDraw* d, u64 address, u64 ticks) {
     /* The console's counter always runs, so a report needs no reset first. One game reports at an address and 16 bytes
@@ -1151,7 +1147,9 @@ int nvn_draw_samples(NvnDraw* d, u64 address, u64 ticks) {
         gpu_samples_reset(d->ds.owner);
         d->samples = 1;
     }
-    return d->samples && g_renderer->samples_report && gpu_renderer_now()->samples_report(d->ds.owner, address, 16, ticks);
+    /* the renderer's count, in its place among the draws, or the replay's made-up 1000 (nvn_replay.c) */
+    gpu_report_samples(d->ds.owner, address, d->samples, 1000, ticks);
+    return 1;
 }
 
 /* ClearTexture: the region of the texture, a color target of its own, cleared within a scissor of the region, a
@@ -1586,9 +1584,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
                 return 1;
             }
             if (what < 0 || what > 3) return 1;
-            if (g_renderer->xfb_control &&
-                !gpu_renderer_now()->xfb_control(d->ds.owner, r->control, (u32)what, d->xfb.stride[0], &d->own))
-                LOG_LIMIT(4, "nvn: transform-feedback control operation %d could not run\n", what);
+            gpu_xfb_control(&d->ds, &d->own, r->control, (u32)what, d->xfb.stride[0]);
             d->tf_on = what == 0 || what == 3;
             if (what == 0) d->own.xfb_reload = 15;
             d->dirty |= D_PROGRAMS;
