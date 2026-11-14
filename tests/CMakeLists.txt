@@ -3358,6 +3358,9 @@ if(UNIX)
     target_link_libraries(snx-test-gpu-park PRIVATE scarletnx-common) # gpu.c says why a thread did not start
         add_test(NAME gpu_park COMMAND snx-test-gpu-park)
     set_tests_properties(gpu_park PROPERTIES TIMEOUT 30) # a deadlock in the queue would otherwise hang ctest
+    # the same queue with gpu_split's renderer thread running its records
+    add_test(NAME gpu_park_split COMMAND snx-test-gpu-park split)
+    set_tests_properties(gpu_park_split PROPERTIES TIMEOUT 30)
 endif()
 
 # the shader programs a game ships, found in containers built by the test (gpu/shader/shipped.c)

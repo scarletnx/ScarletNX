@@ -187,13 +187,16 @@ u32 gmem_r32(u64 gva) {
     /* the common read, a word the CPU alone wrote: no queued release, pending result or owner holds it, so guest
        memory has its bytes and the general path's checks and landing are skipped. A release's payload and a pending
        result, over any guest memory, take the general path below, and so does a word on a host page the GPU owns
-       bytes of: the page is trapped, and the caller may hold the renderer's lock, which its landing needs */
+       bytes of: the page is trapped, and the caller may hold the renderer's lock, which its landing needs. The front
+       end's own writes still queued for the renderer's side come first (gpu_queue.c): from memory, an NVN event's add
+       (nvn_replay.c's FX_ADD) added to the word from before the add queued ahead of it */
     u64 cpu = 0, owners = 0;
+    u8 b[4] = {0};
+    if (gq_forward(gva, b, 4)) return snx_ld_le32(b);
     if (!g_cs_any && !g_gfx_any && !g_gfx_img_any && !g_uma_any &&
         !__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) && gmmu_run(gva, 4, &cpu) == 4 &&
         !own_hash(cpu, 4, &owners))
         return snx_ld_le32(GP(cpu));
-    u8 b[4] = {0};
     gmem_read(gva, b, 4);
     return snx_ld_le32(b);
 }
