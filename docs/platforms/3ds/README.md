@@ -645,8 +645,9 @@ The pair keeps its shape in a window of any size. The 3DS display's Separate
 screens setting gives each screen a window of its own instead, which fills with
 that screen. Top screen resolution and Bottom screen resolution scale the 3D
 rendering of that screen, 1 to 16 times the console's 400x240 and 320x240, and
-the window scales the larger image to its size. A game that copies a target at
-a scale above 1 into its framebuffer with a display transfer is shown from the
+each screen keeps the console's proportions in the window whatever its scale. A
+game that copies a target at a scale above 1 into its framebuffer with a
+display transfer is shown from the
 copy that transfer made, at the target's scale. A write by the guest to one of
 its pixels is shown from memory. The Switch's `vsync` picks how the
 window shows its images, as for a Switch game: `1` each at the display's refresh

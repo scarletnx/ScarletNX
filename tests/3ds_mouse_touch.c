@@ -15,6 +15,7 @@
 #include "3ds/services/hid.h"
 #include "snx_settings.h"
 #include "support/3ds_guest.h"
+#include "support/3ds_sdl_events.h"
 #include <SDL3/SDL.h>
 #include <assert.h>
 #include <stdio.h>
@@ -34,23 +35,6 @@ enum {
     TOUCH_VALID = 4
 };
 
-/* a mouse event of a window, pushed and pumped as the presenter's loop pumps them */
-static void event_mouse(Uint32 type, SDL_WindowID id, float x, float y) {
-    SDL_Event e = {0};
-    e.type = type;
-    if (type == SDL_EVENT_MOUSE_MOTION) {
-        e.motion.windowID = id;
-        e.motion.x = x;
-        e.motion.y = y;
-    } else {
-        e.button.windowID = id;
-        e.button.button = SDL_BUTTON_LEFT;
-        e.button.x = x;
-        e.button.y = y;
-    }
-    assert(SDL_PushEvent(&e));
-    assert(!snx_ctr_present_closed()); /* pumps the queue */
-}
 /* a mouse event SDL made of a finger (its mouse SDL_TOUCH_MOUSEID) */
 static void event_finger_mouse(Uint32 type, SDL_WindowID id, float x, float y) {
     SDL_Event e = {0};

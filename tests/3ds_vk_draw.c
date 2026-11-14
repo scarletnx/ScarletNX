@@ -14,15 +14,18 @@
 #include "3ds/gpu/vk/vk_render.h"
 #include "3ds/gpu/vk/vk_transfer.h"
 #include "3ds/gpu/vk/vk_y2r.h"
+#include "3ds/input/input.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/platform/file.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
+#include "support/3ds_sdl_events.h"
 #include "support/3ds_vk_path.h"
 #include "support/frame_dump.h"
 #include "support/thread_nice.h"
 #include "snx_settings.h"
+#include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,6 +70,7 @@ static uint32_t g_fcram = 0x20000000u, g_vram = 0x18000000u, g_vertices = 0x2011
 #define VERTEX_OFFSET 0x22a
 
 static int failures;
+static int skips; /* checks that found nothing to run, which ctest has to see as 77 and not as a pass */
 static uint32_t seed = 0x3d5u;
 static uint32_t next(void) {
     seed = seed * 1664525u + 1013904223u;
@@ -1022,6 +1026,58 @@ static void scaled_verify(SnxCtrMemory* m) {
     (void)snx_remove_tree(dir);
     free(dir);
 }
+/* The screens' layout takes each frame at the console's size (screen_rect): a top screen drawn at 2x above a bottom one
+   presented at 1x is laid out as the console's 400x240 over 320x240, so at a 600x720 window the pair is 1.5x and fills
+   it, the bottom screen 480x360 at (60, 360), and a press on its own pixel (160, 220) is window (300, 690). A layout at
+   the frames' own sizes would take the top screen at its 800x480 frame, scale the 800x720 pair to 0.75 and centre its
+   600x540, the bottom screen 240x180 at (180, 450): the press would be below its 630 edge and miss */
+static void scaled_layout(SnxCtrMemory* m) {
+    if (!snx_ctr_vk()->host.window) {
+        printf("%-24s no window to lay the screens out in: skipped\n", "the screens' layout");
+        ++skips;
+        return;
+    }
+    if (!snx_ctr_present_init(m, NULL, false) || !snx_ctr_present_windowed()) {
+        printf("%-24s the presenter has no window to show the screens in: skipped\n", "the screens' layout");
+        ++skips;
+        return;
+    }
+    SDL_Window* window = snx_ctr_vk()->host.window;
+    SDL_WindowID id = SDL_GetWindowID(window);
+    int w = 0, h = 0;
+    if (!SDL_GetWindowSize(window, &w, &h) || w != 600 || h != 720) {
+        printf("%-24s the fixture needs the presenter's 600x720 window, not %dx%d: skipped\n", "the screens' layout", w,
+               h);
+        ++skips;
+        return;
+    }
+    int top = g_settings.ctr_top_resolution;
+    g_settings.ctr_top_resolution = 2;
+    static const unsigned char clear[240 * 400 * 4];
+    Scene* s = scaled_scene("the screens' layout", 240, 400, true);
+    setup_clear(m, s);
+    snx_ctr_phys_write(m, COLOR, clear, sizeof clear);
+    bool ok = record(m, s, &vulkan);
+    /* the top screen from its target at the render scale, the bottom one from memory at the console's */
+    ok = ok && snx_ctr_present_frame(1, SCALED_COPY, 240, 320, SNX_CTR_PIX_RGBA8, 240 * 4, NULL) &&
+         snx_ctr_present_frame(0, COLOR, 240, 400, SNX_CTR_PIX_RGBA8, 240 * 4, NULL);
+    SnxCtrVkScaled scaled = {0};
+    bool at_scale =
+        ok && snx_ctr_vk_target_image(COLOR, 240, 400, SNX_CTR_PIX_RGBA8, 240 * 4, &scaled) && scaled.scale == 2;
+    /* at a 600x720 window the console's pair is 1.5x: the bottom screen 480x360 at (60, 360), its pixel (160, 220)
+       across the window at (300, 690), below the 630 edge of a layout at the frames' own sizes */
+    event_mouse(SDL_EVENT_MOUSE_BUTTON_DOWN, id, 300, 690);
+    SnxCtrInput in;
+    snx_ctr_input_read(&in);
+    event_mouse(SDL_EVENT_MOUSE_BUTTON_UP, id, 300, 690);
+    bool touched = in.touch && in.touch_x == 160 && in.touch_y == 220;
+    bool pass = at_scale && touched;
+    printf("%-24s the top at %ux; a press on the bottom screen's pixel (160, 220) %s, the touch (%u, %u): %s\n",
+           s->name, scaled.scale, in.touch ? "touched it" : "missed it", in.touch_x, in.touch_y, pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+    free(s);
+    g_settings.ctr_top_resolution = top;
+}
 /* A game alternates a screen's picture between two framebuffers of one size: a display transfer fills one while the
    other is shown, so the copy the presenter looks up must be the destination's and not the last transfer's. A GPU
    engine's write over one drops its copy alone, and a transfer into it again keeps its own slot */
@@ -1603,6 +1659,7 @@ static const Mode modes[] = {{"--present", "the presented screens", screens},
                              {"--scaled-transfer", "the scaled targets' transfers", scaled_transfer},
                              {"--scaled-rotating", "the rotating destinations", scaled_rotating},
                              {"--scaled-verify", "a destination whose bytes the guest changed", scaled_verify},
+                             {"--scaled-layout", "the screens' layout at different render scales", scaled_layout},
                              {"--after-draw", "the commands after a draw", presented_after_draw},
                              {"--texture-after-draw", "the textures after a draw", texture_after_draw},
                              {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy},
@@ -1651,5 +1708,5 @@ int main(int argc, char** argv) {
     snx_ctr_vk_free();
     snx_ctr_memory_free(m);
     printf("3ds vk draw: %s %s the CPU reference\n", mode->what, failures ? "differ from" : "agree with");
-    return failures != 0;
+    return failures != 0 ? 1 : skips != 0 ? 77 : 0;
 }
