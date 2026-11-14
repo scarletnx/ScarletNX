@@ -36,6 +36,204 @@ hook memcpy(void* dst out[size], const void* src in[size], u64 size) -> void* = 
 hook memmove(void* dst out[size], const void* src in[size], u64 size) -> void* = hook_memmove pure
 hook memset(void* dst out[size], i32 value, u64 size) -> void* = hook_memset pure
 
+# the C library's string, character, number and sorting functions (libc_std.c): the host's, on guest memory. Off on
+# Windows, whose C library lacks some and has another RAND_MAX
+family libc_str
+hook memcmp(addr a, addr b, u64 n) -> i32 = libc_memcmp
+hook memchr(addr s, i32 ch, u64 n) -> addr = libc_memchr
+hook memset_s(addr dst, u64 size, i32 ch, u64 n) -> i32 = libc_memset_s
+hook strlen(addr s) -> u64 = libc_strlen
+hook strnlen(addr s, u64 n) -> u64 = libc_strnlen
+hook strcmp(addr a, addr b) -> i32 = libc_strcmp
+hook strncmp(addr a, addr b, u64 n) -> i32 = libc_strncmp
+hook strcasecmp(addr a, addr b) -> i32 = libc_strcasecmp
+hook strncasecmp(addr a, addr b, u64 n) -> i32 = libc_strncasecmp
+hook strncasecmp_l(addr a, addr b, u64 n, addr locale) -> i32 = libc_strncasecmp_l
+hook strcoll(addr a, addr b) -> i32 = libc_strcoll
+hook strcpy(addr dst, addr src) -> addr = libc_strcpy
+hook strncpy(addr dst, addr src, u64 n) -> addr = libc_strncpy
+hook stpcpy(addr dst, addr src) -> addr = libc_stpcpy
+hook strcat(addr dst, addr src) -> addr = libc_strcat
+hook strncat(addr dst, addr src, u64 n) -> addr = libc_strncat
+hook strlcpy(addr dst, addr src, u64 n) -> u64 = libc_strlcpy
+hook strlcat(addr dst, addr src, u64 n) -> u64 = libc_strlcat
+hook strchr(addr s, i32 ch) -> addr = libc_strchr
+hook strrchr(addr s, i32 ch) -> addr = libc_strrchr
+hook strstr(addr s, addr sub) -> addr = libc_strstr
+hook strcasestr(addr s, addr sub) -> addr = libc_strcasestr
+hook strpbrk(addr s, addr set) -> addr = libc_strpbrk
+hook strspn(addr s, addr set) -> u64 = libc_strspn
+hook strcspn(addr s, addr set) -> u64 = libc_strcspn
+hook strtok(addr s, addr delim) -> addr = libc_strtok
+hook strtok_r(addr s, addr delim, addr save) -> addr = libc_strtok_r
+hook isalnum(i32 ch) -> i32 = libc_isalnum
+hook isalpha(i32 ch) -> i32 = libc_isalpha
+hook isblank(i32 ch) -> i32 = libc_isblank
+hook iscntrl(i32 ch) -> i32 = libc_iscntrl
+hook isdigit(i32 ch) -> i32 = libc_isdigit
+hook isgraph(i32 ch) -> i32 = libc_isgraph
+hook islower(i32 ch) -> i32 = libc_islower
+hook isprint(i32 ch) -> i32 = libc_isprint
+hook ispunct(i32 ch) -> i32 = libc_ispunct
+hook isspace(i32 ch) -> i32 = libc_isspace
+hook isupper(i32 ch) -> i32 = libc_isupper
+hook isxdigit(i32 ch) -> i32 = libc_isxdigit
+hook tolower(i32 ch) -> i32 = libc_tolower
+hook toupper(i32 ch) -> i32 = libc_toupper
+hook atoi(addr s) -> i32 = libc_atoi
+hook atol(addr s) -> i64 = libc_atol
+hook atoll(addr s) -> i64 = libc_atoll
+hook atof(addr s) -> f64 = libc_atof
+hook strtol(addr s, addr end, i32 base) -> i64 = libc_strtol
+hook strtoul(addr s, addr end, i32 base) -> u64 = libc_strtoul
+hook strtoll(addr s, addr end, i32 base) -> i64 = libc_strtoll
+hook strtoull(addr s, addr end, i32 base) -> u64 = libc_strtoull
+hook strtod(addr s, addr end) -> f64 = libc_strtod
+hook strtof(addr s, addr end) -> f32 = libc_strtof
+hook abs(i32 v) -> i32 = libc_abs
+hook labs(i64 v) -> i64 = libc_labs
+hook llabs(i64 v) -> i64 = libc_llabs
+hook div(i32 n, i32 d) -> u64 = libc_div
+hook ldiv(i64 n, i64 d) -> i64 = libc_ldiv
+hook ffs(i32 v) -> i32 = libc_ffs
+hook ffsl(i64 v) -> i32 = libc_ffsl
+hook fabs(f64 v) -> f64 = libc_fabs
+hook ldexp(f64 v, i32 e) -> f64 = libc_ldexp
+hook frexp(f64 v, addr e) -> f64 = libc_frexp
+hook modf(f64 v, addr ip) -> f64 = libc_modf
+hook htonl(u32 v) -> u32 = libc_htonl
+hook ntohl(u32 v) -> u32 = libc_htonl
+hook htons(u32 v) -> u32 = libc_htons
+hook ntohs(u32 v) -> u32 = libc_htons
+hook __fpclassifyf(f32 v) -> i32 = libc_fpclassifyf
+hook rand() -> i32 = libc_rand
+hook srand(u32 seed) = libc_srand
+hook rand_r(addr seed) -> i32 = libc_rand_r
+hook lrand48() -> i64 = libc_lrand48
+hook srand48(i64 seed) = libc_srand48
+hook qsort(addr base, u64 n, u64 size, addr compare) = libc_qsort
+hook bsearch(addr key, addr base, u64 n, u64 size, addr compare) -> addr = libc_bsearch
+
+# the C library's wide string functions (libc_wide.c): the host's, on guest memory, the character classes and case
+# Unicode's as the SDK's musl has them. Off where the host's wchar_t isn't 32 bits or it has no UTF-8 locale
+family libc_wide
+hook wcslen(addr s) -> u64 = libc_wcslen
+hook wcsnlen(addr s, u64 n) -> u64 = libc_wcsnlen
+hook wcscmp(addr a, addr b) -> i32 = libc_wcscmp
+hook wcsncmp(addr a, addr b, u64 n) -> i32 = libc_wcsncmp
+hook wcscasecmp(addr a, addr b) -> i32 = libc_wcscasecmp
+hook wcscpy(addr dst, addr src) -> addr = libc_wcscpy
+hook wcsncpy(addr dst, addr src, u64 n) -> addr = libc_wcsncpy
+hook wcscat(addr dst, addr src) -> addr = libc_wcscat
+hook wcsncat(addr dst, addr src, u64 n) -> addr = libc_wcsncat
+hook wcschr(addr s, u32 wc) -> addr = libc_wcschr
+hook wcsrchr(addr s, u32 wc) -> addr = libc_wcsrchr
+hook wcsstr(addr s, addr sub) -> addr = libc_wcsstr
+hook wcstok(addr s, addr delim, addr save) -> addr = libc_wcstok
+hook wmemchr(addr s, u32 wc, u64 n) -> addr = libc_wmemchr
+hook wmemcmp(addr a, addr b, u64 n) -> i32 = libc_wmemcmp
+hook wmemcpy(addr dst, addr src, u64 n) -> addr = libc_wmemcpy
+hook wmemmove(addr dst, addr src, u64 n) -> addr = libc_wmemmove
+hook wmemset(addr dst, u32 wc, u64 n) -> addr = libc_wmemset
+hook iswalnum(u32 wc) -> i32 = libc_iswalnum
+hook iswalpha(u32 wc) -> i32 = libc_iswalpha
+hook iswdigit(u32 wc) -> i32 = libc_iswdigit
+hook iswgraph(u32 wc) -> i32 = libc_iswgraph
+hook iswlower(u32 wc) -> i32 = libc_iswlower
+hook iswprint(u32 wc) -> i32 = libc_iswprint
+hook iswspace(u32 wc) -> i32 = libc_iswspace
+hook iswupper(u32 wc) -> i32 = libc_iswupper
+hook iswxdigit(u32 wc) -> i32 = libc_iswxdigit
+hook towlower(u32 wc) -> u32 = libc_towlower
+hook towupper(u32 wc) -> u32 = libc_towupper
+hook wcstol(addr s, addr end, i32 base) -> i64 = libc_wcstol
+hook wcstoul(addr s, addr end, i32 base) -> u64 = libc_wcstoul
+hook wcstoll(addr s, addr end, i32 base) -> i64 = libc_wcstoll
+hook wcstoull(addr s, addr end, i32 base) -> u64 = libc_wcstoull
+hook wcstod(addr s, addr end) -> f64 = libc_wcstod
+hook wcstof(addr s, addr end) -> f32 = libc_wcstof
+
+# the C library's formatted output and input (libc_fmt.c): each conversion the host's snprintf or sscanf, with the
+# guest's arguments (a direct call's registers and stack, or a va_list's record); the standard output the log. A
+# format with a conversion it doesn't take runs the function's own code. Off on Windows
+family libc_fmt
+hook snprintf(addr dst, u64 size, addr fmt) -> i32 = libc_snprintf
+hook vsnprintf(addr dst, u64 size, addr fmt, addr ap) -> i32 = libc_vsnprintf
+hook sprintf(addr dst, addr fmt) -> i32 = libc_sprintf
+hook vsprintf(addr dst, addr fmt, addr ap) -> i32 = libc_vsprintf
+hook printf(addr fmt) -> i32 = libc_printf
+hook vprintf(addr fmt, addr ap) -> i32 = libc_vprintf
+hook puts(addr s) -> i32 = libc_puts
+hook putchar(i32 ch) -> i32 = libc_putchar
+hook perror(addr s) = libc_perror
+hook sscanf(addr s, addr fmt) -> i32 = libc_sscanf
+hook vsscanf(addr s, addr fmt, addr ap) -> i32 = libc_vsscanf
+
+# the C and C++ libraries' allocation functions (alloc.c): the host's jemalloc, in an arena of its own whose pages are
+# guest memory. A pointer the arena didn't make goes to the function's own code. Off without jemalloc, and in a game
+# whose address space has no room for the arena
+family alloc
+hook malloc(u64 size) -> addr = alloc_malloc
+hook calloc(u64 count, u64 size) -> addr = alloc_calloc
+hook realloc(addr p, u64 size) -> addr = alloc_realloc
+hook free(addr p) = alloc_free
+hook aligned_alloc(u64 align, u64 size) -> addr = alloc_aligned
+hook memalign(u64 align, u64 size) -> addr = alloc_aligned
+hook posix_memalign(addr out, u64 align, u64 size) -> i32 = alloc_posix_memalign
+hook strdup(const char* s) -> addr = alloc_strdup
+hook strndup(const char* s, u64 max) -> addr = alloc_strndup
+hook _Znwm(u64 size) -> addr = alloc_new
+hook _Znam(u64 size) -> addr = alloc_new
+hook _ZnwmSt11align_val_t(u64 size, u64 align) -> addr = alloc_new_aligned
+hook _ZnamSt11align_val_t(u64 size, u64 align) -> addr = alloc_new_aligned
+hook _ZnwmRKSt9nothrow_t(u64 size, addr nothrow) -> addr = alloc_new_nothrow
+hook _ZnamRKSt9nothrow_t(u64 size, addr nothrow) -> addr = alloc_new_nothrow
+hook _ZnwmSt11align_val_tRKSt9nothrow_t(u64 size, u64 align, addr nothrow) -> addr = alloc_new_aligned_nothrow
+hook _ZnamSt11align_val_tRKSt9nothrow_t(u64 size, u64 align, addr nothrow) -> addr = alloc_new_aligned_nothrow
+hook _ZdlPv(addr p) = alloc_delete
+hook _ZdaPv(addr p) = alloc_delete
+hook _ZdlPvm(addr p) = alloc_delete
+hook _ZdaPvm(addr p) = alloc_delete
+hook _ZdlPvRKSt9nothrow_t(addr p) = alloc_delete
+hook _ZdaPvRKSt9nothrow_t(addr p) = alloc_delete
+hook _ZdlPvSt11align_val_t(addr p) = alloc_delete
+hook _ZdaPvSt11align_val_t(addr p) = alloc_delete
+hook _ZdlPvmSt11align_val_t(addr p) = alloc_delete
+hook _ZdaPvmSt11align_val_t(addr p) = alloc_delete
+hook _ZdlPvSt11align_val_tRKSt9nothrow_t(addr p) = alloc_delete
+hook _ZdaPvSt11align_val_tRKSt9nothrow_t(addr p) = alloc_delete
+# std::vector<T>'s storage with std::allocator<T> (NS_9allocatorIS1_EE for a T of the game's, NS_9allocatorImEE for a
+# built-in one), for a T with nothing to destroy: every such instance of the template's destructor is the same code,
+# which alloc_vector_shape checks the function is before the hook takes it
+hook _ZNSt3__113__vector_baseI*NS_9allocatorI*EEED1Ev(addr self) = alloc_vector_free check alloc_vector_shape
+hook _ZNSt3__113__vector_baseI*NS_9allocatorI*EEED2Ev(addr self) = alloc_vector_free check alloc_vector_shape
+
+# the C++ library's mutexes, condition variable, clocks and sleep (sync.c): the host's own, by the guest object's
+# address. Not timed_mutex, shared_timed_mutex or condition_variable_any, whose templates the game inlines over their
+# members
+family sync
+hook _ZNSt3__15mutex4lockEv(addr m) = sync_mutex_lock
+hook _ZNSt3__15mutex8try_lockEv(addr m) -> bool = sync_mutex_try_lock
+hook _ZNSt3__15mutex6unlockEv(addr m) = sync_mutex_unlock
+hook _ZNSt3__15mutexD1Ev(addr m) = sync_drop
+hook _ZNSt3__15mutexD2Ev(addr m) = sync_drop
+hook _ZNSt3__115recursive_mutexC1Ev(addr m) = sync_recursive_init
+hook _ZNSt3__115recursive_mutexC2Ev(addr m) = sync_recursive_init
+hook _ZNSt3__115recursive_mutexD1Ev(addr m) = sync_drop
+hook _ZNSt3__115recursive_mutexD2Ev(addr m) = sync_drop
+hook _ZNSt3__115recursive_mutex4lockEv(addr m) = sync_recursive_lock
+hook _ZNSt3__115recursive_mutex8try_lockEv(addr m) -> bool = sync_recursive_try_lock
+hook _ZNSt3__115recursive_mutex6unlockEv(addr m) = sync_recursive_unlock
+hook _ZNSt3__118condition_variable10notify_oneEv(addr cv) = sync_cond_notify_one
+hook _ZNSt3__118condition_variable10notify_allEv(addr cv) = sync_cond_notify_all
+hook _ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE(addr cv, addr lock) = sync_cond_wait
+hook _ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEENS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE(addr cv, addr lock, i64 ns) = sync_cond_timed_wait
+hook _ZNSt3__118condition_variableD1Ev(addr cv) = sync_drop
+hook _ZNSt3__118condition_variableD2Ev(addr cv) = sync_drop
+hook _ZNSt3__16chrono12system_clock3nowEv() -> i64 = sync_system_now
+hook _ZNSt3__16chrono12steady_clock3nowEv() -> i64 = sync_steady_now
+hook _ZNSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE(addr duration) = sync_sleep_for
+
 # nn::diag (diag.c): the SDK's abort, which every one of its NN_ABORT overloads ends in, logged with what the SDK passed
 # it, then its own code, which stops the game as it would
 family diag
@@ -90,3 +288,66 @@ hook _ZN2nn5audio28GetInputStreamFreeFrameCountEPKNS0_15InputStreamTypeE(addr st
 hook _ZN2nn5audio32GetInputStreamCapacityFrameCountEPKNS0_15InputStreamTypeE(addr stream) -> i32 = audio_input_capacity_frames
 hook _ZN2nn5audio15ReadInputStreamEPNS0_15InputStreamTypeEPvi(addr stream, addr data, i32 frames) -> i32 = audio_read_input
 hook _ZN2nn5audio24GetInputStreamStatisticsEPNS0_15InputStreamTypeEb(addr stream, bool reset) = audio_stream_statistics
+
+# std::string, libc++'s basic_string<char, char_traits<char>, allocator<char>> (libcxx_string.c): the members main
+# imports or exports across the games, on the object's own layout, its buffers from the guest's operator new. Not
+# another char_traits or allocator, whose code is the game's; not a 32-bit game's, whose layout differs
+family string
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev(addr self) = string_drop
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED2Ev(addr self) = string_drop
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm(addr self, const char* s, u64 n) = string_init
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm(addr self, const char* s, u64 n, u64 reserve) = string_init_reserve
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEmc(addr self, u64 n, u8 ch) = string_init_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initIPKcEENS_9enable_ifIXsr21__is_forward_iteratorIT_EE5valueEvE4typeESA_SA_(addr self, const char* first, const char* last) = string_init_range
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initIPcEENS_9enable_ifIXsr21__is_forward_iteratorIT_EE5valueEvE4typeES9_S9_(addr self, const char* first, const char* last) = string_init_range
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1B6v15007IDnEEPKc(addr self, const char* s) = string_from_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2B6v15007IDnEEPKc(addr self, const char* s) = string_from_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1B7v170006ILi0EEEPKc(addr self, const char* s) = string_from_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2B7v170006ILi0EEEPKc(addr self, const char* s) = string_from_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_(addr self, addr str) = string_copy
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2ERKS5_(addr self, addr str) = string_copy
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_RKS4_(addr self, addr str, addr alloc) = string_copy_alloc
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2ERKS5_RKS4_(addr self, addr str, addr alloc) = string_copy_alloc
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_mmRKS4_(addr self, addr str, u64 pos, u64 n, addr alloc) = string_copy_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2ERKS5_mmRKS4_(addr self, addr str, u64 pos, u64 n, addr alloc) = string_copy_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEaSERKS5_(addr self, addr str) -> addr = string_assign_string
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEaSEc(addr self, u8 ch) -> addr = string_assign_char
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc(addr self, const char* s) -> addr = string_assign_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKcm(addr self, const char* s, u64 n) -> addr = string_assign
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEmc(addr self, u64 n, u8 ch) -> addr = string_assign_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignERKS5_mm(addr self, addr str, u64 pos, u64 n) -> addr = string_assign_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc(addr self, const char* s) -> addr = string_append_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm(addr self, const char* s, u64 n) -> addr = string_append
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEmc(addr self, u64 n, u8 ch) -> addr = string_append_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendERKS5_mm(addr self, addr str, u64 pos, u64 n) -> addr = string_append_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE9push_backEc(addr self, u8 ch) = string_push_back
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6resizeEmc(addr self, u64 n, u8 ch) = string_resize
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7reserveEm(addr self, u64 n) = string_reserve
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmPKc(addr self, u64 pos, const char* s) -> addr = string_insert_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmPKcm(addr self, u64 pos, const char* s, u64 n) -> addr = string_insert
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmmc(addr self, u64 pos, u64 n, u8 ch) -> addr = string_insert_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmRKS5_mm(addr self, u64 pos, addr str, u64 pos2, u64 n) -> addr = string_insert_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertENS_11__wrap_iterIPKcEEc(addr self, addr at, u8 ch) -> addr = string_insert_at
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertIPhEENS_9enable_ifIXaasr21__is_forward_iteratorIT_EE5valuesr38__libcpp_string_gets_noexcept_iteratorIS9_EE5valueENS_11__wrap_iterIPcEEE4typeENSA_IPKcEES9_S9_(addr self, addr at, const u8* first, const u8* last) -> addr = string_insert_range
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5eraseEmm(addr self, u64 pos, u64 n) -> addr = string_erase
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmPKc(addr self, u64 pos, u64 n1, const char* s) -> addr = string_replace_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmPKcm(addr self, u64 pos, u64 n1, const char* s, u64 n2) -> addr = string_replace
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmmc(addr self, u64 pos, u64 n1, u64 n2, u8 ch) -> addr = string_replace_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmRKS5_mm(addr self, u64 pos, u64 n1, addr str, u64 pos2, u64 n2) -> addr = string_replace_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE9__grow_byEmmmmmm(addr self, u64 old_cap, u64 delta_cap, u64 old_size, u64 n_copy, u64 n_del, u64 n_add) = string_grow_by
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE21__grow_by_and_replaceEmmmmmmPKc(addr self, u64 old_cap, u64 delta_cap, u64 old_size, u64 n_copy, u64 n_del, u64 n_add, const char* s) = string_grow_by_and_replace
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE2atEm(addr self, u64 n) -> addr = string_at
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE2atEm(addr self, u64 n) -> addr = string_at
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4copyEPcmm(addr self, char* dst, u64 n, u64 pos) -> u64 = string_copy_out
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEPKc(addr self, const char* s) -> i32 = string_compare_cstr
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEmmPKc(addr self, u64 pos, u64 n1, const char* s) -> i32 = string_compare_sub_cstr
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEmmPKcm(addr self, u64 pos, u64 n1, const char* s, u64 n2) -> i32 = string_compare_sub
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEmmRKS5_mm(addr self, u64 pos1, u64 n1, addr str, u64 pos2, u64 n2) -> i32 = string_compare_sub_sub
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm(addr self, u8 ch, u64 pos) -> u64 = string_find_char
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEcm(addr self, u8 ch, u64 pos) -> u64 = string_rfind_char
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_rfind
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE13find_first_ofEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find_first_of
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE12find_last_ofEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find_last_of
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE17find_first_not_ofEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find_first_not_of
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE16find_last_not_ofEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find_last_not_of

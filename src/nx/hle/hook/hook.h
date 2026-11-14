@@ -29,22 +29,29 @@
    unversioned hook's, which holds for every module. A version of 0 is unknown, and only HOOK_ANY holds for it */
 enum { HOOK_ANY, HOOK_SDK, HOOK_NVN, HOOK_KEYS };
 
+/* a hook's check (hookgen's check FN): whether the function at guest address addr, which the hook's pattern matched,
+   has the shape its handler does the work of; 0 leaves it to its own code */
+typedef int (*HookCheck)(u64 addr);
 /* a generated table (hookgen's <prefix>_table): its entries sorted by symbol and then by version, entry i for the
-   versions [lo[i], hi[i]) of key[i] */
+   versions [lo[i], hi[i]) of key[i]; patterns[0..npatterns) the first entry of each pattern's symbol (a '*' in it),
+   in strcmp order, and check[i] entry i's check or NULL (NULL for a 32-bit program's table) */
 typedef struct {
     u32 count;
     const char* const* symbol;
     const unsigned char* key;
     const u32* lo;
     const u32* hi;
+    u32 npatterns;
+    const u16* patterns;
+    const HookCheck* check;
 } HookTable;
 
 /* the version an SDK middleware label in bytes gives lib ("nnSdk" or "NVN"): the first "SDK MW+<vendor>+<vendor>SDK_"
    (or "...Sdk_") followed by lib, '-' and x_y_z, packed x << 16 | y << 8 | z; 0 when bytes holds none */
 u32 hook_label_version(const u8* bytes, size_t size, const char* lib);
 /* the entry of t for symbol whose versions hold the module's: versions[key] for each key (versions[HOOK_ANY]
-   unused). -1 when t has no entry for symbol, -2 when it has but none holds; *first is the symbol's first entry, or
-   -1 */
+   unused). A symbol no entry names takes the first pattern that matches it. -1 when t has no entry for symbol, -2
+   when it has but none holds; *first is the symbol's (or pattern's) first entry, or -1 */
 int hook_select(const HookTable* t, const char* symbol, const u32 versions[HOOK_KEYS], int* first);
 /* a version of key as the declarations write it (20.5.22, or 55.12 for NVN), "unknown" for 0 */
 void hook_version_text(char* out, size_t n, int key, u32 version);
@@ -215,10 +222,28 @@ void hook_orig_stale(GuestFn f);
 /* where the hook of symbol (a symbol, or an address hook's key as hookgen writes it, BUILDID:OFFSET) was installed:
    the function's guest address, the first one for a symbol several modules export; 0 when it wasn't */
 u64 hook_site(const char* symbol);
+/* A handler that waits on the host (a mutex someone holds, a condition variable, a sleep): its thread leaves its core
+   between the two, and counts as stopped for a pause, as a waiting SVC (sync.c has them) */
+void hook_wait_begin(void);
+void hook_wait_end(void);
+/* family.c: why the family's hooks can't run in this process (a 32-bit game, a host without what its handlers run
+   on), NULL when they can: hook_install leaves such a family's functions to the game's code, and says why */
+const char* hook_family_unready(const char* family);
+/* libc_std.c: errno of the calling guest thread set to e (POSIX's number), through the SDK's __errno_location; 0
+   leaves it. libc_wide.c: the host has what the libc_wide family runs on (a 32-bit wchar_t and a UTF-8 locale) */
+void libc_set_errno(CPU* c, int e);
+int libc_get_errno(CPU* c); /* the guest thread's errno, as the host's number */
+/* errno's number on the host and in musl (the SDK's C library, Linux's numbers), each from the other */
+int libc_errno_musl(int host);
+int libc_errno_host(int musl);
+int libc_wide_ready(void);
+/* alloc.c: the host allocator's arena in guest memory is made (made at the first call): 0 without one, and the alloc
+   family is then off */
+int alloc_ready(void);
 /* runs the hooked function at addr's own code, with the CPU as the call to it left it, until it returns to the call's
    return address (x30) with the call's stack, through the dispatch loop when its code leaves for code compiled apart:
    for a handler that does its work around the function's, as the function's own code then sees every call */
-void hook_run_original(CPU* c, u64 addr);
+void hook_run_original(CPU* c, u64 addr); /* a handler finds addr in c->pc, which its adapter sets */
 /* The same for a 32-bit game, from the handler of the hooked function its thread is in: the adapter runs with r15 at
    the function, so no address is given (a 32-bit SDK's symbol is often not the 64-bit one's). The function's own
    code runs with the registers and the stack as the call left them until it returns to the call's lr; its result

@@ -22,10 +22,14 @@ static void test_generated(void) {
                                            "lock",
                                            "nvn_only",
                                            "unlock",
+                                           "vec_*_dtor",
+                                           "vec_i*",
+                                           "vec_int_dtor",
                                            "wrapped"};
     assert(HOOK_ROUTE_COUNT == sizeof expected / sizeof *expected);
     for (size_t i = 0; i < HOOK_ROUTE_COUNT; ++i) assert(!strcmp(hook_route_names[i], expected[i]));
     assert(hook_route_names[HOOK_ROUTE_COUNT] == NULL);
+    assert(HOOK_ROUTE_PATTERNS == 2 && hook_route_patterns[0] == 9 && hook_route_patterns[1] == 10);
     puts("PASS hookgen --routes: each symbol of three specs once, sorted, with the route lines and address keys");
 }
 
@@ -44,7 +48,11 @@ static void test_runtime_list(void) {
     /* hooks.hook's libc hooks, nvn.hook's functions and its route lines; not a function no hook names */
     assert(snx_hook_routed("memcpy") && snx_hook_routed("memset") && snx_hook_routed("nvnQueueSubmitCommands"));
     assert(snx_hook_routed("nvnBootstrapLoader") && snx_hook_routed("nvnDeviceGetProcAddress"));
-    assert(!snx_hook_routed("strlen") && !snx_hook_routed("") && !snx_hook_routed("memcpy2"));
+    assert(!snx_hook_routed("strxfrm") && !snx_hook_routed("") && !snx_hook_routed("memcpy2"));
+    /* a pattern routes every symbol it matches */
+    assert(snx_hook_routed("_ZNSt3__113__vector_baseImNS_9allocatorImEEED2Ev"));
+    assert(snx_hook_routed("_ZNSt3__113__vector_baseI8SLOTLOOTNS_9allocatorIS1_EEED2Ev"));
+    assert(!snx_hook_routed("_ZNSt3__113__vector_baseI8SLOTLOOTNS_9allocatorIS1_EEED0Ev"));
     assert(snx_hook_route_hash("memcpy") == snx_fnv1a(SNX_FNV_BASIS, "memcpy", 6));
     printf("PASS the runtime's route list: %zu symbols, sorted, each found, list hash %016llx\n", count,
            (unsigned long long)list);

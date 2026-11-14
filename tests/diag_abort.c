@@ -243,3 +243,41 @@ int main(void) {
     puts("PASS null strings and no Result said so");
     return 0;
 }
+
+/* the alloc and sync families' handlers (alloc.c, sync.c), which the table names and this test never calls */
+u64 alloc_malloc(CPU* c, u64 size) { (void)c, (void)size; return 0; }
+u64 alloc_calloc(CPU* c, u64 n, u64 size) { (void)c, (void)n, (void)size; return 0; }
+u64 alloc_realloc(CPU* c, u64 p, u64 size) { (void)c, (void)p, (void)size; return 0; }
+void alloc_free(CPU* c, u64 p) { (void)c, (void)p; }
+u64 alloc_aligned(CPU* c, u64 align, u64 size) { (void)c, (void)align, (void)size; return 0; }
+i32 alloc_posix_memalign(CPU* c, u64 out, u64 align, u64 size) { (void)c, (void)out, (void)align, (void)size; return 0; }
+u64 alloc_strdup(CPU* c, u64 s) { (void)c, (void)s; return 0; }
+u64 alloc_strndup(CPU* c, u64 s, u64 max) { (void)c, (void)s, (void)max; return 0; }
+u64 alloc_new(CPU* c, u64 size) { (void)c, (void)size; return 0; }
+u64 alloc_new_aligned(CPU* c, u64 size, u64 align) { (void)c, (void)size, (void)align; return 0; }
+u64 alloc_new_nothrow(CPU* c, u64 size, u64 nothrow) { (void)c, (void)size, (void)nothrow; return 0; }
+u64 alloc_new_aligned_nothrow(CPU* c, u64 size, u64 align, u64 nothrow) {
+    (void)c, (void)size, (void)align, (void)nothrow;
+    return 0;
+}
+void alloc_delete(CPU* c, u64 p) { (void)c, (void)p; }
+void sync_mutex_lock(CPU* c, u64 m) { (void)c, (void)m; }
+int sync_mutex_try_lock(CPU* c, u64 m) { (void)c, (void)m; return 0; }
+void sync_mutex_unlock(CPU* c, u64 m) { (void)c, (void)m; }
+void sync_drop(CPU* c, u64 o) { (void)c, (void)o; }
+void sync_recursive_init(CPU* c, u64 m) { (void)c, (void)m; }
+void sync_recursive_lock(CPU* c, u64 m) { (void)c, (void)m; }
+int sync_recursive_try_lock(CPU* c, u64 m) { (void)c, (void)m; return 0; }
+void sync_recursive_unlock(CPU* c, u64 m) { (void)c, (void)m; }
+void sync_cond_notify_one(CPU* c, u64 cv) { (void)c, (void)cv; }
+void sync_cond_notify_all(CPU* c, u64 cv) { (void)c, (void)cv; }
+void sync_cond_wait(CPU* c, u64 cv, u64 lk) { (void)c, (void)cv, (void)lk; }
+void sync_cond_timed_wait(CPU* c, u64 cv, u64 lk, i64 ns) { (void)c, (void)cv, (void)lk, (void)ns; }
+i64 sync_system_now(CPU* c) { (void)c; return 0; }
+i64 sync_steady_now(CPU* c) { (void)c; return 0; }
+void sync_sleep_for(CPU* c, u64 d) { (void)c, (void)d; }
+/* libc_std.c's qsort and errno call into the guest, which this test never does */
+void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) { (void)c, (void)fn, (void)a0, (void)a1, (void)a2, (void)a3; }
+void hook_run_original(CPU* c, u64 addr) { (void)c, (void)addr; } /* libc_fmt.c's way out, never taken here */
+void alloc_vector_free(CPU* c, u64 self) { (void)c, (void)self; }
+int alloc_vector_shape(u64 addr) { return (void)addr, 0; }

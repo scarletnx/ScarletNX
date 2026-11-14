@@ -112,3 +112,8 @@ int main(int argc, char** argv) {
     puts("hook_sites: passed");
     return 0;
 }
+/* hook.c asks which families can run (family.c, not linked here): every one of this test's */
+const char* hook_family_unready(const char* family) {
+    (void)family;
+    return NULL;
+}

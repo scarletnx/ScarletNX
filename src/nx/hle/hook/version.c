@@ -4,6 +4,7 @@
    whose versions hold a module's. Pure functions of their arguments, so tests/hook_versions.c runs them on labels and
    tables of its own */
 #include "nx/hle/hook/hook.h"
+#include "nx/loader/hook_routes.h"
 #include <stdio.h>
 
 static int letter(u8 ch) { return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); }
@@ -70,7 +71,10 @@ int hook_select(const HookTable* t, const char* symbol, const u32 versions[HOOK_
             hi = middle;
     }
     *first = lo < t->count && !strcmp(t->symbol[lo], symbol) ? (int)lo : -1;
+    for (i = 0; *first < 0 && i < t->npatterns; i++)
+        if (snx_hook_glob(t->symbol[t->patterns[i]], symbol)) *first = t->patterns[i];
     if (*first < 0) return -1;
+    symbol = t->symbol[lo = (u32)*first];
     for (i = lo; i < t->count && !strcmp(t->symbol[i], symbol); i++) {
         u32 v = t->key[i] < HOOK_KEYS ? versions[t->key[i]] : 0;
         if (t->key[i] == HOOK_ANY || (v && v >= t->lo[i] && v < t->hi[i])) return (int)i;

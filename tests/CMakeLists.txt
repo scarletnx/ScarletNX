@@ -1276,11 +1276,39 @@ target_include_directories(snx-test-hook-verify PRIVATE "${PROJECT_SOURCE_DIR}/s
 snx_hookgen(snx-test-hook-verify SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/verify.hook")
 add_test(NAME hook_verify COMMAND snx-test-hook-verify)
 # nn::diag's abort hook (src/nx/hle/hook/diag.c) on a fake abort: the values it logs, then its own code run
-add_executable(snx-test-diag-abort diag_abort.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/diag.c")
+# libc_std.c too: the table names its handlers, which run on the host's C library alone
+add_executable(snx-test-diag-abort diag_abort.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/diag.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_std.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_wide.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_fmt.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libcxx_string.c")
 snx_test_target(snx-test-diag-abort 11) # log.h has _Thread_local
 target_include_directories(snx-test-diag-abort PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-diag-abort SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
 add_test(NAME diag_abort COMMAND snx-test-diag-abort)
+# std::string's hooks (src/nx/hle/hook/libcxx_string.c) on libc++'s layout in guest memory
+add_executable(snx-test-libcxx-string libcxx_string.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libcxx_string.c")
+snx_test_target(snx-test-libcxx-string 11)
+target_include_directories(snx-test-libcxx-string PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_hookgen(snx-test-libcxx-string SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+add_test(NAME libcxx_string COMMAND snx-test-libcxx-string)
+# std::vector's storage hook (src/nx/hle/hook/alloc.c): the destructor shapes alloc_vector_shape takes and leaves, and
+# alloc_vector_free's empty vector and foreign pointer
+if(NOT WIN32)
+    add_executable(snx-test-alloc-vector alloc_vector.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/alloc.c")
+    snx_test_target(snx-test-alloc-vector 11)
+    target_include_directories(snx-test-alloc-vector PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    snx_hookgen(snx-test-alloc-vector SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    add_test(NAME alloc_vector COMMAND snx-test-alloc-vector)
+endif()
+# the C library's functions on guest memory (src/nx/hle/hook/libc_std.c): guest addresses back from pointers into an
+# argument, end pointers, strtok's place, div_t and ldiv_t, errno, qsort and bsearch through the guest's comparison
+if(NOT WIN32)
+    add_executable(snx-test-libc-std libc_std.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_std.c"
+                   "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_wide.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_fmt.c")
+    snx_test_target(snx-test-libc-std 11)
+    target_include_directories(snx-test-libc-std PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    snx_hookgen(snx-test-libc-std SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    add_test(NAME libc_std COMMAND snx-test-libc-std)
+endif()
 # the event a hooked SDK object attaches to the game's SystemEvent (src/nx/hle/hook/codec.c's hook_attach_event): its
 # references, with the kernel's objects stubbed to their counts
 add_executable(snx-test-hook-event-reference hook_event_reference.c)
