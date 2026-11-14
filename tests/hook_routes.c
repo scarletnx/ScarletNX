@@ -44,7 +44,7 @@ static void test_runtime_list(void) {
     /* hooks.hook's libc hooks, nvn.hook's functions and its route lines; not a function no hook names */
     assert(snx_hook_routed("memcpy") && snx_hook_routed("memset") && snx_hook_routed("nvnQueueSubmitCommands"));
     assert(snx_hook_routed("nvnBootstrapLoader") && snx_hook_routed("nvnDeviceGetProcAddress"));
-    assert(!snx_hook_routed("strlen") && !snx_hook_routed("") && !snx_hook_routed("memcpy2"));
+    assert(!snx_hook_routed("strxfrm") && !snx_hook_routed("") && !snx_hook_routed("memcpy2"));
     assert(snx_hook_route_hash("memcpy") == snx_fnv1a(SNX_FNV_BASIS, "memcpy", 6));
     printf("PASS the runtime's route list: %zu symbols, sorted, each found, list hash %016llx\n", count,
            (unsigned long long)list);
