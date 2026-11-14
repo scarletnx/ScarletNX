@@ -155,3 +155,4 @@ The ScarletNX-to-ScarletNX room transport is separate from Azahar's room protoco
 - [Azahar](https://github.com/azahar-emu/azahar) and Citra, for all of the 3DS emulation.
 - [Vita3K](https://github.com/Vita3K/Vita3K), for the PS Vita's GXM and shader translation, and [vita-headers](https://github.com/vitasdk/vita-headers) for its NIDs.
 - [mGBA](https://github.com/mgba-emu/mgba) as a direct reference for the AGB board.
+- [Cemu](https://github.com/cemu-project/Cemu), whose shader-set cache ([cemu-project/Cemu#1968](https://github.com/cemu-project/Cemu/pull/1968)) led to the batched check of the constant buffer words that a translation folds (`src/nx/gpu/vk/cb_fold.c`). No code was taken.
