@@ -3,10 +3,9 @@
 /* Headless differential test of the actual Vulkan ASTC upload, block linear
    deswizzle and swizzle, frame/staging and allocation code (vk/astc.c,
    vk/blocklinear.c, vk/cmd.c, vk/memory.c) with the SPIR-V the build compiles
-   from astc.comp and blocklinear.comp. No game assets. Run with
-   VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation and
-   VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
-   to check synchronization too (docs/layers/gpu/astc.md). --vk_max_allocation_mb=N lowers
+   from astc.comp and blocklinear.comp. No game assets. ctest's astc_vulkan_sync
+   runs it with VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation and
+   VK_LAYER_VALIDATE_SYNC=1, to check synchronization too (docs/layers/gpu/astc.md). --vk_max_allocation_mb=N lowers
    the allocation cap, so images in pieces are tested at small sizes; --large
    decodes a 2D and a 3D texture of 512 MiB each. --upload-wait checks a BC7 upload across an internal submission.
    --upload-retire checks that completed uploads do not accumulate toward the encoder's wait threshold. */
@@ -197,6 +196,20 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug(VkDebugUtilsMessageSeverityFlagBitsE
 }
 static void init(void) {
     VK_OK(volkInitialize());
+    /* ctest's astc_vulkan_sync asks for the validation layer: without it nothing would be checked, so it skips */
+    const char* asked = getenv("VK_INSTANCE_LAYERS");
+    if (asked && strstr(asked, "VK_LAYER_KHRONOS_validation")) {
+        u32 count = 0, found = 0;
+        VK_OK(vkEnumerateInstanceLayerProperties(&count, NULL));
+        VkLayerProperties* layers = calloc(count ? count : 1, sizeof *layers);
+        VK_OK(vkEnumerateInstanceLayerProperties(&count, layers));
+        for (u32 i = 0; i < count && !found; i++) found = !strcmp(layers[i].layerName, "VK_LAYER_KHRONOS_validation");
+        free(layers);
+        if (!found) {
+            printf("SKIP: VK_INSTANCE_LAYERS=%s asks for VK_LAYER_KHRONOS_validation, which isn't installed\n", asked);
+            exit(77);
+        }
+    }
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_3};
     const char* ext = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     VkInstanceCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,

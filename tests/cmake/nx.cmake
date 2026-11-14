@@ -472,6 +472,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
                          "memory in pieces.*All ASTC Vulkan comparisons passed")
     set_tests_properties(astc_vulkan astc_vulkan_pieces astc_vulkan_upload_wait astc_vulkan_upload_retire
         PROPERTIES TIMEOUT 300)
+    # the same under the validation layer's synchronization checks, whose hazards a driver that runs commands
+    # abreast shows as wrong results (skipped where the layer isn't installed)
+    add_test(NAME astc_vulkan_sync COMMAND snx-test-astc-vulkan)
+    set_tests_properties(astc_vulkan_sync PROPERTIES
+        ENVIRONMENT "VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation;VK_LAYER_VALIDATE_SYNC=1"
+        SKIP_RETURN_CODE 77 TIMEOUT 600)
 endif()
 if(BUILD_TESTING)
     snx_sanitizer_path() # tests/CMakeLists.txt: this folder's tests
