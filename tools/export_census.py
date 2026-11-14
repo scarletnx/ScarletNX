@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""The functions games export that no hook runs yet: what is left to implement natively.
+"""The functions a game's module exports or imports that no hook runs yet: what is left to implement natively.
 
     tools/export_census.py extract [--dumps /tank/switch] [--out work/exefs] [--keys prod.keys] [--only TITLE ...]
-    tools/export_census.py report work/exefs/TITLE [...]
-    tools/export_census.py summary work/exefs/*
+    tools/export_census.py report [--module main|all] work/exefs/TITLE [...]
+    tools/export_census.py summary [--module main|all] work/exefs/*
 
 extract: each dump's ExeFS alone (scarletnx -x --exefs-only), the smallest dump first, into OUT/<title ID>, with the
 game's name in name.txt; one extracted already is left as it is.
 
-report: each module's exported functions (a dynamic symbol of a function, as --dump-modules reads them: the only
-names an NSO carries), each marked hooked when a .hook file under src/ declares a hook for its symbol, and sorted by
+report: the module's (main by default, every module with --module all) exported functions (a dynamic symbol of a
+function, as --dump-modules reads them: the only names an NSO carries) and imported ones (an undefined dynamic symbol
+another module defines as a function: a call main makes into the SDK, its C library's among them, which a hook of the
+defining module's function runs as it goes through the PLT), each marked hooked when a .hook file under src/ declares a hook for its symbol, and sorted by
 what it is: libc (a C function the host's C library has too), libc++ (std::, operator new and delete, the C++ ABI's
 __cxa), nn (the SDK), nvn, or other (a game's or a middleware's), with a tag for the libraries a native one could take
 over (jpeg, png, zlib...). Writes GAME/exports.tsv (every function) and GAME/left.txt (those left, by module and
@@ -117,10 +119,10 @@ def game_name(game):
         return os.path.basename(os.path.normpath(game))
 
 
-def report(game, hooked, libc, quiet=False):
+def report(game, hooked, libc, only='main', quiet=False):
     os.environ.setdefault('SNX_SCARLETNX', os.path.join(REPO, 'build', 'rel', 'scarletnx'))
     folder = moduledump._dump(game)
-    rows = []
+    defined, imported, types = [], [], {}
     with open(os.path.join(folder, 'modules.txt'), encoding='utf-8') as f:
         module = None
         for line in f:
@@ -129,19 +131,25 @@ def report(game, hooked, libc, quiet=False):
                 module = rest.split()[0]
             elif kind == 'symbol' and module:
                 _, _, stype, name = rest.split(' ', 3)
-                if int(stype) == STT_FUNC:
-                    rows.append((module, name))
-    plain = demangle(sorted({n for _, n in rows}))
+                types.setdefault(name, int(stype))
+                defined.append((module, name))
+            elif kind == 'import' and module:
+                imported.append((module, rest))
+    # a module's exported functions, and the functions it imports from another (by the type its definer gives)
+    rows = [(m, 'export', n) for m, n in defined if types.get(n) == STT_FUNC and only in ('all', m)]
+    rows += [(m, 'import', n) for m, n in imported if types.get(n) == STT_FUNC and only in ('all', m)]
+    plain = demangle(sorted({r[2] for r in rows}))
     out = []
-    for module, name in rows:
+    for module, side, name in rows:
         p = plain.get(name, name)
-        out.append((module, kind_of(name, p, libc), 'hooked' if name in hooked else 'left', tag_of(name, p), name, p))
+        out.append((module + ' ' + side, kind_of(name, p, libc), 'hooked' if name in hooked else 'left',
+                    tag_of(name, p), name, p))
     with open(os.path.join(game, 'exports.tsv'), 'w', encoding='utf-8') as f:
         f.write('module\tkind\tstate\ttag\tsymbol\tdemangled\n')
         for r in out:
             f.write('\t'.join(r) + '\n')
     with open(os.path.join(game, 'left.txt'), 'w', encoding='utf-8') as f:
-        f.write('# %s: the exported functions no hook runs, by module and kind\n' % game_name(game))
+        f.write('# %s: the functions exported and imported that no hook runs, by module and kind\n' % game_name(game))
         for module in dict.fromkeys(r[0] for r in out):
             for kind in ('libc', 'libc++', 'nn', 'nvn', 'other'):
                 left = sorted((r for r in out if r[0] == module and r[1] == kind and r[2] == 'left'),
@@ -201,21 +209,21 @@ def extract(args):
         print('%s: %s (%d MB dump)' % (title, m.group(1) if m else '?', os.path.getsize(dump) >> 20))
 
 
-def summary(games, hooked, libc):
+def summary(games, hooked, libc, only='main'):
     counts, where = {}, {}
     for game in games:
-        rows = report(game, hooked, libc, quiet=True)
-        for r in {(r[1], r[3], r[4], r[5]) for r in rows if r[2] == 'left'}:
+        rows = report(game, hooked, libc, only, quiet=True)
+        for r in {(r[0].split()[-1], r[1], r[3], r[4], r[5]) for r in rows if r[2] == 'left'}:
             counts[r] = counts.get(r, 0) + 1
             where.setdefault(r, []).append(os.path.basename(os.path.normpath(game)))
     out = os.path.join(os.path.dirname(os.path.normpath(games[0])), 'left_all.tsv')
     with open(out, 'w', encoding='utf-8') as f:
-        f.write('games\tkind\ttag\tsymbol\tdemangled\n')
-        for r in sorted(counts, key=lambda r: (-counts[r], r[0], r[3])):
-            f.write('%d\t%s\t%s\t%s\t%s\n' % (counts[r], r[0], r[1], r[2], r[3]))
+        f.write('games\tside\tkind\ttag\tsymbol\tdemangled\n')
+        for r in sorted(counts, key=lambda r: (-counts[r], r[0], r[1], r[4])):
+            f.write('%d\t%s\t%s\t%s\t%s\t%s\n' % ((counts[r],) + r))
     by = {}
     for r, n in counts.items():
-        by[r[0]] = by.get(r[0], 0) + 1
+        by[r[1]] = by.get(r[1], 0) + 1
     print('%d games: %d distinct functions left (%s), in %s' % (
         len(games), len(counts), ', '.join('%s %d' % kv for kv in sorted(by.items())), out))
 
@@ -229,8 +237,10 @@ def main():
     x.add_argument('--keys')
     x.add_argument('--only', nargs='*')
     r = sub.add_parser('report')
+    r.add_argument('--module', default='main', help="the module to list, or 'all' (default main)")
     r.add_argument('games', nargs='+')
     s = sub.add_parser('summary')
+    s.add_argument('--module', default='main', help="the module to list, or 'all' (default main)")
     s.add_argument('games', nargs='+')
     args = ap.parse_args()
     if args.cmd == 'extract':
@@ -239,9 +249,9 @@ def main():
     hooked, libc = hooked_symbols(), host_libc()
     if args.cmd == 'report':
         for game in args.games:
-            report(game, hooked, libc)
+            report(game, hooked, libc, args.module)
     else:
-        summary([g for g in args.games if os.path.isdir(os.path.join(g, 'exefs'))], hooked, libc)
+        summary([g for g in args.games if os.path.isdir(os.path.join(g, 'exefs'))], hooked, libc, args.module)
 
 
 if __name__ == '__main__':
