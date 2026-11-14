@@ -426,10 +426,11 @@ if(TARGET snx_ctr_board)
         # reports fails the test, such as a missing barrier (a synchronization hazard), a dispatch, barrier or image
         # transition inside a draw's open rendering, or a command recorded into a buffer that a submission ended
         set(snx_vk_validation_tests 3ds_vk_draw_present_validation 3ds_vk_draw_after_draw_validation
-            3ds_vk_draw_texture_after_draw_validation 3ds_vk_draw_index_copy_validation 3ds_vk_draw_async_validation
+            3ds_vk_draw_texture_after_draw_validation 3ds_vk_draw_index_copy_validation
+            3ds_vk_draw_after_submit_validation 3ds_vk_draw_async_validation
             3ds_vk_draw_shadow_validation)
-        set(snx_vk_validation_modes --present --after-draw --texture-after-draw --draw-after-index-copy --async
-            --shadow)
+        set(snx_vk_validation_modes --present --after-draw --texture-after-draw --draw-after-index-copy
+            --draw-after-submit --async --shadow)
         foreach(snx_test snx_mode IN ZIP_LISTS snx_vk_validation_tests snx_vk_validation_modes)
             add_test(NAME ${snx_test}
                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
@@ -487,7 +488,7 @@ if(TARGET snx_ctr_board)
             list(APPEND snx_tests ${snx_test}_new3ds${snx_suffix})
         endforeach()
     endforeach()
-    foreach(snx_mode present after-draw texture-after-draw draw-after-index-copy async shadow)
+    foreach(snx_mode present after-draw texture-after-draw draw-after-index-copy draw-after-submit async shadow)
         string(REPLACE "-" "_" snx_name "${snx_mode}")
         add_test(NAME 3ds_vk_draw_${snx_name}_new3ds COMMAND snx-test-3ds-vk-draw --new3ds --${snx_mode})
         list(APPEND snx_tests 3ds_vk_draw_${snx_name}_new3ds)

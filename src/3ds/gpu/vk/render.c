@@ -1782,6 +1782,8 @@ static SnxCtrPicaResult stop(SnxCtrPica* p, const char* why) {
    attributes; the descriptor sets that point at them */
 static SnxCtrPicaResult descriptors(const SnxCtrPica* p, const SnxCtrFsConfig* fs, unsigned scale,
                                     VkDescriptorSet sets[2], VkDeviceSize* defaults) {
+    /* the open recording's slot: the last uploads compared below must be its own, not a retired slot's */
+    snx_ctr_vk_commands();
     SnxCtrVsPica vs_pica;
     SnxCtrVsData vs_data;
     SnxCtrFsUniforms* fs_data = (SnxCtrFsUniforms*)malloc(sizeof *fs_data);
