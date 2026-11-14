@@ -632,7 +632,11 @@ static int make_program(const MakeArgs* a, int index) {
         snx_title_text(owner, of);
         game = snx_format("%s_%s", of, own);
     } else
-        game = snx_game_name(name, &program.npdm, program.entry_path);
+        /* a game read from the folder the player named takes that folder's name; a dump keeps its title ID, which
+           names its files whatever the dump was called */
+        game = dump || !program.entry_path || !snx_is_dir(program.entry_path)
+                   ? snx_game_name(name, &program.npdm, program.entry_path)
+                   : snx_game_title(name, &program.npdm, program.entry_path);
     out = outdir ? snx_absolute(outdir) : snx_recompiled_dir(paths->repo);
     if (!out) {
         snx_error("cannot resolve %s", outdir ? outdir : paths->repo);
@@ -740,6 +744,15 @@ static int make_program(const MakeArgs* a, int index) {
             printf("Games shows no icon for the game: its icon.jpg could not be written in %s\n", data);
         free(icon);
         free(jpeg);
+    } else if (program.root_path) {
+        /* An extracted game keeps its icon.jpg beside exefs/, as -x writes one beside a dump's: Games shows that one,
+           so the game's data folder takes a copy, as it takes the control.nacp that names it */
+        char *from = snx_path_join(program.root_path, "icon.jpg");
+        char* icon = snx_path_join(data, "icon.jpg");
+        if (from && icon && snx_is_file(from) && snx_copy_file(from, icon))
+            printf("Games shows no icon for the game: its icon.jpg could not be copied to %s\n", data);
+        free(from);
+        free(icon);
     }
     /* another program plays with its game's settings, and reads its game's dump or its update's: neither of its own */
     ini = index ? NULL : settings_path(folder, game);

@@ -137,8 +137,10 @@ place. `-rx` (`-r -x` on Windows) prepares it extracted, as `-r --extract-contai
 
 An extracted game's folder, one whose `exefs/` holds the game's `main` (beside its `romfs/` and `control.nacp` when it
 has them, as `-x` or hactool lays one out), plays and prepares as a dump does: `./build/scarletnx "Game/"`, or
-`-r "Game/"`. The game is named by the title ID of its `exefs/main.npdm`, and shown by its `control.nacp`'s name, else
-by that ID. Nothing of it is copied: the `.ini` records the folder as `source=`, and each run reads the ExeFS and
+`-r "Game/"`. The game is named by that folder, and shown by its `control.nacp`'s name, else by the folder's name; a
+dump is named by the title ID of its `exefs/main.npdm` and shown by its `control.nacp`'s name, else by that ID. An
+`icon.jpg` beside `exefs/`, as `-x` writes one, is copied into the game's data for Games. Nothing of it is copied: the
+`.ini` records the folder as `source=`, and each run reads the ExeFS and
 RomFS from it, on whatever disk it is, `--extract-container` or not (its RomFS can take gigabytes a copy doubles; what
 an older version copied into the game's data folder is taken away at the next run). `--tmpfs` copies it into tmpfs, as
 it extracts a dump; `-x --out DIR -- "Game/"` copies it alone. Moving or deleting the

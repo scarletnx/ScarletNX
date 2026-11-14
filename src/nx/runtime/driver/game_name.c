@@ -9,12 +9,20 @@
 
 char* snx_game_title(const char* name, const SnxNpdm* npdm, const char* input) {
     const char* s;
+    char leaf[SNX_PATH_SIZE];
     char *out, *dot;
     size_t n = 0;
     int input_name = 0;
     if (!name && npdm->name[0] && strcmp(npdm->name, "Application")) name = npdm->name;
     if (!name) {
-        name = snx_path_leaf(input);
+        /* an ExeFS folder given alone: the game is the folder around it, which is the one a reader named */
+        if (input && (!strcmp(snx_path_leaf(input), "exefs") || !strcmp(snx_path_leaf(input), "ExeFS"))) {
+            char* root = snx_dirname(input);
+            snprintf(leaf, sizeof leaf, "%s", root ? snx_path_leaf(root) : "");
+            free(root);
+            name = leaf;
+        } else
+            name = snx_path_leaf(input);
         input_name = 1;
     }
     out = (char*)snx_alloc(strlen(name) + 1);
