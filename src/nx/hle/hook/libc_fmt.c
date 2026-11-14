@@ -164,6 +164,28 @@ static void out_put(Out* o, const char* s, size_t n) {
     o->p[o->n] = 0;
 }
 
+/* one conversion by the host's printf into o, whatever its length: that length, or -1 */
+static int conv_out(Out* o, const char* spec, ...) {
+    char buf[512];
+    va_list a, b;
+    va_start(a, spec);
+    va_copy(b, a);
+    int n = vsnprintf(buf, sizeof buf, spec, a);
+    va_end(a);
+    if (n >= (int)sizeof buf) {
+        char* big = malloc((size_t)n + 1);
+        if (big) {
+            vsnprintf(big, (size_t)n + 1, spec, b);
+            out_put(o, big, (size_t)n);
+            free(big);
+        } else
+            n = -1;
+    } else if (n >= 0)
+        out_put(o, buf, (size_t)n);
+    va_end(b);
+    return n;
+}
+
 /* a conversion of the format: what it is, read from fmt at f */
 typedef struct {
     char flags[8];
@@ -212,7 +234,7 @@ static int is_long(const Spec* s) { return s->len[0] && strchr("lzjtq", s->len[0
 /* fmt formatted into o with a's arguments: what it wrote, or -1 */
 static int format(CPU* c, Out* o, const char* f, Args* a) {
     Spec s;
-    char spec[48], buf[512];
+    char spec[48];
     while (*f) {
         const char* pct = strchr(f, '%');
         if (!pct) {
@@ -257,17 +279,17 @@ static int format(CPU* c, Out* o, const char* f, Args* a) {
                 else if (!is_long(&s))
                     v = conv == 'd' || conv == 'i' ? (u64)(i64)(i32)v : (u32)v;
                 SPEC("ll", conv);
-                n = snprintf(buf, sizeof buf, spec, (long long)v);
+                n = conv_out(o, spec, (long long)v);
                 break;
             }
             case 'c': {
                 u64 v = arg_int(a);
                 if (s.len[0] == 'l') {
                     SPEC("l", 'c');
-                    n = snprintf(buf, sizeof buf, spec, (wint_t)(u32)v);
+                    n = conv_out(o, spec, (wint_t)(u32)v);
                 } else {
                     SPEC("", 'c');
-                    n = snprintf(buf, sizeof buf, spec, (int)(u8)v);
+                    n = conv_out(o, spec, (int)(u8)v);
                 }
                 break;
             }
@@ -285,17 +307,7 @@ static int format(CPU* c, Out* o, const char* f, Args* a) {
                     continue;
                 }
                 SPEC("", 's');
-                const char* str = p ? S(p) : "(null)"; /* musl's */
-                n = snprintf(NULL, 0, spec, str);
-                if (n >= (int)sizeof buf) {
-                    char* big = malloc((size_t)n + 1);
-                    if (!big) return -1;
-                    snprintf(big, (size_t)n + 1, spec, str);
-                    out_put(o, big, (size_t)n);
-                    free(big);
-                    continue;
-                }
-                snprintf(buf, sizeof buf, spec, str);
+                n = conv_out(o, spec, p ? S(p) : "(null)"); /* musl's */
                 break;
             }
             case 'p': { /* musl's: 0x and 16 hex digits, as %#.16x */
@@ -303,7 +315,7 @@ static int format(CPU* c, Out* o, const char* f, Args* a) {
                 if (prec < 16) prec = 16;
                 snprintf(flags, sizeof flags, "#%s", s.flags);
                 SPEC("ll", 'x');
-                n = snprintf(buf, sizeof buf, spec, (unsigned long long)v);
+                n = conv_out(o, spec, (unsigned long long)v);
                 break;
             }
             case 'n': { /* what was written so far, through the guest's pointer, of the length's size */
@@ -322,21 +334,12 @@ static int format(CPU* c, Out* o, const char* f, Args* a) {
             default: { /* e E f F g G a A */
                 f64 v = s.len[0] == 'L' ? arg_long_double(a) : arg_double(a);
                 SPEC("", conv);
-                n = snprintf(buf, sizeof buf, spec, v);
-                if (n >= (int)sizeof buf) {
-                    char* big = malloc((size_t)n + 1);
-                    if (!big) return -1;
-                    snprintf(big, (size_t)n + 1, spec, v);
-                    out_put(o, big, (size_t)n);
-                    free(big);
-                    continue;
-                }
+                n = conv_out(o, spec, v);
                 break;
             }
         }
 #undef SPEC
         if (n < 0) return -1;
-        out_put(o, buf, (size_t)n < sizeof buf ? (size_t)n : sizeof buf - 1);
     }
     return (int)o->n;
 }

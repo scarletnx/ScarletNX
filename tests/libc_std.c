@@ -145,6 +145,10 @@ int main(void) {
     i32 n2 = libc_snprintf(c, 0x9000, 64, f);
     const char* want = "-7|   ab|3.14|ff|-123456789012|Z|(null)|0x00000000deadbeef";
     assert(n2 == (i32)strlen(want) && !strcmp((char*)g_mem + 0x9000, want));
+    /* a conversion wider than any buffer of the handler's: all of it, and its whole length */
+    c->x[3] = 5;
+    assert(libc_snprintf(c, 0x9400, 1024, put(0x8180, "%600d|")) == 601 && g_mem[0x9400 + 598] == ' ' &&
+           !strcmp((char*)g_mem + 0x9400 + 599, "5|"));
     /* truncated to the size, the whole length returned */
     assert(libc_snprintf(c, 0x9100, 4, put(0x8200, "hello")) == 5 && !strcmp((char*)g_mem + 0x9100, "hel"));
     /* vsnprintf, through a va_list record: two ints from the general registers' save area, a double from the vector
