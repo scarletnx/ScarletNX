@@ -2570,6 +2570,8 @@ static u64 trim_head(u64 budget) {
 static u32 g_forced;    /* the present a failed allocation last forced a trim (+1) */
 static u32 g_oom;       /* the present an image allocation last found no memory (+1) */
 static u64 g_oom_bytes; /* the smallest size that found none in that present */
+static u32 g_oom_target; /* the same of render targets */
+static u64 g_oom_target_bytes;
 u64 vk_mem_trimmed(void) { return g_trimmed; }
 u64 vk_mem_trim_start(u64 budget) { return budget - trim_head(budget); }
 /* The caches' trim takes only what the last presents didn't use, and on a GPU of 2 GB Mario Kart World's working set
@@ -2718,14 +2720,19 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem
                   (unsigned long long)(*bytes >> 20), (unsigned long long)(heap >> 20));
         return 0;
     }
-    /* one as big found no memory this present: neither will this one (what was freed meanwhile is released when the
-       frame is done). Its draws go without it until the next present */
-    if (g_oom == g_vk_present + 1 && *bytes >= g_oom_bytes) return 0;
+    /* one as big of its kind found no memory this present: neither will this one (what was freed meanwhile is released
+       when the frame is done). Its draws go without it until the next present. Render targets are counted apart: in
+       Mario Kart World on a GPU of 2 GB, textures of 66 KB to 1.6 MB found none in each present, and its depth targets
+       of 2 to 8 MB, refused for them, skipped 500,000 draws in a minute and a half where 220 found no memory */
+    const int target = owner == VK_OWN_TARGET;
+    u32* oom = target ? &g_oom_target : &g_oom;
+    u64* oom_bytes = target ? &g_oom_target_bytes : &g_oom_bytes;
+    if (*oom == g_vk_present + 1 && *bytes >= *oom_bytes) return 0;
     vk_mem_trim(*bytes, 0);
     if (vk_image_create_r(ii, img, mem, owner, &res)) return 1;
     if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
-        if (g_oom != g_vk_present + 1 || *bytes < g_oom_bytes) g_oom_bytes = *bytes;
-        g_oom = g_vk_present + 1;
+        if (*oom != g_vk_present + 1 || *bytes < *oom_bytes) *oom_bytes = *bytes;
+        *oom = g_vk_present + 1;
         vk_tex_shed(*bytes);
         vk_mem_trim(*bytes, 1); /* room for it by the time it is asked for again, a present or two later */
     }
