@@ -6,8 +6,11 @@
    of its address taken before (as an NRO's import or the JIT's direct call holds one) runs the game's new code with
    the arguments of the call, its slot is left for the game's code, and a warning names it with both words. A change
    of a neighbour's code in the same cache line, which the JIT drops the same way, invalidates nothing, nor does a
-   change past the function's first 4 bytes, which are all that is compared. The system's refusal to make
-   code writable is reported with its reason. Only x86_64 runs the jump: on another host the test is skipped (77) */
+   change past the function's first 4 bytes, which are all that is compared. Then the mod's trampoline, the
+   function's first instructions and a jump back past them, takes answer's ext_skyline hook (tests/hook/
+   ext_skyline.hooks) when it first runs, in each form a loader writes: the mod's call of the original runs the
+   handler, and a handler's own code is the trampoline's, entered there. The system's refusal to make code writable is
+   reported with its reason. Only x86_64 runs the jump: on another host the test is skipped (77) */
 #include "nx/hle/hook/hook.c"
 #include <assert.h>
 #include <stdarg.h>
@@ -22,6 +25,7 @@
 #define COPY     (CODE + 0x00)
 #define ANSWER   (CODE + 0x10)
 #define UNHOOKED (CODE + 0x20)
+#define TRAMP    (CODE + 0x200) /* the mod's trampolines, in a pool of its code */
 
 /* ---- the handlers */
 static unsigned copies, answers;
@@ -51,6 +55,15 @@ static void game_answer(CPU* RESTRICT c, u64 entry) {
     c->x[0] = 0x55;
     c->pc = c->x[30];
 }
+/* the JIT's code of the trampoline: the SDK's own answer, entered at the trampoline */
+static unsigned tramp_runs;
+static u64 tramp_entry;
+static void tramp_code(CPU* RESTRICT c, u64 entry) {
+    tramp_runs++;
+    tramp_entry = entry;
+    c->x[0] = 0x66;
+    c->pc = c->x[30];
+}
 static GuestFn slots[0x400];
 static const struct {
     const char* name;
@@ -78,12 +91,13 @@ const SnxRoutes* g_routes;
 u64 kmem_alloc(u64 size, u32 state, u32 perm) { return (void)size, (void)state, (void)perm, 0; }
 void mem_query(u64 addr, MemBlock* b) {
     memset(b, 0, sizeof *b);
-    b->addr = addr, b->state = MS_CODE, b->perm = PERM_R | PERM_X;
+    b->addr = CODE, b->size = 0x1000, b->state = MS_CODE, b->perm = PERM_R | PERM_X;
+    if (addr < CODE || addr >= CODE + 0x1000) b->addr = addr, b->size = 0, b->state = MS_FREE;
 }
 GuestFn nce_slot(GuestFn f) { return f; }
 void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
-GuestFn jit_code_now(u64 pc) { return pc == ANSWER ? game_answer : NULL; }
+GuestFn jit_code_now(u64 pc) { return pc == ANSWER ? game_answer : pc == TRAMP ? tramp_code : NULL; }
 SnxArmBlock* arm_slot(u32 addr, int thumb) { return (void)addr, (void)thumb, NULL; }
 SnxArmBlock arm_block(u32 addr, int thumb) { return (void)addr, (void)thumb, NULL; }
 SnxArmCPU* arm_cpu(CPU* c) { return (void)c, NULL; }
@@ -168,7 +182,7 @@ int main(int argc, char** argv) {
     g_settings.native_hooks = 1;
     hook_install();
     assert(slots[(ANSWER - CODE) >> 2] == hook_fn[answer] && slots[(COPY - CODE) >> 2] == hook_fn[copy]);
-    assert(g_host.hook.word[1] == snx_ld_le32(guest + ANSWER));
+    assert(snx_le32(g_host.hook.head[1][0]) == 0xB3B2B1B0u && snx_le32(g_host.hook.head[1][4]) == 0xC3C2C1C0u);
     /* the address of answer's hook, held as an NRO's import is: its handler answers */
     held = slots[(ANSWER - CODE) >> 2];
     c.x[0] = 7, c.x[30] = 0x9000;
@@ -194,7 +208,8 @@ int main(int argc, char** argv) {
     assert(slots[(COPY - CODE) >> 2] == hook_fn[copy] && hook_function(COPY) == hook_fn[copy]);
     assert(warnings == 1 &&
            strstr(warned, "changed the first instruction of answer at 1010 from b3b2b1b0 to 14001234") &&
-           strstr(warned, "which test_answer answered natively"));
+           strstr(warned, "which test_answer answered natively") &&
+           strstr(warned, "but for the mod's call of the original, which runs test_answer once its trampoline runs"));
     /* the adapter's own code now jumps to the sad path, after its landing pad when it has one */
     adapter = (const u8*)(uintptr_t)hook_fn[answer];
     if (!memcmp(adapter, "\xF3\x0F\x1E\xFA", 4)) adapter += 4;
@@ -209,6 +224,64 @@ int main(int argc, char** argv) {
     assert(copies == 1 && own_runs == 0 && c.pc == 0x9200);
     line_dropped(ANSWER);
     assert(slots[(ANSWER - CODE) >> 2] == NULL && warnings == 1);
+
+    /* the forms of a trampoline, answer's first 1, 4 or 5 words and a jump back past them: a b, or ldr x17, #8 and
+       br x17 of the address, after a nop that aligns it. Its words are the ones hook_install saw */
+    {
+        static const struct {
+            unsigned k, nop, literal; /* "far" is a macro of windows.h */
+        } forms[] = {{1, 0, 0}, {4, 0, 0}, {5, 0, 0}, {1, 0, 1}, {1, 1, 1}, {4, 1, 1}};
+        unsigned f, w;
+        for (f = 0; f < sizeof forms / sizeof forms[0]; f++) {
+            u64 at = TRAMP + 4 * forms[f].k, back = ANSWER + 4 * forms[f].k;
+            memset(guest + TRAMP, 0, 0x40);
+            for (w = 0; w < forms[f].k; w++) memcpy(guest + TRAMP + 4 * w, &g_host.hook.head[1][w], 4);
+            if (forms[f].nop) snx_st_le32(guest + at, 0xD503201Fu), at += 4;
+            if (!forms[f].literal)
+                snx_st_le32(guest + at, 0x14000000u | ((u32)((i64)(back - at) >> 2) & 0x3FFFFFFu));
+            else
+                snx_st_le32(guest + at, 0x58000051u), snx_st_le32(guest + at + 4, 0xD61F0220u),
+                    snx_st_le64(guest + at + 8, back);
+            assert(trampoline_of(1, TRAMP, CODE + 0x1000));
+            assert(!trampoline_of(0, TRAMP, CODE + 0x1000)); /* not copy's */
+            /* the jump back right but a moved instruction another: a first instruction that read the pc */
+            guest[TRAMP + 4 * (forms[f].k - 1)] ^= 0xFF;
+            assert(!trampoline_of(1, TRAMP, CODE + 0x1000));
+            guest[TRAMP + 4 * (forms[f].k - 1)] ^= 0xFF;
+            snx_st_le32(guest + at, 0xD503201Fu); /* no jump back where it should be */
+            assert(!trampoline_of(1, TRAMP, CODE + 0x1000));
+        }
+    }
+    /* the near form, as exlaunch writes it for a function within a b's reach: a pc that is no trampoline is no hook's */
+    memset(guest + TRAMP, 0, 0x40);
+    memcpy(guest + TRAMP, &g_host.hook.head[1][0], 4);
+    snx_st_le32(guest + TRAMP + 4, 0x14000000u | ((u32)((i64)((ANSWER + 4) - (TRAMP + 4)) >> 2) & 0x3FFFFFFu));
+    assert(hook_trampoline(TRAMP + 0x100) == NULL && hook_trampoline(TRAMP + 2) == NULL);
+    /* its first run takes answer's ext_skyline hook, which takes its slot: the mod's call of the original runs the
+       handler with its arguments */
+    {
+        const char* handler = NULL;
+        GuestFn ext = hook_ext_skyline("answer", 0, &handler), got = hook_trampoline(TRAMP);
+        assert(ext && got == ext && !strcmp(handler, "test_answer") && slots[(TRAMP - CODE) >> 2] == ext);
+        assert(g_host.hook.tramp[1] == TRAMP && warnings == 1);
+        c.x[0] = 41, c.x[30] = 0x9300, c.pc = 0;
+        slots[(TRAMP - CODE) >> 2](&c, TRAMP);
+        assert(answers == 2 && c.x[0] == 42 && c.pc == 0x9300);
+        /* the handler's own code is the trampoline's, entered there: the SDK's, past the instruction the mod moved */
+        c.x[30] = 0x9400, c.pc = 0;
+        hook_run_original(&c, ANSWER);
+        assert(tramp_runs == 1 && tramp_entry == TRAMP && c.x[0] == 0x66 && c.pc == 0x9400);
+        /* the held adapter still runs the game's code at answer: the mod's detour */
+        c.x[30] = 0x9500, c.pc = 0;
+        held(&c, ANSWER);
+        assert(game_runs == 2 && game_entry == ANSWER && answers == 2 && c.pc == 0x9500);
+        /* the JIT dropped the trampoline's line: its next run takes the hook again */
+        slots[(TRAMP - CODE) >> 2] = NULL;
+        assert(hook_trampoline(TRAMP) == ext && slots[(TRAMP - CODE) >> 2] == ext);
+        /* the mod rewrote it: no longer a trampoline, so no longer the hook's */
+        snx_st_le32(guest + TRAMP + 4, 0xD503201Fu);
+        assert(hook_trampoline(TRAMP) == NULL && g_host.hook.tramp[1] == 0);
+    }
 
 #if !defined(_WIN32)
     /* code the system refuses to make writable (a shared mapping of a file opened to read): nothing is written, and
