@@ -6366,13 +6366,15 @@ static int check_rt_overlap(void) {
     vk_rt_before_write(DMA_GA, 0x14000);
     guest_done(DMA_A, 0x14000);
     CHECK(all_blue(GP(DMA_A), 0x14000));
-    /* a 160 by 256 target, the program's own bytes over its memory after it, and a copy of the 160 by 128 surface */
+    /* a 160 by 256 target, the program's own bytes over its memory after it, and a copy of the 160 by 128 surface: the
+       target reaches past the copy's range, so it is published (vk_rt_overlay), not written back with a wait */
     rt_clear(ch, DMA_GA, 160, 256, 4, 1);
     guest_done(DMA_A, 0x28000); /* the GPU's writes there first, as the guest's fence has them */
     memset(GP(DMA_A), 0x11, 0x28000);
     readbacks = g_vk_rt_readbacks;
+    u64 finishes = g_vk_finishes;
     CHECK(g_renderer->dma_copy(&o));
-    CHECK(g_vk_rt_readbacks == readbacks + 1);
+    CHECK(g_vk_rt_readbacks == readbacks && g_vk_finishes == finishes);
     guest_done(DMA_A + 0x40000, 160 * 128 * 4);
     CHECK(all_bytes(GP(DMA_A + 0x40000), 160 * 128 * 4, 0x11));
     /* A render target and a newer buffer can use different GPU aliases of the
@@ -6387,7 +6389,7 @@ static int check_rt_overlap(void) {
     o.dst = pitch_side(DMA_GA + 0x10000, 512);
     o.width = o.line_in = o.line_out = 512;
     o.lines = 1;
-    u64 finishes = g_vk_finishes;
+    finishes = g_vk_finishes;
     CHECK(g_renderer->dma_copy(&o));
     CHECK(g_vk_finishes == finishes); /* the target under the copy's result published, not written back with a wait */
     o.src = pitch_side(alias + 0x1000, 512);
