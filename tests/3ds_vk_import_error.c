@@ -153,11 +153,9 @@ int main(void) {
     d.result = VK_ERROR_TOO_MANY_OBJECTS;
     expect_ram(&d, "IO", "vkGetMemoryFdKHR gave VK_ERROR_TOO_MANY_OBJECTS (-10) for its dma-buf");
     d.step = SNX_CTR_VK_DEVICE_RAM_VIEWS;
-    d.error = ENOMEM;
-    char reason[128];
-    errno = ENOMEM;
-    snprintf(want, sizeof want, "the guest's views of the RAM do not map its dma-buf: %s",
-             snx_os_error(reason, sizeof reason));
+    d.error = EACCES;
+    errno = 0;
+    snprintf(want, sizeof want, "the guest's views of the RAM do not map its dma-buf: %s", strerror(EACCES));
     expect_ram(&d, "IO", want);
     printf("the device's memory's errors: 10 messages say their values\n");
 
@@ -165,7 +163,7 @@ int main(void) {
     SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
     char why[1024];
     assert(m);
-    if (snx_ctr_vk_init(m, why, sizeof why)) {
+    if (snx_ctr_vk_init(m, false, why, sizeof why)) {
         const SnxCtrVk* v = snx_ctr_vk();
         assert(!snx_ctr_vk_error()[0]);
         if (snx_ctr_vk_shadow())

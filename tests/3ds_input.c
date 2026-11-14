@@ -78,7 +78,7 @@ int main(void) {
     CHECK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD));
     SDL_Window* window = SDL_CreateWindow("3ds input", 64, 64, 0); /* the dummy driver's, with the focus */
     CHECK(window != NULL);
-    snx_ctr_input_init();
+    snx_ctr_input_init(false);
     SDL_Joystick* pad = attach();
     float at[2];
 
@@ -133,7 +133,7 @@ int main(void) {
     CHECK(with(pad, SDL_GAMEPAD_BUTTON_SOUTH) == SNX_CTR_PAD_B);
     snx_ctr_input_map("north:Y");
     snx_ctr_input_free();
-    snx_ctr_input_init();
+    snx_ctr_input_init(false);
     SDL_DetachVirtualJoystick(SDL_GetJoystickID(pad)); /* a pad connected anew, which the input opens */
     pad = attach();
     CHECK(with(pad, SDL_GAMEPAD_BUTTON_NORTH) == SNX_CTR_PAD_Y);

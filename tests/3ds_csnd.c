@@ -118,8 +118,11 @@ int main(void) {
     hardware(p, pa);
 
     char* dir = snx_temp_dir(NULL);
+    assert(dir);
     char* wav = snx_path_join(dir, "csnd.wav");
-    assert(dir && wav && snx_ctr_audio_init(wav));
+    assert(wav);
+    assert(!snx_ctr_audio_init(NULL, true) && !SDL_WasInit(SDL_INIT_AUDIO));
+    assert(snx_ctr_audio_init(wav, false));
     uint32_t srv = ctr_srv(p);
     const uint32_t registration[] = {0x00010002, 0x20, 0};
     ctr_call(p, srv, registration, 3, SNX_CTR_SVC_RETURN, 0);
@@ -159,6 +162,7 @@ int main(void) {
     command(p, block, 0x1040, 0x300, 0xffff, none);
     const uint32_t run_list[] = {0x00030040, 0x1000};
     assert(call(p, csnd, run_list, 2) == 0x00030040 && !ctr_command_word(p, 1));
+    unsigned at = p->csnd.frame_samples; /* the pre-list samples of the frame, before the updates clear it */
     assert((block_word(p, block, 0x1004) & 0xff) == 1); /* the first command finished */
     assert((p->csnd.hw.channel[8].cnt & PLAYING) == PLAYING);
     /* the state: the mask register's channels and the channel's own (8 is the client's first: index 0) */
@@ -175,11 +179,12 @@ int main(void) {
     unsigned char* data = snx_read_file(wav, &bytes);
     assert(data && bytes == 44 + 3 * SNX_CTR_DSP_SAMPLES * 4);
     /* the frame begins with the samples rendered before the list ran, silent: as many as the time it took */
-    unsigned at = 0;
-    while (at < SNX_CTR_DSP_SAMPLES - 5 && !snx_ld_le16(data + 44 + at * 4)) ++at;
     int16_t first[5], mixed_one;
-    for (unsigned i = 0; i < 5; ++i) first[i] = (int16_t)snx_ld_le16(data + 44 + (at + i) * 4);
-    expect(first, (const int16_t[]){1000, -2000, 3000, -4000, 0}, 5, "the recording");
+    if (at + 5 <= SNX_CTR_DSP_SAMPLES) {
+        for (unsigned i = 0; i < 5; ++i) first[i] = (int16_t)snx_ld_le16(data + 44 + (at + i) * 4);
+        expect(first, (const int16_t[]){1000, -2000, 3000, -4000, 0}, 5, "the recording");
+    } else
+        printf("the pre-list frame filled before the list ran: the recording's offset is not checked\n");
     mixed_one = (int16_t)snx_ld_le16(data + 44 + 2 * SNX_CTR_DSP_SAMPLES * 4);
     assert(mixed_one == 100);
     free(data);
@@ -199,6 +204,17 @@ int main(void) {
     assert(ctr_send_header(p, csnd, 0x000c0000) == 0x000c0040 && !(p->csnd.hw.channel[8].cnt & PLAYING));
     assert(ctr_send_header(p, csnd, 0x00020000) == 0x00020040 && !p->csnd.initialized_clients);
 
+    /* a headless recording: no audio device, and the WAV still holds the frames */
+    char* headless_wav = snx_path_join(dir, "headless.wav");
+    assert(headless_wav && snx_ctr_audio_init(headless_wav, true) && !SDL_WasInit(SDL_INIT_AUDIO));
+    int16_t silence[SNX_CTR_DSP_SAMPLES][2] = {0};
+    snx_ctr_audio_frame(silence);
+    snx_ctr_audio_free();
+    size_t headless_bytes = 0;
+    unsigned char* headless_data = snx_read_file(headless_wav, &headless_bytes);
+    assert(headless_data && headless_bytes == 44 + SNX_CTR_DSP_SAMPLES * 4);
+    free(headless_data);
+    free(headless_wav);
     assert(!snx_remove_tree(dir));
     free(wav);
     free(dir);

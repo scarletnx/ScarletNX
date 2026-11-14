@@ -10,12 +10,10 @@
    (ctr_script) is unattended.c's for a Switch game: ms:hex presses, each held for press_len ms */
 #include "3ds/input/input.h"
 #include "3ds/board/clock.h"
-#include "common/utilities/common.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/script.h"
 #include "snx_settings.h"
 #include <SDL3/SDL.h>
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,9 +54,11 @@ static struct {
 
 void snx_ctr_input_map(const char* text) { snx_pad_map_setting(&g_input.map, text, CTR_BITS, "3DS"); }
 
-void snx_ctr_input_init(void) {
+void snx_ctr_input_init(bool headless) {
     g_input.start = snx_ctr_clock_seconds();
-    g_input.presses = snx_script_parse("scarletnx-3ds", g_settings.ctr_script, SNX_CTR_PAD_BUTTONS, &g_input.script);
+    g_input.presses = snx_script_parse("scarletnx-3ds", g_settings.ctr_script,
+                                       SNX_CTR_PAD_BUTTONS | SNX_CTR_PAD_ZL | SNX_CTR_PAD_ZR, &g_input.script);
+    if (headless) return; /* no gamepad: the script's presses alone */
     /* SDL sends an added event for each gamepad already connected */
     g_input.gamepads = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
     if (!g_input.gamepads) fprintf(stderr, "scarletnx-3ds: no gamepads: %s\n", SDL_GetError());
@@ -80,13 +80,21 @@ void snx_ctr_input_touch(bool pressed, uint32_t x, uint32_t y) {
     }
 }
 bool snx_ctr_input_touched(void) { return g_input.touch; }
-/* A stick at x and y (-1 to 1, y up) as held, past the dead zone; it replaces held when it is pushed further, so of
-   several pads and the keys the furthest wins */
-static void stick(float x, float y, float dead, float held[2]) {
-    double sx = x, sy = y;
-    if (sqrtf(x * x + y * y) > sqrtf(held[0] * held[0] + held[1] * held[1]) && snx_pad_dead_zone(&sx, &sy, dead, 1)) {
-        held[0] = (float)sx;
-        held[1] = (float)sy;
+/* A stick at x and y (-1 to 1, y up) replaces the raw one when it is pushed further, so of several pads and the keys
+   the furthest wins. The dead zone is applied once, to that winner, after every pad is read */
+static void stick(float x, float y, float raw[2]) {
+    if (x * x + y * y > raw[0] * raw[0] + raw[1] * raw[1]) {
+        raw[0] = x;
+        raw[1] = y;
+    }
+}
+/* the raw winner at raw, past the dead zone and on the rim, as the console's circle pad reads it */
+static void stick_output(const float raw[2], float dead, float out[2]) {
+    if (!raw[0] && !raw[1]) return;
+    double x = raw[0], y = raw[1];
+    if (snx_pad_dead_zone(&x, &y, dead, 1)) {
+        out[0] = (float)x;
+        out[1] = (float)y;
     }
 }
 void snx_ctr_input_read(SnxCtrInput* input) {
@@ -94,6 +102,8 @@ void snx_ctr_input_read(SnxCtrInput* input) {
     input->touch = g_input.touch;
     input->touch_x = g_input.touch_x;
     input->touch_y = g_input.touch_y;
+    float dead = (float)g_settings.stick_dead_zone / 100.0f;
+    float raw_circle[2] = {0, 0}, raw_c_stick[2] = {0, 0};
     /* the window's keys, which SDL keeps for a window with the focus: none without a window */
     const bool* held = SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
     if (held) {
@@ -102,9 +112,8 @@ void snx_ctr_input_read(SnxCtrInput* input) {
         for (int b = 0; b < SNX_PAD_BUTTONS; ++b)
             if (keys & 1u << b) input->buttons |= CTR_BITS[b];
         if (held[SDL_SCANCODE_SPACE]) input->buttons |= SNX_CTR_PAD_A;
-        snx_pad_key_sticks(held, input->circle, input->c_stick);
+        snx_pad_key_sticks(held, raw_circle, raw_c_stick);
     }
-    float dead = (float)g_settings.stick_dead_zone / 100.0f;
     /* what each control of a pad sends, as a Switch game's pad's (backend/gamepad.c's map_of) */
     SnxPadMap map;
     snx_pad_map_sent(&map, &g_input.map, g_settings.swap_a_b);
@@ -113,11 +122,11 @@ void snx_ctr_input_read(SnxCtrInput* input) {
         if (!pad) continue;
         for (int c = 0; c < SNX_PAD_CONTROLS; ++c)
             if (map.bit[c] >= 0 && snx_pad_held(pad, c)) input->buttons |= CTR_BITS[map.bit[c]];
-        stick(snx_pad_axis(pad, SDL_GAMEPAD_AXIS_LEFTX), -snx_pad_axis(pad, SDL_GAMEPAD_AXIS_LEFTY), dead,
-              input->circle);
-        stick(snx_pad_axis(pad, SDL_GAMEPAD_AXIS_RIGHTX), -snx_pad_axis(pad, SDL_GAMEPAD_AXIS_RIGHTY), dead,
-              input->c_stick);
+        stick(snx_pad_axis(pad, SDL_GAMEPAD_AXIS_LEFTX), -snx_pad_axis(pad, SDL_GAMEPAD_AXIS_LEFTY), raw_circle);
+        stick(snx_pad_axis(pad, SDL_GAMEPAD_AXIS_RIGHTX), -snx_pad_axis(pad, SDL_GAMEPAD_AXIS_RIGHTY), raw_c_stick);
     }
+    stick_output(raw_circle, dead, input->circle);
+    stick_output(raw_c_stick, dead, input->c_stick);
     if (g_input.presses) {
         double ms = (snx_ctr_clock_seconds() - g_input.start) * 1000.0;
         input->buttons |=

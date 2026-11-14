@@ -62,7 +62,7 @@ int main(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
     sdl_real_pads_hide();
     CHECK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD));
-    snx_ctr_input_init();
+    snx_ctr_input_init(false);
     SDL_VirtualJoystickDesc d;
     SDL_INIT_INTERFACE(&d);
     d.type = SDL_JOYSTICK_TYPE_GAMEPAD;

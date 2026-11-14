@@ -413,8 +413,11 @@ if(TARGET snx_ctr_board)
     # the stand-in shaders (shaders/standin.vert and standin.frag) given every draw they draw, against the CPU
     # reference
     add_test(NAME 3ds_vk_draw_stand_in COMMAND snx-test-3ds-vk-draw --ctr_stand_in=2)
+    # the presented screens outside the validation harness, so every host runs that path
+    add_test(NAME 3ds_vk_draw_present COMMAND snx-test-3ds-vk-draw --present)
     set_tests_properties(3ds_vk_draw 3ds_vk_draw_async 3ds_vk_draw_pipelines 3ds_vk_draw_async_pipelines
-                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_stand_in PROPERTIES SKIP_RETURN_CODE 77)
+                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_stand_in 3ds_vk_draw_present
+                         PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's copy of the RAM, page by page: what is copied in and back, and when, and every byte where it belongs
     add_executable(snx-test-3ds-vk-copies 3ds_vk_copies.c)
     snx_test_target(snx-test-3ds-vk-copies 11)
@@ -501,9 +504,9 @@ if(TARGET snx_ctr_board)
         endforeach()
     endif()
     set_tests_properties(${snx_tests} PROPERTIES SKIP_RETURN_CODE 77)
-    # the two windows and the per-screen render scales: one window always, Separate screens, a minimized window and a
-    # window whose images the display holds when the host has a window; the dumps stay the framebuffer's own size
-    # whatever the scale
+    # the two windows and the per-screen render scales: one window always, Separate screens, a minimized window, a
+    # window whose images the display holds, and a headless run; the dumps stay the framebuffer's own size whatever
+    # the scale
     add_executable(snx-test-3ds-windows 3ds_windows.c)
     snx_test_target(snx-test-3ds-windows 11)
     target_link_libraries(snx-test-3ds-windows PRIVATE snx_ctr_gpu)
@@ -514,8 +517,11 @@ if(TARGET snx_ctr_board)
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-minimized" --minimize)
     add_test(NAME 3ds_windows_no_image
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-no-image" --no-image)
+    add_test(NAME 3ds_windows_headless
+             COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-headless" --headless)
     set_tests_properties(3ds_windows 3ds_windows_separate PROPERTIES SKIP_RETURN_CODE 77)
-    set_tests_properties(3ds_windows_minimized 3ds_windows_no_image PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    set_tests_properties(3ds_windows_minimized 3ds_windows_no_image 3ds_windows_headless
+                         PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
     # the transfer engine alone: fills, display transfers, texture copies against hand-written goldens
     add_executable(snx-test-3ds-transfer 3ds_transfer.c)
     snx_test_target(snx-test-3ds-transfer 11)
@@ -619,7 +625,9 @@ if(SNX_TEST_SANITIZERS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_library(snx-test-vulkan-drivers-kept MODULE vulkan_drivers_kept.c)
     target_compile_options(snx-test-vulkan-drivers-kept PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(snx-test-vulkan-drivers-kept PRIVATE ${CMAKE_DL_LIBS})
-    foreach(snx_test 3ds_gsp_gpu 3ds_static_pipeline 3ds_extract)
+    foreach(snx_test 3ds_gsp_gpu 3ds_gsp_gpu_copy 3ds_gsp_gpu_in_place 3ds_static_pipeline 3ds_extract
+                     3ds_vk_transfer 3ds_vk_copies 3ds_vk_ram 3ds_vk_y2r 3ds_vk_draw 3ds_vk_draw_present
+                     3ds_vk_pipeline_cache 3ds_vk_shader_object 3ds_vk_import_error 3ds_windows 3ds_windows_headless)
         if(TEST ${snx_test})
             set_property(TEST ${snx_test} APPEND PROPERTY ENVIRONMENT
                          "LD_PRELOAD=$<TARGET_FILE:snx-test-vulkan-drivers-kept>")

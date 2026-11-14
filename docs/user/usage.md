@@ -35,10 +35,12 @@ works for now, and the run says once what it is called now ([Deprecations](depre
 
 Each driver that recompiles (`scarletnx`, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-agb`, `scarletnx-nds`) also takes
 `--aot_threads=N`, the setting [`aot_threads`](settings.md): the threads compiling the game's code, 0 (the default)
-up to the computer's cores with a quarter left free, or to `--aot_threads_most=N` (`scarletnx`'s open one at a time, as the memory holds them:
-[Extract → AOT → run](#extract--aot--run)). A GBA ROM's code is one module and compiles on one thread whatever N,
-which its recompile says. A value that is not a whole number from 0 to 1024 stops the run. `--jobs N` is the same
-setting, and `-O` the setting [`opt`](settings.md), 2 unless the launcher's Optimization level says another, which
+up to the computer's cores with a quarter left free. The Switch, 3DS, Vita and GBA drivers also take
+`--aot_threads_most=N` (`scarletnx`'s open one at a time, as the memory holds them:
+[Extract → AOT → run](#extract--aot--run)); `scarletnx-nds` takes only `--aot_threads=N`. A GBA ROM's code is one
+module and compiles on one thread whatever N, which its recompile says. A value that is not a whole number from 0
+to 1024 stops the run. `--jobs N` is the same setting for the Switch, 3DS, Vita and GBA drivers, and `-O` the
+setting [`opt`](settings.md), 2 unless the launcher's Optimization level says another, which
 the launcher gives every one of them. The recompile's options take effect when the game is made: a game made already
 keeps its code until `-r`.
 
@@ -66,11 +68,11 @@ On GNU ABI and Android the code compiles as it runs: `-O` is their JIT's level (
 | `--output DIR` | The game's folder itself (default: `<outdir>/<the game's name>`) | | yes | yes | yes | yes | | |
 | `--keys FILE` | The console's keys: `prod.keys` for the Switch, Azahar's `aes_keys.txt` for the 3DS | yes | yes | | | | | |
 | `--seconds N` | Stop after N seconds | yes | yes | yes | | yes | | |
-| `--frames N` | Stop after N frames (the AGB's run has no window, sound or pacing) | yes | | | yes | yes | | |
-| `--shot PATH` | Save the screen to PATH when the run ends (Android: each frame `--shot-frame` names) | yes | | yes | yes | yes | yes | |
+| `--frames N` | Stop after N frames (the AGB's run has no window, sound or pacing) | yes | yes | | yes | yes | | |
+| `--shot PATH` | Save the screen to PATH when the run ends (Android: each frame `--shot-frame` names) | yes | yes | yes | yes | yes | yes | |
 | `--script SPEC` | Press buttons at times of the run, `MS:BUTTONS,...` (each platform's page names the buttons) | yes | yes | yes | yes | yes | | |
 | `-f`, `--fullscreen[=0\|1]` | Start fullscreen for this run, or windowed with `=0` | yes | yes | | yes | yes | | |
-| `-H`, `--headless` | Run without a window | yes | | | | yes | yes | |
+| `-H`, `--headless` | Run without a window | yes | yes | | | yes | yes | |
 | `-O LEVEL`, `--opt LEVEL` | LLVM's optimization of the code it compiles: 0, 1, 2, 3, s or z (default: the setting `opt`, 2); `-O2` too | yes | yes | yes | yes | | yes | yes |
 | `--jobs N` | The threads compiling the game's code, the setting `aot_threads`: 1 to 1024, or 0 (the default), Auto | yes | yes | yes | yes | | | |
 | `--chunk N` | The instructions of a unit of code compiled at once (below) | yes | yes | yes | yes | | | |
@@ -82,7 +84,11 @@ On GNU ABI and Android the code compiles as it runs: `-O` is their JIT's level (
 
 The Switch's `--seconds`, `--frames`, `--shot` and `--script` are settings of the game's run
 ([Settings](settings.md)), which reach the game as `--key=value` in both forms. The 3DS's `--script` is its setting
-`ctr_script`, and the Vita's is `vita_script`. The Switch driver also keeps its combined letters, as `-rx` and `-Hs`.
+`ctr_script`, and its `--frames` counts the frames it decodes (the top screen's, or the bottom screen's until the
+game first draws a top screen). Its `--shot` writes both screens as one PPM to exactly PATH. Its `-H` starts no SDL
+video, audio or gamepad subsystem, so it needs no display server and only `--script` presses reach the game. Its
+`--seconds` counts host seconds, which are the console's seconds at the default pace. The Vita's `--script` is
+`vita_script`. The Switch driver also keeps its combined letters, as `-rx` and `-Hs`.
 
 ## Extract → AOT → run
 

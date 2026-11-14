@@ -202,7 +202,6 @@ void snx_ctr_vk_import_error(const SnxCtrVkImport* f, const char* region, char* 
 }
 void snx_ctr_vk_device_ram_error(const SnxCtrVkDeviceRam* f, const char* region, char* error, size_t error_size) {
     const char* result = snx_vk_result_str(f->result);
-    char reason[128];
     switch (f->step) {
         case SNX_CTR_VK_DEVICE_RAM_EXTENSIONS:
             snprintf(error, error_size,
@@ -241,9 +240,7 @@ void snx_ctr_vk_device_ram_error(const SnxCtrVkDeviceRam* f, const char* region,
             snprintf(error, error_size, "vkGetMemoryFdKHR gave %s (%d) for its dma-buf", result, (int)f->result);
             break;
         case SNX_CTR_VK_DEVICE_RAM_VIEWS:
-            errno = f->error;
-            snprintf(error, error_size, "the guest's views of the RAM do not map its dma-buf: %s",
-                     snx_os_error(reason, sizeof reason));
+            snprintf(error, error_size, "the guest's views of the RAM do not map its dma-buf: %s", strerror(f->error));
             break;
     }
 }
@@ -257,11 +254,11 @@ static void release_ram(SnxCtrVk* v) {
     for (unsigned i = 0; i < v->ram_count; ++i) {
         if (v->ram[i].map) vkUnmapMemory(v->device, v->ram[i].memory);
         vkDestroyBuffer(v->device, v->ram[i].buffer, NULL);
-        vkFreeMemory(v->device, v->ram[i].memory, NULL);
+        if (v->ram[i].memory) vkFreeMemory(v->device, v->ram[i].memory, NULL);
         vkDestroyBuffer(v->device, v->ram[i].copy, NULL);
-        vkFreeMemory(v->device, v->ram[i].copy_memory, NULL);
+        if (v->ram[i].copy_memory) vkFreeMemory(v->device, v->ram[i].copy_memory, NULL);
     }
-    vkFreeMemory(v->device, v->ram_memory, NULL);
+    if (v->ram_memory) vkFreeMemory(v->device, v->ram_memory, NULL);
     v->ram_count = 0;
     v->ram_memory = VK_NULL_HANDLE;
 }
@@ -443,7 +440,7 @@ fail:
 static void drop_copies(SnxCtrVk* v) {
     for (unsigned i = 0; i < v->ram_count; ++i) {
         vkDestroyBuffer(v->device, v->ram[i].copy, NULL);
-        vkFreeMemory(v->device, v->ram[i].copy_memory, NULL);
+        if (v->ram[i].copy_memory) vkFreeMemory(v->device, v->ram[i].copy_memory, NULL);
         v->ram[i].copy = VK_NULL_HANDLE;
         v->ram[i].copy_memory = VK_NULL_HANDLE;
     }
@@ -641,12 +638,16 @@ static bool shadow_ram(SnxCtrVk* v, SnxCtrMemory* memory, char* error, size_t er
     }
     return true;
 }
-static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
+static bool init(SnxCtrMemory* memory, bool headless, char* error, size_t error_size) {
     SnxCtrVk* v = &g_device.vk;
     memset(v, 0, sizeof *v);
-    /* a window first: a display server and a Vulkan surface make it the output; without one frames go to the frame
-       dumps only */
-    if (!snx_vk_window_open("scarletnx-ctr", "ScarletNX 3DS", 600, 720, &v->host, error, error_size)) return false;
+    /* a window first: a display server and a Vulkan surface make it the output; without one, and in a headless run
+       whatever the host has, frames go to the frame dumps only */
+    if (headless) {
+        if (!snx_vk_headless_open("scarletnx-ctr", &v->host, error, error_size)) return false;
+        fprintf(stderr, "3ds gpu: headless: no SDL video, window or surface; frames go to the dumps only\n");
+    } else if (!snx_vk_window_open("scarletnx-ctr", "ScarletNX 3DS", 600, 720, &v->host, error, error_size))
+        return false;
     /* another window for the bottom screen when the screens are apart, on this instance */
     if (g_settings.ctr_separate_screens && v->host.window) {
         v->second = SDL_CreateWindow("ScarletNX 3DS (Bottom)", 640, 480, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
@@ -750,11 +751,11 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     snx_ctr_track_handler(memory, snx_ctr_vk_track, NULL);
     return true;
 }
-bool snx_ctr_vk_init(SnxCtrMemory* memory, char* error, size_t error_size) {
+bool snx_ctr_vk_init(SnxCtrMemory* memory, bool headless, char* error, size_t error_size) {
     if (g_device.up) return true;
     /* the reason stays here, for what stops because the device did not start (the GSP's GX commands) */
     g_device.error[0] = g_device.device[0] = 0;
-    if (init(memory, g_device.error, sizeof g_device.error)) return true;
+    if (init(memory, headless, g_device.error, sizeof g_device.error)) return true;
     snprintf(error, error_size, "%s%s%s", g_device.error, g_device.device[0] ? "; device " : "", g_device.device);
     return false;
 }
@@ -782,9 +783,11 @@ uint64_t snx_ctr_vk_poll(void) { return g_device.up ? snx_vk_ring_poll(&g_device
 bool snx_ctr_vk_wait(uint64_t serial, uint64_t timeout_ns) {
     return !g_device.up || snx_vk_ring_wait(&g_device.vk.ring, serial, timeout_ns);
 }
-VkCommandBuffer snx_ctr_vk_commands(void) { return snx_vk_ring_commands(&g_device.vk.ring); }
-uint64_t snx_ctr_vk_serial(void) { return g_device.vk.ring.submitted + 1; }
-unsigned snx_ctr_vk_slot(void) { return g_device.vk.ring.slot; }
+VkCommandBuffer snx_ctr_vk_commands(void) {
+    return g_device.up ? snx_vk_ring_commands(&g_device.vk.ring) : VK_NULL_HANDLE;
+}
+uint64_t snx_ctr_vk_serial(void) { return g_device.up ? g_device.vk.ring.submitted + 1 : 0; }
+unsigned snx_ctr_vk_slot(void) { return g_device.up ? g_device.vk.ring.slot : 0; }
 uint64_t snx_ctr_vk_submit(void) { return snx_ctr_vk_submit_with(VK_NULL_HANDLE, VK_NULL_HANDLE); }
 uint64_t snx_ctr_vk_submit_with(VkSemaphore wait, VkSemaphore signal) {
     return g_device.up ? snx_vk_ring_submit(&g_device.vk.ring, wait, signal) : 0;
@@ -793,7 +796,9 @@ bool snx_ctr_vk_finish(void) {
     if (!g_device.up) return true;
     return snx_ctr_vk_wait(snx_ctr_vk_submit(), UINT64_MAX);
 }
-VkDescriptorSet snx_ctr_vk_set(VkDescriptorSetLayout layout) { return snx_vk_ring_set(&g_device.vk.ring, layout); }
+VkDescriptorSet snx_ctr_vk_set(VkDescriptorSetLayout layout) {
+    return g_device.up ? snx_vk_ring_set(&g_device.vk.ring, layout) : VK_NULL_HANDLE;
+}
 const SnxCtrVkRam* snx_ctr_vk_ram(uint32_t pa, uint32_t size, VkDeviceSize* offset) {
     const SnxCtrVk* v = &g_device.vk;
     for (unsigned i = 0; i < v->ram_count; ++i) {

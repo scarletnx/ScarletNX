@@ -459,7 +459,7 @@ static void pixels(unsigned char guest[16], unsigned char decoded[16], const uns
 /* what present.c starts a frame's hash from: the decimal digits of SNX_FNV_BASIS without the last one */
 #define PRESENT_HASH_BASIS 1469598103934665603ull
 static void present_screens(SnxCtrMemory* m, bool after_draw) {
-    if (!snx_ctr_present_init(m, NULL)) {
+    if (!snx_ctr_present_init(m, NULL, false)) {
         ++failures;
         return;
     }
@@ -688,8 +688,19 @@ static void async_pipelines(SnxCtrMemory* m) {
 /* the pipeline cache kept between runs: a draw's pipeline goes into the file named for the driver, in the folder's
    shader_cache, and a write that fails, onto a folder in the file's place, is made again by the next one */
 static void pipeline_cache(SnxCtrMemory* m) {
+    if (snx_ctr_vk()->shader_object) {
+        printf("%-24s skipped: draws bind shader objects, so no pipeline cache is made\n", "pipeline cache");
+        return;
+    }
     static unsigned char start[W * H * 4], none[W * H * 4], gpu[W * H * 4], gpu_depth[W * H * 4];
-    const char* folder = "3ds_vk_draw_pipeline_cache";
+    char* base = snx_temp_dir(NULL);
+    char* folder = base ? snx_path_join(base, "pipeline-cache") : NULL;
+    if (!folder) {
+        printf("pipeline cache: no temporary folder: FAIL\n");
+        ++failures;
+        free(base);
+        return;
+    }
     (void)snx_remove_tree(folder);
     (void)plat_mkdir(folder); /* the game's folder, where the renderer makes shader_cache */
     g_settings.vulkan_pipeline_cache = 1;
@@ -728,6 +739,9 @@ static void pipeline_cache(SnxCtrMemory* m) {
     free(data);
     free(s);
     (void)snx_remove_tree(folder);
+    (void)snx_remove_tree(base);
+    free(folder);
+    free(base);
 }
 static void presented_after_draw(SnxCtrMemory* m) {
     present_screens(m, true);
@@ -1112,8 +1126,7 @@ static void all_scenes(SnxCtrMemory* m) {
     {
         Scene* s = scene("indexed 16-bit", 0, 0xff);
         triangles(s, 8);
-        uint16_t* idx = (uint16_t*)s->indices;
-        for (unsigned i = 0; i < 30; ++i) idx[i] = (uint16_t)(next() % s->vertex_count);
+        for (unsigned i = 0; i < 30; ++i) snx_st_le16(s->indices + i * 2, (uint16_t)(next() % s->vertex_count));
         put(&s->list, 0x227, (INDICES - VERTICES) | 1u << 31);
         put(&s->list, 0x228, 30);
         put(&s->list, SNX_PICA_TRIGGER_DRAW_INDEXED, 1);
@@ -1304,7 +1317,7 @@ int main(int argc, char** argv) {
     SnxCtrMemory* m = snx_ctr_memory_new(g_model);
     char why[256];
     if (!m) return 1;
-    if (!snx_ctr_vk_init(m, why, sizeof why)) {
+    if (!snx_ctr_vk_init(m, false, why, sizeof why)) {
         printf("no Vulkan device (%s): GPU draw checks skipped\n", why);
         snx_ctr_memory_free(m);
         return 77;

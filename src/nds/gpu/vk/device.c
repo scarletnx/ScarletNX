@@ -47,15 +47,7 @@ bool nds_vk_init(const char* title, bool headless, char* error, size_t error_siz
     v->headless = headless;
     if (headless) {
         /* no window: the loader and an instance alone */
-        if (volkInitialize() != VK_SUCCESS) {
-            snprintf(error, error_size, "no Vulkan loader");
-            return false;
-        }
-        SnxVkInstanceInfo info = {.app_name = "scarletnx-nds", .portability = true};
-        if (snx_vk_instance_create(&info, &v->host.instance) != VK_SUCCESS) {
-            snprintf(error, error_size, "no Vulkan 1.3 instance");
-            return false;
-        }
+        if (!snx_vk_headless_open("scarletnx-nds", &v->host, error, error_size)) return false;
     } else if (!snx_vk_window_open("scarletnx-nds", title, NDS_SCREEN_WIDTH * 2, NDS_SCREEN_HEIGHT * 4, &v->host, error,
                                    error_size))
         return false;
