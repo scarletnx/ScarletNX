@@ -527,7 +527,7 @@ static void discard_targets(NvnDraw* d, u32 mask) {
         }
         if (j == DS_VIEWPORTS_MAX) targets |= 1u << i;
     }
-    if (targets) g_renderer->discard(&d->ds, targets);
+    if (targets) gpu_discard(&d->ds, targets);
 }
 static void make_dynamic(NvnDraw* d, u32 base_instance) {
     u64 s = d->dss;
@@ -768,7 +768,7 @@ static void draw_arrays(NvnDraw* d, u64 payload, u32 size) {
     if (d->render_off) return;
     draw_fixed_state(d, &dc);
     sync(d, 0, dc.base_instance);
-    if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
+    gpu_draw(&d->ds, &dc, &d->own);
 }
 /* An Ounce's mesh draw (OP_DRAW_MESH): the renderer draws it with the task, mesh and fragment programs. An indirect
    one's records stay where the GPU reads them, as an indirect draw's do */
@@ -790,7 +790,7 @@ static void draw_mesh(NvnDraw* d, u64 payload, u32 size) {
     if (d->render_off) return;
     draw_fixed_state(d, &dc);
     sync(d, 0, 0);
-    if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
+    gpu_draw(&d->ds, &dc, &d->own);
 }
 /* how far an indirect draw's indices may reach, which NVN doesn't say (DrawElementsIndirect takes the index buffer's
    address only, and the GPU reads the count): the guest memory mapped contiguously from that address, at most 64 MiB */
@@ -831,7 +831,7 @@ static void draw_elements(NvnDraw* d, u64 payload, u32 size) {
     if (d->render_off) return;
     draw_fixed_state(d, &dc);
     sync(d, (i32)dc.base_vertex, dc.base_instance);
-    if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
+    gpu_draw(&d->ds, &dc, &d->own);
 }
 
 /* ---- bindings */
@@ -1141,7 +1141,7 @@ static void clear_texture(NvnDraw* d, u64 payload) {
     i32 depth = r.r.depth > 0 ? r.r.depth : 1;
     for (i32 k = 0; k < depth; k++) {
         c.layer = (u32)(r.r.zoffset + k);
-        g_renderer->clear(x, &c, &d->own);
+        gpu_clear(x, &c, &d->own);
     }
 }
 
@@ -1190,10 +1190,10 @@ static void dispatch(NvnDraw* d, u64 payload) {
     if (g_shader_sm86 && d->c0rec[0] == 1) {
         DispatchState x = d->dx;
         c0_packed(d, &x);
-        g_renderer->dispatch(&x);
+        gpu_dispatch(&x);
         return;
     }
-    g_renderer->dispatch(&d->dx);
+    gpu_dispatch(&d->dx);
 }
 
 /* DrawTexture: the 3D engine's DRAW_TEXTURE as the game's driver writes it, in its fixed point: the destination's
@@ -1221,7 +1221,7 @@ static void draw_texture(NvnDraw* d, u64 payload) {
     t.state.subpixel_bias_x = t.state.subpixel_bias_y = 0;
     t.owner.pred = d->own.pred;
     sync(d, 0, 0);
-    g_renderer->draw_texture(&d->ds, &t);
+    gpu_draw_texture(&d->ds, &t);
 }
 int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
     switch (op) {
@@ -1236,7 +1236,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             c.color_mask = (u32)r.mask & 15;
             c.slot = (u32)r.index;
             memcpy(c.color, r.rgba, sizeof c.color);
-            if (c.color_mask && !d->render_off && g_renderer->clear) g_renderer->clear(&d->ds, &c, &d->own);
+            if (c.color_mask && !d->render_off && g_renderer->clear) gpu_clear(&d->ds, &c, &d->own);
             return 1;
         }
         case OP_CLEAR_DS: {
@@ -1247,7 +1247,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             c.stencil_preserve = ~(u32)r.stencil_mask & 0xff;
             c.depth = r.depth;
             c.stencil = (u32)r.stencil;
-            if (c.aspects && !d->render_off && g_renderer->clear) g_renderer->clear(&d->ds, &c, &d->own);
+            if (c.aspects && !d->render_off && g_renderer->clear) gpu_clear(&d->ds, &c, &d->own);
             return 1;
         }
         case OP_VIEWPORTS: {
@@ -1502,7 +1502,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
                 DrawCall dc = {.topology = (u32)r->prim, .count = 1, .instances = 1, .xfb_control = r->control};
                 draw_fixed_state(d, &dc);
                 sync(d, 0, 0);
-                if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
+                gpu_draw(&d->ds, &dc, &d->own);
                 return 1;
             }
             if (what < 0 || what > 3) return 1;

@@ -65,7 +65,7 @@ static void launch(GpuChannel* ch) {
     if (!g_renderer->dispatch) return;
     DispatchState d;
     mx_dispatch_state(q, r, code, &d);
-    g_renderer->dispatch(&d);
+    gpu_dispatch(&d);
 }
 /* Eden's KeplerCompute::CallMethod: every method is kept in the registers, and these act */
 void compute_method(GpuChannel* ch, u32 m, u32 v, int last) {

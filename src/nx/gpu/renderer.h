@@ -238,7 +238,14 @@ extern const Renderer* g_renderer;
 
 /* shared state (gpu/renderer.c) */
 extern int g_renderer_up; /* the renderer started */
-extern u64 g_draws;
+extern u64 g_draws; /* the draws given to the renderer (gpu_draw), for the counters a report makes up */
+/* the front end's draw and dispatch: what the front end counts and holds back is done here, on its side, and the
+   renderer's call does only the renderer's work */
+void gpu_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o);
+void gpu_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o);
+void gpu_draw_texture(const DsState* ds, const DrawTexture* t);
+void gpu_discard(const DsState* ds, u32 targets);
+void gpu_dispatch(const DispatchState* d);
 extern _Atomic int g_cs_any;      /* compute results are pending somewhere */
 extern _Atomic int g_gfx_any;     /* graphics storage-buffer results are pending somewhere */
 extern _Atomic int g_gfx_img_any; /* graphics storage-image results are pending somewhere */
