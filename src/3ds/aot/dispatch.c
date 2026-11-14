@@ -48,6 +48,23 @@ static bool window_marked(const SnxCtrProcess* process, uint32_t offset) {
     uint32_t window = offset >> WINDOW_SHIFT;
     return process->aot_stale && ((process->aot_stale[window / 32] >> (window % 32)) & 1);
 }
+/* The block the tables hold at this address, else one the run-time compiler makes: NULL if neither gives it. */
+static SnxArmBlock block_for_pc(const SnxCtrModule* m, SnxCtrProcess* process, uint32_t pc, bool thumb, bool* compiled,
+                                bool* from_table) {
+    unsigned width = thumb ? 2 : 4;
+    SnxArmBlock block = NULL;
+    *compiled = false;
+    *from_table = false;
+    if (pc >= m->text_address && (uint64_t)pc + width <= (uint64_t)m->text_address + m->text_bytes &&
+        !window_marked(process, pc - m->text_address)) {
+        uint32_t index = (pc - m->text_address) / width;
+        block = thumb ? m->thumb_blocks[index] : m->arm_blocks[index];
+        *from_table = block != NULL;
+    }
+    /* code the static discovery didn't reach (an indirect target, a module loaded at run time) compiles now */
+    if (!block && process->compile) *compiled = (block = process->compile(process->compiler, pc, thumb, false)) != NULL;
+    return block;
+}
 bool snx_ctr_aot_mark_stale(SnxCtrProcess* process, uint32_t address, uint32_t size) {
     uint64_t text = process->segment[0].address, end = text + process->segment[0].bytes;
     uint64_t from = address > text ? address : text, to = (uint64_t)address + size;
@@ -126,6 +143,7 @@ SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, 
         const struct SnxCtrHook* hook = NULL;
         SnxArmBlock block = NULL;
         bool compiled = false;
+        bool from_table = false;
         if (cached) {
             uintptr_t target = entry->target;
             if (target & 1)
@@ -148,18 +166,9 @@ SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, 
                 *executed += count;
                 return SNX_CTR_RUN_FAULT;
             }
-            bool from_table = false;
             hook = process->hooks && !thumb ? snx_ctr_hook_at(process->hooks, pc) : NULL;
             if (hook && window_marked(process, pc - m->text_address)) hook = NULL;
-            if (pc >= m->text_address && (uint64_t)pc + width <= (uint64_t)m->text_address + m->text_bytes &&
-                !window_marked(process, pc - m->text_address)) {
-                uint32_t index = (pc - m->text_address) / width;
-                block = thumb ? m->thumb_blocks[index] : m->arm_blocks[index];
-                from_table = block != NULL;
-            }
-            /* code the static discovery didn't reach (an indirect target, a module loaded at run time) compiles now */
-            if (!block && process->compile)
-                compiled = (block = process->compile(process->compiler, pc, thumb, false)) != NULL;
+            block = block_for_pc(m, process, pc, thumb, &compiled, &from_table);
             if (!block && !hook) {
                 cpu->exit = SNX_ARM_BACKEND_UNSUPPORTED;
                 cpu->syndrome = pc;
@@ -191,7 +200,10 @@ SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, 
                 *executed += count;
                 return cpu->exit == SNX_ARM_BACKEND_UNSUPPORTED ? SNX_CTR_RUN_UNSUPPORTED : SNX_CTR_RUN_FAULT;
             }
-            if (!block) { /* the hook declined and the discovery found no block there */
+            /* On a cache hit the cold lookup did not run, and the entry held the hook alone: resolve the block here,
+               the tables' one or one the compiler makes */
+            if (!block && cached) block = block_for_pc(m, process, pc, thumb, &compiled, &from_table);
+            if (!block) { /* no block anywhere: the game's code is missing */
                 cpu->exit = SNX_ARM_BACKEND_UNSUPPORTED;
                 cpu->syndrome = pc;
                 *executed += count;
