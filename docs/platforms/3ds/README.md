@@ -802,11 +802,13 @@ answered with Cancel where the keyboard has one. A game that checks the text its
 (the callback filter) gets it first, and its answer closes the keyboard or lets the text
 through. The log says what was answered and why (`3ds swkbd: ...`), with the user
 name's length in place of the name. APT answers each step a game takes:
-PrepareToStartLibraryApplet, IsRegistered, the Request for the capture block and its
-Response, StartLibraryApplet, the NotifyToWait before the wakeup, and the WakeupByExit
-the game wakes with, which carries the answer. Any other library applet (the error
-display, say) is one the runtime does not have: preparing it answers as an unknown
-command does.
+PrepareToStartLibraryApplet, PreloadLibraryApplet, IsRegistered, the Request for the
+capture block and its Response, StartLibraryApplet, the NotifyToWait before the
+wakeup, and the WakeupByExit the game wakes with, which carries the answer.
+GetAppletInfo answers a slot's title, media type and attributes, and whether it is
+registered and loaded. Any other library applet (the error display, say) is one the
+runtime does not have: preparing it, or preloading it, answers as an unknown command
+does.
 
 A game that has the player pick a Mii through the Mii selector (its StreetPass Mii,
 say) gets ScarletNX's own Mii at once, as a Mii of the console's database, as Azahar's
@@ -1044,7 +1046,10 @@ port `hle/applets/{swkbd,mii_selector}.{cpp,h}`, `hle/mii.{cpp,h}`,
 (GPL-2.0-or-later): the configurations' and the Mii selector's result's layouts, the
 result codes, the Request, Message and Finalize steps, the default keyboard's answer
 with the user name and its checks, the Mii's checksum; the C implementation is new. The
-Mii's fields are laid out as 3dbrew's Mii page gives them.
+Mii's fields are laid out as 3dbrew's Mii page gives them. The preload and the applet
+info read `hle/service/apt/{apt,applet_manager}.cpp` again at Azahar
+`11eceda5e0e682a1f44e396bf954a1b9137097ca` (GPL-2.0-or-later): the applet a preload
+registers as it finishes loading, and the seven words of a slot's information.
 Stage 2b4 references GPL-2.0-or-later kernel `svc.cpp`, `errors.h`,
 `handle_table.cpp`, `address_arbiter.cpp`, `config_mem.*`, `memory.cpp` and
 `process.cpp` at the same revision for SVC register/result semantics, object

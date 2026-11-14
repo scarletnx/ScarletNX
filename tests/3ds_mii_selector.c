@@ -2,10 +2,10 @@
    Copyright 2026 the ScarletNX contributors */
 /* The Mii selector a 3DS game starts through APT to have the player pick a Mii (a game's StreetPass Mii, say), driven
    as the console's applet library drives it (libctru's aptLaunchLibraryApplet and miiSelectorLaunch copy its steps):
-   PrepareToStartLibraryApplet(0x402), IsRegistered until the applet is there, a Request for the capture block and
-   its Response, StartLibraryApplet with the 0x104-byte configuration and no object, NotifyToWait, then the
-   WakeupByExit the game wakes with, which carries the MiiResult. The Mii in it is read field by field as 3dbrew's Mii
-   page lays them out, and its checksum computed here on its own */
+   PrepareToStartLibraryApplet(0x402), IsRegistered until the applet is there, GetAppletInfo for its slot, a Request
+   for the capture block and its Response, StartLibraryApplet with the 0x104-byte configuration and no object,
+   NotifyToWait, then the WakeupByExit the game wakes with, which carries the MiiResult. The Mii in it is read field
+   by field as 3dbrew's Mii page lays them out, and its checksum computed here on its own */
 #include "3ds/runtime/internal.h"
 #include "3ds/ipc/ctr_ipc.h"
 #include "common/utilities/endian.h"
@@ -134,11 +134,17 @@ static void log_has(const char* said, const char* wanted) {
     (void)said, (void)wanted;
 #endif
 }
-/* PrepareToStartLibraryApplet, IsRegistered, the capture block's Request and Response: the capture block's object */
+/* PrepareToStartLibraryApplet, IsRegistered, GetAppletInfo, the capture block's Request and Response: the capture
+   block's object */
 static uint32_t prepared(SnxCtrProcess* p, uint32_t apt) {
     uint32_t prepare[] = {0x180040, SELECTOR}, out[7];
     assert(!call(p, apt, prepare, 2) && ctr_command_word(p, 0) == 0x180040);
     assert(registered(p, apt, SELECTOR) == 1 && registered(p, apt, 0x400) == 1 && !registered(p, apt, 0x401));
+    /* a prepared applet is registered and not loaded, as Azahar's PrepareToStartLibraryApplet leaves it, and its
+       attributes are AppletPos::Library */
+    uint32_t applet_info[] = {0x60040, SELECTOR};
+    assert(!call(p, apt, applet_info, 2) && ctr_command_word(p, 0) == 0x601c0);
+    assert(ctr_command_word(p, 5) == 1 && !ctr_command_word(p, 6) && ctr_command_word(p, 7) == 1);
     unsigned char info[0x20] = {0};
     snx_st_le32(info, 0x8a000); /* a capture of both screens */
     assert(snx_ctr_write_ram(p->space, CAPTURE, info, sizeof info) == SNX_CTR_MEM_OK);

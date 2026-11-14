@@ -290,6 +290,9 @@ struct SnxCtrProcess {
         unsigned char buffer[0x1000];
     } apt_next;
     uint32_t apt_library; /* the library applet APT registered for the application: its AppletId, 0 for none */
+    /* a preload finished the library applet's loading, as Azahar's FinishPreloadingLibraryApplet marks its slot;
+       PrepareToStartLibraryApplet does not */
+    bool apt_library_loaded;
     uint32_t apt_capture; /* the capture block made at a library applet's first Request (retained), 0 before one */
     /* the software keyboard the application started (services/swkbd.c): its SoftwareKeyboardConfig and the block its
        text goes in (retained while it runs) */

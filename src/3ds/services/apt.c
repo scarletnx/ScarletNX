@@ -18,7 +18,9 @@
 #define APT_PARAMETER_PRESENT  0xc8a0cc02u /* ParameterPresent, Applet, InvalidState, Status */
 #define APT_ALREADY_EXISTS     0xc8a0cffcu /* AlreadyExists, Applet, InvalidState, Status */
 #define APT_NO_DATA            0xc8a0cfefu /* NoData, Applet, InvalidState, Status */
+#define APT_NOT_FOUND          0xc880cffau /* NotFound, Applet, NotFound, Status */
 #define APT_ANY_LIBRARY        0x400u      /* AnyLibraryApplet, and AnySysLibraryApplet (0x200) */
+#define APT_POS_LIBRARY        1u          /* AppletPos::Library: a library applet the application starts */
 #define APT_PARAMETER_CAPACITY 0x1000u     /* the most a parameter's buffer holds, as Azahar's receive takes it */
 #define APT_CAPTURE_LIMIT      0x200000u   /* the most a Request's capture block may take: both screens, both eyes */
 #define APT_CAPTURE_INFO_SIZE  0x20u       /* CaptureBufferInfo, a Request's buffer */
@@ -90,16 +92,18 @@ static uint32_t snx_ctr_apt_wire_NotifyToWait(SnxCtrIpc* c, uint32_t app_id) {
     if (p->apt_phase < 2) p->apt_phase = 2;
     return 0;
 }
+/* whether app_id names the library applet APT registered for the application: itself, or its group (AnyLibraryApplet
+   or AnySysLibraryApplet). The runtime groups by the id's high bits, as IsRegistered does, where Azahar groups by
+   the slot's position */
+static bool names_library(const SnxCtrProcess* p, uint32_t app_id) {
+    uint32_t library = p->apt_library;
+    if (app_id == APT_ANY_LIBRARY || app_id == APT_ANY_LIBRARY >> 1) return library && (library & 0xf00) == app_id;
+    return library && app_id == library;
+}
 /* the application from its Initialize on, and the library applet APT registered for it; no other applet runs */
 static uint32_t snx_ctr_apt_wire_IsRegistered(SnxCtrIpc* c, uint32_t app_id, uint32_t* registered) {
     SnxCtrProcess* p = c->process;
-    uint32_t library = p->apt_library;
-    if (app_id == 0x300)
-        *registered = p->apt_phase != 0;
-    else if (app_id == APT_ANY_LIBRARY || app_id == APT_ANY_LIBRARY >> 1)
-        *registered = library && (library & 0xf00) == app_id;
-    else
-        *registered = library && app_id == library;
+    *registered = app_id == 0x300 ? p->apt_phase != 0 : names_library(p, app_id);
     return 0;
 }
 static void parameter_drop(SnxCtrProcess* p) {
@@ -135,6 +139,34 @@ static uint32_t snx_ctr_apt_wire_PrepareToStartLibraryApplet(SnxCtrIpc* c, uint3
     p->apt_library = app_id;
     return 0;
 }
+/* PreloadLibraryApplet: the library applet the runtime plays, registered as Azahar's preload makes the applet and
+   finishes its loading in the same call (AppletManager::CreateHLEApplet, which calls
+   FinishPreloadingLibraryApplet), so GetAppletInfo sees it registered and loaded. A slot already taken answers
+   AlreadyExists before any applet is made, and an applet the runtime does not have answers as
+   PrepareToStartLibraryApplet's does: as an unknown command. Its reply is one normal word, the result
+   (apt.cpp and applet_manager.cpp at 11eceda5) */
+static void preload_library_applet(SnxCtrIpc* c) {
+    if (!snx_ctr_ipc_expect(c, 1, 0)) return;
+    SnxCtrProcess* p = c->process;
+    uint32_t app_id = c->in[1];
+    if (p->apt_library) {
+        c->out[0] = (c->in[0] & 0xffff0000u) | 0x40; /* one normal word */
+        c->out[1] = APT_ALREADY_EXISTS;
+        return;
+    }
+    if (!snx_ctr_swkbd_is(app_id) && !snx_ctr_mii_selector_is(app_id)) {
+        fprintf(stderr,
+                "3ds apt: the game preloads library applet 0x%03x, which the runtime does not have (only the "
+                "software keyboard, 0x401, and the Mii selector, 0x402)\n",
+                (unsigned)app_id);
+        c->state = SNX_CTR_IPC_UNKNOWN;
+        return;
+    }
+    p->apt_library = app_id;
+    p->apt_library_loaded = true;
+    c->out[0] = (c->in[0] & 0xffff0000u) | 0x40; /* one normal word */
+    c->out[1] = 0;
+}
 void snx_ctr_apt_send(struct SnxCtrProcess* p, uint32_t sender, uint32_t signal, uint32_t object,
                       const unsigned char* buffer, uint32_t size) {
     parameter_drop(p);
@@ -148,7 +180,10 @@ void snx_ctr_apt_send(struct SnxCtrProcess* p, uint32_t sender, uint32_t signal,
     p->objects[p->apt_parameter].data.event.signaled = 1;
     snx_ctr_wake_waiters(p, p->apt_parameter);
 }
-void snx_ctr_apt_library_closed(struct SnxCtrProcess* p) { p->apt_library = 0; }
+void snx_ctr_apt_library_closed(struct SnxCtrProcess* p) {
+    p->apt_library = 0;
+    p->apt_library_loaded = false;
+}
 static uint32_t snx_ctr_apt_wire_GetSharedFont(SnxCtrIpc* c, uint32_t* address, uint32_t* font) {
     return snx_ctr_font_shared(c->process, address, font) ? 0 : APT_NO_SHARED_FONT;
 }
@@ -160,6 +195,29 @@ static uint32_t snx_ctr_apt_wire_GetTargetPlatform(SnxCtrIpc* c, uint32_t* platf
 static uint32_t snx_ctr_apt_wire_IsNew3DS(SnxCtrIpc* c, uint32_t* is_new) {
     *is_new = snx_ctr_memory_profile(c->process->memory)->model == SNX_CTR_NEW;
     return 0;
+}
+/* GetAppletInfo: the application from its Initialize on, or the library applet APT registered for it; another id, or
+   a slot not registered, is NotFound. The seven words are Azahar's (AppletManager::GetAppletInfo): the result, the
+   title as two words (the process's, as Azahar's Initialize titles a slot), the media type, registered, loaded and
+   the slot's attributes */
+static void get_applet_info(SnxCtrIpc* c) {
+    if (!snx_ctr_ipc_expect(c, 1, 0)) return;
+    SnxCtrProcess* p = c->process;
+    uint32_t app_id = c->in[1];
+    bool known = app_id == 0x300 ? p->apt_phase != 0 : names_library(p, app_id);
+    if (!known) {
+        snx_ctr_ipc_error_reply(c, APT_NOT_FOUND);
+        return;
+    }
+    c->out[0] = (c->in[0] & 0xffff0000u) | 0x1c0; /* seven normal words */
+    c->out[2] = (uint32_t)p->title_id;
+    c->out[3] = (uint32_t)(p->title_id >> 32);
+    c->out[4] = 1; /* SDMC, the media type the launch info answers for every title (services/fs.c) */
+    c->out[5] = 1; /* registered */
+    c->out[6] = app_id != 0x300 && p->apt_library_loaded; /* the application is never preloaded */
+    /* the position GetLockHandle gives an applet the application starts; the application's attributes are 0, the
+       only ones snx_ctr_apt_wire_Enable takes */
+    c->out[7] = app_id != 0x300 ? APT_POS_LIBRARY : 0;
 }
 /* ReceiveParameter and GlanceParameter (glance: the parameter stays): from Initialize on, the initial Wakeup that
    Initialize queued; after it, the parameter waiting for the application, its object moved to it */
@@ -381,9 +439,11 @@ static void applet_utility(SnxCtrIpc* c) {
 }
 void snx_ctr_apt_dispatch(SnxCtrIpc* c) {
     switch (c->in[0] >> 16) {
+        case 0x06: get_applet_info(c); break;
         case 0x0c: send_parameter(c); break;
         case 0x0d:
         case 0x0e: receive_parameter(c, c->in[0] >> 16 == 0x0e); break;
+        case 0x16: preload_library_applet(c); break;
         case 0x1e: start_library_applet(c); break;
         case 0x4b: applet_utility(c); break;
         default: snx_ctr_apt_wire_dispatch(c); break;
