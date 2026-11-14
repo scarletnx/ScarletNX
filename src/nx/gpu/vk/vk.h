@@ -1071,6 +1071,7 @@ Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest 
 /* a render target read where its guest memory is (a texture, a present): reload it if the GPU wrote its memory */
 void vk_rt_note_read(Surf* s);
 void vk_rt_before_write(u64 gva, u64 size);
+void vk_rt_before_publish_cpu(u64 cpu, u64 size);
 void vk_rt_before_write_cpu(u64 cpu, u64 size);
 /* an image of a scaled target's format at the guest's size with that many layers, a transfer's source and
    destination: to move it to and from guest memory, or into a texture a blit can't reach. VK_NULL_HANDLE on failure */

@@ -719,7 +719,7 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     else
         __atomic_store_n(&r->serial, __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
     in_place = in_place > 0;
-    vk_rt_before_write_cpu(cpu, size);
+    vk_rt_before_publish_cpu(cpu, size);
     gpu_mem_written_cpu(cpu, size); /* what is built from the bytes (textures, buffers) takes the new ones */
     /* Unified memory, over memory an import holds: the result is copied there on the GPU, in stream order, with no
        owner and no trap (each trap let go of the imports over its pages, and the next use made them again). Older
