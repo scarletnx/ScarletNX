@@ -109,8 +109,6 @@ hook __fpclassifyf(f32 v) -> i32 = libc_fpclassifyf
 hook rand() -> i32 = libc_rand
 hook srand(u32 seed) = libc_srand
 hook rand_r(addr seed) -> i32 = libc_rand_r
-hook lrand48() -> i64 = libc_lrand48
-hook srand48(i64 seed) = libc_srand48
 hook qsort(addr base, u64 n, u64 size, addr compare) = libc_qsort
 hook bsearch(addr key, addr base, u64 n, u64 size, addr compare) -> addr = libc_bsearch
 
