@@ -390,6 +390,18 @@ setting Texture shed
     help evicted and loaded again at its next use; the level comes back when there is room. Off (the default for now)
     help = textures are whole. On a GPU whose images and buffers take blocks apart, the image blocks run full past the
     help budget and the sparse blocks of such textures find no memory for frames at a time
+setting ASTC lines BC1
+    label Colour ASTC textures as BC1
+    key astc_lines_bc1
+    int 0 2
+    default 1
+    words Auto|Never|Always
+    help Under astc_mode's Auto, an opaque colour ASTC texture whose 4x4 blocks hold more colours than BC1's line (the
+    help ones held as BC7) is held as BC1 instead, half BC7's memory and coarser. Auto = once the GPU's memory has run
+    help short (an image found no memory, the caches stayed past their budget, or a trim took what the last frames used),
+    help for the textures loaded from then on. Never (the default) = BC7. Always = from the start. On a 2 GB GPU Mario
+    help Kart World's race ran no faster with Auto (10.3 and 10.9 frames a second against 12.2 and 11.1): the cache
+    help fills what it saves
 setting BC7 queue
     key bc7_queue
     int 0 16384
