@@ -14,6 +14,7 @@
    lacks half of these and has another RAND_MAX */
 #define _GNU_SOURCE /* glibc's strcasestr */
 #include "nx/hle/hook/hook.h"
+#include "common/utilities/bits.h"
 #include "hle/hook/hooks.hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include <ctype.h>
@@ -325,11 +326,11 @@ i32 libc_fpclassifyf(CPU* c, f32 v) {
 /* ---- the network's byte order, big-endian, from the guest's little-endian */
 u32 libc_htonl(CPU* c, u32 v) {
     (void)c;
-    return __builtin_bswap32(v);
+    return snx_bswap32(v);
 }
 u32 libc_htons(CPU* c, u32 v) {
     (void)c;
-    return __builtin_bswap16((u16)v);
+    return snx_bswap16((u16)v);
 }
 
 /* ---- pseudo-random numbers, musl's: rand's 64-bit LCG, which srand seeds with seed - 1 and a program that never calls
