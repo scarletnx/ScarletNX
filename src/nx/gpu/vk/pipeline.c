@@ -1657,6 +1657,34 @@ static void* pipe_tail(PipeInfo* o, int robust) {
     }
     return &o->fi;
 }
+/* The first pipeline of each kind is made alone, the others of that kind waiting for it, and after it any number at
+   once. NVIDIA's driver (580.178 on FreeBSD, a GT 1030) deadlocked in its compiler on the first ones the pipeline
+   workers made at once: one waited in a pthread_once whose initializer, on another worker, waited for a mutex. The
+   run stopped before its first frame where the workers started on the pipelines of earlier runs all together
+   (Mario Kart World, 2 runs of 5) */
+enum { PIPE_GATE_WHOLE, PIPE_GATE_PART, PIPE_GATE_LINK, PIPE_GATES };
+static PMutex g_gate_lock[PIPE_GATES] = {PMUTEX_INIT, PMUTEX_INIT, PMUTEX_INIT};
+static int g_gate_done[PIPE_GATES];
+static int gate_in(int g) {
+    if (__atomic_load_n(&g_gate_done[g], __ATOMIC_ACQUIRE)) return 0;
+    pm_lock(&g_gate_lock[g]);
+    if (g_gate_done[g]) {
+        pm_unlock(&g_gate_lock[g]);
+        return 0;
+    }
+    return 1;
+}
+static void gate_out(int g, int in) {
+    if (!in) return;
+    __atomic_store_n(&g_gate_done[g], 1, __ATOMIC_RELEASE);
+    pm_unlock(&g_gate_lock[g]);
+}
+#define GATED(g, call)                                                                                                \
+    do {                                                                                                               \
+        int gate_ = gate_in(g);                                                                                        \
+        call;                                                                                                          \
+        gate_out(g, gate_);                                                                                            \
+    } while (0)
 static VkPipeline pipe_create(const Pipe* e, int* hit) {
     PipeInfo o;
     pipe_info(&e->k, e->fs, &o);
@@ -1695,7 +1723,7 @@ static VkPipeline pipe_create(const Pipe* e, int* hit) {
         gi.layout = VK_NULL_HANDLE;
     }
     VkPipeline p = VK_NULL_HANDLE;
-    VK_OK(vkCreateGraphicsPipelines(g_vk.dev, g_pipeline.pcache, 1, &gi, NULL, &p));
+    GATED(PIPE_GATE_WHOLE, VK_OK(vkCreateGraphicsPipelines(g_vk.dev, g_pipeline.pcache, 1, &gi, NULL, &p)));
     *hit = (o.made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     if (*hit) __atomic_add_fetch(e->prewarm ? &g_pipeline.pf.hits : &g_pipeline.pipe_hits, 1, __ATOMIC_RELAXED);
     return p;
@@ -1870,7 +1898,7 @@ static VkPipeline lib_create(const PipeLib* l, int* hit) {
         break;
     }
     VkPipeline p = VK_NULL_HANDLE;
-    VK_OK(vkCreateGraphicsPipelines(g_vk.dev, cache, 1, &gi, NULL, &p));
+    GATED(PIPE_GATE_PART, VK_OK(vkCreateGraphicsPipelines(g_vk.dev, cache, 1, &gi, NULL, &p)));
     *hit = (o.made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     return p;
 }
@@ -1940,7 +1968,7 @@ static VkPipeline gpl_link(const Pipe* e, int lto, int* hit) {
                  (lto ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0),
         .layout = e->layout};
     VkPipeline p = VK_NULL_HANDLE;
-    VK_OK(vkCreateGraphicsPipelines(g_vk.dev, lto ? g_pipeline.pcache : VK_NULL_HANDLE, 1, &gi, NULL, &p));
+    GATED(PIPE_GATE_LINK, VK_OK(vkCreateGraphicsPipelines(g_vk.dev, lto ? g_pipeline.pcache : VK_NULL_HANDLE, 1, &gi, NULL, &p)));
     *hit = (made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     return p;
 }
