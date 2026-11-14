@@ -277,3 +277,5 @@ void sync_cond_timed_wait(CPU* c, u64 cv, u64 lk, i64 ns) { (void)c, (void)cv, (
 i64 sync_system_now(CPU* c) { (void)c; return 0; }
 i64 sync_steady_now(CPU* c) { (void)c; return 0; }
 void sync_sleep_for(CPU* c, u64 d) { (void)c, (void)d; }
+/* libc_std.c's qsort and errno call into the guest, which this test never does */
+void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) { (void)c, (void)fn, (void)a0, (void)a1, (void)a2, (void)a3; }

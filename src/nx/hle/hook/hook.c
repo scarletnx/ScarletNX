@@ -210,6 +210,9 @@ static const char* family_unready(const char* family) {
     int alloc = !strcmp(family, "alloc"), sync = !strcmp(family, "sync");
     if ((alloc || sync) && g_arm_mod) return "its handlers are for 64-bit games";
     if (alloc && !alloc_ready()) return "the host allocator has no arena in guest memory this run";
+#if defined(_WIN32)
+    if (!strcmp(family, "libc_str")) return "its handlers take the C library of a POSIX host";
+#endif
     return NULL;
 }
 int hook_family_off(const char* family) {
