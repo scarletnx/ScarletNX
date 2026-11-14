@@ -931,6 +931,19 @@ u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max) {
     u64 lo = addr & ~(g_own.page - 1), hi = (addr + size + g_own.page - 1) & ~(g_own.page - 1), at = addr;
     u32 n, i;
     int trapped;
+    /* No entry on its pages, in a 4 MB region that has one: read as they are, with one look under the lock. Each
+       constant buffer of one game's busy scene sat in such a region, and took the landing's locks, the lookup's and
+       the check's below in turn: about 2.5% of the renderer thread's time in the system's lock code */
+    if (own_any() && region_owned(lo, hi)) {
+        pm_lock(&g_own.lk);
+        u32 f = first_after_nl(lo);
+        trapped = f < g_own.nown && g_own.ent[f].lo < hi;
+        pm_unlock(&g_own.lk);
+        if (!trapped) {
+            memcpy(dst, GP(addr), (size_t)size);
+            return 0;
+        }
+    }
     /* in place, a trapped page whose CPU bytes it reads and no shadow holds lands first: before the lookup, whose
        resources a landing would release */
     if (!g_own.mirror && g_own.traps && own_any() && region_owned(lo, hi)) {
