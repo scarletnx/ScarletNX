@@ -65,6 +65,56 @@ static int stamp_run(u64 cpu, u64 n, void* ctx) {
     stamp_cpu(cpu, n, *(const u64*)ctx);
     return 0;
 }
+/* Constant buffer uploads (LOAD_CONSTANT_BUFFER) are most of the writes: in one game's town 14,000 a frame of one or
+   two words, about 2.5 before each draw. Each moved the generation, so every question after it (each texture, buffer
+   and memo of each draw) missed the quick answer above (since >= g_wgen) and read the tables. They stamp their pages
+   as any write does, and also set a bit for each 2 MiB of GPU addresses that a page they stamped is in, their
+   aliases too (g_wcb). g_wlast is the generation of the newest other write. A question whose baseline is that or
+   newer, about a range whose 2 MiB granules have no bit, has its answer without the tables: only uploads came after,
+   and none of them touched it. Bits are never cleared, so it can say "maybe" more than it must, never "no" wrongly.
+   One box over all the uploads' pages spanned 9.6 GB of GPU addresses in that town, and answered 2% of the questions */
+#define WCB_SHIFT 21u
+#define WCB_BITS  (1ull << (40 - WCB_SHIFT)) /* GPU addresses have 40 bits */
+static u64 g_wcb[WCB_BITS / 64]; /* atomic, set under g_wlk */
+static u64 g_wlast;              /* atomic, stored under g_wlk */
+static void cb_box(u64 gva, u64 n) {
+    if (!n) return;
+    u64 last = gva + n - 1 < gva ? ~(u64)0 : gva + n - 1;
+    for (u64 g = gva >> WCB_SHIFT, e = last >> WCB_SHIFT; g <= e && g < WCB_BITS; g++)
+        if (!(__atomic_load_n(&g_wcb[g >> 6], __ATOMIC_RELAXED) >> (g & 63) & 1))
+            __atomic_fetch_or(&g_wcb[g >> 6], 1ull << (g & 63), __ATOMIC_RELAXED);
+}
+/* whether no upload touched a granule of [a, a + sz) */
+static int cb_clear(u64 a, u64 sz) {
+    u64 last = a + sz - 1 < a ? ~(u64)0 : a + sz - 1;
+    if (last >> WCB_SHIFT >= WCB_BITS) return 0;
+    for (u64 g = a >> WCB_SHIFT, e = last >> WCB_SHIFT; g <= e; g++)
+        if (__atomic_load_n(&g_wcb[g >> 6], __ATOMIC_RELAXED) >> (g & 63) & 1) return 0;
+    return 1;
+}
+static void stamp_alias_cb(void* ctx, u64 gva, u64 n) {
+    write_pages_stamp(&g_wgpu, gva, n, *(const u64*)ctx);
+    cb_box(gva, n);
+}
+static int stamp_run_cb(u64 cpu, u64 n, void* ctx) {
+    u64 gen = *(const u64*)ctx;
+    void (*watch)(u64, u64) = __atomic_load_n(&g_wwatch, __ATOMIC_ACQUIRE);
+    if (watch) watch(cpu, n);
+    gmmu_aliases(cpu, n, stamp_alias_cb, &gen);
+    if (wcheck_on()) write_pages_stamp(&g_wcpu, cpu, n, gen);
+    return 0;
+}
+void gpu_mem_written_cb(u64 gva, u64 size) {
+    u64 gen;
+    if (!size) return;
+    pm_lock(&g_wlk);
+    gen = g_wgen + 1;
+    write_pages_stamp(&g_wgpu, gva, size, gen);
+    cb_box(gva, size);
+    guest_runs(gva, size, stamp_run_cb, &gen);
+    __atomic_store_n(&g_wgen, gen, __ATOMIC_RELEASE);
+    pm_unlock(&g_wlk);
+}
 void gpu_mem_written(u64 gva, u64 size) {
     u64 gen;
     if (!size) return;
@@ -72,6 +122,7 @@ void gpu_mem_written(u64 gva, u64 size) {
     gen = g_wgen + 1;
     write_pages_stamp(&g_wgpu, gva, size, gen);
     guest_runs(gva, size, stamp_run, &gen);
+    __atomic_store_n(&g_wlast, gen, __ATOMIC_RELAXED);
     __atomic_store_n(&g_wgen, gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
 }
@@ -85,6 +136,7 @@ void gpu_mem_remapped(u64 gva, u64 size) {
     pm_lock(&g_wlk);
     gen = g_wgen + 1;
     write_pages_stamp(&g_wgpu, gva, size, gen);
+    __atomic_store_n(&g_wlast, gen, __ATOMIC_RELAXED);
     __atomic_store_n(&g_wgen, gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
 }
@@ -95,6 +147,7 @@ void gpu_mem_written_cpu(u64 cpu, u64 size) {
     pm_lock(&g_wlk);
     gen = g_wgen + 1;
     stamp_cpu(cpu, size, gen);
+    __atomic_store_n(&g_wlast, gen, __ATOMIC_RELAXED);
     __atomic_store_n(&g_wgen, gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
 }
@@ -107,6 +160,7 @@ void gpu_mem_written_all(void) {
     gen = g_wgen + 1;
     __atomic_store_n(&g_wgpu.overflow, gen, __ATOMIC_RELEASE);
     __atomic_store_n(&g_wcpu.overflow, gen, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_wlast, gen, __ATOMIC_RELAXED);
     __atomic_store_n(&g_wgen, gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
 }
@@ -126,6 +180,8 @@ static int dirty_run(u64 cpu, u64 n, void* ctx) {
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) {
     DirtyAsk q;
     if (!sz || since >= __atomic_load_n(&g_wgen, __ATOMIC_ACQUIRE)) return 0;
+    /* only constant buffer uploads since, none in the range (g_wcb): read after g_wgen, so as new as it at least */
+    if (since >= __atomic_load_n(&g_wlast, __ATOMIC_RELAXED) && !wcheck_on() && cb_clear(a, sz)) return 0;
     if (write_pages_since(&g_wgpu, since, a, sz)) return 1;
     if (!wcheck_on()) return 0;
     q.since = since;
@@ -320,6 +376,6 @@ void r3d_const_flush(GpuChannel* ch) {
         return;
     }
     snx_le32_array(ch->cb_words, ch->cb_n); /* guest memory's order: the words aren't read again */
-    gmem_write(ch->cb_addr, ch->cb_words, (u64)ch->cb_n * 4);
+    gmem_write_cb(ch->cb_addr, ch->cb_words, (u64)ch->cb_n * 4);
     ch->cb_n = 0;
 }

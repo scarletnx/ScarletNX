@@ -1777,6 +1777,8 @@ int vk_rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at) {
     return n;
 }
 
+/* whether a render target not parked covers a GPU page of [gva, gva + size), with pend_lock held (or vk_lock) */
+int vk_rt_pages_hit(u64 gva, u64 size) { return size && pend_hit_va(&g_rt_pages, gva, size); }
 int vk_rt_over(u64 gva, u64 size) {
     Surf *local[16], **list;
     u32 count;

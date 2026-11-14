@@ -308,6 +308,8 @@ typedef struct {
    Unmapped pages read as zero and take no writes; the int calls return -1 when any page was unmapped */
 int gmem_read(u64 gva, void* dst, u64 size);
 int gmem_write(u64 gva, const void* src, u64 size);
+/* a constant buffer upload (LOAD_CONSTANT_BUFFER): gmem_write, stamped with gpu_mem_written_cb */
+int gmem_write_cb(u64 gva, const void* src, u64 size);
 /* gmem_read and gmem_write in halves, for a copy made of many small runs (a block linear row's 16 byte runs): the
    hooks once over the span the runs fall in (gmem_need before reading it, gmem_before_write before writing it and
    gpu_mem_written after), then the runs without them */
@@ -386,6 +388,8 @@ void dma_snap_staged_free(DmaStaged* d);
 /* maxwell3d.c: the record of GPU-side writes. Each write stamps a new generation on the pages it covers, by GPU
    address and by the guest pages behind them */
 void gpu_mem_written(u64 gva, u64 size);
+/* the same for a constant buffer upload, whose pages gpu_mem_dirty_since keeps apart (maxwell3d.c) */
+void gpu_mem_written_cb(u64 gva, u64 size);
 void gpu_mem_written_shader(u64 gva, u64 size); /* a shader's result landing in guest memory */
 /* the GPU's pages [gva, gva + size) map other guest memory now (nvdrv.c's mapping changes): they alone read as
    written, as no guest byte changed */
