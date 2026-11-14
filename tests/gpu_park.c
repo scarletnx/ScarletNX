@@ -14,6 +14,7 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include <pthread.h>
@@ -215,17 +216,38 @@ int pc_wait(PCond* c, PMutex* m, i64 ns) {
     struct timespec ts = {(time_t)(t / 1000000000ull), (long)(t % 1000000000ull)};
     return pthread_cond_timedwait(&c->c, &m->l, &ts) != 0;
 }
-static PThreadFn thread_fn;
-static void* thread_main(void* arg) {
-    thread_fn(arg);
+/* each thread's function and argument of its own: gpu.c's GPU thread and gpu_queue.c's renderer thread start one
+   after the other */
+typedef struct {
+    PThreadFn fn;
+    void* arg;
+} ThreadStart;
+static void* thread_main(void* p) {
+    ThreadStart start = *(ThreadStart*)p;
+    free(p);
+    start.fn(start.arg);
     return NULL;
 }
 int plat_thread(PThreadFn fn, void* arg, size_t stack) {
     pthread_t t;
+    ThreadStart* start = malloc(sizeof *start);
     (void)stack;
-    thread_fn = fn;
-    return pthread_create(&t, NULL, thread_main, arg) != 0;
+    if (!start) return 1;
+    *start = (ThreadStart){fn, arg};
+    if (pthread_create(&t, NULL, thread_main, start)) {
+        free(start);
+        return 1;
+    }
+    return 0;
 }
+/* gpu_queue.c's sleeps on a word: a wait that may end early for no reason, as thread.h allows, here a short sleep
+   while the word holds v; the wake has nothing to do then */
+void plat_wait_word(uint32_t* w, uint32_t v, int64_t timeout_ns) {
+    if (__atomic_load_n(w, __ATOMIC_SEQ_CST) != v || !timeout_ns) return;
+    struct timespec ts = {0, timeout_ns > 0 && timeout_ns < 50000 ? (long)timeout_ns : 50000};
+    nanosleep(&ts, NULL);
+}
+void plat_wake_word(uint32_t* w) { (void)w; }
 
 /* ------------------------------------------------ pushbuffers */
 #define SEM  0x8000 /* the semaphores */
@@ -328,7 +350,15 @@ static void expect(int ok, const char* what) {
 }
 #define FAST 500000000ull /* a wait an event ends, well short of the 1 and 2 s timeouts */
 
+/* tests/support/gpu_front_stub.c: the renderer side's decision on draws and clears, which engines.c's render enable
+   makes */
+extern int (*g_stub_render_state)(u32 owner, u32* pred);
 int main(void) {
+    g_stub_render_state = gpu_render_state;
+    /* the front stub runs draws and clears on the GPU thread as they come, so gpu_queue.c's records (DMA copies,
+       writes) run there too, in their order with them: on a renderer thread of their own they ran after the clears
+       that mark a job done */
+    g_settings.gpu_split = 0;
     /* A yielding call retains its lane's order without trapping the GPU thread. Another lane can signal it. */
     gpu_call_poll(poll_wait, (void*)(uintptr_t)0x970, 0);
     gpu_call_poll(poll_mark, (void*)(uintptr_t)0x971, 0);
