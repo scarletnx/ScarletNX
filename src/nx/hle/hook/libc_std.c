@@ -25,7 +25,6 @@
 /* what the handlers call, for the table to link: the family is off on Windows (hook.c's family_unready) */
 #define strcasecmp  _stricmp
 #define strncasecmp _strnicmp
-#define strtok_r    strtok_s
 #define ffs         __builtin_ffs
 #define ffsl        __builtin_ffsl
 static char* stpcpy(char* d, const char* s) {
@@ -152,18 +151,32 @@ u64 libc_strcasestr(CPU* c, u64 s, u64 sub) { return GN(strcasestr(S(s), S(sub))
 u64 libc_strpbrk(CPU* c, u64 s, u64 set) { return GN(strpbrk(S(s), S(set))); }
 u64 libc_strspn(CPU* c, u64 s, u64 set) { return strspn(S(s), S(set)); }
 u64 libc_strcspn(CPU* c, u64 s, u64 set) { return strcspn(S(s), S(set)); }
+/* musl's strtok_r, which the SDK's strtok and strtok_r are: the next token of s, or of *p when s is NULL, and *p the
+   place after it; NULL with no string to go on in, and *p NULL once the string is used up (glibc's would read *p
+   then, and leave it at the string's end) */
+static char* tok(char* s, const char* sep, char** p) {
+    if (!s && !(s = *p)) return NULL;
+    s += strspn(s, sep);
+    if (!*s) return *p = NULL;
+    *p = s + strcspn(s, sep);
+    if (**p)
+        *(*p)++ = 0;
+    else
+        *p = NULL;
+    return s;
+}
 /* strtok's place in the string it was last given, a guest address, as the SDK's keeps one for every thread alike */
 static u64 g_strtok;
 u64 libc_strtok(CPU* c, u64 s, u64 delim) {
     char* save = g_strtok ? S(g_strtok) : NULL;
-    char* t = strtok_r(s ? S(s) : NULL, S(delim), &save);
+    char* t = tok(s ? S(s) : NULL, S(delim), &save);
     g_strtok = GN(save);
     return GN(t);
 }
 u64 libc_strtok_r(CPU* c, u64 s, u64 delim, u64 save) {
     u64 at = snx_ld_le64(hook_host(c, save));
     char* p = at ? S(at) : NULL;
-    char* t = strtok_r(s ? S(s) : NULL, S(delim), &p);
+    char* t = tok(s ? S(s) : NULL, S(delim), &p);
     snx_st_le64(hook_host(c, save), GN(p));
     return GN(t);
 }

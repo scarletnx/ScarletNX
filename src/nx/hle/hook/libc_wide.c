@@ -80,10 +80,22 @@ u64 libc_wcsncat(CPU* c, u64 d, u64 s, u64 n) {
 u64 libc_wcschr(CPU* c, u64 s, u32 ch) { return GN(wcschr(W(s), (wchar_t)ch)); }
 u64 libc_wcsrchr(CPU* c, u64 s, u32 ch) { return GN(wcsrchr(W(s), (wchar_t)ch)); }
 u64 libc_wcsstr(CPU* c, u64 s, u64 sub) { return GN(wcsstr(W(s), W(sub))); }
+/* musl's wcstok, as libc_std.c's tok: NULL with no string to go on in, and the place NULL once it is used up */
+static wchar_t* wtok(wchar_t* s, const wchar_t* sep, wchar_t** p) {
+    if (!s && !(s = *p)) return NULL;
+    s += wcsspn(s, sep);
+    if (!*s) return *p = NULL;
+    *p = s + wcscspn(s, sep);
+    if (**p)
+        *(*p)++ = 0;
+    else
+        *p = NULL;
+    return s;
+}
 u64 libc_wcstok(CPU* c, u64 s, u64 delim, u64 save) {
     u64 at = snx_ld_le64(hook_host(c, save));
     wchar_t* p = at ? W(at) : NULL;
-    wchar_t* t = wcstok(s ? W(s) : NULL, W(delim), &p);
+    wchar_t* t = wtok(s ? W(s) : NULL, W(delim), &p);
     snx_st_le64(hook_host(c, save), GN(p));
     return GN(t);
 }
