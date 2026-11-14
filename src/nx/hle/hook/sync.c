@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The C++ library's mutexes, condition variable, clocks and sleep the game's SDK exports (hooks.hook's sync family,
-   and its cond_var family for std::mutex and the condition variable, which native_cond_var=0 leaves to the game), run
-   on the host's own: a std::mutex, std::recursive_mutex or std::condition_variable of the game's is a host mutex
-   or condition variable (PMutex, PCond: the host's pthreads, SRW locks on Windows) found by the guest object's
-   address, made at its first use (std::mutex's constructor is the compiler's, inlined) and let go of at its
-   destructor. The guest object's own bytes go unread and unwritten: every function that reads them is hooked, and
-   the others (timed_mutex's, shared_timed_mutex's and condition_variable_any's, whose templates the game's code
-   inlines over their members) are left to the game's own code.
+/* The C++ library's mutexes, condition variable, clocks and sleep the game's SDK exports (hooks.hook's sync family for
+   the clocks and the sleep, and its cond_var family for the mutexes and the condition variable, which native_cond_var=0
+   leaves to the game), run on the host's own: a std::mutex, std::recursive_mutex or std::condition_variable of the
+   game's is a host mutex or condition variable (PMutex, PCond: the host's pthreads, SRW locks on Windows) found by the
+   guest object's address, made at its first use (std::mutex's constructor is the compiler's, inlined) and let go of at
+   its destructor. The guest object's own bytes go unread and unwritten: every function that reads them is hooked, and
+   the others (timed_mutex's, shared_timed_mutex's and condition_variable_any's, whose templates the game's code inlines
+   over their members) are left to the game's own code.
 
    A thread that waits (a lock someone holds, a condition variable, a sleep) leaves its core first, as a waiting SVC
    does (hook_wait_begin): the core's other threads run meanwhile, the holder among them.

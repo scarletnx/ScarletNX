@@ -207,9 +207,19 @@ hook _ZdaPvSt11align_val_tRKSt9nothrow_t(addr p) = alloc_delete
 hook _ZNSt3__113__vector_baseI*NS_9allocatorI*EEED1Ev(addr self) = alloc_vector_free check alloc_vector_shape
 hook _ZNSt3__113__vector_baseI*NS_9allocatorI*EEED2Ev(addr self) = alloc_vector_free check alloc_vector_shape
 
-# the C++ library's recursive mutex, clocks and sleep (sync.c): the host's own, by the guest object's address. Not
-# timed_mutex, shared_timed_mutex or condition_variable_any, whose templates the game inlines over their members
+# the C++ library's clocks and sleep (sync.c): the host's own
 family sync
+hook _ZNSt3__16chrono12system_clock3nowEv() -> i64 = sync_system_now
+hook _ZNSt3__16chrono12steady_clock3nowEv() -> i64 = sync_steady_now
+hook _ZNSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE(addr duration) = sync_sleep_for
+
+# std::mutex, std::recursive_mutex and std::condition_variable (sync.c): the host's own, by the guest object's address.
+# A condition variable's wait in the game's own code unlocks its mutex in the guest object, which the host's mutex
+# never writes, so they go together. A save state can't hold a thread waiting on the host's, nor a mutex the host holds
+# for it, so native_cond_var=0 leaves all three to the game's own code, and save states are refused while they run.
+# Not timed_mutex, shared_timed_mutex or condition_variable_any, whose templates the game inlines over their members,
+# which are a std::mutex and a condition variable of these
+family cond_var
 hook _ZNSt3__115recursive_mutexC1Ev(addr m) = sync_recursive_init
 hook _ZNSt3__115recursive_mutexC2Ev(addr m) = sync_recursive_init
 hook _ZNSt3__115recursive_mutexD1Ev(addr m) = sync_drop
@@ -217,15 +227,6 @@ hook _ZNSt3__115recursive_mutexD2Ev(addr m) = sync_drop
 hook _ZNSt3__115recursive_mutex4lockEv(addr m) = sync_recursive_lock
 hook _ZNSt3__115recursive_mutex8try_lockEv(addr m) -> bool = sync_recursive_try_lock
 hook _ZNSt3__115recursive_mutex6unlockEv(addr m) = sync_recursive_unlock
-hook _ZNSt3__16chrono12system_clock3nowEv() -> i64 = sync_system_now
-hook _ZNSt3__16chrono12steady_clock3nowEv() -> i64 = sync_steady_now
-hook _ZNSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE(addr duration) = sync_sleep_for
-
-# std::mutex and std::condition_variable (sync.c): the host's own, as the sync family's. A condition variable's wait
-# in the game's own code unlocks its mutex in the guest object, which the host's mutex never writes, so the two go
-# together. A save state can't hold a thread waiting on the host's, so native_cond_var=0 leaves both to the game's
-# own code, and save states are refused while they run
-family cond_var
 hook _ZNSt3__15mutex4lockEv(addr m) = sync_mutex_lock
 hook _ZNSt3__15mutex8try_lockEv(addr m) -> bool = sync_mutex_try_lock
 hook _ZNSt3__15mutex6unlockEv(addr m) = sync_mutex_unlock
