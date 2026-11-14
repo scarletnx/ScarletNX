@@ -1466,6 +1466,12 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
        memory left out (gpu/vk/texture.c tex_bind), as the game maps a small part of such a texture */
     const VkSparseShape* sh = t->sparse ? vk_image_sparse_shape(t->img) : NULL;
     if (sh && level >= sh->tail_first) sh = NULL;
+    /* a texture sparse for its levels alone (texture.c's shed): a level from its floor on is bound whole, and loads as
+       any texture's does; one finer has no memory, and nothing to load */
+    if (sh && t->shed) {
+        if (level < t->lod_floor) return 1;
+        sh = NULL;
+    }
     if (sh) {
         u32 k = sh->gran.height / bh ? sh->gran.height / bh : 1;
         k = (k + unit - 1) / unit * unit;
@@ -1501,7 +1507,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
            would stay */
         const u32 lw = t->w >> level ? t->w >> level : 1, lh = t->h >> level ? t->h >> level : 1;
         const u32 ld = t->type == VK_IMAGE_VIEW_TYPE_3D && t->depth3d >> level ? t->depth3d >> level : 1;
-        const int quick = !t->sparse && quick_level((u64)lw * lh * ld *
+        const int quick = (!t->sparse || t->shed) && quick_level((u64)lw * lh * ld *
                                                     (t->type == VK_IMAGE_VIEW_TYPE_3D || !t->layers ? 1 : t->layers));
         const u32 build = quick ? 3 : vk_bc7_build(lw, lh, ld);
         bc7_build = build;

@@ -378,6 +378,18 @@ setting ASTC mode
     help from the BC7 cache. BC7 at load = encoded as BC7 as each texture loads, with no
     help RGBA8 image before it, as feat/ounce does (temporary, to compare). Where the GPU samples ASTC it does
     help nothing. It takes the place of astc_bc, whose 1 is Auto
+setting Texture shed
+    label Texture levels give way
+    key texture_shed
+    int 0 1
+    default 0
+    words Off|On
+    help On = a texture of 1 MiB or more mapped whole, with mipmaps, that the GPU only reads is made with sparse
+    help residency (where the GPU has it, and VK_EXT_image_view_min_lod): when the GPU's memory runs short its finest
+    help level gives way, the texture sampled at half its resolution for a while, in place of the whole texture
+    help evicted and loaded again at its next use; the level comes back when there is room. Off (the default for now)
+    help = textures are whole. On a GPU whose images and buffers take blocks apart, the image blocks run full past the
+    help budget and the sparse blocks of such textures find no memory for frames at a time
 setting BC7 queue
     key bc7_queue
     int 0 16384
