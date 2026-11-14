@@ -19,6 +19,7 @@
 #include "3ds/gpu/vk/vk_y2r.h"
 #include "3ds/gpu/vk/vk_render.h"
 #include "common/utilities/bits.h"
+#include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
@@ -48,6 +49,11 @@ static struct {
     VkDeviceMemory readback_memory;
     unsigned char* readback_view;
     SnxVkSwapchain swap[2]; /* the combined window's, or each screen's own */
+    /* the upscaler and the anti-aliasing (common/gpu/vk/present_fx.h) as the settings say, each screen's effects of
+       its own: both screens are drawn in one recording, whose frame slot each keeps its images by. None while both
+       are Off */
+    SnxFxConfig fx_config;
+    SnxFx* fx[2];
     /* each submission slot's: a slot is free again only once its submission is done, and so are they */
     VkSemaphore acquire[2][SNX_CTR_VK_SLOTS], presented[2][SNX_CTR_VK_SLOTS];
     const char* frame_dir;
@@ -112,7 +118,8 @@ static bool frame_make(Frame* f, unsigned width, unsigned height, unsigned scale
                             .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                     VK_IMAGE_USAGE_SAMPLED_BIT, /* the upscaler's and anti-aliasing's source */
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     if (vkCreateImage(v->device, &ii, NULL, &f->image) != VK_SUCCESS) return false;
@@ -154,6 +161,35 @@ static bool semaphores(const SnxCtrVk* v, const VkSemaphoreCreateInfo* si) {
                 return false;
     return true;
 }
+static void fx_log(const char* text) { fprintf(stderr, "3ds gpu: %s\n", text); }
+/* the upscaler and the anti-aliasing the settings ask for, said once, and their effects made where either is on */
+static void fx_init(const SnxCtrVk* v) {
+    char said[512];
+    SnxFxConfig* c = &g_present.fx_config;
+    if (snx_fx_settings(c, g_settings.upscaler, g_settings.upscaler_sharpness, g_settings.anti_aliasing, said,
+                        sizeof said))
+        fprintf(stderr, "3ds gpu: settings: %s\n", said);
+    if (c->upscaler != SNX_FX_UPSCALE_OFF || c->aa != SNX_FX_AA_OFF)
+        for (unsigned i = 0; i < 2; ++i) {
+            g_present.fx[i] = snx_fx_create(v->phys, v->device, VK_NULL_HANDLE, SNX_CTR_VK_SLOTS, fx_log);
+            if (g_present.fx[i]) {
+                snx_fx_set_sharpness(g_present.fx[i], c->sharpness);
+                snx_fx_set_off_sharp(g_present.fx[i], 1); /* the window's own scale, in sharp pixels */
+                continue;
+            }
+            fprintf(stderr,
+                    "3ds gpu: upscaler=%s and anti_aliasing=%s: their passes could not be made on this device, "
+                    "so the screens show with both off\n",
+                    snx_fx_upscale_key(c->upscaler), snx_fx_aa_key(c->aa));
+            c->upscaler = SNX_FX_UPSCALE_OFF;
+            c->aa = SNX_FX_AA_OFF;
+            if (i) snx_fx_destroy(g_present.fx[0]);
+            g_present.fx[0] = NULL;
+            break;
+        }
+    fprintf(stderr, "3ds gpu: upscaler %s, anti-aliasing %s\n", snx_fx_upscale_label(c->upscaler),
+            snx_fx_aa_label(c->aa));
+}
 bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     if (g_present.up) return true;
     /* a finger and the mouse each reach the touch screen once, as on the Switch (backend/sdl3.c): SDL would also send
@@ -169,6 +205,7 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     const SnxCtrVk* v = snx_ctr_vk();
     g_present.frame_dir = frame_dir;
     g_present.separate = g_settings.ctr_separate_screens && v->second && v->second_surface;
+    fx_init(v);
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = (VkDeviceSize)MAX_SIDE * MAX_SIDE * 4,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -455,8 +492,9 @@ static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, 
 }
 /* The window's picture: in one window the top screen above the bottom one, which is centred under it (400 and 320
    pixels wide, 240 high), the pair scaled as one to fit the swapchain's image and centred in it, the rest black; in
-   separate windows this screen alone, scaled to fit and centred. */
-static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen) {
+   separate windows this screen alone, scaled to fit and centred. Scaled through the upscaler and the anti-aliasing
+   where either is on (slot: the recording's), else in sharp pixels */
+static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen, unsigned slot) {
     image_barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkClearColorValue black = {.float32 = {0, 0, 0, 1}};
     VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -469,14 +507,32 @@ static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen) {
         VkOffset2D rect[2];
         /* a screen not drawn yet stays black */
         if (!f->image || f->layout == VK_IMAGE_LAYOUT_UNDEFINED || !screen_rect(i, rect)) continue;
-        image_barrier(cb, f->image, f->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        f->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                            .srcOffsets = {{0, 0, 0}, {(int32_t)f->width, (int32_t)f->height, 1}},
-                            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                            .dstOffsets = {{rect[0].x, rect[0].y, 0}, {rect[1].x, rect[1].y, 1}}};
-        vkCmdBlitImage(cb, f->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       1, &blit, VK_FILTER_NEAREST);
+        const SnxFxConfig* c = &g_present.fx_config;
+        uint32_t shown_w = (uint32_t)(rect[1].x - rect[0].x), shown_h = (uint32_t)(rect[1].y - rect[0].y);
+        SnxFxImage fx = {0};
+        if (g_present.fx[i]) {
+            image_barrier(cb, f->image, f->layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            f->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+        bool effects =
+            g_present.fx[i] && snx_fx_render(g_present.fx[i], cb, slot, f->view, f->width, f->height, 0, 0, f->width,
+                                             f->height, 0, shown_w, shown_h, c->upscaler, c->aa, &fx);
+        if (!effects) {
+            image_barrier(cb, f->image, f->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            f->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        }
+        /* the effects' image is the rectangle's size, copied; an upscaler that did not run leaves the smooth scale */
+        VkImageBlit blit = {
+            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .srcOffsets = {{0, 0, 0},
+                           {(int32_t)(effects ? fx.width : f->width), (int32_t)(effects ? fx.height : f->height), 1}},
+            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .dstOffsets = {{rect[0].x, rect[0].y, 0}, {rect[1].x, rect[1].y, 1}}};
+        vkCmdBlitImage(cb, effects ? fx.image : f->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                       (effects && fx.width == shown_w && fx.height == shown_h) || c->upscaler == SNX_FX_UPSCALE_OFF
+                           ? VK_FILTER_NEAREST
+                           : VK_FILTER_LINEAR);
     }
     image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
@@ -582,7 +638,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     }
     if (show) {
         g_present.bottom_alone = 0;
-        show_screens(cb, g_present.swap[window_index].images[index], screen);
+        show_screens(cb, g_present.swap[window_index].images[index], screen, slot);
     }
     /* submitted, waited for only when the host reads the frame (a dump, a test's hash) */
     bool ok = true;
@@ -650,6 +706,7 @@ void snx_ctr_present_free(void) {
         if (g_present.swap[screen].swapchain) swap_destroy(screen);
     for (unsigned i = 0; i < 2; ++i) frame_free(&g_present.frames[i]);
     frame_free(&g_present.source_dummy);
+    for (unsigned i = 0; i < 2; ++i) snx_fx_destroy(g_present.fx[i]);
     for (unsigned screen = 0; screen < 2; ++screen)
         for (unsigned i = 0; i < SNX_CTR_VK_SLOTS; ++i) {
             if (g_present.acquire[screen][i]) vkDestroySemaphore(v->device, g_present.acquire[screen][i], NULL);

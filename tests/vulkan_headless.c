@@ -18,6 +18,7 @@
 #include "nx/gpu/vk/descriptors.h"
 #include "common/gpu/vk/extension_bans.h"
 #include "nx/gpu/vk/pipeline_parts.h"
+#include "nx/gpu/vk/present_quad.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/maxwell/engines_int.h"
@@ -1742,6 +1743,124 @@ static int check_srgb_blit(void) {
     vk_lock();
     vk_image_destroy(dst, mem);
     vk_unlock();
+    free(ch);
+    return 0;
+}
+
+/* The window's frame through the upscaler and the anti-aliasing (present_quad.c's vk_present_quad_effects): their
+   passes recorded at once on the frame's command buffer, which the recording thread fills, between the commands queued
+   before and after them. A flat target's crop comes out at the window rectangle's size, its colour kept, and the quad
+   draws it from there; a crop of part of the target too. Run under the Khronos layer by vulkan_present_effects */
+static int check_present_effects(void) {
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    u32* r = ch->r3d;
+    r[0x487] = 1;
+    r[0x201] = 0x4C0000;
+    r[0x202] = 64; /* 16 RGBA pixels, pitch linear */
+    r[0x203] = 16;
+    r[0x204] = 0xD5; /* A8B8G8R8 */
+    r[0x205] = 0x1000;
+    r[0x206] = 1;
+    r[0x207] = 1024;
+    r[0x56E] = 1;
+    const float color[4] = {0.25f, 0.5f, 0.75f, 1};
+    memcpy(&r[0x360], color, sizeof color);
+    engine_clear(ch, 15 << 2);
+    vk_render_end();
+    Surf* target = vk_rt_find(r[0x201]);
+    CHECK(target && target->sw == 16 && target->sh == 16);
+    u8 stored[4];
+    CHECK(!read_pixel0(target, stored));
+    snprintf(g_settings.upscaler, sizeof g_settings.upscaler, "fsr1");
+    snprintf(g_settings.anti_aliasing, sizeof g_settings.anti_aliasing, "fxaa");
+    g_settings.upscaler_sharpness = 75;
+    vk_present_quad_effects_init();
+    static const VkRect2D crops[2] = {{{0, 0}, {16, 16}}, {{2, 3}, {10, 9}}};
+    for (u32 k = 0; k < 2; k++) {
+        const u32 w = crops[k].extent.width * 2, h = crops[k].extent.height * 2;
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .imageType = VK_IMAGE_TYPE_2D,
+                                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                .extent = {w, h, 1},
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+        VkImage dst;
+        DevMem mem;
+        VkImageView view;
+        VkBuffer buffer;
+        u8* data = vk_readback_buffer((u64)w * h * 4, &buffer);
+        CHECK(data);
+        vk_lock();
+        CHECK(vk_image_create(&ii, &dst, &mem));
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                    .image = dst,
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                    .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        CHECK(vkCreateImageView(g_vk.dev, &vi, NULL, &view) == VK_SUCCESS);
+        VkCommandBuffer cb = vk_cmd();
+        SnxPresentSource s;
+        VkRect2D crop = crops[k], to = {{0, 0}, {w, h}};
+        CHECK(vk_present_quad_source(cb, target, 1, 1, &s));
+        CHECK(vk_present_quad_effects(cb, &s, &crop, to, 0));
+        CHECK(s.width == w && s.height == h && !crop.offset.x && crop.extent.width == w && crop.extent.height == h);
+        vk_barrier(cb, dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED,
+                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        VkRenderingAttachmentInfo at = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                        .imageView = view,
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                        .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+        VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                              .renderArea = to,
+                              .layerCount = 1,
+                              .colorAttachmentCount = 1,
+                              .pColorAttachments = &at};
+        rec_CmdBeginRendering(cb, &ri);
+        CHECK(vk_present_quad_draw(cb, &s, VK_FORMAT_R8G8B8A8_UNORM, crop, to, 0));
+        rec_CmdEndRendering(cb);
+        vk_render_forget_state();
+        vk_barrier(cb, dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+        rec_CmdCopyImageToBuffer(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+        vk_unlock();
+        vk_finish();
+        vk_readback_ready();
+        u32 bad = 0;
+        for (u32 i = 0; i < w * h; i++)
+            for (u32 c = 0; c < 3; c++)
+                if (abs((int)data[(size_t)i * 4 + c] - stored[c]) > 1) {
+                    if (!bad++)
+                        fprintf(stderr, "present effects: crop %ux%u at %d,%d, pixel %u,%u channel %u is %u, not %u\n",
+                                crops[k].extent.width, crops[k].extent.height, crops[k].offset.x, crops[k].offset.y,
+                                i % w, i / w, c, data[(size_t)i * 4 + c], stored[c]);
+                }
+        vk_lock();
+        vk_defer_image(dst, mem, view, VK_NULL_HANDLE);
+        vk_unlock();
+        CHECK(!bad);
+    }
+    /* the settings changed while the game runs (the game's menu): the next frame takes them, FXAA alone at the window's
+       size, then neither */
+    for (u32 k = 0; k < 2; k++) {
+        SnxPresentSource s;
+        VkRect2D crop = {{0, 0}, {16, 16}}, to = {{0, 0}, {32, 32}};
+        snprintf(g_settings.upscaler, sizeof g_settings.upscaler, "off");
+        snprintf(g_settings.anti_aliasing, sizeof g_settings.anti_aliasing, k ? "off" : "fxaa");
+        vk_lock();
+        VkCommandBuffer cb = vk_cmd();
+        CHECK(vk_present_quad_source(cb, target, 1, 1, &s));
+        int ran = vk_present_quad_effects(cb, &s, &crop, to, 0);
+        vk_unlock();
+        CHECK(k ? !ran && s.width == 16 && crop.extent.width == 16 : ran && s.width == 32 && s.height == 32);
+        vk_finish();
+    }
     free(ch);
     return 0;
 }
@@ -7421,6 +7540,12 @@ static int run_headless(int argc, char** argv) {
         printf("PASS headless Vulkan profile pool only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_PRESENT_EFFECTS_ONLY")) { /* the window's upscaler and anti-aliasing alone */
+        CHECK(!check_present_effects());
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan present effects only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_UI_ONLY")) { /* vulkan_ui.inc's check alone: the on-screen layer's pass */
         CHECK(!check_ui());
         vk_pipeline_quiesce();
@@ -7656,6 +7781,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_big_volume());
     CHECK(!check_srgb_write());
     CHECK(!check_srgb_blit());
+    CHECK(!check_present_effects());
     CHECK(!check_clear_load_op());
     CHECK(!check_alias_newer_target());
     CHECK(!check_sparse_while_submitting());

@@ -75,6 +75,9 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `vsync` | `1` | Images are shown only on the display's refresh, so nothing tears. `0` doesn't wait for it: the newest image is shown on the next refresh where the display can do that, else at once (which may tear). A display that can do neither waits for the refresh as `1` does. A 3DS game takes it too (`--vsync=0`), its window saying at start which it got |
 | `frame_pacing` | `1` | With VSync and `fps_limit=game`: `0` paces the game's frames by a timer; `1` also has the next frame wait until the one before is on the display (`VK_KHR_present_wait` or `VK_GOOGLE_display_timing`), so frames don't queue for it; `2` also holds each frame of a game that asks for two refreshes or more a frame until its refresh, where the display can say when (`VK_EXT_present_timing` or `VK_GOOGLE_display_timing`). Where the display can't do one, the one before it |
 | `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle. A 3DS game takes it too (`--anisotropy=N`), for its mipmapped textures filtered linearly, and says at start the value in effect |
+| `upscaler` | `off` | The filter that grows the game's frame to the window: `off` as the window always drew it (smooth on the Switch and the Vita, sharp pixels on the 3DS), `bilinear` smooth, `fsr1` AMD FSR 1, `nis` NVIDIA NIS and `sgsr` Qualcomm SGSR with sharper edges. Where the frame is not shown larger, the smooth scale runs; NIS grows a frame twice at most, and past that FSR 1 runs. The log says the filter in effect, and why where it is not the one asked. A 3DS game (`--upscaler=`) and a Vita one take it too. Another word is said at start, with `off` in its place. A change while the game runs (the game's menu) takes effect at the next frame |
+| `upscaler_sharpness` | `75` | How sharp FSR 1, NIS and SGSR draw the frame's edges, `0` the softest to `100` the sharpest |
+| `anti_aliasing` | `off` | Smoothing of the shown frame's edges, after the upscaler: `auto` is FXAA where the window shows the frame at 1.25 times its size or more each way, and none elsewhere; `fxaa` and `smaa` filter the frame at the window's size (with `upscaler` `off`, scaled as the window scales it: the 3DS in sharp pixels); `ssaa2` and `ssaa4` draw it 2 or 4 times as large and shrink it (where the device holds an image that large, else the step under it, said). Only an SDR frame: a game's own HDR frames are shown without it, which the log says. A 3DS game and a Vita one take it too. A change while the game runs (the game's menu) takes effect at the next frame |
 | `hdr_game` | `0` | `1` lets a game output HDR. A game that asks is then told the display is HDR, and the frames it draws as HDR10 (PQ in BT.2020's primaries) or scRGB (linear light, `1.0` at 80 nits) are shown as they are, in a swapchain of their own color space with the HDR metadata of the game's window. It takes a window whose display lists both kinds (`VK_EXT_swapchain_colorspace`) on a device with `VK_EXT_hdr_metadata`; where one is missing, and with `0`, the game is told the display is SDR and draws for that. The log says which, and names what is missing. A window system that lists them for a display with no HDR converts the image itself. A screenshot of an HDR frame holds its values as they are |
 | `hdr_paperwhite` | `0` | With `hdr_game`: the light of white a game is told to draw its SDR parts at, in nits, `0` to `480`. The game's menu and the on-screen controls are drawn at it too. `0` is BT.2408's reference white of 203 nits |
 | `hdr_peak` | `1000` | With `hdr_game`: the brightest light a game is told the display shows, in nits, `400` to `4000`, which the game tone maps its frames for. The display's own peak: `1000` for most TVs |
@@ -270,6 +273,8 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 | `hotkey_mouse` | `Ctrl+G` | Lets the mouse go from a game that holds it (an Ounce game's Joy-Con mouse mode), and holds it again |
 | `hotkey_quit` | `Escape` | Quits the game: a first press warns, and a second within 3 seconds quits |
 | `hotkey_tv_mode` | `Ctrl+D` | Steps the TV mode round On, Off and Auto for the run, as the game's menu's **TV mode** row does; `docked` keeps the `.ini`'s choice |
+| `hotkey_upscaler` | `Ctrl+U` | Steps the upscaler round Off, Bilinear, AMD FSR 1, NVIDIA NIS and Qualcomm SGSR for the run, said over the game; `upscaler` keeps the `.ini`'s choice |
+| `hotkey_anti_aliasing` | `Ctrl+Shift+A` | Steps the anti-aliasing round Off, Auto, FXAA, SMAA, SSAA 2x and SSAA 4x for the run, said over the game; `anti_aliasing` keeps the `.ini`'s choice |
 
 ## Network
 
@@ -397,6 +402,9 @@ The unattended runs' settings ([Run / diagnose](../dev/development.md#run--diagn
 | `ctr_top_resolution` | `1` | The scale of the top screen's 3D rendering, 1 to 16: `1` is the console's 400x240, `2` 800x480; the screen is scaled to its window |
 | `ctr_bottom_resolution` | `1` | The same for the bottom screen: `1` is the console's 320x240, `2` 640x480 |
 
+The Switch's `upscaler`, `upscaler_sharpness` and `anti_aliasing` (Graphics) scale each screen to its place in the
+window, and the start says which run.
+
 ## Vita driver
 
 `scarletnx-vita --key=value` ([PS Vita](../platforms/vita/README.md)), in no section of the game's `.ini`.
@@ -412,6 +420,9 @@ The unattended runs' settings ([Run / diagnose](../dev/development.md#run--diagn
 | `vita_shot_every` | `0` | With `--shot=PATH`, also a screenshot every this many vblanks (60 a second), `PATH_0000.ppm` on; `0`, only the last frame's |
 | `vita_lockstep` | `-1` | From this import call on (`0` is the first), every instruction group of the game also runs in Unicorn, and the first difference in registers, flags or written memory stops the run with both states ([Checking the CPU backend](../platforms/vita/README.md#checking-the-cpu-backend)). Only in a build configured with `-DSNX_VITA_LOCKSTEP=ON`: another build says so at start. `-1` is off |
 | `vita_lockstep_steps` | `0` | With `vita_lockstep`, how many instruction groups are compared before the game runs on without Unicorn. `0` has no limit |
+
+The Switch's `upscaler`, `upscaler_sharpness` and `anti_aliasing` (Graphics) scale the frame to the window, the
+launcher passing them, and the start says which run.
 
 ## Launch
 

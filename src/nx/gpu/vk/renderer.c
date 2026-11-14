@@ -192,6 +192,7 @@ static int vkr_start(void) {
     if (g_vk_anisotropy > 1 && !g_vk.feat.samplerAnisotropy)
         LOG("vulkan: this GPU has no anisotropic filtering, so anisotropy=%d does nothing\n", g_vk_anisotropy);
     if (g_vk_scale != 1.0f) LOG("vulkan: render targets at %.2fx\n", g_vk_scale);
+    if (!g_opt_headless) vk_present_quad_effects_init();
     vk_cmd_init();
     vk_render_upload_cache_reset();
     vk_pipeline_init();
@@ -1328,5 +1329,6 @@ const Renderer vk_renderer = {
     .save = vk_pipeline_save,
     .release_window = vk_window_release,
     .prepare = vk_pipeline_prepare,
+    .step_effect = vk_present_quad_effects_step,
 };
 const Renderer* g_renderer = &vk_renderer;

@@ -230,6 +230,9 @@ typedef struct Renderer {
     /* RendererPrepare's progress, any thread. What isn't done when the game starts goes on in the background. NULL when
        the renderer makes nothing before */
     void (*prepare)(RendererPrepare* p);
+    /* the upscaler's (which 0) or the anti-aliasing's (1) next step for this run, the shortcuts' (hotkey_upscaler,
+       hotkey_anti_aliasing): its label, NULL when the renderer has none. Any thread */
+    const char* (*step_effect)(int which);
 } Renderer;
 
 extern const Renderer vk_renderer;
