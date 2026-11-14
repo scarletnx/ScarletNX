@@ -1427,7 +1427,7 @@ int vk_tex_dma_rows(u64 gva, u32 wb, u32 bh, u32 ox, u32 oy, u32 line_bytes, u32
                     u32 rows_pitch, Surf** hit, int max) {
     int n = 0;
     VkCommandBuffer cb = VK_NULL_HANDLE;
-    for (Surf* t = vk_surf_first(gva); t && n < max; t = t->next) {
+    for (Surf* t = vk_surf_first(gva); t && n < max; t = vk_surf_next(t)) {
         const VkFmt* f = &t->f;
         if (t->is_rt || t->gva != gva || !t->upload_valid || !t->bl || t->bh != bh || t->bd || t->msaa ||
             t->type == VK_IMAGE_VIEW_TYPE_3D || f->depth || f->conv || vk_tc_converts(f) || !f->bpp || !f->bw ||
@@ -2721,7 +2721,7 @@ texture_from_memory:
        as a storage image right after its publish, vk_tex_note_writeback), else its own, which the check below loads
        again as before. A storage or raw lookup keeps its own format, which its views need */
     Surf *same = NULL, *twin = NULL;
-    for (Surf* t = vk_surf_first(gva); t; t = t->next) {
+    for (Surf* t = vk_surf_first(gva); t; t = vk_surf_next(t)) {
         if (t->is_rt || t->gva != gva || t->w != w || t->h != h || t->layers != layers || t->depth3d != d3 ||
             t->levels != levels || t->type != vt || t->bl != (u32)bl || t->bh != bh || t->bd != bd ||
             t->tile_w != tile_w || t->pitch != pitch || t->layer_size != stride || t->msaa != msaa)
