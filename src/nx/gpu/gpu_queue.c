@@ -21,7 +21,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/tracy.h"
 
-enum { GQ_WRITE, GQ_RELEASE, GQ_I2M_BLOCK, GQ_CALL, GQ_SKIP };
+enum { GQ_WRITE, GQ_WRITE_CB, GQ_RELEASE, GQ_I2M_BLOCK, GQ_CALL, GQ_SKIP };
 typedef struct {
     u32 kind;  /* GQ_ */
     u32 bytes; /* the record's bytes, this header and its payload */
@@ -87,6 +87,7 @@ static void gq_run(const GqRecord* r) {
     t_gq_run = 1;
     switch (r->kind) {
         case GQ_WRITE: gmem_write_now(r->gva, payload, r->size); break;
+        case GQ_WRITE_CB: gmem_write_cb_now(r->gva, payload, r->size); break;
         case GQ_RELEASE: gpu_release_write_now(r->gva, payload, (u32)r->size); break;
         case GQ_I2M_BLOCK: {
             GpuI2m t = {0};
@@ -197,11 +198,15 @@ static void gq_commit(const GqRecord* r) {
     if (!g_gq.started) gq_drain(); /* without the renderer thread the records run here */
 }
 int gq_queues(void) { return gpu_on_thread() && !t_gq_run; }
-void gq_write(u64 gva, const void* src, u64 size) {
-    GqRecord* r = gq_put(GQ_WRITE, gva, size);
+/* a write record of kind (GQ_WRITE or GQ_WRITE_CB), or the write now after the queue when it is too big */
+static void gq_write_kind(u32 kind, u64 gva, const void* src, u64 size) {
+    GqRecord* r = gq_put(kind, gva, size);
     if (!r) {
         gq_drain();
-        gmem_write_now(gva, src, size);
+        if (kind == GQ_WRITE_CB)
+            gmem_write_cb_now(gva, src, size);
+        else
+            gmem_write_now(gva, src, size);
         return;
     }
     memcpy(r + 1, src, (size_t)size);
@@ -209,6 +214,8 @@ void gq_write(u64 gva, const void* src, u64 size) {
     gq_recent_add(gva, size, r->fence, g_gq.head, 1);
     gq_commit(r);
 }
+void gq_write(u64 gva, const void* src, u64 size) { gq_write_kind(GQ_WRITE, gva, src, size); }
+void gq_write_cb(u64 gva, const void* src, u64 size) { gq_write_kind(GQ_WRITE_CB, gva, src, size); }
 void gq_release(u64 gva, const void* data, u32 len) {
     GqRecord* r = gq_put(GQ_RELEASE, gva, len);
     if (!r) {
