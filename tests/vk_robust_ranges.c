@@ -3,6 +3,7 @@
 /* vk_cb_range / vk_sb_round: a whole checked step, at least one, within the device's uniform limit */
 #include "nx/gpu/vk/vk.h"
 #include <assert.h>
+VkState g_vk;
 int main(void) {
     g_vk.props.limits.maxUniformBufferRange = 65536;
     /* no robustness2: 16-byte uniform steps and byte-exact storage ranges, as before the feature */

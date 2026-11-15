@@ -4050,6 +4050,13 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     target_include_directories(snx-test-vk-checkpoints PRIVATE "${volk_SOURCE_DIR}")
     target_link_libraries(snx-test-vk-checkpoints PRIVATE Vulkan::Headers)
     add_test(NAME vk_checkpoints COMMAND snx-test-vk-checkpoints)
+    # the ranges a constant buffer, a root table and a storage copy are bound with (gpu/vk/vk.h vk_cb_range,
+    # vk_sb_round): whole robustBufferAccess2 steps, at least one, within maxUniformBufferRange
+    add_executable(snx-test-vk-robust-ranges vk_robust_ranges.c)
+    snx_test_target(snx-test-vk-robust-ranges 11)
+    target_include_directories(snx-test-vk-robust-ranges PRIVATE "${volk_SOURCE_DIR}")
+    target_link_libraries(snx-test-vk-robust-ranges PRIVATE Vulkan::Headers)
+    add_test(NAME vk_robust_ranges COMMAND snx-test-vk-robust-ranges)
     # the renderer's device memory (gpu/vk/devmem.c) over a driver the test plays, which checks each call as the
     # specification reads: alignment, memory types, no byte and no granularity page shared, memory made for a
     # resource alone, whole atoms flushed; the cap of the GPU's own heap, and requests from several threads
