@@ -15,6 +15,10 @@ char* snx_game_ini(const char* folder, const char* name) {
     free(base);
     return path;
 }
+char* snx_game_picks(const char* ini) {
+    size_t n = strlen(ini);
+    return snx_format("%.*s.picks", (int)(n > 4 && !strcmp(ini + n - 4, ".ini") ? n - 4 : n), ini);
+}
 /* key's value in an .ini's text, the last one's, as the runtime reads it: in the text, NULL for none */
 static char* text_value(char* text, const char* key) {
     SnxIni ini;
