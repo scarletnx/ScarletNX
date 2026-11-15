@@ -136,10 +136,6 @@ static int heap_capped(u32 h) { return (int)h == g_devmem.main_heap && g_vk.mem_
 static u64 heap_budget(u32 h) {
     u64 budget = g_vk.has_budget ? g_devmem.drv_budget[h] : g_devmem.mp.memoryHeaps[h].size / 5 * 4;
     if (heap_capped(h)) budget = budget > 2 * DM_MARGIN ? budget - DM_MARGIN : budget / 2;
-    /* vk_heap_budget_mb: the heap of a smaller GPU, for testing what this one has too much memory to show (the
-       requests that find no memory, and what the caches and the allocator do then) */
-    const u64 test = (u64)g_settings.vulkan_heap_budget << 20;
-    if (heap_capped(h) && test && test < budget) budget = test;
     return budget;
 }
 /* a heap's use by every process: the driver's count then, and what this process took and gave back since (lock
@@ -188,7 +184,8 @@ int vk_devmem_init(int bda) {
             g_devmem.main_heap = (int)h;
     /* only the capped heap of a discrete GPU is emptied: on a GPU that shares the system's memory (integrated, or a
        phone's or a Mac's, which snx_vk_memory_model counts as UMA) a block held is system memory, and a move would
-       cost the bandwidth that GPU shares with the CPU for nothing it lacks */
+       cost the bandwidth that GPU shares with the CPU for nothing it lacks. DXVK likewise keeps no budget there
+       (DxvkMemoryAllocator: enforceBudget only on a discrete GPU that is not UMA), and the old behaviour stays */
     g_devmem.drain.on = g_devmem.main_heap >= 0 && heap_capped((u32)g_devmem.main_heap);
     g_devmem.coherent = 1;
     for (u32 t = 0; t < g_devmem.mp.memoryTypeCount; t++) {
@@ -836,7 +833,7 @@ static int drain_can(const Block* k, u32 h) {
    the heap's blocks are past the budget, or when the free space inside its blocks that hold something is more than an
    eighth of their use plus a block. Of its blocks that can be emptied, half full at most, the one with the least in it,
    when the free space in the kind's other blocks is one and a half times that block or more. budget: the caches'
-   (vk_mem_use, which vk_budget_mb and vk_heap_budget_mb lower) */
+   (vk_mem_use, which vk_budget_mb lowers) */
 static u32 drain_pick(u64 budget) {
     if (!g_devmem.drain.on) return 0;
     const u32 h = (u32)g_devmem.main_heap;

@@ -2101,7 +2101,7 @@ void vk_tex_later_frame(void);
 void vk_tex_kind_frame(void);
 #define VK_KIND_FRAME_BLOCKS (1u << 18)
 /* After that, its own submission too: the textures in the block of device memory that is being emptied move to other
-   blocks, DEFRAG_BYTES at most (texture.c). Nothing with vulkan_memory_defrag off */
+   blocks, DEFRAG_BYTES at most (texture.c). Nothing on a GPU that shares the system's memory (devmem.c) */
 void vk_tex_defrag_frame(void);
 /* An owner that can move its allocation (vk_devmem_owner) is a texture (Surf*, whose low bit is clear), or an own
    buffer of the buffer cache, its entry's index tagged in the low bit */
