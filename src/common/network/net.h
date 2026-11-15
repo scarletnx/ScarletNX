@@ -103,6 +103,8 @@ int snx_socket_open(SnxSocket** out, int domain, int type, int protocol);
 int snx_socket_pair(SnxSocket* out[2], int domain, int type, int protocol);
 /* An eventfd: a 64-bit counter read and written as 8 bytes, readable while it isn't 0 */
 int snx_socket_eventfd(SnxSocket** out, uint64_t initial, int semaphore);
+/* An eventfd's counter and kind, for a save state that makes it again: 0, or -SNX_EINVAL for any other socket */
+int snx_socket_event_get(SnxSocket* s, uint64_t* count, int* semaphore);
 SnxSocket* snx_socket_ref(SnxSocket* s);
 void snx_socket_unref(SnxSocket* s); /* the last reference closes the socket */
 int snx_socket_domain(const SnxSocket* s);

@@ -118,3 +118,12 @@ int snx_net_event_open(SnxSocket** out, uint64_t initial, int semaphore) {
     *out = s;
     return 0;
 }
+int snx_socket_event_get(SnxSocket* s, uint64_t* count, int* semaphore) {
+    if (s->ops != &g_event_ops) return -SNX_EINVAL;
+    Event* e = s->impl;
+    snx_lock(&e->lock);
+    *count = e->count;
+    snx_unlock(&e->lock);
+    *semaphore = e->semaphore;
+    return 0;
+}
