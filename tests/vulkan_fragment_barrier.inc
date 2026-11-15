@@ -32,6 +32,12 @@ static void fragment_barrier_clear(GpuChannel* channel, u64 target) {
     memcpy(&r[0x360], color, sizeof color);
     engine_clear(channel, 15 << 2);
 }
+/* a draw with the storage bindings made since the last one was recorded, as render.c counts it: its writes are
+   committed, and it is a draw of its own (g_vk_drawn), which the order tells from the draws after it (vk_lock) */
+static void fragment_barrier_drawn(void) {
+    vk_buf_writable_commit();
+    g_vk_drawn++;
+}
 /* what a barrier from all work orders that the renderer keeps count of (vk_lock) */
 static int fragment_barrier_counted(void) { return vk_buf_order_pending(0) || vk_pages_order_pending(); }
 enum { FB_NONE, FB_COUNTED, FB_IN_PLACE };
@@ -42,7 +48,7 @@ static int fragment_barrier_write(u64 stored) {
     VkBuffer output;
     u64 at;
     int made = vk_buf_copy_writable(stored, 32, &output, &at, 0);
-    if (made) vk_buf_writable_commit();
+    if (made) fragment_barrier_drawn();
     int way = !made                        ? FB_NONE
               : fragment_barrier_counted() ? FB_COUNTED
               : vk_uma_pending(stored, 32) ? FB_IN_PLACE
@@ -84,7 +90,7 @@ static u64 fragment_barrier_passes(GpuChannel* channel, u64 target, u64 stored, 
         fragment_barrier_clear(channel, target);
         vk_lock();
         if (after == FB_AFTER_WRITE && bound)
-            vk_buf_writable_commit();
+            fragment_barrier_drawn();
         else if (after == FB_AFTER_WRITE)
             vk_buf_writable_abort();
         vk_unlock();
