@@ -168,7 +168,8 @@ static void metadata(void) {
     CHECK(m.maxContentLightLevel == 800.0f && m.maxFrameAverageLightLevel == 180.0f);
     CHECK(vk_hdr_metadata_set(device, swapchain, &defaults) && g_set.calls == 2);
     CHECK(g_set.metadata.displayPrimaryRed.x == 0.64f && g_set.metadata.minLuminance == 0.03f);
-    CHECK(g_set.metadata.maxContentLightLevel == 200.0f && g_set.metadata.maxFrameAverageLightLevel == 60.0f);
+    /* the builder's content levels say nothing of the content: not known */
+    CHECK(g_set.metadata.maxContentLightLevel == 0.0f && g_set.metadata.maxFrameAverageLightLevel == 0.0f);
     /* content levels of 0 say "not known", and are sent */
     frame.metadata[10] = frame.metadata[11] = 0;
     CHECK(vk_hdr_metadata_set(device, swapchain, &frame) && g_set.calls == 3 &&
