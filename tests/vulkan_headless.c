@@ -6412,7 +6412,20 @@ static int check_rt_superseded(void) {
     const u64 readbacks = g_vk_rt_readbacks, finishes = g_vk_finishes;
     CHECK(published && published->w == 64 && vk_surf_publish(published));
     const u64 back = g_vk_rt_readbacks - readbacks, waited = g_vk_finishes - finishes;
+    OwnRange owned[4];
+    const u32 owners = own_lookup(cpu + 0x4000 + shift, 2 * layer, owned, 4);
+    u64 taken = 0;
+    for (u32 i = 0; i < owners && i < 4; i++) taken += owned[i].size;
     vk_unlock();
+    /* the old first layer's own bytes are its head, before the new one: its publish takes those, and the new layers,
+       which no publish went under, stay on the GPU */
+    if (owners) {
+        fprintf(stderr,
+                "a target later ones drew partly over: %u owners hold %#llx of the new layers' %#llx bytes after the "
+                "old layer's publish, not 0: only its head of %#llx bytes is its own\n",
+                owners, (unsigned long long)taken, (unsigned long long)(2 * layer), (unsigned long long)shift);
+        return 1;
+    }
     if (back || waited) {
         fprintf(stderr,
                 "a target later ones drew all over: %llu write-backs and %llu finishes for an image published in the "
