@@ -38,6 +38,10 @@
 #else
 #include <ucontext.h>
 #endif
+#if defined(__FreeBSD__)
+#include <sys/types.h>
+#include <sys/umtx.h>
+#endif
 #if defined(__linux__)
 #include <linux/falloc.h>
 #include <linux/fs.h>
@@ -675,9 +679,15 @@ typedef struct {
 static TrapWaitCtx g_trap_wait_ctx[TRAP_WAITERS];
 static void context_frame(void* ctx, TrapWaitCtx* w);
 
+/* A wait while *w is v, and the wake of every waiter on w: a futex on Linux, _umtx_op's private word waits on FreeBSD
+   (both system calls, safe in a signal handler), else a yield. With the yield on FreeBSD the trap thread spun while
+   nothing was posted, and each thread waiting in a trap too: in Mario Kart World's race the trap thread held 44 to 87%
+   of a core of six doing nothing */
 static void trap_futex_wait(u32* w, u32 v) {
 #if defined(__linux__)
     syscall(SYS_futex, w, FUTEX_WAIT_PRIVATE, v, NULL, NULL, 0);
+#elif defined(__FreeBSD__)
+    _umtx_op(w, UMTX_OP_WAIT_UINT_PRIVATE, v, NULL, NULL);
 #else
     (void)w, (void)v;
     sched_yield();
@@ -686,6 +696,8 @@ static void trap_futex_wait(u32* w, u32 v) {
 static void trap_futex_wake(u32* w) {
 #if defined(__linux__)
     syscall(SYS_futex, w, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
+#elif defined(__FreeBSD__)
+    _umtx_op(w, UMTX_OP_WAKE_PRIVATE, INT_MAX, NULL, NULL);
 #else
     (void)w;
 #endif
@@ -916,11 +928,7 @@ static int frozen_over(const u8* p, const u8* e) {
 }
 static void frozen_until_thaw(const u8* p, const u8* e) {
     while (frozen_over(p, e)) {
-#if defined(__linux__)
-        syscall(SYS_futex, &g_frozen, FUTEX_WAIT_PRIVATE, 1, NULL, NULL, 0);
-#else
-        sched_yield();
-#endif
+        trap_futex_wait((u32*)&g_frozen, 1);
     }
 }
 void plat_ww_open(u8* p, u64 size) {
@@ -2170,9 +2178,7 @@ void plat_thaw(void) {
     mprotect(lo, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec);
     __atomic_store_n(&g_frozen, 0, __ATOMIC_SEQ_CST);
     wp_let(lo, size, WP_MAPPED, 1);
-#if defined(__linux__)
-    syscall(SYS_futex, &g_frozen, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
-#endif
+    trap_futex_wake((u32*)&g_frozen);
 }
 /* 1 when the fault at a is a write to the frozen range, which may go on now (after waiting for the thaw). The range
    is kept after the thaw, so a write that faulted just before it is let go once more. So is a protection fault
@@ -2194,11 +2200,7 @@ static int frozen_wait(void* a, int access) {
     }
     t_plat_posix.frz_retried = NULL;
     while (__atomic_load_n(&g_frozen, __ATOMIC_SEQ_CST)) {
-#if defined(__linux__)
-        syscall(SYS_futex, &g_frozen, FUTEX_WAIT_PRIVATE, 1, NULL, NULL, 0);
-#else
-        sched_yield();
-#endif
+        trap_futex_wait((u32*)&g_frozen, 1);
     }
     return 1;
 }
