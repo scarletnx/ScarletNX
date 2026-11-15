@@ -169,10 +169,11 @@ target_link_libraries(snx_vk PUBLIC snx_xxhash snx_vk_common snx_fsr2 PRIVATE sn
 set(snx_fsr2_spv "${PROJECT_BINARY_DIR}/generated/spirv/fsr2_spv.c")
 file(GLOB snx_fsr2_shader_sources CONFIGURE_DEPENDS "${snx_fsr2_api_dir}/shaders/*.glsl" "${snx_fsr2_api_dir}/shaders/*.h")
 add_custom_command(OUTPUT "${snx_fsr2_spv}"
-    COMMAND "${CMAKE_COMMAND}" "-DGLSLANG=${SNX_GLSLANG}" "-DSPIRV_OPT=${SNX_SPIRV_OPT}" "-DSPIRV_VAL=${SNX_SPIRV_VAL}"
+    COMMAND "${CMAKE_COMMAND}" "-DGLSLANG=${SNX_GLSLANG}" "-DSPIRV_OPT=$<TARGET_FILE:snx-spirv-opt>"
+            "-DSPIRV_VAL=$<TARGET_FILE:snx-spirv-val>"
             "-DSHADERS=${snx_fsr2_api_dir}/shaders" "-DWORK=${PROJECT_BINARY_DIR}/generated/spirv/fsr2"
             "-DOUT=${snx_fsr2_spv}" -P "${PROJECT_SOURCE_DIR}/cmake/fsr2_shaders.cmake"
-    DEPENDS "${PROJECT_SOURCE_DIR}/cmake/fsr2_shaders.cmake" ${snx_fsr2_shader_sources}
+    DEPENDS "${PROJECT_SOURCE_DIR}/cmake/fsr2_shaders.cmake" ${snx_fsr2_shader_sources} snx-spirv-opt snx-spirv-val
     COMMENT "Compiling FSR 2.2.1's passes to SPIR-V"
     VERBATIM)
 set(snx_fsr2_amd "${snx_fsr2_api_dir}/ffx_fsr2.cpp" "${snx_fsr2_api_dir}/ffx_assert.cpp"

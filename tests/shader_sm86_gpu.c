@@ -1336,7 +1336,8 @@ static int tensor_match(u32 k, u32 h, u32 w, const Expect* e, int bits) {
    as RADV does, or in two of 32 with warp32), translated with or without quad operations, the mixed dot product and
    the device's cooperative matrices (coop: a mask of their shapes, 0 off, in subgroups of 32 only), on one set of
    matrices */
-static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, u32 coop, int pairs, int exact) {
+static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, u32 coop, int pairs, int astat,
+                           int exact) {
     int stage = pairs == 2; /* pairs 2: A and B through a warp's slot of shared memory (g_spirv_translate.hmma_stage) */
     static Prog p;
     static u32 in[INVOCATIONS * 8], want[INVOCATIONS * TENSOR_OUT], got[INVOCATIONS * TENSOR_OUT];
@@ -1371,7 +1372,9 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, u
     g_spirv_translate.half_flush = g->half_flush;
     g_spirv_translate.hmma_coop = coop ? g->coop : 0, g_spirv_translate.hmma_coop_shapes = coop, g_spirv_translate.hmma_pairs = pairs == 1;
     g_spirv_translate.hmma_stage = stage ? 16384 : 0; /* every device's maxComputeSharedMemorySize is at least that */
+    g_spirv_translate.hmma_astat = astat;
     u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
+    g_spirv_translate.hmma_astat = 0;
     g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was, g_spirv_translate.float16 = f16_was;
     g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_shapes = shapes_was, g_spirv_translate.hmma_pairs = pairs_was;
     g_spirv_translate.hmma_stage = stage_was;
@@ -1414,7 +1417,8 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, u
     printf("tensor: workgroups of %u, A by %s, B by %s, %s, %s sums: %u instructions, %u outputs x %u invocations "
            "(subgroups of %u%s), %u differ\n",
            local,
-           coop || stage ? "staging"
+           astat         ? "its lane (A-stationary)"
+           : coop || stage ? "staging"
            : quad        ? "quad broadcasts"
                          : "shuffles",
            coop || stage ? "staging"
@@ -1442,16 +1446,17 @@ static int run_tensor(void) {
     for (int fallback = 0; fallback < 2; fallback++)
         for (u32 run = 0; run < 3; run++) { /* 32, 64, 64 in subgroups of 32 */
             if (run == 2 && !g.warp32) continue;
-            for (int pairs = 0; pairs < 3; pairs++) /* each lane's gather, pairs of lanes, staged */
+            /* each lane's gather, pairs of lanes, staged, then A-stationary with B by shuffles and staged */
+            for (int form = 0; form < 5; form++)
                 for (int exact = 1; exact >= 0; exact--)
                     ok &= run_tensor_with(&g, run ? 64 : 32, run == 2, !fallback && g.quad, !fallback && g.mixed_dot, 0,
-                                          pairs, exact);
+                                          form < 3 ? form : form == 4 ? 2 : 0, form >= 3, exact);
         }
     for (u32 shape = 0; shape < 4 && g.coop; shape++)
         if (g.coop_shapes & (1u << shape))
             for (u32 run = 0; run < 2; run++)
                 for (int exact = 1; exact >= 0; exact--)
-                    ok &= run_tensor_with(&g, run ? 64 : 32, 1, g.quad, g.mixed_dot, 1u << shape, 0, exact);
+                    ok &= run_tensor_with(&g, run ? 64 : 32, 1, g.quad, g.mixed_dot, 1u << shape, 0, 0, exact);
     vkDestroyDevice(g.device, NULL);
     vkDestroyInstance(g.instance, NULL);
     return ok;
@@ -1552,11 +1557,12 @@ static int cmp_double(const void* a, const void* b) {
    (g_spirv_translate.hmma_stage), the device's cooperative matrices (g_spirv_translate.hmma_coop), and f16 half sums
    (g_spirv_translate.hmma_f16). A form the device cannot take is skipped: coop without the matrices, half where the mixed dot
    product already sums two products an instruction */
-static const char* const bench_forms[] = {"gather", "pairs", "stage", "coop", "half"};
+static const char* const bench_forms[] = {"gather", "pairs", "stage", "coop", "half", "astat", "astat-stage"};
 #define BENCH_FORMS (sizeof bench_forms / sizeof *bench_forms)
 static void bench_form(u32 form, const Gpu* g) {
     g_spirv_translate.hmma_pairs = form == 1;
-    g_spirv_translate.hmma_stage = form == 2 ? 16384 : 0;
+    g_spirv_translate.hmma_stage = form == 2 || form == 6 ? 16384 : 0;
+    g_spirv_translate.hmma_astat = form == 5 || form == 6;
     g_spirv_translate.hmma_coop = form == 3 ? g->coop : 0;
     g_spirv_translate.hmma_coop_shapes = form == 3 ? g->coop_shapes : 0;
     g_spirv_translate.hmma_f16 = form == 4;

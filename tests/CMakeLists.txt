@@ -917,19 +917,21 @@ snx_test_target(snx-test-spirv-opt-fold 99)
 target_include_directories(snx-test-spirv-opt-fold PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME spirv_opt_fold COMMAND snx-test-spirv-opt-fold)
 
-# Validate the direct writer against SPIRV-Tools when the system tools are installed.
-if(SNX_BUILD_NX)
-    find_program(SNX_SPIRV_VAL spirv-val)
-    find_program(SNX_SPIRV_DIS spirv-dis)
-    if(SNX_SPIRV_VAL AND SNX_SPIRV_DIS AND Python3_Interpreter_FOUND)
+# Validate the direct writer against SPIRV-Tools (cmake/spirv_tools.cmake)
+if(SNX_BUILD_NX AND Python3_Interpreter_FOUND)
+    include("${PROJECT_SOURCE_DIR}/cmake/spirv_tools.cmake")
+    if(TARGET snx-spirv-dis)
         add_executable(snx-test-spirv-emitter spirv_emitter.c spirv_emitter_fixture.c
             "${PROJECT_SOURCE_DIR}/src/common/utilities/spirv_emit.c")
         snx_test_target(snx-test-spirv-emitter 11)
                 add_test(NAME spirv_emitter COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/spirv_emitter_test.py"
-            --generator $<TARGET_FILE:snx-test-spirv-emitter> --validator "${SNX_SPIRV_VAL}" --disassembler "${SNX_SPIRV_DIS}")
+            --generator $<TARGET_FILE:snx-test-spirv-emitter> --validator $<TARGET_FILE:snx-spirv-val>
+            --disassembler $<TARGET_FILE:snx-spirv-dis>)
     else()
-        message(STATUS "Skipping spirv_emitter: Python3, spirv-val, and spirv-dis are required")
+        message(STATUS "Skipping spirv_emitter: spirv-dis is required")
     endif()
+elseif(SNX_BUILD_NX)
+    message(STATUS "Skipping spirv_emitter: Python 3 is required")
 endif()
 
 add_executable(snx-test-arm-decode arm_decode.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/rt_helpers.c")
@@ -2193,6 +2195,11 @@ add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "
 # CPM_USE_LOCAL_PACKAGES takes from the system the packages added with snx_cpm_local_package alone (cmake/cpm_local.cmake)
 add_test(NAME cpm_local COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCPM=${cpm_file}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpm-local-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/cpm_local_test.cmake")
+# where spirv-opt, spirv-val and spirv-dis come from (cmake/spirv_tools.cmake): the fake tools are shell scripts
+if(NOT CMAKE_HOST_WIN32)
+    add_test(NAME spirv_tools COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCC=${CMAKE_C_COMPILER}"
+             "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/spirv-tools-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/spirv_tools_test.cmake")
+endif()
 # SNX_SYSTEM_SDL3 takes a system SDL3 from 3.4.12, and says what it found where it takes none (cmake/system_sdl3.cmake)
 add_test(NAME system_sdl3 COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/system-sdl3-test" "-DGENERATOR=${CMAKE_GENERATOR}"
@@ -3913,7 +3920,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     endif()
     add_test(NAME shader_structure COMMAND snx-test-shader-structure)
     # the SM86 frontend (gpu/shader/sm86.h): the decoder on words made by NAK's encoding rules, the search for
-    # programs, and small translations, which spirv-val checks when it is on PATH (shader_sm86_test.py, which passes it
+    # programs, and small translations, which spirv-val checks (shader_sm86_test.py, which passes it
     # each module as an argument: cmd.exe refused the quoted command system() gave it)
     add_executable(snx-test-shader-sm86 shader_sm86.c support/spv_eval.c)
     snx_test_target(snx-test-shader-sm86 23)
@@ -3921,9 +3928,10 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     if(NOT WIN32)
         target_link_libraries(snx-test-shader-sm86 PRIVATE m)
     endif()
-    if(SNX_SPIRV_VAL AND Python3_Interpreter_FOUND)
+    if(Python3_Interpreter_FOUND)
+        include("${PROJECT_SOURCE_DIR}/cmake/spirv_tools.cmake")
         add_test(NAME shader_sm86 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/shader_sm86_test.py"
-                 --test $<TARGET_FILE:snx-test-shader-sm86> --validator "${SNX_SPIRV_VAL}")
+                 --test $<TARGET_FILE:snx-test-shader-sm86> --validator $<TARGET_FILE:snx-spirv-val>)
     else()
         add_test(NAME shader_sm86 COMMAND snx-test-shader-sm86 "${CMAKE_CURRENT_BINARY_DIR}")
     endif()

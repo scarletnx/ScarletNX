@@ -788,16 +788,16 @@ level's edge and a mip tail share nothing. `vk_sparse_share=0` gives each block 
 Nothing compiled is checked in. `astc_bc7.comp` is built twelve times: the two passes of the full and of the fast
 build, mode 6 alone and the quick build, each with its dot products spelled out (Vulkan 1.1) and as SPIR-V's packed
 one (Vulkan 1.3).
-`cmake/glsl.cmake` compiles `astc.comp` at build time with
-`glslangValidator -V --target-env vulkan1.1 -O -g0 --spirv-val`, into `build/generated/spirv/astc_spv.c`, which
-holds the words. `nx/gpu/texture/astc_spv.h`, which the build writes beside it (`build/generated/include`), declares
+`cmake/glsl.cmake` compiles `astc.comp` at build time with `glslangValidator -V --target-env vulkan1.1 -g0`, then
+SPIRV-Tools' `spirv-opt -O` and `spirv-val`, into `build/generated/spirv/astc_spv.c`, which holds the words.
+`nx/gpu/texture/astc_spv.h`, which the build writes beside it (`build/generated/include`), declares
 them (`astc_spv` and `astc_spv_size`, in bytes). glslang's
 depfile makes an edit to `astc_decode.glsl` rebuild it too.
 
 glslangValidator is KhronosGroup's glslang 16.6.0 release for the host, a CPM package pinned by its SHA-256, on Linux
 x86-64, Windows x86-64 and macOS. Other hosts (FreeBSD, Linux on ARM) use the one on `PATH`, from the system's glslang
-package, and `-DSNX_GLSLANG=path` picks any. The release has the SPIR-V validator and optimizer built in, so no
-separate SPIRV-Tools is needed.
+package, and `-DSNX_GLSLANG=path` picks any. spirv-opt and spirv-val are the SPIRV-Tools release the build pins
+(`cmake/spirv_tools.cmake`).
 
 ## Tests
 

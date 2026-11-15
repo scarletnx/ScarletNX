@@ -124,20 +124,21 @@ if(BUILD_TESTING)
         add_test(NAME runtime_game_copy COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
                  -P "${PROJECT_SOURCE_DIR}/tests/game_copy.cmake")
     endif()
-    find_program(SNX_SPIRV_VAL spirv-val)
-    find_program(SNX_SPIRV_DIS spirv-dis)
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND) # scarletnx --mcp over stdio (runtime/driver/mcp.c)
         add_test(NAME mcp COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/mcp_test.py"
                  $<TARGET_FILE:scarletnx>)
     endif()
-    if(SNX_SPIRV_VAL AND SNX_SPIRV_DIS AND Python3_Interpreter_FOUND)
+    if(Python3_Interpreter_FOUND)
+        include("${PROJECT_SOURCE_DIR}/cmake/spirv_tools.cmake")
+    endif()
+    if(TARGET snx-spirv-dis AND Python3_Interpreter_FOUND)
         add_test(NAME shader_direct COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/shader_direct_test.py"
-            --generator $<TARGET_FILE:snx-test-shader-direct> --validator "${SNX_SPIRV_VAL}"
-            --disassembler "${SNX_SPIRV_DIS}"
+            --generator $<TARGET_FILE:snx-test-shader-direct> --validator $<TARGET_FILE:snx-spirv-val>
+            --disassembler $<TARGET_FILE:snx-spirv-dis>
             --regressions $<TARGET_FILE:snx-test-shader-direct-regressions>)
     else()
-        message(STATUS "Skipping shader_direct: Python3, spirv-val, and spirv-dis are required")
+        message(STATUS "Skipping shader_direct: Python 3 and spirv-dis are required")
     endif()
 endif()
 

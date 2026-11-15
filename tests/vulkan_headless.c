@@ -5172,15 +5172,17 @@ static int check_dma_bands(void) {
    VK_FRAME_RING_CAPS allocations to its rings, ran only at a draw's start: the copy engine's upload of an 8192x8192
    RGBA8 texture's levels wrote 1365 MiB to one frame's rings, and a phone's system ended the app. The frame ends
    between two bands now: 896 lines of 512 bytes into block linear, 448 KiB of source and as much of the
-   destination's own bytes staged, with the cap lowered to 64 KiB (bands of 16 KiB of rows, a frame's rings 256 KiB),
-   go over several frames or, where the source goes through the stream (cmd.c's vk_stream_upload), over several
-   submissions of one frame, the rings stay within the two slots' share, and the copy is the CPU's */
+   destination's own bytes staged, with the cap lowered to 32 KiB (bands of 8 KiB of rows, a frame's rings 128 KiB),
+   go over several frames, the rings stay within the two slots' share, and the copy is the CPU's. Where the source
+   goes through the stream (cmd.c's vk_stream_upload), the frame's rings still take half of the bytes, 448 KiB: three
+   frames, against six with the rings alone */
 static int check_dma_bands_frames(void) {
     const u64 cap = g_vk.alloc_cap;
     GpuDmaOp o = {0};
+    const u64 low = 32 << 10;
     vk_finish();
     vk_frame_next();
-    g_vk.alloc_cap = 64 << 10;
+    g_vk.alloc_cap = low;
     o.multi = 1;
     o.width = o.line_in = o.line_out = 512;
     o.lines = 896;
@@ -5200,11 +5202,12 @@ static int check_dma_bands_frames(void) {
            (unsigned long long)(bands1 - bands0), (unsigned long long)ended, (unsigned long long)went,
            (unsigned long long)(grown >> 10));
     CHECK(!failed && bands1 - bands0 >= 8);
-    /* with the stream, the frame's rings and the stream each take half of the bytes here, and a frame's end sends
-       the stream's too: two ends or submissions at least. With the frame's rings alone (vk_stream_ring=0), two frames
-       as before the stream. The rings' growth below is what must hold */
-    CHECK(g_settings.stream_ring ? ended + went >= 2 : ended >= 2);
-    CHECK(grown <= (u64)(VK_FRAMES + 1) * VK_FRAME_RING_CAPS * (64 << 10));
+    /* the frames the bands end, with the stream or without it (vk_stream_ring=0). The submissions are not theirs to
+       count: one comes after a millisecond of recording, which a fast GPU leaves none of here, and the stream's own
+       comes at a frame's worth of its bytes since the last submission of any kind, which one of those can put off.
+       The rings' growth below is what must hold */
+    CHECK(ended >= 2);
+    CHECK(grown <= (u64)(VK_FRAMES + 1) * VK_FRAME_RING_CAPS * low);
     return 0;
 }
 
@@ -5597,13 +5600,12 @@ static int check_blit_bands(void) {
             (unsigned long long)asked, (unsigned long long)((512 << 10) / VK_PART_SHARE));
         failed = 1;
     }
-    /* and a frame ends between two bands once its rings hold VK_FRAME_RING_CAPS allocations (256 KiB here), as
-       between a copy engine's (check_dma_bands_frames), or a submission goes where the bands' source is the stream's:
-       the three blits end 3 frames with the frame's rings alone (vk_stream_ring=0), or a frame and 3 submissions,
-       and none without it */
+    /* and a frame ends between two bands once its rings hold VK_FRAME_RING_CAPS allocations (128 KiB here), as
+       between a copy engine's (check_dma_bands_frames): the three blits end frames with the stream or without it
+       (vk_stream_ring=0), and none without the check. Not the submissions, as there */
     vk_finish();
     vk_frame_next();
-    g_vk.alloc_cap = 64 << 10;
+    g_vk.alloc_cap = 32 << 10;
     u64 frames = vk_frame_id(), went0 = vk_submits(VK_SUB_PERIODIC);
     failed |= blit_case(bl_side(0x1000, 128 * 4, 256, 2, 0, 0), bl_side(0x80000, 128 * 4, 256, 1, 0, 0), 4, 9, 30, 100,
                         200, 128, 256, 0);
@@ -5615,7 +5617,7 @@ static int check_blit_bands(void) {
     g_vk.alloc_cap = cap;
     printf("blit bands: %llu frames ended and %llu submissions went between bands\n", (unsigned long long)ended,
            (unsigned long long)went);
-    CHECK(!failed && (g_settings.stream_ring ? ended + went >= 2 : ended >= 2));
+    CHECK(!failed && ended >= 2);
     return 0;
 }
 
@@ -6221,7 +6223,7 @@ static int check_rt_watch_holder(void) {
         const u64 t = targets[k];
         CHECK(own_watched(HOLD_A + t, 0x1000));
         VkRtWatchStats w0 = g_vk_rt_watch;
-        u64 lands = own_landings();
+        u64 lands = own_landings(), faults = own_faults();
         vk_lock();
         if (!k) {
             u8* p = gmem_ptr(HOLD_GA + t, sizeof got);
@@ -6245,6 +6247,15 @@ static int check_rt_watch_holder(void) {
            thread does that work while the copy waits, so the compiler must not read the counters before the copy */
         memcpy(got, GP(HOLD_A + t), sizeof got);
         __atomic_signal_fence(__ATOMIC_SEQ_CST);
+        if (!(g_vk_rt_watch.hits == w0.hits + 1 && own_landings() > lands && !own_trapped(HOLD_A + t, 0x1000)))
+            fprintf(stderr,
+                    "render target watch, target %d: %llu faults, %llu hits, %llu landings, %llu publishes and %llu "
+                    "arms from the holder's read on; its page is %s, watched %d\n",
+                    k, (unsigned long long)(own_faults() - faults), (unsigned long long)(g_vk_rt_watch.hits - w0.hits),
+                    (unsigned long long)(own_landings() - lands),
+                    (unsigned long long)(g_vk_rt_watch.publishes - w0.publishes),
+                    (unsigned long long)(g_vk_rt_watch.arms - w0.arms),
+                    own_trapped(HOLD_A + t, 0x1000) ? "trapped" : "open", own_watched(HOLD_A + t, 0x1000));
         CHECK(g_vk_rt_watch.hits == w0.hits + 1 && own_landings() > lands && !own_trapped(HOLD_A + t, 0x1000));
         for (u32 i = 0; i < sizeof got; i += 4) CHECK(!memcmp(got + i, px_blue, 4));
     }

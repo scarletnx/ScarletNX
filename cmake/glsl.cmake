@@ -42,27 +42,9 @@ if(NOT SNX_GLSLANG)
         "glslangValidator to compile shaders with (empty: the pinned release, or PATH)" FORCE)
 endif()
 
-# spirv-opt and spirv-val: SNX_SPIRV_OPT and SNX_SPIRV_VAL when set, else the ones on PATH, from the system's
-# SPIRV-Tools package (spirv-tools), which no glslang release carries. spirv-val is looked for beside spirv-opt first
-set(SNX_SPIRV_OPT "" CACHE FILEPATH "spirv-opt to optimize shaders with (empty: the one on PATH)")
-set(SNX_SPIRV_VAL "" CACHE FILEPATH "spirv-val to validate shaders with (empty: the one beside spirv-opt, or on PATH)")
-if(NOT SNX_SPIRV_OPT)
-    find_program(snx_spirv_opt_path NAMES spirv-opt)
-    if(NOT snx_spirv_opt_path)
-        message(FATAL_ERROR "spirv-opt not found: install SPIRV-Tools (the spirv-tools package), or set SNX_SPIRV_OPT")
-    endif()
-    set(SNX_SPIRV_OPT "${snx_spirv_opt_path}" CACHE FILEPATH
-        "spirv-opt to optimize shaders with (empty: the one on PATH)" FORCE)
-endif()
-if(NOT SNX_SPIRV_VAL)
-    get_filename_component(snx_spirv_tools_dir "${SNX_SPIRV_OPT}" DIRECTORY)
-    find_program(snx_spirv_val_path NAMES spirv-val HINTS "${snx_spirv_tools_dir}")
-    if(NOT snx_spirv_val_path)
-        message(FATAL_ERROR "spirv-val not found: install SPIRV-Tools (the spirv-tools package), or set SNX_SPIRV_VAL")
-    endif()
-    set(SNX_SPIRV_VAL "${snx_spirv_val_path}" CACHE FILEPATH
-        "spirv-val to validate shaders with (empty: the one beside spirv-opt, or on PATH)" FORCE)
-endif()
+# spirv-opt and spirv-val: SPIRV-Tools' release the build pins, or the ones SNX_SPIRV_OPT and SNX_SPIRV_VAL name
+# (cmake/spirv_tools.cmake)
+include("${CMAKE_CURRENT_LIST_DIR}/spirv_tools.cmake")
 
 # snx_glsl_spirv(target SOURCE file.comp NAME symbol HEADER include/path.h [TARGET vulkan1.x] [DEFINES MACRO[=value]...])
 # Compiles SOURCE (its #includes followed through glslang's depfile) for Vulkan 1.1 (or TARGET) without debug information,
@@ -101,11 +83,11 @@ function(snx_glsl_spirv target)
         COMMENT "Compiling ${shown} to SPIR-V (${arg_NAME})"
         VERBATIM)
     add_custom_command(OUTPUT "${out}"
-        COMMAND "${SNX_SPIRV_OPT}" -O --target-env=${arg_TARGET} "${spv}" -o "${opt}"
-        COMMAND "${SNX_SPIRV_VAL}" --target-env ${arg_TARGET} "${opt}"
+        COMMAND snx-spirv-opt -O --target-env=${arg_TARGET} "${spv}" -o "${opt}"
+        COMMAND snx-spirv-val --target-env ${arg_TARGET} "${opt}"
         COMMAND "${CMAKE_COMMAND}" -DWORDS=${opt} -DOUT=${out} -DNAME=${arg_NAME} -DHEADER=${arg_HEADER}
                 -DSOURCE=${shown} -P "${PROJECT_SOURCE_DIR}/cmake/spirv_source.cmake"
-        DEPENDS "${spv}" "${PROJECT_SOURCE_DIR}/cmake/spirv_source.cmake"
+        DEPENDS "${spv}" "${PROJECT_SOURCE_DIR}/cmake/spirv_source.cmake" snx-spirv-opt snx-spirv-val
         COMMENT "Optimizing ${shown}'s SPIR-V (${arg_NAME})"
         VERBATIM)
     target_sources(${target} PRIVATE "${out}")
