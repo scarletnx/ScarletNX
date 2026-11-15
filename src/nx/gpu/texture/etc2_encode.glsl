@@ -57,18 +57,25 @@ uint et_dist(uint i, int r, int g, int b) {
     int db = clamp(b, 0, 255) - et_ch(p, 2u);
     return uint(dr * dr + dg * dg + db * db);
 }
-/* the squared distance of texel i from a colour word */
-uint et_dist_word(uint i, uint c) {
-    return et_dist(i, et_ch(c, 0u), et_ch(c, 1u), et_ch(c, 2u));
+/* the dot product of two words' R, G and B */
+int et_dot(uint p, uint c) {
+    return et_ch(p, 0u) * et_ch(c, 0u) + et_ch(p, 1u) * et_ch(c, 1u) + et_ch(p, 2u) * et_ch(c, 2u);
 }
-/* the nearest of the four colours c0 to c3 to texel i, the first of equal ones, (error << 2) | index; index 2 and no
-   error for a transparent texel of a see-through block, whose opaque ones never take index 2. The words order as
-   their errors, then as their indices, so the first of the least is their minimum */
+/* The nearest of the four colours c0 to c3 (RGB words as they decode) to texel i, the first of equal ones:
+   (squared error << 2) | index; index 2 and no error for a transparent texel of a see-through block, whose opaque
+   ones never take index 2. A texel p's squared distance from c is |p|^2 + |c|^2 - 2 p.c, and |p|^2 is the same for the
+   four, so the nearest is the least of |c|^2 - 2 p.c: three multiply-adds a colour, its |c|^2 the same for every
+   texel, where the distance was three differences and three squares. 390150 (2 x 3 x 255^2) keeps those non-negative
+   and under 2^20. With the index in the two bits below, the words order as the errors, then as the indices, so the
+   first of the least is the minimum of four words */
 uint et_near4(uint i, uint c0, uint c1, uint c2, uint c3, bool see) {
     if (see && et_clear(i)) return 2u;
-    const uint e01 = min(et_dist_word(i, c0) << 2, (et_dist_word(i, c1) << 2) | 1u);
-    const uint e3 = min(e01, (et_dist_word(i, c3) << 2) | 3u);
-    return see ? e3 : min(e3, (et_dist_word(i, c2) << 2) | 2u);
+    const uint p = tx_px[i];
+    const uint e01 = min(uint(et_dot(c0, c0) - 2 * et_dot(p, c0) + 390150) << 2,
+                         (uint(et_dot(c1, c1) - 2 * et_dot(p, c1) + 390150) << 2) | 1u);
+    uint e = min(e01, (uint(et_dot(c3, c3) - 2 * et_dot(p, c3) + 390150) << 2) | 3u);
+    if (!see) e = min(e, (uint(et_dot(c2, c2) - 2 * et_dot(p, c2) + 390150) << 2) | 2u);
+    return (((e >> 2) + uint(et_dot(p, p)) - 390150u) << 2) | (e & 3u);
 }
 /* texel i's place in the index bits: ETC2 numbers its texels down the columns */
 uint et_pos(uint i) { return (i & 3u) * 4u + (i >> 2); }
@@ -94,26 +101,18 @@ uint et1_texel(uint flip, uint s, uint j) {
     return flip != 0u ? (s << 3) | j : ((j >> 1) << 2) | (s << 1) | (j & 1u);
 }
 
-/* the base and table et1_pick compares texels with (et1_setup): the base, its table's two modifiers (a 0 in a
-   see-through block), whether no channel of the base plus a modifier clamps, and else the four colours as they decode */
-int et1_r;
-int et1_g;
-int et1_b;
+/* the table et1_pick compares texels with (et1_setup): its two modifiers (a 0 in a see-through block) and the four
+   colours of the base and its modifiers as they decode */
 int et1_a;
 int et1_bb;
-bool et1_free;
 uint et1_c0;
 uint et1_c1;
 uint et1_c2;
 uint et1_c3;
 void et1_setup(int r, int g, int b, uint t, bool see) {
     const int a = tc_byte(ETC1_A0, ETC1_A1, t), B = tc_byte(ETC1_B0, ETC1_B1, t);
-    et1_r = r;
-    et1_g = g;
-    et1_b = b;
     et1_a = see ? 0 : a;
     et1_bb = B;
-    et1_free = min(min(r, g), b) >= B && max(max(r, g), b) + B <= 255;
     et1_c0 = et1_word(r + et1_a, g + et1_a, b + et1_a);
     et1_c1 = et1_word(r + B, g + B, b + B);
     et1_c2 = et1_word(r - a, g - a, b - a);
@@ -125,30 +124,8 @@ int et1_m(uint k) {
     const int m = (k & 1u) != 0u ? et1_bb : et1_a;
     return k >= 2u ? -m : m;
 }
-/* The index of texel i nearest et1_setup's base with its table's modifiers, in the low two bits, and that index's
-   squared error (et_dist of its colour) above them; index 2 and no error for a transparent texel of a see-through
-   block.
-
-   A modifier m adds the same to the three channels, so where none of them clamps, a texel p's squared distance from
-   the base plus m is its distance from the base, D, plus m (3 m - 2 s), s being p's channels summed less the base's:
-   the nearest index is a function of s alone, and that function is a sign and one comparison. Of a and -a, and of b
-   and -b, the one of s's sign is nearer (s = 0: the first, as the search keeps), and b is nearer than a once
-   2 |s| > 3 (a + b); a see-through block's index 0 adds 0, which is a = 0 there, and its index 2 is never taken. The
-   search over the four, first of equal ones kept, picks the same index (ucas: the clamp of base + m is base + m for
-   every base and modifier the condition admits, exhaustively; the expansion of the distance, by algebra mod 2^32; the
-   index, exhaustively over every s, table and see; ucas's work/etc1_index.ucas). Where a channel can clamp (a base
-   within b of 0 or of 255) the four colours are compared as they decode */
+/* the index of texel i nearest et1_setup's base with its table's modifiers, and its squared error (et_near4) */
 uint et1_pick(uint i, bool see) {
-    if (see && et_clear(i)) return 2u;
-    if (et1_free) {
-        const uint p = tx_px[i];
-        const int dr = et1_r - et_ch(p, 0u), dg = et1_g - et_ch(p, 1u), db = et1_b - et_ch(p, 2u);
-        const int s = -(dr + dg + db), as = abs(s);
-        const bool big = 2 * as > 3 * (et1_a + et1_bb);
-        const int m = big ? et1_bb : et1_a;
-        const uint k = big ? (s < 0 ? 3u : 1u) : (s < 0 && !see ? 2u : 0u);
-        return (uint(dr * dr + dg * dg + db * db + m * (3 * m - 2 * as)) << 2) | k;
-    }
     return et_near4(i, et1_c0, et1_c1, et1_c2, et1_c3, see);
 }
 /* the error of subblock s's opaque texels with et1_setup's base and table */
