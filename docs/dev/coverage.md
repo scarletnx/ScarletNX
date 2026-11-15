@@ -22,6 +22,9 @@
   * [What the log says is missing](#what-the-log-says-is-missing)
   * [The static censuses](#the-static-censuses)
   * [Closing a gap](#closing-a-gap)
+* [gcov and GCC](#gcov-and-gcc)
+* [Other hosts](#other-hosts)
+* [Pitfalls](#pitfalls)
 
 [Development](development.md) · [edenprobe](edenprobe.md) · [build](build.md) · [profiling](profiling.md).
 
@@ -31,7 +34,7 @@ exercises, and which nothing does. Those last are the *unaccounted-for* paths: c
 check, so a bug in it shows up first in a player's game.
 
 The examples use LLVM's source-based coverage (`clang -fprofile-instr-generate -fcoverage-mapping`, `llvm-profdata`,
-`llvm-cov`). gcov and GCC gives the GCC route. The numbers quoted are from a FreeBSD 15.1 machine
+`llvm-cov`). [gcov and GCC](#gcov-and-gcc) gives the GCC route. The numbers quoted are from a FreeBSD 15.1 machine
 with Clang 23, at `origin/main` of 2026-11-15; yours will differ by commit and host.
 
 Profiles, reports and the recompiled programs they came from stay local, like the games: keep them in the
@@ -369,3 +372,78 @@ candidate for a check.
   (`graphics`) or behind a setting the baseline leaves at one value.
 - **Nothing**, when the path is deliberate: write down why, so the next survey does not ask again.
 
+## gcov and GCC
+
+GCC's coverage (`--coverage`, `.gcno` beside each object at build time, `.gcda` written at exit) works too, with two
+differences:
+
+1. **No continuous mode.** The counters are written by an atexit handler, which `_exit` skips. A preloaded shim that
+   calls `__gcov_dump` before `_exit` writes them:
+
+   ```c
+   /* dump_on_exit.c: cc -shared -fPIC -O2 dump_on_exit.c -o dump_on_exit.so -ldl */
+   #define _GNU_SOURCE
+   #include <dlfcn.h>
+   #include <unistd.h>
+   void _exit(int code) {
+       void (*dump)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "__gcov_dump");
+       void (*real)(int) = (void (*)(int))dlsym(RTLD_NEXT, "_exit");
+       if (dump) dump();
+       real(code);
+       for (;;) {}
+   }
+   ```
+
+   `dlsym` finds `__gcov_dump` only in a program that exports its symbols: link with `-rdynamic`
+   (`-DCMAKE_EXE_LINKER_FLAGS="--coverage -rdynamic"`). Run with `LD_PRELOAD=$PWD/dump_on_exit.so`. A process that
+   is killed or crashes still writes nothing. The same shim does not work for LLVM's `__llvm_profile_write_file`,
+   which is hidden; use continuous mode there.
+2. **One set of files.** Every process writes into the same `.gcda` files in the build folder (their absolute
+   paths are compiled in), merging under a lock, and a later run adds to an earlier one. Delete them before each
+   campaign (`find build/gcov -name '*.gcda' -delete`), and use `GCOV_PREFIX`/`GCOV_PREFIX_STRIP` to send one run's
+   files elsewhere.
+
+```sh
+cmake -S . -B build/gcov -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
+    -DSNX_DEPLOY=OFF -DSNX_JEMALLOC=OFF -DCMAKE_C_FLAGS=--coverage -DCMAKE_CXX_FLAGS=--coverage \
+    "-DCMAKE_EXE_LINKER_FLAGS=--coverage -rdynamic"
+cmake --build build/gcov --target scarletnx
+LD_PRELOAD=$PWD/dump_on_exit.so python3 scripts/edenprobe.py run --runtime build/gcov/scarletnx ...
+gcovr -r . build/gcov --exclude '.cache/' --html-details work/cov/gcov/index.html
+lcov -c -d build/gcov -o work/cov/gcov.info && genhtml work/cov/gcov.info -o work/cov/gcov-html
+```
+
+`clang --coverage` writes the same gcov format, read with `llvm-cov gcov`. Prefer source-based coverage with
+Clang: its regions are exact to the expression, it survives `_exit` and crashes, and each process gets its own
+file.
+
+## Other hosts
+
+- **Linux.** As above.
+- **macOS.** Continuous mode is native on Darwin, without `-runtime-counter-relocation`. Not tried here.
+- **Windows.** `plat_win32.c` leaves through `_exit` too. Use clang-cl with `-fprofile-instr-generate
+  -fcoverage-mapping` and `%c` in `LLVM_PROFILE_FILE`, if your LLVM's profile runtime supports continuous mode on
+  Windows; otherwise only the processes that return from `main` write a profile. Not tried here.
+- **Android.** The app's process writes only where it may, so `LLVM_PROFILE_FILE` must name a folder of the app's
+  own, and the `.profraw` files come back with `adb`. Not tried here. `scarletnx-android` on a desktop host
+  (edenprobe's `--apk`) collects as the desktop does.
+- **The 3DS, Vita, NDS and GBA drivers** are binaries of their own (`scarletnx-3ds`, ...) built in the same folder
+  and instrumented by the same flags: run them with the variable and pass each binary as an `-object`.
+
+## Pitfalls
+
+- **Counts are not times.** Coverage says which code ran and how often. It says nothing about speed: an instrumented
+  build is slower, so never time it ([Profiling](profiling.md)).
+- **Counts race.** The counters are not atomic by default, so concurrent threads lose increments. Whether a line
+  ran is exact; how many times is approximate. `-fprofile-update=atomic` makes the counts exact, at a cost.
+- **Timeouts.** The instrumented runtime is slower; raise `--timeout` in `scripts/edenprobe.py` and
+  `--seconds` budgets if launches start to be killed.
+- **Mixed versions.** A `.profraw` from one LLVM version is unreadable by another's `llvm-profdata`.
+- **A stale binary.** `llvm-cov` maps counts through the binary's coverage mapping. A profile from one build read
+  against another build mixes up functions or refuses (`function hash mismatch`). Keep each profile with the build
+  that made it.
+- **Header and generated code.** Inline functions in headers (`services_int.h`) are counted once per file that
+  includes them; generated dispatchers live under `build/` and are left out by the filter above. Leave the filter
+  off to see them.
+- **0% is not dead code.** A path for another host, a debug setting, or the other drivers is reached by other
+  workloads. Coverage of one workload ranks gaps; the union of all of them finds dead code.

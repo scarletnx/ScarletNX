@@ -18,6 +18,8 @@ case (`pass`, `fail` or `skip`, with a detail) and a summary. `scripts/edenprobe
 holds the report against a baseline, how each case ended before: a case of the baseline that no longer ends that way
 fails.
 
+[Coverage](coverage.md) runs it under an instrumented runtime, to see which of the runtime's code its cases reach.
+
 ## Running it
 
 ```sh
