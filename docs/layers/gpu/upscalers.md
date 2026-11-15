@@ -103,10 +103,17 @@ A context goes round its descriptors over `SNX_UPSCALER_IN_FLIGHT` (4) evaluatio
 | FSR 2.2.1 | temporal | depth, motion vectors | LDR, HDR | any | AMD FidelityFX Super Resolution 2.2.1 (MIT), `gpu/vk/fsr2` |
 | FSR 1 (EASU, RCAS) | spatial | none | LDR | 1 to 4 | FSR 1's `ffx_fsr1.h` from the FSR 2.2.1 archive (MIT), `up_easu.comp` and `up_rcas.comp` |
 | filtered copy | copy | none | LDR, HDR | 1/8 to 16 | `up_copy.comp`: a bilinear sample at each output pixel's centre, kept half a texel inside the picture |
-| DLSS | temporal | depth, motion vectors | LDR, HDR | 1 to 3 | not built in: NVIDIA's Streamline and DLSS runtime, which the user would download |
+| DLSS | temporal | depth, motion vectors | LDR, HDR | 1 to 3 | NVIDIA DLSS Super Resolution through NVIDIA Streamline (`dlss.cpp`): Streamline's MIT headers in a Windows build, NVIDIA's runtime from the user's `dlss_runtime` folder ([DLSS](../../user/dlss.md)), available once Streamline took the device |
 | FSR 3.1 or 4 | temporal | depth, motion vectors | LDR, HDR | 1 to 3 | not built in: AMD's FidelityFX API runtime |
 | XeSS | temporal | depth, motion vectors | LDR, HDR | 1 to 3 | not built in: Intel's XeSS runtime |
 
+- DLSS goes through Streamline's manual hooking: `device.c` starts it before the instance (only with `dlss_runtime`
+  set and `render_upscaler` Best or DLSS), adds the extensions and features it asks for when the device has them all,
+  hands it the device, and calls the swapchain through Streamline's own functions so its present runs every frame.
+  Anything missing stops it, and the choice goes on without it. An evaluation records Streamline's options,
+  constants and tags (`eValidUntilEvaluate`) into the frame's command buffer on the recording thread. A failure there
+  makes DLSS unavailable from then on, so the next evaluation chooses FSR 2. The mode follows the scale, the motion
+  vectors' scale is divided by the render size (Streamline's -1 to 1), and the jitter goes as the game gives it.
 - FSR 2's range refuses nothing. Its quality modes go from a scale of 1 to 3 and a dynamic resolution further, and
   every DLSS evaluation it took before the choice checked a range stays its own.
 - The spatial upscaler is EASU into an image of its own at the output's size, then RCAS into the output when the

@@ -26,6 +26,7 @@
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/upscaler/upscaler.h"
+#include "nx/gpu/vk/upscaler/dlss.h"
 #include "nx/hle/hook/module.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
@@ -591,9 +592,17 @@ int main(void) {
             failures++;                                                                                                \
         }                                                                                                              \
     } while (0)
-    /* the choice, with no device needed for the stubs: DLSS, newer FSR and XeSS are never available */
+    /* the choice, with no device needed for the stubs: DLSS without Streamline running (never on this system, nor
+       anywhere without the runtime's folder), newer FSR and XeSS never */
     {
         const char* why;
+        uint64_t evaluated = 1, failed = 1;
+        CHECK(!snx_dlss_start("", 0, NULL, &why) && why);
+        CHECK(!snx_dlss_available(&why) && why && strstr(why, "DLSS"));
+        SnxUpscalerInfo none = {0};
+        CHECK(!snx_upscaler_create(SNX_UPSCALER_DLSS, &none, &why) && why && strstr(why, "DLSS"));
+        snx_dlss_counts(&evaluated, &failed);
+        CHECK(!evaluated && !failed);
         CHECK(!snx_upscaler_available(SNX_UPSCALER_DLSS, VK_NULL_HANDLE, &why) && why);
         CHECK(!snx_upscaler_available(SNX_UPSCALER_FSR_NEW, VK_NULL_HANDLE, &why) && why);
         CHECK(!snx_upscaler_available(SNX_UPSCALER_XESS, VK_NULL_HANDLE, &why) && why);
@@ -625,7 +634,7 @@ int main(void) {
         CHECK(snx_upscaler_choose(SNX_UPSCALER_BEST, G.physical, &all, &why) == SNX_UPSCALER_FSR2 && !why);
         /* a DLSS evaluation asking for the spatial upscaler gets FSR 2, and says why */
         CHECK(snx_upscaler_choose(SNX_UPSCALER_SPATIAL, G.physical, &all, &why) == SNX_UPSCALER_FSR2 && why);
-        /* DLSS asked for: not built in, FSR 2 stands in */
+        /* DLSS asked for: not running, FSR 2 stands in */
         CHECK(snx_upscaler_choose(SNX_UPSCALER_DLSS, G.physical, &all, &why) == SNX_UPSCALER_FSR2 && why &&
               strstr(why, "DLSS"));
         SnxUpscaleNeeds bare = {0,

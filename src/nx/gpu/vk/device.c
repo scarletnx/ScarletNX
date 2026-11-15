@@ -25,6 +25,7 @@
 #include "common/gpu/vk/device_settings.h"
 #include "common/gpu/vk/gpu_pstate.h"
 #include "nx/gpu/vk/hdr_swapchain.h"
+#include "nx/gpu/vk/upscaler/dlss.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/utilities/bits.h"
@@ -306,13 +307,54 @@ typedef struct {
         separateStencilMaskRef, shaderSampleRateInterpolationFunctions, tessellationIsolines, tessellationPointMode,
         triangleFans, vertexAttributeAccessBeyondStride;
 } PortabilityFeatures;
+/* NVIDIA DLSS (gpu/vk/upscaler/dlss.h), on while Streamline runs: it starts before the instance, when the settings
+   name the folder of NVIDIA's runtime and the render upscaler may be DLSS, says what the instance and the device need,
+   and takes the device and the swapchain's calls once they are made. Where any of that can't be, it stops and the
+   upscalers go on without DLSS */
+static int g_dlss;
+static void dlss_log(int level, const char* text) {
+    if (level)
+        WARN("vulkan: %s\n", text);
+    else
+        LOG("vulkan: %s\n", text);
+}
+static void dlss_off(const char* why) {
+    WARN("vulkan: no DLSS: %s\n", why);
+    g_dlss = 0;
+}
+static void dlss_start(void) {
+    const char* why;
+    int may = g_settings.render_upscaler == 0 || g_settings.render_upscaler == SNX_UPSCALER_DLSS + 1;
+    if (g_opt_headless || !g_settings.dlss_runtime[0] || !may) return;
+    /* the setting's words are NVIDIA's own choice, then the presets J, K, L and M (10 to 13) */
+    g_dlss = snx_dlss_start(g_settings.dlss_runtime, g_settings.dlss_preset ? 9 + g_settings.dlss_preset : 0, dlss_log,
+                            &why);
+    if (!g_dlss) dlss_off(why);
+}
+/* the swapchain's calls through Streamline's, which does its work for each frame in the present */
+static void dlss_hook(void) {
+    PFN_vkVoidFunction f;
+#define DLSS_HOOK(name)                                                                                                \
+    if ((f = snx_dlss_proxy(#name)) != NULL)                                                                           \
+        name = (PFN_##name)f;                                                                                          \
+    else                                                                                                               \
+        WARN("vulkan: Streamline has no " #name ": the driver's is called\n");
+    DLSS_HOOK(vkCreateSwapchainKHR)
+    DLSS_HOOK(vkDestroySwapchainKHR)
+    DLSS_HOOK(vkGetSwapchainImagesKHR)
+    DLSS_HOOK(vkAcquireNextImageKHR)
+    DLSS_HOOK(vkQueuePresentKHR)
+    DLSS_HOOK(vkDeviceWaitIdle)
+#undef DLSS_HOOK
+}
+
 /* MoltenVK (macOS, iOS) is a portability driver: the loader lists it only for an instance that asks for those */
 static int create_instance(void) {
     u32 nbe = 0;
     const char* const* be = g_opt_headless ? NULL : backend_vk_extensions(&nbe);
     /* the window's, and the surface's present timing capabilities (VK_EXT_present_timing) are asked through
-       VK_KHR_get_surface_capabilities2 */
-    const char* ext[18];
+       VK_KHR_get_surface_capabilities2, then DLSS's */
+    const char* ext[26];
     u32 next = 0;
     for (u32 i = 0; i < nbe && next < 16; i++) ext[next++] = be[i];
     if (nbe > 16) WARN("vulkan: the window backend wants %u instance extensions, only 16 are taken\n", nbe);
@@ -324,6 +366,24 @@ static int create_instance(void) {
     if (!g_opt_headless && next < 17 && snx_vk_has_instance_extension(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) {
         ext[next++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
         g_vk.has_swapchain_colorspace = 1;
+    }
+    dlss_start();
+    if (g_dlss) {
+        const char* const* dn;
+        u32 nd = snx_dlss_instance_extensions(&dn), before = next;
+        for (u32 i = 0; i < nd && g_dlss; i++) {
+            int there = 0;
+            for (u32 j = 0; j < next && !there; j++) there = !strcmp(ext[j], dn[i]);
+            if (there) continue;
+            if (next < sizeof ext / sizeof *ext && snx_vk_has_instance_extension(dn[i])) {
+                ext[next++] = dn[i];
+                continue;
+            }
+            snx_dlss_stop();
+            dlss_off(next < sizeof ext / sizeof *ext ? "the Vulkan loader lacks an instance extension DLSS needs"
+                                                     : "too many instance extensions");
+            next = before;
+        }
     }
     SnxVkInstanceInfo info = {.app_name = "ScarletNX",
                               .extensions = ext,
@@ -2519,6 +2579,16 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                                               .queueFamilyIndex = g_vk.video_family,
                                               .queueCount = 1,
                                               .pQueuePriorities = prio};
+    if (g_dlss) {
+        /* DLSS's device extensions, which Streamline names at run time, go into the choice past snx_vk_choice_enable:
+           no vk_ext_* setting names them, and the player turns them off with DLSS (dlss_runtime, render_upscaler) */
+        const char* why = "it needs Vulkan 1.3";
+        if (!core13 || !snx_dlss_device(g_vk.phys, c->extensions, &c->extension_count, SNX_VK_CHOICE_EXTENSIONS, &f12,
+                                        &q12, &f13, &q13, &why)) {
+            if (!core13) snx_dlss_stop();
+            dlss_off(why);
+        }
+    }
     if (!snx_vk_choice_create(c, chain, &g_vk.feat, qci, nq)) return false;
     g_vk.gfx_queues = second ? 2 : 1;
     g_vk.feat11 = f11;
@@ -2622,6 +2692,15 @@ static int create_device(void) {
     pm_lock_announce(&g_vklock, "vulkan"); /* the device's calls, every thread's */
     vkGetDeviceQueue(g_vk.dev, g_vk.gfx_family, 0, &g_vk.gfx);
     vkGetDeviceQueue(g_vk.dev, g_vk.compute_family, second ? 1 : 0, &g_vk.compute);
+    if (g_dlss) {
+        /* DLSS records into the frame's command buffers and asks for no queue of its own: the graphics queue's
+           family is the one it is told of, for both */
+        const char* why;
+        if (snx_dlss_attach(g_vk.instance, g_vk.phys, g_vk.dev, g_vk.gfx_family, 0, g_vk.gfx_family, 0, &why))
+            dlss_hook();
+        else
+            dlss_off(why);
+    }
     vk_mem_init(sparse_queue);
     /* the renderer's own allocator (devmem.c): its blocks are 64 MiB at most, and no more than the cap */
     if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support || g_vk.has_copy_indirect ||

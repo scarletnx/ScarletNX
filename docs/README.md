@@ -28,6 +28,7 @@ keeps audits and measurements as they were taken.
 - [Usage](user/usage.md): extract, recompile and play from the command line, with updates, DLC, mods, cheats, NROs,
   GDB, folders, users and the keys in a game
 - [Settings](user/settings.md): every key of a game's `.ini` and of the launcher, with its default
+- [NVIDIA DLSS](user/dlss.md): DLSS on Windows, with NVIDIA's runtime that you download
 - [AOT packs](user/aot-packs.md): a game build that links in the functions the JIT compiled while it played
 - [What ScarletNX isolates](user/security.md): a game runs as a program of your user, what the services give it, and
   what the launcher downloads

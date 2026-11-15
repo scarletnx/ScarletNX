@@ -104,8 +104,9 @@ static int ready(SnxUpscalerId id, const u32 render[2], const u32 out[2], u32 fl
                             .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            /* DLSS (Streamline) clears it before it writes it */
                             .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     if (!vk_image_create(&ii, &g_upscale.image, &g_upscale.memory)) return setup_failed(id, render, out, flags, format);
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,

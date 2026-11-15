@@ -208,8 +208,15 @@ target_link_libraries(snx_fsr2 PUBLIC snx_vk_common)
 # the filtered copy and the spatial upscaler. Their compute passes are compiled from GLSL at build time, the spatial
 # ones with AMD's FSR 1 header from FSR 2's package, patched (.patch/fidelityfx-fsr2/0002-fsr1-easu-glsl.patch). Like
 # snx_fsr2 it knows no renderer, so tests/vk_upscaler.c links it alone
-add_library(snx_upscaler STATIC gpu/vk/upscaler/upscaler.c gpu/vk/upscaler/passes.c)
+add_library(snx_upscaler STATIC gpu/vk/upscaler/upscaler.c gpu/vk/upscaler/passes.c gpu/vk/upscaler/dlss.cpp)
 target_link_libraries(snx_upscaler PUBLIC snx_fsr2 snx_vk_common)
+# DLSS through NVIDIA Streamline (gpu/vk/upscaler/dlss.cpp) in a Windows build: Streamline's headers only, its loader
+# taken from the user's folder at run time. Windows' own libraries check NVIDIA's signature
+if(WIN32)
+    target_include_directories(snx_upscaler SYSTEM PRIVATE "${snx_streamline_include}")
+    target_compile_definitions(snx_upscaler PRIVATE SNX_STREAMLINE)
+    target_link_libraries(snx_upscaler PRIVATE wintrust crypt32)
+endif()
 foreach(snx_pass copy easu rcas)
     snx_glsl_spirv(snx_upscaler SOURCE gpu/vk/upscaler/up_${snx_pass}.comp NAME up_${snx_pass}_spv
                    HEADER nx/gpu/vk/upscaler/upscaler_spv.h DEFINES FFX_GLSL=1 FFX_GPU=1 FFX_HALF=0
