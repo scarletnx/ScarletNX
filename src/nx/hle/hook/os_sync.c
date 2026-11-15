@@ -345,33 +345,47 @@ static void spin_lock(CPU* c, u64 a) {
 }
 static void spin_unlock(CPU* c, u64 a) { __atomic_store_n(word(c, a), 0u, __ATOMIC_RELEASE); }
 
-/* LightEventType: its clear mode at 0 (1 automatic), initialized at 1, the waiter word at 4 */
-void os_light_event_init(CPU* c, u64 e, int signaled, u32 mode) {
-    u8* h = hook_host(c, e);
-    h[1] = 1;
-    h[0] = mode == 1;
-    __atomic_store_n(word(c, e + 4), snx_le32(signaled ? LW_SIGNALED : 0u), __ATOMIC_RELEASE);
+/* LightEventType (hooks.hook gives its layout per SDK): whether its clear is automatic, that it is initialized, and the
+   waiter word. Its functions keep to the layout of the SDK that built the game, as the SDK's own TimedWait, which the
+   family leaves to the game's code, reads it: an SDK before 13 found 0x101 where its waiter word is and aborted */
+typedef const HookLayout_nn_os_LightEventType LightEventLayout;
+static void light_event_init(CPU* c, LightEventLayout* L, u64 e, int signaled, u32 mode) {
+    hook_put_bool(c, L->auto_clear, e, mode == 1);
+    hook_put_bool(c, L->initialized, e, 1);
+    __atomic_store_n(word(c, e + L->waiter.offset), snx_le32(signaled ? LW_SIGNALED : 0u), __ATOMIC_RELEASE);
 }
-void os_light_event_signal(CPU* c, u64 e) { lw_signal(c, e + 4, !*hook_host(c, e)); }
-void os_light_event_clear(CPU* c, u64 e) { lw_clear(c, e + 4); }
+void os_light_event_init(CPU* c, LightEventLayout* L, u64 e, int signaled, u32 mode) {
+    light_event_init(c, L, e, signaled, mode);
+}
+/* the SDK's before 13 clears all of it first, the word after the flags too */
+void os_light_event_init_old(CPU* c, LightEventLayout* L, u64 e, int signaled, u32 mode) {
+    memset(hook_host(c, e), 0, L->size);
+    light_event_init(c, L, e, signaled, mode);
+}
+void os_light_event_signal(CPU* c, LightEventLayout* L, u64 e) {
+    lw_signal(c, e + L->waiter.offset, !hook_get_bool(c, L->auto_clear, e));
+}
+void os_light_event_clear(CPU* c, LightEventLayout* L, u64 e) { lw_clear(c, e + L->waiter.offset); }
 /* an automatic one's signal is taken: the wake of one waiter, or the word's signaled state cleared */
-void os_light_event_wait(CPU* c, u64 e) {
-    u32* p = word(c, e + 4);
-    if (!*hook_host(c, e)) { /* manual: a wake, or the word found changed, ends it */
-        lw_wait(c, e + 4);
+void os_light_event_wait(CPU* c, LightEventLayout* L, u64 e) {
+    const u64 a = e + L->waiter.offset;
+    u32* p = word(c, a);
+    if (!hook_get_bool(c, L->auto_clear, e)) { /* manual: a wake, or the word found changed, ends it */
+        lw_wait(c, a);
         return;
     }
     for (;;) {
         u32 v = LW_SIGNALED;
         if (cas(p, &v, 0)) return;
         /* woken: SignalAndModifyByWaitingCountIfEqual handed the signal to this thread */
-        if (lw_wait(c, e + 4) == 1) return;
+        if (lw_wait(c, a) == 1) return;
     }
 }
-int os_light_event_try_wait(CPU* c, u64 e) {
+int os_light_event_try_wait(CPU* c, LightEventLayout* L, u64 e) {
     u32 v = LW_SIGNALED;
-    if (*hook_host(c, e)) return cas(word(c, e + 4), &v, 0);
-    return ld(word(c, e + 4)) == LW_SIGNALED;
+    u32* p = word(c, e + L->waiter.offset);
+    if (hook_get_bool(c, L->auto_clear, e)) return cas(p, &v, 0);
+    return ld(p) == LW_SIGNALED;
 }
 
 /* LightSemaphoreType: its count at 4, its spinlock at 0x10, the waiter word at 0x18 */

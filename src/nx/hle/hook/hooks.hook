@@ -301,11 +301,19 @@ hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizon9TimedWaitEPNS1_23I
 # arbiter's with no SVC: their words keep the SDK's protocol, so each function may be left to the game's code alone.
 # Under native_os_sync as the os_sync family, for its waits a save state can't hold
 family os_light
-hook _ZN2nn2os20InitializeLightEventEPNS0_14LightEventTypeEbNS0_14EventClearModeE(addr e, bool signaled, u32 mode) = os_light_event_init
-hook _ZN2nn2os16SignalLightEventEPNS0_14LightEventTypeE(addr e) = os_light_event_signal
-hook _ZN2nn2os15ClearLightEventEPNS0_14LightEventTypeE(addr e) = os_light_event_clear
-hook _ZN2nn2os14WaitLightEventEPNS0_14LightEventTypeE(addr e) = os_light_event_wait
-hook _ZN2nn2os17TryWaitLightEventEPNS0_14LightEventTypeE(addr e) -> bool = os_light_event_try_wait
+# LightEventType as each SDK's InitializeLightEvent lays it out: the waiter word first up to 12.3.1, after the flags
+# from 13.3.0 (games of 6.5.0 to 12.3.1 and of 13.3.0 to 18.3.2 looked at). A module of a version between, or of no
+# known version, runs the SDK's own light event code. The SDK before 13 clears all 12 bytes first
+struct nn::os::LightEventType @version(>= 6.5.0, <= 12.3.1) { u32 waiter @0x0; bool auto_clear @0x4; bool initialized @0x5 } size 0xc
+struct nn::os::LightEventType @version(>= 13.3.0) { bool auto_clear @0x0; bool initialized @0x1; u32 waiter @0x4 } size 0x8
+@version(>= 6.5.0, <= 12.3.1)
+hook _ZN2nn2os20InitializeLightEventEPNS0_14LightEventTypeEbNS0_14EventClearModeE(addr e, bool signaled, u32 mode) = os_light_event_init_old uses nn::os::LightEventType
+@version(>= 13.3.0)
+hook _ZN2nn2os20InitializeLightEventEPNS0_14LightEventTypeEbNS0_14EventClearModeE(addr e, bool signaled, u32 mode) = os_light_event_init uses nn::os::LightEventType
+hook _ZN2nn2os16SignalLightEventEPNS0_14LightEventTypeE(addr e) = os_light_event_signal uses nn::os::LightEventType
+hook _ZN2nn2os15ClearLightEventEPNS0_14LightEventTypeE(addr e) = os_light_event_clear uses nn::os::LightEventType
+hook _ZN2nn2os14WaitLightEventEPNS0_14LightEventTypeE(addr e) = os_light_event_wait uses nn::os::LightEventType
+hook _ZN2nn2os17TryWaitLightEventEPNS0_14LightEventTypeE(addr e) -> bool = os_light_event_try_wait uses nn::os::LightEventType
 hook _ZN2nn2os21AcquireLightSemaphoreEPNS0_18LightSemaphoreTypeE(addr s) = os_light_sem_acquire
 hook _ZN2nn2os24TryAcquireLightSemaphoreEPNS0_18LightSemaphoreTypeE(addr s) -> bool = os_light_sem_try_acquire
 hook _ZN2nn2os21ReleaseLightSemaphoreEPNS0_18LightSemaphoreTypeE(addr s) = os_light_sem_release

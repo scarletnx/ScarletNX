@@ -1385,6 +1385,18 @@ target_include_directories(snx-test-sync-clock PRIVATE "${PROJECT_SOURCE_DIR}/sr
 target_link_libraries(snx-test-sync-clock PRIVATE scarletnx-platform)
 snx_hookgen(snx-test-sync-clock SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
 add_test(NAME sync_clock COMMAND snx-test-sync-clock)
+# the os_light family's LightEvent handlers (src/nx/hle/hook/os_sync.c) on each SDK's layout of nn::os::LightEventType,
+# against the bytes the SDK's own InitializeLightEvent leaves
+add_executable(snx-test-os-light-event os_light_event.c)
+snx_test_target(snx-test-os-light-event 11)
+target_include_directories(snx-test-os-light-event PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx-test-os-light-event PRIVATE scarletnx-platform)
+snx_hookgen(snx-test-os-light-event SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+# its handlers on the layouts of the table hookgen makes, which it reads; os_sync.c's split symbol names are deliberate
+target_compile_definitions(snx-test-os-light-event PRIVATE
+    OS_LIGHT_INC="${CMAKE_CURRENT_BINARY_DIR}/hookgen/snx-test-os-light-event/hle/hook/hooks.hook.inc")
+target_compile_options(snx-test-os-light-event PRIVATE -Wno-string-concatenation)
+add_test(NAME os_light_event COMMAND snx-test-os-light-event)
 # the alloc family's arena (src/nx/hle/hook/alloc.c) in a program that links jemalloc as scarletnx does, whole and
 # unexported: ready, and its allocations in the guest's window above the layout; the SDK heap's functions on its
 # blocks, each in the runtime's route list (snx_nx_module's)
