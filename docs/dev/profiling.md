@@ -19,6 +19,15 @@
   * [The JIT](#the-jit)
   * [Feeding a profile back to the recompiler](#feeding-a-profile-back-to-the-recompiler)
   * [Micro-benchmarks for CPU work](#micro-benchmarks-for-cpu-work)
+* [GPU profiling](#gpu-profiling)
+  * [CPU-bound or GPU-bound](#cpu-bound-or-gpu-bound)
+  * [vk_gpu_profile: where the GPU's time goes](#vk_gpu_profile-where-the-gpus-time-goes)
+  * [The GPU track in Tracy](#the-gpu-track-in-tracy)
+  * [RenderDoc](#renderdoc)
+  * [Vendor GPU profilers](#vendor-gpu-profilers)
+  * [One shader: snx-shaderperf](#one-shader-snx-shaderperf)
+  * [The renderer's CPU side](#the-renderers-cpu-side)
+  * [GPU memory](#gpu-memory)
 
 [Development](development.md) · [architecture](architecture.md) · [build](build.md) · [settings](../user/settings.md)
 · [the CPU cost of a draw](draw-cost.md).
@@ -389,4 +398,145 @@ A change to a hot path is easier to measure outside the game, then confirmed in 
   [Graphics descriptor measurements](../history/gpu-descriptor-bench.md)).
 
 These measure a named workload, not a game's frame rate.
+
+## GPU profiling
+
+The GPU side of a recompiled game is the runtime's Vulkan renderer replaying the game's NVN (or Maxwell) commands:
+the shaders are the game's, translated to SPIR-V; the passes, barriers and copies are the renderer's. GPU profiling
+asks two questions: is the GPU the bound at all, and if so, which pass, draw or shader.
+
+### CPU-bound or GPU-bound
+
+- **Stats box:** the graphics queue's busy share. Near 100% with the frame rate under target: GPU-bound. Low with the
+  frame rate under target: the CPU (very often the GPU thread's per-draw work) is the bound.
+- **Resolution test:** lower the internal resolution (`resolution`). A frame rate that rises with it was GPU-bound;
+  one that does not move was CPU-bound.
+- **Tracy:** the GPU track beside the GPU thread. `gpu idle: waited/frame/recording/queued` splits the queue's idle
+  time by its cause; `gpu gap: dispatches/copies/barriers/nothing` what was between passes.
+- **System tools:** `nvidia-smi dmon -s puc` (NVIDIA: utilization and clocks), `radeontop` (AMD), `intel_gpu_top`
+  (Intel) give the device's busy share independently of the runtime. A GPU that does not reach its top clocks under
+  load is often idle more than it looks.
+
+### vk_gpu_profile: where the GPU's time goes
+
+`--vk_gpu_profile=1` (`src/nx/gpu/vk/gpuprof.c`) times every rendering pass of each frame on the GPU, with its first
+color (or depth) target, its draw count, and what was recorded between it and the pass before (copies by kind and
+bytes, barriers, dispatches). Every 10 s the log gets the frame's span, the time in passes, the time in the gaps by
+what they held, and the targets that took the most. It also times each command buffer, and splits the queue's idle
+time into "before the CPU submitted the next one" (the GPU had nothing to do: a round trip, between frames, or the
+recording was slower than the GPU) and "after" (a semaphore wait). It needs timestamps on the graphics queue
+(`timestampComputeAndGraphics`) and, for the CPU alignment, calibrated timestamps; the log says when a device runs
+it as `0`.
+
+```sh
+"$g" --state_load=2000:1 --seconds=60 --fps_limit=0 --vsync=0 --vk_gpu_profile=1 --log=1
+grep 'vulkan: GPU' ~/.local/state/scarletnx/recompiled/<id>/<id>.log   # the 10-second summaries
+```
+
+It works in every build, with no external tool, on every platform with timestamps (Android included). Off, it costs
+a branch per pass. It is the first GPU tool to reach for: a pass that owns most of the frame, or a gap full of copies
+(that is how 955 MB of buffer copies a frame were found), says where to look next.
+
+### The GPU track in Tracy
+
+In a Tracy build, a connected run takes the same timestamps and puts each pass on the GPU's track, named by its
+target, with each compute batch's dispatches; the GPU clock is aligned to the CPU's once a frame, so a long pass
+shows against the CPU work that waited for it. `--vk_gpu_draw_profile=1` adds a zone on every draw and dispatch
+(named by pipeline, topology and count), capped at 256 draws a frame and 128 per batch (`gpu untimed draws` counts the
+rest). A timestamp between draws keeps the GPU from overlapping them on many devices, so the draw zones inflate the
+frame: use them to rank draws inside a pass, not to time the frame. See
+[Development: Profiling](development.md#profiling).
+
+### RenderDoc
+
+[RenderDoc](https://renderdoc.org/) captures one frame's Vulkan calls and replays them: every pass, draw, resource,
+pipeline state and shader (with SPIR-V disassembly and, for a translated shader, the GLSL-like decompilation), and
+per-draw GPU durations in its Event Browser (`Time` column, via the clock button). The runtime loads it itself:
+
+```sh
+# capture presents 500 and 800, to work/prof/rd_<frame>.rdc
+"$g" --renderdoc=work/prof/rd --renderdoc_frames=500,800
+# or the first present after 45 seconds
+"$g" --renderdoc=work/prof/rd --renderdoc_frames=45s
+```
+
+With `renderdoc` set, `Ctrl+Shift+F12` (`hotkey_capture`) or the game menu's **Capture frame** captures the frame after
+the next present; a game started from RenderDoc's own UI (`qrenderdoc`, *Launch Application* on `<id>`) works the
+same. RenderDoc writes the capture inside the present that ends it and the game stops meanwhile (up to a minute for a
+frame of 1.4 GB); the log and a notice say when it is written.
+
+- On Wayland, run under XWayland (`SDL_VIDEO_DRIVER=x11`): RenderDoc has no Wayland surfaces.
+- `vk_checkpoints=0` (the default) keeps `VK_NV_device_diagnostic_checkpoints` off, so a capture replays on a driver
+  without it.
+- The renderer sets no debug labels or object names: passes and resources appear by their Vulkan handles and order.
+  Match them to Tracy's or `vk_gpu_profile`'s pass names (the target's guest address and size), and to
+  `--gpu_trace_target=0x<address>`, which logs every clear and draw into a target.
+- `qrenderdoc --python script.py` scripts a capture (save each pass's targets, list draws by duration).
+- No RenderDoc on NetBSD; on FreeBSD it is not packaged, so capture on Linux or Windows.
+
+RenderDoc's timings are the replay's, one draw at a time; they rank draws well and frame times poorly.
+
+### Vendor GPU profilers
+
+For counters below the API (occupancy, cache hit rates, stalls by unit), use the GPU vendor's profiler on the
+runtime like on any Vulkan application. Launch `"$games/<id>/<id>"` with the options above as the application:
+
+| GPU | Tool | Notes |
+|---|---|---|
+| NVIDIA | Nsight Graphics (Frame Debugger, GPU Trace) | Linux and Windows; GPU Trace gives per-unit throughput across a frame range |
+| AMD | Radeon GPU Profiler | AMD's driver, or RADV with `MESA_VK_TRACE=rgp` (trigger with `MESA_VK_TRACE_TRIGGER=<file>` and `touch <file>`) |
+| Intel | Mesa's `INTEL_MEASURE`, GPA | `INTEL_MEASURE` logs per-draw/per-renderpass GPU time to CSV |
+| Mesa, any | `MESA_VK_TRACE`, `perfetto` data sources where the driver has them | names depend on the driver and version |
+| Arm Mali, Qualcomm Adreno | Arm Streamline / Performance Studio, Snapdragon Profiler, Android GPU Inspector | for the Android app |
+
+`VK_KHR_performance_query` counters, where a driver has them, are reachable through `snx-shaderperf --counters` for a
+single shader. NVIDIA's driver has none.
+
+### One shader: snx-shaderperf
+
+A pass is slow because of one shader: take it out of the game and time it alone.
+
+1. Keep the game's shaders: `--shader_corpus=$PWD/work/corpus` (every shader is translated, none kept for the next
+   run), or `diag=1` where the game takes no command line (Android: `captures/shaders` beside the game).
+2. Translate them to SPIR-V: `build/snx-shaderc work/corpus --validate --out work/translated` (`--validate` needs
+   `spirv-val`).
+3. Find the slow one: its hash is in Tracy's shader and pipeline zones, and in RenderDoc's pipeline state.
+4. Time it, and a variant of it, in one run:
+
+   ```sh
+   build/snx-shaderperf --reflect work/translated/<hash>.spv
+   build/snx-shaderperf work/translated/<hash>.spv work/variant.spv --size 1920x1080 --check --target-rse 0.005 \
+       --json=work/prof/shader.json
+   ```
+
+   It interleaves the shaders' submissions, rejects outliers, and gives a ratio of medians with a bootstrap interval
+   and a verdict; on NVIDIA it also reports registers, binary size and shared memory per stage
+   (`VK_KHR_pipeline_executable_properties`). `--check` hashes everything the shaders write, so a faster variant that
+   computes something else is caught. Compare only shaders measured in the same run.
+
+The tool's options are in [`tools/shaderperf/README.md`](../../tools/shaderperf/README.md).
+
+### The renderer's CPU side
+
+In many games the GPU idles while the GPU thread records the frame: then a "GPU problem" is a CPU profile of one
+thread. Profile the GPU thread with perf/pmcstat (`--tid`, or `--sort comm` and its name), and look for the functions
+[The CPU cost of a draw](draw-cost.md) names (`buf_get`, `cb_get`, `tex_resolve`, `stage_set`, `vk_shader_hash`,
+`vk_mirror_harvest`, libc copies). Tracy's `draws`, `dispatches`, `pipeline make ms`, `pipeline wait ms` and
+`texture upload MB/s` give the counts to divide by. Settings that move this work are worth one A/B run each:
+`vk_record` (a recording thread of its own), `vk_descriptors_mode`, `vertex_input_dynamic_state`, `vk_memory`,
+`vk_buffer_pages` ([Settings](../user/settings.md#debug)); `tools/tune_gpu.py` searches them for a game.
+
+Pipeline compiles are the other CPU-side GPU cost: the first frames of a new scene make pipelines (`pipeline make
+ms`); the next run loads them from `<id>.<driver>.vkshaders`. `tools/prepare_pipeline_probe.py` with
+`tools/bench_pipeline_compile.py` times the captured pipelines' compiles in fresh processes, with the drivers' disk
+caches off.
+
+### GPU memory
+
+Running out of video memory looks like a GPU slowdown (evictions, uploads, textures over the bus) and sometimes as a
+lost device. Watch the stats box's video memory against the budget, Tracy's GPU memory and budget plots and
+`texture cache misses/s`, and the `resources:`/`memory:` lines of `--log=2`. A Vulkan out-of-memory logs each heap
+and the descriptor pools. `vk_budget_mb` and `vk_max_allocation_mb` impose a smaller budget, to reproduce a small
+GPU's behaviour on a large one; `astc_mode` changes what ASTC textures cost on a GPU without ASTC
+([Settings](../user/settings.md#graphics)).
 
