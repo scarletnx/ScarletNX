@@ -87,7 +87,7 @@ static int check_custom_sample_locations(void) {
                 CHECK(!memcmp(pixel, green ? (const u8[4]){0, 255, 0, 255} : (const u8[4]){0, 0, 255, 255}, 4));
             }
     /* A depth layout transition must retain the sample positions used to produce its contents. */
-    vk_surf_use(vk_cmd(), depth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), depth, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     vk_finish();
     vk_unlock();
