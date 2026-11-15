@@ -2034,9 +2034,7 @@ static u32 cb_range(const DsState* ds, int stage, const VkSh* s, int i) {
     u32 sz = ds->bind.cb_size[stage][i];
     if (sz > 65536 || !sz) sz = 65536;
     if (s->si.cbuf_max[i] && sz > s->si.cbuf_max[i]) sz = s->si.cbuf_max[i]; /* only the bytes the shader reads */
-    sz = vk_cb_round(sz);
-    if (sz > g_vk.props.limits.maxUniformBufferRange) sz = g_vk.props.limits.maxUniformBufferRange;
-    return sz;
+    return vk_cb_range(sz);
 }
 /* A third of a draw's constant buffers miss cb_get's entries, and each of those looks its range up in the buffer
    cache: two cache misses in a row, the index's slot and then the entry it names, which were most of buf_get's time
