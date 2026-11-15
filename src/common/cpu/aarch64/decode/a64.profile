@@ -42,9 +42,15 @@ target switch v8.0 FEAT_CRC32 FEAT_AES FEAT_PMULL FEAT_SHA1 FEAT_SHA256
 # half precision, the dot product and LRCPC, and without pointer authentication. On a CPU without FEAT_PAuth the
 # PACIASP and AUTIASP of the HINT space are NOPs, as the libraries built for every arm64 phone expect
 target android v8.0 FEAT_CRC32 FEAT_AES FEAT_PMULL FEAT_SHA1 FEAT_SHA256 FEAT_LSE FEAT_RDM FEAT_FP16 FEAT_DotProd FEAT_LRCPC
-# Experimental HLE profile: LSE atomics, RCpc loads and PAuth instructions with SCTLR_EL1.EnIA/EnIB/EnDA/EnDB clear.
-# This is not a complete CPU profile for newer consoles.
+# Experimental HLE profile: LSE atomics, RCpc loads and PAuth instructions with SCTLR_EL1.EnIA/EnIB/EnDA/EnDB clear,
+# for a Switch game with the cpu_extensions setting. An Ounce game takes the ounce target.
 target switch_extended v8.0 FEAT_CRC32 FEAT_AES FEAT_PMULL FEAT_SHA1 FEAT_SHA256 FEAT_LSE FEAT_LRCPC FEAT_PAuth
+# The Ounce's Cortex-A78C, from the ID registers in its TRM (102226_0002_03): ISAR0 0x0010100010211120 (AES with
+# PMULL, SHA1, SHA256, CRC32, LSE, RDM, DotProd, FlagM), ISAR1 0x01200031 (DPB, PAuth with QARMA and PACGA, LRCPC2, no
+# JSCVT or FCMA), PFR0 (FP16, RAS, no DIT), MMFR1 and MMFR2 (LOR, PAN, UAO). PFR1's SSBS is 1: PSTATE.SSBS without
+# the MSR and MRS instructions, so MSR SSBS is UNDEF there and the target leaves FEAT_SSBS out. PAuth runs with
+# SCTLR_EL1.EnIA/EnIB/EnDA/EnDB clear, as in switch_extended
+target ounce v8.0 FEAT_CRC32 FEAT_AES FEAT_PMULL FEAT_SHA1 FEAT_SHA256 FEAT_LSE FEAT_RDM FEAT_LOR FEAT_PAN FEAT_FP16 FEAT_DotProd FEAT_UAO FEAT_LRCPC FEAT_PAuth FEAT_LRCPC2 FEAT_FlagM FEAT_RAS
 # every feature the decoder knows
 target max *
 
