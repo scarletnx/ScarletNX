@@ -89,10 +89,18 @@ interface nn::gsv::UserSession {
     @stub [1502] InitializeInterModuleImageContext();
 }
 
-# The camera context's session. One game's own camera module asks 21 for an event as it starts, which it attaches as a
-# system event and stops if 21 fails. With no camera, nothing about one changes, so the event is never signaled
+# The camera context's session (the SDK's nn::camera, which one game links into a subsdk of its own), as a console with
+# no camera plugged in. nn::camera::Initialize sends 3 with the device name "Default" and keeps the u64 of the answer,
+# the device handle that the other calls take. It aborts on every result but success and 0xdc4, and gives 0xdc4 to the
+# game. That game reads it as a platform without the camera function, skips the setup of its webcam, and reads the
+# webcam after that. Finalize sends 4 and aborts on every failure. QueryDeviceConnection (29) takes 0x7c4, which the
+# game logs as no camera device found. The module asks 21 for an event as it starts, which it
+# attaches as a system event and stops if 21 fails. With no camera, nothing about one changes, so the event is never
+# signaled
 @fallback(gsv_camera_none)
 interface nn::gsv::CameraSession {
+    [3] Initialize(bytes<0x10> name) -> u64 device;
+    [4] Finalize();
     [21] GetEvent(u32 id) -> handle<copy, event> event;
 }
 

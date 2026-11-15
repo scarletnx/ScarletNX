@@ -69,10 +69,15 @@ image. Then it gives the handle to `nvnMemoryPoolBuilderSetNativeHandleNVX`. The
 took the handle for a native memory number, which was right only while the two numbers agreed. Another game, whose
 title movie uses the video pools, makes no such pool.
 
-The camera session (gsv 602) answers each command but 21 with result 0xdc4 (module 452, description 6), as a console
-with no camera. The game's own camera module accepts it from command 3 (the camera "Default") and from command 29,
-which it sends again and again. Command 21 must give an event, which the module attaches as a system event. The module
-stops if 21 fails. With no camera, the event is never signaled.
+The camera session (gsv 602) answers as a console with no camera plugged in. The SDK's `nn::camera::Initialize` sends
+command 3 with the device name "Default" and keeps the u64 of the answer as the camera's device handle. It aborts on
+every result but success and 0xdc4 (module 452, description 6), and gives 0xdc4 to the game. A game with its own webcam
+code reads 0xdc4 as a platform without the camera function, skips the setup of its webcam, and then reads a pointer of
+that webcam that is still zero. An Ounce has the camera function whether or not a camera is plugged in, so 3 and
+`Finalize`'s 4 succeed. Each other command answers 0x7c4 (description 3), which `QueryDeviceConnection` (29, sent
+again and again) lets pass and the game logs as no camera device found.
+Command 21 must give an event, which the module attaches as a system event. The module stops if 21 fails. With no
+camera, the event is never signaled.
 
 ## Built-in fonts
 
