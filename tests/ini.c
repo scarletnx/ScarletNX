@@ -126,7 +126,7 @@ int main(void) {
     assert(number == 3 && base_resolution_mult == 0.5f && !strcmp(held, "fits") && !line_said[0]);
     ini_set_say(NULL);
     /* the menus' words: one a value from lo by step; a '#' word for its value and the ones above, plus shift; the
-       number where there is none. Words go round, numbers stop at the ends */
+       number where there is none. Words go round, numbers and a slider's words (INI_SLIDER) stop at the ends */
     {
         static int v;
         static const IniOpt onoff = {"onoff", "0", NULL, INI_INT, 0, &v, 0, 1, NULL, "On or off", "Off|On", 0, 0, 0};
@@ -136,6 +136,8 @@ int main(void) {
         static const IniOpt rumble = {"rumble", "100", NULL,        INI_INT,  0,  &v, 0,
                                       100,      NULL,  "Vibration", "Off|#%", 10, 0, 0};
         static const IniOpt plain = {"plain", "1", NULL, INI_INT, 0, &v, -5, 10, NULL, NULL, NULL, 0, 0, 0};
+        static const IniOpt level = {"level", "1",  NULL,    INI_INT,        INI_SLIDER, &v, 0,
+                                     2,       NULL, "Level", "Low|Mid|High", 0,          0,  0};
         ini_word(&onoff, 0, out, sizeof out);
         assert(!strcmp(out, "Off"));
         ini_word(&onoff, 1, out, sizeof out);
@@ -163,6 +165,24 @@ int main(void) {
         assert(ini_step(&scale, 50, 1) == 60 && ini_step(&scale, 100, 1) == 100 && ini_step(&scale, 0, -1) == 0);
         assert(ini_step(&rumble, 0, 1) == 10 && ini_step(&rumble, 10, -1) == 0 && ini_step(&rumble, 5, 1) == 15);
         assert(ini_step(&plain, -5, -1) == -5 && ini_step(&plain, 3, 1) == 4);
+        assert(ini_step(&level, 2, 1) == 2 && ini_step(&level, 0, -1) == 0 && ini_step(&level, 1, 1) == 2);
+        ini_word(&level, 2, out, sizeof out);
+        assert(!strcmp(out, "High"));
+    }
+    /* a slider's row (INI_SLIDER) for the launcher: slider in its last column, after an empty one where it needs no
+       build, after needs-build where it does */
+    {
+        static int v;
+        static const IniOpt rows[] = {
+            {"volume", "100", "How loud", INI_INT, INI_SLIDER, &v, 0, 100, NULL, "Volume", "Mute|#%", 50, 0, 0},
+            {"gated", "0", "Help", INI_INT, INI_SLIDER | INI_NEEDS_BUILD, &v, 0, 1, NULL, "Gated", "Off|On", 0, 0, 0},
+            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+        static const IniSection sections[] = {{"Audio", 1, {rows, NULL, NULL}, {NULL, NULL, NULL}}};
+        static const char want[] =
+            "Audio\tvolume\t100\tint\t0\t100\tHow loud\tVolume\t0=Mute|50=50%|100=100%\t\t\tslider\n"
+            "Audio\tgated\t0\tint\t0\t1\tHelp\tGated\t0=Off|1=On\t\tneeds-build\tslider\n";
+        char list[512];
+        assert(ini_list_text(sections, 1, list, sizeof list) == strlen(want) && !strcmp(list, want));
     }
     /* the settings not at their default: a number, a float, a text by its value or its key alone, with the defaults;
        a row without a default never */
