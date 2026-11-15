@@ -137,6 +137,22 @@ setting Save layout
     help Where the saves are: global = one folder of every game's, save/ of the data folder, as the console keeps
     help them (an Account save in user.<uid>/<title ID>/); game = each game's own, save/ in its <id>_data/. A save the
     help other one holds is played where it is, said once a run, until Settings > App > Move Old Files moves it
+setting Microphone
+    key microphone
+    text 256
+    default ""
+    help The microphone a game hears as the console's own: empty = the system's default recording device; off = none,
+    help and the game hears silence; else the first recording device whose name holds this text (any case). It is
+    help recording only while the game records, and a change takes effect at the game's next recording
+setting Microphone noise reduction
+    key mic_noise_reduction
+    int 0 1
+    default 1
+    words Off|On
+    help 1 = the steady noise the microphone picks up (a fan, a hum, traffic) is lowered before the game hears it (the
+    help console's audio system has a noise reduction for its microphone, of a strength not known); 0 = the game hears
+    help the microphone as it is. It needs the system's Speex DSP library (libspeexdsp), without which the sound passes
+    help as it is, said in the log
 
 table g_display_ini
 setting TV mode

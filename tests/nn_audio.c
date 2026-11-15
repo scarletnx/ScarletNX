@@ -13,6 +13,7 @@
 #include "kobj_ids.h"              /* the kernel objects the stubs make, as ids */
 
 u8* g_mem;
+int g_ounce;            /* main.c's: a Switch game unless a check sets it */
 u64 g_as_size = AS_MAX; /* the reservation's size, mem.c's, which this test does not link */
 static u64 test_now;
 static unsigned test_checks, test_events, test_attached, test_handles;
@@ -494,18 +495,25 @@ static void test_device(void) {
     test_no_destroy = 0;
 }
 
-/* the audio ins: no microphone, so none listed and none opened, the game's AudioIn and SystemEvent left as they
-   were */
+/* the audio ins: a Switch has no microphone, so none listed and none opened, the game's audio in and event left as
+   they were. An Ounce lists its built-in one, a name in one entry of 0x100 bytes, and still opens none */
 static void test_ins(void) {
     CPU* c = &cpu;
     unsigned attached = test_attached;
     memset(GP(T_OUT), 0xCC, 0x120);
-    memset(GP(NAME), 0xCC, 0x100);
+    memset(GP(NAME), 0xCC, 0x200);
     CHECK(nnaudio_list_ins(c, NAME, 4) == 0 && GP(NAME)[0] == 0xCC);
     CHECK(nnaudio_open_in(c, T_OUT, NAME, PARAMS) == RC(153, 1));
     CHECK(nnaudio_open_in_event(c, T_OUT, EVENT, NAME, PARAMS) == RC(153, 1));
     CHECK(nnaudio_open_default_in_event(c, T_OUT, EVENT, PARAMS) == RC(153, 1));
     CHECK(GP(T_OUT)[0] == 0xCC && GP(T_OUT)[0xc] == 0xCC && test_attached == attached);
+    g_ounce = 1;
+    CHECK(nnaudio_list_ins(c, NAME, 0) == 0 && GP(NAME)[0] == 0xCC);
+    CHECK(nnaudio_list_ins(c, NAME, 4) == 1 && GP(NAME)[0] != 0 && GP(NAME)[0] != 0xCC);
+    CHECK(strlen((const char*)GP(NAME)) < 0x100 && GP(NAME)[0xff] == 0 && GP(NAME)[0x100] == 0xCC);
+    CHECK(nnaudio_open_in(c, T_OUT, NAME, PARAMS) == RC(153, 1));
+    CHECK(GP(T_OUT)[0] == 0xCC && test_attached == attached);
+    g_ounce = 0;
 }
 
 /* the system's calls by a game's AppletResourceUserId, and the DSP's load: each done with nothing to do */

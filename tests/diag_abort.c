@@ -141,6 +141,23 @@ u32 audio_purge_input(CPU* c, u64 stream) {
     return 0;
 }
 void audio_close_input(CPU* c, u64 stream) { (void)c, (void)stream; }
+u32 audio_default_virtual_input(CPU* c, u64 name) {
+    (void)c, (void)name;
+    return 0;
+}
+u32 audio_virtual_input_properties(CPU* c, u64 props, u64 name) {
+    (void)c, (void)props, (void)name;
+    return 0;
+}
+u64 audio_input_format(CPU* c, u64 stream) {
+    (void)c;
+    return stream;
+}
+void audio_set_input_gain(CPU* c, u64 stream, f32 gain, i64 fade) { (void)c, (void)stream, (void)gain, (void)fade; }
+f32 audio_input_gain(CPU* c, u64 stream) {
+    (void)c, (void)stream;
+    return 1.0f;
+}
 u32 audio_input_state(CPU* c, u64 stream) {
     (void)c, (void)stream;
     return 0;

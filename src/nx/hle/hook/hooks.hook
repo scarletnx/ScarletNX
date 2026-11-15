@@ -348,8 +348,8 @@ hook _ZN2nn5codec49GetHardwareOpusDecoderExecutingDecodeRequestCountEPKNS0_23Har
 hook _ZN2nn5codec49GetHardwareOpusDecoderCompletedDecodeRequestCountEPKNS0_23HardwareOpusDecoderTypeE(addr decoder) -> i32 = codec_decoder_completed
 
 # nn::audio's output and input streams of the Ounce's SDK (audio_stream.c), which its SDK plays and records through the
-# audio device manager (auddmg:u) and the audio DSP: played here on the host's output and recorded from a virtual
-# microphone (silence for now), paced by the audio clock
+# audio device manager (auddmg:u) and the audio DSP: played here on the host's output and recorded from the host's
+# microphone, its steady noise reduced, paced by the audio clock
 family audio_stream
 hook _ZN2nn5audio29GetDefaultVirtualOutputDeviceEPNS0_15AudioDeviceNameE(addr name) -> u32 = audio_default_virtual_output
 hook _ZN2nn5audio16OpenOutputStreamEPNS0_16OutputStreamTypeEPNS_2os11SystemEventEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEiiNS_4util10BitFlagSetILi32ENS0_16OutputStreamFlagEEE(addr stream, addr event, addr work, u64 size, addr device, addr format, i32 capacity, i32 threshold) -> u32 = audio_open_stream_event
@@ -379,6 +379,11 @@ hook _ZN2nn5audio28GetInputStreamFreeFrameCountEPKNS0_15InputStreamTypeE(addr st
 hook _ZN2nn5audio32GetInputStreamCapacityFrameCountEPKNS0_15InputStreamTypeE(addr stream) -> i32 = audio_input_capacity_frames
 hook _ZN2nn5audio15ReadInputStreamEPNS0_15InputStreamTypeEPvi(addr stream, addr data, i32 frames) -> i32 = audio_read_input
 hook _ZN2nn5audio24GetInputStreamStatisticsEPNS0_15InputStreamTypeEb(addr stream, bool reset) = audio_stream_statistics
+hook _ZN2nn5audio28GetDefaultVirtualInputDeviceEPNS0_15AudioDeviceNameE(addr name) -> u32 = audio_default_virtual_input
+hook _ZN2nn5audio31GetVirtualInputDevicePropertiesEPNS0_23VirtualDevicePropertiesERKNS0_15AudioDeviceNameE(addr props, addr name) -> u32 = audio_virtual_input_properties
+hook _ZN2nn5audio20GetInputStreamFormatEPKNS0_15InputStreamTypeE(addr stream) -> addr = audio_input_format
+hook _ZN2nn5audio18SetInputStreamGainEPNS0_15InputStreamTypeEfNS_8TimeSpanE(addr stream, f32 gain, i64 fade) = audio_set_input_gain
+hook _ZN2nn5audio18GetInputStreamGainEPKNS0_15InputStreamTypeE(addr stream) -> f32 = audio_input_gain
 
 # std::string, libc++'s basic_string<char, char_traits<char>, allocator<char>> (libcxx_string.c): the members main
 # imports or exports across the games, on the object's own layout, its buffers from the guest's operator new. Not
