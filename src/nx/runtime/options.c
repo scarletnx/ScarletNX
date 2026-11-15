@@ -298,6 +298,9 @@ static struct {
     int poll_soon; /* atomic: a pick the menu took out, shown at once: polled at the next tick (ini_poll_due) */
     char path[sizeof g_path + 8];
     u64 hash, seen; /* as g_hash and g_seen are the .ini's */
+    int old;        /* atomic: the keys Clean Old Settings takes out, the .ini's deprecated ones and the picks' no
+                       pick takes, as the files were last read or written */
+    int clean_soon; /* atomic: the game's menu's Clean Old Settings, taken at the next tick */
 } g_picks;
 static PMutex g_picks_lock = PMUTEX_INIT;
 
@@ -487,6 +490,11 @@ int ini_picked(const char* k) {
 }
 const int* ini_picks_changes(void) { return &g_picks.changes; }
 int ini_poll_due(void) { return __atomic_exchange_n(&g_picks.poll_soon, 0, __ATOMIC_ACQ_REL); }
+int ini_old_settings(void) { return __atomic_load_n(&g_picks.old, __ATOMIC_ACQUIRE); }
+void ini_clean_old(void) {
+    __atomic_store_n(&g_picks.clean_soon, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_picks.poll_soon, 1, __ATOMIC_RELEASE);
+}
 
 static void apply(const char* key, const char* value);
 /* the menu's change of key over the command line's value of it, which the run plays no longer */
@@ -809,6 +817,42 @@ static void launcher_picks(void) {
     for (i = 0; i < g_nover; i++) g_over[i].launcher = strcmp(g_over[i].key, SNX_LAUNCHER_PICKS) != 0;
 }
 
+/* the keys Clean Old Settings would take out, counted for the menu's row */
+static void old_counted(void) {
+    int i, n = 0;
+    for (i = 0; i < g_nstore; i++) n += ini_deprecated(g_store[i].key) != NULL;
+    for (i = 0; i < g_picks.n; i++) n += !picks_key(g_picks.entry[i].key);
+    if (__atomic_exchange_n(&g_picks.old, n, __ATOMIC_ACQ_REL) != n) /* the menu's row comes or goes */
+        __atomic_add_fetch(&g_picks.changes, 1, __ATOMIC_RELEASE);
+}
+/* Clean Old Settings from the game's menu: the .ini's deprecated keys and the picks' keys no pick takes taken out,
+   both files written without them, and each said in the log with its value */
+static void clean_old(void) {
+    char line[2048];
+    size_t at = (size_t)snprintf(line, sizeof line, "settings: Clean Old Settings took out");
+    int i, n = 0;
+    for (i = 0; i < g_nstore;)
+        if (ini_deprecated(g_store[i].key)) {
+            if (at < sizeof line)
+                at += (size_t)snprintf(line + at, sizeof line - at, "%s %s=%s", n++ ? "," : "", g_store[i].key,
+                                       g_store[i].value);
+            memmove(&g_store[i], &g_store[i + 1], (size_t)(--g_nstore - i) * sizeof *g_store); /* in their order */
+        } else
+            i++;
+    for (i = 0; i < g_picks.n;)
+        if (!picks_key(g_picks.entry[i].key)) {
+            if (at < sizeof line)
+                at += (size_t)snprintf(line + at, sizeof line - at, "%s %s=%s (%s)", n++ ? "," : "",
+                                       g_picks.entry[i].key, g_picks.entry[i].value, g_picks.path);
+            picks_put(g_picks.entry[i].key, NULL);
+            g_picks.dirty = 1;
+        } else
+            i++;
+    if (!n) return;
+    LOG("%s\n", line);
+    write_file();
+    if (g_picks.dirty) picks_write();
+}
 /* the store into the .ini and the picks into theirs, then the menu's changes they hold dropped: each file tried, and
    the changes kept for the next poll while either could not be written */
 static void files_write(const Pending* taken, int n) {
@@ -1008,6 +1052,7 @@ void ini_open(const char* path) {
         options_old_environment_say();
         debug_shown(0);
         options_settings(g_said, sizeof g_said);
+        old_counted();
         g_started = 1;
         return;
     }
@@ -1027,6 +1072,7 @@ void ini_open(const char* path) {
     debug_shown(0);
     options_settings(g_said, sizeof g_said);
     files_write(taken, n);
+    old_counted();
     g_started = 1;
 }
 
@@ -1044,6 +1090,7 @@ void ini_poll(int final) {
     pending = g_npending;
     pm_unlock(&g_pending_lock);
     picks = picks_poll();
+    if (__atomic_exchange_n(&g_picks.clean_soon, 0, __ATOMIC_ACQ_REL)) clean_old();
     text = snx_read_file(g_path, &size);
     h = text ? snx_fnv1a(SNX_FNV_BASIS, text, size) : 0;
     if (text && h != g_hash && (final ? pending : h == g_seen)) {
@@ -1069,6 +1116,7 @@ void ini_poll(int final) {
             settings_reloaded();
         }
     }
+    old_counted();
     free(text);
     pm_unlock(&g_poll_lock);
 }

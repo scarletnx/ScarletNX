@@ -888,7 +888,9 @@ too, and Enter or A up, stopping at Mute and at 100%; a tap or a click on the sl
 of it steps down and one on its value up, and a press moves the knob as it drags. Each step is heard at once.
 What the menu changes is kept for this game alone, in its own picks over the launcher's Settings, which every game
 gets ([Settings](settings.md)): its value shows `*` after it, and Delete or a controller's Y gives back the
-launcher's (else the game's `.ini`'s) at once.
+launcher's (else the game's `.ini`'s) at once. **Clean Old Settings** shows while the game's `.ini` keeps keys
+under `[Deprecated]` or its own picks keys no setting takes ([Deprecations](deprecations.md)): asked first, with how
+many, Cancel in focus, it takes them out of both files at once, the log naming each with its value.
 
 A game that asks for text (a name, a password, a search) shows a box over the game, in the menu's look and the same
 on every platform: the game's own words for it, the line with the text the game started it with, and how many

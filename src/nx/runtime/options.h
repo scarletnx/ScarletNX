@@ -31,10 +31,15 @@ void ini_set(const char* k, const char* v);
 void ini_unpick(const char* k);
 /* 1 when the game's picks have k, a change of the menu's not saved yet counted; from any thread */
 int ini_picked(const char* k);
-/* a count of the changes to the game's picks, which the menu watches to show them again */
+/* a count of the changes to the game's picks and to ini_old_settings, which the menu watches to show them again */
 const int* ini_picks_changes(void);
-/* 1 once after ini_unpick: the frontend's loop polls at once (ini_poll) */
+/* 1 once after ini_unpick or ini_clean_old: the frontend's loop polls at once (ini_poll) */
 int ini_poll_due(void);
+/* the keys Clean Old Settings takes out, as the files were last read or written: the .ini's under [Deprecated] and
+   the picks' that no pick takes. From any thread */
+int ini_old_settings(void);
+/* the game's menu's Clean Old Settings: at the next tick those keys are taken out of both files, said in the log */
+void ini_clean_old(void);
 /* every setting of the file's sections but the game's own (a control's place), a line each on stdout, nine fields
    between tabs: the section (with /page for a page of its own), the key, its default, int | float | text, the lowest
    and highest number, the help on one line, the menus' name, and the values as value=word between '|' (empty for a

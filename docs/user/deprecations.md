@@ -12,7 +12,9 @@ What an older version used that this one replaced, how a run tells you, and how 
   never dropped in silence; a deprecated option still works.
 - **Each run says so** where you read it: stderr for the drivers, the game's `.log` and stderr for the runtime, the
   launcher's setup for files an older version left (its Old Files pages). The line names what replaced it.
-- **You remove it**: a setting by hand or with the launcher's **Settings > App > Clean Old Settings** (or Clean Now
+- **You remove it**: a setting by hand, with the game's menu's **Clean Old Settings** (shown while its `.ini` or
+  its own picks keep such keys, asked first) for that game, or with the launcher's **Settings > App > Clean Old
+  Settings** (or Clean Now
   on the setup's last notice), which takes the `[Deprecated]` section out of every game's `.ini` the launcher reaches
   (the games' config folder, `games/` and the libraries of Settings > App > Folders); a file an older version left, by
   moving it where the line says, or with Move All or Delete All on the setup's Old Files pages (Delete All never
@@ -23,8 +25,8 @@ A game's `.ini` keeps its deprecated keys last, under what became of each:
 
 ```ini
 [Deprecated]
-; keys an older version used, which do nothing now (docs/user/deprecations.md): delete them, or use Settings > App >
-;   Clean Old Settings in the launcher
+; keys an older version used, which do nothing now (docs/user/deprecations.md): delete them, or use Clean Old Settings
+;   in the game's menu or the launcher's Settings > App
 ; renderer: Vulkan is the only renderer
 renderer=opengl
 ```

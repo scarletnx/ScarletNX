@@ -411,7 +411,7 @@ const char* ini_renamed(const char* k) {
 void ini_deprecated_head(FILE* f) {
     fprintf(f,
             "\n[Deprecated]\n; keys an older version used, which do nothing now (docs/user/deprecations.md): delete them, "
-            "or use Settings > App >\n;   Clean Old Settings in the launcher\n");
+            "or use Clean Old Settings\n;   in the game's menu or the launcher's Settings > App\n");
 }
 void ini_deprecated_key(FILE* f, const char* key, const char* value) {
     fprintf(f, "; %s: %s\n%s=%s\n", key, ini_deprecated(key), key, value);
@@ -425,8 +425,8 @@ int ini_deprecated_note(char* out, size_t size, const char* path, const char* co
     for (i = 0; i < n && at < size; i++) at += (size_t)snprintf(out + at, size - at, "%s%s", i ? ", " : "", keys[i]);
     if (at < size)
         snprintf(out + at, size - at,
-                 "), under [Deprecated]: delete %s, or use Settings > App > Clean Old Settings in "
-                 "the launcher",
+                 "), under [Deprecated]: delete %s, or use Clean Old Settings in the game's menu or the "
+                 "launcher's Settings > App",
                  n > 1 ? "them" : "it");
     return 1;
 }
