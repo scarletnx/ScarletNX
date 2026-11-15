@@ -524,12 +524,12 @@ static void check_random(int uma, u64 gran, u64 atom, u32 rounds) {
     while (n) unmake(&held[--n]);
     check_counts(0);
     check_priorities();
-    /* what stays is one empty block of a kind at most: a memory type's buffers, and its images where they are apart,
-       each for the low class and for the others */
-    u32 kinds[VK_MAX_MEMORY_TYPES][2][2] = {{{0}}};
+    /* what stays is one empty block of a kind at most: a memory type's buffers, and its images where they are apart.
+       The two classes share it */
+    u32 kinds[VK_MAX_MEMORY_TYPES][2] = {{0}};
     for (u32 k = 0; k < g_devmem.nblock; k++) {
         const Block* b = &g_devmem.block[k];
-        if (b->mem) CHECK(!b->own && !b->allocs && !b->free.used && ++kinds[b->type][b->image][b->low] == 1);
+        if (b->mem) CHECK(!b->own && !b->allocs && !b->free.used && ++kinds[b->type][b->image] == 1);
     }
 }
 
@@ -627,9 +627,17 @@ static void check_priority(void) {
     vk_devmem_priority(low_b.mem, DM_PRIO_LOW);
     CHECK(g_drv.mem[(u32)(uintptr_t)low_a.info.memory - 1].prio == 0.0f && g_drv.priorities == calls_low + 2);
     check_priorities();
+    VkDeviceMemory low_mem = low_a.info.memory;
     unmake(&low_b);
-    unmake(&low_a);
+    unmake(&low_a); /* the low block stays empty, the one spare block of the kind */
     unmake(&low_own);
+    unmake(&a); /* the mid block goes: the low block is the spare */
+    CHECK(g_drv.mem[(u32)(uintptr_t)low_mem - 1].live);
+    /* a request of the other class takes the empty block, with no new one from the driver */
+    u32 made = g_drv.allocations;
+    CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS && a.info.memory == low_mem && g_drv.allocations == made);
+    CHECK(!g_devmem.block[g_devmem.rec[a.mem - 1].block - 1].low);
+    check_priorities();
     unmake(&a);
     /* a driver that does not move memory: the classes are kept, with no call */
     g_vk.has_pageable = 0;
