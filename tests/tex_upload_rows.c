@@ -42,6 +42,7 @@ int vk_vt_level_fresh(const Surf* t, u32 layer, u32 level) {
 }
 void vk_vt_loaded(const Surf* t) { (void)t; }
 void vk_vt_frame(void) {}
+void vk_vt_used(const Surf* t) { (void)t; }
 #undef malloc
 #include "nx/hle/services/nvdrv.h" /* gmmu_pieces, and g_mem, which the stubs below stand in for */
 #include "nx/memory/mem.h"

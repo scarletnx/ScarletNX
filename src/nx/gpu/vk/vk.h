@@ -1519,6 +1519,10 @@ void vk_vt_bound(const Surf* t, const u8* bits, u64 nbits);
 int vk_vt_strip_fresh(const Surf* t, u32 layer, u32 level, u32 y0, u32 y1);
 int vk_vt_level_fresh(const Surf* t, u32 layer, u32 level);
 void vk_vt_loaded(const Surf* t);
+/* vk_vt_used: a draw binds t to sample in this present; vk_vt_whole: t is sampled where the probe marks nothing (a
+   compute program), and is bound whole from now on */
+void vk_vt_used(const Surf* t);
+void vk_vt_whole(const Surf* t);
 void vk_vt_frame(void);
 int vk_tex_vt_load(Surf* t); /* texture.c: t bound again where the probe wants it, its new blocks decoded */
 /* each present, while memory is short: the textures whose texture object the game ended go, once memory can give

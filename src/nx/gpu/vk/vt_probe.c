@@ -156,6 +156,19 @@ int vk_vt_level_fresh(const Surf* t, u32 layer, u32 level) {
         if (vt_bit(L->fresh, b)) return 1;
     return 0;
 }
+void vk_vt_used(const Surf* t) {
+    VtLive* L = vt_rec(t);
+    if (!L || L->used_at == g_vts.now + 1) return;
+    L->used_at = g_vts.now + 1;
+    L->used++;
+}
+void vk_vt_whole(const Surf* t) {
+    VtLive* L = vt_rec(t);
+    if (!L || L->whole) return;
+    L->whole = 1;
+    L->changed = 1;
+    g_vts.wholes++;
+}
 void vk_vt_loaded(const Surf* t) {
     VtLive* L = vt_rec(t);
     if (L) memset(L->fresh, 0, L->nblocks / 8 + 1);
@@ -268,11 +281,7 @@ static struct {
 } g_vt_handles;
 void vk_tex_vt_handle(u32 handle, Surf* t) {
     if (!g_vt_probe_address || !t || t->is_rt) return;
-    VtLive* L = vt_rec(t);
-    if (L && L->used_at != g_vts.now + 1) {
-        L->used_at = g_vts.now + 1;
-        L->used++;
-    }
+    const VtLive* L = vt_rec(t);
     const u32 tic = handle & 0xFFFFF;
     if (tic > g_vt_handles.most) g_vt_handles.most = tic;
     if (g_vt_handles.seen < 8) g_vt_handles.sample[g_vt_handles.seen] = handle;

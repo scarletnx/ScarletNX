@@ -5029,7 +5029,9 @@ static void vt_add(VtSum* s, const Surf* t) {
     }
 }
 static void vt_probe_use(Surf* t) {
-    if (!g_settings.vt_probe || !t || t->f.conv != VKC_ASTC) return;
+    if (!g_settings.vt_probe || !t) return;
+    if (t->vt) vk_vt_used(t); /* vt_sparse: bound to sample, marked or not */
+    if (t->f.conv != VKC_ASTC) return;
     if (t->vt_present != g_vk_present + 1) {
         t->vt_present = g_vk_present + 1;
         vt_add(&g_vt_probe.frame, t);
