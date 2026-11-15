@@ -4570,40 +4570,73 @@ static void test_warp_matrix(const char* dir) {
     g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was, g_spirv_translate.hmma_pairs = pairs_was;
     g_spirv_translate.hmma_stage = stage_was;
     /* The matrix unit's shapes, one OpCooperativeMatrixMulAddKHR a product, on the same 4 HMMAs (two .16816, two
-       .1688): a 16 wide K takes each in one product, so 4; 16x8x8 splits the .16816s' K in two, so 6, and stages 6
-       fewer words because a .1688's K is all of its 8 (no zero fill); 8x8x8 splits their M too, so 12. Every shape
-       stores D once an HMMA */
+       .1688, all of them A at R8 and B at R12): a 16 wide K takes each in one product, so 4; 16x8x8 splits the
+       .16816s' K in two, so 6; 8x8x8 splits their M too, so 12. A fragment is staged once a block, so the matrix
+       loads are those of the first HMMA of each kind alone. Each HMMA stores its D once: an f16 D at its own HMMA,
+       where its halves round, and an f32 one at the block's end, where its matrix stops. An A register written
+       between HMMAs stages its fragment again (restage below) */
     static const struct {
         u32 bit;
         const char* name;
-        u32 products;
-    } shapes[] = {{SH_COOP_16x16x16, "16x16x16", 4},
-                  {SH_COOP_16x8x16, "16x8x16", 4},
-                  {SH_COOP_16x8x8, "16x8x8", 6},
-                  {SH_COOP_8x8x8, "8x8x8", 12}};
+        u32 products, loads, stores, restage, barriers;
+    } shapes[] = {{SH_COOP_16x16x16, "16x16x16", 4, 4, 4, 3, 7},
+                  {SH_COOP_16x8x16, "16x8x16", 4, 4, 4, 3, 7},
+                  {SH_COOP_16x8x8, "16x8x8", 6, 6, 4, 6, 7},
+                  {SH_COOP_8x8x8, "8x8x8", 12, 9, 8, 10, 7}};
     u32 stages_wide = 0;
     for (u32 s = 0; s < 4; s++) {
-        g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_shapes = shapes[s].bit;
-        g_spirv_translate.quad_compute = 1, g_spirv_translate.mixed_dot = 0, g_spirv_translate.hmma_pairs = 0;
-        ShaderInfo si = {0};
-        si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
-        si.shared_size = 1024;
-        size_t count = 0;
-        u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
-        u32 muladds = spv ? spv_count(spv, count, 4459) : 0, loads = spv ? spv_count(spv, count, 4457) : 0;
-        u32 stores = spv ? spv_count(spv, count, 4458) : 0, stages = spv ? spv_count(spv, count, 62) : 0;
-        u32 d_stores = shapes[s].bit == SH_COOP_8x8x8 ? 8 : 4; /* an 8 wide M stores two 8x8 Ds an HMMA */
-        CHECK(muladds == shapes[s].products && loads == 2 * shapes[s].products && stores == d_stores);
-        if (s < 2) stages_wide = stages;
-        if (shapes[s].bit == SH_COOP_16x8x8) CHECK(stages == stages_wide - 6); /* no zero-fill stores */
-        if (muladds != shapes[s].products || stores != d_stores ||
-            (shapes[s].bit == SH_COOP_16x8x8 && stages != stages_wide - 6))
-            fprintf(stderr, "matrix shape %s: %u products, %u loads, %u stores, %u stages for 4 HMMAs, expected %u\n",
-                    shapes[s].name, muladds, loads, stores, stages, shapes[s].products);
-        char name[32];
-        snprintf(name, sizeof name, "warp_matrix_coop_%s", shapes[s].name);
-        CHECK(spv && keep_module(dir, name, spv, count));
-        free(spv);
+        for (int written = 0; written < 2; written++) {
+            /* a program of the same two HMMAs, with R8 written between them where written says so */
+            u8 two[16 * 3] = {0};
+            u32 m = 0;
+            for (u32 k = 0; k < 2; k++) {
+                Word y = fix(0x23c);
+                set(&y, 16, 8, hmma[k][0]);
+                set(&y, 24, 8, 8);
+                set(&y, 32, 8, 12);
+                set(&y, 64, 8, hmma[k][1]);
+                set(&y, 72, 19, hmma[k][2]);
+                put(two, m++, y);
+                if (!k && written) put(two, m++, alu(0x002, 5, 8, 0)); /* MOV R8, R0 */
+            }
+            g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_shapes = shapes[s].bit;
+            g_spirv_translate.quad_compute = 1, g_spirv_translate.mixed_dot = 0, g_spirv_translate.hmma_pairs = 0;
+            ShaderInfo si = {0};
+            si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+            si.shared_size = 1024;
+            u32* spv;
+            size_t count = 0;
+            if (written) {
+                spv = sm86_to_spirv(two, m * 16, ST_CS, NULL, &si, &count);
+                CHECK(spv && spv_count(spv, count, 4457) == shapes[s].restage);
+                if (spv && spv_count(spv, count, 4457) != shapes[s].restage)
+                    fprintf(stderr, "matrix shape %s: %u loads for 2 HMMAs with R8 written between them, expected "
+                                    "%u\n",
+                            shapes[s].name, spv_count(spv, count, 4457), shapes[s].restage);
+                free(spv);
+                continue;
+            }
+            spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+            u32 muladds = spv ? spv_count(spv, count, 4459) : 0, loads = spv ? spv_count(spv, count, 4457) : 0;
+            u32 stores = spv ? spv_count(spv, count, 4458) : 0, stages = spv ? spv_count(spv, count, 62) : 0;
+            u32 barriers = spv ? spv_count(spv, count, 224) : 0;
+            CHECK(spv && muladds == shapes[s].products && loads == shapes[s].loads && stores == shapes[s].stores &&
+                  barriers == shapes[s].barriers);
+            if (s < 2) stages_wide = stages;
+            if (shapes[s].bit == SH_COOP_16x8x8) CHECK(stages == stages_wide - 3); /* no zero-fill stores */
+            if (!spv || muladds != shapes[s].products || loads != shapes[s].loads || stores != shapes[s].stores ||
+                barriers != shapes[s].barriers ||
+                (shapes[s].bit == SH_COOP_16x8x8 && stages != stages_wide - 3))
+                fprintf(stderr,
+                        "matrix shape %s: %u products, %u loads, %u stores, %u stages, %u barriers for 4 HMMAs, "
+                        "expected %u products, %u loads, %u stores, %u barriers\n",
+                        shapes[s].name, muladds, loads, stores, stages, barriers, shapes[s].products,
+                        shapes[s].loads, shapes[s].stores, shapes[s].barriers);
+            char name[32];
+            snprintf(name, sizeof name, "warp_matrix_coop_%s", shapes[s].name);
+            CHECK(spv && keep_module(dir, name, spv, count));
+            free(spv);
+        }
     }
     g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was, g_spirv_translate.hmma_pairs = pairs_was;
     g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_shapes = shapes_was;
@@ -5168,7 +5201,7 @@ static void test_warp_matrix_coop(const char* dir) {
                 u32 model = spv_memory_model(spv, count), coherent = spv_decorations(spv, count, 23);
                 u32 atomic_rw = spv_count(spv, count, 227) + spv_count(spv, count, 228);
                 if (coop) {
-                    CHECK(products == 4 && loads == 8 && stores == 4 && dots == 0 && shuffles == 6);
+                    CHECK(products == 4 && loads == 4 && stores == 4 && dots == 0 && shuffles == 6);
                     CHECK(model == 3 && coherent == 0 && atomic_rw == 2);
                     CHECK(spv_has_capability(spv, count, 6022) && spv_has_capability(spv, count, 5345) &&
                           spv_has_capability(spv, count, 5346));
