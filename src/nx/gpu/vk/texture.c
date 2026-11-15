@@ -1395,6 +1395,80 @@ done:
     memo[slot].kind = kind;
     return kind;
 }
+/* ------------------------------------------------------------ textures in system memory */
+/* The second tier. On a GPU of 2 GB under a desktop, the driver's budget for this process is 1.3 GB, and Mario Kart
+   World's race needs about 2: the cache evicted and loaded again 5,000 to 7,000 textures in 4 minutes, each a load
+   (and an encode) where it was used next. The device takes any image in system memory too (memory type 1 of a
+   GeForce GT 1030, which no CPU maps), and samples it there over the bus. So where the trim would evict a texture
+   (surface.c), its image is copied on the GPU into one in system memory and takes its place: slower to sample, but
+   there, with nothing to load again; and a demoted texture the frames use is moved back while the GPU's memory has
+   room (vk_tex_promote_frame). Not a sparse, bricked, multisampled or depth image, or one whose BC7 image is being
+   made between frames */
+static u64 g_sys_out, g_sys_back, g_sys_bytes;
+void vk_tex_sysmem_stats(u64* out, u64* back, u64* bytes) { *out = g_sys_out, *back = g_sys_back, *bytes = g_sys_bytes; }
+static int tex_moves(const Surf* t) {
+    return t->img && t->mem && !t->sparse && !t->bricks && !t->msaa && !t->f.depth && !t->f.stencil && !t->is_rt &&
+           !t->crop && !t->bc7.queued && t->layout != VK_IMAGE_LAYOUT_UNDEFINED && t->upload_valid;
+}
+/* t's image into a new one of the same shape whose memory `want` places, on the GPU, in the frame's command buffer
+   (a rendering pass open ends): the image takes the new one's place. bytes: the new one's. 0 when none was made */
+static int tex_move(Surf* t, const DevMemWant* want, u64* bytes) {
+    VkImageCreateInfo ii;
+    VkViewFormats vf;
+    int storage;
+    VkImage img;
+    DevMem mem;
+    tex_info(t, t->f.vk, &ii, &vf, &storage);
+    if (vk_devmem_image(&ii, want, &img, &mem) != VK_SUCCESS) return 0;
+    vk_mem_track(mem, VK_OWN_TEXTURE);
+    DevMemInfo info;
+    vk_devmem_info(mem, &info);
+    *bytes = info.size;
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    vk_barrier(cb, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageCopy r[16];
+    u32 n = 0;
+    const int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
+    for (u32 l = 0; l < ii.mipLevels && n < 16; l++) {
+        const u32 w = ii.extent.width >> l ? ii.extent.width >> l : 1, h = ii.extent.height >> l ? ii.extent.height >> l : 1,
+                  d = ii.extent.depth >> l ? ii.extent.depth >> l : 1;
+        r[n++] = (VkImageCopy){.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, is3d ? 1 : ii.arrayLayers},
+                               .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, is3d ? 1 : ii.arrayLayers},
+                               .extent = {w, h, d}};
+    }
+    rec_CmdCopyImage(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, n, r);
+    tex_image_swap(t, img, mem, *bytes, t->f.vk, 1);
+    return 1;
+}
+u64 vk_tex_demote(Surf* t) {
+    if (!g_settings.texture_system_memory || t->demoted || !tex_moves(t)) return 0;
+    const u64 was = t->bytes;
+    DevMemWant want = {.at = DM_SYSTEM, .image = 1};
+    u64 bytes;
+    if (!tex_move(t, &want, &bytes)) return 0;
+    vk_surf_bytes(t, 0); /* none of the GPU's memory: the budget's bytes are those */
+    t->demoted = 1;
+    t->sys_bytes = bytes;
+    g_sys_out++;
+    g_sys_bytes += bytes;
+    return was;
+}
+int vk_tex_promote(Surf* t) {
+    if (!t->demoted || !tex_moves(t)) return 0;
+    DevMemWant want = {.at = DM_DEVICE, .image = 1};
+    u64 bytes;
+    if (!tex_move(t, &want, &bytes)) return 0;
+    t->demoted = 0;
+    g_sys_bytes -= t->sys_bytes;
+    t->sys_bytes = 0;
+    g_sys_back++;
+    return 1;
+}
+
 /* the log's name of a format an ASTC texture is held in */
 static const char* astc_held_name(VkFormat f) {
     return vk_astc_bcn(f) ? vk_astc_bcn_name(vk_astc_bcn(f))
@@ -3516,6 +3590,7 @@ void vk_tex_frame(void) {
     u32 before = vk_present_before(20000000000ull, 120);
     vk_surf_ended_frame(); /* those the game ended go sooner */
     vk_tex_refine_frame(); /* levels shed for room come back while there is some */
+    vk_tex_promote_frame(); /* and textures moved into system memory, into the GPU's */
     vk_surf_reclaim(VK_LRU_TEX, before, ~0ull, VK_RECLAIM_LOSSLESS);
     vk_surf_reclaim(VK_LRU_RT, before, ~0ull, VK_RECLAIM_LOSSLESS);
     if (g_vk_present % 30 == 0) vk_rt_reclaim_superseded(vk_present_before(1000000000ull, 8), ~0ull);

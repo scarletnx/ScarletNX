@@ -220,6 +220,9 @@ static int type_pick(u32 bits, const DevMemWant* w) {
         like = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
         avoid |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
         break;
+    case DM_SYSTEM:
+        avoid |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+        break;
     default: /* DM_CACHED */
         need |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
         like = VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
@@ -231,6 +234,7 @@ static int type_pick(u32 bits, const DevMemWant* w) {
     for (u32 t = 0; t < g_devmem.mp.memoryTypeCount; t++) {
         VkMemoryPropertyFlags f = g_devmem.mp.memoryTypes[t].propertyFlags;
         if (!(bits >> t & 1) || (f & need) != need) continue;
+        if (w->at == DM_SYSTEM && (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) continue;
         u32 cost = snx_popcount64(~f & like) + snx_popcount64(f & avoid);
         if (cost < best_cost) {
             best = (int)t;
