@@ -3,9 +3,9 @@
 #ifndef SNX_GNU_VFS_INTERNAL_H
 #define SNX_GNU_VFS_INTERNAL_H
 #include "gnuabi/filesystem/vfs.h"
-#include "gnuabi/abi/errno/errno.h"
+#include "gnuabi/abi/errno.inc"
 #include "gnuabi/kernel/kernel.h"
-#include "gnuabi/abi/linux_file.h" /* GnuStat and the open flags */
+#include "gnuabi/abi/file.h" /* GnuStat and the open flags */
 #define GNU_VFS_PATH_MAX 4096
 #define GNU_VFS_FD_MAX   256
 #define GNU_VFS_FILE_MAX (64u * 1024u * 1024u)
@@ -79,7 +79,7 @@ typedef struct GnuVfsState {
     GnuMutex lock;
 } GnuVfsState;
 
-/* a GnuStat (abi/linux_file.h) written out as the asm-generic stat or as statx */
+/* a GnuStat (abi/file.h) written out as the asm-generic stat or as statx */
 int gnu_stat_put(GnuMemory* memory, uint64_t address, const GnuStat* st);
 int gnu_statx_put(GnuMemory* memory, uint64_t address, const GnuStat* st);
 /* gnu_host_errno: the kernel's (gnuabi/kernel/kernel.h) */

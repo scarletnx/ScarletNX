@@ -29,13 +29,13 @@
 int gnu_host_signal(int s) {
     if (0) { /* ... */ }
 #define LINUX_SIGNAL(guest, name) else if (guest == s) return name;
-#include "gnuabi/abi/linux_signal.inc"
+#include "gnuabi/abi/signal.inc"
     return 0;
 }
 int gnu_guest_signal(int s) {
     if (0) { /* ... */ }
 #define LINUX_SIGNAL(guest, name) else if (name == s) return guest;
-#include "gnuabi/abi/linux_signal.inc"
+#include "gnuabi/abi/signal.inc"
     return 0;
 }
 #else

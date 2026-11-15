@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Linux ELF64/AArch64 layout, independently decoded rather than host Elf headers. */
 #include "gnuabi/loader/elf/elf.h"
-#include "gnuabi/abi/errno/errno.h"
+#include "gnuabi/abi/errno.inc"
 #include "common/utilities/endian.h"
 #include <stdio.h>
 #include <stdlib.h>

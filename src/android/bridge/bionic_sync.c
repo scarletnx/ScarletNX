@@ -13,7 +13,7 @@
    - spinlock (2 words): 0 held
    - sem_t (4 words): 0 the value, 1 the waiters, 2 shared */
 #include "android/bridge/bionic_sync.h"
-#include "gnuabi/abi/errno/errno.h"
+#include "gnuabi/abi/errno.inc"
 #include <stdbool.h>
 #include <stddef.h>
 

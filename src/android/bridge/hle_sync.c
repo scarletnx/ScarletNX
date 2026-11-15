@@ -10,7 +10,7 @@
 #include "android/bridge/hle_impl.h"
 #include "android/bridge/hle_signal.h"
 #include "common/utilities/endian.h"
-#include "gnuabi/abi/errno/errno.h"
+#include "gnuabi/abi/errno.inc"
 #include <stdbool.h>
 #include <string.h>
 

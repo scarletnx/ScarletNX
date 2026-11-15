@@ -297,8 +297,8 @@ builds for FreeBSD, macOS and Windows x64, where they differ:
   sets for the process (a decimal comma, other names of days, other words), so a host call into guest code
   (`bridge_call`) runs its thread in the C locale until it returns: C.UTF-8 on Linux, whose multibyte functions
   serve the guest's. Windows' C runtime keeps the C locale, as no part of the process sets another.
-- **Constants and layouts** convert by the GNU ABI's tables and the network stack's: `gnuabi/abi/linux_file.h`
-  (struct stat, the open flags), `gnuabi/abi/linux_net.h` (families, flags, options, `sockaddr_in` and `sockaddr_in6`)
+- **Constants and layouts** convert by the GNU ABI's tables and the network stack's: `gnuabi/abi/file.h`
+  (struct stat, the open flags), `gnuabi/abi/net.h` (families, flags, options, `sockaddr_in` and `sockaddr_in6`)
   and `common/network/net_host.h` (the stack's constants as the host's). The adapters in `hle_posix.c` also convert
   the mmap and msync flags, fcntl's commands and `struct flock`, the requests of ioctl, `struct dirent`, `struct
   statfs` and the poll events. `getaddrinfo`, `getnameinfo` and `gethostbyname` are the stack's on every host, whose
