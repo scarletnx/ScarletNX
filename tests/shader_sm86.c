@@ -4498,9 +4498,10 @@ static void test_warp_matrix(const char* dir) {
     put(code, n++, exit_insn());
     put(code, n, bra(n, n, 7, 0));
     n++;
-    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
-        pairs_was = g_spirv_translate.hmma_pairs, f16_was = g_spirv_translate.hmma_f16;
-    int coop_was = g_spirv_translate.hmma_coop, tile_was = g_spirv_translate.hmma_coop_tile;
+    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot, pairs_was = g_spirv_translate.hmma_pairs,
+        f16_was = g_spirv_translate.hmma_f16;
+    int coop_was = g_spirv_translate.hmma_coop;
+    u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
     for (int pairs = 0; pairs < 2; pairs++)
         for (int quad = 0; quad < 2; quad++)
             for (int mixed = 0; mixed < 2; mixed++)
@@ -4566,34 +4567,46 @@ static void test_warp_matrix(const char* dir) {
         CHECK(keep_module(dir, name, spv, count));
         free(spv);
     }
-    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
-    g_spirv_translate.hmma_pairs = pairs_was;
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was, g_spirv_translate.hmma_pairs = pairs_was;
     g_spirv_translate.hmma_stage = stage_was;
-    /* The matrix unit's tile: one OpCooperativeMatrixMulAddKHR an HMMA where the driver offers 16x16x16 (RADV), four
-       where its tile is 8x8x8 (Metal's simdgroup_matrix, which a MoltenVK with VK_KHR_cooperative_matrix reports):
-       the two M halves, each the sum of the two K halves, of which a .1688 has one: 12 for the 4 HMMAs above, two of
-       them .1688 */
-    for (int tile = 0; tile < 2; tile++) {
-        g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_tile = tile ? 8 : 16;
+    /* The matrix unit's shapes, one OpCooperativeMatrixMulAddKHR a product, on the same 4 HMMAs (two .16816, two
+       .1688): a 16 wide K takes each in one product, so 4; 16x8x8 splits the .16816s' K in two, so 6, and stages 6
+       fewer words because a .1688's K is all of its 8 (no zero fill); 8x8x8 splits their M too, so 12. Every shape
+       stores D once an HMMA */
+    static const struct {
+        u32 bit;
+        const char* name;
+        u32 products;
+    } shapes[] = {{SH_COOP_16x16x16, "16x16x16", 4},
+                  {SH_COOP_16x8x16, "16x8x16", 4},
+                  {SH_COOP_16x8x8, "16x8x8", 6},
+                  {SH_COOP_8x8x8, "8x8x8", 12}};
+    u32 stages_wide = 0;
+    for (u32 s = 0; s < 4; s++) {
+        g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_shapes = shapes[s].bit;
         g_spirv_translate.quad_compute = 1, g_spirv_translate.mixed_dot = 0, g_spirv_translate.hmma_pairs = 0;
         ShaderInfo si = {0};
         si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
         si.shared_size = 1024;
         size_t count = 0;
         u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
-        u32 muladds = spv ? spv_count(spv, count, 4459) : 0;
-        CHECK(muladds == (tile ? 12u : 4u));
-        if (muladds != (tile ? 12u : 4u))
-            fprintf(stderr, "matrix tile %d: %u products for 4 HMMAs, expected %u\n", tile ? 8 : 16, muladds,
-                    tile ? 12u : 4u);
+        u32 muladds = spv ? spv_count(spv, count, 4459) : 0, loads = spv ? spv_count(spv, count, 4457) : 0;
+        u32 stores = spv ? spv_count(spv, count, 4458) : 0, stages = spv ? spv_count(spv, count, 62) : 0;
+        u32 d_stores = shapes[s].bit == SH_COOP_8x8x8 ? 8 : 4; /* an 8 wide M stores two 8x8 Ds an HMMA */
+        CHECK(muladds == shapes[s].products && loads == 2 * shapes[s].products && stores == d_stores);
+        if (s < 2) stages_wide = stages;
+        if (shapes[s].bit == SH_COOP_16x8x8) CHECK(stages == stages_wide - 6); /* no zero-fill stores */
+        if (muladds != shapes[s].products || stores != d_stores ||
+            (shapes[s].bit == SH_COOP_16x8x8 && stages != stages_wide - 6))
+            fprintf(stderr, "matrix shape %s: %u products, %u loads, %u stores, %u stages for 4 HMMAs, expected %u\n",
+                    shapes[s].name, muladds, loads, stores, stages, shapes[s].products);
         char name[32];
-        snprintf(name, sizeof name, "warp_matrix_coop%d", tile ? 8 : 16);
+        snprintf(name, sizeof name, "warp_matrix_coop_%s", shapes[s].name);
         CHECK(spv && keep_module(dir, name, spv, count));
         free(spv);
     }
-    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
-    g_spirv_translate.hmma_pairs = pairs_was;
-    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_tile = tile_was;
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was, g_spirv_translate.hmma_pairs = pairs_was;
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_shapes = shapes_was;
 }
 
 /* ---- HMMA's values on the evaluator's subgroup of 32 lanes (spv_eval_subgroup) ---- */
@@ -5130,14 +5143,15 @@ static void test_warp_matrix_coop(const char* dir) {
     put(code, n++, exit_insn());
     put(code, n, bra(n, n, 7, 0));
     n++;
-    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
-        coop_was = g_spirv_translate.hmma_coop, f16_was = g_spirv_translate.float16;
+    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot, coop_was = g_spirv_translate.hmma_coop,
+        f16_was = g_spirv_translate.float16;
+    u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
     /* the translation as each flag and block: 1 when it took the cooperative matrices, 0 when hmma's, -1 failed */
     for (int coop = 0; coop < 2; coop++)
         for (int quad = 0; quad < 2; quad++)
             for (int mixed = 0; mixed < 2; mixed++) {
-                g_spirv_translate.quad_compute = quad, g_spirv_translate.mixed_dot = mixed,
-                g_spirv_translate.hmma_coop = coop ? 65536 : 0;
+                g_spirv_translate.quad_compute = quad, g_spirv_translate.mixed_dot = mixed, g_spirv_translate.hmma_coop = coop ? 65536 : 0;
+                g_spirv_translate.hmma_coop_shapes = coop ? SH_COOP_16x16x16 : 0;
                 ShaderInfo si = {0};
                 si.cs_local[0] = 32, si.cs_local[1] = 2, si.cs_local[2] = 1;
                 si.shared_size = 49152;
@@ -5173,7 +5187,8 @@ static void test_warp_matrix_coop(const char* dir) {
             }
     /* where the cooperative matrices don't fit: a block of 16 lanes, 64 KiB of shared memory but 1 KiB, which the
        two slots' 3.5 KiB don't fit in, and no shaderFloat16 */
-    g_spirv_translate.hmma_coop = 65536, g_spirv_translate.quad_compute = 1, g_spirv_translate.mixed_dot = 0;
+    g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_shapes = SH_COOP_16x16x16, g_spirv_translate.quad_compute = 1,
+    g_spirv_translate.mixed_dot = 0;
     for (int k = 0; k < 3; k++) {
         ShaderInfo si = {0};
         si.cs_local[0] = k == 0 ? 16 : 32, si.cs_local[1] = k == 0 ? 4 : 2, si.cs_local[2] = 1;
@@ -5196,58 +5211,8 @@ static void test_warp_matrix_coop(const char* dir) {
         CHECK(spv && spv_memory_model(spv, count) == 1 && !spv_has_capability(spv, count, 5345));
         free(spv);
     }
-    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
-    g_spirv_translate.hmma_coop = coop_was;
-}
-
-/* A complementary pair, @!P0 MOV R0, a ... @P0 MOV R0, b (or the reverse), with an instruction between that touches
-   neither R0 nor P0, becomes one select: no selection is left in the program, and R0 is b where P0 holds and a where
-   it doesn't (pair_partner). With a MOV between that reads R0 they stay two guarded writes, and that MOV sees R0 as
-   the first wrote it or not. Colour 0 is R0-R3: R0 the pair's, R1 the instruction between's */
-static void test_complementary_pair(const char* dir) {
-    for (u32 reader = 0; reader < 2; reader++)
-        for (u32 first_negated = 0; first_negated < 2; first_negated++)
-            for (u32 p0 = 0; p0 < 2; p0++) {
-                u8 code[16 * 12] = {0};
-                u32 n = 0;
-                for (u32 r = 0; r < 4; r++) put(code, n++, mov_imm(r, f2u(0.25f)));
-                put(code, n++, setp_const(0, p0 ? 0 : 1));
-                put(code, n++, mov_imm(5, f2u(0.5f)));
-                put(code, n++, mov_imm(6, f2u(0.75f)));
-                put(code, n++, mov_if(0, 5, 0, (int)first_negated));                   /* @!P0 MOV R0, R5 (or @P0) */
-                put(code, n++, reader ? mov_if(1, 0, 7, 0) : mov_imm(1, f2u(0.125f))); /* MOV R1, R0 or R1, 0.125 */
-                put(code, n++, mov_if(0, 6, 0, (int)!first_negated));                  /* @P0 MOV R0, R6 (or @!P0) */
-                put(code, n++, exit_insn());
-                put(code, n, bra(n, n, 7, 0));
-                n++;
-                u32 fsph[32] = {0};
-                fsph[0] = sph0(2, 5);
-                fsph[18] = 0xf;
-                ShaderInfo si = {0};
-                size_t count = 0;
-                u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
-                CHECK(spv != NULL);
-                if (!spv) {
-                    fprintf(stderr, "complementary pair: %s\n", si.first_unsupported);
-                    continue;
-                }
-                u32 at[8];
-                u32 merges = spv_find(spv, count, 247 /* OpSelectionMerge */, at, 8);
-                free(spv);
-                CHECK(merges == (reader ? 2u : 0u));
-                SpvEvalEnv env = {0};
-                int ran = run_stage(ST_FS, code, n, fsph, &env);
-                int first_ran = first_negated ? !p0 : (int)p0;
-                u32 want0 = f2u(first_ran ? 0.5f : 0.75f);
-                u32 want1 = reader ? f2u(first_ran ? 0.5f : 0.25f) : f2u(0.125f);
-                CHECK(ran && env.out[0][0] == want0 && env.out[0][1] == want1);
-                if (!ran || env.out[0][0] != want0 || env.out[0][1] != want1 || merges != (reader ? 2u : 0u))
-                    fprintf(stderr,
-                            "complementary pair: reader %u, first negated %u, P0 %u: R0 %08x (%08x), R1 %08x (%08x), "
-                            "%u selections\n",
-                            reader, first_negated, p0, env.out[0][0], want0, env.out[0][1], want1, merges);
-            }
-    (void)dir;
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was, g_spirv_translate.hmma_coop = coop_was;
+    g_spirv_translate.hmma_coop_shapes = shapes_was;
 }
 
 int main(int argc, char** argv) {

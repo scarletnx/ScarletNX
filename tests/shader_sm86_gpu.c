@@ -510,12 +510,11 @@ typedef struct {
     int float16;   /* shaderFloat16, enabled */
     int mixed_dot; /* VK_VALVE_shader_mixed_float_dot_product's Float16AccFloat32, enabled */
     int warp32;    /* compute pipelines can require subgroups of 32, whole, as vk/compute.c's do (enabled) */
-    int coop; /* VK_KHR_cooperative_matrix's 16x16x16 f16 product into f32 in subgroup scope, with the Vulkan memory
-                 model, enabled: the device's maxComputeSharedMemorySize, for g_spirv_translate.hmma_coop, else 0 */
-    int float_add;  /* VK_EXT_shader_atomic_float's shaderBufferFloat32AtomicAdd, enabled
-                       (g_spirv_translate.float_atomic_add) */
-    int half_flush; /* no shaderDenormPreserveFloat16: f16 subnormals packed by hand, as vk/device.c's
-                       g_spirv_translate.half_flush */
+    u32 coop_shapes; /* VK_KHR_cooperative_matrix's shapes of f16 A and B into f32 in subgroup scope, with the Vulkan
+                        memory model, enabled: the bits of g_spirv_translate.hmma_coop_shapes, 0 without the matrices */
+    int coop; /* the device's maxComputeSharedMemorySize where coop_shapes is not 0, for g_spirv_translate.hmma_coop, else 0 */
+    int float_add; /* VK_EXT_shader_atomic_float's shaderBufferFloat32AtomicAdd, enabled (g_shader_float_atomic_add) */
+    int half_flush; /* no shaderDenormPreserveFloat16: f16 subnormals packed by hand, as vk/device.c's g_spirv_translate.half_flush */
 } Gpu;
 /* the subgroups of a device's compute stage: their size where they have shuffles, else 0, and *quad whether they
    have quad operations */
@@ -527,9 +526,9 @@ static u32 compute_subgroups(VkPhysicalDevice phys, int* quad) {
     *quad = compute && (sp.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
     return compute && (sp.supportedOperations & VK_SUBGROUP_FEATURE_SHUFFLE_BIT) ? sp.subgroupSize : 0;
 }
-/* whether the device multiplies 16x16x16 f16 A and B into an f32 accumulator in subgroup scope in compute, as
-   vk/device.c asks for g_spirv_translate.hmma_coop */
-static int coop_shape(VkPhysicalDevice phys) {
+/* the shapes of f16 A and B into an f32 accumulator in subgroup scope in compute that the device multiplies, as
+   vk/device.c reads for g_spirv_translate.hmma_coop_shapes: a bit for each shape this test uses */
+static u32 coop_shape(VkPhysicalDevice phys) {
     VkPhysicalDeviceCooperativeMatrixPropertiesKHR cp = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &cp};
@@ -542,13 +541,18 @@ static int coop_shape(VkPhysicalDevice phys) {
     for (u32 i = 0; i < n; i++)
         props[i] = (VkCooperativeMatrixPropertiesKHR){.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
     if (vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(phys, &n, props) < 0) return 0;
-    for (u32 i = 0; i < n; i++)
-        if (props[i].MSize == 16 && props[i].NSize == 16 && props[i].KSize == 16 &&
-            props[i].AType == VK_COMPONENT_TYPE_FLOAT16_KHR && props[i].BType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
-            props[i].CType == VK_COMPONENT_TYPE_FLOAT32_KHR && props[i].ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
-            !props[i].saturatingAccumulation && props[i].scope == VK_SCOPE_SUBGROUP_KHR)
-            return 1;
-    return 0;
+    u32 shapes = 0;
+    for (u32 i = 0; i < n; i++) {
+        if (props[i].AType != VK_COMPONENT_TYPE_FLOAT16_KHR || props[i].BType != VK_COMPONENT_TYPE_FLOAT16_KHR ||
+            props[i].CType != VK_COMPONENT_TYPE_FLOAT32_KHR || props[i].ResultType != VK_COMPONENT_TYPE_FLOAT32_KHR ||
+            props[i].saturatingAccumulation || props[i].scope != VK_SCOPE_SUBGROUP_KHR)
+            continue;
+        if (props[i].MSize == 16 && props[i].NSize == 16 && props[i].KSize == 16) shapes |= SH_COOP_16x16x16;
+        else if (props[i].MSize == 16 && props[i].NSize == 8 && props[i].KSize == 16) shapes |= SH_COOP_16x8x16;
+        else if (props[i].MSize == 16 && props[i].NSize == 8 && props[i].KSize == 8) shapes |= SH_COOP_16x8x8;
+        else if (props[i].MSize == 8 && props[i].NSize == 8 && props[i].KSize == 8) shapes |= SH_COOP_8x8x8;
+    }
+    return shapes;
 }
 static int has_device_extension(VkPhysicalDevice phys, const char* name) {
     u32 n = 0;
@@ -644,10 +648,11 @@ static int gpu_open(Gpu* g, int warp) {
     }
     g->mixed_dot = has_mixed && mixq.shaderMixedFloatDotProductFloat16AccFloat32 && g->float16;
     g->float_add = has_float_add && addq.shaderBufferFloat32AtomicAdd;
-    g->coop = has_coop && coopq.cooperativeMatrix && g->float16 && v12q.vulkanMemoryModel &&
-                      v12q.vulkanMemoryModelDeviceScope && g->warp32 && coop_shape(g->phys)
-                  ? (int)pp2.properties.limits.maxComputeSharedMemorySize
-                  : 0;
+    g->coop_shapes = has_coop && coopq.cooperativeMatrix && g->float16 && v12q.vulkanMemoryModel &&
+                             v12q.vulkanMemoryModelDeviceScope && g->warp32
+                         ? coop_shape(g->phys)
+                         : 0;
+    g->coop = g->coop_shapes ? (int)pp2.properties.limits.maxComputeSharedMemorySize : 0;
     VkPhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE mix = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MIXED_FLOAT_DOT_PRODUCT_FEATURES_VALVE,
         .shaderMixedFloatDotProductFloat16AccFloat32 = VK_TRUE};
@@ -1311,6 +1316,13 @@ static void tensor_inputs(u32* in, u32* want, Expect* expect, int exact) {
 #undef PAIR
     }
 }
+/* the name of a single cooperative matrix shape bit, for the runs' lines */
+static const char* coop_name(u32 shape) {
+    static const char* const names[4] = {"16x16x16", "16x8x16", "16x8x8", "8x8x8"};
+    for (u32 i = 0; i < 4; i++)
+        if (shape == 1u << i) return names[i];
+    return "mixed";
+}
 /* whether output k's word h is what it should be: its bits where they are exact (bits) or it only moves bits, else
    within its tolerance */
 static int tensor_match(u32 k, u32 h, u32 w, const Expect* e, int bits) {
@@ -1322,8 +1334,9 @@ static int tensor_match(u32 k, u32 h, u32 w, const Expect* e, int bits) {
 }
 /* the program in workgroups of local (32: one warp each, 64: two in a subgroup of 64 where the device runs them so,
    as RADV does, or in two of 32 with warp32), translated with or without quad operations, the mixed dot product and
-   the device's cooperative matrices (coop, in subgroups of 32 only), on one set of matrices */
-static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, int coop, int pairs, int exact) {
+   the device's cooperative matrices (coop: a mask of their shapes, 0 off, in subgroups of 32 only), on one set of
+   matrices */
+static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, u32 coop, int pairs, int exact) {
     int stage = pairs == 2; /* pairs 2: A and B through a warp's slot of shared memory (g_spirv_translate.hmma_stage) */
     static Prog p;
     static u32 in[INVOCATIONS * 8], want[INVOCATIONS * TENSOR_OUT], got[INVOCATIONS * TENSOR_OUT];
@@ -1350,18 +1363,17 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
     si.cs_local[0] = (int)local, si.cs_local[1] = si.cs_local[2] = 1;
     si.shared_size = 2048;
     size_t words = 0;
-    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
-        f16_was = g_spirv_translate.float16, coop_was = g_spirv_translate.hmma_coop,
-        pairs_was = g_spirv_translate.hmma_pairs, stage_was = g_spirv_translate.hmma_stage,
+    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot, f16_was = g_spirv_translate.float16,
+        coop_was = g_spirv_translate.hmma_coop, pairs_was = g_spirv_translate.hmma_pairs, stage_was = g_spirv_translate.hmma_stage,
         flush_was = g_spirv_translate.half_flush;
+    u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
     g_spirv_translate.quad_compute = quad, g_spirv_translate.mixed_dot = mixed, g_spirv_translate.float16 = g->float16;
     g_spirv_translate.half_flush = g->half_flush;
-    g_spirv_translate.hmma_coop = coop ? g->coop : 0, g_spirv_translate.hmma_pairs = pairs == 1;
+    g_spirv_translate.hmma_coop = coop ? g->coop : 0, g_spirv_translate.hmma_coop_shapes = coop, g_spirv_translate.hmma_pairs = pairs == 1;
     g_spirv_translate.hmma_stage = stage ? 16384 : 0; /* every device's maxComputeSharedMemorySize is at least that */
     u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
-    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
-    g_spirv_translate.float16 = f16_was;
-    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_pairs = pairs_was,
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was, g_spirv_translate.float16 = f16_was;
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_shapes = shapes_was, g_spirv_translate.hmma_pairs = pairs_was;
     g_spirv_translate.hmma_stage = stage_was;
     g_spirv_translate.half_flush = flush_was;
     const char* how = exact ? "exact" : "rounded";
@@ -1394,9 +1406,11 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
                     fprintf(stderr, "tensor (%s): lane %u %s: GPU 0x%08x, expected 0x%08x\n", how, i, names[k], h, w);
             }
         }
-    const char* products = coop    ? "products by cooperative matrices"
-                           : mixed ? "products by mixed dot products"
-                                   : "products by unpacking to f32";
+    char products[96];
+    if (coop)
+        snprintf(products, sizeof products, "products by cooperative matrices %s", coop_name(coop));
+    else
+        snprintf(products, sizeof products, "products by %s", mixed ? "mixed dot products" : "unpacking to f32");
     printf("tensor: workgroups of %u, A by %s, B by %s, %s, %s sums: %u instructions, %u outputs x %u invocations "
            "(subgroups of %u%s), %u differ\n",
            local,
@@ -1433,9 +1447,11 @@ static int run_tensor(void) {
                     ok &= run_tensor_with(&g, run ? 64 : 32, run == 2, !fallback && g.quad, !fallback && g.mixed_dot, 0,
                                           pairs, exact);
         }
-    for (u32 run = 0; run < 2 && g.coop; run++)
-        for (int exact = 1; exact >= 0; exact--)
-            ok &= run_tensor_with(&g, run ? 64 : 32, 1, g.quad, g.mixed_dot, 1, 0, exact);
+    for (u32 shape = 0; shape < 4 && g.coop; shape++)
+        if (g.coop_shapes & (1u << shape))
+            for (u32 run = 0; run < 2; run++)
+                for (int exact = 1; exact >= 0; exact--)
+                    ok &= run_tensor_with(&g, run ? 64 : 32, 1, g.quad, g.mixed_dot, 1u << shape, 0, exact);
     vkDestroyDevice(g.device, NULL);
     vkDestroyInstance(g.instance, NULL);
     return ok;
@@ -1532,12 +1548,23 @@ static int cmp_double(const void* a, const void* b) {
     return x < y ? -1 : x > y;
 }
 /* the forms of hmma the bench times, each set before its translation (bench_form): each lane gathering its B words,
-   pairs of lanes sharing them (g_spirv_translate.hmma_pairs), and A and B through a warp's slot of shared memory
-   (g_spirv_translate.hmma_stage) */
-static const char* const bench_forms[] = {"gather", "pairs", "stage"};
+   pairs of lanes sharing them (g_spirv_translate.hmma_pairs), A and B through a warp's slot of shared memory
+   (g_spirv_translate.hmma_stage), the device's cooperative matrices (g_spirv_translate.hmma_coop), and f16 half sums
+   (g_spirv_translate.hmma_f16). A form the device cannot take is skipped: coop without the matrices, half where the mixed dot
+   product already sums two products an instruction */
+static const char* const bench_forms[] = {"gather", "pairs", "stage", "coop", "half"};
 #define BENCH_FORMS (sizeof bench_forms / sizeof *bench_forms)
-static void bench_form(u32 form) {
-    g_spirv_translate.hmma_pairs = form == 1, g_spirv_translate.hmma_stage = form == 2 ? 16384 : 0;
+static void bench_form(u32 form, const Gpu* g) {
+    g_spirv_translate.hmma_pairs = form == 1;
+    g_spirv_translate.hmma_stage = form == 2 ? 16384 : 0;
+    g_spirv_translate.hmma_coop = form == 3 ? g->coop : 0;
+    g_spirv_translate.hmma_coop_shapes = form == 3 ? g->coop_shapes : 0;
+    g_spirv_translate.hmma_f16 = form == 4;
+}
+static int bench_form_usable(u32 form, const Gpu* g) {
+    if (form == 3) return g->coop != 0;
+    if (form == 4) return g->float16 && !g->mixed_dot;
+    return 1;
 }
 static int run_hmma_bench(u32 rounds, u32 groups) {
     Gpu g = {0};
@@ -1545,9 +1572,10 @@ static int run_hmma_bench(u32 rounds, u32 groups) {
         printf("HMMA bench: no device with subgroups of 32 or more lanes and shuffles in compute: skipped\n");
         return 1;
     }
-    printf("HMMA bench device: %s (subgroups of %u%s, quads in compute %d, shaderFloat16 %d, mixed dot product %d)\n",
+    printf("HMMA bench device: %s (subgroups of %u%s, quads in compute %d, shaderFloat16 %d, mixed dot product %d, "
+           "cooperative matrices %d)\n",
            g.name, g.warp32 ? 32 : g.subgroup, g.warp32 ? ", required" : ", the device's own", g.quad, g.float16,
-           g.mixed_dot);
+           g.mixed_dot, g.coop != 0);
     Prog p = {0};
     bench_program(&p);
     static u32 in[BENCH_LOCAL * 16];
@@ -1576,19 +1604,17 @@ static int run_hmma_bench(u32 rounds, u32 groups) {
     for (u32 round = 0; round < rounds && ok; round++)
         for (u32 k = 0; k < BENCH_FORMS && ok; k++) {
             u32 form = round & 1 ? (u32)BENCH_FORMS - 1 - k : k;
+            if (!bench_form_usable(form, &g)) continue;
             ShaderInfo si = {0};
             si.cs_local[0] = (int)BENCH_LOCAL, si.cs_local[1] = si.cs_local[2] = 1;
             si.shared_size = 4096;
-            int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
-                f16_was = g_spirv_translate.float16;
-            g_spirv_translate.quad_compute = g.quad, g_spirv_translate.mixed_dot = g.mixed_dot,
-            g_spirv_translate.float16 = g.float16;
-            bench_form(form);
+            int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot, f16_was = g_spirv_translate.float16;
+            g_spirv_translate.quad_compute = g.quad, g_spirv_translate.mixed_dot = g.mixed_dot, g_spirv_translate.float16 = g.float16;
+            bench_form(form, &g);
             size_t words = 0;
             u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
-            bench_form(0);
-            g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
-            g_spirv_translate.float16 = f16_was;
+            bench_form(0, &g);
+            g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was, g_spirv_translate.float16 = f16_was;
             if (!spv) {
                 fprintf(stderr, "HMMA bench: not translated: %s\n", si.first_unsupported);
                 ok = 0;
@@ -1618,6 +1644,7 @@ static int run_hmma_bench(u32 rounds, u32 groups) {
     /* a warp's HMMAs a dispatch: its 8 a step, BENCH_GROUPS workgroups of two warps */
     double hmmas = (double)groups * (BENCH_LOCAL / 32) * BENCH_STEPS * 8;
     for (u32 k = 0; k < BENCH_FORMS && ok; k++) {
+        if (!nsamples[k]) continue;
         qsort(samples[k], nsamples[k], sizeof **samples, cmp_double);
         double median = samples[k][nsamples[k] / 2];
         printf("HMMA_BENCH form=%s dispatches=%u median_us=%.1f warp_hmma_ns=%.4f (%u steps, %u workgroups)\n",
