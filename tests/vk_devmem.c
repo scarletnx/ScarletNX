@@ -1064,6 +1064,56 @@ static void check_drain_alone(void) {
 }
 
 
+/* drain_pick's room test, as DXVK's on a chunk's used pages: a block is emptied when the free space in the other
+   blocks of its kind holds what it holds and half as much again, whatever the block's size. Two blocks of 1 MiB
+   images, the first filled and the second with 3 MiB free, past the budget: the first with 3 MiB in it stays, as
+   4.5 MiB do not fit in the room. With 1 MiB in it, it is emptied, though the room is less than 1.5 times its size */
+static void check_drain_room(void) {
+    const u64 room = 3 * MIB, high = 3 * MIB, low = MIB;
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1};
+    device(0, 1024, 64, 4 * GIB);
+    g_vk.has_pageable = 0;
+    u32 n = 0, first = 0, second = 0;
+    for (;;) {
+        CHECK(n < DEFRAG_N && make(1, MIB, 4096, ~0u, 0, tex, &g_dh[n]) == VK_SUCCESS);
+        vk_devmem_owner(g_dh[n].mem, &g_dh[n]);
+        const u32 b = g_devmem.rec[g_dh[n++].mem - 1].block;
+        if (!first) first = b;
+        if (b != first && !second) second = b;
+        CHECK(b == first || b == second);
+        if (second && g_devmem.block[second - 1].free.units - g_devmem.block[second - 1].free.used == room / DM_UNIT)
+            break;
+    }
+    const u64 size = g_devmem.block[first - 1].size;
+    CHECK(high <= size / 2 && 2 * room < 3 * high && 2 * room >= 3 * low && 2 * room < 3 * size);
+    u64 held = size;
+    for (u32 i = 0; i < n && held > high; i++)
+        if (g_devmem.rec[g_dh[i].mem - 1].block == first) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+            held -= MIB;
+        }
+    CHECK(held == high && g_devmem.block[first - 1].free.used * DM_UNIT == high);
+    pm_lock(&g_devmem.lk);
+    CHECK(drain_pick(MIB) == 0); /* 1.5 times what it holds is more than the room */
+    pm_unlock(&g_devmem.lk);
+    for (u32 i = 0; i < n && held > low; i++)
+        if (g_dh[i].mem && g_devmem.rec[g_dh[i].mem - 1].block == first) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+            held -= MIB;
+        }
+    pm_lock(&g_devmem.lk);
+    CHECK(drain_pick(MIB) == first); /* the room holds 1.5 times what it holds, not 1.5 times its size */
+    pm_unlock(&g_devmem.lk);
+    for (u32 i = 0; i < n; i++)
+        if (g_dh[i].mem) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    check_counts(0);
+}
+
 /* A block of the low class whose first allocations rose to the high class, as check_defrag's repair: its index plus
    one, and the count raised */
 static u32 repair_setup(u32* raised) {
@@ -1127,16 +1177,20 @@ static void check_repair_end(void) {
     check_counts(0);
 }
 
-/* The memory extensions, the priority classes and the defrag are the device's alone: where the driver has the two
-   extensions, the renderer turns them on (device.c), and where it has not, one class of blocks and no priorities
-   (check_priority). No setting turns them off, empties no block, or lowers the GPU's heap below the driver's budget */
+/* The priority classes and the defrag are the device's: where the driver has the two memory extensions, the renderer
+   turns them on (device.c), and where it has not, one class of blocks and no priorities (check_priority). Each
+   extension has its one setting, as every extension the renderer can use. No setting empties no block, or lowers the
+   GPU's heap below the driver's budget */
 static void check_no_settings(void) {
     static const char* const exts[] = {VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME,
                                        VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME};
     static const char* const args[] = {"vk-defrag", "vk-heap-budget-mb"};
     CHECK(g_vk_extension_settings_count > 0 && g_setting_args_count > 0);
-    for (int k = 0; k < g_vk_extension_settings_count; k++)
-        for (u32 e = 0; e < sizeof exts / sizeof exts[0]; e++) CHECK(strcmp(g_vk_extension_settings[k].name, exts[e]));
+    for (u32 e = 0; e < sizeof exts / sizeof exts[0]; e++) {
+        u32 found = 0;
+        for (int k = 0; k < g_vk_extension_settings_count; k++) found += !strcmp(g_vk_extension_settings[k].name, exts[e]);
+        CHECK(found == 1);
+    }
     for (int i = 0; i < g_setting_args_count; i++)
         for (u32 a = 0; a < sizeof args / sizeof args[0]; a++) CHECK(strcmp(g_setting_args[i], args[a]));
 }
@@ -1166,6 +1220,7 @@ int main(void) {
     check_defrag(1);
     check_repair_end();
     check_drain_alone();
+    check_drain_room();
     check_cap();
     check_atoms(64);
     check_atoms(4096);
