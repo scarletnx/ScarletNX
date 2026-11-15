@@ -25,6 +25,7 @@
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/gamepad.h"
+#include "nx/runtime/platform/joycon2.h"
 #include "nx/runtime/platform/joycon2_sdl.h" /* joycon2_mouse */
 #include "nx/runtime/platform/help.h"
 #include "nx/runtime/platform/hotkeys.h"
@@ -666,6 +667,7 @@ void video_init(const char* title, const char* addons) {
     snx_sdl_desktop_hints();
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
     gamepad_scan();
+    joycon2_start(); /* the Joy-Con 2 host, when joycon2 is on: each one it connects is a gamepad too */
     /* SDL subsystem initialization belongs to the main thread, before the guest can open audout sessions. */
     g_sdl3.audio_ready = SDL_InitSubSystem(SDL_INIT_AUDIO);
     if (!g_sdl3.audio_ready) WARN("audio: SDL could not start its audio: %s\n", SDL_GetError());
@@ -1903,6 +1905,7 @@ void video_poll(void) {
        gives the box's line) is in this poll's state */
     int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown();
     if (!g_opt_headless) mouse_hold_update();
+    joycon2_poll(); /* a Joy-Con 2 that became ready or left: its gamepad's added or removed event comes below */
     while (!g_opt_headless && SDL_PollEvent(&e)) {
         int action = e.type == SDL_EVENT_KEY_DOWN ? key_action(&e.key) : -1; /* the runtime key it is */
         /* SDL numbers the app's, the displays' and the window's events under the keyboard's */
