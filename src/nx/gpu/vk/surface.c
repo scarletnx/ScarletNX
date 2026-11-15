@@ -1309,6 +1309,7 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** 
         s->gw = 0;
     }
 }
+static int rt_superseded(const Surf* s);
 /* The targets over [gva, gva + size) holding pixels guest memory hasn't got, oldest image first: memory freed and
    given to a new target still has the old target's pixels pending, and where two cover the same bytes the newer one's
    go on top. In local while it holds nlocal, else in a list the caller frees */
@@ -1331,6 +1332,10 @@ static u32 rt_pending_over(u64 gva, u64 size, Surf** local, u32 nlocal, Surf*** 
             walk = g_rows.lru[walk].next;
         }
         if ((s->gva >> 63) || s->gva >= gva + size || s->gva + rt_bytes(s) <= gva || !flush_bytes(s)) continue;
+        /* later targets drew all over it since: memory would hold their pixels there, so none of its own go to memory
+           before another owner or a write takes bytes under it (one game's three shadow layers of 18 MB, drawn a frame
+           128 KiB further on in its pool, were published and written back when a 2 KB image went over the old ones) */
+        if (rt_superseded(s)) continue;
         if (n == cap) {
             Surf** grown = (Surf**)malloc((size_t)cap * 2 * sizeof *grown);
             if (!grown) fatal("Out of memory listing the render targets over %llx", (unsigned long long)gva);
