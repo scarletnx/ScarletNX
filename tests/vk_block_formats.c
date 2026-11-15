@@ -235,6 +235,48 @@ int main(void) {
     line(2, "W vulkan: BCn textures (native_bc=1, the GPU samples no BCn, ETC2 sampled): encoded again on the GPU: BC1 "
             "as ASTC 4x4, BC2 as ASTC 4x4, BC3 as ASTC 4x4, BC4 as EAC R11, BC5 as EAC RG11, BC7 as ASTC 4x4; "
             "decoded on the GPU: BC6H to RGBA16F");
+    /* and by whose encoder (vk/texconv.c's builds): the Mali's own, with packed dot products where the GPU has an
+       instruction for them; Adreno's own; any other vendor's the generic one, which has no build with them */
+    line(3,
+         "vulkan: BCn encoded again as ASTC 4x4 by the generic encoder (gpu/texture/astc_encode.glsl) for vendor 0000, "
+         "its dot products spelled out");
+    CHECK(g_test.n == 4, "bcn_astc=1: %d log lines, not 4", g_test.n);
+    static const struct {
+        u32 vendor;
+        int dot;
+        const char* line;
+    } encoders[] = {
+        {0x13B5, 0,
+         "vulkan: BCn encoded again as ASTC 4x4 by Mali's encoder (gpu/texture/astc_encode_arm.glsl) for "
+         "vendor 13b5, its dot products spelled out"},
+        {0x13B5, 1,
+         "vulkan: BCn encoded again as ASTC 4x4 by Mali's encoder (gpu/texture/astc_encode_arm.glsl) for "
+         "vendor 13b5, with packed dot products"},
+        {0x5143, 1,
+         "vulkan: BCn encoded again as ASTC 4x4 by Adreno's encoder (gpu/texture/astc_encode_qcom.glsl) for "
+         "vendor 5143, with packed dot products"},
+        {0x10DE, 1,
+         "vulkan: BCn encoded again as ASTC 4x4 by the generic encoder (gpu/texture/astc_encode.glsl) for "
+         "vendor 10de, its dot products spelled out"}};
+    for (size_t i = 0; i < sizeof encoders / sizeof encoders[0]; i++) {
+        g_vk.props.vendorID = encoders[i].vendor;
+        g_vk.bc7_dot = encoders[i].dot;
+        g_test.n = 0;
+        vk_blocks_say();
+        line(3, encoders[i].line);
+    }
+    g_vk.props.vendorID = 0;
+    g_vk.bc7_dot = 0;
+    /* the encoder by vendor ID alone: Arm's and Qualcomm's own, and the generic one for NVIDIA, AMD, Intel,
+       Imagination, Apple, Mesa's software devices and none */
+    static const u32 generic[] = {0x10DE, 0x1002, 0x8086, 0x1010, 0x106B, 0x10005, 0};
+    CHECK(vk_astc_encoder(0x13B5) == VK_ASTC_ENC_ARM, "vendor 13b5 takes encoder %d, not Mali's (%d)",
+          vk_astc_encoder(0x13B5), VK_ASTC_ENC_ARM);
+    CHECK(vk_astc_encoder(0x5143) == VK_ASTC_ENC_QCOM, "vendor 5143 takes encoder %d, not Adreno's (%d)",
+          vk_astc_encoder(0x5143), VK_ASTC_ENC_QCOM);
+    for (size_t i = 0; i < sizeof generic / sizeof generic[0]; i++)
+        CHECK(vk_astc_encoder(generic[i]) == VK_ASTC_ENC_GENERIC, "vendor %x takes encoder %d, not the generic one",
+              generic[i], vk_astc_encoder(generic[i]));
     /* the images run short of memory: BC1, which ASTC 4x4 holds in twice its bytes, is ETC2 RGB8A1 from then on, said
        once; the others, the same bytes either way, stay ASTC. bcn_astc=2 keeps BC1 ASTC */
     g_test.n = 0;

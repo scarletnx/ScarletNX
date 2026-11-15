@@ -400,7 +400,17 @@ uint tx_px[16];
 #include "astc_encode_tables.glsl"
 #include "astc_quant.glsl"
 #include "bc7_encode.glsl"
+/* the encoder for the GPU's vendor, whose build vk/texconv.c picks: 1 Arm's Mali, 2 Qualcomm's Adreno, 0 any other */
+#ifndef SNX_ASTC_VENDOR
+#define SNX_ASTC_VENDOR 0
+#endif
+#if SNX_ASTC_VENDOR == 1
+#include "astc_encode_arm.glsl"
+#elif SNX_ASTC_VENDOR == 2
+#include "astc_encode_qcom.glsl"
+#else
 #include "astc_encode.glsl"
+#endif
 #include "astc_direct.glsl"
 #include "bcn_regs.glsl"
 #endif

@@ -4,6 +4,7 @@
 
 * [The encoder](#the-encoder)
 * [As ASTC](#as-astc)
+* [By vendor](#by-vendor)
 * [What it costs](#what-it-costs)
 * [Tests](#tests)
 
@@ -206,6 +207,65 @@ What it does not have yet: three and four partitions, two partitions with alpha,
 and 3 (two partitions of 2 bit weights are ASTC's too, where its partition is BC7's, but their ends have 40 values a
 channel), for mode 4 with a rotation and for BC1 with a transparent texel.
 
+## By vendor
+
+The second and third passes, which encode, have builds of their own for Mali and for Adreno: `texconv.glsl` includes
+`gpu/texture/astc_encode_arm.glsl` or `astc_encode_qcom.glsl` in place of `astc_encode.glsl` (`SNX_ASTC_VENDOR`), and
+`vk/texconv.c` runs the one of the device's Vulkan vendor (`vk_astc_encoder`: 0x13B5 Arm, 0x5143 Qualcomm, any other
+the generic encoder), whatever its driver. The first pass, which moves blocks and encodes none, is the same for all.
+Each vendor's two passes are built again with SPIR-V's packed dot product, which the fitter's inner loop is made of,
+and run where the driver says it has an instruction for it (`g_vk.bc7_dot`: PanVK on Valhall, Turnip from a6xx's third
+generation); the generic builds have none. The log says which, as the device starts:
+
+```
+vulkan: BCn encoded again as ASTC 4x4 by Mali's encoder (gpu/texture/astc_encode_arm.glsl) for vendor 13b5, with packed dot products
+```
+
+Both put a block together the same way, the generic `AsPack`'s bytes for any candidate: no 32 bit multiply (three
+instructions on Adreno, Mesa's `ir3_nir_imul.py`; Valhall's `IMUL` shares a unit with its shifts), the weights packed
+as words a nibble each by halving the gaps between them, the colour values in two registers a run of fields at a
+time, the colour encoding's constants once a block, and in the array-free pass the block's own scans of its texels
+reading each by its number. Each of those rewrites is proved equal to what it replaces by `ucas` (by SAT, over the
+whole domain the callers give). And each candidate goes through the one call there is of the function that tries it
+(`AsCandidate`), where the generic encoder tries the source's lines in calls of their own beside the search's: the
+compiler inlines every call, and the third pass is a quarter less SPIR-V (Adreno's 255 KB, the generic 326).
+
+- **Adreno's** writes the generic encoder's bytes, block for block.
+- **Mali's** searches less: of one partition, only the opaque block's RGB ends with 4 bit weights and the others'
+  RGBA ends with 3 and 4 bit weights are tried (the generic encoder also tries 8 bit ends with 3 or 2 bit weights),
+  and a block stops at a squared error of 256 where the generic one stops at 16. Its blocks are legal LDR ASTC: Mali's
+  decoder gives an error block (an illegal one, an HDR endpoint mode in an UNORM texture) as NaN, which an 8 bit
+  target stores as 0 ([#1898](https://github.com/scarletnx/ScarletNX/issues/1898),
+  [#2156](https://github.com/scarletnx/ScarletNX/issues/2156)), so none is ever written.
+
+What Mali's search gives up, against what the BCn blocks decode to, decoded by `tests/support/astc.c`:
+
+| Blocks | generic, dB | Mali's, dB | worst block, both (squared error, channel) | texels fitted |
+| --- | --- | --- | --- | --- |
+| Khronos's LDR sample textures (diffuse, emissive, metal and roughness, normals, occlusion) and two of edenprobe's ASTC pictures, 256x256 each, made BC7 by the CPU's encoder | 47.606 | 47.604 | 36113, 84 | 47% fewer |
+| 4096 random BC1 | 23.326 | 23.304 | 189406, 204 | 20% fewer |
+| 4096 random BC2, BC3 | 29.273, 32.159 | the same | 10363, 48; 15607, 54 | 21% fewer |
+| 4096 random BC7 | 24.121 | 24.121 | 135752, 183 | 34% fewer |
+
+A texel fitted is one `Eval` places at its three nearest weights, the work of the search. What that is in time on a
+Mali is not measured: there is no Mali here.
+
+Time on an Adreno 610 (a Poco M3), Turnip T30 (Mesa 26.3, Vulkan 1.3.359), its library loaded through Android's
+driver HAL from a copy of the app's package: the three passes by the GPU's timestamps, the medians of 5 runs in each
+of 2 rounds, every block the CPU's run of the same encoder. The phone's own driver (Vulkan 1.1, which ScarletNX does not take)
+refuses every build's second and third passes ([#2220](https://github.com/scarletnx/ScarletNX/issues/2220)).
+
+| Blocks | generic | Adreno's | Mali's |
+| --- | --- | --- | --- |
+| 16384 BC7 of Khronos's textures (diffuse, metal and roughness, normals, occlusion) | 17.0 to 19.5 ms | 12.1 to 12.2 ms | 10.9 to 11.0 ms |
+| 4096 random BC7 | 134 to 139 ms | 32.9 to 33.2 ms | 26.5 to 26.9 ms |
+| 4096 random BC3 | 126 to 127 ms | 30.9 to 31.3 ms | 26.6 ms |
+| the third pass's pipeline made | 17.9 to 18.2 s | 12.2 to 12.4 s | 11.6 s |
+
+Nearly all of it is the third pass, the search (10.5 ms of the generic 19.5 on the textures, 2.9 of Mali's 11.0).
+
+The packed dot product builds are not timed here: the 610, of a6xx's first generation, has no instruction for it.
+
 ## What it costs
 
 Measured against the BCn blocks decoded, which is what a GPU without BCn showed before, on three 512x512 photographs
@@ -253,3 +313,10 @@ pipeline is compiled the first time a BCn texture loads (1.3 s on llvmpipe), and
   all) on random BC2, BC3 and BC7 blocks, byte for byte.
 - `vk_block_formats` runs `vk_blocks_want`, `vk_tic_format` and `vk_blocks_say` on stand-in devices, the first a
   player's Mali-G52 MC2 from its vkjson (ASTC and ETC2 sampled, BCn not).
+  Each vendor's encoder (`vk_astc_encoder`) and the log's line for it, with and without packed dot products.
+- `astc_encode_glsl` holds Adreno's encoder to the generic one's bytes on every set above, both vendors' `AsPack` to
+  the generic one's on random candidates of every layout, and Mali's to the generic one's quality (each block at the
+  error it worked out, a tenth of a dB on each set, its worst block's largest channel error 4 more at most); each
+  vendor's three passes write what its one invocation does. `astc_vulkan` runs each vendor's builds on the device,
+  the vendor ID set to Arm's and Qualcomm's in turn, against the CPU's run of that vendor's encoder, and checks the
+  passes are that vendor's builds; `astc_vulkan_encode_dot` the same with packed dot products.
