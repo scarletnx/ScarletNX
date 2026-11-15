@@ -5248,6 +5248,56 @@ static void test_warp_matrix_coop(const char* dir) {
     g_spirv_translate.hmma_coop_shapes = shapes_was;
 }
 
+/* A complementary pair, @!P0 MOV R0, a ... @P0 MOV R0, b (or the reverse), with an instruction between that touches
+   neither R0 nor P0, becomes one select: no selection is left in the program, and R0 is b where P0 holds and a where
+   it doesn't (pair_partner). With a MOV between that reads R0 they stay two guarded writes, and that MOV sees R0 as
+   the first wrote it or not. Colour 0 is R0-R3: R0 the pair's, R1 the instruction between's */
+static void test_complementary_pair(const char* dir) {
+    for (u32 reader = 0; reader < 2; reader++)
+        for (u32 first_negated = 0; first_negated < 2; first_negated++)
+            for (u32 p0 = 0; p0 < 2; p0++) {
+                u8 code[16 * 12] = {0};
+                u32 n = 0;
+                for (u32 r = 0; r < 4; r++) put(code, n++, mov_imm(r, f2u(0.25f)));
+                put(code, n++, setp_const(0, p0 ? 0 : 1));
+                put(code, n++, mov_imm(5, f2u(0.5f)));
+                put(code, n++, mov_imm(6, f2u(0.75f)));
+                put(code, n++, mov_if(0, 5, 0, (int)first_negated));                   /* @!P0 MOV R0, R5 (or @P0) */
+                put(code, n++, reader ? mov_if(1, 0, 7, 0) : mov_imm(1, f2u(0.125f))); /* MOV R1, R0 or R1, 0.125 */
+                put(code, n++, mov_if(0, 6, 0, (int)!first_negated));                  /* @P0 MOV R0, R6 (or @!P0) */
+                put(code, n++, exit_insn());
+                put(code, n, bra(n, n, 7, 0));
+                n++;
+                u32 fsph[32] = {0};
+                fsph[0] = sph0(2, 5);
+                fsph[18] = 0xf;
+                ShaderInfo si = {0};
+                size_t count = 0;
+                u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+                CHECK(spv != NULL);
+                if (!spv) {
+                    fprintf(stderr, "complementary pair: %s\n", si.first_unsupported);
+                    continue;
+                }
+                u32 at[8];
+                u32 merges = spv_find(spv, count, 247 /* OpSelectionMerge */, at, 8);
+                free(spv);
+                CHECK(merges == (reader ? 2u : 0u));
+                SpvEvalEnv env = {0};
+                int ran = run_stage(ST_FS, code, n, fsph, &env);
+                int first_ran = first_negated ? !p0 : (int)p0;
+                u32 want0 = f2u(first_ran ? 0.5f : 0.75f);
+                u32 want1 = reader ? f2u(first_ran ? 0.5f : 0.25f) : f2u(0.125f);
+                CHECK(ran && env.out[0][0] == want0 && env.out[0][1] == want1);
+                if (!ran || env.out[0][0] != want0 || env.out[0][1] != want1 || merges != (reader ? 2u : 0u))
+                    fprintf(stderr,
+                            "complementary pair: reader %u, first negated %u, P0 %u: R0 %08x (%08x), R1 %08x (%08x), "
+                            "%u selections\n",
+                            reader, first_negated, p0, env.out[0][0], want0, env.out[0][1], want1, merges);
+            }
+    (void)dir;
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     test_alu_forms();
