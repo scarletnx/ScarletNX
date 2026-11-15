@@ -1099,9 +1099,9 @@ static int index_bound_cases(GpuChannel* channel, u64 target, u64 indices, u64 p
         CHECK(px.red == 16);
         CHECK(!index_buffer(channel, indices, green, 4, isz, ~0u));
         CHECK(!index_draw(channel, target, &call, &px));
-        if (g_vk.has_vertex_robustness2 && !index_all_green(&px))
+        if ((g_vk.has_vertex_robustness2 || g_vk.robust_buffer2) && !index_all_green(&px))
             fprintf(stderr, "rewritten %u byte indices: %u green, %u blue, %u red\n", isz, px.green, px.blue, px.red);
-        CHECK(!g_vk.has_vertex_robustness2 || index_all_green(&px));
+        CHECK(!(g_vk.has_vertex_robustness2 || g_vk.robust_buffer2) || index_all_green(&px));
     }
     return 0;
 }

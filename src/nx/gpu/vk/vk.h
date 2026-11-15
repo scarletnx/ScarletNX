@@ -144,7 +144,9 @@ typedef struct {
     int has_dynamic_stride; /* a binding's stride is dynamic state, which MoltenVK refuses: a pipeline holds it then */
     /* a test's: linked pipelines are never optimized, so every draw binds the link (pipeline.c) */
     int gpl_hold;
-    int has_vertex_robustness2; /* exact zero/default components for out-of-range mesh fetches */
+    /* per pipeline, exact zero/default components for out-of-range vertex fetches: only where device-wide
+       robustBufferAccess2 (robust_buffer2) does not already give them */
+    int has_vertex_robustness2;
     /* VK_EXT_robustness2's features in effect (device.c): buffer reads past the bound range are zero and writes there
        dropped, image reads out of bounds are zero with an alpha of 1, and descriptors may be null. A uniform range is
        checked in steps of robust_ubo_align bytes (vk_cb_range), a storage range in robust_ssbo_align (vk_sb_round) */
