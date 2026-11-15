@@ -14,6 +14,14 @@
 # warning name, which has to be the same release to capture that client
 set(SNX_TRACY_VERSION 0.15.0)
 
+# SPIRV-Tools' release and the SPIRV-Headers commit its DEPS names (spirv_headers_revision), which
+# cmake/spirv_tools.cmake adds and builds where the build compiles shaders or tests SPIR-V; pinned here, the file the
+# CI's download caches are named after
+set(snx_spirv_tools_version 2026.4)
+set(snx_spirv_tools_sha256 92df4c377603f086c3d2a1eb2bd9b8f883a73ca890fb939d78a0cecdcc01686c)
+set(snx_spirv_headers_commit 496543121ce6419f23d6fa5d7194ba66c36212d2)
+set(snx_spirv_headers_sha256 a9bb9c48713245eacf97cc539b6f1d45405a92d8813f8b82e635f0a085ee9898)
+
 set(CPM_VERSION 0.43.2)
 set(CPM_HASH 49a3bef91ceb65bb66d57255e12d1ffd22abc2f6408fa9fe4534c544a2f232aa)
 if(NOT DEFINED CPM_SOURCE_CACHE AND NOT DEFINED ENV{CPM_SOURCE_CACHE})
