@@ -869,6 +869,17 @@ static const SnxUiQuad* focus_band(u32 ink) {
             band = &list.q[i];
     return band;
 }
+/* the slider's knob (overlay.c's slider_draw) from a column of an item's row on, rows and columns as the letters':
+   a cell wide, a pixel of the scale in two from its row's top and foot, in rgba */
+static int knob_at(int col, int row, u32 rgba) {
+    int i;
+    for (i = 0; i < list.n; ++i)
+        if (qv(&list.q[i]).ink == UI_SOLID && qv(&list.q[i]).x == (float)(px + col * 8 * s) &&
+            qv(&list.q[i]).y == (float)(py + row * 16 * s + 2 * s) && qv(&list.q[i]).w == (float)(8 * s) &&
+            qv(&list.q[i]).h == (float)(12 * s) && qv(&list.q[i]).rgba == ui_rgba(rgba))
+            return 1;
+    return 0;
+}
 /* the markers of the items showing (the font's square, a quad each) */
 static int items_shown(void) {
     int i, n = 0;
@@ -888,7 +899,7 @@ static void finger_rows(void) {
     overlay_set_display_scale(2.6f);
     overlay_toggle();
     draw();
-    assert(s == 3 && (band = focus_band(ink)) && qv(band).h == 48 && items_shown() == 7);
+    assert(s == 3 && (band = focus_band(ink)) && qv(band).h == 48 && items_shown() == 8); /* the first page's all */
     overlay_set_fingers(1);
     draw();
     assert(s == 3 && (band = focus_band(ink)) && qv(band).h == 125 && items_shown() == 7);
@@ -988,15 +999,15 @@ int main(void) {
     overlay_toggle();
     assert(overlay_shown());
     /* letters half the screen's height at most, in whole steps, in the middle: a phone held wide, a small window. The
-       page is as tall as its items (seven here, under three rows of head, over a blank one), at the scale of the
+       page is as tall as its items (eight here, under three rows of head, over a blank one), at the scale of the
        tallest page, and as wide as three quarters of the picture hold, between 40 and 72 columns */
     overlay_place(SW, SH, &px, &py, &s);
     C = overlay_cols(SW, s);
-    assert(s == 2 && C == OVERLAY_COLS_MAX && px == (SW - C * 16) / 2 && py == (SH - 11 * 32) / 2);
+    assert(s == 2 && C == OVERLAY_COLS_MAX && px == (SW - C * 16) / 2 && py == (SH - 12 * 32) / 2);
     assert(overlay_cols(1280, 2) == 60 && overlay_cols(500, 1) == 46 && overlay_cols(400, 1) == OVERLAY_COLS &&
            overlay_cols(3840, 4) == OVERLAY_COLS_MAX);
     overlay_place(500, 168, &x, &y, &sc);
-    assert(sc == 1 && x == (500 - 46 * 8) / 2 && y == (168 - 11 * 16) / 2); /* taller than the picture */
+    assert(sc == 1 && x == (500 - 46 * 8) / 2 && y == (168 - 12 * 16) / 2); /* taller than the picture */
     /* a phone's display scale: the Poco F8 (408 dpi, 2510x1156) and the Pixel 9 (420 dpi) at 3x, where half the
        picture gave 2x; a 4K picture at 100% keeps the 4x half of it gives */
     overlay_set_display_scale(408.0f / 160);
@@ -1012,7 +1023,7 @@ int main(void) {
     /* the first page: the title on a band of ink, the items under it, the focused one on a band; the page hides the
        game, whose text would show through it */
     draw();
-    assert(qv(&list.q[0]).w == (float)(C * 16) && qv(&list.q[0]).h == 11 * 32 &&
+    assert(qv(&list.q[0]).w == (float)(C * 16) && qv(&list.q[0]).h == 12 * 32 &&
            qv(&list.q[1]).rgba == ui_rgba(ink) && qv(&list.q[1]).h == 32);
     assert(qv(&list.q[0]).rgba >> 24 == 0xFFu);
     assert(text_at(C - 2, 3, ">") && text_at(C - 2, 4, ">") && text_at(C - 2, 6, ">")); /* a page under each */
@@ -1021,8 +1032,9 @@ int main(void) {
            text_at(6, 3, "On-screen controls") && icon_at(3, 4, GUI_ICON_GAMEPAD_2) && text_at(6, 4, "Controllers") &&
            icon_at(3, 5, GUI_ICON_SAVE) && text_at(6, 5, "Save states") && icon_at(3, 6, GUI_ICON_KEYBOARD) &&
            text_at(6, 6, "Shortcuts") && icon_at(3, 7, GUI_ICON_MONITOR) && text_at(6, 7, "TV mode") &&
-           icon_at(3, 8, GUI_ICON_ACTIVITY) && text_at(6, 8, "Stats") && icon_at(3, 9, GUI_ICON_LOG_OUT) &&
-           text_at(1, 9, "\xFE") && text_at(6, 9, "Exit"));
+           icon_at(3, 8, GUI_ICON_ACTIVITY) && text_at(6, 8, "Stats") && icon_at(3, 9, GUI_ICON_VOLUME_2) &&
+           text_at(6, 9, "Volume") && icon_at(3, 10, GUI_ICON_LOG_OUT) && text_at(1, 10, "\xFE") &&
+           text_at(6, 10, "Exit"));
     assert(!icon_at(3, 3, GUI_ICON_SAVE) && !text_at(1, 3, "\xFE On-screen controls"));
     /* Stats: a tap turns it on and keeps it in the game's .ini, as F12 does, and again off */
     assert(text_at(C - 4, 8, "Off") && !g_settings.stats);
@@ -1042,6 +1054,54 @@ int main(void) {
     assert(overlay_select() == OVERLAY_NONE && tv.steps == 3 && tv.last == 1);
     draw();
     assert(text_at(C - 3, 7, "On") && !strcmp(stored, "stats"));
+    /* Volume (settings.txt's volume, INI_SLIDER): its icon, its value at the right, a slider a column before the value
+       at its widest, OVERLAY_SLIDER_COLS long, its knob a cell wide at the value, in the row's colour: the ink, the
+       page's in focus. Left/Right step it 5 a press and a direction held goes on (no TV mode), Enter and A up, to its
+       ends and never round, each step kept in the game's .ini; a tap on the slider takes the step under it, one left
+       of it steps down, one on its value up; a press on it takes the step under it at once, the knob follows the drag
+       past either end, and the lift taps nothing */
+    {
+        const int area[4] = {0, 0, SW, SH};
+        const int bar = C - 6 - OVERLAY_SLIDER_COLS; /* the slider's first column */
+        float row = (float)(py + 9 * 16 * s + 5), cell = (float)(8 * s);
+        int i;
+        draw();
+        assert(g_settings.volume == 100 && text_at(C - 5, 9, "100%") && knob_at(bar + 20, 9, ink));
+        assert(!knob_at(bar + 20, 8, ink) && !knob_at(bar + 20, 8, LIGHT_RGBA)); /* Stats: no slider */
+        log_[0] = 0;
+        assert(tap(6, C - 3) == OVERLAY_NONE && g_settings.volume == 100 && !strcmp(log_, "volume=100;"));
+        draw();
+        assert(knob_at(bar + 20, 9, LIGHT_RGBA) && !knob_at(bar + 20, 9, ink));
+        assert(overlay_side(1) == OVERLAY_NONE && g_settings.volume == 100);
+        assert(overlay_side(-1) == OVERLAY_NONE && g_settings.volume == 95);
+        assert(overlay_side_held(-1) == OVERLAY_NONE && overlay_side_held(-1) == OVERLAY_NONE &&
+               g_settings.volume == 85);
+        draw();
+        assert(text_at(C - 4, 9, "85%") && knob_at(bar + 17, 9, LIGHT_RGBA) && !knob_at(bar + 20, 9, LIGHT_RGBA));
+        assert(overlay_select() == OVERLAY_NONE && g_settings.volume == 90);
+        assert(overlay_pad(1ull << 0) == OVERLAY_NONE && g_settings.volume == 95); /* A */
+        assert(tap(6, bar + 10) == OVERLAY_NONE && g_settings.volume == 50);
+        assert(tap(6, bar - 2) == OVERLAY_NONE && g_settings.volume == 45);
+        assert(tap(6, C - 3) == OVERLAY_NONE && g_settings.volume == 50);
+        for (i = 0; i < 12; ++i) assert(overlay_side(-1) == OVERLAY_NONE);
+        assert(g_settings.volume == 0 && !strcmp(stored, "volume"));
+        draw();
+        assert(text_at(C - 5, 9, "Mute") && knob_at(bar, 9, LIGHT_RGBA));
+        log_[0] = 0;
+        overlay_pointer_down(21, (float)px + cell * (float)(bar + 4) + cell / 2, row, area);
+        assert(g_settings.volume == 20 && !strcmp(log_, "volume=20;"));
+        overlay_pointer_move(21, (float)px + cell * (float)(bar + 30), row + 200, area); /* off its row: its x counts */
+        assert(g_settings.volume == 100);
+        overlay_pointer_move(21, (float)px - 100, row, area);
+        assert(g_settings.volume == 0);
+        overlay_pointer_move(21, (float)px + cell * (float)(bar + 15) + cell / 2, row, area);
+        assert(g_settings.volume == 75);
+        assert(overlay_pointer_up(21, (float)px + cell * (float)(bar + 15) + cell / 2, row, SW, SH) == OVERLAY_NONE &&
+               g_settings.volume == 75 && overlay_shown());
+        overlay_pointer_move(21, (float)px + cell * (float)(bar + 2) + cell / 2, row, area); /* lifted: it moves none */
+        assert(g_settings.volume == 75);
+        g_settings.volume = 100;
+    }
     /* the page kept from frame to frame, laid out again for what changes elsewhere with no call of the menu's between:
        a setting a row shows (F12's Stats), the TV mode (its key), RenderDoc's capture */
     g_settings.stats = 1;
@@ -1056,14 +1116,14 @@ int main(void) {
     tv.choice = 1;
     can_capture = 1;
     draw();
-    assert(text_at(6, 9, "Capture frame") && text_at(C - 3, 7, "On"));
+    assert(text_at(6, 10, "Capture frame") && text_at(C - 3, 7, "On"));
     can_capture = 0;
     draw();
-    assert(text_at(6, 9, "Exit"));
+    assert(text_at(6, 10, "Exit"));
     /* Exit ends the game, no way back: the failure colour, asked first with Cancel in focus; Back to the menu on Exit,
        then its Exit exits. On the title, nothing; outside the panel, it closes */
     assert(shows_as("Exit", 0, FAILURE));
-    assert(tap(6, 3) == OVERLAY_NONE);
+    assert(tap(7, 3) == OVERLAY_NONE);
     draw();
     assert(shows("SCARLETNX  /  EXIT THE GAME?") && shows("what was played since it last saved is lost.") &&
            shows_as("\xFE Exit", 0, FAILURE));
@@ -1076,7 +1136,7 @@ int main(void) {
     /* the focus goes round, from Exit to the first item and back over the top; Back from here closes */
     overlay_move(-1);
     overlay_move(1);
-    overlay_move(-8);
+    overlay_move(-9);
     assert(overlay_select() == OVERLAY_NONE); /* asked */
     overlay_move(-1);
     assert(overlay_select() == OVERLAY_EXIT && overlay_back() == OVERLAY_CLOSE);
@@ -1084,10 +1144,10 @@ int main(void) {
        under it, the panel a row taller; a tap is the caller's capture, Exit a row down */
     can_capture = 1;
     draw();
-    assert(qv(&list.q[0]).h == 12 * 32 && icon_at(3, 9, GUI_ICON_IMAGE) && text_at(6, 9, "Capture frame") &&
-           !text_at(C - 2, 9, ">") && text_at(6, 10, "Exit") && icon_at(3, 10, GUI_ICON_LOG_OUT));
-    assert(tap(7, 3) == OVERLAY_NONE && overlay_back() == OVERLAY_NONE); /* Exit asked; Back to it */
-    assert(tap(6, 3) == OVERLAY_CAPTURE && overlay_select() == OVERLAY_CAPTURE);
+    assert(qv(&list.q[0]).h == 13 * 32 && icon_at(3, 10, GUI_ICON_IMAGE) && text_at(6, 10, "Capture frame") &&
+           !text_at(C - 2, 10, ">") && text_at(6, 11, "Exit") && icon_at(3, 11, GUI_ICON_LOG_OUT));
+    assert(tap(8, 3) == OVERLAY_NONE && overlay_back() == OVERLAY_NONE); /* Exit asked; Back to it */
+    assert(tap(7, 3) == OVERLAY_CAPTURE && overlay_select() == OVERLAY_CAPTURE);
     overlay_move(1);
     assert(overlay_select() == OVERLAY_NONE);
     overlay_move(-1);
@@ -1096,7 +1156,7 @@ int main(void) {
     /* without it, none: Exit where it was */
     can_capture = 0;
     draw();
-    assert(qv(&list.q[0]).h == 11 * 32 && text_at(6, 9, "Exit") && !shows("Capture frame"));
+    assert(qv(&list.q[0]).h == 12 * 32 && text_at(6, 10, "Exit") && !shows("Capture frame"));
     assert(overlay_select() == OVERLAY_NONE);
     overlay_move(-1);
     assert(overlay_select() == OVERLAY_EXIT);
@@ -1295,6 +1355,8 @@ int main(void) {
         assert(overlay_controls(0, down, 1000) == OVERLAY_NONE);  /* to TV mode */
         assert(overlay_controls(0, still, 1000) == OVERLAY_NONE); /* let go */
         assert(overlay_controls(0, down, 1000) == OVERLAY_NONE);  /* to Stats */
+        assert(overlay_controls(0, still, 1000) == OVERLAY_NONE); /* let go */
+        assert(overlay_controls(0, down, 1000) == OVERLAY_NONE);  /* to Volume */
         assert(overlay_controls(0, still, 1000) == OVERLAY_NONE); /* let go */
         assert(overlay_controls(0, down, 1000) == OVERLAY_NONE);  /* to Exit */
         assert(overlay_controls(0, down, 1000 + SNX_OVERLAY_REPEAT_DELAY - 1) == OVERLAY_NONE);
