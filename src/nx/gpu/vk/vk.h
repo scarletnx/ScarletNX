@@ -373,6 +373,11 @@ const VkSparseShape* vk_image_sparse_shape(VkImage img); /* NULL for an image wi
 int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* bytes);
 u64 vk_image_sparse_need(VkImage img, const u8* bits, const u64* keys);
 int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32 z0, u32 z1, int all);
+/* the blocks the binds after it give memory take system memory (system 1, texture.c's levels moved out of the GPU's
+   memory) or the GPU's (0, as made); a mip tail takes the GPU's always. vk_image_sparse_level_bytes: the bytes of the
+   blocks of its levels before `levels`, every layer */
+void vk_image_sparse_place(VkImage img, int system);
+u64 vk_image_sparse_level_bytes(VkImage img, u32 levels);
 void vk_sparse_stats(u64* binds, u64* bind_ns); /* statistics: sparse binds, and the host's wait for them */
 /* statistics: the blocks and mip tails with memory now of an image of either kind above, 0 for another image */
 u32 vk_image_bound_blocks(VkImage img);
@@ -1027,6 +1032,9 @@ typedef struct Surf {
     /* textures: its image is in system memory (texture.c vk_tex_demote), bytes 0 while it is: sys_bytes its size */
     u8 demoted;
     u64 sys_bytes;
+    /* textures sparse for their levels (shed): its finest levels in system memory, the GPU's own having no room
+       (vk_tex_coarser with texture_sysmem) */
+    u8 sys_levels;
     /* textures: sparse for its levels alone (texture.c tex_create's shed): mapped whole, with every level from
        lod_floor on bound, its finest going where the device's memory runs short (vk_tex_coarser) and coming back
        when it has room (vk_tex_finer) */

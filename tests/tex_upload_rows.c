@@ -727,6 +727,8 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
     (void)img, (void)bits, (void)keys, (void)bytes;
     return -1;
 }
+void vk_image_sparse_place(VkImage img, int system) { (void)img, (void)system; }
+u64 vk_image_sparse_level_bytes(VkImage img, u32 levels) { return (void)img, (void)levels, 0; }
 u64 vk_image_sparse_need(VkImage img, const u8* bits, const u64* keys) {
     (void)img, (void)bits, (void)keys;
     return 0;
