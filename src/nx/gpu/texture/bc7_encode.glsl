@@ -300,7 +300,14 @@ uint StoredBits() {
    v >> 8 = 0, and v < 2^n keeps the result under 256, so neither a branch nor a mask is needed (ucas: exhaustive equiv
    over n = 5 to 8, every v < 2^n) */
 uint Widen(uint v, uint n) {
+#if SNX_ASTC_ENC
+    /* an ASTC end is kept as the 8 bits it decodes to (AsShape's sh_cb is 8, its sh_pk 0), so n is 8 and v is under
+       256: the compiler folds n but can't know v's range, and ucas's simplify on the third pass's SPIR-V proves each
+       v >> 8 left there 0 (60 of them). The shift by n - 8 is by 0, which folds away; it keeps n used */
+    return v >> (n - 8u);
+#else
     return (v << (8u - n)) | (v >> (2u * n - 8u));
+#endif
 }
 
 /* the stored ends as the decoder reads them, an RGBA8 word, alpha 255 where the shape stores none */
