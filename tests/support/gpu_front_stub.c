@@ -46,6 +46,9 @@ void gpu_mem_seen(void) {
 void gpu_xfb_control(const DsState* ds, DrawOwner* o, u64 control, u32 what, u32 stride) {
     if (g_renderer->xfb_control) g_renderer->xfb_control(ds->owner, control, what, stride, o);
 }
+void gpu_ds_inline_changed(const DsState* ds, u64 before, u32 off, u32 len) {
+    (void)ds, (void)before, (void)off, (void)len;
+}
 void gpu_ready(void) {
     if (g_renderer->ready) g_renderer->ready();
 }

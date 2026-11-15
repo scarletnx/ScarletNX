@@ -245,6 +245,10 @@ void gpu_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o);
 void gpu_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o);
 void gpu_draw_texture(const DsState* ds, const DrawTexture* t);
 void gpu_discard(const DsState* ds, u32 targets);
+/* the front end changed len bytes at off of ds's inline group (DsState.inl), which had the generation before: the
+   next draw record of ds sends those bytes in place of the whole group. A change of more ranges names the first with
+   the old generation and the others with the new one */
+void gpu_ds_inline_changed(const DsState* ds, u64 before, u32 off, u32 len);
 void gpu_dispatch(const DispatchState* d);
 /* the state's copies start over after a state load (gpu.c) */
 void gpu_draw_states_reset(void);
