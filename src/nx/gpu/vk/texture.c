@@ -1970,13 +1970,17 @@ static int resident_image(Surf* t, const VkImageCreateInfo* ii) {
             snprintf(in, sizeof in, "%u bytes across and %u rows high in its layout", across, rows);
         else
             snprintf(in, sizeof in, "%u GOBs across and %u high in its layout", across / 64, rows / 8);
-        LOG_LIMIT(4,
-                  "vulkan: a %ux%ux%u texture of %u levels in %s with holes in its mapping is made whole: the device "
-                  "binds blocks of %ux%ux%u texels, %s, its mip tail from level %u; the layout's level %u has blocks "
-                  "%u GOBs high and %u deep, %u GOBs a row (%u in whole blocks), its layers %llu bytes apart\n",
-                  t->w, t->h, t->layers * d3, t->levels, tex_format_name(t, name, sizeof name), g.width, g.height,
-                  g.depth, in, s.tail_first, at, 1u << lbh, 1u << lbd, gobs,
-                  (lw + g.width - 1) / g.width * (across / 64), (unsigned long long)t->layer_size);
+        /* tex_create then binds it by the device's blocks under its mapped memory (tex_bind), or makes it whole,
+           and says so */
+        LOG_LIMIT(
+            4,
+            "vulkan: a %ux%ux%u texture of %u levels in %s with holes in its mapping isn't bound a tile at a time: "
+            "the device binds blocks of %ux%ux%u texels, %s, its mip tail from level %u; the layout's level %u "
+            "has blocks %u GOBs high and %u deep, %u GOBs a row (%u in whole blocks), its layers %llu bytes "
+            "apart\n",
+            t->w, t->h, t->layers * d3, t->levels, tex_format_name(t, name, sizeof name), g.width, g.height, g.depth,
+            in, s.tail_first, at, 1u << lbh, 1u << lbd, gobs, (lw + g.width - 1) / g.width * (across / 64),
+            (unsigned long long)t->layer_size);
         return 0;
     }
     if (!vk_image_create_resident(ii, &s, &t->img)) return 0;

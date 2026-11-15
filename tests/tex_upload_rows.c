@@ -1422,8 +1422,9 @@ static void check_astc_call(const Surf* t, u32 c, u32 x, u32 y, u32 w, u32 h, u3
    the run of blocks they lie in decoded again, and nothing for 16 of a hole; a tile of level 0 mapped: bound, and
    decoded whole. An ASTC 8x8 one, the device's blocks 4 GOBs high in its layout where its blocks are 8, binds them in
    stacks of two (resident_stacks): 85 bricks of 16 KiB, and its first tile mapped, 64 KiB, binds the 2x2 device
-   blocks it covers, 0, 1, 8 and 9. A 6x6 one, whose blocks aren't whole in 256 texels, and one the device makes no
-   sparse image of are made whole, the log line saying the format and why */
+   blocks it covers, 0, 1, 8 and 9. A 6x6 one, whose blocks aren't whole in 256 texels, isn't bound a tile at a time
+   (tex_create binds it by the device's blocks), and one the device makes no sparse image of is made whole, the log
+   line saying the format and why */
 static void check_resident_astc(void) {
     Surf t = tex(1024, 1024, 1, 11, 16, 3, 0, 1);
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -1468,7 +1469,7 @@ static void check_resident_astc(void) {
     check_astc_call(&t, 0, 512, 0, 256, 256, 0);
     g_map.count = 0;
     astc_append = 0;
-    /* bound in stacks; made whole, saying why */
+    /* bound in stacks; not a tile at a time, or whole, saying why */
     Surf e = tex(2048, 2048, 1, 12, 16, 3, 0, 1), s = tex(1536, 1536, 1, 11, 16, 3, 0, 1), n = t;
     e.f = s.f = t.f;
     e.f.bw = e.f.bh = 8;
@@ -1488,7 +1489,8 @@ static void check_resident_astc(void) {
     g_map.count = 0;
     g_log[0] = 0;
     CHECK(!resident_image(&s, &ii) && !s.bricks);
-    CHECK(strstr(g_log, "in ASTC 6x6 as BC7 with holes") && strstr(g_log, "256x256x1 texels, not whole 6x6 blocks,"));
+    CHECK(strstr(g_log, "in ASTC 6x6 as BC7 with holes in its mapping isn't bound a tile at a time: ") &&
+          strstr(g_log, "256x256x1 texels, not whole 6x6 blocks,"));
     g_res.shape = (VkResidentShape){{0, 0, 0}, 0, 0};
     g_vk.resident = 1;
     g_vk.feat.sparseResidencyImage2D = VK_TRUE;
