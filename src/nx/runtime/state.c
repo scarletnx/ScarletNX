@@ -913,6 +913,10 @@ static int hle_check(const Hle* h) {
             t->req_nvfd > NV_FDS || t->park < PARK_RUN || t->park > PARK_SERVICE || t->wait_svc < WAIT_SVC_SLEEP ||
             t->wait_svc > WAIT_SVC_SETTLE || t->state < 0 || t->state > 2)
             return -1;
+        /* a request made again from the svc instruction before the pc: a thread outside an SVC has none there. Builds
+           before kthread_wait knew it parked an NVN call's syncpoint wait so, and its load ran the game on from a
+           stale pc */
+        if (t->state == 1 && t->park == PARK_SERVICE && !t->in_svc) return -1;
         for (k = 0; k < (u32)t->nwaits; k++)
             if (!t->waits[k] || !id_ok(h, t->waits[k], 0)) return -1;
     }

@@ -287,10 +287,11 @@ static void* enter_body(void* p) {
     return NULL;
 }
 /* a thread for a game pause: mode 0 runs game code that polls (counting steps), 1 game code that never polls, 2 is
-   blocked in a service's wait until signaled, then takes a step */
+   blocked in a service's wait in an SVC until signaled, then takes a step, and 3 the same wait outside an SVC (an NVN
+   call's syncpoint wait) */
 typedef struct {
     KThread* t;
-    int mode, stop, signaled;
+    int mode, stop, signaled, waiting;
     u64 steps;
     PMutex m;
     PCond cv;
@@ -298,10 +299,13 @@ typedef struct {
 static void* game_body(void* p) {
     SnxKctGame* g = (SnxKctGame*)p;
     t_hle.thread.cur = g->t;
-    if (g->mode == 2) {
+    if (g->mode == 2 || g->mode == 3) {
+        __atomic_store_n(&g->t->in_svc, g->mode == 2, __ATOMIC_SEQ_CST); /* svc_enter's */
         pm_lock(&g->m);
+        __atomic_store_n(&g->waiting, 1, __ATOMIC_SEQ_CST); /* under m, which the wait lets go of */
         while (!g->signaled) kthread_wait(&g->cv, &g->m, -1);
         pm_unlock(&g->m);
+        __atomic_store_n(&g->t->in_svc, 0, __ATOMIC_SEQ_CST);
         __atomic_add_fetch(&g->steps, 1, __ATOMIC_SEQ_CST);
         return NULL;
     }
@@ -817,6 +821,31 @@ int main(void) {
         __atomic_store_n(&g[3].stop, 1, __ATOMIC_SEQ_CST);
         pthread_join(gh[3], NULL);
         g[3].t->state = 2;
+
+        /* a service's wait outside an SVC isn't stopped: no svc instruction would make it again after a save state's
+           load, so the pause waits for it to end */
+        {
+            static SnxKctGame h;
+            pthread_t hh;
+            h.t = g[3].t;
+            h.t->state = 1;
+            h.mode = 3;
+            pm_init(&h.m);
+            pc_init(&h.cv);
+            pthread_create(&hh, NULL, game_body, &h);
+            while (!__atomic_load_n(&h.waiting, __ATOMIC_SEQ_CST)) sched_yield();
+            pm_lock(&h.m); /* it has let go of m: it waits */
+            pm_unlock(&h.m);
+            CHECK(kernel_hold(50) == -1 && !g_hle.thread.hold && !h.t->stopped,
+                  "a wait outside an SVC is not stopped: the pause gives up (%d)", h.t->stopped);
+            pm_lock(&h.m);
+            h.signaled = 1;
+            pc_broadcast(&h.cv);
+            pm_unlock(&h.m);
+            pthread_join(hh, NULL);
+            CHECK(h.steps == 1, "its wait ends: %llu", (unsigned long long)h.steps);
+            h.t->state = 2;
+        }
     }
 
     /* without emulated cores (emulated_cores off) the threads run at once, holding no core, so a pause asks each one
