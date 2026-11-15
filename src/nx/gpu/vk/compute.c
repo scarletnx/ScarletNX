@@ -1356,6 +1356,7 @@ void vk_dispatch(const DispatchState* d) {
     u64 tic_key_base;
     VkBufImg bimg[8] = {0};
     int i;
+    SNX_ZONE(z_dispatch, "dispatch");
     vk_frame_check();
     vk_own_room();
     if (d->indirect) gx = gy = gz = 1; /* the GPU's: these only say there is a grid */

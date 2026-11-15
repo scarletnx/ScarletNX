@@ -25,6 +25,7 @@
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -418,6 +419,7 @@ static int run(void* arg) {
     NvnReplayQueue* q = j->kind == JOB_SETTLE ? NULL : &g_nvn.replay.q[j->queue - 1]; /* JOB_SETTLE is no queue's */
     switch (j->kind) {
         case JOB_SUBMIT: {
+            SNX_ZONE(z_replay, "nvn replay");
             if (g_renderer->stream_run) g_renderer->stream_run(1);
             int done = replay_records(j, q);
             effects(q);

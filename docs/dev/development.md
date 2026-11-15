@@ -290,7 +290,8 @@ wait
 
 The timeline has the frontend tick,
 presents, GPU jobs and idle waits, Vulkan record/land/release/submit/wait/present work, shader translation and
-pipeline creation, texture uploads, the BC7 encodes between frames, the landings of the guest memory the GPU owns,
+pipeline creation, texture uploads, the replay of an NVN submission, compute dispatches, the publishes of surfaces
+over guest memory, the BC7 encodes between frames, the landings of the guest memory the GPU owns,
 the input tick, the audio and host1x clocks, every returning SVC except the waits above (named
 as in `hos.svc`) and every IPC command (the service and command number in the zone's text). Frames appear with the
 `frame ms`, guest memory, GPU memory and budget, per-frame draws, shader translations, pipelines made, texture
