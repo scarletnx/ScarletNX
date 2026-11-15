@@ -80,7 +80,7 @@ function(check label)
     string(REPLACE "${WORK}/${label}/spirv-tools/bin" "PINNED" out "${out}")
     string(REPLACE "${WORK}" "WORK" out "${out}")
     string(REGEX REPLACE "\n *" " " flat "${out}") # CMake wraps an error's text
-    if(arg_FAIL AND result EQUAL 0 OR NOT arg_FAIL AND NOT result EQUAL 0)
+    if((arg_FAIL AND result EQUAL 0) OR (NOT arg_FAIL AND NOT result EQUAL 0))
         message(SEND_ERROR "${label}: the configure exited ${result}:\n${out}")
         set_property(GLOBAL APPEND PROPERTY failed "${label}")
         return()
