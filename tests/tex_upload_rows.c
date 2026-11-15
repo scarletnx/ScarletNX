@@ -680,6 +680,7 @@ u32 vk_devmem_moving(DevMem* mems, void** owners, u32 max, u64 budget) {
     return 0;
 }
 void vk_devmem_moving_stop(void) { abort(); }
+int vk_devmem_emptying(void) { return 0; }
 void vk_devmem_moved(u64 bytes) {
     (void)bytes;
     abort();
