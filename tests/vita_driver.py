@@ -32,6 +32,7 @@ def main():
         '\n  --keep-ir',
         '\n  -q, --quiet',
         'On the Vita, -O is the level',
+        'KEY with a - for each _ is the same setting (--vita-hle-trace=1)',
     ):
         if line not in help_text:
             failures.append(f'the help lacks "{line.strip()}"')
@@ -40,6 +41,15 @@ def main():
     run(['--chunk', 'x', 'game.vpk'], 2, 'scarletnx-vita: --chunk x: not a whole number of instructions from 1')
     run(['-x', '--keep-ir', 'game.vpk'], 2, "scarletnx-vita: --keep-ir is the recompile's, and -x compiles no code")
     run(['-x', '--opt=1', 'game.vpk'], 2, "scarletnx-vita: -O is the recompile's, and -x compiles no code")
+    # a setting's key with a - for each _ is the same setting, said by its key, --press-len= the Vita's press length
+    # as --press_len= is; some _ left is no setting
+    run(['--aot-threads=many', 'game.vpk'], 2, 'scarletnx-vita: aot_threads=many is not a whole number from 0 to 1024')
+    run(
+        ['--press-len=-5', '--help'],
+        0,
+        'settings: vita_press_len=-5 is not a whole number from 0 to 2147483647: it keeps 0',
+    )
+    run(['--vita-hle_trace=1', 'game.vpk'], 2, 'scarletnx-vita: unknown setting: --vita-hle_trace=1')
     if failures:
         sys.exit('vita_driver:\n' + '\n'.join(failures))
     print('vita_driver: ok')

@@ -7,8 +7,8 @@
 # a line at a time (leading spaces left out, # starts a comment):
 #
 #   include FILE          a header the generated tables include, for a constant they name (a range's)
-#   list NAME id=Label... the instances of an each block: their id in its key, and the label it is shown by (an _ in
-#                         a label is a space)
+#   list NAME id=Label... the instances of an each block: their id in its key (letters, digits and _), and the label it
+#                         is shown by (an _ in a label is a space)
 #   table NAME [SCOPE]    the settings below go in the IniOpt table NAME. SCOPE is runtime (the game's, the default),
 #                         launcher (the launcher handles them itself), recompile (the recompiler's, which the launcher
 #                         and the driver pass on as --key=value) or llvm (recompile, filled with LLVM's passes and the
@@ -22,7 +22,9 @@
 #                         name>", key llvm_pass_<name>, int 0 1 default 1; an option "LLVM <its words>", key
 #                         llvm_<option> (the ID in snake_case: key KEY where that reads wrong, FastISel's
 #                         llvm_fast_i_sel), LLVM's own value (SETTINGS_UNSET) until it is set
-#     key KEY             its key in the .ini (<N> in a repeat, <ID> in an each). An LLVM setting's is LLVM's ID's
+#     key KEY             its key in the .ini (<N> in a repeat, <ID> in an each), letters, digits and _. A command line
+#                         gives it as --KEY=value, and as KEY with a - for each _ (--aot-threads=4 is aot_threads=4),
+#                         names settingsgen lists for the drivers (settings_arg). An LLVM setting's is LLVM's ID's
 #     int LO HI           an int, clamped to LO..HI (C expressions)
 #     float LO HI         a float, clamped
 #     text SIZE           text, up to SIZE - 1 bytes

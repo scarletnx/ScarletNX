@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# scarletnx -r --KEY=VALUE, a setting of the recompile (settings.txt's recompile and llvm tables): a value the setting
-# does not take is refused before anything runs, saying what it takes; one it takes reaches the input's check. Run by
-# ctest as runtime_recompile_settings
+# scarletnx -r --KEY=VALUE, a setting of the recompile (settings.txt's recompile and llvm tables), KEY with a - for each
+# _ too: a value the setting does not take is refused before anything runs, saying what it takes by its key; one it
+# takes reaches the input's check; a KEY with some _ left is no setting. Run by ctest as runtime_recompile_settings
 set(dir "${CMAKE_CURRENT_BINARY_DIR}/recompile-settings")
 file(REMOVE_RECURSE "${dir}")
 file(MAKE_DIRECTORY "${dir}")
@@ -18,7 +18,13 @@ foreach(case "--aot_threads=abc|aot_threads=abc is not a whole number from 0 to 
              "--opt=z|holds no exefs/main" "--unit_cache_gb=0|holds no exefs/main"
              "--llvm_batch=fast|llvm_batch = fast: not full or ipo"
              "--opt=0 --llvm_batch=ipo|llvm_batch = ipo takes the place of -O1 to -O3, s and z's passes: opt = 0"
-             "--llvm_batch=ipo|holds no exefs/main" "--llvm_batch=full|holds no exefs/main")
+             "--llvm_batch=ipo|holds no exefs/main" "--llvm_batch=full|holds no exefs/main"
+             "--aot-threads=abc|aot_threads=abc is not a whole number from 0 to 1024"
+             "--unit-cache-gb=2.5|unit_cache_gb=2.5 is not a whole number from 0 to 100000"
+             "--llvm-inliner-threshold=50x|llvm_inliner_threshold=50x is not a whole number from -2147483647 to 2147483647"
+             "--aot-threads=4|holds no exefs/main" "--aot-threads-most=2|holds no exefs/main"
+             "--llvm-batch=fast|llvm_batch = fast: not full or ipo"
+             "--aot-threads_most=2|unknown option: --aot-threads_most (scarletnx -r -h lists them)")
     string(REPLACE "|" ";" case "${case}")
     list(GET case 0 option)
     list(GET case 1 expected)

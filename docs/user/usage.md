@@ -177,7 +177,9 @@ mouse's left button (the default). The game's menu sets it too; the game's `.ini
 `--controls=0|1|2` likewise hides or shows the [on-screen controls](#on-screen-controls), or shows them on a touch
 screen while no gamepad is connected (`2`, the default); the game's `.ini` keeps `controls`. Any other `--key=value` of the game's
 `.ini` is forwarded as well, for that run (`scarletnx --settings` lists them all), and so are the timed-run ones
-(`--seconds=`, `--shot=`...); any other key stops the run with `unknown option`.
+(`--seconds=`, `--shot=`...); any other key stops the run with `unknown option`. Each key is also taken with a `-` for
+each `_`, the same setting (`--state-slots=5`, `--aot-threads=4`), forwarded as given; a name with some `_` left
+(`--aot-threads_most=2`) is no setting.
 The game's own executable also takes `-v`, the same as `--log=2`.
 LLVM is the only backend. `--backend=llvm`, which older scripts give, is accepted and changes nothing, and any
 other `--backend` stops with an error.
@@ -450,9 +452,10 @@ Remaining examples: POSIX.
   target machine set, `--llvm_<option>=N` (`--llvm_inliner_threshold=50`). `scarletnx --settings=recompile` lists
   them, as the launcher's LLVM Internals page shows them: the passes are those of the pipelines the build's LLVM prints
   for each level, and a build without an `opt` of that LLVM has none. A dump played with these is recompiled with them
-  when it has to be, and a game made already keeps its code until `-r` recompiles it. A value a setting does not take
-  (`--aot_threads=abc`) stops the recompile. The code the runtime compiles while the game runs keeps LLVM's own, but
-  for the SLP vectorizer, which `slp_vectorizer` turns on or off for both.
+  when it has to be, and a game made already keeps its code until `-r` recompiles it. Each of them takes a `-` for each
+  `_` too (`--llvm-pass-instcombine=0`). A value a setting does not take (`--aot_threads=abc`) stops the recompile.
+  The code the runtime compiles while the game runs keeps LLVM's own, but for the SLP vectorizer, which
+  `slp_vectorizer` turns on or off for both.
   `--target auto|linux|win64` takes only this host's own system: modules are built for the machine that builds
   them. `--target ios` writes `<id>_code.snxobj` instead, a pack of the code's objects for the iOS app to load into JIT
   memory (64-bit games only, [macOS and iOS](../hosts/apple.md)); it makes no runtime copy. `--runtime FILE` deploys that runtime instead of the running one, or of the one a tools-only build builds in

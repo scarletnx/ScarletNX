@@ -2034,6 +2034,12 @@ add_test(NAME fatal_screen COMMAND snx-test-fatal-screen)
 add_executable(snx-test-ini ini.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-ini 11)
 add_test(NAME ini COMMAND snx-test-ini)
+# the settings' names on a command line, each key's with a - for each _ (tools/settingsgen's settings_args.c): sorted,
+# each read back as its key, none a common option's
+add_executable(snx-test-settings-args settings_args.c)
+snx_test_target(snx-test-settings-args 11)
+target_link_libraries(snx-test-settings-args PRIVATE scarletnx-common)
+add_test(NAME settings_args COMMAND snx-test-settings-args)
 # the Linux AArch64 signal frame the GNU ABI runtime and the Android bridge share
 add_executable(snx-test-linux-signal linux_signal.c "${PROJECT_SOURCE_DIR}/src/common/runtime/linux_signal.c")
 snx_test_target(snx-test-linux-signal 11)

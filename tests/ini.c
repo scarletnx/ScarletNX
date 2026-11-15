@@ -307,12 +307,33 @@ int main(void) {
     }
     { /* a command line's --key=value */
         char key[8];
-        const char* value = ini_arg("--speed=2", key, sizeof key);
+        const char* value = ini_arg("--speed=2", key, sizeof key, NULL, 0);
         assert(value && !strcmp(value, "2") && !strcmp(key, "speed"));
-        assert(!ini_arg("--speed", key, sizeof key) && !ini_arg("-s=1", key, sizeof key));
-        assert(!ini_arg("--too_long=1", key, sizeof key));
-        value = ini_arg("--a=b=c", key, sizeof key);
+        assert(!ini_arg("--speed", key, sizeof key, NULL, 0) && !ini_arg("-s=1", key, sizeof key, NULL, 0));
+        assert(!ini_arg("--too_long=1", key, sizeof key, NULL, 0));
+        value = ini_arg("--a=b=c", key, sizeof key, NULL, 0);
         assert(value && !strcmp(value, "b=c") && !strcmp(key, "a"));
+    }
+    { /* and its key's name with a - for each _, of the names given (sorted as strcmp sorts them: a - before a digit,
+         which an _ comes after), the first, a middle and the last found; any other NAME is the key as given */
+        static const char* const names[] = {"a-b", "a-b-c", "a1-b", "ab-c", "z-z"};
+        static const char* const cases[][3] = {
+            {"--a-b=1", "a_b", "1"},     {"--a-b-c=x=y", "a_b_c", "x=y"}, {"--a1-b=", "a1_b", ""},
+            {"--ab-c=2", "ab_c", "2"},   {"--z-z=3", "z_z", "3"},         {"--a_b=4", "a_b", "4"},
+            {"--a_b-c=5", "a_b-c", "5"}, {"--a-b_c=6", "a-b_c", "6"},     {"--a-c=7", "a-c", "7"},
+            {"--a1=8", "a1", "8"},       {"--z-zz=9", "z-zz", "9"},       {"--0-a=10", "0-a", "10"},
+        };
+        char key[8];
+        size_t i;
+        for (i = 0; i < sizeof cases / sizeof *cases; i++) {
+            const char* value = ini_arg(cases[i][0], key, sizeof key, names, 5);
+            assert(value && !strcmp(value, cases[i][2]));
+            if (strcmp(key, cases[i][1])) {
+                fprintf(stderr, "%s: key %s, not %s\n", cases[i][0], key, cases[i][1]);
+                assert(!"ini_arg's key");
+            }
+        }
+        assert(!ini_arg("--a-b-c-de=1", key, sizeof key, names, 5)); /* a NAME of 8 letters does not fit key's 8 */
     }
     puts("ini passed");
     return 0;

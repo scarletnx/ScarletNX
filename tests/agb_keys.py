@@ -62,6 +62,7 @@ def main():
             ((), 0x3FF, None),  # nothing held
             (('--script=0:9',), 0x3F6, None),  # A and Start from the start, held 300 ms
             (('--script=0:9', '--press_len=50'), 0x3FF, None),  # let go after 50 ms, before frame 5
+            (('--script=0:9', '--press-len=50'), 0x3FF, None),  # the same setting with a - for its _
             (('--script=40:200',), 0x1FF, None),  # L from 40 ms
             (('--script=0:1,soon:8',), 0x3FE, 'the script stops after 1 presses, at "soon:8"'),
             (('--script=0:400',), 0x3FF, 'the script stops after 0 presses, at "0:400"'),  # past KEYINPUT's ten keys
@@ -102,6 +103,16 @@ def main():
         )
         if bad.returncode != 2 or 'aot_threads=many is not a whole number from 0 to 1024' not in bad.stderr:
             sys.exit('agb_keys: --aot_threads=many was taken (%d)\n%s' % (bad.returncode, bad.stderr))
+        # and with a - for each _ of its key, said by its key; some _ left is no setting
+        for option, said in (
+            ('--aot-threads=many', 'aot_threads=many is not a whole number from 0 to 1024'),
+            ('--aot-threads_most=1', 'unexpected argument: --aot-threads_most=1'),
+        ):
+            bad = subprocess.run(
+                [args.runner, '-r', option, str(work / 'keys.gba')], capture_output=True, text=True, timeout=60
+            )
+            if bad.returncode != 2 or said not in bad.stderr:
+                sys.exit('agb_keys: %s was taken (%d)\n%s' % (option, bad.returncode, bad.stderr))
         # --gba_color=, the launcher's GBA colors: the screen in forced blank is white, raw 255 255 255 and gba as the
         # original GBA's screen shows white, 252 238 242; a value it does not take stops the run with the value
         for value, white in (('raw', b'\xff\xff\xff'), ('gba', b'\xfc\xee\xf2')):

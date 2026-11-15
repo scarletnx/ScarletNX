@@ -365,20 +365,15 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         memmove(argv + 2, argv + at, (size_t)(argc - at) * sizeof *argv);
         argc -= at - 2;
     }
-    /* a recompile's setting the dump was played with (SNX_WORKFLOW_FLAGS), passed on as it was given; opt's --opt= is
-       the common option, which reaches the recompile as -O (SNX_WORKFLOW_OPT) */
+    /* a recompile's setting the dump was played with (SNX_WORKFLOW_FLAGS), its key's _ a - or not, passed on as it was
+       given; opt's --opt= is the common option, which reaches the recompile as -O (SNX_WORKFLOW_OPT) */
     {
         const char* flags = getenv("SNX_WORKFLOW_FLAGS");
         char key[64];
-        size_t length = flags && strchr(flags, '=') ? (size_t)(strchr(flags, '=') - flags) : 0;
-        if (length > 2 && length - 2 < sizeof key) {
-            memcpy(key, flags + 2, length - 2);
-            key[length - 2] = 0;
-            if (snx_recompile_setting(key) && strcmp(key, "opt")) {
-                CHECK(argc > 3 && !strcmp(argv[2], flags));
-                memmove(argv + 2, argv + 3, (size_t)(argc - 3) * sizeof *argv);
-                --argc;
-            }
+        if (flags && settings_arg(flags, key, sizeof key) && snx_recompile_setting(key) && strcmp(key, "opt")) {
+            CHECK(argc > 3 && !strcmp(argv[2], flags));
+            memmove(argv + 2, argv + 3, (size_t)(argc - 3) * sizeof *argv);
+            --argc;
         }
     }
     /* a dump's: no name given, the recompile names the game; a game made already: its folder's name */
@@ -1110,6 +1105,18 @@ int main(int argc, char** argv) {
             run(exe, repo, dump, log, 0, "RG", NULL);
             free(stamp);
         }
+        /* and with a - for each _ of its key, as every setting is: the same setting, for the game and a recompile made
+           for it alike; a name with some _ left is no setting */
+        set_env("SNX_WORKFLOW_FLAGS", "--slp-vectorizer=1");
+        run(exe, repo, dump, log, 0, "G", NULL);
+        {
+            char* stamp = snx_path_join(repo, "recompiled/Test game/Test game.abi");
+            CHECK(!snx_write_file(stamp, "broken", 6));
+            run(exe, repo, dump, log, 0, "RG", NULL);
+            free(stamp);
+        }
+        set_env("SNX_WORKFLOW_FLAGS", "--aot-threads_most=1");
+        run(exe, repo, dump, log, 1, "", "unknown option: --aot-threads_most=1");
         set_env("SNX_WORKFLOW_FLAGS", "--resoltion=2");
         run(exe, repo, dump, log, 1, "", "unknown option: --resoltion=2");
         set_env("SNX_WORKFLOW_FLAGS", "--controls_a=0.5 0.5 100 1");

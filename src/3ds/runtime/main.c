@@ -97,7 +97,8 @@ static void usage(FILE* out) {
         "                         goes, game the console's (the default), and F4 turns it off and on.\n"
         "                         --aot_threads=N compiles the game's code on N threads (0 to 1024; the default 0:\n"
         "                         the computer's cores with a quarter left free, or --aot_threads_most=N), as the\n"
-        "                         Switch's, the same as --jobs N\n"
+        "                         Switch's, the same as --jobs N. KEY with a - for each _ is the same setting\n"
+        "                         (--ctr-top-resolution=2)\n"
         "\n"
         "On the 3DS, -O is the level of the static blocks' code and of the helpers they call. --chunk N puts N\n"
         "instructions in a chunk, whole blocks (default: 512 blocks a chunk). --jit-cache FILE is the list of the\n"
@@ -855,10 +856,10 @@ int snx_ctr_main(int argc, char** argv) {
         } else if (!positional && !strncmp(arg, "--", 2) && strchr(arg, '=')) {
             /* a setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini, in
                src/nx/runtime/settings.txt), one of the Switch's the 3DS takes too (snx_ctr_shared_setting), or a
-               Vulkan extension's (vk_ext_*, g_vk_extensions_ini), --key=value. gamepad_map is the input's to read: its row's setter keeps the map for a Switch game's
-               pads */
+               Vulkan extension's (vk_ext_*, g_vk_extensions_ini), --key=value, its key's _ a - or not. gamepad_map
+               is the input's to read: its row's setter keeps the map for a Switch game's pads */
             char key[64];
-            const char* value = ini_arg(arg, key, sizeof key);
+            const char* value = settings_arg(arg, key, sizeof key);
             const IniOpt* o = NULL;
             bool map = false;
             /* the recompile's threads, the Switch's setting: a value it does not take stops here, as there */
