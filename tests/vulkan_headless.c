@@ -6384,6 +6384,55 @@ static int check_zt_watch(void) {
     puts("Depth targets the CPU reads after a clear land in their formats' layouts");
     return 0;
 }
+/* A target that later ones drew all over holds nothing memory needs (rt_superseded): an owner published under an older
+   target beside it neither publishes it nor writes it back. One game draws three shadow layers of 18 MB one after
+   another in its pool, and for a frame draws them 128 KiB further on: a storage image of 2 KB published inside the old
+   first layer's head had that layer published (rt_before_cpu), the new first layer over it too (vk_rt_overlay), and
+   the old second layer, which the new first and second cover, written back by the overlay inside that publish: a
+   readback and a wait for the GPU. The image is at another GPU address of the same memory, as the game's is (a second
+   virtual pool), so its own overlay meets none of them. Here two layers of 0x14000 bytes at 0x4000, drawn again 0x8000
+   further on, and a 64 by 64 image published in the old first layer's head */
+static int check_rt_superseded(void) {
+    const u64 cpu = HEAP_BASE + 0x2800000, ga = 0x290000000ull, span = 0x100000, layer = 0x14000, shift = 0x8000;
+    const u64 old = ga + 0x4000, alias = 0x2A0000000ull, image = alias + 0x8000;
+    static const u8 red[4] = {255, 0, 0, 255};
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    CHECK(mem_map(cpu, span, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(ga, cpu, span);
+    gmmu_map(alias, cpu, span);
+    memset(GP(cpu), 0x22, span);
+    rt_clear(ch, old, 160, 128, 4, 0);
+    rt_clear(ch, old + layer, 160, 128, 4, 0);
+    rt_clear(ch, old + shift, 160, 128, 4, 1);
+    rt_clear(ch, old + shift + layer, 160, 128, 4, 1);
+    rt_clear(ch, image, 64, 64, 3, 1);
+    vk_lock();
+    Surf* published = vk_rt_find(image);
+    const u64 readbacks = g_vk_rt_readbacks, finishes = g_vk_finishes;
+    CHECK(published && published->w == 64 && vk_surf_publish(published));
+    const u64 back = g_vk_rt_readbacks - readbacks, waited = g_vk_finishes - finishes;
+    vk_unlock();
+    if (back || waited) {
+        fprintf(stderr,
+                "a target later ones drew all over: %llu write-backs and %llu finishes for an image published in the "
+                "head of the older target beside it, not 0 and 0\n",
+                (unsigned long long)back, (unsigned long long)waited);
+        return 1;
+    }
+    /* memory has the old first layer's red before the image, and the image's blue */
+    guest_done(cpu + 0x4000, 0x8000);
+    CHECK(!memcmp(GP(cpu + 0x4000), red, 4) && !memcmp(GP(cpu + 0x8000 - 4), red, 4));
+    CHECK(all_blue(GP(cpu + 0x8000), 0x4000));
+    vk_lock();
+    vk_rt_before_write(ga, span);
+    vk_rt_before_write(alias, span);
+    vk_unlock();
+    CHECK(mem_unmap(cpu, span) == 0);
+    free(ch);
+    puts("A target later ones drew all over is neither published nor written back for an owner beside it");
+    return 0;
+}
 static int check_rt_overlap(void) {
     GpuChannel* ch = calloc(1, sizeof *ch);
     GpuDmaOp o;
@@ -7839,6 +7888,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_dma_flip());
     CHECK(!check_dma_owners());
     CHECK(!check_dma_bands());
+    CHECK(!check_rt_superseded());
     CHECK(!check_dma_bands_frames());
     CHECK(!check_flush_parts());
     CHECK(!check_publish_bands());
