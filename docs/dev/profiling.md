@@ -10,6 +10,15 @@
   * [A scene that repeats](#a-scene-that-repeats)
 * [First look: the stats box and the log](#first-look-the-stats-box-and-the-log)
 * [Tracy: the whole run on one timeline](#tracy-the-whole-run-on-one-timeline)
+* [CPU profiling](#cpu-profiling)
+  * [Naming the game's code](#naming-the-games-code)
+  * [perf (Linux)](#perf-linux)
+  * [profile_cpu.py: sampling without perf](#profile_cpupy-sampling-without-perf)
+  * [pmcstat and DTrace (FreeBSD)](#pmcstat-and-dtrace-freebsd)
+  * [Windows, macOS and Android](#windows-macos-and-android)
+  * [The JIT](#the-jit)
+  * [Feeding a profile back to the recompiler](#feeding-a-profile-back-to-the-recompiler)
+  * [Micro-benchmarks for CPU work](#micro-benchmarks-for-cpu-work)
 
 [Development](development.md) · [architecture](architecture.md) · [build](build.md) · [settings](../user/settings.md)
 · [the CPU cost of a draw](draw-cost.md).
@@ -33,7 +42,7 @@ A profiler sees an ordinary native process. Knowing its parts saves most of the 
 |---|---|---|
 | The runtime (HLE kernel, services, NVN to Vulkan, audio, input) | `recompiled/<id>/<id>[.exe]`, a copy of `scarletnx` the driver put beside the game | its own symbols (C functions: `buf_get`, `stage_set`, `svc_*`, ...) |
 | The game's recompiled code (AOT) | `recompiled/<id>/<id>_code.{so,dll}` | `F_<guest address in hex>`, from the module's `.symtab` (`ir_codegen.c`'s `snx_ir_guest_function`) |
-| Code the JIT compiled for functions the module missed | anonymous executable memory in the JIT loader's arena | nothing: `[unknown]`, `//anon`, a bare address (The JIT) |
+| Code the JIT compiled for functions the module missed | anonymous executable memory in the JIT loader's arena | nothing: `[unknown]`, `//anon`, a bare address ([The JIT](#the-jit)) |
 | The game's code under NCE (AArch64 Linux/Android, `nce=1`) | the guest's own pages, at the guest's own addresses (`g_mem` is 0) | nothing; the address *is* the guest address |
 | The GPU driver, the Vulkan loader, libc, SDL | shared libraries | their exports; a stripped driver stays addresses |
 
@@ -43,7 +52,7 @@ Things that follow from this:
   The GPU thread, the recording thread, the JIT's threads (`jit compile`, `jit miss`), the audio and host1x workers
   are host threads with names of their own.
 - `F_7100123450` is the guest function at `0x7100123450`. Its real (demangled) name comes from the game's own symbol
-  tables, through `tools/symbols.py` (Naming the game's code).
+  tables, through `tools/symbols.py` ([Naming the game's code](#naming-the-games-code)).
 - Most of a typical profile is the runtime, not the game: memory copies, the renderer's per-draw work, the SVCs and
   IPC. [The CPU cost of a draw](draw-cost.md) is an example of where that leads.
 - The generated module has a `.symtab` but no `.eh_frame` (`link_elf.c` writes neither it nor debug info), and its
@@ -163,4 +172,221 @@ Things to know (more in [Development](development.md#profiling)):
 - Tracy's client is not in Android's app or on iOS. On FreeBSD the instrumentation works; the sampler does not
   (Tracy samples with Linux perf events or Windows ETW).
 - The cost: off, an emission is one atomic load; connected, Tracy's own. Measure throughput without it.
+
+## CPU profiling
+
+### Naming the game's code
+
+A sample in the game's code is named `F_<hex>` (AOT), or not named at all (JIT, NCE). The hex is the guest address,
+and the modules are laid out at the same bases as in the runtime, so the game's own symbol tables name it:
+
+```sh
+python3 tools/symbols.py work/Game 7100123450 71001a2b3c     # demangled names, as the game's modules have them
+python3 tools/disasm.py  work/Game 7100123450 71001234f0     # the guest code of a range
+python3 tools/disasm.py  work/Game nn::gfx::detail::Foo       # a whole function, by (sub)name
+```
+
+`work/Game` is the extracted dump (`exefs/` + `romfs/`) or an NRO. Both read the modules through
+`scarletnx --dump-modules` (`SNX_SCARLETNX` names another binary) and cache them in `~/.cache/scarletnx/module-dumps`.
+`disasm.py` needs `llvm-objcopy` and `llvm-objdump`. Many retail modules are stripped: then a function only has its
+address, and the guest disassembly (or the host code, `perf annotate`) is what tells it apart.
+
+To see the host code the recompiler made for a function, disassemble the module itself:
+
+```sh
+llvm-objdump -d --disassemble-symbols=F_7100123450 "$games/<id>/<id>_code.so"
+```
+
+### perf (Linux)
+
+`perf` is the general tool on Linux: no rebuild, every thread, hardware counters.
+
+**Who can sample.** `kernel.perf_event_paranoid` of 2 (the usual default) lets a user sample their own processes'
+user-space code; that is enough. `-1` (root) adds kernel stacks and system-wide sampling.
+
+**A flat profile of a scene** (the most useful first view, as the game's code has no reliable stacks):
+
+```sh
+"$g" --state_load=2000:1 --seconds=90 --fps_limit=0 --vsync=0 &
+sleep 30                                                  # past loading, into the scene
+perf record -F 999 -e cycles:u -p $! -o work/prof/perf.data -- sleep 30
+perf report -i work/prof/perf.data --no-children --sort comm,dso,sym
+```
+
+- `--sort comm,dso,sym` splits by thread name, then module: the `_code.so` rows are the game's code, the `<id>` rows
+  the runtime, `[unknown]`/`//anon` the JIT.
+- `--sort tid` or `perf report --tid=...` isolates one thread (the GPU thread for the renderer, a game thread for the
+  game's own work).
+- `perf top -p PID --sort dso,sym` gives the same live.
+
+**Call stacks for the runtime's code.** Use the Tracy build (frame pointers) and `--call-graph fp`:
+
+```sh
+perf record -F 999 -e cycles:u --call-graph fp -p PID -o work/prof/fp.data -- sleep 20
+perf report -i work/prof/fp.data --children --sort sym
+```
+
+Stacks stop at the game's code: a runtime function called from the game (an SVC wrapper, an NVN handler, a hooked
+`memcpy`) shows its runtime callers up to the generated function, then breaks. On Intel, last-branch-record call
+stacks do not need frame pointers and see through the game's code too, a few calls deep:
+
+```sh
+perf record -F 999 -e cycles:u --call-graph lbr -p PID -o work/prof/lbr.data -- sleep 20
+```
+
+`--call-graph dwarf` copies the stack with each sample and unwinds with `.eh_frame`; it works for the runtime and the
+libraries, not through the module, which has none, and is heavy (keep the sample rate low).
+
+**Flame graphs.** `perf script -i work/prof/fp.data | stackcollapse-perf.pl | flamegraph.pl > work/prof/fg.svg`
+([FlameGraph](https://github.com/brendangregg/FlameGraph)), or open the data in
+[hotspot](https://github.com/KDAB/hotspot), which also has a per-thread timeline.
+
+**Counters.** `perf stat` says why code is slow rather than where:
+
+```sh
+perf stat -e task-clock,cycles,instructions,branch-misses,cache-misses,context-switches,cpu-migrations \
+    -p PID -- sleep 20
+perf stat --per-thread -e task-clock -p PID -- sleep 10        # CPU time per guest and runtime thread
+```
+
+Low instructions per cycle in the game's code points at memory (guest memory accesses are plain loads from `g_mem`,
+`GP(addr)`); many context switches point at the guest's synchronization (try `native_os_sync`/`native_cond_var`, and
+look at the SVC zones in Tracy).
+
+**Annotate.** `perf annotate -i work/prof/perf.data -s F_7100123450` shows the hot instructions of a generated
+function; set it beside `tools/disasm.py` of the same address to read the guest code each host instruction came from.
+
+### profile_cpu.py: sampling without perf
+
+Where perf is not allowed (a locked-down machine, a container), `tools/profile_cpu.py` samples a process on Linux
+x86-64 and AArch64 with a preload library (`tools/cpu_sample.c`) and each thread's own CPU clock (SIGPROF). Sleeping
+threads give no samples, so it measures CPU cost, not waits.
+
+```sh
+python3 tools/profile_cpu.py tune --out work/prof/ring-search               # once: size the rings
+python3 tools/profile_cpu.py run --config work/prof/ring-search/winner.json \
+    --out work/prof/capture -- "$g" --seconds=60 --fps_limit=0
+```
+
+The capture holds `samples.bin` (timestamp, host PC, TID, weight), `maps.txt` to resolve the PCs against, and
+`sched.jsonl` (per-thread CPU time, run-queue wait and context switches). Check `samples.bin.json` for drops after
+every real capture and raise the capacity if it reports any. The format and the recovery rules are in
+[CPU sampling without perf](development.md#cpu-sampling-without-perf).
+
+### pmcstat and DTrace (FreeBSD)
+
+FreeBSD has no `perf`; it has `hwpmc(4)` with `pmcstat(8)`, and DTrace. Both need root (or a user `security.bsd`
+settings allow), and the module loaded:
+
+```sh
+sudo kldload hwpmc
+pmcstat -L | head                      # the events this CPU has
+```
+
+**A flat profile** of a running game (the PID is the `<id>` process):
+
+```sh
+sudo pmcstat -P cpu_clk_unhalted.thread_p -t PID -O work/prof/game.pmc    # Intel; AMD: ls_not_halted_cyc
+# ... let the scene run, then Ctrl-C
+pmcstat -R work/prof/game.pmc -g -D work/prof/gprof                        # gprof-style files per module
+pmcstat -R work/prof/game.pmc -G work/prof/callgraph.txt                   # callers and callees, as text
+```
+
+`-P` samples the process's own threads (`-S` would sample the whole system). `-t` attaches to a PID; giving the
+command after the options starts it instead. `pmcstat -R ... -T` gives a live, `top`-like view of a log or of a live
+session (`pmcstat -P event -t PID -T`).
+
+Call chains come from the frame pointers, so the Tracy build is again the one to use, and they stop at the game's
+code. For a flame graph, `stackcollapse-pmc.pl` from FlameGraph reads `-G` output.
+
+**DTrace** samples with the `profile` provider and walks user stacks with frame pointers too:
+
+```sh
+sudo dtrace -p PID -n 'profile-997 /pid == $target/ { @[ufunc(uregs[R_PC])] = count(); } tick-30s { exit(0); }' \
+    -o work/prof/funcs.txt
+sudo dtrace -p PID -n 'profile-997 /pid == $target/ { @[ustack(32)] = count(); } tick-30s { exit(0); }' \
+    -o work/prof/stacks.txt
+stackcollapse.pl work/prof/stacks.txt | flamegraph.pl > work/prof/fg.svg
+```
+
+DTrace is also good at questions a sampler is not: how often a syscall is made and how long it takes
+(`syscall:::entry /pid == $target/ { @[probefunc] = count(); }`), or which thread waits on what
+(`sched:::off-cpu`).
+
+Notes for FreeBSD:
+
+- The host has no userfaultfd: `write_tracking` and the GPU's memory traps use page protection there, and a
+  profile shows the fault handling as `SIGSEGV`/`SIGBUS` handler time (`vm_fault` in the kernel when sampling it). Read
+  that as the cost of the trap model ([GPU ownership](../layers/gpu/ownership.md)), not as a bug.
+- Tracy's sampler does not run; use Tracy for the instrumented zones and `pmcstat` for where the time went between
+  them.
+- `top -H -p PID` (or `top -HSP`) shows the CPU of each thread by name: the runtime's names are cut to 19 bytes.
+
+### Windows, macOS and Android
+
+- **Windows.** `--profile=1` (`profile=1` in the game's `.ini`) is a built-in sampler
+  (`src/nx/runtime/platform/profiler_win32.c`): it samples each runtime thread's PC every millisecond, skips threads
+  whose cycle count did not move (waiting), and writes `profile.txt` beside the game every 10 s, by thread. An address
+  outside the runtime is given as its module and offset, with the first runtime address found above it on the stack.
+  It is the zero-setup option. Tracy builds and samples on Windows too (its sampler uses ETW and needs the program run
+  as Administrator). General tools that read PDBs and ETW (Windows Performance Analyzer, Superluminal, VTune) work on
+  the runtime; the game's `_code.dll` is named by its COFF symbol table, without unwind data.
+- **macOS.** Instruments' Time Profiler or `xctrace record --template 'Time Profiler' --attach PID`. The module is a
+  Mach-O dylib whose `__eh_frame` and `__compact_unwind` the linker drops (`link_macho.c`), so its stacks are cut as on
+  Linux. Vulkan runs over MoltenVK; Xcode's Metal tools see Metal, not Vulkan.
+- **Android.** `simpleperf` (from the NDK) on the app's process; Tracy is not built into the app. Under NCE the game's
+  code runs from its own addresses: the sampled PC is the guest address, and `tools/symbols.py` names it as it is.
+  The GPU vendors' tools for phones are below.
+
+### The JIT
+
+The recompile compiles what its analysis finds; a function it missed is compiled at run time by the JIT, on the
+`jit compile` threads (background) and a `jit miss` thread (what a game thread is waiting for). Two costs follow:
+
+1. **Compile time.** A game thread that reaches a missed function waits for its compile. Tracy's `jit miss ms`,
+   `jit compile ms`, `jit queue depth` and `jit batch size` show it; a hitch whose frame holds a `jit miss ms` spike is
+   one. The settings `jit_threads`, `jit_region_instructions`, `jit_live_budget` and `jit_opt` trade compile time
+   against code quality ([Settings](../user/settings.md#performance)). `tools/tune_jit_latency.py` compares
+   compile strategies offline on private snapshots with `snx-bench-jit-latency`.
+2. **Unnamed code.** The JIT's code is in anonymous memory and the runtime writes no perf map, so external
+   profilers cannot name it. To profile it, make it AOT: the JIT records what it compiled, and an
+   [AOT pack](../user/aot-packs.md) links those functions into the game's module, where they have `F_` names. A profile
+   of the pack's run names them. Under the GDB stub, `gdb_jit=1` registers each JIT object with GDB (`gdb_jit.c`), so
+   a debugger can name and unwind them; it stops the game at every compile, so it is for inspection, not timing.
+
+A profile in which `[unknown]` is large is usually JIT code: check its share before reading the rest.
+
+### Feeding a profile back to the recompiler
+
+Two settings take a profile as input. Both change how the code is laid out or optimized, not what it does:
+
+- **Function order** (`-r --layout`). `tools/layout.py` records a scene's taken branches with LBR
+  (`perf record -j any,u`; Intel LBR, AMD BRS or LBRv2), clusters each function after its most frequent caller (C3, as
+  lld's `CallGraphSort.cpp`) and writes an order the recompile puts the hot code in. ELF modules for this host only.
+
+  ```sh
+  python3 tools/layout.py record PID 30 work/prof/branches.data      # in the scene to make fast
+  python3 tools/layout.py order work/prof/branches.data "$games/<id>/<id>_code.so" work/prof/game.layout
+  build/scarletnx -r work/Game --layout work/prof/game.layout
+  ```
+
+- **Branch odds** (`ir_branch_profile`): a file of branch counts, a line each (the branch's address and instruction
+  word in hex, then taken and not taken). The recompiler gives LLVM those odds for each branch whose address and word
+  match; the next recompile and the JIT's next run take it ([Settings](../user/settings.md)).
+
+Measure either with `tools/bench_nvn_game.py` against the same game without it.
+
+### Micro-benchmarks for CPU work
+
+A change to a hot path is easier to measure outside the game, then confirmed in it:
+
+- `tests/llvm_bench.c` times the recompiler's code on assembly kernels.
+- `tools/cpu_plan.py` and `tools/tune_cpu_sequences.py` compare candidate instruction sequences for an emitter after
+  exactness checks, with quiet serial timings ([CPU guide](../layers/cpu/guide.md); `llvm-mca` for a static estimate).
+- `tools/bench_gpu_hotpaths.py` times the renderer's CPU-side preparation on synthetic workloads, and
+  `tools/bench_gpu_descriptors.py` sets, descriptor buffers and heaps on the real driver
+  ([GPU preparation benchmarks](../history/gpu-hotpath-bench.md),
+  [Graphics descriptor measurements](../history/gpu-descriptor-bench.md)).
+
+These measure a named workload, not a game's frame rate.
 
