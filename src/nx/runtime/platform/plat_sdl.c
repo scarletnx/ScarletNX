@@ -74,6 +74,7 @@ static void* dl_open_from_memory(const char* path) {
     }
     for (size_t at = 0; at < size;) {
         ssize_t written = write(fd, bytes + at, size - at);
+        if (written < 0 && errno == EINTR) continue;
         if (written <= 0) {
             fprintf(stderr, "scarletnx: cannot write the module into memory: %s\n", strerror(errno));
             close(fd);

@@ -502,7 +502,7 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
     if (snx_write_file(staged, linked.data, linked.size) || snx_make_executable(staged) ||
         plat_replace_file(staged, target)) {
         char why[256];
-        snprintf(error, error_size, "cannot write %s: %s", target, snx_os_error(why, sizeof why));
+        snprintf(error, error_size, "cannot write %s or make it executable: %s", target, snx_os_error(why, sizeof why));
         (void)remove(staged);
         goto done;
     }
