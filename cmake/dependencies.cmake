@@ -266,6 +266,23 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     snx_package_file(yuzu-oss-extension)
     include("${PROJECT_SOURCE_DIR}/cmake/shared_fonts.cmake")
 
+    # NVIDIA Streamline's headers (MIT, NVIDIA-RTX/Streamline v2.14.16), the DLSS backend's (src/nx/gpu/vk/upscaler/dlss.cpp),
+    # in a Windows build alone, as Streamline runs there alone. One file each, the ones it includes: the repository also
+    # holds NVIDIA's NGX SDK, whose licence keeps it out of this program, and nothing else of it is fetched. NVIDIA's
+    # runtime (its DLLs) is never fetched or shipped: the user downloads it (docs/user/dlss.md)
+    if(WIN32)
+        set(snx_streamline_include "${PROJECT_BINARY_DIR}/streamline/include")
+        # each pinned in cpmfile.json by its SHA-512, as streamline_<its name, sl_dlss_h>
+        foreach(snx_sl_name IN ITEMS sl.h sl_struct.h sl_consts.h sl_version.h sl_result.h sl_appidentity.h
+                                     sl_device_wrappers.h sl_core_api.h sl_core_types.h sl_dlss.h sl_helpers_vk.h)
+            string(MAKE_C_IDENTIFIER "${snx_sl_name}" snx_sl_id)
+            snx_package_file(streamline_${snx_sl_id})
+            # one folder, as they include each other by name
+            configure_file("${streamline_${snx_sl_id}_SOURCE_DIR}/${snx_sl_name}"
+                           "${snx_streamline_include}/${snx_sl_name}" COPYONLY)
+        endforeach()
+    endif()
+
     # AMD FidelityFX Super Resolution 2.2.1 (MIT), the temporal upscaler the Ounce's DLSS evaluations run through
     # (src/nx/gpu/vk/fsr2, gpu/nvn/nvn_dlss.c): its library and Vulkan backend's sources and its GLSL passes, which the
     # build compiles (cmake/fsr2_shaders.cmake). The archive's prebuilt tools (tools/sc, Windows programs) are not used
