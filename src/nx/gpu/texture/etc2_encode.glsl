@@ -526,17 +526,16 @@ int ex_value(uint kind, int base, int m, int mod) {
     if (kind == EX_R11) return clamp(base * 8 + 4 + step, 0, 2047);
     return clamp(base * 8 + step, -1023, 1023);
 }
-/* the nearest index of value v */
-uint ex_index(uint kind, int base, int m, uint t, int v) {
-    uint best = 0xFFFFFFFFu, bk = 0u;
-    for (uint k = 0u; k < 8u; k++) {
-        int d = ex_value(kind, base, m, ex_mod(t, k)) - v;
-        if (uint(d * d) < best) {
-            best = uint(d * d);
-            bk = k;
-        }
-    }
-    return bk;
+/* the index of the eight values w0 to w7 (each index's, as the decoder decodes them) nearest v, in the low three
+   bits, and its distance above them: the words order as the distances, then as the indices, so their minimum is the
+   first of the nearest, the index the search over the eight keeps. A candidate's values are the same for each texel,
+   so the clamps are worked out once a candidate (ex_encode), not once a texel and index */
+uint ex_near(int v, int w0, int w1, int w2, int w3, int w4, int w5, int w6, int w7) {
+    const uint a = min(uint(abs(w0 - v)) << 3, (uint(abs(w1 - v)) << 3) | 1u);
+    const uint b = min((uint(abs(w2 - v)) << 3) | 2u, (uint(abs(w3 - v)) << 3) | 3u);
+    const uint c = min((uint(abs(w4 - v)) << 3) | 4u, (uint(abs(w5 - v)) << 3) | 5u);
+    const uint d = min((uint(abs(w6 - v)) << 3) | 6u, (uint(abs(w7 - v)) << 3) | 7u);
+    return min(min(a, b), min(c, d));
 }
 /* n / d rounded to nearest, halves away from 0 (d > 0): either dividend is positive or 0, so the divisions are
    unsigned ones */
@@ -575,10 +574,14 @@ void ex_encode(uint kind) {
             base = ex_round(lo + hi - 2 * off - mid, 2 * unit);
         }
         base = clamp(base, bmin, bmax);
+        const int w0 = ex_value(kind, base, m, ex_mod(t, 0u)), w1 = ex_value(kind, base, m, ex_mod(t, 1u));
+        const int w2 = ex_value(kind, base, m, ex_mod(t, 2u)), w3 = ex_value(kind, base, m, ex_mod(t, 3u));
+        const int w4 = ex_value(kind, base, m, ex_mod(t, 4u)), w5 = ex_value(kind, base, m, ex_mod(t, 5u));
+        const int w6 = ex_value(kind, base, m, ex_mod(t, 6u)), w7 = ex_value(kind, base, m, ex_mod(t, 7u));
         uint e = 0u;
         for (uint i = 0u; i < 16u; i++) {
-            int d = ex_value(kind, base, m, ex_mod(t, ex_index(kind, base, m, t, tx_v[i]))) - tx_v[i];
-            e += uint(d * d);
+            const uint d = ex_near(tx_v[i], w0, w1, w2, w3, w4, w5, w6, w7) >> 3;
+            e += d * d;
         }
         if (e < best) {
             best = e;
@@ -589,9 +592,13 @@ void ex_encode(uint kind) {
     }
     tx_hi = ((uint(bb) & 255u) << 24) | (uint(bm) << 20) | (bt << 16);
     tx_lo = 0u;
+    const int w0 = ex_value(kind, bb, bm, ex_mod(bt, 0u)), w1 = ex_value(kind, bb, bm, ex_mod(bt, 1u));
+    const int w2 = ex_value(kind, bb, bm, ex_mod(bt, 2u)), w3 = ex_value(kind, bb, bm, ex_mod(bt, 3u));
+    const int w4 = ex_value(kind, bb, bm, ex_mod(bt, 4u)), w5 = ex_value(kind, bb, bm, ex_mod(bt, 5u));
+    const int w6 = ex_value(kind, bb, bm, ex_mod(bt, 6u)), w7 = ex_value(kind, bb, bm, ex_mod(bt, 7u));
     for (uint i = 0u; i < 16u; i++) {
         /* three bits a texel, down the columns from bit 47 */
-        uint k = ex_index(kind, bb, bm, bt, tx_v[i]), p = 45u - 3u * et_pos(i);
+        uint k = ex_near(tx_v[i], w0, w1, w2, w3, w4, w5, w6, w7) & 7u, p = 45u - 3u * et_pos(i);
         if (p >= 32u) {
             tx_hi |= k << (p - 32u);
         } else {
