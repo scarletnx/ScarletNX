@@ -928,10 +928,36 @@ static u64 inplace_part(u64 cpu, u64 n) {
     u64 part = vk_uma_import_part(cpu, n, &held);
     return part ? part : n;
 }
+/* Guest [gva, gva + size) into buf at at on the GPU, in stream order, when draws' or dispatches' results the renderer
+   has pending lie over it (buffer.c): from where they are, composed over guest memory there when they cover only part
+   of it (vk_buf_copy). Landing them first, as gmem_need does, finished all the work recorded when one was in the
+   submission being recorded: one battle's texture checks and uploads of linear textures that a draw had just written
+   made about 2200 such finishes in 600 presents. In-place writes there too (uma.c) are copied from their import under
+   the results (vk_buf_copy). 0 when there are none */
+static int pending_gpu_read(u64 gva, u64 size, VkBuffer buf, u64 at) {
+    VkBuffer sb;
+    u64 so;
+    if (!vk_buf_pending(gva, size)) return 0;
+    vk_render_end(); /* copies happen outside rendering passes */
+    if (!vk_buf_copy(gva, size, &sb, &so)) return 0;
+    VkCommandBuffer cb = vk_cmd();
+    VkBufferCopy c = {so, at, size};
+    read_barrier(cb, 1); /* the results' writers first */
+    rec_CmdCopyBuffer(cb, sb, buf, 1, &c);
+    /* before what reads buf there, and what writes over it (vk_rt_overlay), as guest_read's own copies */
+    VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                          .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                          .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                          .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                          .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+    VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
+    rec_CmdPipelineBarrier2(cb, &dep);
+    return 1;
+}
 void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     u64 o = 0;
     int any = 0;
-    if (!size) return;
+    if (!size || pending_gpu_read(gva, size, buf, at)) return;
     vk_uma_gpu_reads(1);  /* the in-place writes there are copied below (cpu_read), not waited for */
     gmem_need(gva, size); /* results the renderer has pending there land first, as gmem_read has them */
     vk_uma_gpu_reads(0);
@@ -1022,6 +1048,7 @@ static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead) {
     int any = ahead; /* the upload command buffer waits for earlier submissions' writes itself */
     if (!size) return 1;
     if (ahead && !read_settled(gva, size)) return 0;
+    if (!ahead && pending_gpu_read(gva, size, buf, at)) return 1;
     if (!ahead) vk_render_end(); /* the copies happen outside rendering passes */
     vk_uma_gpu_reads(1);  /* the in-place writes there are copied below, not waited for */
     gmem_need(gva, size); /* results the renderer has pending there land first, as gmem_read has them */

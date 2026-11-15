@@ -475,6 +475,9 @@ void vk_uma_gpu_reads(int on) { (void)on; }
 int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off) {
     return (void)cpu, (void)len, (void)buf, (void)off, 0;
 }
+/* no draw's result is pending (buffer.c): none is copied from where it is either */
+int vk_buf_pending(u64 gva, u64 len) { return (void)gva, (void)len, 0; }
+int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off) { return (void)gva, (void)len, (void)buf, (void)off, 0; }
 void vk_defer_image(VkImage img, DevMem a, VkImageView v1, VkImageView v2) {
     (void)img, (void)a, (void)v1, (void)v2;
 }
