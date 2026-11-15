@@ -1790,16 +1790,26 @@ static int tex_copy_pending(Surf* t) {
     const VkFmt* f = &t->f;
     VkBuffer ib;
     u64 cpu = 0, io;
-    if (!vk_uma_pending(t->gva, t->size) || t->bl || t->sparse || t->bricks || t->piecewise || t->msaa || t->is_rt ||
+    /* or a draw's or dispatch's result the renderer has pending there (buffer.c): copied from where it is, composed over
+       guest memory where it covers part, and over in-place writes there from their import (vk_buf_copy). Hashed, the
+       result landed first, which finished all the work recorded when it was in the submission being recorded */
+    int gfx = vk_buf_pending(t->gva, t->size), uma = !gfx && vk_uma_pending(t->gva, t->size);
+    if (!(uma || gfx) || t->bl || t->sparse || t->bricks || t->piecewise || t->msaa || t->is_rt ||
         f->depth || f->conv || vk_tc_converts(f) || f->bw != 1 || f->bh != 1 || !f->bpp || t->levels != 1 ||
         t->layers != 1 || t->type == VK_IMAGE_VIEW_TYPE_3D || t->pitch % f->bpp || t->pitch < t->w * f->bpp)
         return 0;
-    vk_uma_gpu_reads(1);        /* the in-place writes are copied below, not waited for */
-    gmem_need(t->gva, t->size); /* anything else pending there lands first */
-    vk_uma_gpu_reads(0);
-    vk_render_end(); /* copies happen outside rendering passes */
-    if (gmmu_run(t->gva, t->size, &cpu) != t->size || !vk_uma_copy_pending(cpu, t->size, &ib, &io) || io % f->bpp)
-        return 0;
+    if (gfx) {
+        vk_render_end(); /* copies happen outside rendering passes */
+        if (!vk_buf_copy(t->gva, t->size, &ib, &io) || io % f->bpp) return 0;
+    } else {
+        vk_uma_gpu_reads(1);        /* the in-place writes are copied below, not waited for */
+        gmem_need(t->gva, t->size); /* anything else pending there lands first */
+        vk_uma_gpu_reads(0);
+        vk_render_end(); /* copies happen outside rendering passes */
+        if (gmmu_run(t->gva, t->size, &cpu) != t->size || !vk_uma_copy_pending(cpu, t->size, &ib, &io) ||
+            io % f->bpp)
+            return 0;
+    }
     VkCommandBuffer cb = vk_cmd();
     VkBufferImageCopy r = {.bufferOffset = io,
                            .bufferRowLength = t->pitch / f->bpp,

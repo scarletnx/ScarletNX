@@ -643,6 +643,9 @@ typedef struct WwStage WwStage;
 static _Thread_local struct {
     /* Suppress recursive lookups by the landing thread. Other readers still take vk_lock and wait for landing. */
     int out_landing;
+    /* guest memory's bytes under the pending results being read on the GPU, which go over them after (gfx_composed):
+       the results are neither found nor landed meanwhile */
+    int under_results;
     /* A job on the GPU thread checks against the newest epoch when it started (vk_ww_stream), not one a later
        submission starts while it runs: what the CPU wrote for that submission is the later job's to see. That leaves
        the scanner thread (ww_scanner) the time until the job starts to scan what it will check */
@@ -1139,7 +1142,7 @@ static void mem_need_reason(u64 gva, u64 len, int reason) {
     RangePages q;
     OutList l;
     RangeMap rm = {0};
-    if (!g_gfx_any || t_buffer.out_landing || !len) return;
+    if (!g_gfx_any || t_buffer.out_landing || t_buffer.under_results || !len) return;
     /* asked first without the lock, which another thread may hold: results are added on the GPU thread, so a miss
        here can only be one another thread has landed since. A hit is asked again with it */
     if (reason != WB_MAP && !pend_hit(&g_out_pages, gva, len)) return;
@@ -1184,7 +1187,7 @@ int vk_buf_pending(u64 gva, u64 len) {
     RangePages q;
     OutList l;
     int hit = 0;
-    if (!g_gfx_any || !len || !pend_hit(&g_out_pages, gva, len)) return 0;
+    if (!g_gfx_any || t_buffer.under_results || !len || !pend_hit(&g_out_pages, gva, len)) return 0;
     range_pages(gva, len, &q);
     out_near(&l, gva, len, &q);
     for (u32 i = 0; i < l.n && !hit; i++)
@@ -1794,6 +1797,18 @@ static void gap_read(void* user, u8* to, u64 a, u64 b) {
    over it: about 45 MB a frame of composed storage ranges in one game, most of its GPU-to-host traffic */
 static int gfx_composed(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     if (!vk_stage_device(len, vk_stage_align(), buf, off)) return 0;
+    if (vk_uma_pending(gva, len)) {
+        /* in-place writes pending there too (uma.c), whose bytes the CPU doesn't have yet: guest memory's bytes are
+           copied on the GPU, from the import after the write (vk_guest_read_device), and the results go over them.
+           Where a result and an in-place write share a byte, the result is the newer: a writer that binds bytes a
+           result holds takes that result (copy_writable), and a result made over an in-place write took its bytes
+           as its input. Read on the CPU, the gaps were the bytes from before the write. Landed first instead, a texture
+           over both finished all the work recorded: one battle's histograms, about 600 times in 600 presents */
+        t_buffer.under_results++;
+        int ok = vk_guest_read_device(gva, len, *buf, *off);
+        t_buffer.under_results--;
+        return ok && gfx_overlay(gva, len, *buf, *off, NULL, NULL, NULL);
+    }
     GapRead g = {gva};
     return gfx_overlay(gva, len, *buf, *off, NULL, gap_read, &g);
 }
@@ -2512,7 +2527,11 @@ int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         u8* q = vk_stage(len, vk_stage_align(), buf, off);
         if (!q) return 0;
         vk_render_end();
+        /* with no result looked for there again: gfx_gpu_src found none that meets the range, where vk_buf_pending
+           can still see one through a backing (owned.c's pending_gpu_read came back here, until the stack ran out) */
+        t_buffer.under_results++;
         vk_guest_read(gva, len, q, *buf, *off);
+        t_buffer.under_results--;
         copy_note(gva, len);
         return 1;
     }
