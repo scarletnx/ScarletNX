@@ -975,8 +975,14 @@ static void hid_vibrate(u32 handle, const nn_hid_VibrationValue* v) {
     g_hle.hid.vibration[p][motor].freq_low = v->freq_low;
     g_hle.hid.vibration[p][motor].amp_high = v->amp_high;
     g_hle.hid.vibration[p][motor].freq_high = v->freq_high;
-    __atomic_store_n(&(p ? &g_hle.hid.pad_extra[p - 1] : &g_hle.hid.pad1)->rumble[motor],
-                     hid_amplitude(v->amp_low) | hid_amplitude(v->amp_high) << 16, __ATOMIC_RELAXED);
+    u32 lo = hid_amplitude(v->amp_low), hi = hid_amplitude(v->amp_high);
+    __atomic_store_n(&(p ? &g_hle.hid.pad_extra[p - 1] : &g_hle.hid.pad1)->rumble[motor], lo | hi << 16,
+                     __ATOMIC_RELAXED);
+    if (p < HID_PADS) {
+        u32* peak = &g_host.hid.rumble_peak[p][motor];
+        u32 plo = *peak & 0xffff, phi = *peak >> 16;
+        *peak = (lo > plo ? lo : plo) | (hi > phi ? hi : phi) << 16;
+    }
 }
 static int nn_hid_IHidServer_SendVibrationValue(SvcObj* self, nn_hid_VibrationDeviceHandle handle,
                                                 const nn_hid_VibrationValue* value, u64 aruid) {
