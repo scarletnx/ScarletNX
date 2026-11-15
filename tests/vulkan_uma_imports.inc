@@ -1075,28 +1075,40 @@ static int check_uma_placed_view(void) {
    imports, so it copies where 0 would move, and 2 only moves, on a driver that imports and under auto as well; neither
    puts guest memory in place where vk_memory copies */
 static int check_uma_way(void) {
-    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 0, 1) == VK_UMA_WITH_NONE);
-    CHECK(vk_uma_way(2, 0, VK_MEM_UMA, 0, 1) == VK_UMA_WITH_AHB);
-    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_HOST &&
-          vk_uma_way(2, 0, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_HOST);
-    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 1) == VK_UMA_WITH_NONE &&
-          vk_uma_way(2, 0, VK_MEM_REBAR, 1, 0) == VK_UMA_WITH_HOST);
-    CHECK(vk_uma_way(1, 0, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_NONE &&
-          vk_uma_way(2, 0, VK_MEM_UMA, 0, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 0, 1, 0, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(2, 0, VK_MEM_UMA, 0, 1, 0, 0) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_HOST &&
+          vk_uma_way(2, 0, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 1, 0, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(2, 0, VK_MEM_REBAR, 1, 0, 0, 0) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(1, 0, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(2, 0, VK_MEM_UMA, 0, 0, 0, 0) == VK_UMA_WITH_NONE);
     /* imported only */
-    CHECK(vk_uma_way(2, 1, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_HOST &&
-          vk_uma_way(0, 1, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_HOST);
-    CHECK(vk_uma_way(2, 1, VK_MEM_UMA, 0, 1) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(2, 1, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_HOST &&
+          vk_uma_way(0, 1, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(2, 1, VK_MEM_UMA, 0, 1, 0, 0) == VK_UMA_WITH_NONE);
     /* moved only */
-    CHECK(vk_uma_way(2, 2, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_AHB &&
-          vk_uma_way(0, 2, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_AHB);
-    CHECK(vk_uma_way(0, 2, VK_MEM_UMA, 0, 1) == VK_UMA_WITH_AHB &&
-          vk_uma_way(2, 2, VK_MEM_REBAR, 1, 1) == VK_UMA_WITH_AHB);
-    CHECK(vk_uma_way(2, 2, VK_MEM_UMA, 1, 0) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(2, 2, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_AHB &&
+          vk_uma_way(0, 2, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(0, 2, VK_MEM_UMA, 0, 1, 0, 0) == VK_UMA_WITH_AHB &&
+          vk_uma_way(2, 2, VK_MEM_REBAR, 1, 1, 0, 0) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(2, 2, VK_MEM_UMA, 1, 0, 0, 0) == VK_UMA_WITH_NONE);
+    /* Linux's dma-bufs of memfds (udmabuf): auto moves into them where imports are dear (amdgpu), else imports as before;
+       imported only never moves, moved only takes them where there are no AHardwareBuffers */
+    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF &&
+          vk_uma_way(2, 0, VK_MEM_UMA, 1, 0, 1, 1) == VK_UMA_WITH_DMABUF);
+    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 1, 0) == VK_UMA_WITH_HOST &&
+          vk_uma_way(0, 0, VK_MEM_UMA, 1, 0, 0, 1) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(0, 1, VK_MEM_UMA, 1, 0, 1, 1) == VK_UMA_WITH_HOST &&
+          vk_uma_way(0, 1, VK_MEM_UMA, 0, 0, 1, 1) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(0, 2, VK_MEM_UMA, 1, 0, 1, 0) == VK_UMA_WITH_DMABUF &&
+          vk_uma_way(0, 2, VK_MEM_UMA, 1, 1, 1, 1) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 0, 1, 1) == VK_UMA_WITH_NONE &&
+          vk_uma_way(1, 0, VK_MEM_UMA, 1, 0, 1, 1) == VK_UMA_WITH_NONE);
     /* vk_memory's copy stays a copy */
-    CHECK(vk_uma_way(1, 1, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_NONE &&
-          vk_uma_way(1, 2, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_NONE &&
-          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 1) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(1, 1, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(1, 2, VK_MEM_UMA, 1, 1, 0, 0) == VK_UMA_WITH_NONE &&
+          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 1, 0, 0) == VK_UMA_WITH_NONE);
     printf("in place: auto copies where only AHardwareBuffers would take guest memory; vk_memory=2 moves it there; "
            "uma_memory=1 only imports, uma_memory=2 only moves\n");
     return 0;
@@ -1168,8 +1180,12 @@ static int check_uma_migrate(void) {
         printf("skip: guest memory is copied on this device (vk_memory)\n");
         return 0;
     }
-    if (!uma_imports_shared()) {
-        printf("skip: the driver imports no buffer's pages as host memory, which the migrate way needs here\n");
+    /* regions the driver imports as host memory, else as dma-bufs (Linux's udmabuf: amdgpu takes no memfd's pages as
+       host memory) */
+    const int way = uma_imports_shared() ? 1 : vk_uma_can_dmabuf() ? 2 : 0;
+    if (!way) {
+        printf("skip: the driver imports no buffer's pages as host memory or as a dma-buf, which the migrate way "
+               "needs here\n");
         return 0;
     }
     CHECK(mem_map(UMA_M, 4 * window, MS_NORMAL, PERM_RW) == 0);
@@ -1177,7 +1193,7 @@ static int check_uma_migrate(void) {
     u8* g = GP(UMA_M);
     for (u64 i = 0; i < 4 * window; i++) g[i] = uma_fill(i);
     vk_lock();
-    CHECK(vk_uma_migrate(1));
+    CHECK(vk_uma_migrate(way));
     u8* result = vk_readback_buffer(768, &rb);
     CHECK(result);
     /* the first window moves, with its bytes; a range beside it is in the same region */
@@ -1258,8 +1274,12 @@ static int check_uma_region_writes(void) {
         printf("skip: guest memory is copied on this device (vk_memory)\n");
         return 0;
     }
-    if (!uma_imports_shared()) {
-        printf("skip: the driver imports no buffer's pages as host memory, which the migrate way needs here\n");
+    /* regions the driver imports as host memory, else as dma-bufs (Linux's udmabuf: amdgpu takes no memfd's pages as
+       host memory) */
+    const int way = uma_imports_shared() ? 1 : vk_uma_can_dmabuf() ? 2 : 0;
+    if (!way) {
+        printf("skip: the driver imports no buffer's pages as host memory or as a dma-buf, which the migrate way "
+               "needs here\n");
         return 0;
     }
     CHECK(mem_map(UMA_RW, 3 * window, MS_NORMAL, PERM_RW) == 0);
@@ -1267,7 +1287,7 @@ static int check_uma_region_writes(void) {
     u8* g = GP(UMA_RW);
     for (u32 i = 0; i < 3; i++) memset(g + i * window, 0x91, 0x6000);
     vk_lock();
-    CHECK(vk_uma_migrate(1));
+    CHECK(vk_uma_migrate(way));
     /* written in place in a region, then its page trapped before anything waited for the write */
     CHECK(vk_buf_copy_writable(UMA_GRW + 0x100, 256, &w, &wo, 1));
     int region = vk_uma_imports(UMA_RW, window) == 1 && uma_in_buffer(g) == 1;
@@ -1301,7 +1321,7 @@ static int check_uma_region_writes(void) {
     gmmu_map(src, src_cpu, 0x10000);
     memset(GP(src_cpu), 0xa1, 0x1000);
     vk_lock();
-    CHECK(vk_uma_migrate(1));
+    CHECK(vk_uma_migrate(way));
     CHECK(vk_buf_get_input(UMA_GRW + 0x4100, 256, 4, &r, &ro));
     int held = vk_uma_held(UMA_RW + 0x4100, 256) && uma_in_buffer(g + 0x4000) == 1;
     vk_unlock();
@@ -1355,8 +1375,12 @@ static int check_uma_region_merge(void) {
         printf("skip: guest memory is copied on this device (vk_memory)\n");
         return 0;
     }
-    if (!uma_imports_shared()) {
-        printf("skip: the driver imports no buffer's pages as host memory, which the migrate way needs here\n");
+    /* regions the driver imports as host memory, else as dma-bufs (Linux's udmabuf: amdgpu takes no memfd's pages as
+       host memory) */
+    const int way = uma_imports_shared() ? 1 : vk_uma_can_dmabuf() ? 2 : 0;
+    if (!way) {
+        printf("skip: the driver imports no buffer's pages as host memory or as a dma-buf, which the migrate way "
+               "needs here\n");
         return 0;
     }
     CHECK(mem_map(UMA_RM, 2 * window, MS_NORMAL, PERM_RW) == 0);
@@ -1365,7 +1389,7 @@ static int check_uma_region_merge(void) {
     memset(g, 0x91, 0x1000);
     memset(g + window - 0x1000, 0x91, 0x2000);
     vk_lock();
-    CHECK(vk_uma_migrate(1));
+    CHECK(vk_uma_migrate(way));
     /* a region of each window: the second's for a range read in place, the first's for a write in place */
     CHECK(vk_buf_get_input(UMA_GRM + window + 0x100, 256, 4, &b, &bo));
     CHECK(vk_buf_copy_writable(UMA_GRM + 0x100, 256, &w, &wo, 1));

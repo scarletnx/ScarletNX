@@ -99,6 +99,12 @@ int plat_vm_unshare(u8* p, u64 size);
    memory (the tests' way). 0, or -1 with errno (ENOSYS elsewhere, and on Android before 8) */
 int plat_gpu_buffer(u64 size, int* fd, void** handle);
 void plat_gpu_buffer_free(int fd, void* handle, u64 size);
+/* Linux: a dma-buf of all size bytes of plat_gpu_buffer's memfd fd, from /dev/udmabuf, which the driver imports with no
+   per-submission cost (a host-memory import of amdgpu's has its pages faulted in again at each). The dma-buf pins the
+   pages: nothing may punch the memfd while it lives. The descriptor, or -1 with errno (ENODEV without the device,
+   ENOSYS elsewhere). plat_dmabuf_limit: the bytes one may hold (udmabuf's size_limit_mb), 0 when there are none */
+int plat_gpu_buffer_dmabuf(int fd, u64 size);
+u64 plat_dmabuf_limit(void);
 /* What of the process lies in its address space's [lo, hi) and is not the guest's: a mapping with a name (a file, a
    device, a named anonymous mapping such as ART's or the allocator's, a memfd other than the alias pool's) that own
    does not claim (own(a, b): 1 when [a, b) is the caller's; NULL claims none), and a run that nothing maps, which any

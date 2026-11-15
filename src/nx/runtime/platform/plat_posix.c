@@ -56,6 +56,12 @@
 #if defined(__aarch64__)
 #include <asm/sigcontext.h> /* the signal frame's ESR record (context_write) */
 #endif
+#if !defined(__ANDROID__) && defined(__has_include)
+#if __has_include(<linux/udmabuf.h>)
+#include <linux/udmabuf.h> /* plat_gpu_buffer_dmabuf */
+#define SNX_UDMABUF 1
+#endif
+#endif
 #endif
 #include <dlfcn.h> /* Android's libnativewindow (plat_gpu_buffer) */
 #if defined(__ANDROID__)
@@ -1287,10 +1293,11 @@ int plat_gpu_buffer(u64 size, int* fd, void** handle) {
     *handle = b;
     return 0;
 #elif defined(__linux__) && defined(SYS_memfd_create)
-    long f = syscall(SYS_memfd_create, "snx-gpu-buffer", 1u /* MFD_CLOEXEC */);
+    /* sealed against shrinking, which udmabuf asks of a memfd it makes a dma-buf of (plat_gpu_buffer_dmabuf) */
+    long f = syscall(SYS_memfd_create, "snx-gpu-buffer", 1u /* MFD_CLOEXEC */ | 2u /* MFD_ALLOW_SEALING */);
     void* view;
     if (f < 0) return -1;
-    if (ftruncate((int)f, (off_t)size) ||
+    if (ftruncate((int)f, (off_t)size) || fcntl((int)f, F_ADD_SEALS, F_SEAL_SHRINK) ||
         (view = mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED, (int)f, 0)) == MAP_FAILED) {
         int e = errno;
         close((int)f);
@@ -1313,6 +1320,64 @@ void plat_gpu_buffer_free(int fd, void* handle, u64 size) {
     if (handle) g_ahb.release((AHardwareBuffer*)handle);
 #else
     if (handle) munmap(handle, (size_t)size);
+#endif
+}
+/* Linux's udmabuf: /dev/udmabuf, opened once (-2 not tried yet, -1 not available) */
+#if SNX_UDMABUF
+static int g_udmabuf = -2;
+static int udmabuf_dev(void) {
+    int fd = __atomic_load_n(&g_udmabuf, __ATOMIC_ACQUIRE);
+    if (fd != -2) return fd;
+    fd = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
+    int was = -2;
+    if (!__atomic_compare_exchange_n(&g_udmabuf, &was, fd < 0 ? -1 : fd, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        if (fd >= 0) close(fd);
+        return was;
+    }
+    return fd < 0 ? -1 : fd;
+}
+#endif
+u64 plat_dmabuf_limit(void) {
+#if SNX_UDMABUF
+    if (udmabuf_dev() < 0) return 0;
+    /* the module's size_limit_mb, which root sets: 64 on SteamOS's kernel, larger upstream. Unread, the old default */
+    u64 mb = 64;
+    int f = open("/sys/module/udmabuf/parameters/size_limit_mb", O_RDONLY | O_CLOEXEC);
+    if (f >= 0) {
+        char buf[24];
+        ssize_t n = read(f, buf, sizeof buf - 1);
+        close(f);
+        if (n > 0) {
+            buf[n] = 0;
+            char* end;
+            unsigned long long v = strtoull(buf, &end, 10);
+            if (end != buf && v > 0 && v < (1ull << 30)) mb = v;
+        }
+    }
+    return mb << 20;
+#else
+    return 0;
+#endif
+}
+int plat_gpu_buffer_dmabuf(int fd, u64 size) {
+#if SNX_UDMABUF
+    int dev = udmabuf_dev();
+    if (dev < 0) {
+        errno = ENODEV;
+        return -1;
+    }
+    struct udmabuf_create c;
+    memset(&c, 0, sizeof c);
+    c.memfd = (__u32)fd;
+    c.flags = UDMABUF_FLAGS_CLOEXEC;
+    c.offset = 0;
+    c.size = size;
+    return ioctl(dev, UDMABUF_CREATE, &c);
+#else
+    (void)fd;
+    (void)size;
+    errno = ENOSYS;
+    return -1;
 #endif
 }
 
