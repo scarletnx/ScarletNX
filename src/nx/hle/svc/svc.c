@@ -62,10 +62,12 @@ static int pause_point(KThread* t, int where) {
     klock_unlock();
     return 1;
 }
-/* cur (with g_klock held) waits until t, asked to pause, runs no game code: it is inside an SVC, stopped at a pause
-   point, has exited, or was resumed meanwhile. pause_point and svc_exit_thread wake it */
+/* cur (with g_klock held) waits until t, asked to pause, runs no game code: it is inside an SVC, blocked in a wait
+   outside one (stopped: a hook's, NVN's or a JIT compile's, kthread_block), stopped at a pause point, has exited, or
+   was resumed meanwhile. pause_point, kthread_block and svc_exit_thread wake it */
 static void pause_settle_nl(KThread* cur, KThread* t) {
-    while (t->suspended && t->state == 1 && !t->pause_at && !__atomic_load_n(&t->in_svc, __ATOMIC_SEQ_CST)) {
+    while (t->suspended && t->state == 1 && !t->pause_at && !__atomic_load_n(&t->in_svc, __ATOMIC_SEQ_CST) &&
+           !__atomic_load_n(&t->stopped, __ATOMIC_SEQ_CST)) {
         cur->woken = 0;
         cur->wait_kind = 5;
         cur->wait_svc = WAIT_SVC_SETTLE;
@@ -75,6 +77,7 @@ static void pause_settle_nl(KThread* cur, KThread* t) {
         cur->wait_kind = 0;
     }
 }
+int svc_pause_point(KThread* t) { return pause_point(t, 2); }
 /* the core a thread whose core is no longer in its affinity mask moves to: its ideal core, or the highest it may use,
    as the console's SetCoreMask picks it */
 static int core_allowed(const KThread* t) {

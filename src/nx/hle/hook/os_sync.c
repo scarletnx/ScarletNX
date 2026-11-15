@@ -321,7 +321,10 @@ static int lw_wait(CPU* c, u64 a) {
         if (v == LW_SIGNALED) return 0;
         if (v == 0 && !cas(p, &v, 1u)) continue;
         if (v != 0 && v != 1) misuse("a light object's waiter word holds neither 0, 1 nor 2");
-        const u32 rc = svc_wait_addr(kthread_cur(), a, 2, 1, -1);
+        KThread* t = kthread_cur();
+        kthread_block(t); /* outside an SVC: a pause asked during the wait settles, and stops the thread after it */
+        const u32 rc = svc_wait_addr(t, a, 2, 1, -1);
+        kthread_unblock(t);
         if (lw_retry(rc)) return 2;
         lw_check(rc, "a light object's wait");
         return 1;

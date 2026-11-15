@@ -50,6 +50,9 @@ void kthread_retire_check(PMutex* held);
 void svc_resume(KThread* t);
 void svc_resume_leave(KThread* t);
 void svc_service_retry(KThread* t);
+/* svcSetThreadActivity's pause, where a thread asked to pause during a wait outside an SVC (kthread_unblock) stops on
+   its way back to game code, as on its way out of an SVC: 1 when it stopped, its core to take back */
+int svc_pause_point(KThread* t);
 /* sync.c's: the rest of a wait that a restored thread was blocked in, the SVC's result and outputs in its registers */
 void sync_resume(KThread* t);
 int h_close(u32 h);

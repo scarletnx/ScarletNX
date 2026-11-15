@@ -710,11 +710,20 @@ int kthread_hold_point(KThread* t, int park) {
     return 1;
 }
 void kthread_block(KThread* t) {
-    if (t) __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
+    if (!t) return;
+    __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
+    /* runs no game code now: a svcSetThreadActivity waiting for it to pause has its answer (stopped is set before
+       suspended is read, and the pause sets suspended before it reads stopped) */
+    if (__atomic_load_n(&t->suspended, __ATOMIC_SEQ_CST)) {
+        pm_lock(&g_host.kernel.klock);
+        kobj_wake_nl(&t->o, 5);
+        klock_unlock();
+    }
 }
 void kthread_unblock(KThread* t) {
     if (!t) return;
     __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&t->suspended, __ATOMIC_SEQ_CST)) svc_pause_point(t); /* paused during the wait */
     kthread_hold_point(t, PARK_RUN); /* rt_miss set the pc it goes on at */
 }
 void kthread_commit(void) {
