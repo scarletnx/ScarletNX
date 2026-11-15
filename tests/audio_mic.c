@@ -489,12 +489,33 @@ static void test_reduction(void) {
     }
     scale_to(g_babble, TOTAL, 0.03, 0);
 
-    /* the neural method, built in (no system librnnoise here), checked: a steady noise and babble lowered, the speech
-       kept, its SNR better */
+    /* the neural method, the copy built in, checked: a steady noise and babble lowered, the speech kept, its SNR
+       better */
     measure("neural", SNX_DENOISE_NEURAL, "steady", g_steady, &lowered, &gain, &kept);
     CHECK(lowered >= 10.0 && gain >= 3.0 && kept > -6.0);
     measure("neural", SNX_DENOISE_NEURAL, "babble", g_babble, &lowered, &gain, &kept);
     CHECK(lowered >= 3.0 && kept > -6.0);
+    /* it is the copy built in, whatever librnnoise the host has: each block what that copy's own call makes of it. A
+       system librnnoise 0.4.1 gave other samples and another delay */
+    {
+        SnxDenoise* neural = snx_denoise_new(48000, 480, SNX_DENOISE_NEURAL);
+        DenoiseState* copy = rnnoise_create(NULL);
+        static i16 block[480];
+        static float in[480], out[480];
+        u32 differ = 0;
+        CHECK(neural != NULL && copy != NULL);
+        for (u32 i = 0; i + 480 <= 48000; i += 480) {
+            memcpy(block, g_mix + i, sizeof block);
+            for (u32 k = 0; k < 480; k++) in[k] = block[k];
+            snx_denoise_run(neural, block);
+            rnnoise_process_frame(copy, out, in);
+            for (u32 k = 0; k < 480; k++)
+                differ += block[k] != (i16)(out[k] > 32767.0f ? 32767 : out[k] < -32768.0f ? -32768 : lrintf(out[k]));
+        }
+        CHECK(differ == 0);
+        rnnoise_destroy(copy);
+        snx_denoise_free(neural);
+    }
     printf(
         "audio_mic: neural: a block of 10 ms takes %.1f us (%.2f%% of one core), and the output lags by %u samples\n",
         block_us(SNX_DENOISE_NEURAL), block_us(SNX_DENOISE_NEURAL) / 100.0, 480u);

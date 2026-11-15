@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The microphone's noise reduction (audio_denoise.h).
    The neural method is RNNoise. It takes frames of 480 samples at 48 kHz as floats on the 16-bit scale, and gives each
-   frame back a frame later, as it overlaps one frame's analysis with the next (so does the spectral method). A system librnnoise is found by its C
-   functions, else the copy linked in runs (its symbols hidden, so the system's library never binds to them).
+   frame back a frame later, as it overlaps one frame's analysis with the next (so does the spectral method). It is the
+   copy built in, never a system librnnoise: another version's network gives other gains and another delay.
    The spectral method is the Speex DSP library's preprocessor, found by its C functions in the library the host has.
    Its noise estimate follows the quietest level of each band over the last seconds, so a steady noise (a fan, a hum,
    traffic) is learnt and lowered while a voice, which comes and goes, passes. Only its noise suppression is switched
@@ -29,9 +29,6 @@ typedef void* (*SpeexInit)(int frame_size, int rate);
 typedef int (*SpeexCtl)(void* state, int request, void* value);
 typedef int (*SpeexRun)(void* state, int16_t* samples);
 typedef void (*SpeexDestroy)(void* state);
-typedef void* (*RnnCreate)(void* model);
-typedef float (*RnnProcess)(void* state, float* out, const float* in);
-typedef void (*RnnDestroy)(void* state);
 
 /* a library, loaded once: state 0 not tried, 1 being loaded, 2 loaded, 3 not there */
 static struct {
@@ -41,19 +38,11 @@ static struct {
     SpeexRun run;
     SpeexDestroy destroy;
 } g_speex;
-static struct {
-    int state;
-    RnnCreate create;
-    RnnProcess process;
-    RnnDestroy destroy;
-} g_rnn;
 
 struct SnxDenoise {
     int method;
     uint32_t block;
-    void* state;
-    RnnProcess process; /* the neural method's, the system's or the one linked in */
-    RnnDestroy destroy;
+    void* state; /* the neural method's DenoiseState, or the spectral one's */
     float in[RNNOISE_FRAME], out[RNNOISE_FRAME];
 };
 
@@ -75,22 +64,6 @@ static int speex_load(void) {
     }
     return 1;
 }
-/* the system's librnnoise, when the host has one with the functions every version has: 1 when it loaded */
-static int rnn_load(void) {
-    void* lib = plat_dl_open(SNX_RNNOISE_LIBRARY);
-    if (!lib) return 0;
-    g_rnn.create = (RnnCreate)plat_dl_sym(lib, "rnnoise_create");
-    g_rnn.process = (RnnProcess)plat_dl_sym(lib, "rnnoise_process_frame");
-    g_rnn.destroy = (RnnDestroy)plat_dl_sym(lib, "rnnoise_destroy");
-    int (*frame_size)(void) = (int (*)(void))plat_dl_sym(lib, "rnnoise_get_frame_size");
-    if (!g_rnn.create || !g_rnn.process || !g_rnn.destroy || !frame_size || frame_size() != RNNOISE_FRAME) {
-        plat_dl_close(lib);
-        return 0;
-    }
-    LOG("audio: the neural noise reduction is the system's %s\n", SNX_RNNOISE_LIBRARY);
-    return 1;
-}
-
 /* 1 when a library is loaded: the first caller loads it, any other waits for that */
 static int ready(int* state, int (*load)(void)) {
     int now = __atomic_load_n(state, __ATOMIC_ACQUIRE), expected = 0;
@@ -100,29 +73,13 @@ static int ready(int* state, int (*load)(void)) {
     return now == 2;
 }
 
-/* the copy linked in, by the types the system's library is called through */
-static void* linked_create(void* model) {
-    (void)model;
-    return rnnoise_create(NULL);
-}
-static float linked_process(void* state, float* out, const float* in) { return rnnoise_process_frame(state, out, in); }
-static void linked_destroy(void* state) { rnnoise_destroy(state); }
-
-static int neural_new(SnxDenoise* d) {
-    int system = ready(&g_rnn.state, rnn_load);
-    RnnCreate create = system ? g_rnn.create : linked_create;
-    d->process = system ? g_rnn.process : linked_process;
-    d->destroy = system ? g_rnn.destroy : linked_destroy;
-    d->state = create(NULL);
-    return d->state != NULL;
-}
-
 SnxDenoise* snx_denoise_new(uint32_t rate, uint32_t block, int method) {
     if (method == SNX_DENOISE_OFF || !rate || !block || block > rate) return NULL;
     SnxDenoise* d = calloc(1, sizeof *d);
     if (!d) return NULL;
     d->block = block;
-    if (method == SNX_DENOISE_NEURAL && rate == RNNOISE_RATE && block == RNNOISE_FRAME && neural_new(d)) {
+    if (method == SNX_DENOISE_NEURAL && rate == RNNOISE_RATE && block == RNNOISE_FRAME &&
+        (d->state = rnnoise_create(NULL)) != NULL) {
         d->method = SNX_DENOISE_NEURAL;
         return d;
     }
@@ -148,7 +105,7 @@ void snx_denoise_run(SnxDenoise* d, int16_t* block) {
         return;
     }
     for (int i = 0; i < RNNOISE_FRAME; i++) d->in[i] = block[i];
-    d->process(d->state, d->out, d->in);
+    rnnoise_process_frame(d->state, d->out, d->in);
     for (int i = 0; i < RNNOISE_FRAME; i++) {
         float v = d->out[i];
         block[i] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : lrintf(v));
@@ -160,6 +117,6 @@ void snx_denoise_free(SnxDenoise* d) {
     if (d->method == SNX_DENOISE_SPECTRAL)
         g_speex.destroy(d->state);
     else
-        d->destroy(d->state);
+        rnnoise_destroy(d->state);
     free(d);
 }
