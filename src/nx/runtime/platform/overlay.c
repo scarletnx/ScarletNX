@@ -281,6 +281,24 @@ static const IniOpt* setting(int i) {
     if (page == PAGE_PADS) return ini_find(g_gamepad_ini, PADS[i]);
     return page == PAGE_BUTTONS && i > 0 && i <= SNX_VPAD_COUNT ? &g_vpad_shown_ini[i - 1] : NULL;
 }
+/* the key of item i that the game's picks can hold: a setting's, and TV mode's (docked); NULL for an action */
+static const char* pick_key(int i) {
+    const IniOpt* o = setting(i);
+    if (o) return o->key;
+    return page == PAGE_MAIN && main_item(i) == M_TV_MODE ? "docked" : NULL;
+}
+/* item i set for this game alone, in its picks: its value marked *, Y or Delete back to Global */
+static int picked(int i) {
+    const char* k = pick_key(i);
+    return k && ini_picked(k);
+}
+/* a page with an item the game's picks hold, which its second line of help says how to read */
+static int page_picked(void) {
+    int i, n = page == PAGE_KEYS ? 0 : items();
+    for (i = 0; i < n; ++i)
+        if (picked(i)) return 1;
+    return 0;
+}
 /* a number, stepped by the arrows around it, not a word; a slider's is its own (INI_SLIDER) */
 static int arrows(const IniOpt* o) { return o && !(o->flags & INI_SLIDER) && (!o->words || strchr(o->words, '#')); }
 static const IniOpt* slider(int i) {
@@ -292,7 +310,7 @@ static int slider_place(const IniOpt* o) {
     int v = __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED);
     return o->hi > o->lo ? (int)(((double)v - o->lo) * 1000.0 / (o->hi - o->lo) + 0.5) : 0;
 }
-/* the columns its value takes at its widest, which the slider ends before whatever it says */
+/* the columns its value takes at its widest, with a pick's " *", which the slider ends before whatever it says */
 static int slider_cols(const IniOpt* o) {
     char word[OVERLAY_COLS];
     int v, step = o->step > 0 ? o->step : 1, most = 0;
@@ -300,7 +318,7 @@ static int slider_cols(const IniOpt* o) {
         ini_word(o, v, word, sizeof word);
         if ((int)strlen(word) > most) most = (int)strlen(word);
     }
-    return most;
+    return most + 2;
 }
 /* the slider of item i set to the step nearest to at, thousandths of its way: stored, as a step is (act) */
 static int slide_to(int i, int at) {
@@ -314,25 +332,28 @@ static int slide_to(int i, int at) {
     vpad_store_opt(o);
     return OVERLAY_NONE;
 }
-/* an item's text, and its value at the right */
+/* an item's text, and its value at the right, * after a value the game's picks hold */
 static void label(int i, char* text, size_t size, char* value, size_t vsize) {
     const IniOpt* o = setting(i);
+    const char* own = picked(i) ? " *" : "";
     *value = 0;
     if (o) {
         char word[OVERLAY_COLS];
         snprintf(text, size, "%s", o->name);
         ini_word(o, __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED), word, sizeof word);
-        snprintf(value, vsize, arrows(o) ? "< %s >" : "%s", word);
+        snprintf(value, vsize, arrows(o) ? "< %s%s >" : "%s%s", word, own);
         return;
     }
     if (page == PAGE_MAIN) {
         static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Save states",
                                                         "Shortcuts",   "TV mode",        "Stats",
                                                         "Volume",      "Capture frame",  "Exit"};
+        char word[OVERLAY_COLS];
         snprintf(text, size, "%s", main_items[main_item(i)]);
-        if (main_item(i) == M_TV_MODE) /* the choice in effect, in docked's words: the .ini keeps its own */
-            ini_word(ini_find(g_display_ini, "docked"), options_tv_mode_choice(), value, vsize);
-        else if (main_item(i) < M_CAPTURE)
+        if (main_item(i) == M_TV_MODE) { /* the choice in effect, in docked's words */
+            ini_word(ini_find(g_display_ini, "docked"), options_tv_mode_choice(), word, sizeof word);
+            snprintf(value, vsize, "%s%s", word, own);
+        } else if (main_item(i) < M_CAPTURE)
             snprintf(value, vsize, ">");
         return;
     }
@@ -456,6 +477,14 @@ void overlay_shortcut_key(unsigned key, unsigned mods) {
     changed();
     listening = 0;
     if (key != SDLK_ESCAPE && key != SDLK_AC_BACK) shortcut_give(key, mods);
+}
+int overlay_delete(void) {
+    const char* k = page == PAGE_KEYS || page == PAGE_MAP ? NULL : pick_key(focus);
+    if (page == PAGE_SHORTCUTS) return overlay_backspace();
+    if (!k || !ini_picked(k)) return OVERLAY_NONE;
+    changed();
+    ini_unpick(k);
+    return OVERLAY_NONE;
 }
 int overlay_backspace(void) {
     unsigned key, mods;
@@ -1141,6 +1170,7 @@ int overlay_pad(u64 button) {
     switch (button) {
         case 1ull << 0: return overlay_select(); /* A */
         case 1ull << 1: return overlay_back();   /* B */
+        case 1ull << 3: return overlay_delete(); /* Y */
         case 1ull << 12:                         /* the D-pad's left and the left stick's */
         case 1ull << 16: return overlay_side(-1);
         case 1ull << 13: /* up */
@@ -1274,6 +1304,11 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     d->para[0].text = page == PAGE_PADS ? pads_hint(pads, size / 2) : page < PAGE_SLOT ? hints[page] : pads;
     d->para[0].rgba = UI_SOFT;
     d->paras = 1;
+    if (page_picked()) {
+        d->para[1].text = "*: set for this game alone. Y or Delete: back to Global.";
+        d->para[1].rgba = UI_SOFT;
+        d->paras = 2;
+    }
     if (page == PAGE_SHORTCUTS && listening && shortcut(focus) >= 0) {
         snprintf(pads, size / 2, "Press the key for %s. Esc or B cancels.", hotkey_row(shortcut(focus))->name);
         d->para[0].text = pads;
@@ -1548,7 +1583,7 @@ static void aside_draw(SnxUiList* l, const SnxOverlayRect* r) {
    they read from elsewhere: the keys' and the gamepads' counts, the TV mode, whether a frame can be captured, the
    users, and the settings the page's rows show, whose variables are watched (g_menu.watch) */
 enum { MENU_NONE, MENU_PAGE, MENU_KB };
-enum { MENU_QUADS = 4096, MENU_WATCH = SNX_VPAD_COUNT + VISIBLE + 1 };
+enum { MENU_QUADS = 4096, MENU_WATCH = SNX_VPAD_COUNT + VISIBLE + 2 };
 typedef struct {
     int sw, sh, what, tv, capture, users;
     u32 changes, hotkeys, pads;
@@ -1603,6 +1638,7 @@ static void menu_lay(int sw, int sh, const MenuKey* key) {
         if (page == PAGE_BUTTONS)
             for (r = 0; r < SNX_VPAD_COUNT; ++r) watch(&g_settings.control_shown[r]); /* All's */
         if (page == PAGE_ASK) watch(&g_settings.save_state_backup);
+        watch(ini_picks_changes()); /* a pick the launcher set or took out meanwhile: its * */
     }
     g_menu.n = l.n;
     g_menu.key = *key;
