@@ -21,8 +21,9 @@ double snx_ctr_clock_rate(void);
 int snx_ctr_clock_pace(void);
 void snx_ctr_clock_set_pace(int pace);
 /* F4's: no limit, or back from none to the pace before it (the console's when the run started with none). The pace
-   in effect afterwards */
-int snx_ctr_clock_toggle(void);
+   in effect afterwards, and F4's line in line (size bytes, 0 for none): the limit now and before it, as a Switch game
+   says it (common/utilities/key_said.h) */
+int snx_ctr_clock_toggle(char* line, size_t size);
 /* The host's wait for the clock to reach deadline (its seconds): none when it has, or with no limit, the clock moving
    to deadline at once; else the time to sleep at the pace */
 double snx_ctr_clock_wait(double deadline);

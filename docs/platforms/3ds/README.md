@@ -497,8 +497,9 @@ tick of the runtime is on one clock (`board/clock.c`): the host's at the console
 pace, which the Switch's `fps_limit` sets as for a Switch game. `N` runs it at N/60
 of the console's pace (the 3DS shows 60 frames a second), the sound with it; `0`
 skips every wait, the clock moving on by it, so the game runs as fast as the host
-does and its sound is not played; F4 turns the limit off and back on. A change of
-pace never moves the clock back. FSUSER ControlArchive
+does and its sound is not played; F4 turns the limit off and back on, the terminal
+saying the limit now and before it as a Switch game does (`FPS limit: off (was the
+game's pace)`). A change of pace never moves the clock back. FSUSER ControlArchive
 GET_TIMESTAMP (`0x80d`) resolves a bounded UTF-16 archive path and returns the real
 backing file's host modification time as a 3DS datetime (milliseconds since 1900
 UTC). Missing paths return `0xc8804478` and stale tokens `0xc8804465`.

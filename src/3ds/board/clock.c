@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/board/clock.h"
 #include "common/utilities/common.h"
+#include "common/utilities/key_said.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,12 +24,16 @@ void snx_ctr_clock_set_pace(int pace) {
     g_clock.host = host;
     g_clock.pace = pace;
 }
-int snx_ctr_clock_toggle(void) {
+int snx_ctr_clock_toggle(char* line, size_t size) {
+    char now[16], was[16];
+    snx_ctr_clock_text(g_clock.pace, was, sizeof was);
     if (g_clock.pace != SNX_CTR_PACE_NONE) {
         g_clock.previous = g_clock.pace;
         snx_ctr_clock_set_pace(SNX_CTR_PACE_NONE);
     } else
         snx_ctr_clock_set_pace(g_clock.previous);
+    snx_ctr_clock_text(g_clock.pace, now, sizeof now);
+    if (size) snx_fps_limit_said(line, size, now, was);
     return g_clock.pace;
 }
 double snx_ctr_clock_wait(double deadline) {
