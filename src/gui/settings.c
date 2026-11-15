@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gui/settings.h"
 #include "3ds/runtime/main.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
 #include "common/utilities/ini_lines.h"
@@ -98,7 +99,7 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
     own_end = text + own;
     memset(s->values, 0, n * sizeof *s->values);
     for (line = text; *line; line = next) {
-        char* field[11];
+        char* field[12];
         if (line >= own_end && !s->own) s->own = s->count; /* the launcher's rows end there */
         const char **words = NULL, **values = NULL;
         int f = 1;
@@ -106,9 +107,9 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
         if (*next) *next++ = 0;
         line[strcspn(line, "\r")] = 0;
         field[0] = line;
-        while (f < 11 && (field[f] = strchr(field[f - 1], '\t')) != NULL) *field[f++]++ = 0;
+        while (f < 12 && (field[f] = strchr(field[f - 1], '\t')) != NULL) *field[f++]++ = 0;
         if (f < 7) continue; /* not a setting: another line the runtime printed */
-        for (; f < 11; ++f) field[f] = line + strlen(line); /* an older runtime's, with no last columns */
+        for (; f < 12; ++f) field[f] = line + strlen(line); /* an older runtime's, with no last columns */
         if (page && strcmp(page, field[0])) page = NULL;
         if (!page && strchr(field[0], '/')) { /* a page: its row in the section, and its All first on it */
             page = field[0];
@@ -148,6 +149,7 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
             plain(s, s->count - 1);
             --v->word;
         }
+        v->slider = v->plain && !strcmp(field[11], "slider"); /* its default a step, as the runtime's list makes it */
         if (page) {
             link->count = s->count - link->first;
             all->count = s->count - all->first;
@@ -368,6 +370,33 @@ int gui_settings_unread(GuiSettings* s, const char* path, char* out, size_t size
     }
     free(text);
     return count;
+}
+/* row's steps, its words: 0 for a row that is no slider's */
+static int steps(const GuiSettings* s, int row) {
+    int n = 0;
+    if (row < 0 || row >= s->count || !s->values[row].slider) return 0;
+    while (s->keys[row].words[n]) ++n;
+    return n;
+}
+int gui_settings_slide(GuiSettings* s, int row, int step) {
+    int n = steps(s, row), to;
+    if (!n) return 0;
+    to = snx_clamp_int(s->values[row].word + (step < 0 ? -1 : 1), 0, n - 1);
+    if (to == s->values[row].word) return 0;
+    s->values[row].word = to;
+    return 1;
+}
+int gui_settings_slide_to(GuiSettings* s, int row, int at) {
+    int n = steps(s, row), to;
+    if (!n) return 0;
+    to = (snx_clamp_int(at, 0, 1000) * (n - 1) + 500) / 1000;
+    if (to == s->values[row].word) return 0;
+    s->values[row].word = to;
+    return 1;
+}
+int gui_settings_knob(const GuiSettings* s, int row) {
+    int n = steps(s, row);
+    return n > 1 ? s->values[row].word * 1000 / (n - 1) : 0;
 }
 int gui_settings_step_all(GuiSettings* s, int row, int step) {
     const GuiSetting* all = row >= 0 && row < s->count ? &s->values[row] : NULL;

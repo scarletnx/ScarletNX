@@ -3793,6 +3793,16 @@ msgid "%s: %s. A game on this system runs the same whatever it says, and it stay
 msgstr "%s: %s. Um jogo neste sistema roda igual seja qual for o valor, e o ajuste fica %s"
 
 #: src/gui/main.c
+#, c-format
+msgid "%s: %s is its lowest"
+msgstr "%s: %s é o mínimo"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s is its highest"
+msgstr "%s: %s é o máximo"
+
+#: src/gui/main.c
 msgid "Paste one local folder's path"
 msgstr "Cole o caminho de uma pasta local"
 
