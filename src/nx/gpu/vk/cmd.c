@@ -1295,6 +1295,46 @@ void vk_frame_next(void) {
 }
 /* the GPU thread's recording time a submission holds at most */
 #define SUBMIT_EVERY_NS 1000000
+/* The last graphics submission the GPU has done, as a thread that waits on the timeline publishes it (atomic): the
+   submit below asks it at the start of each draw, where vkGetSemaphoreCounterValue is a call into the kernel each time.
+   The thread waits for the next value whether or not it is submitted yet (a timeline's wait before its signal), in
+   slices of a second, and stops on a lost device, which the other waits report */
+static u64 g_gdone;
+static int g_gwatch; /* the thread started: the GPU thread's */
+static void gdone_watch(void* arg) {
+    u64 done = 0;
+    (void)arg;
+    SNX_THREAD_NAME("Vulkan timeline");
+    for (;;) {
+        u64 want = done + 1;
+        VkSemaphoreWaitInfo wi = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_gsem, .pValues = &want};
+        VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull);
+        if (r == VK_TIMEOUT) continue;
+        if (r != VK_SUCCESS || vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done) != VK_SUCCESS) return;
+        __atomic_store_n(&g_gdone, done, __ATOMIC_RELEASE);
+    }
+}
+/* Whether the GPU is on the last submission it has, or has none: what is recorded then goes to it, so it has the next
+   work queued before it runs out. While it has more than that, a submission made now only waits behind them, and costs
+   its own call into the kernel, on the recording thread. On a Steam Deck each took about 150 us and some 12 us more
+   for each MB of guest memory imported, which amdgpu takes again at each submission. One game's race holds about
+   180 MB of imports: it made 56 submissions a present, 41 of them for the millisecond alone, the recording thread
+   spent 87% of its time in the kernel, and the GPU stood idle 100 ms of each 180 ms present waiting for them. Without
+   the thread, every millisecond is a submission, as before */
+static int gpu_short_of_work(void) {
+    if (!g_gwatch) {
+        g_gwatch = 1;
+        if (plat_thread(gdone_watch, NULL, (size_t)256 << 10)) {
+            char why[256];
+            WARN("vulkan: could not start the thread that follows the GPU's timeline (%s): a submission each "
+                 "millisecond of recording\n",
+                 snx_os_error(why, sizeof why));
+            g_gwatch = -1;
+        }
+    }
+    return g_gwatch < 0 || __atomic_load_n(&g_gdone, __ATOMIC_ACQUIRE) + 1 >= g_gval;
+}
 /* A frame that goes long without a present (a loading screen) still has to hand its pools and rings back: one with
    many submissions, descriptor pools or descriptor tables ends here, at the start of a draw or dispatch, before
    anything is set up (a draw's setup must not submit). Otherwise what was recorded goes to the GPU once it holds a
@@ -1352,7 +1392,7 @@ static void frame_check(void) {
         submit(NULL, NULL, 1, VK_SUB_PERIODIC);
         if (stream_busy(&oldest) >= 2 * cap && oldest) vk_wait_submit(oldest);
     }
-    else if (f->recording && plat_ns() - g_sub_ns >= SUBMIT_EVERY_NS)
+    else if (f->recording && plat_ns() - g_sub_ns >= SUBMIT_EVERY_NS && gpu_short_of_work())
         submit(NULL, NULL, 1, VK_SUB_PERIODIC);
 }
 void vk_frame_check(void) {
