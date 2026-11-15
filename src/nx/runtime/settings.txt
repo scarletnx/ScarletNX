@@ -158,7 +158,7 @@ setting TV refresh rate
 setting TV resolution
     key tv_resolution
     int 0 2
-    default 1
+    default 0
     startup
     words 1920x1080|Display's|3840x2160
     help The picture an Ounce game is told the TV shows in TV mode: 0 = 1920x1080; 1 = 3840x2160 where the window's

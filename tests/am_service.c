@@ -621,6 +621,9 @@ static void resolution(int ounce, int tv, int setting, u32 w, u32 h, i32 want_w,
     CHECK(width == want_w && height == want_h);
 }
 static void test_default_resolution(void) {
+    /* tv_resolution's default, settings.txt's: 1920x1080 on a 4K display too, until the player picks 4K */
+    CHECK(g_settings.tv_resolution == 0);
+    resolution(1, 1, g_settings.tv_resolution, 3840, 2160, 1920, 1080);
     resolution(1, 1, 1, 3840, 2160, 3840, 2160);
     resolution(1, 1, 1, 2160, 3840, 3840, 2160); /* the display turned on its side */
     resolution(1, 1, 1, 2560, 1440, 1920, 1080);
