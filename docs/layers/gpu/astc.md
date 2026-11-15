@@ -1017,6 +1017,17 @@ profiled: a small level is few of `astc.comp`'s workgroups of 64 blocks, each in
 weights and endpoints in a row, where Granite's invocations, a texel each, decode only what their texel needs. On random blocks, most of them
 illegal, Granite's is level or faster (0.75 to 1.9 times): random blocks are no measure of either.
 
+In games, on the same GPU (three interleaved rounds, the same recompiled program in each arm), Granite's RGBA8 takes
+the memory `astc.comp`'s RGBA8 takes: a racing game's title ends both at 10.7 to 10.8 GB of the process's VRAM, at the
+card's budget, where BC7 ends at 7.3 GB, and the renderer's own count gives Granite 20 MiB more (its scratch images
+and tables). Frame rates are level within the run-to-run spread of the title's route (41.9, 42.9 and 43.7 fps for
+Granite, `astc.comp` and BC7). Over the title's first 120 s, from a cold start, the decode took the GPU 1.23 s with
+Granite's and 1.26 s with `astc.comp` (`vk_gpu_profile=1`): the small levels Granite decodes faster make up for the
+large ones. An open-world game's route, held at its 30 fps cap, decoded little (99 ms against 64). edenprobe 0.16.1's
+`astc`, `astcimage` and `tex8k` suites give the same results with both, and their 8192x8192 ASTC uploads are not
+apart (4x4: 21.9 ms against 20.0; 8x8: 11.8 against 12.2). The bytes staged are the blocks either way: the decoded
+texels never cross the bus.
+
 ## Findings and what is left
 
 Both transcoders are meant: ASTC made BC7 (this page) and BCn made ASTC ([BCn without BCn](bcn.md#as-astc)), which
