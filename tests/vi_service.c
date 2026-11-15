@@ -136,6 +136,7 @@ void present_pace(u32 interval, int slot) {
     (void)slot;
     paced = interval;
 }
+int g_opt_fps = SNX_FPS_GAME; /* options.c's fps_limit, which vi_vsync_period reads: game, unless a check sets it */
 
 static u32 rd32(u64 a) { return snx_ld_le32(g_mem + a); } /* the parcels' words are the guest's, little-endian */
 /* a request parcel at 0x2000: the header, the interface token, then the payload */
@@ -319,16 +320,34 @@ int main(void) {
     CHECK(transact(BQ_DEQUEUE_BUFFER, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 20) == 56);
     CHECK(transact(BQ_QUEUE_BUFFER, q, sizeof q) == 20 && shown_n == v + 1);
 
-    /* the swap interval queued is the next dequeue's pace: 0 to 4, a negative one 1, past 4 capped */
+    /* the swap interval queued is the next dequeue's pace: 1 to 4, past 4 capped. 0 and less (to VI_INTERVAL_MIN) are
+       the yuzu family's extension: the dequeue doesn't wait, and the vsync is 120 times (1 - interval) a second */
     snx_st_le32(q + 12 + 44, 9);
     CHECK(transact(BQ_DEQUEUE_BUFFER, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 20) == 56);
     CHECK(transact(BQ_QUEUE_BUFFER, q, sizeof q) == 20 && g_hle.vi.layer[0].interval == 4);
+    CHECK(vi_vsync_period() == 1000000000u / 60);
     snx_st_le32(q + 12 + 44, ~0u);
-    CHECK(transact(BQ_DEQUEUE_BUFFER, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 20) == 56);
-    CHECK(transact(BQ_QUEUE_BUFFER, q, sizeof q) == 20 && g_hle.vi.layer[0].interval == 1);
+    paced = 9;
+    CHECK(transact(BQ_DEQUEUE_BUFFER, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 20) == 56 && paced == 4);
+    CHECK(transact(BQ_QUEUE_BUFFER, q, sizeof q) == 20 && g_hle.vi.layer[0].interval == -1);
+    CHECK(vi_vsync_period() == 1000000000u / 240);
+    paced = 9;
+    CHECK(transact(BQ_DEQUEUE_BUFFER, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 20) == 56 && paced == 0);
+    snx_st_le32(q + 12 + 44, 0x80000000u); /* the least i32: clamped, not an overflow in 1 - interval */
+    CHECK(transact(BQ_QUEUE_BUFFER, q, sizeof q) == 20 && g_hle.vi.layer[0].interval == VI_INTERVAL_MIN);
+    CHECK(vi_vsync_period() == 1000000000u / (VI_UNLOCKED_HZ * (1 - VI_INTERVAL_MIN)));
+    __atomic_store_n(&g_hle.vi.layer[0].interval, INT32_MIN, __ATOMIC_RELAXED); /* the period clamps it too */
+    CHECK(vi_vsync_period() == 1000000000u / (VI_UNLOCKED_HZ * (1 - VI_INTERVAL_MIN)));
     snx_st_le32(q + 12 + 44, 0);
     CHECK(transact(BQ_DEQUEUE_BUFFER, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 20) == 56);
     CHECK(transact(BQ_QUEUE_BUFFER, q, sizeof q) == 20 && g_hle.vi.layer[0].interval == 0);
+    CHECK(vi_vsync_period() == 1000000000u / 120);
+    /* fps_limit other than game sets the vsync rate whatever the interval: a number, or VI_NO_LIMIT_VSYNC_HZ for 0 */
+    g_opt_fps = 30;
+    CHECK(vi_vsync_period() == 1000000000u / 30);
+    g_opt_fps = 0;
+    CHECK(vi_vsync_period() == 1000000000u / VI_NO_LIMIT_VSYNC_HZ);
+    g_opt_fps = SNX_FPS_GAME;
     /* a QueueBufferInput cut short: the whole buffer at interval 1 */
     CHECK(transact(BQ_DEQUEUE_BUFFER, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 20) == 56);
     CHECK(transact(BQ_QUEUE_BUFFER, q, 12 + 40) == 20 && g_hle.vi.layer[0].interval == 1);
