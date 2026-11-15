@@ -693,8 +693,9 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
         *mem = alloc_in((u32)type, req, want, DM_OWN_LAST, buf, img, &res);
     /* No request takes a run of the block being emptied. One that found room nowhere else has that block given back
        to the requests: the drain stops (drain_stop), and the request looks again. Emptying a block is never why a
-       request finds no memory */
-    if (!*mem && g_devmem.drain.slot && !g_devmem.drain.repair) {
+       request finds no memory. One that must have memory of its own takes no run: its look again would bind it into
+       a block, against the driver or the caller */
+    if (!*mem && g_devmem.drain.slot && !g_devmem.drain.repair && !want->own && alone != 2) {
         const Block* d = &g_devmem.block[g_devmem.drain.slot - 1];
         LOG_LIMIT(16,
                   "vulkan: a request for %.1f MB of device memory found no room but in the block being emptied (%.1f "

@@ -999,6 +999,41 @@ static void check_defrag(int pageable) {
     unmake(&h);
 }
 
+/* A request that must have memory of its own (the driver requires it, or the caller asks) and finds none while a block
+   is emptied fails as it does with none emptied (check_alone): no run of a block is memory of its own, so the drain
+   is not stopped for it and its retry takes no run */
+static void check_drain_alone(void) {
+    const u64 budget = 4 * GIB;
+    device(0, 1024, 64, budget);
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1}, gpu = {.at = DM_DEVICE}, mine = {.at = DM_DEVICE, .own = 1};
+    for (u32 i = 0; i < DEFRAG_N; i++) {
+        CHECK(make(1, MIB, 4096, ~0u, 0, tex, &g_dh[i]) == VK_SUCCESS);
+        vk_devmem_owner(g_dh[i].mem, &g_dh[i]);
+    }
+    for (u32 i = 0; i < DEFRAG_N; i++)
+        if (i % 4) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    DevMem mems[64];
+    void* owners[64];
+    g_devmem.frame += 31;
+    CHECK(vk_devmem_moving(mems, owners, 64, budget) > 0 && g_devmem.drain.slot && !g_devmem.drain.repair);
+    const u32 slot = g_devmem.drain.slot;
+    g_drv.no_alone = 1; /* the driver has no memory for a resource alone; the blocks have room */
+    Held h;
+    CHECK(make(1, MIB, 256, ~0u, 2, gpu, &h) != VK_SUCCESS);
+    CHECK(make(0, MIB, 256, ~0u, 0, mine, &h) != VK_SUCCESS);
+    g_drv.no_alone = 0;
+    CHECK(g_devmem.drain.slot == slot && g_devmem.block[slot - 1].drain && !g_devmem.drain.gave_up);
+    for (u32 i = 0; i < DEFRAG_N; i++)
+        if (g_dh[i].mem) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    check_counts(0);
+}
+
 int main(void) {
     vkGetPhysicalDeviceMemoryProperties = memory_properties;
     vkGetPhysicalDeviceMemoryProperties2 = memory_properties2;
@@ -1021,6 +1056,7 @@ int main(void) {
     check_priority();
     check_defrag(0); /* no priority classes: the fallback */
     check_defrag(1);
+    check_drain_alone();
     check_cap();
     check_atoms(64);
     check_atoms(4096);
