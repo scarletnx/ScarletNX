@@ -63,9 +63,10 @@ KObj* h_get_ref(u32 h, int t) {
     return NULL;
 }
 int new_event(u32* event, const char* name, int is_signaled) {
-    (void)event, (void)name, (void)is_signaled;
-    UNUSED("new_event");
-    return -1;
+    u32 id = owned_event(name);
+    g_events[id - 1].signaled = is_signaled != 0;
+    *event = ev_handle(id);
+    return 0;
 }
 SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
     (void)name, (void)dispatch;
@@ -77,7 +78,8 @@ u32 session_new(SvcObj* obj) {
     UNUSED("session_new");
     return 0;
 }
-void out_copy_h(IpcCtx* c, u32 h) { (void)c, (void)h; }
+static u32 g_copied; /* the last handle a reply copied */
+void out_copy_h(IpcCtx* c, u32 h) { (void)c, g_copied = h; }
 void out_move_h(IpcCtx* c, u32 h) { (void)c, (void)h; }
 int ipc_bad_request(SvcObj* o, IpcCtx* c) {
     (void)o, (void)c;
@@ -202,6 +204,36 @@ static void status(u64 name, int rc_ok, u64 want_format, u32 want_peak, u32 want
     if (rc_ok) status_wire(name, want_format, want_peak);
     CHECK((nn_vi2_IVi2Session_GetHdrPaperWhite(NULL, r, &paper_white) == 0) == rc_ok);
     if (rc_ok) CHECK(paper_white == want_paper_white);
+}
+
+/* The camera session (gsv.c's), as a console with no camera plugged in: the SDK's nn::camera::Initialize sends 3 with
+   the device name "Default" and aborts on every result but success and 0xdc4, which it gives the game as a platform
+   without the camera function; Finalize (4) aborts on any failure. So 3 succeeds with a u64 device handle and 4
+   succeeds, 21 gives an event that nothing signals, and every other command, QueryDeviceConnection (29) among them,
+   answers 0x7c4 (module 452, description 3), which the SDK lets pass as no camera device */
+static void camera_session(void) {
+    u8 name[16] = "Default", id[4] = {0};
+    IpcCtx c;
+    memset(&c, 0, sizeof c);
+    c.cmd = 3;
+    c.raw = name;
+    c.raw_size = sizeof name;
+    CHECK(nn_gsv_CameraSession_dispatch(NULL, &c) == 0 && c.out_size == 8 && snx_ld_le64(c.out) == 0);
+    memset(&c, 0, sizeof c);
+    c.cmd = 4;
+    CHECK(nn_gsv_CameraSession_dispatch(NULL, &c) == 0);
+    memset(&c, 0, sizeof c);
+    c.cmd = 21;
+    c.raw = id;
+    c.raw_size = sizeof id;
+    g_copied = 0;
+    CHECK(nn_gsv_CameraSession_dispatch(NULL, &c) == 0 && g_copied && !signaled(g_copied));
+    CHECK(!strcmp(g_events[g_copied - 0x100 - 1].o.name, "gsv camera"));
+    memset(&c, 0, sizeof c);
+    c.cmd = 29;
+    c.raw = id;
+    c.raw_size = sizeof id;
+    CHECK(nn_gsv_CameraSession_dispatch(NULL, &c) == 0x7c4);
 }
 
 /* GetBufferMaxResolution: one bit for the largest picture the display takes (1 1280x720, 2 1920x1080, 8 3840x2160),
@@ -381,6 +413,7 @@ int main(void) {
     g_hdr = 0;
     gsv_vsync_tick();
     CHECK(!signaled(hdr_event));
+    camera_session();
     printf("gsv hdr: %u checks\n", test_checks);
     return 0;
 }
