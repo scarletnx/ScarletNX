@@ -1485,7 +1485,7 @@ static int tex_defrag_move(VkCommandBuffer cb, Surf* t, u64* bytes) {
                          levels, rg);
     }
     vk_devmem_owner(t->mem, NULL); /* the old allocation is not given out again */
-    vk_defer_moved(t->bytes);      /* released into the block being emptied (tex_image_swap defers them) */
+    if (vk_devmem_emptying()) vk_defer_moved(t->bytes); /* released into a block closed to requests */
     tex_image_swap(t, img, mem, info.size, t->f.vk, copied);
     if (copied && was != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) vk_surf_use(cb, t, was, stage, access);
     return 1;
