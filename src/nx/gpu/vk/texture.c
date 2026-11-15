@@ -2604,10 +2604,11 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     /* vt_sparse (aogo/vt-sparse, a local prototype): an ASTC texture mapped whole that the GPU only reads, sampled in
        2D, of TEX_SHED_MIN or more: held RGBA8, decoded exact, in an image with sparse residency whose memory follows
        the blocks the probe sees sampled (vt_probe.c), its mip tail bound whole; its first load decodes the tail alone.
-       Without a record for it, it is a sparse texture bound where guest memory maps it: all of it */
-    if (g_settings.vt_sparse && g_vt_probe_address && f.conv == VKC_ASTC && !holes && !written && !msaa && bl &&
-        (type == VK_IMAGE_VIEW_TYPE_2D || type == VK_IMAGE_VIEW_TYPE_2D_ARRAY) && g_vk.sparse && g_vk.resident &&
-        g_vk.feat.sparseResidencyImage2D) {
+       Without a record for it, it is a sparse texture bound where guest memory maps it: all of it. Only for an Ounce
+       program, whose translator (sm86_translate.c) is the one that marks samples */
+    if (g_settings.vt_sparse && g_vt_probe_address && g_shader_sm86 && f.conv == VKC_ASTC && !holes && !written &&
+        !msaa && bl && (type == VK_IMAGE_VIEW_TYPE_2D || type == VK_IMAGE_VIEW_TYPE_2D_ARRAY) && g_vk.sparse &&
+        g_vk.resident && g_vk.feat.sparseResidencyImage2D) {
         const VkFormat rgba8 = fkey >> 31 ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
         VkImageCreateInfo vi;
         VkViewFormats vvf;
