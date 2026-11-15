@@ -7,7 +7,9 @@
 
    Each call reaches the renderer as a record of gpu_queue.c, in its order: the draw's inline indices are a copy, the
    renderer's side keeps its own DrawOwner with the front end's predicate and capture starts, and the calls without a
-   result keep their arguments. The render enable is decided on the renderer's side, in the record's place.
+   result keep their arguments. The render enable is decided on the renderer's side, in the record's place. A front
+   end that names the inline bytes it changed (gpu_ds_inline_changed) sends only those, while the ranges chain from the
+   generation the renderer's side has, are at most 16 and less than half of the group.
 
    With the argument split, gpu_split's renderer thread runs the records: a draw that the front end queued reads the
    state as it was at the draw, while the front end has gone on and changed it */
@@ -262,6 +264,77 @@ static void test_records(void) {
     CHECK(seen_own_v.xfb_reload == 0, "after a state load, the renderer's owner did not start over");
 }
 
+/* the inline group's changed ranges in place of the group. The test also changes a byte it doesn't name: the copy
+   gets it only when the record carries the whole group */
+#define INL(s, off) (((u8*)&(s).inl)[off])
+static void inline_draw(DsState* s) {
+    DrawOwner own = {0};
+    gpu_draw(s, &(DrawCall){0}, &own);
+}
+static u64 inline_change(DsState* s, u32 off, u32 len, u8 v) {
+    u64 before = s->gen[DS_INLINE];
+    memset((u8*)&s->inl + off, v, len);
+    s->gen[DS_INLINE] = gen_next++;
+    return before;
+}
+static void test_inline_patches(void) {
+    new_state(&b, 0x60, 0x66);
+    inline_draw(&b); /* sent whole */
+    /* two ranges, chained, and a byte not named */
+    u64 g0 = inline_change(&b, 0x10, 8, 0x01);
+    gpu_ds_inline_changed(&b, g0, 0x10, 8);
+    u64 g1 = inline_change(&b, 0x2001, 3, 0x02);
+    gpu_ds_inline_changed(&b, g1, 0x2001, 3);
+    INL(b, 0x400) = 0x03;
+    inline_draw(&b);
+    CHECK(INL(seen_ds, 0x10) == 0x01 && INL(seen_ds, 0x17) == 0x01 && INL(seen_ds, 0x2001) == 0x02 &&
+              INL(seen_ds, 0x2003) == 0x02,
+          "the named ranges did not reach the renderer's copy");
+    CHECK(INL(seen_ds, 0x400) == 0x66, "the record carried the whole inline group, not its changed ranges");
+    CHECK(seen_ds.gen[DS_INLINE] == b.gen[DS_INLINE], "the copy did not take the inline group's generation");
+    /* a range that follows no generation the renderer's side has: the whole group */
+    INL(b, 0x400) = 0x66;
+    inline_change(&b, 0x20, 4, 0x04);
+    u64 g2 = inline_change(&b, 0x30, 4, 0x05); /* the change from g2's own generation, not the one sent */
+    gpu_ds_inline_changed(&b, g2, 0x30, 4);
+    INL(b, 0x400) = 0x06;
+    inline_draw(&b);
+    CHECK(INL(seen_ds, 0x400) == 0x06 && INL(seen_ds, 0x20) == 0x04, "a break in the chain did not send the group");
+    /* 17 ranges apart: the whole group */
+    u64 from = b.gen[DS_INLINE];
+    for (u32 i = 0; i < 17; i++) {
+        inline_change(&b, 0x800 + 0x40 * i, 4, (u8)(0x10 + i));
+        gpu_ds_inline_changed(&b, from, 0x800 + 0x40 * i, 4);
+        from = b.gen[DS_INLINE];
+    }
+    INL(b, 0x400) = 0x07;
+    inline_draw(&b);
+    CHECK(INL(seen_ds, 0x400) == 0x07, "17 ranges apart did not send the group");
+    /* 17 ranges that touch: one patch */
+    from = b.gen[DS_INLINE];
+    for (u32 i = 0; i < 17; i++) {
+        inline_change(&b, 0x1000 + 4 * i, 4, (u8)(0x30 + i));
+        gpu_ds_inline_changed(&b, from, 0x1000 + 4 * i, 4);
+        from = b.gen[DS_INLINE];
+    }
+    INL(b, 0x400) = 0x08;
+    inline_draw(&b);
+    CHECK(INL(seen_ds, 0x400) == 0x07 && INL(seen_ds, 0x1040) == 0x40 && INL(seen_ds, 0x1000) == 0x30,
+          "ranges that touch did not go as one patch");
+    /* half of the group or more: the whole group */
+    from = b.gen[DS_INLINE];
+    u32 half = (u32)sizeof b.inl / 2;
+    inline_change(&b, 0, half, 0x09);
+    gpu_ds_inline_changed(&b, from, 0, half);
+    inline_draw(&b);
+    CHECK(INL(seen_ds, 0x400) == 0x09 && !memcmp(&seen_ds.inl, &b.inl, sizeof b.inl),
+          "a change of half the group did not send the group");
+    /* a byte changed with no range named: the whole group */
+    inline_change(&b, 0x3000, 1, 0x0A);
+    inline_draw(&b);
+    CHECK(!memcmp(&seen_ds.inl, &b.inl, sizeof b.inl), "a change with no range named did not send the group");
+}
+
 /* the calls without a result, in their order with the draws */
 /* the render enable, decided on the renderer's side: the draws and clears of an owner it turns off are skipped, and
    the others take its predicate */
@@ -400,6 +473,7 @@ int main(int argc, char** argv) {
     test_dispatch();
     test_records();
     test_render_enable();
+    test_inline_patches();
     test_calls();
     if (failed) {
         fprintf(stderr, "gpu_records: %d of %d checks failed\n", failed, checks);

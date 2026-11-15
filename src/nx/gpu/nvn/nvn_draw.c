@@ -682,6 +682,8 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
     if (d->dirty & D_BIND) keep(&d->ds.bind, &d->bind, sizeof d->bind, &d->ds.gen[DS_BIND]);
     if (d->dirty & D_INLINE) {
         int changed = 0;
+        /* the ranges copied, for the draw records (gpu_ds_inline_changed): bank0 and bank2 of each stage, and the root */
+        u32 rlo[2 * DS_GFX_STAGES + 1], rhi[2 * DS_GFX_STAGES + 1], nr = 0;
         for (u32 bank = 0; bank < 2; bank++) {
             u32 bytes = bank ? DS_INLINE_BANK2 : DS_INLINE_BANK0;
             for (s = 0; s < DS_GFX_STAGES; s++) {
@@ -692,6 +694,8 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
                     if (memcmp(kept, made, hi - lo)) {
                         memcpy(kept, made, hi - lo);
                         changed = 1;
+                        rlo[nr] = (u32)(kept - (u8*)&d->ds.inl);
+                        rhi[nr++] = (u32)(kept - (u8*)&d->ds.inl) + (hi - lo);
                     }
                 }
                 d->inl_lo[bank][s] = (u16)bytes;
@@ -704,11 +708,22 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
             if (memcmp(kept, made, (u32)(d->root_hi - d->root_lo))) {
                 memcpy(kept, made, (u32)(d->root_hi - d->root_lo));
                 changed = 1;
+                rlo[nr] = (u32)(kept - (u8*)&d->ds.inl);
+                rhi[nr++] = (u32)(kept - (u8*)&d->ds.inl) + (u32)(d->root_hi - d->root_lo);
             }
         }
         d->root_lo = DS_ROOT_BYTES;
         d->root_hi = 0;
-        if (changed) new_gen(&d->ds.gen[DS_INLINE]);
+        if (changed) {
+            /* each range follows the one before it: the first from the old generation, the others from the new one,
+               which the first named */
+            u64 from = d->ds.gen[DS_INLINE];
+            new_gen(&d->ds.gen[DS_INLINE]);
+            for (u32 i = 0; i < nr; i++) {
+                gpu_ds_inline_changed(&d->ds, from, rlo[i], rhi[i] - rlo[i]);
+                from = d->ds.gen[DS_INLINE];
+            }
+        }
     }
     d->dirty = 0;
 }

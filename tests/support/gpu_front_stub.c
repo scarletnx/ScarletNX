@@ -46,6 +46,12 @@ void gpu_mem_seen(void) {
 void gpu_xfb_control(const DsState* ds, DrawOwner* o, u64 control, u32 what, u32 stride) {
     if (g_renderer->xfb_control) g_renderer->xfb_control(ds->owner, control, what, stride, o);
 }
+/* a test that checks the inline ranges a front end names sets this to its own recorder */
+extern void (*g_stub_inline_changed)(const DsState* ds, u64 before, u32 off, u32 len);
+void (*g_stub_inline_changed)(const DsState* ds, u64 before, u32 off, u32 len);
+void gpu_ds_inline_changed(const DsState* ds, u64 before, u32 off, u32 len) {
+    if (g_stub_inline_changed) g_stub_inline_changed(ds, before, off, len);
+}
 void gpu_ready(void) {
     if (g_renderer->ready) g_renderer->ready();
 }

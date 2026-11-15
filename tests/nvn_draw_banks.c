@@ -399,6 +399,30 @@ static void test_storage_tables(void) {
 
 /* Sparse writes to distant stages and both inline banks must preserve every other byte. A generation changes only
    when the bytes that the renderer sees change, even if a record writes and then restores a value before the draw. */
+/* tests/support/gpu_front_stub.c: the inline ranges nvn_draw.c names for the draw records (gpu_ds_inline_changed) */
+extern void (*g_stub_inline_changed)(const DsState* ds, u64 before, u32 off, u32 len);
+static struct {
+    u64 before;
+    u32 off, len;
+} named[16];
+static u32 nnamed;
+static void name_range(const DsState* ds, u64 before, u32 off, u32 len) {
+    (void)ds;
+    if (nnamed < 16) named[nnamed].before = before, named[nnamed].off = off, named[nnamed++].len = len;
+}
+/* the inline group sent before (old, its generation gen) with the named ranges laid over it is the group now, and the
+   ranges chain: the first from gen, the others from the new generation */
+static int ranges_rebuild(const DsInline* old, u64 gen) {
+    static DsInline built;
+    built = *old;
+    int chained = nnamed > 0;
+    for (u32 i = 0; i < nnamed; i++) {
+        if (named[i].off + named[i].len > sizeof built) return 0;
+        memcpy((u8*)&built + named[i].off, (const u8*)&d.ds.inl + named[i].off, named[i].len);
+        chained &= named[i].before == (i ? d.ds.gen[DS_INLINE] : gen);
+    }
+    return chained && !memcmp(&built, &d.ds.inl, sizeof built);
+}
 static void test_inline_updates(void) {
     memset(&d, 0, sizeof d);
     nvn_draw_init(&d, 0);
@@ -434,9 +458,15 @@ static void test_inline_updates(void) {
         snx_st_le64(expected.bank0[gfx[i]] + off, b.address);
         snx_st_le32(expected.bank0[gfx[i]] + off + 8, (u32)b.size);
     }
+    static DsInline sent;
+    sent = d.ds.inl;
+    g_stub_inline_changed = name_range;
+    nnamed = 0;
     check(nvn_draw_record(&d, OP_DRAW_IDX, DRAW, sizeof r), "draw after sparse bindings accepted");
     check(!memcmp(&d.ds.inl, &expected, sizeof expected), "sparse bindings preserve every unchanged inline byte");
     check(d.ds.gen[DS_INLINE] != gen, "sparse bindings change the inline generation");
+    check(ranges_rebuild(&sent, gen), "the %u inline ranges named do not make the group from the one sent", nnamed);
+    g_stub_inline_changed = NULL;
     gen = d.ds.gen[DS_INLINE];
 
     NvnPBindTex1 t = {.stage = NVN_SHADER_STAGE_FRAGMENT, .slot = 31, .h = 0xdeadbeef};
@@ -464,9 +494,15 @@ static void test_inline_updates(void) {
         snx_st_le32(expected.bank0[s] + SH_CB0_BASE_VERTEX, (u32)r.base_vertex);
         snx_st_le32(expected.bank0[s] + SH_CB0_BASE_INSTANCE, (u32)r.base_instance);
     }
+    sent = d.ds.inl;
+    g_stub_inline_changed = name_range;
+    nnamed = 0;
     check(nvn_draw_record(&d, OP_DRAW_IDX, DRAW, sizeof r), "changed draw parameters accepted");
     check(!memcmp(&d.ds.inl, &expected, sizeof expected), "changed parameters preserve all bound handles and storage");
     check(d.ds.gen[DS_INLINE] != gen, "changed draw parameters change the inline generation");
+    check(ranges_rebuild(&sent, gen), "the %u inline ranges named for the draw's parameters do not make the group",
+          nnamed);
+    g_stub_inline_changed = NULL;
 }
 
 /* CPU front-end cost only. These records use no Vulkan driver or game data. Each workload varies one draw parameter
