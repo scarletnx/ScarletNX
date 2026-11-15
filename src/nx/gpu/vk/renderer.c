@@ -295,15 +295,18 @@ static void vkr_method_barrier(int kind)
 	 * same reads. Where the device runs graphics descriptor buffers or heaps,
 	 * a fragment barrier stays in the pass as it always did.
 	 *
-	 * Elsewhere, the barrier from all work stays where it can order what the
-	 * renderer does not see as a target or a texture: storage writes or reads
-	 * still pending since the last such barrier (vk_buf_order_pending), guest
-	 * memory bound in place in this submission (vk_pages_order_pending), and
-	 * graphics image stores since this function's last barrier. Without any of
-	 * them, what came before it is ordered where a later command binds it, so
-	 * the pass stays open. In one game's open world, 97.7% of these barriers
-	 * came after none of them, and each one ended the pass: 730 gaps a frame
-	 * against 120.
+	 * Elsewhere, the barrier from all work stays after storage writes or reads
+	 * still pending since the last such barrier (vk_buf_order_pending: storage
+	 * and texel buffers, transform feedback), guest memory bound in place in
+	 * this submission (vk_pages_order_pending), and storage image results added
+	 * since this function's last barrier (vk_gfx_image_adds). Without any of
+	 * them, what came before it is ordered elsewhere: targets and storage
+	 * images where a later command binds them (vk_surf_use), buffer results
+	 * where a draw reads them (gfx_gpu_src), and DMA, 2D and query copies by
+	 * their own barriers. That is what a fragment barrier on descriptor buffers
+	 * or heaps always relied on, so the pass stays open. In one game's open
+	 * world, 97.7% of these barriers came after none of them, and they made
+	 * 730 barrier gaps a frame against 120.
 	 */
 	if (kind == 0 || kind == 2) {
 		vk_lock();
