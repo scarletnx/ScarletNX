@@ -45,6 +45,8 @@ char* backend_launcher_folder(void);
 char* backend_exit_reason(long long pid, long long started);
 /* the refresh period of the display the window is on, in ns: 0 when headless or the display doesn't say. Any thread */
 u64 backend_display_refresh_ns(void);
+/* the size of that display's current mode, in pixels: 0 by 0 when headless or the display doesn't say. Any thread */
+void backend_display_mode(u32* w, u32* h);
 /* changes whenever the surface comes back, so the renderer knows to make a new Vulkan surface */
 u32 backend_window_generation(void);
 /* a count of the events of the app, the displays and the window (uncovered, moved, resized, shown again): after one,

@@ -403,10 +403,28 @@ static int nn_am_service_ICommonStateGetter_EndVrModeEx(SvcObj* self) {
     return am_set_vr_mode(0);
 }
 
+/* Whether the TV in the dock shows 3840x2160 to an Ounce game, as tv_resolution says: with 2, or with 1 where the
+   window's display's mode is that large (either way up). A Switch game is told 1920x1080 in TV mode as before. One
+   game runs a part made for a 4K TV only when this answers at least 3840x2160 */
+static int am_tv_2160(void) {
+    static int told;
+    u32 w = 0, h = 0, lo, hi;
+    int uhd;
+    if (!g_ounce || !g_settings.tv_resolution) return 0;
+    backend_display_mode(&w, &h);
+    lo = w < h ? w : h;
+    hi = w < h ? h : w;
+    uhd = g_settings.tv_resolution == 2 || (hi >= 3840 && lo >= 2160);
+    if (!told++)
+        LOG("am: the TV shows %s (tv_resolution=%d, the window's display %ux%u)\n", uhd ? "3840x2160" : "1920x1080",
+            g_settings.tv_resolution, w, h);
+    return uhd;
+}
 static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolution(SvcObj* self, i32* width, i32* height) {
+    int tv = snx_tv_mode(), uhd = tv && am_tv_2160();
     (void)self;
-    *width = snx_tv_mode() ? 1920 : 1280;
-    *height = snx_tv_mode() ? 1080 : 720;
+    *width = uhd ? 3840 : tv ? 1920 : 1280;
+    *height = uhd ? 2160 : tv ? 1080 : 720;
     R_SUCCEED();
 }
 static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolutionChangeEvent(SvcObj* self, u32* event) {
