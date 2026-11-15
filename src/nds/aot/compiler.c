@@ -264,7 +264,7 @@ static int by_place(const void* a, const void* b) {
     return (x->index > y->index) - (x->index < y->index);
 }
 
-int nds_aot_compile(const NdsRom* rom, const char* path, const char* hints_path, int threads, char* error,
+int nds_aot_compile(const NdsRom* rom, const char* path, const char* hints_path, int threads, int most, char* error,
                     size_t error_size) {
     int result = 1;
     NdsPlan* plans = NULL;
@@ -326,7 +326,7 @@ int nds_aot_compile(const NdsRom* rom, const char* path, const char* hints_path,
     work = (Work){.rom = rom, .entries = entries, .objects = objects + 2, .count = count, .chunks = files - 2};
     {
         char note[160];
-        unsigned jobs = snx_aot_threads(threads, 0, note, sizeof note);
+        unsigned jobs = snx_aot_threads(threads, most, note, sizeof note);
         if (note[0]) fprintf(stderr, "scarletnx-nds: %s\n", note);
         if (jobs > work.chunks) jobs = work.chunks;
         if (jobs < 1) jobs = 1;
