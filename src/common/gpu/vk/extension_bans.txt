@@ -5,7 +5,9 @@
 # and who found it. The renderer reads this before it turns anything on (common/gpu/vk/extension_bans.c): an "off" line takes
 # the extension out of the device's list, or turns the feature off where the renderer can do without it, and the log
 # says which, on which device, driver and version, and why. A "warn" line is only said: a ban another project lifted,
-# one not proven for the way this renderer uses the feature, or a part it has no way around. Compiled in
+# one not proven for the way this renderer uses the feature on a driver that runs here, or a part it has no way
+# around. On NVIDIA's, AMD's and Intel's own drivers, which nobody here runs, another project's ban is off until a
+# tester's run shows the renderer does without it. Compiled in
 # (cmake/vk_extension_bans.cmake); tests/vk_extension_bans.c reads it, and "snx-test-vk-bans --devices" lists the lines
 # that hold for this machine's drivers. docs/layers/gpu/driver-quirks.md shows every line by driver, beside the quirks
 # the code works around by itself: "scripts/check-docs.py --bans" writes those rows from this file after a change to
@@ -51,7 +53,7 @@ key | action | driver | versions | system | devices | breaks | source | retest |
 # Dynamic vertex input (gpu/vk/vertex_input.c: vertex_input_dynamic_state=auto keeps off what holds here, on goes over it)
 VK_EXT_vertex_input_dynamic_state | off | nvidia | < 580.119.02 | any | * | breaks dynamic vertex input | Eden PR 3379 (9b1f6801a5, 2026-02-05) | headless:--vertex-input-dynamic-state=on | never | vertex_input_dynamic_state=on
 VK_EXT_vertex_input_dynamic_state | off | intel-windows | < 27.20.100.0 | any | * | breaks dynamic vertex input | yuzu 69f9b97e7e (2021-06-15), bounded in ddbf851ef6 (2022-12-27), kept by Eden; Eden's driver bug list:24 | headless:--vertex-input-dynamic-state=on | never | vertex_input_dynamic_state=on
-VK_EXT_vertex_input_dynamic_state | warn | intel-windows | >= 27.20.100.0 | any | * | still has issues with dynamic vertex input by ANGLE's account, which keeps it off on every version | ANGLE vk_renderer.cpp:6632, anglebug 42265637 | headless:--vertex-input-dynamic-state=on | never | -
+VK_EXT_vertex_input_dynamic_state | off | intel-windows | >= 27.20.100.0 | any | * | still has issues with dynamic vertex input by ANGLE's account, which keeps it off on every version | ANGLE vk_renderer.cpp:6632, anglebug 42265637 | headless:--vertex-input-dynamic-state=on | never | -
 VK_EXT_vertex_input_dynamic_state | off | qualcomm | * | android | * | draws edenprobe's coherence suite wrong with dynamic vertex input | ScarletNX 5722fc560 (2026-11-04); ANGLE vk_renderer.cpp:6632 keeps it off too (anglebug 381384988) | edenprobe:coherence | 2026-11-04 broken on 512.800.48 | vertex_input_dynamic_state=on
 VK_EXT_vertex_input_dynamic_state | off | mali | < 48.0.0 | any | * | applies vkCmdBindVertexBuffers2's strides to the wrong binding (Arm errata SDEN-3735689) | ANGLE vk_renderer.cpp:6632 | headless:--vertex-input-dynamic-state=on | never | vertex_input_dynamic_state=on
 
@@ -64,9 +66,9 @@ VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE | off | intel-windows | < 100.9684 
 shaderDenormFlushToZeroFloat32 | off | qualcomm | * | any | * | miscompiles shaders that declare DenormFlushToZero for 32 bits: one game's waterfall shader drew its background's colour on an Adreno 740 | ScarletNX 33bf51294 (2026-10-22); Eden PR 4297 (60a474b8df, 2026-08-24) found the same | new:headless:a fragment shader declaring DenormFlushToZero whose FMUL, FADD and FFMA results are read back | 2026-10-22 broken on 512.676 | -
 shaderFloat16 | off | intel-windows | * | any | * | crashes its SPIR-V compiler on a game's shaders that use FP16 | yuzu ef6cc3aa1d (2021-01-27), kept by Eden | new:headless:FP16 arithmetic in each stage, compiled and read back | never | -
 shaderFloat16 | warn | samsung | * | any | * | has FP16 turned off by ANGLE, which gives no reason | ANGLE vk_renderer.cpp:7364 | new:headless:FP16 arithmetic in each stage, compiled and read back | never | -
-shaderFloat16 | warn | nvidia | * | any | * | gets FP16 math wrong on Ampere and newer GPUs by yuzu's account, which Eden still follows | yuzu 7277d7fe96 (2021-07-03); Eden's driver bug list:18 | new:edenprobe:the HADD2, HMUL2 and HFMA2 cases against the console's | never | -
-shaderFloat16 | warn | amd-proprietary | * | any | * | gets FP16 math wrong from its 2026 versions in one game, by Eden's account | Eden PR 3661 (9d2341eaea, 2026-03-03) | new:edenprobe:the HADD2, HMUL2 and HFMA2 cases against the console's | never | -
-shaderDenormPreserveFloat16 | warn | nvidia | * | any | * | lets a DenormPreserve for 16 bits keep 32-bit denormals too, over a DenormFlushToZero for 32 bits | vkd3d-proton device.c:10180 | new:headless:one shader declaring both, its FP32 subnormals read back | never | -
+shaderFloat16 | off | nvidia | * | any | * | gets FP16 math wrong on Ampere and newer GPUs by yuzu's account, which Eden still follows | yuzu 7277d7fe96 (2021-07-03); Eden's driver bug list:18 | new:edenprobe:the HADD2, HMUL2 and HFMA2 cases against the console's | never | -
+shaderFloat16 | off | amd-proprietary | * | any | * | gets FP16 math wrong from its 2026 versions in one game, by Eden's account | Eden PR 3661 (9d2341eaea, 2026-03-03) | new:edenprobe:the HADD2, HMUL2 and HFMA2 cases against the console's | never | -
+shaderDenormPreserveFloat16 | off | nvidia | * | any | * | lets a DenormPreserve for 16 bits keep 32-bit denormals too, over a DenormFlushToZero for 32 bits | vkd3d-proton device.c:10180 | new:headless:one shader declaring both, its FP32 subnormals read back | never | -
 shaderInt64 | warn | qualcomm | * | any | * | has 64-bit integers and atomics turned off by Eden, which gives no reason | Eden PR 2732 (b389a72697, 2025-10-14); Eden's driver bug list:32 | new:edenprobe:64-bit integer arithmetic in a shader | never | -
 
 # Integer to float conversion (shader.h's g_spirv_translate.i2f_nearest: I2F.F32 of a 32-bit integer converts its two
@@ -93,7 +95,7 @@ OpGroupNonUniformShuffle | off | turnip | * | any | * | compiles a shuffle whose
 
 # Descriptors (without heaps, graphics descriptors use buffers or sets)
 VK_EXT_descriptor_heap | off | amd-proprietary | * | any | * | crashes a game at start with descriptor heaps (Adrenalin 26.7.1 on an RX 7900 XTX) | DXVK 076922bd24 (2026-09-19), issue 5837 | headless:--vk-descriptors-mode=3 | never | -
-VK_EXT_descriptor_heap | warn | nvidia | < 595.84.0 | any | * | runs descriptor heaps slower than its later drivers do | DXVK dxvk_device_info.cpp:506 (b5fadf8e5a, 2026-06-18) | new:headless:--bench-descriptors under vk_descriptors_mode=3 against vk_descriptors_mode=1 | never | -
+VK_EXT_descriptor_heap | off | nvidia | < 595.84.0 | any | * | runs descriptor heaps slower than its later drivers do | DXVK dxvk_device_info.cpp:506 (b5fadf8e5a, 2026-06-18) | new:headless:--bench-descriptors under vk_descriptors_mode=3 against vk_descriptors_mode=1 | never | -
 
 # Pipeline libraries (gpu/vk/pipeline_parts.c: a new pipeline links the parts of its shaders)
 VK_EXT_graphics_pipeline_library | off | nvidia | < 531.0.0 | any | * | draws transient glitches with pipeline libraries | ANGLE vk_renderer.cpp:6928, anglebug 42266655 | new:edenprobe:the graphics suites with pipeline libraries on | never | -

@@ -410,10 +410,9 @@ static void check_settings(void) {
     for (int i = 0; i < 6; i++) snprintf(list[i].extensionName, sizeof list[i].extensionName, "%s", names[i]);
     CHECK(vk_bans_load(g_table, err, sizeof err), err);
     device(VK_DRIVER_ID_MESA_RADV, MESA(26u, 0u, 4u), 0x73bf, SNX_VK_BAN_LINUX);
-    const VkExtensionSetting settings[] = {{"VK_KHR_swapchain", "auto", 0}, {"VK_EXT_b", "on", 0},
-                                           {"VK_EXT_c", "auto", 13},        {"VK_EXT_e", "auto", 0},
-                                           {"VK_EXT_j", "auto", 0},         {"VK_EXT_k", "off", 0},
-                                           {"VK_EXT_z", "on", 0},           {"VK_EXT_y", "off", 0}};
+    const VkExtensionSetting settings[] = {
+        {"VK_KHR_swapchain", "auto", 0}, {"VK_EXT_b", "on", 0},  {"VK_EXT_c", "auto", 13}, {"VK_EXT_e", "auto", 0},
+        {"VK_EXT_j", "auto", 0},         {"VK_EXT_k", "off", 0}, {"VK_EXT_z", "on", 0},    {"VK_EXT_y", "off", 0}};
     const VkExtensionNeed need[] = {{"VK_KHR_swapchain", "the window is drawn with it"}, {"VK_EXT_y", "y is needed"}};
     const VkExtensionSetting maybe[] = {{"VK_EXT_c", "maybe", 0}};
     CHECK(!vk_extension_settings(&e, maybe, 1, NULL, 0, err, sizeof err) &&
@@ -470,8 +469,9 @@ static void check_shipped(void) {
          0, NULL},
         {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, INTEL_WIN(99u, 16383u), 0, SNX_VK_BAN_WINDOWS,
          "VK_EXT_vertex_input_dynamic_state", 1, "Intel's Windows driver before 27.20.100.0"},
+        /* from 27.20.100.0 on, ANGLE's ban is off too: nobody here runs Intel's Windows driver to prove it wrong */
         {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, INTEL_WIN(101u, 4502u), 0, SNX_VK_BAN_WINDOWS,
-         "VK_EXT_vertex_input_dynamic_state", 0, NULL},
+         "VK_EXT_vertex_input_dynamic_state", 1, "Intel's Windows driver from 27.20.100.0 on"},
         {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0, SNX_VK_BAN_ANDROID,
          "VK_EXT_vertex_input_dynamic_state", 1, "Qualcomm's driver on Android"},
         {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0, SNX_VK_BAN_WINDOWS,
@@ -519,7 +519,28 @@ static void check_shipped(void) {
         {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0x44050a01, SNX_VK_BAN_ANDROID,
          "OpGroupNonUniformShuffle", 0, NULL},
         {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0x73df, SNX_VK_BAN_LINUX, "OpGroupNonUniformShuffle", 0, NULL},
-        /* the depth clamp's own range: wrong depth values on AMD's drivers, not on RADV */
+        /* another project's ban is off on the drivers nobody here runs (NVIDIA's, AMD's and Intel's own), warn on the
+           ones that run here */
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 119u, 2u), 0x2503, SNX_VK_BAN_WINDOWS, "shaderFloat16", 1,
+         "NVIDIA's driver"},
+        {VK_DRIVER_ID_AMD_PROPRIETARY, MESA(2u, 0u, 302u), 0x744c, SNX_VK_BAN_WINDOWS, "shaderFloat16", 1,
+         "AMD's proprietary driver"},
+        {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0x73df, SNX_VK_BAN_LINUX, "shaderFloat16", 0, NULL},
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 119u, 2u), 0x2503, SNX_VK_BAN_LINUX, "shaderDenormPreserveFloat16",
+         1, "NVIDIA's driver"},
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(590u, 48u, 1u), 0x2503, SNX_VK_BAN_LINUX, "VK_EXT_descriptor_heap", 1,
+         "NVIDIA's driver before 595.84.0"},
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(595u, 84u, 0u), 0x2503, SNX_VK_BAN_LINUX, "VK_EXT_descriptor_heap", 0,
+         NULL},
+        /* lifted by Eden, or with no way around: still warn on AMD's drivers */
+        {VK_DRIVER_ID_AMD_PROPRIETARY, MESA(2u, 0u, 302u), 0x744c, SNX_VK_BAN_WINDOWS, "primitiveRestartEnable", 0,
+         NULL},
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 119u, 2u), 0x2503, SNX_VK_BAN_WINDOWS, "vkCmdClearAttachments", 0,
+         NULL},
+        /* the depth clamp's own range: wrong depth values on AMD's drivers, not on RADV; NVIDIA's lists it with no
+           vkCmdSetDepthClampRangeEXT */
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(621u, 1u, 0u), 0x2684, SNX_VK_BAN_WINDOWS, "VK_EXT_depth_clamp_control", 1,
+         "NVIDIA's driver"},
         {VK_DRIVER_ID_AMD_PROPRIETARY, MESA(2u, 0u, 302u), 0x744c, SNX_VK_BAN_WINDOWS, "VK_EXT_depth_clamp_control", 1,
          "AMD's proprietary driver"},
         {VK_DRIVER_ID_AMD_OPEN_SOURCE, MESA(2u, 0u, 302u), 0x744c, SNX_VK_BAN_LINUX, "VK_EXT_depth_clamp_control", 1,
