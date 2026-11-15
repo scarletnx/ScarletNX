@@ -95,6 +95,7 @@ void vk_pipe_part_src(u32 part, const void* key, PipeKey* out) {
         const PipeViKey* vi = key;
         out->topo_class = vi->topo_class;
         out->vi = vi->vi;
+        out->heaps = vi->heaps;
     } else if (part == VK_PART_PR) {
         const PipePrKey* pr = key;
         out->vs = pr->vs;
@@ -108,6 +109,7 @@ void vk_pipe_part_src(u32 part, const void* key, PipeKey* out) {
         out->depth_clip = pr->depth_clip;
         out->provoking_last = pr->provoking_last;
         out->conservative = pr->conservative;
+        out->heaps = pr->heaps;
     } else if (part == VK_PART_FS) {
         const PipeFsKey* f = key;
         out->fs = f->fs;
@@ -120,6 +122,7 @@ void vk_pipe_part_src(u32 part, const void* key, PipeKey* out) {
         out->alpha_to_coverage = f->alpha_to_coverage;
         out->alpha_to_one = f->alpha_to_one;
         out->coverage = f->coverage;
+        out->heaps = f->heaps;
     } else {
         const PipeFoKey* fo = key;
         out->ncolor = fo->ncolor;
@@ -145,6 +148,7 @@ void vk_pipe_part_src(u32 part, const void* key, PipeKey* out) {
         out->feedback = fo->feedback;
         out->coverage = fo->coverage;
         out->advanced = fo->advanced;
+        out->heaps = fo->heaps;
         /* the masks hold already whether there is a fragment program: any one passes them through */
         out->fs = (VkShaderModule)(uintptr_t)1;
     }
@@ -232,6 +236,7 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
     *vi = (PipeViKey){0};
     vi->topo_class = k->topo_class;
     vi->vi = k->vi;
+    vi->heaps = k->heaps;
 
     *pr = (PipePrKey){0};
     pr->vs = k->vs;
@@ -239,6 +244,7 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
     pr->tes = k->tes;
     pr->gs = k->gs;
     pr->arrays = k->arrays & VK_ARRAYS_PR;
+    pr->heaps = k->heaps;
     if (!(d->dyn_pr & VK_DYN_PR_PATCH)) pr->patch = k->patch;
     if (!(d->dyn_pr & VK_DYN_PR_POLYGON)) pr->polygon = k->polygon;
     if (!(d->dyn_pr & VK_DYN_PR_DEPTH_CLAMP)) pr->depth_clamp = k->depth_clamp;
@@ -250,6 +256,7 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
     f->fs = fs;
     f->arrays = k->arrays & VK_ARRAYS_FS;
     f->spec = k->fs_spec;
+    f->heaps = k->heaps;
     if (!d->feedback_dynamic) f->feedback = k->feedback;
     if (k->sample_shading) {
         f->sample_shading = k->sample_shading;
@@ -284,6 +291,7 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
     if (!d->feedback_dynamic) fo->feedback = k->feedback;
     fo->coverage = k->coverage;
     fo->advanced = k->advanced;
+    fo->heaps = k->heaps;
 }
 
 /* out's text from at, which may be past its end (the text is then cut): where the next one goes */

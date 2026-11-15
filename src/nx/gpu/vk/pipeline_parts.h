@@ -83,12 +83,14 @@ u32 vk_pipe_dynamic(u32 parts, const PipeDynIn* in, VkDynamicState* out);
 typedef struct {
     u32 topo_class;
     VertexLayout vi;
+    u32 heaps; /* PipeKey.heaps: a library of heaps links only with others of heaps (in each part's key) */
 } PipeViKey;
 typedef struct {
     VkShaderModule vs, tcs, tes, gs;
     u32 arrays; /* PipeKey.arrays' bits of the vertex, tessellation and geometry sets */
     /* 0 where dyn_pr makes them dynamic */
     u32 patch, polygon, depth_clamp, depth_clip, provoking_last, conservative;
+    u32 heaps;
 } PipePrKey;
 typedef struct {
     VkShaderModule fs; /* the fragment program, or the empty one */
@@ -98,6 +100,7 @@ typedef struct {
     u32 sample_shading, samples, sample_off, alpha_to_coverage, alpha_to_one;
     VkCoverage coverage;
     u32 spec; /* PipeKey.fs_spec: the module's specialization constants */
+    u32 heaps;
 } PipeFsKey;
 typedef struct {
     u32 ncolor, color[8], depth, stencil;
@@ -107,7 +110,13 @@ typedef struct {
     u32 logic_op, samples, sample_off, alpha_to_coverage, alpha_to_one, sample_shading, feedback;
     VkCoverage coverage;
     VkAdvancedBlend advanced; /* a native advanced equation is in the output part's blend state */
+    u32 heaps;
 } PipeFoKey;
+/* no padding in a key, whose bytes memcmp compares */
+_Static_assert(sizeof(PipeViKey) == offsetof(PipeViKey, heaps) + sizeof(u32), "PipeViKey has padding");
+_Static_assert(sizeof(PipePrKey) == offsetof(PipePrKey, heaps) + sizeof(u32), "PipePrKey has padding");
+_Static_assert(sizeof(PipeFsKey) == offsetof(PipeFsKey, heaps) + sizeof(u32), "PipeFsKey has padding");
+_Static_assert(sizeof(PipeFoKey) == offsetof(PipeFoKey, heaps) + sizeof(u32), "PipeFoKey has padding");
 /* the device state the split reads, g_vk.dyn_pr and has_feedback_dynamic, as arguments so a test gives its own */
 typedef struct {
     u32 dyn_pr;
