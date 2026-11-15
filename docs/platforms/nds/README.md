@@ -70,7 +70,8 @@ console's frames: KEYS in hex are KEYINPUT's bits (1 A, 2 B, 4 Select, 8 Start, 
 `60601000` touches x 96, y 96). `--press-len=MS` is how long each is held (300). `--wav=PATH` writes the run's sound.
 
 `--aot=0` plays without the module: every block is compiled at run time, which starts at once and is slower until the
-game's code has been seen. `--aot-threads=N` sets the compile's threads. For work on the driver, `--trace` prints the
+game's code has been seen. `--aot-threads=N` sets the compile's threads, and `--aot-threads-most=N` the most its 0
+takes. For work on the driver, `--trace` prints the
 services' requests and what the board does not know (twice, each interrupt too), and `--dump_ram=PATH` writes the
 ITCM and main memory's range, 0x01FF8000 to 0x02FFFFFF, when the run ends.
 

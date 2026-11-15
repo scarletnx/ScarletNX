@@ -35,9 +35,9 @@ works for now, and the run says once what it is called now ([Deprecations](depre
 
 Each driver that recompiles (`scarletnx`, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-agb`, `scarletnx-nds`) also takes
 `--aot-threads=N`, the setting [`aot_threads`](settings.md): the threads compiling the game's code, 0 (the default)
-up to the computer's cores with a quarter left free. The Switch, 3DS, Vita and GBA drivers also take
-`--aot-threads-most=N` (`scarletnx`'s open one at a time, as the memory holds them:
-[Extract → AOT → run](#extract--aot--run)); `scarletnx-nds` takes only `--aot-threads=N`. A GBA ROM's code is one
+up to the computer's cores with a quarter left free. Each also takes `--aot-threads-most=N`, the most 0 takes
+(`scarletnx`'s open one at a time, as the memory holds them: [Extract → AOT → run](#extract--aot--run)), which the
+launcher's Gentle queue gives every driver. A GBA ROM's code is one
 module and compiles on one thread whatever N, which its recompile says. A value that is not a whole number from 0
 to 1024 stops the run. `--jobs N` is the same setting for the Switch, 3DS, Vita and GBA drivers, and `-O` the
 setting [`opt`](settings.md), 2 unless the launcher's Optimization level says another, which
