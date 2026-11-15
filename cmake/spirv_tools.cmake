@@ -22,10 +22,11 @@ endif()
 foreach(snx_spirv_tool opt val dis)
     string(TOUPPER "${snx_spirv_tool}" snx_spirv_key)
     get_property(snx_spirv_help CACHE SNX_SPIRV_${snx_spirv_key} PROPERTY HELPSTRING)
+    # if() takes AND and OR as they come, left to right: the parentheses group them
     if(DEFINED CACHE{SNX_SPIRV_${snx_spirv_key}}
        AND (snx_spirv_help STREQUAL "Path to a program."
-            OR DEFINED CACHE{snx_spirv_${snx_spirv_tool}_path}
-               AND "$CACHE{SNX_SPIRV_${snx_spirv_key}}" STREQUAL "$CACHE{snx_spirv_${snx_spirv_tool}_path}"))
+            OR (DEFINED CACHE{snx_spirv_${snx_spirv_tool}_path}
+                AND "$CACHE{SNX_SPIRV_${snx_spirv_key}}" STREQUAL "$CACHE{snx_spirv_${snx_spirv_tool}_path}")))
         message(STATUS "SNX_SPIRV_${snx_spirv_key}=$CACHE{SNX_SPIRV_${snx_spirv_key}} was found on PATH by a "
                        "configure from before SPIRV-Tools was pinned, not given: the build uses the pinned "
                        "v${snx_spirv_tools_version} now, and -DSNX_SPIRV_${snx_spirv_key}=... names another")
