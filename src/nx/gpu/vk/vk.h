@@ -1780,8 +1780,9 @@ static inline u32 vk_cb_round(u32 bytes) {
 }
 /* A constant buffer's bound range: a whole number of checked steps, at least one (so an empty binding reads zeros
    across the whole step, not a neighbour's bytes in staging), within maxUniformBufferRange rounded down to a step.
-   The binding zero-fills its tail, so reads inside the last step get the bytes it copied, never a neighbour's. Where
-   the limit is smaller than a step (no real device), the limit wins: a valid range over an aligned one */
+   Reads inside the last step get the bytes its binding put there: zeros past the guest's in a compute or inline
+   one, the guest's next bytes in a graphics one read from guest memory (cb_get). Where the limit is smaller than a
+   step (no real device), the limit wins: a valid range over an aligned one */
 static inline u32 vk_cb_range(u32 bytes) {
     u32 step = vk_cb_step(), max = g_vk.props.limits.maxUniformBufferRange;
     u32 range = vk_cb_round(bytes);
