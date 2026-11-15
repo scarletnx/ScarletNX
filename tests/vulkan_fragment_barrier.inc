@@ -3,7 +3,9 @@
 /* NVN's fragment barrier (the renderer's barrier kind 0) is skipped only where the device draws with descriptor buffers
    or heaps. A device that has neither draws with descriptor sets and keeps every one, whatever vk_descriptors_mode asks
    for. A clear on each side of the barrier shows which: a kept barrier ends the first clear's pass, so the second clear
-   begins another; a skipped one leaves both clears in one pass. */
+   begins another; a skipped one leaves both clears in one pass. A texture data cache invalidation (kind 2) just after
+   the fragment barrier, with no command between them, records no second barrier: the first orders all that it would.
+   With a clear between them, it records its own. */
 static void fragment_barrier_clear(GpuChannel* channel, u64 target) {
     u32* r = channel->r3d;
     const float color[4] = {0.25f, 0.5f, 0.75f, 1};
@@ -28,7 +30,7 @@ static int check_fragment_barrier_backend(void) {
     int buffers = g_vk.has_descriptor_buffers, heaps = g_vk.has_descriptor_heap_support;
     int setting = g_settings.descriptor_buffers;
     g_settings.descriptor_buffers = 3;
-    u64 passes[2];
+    u64 passes[2], merged = 0, kept = 0;
     for (u32 sets = 0; sets < 2; sets++) {
         vk_lock();
         vk_render_end();
@@ -42,6 +44,20 @@ static int check_fragment_barrier_backend(void) {
         vk_lock();
         vk_render_end();
         passes[sets] = g_vk_passes - before;
+        vk_unlock();
+        if (sets) {
+            fragment_barrier_clear(channel, gpu);
+            g_renderer->method_barrier(0);
+            merged = g_vk_barriers_merged;
+            g_renderer->method_barrier(2);
+            merged = g_vk_barriers_merged - merged;
+            fragment_barrier_clear(channel, gpu);
+            kept = g_vk_barriers_merged;
+            g_renderer->method_barrier(2);
+            kept = g_vk_barriers_merged - kept;
+        }
+        vk_lock();
+        vk_render_end();
         g_vk.has_descriptor_buffers = buffers;
         g_vk.has_descriptor_heap_support = heaps;
         vk_unlock();
@@ -57,6 +73,12 @@ static int check_fragment_barrier_backend(void) {
                 : buffers ? "buffers"
                           : "sets",
                 buffers || heaps ? 1u : 2u);
+    if (merged != 1 || kept != 0)
+        fprintf(stderr,
+                "texture invalidation after a fragment barrier on descriptor sets: %llu merged (1 expected), %llu "
+                "after a clear (0 expected)\n",
+                (unsigned long long)merged, (unsigned long long)kept);
+    CHECK(merged == 1 && kept == 0);
     CHECK(passes[1] == 2);
     CHECK(passes[0] == (buffers || heaps ? 1u : 2u));
     return 0;
