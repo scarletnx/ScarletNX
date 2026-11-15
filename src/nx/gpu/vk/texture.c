@@ -162,6 +162,11 @@ static void sparse_floor(const VkSparseShape* sh, u8* bits, u32 floor) {
         }
 }
 #define TEX_SHED_MIN (1ull << 20) /* the image bytes from which a texture mapped whole is shed (tex_create) */
+/* set while vk_tex_coarser and vk_tex_finer move a texture's levels between the GPU's memory and system memory: their
+   binds make no room under the budget (vk_mem_trim). System memory needs none, the move back checks its room first,
+   and they run inside a trim's walk of the textures (surface.c tex_shed_lru) or the refine's, which a trim inside
+   them broke: it evicted the next texture the walk would take, and the texture moved itself */
+static int g_bind_no_trim;
 static u64 g_shed_made, g_shed_bytes, g_shed_coarser, g_shed_finer;
 void vk_tex_shed_stats(u64* made, u64* bytes, u64* coarser, u64* finer) {
     *made = g_shed_made, *bytes = g_shed_bytes, *coarser = g_shed_coarser, *finer = g_shed_finer;
@@ -239,13 +244,13 @@ static int tex_bind_at(Surf* t, int finer_ok) {
     }
     if (floor) sparse_floor(sh, bits, floor);
     u64 need = vk_image_sparse_need(t->img, bits, keys), bytes;
-    if (need) vk_mem_trim(need, 0);
+    if (need && !g_bind_no_trim) vk_mem_trim(need, 0);
     int r = vk_image_sparse_bind(t->img, bits, keys, &bytes);
     while (r < 0 && g_vk.has_view_min_lod && floor + 1 < sh->tail_first) { /* nothing changed: a level coarser */
         sparse_floor(sh, bits, ++floor);
         r = vk_image_sparse_bind(t->img, bits, keys, &bytes);
     }
-    if (r < 0 && need) vk_mem_trim(need, 1); /* room for it by the time the upload is tried again */
+    if (r < 0 && need && !g_bind_no_trim) vk_mem_trim(need, 1); /* room for it by the time the upload is tried again */
     if (r >= 0 && floor != t->lod_floor) {
         if (floor < t->lod_floor) g_shed_finer++;
         else g_shed_coarser += floor - t->lod_floor;
@@ -902,6 +907,27 @@ static int resident_bind_mapped(Surf* t, u8* want) { return resident_bind_at(t, 
 u64 vk_tex_coarser(Surf* t) {
     if (!vk_tex_can_coarsen(t)) return 0;
     const u64 was = t->bytes;
+    if (t->shed && g_settings.texture_system_memory) {
+        /* its finest level not in system memory yet moved there, with those before it: their blocks released and
+           bound again to system memory (in one batch, before the next submission), and the texture loaded again at
+           its next use. It keeps every level, sampled over the bus where its blocks are in system memory, where giving
+           the level up left the texture at half its resolution */
+        const u32 n = t->sys_levels + 1u;
+        const u64 freed = vk_image_sparse_level_bytes(t->img, n) - vk_image_sparse_level_bytes(t->img, t->sys_levels);
+        g_bind_no_trim = 1;
+        t->lod_floor = n;
+        tex_bind_at(t, 0);
+        vk_image_sparse_place(t->img, 1);
+        t->lod_floor = 0;
+        const int r = tex_bind_at(t, 0);
+        vk_image_sparse_place(t->img, 0);
+        g_bind_no_trim = 0;
+        t->sys_levels = (u8)n;
+        t->upload_valid = 0;
+        g_shed_coarser++;
+        (void)was;
+        return r < 0 ? 0 : freed;
+    }
     if (t->sparse) { /* its finest level's blocks released; the levels left keep their memory and their texels */
         const u32 had = t->lod_floor;
         t->lod_floor++;
@@ -926,14 +952,31 @@ int vk_tex_can_coarsen(const Surf* t) {
     if (!t->img || !g_vk.has_view_min_lod) return 0;
     if (t->sparse) {
         const VkSparseShape* sh = vk_image_sparse_shape(t->img);
+        if (t->shed && g_settings.texture_system_memory) return sh && t->sys_levels + 1u < sh->tail_first;
         return sh && t->lod_floor + 1 < sh->tail_first;
     }
     return t->bricks && t->lod_floor + 1 < t->tail_first;
 }
 int vk_tex_finer(Surf* t) {
+    if (t->shed && t->sys_levels && t->upload_valid) {
+        /* its levels in system memory back into the GPU's: released, bound again there, and loaded again */
+        g_bind_no_trim = 1;
+        t->lod_floor = t->sys_levels;
+        tex_bind_at(t, 0);
+        t->lod_floor = 0;
+        const int r = tex_bind_at(t, 0);
+        g_bind_no_trim = 0;
+        t->sys_levels = 0;
+        t->upload_valid = 0;
+        g_shed_finer++;
+        return r >= 0;
+    }
     if (!t->shed || !t->lod_floor || !t->upload_valid) return 0;
     const u32 had = t->lod_floor;
-    if (tex_bind_at(t, 1) < 0 || t->lod_floor >= had) return 0;
+    g_bind_no_trim = 1; /* the refine checked its room, and walks the textures: no trim inside it */
+    const int r = tex_bind_at(t, 1);
+    g_bind_no_trim = 0;
+    if (r < 0 || t->lod_floor >= had) return 0;
     t->upload_valid = 0; /* the level taken back has no texels: its next use loads the texture again */
     return 1;
 }

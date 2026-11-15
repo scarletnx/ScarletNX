@@ -552,6 +552,7 @@ typedef struct Sparse {
     int alias; /* made with VK_IMAGE_CREATE_SPARSE_ALIASED_BIT: blocks of one key share memory */
     u64 batch; /* the bind batch its last binds are in, 0 none */
     struct Sparse* hnext; /* the next of its hash bucket (g_sparse_hash) */
+    int place_sys; /* the blocks its binds give memory take system memory (vk_image_sparse_place) */
     /* the blocks' allocations: of[b] is block b's, its index in mem and one more, 0 for none. free_mem: the first
        free record and one more (next goes on), 0 for none */
     struct SparseMem {
@@ -842,6 +843,17 @@ static int sparse_plan(const Sparse* s, const u8* bits, const u64* keys, SparseP
     return 1;
 }
 
+void vk_image_sparse_place(VkImage img, int system) {
+    Sparse* s = sparse_find(img);
+    if (s) s->place_sys = system;
+}
+u64 vk_image_sparse_level_bytes(VkImage img, u32 levels) {
+    const Sparse* s = sparse_find(img);
+    if (!s) return 0;
+    u64 n = 0;
+    for (u32 l = 0; l < levels && l < s->sh.tail_first; l++) n += (u64)s->sh.bx[l] * s->sh.by[l] * s->sh.bz[l];
+    return n * s->sh.layers * s->block;
+}
 u64 vk_image_sparse_need(VkImage img, const u8* bits, const u64* keys) {
     const Sparse* s = sparse_find(img);
     SparsePlan p;
@@ -891,13 +903,14 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
     int ok = ib && ob && fresh && info && rec && rec_a && dead;
     /* the fresh blocks, all at once, then the tails */
     VkMemoryRequirements req = {.size = s->block, .alignment = s->block, .memoryTypeBits = s->memtypes};
-    DevMemWant aci = {.at = DM_DEVICE, .image = 1};
+    DevMemWant aci = {.at = s->place_sys ? DM_SYSTEM : DM_DEVICE, .image = 1};
     u32 made = 0;
     for (u32 j = 0; ok && j < p.nfresh; j++) {
         /* no room is an answer here (texture.c binds a level coarser), not an error to log */
         ok = vk_devmem_alloc(&req, &aci, &fresh[j], &info[j]) == VK_SUCCESS;
         if (ok) made++;
     }
+    aci.at = DM_DEVICE; /* a mip tail is small: the GPU's memory always */
     for (u32 t = 0; ok && t < p.ntail; t++) {
         VkMemoryRequirements tr = {.size = s->tail_size, .alignment = s->block, .memoryTypeBits = s->memtypes};
         ok = vk_devmem_alloc(&tr, &aci, &fresh[p.nfresh + t], &info[p.nfresh + t]) == VK_SUCCESS;

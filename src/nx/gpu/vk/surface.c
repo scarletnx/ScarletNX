@@ -2687,7 +2687,7 @@ void vk_tex_refine_frame(void) {
         p = g_rows.lru[r].prev;
         Surf* t = g_rows.surf[r];
         if ((i32)((u32)t->last_used - since) < 0) break;
-        if (t->shed && t->lod_floor) took += (u32)vk_tex_finer(t);
+        if (t->shed && (t->lod_floor || t->sys_levels)) took += (u32)vk_tex_finer(t);
     }
 }
 /* Once a present: the demoted textures (vk_tex_demote) the last two presents used, the most recently used first, moved
