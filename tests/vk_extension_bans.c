@@ -630,6 +630,75 @@ static void check_shipped(void) {
             }
         }
     }
+    /* the rows of Eden's driver bug list the renderer reaches, each a warning at the filter on its driver alone, within
+       its bounds and system, and a ban nowhere */
+    {
+        static const struct {
+            uint32_t id, v, system;
+            const char *key, *source;
+            int said;
+        } eden[] = {
+            {VK_DRIVER_ID_AMD_PROPRIETARY, MESA(2u, 0u, 302u), SNX_VK_BAN_WINDOWS,
+             "VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT", "list:11", 1},
+            {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), SNX_VK_BAN_LINUX, "VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT", NULL,
+             0},
+            {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, INTEL_WIN(101u, 4096u), SNX_VK_BAN_WINDOWS,
+             "VK_SHADER_STAGE_COMPUTE_BIT", "list:26", 1},
+            {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, INTEL_WIN(101u, 4381u), SNX_VK_BAN_WINDOWS,
+             "VK_SHADER_STAGE_COMPUTE_BIT", "list:26", 1},
+            {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, INTEL_WIN(101u, 4382u), SNX_VK_BAN_WINDOWS,
+             "VK_SHADER_STAGE_COMPUTE_BIT", NULL, 0},
+            {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, INTEL_WIN(101u, 4095u), SNX_VK_BAN_WINDOWS,
+             "VK_SHADER_STAGE_COMPUTE_BIT", NULL, 0},
+            {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), SNX_VK_BAN_ANDROID,
+             "VkVertexInputAttributeDescription.format", "158a1896ec", 1},
+            {VK_DRIVER_ID_ARM_PROPRIETARY, MESA(48u, 0u, 0u), SNX_VK_BAN_ANDROID,
+             "VkVertexInputAttributeDescription.format", "158a1896ec", 1},
+            {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), SNX_VK_BAN_ANDROID, "maxVertexInputBindings",
+             "list:33", 1},
+            {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 2u, 99u), SNX_VK_BAN_ANDROID, "maxVertexInputBindings", "list:33", 1},
+            {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), SNX_VK_BAN_ANDROID,
+             "VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE", "list:34", 1},
+            {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 2u, 99u), SNX_VK_BAN_ANDROID,
+             "VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE", "list:34", 1},
+            {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), SNX_VK_BAN_ANDROID, "vkCmdCopyImageToBuffer",
+             "81c817c54d", 1},
+            {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 2u, 99u), SNX_VK_BAN_ANDROID, "vkCmdCopyImageToBuffer", NULL, 0},
+            {VK_DRIVER_ID_ARM_PROPRIETARY, MESA(48u, 0u, 0u), SNX_VK_BAN_ANDROID, "VK_MEMORY_PROPERTY_HOST_CACHED_BIT",
+             "list:43", 1},
+            {VK_DRIVER_ID_ARM_PROPRIETARY, MESA(42u, 0u, 0u), SNX_VK_BAN_ANDROID, "VK_DYNAMIC_STATE_STENCIL_WRITE_MASK",
+             "list:44", 1},
+            {VK_DRIVER_ID_ARM_PROPRIETARY, MESA(43u, 0u, 0u), SNX_VK_BAN_ANDROID, "VK_DYNAMIC_STATE_STENCIL_WRITE_MASK",
+             NULL, 0},
+            {VK_DRIVER_ID_ARM_PROPRIETARY, MESA(48u, 0u, 0u), SNX_VK_BAN_ANDROID, "VK_FORMAT_R32G32B32A32_SFLOAT",
+             "list:48", 1},
+            {VK_DRIVER_ID_MOLTENVK, 10211u, SNX_VK_BAN_MACOS, "maxVertexInputAttributes", "list:50", 1},
+            {VK_DRIVER_ID_MOLTENVK, 10211u, SNX_VK_BAN_MACOS, "EarlyFragmentTests", "list:51", 1},
+            {VK_DRIVER_ID_MOLTENVK, 10211u, SNX_VK_BAN_MACOS, "HelperInvocation", "list:17", 1},
+            {VK_DRIVER_ID_MOLTENVK, 10211u, SNX_VK_BAN_MACOS, "shaderSampledImageArrayNonUniformIndexing", "list:27",
+             1},
+            {VK_DRIVER_ID_MOLTENVK, 10211u, SNX_VK_BAN_MACOS, "OpGroupNonUniformUMax", "list:28", 1},
+            {VK_DRIVER_ID_MOLTENVK, 10211u, SNX_VK_BAN_IOS, "VK_EXT_robustness2.nullDescriptor", "list:52", 1},
+            {VK_DRIVER_ID_MOLTENVK, 10211u, SNX_VK_BAN_MACOS, "VK_EXT_robustness2.nullDescriptor", NULL, 0},
+            {VK_DRIVER_ID_MOLTENVK, 10211u, SNX_VK_BAN_IOS, "HelperInvocation", NULL, 0},
+        };
+        for (size_t i = 0; i < sizeof eden / sizeof *eden; i++) {
+            char what[300], on[200];
+            VkExtensionProperties list[1] = {{"VK_KHR_swapchain", 1}};
+            SnxVkExtensions e = {list, 1};
+            VkBanDevice d = {"a stand-in", "its driver", "its info", eden[i].id, eden[i].v, 0, eden[i].system};
+            vk_bans_device(&d);
+            g_test.nsaid = 0;
+            snprintf(on, sizeof on, "%s on a stand-in", eden[i].key);
+            CHECK(vk_bans_filter(&e, say) == 0 && e.count == 1, "a row of Eden's list takes no extension out");
+            int w = said_with("vulkan: a known problem the extension bans do not turn off: ", on, eden[i].source);
+            snprintf(what, sizeof what, "Eden's list case %zu: %s %s, a warning naming %s", i, eden[i].key,
+                     eden[i].said ? "said" : "not said", eden[i].source ? eden[i].source : "nothing");
+            CHECK(eden[i].said ? w >= 0 && g_test.warned[w] : w < 0, what);
+            if (eden[i].said && w < 0) show_said();
+            CHECK(vk_ban_find(eden[i].key) == 0, "and a ban nowhere");
+        }
+    }
     /* this machine's drivers, RADV and lavapipe: no "off" line holds; RADV's warnings are the lifted bans */
     static const struct {
         uint32_t id, v;
