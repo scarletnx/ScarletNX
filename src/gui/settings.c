@@ -298,10 +298,11 @@ int gui_settings_save(const GuiSettings* s, const char* path) {
     text = (char*)malloc(room);
     folder = snx_dirname(path);
     staged = snx_format("%s.new", path);
-    if (text)
-        at = (size_t)snprintf(text, room,
-                              "; what the launcher's Settings changed, for every game it runs: over each "
-                              "game's .ini\n");
+    if (text) /* a game's own picks file starts as the runtime writes it */
+        at = (size_t)snprintf(text, room, "%s",
+                              s->game ? SNX_GAME_PICKS_HEAD
+                                      : "; what the launcher's Settings changed, for every game it runs: over each "
+                                        "game's .ini\n");
     for (i = 0; text && i < s->count; ++i) {
         const char* value = kept(s, i);
         if (!strcmp(value, s->values[i].start)) continue;

@@ -980,7 +980,8 @@ int main(int argc, char** argv) {
         gui_settings_shown_game(&game, &global, v, out, sizeof out);
         assert(!strcmp(out, "100%") && gui_settings_changed(&game) == 1 && !gui_settings_save(&game, picks));
         assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "[Audio]\nvolume=100\n") &&
-               !strstr(text, "fullscreen") && !strstr(text, "resolution"));
+               !strstr(text, "fullscreen") && !strstr(text, "resolution") &&
+               !strncmp(text, SNX_GAME_PICKS_HEAD, strlen(SNX_GAME_PICKS_HEAD))); /* as the runtime writes it */
         free(text);
         assert(gui_settings_game_own(ini, out, sizeof out) == 1 && !strcmp(out, "volume=100"));
         assert(!snx_ini_record(ini, "gpu_driver", "Turnip_v32") &&

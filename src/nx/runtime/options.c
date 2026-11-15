@@ -729,8 +729,7 @@ static int picks_write(void) {
         WARN_LIMIT(1, "settings: could not write %s: %s\n", tmp, snx_os_error(why, sizeof why));
         return -1;
     }
-    fprintf(f, "; This game's own settings, set for it alone in its menu or the launcher's Settings of the game. Each\n"
-               "; goes over the launcher's for every game and over the game's .ini; one taken out goes back to them\n");
+    fputs(SNX_GAME_PICKS_HEAD, f);
     for (s = 0; s < g_ini_sections_count; s++) {
         int head = 0;
         for (t = 0; t < 3 && g_ini_sections[s].table[t]; t++) {
