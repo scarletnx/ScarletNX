@@ -35,7 +35,7 @@ The tools, once:
 
 ```bash
 sudo apt install clang lld llvm ninja-build meson cmake ccache mmdebstrap qemu-user qemu-user-binfmt binfmt-support \
-    glslang-tools spirv-tools debian-ports-archive-keyring
+    glslang-tools debian-ports-archive-keyring
 ```
 
 A sysroot with the target's libraries and LLVM, made without root by `scripts/ppc64-sysroot.sh` (about 1 GB). It is

@@ -38,20 +38,21 @@ if(Python3_Interpreter_FOUND) # tests/CMakeLists.txt looked it up
         add_test(NAME glslc_keywords COMMAND ${snx_glslc_test} keywords --cli $<TARGET_FILE:snx-glslc-cli>
                                              ${snx_glslc_compare})
     endif()
-    find_program(SNX_SPIRV_VAL spirv-val)
-    find_program(SNX_SPIRV_DIS spirv-dis)
-    if(SNX_SPIRV_VAL AND SNX_SPIRV_DIS)
+    # SPIRV-Tools (cmake/spirv_tools.cmake)
+    include("${PROJECT_SOURCE_DIR}/cmake/spirv_tools.cmake")
+    if(TARGET snx-spirv-dis)
         add_test(NAME glslc_shaders COMMAND ${snx_glslc_test} shaders --cli $<TARGET_FILE:snx-glslc-cli>
-                                            --spirv-val "${SNX_SPIRV_VAL}" --spirv-dis "${SNX_SPIRV_DIS}" ${snx_glslc_compare})
+                                            --spirv-val $<TARGET_FILE:snx-spirv-val>
+                                            --spirv-dis $<TARGET_FILE:snx-spirv-dis> ${snx_glslc_compare})
     else()
-        message(STATUS "Skipping glslc_shaders: spirv-val and spirv-dis are required")
+        message(STATUS "Skipping glslc_shaders: spirv-dis is required")
     endif()
-    find_program(SNX_SPIRV_OPT spirv-opt)
-    if(snx_glslc_glslang AND SNX_SPIRV_OPT AND SNX_SPIRV_DIS)
+    if(snx_glslc_glslang AND TARGET snx-spirv-dis)
         add_test(NAME glslc_semantics COMMAND ${snx_glslc_test} semantics --cli $<TARGET_FILE:snx-glslc-cli>
-                                              --spirv-opt "${SNX_SPIRV_OPT}" --spirv-dis "${SNX_SPIRV_DIS}" ${snx_glslc_compare})
+                                              --spirv-opt $<TARGET_FILE:snx-spirv-opt>
+                                              --spirv-dis $<TARGET_FILE:snx-spirv-dis> ${snx_glslc_compare})
     else()
-        message(STATUS "Skipping glslc_semantics: glslangValidator, spirv-opt and spirv-dis are required")
+        message(STATUS "Skipping glslc_semantics: glslangValidator and spirv-dis are required")
     endif()
 endif()
 # a compilation that runs on forever (a workspace left with a previous compilation's state can loop a chain) fails
