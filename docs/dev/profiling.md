@@ -9,6 +9,7 @@
   * [A build to profile with](#a-build-to-profile-with)
   * [A scene that repeats](#a-scene-that-repeats)
 * [First look: the stats box and the log](#first-look-the-stats-box-and-the-log)
+* [Tracy: the whole run on one timeline](#tracy-the-whole-run-on-one-timeline)
 
 [Development](development.md) · [architecture](architecture.md) · [build](build.md) · [settings](../user/settings.md)
 · [the CPU cost of a draw](draw-cost.md).
@@ -109,4 +110,57 @@ Before any profiler, look at what the runtime already measures.
 - **`--vk_buffer_stats=1`** logs what the renderer copies between guest memory and its buffers.
 - **`F5`** dumps every thread's state (guest PC and symbol) to the log: a poor man's sample when a game hangs or
   crawls.
+
+## Tracy: the whole run on one timeline
+
+[Tracy](https://github.com/wolfpld/tracy) is the profiler the runtime is instrumented for: frames, every SVC and IPC
+command, the GPU thread's jobs, Vulkan recording and submission, shader translation and pipeline creation, texture
+uploads and encodes, the JIT, audio, input, and the GPU's own passes, on one timeline with plots of every counter the
+runtime keeps. It is the right first tool for "why is this frame slow".
+
+Build it (`cmake --preset tracy -B build/tracy && cmake --build build/tracy`) and get Tracy **0.15.0**'s GUI
+(`tracy-profiler`) and `tracy-capture`: the server must be the client's version. Then either:
+
+```sh
+# record a run to a file, and open it in the GUI when the run ends
+build/tracy/scarletnx --game="$games/<id>" --tracy-capture --seconds=60
+
+# start with the client up, and connect the GUI to 127.0.0.1:8086 (discovery is off)
+build/tracy/scarletnx --game="$games/<id>" --tracy
+
+# record without the GUI, on another machine or over ssh
+tracy-capture -o work/prof/trace.tracy -f -s 60 &
+build/tracy/scarletnx --game="$games/<id>" --tracy
+wait
+```
+
+or, while a game runs, press `F10` for a 60-second capture beside the game (the log names its file). The launcher
+has the same as settings (`Settings > Debug > Tracy profiler`, `Settings > Launch > Tracy capture`).
+
+A walk through a trace:
+
+1. **Frames.** The frame bar on top; click the slow frames. `frame ms` and its neighbours (`jit miss ms`,
+   `pipeline wait ms`, `texture uploads`, `shaders`) say at once whether a hitch was a compile.
+2. **Threads.** Find the thread whose zones fill the slow frame: the GPU thread (`gpu job`, `vk record`, ...), a guest
+   thread (SVC zones, IPC commands), the JIT. A thread with gaps is waiting; `vk lock wait` appears only when the
+   Vulkan lock was contended.
+3. **The GPU track.** The passes on the GPU's clock, aligned to the CPU's once a frame. A long pass with the CPU idle
+   is GPU-bound; the CPU busy while the GPU idles (`gpu idle:` plots) is CPU-bound.
+4. **Statistics.** *Instrumentation* sums the zones; with the sampler on, *Sampling* lists the hot functions with
+   their call stacks.
+
+Turn on the sampler (`--tracy_sampling=1`) for the time between the zones. It needs Linux perf events (a normal user
+has them unless `kernel.perf_event_paranoid` forbids it), samples at 1 kHz (`TRACY_SAMPLING_HZ`), and names the
+runtime, the game's `_code.so` and shared libraries' exports; the JIT's code stays `[unknown]`. Without it, Tracy shows
+the instrumented zones alone, which costs much less.
+
+Things to know (more in [Development](development.md#profiling)):
+
+- Every plot and zone is listed by the question it answers in [What a trace answers](development.md#what-a-trace-answers).
+- Raise the open file limit (`ulimit -n 65536`) for a profiled run.
+- The GPU and CPU clocks drift while the system synchronizes its time; stop the time sync for long traces.
+- `tracy-csvexport trace.tracy > zones.csv` gives the zones without the GUI, for scripts.
+- Tracy's client is not in Android's app or on iOS. On FreeBSD the instrumentation works; the sampler does not
+  (Tracy samples with Linux perf events or Windows ETW).
+- The cost: off, an emission is one atomic load; connected, Tracy's own. Measure throughput without it.
 
