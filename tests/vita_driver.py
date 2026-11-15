@@ -32,7 +32,8 @@ def main():
         '\n  --keep-ir',
         '\n  -q, --quiet',
         'On the Vita, -O is the level',
-        'KEY with a - for each _ is the same setting (--vita-hle-trace=1)',
+        'KEY is the key with a - for each _; the key as written, the older spelling, is still\n'
+        '                         read, and said once',
     ):
         if line not in help_text:
             failures.append(f'the help lacks "{line.strip()}"')
@@ -42,7 +43,7 @@ def main():
     run(['-x', '--keep-ir', 'game.vpk'], 2, "scarletnx-vita: --keep-ir is the recompile's, and -x compiles no code")
     run(['-x', '--opt=1', 'game.vpk'], 2, "scarletnx-vita: -O is the recompile's, and -x compiles no code")
     # a setting's key with a - for each _ is the same setting, said by its key, --press-len= the Vita's press length
-    # as --press_len= is; some _ left is no setting
+    # as --press-len= is; some _ left is no setting
     run(['--aot-threads=many', 'game.vpk'], 2, 'scarletnx-vita: aot_threads=many is not a whole number from 0 to 1024')
     run(
         ['--press-len=-5', '--help'],
@@ -50,6 +51,14 @@ def main():
         'settings: vita_press_len=-5 is not a whole number from 0 to 2147483647: it keeps 0',
     )
     run(['--vita-hle_trace=1', 'game.vpk'], 2, 'scarletnx-vita: unknown setting: --vita-hle_trace=1')
+    # the key as the .ini writes it, the older spelling: still read, and said once a run with the name now
+    out = run(
+        ['--vita_hle_trace=1', '--vita_hle_trace=2', '--help'],
+        0,
+        'settings: --vita_hle_trace is the old spelling of --vita-hle-trace: it is read as that; write --vita-hle-trace',
+    )
+    if out.count('old spelling') != 1:
+        failures.append(f'the old spelling not said once:\n{out}')
     if failures:
         sys.exit('vita_driver:\n' + '\n'.join(failures))
     print('vita_driver: ok')

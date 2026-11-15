@@ -274,7 +274,7 @@ SnxCtrSvcResult snx_ctr_ipc_exchange(SnxCtrProcess* p, uint32_t handle, uint32_t
         if (!snx_ctr_ipc_stubbed(p, p->last_ipc_service)) {
             fprintf(stderr,
                     "3ds ipc: %s%s has no command 0x%04x (header 0x%08x). Run with --ipc-stubs %s (or "
-                    "--ctr_auto_stub_ipc=1) to answer it with success.\n",
+                    "--ctr-auto-stub-ipc=1) to answer it with success.\n",
                     family, kind, c.in[0] >> 16, c.in[0], family);
             return SNX_CTR_SVC_UNSUPPORTED;
         }

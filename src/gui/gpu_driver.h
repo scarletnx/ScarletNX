@@ -29,7 +29,8 @@ GuiGpuDriver* gui_gpu_drivers_list(const char* dir, size_t* count);
 /* the folder id of dir taken away: 1, else 0; said says either */
 int gui_gpu_driver_remove(const char* dir, const char* id, char* said, size_t size);
 /* what a game's run is passed for key: nothing (NULL) when the game's .ini at game_ini has a key= line of its own,
-   which the run reads, or when the launcher's global is empty; else --key=global. Owned */
+   which the run reads, or when the launcher's global is empty; else --key=global, the key with a - for each _
+   (ini_option: --gpu-driver=NAME). Owned */
 char* gui_run_option(const char* key, const char* game_ini, const char* global);
 
 /* Freedreno Settings' presets, as Eden has them: a name, what it does, and the variables it sets in the place of the

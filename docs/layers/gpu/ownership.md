@@ -195,9 +195,9 @@ macOS have no alias pool yet, so no mirror and no traps.
     the kernel (below). Code in a system DLL that reads or writes guest memory in user mode (SDL's audio queue, OpenSSL,
     `WideCharToMultiByte`) faults into the handler like the guest does.
 - On an RTX 5080 (Windows 11, driver 621.14, resizable BAR, guest buffers copied), one Ounce game's intro movie
-  (`--vk_gpu_profile=1`, the same 600 presents): 16.7 frames a second without traps, 54 to 55 with them. The GPU's
+  (`--vk-gpu-profile=1`, the same 600 presents): 16.7 frames a second without traps, 54 to 55 with them. The GPU's
   frame, first pass to last, 56.0 ms against 16.1; its dispatches and copies 19.7 ms against 6.4, the GPU mirror's
-  harvest 11.5 ms against 1.4. With `--vk_buffer_stats=1` the mirror landed 47.7 GB in 600 presents without traps
+  harvest 11.5 ms against 1.4. With `--vk-buffer-stats=1` the mirror landed 47.7 GB in 600 presents without traps
   (11.6 million pages written), 40 MB with them; storage images and the mirror's pages stay GPU-owned. What still
   lands, about 1,000 times in 600 presents, is the movie's pictures: the native video service writes each one into
   its image on the GPU (`nvdec_write`, NV12 at a pitch of 2048: 2.2 MB of luma and 1.1 MB of chroma), and the game's
@@ -288,7 +288,7 @@ thread to hash and copy, and memory bandwidth.
 - Discrete with resizable BAR: device-local, host-visible memory is at least half of the biggest device-local heap.
 - Discrete with a small BAR: anything else. An RTX 2080 without resizable BAR has a 246 MiB window.
 
-The `[Debug]` setting `vk_memory` (also `--vk_memory=N`) chooses the path for guest buffers: 0 auto (in place on
+The `[Debug]` setting `vk_memory` (also `--vk-memory=N`) chooses the path for guest buffers: 0 auto (in place on
 UMA, copied otherwise), 1 copy, 2 in place. In place needs `VK_EXT_external_memory_host`, or on Android with 2
 `VK_ANDROID_external_memory_android_hardware_buffer` ([below](#android-guest-memory-moved-into-ahardwarebuffers)).
 Without either the log warns and the path is the copy. Auto with the second alone copies, and the log says
@@ -497,7 +497,7 @@ view and its source counted as one address by the in-place bookkeeping (`live`, 
 
 ### Measurements on a discrete GPU (RTX 2080, 246 MiB BAR)
 
-Each scene is the benchmark save and script of one game, `-H --fps_limit=0 --vsync=0`, with NVN's calls run by the
+Each scene is the benchmark save and script of one game, `-H --fps-limit=0 --vsync=0`, with NVN's calls run by the
 runtime, and `vk_gpu_profile=1` for the queue's times. The machine ran other jobs (load 4 to 16), so a single frame rate moves by
 several frames a second from run to run.
 
@@ -518,13 +518,13 @@ runs. Round trips (the GPU thread waiting for the GPU, then landing results) are
 PCIe 3.0 x16 gives. These scenes are bound by the CPU's work on the GPU thread, not by PCIe or GPU stalls. "Submitted,
 not started" (3 to 11 ms) is the recording thread's lag and the compute queue's semaphores: the next thing to look at.
 
-In place forced on this GPU (`--vk_memory=2`) ran all four scenes to their end with no validation message and with
+In place forced on this GPU (`--vk-memory=2`) ran all four scenes to their end with no validation message and with
 screenshots that differ from the copy path's only where the scene moves (animation, the time of a camera move). That
 build asked the driver again for every range in a refused window: scene B fell to 5 frames a second, the reason for
 the list of refused spans. Scene D's imports were all refused (a page in each window the driver could not pin), so it
 copied as before but paid for the releases' longer gates (29 frames a second against 37 copied).
 
-The same two scenes A and B on the newer base, two rounds of the unchanged runtime against `--vk_memory=2`, with no
+The same two scenes A and B on the newer base, two rounds of the unchanged runtime against `--vk-memory=2`, with no
 profile:
 
 | Scene | Copy, frames a second | In place, frames a second | Copy, PCIe RX / TX | In place, PCIe RX / TX |
@@ -541,7 +541,7 @@ found yet, and it is where scene B's higher TX comes from.
 
 The screenshots matched in both scenes, but for scene A's last one (difference 32 to 35 of 255, two copy runs 3):
 in place ran at twice the frame rate, and the game's camera had turned further by then. In place capped at 18 frames a
-second (`--fps_limit=18`) matched the copy runs there too (1.6 and 3.9). Under the validation layer with
+second (`--fps-limit=18`) matched the copy runs there too (1.6 and 3.9). Under the validation layer with
 synchronization validation, scene A gave the same 30 messages in both modes (pipeline interface and output warnings,
 and a write-after-write of two image-to-buffer copies, all in the copy run too).
 
@@ -558,10 +558,10 @@ Nothing of the game leaves the machine: the steps below compare numbers and scre
    If it says `copied`, the driver has no `VK_EXT_external_memory_host`: say which driver it is (the `vulkan:` line
    with the device name and driver version).
 2. Pick a scene that comes back the same way each run: a save, and a script of inputs that ends there
-   (`--script`, `--press_len`, `snx-run` skill), with a screenshot every few seconds (`--shot=DIR/s --shot_every=60`).
-   Run with `-H --fps_limit=0 --vsync=0 --vk_gpu_profile=1 --vk_buffer_stats=1` so that the frame rate is the
+   (`--script`, `--press-len`, `snx-run` skill), with a screenshot every few seconds (`--shot=DIR/s --shot-every=60`).
+   Run with `-H --fps-limit=0 --vsync=0 --vk-gpu-profile=1 --vk-buffer-stats=1` so that the frame rate is the
    renderer's, not the display's.
-3. Run the scene three times with `--vk_memory=1` (copy) and three times with `--vk_memory=2` (in place), one after
+3. Run the scene three times with `--vk-memory=1` (copy) and three times with `--vk-memory=2` (in place), one after
    the other, with nothing else running. Keep each run's log and screenshots apart.
 4. Compare, for each pair:
    - the frame rate over the same span of the scene (the presents between two screenshot times);
@@ -574,7 +574,7 @@ Nothing of the game leaves the machine: the steps below compare numbers and scre
      copied), the megabytes the imports hold (amdgpu checks every import's pages at every submission: if the frame
      rate falls as that number grows, say so with the number of submissions a present), and the hazards;
    - `vulkan: staged by reason` and `ring MB over 600 presents`: the bytes copied, which in place should cut.
-   - any `vulkan validation:` lines with `--vk_validation=1` (one short run in each mode, the layer from the
+   - any `vulkan validation:` lines with `--vk-validation=1` (one short run in each mode, the layer from the
      distribution's package), and any `device lost`.
 5. Report the numbers of the three pairs, not one: a single run's frame rate on a handheld moves with its temperature
    and power limit.

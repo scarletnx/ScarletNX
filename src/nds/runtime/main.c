@@ -46,17 +46,17 @@ static void usage(FILE* out) {
           out);
     snx_cli_help(out, nds_cli);
     fputs("NDS options:\n"
-          "  --press_len=MS         How long each scripted press is held (default 300)\n"
-          "  --aot_threads=N        The threads a recompile may take (0: the system's choice)\n"
-          "  --shot_every=N         With --shot PATH, also write PATH.<frame>.ppm every N frames\n"
+          "  --press-len=MS         How long each scripted press is held (default 300)\n"
+          "  --aot-threads=N        The threads a recompile may take (0: the system's choice)\n"
+          "  --shot-every=N         With --shot PATH, also write PATH.<frame>.ppm every N frames\n"
           "  --aot=0                Do not compile the game first when it has no module: every block compiles as the\n"
           "                         run reaches it (a quick look at a game; -r compiles it later, from the hints)\n"
           "  --wav=PATH             Write the run's sound to PATH, 16 bits stereo\n"
           "  --dump_ram=PATH        Write 0x01FF8000 to 0x02FFFFFF to PATH when the run ends\n"
           "  --trace                Say each register access and ARM7 request the board does not know\n"
           "\n"
-          "--press_len, --aot_threads and --shot_every are settings, taken with a - for each _ too, as every\n"
-          "driver's are: --press-len=MS is --press_len=MS.\n"
+          "--press-len, --aot-threads and --shot-every are settings: each with an _ for each - (--press_len=MS), the\n"
+          "older spelling, is still read, and said once.\n"
           "\n"
           "--frames runs that many of the console's frames and --seconds that much of its time, then ends. --headless\n"
           "opens no window. --shot writes the last frame, both screens, as a PPM image. --script=MS:KEYS,... presses\n"
@@ -190,7 +190,7 @@ int snx_nds_main(int argc, char** argv) {
         if (value && !strcmp(key, "press_len")) {
             press_len = strtol(value, &end, 10);
             if (end == value || *end || press_len < 0 || press_len > 0x7FFFFFFF) {
-                fprintf(stderr, "scarletnx-nds: --press_len=%s is not a whole number of ms\n", value);
+                fprintf(stderr, "scarletnx-nds: --press-len=%s is not a whole number of ms\n", value);
                 snx_cli_free(&cli);
                 return 2;
             }
@@ -205,7 +205,7 @@ int snx_nds_main(int argc, char** argv) {
         } else if (value && !strcmp(key, "shot_every")) {
             shot_every = strtol(value, &end, 10);
             if (end == value || *end || shot_every < 0) {
-                fprintf(stderr, "scarletnx-nds: --shot_every=%s is not a whole number of frames\n", value);
+                fprintf(stderr, "scarletnx-nds: --shot-every=%s is not a whole number of frames\n", value);
                 snx_cli_free(&cli);
                 return 2;
             }

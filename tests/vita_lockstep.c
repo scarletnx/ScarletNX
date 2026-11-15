@@ -66,9 +66,9 @@ int main(void) {
     driver(NULL);
     CHECK(g_settings.vita_lockstep == 12 && g_settings.vita_lockstep_steps == 300);
     CHECK(strstr(g_test.said,
-                 "VITA_LOCKSTEP=12 is deprecated, and this run reads it as --vita_lockstep: vita_lockstep=12 "
+                 "VITA_LOCKSTEP=12 is deprecated, and this run reads it as --vita-lockstep: vita_lockstep=12 "
                  "(docs/user/deprecations.md)\n"));
-    CHECK(strstr(g_test.said, "VITA_LOCKSTEP_STEPS=300 is deprecated, and this run reads it as --vita_lockstep_steps: "
+    CHECK(strstr(g_test.said, "VITA_LOCKSTEP_STEPS=300 is deprecated, and this run reads it as --vita-lockstep-steps: "
                               "vita_lockstep_steps=300 (docs/user/deprecations.md)\n"));
 
     driver("--vita_lockstep_steps=40"); /* the command line's own comes first */

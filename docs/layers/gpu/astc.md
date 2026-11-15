@@ -762,7 +762,7 @@ FreeBSD), and a texture can be bigger once decoded: a 2D ASTC texture of 11584x1
   cap) in bands of block rows of one slice, converted band by band.
 - The blocks of device memory (`devmem.c`) stay within the cap.
 
-The `[Debug]` setting `vk_max_allocation_mb` (`--vk_max_allocation_mb=4` for a run) lowers the cap, to test the pieces on a driver that accepts anything (lavapipe).
+The `[Debug]` setting `vk_max_allocation_mb` (`--vk-max-allocation-mb=4` for a run) lowers the cap, to test the pieces on a driver that accepts anything (lavapipe).
 
 ## Sparse textures
 

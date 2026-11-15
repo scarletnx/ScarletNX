@@ -512,7 +512,7 @@ static void test_vk_descriptors_old(void) {
     CHECK(!strstr(g_test.said, "is not a setting") && ini_overridden("vk_descriptors_mode") &&
           !strcmp(ini_overridden("vk_descriptors_mode"), "0"));
     CHECK(strstr(g_test.said,
-                 "settings: --vk_descriptors=0 is deprecated: this run reads it as --vk_descriptors_mode=0 "
+                 "settings: --vk_descriptors=0 is deprecated: this run reads it as --vk-descriptors-mode=0 "
                  "(Sets) (docs/user/deprecations.md)\n"));
     CHECK(text && strstr(text, "\nvk_descriptors_mode=3\n"));
     free(text);
@@ -528,7 +528,7 @@ static void test_vk_descriptors_old(void) {
     text = open_ini("[Debug]\nvk_descriptors_mode=3\n");
     CHECK(!strcmp(ini_overridden("vk_descriptors_mode"), "2"));
     CHECK(strstr(g_test.said, "settings: --vk_descriptors=1 is deprecated, and the command line gives "
-                              "--vk_descriptors_mode=2 too: vk_descriptors_mode=2 this run (docs/user/deprecations.md)\n"));
+                              "--vk-descriptors-mode=2 too: vk_descriptors_mode=2 this run (docs/user/deprecations.md)\n"));
     free(text);
     ini_override("vk_descriptors", NULL);
     ini_override("vk_descriptors_mode", NULL);

@@ -617,7 +617,7 @@ typedef struct App {
     size_t states_count;
     SDL_Texture* states_texture;
     char*
-        state_load; /* the --state_load= option launch adds to a Switch game's run, while Play from a state starts it */
+        state_load; /* the --state-load= option launch adds to a Switch game's run, while Play from a state starts it */
     bool previewing; /* drawing the theme editor's preview, on a copy of the app put back after it */
     Uint64 splash_until;
     GuiRgb splash_page;
@@ -731,7 +731,7 @@ typedef struct App {
     GuiCoverFailure* cover_failed;
     int cover_failed_count;
     char vk_gpu[256]; /* the system's GPU, as Vulkan names it (vk_system_ask): Download Driver's recommendation */
-    char* run_driver; /* the run's --gpu_driver= and --freedreno_env= (gui_run_option), until the next run */
+    char* run_driver; /* the run's --gpu-driver= and --freedreno-env= (gui_run_option), until the next run */
     char* run_freedreno;
     char users_label[SNX_USERS_MAX][32];
     char users_mii_label[SNX_USERS_MAX][32];
@@ -6218,7 +6218,7 @@ static void options_pointer(App* app, float x, float y, bool click) {
 }
 /* ---- the box of a game's save states (S on Games): a row each, the newest first, saying its slot, when it was saved
    and the game's play time then; the focused one's picture beside the box. Enter plays the game from it, through its
-   program (the game's own or an update's) with --state_load=, and Del deletes it, asked first. A state this build
+   program (the game's own or an update's) with --state-load=, and Del deletes it, asked first. A state this build
    can't load is drawn in the failure colour, and Enter says why ---- */
 typedef struct GuiState {
     char *path, *program; /* the state's file, and the program it plays in */
@@ -6417,7 +6417,7 @@ static void state_play(App* app, int row) {
         snprintf(app->message, sizeof app->message, snx_tr("It can't be played from that state: %s."), g->why);
         return;
     }
-    app->state_load = snx_format("--state_load=0:%s", g->path);
+    app->state_load = snx_format("--state-load=0:%s", g->path);
     {
         char* program = snx_absolute(g->program);
         states_close(app);
@@ -18106,8 +18106,8 @@ static void job_start(App* app) {
         gentle = job_gentle(app);
         app->job_threads = gentle ? SDL_max(1, job_cores(app) / 2) : 0;
         if (gentle) { /* after the settings', which the last one given replaces: Auto, as the memory holds, up to half */
-            snprintf(threads, sizeof threads, "--aot_threads_most=%d", app->job_threads);
-            argv[n++] = "--aot_threads=0";
+            snprintf(threads, sizeof threads, "--aot-threads-most=%d", app->job_threads);
+            argv[n++] = "--aot-threads=0";
             argv[n++] = threads;
             argv[n] = NULL;
         }

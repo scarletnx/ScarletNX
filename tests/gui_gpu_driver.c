@@ -189,7 +189,7 @@ int main(void) {
     /* a run's option: the game's own key= wins, an empty one too (the system's driver); else the launcher's */
     ini = snx_path_join(root, "Game.ini");
     option = gui_run_option("gpu_driver", ini, "Turnip_v32"); /* no .ini yet */
-    assert(option && !strcmp(option, "--gpu_driver=Turnip_v32"));
+    assert(option && !strcmp(option, "--gpu-driver=Turnip_v32"));
     free(option);
     assert(!snx_ini_record(ini, "addons", "") && !snx_ini_has(ini, "gpu_driver"));
     assert(!snx_ini_record(ini, "gpu_driver", "") && snx_ini_has(ini, "gpu_driver"));
@@ -197,7 +197,7 @@ int main(void) {
     assert(!snx_ini_drop(ini, "gpu_driver") && !snx_ini_has(ini, "gpu_driver") && snx_ini_has(ini, "addons"));
     assert(!snx_ini_drop(ini, "gpu_driver")); /* none: as it was */
     option = gui_run_option("freedreno_env", ini, "TU_DEBUG=sysmem");
-    assert(option && !strcmp(option, "--freedreno_env=TU_DEBUG=sysmem"));
+    assert(option && !strcmp(option, "--freedreno-env=TU_DEBUG=sysmem"));
     free(option);
     free(ini);
     /* Freedreno Settings' presets: Eden's nine, each a text freedreno_env takes, the last setting none */

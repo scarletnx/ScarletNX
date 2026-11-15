@@ -31,14 +31,17 @@ def main():
     assert '\n  --frames N' in help_text and '\n  --shot PATH' in help_text and '\n  -H, --headless' in help_text
     assert '--recomp' in help_text and '--extract' in help_text and 'scarletnx-3ds-aot' not in help_text
     assert '--extract-container' in help_text and 'read where it lies' in help_text
-    assert '--ctr_separate_windows=1' in help_text and '--ctr_top_resolution=2' in help_text
-    assert '--vk_memory=N' in help_text
-    assert '--async_pipelines=1' in help_text and '--pipeline_threads=N' in help_text
-    assert '--gamepad_swap_ab=1' in help_text and '--gamepad_deadzone=N' in help_text
-    assert '--gamepad_map=MAP' in help_text and '--touch=N' in help_text
+    assert '--ctr-separate-windows=1' in help_text and '--ctr-top-resolution=2' in help_text
+    assert '--vk-memory=N' in help_text
+    assert '--async-pipelines=1' in help_text and '--pipeline-threads=N' in help_text
+    assert '--gamepad-swap-ab=1' in help_text and '--gamepad-deadzone=N' in help_text
+    assert '--gamepad-map=MAP' in help_text and '--touch=N' in help_text
     assert '--vsync=0' in help_text and '--fullscreen=1' in help_text and '--anisotropy=N' in help_text
-    assert '--fps_limit=N' in help_text and '--aot_threads=N' in help_text
-    assert 'KEY with a - for each _ is the same setting\n                         (--ctr-top-resolution=2)' in help_text
+    assert '--fps-limit=N' in help_text and '--aot-threads=N' in help_text
+    assert (
+        'KEY is the key with a - for each _; the key as\n                         written, the older spelling'
+        in help_text
+    )
     run(['--board-info', '--extract-container'], 2, 'Usage:')
     run(['-x', '-r', 'game.cia'], 2, 'Usage:')
     # --icon takes the game and --out DIR, and nothing else; the folder may not be an option or empty
@@ -61,24 +64,24 @@ def main():
     run(['--model'], 2, 'requires old or new')
     run(['--model', 'other', '--board-info'], 2, 'requires old or new')
     run(['--board-info'], 0, 'Old 3DS\nARM11 cores: 2\nBase clock: 268111856 Hz\nFCRAM: 128 MiB')
-    run(['--board-info', '--ctr_separate_windows=1', '--ctr_top_resolution=2', '--ctr_bottom_resolution=2'], 0,
+    run(['--board-info', '--ctr-separate-windows=1', '--ctr-top-resolution=2', '--ctr-bottom-resolution=2'], 0,
         'Old 3DS\nARM11 cores: 2')
     run(['--model', 'new', '--board-info'], 0, 'New 3DS\nARM11 cores: 4')
     run(['--board-info', 'game.cia'], 2, 'Usage:')
     run(['--backend=gcc'], 2, 'unknown setting: --backend=gcc')  # --key=value is the 3DS tables'
     # and the Switch's the 3DS takes too (vk_memory), never another of the Switch's Debug table
-    run(['--board-info', '--vk_memory=1'], 0, 'Old 3DS')
-    run(['--board-info', '--async_pipelines=1', '--pipeline_threads=2'], 0, 'Old 3DS')
-    run(['--board-info', '--vk_budget_mb=64'], 2, 'unknown setting: --vk_budget_mb=64')
+    run(['--board-info', '--vk-memory=1'], 0, 'Old 3DS')
+    run(['--board-info', '--async-pipelines=1', '--pipeline-threads=2'], 0, 'Old 3DS')
+    run(['--board-info', '--vk-budget-mb=64'], 2, 'unknown setting: --vk-budget-mb=64')
     # the recompile's threads, the Switch's setting, which the launcher's queue gives every driver: a value it does
     # not take stops the run with the value
-    run(['--board-info', '--aot_threads=3'], 0, 'Old 3DS')
+    run(['--board-info', '--aot-threads=3'], 0, 'Old 3DS')
     run(
-        ['--board-info', '--aot_threads=many'],
+        ['--board-info', '--aot-threads=many'],
         2,
         'scarletnx-3ds: aot_threads=many is not a whole number from 0 to 1024',
     )
-    run(['--board-info', '--aot_threads=2000'], 2, 'aot_threads=2000 is not a whole number from 0 to 1024')
+    run(['--board-info', '--aot-threads=2000'], 2, 'aot_threads=2000 is not a whole number from 0 to 1024')
     # a key with a - for each _ is the same setting, a value not taken said by its key; some _ left is no setting
     run(
         ['--board-info', '--ctr-separate-windows=1', '--ctr-top-resolution=2', '--vk-ext-shader-object=off'],
@@ -96,6 +99,14 @@ def main():
         'settings: gamepad_deadzone=95 is not a whole number from 0 to 90: it keeps 90',
     )
     run(['--board-info', '--ctr-top_resolution=2'], 2, 'unknown setting: --ctr-top_resolution=2')
+    # the key as the .ini writes it, the older spelling: still read, and said once a run with the name now
+    out = run(
+        ['--board-info', '--gamepad_deadzone=30', '--gamepad_deadzone=40'],
+        0,
+        'settings: --gamepad_deadzone is the old spelling of --gamepad-deadzone: it is read as that; write '
+        '--gamepad-deadzone',
+    )
+    assert out.count('old spelling') == 1, out
     # the recompile's common options (common/utilities/cli.h): their lines in the help, each value they do not take
     # stopping the run with it, and none where nothing is compiled
     assert '\n  -O, --opt LEVEL        LLVM' in help_text and '\n  --jobs N' in help_text
@@ -110,34 +121,34 @@ def main():
     run(['-x', '--icon', '--out', 'icon', '--jobs', '0', 'game.cia'], 2, "--jobs is the recompile's, and --icon")
     # the Controllers table's A and B and dead zone, read as the Switch's (a dead zone past 90 is 90, said), never
     # its vibration, which the 3DS has none of
-    run(['--board-info', '--gamepad_swap_ab=1', '--gamepad_deadzone=30'], 0, 'Old 3DS')
+    run(['--board-info', '--gamepad-swap-ab=1', '--gamepad-deadzone=30'], 0, 'Old 3DS')
     run(
-        ['--board-info', '--gamepad_deadzone=95'],
+        ['--board-info', '--gamepad-deadzone=95'],
         0,
         'settings: gamepad_deadzone=95 is not a whole number from 0 to 90: it keeps 90',
     )
-    run(['--board-info', '--gamepad_rumble=50'], 2, 'unknown setting: --gamepad_rumble=50')
+    run(['--board-info', '--gamepad-rumble=50'], 2, 'unknown setting: --gamepad-rumble=50')
     # and its button map, which the 3DS input reads itself: a map it cannot read keeps the one before, a control sent
     # to a button the 3DS lacks sends nothing, each said with the value
-    out = run(['--board-info', '--gamepad_map=south:A east:B'], 0, 'Old 3DS')
+    out = run(['--board-info', '--gamepad-map=south:A east:B'], 0, 'Old 3DS')
     assert 'gamepad_map' not in out, out
     run(
-        ['--board-info', '--gamepad_map=south:A', '--gamepad_map=south:Q'],
+        ['--board-info', '--gamepad-map=south:A', '--gamepad-map=south:Q'],
         0,
         'settings: gamepad_map\'s "south:Q" is not a control and the button it sends (south:B): it keeps "south:A"',
     )
     run(
-        ['--board-info', '--gamepad_map=east:Q'],
+        ['--board-info', '--gamepad-map=east:Q'],
         0,
         'it keeps "", each control sending the button in its place',
     )
-    run(['--board-info', '--gamepad_map=ls:L3'], 0, "settings: gamepad_map's ls:L3 sends nothing: the 3DS has no L3")
-    out = run(['--board-info', '--gamepad_map=lb:ZL rb:ZR'], 0, 'Old 3DS')  # ir:rst's, which the runtime has
+    run(['--board-info', '--gamepad-map=ls:L3'], 0, "settings: gamepad_map's ls:L3 sends nothing: the 3DS has no L3")
+    out = run(['--board-info', '--gamepad-map=lb:ZL rb:ZR'], 0, 'Old 3DS')  # ir:rst's, which the runtime has
     assert 'sends nothing' not in out, out
     # the On-screen controls table's touch screen, as the Switch's (0 to 2), never its on-screen controls
     run(['--board-info', '--touch=1'], 0, 'Old 3DS')
     run(['--board-info', '--touch=5'], 0, 'settings: touch=5 is not a whole number from 0 to 2: it keeps 2')
-    run(['--board-info', '--controls_haptics=0'], 2, 'unknown setting: --controls_haptics=0')
+    run(['--board-info', '--controls-haptics=0'], 2, 'unknown setting: --controls-haptics=0')
     # the Graphics table's vsync, never another of its rows
     run(['--board-info', '--vsync=0', '--anisotropy=16'], 0, 'Old 3DS')
     run(['--board-info', '--shadows=0'], 2, 'unknown setting: --shadows=0')
@@ -145,15 +156,15 @@ def main():
     run(['--board-info', '--fullscreen=1'], 0, 'Old 3DS')
     run(['--board-info', '--docked=0'], 2, 'unknown setting: --docked=0')
     # and the Performance table's fps_limit, read as the Switch reads it, a value not taken as given said
-    out = run(['--board-info', '--fps_limit=120'], 0, 'Old 3DS')
+    out = run(['--board-info', '--fps-limit=120'], 0, 'Old 3DS')
     assert 'fps_limit' not in out, out
     run(
-        ['--board-info', '--fps_limit=5'],
+        ['--board-info', '--fps-limit=5'],
         0,
         'settings: fps_limit=5 is not game, 0 or a whole number of frames a second from 10 to 1000: it takes 10',
     )
     run(
-        ['--board-info', '--fps_limit=fast'],
+        ['--board-info', '--fps-limit=fast'],
         0,
         'settings: fps_limit=fast is not game or a number of frames a second: it keeps game',
     )
@@ -162,11 +173,11 @@ def main():
     run(
         ['--board-info'],
         0,
-        f'{old}=1 is deprecated, and this run reads it as --ctr_uds_trace=1: ctr_uds_trace=1',
+        f'{old}=1 is deprecated, and this run reads it as --ctr-uds-trace=1: ctr_uds_trace=1',
         env={old: '1'},
     )
     run(
-        ['--board-info', '--ctr_uds_trace=0'],
+        ['--board-info', '--ctr-uds-trace=0'],
         0,
         'the command line gives ctr_uds_trace first: ctr_uds_trace=0',
         env={old: '1'},
