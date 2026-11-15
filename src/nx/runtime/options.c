@@ -671,7 +671,7 @@ int options_debug(int flags, char* out, size_t n) {
     return count;
 }
 int options_settings(char* out, size_t n) {
-    const IniOpt* const tables[] = {g_display_ini, g_graphics_ini, g_performance_ini};
+    const IniOpt* const tables[] = {g_display_ini, g_graphics_ini, g_audio_ini, g_performance_ini};
     char part[1024];
     size_t at = 0, t;
     int count = 0;
@@ -683,9 +683,9 @@ int options_settings(char* out, size_t n) {
     }
     return count;
 }
-/* the Display, Graphics and Performance settings as the log last said them */
+/* the Display, Graphics, Audio and Performance settings as the log last said them */
 static char g_said[2048];
-/* after a reload, the Display, Graphics and Performance settings again when they changed */
+/* after a reload, the Display, Graphics, Audio and Performance settings again when they changed */
 static void settings_reloaded(void) {
     char now[sizeof g_said];
     int n = options_settings(now, sizeof now);
@@ -693,7 +693,7 @@ static void settings_reloaded(void) {
     if (n)
         LOG("settings: after the reload, %s\n", now);
     else
-        LOG("settings: after the reload, every Display, Graphics and Performance setting is at its default\n");
+        LOG("settings: after the reload, every Display, Graphics, Audio and Performance setting is at its default\n");
     memcpy(g_said, now, sizeof g_said);
 }
 /* the Debug settings in effect at the top of the picture; after a reload that changes them, in the log too */

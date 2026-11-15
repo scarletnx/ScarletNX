@@ -735,8 +735,9 @@ filters and gain ramps, mixes the three intermediate mixes with the aux buses an
 effects, writes the statuses and final samples into the other region and raises the
 audio pipe's interrupt. Reverb, the limiter, the compressor and surround output are
 stubs in Azahar too. The binary pipe decodes AAC requests with FFmpeg. Frames play on
-the default device through SDL3 and their first two minutes are recorded to
-`<output>/audio.wav`. libctru's ndsp loads `sdmc:/3ds/dspfirm.cdc` and leaves audio off
+the default device through SDL3, at the Switch's `volume` (`--volume=N`, 0 to 100 percent of the game's sound, which
+the launcher's Settings > Audio > Volume passes), and their first two minutes are recorded to `<output>/audio.wav` as
+the game makes them. libctru's ndsp loads `sdmc:/3ds/dspfirm.cdc` and leaves audio off
 without it, so a stand-in header goes there when the title's SD has none: the HLE DSP
 never runs the component, and a dumped file is used as it is. cfg:u, cfg:s and cfg:i
 (`services/cfg.c`) answer GetConfig for the sound output mode (stereo, Azahar's
