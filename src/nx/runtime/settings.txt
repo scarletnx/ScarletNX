@@ -153,10 +153,10 @@ setting Microphone noise reduction
     words Off|Neural|Spectral
     help How the noise the microphone picks up is lowered before the game hears it (the console's audio system has a
     help noise reduction for its microphone, of a strength not known). 1 = neural: RNNoise, a small network trained on
-    help speech (the system's librnnoise, else the copy built in), at 48 kHz, else as 2. On test signals it lowered a
-    help steady noise by 27 dB and background voices by 6 dB between words. 2 = spectral: the system's libspeexdsp,
-    help which lowered the steady noise by 18 dB and the voices by 1 dB. 0 = the game hears the microphone as it is.
-    help Both add 10 ms of delay. Read every 10 ms, so a change takes effect at once
+    help speech, built in, at 48 kHz, else as 2. On test signals it lowered a steady noise by 27 dB and background
+    help voices by 6 dB between words. 2 = spectral: the system's libspeexdsp, which lowered the steady noise by 18 dB
+    help and the voices by 1 dB. 0 = the game hears the microphone as it is. Both add 10 ms of delay. Read every 10 ms,
+    help so a change takes effect at once
 
 table g_display_ini
 setting TV mode

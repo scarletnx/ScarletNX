@@ -111,7 +111,9 @@ endif()
 # RNNoise 0.1.1 (BSD-3-Clause) for the microphone's noise reduction (src/nx/runtime/platform/audio_denoise.c): a small
 # recurrent network that gives each band of a 10 ms frame at 48 kHz its gain. Its model is rnn_data.c, 87503 weights of
 # one byte (425 KB of C). Its sources but the training program (denoise.c's TRAINING part, off by default), with their
-# symbols hidden, so that a system librnnoise the runtime loads first never binds to them
+# symbols hidden, so that no other librnnoise a library loads into the process binds to them. It installs no CMake
+# package (its build is autotools), so CPM_USE_LOCAL_PACKAGES has none to find: the pinned copy is the one the runtime
+# runs, and another version's network would give other gains and another delay
 if(SNX_BUILD_NX)
     CPMAddPackage(NAME rnnoise VERSION 0.1.1
                   URL https://github.com/xiph/rnnoise/archive/refs/tags/v0.1.1.tar.gz
