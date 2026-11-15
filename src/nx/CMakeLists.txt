@@ -50,7 +50,7 @@ snx_svcgen(snx_kernel)
 snx_component(hle hle/services/services.c hle/services/audren.c hle/services/audren_dsp.c hle/services/sm.c hle/services/am.c hle/services/gsv.c hle/services/native_video.c hle/services/native_video_core.c hle/services/native_video_decoder.c hle/services/set.c  hle/services/acc.c hle/services/users.c hle/services/audio.c
               hle/services/misc.c hle/services/ldr.c hle/services/network/bsd.c hle/services/network/dns.c
               hle/services/network/nifm.c hle/services/network/ssl.c hle/services/network/ldn.c hle/services/network/room.c hle/filesystem/fs.c hle/services/hid.c hle/services/hid_motion.c hle/services/hid_touch.c hle/services/vi.c hle/services/nvdrv.c
-              hle/hook/hook.c hle/hook/family.c hle/hook/jump.c hle/hook/ext_skyline.c hle/hook/libc.c hle/hook/alloc.c hle/hook/sync.c hle/hook/os_sync.c hle/hook/libc_std.c hle/hook/libc_wide.c hle/hook/libc_fmt.c hle/hook/libcxx_string.c hle/hook/gs.c hle/hook/diag.c hle/hook/codec.c hle/hook/audio_stream.c hle/hook/verify.c hle/hook/version.c
+              hle/hook/hook.c hle/hook/module.c hle/hook/family.c hle/hook/jump.c hle/hook/ext_skyline.c hle/hook/libc.c hle/hook/alloc.c hle/hook/sync.c hle/hook/os_sync.c hle/hook/libc_std.c hle/hook/libc_wide.c hle/hook/libc_fmt.c hle/hook/libcxx_string.c hle/hook/gs.c hle/hook/diag.c hle/hook/codec.c hle/hook/audio_stream.c hle/hook/verify.c hle/hook/version.c
               nn/ro.c nn/fs.c nn/time.c nn/pl.c nn/pl_font.c nn/pctl.c nn/nsd.c nn/ngc.c nn/prepo.c
               nn/audio.c nn/audio_renderer.c nn/codec.c nn/tvmr_jpeg.c)
 # the shared fonts' stand-ins (cmake/shared_fonts.cmake), which nn/pl.c hands out
@@ -62,7 +62,8 @@ if(APPLE)
     target_link_libraries(snx_hle PUBLIC "-framework VideoToolbox" "-framework CoreMedia" "-framework CoreVideo")
 endif()
 # the hooks' adapters and table, generated from hle/hook/hooks.hook and the game patches' address hooks
-# (patches/*.hook), whose handlers are the .c files beside them
+# (patches/*.hook), whose handlers are the .c files beside them. patches/modules.c lists the hook modules
+# (hle/hook/module.h)
 include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
 snx_hookgen(snx_hle A32_MARKED)
 # the native hooks of mods' trampolines (hle/hook/ext_skyline.hooks), a table of their own for ext_skyline.c
@@ -87,7 +88,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/splash.cmake")
 target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec OpenSSL::SSL snx_splash)
 snx_component(gpu gpu/gpu.c gpu/gpu_queue.c gpu/guest_pools.c gpu/guest_textures.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/write_pages.c gpu/draw_state.c gpu/maxwell/draw_state.c gpu/maxwell/maxwell3d.c gpu/renderer.c
               gpu/nvn/nvn_loader.c gpu/nvn/nvn_object.c gpu/nvn/nvn_cmd.c gpu/nvn/nvn_queue.c gpu/nvn/nvn_dlss.c
-              gpu/nvn/nvn_tex.c gpu/nvn/nvn_driver.c gpu/nvn/nvn_tic.c gpu/nvn/nvn_replay.c gpu/nvn/nvn_draw.c gpu/nvn/nvn_copy.c gpu/nvn/nvn_state.c
+              gpu/nvn/nvn_tex.c gpu/nvn/nvn_driver.c gpu/nvn/nvn_tic.c gpu/nvn/nvn_replay.c gpu/nvn/nvn_hook.c gpu/nvn/nvn_draw.c gpu/nvn/nvn_copy.c gpu/nvn/nvn_state.c
               gpu/nvn/nvn_save.c
               gpu/gl/gl_census.c
               gpu/gl/gl_loader.c gpu/gl/gl_egl.c gpu/gl/gl_calls.c gpu/gl/gl_program_calls.c gpu/gl/gl_host_program.c gpu/gl/gl_object_calls.c
@@ -177,7 +178,7 @@ snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/d
 include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
 # vk_hash (gpu/vk/cmd.c); the device setup the 3DS and the Vita share (src/common/gpu/vk); the shader file's units
 # (gpu/vk/pipeline_file.c)
-target_link_libraries(snx_vk PUBLIC snx_xxhash snx_vk_common snx_fsr2 PRIVATE snx_zstd)
+target_link_libraries(snx_vk PUBLIC snx_xxhash snx_vk_common snx_fsr2 snx_upscaler PRIVATE snx_zstd)
 # the vk_ext_* table (g_vk_extension_settings) its device takes (gpu/vk/device.c, common/gpu/vk/device_settings.h)
 target_link_libraries(snx_vk PUBLIC snx_settings_runtime)
 # AMD FidelityFX Super Resolution 2.2.1 (cmake/dependencies.cmake): AMD's library and Vulkan backend as they are
@@ -202,6 +203,17 @@ target_include_directories(snx_fsr2 PRIVATE "${snx_fsr2_api_dir}" "${PROJECT_SOU
 set_source_files_properties(${snx_fsr2_amd} PROPERTIES COMPILE_OPTIONS
                             "${snx_third_party_flags};-include;${CMAKE_CURRENT_SOURCE_DIR}/gpu/vk/fsr2/fsr2_compat.h")
 target_link_libraries(snx_fsr2 PUBLIC snx_vk_common)
+# the runtime's upscalers behind one interface (gpu/vk/upscaler, docs/layers/gpu/upscalers.md): FSR 2 through snx_fsr2,
+# the filtered copy and the spatial upscaler. Their compute passes are compiled from GLSL at build time, the spatial
+# ones with AMD's FSR 1 header from FSR 2's package, patched (.patch/fidelityfx-fsr2/0002-fsr1-easu-glsl.patch). Like
+# snx_fsr2 it knows no renderer, so tests/vk_upscaler.c links it alone
+add_library(snx_upscaler STATIC gpu/vk/upscaler/upscaler.c gpu/vk/upscaler/passes.c)
+target_link_libraries(snx_upscaler PUBLIC snx_fsr2 snx_vk_common)
+foreach(snx_pass copy easu rcas)
+    snx_glsl_spirv(snx_upscaler SOURCE gpu/vk/upscaler/up_${snx_pass}.comp NAME up_${snx_pass}_spv
+                   HEADER nx/gpu/vk/upscaler/upscaler_spv.h DEFINES FFX_GLSL=1 FFX_GPU=1 FFX_HALF=0
+                   INCLUDES "${snx_fsr2_api_dir}/shaders")
+endforeach()
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc.comp NAME astc_spv HEADER nx/gpu/texture/astc_spv.h)
 # ASTC blocks straight into BC7 blocks, for a GPU that samples BC7 and not ASTC (gpu/vk/astc.c), in the encoder's
 # builds: the full one; the fast one, every mode only where mode 6 is not close, for large levels; mode 6 alone for the

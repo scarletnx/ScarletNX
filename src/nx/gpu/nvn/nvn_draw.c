@@ -1384,33 +1384,39 @@ static void c0_packed(const NvnDraw* d, DispatchState* x) {
     }
     memcpy(x->bank0, c0, sizeof c0);
 }
-static void dispatch(NvnDraw* d, u64 payload) {
-    SNX_ZONE(z, "nvn dispatch");
+/* the record's grid into the queue's state: DR_OK, or why the record dispatches nothing (its words in g either way) */
+static u32 dispatch_grid(NvnDraw* d, u64 payload, u32 g[3]) {
     const NvnPDispatch* r = NVN_OBJ(const NvnPDispatch, payload);
-    u32 g[3];
     g[0] = (u32)r->x, g[1] = (u32)r->y, g[2] = (u32)r->z;
-    {
-        u32 why = !d->dx.code ? DR_NO_PROGRAM
-                  : !g_renderer->dispatch ? DR_NO_RENDERER
-                  : !r->ind && (!g[0] || !g[1] || !g[2]) ? DR_EMPTY
-                                                          : DR_OK;
-#if defined(SNX_TRACY)
-        dispatch_text(z, r, g, why);
-#endif
-        if (why) {
-            SNX_ZONE_VALUE(z, why);
-            return;
-        }
-    }
+    if (!d->dx.code) return DR_NO_PROGRAM;
+    if (!g_renderer->dispatch) return DR_NO_RENDERER;
+    if (!r->ind && (!g[0] || !g[1] || !g[2])) return DR_EMPTY;
     /* DispatchComputeIndirect's grid stays in guest memory, which the GPU reads (DispatchState.indirect) */
     d->dx.indirect = r->ind;
     if (!r->ind) {
-        memcpy(d->dx.grid, g, sizeof g);
+        memcpy(d->dx.grid, g, sizeof d->dx.grid);
         snx_st_le32(d->dx.bank0 + 0x200, g[0]);
         snx_st_le32(d->dx.bank0 + 0x204, g[1]);
         snx_st_le32(d->dx.bank0 + 0x208, g[2]);
     }
-    SNX_ZONE_VALUE(z, DR_OK);
+    return DR_OK;
+}
+int nvn_draw_dispatch_state(NvnDraw* d, u64 payload, DispatchState* x) {
+    u32 g[3];
+    if (dispatch_grid(d, payload, g) != DR_OK) return 0;
+    *x = d->dx;
+    if (g_shader_sm86 && d->c0rec[0] == 1) c0_packed(d, x);
+    return 1;
+}
+static void dispatch(NvnDraw* d, u64 payload) {
+    SNX_ZONE(z, "nvn dispatch");
+    u32 g[3];
+    const u32 why = dispatch_grid(d, payload, g);
+#if defined(SNX_TRACY)
+    dispatch_text(z, NVN_OBJ(const NvnPDispatch, payload), g, why);
+#endif
+    SNX_ZONE_VALUE(z, why);
+    if (why) return;
     if (g_shader_sm86 && d->c0rec[0] == 1) {
         DispatchState x = d->dx;
         c0_packed(d, &x);

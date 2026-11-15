@@ -35,7 +35,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | xxHash 0.8.4 (XXH3 and its x86 dispatcher, the renderer's content hashes: `src/nx/gpu/vk/xxh3.c`) | BSD-2-Clause |
 | Vulkan-Headers | Apache 2.0 |
 | volk | MIT |
-| AMD FidelityFX Super Resolution 2.2.1 (the DLSS evaluations of Switch 2 games) | MIT |
+| AMD FidelityFX Super Resolution 2.2.1 (the DLSS evaluations of Switch 2 games), with FSR 1's EASU and RCAS from its archive (the spatial upscaler) | MIT |
 | KosmicKrisp (Mesa's Vulkan driver on Metal, which the macOS app carries with `SNX_KOSMICKRISP`) | MIT |
 | The Vulkan Loader (the macOS app carries it for KosmicKrisp) | Apache 2.0 |
 | AMD FidelityFX Super Resolution 1.0 (`src/common/gpu/vk/fx/ffx_a.h`, `ffx_fsr1.h`, and the EASU and RCAS shaders' constants) | MIT |

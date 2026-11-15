@@ -633,6 +633,7 @@ static int dlss_upscale(const NvnPDlss* r) {
                      "in\n");
         return 0;
     }
+    u.has_depth = u.has_motion = 1;
     u.has_exposure = r->tex[NVN_DLSS_EXPOSURE] && surf2d_at(r->tex[NVN_DLSS_EXPOSURE], &r->view[NVN_DLSS_EXPOSURE],
                                                             r->has_view[NVN_DLSS_EXPOSURE], 0, &u.exposure, &bpp);
     u.has_reactive =
