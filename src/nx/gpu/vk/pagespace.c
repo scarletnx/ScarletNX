@@ -538,6 +538,7 @@ typedef struct {
     u64 sub, gnow;  /* the submission, and the clocks read before any byte: a write after them shows at the next ask */
     u32 now, epoch;
     u64 stale;   /* the pages that take bytes */
+    int mine;    /* a page of it holds bytes the cache owns (PG_MINE) */
     u64 covered; /* the range's bytes that the cache owns already */
     int hot;   /* one of them was given out in this submission: they are copied after its draws */
     VkBuffer buf; /* what the range binds (bring): the region's buffer, or its slab's */
@@ -578,6 +579,7 @@ static int ask(u64 gva, u64 len, u64 align, int patch, int whole, PgAsk* a) {
     u64 bgva = a->bgva = gva - (cpu - base); /* the pages of a run go on alike */
     memset(a->take, PG_CUR, n);
     a->stale = a->covered = 0;
+    a->mine = 0;
     a->hot = 0;
     /* the pages with bytes the cache owns, which hold the truth; another owner's bytes in the range are not here at
        all */
@@ -589,6 +591,7 @@ static int ask(u64 gva, u64 len, u64 align, int patch, int whole, PgAsk* a) {
             const PgGran* q = r->gran[at >> PG_SHIFT];
             if (q && q->own && o[i].res == q->own) {
                 for (u64 p = at >> 12, e = (at + o[i].size - 1) >> 12; p <= e; p++) a->take[p - p0] = PG_MINE;
+                a->mine = 1;
                 u64 lo = o[i].addr > cpu ? o[i].addr : cpu;
                 u64 hi = o[i].addr + o[i].size < cpu + len ? o[i].addr + o[i].size : cpu + len;
                 if (hi > lo) a->covered += hi - lo;
@@ -643,8 +646,10 @@ static int ask(u64 gva, u64 len, u64 align, int patch, int whole, PgAsk* a) {
             looks = 1;
         }
     }
-    /* a page to be read from guest memory must not be trapped there, and one to be the cache's own must have no watch */
-    int trapped = own_any() && own_trapped(base, n << 12);
+    /* a page to be read from guest memory must not be trapped there, and one to be the cache's own must have no watch.
+       With nothing written since and no page new, a page is read only to be the cache's own (whole): a range that
+       neither takes nor publishes a page walks none of them, where each draw that bound it walked all */
+    int trapped = (looks || whole || a->stale) && own_any() && own_trapped(base, n << 12);
     for (u64 p = p0; p <= p1 && (looks || trapped); p++) {
         u8 t = a->take[p - p0];
         if (t == PG_MINE) continue;
@@ -705,6 +710,25 @@ static int bring(PgAsk* a) {
     if (a->hot && left) {
         vk_render_end(); /* copies happen outside rendering passes */
         g_pages.stats.patched++;
+    }
+    /* nothing to take, and none of the cache's own: the pages are marked found unwritten in this epoch, a granule's at
+       once, where the walk below went page by page for each draw that bound the range (most bind one that held still,
+       and a window has thousands of pages) */
+    if (!left && !a->mine) {
+        for (u64 g = p0 >> (PG_SHIFT - 12); g <= p1 >> (PG_SHIFT - 12); g++) {
+            PgGran* q = r->gran[g];
+            u64 lo = g << (PG_SHIFT - 12), hi = lo + PG_PAGES - 1;
+            if (lo < p0) lo = p0;
+            if (hi > p1) hi = p1;
+            if (q->ck_epoch != a->epoch) {
+                q->ck_epoch = a->epoch;
+                q->ck_mask = 0;
+            }
+            q->used = g_vk_present;
+            q->given = a->sub;
+            q->ck_mask |= (u16)(((1u << (hi - lo + 1)) - 1) << (lo & (PG_PAGES - 1)));
+        }
+        return 1;
     }
     VkBuffer sb = VK_NULL_HANDLE;
     u64 so = 0;
