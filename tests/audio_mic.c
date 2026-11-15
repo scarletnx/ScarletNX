@@ -11,6 +11,7 @@
    each measured: the noise lowered between the syllables, the syllables' signal-to-noise ratio, the speech kept, the
    delay and the cost */
 #include "nx/hle/services/services_int.h"
+#include "nx/runtime/ini.h"
 #include <stdarg.h>
 #include <time.h>
 
@@ -287,11 +288,14 @@ static void test_gain_stop(void) {
     CHECK(audio_purge_input(&cpu, STREAM) == 0 && audio_input_filled_frames(&cpu, STREAM) == 0);
 }
 
-/* the setting off: no device opened, silence at the same pace. A host without a device: the same */
+/* the setting at its default, off: no device opened until the player picks one, silence at the same pace. A host
+   without a device: the same */
 static void test_off(void) {
     u32 n = 0;
     static i16 got[4800];
-    snprintf(g_settings.microphone, sizeof g_settings.microphone, "off");
+    const IniOpt* setting = ini_find(g_game_ini, "microphone");
+    CHECK(setting && setting->def && !strcmp(setting->def, "off"));
+    snprintf(g_settings.microphone, sizeof g_settings.microphone, "%s", setting->def);
     unsigned opens = test_opens;
     CHECK(audio_start_input(&cpu, STREAM) == 0 && test_opens == opens && test_mic == NULL);
     for (int t = 0; t < 10; t++) tick();
