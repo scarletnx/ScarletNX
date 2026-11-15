@@ -5172,15 +5172,17 @@ static int check_dma_bands(void) {
    VK_FRAME_RING_CAPS allocations to its rings, ran only at a draw's start: the copy engine's upload of an 8192x8192
    RGBA8 texture's levels wrote 1365 MiB to one frame's rings, and a phone's system ended the app. The frame ends
    between two bands now: 896 lines of 512 bytes into block linear, 448 KiB of source and as much of the
-   destination's own bytes staged, with the cap lowered to 64 KiB (bands of 16 KiB of rows, a frame's rings 256 KiB),
-   go over several frames or, where the source goes through the stream (cmd.c's vk_stream_upload), over several
-   submissions of one frame, the rings stay within the two slots' share, and the copy is the CPU's */
+   destination's own bytes staged, with the cap lowered to 32 KiB (bands of 8 KiB of rows, a frame's rings 128 KiB),
+   go over several frames, the rings stay within the two slots' share, and the copy is the CPU's. Where the source
+   goes through the stream (cmd.c's vk_stream_upload), the frame's rings still take half of the bytes, 448 KiB: three
+   frames, against six with the rings alone */
 static int check_dma_bands_frames(void) {
     const u64 cap = g_vk.alloc_cap;
     GpuDmaOp o = {0};
+    const u64 low = 32 << 10;
     vk_finish();
     vk_frame_next();
-    g_vk.alloc_cap = 64 << 10;
+    g_vk.alloc_cap = low;
     o.multi = 1;
     o.width = o.line_in = o.line_out = 512;
     o.lines = 896;
@@ -5200,11 +5202,12 @@ static int check_dma_bands_frames(void) {
            (unsigned long long)(bands1 - bands0), (unsigned long long)ended, (unsigned long long)went,
            (unsigned long long)(grown >> 10));
     CHECK(!failed && bands1 - bands0 >= 8);
-    /* with the stream, the frame's rings and the stream each take half of the bytes here, and a frame's end sends
-       the stream's too: two ends or submissions at least. With the frame's rings alone (vk_stream_ring=0), two frames
-       as before the stream. The rings' growth below is what must hold */
-    CHECK(g_settings.stream_ring ? ended + went >= 2 : ended >= 2);
-    CHECK(grown <= (u64)(VK_FRAMES + 1) * VK_FRAME_RING_CAPS * (64 << 10));
+    /* the frames the bands end, with the stream or without it (vk_stream_ring=0). The submissions are not theirs to
+       count: one comes after a millisecond of recording, which a fast GPU leaves none of here, and the stream's own
+       comes at a frame's worth of its bytes since the last submission of any kind, which one of those can put off.
+       The rings' growth below is what must hold */
+    CHECK(ended >= 2);
+    CHECK(grown <= (u64)(VK_FRAMES + 1) * VK_FRAME_RING_CAPS * low);
     return 0;
 }
 
@@ -5597,13 +5600,12 @@ static int check_blit_bands(void) {
             (unsigned long long)asked, (unsigned long long)((512 << 10) / VK_PART_SHARE));
         failed = 1;
     }
-    /* and a frame ends between two bands once its rings hold VK_FRAME_RING_CAPS allocations (256 KiB here), as
-       between a copy engine's (check_dma_bands_frames), or a submission goes where the bands' source is the stream's:
-       the three blits end 3 frames with the frame's rings alone (vk_stream_ring=0), or a frame and 3 submissions,
-       and none without it */
+    /* and a frame ends between two bands once its rings hold VK_FRAME_RING_CAPS allocations (128 KiB here), as
+       between a copy engine's (check_dma_bands_frames): the three blits end frames with the stream or without it
+       (vk_stream_ring=0), and none without the check. Not the submissions, as there */
     vk_finish();
     vk_frame_next();
-    g_vk.alloc_cap = 64 << 10;
+    g_vk.alloc_cap = 32 << 10;
     u64 frames = vk_frame_id(), went0 = vk_submits(VK_SUB_PERIODIC);
     failed |= blit_case(bl_side(0x1000, 128 * 4, 256, 2, 0, 0), bl_side(0x80000, 128 * 4, 256, 1, 0, 0), 4, 9, 30, 100,
                         200, 128, 256, 0);
@@ -5615,7 +5617,7 @@ static int check_blit_bands(void) {
     g_vk.alloc_cap = cap;
     printf("blit bands: %llu frames ended and %llu submissions went between bands\n", (unsigned long long)ended,
            (unsigned long long)went);
-    CHECK(!failed && (g_settings.stream_ring ? ended + went >= 2 : ended >= 2));
+    CHECK(!failed && ended >= 2);
     return 0;
 }
 
@@ -6221,7 +6223,7 @@ static int check_rt_watch_holder(void) {
         const u64 t = targets[k];
         CHECK(own_watched(HOLD_A + t, 0x1000));
         VkRtWatchStats w0 = g_vk_rt_watch;
-        u64 lands = own_landings();
+        u64 lands = own_landings(), faults = own_faults();
         vk_lock();
         if (!k) {
             u8* p = gmem_ptr(HOLD_GA + t, sizeof got);
@@ -6245,6 +6247,15 @@ static int check_rt_watch_holder(void) {
            thread does that work while the copy waits, so the compiler must not read the counters before the copy */
         memcpy(got, GP(HOLD_A + t), sizeof got);
         __atomic_signal_fence(__ATOMIC_SEQ_CST);
+        if (!(g_vk_rt_watch.hits == w0.hits + 1 && own_landings() > lands && !own_trapped(HOLD_A + t, 0x1000)))
+            fprintf(stderr,
+                    "render target watch, target %d: %llu faults, %llu hits, %llu landings, %llu publishes and %llu "
+                    "arms from the holder's read on; its page is %s, watched %d\n",
+                    k, (unsigned long long)(own_faults() - faults), (unsigned long long)(g_vk_rt_watch.hits - w0.hits),
+                    (unsigned long long)(own_landings() - lands),
+                    (unsigned long long)(g_vk_rt_watch.publishes - w0.publishes),
+                    (unsigned long long)(g_vk_rt_watch.arms - w0.arms),
+                    own_trapped(HOLD_A + t, 0x1000) ? "trapped" : "open", own_watched(HOLD_A + t, 0x1000));
         CHECK(g_vk_rt_watch.hits == w0.hits + 1 && own_landings() > lands && !own_trapped(HOLD_A + t, 0x1000));
         for (u32 i = 0; i < sizeof got; i += 4) CHECK(!memcmp(got + i, px_blue, 4));
     }
@@ -6382,6 +6393,84 @@ static int check_zt_watch(void) {
     CHECK(mem_unmap(ZWATCH_A, 0x200000) == 0);
     free(ch);
     puts("Depth targets the CPU reads after a clear land in their formats' layouts");
+    return 0;
+}
+/* A target that later ones drew all over holds nothing memory needs (rt_superseded): an owner published under an older
+   target beside it neither publishes it nor writes it back. One game draws three shadow layers of 18 MB one after
+   another in its pool, and for a frame draws them 128 KiB further on: a storage image of 2 KB published inside the old
+   first layer's head had that layer published (rt_before_cpu), the new first layer over it too (vk_rt_overlay), and
+   the old second layer, which the new first and second cover, written back by the overlay inside that publish: a
+   readback and a wait for the GPU. The image is at another GPU address of the same memory, as the game's is (a second
+   virtual pool), so its own overlay meets none of them. Here two layers of 0x14000 bytes at 0x4000, drawn again 0x8000
+   further on, and a 64 by 64 image published in the old first layer's head */
+static int check_rt_superseded(void) {
+    const u64 cpu = HEAP_BASE + 0x2800000, ga = 0x290000000ull, span = 0x100000, layer = 0x14000, shift = 0x8000;
+    const u64 old = ga + 0x4000, alias = 0x2A0000000ull, image = alias + 0x8000;
+    static const u8 red[4] = {255, 0, 0, 255};
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    CHECK(mem_map(cpu, span, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(ga, cpu, span);
+    gmmu_map(alias, cpu, span);
+    memset(GP(cpu), 0x22, span);
+    rt_clear(ch, old, 160, 128, 4, 0);
+    rt_clear(ch, old + layer, 160, 128, 4, 0);
+    rt_clear(ch, old + shift, 160, 128, 4, 1);
+    rt_clear(ch, old + shift + layer, 160, 128, 4, 1);
+    rt_clear(ch, image, 64, 64, 3, 1);
+    vk_lock();
+    Surf* published = vk_rt_find(image);
+    const u64 readbacks = g_vk_rt_readbacks, finishes = g_vk_finishes;
+    CHECK(published && published->w == 64 && vk_surf_publish(published));
+    const u64 back = g_vk_rt_readbacks - readbacks, waited = g_vk_finishes - finishes;
+    OwnRange owned[4];
+    const u32 owners = own_lookup(cpu + 0x4000 + shift, 2 * layer, owned, 4);
+    u64 taken = 0;
+    for (u32 i = 0; i < owners && i < 4; i++) taken += owned[i].size;
+    vk_unlock();
+    /* the old first layer's own bytes are its head, before the new one: its publish takes those, and the new layers,
+       which no publish went under, stay on the GPU */
+    if (owners) {
+        fprintf(stderr,
+                "a target later ones drew partly over: %u owners hold %#llx of the new layers' %#llx bytes after the "
+                "old layer's publish, not 0: only its head of %#llx bytes is its own\n",
+                owners, (unsigned long long)taken, (unsigned long long)(2 * layer), (unsigned long long)shift);
+        return 1;
+    }
+    if (back || waited) {
+        fprintf(stderr,
+                "a target later ones drew all over: %llu write-backs and %llu finishes for an image published in the "
+                "head of the older target beside it, not 0 and 0\n",
+                (unsigned long long)back, (unsigned long long)waited);
+        return 1;
+    }
+    /* memory has the old first layer's red before the image, and the image's blue */
+    guest_done(cpu + 0x4000, 0x8000);
+    CHECK(!memcmp(GP(cpu + 0x4000), red, 4) && !memcmp(GP(cpu + 0x8000 - 4), red, 4));
+    CHECK(all_blue(GP(cpu + 0x8000), 0x4000));
+    vk_lock();
+    vk_rt_before_write(ga, span);
+    vk_rt_before_write(alias, span);
+    vk_unlock();
+    /* with every target back in memory, each byte has the last one drawn over it: the new layers' blue from where
+       they start, the old first layer's bytes under them too (vk_rt_overlay publishes the new first layer inside the
+       old one's publish, and the old one's owner then went over the bytes they share) */
+    guest_done(cpu + 0x4000 + shift, 2 * layer);
+    u64 stale = 0, first_stale = 0;
+    for (u64 at = 0x4000 + shift; at < 0x4000 + shift + 2 * layer; at += 4)
+        if (!memcmp(GP(cpu + at), red, 4) && !stale++) first_stale = at;
+    if (stale || !all_blue(GP(cpu + 0x4000 + shift), (u32)(2 * layer))) {
+        fprintf(stderr,
+                "a newer target under an older one's publish: %llu of the new layers' %llu pixels read the old "
+                "layer's red, the first at byte %#llx; the first not blue is %02x %02x %02x %02x\n",
+                (unsigned long long)stale, (unsigned long long)(2 * layer / 4), (unsigned long long)first_stale,
+                GP(cpu + 0x4000 + shift)[0], GP(cpu + 0x4000 + shift)[1], GP(cpu + 0x4000 + shift)[2],
+                GP(cpu + 0x4000 + shift)[3]);
+        return 1;
+    }
+    CHECK(mem_unmap(cpu, span) == 0);
+    free(ch);
+    puts("A target later ones drew all over is neither published nor written back for an owner beside it");
     return 0;
 }
 static int check_rt_overlap(void) {
@@ -6794,31 +6883,37 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
    shared memory) changes the part of the key past the guest part, so a run that chose another form translates its
    programs again */
 static int check_hmma_file_key(void) {
-    int coop_was = g_spirv_translate.hmma_coop, pairs_was = g_spirv_translate.hmma_pairs,
-        f16_was = g_spirv_translate.hmma_f16;
+    int coop_was = g_spirv_translate.hmma_coop, pairs_was = g_spirv_translate.hmma_pairs, f16_was = g_spirv_translate.hmma_f16;
     int stage_was = g_spirv_translate.hmma_stage;
+    u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
     char base[1024], other[1024];
     size_t gbase = 0, gother = 0;
-    g_spirv_translate.hmma_coop = g_spirv_translate.hmma_pairs = g_spirv_translate.hmma_f16 =
-        g_spirv_translate.hmma_stage = 0;
+    g_spirv_translate.hmma_coop = g_spirv_translate.hmma_pairs = g_spirv_translate.hmma_f16 = g_spirv_translate.hmma_stage = 0;
+    g_spirv_translate.hmma_coop_shapes = 0;
     vk_pipeline_file_key(base, sizeof base, &gbase);
     CHECK(gbase);
     for (int form = 0; form < 4; form++) {
-        g_spirv_translate.hmma_coop = form == 0 ? 65536 : 0, g_spirv_translate.hmma_pairs = form == 1,
-        g_spirv_translate.hmma_f16 = form == 2;
+        g_spirv_translate.hmma_coop = form == 0 ? 65536 : 0, g_spirv_translate.hmma_pairs = form == 1, g_spirv_translate.hmma_f16 = form == 2;
+        g_spirv_translate.hmma_coop_shapes = form == 0 ? SH_COOP_16x16x16 : 0;
         g_spirv_translate.hmma_stage = form == 3 ? 65536 : 0;
         vk_pipeline_file_key(other, sizeof other, &gother);
-        g_spirv_translate.hmma_coop = g_spirv_translate.hmma_pairs = g_spirv_translate.hmma_f16 =
-            g_spirv_translate.hmma_stage = 0;
+        g_spirv_translate.hmma_coop = g_spirv_translate.hmma_pairs = g_spirv_translate.hmma_f16 = g_spirv_translate.hmma_stage = 0;
+        g_spirv_translate.hmma_coop_shapes = 0;
         CHECK(gother == gbase && !memcmp(base, other, gbase));
         if (!strcmp(base + gbase, other + gother))
             fprintf(stderr, "file key: HMMA form %d (0 coop, 1 pairs, 2 hmma_f16, 3 staged) leaves the key as %s\n",
                     form, other + gother);
         CHECK(strcmp(base + gbase, other + gother) != 0);
     }
-    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_pairs = pairs_was,
-    g_spirv_translate.hmma_f16 = f16_was;
+    /* the shapes differ between devices, and their modules with them */
+    g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_shapes = SH_COOP_16x16x16;
+    vk_pipeline_file_key(base, sizeof base, &gbase);
+    g_spirv_translate.hmma_coop_shapes = SH_COOP_16x8x16;
+    vk_pipeline_file_key(other, sizeof other, &gother);
+    CHECK(gbase && gother == gbase && strcmp(base + gbase, other + gother) != 0);
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_pairs = pairs_was, g_spirv_translate.hmma_f16 = f16_was;
     g_spirv_translate.hmma_stage = stage_was;
+    g_spirv_translate.hmma_coop_shapes = shapes_was;
     return 0;
 }
 
@@ -7520,6 +7615,16 @@ static int run_headless(int argc, char** argv) {
                g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_MAXWELL_FIXED_ONLY")) { /* the 3D engine's fixed state alone */
+        CHECK(!check_maxwell_point_size());
+        CHECK(!check_maxwell_depth_bounds());
+        CHECK(!check_maxwell_depth_range());
+        CHECK(!check_maxwell_depth_clamp());
+        CHECK(!check_maxwell_viewport_swizzle());
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan 3D engine fixed state only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_MSAA_ONLY")) { /* the multisample checks alone */
         CHECK(!check_multisample_shader_gate());
         CHECK(!check_msaa());
@@ -7538,6 +7643,8 @@ static int run_headless(int argc, char** argv) {
         return 0;
     }
     if (getenv("SNX_TEST_TRIM_ONLY")) { /* the budget's trim alone: a trim that wants everything takes the others' */
+        /* what the trim evicts: texture_sysmem would move those textures into system memory, where they stay held */
+        g_settings.texture_system_memory = 0;
         CHECK(!check_trim_working_set());
         CHECK(!check_trim_unmapped());
         CHECK(!check_trim_ended());
@@ -7740,6 +7847,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_maxwell_point_size());
     CHECK(!check_maxwell_depth_bounds());
     CHECK(!check_maxwell_depth_range());
+    CHECK(!check_maxwell_depth_clamp());
     CHECK(!check_maxwell_viewport_swizzle());
     CHECK(!check_nvn_default_tessellation());
     CHECK(!check_nvn_advanced_blend());
@@ -7839,6 +7947,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_dma_flip());
     CHECK(!check_dma_owners());
     CHECK(!check_dma_bands());
+    CHECK(!check_rt_superseded());
     CHECK(!check_dma_bands_frames());
     CHECK(!check_flush_parts());
     CHECK(!check_publish_bands());

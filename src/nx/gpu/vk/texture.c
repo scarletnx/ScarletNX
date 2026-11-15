@@ -151,7 +151,36 @@ static void mark_pages(void* ctx, u64 gva, u64 cpu, u64 n) {
 }
 /* A sparse texture's memory bound where guest memory maps its texels now (memory.c vk_image_sparse_bind), with room
    made for it under the budget: -1 when memory ran out, 0 when nothing changed, 1 when the binds changed */
-static int tex_bind(Surf* t) {
+/* The blocks of a sparse texture's levels finer than floor, in bits (the order vk_image_sparse_bind takes), left
+   without memory: as resident_floor does for a texture bound by tiles, its views sampled no finer than the first
+   level left (tex_view). The mip tail stays */
+static void sparse_floor(const VkSparseShape* sh, u8* bits, u32 floor) {
+    for (u32 layer = 0; layer < sh->layers; layer++)
+        for (u32 l = 0; l < floor && l < sh->tail_first; l++) {
+            const u64 at = (u64)layer * sh->per_layer + sh->first[l], n = (u64)sh->bx[l] * sh->by[l] * sh->bz[l];
+            for (u64 k = at; k < at + n; k++) bits[k >> 3] &= (u8)~(1u << (k & 7));
+        }
+}
+#define TEX_SHED_MIN (1ull << 20) /* the image bytes from which a texture mapped whole is shed (tex_create) */
+/* set while vk_tex_coarser and vk_tex_finer move a texture's levels between the GPU's memory and system memory: their
+   binds make no room under the budget (vk_mem_trim). System memory needs none, the move back checks its room first,
+   and they run inside a trim's walk of the textures (surface.c tex_shed_lru) or the refine's, which a trim inside
+   them broke: it evicted the next texture the walk would take, and the texture moved itself */
+static int g_bind_no_trim;
+static u64 g_shed_made, g_shed_bytes, g_shed_coarser, g_shed_finer, g_half_made, g_half_bytes;
+void vk_tex_shed_stats(u64* made, u64* bytes, u64* coarser, u64* finer) {
+    *made = g_shed_made, *bytes = g_shed_bytes, *coarser = g_shed_coarser, *finer = g_shed_finer;
+}
+void vk_tex_half_stats(u64* made, u64* bytes) { *made = g_half_made, *bytes = g_half_bytes; }
+/* texture_half_res: Auto (0) while the GPU's memory is under pressure, Never (1), Always (2) */
+static int half_res_now(void) {
+    return g_settings.texture_half_res == 2 || (g_settings.texture_half_res == 0 && vk_mem_pressed());
+}
+/* A sparse texture's memory bound where guest memory maps its texels now (memory.c vk_image_sparse_bind), with room
+   made for it under the budget, no finer than its lod_floor: -1 when memory ran out, 0 when nothing changed, 1 when
+   the binds changed. finer_ok: one level finer than the floor where the heap has a fifth of its budget left after it.
+   Where the bind finds no memory, its finest levels go one at a time until it does */
+static int tex_bind_at(Surf* t, int finer_ok) {
     const VkSparseShape* sh = vk_image_sparse_shape(t->img);
     if (!sh) return -1;
     u64 nbits = (u64)sh->layers * sh->per_layer;
@@ -166,7 +195,14 @@ static int tex_bind(Surf* t) {
     }
     u32 d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1;
     const VkFmt* f = &t->f;
-    for (u32 layer = 0; layer < t->layers; layer++) {
+    /* a texture sparse for its levels alone is mapped whole: every block, each like no other (no keys), with no walk
+       over its mapping, which a trim that makes hundreds of them coarser would take for each */
+    if (t->shed) {
+        memset(bits, 0xFF, nbits / 8 + 1);
+        free(keys);
+        keys = NULL;
+    }
+    for (u32 layer = 0; layer < (t->shed ? 0 : t->layers); layer++) {
         u64 at = t->gva + layer * t->layer_size;
         for (u32 l = 0; l < t->levels; l++) {
             u32 lbh, lbd;
@@ -195,16 +231,37 @@ static int tex_bind(Surf* t) {
             at += lsz;
         }
     }
-    for (u64 k = 0; k < nbits; k++) { /* 0 is the key of a block like no other */
+    for (u64 k = 0; keys && k < nbits; k++) { /* 0 is the key of a block like no other */
         if ((odd[k >> 3] >> (k & 7)) & 1)
             keys[k] = 0;
         else if ((bits[k >> 3] >> (k & 7)) & 1 && !keys[k])
             keys[k] = 1;
     }
+    u32 floor = t->lod_floor;
+    u8* finer = floor && finer_ok ? malloc(nbits / 8 + 1) : NULL;
+    if (finer) {
+        u64 usage, budget;
+        vk_mem_use(&usage, &budget);
+        memcpy(finer, bits, nbits / 8 + 1);
+        sparse_floor(sh, finer, floor - 1);
+        if (usage + vk_image_sparse_need(t->img, finer, keys) <= budget / 5 * 4) floor--;
+        free(finer);
+    }
+    if (floor) sparse_floor(sh, bits, floor);
     u64 need = vk_image_sparse_need(t->img, bits, keys), bytes;
-    if (need) vk_mem_trim(need, 0);
+    if (need && !g_bind_no_trim) vk_mem_trim(need, 0);
     int r = vk_image_sparse_bind(t->img, bits, keys, &bytes);
-    if (r < 0 && need) vk_mem_trim(need, 1); /* room for it by the time the upload is tried again */
+    while (r < 0 && g_vk.has_view_min_lod && floor + 1 < sh->tail_first) { /* nothing changed: a level coarser */
+        sparse_floor(sh, bits, ++floor);
+        r = vk_image_sparse_bind(t->img, bits, keys, &bytes);
+    }
+    if (r < 0 && need && !g_bind_no_trim) vk_mem_trim(need, 1); /* room for it by the time the upload is tried again */
+    if (r >= 0 && floor != t->lod_floor) {
+        if (floor < t->lod_floor) g_shed_finer++;
+        else g_shed_coarser += floor - t->lod_floor;
+        t->lod_floor = floor;
+        r = 1;
+    }
     free(bits);
     free(odd);
     free(keys);
@@ -215,6 +272,11 @@ static int tex_bind(Surf* t) {
     }
     return r;
 }
+/* a load's or a check's bind keeps the floor: a level comes back only by vk_tex_finer, when no level has had to give
+   way for a while. Taken back at any bind where the heap had room for a moment, as the memory a coarser level let go
+   came free, a texture went finer, loaded, made the next trim shed it, and did so again each frame: Mario Kart World
+   loaded the same 15 textures, 10 MB, a frame for seconds at under 2 frames a second */
+static int tex_bind(Surf* t) { return tex_bind_at(t, !t->shed); }
 
 /* the guest bytes a move of a level reads (lsz bytes at gva) staged as they are (what the GPU holds of them copied on
    the GPU, vk_guest_read), zero past the level's end: buf and off hold the layout's first byte the move reads
@@ -850,6 +912,36 @@ static int resident_bind_mapped(Surf* t, u8* want) { return resident_bind_at(t, 
 u64 vk_tex_coarser(Surf* t) {
     if (!vk_tex_can_coarsen(t)) return 0;
     const u64 was = t->bytes;
+    if (t->shed && g_settings.texture_system_memory) {
+        /* its finest level not in system memory yet moved there, with those before it: their blocks released and
+           bound again to system memory (in one batch, before the next submission), and the texture loaded again at
+           its next use. It keeps every level, sampled over the bus where its blocks are in system memory, where giving
+           the level up left the texture at half its resolution */
+        const u32 n = t->sys_levels + 1u;
+        const u64 freed = vk_image_sparse_level_bytes(t->img, n) - vk_image_sparse_level_bytes(t->img, t->sys_levels);
+        g_bind_no_trim = 1;
+        t->lod_floor = n;
+        tex_bind_at(t, 0);
+        vk_image_sparse_place(t->img, 1);
+        t->lod_floor = 0;
+        const int r = tex_bind_at(t, 0);
+        vk_image_sparse_place(t->img, 0);
+        g_bind_no_trim = 0;
+        t->sys_levels = (u8)n;
+        t->upload_valid = 0;
+        g_shed_coarser++;
+        (void)was;
+        return r < 0 ? 0 : freed;
+    }
+    if (t->sparse) { /* its finest level's blocks released; the levels left keep their memory and their texels */
+        const u32 had = t->lod_floor;
+        t->lod_floor++;
+        if (tex_bind_at(t, 0) < 0) t->upload_valid = 0;
+        g_shed_coarser += t->lod_floor > had;
+        LOG_LIMIT(16, "vulkan: a %ux%ux%u texture of %u levels is sampled from level %u on, for another image's "
+                      "memory\n", t->w, t->h, t->layers, t->levels, t->lod_floor);
+        return was > t->bytes ? was - t->bytes : 0;
+    }
     u8* want = calloc(resident_pages(t), 1);
     if (!want) return 0;
     t->lod_floor++;
@@ -862,7 +954,36 @@ u64 vk_tex_coarser(Surf* t) {
     return was > t->bytes ? was - t->bytes : 0;
 }
 int vk_tex_can_coarsen(const Surf* t) {
-    return t->bricks && t->img && g_vk.has_view_min_lod && t->lod_floor + 1 < t->tail_first;
+    if (!t->img || !g_vk.has_view_min_lod) return 0;
+    if (t->sparse) {
+        const VkSparseShape* sh = vk_image_sparse_shape(t->img);
+        if (t->shed && g_settings.texture_system_memory) return sh && t->sys_levels + 1u < sh->tail_first;
+        return sh && t->lod_floor + 1 < sh->tail_first;
+    }
+    return t->bricks && t->lod_floor + 1 < t->tail_first;
+}
+int vk_tex_finer(Surf* t) {
+    if (t->shed && t->sys_levels && t->upload_valid) {
+        /* its levels in system memory back into the GPU's: released, bound again there, and loaded again */
+        g_bind_no_trim = 1;
+        t->lod_floor = t->sys_levels;
+        tex_bind_at(t, 0);
+        t->lod_floor = 0;
+        const int r = tex_bind_at(t, 0);
+        g_bind_no_trim = 0;
+        t->sys_levels = 0;
+        t->upload_valid = 0;
+        g_shed_finer++;
+        return r >= 0;
+    }
+    if (!t->shed || !t->lod_floor || !t->upload_valid) return 0;
+    const u32 had = t->lod_floor;
+    g_bind_no_trim = 1; /* the refine checked its room, and walks the textures: no trim inside it */
+    const int r = tex_bind_at(t, 1);
+    g_bind_no_trim = 0;
+    if (r < 0 || t->lod_floor >= had) return 0;
+    t->upload_valid = 0; /* the level taken back has no texels: its next use loads the texture again */
+    return 1;
 }
 static int tex_patch_range(Upload* u, u64 a, u64 b);
 /* such a texture's upload: its pages bound where it is mapped (resident_bind_mapped), then each bound brick staged as
@@ -1396,6 +1517,19 @@ static u32 astc_kind_of(u64 gva, u64 size, u32 w, u32 h, u32 d3, u32 layers, u32
     if (own_hash(cpu, size, &owners)) return SNX_ASTC_OTHER;
     *unread = 0;
     const u8* p = GP(cpu);
+    /* The same bytes read the same: a texture the cache evicted and the game uses again comes back with them. Reading
+       each block's endpoint modes and colours took a GT 1030's renderer most of each frame in Mario Kart World, whose
+       textures were evicted and made again by the hundred, under 2 frames a second; a hash of the bytes and of how
+       they are laid out is read at gigabytes a second */
+    static struct {
+        u64 key;
+        u32 kind;
+    } memo[4096];
+    u64 shape[8] = {(u64)w << 32 | h, (u64)d3 << 32 | layers, (u64)levels << 32 | f->bw << 8 | f->bh,
+                    (u64)bl << 48 | (u64)bh << 32 | (u64)bd << 16 | tile_w, pitch, layer_size, (u64)srgb, size};
+    const u64 key = (vk_hash(p, size) ^ vk_hash(shape, sizeof shape)) | 1;
+    const u32 slot = (u32)(key >> 52) & 4095;
+    if (memo[slot].key == key) return memo[slot].kind;
     u32 kind = 0;
     for (u32 layer = 0; layer < layers; layer++) {
         u64 at = (u64)layer * layer_size;
@@ -1407,12 +1541,89 @@ static u32 astc_kind_of(u64 gva, u64 size, u32 w, u32 h, u32 d3, u32 layers, u32
             const u32 gobs_x = bl ? bl_level_gobs_x(rowb, th, ld, bh, bd, tile_w) : 0;
             kind |= snx_astc_level_kind(p + at, size - at, tw, th, ld, bl ? 0 : pitch, gobs_x, lbh, lbd, f->bw, f->bh,
                                         srgb);
-            if (snx_astc_kind_done(kind, srgb)) return kind;
+            if (snx_astc_kind_done(kind, srgb)) goto done;
             at += lsz;
         }
     }
+done:
+    memo[slot].key = key;
+    memo[slot].kind = kind;
     return kind;
 }
+/* ------------------------------------------------------------ textures in system memory */
+/* The second tier. On a GPU of 2 GB under a desktop, the driver's budget for this process is 1.3 GB, and Mario Kart
+   World's race needs about 2: the cache evicted and loaded again 5,000 to 7,000 textures in 4 minutes, each a load
+   (and an encode) where it was used next. The device takes any image in system memory too (memory type 1 of a
+   GeForce GT 1030, which no CPU maps), and samples it there over the bus. So where the trim would evict a texture
+   (surface.c), its image is copied on the GPU into one in system memory and takes its place: slower to sample, but
+   there, with nothing to load again; and a demoted texture the frames use is moved back while the GPU's memory has
+   room (vk_tex_promote_frame). Not a sparse, bricked, multisampled or depth image, or one whose BC7 image is being
+   made between frames */
+static u64 g_sys_out, g_sys_back, g_sys_bytes;
+void vk_tex_sysmem_stats(u64* out, u64* back, u64* bytes) { *out = g_sys_out, *back = g_sys_back, *bytes = g_sys_bytes; }
+static int tex_moves(const Surf* t) {
+    return t->img && t->mem && !t->sparse && !t->bricks && !t->msaa && !t->f.depth && !t->f.stencil && !t->is_rt &&
+           !t->crop && !t->bc7.queued && t->layout != VK_IMAGE_LAYOUT_UNDEFINED && t->upload_valid;
+}
+/* t's image into a new one of the same shape whose memory `want` places, on the GPU, in the frame's command buffer
+   (a rendering pass open ends): the image takes the new one's place. bytes: the new one's. 0 when none was made */
+static int tex_move(Surf* t, const DevMemWant* want, u64* bytes) {
+    VkImageCreateInfo ii;
+    VkViewFormats vf;
+    int storage;
+    VkImage img;
+    DevMem mem;
+    tex_info(t, t->f.vk, &ii, &vf, &storage);
+    if (vk_devmem_image(&ii, want, &img, &mem) != VK_SUCCESS) return 0;
+    vk_mem_track(mem, VK_OWN_TEXTURE);
+    DevMemInfo info;
+    vk_devmem_info(mem, &info);
+    *bytes = info.size;
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    vk_barrier(cb, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageCopy r[16];
+    u32 n = 0;
+    const int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
+    for (u32 l = 0; l < ii.mipLevels && n < 16; l++) {
+        const u32 w = ii.extent.width >> l ? ii.extent.width >> l : 1, h = ii.extent.height >> l ? ii.extent.height >> l : 1,
+                  d = ii.extent.depth >> l ? ii.extent.depth >> l : 1;
+        r[n++] = (VkImageCopy){.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, is3d ? 1 : ii.arrayLayers},
+                               .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, is3d ? 1 : ii.arrayLayers},
+                               .extent = {w, h, d}};
+    }
+    rec_CmdCopyImage(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, n, r);
+    tex_image_swap(t, img, mem, *bytes, t->f.vk, 1);
+    return 1;
+}
+u64 vk_tex_demote(Surf* t) {
+    if (!g_settings.texture_system_memory || t->demoted || !tex_moves(t)) return 0;
+    const u64 was = t->bytes;
+    DevMemWant want = {.at = DM_SYSTEM, .image = 1};
+    u64 bytes;
+    if (!tex_move(t, &want, &bytes)) return 0;
+    vk_surf_bytes(t, 0); /* none of the GPU's memory: the budget's bytes are those */
+    t->demoted = 1;
+    t->sys_bytes = bytes;
+    g_sys_out++;
+    g_sys_bytes += bytes;
+    return was;
+}
+int vk_tex_promote(Surf* t) {
+    if (!t->demoted || !tex_moves(t)) return 0;
+    DevMemWant want = {.at = DM_DEVICE, .image = 1};
+    u64 bytes;
+    if (!tex_move(t, &want, &bytes)) return 0;
+    t->demoted = 0;
+    g_sys_bytes -= t->sys_bytes;
+    t->sys_bytes = 0;
+    g_sys_back++;
+    return 1;
+}
+
 /* the log's name of a format an ASTC texture is held in */
 static const char* astc_held_name(VkFormat f) {
     return vk_astc_bcn(f) ? vk_astc_bcn_name(vk_astc_bcn(f))
@@ -1434,10 +1645,18 @@ static int astc_kind_outcome(u32 kind, int srgb, int unread) {
                                                                  : VK_ASTC_KIND_SRGB_ALPHA;
 }
 /* the image format of an outcome that has one: BC4 and BC5 UNORM (there is no sRGB BC4 or BC5), BC1 as sRGB or not */
+/* Opaque colour that BC1 holds only roughly (more than one line in a 4x4 block: VK_ASTC_KIND_LINES), held as BC1
+   all the same, half BC7's bytes: astc_lines_bc1=2, or its Auto (0) once the images have run short of memory
+   (g_vk.bc1_tight); Never (1) by default. Half of Mario Kart World's ASTC textures are such, and on a GPU of 2 GB its race needs more than
+   the budget: the cache evicted and made again 5,000 to 7,000 textures in 4 minutes */
+static int astc_lines_bc1(void) {
+    return g_settings.astc_lines_bc1 == 2 || (g_settings.astc_lines_bc1 == 0 && g_vk.bc1_tight);
+}
 static VkFormat astc_kind_vk(int outcome, int srgb) {
     return outcome == VK_ASTC_KIND_BC4   ? VK_FORMAT_BC4_UNORM_BLOCK
            : outcome == VK_ASTC_KIND_BC5 ? VK_FORMAT_BC5_UNORM_BLOCK
-           : outcome == VK_ASTC_KIND_BC1 || outcome == VK_ASTC_KIND_SRGB_GREY
+           : outcome == VK_ASTC_KIND_BC1 || outcome == VK_ASTC_KIND_SRGB_GREY ||
+                   (outcome == VK_ASTC_KIND_LINES && astc_lines_bc1())
                ? (srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK)
                : VK_FORMAT_UNDEFINED;
 }
@@ -1564,7 +1783,7 @@ static int tex_upload_(Surf* t) {
                 const u32 nlayers = astc_layers ? layers : 1, slices = astc_layers ? layers : ld;
                 const int straight = is_bc7(f->vk), later = t->bc7_later && !straight;
                 u64 content[2];
-                const int keyed = (straight || later) && !t->sparse && l < VK_TEX_MAX_LEVELS &&
+                const int keyed = (straight || later) && (!t->sparse || t->shed) && l < VK_TEX_MAX_LEVELS &&
                                   (vk_astc_cached(lw, lh, slices) || (straight && vk_astc_quick(lw, lh, slices))) &&
                                   astc_content(&ls, nlayers, content);
                 if (keyed && later) {
@@ -1658,7 +1877,7 @@ static void runs_take(void* ctx, u64 gva, u64 cpu, u64 n) {
 }
 static u64 tex_hash(const Surf* t) {
     u64 h = 1469598103934665603ull, at = t->gva, end = t->gva + t->size;
-    if (!t->sparse && !t->piecewise) return mem_hash(t->gva, t->size);
+    if ((!t->sparse || t->shed) && !t->piecewise) return mem_hash(t->gva, t->size);
     while (at < end) {
         RunsTaken r = {0};
         gmmu_pieces(at, end - at, runs_take, &r);
@@ -1926,7 +2145,22 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     /* room is made for it under the budget: the caller holds only surfaces it used this present, which stay. A sparse
        one has no memory until tex_bind, which makes room for what it binds. Only where holes read as zeros
        (g_vk.resident), as they do on the console: elsewhere a texture with holes is made whole */
-    int sparse = holes && bl && !msaa && g_vk.sparse && g_vk.resident &&
+    /* And a texture mapped whole that the GPU only reads, with levels, of TEX_SHED_MIN or more (texture_shed): sparse
+       for its levels alone, all bound, so that where the device's memory runs short its finest level goes (vk_mem_trim,
+       vk_tex_coarser), a quarter of its bytes left and sampled from the next level, in place of the whole texture
+       evicted and loaded again; the level comes back when there is room (vk_tex_finer). On a GPU of 2 GB Mario Kart
+       World's caches evicted 2,400 textures the last 60 presents had used every 600 presents, each loaded again at its
+       next use. Not ASTC that goes RGBA8 first and BC7 between frames, whose BC7 image is another */
+    /* Made under memory pressure (texture_half_res), such a texture is made so whatever texture_shed says, its finest
+       level never bound: sampled at half its resolution from the start, a quarter of its bytes left. Its size stays
+       the texture's, so textureSize and texelFetch read as the game's, and the level comes back as a shed one's does,
+       when there is room (vk_tex_finer) */
+    const int can_shed = !holes && !written && bl && levels > 1 && type != VK_IMAGE_VIEW_TYPE_3D &&
+                         g_vk.has_view_min_lod &&
+                         (f.conv == VKC_NONE || (f.conv == VKC_ASTC && !(is_bc7(f.vk) && !g_vk.astc_at_load)));
+    const int half = can_shed && half_res_now();
+    const int shed = can_shed && (g_settings.texture_shed || half);
+    int sparse = (holes || shed) && bl && !msaa && g_vk.sparse && g_vk.resident &&
                  (type == VK_IMAGE_VIEW_TYPE_3D ? g_vk.feat.sparseResidencyImage3D : g_vk.feat.sparseResidencyImage2D);
     /* held as BC7: RGBA8 until the encoder has made its BC7 image between frames (vk_tex_later_frame). Not one with
        holes (BC7 for them whatever astc_mode says, tex_from_tic): its RGBA8 image is what took the GPU past its memory,
@@ -1938,8 +2172,21 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
         t->f.vk = later_rgba8(f.vk);
         tex_info(t, t->f.vk, &ii, &vf, &t->storage_capable);
     }
-    if (sparse && vk_image_create_sparse(&ii, &t->img))
+    if (sparse && (shed ? vk_image_create_sparse_min(&ii, &t->img, TEX_SHED_MIN) : vk_image_create_sparse(&ii, &t->img))) {
         t->sparse = 1;
+        t->shed = (u8)shed;
+        if (shed) {
+            VkMemoryRequirements req;
+            vkGetImageMemoryRequirements(g_vk.dev, t->img, &req);
+            g_shed_made++;
+            g_shed_bytes += req.size;
+            if (half) { /* its first bind (tex_bind) keeps the floor */
+                t->lod_floor = 1;
+                g_half_made++;
+                g_half_bytes += vk_image_sparse_level_bytes(t->img, 1);
+            }
+        }
+    }
     else {
         if (holes)
             LOG_LIMIT(8, "vulkan: a %ux%ux%u texture of %u levels in format %d with holes in its mapping takes memory "
@@ -3516,6 +3763,8 @@ void vk_tex_frame(void) {
        presents go (a game at a dynamic resolution makes its scene's targets again each frame) */
     u32 before = vk_present_before(20000000000ull, 120);
     vk_surf_ended_frame(); /* those the game ended go sooner */
+    vk_tex_refine_frame(); /* levels shed for room come back while there is some */
+    vk_tex_promote_frame(); /* and textures moved into system memory, into the GPU's */
     vk_surf_reclaim(VK_LRU_TEX, before, ~0ull, VK_RECLAIM_LOSSLESS);
     vk_surf_reclaim(VK_LRU_RT, before, ~0ull, VK_RECLAIM_LOSSLESS);
     if (g_vk_present % 30 == 0) vk_rt_reclaim_superseded(vk_present_before(1000000000ull, 8), ~0ull);

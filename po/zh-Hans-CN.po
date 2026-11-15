@@ -177,6 +177,10 @@ msgid "Not moved: %s could not be made: %s"
 msgstr "未移动：无法创建 %s：%s"
 
 #: src/gui/clean.c
+msgid "Stays beside the save's 0/: a name that starts with a dot is a sync tool's or the system's, not one of the game's files"
+msgstr ""
+
+#: src/gui/clean.c
 #, c-format
 msgid "Its files are in %s, which could not take its place: %s"
 msgstr ""
@@ -3791,6 +3795,16 @@ msgstr "%s 不是有效的昵称：%s"
 #, c-format
 msgid "%s: %s. A game on this system runs the same whatever it says, and it stays %s"
 msgstr "%s：%s。在此系统上，无论它设为什么，游戏运行都一样，它保持为 %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s is its lowest"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s is its highest"
+msgstr ""
 
 #: src/gui/main.c
 msgid "Paste one local folder's path"

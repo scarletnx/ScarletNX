@@ -370,7 +370,7 @@ static GuiRect row_box(App* app, int row, bool right) {
 static int row_marked(App* app, int r) {
     char line[700];
     size_t n;
-    form_line(app, &app->editor, r, form_labels(&app->editor), 400, line, sizeof line);
+    form_line(app, &app->editor, r, form_labels(&app->editor), 400, line, sizeof line, NULL);
     n = strlen(line);
     return n > 2 && !strcmp(line + n - 2, " *");
 }
@@ -841,6 +841,131 @@ static bool picks_have(App* app, const char* line) {
     bool has = kept && strstr(kept, line);
     free(kept);
     return has;
+}
+/* the left button let go, as a drag on a slider ends */
+static void mouse_up(App* app) {
+    SDL_Event e = {0};
+    e.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    e.button.button = SDL_BUTTON_LEFT;
+    event(app, &e);
+}
+/* the open group's row r's slider as drawn (form_slider), its setting's row in *setting */
+static GuiRect slider_of(App* app, int r, int* setting) {
+    static GuiEditor peek; /* a group's rows seen from the groups: as large as an editor is, out of the stack */
+    const GuiEditor* e;
+    GuiFormBoxes f;
+    layout(app);
+    form_boxes(app, &f);
+    e = form_rows(app, &peek);
+    return form_slider(app, e, r,
+                       row_drawn(app, ui_form_side_row, ui_form_side_shown, f.right, UI_FORM_SIDE_ROWS,
+                                 &f.right_lists[UI_FORM_SIDE_ROWS], (size_t)r),
+                       form_labels(e), setting);
+}
+/* the pixel x of step k of 20 on bar, the knob's middle there */
+static int slider_step_x(App* app, GuiRect bar, int k) {
+    return bar.x + cell_w(app) / 2 + (bar.w - cell_w(app)) * k / 20;
+}
+/* Settings > Audio's Volume, a slider's row (settings.txt's slider): its value where a group's values are and the
+   slider at the row's right, the knob at the value, in the row's colour; Left/Right and Enter step it to its ends and
+   never round, the foot saying the end, each step kept at once; a click on the slider takes the step under it and the
+   knob follows the mouse held down, past either end staying there, until the button lifts; a finger the same, its lift
+   no tap; Del back to its default; the group in focus among the groups shows it in its own colour */
+static void volume_view(App* app) {
+    static const char list[] =
+        "Audio\tvolume\t100\tint\t0\t100\tHow loud the game plays\tVolume\t0=Mute|5=5%|10=10%|15=15%|20=20%|25=25%|"
+        "30=30%|35=35%|40=40%|45=45%|50=50%|55=55%|60=60%|65=65%|70=70%|75=75%|80=80%|85=85%|90=90%|95=95%|100=100%"
+        "\t\t\tslider\n";
+    GuiRect bar, box;
+    char line[64];
+    int setting, s, cw, mid, k;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    key(app, SDLK_DOWN); /* past Launch and GBA, the launcher's own */
+    key(app, SDLK_DOWN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP && !strcmp(app->group_keys[app->group].key, "Audio") &&
+           gui_editor_rows(&app->editor) == 1);
+    render(app);
+    snprintf(line, sizeof line, "- %-8s %s", "Volume", "100% [default]");
+    shows(app, line, yellow);
+    /* the slider at the row's right, a column short of its end, the knob at the last step in the focus's colour, the
+       line thick up to it */
+    bar = slider_of(app, 0, &setting);
+    box = row_box(app, 0, true);
+    s = app->scale;
+    cw = cell_w(app);
+    mid = bar.y + bar.h / 2;
+    assert(setting == setting_row(app, "volume") && app->settings.values[setting].slider);
+    assert(bar.w % cw == 0 && bar.w >= GUI_SLIDER_LEAST * cw && bar.w <= GUI_SLIDER_COLS * cw &&
+           bar.x + bar.w == box.x + box.w - cw && bar.h == cell_h(app));
+    { /* past the value at its longest, a column apart, on whole columns */
+        char tail[64];
+        int at = 0, top = 0;
+        snprintf(tail, sizeof tail, "- %-8s Mute [default] *", "Volume");
+        assert(find_text(app, "- Volume", yellow, 1, &at, &top) && top == bar.y);
+        assert(bar.x >= at + (gui_text_cols(tail) + 1) * cw);
+    }
+    assert(same_colour(pixel(app, (float)(bar.x + bar.w - cw / 2), (float)mid), yellow));
+    assert(same_colour(pixel(app, (float)(bar.x + cw), (float)(mid - s)), yellow));      /* the thick line */
+    assert(!same_colour(pixel(app, (float)(bar.x + cw), (float)(mid - 3 * s)), yellow)); /* over it */
+    /* Right at the end: no step round to Mute, the foot says so; Left a step, kept, the knob a column back */
+    key(app, SDLK_RIGHT);
+    assert(setting_is(app, "volume", NULL) && !strcmp(app->editor.note, "Volume: 100% is its highest"));
+    key(app, SDLK_LEFT);
+    assert(setting_is(app, "volume", "95") && !app->editor.note[0] && picks_have(app, "volume=95"));
+    render(app);
+    snprintf(line, sizeof line, "- %-8s %s", "Volume", "95% *");
+    shows(app, line, yellow);
+    assert(same_colour(pixel(app, (float)slider_step_x(app, bar, 19), (float)(bar.y + 3 * s)), yellow));
+    assert(!same_colour(pixel(app, (float)slider_step_x(app, bar, 20), (float)(bar.y + 3 * s)), yellow));
+    key(app, SDLK_RETURN); /* Enter up, as a word row's */
+    assert(setting_is(app, "volume", NULL));
+    for (k = 0; k < 20; ++k) key(app, SDLK_LEFT);
+    assert(setting_is(app, "volume", "0"));
+    key(app, SDLK_LEFT); /* Mute's end: never round to the loudest */
+    assert(setting_is(app, "volume", "0") && !strcmp(app->editor.note, "Volume: Mute is its lowest"));
+    render(app);
+    snprintf(line, sizeof line, "- %-8s %s", "Volume", "Mute *");
+    shows(app, line, yellow);
+    assert(same_colour(pixel(app, (float)(bar.x + cw / 2), (float)(bar.y + 3 * s)), yellow)); /* the knob first */
+    key(app, SDLK_DELETE);
+    assert(setting_is(app, "volume", NULL));
+    /* a click on the slider: the step under it; held, the knob follows, past either end staying there; let go, the
+       mouse moves it no more */
+    mouse_px(app, slider_step_x(app, bar, 10), mid, true);
+    assert(app->row_slide == setting + 1 && setting_is(app, "volume", "50") && picks_have(app, "volume=50"));
+    mouse_px(app, slider_step_x(app, bar, 15) + 1, mid + cell_h(app), false); /* off the row too: its x alone counts */
+    assert(setting_is(app, "volume", "75"));
+    mouse_px(app, bar.x + bar.w + 10 * cw, mid, false);
+    assert(setting_is(app, "volume", NULL));
+    mouse_px(app, bar.x - 10 * cw, mid, false);
+    assert(setting_is(app, "volume", "0"));
+    mouse_up(app);
+    assert(!app->row_slide);
+    mouse_px(app, slider_step_x(app, bar, 4), mid, false);
+    assert(setting_is(app, "volume", "0"));
+    /* a finger the same, its lift no tap */
+    finger_px(app, SDL_EVENT_FINGER_DOWN, slider_step_x(app, bar, 4), mid);
+    assert(setting_is(app, "volume", "20") && app->row_slide);
+    finger_px(app, SDL_EVENT_FINGER_MOTION, slider_step_x(app, bar, 6), mid);
+    assert(setting_is(app, "volume", "30"));
+    finger_px(app, SDL_EVENT_FINGER_UP, slider_step_x(app, bar, 6), mid);
+    assert(setting_is(app, "volume", "30") && !app->row_slide && app->form == GUI_FORM_GROUP);
+    /* the groups again, Audio's in focus: its row beside them with its slider, in the row's own colour */
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_SETTINGS && !strcmp(app->group_keys[app->editor.row].key, "Audio"));
+    render(app);
+    bar = slider_of(app, 0, &setting);
+    assert(bar.w && same_colour(pixel(app, (float)slider_step_x(app, bar, 6), (float)(bar.y + bar.h / 2)), normal));
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DELETE);
+    assert(setting_is(app, "volume", NULL));
+    key(app, SDLK_ESCAPE);
+    leave_editor(app);
 }
 /* Settings > Controllers by player, as Eden's tabs: its Player row goes round All (every player's rows) and 1 to 8
    (the player's own and those no player has its own of); a player's Button map is the button map page on its keys,
@@ -7827,6 +7952,30 @@ int main(int argc, char** argv) {
             assert(app.lefts == 0);
             assert(!snx_path_format(path, sizeof path, "%s/save/device/0100000000ABC000" GUI_SAVE_MOVING, data_saves) &&
                    !snx_remove_tree(path));
+            /* a sync tool's folders (Syncthing's) beside a user's saves, beside the Device saves, and in a game's own
+               save folder that holds nothing else: neither listed nor taken for a save */
+            {
+                static const char* const marks[] = {
+                    "%s/save/user.0123456789abcdeffedcba9876543210/.stfolder/syncthing-folder-1.txt",
+                    "%s/save/device/.stversions/d.bin",
+                    "%s/0100000000ABC000_data/save/bcat/.stfolder/syncthing-folder-1.txt"};
+                for (i = 0; i < sizeof marks / sizeof *marks; ++i) {
+                    char* dir;
+                    assert(!snx_path_format(path, sizeof path, marks[i], i < 2 ? data_saves : game));
+                    dir = snx_dirname(path);
+                    assert(!snx_mkdirs(dir) && !snx_write_file(path, "mark", 4));
+                    free(dir);
+                }
+                left_behind(&app);
+                assert(app.lefts == 0);
+                for (i = 0; i < sizeof marks / sizeof *marks; ++i) {
+                    char* dir;
+                    assert(!snx_path_format(path, sizeof path, marks[i], i < 2 ? data_saves : game));
+                    dir = snx_dirname(path);
+                    assert(!snx_remove_tree(dir));
+                    free(dir);
+                }
+            }
             /* save_layout=game (read from settings.ini, as this driver lists no save_layout): a game's own save as an
                older version kept it is listed where it is, with its 0/ */
             {
@@ -8218,12 +8367,12 @@ int main(int argc, char** argv) {
             size_t n;
             assert(!strcmp(app.app_form.folder[r], "default"));
             for (int extra = 9; extra <= 40; extra += 31) {
-                form_line(&app, &app.editor, r, labels, whole + extra, line, sizeof line);
+                form_line(&app, &app.editor, r, labels, whole + extra, line, sizeof line, NULL);
                 n = strlen(line);
                 assert(gui_text_cols(line) == whole + extra && n > 7 && !strcmp(line + n - 7, "default") &&
                        strstr(line, app.data_dir));
             }
-            form_line(&app, &app.editor, r, labels, whole + 8, line, sizeof line);
+            form_line(&app, &app.editor, r, labels, whole + 8, line, sizeof line, NULL);
             assert(strstr(line, app.data_dir) && !strstr(line, "default"));
         }
         { /* a click on a row takes it; one on a group's title, nothing */
@@ -13257,7 +13406,8 @@ int main(int argc, char** argv) {
                 assert(!l->first && l->shift == half);
                 row = row_drawn(&app, ui_form_list_row, ui_form_list_shown, f.left, UI_FORM_LIST_ROWS, l, (size_t)k);
                 b = ui_row_box(&app, row);
-                form_line(&app, &app.editor, k, form_labels(&app.editor), form_room(&app, row.w), line, sizeof line);
+                form_line(&app, &app.editor, k, form_labels(&app.editor), form_room(&app, row.w), line, sizeof line,
+                          NULL);
                 x = b.x + cw / 2 + gui_text_cols(line) * cw + cw;
                 assert(x + 2 * cw <= b.x + b.w - cw);
                 assert(same_colour(pixel(&app, (float)(x + cw), (float)(ui_text_y(&app, b) + 3 * app.scale)),
@@ -16466,6 +16616,7 @@ int main(int argc, char** argv) {
         leave_editor(&app);
     }
     players_view(&app);
+    volume_view(&app);
     only_rows(&app);
     icons_named();
     help_icons_named();

@@ -108,6 +108,31 @@ static void check_dynamic(void) {
     CHECK(strstr(line, "dynamic pre-rasterization state: none") != NULL, line);
 }
 
+/* Depth clipping apart from the clamp (VK_EXT_depth_clip_enable) is dynamic with a dynamic clamp alone: a dynamic
+   clamp without it would turn clipping the other way whatever the pipeline says */
+static void check_depth_clip(void) {
+    char line[512];
+    u32 dyn = 0;
+    VkGplDevice d = full();
+    d.depth_clip = d.has_depth_clip_enable = 1;
+    CHECK(vk_gpl_choose(&d, &dyn, line, sizeof line), "on with everything");
+    CHECK((dyn & (VK_DYN_PR_DEPTH_CLAMP | VK_DYN_PR_DEPTH_CLIP)) == (VK_DYN_PR_DEPTH_CLAMP | VK_DYN_PR_DEPTH_CLIP),
+          "clamp and clip dynamic");
+    CHECK(strstr(line, "depth range, depth clip") != NULL, line);
+    d.has_depth_clip_enable = 0;
+    CHECK(vk_gpl_choose(&d, &dyn, line, sizeof line) && !(dyn & VK_DYN_PR_DEPTH_CLIP), "no clip without the extension");
+    CHECK(strstr(line, "depth clip") == NULL, line);
+    d = full();
+    d.depth_clip = 1;
+    CHECK(vk_gpl_choose(&d, &dyn, line, sizeof line) && !(dyn & VK_DYN_PR_DEPTH_CLIP),
+          "no clip the renderer doesn't use");
+    d = full();
+    d.depth_clip = d.has_depth_clip_enable = 1;
+    d.depth_clamp = 0;
+    CHECK(vk_gpl_choose(&d, &dyn, line, sizeof line) && !(dyn & (VK_DYN_PR_DEPTH_CLAMP | VK_DYN_PR_DEPTH_CLIP)),
+          "a static clamp keeps the clip static: the pipeline's depth clip state holds");
+}
+
 /* Who makes a depth range of -1 to 1, in the log: the device with the state, else the last stage, with the first
    thing the device lacks for it named */
 static void check_depth_range(void) {
@@ -178,7 +203,8 @@ static void check_states(void) {
               {VK_DYN_PR_CONSERVATIVE, VK_DYNAMIC_STATE_CONSERVATIVE_RASTERIZATION_MODE_EXT},
               {VK_DYN_PR_CONSERVATIVE, VK_DYNAMIC_STATE_EXTRA_PRIMITIVE_OVERESTIMATION_SIZE_EXT},
               {VK_DYN_PR_PATCH, VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT},
-              {VK_DYN_PR_DEPTH_RANGE, VK_DYNAMIC_STATE_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE_EXT}};
+              {VK_DYN_PR_DEPTH_RANGE, VK_DYNAMIC_STATE_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE_EXT},
+              {VK_DYN_PR_DEPTH_CLIP, VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT}};
     for (u32 i = 0; i < sizeof pr / sizeof *pr; i++)
         for (int tess = 0; tess < 2; tess++) {
             PipeDynIn in = {.dyn_pr = pr[i].bit, .tess = tess};
@@ -216,11 +242,12 @@ static void check_states(void) {
 
 /* ---- the key split (vk_pipe_split): a change of a whole pipeline's key changes the keys of the parts that hold that
    state and no other, so a new state of known shaders reuses the parts that compile shaders */
-enum { F_VS, F_TCS, F_TES, F_GS, F_PATCH, F_POLYGON, F_CLAMP, F_PROVOKING, F_CONSERVATIVE, F_TOPO, F_VI, F_NCOLOR,
+enum { F_VS, F_TCS, F_TES, F_GS, F_PATCH, F_POLYGON, F_CLAMP, F_CLIP, F_PROVOKING, F_CONSERVATIVE, F_TOPO, F_VI, F_NCOLOR,
        F_COLOR, F_DEPTH, F_STENCIL, F_BLEND, F_MASK, F_LOGIC, F_SAMPLES, F_SAMPLE_OFF, F_A2C, F_A2O, F_COVERAGE,
        F_ADVANCED, F_SHADING, F_FEEDBACK, F_ARRAYS_VS, F_ARRAYS_FS, F_ARRAYS_GS, F_FS_SPEC, F_FS, F_COUNT };
 static const char* const g_fields[F_COUNT] = {
-    "vs", "tcs", "tes", "gs", "patch", "polygon", "depth_clamp", "provoking_last", "conservative", "topo_class", "vi",
+    "vs", "tcs", "tes", "gs", "patch", "polygon", "depth_clamp", "depth_clip", "provoking_last", "conservative",
+    "topo_class", "vi",
     "ncolor", "color", "depth", "stencil", "blend", "blend mask", "logic_op", "samples", "sample_off",
     "alpha_to_coverage", "alpha_to_one", "coverage", "advanced blend", "sample_shading", "feedback", "arrays (vertex)",
     "arrays (fragment)", "arrays (geometry)", "fs_spec", "fs"};
@@ -233,6 +260,7 @@ static void mutate(PipeKey* k, int f) {
     case F_PATCH: k->patch = 4; break;
     case F_POLYGON: k->polygon = VK_POLYGON_MODE_LINE; break;
     case F_CLAMP: k->depth_clamp = 1; break;
+    case F_CLIP: k->depth_clip = 2; break;
     case F_PROVOKING: k->provoking_last = 1; break;
     case F_CONSERVATIVE: k->conservative = 3; break;
     case F_TOPO: k->topo_class = VK_PRIMITIVE_TOPOLOGY_LINE_LIST; break;
@@ -273,7 +301,7 @@ static u32 parts_differ(const PipeKey* a, const PipeKey* b, const PipeSplitDevic
 static void check_split(void) {
     for (int dynamic = 0; dynamic < 2; dynamic++)
         for (int shading = 0; shading < 2; shading++) {
-            const PipeSplitDevice d = {.dyn_pr = dynamic ? 63u : 0u, .feedback_dynamic = dynamic};
+            const PipeSplitDevice d = {.dyn_pr = dynamic ? 127u : 0u, .feedback_dynamic = dynamic};
             PipeKey base;
             memset(&base, 0, sizeof base);
             base.vs = (VkShaderModule)(uintptr_t)0x1000;
@@ -291,7 +319,7 @@ static void check_split(void) {
                 u32 want;
                 switch (f) {
                 case F_VS: case F_TCS: case F_TES: case F_GS: case F_ARRAYS_VS: case F_ARRAYS_GS: want = VK_PART_PR; break;
-                case F_PATCH: case F_POLYGON: case F_CLAMP: case F_PROVOKING: case F_CONSERVATIVE:
+                case F_PATCH: case F_POLYGON: case F_CLAMP: case F_CLIP: case F_PROVOKING: case F_CONSERVATIVE:
                     want = dynamic ? 0 : VK_PART_PR;
                     break;
                 case F_TOPO: case F_VI: want = VK_PART_VI; break;
@@ -379,8 +407,8 @@ static void check_bans(void) {
         const char* key;               /* in the last line said */
     } cases[] = {
         {"RADV 26.2.6", VK_DRIVER_ID_MESA_RADV, VK_MAKE_VERSION(26, 2, 6), 0, NULL},
-        {"RADV 22.3.0", VK_DRIVER_ID_MESA_RADV, VK_MAKE_VERSION(22, 3, 0), VK_DYN_PR_DEPTH_CLAMP,
-         "extendedDynamicState3DepthClampEnable"},
+        /* its depth clamp line only warns (a ban Eden lifted): the member stays dynamic and nothing is said */
+        {"RADV 22.3.0", VK_DRIVER_ID_MESA_RADV, VK_MAKE_VERSION(22, 3, 0), 0, NULL},
         {"PowerVR", VK_DRIVER_ID_IMAGINATION_PROPRIETARY, VK_MAKE_VERSION(1, 21, 0),
          VK_DYN_PR_POLYGON | VK_DYN_PR_DEPTH_CLAMP, "extendedDynamicState3DepthClampEnable"},
         {"Intel on Windows", VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, 101u << 14 | 5000u, VK_DYN_PR_DEPTH_RANGE,
@@ -449,14 +477,18 @@ static void check_key_text(void) {
     k.sample_shading = 1;
     k.conservative = 1;
     k.depth_clamp = 1;
+    k.depth_clip = 1;
     k.provoking_last = 1;
     k.feedback = 1;
     vk_pipe_key_text(&k, text, sizeof text);
     CHECK(!strcmp(text, "no color targets, depth 0, stencil 0, 1 sample, topology class 10, 4 control points, polygon "
                         "mode 1, fragment specialization 0x5, logic op 6, advanced blend 1000148012, alpha to "
-                        "coverage, every sample shaded, conservative, depth clamp, the last vertex provokes, a "
-                        "feedback loop"),
+                        "coverage, every sample shaded, conservative, depth clamp, depth clip off, the last vertex "
+                        "provokes, a feedback loop"),
           text);
+    k.depth_clip = 2;
+    vk_pipe_key_text(&k, text, sizeof text);
+    CHECK(strstr(text, ", depth clamp, depth clip on, ") != NULL, text);
 
     k = (PipeKey){0};
     k.mesh = 1;
@@ -471,10 +503,28 @@ static void check_key_text(void) {
     CHECK(text[0] == 'z', "a buffer of no bytes was written");
 }
 
+/* The depth clamp's range (VK_EXT_depth_clamp_control) is the pre-rasterization part's dynamic state, and only where
+   the renderer uses the extension */
+static void check_clamp_range(void) {
+    VkDynamicState s[VK_PIPE_DYN_MAX];
+    PipeDynIn in = {0};
+    u32 n = vk_pipe_dynamic(VK_PART_ALL, &in, s);
+    CHECK(!has(s, n, VK_DYNAMIC_STATE_DEPTH_CLAMP_RANGE_EXT), "no clamp range without the extension");
+    in.clamp_range = 1;
+    u32 m = vk_pipe_dynamic(VK_PART_ALL, &in, s);
+    CHECK(m == n + 1 && s[m - 1] == VK_DYNAMIC_STATE_DEPTH_CLAMP_RANGE_EXT, "the clamp range after the others");
+    n = vk_pipe_dynamic(VK_PART_PR, &in, s);
+    CHECK(has(s, n, VK_DYNAMIC_STATE_DEPTH_CLAMP_RANGE_EXT), "in the pre-rasterization part");
+    n = vk_pipe_dynamic(VK_PART_VI | VK_PART_FS | VK_PART_FO, &in, s);
+    CHECK(!has(s, n, VK_DYNAMIC_STATE_DEPTH_CLAMP_RANGE_EXT), "in no other part");
+}
+
 int main(void) {
     check_off();
     check_dynamic();
     check_depth_range();
+    check_depth_clip();
+    check_clamp_range();
     check_bans();
     check_states();
     check_split();

@@ -3,8 +3,8 @@
 # tools/settingsgen on a spec of its own, with LLVM headers written here: every setter of a bool or an integer is
 # found whichever way its declaration is broken over lines (LLVM 20's headers put the name on the line after
 # LLVM_C_ABI void, LLVM 19's after void on the same line), the others are left out, the passes of a pipeline get
-# their toggles, and an @ID that LLVM lacks is said on stderr. Run by ctest as settingsgen, with SETTINGSGEN the
-# generator and WORK a folder of its own
+# their toggles, and an @ID that LLVM lacks is said on stderr; every key with an _ is listed with a - for each, as a
+# command line names it. Run by ctest as settingsgen, with SETTINGSGEN the generator and WORK a folder of its own
 file(REMOVE_RECURSE "${WORK}")
 file(MAKE_DIRECTORY "${WORK}/out" "${WORK}/include/llvm-c/Transforms")
 # a setting's name and an LLVM ID longer than any fixed buffer: 1100 letters (a line of generated C over 1024), and 126
@@ -45,6 +45,7 @@ LLVM_C_ABI void LLVMSetTargetMachineFastISel(LLVMTargetMachineRef T,
 file(WRITE "${WORK}/pipelines.txt"
      "0 function(ee-instrument<>),always-inline,verify\n2 function<eager-inv>(sroa<modify-cfg>,instcombine<max-iterations=1;no-verify-fixpoint>),require<globals-aa>,verify\n")
 file(WRITE "${WORK}/settings.txt" "
+list sides l=Left stick_r=Right_stick
 table g_test_ini
 setting Plain
     key plain
@@ -61,6 +62,21 @@ setting Two hosts
     default 1
     default-if HOST_A 2
     default-if HOST_B 3
+setting Two more
+    key two1_more
+    int 0 1
+    default 0
+setting Side
+    key side_<ID>
+    int 0 1
+    default 0
+    each sides
+repeat 2
+setting Pad swap
+    key pad<N>_swap
+    int 0 1
+    default 0
+end
 setting One system
     key one_system
     int 0 1
@@ -72,6 +88,13 @@ setting Its kernel
     int 0 1
     default 0
     only arm64-linux
+setting Loudness
+    key loudness
+    int 0 100
+    default 100
+    words Mute|#%
+    step 5
+    slider
 setting ${long_name}
     key long
     text 4
@@ -142,7 +165,9 @@ endforeach()
 file(READ "${WORK}/out/settings_test.c" text)
 foreach(row "{\"one_system\", \"0\", NULL, INI_INT, INI_STARTUP | INI_ONLY_MACOS, &g_settings.one_system,"
             "{\"its_kernel\", \"0\", NULL, INI_INT, INI_ONLY_ARM64_LINUX, &g_settings.its_kernel,"
-            "{\"plain\", \"0\", NULL, INI_INT, 0, &g_settings.plain,")
+            "{\"plain\", \"0\", NULL, INI_INT, 0, &g_settings.plain,"
+            # a slider's (ini.h's INI_SLIDER): an int with words, the menus' steps
+            "{\"loudness\", \"100\", NULL, INI_INT, INI_SLIDER, &g_settings.loudness, 0, 100, NULL, \"Loudness\", \"Mute|#%\", 5, 0,")
     string(FIND "${text}" "${row}" at)
     if(at LESS 0)
         message(FATAL_ERROR "settings_test.c lacks the row ${row}:\n${text}")
@@ -155,6 +180,15 @@ execute_process(COMMAND "${SETTINGSGEN}" --out "${WORK}/out" "${WORK}/unknown.tx
 if(NOT unknown_result OR NOT unknown_errors MATCHES "unknown.txt:6: only amiga: the systems are macos, windows, android, linux and arm64-linux\n$")
     message(FATAL_ERROR "settingsgen took only amiga (${unknown_result}), or did not say which systems only takes:\n${unknown_errors}")
 endif()
+# a slider of a text, or of an int without words, is refused with its line: its steps are an int's words
+foreach(lines "text 8\n    default a" "int 0 9\n    default 0")
+    file(WRITE "${WORK}/slider.txt" "table g_test_ini\nsetting Wordless\n    key wordless\n    ${lines}\n    slider\n")
+    execute_process(COMMAND "${SETTINGSGEN}" --out "${WORK}/out" "${WORK}/slider.txt"
+                    RESULT_VARIABLE slider_result ERROR_VARIABLE slider_errors)
+    if(NOT slider_result OR NOT slider_errors MATCHES "slider.txt:2: Wordless: slider takes an int with words, the steps its slider shows\n$")
+        message(FATAL_ERROR "settingsgen took a slider of ${lines} (${slider_result}), or did not say why:\n${slider_errors}")
+    endif()
+endforeach()
 # each setter found, with its argument cast to the type the header declares, and the setting its @ID names
 foreach(line "LLVMPassBuilderOptionsSetLoopVectorization(options, (LLVMBool)s->loop_vectorization)"
              "LLVMPassBuilderOptionsSetSLPVectorization(options, (LLVMBool)s->llvm_slp_vectorization)"
@@ -269,5 +303,47 @@ foreach(bad "VK_EXT_no_such_one|is no extension of the Khronos registry" "VK_KHR
                     RESULT_VARIABLE result ERROR_VARIABLE errors)
     if(NOT result OR NOT errors MATCHES "bad.txt:2: ${name} [^\n]*${why}")
         message(FATAL_ERROR "settingsgen took @${name} (${result}): ${errors}")
+    endif()
+endforeach()
+
+# the names a command line gives the settings by: every row's key that has an _, with a - for each (a repeat's and an
+# each's once per row, LLVM's and the Vulkan extensions' too, none of a key without an _), in the order strcmp sorts
+# them, which ini_arg's search takes: two-hosts before two1-more, whose keys sort the other way (_ after 1)
+string(REPEAT "ab-" 63 long_arg)
+string(REGEX REPLACE "-$" "" long_arg "${long_arg}")
+set(names "")
+foreach(name its-kernel llvm-${long_arg} llvm-asm-verbosity llvm-fast-isel llvm-forget-all-scev-in-loop-unroll
+             llvm-inliner-threshold llvm-licm-mssa-opt-cap llvm-loop-vectorization llvm-pass-always-inline
+             llvm-pass-ee-instrument llvm-pass-instcombine llvm-pass-sroa llvm-pass-verify llvm-slp-vectorization
+             one-system pad1-swap pad2-swap side-l side-stick-r two-hosts two1-more vk-ext-core-one vk-khr-own-help)
+    string(APPEND names "    \"${name}\",\n")
+endforeach()
+file(READ "${WORK}/out/settings_args.c" args)
+string(FIND "${args}" "const char* const g_setting_args[] = {\n${names}};\nconst int g_setting_args_count = 23;\n" at)
+if(at LESS 0)
+    message(FATAL_ERROR "settings_args.c does not list these 23 names, in this order:\n${names}\nbut:\n${args}")
+endif()
+string(FIND "${args}" "return ini_arg(arg, key, size, g_setting_args, g_setting_args_count);" at)
+string(FIND "${header}" "const char* settings_arg(const char* arg, char* key, size_t size);" declared)
+if(at LESS 0 OR declared LESS 0)
+    message(FATAL_ERROR "settings_arg is not declared, or not ini_arg over the names:\n${header}\n${args}")
+endif()
+# a key a command line could not name as it is, or whose name with - could be another key's, is refused with its line
+# before anything is written: a - or a stray <N> in a key, a - in an each's id
+foreach(bad "table g_t_ini\nsetting Dashed\n    key a-b\n    int 0 1\n    default 0\n|refused.txt:2: Dashed's key a-b has a -: a key is letters, digits and _ (a command line gives it with - for each _ too)"
+            "table g_t_ini\nsetting Stray\n    key a<N>\n    int 0 1\n    default 0\n|refused.txt:2: Stray's key a<N> has a <: a key is letters, digits and _ (a command line gives it with - for each _ too)"
+            "list sides a-b=A\ntable g_t_ini\nsetting Side\n    key side_<ID>\n    int 0 1\n    default 0\n    each sides\n|settingsgen: list sides: its id a-b has a -, which its settings' keys would have: an id is letters, digits and _")
+    string(REPLACE "|" ";" bad "${bad}")
+    list(GET bad 0 spec)
+    list(GET bad 1 why)
+    file(REMOVE_RECURSE "${WORK}/refused")
+    file(MAKE_DIRECTORY "${WORK}/refused")
+    file(WRITE "${WORK}/refused.txt" "${spec}")
+    execute_process(COMMAND "${SETTINGSGEN}" --out "${WORK}/refused" "${WORK}/refused.txt"
+                    RESULT_VARIABLE result ERROR_VARIABLE errors)
+    file(GLOB written "${WORK}/refused/*")
+    string(REPLACE "${WORK}/" "" said "${errors}")
+    if(NOT result OR NOT said STREQUAL "${why}\n" OR written)
+        message(FATAL_ERROR "settingsgen took or wrote it (${result}, ${written}), or did not say \"${why}\":\n${spec}\n${errors}")
     endif()
 endforeach()

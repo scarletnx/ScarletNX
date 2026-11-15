@@ -49,8 +49,10 @@ snx_glsl_spirv(snx_nds_gpu SOURCE gpu/vk/shaders/aa.frag NAME snx_nds_aa_frag_sp
                HEADER nds/gpu/vk/shaders/post_spv.h)
 target_link_libraries(scarletnx-nds PUBLIC snx_nds_gpu)
 
+# snx_settings: the settings its command line takes, by their names there (settings_arg)
 add_library(snx_nds_program STATIC runtime/main.c runtime/host.c aot/compiler.c aot/discover.c)
-target_link_libraries(snx_nds_program PUBLIC scarletnx-nds snx_nds_gpu snx_build_info snx_window_icon snx_pad_sdl)
+target_link_libraries(snx_nds_program PUBLIC scarletnx-nds snx_nds_gpu snx_build_info snx_window_icon snx_pad_sdl
+                      snx_settings)
 set_target_properties(snx_nds_program PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_nds_program PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 include("${PROJECT_SOURCE_DIR}/tests/cmake/nds.cmake") # its tests

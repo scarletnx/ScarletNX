@@ -606,8 +606,10 @@ u32 kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core, KThrea
    program (as Eden's KProcess::Run and CreateThread do): no code of the program writes it there, and the SDK from 22 on,
    the Switch's as the Ounce's, takes a lock's owner from it (InternalCriticalSection::IsLockedByCurrentThread), from
    the C library's first lock on. Left 0, it reads as the owner of every free lock, and the first pthread_mutex_lock of
-   a normal mutex aborts as a relock. Older SDKs leave the word alone: the kernel's own words end at 0x10f */
+   a normal mutex aborts as a relock. Older SDKs leave the word alone: the kernel's own words end at 0x10f. The thread
+   keeps it too, for the lock words the hooks write for it (hle/hook/os_sync.c), whatever its SDK reads */
 void kthread_set_own_handle(KThread* t, u32 h) {
+    if (t) t->own_handle = h;
     if (t && t->tls) gw32(t->tls + 0x110, h);
 }
 
@@ -708,11 +710,20 @@ int kthread_hold_point(KThread* t, int park) {
     return 1;
 }
 void kthread_block(KThread* t) {
-    if (t) __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
+    if (!t) return;
+    __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
+    /* runs no game code now: a svcSetThreadActivity waiting for it to pause has its answer (stopped is set before
+       suspended is read, and the pause sets suspended before it reads stopped) */
+    if (__atomic_load_n(&t->suspended, __ATOMIC_SEQ_CST)) {
+        pm_lock(&g_host.kernel.klock);
+        kobj_wake_nl(&t->o, 5);
+        klock_unlock();
+    }
 }
 void kthread_unblock(KThread* t) {
     if (!t) return;
     __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&t->suspended, __ATOMIC_SEQ_CST)) svc_pause_point(t); /* paused during the wait */
     kthread_hold_point(t, PARK_RUN); /* rt_miss set the pc it goes on at */
 }
 void kthread_commit(void) {

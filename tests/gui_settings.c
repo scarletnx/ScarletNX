@@ -792,6 +792,10 @@ int main(int argc, char** argv) {
         assert(!strcmp(key(&s, "controls")->key, "Show controls") &&
                !strcmp(key(&s, "touch")->words[2], "Fingers and mouse"));
         assert(!strcmp(key(&s, "gamepad_rumble")->words[0], "Off") && !key(&s, "controls_a"));
+        /* the game's Volume, Audio's: a slider of every 5 percent, Mute first */
+        assert(s.values[at(&s, "volume")].slider && words(key(&s, "volume")) == 21 &&
+               !strcmp(key(&s, "volume")->words[0], "Mute") && !strcmp(key(&s, "volume")->words[20], "100%") &&
+               !strcmp(key(&s, "volume")->section, "Audio") && !strcmp(on_screen(&s, "volume"), "100% [default]"));
         assert(gui_settings_set(&s, "fullscreen", "0") && gui_settings_set(&s, "touch", "1"));
         assert(gui_settings_set(&s, "controls", "0") && key(&s, "resolution")->type == GUI_KEY_TEXT);
         /* as the launcher has them: fullscreen Off or On, Off its [default]; the controls Auto, their [default] */
@@ -889,8 +893,8 @@ int main(int argc, char** argv) {
     }
     /* a 3DS game's run gets its own table's picks and the Switch's settings the 3DS takes too (vk_memory,
        async_pipelines, pipeline_threads, gamepad_swap_ab, gamepad_deadzone, gamepad_map, touch, vsync, fullscreen,
-       anisotropy, fps_limit) only: another Display, Graphics, Debug, Controllers or On-screen controls setting picked for a
-       Switch game is not one */
+       anisotropy, fps_limit, volume) only: another Display, Graphics, Debug, Controllers or On-screen controls setting
+       picked for a Switch game is not one */
     {
         static const char ctr[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
                                   "Display\tdocked\t1\tint\t0\t1\tTV\tDocked\t0=Off|1=On\n"
@@ -909,7 +913,8 @@ int main(int argc, char** argv) {
                                   "On-screen controls\ttouch\t2\tint\t0\t2\tTouch\tTouch screen\t\n"
                                   "On-screen controls\tcontrols_haptics\t1\tint\t0\t1\tBuzz\tHaptics\t\n"
                                   "Debug\tvk_memory\t0\tint\t0\t2\tGuest buffers\tGuest memory\t0=Auto|1=Copy|2=UMA\n"
-                                  "Debug\tvk_budget_mb\t0\tint\t0\t65536\tBudget\tVulkan budget\t";
+                                  "Debug\tvk_budget_mb\t0\tint\t0\t65536\tBudget\tVulkan budget\t\n"
+                                  "Audio\tvolume\t100\tint\t0\t100\tLoud\tVolume\t0=Mute|50=50%|100=100%\t\t\tslider";
         assert(!gui_settings_read(&s, ctr));
         assert(gui_settings_set(&s, "fullscreen", "1") && gui_settings_set(&s, "ctr_separate_windows", "1") &&
                gui_settings_set(&s, "ctr_top_resolution", "2") && gui_settings_set(&s, "async_pipelines", "1") &&
@@ -920,13 +925,45 @@ int main(int argc, char** argv) {
                gui_settings_set(&s, "vk_budget_mb", "512") && gui_settings_set(&s, "vsync", "0") &&
                gui_settings_set(&s, "shadows", "0") && gui_settings_set(&s, "docked", "0") &&
                gui_settings_set(&s, "anisotropy", "8") && gui_settings_set(&s, "fps_limit", "120"));
-        assert(gui_settings_ctr_options(&s, options) == 13 && !strcmp(options[0], "--fullscreen=1") &&
+        assert(gui_settings_set(&s, "volume", "50"));
+        assert(gui_settings_ctr_options(&s, options) == 14 && !strcmp(options[0], "--fullscreen=1") &&
                !strcmp(options[1], "--ctr_separate_windows=1") && !strcmp(options[2], "--ctr_top_resolution=2") &&
                !strcmp(options[3], "--vsync=0") && !strcmp(options[4], "--anisotropy=8") &&
                !strcmp(options[5], "--async_pipelines=1") && !strcmp(options[6], "--pipeline_threads=2") &&
                !strcmp(options[7], "--fps_limit=120") && !strcmp(options[8], "--gamepad_swap_ab=1") &&
                !strcmp(options[9], "--gamepad_deadzone=35") && !strcmp(options[10], "--gamepad_map=south:A east:B") &&
                !strcmp(options[11], "--touch=1") && !strcmp(options[12], "--vk_memory=1"));
+        assert(!strcmp(options[13], "--volume=50"));
+        gui_settings_free(&s);
+    }
+    /* a slider's row (the runtime's twelfth column, settings.txt's slider): a plain word row whose steps stop at its
+       ends, set to the step nearest a place along it; the same words without the mark are no slider, nor are they
+       where the default is no step (its row's first word the .ini's) */
+    {
+        static const char sliders[] =
+            "Audio\tvolume\t100\tint\t0\t100\tHow loud\tVolume\t0=Mute|25=25%|50=50%|75=75%|100=100%\t\t\tslider\n"
+            "Audio\tplain\t100\tint\t0\t100\tHow loud\tPlain\t0=Mute|50=50%|100=100%\n"
+            "Audio\toff_step\t60\tint\t0\t100\tHow loud\tOff step\t0=Mute|50=50%|100=100%\t\t\tslider";
+        int v, p, o;
+        assert(!gui_settings_read(&s, sliders));
+        v = at(&s, "volume");
+        p = at(&s, "plain");
+        o = at(&s, "off_step");
+        assert(v >= 0 && p >= 0 && o >= 0 && s.values[v].slider && !s.values[p].slider && !s.values[o].slider);
+        assert(!strcmp(on_screen(&s, "volume"), "100% [default]") && gui_settings_knob(&s, v) == 1000);
+        assert(!gui_settings_slide(&s, v, 1) && gui_settings_knob(&s, v) == 1000); /* its end: never round to Mute */
+        assert(gui_settings_slide(&s, v, -1) && !strcmp(gui_settings_value(&s, "volume"), "75") &&
+               gui_settings_knob(&s, v) == 750);
+        assert(gui_settings_options(&s, 0, options) == 1 && !strcmp(options[0], "--volume=75"));
+        assert(gui_settings_slide_to(&s, v, 0) && !strcmp(gui_settings_value(&s, "volume"), "0"));
+        assert(!gui_settings_slide(&s, v, -1) && !strcmp(on_screen(&s, "volume"), "Mute")); /* never round to 100% */
+        assert(gui_settings_slide_to(&s, v, 374) && !strcmp(gui_settings_value(&s, "volume"), "25")); /* nearer 250 */
+        assert(gui_settings_slide_to(&s, v, 376) && !strcmp(gui_settings_value(&s, "volume"), "50")); /* nearer 500 */
+        assert(!gui_settings_slide_to(&s, v, 500) && gui_settings_knob(&s, v) == 500);    /* there already */
+        assert(gui_settings_slide_to(&s, v, 5000) && !gui_settings_value(&s, "volume") && /* past its end */
+               !strcmp(on_screen(&s, "volume"), "100% [default]"));
+        assert(!gui_settings_slide(&s, p, -1) && !gui_settings_slide_to(&s, p, 0) && gui_settings_knob(&s, p) == 0);
+        assert(!gui_settings_slide(&s, o, -1) && !strcmp(on_screen(&s, "off_step"), "60 [default]"));
         gui_settings_free(&s);
     }
     puts("GUI settings: the runtime's list, picks and a run's options passed");

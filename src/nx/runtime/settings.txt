@@ -7,8 +7,8 @@
 # a line at a time (leading spaces left out, # starts a comment):
 #
 #   include FILE          a header the generated tables include, for a constant they name (a range's)
-#   list NAME id=Label... the instances of an each block: their id in its key, and the label it is shown by (an _ in
-#                         a label is a space)
+#   list NAME id=Label... the instances of an each block: their id in its key (letters, digits and _), and the label it
+#                         is shown by (an _ in a label is a space)
 #   table NAME [SCOPE]    the settings below go in the IniOpt table NAME. SCOPE is runtime (the game's, the default),
 #                         launcher (the launcher handles them itself), recompile (the recompiler's, which the launcher
 #                         and the driver pass on as --key=value) or llvm (recompile, filled with LLVM's passes and the
@@ -22,7 +22,9 @@
 #                         name>", key llvm_pass_<name>, int 0 1 default 1; an option "LLVM <its words>", key
 #                         llvm_<option> (the ID in snake_case: key KEY where that reads wrong, FastISel's
 #                         llvm_fast_i_sel), LLVM's own value (SETTINGS_UNSET) until it is set
-#     key KEY             its key in the .ini (<N> in a repeat, <ID> in an each). An LLVM setting's is LLVM's ID's
+#     key KEY             its key in the .ini (<N> in a repeat, <ID> in an each), letters, digits and _. A command line
+#                         gives it as --KEY=value, and as KEY with a - for each _ (--aot-threads=4 is aot_threads=4),
+#                         names settingsgen lists for the drivers (settings_arg). An LLVM setting's is LLVM's ID's
 #     int LO HI           an int, clamped to LO..HI (C expressions)
 #     float LO HI         a float, clamped
 #     text SIZE           text, up to SIZE - 1 bytes
@@ -37,6 +39,8 @@
 #                         say which beside it (ini.h's ini_only); its value is read and written there as anywhere
 #     words W|W...        the menus' words (ini.h): an int's for LO, LO + step..., a text's value=word
 #     step N, shift N     the menus' step and shift (ini.h)
+#     slider              the menus draw an int with words on a slider and step it to its ends, never round (ini.h's
+#                         INI_SLIDER): every step a word the launcher lists, its default one of them
 #     label TEXT          the menus' name when it is not NAME (the game's menu shows a page's settings by it)
 #     startup             read when the game starts only
 #     in-game             the game's own (its menu's, or the driver's): the launcher's Settings leave it out
@@ -135,6 +139,24 @@ setting Save layout
     help Where the saves are: global = one folder of every game's, save/ of the data folder, as the console keeps
     help them (an Account save in user.<uid>/<title ID>/); game = each game's own, save/ in its <id>_data/. A save the
     help other one holds is played where it is, said once a run, until Settings > App > Move Old Files moves it
+setting Microphone
+    key microphone
+    text 256
+    default off
+    help The microphone a game hears as the console's own: empty = the system's default recording device; off = none,
+    help and the game hears silence; else the first recording device whose name holds this text (any case). It is
+    help recording only while the game records, and a change takes effect at the game's next recording
+setting Microphone noise reduction
+    key mic_noise_reduction
+    int 0 2
+    default 1
+    words Off|Neural|Spectral
+    help How the noise the microphone picks up is lowered before the game hears it (the console's audio system has a
+    help noise reduction for its microphone, of a strength not known). 1 = neural: RNNoise, a small network trained on
+    help speech, built in, at 48 kHz, else as 2. On test signals it lowered a steady noise by 27 dB and background
+    help voices by 6 dB between words. 2 = spectral: the system's libspeexdsp, which lowered the steady noise by 18 dB
+    help and the voices by 1 dB. 0 = the game hears the microphone as it is. Both add 10 ms of delay. Read every 10 ms,
+    help so a change takes effect at once
 
 table g_display_ini
 setting TV mode
@@ -146,6 +168,23 @@ setting TV mode
     words Off|On|Auto
     help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720), 2 = Auto: TV mode while the
     help host is on its charger, handheld mode on its battery. Auto switches while the game runs
+setting TV refresh rate
+    key tv_refresh_rate
+    int 0 2
+    default 1
+    startup
+    words 60 Hz|Display's|120 Hz
+    help The refresh rates an Ounce game is told its display takes: 0 = 60 Hz; 1 = 120 Hz too where the window's
+    help display refreshes at 119 Hz or more; 2 = 120 Hz too on any display. A game that turns 120 Hz on is then
+    help paced at 120 frames a second with fps_limit=game
+setting TV resolution
+    key tv_resolution
+    int 0 2
+    default 0
+    startup
+    words 1920x1080|Display's|3840x2160
+    help The picture an Ounce game is told the TV shows in TV mode: 0 = 1920x1080; 1 = 3840x2160 where the window's
+    help display's mode is that large, else 1920x1080; 2 = 3840x2160 on any display. A Switch game is told 1920x1080
 setting Fullscreen
     key fullscreen
     int 0 1
@@ -378,6 +417,50 @@ setting ASTC mode
     help from the BC7 cache. BC7 at load = encoded as BC7 as each texture loads, with no
     help RGBA8 image before it, as feat/ounce does (temporary, to compare). Where the GPU samples ASTC it does
     help nothing. It takes the place of astc_bc, whose 1 is Auto
+setting Texture shed
+    label Texture levels give way
+    key texture_shed
+    int 0 1
+    default 0
+    words Off|On
+    help On = a texture of 1 MiB or more mapped whole, with mipmaps, that the GPU only reads is made with sparse
+    help residency (where the GPU has it, and VK_EXT_image_view_min_lod): when the GPU's memory runs short its finest
+    help level gives way, the texture sampled at half its resolution for a while, in place of the whole texture
+    help evicted and loaded again at its next use; the level comes back when there is room. Off (the default for now)
+    help = textures are whole. On a GPU whose images and buffers take blocks apart, the image blocks run full past the
+    help budget and the sparse blocks of such textures find no memory for frames at a time
+setting Texture half res
+    label Textures at half resolution under pressure
+    key texture_half_res
+    int 0 2
+    default 0
+    words Auto|Never|Always
+    help A texture of 1 MiB or more mapped whole, with mipmaps, that the GPU only reads, made while the GPU's memory is
+    help under pressure (its use at 90% of the budget, or short in the last 300 presents), is made with sparse
+    help residency (where the GPU has it, and VK_EXT_image_view_min_lod) and its finest level never bound: sampled at
+    help half its resolution, a quarter of its memory, its size still the game's for textureSize and texelFetch. The
+    help level comes back when there is room, as texture_shed's do. Auto = under pressure, Never, Always
+setting ASTC lines BC1
+    label Colour ASTC textures as BC1
+    key astc_lines_bc1
+    int 0 2
+    default 1
+    words Auto|Never|Always
+    help Under astc_mode's Auto, an opaque colour ASTC texture whose 4x4 blocks hold more colours than BC1's line (the
+    help ones held as BC7) is held as BC1 instead, half BC7's memory and coarser. Auto = once the GPU's memory has run
+    help short (an image found no memory, the caches stayed past their budget, or a trim took what the last frames used),
+    help for the textures loaded from then on. Never (the default) = BC7. Always = from the start. On a 2 GB GPU Mario
+    help Kart World's race ran no faster with Auto (10.3 and 10.9 frames a second against 12.2 and 11.1): the cache
+    help fills what it saves
+setting Texture system memory
+    label Textures given way to system memory
+    key texture_sysmem
+    int 0 1
+    default 1
+    words Off|On
+    help On = where the GPU's memory runs short, a texture the cache would evict is moved into system memory instead,
+    help where the GPU still samples it (more slowly, over the bus), and moved back when it is used and there is room.
+    help Off = it is evicted, and loaded again at its next use
 setting BC7 queue
     key bc7_queue
     int 0 16384
@@ -409,6 +492,17 @@ setting ASTC background
     words Nobody|GPU
     help Who makes the better version of the very large ASTC textures encoded quickly (ASTC quick Mtexels): 1 = the
     help GPU, a piece after each frame; 0 = nobody: they stay as they were encoded quickly
+
+table g_audio_ini
+setting Volume
+    key volume
+    int 0 100
+    default 100
+    words Mute|#%
+    step 5
+    slider
+    help How loud the game plays, in percent of its own sound: 0 = mute. The system's volume stays as it is. The game's
+    help menu sets it while the game plays
 
 table g_performance_ini
 setting FPS limit
@@ -1287,6 +1381,17 @@ setting Native cond var
     help 1 = the game's std::condition_variable, std::mutex and std::recursive_mutex wait on the host's own
     help (hle/hook/hooks.hook's cond_var family), and save states are refused, as a state can't hold a thread waiting
     help there. 0 = the game's own code waits, and save states can be taken and loaded
+setting Native os sync
+    key native_os_sync
+    label Native nn::os waits
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = nn::os's sleeps, yields, locks and condition variables (hle/hook/hooks.hook's os_sync family) and its light
+    help events, semaphores and message queues (os_light) run on the host with no SVC, a lock's waiters waiting on its
+    help word with the host's futex, and save states are refused, as a state can't hold a thread waiting there. 0 = the game's own code makes the SVCs, and save states can be taken
+    help and loaded
 setting Shader corpus
     key shader_corpus
     text 1024
@@ -1468,6 +1573,17 @@ setting HMMA in half floats
     help sum past 65504 is an infinity. 0 = the f32 sum, as exact as the console's. A device with the mixed dot
     help product (VK_VALVE_shader_mixed_float_dot_product) or without shaderFloat16 keeps the f32 sum, and the log
     help says so
+setting HMMA A-stationary
+    key hmma_astat
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help An SM86 HMMA off the device's matrix unit forms each product in the lane that holds its A words, takes only
+    help B's words from the other lanes, and adds the partial sums of each quad together in a butterfly of 12 xor
+    help shuffles: the GT 1030 ran the HMMA bench 5.6 times faster than the gather, and 2.7 times faster than A and
+    help B through shared memory. Its f32 sums are a tree, at most 6 roundings a term where the gather's chain has
+    help 16. 0 = the gather, or what the device chose for it (pairs, staging)
 setting Vulkan allocation cap
     key vk_max_allocation_mb
     int 0 INT_MAX
@@ -1824,7 +1940,9 @@ setting @VK_EXT_calibrated_timestamps
 setting @VK_EXT_conditional_rendering
 setting @VK_EXT_conservative_rasterization
 setting @VK_EXT_custom_border_color
+setting @VK_EXT_depth_clamp_control
 setting @VK_EXT_depth_clip_control
+setting @VK_EXT_depth_clip_enable
 setting @VK_EXT_depth_range_unrestricted
 setting @VK_EXT_descriptor_buffer
 setting @VK_EXT_descriptor_heap
@@ -1892,6 +2010,7 @@ setting @VK_VALVE_shader_mixed_float_dot_product
 section Game: g_game_ini
 section Display: g_display_ini
 section Graphics: g_graphics_ini, g_vk_extensions_ini/Vulkan Extensions
+section Audio: g_audio_ini
 section 3DS: g_ctr_display_ini
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend

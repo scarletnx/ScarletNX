@@ -10,6 +10,7 @@
 #include "nx/loader/module.h"
 #include "nx/loader/module_llvm.h"
 #include "nx/loader/codegen_view.h"
+#include "nx/loader/ounce.h"
 #include "nx/runtime/nce/nce_host.h"
 #include "nx/runtime/nce/nce_patch.h"
 #if defined(__ANDROID__)
@@ -48,7 +49,8 @@ static void usage(void) {
          "  --title-keys FILE      title.keys for a dump, found the same way (optional)\n"
          "  --program N            Only program N of a dump's application of several (default: every one)");
     puts("  --KEY=VALUE            A recompile setting: opt, llvm_batch, aot_threads, unit_cache_gb,\n"
-         "                         llvm_pass_<pass>=0 (scarletnx --settings=recompile lists them)");
+         "                         llvm_pass_<pass>=0 (scarletnx --settings=recompile lists them). KEY with a - for\n"
+         "                         each _ is the same setting (--aot-threads=4 is aot_threads=4)");
     puts("  --target auto|linux|win64  The host only: modules are built for the machine that builds them\n"
          "  --target ios           A pack of objects for the iOS app, which loads them into JIT memory (docs/hosts/apple.md)\n"
          "  --no-build             Stage data/INI only, generate no code\n"
@@ -479,8 +481,8 @@ static int nce_prepare(SnxProgram* p, const char* base, int quiet) {
         free(path);
         return snx_error("NCE: the program has no modules");
     }
-    /* the instructions the recompile decodes: an Ounce game's too, as module_llvm.c's analysis does */
-    SnxU64 features = g_settings.cpu_extensions || p->npdm.ounce ? SNX_A64_TARGET_SWITCH_EXTENDED : 0;
+    /* the instructions the recompile decodes, the program's CPU (loader/ounce.h), as module_llvm.c's analysis does */
+    SnxU64 features = snx_guest_features(p->npdm.ounce, g_settings.cpu_extensions);
     if (snx_nx_codegen_analyze(&cg, p, NULL, 0, quiet, features)) {
         free(path);
         return snx_error("NCE: the analysis of the game's code failed");
@@ -999,6 +1001,14 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         else if (arg[0] == '-') {
             value = NULL;
             if ((equal = strchr(arg, '=')) != NULL) {
+                /* a recompile setting, its key's _ a - or not */
+                char key[64];
+                const IniOpt* o = settings_arg(arg, key, sizeof key) ? snx_recompile_setting(key) : NULL;
+                if (o) {
+                    if (ini_check(o, equal + 1, error, sizeof error)) return snx_error("%s", error);
+                    ini_read(o, equal + 1);
+                    continue;
+                }
                 option_size = (size_t)(equal - arg);
                 if (option_size >= sizeof(option))
                     return snx_error("unknown option: %s (scarletnx -r -h lists them)", arg);
@@ -1006,12 +1016,6 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
                 option[option_size] = 0;
                 value = equal + 1;
                 arg = option;
-                if (arg[1] == '-' && snx_recompile_setting(arg + 2)) {
-                    const IniOpt* o = snx_recompile_setting(arg + 2);
-                    if (ini_check(o, value, error, sizeof error)) return snx_error("%s", error);
-                    ini_read(o, value);
-                    continue;
-                }
             }
             if (strcmp(arg, "-o") && strcmp(arg, "--name") && strcmp(arg, "--out") && strcmp(arg, "--outname") &&
                 strcmp(arg, "--keys") && strcmp(arg, "--title-keys") && strcmp(arg, "--outdir") &&

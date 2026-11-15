@@ -392,9 +392,11 @@ static void start_failure_devices(void) {
                  n ? ", and " : "No Vulkan device: ", g_opt_headless ? "graphics" : "graphics and presentation", hint);
 }
 
-/* whether the device multiplies 16x16x16 f16 A and B into an f32 accumulator in subgroup scope in compute, as
-   g_spirv_translate.hmma_coop asks (VK_KHR_cooperative_matrix: RADV from GFX11) */
-static int coop_f16_f32(VkPhysicalDevice phys) {
+/* the shapes of f16 A and B into an f32 accumulator in subgroup scope in compute that the device multiplies, as
+   g_spirv_translate.hmma_coop_shapes asks (VK_KHR_cooperative_matrix: RADV from GFX11): a bit for each of an SM86
+   HMMA's exact 16x8x16 and 16x8x8, a 16x16x16 and Metal's simdgroup_matrix 8x8x8. 0 when it has no product in
+   compute */
+static u32 coop_f16_f32_shapes(VkPhysicalDevice phys) {
     VkPhysicalDeviceCooperativeMatrixPropertiesKHR cp = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &cp};
@@ -409,19 +411,20 @@ static int coop_f16_f32(VkPhysicalDevice phys) {
     for (u32 i = 0; i < n; i++)
         props[i] = (VkCooperativeMatrixPropertiesKHR){.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
     vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(phys, &n, props);
-    int tile = 0;
+    u32 shapes = 0;
     for (u32 i = 0; i < n; i++) {
-        int size = (int)props[i].MSize;
-        if ((size != 8 && size != 16) || props[i].NSize != props[i].MSize || props[i].KSize != props[i].MSize ||
-            props[i].AType != VK_COMPONENT_TYPE_FLOAT16_KHR || props[i].BType != VK_COMPONENT_TYPE_FLOAT16_KHR ||
+        u32 m = props[i].MSize, cols = props[i].NSize, k = props[i].KSize;
+        if (props[i].AType != VK_COMPONENT_TYPE_FLOAT16_KHR || props[i].BType != VK_COMPONENT_TYPE_FLOAT16_KHR ||
             props[i].CType != VK_COMPONENT_TYPE_FLOAT32_KHR ||
             props[i].ResultType != VK_COMPONENT_TYPE_FLOAT32_KHR || props[i].saturatingAccumulation ||
             props[i].scope != VK_SCOPE_SUBGROUP_KHR)
             continue;
-        if (size == 16) return 16; /* one product an HMMA, where the driver has the wider tile */
-        tile = 8;
+        if (m == 16 && cols == 16 && k == 16) shapes |= SH_COOP_16x16x16;
+        else if (m == 16 && cols == 8 && k == 16) shapes |= SH_COOP_16x8x16;
+        else if (m == 16 && cols == 8 && k == 8) shapes |= SH_COOP_16x8x8;
+        else if (m == 8 && cols == 8 && k == 8) shapes |= SH_COOP_8x8x8;
     }
-    return tile;
+    return shapes;
 }
 
 /* The subgroup sizes a pipeline stage can require, where has says the device has them: Vulkan 1.3's, or a 1.2 device's
@@ -834,6 +837,8 @@ static int create_device(void) {
     int has_hdr_metadata = 0;
     int has_gpl = 0, has_eds2 = 0, has_eds3 = 0; /* the extensions of pipeline libraries and their dynamic state */
     int has_depth_clip_control = 0;              /* and of the depth range as one of those states */
+    int has_depth_clip_enable = 0;               /* depth clipping apart from the clamp (VK_EXT_depth_clip_enable) */
+    int has_depth_clamp_control = 0;             /* the clamp's own range (VK_EXT_depth_clamp_control) */
     int has_mesh = 0;
     int has_size_control = 0; /* VK_EXT_subgroup_size_control, on a 1.2 device: 1.3 has it in its core */
     int has_mixed_dot = 0; /* VK_VALVE_shader_mixed_float_dot_product: HMMA's pairs of f16 products in one instruction */
@@ -880,6 +885,8 @@ static int create_device(void) {
         has_eds2 = snx_vk_extensions_has(&e, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
         has_eds3 = snx_vk_extensions_has(&e, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
         has_depth_clip_control = snx_vk_extensions_has(&e, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
+        has_depth_clip_enable = snx_vk_extensions_has(&e, VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
+        has_depth_clamp_control = snx_vk_extensions_has(&e, VK_EXT_DEPTH_CLAMP_CONTROL_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
         /* only when vk_checkpoints asks: a device made with it marks every draw and dispatch, and a RenderDoc capture
@@ -1123,6 +1130,10 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
     VkPhysicalDeviceDepthClipControlFeaturesEXT qclip_control = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT};
+    VkPhysicalDeviceDepthClipEnableFeaturesEXT qclip_enable = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
+    VkPhysicalDeviceDepthClampControlFeaturesEXT qclamp_control = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLAMP_CONTROL_FEATURES_EXT};
     /* with the subset enabled, each of its features is off until the device asks for it: a view's swizzle, for one */
     PortabilityFeatures qport = {.sType = PORTABILITY_FEATURES_STYPE};
     VkPhysicalDevicePresentIdFeaturesKHR qpid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
@@ -1173,6 +1184,8 @@ static int create_device(void) {
                            has_gpl ? &qgpl : NULL,
                            has_eds3 ? &qeds3 : NULL,
                            has_depth_clip_control ? &qclip_control : NULL,
+                           has_depth_clip_enable ? &qclip_enable : NULL,
+                           has_depth_clamp_control ? &qclamp_control : NULL,
                            has_portability ? &qport : NULL,
                            has_reconvergence ? &qreconv : NULL,
                            robustness ? &qpipeline : NULL,
@@ -1229,15 +1242,19 @@ static int create_device(void) {
     g_vk.has_display_timing = has_google_timing && !g_vk.has_present_wait;
     /* VK_EXT_robustness2 for the whole device: reads past a buffer's bound range are zero and writes there are
        dropped (the console's constant buffers read zero past their size, and an unmapped page of a program's storage
-       map is index 0xffffffff, shader_gbuf_word_index), image reads out of bounds are zero with an alpha of 1, and
-       empty slots take null descriptors (vk_null_descriptors). A ban of robustBufferAccess2 also stops the bounds of
-       vertex inputs below, and the device-wide feature needs robustBufferAccess */
+       map is index 0xffffffff, shader_gbuf_word_index), image reads out of bounds are zero (an alpha of 1 where the
+       format has none), and empty slots take null descriptors (vk_null_descriptors). A ban of robustBufferAccess2 also
+       stops the bounds of vertex inputs below, and the device-wide feature needs robustBufferAccess */
     VkPhysicalDeviceRobustness2PropertiesEXT robust_limits = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_PROPERTIES_EXT};
     if (has_robustness2) {
-        if (vk_ban("robustBufferAccess2", qrobust.robustBufferAccess2, ban_say)) qrobust.robustBufferAccess2 = VK_FALSE;
-        if (vk_ban("robustImageAccess2", qrobust.robustImageAccess2, ban_say)) qrobust.robustImageAccess2 = VK_FALSE;
-        if (vk_ban("nullDescriptor", qrobust.nullDescriptor, ban_say)) qrobust.nullDescriptor = VK_FALSE;
+        /* an extension's feature, keyed as extension_bans.txt's head says (extension.feature) */
+        if (vk_ban("VK_EXT_robustness2.robustBufferAccess2", qrobust.robustBufferAccess2, ban_say))
+            qrobust.robustBufferAccess2 = VK_FALSE;
+        if (vk_ban("VK_EXT_robustness2.robustImageAccess2", qrobust.robustImageAccess2, ban_say))
+            qrobust.robustImageAccess2 = VK_FALSE;
+        if (vk_ban("VK_EXT_robustness2.nullDescriptor", qrobust.nullDescriptor, ban_say))
+            qrobust.nullDescriptor = VK_FALSE;
         VkPhysicalDeviceProperties2 query = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
                                              .pNext = &robust_limits};
         vkGetPhysicalDeviceProperties2(g_vk.phys, &query);
@@ -1246,12 +1263,14 @@ static int create_device(void) {
     g_vk.robust_image2 = qrobust.robustImageAccess2 != 0;
     g_vk.null_descriptor = qrobust.nullDescriptor != 0;
     g_vk.robust_ubo_align = (u32)robust_limits.robustUniformBufferAccessSizeAlignment;
+    g_vk.robust_ssbo_align = (u32)robust_limits.robustStorageBufferAccessSizeAlignment;
     LOG("vulkan: robustness2: robustBufferAccess2=%d robustImageAccess2=%d nullDescriptor=%d (uniform ranges checked "
         "in %u-byte steps, storage in %u)%s\n",
-        g_vk.robust_buffer2, g_vk.robust_image2, g_vk.null_descriptor, g_vk.robust_ubo_align,
-        (u32)robust_limits.robustStorageBufferAccessSizeAlignment,
+        g_vk.robust_buffer2, g_vk.robust_image2, g_vk.null_descriptor, g_vk.robust_ubo_align, g_vk.robust_ssbo_align,
         has_robustness2 ? "" : ", the device has no VK_EXT_robustness2");
-    g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2;
+    /* device-wide robustBufferAccess2 already gives vertex inputs their strict bounds: the per-pipeline struct (and
+       VK_EXT_pipeline_robustness) is only needed where the device feature is off, so don't chain a redundant one */
+    g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2 && !g_vk.robust_buffer2;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_fault = has_fault && qfault.deviceFault;
     g_vk.has_pageable = has_pageable && qpriority.memoryPriority && qpageable.pageableDeviceLocalMemory;
@@ -1348,6 +1367,8 @@ static int create_device(void) {
                           .patch = qeds2.extendedDynamicState2PatchControlPoints,
                           .depth_range = qeds3.extendedDynamicState3DepthClipNegativeOneToOne,
                           .depth_clip_control = qclip_control.depthClipControl,
+                          .depth_clip = qeds3.extendedDynamicState3DepthClipEnable,
+                          .has_depth_clip_enable = has_depth_clip_enable && qclip_enable.depthClipEnable,
                           .has_provoking_last = g_vk.has_provoking_last,
                           .has_conservative = g_vk.has_conservative};
         char line[400];
@@ -1363,6 +1384,29 @@ static int create_device(void) {
         }
         vk_depth_range_line(&gd, g_vk.dyn_pr, line, sizeof line);
         LOG("%s\n", line);
+        /* depth clipping and clamping apart, as the console's viewport clip control has them, where the device can;
+           with pipeline libraries' dynamic clamp only if the clip is dynamic too (pipeline_parts.h) */
+        int clamp_alone = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLAMP) && !(g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLIP);
+        g_vk.has_depth_clip_enable = gd.has_depth_clip_enable && !clamp_alone;
+        if (g_vk.has_depth_clip_enable)
+            LOG("vulkan: depth is clipped and clamped as the console sets each (VK_EXT_depth_clip_enable%s)\n",
+                g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLIP ? ", both as dynamic state" : "");
+        else
+            LOG("vulkan: depth clipping goes with the clamp, one switch: a fragment's depth past the viewport's range is "
+                "undefined with the clamp off, where the console clamps it (%s)\n",
+                !has_depth_clip_enable ? "VK_EXT_depth_clip_enable is off: its line above says why"
+                : !qclip_enable.depthClipEnable
+                    ? "the device has VK_EXT_depth_clip_enable without depthClipEnable"
+                    : "the clamp is dynamic state and the device has no extendedDynamicState3DepthClipEnable");
+        g_vk.has_depth_clamp_range = has_depth_clamp_control && qclamp_control.depthClampControl;
+        if (g_vk.has_depth_clamp_range)
+            LOG("vulkan: a clamped depth stays in the viewport's clip range, as the console clamps it "
+                "(VK_EXT_depth_clamp_control, as dynamic state)\n");
+        else
+            LOG("vulkan: a clamped depth stays in the viewport transform's range, where the console clamps to the "
+                "viewport's clip range (%s)\n",
+                !has_depth_clamp_control ? "VK_EXT_depth_clamp_control is off: its line above says why"
+                                         : "the device has VK_EXT_depth_clamp_control without depthClampControl");
     }
     g_vk.has_xfb = g_vk.has_xfb && fxfb.transformFeedback;
     g_vk.has_geometry_streams = g_vk.has_xfb && fxfb.geometryStreams;
@@ -1483,23 +1527,34 @@ static int create_device(void) {
         LOG("vulkan: hmma_f16=1 asks for HMMA's sums in half floats; they stay in f32, as hmma_f16=0's: %s\n",
             shader_hmma_f16_unused());
     /* its f16 matrices are Float16's, its modules the Vulkan memory model's, and its matrices span a subgroup of 32.
-       The tile is the 8 or the 16 its vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR offers: Metal's
-       simdgroup_matrix is 8x8x8, so an SM86 HMMA is four products there and one where the tile is 16 */
+       The shapes are the ones vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR lists: an SM86 HMMA's exact 16x8x16
+       and 16x8x8 where they are, a 16x16x16, and Metal's simdgroup_matrix 8x8x8 */
     /* A subgroup of 32 lanes, which is what an HMMA and its matrices span: has_cs_warp32 where the device lets a
        pipeline ask for one, or where its subgroups are already 32 and compute has them (Metal's are, at every
        stage). Gating the matrix unit on the request alone left every driver whose size is fixed without it */
     int warp32 = g_vk.has_cs_warp32 || (subgroup.subgroupSize == 32 &&
                                         (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0);
-    int coop_tile = has_coop && qcoop.cooperativeMatrix && g_spirv_translate.float16 && q12.vulkanMemoryModel &&
-                            q12.vulkanMemoryModelDeviceScope && warp32
-                        ? coop_f16_f32(g_vk.phys)
-                        : 0;
-    g_spirv_translate.hmma_coop = coop_tile ? (int)g_vk.props.limits.maxComputeSharedMemorySize : 0;
-    g_spirv_translate.hmma_coop_tile = coop_tile ? coop_tile : 16;
-    if (coop_tile)
-        LOG("vulkan: HMMA runs on the device's cooperative matrices, %dx%dx%d a product, shared memory's own "
-            "fragments after the program's\n",
-            coop_tile, coop_tile, coop_tile);
+    u32 coop_shapes = has_coop && qcoop.cooperativeMatrix && g_spirv_translate.float16 && q12.vulkanMemoryModel &&
+                              q12.vulkanMemoryModelDeviceScope && warp32
+                          ? coop_f16_f32_shapes(g_vk.phys)
+                          : 0;
+    g_spirv_translate.hmma_coop = coop_shapes ? (int)g_vk.props.limits.maxComputeSharedMemorySize : 0;
+    g_spirv_translate.hmma_coop_shapes = coop_shapes;
+    if (coop_shapes) {
+        char names[64] = "";
+        static const struct {
+            u32 bit;
+            const char* name;
+        } listed[] = {{SH_COOP_16x16x16, "16x16x16"}, {SH_COOP_16x8x16, "16x8x16"},
+                      {SH_COOP_16x8x8, "16x8x8"}, {SH_COOP_8x8x8, "8x8x8"}};
+        for (u32 i = 0; i < 4; i++)
+            if (coop_shapes & listed[i].bit) {
+                size_t used = strlen(names);
+                snprintf(names + used, sizeof names - used, "%s%s", used ? ", " : "", listed[i].name);
+            }
+        LOG("vulkan: HMMA runs on the device's cooperative matrices, %s a product, shared memory's own fragments "
+            "after the program's\n", names);
+    }
     f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_spirv_translate.hmma_coop != 0;
     /* HMMA off the matrix unit: pairs of lanes on RADV with subgroups of 32 (an RX 6700 XT's HMMA bench ran 9.7%
        faster), and A and B through shared memory where the driver loops for a shuffle whose index differs between
@@ -1852,7 +1907,8 @@ static int create_device(void) {
         .extendedDynamicState3ProvokingVertexMode = (g_vk.dyn_pr & VK_DYN_PR_PROVOKING) != 0,
         .extendedDynamicState3ConservativeRasterizationMode = (g_vk.dyn_pr & VK_DYN_PR_CONSERVATIVE) != 0,
         .extendedDynamicState3ExtraPrimitiveOverestimationSize = (g_vk.dyn_pr & VK_DYN_PR_CONSERVATIVE) != 0,
-        .extendedDynamicState3DepthClipNegativeOneToOne = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) != 0};
+        .extendedDynamicState3DepthClipNegativeOneToOne = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) != 0,
+        .extendedDynamicState3DepthClipEnable = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLIP) != 0};
     VkPhysicalDeviceDepthClipControlFeaturesEXT fclip_control = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT, .depthClipControl = VK_TRUE};
     if (g_vk.has_gpl) {
@@ -1876,6 +1932,22 @@ static int create_device(void) {
             chain = &fclip_control;
             ext[next++] = VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME;
         }
+    }
+    VkPhysicalDeviceDepthClipEnableFeaturesEXT fclip_enable = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT,
+        .pNext = chain,
+        .depthClipEnable = VK_TRUE};
+    if (g_vk.has_depth_clip_enable) {
+        chain = &fclip_enable;
+        ext[next++] = VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceDepthClampControlFeaturesEXT fclamp_control = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLAMP_CONTROL_FEATURES_EXT,
+        .pNext = chain,
+        .depthClampControl = VK_TRUE};
+    if (g_vk.has_depth_clamp_range) {
+        chain = &fclamp_control;
+        ext[next++] = VK_EXT_DEPTH_CLAMP_CONTROL_EXTENSION_NAME;
     }
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR findex8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR,

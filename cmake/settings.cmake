@@ -6,7 +6,8 @@
 # against the Khronos registry, vk.xml of the Vulkan-Headers the renderer builds with). It runs during the build, so a
 # cross build also builds it for the machine doing the build (SNX_HOST_CC), as svcgen.cmake does for svcgen.
 #
-#   snx_settings          g_settings, the launcher's and the recompiler's tables, ini.c: the launcher, the driver
+#   snx_settings          g_settings, the launcher's and the recompiler's tables, ini.c: the launcher, the driver;
+#                         and settings_args.c, the settings' names on a command line (settings_arg): every driver
 #   snx_settings_runtime  the game's .ini's tables, a file each, and its sections: the set functions are the runtime's
 #   SNX_SETTINGS_LLVM     settings_llvm.c, for the LLVM backend's side of the driver
 include_guard(GLOBAL)
@@ -138,7 +139,7 @@ foreach(line IN LISTS snx_settings_tables)
     endif()
 endforeach()
 list(TRANSFORM snx_settings_runtime_files PREPEND "${snx_settings_out}/")
-set(snx_settings_files snx_settings.h settings.c settings_launch.c settings_llvm.c)
+set(snx_settings_files snx_settings.h settings.c settings_launch.c settings_llvm.c settings_args.c)
 list(TRANSFORM snx_settings_files PREPEND "${snx_settings_out}/" OUTPUT_VARIABLE snx_settings_outputs)
 list(APPEND snx_settings_outputs ${snx_settings_runtime_files})
 add_custom_command(OUTPUT ${snx_settings_outputs}
@@ -148,7 +149,7 @@ add_custom_command(OUTPUT ${snx_settings_outputs}
 add_custom_target(snx_settings_generated DEPENDS ${snx_settings_outputs})
 
 add_library(snx_settings STATIC "${snx_settings_out}/settings.c" "${snx_settings_out}/settings_launch.c"
-                                "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+                                "${snx_settings_out}/settings_args.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 set_target_properties(snx_settings PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON) # ini.c: __atomic
 target_compile_options(snx_settings PRIVATE -Wall -Wextra -Werror=missing-prototypes -Werror=missing-variable-declarations)
 target_include_directories(snx_settings PUBLIC "${snx_settings_out}" "${PROJECT_SOURCE_DIR}/src")

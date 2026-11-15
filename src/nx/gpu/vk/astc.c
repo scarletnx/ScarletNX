@@ -887,7 +887,7 @@ static void bc7_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 build, u3
 }
 
 /* A strip's ASTC blocks straight into BC1, BC4 or BC5 blocks (kind 1, 4 or 5) by astc_bcn.comp, an invocation a 4x4
-   block, as bc7_transcode lays them out, into the BC7 encoder's scratch buffer from its start: one pass, as the
+   block (an ASTC block, for a footprint of whole 4x4 blocks), as bc7_transcode lays them out, into the BC7 encoder's scratch buffer from its start: one pass, as the
    encoders have no search to split */
 static void bcn_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 kind, u32 w, u32 height, u32 nx, u32 n, u32 nz,
                           u32 bw, u32 bh, u32 srgb) {
@@ -910,7 +910,11 @@ static void bcn_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 kind, u32
     rec_CmdPushConstants(cb, g_astc.bc7_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
     vk_ck(cb, VK_CK_BC7, cx, cy, nz, bw << 8 | bh);
     vk_gpuprof_tag(VK_PROF_BC7);
-    rec_CmdDispatch(cb, (cx + 63) / 64, cy, nz);
+    /* a footprint of whole 4x4 blocks: an invocation an ASTC block, which makes the blocks inside it (astc_bcn.glsl) */
+    if ((bw | bh) % 4 == 0)
+        rec_CmdDispatch(cb, (nx + 63) / 64, n, nz);
+    else
+        rec_CmdDispatch(cb, (cx + 63) / 64, cy, nz);
     scratch_barrier(cb, g_astc.bc7_scratch, USE_WRITE, 0, USE_COPY);
 }
 
@@ -1462,6 +1466,12 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
        memory left out (gpu/vk/texture.c tex_bind), as the game maps a small part of such a texture */
     const VkSparseShape* sh = t->sparse ? vk_image_sparse_shape(t->img) : NULL;
     if (sh && level >= sh->tail_first) sh = NULL;
+    /* a texture sparse for its levels alone (texture.c's shed): a level from its floor on is bound whole, and loads as
+       any texture's does; one finer has no memory, and nothing to load */
+    if (sh && t->shed) {
+        if (level < t->lod_floor) return 1;
+        sh = NULL;
+    }
     if (sh) {
         u32 k = sh->gran.height / bh ? sh->gran.height / bh : 1;
         k = (k + unit - 1) / unit * unit;
@@ -1497,7 +1507,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
            would stay */
         const u32 lw = t->w >> level ? t->w >> level : 1, lh = t->h >> level ? t->h >> level : 1;
         const u32 ld = t->type == VK_IMAGE_VIEW_TYPE_3D && t->depth3d >> level ? t->depth3d >> level : 1;
-        const int quick = !t->sparse && quick_level((u64)lw * lh * ld *
+        const int quick = (!t->sparse || t->shed) && quick_level((u64)lw * lh * ld *
                                                     (t->type == VK_IMAGE_VIEW_TYPE_3D || !t->layers ? 1 : t->layers));
         const u32 build = quick ? 3 : vk_bc7_build(lw, lh, ld);
         bc7_build = build;

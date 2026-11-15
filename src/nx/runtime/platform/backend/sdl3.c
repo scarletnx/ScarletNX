@@ -29,6 +29,7 @@
 #include "nx/runtime/platform/hotkeys.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/quit_key.h"
+#include "common/utilities/audio_volume.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,6 +102,8 @@ static struct {
     /* the window's display's refresh period in ns (0 not known), set on the main thread when the window opens or moves
        to another display, read by the renderer's threads */
     u64 refresh_ns;
+    /* the size of that display's mode in pixels, w | h << 32 (0 not known), set and read as refresh_ns is */
+    u64 mode_px;
     /* the window's part clear of the system's bars, in pixels, x | y << 16 | w << 32 | h << 48, or 0 for all of it: set
        on the main thread with the size, read by the renderer on its own */
     u64 wsafe;
@@ -138,7 +141,15 @@ struct PAudio {
     SDL_AudioStream* stream;
     int logged_data, logged_nonzero;
     int downmix; /* the game's 5.1 is mixed to the stream's stereo here */
+    int volume;  /* the player's Volume its device was given last (audio_volume.h), -1 before */
 };
+/* the player's Volume on a's device: the setting the .ini, its reload and the game's menu change, read as it is now */
+static int audio_volume(PAudio* a) {
+    int volume = __atomic_load_n(&g_settings.volume, __ATOMIC_RELAXED);
+    if (!snx_audio_volume_follow(a->stream, volume, &a->volume))
+        WARN_LIMIT(4, "audio: SDL could not set the output's volume to %d%%: %s\n", volume, SDL_GetError());
+    return volume;
+}
 
 PAudio* plat_audio_open(u32 rate, u32 channels) {
     if (g_opt_headless || !g_sdl3.audio_ready) return NULL;
@@ -171,19 +182,22 @@ PAudio* plat_audio_open(u32 rate, u32 channels) {
     }
     a->stream = stream;
     a->downmix = downmix;
+    a->volume = -1;
+    int volume = audio_volume(a);
     /* the device by its format, never its name: the system names a headset after its owner ("<name>'s headphones"), and
        players attach the log to public reports */
     SDL_AudioSpec device;
     int frames = 0;
     if (SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream), &device, &frames))
         LOG("audio: SDL %s output opened on the system default, which plays %s at %d Hz, %d channels, %d-frame "
-            "buffer; the game gives %u Hz, %u channels, signed 16-bit PCM%s\n",
+            "buffer; the game gives %u Hz, %u channels, signed 16-bit PCM%s; volume %d%%\n",
             SDL_GetCurrentAudioDriver(), SDL_GetAudioFormatName(device.format), device.freq, device.channels, frames,
-            rate, channels, downmix ? ", mixed to 2 channels here" : "");
+            rate, channels, downmix ? ", mixed to 2 channels here" : "", volume);
     else
         LOG("audio: SDL %s output opened on the system default, whose format SDL does not give (%s); the game gives "
-            "%u Hz, %u channels, signed 16-bit PCM%s\n",
-            SDL_GetCurrentAudioDriver(), SDL_GetError(), rate, channels, downmix ? ", mixed to 2 channels here" : "");
+            "%u Hz, %u channels, signed 16-bit PCM%s; volume %d%%\n",
+            SDL_GetCurrentAudioDriver(), SDL_GetError(), rate, channels, downmix ? ", mixed to 2 channels here" : "",
+            volume);
     return a;
 }
 
@@ -195,6 +209,7 @@ void plat_audio_close(PAudio* a) {
 
 int plat_audio_queue(PAudio* a, const void* samples, u32 bytes) {
     if (!a || !bytes) return 0;
+    audio_volume(a); /* a change since the last buffer, heard from what SDL has queued on */
     /* SDL's length is signed. Split only at whole stereo frames, without truncating a large guest buffer. */
     const u8* p = samples;
     u32 left = bytes;
@@ -260,6 +275,73 @@ void plat_audio_volume(PAudio* a, float volume) {
         WARN_LIMIT(4, "audio: SDL could not set output volume: %s\n", SDL_GetError());
 }
 
+struct PMic {
+    SDL_AudioStream* stream;
+};
+
+/* the recording device whose name holds device, ignoring case: the default when none does or device is empty */
+static SDL_AudioDeviceID mic_device(const char* device) {
+    SDL_AudioDeviceID found = SDL_AUDIO_DEVICE_DEFAULT_RECORDING;
+    int count = 0;
+    if (!*device) return found;
+    SDL_AudioDeviceID* ids = SDL_GetAudioRecordingDevices(&count);
+    for (int i = 0; ids && i < count && found == SDL_AUDIO_DEVICE_DEFAULT_RECORDING; i++) {
+        const char* name = SDL_GetAudioDeviceName(ids[i]);
+        if (name && SDL_strcasestr(name, device)) found = ids[i];
+    }
+    SDL_free(ids);
+    if (found == SDL_AUDIO_DEVICE_DEFAULT_RECORDING)
+        WARN("audio: no recording device's name holds the microphone setting's text: the system default records\n");
+    return found;
+}
+
+PMic* plat_mic_open(u32 rate, const char* device) {
+    if (g_opt_headless || !g_sdl3.audio_ready) return NULL;
+    SDL_AudioSpec spec = {SDL_AUDIO_S16, 1, (int)rate}; /* the host's order: read as i16 */
+    SDL_AudioStream* stream = SDL_OpenAudioDeviceStream(mic_device(device), &spec, NULL, NULL);
+    if (!stream) {
+        WARN("audio: SDL could not open a recording device: %s\n", SDL_GetError());
+        return NULL;
+    }
+    PMic* m = calloc(1, sizeof *m);
+    if (!m || !SDL_ResumeAudioStreamDevice(stream)) {
+        WARN("audio: SDL could not start recording: %s\n", m ? SDL_GetError() : "out of memory");
+        SDL_DestroyAudioStream(stream);
+        free(m);
+        return NULL;
+    }
+    m->stream = stream;
+    /* the device by its format, never its name, as for the output */
+    SDL_AudioSpec from;
+    int frames = 0;
+    if (SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream), &from, &frames))
+        LOG("audio: SDL %s recording device opened, which records %s at %d Hz, %d channels, %d-frame buffer; the game "
+            "gets mono signed 16-bit PCM at %u Hz\n",
+            SDL_GetCurrentAudioDriver(), SDL_GetAudioFormatName(from.format), from.freq, from.channels, frames, rate);
+    else
+        LOG("audio: SDL %s recording device opened; the game gets mono signed 16-bit PCM at %u Hz\n",
+            SDL_GetCurrentAudioDriver(), rate);
+    return m;
+}
+
+void plat_mic_close(PMic* m) {
+    if (!m) return;
+    SDL_DestroyAudioStream(m->stream); /* and the device the stream opened with it */
+    free(m);
+}
+
+u32 plat_mic_available(PMic* m) {
+    int n = m ? SDL_GetAudioStreamAvailable(m->stream) : 0;
+    return n > 0 ? (u32)n / 2 : 0;
+}
+
+u32 plat_mic_read(PMic* m, i16* samples, u32 frames) {
+    if (!m || !frames) return 0;
+    int n = SDL_GetAudioStreamData(m->stream, samples, (int)(frames > 0x3FFFFFFFu ? 0x3FFFFFFFu : frames) * 2);
+    if (n < 0) WARN_LIMIT(4, "audio: SDL could not read the recording: %s\n", SDL_GetError());
+    return n > 0 ? (u32)n / 2 : 0;
+}
+
 /* the game's touch screen is g_settings.touch_screen: 0 nothing, 1 the fingers, 2 the fingers and the mouse's left
    button (ini key touch) */
 /* a finger (or the mouse) down, moved or up on the game's touch screen: under input_lock, which hid's update reads
@@ -315,15 +397,27 @@ static void wsize_set(int w, int h) {
 }
 static void refresh_set(void) {
     const SDL_DisplayMode* m = g_sdl3.win ? SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(g_sdl3.win)) : NULL;
-    u64 ns = 0;
+    u64 ns = 0, px = 0;
     if (m && m->refresh_rate_numerator > 0 && m->refresh_rate_denominator > 0)
         ns = (u64)1000000000u * (u64)m->refresh_rate_denominator / (u64)m->refresh_rate_numerator;
     else if (m && m->refresh_rate > 0)
         ns = (u64)(1e9 / m->refresh_rate);
     __atomic_store_n(&g_sdl3.refresh_ns, ns, __ATOMIC_RELAXED);
+    /* a mode's size is in the desktop's units, which its pixel density scales to pixels (a 4K display at 200% is a
+       1920x1080 mode of density 2) */
+    if (m && m->w > 0 && m->h > 0) {
+        float d = m->pixel_density > 0 ? m->pixel_density : 1.0f;
+        px = (u64)(u32)((float)m->w * d + 0.5f) | (u64)(u32)((float)m->h * d + 0.5f) << 32;
+    }
+    __atomic_store_n(&g_sdl3.mode_px, px, __ATOMIC_RELAXED);
 }
 u64 backend_display_refresh_ns(void) {
     return g_opt_headless ? 0 : __atomic_load_n(&g_sdl3.refresh_ns, __ATOMIC_RELAXED);
+}
+void backend_display_mode(u32* w, u32* h) {
+    u64 v = g_opt_headless ? 0 : __atomic_load_n(&g_sdl3.mode_px, __ATOMIC_RELAXED);
+    *w = (u32)v;
+    *h = (u32)(v >> 32);
 }
 static void wsafe_set(void) {
     SDL_Rect r;
@@ -1774,11 +1868,20 @@ void video_poll(void) {
         pm_lock(&g_host.hid.lock);
         for (int i = 0; i < SNX_GAMEPADS; i++)
             for (int m = 0; m < 2; m++) {
-                rumble[i][m] =
-                    __atomic_load_n(&(i ? &g_hle.hid.pad_extra[i - 1] : &g_hle.hid.pad1)->rumble[m], __ATOMIC_RELAXED);
+                u32 now = __atomic_load_n(&(i ? &g_hle.hid.pad_extra[i - 1] : &g_hle.hid.pad1)->rumble[m],
+                                          __ATOMIC_RELAXED);
+                /* with the strongest the game asked since the last poll, so a short pulse is not lost between two */
+                u32 peak = i < HID_PADS ? g_host.hid.rumble_peak[i][m] : 0;
+                if (i < HID_PADS) g_host.hid.rumble_peak[i][m] = 0;
+                rumble[i][m] = ((now & 0xffff) > (peak & 0xffff) ? now & 0xffff : peak & 0xffff) |
+                               ((now >> 16) > (peak >> 16) ? now >> 16 : peak >> 16) << 16;
                 hz[i][2 * m] = g_hle.hid.vibration[i][m].freq_low;
                 hz[i][2 * m + 1] = g_hle.hid.vibration[i][m].freq_high;
             }
+        pm_unlock(&g_host.hid.lock);
+    } else { /* paused: what the game asked before comes to nothing after it */
+        pm_lock(&g_host.hid.lock);
+        memset(g_host.hid.rumble_peak, 0, sizeof g_host.hid.rumble_peak);
         pm_unlock(&g_host.hid.lock);
     }
     pm_lock(&g_host.hid.input_lock);

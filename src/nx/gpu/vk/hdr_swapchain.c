@@ -45,6 +45,11 @@ int vk_hdr_metadata(const SnxHdrFrame* frame, VkHdrMetadataEXT* out) {
     for (u32 i = 0; i < 12; i++)
         if (!isfinite(m[i]) || m[i] < 0 || (i < 8 && m[i] > 1)) return 0;
     if (m[9] <= m[8]) return 0;
+    /* the content's light levels as NVN leaves them in a window builder, 200 and 60 nits, say nothing
+       of the content: one game left them so for frames whose highlights reach 588 nits, and a compositor that took
+       200 as the content's peak tone mapped them down to its SDR white. Those go as 0, not known, and the display's
+       range alone stands; levels a game set are sent as it set them */
+    int defaults = m[10] == 200.0f && m[11] == 60.0f;
     *out = (VkHdrMetadataEXT){.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,
                               .displayPrimaryRed = {m[0], m[1]},
                               .displayPrimaryGreen = {m[2], m[3]},
@@ -52,8 +57,8 @@ int vk_hdr_metadata(const SnxHdrFrame* frame, VkHdrMetadataEXT* out) {
                               .whitePoint = {m[6], m[7]},
                               .maxLuminance = m[9],
                               .minLuminance = m[8],
-                              .maxContentLightLevel = m[10],
-                              .maxFrameAverageLightLevel = m[11]};
+                              .maxContentLightLevel = defaults ? 0.0f : m[10],
+                              .maxFrameAverageLightLevel = defaults ? 0.0f : m[11]};
     return 1;
 }
 

@@ -171,7 +171,9 @@ the game's image read from that image.
   SDK opens no session), at the address its AOT module is made for when it has one; its BSS zeroed; relocated behind
   the game's modules and the NROs loaded before it, in that order; each word or PLT slot of those that nothing
   defined until then bound to its definition; and its `DT_INIT` run on the thread that loads it. `UnloadModule` runs
-  its `DT_FINI`, puts each word of the others that points into it back to 0, a PLT slot to its lazy value, and unmaps
+  its `DT_FINI`, puts each word of the others that points into it back to 0, binds a PLT slot of theirs again to the
+  definition the modules left give its name (what lazy binding gives it at the slot's next call), or to its lazy
+  value when none of them defines it, and unmaps
   it. What the SDK stops the game on stops it with the reason: a result of ldr:ro's that is not `nn::ro`'s own, an
   NRO without a module header, one loaded for no other module to bind to that another binds to, an unload while the
   SDK counts thread-local destructors of the module not run yet. Where the runtime cannot link, the game's rtld

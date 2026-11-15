@@ -177,7 +177,9 @@ mouse's left button (the default). The game's menu sets it too; the game's `.ini
 `--controls=0|1|2` likewise hides or shows the [on-screen controls](#on-screen-controls), or shows them on a touch
 screen while no gamepad is connected (`2`, the default); the game's `.ini` keeps `controls`. Any other `--key=value` of the game's
 `.ini` is forwarded as well, for that run (`scarletnx --settings` lists them all), and so are the timed-run ones
-(`--seconds=`, `--shot=`...); any other key stops the run with `unknown option`.
+(`--seconds=`, `--shot=`...); any other key stops the run with `unknown option`. Each key is also taken with a `-` for
+each `_`, the same setting (`--state-slots=5`, `--aot-threads=4`), forwarded as given; a name with some `_` left
+(`--aot-threads_most=2`) is no setting.
 The game's own executable also takes `-v`, the same as `--log=2`.
 LLVM is the only backend. `--backend=llvm`, which older scripts give, is accepted and changes nothing, and any
 other `--backend` stops with an error.
@@ -450,9 +452,10 @@ Remaining examples: POSIX.
   target machine set, `--llvm_<option>=N` (`--llvm_inliner_threshold=50`). `scarletnx --settings=recompile` lists
   them, as the launcher's LLVM Internals page shows them: the passes are those of the pipelines the build's LLVM prints
   for each level, and a build without an `opt` of that LLVM has none. A dump played with these is recompiled with them
-  when it has to be, and a game made already keeps its code until `-r` recompiles it. A value a setting does not take
-  (`--aot_threads=abc`) stops the recompile. The code the runtime compiles while the game runs keeps LLVM's own, but
-  for the SLP vectorizer, which `slp_vectorizer` turns on or off for both.
+  when it has to be, and a game made already keeps its code until `-r` recompiles it. Each of them takes a `-` for each
+  `_` too (`--llvm-pass-instcombine=0`). A value a setting does not take (`--aot_threads=abc`) stops the recompile.
+  The code the runtime compiles while the game runs keeps LLVM's own, but for the SLP vectorizer, which
+  `slp_vectorizer` turns on or off for both.
   `--target auto|linux|win64` takes only this host's own system: modules are built for the machine that builds
   them. `--target ios` writes `<id>_code.snxobj` instead, a pack of the code's objects for the iOS app to load into JIT
   memory (64-bit games only, [macOS and iOS](../hosts/apple.md)); it makes no runtime copy. `--runtime FILE` deploys that runtime instead of the running one, or of the one a tools-only build builds in
@@ -878,7 +881,12 @@ state FILE the same way.
 
 In the game's menu the arrows, Enter and Escape move, select and go back; a gamepad's D-pad or left stick, A and B
 do the same, the on-screen controls' too, and a direction held goes on after a moment. **TV mode** steps On, Off and
-Auto, Left and Right either way, once a press: each step docks or undocks the console under the game.
+Auto, Left and Right either way, once a press: each step docks or undocks the console under the game. **Volume** is the
+game's sound on a slider ([`volume`](settings.md#audio)), 100% at first: Left and Right step it 5% either way, held
+too, and Enter or A up, stopping at Mute and at 100%; a tap or a click on the slider takes the step under it, one left
+of it steps down and one on its value up, and a press moves the knob as it drags. Each step is heard at once and kept
+in the game's `.ini`, but while the launcher's Settings > Audio > Volume passes the run its own (`--volume=N`), which
+the run then keeps to: the step lasts until the game ends.
 
 A game that asks for text (a name, a password, a search) shows a box over the game, in the menu's look and the same
 on every platform: the game's own words for it, the line with the text the game started it with, and how many

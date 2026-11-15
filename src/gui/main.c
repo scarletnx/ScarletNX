@@ -399,6 +399,10 @@ typedef struct App {
     /* UI scale's slider, in its dialog: its bar as last drawn, empty when none shows; a drag on it going on */
     GuiRect slider_bar;
     bool slider_drag;
+    /* a setting's slider (form_slider) a press went down on: its setting's row + 1, 0 for none, and its bar then,
+       which the knob follows the pointer along until it lifts */
+    int row_slide;
+    GuiRect row_slide_bar;
     bool left_clear;   /* the menu's own files of menu_old among them: their page says how they go (SAY_LEFT_CLEAR) */
     char* menu_old;    /* Android: SDL's folder for the app, its own files, where an older version kept the menu's own
                           files (menu_files); NULL elsewhere */
@@ -3704,6 +3708,22 @@ static GuiRect row_drawn(App* app, GuiRect (*row)(const GuiRect*, int, int, size
     r.y -= list->shift;
     return r;
 }
+/* the colour ui_draw_row writes a row's text in, by its look: what a row draws beside its text (a setting's slider)
+   takes it too */
+static GuiRgb row_ink(const App* app, unsigned color, unsigned attr, bool focused) {
+    const GuiTheme* t = &app->theme;
+    int look = focused || (attr & UI_ATTR_OPEN), inverted = look && t->focus_bar;
+    int failing =
+        (attr & UI_ATTR_FAILURE) && !((attr & UI_ATTR_BLINK) && t->blink_ms && (now_ms(app) / t->blink_ms) % 2);
+    int off = (attr & UI_ATTR_OFF) != 0, toned = (attr & (UI_ATTR_DANGER | UI_ATTR_CAUTION)) && !failing && !off;
+    return failing || inverted || (toned && look) ? t->page
+           : toned                                ? (attr & UI_ATTR_DANGER ? t->failure : t->warning)
+           : off                                  ? t->soft
+           : attr & UI_ATTR_WARNING               ? t->warning
+           : attr & UI_ATTR_ACTIVE                ? t->active
+           : look                                 ? t->focus
+                                                  : ui_colour(app, color, t->ink);
+}
 void ui_draw_row(App* app, GuiRect r, const char* text, unsigned icon, const void* image, unsigned color, unsigned attr,
                  bool focused) {
     const GuiTheme* t = &app->theme;
@@ -3736,13 +3756,7 @@ void ui_draw_row(App* app, GuiRect r, const char* text, unsigned icon, const voi
         fill_rect(app, b, toned ? t->page : t->dim);
     if (!solid && (!filled || look || toned)) outline(app, b, toned ? tone : look ? t->focus : t->dim);
     {
-        SDL_Color ink = rgb(solid                    ? t->page
-                            : toned                  ? tone
-                            : off                    ? t->soft
-                            : attr & UI_ATTR_WARNING ? t->warning
-                            : attr & UI_ATTR_ACTIVE  ? t->active
-                            : look                   ? t->focus
-                                                     : ui_colour(app, color, t->ink));
+        SDL_Color ink = rgb(row_ink(app, color, attr, focused));
         int x = b.x + cell_w(app) / 2, side = user_side(app, b.h);
         if (image && side > 0) { /* the marker, the image as big as the head's user picture, then the text */
             SDL_FRect at;
@@ -8839,7 +8853,8 @@ static unsigned group_icon(const char* name) {
         {"Display", GUI_ICON_MONITOR},    {"Graphics", GUI_ICON_IMAGE},  {"3DS", GUI_ICON_SQUARE_SPLIT_VERTICAL},
         {"Performance", GUI_ICON_GAUGE},  {"Overlay", GUI_ICON_POINTER}, {"Controllers", GUI_ICON_GAMEPAD_2},
         {"Shortcuts", GUI_ICON_KEYBOARD}, {"Network", GUI_ICON_WIFI},    {"User", GUI_ICON_USER},
-        {"Debug", GUI_ICON_BUG},          {"GBA", GUI_ICON_GAMEPAD}}; /* the menu's Load GBA ROM's */
+        {"Debug", GUI_ICON_BUG},          {"GBA", GUI_ICON_GAMEPAD}, /* the menu's Load GBA ROM's */
+        {"Audio", GUI_ICON_VOLUME_2}};
     for (size_t i = 0; i < SDL_arraysize(icons); ++i)
         if (!strcmp(icons[i].name, name)) return icons[i].icon;
     return GUI_ICON_NONE;
@@ -12137,6 +12152,25 @@ static void editor_key(App* app, GuiKey key) {
         device_listen(app, setting_of(app, app->editor.row));
         return;
     }
+    /* a slider's row: Left/Right step it, Enter up as a word's, to its ends and never round (Mute a step from the
+       loudest), an end saying so */
+    if (app->form == GUI_FORM_GROUP && !app->editor.typing &&
+        (key == GUI_LEFT || key == GUI_RIGHT || key == GUI_SELECT) &&
+        app->settings.values[setting_of(app, app->editor.row)].slider) {
+        int row = setting_of(app, app->editor.row);
+        char value[64];
+        app->editor.note[0] = 0;
+        if (gui_settings_slide(&app->settings, row, key == GUI_LEFT ? -1 : 1)) {
+            app->editor.dirty = true;
+            keep_settings(app);
+            return;
+        }
+        gui_theme_get(app->settings.values, &app->settings.keys[row], value, sizeof value);
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 key == GUI_LEFT ? snx_tr("%s: %s is its lowest") : snx_tr("%s: %s is its highest"),
+                 snx_tr(app->settings.keys[row].key), value);
+        return;
+    }
     what = gui_editor_key(&app->editor, key);
     if (key == GUI_SELECT && was_typing && !app->editor.typing && app->form == GUI_FORM_GROUP &&
         app->editor.object == (char*)app->settings.values) {
@@ -12449,8 +12483,10 @@ static int form_setting(const App* app, const GuiEditor* e, int r) {
                                        : (int)(k - app->settings.keys);
 }
 /* a row of a form as its box shows it, its marker first: its label, the value past the widest label (labels
-   columns), in room columns; a value typed is typed in its dialog (render_typed) */
-static void form_line(App* app, const GuiEditor* e, int r, int labels, int room, char* line, size_t size) {
+   columns), in room columns; a value typed is typed in its dialog (render_typed). value_at, when not NULL: the column
+   the value starts at */
+static void form_line(App* app, const GuiEditor* e, int r, int labels, int room, char* line, size_t size,
+                      int* value_at) {
     char label[256], value[400];
     const GuiThemeKey* k = gui_editor_key_of(e, r);
     const char* path;
@@ -12500,6 +12536,7 @@ static void form_line(App* app, const GuiEditor* e, int r, int labels, int room,
         snprintf(line, size, "%s%s%*s %s", app->theme.marker, label, pad, "", value);
     } else /* no value to line up: padding would make a short row too long for its box, and cut */
         snprintf(line, size, "%s%s", app->theme.marker, label);
+    if (value_at) *value_at = gui_text_cols(app->theme.marker) + gui_text_cols(label) + pad + 1;
 }
 static int clean_inis(App* app, GuiCleaned* done);
 static int settings_unread(App* app, char* out, size_t size);
@@ -12580,7 +12617,7 @@ static bool form_row_info(App* app, const GuiEditor* e, size_t r, int labels, in
     info->icon = form_icon(app, e, (int)r);
     gutter = gutter && !info->icon;
     form_line(app, e, (int)r, labels, form_room(app, width) - (gutter || info->icon ? 3 : 0), line + 3 * gutter,
-              sizeof app->row_text - 3);
+              sizeof app->row_text - 3, NULL);
     if (gutter) { /* the marker, then the icon's columns and the one after it */
         size_t n = strlen(app->theme.marker);
         memmove(line, line + 3, n);
@@ -12670,13 +12707,111 @@ static void form_swatches(App* app, const GuiFormBoxes* f) {
                 b = ui_row_box(app, row);
         char line[700];
         if (!k || k->type != GUI_KEY_COLOUR) continue;
-        form_line(app, e, r, labels, form_room(app, row.w), line, sizeof line);
+        form_line(app, e, r, labels, form_room(app, row.w), line, sizeof line, NULL);
         x = b.x + cw / 2 + gui_text_cols(line) * cw + cw;
         if (x + 2 * cw <= b.x + b.w - cw) /* a cell short of the box's end */
             swatch(app, gui_rect(x, ui_text_y(app, b) + 2 * s, 2 * cw, cell_h(app) - 5 * s),
                    *(const GuiRgb*)((const char*)(e->object ? e->object : (const char*)&e->theme) + k->at));
     }
     if (l->shift) ui_clip(app, NULL);
+}
+/* ---- a setting's slider (GuiSetting's slider), on its row of a group of settings: its value where the group's values
+   are, the slider at the row's right, up to GUI_SLIDER_COLS columns of what the row has past its value at its
+   longest, none in fewer than GUI_SLIDER_LEAST. Left/Right step it to its ends, a press on it takes the step under it
+   and a drag follows ---- */
+#define GUI_SLIDER_COLS  21 /* the knob's travel a column a step of Volume's twenty, and the knob's own */
+#define GUI_SLIDER_LEAST 6
+/* row r of e's slider in row as row_drawn gives it, the widest label labels columns: its bar, the knob's travel and a
+   knob's width; empty for a row with no slider, or no room for one. Its setting's row into *setting (-1: none) */
+static GuiRect form_slider(App* app, const GuiEditor* e, int r, GuiRect row, int labels, int* setting) {
+    const GuiThemeKey* k;
+    GuiRect b = ui_row_box(app, row), none = {0, 0, 0, 0};
+    char line[800], tail[64];
+    int i, rows = gui_editor_rows(e), shift = 0, value_at, widest = 0, cw = cell_w(app), left, right, cols;
+    *setting = form_setting(app, e, r);
+    if (*setting < 0 || !app->settings.values[*setting].slider) return none;
+    for (i = 0; i < rows && !shift; ++i) /* the icons' columns, as form_row_info gives a form with icons */
+        shift = form_icon(app, e, i) != GUI_ICON_NONE ? 3 : 0;
+    form_line(app, e, r, labels, form_room(app, row.w) - shift, line, sizeof line, &value_at);
+    k = &app->settings.keys[*setting];
+    for (i = 0; k->words[i]; ++i) widest = SDL_max(widest, gui_text_cols(k->words[i]));
+    /* the value at its longest: its widest word, [default] and the changed mark ("Mute [default] *") */
+    snprintf(tail, sizeof tail, " %s " GUI_CHANGED_MARK, snx_tr("[default]"));
+    left = b.x + cw / 2 + (shift + value_at + widest + gui_text_cols(tail) + 1) * cw;
+    right = b.x + b.w - cw; /* the last column the arrows of rows out of sight take */
+    cols = SDL_min(GUI_SLIDER_COLS, (right - left) / cw); /* whole columns, as the letters beside it */
+    if (cols < GUI_SLIDER_LEAST) return none;
+    return gui_rect(right - cols * cw, ui_text_y(app, b), cols * cw, cell_h(app));
+}
+/* a slider in bar, its knob at at (thousandths of its way), in its row's ink: a thin line, thicker up to the knob, and
+   the knob, a cell wide */
+static void slider_row_draw(App* app, GuiRect bar, int at, GuiRgb ink) {
+    int s = app->scale, cw = cell_w(app), mid = bar.y + bar.h / 2, knob = bar.x + (bar.w - cw) * at / 1000;
+    /* the line from a knob's middle at one end to the other's, as the game's menu draws it (overlay.c) */
+    if (knob < bar.x + bar.w - cw) fill_rect(app, gui_rect(knob + cw / 2, mid - s, bar.x + bar.w - cw - knob, s), ink);
+    if (knob > bar.x) fill_rect(app, gui_rect(bar.x + cw / 2, mid - 2 * s, knob - bar.x, 3 * s), ink);
+    fill_rect(app, gui_rect(knob, bar.y + 2 * s, cw, bar.h - 4 * s), ink);
+}
+/* the side box's rows' sliders, the open group's or the one in focus, drawn over their rows as they show */
+static void form_sliders(App* app, const GuiFormBoxes* f) {
+    GuiEditor peek;
+    const GuiEditor* e = form_rows(app, &peek);
+    const UiList* l = &f->right_lists[UI_FORM_SIDE_ROWS];
+    int labels = form_labels(e), setting;
+    size_t i, n = ui_form_side_shown(f->right, app->scale, UI_FORM_SIDE_ROWS) + (l->shift > 0);
+    if (form_grouped(app) || !e->object || e->object != (char*)app->settings.values) return;
+    if (l->shift) ui_clip(app, &f->right[UI_FORM_SIDE_ROWS]);
+    for (i = 0; i < n && l->first + i < (size_t)gui_editor_rows(e); ++i) {
+        int r = (int)(l->first + i);
+        GuiRect row = row_drawn(app, ui_form_side_row, ui_form_side_shown, f->right, UI_FORM_SIDE_ROWS, l, i),
+                bar = form_slider(app, e, r, row, labels, &setting);
+        UiRowInfo info = {0};
+        if (!bar.w) continue;
+        form_row_info(app, e, (size_t)r, labels, row.w, &info); /* its look, as the row was drawn */
+        slider_row_draw(app, bar, gui_settings_knob(&app->settings, setting),
+                        row_ink(app, UI_COLOR_NONE, info.attr, l->focus == (size_t)r));
+    }
+    if (l->shift) ui_clip(app, NULL);
+}
+/* the open group's row whose slider lies under pixel x, y, its bar into *bar; -1 for none */
+static int slider_under(App* app, const GuiFormBoxes* f, float x, float y, GuiRect* bar) {
+    const UiList* l = &f->right_lists[UI_FORM_SIDE_ROWS];
+    int labels, setting;
+    size_t i, n = ui_form_side_shown(f->right, app->scale, UI_FORM_SIDE_ROWS);
+    if (app->form != GUI_FORM_GROUP || app->editor.typing || app->editor.object != (char*)app->settings.values ||
+        !in_rect(f->right[UI_FORM_SIDE_ROWS], x, y))
+        return -1;
+    labels = form_labels(&app->editor);
+    for (i = 0; i < n && l->first + i < (size_t)gui_editor_rows(&app->editor); ++i) {
+        GuiRect row = row_drawn(app, ui_form_side_row, ui_form_side_shown, f->right, UI_FORM_SIDE_ROWS, l, i);
+        *bar = form_slider(app, &app->editor, (int)(l->first + i), row, labels, &setting);
+        if (bar->w && x >= (float)bar->x && x < (float)(bar->x + bar->w) && y >= (float)row.y &&
+            y < (float)(row.y + row.h))
+            return (int)(l->first + i);
+    }
+    return -1;
+}
+/* the slider a press went down on to the step under pixel x, kept as a step by a key is */
+static void row_slide_to(App* app, float x) {
+    GuiRect b = app->row_slide_bar;
+    int cw = cell_w(app), at = 0;
+    if (b.w > cw) at = (int)SDL_lroundf((x - (float)b.x - (float)cw / 2) * 1000 / (float)(b.w - cw));
+    if (!gui_settings_slide_to(&app->settings, app->row_slide - 1, at)) return;
+    app->editor.dirty = true;
+    keep_settings(app);
+}
+/* a press at pixel x, y on a row's slider: the row in focus, the step under it taken, and its drag begun; false off
+   every slider */
+static bool slider_press(App* app, const GuiFormBoxes* f, float x, float y) {
+    GuiRect bar;
+    int r = slider_under(app, f, x, y, &bar);
+    if (r < 0) return false;
+    app->editor.row = r;
+    app->editor.note[0] = 0;
+    app->row_slide = form_setting(app, &app->editor, r) + 1;
+    app->row_slide_bar = bar;
+    row_slide_to(app, x);
+    return true;
 }
 /* a grouped screen's groups (form_grouped), a box each as far as it shows: from its title down to its last row shown,
    half a cell wider either side, Folders' Defaults too, the right one at the rows' end beside a scroll bar; with the rows
@@ -12840,6 +12975,7 @@ static void draw_form(App* app) {
                  app->form == GUI_FORM_GROUP && app->page >= 0 ? snx_tr(app->settings.keys[app->page].key)
                                                                : snx_tr(app->group_keys[g].key));
         ui_form_side_draw(app, f.right, app->scale, f.right_lists);
+        form_sliders(app, &f);
         if (form_note(app)) { /* a half step under the text's letters, as form_boxes measured it */
             GuiRect text = inner(app, f.info);
             int half = text_half(app);
@@ -13035,6 +13171,7 @@ static void form_pointer(App* app, float x, float y) {
         app->preview_since = 0;
         return;
     }
+    if (slider_press(app, &f, x, y)) return;
     form_rows_pointer(app, &f, x, y, UI_HIT_CLICK);
 }
 /* ---- Last Run (gui/last_run.h): the run going kept beside its run log until the menu sees it end; a start that finds
@@ -15511,6 +15648,15 @@ static bool has_files(const char* folder) {
     snx_free_strings(names, count);
     return any;
 }
+/* a save's folder with something of the save's in it: an entry SNX_SAVE_HIDDEN does not take for a sync tool's */
+static bool has_save_files(const char* folder) {
+    char** names = NULL;
+    size_t count = 0, i = 0;
+    if (folder && !snx_list_dir(folder, &names, &count))
+        while (i < count && SNX_SAVE_HIDDEN(names[i])) ++i;
+    snx_free_strings(names, count);
+    return i < count;
+}
 /* Settings' save_layout is global (its default): the saves in the data folder's save/, fs.c's save_global. Read from
    settings.ini until the Settings are, as settings_user */
 static bool saves_global(const App* app) {
@@ -15572,7 +15718,7 @@ static void left_saves(App* app, const char* folder, bool global) {
                 left_save(app, old);
             else if (!snx_path_format(now, sizeof now, "%s/save/%s/%s%s", app->data_dir, kind, names[i],
                                       cache ? "/0" : ""))
-                left_line(app, old, now, has_files(old));
+                left_line(app, old, now, has_save_files(old));
         }
         snx_free_strings(kinds, kinds_count);
         kinds = NULL;
@@ -15588,8 +15734,8 @@ static void left_saves_in(App* app, const char* folder, int deep) {
     if (snx_list_dir(folder, &names, &count)) return;
     for (i = 0; i < count; ++i) {
         size_t n = strlen(names[i]), tail = sizeof GUI_SAVE_MOVING - 1;
-        /* a move of the save beside it that was cut short, which that save's line goes on from */
-        if ((n > tail && !strcmp(names[i] + n - tail, GUI_SAVE_MOVING)) ||
+        /* a move of the save beside it that was cut short, which that save's line goes on from; a sync tool's entry */
+        if ((n > tail && !strcmp(names[i] + n - tail, GUI_SAVE_MOVING)) || SNX_SAVE_HIDDEN(names[i]) ||
             snx_path_format(path, sizeof path, "%s/%s", folder, names[i]) || !snx_is_dir(path))
             continue;
         if (deep > 1)
@@ -20378,6 +20524,18 @@ static bool on_slider(App* app, float window_x, float window_y) {
     return !app->confirm.shown && size_picking(app) &&
            SDL_RenderCoordinatesFromWindow(app->renderer, window_x, window_y, &x, &y) && slider_at(app, x, y) >= 0;
 }
+/* the window's pixel x, y on a setting's slider of the open group, nothing over it */
+static bool on_row_slider(App* app, float window_x, float window_y) {
+    GuiFormBoxes f;
+    GuiRect bar;
+    float x, y;
+    if (!app->editing || app->confirm.shown || app->help_shown || app->sizes_shown ||
+        !SDL_RenderCoordinatesFromWindow(app->renderer, window_x, window_y, &x, &y))
+        return false;
+    layout(app);
+    form_boxes(app, &f);
+    return slider_under(app, &f, x, y, &bar) >= 0;
+}
 static void cancel(App* app);
 static void pointer(App* app, float window_x, float window_y, bool click, bool touch) {
     float x, y;
@@ -20411,6 +20569,11 @@ static void pointer(App* app, float window_x, float window_y, bool click, bool t
     if (click && !app->confirm.shown && size_picking(app) && slider_at(app, x, y) >= 0) {
         app->slider_drag = true;
         slider_to(app, slider_at(app, x, y));
+        return;
+    }
+    /* a setting's slider a press went down on (slider_press): the knob follows until the button or the finger lifts */
+    if (app->row_slide && !click) {
+        row_slide_to(app, x);
         return;
     }
     /* a list's scroll bar: a press on it takes the thumb there, and the drag goes on until the button or the finger
@@ -21250,7 +21413,8 @@ static void event_take(App* app, const SDL_Event* e) {
         app->pick_press = 0;                     /* the finger's own, not a mouse's whose lift was missed */
         if (app->editing && app->editor.picking) /* the picker's bars take a finger as it goes down, to drag */
             pointer(app, e->tfinger.x * (float)w, e->tfinger.y * (float)h, true, true);
-        else if (on_slider(app, e->tfinger.x * (float)w, e->tfinger.y * (float)h)) { /* so does UI scale's slider */
+        else if (on_slider(app, e->tfinger.x * (float)w, e->tfinger.y * (float)h) ||
+                 on_row_slider(app, e->tfinger.x * (float)w, e->tfinger.y * (float)h)) { /* so do the sliders */
             pointer(app, e->tfinger.x * (float)w, e->tfinger.y * (float)h, true, true);
             app->pick_press = 1; /* its moves its drag's, its lift no tap */
         } else if (on_bar(app, e->tfinger.x * (float)w, e->tfinger.y * (float)h)) { /* a list's scroll bar too */
@@ -21282,11 +21446,11 @@ static void event_take(App* app, const SDL_Event* e) {
         return;
     }
     if ((e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) &&
-        finger_id(&e->tfinger) == app->finger && app->pick_press) { /* the picker, the slider or a bar had it: no tap */
+        finger_id(&e->tfinger) == app->finger && app->pick_press) { /* the picker, a slider or a bar had it: no tap */
         app->finger = 0;
         app->pick_press = 0;
         app->slider_drag = false;
-        app->bar_hold = 0;
+        app->bar_hold = app->row_slide = 0;
         return;
     }
     if ((e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) &&
@@ -21387,9 +21551,9 @@ static void event_take(App* app, const SDL_Event* e) {
         return;
     }
     if (e->type == SDL_EVENT_MOUSE_BUTTON_UP && e->button.button == SDL_BUTTON_LEFT) {
-        app->pick_press = 0; /* a drag on the picker's bar ends, and one on UI scale's slider, and a list's thumb */
+        app->pick_press = 0; /* a drag on the picker's bar ends, on UI scale's slider, a setting's or a list's thumb */
         app->slider_drag = app->bar_held = false;
-        app->bar_hold = 0;
+        app->bar_hold = app->row_slide = 0;
         return;
     }
     if (e->type != SDL_EVENT_KEY_DOWN) return;

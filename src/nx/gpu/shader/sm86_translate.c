@@ -26,6 +26,28 @@
 typedef struct {
     u32 slot, ldc, var, first, stride;
 } TexHandle;
+/* HMMA on the device's cooperative matrices (hmma_coop): the matrices a run of HMMAs takes again. A fragment is a
+   matrix whose words were staged from a tuple of registers, and a D is one whose words no register holds yet. Both
+   hold only while their registers keep their values, which coop_gen counts, and only within one block: a matrix
+   defined in one arm of a branch does not reach the merge, so coop_flow empties them at a branch or a label. The
+   bounds are the fragments of a GEMM's step (2 A, 4 B) and its accumulators (8) */
+#define COOP_FRAGS 8
+#define COOP_ACC   8
+typedef struct {
+    u32 first, n;    /* the tuple: its first register and its length */
+    u32 shape;       /* the shape they were staged as (COOP_SHAPE_*) */
+    u32 b;           /* 0 for A, 1 for B */
+    u32 gen[4];      /* coop_gen of each register when they were staged */
+    u32 nmat;        /* the matrices, one for each M block and k half */
+    u32 mat[4];
+} CoopFrag;
+typedef struct {
+    u32 first, n;    /* the tuple of the f32 D: 4 registers */
+    u32 shape;
+    u32 gen[4];
+    u32 nmat;        /* the matrices, one for each M block */
+    u32 mat[2];
+} CoopAcc;
 typedef struct {
     SpvEmitter e;
     ShaderInfo* si;
@@ -45,7 +67,7 @@ typedef struct {
     u32 gbuf_f32[16];  /* each global buffer's view as floats, for OpAtomicFAddEXT (atomic_fadd) */
     u32 cas_var;       /* atomic_fadd's loop's word, made at the start where the device has no float atomics */
     u32 wpages, mbase; /* SNX_VKB_WPAGES, and SNX_VKB_MBASE (the windows of pointer tables, SH_GBUF_TABLE) */
-    u32 gkey;   /* the global buffer the last global_address named */
+    u32 gkey;         /* the global buffer the last global_address named */
     u32 shared, shared_ptr, shared_words;
     u32 local, local_ptr, local_words; /* LDL and STL's memory: a Function array, made at the start */
     u32 in_attr[32], out_attr[32], position, point_size, fragcoord, color[8], depth;
@@ -53,7 +75,11 @@ typedef struct {
     u32 num_groups, hmma_count;  /* NumWorkgroups and the HMMAs so far, for hmma_zero */
     int coop;                    /* HMMA takes hmma_coop (coop_wanted), and the module the Vulkan memory model */
     u32 coop_slots, subgroup_id; /* hmma_coop's slots (Workgroup) and SubgroupId */
-    u32 stage_slots;             /* hmma's A and B staged a warp each (g_spirv_translate.hmma_stage, Workgroup) */
+    CoopFrag coop_frags[COOP_FRAGS]; /* the staged fragments this block's HMMAs can take again */
+    CoopAcc coop_acc[COOP_ACC];      /* the D matrices this block's words are not written for yet */
+    u32 nfrags, nacc;
+    u32 coop_gen[256];               /* the writes each register took, which the matrices are held against */
+    u32 stage_slots;                 /* hmma's A and B staged a warp each (g_spirv_translate.hmma_stage, Workgroup) */
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
@@ -62,6 +88,8 @@ typedef struct {
        PrimitiveId in and out (passthrough), the viewport mask it writes (a Function variable, 1 until written) and
        whether its SPH asks for passthrough */
     u32 position_in, primitive_id_in, primitive_id_out, viewport_mask;
+    /* a vertex or geometry program's ClipDistance output, 8 planes (clip_var) */
+    u32 clip;
     int passthrough;
     /* a fragment program at a resolution scale: SNX_VKB_RS's vec4 (scale_component) and the fragment stage's push
        constants, whose uvec4s mark the textures bound to scaled render targets (scaled_slot) */
@@ -163,14 +191,58 @@ static u32 pack_half(Ctx* c, u32 pair) {
 
 /* ---- registers ---- */
 
-static u32 rd(Ctx* c, u32 r) { return r >= SM86_RZ ? c->zero : spv_emit_load(&c->e, c->t_u32, c->reg[r]); }
+/* hmma_coop keeps a D matrix whose words its registers do not have, so a read or a write of one of them makes the
+   words first (coop_acc_take, defined with the matrices below), and a run of HMMAs can take the registers' matrices
+   again while they are as they were, which coop_gen counts. Both, and the fragments, hold in one block only: the
+   flow instructions of the module take a block's matrices to their words at its end (coop_flow) */
+static void coop_acc_take(Ctx* c, u32 r);
+static void coop_flow(Ctx* c);
+/* the flow instructions of the module, which take the matrices of the block to their words first: a matrix is a value
+   in one block only */
+static void coop_label(Ctx* c, u32 label) {
+    coop_flow(c);
+    spv_emit_label(&c->e, label);
+}
+static void coop_branch(Ctx* c, u32 label) {
+    coop_flow(c);
+    spv_emit_branch(&c->e, label);
+}
+static void coop_branch_if(Ctx* c, u32 cond, u32 yes, u32 no) {
+    coop_flow(c);
+    spv_emit_branch_conditional(&c->e, cond, yes, no);
+}
+static void coop_merge(Ctx* c, u32 merge) {
+    coop_flow(c);
+    spv_emit_selection_merge(&c->e, merge);
+}
+static void coop_switch(Ctx* c, u32 selector, u32 deflt, const u32* literals, const u32* labels, u32 count) {
+    coop_flow(c);
+    spv_emit_switch_u32(&c->e, selector, deflt, literals, labels, count);
+}
+static void coop_end(Ctx* c) {
+    coop_flow(c);
+    spv_emit_return(&c->e);
+}
+static void coop_demote(Ctx* c) {
+    coop_flow(c);
+    spv_emit_demote(&c->e);
+}
+static u32 rd(Ctx* c, u32 r) {
+    if (r >= SM86_RZ) return c->zero;
+    coop_acc_take(c, r);
+    return spv_emit_load(&c->e, c->t_u32, c->reg[r]);
+}
 static void wr(Ctx* c, u32 r, u32 v) {
-    if (c->cap_on && r == c->cap_reg) {
+    if (c->cap_on && r == c->cap_reg) { /* a pair's halves are kept, not stored: the select of them writes it */
         c->cap_val = v;
         c->cap_n++;
         return;
     }
-    if (r < SM86_RZ) spv_emit_store(&c->e, c->reg[r], v);
+    if (r < SM86_RZ) {
+        coop_acc_take(c, r);
+        c->coop_gen[r]++;
+        spv_emit_store(&c->e, c->reg[r], v);
+    }
 }
 static u32 urd(Ctx* c, u32 r) { return r >= SM86_URZ ? c->zero : spv_emit_load(&c->e, c->t_u32, c->ureg[r]); }
 static void uwr(Ctx* c, u32 r, u32 v) {
@@ -561,23 +633,38 @@ static u32 push_component(Ctx* c, u32 k) {
 static void vertex_depth_fix(Ctx* c) {
     u32 enabled = spv_emit_fcompare(&c->e, c->t_bool, 5, push_component(c, 1), cf(c, 0.0f)); /* 5: != */
     u32 adjust = spv_emit_id(&c->e), merge = spv_emit_id(&c->e);
-    spv_emit_selection_merge(&c->e, merge);
-    spv_emit_branch_conditional(&c->e, enabled, adjust, merge);
-    spv_emit_label(&c->e, adjust);
+    coop_merge(c, merge);
+    coop_branch_if(c, enabled, adjust, merge);
+    coop_label(c, adjust);
     u32 value = spv_emit_load(&c->e, c->t_v4f, c->position);
     u32 sum =
         nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_ADD, c->t_f32, spv_emit_vec4_extract(&c->e, c->t_f32, value, 2),
                                       spv_emit_vec4_extract(&c->e, c->t_f32, value, 3)));
     u32 depth = nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, sum, cf(c, 0.5f)));
     spv_emit_store(&c->e, c->position, spv_emit_vec4_insert(&c->e, c->t_v4f, value, depth, 2));
-    spv_emit_branch(&c->e, merge);
-    spv_emit_label(&c->e, merge);
+    coop_branch(c, merge);
+    coop_label(c, merge);
 }
 static void position_var(Ctx* c) {
     if (!c->position) {
         c->position = spv_emit_position_output(&c->e, c->t_v4f);
         add_interface(c, c->position);
     }
+}
+/* whether a store to clip distance plane reaches the rasterizer or a later stage: the last stage before rasterization
+   writes only the planes the 3D engine enables (SetUserClipEnable), as spirv_translate.c does for Maxwell's */
+static int clip_plane_used(const Ctx* c, u32 plane) {
+    return (c->si->clip_enable & SNX_SH_NOT_LAST) || (c->si->clip_enable & (1u << plane));
+}
+/* the ClipDistance output, made before the program's code, so that each plane starts at 0 and a vertex program's
+   planes that it doesn't write clip nothing. A geometry program's planes are undefined again after each EmitVertex, as
+   on Maxwell's path (spirv_translate.c initializes them once too). It has 8 planes, as spirv_translate.c makes
+   Maxwell's, so that the builtin interfaces of adjacent stages agree */
+static void clip_var(Ctx* c) {
+    if (c->clip) return;
+    spv_emit_clip_distance_capability(&c->e);
+    c->clip = spv_emit_clip_distance_output(&c->e, c->t_f32, c->t_u32, 8);
+    add_interface(c, c->clip);
 }
 
 /* a float to BF16 bits, rounded to nearest even, a NaN kept a NaN */
@@ -867,6 +954,14 @@ static void attr_store(Ctx* c, u32 addr, u32 bits) {
         spv_emit_store(&c->e, c->viewport_mask, bits);
         return;
     }
+    if (addr >= 0x2c0 && addr < 0x2e0) {
+        /* ClipDistance0 to 7, a word each: the plane is in clip_var's output, made before the code */
+        u32 plane = (addr - 0x2c0) >> 2;
+        if (c->clip && clip_plane_used(c, plane))
+            spv_emit_store(&c->e, spv_emit_output_element_pointer(&c->e, c->t_f32, c->clip, cu(c, plane)),
+                           to_f(c, bits));
+        return;
+    }
     if (addr == 0x5c) {
         /* NAK's NAK_ATTR_VPRS_TABLE_INDEX from SM86, the primitive's shading rate: the default rate, one fragment
            a pixel, is what the translation gives without it */
@@ -936,6 +1031,11 @@ static void gs_passthrough(Ctx* c) {
         saved[a] = written ? spv_emit_load(e, c->t_v4f, out[a]) : empty;
     }
     u32 size = c->point_size ? spv_emit_load(e, c->t_f32, c->point_size) : 0;
+    /* and the clip distances, which EmitVertex leaves undefined too (emit_io.c's saved_clip for Maxwell's) */
+    u32 clip_saved[8] = {0};
+    for (u32 plane = 0; plane < 8 && c->clip; plane++)
+        clip_saved[plane] =
+            spv_emit_load(e, c->t_f32, spv_emit_output_element_pointer(e, c->t_f32, c->clip, cu(c, plane)));
     if (!c->primitive_id_in) {
         c->primitive_id_in = spv_emit_builtin_input_u32(e, c->t_u32, SPV_BUILT_IN_PRIMITIVE_ID);
         add_interface(c, c->primitive_id_in);
@@ -961,6 +1061,8 @@ static void gs_passthrough(Ctx* c) {
             spv_emit_store(e, out[a], value);
         }
         if (c->point_size) spv_emit_store(e, c->point_size, size);
+        for (u32 plane = 0; plane < 8 && c->clip; plane++)
+            spv_emit_store(e, spv_emit_output_element_pointer(e, c->t_f32, c->clip, cu(c, plane)), clip_saved[plane]);
         spv_emit_store(e, c->primitive_id_out, id);
         if (c->position && !(c->si->clip_enable & SNX_SH_NOT_LAST)) vertex_depth_fix(c);
         spv_emit_emit_vertex(e);
@@ -1174,9 +1276,9 @@ static void global_dynamic(Ctx* c, const Sm86Insn* in, int kind, u32 opcode, int
         u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, relative, to64(c, length));
         u32 then = spv_emit_id(&c->e), other = spv_emit_id(&c->e);
         merges[k] = spv_emit_id(&c->e);
-        spv_emit_selection_merge(&c->e, merges[k]);
-        spv_emit_branch_conditional(&c->e, inside, then, other);
-        spv_emit_label(&c->e, then);
+        coop_merge(c, merges[k]);
+        coop_branch_if(c, inside, then, other);
+        coop_label(c, then);
         u32 offset = lo32(c, relative);
         if (kind == DYN_LOAD)
             mem_load(c, buffer, offset, type, in->dst, 0);
@@ -1189,12 +1291,12 @@ static void global_dynamic(Ctx* c, const Sm86Insn* in, int kind, u32 opcode, int
                            : spv_emit_atomic_u32(&c->e, c->t_u32, opcode, mem_ptr(c, buffer, offset, 0), data);
             if (returns && in->dst < SM86_RZ) wr(c, in->dst, old);
         }
-        spv_emit_branch(&c->e, merges[k]);
-        spv_emit_label(&c->e, other);
+        coop_branch(c, merges[k]);
+        coop_label(c, other);
     }
     for (u32 k = nkeys; k-- > 0;) {
-        spv_emit_branch(&c->e, merges[k]);
-        spv_emit_label(&c->e, merges[k]);
+        coop_branch(c, merges[k]);
+        coop_label(c, merges[k]);
     }
 }
 /* what track_globals follows at an instruction: each register's key (a global buffer's SH_GBUF_* + 1, 0 for none),
@@ -1871,20 +1973,20 @@ static u32 atomic_fadd(Ctx* c, u32 buffer, u32 address, u32 data) {
     u32 ptr = mem_ptr(c, buffer, address, 0), header = spv_emit_id(e), body = spv_emit_id(e), cont = spv_emit_id(e),
         merge = spv_emit_id(e);
     spv_emit_store(e, c->cas_var, mem_word_load(c, buffer, ptr));
-    spv_emit_branch(e, header);
-    spv_emit_label(e, header);
+    coop_branch(c, header);
+    coop_label(c, header);
     spv_emit_loop_merge(e, merge, cont);
-    spv_emit_branch(e, body);
-    spv_emit_label(e, body);
+    coop_branch(c, body);
+    coop_label(c, body);
     u32 old = spv_emit_load(e, c->t_u32, c->cas_var);
     u32 sum =
         nocontract(c, spv_emit_binary(e, SPV_OP_F_ADD, c->t_f32, ftz(c, to_f(c, old), 1), ftz(c, to_f(c, data), 1)));
     u32 seen = spv_emit_atomic_compare_exchange_u32(e, c->t_u32, ptr, to_u(c, ftz(c, sum, 1)), old);
     spv_emit_store(e, c->cas_var, seen);
-    spv_emit_branch_conditional(e, spv_emit_binary(e, SPV_OP_I_EQUAL, c->t_bool, seen, old), merge, cont);
-    spv_emit_label(e, cont);
-    spv_emit_branch(e, header);
-    spv_emit_label(e, merge);
+    coop_branch_if(c, spv_emit_binary(e, SPV_OP_I_EQUAL, c->t_bool, seen, old), merge, cont);
+    coop_label(c, cont);
+    coop_branch(c, header);
+    coop_label(c, merge);
     return old;
 }
 
@@ -1944,12 +2046,12 @@ static u32 isbe_load(Ctx* c, u32 var, u32 storage, u32 words, u32 index) {
 static void isbe_store(Ctx* c, u32 var, u32 storage, u32 words, u32 index, u32 value) {
     u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, index, cu(c, words));
     u32 then = spv_emit_id(&c->e), merge = spv_emit_id(&c->e);
-    spv_emit_selection_merge(&c->e, merge);
-    spv_emit_branch_conditional(&c->e, inside, then, merge);
-    spv_emit_label(&c->e, then);
+    coop_merge(c, merge);
+    coop_branch_if(c, inside, then, merge);
+    coop_label(c, then);
     spv_emit_store(&c->e, isbe_ptr(c, var, storage, index), value);
-    spv_emit_branch(&c->e, merge);
-    spv_emit_label(&c->e, merge);
+    coop_branch(c, merge);
+    coop_label(c, merge);
 }
 static u32 payload_var(Ctx* c) { return isbe_var(c, &c->payload, SPV_STORAGE_TASK_PAYLOAD, c->payload_words); }
 static u32 map_var(Ctx* c) { return isbe_var(c, &c->isbe_map, SPV_STORAGE_WORKGROUP, c->isbe_map_words); }
@@ -2164,6 +2266,7 @@ static int may_write(const Sm86Insn* in, u32 r) {
         case SM86_TEX_U:
         case SM86_TLD_U:
         case SM86_TLD4_U:
+        case SM86_TXD_U:
         case SM86_TXQ_U: {
             u32 d1 = sm86_field(in, 64, 8);
             if (d1 < SM86_RZ && r >= d1 && r < d1 + 4) return 1;
@@ -2719,7 +2822,8 @@ static void texture_grad(Ctx* c, const Sm86Insn* in) {
         return;
     }
     u32 handle = sm86_field(in, 40, 19);
-    int slot = tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, 0, 0);
+    int slot = in->op == SM86_TXD_U ? (int)c->handle[c->cur].slot - 1 /* memory_handles' */
+                                    : tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, 0, 0);
     if (slot < 0) return;
     u32 a = sm86_field(in, 24, 8), b = sm86_field(in, 32, 8), f[4], dx[3], dy[3], count = 0;
 #define TXD_REG(base, k) ((base) < SM86_RZ ? (base) + (k) : SM86_RZ)
@@ -2984,7 +3088,10 @@ void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int s
 void shader_hmma_way(char* out, size_t n) {
     int mixed = g_spirv_translate.mixed_dot && g_spirv_translate.float16,
         halves = !mixed && g_spirv_translate.hmma_f16 && g_spirv_translate.float16;
-    const char* how = g_spirv_translate.hmma_stage ? "A and B through a warp's slot of shared memory"
+    const char* how = g_spirv_translate.hmma_astat && !halves
+                          ? g_spirv_translate.hmma_stage ? "A-stationary, B through a warp's slot of shared memory"
+                                                         : "A-stationary, B by shuffles"
+                      : g_spirv_translate.hmma_stage ? "A and B through a warp's slot of shared memory"
                       : g_spirv_translate.hmma_pairs && g_spirv_translate.quad_compute
                           ? "A by quad broadcasts, B shared by pairs of lanes"
                       : g_spirv_translate.hmma_pairs   ? "A by shuffles, B shared by pairs of lanes"
@@ -3025,35 +3132,48 @@ static u32 hmma_zero(Ctx* c) {
                                 builtin_vec3(c, &c->num_groups, SPV_BUILT_IN_NUM_WORKGROUPS, 0), c->zero);
     return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, never, cu(c, group + 1), c->zero);
 }
-/* HMMA on the device's matrix unit (g_spirv_translate.hmma_coop): one OpCooperativeMatrixMulAddKHR of 16x16 f16 A and B
-   into a 16x16 f32 accumulator, in place of hmma's 16 B gathers and 32 dot products. SPV_KHR_cooperative_matrix leaves
-   which lane holds which element to the driver, with no query, so the fragments go through shared memory: each
-   subgroup has a slot of its own (SubgroupId) in an array after the program's, where A is row-major (8 words a row
-   of 16 halves), B column-major (8 words a column) and D row-major in f32 (16 words a row). The product has 16
-   columns for HMMA's 8: B's columns 8-15 are whatever the 64 words after its 8 hold (the start of D's), which only
-   reach D's columns 8-15, never read back. The .1688 forms' k of 8 pads to 16 with zeros in A's columns and B's rows
-   8-15, as stale words there could be infinities or NaNs, and 0 times those poisons the sums. The accumulator starts
-   at zero and C is added to the lane's four elements of D after the product: staging C as well (4 stores, 8 loads)
-   cost one game's video upscaler half of the gain. A subgroup barrier comes before the stores (the last HMMA's
-   loads of the slot), between them and the matrix loads, and between D's store and the lanes' loads of it; RADV
-   makes them no instruction, a wave's LDS accesses being in order.
+/* HMMA on the device's matrix unit (g_spirv_translate.hmma_coop): an OpCooperativeMatrixMulAddKHR of 16xK f16 A and KxN f16 B
+   into a 16xN or 8xN f32 accumulator, in place of hmma's 16 B gathers and 32 dot products, on the shape the device
+   offers that HMMA best (coop_shape). SPV_KHR_cooperative_matrix leaves which lane holds which element to the
+   driver, with no query, so the fragments go through shared memory: each subgroup has a slot of its own (SubgroupId)
+   in an array after the program's, where A is row-major (8 words a row of 16 halves), B column-major (8 words a
+   column) and D row-major in f32 (N words a row). Which lane owns which element is the same for each shape: lane
+   4(r % 8) + c/2 writes A's row r column c and B's column c row k, at their row-major or column-major word (a word
+   holds two halves, so c/2 is the word and c % 2 the half of it), and the same lane plus its row g + 8, 64 words
+   on, owns the second 8 rows. D is f32, a word an element: lane 4(r % 8) + c/2 owns rows r and r + 8's column c,
+   at 8r + c, or 16r + c and 128 words on for a 16 wide row. ucas proved these identities exhaustively: each
+   element of each shape lands in exactly one lane's word, and no two of them share one.
+   A 16 wide shape has 16 columns for HMMA's 8: B's columns 8-15 are
+   whatever the 64 words after its 8 hold (the start of D's), which only reach D's columns 8-15, never read back. A
+   16 wide K pads a .1688's k of 8 with zeros in A's columns and B's rows 8-15, as stale words there could be
+   infinities or NaNs, and 0 times those poisons the sums; a 16x8x8 shape splits a .16816's K in two products and an
+   8x8x8 its M in two more. The accumulator starts at zero and C is added to the lane's four elements of D after the
+   product: staging C as well (4 stores, 8 loads) cost one game's video upscaler half of the gain. A subgroup barrier
+   comes before the stores (the last HMMA's loads of the slot), between them and the matrix loads, and between D's
+   store and the lanes' loads of it; RADV makes them no instruction, a wave's LDS accesses being in order.
    The products of two f16 are exact in f32, and the device sums them in f32 inside the instruction, rounded as it
    does it (RDNA 3.5's is a few f32 places off an FMA chain even on exact sums, as its v_dot2_f32_f16 is); C then adds
    one rounding, in f32. So both D types keep hmma's bound, that of an f32 sum of the products and C, which an f16 D
    then rounds to. On a Radeon 890M (RDNA 3.5, RADV) that upscaler's 7 HMMA programs went from 46.6 ms of GPU time a
    frame to 38.7 (two of them slower, by 4% and 13%), and its movie from 12.6 frames a second to 14.2: the GPU
-   gathers and dot products were most of their instructions, and the matrix unit is idle otherwise */
+   gathers and dot products were most of their instructions, and the matrix unit is idle otherwise.
+   A GEMM multiplies the same fragments again, and adds each product into the same accumulator, so a matrix stays
+   while the registers it came from stay as they are (hmma_coop's coop_frags and coop_acc): a hit saves its stores,
+   its barrier and its matrix loads, and an HMMA whose C registers are the last HMMA's D multiplies into that matrix
+   instead of reading its words back. The D words go to their registers only where something else reads or writes
+   them, which rd and wr see, or before the block ends (coop_flow), and only the f32 D chains: an f16 D rounds at
+   each HMMA, so each of its links is written back as it was before */
 #define COOP_B     128u /* the words of a slot: A at 0, B, D */
 #define COOP_D     192u
 #define COOP_WORDS 448u
 /* Whether a program's HMMAs take hmma_coop: a compute program with one, in blocks of whole subgroups of 32 (vk/
-   compute.c asks for subgroups of 32 for a program that reads other lanes, full where x is a multiple of 32; a 16x16
-   matrix takes the subgroup's 32 lanes), with shaderFloat16 for the halves, and with room for the slots after the
-   program's shared memory within the device's (g_spirv_translate.hmma_coop). It is the module's choice, as the
-   extension asks for the Vulkan memory model */
+   compute.c asks for subgroups of 32 for a program that reads other lanes, full where x is a multiple of 32; every
+   cooperative matrix spans the subgroup's 32 lanes), with shaderFloat16 for the halves, a shape to take
+   (g_spirv_translate.hmma_coop_shapes), and with room for the slots after the program's shared memory within the device's
+   (g_spirv_translate.hmma_coop). It is the module's choice, as the extension asks for the Vulkan memory model */
 static int coop_wanted(const Ctx* c) {
-    if (!g_spirv_translate.hmma_coop || !g_spirv_translate.float16 || c->stage != ST_CS || c->si->cs_local[0] <= 0 ||
-        c->si->cs_local[0] % 32)
+    if (!g_spirv_translate.hmma_coop || !g_spirv_translate.hmma_coop_shapes || !g_spirv_translate.float16 || c->stage != ST_CS ||
+        c->si->cs_local[0] <= 0 || c->si->cs_local[0] % 32)
         return 0;
     u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
     u32 own = c->si->shared_size > 0 ? (u32)c->si->shared_size : 16384u; /* shared_var's */
@@ -3071,22 +3191,168 @@ static u32 coop_ptr(Ctx* c, u32 index) {
     return SPV(&c->e, SPV_OP_ACCESS_CHAIN, spv_emit_type_workgroup_pointer(&c->e, c->t_u32), c->coop_slots, index);
 }
 static u32 coop_add(Ctx* c, u32 at, u32 k) { return k ? spv_emit_iadd_u32(&c->e, c->t_u32, at, cu(c, k)) : at; }
+/* the shape an HMMA takes on the device's cooperative matrices (g_spirv_translate.hmma_coop_shapes): an exact one first,
+   16x8x16 for a .16816 and 16x8x8 for a .1688, then a 16 wide K for either (the .1688's second K half zeros, the
+   .16816's spare N columns garbage), then the splits, an 8 wide K (two products) and an 8 wide M (two more) */
+enum { COOP_SHAPE_16x16x16, COOP_SHAPE_16x8x16, COOP_SHAPE_16x8x8, COOP_SHAPE_8x8x8 };
+static u32 coop_shape(int k16) {
+    u32 s = g_spirv_translate.hmma_coop_shapes;
+    if (k16) {
+        if (s & SH_COOP_16x8x16) return COOP_SHAPE_16x8x16;
+        if (s & SH_COOP_16x16x16) return COOP_SHAPE_16x16x16;
+        if (s & SH_COOP_16x8x8) return COOP_SHAPE_16x8x8;
+        return COOP_SHAPE_8x8x8;
+    }
+    if (s & SH_COOP_16x8x8) return COOP_SHAPE_16x8x8;
+    if (s & SH_COOP_16x8x16) return COOP_SHAPE_16x8x16;
+    if (s & SH_COOP_16x16x16) return COOP_SHAPE_16x16x16;
+    return COOP_SHAPE_8x8x8;
+}
+/* the M, N and K of each shape */
+static const u32 coop_dim[4][3] = {{16, 16, 16}, {16, 8, 16}, {16, 8, 8}, {8, 8, 8}};
+/* the matrices each shape takes its fragments in: one a block of 8 rows where its M is 8 wide, and a 16 wide K in two
+   8 wide halves where the HMMA's k is 16. A 16 wide K is one product either way */
+static u32 coop_kblocks(int k16, u32 shape) { return k16 && coop_dim[shape][2] == 8 ? 2 : 1; }
+static u32 coop_mblocks(u32 shape) { return coop_dim[shape][0] == 8 ? 2 : 1; }
+/* the slot of the subgroup's own: the array of COOP_WORDS words after the program's shared memory */
+static u32 coop_base(Ctx* c) {
+    return spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32,
+                           builtin_u32(c, &c->subgroup_id, SPV_BUILT_IN_SUBGROUP_ID), cu(c, COOP_WORDS));
+}
+/* a lane's words (g = l / 4, t = l % 4): g8 = 8g and t */
+static void coop_lane(Ctx* c, u32* g8, u32* t) {
+    u32 lane = warp_lane(c);
+    *g8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                          spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 2)), cu(c, 3));
+    *t = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3));
+}
+/* the lane's first D word in its slot: row g of a 16 wide shape's 16 words a row at 2g8, and of an 8 wide one's 8 at
+   g8, then its two columns. Its four words are that one, the next, and both a row of 8 lanes further on */
+static u32 coop_d_at(Ctx* c, u32 shape) {
+    u32 cols = coop_dim[shape][1], drow, g8, t;
+    coop_lane(c, &g8, &t);
+    drow = cols == 16 ? spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g8, cu(c, 1)) : g8;
+    return spv_emit_iadd_u32(
+        &c->e, c->t_u32, coop_base(c),
+        spv_emit_iadd_u32(&c->e, c->t_u32, drow,
+                          spv_emit_iadd_u32(&c->e, c->t_u32,
+                                            spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 1)),
+                                            cu(c, COOP_D))));
+}
+/* the lane's four D words: k's, of which the two of its row g and the two of row g + 8 */
+static u32 coop_d_word(Ctx* c, u32 shape, u32 at_d, u32 k) {
+    return coop_ptr(c, coop_add(c, at_d,
+                                (k >> 1) * (coop_dim[shape][1] == 16 ? 128 : 64) + (k & 1)));
+}
+/* the staged fragment a tuple of registers already has, or -1: the same registers, unchanged, staged as this
+   shape. A matrix is a value, so a fragment stays while the words are the same, even where the slot is overwritten
+   after it */
+static int coop_frag_find(Ctx* c, u32 b, u32 first, u32 n, u32 shape) {
+    for (u32 i = 0; i < c->nfrags; i++) {
+        const CoopFrag* f = &c->coop_frags[i];
+        if (f->b != b || f->first != first || f->n != n || f->shape != shape) continue;
+        u32 k = 0;
+        while (k < n && f->gen[k] == c->coop_gen[first + k]) k++;
+        if (k == n) return (int)i;
+    }
+    return -1;
+}
+/* the matrices of a staged fragment kept for this block, whatever moved the slot after them */
+static void coop_frag_hold(Ctx* c, u32 b, u32 first, u32 n, u32 shape, const u32* mat, u32 nmat) {
+    if (c->nfrags == COOP_FRAGS) return;
+    CoopFrag* f = &c->coop_frags[c->nfrags++];
+    f->b = b, f->first = first, f->n = n, f->shape = shape, f->nmat = nmat;
+    for (u32 k = 0; k < n; k++) f->gen[k] = c->coop_gen[first + k];
+    for (u32 k = 0; k < nmat; k++) f->mat[k] = mat[k];
+}
+/* the D matrix whose words a register's are not, or -1: an HMMA's result is in a matrix and not in the variables, so
+   nothing but that gives their words back */
+static int coop_acc_find(Ctx* c, u32 r) {
+    for (u32 i = 0; i < c->nacc; i++) {
+        const CoopAcc* a = &c->coop_acc[i];
+        if (r < a->first || r >= a->first + a->n) continue;
+        u32 k = 0;
+        while (k < a->n && a->gen[k] == c->coop_gen[a->first + k]) k++;
+        if (k == a->n) return (int)i;
+    }
+    return -1;
+}
+/* the words of a D matrix to its registers: the words take a store, so one block's matrices are stored between one
+   pair of subgroup barriers (coop_flow) where there are many, or one matrix alone where one register asks. Both take
+   the slot's base and the lane's word, which a block of matrices makes once */
+static void coop_d_store(Ctx* c, u32 shape, const u32* mat, u32 nmat, u32 base) {
+    for (u32 m = 0; m < nmat; m++)
+        SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR,
+                 coop_ptr(c, coop_add(c, coop_add(c, base, COOP_D), m ? 64 : 0)), mat[m],
+                 cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, coop_dim[shape][1]),
+                 SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
+}
+/* the lane's four words of a shape's D (row g columns 2t and 2t + 1, row g + 8's the same), as f32 */
+static void coop_d_read(Ctx* c, u32 shape, u32 at_d, u32 out[4]) {
+    for (u32 k = 0; k < 4; k++)
+        out[k] = to_f(c, spv_emit_load_nonprivate(&c->e, c->t_u32, coop_d_word(c, shape, at_d, k)));
+}
+/* the words of the matrix r's register is one of, before a read or a write of it: an other entry stays held, and its
+   words are still the matrix's */
+static void coop_acc_take(Ctx* c, u32 r) {
+    int i = coop_acc_find(c, r);
+    if (i < 0) return;
+    CoopAcc a = c->coop_acc[i];
+    c->coop_acc[i] = c->coop_acc[c->nacc - 1];
+    c->nacc--; /* the writes below must not find it again */
+    u32 base = coop_base(c), at_d = coop_d_at(c, a.shape), out[4];
+    coop_d_store(c, a.shape, a.mat, a.nmat, base);
+    coop_barrier(c);
+    coop_d_read(c, a.shape, at_d, out);
+    for (u32 k = 0; k < 4; k++) wr(c, a.first + k, to_u(c, out[k]));
+}
+/* an HMMA's f32 result kept as the D matrix of the registers it names, instead of their words: 1 where it is held,
+   0 where the block already holds its share of matrices and the words must be written */
+static int coop_acc_hold(Ctx* c, u32 d, u32 shape, const u32* mat, u32 nmat) {
+    for (u32 k = 0; k < 4; k++) c->coop_gen[d + k]++; /* the words are the matrix's now */
+    if (c->nacc == COOP_ACC) return 0;
+    CoopAcc* a = &c->coop_acc[c->nacc++];
+    a->first = d, a->n = 4, a->shape = shape, a->nmat = nmat;
+    for (u32 k = 0; k < 4; k++) a->gen[k] = c->coop_gen[d + k];
+    for (u32 k = 0; k < nmat; k++) a->mat[k] = mat[k];
+    return 1;
+}
+/* the block's end, at its branches and labels: D's words back to their registers, and the caches empty. A matrix
+   defined here has no value at a label the block's other arms reach too */
+static void coop_flow(Ctx* c) {
+    if (!c->nacc && !c->nfrags) return;
+    if (c->nacc) {
+        u32 n = c->nacc;
+        c->nacc = c->nfrags = 0; /* the writes below must not find them again */
+        u32 base = coop_base(c), at_d = coop_d_at(c, c->coop_acc[0].shape);
+        for (u32 i = 0; i < n; i++)
+            coop_d_store(c, c->coop_acc[i].shape, c->coop_acc[i].mat, c->coop_acc[i].nmat, base);
+        coop_barrier(c);
+        for (u32 i = 0; i < n; i++) {
+            CoopAcc a = c->coop_acc[i];
+            u32 out[4], at = a.shape == c->coop_acc[0].shape ? at_d : coop_d_at(c, a.shape);
+            coop_d_read(c, a.shape, at, out);
+            for (u32 k = 0; k < 4; k++) wr(c, a.first + k, to_u(c, out[k]));
+        }
+        return;
+    }
+    c->nfrags = 0;
+}
 static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 rb, u32 rc) {
     u32 na = k16 ? 4 : 2, nb = k16 ? 2 : 1, ncd = f32 ? 4 : 2, a[4], b[2], cc[4], k;
-    for (k = 0; k < na; k++) a[k] = rd(c, ra + k);
-    for (k = 0; k < nb; k++) b[k] = rd(c, rb + k);
-    for (k = 0; k < ncd; k++) cc[k] = rd(c, rc + k);
     spv_emit_capability(&c->e, SPV_CAPABILITY_FLOAT16);
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
     spv_emit_capability(&c->e, SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR);
     spv_emit_extension(&c->e, "SPV_KHR_cooperative_matrix");
     u32 t_h = spv_emit_type_float(&c->e, 16);
-    u32 tile = g_spirv_translate.hmma_coop_tile == 8 ? 8 : 16; /* Metal's simdgroup_matrix is 8x8x8, RADV's 16x16x16 */
-    u32 t_a = spv_emit_type_cooperative_matrix(&c->e, t_h, SPV_SCOPE_SUBGROUP, tile, tile,
+    /* the shape this HMMA takes: the exact one first, then a 16 wide K (a .1688's second K half zeros, a .16816's
+       spare N columns garbage), then the splits. coop_wanted admits no module without a shape */
+    u32 shape = coop_shape(k16), rows = coop_dim[shape][0], cols = coop_dim[shape][1], depth = coop_dim[shape][2];
+    u32 t_a = spv_emit_type_cooperative_matrix(&c->e, t_h, SPV_SCOPE_SUBGROUP, rows, depth,
                                                SPV_COOPERATIVE_MATRIX_USE_MATRIX_A_KHR);
-    u32 t_b = spv_emit_type_cooperative_matrix(&c->e, t_h, SPV_SCOPE_SUBGROUP, tile, tile,
+    u32 t_b = spv_emit_type_cooperative_matrix(&c->e, t_h, SPV_SCOPE_SUBGROUP, depth, cols,
                                                SPV_COOPERATIVE_MATRIX_USE_MATRIX_B_KHR);
-    u32 t_acc = spv_emit_type_cooperative_matrix(&c->e, c->t_f32, SPV_SCOPE_SUBGROUP, tile, tile,
+    u32 t_acc = spv_emit_type_cooperative_matrix(&c->e, c->t_f32, SPV_SCOPE_SUBGROUP, rows, cols,
                                                  SPV_COOPERATIVE_MATRIX_USE_MATRIX_ACCUMULATOR_KHR);
     if (!c->coop_slots) {
         u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
@@ -3094,75 +3360,97 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
         c->coop_slots = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
         add_interface(c, c->coop_slots);
     }
-    u32 base = spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, builtin_u32(c, &c->subgroup_id, SPV_BUILT_IN_SUBGROUP_ID),
-                               cu(c, COOP_WORDS));
-    u32 lane = warp_lane(c);
-    u32 g8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
-                             spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 2)), cu(c, 3));
-    u32 t = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3));
     /* lane l's words (g = l / 4, t = l % 4): A's at 8g + t (+64 row g + 8, +4 columns 8-15), B's at 8g + t (+4 rows
-       8-15), D's at 16g + 2t (+1 the next column, +128 row g + 8) */
-    u32 at_a = spv_emit_iadd_u32(&c->e, c->t_u32, base, spv_emit_iadd_u32(&c->e, c->t_u32, g8, t));
-    u32 at_b = coop_add(c, at_a, COOP_B);
-    u32 at_d = spv_emit_iadd_u32(
-        &c->e, c->t_u32, base,
-        spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g8, cu(c, 1)),
-                          spv_emit_iadd_u32(&c->e, c->t_u32,
-                                            spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 1)),
-                                            cu(c, COOP_D))));
-    coop_barrier(c);
-    /* the K halves the products read: a .1688's second is zeros, which an 8 wide tile does not multiply */
-    u32 halves = tile == 8 && !k16 ? 1 : 2;
-    static const u32 a_at[4] = {0, 64, 4, 68};
-    for (k = 0; k < 2 * halves; k++)
-        spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_a, a_at[k])), k < na ? a[k] : c->zero);
-    for (k = 0; k < halves; k++)
-        spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_b, 4 * k)), k < nb ? b[k] : c->zero);
-    coop_barrier(c);
+       8-15), D's at 16g + 2t (+1 the next column, +128 row g + 8) in a 16 wide one, 8g + 2t (+1, +64 at row g + 8) in
+       an 8 wide one */
+    /* the fragments a previous HMMA's matrices stand for, and C's matrix: found before any of their words are read,
+       so that a matrix they are still in takes no stores, no barrier and no loads. An HMMA whose C registers are
+       another shape's D, or were written since, takes their words from the registers, as before */
+    u32 kblocks = coop_kblocks(k16, shape), mblocks = coop_mblocks(shape);
+    int fa = ra < SM86_RZ ? coop_frag_find(c, 0, ra, na, shape) : -1;
+    int fb = rb < SM86_RZ ? coop_frag_find(c, 1, rb, nb, shape) : -1;
+    u32 c_mat[2] = {0, 0};
+    int c_chain = 0;
+    if (f32 && rc < SM86_RZ) {
+        int i = coop_acc_find(c, rc);
+        if (i >= 0 && c->coop_acc[i].shape == shape) {
+            for (u32 m = 0; m < mblocks; m++) c_mat[m] = c->coop_acc[i].mat[m];
+            c_chain = 1;
+        } else if (i >= 0)
+            coop_acc_take(c, rc); /* the words of another shape's matrix go back to the registers first */
+    }
+    /* the words the staging writes: a .1688's second K half is zeros where the shape's K is 16, and an 8 wide K reads
+       only the first half's, whose .1688 has none to zero */
+    u32 ka = k16 || depth == 16 ? 4 : 2, kb = k16 || depth == 16 ? 2 : 1;
+    /* C's words, which the product takes from the registers where no matrix stands for them: added to the lane's
+       words after the product, as they were before the matrices stayed. Staging them instead costs a matrix load for
+       the 4 word loads and adds it takes */
+    if (rc < SM86_RZ && !c_chain)
+        for (k = 0; k < ncd; k++) cc[k] = rd(c, rc + k);
+    /* the fragments no matrix stands for, staged in the slot, with the barrier that keeps the last HMMA's loads of it
+       away. An RZ fragment's zeros stage too, as the words there can be anything */
+    int words = (ra < SM86_RZ ? fa < 0 : 1) || (rb < SM86_RZ ? fb < 0 : 1);
+    u32 base = words || fa < 0 || fb < 0 ? coop_base(c) : 0, g8 = 0, t = 0, at_a = 0, at_b = 0;
+    if (words) {
+        if (ra < SM86_RZ && fa < 0)
+            for (k = 0; k < na; k++) a[k] = rd(c, ra + k);
+        if (rb < SM86_RZ && fb < 0)
+            for (k = 0; k < nb; k++) b[k] = rd(c, rb + k);
+        coop_lane(c, &g8, &t);
+        at_a = spv_emit_iadd_u32(&c->e, c->t_u32, base, spv_emit_iadd_u32(&c->e, c->t_u32, g8, t));
+        at_b = coop_add(c, at_a, COOP_B);
+        coop_barrier(c);
+        static const u32 a_at[4] = {0, 64, 4, 68};
+        if (ra < SM86_RZ ? fa < 0 : 1)
+            for (k = 0; k < ka; k++)
+                spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_a, a_at[k])),
+                                          k < na ? a[k] : c->zero);
+        if (rb < SM86_RZ ? fb < 0 : 1)
+            for (k = 0; k < kb; k++)
+                spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_b, 4 * k)), k < nb ? b[k] : c->zero);
+        coop_barrier(c);
+    }
+    /* the products: an 8 wide K splits a .16816's K in two, an 8 wide M its 16 rows in two blocks of 8, each block's
+       K halves adding into one accumulator. A 16 wide K is one product */
+    static const u32 half_at[2] = {0, 4}, block_at[2] = {0, 64};
     u32 zero_acc = spv_emit_const_composite(&c->e, t_acc, (const u32[]){cf(c, 0.0f)}, 1);
-    if (g_spirv_translate.hmma_coop_tile != 8) {
-        u32 ma =
-            SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a, coop_ptr(c, base),
-                cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 8), SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
-        u32 mb =
-            SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b, coop_ptr(c, coop_add(c, base, COOP_B)),
-                cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_COLUMN_MAJOR_KHR), cu(c, 8), SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
-        u32 md = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_MUL_ADD_KHR, t_acc, ma, mb, zero_acc);
-        SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR, coop_ptr(c, coop_add(c, base, COOP_D)), md,
-                 cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 16), SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
-    } else {
-        /* An 8x8x8 tile, as Metal's simdgroup_matrix is: the HMMA's 16x8x16 is two M halves of 8 rows, each the sum
-           of the two K halves' products, so four products a .16816 (two a .1688, whose K is one half), the K halves'
-           the second of each pair adding into the first. The tiles sit where a_at and the B words already are, and D's two go a row of 16 words apart,
-           so the lanes read D back as they do above */
-        static const u32 half_at[2] = {0, 4};     /* K's two halves of A, and of B's columns, 4 words apart */
-        u32 a_at2[2] = {coop_add(c, base, 0), coop_add(c, base, 64)};
-        u32 d_at[2] = {coop_add(c, base, COOP_D), coop_add(c, base, COOP_D + 128)};
-        for (u32 m = 0; m < 2; m++) {
-            u32 acc8 = 0;
-            for (u32 h = 0; h < halves; h++) {
-                u32 ma =
-                    SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a, coop_ptr(c, coop_add(c, a_at2[m], half_at[h])),
-                        cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 8),
-                        SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
-                u32 mb = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b,
+    u32 d_mat[2], ma_mat[4], mb_mat[2];
+    for (u32 h = 0; h < kblocks; h++) /* B's matrix, one a k half: the same words for every M block */
+        if (fb < 0)
+            mb_mat[h] = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b,
                              coop_ptr(c, coop_add(c, coop_add(c, base, COOP_B), half_at[h])),
                              cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_COLUMN_MAJOR_KHR), cu(c, 8),
                              SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
-                acc8 = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_MUL_ADD_KHR, t_acc, ma, mb, acc8 ? acc8 : zero_acc);
-            }
-            SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR, coop_ptr(c, d_at[m]), acc8,
-                     cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 16),
-                     SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
+    for (u32 m = 0; m < mblocks; m++) {
+        u32 acc = c_chain ? c_mat[m] : 0;
+        for (u32 h = 0; h < kblocks; h++) {
+            u32 ma = fa >= 0 ? c->coop_frags[fa].mat[m * kblocks + h]
+                             : SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a,
+                                   coop_ptr(c, coop_add(c, coop_add(c, base, block_at[m]), half_at[h])),
+                                   cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 8),
+                                   SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
+            if (fa < 0) ma_mat[m * kblocks + h] = ma;
+            u32 mb = fb >= 0 ? c->coop_frags[fb].mat[h] : mb_mat[h];
+            acc = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_MUL_ADD_KHR, t_acc, ma, mb, acc ? acc : zero_acc);
         }
+        d_mat[m] = acc;
     }
+    if (fa < 0 && ra < SM86_RZ) coop_frag_hold(c, 0, ra, na, shape, ma_mat, mblocks * kblocks);
+    if (fb < 0 && rb < SM86_RZ) coop_frag_hold(c, 1, rb, nb, shape, mb_mat, kblocks);
+    /* D's words: an f32 one stays in the matrix until something reads or writes those registers, and an f16 one is
+       written back now, as its halves round at each HMMA */
+    u32 d = in->dst;
+    if (d >= SM86_RZ) return;
+    if (f32 && coop_acc_hold(c, d, shape, d_mat, mblocks)) return;
+    /* the barrier this D store needs where the staging above had none: the words of a previous D were read after
+       their own, and a matrix load of C came between those and this */
+    if (!words) coop_barrier(c);
+    u32 at_d = coop_d_at(c, shape);
+    coop_d_store(c, shape, d_mat, mblocks, base ? base : coop_base(c));
     coop_barrier(c);
-    u32 acc[4]; /* row g columns 2t and 2t + 1, row g + 8 the same */
-    for (k = 0; k < 4; k++) {
-        u32 at = coop_add(c, at_d, (k >> 1) * 128 + (k & 1));
-        acc[k] = to_f(c, spv_emit_load_nonprivate(&c->e, c->t_u32, coop_ptr(c, at)));
-    }
-    if (rc < SM86_RZ)
+    u32 acc[4];
+    coop_d_read(c, shape, at_d, acc);
+    if (rc < SM86_RZ && !c_chain) /* C was the product's accumulator operand where its matrix stayed */
         for (u32 i = 0; i < 2; i++) {
             u32 pair = f32 ? 0 : half_pair(c, cc[i]);
             for (u32 j = 0; j < 2; j++) {
@@ -3170,8 +3458,6 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
                 acc[2 * i + j] = op2(c, SPV_OP_F_ADD, c->t_f32, acc[2 * i + j], addend);
             }
         }
-    u32 d = in->dst;
-    if (d >= SM86_RZ) return;
     if (f32)
         for (k = 0; k < 4; k++) wr(c, d + k, to_u(c, acc[k]));
     else
@@ -3191,6 +3477,129 @@ static int stage_wanted(const Ctx* c) {
 }
 static u32 stage_ptr(Ctx* c, u32 index) {
     return SPV(&c->e, SPV_OP_ACCESS_CHAIN, spv_emit_type_workgroup_pointer(&c->e, c->t_u32), c->stage_slots, index);
+}
+/* HMMA A-stationary (g_spirv_translate.hmma_astat): lane l = 4g + t holds A's pairs of rows g and g + 8 at k words t
+   (a0, a1) and t + 4 (a2, a3), and forms every product they take part in: with B's words of the same k words of each
+   of the 8 columns, those of lane 4c + t (b0, b1). Its partial sum of row i and column c = j ^ 2t sits in slot j (a
+   skew by t, so that the butterfly sends the same slots from every lane): 16 partial sums of 4 products (2 for k8).
+   The lanes of a quad hold the same 16 (row, column) pairs, each summed over its own k words, and D's owner of
+   (row, c) is the quad lane c >> 1. A butterfly over the quad: at bit b (xor 1, then xor 2) a lane sends the slots
+   whose bit b + 1 is set and adds what it receives into slot j ^ (2 << b), which holds the same pair there. Slots 0
+   and 1 are then columns 2t and 2t + 1, all of their k words: D = them + C. 16 B words fetched (shuffles, or loads from
+   the warp's slot where hmma_stage takes it, B at 128 + 2l as hmma's), 12 xor shuffles, 12 adds: ucas's mma chose it
+   under its gt1030 and sm86 models, and proved it over the 32 lanes (each D element exactly its 16 products and C).
+   The sums are a tree: a term goes through 6 roundings at most, where hmma's chain has 16 */
+static void hmma_astat(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 rb, u32 rc) {
+    u32 na = k16 ? 4 : 2, nb = k16 ? 2 : 1, ncd = f32 ? 4 : 2, a[4], b[2], cc[4], k;
+    for (k = 0; k < na; k++) a[k] = ra >= SM86_RZ ? c->zero : rd(c, ra + k);
+    for (k = 0; k < nb; k++) b[k] = rb >= SM86_RZ ? c->zero : rd(c, rb + k);
+    for (k = 0; k < ncd; k++) cc[k] = rc >= SM86_RZ ? c->zero : rd(c, rc + k);
+    int mixed = g_spirv_translate.mixed_dot && g_spirv_translate.float16;
+    u32 t_v2h = 0;
+    if (mixed) {
+        spv_emit_capability(&c->e, SPV_CAPABILITY_FLOAT16);
+        t_v2h = spv_emit_type_vector(&c->e, spv_emit_type_float(&c->e, 16), 2);
+        spv_emit_capability(&c->e, SPV_CAPABILITY_DOT_PRODUCT_FLOAT16_ACC_FLOAT32_VALVE);
+        spv_emit_extension(&c->e, "SPV_VALVE_mixed_float_dot_product");
+    }
+    u32 lane = warp_lane(c);
+    u32 t = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3));
+    /* slot j's column is j ^ 2t, its B words lane 4 (j ^ 2t) + t's: (t ^ 8t) ^ 4j */
+    u32 src0 = spv_emit_binary(&c->e, SPV_OP_BITWISE_XOR, c->t_u32, t,
+                               spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 3)));
+    u32 b_at = 0;
+    if (stage_wanted(c)) {
+        if (!c->stage_slots) {
+            u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
+            u32 array = spv_emit_type_array_u32(&c->e, c->t_u32, (lanes + 31) / 32 * HMMA_STAGE_WORDS);
+            c->stage_slots = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
+            add_interface(c, c->stage_slots);
+        }
+        u32 slot = spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32,
+                                   spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32,
+                                                   builtin_u32(c, &c->local_index, SPV_BUILT_IN_LOCAL_INVOCATION_INDEX),
+                                                   cu(c, 5)),
+                                   cu(c, HMMA_STAGE_WORDS));
+        u32 own_b = spv_emit_iadd_u32(
+            &c->e, c->t_u32, slot,
+            spv_emit_iadd_u32(&c->e, c->t_u32,
+                              spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, lane, cu(c, 1)), cu(c, 128)));
+        coop_barrier(c); /* the HMMA before's loads of the slot */
+        for (k = 0; k < nb; k++) spv_emit_store_nonprivate(&c->e, stage_ptr(c, coop_add(c, own_b, k)), b[k]);
+        coop_barrier(c);
+        b_at = coop_add(c, slot, 128); /* lane L's B words at 128 + 2L */
+    }
+    u32 ap[4][2] = {{0}}; /* A's pairs, as two f16 (mixed) or unpacked to two f32 */
+    for (k = 0; k < na; k++)
+        if (mixed)
+            ap[k][0] = spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, a[k]);
+        else {
+            u32 pair = half_pair(c, a[k]);
+            ap[k][0] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 0);
+            ap[k][1] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 1);
+        }
+    u32 part[2][8]; /* [row g, g + 8][slot j] */
+    for (u32 j = 0; j < 8; j++) {
+        u32 bw[2];
+        for (k = 0; k < nb; k++) {
+            if (b_at) { /* 2 (src0 ^ 4j): the xor, as src0 has bits where 4j does */
+                u32 at = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                                         spv_emit_binary(&c->e, SPV_OP_BITWISE_XOR, c->t_u32, src0, cu(c, 4 * j)),
+                                         cu(c, 1));
+                bw[k] = spv_emit_load_nonprivate(&c->e, c->t_u32,
+                                                 stage_ptr(c, coop_add(c, spv_emit_iadd_u32(&c->e, c->t_u32, b_at, at), k)));
+            } else
+                bw[k] = warp_read(c, b[k], spv_emit_binary(&c->e, SPV_OP_BITWISE_XOR, c->t_u32, src0, cu(c, 4 * j)));
+        }
+        u32 bp[2][2] = {{0}};
+        for (k = 0; k < nb; k++)
+            if (mixed)
+                bp[k][0] = spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bw[k]);
+            else {
+                u32 pair = half_pair(c, bw[k]);
+                bp[k][0] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 0);
+                bp[k][1] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 1);
+            }
+        for (u32 i = 0; i < 2; i++) {
+            u32 acc = 0;
+            for (u32 h = 0; h < nb; h++) { /* A's register 2h + i, B's h: the k words t and t + 4 */
+                if (mixed) {
+                    acc = SPV(&c->e, SPV_OP_F_DOT2_MIX_ACC32_VALVE, c->t_f32, ap[2 * h + i][0], bp[h][0],
+                              acc ? acc : cf(c, 0.0f));
+                    continue;
+                }
+                for (u32 e = 0; e < 2; e++) {
+                    u32 prod = op2(c, SPV_OP_F_MUL, c->t_f32, ap[2 * h + i][e], bp[h][e]);
+                    acc = acc ? op2(c, SPV_OP_F_ADD, c->t_f32, acc, prod) : prod;
+                }
+            }
+            part[i][j] = acc;
+        }
+    }
+    for (u32 bit = 0; bit < 2; bit++) /* the butterfly over the quad */
+        for (u32 j = 0; j < 8; j++) {
+            if (!(j >> (bit + 1) & 1) || (bit == 1 && (j & 2))) continue; /* the slots still live that it sends */
+            for (u32 i = 0; i < 2; i++) {
+                u32 x = to_f(c, warp_xor(c, to_u(c, part[i][j]), 1u << bit));
+                u32 to = j ^ (2u << bit);
+                part[i][to] = op2(c, SPV_OP_F_ADD, c->t_f32, part[i][to], x);
+            }
+        }
+    u32 acc[4]; /* row g columns 2t and 2t + 1, row g + 8 the same: slots 0 and 1 */
+    for (u32 i = 0; i < 2; i++) {
+        u32 pair = f32 ? 0 : half_pair(c, cc[i]);
+        for (u32 j = 0; j < 2; j++) {
+            u32 addend = f32 ? to_f(c, cc[2 * i + j]) : spv_emit_vec4_extract(&c->e, c->t_f32, pair, j);
+            acc[2 * i + j] = op2(c, SPV_OP_F_ADD, c->t_f32, part[i][j], addend);
+        }
+    }
+    u32 d = in->dst;
+    if (d >= SM86_RZ) return;
+    if (f32)
+        for (k = 0; k < 4; k++) wr(c, d + k, to_u(c, acc[k]));
+    else
+        for (u32 i = 0; i < 2; i++)
+            wr(c, d + i, pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, acc[2 * i], acc[2 * i + 1])));
 }
 /* HMMA (0x23c): D = A B + C on the warp's fragments, as PTX's mma.sync.aligned.m16n8k16 (bit 75) or m16n8k8 .row.col
    with f16 A and B, and f16 (bit 76 clear) or f32 C and D (the encodings of CuAssembler's sm_86 records: bits 72-90 8
@@ -3220,6 +3629,10 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
     u32 ra = sm86_field(in, 24, 8), rb = sm86_field(in, 32, 8), rc = sm86_field(in, 64, 8);
     if (c->coop) {
         hmma_coop(c, in, k16, f32, ra, rb, rc);
+        return;
+    }
+    if (g_spirv_translate.hmma_astat && !g_spirv_translate.hmma_f16) {
+        hmma_astat(c, in, k16, f32, ra, rb, rc);
         return;
     }
     u32 na = k16 ? 4 : 2, nb = k16 ? 2 : 1, ncd = f32 ? 4 : 2, a[4], b[2], cc[4], k;
@@ -3583,22 +3996,22 @@ static u32 loop_begin(Ctx* c, MeshLoop* l, u32 start, u32 end) {
     u32 body = spv_emit_id(e);
     l->header = spv_emit_id(e), l->cont = spv_emit_id(e), l->merge = spv_emit_id(e);
     spv_emit_store(e, l->counter, start);
-    spv_emit_branch(e, l->header);
-    spv_emit_label(e, l->header);
+    coop_branch(c, l->header);
+    coop_label(c, l->header);
     u32 i = spv_emit_load(e, c->t_u32, l->counter);
     u32 more = spv_emit_binary(e, SPV_OP_U_LESS_THAN, c->t_bool, i, end);
     spv_emit_loop_merge(e, l->merge, l->cont);
-    spv_emit_branch_conditional(e, more, body, l->merge);
-    spv_emit_label(e, body);
+    coop_branch_if(c, more, body, l->merge);
+    coop_label(c, body);
     return i;
 }
 static void loop_end(Ctx* c, const MeshLoop* l, u32 i) {
     SpvEmitter* e = &c->e;
-    spv_emit_branch(e, l->cont);
-    spv_emit_label(e, l->cont);
+    coop_branch(c, l->cont);
+    coop_label(c, l->cont);
     spv_emit_store(e, l->counter, spv_emit_iadd_u32(e, c->t_u32, i, l->step));
-    spv_emit_branch(e, l->header);
-    spv_emit_label(e, l->merge);
+    coop_branch(c, l->header);
+    coop_label(c, l->merge);
 }
 /* the words of an output map from base on, a vec4 for each generic it names into its Output array (generic[i], made
    here, of count elements) at element, and the position's into position: the words k from first on, word k at
@@ -3661,22 +4074,22 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     const ShMesh* m = &c->si->mesh;
     u32 fn = spv_emit_id(e);
     spv_emit_function_void(e, c->t_void, fn, spv_emit_type_function_void(e, c->t_void));
-    spv_emit_label(e, spv_emit_id(e));
+    coop_label(c, spv_emit_id(e));
     MeshLoop loop = {0};
     if (c->stage == ST_MS) loop.counter = spv_emit_function_variable(e, spv_emit_type_function_pointer(e, c->t_u32));
     loop.step = cu(c, m->threads);
     u32 invocation = builtin_u32(c, &c->local_index, SPV_BUILT_IN_LOCAL_INVOCATION_INDEX);
     u32 first = spv_emit_binary(e, SPV_OP_I_EQUAL, c->t_bool, invocation, c->zero);
     u32 then = spv_emit_id(e), merge = spv_emit_id(e);
-    spv_emit_selection_merge(e, merge);
-    spv_emit_branch_conditional(e, first, then, merge);
-    spv_emit_label(e, then);
+    coop_merge(c, merge);
+    coop_branch_if(c, first, then, merge);
+    coop_label(c, then);
     if (c->stage == ST_TS)
         spv_emit_store(e, isbe_ptr(c, payload_var(c), SPV_STORAGE_TASK_PAYLOAD, cu(c, 1)), c->zero);
     else
         spv_emit_store(e, isbe_ptr(c, map_var(c), SPV_STORAGE_WORKGROUP, cu(c, 3)), c->zero);
-    spv_emit_branch(e, merge);
-    spv_emit_label(e, merge);
+    coop_branch(c, merge);
+    coop_label(c, merge);
     spv_emit_control_barrier(e, c->t_u32);
     SPV(e, SPV_OP_FUNCTION_CALL, c->t_void, body);
     spv_emit_control_barrier(e, c->t_u32);
@@ -3734,7 +4147,7 @@ static u32 mesh_entry(Ctx* c, u32 body) {
         mesh_outputs(c, m->prim_sph, base, p, m->max_primitives, 1, c->prim_attr);
     }
     loop_end(c, &loop, p);
-    spv_emit_return(e);
+    coop_end(c);
     spv_emit_function_end(e);
     return fn;
 }
@@ -5143,6 +5556,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_TLD_U:
         case SM86_TLD4_U:
         case SM86_TXQ_U:
+        case SM86_TXD_U:
             if (!c->handle || !c->handle[c->cur].slot) { /* memory_handles found no slot */
                 uniform_handle(c, in);
                 return;
@@ -5151,6 +5565,8 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 texel_fetch(c, in);
             else if (op == SM86_TXQ_U)
                 texture_query(c, in);
+            else if (op == SM86_TXD_U)
+                texture_grad(c, in);
             else
                 texture(c, in);
             return;
@@ -5179,7 +5595,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_KILL:
             c->si->has_discard = 1; /* the renderer tests depth before the program only for one that keeps its pixels */
             spv_emit_capability(&c->e, SPV_CAPABILITY_DEMOTE_TO_HELPER_INVOCATION);
-            spv_emit_demote(&c->e);
+            coop_demote(c);
             return;
         case SM86_ISBERD:
         case SM86_ISBEWR: isbe(c, in); return;
@@ -5207,7 +5623,7 @@ typedef struct {
 enum { SE_DONE, SE_BODY, SE_END };
 
 static void se_branch(Ctx* c, StructEmit* se, u32 label) {
-    spv_emit_branch(&c->e, label);
+    coop_branch(c, label);
     se->open = 0;
 }
 static void se_break(Ctx* c, StructEmit* se, u32 scope) {
@@ -5216,7 +5632,7 @@ static void se_break(Ctx* c, StructEmit* se, u32 scope) {
 }
 static void se_ensure_open(Ctx* c, StructEmit* se) {
     if (se->open) return;
-    spv_emit_label(&c->e, spv_emit_id(&c->e));
+    coop_label(c, spv_emit_id(&c->e));
     se->open = 1;
 }
 static void se_pending(Ctx* c, StructEmit* se, u32 scope) {
@@ -5227,9 +5643,9 @@ static void se_pending(Ctx* c, StructEmit* se, u32 scope) {
     u32 here = cu(c, parent + 1);
     u32 set = spv_emit_binary(&c->e, SPV_OP_I_NOT_EQUAL, c->t_bool, t,
                               c->zero); /* before the merge, which precedes the branch */
-    spv_emit_selection_merge(&c->e, go);
-    spv_emit_branch_conditional(&c->e, set, pending, go);
-    spv_emit_label(&c->e, pending);
+    coop_merge(c, go);
+    coop_branch_if(c, set, pending, go);
+    coop_label(c, pending);
     if (!se->st->scope[parent].loop) {
         if (s->arrive && s->beyond)
             spv_emit_store(&c->e, se->flag,
@@ -5241,21 +5657,21 @@ static void se_pending(Ctx* c, StructEmit* se, u32 scope) {
     } else if (s->arrive && s->beyond) {
         u32 again = spv_emit_id(&c->e), out = spv_emit_id(&c->e), merge = spv_emit_id(&c->e);
         u32 arrived = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, t, here);
-        spv_emit_selection_merge(&c->e, merge);
-        spv_emit_branch_conditional(&c->e, arrived, again, out);
-        spv_emit_label(&c->e, again);
+        coop_merge(c, merge);
+        coop_branch_if(c, arrived, again, out);
+        coop_label(c, again);
         spv_emit_store(&c->e, se->flag, c->zero);
-        spv_emit_branch(&c->e, se->label[4 * parent + 2]);
-        spv_emit_label(&c->e, out);
+        coop_branch(c, se->label[4 * parent + 2]);
+        coop_label(c, out);
         se_break(c, se, parent);
-        spv_emit_label(&c->e, merge);
+        coop_label(c, merge);
         spv_emit_void_op(&c->e, SPV_OP_UNREACHABLE, NULL, 0);
     } else if (s->arrive) {
         spv_emit_store(&c->e, se->flag, c->zero);
-        spv_emit_branch(&c->e, se->label[4 * parent + 2]);
+        coop_branch(c, se->label[4 * parent + 2]);
     } else
         se_break(c, se, parent);
-    spv_emit_label(&c->e, go);
+    coop_label(c, go);
     se->open = 1;
 }
 static int structure_step(Ctx* c, StructEmit* se) {
@@ -5276,18 +5692,18 @@ static int structure_step(Ctx* c, StructEmit* se) {
             case SHS_OPEN_BLOCK:
             case SHS_OPEN_LOOP:
                 for (u32 k = 0; k < 4; k++) l[k] = spv_emit_id(&c->e);
-                if (se->open) spv_emit_branch(&c->e, l[0]);
-                spv_emit_label(&c->e, l[0]);
+                if (se->open) coop_branch(c, l[0]);
+                coop_label(c, l[0]);
                 spv_emit_loop_merge(&c->e, l[3], l[2]);
-                spv_emit_branch(&c->e, l[1]);
-                spv_emit_label(&c->e, l[1]);
+                coop_branch(c, l[1]);
+                coop_label(c, l[1]);
                 se->open = 1;
                 break;
             case SHS_CLOSE:
                 if (se->open) se_break(c, se, t->a);
-                spv_emit_label(&c->e, l[2]);
-                spv_emit_branch(&c->e, l[0]);
-                spv_emit_label(&c->e, l[3]);
+                coop_label(c, l[2]);
+                coop_branch(c, l[0]);
+                coop_label(c, l[3]);
                 if (!se->used[t->a]) {
                     spv_emit_void_op(&c->e, SPV_OP_UNREACHABLE, NULL, 0);
                     se->open = 0;
@@ -5305,9 +5721,9 @@ static int structure_step(Ctx* c, StructEmit* se) {
                 sel[1] = spv_emit_id(&c->e);
                 *sel_used = 0;
                 u32 then = spv_emit_id(&c->e);
-                spv_emit_selection_merge(&c->e, sel[0]);
-                spv_emit_branch_conditional(&c->e, c->branch_cond ? c->branch_cond : c->true_v, then, sel[1]);
-                spv_emit_label(&c->e, then);
+                coop_merge(c, sel[0]);
+                coop_branch_if(c, c->branch_cond ? c->branch_cond : c->true_v, then, sel[1]);
+                coop_label(c, then);
                 se->open = 1;
                 break;
             }
@@ -5316,7 +5732,7 @@ static int structure_step(Ctx* c, StructEmit* se) {
                     *sel_used = 1;
                     se_branch(c, se, sel[0]);
                 }
-                spv_emit_label(&c->e, sel[1]);
+                coop_label(c, sel[1]);
                 se->open = 1;
                 break;
             case SHS_ENDIF:
@@ -5324,7 +5740,7 @@ static int structure_step(Ctx* c, StructEmit* se) {
                     *sel_used = 1;
                     se_branch(c, se, sel[0]);
                 }
-                spv_emit_label(&c->e, sel[0]);
+                coop_label(c, sel[0]);
                 se->open = *sel_used;
                 if (!se->open) spv_emit_void_op(&c->e, SPV_OP_UNREACHABLE, NULL, 0);
                 se->selections--;
@@ -5355,8 +5771,8 @@ static int structure_step(Ctx* c, StructEmit* se) {
                 sel[1] = spv_emit_id(&c->e); /* the default's label, the cases' from the next id on */
                 for (u32 k = 0; k < count; k++) labels[k] = spv_emit_id(&c->e);
                 *sel_used = 0;
-                spv_emit_selection_merge(&c->e, sel[0]);
-                spv_emit_switch_u32(&c->e, c->branch_target, sel[1], literals, labels, count);
+                coop_merge(c, sel[0]);
+                coop_switch(c, c->branch_target, sel[1], literals, labels, count);
                 se->open = 0;
                 break;
             }
@@ -5366,7 +5782,7 @@ static int structure_step(Ctx* c, StructEmit* se) {
                     *sel_used = 1;
                     se_branch(c, se, sel[0]);
                 }
-                spv_emit_label(&c->e, t->kind == SHS_DEFAULT ? sel[1] : sel[1] + 1 + t->a);
+                coop_label(c, t->kind == SHS_DEFAULT ? sel[1] : sel[1] + 1 + t->a);
                 se->open = 1;
                 break;
             case SHS_ENDSWITCH:
@@ -5374,7 +5790,7 @@ static int structure_step(Ctx* c, StructEmit* se) {
                     *sel_used = 1;
                     se_branch(c, se, sel[0]);
                 }
-                spv_emit_label(&c->e, sel[0]);
+                coop_label(c, sel[0]);
                 se->open = *sel_used;
                 if (!se->open) spv_emit_void_op(&c->e, SPV_OP_UNREACHABLE, NULL, 0);
                 se->selections--;
@@ -5795,6 +6211,9 @@ static int mh_may_write(const Sm86Insn* in, int file, u32 r) {
             case SM86_TEX_U:
             case SM86_TLD_U:
             case SM86_TLD4_U:
+            case SM86_TXD:
+            case SM86_TXD_B:
+            case SM86_TXD_U:
             case SM86_SULD_P:
             case SM86_SULD_D:
             case SM86_SULD_P_B:
@@ -6059,14 +6478,14 @@ static int tex_b_cbuf_handle(Ctx* c, u32 i, u32 reg) {
     if (c->stage == ST_CS && w->op == SM86_LDC && sm86_field(w, 24, 8) < SM86_RZ) return 0;
     return (w->op == SM86_MOV && w->b.kind == SM86_SRC_CBUF && !w->b.bindless) || w->op == SM86_LDC;
 }
-/* The handles from memory: TEX, TLD, TLD4 and TXQ with the handle in a uniform register pair (URn the texture's word,
-   URn + 1 the sampler's), and TEX.B whose handle register no constant buffer word gives. Their slots go in
+/* The handles from memory: TEX, TLD, TLD4, TXD and TXQ with the handle in a uniform register pair (URn the texture's
+   word, URn + 1 the sampler's), and TEX.B whose handle register no constant buffer word gives. Their slots go in
    c->handle (the slot + 1), and the instructions that make them in ShaderInfo.memh */
 static void memory_handles(Ctx* c) {
     u32 n = c->n, any = 0;
     for (u32 i = 0; i < n; i++) {
         int op = c->in[i].op;
-        any |= op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXQ_U ||
+        any |= op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXD_U || op == SM86_TXQ_U ||
                ((op == SM86_TEX_B || op == SM86_TXQ_B) && handle_b_reg(&c->in[i]) < SM86_RZ &&
                 !tex_b_cbuf_handle(c, i, handle_b_reg(&c->in[i])));
     }
@@ -6087,7 +6506,8 @@ static void memory_handles(Ctx* c) {
        is sampled as no texture (SH_PROBE_NONE): its instructions are unmarked, and the draw goes on without it */
     for (u32 i = 0; i < n && !c->failed; i++) {
         const Sm86Insn* in = &c->in[i];
-        int op = in->op, u = op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXQ_U;
+        int op = in->op, u = op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXQ_U ||
+                             op == SM86_TXD_U;
         int b = op == SM86_TEX_B || op == SM86_TXQ_B;
         u32 reg = b ? handle_b_reg(in) : SM86_RZ;
         if (!u && !(b && reg < SM86_RZ && !tex_b_cbuf_handle(c, i, reg))) continue;
@@ -6119,7 +6539,9 @@ static void memory_handles(Ctx* c) {
             int op = in->op, slot = -1;
             int query = op == SM86_TXQ_U || op == SM86_TXQ_B;
             if (probe[i][0] == ~0u || query != (pass == 1)) continue;
-            if (op != SM86_TEX_U && op != SM86_TLD_U && op != SM86_TLD4_U && !query && op != SM86_TEX_B) continue;
+            if (op != SM86_TEX_U && op != SM86_TLD_U && op != SM86_TLD4_U && op != SM86_TXD_U && !query &&
+                op != SM86_TEX_B)
+                continue;
             u32 tex = mh_final(c, probe[i][0]), smp = probe[i][1] == ~0u ? 0 : mh_final(c, probe[i][1]);
             int has_smp = probe[i][1] != ~0u;
             if (query) {
@@ -6132,7 +6554,8 @@ static void memory_handles(Ctx* c) {
             } else {
                 u32 type, array, coords;
                 if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) continue; /* refused where it's written */
-                u32 shadow = op == SM86_TLD_U ? 0 : sm86_field(in, 78, 1),
+                /* TXD has no depth reference: its bit 78 is not the shadow bit */
+                u32 shadow = op == SM86_TLD_U || op == SM86_TXD_U ? 0 : sm86_field(in, 78, 1),
                     ms = op == SM86_TLD_U && sm86_field(in, 78, 1);
                 slot = tex_slot_memory(c, tex, has_smp, smp, type, array, shadow, ms);
             }
@@ -6507,7 +6930,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         c->false_v = spv_emit_constant_bool(e, c->t_bool, 0);
         u32 fn = spv_emit_id(e);
         spv_emit_function_void(e, c->t_void, fn, spv_emit_type_function_void(e, c->t_void));
-        spv_emit_label(e, spv_emit_id(e));
+        coop_label(c, spv_emit_id(e));
         u32 reg_ptr = spv_emit_type_function_pointer(e, c->t_u32),
             pred_ptr = spv_emit_type_function_pointer(e, c->t_bool);
         /* the registers up to the highest named and the next three (vector operands), and the predicates */
@@ -6547,6 +6970,17 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             if (insn[i].op == SM86_AST)
                 for (u32 k = 0; k <= sm86_field(&insn[i], 74, 2); k++)
                     output_var(c, sm86_field(&insn[i], 40, 10) + 4 * k);
+        /* and the clip distances of a vertex or geometry program, when it stores one that is used. uses_clip_mask names
+           those planes, as spirv_translate.c's clip_used does: the renderer gives such a program no varying geometry
+           program of its own (render.c), and a tessellation passthrough hands them on (tess_passthrough.c) */
+        for (u32 i = 0; i < n && (stage == ST_VS || stage == ST_GS); i++)
+            if (insn[i].op == SM86_AST)
+                for (u32 k = 0; k <= sm86_field(&insn[i], 74, 2); k++) {
+                    u32 addr = sm86_field(&insn[i], 40, 10) + 4 * k;
+                    if (addr < 0x2c0 || addr >= 0x2e0 || !clip_plane_used(c, (addr - 0x2c0) >> 2)) continue;
+                    c->si->uses_clip_mask |= 1 << ((addr - 0x2c0) >> 2);
+                    clip_var(c);
+                }
         StructEmit se = {0};
         se.st = st;
         se.open = 1;
@@ -6565,12 +6999,14 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             for (u32 i = 0; i < 32; i++)
                 if (c->out_attr[i]) spv_emit_store(e, c->out_attr[i], empty);
         }
+        for (u32 plane = 0; plane < 8 && c->clip; plane++)
+            spv_emit_store(e, spv_emit_output_element_pointer(e, c->t_f32, c->clip, cu(c, plane)), cf(c, 0.0f));
         while (!c->failed) {
             int step = structure_step(c, &se);
             if (step == SE_DONE) break;
             if (step == SE_END) {
                 epilogue(c);
-                spv_emit_return(e);
+                coop_end(c);
                 se.open = 0;
                 continue;
             }
@@ -6591,7 +7027,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                 }
                 if (in->op == SM86_EXIT && always) {
                     epilogue(c);
-                    spv_emit_return(e);
+                    coop_end(c);
                     se.open = 0;
                     break;
                 }
@@ -6613,24 +7049,24 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                 if (!always) {
                     u32 cond = guard(c, in), then = spv_emit_id(e);
                     merge = spv_emit_id(e);
-                    spv_emit_selection_merge(e, merge);
-                    spv_emit_branch_conditional(e, cond, then, merge);
-                    spv_emit_label(e, then);
+                    coop_merge(c, merge);
+                    coop_branch_if(c, cond, then, merge);
+                    coop_label(c, then);
                 }
                 if (in->op == SM86_EXIT) {
                     epilogue(c);
-                    spv_emit_return(e);
+                    coop_end(c);
                 } else {
                     c->cur = i;
                     emit_insn(c, in);
-                    if (merge) spv_emit_branch(e, merge);
+                    if (merge) coop_branch(c, merge);
                 }
-                if (merge) spv_emit_label(e, merge);
+                if (merge) coop_label(c, merge);
             }
         }
         if (se.open && !c->failed) {
             epilogue(c);
-            spv_emit_return(e);
+            coop_end(c);
         }
         spv_emit_function_end(e);
         free(pair_first);

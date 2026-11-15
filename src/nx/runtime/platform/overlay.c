@@ -36,7 +36,7 @@ enum {
     PAGE_KEYS
 };
 /* the first page's items: Capture frame only while RenderDoc can capture */
-enum { M_CONTROLS, M_PADS, M_STATES, M_SHORTCUTS, M_TV_MODE, M_STATS, M_CAPTURE, M_EXIT, M_COUNT };
+enum { M_CONTROLS, M_PADS, M_STATES, M_SHORTCUTS, M_TV_MODE, M_STATS, M_VOLUME, M_CAPTURE, M_EXIT, M_COUNT };
 enum { S_SAVE, S_LOAD, S_DELETE, S_BACK, S_COUNT };              /* a slot's page's, the auto slot without Save */
 enum { P_PLAYER, P_SWAP, P_DEADZONE, P_RUMBLE, P_BACKGROUND, P_MAP, P_BACK, P_COUNT }; /* the gamepads' page's */
 /* the controls page's items */
@@ -273,7 +273,10 @@ static int all_shown(void) {
 }
 /* the setting an item is, NULL for an action */
 static const IniOpt* setting(int i) {
-    if (page == PAGE_MAIN) return main_item(i) == M_STATS ? ini_find(g_display_ini, "stats") : NULL;
+    if (page == PAGE_MAIN)
+        return main_item(i) == M_STATS    ? ini_find(g_display_ini, "stats")
+               : main_item(i) == M_VOLUME ? ini_find(g_audio_ini, "volume")
+                                          : NULL;
     if (page == PAGE_CONTROLS) return ini_find(i == C_TOUCH ? g_backend_ini : g_vpad_ini, CONTROLS[i]);
     if (page == PAGE_PADS && i == P_PLAYER) return NULL;
     if (page == PAGE_PADS && pad_player && (i == P_SWAP || i == P_RUMBLE)) { /* the player's own */
@@ -284,8 +287,39 @@ static const IniOpt* setting(int i) {
     if (page == PAGE_PADS) return ini_find(g_gamepad_ini, PADS[i]);
     return page == PAGE_BUTTONS && i > 0 && i <= SNX_VPAD_COUNT ? &g_vpad_shown_ini[i - 1] : NULL;
 }
-/* a number, stepped by the arrows around it, not a word */
-static int arrows(const IniOpt* o) { return o && (!o->words || strchr(o->words, '#')); }
+/* a number, stepped by the arrows around it, not a word; a slider's is its own (INI_SLIDER) */
+static int arrows(const IniOpt* o) { return o && !(o->flags & INI_SLIDER) && (!o->words || strchr(o->words, '#')); }
+static const IniOpt* slider(int i) {
+    const IniOpt* o = setting(i);
+    return o && (o->flags & INI_SLIDER) ? o : NULL;
+}
+/* a slider's value now, its knob's place in thousandths of the way from its lowest to its highest */
+static int slider_place(const IniOpt* o) {
+    int v = __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED);
+    return o->hi > o->lo ? (int)(((double)v - o->lo) * 1000.0 / (o->hi - o->lo) + 0.5) : 0;
+}
+/* the columns its value takes at its widest, which the slider ends before whatever it says */
+static int slider_cols(const IniOpt* o) {
+    char word[OVERLAY_COLS];
+    int v, step = o->step > 0 ? o->step : 1, most = 0;
+    for (v = (int)o->lo; v <= (int)o->hi; v += step) {
+        ini_word(o, v, word, sizeof word);
+        if ((int)strlen(word) > most) most = (int)strlen(word);
+    }
+    return most;
+}
+/* the slider of item i set to the step nearest to at, thousandths of its way: stored, as a step is (act) */
+static int slide_to(int i, int at) {
+    const IniOpt* o = slider(i);
+    int step, steps, k;
+    if (!o) return OVERLAY_NONE;
+    step = o->step > 0 ? o->step : 1;
+    steps = (int)((o->hi - o->lo) / step);
+    k = (snx_clamp_int(at, 0, 1000) * steps + 500) / 1000;
+    __atomic_store_n((int*)o->var, (int)o->lo + k * step, __ATOMIC_RELAXED);
+    vpad_store_opt(o);
+    return OVERLAY_NONE;
+}
 /* an item's text, and its value at the right */
 static void label(int i, char* text, size_t size, char* value, size_t vsize) {
     const IniOpt* o = setting(i);
@@ -293,13 +327,14 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
     if (o) {
         char word[OVERLAY_COLS];
         snprintf(text, size, "%s", o->name);
-        ini_word(o, *(const int*)o->var, word, sizeof word);
+        ini_word(o, __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED), word, sizeof word);
         snprintf(value, vsize, arrows(o) ? "< %s >" : "%s", word);
         return;
     }
     if (page == PAGE_MAIN) {
-        static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Save states",   "Shortcuts",
-                                                        "TV mode",     "Stats",          "Capture frame", "Exit"};
+        static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Save states",
+                                                        "Shortcuts",   "TV mode",        "Stats",
+                                                        "Volume",      "Capture frame",  "Exit"};
         snprintf(text, size, "%s", main_items[main_item(i)]);
         if (main_item(i) == M_TV_MODE) /* the choice in effect, in docked's words: the .ini keeps its own */
             ini_word(ini_find(g_display_ini, "docked"), options_tv_mode_choice(), value, vsize);
@@ -684,12 +719,15 @@ typedef struct {
     const char* value[VISIBLE];   /* at their right; NULL for none */
     const char* key[VISIBLE];     /* the keys F1's page names before the label, on a band; NULL for none */
     int keys;                     /* their column's width: the label after it and two more */
+    /* a slider's: the columns its value takes at its widest, 0 for no slider, and its knob in thousandths of its way */
+    int slider_cols[VISIBLE], knob[VISIBLE];
     int items, top, shown, focus; /* all the items, the first showing, how many show, the one in focus */
     int aside;                    /* room at the box's right for a picture (the save states' thumbnail), if it fits */
 } Dialog;
 typedef struct {
     SnxOverlayRect box, link, item[VISIBLE];
-    SnxOverlayRect aside; /* the picture's room: empty when there was none */
+    SnxOverlayRect bar[VISIBLE]; /* each item's slider, its knob's travel and a knob's width: empty for none */
+    SnxOverlayRect aside;        /* the picture's room: empty when there was none */
     SnxOverlayRect field; /* the field paragraph's panel, empty without one */
     int cols, scale;
 } DialogDrawn;
@@ -727,6 +765,30 @@ static struct {
     int kb_shown, refused, answer;
     DialogRows event_rows;
 } g_overlay;
+/* item i's slider, at its row's letters ty on a box from x cols wide (cells cw x ch), in its letters' colour fg as
+   the launcher's (src/gui's slider_row_draw): a thin line, thicker up to the knob, and the knob, a cell wide; ending a
+   column before its value at its widest, OVERLAY_SLIDER_COLS long where the label leaves room, a column after it.
+   Where it lies into bar, the knob's travel with the knob's width (empty without room for a cell of travel); drawn
+   into l when not NULL */
+static void slider_draw(SnxUiList* l, const Dialog* d, int i, float x, float ty, float cw, float ch, int cols, u32 fg,
+                        SnxOverlayRect* bar) {
+    int start = d->key[i] ? 6 + d->keys + 2 : d->icon[i] ? 6 : 3; /* the label's first column */
+    float right = x + cw * (float)(cols - 2 - d->slider_cols[i]), left = right - cw * (float)OVERLAY_SLIDER_COLS;
+    float lowest = x + cw * (float)(start + (int)strlen(d->label[i]) + 1), mid = ty + ch / 2, px = ch / 16, knob;
+    if (left < lowest) left = lowest;
+    memset(bar, 0, sizeof *bar);
+    if (right - left < 2 * cw) return;
+    bar->x = left;
+    bar->y = ty;
+    bar->w = right - left;
+    bar->h = ch;
+    if (!l) return;
+    knob = left + (bar->w - cw) * (float)d->knob[i] / 1000.0f;
+    /* the line from a knob's middle at one end to the knob's middle at the other */
+    if (knob < right - cw) ui_fill(l, knob + cw / 2, mid - px, right - cw - knob, px, fg);
+    if (knob > left) ui_fill(l, left + cw / 2, mid - 2 * px, knob - left, 3 * px, fg);
+    ui_fill(l, knob, ty + 2 * px, cw, ch - 4 * px, fg);
+}
 /* d on a picture sw x sh, into l (NULL: only where it all goes, in out): the head, each paragraph after a blank row,
    a blank row, the items and a blank row; overlay_cols wide, in the middle */
 static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRows rows_of, DialogDrawn* out) {
@@ -829,7 +891,10 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
         at->w = w;
         at->h = rh;
         ty = at->y + into;
-        if (!l) continue;
+        if (!l) {
+            if (d->slider_cols[i]) slider_draw(NULL, d, i, x, ty, cw, ch, cols, 0, &out->bar[i]);
+            continue;
+        }
         fg = on ? UI_PAGE : d->tone[i] ? d->tone[i] : UI_INK;
         if (on)
             ui_fill(l, x, at->y, w, rh, d->tone[i] ? d->tone[i] : UI_INK);
@@ -855,6 +920,7 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
             ui_text(l, x + cw, ty, s, line, fg);
         }
         if (d->value[i]) ui_text(l, x + cw * (float)(cols - 1 - (int)strlen(d->value[i])), ty, s, d->value[i], fg);
+        if (d->slider_cols[i]) slider_draw(l, d, i, x, ty, cw, ch, cols, fg, &out->bar[i]);
     }
     /* more above or under: the font's arrows at the edge */
     if (l && d->shown && d->top) ui_text(l, x + cw * (float)(cols - 1), out->item[0].y + into, s, "\x18", UI_SOFT);
@@ -1057,14 +1123,14 @@ void overlay_scroll(int rows) {
     focus = snx_clamp_int(focus + rows, 0, items() - 1);
     keep_in_view();
 }
-/* the first page's settings take no side step but the TV mode row's, and that one only on a press */
+/* the first page's settings take no side step but Volume's and the TV mode row's, that one only on a press */
 static int side(int step, int held) {
     changed();
     listening = 0;
     if (page == PAGE_KEYS) return OVERLAY_CLOSE;
     if (page == PAGE_MAP)
         map_key(step < 0 ? SNX_PAD_KEY_LEFT : SNX_PAD_KEY_RIGHT);
-    else if (page != PAGE_MAIN || (main_item(focus) == M_TV_MODE && !held))
+    else if (page != PAGE_MAIN || main_item(focus) == M_VOLUME || (main_item(focus) == M_TV_MODE && !held))
         act(focus, step);
     return OVERLAY_NONE;
 }
@@ -1267,13 +1333,23 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     for (r = 0; r < d->shown; ++r) {
         static const unsigned main_icons[M_COUNT] = {GUI_ICON_POINTER,  GUI_ICON_GAMEPAD_2, GUI_ICON_SAVE,
                                                      GUI_ICON_KEYBOARD, GUI_ICON_MONITOR,   GUI_ICON_ACTIVITY,
-                                                     GUI_ICON_IMAGE,    GUI_ICON_LOG_OUT};
+                                                     GUI_ICON_VOLUME_2, GUI_ICON_IMAGE,     GUI_ICON_LOG_OUT};
+        const IniOpt* o = slider(top + r);
         label(top + r, text[r], sizeof *text, value[r], sizeof *value);
         d->label[r] = text[r];
         d->icon[r] = page == PAGE_MAIN ? main_icons[main_item(top + r)] : GUI_ICON_NONE;
         d->tone[r] = item_tone(top + r);
         d->value[r] = value[r];
+        if (o) {
+            d->slider_cols[r] = slider_cols(o);
+            d->knob[r] = slider_place(o);
+        }
     }
+}
+/* pixel x on bar, a slider drawn at scale: the knob's place it puts the knob's middle at, in thousandths of its way */
+static int bar_place(const SnxOverlayRect* bar, float x, int scale) {
+    float cw = 8.0f * (float)scale, travel = bar->w - cw;
+    return travel > 0 ? snx_clamp_int((int)((x - bar->x - cw / 2) * 1000.0f / travel + 0.5f), 0, 1000) : 0;
 }
 int overlay_tap(float x, float y, int sw, int sh) {
     char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[2 * OVERLAY_COLS_MAX + 64];
@@ -1295,6 +1371,11 @@ int overlay_tap(float x, float y, int sw, int sh) {
     if (r == d.shown) return OVERLAY_NONE;
     focus = d.top + r;
     col = (int)((x - at.box.x) / (8.0f * (float)at.scale));
+    /* a slider's row: a tap on the slider takes the step under it, one left of it steps it down and one right of it
+       (its value) up */
+    if (at.bar[r].w > 0 && x >= at.bar[r].x && x < at.bar[r].x + at.bar[r].w)
+        return slide_to(focus, bar_place(&at.bar[r], x, at.scale));
+    if (at.bar[r].w > 0) return act(focus, x < at.bar[r].x ? -1 : 1);
     /* a value's row: a tap on its last five columns (the right arrow's) steps it up, a tap anywhere left of them
        down */
     if (arrows(setting(focus))) return act(focus, col < at.cols - 5 ? -1 : 1);
@@ -1316,6 +1397,28 @@ static int tap_down;    /* whose lift taps the menu where it went down, */
 static float tap_at[2]; /* there, */
 static int tap_dragged; /* unless it went further than a finger's slip: then it scrolls the page, */
 static int tap_rows;    /* by this many rows so far */
+/* or it went down on a slider: the item's, -1 for none, which follows it until it lifts, on its bar as drawn then at
+   the scale then */
+static int tap_slider = -1, tap_scale;
+static SnxOverlayRect tap_bar;
+/* the item whose slider lies under x, y on the picture overlay_place last had, with its bar and the scale; -1 none */
+static int slider_under(float x, float y, SnxOverlayRect* bar, int* scale) {
+    char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[2 * OVERLAY_COLS_MAX + 64];
+    Dialog d;
+    DialogDrawn at;
+    int r;
+    if (!shown || page == PAGE_MAP || page == PAGE_KEYS || picture[0] <= 0 || picture[1] <= 0) return -1;
+    menu_dialog(&d, text, value, pads, sizeof pads);
+    dialog_draw(NULL, picture[0], picture[1], &d, g_overlay.event_rows, &at);
+    for (r = 0; r < d.shown; ++r)
+        if (at.bar[r].w > 0 && overlay_error_hit(&at.item[r], x, y) && x >= at.bar[r].x &&
+            x < at.bar[r].x + at.bar[r].w) {
+            *bar = at.bar[r];
+            *scale = at.scale;
+            return d.top + r;
+        }
+    return -1;
+}
 void overlay_pointer_down(u64 id, float x, float y, const int safe[4]) {
     /* on the panel a finger is the menu's, whatever control lies under it; off it a control's, but under the loading
        screen, where they aren't drawn (vk/ui.c) */
@@ -1325,6 +1428,13 @@ void overlay_pointer_down(u64 id, float x, float y, const int safe[4]) {
     tap_at[0] = x;
     tap_at[1] = y;
     tap_dragged = tap_rows = 0;
+    /* on a slider: the step under it at once, its focus, and the drag after it */
+    tap_slider = slider_under(x, y, &tap_bar, &tap_scale);
+    if (tap_slider < 0) return;
+    changed();
+    listening = 0;
+    focus = tap_slider;
+    slide_to(focus, bar_place(&tap_bar, x, tap_scale));
 }
 /* a drag's rows: the page goes by under the finger, the item in focus kept on it */
 static void page_scroll(int rows) {
@@ -1346,6 +1456,11 @@ void overlay_pointer_move(u64 id, float x, float y, const int safe[4]) {
         vpad_move(id, x, y, safe);
         return;
     }
+    if (tap_slider >= 0) { /* the knob follows it across, and past either end stays there */
+        changed();
+        slide_to(tap_slider, bar_place(&tap_bar, x, tap_scale));
+        return;
+    }
     dx = x - tap_at[0];
     dy = y - tap_at[1];
     if (!tap_dragged && dx * dx + dy * dy < slip * slip) return;
@@ -1357,16 +1472,23 @@ void overlay_pointer_move(u64 id, float x, float y, const int safe[4]) {
     tap_rows = rows;
 }
 int overlay_pointer_up(u64 id, float x, float y, int sw, int sh) {
+    int slid = tap_slider >= 0;
     if (vpad_up(id) || !tap_down || id != tap_id) return OVERLAY_NONE;
     tap_down = 0;
+    tap_slider = -1;
     (void)x;
     (void)y;
-    return tap_dragged ? OVERLAY_NONE : overlay_tap(tap_at[0], tap_at[1], sw, sh);
+    return tap_dragged || slid ? OVERLAY_NONE : overlay_tap(tap_at[0], tap_at[1], sw, sh);
 }
 void overlay_pointer_cancel(u64 id) {
-    if (id == tap_id) tap_down = 0;
+    if (id != tap_id) return;
+    tap_down = 0;
+    tap_slider = -1;
 }
-void overlay_pointers_reset(void) { tap_down = 0; }
+void overlay_pointers_reset(void) {
+    tap_down = 0;
+    tap_slider = -1;
+}
 /* the gamepads' page's second row: the first one connected by name, and how many more */
 static const char* pads_hint(char* out, size_t size) {
     int more = 0;

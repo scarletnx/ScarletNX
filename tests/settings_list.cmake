@@ -2,17 +2,33 @@
 # Copyright 2026 the ScarletNX contributors
 # `scarletnx --settings`: every setting of the game's .ini, by section, a line each of ten fields, the help on one
 # line, the menus' name and values (runtime/options.c's ini_list), where the setting does nothing the systems it is
-# for (ini_only), and, on the rows that need a build, that build. Run by ctest as runtime_settings_list
+# for (ini_only), and, on the rows that need a build, that build; a slider's (INI_SLIDER) slider in a twelfth, its
+# every step listed and its default one of them. Run by ctest as runtime_settings_list
 execute_process(COMMAND "${RUNTIME}" --settings RESULT_VARIABLE result OUTPUT_VARIABLE list ERROR_VARIABLE errors)
 if(result OR NOT errors STREQUAL "")
     message(FATAL_ERROR "scarletnx --settings ended with ${result}: ${errors}")
 endif()
 set(field "[^\t\r\n]*")
-string(REGEX REPLACE "${field}\t${field}\t${field}\t(int|float|text)\t${field}\t${field}\t${field}\t${field}\t${field}\t${field}(\t${field})?\r?\n"
+string(REGEX REPLACE "${field}\t${field}\t${field}\t(int|float|text)\t${field}\t${field}\t${field}\t${field}\t${field}\t${field}(\t${field}(\tslider)?)?\r?\n"
        "" rest "${list}")
 if(NOT rest STREQUAL "" OR list STREQUAL "")
-    message(FATAL_ERROR "lines of scarletnx --settings that are not ten or eleven fields:\n${rest}")
+    message(FATAL_ERROR "lines of scarletnx --settings that are not ten, eleven or twelve fields:\n${rest}")
 endif()
+# a slider's steps are the words the launcher's row goes along, its default the step it starts on: each listed, the
+# default among them
+string(REGEX MATCHALL "\n[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\tslider" sliders "${list}")
+if(NOT sliders)
+    message(FATAL_ERROR "scarletnx --settings lists no slider")
+endif()
+foreach(row IN LISTS sliders)
+    string(REGEX REPLACE "^\n[^\t]*\t([^\t]*)\t([^\t]*)\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t([^\t]*)\t.*" "\\1;\\2;\\3" parts "${row}")
+    list(GET parts 0 key)
+    list(GET parts 1 default)
+    list(GET parts 2 steps)
+    if(steps STREQUAL "" OR NOT "|${steps}" MATCHES "\\|${default}=")
+        message(FATAL_ERROR "scarletnx --settings: the slider ${key} lists no steps, or not its default ${default}: \"${steps}\"")
+    endif()
+endforeach()
 # the rows this build has none of what they need, named: a menu shows them greyed and picks nothing
 set(needed)
 string(REGEX MATCHALL "\n[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\tneeds-build" rows "${list}")
@@ -48,6 +64,9 @@ foreach(row "Display\tdocked\t1\tint\t0\t2\t1 = TV mode" "Display\tfullscreen\t0
             "Controllers/Button map\tgamepad_map\t\ttext\t"
             "\tStick dead zone\t0=0%|5=5%|10=10%|" "|90=90%\t\n" "\tVibration\t0=Off|10=10%|20=20%|"
             "Debug\tlog\t1\tint\t0\t2\t" "\tLog level\t0=0|1=1|2=2\t\n"
+            # the game's Volume, a slider of every 5 percent
+            "Audio\tvolume\t100\tint\t0\t100\tHow loud the game plays, in percent of its own sound: 0 = mute. "
+            "\tVolume\t0=Mute|5=5%|10=10%|15=15%|20=20%|25=25%|30=30%|35=35%|40=40%|45=45%|50=50%|55=55%|60=60%|65=65%|70=70%|75=75%|80=80%|85=85%|90=90%|95=95%|100=100%\t\t\tslider\n"
             "Performance\tprepare_shaders\t2\tint\t0\t2\t"
             "\tPrepare shaders\t0=Off|1=While playing|2=Before starting\t\n"
             ", 2 French, 3 German, 4 Italian, 5 Spanish, 6 Chinese, 7 Korean,"
@@ -81,7 +100,7 @@ if(NOT at LESS 0)
     message(FATAL_ERROR "scarletnx --settings lists controls_a, the game's own")
 endif()
 if(NOT list MATCHES
-   "^Game\t.*\nDisplay\t.*\nGraphics\t.*\nPerformance\t.*\nOn-screen controls\t.*\nOn-screen controls/Buttons\t.*\nControllers\t.*\nControllers/Button map\t.*\nNetwork\t.*\nDebug\t")
+   "^Game\t.*\nDisplay\t.*\nGraphics\t.*\nAudio\t.*\nPerformance\t.*\nOn-screen controls\t.*\nOn-screen controls/Buttons\t.*\nControllers\t.*\nControllers/Button map\t.*\nNetwork\t.*\nDebug\t")
     message(FATAL_ERROR "scarletnx --settings lists the sections out of the .ini's order")
 endif()
 if(list MATCHES "\nOn-screen controls/Buttons\t[^\n]*\nOn-screen controls\t") # a page after its section's others

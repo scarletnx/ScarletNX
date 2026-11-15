@@ -253,6 +253,96 @@ static int check_maxwell_depth_range(void) {
     return 0;
 }
 
+/* NVB197_SET_VIEWPORT_CLIP_CONTROL (0x64F, open-gpu-doc clb197.h) clips the geometry against the depth planes by its
+   GEOMETRY_CLIP and clamps a fragment's depth by PIXEL_MIN_Z and PIXEL_MAX_Z, each apart: deko3d's word for the clamp
+/* NVB197_SET_VIEWPORT_CLIP_CONTROL (0x64F, open-gpu-doc clb197.h) clips the geometry against the depth planes by its
+   GEOMETRY_CLIP and clamps a fragment's depth by PIXEL_MIN_Z and PIXEL_MAX_Z, each apart: deko3d's word for the clamp
+   off, 0x181D, clips and clamps, to 0 to 1 (its bit 0, deko3d's ForceDepthRangeZeroToOne), and its word for the clamp
+   on, 0x101A, clamps to the viewport's clip range (SET_VIEWPORT_CLIP_MIN_Z, MAX_Z) without clipping. The triangle over
+   the target at clip z 0.5 is depth 0.375 in a range of 0.25 to 0.5 (scale and offset 0.25); a depth bias of 2^24
+   units, half a unit of depth at that exponent (2^-25 apart), takes it to 0.875, and 2^26 units to 2.375. The clamp
+   off keeps 0.875, behind a buffer of 0.55, and brings 2.375 to 1, drawn over a buffer of 1; the clamp on brings 0.875
+   to the clip range's far end: 0.5, nearer than 0.55, or 0.45, nearer than 0.47, where the transform's end, 0.5, is
+   not. Vulkan's one switch leaves depth past the range undefined with the clamp off and clipping on (the
+   specification's Depth Clamping and Range Adjustment): VK_EXT_depth_clip_enable gives both, and
+   VK_EXT_depth_clamp_control a range other than the transform's */
+static int check_maxwell_depth_clamp(void) {
+    enum { LESS = 0x201, LEQUAL = 0x203, CLIP = 1, RANGE = 2 };
+    static const struct {
+        u32 word, func;
+        f32 units, far_end, buffer; /* not far: Windows' headers define it away */
+        u32 want, needs;
+        const char* what;
+    } cases[] = {
+        {0x181D, LESS, 0.0f, 0.5f, 0.55f, 64, 0, "clipped and clamped, no bias: 0.375"},
+        {0x181D, LEQUAL, 67108864.0f, 0.5f, 1.0f, 64, CLIP, "clipped and clamped, biased past 1: 2.375 clamped"},
+        {0x181D, LESS, 16777216.0f, 0.5f, 0.55f, 0, CLIP | RANGE, "clipped and clamped to 0 to 1, biased: 0.875"},
+        {0x101A, LESS, 16777216.0f, 0.5f, 0.55f, 64, 0, "clamped, not clipped, biased: 0.875 clamped to 0.5"},
+        {0x101A, LESS, 16777216.0f, 0.45f, 0.47f, 64, RANGE, "clamped to a clip range of 0.25 to 0.45, biased: 0.45"},
+        {0x181C, LESS, 16777216.0f, 0.45f, 0.47f, 64, CLIP | RANGE,
+         "clipped and clamped to a clip range ending at 0.45 (bit 0 clear), biased"},
+    };
+    const u64 gpu = 0x4c2040000ull, depth = gpu + 0xc000;
+    const f32 quarter = 0.25f, zero = 0.0f;
+    GpuChannel* channel = NULL;
+    CHECK(!mx_fixed_channel(161, gpu, HEAP_BASE + 0x54a0000, &channel));
+    u32* r = channel->r3d;
+    r[0x54E] = 1; /* a Z32_FLOAT target of 8 by 8, block linear one GOB high */
+    r[0x3F8] = (u32)(depth >> 32);
+    r[0x3F9] = (u32)depth;
+    r[0x3FA] = 0x0A;
+    r[0x3FB] = 0;
+    r[0x3FC] = 512 / 4;
+    r[0x48A] = r[0x48B] = 8;
+    r[0x48C] = 1;
+    r[0x4B3] = 1;                   /* the depth test, */
+    r[0x4BA] = 0;                   /* no writes, */
+    r[0x35F] = 1;                   /* depth from 0 to 1 */
+    memcpy(&r[0x282], &quarter, 4); /* SET_VIEWPORT_SCALE_Z */
+    memcpy(&r[0x285], &quarter, 4); /* SET_VIEWPORT_OFFSET_Z */
+    memcpy(&r[0x302], &quarter, 4); /* SET_VIEWPORT_CLIP_MIN_Z */
+    memcpy(&r[0x55B], &zero, 4);    /* no slope */
+    memcpy(&r[0x61F], &zero, 4);    /* nor bias clamp */
+    /* SNX_TEST_DEPTH_CLAMP_UNDEFINED=1 draws the cases that need the extensions without them too, to show what the
+       driver makes of them */
+    int undefined_too = getenv("SNX_TEST_DEPTH_CLAMP_UNDEFINED") != NULL;
+    u32 skipped = 0;
+    vk_lock();
+    for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) {
+        u32 lacks = ((cases[i].needs & CLIP) && !g_vk.has_depth_clip_enable ? CLIP : 0) |
+                    ((cases[i].needs & RANGE) && !g_vk.has_depth_clamp_range ? RANGE : 0);
+        if (lacks && !undefined_too) {
+            printf("SKIP 3D engine depth clamp, %s: without %s in use\n", cases[i].what,
+                   lacks == (CLIP | RANGE) ? "VK_EXT_depth_clip_enable and VK_EXT_depth_clamp_control"
+                   : lacks == CLIP         ? "VK_EXT_depth_clip_enable (a fragment's depth past the viewport's "
+                                             "range is undefined with the clamp off)"
+                                           : "VK_EXT_depth_clamp_control (the clamp is the transform's range)");
+            skipped++;
+            continue;
+        }
+        r[0x64F] = cases[i].word;
+        r[0x4C3] = cases[i].func;
+        r[0x372] = cases[i].units > 0.0f; /* POLYGON_OFFSET_FILL_ENABLE */
+        memcpy(&r[0x56F], &cases[i].units, 4);
+        memcpy(&r[0x303], &cases[i].far_end, 4); /* SET_VIEWPORT_CLIP_MAX_Z */
+        memcpy(&r[0x364], &cases[i].buffer, 4);
+        engine_clear(channel, 1);
+        u64 covered;
+        CHECK(!mx_fixed_draw(channel, 4, 10, 3, &covered));
+        u32 count = (u32)snx_popcount64(covered);
+        if (count != cases[i].want)
+            fprintf(stderr, "3D engine depth clamp, clip control %04x, %s (case %u): %u pixels, expected %u\n",
+                    cases[i].word, cases[i].what, i, count, cases[i].want);
+        CHECK(count == cases[i].want);
+    }
+    vk_unlock();
+    free(channel);
+    printf("PASS 3D engine depth clamp: clipped and clamped apart, to 0 to 1 and to the clip's range, clamped alone "
+           "(%u of %u cases skipped)\n",
+           skipped, (u32)(sizeof cases / sizeof *cases));
+    return 0;
+}
+
 /* the pixels of columns x0 to x1 and rows y0 to y1 of the 8x8 target, both ends in, as fixed_state_covered's bits */
 static u64 mx_fixed_rect(u32 x0, u32 x1, u32 y0, u32 y1) {
     u64 bits = 0;

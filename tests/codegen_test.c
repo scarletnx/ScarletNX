@@ -1219,6 +1219,90 @@ static void cpu_extensions_test(void) {
     check(snx_a64_flow(0xdac10083u, 0) == SNX_A64_FLOW_UNDEF, "A57 still rejects PACIA register");
 }
 
+/* Synthetic words of the ounce target (the Cortex-A78C) beyond switch_extended: the dot product, FlagM and ESB, in the
+   step JIT and the AOT path, and the words the A78C does not decode. No game code is used. */
+static void ounce_cpu_test(void) {
+    static const u32 words[] = {
+        0x6e849427u, /* UDOT v7.4s, v1.16b, v4.16b */
+        0xd500401fu, /* CFINV */
+        0xba02046au, /* RMIF x3, #4, #0b1010 (N and C) */
+        0x3a00086du, /* SETF8 w3 */
+        0x3a00486du, /* SETF16 w3 */
+        0xd503221fu  /* ESB */
+    };
+    enum { O_UDOT, O_CFINV, O_RMIF, O_SETF8, O_SETF16, O_ESB, O_WORDS };
+    for (int jit = 0; jit <= 1; ++jit) {
+        LlvmSteps steps;
+        char error[1024];
+        if (llvm_steps_begin(&steps, jit, 0, error, sizeof error)) {
+            fprintf(stderr, "%s\n", error);
+            check(0, "start Ounce steps");
+            return;
+        }
+        for (size_t i = 0; i < O_WORDS; ++i) llvm_steps_add(&steps, words[i], 0x1000, SNX_A64_TARGET_OUNCE);
+        if (llvm_steps_load(&steps, error, sizeof error)) {
+            fprintf(stderr, "%s\n", error);
+            check(0, "load Ounce steps");
+            llvm_steps_end(&steps);
+            return;
+        }
+        RtAPI rt = {.cas128 = snx_runtime_cas128};
+        rt.undef = undefined;
+        CPU c = {0};
+        c.rt = &rt;
+        g_traps = 0;
+        for (unsigned i = 0; i < 16; ++i) {
+            c.v[1].b[i] = (u8)(i + 1);
+            c.v[4].b[i] = 0xff;
+        }
+        for (unsigned i = 0; i < 4; ++i) c.v[7].s[i] = 10 * (i + 1);
+        check(steps.steps[O_UDOT](&c) == 0x1004 && !g_traps, "UDOT runs on the ounce target");
+        check(c.v[7].s[0] == 2560 && c.v[7].s[1] == 6650 && c.v[7].s[2] == 10740 && c.v[7].s[3] == 14830,
+              "UDOT adds each group of four unsigned byte products to its lane");
+
+        c.n = 1, c.z = 0, c.cf = 0, c.vf = 1;
+        check(steps.steps[O_CFINV](&c) == 0x1004 && c.n == 1 && c.z == 0 && c.cf == 1 && c.vf == 1,
+              "CFINV inverts C alone");
+
+        c.n = 0, c.z = 1, c.cf = 0, c.vf = 0;
+        c.x[3] = 0xa5; /* rotated right by 4: 1010 in bits 3:0, where the unrotated value has 0101 */
+        check(steps.steps[O_RMIF](&c) == 0x1004 && c.n == 1 && c.z == 1 && c.cf == 1 && c.vf == 0,
+              "RMIF sets the masked flags from the rotated bits and keeps the others");
+
+        c.n = 0, c.z = 1, c.cf = 1, c.vf = 1;
+        c.x[3] = 0x180; /* bit 7 set, bit 8 set */
+        check(steps.steps[O_SETF8](&c) == 0x1004 && c.n == 1 && c.z == 0 && c.cf == 1 && c.vf == 0,
+              "SETF8 sets N, Z and V from bits 8:0 and keeps C");
+        c.x[3] = 0x80;
+        check(steps.steps[O_SETF8](&c) == 0x1004 && c.n == 1 && c.vf == 1, "SETF8 overflow is bit 8 XOR bit 7");
+
+        c.n = 1, c.z = 0, c.cf = 0, c.vf = 0;
+        c.x[3] = 0x10000;
+        check(steps.steps[O_SETF16](&c) == 0x1004 && c.n == 0 && c.z == 1 && c.cf == 0 && c.vf == 1,
+              "SETF16 sets N, Z and V from bits 16:0 and keeps C");
+
+        check(steps.steps[O_ESB](&c) == 0x1004 && !g_traps, "ESB runs as a no-op at EL0");
+        llvm_steps_end(&steps);
+    }
+    for (size_t i = 0; i < O_WORDS; ++i)
+        check(snx_a64_flow(words[i], SNX_A64_TARGET_SWITCH_EXTENDED) == SNX_A64_FLOW_UNDEF || i == O_ESB,
+              "switch_extended rejects the ounce target's extensions");
+    /* ISAR1's JSCVT and FCMA are 0, PFR0's DIT is 0, PFR1's SSBS is 1 (no MSR SSBS), and SB and FlagM2 are later
+       than the A78C */
+    static const u32 refused[] = {
+        0x1e7e0000u, /* FJCVTZS w0, d0 */
+        0x6e80e400u, /* FCADD v0.4s, v0.4s, v0.4s, #90 */
+        0xd503415fu, /* MSR DIT, #1 */
+        0xd503413fu, /* MSR SSBS, #1 */
+        0xd50330ffu, /* SB */
+        0xd500403fu, /* XAFLAG */
+        0xd500405fu  /* AXFLAG */
+    };
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; ++i)
+        check(snx_a64_flow(refused[i], SNX_A64_TARGET_OUNCE) == SNX_A64_FLOW_UNDEF,
+              "the ounce target rejects what the Cortex-A78C lacks");
+}
+
 /* the allocas left in fn (the registers' slots, until ir_clean_function makes them SSA values), or with named the blocks
    and instructions that keep a name (whose order in the bitcode SROA's names leave different from run to run) */
 static int left_over(LLVMValueRef fn, int named) {
@@ -1415,6 +1499,7 @@ int main(void) {
     semantics_test();
     poll_test();
     cpu_extensions_test();
+    ounce_cpu_test();
     clean_test();
     zva_test();
     printf("Native codegen: %s\n", failures ? "FAILED" : "passed");

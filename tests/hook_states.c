@@ -3,7 +3,9 @@
 /* native_cond_var (src/nx/hle/hook/family.c, hook.c) over tests/hook/states.hook, with the runtime stubbed: at 1 the
    cond_var family's functions take its handlers and save states are refused with a message that names the setting
    and its value; at 0 they keep their own code (the recursive mutex's with the condition variable's) and states may
-   be taken. hooks_off naming the family, or the game changing every hooked function's code, leaves the game's too */
+   be taken. hooks_off naming the family, or the game changing every hooked function's code, leaves the game's too.
+   native_os_sync the same for the os_sync family, which also stays the game's where its SDK lacks a function that
+   writes the words the family owns (os_sync_ready) */
 #include "nx/hle/hook/hook.c"
 #include "nx/hle/hook/family.c"
 #include <assert.h>
@@ -13,10 +15,12 @@
 #define LOCK (CODE + 0x00)
 #define WAIT (CODE + 0x10)
 #define NOW  (CODE + 0x20)
+#define SLEEP (CODE + 0x30)
 
 i64 test_now(CPU* c) { return (void)c, 0; }
 void test_lock(CPU* c, u64 m) { (void)c, (void)m; }
 void test_wait(CPU* c, u64 cv) { (void)c, (void)cv; }
+void test_sleep(CPU* c, i64 ns) { (void)c, (void)ns; }
 
 /* ---- the game: two functions of one module, each slot holding its own code */
 static void own_code(CPU* RESTRICT c, u64 entry) {
@@ -27,7 +31,7 @@ static GuestFn slots[0x400];
 static const struct {
     const char* name;
     u64 addr;
-} symbols[] = {{"lock", LOCK}, {"wait", WAIT}, {"now", NOW}};
+} symbols[] = {{"lock", LOCK}, {"wait", WAIT}, {"now", NOW}, {"sleep", SLEEP}};
 int kernel_symbol(u32 i, u64* addr, const char** name) {
     if (i >= sizeof symbols / sizeof symbols[0]) return 0;
     *addr = symbols[i].addr, *name = symbols[i].name;
@@ -76,12 +80,18 @@ int snx_hook_key_at(const char* name, const unsigned char build_id[32], SnxU64* 
 void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
+/* ext_skyline.c's: no hook for a mod's trampoline */
+GuestFn hook_ext_skyline(const char* symbol, u32 sdk, const char** handler) {
+    return (void)symbol, (void)sdk, (void)handler, NULL;
+}
 void fatal(const char* fmt, ...) {
     fprintf(stderr, "fatal: %s\n", fmt);
     exit(1);
 }
 int alloc_ready(void) { return 0; }
 int libc_wide_ready(void) { return 0; }
+static int g_os_ready = 1;
+int os_sync_ready(void) { return g_os_ready; }
 
 /* hook_install over fresh slots, with native_cond_var and hooks_off as given; 1 when the condition variable's
    function took its hook, which the recursive mutex's follows: a mutex the host holds is out of a state as a wait on
@@ -92,6 +102,7 @@ static int install(int native, const char* off) {
     for (i = 0; i < sizeof slots / sizeof slots[0]; i++) slots[i] = own_code;
     g_settings.native_hooks = 1;
     g_settings.native_cond_var = native;
+    g_settings.native_os_sync = 0;
     snprintf(g_settings.hook_families_off, sizeof g_settings.hook_families_off, "%s", off);
     hook_install();
     assert(slots[(NOW - CODE) >> 2] != own_code); /* the sync family stays native either way */
@@ -126,6 +137,32 @@ int main(void) {
     /* a 32-bit game runs none of the family */
     g_arm_mod = (const SnxArmModule*)&module;
     assert(!strcmp(hook_family_unready("cond_var"), "its handlers are for 64-bit games"));
+    g_arm_mod = NULL;
+    /* os_sync: native, the sleep is the host's and a state is refused naming its setting */
+    memset(&g_host, 0, sizeof g_host);
+    for (u32 i = 0; i < sizeof slots / sizeof slots[0]; i++) slots[i] = own_code;
+    g_settings.native_cond_var = 0;
+    g_settings.native_os_sync = 1;
+    g_settings.hook_families_off[0] = 0;
+    hook_install();
+    assert(slots[(SLEEP - CODE) >> 2] != own_code && slots[(WAIT - CODE) >> 2] == own_code);
+    assert(hook_family_unready("os_sync") == NULL);
+    assert(hook_states_refused(why, sizeof why) == -1);
+    assert(!strcmp(why, "save states need native_os_sync=0 (it is 1)"));
+    /* an SDK without every word writer: the game's own code, and states may be taken */
+    g_os_ready = 0;
+    memset(&g_host, 0, sizeof g_host);
+    for (u32 i = 0; i < sizeof slots / sizeof slots[0]; i++) slots[i] = own_code;
+    hook_install();
+    assert(slots[(SLEEP - CODE) >> 2] == own_code);
+    assert(strstr(hook_family_unready("os_sync"), "doesn't export every function"));
+    assert(hook_states_refused(why, sizeof why) == 0);
+    g_os_ready = 1;
+    /* emulated */
+    g_settings.native_os_sync = 0;
+    assert(strstr(hook_family_unready("os_sync"), "native_os_sync is 0"));
+    g_arm_mod = (const SnxArmModule*)&module;
+    assert(!strcmp(hook_family_unready("os_sync"), "its handlers are for 64-bit games"));
     g_arm_mod = NULL;
     puts("hook_states: passed");
     return 0;

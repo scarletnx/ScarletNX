@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# hooks for tests/hook_states.c: a clock's, which save states leave be, and a recursive mutex's and a condition
-# variable's, whose family (cond_var) keeps them from being taken
+# hooks for tests/hook_states.c: a clock's, which save states leave be, a recursive mutex's and a condition
+# variable's, whose family (cond_var) keeps them from being taken, and nn::os's sleep, whose family (os_sync) does too
 family sync
 hook now() -> i64 = test_now
 family cond_var
 hook lock(addr m) = test_lock
 hook wait(addr cv) = test_wait
+family os_sync
+hook sleep(i64 ns) = test_sleep

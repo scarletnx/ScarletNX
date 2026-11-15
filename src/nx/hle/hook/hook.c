@@ -23,6 +23,8 @@
 
 /* a site for every hook of either table, so that no family is left half native (hook.h) */
 typedef char hook_sites_hold_the_tables[HOOK_COUNT <= HOOK_SITES && HOOK32_COUNT <= HOOK_SITES ? 1 : -1];
+/* an index slot for every site twice over, each holding a site + 1 */
+typedef char hook_index_holds_the_sites[(1u << HOOK_INDEX_BITS) >= 2 * HOOK_SITES && HOOK_SITES < 65535 ? 1 : -1];
 
 /* whether a setting's list (hooks_off, hooks_verify) names family: one of its words, separated by commas or spaces */
 static int family_listed(const char* list, const char* family) {
@@ -103,12 +105,17 @@ void hook_missed_text(char* out, size_t n) {
              (g_arm_mod ? g_arm_mod->mods : g_mod->mods)[h->missed_module].name, version, ranges);
 }
 
-/* the site of the hooked function at addr; -1 for none */
+/* the index slot where the search for addr starts: its hash, Fibonacci's of the address in instructions */
+static u32 index_slot(u64 addr) { return (u32)((addr >> 2) * 0x9E3779B97F4A7C15ull >> (64 - HOOK_INDEX_BITS)); }
+
+/* the site of the hooked function at addr; -1 for none. Each call a hook's own code runs (hook_run_original) and each
+   invalidated hook's call asks it, so it reads the index, where the slots from addr's hash to an empty one hold every
+   site that can be addr's */
 static int site_of(u64 addr) {
     const HostHook* h = &g_host.hook;
-    u32 i;
-    for (i = 0; i < h->count; i++)
-        if (h->addr[i] == addr) return (int)i;
+    u32 s, i;
+    for (s = index_slot(addr); (i = h->index[s]) != 0; s = (s + 1) & ((1u << HOOK_INDEX_BITS) - 1))
+        if (i <= h->count && h->addr[i - 1] == addr) return (int)i - 1;
     return -1;
 }
 
@@ -117,6 +124,30 @@ static u32 first_word(u64 a) {
     u32 w;
     memcpy(&w, GP(a), 4);
     return w;
+}
+
+/* whether the code at pc, readable up to end, is the mod's trampoline of site i: the function's first k instructions
+   (1, or 4 or 5 for a hook too far for a b, which wrote a nop when its address was unaligned) and a jump back to the
+   one after them, a b, or an ldr x17, #8 and br x17 of the address after a nop that aligns it (And64InlineHook's,
+   which skyline and exlaunch use). A first instruction that reads the pc is rewritten there and never matches */
+static int trampoline_of(u32 i, u64 pc, u64 end) {
+    static const unsigned k[3] = {1, 4, 5};
+    const HostHook* h = &g_host.hook;
+    unsigned n;
+    for (n = 0; n < 3; n++) {
+        u64 at = pc + 4 * k[n], back = h->addr[i] + 4 * k[n];
+        i64 d = (i64)(back - at);
+        u32 w;
+        if (at + 4 > end) break;
+        if (memcmp(GP(pc), h->head[i], 4 * k[n])) continue;
+        w = snx_ld_le32(GP(at));
+        if (d >= -((i64)1 << 27) && d < ((i64)1 << 27) && w == (0x14000000u | ((u32)(d >> 2) & 0x3FFFFFFu))) return 1;
+        if (w == 0xD503201Fu) at += 4; /* nop */
+        if (at + 16 <= end && snx_ld_le32(GP(at)) == 0x58000051u && snx_ld_le32(GP(at + 4)) == 0xD61F0220u &&
+            snx_ld_le64(GP(at + 8)) == back)
+            return 1;
+    }
+    return 0;
 }
 
 /* a scratch slot of verify mode's, -1 when every one is taken */
@@ -210,12 +241,18 @@ int hook_family_off(const char* family) {
 int hook_states_refused(char* why, size_t whysize) {
     const HostHook* h = &g_host.hook;
     u32 i;
-    for (i = 0; i < h->count; i++)
-        if (!__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE) &&
-            !strcmp(hook_family_name[hook_family[h->hook[i]]], "cond_var")) {
+    for (i = 0; i < h->count; i++) {
+        const char* f = hook_family_name[hook_family[h->hook[i]]];
+        if (__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE)) continue;
+        if (!strcmp(f, "cond_var")) {
             snprintf(why, whysize, "save states need native_cond_var=0 (it is %d)", g_settings.native_cond_var);
             return -1;
         }
+        if (!strcmp(f, "os_sync") || !strcmp(f, "os_light")) {
+            snprintf(why, whysize, "save states need native_os_sync=0 (it is %d)", g_settings.native_os_sync);
+            return -1;
+        }
+    }
     return 0;
 }
 
@@ -237,11 +274,14 @@ static void routes_say(void) {
             (unsigned)r->count, (unsigned long long)r->list, (unsigned long long)own, (unsigned)snx_hook_route_count());
 }
 
-/* the function at addr given entry k's adapter, or verify mode's check. With every site taken the game stops: its
-   function would run the SDK's own code beside the hooks of its family, which keep the family's state natively */
-static void hook_put(int k, u64 addr, const char* name, const unsigned char verify[]) {
+/* the function at addr, of a module of SDK version sdk (0 for unknown) that ends at end, given entry k's adapter, or
+   verify mode's check. With every site taken the game stops: its function would run the SDK's own code beside the hooks of its
+   family, which keep the family's state natively */
+static void hook_put(int k, u64 addr, u32 sdk, u64 end, const char* name, const unsigned char verify[]) {
     HostHook* h = &g_host.hook;
     GuestFn* slot;
+    int i;
+    u32 s;
     if (h->count == HOOK_SITES)
         fatal("hooks: no site left for %s at %llx: the runtime holds %d, one for each hook, and the game's modules "
               "export the functions of the hooks more than once",
@@ -251,8 +291,14 @@ static void hook_put(int k, u64 addr, const char* name, const unsigned char veri
     h->addr[h->count] = addr;
     h->orig[h->count] = nce_slot(*slot);
     h->fn[h->count] = verify[hook_family[k]] && hook_verify[k].pure ? verify_fn : hook_fn[k];
-    h->word[h->count] = first_word(addr);
+    /* within its module: a function at the end of the last one has no mapped bytes after it */
+    for (i = 0; i < 5; i++) h->head[h->count][i] = addr + 4 * i + 4 <= end ? first_word(addr + 4 * i) : 0;
     h->invalid[h->count] = 0;
+    h->sdk[h->count] = sdk;
+    h->ext[h->count] = NULL;
+    h->tramp[h->count] = 0;
+    for (s = index_slot(addr); h->index[s]; s = (s + 1) & ((1u << HOOK_INDEX_BITS) - 1)) {}
+    h->index[s] = (u16)(h->count + 1);
     __atomic_store_n(slot, h->fn[h->count], __ATOMIC_RELEASE);
     nce_slot_taken(addr, hook_family_name[hook_family[k]]);
     jit_slot_taken(addr, h->fn[h->count]);
@@ -281,7 +327,7 @@ static void hook_put_addresses(const unsigned char off[], const unsigned char ve
                 continue;
             }
             if (off[hook_family[k]] || site_of(addr) >= 0) continue;
-            hook_put(k, addr, hook_symbol[k], verify);
+            hook_put(k, addr, 0, mi->base + mi->size, hook_symbol[k], verify);
             LOG("hook: %s at %llx (%s+%llx) runs %s\n", hook_symbol[k], (unsigned long long)addr, mi->name,
                 (unsigned long long)offset, hook_handler[k]);
         }
@@ -423,7 +469,7 @@ void hook_install(void) {
             said[k] = 1;
             continue;
         }
-        hook_put(k, addr, name, verify);
+        hook_put(k, addr, versions[HOOK_SDK], g_mod->mods[m].base + g_mod->mods[m].size, name, verify);
         if (strcmp(hook_symbol[k], name)) {
             LOG("hook: %s at %llx runs %s (%s)\n", name, (unsigned long long)addr, hook_handler[k], hook_symbol[k]);
             continue;
@@ -448,6 +494,8 @@ static void hook_invalidate(u32 i) {
     HostHook* h = &g_host.hook;
     GuestFn adapter = hook_fn[h->hook[i]];
     char why[320];
+    const char* ext_handler = NULL;
+    GuestFn ext = hook_ext_skyline(hook_symbol[h->hook[i]], h->sdk[i], &ext_handler);
     u32 j;
     int r, k;
     __atomic_store_n(&h->stale[i], 1, __ATOMIC_RELEASE); /* its own code is what the game put there */
@@ -463,9 +511,16 @@ static void hook_invalidate(u32 i) {
     }
     WARN("hooks: the game changed the first instruction of %s at %llx from %08x to %08x, which %s answered natively: "
          "a mod's hook. That native hook is off from here, and the game's code runs, the SDK's own code included "
-         "wherever it calls it\n",
-         hook_symbol[h->hook[i]], (unsigned long long)h->addr[i], snx_le32(h->word[i]),
-         snx_le32(first_word(h->addr[i])), hook_handler[h->hook[i]]);
+         "wherever it calls it%s%s%s\n",
+         hook_symbol[h->hook[i]], (unsigned long long)h->addr[i], snx_le32(h->head[i][0]),
+         snx_le32(first_word(h->addr[i])), hook_handler[h->hook[i]],
+         ext ? ", but for the mod's call of the original, which runs " : "", ext ? ext_handler : "",
+         ext ? " once its trampoline runs (ext_skyline.hooks)" : "");
+    if (ext) {
+        h->ext_handler[i] = ext_handler;
+        __atomic_store_n(&h->ext[i], ext, __ATOMIC_RELEASE);
+        __atomic_add_fetch(&h->ext_count, 1, __ATOMIC_RELEASE);
+    }
     /* the other sites of its adapter: their code did not change, so their slots run it, their own */
     for (j = 0; j < h->count; j++)
         if (j != i && hook_fn[h->hook[j]] == adapter && !__atomic_load_n(&h->invalid[j], __ATOMIC_ACQUIRE)) {
@@ -481,11 +536,13 @@ static void hook_invalidate(u32 i) {
 }
 
 void hook_invalidated(CPU* RESTRICT c, u64 entry) {
+    int i = site_of(entry);
     GuestFn own;
-    if (site_of(entry) < 0)
+    if (i < 0)
         fatal("hooks: an invalidated native hook was called for %llx, where no hook was installed",
               (unsigned long long)entry);
-    own = hook_original(entry);
+    /* the game's code at entry (the mod's detour), or the own code of a site whose adapter is the same code */
+    own = __atomic_load_n(&g_host.hook.stale[i], __ATOMIC_ACQUIRE) ? jit_code_now(entry) : g_host.hook.orig[i];
     if (!own)
         fatal("hooks: the native hook at %llx is off, and nothing compiles the game's code there: the JIT is off",
               (unsigned long long)entry);
@@ -503,7 +560,7 @@ void hook_restore(u64 addr, u64 size) {
         mem_query(a, &block);
         if (block.state == MS_FREE || !(block.perm & PERM_X)) continue; /* no longer code: the hook goes with it */
         /* its first 4 bytes alone, which every mod's hook writes over: a change further in is not looked at */
-        if (!__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE) && first_word(a) != h->word[i]) {
+        if (!__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE) && first_word(a) != h->head[i][0]) {
             pm_lock(&g_invalidate_lock);
             if (!__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE)) hook_invalidate(i);
             pm_unlock(&g_invalidate_lock);
@@ -513,16 +570,55 @@ void hook_restore(u64 addr, u64 size) {
     }
 }
 
+GuestFn hook_trampoline(u64 pc) {
+    HostHook* h = &g_host.hook;
+    GuestFn fn = NULL;
+    MemBlock block;
+    u32 i;
+    if (!__atomic_load_n(&h->ext_count, __ATOMIC_ACQUIRE) || (pc & 3)) return NULL;
+    mem_query(pc, &block);
+    if (block.state == MS_FREE || !(block.perm & PERM_X) || pc < block.addr || pc - block.addr >= block.size)
+        return NULL;
+    pm_lock(&g_invalidate_lock);
+    for (i = 0; i < h->count && !fn; i++) {
+        if (!h->ext[i] || (h->tramp[i] && h->tramp[i] != pc)) continue;
+        if (!trampoline_of(i, pc, block.addr + block.size)) { /* no longer the trampoline: the mod rewrote it */
+            h->tramp[i] = 0;
+            continue;
+        }
+        if (!h->tramp[i])
+            LOG("hooks: the mod's trampoline of %s at %llx ran: its call of the original runs %s natively "
+                "(ext_skyline.hooks)\n",
+                hook_symbol[h->hook[i]], (unsigned long long)pc, h->ext_handler[i]);
+        h->tramp[i] = pc;
+        fn = h->ext[i];
+    }
+    pm_unlock(&g_invalidate_lock);
+    if (fn && pc >= g_code_lo && pc < g_code_hi) __atomic_store_n(&g_disp[(pc - g_code_lo) >> 2], fn, __ATOMIC_RELEASE);
+    return fn;
+}
+
 GuestFn hook_function(u64 addr) {
     int i = site_of(addr);
     return i < 0 || __atomic_load_n(&g_host.hook.invalid[i], __ATOMIC_ACQUIRE) ? NULL : g_host.hook.fn[i];
 }
 
+/* where the own code of site i is entered: the mod's trampoline once one took its ext_skyline hook, else the
+   function's address */
+static u64 own_entry(int i) {
+    u64 t = __atomic_load_n(&g_host.hook.invalid[i], __ATOMIC_ACQUIRE) ? g_host.hook.tramp[i] : 0;
+    return t ? t : g_host.hook.addr[i];
+}
+
+/* the own code of site i: what its slot held, or once the game changed it what the JIT makes of it now */
+static GuestFn original_of(int i) {
+    if (!__atomic_load_n(&g_host.hook.stale[i], __ATOMIC_ACQUIRE)) return g_host.hook.orig[i];
+    return jit_code_now(own_entry(i));
+}
+
 GuestFn hook_original(u64 addr) {
     int i = site_of(addr);
-    if (i < 0) return NULL;
-    if (!__atomic_load_n(&g_host.hook.stale[i], __ATOMIC_ACQUIRE)) return g_host.hook.orig[i];
-    return jit_code_now(addr);
+    return i < 0 ? NULL : original_of(i);
 }
 
 void hook_orig_stale(GuestFn f) {
@@ -540,10 +636,11 @@ const char* hook_at(u64 addr, const char** handler) {
 }
 
 void hook_run_original(CPU* c, u64 addr) {
-    GuestFn own = hook_original(addr);
+    int i = site_of(addr);
+    GuestFn own = i < 0 ? NULL : original_of(i);
     u64 ret = c->x[30], sp = c->x[31];
     if (!own) fatal("hook: no hook at %llx to run the code of", (unsigned long long)addr);
-    own(c, addr);
+    own(c, own_entry(i));
     while (c->pc != ret || c->x[31] != sp) snx_lookup(c, c->pc)(c, c->pc);
 }
 

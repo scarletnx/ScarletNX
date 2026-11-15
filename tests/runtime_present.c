@@ -102,6 +102,15 @@ static void pacing(void) {
     present_pace(1, -1);
     CHECK(slept_ns == before, "fps_limit=0 waited");
     g_opt_fps = SNX_FPS_GAME;
+    /* the display at 120 Hz, as an Ounce game turns it on (gsv.c): the game's interval counts in its refreshes */
+    g_vi_refresh_hz = 120;
+    now_ns += 10 * refresh;
+    present_pace(1, -1); /* late: no wait */
+    before = slept_ns;
+    present_pace(1, -1);
+    CHECK(slept_ns - before == 1000000000u / 120, "interval 1 at 120 Hz waited %llu ns",
+          (unsigned long long)(slept_ns - before));
+    g_vi_refresh_hz = VI_REFRESH_HZ;
 }
 
 /* the display's clock: its refresh sets the period, and one that didn't take the frames in time is only asked,

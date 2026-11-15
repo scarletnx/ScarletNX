@@ -421,6 +421,69 @@ int main(void) {
             free(now);
             free(old);
         }
+        /* a sync tool's entry in a save's folder (Syncthing's .stfolder, with its file): no file of the game's. A save
+           holding only it is no save as the versions before kept one; one holding the game's files too moves those
+           into its 0/ and keeps it beside that, and a save moved to the data folder's save/ at once takes it along,
+           beside its 0/ there */
+        {
+            char *save = snx_path_join(root, "synced"),
+                 *marker = snx_path_join(save, ".stfolder/syncthing-folder-1.txt"), *a = snx_path_join(save, "a.bin"),
+                 *dir = snx_dirname(marker), *said, *path, *now = snx_path_join(root, "data/save/device/title");
+            assert(dir && !snx_mkdirs(dir));
+            write_text(marker, "marker");
+            assert(!gui_save_old(save));
+            write_text(a, "a");
+            assert(gui_save_old(save));
+            assert(gui_move_save_committed(&done, save, true) == 1 && done.count == 2 && done.done == 2);
+            { /* the paths in the system's separators, the message as the code says it, its 0/ included */
+                char* paths =
+                    native(snx_format("+synced/.stfolder|\n+synced/a.bin|Moved to %s/synced/0/a.bin\n", root));
+                const char* line = strchr(paths, '\n');
+                said = snx_format("%.*s%s%s", (int)(line - paths), paths,
+                                  "Stays beside the save's 0/: a name that starts with a dot is a sync tool's or the "
+                                  "system's, not one of the game's files",
+                                  line);
+                free(paths);
+            }
+            assert(!strcmp(entries(&done, base), said));
+            free(said);
+            gui_cleaned_free(&done);
+            path = snx_path_join(save, SNX_SAVE_COMMITTED "/a.bin");
+            assert(snx_is_file(marker) && snx_is_file(path) && !gui_save_old(save));
+            free(path);
+            path = snx_path_join(save, SNX_SAVE_COMMITTED "/.stfolder");
+            assert(!snx_path_exists(path));
+            free(path);
+            /* as a game's own save, laid out as before, to the data folder's save/ */
+            free(a);
+            a = snx_path_join(save, SNX_SAVE_COMMITTED);
+            assert(!snx_remove_tree(a));
+            free(a);
+            a = snx_path_join(save, SNX_SAVE_JOURNALED);
+            assert(!remove(a));
+            free(a);
+            a = snx_path_join(save, "a.bin");
+            write_text(a, "a");
+            assert(gui_move_save_into(&done, save, now, true) == 2 && done.count == 3 && done.done == 3);
+            said = native(snx_format("+synced/.stfolder|Moved to %s/data/save/device/title/.stfolder\n"
+                                     "+synced/a.bin|Moved to %s/data/save/device/title/0/a.bin\n"
+                                     "+synced|Removed: it was empty\n",
+                                     root, root));
+            assert(!strcmp(entries(&done, base), said));
+            free(said);
+            gui_cleaned_free(&done);
+            path = snx_path_join(now, ".stfolder/syncthing-folder-1.txt");
+            assert(snx_is_file(path) && !snx_path_exists(save) && !gui_save_old(now));
+            free(path);
+            path = snx_path_join(root, "data");
+            assert(!snx_remove_tree(path));
+            free(path);
+            free(now);
+            free(dir);
+            free(a);
+            free(marker);
+            free(save);
+        }
 #ifdef SNX_XDG
         { /* another disk: the entry not moved, the folder on the other named */
             char* shm = snx_is_dir("/dev/shm") ? snx_temp_dir("/dev/shm") : NULL;

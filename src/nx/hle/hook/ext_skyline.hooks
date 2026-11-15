@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# Native hooks for the detours of mods' loaders (skyline, exlaunch and the mods built on them), for tools/hookgen, in
+# the language of hooks.hook (docs/platforms/nx/hooks.md, "A mod's call of the original"). A loader hooks an SDK
+# function by writing a branch over its first instruction, which turns the function's native hook off (hook.c,
+# hook_restore), and keeps a trampoline: that instruction, then a jump back to the one after it, which the mod calls as
+# the original function. A hook here takes that trampoline's slot once it first runs, so the mod's call of the
+# original runs the function's native handler instead of the SDK's own code, which may need a service only the native
+# layer answers. Each is a function a loader is known to detour, with the handler and arguments of its native hook.
+family ext_skyline
+# the game's RomFS: skyline's loader mounts the SD card and loads its plugins before the original runs, Cobalt (an
+# exlaunch subsdk9) mounts the card
+hook _ZN2nn2fs8MountRomEPKcPvm(const char* name, addr cache, u64 cache_size) -> u32 = nnfs_mount_rom
+# skyline's loader runs the original once, so a plugin's later call does nothing
+hook _ZN2nn2ro10InitializeEv() = nnro_initialize

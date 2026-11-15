@@ -144,12 +144,20 @@ typedef struct {
     int has_dynamic_stride; /* a binding's stride is dynamic state, which MoltenVK refuses: a pipeline holds it then */
     /* a test's: linked pipelines are never optimized, so every draw binds the link (pipeline.c) */
     int gpl_hold;
-    int has_vertex_robustness2; /* exact zero/default components for out-of-range mesh fetches */
+    /* per pipeline, exact zero/default components for out-of-range vertex fetches: only where device-wide
+       robustBufferAccess2 (robust_buffer2) does not already give them */
+    int has_vertex_robustness2;
     /* VK_EXT_robustness2's features in effect (device.c): buffer reads past the bound range are zero and writes there
-       dropped, image reads out of bounds are zero with an alpha of 1, and descriptors may be null. A uniform range is
-       checked in steps of robust_ubo_align bytes (vk_cb_round) */
+       dropped, image reads out of bounds are zero (an alpha of 1 where the format has none), and descriptors may be
+       null. A uniform range is checked in steps of robust_ubo_align bytes (vk_cb_range), a storage range in
+       robust_ssbo_align (vk_sb_round) */
     int robust_buffer2, robust_image2, null_descriptor;
-    u32 robust_ubo_align;
+    u32 robust_ubo_align, robust_ssbo_align;
+    /* VK_EXT_depth_clip_enable in use: depth clipping and clamping each as the console sets them (PipeKey.depth_clip) */
+    int has_depth_clip_enable;
+    /* VK_EXT_depth_clamp_control in use: a clamped depth stays in the viewport's clip range (SET_VIEWPORT_CLIP_MIN_Z,
+       MAX_Z), as the console clamps it, not in the transform's, every draw pipeline with the range as dynamic state */
+    int has_depth_clamp_range;
     int has_calibrated_host;    /* VK_EXT_calibrated_timestamps with CLOCK_MONOTONIC_RAW: the GPU's clock goes next to
                                 the client's, one driver call (gpuprof.c's calibration) */
     int has_portability;        /* a portability driver (MoltenVK): the device lists VK_KHR_portability_subset */
@@ -372,10 +380,17 @@ typedef struct {
 } VkSparseShape;
 int vk_sparse_supported(const VkImageCreateInfo* ii);
 int vk_image_create_sparse(const VkImageCreateInfo* ii, VkImage* img);
+/* the same from min bytes of memory, where vk_image_create_sparse takes 4 MiB (texture.c's shed textures) */
+int vk_image_create_sparse_min(const VkImageCreateInfo* ii, VkImage* img, u64 min);
 const VkSparseShape* vk_image_sparse_shape(VkImage img); /* NULL for an image without sparse residency */
 int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* bytes);
 u64 vk_image_sparse_need(VkImage img, const u8* bits, const u64* keys);
 int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32 z0, u32 z1, int all);
+/* the blocks the binds after it give memory take system memory (system 1, texture.c's levels moved out of the GPU's
+   memory) or the GPU's (0, as made); a mip tail takes the GPU's always. vk_image_sparse_level_bytes: the bytes of the
+   blocks of its levels before `levels`, every layer */
+void vk_image_sparse_place(VkImage img, int system);
+u64 vk_image_sparse_level_bytes(VkImage img, u32 levels);
 void vk_sparse_stats(u64* binds, u64* bind_ns); /* statistics: sparse binds, and the host's wait for them */
 /* statistics: the blocks and mip tails with memory now of an image of either kind above, 0 for another image */
 u32 vk_image_bound_blocks(VkImage img);
@@ -775,6 +790,8 @@ void rec_CmdSetAttachmentFeedbackLoopEnableEXT(VkCommandBuffer cb, VkImageAspect
 /* the pre-rasterization state pipelines of libraries take as dynamic state (g_vk.dyn_pr) */
 void rec_CmdSetPolygonModeEXT(VkCommandBuffer cb, VkPolygonMode mode);
 void rec_CmdSetDepthClampEnableEXT(VkCommandBuffer cb, VkBool32 on);
+void rec_CmdSetDepthClipEnableEXT(VkCommandBuffer cb, VkBool32 on);
+void rec_CmdSetDepthClampRangeEXT(VkCommandBuffer cb, VkDepthClampModeEXT mode, const VkDepthClampRangeEXT* range);
 void rec_CmdSetProvokingVertexModeEXT(VkCommandBuffer cb, VkProvokingVertexModeEXT mode);
 void rec_CmdSetConservativeRasterizationModeEXT(VkCommandBuffer cb, VkConservativeRasterizationModeEXT mode);
 void rec_CmdSetExtraPrimitiveOverestimationSizeEXT(VkCommandBuffer cb, float size);
@@ -894,6 +911,17 @@ int vk_astc_bc7(void);
 /* the images ran short of memory, why said: g_vk.bc1_tight from now on (format.c). 1 when that changes what BC1
    textures become, which the log then says */
 int vk_bc1_tight(const char* why);
+/* the GPU's memory is under pressure (surface.c): its use at 90% of the budget or more, or it ran short in the last
+   300 presents (an image found none, a trim found too little to free or left the caches past their budget). What
+   texture_half_res and astc_lines_bc1's Auto go by */
+int vk_mem_pressed(void);
+/* the encoder BCn is encoded again as ASTC 4x4 with on a GPU of Vulkan vendor ID vendor (texconv.c's builds,
+   texconv.glsl's SNX_ASTC_VENDOR): Arm's Mali (0x13B5) and Qualcomm's Adreno (0x5143) have one each
+   (gpu/texture/astc_encode_arm.glsl, astc_encode_qcom.glsl), any other GPU the generic one (astc_encode.glsl) */
+enum { VK_ASTC_ENC_GENERIC, VK_ASTC_ENC_ARM, VK_ASTC_ENC_QCOM };
+static inline int vk_astc_encoder(u32 vendor) {
+    return vendor == 0x13B5u ? VK_ASTC_ENC_ARM : vendor == 0x5143u ? VK_ASTC_ENC_QCOM : VK_ASTC_ENC_GENERIC;
+}
 /* vk_tic_format for a 3D image: ASTC and ETC2 blocks decoded where the device can't make 3D images of them */
 VkFmt vk_tic_format_3d(u32 w0, int srgb);
 /* The device and optimal-tiling format both support writes without a shader format. */
@@ -1031,6 +1059,16 @@ typedef struct Surf {
     /* textures: an image with sparse residency, memory bound only for the levels that guest memory maps
        (gpu/vk/texture.c tex_bind). mem is VK_NULL_HANDLE, and bytes counts the memory bound now */
     u8 sparse;
+    /* textures: its image is in system memory (texture.c vk_tex_demote), bytes 0 while it is: sys_bytes its size */
+    u8 demoted;
+    u64 sys_bytes;
+    /* textures sparse for their levels (shed): its finest levels in system memory, the GPU's own having no room
+       (vk_tex_coarser with texture_sysmem) */
+    u8 sys_levels;
+    /* textures: sparse for its levels alone (texture.c tex_create's shed): mapped whole, with every level from
+       lod_floor on bound, its finest going where the device's memory runs short (vk_tex_coarser) and coming back
+       when it has room (vk_tex_finer) */
+    u8 shed;
     /* textures: its image can move to other device memory when its block is emptied (texture.c vk_tex_defrag_frame):
        the allocation's owner in devmem.c is the texture */
     u8 movable;
@@ -1282,6 +1320,26 @@ u64 vk_mem_trim_start(u64 budget);
 u64 vk_tex_shed(u64 need);
 int vk_tex_can_coarsen(const Surf* t); /* texture.c: t is such a texture with a coarser level to go to */
 u64 vk_tex_coarser(Surf* t);           /* texture.c: t a level coarser, the bytes that released */
+/* texture.c: a shed texture a level finer where the heap has room for it (a fifth of the budget left after it), its
+   next use loading it again: 1 when it took one */
+int vk_tex_finer(Surf* t);
+/* texture.c: t's image moved into system memory, where the GPU still samples it (over the bus), in place of an
+   eviction: its texels kept, no load or encode again at its next use. The GPU memory bytes it lets go, 0 when it
+   can't be (texture_sysmem=0, not a plain image, no system memory for it). vk_tex_promote: back into the GPU's memory,
+   1 when it went. vk_tex_sysmem_stats: textures moved out and back, and the bytes in system memory now */
+u64 vk_tex_demote(Surf* t);
+int vk_tex_promote(Surf* t);
+void vk_tex_sysmem_stats(u64* out, u64* back, u64* bytes);
+u64 vk_mirror_system(void); /* mirror.c: its granules that took system memory so far */
+/* surface.c: once a present, the demoted textures the last presents used moved back while the GPU's memory has room */
+void vk_tex_promote_frame(void);
+/* surface.c: once a present, shed textures used lately a level finer while the heap has room */
+void vk_tex_refine_frame(void);
+/* texture.c: the shed textures made, their bytes as made whole, and the levels shed and taken back so far */
+void vk_tex_shed_stats(u64* made, u64* bytes, u64* coarser, u64* finer);
+/* the textures made at half their resolution under memory pressure (texture_half_res), and their finest levels' bytes
+   never bound */
+void vk_tex_half_stats(u64* made, u64* bytes);
 u64 vk_mem_trimmed(void); /* statistics: the bytes vk_mem_trim freed */
 /* astc_mode's Auto follows the memory (gpu/texture/astc_bc.h): vk_astc_auto_trimmed, at the end of each trim that ran,
    with the use it counted (an allocation's extra bytes in it), what it left (the use less what it freed, an
@@ -1471,6 +1529,9 @@ int vk_tc_nv12_uv(VkCommandBuffer cb, u32 pairs, u32 rows, VkBuffer in, u64 u_at
 /* the bytes of SPIR-V the pipeline of a conversion of mode (texconv_modes.glsl's TC_*) compiles from, its first pass's
    for the ASTC build */
 u64 vk_tc_spirv_bytes(u32 mode);
+/* what the build f's conversion runs in its pass `pass` is, as its errors name it: "" for the plain one, " (its ASTC
+   build's third pass for Mali, with packed dot products)" (the ASTC build's passes are 0 to 2, the others' 0) */
+const char* vk_tc_build_name(const VkFmt* f, int pass);
 /* the DMA copy engine's remap (gpu.h's GpuDmaOp) of lines lines: each line in at in_at + y * in_pitch (bytes, any
    alignment), out at out_at + y * out_pitch (words), which holds the destination's own bytes already for the
    components that keep them. 0 past the device's limits */
@@ -1778,13 +1839,35 @@ static inline int vk_tic_empty(const u32* tic) { return tic[0] == 0; }
 /* An empty storage image or storage buffer slot takes a null descriptor (VK_EXT_robustness2's nullDescriptor): its
    reads are zero, its writes and atomics are dropped, and no image or buffer needs barriers for it. A sampled slot
    keeps vk_null_view's 1x1 image: a size query of an empty header reads 1x1 on the console, and 0 from a null
-   descriptor. Not with descriptor heaps, whose writes (descriptor_heaps.c) have no null form */
+   descriptor. Not with descriptor heaps yet: their writes take a NULL resource for a null descriptor too, which
+   descriptor_heaps.c does not write */
 static inline int vk_null_descriptors(void) { return g_vk.null_descriptor && !g_vk.has_descriptor_heaps; }
-/* A constant buffer's bound range: bytes rounded up to 16, or to the step robustBufferAccess2 checks uniform ranges in
-   where that is larger (a power of two). With that feature, reads past the range are zero, and reads inside the last
-   step get the bytes the binding copied, never a neighbour's in staging */
+/* the step robustBufferAccess2 checks uniform ranges in: 16, or the device's alignment where that is larger */
+static inline u32 vk_cb_step(void) {
+    return g_vk.robust_buffer2 && g_vk.robust_ubo_align > 16 ? g_vk.robust_ubo_align : 16;
+}
+/* bytes rounded up to a whole uniform step (a power of two) */
 static inline u32 vk_cb_round(u32 bytes) {
-    u32 step = g_vk.robust_buffer2 && g_vk.robust_ubo_align > 16 ? g_vk.robust_ubo_align : 16;
+    u32 step = vk_cb_step();
+    return (bytes + step - 1) & ~(step - 1);
+}
+/* A constant buffer's bound range: a whole number of checked steps, at least one (so an empty binding reads zeros
+   across the whole step, not a neighbour's bytes in staging), within maxUniformBufferRange rounded down to a step.
+   Reads inside the last step get the bytes its binding put there: zeros past the guest's in a compute or inline
+   one, the guest's next bytes in a graphics one read from guest memory (cb_get). Where the limit is smaller than a
+   step (no real device), the limit wins: a valid range over an aligned one */
+static inline u32 vk_cb_range(u32 bytes) {
+    u32 step = vk_cb_step(), max = g_vk.props.limits.maxUniformBufferRange;
+    u32 range = vk_cb_round(bytes);
+    if (range < step) range = step;
+    if (range > max) range = max >= step ? max & ~(step - 1) : max;
+    return range;
+}
+/* a storage buffer's bound range rounded to the step robustBufferAccess2 checks storage ranges in. Only bind this
+   where the binding zero-fills the tail and nothing writes it back: a writable copy would write the tail back, and a
+   window of real guest memory reads its true neighbour (as the console does), which needs no rounding */
+static inline u32 vk_sb_round(u32 bytes) {
+    u32 step = g_vk.robust_buffer2 && g_vk.robust_ssbo_align > 1 ? g_vk.robust_ssbo_align : 1;
     return (bytes + step - 1) & ~(step - 1);
 }
 /* the sampler for a TSC: raise lets anisotropy= raise its filtering (a 2D texture with mipmaps), integer gives its
@@ -2291,6 +2374,9 @@ typedef struct {
     u32 topo_class;
     u32 polygon;
     u32 depth_clamp;
+    /* with has_depth_clip_enable, whether the geometry is clipped against the depth planes apart from the clamp: 1 not,
+       2 clipped (VkPipelineRasterizationDepthClipStateCreateInfoEXT); 0 without it, depth_clamp deciding both */
+    u32 depth_clip;
     /* all zero with dynamic vertex input (g_vk.vertex_input_dynamic): each draw sets its own (render.c), and one
        pipeline serves every layout its programs are drawn with */
     VertexLayout vi;
@@ -2540,6 +2626,8 @@ int vk_memh_mem(void* user, u64 address, u32* words, u32 count);
    accesses a barrier names see the writes before it */
 #define VK_STORAGE_IMAGE_ACCESS (VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)
 extern u64 g_vk_drawn, g_vk_skipped; /* draws recorded, and draws skipped (unsupported topology, failed shader) */
+/* draws whose depth the console clips and clamps, and of them those that write depth or take a depth bias (render.c) */
+extern u64 g_vk_depth_apart_draws, g_vk_depth_apart_moved;
 extern u64 g_vk_mesh_draws, g_vk_mesh_drawn; /* of them, an Ounce's mesh draws, and those recorded */
 /* The ordered capture fallback (render.c capture_draw) records a clear, a draw and a resolve for every primitive: past
    this many primitives a draw is skipped instead. Statistics: draws captured, their primitives, the draws skipped */

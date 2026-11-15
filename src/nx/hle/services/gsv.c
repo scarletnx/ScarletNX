@@ -6,6 +6,8 @@
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "nx/gpu/renderer.h"
+#include "nx/hle/services/vi.h"
+#include "nx/runtime/platform/backend.h"
 static int gsv_user_unknown(SvcObj* self, IpcCtx* c) {
     {
         u32 i;
@@ -32,19 +34,13 @@ static int gsv_kuser_unknown(SvcObj* self, IpcCtx* c) {
     }
     return ipc_unknown(self, c);
 }
-/* The camera context's session, with no camera behind it: every command but 21 (gsv.swipc) answers the camera
-   service's result of module 452 and description 6, whose name nobody documents. One game's main lets it pass when it
-   opens the camera "Default" */
+/* The camera context's session, with no camera plugged in (gsv.swipc): every command that gsv.swipc does not declare
+   answers the camera service's result of module 452 and description 3, which the SDK's QueryDeviceConnection (29)
+   lets pass and one game logs as no camera device found */
 static int gsv_camera_none(SvcObj* self, IpcCtx* c) {
-    u32 i;
     (void)self;
-    LOG_LIMIT(16, "gsv: camera session cmd %u, raw size %#x, and there is no camera\n", c->cmd, c->raw_size);
-    for (i = 0; i < c->raw_size && i < 0x20; i += 8) {
-        u64 word = 0;
-        memcpy(&word, c->raw + i, c->raw_size - i < 8 ? c->raw_size - i : 8);
-        LOG_LIMIT(16, "gsv:   raw +%#x = %#llx\n", i, (unsigned long long)word);
-    }
-    R_THROW(SNX_RC_CAMERA_NOT_AVAILABLE);
+    LOG_LIMIT(16, "gsv: camera session cmd %u, raw size %#x, and no camera is plugged in\n", c->cmd, c->raw_size);
+    R_THROW(SNX_RC_CAMERA_DEVICE_NOT_DETECTED);
 }
 #include "hle/services/gsv.swipc.inc"
 #include "hle/services/nvdrv.swipc.h"
@@ -96,6 +92,18 @@ static int nn_gsv_UserSession_DestroyCameraContext(SvcObj* self) {
 static int nn_gsv_CameraSession_GetEvent(SvcObj* self, u32 id, u32* event) {
     (void)self, (void)id;
     return new_event(event, "gsv camera", 0);
+}
+/* The device handle of the camera "Default", which the SDK gives back to the session in the calls on that camera.
+   The session takes none of them while no camera is plugged in, so its value is the session's own choice */
+static int nn_gsv_CameraSession_Initialize(SvcObj* self, const u8* name, u64* device) {
+    (void)self;
+    LOG("gsv: camera Initialize(\"%.16s\")\n", (const char*)name);
+    *device = 0;
+    R_SUCCEED();
+}
+static int nn_gsv_CameraSession_Finalize(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
 }
 static int nn_gsv_UserSession_OpenGraphicsFrameSession(SvcObj* self, u32* session) {
     (void)self;
@@ -594,6 +602,7 @@ static u32 vi2_group_events[8];  /* the request group events' kobj ids */
 static u32 vi2_group_vsync[8];   /* 1 while a group is registered for the display's vsync (kind 0) */
 static u32 vi2_group_hdr[8];     /* 1 while a group is registered for the display's HDR status (kind 2) */
 static int vi2_hdr_told = -1;    /* what vi2_hdr said when the HDR status groups were last signaled, -1 never */
+static u32 vi2_group_refresh[8]; /* 1 while a group is registered for the display's refresh rate (kind 1) */
 static Vi2Client vi2_clients[VI2_CLIENTS];
 static u32 vi2_client_slots;
 
@@ -756,11 +765,67 @@ static int nn_vi2_IVi2Session_GetBufferMaxResolution(SvcObj* self, const u8* req
     *resolution = snx_tv_mode() ? 8 : 2;
     R_SUCCEED();
 }
-static int nn_vi2_IVi2Session_GetDisplayState107(SvcObj* self, const u8* request, u64* a, u64* b, u64* c) {
+/* The display's refresh rates, as the SDK codes them: 1 for 60 Hz, 2 for 120 Hz, each also its bit in the
+   rate sets (107, 354), and 1 << 63 for VRR. A game turns a rate on or off (301), the display then runs at the
+   fastest one that is on and the TV takes, and the game reads it back (103, 354) once the refresh rate event says it
+   changed. One game turns 120 Hz on for a part made for a 120 Hz TV and checks that the display then runs at 120 Hz */
+#define VI2_RATE_60  1ull
+#define VI2_RATE_120 2ull
+static u64 vi2_rates_on = VI2_RATE_60; /* the rates the game turned on */
+
+/* The rates the TV in the dock takes, as tv_refresh_rate says: 60 Hz, and 120 Hz with 2, or with 1 where the window's
+   display refreshes at 119 Hz or more (119.88 Hz counts). Never VRR: the runtime paces no VRR */
+static u64 vi2_rates_offered(void) {
+    static int told;
+    u64 ns = backend_display_refresh_ns();
+    int on = g_settings.tv_refresh_rate == 2 || (g_settings.tv_refresh_rate == 1 && ns && ns <= 1000000000u / 119);
+    if (!told++)
+        LOG("gsv: the TV takes 60 Hz%s (tv_refresh_rate=%d, the window's display at %.2f Hz)\n",
+            on ? " and 120 Hz" : "", g_settings.tv_refresh_rate, ns ? 1e9 / (double)ns : 0.0);
+    return on ? VI2_RATE_60 | VI2_RATE_120 : VI2_RATE_60;
+}
+/* the console's display runs at 120 Hz or VI_REFRESH_HZ (vi.h), which present.c and nvn_queue.c pace by; a guest's
+   display of GameShare at 60 Hz */
+static u64 vi2_rate_now(u64 name) {
+    return name == VI2_DEFAULT_DISPLAY && vi_refresh_hz() == 120 ? VI2_RATE_120 : VI2_RATE_60;
+}
+static int nn_vi2_IVi2Session_GetDisplayRefreshRate(SvcObj* self, const u8* request, u64* rate) {
+    u64 name = snx_ld_le64(request);
+    (void)self;
+    R_UNLESS(vi2_display(name), SNX_RC_VI2_NOT_FOUND);
+    *rate = vi2_rate_now(name);
+    R_SUCCEED();
+}
+/* the rate as its bit: the same values as the codes for 60 and 120 Hz, and bit 63 (VRR on) never set */
+static int nn_vi2_IVi2Session_GetDisplayRefreshRateBits(SvcObj* self, const u8* request, u64* rate) {
+    return nn_vi2_IVi2Session_GetDisplayRefreshRate(self, request, rate);
+}
+/* the HDR formats' set is 1, as before anything read it */
+static int nn_vi2_IVi2Session_GetDisplayModeCapability(SvcObj* self, const u8* request, u64* refresh_rates,
+                                                       u64* hdr_formats, u64* refresh_rates2) {
     (void)self, (void)request;
-    *a = 1;
-    *b = 1;
-    *c = 0;
+    *refresh_rates = vi2_rates_offered();
+    *hdr_formats = 1;
+    *refresh_rates2 = 0;
+    R_SUCCEED();
+}
+/* The value's bits turn the mask's rates on, its clear bits turn them off. 60 Hz stays on: the SDK stops a game that
+   turns it off. A change of the console's display's rate signals the groups registered for the refresh rate event */
+static int nn_vi2_IVi2Session_SetDisplayRefreshRateCapability(SvcObj* self, const u8* request) {
+    u64 name = snx_ld_le64(request), value = snx_ld_le64(request + 8), mask = snx_ld_le64(request + 16);
+    u32 hz, i;
+    (void)self;
+    R_UNLESS(vi2_display(name), SNX_RC_VI2_NOT_FOUND);
+    if (name != VI2_DEFAULT_DISPLAY) R_SUCCEED();
+    vi2_rates_on = ((vi2_rates_on & ~mask) | (value & mask)) | VI2_RATE_60;
+    hz = (vi2_rates_on & vi2_rates_offered() & VI2_RATE_120) ? 120 : VI_REFRESH_HZ;
+    if ((vi2_rates_on & VI2_RATE_120) && hz != 120)
+        LOG_LIMIT(4, "gsv: the game turned 120 Hz on, which the TV doesn't take: the display stays at 60 Hz\n");
+    if (hz == vi_refresh_hz()) R_SUCCEED();
+    LOG("gsv: the display runs at %u Hz, as the game turned 120 Hz %s\n", hz, hz == 120 ? "on" : "off");
+    __atomic_store_n(&g_vi_refresh_hz, (int)hz, __ATOMIC_RELAXED);
+    for (i = 0; i < 8; i++)
+        if (vi2_group_refresh[i] && vi2_group_events[i]) ev_signal(vi2_group_events[i]);
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_OpenEndpoint(SvcObj* self, const u8* request) {
@@ -901,6 +966,7 @@ static int vi2_register_monitor(const u8* request, int kind) {
         vi2_group_vsync[group] = 1;
     else
         ev_signal(vi2_group_events[group]);
+    if (kind == 1) vi2_group_refresh[group] = 1;
     if (kind == 2) vi2_group_hdr[group] = 1;
     R_SUCCEED();
 }
@@ -909,6 +975,7 @@ static int vi2_unregister_monitor(const u8* request, int kind) {
     u32 group = snx_ld_le32(request + 8);
     R_UNLESS(group < 8 && vi2_display(name), SNX_RC_VI2_NOT_FOUND);
     vi2_group_vsync[group] = 0;
+    if (kind == 1) vi2_group_refresh[group] = 0;
     if (kind == 2) vi2_group_hdr[group] = 0;
     R_SUCCEED();
 }
@@ -920,11 +987,11 @@ static int nn_vi2_IVi2Session_UnregisterDisplayEventMonitor(SvcObj* self, const 
     (void)self;
     return vi2_unregister_monitor(request, 0);
 }
-static int nn_vi2_IVi2Session_RegisterDisplayMonitor263(SvcObj* self, const u8* request) {
+static int nn_vi2_IVi2Session_RegisterRefreshRateMonitor(SvcObj* self, const u8* request) {
     (void)self;
     return vi2_register_monitor(request, 1);
 }
-static int nn_vi2_IVi2Session_UnregisterDisplayMonitor264(SvcObj* self, const u8* request) {
+static int nn_vi2_IVi2Session_UnregisterRefreshRateMonitor(SvcObj* self, const u8* request) {
     (void)self;
     return vi2_unregister_monitor(request, 1);
 }
@@ -973,10 +1040,6 @@ void gsv_vsync_tick(void) {
         if (vi2_group_hdr[i] && vi2_group_events[i]) ev_signal(vi2_group_events[i]);
     vi2_hdr_told = hdr;
 }
-static int nn_vi2_IVi2Session_SetDisplayParameter301(SvcObj* self, const u8* request) {
-    (void)self, (void)request;
-    R_SUCCEED();
-}
 static int nn_vi2_IVi2Session_SetClientOutputEncoding(SvcObj* self, const u8* request) {
     u64 token = snx_ld_le64(request);
     (void)self;
@@ -987,13 +1050,6 @@ static int nn_vi2_IVi2Session_SetClientOutputLevels(SvcObj* self, const u8* requ
     u64 token = snx_ld_le64(request);
     (void)self;
     R_UNLESS(token && vi2_client(token), SNX_RC_VI2_NOT_FOUND);
-    R_SUCCEED();
-}
-static int nn_vi2_IVi2Session_GetDisplayState354(SvcObj* self, const u8* request, u64* value) {
-    u64 name = snx_ld_le64(request);
-    (void)self;
-    R_UNLESS(vi2_display(name), SNX_RC_VI2_NOT_FOUND);
-    *value = 1;
     R_SUCCEED();
 }
 static int nn_gsv_SyncptSession_Ping(SvcObj* self, u64 tick, u64* out_tick) {

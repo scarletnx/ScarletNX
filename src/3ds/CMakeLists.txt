@@ -61,7 +61,7 @@ target_link_libraries(snx_ctr_gpu_reference PUBLIC snx_ctr_gpu m)
 # the HLE DSP, its SDL3 output and the AAC decoder of its binary pipe
 add_library(snx_ctr_audio STATIC audio/dsp.c audio/source.c audio/mixers.c audio/output.c audio/mix.c audio/csnd.c)
 target_link_libraries(snx_ctr_audio PUBLIC snx_ctr_memory SDL3::SDL3)
-target_link_libraries(snx_ctr_audio PRIVATE FFmpeg::avcodec)
+target_link_libraries(snx_ctr_audio PRIVATE FFmpeg::avcodec snx_settings) # g_settings: the player's Volume
 # snx_settings_runtime: g_settings and the 3DS debug table (g_ctr_debug_ini, src/nx/runtime/settings.txt)
 target_link_libraries(snx_ctr_process PUBLIC snx_ctr_cpu snx_ctr_loader scarletnx-filesystem snx_ctr_gpu snx_ctr_audio
                       snx_settings_runtime)

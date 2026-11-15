@@ -1,17 +1,19 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # A --key=value that no table of runtime/options.c knows is refused before anything runs; a known one reaches the
-# input's check. Run by ctest as runtime_unknown_option
+# input's check, its key's _ each a - or none (a game's, the recompile's, a timed run's); some _ left is no key. Run by
+# ctest as runtime_unknown_option
 set(dir "${CMAKE_CURRENT_BINARY_DIR}/unknown-option")
 file(REMOVE_RECURSE "${dir}")
 file(MAKE_DIRECTORY "${dir}")
-foreach(option --resoltion=2 --resolution=2 --seconds=5)
+foreach(option --resoltion=2 --resolution=2 --seconds=5 --state-slots=5 --state_slots=5 --aot-threads=2
+               --shot-every=5 --aot-threads_most=2)
     execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY SDL_VIDEO_DRIVER=dummy
                             "${RUNTIME}" ${option} missing.nro
                     WORKING_DIRECTORY "${dir}" TIMEOUT 20 RESULT_VARIABLE result OUTPUT_VARIABLE out
                     ERROR_VARIABLE out)
-    if(option STREQUAL "--resoltion=2")
-        set(expected "unknown option: --resoltion=2")
+    if(option STREQUAL "--resoltion=2" OR option STREQUAL "--aot-threads_most=2")
+        set(expected "unknown option: ${option}")
     else()
         set(expected "missing.nro is not a file")
     endif()

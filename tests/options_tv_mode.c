@@ -390,7 +390,8 @@ static void test_astc_bc_old(void) {
     g_test.write = 0;
 }
 
-/* the log's settings line: the Display, Graphics and Performance settings off their default, each with its default */
+/* the log's settings line: the Display, Graphics, Audio and Performance settings off their default, each with its
+   default */
 static void test_settings_line(void) {
     char list[2048];
     g_settings.astc_mode = 1;
@@ -398,6 +399,11 @@ static void test_settings_line(void) {
     g_settings.astc_mode = 0;
     options_settings(list, sizeof list);
     CHECK(!strstr(list, "astc_mode"));
+    g_settings.volume = 40; /* the player's Volume: a silent game's log says why */
+    CHECK(options_settings(list, sizeof list) >= 1 && strstr(list, "volume=40 (default 100)"));
+    g_settings.volume = 100;
+    options_settings(list, sizeof list);
+    CHECK(!strstr(list, "volume"));
 }
 
 

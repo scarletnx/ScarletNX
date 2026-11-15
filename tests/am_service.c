@@ -205,6 +205,13 @@ int backend_keyboard_show(const OverlayKeyboard* k) {
     return 0;
 }
 void backend_keyboard_hide(u32 ticket) { box_hidden = ticket; }
+/* the window's display's mode, in pixels, as the backend's stand-in; and whether the game is an Ounce one (main.c) */
+static u32 display_w = 3840, display_h = 2160;
+void backend_display_mode(u32* w, u32* h) {
+    *w = display_w;
+    *h = display_h;
+}
+int g_ounce;
 static int popped_while_waiting; /* a whole keyboard applet counted as popped while its thread waited */
 int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     int i;
@@ -599,6 +606,35 @@ static void test_cpu_boost(void) {
     CHECK(nn_am_service_ICommonStateGetter_GetCurrentPerformanceConfiguration(NULL, &config) == 0 &&
           config == 0x92220009u);
     g_settings.tv_mode = 0;
+}
+
+/* GetDefaultDisplayResolution (60): in TV mode 1920x1080, or 3840x2160 to an Ounce game where tv_resolution says the
+   TV shows that (1 with the window's display's mode that large, 2 always); 1280x720 in handheld mode */
+static void resolution(int ounce, int tv, int setting, u32 w, u32 h, i32 want_w, i32 want_h) {
+    i32 width = 0, height = 0;
+    g_ounce = ounce;
+    g_settings.tv_mode = tv;
+    g_settings.tv_resolution = setting;
+    display_w = w;
+    display_h = h;
+    CHECK(nn_am_service_ICommonStateGetter_GetDefaultDisplayResolution(NULL, &width, &height) == 0);
+    CHECK(width == want_w && height == want_h);
+}
+static void test_default_resolution(void) {
+    /* tv_resolution's default, settings.txt's: 1920x1080 on a 4K display too, until the player picks 4K */
+    CHECK(g_settings.tv_resolution == 0);
+    resolution(1, 1, g_settings.tv_resolution, 3840, 2160, 1920, 1080);
+    resolution(1, 1, 1, 3840, 2160, 3840, 2160);
+    resolution(1, 1, 1, 2160, 3840, 3840, 2160); /* the display turned on its side */
+    resolution(1, 1, 1, 2560, 1440, 1920, 1080);
+    resolution(1, 1, 1, 0, 0, 1920, 1080); /* headless */
+    resolution(1, 1, 2, 2560, 1440, 3840, 2160);
+    resolution(1, 1, 0, 3840, 2160, 1920, 1080);
+    resolution(0, 1, 2, 3840, 2160, 1920, 1080); /* a Switch game */
+    resolution(1, 0, 2, 3840, 2160, 1280, 720);  /* handheld mode */
+    g_ounce = 0;
+    g_settings.tv_mode = 0;
+    g_settings.tv_resolution = 0;
 }
 
 /* a lock accessor from GetHomeButtonReaderLockAccessor (30) and GetReaderLockAccessorEx (31): its event signaled
@@ -1076,6 +1112,7 @@ int main(void) {
     test_swkbd();
     test_lock_event();
     test_cpu_boost();
+    test_default_resolution();
     test_am_command_replies();
     test_applets();
     test_web_versions();

@@ -1435,6 +1435,7 @@ typedef struct {
     VkAttachmentSampleCountInfoNV attachment_samples; /* with mixed samples (coverage.raster_samples) */
     VkPipelineRenderingCreateInfo ri;
     VkPipelineRobustnessCreateInfoEXT robustness; /* with has_vertex_robustness2 */
+    VkPipelineRasterizationDepthClipStateCreateInfoEXT depth_clip; /* with k->depth_clip */
     VkPipelineCreationFeedback made;
     VkPipelineCreationFeedbackCreateInfo fi;
     PipeDynIn dyn;
@@ -1522,10 +1523,17 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT,
         .pNext = k->conservative ? &o->conservative : NULL,
         .provokingVertexMode = VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT};
+    o->depth_clip = (VkPipelineRasterizationDepthClipStateCreateInfoEXT){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT,
+        .pNext = k->provoking_last ? (void*)&o->provoking
+                 : k->conservative ? (void*)&o->conservative
+                                   : NULL,
+        .depthClipEnable = k->depth_clip == 2};
     o->rs = (VkPipelineRasterizationStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-                                                     .pNext = k->provoking_last ? (void*)&o->provoking
-                                                              : k->conservative ? (void*)&o->conservative
-                                                                                : NULL,
+                                                     .pNext = k->depth_clip       ? (void*)&o->depth_clip
+                                                              : k->provoking_last ? (void*)&o->provoking
+                                                              : k->conservative   ? (void*)&o->conservative
+                                                                                  : NULL,
                                                      .depthClampEnable = k->depth_clamp,
                                                      .polygonMode = (VkPolygonMode)k->polygon,
                                                      .lineWidth = 1.0f};
@@ -1655,7 +1663,8 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
                          .stride = l->nbind && g_vk.has_dynamic_stride,
                          .vertex_input = g_vk.vertex_input_dynamic,
                          .tess = k->tes != VK_NULL_HANDLE,
-                         .mesh = k->mesh != 0};
+                         .mesh = k->mesh != 0,
+                         .clamp_range = g_vk.has_depth_clamp_range};
     o->flags = (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
                (k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0);
 }
@@ -2814,14 +2823,15 @@ static void pf_key(char* out, size_t n, size_t* guest) {
     if (*guest)
         snprintf(
             out + *guest, n - *guest,
-            " %s%s driver=%u api=%u spirv=%x uuid=%s ftz=%d quad=%d,%d mixed_dot=%d hmma_coop=%d hmma_pairs=%d hmma_stage=%d half_flush=%d "
-            "hmma_f16=%d sizes=%u,%u vertex_bounds=%d robust2=%d%d%d",
+            " %s%s driver=%u api=%u spirv=%x uuid=%s ftz=%d quad=%d,%d mixed_dot=%d hmma_coop=%d hmma_shapes=%u "
+            "hmma_pairs=%d hmma_stage=%d half_flush=%d hmma_f16=%d hmma_astat=%d sizes=%u,%u vertex_bounds=%d "
+            "robust2=%d%d%d",
             snx_build_info(), exe, d->driverVersion, d->apiVersion, (unsigned)spv_emit_version(), uuid, g_vk_ftz,
             g_spirv_translate.quad, g_spirv_translate.quad_compute, g_spirv_translate.mixed_dot,
-            g_spirv_translate.hmma_coop, g_spirv_translate.hmma_pairs, g_spirv_translate.hmma_stage,
-            g_spirv_translate.half_flush, g_spirv_translate.hmma_f16, (unsigned)sizeof(ShaderInfo),
-            (unsigned)sizeof(PfShader), g_vk.has_vertex_robustness2, g_vk.robust_buffer2, g_vk.robust_image2,
-            g_vk.null_descriptor);
+            g_spirv_translate.hmma_coop, g_spirv_translate.hmma_coop_shapes, g_spirv_translate.hmma_pairs,
+            g_spirv_translate.hmma_stage, g_spirv_translate.half_flush, g_spirv_translate.hmma_f16,
+            g_spirv_translate.hmma_astat, (unsigned)sizeof(ShaderInfo), (unsigned)sizeof(PfShader), g_vk.has_vertex_robustness2,
+            g_vk.robust_buffer2, g_vk.robust_image2, g_vk.null_descriptor);
 }
 
 void vk_pipeline_file_key(char* out, size_t n, size_t* guest) { pf_key(out, n, guest); }

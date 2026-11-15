@@ -1479,8 +1479,11 @@ VkImageView vk_storage_image_view(Surf* t, const ShaderInfo* si, int i, u64* byt
                 : t->depth3d != 1 || (si->img[i].type != 3 && si->img[i].type != 4)) ||
         !*bytes || *bytes > UINT32_MAX)
         return VK_NULL_HANDLE;
+    /* an sRGB surface is written through its linear twin (vk_tex_storage_view's view, surf_create_'s EXTENDED_USAGE):
+       NVN's image stores convert no sRGB, so the program's bytes land as it wrote them. One game's upscaler stores
+       its already encoded frame into an RGBA8 sRGB image, and refused, its whole frame stayed black */
     if (kind == 1 ? t->f.vk != VK_FORMAT_R32_UINT
-                  : !vk_format_storage_write(t->f.vk) || kind != (t->f.is_int ? t->f.sint ? 3 : 2 : 0))
+                  : !vk_format_storage_write(vk_srgb_as(t->f.vk, 0)) || kind != (t->f.is_int ? t->f.sint ? 3 : 2 : 0))
         return VK_NULL_HANDLE;
     /* a 2D array surface sees every layer of the image, a single layer one too */
     return vk_tex_storage_view(t, vk_storage_image_type(si, i));
@@ -2034,9 +2037,7 @@ static u32 cb_range(const DsState* ds, int stage, const VkSh* s, int i) {
     u32 sz = ds->bind.cb_size[stage][i];
     if (sz > 65536 || !sz) sz = 65536;
     if (s->si.cbuf_max[i] && sz > s->si.cbuf_max[i]) sz = s->si.cbuf_max[i]; /* only the bytes the shader reads */
-    sz = vk_cb_round(sz);
-    if (sz > g_vk.props.limits.maxUniformBufferRange) sz = g_vk.props.limits.maxUniformBufferRange;
-    return sz;
+    return vk_cb_range(sz);
 }
 /* A third of a draw's constant buffers miss cb_get's entries, and each of those looks its range up in the buffer
    cache: two cache misses in a row, the index's slot and then the entry it names, which were most of buf_get's time
@@ -3064,7 +3065,8 @@ static struct {
     VkDescriptorSet sets[5];
     u64 set_binds; /* vk_rec_set_binds when sets were: a set bound the old way since unbinds descriptor buffers */
     u32 fb, cull, front, topo, restart, discard, bias_on, dt, dw, dcmp, dbounds, st;
-    u32 polygon, clamp, provoking, conservative, patch; /* g_vk.dyn_pr's, as PipeKey holds them */
+    u32 polygon, clamp, clip, provoking, conservative, patch; /* g_vk.dyn_pr's, as PipeKey holds them */
+    VkDepthClampRangeEXT clamp_range;                         /* with has_depth_clamp_range */
     u32 minus_one;                                      /* and its depth range, which no key holds: from -1 */
     VkViewport vp[GUEST_VIEWPORTS];
     VkRect2D sc[GUEST_VIEWPORTS];
@@ -3101,6 +3103,8 @@ static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int minus_one, int 
     if (d & VK_DYN_PR_POLYGON) DYN(polygon, k->polygon, rec_CmdSetPolygonModeEXT(cb, (VkPolygonMode)k->polygon));
     if (d & VK_DYN_PR_DEPTH_CLAMP)
         DYN(clamp, k->depth_clamp, rec_CmdSetDepthClampEnableEXT(cb, k->depth_clamp ? VK_TRUE : VK_FALSE));
+    if (d & VK_DYN_PR_DEPTH_CLIP)
+        DYN(clip, k->depth_clip, rec_CmdSetDepthClipEnableEXT(cb, k->depth_clip == 2 ? VK_TRUE : VK_FALSE));
     if (d & VK_DYN_PR_PROVOKING)
         DYN(provoking, k->provoking_last,
             rec_CmdSetProvokingVertexModeEXT(cb, k->provoking_last ? VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT
@@ -3115,6 +3119,9 @@ static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int minus_one, int 
     if ((d & VK_DYN_PR_PATCH) && k->tes) DYN(patch, k->patch, rec_CmdSetPatchControlPointsEXT(cb, k->patch));
 }
 u64 g_vk_drawn, g_vk_skipped, g_vk_mesh_draws, g_vk_mesh_drawn;
+/* draws whose depth the console both clips and clamps (its clamp off), and of them those that write their own depth or
+   take a depth bias, whose depth may leave the viewport's range: undefined there without VK_EXT_depth_clip_enable */
+u64 g_vk_depth_apart_draws, g_vk_depth_apart_moved;
 u64 g_vk_capture_draws, g_vk_capture_primitives, g_vk_capture_capped;
 
 /* The viewport's size with the transform off: the surface clip's, at most the device's viewport dimensions at the
@@ -3672,9 +3679,13 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
     memset(pl, 0, sizeof *pl);
     k->vs = vs->mod;
     k->fs = fs ? fs->mod : VK_NULL_HANDLE;
-    k->depth_clamp = g_vk.feat.depthClamp && rk->depth_clamp;
-    if (!g_vk.feat.depthClamp && rk->depth_clamp)
-        LOG_LIMIT(1, "vulkan: depth clamp requested but unavailable on this device\n");
+    /* with VK_EXT_depth_clip_enable, the clamp and the clip as the console has them apart; without it one switch,
+       where clamping turns clipping off: a fragment's depth past the viewport's range is undefined then with the clamp
+       off (the specification's Depth Clamping and Range Adjustment), which the console clamps to 0 to 1 */
+    int clamp = g_vk.has_depth_clip_enable ? rk->depth_pixel_clamp : rk->depth_clamp;
+    k->depth_clamp = g_vk.feat.depthClamp && clamp;
+    if (g_vk.has_depth_clip_enable) k->depth_clip = rk->depth_no_clip ? 1 : 2;
+    if (!g_vk.feat.depthClamp && clamp) LOG_LIMIT(1, "vulkan: depth clamp requested but unavailable on this device\n");
     k->provoking_last = rk->provoking_last && g_vk.has_provoking_last;
     if (rk->provoking_last && !g_vk.has_provoking_last)
         LOG_LIMIT(1, "vulkan: flat inputs take the first vertex of a primitive, not the last the game asks for\n");
@@ -5629,6 +5640,29 @@ retry:
         rec_CmdSetScissorWithCount(cb, viewports, scissor);
     }
     g_dyn.viewports = viewports;
+    /* The console clamps a fragment's depth to the viewport's clip range (SET_VIEWPORT_CLIP_MIN_Z and MAX_Z), which
+       need not be the transform's minDepth to maxDepth: NVK, which drives the same registers, turns the clamp off on
+       these GPUs by setting that range to -inf..inf. Where the clip control forces 0 to 1 (its bit 0, deko3d's clamp
+       off) the range is that. Vulkan's range is one for every viewport: viewport 0's */
+    if (g_vk.has_depth_clamp_range) {
+        float zn = ds->rkey.depth_zero_one ? 0.0f : ds->vp.z_near[0],
+              zf = ds->rkey.depth_zero_one ? 1.0f : ds->vp.z_far[0];
+        VkDepthClampRangeEXT range = {zn < zf ? zn : zf, zn < zf ? zf : zn};
+        int numbers = zn == zn && zf == zf;
+        if (!g_vk.has_depth_range_unrestricted) {
+            range.minDepthClamp = range.minDepthClamp < 0 ? 0 : range.minDepthClamp > 1 ? 1 : range.minDepthClamp;
+            range.maxDepthClamp = range.maxDepthClamp < 0 ? 0 : range.maxDepthClamp > 1 ? 1 : range.maxDepthClamp;
+        }
+        if (!numbers) range = (VkDepthClampRangeEXT){0, 0}; /* the viewport's range: the mode below says so */
+        if (!ds->rkey.depth_zero_one && viewports > 1 && (ds->vp.z_near[1] != zn || ds->vp.z_far[1] != zf))
+            LOG_LIMIT(1,
+                      "vulkan: viewport 1 clamps depth to %g..%g and viewport 0 to %g..%g: every viewport takes 0's\n",
+                      (double)ds->vp.z_near[1], (double)ds->vp.z_far[1], (double)zn, (double)zf);
+        DYNV(clamp_range, range,
+             rec_CmdSetDepthClampRangeEXT(
+                 cb, numbers ? VK_DEPTH_CLAMP_MODE_USER_DEFINED_RANGE_EXT : VK_DEPTH_CLAMP_MODE_VIEWPORT_RANGE_EXT,
+                 &range));
+    }
     /* Triangle facing has its own window-origin control, independent of viewport scale and swizzle. */
     {
         VkCullModeFlags cull = ds->dyn.cull;
@@ -5660,6 +5694,10 @@ retry:
                                                                                          : 2) &
                                     1;
         DYN(bias_on, bias_on, rec_CmdSetDepthBiasEnable(cb, bias_on));
+        if (ds->rkey.depth_pixel_clamp && !ds->rkey.depth_no_clip) {
+            g_vk_depth_apart_draws++;
+            if (bias_on || (sh.fs0 && (sh.fs0->si.sph[19] & 2u))) g_vk_depth_apart_moved++;
+        }
     }
     {
         float bias[3];

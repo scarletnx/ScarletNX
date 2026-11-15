@@ -2,8 +2,11 @@
    Copyright 2026 the ScarletNX contributors */
 /* What the Ounce's display session (hle/services/gsv.c, nn::vi2::IVi2Session) tells a game of the display's HDR, with
    the renderer stood in for: GetHdrStatus's format (1 for SDR and 2 for HDR, as the SDK's QueryDisplayHdrStatus reads
-   it) and peak, GetHdrPaperWhite, and the HDR status event when the display's changes; and the largest picture it
-   takes, GetBufferMaxResolution. Everything else gsv.c reaches is stood in for by functions no check here calls */
+   it) and peak, GetHdrPaperWhite, and the HDR status event when the display's changes; the largest picture it
+   takes, GetBufferMaxResolution; and its refresh rates, with the window's display stood in for: the ones it takes
+   (GetDisplayModeCapability), the one it runs at (GetDisplayRefreshRate and its bits), and the game turning 120 Hz
+   on and off (301) with the refresh rate event. Everything else gsv.c reaches is stood in
+   for by functions no check here calls */
 #include "nx/hle/services/services_int.h"
 #include <stdarg.h>
 
@@ -29,6 +32,9 @@ Settings g_settings;
 int g_frames;
 u64 g_sync_shim_cpu;
 const Renderer* g_renderer;
+int g_vi_refresh_hz = VI_REFRESH_HZ; /* present.c's, which the session sets */
+static u64 g_refresh_ns;             /* the window's display's refresh period, 0 not known (headless) */
+u64 backend_display_refresh_ns(void) { return g_refresh_ns; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 void logf_(int level, const char* format, ...) {
@@ -212,10 +218,117 @@ static void max_resolution(void) {
     CHECK(nn_vi2_IVi2Session_GetBufferMaxResolution(NULL, r, &resolution) != 0);
 }
 
+/* the refresh rates: a display's packet to 301 (the display, a value and a mask of rate codes) and the rate it runs
+   at, which GetDisplayRefreshRate and its bits answer alike for 60 and 120 Hz */
+static int set_rates(u64 name, u64 value, u64 mask) {
+    u8 r[24];
+    for (u32 i = 0; i < 8; i++) {
+        r[i] = (u8)(name >> (8 * i));
+        r[8 + i] = (u8)(value >> (8 * i));
+        r[16 + i] = (u8)(mask >> (8 * i));
+    }
+    return nn_vi2_IVi2Session_SetDisplayRefreshRateCapability(NULL, r);
+}
+static u64 rate_now(u64 name) {
+    u8 r[12];
+    u64 rate = 99, bits = 99;
+    request(r, name, 0);
+    CHECK(!nn_vi2_IVi2Session_GetDisplayRefreshRate(NULL, r, &rate));
+    CHECK(!nn_vi2_IVi2Session_GetDisplayRefreshRateBits(NULL, r, &bits) && bits == rate);
+    return rate;
+}
+static u64 rates_offered(void) {
+    u8 r[12];
+    u64 rates = 99, hdr = 99, rates2 = 99;
+    request(r, DEFAULT_DISPLAY, 0);
+    CHECK(!nn_vi2_IVi2Session_GetDisplayModeCapability(NULL, r, &rates, &hdr, &rates2) && hdr == 1 && rates2 == 0);
+    return rates;
+}
+/* a command through the session's dispatch, its reply's first 64 bits after the result as the SDK's proxy reads them */
+static u64 wire(u32 cmd, u8* raw, u32 size, int* rc) {
+    IpcCtx c;
+    memset(&c, 0, sizeof c);
+    c.cmd = cmd;
+    c.tipc = 1;
+    c.raw = raw;
+    c.raw_size = size;
+    *rc = nn_vi2_IVi2Session_dispatch(NULL, &c);
+    return *rc || c.out_size < 8 ? 0 : snx_ld_le64(c.out);
+}
+#define RATE_60  1u
+#define RATE_120 2u
+#define VRR      (1ull << 63)
+static void refresh_rate(void) {
+    u8 r[24];
+    u32 event = 0;
+    int rc;
+    /* a 60 Hz display: 60 Hz alone, which turning 120 Hz on leaves as it is */
+    g_settings.tv_refresh_rate = 1;
+    g_refresh_ns = 1000000000u / 60;
+    CHECK(rates_offered() == RATE_60 && rate_now(DEFAULT_DISPLAY) == RATE_60);
+    CHECK(!set_rates(DEFAULT_DISPLAY, RATE_120, RATE_120) && rate_now(DEFAULT_DISPLAY) == RATE_60);
+    CHECK(vi_refresh_hz() == 60);
+    CHECK(!set_rates(DEFAULT_DISPLAY, 0, RATE_120));
+    /* headless and a 95 Hz display: no 120 Hz either */
+    g_refresh_ns = 0;
+    CHECK(rates_offered() == RATE_60);
+    g_refresh_ns = 1000000000u / 95;
+    CHECK(rates_offered() == RATE_60);
+    /* a 119.88 Hz display takes 120 Hz, and the display runs at it once the game turns it on: the refresh rate event,
+       signaled as its group registers so the SDK asks once, is signaled again, so the SDK asks again */
+    g_refresh_ns = 1001000000u / 120;
+    CHECK(rates_offered() == (RATE_60 | RATE_120));
+    request(r, 6, 0);
+    CHECK(!nn_vi2_IVi2Session_CreateRequestGroupEvent(NULL, r, &event) && event);
+    request(r, DEFAULT_DISPLAY, 6);
+    CHECK(!nn_vi2_IVi2Session_RegisterRefreshRateMonitor(NULL, r) && signaled(event));
+    clear(event);
+    CHECK(!set_rates(DEFAULT_DISPLAY, RATE_120, RATE_120) && rate_now(DEFAULT_DISPLAY) == RATE_120);
+    CHECK(vi_refresh_hz() == 120 && signaled(event));
+    clear(event);
+    /* the same again, and VRR turned on, change nothing: the runtime offers no VRR */
+    CHECK(!set_rates(DEFAULT_DISPLAY, RATE_120, RATE_120) && !set_rates(DEFAULT_DISPLAY, VRR, VRR));
+    CHECK(rate_now(DEFAULT_DISPLAY) == RATE_120 && !signaled(event));
+    /* a guest's display of GameShare runs at 60 Hz, and turning its 120 Hz off leaves the console's on */
+    CHECK(rate_now(0x0031726579616c70ull /* "player1" */) == RATE_60);
+    CHECK(!set_rates(0x0031726579616c70ull, 0, RATE_120) && rate_now(DEFAULT_DISPLAY) == RATE_120);
+    /* 120 Hz off, as a part made for a 4K TV turns it: 60 Hz again, the event signaled */
+    CHECK(!set_rates(DEFAULT_DISPLAY, 0, RATE_120) && rate_now(DEFAULT_DISPLAY) == RATE_60);
+    CHECK(vi_refresh_hz() == 60 && signaled(event));
+    clear(event);
+    /* on the wire: 354 and 103 put the rate after the result, 301 takes the display, the value and the mask */
+    request(r, DEFAULT_DISPLAY, 0);
+    CHECK(wire(354, r, 8, &rc) == RATE_60 && !rc);
+    snx_st_le64(r + 8, RATE_120);
+    snx_st_le64(r + 16, RATE_120);
+    wire(301, r, 0x18, &rc);
+    CHECK(!rc && wire(103, r, 8, &rc) == RATE_120 && !rc && wire(354, r, 8, &rc) == RATE_120 && !rc);
+    CHECK(set_rates(0x1234, RATE_120, RATE_120) != 0); /* no such display */
+    request(r, 0x1234, 0);
+    wire(103, r, 8, &rc);
+    CHECK(rc != 0);
+    clear(event);
+    /* unregistered: a change is no longer signaled */
+    request(r, DEFAULT_DISPLAY, 6);
+    CHECK(!nn_vi2_IVi2Session_UnregisterRefreshRateMonitor(NULL, r));
+    CHECK(!set_rates(DEFAULT_DISPLAY, 0, RATE_120) && vi_refresh_hz() == 60 && !signaled(event));
+    /* tv_refresh_rate 0: never 120 Hz; 2: 120 Hz on a 60 Hz display too */
+    g_settings.tv_refresh_rate = 0;
+    g_refresh_ns = 1000000000u / 120;
+    CHECK(rates_offered() == RATE_60);
+    CHECK(!set_rates(DEFAULT_DISPLAY, RATE_120, RATE_120) && rate_now(DEFAULT_DISPLAY) == RATE_60);
+    g_settings.tv_refresh_rate = 2;
+    g_refresh_ns = 1000000000u / 60;
+    CHECK(rates_offered() == (RATE_60 | RATE_120));
+    CHECK(!set_rates(DEFAULT_DISPLAY, RATE_120, RATE_120) && rate_now(DEFAULT_DISPLAY) == RATE_120);
+    CHECK(!set_rates(DEFAULT_DISPLAY, 0, RATE_120) && rate_now(DEFAULT_DISPLAY) == RATE_60);
+}
+
 int main(void) {
     u8 r[12], other[12];
     u32 hdr_event = 0, vsync_event = 0;
     max_resolution();
+    refresh_rate();
     /* no renderer, one that shows no HDR at all, and one whose display is SDR: format 1, no peak, no paper white */
     status(DEFAULT_DISPLAY, 1, 1, 0, 0);
     g_renderer = &g_without;

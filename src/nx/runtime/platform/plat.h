@@ -222,6 +222,16 @@ void plat_audio_clear(PAudio* a);
 u32 plat_audio_queued(PAudio* a); /* bytes waiting to be played; 0 without a device */
 void plat_audio_volume(PAudio* a, float volume);
 
+/* Host audio input: a recording device, which the system resamples to mono signed 16-bit at rate. plat_mic_open opens
+   and starts it, the system's default recording device for an empty device or else the first whose name holds device
+   (the default when none does), and gives NULL when there is no device (always when headless). plat_mic_read takes up
+   to frames of what it recorded since, the count taken, and plat_mic_available counts what waits */
+typedef struct PMic PMic;
+PMic* plat_mic_open(u32 rate, const char* device);
+void plat_mic_close(PMic* m);
+u32 plat_mic_available(PMic* m);
+u32 plat_mic_read(PMic* m, i16* samples, u32 frames);
+
 /* ---- crash reports and profiling */
 void plat_install_crash_handler(void);
 /* The game's code module, by any address in it: a fault in its code is reported first, whatever else the process

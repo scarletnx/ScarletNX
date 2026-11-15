@@ -40,7 +40,10 @@ The NPDM tells an Ounce program (`snx_npdm_ounce` in `loader/ounce.h`). An Ounce
 bytes each, where a Switch's are 0x100, so its magic is at 0x300 of the ACID, not at 0x200. The recompiler and the
 runtime read the same NPDM, and `g_ounce` is the one flag. It gives the game these, with no setting:
 
-- the CPU extensions of `cpu_extensions=1` (LSE, RCpc and PAuth), in the recompiler and the runtime JIT alike
+- the Cortex-A78C's instructions (`a64.profile`'s `ounce` target, from the ID registers in the core's TRM), in the
+  recompiler and the runtime JIT alike: LSE, RDM, FP16, the dot product, RCpc with LRCPC2, PAuth with authentication
+  off, FlagM and ESB. It has no JSCVT, FCMA, DIT or MSR SSBS (PFR1's SSBS is 1). Before, an Ounce game took
+  `cpu_extensions=1`'s LSE, RCpc and PAuth only, and one game's bootstrap level stopped on a UDOT
 - the 10 GiB application pool and the 12 GiB heap region of `memory_gb=12`
 - SM86 shaders and the T239's GOB
 - a 31.25 MHz system tick. The SDK's `nn::os::GetSystemTickFrequency` returns 31,250,000 as a constant, and the SDK
@@ -66,10 +69,15 @@ image. Then it gives the handle to `nvnMemoryPoolBuilderSetNativeHandleNVX`. The
 took the handle for a native memory number, which was right only while the two numbers agreed. Another game, whose
 title movie uses the video pools, makes no such pool.
 
-The camera session (gsv 602) answers each command but 21 with result 0xdc4 (module 452, description 6), as a console
-with no camera. The game's own camera module accepts it from command 3 (the camera "Default") and from command 29,
-which it sends again and again. Command 21 must give an event, which the module attaches as a system event. The module
-stops if 21 fails. With no camera, the event is never signaled.
+The camera session (gsv 602) answers as a console with no camera plugged in. The SDK's `nn::camera::Initialize` sends
+command 3 with the device name "Default" and keeps the u64 of the answer as the camera's device handle. It aborts on
+every result but success and 0xdc4 (module 452, description 6), and gives 0xdc4 to the game. A game with its own webcam
+code reads 0xdc4 as a platform without the camera function, skips the setup of its webcam, and then reads a pointer of
+that webcam that is still zero. An Ounce has the camera function whether or not a camera is plugged in, so 3 and
+`Finalize`'s 4 succeed. Each other command answers 0x7c4 (description 3), which `QueryDeviceConnection` (29, sent
+again and again) lets pass and the game logs as no camera device found.
+Command 21 must give an event, which the module attaches as a system event. The module stops if 21 fails. With no
+camera, the event is never signaled.
 
 ## Built-in fonts
 
@@ -194,11 +202,12 @@ import limits and the ownership model above don't allow.
 A texture's handle may come from memory too. One game's material programs take each texture's from a table of
 materials in a storage buffer: an `LDG.E.64` at a record that the draw's constant buffers pick (in one program
 `c[0][0x520] + ((c[4][0x88] & 0xfffff) + c[5][0x2ec]) * 32 + 0x18`, with a `SEL` on an `ISETP` of the index's top
-bits), then `R2UR` into the uniform register pair of a `TEX`, `TLD`, `TLD4` or `TXQ` whose handle is in a uniform
-register (0xf60, 0xf66, 0xf63, 0xf6f: the texture's word, then the sampler's index, the word `>> 20`), or into a
-`TEX.B`'s handle register. The translator refused these programs: about 320 draws a frame of the first 3D scene, which
-was then a white screen. It now keeps the instructions that make each such handle in `ShaderInfo.memh`, where every
-value they read is the draw's (constant buffer words, immediates, and words loaded from addresses made of them), and
+bits), then `R2UR` into the uniform register pair of a `TEX`, `TLD`, `TLD4`, `TXD` or `TXQ` whose handle is in a
+uniform register (0xf60, 0xf66, 0xf63, 0xf6c, 0xf6f: the texture's word, then the sampler's index, the word `>> 20`),
+or into a `TEX.B`'s handle register. The translator refused these programs: about 320 draws a frame of the first 3D
+scene, which was then a white screen. It now keeps the instructions that make each such handle in `ShaderInfo.memh`,
+where every value they read is the draw's (constant buffer words, immediates, and words loaded from addresses made
+of them), and
 the slot names the value that is the handle (`SNX_TEX_MEMORY`, `SH_PROBE` in `shader.h`): a register as one of those
 instructions leaves it. Each value one of them reads has one unguarded writer before it on every path, and no other
 kept instruction between the two writes it, so the list run in program order gives what the program computes. The

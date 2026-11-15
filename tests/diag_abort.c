@@ -141,6 +141,23 @@ u32 audio_purge_input(CPU* c, u64 stream) {
     return 0;
 }
 void audio_close_input(CPU* c, u64 stream) { (void)c, (void)stream; }
+u32 audio_default_virtual_input(CPU* c, u64 name) {
+    (void)c, (void)name;
+    return 0;
+}
+u32 audio_virtual_input_properties(CPU* c, u64 props, u64 name) {
+    (void)c, (void)props, (void)name;
+    return 0;
+}
+u64 audio_input_format(CPU* c, u64 stream) {
+    (void)c;
+    return stream;
+}
+void audio_set_input_gain(CPU* c, u64 stream, f32 gain, i64 fade) { (void)c, (void)stream, (void)gain, (void)fade; }
+f32 audio_input_gain(CPU* c, u64 stream) {
+    (void)c, (void)stream;
+    return 1.0f;
+}
 u32 audio_input_state(CPU* c, u64 stream) {
     (void)c, (void)stream;
     return 0;
@@ -251,17 +268,57 @@ int main(void) {
     return 0;
 }
 
+/* the os_sync, os_light and os_core families' handlers (os_sync.c), which the table names and this test never calls */
+void os_sleep_thread(CPU* c, i64 ns) { (void)c, (void)ns; }
+void os_yield_thread(CPU* c) { (void)c; }
+void os_yield_impl(CPU* c, u64 self) { (void)c, (void)self; }
+i32 os_core_number(CPU* c) { return (void)c, 0; }
+i32 os_core_number_impl(CPU* c, u64 self) { return (void)c, (void)self, 0; }
+void os_cs_init(CPU* c, u64 cs) { (void)c, (void)cs; }
+void os_cs_enter(CPU* c, u64 cs) { (void)c, (void)cs; }
+int os_cs_try_enter(CPU* c, u64 cs) { return (void)c, (void)cs, 0; }
+void os_cs_leave(CPU* c, u64 cs) { (void)c, (void)cs; }
+int os_cs_mine(CPU* c, u64 cs) { return (void)c, (void)cs, 0; }
+void os_cv_init(CPU* c, u64 cv) { (void)c, (void)cv; }
+void os_cv_signal(CPU* c, u64 cv) { (void)c, (void)cv; }
+void os_cv_broadcast(CPU* c, u64 cv) { (void)c, (void)cv; }
+void os_cv_wait(CPU* c, u64 cv, u64 cs) { (void)c, (void)cv, (void)cs; }
+int os_cv_timed_wait(CPU* c, u64 cv, u64 cs, u64 helper) { return (void)c, (void)cv, (void)cs, (void)helper, 0; }
+void os_sdk_mutex_lock(CPU* c, u64 m) { (void)c, (void)m; }
+int os_sdk_mutex_try_lock(CPU* c, u64 m) { return (void)c, (void)m, 0; }
+void os_sdk_mutex_unlock(CPU* c, u64 m) { (void)c, (void)m; }
+void os_sdk_recursive_init(CPU* c, u64 m) { (void)c, (void)m; }
+void os_sdk_recursive_lock(CPU* c, u64 m) { (void)c, (void)m; }
+int os_sdk_recursive_try_lock(CPU* c, u64 m) { return (void)c, (void)m, 0; }
+void os_sdk_recursive_unlock(CPU* c, u64 m) { (void)c, (void)m; }
+void os_sdk_cv_wait(CPU* c, u64 cv, u64 m) { (void)c, (void)cv, (void)m; }
+int os_sdk_cv_timed_wait(CPU* c, u64 cv, u64 m, i64 ns) { return (void)c, (void)cv, (void)m, (void)ns, 0; }
+void os_sdk_cv_wait_recursive(CPU* c, u64 cv, u64 m) { (void)c, (void)cv, (void)m; }
+void os_light_event_init(CPU* c, u64 e, int signaled, u32 mode) { (void)c, (void)e, (void)signaled, (void)mode; }
+void os_light_event_signal(CPU* c, u64 e) { (void)c, (void)e; }
+void os_light_event_clear(CPU* c, u64 e) { (void)c, (void)e; }
+void os_light_event_wait(CPU* c, u64 e) { (void)c, (void)e; }
+int os_light_event_try_wait(CPU* c, u64 e) { return (void)c, (void)e, 0; }
+void os_light_sem_acquire(CPU* c, u64 s) { (void)c, (void)s; }
+int os_light_sem_try_acquire(CPU* c, u64 s) { return (void)c, (void)s, 0; }
+void os_light_sem_release(CPU* c, u64 s) { (void)c, (void)s; }
+void os_light_sem_release_n(CPU* c, u64 s, i32 k) { (void)c, (void)s, (void)k; }
+void os_lmq_receive(CPU* c, u64 out, u64 q) { (void)c, (void)out, (void)q; }
+int os_lmq_try_receive(CPU* c, u64 out, u64 q) { return (void)c, (void)out, (void)q, 0; }
+int os_lmq_try_send(CPU* c, u64 q, u64 msg) { return (void)c, (void)q, (void)msg, 0; }
 /* the alloc and sync families' handlers (alloc.c, sync.c), which the table names and this test never calls */
 u64 alloc_malloc(CPU* c, u64 size) { (void)c, (void)size; return 0; }
 u64 alloc_calloc(CPU* c, u64 n, u64 size) { (void)c, (void)n, (void)size; return 0; }
 u64 alloc_realloc(CPU* c, u64 p, u64 size) { (void)c, (void)p, (void)size; return 0; }
 void alloc_free(CPU* c, u64 p) { (void)c, (void)p; }
 u64 alloc_std_size(CPU* c, u64 self, u64 p) { (void)c, (void)self, (void)p; return 0; }
-void alloc_heap_free(CPU* c, u64 self, u64 p) { (void)c, (void)self, (void)p; }
-u64 alloc_heap_realloc(CPU* c, u64 self, u64 p, u64 size) {
-    (void)c, (void)self, (void)p, (void)size;
+i32 alloc_heap_free(CPU* c, u64 heap, u64 p) { (void)c, (void)heap, (void)p; return 0; }
+i32 alloc_heap_free_size(CPU* c, u64 heap, u64 p, u64 size) { (void)c, (void)heap, (void)p, (void)size; return 0; }
+i32 alloc_heap_realloc(CPU* c, u64 heap, u64 p, u64 size, u64 out) {
+    (void)c, (void)heap, (void)p, (void)size, (void)out;
     return 0;
 }
+i32 alloc_heap_shrink(CPU* c, u64 heap, u64 p, u64 size) { (void)c, (void)heap, (void)p, (void)size; return 0; }
 u64 alloc_aligned(CPU* c, u64 align, u64 size) { (void)c, (void)align, (void)size; return 0; }
 i32 alloc_posix_memalign(CPU* c, u64 out, u64 align, u64 size) { (void)c, (void)out, (void)align, (void)size; return 0; }
 u64 alloc_strdup(CPU* c, u64 s) { (void)c, (void)s; return 0; }

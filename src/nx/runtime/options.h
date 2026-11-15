@@ -36,8 +36,8 @@ void ini_open(const char* path);
    ", ": how many. ini_open and a reload show the list at the top of the picture (hud.h), a reload that changes it in the
    log too */
 int options_debug(int flags, char* out, size_t n);
-/* the Display, Graphics and Performance settings not at their default, each "key=value (default D)" between ", ": how
-   many. The log's header says them, and a reload that changes them says them again */
+/* the Display, Graphics, Audio and Performance settings not at their default, each "key=value (default D)" between
+   ", ": how many. The log's header says them, and a reload that changes them says them again */
 int options_settings(char* out, size_t n);
 /* memory_fit's value old as memory_fit_mode's (0 Auto, 1 Off): 1 is 0; 0 is 1 where memory_fit's default was 1 (ios),
    else -1, memory_fit_mode's default, as 0 was then memory_fit's own, which every game's .ini had written; -2 for

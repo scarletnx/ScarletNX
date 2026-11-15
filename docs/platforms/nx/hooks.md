@@ -9,6 +9,7 @@
 * [Struct layouts](#struct-layouts)
 * [Game patches: hooks by address](#game-patches-hooks-by-address)
 * [A game that rewrites a hooked function](#a-game-that-rewrites-a-hooked-function)
+* [A mod's call of the original](#a-mods-call-of-the-original)
 * [Verify mode](#verify-mode)
 * [Checking a hook](#checking-a-hook)
 * [What the guest profile showed](#what-the-guest-profile-showed)
@@ -300,7 +301,7 @@ function whose first 4 bytes changed has its native hook invalidated:
 
 The game's code then runs as on the console, the SDK's own code included wherever it calls it: a mod's call of the
 original function through its trampoline runs the SDK's code of that function, which may reach a service only the
-native layer answers.
+native layer answers, unless an ext_skyline hook takes it ([below](#a-mods-call-of-the-original)).
 
 When the system refuses to make the adapter's code writable (`mprotect`, `VirtualProtect`), the game stops with the
 reason and the values, since the mod's code would never run.
@@ -326,6 +327,22 @@ and stores its result, so none is that short, though an x86_64 function can be a
 checks every architecture's bytes on any host, against llvm-mc's disassembly and, for IA-64, GNU objdump's (clang has
 no IA-64 target yet; llvm-ia64 will take its place). Under NCE the JIT drops no code, so nothing is invalidated
 there. A 32-bit game's hooks are not invalidated either: their slots are blocks `hook_restore` does not handle.
+
+## A mod's call of the original
+
+`src/nx/hle/hook/ext_skyline.hooks` holds native hooks for the detours loaders are known to make (skyline's and
+Cobalt's on `nn::fs::MountRom`, skyline's on `nn::ro::Initialize`), each with the handler and arguments of the
+function's native hook, in a table of its own (prefix `skyline`, `ext_skyline.c`). They are not installed at the
+start: once a function's native hook is invalidated, a dispatch miss at a pc (`rt_miss`, `hook_trampoline`) checks
+whether the code there is the mod's trampoline of that function, its first instructions as `hook_install` saw them
+(1, or 4 or 5 when the hook was too far for a `b`) followed by a jump back to the one after them (a `b`, or
+`ldr x17, #8` and `br x17` of the address, after a `nop` that aligns it), as skyline's and exlaunch's
+And64InlineHook writes it. The first time it runs, the hook takes the trampoline's slot, and the mod's call of the
+original runs the handler. A handler that hands a case back to the function's own code (`hook_run_original`) runs the
+trampoline's code, entered at the trampoline: the SDK's, past the instructions the mod moved. A first instruction that
+reads the pc (`adr`, `adrp`, a literal load, a branch) is rewritten in the trampoline, so it is never recognized, and
+that function's original stays the SDK's code. A hook of a detour no loader makes is never reached, so the file lists
+the known ones only, and its hooks change no route list.
 
 ## Verify mode
 

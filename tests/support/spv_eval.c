@@ -731,6 +731,8 @@ static const char* run(Ev* e) {
                                                                                          : 34;
                     uint32_t words = b->n < 4 ? b->n : 4;
                     if (e->env->emitted < 8 && slot < 34) memcpy(e->env->vertex[e->env->emitted][slot], b->words, words * 4);
+                    if (e->env->emitted < 8 && v->builtin == 3 + 1) /* ClipDistance */
+                        memcpy(e->env->vertex_clip[e->env->emitted], b->words, (b->n < 8 ? b->n : 8) * 4);
                     /* the emit leaves every output undefined: a program that relies on one after it reads this */
                     for (uint32_t k = 0; k < b->n; k++) b->words[k] = 0xdeadbeefu;
                 }
@@ -938,6 +940,10 @@ static const char* ev_open(Ev* e, const uint32_t* w, size_t count, SpvEvalEnv* e
                 why = "out of memory";
                 break;
             }
+            /* a ClipDistance output starts undefined, as the 0xdeadbeef of an emit: a plane that no store writes
+               shows */
+            if (sc == 3 && v->builtin == 3 + 1)
+                for (uint32_t k = 0; k < n; k++) m[k] = 0xdeadbeefu;
             /* an input array (a geometry program's, one element for each vertex of the input primitive) takes its
                words from gs_in: the generic's location, or 32 for Position */
             int array = e->ids[pointee].op == 28;
@@ -981,6 +987,8 @@ static void ev_close(Ev* e) {
         if (v->builtin == 22 + 1) env->frag_depth = m[0];
         if (v->builtin == 0 + 1)
             for (uint32_t k = 0; k < 4 && k < n; k++) env->position[k] = m[k];
+        if (v->builtin == 3 + 1)
+            for (uint32_t k = 0; k < 8 && k < n; k++) env->clip[k] = m[k];
         /* an array's elements */
         uint32_t slot = v->location ? v->location - 1 : v->builtin == 1 ? 32 : v->builtin == 5296 + 1 ? 33 : 34;
         if (e->ids[e->ids[v->type].a].op == 28 && slot < 34 && env->arrays[slot])

@@ -3181,7 +3181,8 @@ static Word ushf_r(u32 ud, u32 uc, u32 shift) {
    instructions (ShaderInfo.memh), and sm86_eval runs them as the renderer does: it loads the record at 0x2_0000_10f8
    and gives the texture's word and the sampler's index. The TEX.B takes its handle register R6 from an LDG.64 at
    [UR4 + 0x10]. A handle whose address depends on the invocation (S2R of the lane), or whose register has another
-   writer on a path (a guarded MOV), is no texture (SH_PROBE_NONE), and the program translates */
+   writer on a path (a guarded MOV), is no texture (SH_PROBE_NONE), and the program translates. Variant 4 samples with
+   a TXD whose handle is in the uniform register pair (TXD_U, 0xf6c), which takes the same slot with no depth reference */
 static void test_uniform_handle(const char* dir) {
     static const struct {
         u64 hi, lo;
@@ -3189,7 +3190,8 @@ static void test_uniform_handle(const char* dir) {
     } forms[] = {{0x00000000099e4f08ull, 0x3000040602227f60ull, SM86_TEX_U, 4},
                  {0x00000000089e0f04ull, 0x30000406060e7f66ull, SM86_TLD_U, 4},
                  {0x00000000099e0f10ull, 0x3000043030027f63ull, SM86_TLD4_U, 4},
-                 {0x00000000080002ffull, 0x00000c0014237f6full, SM86_TXQ_U, 12}};
+                 {0x00000000080002ffull, 0x00000c0014237f6full, SM86_TXQ_U, 12},
+                 {0x00000000081e0fffull, 0x2000040802027f6cull, SM86_TXD_U, 4}};
     for (u32 i = 0; i < sizeof forms / sizeof forms[0]; i++) {
         Sm86Insn in;
         CHECK(sm86_decode(forms[i].lo, forms[i].hi, &in) && in.op == forms[i].op &&
@@ -3198,7 +3200,8 @@ static void test_uniform_handle(const char* dir) {
     u32 fsph[32] = {0};
     fsph[0] = sph0(2, 5);
     fsph[18] = 0xf;
-    for (u32 variant = 0; variant < 4; variant++) {
+    for (u32 variant = 0; variant < 5; variant++) {
+        int txd = variant == 4, base = txd ? 0 : (int)variant; /* TXD_U's program is variant 0's */
         u8 code[16 * 20] = {0};
         u32 n = 0;
         put(code, n++, uldc64(0x520));
@@ -3220,7 +3223,7 @@ static void test_uniform_handle(const char* dir) {
         u32 first = n;
         put(code, n++, r2ur(8, 4));
         put(code, n++, ushf_r(9, 8, 20));
-        Word t = {{forms[0].lo, forms[0].hi}};
+        Word t = {{forms[txd ? 4 : 0].lo, forms[txd ? 4 : 0].hi}};
         set(&t, 40, 6, 8);
         put(code, n++, t);
         if (variant == 1) { /* a TEX.B, its handle R6 from [UR4 + 0x10] */
@@ -3241,7 +3244,7 @@ static void test_uniform_handle(const char* dir) {
         ShaderInfo si = {0};
         size_t count = 0;
         u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
-        if (variant >= 2) { /* no texture (SH_PROBE_NONE), the draw going on, and nothing kept to run */
+        if (base >= 2) { /* no texture (SH_PROBE_NONE), the draw going on, and nothing kept to run */
             const char* want = variant == 2 ? "made with S2R" : "has no one writer";
             int ok = spv && si.ntex == 1 && (si.tex[0].flags & SNX_TEX_MEMORY) && si.tex[0].cbuf_off == SH_PROBE_NONE &&
                      si.tex[0].bl2_off == SH_PROBE_NONE && si.memh_none == 1 && strstr(si.memh_why, want) &&
@@ -3258,23 +3261,24 @@ static void test_uniform_handle(const char* dir) {
             fprintf(stderr, "memory handle: %s\n", si.first_unsupported);
             continue;
         }
-        CHECK(keep_module(dir, variant ? "fs_memory_handle_b" : "fs_memory_handle", spv, count));
+        CHECK(keep_module(dir, txd ? "fs_memory_handle_txd" : base ? "fs_memory_handle_b" : "fs_memory_handle", spv,
+                          count));
         free(spv);
         /* the slot names UR8 and UR9 as the R2UR and the USHF leave them, and memh is the instructions up to them */
-        u32 want_slots = variant ? 2 : 1;
+        u32 want_slots = base ? 2 : 1;
         CHECK(si.ntex == (int)want_slots && (si.tex[0].flags & SNX_TEX_MEMORY) && si.tex[0].bl2 &&
-              si.tex[0].shadow && si.nmemh == first + 2 + variant);
+              (si.tex[0].shadow != 0) == !txd && si.nmemh == first + 2 + (u32)base);
         if (si.ntex < 1) continue;
         CHECK(SH_PROBE_UNIFORM(si.tex[0].cbuf_off) && SH_PROBE_REG(si.tex[0].cbuf_off) == 8 &&
               SH_PROBE_INSN(si.tex[0].cbuf_off) == first && SH_PROBE_REG(si.tex[0].bl2_off) == 9 &&
               SH_PROBE_INSN(si.tex[0].bl2_off) == first + 1);
-        u32 probes[3] = {si.tex[0].cbuf_off, si.tex[0].bl2_off, variant ? si.tex[1].cbuf_off : si.tex[0].cbuf_off};
+        u32 probes[3] = {si.tex[0].cbuf_off, si.tex[0].bl2_off, base ? si.tex[1].cbuf_off : si.tex[0].cbuf_off};
         u32 values[3] = {0, 0, 0};
         Sm86EvalIo io = {NULL, mh_cbuf, mh_mem};
         g_mh_nloads = 0;
         int ran = sm86_eval((const u64(*)[2])si.memh, si.nmemh, &io, probes, 3, values);
         int ok = ran && values[0] == 0x12300abcu && values[1] == 0x123u && g_mh_loads[0] == 0x2000010f8ull &&
-                 (!variant || (values[2] == 0x00402345u && !SH_PROBE_UNIFORM(si.tex[1].cbuf_off) &&
+                 (!base || (values[2] == 0x00402345u && !SH_PROBE_UNIFORM(si.tex[1].cbuf_off) &&
                                SH_PROBE_REG(si.tex[1].cbuf_off) == 6 && !si.tex[1].bl2));
         CHECK(ok);
         if (!ok)
@@ -4466,6 +4470,83 @@ static int spv_has_builtin(const u32* words, size_t count, u32 builtin) {
         if ((words[i] & 0xffff) == 71 && words[i] >> 16 == 4 && words[i + 2] == 11 && words[i + 3] == builtin) return 1;
     return 0;
 }
+/* AST a[0x2c0] of two words, ClipDistance0 = 0.5 and ClipDistance1 = 0.25. A vertex program before the rasterizer
+   writes only the planes that SetUserClipEnable enables (ShaderInfo.clip_enable's low bits) into an 8-plane
+   ClipDistance output that it names in uses_clip_mask, and the other planes are 0, as the program starts them: the
+   evaluator starts the output at 0xdeadbeef. With no plane enabled it has no such output. A program that a later
+   stage follows (SNX_SH_NOT_LAST) writes every plane it stores. A passthrough geometry program's plane 0 (0.75) is on
+   each vertex it emits, though each EmitVertex leaves the outputs undefined. Before, the translator refused both */
+static void test_clip_distances(const char* dir) {
+    u8 code[16 * 6] = {0};
+    put(code, 0, mov_imm(1, f2u(0.5f)));
+    put(code, 1, mov_imm(2, f2u(0.25f)));
+    put(code, 2, ast(0x70, 1, 4));
+    put(code, 3, ast(0x2c0, 1, 2));
+    put(code, 4, exit_insn());
+    put(code, 5, bra(5, 5, 7, 0));
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    static const struct {
+        u32 clip_enable;
+        int mask;
+    } cases[] = {{1, 1}, {2, 2}, {4, 0}, {0, 0}, {SNX_SH_NOT_LAST, 3}};
+    static SpvEvalEnv env;
+    for (u32 i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        ShaderInfo si = {0};
+        si.clip_enable = cases[i].clip_enable;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, sizeof code, ST_VS, vsph, &si, &count);
+        int has = cases[i].mask != 0;
+        int ok = spv && si.uses_clip_mask == cases[i].mask && spv_has_builtin(spv, count, 3 /* ClipDistance */) == has;
+        memset(&env, 0, sizeof env);
+        const char* why = spv ? spv_eval(spv, count, &env) : "not translated";
+        ok &= !why;
+        for (u32 plane = 0; plane < 8 && has; plane++) {
+            u32 want = plane == 0 && (cases[i].mask & 1)   ? f2u(0.5f)
+                       : plane == 1 && (cases[i].mask & 2) ? f2u(0.25f)
+                                                           : 0;
+            ok &= env.clip[plane] == want;
+        }
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "clip distances, clip_enable %#x: %s, mask %d, planes %08x %08x %08x\n",
+                    cases[i].clip_enable, why ? why : si.first_unsupported, si.uses_clip_mask, env.clip[0], env.clip[1],
+                    env.clip[2]);
+        if (spv && i == 0) CHECK(keep_module(dir, "vs_clip_distance", spv, count));
+        free(spv);
+    }
+    /* the passthrough geometry program of a triangle strip, which stores plane 0 and emits the input triangle */
+    u8 gs[16 * 4] = {0};
+    put(gs, 0, mov_imm(1, f2u(0.75f)));
+    put(gs, 1, ast(0x2c0, 1, 1));
+    put(gs, 2, exit_insn());
+    put(gs, 3, bra(3, 3, 7, 0));
+    u32 sph[32] = {0};
+    sph[0] = sph0(1, 4) | 1u << 24; /* passthrough */
+    sph[3] = 7u << 24;              /* a triangle strip */
+    sph[4] = 1;
+    ShaderInfo si = {0};
+    si.clip_enable = 1;
+    si.rt_int_mask = 3; /* the input primitive's vertices (gs_vertices), a triangle's */
+    for (u32 w = 0; w < 8; w++) si.gp_skip_mask[w] = 0xffffffffu;
+    si.gp_skip_mask[0] = 0x0fffffffu; /* the position, from the input vertex */
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(gs, sizeof gs, ST_GS, sph, &si, &count);
+    memset(&env, 0, sizeof env);
+    for (u32 v = 0; v < 3; v++)
+        for (u32 k = 0; k < 4; k++) env.gs_in[32][4 * v + k] = f2u((float)(v + 1) + 0.25f * (float)k);
+    const char* why = spv ? spv_eval(spv, count, &env) : "not translated";
+    int ok = !why && si.uses_clip_mask == 1 && env.emitted == 3;
+    for (u32 v = 0; v < 3 && v < env.emitted; v++)
+        for (u32 plane = 0; plane < 8; plane++) ok &= env.vertex_clip[v][plane] == (plane ? 0 : f2u(0.75f));
+    CHECK(ok);
+    if (!ok)
+        fprintf(stderr, "clip distances, geometry: %s (%s), %u vertices, plane 0 %08x %08x %08x, plane 1 %08x\n",
+                why ? why : "ran", si.first_unsupported, env.emitted, env.vertex_clip[0][0], env.vertex_clip[1][0],
+                env.vertex_clip[2][0], env.vertex_clip[1][1]);
+    if (spv) CHECK(keep_module(dir, "gs_clip_distance", spv, count));
+    free(spv);
+}
 /* HMMA (16816 and 1688, F16 and F32), LDSM and MOVM with and without the device's quads in compute and its mixed dot
    product: A's 48 reads are quad broadcasts or shuffles, B's 48, LDSM's 4 and MOVM's 2 stay shuffles, and each pair
    of products is an OpFDot2MixAcc32VALVE (96) or an OpDot. B's registers are OR'd with hmma_zero's zero, which
@@ -4498,9 +4579,10 @@ static void test_warp_matrix(const char* dir) {
     put(code, n++, exit_insn());
     put(code, n, bra(n, n, 7, 0));
     n++;
-    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
-        pairs_was = g_spirv_translate.hmma_pairs, f16_was = g_spirv_translate.hmma_f16;
-    int coop_was = g_spirv_translate.hmma_coop, tile_was = g_spirv_translate.hmma_coop_tile;
+    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot, pairs_was = g_spirv_translate.hmma_pairs,
+        f16_was = g_spirv_translate.hmma_f16;
+    int coop_was = g_spirv_translate.hmma_coop;
+    u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
     for (int pairs = 0; pairs < 2; pairs++)
         for (int quad = 0; quad < 2; quad++)
             for (int mixed = 0; mixed < 2; mixed++)
@@ -4566,34 +4648,79 @@ static void test_warp_matrix(const char* dir) {
         CHECK(keep_module(dir, name, spv, count));
         free(spv);
     }
-    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
-    g_spirv_translate.hmma_pairs = pairs_was;
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was, g_spirv_translate.hmma_pairs = pairs_was;
     g_spirv_translate.hmma_stage = stage_was;
-    /* The matrix unit's tile: one OpCooperativeMatrixMulAddKHR an HMMA where the driver offers 16x16x16 (RADV), four
-       where its tile is 8x8x8 (Metal's simdgroup_matrix, which a MoltenVK with VK_KHR_cooperative_matrix reports):
-       the two M halves, each the sum of the two K halves, of which a .1688 has one: 12 for the 4 HMMAs above, two of
-       them .1688 */
-    for (int tile = 0; tile < 2; tile++) {
-        g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_tile = tile ? 8 : 16;
-        g_spirv_translate.quad_compute = 1, g_spirv_translate.mixed_dot = 0, g_spirv_translate.hmma_pairs = 0;
-        ShaderInfo si = {0};
-        si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
-        si.shared_size = 1024;
-        size_t count = 0;
-        u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
-        u32 muladds = spv ? spv_count(spv, count, 4459) : 0;
-        CHECK(muladds == (tile ? 12u : 4u));
-        if (muladds != (tile ? 12u : 4u))
-            fprintf(stderr, "matrix tile %d: %u products for 4 HMMAs, expected %u\n", tile ? 8 : 16, muladds,
-                    tile ? 12u : 4u);
-        char name[32];
-        snprintf(name, sizeof name, "warp_matrix_coop%d", tile ? 8 : 16);
-        CHECK(spv && keep_module(dir, name, spv, count));
-        free(spv);
+    /* The matrix unit's shapes, one OpCooperativeMatrixMulAddKHR a product, on the same 4 HMMAs (two .16816, two
+       .1688, all of them A at R8 and B at R12): a 16 wide K takes each in one product, so 4; 16x8x8 splits the
+       .16816s' K in two, so 6; 8x8x8 splits their M too, so 12. A fragment is staged once a block, so the matrix
+       loads are those of the first HMMA of each kind alone. Each HMMA stores its D once: an f16 D at its own HMMA,
+       where its halves round, and an f32 one at the block's end, where its matrix stops. An A register written
+       between HMMAs stages its fragment again (restage below) */
+    static const struct {
+        u32 bit;
+        const char* name;
+        u32 products, loads, stores, restage, barriers;
+    } shapes[] = {{SH_COOP_16x16x16, "16x16x16", 4, 4, 4, 3, 7},
+                  {SH_COOP_16x8x16, "16x8x16", 4, 4, 4, 3, 7},
+                  {SH_COOP_16x8x8, "16x8x8", 6, 6, 4, 6, 7},
+                  {SH_COOP_8x8x8, "8x8x8", 12, 9, 8, 10, 7}};
+    u32 stages_wide = 0;
+    for (u32 s = 0; s < 4; s++) {
+        for (int written = 0; written < 2; written++) {
+            /* a program of the same two HMMAs, with R8 written between them where written says so */
+            u8 two[16 * 3] = {0};
+            u32 m = 0;
+            for (u32 k = 0; k < 2; k++) {
+                Word y = fix(0x23c);
+                set(&y, 16, 8, hmma[k][0]);
+                set(&y, 24, 8, 8);
+                set(&y, 32, 8, 12);
+                set(&y, 64, 8, hmma[k][1]);
+                set(&y, 72, 19, hmma[k][2]);
+                put(two, m++, y);
+                if (!k && written) put(two, m++, alu(0x002, 5, 8, 0)); /* MOV R8, R0 */
+            }
+            g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_shapes = shapes[s].bit;
+            g_spirv_translate.quad_compute = 1, g_spirv_translate.mixed_dot = 0, g_spirv_translate.hmma_pairs = 0;
+            ShaderInfo si = {0};
+            si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+            si.shared_size = 1024;
+            u32* spv;
+            size_t count = 0;
+            if (written) {
+                spv = sm86_to_spirv(two, m * 16, ST_CS, NULL, &si, &count);
+                CHECK(spv && spv_count(spv, count, 4457) == shapes[s].restage);
+                if (spv && spv_count(spv, count, 4457) != shapes[s].restage)
+                    fprintf(stderr, "matrix shape %s: %u loads for 2 HMMAs with R8 written between them, expected "
+                                    "%u\n",
+                            shapes[s].name, spv_count(spv, count, 4457), shapes[s].restage);
+                free(spv);
+                continue;
+            }
+            spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+            u32 muladds = spv ? spv_count(spv, count, 4459) : 0, loads = spv ? spv_count(spv, count, 4457) : 0;
+            u32 stores = spv ? spv_count(spv, count, 4458) : 0, stages = spv ? spv_count(spv, count, 62) : 0;
+            u32 barriers = spv ? spv_count(spv, count, 224) : 0;
+            CHECK(spv && muladds == shapes[s].products && loads == shapes[s].loads && stores == shapes[s].stores &&
+                  barriers == shapes[s].barriers);
+            if (s < 2) stages_wide = stages;
+            if (shapes[s].bit == SH_COOP_16x8x8) CHECK(stages == stages_wide - 3); /* no zero-fill stores */
+            if (!spv || muladds != shapes[s].products || loads != shapes[s].loads || stores != shapes[s].stores ||
+                barriers != shapes[s].barriers ||
+                (shapes[s].bit == SH_COOP_16x8x8 && stages != stages_wide - 3))
+                fprintf(stderr,
+                        "matrix shape %s: %u products, %u loads, %u stores, %u stages, %u barriers for 4 HMMAs, "
+                        "expected %u products, %u loads, %u stores, %u barriers\n",
+                        shapes[s].name, muladds, loads, stores, stages, barriers, shapes[s].products,
+                        shapes[s].loads, shapes[s].stores, shapes[s].barriers);
+            char name[32];
+            snprintf(name, sizeof name, "warp_matrix_coop_%s", shapes[s].name);
+            CHECK(spv && keep_module(dir, name, spv, count));
+            free(spv);
+        }
     }
-    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
-    g_spirv_translate.hmma_pairs = pairs_was;
-    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_tile = tile_was;
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was, g_spirv_translate.hmma_pairs = pairs_was;
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_shapes = shapes_was;
 }
 
 /* ---- HMMA's values on the evaluator's subgroup of 32 lanes (spv_eval_subgroup) ---- */
@@ -5130,14 +5257,15 @@ static void test_warp_matrix_coop(const char* dir) {
     put(code, n++, exit_insn());
     put(code, n, bra(n, n, 7, 0));
     n++;
-    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
-        coop_was = g_spirv_translate.hmma_coop, f16_was = g_spirv_translate.float16;
+    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot, coop_was = g_spirv_translate.hmma_coop,
+        f16_was = g_spirv_translate.float16;
+    u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
     /* the translation as each flag and block: 1 when it took the cooperative matrices, 0 when hmma's, -1 failed */
     for (int coop = 0; coop < 2; coop++)
         for (int quad = 0; quad < 2; quad++)
             for (int mixed = 0; mixed < 2; mixed++) {
-                g_spirv_translate.quad_compute = quad, g_spirv_translate.mixed_dot = mixed,
-                g_spirv_translate.hmma_coop = coop ? 65536 : 0;
+                g_spirv_translate.quad_compute = quad, g_spirv_translate.mixed_dot = mixed, g_spirv_translate.hmma_coop = coop ? 65536 : 0;
+                g_spirv_translate.hmma_coop_shapes = coop ? SH_COOP_16x16x16 : 0;
                 ShaderInfo si = {0};
                 si.cs_local[0] = 32, si.cs_local[1] = 2, si.cs_local[2] = 1;
                 si.shared_size = 49152;
@@ -5154,7 +5282,7 @@ static void test_warp_matrix_coop(const char* dir) {
                 u32 model = spv_memory_model(spv, count), coherent = spv_decorations(spv, count, 23);
                 u32 atomic_rw = spv_count(spv, count, 227) + spv_count(spv, count, 228);
                 if (coop) {
-                    CHECK(products == 4 && loads == 8 && stores == 4 && dots == 0 && shuffles == 6);
+                    CHECK(products == 4 && loads == 4 && stores == 4 && dots == 0 && shuffles == 6);
                     CHECK(model == 3 && coherent == 0 && atomic_rw == 2);
                     CHECK(spv_has_capability(spv, count, 6022) && spv_has_capability(spv, count, 5345) &&
                           spv_has_capability(spv, count, 5346));
@@ -5173,7 +5301,8 @@ static void test_warp_matrix_coop(const char* dir) {
             }
     /* where the cooperative matrices don't fit: a block of 16 lanes, 64 KiB of shared memory but 1 KiB, which the
        two slots' 3.5 KiB don't fit in, and no shaderFloat16 */
-    g_spirv_translate.hmma_coop = 65536, g_spirv_translate.quad_compute = 1, g_spirv_translate.mixed_dot = 0;
+    g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_shapes = SH_COOP_16x16x16, g_spirv_translate.quad_compute = 1,
+    g_spirv_translate.mixed_dot = 0;
     for (int k = 0; k < 3; k++) {
         ShaderInfo si = {0};
         si.cs_local[0] = k == 0 ? 16 : 32, si.cs_local[1] = k == 0 ? 4 : 2, si.cs_local[2] = 1;
@@ -5196,8 +5325,8 @@ static void test_warp_matrix_coop(const char* dir) {
         CHECK(spv && spv_memory_model(spv, count) == 1 && !spv_has_capability(spv, count, 5345));
         free(spv);
     }
-    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
-    g_spirv_translate.hmma_coop = coop_was;
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was, g_spirv_translate.hmma_coop = coop_was;
+    g_spirv_translate.hmma_coop_shapes = shapes_was;
 }
 
 /* A complementary pair, @!P0 MOV R0, a ... @P0 MOV R0, b (or the reverse), with an instruction between that touches
@@ -5288,6 +5417,7 @@ int main(int argc, char** argv) {
     test_tex_f16(dir);
     test_output_defaults(dir);
     test_fragment_depth(dir);
+    test_clip_distances(dir);
     test_float64_fallback_scale(dir);
     test_flow_operand(dir);
     test_global_pointer(dir);

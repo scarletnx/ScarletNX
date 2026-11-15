@@ -798,6 +798,7 @@ REC2(CmdSetStencilWriteMask, VkStencilFaceFlags, u32)
 REC1(CmdSetAttachmentFeedbackLoopEnableEXT, VkImageAspectFlags)
 REC1(CmdSetPolygonModeEXT, VkPolygonMode)
 REC1(CmdSetDepthClampEnableEXT, VkBool32)
+REC1(CmdSetDepthClipEnableEXT, VkBool32)
 REC1(CmdSetProvokingVertexModeEXT, VkProvokingVertexModeEXT)
 REC1(CmdSetConservativeRasterizationModeEXT, VkConservativeRasterizationModeEXT)
 REC1(CmdSetExtraPrimitiveOverestimationSizeEXT, float)
@@ -854,6 +855,24 @@ typedef struct {
 static void blend_run(const void* p) {
     const BlendArgs* x = p;
     vkCmdSetBlendConstants(x->cb, x->c);
+}
+typedef struct {
+    VkCommandBuffer cb;
+    VkDepthClampModeEXT mode;
+    VkDepthClampRangeEXT range;
+} ClampRangeArgs;
+static void clamp_range_run(const void* p) {
+    const ClampRangeArgs* x = p;
+    vkCmdSetDepthClampRangeEXT(x->cb, x->mode, &x->range);
+}
+void rec_CmdSetDepthClampRangeEXT(VkCommandBuffer cb, VkDepthClampModeEXT mode, const VkDepthClampRangeEXT* range) {
+    if (!rec_on(cb)) {
+        vkCmdSetDepthClampRangeEXT(cb, mode, range);
+        return;
+    }
+    ClampRangeArgs* x = rec_push(clamp_range_run, sizeof *x);
+    *x = (ClampRangeArgs){cb, mode, *range};
+    rec_commit();
 }
 void rec_CmdSetBlendConstants(VkCommandBuffer cb, const float c[4]) {
     if (!rec_on(cb)) {

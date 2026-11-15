@@ -49,7 +49,8 @@ static void usage(FILE* out) {
         "  --KEY=VALUE            A Vita debug setting: --vita_hle_trace=1 logs each import the runtime lacks (2\n"
         "                         every call), --vita_gxm_trace=1 each scene. And the Switch's --aot_threads=N:\n"
         "                         the game's code compiles on N threads (1 to 1024; the default 0: the computer's\n"
-        "                         cores with a quarter left free, or --aot_threads_most=N), the same as --jobs N\n"
+        "                         cores with a quarter left free, or --aot_threads_most=N), the same as --jobs N.\n"
+        "                         KEY with a - for each _ is the same setting (--vita-hle-trace=1)\n"
         "\n"
         "On the Vita, -O is the level of the blocks' code and of the helpers they call. --chunk N puts N instructions\n"
         "in a chunk, whole blocks (default: 512 blocks a chunk). --jit-cache FILE is the list of the blocks a run\n"
@@ -342,7 +343,7 @@ int snx_vita_main(int argc, char** argv) {
                game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet) and
                gamepad_map */
             char key[64];
-            const char* value = ini_arg(a, key, sizeof key);
+            const char* value = settings_arg(a, key, sizeof key);
             const IniOpt* o = NULL;
             /* the recompile's threads, the Switch's setting: a value it does not take stops here, as there */
             if (value && (!strcmp(key, "aot_threads") || !strcmp(key, "aot_threads_most"))) {

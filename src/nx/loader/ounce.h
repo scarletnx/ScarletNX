@@ -6,6 +6,7 @@
 #ifndef SNX_NX_LOADER_OUNCE_H
 #define SNX_NX_LOADER_OUNCE_H
 
+#include "common/cpu/aarch64/a64_decoder.h"
 #include "common/utilities/endian.h"
 #include <stddef.h>
 #include <string.h>
@@ -17,6 +18,14 @@ static inline int snx_npdm_ounce(const unsigned char* data, size_t size) {
     if (!data || size < 0x80 || memcmp(data, "META", 4)) return 0;
     size_t acid = snx_ld_le32(data + 0x78), acid_size = snx_ld_le32(data + 0x7c);
     return acid < size && acid_size >= 0x304 && acid_size <= size - acid && !memcmp(data + acid + 0x300, "ACID", 4);
+}
+
+/* The CPU features of a program's code, for the recompile and the runtime JIT alike: an Ounce program's Cortex-A78C
+   (a64.profile's ounce target), else the Switch's Cortex-A57, with LSE, RCpc and PAuth when the cpu_extensions
+   setting is on */
+static inline SnxU64 snx_guest_features(int ounce, int cpu_extensions) {
+    if (ounce) return SNX_A64_TARGET_OUNCE;
+    return cpu_extensions ? SNX_A64_TARGET_SWITCH_EXTENDED : 0;
 }
 
 #endif

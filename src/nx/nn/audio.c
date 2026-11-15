@@ -28,6 +28,7 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/services_int.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/main.h" /* g_ounce */
 #include "nx/runtime/platform/log.h"
 
 #define OUT_NAME_SIZE   0x100 /* an AudioOutInfo, and the name in an AudioOut */
@@ -399,13 +400,19 @@ i32 nnaudio_list_outs(CPU* c, u64 infos, i32 count) {
 }
 
 /* ============================================================ the audio ins */
-/* nn::audio's audio ins, with no audin:u session: the runtime has no microphone, so there is none to list and none
-   to open, as the service answered. The SDK gives a game the session's result for an open that fails, and writes
-   nothing into its AudioIn; the functions that take an AudioIn it opened (StartAudioIn, AppendAudioInBuffer and the
-   rest) have none to be called with */
+/* The SDK's audio ins, with no audin:u session. A Switch has no microphone of its own, so there is none to list and
+   none to open, as the service answered. The SDK gives a game the session's result for an open that fails, and
+   writes nothing into its audio in. The functions that take an audio in it opened have none to be called with.
+   The Ounce has a microphone built in, which the list of audio ins names. A game of the Ounce records it through the
+   input streams (hle/hook/audio_stream.c), and one game opens its input stream only once the list has named an
+   audio in: the name is the game's to show. An open of it as an audio in still fails as on a Switch */
+#define IN_NAME_SIZE 0x100 /* an audio in's entry */
 i32 nnaudio_list_ins(CPU* c, u64 infos, i32 count) {
-    (void)c, (void)infos, (void)count;
-    return 0;
+    static const char in_name[] = "Microphone";
+    if (!g_ounce || !infos || count < 1) return 0;
+    memset(hook_host(c, infos), 0, IN_NAME_SIZE);
+    memcpy(hook_host(c, infos), in_name, sizeof in_name);
+    return 1;
 }
 u32 nnaudio_open_in(CPU* c, u64 in, u64 name, u64 params) {
     (void)c, (void)in, (void)name, (void)params;

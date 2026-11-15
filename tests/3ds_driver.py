@@ -38,6 +38,7 @@ def main():
     assert '--gamepad_map=MAP' in help_text and '--touch=N' in help_text
     assert '--vsync=0' in help_text and '--fullscreen=1' in help_text and '--anisotropy=N' in help_text
     assert '--fps_limit=N' in help_text and '--aot_threads=N' in help_text
+    assert 'KEY with a - for each _ is the same setting\n                         (--ctr-top-resolution=2)' in help_text
     run(['--board-info', '--extract-container'], 2, 'Usage:')
     run(['-x', '-r', 'game.cia'], 2, 'Usage:')
     # --icon takes the game and --out DIR, and nothing else; the folder may not be an option or empty
@@ -78,6 +79,23 @@ def main():
         'scarletnx-3ds: aot_threads=many is not a whole number from 0 to 1024',
     )
     run(['--board-info', '--aot_threads=2000'], 2, 'aot_threads=2000 is not a whole number from 0 to 1024')
+    # a key with a - for each _ is the same setting, a value not taken said by its key; some _ left is no setting
+    run(
+        ['--board-info', '--ctr-separate-windows=1', '--ctr-top-resolution=2', '--vk-ext-shader-object=off'],
+        0,
+        'Old 3DS',
+    )
+    run(
+        ['--board-info', '--aot-threads=many'],
+        2,
+        'scarletnx-3ds: aot_threads=many is not a whole number from 0 to 1024',
+    )
+    run(
+        ['--board-info', '--gamepad-deadzone=95'],
+        0,
+        'settings: gamepad_deadzone=95 is not a whole number from 0 to 90: it keeps 90',
+    )
+    run(['--board-info', '--ctr-top_resolution=2'], 2, 'unknown setting: --ctr-top_resolution=2')
     # the recompile's common options (common/utilities/cli.h): their lines in the help, each value they do not take
     # stopping the run with it, and none where nothing is compiled
     assert '\n  -O, --opt LEVEL        LLVM' in help_text and '\n  --jobs N' in help_text

@@ -169,6 +169,7 @@ enum { SM86_K_FIX = 0, SM86_K_ALU = 1, SM86_K_UALU = 2 };
     X(TEX_U, FIX, "TEX (uniform handle)")                                                                              \
     X(TLD_U, FIX, "TLD (uniform handle)")                                                                              \
     X(TLD4_U, FIX, "TLD4 (uniform handle)")                                                                            \
+    X(TXD_U, FIX, "TXD (uniform handle)")                                                                              \
     X(TXQ_U, FIX, "TXQ (uniform handle)")                                                                              \
     X(SULD_P, FIX, "SULD.P")                                                                                           \
     X(SULD_P_B, FIX, "SULD.P.B")                                                                                       \

@@ -10,6 +10,10 @@
 
 /* the display's refresh rate: vsync ticks, and the swap interval a game asks for, count in it */
 #define VI_REFRESH_HZ 60
+/* The rate the console's display runs at now, which a game's swap interval counts in: VI_REFRESH_HZ, or 120 once an
+   Ounce game turned 120 Hz on where the TV takes it (gsv.c). The vsync ticks stay at VI_REFRESH_HZ. Any thread */
+extern int g_vi_refresh_hz;
+static inline u32 vi_refresh_hz(void) { return (u32)__atomic_load_n(&g_vi_refresh_hz, __ATOMIC_RELAXED); }
 
 /* a swap interval of 0 or less: a multiple of this many vsyncs a second (vi_vsync_period), from 0 down to the least */
 #define VI_UNLOCKED_HZ  120

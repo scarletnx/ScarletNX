@@ -41,6 +41,15 @@ void guest_stats_thread_end(u32 ix) { (void)ix; }
 void svc_resume(KThread* t) { (void)t, abort(); }
 void svc_resume_leave(KThread* t) { (void)t, abort(); }
 void svc_service_retry(KThread* t) { (void)t, abort(); }
+/* svcSetThreadActivity's side of a wait outside an SVC (kthread_block and kthread_unblock): the waiters kernel.c wakes
+   on the thread (kind 5, a pause waiting for it to run no game code) and svc.c's pause point, counted */
+static int pause_wakes, pause_points;
+void kobj_wake_nl(KObj* o, int kind) { (void)o, pause_wakes += kind == 5; }
+int svc_pause_point(KThread* t) {
+    (void)t;
+    pause_points++;
+    return 0;
+}
 /* fatal ends the test, but where the test catches it (fatal_jump set): its message kept, back to the test; the last
    line logged kept too */
 static jmp_buf* fatal_jump;
@@ -341,6 +350,23 @@ int main(void) {
     static const int twelve[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
     pthread_t h, h2;
     kernel_init();
+
+    /* a wait outside an SVC (a hook's, NVN's, a JIT compile's) runs no game code: with no pause asked nothing else
+       happens; with one asked, its waiter is woken as the wait begins, and the thread stops at the pause point as the
+       wait ends, on its way back to game code */
+    {
+        KThread t = {0};
+        kthread_block(&t);
+        CHECK(t.stopped == 1 && !pause_wakes, "blocked, no pause asked: stopped %d, %d woken", t.stopped, pause_wakes);
+        kthread_unblock(&t);
+        CHECK(t.stopped == 0 && !pause_points, "back, no pause: stopped %d, %d pause points", t.stopped, pause_points);
+        t.suspended = 1;
+        kthread_block(&t);
+        CHECK(t.stopped == 1 && pause_wakes == 1, "blocked, paused: stopped %d, %d woken", t.stopped, pause_wakes);
+        kthread_unblock(&t);
+        CHECK(t.stopped == 0 && pause_points == 1, "back, paused: stopped %d, %d pause points", t.stopped,
+              pause_points);
+    }
 
     /* a ready thread behind a holder it wouldn't preempt runs on an idle core of its mask, at once. Whatever is
        expected to return at once runs on a host thread too, so a scheduler that blocks it fails here instead of

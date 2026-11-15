@@ -139,6 +139,8 @@ int vk_mirror_on(void) {
 VkBuffer vk_mirror_buffer(void) { return g_mir.buf; }
 VkBuffer vk_mirror_mask(void) { return g_mir.mask; }
 
+static u64 g_mir_system; /* granules that took system memory, the GPU's having none */
+u64 vk_mirror_system(void) { return g_mir_system; }
 /* memory for granule g bound into the mirror and its mask, the mask cleared; 0 out of memory */
 static Gran* gran_bind(u64 g) {
     Gran* r = calloc(1, sizeof *r);
@@ -151,11 +153,22 @@ static Gran* gran_bind(u64 g) {
     req[1].size = MIR_MASK_G;
     DevMemWant aci = {.at = DM_DEVICE};
     DevMemInfo info[2];
-    if (!r->shadow || !VK_OK(vk_devmem_alloc(&req[0], &aci, &r->mem, &info[0]))) goto fail;
-    if (!VK_OK(vk_devmem_alloc(&req[1], &aci, &r->mask, &info[1]))) {
-        vk_devmem_free(r->mem);
-        goto fail;
+    if (!r->shadow) goto fail;
+    /* the GPU's memory, else system memory, where the programs read and write it over the bus: a granule that found
+       none left its dispatches the slow way each time, under a frame a second for seconds in Mario Kart World on a GPU
+       of 2 GB. Its mask goes with it */
+    int got = 0;
+    for (int at = 0; at < 2 && !got; at++) {
+        aci.at = at ? DM_SYSTEM : DM_DEVICE;
+        if (vk_devmem_alloc(&req[0], &aci, &r->mem, &info[0]) != VK_SUCCESS) continue;
+        if (vk_devmem_alloc(&req[1], &aci, &r->mask, &info[1]) != VK_SUCCESS) {
+            vk_devmem_free(r->mem);
+            continue;
+        }
+        got = 1;
+        g_mir_system += at;
     }
+    if (!got) goto fail;
     vk_mem_track(r->mem, VK_OWN_MIRROR);
     vk_mem_track(r->mask, VK_OWN_MIRROR);
     VkSparseMemoryBind b[2] = {
@@ -1105,18 +1118,21 @@ static int gran_release(u64 g) {
    100 of its 117 granules, bound by the programs of its menus, took no binding through most of a race, 225 MB of the
    device's memory, while its textures were evicted for room. One bound again later takes guest memory's bytes
    whole, as a new one does. A few a call, each a part of the granules: a landing is a round trip to the GPU */
-#define MIR_IDLE    600
+#define MIR_IDLE       600
+#define MIR_IDLE_TIGHT 120 /* past nine tenths of the budget: a granule bound again takes system memory where the GPU's
+                              has none, so letting it go sooner costs a copy of its bytes, not a stall */
 #define MIR_RELEASE 8
 void vk_mirror_trim(void) {
     if (g_mir.on <= 0 || !g_mir.bound || vk_rec_unsafe()) return;
     u64 usage, budget;
     vk_mem_use(&usage, &budget);
     if (usage < budget / 5 * 4) return;
+    const u32 idle = usage >= budget / 10 * 9 ? MIR_IDLE_TIGHT : MIR_IDLE;
     u32 done = 0;
     for (u64 n = 0; n < g_mir.granules / 8 && done < MIR_RELEASE; n++) {
         u64 g = g_mir.trim_at++ % g_mir.granules;
         const Gran* r = g_mir.gran[g];
-        if (r && (u32)(g_vk_present - r->used) >= MIR_IDLE) {
+        if (r && (u32)(g_vk_present - r->used) >= idle) {
             gran_release(g);
             done++;
         }

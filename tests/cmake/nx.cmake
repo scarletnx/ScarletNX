@@ -124,20 +124,21 @@ if(BUILD_TESTING)
         add_test(NAME runtime_game_copy COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
                  -P "${PROJECT_SOURCE_DIR}/tests/game_copy.cmake")
     endif()
-    find_program(SNX_SPIRV_VAL spirv-val)
-    find_program(SNX_SPIRV_DIS spirv-dis)
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND) # scarletnx --mcp over stdio (runtime/driver/mcp.c)
         add_test(NAME mcp COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/mcp_test.py"
                  $<TARGET_FILE:scarletnx>)
     endif()
-    if(SNX_SPIRV_VAL AND SNX_SPIRV_DIS AND Python3_Interpreter_FOUND)
+    if(Python3_Interpreter_FOUND)
+        include("${PROJECT_SOURCE_DIR}/cmake/spirv_tools.cmake")
+    endif()
+    if(TARGET snx-spirv-dis AND Python3_Interpreter_FOUND)
         add_test(NAME shader_direct COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/shader_direct_test.py"
-            --generator $<TARGET_FILE:snx-test-shader-direct> --validator "${SNX_SPIRV_VAL}"
-            --disassembler "${SNX_SPIRV_DIS}"
+            --generator $<TARGET_FILE:snx-test-shader-direct> --validator $<TARGET_FILE:snx-spirv-val>
+            --disassembler $<TARGET_FILE:snx-spirv-dis>
             --regressions $<TARGET_FILE:snx-test-shader-direct-regressions>)
     else()
-        message(STATUS "Skipping shader_direct: Python3, spirv-val, and spirv-dis are required")
+        message(STATUS "Skipping shader_direct: Python 3 and spirv-dis are required")
     endif()
 endif()
 
@@ -437,6 +438,14 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_b_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_c_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_arm_b_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_arm_c_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_arm_b_dot_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_arm_c_dot_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_qcom_b_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_qcom_c_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_qcom_b_dot_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_qcom_c_dot_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_a_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_b_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_fast_a_spv.c"
@@ -454,7 +463,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/astc_bc7_cpu.cpp"
         "${PROJECT_SOURCE_DIR}/tests/glsl/astc_bcn_cpu.cpp"
         "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_etc2_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_astc_cpu.cpp"
-        "${PROJECT_SOURCE_DIR}/tests/glsl/blit_convert_cpu.cpp")
+        "${PROJECT_SOURCE_DIR}/tests/glsl/astc_vendor_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/blit_convert_cpu.cpp")
     target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
     target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash snx_vk_common
                                                       Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})
@@ -476,6 +485,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
                          "memory in pieces.*All ASTC Vulkan comparisons passed")
     set_tests_properties(astc_vulkan astc_vulkan_pieces astc_vulkan_upload_wait astc_vulkan_upload_retire
         PROPERTIES TIMEOUT 300)
+    # the BCn to ASTC transcoder alone with packed dot products, which a device runs where it says it has an instruction
+    # for them (lavapipe says not, and has them): every vendor's builds of its later passes that take them
+    add_test(NAME astc_vulkan_encode_dot COMMAND snx-test-astc-vulkan --astc-encode)
+    set_tests_properties(astc_vulkan_encode_dot PROPERTIES TIMEOUT 120 ENVIRONMENT "SNX_TEST_BC7_DOT=1"
+        SKIP_RETURN_CODE 77 PASS_REGULAR_EXPRESSION "BC7 encoder: packed dot products.*by each vendor's encoder")
     # the same under the validation layer's synchronization checks, whose hazards a driver that runs commands
     # abreast shows as wrong results (skipped where the layer isn't installed)
     add_test(NAME astc_vulkan_sync COMMAND snx-test-astc-vulkan)
