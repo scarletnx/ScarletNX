@@ -257,6 +257,11 @@ static int vkr_samples_report(u32 owner, u64 gva, u32 len, u64 ticks) {
     vk_unlock();
     return r;
 }
+/* where vkr_method_barrier recorded its last full barrier: the submission, and vk_cmd_uses after it (vk_lock) */
+static struct {
+	u64 submit, uses;
+} g_full_barrier;
+u64 g_vk_barriers_merged;
 static void vkr_method_barrier(int kind)
 {
 	/* a fragment barrier, and the 3D engine's texture data cache invalidation (kind 2), make earlier draws' writes
@@ -321,8 +326,17 @@ static void vkr_method_barrier(int kind)
 		return;
 	}
 	vk_render_end();
-	/* CPU-visible releases wait for completion in the release path. */
-	rec_CmdPipelineBarrier2(vk_cmd(), &di);
+	/* The barrier is from all commands to all commands. When nothing was recorded since the last one in this
+	 * submission, the last one already orders all that this one would, and the pass stays ended. One game's open
+	 * world gives a texture data cache invalidation just after each of its fragment barriers. */
+	if (g_full_barrier.submit != vk_submit_number() || g_full_barrier.uses != vk_cmd_uses()) {
+		/* CPU-visible releases wait for completion in the release path. */
+		rec_CmdPipelineBarrier2(vk_cmd(), &di);
+		g_full_barrier.submit = vk_submit_number();
+		g_full_barrier.uses = vk_cmd_uses();
+	} else {
+		g_vk_barriers_merged++;
+	}
 	vk_buf_ordered();
 	vk_unlock();
 }
@@ -904,11 +918,12 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             vk_tex_report_log();
             LOG("vulkan: %llu draws sampled a target they render to in place (%llu barriers in passes, %llu passes "
                 "begun again, %llu drawn two times, %llu feedback draws kept in place), %llu through a copy; %llu "
-                "copies of targets written\n",
+                "copies of targets written; %llu guest barriers that the barrier before them covered\n",
                 (unsigned long long)g_vk_fb_draws, (unsigned long long)g_vk_fb_barriers,
                 (unsigned long long)g_vk_fb_restarts, (unsigned long long)g_vk_predraws,
                 (unsigned long long)g_vk_predraw_refused,
-                (unsigned long long)g_vk_rt_copies, (unsigned long long)g_vk_rt_copy_writes);
+                (unsigned long long)g_vk_rt_copies, (unsigned long long)g_vk_rt_copy_writes,
+                (unsigned long long)g_vk_barriers_merged);
             vk_predraw_report();
             if (g_vk_capture_draws || g_vk_capture_capped)
                 LOG("vulkan: %llu draws captured a primitive at a time (%llu primitives), %llu skipped past %u "

@@ -496,8 +496,11 @@ int vk_cmd_ready(void) {
     return vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done) == VK_SUCCESS && done >= last;
 }
 
+static u64 g_cmd_uses;
+u64 vk_cmd_uses(void) { return g_cmd_uses; }
 VkCommandBuffer vk_cmd(void) {
     Frame* f = &g_fr[g_cur];
+    g_cmd_uses++;
     if (!f->recording) {
         /* not inside a landing: the slot's results may be the ones landing, out of the rings its recycling hands
            back, and the recycling's own landing would recycle the slot again under itself. What a landing records in

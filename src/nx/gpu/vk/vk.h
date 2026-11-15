@@ -456,6 +456,9 @@ u32 vk_present_before(u64 ago_ns, u32 presents);
 /* cmd.c */
 void vk_cmd_init(void);
 VkCommandBuffer vk_cmd(void); /* the current frame's command buffer, begun on first use */
+/* the calls of vk_cmd so far. Each command in the frame's command buffer comes after one of them: when the count and
+   vk_submit_number did not change, no command was recorded there */
+u64 vk_cmd_uses(void);
 /* The current submission's upload command buffer, begun on first use: the submission runs it before the frame's
    (vk_cmd), and its copies before any command recorded there, the rendering pass open now and the draws before it
    too, so they need not end that pass. For copies whose sources were written before the submission and whose
@@ -2375,6 +2378,9 @@ extern u64 g_vk_targets_kept;
    through a copy instead (gpu/vk/render.c); the times a target's pixels were copied into a copy of it, for those draws
    and for textures that read a target as another size or format (gpu/vk/texture.c) */
 extern u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies, g_vk_rt_copy_writes;
+/* statistics: the guest's full barriers not recorded, as no command came after the one before them in the submission
+   (renderer.c vkr_method_barrier) */
+extern u64 g_vk_barriers_merged;
 /* g_vk.feedback_mode, from the device's features and vendor (device.c): in place (attachment feedback loops), the
    two draws of render.c predraw_run, or in place with the pre-draw capture in a fragment interlock (vk/predraw.c) */
 #define VK_FEEDBACK_IN_PLACE  0
