@@ -5488,22 +5488,22 @@ static void check_play_args(App* app, const char* root) {
     assert(play_args(app, GUI_SWITCH, prog, argv, 512, &own) >= 1);
     assert(!strncmp(argv[0], "--game=", 7) && !strcmp(argv[0] + 7, prog));
     play_args_free(&own);
-    /* a 3DS setting goes to the 3DS and to no other console */
+    /* a setting the 3DS takes goes to the 3DS and to no other console */
     app->menu.selected = GUI_3DS;
-    if (gui_settings_set(settings_of(app), "ctr_screen_stretch", "15")) {
+    if (gui_settings_set(settings_of(app), "vsync", "0")) {
         bool ctr = false, gba = false;
         (void)play_args(app, GUI_3DS, dir, argv, 512, &own);
         for (size_t i = 0; argv[i]; i++)
-            if (!strcmp(argv[i], "--ctr_screen_stretch=15")) ctr = true;
+            if (!strcmp(argv[i], "--vsync=0")) ctr = true;
         assert(ctr);
         play_args_free(&own);
         app->menu.selected = GUI_GBA;
         (void)play_args(app, GUI_GBA, dir, argv, 512, &own);
         for (size_t i = 0; argv[i]; i++)
-            if (!strcmp(argv[i], "--ctr_screen_stretch=15")) gba = true;
+            if (!strcmp(argv[i], "--vsync=0")) gba = true;
         assert(!gba);
         play_args_free(&own);
-        (void)gui_settings_set(settings_of(app), "ctr_screen_stretch", "0");
+        (void)gui_settings_set(settings_of(app), "vsync", "1");
     }
     free(argv);
     free(prog);
