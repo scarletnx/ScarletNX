@@ -526,6 +526,11 @@ typedef struct {
        (sm86_translate.c's hmma). RADV with subgroups of 32 (GFX10 on): half of the B permutes through LDS become DPP
        moves. 0 offline */
     unsigned hmma_pairs : 1;
+    /* an SM86 HMMA off the cooperative matrices forms each product in the lane that holds its A pair (A-stationary,
+       sm86_translate.c's hmma_astat): a lane fetches only B's 16 words (by shuffles, or through the warp's slot with
+       hmma_stage), and the partial sums meet by a butterfly of 12 xor shuffles. ucas's mma found it, proved over the
+       32 lanes. 0 offline */
+    unsigned hmma_astat : 1;
     /* an SM86 HMMA off the cooperative matrices takes A and B from the other lanes through shared memory, a slot a
        warp, where the driver compiles a shuffle whose index differs between lanes into a loop over the distinct indices
        (an "off" line on OpGroupNonUniformShuffle in vk/extension_bans.txt: Turnip, whose Adreno 610 ran the HMMA bench
