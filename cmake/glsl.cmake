@@ -64,14 +64,17 @@ if(NOT SNX_SPIRV_VAL)
         "spirv-val to validate shaders with (empty: the one beside spirv-opt, or on PATH)" FORCE)
 endif()
 
-# snx_glsl_spirv(target SOURCE file.comp NAME symbol HEADER include/path.h [TARGET vulkan1.x] [DEFINES MACRO[=value]...])
+# snx_glsl_spirv(target SOURCE file.comp NAME symbol HEADER include/path.h [TARGET vulkan1.x] [DEFINES MACRO[=value]...]
+#                [PREAMBLE text])
 # Compiles SOURCE (its #includes followed through glslang's depfile) for Vulkan 1.1 (or TARGET) without debug information,
 # optimizes it for speed with spirv-opt -O, validates the result with spirv-val, and puts it into a C file added to
 # target: `const u32 NAME[]` and `const u64 NAME_size` (bytes). HEADER, which the C file includes, declares them: the
 # build writes it too, under generated/include in the build tree (on the include path beside src), one header for every
-# NAME given it. DEFINES are predefined macros, for another build of the same source
+# NAME given it. DEFINES are predefined macros, for another build of the same source. PREAMBLE is text glslang reads as
+# if it stood after the source's #version: a third party's shader that #includes without asking for
+# GL_GOOGLE_include_directive, as its own compiler allows
 function(snx_glsl_spirv target)
-    cmake_parse_arguments(arg "" "SOURCE;NAME;HEADER;TARGET" "DEFINES" ${ARGN})
+    cmake_parse_arguments(arg "" "SOURCE;NAME;HEADER;TARGET;PREAMBLE" "DEFINES" ${ARGN})
     if(NOT arg_TARGET)
         set(arg_TARGET vulkan1.1)
     endif()
@@ -84,6 +87,9 @@ function(snx_glsl_spirv target)
     foreach(define IN LISTS arg_DEFINES)
         list(APPEND defines "-D${define}")
     endforeach()
+    if(arg_PREAMBLE)
+        list(APPEND defines "-P${arg_PREAMBLE}")
+    endif()
     get_filename_component(source "${arg_SOURCE}" ABSOLUTE)
     set(dir "${PROJECT_BINARY_DIR}/generated/spirv")
     set(spv "${dir}/${arg_NAME}.spv")
