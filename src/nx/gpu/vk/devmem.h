@@ -102,7 +102,7 @@ void vk_devmem_free(DevMem mem); /* 0 is ignored */
 void vk_devmem_owner(DevMem mem, void* owner);
 /* the allocations to move out of the block being emptied, max at most, with their owners: 0 when none is. Called once
    a present, by the one owner of allocations that move, with the budget its caches keep within (vk_mem_use's, which
-   vk_budget_mb and vk_heap_budget_mb lower): it starts on a block by the rule above when none is being emptied. An
+   vk_budget_mb lowers): it starts on a block by the rule above when none is being emptied. An
    owner
    moves one by making its resource again with existing set, copying it on the GPU, and freeing the old memory once
    the frames that use it are done; vk_devmem_moved counts it. vk_devmem_moving_stop: an allocation cannot move now,

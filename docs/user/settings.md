@@ -156,9 +156,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_ext_load_store_op_none` | `auto` | `VK_EXT_load_store_op_none` |
 | `vk_ext_map_memory_placed` | `auto` | `VK_EXT_map_memory_placed` |
 | `vk_ext_memory_budget` | `auto` | `VK_EXT_memory_budget` |
-| `vk_ext_memory_priority` | `auto` | `VK_EXT_memory_priority`, which `VK_EXT_pageable_device_local_memory` needs: off turns both off |
 | `vk_ext_mesh_shader` | `auto` | `VK_EXT_mesh_shader` |
-| `vk_ext_pageable_device_local_memory` | `auto` | `VK_EXT_pageable_device_local_memory`: where the GPU's own memory is short because other programs take video memory, the driver moves textures loaded from memory to system memory first, and render targets last. ScarletNX keeps its own use under the driver's budget either way. Off, the renderer gives no priorities |
 | `vk_ext_pipeline_creation_feedback` | `auto` | `VK_EXT_pipeline_creation_feedback`, promoted to Vulkan 1.3 |
 | `vk_ext_pipeline_robustness` | `auto` | `VK_EXT_pipeline_robustness`, promoted to Vulkan 1.4 |
 | `vk_ext_post_depth_coverage` | `auto` | `VK_EXT_post_depth_coverage` |

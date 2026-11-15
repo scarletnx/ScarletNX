@@ -1090,6 +1090,20 @@ static void check_repair_end(void) {
     check_counts(0);
 }
 
+/* The memory extensions, the priority classes and the defrag are the device's alone: where the driver has the two
+   extensions, the renderer turns them on (device.c), and where it has not, one class of blocks and no priorities
+   (check_priority). No setting turns them off, empties no block, or lowers the GPU's heap below the driver's budget */
+static void check_no_settings(void) {
+    static const char* const exts[] = {VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME,
+                                       VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME};
+    static const char* const args[] = {"vk-defrag", "vk-heap-budget-mb"};
+    CHECK(g_vk_extension_settings_count > 0 && g_setting_args_count > 0);
+    for (int k = 0; k < g_vk_extension_settings_count; k++)
+        for (u32 e = 0; e < sizeof exts / sizeof exts[0]; e++) CHECK(strcmp(g_vk_extension_settings[k].name, exts[e]));
+    for (int i = 0; i < g_setting_args_count; i++)
+        for (u32 a = 0; a < sizeof args / sizeof args[0]; a++) CHECK(strcmp(g_setting_args[i], args[a]));
+}
+
 int main(void) {
     vkGetPhysicalDeviceMemoryProperties = memory_properties;
     vkGetPhysicalDeviceMemoryProperties2 = memory_properties2;
@@ -1110,6 +1124,7 @@ int main(void) {
     check_random(1, 1, 4096, 30000);  /* one heap, and atoms of four units */
     check_alone();
     check_priority();
+    check_no_settings();
     check_defrag(0); /* no priority classes: the fallback */
     check_defrag(1);
     check_repair_end();
