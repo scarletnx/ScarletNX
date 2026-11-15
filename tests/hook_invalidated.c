@@ -9,7 +9,8 @@
    change past the function's first 4 bytes, which are all that is compared. Then the mod's trampoline, the
    function's first instructions and a jump back past them, takes answer's ext_skyline hook (tests/hook/
    ext_skyline.hooks) when it first runs, in each form a loader writes: the mod's call of the original runs the
-   handler, and a handler's own code is the trampoline's, entered there. The system's refusal to make code writable is
+   handler, and a handler's own code is the trampoline's, entered there. The index of the sites by address still finds
+   the invalidated one, and no other, as a search of every site does. The system's refusal to make code writable is
    reported with its reason. Only x86_64 runs the jump: on another host the test is skipped (77) */
 #include "nx/hle/hook/hook.c"
 #include <assert.h>
@@ -153,6 +154,14 @@ static void line_dropped(u64 addr) {
     hook_restore(addr & ~(u64)63, 64);
 }
 
+/* the site of addr as a search of every site finds it, the first at addr, or -1 */
+static int searched(u64 addr) {
+    u32 i;
+    for (i = 0; i < g_host.hook.count; i++)
+        if (g_host.hook.addr[i] == addr) return (int)i;
+    return -1;
+}
+
 /* the host whose jump the test runs; every host compiles the whole test, so that what only it reads is read there */
 #if defined(__x86_64__) || defined(_M_X64)
 #define JUMP_RUNS 1
@@ -224,6 +233,12 @@ int main(int argc, char** argv) {
     assert(copies == 1 && own_runs == 0 && c.pc == 0x9200);
     line_dropped(ANSWER);
     assert(slots[(ANSWER - CODE) >> 2] == NULL && warnings == 1);
+    /* the invalidated site keeps its place in the index: hook_invalidated and its own code still find it */
+    {
+        u64 a;
+        assert(g_host.hook.invalid[1] && site_of(ANSWER) == 1 && site_of(COPY) == 0 && site_of(UNHOOKED) == -1);
+        for (a = 0; a < g_code_hi + 64; a++) assert(site_of(a) == searched(a));
+    }
 
     /* the forms of a trampoline, answer's first 1, 4 or 5 words and a jump back past them: a b, or ldr x17, #8 and
        br x17 of the address, after a nop that aligns it. Its words are the ones hook_install saw */
