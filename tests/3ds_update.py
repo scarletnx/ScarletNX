@@ -27,11 +27,16 @@ def main():
     with tempfile.TemporaryDirectory(prefix='snx-ctr-update-') as temp:
         root = Path(temp)
 
-        def run(game, update, name):
+        def run(game, update, name, leftover=False):
             g, u, state = root / f'{name}-game.cia', root / f'{name}-update', root / f'{name}-state'
             g.write_bytes(game)
             u.write_bytes(update)
             state.mkdir()
+            if leftover:  # an extraction stopped before its exheader.bin: its exefs/ and romfs/ stay in the folder
+                (state / 'exefs').mkdir()
+                (state / 'exefs' / 'icon').write_bytes(b'old')
+                (state / 'romfs').mkdir()
+                (state / 'romfs' / 'old.txt').write_bytes(b'old')
             p = subprocess.run(
                 [probe, str(g), '--update', str(u), str(state)], capture_output=True, text=True, timeout=20
             )
@@ -47,6 +52,9 @@ def main():
             f'title {TITLE:016x} name PATCHED exheader {UPDATE_TITLE:016x} romfs base update-romfs update icon 1' in out
         ), out
         assert 'self romfs base update-romfs update' in out, out
+        # the game read from its dump over an extraction's leftovers: they are not read, and its ExeFS icon is its own
+        code, out = run(game, cia(application=update_ncch(), title=UPDATE_TITLE), 'leftover', leftover=True)
+        assert code == 0 and 'self romfs base update-romfs update' in out, out
 
         # a console's update: the NCCH under the update's ID, its ExHeader naming the game's program
         def console_update():
