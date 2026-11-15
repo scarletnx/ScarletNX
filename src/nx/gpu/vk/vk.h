@@ -892,6 +892,10 @@ int vk_astc_bc7(void);
 /* the images ran short of memory, why said: g_vk.bc1_tight from now on (format.c). 1 when that changes what BC1
    textures become, which the log then says */
 int vk_bc1_tight(const char* why);
+/* the GPU's memory is under pressure (surface.c): its use at 90% of the budget or more, or it ran short in the last
+   300 presents (an image found none, a trim found too little to free or left the caches past their budget). What
+   texture_half_res and astc_lines_bc1's Auto go by */
+int vk_mem_pressed(void);
 /* vk_tic_format for a 3D image: ASTC and ETC2 blocks decoded where the device can't make 3D images of them */
 VkFmt vk_tic_format_3d(u32 w0, int srgb);
 /* The device and optimal-tiling format both support writes without a shader format. */
@@ -1301,6 +1305,9 @@ void vk_tex_promote_frame(void);
 void vk_tex_refine_frame(void);
 /* texture.c: the shed textures made, their bytes as made whole, and the levels shed and taken back so far */
 void vk_tex_shed_stats(u64* made, u64* bytes, u64* coarser, u64* finer);
+/* the textures made at half their resolution under memory pressure (texture_half_res), and their finest levels' bytes
+   never bound */
+void vk_tex_half_stats(u64* made, u64* bytes);
 u64 vk_mem_trimmed(void); /* statistics: the bytes vk_mem_trim freed */
 /* astc_mode's Auto follows the memory (gpu/texture/astc_bc.h): vk_astc_auto_trimmed, at the end of each trim that ran,
    with the use it counted (an allocation's extra bytes in it), what it left (the use less what it freed, an

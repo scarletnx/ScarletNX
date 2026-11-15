@@ -318,6 +318,12 @@ void vk_tex_report_log(void) {
             "room, %llu taken back\n",
             (unsigned long long)shed_made, MB(shed_bytes), (unsigned long long)shed_coarser,
             (unsigned long long)shed_finer);
+    u64 half_made, half_bytes;
+    vk_tex_half_stats(&half_made, &half_bytes);
+    if (half_made)
+        LOG("vulkan: %llu textures made at half their resolution under memory pressure (texture_half_res), %llu MB of "
+            "finest levels left unbound\n",
+            (unsigned long long)half_made, MB(half_bytes));
     const u64 *idle = g_tex_report.idle, *back = g_tex_report.back;
     if (idle[0] | idle[1] | idle[2] | idle[3] | back[0] | back[1] | back[2] | back[3])
         LOG("vulkan: since the last report the cache evicted %llu textures unused for under 60 presents, %llu for 60 "

@@ -167,9 +167,14 @@ static void sparse_floor(const VkSparseShape* sh, u8* bits, u32 floor) {
    and they run inside a trim's walk of the textures (surface.c tex_shed_lru) or the refine's, which a trim inside
    them broke: it evicted the next texture the walk would take, and the texture moved itself */
 static int g_bind_no_trim;
-static u64 g_shed_made, g_shed_bytes, g_shed_coarser, g_shed_finer;
+static u64 g_shed_made, g_shed_bytes, g_shed_coarser, g_shed_finer, g_half_made, g_half_bytes;
 void vk_tex_shed_stats(u64* made, u64* bytes, u64* coarser, u64* finer) {
     *made = g_shed_made, *bytes = g_shed_bytes, *coarser = g_shed_coarser, *finer = g_shed_finer;
+}
+void vk_tex_half_stats(u64* made, u64* bytes) { *made = g_half_made, *bytes = g_half_bytes; }
+/* texture_half_res: Auto (0) while the GPU's memory is under pressure, Never (1), Always (2) */
+static int half_res_now(void) {
+    return g_settings.texture_half_res == 2 || (g_settings.texture_half_res == 0 && vk_mem_pressed());
 }
 /* A sparse texture's memory bound where guest memory maps its texels now (memory.c vk_image_sparse_bind), with room
    made for it under the budget, no finer than its lod_floor: -1 when memory ran out, 0 when nothing changed, 1 when
@@ -2039,9 +2044,15 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
        evicted and loaded again; the level comes back when there is room (vk_tex_finer). On a GPU of 2 GB Mario Kart
        World's caches evicted 2,400 textures the last 60 presents had used every 600 presents, each loaded again at its
        next use. Not ASTC that goes RGBA8 first and BC7 between frames, whose BC7 image is another */
-    const int shed = g_settings.texture_shed && !holes && !written && bl && levels > 1 && type != VK_IMAGE_VIEW_TYPE_3D &&
-                     g_vk.has_view_min_lod &&
-                     (f.conv == VKC_NONE || (f.conv == VKC_ASTC && !(is_bc7(f.vk) && !g_vk.astc_at_load)));
+    /* Made under memory pressure (texture_half_res), such a texture is made so whatever texture_shed says, its finest
+       level never bound: sampled at half its resolution from the start, a quarter of its bytes left. Its size stays
+       the texture's, so textureSize and texelFetch read as the game's, and the level comes back as a shed one's does,
+       when there is room (vk_tex_finer) */
+    const int can_shed = !holes && !written && bl && levels > 1 && type != VK_IMAGE_VIEW_TYPE_3D &&
+                         g_vk.has_view_min_lod &&
+                         (f.conv == VKC_NONE || (f.conv == VKC_ASTC && !(is_bc7(f.vk) && !g_vk.astc_at_load)));
+    const int half = can_shed && half_res_now();
+    const int shed = can_shed && (g_settings.texture_shed || half);
     int sparse = (holes || shed) && bl && !msaa && g_vk.sparse && g_vk.resident &&
                  (type == VK_IMAGE_VIEW_TYPE_3D ? g_vk.feat.sparseResidencyImage3D : g_vk.feat.sparseResidencyImage2D);
     /* held as BC7: RGBA8 until the encoder has made its BC7 image between frames (vk_tex_later_frame). Not one with
@@ -2062,6 +2073,11 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
             vkGetImageMemoryRequirements(g_vk.dev, t->img, &req);
             g_shed_made++;
             g_shed_bytes += req.size;
+            if (half) { /* its first bind (tex_bind) keeps the floor */
+                t->lod_floor = 1;
+                g_half_made++;
+                g_half_bytes += vk_image_sparse_level_bytes(t->img, 1);
+            }
         }
     }
     else {
