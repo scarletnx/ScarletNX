@@ -2,8 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* The game's menu: Android's back button, a gamepad's Home, the on-screen Home or F2 opens it over the game, in the
    menu's look (src/gui, the YoRHa theme), drawn by the renderer as quads (ui.h). The same on every platform: the
-   on-screen controls' options (vpad.h), the touch screen's, the runtime's keys (Shortcuts), Capture frame while
-   RenderDoc is in the game (the renderer's capture), and Exit */
+   on-screen controls' options (vpad.h), the touch screen's, the runtime's keys (Shortcuts), the Volume on a slider
+   (an INI_SLIDER setting's row: Left/Right step it to its ends, held too, a press on it takes the step under it and a
+   drag follows), Capture frame while RenderDoc is in the game (the renderer's capture), and Exit */
 #ifndef SNX_OVERLAY_H
 #define SNX_OVERLAY_H
 #include "nx/runtime/platform/ui.h"
@@ -11,6 +12,8 @@
 #define OVERLAY_COLS     40 /* the panel, in cells of the 8x16 font: the narrowest */
 #define OVERLAY_COLS_MAX 72 /* and the widest, as far as three quarters of the picture let it */
 #define OVERLAY_ROWS     16 /* the tallest page's: the others are as tall as their items */
+/* a slider's columns where its row has them: the knob's travel a column a step of Volume's twenty, and the knob's own */
+#define OVERLAY_SLIDER_COLS 21
 /* what a menu action leaves to its caller: the save state ones for the slot overlay_slot names; the keyboard's box
    answered (overlay_keyboard_take), or a tap on its line, which asks for the system's keyboard again; Capture frame,
    RenderDoc's capture of the next frame, the menu closed first so the frame is the game's */
@@ -45,7 +48,7 @@ void overlay_scroll(int rows); /* the mouse's wheel: the same, stopping at the e
 int overlay_side(int step);    /* the focused setting down (-1) or up (1); OVERLAY_CLOSE on F1's page */
 int overlay_back(void);        /* the page above; OVERLAY_CLOSE from the first, and from F1's */
 /* a direction held: overlay_side, but for the first page's TV mode row, which a press steps once, as each step docks or
-   undocks the console under the game */
+   undocks the console under the game; its Volume goes on stepping */
 int overlay_side_held(int step);
 /* F1: the page of the runtime's keys and the game's buttons on the keyboard, a row each, in place of the page showing,
    the menu open; OVERLAY_CLOSE when it shows already. Up/Down and the wheel go over its rows; any other key, button
@@ -83,7 +86,8 @@ int overlay_backspace(void);
 /* a tap at x, y on a picture of sw x sh: what it did, OVERLAY_CLOSE outside the panel */
 int overlay_tap(float x, float y, int sw, int sh);
 /* a finger or the mouse (touch.h's SNX_TOUCH_MOUSE) on the open menu, at x, y in the picture's pixels: down off the
-   panel on an on-screen control it is the controls', whose presses move the menu (overlay_controls); else, on the
+   panel on an on-screen control it is the controls', whose presses move the menu (overlay_controls); down on a
+   slider it takes the step under it at once and the knob follows it until it lifts, which taps nothing; else, on the
    panel whatever control lies under it, its lift taps the menu where it went down (what that did), or, moved
    further than a finger slips, it scrolls the page as it goes and taps nothing. Reset forgets the one down, which
    lifts without a tap; cancel forgets id's */

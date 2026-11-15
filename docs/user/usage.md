@@ -878,7 +878,12 @@ state FILE the same way.
 
 In the game's menu the arrows, Enter and Escape move, select and go back; a gamepad's D-pad or left stick, A and B
 do the same, the on-screen controls' too, and a direction held goes on after a moment. **TV mode** steps On, Off and
-Auto, Left and Right either way, once a press: each step docks or undocks the console under the game.
+Auto, Left and Right either way, once a press: each step docks or undocks the console under the game. **Volume** is the
+game's sound on a slider ([`volume`](settings.md#audio)), 100% at first: Left and Right step it 5% either way, held
+too, and Enter or A up, stopping at Mute and at 100%; a tap or a click on the slider takes the step under it, one left
+of it steps down and one on its value up, and a press moves the knob as it drags. Each step is heard at once and kept
+in the game's `.ini`, but while the launcher's Settings > Audio > Volume passes the run its own (`--volume=N`), which
+the run then keeps to: the step lasts until the game ends.
 
 A game that asks for text (a name, a password, a search) shows a box over the game, in the menu's look and the same
 on every platform: the game's own words for it, the line with the text the game started it with, and how many
