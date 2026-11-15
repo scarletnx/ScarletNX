@@ -413,13 +413,15 @@ u32 vk_image_bound_blocks(VkImage img);
 u32 vk_image_bound_memory(VkImage img);
 /* ledger.h: vk_mem_track and vk_mem_untrack enter each allocation in the byte ledger under its owner */
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
-/* before the device is made: the extension to enable, VK_UMA_WITH_* (VK_EXT_external_memory_host, or Android's
-   VK_ANDROID_external_memory_android_hardware_buffer) */
-enum { VK_UMA_WITH_NONE, VK_UMA_WITH_HOST, VK_UMA_WITH_AHB };
-int vk_uma_choose(int has_import, int has_ahb, int has_placed);
+/* before the device is made: the extension to enable, VK_UMA_WITH_* (VK_EXT_external_memory_host, Android's
+   VK_ANDROID_external_memory_android_hardware_buffer, or VK_KHR_external_memory_fd with VK_EXT_external_memory_dma_buf
+   for Linux's udmabuf). has_dmabuf: the device has those two */
+enum { VK_UMA_WITH_NONE, VK_UMA_WITH_HOST, VK_UMA_WITH_AHB, VK_UMA_WITH_DMABUF };
+int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf);
 /* what vk_uma_choose takes for vk_memory want (0 auto, 1 copy, 2 UMA) and uma_memory how (0 auto, 1 imported only, 2
-   moved only) on a device of model VK_MEM_*: VK_UMA_WITH_* */
-int vk_uma_way(int want, int how, int model, int has_import, int has_ahb);
+   moved only) on a device of model VK_MEM_*, where guest memory can move into dma-bufs (has_dmabuf) and the driver's
+   imports cost each submission (dear): VK_UMA_WITH_* */
+int vk_uma_way(int want, int how, int model, int has_import, int has_ahb, int has_dmabuf, int dear);
 void vk_uma_init(void); /* after it */
 int vk_uma(void);       /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
@@ -486,10 +488,12 @@ u32 vk_uma_imports(u64 cpu, u64 size); /* the imports the driver holds over gues
 /* the first import the driver holds over guest memory [cpu, end), on any thread: where it starts there, with where it
    ends in *hi (end at most); end for none. Write tracking leaves those pages alone */
 u64 vk_uma_import_in(u64 cpu, u64 end, u64* hi);
-/* guest memory moves into regions of buffers of their own (the migrate way, Android's) from now on, or with on 0 is
-   imported where it is, the other way's imports let go first: 0 without guest memory in place. Tests run the migrate
-   way off Android with memfd regions the driver imports as host memory (vk_lock) */
+/* guest memory moves into regions of buffers of their own (the migrate way) from now on, or with on 0 is imported
+   where it is, the other way's imports let go first: 0 without guest memory in place. Tests run the migrate way off
+   Android with memfd regions the driver imports as host memory (on 1) or as dma-bufs of udmabuf (on 2, 0 where
+   vk_uma_can_dmabuf says it can't) (vk_lock) */
 int vk_uma_migrate(int on);
+int vk_uma_can_dmabuf(void);
 
 /* The caches of textures, render targets and buffers are kept within the driver's budget for the heap images go to
    (VK_EXT_memory_budget, devmem.c; vk_budget_mb lowers it, for testing): past it the driver pages memory out,
@@ -2550,7 +2554,7 @@ extern u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because th
    were left so (statistics) */
 extern u64 g_vk_cs_open, g_vk_cs_left;
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
-int vk_uma_choose(int has_import, int has_ahb, int has_placed);
+int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf);
 void vk_uma_init(void); /* after it */
 int vk_uma(void);       /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
@@ -2813,7 +2817,7 @@ extern u64 g_rec_barriers_synced;               /* record.c: barriers with a pNe
 extern u64 g_rec_xfer_kind[3], g_rec_buf_bytes; /* buffer, buffer-image, image copies; buffer copies' bytes */
 
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
-int vk_uma_choose(int has_import, int has_ahb, int has_placed);
+int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf);
 void vk_uma_init(void); /* after it */
 int vk_uma(void);       /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);

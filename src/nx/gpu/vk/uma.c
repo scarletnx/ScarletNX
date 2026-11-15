@@ -16,6 +16,12 @@
    Where the driver can't import host memory but takes buffers of a kind of its own in place, guest memory moves into
    them instead with vk_memory=2 (the migrate way: Android, whose drivers all take an AHardwareBuffer, and Qualcomm's
    has no VK_EXT_external_memory_host); auto copies there, as no phone has measured the moves yet (vk_uma_way).
+   On Linux, where the driver's imports are dear (amdgpu faults in every import's pages again at each submission),
+   auto moves guest memory into memfds the GPU imports as dma-bufs (/dev/udmabuf, the dma-buf way): the import costs a
+   submission about a microsecond, and the CPU keeps an ordinary shared mapping of the pages. A region is at most what
+   one udmabuf holds (the module's size_limit_mb, 64 MiB on SteamOS), and nothing punches its memfd while the GPU holds
+   the pages (they are pinned: the GPU would keep the old ones). In one game's race the recording thread went from 95%
+   of a core, 87% of it in the kernel, to 24%.
    uma_memory compares the two ways on a device that has both: 1 only imports, 2 only moves. The
    windows a range touches become a region: a buffer imported once, which the pages then move into with their bytes,
    mapped where they were (mem.c's mem_migrate); the regions it meets move on into it, so one region of their union
@@ -159,6 +165,10 @@ typedef struct {
     VkResult import_result; /* the last import's, for the log */
     u64 align;              /* minImportedHostPointerAlignment, and the host's page in the migrate way */
     int migrate;            /* the migrate way: guest memory moves into regions (vk_uma_choose, vk_uma_migrate) */
+    int dmabuf;             /* and a region is a memfd the driver imports as a dma-buf (udmabuf), not a host pointer */
+    u64 region_max;         /* a region's most bytes: UMA_REGION_MAX, or what one udmabuf holds */
+    int can_dmabuf;         /* regions can be dma-bufs: udmabuf opens, and the device imports them (vk_uma_init) */
+    u64 dmabuf_max;         /* what one udmabuf holds, whole windows */
     char why[96];           /* why the last region couldn't be made, for the log */
     u64 bound;              /* the submit that last read guest memory in place (vk_submit_number) */
     Seen seen[256];         /* the ranges hz_mark marked, with their submit */
@@ -232,9 +242,9 @@ int vk_uma(void) { return g_vk.mem_path == VK_MEM_PATH_UMA; }
    imports and its constant buffers about 40 MB; copied as on a discrete GPU, 90 MB stayed and the map ran at 14.9.
    What stays imported are the pages written in place and the dispatches' storage ranges, 16 MiB windows that are far
    dearer copied (5 frames a second). AMD's driver on Windows has no amdgpu user pointers. uma_copies overrides it */
-int vk_uma_imports_dear(void) {
-    if (g_settings.guest_buffers_copied) return g_settings.guest_buffers_copied == 2; /* uma_copies */
-    switch (g_vk.driver_id) {
+/* a driver that takes every import's pages again at each submission */
+static int driver_imports_dear(u32 driver_id) {
+    switch (driver_id) {
         case VK_DRIVER_ID_MESA_RADV:
         case VK_DRIVER_ID_AMD_OPEN_SOURCE: return 1;
 #if defined(__linux__)
@@ -242,6 +252,10 @@ int vk_uma_imports_dear(void) {
 #endif
         default: return 0;
     }
+}
+int vk_uma_imports_dear(void) {
+    if (g_settings.guest_buffers_copied) return g_settings.guest_buffers_copied == 2; /* uma_copies */
+    return driver_imports_dear(g_vk.driver_id);
 }
 u64 vk_uma_bound(void) { return g_uma.bound; }
 
@@ -269,16 +283,41 @@ static int mem_model(void) {
 /* The moves into AHardwareBuffers are taken only when asked for (want 2, or how 2): auto keeps copying where the device
    has no VK_EXT_external_memory_host, as no phone has measured them yet. how is uma_memory, which compares the two ways
    on one device: 1 never moves, 2 never imports guest memory where it is */
-int vk_uma_way(int want, int how, int model, int has_import, int has_ahb) {
+/* Linux's dma-bufs of memfds (udmabuf, has_dmabuf) are moved into under auto where the driver's imports are dear
+   (dear): a dma-buf's import costs a submission about a microsecond, where amdgpu faults in a host pointer's pages
+   again at each. On a Steam Deck a submission took 20 us with 192 MB in three dma-bufs, 346 us with it in 48 host
+   pointers, and one game's race held about 180 MB of imports, its recording thread 87% in the kernel */
+int vk_uma_way(int want, int how, int model, int has_import, int has_ahb, int has_dmabuf, int dear) {
     if (want != 2 && (want != 0 || model != VK_MEM_UMA)) return VK_UMA_WITH_NONE;
-    if (how == 2) return has_ahb ? VK_UMA_WITH_AHB : VK_UMA_WITH_NONE;
+    if (how == 2) return has_ahb ? VK_UMA_WITH_AHB : has_dmabuf ? VK_UMA_WITH_DMABUF : VK_UMA_WITH_NONE;
+    if (how == 0 && has_dmabuf && dear) return VK_UMA_WITH_DMABUF;
     if (has_import) return VK_UMA_WITH_HOST;
     return how == 0 && want == 2 && has_ahb ? VK_UMA_WITH_AHB : VK_UMA_WITH_NONE;
 }
-int vk_uma_choose(int has_import, int has_ahb, int has_placed) {
+/* whether a buffer of guest_usage() can be a dma-buf the device imports, not one it takes only whole (dedicated) */
+static VkBufferUsageFlags guest_usage(void);
+static int dmabuf_importable(void) {
+    VkPhysicalDeviceExternalBufferInfo bi = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO,
+                                             /* the device address too, which the device's later features may add */
+                                             .usage = guest_usage() | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                             .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkExternalBufferProperties p = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES};
+    vkGetPhysicalDeviceExternalBufferProperties(g_vk.phys, &bi, &p);
+    VkExternalMemoryFeatureFlags f = p.externalMemoryProperties.externalMemoryFeatures;
+    return (f & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) && !(f & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT);
+}
+int vk_uma_choose(int has_import, int has_ahb, int has_placed, int has_dmabuf) {
     int want = g_settings.guest_memory, how = g_settings.guest_memory_in_place, with;
     g_vk.mem_model = mem_model();
-    with = vk_uma_way(want, how, g_vk.mem_model, has_import, has_ahb);
+    /* the driver's, before the device is made (g_vk.driver_id comes after) */
+    VkPhysicalDeviceDriverProperties dp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 pp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dp};
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &pp);
+    int dear = g_settings.guest_buffers_copied ? g_settings.guest_buffers_copied == 2 : driver_imports_dear(dp.driverID);
+    /* a region holds whole windows: a dma-buf that can't hold one is none */
+    u64 dmabuf_max = has_dmabuf && g_vk.mem_model == VK_MEM_UMA ? plat_dmabuf_limit() : 0;
+    int can_dmabuf = dmabuf_max >= UMA_WINDOW && dmabuf_importable();
+    with = vk_uma_way(want, how, g_vk.mem_model, has_import, has_ahb, can_dmabuf, dear);
     int ahb_held = with == VK_UMA_WITH_NONE && how == 0 && want == 0 && g_vk.mem_model == VK_MEM_UMA && has_ahb;
     g_vk.mem_path = with == VK_UMA_WITH_NONE ? VK_MEM_PATH_COPY : VK_MEM_PATH_UMA;
     if (with == VK_UMA_WITH_NONE && !ahb_held && (want == 2 || (want == 0 && g_vk.mem_model == VK_MEM_UMA))) {
@@ -292,7 +331,11 @@ int vk_uma_choose(int has_import, int has_ahb, int has_placed) {
             WARN("vulkan: guest memory in place was asked for, but the device has " UMA_NO_IMPORT
                  ": guest memory is copied\n");
     }
-    g_uma.migrate = with == VK_UMA_WITH_AHB;
+    g_uma.migrate = with == VK_UMA_WITH_AHB || with == VK_UMA_WITH_DMABUF;
+    g_uma.dmabuf = with == VK_UMA_WITH_DMABUF;
+    g_uma.can_dmabuf = can_dmabuf;
+    g_uma.dmabuf_max = dmabuf_max & ~(UMA_WINDOW - 1);
+    g_uma.region_max = g_uma.dmabuf && g_uma.dmabuf_max < UMA_REGION_MAX ? g_uma.dmabuf_max : UMA_REGION_MAX;
     /* placed maps: a whole chunk mapped at an address of a window's alignment, given back reserved. Linux's and
        Android's, whose reservation plat_alias_unmap gives back. Decided again for a device made again without
        VK_EXT_map_memory_placed (device.c's create_device) */
@@ -315,7 +358,8 @@ int vk_uma_choose(int has_import, int has_ahb, int has_placed) {
         "VK_EXT_map_memory_placed %s\n",
         model_name(g_vk.mem_model),
         g_vk.mem_path != VK_MEM_PATH_UMA ? "copied"
-        : g_uma.migrate                  ? "moved into AHardwareBuffers the GPU reads in place, where they can be"
+        : g_uma.dmabuf ? "moved into memfds the GPU imports as dma-bufs (udmabuf) and reads in place, where they can be"
+        : g_uma.migrate ? "moved into AHardwareBuffers the GPU reads in place, where they can be"
                                          : "read in place where they can be",
         want == 1   ? "copy"
         : want == 2 ? "uma"
@@ -892,6 +936,43 @@ static int imp_make_ahb(Imp* m, u64 cpu, u64 size, void* ahb) {
                     ap.memoryTypeBits, ap.allocationSize);
 }
 #endif
+/* a region's memfd fd as a dma-buf (udmabuf) imported as its buffer: 0 when it can't be. The memfd is never punched
+   while the dma-buf lives (plat_gpu_buffer_free only closes and unmaps): its pinned pages would stay the GPU's while
+   the CPU's became others */
+static int imp_make_dmabuf(Imp* m, u64 cpu, u64 size, int fd) {
+    int dmabuf = plat_gpu_buffer_dmabuf(fd, size);
+    if (dmabuf < 0) {
+        g_uma.import_result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+        return 0;
+    }
+    VkMemoryFdPropertiesKHR fp = {.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
+    VkResult r = vkGetMemoryFdPropertiesKHR(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dmabuf, &fp);
+    if (r != VK_SUCCESS) {
+        g_uma.import_result = r;
+        plat_vm_fd_close(dmabuf);
+        return 0;
+    }
+    /* host-visible, coherent and cached where the driver offers it: the pages are the system's, snooped, which the
+       guest's CPU reads and writes through the memfd's mapping, not through vkMapMemory */
+    const VkPhysicalDeviceMemoryProperties* mp = vk_devmem_props();
+    const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                       VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    u32 bits = 0;
+    for (u32 k = 0; k < mp->memoryTypeCount; k++)
+        if ((fp.memoryTypeBits >> k & 1) && (mp->memoryTypes[k].propertyFlags & want) == want) bits |= 1u << k;
+    VkImportMemoryFdInfoKHR imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+                                   .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+                                   .fd = dmabuf};
+    /* the import owns the descriptor once vkAllocateMemory took it (imp_bind's import_result), and frees it with the
+       memory when the bind after it fails: it is closed here only when the allocation never took it */
+    g_uma.import_result = VK_ERROR_INITIALIZATION_FAILED;
+    if (!imp_bind(m, cpu, size, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, &imp, bits ? bits : fp.memoryTypeBits,
+                  size)) {
+        if (g_uma.import_result != VK_SUCCESS) plat_vm_fd_close(dmabuf);
+        return 0;
+    }
+    return 1;
+}
 /* guest memory [cpu, cpu + size) as a region (the migrate way): a buffer of its own, imported, that its pages then move
    into with their bytes, those of the regions it meets included. NULL, or why it can't be */
 static const char* region_make(Imp* m, u64 cpu, u64 size) {
@@ -904,7 +985,7 @@ static const char* region_make(Imp* m, u64 cpu, u64 size) {
 #if defined(__ANDROID__)
     r = imp_make_ahb(m, cpu, size, handle);
 #else
-    r = imp_make(m, cpu, size, handle);
+    r = g_uma.dmabuf ? imp_make_dmabuf(m, cpu, size, fd) : imp_make(m, cpu, size, handle);
 #endif
     if (!r) {
         plat_gpu_buffer_free(fd, handle, size);
@@ -983,7 +1064,7 @@ static u32 imp_get(u64 cpu, u64 len) {
             return ~0u;
         }
     }
-    u64 cap = g_uma.migrate && g_vk.alloc_cap > UMA_REGION_MAX ? UMA_REGION_MAX : g_vk.alloc_cap;
+    u64 cap = g_uma.migrate && g_vk.alloc_cap > g_uma.region_max ? g_uma.region_max : g_vk.alloc_cap;
     if (hi - lo > cap || failed(lo, hi)) {
         g_uma.imp_why[hi - lo > cap ? 3 : 4]++;
         return ~0u;
@@ -1349,14 +1430,17 @@ static void gpu_wrote(u64 cpu, u64 n) {
 
 void vk_uma_init(void) {
     if (!vk_uma()) return;
+    /* the device's dma-buf functions, there only when the extensions were enabled (this way, or placed maps' views) */
+    if (!vkGetMemoryFdPropertiesKHR) g_uma.can_dmabuf = 0;
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &hp};
     if (g_uma.migrate) { /* regions move whole host pages (mem_migrate) */
         if (plat_vm_page() > g_uma.align) g_uma.align = plat_vm_page();
-        LOG("vulkan: guest memory moves into AHardwareBuffers as the GPU reads it, in regions of whole %llu MiB "
-            "windows, %llu MiB at most\n",
-            (unsigned long long)(UMA_WINDOW >> 20), (unsigned long long)(UMA_REGION_MAX >> 20));
+        LOG("vulkan: guest memory moves into %s as the GPU reads it, in regions of whole %llu MiB windows, %llu MiB "
+            "at most\n",
+            g_uma.dmabuf ? "memfds the GPU imports as dma-bufs (udmabuf)" : "AHardwareBuffers",
+            (unsigned long long)(UMA_WINDOW >> 20), (unsigned long long)(g_uma.region_max >> 20));
     } else {
         vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
         if (hp.minImportedHostPointerAlignment > g_uma.align) g_uma.align = hp.minImportedHostPointerAlignment;
@@ -1584,10 +1668,13 @@ void vk_uma_before_write(u64 gva, u64 len) {
 void vk_uma_forget_all(void) {
     for (u32 i = g_uma.nimp; i-- > 0;) imp_let_go(i);
 }
+int vk_uma_can_dmabuf(void) { return vk_uma() && g_uma.can_dmabuf; }
 int vk_uma_migrate(int on) {
-    if (!vk_uma()) return 0;
+    if (!vk_uma() || (on == 2 && !g_uma.can_dmabuf)) return 0;
     for (u32 i = g_uma.nimp; i-- > 0;) imp_let_go(i); /* the other way's go first */
-    g_uma.migrate = on;
+    g_uma.migrate = on != 0;
+    g_uma.dmabuf = on == 2;
+    g_uma.region_max = on == 2 && g_uma.dmabuf_max < UMA_REGION_MAX ? g_uma.dmabuf_max : UMA_REGION_MAX;
     if (on && plat_vm_page() > g_uma.align) g_uma.align = plat_vm_page();
     return 1;
 }

@@ -992,9 +992,15 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         has_hdr_metadata = !g_opt_headless && snx_vk_choice_has(c, VK_EXT_HDR_METADATA_EXTENSION_NAME);
     }
     /* guest memory the GPU reads in place (uma.c) */
-    int uma_with = vk_uma_choose(has_host_import, has_ahb, has_placed && has_map2);
+    int uma_with = vk_uma_choose(has_host_import, has_ahb, has_placed && has_map2, has_dmabuf);
     if (uma_with == VK_UMA_WITH_HOST) snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     if (uma_with == VK_UMA_WITH_AHB) snx_vk_choice_enable(c, "VK_ANDROID_external_memory_android_hardware_buffer");
+    /* the dma-bufs of memfds that guest memory moves into (uma.c, udmabuf), which placed maps' views also take */
+    int fd_exts = uma_with == VK_UMA_WITH_DMABUF;
+    if (fd_exts) {
+        snx_vk_choice_enable(c, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+        snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+    }
     if (g_vk.has_budget) snx_vk_choice_enable(c, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     if (has_hdr_metadata) {
         snx_vk_choice_enable(c, VK_EXT_HDR_METADATA_EXTENSION_NAME);
@@ -1803,7 +1809,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         snx_vk_choice_enable(c, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
         snx_vk_choice_enable(c, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME);
         vk_uma_dmabuf(has_dmabuf); /* a view of it maps the same memory again, through a dma-buf */
-        if (vk_uma_can_view()) {
+        if (vk_uma_can_view() && !fd_exts) {
             snx_vk_choice_enable(c, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
             snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
         }
