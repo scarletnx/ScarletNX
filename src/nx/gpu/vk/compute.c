@@ -1730,11 +1730,11 @@ rebind:
     u32 nw = 0;
     for (int i = 0; i < 8; i++)
         if (p->si.cbuf_mask & (1u << i)) {
-            /* only the bytes the shader reads (robust buffer access keeps reads past them in bounds, of undefined
-               value) */
+            /* only the bytes the shader reads, zeros after the guest's: reads past the range are zero with
+               robustBufferAccess2, and stay in bounds, of undefined value, with robust buffer access alone */
             u32 range = g_cbn[i];
             if (p->si.cbuf_max[i] && range > p->si.cbuf_max[i]) range = p->si.cbuf_max[i];
-            range = (range + 15) & ~15u;
+            range = vk_cb_round(range);
             if (!range) range = 16;
             if (range > g_vk.props.limits.maxUniformBufferRange) range = g_vk.props.limits.maxUniformBufferRange;
             u32 n = g_cbn[i] < range ? g_cbn[i] : range;
@@ -2055,12 +2055,14 @@ rebind:
                Skipped whole for them, the dispatch left levels 1 to 3 zero, and the trilinear lookups of the
                texture drew a dark square under the game's kart */
             VkImageView null_view = VK_NULL_HANDLE;
-            Surf* null_image = vk_tic_empty(tic)
+            int null_slot = vk_tic_empty(tic) && vk_null_descriptors();
+            Surf* null_image = vk_tic_empty(tic) && !null_slot
                                    ? vk_null_storage(vk_storage_image_type(&p->si, i), p->si.img[i].kind, &null_view)
                                    : NULL;
-            if (null_image) {
-                vk_surf_use(vk_cmd(), null_image, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            VK_STORAGE_IMAGE_ACCESS);
+            if (null_image || null_slot) {
+                if (null_image)
+                    vk_surf_use(vk_cmd(), null_image, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_STORAGE_IMAGE_ACCESS);
                 ii[p->si.ntex + i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, null_view, VK_IMAGE_LAYOUT_GENERAL};
                 w[nw++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                                  .dstSet = set,

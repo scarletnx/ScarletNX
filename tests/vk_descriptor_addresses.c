@@ -232,10 +232,12 @@ int main(void) {
     assert(encoded_address(table, 0, 0) == (1ull << 40) + 7 * 4096 + buffers[0].offset);
     g_test.incarnation = 0;
     /* Descriptor arrays share the same reuse; null descriptors never query the driver. */
+    /* A null buffer (nullDescriptor) is address 0 and the whole size, whatever its offset. */
     for (u32 i = 0; i < 4; i++) buffers[i].buffer = HANDLE(VkBuffer, i < 2 ? 7 : 0);
     writes[0].descriptorCount = 4;
     table = encode(writes, 1, 1, 2); /* the two non-null encodings are cached */
-    for (u32 i = 0; i < 4; i++) assert(encoded_address(table, 0, i) == (i < 2 ? 7 * 4096 : 0) + buffers[i].offset);
+    for (u32 i = 0; i < 4; i++) assert(encoded_address(table, 0, i) == (i < 2 ? 7 * 4096 + buffers[i].offset : 0));
+    assert(g_test.address[0] == 0 && g_test.range[0] == VK_WHOLE_SIZE);
     writes[0].descriptorCount = 1;
     /* A texel view of the same buffer can reuse the address across descriptor types. */
     VkBufferViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
