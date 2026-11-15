@@ -32,19 +32,13 @@ static int gsv_kuser_unknown(SvcObj* self, IpcCtx* c) {
     }
     return ipc_unknown(self, c);
 }
-/* The camera context's session, with no camera behind it: every command but 21 (gsv.swipc) answers the camera
-   service's result of module 452 and description 6, whose name nobody documents. One game's main lets it pass when it
-   opens the camera "Default" */
+/* The camera context's session, with no camera plugged in (gsv.swipc): every command that gsv.swipc does not declare
+   answers the camera service's result of module 452 and description 3, which the SDK's QueryDeviceConnection (29)
+   lets pass and one game logs as no camera device found */
 static int gsv_camera_none(SvcObj* self, IpcCtx* c) {
-    u32 i;
     (void)self;
-    LOG_LIMIT(16, "gsv: camera session cmd %u, raw size %#x, and there is no camera\n", c->cmd, c->raw_size);
-    for (i = 0; i < c->raw_size && i < 0x20; i += 8) {
-        u64 word = 0;
-        memcpy(&word, c->raw + i, c->raw_size - i < 8 ? c->raw_size - i : 8);
-        LOG_LIMIT(16, "gsv:   raw +%#x = %#llx\n", i, (unsigned long long)word);
-    }
-    R_THROW(SNX_RC_CAMERA_NOT_AVAILABLE);
+    LOG_LIMIT(16, "gsv: camera session cmd %u, raw size %#x, and no camera is plugged in\n", c->cmd, c->raw_size);
+    R_THROW(SNX_RC_CAMERA_DEVICE_NOT_DETECTED);
 }
 #include "hle/services/gsv.swipc.inc"
 #include "hle/services/nvdrv.swipc.h"
@@ -96,6 +90,18 @@ static int nn_gsv_UserSession_DestroyCameraContext(SvcObj* self) {
 static int nn_gsv_CameraSession_GetEvent(SvcObj* self, u32 id, u32* event) {
     (void)self, (void)id;
     return new_event(event, "gsv camera", 0);
+}
+/* The device handle of the camera "Default", which the SDK gives back to the session in the calls on that camera.
+   The session takes none of them while no camera is plugged in, so its value is the session's own choice */
+static int nn_gsv_CameraSession_Initialize(SvcObj* self, const u8* name, u64* device) {
+    (void)self;
+    LOG("gsv: camera Initialize(\"%.16s\")\n", (const char*)name);
+    *device = 0;
+    R_SUCCEED();
+}
+static int nn_gsv_CameraSession_Finalize(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
 }
 static int nn_gsv_UserSession_OpenGraphicsFrameSession(SvcObj* self, u32* session) {
     (void)self;
