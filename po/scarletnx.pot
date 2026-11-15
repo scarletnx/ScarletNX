@@ -1738,6 +1738,14 @@ msgid "Clean"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Keep the Games' Own"
+msgstr ""
+
+#: src/gui/main.c
+msgid "With the Games' Own"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Reset"
 msgstr ""
 
@@ -4650,6 +4658,20 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Clean Old Settings? %d old key"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Clean Old Settings?"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid " The games' own settings keep %d old keys."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid " The games' own settings keep %d old key."
 msgstr ""
 
 #: src/gui/main.c

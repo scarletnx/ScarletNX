@@ -1741,6 +1741,14 @@ msgid "Clean"
 msgstr "清理"
 
 #: src/gui/main.c
+msgid "Keep the Games' Own"
+msgstr ""
+
+#: src/gui/main.c
+msgid "With the Games' Own"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Reset"
 msgstr "重置"
 
@@ -4654,6 +4662,20 @@ msgstr "清理旧设置？%d 个旧键"
 #, c-format
 msgid "Clean Old Settings? %d old key"
 msgstr "清理旧设置？%d 个旧键"
+
+#: src/gui/main.c
+msgid "Clean Old Settings?"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid " The games' own settings keep %d old keys."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid " The games' own settings keep %d old key."
+msgstr ""
 
 #: src/gui/main.c
 msgid "Nothing to clean: no [Deprecated] in a game's .ini, no old keys"

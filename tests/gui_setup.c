@@ -1223,6 +1223,7 @@ static void test_ask_tones(App* app) {
                 {GUI_ASK_OUTSIDE, UI_ATTR_CAUTION},
                 {GUI_ASK_ROOM, UI_ATTR_CAUTION},
                 {GUI_ASK_CLEAN, UI_ATTR_CAUTION},
+                {GUI_ASK_CLEAN_OWN, UI_ATTR_CAUTION},
                 {GUI_ASK_RESET, UI_ATTR_CAUTION},
                 {GUI_ASK_PLACES, UI_ATTR_CAUTION},
                 {GUI_ASK_PLACE, UI_ATTR_CAUTION},

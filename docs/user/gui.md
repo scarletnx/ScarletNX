@@ -264,7 +264,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   how many it would take out, then takes out the settings nothing reads any more: the `[Deprecated]` section the runtime
   gives a game's `.ini` for the keys it no longer uses (in the config folder's `recompiled/`, in `recompiled/`
   and in the player's folders), the keys of `settings.ini` that no setting of the runtime's takes
-  (only while the runtime lists its settings) and those of `app.ini` the menu does not know. A box
+  (only while the runtime lists its settings) and those of `app.ini` the menu does not know. While a game's own
+  picks (`<id>.picks`, [Settings](settings.md)) keep keys no setting takes, the question says how many and its
+  choices are **Keep the Games' Own** and **With the Games' Own**, in focus, which writes each of those files again
+  without them (removed with no pick left); Back takes out nothing. A box
   over the screen then lists each file and what was done to it, or why not, Up/Down and the wheel going over those
   that do not fit, until another key closes it;
   Share Log lists them too. **Move Old Files** (its value how many folders an older version left, the setup's Old Files

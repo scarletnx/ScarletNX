@@ -7825,6 +7825,41 @@ int main(int argc, char** argv) {
         hides(&app, "Clean Old Settings: 3 done", title);
         key(&app, SDLK_RETURN);
         assert(!app.confirm.shown && !strncmp(app.editor.note, "Nothing to clean", 16));
+        /* a game's own picks keeping a key no setting takes: asked with them, the games' own in focus; Back and Keep
+           the Games' Own leave the file, With the Games' Own writes it without the key, an entry of the report */
+        {
+            char* picks = snx_path_join(app.games_dir, "Old game.picks");
+            const char* own = "[Display]\nfullscreen=1\n[Other]\nnewer_key=5\n";
+            assert(!snx_write_file(picks, own, strlen(own)));
+            key(&app, SDLK_RETURN);
+            assert(app.confirm.shown && app.confirm.ask == GUI_ASK_CLEAN_OWN && app.confirm.selected == 1 &&
+                   !strcmp(app.ask_line, "Clean Old Settings? The games' own settings keep 1 old key."));
+            {
+                UiRowInfo keep = {0}, with = {0};
+                app.choices_of = GUI_CHOICES_ASK;
+                assert(ui_choices_rows_get_row_info(&app, 0, 0, &keep) && !strcmp(keep.label, "Keep the Games' Own") &&
+                       ui_choices_rows_get_row_info(&app, 1, 0, &with) && !strcmp(with.label, "With the Games' Own"));
+            }
+            key(&app, SDLK_ESCAPE); /* Back */
+            assert(!app.confirm.shown && (kept = (char*)snx_read_file(picks, &size)) && !strcmp(kept, own));
+            free(kept);
+            key(&app, SDLK_RETURN);
+            key(&app, SDLK_LEFT); /* Keep the Games' Own */
+            key(&app, SDLK_RETURN);
+            assert(!app.confirm.shown && (kept = (char*)snx_read_file(picks, &size)) && !strcmp(kept, own));
+            free(kept);
+            key(&app, SDLK_RETURN);
+            key(&app, SDLK_RETURN); /* With the Games' Own, in focus */
+            assert(!app.confirm.shown && app.cleaned_shown && app.cleaned.count == 1 && app.cleaned.done == 1 &&
+                   strstr(app.cleaned.text, "\tRemoved newer_key=5\n"));
+            assert((kept = (char*)snx_read_file(picks, &size)) && strstr(kept, "\n[Display]\nfullscreen=1\n") &&
+                   !strstr(kept, "newer_key"));
+            free(kept);
+            key(&app, SDLK_LEFT); /* the report closed */
+            assert(!app.cleaned_shown);
+            remove(picks);
+            free(picks);
+        }
         /* a runtime that listed no settings: every key of settings.ini would look old, and none is taken out */
         {
             GuiSettings listed = app.settings;
@@ -16505,7 +16540,7 @@ int main(int argc, char** argv) {
                 assert(!app.setup_on && app.menu.selected == selected && snx_is_file(loose) && snx_is_dir(work));
                 app.setup = setup_was;
                 /* Clean Old Settings cleans settings only: what an older version left stays where it is */
-                clean_old(&app);
+                clean_old(&app, true);
                 assert(snx_is_file(loose) && snx_is_dir(loose_data) && snx_is_file(npdm) && snx_is_dir(work));
                 left_behind(&app);
                 assert(app.lefts == 5);
