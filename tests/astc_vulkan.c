@@ -946,28 +946,37 @@ static void bench_decoders(u32 w, u32 h, int runs, BenchSource src) {
             VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     vk_finish();
     vk_astc_study_time(1);
+    /* A run is reps uploads of the level with no wait between them, 64 megatexels or more: one upload of a small
+       level leaves the GPU idle between runs, and the GPU's clock (amdgpu's automatic levels) stayed at its lowest
+       through them, 3.7 times slower (a 2048x2048 6x6 level's runs 1 to 5 against 6 and 7) */
+    const u32 reps = (u64)w * h >= 64ull << 20 ? 1 : (u32)((64ull << 20) / ((u64)w * h));
     for (int r = -1; r < runs; r++)
         for (int dec = 0; dec < 2; dec++) {
-            Level lv = {b, nx, ny, NULL, 2, 0};
             u64 dns, dn, sns, sn;
             g_settings.astc_decoder = dec;
             u64 t0 = plat_ns();
-            if (!vk_astc_upload(vk_cmd(), &t, 0, 0, w, h, 1, 0, 0, level_rows, &lv, NULL))
-                fatal("bench upload failed\n");
+            for (u32 k = 0; k < (reps < 64 ? reps : 64); k++) {
+                Level lv = {b, nx, ny, NULL, 2, 0};
+                if (!vk_astc_upload(vk_cmd(), &t, 0, 0, w, h, 1, 0, 0, level_rows, &lv, NULL))
+                    fatal("bench upload failed\n");
+            }
             vk_finish();
-            const u64 took = plat_ns() - t0;
+            const u32 n = reps < 64 ? reps : 64;
+            const u64 took = (plat_ns() - t0) / n;
             vk_astc_study_take(&dns, &dn, &sns, &sn);
             if (!dn || !sn)
                 fatal("bench %s: %llu dispatches and %llu strips timed\n", names[dec], (unsigned long long)dn,
                       (unsigned long long)sn);
-            if (r < 0) continue; /* the pipelines and Granite's tables made */
+            dns /= n;
+            sns /= n;
+            if (r < 0) continue; /* the pipelines and Granite's tables made, the clock up */
             dispatch[dec][count[dec]] = dns;
             strip[dec][count[dec]] = sns;
             wall[dec][count[dec]++] = took;
-            printf("BENCH-DECODER %s ASTC %ux%u %ux%u run %d: dispatches %.3f ms (%llu), strips %.3f ms (%llu), wall "
-                   "%.3f ms\n",
-                   names[dec], src.bw, src.bh, w, h, r + 1, dns / 1e6, (unsigned long long)dn, sns / 1e6,
-                   (unsigned long long)sn, took / 1e6);
+            printf("BENCH-DECODER %s ASTC %ux%u %ux%u run %d (%u uploads): dispatches %.3f ms (%llu), strips %.3f ms "
+                   "(%llu), wall %.3f ms, an upload each\n",
+                   names[dec], src.bw, src.bh, w, h, r + 1, n, dns / 1e6, (unsigned long long)(dn / n), sns / 1e6,
+                   (unsigned long long)(sn / n), took / 1e6);
             fflush(stdout);
         }
     vk_astc_study_time(0);
