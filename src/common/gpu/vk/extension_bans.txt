@@ -42,13 +42,14 @@
 # The other projects' sources, read at: ANGLE 97d96dab70 (src/libANGLE/renderer/vulkan/vk_renderer.cpp), DXVK
 # 829e377d2d (src/dxvk/dxvk_device_info.cpp), vkd3d-proton db5628e2af (libs/vkd3d/device.c), Dolphin 257a6d0eac
 # (Source/Core/VideoCommon/DriverDetails.cpp), PPSSPP 9f286ee4ca (Common/GPU/Vulkan/thin3d_vulkan.cpp); yuzu's and
-# Eden's commits by their hash, Eden's with the PR it came in (src/video_core/vulkan_common/vulkan_device.cpp).
+# Eden's commits by their hash, Eden's with the PR it came in (src/video_core/vulkan_common/vulkan_device.cpp); Eden's
+# driver bug list is its docs/DriverBugs.md at 9cf3a04af3, and :N the line of a row in it.
 
 key | action | driver | versions | system | devices | breaks | source | retest | checked | override
 
 # Dynamic vertex input (gpu/vk/vertex_input.c: vertex_input_dynamic_state=auto keeps off what holds here, on goes over it)
 VK_EXT_vertex_input_dynamic_state | off | nvidia | < 580.119.02 | any | * | breaks dynamic vertex input | Eden PR 3379 (9b1f6801a5, 2026-02-05) | headless:--vertex_input_dynamic_state=on | never | vertex_input_dynamic_state=on
-VK_EXT_vertex_input_dynamic_state | off | intel-windows | < 27.20.100.0 | any | * | breaks dynamic vertex input | yuzu 69f9b97e7e (2021-06-15), bounded in ddbf851ef6 (2022-12-27), kept by Eden | headless:--vertex_input_dynamic_state=on | never | vertex_input_dynamic_state=on
+VK_EXT_vertex_input_dynamic_state | off | intel-windows | < 27.20.100.0 | any | * | breaks dynamic vertex input | yuzu 69f9b97e7e (2021-06-15), bounded in ddbf851ef6 (2022-12-27), kept by Eden; Eden's driver bug list:24 | headless:--vertex_input_dynamic_state=on | never | vertex_input_dynamic_state=on
 VK_EXT_vertex_input_dynamic_state | warn | intel-windows | >= 27.20.100.0 | any | * | still has issues with dynamic vertex input by ANGLE's account, which keeps it off on every version | ANGLE vk_renderer.cpp:6632, anglebug 42265637 | headless:--vertex_input_dynamic_state=on | never | -
 VK_EXT_vertex_input_dynamic_state | off | qualcomm | * | android | * | draws edenprobe's coherence suite wrong with dynamic vertex input | ScarletNX 5722fc560 (2026-11-04); ANGLE vk_renderer.cpp:6632 keeps it off too (anglebug 381384988) | edenprobe:coherence | 2026-11-04 broken on 512.800.48 | vertex_input_dynamic_state=on
 VK_EXT_vertex_input_dynamic_state | off | mali | < 48.0.0 | any | * | applies vkCmdBindVertexBuffers2's strides to the wrong binding (Arm errata SDEN-3735689) | ANGLE vk_renderer.cpp:6632 | headless:--vertex_input_dynamic_state=on | never | vertex_input_dynamic_state=on
@@ -62,10 +63,10 @@ VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE | off | intel-windows | < 100.9684 
 shaderDenormFlushToZeroFloat32 | off | qualcomm | * | any | * | miscompiles shaders that declare DenormFlushToZero for 32 bits: one game's waterfall shader drew its background's colour on an Adreno 740 | ScarletNX 33bf51294 (2026-10-22); Eden PR 4297 (60a474b8df, 2026-08-24) found the same | new:headless:a fragment shader declaring DenormFlushToZero whose FMUL, FADD and FFMA results are read back | 2026-10-22 broken on 512.676 | -
 shaderFloat16 | off | intel-windows | * | any | * | crashes its SPIR-V compiler on a game's shaders that use FP16 | yuzu ef6cc3aa1d (2021-01-27), kept by Eden | new:headless:FP16 arithmetic in each stage, compiled and read back | never | -
 shaderFloat16 | warn | samsung | * | any | * | has FP16 turned off by ANGLE, which gives no reason | ANGLE vk_renderer.cpp:7364 | new:headless:FP16 arithmetic in each stage, compiled and read back | never | -
-shaderFloat16 | warn | nvidia | * | any | * | gets FP16 math wrong on Ampere and newer GPUs by yuzu's account, which Eden still follows | yuzu 7277d7fe96 (2021-07-03) | new:edenprobe:the HADD2, HMUL2 and HFMA2 cases against the console's | never | -
+shaderFloat16 | warn | nvidia | * | any | * | gets FP16 math wrong on Ampere and newer GPUs by yuzu's account, which Eden still follows | yuzu 7277d7fe96 (2021-07-03); Eden's driver bug list:18 | new:edenprobe:the HADD2, HMUL2 and HFMA2 cases against the console's | never | -
 shaderFloat16 | warn | amd-proprietary | * | any | * | gets FP16 math wrong from its 2026 versions in one game, by Eden's account | Eden PR 3661 (9d2341eaea, 2026-03-03) | new:edenprobe:the HADD2, HMUL2 and HFMA2 cases against the console's | never | -
 shaderDenormPreserveFloat16 | warn | nvidia | * | any | * | lets a DenormPreserve for 16 bits keep 32-bit denormals too, over a DenormFlushToZero for 32 bits | vkd3d-proton device.c:10180 | new:headless:one shader declaring both, its FP32 subnormals read back | never | -
-shaderInt64 | warn | qualcomm | * | any | * | has 64-bit integers and atomics turned off by Eden, which gives no reason | Eden PR 2732 (b389a72697, 2025-10-14) | new:edenprobe:64-bit integer arithmetic in a shader | never | -
+shaderInt64 | warn | qualcomm | * | any | * | has 64-bit integers and atomics turned off by Eden, which gives no reason | Eden PR 2732 (b389a72697, 2025-10-14); Eden's driver bug list:32 | new:edenprobe:64-bit integer arithmetic in a shader | never | -
 
 # Integer to float conversion (shader.h's g_spirv_translate.i2f_nearest: I2F.F32 of a 32-bit integer converts its two
 # halves, each exact, and adds them)
@@ -140,16 +141,16 @@ VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY | warn | powervr | * | any | * | renders wro
 primitiveRestartEnable | warn | mali | * | any | * | breaks primitive restart | Dolphin DriverDetails.cpp:110 | new:edenprobe:strips with restart indices | never | -
 primitiveRestartEnable | warn | qualcomm | * | any | * | breaks primitive restart | Dolphin DriverDetails.cpp:152 | new:edenprobe:strips with restart indices | never | -
 primitiveRestartEnable | warn | amd-proprietary | * | windows | * | resets the GPU with primitive restart on GCN 4 | Dolphin DriverDetails.cpp:108, VulkanContext.cpp:514 | new:edenprobe:strips with restart indices | never | -
-VkViewport.minDepth | warn | qualcomm | * | any | * | breaks a viewport whose minDepth is above its maxDepth | Dolphin DriverDetails.cpp:125 | new:edenprobe:depth with a reversed viewport range | never | -
-VkViewport.minDepth | warn | anv | * | any | * | breaks a viewport whose minDepth is above its maxDepth | Dolphin DriverDetails.cpp:122 | new:edenprobe:depth with a reversed viewport range | never | -
-VkViewport.minDepth | warn | moltenvk | * | any | * | breaks a viewport whose minDepth is above its maxDepth | Dolphin DriverDetails.cpp:127 | new:edenprobe:depth with a reversed viewport range | never | -
-VK_FORMAT_D32_SFLOAT | warn | qualcomm | * | any | * | leaves 32-bit float depth uncleared by a clear | Dolphin DriverDetails.cpp:120 | new:edenprobe:D32 depth clears read back | never | -
-vkCmdClearAttachments | warn | nvidia | * | any | * | can lock the GPU up clearing part of a multisampled target, several clears in one command buffer | Dolphin DriverDetails.cpp:116 | new:edenprobe:partial clears of a multisampled target, several a frame | never | -
+VkViewport.minDepth | warn | qualcomm | * | any | * | breaks a viewport whose minDepth is above its maxDepth | Dolphin DriverDetails.cpp:125; Eden's driver bug list:55 | new:edenprobe:depth with a reversed viewport range | never | -
+VkViewport.minDepth | warn | anv | * | any | * | breaks a viewport whose minDepth is above its maxDepth | Dolphin DriverDetails.cpp:122; Eden's driver bug list:55 | new:edenprobe:depth with a reversed viewport range | never | -
+VkViewport.minDepth | warn | moltenvk | * | any | * | breaks a viewport whose minDepth is above its maxDepth | Dolphin DriverDetails.cpp:127; Eden's driver bug list:55 | new:edenprobe:depth with a reversed viewport range | never | -
+VK_FORMAT_D32_SFLOAT | warn | qualcomm | * | any | * | leaves 32-bit float depth uncleared by a clear | Dolphin DriverDetails.cpp:120; Eden's driver bug list:37 | new:edenprobe:D32 depth clears read back | never | -
+vkCmdClearAttachments | warn | nvidia | * | any | * | can lock the GPU up clearing part of a multisampled target, several clears in one command buffer | Dolphin DriverDetails.cpp:116; Eden's driver bug list:23 | new:edenprobe:partial clears of a multisampled target, several a frame | never | -
 vkCmdClearAttachments | warn | qualcomm | < 512.762.12 | any | * | races clears inside a pass with the draws around them | ANGLE vk_renderer.cpp:6380, issuetracker.google.com 166809097 | new:edenprobe:clears between draws in one pass | never | -
 shaderCullDistance | warn | powervr | * | any | * | culls nothing for a shader that writes both clip and cull distances (BXM-8-256) | PPSSPP thin3d_vulkan.cpp:1147 | new:edenprobe:a draw with clip and cull distances both written | never | -
 
-# Eden's driver bug list (docs/DriverBugs.md at 9cf3a04af3, its row after the colon), where the renderer uses what a
-# row names and has no way around it yet: said, so a report from such a driver starts from them
+# The rows of Eden's driver bug list whose subject the renderer uses with no way around it yet: said, so a report from
+# such a driver starts from them
 VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT | warn | amd-proprietary | * | any | * | breaks cube compatible images on GCN 4 and older GPUs, which Eden tells by their lack of shaderFloat16 | Eden's driver bug list:11; Eden vulkan_device.cpp:615 (4dc69c06f7) | new:edenprobe:cube maps sampled after their faces are drawn to | never | -
 VK_SHADER_STAGE_COMPUTE_BIT | warn | intel-windows | >= 101.4096 < 101.4382 | any | * | breaks compute (its 0.405.0 to 0.405.286, as VK_MAKE_VERSION reads them) | Eden's driver bug list:26; Eden vulkan_device.h:1070 (4dc69c06f7) | headless: | never | -
 VkVertexInputAttributeDescription.format | warn | qualcomm | * | any | * | has no USCALED or SSCALED vertex formats, which yuzu and Eden emulate in the shader and the renderer passes as they are | yuzu 158a1896ec (2023-02-18); Eden's driver bug list:31 | new:edenprobe:scaled vertex attributes of each size read back | never | -
