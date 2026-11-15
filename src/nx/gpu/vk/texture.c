@@ -2275,6 +2275,17 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
    one game's full-screen pass read its 800x448 target as 792x448 through each of its draws to it, and the copy before
    each draw (210 a frame) took about 10 ms of the GPU. Its GPU timer then held its render size down there */
 static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) { return rt_copy(rt, w, h, as, 0, 1, 1); }
+/* Whether a texture of format f reads the B, G, R, A target format t (format.c's Cbgra) as its R, G, B, A twin: the
+   same bytes, red and blue in each other's places. The copy in f's format (rt_copy's CmdCopyImage, texels as they are)
+   holds byte 0 as red, and the target's own view gives byte 0 as blue, to which tex_map (render.c) sends the
+   header's red on a B, G, R, A surface: the target sampled itself reads the copy's texels. One battle copied three
+   1024x576 targets a frame for this, and missed the texture memo some 850 times a frame (it keeps no copy) */
+static int rb_twins(const VkFmt* f, const VkFmt* t) {
+    VkFormat a = vk_srgb_as(f->vk, 0), b = vk_srgb_as(t->vk, 0);
+    return t->bgra && !f->bgra &&
+           ((b == VK_FORMAT_B8G8R8A8_UNORM && a == VK_FORMAT_R8G8B8A8_UNORM) ||
+            (b == VK_FORMAT_A2R10G10B10_UNORM_PACK32 && a == VK_FORMAT_A2B10G10R10_UNORM_PACK32));
+}
 /* A scaled color target for a program whose texels are the guest's (a compute program, whose fetches, size queries
    and stored images count them, or a stage before the fragment's): its top-left w x h at the guest's size, in as when
    not NULL. NULL for a multisampled or depth target, a format that can't be blitted or a copy that found no memory,
@@ -3210,8 +3221,12 @@ static Surf* tex_from_tic(const u32* tic, int raw, int use) {
             }
             /* the same bytes in another color format (an RGBA8 target read as R32_Uint): sampling the target itself
                would convert its texels, so a copy in the texture's format holds them as they are. sRGB and linear
-               twins are views of one image and need no copy */
-            const VkFmt* as = !f.depth && !rt->f.depth && vk_srgb_as(f.vk, 0) != vk_srgb_as(rt->f.vk, 0) ? &f : NULL;
+               twins are views of one image and need no copy, and nor does a B, G, R, A target read in its R, G, B, A
+               twin (rb_twins) */
+            const VkFmt* as = !f.depth && !rt->f.depth && vk_srgb_as(f.vk, 0) != vk_srgb_as(rt->f.vk, 0) &&
+                                      !rb_twins(&f, &rt->f)
+                                  ? &f
+                                  : NULL;
             if (use == TEX_GUEST && (rt->sw != rt->w || rt->sh != rt->h)) {
                 Surf* guest = rt_guest(rt, w, h, as);
                 if (guest) return guest;
