@@ -215,6 +215,7 @@ static void test_open(void) {
 static u32 test_pace(void) {
     static i16 got[48000 * 2];
     u32 n = 0, total = 0, lead = 0;
+    g_settings.microphone[0] = 0; /* the system's default device, whatever the settings' table starts it at */
     g_settings.microphone_noise_reduction = 0;
     test_signals = 0;
     CHECK(audio_start_input(&cpu, STREAM) == 0 && test_opens == 1 && test_mic != NULL && test_device[0] == 0);
