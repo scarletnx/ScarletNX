@@ -300,6 +300,14 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "--settings-ini=${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_vk12.ini" --vk-validation=1)
     set_tests_properties(vulkan_headless_vk12 PROPERTIES TIMEOUT 120
         ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again on a device made again without VK_EXT_depth_clamp_control and VK_EXT_conditional_rendering,
+    # whose commands vk_debug_hide_commands has the check of each extension's commands take as missing (gpu/vk/device.c):
+    # each extension off, the log saying the command and the driver (tests/vulkan_hidden_commands.inc). A driver that
+    # would have neither on skips (77)
+    add_test(NAME vulkan_headless_hidden_commands COMMAND snx-test-vulkan -H
+             --vk_debug_hide_commands=vkCmdSetDepthClampRangeEXT,vkCmdBeginConditionalRenderingEXT)
+    set_tests_properties(vulkan_headless_hidden_commands PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with each vertex layout in its pipeline: the default run sets it as dynamic state where the
     # device has VK_EXT_vertex_input_dynamic_state (gpu/vk/vertex_input.c), and both find each draw's own layout
     add_test(NAME vulkan_headless_vertex_input_off COMMAND snx-test-vulkan -H --vertex-input-dynamic-state=off)

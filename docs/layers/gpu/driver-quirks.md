@@ -39,6 +39,11 @@ Two halves of one thing:
   [In the code](#in-the-code) lists each, by hand, with the function, the commit that brought it and the test that
   keeps it, or none.
 
+An extension whose driver lists it without one of the commands it requires needs neither: once the device is made,
+each command of each extension it is made with is asked of the driver, and one that gives none takes its extension
+out as an `off` line would, the device made again without it ([Driver bans](../../dev/development.md#driver-bans)). A
+ban line on such a driver, as NVIDIA's on `VK_EXT_depth_clamp_control`, still says what broke and where.
+
 A source is the case where it broke (a game, a test suite, a measure, an issue), a driver bug, or another project's
 commit or file at a commit (the table's head names the hashes they were read at). Eden's driver bug list is Eden's
 `docs/DriverBugs.md` at 9cf3a04af3; "Eden's driver bug list:N" is the line of its row.
