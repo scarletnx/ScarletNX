@@ -7538,6 +7538,8 @@ static int run_headless(int argc, char** argv) {
         return 0;
     }
     if (getenv("SNX_TEST_TRIM_ONLY")) { /* the budget's trim alone: a trim that wants everything takes the others' */
+        /* what the trim evicts: texture_sysmem would move those textures into system memory, where they stay held */
+        g_settings.texture_system_memory = 0;
         CHECK(!check_trim_working_set());
         CHECK(!check_trim_unmapped());
         CHECK(!check_trim_ended());
