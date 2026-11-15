@@ -12,51 +12,72 @@
 set(SNX_DEPS_CACHE "$ENV{SNX_DEPS_CACHE}" CACHE PATH
     "Folder where FFmpeg and OpenSSL, once built, are kept for every build tree to reuse")
 
-# The system's C headers as this compiler reads them: a toolchain update that changes them changes every key
-function(snx_deps_headers_hash out)
+# The system's C headers as <compiler> reads them with the flags after it: a toolchain update that changes them changes
+# every key
+function(snx_deps_headers_hash out compiler)
     set(probe "${PROJECT_BINARY_DIR}/snx-deps/headers.c")
     file(WRITE "${probe}" "#include <errno.h>\n#include <limits.h>\n#include <math.h>\n#include <stddef.h>\n"
                           "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n"
                           "#include <time.h>\n#ifdef _WIN32\n#include <windows.h>\n#else\n#include <pthread.h>\n"
                           "#include <unistd.h>\n#endif\n")
-    set(flags "")
-    if(CMAKE_C_COMPILER_TARGET)
-        list(APPEND flags "--target=${CMAKE_C_COMPILER_TARGET}")
-    endif()
-    if(CMAKE_SYSROOT)
-        list(APPEND flags "--sysroot=${CMAKE_SYSROOT}")
-    endif()
-    # the CPU and ABI the dependencies are built for (cmake/cross.cmake): big-endian PowerPC64 glibc is ELFv1 to Clang
-    # without -mabi=elfv2, and an ELFv2 root (Arch POWER's) has no ELFv1 headers
-    list(APPEND flags ${SNX_ARCH_FLAGS})
     # -P: the text without line markers, which would put this tree's path in it
-    execute_process(COMMAND "${CMAKE_C_COMPILER}" ${flags} -E -P "${probe}" OUTPUT_VARIABLE text ERROR_VARIABLE err
+    execute_process(COMMAND "${compiler}" ${ARGN} -E -P "${probe}" OUTPUT_VARIABLE text ERROR_VARIABLE err
                     RESULT_VARIABLE rc)
     if(NOT rc EQUAL 0)
-        message(FATAL_ERROR "SNX_DEPS_CACHE: the compiler could not read the system's C headers:\n${err}")
+        message(FATAL_ERROR "SNX_DEPS_CACHE: ${compiler} could not read the system's C headers:\n${err}")
     endif()
     string(SHA256 hash "${text}")
     set(${out} "${hash}" PARENT_SCOPE)
 endfunction()
 
-# snx_deps_cached(<name> <out> <key text>...): where this build of <name> lives. <out>_FOUND is TRUE when a finished
-# build is in SNX_DEPS_CACHE (use <out>_DIR, build nothing), else FALSE (build it in the tree; <out>_DIR, when set, is
-# where snx_deps_publish puts it). The cmake file calling this is part of the key, with the compiler and the headers.
-# The tree's snx-deps/<name>.dir names the folder, for a CI cache to keep the ones a run used
+# snx_deps_cached(<name> <out> [HOST <C compiler>] <key text>...): where this build of <name> lives. <out>_FOUND is
+# TRUE when a finished build is in SNX_DEPS_CACHE (use <out>_DIR, build nothing), else FALSE (build it in the tree;
+# <out>_DIR, when set, is where snx_deps_publish puts it). The cmake file calling this is part of the key, with the
+# compiler and the headers: the target's, or with HOST, for a program the build runs, the build machine's compiler's
+# without the target's flags, so every target built on one machine shares it. The tree's snx-deps/<name>.dir names
+# the folder, for a CI cache to keep the ones a run used
 function(snx_deps_cached name out)
     set(${out}_FOUND FALSE PARENT_SCOPE)
     set(${out}_DIR "" PARENT_SCOPE)
     if(NOT SNX_DEPS_CACHE)
         return()
     endif()
-    get_property(headers GLOBAL PROPERTY snx_deps_headers)
+    set(texts ${ARGN})
+    list(LENGTH texts count)
+    if(count GREATER 1)
+        list(GET texts 0 first)
+    else()
+        set(first "")
+    endif()
+    if(first STREQUAL "HOST")
+        list(GET texts 1 compiler)
+        list(REMOVE_AT texts 0 1)
+        execute_process(COMMAND "${compiler}" --version OUTPUT_VARIABLE identity ERROR_QUIET)
+        string(REGEX REPLACE "\n.*" "" identity "${identity}")
+        set(flags "")
+        set(property "snx_deps_headers:${compiler}")
+    else()
+        set(compiler "${CMAKE_C_COMPILER}")
+        set(identity "${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}")
+        set(flags "")
+        if(CMAKE_C_COMPILER_TARGET)
+            list(APPEND flags "--target=${CMAKE_C_COMPILER_TARGET}")
+        endif()
+        if(CMAKE_SYSROOT)
+            list(APPEND flags "--sysroot=${CMAKE_SYSROOT}")
+        endif()
+        # the CPU and ABI the dependencies are built for (cmake/cross.cmake): big-endian PowerPC64 glibc is ELFv1 to
+        # Clang without -mabi=elfv2, and an ELFv2 root (Arch POWER's) has no ELFv1 headers
+        list(APPEND flags ${SNX_ARCH_FLAGS})
+        set(property snx_deps_headers)
+    endif()
+    get_property(headers GLOBAL PROPERTY "${property}")
     if(NOT headers)
-        snx_deps_headers_hash(headers)
-        set_property(GLOBAL PROPERTY snx_deps_headers "${headers}")
+        snx_deps_headers_hash(headers "${compiler}" ${flags})
+        set_property(GLOBAL PROPERTY "${property}" "${headers}")
     endif()
     file(SHA256 "${CMAKE_CURRENT_LIST_FILE}" recipe)
-    string(JOIN "\n" key "${name}" ${ARGN} "compiler: ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}"
-                "headers: ${headers}" "recipe: ${recipe}")
+    string(JOIN "\n" key "${name}" ${texts} "compiler: ${identity}" "headers: ${headers}" "recipe: ${recipe}")
     string(SHA256 hash "${key}")
     string(SUBSTRING "${hash}" 0 16 hash)
     set(dir "${SNX_DEPS_CACHE}/${name}-${hash}")
