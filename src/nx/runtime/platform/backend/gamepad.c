@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/gamepad.h"
+#include "nx/runtime/platform/joycon2_sdl.h" /* joycon2_rumble */
 #include "nx/runtime/options.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/backend.h"
@@ -311,6 +312,7 @@ static int slot_for(u32 id) {
 static void who_of(SDL_Gamepad* g, char* out, size_t n) {
     const char* serial = SDL_GetGamepadSerial(g);
     char guid[33];
+    if (joycon2_who(SDL_GetGamepadID(g), out, n)) return; /* a Joy-Con 2 pair keeps its single's player */
     if (serial && *serial) {
         snprintf(out, n, "serial:%s", serial);
         return;
@@ -747,6 +749,8 @@ void gamepad_rumble_slot(int slot, u32 left, u32 right, const float hz[4], u64 n
     if (!strength(slot) || game_paused()) g_gamepad.hd[slot].has_pending = 0;
     left = scaled(left, slot);
     right = scaled(right, slot);
+    /* a Joy-Con 2 (joycon2_sdl.h) takes the amplitudes and frequencies themselves */
+    if (joycon2_rumble(SDL_GetGamepadID(g_gamepad.pads[slot]), left, right, hz)) return;
     if (hd_play(slot, left, right, hz, now_ns)) return;
     /* each motor as the stronger of the two devices' bands: the heavy one low, the light one high */
     u32 lo = (left & 0xFFFF) > (right & 0xFFFF) ? left & 0xFFFF : right & 0xFFFF;

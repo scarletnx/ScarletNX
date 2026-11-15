@@ -502,11 +502,24 @@ static const struct {
                {NMOUSE_RIGHT, NPAD_HANDHELD}};
 #define NMICE (sizeof g_nmice / sizeof *g_nmice)
 static u64 nmouse_handle(u32 i) { return 0x4e4d000000000000ull | (i + 1); }
-/* the mouse's states since the last update, to the memories the game gave. Under hid's lock */
+/* a real Joy-Con 2's motion behind an Npad's left (0) or right (1) device, X and Y, its whole counts: 0 when none */
+static void hid_pad_mouse(const HidSource* s, int dev, i32 real[HID_PADS][2][2], i32 out[2]) {
+    int p, sensor;
+    out[0] = out[1] = 0;
+    if (!hid_device(s, dev, &p, &sensor)) return;
+    out[0] = real[p][sensor][0];
+    out[1] = real[p][sensor][1];
+}
+/* the mouse's states since the last update, to the memories the game gave. Under hid's lock. The host's mouse is the
+   right Joy-Con's (the merged one's and the pointer's); a real Joy-Con 2's sensor (g_host.hid.pad_mouse) is its own
+   hand's, on the Npad its player is, and the right one of Npad No1 moves the pointer too. Their units and signs are a
+   guess: the console's own conversion is not known. The flags at 0x18 follow the sensor's surface (below) */
 static void hid_mouse_update(u64 now) {
     HidMouse* m = &g_hle.hid.mouse;
-    i32 dx, dy, wheel;
+    HidSource src[HID_ENTRIES];
+    i32 dx, dy, wheel, real[HID_PADS][2][2], pointer[2];
     u32 buttons;
+    u8 is_real[HID_PADS], surface[HID_PADS];
     pm_lock(&g_host.hid.input_lock);
     dx = (i32)m->dx;
     dy = (i32)m->dy;
@@ -515,18 +528,52 @@ static void hid_mouse_update(u64 now) {
     m->dy -= (float)dy;
     m->wheel -= (float)wheel;
     buttons = atomic_load_explicit(&m->buttons, memory_order_relaxed);
+    memcpy(is_real, g_host.hid.pad_mouse_real, sizeof is_real);
+    memcpy(surface, g_host.hid.pad_mouse_surface, sizeof surface);
+    for (int p = 0; p < HID_PADS; p++)
+        for (int k = 0; k < 4; k++) {
+            float* f = &g_host.hid.pad_mouse[p][k >> 1][k & 1];
+            real[p][k >> 1][k & 1] = !(*f > -1e6f) ? -1000000 : *f > 1e6f ? 1000000 : (i32)*f; /* a NaN too */
+            *f -= (float)real[p][k >> 1][k & 1];
+            if (!(*f > -1.0f && *f < 1.0f)) *f = 0; /* what was cut, and a NaN */
+        }
     pm_unlock(&g_host.hid.input_lock);
+    hid_sources(src);
     if (m->jcms)
         for (u32 i = 0; i < JCMS_INDEXES; i++) {
             u8 state[0x20] = {0};
+            i32 own[2];
             if (!(atomic_load_explicit(&m->jcms_on, memory_order_relaxed) >> i & 1)) continue;
+            int p, sensor;
+            u32 flags = MOUSE_CONNECTED;
+            hid_pad_mouse(&src[i >> 1], (int)(i & 1), real, own);
+            /* a real Joy-Con 2 off a surface: no motion and neither flag. The SDK copies the word as it is, and an
+               Ounce game can take bit 0 as "this Joy-Con is a mouse now": one keeps bits 0-1 per hand, enters its
+               mouse mode as soon as either hand's bit 0 is set and leaves it when neither is. Bit 1 is set only by its
+               own stand-in for a mouse while that one moves, so it is clear here too */
+            if (hid_device(&src[i >> 1], (int)(i & 1), &p, &sensor) && (is_real[p] >> sensor & 1) &&
+                !(surface[p] >> sensor & 1)) {
+                own[0] = own[1] = 0;
+                flags = 0;
+            }
             snx_st_le64(state + 8, g_hle.hid.samp);
-            snx_st_le32(state + 0x10, i & 1 ? (u32)dx : 0);
-            snx_st_le32(state + 0x14, i & 1 ? (u32)dy : 0);
-            snx_st_le32(state + 0x18, MOUSE_CONNECTED);
+            snx_st_le32(state + 0x10, (i & 1 ? (u32)dx : 0u) + (u32)own[0]);
+            snx_st_le32(state + 0x14, (i & 1 ? (u32)dy : 0u) + (u32)own[1]);
+            snx_st_le32(state + 0x18, flags);
             hid_lifo_push(GP(m->jcms + i * JCMS_ENTRY), 8 + sizeof state, state, sizeof state);
         }
     if (!m->nmouse) return;
+    hid_pad_mouse(&src[0], 1, real, pointer);
+    { /* a real Joy-Con 2 behind Npad No1's right hand clicks the pointer with R (left button) and ZR (right) */
+        int p, sensor;
+        if (hid_device(&src[0], 1, &p, &sensor) && (is_real[p] >> sensor & 1)) {
+            u64 pad = g_hle.hid.pad[p].buttons;
+            if (pad >> 7 & 1) buttons |= 1;
+            if (pad >> 9 & 1) buttons |= 2;
+        }
+    }
+    dx = (i32)((i64)dx + pointer[0]);
+    dy = (i32)((i64)dy + pointer[1]);
     m->x += dx;
     m->y += dy;
     if (m->x < 0) m->x = 0;

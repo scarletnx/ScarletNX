@@ -834,6 +834,11 @@ setting Joy-Con mouse
     help How the mouse reaches an Ounce game as its Joy-Con mouse. 0 = only after hotkey_mouse (Ctrl+G) declares mouse
     help mode, which holds the mouse until a second press ends it, and nothing reaches the game before. 1 = always, as
     help before this setting: held while the game plays with it, and hotkey_mouse lets it go
+setting Joy-Con 2 mouse scale
+    key joycon2_mouse_scale
+    float 0.1 10
+    default 1
+    help How far a Joy-Con 2's mouse sensor moves the game's mouse, against its own counts
 
 table g_gamepad_map_ini
 setting Button map
