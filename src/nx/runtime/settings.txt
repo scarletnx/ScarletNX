@@ -146,6 +146,23 @@ setting TV mode
     words Off|On|Auto
     help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720), 2 = Auto: TV mode while the
     help host is on its charger, handheld mode on its battery. Auto switches while the game runs
+setting TV refresh rate
+    key tv_refresh_rate
+    int 0 2
+    default 1
+    startup
+    words 60 Hz|Display's|120 Hz
+    help The refresh rates an Ounce game is told its display takes: 0 = 60 Hz; 1 = 120 Hz too where the window's
+    help display refreshes at 119 Hz or more; 2 = 120 Hz too on any display. A game that turns 120 Hz on is then
+    help paced at 120 frames a second with fps_limit=game
+setting TV resolution
+    key tv_resolution
+    int 0 2
+    default 1
+    startup
+    words 1920x1080|Display's|3840x2160
+    help The picture an Ounce game is told the TV shows in TV mode: 0 = 1920x1080; 1 = 3840x2160 where the window's
+    help display's mode is that large, else 1920x1080; 2 = 3840x2160 on any display. A Switch game is told 1920x1080
 setting Fullscreen
     key fullscreen
     int 0 1

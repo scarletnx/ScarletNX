@@ -101,6 +101,8 @@ static struct {
     /* the window's display's refresh period in ns (0 not known), set on the main thread when the window opens or moves
        to another display, read by the renderer's threads */
     u64 refresh_ns;
+    /* the size of that display's mode in pixels, w | h << 32 (0 not known), set and read as refresh_ns is */
+    u64 mode_px;
     /* the window's part clear of the system's bars, in pixels, x | y << 16 | w << 32 | h << 48, or 0 for all of it: set
        on the main thread with the size, read by the renderer on its own */
     u64 wsafe;
@@ -315,15 +317,27 @@ static void wsize_set(int w, int h) {
 }
 static void refresh_set(void) {
     const SDL_DisplayMode* m = g_sdl3.win ? SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(g_sdl3.win)) : NULL;
-    u64 ns = 0;
+    u64 ns = 0, px = 0;
     if (m && m->refresh_rate_numerator > 0 && m->refresh_rate_denominator > 0)
         ns = (u64)1000000000u * (u64)m->refresh_rate_denominator / (u64)m->refresh_rate_numerator;
     else if (m && m->refresh_rate > 0)
         ns = (u64)(1e9 / m->refresh_rate);
     __atomic_store_n(&g_sdl3.refresh_ns, ns, __ATOMIC_RELAXED);
+    /* a mode's size is in the desktop's units, which its pixel density scales to pixels (a 4K display at 200% is a
+       1920x1080 mode of density 2) */
+    if (m && m->w > 0 && m->h > 0) {
+        float d = m->pixel_density > 0 ? m->pixel_density : 1.0f;
+        px = (u64)(u32)((float)m->w * d + 0.5f) | (u64)(u32)((float)m->h * d + 0.5f) << 32;
+    }
+    __atomic_store_n(&g_sdl3.mode_px, px, __ATOMIC_RELAXED);
 }
 u64 backend_display_refresh_ns(void) {
     return g_opt_headless ? 0 : __atomic_load_n(&g_sdl3.refresh_ns, __ATOMIC_RELAXED);
+}
+void backend_display_mode(u32* w, u32* h) {
+    u64 v = g_opt_headless ? 0 : __atomic_load_n(&g_sdl3.mode_px, __ATOMIC_RELAXED);
+    *w = (u32)v;
+    *h = (u32)(v >> 32);
 }
 static void wsafe_set(void) {
     SDL_Rect r;
