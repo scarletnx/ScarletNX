@@ -6223,7 +6223,7 @@ static int check_rt_watch_holder(void) {
         const u64 t = targets[k];
         CHECK(own_watched(HOLD_A + t, 0x1000));
         VkRtWatchStats w0 = g_vk_rt_watch;
-        u64 lands = own_landings();
+        u64 lands = own_landings(), faults = own_faults();
         vk_lock();
         if (!k) {
             u8* p = gmem_ptr(HOLD_GA + t, sizeof got);
@@ -6247,6 +6247,15 @@ static int check_rt_watch_holder(void) {
            thread does that work while the copy waits, so the compiler must not read the counters before the copy */
         memcpy(got, GP(HOLD_A + t), sizeof got);
         __atomic_signal_fence(__ATOMIC_SEQ_CST);
+        if (!(g_vk_rt_watch.hits == w0.hits + 1 && own_landings() > lands && !own_trapped(HOLD_A + t, 0x1000)))
+            fprintf(stderr,
+                    "render target watch, target %d: %llu faults, %llu hits, %llu landings, %llu publishes and %llu "
+                    "arms from the holder's read on; its page is %s, watched %d\n",
+                    k, (unsigned long long)(own_faults() - faults), (unsigned long long)(g_vk_rt_watch.hits - w0.hits),
+                    (unsigned long long)(own_landings() - lands),
+                    (unsigned long long)(g_vk_rt_watch.publishes - w0.publishes),
+                    (unsigned long long)(g_vk_rt_watch.arms - w0.arms),
+                    own_trapped(HOLD_A + t, 0x1000) ? "trapped" : "open", own_watched(HOLD_A + t, 0x1000));
         CHECK(g_vk_rt_watch.hits == w0.hits + 1 && own_landings() > lands && !own_trapped(HOLD_A + t, 0x1000));
         for (u32 i = 0; i < sizeof got; i += 4) CHECK(!memcmp(got + i, px_blue, 4));
     }
