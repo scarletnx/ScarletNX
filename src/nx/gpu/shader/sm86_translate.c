@@ -231,6 +231,11 @@ static u32 rd(Ctx* c, u32 r) {
     return spv_emit_load(&c->e, c->t_u32, c->reg[r]);
 }
 static void wr(Ctx* c, u32 r, u32 v) {
+    if (c->cap_on && r == c->cap_reg) { /* a pair's halves are kept, not stored: the select of them writes it */
+        c->cap_val = v;
+        c->cap_n++;
+        return;
+    }
     if (r < SM86_RZ) {
         coop_acc_take(c, r);
         c->coop_gen[r]++;
@@ -3095,7 +3100,13 @@ static u32 hmma_zero(Ctx* c) {
    offers that HMMA best (coop_shape). SPV_KHR_cooperative_matrix leaves which lane holds which element to the
    driver, with no query, so the fragments go through shared memory: each subgroup has a slot of its own (SubgroupId)
    in an array after the program's, where A is row-major (8 words a row of 16 halves), B column-major (8 words a
-   column) and D row-major in f32 (N words a row). A 16 wide shape has 16 columns for HMMA's 8: B's columns 8-15 are
+   column) and D row-major in f32 (N words a row). Which lane owns which element is the same for each shape: lane
+   4(r % 8) + c/2 writes A's row r column c and B's column c row k, at their row-major or column-major word (a word
+   holds two halves, so c/2 is the word and c % 2 the half of it), and the same lane plus its row g + 8, 64 words
+   on, owns the second 8 rows. D is f32, a word an element: lane 4(r % 8) + c/2 owns rows r and r + 8's column c,
+   at 8r + c, or 16r + c and 128 words on for a 16 wide row. ucas proved these identities exhaustively: each
+   element of each shape lands in exactly one lane's word, and no two of them share one.
+   A 16 wide shape has 16 columns for HMMA's 8: B's columns 8-15 are
    whatever the 64 words after its 8 hold (the start of D's), which only reach D's columns 8-15, never read back. A
    16 wide K pads a .1688's k of 8 with zeros in A's columns and B's rows 8-15, as stale words there could be
    infinities or NaNs, and 0 times those poisons the sums; a 16x8x8 shape splits a .16816's K in two products and an
