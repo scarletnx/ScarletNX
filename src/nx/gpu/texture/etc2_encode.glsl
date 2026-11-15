@@ -50,11 +50,12 @@ uint et_best_err;
 int et_ch(uint p, uint c) { return int((p >> (8u * c)) & 255u); }
 /* texel i is transparent (an opaque bit's block only: BC1 gives 0 or 255) */
 bool et_clear(uint i) { return (tx_px[i] >> 24) < 128u; }
-/* the squared distance of texel i's colour from (r, g, b), each clamped to 0 to 255 first as the decoder does */
+/* the squared distance of texel i's colour from (r, g, b), a colour of 0 to 255 a channel (et_cluster's: the block's
+   texels and their means) */
 uint et_dist(uint i, int r, int g, int b) {
     uint p = tx_px[i];
-    int dr = clamp(r, 0, 255) - et_ch(p, 0u), dg = clamp(g, 0, 255) - et_ch(p, 1u);
-    int db = clamp(b, 0, 255) - et_ch(p, 2u);
+    int dr = r - et_ch(p, 0u), dg = g - et_ch(p, 1u);
+    int db = b - et_ch(p, 2u);
     return uint(dr * dr + dg * dg + db * db);
 }
 /* 1: the packed dot product instruction (Vulkan 1.3's shaderIntegerDotProduct), which the build vk/texconv.c runs where
@@ -62,13 +63,13 @@ uint et_dist(uint i, int r, int g, int b) {
 #ifndef SNX_BC7_DOT
 #define SNX_BC7_DOT 0
 #endif
-/* the dot product of two words' R, G and B, of which c's alpha byte is 0 (et1_word's and et_th_word's colours,
-   a texel with its alpha cleared) */
+/* the dot product of two words' R, G and B, whose alpha bytes are 0 (et1_word's and et_th_word's colours, a texel
+   with its alpha cleared): B is the word shifted down, with no mask (ucas, simplify on the build's SPIR-V) */
 int et_dot(uint p, uint c) {
 #if SNX_BC7_DOT
     return int(dotPacked4x8EXT(p, c));
 #else
-    return et_ch(p, 0u) * et_ch(c, 0u) + et_ch(p, 1u) * et_ch(c, 1u) + et_ch(p, 2u) * et_ch(c, 2u);
+    return int((p & 255u) * (c & 255u) + ((p >> 8) & 255u) * ((c >> 8) & 255u) + (p >> 16) * (c >> 16));
 #endif
 }
 /* The nearest of the four colours c0 to c3 (RGB words as they decode) to texel i, the first of equal ones:
@@ -101,9 +102,12 @@ int et_quant(int sum, int n, int top) { return (sum * top * 2 + n * 255) / (n * 
 /* 12 bit colours of three 4 bit channels: each channel expanded */
 int et_c4(uint c, uint ch) { return tc_ext4((c >> (8u - 4u * ch)) & 15u); }
 
-/* a colour clamped as the decoder clamps it, an RGB word */
-uint et1_word(int r, int g, int b) {
-    return uint(clamp(r, 0, 255)) | (uint(clamp(g, 0, 255)) << 8) | (uint(clamp(b, 0, 255)) << 16);
+/* a colour of a base (0 to 255 a channel) and a modifier m as the decoder clamps it, an RGB word: a modifier of no
+   less than 0 only clamps at 255, a negative one only at 0, so up holds the one clamp the colour needs (ucas,
+   simplify on the build's SPIR-V: the other never bites) */
+uint et1_word(int r, int g, int b, bool up) {
+    if (up) return uint(min(r, 255)) | (uint(min(g, 255)) << 8) | (uint(min(b, 255)) << 16);
+    return uint(max(r, 0)) | (uint(max(g, 0)) << 8) | (uint(max(b, 0)) << 16);
 }
 /* texel j (0 to 7) of subblock s: the subblocks side by side (flip 0) are two columns wide, one above the other two
    rows high; a loop over these is half the one over the block's 16 that skipped the other subblock's */
@@ -123,10 +127,10 @@ void et1_setup(int r, int g, int b, uint t, bool see) {
     const int a = tc_byte(ETC1_A0, ETC1_A1, t), B = tc_byte(ETC1_B0, ETC1_B1, t);
     et1_a = see ? 0 : a;
     et1_bb = B;
-    et1_c0 = et1_word(r + et1_a, g + et1_a, b + et1_a);
-    et1_c1 = et1_word(r + B, g + B, b + B);
-    et1_c2 = et1_word(r - a, g - a, b - a);
-    et1_c3 = et1_word(r - B, g - B, b - B);
+    et1_c0 = et1_word(r + et1_a, g + et1_a, b + et1_a, true);
+    et1_c1 = et1_word(r + B, g + B, b + B, true);
+    et1_c2 = et1_word(r - a, g - a, b - a, false);
+    et1_c3 = et1_word(r - B, g - B, b - B, false);
 }
 /* the modifier index k adds with et1_setup's table: a, b, -a, -b; a see-through block's index 0 adds nothing (its
    index 2 is transparent and never asked for) */
@@ -323,10 +327,14 @@ int et_th_colour(bool h, uint a, uint b, uint k, int d, uint ch) {
     return et_c4(first ? a : b, ch) + (first && !h ? 0 : et_th_offset(h, k, d));
 }
 /* index k's colour of the T or H mode as it decodes, clamped, an RGB word (R in the low byte): what a texel's index
-   is compared with, worked out once a distance and not once a texel */
+   is compared with, worked out once a distance and not once a texel. The distance d is positive, so the colours it is
+   taken from (T's index 3, H's 1 and 3) clamp only at 0 and the others only at 255 (ucas, simplify on the build's
+   SPIR-V: the other bound never bites) */
 uint et_th_word(bool h, uint a, uint b, uint k, int d) {
-    return uint(clamp(et_th_colour(h, a, b, k, d, 0u), 0, 255)) | (uint(clamp(et_th_colour(h, a, b, k, d, 1u), 0, 255)) << 8) |
-           (uint(clamp(et_th_colour(h, a, b, k, d, 2u), 0, 255)) << 16);
+    const int r = et_th_colour(h, a, b, k, d, 0u), g = et_th_colour(h, a, b, k, d, 1u);
+    const int bl = et_th_colour(h, a, b, k, d, 2u);
+    if ((k & 1u) != 0u && (h || k == 3u)) return uint(max(r, 0)) | (uint(max(g, 0)) << 8) | (uint(max(bl, 0)) << 16);
+    return uint(min(r, 255)) | (uint(min(g, 255)) << 8) | (uint(min(bl, 255)) << 16);
 }
 /* the T mode with base colour a alone (swap: the clusters the other way round), or the H mode, into tx_hi, tx_lo and
    et_err. Its distance is the
@@ -380,11 +388,15 @@ void et_th_build(bool h, bool swap, bool see) {
 }
 
 /* the squared error of a row of four texels of one channel, rw their bytes (x = 0 the lowest), against the planar
-   mode's values (b + x h) >> 2 as the decoder clamps them: b is the row's 4 eo + y (ev - eo) + 2, h the horizontal
-   difference eh - eo */
-uint et_pl_row(uint rw, int b, int h) {
-    const int d0 = clamp(b >> 2, 0, 255) - int(rw & 255u), d1 = clamp((b + h) >> 2, 0, 255) - int((rw >> 8) & 255u);
-    const int d2 = clamp((b + 2 * h) >> 2, 0, 255) - int((rw >> 16) & 255u), d3 = clamp((b + 3 * h) >> 2, 0, 255) - int(rw >> 24);
+   mode's values (b + x h) >> 2: b is the row's 4 eo + y (ev - eo) + 2, h the horizontal difference eh - eo. Texel
+   (x, y)'s value is ((4 - x - y) eo + x eh + y ev + 2) >> 2, which for x + y <= 4 weighs the three corners, each 0 to
+   255, by no less than 0 and 4 in all, so the decoder's clamp never bites there (ucas, tests/etc2planar.ucas, by
+   SAT): only the texels of the row from x = free on are clamped, (3, 2), (2, 3) and (3, 3) of the sixteen */
+uint et_pl_row(uint rw, int b, int h, uint free) {
+    const int v2 = (b + 2 * h) >> 2, v3 = (b + 3 * h) >> 2;
+    const int d0 = (b >> 2) - int(rw & 255u), d1 = ((b + h) >> 2) - int((rw >> 8) & 255u);
+    const int d2 = (free > 2u ? v2 : clamp(v2, 0, 255)) - int((rw >> 16) & 255u);
+    const int d3 = (free > 3u ? v3 : clamp(v3, 0, 255)) - int(rw >> 24);
     return uint(d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3);
 }
 /* channel ch of row y's four texels, a byte each */
@@ -459,8 +471,8 @@ void et_planar_build(uint bound) {
             int eh = ch == 1u ? tc_ext7(uint(qh)) : tc_ext6(uint(qh));
             int ev = ch == 1u ? tc_ext7(uint(qv)) : tc_ext6(uint(qv));
             const int h = eh - eo, v = ev - eo, b = 4 * eo + 2;
-            const uint e = et_pl_row(rw0, b, h) + et_pl_row(rw1, b + v, h) + et_pl_row(rw2, b + 2 * v, h) +
-                           et_pl_row(rw3, b + 3 * v, h);
+            const uint e = et_pl_row(rw0, b, h, 4u) + et_pl_row(rw1, b + v, h, 4u) +
+                           et_pl_row(rw2, b + 2 * v, h, 3u) + et_pl_row(rw3, b + 3 * v, h, 2u);
             if (e < best) {
                 best = e;
                 o[ch] = qo;
