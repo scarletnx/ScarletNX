@@ -191,6 +191,15 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug(VkDebugUtilsMessageSeverityFlagBitsE
     (void)type;
     (void)user;
     if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+        /* SPIRV-Tools' --fold-spec-const-op-composite, which the layer runs on a pipeline's specialized module, puts
+           an OpConstantComposite of Granite's frozen workgroup size before the constant it names (v2026.3: the module
+           frozen without that fold passes spirv-val, docs/layers/gpu/astc.md "Granite's decoder"). Said, not counted */
+        const char* id = data->pMessageIdName ? data->pMessageIdName : "";
+        if (strstr(id, "VUID-VkPipelineShaderStageCreateInfo-pSpecializationInfo-06849") &&
+            strstr(data->pMessage, "has not been defined") && strstr(data->pMessage, "OpConstantComposite")) {
+            fprintf(stderr, "SPIRV-Tools' spec constant fold (not counted): %s\n", data->pMessage);
+            return VK_FALSE;
+        }
         fprintf(stderr, "%s\n", data->pMessage);
         errors++;
     }
@@ -245,6 +254,8 @@ static void init(void) {
     g_vk.feat.sparseBinding = sparse_queue && have.sparseBinding;
     g_vk.feat.textureCompressionBC = have.textureCompressionBC; /* bc_native_case compares the device's decoding */
     g_vk.feat.textureCompressionETC2 = have.textureCompressionETC2; /* etc2_case too, of the BCn it encodes again */
+    /* Granite's decoder writes its texels into a storage image declared without a format (--decoder granite) */
+    g_vk.feat.shaderStorageImageWriteWithoutFormat = have.shaderStorageImageWriteWithoutFormat;
     g_vk.gfx_family = family;
     float priority = 1;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -372,6 +383,37 @@ static void barrier(VkImage img, VkPipelineStageFlags2 src_stage, VkAccessFlags2
     vk_barrier(vk_cmd(), img, VK_IMAGE_ASPECT_COLOR_BIT, src_stage, src, from, dst_stage, dst, to);
 }
 
+/* astc_decoder=1 (--decoder granite): Granite's shader decodes as the CPU decoder does but for void extents, whose
+   colour it keeps the top 8 bits of in every channel, where the CPU decoder rounds UNORM channels (and sRGB alpha),
+   and HDR ones, which it decodes the same way where the CPU decoder (the LDR profile) gives the error colour. A void
+   extent of either decoder's error colour (reserved bits, coordinates out of order) stays so. The bytes it changes
+   from the CPU decoder's are counted (g_granite_moved, of g_granite_bytes) */
+static u64 g_granite_moved, g_granite_bytes;
+static void cpu_texels(const u8* blocks, u32 w, u32 rows, u32 bw, u32 bh, u8* out, int srgb) {
+    astc_decode_image(blocks, w, rows, bw, bh, out, srgb);
+    if (g_settings.astc_decoder != 1) return;
+    const u32 nx = (w + bw - 1) / bw, ny = (rows + bh - 1) / bh;
+    g_granite_bytes += (u64)w * rows * 4;
+    for (u32 by = 0; by < ny; by++)
+        for (u32 bx = 0; bx < nx; bx++) {
+            const u8* b = blocks + ((size_t)by * nx + bx) * 16;
+            u64 lo = 0;
+            for (int i = 7; i >= 0; i--) lo = lo << 8 | b[i];
+            if ((lo & 0x1ff) != 0x1fc || ((lo >> 10) & 3) != 3) continue;
+            const u32 s0 = (u32)(lo >> 12) & 0x1fff, s1 = (u32)(lo >> 25) & 0x1fff;
+            const u32 t0 = (u32)(lo >> 38) & 0x1fff, t1 = (u32)(lo >> 51) & 0x1fff;
+            if ((s0 & s1 & t0 & t1) != 0x1fff && (s0 >= s1 || t0 >= t1)) continue;
+            const u8 c[4] = {b[9], b[11], b[13], b[15]};
+            for (u32 y = by * bh; y < (by + 1) * bh && y < rows; y++)
+                for (u32 x = bx * bw; x < (bx + 1) * bw && x < w; x++)
+                    for (u32 k = 0; k < 4; k++) {
+                        u8* p = out + ((size_t)y * w + x) * 4 + k;
+                        g_granite_moved += *p != c[k];
+                        *p = c[k];
+                    }
+        }
+}
+
 /* reads a level of one layer back in bands of block rows of a slice that the readback buffer takes, comparing each
    with the CPU decoder's bytes for the band's blocks. keep, when given, receives the level's bytes */
 static void compare(VkImage img, u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 level, u32 layer,
@@ -393,7 +435,7 @@ static void compare(VkImage img, u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 dep
             rec_CmdCopyImageToBuffer(vk_cmd(), img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
             vk_finish();
             vk_readback_ready();
-            astc_decode_image(blocks + ((size_t)z * ny + y) * nx * 16, w, rows, bw, bh, expected, srgb);
+            cpu_texels(blocks + ((size_t)z * ny + y) * nx * 16, w, rows, bw, bh, expected, srgb);
             for (u64 i = 0; i < size; i++)
                 if (actual[i] != expected[i])
                     fatal("%ux%u srgb=%d %ux%ux%u level %u layer %u: byte %llu of slice %u, block row %u: expected %u "
@@ -754,7 +796,7 @@ static void run_region(u32 bw, u32 bh, int bc7, u32 w, u32 h, u32 rx, u32 ry, u3
     vk_readback_ready();
     u8* texels = malloc((size_t)w * h * 4);
     u8* expected = bc7 ? malloc(size) : texels;
-    astc_decode_image(b, w, h, bw, bh, texels, 0);
+    cpu_texels(b, w, h, bw, bh, texels, 0);
     if (bc7) astc_bc7_cpu(vk_bc7_build(w, h, 1), b, w, h, 1, bw, bh, 0, expected);
     for (u64 i = 0; i < size; i++)
         if (actual[i] != expected[i])
@@ -865,6 +907,154 @@ static void bench(u32 w, u32 h, int runs, BenchSource src) {
         vk_image_destroy(t.img, t.mem);
     }
     free(b);
+}
+
+/* --bench-decoders [WxH | file.astc] [--bench-level WxH]: one w x h level of ASTC blocks (random 8x8 ones, of the
+   footprint given, or a file's repeated over the level, as --bench) decoded into an RGBA8 image by each decoder,
+   astc_decoder 0 (ScarletNX's astc.comp) and 1 (Granite's), interleaved, runs times each after one run each that
+   makes their pipelines and tables: the GPU's time of the decode dispatches alone and of the strips (from the first
+   command after the blocks are staged to their copy into the image done), from timestamps (vk_astc_study_time), and
+   the wall time from the upload's start to the GPU's end. Then each decoder's image is read back and held to its
+   texels (cpu_texels), and the bytes Granite's moves from ScarletNX's are counted */
+static int ns_cmp(const void* a, const void* b) {
+    const u64 x = *(const u64*)a, y = *(const u64*)b;
+    return x < y ? -1 : x > y;
+}
+static void bench_decoders(u32 w, u32 h, int runs, BenchSource src) {
+    static const char* const names[2] = {"ScarletNX", "Granite"};
+    u8* b = bench_blocks(&src, w, h);
+    const u32 nx = (w + src.bw - 1) / src.bw, ny = (h + src.bh - 1) / src.bh;
+    u64 dispatch[2][64], strip[2][64], wall[2][64], count[2] = {0, 0};
+    if (runs > 64) runs = 64;
+    Surf t = {.w = w,
+              .h = h,
+              .layers = 1,
+              .levels = 1,
+              .depth3d = 1,
+              .f = {.vk = VK_FORMAT_R8G8B8A8_UNORM, .bw = src.bw, .bh = src.bh}};
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = t.f.vk,
+                            .extent = {w, h, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+    if (!vk_image_create(&ii, &t.img, &t.mem)) fatal("cannot create a %ux%u bench image\n", w, h);
+    barrier(t.img, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vk_finish();
+    vk_astc_study_time(1);
+    for (int r = -1; r < runs; r++)
+        for (int dec = 0; dec < 2; dec++) {
+            Level lv = {b, nx, ny, NULL, 2, 0};
+            u64 dns, dn, sns, sn;
+            g_settings.astc_decoder = dec;
+            u64 t0 = plat_ns();
+            if (!vk_astc_upload(vk_cmd(), &t, 0, 0, w, h, 1, 0, 0, level_rows, &lv, NULL))
+                fatal("bench upload failed\n");
+            vk_finish();
+            const u64 took = plat_ns() - t0;
+            vk_astc_study_take(&dns, &dn, &sns, &sn);
+            if (!dn || !sn)
+                fatal("bench %s: %llu dispatches and %llu strips timed\n", names[dec], (unsigned long long)dn,
+                      (unsigned long long)sn);
+            if (r < 0) continue; /* the pipelines and Granite's tables made */
+            dispatch[dec][count[dec]] = dns;
+            strip[dec][count[dec]] = sns;
+            wall[dec][count[dec]++] = took;
+            printf("BENCH-DECODER %s ASTC %ux%u %ux%u run %d: dispatches %.3f ms (%llu), strips %.3f ms (%llu), wall "
+                   "%.3f ms\n",
+                   names[dec], src.bw, src.bh, w, h, r + 1, dns / 1e6, (unsigned long long)dn, sns / 1e6,
+                   (unsigned long long)sn, took / 1e6);
+            fflush(stdout);
+        }
+    vk_astc_study_time(0);
+    for (int dec = 0; dec < 2; dec++) {
+        qsort(dispatch[dec], count[dec], sizeof(u64), ns_cmp);
+        qsort(strip[dec], count[dec], sizeof(u64), ns_cmp);
+        qsort(wall[dec], count[dec], sizeof(u64), ns_cmp);
+        const u64 m = count[dec] / 2;
+        printf("DECODERS %s ASTC %ux%u %ux%u (%s): dispatches median %.3f ms (%.3f to %.3f), %.0f Mtexels/s; strips "
+               "median %.3f ms (%.3f to %.3f), %.0f Mtexels/s; wall median %.3f ms; %llu runs\n",
+               names[dec], src.bw, src.bh, w, h, src.name ? src.name : "random blocks", dispatch[dec][m] / 1e6,
+               dispatch[dec][0] / 1e6, dispatch[dec][count[dec] - 1] / 1e6, (double)w * h / (dispatch[dec][m] / 1e3),
+               strip[dec][m] / 1e6, strip[dec][0] / 1e6, strip[dec][count[dec] - 1] / 1e6,
+               (double)w * h / (strip[dec][m] / 1e3), wall[dec][m] / 1e6, (unsigned long long)count[dec]);
+    }
+    /* each decoder's image held to its texels */
+    for (int dec = 0; dec < 2; dec++) {
+        Level lv = {b, nx, ny, NULL, 2, 0};
+        g_settings.astc_decoder = dec;
+        if (!vk_astc_upload(vk_cmd(), &t, 0, 0, w, h, 1, 0, 0, level_rows, &lv, NULL)) fatal("bench upload failed\n");
+        barrier(t.img, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        const u64 moved = g_granite_moved, bytes = g_granite_bytes;
+        compare(t.img, src.bw, src.bh, 0, w, h, 1, 0, 0, b, NULL);
+        barrier(t.img, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        if (dec)
+            printf("DECODERS texels ASTC %ux%u %ux%u: both images are their decoders' texels; Granite's moves %llu of "
+                   "%llu bytes from ScarletNX's (void extents)\n",
+                   src.bw, src.bh, w, h, (unsigned long long)(g_granite_moved - moved),
+                   (unsigned long long)(g_granite_bytes - bytes));
+    }
+    g_settings.astc_decoder = 0;
+    u64 gd, gt, tables;
+    vk_astc_granite_stats(&gd, &gt, &tables);
+    printf("DECODERS Granite's tables: %llu bytes on the device so far\n", (unsigned long long)tables);
+    vk_image_destroy(t.img, t.mem);
+    free(b);
+}
+
+/* --decoder granite (ctest's astc_vulkan_granite): the RGBA8 cases with astc_decoder=1, each image held to
+   Granite's texels (cpu_texels): every footprint in both formats, sizes off the footprint, mips, layers (one at a
+   time and all at once), slices of a 3D texture sharing strips, blocks that come block linear, regions, many strips
+   (and memory in pieces under --vk_max_allocation_mb=4), and levels wider and higher than its scratch images'
+   4096x1024 tiles, cut into several */
+static void granite_cases(void) {
+    g_settings.astc_decoder = 1;
+    const u32 footprints[][2] = {{4, 4}, {5, 4},  {5, 5},  {6, 5},  {6, 6},   {8, 5},   {8, 6},
+                                 {8, 8}, {10, 5}, {10, 6}, {10, 8}, {10, 10}, {12, 10}, {12, 12}};
+    for (u32 i = 0; i < sizeof footprints / sizeof footprints[0]; i++)
+        for (int srgb = 0; srgb < 2; srgb++) {
+            u32 bw = footprints[i][0], bh = footprints[i][1];
+            run(bw, bh, srgb, bw * 67 - 1, bh * 123 - 2, 1, 1, 1, 0, NULL, NULL);
+            run(bw, bh, srgb, 17, 13, 1, 6, 5, 0, NULL, NULL);
+            run(bw, bh, srgb, 17, 13, 5, 1, 5, 0, NULL, NULL);
+        }
+    g_bl_source = 1;
+    run(4, 4, 0, 4 * 67 - 1, 4 * 123 - 2, 1, 1, 1, 0, NULL, NULL);
+    run(8, 6, 1, 17, 13, 1, 6, 5, 0, NULL, NULL);
+    run(6, 6, 0, 301, 97, 37, 1, 1, 0, NULL, NULL);
+    g_bl_source = 0;
+    g_batch_layers = 1;
+    run(6, 6, 0, 17, 13, 1, 6, 5, 0, NULL, NULL);
+    run(4, 4, 1, 97, 61, 1, 5, 3, 0, NULL, NULL);
+    g_batch_layers = 0;
+    run_region(6, 6, 0, 97, 61, 1, 1, 3, 2);
+    run_region(12, 12, 0, 97, 61, 1, 1, 2, 1);
+    run(4, 4, 0, 2051, 1055, 1, 1, 1, 1, NULL, NULL);
+    run(12, 12, 1, 2051, 1055, 1, 1, 1, 0, NULL, NULL);
+    run(6, 6, 0, 301, 97, 37, 1, 1, 0, NULL, NULL);
+    /* past a tile each way: 4100 is two columns of 4x4 and 12x12 tiles (1024 and 341 blocks), 1030 two rows */
+    run(4, 4, 0, 4100, 1030, 1, 1, 1, 0, NULL, NULL);
+    run(12, 12, 1, 4100, 1030, 1, 1, 1, 0, NULL, NULL);
+    run(10, 8, 0, 8191, 77, 1, 1, 2, 0, NULL, NULL);
+    g_settings.astc_decoder = 0;
+    u64 dispatches, texels, tables;
+    vk_astc_granite_stats(&dispatches, &texels, &tables);
+    if (!dispatches) fatal("Granite's decoder ran no dispatch: the cases decoded with astc.comp\n");
+    if (!g_granite_moved)
+        fatal("Granite's texels: no void extent byte moved from the CPU decoder's, of %llu\n",
+              (unsigned long long)g_granite_bytes);
+    printf("PASS Granite's decoder: %llu dispatches, %llu texels; %llu of %llu bytes moved from the CPU decoder's "
+           "(void extents), %llu bytes of tables\n",
+           (unsigned long long)dispatches, (unsigned long long)texels, (unsigned long long)g_granite_moved,
+           (unsigned long long)g_granite_bytes, (unsigned long long)tables);
 }
 
 /* the cache file, this process's own: ctest runs the astc_vulkan entries at once in one directory (--parallel 4 on
@@ -2023,13 +2213,26 @@ static void bench_etc2(int runs, const char* file) {
 }
 
 int main(int argc, char** argv) {
-    int large = 0, upload_wait = 0;
+    int large = 0, upload_wait = 0, granite = 0;
     BenchSource bench_src = {NULL, 8, 8};
+    u32 bench_w = 0, bench_h = 0; /* --bench-level WxH: that level size alone */
     /* --vk_max_allocation_mb=N as the runtime takes it (ctest's astc_vulkan_pieces: 4), and --large */
     for (int i = 1; i < argc; i++)
         if (!strncmp(argv[i], "--vk_max_allocation_mb=", 23)) g_settings.vulkan_allocation_cap = atoi(argv[i] + 23);
         else if (!strcmp(argv[i], "--large")) large = 1;
-        else if (!strcmp(argv[i], "--bench")) {
+        else if (!strcmp(argv[i], "--bench-level") && i + 1 < argc &&
+                 sscanf(argv[i + 1], "%ux%u", &bench_w, &bench_h) == 2)
+            i++;
+        else if (!strcmp(argv[i], "--decoder") && i + 1 < argc && !strcmp(argv[i + 1], "granite")) {
+            granite = 1;
+            i++;
+        } else if (!strcmp(argv[i], "--bench-decoders")) {
+            large = 4;
+            if (i + 1 < argc && sscanf(argv[i + 1], "%ux%u", &bench_src.bw, &bench_src.bh) == 2)
+                i++;
+            else if (i + 1 < argc && argv[i + 1][0] != '-')
+                bench_src.name = argv[++i];
+        } else if (!strcmp(argv[i], "--bench")) {
             large = 2;
             /* --bench WxH: random blocks of that footprint */
             if (i + 1 < argc && sscanf(argv[i + 1], "%ux%u", &bench_src.bw, &bench_src.bh) == 2)
@@ -2051,6 +2254,27 @@ int main(int argc, char** argv) {
     if (upload_wait) return upload_wait_case(upload_wait == 2);
     if (large == 3) {
         bench_etc2(3, bench_src.name);
+        return 0;
+    }
+    if (large == 4) {
+        if (bench_w)
+            bench_decoders(bench_w, bench_h, 7, bench_src);
+        else {
+            bench_decoders(4096, 4096, 7, bench_src);
+            bench_decoders(2048, 2048, 7, bench_src);
+            bench_decoders(512, 512, 7, bench_src);
+        }
+        if (errors) fatal("%u validation errors\n", errors);
+        return 0;
+    }
+    if (granite) {
+        granite_cases();
+        if (errors) fatal("%u validation errors\n", errors);
+        puts("All ASTC Vulkan comparisons passed with Granite's decoder (zero validation errors).");
+        return 0;
+    }
+    if (large == 2 && bench_w) {
+        bench(bench_w, bench_h, 5, bench_src);
         return 0;
     }
     if (large == 2) {

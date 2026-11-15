@@ -724,6 +724,57 @@ static VkPipeline astc_pipeline(u32 bw, u32 bh) {
     return *pipe;
 }
 
+/* vk_astc_study_time (vk.h): the decoders' timestamps, a kind each (0 and 1 around a dispatch, 2 and 3 around a strip),
+   in a pool of their own reset at the first mark after a take */
+#define STUDY_QUERIES 8192u
+typedef struct {
+    VkQueryPool pool;
+    u32 used, on;
+    u8 kind[STUDY_QUERIES];
+    u64 ticks[STUDY_QUERIES];
+} AstcStudy;
+static AstcStudy g_astc_study;
+void vk_astc_study_time(int on) { g_astc_study.on = (u32)on; }
+void vk_astc_study_mark(VkCommandBuffer cb, int kind) {
+    AstcStudy* s = &g_astc_study;
+    if (!s->on) return;
+    if (s->used == STUDY_QUERIES) fatal("vulkan: the ASTC study's %u timestamps are full: take them", STUDY_QUERIES);
+    if (!s->pool) {
+        VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                                    .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                    .queryCount = STUDY_QUERIES};
+        if (!VK_OK(vkCreateQueryPool(g_vk.dev, &qi, NULL, &s->pool)))
+            fatal("vulkan: cannot create the ASTC study's pool");
+    }
+    if (!s->used) rec_CmdResetQueryPool(cb, s->pool, 0, STUDY_QUERIES);
+    s->kind[s->used] = (u8)kind;
+    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, s->pool, s->used++);
+}
+void vk_astc_study_take(u64* dispatch_ns, u64* dispatches, u64* strip_ns, u64* strips) {
+    AstcStudy* s = &g_astc_study;
+    u64* ticks = s->ticks;
+    *dispatch_ns = *dispatches = *strip_ns = *strips = 0;
+    if (!s->used) return;
+    if (!VK_OK(vkGetQueryPoolResults(g_vk.dev, s->pool, 0, s->used, sizeof(u64) * s->used, ticks, sizeof(u64),
+                                     VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT)))
+        fatal("vulkan: cannot read the ASTC study's timestamps");
+    const double period = g_vk.props.limits.timestampPeriod;
+    u64 open[2] = {0, 0};
+    for (u32 i = 0; i < s->used; i++) {
+        const u32 pair = s->kind[i] >> 1;
+        if (!(s->kind[i] & 1))
+            open[pair] = ticks[i];
+        else if (pair) {
+            *strip_ns += (u64)((double)(ticks[i] - open[1]) * period);
+            ++*strips;
+        } else {
+            *dispatch_ns += (u64)((double)(ticks[i] - open[0]) * period);
+            ++*dispatches;
+        }
+    }
+    s->used = 0;
+}
+
 /* The fast build's transcode of texels (its BC7 blocks' texels) of SNX_ASTC_QUICK_TIMED_TEXELS or more goes between a
    pair of timestamps, each after all the work before it, where the graphics queue has them and a pair is free
    (VK_BC7_TIMED at once: the rest go untimed), and its time goes into the sum that astc_quick_mtexels follows once its
@@ -1585,7 +1636,16 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
                 image_rows = cy * 4;
                 g_astc.bcn_bytes[bcn_slot(bcn)] += (u64)cx * cy * nz * bcn_bytes;
                 g_astc.bcn_rgba8_bytes[bcn_slot(bcn)] += texels;
+            } else if (vk_astc_granite_takes(bw, bh, offset)) {
+                /* astc_decoder=1: Granite's decoder, which copies its texels into the image itself */
+                vk_astc_study_mark(cb, 2);
+                vk_astc_granite_strip(cb, input, offset, nx, n, nz, w, height, bw, bh, t->img, level, x, y0 + y * bh,
+                                      layered ? layer + z : layer, layered, layered ? 0 : z);
+                vk_astc_study_mark(cb, 3);
+                g_astc.rgba8_bytes += texels;
+                continue;
             } else {
+                vk_astc_study_mark(cb, 2);
                 /* Submission makes the flushed host staging writes visible. Scratch
                    reuse also needs a WAR dependency on the preceding image copy,
                    including when that belongs to an earlier frame. */
@@ -1597,7 +1657,9 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
                 rec_CmdPushConstants(cb, g_astc.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
                 vk_ck(cb, VK_CK_ASTC, nx, n, nz, bw << 8 | bh);
                 vk_gpuprof_tag(VK_PROF_ASTC);
+                vk_astc_study_mark(cb, 0);
                 rec_CmdDispatch(cb, (nx + tw - 1) / tw, (n + th - 1) / th, nz);
+                vk_astc_study_mark(cb, 1);
                 scratch_barrier(cb, g_astc.scratch, USE_WRITE, 0, USE_COPY);
                 g_astc.rgba8_bytes += texels;
             }
@@ -1610,6 +1672,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
                 .imageExtent = {w, height, layered ? 1 : nz}};
             vk_ck(cb, VK_CK_COPY, w, height, nz, level);
             rec_CmdCopyBufferToImage(cb, from, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            if (!blocks4) vk_astc_study_mark(cb, 3);
             vk_ck(cb, VK_CK_STRIP_DONE, w, height, nz, level);
             if (bc7) {
                 g_astc.bc7_queued.blocks += (u64)cx * ((height + 3) / 4) * nz;

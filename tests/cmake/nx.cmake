@@ -425,12 +425,13 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         set(snx_astc_plat runtime/platform/plat_posix.c runtime/platform/plat_sdl.c)
     endif()
     add_executable(snx-test-astc-vulkan "${PROJECT_SOURCE_DIR}/tests/astc_vulkan.c" "${PROJECT_SOURCE_DIR}/tests/tracy_stubs.c"
-        "${PROJECT_SOURCE_DIR}/tests/support/astc.c" gpu/vk/astc.c gpu/vk/bc7_cache.c
+        "${PROJECT_SOURCE_DIR}/tests/support/astc.c" gpu/vk/astc.c gpu/vk/astc_granite.c gpu/vk/bc7_cache.c
         gpu/vk/blocklinear.c gpu/texture/blocklinear.c gpu/vk/texconv.c "${PROJECT_SOURCE_DIR}/tests/support/etc2.c"
         "${PROJECT_SOURCE_DIR}/tests/support/bcn.c"
         gpu/vk/cmd.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c
         gpu/vk/memory.c gpu/vk/ledger.c gpu/vk/resource_stats.c gpu/vk/record.c gpu/vk/checkpoints.c gpu/vk/devmem.c gpu/vk/space.c ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
-        "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/granite_astc_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/texconv_etc2_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_convert_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_nv12_spv.c"
@@ -480,6 +481,16 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # abreast shows as wrong results (skipped where the layer isn't installed)
     add_test(NAME astc_vulkan_sync COMMAND snx-test-astc-vulkan)
     set_tests_properties(astc_vulkan_sync PROPERTIES
+        ENVIRONMENT "VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation;VK_LAYER_VALIDATE_SYNC=1"
+        SKIP_RETURN_CODE 77 TIMEOUT 600)
+    # astc_decoder=1, Granite's decoder (gpu/vk/astc_granite.c): the RGBA8 cases held to its texels, in pieces too, and
+    # under the synchronization checks
+    add_test(NAME astc_vulkan_granite COMMAND snx-test-astc-vulkan --decoder granite)
+    add_test(NAME astc_vulkan_granite_pieces COMMAND snx-test-astc-vulkan --decoder granite --vk_max_allocation_mb=4)
+    add_test(NAME astc_vulkan_granite_sync COMMAND snx-test-astc-vulkan --decoder granite)
+    set_tests_properties(astc_vulkan_granite astc_vulkan_granite_pieces PROPERTIES TIMEOUT 300
+                         PASS_REGULAR_EXPRESSION "passed with Granite's decoder")
+    set_tests_properties(astc_vulkan_granite_sync PROPERTIES
         ENVIRONMENT "VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation;VK_LAYER_VALIDATE_SYNC=1"
         SKIP_RETURN_CODE 77 TIMEOUT 600)
 endif()

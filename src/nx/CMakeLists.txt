@@ -145,7 +145,7 @@ snx_decodetree(snx_shader OUTPUT decode-sm86.inc DECODE "${CMAKE_CURRENT_SOURCE_
                OPTIONS -w 16 --static-decode=decode_sm86)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/writelog.c gpu/vk/mirror.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/xfb.c gpu/vk/display.c gpu/vk/compute.c
-                 gpu/vk/pending_pages.c gpu/vk/checkpoints.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/upscale.c gpu/vk/memory.c gpu/vk/ledger.c gpu/vk/pagespace.c gpu/vk/range_shape.c gpu/vk/tex_census.c gpu/vk/tex_report.c gpu/vk/resource_stats.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/bc7_cache.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/vk/hdr_swapchain.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/devmem.c gpu/vk/space.c gpu/vk/gpuprof.c gpu/vk/uma.c
+                 gpu/vk/pending_pages.c gpu/vk/checkpoints.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/upscale.c gpu/vk/memory.c gpu/vk/ledger.c gpu/vk/pagespace.c gpu/vk/range_shape.c gpu/vk/tex_census.c gpu/vk/tex_report.c gpu/vk/resource_stats.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/astc_granite.c gpu/vk/bc7_cache.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/vk/hdr_swapchain.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/devmem.c gpu/vk/space.c gpu/vk/gpuprof.c gpu/vk/uma.c
                  gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/pipeline_parts.c gpu/vk/cb_fold.c
                  gpu/vk/draw_texture.c gpu/vk/draw_texture_shader.c gpu/vk/tess_passthrough.c gpu/vk/varying_geometry.c gpu/vk/present_quad.c gpu/vk/capture.c gpu/vk/depth_shadow.c gpu/vk/predraw.c
                  "${volk_SOURCE_DIR}/volk.c")
@@ -179,6 +179,9 @@ set_source_files_properties(${snx_fsr2_amd} PROPERTIES COMPILE_OPTIONS
                             "${snx_third_party_flags};-include;${CMAKE_CURRENT_SOURCE_DIR}/gpu/vk/fsr2/fsr2_compat.h")
 target_link_libraries(snx_fsr2 PUBLIC snx_vk_common)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc.comp NAME astc_spv HEADER nx/gpu/texture/astc_spv.h)
+# Granite's ASTC decoder as its archive has it (cmake/dependencies.cmake), for astc_decoder=1 (gpu/vk/astc_granite.c)
+snx_glsl_spirv(snx_vk SOURCE "${Granite_SOURCE_DIR}/assets/shaders/decode/astc.comp" NAME granite_astc_spv
+               HEADER nx/gpu/texture/granite_astc_spv.h PREAMBLE "#extension GL_GOOGLE_include_directive : require")
 # ASTC blocks straight into BC7 blocks, for a GPU that samples BC7 and not ASTC (gpu/vk/astc.c), in the encoder's
 # builds: the full one; the fast one, every mode only where mode 6 is not close, for large levels; mode 6 alone for the
 # largest; and mode 6 from its first line alone, a very large level's quick encode until the background's fast build is

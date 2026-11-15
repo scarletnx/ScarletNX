@@ -1282,6 +1282,18 @@ setting ASTC dump
     help A folder that keeps each whole ASTC texture level the game loads, as an .astc file (astcenc's format, the
     help layers or slices as its depth), for snx-test-astc-vulkan --bench and the BC7 encoder's measurements (the
     help game's own textures: keep them local). At most 2 GiB a run. Empty: none
+setting ASTC decoder
+    key astc_decoder
+    int 0 1
+    default 0
+    startup
+    words ScarletNX|Granite
+    help Which compute shader decodes the ASTC textures held as RGBA8 (astc_mode's Exact, and BC7's RGBA8 image before
+    help its encode between frames), on a GPU that samples no ASTC: 0 = ScarletNX's (astc.comp); 1 = Granite's
+    help (Hans-Kristian Arntzen's, MIT), to compare the two. Granite's reads the blocks as an image and writes the texels
+    help into one, which a copy puts into the texture; its tables are made once and shared by every texture. Its void
+    help extents keep the top 8 bits of their colour where ScarletNX's rounds them, and an HDR one is its colour's top
+    help bits where ScarletNX's is the error colour. BC7, BC1, BC4 and BC5 straight from the blocks keep ScarletNX's
 setting SM86 dump
     key sm86_dump
     text 1024

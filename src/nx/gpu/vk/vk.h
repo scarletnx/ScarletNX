@@ -1487,6 +1487,22 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y, u32 w, u32 h, u32 
    work to fill the GPU and each layer's encoder dispatch waits for the one before (docs/layers/gpu/astc.md) */
 int vk_astc_upload_layers(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 level, u32 layer, u32 layers, VkAstcRows rows,
                           void* ctx, const u64* content);
+/* astc_granite.c, astc_decoder=1: Granite's decoder in astc.comp's place for a strip held as RGBA8. takes: 1 where it
+   decodes a strip of bw x bh blocks starting at byte in_off of their buffer (said once each where it doesn't: the
+   device's workgroups, its storage image writes, the blocks' offset). strip: the strip's blocks (rows of nx blocks, n
+   rows a slice, nz slices from in_off of in) decoded and copied into dst at (x, y) of level: layer layer + k of a
+   layered strip, else layer layer and slice z + k, k under nz. stats: its dispatches, texels and the tables' bytes */
+int vk_astc_granite_takes(u32 bw, u32 bh, u64 in_off);
+void vk_astc_granite_strip(VkCommandBuffer cb, VkBuffer in, u64 in_off, u32 nx, u32 n, u32 nz, u32 w, u32 height,
+                           u32 bw, u32 bh, VkImage dst, u32 level, u32 x, u32 y, u32 layer, int layered, u32 z);
+void vk_astc_granite_stats(u64* dispatches, u64* texels, u64* table_bytes);
+/* The decoders' study (snx-test-astc-vulkan --bench-decoders): with vk_astc_study_time(1) each decode dispatch (kind
+   0 before it, 1 after) and each RGBA8 strip from its first command to its copy into the image done (2, 3) are
+   timestamped on the GPU; vk_astc_study_take, after a vk_finish, sums the dispatches' and the strips' nanoseconds since
+   the last take and counts them. Off, a mark is one branch */
+void vk_astc_study_time(int on);
+void vk_astc_study_mark(VkCommandBuffer cb, int kind);
+void vk_astc_study_take(u64* dispatch_ns, u64* dispatches, u64* strip_ns, u64* strips);
 /* The ASTC blocks a texture held as BC7 keeps while its image is RGBA8, for its BC7 image made between frames
    (texture.c's vk_tex_later_frame): vk_astc_keep gives t the buffer for them (1 when it has one), and from then on
    vk_astc_upload and vk_astc_upload_layers copy each strip they decode into its place there, a region's too.
@@ -2570,6 +2586,7 @@ enum {
     VK_PROF_QUERY_PREDICATE, /* the queries' predicates (query_predicate.comp) */
     VK_PROF_QUERY_COMPARE,   /* a query compare (query_compare.comp) */
     VK_PROF_QUERY_COUNT,     /* the queries' counts (query_count.comp) */
+    VK_PROF_GRANITE_ASTC,    /* Granite's ASTC decode (astc_decoder=1, astc_granite.c) */
     VK_PROF_N
 };
 void vk_gpuprof_cb_begin(VkCommandBuffer cb);

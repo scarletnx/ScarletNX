@@ -360,6 +360,13 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
                   URL https://github.com/GPUOpen-Effects/FidelityFX-FSR2/archive/refs/tags/v2.2.1.tar.gz
                   URL_HASH SHA256=4d7261ef054b071de83c7d201f6850c274226bd3025f4a2274ef4968343bd534
                   DOWNLOAD_ONLY YES)
+    # Granite (Hans-Kristian Arntzen, MIT): its ASTC compute decoder, assets/shaders/decode/astc.comp, compiled as it
+    # stands for astc_decoder=1 (gpu/vk/astc_granite.c, a study of it against astc.comp); the tables it reads are made
+    # by our port of its vulkan/texture/texture_decoder.cpp
+    CPMAddPackage(NAME Granite VERSION 2026.10.26
+                  URL https://github.com/Themaister/Granite/archive/69f450c62dc3780680b936539a931b5d03e436fb.tar.gz
+                  URL_HASH SHA256=a1bf7a1040927ea61cf482df5cbd7ae63cd112ed5c26d2a63d23607834617a7b
+                  DOWNLOAD_ONLY YES)
     # A copy of its library with one patch (cmake/fsr2-memory-types.patch): the backend takes device-local memory only
     # from a type that is not host-visible, and found none where every device-local type is (lavapipe, some integrated
     # GPUs), so no context could be made there

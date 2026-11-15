@@ -36,6 +36,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | Vulkan-Headers | Apache 2.0 |
 | volk | MIT |
 | AMD FidelityFX Super Resolution 2.2.1 (the DLSS evaluations of Switch 2 games) | MIT |
+| Granite's ASTC decoder (Hans-Kristian Arntzen's [Granite](https://github.com/Themaister/Granite), `assets/shaders/decode/astc.comp` as its archive has it, and its tables, ported from `vulkan/texture/texture_decoder.cpp` into `src/nx/gpu/vk/astc_granite.c`, for `astc_decoder=1`) | MIT (in the file) |
 | KosmicKrisp (Mesa's Vulkan driver on Metal, which the macOS app carries with `SNX_KOSMICKRISP`) | MIT |
 | The Vulkan Loader (the macOS app carries it for KosmicKrisp) | Apache 2.0 |
 | SDL3 | zlib |

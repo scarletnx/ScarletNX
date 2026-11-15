@@ -20,6 +20,7 @@
 * [Sparse textures](#sparse-textures)
 * [Building the shader](#building-the-shader)
 * [Tests](#tests)
+* [Granite's decoder](#granites-decoder)
 * [Findings and what is left](#findings-and-what-is-left)
   * [What was found](#what-was-found)
   * [What is left](#what-is-left)
@@ -936,6 +937,62 @@ error color, the CPU decoder was compared with edenprobe's LDR profile reference
 to astcenc by edenprobe's reference suite) on 20,000 random blocks for each of the 14 footprints: every texel was
 one of the two bytes the reference allows, error blocks included. The sRGB decode mode was checked
 the same way against `astcenc -cs` and `-ds` on five footprints: every byte agreed, alpha included.
+
+## Granite's decoder
+
+`astc_decoder=1` (a `[Debug]` setting, 0 by default) decodes the ASTC textures held as RGBA8 with Granite's compute
+shader in `astc.comp`'s place, to compare the two (`gpu/vk/astc_granite.c`). Granite is Hans-Kristian Arntzen's
+renderer (MIT); its `assets/shaders/decode/astc.comp` comes from its archive at a pinned commit through CPM
+(`cmake/dependencies.cmake`) and is compiled as it stands, with `GL_GOOGLE_include_directive` given as a preamble
+(`cmake/glsl.cmake`'s `PREAMBLE`), as Granite's own compiler includes without asking. The BC7, BC1, BC4 and BC5
+encoders decode the blocks themselves (`astc_decode.glsl`) whatever the setting.
+
+What it is, against `astc.comp`:
+
+- **An invocation a texel.** A workgroup is the footprint's texels times four blocks (`local_size_z` 4, two blocks
+  each way): 64 invocations at 4x4, 576 at 12x12, which a device with fewer `maxComputeWorkGroupInvocations` cannot
+  run (that footprint decodes with `astc.comp`, said once). Each invocation decodes its block's header, its own
+  partition, the up to four weights it interpolates of each plane and its partition's endpoints, so a block's
+  serial work is done once per texel, 16 to 144 times, where `astc.comp` decodes a block once into shared memory and
+  64 invocations write its texels from there.
+- **Tables in memory.** The endpoints' and weights' quantization modes and unquantization, the trit and quint blocks'
+  digits and each footprint's partitions for its 1024 seeds are uniform texel buffers and an R8UI image, made once on
+  the device and shared by every texture, level and strip: 11392 bytes, and 16 to 144 KiB a footprint (864384 bytes
+  for all 14). `astc.comp` has none: its tables are constants read with a shift and a mask, and a texel's partition is
+  the specification's hash, two multiply-adds a texel.
+- **Branches per texel** on what the block holds (a void extent, its partitions, a second plane, the weight grid's
+  fractions), and the block's 128 bits indexed by a computed word (`payload[offset >> 5]`).
+- **Images in and out.** It reads the blocks from an RGBA32UI image, a texel a block, and writes RGBA8UI texels into a
+  storage image declared without a format, which needs `shaderStorageImageWriteWithoutFormat` (without it nothing
+  decodes with Granite's, said once). `astc_granite.c` cuts a strip into tiles of at most 4096x1024 texels, each
+  copied from the strip's buffer into a blocks image of 1024x256 (4 MiB), decoded into a texels image of 4096x1024
+  (16 MiB), and copied into the texture: one copy more a tile than `astc.comp`'s path, of the blocks (a sixteenth to
+  a 144th of the texels' bytes). Both scratch images, and one descriptor set of them, live as long as the device.
+- **The bytes.** In its 8 bit mode every channel takes the sRGB decode mode's expansion, `(e << 8) | 0x80`, and the
+  top 8 bits of the interpolation, which for interpolated texels is the byte `astc.comp` makes in both of its modes
+  (see "Two channels per operation"). Void extents differ: Granite keeps the top 8 bits of their 16 bit colour in
+  every channel, where `astc.comp` rounds UNORM channels and the alpha of sRGB ones, by one step at most, and an HDR
+  void extent is its colour's top bits where `astc.comp` (the LDR profile) gives the error colour. Partitions with HDR
+  endpoint modes are the error colour in both. Its error colour is a push constant, opaque magenta as `astc.comp`'s.
+- **HDR.** With its 8 bit mode off it decodes HDR to RGBA16F's bits; the setting never asks for that.
+
+`astc_vulkan_granite` and `astc_vulkan_granite_pieces` (ctest with `-DSNX_TEST_VULKAN=ON`, `snx-test-astc-vulkan
+--decoder granite`) hold Granite's images to the CPU decoder's texels with its void extents changed as above
+(`tests/astc_vulkan.c`'s `cpu_texels`), byte for byte: all 14 footprints in both formats, sizes off the footprint, mips,
+layers one at a time and all at once, 3D slices that share strips, blocks that come block linear, regions, many
+strips (in pieces under the 4 MiB cap), and levels wider and higher than a tile (4100x1030 at 4x4 and 12x12, 8191x77
+at 10x8). They check that its dispatches ran and that void extent bytes moved. `astc_vulkan_granite_sync` runs them
+under the validation layer's synchronization checks. That layer runs SPIRV-Tools' `--fold-spec-const-op-composite` on
+each pipeline's specialized module, and v2026.3's puts an `OpConstantComposite` of Granite's frozen workgroup size
+before the constant it names (`ID ... has not been defined`): the same module with the footprint set and frozen
+(`spirv-opt --set-spec-const-default-value "0:4 1:4 2:1" --freeze-spec-const`) passes `spirv-val`, and the test says
+those messages without counting them as errors.
+
+`snx-test-astc-vulkan --bench-decoders [WxH | file.astc] [--bench-level WxH]` decodes one level with each decoder,
+interleaved, and gives the GPU's time of the decode dispatches alone and of the strips (from the first command after
+the blocks are staged to their copy into the image done), from timestamps (`vk_astc_study_time`), and the wall time;
+then each image is held to its decoder's texels and the bytes Granite moves from `astc.comp`'s are counted. In a game,
+`vk_gpu_profile=1` names its dispatches "Granite's ASTC decode".
 
 ## Findings and what is left
 
