@@ -57,13 +57,15 @@ void vk_tex_evicted(const Surf* t) {
     vk_tex_evicted_add(&g_tex_report.evicted, key);
 }
 
-void vk_tex_made(const Surf* t) {
+u32 vk_tex_made(const Surf* t) {
     u64 key = tex_key(t);
-    if (!vk_tex_evicted_take(&g_tex_report.evicted, key)) return;
-    g_tex_report.back[age_class(g_vk_present - g_tex_report.when[key >> 20 & 4095])]++;
+    if (!vk_tex_evicted_take(&g_tex_report.evicted, key)) return 0;
+    const u32 after = g_vk_present - g_tex_report.when[key >> 20 & 4095];
+    g_tex_report.back[age_class(after)]++;
     g_tex_report.reloads++;
     g_tex_report.reload_guest += t->size;
     g_tex_report.reload_device += t->bytes;
+    return after + 1;
 }
 
 /* One report's sums over the textures of the cache */

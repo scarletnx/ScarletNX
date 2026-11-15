@@ -1682,6 +1682,26 @@ setting Vulkan memory budget
     startup
     help The caches keep within this many MiB of the GPU's heap, below the driver's budget, for testing. 0 = the
     help driver's budget alone
+setting Vulkan heap budget
+    key vk_heap_budget_mb
+    int 0 INT_MAX
+    default 0
+    startup
+    help The GPU's own heap is used up to this many MiB, below the driver's budget, as on a GPU with less memory, for
+    help testing: the allocator's requests find no memory past it, and the caches keep within it. 0 = the driver's
+    help budget alone
+setting Vulkan memory defrag
+    key vk_defrag
+    label Vulkan memory defragmentation
+    int 0 1
+    default 1
+    words Off|On
+    help 1 = the free space inside the GPU's blocks of device memory is gathered into whole blocks, by DXVK's rule:
+    help when the free space is more than an eighth of what the blocks hold plus a block, or the blocks are past the
+    help budget, the block with the least in it is emptied, its textures copied to other blocks on the GPU, 32 MB a
+    help frame at most. The empty block is kept for a large request or given back to the driver. Discrete GPUs only:
+    help an integrated or mobile GPU, which shares the system's memory, never empties blocks. 0 = blocks keep what
+    help they hold
 setting RenderDoc captures
     key renderdoc
     text 1024

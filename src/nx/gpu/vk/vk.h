@@ -714,6 +714,10 @@ void vk_defer_buffer_view(VkBufferView v);
    entry's memory counts as gone from when it is deferred (vk_mem_trim) */
 void vk_defer_bytes(u64 bytes);
 u64 vk_deferred_bytes(void);
+/* bytes of this frame's vk_defer_bytes whose memory is in a block being emptied (devmem.c vk_devmem_moving): released
+   there, where no request takes them, so a trim for an allocation does not count on them (surface.c vk_mem_trim) */
+void vk_defer_moved(u64 bytes);
+u64 vk_deferred_moved(void);
 void vk_defer_call(void (*fn)(void*), void* arg); /* fn(arg) then */
 /* the submission being recorded (a number that grows at every submit: what a submit may have changed, results landed,
    is checked against it), and the frame (grows at vk_frame_next: frame f's work is done once f + VK_FRAMES started) */
@@ -1211,6 +1215,12 @@ typedef struct Surf {
        lod_floor on bound, its finest going where the device's memory runs short (vk_tex_coarser) and coming back
        when it has room (vk_tex_finer) */
     u8 shed;
+    /* textures: its image can move to other device memory when its block is emptied (texture.c vk_tex_defrag_frame):
+       the allocation's owner in devmem.c is the texture */
+    u8 movable;
+    /* textures: made again within 300 presents of the cache's eviction of its key (texture.c): a trim's first step,
+       for headroom, leaves it (surface.c vk_mem_trim) */
+    u8 came_back;
     /* depth targets: undefined but for draws and clears predicated on the GPU, which may not have run, so they count
        as no draw (render.c zt_written) */
     int pred_undefined;
@@ -2133,6 +2143,22 @@ void vk_tex_later_frame(void);
    written since its read. Nothing when vk_cmd would wait for the GPU first */
 void vk_tex_kind_frame(void);
 #define VK_KIND_FRAME_BLOCKS (1u << 18)
+/* After that, its own submission too: the textures in the block of device memory that is being emptied move to other
+   blocks, DEFRAG_BYTES at most (texture.c). Nothing with vulkan_memory_defrag off */
+void vk_tex_defrag_frame(void);
+/* An owner that can move its allocation (vk_devmem_owner) is a texture (Surf*, whose low bit is clear), or an own
+   buffer of the buffer cache, its entry's index tagged in the low bit */
+#define VK_MOVE_BUF(i)       ((void*)(((uintptr_t)(i) << 1) | 1u))
+#define VK_MOVE_IS_BUF(o)    (((uintptr_t)(o) & 1u) != 0)
+#define VK_MOVE_BUF_INDEX(o) ((u32)((uintptr_t)(o) >> 1))
+/* buffer.c: own buffer i, whose memory is from, made again in a run of another block (DevMemWant.existing) and copied
+   there on cb, the old one freed when the frames in flight are done. 1 with *bytes, 0 when no run held it, -1 when
+   the entry no longer has that memory */
+int vk_buf_move(VkCommandBuffer cb, u32 i, DevMem from, u64* bytes);
+/* surface.c: render target s's image made again in a run of another block and copied there on cb, with its attachment
+   view, in the layout it had; the old image and its views go when the frames in flight are done. 1 with *bytes, 0
+   when no run held it, -1 when it cannot move now (a storage result of it still lands) */
+int vk_rt_move(VkCommandBuffer cb, Surf* s, u64* bytes);
 /* the encoder's blocks a frame: 3.3 ms of an RX 6700 XT, which encodes 10 million a second (docs/layers/gpu/astc.md), a tenth of
    a frame at 30 fps */
 #define VK_BC7_LATER_BLOCKS (1u << 15)
