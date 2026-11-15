@@ -2196,6 +2196,7 @@ static int may_write(const Sm86Insn* in, u32 r) {
         case SM86_TEX_U:
         case SM86_TLD_U:
         case SM86_TLD4_U:
+        case SM86_TXD_U:
         case SM86_TXQ_U: {
             u32 d1 = sm86_field(in, 64, 8);
             if (d1 < SM86_RZ && r >= d1 && r < d1 + 4) return 1;
@@ -2751,7 +2752,8 @@ static void texture_grad(Ctx* c, const Sm86Insn* in) {
         return;
     }
     u32 handle = sm86_field(in, 40, 19);
-    int slot = tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, 0, 0);
+    int slot = in->op == SM86_TXD_U ? (int)c->handle[c->cur].slot - 1 /* memory_handles' */
+                                    : tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, 0, 0);
     if (slot < 0) return;
     u32 a = sm86_field(in, 24, 8), b = sm86_field(in, 32, 8), f[4], dx[3], dy[3], count = 0;
 #define TXD_REG(base, k) ((base) < SM86_RZ ? (base) + (k) : SM86_RZ)
@@ -5175,6 +5177,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_TLD_U:
         case SM86_TLD4_U:
         case SM86_TXQ_U:
+        case SM86_TXD_U:
             if (!c->handle || !c->handle[c->cur].slot) { /* memory_handles found no slot */
                 uniform_handle(c, in);
                 return;
@@ -5183,6 +5186,8 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 texel_fetch(c, in);
             else if (op == SM86_TXQ_U)
                 texture_query(c, in);
+            else if (op == SM86_TXD_U)
+                texture_grad(c, in);
             else
                 texture(c, in);
             return;
@@ -5827,6 +5832,9 @@ static int mh_may_write(const Sm86Insn* in, int file, u32 r) {
             case SM86_TEX_U:
             case SM86_TLD_U:
             case SM86_TLD4_U:
+            case SM86_TXD:
+            case SM86_TXD_B:
+            case SM86_TXD_U:
             case SM86_SULD_P:
             case SM86_SULD_D:
             case SM86_SULD_P_B:
@@ -6091,14 +6099,14 @@ static int tex_b_cbuf_handle(Ctx* c, u32 i, u32 reg) {
     if (c->stage == ST_CS && w->op == SM86_LDC && sm86_field(w, 24, 8) < SM86_RZ) return 0;
     return (w->op == SM86_MOV && w->b.kind == SM86_SRC_CBUF && !w->b.bindless) || w->op == SM86_LDC;
 }
-/* The handles from memory: TEX, TLD, TLD4 and TXQ with the handle in a uniform register pair (URn the texture's word,
-   URn + 1 the sampler's), and TEX.B whose handle register no constant buffer word gives. Their slots go in
+/* The handles from memory: TEX, TLD, TLD4, TXD and TXQ with the handle in a uniform register pair (URn the texture's
+   word, URn + 1 the sampler's), and TEX.B whose handle register no constant buffer word gives. Their slots go in
    c->handle (the slot + 1), and the instructions that make them in ShaderInfo.memh */
 static void memory_handles(Ctx* c) {
     u32 n = c->n, any = 0;
     for (u32 i = 0; i < n; i++) {
         int op = c->in[i].op;
-        any |= op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXQ_U ||
+        any |= op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXD_U || op == SM86_TXQ_U ||
                ((op == SM86_TEX_B || op == SM86_TXQ_B) && handle_b_reg(&c->in[i]) < SM86_RZ &&
                 !tex_b_cbuf_handle(c, i, handle_b_reg(&c->in[i])));
     }
@@ -6119,7 +6127,8 @@ static void memory_handles(Ctx* c) {
        is sampled as no texture (SH_PROBE_NONE): its instructions are unmarked, and the draw goes on without it */
     for (u32 i = 0; i < n && !c->failed; i++) {
         const Sm86Insn* in = &c->in[i];
-        int op = in->op, u = op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXQ_U;
+        int op = in->op, u = op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXQ_U ||
+                             op == SM86_TXD_U;
         int b = op == SM86_TEX_B || op == SM86_TXQ_B;
         u32 reg = b ? handle_b_reg(in) : SM86_RZ;
         if (!u && !(b && reg < SM86_RZ && !tex_b_cbuf_handle(c, i, reg))) continue;
@@ -6151,7 +6160,9 @@ static void memory_handles(Ctx* c) {
             int op = in->op, slot = -1;
             int query = op == SM86_TXQ_U || op == SM86_TXQ_B;
             if (probe[i][0] == ~0u || query != (pass == 1)) continue;
-            if (op != SM86_TEX_U && op != SM86_TLD_U && op != SM86_TLD4_U && !query && op != SM86_TEX_B) continue;
+            if (op != SM86_TEX_U && op != SM86_TLD_U && op != SM86_TLD4_U && op != SM86_TXD_U && !query &&
+                op != SM86_TEX_B)
+                continue;
             u32 tex = mh_final(c, probe[i][0]), smp = probe[i][1] == ~0u ? 0 : mh_final(c, probe[i][1]);
             int has_smp = probe[i][1] != ~0u;
             if (query) {
@@ -6164,7 +6175,8 @@ static void memory_handles(Ctx* c) {
             } else {
                 u32 type, array, coords;
                 if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) continue; /* refused where it's written */
-                u32 shadow = op == SM86_TLD_U ? 0 : sm86_field(in, 78, 1),
+                /* TXD has no depth reference: its bit 78 is not the shadow bit */
+                u32 shadow = op == SM86_TLD_U || op == SM86_TXD_U ? 0 : sm86_field(in, 78, 1),
                     ms = op == SM86_TLD_U && sm86_field(in, 78, 1);
                 slot = tex_slot_memory(c, tex, has_smp, smp, type, array, shadow, ms);
             }

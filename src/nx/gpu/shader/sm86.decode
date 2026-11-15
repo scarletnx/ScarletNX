@@ -423,14 +423,16 @@ TXD          ---- 101 101101100
 TXD_B        ---- 001 101101101
 TXQ          ---- 101 101101111
 TXQ_B        ---- 001 101110000
-# TEX, TLD, TLD4 and TXQ with the handle in a uniform register: the constant buffer codes with bit 10, the register at
-# 40-45 in place of the constant buffer's reference, bit 91 set, the rest of the fields theirs. CuAssembler's sm_86
-# records: "TEX.SCR.LL.DC R34, R8, R2, R6, UR4, 2D" (0x00000000099e4f08_3000040602227f60) and "TXQ R35, R20, UR12,
-# TEX_HEADER_DIMENSION, 0x2" (0x00000000080002ff_00000c0014237f6f). One game's programs take the handle from memory:
-# an LDG.64 of a table of handles, R2UR, then UR + 1 = UR >> 20, the sampler's index
+# TEX, TLD, TLD4, TXD and TXQ with the handle in a uniform register: the constant buffer codes with bit 10, the
+# register at 40-45 in place of the constant buffer's reference, bit 91 set, the rest of the fields theirs.
+# CuAssembler's sm_86 records: "TEX.SCR.LL.DC R34, R8, R2, R6, UR4, 2D" (0x00000000099e4f08_3000040602227f60) and
+# "TXQ R35, R20, UR12, TEX_HEADER_DIMENSION, 0x2" (0x00000000080002ff_00000c0014237f6f). One game's programs take the
+# handle from memory: an LDG.64 of a table of handles, R2UR, then UR + 1 = UR >> 20, the sampler's index. Another
+# game's fragment and compute programs sample with TXD this way (0xf6c, with TXD's fields: Lichii's lowering of it)
 TEX_U        ---- 111 101100000
 TLD_U        ---- 111 101100110
 TLD4_U       ---- 111 101100011
+TXD_U        ---- 111 101101100
 TXQ_U        ---- 111 101101111
 SULD_P       ---- 101 110010111
 SULD_P_B     ---- 100 110011000
