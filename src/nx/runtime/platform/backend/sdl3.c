@@ -25,6 +25,7 @@
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/gamepad.h"
+#include "nx/runtime/platform/joycon2_sdl.h" /* joycon2_mouse */
 #include "nx/runtime/platform/help.h"
 #include "nx/runtime/platform/hotkeys.h"
 #include "common/utilities/pad_sdl.h"
@@ -2043,6 +2044,18 @@ void video_poll(void) {
         player->rx = one_sticks[2];
         player->ry = one_sticks[3];
         gamepad_motion(i, player->motion);
+        { /* a Joy-Con 2's mouse sensors (joycon2_sdl.h), by sensor as player->motion has them, for hid's Jcms; taken
+             and dropped while the game is paused, so that it doesn't come as one jump after */
+            float jm[2][2];
+            int surface = id ? joycon2_surface(id) : -1;
+            g_host.hid.pad_mouse_real[i] = surface >= 0 ? 3 : 0;
+            g_host.hid.pad_mouse_surface[i] = surface >= 0 ? (u8)surface : 0;
+            if (id && joycon2_mouse(id, jm) && !game_paused())
+                for (int sensor = 0; sensor < 2; sensor++) {
+                    g_host.hid.pad_mouse[i][sensor][0] += jm[sensor][0];
+                    g_host.hid.pad_mouse[i][sensor][1] += jm[sensor][1];
+                }
+        }
         if (i == 0) memcpy(pad0, one_sticks, sizeof pad0);
     }
     gamepad_state(&pb, pad); /* the combined state drives the menu and its held-control display */

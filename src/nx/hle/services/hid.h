@@ -86,9 +86,15 @@ typedef struct {
     HidVibration vibration[HID_PADS][2];
     HidMouse mouse;
 } HleHid;
-/* hid's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+/* hid's host side: locks and condition variables, and input not yet taken, which a save state never holds (hle.h's
+   g_host) */
 typedef struct {
     PMutex input_lock;
+    /* a real Joy-Con 2's mouse sensors' motion not yet taken (joycon2_mouse), by player and sensor (PadState.motion's),
+       X and Y in the sensor's counts, under input_lock */
+    float pad_mouse[HID_PADS][2][2];
+    /* the players whose sensors are a real Joy-Con 2's, and the ones of them on a surface, a bit per sensor */
+    u8 pad_mouse_real[HID_PADS], pad_mouse_surface[HID_PADS];
     /* hid's own, under lock */
     PMutex lock;
     /* each player's motors' strongest amplitudes since the frontend last read them (hid_vibrate), low | high << 16:
