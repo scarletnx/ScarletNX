@@ -97,6 +97,7 @@ typedef enum {
     GUI_ASK_OVERWRITE, /* the setup's user page: Overwrite users.ini, which is kept as users.ini.old */
     GUI_ASK_SAVES,     /* an import of saves over saves there, which go to the trash first (Import Saves) */
     GUI_ASK_PACK,      /* a folder of NCAs picked to pack: into an NSP or an XCI */
+    GUI_ASK_FORGET,    /* a Joy-Con 2 forgotten (Controllers > Bluetooth): games no longer connect it */
     GUI_ASK_ERROR      /* a failure of the system's, or Run Amberlith's counts, said whole: OK alone, which closes it */
 } GuiAsk;
 typedef struct {

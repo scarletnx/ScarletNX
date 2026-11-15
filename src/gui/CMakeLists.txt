@@ -52,10 +52,12 @@ set_target_properties(snx_gui_ui PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON
 target_compile_options(snx_gui_ui PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 add_library(snx_gui_support STATIC aot.c model.c browser.c steps.c theme.c recent.c editor.c settings.c place.c clean.c
             queue.c latin.c wide.c log.c logzip.c saves.c gpu_driver.c gpu_driver_fetch.c covers.c probe.c last_run.c
-            title.c ${gui_process}
+            title.c bluetooth.c ${gui_process}
             "${PROJECT_BINARY_DIR}/generated/gui_themes.c" "${PROJECT_BINARY_DIR}/generated/gui_glyphs.c"
             "${PROJECT_BINARY_DIR}/generated/gui_titles.c")
 target_link_libraries(snx_gui_support PUBLIC scarletnx-common snx_setup snx_i18n snx_settings snx_miniz PRIVATE snx_libdeflate)
+# Controllers > Bluetooth's controllers (bluetooth.c): the adverts a scan hears (common/platform/ble_scan.h)
+target_link_libraries(snx_gui_support PUBLIC snx_ble)
 # Install Keys' check of the DS's ARM7 BIOS, its CRC-32 (snx_crc32, main.c)
 target_link_libraries(snx_gui_support PUBLIC snx_zip)
 # Download Driver's GitHub lists (gpu_driver_fetch.c), Amberlith's report (probe.c)
@@ -145,6 +147,9 @@ target_compile_options(scarletnx-gui PRIVATE -Wframe-larger-than=262144 -Werror=
 target_compile_definitions(scarletnx-gui PRIVATE SNX_SOURCE_DIR="${PROJECT_SOURCE_DIR}" SNX_BUILD_DIR="${PROJECT_BINARY_DIR}")
 target_link_libraries(scarletnx-gui PUBLIC snx_gui_support PRIVATE snx_gui_ui scarletnx-common SDL3::SDL3
                       snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages snx_demangle)
+# Controllers > Bluetooth's search: the system's scan (BlueZ on Linux), which the tests that compile main.c replace
+# by a fake (tests/support/ble_fake_system.c)
+target_link_libraries(scarletnx-gui PRIVATE snx_ble_system)
 # GPU Drivers' Download Driver, where the build has OpenSSL (common/network/https.h)
 if(TARGET snx_https)
     target_link_libraries(scarletnx-gui PRIVATE snx_https)
