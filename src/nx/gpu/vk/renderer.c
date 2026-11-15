@@ -994,6 +994,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         vk_display_presented(VK_NULL_HANDLE, 0, game, released_ns, shown_syncpt);
     /* the BC7 encoder's share of the frame after its present, which it never holds back */
     vk_tex_later_frame();
+    vk_tex_defrag_frame();
     if (recreate && !g_lost && !g_vk.sc_lost) { /* not when this frame's create found the surface lost */
         vk_finish();
         vk_swapchain_create(kind);

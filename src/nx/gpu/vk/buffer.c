@@ -3407,23 +3407,30 @@ static int make_own(u32 i, VkBuffer sb, u64 so) {
     vk_resource_end(VK_RESOURCE_BUFFER_CACHE_BUILD, scope);
     return r;
 }
+/* an own buffer of len bytes */
+static VkBufferCreateInfo own_info(u64 len) {
+    return (VkBufferCreateInfo){.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                .size = len,
+                                .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                         VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                                         VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT, /* render.c copies indices out of it */
+                                .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+}
 static int make_own_(u32 i, VkBuffer sb, u64 so) {
     Vb* e = &g_vb[i];
     u64 len = e->len;
-    VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                              .size = len,
-                              .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT, /* render.c copies indices out of it */
-                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VkBufferCreateInfo bci = own_info(len);
     DevMemWant aci = {.at = DM_DEVICE};
     VkBuffer b;
     DevMem m;
     if (vk_buffer_create(&bci, &aci, &b, &m, NULL) != VK_SUCCESS) return 0;
     vk_mem_track(m, VK_OWN_BUFFER);
+    /* it can move to another block when its own is emptied (vk_buf_move): no one keeps its handle past a lookup
+       (buf_get), and no one takes its device address */
+    vk_devmem_owner(m, VK_MOVE_BUF(i));
     if (copy_stats_on()) g_copy_owned += len;
     VkBufferCopy r = {so, 0, len};
     rec_CmdCopyBuffer(vk_cmd_upload(0), sb, b, 1, &r);
@@ -4065,6 +4072,40 @@ int vk_buf_get_copy_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     return buf_get(gva, len, buf, off, 2, vk_stage_align(), IN_NO);
 }
 u64 vk_buf_copy_src_read(void) { return g_buffer.copy_src_read; }
+
+int vk_buf_move(VkCommandBuffer cb, u32 i, DevMem from, u64* bytes) {
+    Vb* e = &g_vb[i];
+    if (!e->own || e->mem != from) return -1; /* dropped or made again since the allocator named it */
+    VkBufferCreateInfo bci = own_info(e->len);
+    const DevMemWant want = {.at = DM_DEVICE, .existing = 1};
+    VkBuffer b;
+    DevMem m;
+    if (vk_buffer_create(&bci, &want, &b, &m, NULL) != VK_SUCCESS) return 0;
+    vk_mem_track(m, VK_OWN_BUFFER);
+    /* every write before it (uploads, patches, shader stores) done before the copy reads it, and the copy done before
+       anything after it reads or writes the new buffer */
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                           .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    rec_CmdPipelineBarrier2(cb, &d);
+    const VkBufferCopy r = {0, 0, e->len};
+    rec_CmdCopyBuffer(cb, e->buf, b, 1, &r);
+    mb = (VkMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+    rec_CmdPipelineBarrier2(cb, &d);
+    vk_defer_buffer(e->buf, e->mem); /* the frames in flight that read it are done first; its owner goes */
+    e->buf = b;
+    e->mem = m;
+    vk_devmem_owner(m, VK_MOVE_BUF(i));
+    *bytes = e->len;
+    return 1;
+}
 
 u64 vk_buf_reclaim(u32 before, u64 want) {
     u64 freed = 0;

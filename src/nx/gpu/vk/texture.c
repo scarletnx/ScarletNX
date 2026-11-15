@@ -1230,6 +1230,7 @@ static void tex_image_swap(Surf* t, VkImage img, DevMem mem, u64 bytes, VkFormat
     t->img = img;
     t->mem = mem;
     if (t->took_drawn) vk_devmem_priority(mem, DM_PRIO_MID); /* new memory has the low class of its owner */
+    if (t->movable) vk_devmem_owner(mem, t);
     vk_surf_bytes(t, bytes);
     t->f.vk = fmt;
     VkFormatProperties fp;
@@ -1394,6 +1395,102 @@ void vk_tex_later_frame(void) {
         g_later.n--;
     }
     if (cb) vk_submit_recorded(); /* its own submission, after the present's */
+}
+
+/* ------------------------------------------------------------ moves out of a block that is emptied */
+/* The design is DXVK's defragmentation (DxvkMemoryAllocator's chunk relocation, 2.5): devmem.c picks a block of the
+   GPU's heap that holds little and takes no more requests in it, and the textures in it are moved to the runs of other
+   blocks, a few a present, so that the block goes back to the driver. A move makes the texture's image again with no
+   new block (DevMemWant.existing), copies every level on the GPU, and puts the new image in the old one's place as the
+   BC7 encoder does (tex_image_swap): the old image and its views go when the frames that sample them are done.
+
+   A texture moves when it is a cache texture with all its memory in one allocation (t->movable): not a render target,
+   a copy of one, an image the GPU writes, or an image whose memory follows its mapping (sparse, bricks). One whose BC7
+   image is being made waits for it. When an image finds no run, the block is left as it is (vk_devmem_moving_stop) */
+#define DEFRAG_BYTES (32ull << 20) /* the most a present copies */
+#define DEFRAG_MAX   32u           /* textures asked for a present */
+/* t's image in a free run of another block, copied on cb. 1 when moved, 0 when no run held it */
+static int tex_defrag_move(VkCommandBuffer cb, Surf* t, u64* bytes) {
+    VkImageCreateInfo ii;
+    VkViewFormats vf;
+    int storage;
+    tex_info(t, t->f.vk, &ii, &vf, &storage);
+    DevMemInfo was_info, info;
+    vk_devmem_info(t->mem, &was_info);
+    /* in the blocks of its class: the owner's (textures low), or medium once drawn into (tex_drawn) */
+    const u32 owner = was_info.tag ? was_info.tag - 1 : VK_OWN_TEXTURE;
+    const DevMemWant want = {.at = DM_DEVICE,
+                             .existing = 1,
+                             .low = vk_mem_owner_prio(owner) == DM_PRIO_LOW && !t->took_drawn};
+    VkImage img;
+    DevMem mem;
+    if (vk_devmem_image(&ii, &want, &img, &mem) != VK_SUCCESS) return 0;
+    vk_devmem_info(mem, &info);
+    if (was_info.tag) vk_mem_track(mem, owner); /* under the old one's owner in the ledger, and its class */
+    *bytes = info.size;
+    const VkImageLayout was = t->layout;
+    const VkPipelineStageFlags2 stage = t->stage;
+    const VkAccessFlags2 access = t->access;
+    /* an image in UNDEFINED holds nothing to copy */
+    const int copied = was != VK_IMAGE_LAYOUT_UNDEFINED;
+    if (copied) {
+        const VkImageAspectFlags aspect = vk_aspect(&t->f);
+        const int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
+        vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+        vk_barrier(cb, img, aspect, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
+                   VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageCopy rg[VK_TEX_MAX_LEVELS];
+        const u32 levels = t->levels < VK_TEX_MAX_LEVELS ? t->levels : VK_TEX_MAX_LEVELS;
+        for (u32 l = 0; l < levels; l++) {
+            const VkImageSubresourceLayers sub = {.aspectMask = aspect, .mipLevel = l, .layerCount = t->layers};
+            rg[l] = (VkImageCopy){.srcSubresource = sub,
+                                  .dstSubresource = sub,
+                                  .extent = {t->w >> l ? t->w >> l : 1, t->h >> l ? t->h >> l : 1,
+                                             is3d ? (t->depth3d >> l ? t->depth3d >> l : 1) : 1}};
+        }
+        rec_CmdCopyImage(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         levels, rg);
+    }
+    vk_devmem_owner(t->mem, NULL); /* the old allocation is not given out again */
+    vk_defer_moved(t->bytes);      /* released into the block being emptied (tex_image_swap defers them) */
+    tex_image_swap(t, img, mem, info.size, t->f.vk, copied);
+    if (copied && was != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) vk_surf_use(cb, t, was, stage, access);
+    return 1;
+}
+void vk_tex_defrag_frame(void) {
+    if (!g_settings.vulkan_memory_defrag || !vk_cmd_ready()) return;
+    DevMem mems[DEFRAG_MAX];
+    void* owners[DEFRAG_MAX];
+    u64 usage, budget;
+    vk_mem_use(&usage, &budget);
+    const u32 n = vk_devmem_moving(mems, owners, DEFRAG_MAX, budget);
+    if (!n) return;
+    SNX_ZONE(z, "vk defrag");
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    u64 moved = 0;
+    for (u32 i = 0; i < n && moved < DEFRAG_BYTES; i++) {
+        /* an owner is the texture or buffer entry while it holds that memory: tex_image_swap, vk_defer_image and
+           vk_defer_buffer take it off first */
+        Surf* t = VK_MOVE_IS_BUF(owners[i]) ? NULL : owners[i];
+        if (t && (t->mem != mems[i] || (!t->is_rt && t->bc7.img))) continue;
+        if (!cb) {
+            vk_render_end(); /* copies happen outside rendering passes */
+            cb = vk_cmd();
+        }
+        u64 bytes = 0;
+        int r = !t           ? vk_buf_move(cb, VK_MOVE_BUF_INDEX(owners[i]), mems[i], &bytes)
+                : t->is_rt ? vk_rt_move(cb, t, &bytes)
+                           : tex_defrag_move(cb, t, &bytes);
+        if (r < 0) continue;
+        if (!r) {
+            vk_devmem_moving_stop();
+            break;
+        }
+        vk_devmem_moved(bytes);
+        moved += bytes;
+    }
+    if (cb) vk_submit_recorded(); /* its own submission, as the BC7 encoder's */
 }
 
 /* ------------------------------------------------------------ ASTC held by what its blocks hold */
@@ -2102,6 +2199,9 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
             free(t);
             return NULL;
         }
+        /* an image the GPU writes is left where it is: its writes may come from another queue */
+        t->movable = !written && t->mem;
+        if (t->movable) vk_devmem_owner(t->mem, t);
     }
     vk_surf_add(t);
     return t;
@@ -3311,7 +3411,11 @@ texture_from_memory:
     t->checked = g_vk_present;
     t->next_check = g_vk_present + 4;
     const int loaded = t->piecewise ? tex_load_pieces(t) : tex_upload(t);
-    vk_tex_made(t); /* statistics: one the cache evicted before is counted, with the memory its load bound */
+    /* statistics: one the cache evicted before is counted, with the memory its load bound. One the game asked for
+       again within 300 presents of its eviction is one it uses now and then: a trim for headroom leaves it
+       (vk_mem_trim) */
+    const u32 back = vk_tex_made(t);
+    t->came_back = back && back <= 300;
     return loaded ? t : NULL;
 }
 

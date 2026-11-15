@@ -49,6 +49,9 @@ typedef struct {
     u8 reserve;    /* the reserve (vk_devmem_reserve): taken only while vk_devmem_reserve_use says, never let go */
     u8 low;        /* for requests of the low class first (DevMemWant.low): with image and type, its kind */
     u8 prio;       /* the class whose priority the driver has for it (block_prio) */
+    u8 drain;      /* being emptied (vk_devmem_moving): no request takes a run of it */
+    u32 movable;   /* its allocations whose owner can move them (vk_devmem_owner) */
+    u64 drain_skip; /* not emptied again before this present: a move out of it failed */
 } Block;
 /* an allocation: DevMem is its index plus one */
 typedef struct {
@@ -58,6 +61,7 @@ typedef struct {
     u32 mapped;    /* it asked for the CPU's address */
     u8 prio;       /* its class, DM_PRIO_*: in the padding before size, so a record stays 32 bytes */
     u64 size;      /* the bytes asked for */
+    void* owner;   /* the owner that can move it to other memory (vk_devmem_owner), NULL when none can */
 } Rec;
 
 static struct {
@@ -102,6 +106,18 @@ static struct {
        the capped heap's blocks then (no one run held them), and the largest */
     u64 failed, failed_room, failed_max;
     u64 priorities; /* calls that gave a block a new priority since the last report (block_prio) */
+    /* The block being emptied (vk_devmem_moving), as DXVK defragments its chunks: no request takes its runs, and the
+       owners of its allocations move them to the runs of other blocks on the GPU. Once it has none it is an empty
+       block (vk_devmem_free). slot: its index plus one, 0 for none. since: the present it started. picked: the present
+       of the last search for one. The counts are since the last report */
+    struct {
+        int on; /* a GPU with memory of its own: integrated and mobile GPUs (UMA) keep their blocks as they are */
+        u32 slot;
+        int moving; /* a move asks for memory (DevMemWant.existing): only blocks that hold something take it */
+        int repair; /* the block is repaired, not emptied (repair_pick): only its allocations of the wrong class move */
+        u64 since, picked;
+        u64 emptied, kept, gave_up, moved, moved_bytes, repaired;
+    } drain;
     int coherent;  /* every memory type the CPU maps is coherent: a flush has nothing to do */
     u32 since;     /* requests since the driver's budgets were asked */
     u64 block_bytes[VK_MAX_MEMORY_HEAPS], allocated[VK_MAX_MEMORY_HEAPS];
@@ -118,6 +134,10 @@ static int heap_capped(u32 h) { return (int)h == g_devmem.main_heap && g_vk.mem_
 static u64 heap_budget(u32 h) {
     u64 budget = g_vk.has_budget ? g_devmem.drv_budget[h] : g_devmem.mp.memoryHeaps[h].size / 5 * 4;
     if (heap_capped(h)) budget = budget > 2 * DM_MARGIN ? budget - DM_MARGIN : budget / 2;
+    /* vk_heap_budget_mb: the heap of a smaller GPU, for testing what this one has too much memory to show (the
+       requests that find no memory, and what the caches and the allocator do then) */
+    const u64 test = (u64)g_settings.vulkan_heap_budget << 20;
+    if (heap_capped(h) && test && test < budget) budget = test;
     return budget;
 }
 /* a heap's use by every process: the driver's count then, and what this process took and gave back since (lock
@@ -163,6 +183,10 @@ int vk_devmem_init(int bda) {
             (g_devmem.main_heap < 0 ||
              g_devmem.mp.memoryHeaps[h].size > g_devmem.mp.memoryHeaps[g_devmem.main_heap].size))
             g_devmem.main_heap = (int)h;
+    /* only the capped heap of a discrete GPU is emptied: on a GPU that shares the system's memory (integrated, or a
+       phone's or a Mac's, which snx_vk_memory_model counts as UMA) a block held is system memory, and a move would
+       cost the bandwidth that GPU shares with the CPU for nothing it lacks */
+    g_devmem.drain.on = g_devmem.main_heap >= 0 && heap_capped((u32)g_devmem.main_heap);
     g_devmem.coherent = 1;
     for (u32 t = 0; t < g_devmem.mp.memoryTypeCount; t++) {
         VkMemoryPropertyFlags f = g_devmem.mp.memoryTypes[t].propertyFlags;
@@ -490,7 +514,8 @@ static u32 block_find(u32 type, int image, int low, u32 units, u32 align_units, 
         for (u32 i = 0; i < g_devmem.nblock; i++) {
             const Block* k = &g_devmem.block[i];
             if (!k->mem || k->own || k->type != type || k->image != image || (low >= 0 && k->low != low)) continue;
-            if (k->reserve && !g_devmem.use_reserve) continue;
+            if ((k->reserve && !g_devmem.use_reserve) || k->drain) continue;
+            if (g_devmem.drain.moving && !k->allocs) continue; /* a move goes to blocks in use (vk_devmem_moving) */
             u32 room = k->free.units - k->free.used, piece = k->free.largest;
             if (room < from_room || (room == from_room && i < from_i)) continue; /* tried */
             if (piece >= units && piece >= align_units && room < least) {
@@ -508,9 +533,12 @@ static u32 block_find(u32 type, int image, int low, u32 units, u32 align_units, 
    classes share one spare block of a kind as all requests did before the classes. With a spare and a partly filled
    block for each class, the game held 93 MB more free memory inside its blocks at the same point */
 static u32 block_adopt(u32 type, int image, int low, u32 units, u32 align_units, u32* at) {
+    if (g_devmem.drain.moving) return 0; /* a move goes to blocks in use of its own class (vk_devmem_moving) */
     for (u32 i = 0; i < g_devmem.nblock; i++) {
         Block* k = &g_devmem.block[i];
-        if (!k->mem || k->own || k->allocs || k->type != type || k->image != image || k->low == low) continue;
+        if (!k->mem || k->own || k->allocs || k->reserve || k->drain || k->type != type || k->image != image ||
+            k->low == low)
+            continue;
         if (k->free.largest < units || !space_take(&k->free, units, align_units, at)) continue;
         k->low = (u8)low;
         return i + 1;
@@ -550,8 +578,8 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
         u32 heap = g_devmem.mp.memoryTypes[type].heapIndex;
         int full = g_devmem.full_frame[type] && g_devmem.frame + 1 - g_devmem.full_frame[type] < 120 &&
                    g_devmem.full_gave[type] == g_devmem.gave[heap];
-        if (!slot && shared && full) *res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
-        if (!slot && shared && !full) {
+        if (!slot && (want->existing || (shared && full))) *res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+        if (!slot && shared && !full && !want->existing) {
             /* a new block, of a smaller size when the driver has no room for the one wanted, down to an eighth of
                the cap: a heap with no room for that is full */
             u64 size = block_size_for(type, image, low, req->size, cap), least = cap / 8;
@@ -575,9 +603,10 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
         }
         /* a block of the other class, when its own have no room and no new one could be made: the classes only
            order what the driver moves, and must not make a request fail that would have found room */
-        if (!slot) slot = block_find(type, image, -1, units, (u32)align_units, &at);
+        if (!slot && !(want->existing && g_vk.has_pageable))
+            slot = block_find(type, image, -1, units, (u32)align_units, &at);
     }
-    if (!slot && !shared) { /* memory of its own: by its size, or by the request */
+    if (!slot && !shared && !want->existing) { /* memory of its own: by its size, or by the request */
         units = 0;
         slot = block_new(type, req->size, image, low, 0, buf, img, res);
         if (slot) g_devmem.own_why[alone]++;
@@ -598,6 +627,8 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
         }
     }
     u32 prio = want->low ? DM_PRIO_LOW : DM_PRIO_MID; /* until its owner gives its class (vk_devmem_priority) */
+    /* a block that took a move is not emptied for 120 presents: what came in settles first */
+    if (want->existing && k->drain_skip < g_devmem.frame + 120) k->drain_skip = g_devmem.frame + 120;
     k->allocs++;
     k->holds[prio] += units ? units : 1;
     block_prio(k);
@@ -625,6 +656,7 @@ static void info_of(DevMem m, DevMemInfo* info) {
 
 /* alone: the driver's word on the resource, 2 when it must have memory of its own, 1 when it would rather. A request
    that no memory type has a block for gets memory of its own in the end, in the first type that has any */
+static void drain_stop(void);
 static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, int alone, VkBuffer buf, VkImage img,
                       DevMem* mem, DevMemInfo* info) {
     VkResult res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
@@ -632,6 +664,17 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
     pm_lock(&g_devmem.lk);
     g_devmem.since++;
     u32 bits = req->memoryTypeBits;
+    if (want->existing) {
+        /* a move: a free run of a block that is there, or nothing. A resource that must be alone has no such run */
+        g_devmem.drain.moving = 1;
+        for (int type; !*mem && !want->own && alone != 2 && (type = type_pick(bits, want)) >= 0;
+             bits &= ~(1u << type))
+            *mem = alloc_in((u32)type, req, want, 0, buf, img, &res);
+        g_devmem.drain.moving = 0;
+        if (*mem && info) info_of(*mem, info);
+        pm_unlock(&g_devmem.lk);
+        return *mem ? VK_SUCCESS : VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    }
     for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type)) {
         int own = want->own || alone == 2 ? DM_OWN_MUST : 0;
         if (alone == 1 && !own) {
@@ -651,16 +694,39 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
     bits = req->memoryTypeBits;
     for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type))
         *mem = alloc_in((u32)type, req, want, DM_OWN_LAST, buf, img, &res);
+    /* No request takes a run of the block being emptied. One that found room nowhere else has that block given back
+       to the requests: the drain stops (drain_stop), and the request looks again. Emptying a block is never why a
+       request finds no memory */
+    if (!*mem && g_devmem.drain.slot) {
+        const Block* d = &g_devmem.block[g_devmem.drain.slot - 1];
+        LOG_LIMIT(16,
+                  "vulkan: a request for %.1f MB of device memory found no room but in the block being emptied (%.1f "
+                  "MB of %.1f MB free there): that block takes requests again\n",
+                  (double)req->size / 1048576.0, (double)(d->free.units - d->free.used) * DM_UNIT / 1048576.0,
+                  (double)d->size / 1048576.0);
+        drain_stop();
+        bits = req->memoryTypeBits;
+        for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type))
+            *mem = alloc_in((u32)type, req, want, 0, buf, img, &res);
+    }
     if (!*mem) {
-        u64 room = 0;
+        u64 room = 0, piece = 0;
         for (u32 i = 0; i < g_devmem.nblock; i++) {
             const Block* k = &g_devmem.block[i];
-            if (k->mem && !k->own && (int)g_devmem.mp.memoryTypes[k->type].heapIndex == g_devmem.main_heap)
-                room += (u64)(k->free.units - k->free.used) * DM_UNIT;
+            if (!k->mem || k->own || (int)g_devmem.mp.memoryTypes[k->type].heapIndex != g_devmem.main_heap) continue;
+            room += (u64)(k->free.units - k->free.used) * DM_UNIT;
+            if ((u64)k->free.largest * DM_UNIT > piece) piece = (u64)k->free.largest * DM_UNIT;
         }
         g_devmem.failed++;
         g_devmem.failed_room += req->size <= room;
         if (req->size > g_devmem.failed_max) g_devmem.failed_max = req->size;
+        /* the first few in full: which requests the free space failed, and how scattered it was */
+        LOG_LIMIT(32,
+                  "vulkan: a request for %.1f MB of device memory (%s) found none: the GPU heap's blocks have %.1f MB "
+                  "free, the largest piece %.1f MB, and its use is %.1f of %.1f MB\n",
+                  (double)req->size / 1048576.0, want->image ? "an image" : "a buffer", (double)room / 1048576.0,
+                  (double)piece / 1048576.0, (double)heap_usage((u32)g_devmem.main_heap) / 1048576.0,
+                  (double)heap_budget((u32)g_devmem.main_heap) / 1048576.0);
     }
     if (*mem && info) info_of(*mem, info);
     pm_unlock(&g_devmem.lk);
@@ -703,10 +769,20 @@ void vk_devmem_free(DevMem m) {
     g_devmem.allocs[heap]--;
     k->holds[r->prio] -= rec_weight(r);
     if (!k->own) space_give(&k->free, r->at, r->units);
+    if (r->owner) k->movable--;
+    const u32 slot = r->block;
     rec_gone(m);
     if (!--k->allocs) {
         /* an empty block stays when it is the only empty one of its kind and the heap is within its budget. The two
-           classes count as one kind here: block_adopt gives an empty block to either */
+           classes count as one kind here: block_adopt gives an empty block to either. One that was emptied
+           (vk_devmem_moving) follows the same rule: given back, the next request of its kind would have the thread
+           ahead make a block of the same size again. Kept, it is a whole block for a request that no run of the others
+           held */
+        const int emptied = k->drain && g_devmem.drain.slot == slot;
+        if (emptied) {
+            g_devmem.drain.slot = 0;
+            k->drain = 0;
+        }
         int keep = !k->own;
         if (keep && !k->reserve) {
             u64 budget = heap_budget(heap);
@@ -716,9 +792,164 @@ void vk_devmem_free(DevMem m) {
                 if (o != k && o->mem && !o->own && !o->allocs && o->type == k->type && o->image == k->image) keep = 0;
             }
         }
+        if (emptied) {
+            if (keep)
+                g_devmem.drain.kept++;
+            else
+                g_devmem.drain.emptied++;
+        }
         if (!keep) block_gone(k);
     }
     if (k->allocs) block_prio(k); /* what the block holds now (an empty one keeps its priority) */
+    pm_unlock(&g_devmem.lk);
+}
+
+void vk_devmem_owner(DevMem m, void* owner) {
+    if (!m || !g_devmem.drain.on) return; /* set at init, before any allocation */
+    pm_lock(&g_devmem.lk);
+    Rec* r = &g_devmem.rec[m - 1];
+    Block* k = &g_devmem.block[r->block - 1];
+    if (!r->owner && owner) k->movable++;
+    if (r->owner && !owner) k->movable--;
+    r->owner = owner;
+    pm_unlock(&g_devmem.lk);
+}
+/* a block that drain_pick may empty: of the capped heap, not the reserve or memory of one allocation, not empty, every
+   allocation's owner able to move it, and not left as it was in the last 600 presents */
+static int drain_can(const Block* k, u32 h) {
+    return k->mem && !k->own && !k->reserve && k->allocs && k->movable == k->allocs &&
+           g_devmem.mp.memoryTypes[k->type].heapIndex == h && g_devmem.frame >= k->drain_skip;
+}
+/* The block to empty next (lock held): its index plus one, 0 for none. The rule is DXVK's (pickDefragChunk in
+   dxvk_memory.cpp), for each kind of block (memory type, and images apart where they are): a kind is defragmented when
+   the heap's blocks are past the budget, or when the free space inside its blocks that hold something is more than an
+   eighth of their use plus a block. Of its blocks that can be emptied, half full at most, the one with the least in it,
+   when the free space in the kind's other blocks is one and a half times that block or more. budget: the caches'
+   (vk_mem_use, which vk_budget_mb and vk_heap_budget_mb lower) */
+static u32 drain_pick(u64 budget) {
+    if (!g_devmem.drain.on) return 0;
+    const u32 h = (u32)g_devmem.main_heap;
+    const int over = g_devmem.block_bytes[h] > budget;
+    u32 best = 0;
+    u64 best_used = ~0ull;
+    for (u32 i = 0; i < g_devmem.nblock; i++) {
+        const Block* k = &g_devmem.block[i];
+        if (!drain_can(k, h)) continue;
+        const u64 used = (u64)k->free.used * DM_UNIT;
+        /* half full at most: DXVK's pick runs over every chunk, where the least used one is the one with most holes.
+           Here it runs over the blocks every allocation of which moves, and in TotK the least used of those was full
+           (64 MB in 184 allocations) while the blocks with holes held allocations that do not move: emptying it moved
+           64 MB and freed nothing */
+        if (used >= best_used || used > k->size / 2) continue;
+        /* the kind's blocks that hold something: their use, their size, and the free space of the others */
+        u64 kind_used = 0, kind_size = 0, room = 0;
+        for (u32 j = 0; j < g_devmem.nblock; j++) {
+            const Block* o = &g_devmem.block[j];
+            if (!o->mem || o->own || o->reserve || !o->allocs || o->type != k->type || o->image != k->image) continue;
+            if (g_vk.has_pageable && o->low != k->low) continue; /* moves stay in their class's blocks */
+            kind_used += (u64)o->free.used * DM_UNIT;
+            kind_size += o->size;
+            if (j != i) room += (u64)(o->free.units - o->free.used) * DM_UNIT;
+        }
+        /* within the budget, a kind whose free space is an eighth of its use and a block, or less, is left alone */
+        const u64 next = block_size_for(k->type, k->image, k->low, 1, block_cap(k->type));
+        if (!over && kind_used + kind_used / 8 + next >= kind_size) continue;
+        if (2 * room < 3 * k->size) continue;
+        best = i + 1;
+        best_used = used;
+    }
+    return best;
+}
+/* the units of k's allocations whose class is not its own: higher classes in a block of the low class, or the low
+   class in another block. The driver gives a block one priority (block_prio), so they move with the wrong one */
+static u32 misplaced(const Block* k) {
+    return k->low ? k->holds[DM_PRIO_MID] + k->holds[DM_PRIO_HIGH] : k->holds[DM_PRIO_LOW];
+}
+static int is_misplaced(const Block* k, const Rec* r) { return k->low ? r->prio != DM_PRIO_LOW : r->prio == DM_PRIO_LOW; }
+/* The block to repair next (lock held), where the driver moves memory by priority (g_vk.has_pageable): its
+   index plus one, 0 for none. A class takes the other's blocks when its own have no room and no new one can be made
+   (alloc_in), and a texture drawn into rises from the low class. So a block of the low class can hold render targets,
+   which keep it high, and its textures cannot go to system memory first; or low textures sit in a high block. Of the
+   blocks whose allocations all move, the one with most units of the wrong class, an eighth of what it holds at
+   least. Only those allocations move, to blocks of their own class, and the block takes requests as before */
+static u32 repair_pick(void) {
+    if (!g_vk.has_pageable) return 0;
+    const u32 h = (u32)g_devmem.main_heap;
+    u32 best = 0, most = 0;
+    for (u32 i = 0; i < g_devmem.nblock; i++) {
+        const Block* k = &g_devmem.block[i];
+        if (!drain_can(k, h)) continue;
+        const u32 wrong = misplaced(k);
+        if (wrong > most && wrong * 8 >= k->free.used) {
+            best = i + 1;
+            most = wrong;
+        }
+    }
+    return best;
+}
+/* the block being emptied (or repaired) is left as it is, and not taken again for 600 presents (lock held) */
+static void drain_stop(void) {
+    if (!g_devmem.drain.slot) return;
+    Block* k = &g_devmem.block[g_devmem.drain.slot - 1];
+    k->drain = 0;
+    k->drain_skip = g_devmem.frame + 600;
+    g_devmem.drain.slot = 0;
+    g_devmem.drain.repair = 0;
+    g_devmem.drain.gave_up++;
+}
+u32 vk_devmem_moving(DevMem* mems, void** owners, u32 max, u64 budget) {
+    u32 n = 0;
+    if (!g_devmem.drain.on) return 0;
+    pm_lock(&g_devmem.lk);
+    /* one that takes more than 600 presents to empty has an owner that does not move its allocation */
+    if (g_devmem.drain.slot && g_devmem.frame - g_devmem.drain.since > 600) drain_stop();
+    if (!g_devmem.drain.slot && g_devmem.frame - g_devmem.drain.picked >= 30) {
+        g_devmem.drain.picked = g_devmem.frame;
+        g_devmem.drain.slot = drain_pick(budget);
+        /* with no block to empty, one whose classes are mixed is repaired: it stays open to requests */
+        if (!g_devmem.drain.slot && (g_devmem.drain.slot = repair_pick())) {
+            const Block* k = &g_devmem.block[g_devmem.drain.slot - 1];
+            g_devmem.drain.repair = 1;
+            g_devmem.drain.since = g_devmem.frame;
+            LOG_LIMIT(64, "vulkan: device memory block %u (%.1f MB, the %s class) has %.1f MB of the other class: "
+                          "repaired at present %llu\n",
+                      g_devmem.drain.slot - 1, (double)k->size / 1048576.0, k->low ? "low" : "higher",
+                      (double)misplaced(k) * DM_UNIT / 1048576.0, (unsigned long long)g_devmem.frame);
+        } else if (g_devmem.drain.slot) {
+            const Block* k = &g_devmem.block[g_devmem.drain.slot - 1];
+            g_devmem.block[g_devmem.drain.slot - 1].drain = 1;
+            g_devmem.drain.since = g_devmem.frame;
+            LOG_LIMIT(64, "vulkan: device memory block %u (%.1f MB, %.1f MB in %u allocations) is emptied at present "
+                          "%llu\n",
+                      g_devmem.drain.slot - 1, (double)k->size / 1048576.0,
+                      (double)k->free.used * DM_UNIT / 1048576.0, k->allocs, (unsigned long long)g_devmem.frame);
+        }
+    }
+    for (u32 i = 0; g_devmem.drain.slot && i < g_devmem.nrec && n < max; i++) {
+        const Rec* r = &g_devmem.rec[i];
+        if (r->block != g_devmem.drain.slot || !r->owner) continue;
+        if (g_devmem.drain.repair && !is_misplaced(&g_devmem.block[r->block - 1], r)) continue;
+        mems[n] = i + 1;
+        owners[n++] = r->owner;
+    }
+    /* a repair with nothing of the wrong class left is done */
+    if (g_devmem.drain.slot && g_devmem.drain.repair && !misplaced(&g_devmem.block[g_devmem.drain.slot - 1])) {
+        g_devmem.drain.slot = 0;
+        g_devmem.drain.repair = 0;
+        g_devmem.drain.repaired++;
+    }
+    pm_unlock(&g_devmem.lk);
+    return n;
+}
+void vk_devmem_moving_stop(void) {
+    pm_lock(&g_devmem.lk);
+    drain_stop();
+    pm_unlock(&g_devmem.lk);
+}
+void vk_devmem_moved(u64 bytes) {
+    pm_lock(&g_devmem.lk);
+    g_devmem.drain.moved++;
+    g_devmem.drain.moved_bytes += bytes;
     pm_unlock(&g_devmem.lk);
 }
 
@@ -865,6 +1096,12 @@ void vk_devmem_log(void) {
     }
     u64 failed = g_devmem.failed, failed_room = g_devmem.failed_room, failed_max = g_devmem.failed_max;
     g_devmem.failed = g_devmem.failed_room = g_devmem.failed_max = 0;
+    u64 emptied = g_devmem.drain.emptied, kept = g_devmem.drain.kept, gave_up = g_devmem.drain.gave_up,
+        moved = g_devmem.drain.moved, moved_bytes = g_devmem.drain.moved_bytes;
+    g_devmem.drain.emptied = g_devmem.drain.kept = g_devmem.drain.gave_up = 0;
+    g_devmem.drain.moved = g_devmem.drain.moved_bytes = 0;
+    const u64 repaired = g_devmem.drain.repaired;
+    g_devmem.drain.repaired = 0;
     u64 made = g_devmem.ahead.made, asked = g_devmem.ahead.asked, priorities = g_devmem.priorities;
     g_devmem.priorities = 0;
     u64 why[4] = {g_devmem.own_why[0], g_devmem.own_why[1], g_devmem.own_why[2], g_devmem.own_why[3]};
@@ -881,6 +1118,12 @@ void vk_devmem_log(void) {
         LOG("vulkan: %llu requests for device memory found none since the last report, %llu of them no larger than "
             "the free space inside the GPU heap's blocks; the largest was %.1f MB\n",
             (unsigned long long)failed, (unsigned long long)failed_room, (double)failed_max / 1048576.0);
+    if (emptied || kept || gave_up || moved || repaired)
+        LOG("vulkan: device memory blocks emptied since the last report: %llu given back, %llu kept as their kind's "
+            "empty block, %llu left as they were; %llu repaired to one priority class; %llu allocations moved, "
+            "%.1f MB\n",
+            (unsigned long long)emptied, (unsigned long long)kept, (unsigned long long)gave_up,
+            (unsigned long long)repaired, (unsigned long long)moved, (double)moved_bytes / 1048576.0);
     if (made || asked)
         LOG("vulkan: device memory blocks since the last report: %llu made ahead of their first request, %llu made "
             "by a request on its own thread\n",

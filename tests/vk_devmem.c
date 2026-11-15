@@ -864,6 +864,143 @@ static void check_threads(void) {
     check_counts(0);
 }
 
+/* Defragmentation (vk_devmem_moving), with and without the priority classes (pageable). Images of 1 MiB fill
+   blocks, three of every four go, and the owners move what the allocator names, as texture.c's moves do: a move
+   lands in a block in use, never in the one being emptied or an empty one, and where the driver moves memory by
+   priority, in a block of its own class. No other request takes a run of the block being emptied. Blocks are
+   emptied, and the counts and priorities hold throughout. With pageable, a block of the low class given allocations
+   of a higher class is repaired: those alone move, to blocks of their class. Without it, no block is repaired */
+enum { DEFRAG_N = 256 };
+static Held g_dh[DEFRAG_N];
+static int defrag_round(u64 budget) {
+    DevMem mems[64];
+    void* owners[64];
+    g_devmem.frame += 31;
+    const u32 n = vk_devmem_moving(mems, owners, 64, budget);
+    int moved = 0;
+    for (u32 i = 0; i < n; i++) {
+        Held* x = owners[i];
+        CHECK(x >= g_dh && x < g_dh + DEFRAG_N && x->mem == mems[i]);
+        const u32 from = g_devmem.rec[x->mem - 1].block;
+        const u32 prio = g_devmem.rec[x->mem - 1].prio;
+        Held to;
+        DevMemWant want = {.at = DM_DEVICE, .image = 1, .existing = 1, .low = prio == DM_PRIO_LOW};
+        if (make(1, x->info.size, 4096, ~0u, 0, want, &to) != VK_SUCCESS) {
+            vk_devmem_moving_stop();
+            break;
+        }
+        const Rec* r = &g_devmem.rec[to.mem - 1];
+        const Block* k = &g_devmem.block[r->block - 1];
+        CHECK(r->block != from && !k->drain && k->allocs >= 2); /* a block in use, which held something before */
+        if (g_vk.has_pageable) CHECK(k->low == (prio == DM_PRIO_LOW)); /* of its own class */
+        vk_devmem_priority(to.mem, prio);
+        vk_devmem_owner(x->mem, NULL);
+        unmake(x);
+        *x = to;
+        vk_devmem_owner(x->mem, x);
+        vk_devmem_moved(x->info.size);
+        moved++;
+    }
+    /* while a block is emptied, no request takes its runs */
+    if (g_devmem.drain.slot && !g_devmem.drain.repair) {
+        Held probe;
+        DevMemWant gpu = {.at = DM_DEVICE, .image = 1};
+        CHECK(make(1, 64 * KIB, 4096, ~0u, 0, gpu, &probe) == VK_SUCCESS);
+        CHECK(g_devmem.rec[probe.mem - 1].block != g_devmem.drain.slot || !g_devmem.drain.slot);
+        unmake(&probe);
+    }
+    return moved;
+}
+static void check_defrag(int pageable) {
+    const u64 budget = 4 * GIB;
+    device(0, 1024, 64, budget);
+    g_vk.has_pageable = pageable;
+    CHECK(g_devmem.drain.on);
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .low = 1}, mid = {.at = DM_DEVICE, .image = 1};
+    for (u32 i = 0; i < DEFRAG_N; i++) {
+        CHECK(make(1, MIB, 4096, ~0u, 0, i < 192 ? tex : mid, &g_dh[i]) == VK_SUCCESS);
+        vk_devmem_priority(g_dh[i].mem, i < 192 ? DM_PRIO_LOW : DM_PRIO_MID);
+        vk_devmem_owner(g_dh[i].mem, &g_dh[i]);
+    }
+    for (u32 i = 0; i < DEFRAG_N; i++)
+        if (i % 4) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    u32 live = 0;
+    for (u32 i = 0; i < DEFRAG_N; i++) live += g_dh[i].mem != 0;
+    int moves = 0;
+    for (u32 round = 0; round < 200; round++) {
+        moves += defrag_round(budget);
+        check_counts(live);
+        if (pageable) check_priorities();
+    }
+    CHECK(moves > 0 && g_devmem.drain.emptied + g_devmem.drain.kept > 0);
+    CHECK(!g_devmem.drain.repaired); /* no class was mixed */
+    if (!pageable) CHECK(!repair_pick()); /* the classes are only kept where the driver does not move memory */
+    printf("vk_devmem: defrag %s: %d allocations moved, %llu blocks given back, %llu kept\n",
+           pageable ? "with the priority classes" : "without them", moves,
+           (unsigned long long)g_devmem.drain.emptied, (unsigned long long)g_devmem.drain.kept);
+    for (u32 i = 0; i < DEFRAG_N; i++)
+        if (g_dh[i].mem) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    check_counts(0);
+    if (pageable) {
+        /* Repair: blocks filled in order, with no holes to gather, and in the first block of the low class half its
+           allocations rise to the high class. The repair moves those, and only those, to blocks of the higher
+           classes, and the block stays with its low ones */
+        device(0, 1024, 64, budget);
+        g_vk.has_pageable = 1;
+        enum { LOWS = 40, MIDS = 40 };
+        for (u32 i = 0; i < LOWS + MIDS; i++) {
+            CHECK(make(1, MIB, 4096, ~0u, 0, i < LOWS ? tex : mid, &g_dh[i]) == VK_SUCCESS);
+            vk_devmem_priority(g_dh[i].mem, i < LOWS ? DM_PRIO_LOW : DM_PRIO_MID);
+            vk_devmem_owner(g_dh[i].mem, &g_dh[i]);
+        }
+        const u32 slot = g_devmem.rec[g_dh[0].mem - 1].block;
+        CHECK(g_devmem.block[slot - 1].low);
+        u32 raised = 0, stays = 0;
+        for (u32 i = 0; i < LOWS; i++)
+            if (g_devmem.rec[g_dh[i].mem - 1].block == slot) {
+                if (i % 2) {
+                    vk_devmem_priority(g_dh[i].mem, DM_PRIO_HIGH);
+                    raised++;
+                } else
+                    stays++;
+            }
+        CHECK(raised && stays && misplaced(&g_devmem.block[slot - 1]));
+        int moved = 0;
+        for (u32 round = 0; round < 50 && !g_devmem.drain.repaired; round++) {
+            moved += defrag_round(budget);
+            check_counts(LOWS + MIDS);
+            check_priorities();
+        }
+        CHECK(g_devmem.drain.repaired == 1 && (u32)moved == raised);
+        CHECK(!misplaced(&g_devmem.block[slot - 1]) && g_devmem.block[slot - 1].allocs == stays);
+        printf("vk_devmem: repair: %d allocations of the high class moved out of a block of the low class\n", moved);
+        for (u32 i = 0; i < LOWS + MIDS; i++) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+        check_counts(0);
+    }
+    /* a GPU that shares the system's memory empties no block, and keeps no owner */
+    device(1, 1, 4096, 0);
+    g_vk.has_pageable = pageable;
+    CHECK(!g_devmem.drain.on);
+    Held h;
+    CHECK(make(1, MIB, 4096, ~0u, 0, tex, &h) == VK_SUCCESS);
+    vk_devmem_owner(h.mem, &h);
+    CHECK(!g_devmem.rec[h.mem - 1].owner);
+    DevMem mems[4];
+    void* owners[4];
+    g_devmem.frame += 31;
+    CHECK(vk_devmem_moving(mems, owners, 4, GIB) == 0);
+    unmake(&h);
+}
+
 int main(void) {
     vkGetPhysicalDeviceMemoryProperties = memory_properties;
     vkGetPhysicalDeviceMemoryProperties2 = memory_properties2;
@@ -884,6 +1021,8 @@ int main(void) {
     check_random(1, 1, 4096, 30000);  /* one heap, and atoms of four units */
     check_alone();
     check_priority();
+    check_defrag(0); /* no priority classes: the fallback */
+    check_defrag(1);
     check_cap();
     check_atoms(64);
     check_atoms(4096);
