@@ -1381,12 +1381,13 @@ target_link_libraries(snx-test-sync-clock PRIVATE scarletnx-platform)
 snx_hookgen(snx-test-sync-clock SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
 add_test(NAME sync_clock COMMAND snx-test-sync-clock)
 # the alloc family's arena (src/nx/hle/hook/alloc.c) in a program that links jemalloc as scarletnx does, whole and
-# unexported: ready, and its allocations in the guest's window above the layout
+# unexported: ready, and its allocations in the guest's window above the layout; the SDK heap's functions on its
+# blocks, each in the runtime's route list (snx_nx_module's)
 if(SNX_JEMALLOC AND NOT WIN32)
     add_executable(snx-test-alloc-arena alloc_arena.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/alloc.c")
     snx_test_target(snx-test-alloc-arena 11)
     target_include_directories(snx-test-alloc-arena PRIVATE "${PROJECT_SOURCE_DIR}/src")
-    target_link_libraries(snx-test-alloc-arena PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,snx_jemalloc>")
+    target_link_libraries(snx-test-alloc-arena PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,snx_jemalloc>" snx_nx_module)
     snx_hookgen(snx-test-alloc-arena SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
     target_compile_definitions(snx-test-alloc-arena PRIVATE LIVE_BITS=8) # a table that fills in a few hundred blocks
     add_test(NAME alloc_arena COMMAND snx-test-alloc-arena)

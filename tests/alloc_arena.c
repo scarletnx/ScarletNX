@@ -5,9 +5,12 @@
    in the window above the layout, in guest memory the test reserves, a block of a page or more at a page. A pointer
    that is no block the arena handed out goes to the function's own code: one outside the window, a piece of a region
    the game carved from an arena block, a block given back already; and the table of blocks stays right as many come
-   and go (built with LIVE_BITS 8) */
+   and go (built with LIVE_BITS 8). Then the SDK heap's functions, which a game whose malloc is its StandardAllocator's
+   hands a block malloc gave: an arena block is the arena's, with the heap's results, any other pointer the heap's own
+   code, and the route list names each of them as the SDK spells it */
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
+#include "nx/loader/hook_routes.h"
 #include "nx/loader/module_abi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/loader.h"
@@ -138,17 +141,41 @@ int main(void) {
     assert(alloc_std_size(&c, 0, sized + 16) == 777 && g_original == was + 2);
     alloc_free(&c, sized);
     assert(g_original == was + 2);
-    /* the SDK heap's own free and realloc of an arena block, as one game's free calls them: the arena's; any other
-       pointer, the heap's own code */
+    /* the SDK heap's functions, through which a game whose malloc is its StandardAllocator's frees, sizes and resizes
+       a block malloc gave: an arena block is the arena's, with the heap's result; any other pointer, a region's piece
+       among them, the heap's own code */
     u64 h = alloc_malloc(&c, 64);
     memset(g_mem + h, 0x3C, 64);
-    u64 h2 = alloc_heap_realloc(&c, 0, h, 4096);
-    assert(h2 >= WINDOW && g_mem[h2] == 0x3C && g_mem[h2 + 63] == 0x3C && g_original == was + 2);
-    alloc_heap_free(&c, 0, h2);
-    assert(g_original == was + 2);
-    alloc_heap_free(&c, 0, h2); /* gone already: the heap's own code */
-    assert(g_original == was + 3);
-    assert(alloc_heap_realloc(&c, 0, 0x2000, 32) == 777 && g_original == was + 4);
+    assert(alloc_heap_free(&c, 0, h) == 0 && g_original == was + 2);
+    assert(alloc_heap_free(&c, 0, h) == 777 && g_original == was + 3); /* gone already: the heap's own code */
+    /* realloc: the block at *out, its bytes kept, the old pointer no block any more; EINVAL for a size of 0 and ENOMEM
+       for one with its top bit set, *out untouched; ENOMEM with *out 0 and the block kept when there is no room */
+    h = alloc_malloc(&c, 64);
+    memset(g_mem + h, 0x3C, 64);
+    const u64 out = alloc_malloc(&c, 8);
+    assert(alloc_heap_realloc(&c, 0, h, 4096, out) == 0 && g_original == was + 3);
+    u64 h2 = snx_ld_le64(g_mem + out);
+    assert(h2 >= WINDOW && !(h2 & 0xFFF) && g_mem[h2] == 0x3C && g_mem[h2 + 63] == 0x3C);
+    snx_st_le64(g_mem + out, 0x5555);
+    assert(alloc_heap_realloc(&c, 0, h2, 0, out) == 22 && alloc_heap_realloc(&c, 0, h2, 1ull << 63, out) == 12);
+    assert(snx_ld_le64(g_mem + out) == 0x5555 && g_original == was + 3);
+    assert(alloc_heap_realloc(&c, 0, h2, 1ull << 40, out) == 12 && !snx_ld_le64(g_mem + out));
+    assert(g_mem[h2 + 63] == 0x3C && alloc_std_size(&c, 0, h2) >= 4096 && g_original == was + 3);
+    assert(h2 != h && alloc_heap_realloc(&c, 0, h, 32, out) == 777 && g_original == was + 4);
+    assert(alloc_heap_realloc(&c, 0, 0x2000, 32, out) == 777 && alloc_heap_realloc(&c, 0, h2 + 16, 32, out) == 777);
+    const int then = g_original;
+    assert(alloc_heap_free(&c, 0, h2) == 0 && alloc_heap_free(&c, 0, 0x2000) == 777 && g_original == then + 1);
+    alloc_free(&c, out);
+    /* each of them hooked as the SDK spells it, its calls going to its slot; not the heap's allocation, whose blocks
+       are its own */
+    static const char* const heap[] = {
+        "_ZNK2nn3mem17StandardAllocator9GetSizeOfEPKv",
+        "_ZN2nn7nlibsdk4heap11CentralHeap4FreeEPv",
+        "_ZN2nn7nlibsdk4heap11CentralHeap12GetAllocSizeEPKv",
+        "_ZN2nn7nlibsdk4heap11CentralHeap7ReallocEPvmPS3_",
+    };
+    for (size_t i = 0; i < sizeof heap / sizeof *heap; i++) assert(snx_hook_routed(heap[i]));
+    assert(!snx_hook_routed("_ZN2nn7nlibsdk4heap11CentralHeap5AllocEmm"));
     puts("PASS the alloc family's arena: jemalloc found in the program, allocations in the window, a foreign pointer's "
          "own code");
     return 0;
