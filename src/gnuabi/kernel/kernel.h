@@ -21,7 +21,7 @@
    blocks */
 #include "common/cpu/aarch64/cpu.h"
 #include "common/runtime/linux_signal.h"
-#include "gnuabi/abi/errno/errno.h"
+#include "gnuabi/abi/errno.inc"
 #include "gnuabi/kernel/sync.h"
 #include <stdbool.h>
 #include <stddef.h>

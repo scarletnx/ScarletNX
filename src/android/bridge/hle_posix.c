@@ -4,7 +4,7 @@
    bionic's numbers and layouts are Linux's (AArch64's). Where the host's differ, the adapter converts them: struct
    stat, the open and fcntl flags, sysconf's names, epoll_event, addrinfo and sigset_t on every host, and on FreeBSD,
    macOS and Windows also the socket families, levels, options and addresses (BSD's have sa_len), the poll events, the
-   mmap flags and struct dirent. The conversions are the GNU ABI's (gnuabi/abi/linux_file.h, linux_net.h) and the
+   mmap flags and struct dirent. The conversions are the GNU ABI's (gnuabi/abi/file.h, net.h) and the
    network stack's (common/network/net_host.h). Windows has no POSIX C library: its CRT, winpthreads and Winsock
    give what they have, and the rest is a Win32 version or an error (docs/platforms/android-apps/native.md, "Hosts"). The rest is
    PASS */
@@ -22,9 +22,9 @@
 #include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
-#include "gnuabi/abi/errno/errno.h"
-#include "gnuabi/abi/linux_file.h"
-#include "gnuabi/abi/linux_net.h"
+#include "gnuabi/abi/errno.inc"
+#include "gnuabi/abi/file.h"
+#include "gnuabi/abi/net.h"
 #include "gnuabi/kernel/kernel.h"
 #include "common/platform/file.h"
 #include <errno.h>
@@ -585,7 +585,7 @@ static void g_ioctl(CPU* c, void* data) {
 #endif
 }
 
-/* ---- struct stat: AArch64's (asm-generic), 128 bytes, from the host's (gnuabi/abi/linux_file.h) ---- */
+/* ---- struct stat: AArch64's (asm-generic), 128 bytes, from the host's (gnuabi/abi/file.h) ---- */
 
 static void put_stat(CPU* c, int r, uint64_t guest, const GnuHostStat* s) {
     if (!r) {
@@ -1703,7 +1703,7 @@ static void g_getpeername(CPU* c, void* data) {
     (void)data;
     g_getname(c, true);
 }
-/* a guest option as the host's level and name, with its value's layout (linux_net.h): 0 or a Linux errno */
+/* a guest option as the host's level and name, with its value's layout (gnuabi/abi/net.h): 0 or a Linux errno */
 static int option_to_host(uint64_t level, uint64_t name, int* hl, int* hn, int* layout, int* snx_level,
                           int* snx_name) {
     if (gnu_linux_sockopt_in(level, name, snx_level, snx_name, layout)) return SNX_ENOPROTOOPT;

@@ -8,7 +8,7 @@
 #include "common/utilities/endian.h"
 #include "gnuabi/network/network.h"
 #include "gnuabi/filesystem/internal.h"
-#include "gnuabi/abi/linux_net.h"
+#include "gnuabi/abi/net.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -27,7 +27,7 @@ enum {
     BOUNCE_MAX = 64 * 1024 * 1024,
 };
 
-/* ============================================================ translations (abi/linux_net.h) */
+/* ============================================================ translations (abi/net.h) */
 uint16_t gnu_net_poll_in(uint32_t e) { return gnu_linux_poll_in(e); }
 uint32_t gnu_net_poll_out(uint16_t e) { return gnu_linux_poll_out(e); }
 /* ============================================================ addresses */

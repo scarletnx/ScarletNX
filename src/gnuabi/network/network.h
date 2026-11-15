@@ -12,10 +12,10 @@
 
 enum {
 #define LINUX_NET_SYSCALL(number, name) GNU_NR_##name = number,
-#include "gnuabi/abi/linux_syscalls.inc"
+#include "gnuabi/abi/syscalls.inc"
 };
 
-/* syscalls.c: true when number is one of abi/linux_syscalls.inc's */
+/* syscalls.c: true when number is one of abi/syscalls.inc's */
 bool gnu_net_syscall(GnuProcess* process, uint64_t number, const uint64_t arguments[6], int64_t* result);
 /* etc.c: /etc/resolv.conf from the host's DNS servers, /etc/hosts, /etc/services... */
 int gnu_net_process_init(GnuProcess* process);

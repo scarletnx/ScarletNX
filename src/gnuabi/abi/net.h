@@ -4,8 +4,8 @@
    ABI's socket calls, the Android bridge): the address families, the send and receive flags, the poll events, the
    socket options (the tables in this folder), and the AArch64 sockaddr_in and sockaddr_in6 as SnxSockAddr. The stack
    then gives each of them as the host's (net_internal.h). Only bytes: no guest memory */
-#ifndef SNX_GNU_ABI_LINUX_NET_H
-#define SNX_GNU_ABI_LINUX_NET_H
+#ifndef SNX_GNU_ABI_NET_H
+#define SNX_GNU_ABI_NET_H
 #include "common/network/net.h"
 #include "common/utilities/endian.h"
 #include <stddef.h>
@@ -16,52 +16,52 @@
 static inline int gnu_linux_domain_in(uint32_t d) {
 #define LINUX_DOMAIN(guest, name)                                                                                      \
     if (d == guest) return SNX_AF_##name;
-#include "gnuabi/abi/linux_domain.inc"
+#include "gnuabi/abi/domain.inc"
     return -1;
 }
 static inline uint16_t gnu_linux_domain_out(int d) {
 #define LINUX_DOMAIN(guest, name)                                                                                      \
     if (d == SNX_AF_##name) return guest;
-#include "gnuabi/abi/linux_domain.inc"
+#include "gnuabi/abi/domain.inc"
     return 0;
 }
 static inline int gnu_linux_msg_in(uint64_t f) {
     int r = 0;
 #define LINUX_MSG(guest, name)                                                                                         \
     if (f & guest) r |= SNX_MSG_##name;
-#include "gnuabi/abi/linux_msgflag.inc"
+#include "gnuabi/abi/msgflag.inc"
     return r;
 }
 static inline uint32_t gnu_linux_msg_out(int f) {
     uint32_t r = 0;
 #define LINUX_MSG(guest, name)                                                                                         \
     if (f & SNX_MSG_##name) r |= guest;
-#include "gnuabi/abi/linux_msgflag.inc"
+#include "gnuabi/abi/msgflag.inc"
     return r;
 }
 static inline uint16_t gnu_linux_poll_in(uint32_t e) {
     uint16_t r = 0;
 #define LINUX_POLL(guest, name)                                                                                        \
     if (e & guest) r |= SNX_POLL##name;
-#include "gnuabi/abi/linux_poll.inc"
+#include "gnuabi/abi/poll.inc"
     return r;
 }
 static inline uint32_t gnu_linux_poll_out(uint16_t e) {
     uint32_t r = 0;
 #define LINUX_POLL(guest, name)                                                                                        \
     if (e & SNX_POLL##name) r |= guest;
-#include "gnuabi/abi/linux_poll.inc"
+#include "gnuabi/abi/poll.inc"
     return r;
 }
 
-/* how the guest lays an option's value out, when it differs from the stack's (linux_sockopt.inc) */
+/* how the guest lays an option's value out, when it differs from the stack's (sockopt.inc) */
 enum { GNU_LAYOUT_SAME, GNU_LAYOUT_MREQN, GNU_LAYOUT_IFADDR };
 /* a guest level and option as the stack's: 0, or -SNX_ENOPROTOOPT */
 static inline int gnu_linux_sockopt_in(uint64_t level, uint64_t name, int* l, int* n, int* layout) {
     int sl = -1;
 #define LINUX_LEVEL(guest, nm)                                                                                         \
     if (level == guest) sl = SNX_SOL_##nm;
-#include "gnuabi/abi/linux_sockopt.inc"
+#include "gnuabi/abi/sockopt.inc"
     if (sl < 0) return -SNX_ENOPROTOOPT;
     *l = sl;
 #define LINUX_SOCKOPT(lv, guest, nm, lay)                                                                              \
@@ -70,7 +70,7 @@ static inline int gnu_linux_sockopt_in(uint64_t level, uint64_t name, int* l, in
         *layout = GNU_LAYOUT_##lay;                                                                                    \
         return 0;                                                                                                      \
     }
-#include "gnuabi/abi/linux_sockopt.inc"
+#include "gnuabi/abi/sockopt.inc"
     return -SNX_ENOPROTOOPT;
 }
 

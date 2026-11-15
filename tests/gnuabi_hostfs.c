@@ -3,7 +3,7 @@
 /* The host-backed namespace (gnu_vfs_set_root): a guest path names the sysroot's file first and the host's otherwise,
    a symlink with an absolute target stays in the sysroot, /proc and /dev stay virtual, pipes are host pipes */
 #include "gnuabi/filesystem/vfs.h"
-#include "gnuabi/abi/errno/errno.h"
+#include "gnuabi/abi/errno.inc"
 #include "common/utilities/common.h"
 #include <stdio.h>
 #include <stdlib.h>

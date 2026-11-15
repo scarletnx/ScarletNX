@@ -3,8 +3,8 @@
 /* Linux's file ABI against the host's, for each runtime whose guest is Linux (the GNU ABI's VFS, the Android bridge,
    whose bionic has Linux's numbers): the asm-generic struct stat that AArch64 has (128 bytes), a host stat as it,
    and the open flags (asm-generic, AArch64's) as the host's and back. Only bytes and host types: no guest memory */
-#ifndef SNX_GNU_ABI_LINUX_FILE_H
-#define SNX_GNU_ABI_LINUX_FILE_H
+#ifndef SNX_GNU_ABI_FILE_H
+#define SNX_GNU_ABI_FILE_H
 #include "common/utilities/endian.h"
 #include <fcntl.h>
 #include <stdint.h>

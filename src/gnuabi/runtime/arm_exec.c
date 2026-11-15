@@ -3,7 +3,7 @@
 #include "gnuabi/runtime/arm_exec.h"
 #include "common/cpu/arm/exec.h"
 #include "gnuabi/abi/syscalls/syscalls.h"
-#include "gnuabi/abi/errno/errno.h"
+#include "gnuabi/abi/errno.inc"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>

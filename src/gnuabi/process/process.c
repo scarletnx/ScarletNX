@@ -6,7 +6,7 @@
 #include "gnuabi/process/process.h"
 #include "gnuabi/kernel/signals.h"
 #include "gnuabi/network/network.h"
-#include "gnuabi/abi/errno/errno.h"
+#include "gnuabi/abi/errno.inc"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include <limits.h>
