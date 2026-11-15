@@ -147,9 +147,9 @@ typedef struct {
     int has_vertex_robustness2; /* exact zero/default components for out-of-range mesh fetches */
     /* VK_EXT_robustness2's features in effect (device.c): buffer reads past the bound range are zero and writes there
        dropped, image reads out of bounds are zero with an alpha of 1, and descriptors may be null. A uniform range is
-       checked in steps of robust_ubo_align bytes (vk_cb_round) */
+       checked in steps of robust_ubo_align bytes (vk_cb_range), a storage range in robust_ssbo_align (vk_sb_round) */
     int robust_buffer2, robust_image2, null_descriptor;
-    u32 robust_ubo_align;
+    u32 robust_ubo_align, robust_ssbo_align;
     int has_calibrated_host;    /* VK_EXT_calibrated_timestamps with CLOCK_MONOTONIC_RAW: the GPU's clock goes next to
                                 the client's, one driver call (gpuprof.c's calibration) */
     int has_portability;        /* a portability driver (MoltenVK): the device lists VK_KHR_portability_subset */
@@ -1765,11 +1765,31 @@ static inline int vk_tic_empty(const u32* tic) { return tic[0] == 0; }
    keeps vk_null_view's 1x1 image: a size query of an empty header reads 1x1 on the console, and 0 from a null
    descriptor. Not with descriptor heaps, whose writes (descriptor_heaps.c) have no null form */
 static inline int vk_null_descriptors(void) { return g_vk.null_descriptor && !g_vk.has_descriptor_heaps; }
-/* A constant buffer's bound range: bytes rounded up to 16, or to the step robustBufferAccess2 checks uniform ranges in
-   where that is larger (a power of two). With that feature, reads past the range are zero, and reads inside the last
-   step get the bytes the binding copied, never a neighbour's in staging */
+/* the step robustBufferAccess2 checks uniform ranges in: 16, or the device's alignment where that is larger */
+static inline u32 vk_cb_step(void) {
+    return g_vk.robust_buffer2 && g_vk.robust_ubo_align > 16 ? g_vk.robust_ubo_align : 16;
+}
+/* bytes rounded up to a whole uniform step (a power of two) */
 static inline u32 vk_cb_round(u32 bytes) {
-    u32 step = g_vk.robust_buffer2 && g_vk.robust_ubo_align > 16 ? g_vk.robust_ubo_align : 16;
+    u32 step = vk_cb_step();
+    return (bytes + step - 1) & ~(step - 1);
+}
+/* A constant buffer's bound range: a whole number of checked steps, at least one (so an empty binding reads zeros
+   across the whole step, not a neighbour's bytes in staging), within maxUniformBufferRange rounded down to a step.
+   The binding zero-fills its tail, so reads inside the last step get the bytes it copied, never a neighbour's. Where
+   the limit is smaller than a step (no real device), the limit wins: a valid range over an aligned one */
+static inline u32 vk_cb_range(u32 bytes) {
+    u32 step = vk_cb_step(), max = g_vk.props.limits.maxUniformBufferRange;
+    u32 range = vk_cb_round(bytes);
+    if (range < step) range = step;
+    if (range > max) range = max >= step ? max & ~(step - 1) : max;
+    return range;
+}
+/* a storage buffer's bound range rounded to the step robustBufferAccess2 checks storage ranges in. Only bind this
+   where the binding zero-fills the tail and nothing writes it back: a writable copy would write the tail back, and a
+   window of real guest memory reads its true neighbour (as the console does), which needs no rounding */
+static inline u32 vk_sb_round(u32 bytes) {
+    u32 step = g_vk.robust_buffer2 && g_vk.robust_ssbo_align > 1 ? g_vk.robust_ssbo_align : 1;
     return (bytes + step - 1) & ~(step - 1);
 }
 /* the sampler for a TSC: raise lets anisotropy= raise its filtering (a 2D texture with mipmaps), integer gives its

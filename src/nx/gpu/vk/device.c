@@ -1234,12 +1234,14 @@ static int create_device(void) {
     g_vk.robust_image2 = qrobust.robustImageAccess2 != 0;
     g_vk.null_descriptor = qrobust.nullDescriptor != 0;
     g_vk.robust_ubo_align = (u32)robust_limits.robustUniformBufferAccessSizeAlignment;
+    g_vk.robust_ssbo_align = (u32)robust_limits.robustStorageBufferAccessSizeAlignment;
     LOG("vulkan: robustness2: robustBufferAccess2=%d robustImageAccess2=%d nullDescriptor=%d (uniform ranges checked "
         "in %u-byte steps, storage in %u)%s\n",
-        g_vk.robust_buffer2, g_vk.robust_image2, g_vk.null_descriptor, g_vk.robust_ubo_align,
-        (u32)robust_limits.robustStorageBufferAccessSizeAlignment,
+        g_vk.robust_buffer2, g_vk.robust_image2, g_vk.null_descriptor, g_vk.robust_ubo_align, g_vk.robust_ssbo_align,
         has_robustness2 ? "" : ", the device has no VK_EXT_robustness2");
-    g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2;
+    /* device-wide robustBufferAccess2 already gives vertex inputs their strict bounds: the per-pipeline struct (and
+       VK_EXT_pipeline_robustness) is only needed where the device feature is off, so don't chain a redundant one */
+    g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2 && !g_vk.robust_buffer2;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_fault = has_fault && qfault.deviceFault;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;

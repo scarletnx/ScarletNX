@@ -1741,9 +1741,7 @@ rebind:
                robustBufferAccess2, and stay in bounds, of undefined value, with robust buffer access alone */
             u32 range = g_cbn[i];
             if (p->si.cbuf_max[i] && range > p->si.cbuf_max[i]) range = p->si.cbuf_max[i];
-            range = vk_cb_round(range);
-            if (!range) range = 16;
-            if (range > g_vk.props.limits.maxUniformBufferRange) range = g_vk.props.limits.maxUniformBufferRange;
+            range = vk_cb_range(range); /* a whole checked step, within the limit; the tail is zeroed below */
             u32 n = g_cbn[i] < range ? g_cbn[i] : range;
             VkBuffer cbuf = g_ar;
             u64 o;
@@ -1782,7 +1780,7 @@ rebind:
             nw++;
         }
     if (p->si.root_max) { /* an Ounce program's root tables, the bytes it reads (SNX_VKB_ROOT) */
-        u32 range = (p->si.root_max + 15u) & ~15u;
+        u32 range = vk_cb_range(p->si.root_max); /* a uniform buffer: the same checked step as a constant buffer */
         VkBuffer rbuf = g_ar;
         u64 o;
         u8* dst;
@@ -1796,7 +1794,8 @@ rebind:
             o = arena_alloc(range);
             dst = g_ar_ptr + o;
         }
-        memcpy(dst, d->root, range);
+        memcpy(dst, d->root, p->si.root_max); /* only the real bytes; the rest of the step is zeroed, not read past */
+        memset(dst + p->si.root_max, 0, range - p->si.root_max);
         bi[nw] = (VkDescriptorBufferInfo){rbuf, o, range};
         w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
@@ -1837,6 +1836,7 @@ rebind:
     for (int i = 0; i < ng; i++) {
         VkBuffer sbuf = g_ar;
         u64 o;
+        u32 srange = ss[i]; /* the bound range: a whole storage step where the arena zero-fills the tail below */
         int alias = -1;
         for (int k = 0; k < i && resident && alias < 0; k++)
             if (sa[k] && sa[k] == sa[i] && ss[k] == ss[i]) alias = k; /* one range bound twice names one buffer */
@@ -1879,20 +1879,24 @@ rebind:
             so[i] = o;
         } else {
             if (chain[i] >= 0) chained = 1;
-            o = so[i] = chain[i] >= 0 ? (u64)chain[i] : arena_alloc(ss[i]);
+            /* a chained buffer reads an earlier dispatch's in place: its range stays ss[i]. A fresh one spans a whole
+               checked step, the tail zeroed, so reads past ss[i] in it are zero, not a neighbour's in the arena */
+            if (chain[i] < 0) srange = vk_sb_round(ss[i]);
+            o = so[i] = chain[i] >= 0 ? (u64)chain[i] : arena_alloc(srange);
             if (chain[i] >= 0)
                 ; /* written by an earlier dispatch of the batch, read in place */
             /* read: its bytes copied in. So are those of one written and not logged: its result is what differs from
                them after the dispatch, and a store of the bytes zeroed in their place would differ from nothing */
-            else if (sa[i] && (((p->si.gbuf_rmask >> i) & 1) || !(log && p->si.gbuf_mark[i])))
+            else if (sa[i] && (((p->si.gbuf_rmask >> i) & 1) || !(log && p->si.gbuf_mark[i]))) {
                 gmem_read(sa[i], g_ar_ptr + o, ss[i]);
-            else {
+                memset(g_ar_ptr + o + ss[i], 0, srange - ss[i]);
+            } else {
                 if (sa[i]) gmem_need(sa[i], ss[i]); /* write-only: results pending there land, but nothing is read */
-                memset(g_ar_ptr + o, 0, ss[i]);
+                memset(g_ar_ptr + o, 0, srange);
             }
         }
         bi_buf[i] = sbuf;
-        bi[nw] = (VkDescriptorBufferInfo){sbuf, o, ss[i]};
+        bi[nw] = (VkDescriptorBufferInfo){sbuf, o, srange}; /* outputs still write back ss[i] bytes (g_out) */
         w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
                                        .dstBinding = SNX_VKB_SSBO + i,
