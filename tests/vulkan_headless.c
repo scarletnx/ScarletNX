@@ -8050,6 +8050,13 @@ static int run_headless(int argc, char** argv) {
         printf("PASS headless Vulkan watched targets only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_STORAGE_IMAGES_ONLY")) { /* the storage image formats' check alone, for its mutants */
+        CHECK(!check_storage_image_formats());
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan storage image formats only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
     if (tex_array) { /* the texture arrays at the size asked: their layouts, pools and indexed draws */
         printf("Texture arrays of %u elements, %u asked\n", g_spirv_translate.tex_array,
                (unsigned)strtoul(tex_array, NULL, 10));

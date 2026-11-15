@@ -75,8 +75,10 @@ static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 	u32 program_count = 0, at = 0, values[4];
 	const u32 floats[4] = {0xbe800000, 0x3f000000, 0xbf400000, 0x3f800000};
 	const u32 halves[4] = {0xb400, 0x3800, 0xba00, 0x3c00};
-	VkFmt format = vk_tic_format(format_word, 0);
+	VkFmt format = vk_tic_format(format_word, mip_case == 8);
 
+	if (mip_case == 8)
+		tic[4] |= 1u << 22; /* sRGB */
 	instructions[8] = (0xeb203a0200f77614ull &
 		~(0xffull | 0xffull << 8 | 0xfull << 16 | 0xffull << 39 | 7ull << 33)) |
 		8ull | 7ull << 16 | 4ull << 39 | (u64)dim << 33;
@@ -142,6 +144,8 @@ static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 	for (u32 c = 0; c < 4; c++) {
 		values[c] = numeric == 2 ? floats[c] : 17 * (c + 1);
 		if (format.vk == VK_FORMAT_R8G8B8A8_UNORM && c == 1) values[c] = 0x3f800000;
+		/* 0.25: 64 as the program stores it, 137 if the store encoded it as sRGB */
+		if (format.vk == VK_FORMAT_R8G8B8A8_SRGB && c == 1) values[c] = 0x3e800000;
 		if (numeric == 1 && !(c & 1)) values[c] = 0u - values[c];
 	}
 	CHECK(!storage_write_words(address + 0x20000 + 0x130, values, 4));
@@ -149,13 +153,21 @@ static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 	for (u32 i = 0; i < sizeof(initial); i++) initial[i] = (u8)(i * 37 + (i >> 7));
 	if (mip_case == 4 || mip_case == 5) snx_st_le32(initial + 4096 + 20, 0x87654321);
 	CHECK(!gmem_write(target, initial, sizeof(initial)));
-	/* 3: a wider live target under the header, 6: one of its size */
-	if (mip_case == 3 || mip_case == 6) {
+	/* 3: a wider live target under the header, 6: one of its size, 8: an sRGB one of its size, which the store
+	 * writes through its linear twin (surf_create_'s EXTENDED_USAGE): the console's image stores convert no sRGB */
+	if (mip_case == 3 || mip_case == 6 || mip_case == 8) {
 		vk_lock();
-		rt_clear_format(channel, target, mip_case == 6 ? 8 : 16, 4, 0, 1,
+		rt_clear_format(channel, target, mip_case == 3 ? 16 : 8, 4, 0, 1,
 				format.vk == VK_FORMAT_B10G11R11_UFLOAT_PACK32 ? 0xE0 :
-				format.vk == VK_FORMAT_R32_UINT ? 0xE4 : 0xD5);
-		vk_surf_flush(vk_rt_find(target), NULL);
+				format.vk == VK_FORMAT_R32_UINT ? 0xE4 : mip_case == 8 ? 0xD6 : 0xD5);
+		Surf *live = vk_rt_find(target);
+
+		if (mip_case == 8 && live && !live->storage_capable) {
+			vk_unlock();
+			puts("storage image formats: no storage images of an sRGB target on this device, its case skipped");
+			return 0;
+		}
+		vk_surf_flush(live, NULL);
 		vk_unlock();
 		CHECK(!gmem_read(target, initial, sizeof(initial)));
 	}
@@ -176,6 +188,8 @@ static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 	}
 	if (format.vk == VK_FORMAT_R8G8B8A8_UNORM)
 		memcpy(expected + offset, (const u8[4]){0, 255, 0, 255}, 4);
+	if (format.vk == VK_FORMAT_R8G8B8A8_SRGB)
+		memcpy(expected + offset, (const u8[4]){0, 64, 0, 255}, 4);
 	if (format.vk == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
 		snx_st_le32(expected + offset, 0x380u << 11); /* (0, 0.5, 0), unsigned mini-floats */
 	if (mip_case == 4 || mip_case == 5) snx_st_le32(expected + offset, 0x87654321);
@@ -204,7 +218,7 @@ static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 	CHECK(surface && surface->f.vk == format.vk && surface->levels == levels - base);
 	/* a header over a live target's own pixels writes the target, which the draws after it sample before guest
 	 * memory has the store */
-	if (mip_case == 3 || mip_case == 6) CHECK(surface == vk_rt_find(target));
+	if (mip_case == 3 || mip_case == 6 || mip_case == 8) CHECK(surface == vk_rt_find(target));
 	info.nimg = 1;
 	info.img[0].type = (u8)dim;
 	info.img[0].kind = numeric == 2 ? 0 : numeric == 1 ? 3 : 2;
@@ -255,7 +269,7 @@ static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 			}
 	}
 	CHECK(!memcmp(result, expected, sizeof(result)));
-	if (mip_case == 3 || mip_case == 6) { /* the store is in the target's image, not only in memory */
+	if (mip_case == 3 || mip_case == 6 || mip_case == 8) { /* the store is in the target's image, not only in memory */
 		vk_lock();
 		CHECK(!storage_pixel(vk_rt_find(target), 0, 0, 0, expected + offset));
 		vk_unlock();
@@ -473,6 +487,9 @@ static int check_storage_image_formats(void)
 		g_vk_scale = 1.0f;
 		CHECK(rt && rt->sw == 16 && surface && surface != rt);
 	}
+	/* an RGBA8 sRGB target of the header's size, as one game's last pass stores its already encoded frame into */
+	CHECK(!storage_image_case(channel, qmd, address, unorm, 4, 1, 0, 3, 2, 0, 8));
+	completed++;
 	if (g_vk.feat.shaderStorageImageReadWithoutFormat) {
 		CHECK(!buffer_formatted_load(channel, qmd, address));
 		completed++;
