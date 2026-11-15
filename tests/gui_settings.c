@@ -859,7 +859,7 @@ int main(int argc, char** argv) {
             char *dir = snx_temp_dir(NULL), *ini = snx_path_join(dir, "game.ini"), *picks = snx_game_picks(ini);
             size_t n, j;
             int nce = 0, volume = 0;
-            assert(picks && !strcmp(picks + strlen(picks) - 11, "/game.picks"));
+            assert(picks && !strcmp(picks + strlen(picks) - 10, "game.picks")); /* after either separator */
             assert(!snx_write_file(picks, own, sizeof own - 1));
             assert(gui_settings_recompile(&s, 1, ini, options) == 1 && !strcmp(options[0], "--nce=0"));
             assert(!gui_settings_recompile(&s, 1, NULL, options) && !gui_settings_recompile(&s, 0, ini, options));
