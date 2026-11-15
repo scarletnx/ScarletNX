@@ -834,21 +834,6 @@ setting Joy-Con mouse
     help How the mouse reaches an Ounce game as its Joy-Con mouse. 0 = only after hotkey_mouse (Ctrl+G) declares mouse
     help mode, which holds the mouse until a second press ends it, and nothing reaches the game before. 1 = always, as
     help before this setting: held while the game plays with it, and hotkey_mouse lets it go
-setting Joy-Con 2
-    key joycon2
-    int 0 1
-    default 0
-    startup
-    only linux
-    words Off|On
-    help 1 = the runtime connects Joy-Con 2 controllers over Bluetooth itself, without pairing them, as gamepads. It
-    help doesn't search for them: it tries those joycon2.txt in the user's config folder lists, a line each
-    help (AA:BB:CC:DD:EE:FF L, or R). 0 = it leaves Bluetooth alone
-setting Joy-Con 2 mouse scale
-    key joycon2_mouse_scale
-    float 0.1 10
-    default 1
-    help How far a Joy-Con 2's mouse sensor moves the game's mouse, against its own counts
 
 table g_gamepad_map_ini
 setting Button map
@@ -906,6 +891,25 @@ setting Player button map
     set gamepad_player_map_set
     help Player N's map, as gamepad_map; empty = gamepad_map's
 end
+
+# the Joy-Con 2 over Bluetooth (platform/joycon2.c): the launcher's Controllers > Bluetooth page shows them with the
+# controllers it finds, syncs and forgets
+table g_joycon2_ini
+setting Joy-Con 2
+    key joycon2
+    int 0 1
+    default 0
+    startup
+    only linux
+    words Off|On
+    help 1 = the runtime connects Joy-Con 2 controllers over Bluetooth itself, without pairing them, as gamepads. It
+    help doesn't search for them: it tries those joycon2.txt in the user's config folder lists, a line each
+    help (AA:BB:CC:DD:EE:FF L, or R). 0 = it leaves Bluetooth alone
+setting Joy-Con 2 mouse scale
+    key joycon2_mouse_scale
+    float 0.1 10
+    default 1
+    help How far a Joy-Con 2's mouse sensor moves the game's mouse, against its own counts
 
 # the runtime's keys (platform/hotkeys.c, backend/sdl3.c): F1's help and the game's menu show them
 table g_hotkeys_ini
@@ -2243,7 +2247,7 @@ section Audio: g_audio_ini
 section 3DS: g_ctr_display_ini
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend
-section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player    backend
+section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player, g_joycon2_ini/Bluetooth    backend
 section Shortcuts: g_hotkeys_ini    backend
 section Network: g_network_ini
 section Online: g_nds_network_ini, g_switch_online_ini
