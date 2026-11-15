@@ -209,6 +209,19 @@ int main(void) {
         fprintf(stderr, "FAIL: shadow RAM track-with-filter did not track\n");
         failures++;
     }
+    /* the window origin as deko3d's present writes it: flipped under PASSTHROUGH, then again under REPLAY, which
+       gives back the tracked origin */
+    memset(&ch, 0, sizeof ch);
+    maxwell3d_method(&ch, 0x4EB, 0, 1);    /* TRACK: the origin a draw keeps */
+    maxwell3d_method(&ch, 0x49, 2, 1);     /* PASSTHROUGH */
+    maxwell3d_method(&ch, 0x4EB, 0x10, 1); /* FLIP_Y for the present's own work */
+    maxwell3d_method(&ch, 0x49, 3, 1);     /* REPLAY */
+    maxwell3d_method(&ch, 0x4EB, 0x10, 1);
+    if (ch.r3d[0x4EB] != 0 || ch.r3d_shadow[0x4EB] != 0) {
+        fprintf(stderr, "FAIL: shadow RAM replay left the window origin at %x (tracked %x), not 0\n", ch.r3d[0x4EB],
+                ch.r3d_shadow[0x4EB]);
+        failures++;
+    }
 
     memset(&ch, 0, sizeof ch);
     ndraws = nbarriers = signals = 0;

@@ -331,10 +331,10 @@ static void inline_push(GpuChannel* ch, const u32* idx, u32 n) {
     ch->inline_n += n;
 }
 /* ------------------------------------------------------------ the shadow RAM and the merged draw */
-/* the methods the shadow RAM leaves alone: the class's own, the window origin, and the data streams */
+/* the methods the shadow RAM leaves alone: the class's own and the data streams */
 static int shadowed(u32 m) {
-    return m >= MAXWELL3D_SHADOW_FIRST && m != MAXWELL3D_WINDOW_ORIGIN && m != MAXWELL3D_INLINE_INDEX_4X8_INDEX0 &&
-           m != MAXWELL3D_DRAW_INLINE_INDEX && m != MAXWELL3D_INLINE_INDEX_2X16_EVEN &&
+    return m >= MAXWELL3D_SHADOW_FIRST && m != MAXWELL3D_INLINE_INDEX_4X8_INDEX0 && m != MAXWELL3D_DRAW_INLINE_INDEX &&
+           m != MAXWELL3D_INLINE_INDEX_2X16_EVEN &&
            !(m >= MAXWELL3D_CONST_BUFFER_BUFFER && m <= MAXWELL3D_CONST_BUFFER_BUFFER_LAST);
 }
 /* a transform feedback buffer's start_offset, the write pointer its load resets */
