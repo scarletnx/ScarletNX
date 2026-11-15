@@ -24,6 +24,24 @@ static void* counted_malloc(size_t n) {
 /* vt_probe's sampling bitmap (vk/vt_probe.c, not linked here) */
 void vk_vt_bits_present(void) {}
 void vk_vt_bits_window(void) {}
+/* and vt_sparse's records (aogo/vt-sparse), whose textures need the probe: none here */
+int vk_vt_register(Surf* t) {
+    (void)t;
+    return 0;
+}
+void vk_vt_forget(Surf* t) { (void)t; }
+void vk_vt_want(const Surf* t, u8* bits, u64 nbits) { (void)t, (void)bits, (void)nbits; }
+void vk_vt_bound(const Surf* t, const u8* bits, u64 nbits) { (void)t, (void)bits, (void)nbits; }
+int vk_vt_strip_fresh(const Surf* t, u32 layer, u32 level, u32 y0, u32 y1) {
+    (void)t, (void)layer, (void)level, (void)y0, (void)y1;
+    return 0;
+}
+int vk_vt_level_fresh(const Surf* t, u32 layer, u32 level) {
+    (void)t, (void)layer, (void)level;
+    return 0;
+}
+void vk_vt_loaded(const Surf* t) { (void)t; }
+void vk_vt_frame(void) {}
 #undef malloc
 #include "nx/hle/services/nvdrv.h" /* gmmu_pieces, and g_mem, which the stubs below stand in for */
 #include "nx/memory/mem.h"
