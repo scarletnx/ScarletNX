@@ -1656,8 +1656,9 @@ static void check_move_copy(const Surf* t, u32 w, u32 h, u32 d, u32 layers, u32 
 }
 /* One tex_move for the defrag and the second tier. vk_tex_demote asks for system memory, vk_tex_promote for the GPU's
    in the low class (a medium one once the texture took drawn pixels), and the defrag for a run of a block in use, of
-   the class of its owner. Each copies every level and layer of the image, and the copies of a target that draws sample
-   (vk_rt_save) are VK_OWN_IMAGE_OTHER's: above textures in priority, not a target's */
+   the class of its owner. Each copies every level and layer of the image, and the new memory has the old one's owner
+   in the ledger, or none when the old one had none. The copies of a target that draws sample (vk_rt_save) are
+   VK_OWN_IMAGE_OTHER's: above textures in priority, not a target's */
 static void check_tex_moves(void) {
     const int sysmem = g_settings.texture_system_memory;
     PFN_vkCmdCopyImage copy_was = vkCmdCopyImage;
@@ -1666,19 +1667,22 @@ static void check_tex_moves(void) {
     vkCmdCopyImage = record_move_copy;
     vkGetPhysicalDeviceFormatProperties = no_format;
     g_mv.give = 1;
-    g_mv.tag = VK_OWN_TEXTURE + 1;
-    for (int drawn = 0; drawn < 2; drawn++) {
+    static const u32 tags[] = {VK_OWN_TEXTURE + 1, VK_OWN_IMAGE_OTHER + 1, 0};
+    for (u32 i = 0; i < 6; i++) {
+        const int drawn = i & 1;
         Surf t = mv_tex(64, 32, 1, 1, 3);
         t.took_drawn = (u8)drawn;
+        g_mv.tag = tags[i / 2];
         g_mv.tracks = 0;
+        g_mv.owner = VK_OWN_N;
         CHECK(vk_tex_demote(&t) && t.demoted);
         CHECK(g_mv.want.at == DM_SYSTEM && g_mv.want.image && !g_mv.want.low && !g_mv.want.existing);
-        CHECK(g_mv.tracks == 1 && g_mv.owner == VK_OWN_TEXTURE);
+        CHECK(g_mv.tag ? g_mv.tracks == 1 && g_mv.owner == g_mv.tag - 1 : !g_mv.tracks);
         check_move_copy(&t, 64, 32, 1, 1, 3);
         t.img = (VkImage)(uintptr_t)0x1A6;
         CHECK(vk_tex_promote(&t) && !t.demoted);
         CHECK(g_mv.want.at == DM_DEVICE && g_mv.want.image && g_mv.want.low == !drawn && !g_mv.want.existing);
-        CHECK(g_mv.tracks == 2 && g_mv.owner == VK_OWN_TEXTURE);
+        CHECK(g_mv.tag ? g_mv.tracks == 2 && g_mv.owner == g_mv.tag - 1 : !g_mv.tracks);
         check_move_copy(&t, 64, 32, 1, 1, 3);
     }
     /* the defrag: a texture into the low class's blocks, an image of another owner into the medium class's */
@@ -1695,11 +1699,14 @@ static void check_tex_moves(void) {
         CHECK(g_mv.moved == 64 << 10 && !g_mv.stops);
         check_move_copy(&t, 16, 16, 1, 3, 2);
     }
-    /* a 3D texture: each level's slices in one region of one layer */
-    g_mv.tag = VK_OWN_TEXTURE + 1;
+    /* a 3D texture whose memory the ledger does not track: each level's slices in one region of one layer, and the
+       new memory untracked too, in the low class as a texture's */
+    g_mv.tag = 0;
+    g_mv.tracks = 0;
     Surf v = mv_tex(16, 8, 4, 1, 2);
     g_mv.moving = &v;
     vk_tex_defrag_frame();
+    CHECK(g_mv.want.existing && g_mv.want.low && !g_mv.tracks);
     check_move_copy(&v, 16, 8, 4, 1, 2);
     /* no run holds it: the block is left as it is */
     Surf u = mv_tex(16, 16, 1, 1, 1);
