@@ -3293,8 +3293,8 @@ static struct {
     /* A program can have more than one translation, each with other constant buffer words folded (cb_fold.h), and
        vk_shader_get takes the one that folds the most words of those that hold. A kept shader still holds when
        another translation of its program starts to hold, because it doesn't read the words that the other folds. So
-       fold_gen is vk_shader_fold_gen before the draw looked up its shaders (no translation came since), and not_top
-       has a bit for each shader of used_shaders that another translation of its program folds more than. draw_kept
+       fold_gen is vk_shader_fold_gen when the state was kept (no translation came since), and not_top has a bit for
+       each shader of used_shaders that another translation of its program folded more than then. draw_kept
        asks vk_shader_chosen for those. Without these checks, draw_state_check=1 found 0.22% of the kept draws in one
        game's town with a fragment program that folded no word, where a lookup gave one that folded a word: the game
        had set that word to the value the other translation folded */
@@ -3352,11 +3352,11 @@ static int vertex_format_holds(const DsVertexFormat* f, const DrawShaders* s) {
     return 1;
 }
 /* whether the state kept in g_draw holds for this draw of ch, as far as what is checked before drawing tells */
-static int draw_kept(const DsState* ds, u32 topology, int mesh, u32 epoch, u32 fold_gen) {
+static int draw_kept(const DsState* ds, u32 topology, int mesh, u32 epoch) {
     const DrawShaders* s = &g_draw.sh;
     if (s->mesh != mesh) return 0;
     if (g_draw.shader_generation != g_vk.shader_generation) return 0;
-    if (g_draw.fold_gen != fold_gen) return 0; /* a translation came that a lookup may take over a kept one */
+    if (g_draw.fold_gen != vk_shader_fold_gen()) return 0; /* a translation came that a lookup may take instead */
     if (g_draw.k.heaps != (u32)g_vk.has_descriptor_heaps) return 0;
     if (!s->vs || g_draw.ch_id != ds->owner || g_draw.topology != topology || g_draw.epoch != epoch) return 0;
     for (u32 i = 0; i < sizeof g_draw_groups; i++)
@@ -4487,11 +4487,11 @@ retry:
     first = initial_first;
     count = initial_count;
     u64 setup_frame = vk_submit_number();
-    u32 epoch = vk_ww_epoch(), fold_gen = vk_shader_fold_gen(); /* before a shader is looked up */
+    u32 epoch = vk_ww_epoch();
     /* kept: the state the last draw made holds for this one, as far as each check below tells. Each part is made
        here when it doesn't (and when draw_state_check compares) */
     int capture = g_capture_draw.images != NULL;
-    int kept = !texture && !capture && !g_predraw.phase && draw_kept(ds, draw_topo, mesh, epoch, fold_gen);
+    int kept = !texture && !capture && !g_predraw.phase && draw_kept(ds, draw_topo, mesh, epoch);
     if (kept && g_draw.check) g_vk_draw_checked++;
     DrawShaders sh;
     if (kept) sh = g_draw.sh;
@@ -5396,7 +5396,8 @@ retry:
         g_draw.topology = draw_topo;
         g_draw.epoch = epoch;
         g_draw.shader_generation = g_vk.shader_generation;
-        g_draw.fold_gen = fold_gen;
+        /* the translations as they are after this draw's lookups, which can have made some */
+        g_draw.fold_gen = vk_shader_fold_gen();
         g_draw.sh = sh;
         g_draw.fkey = fk;
         g_draw.fs = fs;
