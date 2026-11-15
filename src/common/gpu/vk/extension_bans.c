@@ -42,6 +42,12 @@ static struct {
     char device[256], driver_name[256], driver_info[256];
     uint32_t driver_id, driver_version, device_id, system;
     char ignore[512]; /* vulkan_ban_ignore's value, as given */
+    /* the extensions whose driver gave no pointer for a command they require, with that command (vk_bans_lacking) */
+    struct {
+        char extension[VK_MAX_EXTENSION_NAME_SIZE], command[VK_MAX_EXTENSION_NAME_SIZE];
+        int hidden;
+    } lacking[VK_BANS_LACKING];
+    uint32_t nlacking;
 } g_extension_bans;
 
 /* the table's names and the log's for each VkDriverId */
@@ -463,6 +469,7 @@ int vk_bans_load(const char* text, char* err, size_t n) {
     char why[400];
     g_extension_bans.count = 0;
     g_extension_bans.ignore[0] = 0;
+    g_extension_bans.nlacking = 0;
     if (size >= BAN_TEXT) {
         snprintf(err, n, "extension_bans.txt is %zu bytes, past the %d this reader holds", size, BAN_TEXT - 1);
         return 0;
@@ -739,6 +746,33 @@ uint32_t vk_ban(const char* key, int have, VkBanSay say) {
     return line;
 }
 
+int vk_bans_lacking(const char* extension, const char* command, int hidden) {
+    uint32_t i = g_extension_bans.nlacking;
+    if (i == VK_BANS_LACKING || strlen(extension) >= sizeof g_extension_bans.lacking[0].extension ||
+        strlen(command) >= sizeof g_extension_bans.lacking[0].command)
+        return 0;
+    snprintf(g_extension_bans.lacking[i].extension, sizeof g_extension_bans.lacking[i].extension, "%s", extension);
+    snprintf(g_extension_bans.lacking[i].command, sizeof g_extension_bans.lacking[i].command, "%s", command);
+    g_extension_bans.lacking[i].hidden = hidden;
+    g_extension_bans.nlacking++;
+    return 1;
+}
+/* the commands of extension its driver gave no pointer for, as a line says them: "without vkCmdA, vkCmdB, which it
+   requires"; empty for one the driver has every command of */
+static void lacking_text(const char* extension, char* out, size_t n) {
+    size_t w = 0;
+    int hidden = 0;
+    out[0] = 0;
+    for (uint32_t i = 0; i < g_extension_bans.nlacking && w < n; i++)
+        if (!strcmp(g_extension_bans.lacking[i].extension, extension)) {
+            w += (size_t)snprintf(out + w, n - w, "%s%s", w ? ", " : "without ", g_extension_bans.lacking[i].command);
+            hidden |= g_extension_bans.lacking[i].hidden;
+        }
+    if (w && w < n)
+        snprintf(out + w, n - w, ", which it requires%s",
+                 hidden ? " (vk_debug_hide_commands hides from the check what the driver has)" : "");
+}
+
 uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say) {
     uint32_t removed = 0;
     for (uint32_t i = 0; i < g_extension_bans.count; i++) {
@@ -765,6 +799,22 @@ uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say) {
         e->count--;
         removed++;
         say_ban(b, SAY_OFF, say);
+    }
+    /* what a device made before found missing: off whatever goes over a ban, as nothing gives the driver the command */
+    for (uint32_t at = 0; at < e->count;) {
+        char line[2048], device[900], without[1024];
+        lacking_text(e->list[at].extensionName, without, sizeof without);
+        if (!without[0]) {
+            at++;
+            continue;
+        }
+        device_text(device, sizeof device);
+        snprintf(line, sizeof line, "vulkan: %s is off on %s: its driver lists it %s", e->list[at].extensionName,
+                 device, without);
+        memmove(&e->list[at], &e->list[at + 1], (e->count - at - 1) * sizeof *e->list);
+        e->count--;
+        removed++;
+        say(line, 0);
     }
     return removed;
 }
@@ -856,9 +906,10 @@ void vk_extension_settings_say(const SnxVkExtensions* e, uint32_t api, VkBanSay 
         int value = g_extension_settings.value[k], had = g_extension_settings.had[k], in = list_has(e, name);
         int core = g_extension_settings.core[k], warn = 0;
         const Ban* ban = held_off(name);
-        char key[160], why[1100] = "", line[1600], over[200] = "", core_text[120] = "";
+        char key[160], why[1100] = "", line[1600], over[200] = "", core_text[120] = "", without[1024];
         setting_key(name, key, sizeof key);
         if (ban) vk_ban_why(ban->line, why, sizeof why);
+        lacking_text(name, without, sizeof without);
         /* core in the version the renderer runs the device at: it has the feature as core whatever the setting */
         if (core && api >= ((uint32_t)(core / 10) << 22 | (uint32_t)(core % 10) << 12))
             snprintf(core_text, sizeof core_text, "; core in Vulkan %d.%d, which the renderer runs this device at",
@@ -870,6 +921,11 @@ void vk_extension_settings_say(const SnxVkExtensions* e, uint32_t api, VkBanSay 
             snprintf(line, sizeof line, "vulkan: %s: off (the driver has it not, which %s=on can't change)", name, key);
         else if (!had)
             snprintf(line, sizeof line, "vulkan: %s: off (the driver has it not)", name);
+        else if (without[0] && value == SETTING_ON)
+            snprintf(line, sizeof line, "vulkan: %s: off (its driver lists it %s, which %s=on can't change)", name,
+                     without, key);
+        else if (without[0])
+            snprintf(line, sizeof line, "vulkan: %s: off (its driver lists it %s)", name, without);
         else if (value == SETTING_ON) {
             warn = ban != NULL;
             if (ban)

@@ -17,6 +17,7 @@
 #include "nx/gpu/vk/pagespace.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "common/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/extension_commands.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
@@ -7068,6 +7069,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_storage_formats.inc"
 #include "vulkan_scaled_compute.inc"
 #include "vulkan_storage_atomics.inc"
+#include "vulkan_hidden_commands.inc"
 #include "vulkan_surface_loads.inc"
 #include "vulkan_rect_textures.inc"
 #include "vulkan_minmax_program.inc"
@@ -7573,7 +7575,36 @@ static int run_headless(int argc, char** argv) {
         }
         g_spirv_translate.tex_array = (u32)n;
     }
+    /* vk_debug_hide_commands: what the renderer's start says of the commands it takes as missing, read below */
+    FILE* start_log = NULL;
+    if (g_settings.vulkan_hidden_commands[0]) {
+        char* path = snx_path_join(root, "start.log");
+        start_log = fopen(path, "w+b");
+        free(path);
+        CHECK(start_log);
+        t_plat.log_redirect = start_log;
+    }
     video_init("Headless Vulkan fixture", "");
+    if (start_log) {
+        t_plat.log_redirect = NULL;
+        long size = ftell(start_log);
+        char* text = size >= 0 ? malloc((size_t)size + 1) : NULL;
+        CHECK(text && !fseek(start_log, 0, SEEK_SET) && fread(text, 1, (size_t)size, start_log) == (size_t)size);
+        text[size] = 0;
+        fclose(start_log);
+        fputs(text, stdout);
+        int hidden = check_hidden_commands(text);
+        free(text);
+        if (hidden == 77) {
+            vk_pipeline_quiesce();
+            CHECK(!snx_remove_tree(root));
+            free(root);
+            free(shot);
+            free(ppm);
+            return 77;
+        }
+        CHECK(!hidden);
+    }
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
     CHECK(!check_vk12_way());
     if (pipeline_probe) {

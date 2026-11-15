@@ -1439,6 +1439,16 @@ setting GPU checkpoints
     help 1 = records what the GPU is doing as it goes (VK_NV_device_diagnostic_checkpoints), and when the device is
     help lost logs the work each queue reached. Where the driver has no such extension it is only a warning. Off, the
     help device is made without it, so a RenderDoc capture also replays on a driver that lacks it
+setting Vulkan hidden commands
+    label Hide Vulkan commands
+    key vk_debug_hide_commands
+    text 512
+    default ""
+    startup
+    help Vulkan device commands, separated by commas, that the check of each extension's commands takes as missing
+    help from the driver, to test that path: an extension that requires one goes off, and the device is made again
+    help without it, as with a driver that lists the extension without the command. The log says each. Empty: none.
+    help A name that is no device command of a Vulkan extension stops the game, naming the nearest ones
 setting Guest memory
     key vk_memory
     int 0 2

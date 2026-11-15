@@ -5,7 +5,9 @@
    settings (vk_extension_settings: auto, on, off for each extension, auto by the bans), takes the banned extensions
    out of the device's list before anything reads it (vk_bans_filter), asks for each feature it can do without
    (vk_ban), and at the end says the "off" lines that held for something nothing asked for (vk_bans_unclaimed). Every
-   line that holds is said in the log with the extension, the device, its driver and version, and why */
+   line that holds is said in the log with the extension, the device, its driver and version, and why. An extension
+   whose driver turned out to lack one of its commands is taken out the same way, for the device made again
+   (vk_bans_lacking) */
 #ifndef SNX_VK_EXTENSION_BANS_H
 #define SNX_VK_EXTENSION_BANS_H
 #include <stddef.h>
@@ -63,11 +65,18 @@ void vk_ban_scope(uint32_t line, char* out, size_t n);
    input (Eden's ban, ...; extension_bans.txt:42)" */
 void vk_ban_why(uint32_t line, char* out, size_t n);
 /* takes out of e every extension an "off" line without an override holds for, but those vulkan_ban_ignore goes over,
-   each said; says the "warn" lines that hold for an extension e has and for a feature; the rest (features, overrides)
-   wait for vk_ban and vk_ban_find. How many it took out */
+   and every one vk_bans_lacking named, each said; says the "warn" lines that hold for an extension e has and for a
+   feature; the rest (features, overrides) wait for vk_ban and vk_ban_find. How many it took out */
 uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say);
 /* says each "off" line that holds and nothing claimed */
 void vk_bans_unclaimed(VkBanSay say);
+/* an extension a device was made with whose driver gave no pointer for command, which the extension requires
+   (extension_commands.h): the device made again goes without it. vk_bans_filter takes it out of the list over any
+   setting, and says so with each such command, and vk_extension_settings_say says why it is off. hidden: the driver
+   has the command, which vk_debug_hide_commands names to test this. 1, or 0 past VK_BANS_LACKING (the extension stays
+   in) or for a name longer than any Vulkan has. A new load lets them go */
+#define VK_BANS_LACKING 16
+int vk_bans_lacking(const char* extension, const char* command, int hidden);
 /* The extension settings (settings.txt's g_vk_extensions_ini, vk_ext_*), one per extension the renderer can use: its
    name, the setting's value (auto, on or off) and the Vulkan version it was promoted to (13 for 1.3, 0 for none).
    auto leaves the extension to the bans; on goes over every ban on it; off takes it out of the device's list */

@@ -464,6 +464,34 @@ vulkan: VK_EXT_vertex_input_dynamic_state: on (vk_ext_vertex_input_dynamic_state
 features asked for against stand-in devices, the table the build carries, `vulkan_ban_ignore` read from a `.ini`
 with a key the table has and with one it has not, and the extension settings' values and log lines.
 
+An extension stays on only with its commands. Once the device is made, each command each of its extensions requires
+is asked of the driver (`vkGetDeviceProcAddr`, `snx_vk_commands_lacking` in `src/common/gpu/vk/extension_commands.c`).
+The table of them is generated from the same registry by `tools/vkcmdgen`: every device extension, with the commands
+of its `<require>` blocks that a device answers for, each block's `depends` kept and checked against the device (a
+version up to the one the renderer runs it at, an extension it is made with; any other name, an instance
+extension's, does not hold). A driver that lists an extension without one of them (NVIDIA's
+`VK_EXT_depth_clamp_control` without `vkCmdSetDepthClampRangeEXT`) would have the renderer call a null pointer: the
+extension goes off as an `off` line takes one out, its features and their structures with it, and the device is made
+again without it, once (`device.c`'s `create_device`). One the device can't go without (a window's swapchain, what 1.3
+took in on a 1.2 device) fails the start, saying so, and so does a device made again that still lacks a command. The
+log says each, with the driver and its version (here a command `vk_debug_hide_commands` hid, on lavapipe):
+
+```
+vulkan: llvmpipe (LLVM 22.1.8, 256 bits)'s driver lists VK_EXT_conditional_rendering without vkCmdBeginConditionalRenderingEXT, which it requires (vk_debug_hide_commands hides it from the check): the device is made again without it
+vulkan: VK_EXT_conditional_rendering is off on llvmpipe (LLVM 22.1.8, 256 bits) (llvmpipe, Mesa 26.2.6 (LLVM 22.1.8), driver version 26.2.6): its driver lists it without vkCmdBeginConditionalRenderingEXT, which it requires (vk_debug_hide_commands hides from the check what the driver has)
+```
+
+`vk_debug_hide_commands` ([Settings](../user/settings.md#debug)) has the check take the commands it lists as missing,
+to test that path on any driver. `vulkan_headless_hidden_commands` hides `vkCmdSetDepthClampRangeEXT` and
+`vkCmdBeginConditionalRenderingEXT` and runs every check of `vulkan_headless` on the device made again without the
+extensions of the two that the driver has on; `vk_extension_commands` checks the table, the `depends`, a stand-in
+device's check and the hide list; `vkcmdgen` the generator on registries of its own and on the build's.
+
+```sh
+ctest --test-dir build -R 'vk_extension_commands|vkcmdgen|vk_extension_bans'
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json ctest --test-dir build -R vulkan_headless_hidden_commands
+```
+
 ## SVCs
 
 `src/nx/hle/svc/hos.svc` declares the kernel's SVCs as Eden's SVC generator does, and `tools/svcgen/svcgen.c`
