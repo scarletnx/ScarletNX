@@ -175,7 +175,7 @@ void ini_word(const IniOpt* o, int v, char* out, size_t n) {
 }
 int ini_step(const IniOpt* o, int v, int dir) {
     int step = step_of(o), count;
-    if (!o->words || strchr(o->words, '#')) {
+    if (!o->words || strchr(o->words, '#') || (o->flags & INI_SLIDER)) {
         double n = (double)v + (double)dir * step;
         return n < o->lo ? (int)o->lo : n > o->hi ? (int)o->hi : (int)n;
     }
@@ -296,7 +296,9 @@ size_t ini_list_text(const IniSection* sections, int count, char* out, size_t si
                 put(&l, "\t%s\t", o->name ? o->name : "");
                 list_values(&l, o);
                 put(&l, "\t%s", ini_only(o) ? ini_only(o) : "");
-                if (o->flags & INI_NEEDS_BUILD) put(&l, "\tneeds-build");
+                if (o->flags & (INI_NEEDS_BUILD | INI_SLIDER))
+                    put(&l, "\t%s", o->flags & INI_NEEDS_BUILD ? "needs-build" : "");
+                if (o->flags & INI_SLIDER) put(&l, "\tslider");
                 put(&l, "\n");
             }
         }

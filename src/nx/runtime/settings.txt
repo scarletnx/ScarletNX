@@ -39,6 +39,8 @@
 #                         say which beside it (ini.h's ini_only); its value is read and written there as anywhere
 #     words W|W...        the menus' words (ini.h): an int's for LO, LO + step..., a text's value=word
 #     step N, shift N     the menus' step and shift (ini.h)
+#     slider              the menus draw an int with words on a slider and step it to its ends, never round (ini.h's
+#                         INI_SLIDER): every step a word the launcher lists, its default one of them
 #     label TEXT          the menus' name when it is not NAME (the game's menu shows a page's settings by it)
 #     startup             read when the game starts only
 #     in-game             the game's own (its menu's, or the driver's): the launcher's Settings leave it out

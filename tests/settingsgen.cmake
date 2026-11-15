@@ -88,6 +88,13 @@ setting Its kernel
     int 0 1
     default 0
     only arm64-linux
+setting Loudness
+    key loudness
+    int 0 100
+    default 100
+    words Mute|#%
+    step 5
+    slider
 setting ${long_name}
     key long
     text 4
@@ -158,7 +165,9 @@ endforeach()
 file(READ "${WORK}/out/settings_test.c" text)
 foreach(row "{\"one_system\", \"0\", NULL, INI_INT, INI_STARTUP | INI_ONLY_MACOS, &g_settings.one_system,"
             "{\"its_kernel\", \"0\", NULL, INI_INT, INI_ONLY_ARM64_LINUX, &g_settings.its_kernel,"
-            "{\"plain\", \"0\", NULL, INI_INT, 0, &g_settings.plain,")
+            "{\"plain\", \"0\", NULL, INI_INT, 0, &g_settings.plain,"
+            # a slider's (ini.h's INI_SLIDER): an int with words, the menus' steps
+            "{\"loudness\", \"100\", NULL, INI_INT, INI_SLIDER, &g_settings.loudness, 0, 100, NULL, \"Loudness\", \"Mute|#%\", 5, 0,")
     string(FIND "${text}" "${row}" at)
     if(at LESS 0)
         message(FATAL_ERROR "settings_test.c lacks the row ${row}:\n${text}")
@@ -171,6 +180,15 @@ execute_process(COMMAND "${SETTINGSGEN}" --out "${WORK}/out" "${WORK}/unknown.tx
 if(NOT unknown_result OR NOT unknown_errors MATCHES "unknown.txt:6: only amiga: the systems are macos, windows, android, linux and arm64-linux\n$")
     message(FATAL_ERROR "settingsgen took only amiga (${unknown_result}), or did not say which systems only takes:\n${unknown_errors}")
 endif()
+# a slider of a text, or of an int without words, is refused with its line: its steps are an int's words
+foreach(lines "text 8\n    default a" "int 0 9\n    default 0")
+    file(WRITE "${WORK}/slider.txt" "table g_test_ini\nsetting Wordless\n    key wordless\n    ${lines}\n    slider\n")
+    execute_process(COMMAND "${SETTINGSGEN}" --out "${WORK}/out" "${WORK}/slider.txt"
+                    RESULT_VARIABLE slider_result ERROR_VARIABLE slider_errors)
+    if(NOT slider_result OR NOT slider_errors MATCHES "slider.txt:2: Wordless: slider takes an int with words, the steps its slider shows\n$")
+        message(FATAL_ERROR "settingsgen took a slider of ${lines} (${slider_result}), or did not say why:\n${slider_errors}")
+    endif()
+endforeach()
 # each setter found, with its argument cast to the type the header declares, and the setting its @ID names
 foreach(line "LLVMPassBuilderOptionsSetLoopVectorization(options, (LLVMBool)s->loop_vectorization)"
              "LLVMPassBuilderOptionsSetSLPVectorization(options, (LLVMBool)s->llvm_slp_vectorization)"
