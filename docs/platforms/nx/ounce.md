@@ -40,7 +40,10 @@ The NPDM tells an Ounce program (`snx_npdm_ounce` in `loader/ounce.h`). An Ounce
 bytes each, where a Switch's are 0x100, so its magic is at 0x300 of the ACID, not at 0x200. The recompiler and the
 runtime read the same NPDM, and `g_ounce` is the one flag. It gives the game these, with no setting:
 
-- the CPU extensions of `cpu_extensions=1` (LSE, RCpc and PAuth), in the recompiler and the runtime JIT alike
+- the Cortex-A78C's instructions (`a64.profile`'s `ounce` target, from the ID registers in the core's TRM), in the
+  recompiler and the runtime JIT alike: LSE, RDM, FP16, the dot product, RCpc with LRCPC2, PAuth with authentication
+  off, FlagM and ESB. It has no JSCVT, FCMA, DIT or MSR SSBS (PFR1's SSBS is 1). Before, an Ounce game took
+  `cpu_extensions=1`'s LSE, RCpc and PAuth only, and one game's bootstrap level stopped on a UDOT
 - the 10 GiB application pool and the 12 GiB heap region of `memory_gb=12`
 - SM86 shaders and the T239's GOB
 - a 31.25 MHz system tick. The SDK's `nn::os::GetSystemTickFrequency` returns 31,250,000 as a constant, and the SDK

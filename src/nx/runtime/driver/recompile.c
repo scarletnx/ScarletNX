@@ -10,6 +10,7 @@
 #include "nx/loader/module.h"
 #include "nx/loader/module_llvm.h"
 #include "nx/loader/codegen_view.h"
+#include "nx/loader/ounce.h"
 #include "nx/runtime/nce/nce_host.h"
 #include "nx/runtime/nce/nce_patch.h"
 #if defined(__ANDROID__)
@@ -479,8 +480,8 @@ static int nce_prepare(SnxProgram* p, const char* base, int quiet) {
         free(path);
         return snx_error("NCE: the program has no modules");
     }
-    /* the instructions the recompile decodes: an Ounce game's too, as module_llvm.c's analysis does */
-    SnxU64 features = g_settings.cpu_extensions || p->npdm.ounce ? SNX_A64_TARGET_SWITCH_EXTENDED : 0;
+    /* the instructions the recompile decodes, the program's CPU (loader/ounce.h), as module_llvm.c's analysis does */
+    SnxU64 features = snx_guest_features(p->npdm.ounce, g_settings.cpu_extensions);
     if (snx_nx_codegen_analyze(&cg, p, NULL, 0, quiet, features)) {
         free(path);
         return snx_error("NCE: the analysis of the game's code failed");

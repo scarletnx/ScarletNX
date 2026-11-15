@@ -6,6 +6,7 @@
 #include "common/cpu/recompiler/auto_workers.h"
 #include "common/cpu/recompiler/compile_thread.h"
 #include "nx/loader/codegen_view.h"
+#include "nx/loader/ounce.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/llvm/objects_pack.h"
@@ -819,8 +820,8 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         snx_error("--jit-cache cannot go with --target %s: a JIT cache is this host's", build->triple);
         goto done;
     }
-    /* an Ounce program's CPU (loader/ounce.h): the runtime JIT takes the same features from the same NPDM */
-    SnxU64 features = g_settings.cpu_extensions || loaded->npdm.ounce ? SNX_A64_TARGET_SWITCH_EXTENDED : 0;
+    /* the program's CPU (loader/ounce.h): the runtime JIT takes the same features from the same NPDM */
+    SnxU64 features = snx_guest_features(loaded->npdm.ounce, g_settings.cpu_extensions);
     if (options->jit_cache) {
         char* key = snx_jit_cache_key(build->opt, options->hook_direct_calls, 1, features);
         if (!key) {
