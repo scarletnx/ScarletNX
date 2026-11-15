@@ -334,6 +334,39 @@ static void test_float(void) {
     format(FORMAT, 2, 2, 48000);
 }
 
+/* ticks of the clock until the log says text, 8 at most: 1 when it did */
+static int said_within(const char* text) {
+    for (int t = 0; t < 8; t++) {
+        tick();
+        if (strstr(test_last_log, text)) return 1;
+    }
+    return 0;
+}
+/* what the log says of the noise reduction: the method mic_noise_reduction asks for beside the one that runs, when
+   they differ (neural on a 16 kHz stream, spectral without libspeexdsp), and each change of the setting while the
+   stream records. Which one runs in place of neural depends on whether the host has libspeexdsp */
+static void test_reduction_said(void) {
+    format(FORMAT, 2, 1, 16000);
+    g_settings.microphone_noise_reduction = SNX_DENOISE_NEURAL;
+    CHECK(audio_open_input(&cpu, STREAM2, 0, 0, NAMES, FORMAT, 1600) == 0);
+    CHECK(audio_start_input(&cpu, STREAM2) == 0 && input_of(STREAM2)->mic != NULL);
+    int spectral = snx_denoise_method(input_of(STREAM2)->mic->denoise) == SNX_DENOISE_SPECTRAL;
+    CHECK(strstr(test_last_log, spectral ? "16000 Hz, noise reduction spectral, not neural as mic_noise_reduction=1 "
+                                           "asks: neural takes 48000 Hz and the stream records at 16000 Hz\n"
+                                         : "16000 Hz, noise reduction off, not neural as mic_noise_reduction=1 asks: "
+                                           "neural takes 48000 Hz and the stream records at 16000 Hz, and spectral "
+                                           "needs " SNX_DENOISE_LIBRARY "\n") != NULL);
+    g_settings.microphone_noise_reduction = SNX_DENOISE_OFF;
+    CHECK(said_within("audio: the microphone's noise reduction is now off\n"));
+    g_settings.microphone_noise_reduction = SNX_DENOISE_SPECTRAL;
+    CHECK(said_within(spectral ? "audio: the microphone's noise reduction is now spectral\n"
+                               : "audio: the microphone's noise reduction is now off, not spectral as "
+                                 "mic_noise_reduction=2 asks: spectral needs " SNX_DENOISE_LIBRARY "\n"));
+    audio_close_input(&cpu, STREAM2);
+    g_settings.microphone_noise_reduction = SNX_DENOISE_OFF;
+    format(FORMAT, 2, 2, 48000);
+}
+
 /* ------------------------------------------------------------ the reduction, on speech-like signals */
 /* Speech-like: syllables of 220 ms, one every 350 ms, each a harmonic sound on a pitch that glides (a talker's base
    between 110 and 230 Hz), its harmonics up to 4 kHz shaped by three formants that move from syllable to syllable, a
@@ -576,6 +609,7 @@ int main(void) {
     test_gain_stop();
     test_off();
     test_float();
+    test_reduction_said();
     (void)lead;
     test_reduction();
     audio_close_input(&cpu, STREAM);
