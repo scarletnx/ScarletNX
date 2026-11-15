@@ -1240,7 +1240,8 @@ static void only_rows(App* app) {
     info = (UiRowInfo){0};
     assert(form_row_info(app, &app->editor, 1, form_labels(&app->editor), 0, &info) && (info.attr & UI_ATTR_OFF) &&
            strstr(info.label, "MoltenVK " GUI_CHANGED_MARK " macOS only"));
-    assert(gui_settings_options(&app->settings, 0, options) == 1 && !strcmp(options[0], "--vulkan-driver=moltenvk"));
+    assert(gui_settings_options(&app->settings, 0, NULL, options) == 2 &&
+           !strcmp(options[0], "--vulkan-driver=moltenvk"));
     app->editor.row = 1;
     key(app, SDLK_RETURN);
     assert(strstr(app->editor.note, "and it stays MoltenVK") && setting_is(app, "vulkan_driver", "moltenvk"));
@@ -5777,14 +5778,16 @@ int main(int argc, char** argv) {
         }
         return status;
     }
-    if (argc == 3 && !strcmp(argv[1], "--fullscreen=1") && !strcmp(argv[2], "--controls=2")) {
+    if (argc == 4 && !strcmp(argv[1], "--fullscreen=1") && !strcmp(argv[2], "--controls=2") &&
+        !strcmp(argv[3], "--launcher-picks=1")) {
         puts("prepared game stdout");
         fputs("prepared game stderr\n", stderr);
         return 0;
     }
     if (argc > 1 && strstr(argv[1], "option flags")) {
         int i = 2;
-        assert(argc == 8 && !strcmp(argv[i++], "--fullscreen=1") && !strcmp(argv[i++], "--controls=2"));
+        assert(argc == 9 && !strcmp(argv[i++], "--fullscreen=1") && !strcmp(argv[i++], "--controls=2"));
+        assert(!strcmp(argv[i++], "--launcher-picks=1"));
         assert(!strcmp(argv[i++], "-S") && !strcmp(argv[i++], "-s"));
         assert(!strcmp(argv[i++], "--data") && argv[i++][0] && i == argc);
         puts("Recompiling option flags\nScarletNX - option flags"); /* the runner's banner: now loading */
@@ -5816,13 +5819,14 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc > 1 && strstr(argv[1], "folder game")) { /* a game in a folder of its own, through the menu's driver */
-        assert(strstr(argv[0], "runtime") && argc == 6 && snx_is_file(argv[1]) && !strcmp(argv[2], "--fullscreen=1") &&
-               !strcmp(argv[3], "--controls=2") && !strcmp(argv[4], "--data") && argv[5][0]);
+        assert(strstr(argv[0], "runtime") && argc == 7 && snx_is_file(argv[1]) && !strcmp(argv[2], "--fullscreen=1") &&
+               !strcmp(argv[3], "--controls=2") && !strcmp(argv[4], "--launcher-picks=1") &&
+               !strcmp(argv[5], "--data") && argv[6][0]);
         puts("Recompiling folder game (1 modules)\nBuilt folder game\nScarletNX - folder game");
         return 0;
     }
     if (argc > 1) {
-        assert(argc == 2 || argc == 6);
+        assert(argc == 2 || argc == 7);
         assert(snx_is_file(argv[1]));
         if (strstr(argv[1], "Game00")) {
             assert(argc == 2 && strstr(argv[0], "gnuabi"));
@@ -5832,8 +5836,8 @@ int main(int argc, char** argv) {
         assert(strstr(argv[1], "game with spaces"));
         bool nx = strstr(argv[0], "runtime") != NULL; /* the program the menu is part of */
         if (nx)
-            assert(argc == 6 && !strcmp(argv[2], "--fullscreen=1") && !strcmp(argv[3], "--controls=2") &&
-                   !strcmp(argv[4], "--data") && argv[5][0]);
+            assert(argc == 7 && !strcmp(argv[2], "--fullscreen=1") && !strcmp(argv[3], "--controls=2") &&
+                   !strcmp(argv[4], "--launcher-picks=1") && !strcmp(argv[5], "--data") && argv[6][0]);
         else
             assert(argc == 2);
         size_t size;
@@ -9490,7 +9494,8 @@ int main(int argc, char** argv) {
     {
         size_t size;
         char* kept = (char*)snx_read_file(app.run_log, &size);
-        char* line = snx_format("game with spaces;literal.nro --fullscreen=1 --controls=2 --data %s\n", app.data_dir);
+        char* line = snx_format(
+            "game with spaces;literal.nro --fullscreen=1 --controls=2 --launcher-picks=1 --data %s\n", app.data_dir);
         assert(kept && line && !app.run_out && !strncmp(kept, "$ ", 2) && strstr(kept, line));
         free(line);
         assert(strstr(kept, "driver stdout") && strstr(kept, "driver stderr") && strstr(kept, "\n[ended, status 0]\n"));
@@ -10716,7 +10721,7 @@ int main(int argc, char** argv) {
         assert(gui_settings_set(&app.settings, "java_home", "/opt/jdk 21"));
         {
             const char** options = calloc((size_t)app.settings.count + 1, sizeof *options);
-            size_t count = options ? gui_settings_recompile(&app.settings, 0, options) : 0;
+            size_t count = options ? gui_settings_recompile(&app.settings, 0, NULL, options) : 0;
             assert(options);
             for (size_t k = 0; k < count; ++k) assert(!strstr(options[k], "java"));
             free(options);

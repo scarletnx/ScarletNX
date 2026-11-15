@@ -15381,7 +15381,7 @@ typedef struct {
     /* the settings the console's driver takes, as a run of it in a child gets (see run()): the Switch's all of the
        launcher's, the 3DS's its own, and the others' none, whose drivers refuse a setting they do not have */
     n += item == GUI_3DS     ? gui_settings_ctr_options(s, argv + n)
-         : item == GUI_SWITCH ? (size_t)gui_settings_options(s, 0, argv + n)
+         : item == GUI_SWITCH ? (size_t)gui_settings_options(s, 0, own->ini, argv + n)
                               : 0;
     if (item == GUI_SWITCH && own->driver) argv[n++] = own->driver;
     if (item == GUI_SWITCH && own->freedreno) argv[n++] = own->freedreno;
@@ -15580,7 +15580,7 @@ static int play(App* app, const char* asked) {
     size_t n;
     argv[0] = "scarletnx";
     argv[1] = option;
-    n = 2 + gui_settings_options(s, 0, argv + 2);
+    n = 2 + gui_settings_options(s, 0, ini, argv + 2);
     if (driver) argv[n++] = driver;
     if (freedreno) argv[n++] = freedreno;
     argv[n] = NULL;
@@ -17454,7 +17454,11 @@ static void addons_put(App* app, const GuiAddonDumps* set) {
     if (driver_run(app, GUI_SWITCH, &how) && how.first) argv[n++] = how.first;
     argv[n++] = "-r";
     argv[n++] = set->program;
-    n += gui_settings_recompile(s, 1, argv + n);
+    {
+        char* ini = game_ini_of(set->program);
+        n += gui_settings_recompile(s, 1, ini, argv + n);
+        free(ini);
+    }
     argv[n++] = "--data";
     argv[n++] = app->data_dir;
     for (k = 0; k < set->count; ++k) {
@@ -17747,7 +17751,7 @@ static void launch(App* app, char* absolute, bool prepared) {
                       : 0;
     /* the driver, the file, the settings, --repo and its folder, the picked games and extraction folders, NULL */
     GuiSettings* s = settings_of(app);
-    const char** argv = (const char**)snx_alloc((size_t)(s->count + 21 + 2 * with) * sizeof(*argv));
+    const char** argv = (const char**)snx_alloc((size_t)(s->count + 22 + 2 * with) * sizeof(*argv));
     char* out = NULL; /* a dump's extraction in the picked extractions folder */
     char program[16]; /* --program's, a collection's Play Program N */
     /* what runs, and what R makes: the program Play runs; the queue and Recent go by the file opened */
@@ -17765,7 +17769,8 @@ static void launch(App* app, char* absolute, bool prepared) {
        option of a run but the game's settings it recompiles with (NCE). The drivers work in the menu's data folder,
        so they list the same games */
     if (make && app->menu.selected == GUI_SWITCH && gui_settings_tmpfs(s)) argv[n++] = gui_settings_tmpfs(s);
-    if (!direct && app->menu.selected == GUI_SWITCH) n += gui_settings_recompile(s, make, argv + n);
+    char* game_ini = app->menu.selected == GUI_SWITCH ? game_ini_of(absolute) : NULL; /* its own picks beside it */
+    if (!direct && app->menu.selected == GUI_SWITCH) n += gui_settings_recompile(s, make, game_ini, argv + n);
     /* the level and the threads the other recompiles take too, for when the game is made */
     if (!direct && (app->menu.selected == GUI_3DS || app->menu.selected == GUI_VITA || app->menu.selected == GUI_GBA))
         n += gui_settings_recompile_shared(s, argv + n);
@@ -17778,7 +17783,7 @@ static void launch(App* app, char* absolute, bool prepared) {
         argv[n++] = app->aot_opt;
         if (app->aot_hook) argv[n++] = "--hook-direct-calls";
     }
-    if (app->menu.selected == GUI_SWITCH && !make) n += gui_settings_options(s, 1, argv + n);
+    if (app->menu.selected == GUI_SWITCH && !make) n += gui_settings_options(s, 1, game_ini, argv + n);
     if (app->menu.selected == GUI_SWITCH && !make && app->play_program > 0) {
         snprintf(program, sizeof program, "%d", app->play_program);
         argv[n++] = "--program";
@@ -17787,15 +17792,14 @@ static void launch(App* app, char* absolute, bool prepared) {
     if (app->menu.selected == GUI_3DS && !make) n += gui_settings_ctr_options(s, argv + n);
     /* the launcher's GPU driver and Freedreno variables, where the game's .ini has none of its own */
     if (app->menu.selected == GUI_SWITCH && !make) {
-        char* ini = game_ini_of(absolute);
         free(app->run_driver);
         free(app->run_freedreno);
-        app->run_driver = gui_run_option("gpu_driver", ini, app->gpu_driver);
-        app->run_freedreno = gui_run_option("freedreno_env", ini, app->freedreno);
+        app->run_driver = gui_run_option("gpu_driver", game_ini, app->gpu_driver);
+        app->run_freedreno = gui_run_option("freedreno_env", game_ini, app->freedreno);
         if (app->run_driver) argv[n++] = app->run_driver;
         if (app->run_freedreno) argv[n++] = app->run_freedreno;
-        free(ini);
     }
+    free(game_ini);
     /* Play from a save state: the runtime loads it before the game's first frame */
     if (app->menu.selected == GUI_SWITCH && !make && app->state_load) argv[n++] = app->state_load;
     /* Extract dump, which both drivers take, for a run and for R's recompile: off, nothing is extracted */
