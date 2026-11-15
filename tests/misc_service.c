@@ -3,6 +3,7 @@
 /* mm:u and the smaller services (misc.c), hid's IHidServer (hid.c) and acc (acc.c) through their generated
    dispatchers, with the kernel objects they hand out made here and the shared memory a host buffer */
 #include "nx/hle/services/services_int.h"
+#include <stdatomic.h>
 #include <math.h>
 #include <stdarg.h>
 #include <plutovg.h> /* caps' JPEGs read back */
@@ -804,7 +805,13 @@ static void test_hid(void) {
     CHECK(npad_style_at(8) == 0);
     g_settings.tv_mode = 0;
     hid_update();
-    CHECK(npad_style_at(8) == 1u << 1);
+    CHECK(npad_style_at(8) == 1u << 1 && hid_attached());
+    /* the controller applet's dialog detaches the Joy-Cons (tabletop): no handheld Npad, the TV mode still off. Then
+       it attaches them again */
+    hid_set_detached(1);
+    CHECK(npad_style_at(8) == 0 && !hid_attached() && !g_settings.tv_mode && no1_style() == 1);
+    hid_set_detached(0);
+    CHECK(npad_style_at(8) == 1u << 1 && hid_attached());
     /* the handheld Npad's full-key LIFO carries No1's state too */
     g_hle.hid.pad1.buttons = 1ull << 3;
     hid_update();
@@ -826,6 +833,30 @@ static void test_hid(void) {
     CHECK(get_styles(h) == 2 && no1_style() == 0 && no1->signaled);
     set_styles(h, 0x7F);
     CHECK(get_styles(h) == 0x7F && no1_style() == 1);
+    /* a console controller keeps its own styles: a Pro Controller in a game of Joy-Con 2 alone has none (the game
+       finds no controller it takes and asks through the controller applet), where a generic pad shows as a Joy-Con 2
+       pair. A console pair is two Joy-Con 2 there, a console left Joy-Con none in a game of Pro Controllers alone */
+    atomic_store_explicit(&g_host.hid.pad_native[0], 1, memory_order_relaxed);
+    set_styles(h, (1u << 12) | (1u << 13));
+    CHECK(no1_style() == 0);
+    atomic_store_explicit(&g_host.hid.pad_native[0], 0, memory_order_relaxed);
+    hid_update();
+    CHECK(no1_style() == 1u << 12);
+    atomic_store_explicit(&g_host.hid.pad_native[0], 1, memory_order_relaxed);
+    g_hle.hid.pad1.kind = SNX_PAD_JOY_DUAL;
+    hid_update();
+    CHECK(no1_style() == 1u << 12);
+    g_hle.hid.pad1.kind = SNX_PAD_JOY_LEFT;
+    set_styles(h, 1u);
+    hid_update(); /* hid takes the player's new kind */
+    CHECK(no1_style() == 0);
+    set_styles(h, 1u | 1u << 3);
+    CHECK(no1_style() == 1u << 3);
+    atomic_store_explicit(&g_host.hid.pad_native[0], 0, memory_order_relaxed);
+    g_hle.hid.pad1.kind = SNX_PAD_FULL_KEY;
+    set_styles(h, 0x7F);
+    hid_update();
+    CHECK(no1_style() == 1);
     /* Keyboard and scripted No1 input remains usable when slot 0 is an unsupported single Joy-Con. */
     g_hle.hid.pad1.kind = SNX_PAD_JOY_LEFT;
     g_hle.hid.pad1.buttons = 1ull;

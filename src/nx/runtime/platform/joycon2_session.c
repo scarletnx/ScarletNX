@@ -37,6 +37,27 @@ static const Step STEPS[] = {
     {STEP_NOTIFY, 0, 0, 0, JC2_H_COMMON_CCCD, 0, {0}},
 };
 #define STEPS_N ((int)(sizeof STEPS / sizeof *STEPS))
+/* a Pro Controller 2's: its feature set (the console's), both sticks' calibration, no mouse sensor, and none of the
+   Joy-Con 2's actuator parameters (the Pro Controller 2's are not known) */
+static const Step STEPS_PRO[] = {
+    {STEP_NOTIFY, 0, 0, 0, JC2_H_REPLY_CCCD, 0, {0}},
+    {STEP_READ, 0, 0, 0x40, JC2_FLASH_INFO, 1, {0}},
+    {STEP_CMD, JC2_CMD_VERSION, 0x01, 0, 0, 0, {0}},
+    {STEP_CMD, JC2_CMD_FEATURES, 0x02, 4, 0, 0, {JC2_F_PRO}},
+    {STEP_READ, 0, 0, 0x40, JC2_FLASH_STICK, 1, {0}},
+    {STEP_READ, 0, 0, 0x40, JC2_FLASH_STICK2, 1, {0}},
+    {STEP_READ, 0, 0, 0x40, JC2_FLASH_USER_STICK, 1, {0}},
+    {STEP_READ, 0, 0, 0x10, JC2_FLASH_GYRO, 1, {0}},
+    {STEP_CMD, JC2_CMD_IMU, 0x03, 0, 0, 1, {0}},
+    {STEP_CMD, JC2_CMD_IMU, 0x01, 0, 0, 1, {0}},
+    {STEP_CMD, JC2_CMD_FEATURES, 0x04, 4, 0, 0, {JC2_F_PRO}},
+    {STEP_CMD, JC2_CMD_VIBRATION, 0x02, 4, 0, 1, {3}},
+    {STEP_NOTIFY, 0, 0, 0, JC2_H_COMMON_CCCD, 0, {0}},
+};
+#define STEPS_PRO_N ((int)(sizeof STEPS_PRO / sizeof *STEPS_PRO))
+/* the session's setup steps, and how many */
+static const Step* steps_of(const Jc2Session* s) { return s->side == JC2_SIDE_PRO ? STEPS_PRO : STEPS; }
+static int steps_n(const Jc2Session* s) { return s->side == JC2_SIDE_PRO ? STEPS_PRO_N : STEPS_N; }
 /* a stick with no calibration in its flash: centred, a plain travel (the public notes' "about 2048") */
 static const Jc2StickCal STICK_PLAIN = {{2048, 2048}, {1600, 1600}, {1600, 1600}};
 
@@ -44,6 +65,7 @@ void jc2_session_start(Jc2Session* s, int side) {
     *s = (Jc2Session){0};
     s->side = side;
     s->stick = STICK_PLAIN;
+    s->stick2 = STICK_PLAIN;
 }
 
 /* the step's command (its request into buf); 0 when the builder refuses it */
@@ -56,17 +78,17 @@ static void step_done(Jc2Session* s, u64 now_ns) {
     s->sends = 0;
     s->sent_ns = 0;
     s->reply_ns = now_ns;
-    if (s->step >= STEPS_N) s->state = JC2_READY;
+    if (s->step >= steps_n(s)) s->state = JC2_READY;
 }
 /* the step failed: an optional one is skipped, else the setup stops */
 static void step_failed(Jc2Session* s, u64 now_ns) {
-    if (STEPS[s->step].optional)
+    if (steps_of(s)[s->step].optional)
         step_done(s, now_ns);
     else
         s->state = JC2_FAILED;
 }
 static void step_send(Jc2Session* s, const Jc2Transport* t, u64 now_ns) {
-    const Step* st = &STEPS[s->step];
+    const Step* st = &steps_of(s)[s->step];
     u8 buf[JC2_CMD_HEADER + JC2_CMD_PAYLOAD];
     if (st->kind == STEP_NOTIFY) { /* its write has a response of its own: done when it went */
         if (t->notify(t->link, (u16)st->at, 1)) {
@@ -101,13 +123,17 @@ static void ready_tick(Jc2Session* s, const Jc2Transport* t, u64 now_ns) {
 }
 /* the vibration: written again every JC2_RUMBLE_GAP_NS while it plays, a stop once when it ends */
 static void rumble_tick(Jc2Session* s, const Jc2Transport* t, u64 now_ns) {
-    int on = s->rumble.amp_low > 0.0f || s->rumble.amp_high > 0.0f;
+    int on = s->rumble.amp_low > 0.0f || s->rumble.amp_high > 0.0f ||
+             (s->side == JC2_SIDE_PRO && (s->rumble2.amp_low > 0.0f || s->rumble2.amp_high > 0.0f));
     if (!on && !s->rumble_on) return;
     /* while it plays: at most one write a report, the newest value. A report comes at each connection event, so the
        writes never outrun what the link carries (at a 30-50 ms interval they queued and played seconds late) */
     if (on && s->rumble_on && (now_ns < s->rumble_ns + JC2_RUMBLE_GAP_NS || s->pad.reports == s->rumble_reports)) return;
     u8 packet[JC2_RUMBLE_PACKET];
-    jc2_rumble_packet(packet, &s->rumble, s->rumble_counter);
+    if (s->side == JC2_SIDE_PRO)
+        jc2_rumble_packet_pro(packet, &s->rumble, &s->rumble2, s->rumble_counter);
+    else
+        jc2_rumble_packet(packet, &s->rumble, s->rumble_counter);
     if (t->write(t->link, JC2_H_VIBRATION, packet, sizeof packet)) return;
     s->rumble_counter++;
     s->rumble_ns = now_ns;
@@ -145,11 +171,15 @@ static void step_read(Jc2Session* s, u32 at, const u8* d) {
                 s->has_stick = 1;
             }
             break;
+        case JC2_FLASH_STICK2:
+            if (jc2_stick_cal(d + 0x28, &c)) s->stick2 = c;
+            break;
         case JC2_FLASH_USER_STICK: /* the user's calibration, made in the console's settings, comes first */
             if (jc2_user_stick_cal(d, &c)) {
                 s->stick = c;
                 s->has_stick = 1;
             }
+            if (s->side == JC2_SIDE_PRO && jc2_user_stick_cal(d + 0x20, &c)) s->stick2 = c;
             break;
         case JC2_FLASH_GYRO: jc2_gyro_cal(d, s->gyro_offset); break;
         default: break;
@@ -163,7 +193,7 @@ static void on_reply(Jc2Session* s, const u8* p, size_t n, u64 now_ns) {
         s->reply_ns = now_ns;
         return;
     }
-    const Step* st = &STEPS[s->step];
+    const Step* st = &steps_of(s)[s->step];
     if (st->kind == STEP_READ) {
         if (r.cmd != JC2_CMD_FLASH || r.sub != 0x04) return; /* not this step's */
         if (r.status != 1) {
@@ -182,19 +212,24 @@ static void on_reply(Jc2Session* s, const u8* p, size_t n, u64 now_ns) {
         /* the version: three numbers, then 0 for a left Joy-Con 2, 1 for a right one */
         if (st->cmd == JC2_CMD_VERSION && r.size >= 4) {
             memcpy(s->version, r.data, 3);
-            if (r.data[3] <= 1) s->side = r.data[3];
+            if (s->side != JC2_SIDE_PRO && r.data[3] <= 1) s->side = r.data[3]; /* a Pro Controller 2 stays one */
         }
     }
     if (s->state == JC2_SETUP) step_done(s, now_ns);
 }
 static void on_report(Jc2Session* s, const u8* p, size_t n, u64 now_ns) {
     Jc2Report r;
-    if (!jc2_report(p, n, JC2_F_JOYCON, &r)) return;
+    int pro = s->side == JC2_SIDE_PRO;
+    if (!jc2_report(p, n, pro ? JC2_F_PRO : JC2_F_JOYCON, &r)) return;
     const u16* raw = r.stick[s->side == JC2_SIDE_RIGHT];
     s->pad.buttons = r.buttons;
     s->pad.extra = r.extra;
     s->pad.stick[0] = jc2_stick_axis(raw[0], &s->stick, 0);
     s->pad.stick[1] = jc2_stick_axis(raw[1], &s->stick, 1);
+    if (pro) { /* both sticks, the right one by its own calibration */
+        s->pad.rstick[0] = jc2_stick_axis(r.stick[1][0], &s->stick2, 0);
+        s->pad.rstick[1] = jc2_stick_axis(r.stick[1][1], &s->stick2, 1);
+    }
     jc2_motion(&r, s->gyro_offset, s->pad.accel, s->pad.gyro);
     s->pad.battery_mv = r.battery_mv;
     (void)now_ns;
@@ -218,6 +253,7 @@ void jc2_session_notify(Jc2Session* s, const Jc2Transport* t, u16 handle, const 
 }
 void jc2_session_led(Jc2Session* s, u8 pattern) { s->led = pattern & 0x0f; }
 void jc2_session_rumble(Jc2Session* s, const Jc2Vibration* v) { s->rumble = *v; }
+void jc2_session_rumble2(Jc2Session* s, const Jc2Vibration* right) { s->rumble2 = *right; }
 void jc2_session_mouse(Jc2Session* s, i32 out[2]) {
     out[0] = s->mouse[0];
     out[1] = s->mouse[1];

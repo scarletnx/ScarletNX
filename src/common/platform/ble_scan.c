@@ -113,8 +113,10 @@ int snx_ble_joycon2(const SnxBleAdvert* a, SnxBleJoyCon2* out) {
         (p[3] | p[4] << 8) != 0x057e)
         return 0;
     product = (unsigned)(p[5] | p[6] << 8);
-    if (product != 0x2066u && product != 0x2067u) return 0;
+    if (product != 0x2066u && product != 0x2067u && product != 0x2069u) return 0;
     out->right = product == 0x2066u;
+    out->pro = product == 0x2069u;
+    out->wake = (p[9] & 0x80) != 0;
     out->syncing = 1;
     for (i = 10; i < 16; i++) out->syncing &= !p[i];
     return 1;

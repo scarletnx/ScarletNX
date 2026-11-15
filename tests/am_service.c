@@ -184,11 +184,16 @@ void set_language_code(int lang, u8 code[8]) {
     (void)lang;
     memcpy(code, "en-US", 6);
 }
-static int test_players = 1;
+static int test_players = 1, test_players_after = -1; /* the players hid sees, and once the dialog closed */
 int hid_connected_players(u32* selected_id) {
     *selected_id = 0;
     return test_players;
 }
+u64 hid_update(void) { /* the players as the dialog left them */
+    if (test_players_after >= 0) test_players = test_players_after;
+    return 0;
+}
+u32 hid_mouse_hands(void) { return 0; }
 /* The keyboard's box, as the backend's stand-in: the last one shown and how many have, the ticket last hidden, and no
    window to show one in when no_window. The player answers a whole applet's box while its thread waits for it
    (kthread_wait): player_text, or a cancel */
@@ -206,6 +211,19 @@ int backend_keyboard_show(const OverlayKeyboard* k) {
     return 0;
 }
 void backend_keyboard_hide(u32 ticket) { box_hidden = ticket; }
+/* The controller applet's dialog, as the backend's stand-in: the request it showed last, how many it showed, and the
+   player's answer while the game's thread waits (kthread_wait): cancelled when ctrl_cancels */
+static CtrlRequest ctrl_shown;
+static u32 ctrl_ticket, ctrl_hidden;
+static int ctrl_shows, ctrl_cancels;
+int backend_controller_show(const CtrlRequest* r, u32 ticket) {
+    if (no_window) return -1;
+    ctrl_shown = *r;
+    ctrl_ticket = ticket;
+    ctrl_shows++;
+    return 0;
+}
+void backend_controller_hide(u32 ticket) { ctrl_hidden = ticket; }
 /* the window's display's mode, in pixels, as the backend's stand-in; and whether the game is an Ounce one (main.c) */
 static u32 display_w = 3840, display_h = 2160;
 void backend_display_mode(u32* w, u32* h) {
@@ -216,7 +234,13 @@ int g_ounce;
 static int popped_while_waiting; /* a whole keyboard applet counted as popped while its thread waited */
 int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     int i;
-    (void)c, (void)m, (void)timeout_ns;
+    (void)m, (void)timeout_ns;
+    if (c == &g_host.am.ctrl_cv) {
+        pm_unlock(&g_host.am.lock); /* the answer comes from the main thread, which takes the lock */
+        am_controller_answered(ctrl_ticket, ctrl_cancels);
+        pm_lock(&g_host.am.lock);
+        return 0;
+    }
     for (i = 0; i < AM_APPLETS; i++)
         if (g_hle.am.applets[i].obj && g_hle.am.applets[i].applet_id == 0x11)
             popped_while_waiting |= g_hle.am.applets[i].out_popped;
@@ -848,9 +872,82 @@ static void test_web_versions(void) {
     test_log[0] = 0;
     close_handles();
 }
+/* the controller applet with the three storages a game pushes, built here: the common arguments of version 9, the
+   private one (single Joy-Cons held sideways) and an 8-player argument of 2 to 4 players with a text for player 2.
+   The dialog shows the request and the game's thread waits for it: its players once it closes, cancelled when the
+   player cancels, no more than the most. Quick answers at once when the players are there, and asks when not */
+static void test_controller(void) {
+    u8 common[0x20] = {1, 0, 0, 0, 0x20}, priv[0x14] = {0x14, 0, 0, 0, 0x30, 4}, arg[0x430] = {0};
+    SvcObj *in[3], *out;
+    int i;
+    put32(common + 8, 9);
+    put32(priv + 0xc, 0x18); /* the left and the right Joy-Con alone */
+    put32(priv + 0x10, 1);   /* held sideways */
+    arg[0] = 2;
+    arg[1] = 4;
+    arg[0x27] = 1; /* the texts: after the 8 colors */
+    memcpy(arg + 0x28 + 0x81, "Blue", 5);
+    in[0] = am_storage_new(sizeof common, common);
+    in[1] = am_storage_new(sizeof priv, priv);
+    in[2] = am_storage_new(sizeof arg, arg);
+    no_window = 0;
+    test_players = 1;
+    test_players_after = 2;
+    ctrl_cancels = 0;
+    out = run_applet(0x0c, in, 3);
+    CHECK(ctrl_shows == 1 && ctrl_shown.min == 2 && ctrl_shown.max == 4 && ctrl_shown.slots == 8 && ctrl_shown.hold == 1);
+    CHECK(ctrl_shown.styles == 0x18 && ctrl_shown.version == 9 && !strcmp(ctrl_shown.text[1], "Blue"));
+    CHECK(((StorageData*)out->data)->d[0] == 2 && get32(((StorageData*)out->data)->d + 8) == 0);
+    CHECK(log_has("am: the controller applet (version 9, mode 0): 2 to 4 players, styles 0x18, sideways hold, with "
+                  "texts\n"));
+    svcobj_unref(out);
+    test_players = test_players_after = 1;
+    ctrl_cancels = 1;
+    out = run_applet(0x0c, in, 3);
+    CHECK(ctrl_shows == 2 && ((StorageData*)out->data)->d[0] == 1 && get32(((StorageData*)out->data)->d + 8) == 2);
+    svcobj_unref(out);
+    ctrl_cancels = 0;
+    test_players_after = 6; /* more than the most: the most */
+    out = run_applet(0x0c, in, 3);
+    CHECK(((StorageData*)out->data)->d[0] == 4 && get32(((StorageData*)out->data)->d + 8) == 0);
+    svcobj_unref(out);
+    g_settings.controller_applet = 1; /* Quick: the players are there, no dialog */
+    test_players = 3;
+    test_players_after = -1;
+    out = run_applet(0x0c, in, 3);
+    CHECK(ctrl_shows == 3 && ((StorageData*)out->data)->d[0] == 3 && get32(((StorageData*)out->data)->d + 8) == 0);
+    svcobj_unref(out);
+    test_players = 1; /* Quick short of the least: the dialog all the same */
+    test_players_after = 2;
+    out = run_applet(0x0c, in, 3);
+    CHECK(ctrl_shows == 4 && ((StorageData*)out->data)->d[0] == 2);
+    svcobj_unref(out);
+    /* no controller the game takes (a console controller of another style shows none): the dialog, Quick or not, and
+       the players it leaves */
+    test_players = 0;
+    test_players_after = 2;
+    out = run_applet(0x0c, in, 3);
+    CHECK(ctrl_shows == 5 && ((StorageData*)out->data)->d[0] == 2 && get32(((StorageData*)out->data)->d + 8) == 0);
+    svcobj_unref(out);
+    g_settings.controller_applet = 0;
+    test_players = 1;
+    test_players_after = -1;
+    /* a save state's load while a dialog shows: the dialog goes, no answer is given (the loaded state's thread asks
+       again), as the keyboard's box */
+    pm_lock(&g_host.am.lock);
+    g_host.am.ctrl_ticket = 77;
+    g_host.am.ctrl_open = 1;
+    pm_unlock(&g_host.am.lock);
+    am_state_loaded();
+    CHECK(ctrl_hidden == 77 && !g_host.am.ctrl_open && g_host.am.ctrl_answered != 77 && g_host.am.ctrl_ticket == 77);
+    for (i = 0; i < 3; i++) svcobj_unref(in[i]);
+    test_log[0] = 0;
+    close_handles();
+}
 static void test_applets(void) {
     u8 arg[0x40] = {2};
     SvcObj *in[2], *out;
+    no_window = 1; /* the answer of before the dialog, with no window to show it in */
     in[0] = am_storage_new(0x20, NULL);
     in[1] = am_storage_new(sizeof arg, arg);
     test_players = 1;
@@ -890,6 +987,7 @@ static void test_applets(void) {
     svcobj_unref(in[0]);
     svcobj_unref(in[1]);
     close_handles();
+    no_window = 0;
 }
 /* the events am_init made, which g_hle.am keeps: released before it runs again, which makes new ones */
 static void am_events_release(void) {
@@ -1144,6 +1242,7 @@ int main(void) {
     test_default_resolution();
     test_am_command_replies();
     test_applets();
+    test_controller();
     test_web_versions();
     test_movie_maker();
     CHECK(test_objects == 0 && test_kobjs == 0);

@@ -19,6 +19,9 @@
 #include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/platform/unattended.h"
 #include "nx/runtime/platform/overlay.h"
+#include "nx/runtime/platform/ctrl_applet.h"
+#include "nx/runtime/platform/ctrl_scan.h"
+#include "nx/runtime/platform/connect.h"
 #include "nx/runtime/platform/fatal_screen.h"
 #include "common/gpu/vk/gpu_driver_load.h"
 #include "nx/runtime/platform/touch.h"
@@ -137,6 +140,20 @@ static struct {
     int mouse_let_go, mouse_declared, mouse_held, mouse_fed;
     u64 script_was;                 /* the scripted buttons of the last poll: a Home press opens or closes the menu */
     u32 previous_ids[SNX_GAMEPADS]; /* the pad video_poll last saw in each slot */
+    /* the controller applet's dialog: each player's buttons at the last poll and the poll before, the Joy-Con 2
+       mouse motion player 1 gave meanwhile, and what the dialog asked of the backend, done once no lock is held */
+    u64 ctrl_buttons[SNX_GAMEPADS], ctrl_was[SNX_GAMEPADS];
+    float ctrl_dx, ctrl_dy;
+    CtrlDo ctrl_do[8];
+    int ctrl_dos;
+    CtrlDo ctrl_later; /* a split or a merge left for the next poll, once a controller moved for it plays there */
+    CtrlScan ctrl_scan; /* its Bluetooth scan, while it shows and the Joy-Con 2 host runs */
+    int ctrl_scanning;
+    int ctrl_reconnect; /* it shows for the players a gamepad_assign=1 pause waits for (ticket 0) */
+    /* the menu's Assign players asked for it, and it shows for that with the game paused (ticket 0). And the game's
+       last request, which it shows again */
+    int ctrl_menu_ask, ctrl_menu, ctrl_has_last;
+    CtrlRequest ctrl_last;
 } g_sdl3;
 static void set_fullscreen(int on);
 
@@ -563,6 +580,22 @@ void backend_keyboard_hide(u32 ticket) {
     overlay_keyboard_hide(ticket);
     ui_unlock();
 }
+int backend_controller_show(const CtrlRequest* r, u32 ticket) {
+    if (g_opt_headless || !g_sdl3.win || unattended_active() || unattended_scripted()) return -1;
+    ui_lock();
+    if (r->mode == CTRL_MODE_SUPPORT) { /* for the menu's Assign players */
+        g_sdl3.ctrl_last = *r;
+        g_sdl3.ctrl_has_last = 1;
+    }
+    ctrl_dialog_show(r, ticket);
+    ui_unlock();
+    return 0;
+}
+void backend_controller_hide(u32 ticket) {
+    ui_lock();
+    ctrl_dialog_hide(ticket);
+    ui_unlock();
+}
 
 /* the atlas the renderer uploads: when the window opens, and again for the fatal panel */
 static void controls_atlas(void) { ui_atlas_build(); }
@@ -774,6 +807,11 @@ int backend_vk_surface(VkInstance instance, VkSurfaceKHR* surface) {
     return 0;
 }
 
+/* whether an SDL gamepad type is a console controller's: a Pro Controller or Joy-Cons, alone or as a pair */
+static int native_type(int type) {
+    return type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO || type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT ||
+           type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT || type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR;
+}
 static PadKind gamepad_kind(int type) {
     switch (type) {
         case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT: return SNX_PAD_JOY_LEFT;
@@ -1374,6 +1412,10 @@ static void overlay_do(int action) {
         menu_open(0);
         g_renderer->capture(1);
     }
+    if (action == OVERLAY_CONTROLLERS) { /* the dialog, once no lock is held (ctrl_sync) */
+        menu_open(0);
+        g_sdl3.ctrl_menu_ask = 1;
+    }
 }
 /* the keyboard's box, under no menu: the text typed, Backspace, Return and Esc, a paste (Ctrl+V, the system key's V
    on a Mac), and no other key, which would reach the game or a runtime key; a fullscreen key held with Ctrl, Alt or
@@ -1407,6 +1449,49 @@ static int keyboard_event(const SDL_Event* e, int action) {
     }
     return 1;
 }
+/* what the controller applet's dialog asked for, done in the poll once no lock is held (ctrl_sync). Under ui_lock */
+static void ctrl_queue(CtrlDo d) {
+    if (d.what != CTRL_DO_NONE && g_sdl3.ctrl_dos < (int)(sizeof g_sdl3.ctrl_do / sizeof *g_sdl3.ctrl_do))
+        g_sdl3.ctrl_do[g_sdl3.ctrl_dos++] = d;
+}
+/* the controller applet's dialog, under no menu: Up, Down, Return or Space, Esc, and a click or a tap on it. The pads'
+   presses come from the poll, by player (ctrl_sync). Every other key, button and pointer event is the dialog's while
+   it shows, but the fullscreen key's */
+static int ctrl_event(const SDL_Event* e, int action) {
+    int w, h, px, py, scale;
+    float d;
+    if (action == HOTKEY_FULLSCREEN || action == HOTKEY_FULLSCREEN_2) return 0;
+    backend_window_size(&w, &h);
+    overlay_place(w, h, &px, &py, &scale);
+    switch (e->type) {
+        case SDL_EVENT_KEY_DOWN:
+            if (e->key.key == SDLK_UP) ctrl_queue(ctrl_dialog_key(CTRL_KEY_UP));
+            if (e->key.key == SDLK_DOWN) ctrl_queue(ctrl_dialog_key(CTRL_KEY_DOWN));
+            if (e->key.repeat) return 1;
+            if (e->key.key == SDLK_RETURN || e->key.key == SDLK_KP_ENTER || e->key.key == SDLK_SPACE)
+                ctrl_queue(ctrl_dialog_key(CTRL_KEY_ENTER));
+            if (e->key.key == SDLK_ESCAPE) ctrl_queue(ctrl_dialog_key(CTRL_KEY_ESC));
+            return 1;
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+            if (e->button.which == SDL_TOUCH_MOUSEID || e->button.button != SDL_BUTTON_LEFT) return 1;
+            d = SDL_GetWindowPixelDensity(g_sdl3.win);
+            ctrl_queue(ctrl_dialog_tap(e->button.x * d, e->button.y * d, w, h, scale));
+            return 1;
+        case SDL_EVENT_FINGER_UP:
+            ctrl_queue(ctrl_dialog_tap(e->tfinger.x * (float)w, e->tfinger.y * (float)h, w, h, scale));
+            return 1;
+        case SDL_EVENT_KEY_UP:
+        case SDL_EVENT_TEXT_INPUT:
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_MOTION:
+        case SDL_EVENT_MOUSE_WHEEL:
+        case SDL_EVENT_FINGER_DOWN:
+        case SDL_EVENT_FINGER_MOTION:
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        case SDL_EVENT_GAMEPAD_BUTTON_UP: return 1;
+        default: return 0;
+    }
+}
 /* action: the key's runtime key (hotkeys.h), -1 for none */
 static int menu_event(const SDL_Event* e, int action) {
     int w, h;
@@ -1428,6 +1513,7 @@ static int menu_event(const SDL_Event* e, int action) {
         vpad_edit(0);
         return 1;
     }
+    if (!overlay_shown() && ctrl_dialog_shown()) return ctrl_event(e, action);
     if (!overlay_shown() && !overlay_keyboard_shown()) return 0;
     if (!overlay_shown() && (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_TEXT_INPUT))
         return keyboard_event(e, action);
@@ -1600,7 +1686,7 @@ static void mouse_hold_update(void) {
     if (!mode) g_sdl3.mouse_let_go = 0;
     mouse_fed_update();
     int game = g_settings.joy_con_mouse ? mode && !g_sdl3.mouse_let_go : g_sdl3.win && g_sdl3.mouse_declared;
-    int want = game && !overlay_shown() && !vpad_editing() && !overlay_keyboard_shown();
+    int want = game && !overlay_shown() && !vpad_editing() && !overlay_keyboard_shown() && !ctrl_dialog_shown();
     if (want == g_sdl3.mouse_held) return;
     g_sdl3.mouse_held = want;
     if (!SDL_SetWindowRelativeMouseMode(g_sdl3.win, want))
@@ -1898,12 +1984,292 @@ void backend_presses_drop(void) {
     SDL_PumpEvents();
     for (size_t i = 0; i < sizeof presses / sizeof *presses; i++) SDL_FlushEvent(presses[i]);
 }
+/* the Joy-Con 2 host as the dialog's scan sees it (ctrl_scan.h) */
+static int ctrl_known(void* user, const u8 address[6]) {
+    (void)user;
+    return joycon2_known(address);
+}
+static void ctrl_connect(void* user, const u8 address[6], int random, int side, int syncing) {
+    char text[18];
+    (void)user;
+    snx_ble_address_text(address, text);
+    LOG("input: the controller applet's dialog connects the %s %s at %s\n", syncing ? "new" : "known",
+        side == 2 ? "Pro Controller 2" : side ? "Joy-Con 2 (R)" : "Joy-Con 2 (L)", text);
+    joycon2_connect(address, random, side, syncing);
+}
+static int ctrl_held(void* user, const u8 address[6], int wake) {
+    (void)user;
+    return joycon2_held(address, wake);
+}
+static int ctrl_busy(void* user) {
+    (void)user;
+    return joycon2_connecting();
+}
+static int ctrl_has(void* user, const u8 address[6]) {
+    (void)user;
+    return joycon2_has(address);
+}
+static const CtrlScanHost g_ctrl_host = {ctrl_known, ctrl_connect, ctrl_busy, NULL, ctrl_has, ctrl_held};
+/* the scan listens while the dialog shows and the Joy-Con 2 host runs, and stops when it closes */
+static void ctrl_scan_sync(int shown) {
+    CtrlFound found[CTRL_FOUND];
+    int n;
+    if (shown && !g_sdl3.ctrl_scanning && joycon2_running()) {
+        char why[128] = "";
+        SnxBleScan* scan = snx_ble_system_open(why, sizeof why);
+        g_sdl3.ctrl_scanning = 1;
+        joycon2_listening(1);
+        if (ctrl_scan_open(&g_sdl3.ctrl_scan, scan, why))
+            LOG("input: the controller applet's dialog finds no Joy-Con 2: %s\n", g_sdl3.ctrl_scan.why);
+        else
+            LOG("input: the controller applet's dialog listens for Joy-Con 2 (%s)\n", snx_ble_scan_name(scan));
+    } else if (!shown && g_sdl3.ctrl_scanning) {
+        ctrl_scan_close(&g_sdl3.ctrl_scan);
+        g_sdl3.ctrl_scanning = 0;
+        joycon2_listening(0);
+        LOG("input: the controller applet's dialog stops listening for Joy-Con 2\n");
+    }
+    if (!g_sdl3.ctrl_scanning) return;
+    n = ctrl_scan_poll(&g_sdl3.ctrl_scan, &g_ctrl_host, found);
+    /* with no scan listening (none on this system, or it gave the known ones back) the host tries them in turn */
+    joycon2_listening(g_sdl3.ctrl_scan.scan != NULL);
+    ui_lock();
+    ctrl_dialog_found(found, n);
+    if (g_sdl3.ctrl_scan.why[0]) {
+        char problem[160];
+        snprintf(problem, sizeof problem, "Bluetooth: %s", g_sdl3.ctrl_scan.why);
+        ctrl_dialog_problem(problem);
+    }
+    ui_unlock();
+}
+/* gamepad_assign=1's pause for players whose controllers left: the dialog in place of its notice, for the players up to
+   the last one waiting or connected, unless the game's own call shows it. It goes when the pause ends (the controller
+   back, another moved in, or Go on without them) */
+static void ctrl_reconnect_sync(void) {
+    int paused = gamepad_console_paused();
+    if (paused && !g_sdl3.ctrl_reconnect) {
+        unsigned waiting = connect_waiting();
+        CtrlRequest r;
+        int last = 0, p;
+        size_t at = 0;
+        ctrl_request_base(&r, atomic_load_explicit(&g_hle.hid.supported_styles, memory_order_relaxed),
+                          (int)g_hle.hid.hold);
+        for (p = 0; p < SNX_GAMEPADS && p < CTRL_PLAYERS; p++) {
+            if (waiting >> p & 1) {
+                int w = snprintf(r.lost + at, sizeof r.lost - at, "%sP%d", at ? ", " : "", p + 1);
+                at += w > 0 && (size_t)w < sizeof r.lost - at ? (size_t)w : 0;
+            }
+            if ((waiting >> p & 1) || gamepad_slot_id(p)) last = p;
+        }
+        r.slots = CTRL_PLAYERS;
+        r.min = r.max = last + 1;
+        ui_lock();
+        if (!ctrl_dialog_shown()) {
+            ctrl_dialog_show(&r, 0);
+            g_sdl3.ctrl_reconnect = 1;
+        }
+        ui_unlock();
+    } else if (!paused && g_sdl3.ctrl_reconnect) {
+        ui_lock();
+        ctrl_dialog_hide(0);
+        ui_unlock();
+        g_sdl3.ctrl_reconnect = 0;
+    }
+    gamepad_console_quiet(g_sdl3.ctrl_reconnect);
+}
+/* a split or a merge a gesture asks of hid, its controller at its player now. What fails is said in the dialog */
+static void ctrl_hid_gesture(CtrlDo d) {
+    const char* problem = NULL;
+    int cards = 0, other;
+    ui_lock();
+    if (ctrl_dialog_shown()) cards = ctrl_request_cards(ctrl_dialog_request());
+    ui_unlock();
+    if (d.what == CTRL_DO_SPLIT && (other = hid_dialog_split(d.from, d.side)) < 0)
+        problem = "No free player the game takes for the pair's other half: it stays a pair.";
+    else if (d.what == CTRL_DO_SPLIT && other >= cards) { /* past the players the game asked for: whole again */
+        hid_dialog_whole(d.from);
+        problem = "The pair's other half would be a player the game didn't ask for: it stays a pair.";
+    }
+    if (d.what == CTRL_DO_MERGE && hid_dialog_merge(d.from, d.to))
+        problem = "Those two Joy-Cons could not be joined into one pair.";
+    if (!problem) return;
+    LOG("input: the controller applet's dialog: %s\n", problem);
+    ui_lock();
+    ctrl_dialog_problem(problem);
+    ui_unlock();
+}
+/* the dialog's kind for a host pad, as hid's PadKind */
+static int ctrl_pad_kind(int kind) {
+    return kind == CTRL_PAD_JOY_LEFT ? SNX_PAD_JOY_LEFT : kind == CTRL_PAD_JOY_RIGHT ? SNX_PAD_JOY_RIGHT : -1;
+}
+/* The controller applet's dialog, each poll once no lock is held: the players' controllers and their presses given
+   to it (each press once, a button held as it opened let go first), the mouse's live check, what it asked for done (a
+   controller moved to another player and given the kind the game takes, an identify, the PC mouse as the right
+   mouse), and its answer handed to am. And the mouse notice: the game playing with the mouse, a Joy-Con 2 on the
+   table */
+static void ctrl_sync(void) {
+    CtrlPad pads[CTRL_PLAYERS];
+    CtrlDo todo[8];
+    u32 ticket = 0;
+    int answer, shown, n, i, left_justify = 0, cards = 0, host_kind = -1, ready[CTRL_PLAYERS] = {0};
+    int split[HID_PADS], keep_right[HID_PADS], merged[HID_PADS];
+    if (g_sdl3.ctrl_menu_ask) { /* the menu's Assign players: the game paused, its last request, else one to four */
+        g_sdl3.ctrl_menu_ask = 0;
+        ui_lock();
+        shown = ctrl_dialog_shown();
+        ui_unlock();
+        if (!shown && !game_pause()) {
+            CtrlRequest r;
+            if (g_sdl3.ctrl_has_last)
+                r = g_sdl3.ctrl_last;
+            else {
+                ctrl_request_base(&r, atomic_load_explicit(&g_hle.hid.supported_styles, memory_order_relaxed),
+                                  (int)g_hle.hid.hold);
+                r.max = 4;
+            }
+            g_sdl3.ctrl_menu = 1;
+            ui_lock();
+            ctrl_dialog_show(&r, 0);
+            ui_unlock();
+        }
+    }
+    ctrl_reconnect_sync();
+    if (g_sdl3.ctrl_later.what != CTRL_DO_NONE) { /* the controller it waited for plays at its new player now */
+        CtrlDo d = g_sdl3.ctrl_later;
+        g_sdl3.ctrl_later.what = CTRL_DO_NONE;
+        hid_update();
+        ctrl_hid_gesture(d);
+    }
+    hid_dialog_layout(split, keep_right, merged);
+    ui_lock();
+    shown = ctrl_dialog_shown();
+    if (shown) {
+        const CtrlRequest* r = ctrl_dialog_request();
+        int host = ctrl_pad_kind(ctrl_host_kind(r));
+        CtrlMouse m = {{0, 0}, {0, 0}, g_sdl3.ctrl_dx, g_sdl3.ctrl_dy, 0, 0, 0};
+        for (i = 0; i < SNX_GAMEPADS && i < CTRL_PLAYERS; i++) {
+            u32 id = gamepad_slot_id(i);
+            int type = gamepad_slot_type(i), named = gamepad_of_player(i);
+            const char* name = named >= 0 ? gamepad_name(named) : NULL;
+            int in_card = i < ctrl_request_cards(r);
+            pads[i] = (CtrlPad){0};
+            if (!id) {
+                pads[i].keyboard = i == 0;
+                pads[i].lost = g_sdl3.ctrl_reconnect && (connect_waiting() >> i & 1);
+                /* player 1's keyboard plays as the style the game takes too */
+                gamepad_kind_override(i, i == 0 && in_card && !pads[i].lost ? host : -1);
+                continue;
+            }
+            pads[i].present = 1;
+            pads[i].split = i < HID_PADS ? split[i] : 0;
+            pads[i].keep_right = i < HID_PADS ? keep_right[i] : 0;
+            pads[i].merged = i < HID_PADS ? merged[i] : 0;
+            pads[i].kind = type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT    ? CTRL_PAD_JOY_LEFT
+                           : type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT ? CTRL_PAD_JOY_RIGHT
+                           : type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR  ? CTRL_PAD_JOY_PAIR
+                           : type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO          ? CTRL_PAD_PRO
+                                                                                   : CTRL_PAD_HOST;
+            pads[i].joycon2 = joycon2_surface(id) >= 0;
+            snprintf(pads[i].name, sizeof pads[i].name, "%s", name && name[0] ? name : "Gamepad");
+            /* a host pad among the cards plays as the style the game takes, any other as its own kind */
+            gamepad_kind_override(i, pads[i].kind == CTRL_PAD_HOST && in_card ? host : -1);
+            if (i == 0 && pads[i].joycon2 && pads[i].kind != CTRL_PAD_PRO) { /* a Joy-Con 2, not a Pro Controller 2 */
+                int surface = joycon2_surface(id);
+                m.real[0] = m.real[1] = 1;
+                m.surface[0] = surface & 1;
+                m.surface[1] = surface >> 1 & 1;
+                m.r = g_sdl3.ctrl_buttons[0] >> 7 & 1;
+                m.zr = g_sdl3.ctrl_buttons[0] >> 9 & 1;
+                m.rate = joycon2_rate(id);
+            }
+        }
+        ctrl_dialog_pads(pads);
+        ctrl_dialog_mouse(&m);
+        ctrl_dialog_pc_mouse(mouse_to_game());
+        ctrl_dialog_attached(!snx_tv_mode(), hid_attached());
+        /* every player each poll: what it holds counts for L and R across two Joy-Cons */
+        for (i = 0; i < SNX_GAMEPADS && i < CTRL_PLAYERS && !overlay_shown() && !vpad_editing(); i++)
+            ctrl_queue(ctrl_dialog_press(i, g_sdl3.ctrl_buttons[i] & ~g_sdl3.ctrl_was[i], g_sdl3.ctrl_buttons[i]));
+        left_justify = r->left_justify && !r->lost[0];
+        host_kind = host;
+        cards = ctrl_request_cards(r);
+        for (i = 0; i < cards; i++) ready[i] = ctrl_dialog_ready(i);
+    }
+    g_sdl3.ctrl_dx = g_sdl3.ctrl_dy = 0;
+    /* a button held as the dialog opens counts once let go and pressed again */
+    memcpy(g_sdl3.ctrl_was, g_sdl3.ctrl_buttons, sizeof g_sdl3.ctrl_was);
+    n = g_sdl3.ctrl_dos;
+    memcpy(todo, g_sdl3.ctrl_do, sizeof todo);
+    g_sdl3.ctrl_dos = 0;
+    answer = ctrl_dialog_take(&ticket);
+    ui_unlock();
+    for (i = 0; i < n; i++) {
+        CtrlDo d = todo[i];
+        if (d.what == CTRL_DO_MOVE) {
+            LOG("input: the controller applet's dialog moves player %d's controller to player %d\n", d.from + 1,
+                d.to + 1);
+            gamepad_move(d.from, d.to);
+        } else if (d.what == CTRL_DO_DISCONNECT) {
+            u32 id = gamepad_slot_id(d.from);
+            int links;
+            gamepad_drop_quietly(d.from); /* its player waits in the dialog: no pause, no notice for it */
+            links = joycon2_disconnect(id);
+            LOG("input: the controller applet's dialog disconnects player %d's controller: %d link%s closed\n",
+                d.from + 1, links, links == 1 ? "" : "s");
+        } else if (d.what == CTRL_DO_DETACH) {
+            LOG("input: the controller applet's dialog %s the Joy-Cons %s the console\n",
+                d.from ? "detaches" : "attaches", d.from ? "from" : "to");
+            hid_set_detached(d.from);
+        } else if (d.what >= CTRL_DO_SINGLE && d.what <= CTRL_DO_WHOLE) { /* a gesture: moved first if no player */
+            static const char* const what[4] = {"alone, sideways", "split, one half alone", "joined into a pair",
+                                                "whole"};
+            LOG("input: the controller applet's dialog: player %d's controller %s%s\n", d.from + 1,
+                what[d.what - CTRL_DO_SINGLE], d.card >= 0 ? ", moved to a free player" : "");
+            if (d.what == CTRL_DO_SINGLE || d.what == CTRL_DO_WHOLE) hid_dialog_whole(d.from);
+            if (d.card >= 0) {
+                gamepad_move(d.from, d.card);
+                d.from = d.card;
+                d.card = -1;
+                if (d.what == CTRL_DO_SPLIT || d.what == CTRL_DO_MERGE) g_sdl3.ctrl_later = d; /* hid sees it next poll */
+            } else
+                ctrl_hid_gesture(d);
+        } else if (d.what == CTRL_DO_IDENTIFY)
+            gamepad_identify(d.from);
+        else if (d.what == CTRL_DO_PC_MOUSE && mouse_to_game() != d.from)
+            mouse_key(); /* the PC mouse as the right mouse on or off, as hotkey_mouse does at either game_mouse */
+        else if (d.what == CTRL_DO_TAKE && g_sdl3.ctrl_scanning)
+            ctrl_scan_take(&g_sdl3.ctrl_scan, &g_ctrl_host, d.from); /* the new Joy-Con 2 the user confirmed */
+    }
+    ctrl_scan_sync(shown && answer < 0);
+    if (answer == 0 && ticket && left_justify) /* the players from the first, with no gap, as the game asked */
+        for (i = 0; i < cards; i++) {
+            int k;
+            if (ready[i]) continue;
+            for (k = i + 1; k < cards && !(ready[k] && gamepad_slot_id(k)); k++) {}
+            if (k == cards) break;
+            LOG("input: the controller applet's dialog moves player %d's controller to player %d, with no gap\n", k + 1,
+                i + 1);
+            gamepad_move(k, i);
+            if (!native_type(gamepad_slot_type(i)))
+                gamepad_kind_override(i, host_kind); /* a generic pad: the style the game takes, at its new player */
+            gamepad_kind_override(k, -1);
+            ready[i] = 1;
+            ready[k] = 0;
+        }
+    if (answer >= 0 && !ticket && g_sdl3.ctrl_menu) { /* the menu's: the game goes on */
+        g_sdl3.ctrl_menu = 0;
+        game_resume();
+    } else if (answer >= 0 && !ticket)
+        connect_go_on(); /* the pause's dialog: Go on without the players it waited for */
+    else if (answer >= 0)
+        am_controller_answered(ticket, answer);
+}
 void video_poll(void) {
     SDL_Event e;
     fatal_left_show();
     /* the menu, or the keyboard's box, had the controls when this poll began: the press that closes it (B, or A that
        gives the box's line) is in this poll's state */
-    int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown();
+    int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown() || ctrl_dialog_shown();
     if (!g_opt_headless) mouse_hold_update();
     joycon2_poll(); /* a Joy-Con 2 that became ready or left: its gamepad's added or removed event comes below */
     while (!g_opt_headless && SDL_PollEvent(&e)) {
@@ -2031,6 +2397,7 @@ void video_poll(void) {
             g_sdl3.previous_ids[i] = id;
         }
         gamepad_state_slot(i, &one_buttons, one_sticks);
+        g_sdl3.ctrl_buttons[i] = id ? one_buttons | gamepad_slot_sides(i) : 0; /* a pair's SL and SR too */
         gamepad_rumble_slot(i, rumble[i][0], rumble[i][1], hz[i], plat_ns());
         /* each player as its settings say: seen or not, and the kind of controller the game sees */
         atomic_store_explicit(&player->connected, (connected && gamepad_player_seen(i)) || i == 0,
@@ -2040,6 +2407,11 @@ void video_poll(void) {
             gamepad_player_kind(i, connected ? gamepad_kind(kept ? gamepad_slot_kept_type(i) : gamepad_slot_type(i))
                                              : SNX_PAD_FULL_KEY),
             memory_order_relaxed);
+        /* a console controller (SDL's Switch types: the runtime's Joy-Con 2 and Pro Controller 2 too) keeps its own
+           styles, as hid shows it on the console */
+        atomic_store_explicit(&g_host.hid.pad_native[i],
+                              (u8)(connected && native_type(kept ? gamepad_slot_kept_type(i) : gamepad_slot_type(i))),
+                              memory_order_relaxed);
         player->source_id = id;
         player->buttons = one_buttons;
         player->lx = one_sticks[0];
@@ -2053,11 +2425,16 @@ void video_poll(void) {
             int surface = id ? joycon2_surface(id) : -1;
             g_host.hid.pad_mouse_real[i] = surface >= 0 ? 3 : 0;
             g_host.hid.pad_mouse_surface[i] = surface >= 0 ? (u8)surface : 0;
-            if (id && joycon2_mouse(id, jm) && !game_paused())
+            if (id && joycon2_mouse(id, jm) && !game_paused()) {
                 for (int sensor = 0; sensor < 2; sensor++) {
                     g_host.hid.pad_mouse[i][sensor][0] += jm[sensor][0];
                     g_host.hid.pad_mouse[i][sensor][1] += jm[sensor][1];
                 }
+                if (i == 0) { /* the dialog's live check moves with the right sensor */
+                    g_sdl3.ctrl_dx += jm[1][0];
+                    g_sdl3.ctrl_dy += jm[1][1];
+                }
+            }
         }
         if (i == 0) memcpy(pad0, one_sticks, sizeof pad0);
     }
@@ -2099,8 +2476,8 @@ void video_poll(void) {
         g_sdl3.menu_held_pad0 |= g_hle.hid.pad1.buttons;
         for (int i = 0; i < SNX_GAMEPADS - 1; i++) g_sdl3.menu_held_extra[i] |= g_hle.hid.pad_extra[i].buttons;
     }
-    /* the game's menu, the controls' edit mode or the keyboard's box has them */
-    if (menu_had || overlay_shown() || vpad_editing() || overlay_keyboard_shown()) {
+    /* the game's menu, the controls' edit mode, the keyboard's box or the controller applet's dialog has them */
+    if (menu_had || overlay_shown() || vpad_editing() || overlay_keyboard_shown() || ctrl_dialog_shown()) {
         g_sdl3.menu_held = nonpad;
         g_sdl3.menu_held_pad0 = g_hle.hid.pad1.buttons;
         b = 0;
@@ -2140,6 +2517,7 @@ void video_poll(void) {
     pm_unlock(&g_host.hid.input_lock);
     gamepad_console(pb >> 10 & 1, plat_ns()); /* out of the input's lock: a pause stops the game's threads */
     keyboard_sync();
+    ctrl_sync();
 }
 
 char* backend_launcher_folder(void) {
@@ -2184,10 +2562,10 @@ void frontend_frame(void) {
     }
     /* the controls and the menu stay on the window while the game shows nothing new, and so does its last frame while
        it is paused */
-    if (g_renderer->refresh &&
-        (overlay_shown() || overlay_keyboard_shown() || vpad_shown() || game_paused() || overlay_toasting(plat_ns()) ||
-         atomic_load_explicit((_Atomic int*)&g_settings.showcase, memory_order_relaxed) ||
-         atomic_load_explicit((_Atomic int*)&g_settings.stats, memory_order_relaxed)))
+    if (g_renderer->refresh && (overlay_shown() || overlay_keyboard_shown() || ctrl_dialog_shown() || vpad_shown() ||
+                                game_paused() || overlay_toasting(plat_ns()) ||
+                                atomic_load_explicit((_Atomic int*)&g_settings.showcase, memory_order_relaxed) ||
+                                atomic_load_explicit((_Atomic int*)&g_settings.stats, memory_order_relaxed)))
         g_renderer->refresh();
     if (g_sdl3.shot_req) {
         g_sdl3.shot_req = 0;

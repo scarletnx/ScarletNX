@@ -13,6 +13,32 @@ static struct {
 } g_connect;
 
 void connect_reset(void) { memset(&g_connect, 0, sizeof g_connect); }
+void connect_swap(int a, int b) {
+    char who[64];
+    u64 left;
+    unsigned ba, bb;
+    if (a < 0 || a >= SNX_CONNECT_PLAYERS || b < 0 || b >= SNX_CONNECT_PLAYERS || a == b) return;
+    memcpy(who, g_connect.who[a], sizeof who);
+    memcpy(g_connect.who[a], g_connect.who[b], sizeof who);
+    memcpy(g_connect.who[b], who, sizeof who);
+    left = g_connect.left[a];
+    g_connect.left[a] = g_connect.left[b];
+    g_connect.left[b] = left;
+    ba = 1u << a;
+    bb = 1u << b;
+    if (!(g_connect.paused & ba) != !(g_connect.paused & bb)) g_connect.paused ^= ba | bb;
+}
+unsigned connect_waiting(void) { return g_connect.waiting; }
+void connect_forget(int p) {
+    if (p < 0 || p >= SNX_CONNECT_PLAYERS) return;
+    g_connect.who[p][0] = 0;
+    g_connect.left[p] = 0;
+    g_connect.waiting &= ~(1u << p);
+    g_connect.paused &= ~(1u << p);
+}
+void connect_go_on(void) {
+    if (g_connect.waiting) g_connect.plus = 1; /* the next tick, + not held, goes on */
+}
 int connect_kept(int p, u64 now_ns) { /* a pause waiting for it keeps it past the time */
     return p >= 0 && p < SNX_CONNECT_PLAYERS && g_connect.who[p][0] && g_connect.left[p] &&
            (now_ns - g_connect.left[p] <= SNX_CONNECT_HOLD_NS || (g_connect.waiting >> p & 1));

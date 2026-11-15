@@ -52,15 +52,18 @@ SnxBleScan* snx_ble_fake_open(const char* fail);
 int snx_ble_fake_hear(SnxBleScan* scan, const SnxBleAdvert* advert); /* 0, else -1 with no room (64 at most) */
 int snx_ble_fake_starts(const SnxBleScan* scan);                     /* how many times it was started */
 
-/* ---- a Joy-Con 2's advert (the protocol: src/nx/runtime/platform/joycon2_proto.h, whose jc2_advert this agrees with,
-   tests/joycon2.c): the console maker's company id, then 01 00 03, the vendor id 057E, the product id (2067 left, 2066
-   right), 00 01, flags, and the address of the console it is paired with, all zero while it waits to sync */
+/* ---- a Joy-Con 2's or a Pro Controller 2's advert (the protocol: src/nx/runtime/platform/joycon2_proto.h, whose
+   jc2_advert this agrees with, tests/joycon2.c): the console maker's company id, then 01 00 03, the vendor id 057E, the
+   product id (2067 left, 2066 right, 2069 the Pro Controller 2), 00 01, flags (bit 7: it asks its console to wake),
+   and the address of the console it is paired with, all zero while it waits to sync */
 #define SNX_BLE_NINTENDO 0x0553u
 typedef struct {
-    int right;   /* the product id is the right one's */
+    int right;   /* the product id is the right Joy-Con's */
+    int pro;     /* the product id is the Pro Controller 2's */
     int syncing; /* it names no console: its sync button is held */
+    int wake;    /* its flags ask the console to wake */
 } SnxBleJoyCon2;
-int snx_ble_joycon2(const SnxBleAdvert* advert, SnxBleJoyCon2* out); /* 0 when it isn't a Joy-Con 2's */
+int snx_ble_joycon2(const SnxBleAdvert* advert, SnxBleJoyCon2* out); /* 0 when it is none of them */
 /* "AA:BB:CC:DD:EE:FF" into out (18 bytes), and back: 1 when s starts with one */
 void snx_ble_address_text(const uint8_t address[6], char out[18]);
 int snx_ble_address_parse(const char* s, uint8_t address[6]);

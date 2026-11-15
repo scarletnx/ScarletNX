@@ -7,6 +7,7 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/runtime/ini.h"
 #include "nx/runtime/platform/overlay.h"
+#include "nx/runtime/platform/ctrl_applet.h"
 
 /* the window, titled after the game and, when addons is not "", the updates and DLCs it plays with ("Update 1.2.0,
    DLC 1") */
@@ -65,6 +66,11 @@ u32 backend_window_changes(void);
    its answer to am_keyboard_answered (services.h). Hide takes the box of that ticket away unanswered */
 int backend_keyboard_show(const OverlayKeyboard* k);
 void backend_keyboard_hide(u32 ticket);
+/* The controller applet's dialog over the game (ctrl_applet.h), from any thread, the same way: 0 shown, -1 with no
+   window or in an unattended run, which no one answers. The main thread hands its answer to am_controller_answered
+   (services.h). Hide takes the dialog of that ticket away unanswered */
+int backend_controller_show(const CtrlRequest* r, u32 ticket);
+void backend_controller_hide(u32 ticket);
 
 /* fatal's message box. Called on every platform and from any thread; does nothing where there is no box */
 void win_fatal_box(const char* msg);

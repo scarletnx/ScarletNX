@@ -2264,7 +2264,8 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
 endif()
 
 # Inline software keyboard protocol and applet completion events.
-add_executable(snx-test-am-service am_service.c am_service_stubs.c)
+add_executable(snx-test-am-service am_service.c am_service_stubs.c
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c")
 snx_test_target(snx-test-am-service gnu23)
 snx_service_swipc(snx-test-am-service hle/services/am.swipc hle/services/vi.swipc) # vi: grc's video proxy
 target_link_libraries(snx-test-am-service PRIVATE snx_test_common) # snx_nacp_aoc_base
@@ -2291,7 +2292,8 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux|FreeBSD")
 endif()
 
 # am.c with a control.nacp: the desired language against its supported languages, its version and save sizes
-add_executable(snx-test-am-nacp am_nacp.c am_service_stubs.c)
+add_executable(snx-test-am-nacp am_nacp.c am_service_stubs.c
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c")
 snx_test_target(snx-test-am-nacp gnu23)
 snx_service_swipc(snx-test-am-nacp hle/services/am.swipc hle/services/vi.swipc)
 target_link_libraries(snx-test-am-nacp PRIVATE snx_test_common) # snx_nacp_aoc_base
@@ -2375,6 +2377,8 @@ add_test(NAME llvm_dependency COMMAND "${CMAKE_COMMAND}"
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as SDL names them
     add_executable(snx-test-overlay overlay.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/overlay.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_applet.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/prepare_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/wait_screen.c"
@@ -2390,6 +2394,17 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
     target_link_libraries(snx-test-overlay PRIVATE scarletnx-common snx_splash m SDL3::SDL3 snx_notice)
     target_include_directories(snx-test-overlay PRIVATE "${PROJECT_BINARY_DIR}/generated")
     add_test(NAME overlay COMMAND snx-test-overlay)
+    # the controller applet's dialog: its request, cards and gestures, and its pictures drawn on the CPU
+    add_executable(snx-test-ctrl-applet ctrl_applet.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_applet.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_scan.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" support/ui_raster.c support/ui_shape_ref.c)
+    snx_test_target(snx-test-ctrl-applet 11)
+    # the scan's fake alone (ble_scan.h's snx_ble_fake_open): the test never reaches the system's Bluetooth
+    target_link_libraries(snx-test-ctrl-applet PRIVATE scarletnx-common snx_splash snx_ble m SDL3::SDL3)
+    target_include_directories(snx-test-ctrl-applet PRIVATE "${PROJECT_BINARY_DIR}/generated" "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME ctrl_applet COMMAND snx-test-ctrl-applet)
 endif()
 
 # the screens the player waits on (runtime/platform/wait_screen.c): the game closing's from half a second into its
