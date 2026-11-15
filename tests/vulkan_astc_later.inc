@@ -737,6 +737,10 @@ static int al_auto(void) {
     const SnxAstcAuto had = g_vk.astc_auto;
     AlTex xa, xb, xc, xe;
     u64 usage, budget, reads, stored, restarts, file0, file, size = 0;
+    /* the trim evicts what it marks; texture_sysmem would move it into system memory instead, where it stays held
+       and is never read again, whenever the system's memory left the move room (more tests running at once) */
+    const int sysmem = g_settings.texture_system_memory;
+    g_settings.texture_system_memory = 0;
     g_settings.astc_mode = 0;
     g_vk.astc_auto = (SnxAstcAuto){0, 0, 0};
     vk_bc7_cache_stats(&reads, &stored, &restarts, &file0);
@@ -815,6 +819,7 @@ static int al_auto(void) {
     if (!file0) vk_bc7_cache_close(); /* the game's, which the present opened: the checks after have none */
     g_vk.astc_auto = had;
     g_settings.astc_mode = 2;
+    g_settings.texture_system_memory = sysmem;
     al_free(&xa);
     al_free(&xb);
     al_free(&xc);
