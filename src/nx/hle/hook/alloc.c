@@ -331,11 +331,12 @@ void alloc_free(CPU* c, u64 p) { give(c, p); }
 /* whether p is a block the arena gave and still holds */
 static int held(u64 p) { return p >= g_alloc.lo && p < g_alloc.hi && live_has(p); }
 
-/* nn::mem::StandardAllocator, and nn::nlibsdk::heap::CentralHeap under it. A game whose own malloc is its
+/* nn::mem::StandardAllocator, and nn::nlibsdk::heap, the SDK's heap under it. A game whose own malloc is its
    StandardAllocator's hands the allocator a block malloc gave, which the arena made and the heap never saw: the heap
-   stops the game on a pointer outside its pages (one game's free asks GetSizeOf, then frees the block on the heap).
-   These take an arena block as the arena's and give any other pointer to their own code. The results are the
-   heap's: a size, or 0 and an errno */
+   stops the game on a pointer outside its pages. The allocator's functions end in CentralHeap's, or on a thread with
+   a cache in those the TlsHeapCache's table holds, which StandardAllocator and CachedHeap call through it, so these
+   take an arena block as the arena's and give any other pointer to their own code. The results are the heap's: a
+   size, or 0 and an errno */
 #define ALLOC_ENOMEM 12
 #define ALLOC_EINVAL 22
 /* the function's own code, with the registers as the call left them: its result */
@@ -343,7 +344,7 @@ static u64 heap_own(CPU* c) {
     hook_run_original(c, c->pc);
     return c->x[0];
 }
-/* StandardAllocator::GetSizeOf and CentralHeap::GetAllocSize: an arena block's size is jemalloc's */
+/* StandardAllocator::GetSizeOf, CentralHeap::GetAllocSize and the cache's: an arena block's size is jemalloc's */
 u64 alloc_std_size(CPU* c, u64 self, u64 p) {
     (void)self;
     return held(p) ? (u64)g_alloc.sallocx(GP(p), g_alloc.flags) : heap_own(c);
@@ -354,6 +355,11 @@ i32 alloc_heap_free(CPU* c, u64 heap, u64 p) {
     if (!q) return (i32)heap_own(c);
     g_alloc.dallocx(q, g_alloc.flags);
     return 0;
+}
+/* the size the block was asked with, which the arena knows already */
+i32 alloc_heap_free_size(CPU* c, u64 heap, u64 p, u64 size) {
+    (void)size;
+    return alloc_heap_free(c, heap, p);
 }
 /* the block resized, moved or not, at *out: 0, or ENOMEM with *out 0 and the block as it was when there is no room.
    As CentralHeap answers, a size of 0 is EINVAL and one with its top bit set ENOMEM, *out untouched */
@@ -366,6 +372,14 @@ i32 alloc_heap_realloc(CPU* c, u64 heap, u64 p, u64 size, u64 out) {
     r = alloc_realloc(c, p, size);
     snx_st_le64(hook_host(c, out), r);
     return r ? 0 : ALLOC_ENOMEM;
+}
+/* the block shrunk in place to size: the arena keeps it whole, as the heap keeps a small block in its size class, so
+   0 when size fits in it and EINVAL when it doesn't (a shrink grows nothing); ENOMEM for a size with its top bit set */
+i32 alloc_heap_shrink(CPU* c, u64 heap, u64 p, u64 size) {
+    (void)heap;
+    if (!held(p)) return (i32)heap_own(c);
+    if (size >> 63) return ALLOC_ENOMEM;
+    return size <= (u64)g_alloc.sallocx(GP(p), g_alloc.flags) ? 0 : ALLOC_EINVAL;
 }
 u64 alloc_aligned(CPU* c, u64 align, u64 size) {
     (void)c;

@@ -258,10 +258,12 @@ u64 alloc_realloc(CPU* c, u64 p, u64 size) { (void)c, (void)p, (void)size; retur
 void alloc_free(CPU* c, u64 p) { (void)c, (void)p; }
 u64 alloc_std_size(CPU* c, u64 self, u64 p) { (void)c, (void)self, (void)p; return 0; }
 i32 alloc_heap_free(CPU* c, u64 heap, u64 p) { (void)c, (void)heap, (void)p; return 0; }
+i32 alloc_heap_free_size(CPU* c, u64 heap, u64 p, u64 size) { (void)c, (void)heap, (void)p, (void)size; return 0; }
 i32 alloc_heap_realloc(CPU* c, u64 heap, u64 p, u64 size, u64 out) {
     (void)c, (void)heap, (void)p, (void)size, (void)out;
     return 0;
 }
+i32 alloc_heap_shrink(CPU* c, u64 heap, u64 p, u64 size) { (void)c, (void)heap, (void)p, (void)size; return 0; }
 u64 alloc_aligned(CPU* c, u64 align, u64 size) { (void)c, (void)align, (void)size; return 0; }
 i32 alloc_posix_memalign(CPU* c, u64 out, u64 align, u64 size) { (void)c, (void)out, (void)align, (void)size; return 0; }
 u64 alloc_strdup(CPU* c, u64 s) { (void)c, (void)s; return 0; }

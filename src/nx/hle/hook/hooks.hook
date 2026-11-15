@@ -176,10 +176,25 @@ hook malloc(u64 size) -> addr = alloc_malloc
 hook calloc(u64 count, u64 size) -> addr = alloc_calloc
 hook realloc(addr p, u64 size) -> addr = alloc_realloc
 hook free(addr p) = alloc_free
+# a game whose malloc is its nn::mem::StandardAllocator's hands the allocator a block malloc gave: its GetSizeOf, and the
+# SDK heap's functions its others end in (nn::nlibsdk::heap), CentralHeap's and, on a thread with a cache, those of the
+# TlsHeapCache's table, in each spelling the SDKs give them (Mode0 or an older _Mode0, a template's two instances)
 hook _ZNK2nn3mem17StandardAllocator9GetSizeOfEPKv(addr self, addr p) -> u64 = alloc_std_size
 hook _ZN2nn7nlibsdk4heap11CentralHeap12GetAllocSizeEPKv(addr heap, addr p) -> u64 = alloc_std_size
 hook _ZN2nn7nlibsdk4heap11CentralHeap4FreeEPv(addr heap, addr p) -> i32 = alloc_heap_free
 hook _ZN2nn7nlibsdk4heap11CentralHeap7ReallocEPvmPS3_(addr heap, addr p, u64 size, addr out) -> i32 = alloc_heap_realloc
+hook _ZN2nn7nlibsdk4heap11CentralHeap12FreeWithSizeEPvm(addr heap, addr p, u64 size) -> i32 = alloc_heap_free_size
+hook _ZN2nn7nlibsdk4heap11CentralHeap6ShrinkEPvm(addr heap, addr p, u64 size) -> i32 = alloc_heap_shrink
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache13FreeFuncMode0I*EEiPS2_Pv(addr cache, addr p) -> i32 = alloc_heap_free
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache14FreeFunc_Mode0I*EEiPS2_Pv(addr cache, addr p) -> i32 = alloc_heap_free
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache17FreeFuncSizeMode0I*EEiPS2_Pvm(addr cache, addr p, u64 size) -> i32 = alloc_heap_free_size
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache18FreeFuncSize_Mode0I*EEiPS2_Pvm(addr cache, addr p, u64 size) -> i32 = alloc_heap_free_size
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache21GetAllocSizeFuncMode0EPS2_PKv(addr cache, addr p) -> u64 = alloc_std_size
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache22GetAllocSizeFunc_Mode0EPS2_PKv(addr cache, addr p) -> u64 = alloc_std_size
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache16ReallocFuncMode0I*EEiPS2_PvmPS8_(addr cache, addr p, u64 size, addr out) -> i32 = alloc_heap_realloc
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache17ReallocFunc_Mode0I*EEiPS2_PvmPS8_(addr cache, addr p, u64 size, addr out) -> i32 = alloc_heap_realloc
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache15ShrinkFuncMode0I*EEiPS2_Pvm(addr cache, addr p, u64 size) -> i32 = alloc_heap_shrink
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache15ShrinkFuncMode0EPS2_Pvm(addr cache, addr p, u64 size) -> i32 = alloc_heap_shrink
 hook aligned_alloc(u64 align, u64 size) -> addr = alloc_aligned
 hook memalign(u64 align, u64 size) -> addr = alloc_aligned
 hook posix_memalign(addr out, u64 align, u64 size) -> i32 = alloc_posix_memalign
