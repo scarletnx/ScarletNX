@@ -57,6 +57,19 @@ uint et_dist(uint i, int r, int g, int b) {
     int db = clamp(b, 0, 255) - et_ch(p, 2u);
     return uint(dr * dr + dg * dg + db * db);
 }
+/* the squared distance of texel i from a colour word */
+uint et_dist_word(uint i, uint c) {
+    return et_dist(i, et_ch(c, 0u), et_ch(c, 1u), et_ch(c, 2u));
+}
+/* the nearest of the four colours c0 to c3 to texel i, the first of equal ones, (error << 2) | index; index 2 and no
+   error for a transparent texel of a see-through block, whose opaque ones never take index 2. The words order as
+   their errors, then as their indices, so the first of the least is their minimum */
+uint et_near4(uint i, uint c0, uint c1, uint c2, uint c3, bool see) {
+    if (see && et_clear(i)) return 2u;
+    const uint e01 = min(et_dist_word(i, c0) << 2, (et_dist_word(i, c1) << 2) | 1u);
+    const uint e3 = min(e01, (et_dist_word(i, c3) << 2) | 3u);
+    return see ? e3 : min(e3, (et_dist_word(i, c2) << 2) | 2u);
+}
 /* texel i's place in the index bits: ETC2 numbers its texels down the columns */
 uint et_pos(uint i) { return (i & 3u) * 4u + (i >> 2); }
 /* the subblock of texel i: side by side (flip 0), or one above the other */
@@ -71,43 +84,86 @@ int et_quant(int sum, int n, int top) { return (sum * top * 2 + n * 255) / (n * 
 /* 12 bit colours of three 4 bit channels: each channel expanded */
 int et_c4(uint c, uint ch) { return tc_ext4((c >> (8u - 4u * ch)) & 15u); }
 
-/* ETC1's modifier of index k of table t. see: a see-through punch-through block, whose index 0 adds nothing (its index
-   2 is transparent and never asked for) */
-int et1_mod(uint t, uint k, bool see) {
-    int a = tc_byte(ETC1_A0, ETC1_A1, t), b = tc_byte(ETC1_B0, ETC1_B1, t);
-    int m = k == 0u ? a : k == 1u ? b : k == 2u ? -a : -b;
-    return see && k == 0u ? 0 : m;
+/* a colour clamped as the decoder clamps it, an RGB word */
+uint et1_word(int r, int g, int b) {
+    return uint(clamp(r, 0, 255)) | (uint(clamp(g, 0, 255)) << 8) | (uint(clamp(b, 0, 255)) << 16);
 }
-/* the index of texel i nearest base (r, g, b) with table t's modifiers; 2 for a transparent texel of a see-through
-   block. Its error is et_dist of that index's colour */
-uint et1_index(uint i, int r, int g, int b, uint t, bool see) {
+/* texel j (0 to 7) of subblock s: the subblocks side by side (flip 0) are two columns wide, one above the other two
+   rows high; a loop over these is half the one over the block's 16 that skipped the other subblock's */
+uint et1_texel(uint flip, uint s, uint j) {
+    return flip != 0u ? (s << 3) | j : ((j >> 1) << 2) | (s << 1) | (j & 1u);
+}
+
+/* the base and table et1_pick compares texels with (et1_setup): the base, its table's two modifiers (a 0 in a
+   see-through block), whether no channel of the base plus a modifier clamps, and else the four colours as they decode */
+int et1_r;
+int et1_g;
+int et1_b;
+int et1_a;
+int et1_bb;
+bool et1_free;
+uint et1_c0;
+uint et1_c1;
+uint et1_c2;
+uint et1_c3;
+void et1_setup(int r, int g, int b, uint t, bool see) {
+    const int a = tc_byte(ETC1_A0, ETC1_A1, t), B = tc_byte(ETC1_B0, ETC1_B1, t);
+    et1_r = r;
+    et1_g = g;
+    et1_b = b;
+    et1_a = see ? 0 : a;
+    et1_bb = B;
+    et1_free = min(min(r, g), b) >= B && max(max(r, g), b) + B <= 255;
+    et1_c0 = et1_word(r + et1_a, g + et1_a, b + et1_a);
+    et1_c1 = et1_word(r + B, g + B, b + B);
+    et1_c2 = et1_word(r - a, g - a, b - a);
+    et1_c3 = et1_word(r - B, g - B, b - B);
+}
+/* the modifier index k adds with et1_setup's table: a, b, -a, -b; a see-through block's index 0 adds nothing (its
+   index 2 is transparent and never asked for) */
+int et1_m(uint k) {
+    const int m = (k & 1u) != 0u ? et1_bb : et1_a;
+    return k >= 2u ? -m : m;
+}
+/* The index of texel i nearest et1_setup's base with its table's modifiers, in the low two bits, and that index's
+   squared error (et_dist of its colour) above them; index 2 and no error for a transparent texel of a see-through
+   block.
+
+   A modifier m adds the same to the three channels, so where none of them clamps, a texel p's squared distance from
+   the base plus m is its distance from the base, D, plus m (3 m - 2 s), s being p's channels summed less the base's:
+   the nearest index is a function of s alone, and that function is a sign and one comparison. Of a and -a, and of b
+   and -b, the one of s's sign is nearer (s = 0: the first, as the search keeps), and b is nearer than a once
+   2 |s| > 3 (a + b); a see-through block's index 0 adds 0, which is a = 0 there, and its index 2 is never taken. The
+   search over the four, first of equal ones kept, picks the same index (ucas: the clamp of base + m is base + m for
+   every base and modifier the condition admits, exhaustively; the expansion of the distance, by algebra mod 2^32; the
+   index, exhaustively over every s, table and see; ucas's work/etc1_index.ucas). Where a channel can clamp (a base
+   within b of 0 or of 255) the four colours are compared as they decode */
+uint et1_pick(uint i, bool see) {
     if (see && et_clear(i)) return 2u;
-    uint best = 0xFFFFFFFFu, bk = 0u;
-    for (uint k = 0u; k < 4u; k++) {
-        if (see && k == 2u) continue;
-        int m = et1_mod(t, k, see);
-        uint d = et_dist(i, r + m, g + m, b + m);
-        if (d < best) {
-            best = d;
-            bk = k;
-        }
+    if (et1_free) {
+        const uint p = tx_px[i];
+        const int dr = et1_r - et_ch(p, 0u), dg = et1_g - et_ch(p, 1u), db = et1_b - et_ch(p, 2u);
+        const int s = -(dr + dg + db), as = abs(s);
+        const bool big = 2 * as > 3 * (et1_a + et1_bb);
+        const int m = big ? et1_bb : et1_a;
+        const uint k = big ? (s < 0 ? 3u : 1u) : (s < 0 && !see ? 2u : 0u);
+        return (uint(dr * dr + dg * dg + db * db + m * (3 * m - 2 * as)) << 2) | k;
     }
-    return bk;
+    return et_near4(i, et1_c0, et1_c1, et1_c2, et1_c3, see);
 }
-/* the table of eight whose modifiers bring subblock s's opaque texels nearest base (r, g, b), and its indices for
-   them in the index bits (in et_best_lo's place: tx_lo) */
+/* the error of subblock s's opaque texels with et1_setup's base and table */
+uint et1_error(uint flip, uint s, bool see) {
+    uint e = 0u;
+    for (uint j = 0u; j < 8u; j++) e += et1_pick(et1_texel(flip, s, j), see) >> 2;
+    return e;
+}
+/* the table of eight whose modifiers bring subblock s's opaque texels nearest base (r, g, b) */
 uint et1_table(uint flip, uint s, int r, int g, int b, bool see) {
     uint best = 0xFFFFFFFFu;
     for (uint t = 0u; t < 8u; t++) {
-        uint e = 0u;
-        for (uint i = 0u; i < 16u; i++) {
-            if (et_sub(flip, i) != s || (see && et_clear(i))) continue;
-            uint k = et1_index(i, r, g, b, t, see);
-            int m = et1_mod(t, k, see);
-            e += et_dist(i, r + m, g + m, b + m);
-        }
+        et1_setup(r, g, b, t, see);
         /* the error is below 2^21 (8 texels of 3 channels of 255 squared): the table in the bits below it */
-        best = min(best, (e << 3) | t);
+        best = min(best, (et1_error(flip, s, see) << 3) | t);
     }
     return best & 7u;
 }
@@ -160,21 +216,20 @@ void et1_build(uint flip, bool diff, bool see) {
             l[0] = 0;
             l[1] = 0;
             l[2] = 0;
-            for (uint i = 0u; i < 16u; i++) {
-                if (et_sub(flip, i) != s || (see && et_clear(i))) continue;
-                int m = et1_mod(t, et1_index(i, m0[0], m0[1], m0[2], t, see), see);
-                for (uint c = 0u; c < 3u; c++) l[c] += et_ch(tx_px[i], c) - m;
+            /* a transparent texel's pick is index 2, which adds nothing, and its channels are not in sum */
+            et1_setup(m0[0], m0[1], m0[2], t, see);
+            int ms = 0;
+            for (uint j = 0u; j < 8u; j++) {
+                const uint k = et1_pick(et1_texel(flip, s, j), see) & 3u;
+                ms += see && k == 2u ? 0 : et1_m(k);
             }
+            for (uint c = 0u; c < 3u; c++) l[c] = sum[c] - ms;
             for (uint c = 0u; c < 3u; c++) l[c] = clamp(et_quant(max(l[c], 0), n[s], top), 0, top);
             int r = diff ? tc_ext5(uint(l[0])) : tc_ext4(uint(l[0]));
             int g = diff ? tc_ext5(uint(l[1])) : tc_ext4(uint(l[1]));
             int b = diff ? tc_ext5(uint(l[2])) : tc_ext4(uint(l[2]));
-            uint e = 0u;
-            for (uint i = 0u; i < 16u; i++) {
-                if (et_sub(flip, i) != s || (see && et_clear(i))) continue;
-                int m = et1_mod(t, et1_index(i, r, g, b, t, see), see);
-                e += et_dist(i, r + m, g + m, b + m);
-            }
+            et1_setup(r, g, b, t, see);
+            const uint e = et1_error(flip, s, see);
             if (e < best) {
                 best = e;
                 tab[s] = t;
@@ -202,12 +257,12 @@ void et1_build(uint flip, bool diff, bool see) {
         /* the second subblock's colour held in the difference wants its table chosen again */
         uint t = s == 1u && moved ? et1_table(flip, s, r, g, b, see) : tab[s];
         tx_hi |= t << (s == 0u ? 5u : 2u);
-        for (uint i = 0u; i < 16u; i++) {
-            if (et_sub(flip, i) != s) continue;
-            uint k = et1_index(i, r, g, b, t, see);
-            tx_lo |= et_index_bits(i, k);
-            int m = et1_mod(t, k, see);
-            if (!(see && et_clear(i))) et_err += et_dist(i, r + m, g + m, b + m);
+        et1_setup(r, g, b, t, see);
+        for (uint j = 0u; j < 8u; j++) {
+            /* a transparent texel's pick is index 2 and no error */
+            const uint i = et1_texel(flip, s, j), pk = et1_pick(i, see);
+            tx_lo |= et_index_bits(i, pk & 3u);
+            et_err += pk >> 2;
         }
     }
     if (diff) {
@@ -280,20 +335,11 @@ int et_th_colour(bool h, uint a, uint b, uint k, int d, uint ch) {
     bool first = h ? k < 2u : k == 0u;
     return et_c4(first ? a : b, ch) + (first && !h ? 0 : et_th_offset(h, k, d));
 }
-/* the nearest index of texel i in the T or H mode, its transparent ones index 2 */
-uint et_th_index(uint i, bool h, uint a, uint b, int d, bool see) {
-    if (see && et_clear(i)) return 2u;
-    uint best = 0xFFFFFFFFu, bk = 0u;
-    for (uint k = 0u; k < 4u; k++) {
-        if (see && k == 2u) continue;
-        uint e = et_dist(i, et_th_colour(h, a, b, k, d, 0u), et_th_colour(h, a, b, k, d, 1u),
-                         et_th_colour(h, a, b, k, d, 2u));
-        if (e < best) {
-            best = e;
-            bk = k;
-        }
-    }
-    return bk;
+/* index k's colour of the T or H mode as it decodes, clamped, an RGB word (R in the low byte): what a texel's index
+   is compared with, worked out once a distance and not once a texel */
+uint et_th_word(bool h, uint a, uint b, uint k, int d) {
+    return uint(clamp(et_th_colour(h, a, b, k, d, 0u), 0, 255)) | (uint(clamp(et_th_colour(h, a, b, k, d, 1u), 0, 255)) << 8) |
+           (uint(clamp(et_th_colour(h, a, b, k, d, 2u), 0, 255)) << 16);
 }
 /* the T mode with base colour a alone (swap: the clusters the other way round), or the H mode, into tx_hi, tx_lo and
    et_err. Its distance is the
@@ -311,13 +357,10 @@ void et_th_build(bool h, bool swap, bool see) {
             b = (di & 1u) != 0u ? small : big;
         }
         int d = tc_byte(ETC2_D0, ETC2_D1, di);
+        const uint c0 = et_th_word(h, a, b, 0u, d), c1 = et_th_word(h, a, b, 1u, d), c2 = et_th_word(h, a, b, 2u, d),
+                   c3 = et_th_word(h, a, b, 3u, d);
         uint e = 0u;
-        for (uint i = 0u; i < 16u; i++) {
-            if (see && et_clear(i)) continue;
-            uint k = et_th_index(i, h, a, b, d, see);
-            e += et_dist(i, et_th_colour(h, a, b, k, d, 0u), et_th_colour(h, a, b, k, d, 1u),
-                         et_th_colour(h, a, b, k, d, 2u));
-        }
+        for (uint i = 0u; i < 16u; i++) e += et_near4(i, c0, c1, c2, c3, see) >> 2;
         if (e < best) {
             best = e;
             ba = a;
@@ -328,7 +371,9 @@ void et_th_build(bool h, bool swap, bool see) {
     int d = tc_byte(ETC2_D0, ETC2_D1, bdi);
     et_err = best;
     tx_lo = 0u;
-    for (uint i = 0u; i < 16u; i++) tx_lo |= et_index_bits(i, et_th_index(i, h, ba, bb, d, see));
+    const uint c0 = et_th_word(h, ba, bb, 0u, d), c1 = et_th_word(h, ba, bb, 1u, d), c2 = et_th_word(h, ba, bb, 2u, d),
+               c3 = et_th_word(h, ba, bb, 3u, d);
+    for (uint i = 0u; i < 16u; i++) tx_lo |= et_index_bits(i, et_near4(i, c0, c1, c2, c3, see) & 3u);
     uint r1 = ba >> 8, g1 = (ba >> 4) & 15u, b1 = ba & 15u, r2 = bb >> 8, g2 = (bb >> 4) & 15u, b2 = bb & 15u;
     /* bit 33, the differential (or opaque) bit, set: et_build clears it for a see-through block */
     tx_hi = 2u;
