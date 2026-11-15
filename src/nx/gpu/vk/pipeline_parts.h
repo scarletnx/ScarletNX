@@ -21,6 +21,11 @@
 /* the clip volume's depth, from -w or from 0 (DsDynamic.depth_mode): extendedDynamicState3DepthClipNegativeOneToOne
    with VK_EXT_depth_clip_control. No key holds it: without the state the last stage makes the range (render.c) */
 #define VK_DYN_PR_DEPTH_RANGE  32u
+/* depth clipping apart from the clamp: extendedDynamicState3DepthClipEnable, with VK_EXT_depth_clip_enable in use. A
+   dynamic clamp without it turns clipping the other way whatever the pipeline's depth clip state says
+   (the specification's vkCmdSetDepthClampEnableEXT, before maintenance11), so the renderer uses the extension with
+   a dynamic clamp only where this is dynamic too */
+#define VK_DYN_PR_DEPTH_CLIP   64u
 
 /* what a device has, as the choice reads it */
 typedef struct {
@@ -33,6 +38,8 @@ typedef struct {
     int polygon, depth_clamp, provoking, conservative_mode, conservative_size, patch;
     int depth_range;          /* extendedDynamicState3DepthClipNegativeOneToOne */
     int depth_clip_control;   /* VK_EXT_depth_clip_control's depthClipControl */
+    int depth_clip;           /* extendedDynamicState3DepthClipEnable */
+    int has_depth_clip_enable; /* VK_EXT_depth_clip_enable with its depthClipEnable */
     uint32_t depth_range_ban; /* the table's line of the ban that turned depth_range off (vk_gpl_bans), 0 for none */
     /* what the renderer uses at all: a dynamic state of a feature it doesn't use is left out */
     int has_provoking_last, has_conservative;
@@ -79,7 +86,7 @@ typedef struct {
     VkShaderModule vs, tcs, tes, gs;
     u32 arrays; /* PipeKey.arrays' bits of the vertex, tessellation and geometry sets */
     /* 0 where dyn_pr makes them dynamic */
-    u32 patch, polygon, depth_clamp, provoking_last, conservative;
+    u32 patch, polygon, depth_clamp, depth_clip, provoking_last, conservative;
 } PipePrKey;
 typedef struct {
     VkShaderModule fs; /* the fragment program, or the empty one */

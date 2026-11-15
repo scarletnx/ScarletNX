@@ -3062,7 +3062,7 @@ static struct {
     VkDescriptorSet sets[5];
     u64 set_binds; /* vk_rec_set_binds when sets were: a set bound the old way since unbinds descriptor buffers */
     u32 fb, cull, front, topo, restart, discard, bias_on, dt, dw, dcmp, dbounds, st;
-    u32 polygon, clamp, provoking, conservative, patch; /* g_vk.dyn_pr's, as PipeKey holds them */
+    u32 polygon, clamp, clip, provoking, conservative, patch; /* g_vk.dyn_pr's, as PipeKey holds them */
     u32 minus_one;                                      /* and its depth range, which no key holds: from -1 */
     VkViewport vp[GUEST_VIEWPORTS];
     VkRect2D sc[GUEST_VIEWPORTS];
@@ -3099,6 +3099,8 @@ static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int minus_one, int 
     if (d & VK_DYN_PR_POLYGON) DYN(polygon, k->polygon, rec_CmdSetPolygonModeEXT(cb, (VkPolygonMode)k->polygon));
     if (d & VK_DYN_PR_DEPTH_CLAMP)
         DYN(clamp, k->depth_clamp, rec_CmdSetDepthClampEnableEXT(cb, k->depth_clamp ? VK_TRUE : VK_FALSE));
+    if (d & VK_DYN_PR_DEPTH_CLIP)
+        DYN(clip, k->depth_clip, rec_CmdSetDepthClipEnableEXT(cb, k->depth_clip == 2 ? VK_TRUE : VK_FALSE));
     if (d & VK_DYN_PR_PROVOKING)
         DYN(provoking, k->provoking_last,
             rec_CmdSetProvokingVertexModeEXT(cb, k->provoking_last ? VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT
@@ -3670,9 +3672,13 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
     memset(pl, 0, sizeof *pl);
     k->vs = vs->mod;
     k->fs = fs ? fs->mod : VK_NULL_HANDLE;
-    k->depth_clamp = g_vk.feat.depthClamp && rk->depth_clamp;
-    if (!g_vk.feat.depthClamp && rk->depth_clamp)
-        LOG_LIMIT(1, "vulkan: depth clamp requested but unavailable on this device\n");
+    /* with VK_EXT_depth_clip_enable, the clamp and the clip as the console has them apart; without it one switch,
+       where clamping turns clipping off: a fragment's depth past the viewport's range is undefined then with the clamp
+       off (the specification's Depth Clamping and Range Adjustment), which the console clamps to 0 to 1 */
+    int clamp = g_vk.has_depth_clip_enable ? rk->depth_pixel_clamp : rk->depth_clamp;
+    k->depth_clamp = g_vk.feat.depthClamp && clamp;
+    if (g_vk.has_depth_clip_enable) k->depth_clip = rk->depth_no_clip ? 1 : 2;
+    if (!g_vk.feat.depthClamp && clamp) LOG_LIMIT(1, "vulkan: depth clamp requested but unavailable on this device\n");
     k->provoking_last = rk->provoking_last && g_vk.has_provoking_last;
     if (rk->provoking_last && !g_vk.has_provoking_last)
         LOG_LIMIT(1, "vulkan: flat inputs take the first vertex of a primitive, not the last the game asks for\n");
