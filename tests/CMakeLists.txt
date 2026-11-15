@@ -1653,7 +1653,8 @@ snx_hookgen(snx-test-hook-adapters SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/test.h
 add_test(NAME hook_adapters COMMAND snx-test-hook-adapters)
 # hook_install on a 32-bit game (src/nx/hle/hook/hook.c) over tests/hook/a32_marked.hook: the hooks of the 32-bit
 # program's table take their functions' slots of the code table, with the runtime stubbed
-add_executable(snx-test-hook-install-a32 hook_install_a32.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
+add_executable(snx-test-hook-install-a32 hook_install_a32.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
                "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
 snx_test_target(snx-test-hook-install-a32 gnu23)
 target_link_libraries(snx-test-hook-install-a32 PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
@@ -1677,7 +1678,8 @@ snx_hookgen(snx-test-hook-address SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/address
 add_test(NAME hook_address COMMAND snx-test-hook-address)
 # hook_install on a 64-bit game (src/nx/hle/hook/hook.c) over tests/hook/install.hook, with the runtime stubbed: the
 # hooks' slots, and what is left of them once a save state's g_hle took the running one's place
-add_executable(snx-test-hook-install hook_install.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
+add_executable(snx-test-hook-install hook_install.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
                "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
 snx_test_target(snx-test-hook-install gnu23)
 target_link_libraries(snx-test-hook-install PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
@@ -1752,14 +1754,31 @@ snx_hookgen(snx-test-gl-layer SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl.hook"
 add_test(NAME gl_layer COMMAND snx-test-gl-layer)
 # native_cond_var (src/nx/hle/hook/family.c, hook.c) over tests/hook/states.hook: the cond_var family's hooks at 1, the
 # game's own wait at 0, and save states refused while the host's wait runs, by a message naming the setting's value
-add_executable(snx-test-hook-states hook_states.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
+add_executable(snx-test-hook-states hook_states.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
 snx_test_target(snx-test-hook-states gnu23)
 target_link_libraries(snx-test-hook-states PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-states PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_service_swipc(snx-test-hook-states)
 snx_hookgen(snx-test-hook-states SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/states.hook" A32_MARKED)
 add_test(NAME hook_states COMMAND snx-test-hook-states)
+# hook_install with a hook module named after install.hook's plain family (tests/hook_module_plain.c, hle/hook/module.c):
+# its code check holding, the family's hook goes in. Failing, or with hooks_off naming it, the function keeps its own
+# code
+foreach(snx_case IN ITEMS applied refused off)
+    add_executable(snx-test-hook-module-${snx_case} hook_install.c hook_module_plain.c
+                   "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
+                   "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
+    snx_test_target(snx-test-hook-module-${snx_case} gnu23)
+    target_link_libraries(snx-test-hook-module-${snx_case} PRIVATE scarletnx-common)
+    target_include_directories(snx-test-hook-module-${snx_case} PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    snx_service_swipc(snx-test-hook-module-${snx_case})
+    snx_hookgen(snx-test-hook-module-${snx_case} SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook" A32_MARKED)
+    add_test(NAME hook_module_${snx_case} COMMAND snx-test-hook-module-${snx_case})
+endforeach()
+target_compile_definitions(snx-test-hook-module-applied PRIVATE HOOK_MODULE_TEST=1)
+target_compile_definitions(snx-test-hook-module-refused PRIVATE HOOK_MODULE_TEST=2)
+target_compile_definitions(snx-test-hook-module-off PRIVATE HOOK_MODULE_TEST=3)
 # the jumps written over an invalidated native hook's start (src/nx/hle/hook/jump.c), every architecture's bytes
 # against what llvm-mc disassembles them to, on any host
 add_executable(snx-test-hook-jump hook_jump.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
@@ -1770,8 +1789,9 @@ add_test(NAME hook_jump COMMAND snx-test-hook-jump)
 # a native hook the game invalidates (src/nx/hle/hook/hook.c): its adapter rewritten into a jump to the game's code, on
 # this test's own x86_64 code, and the mod's trampolines that an ext_skyline hook (tests/hook/ext_skyline.hooks) takes;
 # skipped on another host
-add_executable(snx-test-hook-invalidated hook_invalidated.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/ext_skyline.c")
+add_executable(snx-test-hook-invalidated hook_invalidated.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/ext_skyline.c")
 snx_test_target(snx-test-hook-invalidated gnu23)
 target_link_libraries(snx-test-hook-invalidated PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-invalidated PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -1789,7 +1809,8 @@ foreach(i RANGE 1023)
     string(APPEND full_spec "hook full_${i}() = test_full\n")
 endforeach()
 file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/hook/full.hook" CONTENT "${full_spec}")
-add_executable(snx-test-hook-sites hook_sites.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
+add_executable(snx-test-hook-sites hook_sites.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
                "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
 snx_test_target(snx-test-hook-sites gnu23)
 target_link_libraries(snx-test-hook-sites PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
@@ -5119,6 +5140,19 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
             set_target_properties(snx-test-vk-fsr2 PROPERTIES LINKER_LANGUAGE CXX)
             add_test(NAME vk_fsr2 COMMAND snx-test-vk-fsr2)
             set_tests_properties(vk_fsr2 PROPERTIES SKIP_RETURN_CODE 77)
+            # a hook module of no game (hle/hook/module.c) with a GPU chain (gpu/nvn/nvn_hook.c) over a synthetic stream
+            # of NVN records, replaced through the upscalers' interface (gpu/vk/upscaler) on a real device, its
+            # fallbacks, the choice among the upscalers, and FSR 2 through the interface. Skipped (77) without a device
+            add_executable(snx-test-vk-hook-upscale vk_hook_upscale.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_hook.c"
+                "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c" "${volk_SOURCE_DIR}/volk.c")
+            snx_test_target(snx-test-vk-hook-upscale gnu23)
+            add_dependencies(snx-test-vk-hook-upscale snx_settings)
+            target_include_directories(snx-test-vk-hook-upscale PRIVATE "${PROJECT_SOURCE_DIR}/src"
+                "${PROJECT_BINARY_DIR}/settingsgen")
+            target_link_libraries(snx-test-vk-hook-upscale PRIVATE snx_upscaler snx_vk_common m)
+            set_target_properties(snx-test-vk-hook-upscale PROPERTIES LINKER_LANGUAGE CXX)
+            add_test(NAME vk_hook_upscale COMMAND snx-test-vk-hook-upscale)
+            set_tests_properties(vk_hook_upscale PROPERTIES SKIP_RETURN_CODE 77)
         endif()
         # a compute program's layouts and what its descriptor set is written with, for every frontend's dispatches
         add_executable(snx-test-vk-compute-program vk_compute_program.c "${volk_SOURCE_DIR}/volk.c")

@@ -269,11 +269,23 @@ setting DLSS upscaler
     key dlss_upscaler
     int 0 1
     default 1
-    words Filtered copy|FSR 2
+    words Filtered copy|Upscaler
     perf
-    help What a Switch 2 game's DLSS evaluations run, as this runtime has no DLSS: 1 = AMD FidelityFX Super Resolution
-    help 2.2 (a temporal upscaler, on any GPU), 0 = a filtered copy of the frame (cheaper, soft, and the picture shakes
-    help with the game's camera jitter). FSR 2 falls back to the copy where it can't run
+    help What a Switch 2 game's DLSS evaluations run, as this runtime has no DLSS: 1 = the runtime's temporal upscaler
+    help (render_upscaler's, AMD FidelityFX Super Resolution 2.2 by default, on any GPU), 0 = a filtered copy of the
+    help frame (cheaper, soft, and the picture shakes with the game's camera jitter). The upscaler falls back to the
+    help copy where it can't run
+setting Render upscaler
+    key render_upscaler
+    int 0 6
+    default 0
+    words Best|FSR 2|FSR 1|Filtered copy|DLSS|FSR 3.1 or 4|XeSS
+    perf
+    help The upscaler of the game's own rendering: a Switch 2 game's DLSS evaluations, and the upscalers that hook
+    help modules replace (docs/layers/gpu/upscalers.md). 0 = the best one that can run, 1 = AMD FidelityFX Super
+    help Resolution 2.2 (temporal), 2 = FSR 1 (spatial: one frame, no jitter or motion needed), 3 = a filtered copy.
+    help DLSS, FSR 3.1 or 4 and XeSS are not built in yet. Where the one asked for can't run, or its caller can't take
+    help it (a DLSS evaluation takes a temporal one only), the best one that can stands in
 setting DLSS render size
     key dlss_render_size
     int 0 5
@@ -288,7 +300,7 @@ setting FSR sharpness
     float 0 1
     default 0
     perf
-    help The sharpening FSR 2 applies after upscaling (RCAS), 0 to 1: 0 = none, and no sharpening pass runs
+    help The sharpening FSR 2 or FSR 1 applies after upscaling (RCAS), 0 to 1: 0 = none, and no sharpening pass runs
 setting Shadows
     key shadows
     int 0 1
@@ -1547,7 +1559,8 @@ setting Hook families off
     default ""
     startup
     help The families of hooks (hle/hook/hooks.hook's family lines, such as libc) whose functions run their own code,
-    help separated by commas or spaces, to tell which family a problem comes from. Empty: every family is on
+    help and the hook modules turned off (docs/platforms/nx/hooks.md, Modules), separated by commas or spaces, to tell
+    help which a problem comes from. Empty: every family and module is on
 setting Hook families verified
     key hooks_verify
     text 256
@@ -1578,6 +1591,14 @@ setting Native os sync
     help events, semaphores and message queues (os_light) run on the host with no SVC, a lock's waiters waiting on its
     help word with the host's futex, and save states are refused, as a state can't hold a thread waiting there. 0 = the game's own code makes the SVCs, and save states can be taken
     help and loaded
+setting GPU hook trace
+    key gpu_hook_trace
+    int 0 1000000
+    default 0
+    startup
+    help How many of a Switch 2 or NVN game's draws and dispatches the log names as a hook module's GPU chain would
+    help (docs/platforms/nx/hooks.md, Modules): each dispatch's program hash, call site in main, grid and block, each
+    help draw's fragment program hash and targets. For writing a module from a run. 0 = none
 setting Shader corpus
     key shader_corpus
     text 1024

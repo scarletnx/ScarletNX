@@ -5,6 +5,7 @@
    version */
 #include "nx/hle/hook/hook.h"
 #include "nx/hle/hook/jump.h"
+#include "nx/hle/hook/module.h"
 #include "nx/runtime/nce/nce.h"
 #include "common/utilities/bits.h"
 #include "nx/hle/hle.h"
@@ -491,12 +492,17 @@ void hook_install(void) {
     }
     if (!g_disp || !g_mod) return;
     routes_say();
+    /* the hook modules (module.h): a module that doesn't apply leaves its family's hooks out, and its GPU chains
+       (gpu/nvn/nvn_hook.c takes those of the modules that apply when the game makes its first queue) */
+    hook_modules_select(g_mod, g_mem, hook_family_off);
     for (i = 0; i < HOOK_FAMILIES; i++)
         if ((off[i] = (unsigned char)family_listed(g_settings.hook_families_off, hook_family_name[i])) != 0)
             LOG("hooks: the %s family is off (hooks_off)\n", hook_family_name[i]);
         else if (hook_family_unready(hook_family_name[i]))
             off[i] = 1, LOG("hooks: the %s family is off: %s\n", hook_family_name[i],
                             hook_family_unready(hook_family_name[i]));
+        else if (hook_module_family_refused(hook_family_name[i]))
+            off[i] = 1; /* module.c said why */
         else if (!strcmp(hook_family_name[i], LINKER_FAMILY) && !linker_links())
             off[i] = 1; /* nn::ro is the SDK's own while the game's linker runs: linker.c said why */
         else if (family_listed(g_settings.hook_families_verified, hook_family_name[i]))

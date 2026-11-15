@@ -83,6 +83,8 @@ keeps audits and measurements as they were taken.
   - [Working on the plan](layers/cpu/guide.md): setup, rules, how work is handed back, and the first milestone
 - GPU (`layers/gpu/`)
   - [NVN](layers/gpu/nvn.md): how games draw through NVN, and how the runtime replays it
+  - [Upscalers](layers/gpu/upscalers.md): the one interface a DLSS evaluation and a hook module upscale through, its
+    backends and its fallback rule
   - [GPU-owned guest memory](layers/gpu/ownership.md): the design of memory the GPU keeps, guest buffers on
     unified memory, and its phases
   - [Regression inventory for the buffer cache rewrite](layers/gpu/buffer-rewrite-inventory.md): the behaviors

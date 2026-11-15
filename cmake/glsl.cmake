@@ -51,15 +51,16 @@ endif()
 # (cmake/spirv_tools.cmake)
 include("${CMAKE_CURRENT_LIST_DIR}/spirv_tools.cmake")
 
-# snx_glsl_spirv(target SOURCE file.comp NAME symbol HEADER include/path.h [TARGET vulkan1.x] [DEFINES MACRO[=value]...])
+# snx_glsl_spirv(target SOURCE file.comp NAME symbol HEADER include/path.h [TARGET vulkan1.x] [DEFINES MACRO[=value]...]
+#                [INCLUDES dir...])
 # Compiles SOURCE (its #includes, beside it or from src as a C file's, followed through glslang's depfile) for Vulkan
 # 1.1 (or TARGET) without debug information, optimizes it for speed with spirv-opt -O, validates the result with
 # spirv-val, and puts it into a C file added to target: `const u32 NAME[]` and `const u64 NAME_size` (bytes). HEADER,
 # which the C file includes, declares them: the build writes it too, under generated/include in the build tree (on the
 # include path beside src), one header for every NAME given it. DEFINES are predefined macros, for another build of the
-# same source
+# same source, and INCLUDES folders its #includes are looked for in after its own
 function(snx_glsl_spirv target)
-    cmake_parse_arguments(arg "" "SOURCE;NAME;HEADER;TARGET" "DEFINES" ${ARGN})
+    cmake_parse_arguments(arg "" "SOURCE;NAME;HEADER;TARGET" "DEFINES;INCLUDES" ${ARGN})
     if(NOT arg_TARGET)
         set(arg_TARGET vulkan1.1)
     endif()
@@ -71,6 +72,9 @@ function(snx_glsl_spirv target)
     set(defines "")
     foreach(define IN LISTS arg_DEFINES)
         list(APPEND defines "-D${define}")
+    endforeach()
+    foreach(include IN LISTS arg_INCLUDES)
+        list(APPEND defines "-I${include}")
     endforeach()
     get_filename_component(source "${arg_SOURCE}" ABSOLUTE)
     set(dir "${PROJECT_BINARY_DIR}/generated/spirv")

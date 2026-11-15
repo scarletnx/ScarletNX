@@ -97,6 +97,9 @@ void nvn_draw_free(NvnDraw* d);
 /* On the GPU thread, a record a queue replays: its render targets, clears, state, bindings and draws. 0 when the
    record is none of those */
 int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size);
+/* On the GPU thread, what the renderer's dispatch gets for the OP_DISPATCH record at payload, the queue's state taking
+   its grid as the record would: 0 when it dispatches nothing. nvn_hook.c holds a dispatch back this way */
+int nvn_draw_dispatch_state(NvnDraw* d, u64 payload, DispatchState* x);
 /* On the GPU thread, a samples-passed report of the queue at address ({count, ticks}), in order with its draws: 0
    when the queue's counter wasn't reset, and the caller writes a count of its own */
 int nvn_draw_samples(NvnDraw* d, u64 address);
