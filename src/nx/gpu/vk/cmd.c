@@ -384,6 +384,20 @@ u64 vk_host_next(VkHostTimeline* t) {
     }
     return ++t->value;
 }
+int vk_host_bind_sparse(VkHostTimeline* t, const VkBindSparseInfo* bi) {
+    vk_queue_lock(g_vk.gfx);
+    u64 value = vk_host_next(t);
+    VkTimelineSemaphoreSubmitInfo ts = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                        .signalSemaphoreValueCount = 1,
+                                        .pSignalSemaphoreValues = &value};
+    VkBindSparseInfo b = *bi;
+    b.pNext = &ts;
+    b.signalSemaphoreCount = 1;
+    b.pSignalSemaphores = &t->sem;
+    int ok = value && VK_OK(vkQueueBindSparse(g_vk.gfx, 1, &b, VK_NULL_HANDLE));
+    vk_queue_unlock(g_vk.gfx);
+    return ok && vk_host_wait(t, value);
+}
 /* no submission of the runtime's own paths takes seconds: a wait that does is a stopped GPU */
 int vk_host_wait(const VkHostTimeline* t, u64 value) {
     VkSemaphoreWaitInfo wi = {

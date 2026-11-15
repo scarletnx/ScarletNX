@@ -74,7 +74,7 @@ bool snx_vk_ring_wait(SnxVkRing* ring, uint64_t serial, uint64_t timeout_ns) {
     if (!ring->pool || serial <= ring->completed) return true;
     if (serial > ring->submitted) snx_vk_ring_submit(ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
     if (serial > ring->submitted) return false; /* a lost device: it never comes */
-    if (ring->timeline) { /* one wait for the value, then each slot it passed is free in order */
+    if (ring->timeline) {                       /* one wait for the value, then each slot it passed is free in order */
         VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
                                   .semaphoreCount = 1,
                                   .pSemaphores = &ring->timeline,

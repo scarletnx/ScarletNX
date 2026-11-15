@@ -33,12 +33,18 @@ static bool make(VkPhysicalDevice phys, uint32_t family, void* user) {
     m->timeline = timeline.timelineSemaphore;
     return true;
 }
-/* five recordings in two slots: the even ones fill the source in their uploads after their copy is recorded */
+/* five recordings in two slots: the even ones fill the source in their uploads after their copy is recorded. With
+   present, each also waits for a binary semaphore and signals another, as a swapchain's acquire and present do: the
+   submission then signals the binary one and the timeline together */
 static int recordings(const Made* m, VkQueue queue, VkBuffer buffer, uint32_t* words,
-                      const VkDescriptorPoolCreateInfo* dp, bool timeline) {
+                      const VkDescriptorPoolCreateInfo* dp, bool timeline, bool present) {
     SnxVkRing ring;
     if (!snx_vk_ring_init(&ring, m->device, queue, m->family, 2, dp, timeline)) abort();
     if (timeline != (ring.timeline != VK_NULL_HANDLE)) abort();
+    VkSemaphore binary[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    for (int k = 0; k < 2 && present; ++k)
+        if (vkCreateSemaphore(m->device, &sci, NULL, &binary[k]) != VK_SUCCESS) abort();
     int failures = 0;
     for (uint32_t i = 0; i < 5; ++i) {
         words[0] = 0x11110000u + i;
@@ -50,16 +56,22 @@ static int recordings(const Made* m, VkQueue queue, VkBuffer buffer, uint32_t* w
             want = 0xc0de0000u + i;
             vkCmdFillBuffer(snx_vk_ring_uploads(&ring), buffer, 0, 4, want);
         }
-        uint64_t serial = snx_vk_ring_submit(&ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        /* the one the submission before signaled, waited for once; the other signaled for the next */
+        VkSemaphore wait = present && i ? binary[(i - 1) % 2] : VK_NULL_HANDLE;
+        uint64_t serial = snx_vk_ring_submit(&ring, wait, present ? binary[i % 2] : VK_NULL_HANDLE);
         if (serial != i + 1 || !snx_vk_ring_wait(&ring, serial, UINT64_MAX) || snx_vk_ring_poll(&ring) != serial)
             abort();
         if (words[64] != want) {
-            fprintf(stderr, "%s: recording %u copied 0x%08x, 0x%08x expected\n", timeline ? "timeline" : "fences", i,
-                    words[64], want);
+            fprintf(stderr, "%s%s: recording %u copied 0x%08x, 0x%08x expected\n", timeline ? "timeline" : "fences",
+                    present ? " with binary semaphores" : "", i, words[64], want);
             ++failures;
         }
     }
     snx_vk_ring_free(&ring);
+    /* the last one signaled has no wait left: the queue is idle, so it is free to destroy */
+    if (vkQueueWaitIdle(queue) != VK_SUCCESS) abort();
+    for (int k = 0; k < 2; ++k)
+        if (binary[k]) vkDestroySemaphore(m->device, binary[k], NULL);
     return failures;
 }
 int main(void) {
@@ -105,14 +117,18 @@ int main(void) {
                                      .maxSets = 1,
                                      .poolSizeCount = 1,
                                      .pPoolSizes = &size};
-    int failures = recordings(&m, queue, buffer, words, &dp, false);
-    if (m.timeline) failures += recordings(&m, queue, buffer, words, &dp, true);
+    int failures = 0;
+    for (int present = 0; present < 2; ++present) {
+        failures += recordings(&m, queue, buffer, words, &dp, false, present);
+        if (m.timeline) failures += recordings(&m, queue, buffer, words, &dp, true, present);
+    }
     vkDestroyBuffer(m.device, buffer, NULL);
     vkFreeMemory(m.device, memory, NULL);
     vkDestroyDevice(m.device, NULL);
     snx_vk_window_close(&w);
     if (failures) return 1;
-    printf("vk_ring_uploads: 5 recordings, 3 with uploads, each run before its recording (fences%s)\n",
+    printf("vk_ring_uploads: 5 recordings, 3 with uploads, each run before its recording, with and without binary "
+           "semaphores (fences%s)\n",
            m.timeline ? " and timeline" : "; no timeline semaphores");
     return 0;
 }

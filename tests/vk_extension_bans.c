@@ -211,6 +211,26 @@ static void check_versions(void) {
           "no name for what is no driver");
 }
 
+/* a line on the driver *: it holds for each driver on its systems, and takes no versions */
+static void check_any_driver(void) {
+    char err[512] = "", text[256];
+    CHECK(vk_bans_load(HEAD "featureA | off | * | * | android | * | breaks a | src a | headless: | never | -\n", err,
+                       sizeof err),
+          err);
+    device(VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0x6020200, SNX_VK_BAN_ANDROID);
+    CHECK(vk_ban_find("featureA") == 2, "a line on * holds for Qualcomm's driver on Android");
+    device(VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 119u, 2u), 0x2684, SNX_VK_BAN_ANDROID);
+    CHECK(vk_ban_find("featureA") == 2, "and for NVIDIA's driver on Android");
+    device(VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 119u, 2u), 0x2684, SNX_VK_BAN_WINDOWS);
+    CHECK(vk_ban_find("featureA") == 0, "but not on a system it does not name");
+    vk_ban_scope(2, text, sizeof text);
+    CHECK(!strcmp(text, "Each driver on Android"), text);
+    CHECK(!vk_bans_load(HEAD "featureA | off | * | < 1.0.0 | any | * | b | s | headless: | never | -\n", err,
+                        sizeof err) &&
+              strstr(err, "are not * for the driver *"),
+          err);
+}
+
 static const char g_table[] =
     "# a table of every kind of line\n" HEAD
     "VK_EXT_a | off | nvidia | < 580.119.02 | any | * | breaks a | src a | headless: | never | -\n"
@@ -890,6 +910,7 @@ int main(int argc, char** argv) {
     }
     check_errors();
     check_versions();
+    check_any_driver();
     check_matching();
     check_filter();
     check_settings();

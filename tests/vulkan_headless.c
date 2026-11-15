@@ -2314,16 +2314,19 @@ static int run_compute(const u32* code, size_t words, u32* data, u32 count, VkIm
     CHECK(vkEndCommandBuffer(cmd) == VK_SUCCESS);
     VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cmd};
     /* under the queue's lock, as the recording thread submits to it (record.c): a VkQueue takes one thread at a time.
-       Its own fence, waited outside the lock, so the recording thread's submits go on meanwhile */
-    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    VkFence fence;
-    CHECK(vkCreateFence(g_vk.dev, &fi, NULL, &fence) == VK_SUCCESS);
+       A timeline of its own, waited outside the lock, so the recording thread's submits go on meanwhile */
+    static VkHostTimeline ran;
     vk_queue_lock(g_vk.gfx);
-    VkResult submitted = vkQueueSubmit(g_vk.gfx, 1, &submit, fence);
+    u64 value = vk_host_next(&ran);
+    VkTimelineSemaphoreSubmitInfo ts = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                        .signalSemaphoreValueCount = 1,
+                                        .pSignalSemaphoreValues = &value};
+    submit.pNext = &ts;
+    submit.signalSemaphoreCount = 1;
+    submit.pSignalSemaphores = &ran.sem;
+    VkResult submitted = value ? vkQueueSubmit(g_vk.gfx, 1, &submit, VK_NULL_HANDLE) : VK_ERROR_INITIALIZATION_FAILED;
     vk_queue_unlock(g_vk.gfx);
-    int done = submitted == VK_SUCCESS && vk_wait_fence(fence);
-    vkDestroyFence(g_vk.dev, fence, NULL);
-    CHECK(done);
+    CHECK(submitted == VK_SUCCESS && vk_host_wait(&ran, value));
     CHECK(vk_devmem_invalidate(memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
     memcpy(data, allocation.ptr, (size_t)count * sizeof(u32));
     vkDestroyCommandPool(g_vk.dev, cpool, NULL);

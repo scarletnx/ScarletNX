@@ -610,16 +610,21 @@ void vk_wait_submit(u64 value); /* until the GPU has done that submission (any t
 void vk_wait_semaphore(VkSemaphore sem, u64 value);
 /* A timeline semaphore of one path that the CPU waits for (a sparse bind, a granule of the mirror, a landing), in place
    of a fence for each submission: no fence to make, reset or destroy, and the wait is vk_wait_semaphore's. Each
-   submission signals the next value. Take the value under the lock of the queue that the path submits to, and use
-   one queue for each timeline, so that the queue signals the values in order */
+   submission signals the next value, and a timeline's values must be signaled in increasing order. A queue does not
+   promise that across its batches (sparse binds are not ordered against command buffers, nor batches in how they
+   complete), so each timeline has one kind of batch on one queue, and one batch of it in flight at a time: its path
+   holds a lock from vk_host_next to the end of vk_host_wait. The paths here hold vk_lock */
 typedef struct {
     VkSemaphore sem; /* made at the first vk_host_next */
     u64 value;       /* the last value given */
 } VkHostTimeline;
-/* under the queue's lock: the value that the next submission signals on t->sem, 0 when the semaphore can't be made */
+/* the value that the next submission signals on t->sem, 0 when the semaphore can't be made */
 u64 vk_host_next(VkHostTimeline* t);
 /* until t reaches value, as vk_wait_semaphore waits: 0 when the device was lost */
 int vk_host_wait(const VkHostTimeline* t, u64 value);
+/* bi's binds (with no semaphores of their own) on the graphics queue, signaling t, and waited for: 0 when the bind
+   failed or the device was lost */
+int vk_host_bind_sparse(VkHostTimeline* t, const VkBindSparseInfo* bi);
 /* Flush recorded work without frame recycling or guest result callbacks, under
    vk_lock, before an ownership readback uses the graphics queue directly. */
 void vk_submit_for_readback(void);

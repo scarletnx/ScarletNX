@@ -14,7 +14,7 @@
 typedef struct {
     VkCommandBuffer cb;
     VkCommandBuffer uploads; /* run before cb in its submission, when the recording asked for it */
-    VkFence fence; /* only without the timeline */
+    VkFence fence;           /* only without the timeline */
     VkDescriptorPool descriptors; /* the recording's descriptor sets */
     uint64_t serial;              /* 0: not in flight */
 } SnxVkRingSlot;
