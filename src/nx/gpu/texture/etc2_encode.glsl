@@ -369,19 +369,46 @@ void et_th_build(bool h, bool swap, bool see) {
     }
 }
 
+/* the squared error of a row of four texels of one channel, rw their bytes (x = 0 the lowest), against the planar
+   mode's values (b + x h) >> 2 as the decoder clamps them: b is the row's 4 eo + y (ev - eo) + 2, h the horizontal
+   difference eh - eo */
+uint et_pl_row(uint rw, int b, int h) {
+    const int d0 = clamp(b >> 2, 0, 255) - int(rw & 255u), d1 = clamp((b + h) >> 2, 0, 255) - int((rw >> 8) & 255u);
+    const int d2 = clamp((b + 2 * h) >> 2, 0, 255) - int((rw >> 16) & 255u), d3 = clamp((b + 3 * h) >> 2, 0, 255) - int(rw >> 24);
+    return uint(d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3);
+}
+/* channel ch of row y's four texels, a byte each */
+uint et_pl_rw(uint ch, uint y) {
+    const uint s = 8u * ch;
+    return ((tx_px[y * 4u] >> s) & 255u) | (((tx_px[y * 4u + 1u] >> s) & 255u) << 8) |
+           (((tx_px[y * 4u + 2u] >> s) & 255u) << 16) | (((tx_px[y * 4u + 3u] >> s) & 255u) << 24);
+}
+
 /* the planar mode: the colours at the corners (0, 0), (4, 0) and (0, 4), 6, 7 and 6 bits a channel. A channel's
    decoded values depend on its own three alone, so each channel starts from the texels' least squares fit and moves
    to the best of its three a level either way (27 tries), up to four times while that is better: the fit is of values
    the decoder rounds, the levels round them again, and a gradient the decoder clamps (the corner at (3, 3) lies past
    the three, so it can pass 255) pulls the fit off by more than a level. The fit's weights are the normal equations'
    inverse over the 4x4 grid, in 80ths: the origin's 23 - 6x - 6y, the horizontal corner's 10x - 6y - 1, the vertical
-   one's 10y - 6x - 1. Into tx_hi, tx_lo and et_err */
-void et_planar_build() {
+   one's 10y - 6x - 1. Into tx_hi, tx_lo and et_err.
+
+   Each pass after the first tries only the levels the one before it didn't: those it did have an error no less than
+   the best, and a try is kept only when it is less, so the levels kept are the same. A channel's texels are four
+   words of its bytes, a row each, read once a channel and not once a try.
+
+   bound: a planar block whose error reaches it isn't wanted (et_encode's best so far): once the channels done reach
+   it, the others aren't searched, and et_err is 0xFFFFFFFF. The channels' errors only add up, so no block that would
+   have been kept is lost */
+void et_planar_build(uint bound) {
     int o[3];
     int hz[3];
     int vt[3];
     et_err = 0u;
     for (uint ch = 0u; ch < 3u; ch++) {
+        if (et_err >= bound) {
+            et_err = 0xFFFFFFFFu;
+            return;
+        }
         int so = 0, sh = 0, sv = 0;
         for (uint i = 0u; i < 16u; i++) {
             int x = int(i & 3u), y = int(i >> 2), p = et_ch(tx_px[i], ch);
@@ -389,11 +416,14 @@ void et_planar_build() {
             sh += (10 * x - 6 * y - 1) * p;
             sv += (10 * y - 6 * x - 1) * p;
         }
+        const uint rw0 = et_pl_rw(ch, 0u), rw1 = et_pl_rw(ch, 1u), rw2 = et_pl_rw(ch, 2u), rw3 = et_pl_rw(ch, 3u);
         int top = ch == 1u ? 127 : 63;
         /* the fit over 80 quantized to top + 1 levels; a negative one is 0 whichever way it rounds */
         int q0 = clamp((so * top * 2 + 80 * 255) / (80 * 510), 0, top);
         int q1 = clamp((sh * top * 2 + 80 * 255) / (80 * 510), 0, top);
         int q2 = clamp((sv * top * 2 + 80 * 255) / (80 * 510), 0, top);
+        /* the centre of the pass before (none before the first: no level is within one of -2) */
+        int p0 = -2, p1 = -2, p2 = -2;
         uint best = 0xFFFFFFFFu;
         o[ch] = q0;
         hz[ch] = q1;
@@ -402,6 +432,9 @@ void et_planar_build() {
             if (k == 27 || k == 54 || k == 81) { /* a pass of 27 is over */
                 /* the pass's best in the middle: no level nearby is better */
                 if (o[ch] == q0 && hz[ch] == q1 && vt[ch] == q2) break;
+                p0 = q0;
+                p1 = q1;
+                p2 = q2;
                 q0 = o[ch];
                 q1 = hz[ch];
                 q2 = vt[ch];
@@ -410,15 +443,14 @@ void et_planar_build() {
             uint uk = uint(k);
             int qo = clamp(q0 + int(uk % 3u) - 1, 0, top), qh = clamp(q1 + int((uk / 3u) % 3u) - 1, 0, top);
             int qv = clamp(q2 + int((uk / 9u) % 3u) - 1, 0, top);
+            /* tried in the pass before */
+            if (abs(qo - p0) <= 1 && abs(qh - p1) <= 1 && abs(qv - p2) <= 1) continue;
             int eo = ch == 1u ? tc_ext7(uint(qo)) : tc_ext6(uint(qo));
             int eh = ch == 1u ? tc_ext7(uint(qh)) : tc_ext6(uint(qh));
             int ev = ch == 1u ? tc_ext7(uint(qv)) : tc_ext6(uint(qv));
-            uint e = 0u;
-            for (uint i = 0u; i < 16u; i++) {
-                int x = int(i & 3u), y = int(i >> 2);
-                int d = clamp((x * (eh - eo) + y * (ev - eo) + 4 * eo + 2) >> 2, 0, 255) - et_ch(tx_px[i], ch);
-                e += uint(d * d);
-            }
+            const int h = eh - eo, v = ev - eo, b = 4 * eo + 2;
+            const uint e = et_pl_row(rw0, b, h) + et_pl_row(rw1, b + v, h) + et_pl_row(rw2, b + 2 * v, h) +
+                           et_pl_row(rw3, b + 3 * v, h);
             if (e < best) {
                 best = e;
                 o[ch] = qo;
@@ -439,14 +471,15 @@ void et_planar_build() {
 }
 
 /* candidate c into tx_hi, tx_lo and et_err: 0 and 1 individual, 2 and 3 differential (flips 0 and 1), 4 H, 5 and 6 T,
-   7 planar. punch: an RGB8A1 block, whose differential bit (bit 33) is the opaque bit, clear when see */
-void et_build(uint c, bool punch, bool see) {
+   7 planar. punch: an RGB8A1 block, whose differential bit (bit 33) is the opaque bit, clear when see. bound: an error
+   that isn't wanted (et_planar_build's); 0xFFFFFFFF builds every candidate whole */
+void et_build(uint c, bool punch, bool see, uint bound) {
     if (c < 4u)
         et1_build(c & 1u, c >= 2u, see);
     else if (c < 7u)
         et_th_build(c == 4u, c == 6u, see);
     else
-        et_planar_build();
+        et_planar_build(bound);
     if (punch && see) tx_hi &= ~2u;
 }
 /* tx_px's colours as an ETC2 RGB block (punch: RGB8A1, opaque bit and all) into tx_hi and tx_lo */
@@ -473,7 +506,7 @@ void et_encode(bool punch) {
         /* punch-through has no individual mode (its bit is the opaque bit), nor a transparent texel in the planar
            mode; the individual mode is for subblocks the differential one can't hold */
         if ((c < 2u && (punch || et1_diff_holds(c))) || (see && c == 7u)) continue;
-        et_build(c, punch, see);
+        et_build(c, punch, see, et_best_err);
         if (et_err < et_best_err) {
             et_best_err = et_err;
             et_best_hi = tx_hi;
