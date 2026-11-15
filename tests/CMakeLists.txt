@@ -2521,6 +2521,11 @@ include("${PROJECT_SOURCE_DIR}/cmake/pad_sdl.cmake")
 add_executable(snx-test-connect connect.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/connect.c")
 snx_test_target(snx-test-connect c23)
 add_test(NAME connect COMMAND snx-test-connect)
+# the Joy-Con 2's protocol on made-up bytes, no Bluetooth (runtime/platform/joycon2_proto.c)
+add_executable(snx-test-joycon2 joycon2.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/joycon2_proto.c")
+snx_test_target(snx-test-joycon2 99)
+target_link_libraries(snx-test-joycon2 PRIVATE m)
+add_test(NAME joycon2 COMMAND snx-test-joycon2)
 
 add_executable(snx-test-gamepad gamepad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/backend/gamepad.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/connect.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
