@@ -834,6 +834,16 @@ setting Joy-Con mouse
     help How the mouse reaches an Ounce game as its Joy-Con mouse. 0 = only after hotkey_mouse (Ctrl+G) declares mouse
     help mode, which holds the mouse until a second press ends it, and nothing reaches the game before. 1 = always, as
     help before this setting: held while the game plays with it, and hotkey_mouse lets it go
+setting Joy-Con 2
+    key joycon2
+    int 0 1
+    default 0
+    startup
+    only linux
+    words Off|On
+    help 1 = the runtime connects Joy-Con 2 controllers over Bluetooth itself, without pairing them, as gamepads. It
+    help doesn't search for them: it tries those joycon2.txt in the user's config folder lists, a line each
+    help (AA:BB:CC:DD:EE:FF L, or R). 0 = it leaves Bluetooth alone
 setting Joy-Con 2 mouse scale
     key joycon2_mouse_scale
     float 0.1 10
