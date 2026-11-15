@@ -494,7 +494,13 @@ static int xfb_bind(const DsState* ds, const DrawOwner* o, const VkSh* vs, int i
     x->size[4] = sizeof params;
     for (u32 b = 0; b < 4; b++) {
         if (!(r->declared >> b & 1)) continue;
-        if (!(r->bound >> b & 1)) { /* nothing stored: a buffer for the binding */
+        if (!(r->bound >> b & 1)) { /* nothing stored: a null buffer, or a buffer for the binding */
+            if (vk_null_descriptors()) {
+                x->buf[b] = VK_NULL_HANDLE;
+                x->off[b] = 0;
+                x->size[b] = VK_WHOLE_SIZE;
+                continue;
+            }
             if (!vk_buf_copy(0, 16, &x->buf[b], &x->off[b])) return 0;
             x->size[b] = 16;
             continue;
@@ -2028,7 +2034,7 @@ static u32 cb_range(const DsState* ds, int stage, const VkSh* s, int i) {
     u32 sz = ds->bind.cb_size[stage][i];
     if (sz > 65536 || !sz) sz = 65536;
     if (s->si.cbuf_max[i] && sz > s->si.cbuf_max[i]) sz = s->si.cbuf_max[i]; /* only the bytes the shader reads */
-    sz = (sz + 15) & ~15u;
+    sz = vk_cb_round(sz);
     if (sz > g_vk.props.limits.maxUniformBufferRange) sz = g_vk.props.limits.maxUniformBufferRange;
     return sz;
 }
@@ -2681,9 +2687,11 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                  : addr && gb->writable ? vk_buf_copy_writable(addr, size, &b, &o, ordered)
                  : addr && gb->bare     ? vk_buf_get_window(addr, size, &b, &o)
                  : addr                 ? vk_buf_get_input(addr, size, sa, &b, &o)
+                 : vk_null_descriptors() ? (b = VK_NULL_HANDLE, o = 0, 1) /* no address: a null buffer, reads zero */
                                         : vk_buf_copy(0, size, &b, &o);
         if (!ok) return VK_NULL_HANDLE;
-        dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o, gb->aliased ? gb->range : size);
+        dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o,
+                  !b ? VK_WHOLE_SIZE : gb->aliased ? gb->range : size);
     }
     /* each pointer table window's base and length, at its buffer's slot: 16 vec4 of words (SNX_VKB_MBASE, which is
        the fragment stage's SNX_VKB_RS: the translator makes no table for a fragment program) */
@@ -2962,10 +2970,14 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         /* a slot with nothing bound (an empty header): an empty image, which nothing writes back, as a dispatch
            takes one (compute.c's vk_dispatch), where the draw was skipped */
         VkImageView null_view = VK_NULL_HANDLE;
-        Surf* null_image =
-            vk_tic_empty(tic) ? vk_null_storage(vk_storage_image_type(&s->si, i), kind, &null_view) : NULL;
-        if (null_image) {
-            vk_surf_use(vk_cmd(), null_image, VK_IMAGE_LAYOUT_GENERAL, image_stages[stage], VK_STORAGE_IMAGE_ACCESS);
+        int null_slot = vk_tic_empty(tic) && vk_null_descriptors();
+        Surf* null_image = vk_tic_empty(tic) && !null_slot
+                               ? vk_null_storage(vk_storage_image_type(&s->si, i), kind, &null_view)
+                               : NULL;
+        if (null_image || null_slot) {
+            if (null_image)
+                vk_surf_use(vk_cmd(), null_image, VK_IMAGE_LAYOUT_GENERAL, image_stages[stage],
+                            VK_STORAGE_IMAGE_ACCESS);
             u32 binding = SNX_VKB_IMG + (u32)i;
             d.ii[binding] = (VkDescriptorImageInfo){VK_NULL_HANDLE, null_view, VK_IMAGE_LAYOUT_GENERAL};
             d.w[d.n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,

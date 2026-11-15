@@ -145,6 +145,11 @@ typedef struct {
     /* a test's: linked pipelines are never optimized, so every draw binds the link (pipeline.c) */
     int gpl_hold;
     int has_vertex_robustness2; /* exact zero/default components for out-of-range mesh fetches */
+    /* VK_EXT_robustness2's features in effect (device.c): buffer reads past the bound range are zero and writes there
+       dropped, image reads out of bounds are zero with an alpha of 1, and descriptors may be null. The bound range
+       is checked in steps of robust_ubo_align (uniform) and robust_ssbo_align (storage) bytes */
+    int robust_buffer2, robust_image2, null_descriptor;
+    u32 robust_ubo_align, robust_ssbo_align;
     int has_calibrated_host;    /* VK_EXT_calibrated_timestamps with CLOCK_MONOTONIC_RAW: the GPU's clock goes next to
                                 the client's, one driver call (gpuprof.c's calibration) */
     int has_portability;        /* a portability driver (MoltenVK): the device lists VK_KHR_portability_subset */
@@ -1755,6 +1760,18 @@ VkImageView vk_null_view(VkImageViewType type, int num, int ms);
 Surf* vk_null_storage(VkImageViewType type, int kind, VkImageView* view);
 /* a storage image header with nothing bound: no format and no component types in word 0 */
 static inline int vk_tic_empty(const u32* tic) { return tic[0] == 0; }
+/* An empty storage image or storage buffer slot takes a null descriptor (VK_EXT_robustness2's nullDescriptor): its
+   reads are zero, its writes and atomics are dropped, and no image or buffer needs barriers for it. A sampled slot
+   keeps vk_null_view's 1x1 image: a size query of an empty header reads 1x1 on the console, and 0 from a null
+   descriptor. Not with descriptor heaps, whose writes (descriptor_heaps.c) have no null form */
+static inline int vk_null_descriptors(void) { return g_vk.null_descriptor && !g_vk.has_descriptor_heaps; }
+/* A constant buffer's bound range: bytes rounded up to 16, or to the step robustBufferAccess2 checks uniform ranges in
+   where that is larger (a power of two). Reads past the range are then zero, and those inside the step read the
+   bytes the binding copied, never a neighbour's in staging */
+static inline u32 vk_cb_round(u32 bytes) {
+    u32 step = g_vk.robust_buffer2 && g_vk.robust_ubo_align > 16 ? g_vk.robust_ubo_align : 16;
+    return (bytes + step - 1) & ~(step - 1);
+}
 /* the sampler for a TSC: raise lets anisotropy= raise its filtering (a 2D texture with mipmaps), integer gives its
    border color as integers (an integer texture) */
 VkSampler vk_sampler(const u32* tsc, int raise, int integer);

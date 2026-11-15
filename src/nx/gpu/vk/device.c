@@ -1166,7 +1166,7 @@ static int create_device(void) {
                            has_portability ? &qport : NULL,
                            has_reconvergence ? &qreconv : NULL,
                            robustness ? &qpipeline : NULL,
-                           robustness ? &qrobust : NULL,
+                           has_robustness2 ? &qrobust : NULL,
                            present_wait ? &qpid : NULL,
                            present_wait ? &qpwait : NULL,
                            has_present_v2 ? &qpid2 : NULL,
@@ -1216,6 +1216,29 @@ static int create_device(void) {
                               qtiming.presentTiming && qtiming.presentAtAbsoluteTime;
     g_vk.has_display_timing = has_google_timing && !g_vk.has_present_wait;
     g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2;
+    /* VK_EXT_robustness2 for the whole device: reads past a buffer's bound range are zero and writes there are
+       dropped (the console's constant buffers read zero past their size, and an unmapped page of a program's storage
+       map is index 0xffffffff, shader_gbuf_word_index), image reads out of bounds are zero with an alpha of 1, and
+       empty slots take null descriptors (vk_null_descriptors). robustBufferAccess2 needs robustBufferAccess */
+    if (has_robustness2) {
+        if (vk_ban("robustBufferAccess2", qrobust.robustBufferAccess2 && want->robustBufferAccess, ban_say))
+            qrobust.robustBufferAccess2 = VK_FALSE;
+        if (vk_ban("robustImageAccess2", qrobust.robustImageAccess2, ban_say)) qrobust.robustImageAccess2 = VK_FALSE;
+        if (vk_ban("nullDescriptor", qrobust.nullDescriptor, ban_say)) qrobust.nullDescriptor = VK_FALSE;
+        g_vk.robust_buffer2 = qrobust.robustBufferAccess2 && want->robustBufferAccess;
+        g_vk.robust_image2 = qrobust.robustImageAccess2 != 0;
+        g_vk.null_descriptor = qrobust.nullDescriptor != 0;
+        VkPhysicalDeviceRobustness2PropertiesEXT rp = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 rq = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &rp};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &rq);
+        g_vk.robust_ubo_align = (u32)rp.robustUniformBufferAccessSizeAlignment;
+        g_vk.robust_ssbo_align = (u32)rp.robustStorageBufferAccessSizeAlignment;
+    }
+    LOG("vulkan: robustness2: robustBufferAccess2=%d robustImageAccess2=%d nullDescriptor=%d (uniform ranges checked "
+        "in %u-byte steps, storage in %u)%s\n",
+        g_vk.robust_buffer2, g_vk.robust_image2, g_vk.null_descriptor, g_vk.robust_ubo_align, g_vk.robust_ssbo_align,
+        has_robustness2 ? "" : ", the device has no VK_EXT_robustness2");
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_fault = has_fault && qfault.deviceFault;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
@@ -1868,6 +1891,14 @@ static int create_device(void) {
     if (g_vk.has_vertex_robustness2) {
         chain = &fpipeline;
         ext[next++] = VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceRobustness2FeaturesEXT frobust = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
+                                                      .pNext = chain,
+                                                      .robustBufferAccess2 = (VkBool32)g_vk.robust_buffer2,
+                                                      .robustImageAccess2 = (VkBool32)g_vk.robust_image2,
+                                                      .nullDescriptor = (VkBool32)g_vk.null_descriptor};
+    if (g_vk.has_vertex_robustness2 || g_vk.robust_buffer2 || g_vk.robust_image2 || g_vk.null_descriptor) {
+        chain = &frobust;
         ext[next++] = VK_EXT_ROBUSTNESS_2_EXTENSION_NAME;
     }
     VkPhysicalDeviceMeshShaderFeaturesEXT fmesh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
