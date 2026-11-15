@@ -2401,8 +2401,10 @@ rebind:
            the end of the game's GPU submission (vk_release_submit) or whatever submits first, as the console's GPU
            runs what a flush handed it. Submitted each, one game's battle map made 350 to 390 submissions a present
            by the GPU profiler, and 22 to 24 so. A program a CPU reader waited for while its writes were still
-           unsubmitted (vk_uma_read_soon) is submitted at once, as above */
-        if (vk_uma() && !vk_buf_pending_unsubmitted() && !vk_uma_read_soon(p->key)) {
+           unsubmitted (vk_uma_read_soon) is submitted at once, as above. A draw's result pending in that submission
+           is no reason to submit: what reads one on the GPU copies it there (owned.c's pending_gpu_read). Submitted
+           for them, another game's battle made about 70 submissions a present, with the GPU idle between them */
+        if (vk_uma() && !vk_uma_read_soon(p->key)) {
             g_vk_cs_open = vk_submit_number();
             g_vk_cs_left++;
             return;
