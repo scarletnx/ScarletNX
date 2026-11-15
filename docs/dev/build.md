@@ -25,7 +25,8 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
 
 - **Linux / FreeBSD:** Clang (CI: 23; FreeBSD's system Clang also works), LLVM's development files
   (`llvm-config`, required by the recompiler), CMake ≥3.25, Ninja, POSIX shell, GNU make (`gmake` on FreeBSD),
-  NASM on x86-64, Perl, Python 3 (the menu's languages), Git, pkg-config, `patch` and meson (dav1d's build).
+  NASM on x86-64, Perl, Python 3 (the menu's languages, SPIRV-Tools' build), Git, pkg-config, `patch` and meson
+  (dav1d's build).
   Use a system SDL3 development package, or X11/Wayland and audio development libraries for the bundled
   SDL3 build.
 - **macOS:** Apple silicon, macOS 13 or newer, Xcode (its Clang and SDKs), CMake ≥3.25, Ninja, meson, Python 3 and
@@ -37,9 +38,10 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
   MinGW LLVM's `llvm-config` set with `-DSNX_LLVM_CONFIG=/path/to/llvm-config`. CMake fails without it.
 - **Shaders:** glslang's `glslangValidator` compiles them at build time (CMake fetches its pinned release on Linux
   x86-64, Windows x86-64 and macOS; elsewhere it takes the system's `glslang`), and SPIRV-Tools' `spirv-opt` and
-  `spirv-val` optimize and validate them (`cmake/glsl.cmake`). Those two come from the system's `spirv-tools` package,
-  or on Windows outside MSYS2 from the LunarG Vulkan SDK; `-DSNX_SPIRV_OPT` and `-DSNX_SPIRV_VAL` name others. The
-  configure stops without them.
+  `spirv-val` optimize and validate them (`cmake/glsl.cmake`). Those two are the SPIRV-Tools release CMake pins, built
+  from source for the machine doing the build, which needs Python 3 (`cmake/spirv_tools.cmake`).
+  `-DCPM_USE_LOCAL_PACKAGES=ON` takes the system's instead when it is that release or newer, and `-DSNX_SPIRV_OPT`,
+  `-DSNX_SPIRV_VAL` and `-DSNX_SPIRV_DIS` (the tests' disassembler) name others.
 - **Display:** a Vulkan 1.3 driver. Headless runs use Vulkan offscreen and skip SDL video initialization.
   SDL3 remains a required build dependency.
 - **Compiler cache (optional):** `ccache`, or `sccache` when `ccache` is not found, makes a cold build after a
@@ -65,7 +67,7 @@ system include; Fedora lists it below.
 
 ```sh
 sudo apt update
-sudo apt install build-essential git cmake ninja-build meson clang llvm-dev nasm pkg-config python3 spirv-tools \
+sudo apt install build-essential git cmake ninja-build meson clang llvm-dev nasm pkg-config python3 \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
   libasound2-dev libpulse-dev libpipewire-0.3-dev
 ```
@@ -99,7 +101,7 @@ Vulkan-capable NVIDIA driver.
 
 ```sh
 sudo dnf install clang cmake ninja-build meson nasm make perl git pkgconf-pkg-config patch llvm-devel python3 \
-  spirv-tools libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
+  libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
   libXScrnSaver-devel libXtst-devel alsa-lib-devel pulseaudio-libs-devel pipewire-devel
 ```
 
@@ -123,7 +125,7 @@ sudo dnf install wayland-devel libxkbcommon-devel wayland-protocols-devel libdec
 ### Arch Linux
 
 ```sh
-sudo pacman -Syu --needed base-devel git cmake ninja meson clang llvm nasm perl pkgconf python sdl3 spirv-tools
+sudo pacman -Syu --needed base-devel git cmake ninja meson clang llvm nasm perl pkgconf python sdl3
 ```
 
 ### FreeBSD
@@ -132,7 +134,7 @@ FreeBSD provides Clang in the base system. Install the remaining tools, the SDL3
 HIDAPI loads at run time to read controllers (an Xbox pad is only read that way):
 
 ```sh
-sudo pkg install git cmake ninja meson gmake nasm perl5 pkgconf python3 sdl3 llvm libusb glslang spirv-tools
+sudo pkg install git cmake ninja meson gmake nasm perl5 pkgconf python3 sdl3 llvm libusb glslang
 ```
 
 The build uses that `sdl3` package by default (`SNX_SYSTEM_SDL3`, see [SDL3 troubleshooting](#sdl3-troubleshooting));
@@ -203,7 +205,7 @@ Install Xcode, then the build tools:
 
 ```sh
 xcode-select --install
-brew install cmake ninja meson spirv-tools
+brew install cmake ninja meson
 ```
 
 1. **LLVM's libraries**, once (about 10 minutes on an M1). The script builds the AArch64 code generator alone,
@@ -295,11 +297,11 @@ runtime must not mix with another LLVM build.
      mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-llvm mingw-w64-clang-x86_64-lld \
      mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja mingw-w64-clang-x86_64-nasm \
      mingw-w64-clang-x86_64-meson mingw-w64-clang-x86_64-pkgconf mingw-w64-clang-x86_64-python \
-     mingw-w64-clang-x86_64-spirv-tools mingw-w64-clang-x86_64-glslang
+     mingw-w64-clang-x86_64-glslang
    ```
 
-   Python builds the menu's languages; spirv-tools optimizes and validates the shaders. CI also installs ccache, which
-   is optional here, as sccache is.
+   Python builds the menu's languages and runs SPIRV-Tools' build, which optimizes and validates the shaders. CI also
+   installs ccache, which is optional here, as sccache is.
 3. Clone to a path without spaces:
 
    ```sh
@@ -359,10 +361,11 @@ jemalloc, zstd, xxHash's x86 dispatcher, libdeflate, miniz, lunasvg and plutovg)
 way (ENet installs none, yyjson's carries no version). For a package in a prefix of your own, add
 `-DCMAKE_PREFIX_PATH=/path/to/prefix`.
 
-FFmpeg, OpenSSL and jemalloc build with their own configure and make, in each build tree. With `SNX_DEPS_CACHE` (CMake
-or env) naming a folder, a tree reuses a finished build there whose inputs match (source, configure line, compiler, C
-headers and the cmake file that builds it, see [deps_cache.cmake](../../cmake/deps_cache.cmake)) and publishes the ones
-it builds, so other trees and branches skip them. A change to any input is a new folder; old ones are only left behind.
+FFmpeg, OpenSSL and jemalloc build with their own configure and make, and SPIRV-Tools with its own CMake, in each build
+tree. With `SNX_DEPS_CACHE` (CMake or env) naming a folder, a tree reuses a finished build there whose inputs match
+(source, configure line, compiler, C headers and the cmake file that builds it, see
+[deps_cache.cmake](../../cmake/deps_cache.cmake)) and publishes the ones it builds, so other trees and branches skip
+them. A change to any input is a new folder; old ones are only left behind.
 
 A compiler cache is optional. At configure, `ccache` is used for the C and C++ compiles when it is found, and
 `sccache` is used when `ccache` is not found. With neither installed the build compiles as it does without one. The
@@ -399,8 +402,8 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DCPM_USE_LOCAL_PACKAGES=ON`: take LZ4 and the Vulkan headers from the system where it has
   them at the pinned version or newer (default OFF: every package from its pinned source). See
   [Rebuild, deploy, cache](#rebuild-deploy-cache).
-- `-DSNX_DEPS_CACHE=/path`: reuse and publish finished FFmpeg, OpenSSL and jemalloc builds there (default: the
-  environment's `SNX_DEPS_CACHE`, else none).
+- `-DSNX_DEPS_CACHE=/path`: reuse and publish finished FFmpeg, OpenSSL, jemalloc and SPIRV-Tools builds there
+  (default: the environment's `SNX_DEPS_CACHE`, else none).
 - `-DSNX_BUILD_NX=OFF`: omit the Switch runtime (default ON).
 - `-DSNX_BUILD_GNUABI=OFF`: omit the CPU-only Linux AArch64 runtime, see [GNU ABI](../platforms/gnuabi/README.md) (default ON).
 - `-DSNX_BUILD_3DS=OFF`: omit the 3DS layer, see [3DS](../platforms/3ds/README.md) (default ON).
