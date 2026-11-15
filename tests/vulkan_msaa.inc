@@ -46,7 +46,7 @@ static int ms_read_samples(Surf* s, u8* out) {
     VkImage grid = vk_ms_unpack(cb, s, 0, 0, 8);
     CHECK(grid);
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {8, 8, 1}};
-    rec_CmdCopyImageToBuffer(cb, grid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    rec_CmdCopyImageToBuffer(cb, grid, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
     vk_finish();
     vk_readback_ready();
     memcpy(out, data, 256);
@@ -58,10 +58,10 @@ static int ms_read_pixels(Surf* s, u32 w, u32 h, u8* out) {
     u8* data = vk_readback_buffer((u64)w * h * 4, &buffer);
     CHECK(data && !s->msaa);
     VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(cb, s, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
-    rec_CmdCopyImageToBuffer(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    rec_CmdCopyImageToBuffer(cb, s->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
     vk_finish();
     vk_readback_ready();
     memcpy(out, data, (size_t)w * h * 4);
@@ -483,10 +483,10 @@ static int check_msaa_nvn_depth(NvnDraw* d, u64 gpu, u64 cpu) {
     u8* data = vk_readback_buffer(16 * 8 * 4, &buffer);
     CHECK(data);
     VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(cb, t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy bc = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {16, 8, 1}};
-    rec_CmdCopyImageToBuffer(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &bc);
+    rec_CmdCopyImageToBuffer(cb, t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &bc);
     vk_finish();
     vk_readback_ready();
     vk_unlock();
@@ -567,13 +567,13 @@ static int nvn_depth_copy(NvnDraw* d, u16 format, u64 gpu, u64 cpu, u64 soff, u6
     u8* data = vk_readback_buffer(16 * 8 * 5, &buffer);
     CHECK(data);
     VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(cb, t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy bc[2] = {{.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {16, 8, 1}},
                                {.bufferOffset = 16 * 8 * 4,
                                 .imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1},
                                 .imageExtent = {16, 8, 1}}};
-    rec_CmdCopyImageToBuffer(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 2, bc);
+    rec_CmdCopyImageToBuffer(cb, t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 2, bc);
     vk_finish();
     vk_readback_ready();
     vk_unlock();

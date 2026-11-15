@@ -152,18 +152,18 @@ static int ui_frame_once(UiCheck* c, const int safe[4], const char* what, int* c
     cb = vk_cmd();
     vk_barrier(cb, c->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
                VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    rec_CmdClearColorImage(cb, c->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &back, 1, &all);
+               VK_LAYOUT(TRANSFER_DST_OPTIMAL));
+    rec_CmdClearColorImage(cb, c->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), &back, 1, &all);
     /* as the frame's blit leaves the swapchain's image */
     vk_barrier(cb, c->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+               VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               VK_LAYOUT(TRANSFER_DST_OPTIMAL));
     vk_ui_draw(cb, c->img, safe);
     cb = vk_cmd();
     vk_barrier(cb, c->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    rec_CmdCopyImageToBuffer(cb, c->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb, 1, &copy);
+               VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+               VK_LAYOUT(TRANSFER_SRC_OPTIMAL));
+    rec_CmdCopyImageToBuffer(cb, c->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), rb, 1, &copy);
     vk_finish();
     vk_readback_ready();
     n = ui_quads(c, safe);
