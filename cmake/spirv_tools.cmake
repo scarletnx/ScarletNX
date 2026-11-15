@@ -136,12 +136,9 @@ if(NOT snx_spirv_opt OR NOT snx_spirv_val)
         endif()
         set(snx_spirv_cc "${SNX_HOST_CC}")
         set(snx_spirv_cxx "${SNX_HOST_CXX}")
-        execute_process(COMMAND "${SNX_HOST_CXX}" --version OUTPUT_VARIABLE snx_spirv_cxx_id ERROR_QUIET)
-        string(REGEX REPLACE "\n.*" "" snx_spirv_cxx_id "${snx_spirv_cxx_id}")
     else()
         set(snx_spirv_cc "${CMAKE_C_COMPILER}")
         set(snx_spirv_cxx "${CMAKE_CXX_COMPILER}")
-        set(snx_spirv_cxx_id "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
     endif()
     # SPIRV-Tools' configure generates its grammar tables with Python
     if(NOT Python3_EXECUTABLE)
@@ -166,9 +163,9 @@ if(NOT snx_spirv_opt OR NOT snx_spirv_val)
         -DSPIRV_TOOLS_BUILD_STATIC=ON
         -DBUILD_SHARED_LIBS=OFF
         -DSKIP_SPIRV_TOOLS_INSTALL=ON)
-    snx_deps_cached(spirv-tools snx_spirv_tools_cache "source: ${snx_spirv_tools_sha256}"
-                    "headers: ${snx_spirv_headers_sha256}" "configure: ${snx_spirv_args}"
-                    "host compiler: ${snx_spirv_cxx} ${snx_spirv_cxx_id}")
+    # keyed by the build machine's compiler, not the target's: every target built here runs the same tools
+    snx_deps_cached(spirv-tools snx_spirv_tools_cache HOST "${snx_spirv_cc}" "source: ${snx_spirv_tools_sha256}"
+                    "headers: ${snx_spirv_headers_sha256}" "configure: ${snx_spirv_args}")
     if(snx_spirv_tools_cache_FOUND)
         set(snx_spirv_prefix "${snx_spirv_tools_cache_DIR}")
     else()
