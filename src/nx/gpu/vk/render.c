@@ -3116,6 +3116,9 @@ static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int minus_one, int 
     if ((d & VK_DYN_PR_PATCH) && k->tes) DYN(patch, k->patch, rec_CmdSetPatchControlPointsEXT(cb, k->patch));
 }
 u64 g_vk_drawn, g_vk_skipped, g_vk_mesh_draws, g_vk_mesh_drawn;
+/* draws whose depth the console both clips and clamps (its clamp off), and of them those that write their own depth or
+   take a depth bias, whose depth may leave the viewport's range: undefined there without VK_EXT_depth_clip_enable */
+u64 g_vk_depth_apart_draws, g_vk_depth_apart_moved;
 u64 g_vk_capture_draws, g_vk_capture_primitives, g_vk_capture_capped;
 
 /* The viewport's size with the transform off: the surface clip's, at most the device's viewport dimensions at the
@@ -5688,6 +5691,10 @@ retry:
                                                                                          : 2) &
                                     1;
         DYN(bias_on, bias_on, rec_CmdSetDepthBiasEnable(cb, bias_on));
+        if (ds->rkey.depth_pixel_clamp && !ds->rkey.depth_no_clip) {
+            g_vk_depth_apart_draws++;
+            if (bias_on || (sh.fs0 && (sh.fs0->si.sph[19] & 2u))) g_vk_depth_apart_moved++;
+        }
     }
     {
         float bias[3];

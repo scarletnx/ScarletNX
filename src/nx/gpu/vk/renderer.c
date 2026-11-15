@@ -783,6 +783,17 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 (unsigned long long)g_vk_dset_new, (unsigned long long)g_vk_dset_reused, vk_desc_pools(),
                 (unsigned long long)vk_desc_array_sets(), (unsigned long long)g_vk_draw_kept,
                 (unsigned long long)g_vk_draw_checked, (unsigned long long)g_vk_targets_kept);
+            if (g_vk_depth_apart_draws) {
+                static u64 apart_was, moved_was;
+                LOG("vulkan: %llu draws of the last 600 frames clip and clamp depth, as the console's clamp off does, "
+                    "%llu of them writing their own depth or taking a depth bias: depth past the viewport's range %s\n",
+                    (unsigned long long)(g_vk_depth_apart_draws - apart_was),
+                    (unsigned long long)(g_vk_depth_apart_moved - moved_was),
+                    g_vk.has_depth_clip_enable ? "is clamped (VK_EXT_depth_clip_enable)"
+                                               : "is undefined without VK_EXT_depth_clip_enable");
+                apart_was = g_vk_depth_apart_draws;
+                moved_was = g_vk_depth_apart_moved;
+            }
             {
                 static u64 synced_was;
                 if (g_rec_barriers_synced != synced_was)

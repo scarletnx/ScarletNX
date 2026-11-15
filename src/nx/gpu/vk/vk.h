@@ -2595,6 +2595,8 @@ int vk_memh_mem(void* user, u64 address, u32* words, u32 count);
    accesses a barrier names see the writes before it */
 #define VK_STORAGE_IMAGE_ACCESS (VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)
 extern u64 g_vk_drawn, g_vk_skipped; /* draws recorded, and draws skipped (unsupported topology, failed shader) */
+/* draws whose depth the console clips and clamps, and of them those that write depth or take a depth bias (render.c) */
+extern u64 g_vk_depth_apart_draws, g_vk_depth_apart_moved;
 extern u64 g_vk_mesh_draws, g_vk_mesh_drawn; /* of them, an Ounce's mesh draws, and those recorded */
 /* The ordered capture fallback (render.c capture_draw) records a clear, a draw and a resolve for every primitive: past
    this many primitives a draw is skipped instead. Statistics: draws captured, their primitives, the draws skipped */
