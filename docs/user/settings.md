@@ -30,6 +30,17 @@ Settings show a group for each section ([GUI launcher](gui.md)).
 run: its key with a `-` for each `_` (`state_slots`: `--state-slots=5`), on every driver; a value it does not take is
 said by its key, as the `.ini`'s is. The key as the `.ini` writes it (`--state_slots=5`) is the older spelling, still
 read and said once a run ([Deprecations](deprecations.md)).
+
+A game's own picks, `<id>.picks` beside its `.ini` (`recompiled/<id>/<id>.picks`), hold what was set for that game
+alone, by section as the `.ini` has them: each setting its menu changes (TV mode, Stats, Volume, the controls' and
+controllers' pages, the shortcuts' keys, F4, F6) is kept there, the controls' places and the rest of the game's own
+(`[Game]`, `in-game` in `settings.txt`) in its `.ini`. A run takes a setting from its own command line, then from the
+game's picks, then from the launcher's Settings, which every game gets (the launcher passes them on the command line
+with `--launcher-picks=1`, which puts the game's picks over them), then from the `.ini`, else its default. The `.ini`
+keeps its own values meanwhile. The log's `settings: this game's own, from <path>:` line lists the picks, and says the
+value a run's own `--key=value` plays over one. A change to the file is read while the game runs, as the `.ini`'s is; a
+key no pick takes is said with its value, kept in the file and does nothing; with no pick left the file is removed.
+
 Restart for `docked` (`Auto` follows the host's power while the game runs, and `hotkey_tv_mode` and the game's menu's
 **TV mode** change the mode for the run), `tv_refresh_rate`, `tv_resolution`, `fullscreen`, `transition_screen`, `language`, `resolution`,
 `anisotropy`, `hdr_game`, `hdr_paperwhite`, `hdr_peak`, `memory_gb`, `memory_fit_mode`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
@@ -220,7 +231,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `volume` | `100` | How loud the game plays, in percent of its own sound, `0` to `100` (the menus' steps 5 apart): `0` mutes it. The system's volume stays as it is, and the game's own volume (its options, the console's volume it sets) is taken at this share. A change is heard at once, from the game's `.ini` too. The game's menu (Home, F2) has it on a slider ([Usage](usage.md#playing)), kept in the game's `.ini`; the launcher's Settings > Audio > Volume, a slider too, sets it for every game ([GUI launcher](gui.md)). The log's `settings:` line names it when it is not `100`, again after a reload that changes it, and each output the game opens says the volume it plays at. A 3DS game takes it too (`--volume=N`) |
+| `volume` | `100` | How loud the game plays, in percent of its own sound, `0` to `100` (the menus' steps 5 apart): `0` mutes it. The system's volume stays as it is, and the game's own volume (its options, the console's volume it sets) is taken at this share. A change is heard at once, from the game's `.ini` too. The game's menu (Home, F2) has it on a slider ([Usage](usage.md#playing)), kept in the game's own picks, over the launcher's Settings > Audio > Volume, a slider too, which sets it for every game ([GUI launcher](gui.md)). The log's `settings:` line names it when it is not `100`, again after a reload that changes it, and each output the game opens says the volume it plays at. A 3DS game takes it too (`--volume=N`) |
 
 ## Performance
 
