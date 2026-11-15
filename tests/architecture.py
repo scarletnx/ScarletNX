@@ -253,7 +253,8 @@ DYNAMIC_DESCRIPTOR = re.compile(r'\bVK_DESCRIPTOR_TYPE_(UNIFORM|STORAGE)_BUFFER_
 def check_dynamic_descriptors(repo):
     """no descriptor of src/nx is a dynamic buffer: the NX runtime gives Turnip's reserved descriptor set back as a fifth
     one (gpu_driver_load.c's turnip_sets), and that set is where Turnip keeps dynamic buffers, which then read as zeros.
-    A switch's case naming the type, as a recorder copying any descriptor write does, is no use of it"""
+    A switch's case naming the type, as a recorder copying any descriptor write does, is no use of it. What was seen,
+    beside the other drivers' quirks: docs/layers/gpu/driver-quirks.md"""
     errors = []
     for path in sorted((repo / 'src/nx').rglob('*')):
         if path.suffix not in {'.c', '.h', '.cpp', '.hpp', '.inc'}:
@@ -268,7 +269,8 @@ def check_dynamic_descriptors(repo):
             errors.append(
                 f'{shown}:{line}: {match.group(0)}: Turnip keeps dynamic buffers in the descriptor set the runtime takes '
                 "back for a fifth (gpu_driver_load.c's turnip_sets), so they read as zeros there. Bind the whole "
-                'buffer and give the shader its offset (ui.c and ui.vert do it with a push constant)'
+                'buffer and give the shader its offset (ui.c and ui.vert do it with a push constant; '
+                'docs/layers/gpu/driver-quirks.md#turnip)'
             )
     return errors
 
