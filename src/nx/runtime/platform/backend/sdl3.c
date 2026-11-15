@@ -29,6 +29,7 @@
 #include "nx/runtime/platform/hotkeys.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/quit_key.h"
+#include "common/utilities/audio_volume.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -138,7 +139,15 @@ struct PAudio {
     SDL_AudioStream* stream;
     int logged_data, logged_nonzero;
     int downmix; /* the game's 5.1 is mixed to the stream's stereo here */
+    int volume;  /* the player's Volume its device was given last (audio_volume.h), -1 before */
 };
+/* the player's Volume on a's device: the setting the .ini, its reload and the game's menu change, read as it is now */
+static int audio_volume(PAudio* a) {
+    int volume = __atomic_load_n(&g_settings.volume, __ATOMIC_RELAXED);
+    if (!snx_audio_volume_follow(a->stream, volume, &a->volume))
+        WARN_LIMIT(4, "audio: SDL could not set the output's volume to %d%%: %s\n", volume, SDL_GetError());
+    return volume;
+}
 
 PAudio* plat_audio_open(u32 rate, u32 channels) {
     if (g_opt_headless || !g_sdl3.audio_ready) return NULL;
@@ -171,19 +180,22 @@ PAudio* plat_audio_open(u32 rate, u32 channels) {
     }
     a->stream = stream;
     a->downmix = downmix;
+    a->volume = -1;
+    int volume = audio_volume(a);
     /* the device by its format, never its name: the system names a headset after its owner ("<name>'s headphones"), and
        players attach the log to public reports */
     SDL_AudioSpec device;
     int frames = 0;
     if (SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream), &device, &frames))
         LOG("audio: SDL %s output opened on the system default, which plays %s at %d Hz, %d channels, %d-frame "
-            "buffer; the game gives %u Hz, %u channels, signed 16-bit PCM%s\n",
+            "buffer; the game gives %u Hz, %u channels, signed 16-bit PCM%s; volume %d%%\n",
             SDL_GetCurrentAudioDriver(), SDL_GetAudioFormatName(device.format), device.freq, device.channels, frames,
-            rate, channels, downmix ? ", mixed to 2 channels here" : "");
+            rate, channels, downmix ? ", mixed to 2 channels here" : "", volume);
     else
         LOG("audio: SDL %s output opened on the system default, whose format SDL does not give (%s); the game gives "
-            "%u Hz, %u channels, signed 16-bit PCM%s\n",
-            SDL_GetCurrentAudioDriver(), SDL_GetError(), rate, channels, downmix ? ", mixed to 2 channels here" : "");
+            "%u Hz, %u channels, signed 16-bit PCM%s; volume %d%%\n",
+            SDL_GetCurrentAudioDriver(), SDL_GetError(), rate, channels, downmix ? ", mixed to 2 channels here" : "",
+            volume);
     return a;
 }
 
@@ -195,6 +207,7 @@ void plat_audio_close(PAudio* a) {
 
 int plat_audio_queue(PAudio* a, const void* samples, u32 bytes) {
     if (!a || !bytes) return 0;
+    audio_volume(a); /* a change since the last buffer, heard from what SDL has queued on */
     /* SDL's length is signed. Split only at whole stereo frames, without truncating a large guest buffer. */
     const u8* p = samples;
     u32 left = bytes;

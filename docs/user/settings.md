@@ -8,6 +8,7 @@
 * [Display](#display)
 * [Graphics](#graphics)
   * [Vulkan Extensions](#vulkan-extensions)
+* [Audio](#audio)
 * [Performance](#performance)
 * [On-screen controls](#on-screen-controls)
 * [Controllers](#controllers)
@@ -197,6 +198,12 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_nv_fragment_coverage_to_color` | `auto` | `VK_NV_fragment_coverage_to_color` |
 | `vk_nv_framebuffer_mixed_samples` | `auto` | `VK_NV_framebuffer_mixed_samples` |
 | `vk_valve_shader_mixed_float_dot_product` | `auto` | `VK_VALVE_shader_mixed_float_dot_product` |
+
+## Audio
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `volume` | `100` | How loud the game plays, in percent of its own sound, `0` to `100` (the menus' steps 5 apart): `0` mutes it. The system's volume stays as it is, and the game's own volume (its options, the console's volume it sets) is taken at this share. A change is heard at once, from the game's `.ini` too. The game's menu (Home, F2) has it on a slider ([Usage](usage.md#playing)), kept in the game's `.ini`; the launcher's Settings > Audio > Volume, a slider too, sets it for every game ([GUI launcher](gui.md)). The log's `settings:` line names it when it is not `100`, again after a reload that changes it, and each output the game opens says the volume it plays at. A 3DS game takes it too (`--volume=N`) |
 
 ## Performance
 

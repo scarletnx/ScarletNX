@@ -94,7 +94,8 @@ static void usage(FILE* out) {
         "                         --anisotropy=N (2 to 16) filters a mipmapped texture the game filters linearly\n"
         "                         anisotropically (default 0: as the game asks). --fps_limit=N runs the game at\n"
         "                         N/60 of the console's pace (the 3DS shows 60 frames a second), 0 as fast as it\n"
-        "                         goes, game the console's (the default), and F4 turns it off and on.\n"
+        "                         goes, game the console's (the default), and F4 turns it off and on. --volume=N\n"
+        "                         plays the game's sound at N percent (0 to 100, the default 100; 0 mutes it)\n"
         "                         --aot_threads=N compiles the game's code on N threads (0 to 1024; the default 0:\n"
         "                         the computer's cores with a quarter left free, or --aot_threads_most=N), as the\n"
         "                         Switch's, the same as --jobs N. KEY with a - for each _ is the same setting\n"
@@ -879,6 +880,7 @@ int snx_ctr_main(int argc, char** argv) {
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_backend_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_graphics_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_display_ini, key);
+                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_audio_ini, key);
                 if (!o) o = ini_find(g_vk_extensions_ini, key);
                 map = !strcmp(key, "gamepad_map");
             }

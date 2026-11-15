@@ -3453,6 +3453,13 @@ else()
     add_test(NAME audio_opus COMMAND snx-test-audio-opus)
 endif()
 
+# the player's Volume on an SDL output, the Switch's and the 3DS's (common/utilities/audio_volume.h), on SDL's dummy driver
+if(TARGET SDL3::SDL3)
+    add_executable(snx-test-audio-volume audio_volume.c)
+    snx_test_target(snx-test-audio-volume 11)
+    target_link_libraries(snx-test-audio-volume PRIVATE scarletnx-common SDL3::SDL3)
+    add_test(NAME audio_volume COMMAND snx-test-audio-volume)
+endif()
 # a 5.1 game's PCM mixed to stereo for a host output of two channels (runtime/platform/audio_downmix.c)
 add_executable(snx-test-audio-downmix audio_downmix.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/audio_downmix.c")
 snx_test_target(snx-test-audio-downmix 99)

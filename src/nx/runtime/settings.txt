@@ -458,6 +458,17 @@ setting ASTC background
     help Who makes the better version of the very large ASTC textures encoded quickly (ASTC quick Mtexels): 1 = the
     help GPU, a piece after each frame; 0 = nobody: they stay as they were encoded quickly
 
+table g_audio_ini
+setting Volume
+    key volume
+    int 0 100
+    default 100
+    words Mute|#%
+    step 5
+    slider
+    help How loud the game plays, in percent of its own sound: 0 = mute. The system's volume stays as it is. The game's
+    help menu sets it while the game plays
+
 table g_performance_ini
 setting FPS limit
     key fps_limit
@@ -1951,6 +1962,7 @@ setting @VK_VALVE_shader_mixed_float_dot_product
 section Game: g_game_ini
 section Display: g_display_ini
 section Graphics: g_graphics_ini, g_vk_extensions_ini/Vulkan Extensions
+section Audio: g_audio_ini
 section 3DS: g_ctr_display_ini
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend
