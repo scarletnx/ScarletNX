@@ -1462,6 +1462,15 @@ setting ASTC dump
     help A folder that keeps each whole ASTC texture level the game loads, as an .astc file (astcenc's format, the
     help layers or slices as its depth), for snx-test-astc-vulkan --bench and the BC7 encoder's measurements (the
     help game's own textures: keep them local). At most 2 GiB a run. Empty: none
+setting VT probe
+    key vt_probe
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = every 60 presents the log says how much of the ASTC textures the frames sampled (aogo/vt-working-set, a
+    help local measurement for the virtual texture study): the textures a frame and 60 frames bound, as RGBA8, as
+    help ASTC and as held, against every ASTC texture alive
 setting SM86 dump
     key sm86_dump
     text 1024

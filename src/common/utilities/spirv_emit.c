@@ -1755,7 +1755,7 @@ uint32_t* spv_emit_finish(const SpvEmitter* e, size_t* word_count) {
     if (e->imports.count) memcpy(out + p, e->imports.words, e->imports.count * sizeof(uint32_t));
     p += e->imports.count;
     out[p++] = (3u << 16) | SPV_OP_MEMORY_MODEL;
-    out[p++] = 0; /* Logical */
+    out[p++] = e->physical_storage_buffer ? 5348u : 0; /* PhysicalStorageBuffer64, Logical */
     out[p++] = e->vulkan_memory_model ? 3 : 1; /* Vulkan, GLSL450 */
     for (size_t i = 3; i < sizeof sections / sizeof sections[0]; i++) {
         if (sections[i]->count) memcpy(out + p, sections[i]->words, sections[i]->count * sizeof(uint32_t));

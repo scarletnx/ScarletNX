@@ -21,6 +21,7 @@
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/texture/astc_kind.h"
+#include "nx/gpu/shader/shader.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 
@@ -4428,7 +4429,9 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     return s;
 }
 
+static void vt_probe_present(void);
 void vk_tex_frame(void) {
+    vt_probe_present();
     /* surfaces whose pixels can be had again go once unused for twenty seconds and in 120 presents (a game at 6 frames
        a second kept 600 presents' worth, 100 seconds, of the targets it made every frame); textures come back from
        memory if they are needed again. Those whose pixels would be lost (vk_surf_reclaim) go before five minutes
@@ -4914,10 +4917,153 @@ static void tex_tag(const Surf* t) {
     vk_devmem_info(t->mem, &info);
     if ((int)vk_devmem_props()->memoryTypes[info.type].heapIndex != vk_mem_heap()) g_tex_tags |= 512;
 }
+/* vt_probe: the ASTC textures the frames sample, a texture a whole (every level and layer): what a cache of whole
+   decoded textures would have to hold. A frame's and a window of VT_PROBE_WINDOW presents', each as RGBA8, as the ASTC
+   blocks and as the image holds it (t->bytes: RGBA8, BC7 or BCn), against every ASTC texture alive, logged at each
+   window's end. A texture bound but not sampled by the draw counts: an upper bound of the textures' working set */
+#define VT_PROBE_WINDOW 60u
+typedef struct {
+    u64 n, rgba8, astc, held;
+    u64 sparse_n, sparse_rgba8, sparse_held; /* of those, the textures with holes in their mapping (t->sparse), whose
+                                                RGBA8 and ASTC sizes count every layer, mapped or not */
+} VtSum;
+static struct {
+    VtSum frame, window, frames[VT_PROBE_WINDOW];
+    u32 nframes, window_id;
+} g_vt_probe;
+static u64 vt_texels(const Surf* t) {
+    u64 n = 0;
+    const u32 d = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1;
+    for (u32 l = 0; l < t->levels; l++)
+        n += (u64)(t->w >> l ? t->w >> l : 1) * (t->h >> l ? t->h >> l : 1) * (d >> l ? d >> l : 1);
+    return n * (t->layers ? t->layers : 1);
+}
+static u64 vt_astc_bytes(const Surf* t) {
+    u64 n = 0;
+    const u32 d = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1, bw = t->f.bw, bh = t->f.bh;
+    for (u32 l = 0; l < t->levels; l++) {
+        const u64 w = t->w >> l ? t->w >> l : 1, h = t->h >> l ? t->h >> l : 1;
+        n += (w + bw - 1) / bw * ((h + bh - 1) / bh) * (d >> l ? d >> l : 1) * 16;
+    }
+    return n * (t->layers ? t->layers : 1);
+}
+static void vt_add(VtSum* s, const Surf* t) {
+    s->n++;
+    s->rgba8 += vt_texels(t) * 4;
+    s->astc += vt_astc_bytes(t);
+    s->held += t->bytes;
+    if (t->sparse) {
+        s->sparse_n++;
+        s->sparse_rgba8 += vt_texels(t) * 4;
+        s->sparse_held += t->bytes;
+    }
+}
+static void vt_probe_use(Surf* t) {
+    if (!g_settings.vt_probe || !t || t->f.conv != VKC_ASTC) return;
+    if (t->vt_present != g_vk_present + 1) {
+        t->vt_present = g_vk_present + 1;
+        vt_add(&g_vt_probe.frame, t);
+    }
+    if (t->vt_window != g_vt_probe.window_id + 1) {
+        t->vt_window = g_vt_probe.window_id + 1;
+        vt_add(&g_vt_probe.window, t);
+    }
+}
+void vk_tex_vt_use(Surf* t) { vt_probe_use(t); }
+/* the biggest ASTC textures alive by their RGBA8 size, logged every tenth window: which ones make the totals */
+#define VT_TOP 8
+static struct {
+    const Surf* t[VT_TOP];
+    u64 rgba8[VT_TOP];
+} g_vt_top;
+/* every ASTC texture alive by footprint (bw - 4, bh - 4): textures, RGBA8, ASTC and held bytes */
+static u64 g_vt_alive_fp[9][9][4];
+static void vt_alive(Surf* t, void* ctx) {
+    if (t->f.conv != VKC_ASTC) return;
+    vt_add(ctx, t);
+    if (t->f.bw >= 4 && t->f.bw <= 12 && t->f.bh >= 4 && t->f.bh <= 12) {
+        u64* f = g_vt_alive_fp[t->f.bw - 4][t->f.bh - 4];
+        f[0]++;
+        f[1] += vt_texels(t) * 4;
+        f[2] += vt_astc_bytes(t);
+        f[3] += t->bytes;
+    }
+    const u64 b = vt_texels(t) * 4;
+    int i = VT_TOP;
+    while (i > 0 && g_vt_top.rgba8[i - 1] < b) i--;
+    if (i == VT_TOP) return;
+    for (int k = VT_TOP - 1; k > i; k--) {
+        g_vt_top.t[k] = g_vt_top.t[k - 1];
+        g_vt_top.rgba8[k] = g_vt_top.rgba8[k - 1];
+    }
+    g_vt_top.t[i] = t;
+    g_vt_top.rgba8[i] = b;
+}
+static int vt_cmp(const void* a, const void* b) {
+    const u64 x = *(const u64*)a, y = *(const u64*)b;
+    return x < y ? -1 : x > y;
+}
+static void vt_probe_present(void) {
+    if (!g_settings.vt_probe) return;
+    vk_vt_bits_present();
+    g_vt_probe.frames[g_vt_probe.nframes++] = g_vt_probe.frame;
+    g_vt_probe.frame = (VtSum){0, 0, 0, 0, 0, 0, 0};
+    if (g_vt_probe.nframes < VT_PROBE_WINDOW) return;
+    u64 rgba8[VT_PROBE_WINDOW], astc[VT_PROBE_WINDOW], n[VT_PROBE_WINDOW];
+    for (u32 i = 0; i < VT_PROBE_WINDOW; i++) {
+        rgba8[i] = g_vt_probe.frames[i].rgba8;
+        astc[i] = g_vt_probe.frames[i].astc;
+        n[i] = g_vt_probe.frames[i].n;
+    }
+    qsort(rgba8, VT_PROBE_WINDOW, sizeof(u64), vt_cmp);
+    qsort(astc, VT_PROBE_WINDOW, sizeof(u64), vt_cmp);
+    qsort(n, VT_PROBE_WINDOW, sizeof(u64), vt_cmp);
+    VtSum alive = {0, 0, 0, 0, 0, 0, 0};
+    memset(&g_vt_top, 0, sizeof g_vt_top);
+    memset(g_vt_alive_fp, 0, sizeof g_vt_alive_fp);
+    vk_surf_textures(vt_alive, &alive);
+    if (g_vt_probe.window_id % 10 == 0)
+        for (u32 x = 0; x < 9; x++)
+            for (u32 y = 0; y < 9; y++)
+                if (g_vt_alive_fp[x][y][0])
+                    LOG("vt probe: alive, ASTC %ux%u: %llu textures, %llu MB as RGBA8, %llu MB as ASTC, %llu MB held\n",
+                        x + 4, y + 4, (unsigned long long)g_vt_alive_fp[x][y][0],
+                        (unsigned long long)(g_vt_alive_fp[x][y][1] >> 20),
+                        (unsigned long long)(g_vt_alive_fp[x][y][2] >> 20),
+                        (unsigned long long)(g_vt_alive_fp[x][y][3] >> 20));
+    if (g_vt_probe.window_id % 10 == 0)
+        for (int i = 0; i < VT_TOP && g_vt_top.t[i]; i++) {
+            const Surf* t = g_vt_top.t[i];
+            LOG("vt probe: the %d biggest: %ux%u, %u layers, depth %u, %u levels, ASTC %ux%u, format %d, %llu MB as "
+                "RGBA8, %llu MB held, sparse %u, lod floor %u, sampled in this window %u\n",
+                i + 1, t->w, t->h, t->layers, t->depth3d, t->levels, t->f.bw, t->f.bh, (int)t->f.vk,
+                (unsigned long long)(g_vt_top.rgba8[i] >> 20), (unsigned long long)(t->bytes >> 20), t->sparse,
+                t->lod_floor, t->vt_window == g_vt_probe.window_id + 1);
+        }
+    const VtSum* w = &g_vt_probe.window;
+    LOG("vt probe: presents %u to %u: a frame samples %llu ASTC textures (median; %llu at most), %llu MB as RGBA8 "
+        "(median; %llu at most), %llu MB as ASTC; the %u presents together %llu textures, %llu MB as RGBA8, %llu MB as "
+        "ASTC, %llu MB held (sparse: %llu textures, %llu MB as RGBA8, %llu MB held); alive %llu ASTC textures, %llu MB "
+        "as RGBA8, %llu MB as ASTC, %llu MB held (sparse: %llu textures, %llu MB as RGBA8, %llu MB held)\n",
+        g_vk_present + 1 - VT_PROBE_WINDOW, g_vk_present, (unsigned long long)n[VT_PROBE_WINDOW / 2],
+        (unsigned long long)n[VT_PROBE_WINDOW - 1], (unsigned long long)(rgba8[VT_PROBE_WINDOW / 2] >> 20),
+        (unsigned long long)(rgba8[VT_PROBE_WINDOW - 1] >> 20), (unsigned long long)(astc[VT_PROBE_WINDOW / 2] >> 20),
+        VT_PROBE_WINDOW, (unsigned long long)w->n, (unsigned long long)(w->rgba8 >> 20),
+        (unsigned long long)(w->astc >> 20), (unsigned long long)(w->held >> 20), (unsigned long long)w->sparse_n,
+        (unsigned long long)(w->sparse_rgba8 >> 20), (unsigned long long)(w->sparse_held >> 20),
+        (unsigned long long)alive.n, (unsigned long long)(alive.rgba8 >> 20), (unsigned long long)(alive.astc >> 20),
+        (unsigned long long)(alive.held >> 20), (unsigned long long)alive.sparse_n,
+        (unsigned long long)(alive.sparse_rgba8 >> 20), (unsigned long long)(alive.sparse_held >> 20));
+    vk_vt_bits_window();
+    g_vt_probe.nframes = 0;
+    g_vt_probe.window = (VtSum){0, 0, 0, 0, 0, 0, 0};
+    g_vt_probe.window_id++;
+}
 Surf* vk_tex_from_tic(const u32* tic) {
     Surf* t = tex_from_tic(tic, 0, TEX_SAMPLED);
     tex_take_drawn(t);
     tex_tag(t);
+    vt_probe_use(t);
     return t;
 }
 Surf* vk_tex_from_tic_storage(const u32* tic) {
@@ -4928,6 +5074,7 @@ Surf* vk_tex_from_tic_storage(const u32* tic) {
 Surf* vk_tex_from_tic_guest(const u32* tic, int raw) {
     Surf* t = tex_from_tic(tic, raw, TEX_GUEST);
     tex_take_drawn(t);
+    vt_probe_use(t);
     return t;
 }
 Surf* vk_tex_recheck(Surf* t) {
@@ -4940,5 +5087,6 @@ Surf* vk_tex_recheck(Surf* t) {
 Surf* vk_tex_from_tic_raw(const u32* tic) {
     Surf* t = tex_from_tic(tic, 1, TEX_SAMPLED);
     tex_take_drawn(t);
+    vt_probe_use(t);
     return t;
 }

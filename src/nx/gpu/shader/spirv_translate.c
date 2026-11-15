@@ -146,6 +146,7 @@ ShCaps g_spirv_translate = {.tex_array = SNX_TEX_ARRAY,
                             .quad = 1,
                             .quad_compute = 1,
                             .tessellation = 1};
+u64 g_vt_probe_address;
 
 /* the family of instructions whose branches take each opcode, FAM_NONE for one no branch takes (refused by
    the prescan, or one that writes nothing): a family's function is the only one with branches for its opcodes */

@@ -1686,7 +1686,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                                             .bufferDeviceAddress = g_vk.has_descriptor_buffers ||
                                                                    g_vk.has_descriptor_heap_support ||
                                                                    g_vk.has_copy_indirect ||
-                                                                   g_vk.has_inplace_loads,
+                                                                   g_vk.has_inplace_loads || g_settings.vt_probe,
                                             .shaderFloat16 = q12.shaderFloat16,
                                             .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,
                                             .shaderOutputLayer = q12.shaderOutputLayer,
@@ -2330,9 +2330,10 @@ static int create_device(void) {
     vk_mem_init(sparse_queue);
     /* the renderer's own allocator (devmem.c): its blocks are 64 MiB at most, and no more than the cap */
     if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support || g_vk.has_copy_indirect ||
-                        g_vk.has_inplace_loads))
+                        g_vk.has_inplace_loads || g_settings.vt_probe))
         return 0;
     __atomic_store_n(&g_devmem_ready, 1, __ATOMIC_RELEASE);
+    vk_tex_vt_init(); /* vt_probe: the samples' bitmap and its address, before any program is translated */
     { /* a GPU of 4 GiB or less: memory held back for render targets (devmem.c vk_devmem_reserve) */
         VkPhysicalDeviceMemoryProperties mp;
         vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);

@@ -1262,6 +1262,7 @@ static struct {
     VkDescriptorBufferInfo shadow;
 } g_capture_draw;
 static Surf* capture_sample(Surf* texture) {
+    vk_tex_vt_use(texture); /* vt_probe: every texture a draw binds to sample, directly or in its indexed tables */
     if (!g_capture_draw.images || texture != g_capture_draw.images->target) return texture;
     if (!g_capture_draw.snapshot) g_capture_draw.snapshot = vk_rt_snapshot(texture, 1);
     return g_capture_draw.snapshot;
@@ -2824,6 +2825,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                 if ((handle & 0xFFFFF) <= ds->bind.tex_max && ((handle >> 20) & 0xFFF) <= ds->bind.smp_max) {
                     tex_resolve(ds, handle, &x);
                     x.t = capture_sample(x.t);
+                    vk_tex_vt_handle(handle, x.t);
                     if (x.t && !!(kind->flags & 2) == !!x.t->msaa && (!kind->shadow || !x.t->f.is_int)) {
                         if (is_target(x.t, rt, zt, n)) {
                             /* An indexed handle needs the same pre-draw contents as a directly bound texture.
@@ -3317,6 +3319,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                       "which its samples don't divide by the size: sampled as normalized\n",
                       i, stage, handle, (x->tic[4] >> 23) & 0xF);
         Surf* t = capture_sample(x->t);
+        vk_tex_vt_handle(handle, t);
         if (stage == ST_FS) t = predraw_sample(i, t);
         /* a multisampled texture's program fetches its samples (flags bit 1), and an image of other samples than
            the program's reads zeros, as a missing texture does */

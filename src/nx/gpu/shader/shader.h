@@ -566,6 +566,28 @@ typedef struct {
     unsigned maximal_reconvergence : 1;
 } ShCaps;
 extern ShCaps g_spirv_translate;
+/* aogo/vt-working-set's sampling probe (vt_probe=1): the device address of the bitmap a fragment program's 2D samples
+   mark their tiles in, 0 when off. A texture header index h has bits h * SH_VT_REGION up (h under SH_VT_TICS; the
+   last index takes the others), laid out by shader_vt_tile: its levels, then layers, then rows of tiles */
+extern u64 g_vt_probe_address;
+#define SH_VT_TICS       131072u
+#define SH_VT_REGION     8192u
+/* the tile side, SH_VT_PAGE << k for the smallest k from 0 to 7 that fits levels * layers * tiles of level 0 in
+   SH_VT_REGION bits, as the shader picks it: its k, and its tiles across and down level 0. SH_VT_PAGE is eXxe's page
+   (2026-11-15): 128x128 useful texels */
+#define SH_VT_PAGE_SHIFT 7u
+#define SH_VT_PAGE       (1u << SH_VT_PAGE_SHIFT)
+static inline u32 shader_vt_tile(u32 w, u32 h, u32 layers, u32 levels, u32* across, u32* down) {
+    u32 k = 7;
+    for (int j = 7; j >= 0; j--) {
+        const u32 t = SH_VT_PAGE << j, x = (w + t - 1) / t, y = (h + t - 1) / t;
+        if ((u64)levels * layers * x * y <= SH_VT_REGION) k = (u32)j;
+    }
+    const u32 t = SH_VT_PAGE << k;
+    *across = (w + t - 1) / t;
+    *down = (h + t - 1) / t;
+    return k;
+}
 /* NVN's draw parameters: its driver writes each draw's base vertex and base instance into constant buffer 0 at these
    offsets, which vertex programs read (an instanced program adds the base instance to its instance ID). An indirect
    draw's are in its record, on the GPU: with draw parameters, a vertex program's reads of these words take

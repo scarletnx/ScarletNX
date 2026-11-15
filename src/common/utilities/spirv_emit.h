@@ -63,6 +63,9 @@ typedef struct {
        barriers' and atomics' acquire and release semantics then also make memory visible and available, as GLSL450
        implies, and spv_emit_load_nonprivate and spv_emit_store_nonprivate access memory other invocations share */
     int vulkan_memory_model;
+    /* the PhysicalStorageBuffer64 addressing model, for pointers made from a device address (aogo/vt-working-set's
+       sampling probe) */
+    int physical_storage_buffer;
     /* the memory semantics' storage class bit of "shared" memory, for the shared atomics and the control barrier: 0 for
        WorkgroupMemory, or UniformMemory (0x40) for a program whose shared memory a storage buffer holds (a block that
        asks for more than the device gives, vk/compute.c), so that its barriers and atomics order that buffer's words */

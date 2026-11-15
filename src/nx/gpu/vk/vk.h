@@ -1262,6 +1262,8 @@ typedef struct Surf {
        it loaded: its next use reads its blocks again from memory, as a load held as BC7 does, unless it was loaded
        again since (its wgen then, texture.c later_reread) */
     u8 bc7_reread;
+    /* vt_probe: the present (plus one) and the probe's window (plus one) this ASTC texture was last sampled in */
+    u32 vt_present, vt_window;
     u32 bc7_reread_wgen;
     /* textures: an ASTC one under astc_mode's Auto whose blocks' kind the GPU reads (texture.c's kind_frame), made in
        the format Auto holds one of unknown kind in, its blocks kept (bc7.kept) for the read and for the BC1, BC4 or BC5
@@ -1489,6 +1491,14 @@ void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked);
 void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx);
 /* fn on each texture of the caches with ctx, the least recently used first: it may change one, not free or add one */
 void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx);
+/* vt_probe (texture.c): t is bound for sampling in this frame */
+void vk_tex_vt_use(Surf* t);
+/* vt_probe's sampling bitmap: made with the device (vk_tex_vt_init), and the texture a header index named when a draw
+   bound it (vk_tex_vt_handle) */
+void vk_tex_vt_init(void);
+void vk_tex_vt_handle(u32 handle, Surf* t);
+void vk_vt_bits_present(void); /* each present: the frame's marks copied out, the landed ones counted */
+void vk_vt_bits_window(void);  /* each window: the frames' and their union's tile bytes logged */
 /* each present, while memory is short: the textures whose texture object the game ended go, once memory can give
    them again and a grace period passed with no object made at their address (a game that ends a texture and makes
    it again there with the same bytes still finds it) */

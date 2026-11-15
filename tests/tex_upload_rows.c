@@ -21,6 +21,9 @@ static void* counted_malloc(size_t n) {
 #define malloc counted_malloc
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers" /* texture.c builds without -Wextra */
 #include "nx/gpu/vk/texture.c"
+/* vt_probe's sampling bitmap (vk/vt_probe.c, not linked here) */
+void vk_vt_bits_present(void) {}
+void vk_vt_bits_window(void) {}
 #undef malloc
 #include "nx/hle/services/nvdrv.h" /* gmmu_pieces, and g_mem, which the stubs below stand in for */
 #include "nx/memory/mem.h"
