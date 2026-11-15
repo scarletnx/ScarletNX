@@ -108,6 +108,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
              runtime/platform/backend/sdl3.c runtime/platform/audio_downmix.c
              runtime/platform/backend/gamepad.c runtime/platform/connect.c runtime/platform/tracy.c
+             runtime/platform/ctrl_applet.c runtime/platform/ctrl_request.c runtime/platform/ctrl_scan.c
              runtime/platform/joycon2.c runtime/platform/joycon2_sdl.c runtime/platform/joycon2_session.c
              runtime/platform/joycon2_proto.c runtime/platform/joycon2_att.c runtime/platform/joycon2_link.c
              runtime/platform/help.c runtime/platform/hotkeys.c runtime/platform/hud.c runtime/platform/overlay.c
@@ -380,6 +381,8 @@ include("${PROJECT_SOURCE_DIR}/cmake/window_icon.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/build_info.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/pad_sdl.cmake")
 target_link_libraries(snx_platform PRIVATE SDL3::SDL3 snx_window_icon snx_build_info snx_pad_sdl snx_splash snx_notice)
+# the controller applet's dialog listens for Joy-Con 2 adverts while it shows (ctrl_scan.h)
+target_link_libraries(snx_platform PRIVATE snx_ble_system)
 if(WIN32)
     target_link_libraries(snx_platform PUBLIC synchronization powrprof) # plat_wait_word's WaitOnAddress, the power notification
 endif()

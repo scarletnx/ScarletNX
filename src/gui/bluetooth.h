@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Controllers > Bluetooth's controllers, without SDL: the Joy-Con 2 the runtime knows, and those a scan hears
-   (common/platform/ble_scan.h). The runtime, another process, connects them itself (src/nx/runtime/platform/joycon2.c,
-   setting joycon2); the two share joycon2.txt of the user's config folder, a line each, "AA:BB:CC:DD:EE:FF L" (R for a
-   right one), a serial after it when the runtime wrote it. Sync adds a line for a controller heard waiting to sync
+/* Controllers > Bluetooth's controllers, without SDL: the Joy-Con 2 and Pro Controller 2 the runtime knows, and those
+   a scan hears (common/platform/ble_scan.h). The runtime, another process, connects them itself
+   (src/nx/runtime/platform/joycon2.c, setting joycon2). The two share joycon2.txt of the user's config folder, a line
+   each, "AA:BB:CC:DD:EE:FF L" (R for a right Joy-Con 2, P for a Pro Controller 2), a serial after it when the runtime
+   wrote it. Sync adds a line for a controller heard waiting to sync
    (its sync button held), Forget takes its lines out; the other lines stay as they are. Nothing here connects, pairs
    or trusts a controller */
 #ifndef SNX_GUI_BLUETOOTH_H
@@ -22,6 +23,7 @@ enum { GUI_BT_AWAY, GUI_BT_NEARBY, GUI_BT_WAITING, GUI_BT_CONNECTING, GUI_BT_REA
 typedef struct {
     uint8_t address[6];
     int right;         /* a right Joy-Con 2, else a left one */
+    int pro;           /* a Pro Controller 2 */
     char serial[17];   /* "" not known */
     int known;         /* joycon2.txt has it */
     int heard;         /* the scan's state: GUI_BT_AWAY, GUI_BT_NEARBY or GUI_BT_WAITING */

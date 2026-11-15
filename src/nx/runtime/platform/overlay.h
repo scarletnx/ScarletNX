@@ -19,7 +19,8 @@
 #define OVERLAY_SLIDER_COLS 21
 /* what a menu action leaves to its caller: the save state ones for the slot overlay_slot names; the keyboard's box
    answered (overlay_keyboard_take), or a tap on its line, which asks for the system's keyboard again; Capture frame,
-   RenderDoc's capture of the next frame, the menu closed first so the frame is the game's */
+   RenderDoc's capture of the next frame, the menu closed first so the frame is the game's; Assign players, the
+   controller applet's dialog over the game paused */
 enum {
     OVERLAY_NONE,
     OVERLAY_CLOSE,
@@ -30,7 +31,8 @@ enum {
     OVERLAY_DELETE,
     OVERLAY_KEYBOARD,
     OVERLAY_TYPE,
-    OVERLAY_CAPTURE
+    OVERLAY_CAPTURE,
+    OVERLAY_CONTROLLERS
 };
 
 /* whether it is open, for the renderer's thread too */

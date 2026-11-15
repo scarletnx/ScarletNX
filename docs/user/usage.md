@@ -835,9 +835,33 @@ Keyboard and on-screen controls also drive player one.
 `gamepad_assign=1`, the default, gives the players out as a console does (after Eden's Modern Console): each controller
 that connects is the lowest player free ("P2: Xbox Wireless Controller joined"), and one that leaves keeps its player
 for 45 seconds, which it takes back when it returns while another that connects goes past it. Once a player's controller
-has been gone 3 seconds the game pauses ("P2 disconnected: reconnect, or press + on another controller to go on") until
-it returns, or until + is let go on another controller, which goes on without that player. `0` gives them out as each
-player's `gamepad_p<N>_device` names its controller, the next to connect where it names none.
+has been gone 3 seconds the game pauses until it returns, or until + is let go on another controller, which goes on
+without that player. In a window the pause shows the controllers' dialog (below) with that player's card, where A on
+another pad takes its place and *Go on without P2* goes on. `0` gives them out as each player's `gamepad_p<N>_device`
+names its controller, the next to connect where it names none.
+
+When the game asks for its controllers (the console's controller applet), a dialog over the game says what the game
+expects: how many players, how each one holds its controller (with a picture), and the game's own text and color for
+each player. A game of Joy-Con 2 alone that started their mouse sensor gets an optional panel to check the Joy-Con 2 as
+a mouse (on the table or in the air, the cursor, R and ZR): the game never says whether it uses the mouse, so the dialog
+only says "if". Each player has a card that a controller fills with the console's
+gestures, which also choose its style: SL and SR together on one Joy-Con make it a player alone, held sideways (half of
+a pair leaves the pair), L on a left Joy-Con and R on a right one held together make them one pair, and L and R
+together on a pair or any other pad make it a whole one (a pad plays as whatever style the game takes). A gesture the
+game does not take is refused with the reason in the card. A only picks the dialog's items. A console controller (a
+Pro Controller, Joy-Cons, a Joy-Con 2 or Pro Controller 2 the runtime connects, a pad in Switch mode) keeps its own
+style as on the console: a game that takes none of its styles does not see it, asks for its controllers, and the
+dialog says why that one does not fit. A generic pad and the keyboard play as whatever style the game takes. While the TV mode is off,
+player 1's card says whether it is the Joy-Cons attached to the console (the handheld controls, which the game also
+sees as player 1) or detached. A game that does not take the handheld controls, and the Joy-Con 2 mouse, need them
+detached: *Detach the Joy-Cons from the console (tabletop)* takes the handheld controls away for the session and
+leaves the TV mode and the performance mode as they are, and *Attach the Joy-Cons to the console* brings them back. A line under the cards says who is still missing, Continue goes back to the
+game once the least it needs are there, and Cancel tells the game the player backed out. With `joycon2=1` the dialog
+listens for Joy-Con 2 and Pro Controller 2 while it shows: a known one connects as soon as it is heard, a new one
+waiting to sync is connected once picked. *Disconnect P2* closes the link of a controller the runtime connected itself
+(no command goes to the controller) and leaves player 2 waiting: for a minute the controller is not connected again by
+itself, its *Connect ... again* item takes it back at once, and after that a button press connects it as before. The game's menu opens the same dialog under *Controllers > Assign players*, the game paused.
+`controller_applet=1` answers at once when the players are already there.
 `gamepad_joycon_pair=1` makes SDL combine a left and right Joy-Con. Set it to `0` to expose them separately and
 restart the game after changing it.
 

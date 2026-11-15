@@ -24,14 +24,15 @@ typedef struct {
    lifted 0xff (no reading). The left one lying flat, its sensor to the side, about 0x35. Below this it is on a
    surface the game may take it as a mouse on */
 #define JC2_SURFACE_NEAR     0x30
-enum { JC2_SIDE_LEFT, JC2_SIDE_RIGHT };
+enum { JC2_SIDE_LEFT, JC2_SIDE_RIGHT, JC2_SIDE_PRO }; /* a left or right Joy-Con 2, or a Pro Controller 2 */
 enum { JC2_FAILED = -1, JC2_SETUP = 0, JC2_READY = 1 };
 
 /* the pad as the report last gave it, in the Switch's terms */
 typedef struct {
     u64 buttons;      /* NpadButton bits, upright */
     u8 extra;         /* JC2_X_* */
-    i32 stick[2];     /* its one stick, X and Y up, -32767..32767 */
+    i32 stick[2];     /* its one stick (a Pro Controller 2's left one), X and Y up, -32767..32767 */
+    i32 rstick[2];    /* a Pro Controller 2's right stick, the same way */
     float accel[3];   /* g */
     float gyro[3];    /* rad/s */
     u16 battery_mv;
@@ -50,20 +51,23 @@ typedef struct {
     Jc2Info info;
     Jc2StickCal stick;   /* the user's, else the factory's */
     int has_stick;
+    Jc2StickCal stick2;  /* a Pro Controller 2's right stick's */
     float gyro_offset[3];
     Jc2Pad pad;
     u16 mouse_last[2];
     int mouse_seen;      /* a report gave the counters: the next one's motion counts */
     i32 mouse[2];        /* the sensor's motion not yet taken */
     u8 led, led_sent;    /* the player lights wanted, and sent (0 none yet) */
-    Jc2Vibration rumble; /* the vibration wanted */
+    Jc2Vibration rumble; /* the vibration wanted (a Pro Controller 2's left actuator) */
+    Jc2Vibration rumble2; /* a Pro Controller 2's right actuator's */
     int rumble_on;       /* the last write played one: a stop is due when it ends */
     u64 rumble_ns;
     u32 rumble_reports; /* pad.reports at the last vibration write: one write a report, so none queue on the link */
     unsigned rumble_counter;
 } Jc2Session;
 
-/* a new controller's session: side from its advert's product id */
+/* a new controller's session: side from its advert's product id (JC2_SIDE_PRO: a Pro Controller 2, set up with its
+   own features, its second stick's calibration, no mouse sensor and no Joy-Con actuator parameters) */
 void jc2_session_start(Jc2Session* s, int side);
 /* time passes: the next command when its turn comes, a send again after the timeout, the failure after the last;
    and the vibration due. Returns s->state. The times compare by sum, not difference: a notification stamped a little
@@ -73,8 +77,9 @@ int jc2_session_tick(Jc2Session* s, const Jc2Transport* t, u64 now_ns);
 void jc2_session_notify(Jc2Session* s, const Jc2Transport* t, u16 handle, const u8* p, size_t n, u64 now_ns);
 /* the player lights' pattern (bits 0-3), sent once the setup is done */
 void jc2_session_led(Jc2Session* s, u8 pattern);
-/* the vibration the game wants now; the ticks write it */
+/* the vibration the game wants now, which the ticks write. A Pro Controller 2 has a second actuator, the right one */
 void jc2_session_rumble(Jc2Session* s, const Jc2Vibration* v);
+void jc2_session_rumble2(Jc2Session* s, const Jc2Vibration* right);
 /* the sensor's motion since the last take, X then Y, in its counts */
 void jc2_session_mouse(Jc2Session* s, i32 out[2]);
 #endif

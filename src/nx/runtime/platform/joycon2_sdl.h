@@ -15,7 +15,8 @@
 #include <SDL3/SDL.h>
 
 #define JC2_PADS 8
-enum { JC2_PAD_LEFT, JC2_PAD_RIGHT, JC2_PAD_PAIR };
+/* a single Joy-Con 2, a pair, or a Pro Controller 2 (a full controller to SDL and to the game, fed as the left) */
+enum { JC2_PAD_LEFT, JC2_PAD_RIGHT, JC2_PAD_PAIR, JC2_PAD_PRO };
 
 /* SDL's buttons (a bit each, by SDL_GamepadButton) and axes (by SDL_GamepadAxis) for a pad of kind: a single's from
    the one of left and right it is (the other NULL), a pair's from both */
@@ -38,8 +39,8 @@ typedef struct {
 enum { JC2_JOIN_NONE, JC2_JOIN_SINGLE, JC2_JOIN_PAIR };
 /* the next gamepad to make for the n controllers d: JC2_JOIN_PAIR of *a (a left one) and *b (a right one), each out of
    the single it may have, when pairing is on and a left and a right are ready outside a pair, one of them without a
-   gamepad; else JC2_JOIN_SINGLE of *a, ready and without a gamepad, when pairing is off, it had one before, or it
-   waited JC2_PAIR_WAIT_NS; else JC2_JOIN_NONE */
+   gamepad; else JC2_JOIN_SINGLE of *a, ready and without a gamepad, when pairing is off, it had one before, it is a
+   Pro Controller 2 (which waits for no partner), or it waited JC2_PAIR_WAIT_NS; else JC2_JOIN_NONE */
 int jc2_join_next(const Jc2Join* d, int n, int pair, u64 now_ns, int* a, int* b);
 
 /* a virtual gamepad of kind: its index (1 up), 0 when SDL makes none. SDL then says it was added, as for any pad */
@@ -66,6 +67,9 @@ void jc2_pad_who(int pad, const char* who);
 /* sdl3.c's: which of a Joy-Con 2 gamepad's mouse sensors see a surface, a bit each in PadMotion's order; -1 when id is
    no Joy-Con 2's */
 int joycon2_surface(u32 id);
+/* sdl3.c's: the reports per second the right (or only) Joy-Con of a Joy-Con 2 gamepad sent over the last second, 0
+   when id is no Joy-Con 2's or before a second has gone by */
+int joycon2_rate(u32 id);
 /* gamepad.c's who_of: 1 and out when id is a Joy-Con 2's gamepad with an identity */
 int joycon2_who(u32 id, char* out, size_t n);
 #endif

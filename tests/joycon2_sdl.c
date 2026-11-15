@@ -14,6 +14,7 @@
 #include "common/utilities/common.h"
 #include "support/sdl_real_pads.h"
 #include <math.h>
+#include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -148,7 +149,18 @@ static void pair(void) {
     jc2_pad_feed(pad, &l, &r, NULL, NULL);
     SDL_UpdateGamepads();
     gamepad_state_slot(slot, &b, s);
-    CHECK(b == (l.buttons | r.buttons));
+    CHECK(b == (l.buttons | r.buttons) && !gamepad_slot_sides(slot));
+    /* each half's SL and SR reach the controller applet's dialog (as SDL's own pair's paddles), never the game */
+    l.buttons |= 1ull << 24 | 1ull << 25;
+    r.buttons |= 1ull << 27;
+    jc2_pad_feed(pad, &l, &r, NULL, NULL);
+    SDL_UpdateGamepads();
+    gamepad_state_slot(slot, &b, s);
+    CHECK(gamepad_slot_sides(slot) == (1ull << 24 | 1ull << 25 | 1ull << 27) && !(b >> 24 & 0xF));
+    l.buttons &= ~(1ull << 24 | 1ull << 25);
+    r.buttons &= ~(1ull << 27);
+    jc2_pad_feed(pad, &l, &r, NULL, NULL);
+    SDL_UpdateGamepads();
     CHECK(!s[0] && abs(s[1] - 30000) < 2 && abs(s[2] + 30000) < 2 && !s[3]);
     {
         PadMotion m[2];
@@ -196,6 +208,41 @@ static void pair(void) {
     pump();
 }
 
+/* a Pro Controller 2: a Pro Controller to SDL and to gamepad.c (a full controller, named Pro Controller 2), every
+   button where a pair has it, both sticks of its own, ZL and ZR as triggers, one motion sensor, the game's two
+   motors for its two actuators */
+static void pro(void) {
+    int pad = jc2_pad_attach(JC2_PAD_PRO), slot;
+    Jc2Pad p = {0};
+    u64 b;
+    i32 s[4];
+    CHECK(pad > 0);
+    pump();
+    slot = slot_of(pad);
+    CHECK(slot >= 0 && gamepad_slot_type(slot) == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO);
+    CHECK(!strcmp(SDL_GetGamepadNameForID(jc2_pad_id(pad)), "Pro Controller 2"));
+    p.buttons = 0xfull | 1ull << 6 | 1ull << 7 | 1ull << 8 | 1ull << 9 | 1ull << 10 | 1ull << 11 | 0xfull << 12;
+    p.stick[0] = 12000;
+    p.stick[1] = 20000;
+    p.rstick[0] = -15000;
+    p.rstick[1] = 9000;
+    p.accel[2] = 1.0f;
+    p.reports = 1;
+    jc2_pad_feed(pad, &p, NULL, NULL, NULL);
+    SDL_UpdateGamepads();
+    gamepad_state_slot(slot, &b, s);
+    CHECK(b == p.buttons && !gamepad_slot_sides(slot));
+    CHECK(abs(s[0] - 12000) < 2 && abs(s[1] - 20000) < 2 && abs(s[2] + 15000) < 2 && abs(s[3] - 9000) < 2);
+    {
+        PadMotion m[2];
+        gamepad_motion(slot, m);
+        CHECK(m[0].valid && near(m[0].acceleration[2], 1.0f));
+    }
+    CHECK(joycon2_surface(jc2_pad_id(pad)) == 0); /* no mouse sensor */
+    jc2_pad_detach(pad);
+    pump();
+}
+
 /* which controllers make which gamepad: a left and a right that connect together are a pair at once, a lone one waits
    3 s for its partner, one that comes later joins it, the half that stays after the other left is a single at once */
 static void join(void) {
@@ -227,6 +274,9 @@ static void join(void) {
     /* two that set up together: a pair at once */
     Jc2Join two[2] = {{1, JC2_SIDE_RIGHT, 5 * s, 0, 0, 0}, {1, JC2_SIDE_LEFT, 5 * s, 0, 0, 0}};
     CHECK(jc2_join_next(two, 2, 1, 5 * s, &a, &b) == JC2_JOIN_PAIR && a == 1 && b == 0);
+    /* a Pro Controller 2 waits for no partner, and never pairs */
+    Jc2Join pro_one[2] = {{1, JC2_SIDE_PRO, 5 * s, 0, 0, 0}, {1, JC2_SIDE_LEFT, 5 * s, 0, 0, 0}};
+    CHECK(jc2_join_next(pro_one, 2, 1, 5 * s, &a, &b) == JC2_JOIN_SINGLE && a == 0);
 }
 
 int main(void) {
@@ -240,6 +290,7 @@ int main(void) {
     single(JC2_PAD_LEFT);
     single(JC2_PAD_RIGHT);
     pair();
+    pro();
     SDL_Quit();
     printf("joycon2_sdl: %d checks\n", checks);
     return 0;

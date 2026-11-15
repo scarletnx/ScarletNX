@@ -22,4 +22,21 @@ void joycon2_stop(void);
 void joycon2_poll(void);
 /* for seconds from now, a controller that waits to sync is taken and remembered */
 void joycon2_sync(u64 seconds);
+/* For the controller applet's dialog, whose scan hears the controllers (ctrl_scan.h): whether the host runs, whether
+   it knows a controller, and a controller heard to connect to now, of side (JC2_SIDE_*: a Joy-Con 2's or a Pro
+   Controller 2), a new one waiting to sync only once the user confirmed it (the sync window opens for it) */
+int joycon2_running(void);
+int joycon2_known(const u8 address[6]);
+void joycon2_connect(const u8 address[6], int random, int side, int syncing);
+/* The dialog's Disconnect: the controller (both halves of a pair) behind an SDL gamepad id has only its link closed,
+   no command sent, and is held off from connecting again for a while: the dialog's scan and the tries in turn leave
+   it, joycon2_connect takes it back at once, and after the hold a button press connects it as before. How many
+   controllers it closes. And whether a known controller heard is held off (its advert logged, wake: its flag) */
+int joycon2_disconnect(u32 gamepad_id);
+int joycon2_held(const u8 address[6], int wake);
+/* the dialog's scan listens: the known controllers are not tried in turn meanwhile, it hears them. And whether a
+   connect it asked for still goes on */
+void joycon2_listening(int on);
+int joycon2_connecting(void);
+int joycon2_has(const u8 address[6]); /* a controller at address is connected */
 #endif

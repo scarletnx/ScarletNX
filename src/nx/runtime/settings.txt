@@ -878,6 +878,14 @@ setting Controller assignment
     help 1 = as a console's (Eden's Modern Console): each controller that connects takes the lowest free player, one
     help that leaves keeps its player 45 s, the game pauses once one has been gone 3 s until it comes back or + is let
     help go on another controller, and a notice says each that joins or leaves, with its player
+setting Controller applet
+    key controller_applet
+    int 0 1
+    default 0
+    words Dialog|Quick
+    help What the runtime does when the game asks for its controllers. 0 = a dialog over the game says what the game
+    help expects and lets each player take a controller, and the game goes on once it closes. 1 = the game gets its
+    help answer at once when the players it needs are connected, and the dialog shows only when they are not
 setting Joy-Con mouse
     key game_mouse
     int 0 1

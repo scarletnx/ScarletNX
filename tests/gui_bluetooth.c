@@ -78,7 +78,12 @@ static void adverts(void) {
     a.company = 0x004c; /* another company's */
     assert(!snx_ble_joycon2(&a, &j));
     a = joycon2(1, 0, 1);
-    a.data[5] = 0x69; /* a Pro Controller 2's product id: not a Joy-Con 2 */
+    a.data[5] = 0x69; /* a Pro Controller 2's product id: one too, neither side */
+    a.data[9] = 0x00;
+    assert(snx_ble_joycon2(&a, &j) && j.pro && !j.right && j.syncing && !j.wake);
+    a.data[9] = 0x81; /* its flags asking its console to wake */
+    assert(snx_ble_joycon2(&a, &j) && j.wake);
+    a.data[5] = 0x73; /* another of the console maker's pads: none */
     assert(!snx_ble_joycon2(&a, &j));
     a = joycon2(1, 0, 1);
     a.size = 15;
@@ -141,6 +146,22 @@ static void rows(const char* dir) {
     assert(gui_bt_state(&bt.dev[0]) == GUI_BT_CONNECTING && !bt.dev[0].battery_mv);
     gui_bt_tick(&bt, 23000 + GUI_BT_SAID_MS);
     assert(gui_bt_state(&bt.dev[0]) == GUI_BT_AWAY);
+    /* a Pro Controller 2 waiting to sync: its row says so, its line has P, and it reads back as one. An old file's L
+       and R lines read as before beside it */
+    a = joycon2(6, 0, 1);
+    a.data[5] = 0x69;
+    assert(gui_bt_heard(&bt, &a, 30000) == 1);
+    {
+        int i;
+        for (i = 0; i < bt.count && bt.dev[i].address[5] != 6; i++) {}
+        assert(i < bt.count && bt.dev[i].pro && !bt.dev[i].right && gui_bt_state(&bt.dev[i]) == GUI_BT_WAITING);
+        assert(gui_bt_sync(&bt, i, path, why, sizeof why) == 0);
+    }
+    file_is(path, "# mine\nnonsense\n98:b6:00:00:00:04 X\n98:B6:00:00:00:01 L \n98:B6:00:00:00:06 P\n");
+    assert(gui_bt_read(&bt, path) == 2 && bt.dev[1].address[5] == 6 && bt.dev[1].pro && bt.dev[1].known);
+    assert(!bt.dev[0].pro && !bt.dev[0].right);
+    assert(gui_bt_forget(&bt, 1, path, why, sizeof why) == 0);
+    file_is(path, "# mine\nnonsense\n98:b6:00:00:00:04 X\n98:B6:00:00:00:01 L \n");
     free(path);
 }
 /* at most GUI_BT_KNOWN known: the runtime reads no more, and a 17th is refused */

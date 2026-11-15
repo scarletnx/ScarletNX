@@ -7,18 +7,19 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* a line of joycon2.txt as joycon2.c's known_load takes it: the address, then L or R, then the serial if any. n is the
-   line's length with its newline, if it has one. 1 when it is one */
-static int entry(const char* line, size_t n, uint8_t address[6], int* right, char serial[17]) {
+/* a line of joycon2.txt as joycon2.c's known_load takes it: the address, then L or R (a Joy-Con 2's side) or P (a Pro
+   Controller 2), then the serial if any. n is the line's length with its newline, if it has one. 1 when it is one,
+   its kind in *kind: 0 L, 1 R, 2 P */
+static int entry(const char* line, size_t n, uint8_t address[6], int* kind, char serial[17]) {
     char text[128], side = 0;
     if (n < 19 || n >= sizeof text) return 0;
     memcpy(text, line, n);
     text[n] = 0;
     serial[0] = 0;
     if (!snx_ble_address_parse(text, address) || sscanf(text + 17, " %c %16s", &side, serial) < 1 ||
-        (side != 'L' && side != 'R'))
+        (side != 'L' && side != 'R' && side != 'P'))
         return 0;
-    *right = side == 'R';
+    *kind = side == 'P' ? 2 : side == 'R';
     return 1;
 }
 static int find(const GuiBt* bt, const uint8_t address[6]) {
@@ -64,7 +65,8 @@ int gui_bt_read(GuiBt* bt, const char* path) {
         if (!d) break;
         if (w >= 0) *d = was.dev[w];
         d->known = 1;
-        d->right = right;
+        d->right = right == 1;
+        d->pro = right == 2;
         snprintf(d->serial, sizeof d->serial, "%s", serial);
         known++;
     }
@@ -85,7 +87,10 @@ int gui_bt_heard(GuiBt* bt, const SnxBleAdvert* advert, uint64_t now_ms) {
     i = find(bt, advert->address);
     d = i >= 0 ? &bt->dev[i] : add(bt, advert->address);
     if (!d) return 1;
-    if (!d->known) d->right = j.right; /* a known one's side is joycon2.txt's */
+    if (!d->known) { /* a known one's kind is joycon2.txt's */
+        d->right = j.right;
+        d->pro = j.pro;
+    }
     d->heard = j.syncing ? GUI_BT_WAITING : GUI_BT_NEARBY;
     d->heard_ms = now_ms ? now_ms : 1;
     d->rssi = advert->rssi;
@@ -171,7 +176,7 @@ int gui_bt_sync(GuiBt* bt, int i, const char* path, char* why, size_t size) {
     }
     snx_ble_address_text(d.address, address);
     out = snx_format("%.*s%s%s %c\n", (int)n, text ? text : "", n && text[n - 1] != '\n' ? "\n" : "", address,
-                     d.right ? 'R' : 'L');
+                     d.pro ? 'P' : d.right ? 'R' : 'L');
     failed = !out || write_whole(path, out, strlen(out), why, size);
     free(out);
     free(text);

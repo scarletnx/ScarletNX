@@ -13,12 +13,14 @@
    players, or the player's text in the software keyboard's box over the game: at once, but for the software keyboard,
    whose game waits for the box, and the inline one, which lives until the game finalizes it and answers its requests
    through the interactive channels */
+#include <stdatomic.h>
 #include <ctype.h>
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/services/hid.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/runtime/platform/backend.h"
+#include "nx/runtime/platform/ctrl_applet.h"
 
 #include "hle/services/am.swipc.inc"
 
@@ -51,6 +53,7 @@ const u64 g_user_id[2] = {SNX_USERS_FIRST_UID0, SNX_USERS_FIRST_UID1};
 void am_init(void) {
     pm_init(&g_host.am.lock);
     pc_init(&g_host.am.kb_cv);
+    pc_init(&g_host.am.ctrl_cv);
     g_hle.am.msg_event = owned_event("am:message");
     g_hle.am.sleep_lock_event = owned_event("am:sleep lock");
     g_hle.am.launchable_event = owned_event("am:library applet launchable");
@@ -1106,6 +1109,7 @@ static int nn_grcsrv_IMovieMaker_GetOffscreenLayerAudioEncodeReadyEvent(SvcObj* 
 #define SWKBD_CALC_NEW_SIZE 0x4e8
 
 
+static void am_ctrl_drop(int wake); /* the controller applet's dialog taken away (below) */
 static int am_is_inline(const LibApplet* a) {
     return a->applet_id == AM_APPLET_SWKBD && (a->mode == 1 || a->mode == 3); /* PartialForeground(IndirectDisplay) */
 }
@@ -1202,6 +1206,7 @@ static int nn_am_service_ILibraryAppletAccessor_IsCompleted(SvcObj* self, u8* co
 }
 static int nn_am_service_ILibraryAppletAccessor_RequestExit(SvcObj* self) {
     LibApplet* a = (LibApplet*)self->data;
+    if (a->applet_id == AM_APPLET_CONTROLLER) am_ctrl_drop(1);
     pm_lock(&g_host.am.lock);
     am_applet_finish(a);
     pm_unlock(&g_host.am.lock);
@@ -1612,6 +1617,7 @@ void am_keyboard_answered(u32 ticket, int cancelled, const char* text) {
 }
 void am_state_loaded(void) {
     int i;
+    am_ctrl_drop(0);
     pm_lock(&g_host.am.lock);
     if (g_host.am.kb_open) backend_keyboard_hide(g_host.am.kb_ticket);
     g_host.am.kb_open = 0;
@@ -1831,30 +1837,137 @@ done:
     return found;
 }
 
+/* ------------------------------------------------------------ the controller applet's dialog */
+/* The dialog over the game (ctrl_applet.h, through backend_controller_show) says what the game asks for and lets each
+   player take a controller. Its answer is waited for on the game's thread, as the console's applet holds the game
+   until it closes and as the keyboard's box does. 0 continued, 1 cancelled, -1 when no dialog can show (no window,
+   an unattended run) */
+static int am_ctrl_wait(const CtrlRequest* r) {
+    u32 ticket;
+    int answer;
+    pm_lock(&g_host.am.lock);
+    if (!++g_host.am.ctrl_ticket) ++g_host.am.ctrl_ticket; /* 0 is none */
+    ticket = g_host.am.ctrl_ticket;
+    g_host.am.ctrl_open = 1;
+    pm_unlock(&g_host.am.lock);
+    if (backend_controller_show(r, ticket)) {
+        pm_lock(&g_host.am.lock);
+        g_host.am.ctrl_open = 0;
+        pm_unlock(&g_host.am.lock);
+        return -1;
+    }
+    LOG("am: the controller applet asks in its dialog\n");
+    pm_lock(&g_host.am.lock);
+    while (g_host.am.ctrl_answered != ticket && g_host.am.ctrl_ticket == ticket)
+        kthread_wait(&g_host.am.ctrl_cv, &g_host.am.lock, -1);
+    answer = g_host.am.ctrl_answered == ticket ? g_host.am.ctrl_cancelled : 1;
+    pm_unlock(&g_host.am.lock);
+    return answer;
+}
+void am_controller_answered(u32 ticket, int cancelled) {
+    pm_lock(&g_host.am.lock);
+    if (g_host.am.ctrl_open && ticket == g_host.am.ctrl_ticket) {
+        g_host.am.ctrl_open = 0;
+        g_host.am.ctrl_answered = ticket;
+        g_host.am.ctrl_cancelled = cancelled;
+        pc_broadcast(&g_host.am.ctrl_cv);
+    }
+    pm_unlock(&g_host.am.lock);
+}
+/* the dialog taken away unanswered. The game ending its applet (wake) cancels the thread that waits: a new ticket
+   ends its wait. A save state's load leaves the thread as the keyboard's box does, as the loaded state's thread makes
+   the request again */
+static void am_ctrl_drop(int wake) {
+    u32 ticket = 0;
+    pm_lock(&g_host.am.lock);
+    if (g_host.am.ctrl_open) {
+        ticket = g_host.am.ctrl_ticket;
+        g_host.am.ctrl_open = 0;
+        if (wake) {
+            if (!++g_host.am.ctrl_ticket) ++g_host.am.ctrl_ticket;
+            pc_broadcast(&g_host.am.ctrl_cv);
+        }
+    }
+    pm_unlock(&g_host.am.lock);
+    if (ticket) backend_controller_hide(ticket);
+}
+/* The controller applet's result: the players the game sees once the dialog closes, the Npad of the first, and whether
+   the player cancelled. The request is what the game told hid (its styles and hold) with the applet's arguments
+   over it: the common arguments, the private one and the argument, pushed in that order. The dialog shows unless no
+   window can show it, or the controller_applet setting is Quick and the players the game needs are there already.
+   Without it the answer is the one from before the dialog: the players connected, cancelled when fewer than the
+   least */
+static SvcObj* am_controller(LibApplet* a) {
+    const u8* in[3] = {NULL, NULL, NULL}; /* the common arguments, the private one and the argument */
+    u64 size[3] = {0, 0, 0};
+    CtrlRequest r;
+    u32 first = 0;
+    int i, players, cancelled, asked = -1;
+    SvcObj* out;
+    /* the argument is the last storage pushed, the private one an earlier storage that starts with its own size
+       (0x14), and the common arguments the first of the others */
+    for (i = 0; i < a->nin; ++i) {
+        const u8* d = am_storage_bytes(a->in[i]);
+        u64 n = ((StorageData*)a->in[i]->data)->size;
+        int k = i == a->nin - 1 ? 2 : n >= 0x14 && snx_ld_le32(d) == 0x14 ? 1 : i == 0 ? 0 : -1;
+        if (k >= 0 && !in[k]) {
+            in[k] = d;
+            size[k] = n;
+        }
+    }
+    ctrl_request_base(&r, atomic_load_explicit(&g_hle.hid.supported_styles, memory_order_relaxed), (int)g_hle.hid.hold);
+    r.mouse_hands = hid_mouse_hands();
+    if (ctrl_request_parse(&r, in[0], size[0], in[1], size[1], in[2], size[2]))
+        WARN("am: the controller applet's argument could not be read (storages of %llu, %llu and %llu bytes): one "
+             "player of the game's styles\n",
+             (unsigned long long)size[0], (unsigned long long)size[1], (unsigned long long)size[2]);
+    /* the hold only means something for a single Joy-Con, and the styles alone never say the game uses a mouse */
+    LOG("am: the controller applet (version %u, mode %d): %d to %d players%s, styles %#x%s%s%s\n", r.version, r.mode,
+        r.min, r.max, r.single ? " (single mode)" : "", r.styles,
+        !(r.styles & CTRL_STYLE_SINGLE) ? ""
+        : r.hold                        ? ", sideways hold"
+                                        : ", upright hold",
+        r.has_texts ? ", with texts" : "", r.mouse ? ", Joy-Con 2 only" : "");
+    { /* no more players than the game listed Npads for, from No1 on: hid shows none past them */
+        u32 ids = atomic_load_explicit((_Atomic u32*)&g_hle.hid.supported_ids, memory_order_relaxed);
+        int listed = 0;
+        while (listed < 8 && (ids >> listed & 1)) ++listed;
+        if (listed && r.max > listed) r.max = listed;
+        if (r.min > r.max) r.min = r.max;
+    }
+    players = hid_connected_players(&first);
+    if (!(g_settings.controller_applet && r.mode == CTRL_MODE_SUPPORT && players >= r.min)) asked = am_ctrl_wait(&r);
+    if (asked < 0) {
+        cancelled = r.mode == CTRL_MODE_SUPPORT && players < r.min;
+        if (cancelled) LOG("am: the controller applet wants %d players, %d are connected: cancelled\n", r.min, players);
+    } else {
+        cancelled = r.mode == CTRL_MODE_SUPPORT && asked;
+        hid_update(); /* the players as the dialog left them */
+        players = hid_connected_players(&first);
+        LOG("am: the controller applet's dialog %s: %d players, the first Npad %u\n",
+            cancelled ? "was cancelled" : "closed", players, first);
+        if (!cancelled && r.mode == CTRL_MODE_SUPPORT && players < r.min)
+            WARN("am: the controller applet's dialog closed with its players ready, but the game sees %d of the %d it "
+                 "needs\n",
+                 players, r.min);
+    }
+    if (r.single && players > 1) players = 1;
+    if (r.mode == CTRL_MODE_SUPPORT && players > r.max) players = r.max;
+    out = am_storage_new(CTRL_RESULT_SIZE, NULL);
+    ctrl_result_bytes(am_storage_bytes(out), players, first, cancelled);
+    return out;
+}
+
 static int nn_am_service_ILibraryAppletAccessor_PopOutData(SvcObj* self, SvcObj** storage) {
     LibApplet* a = (LibApplet*)self->data;
     u8* d;
-    u32 first = 0;
     int popped;
     pm_lock(&g_host.am.lock);
     popped = a->out_popped || am_is_inline(a);
     pm_unlock(&g_host.am.lock);
     R_UNLESS(!popped, SNX_RC_AM_NOT_AVAILABLE);
     switch (a->applet_id) {
-    case AM_APPLET_CONTROLLER: { /* ControllerSupportResultInfo: the players connected and the first of them */
-        /* ControllerSupportArg, the last storage pushed, starts with the fewest players the game accepts */
-        int players = hid_connected_players(&first);
-        int least = a->nin ? (signed char)am_storage_bytes(a->in[a->nin - 1])[0] : 0;
-        *storage = am_storage_new(0xc, NULL);
-        d = am_storage_bytes(*storage);
-        d[0] = (u8)players;
-        am_put32(d + 4, first);
-        if (players < least) { /* nobody to pick: the player closed the applet */
-            LOG("am: the controller applet wants %d players, %d are connected: cancelled\n", least, players);
-            am_put32(d + 8, 2); /* the result: cancelled */
-        }
-        break;
-    }
+    case AM_APPLET_CONTROLLER: *storage = am_controller(a); break;
     case AM_APPLET_PROFILE_SELECT: { /* UiReturnArg: success, the user the game plays as */
         u64 uid[2];
         acc_playing(uid, NULL, 0);

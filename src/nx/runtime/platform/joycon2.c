@@ -31,6 +31,7 @@
                                           for minutes */
 #define JC2_STALE_NS    100000000ull   /* a vibration the main thread hasn't renewed for this long stops */
 #define JC2_STABLE_NS   30000000000ull /* a link up this long after the setup: its failures in a row end */
+#define JC2_HOLD_NS     60000000000ull /* a controller the dialog disconnected is not connected again this long */
 
 typedef struct {
     u8 address[6]; /* as written, most significant first; all zero: the slot is free */
@@ -45,6 +46,7 @@ typedef struct {
     i32 mouse[2]; /* the sensor's motion the main thread has not taken */
     /* the main thread's, read by the host thread under the lock */
     Jc2Vibration rumble;
+    Jc2Vibration rumble_right; /* a Pro Controller 2's right actuator's */
     u64 rumble_ns; /* when it was last given */
     u8 led;
     u64 ready_ns; /* when the main thread first saw it ready */
@@ -52,6 +54,7 @@ typedef struct {
     int gamepad;  /* its jc2_pad (a pair's for both halves), 0 for none */
     int kind;     /* that gamepad's JC2_PAD_* */
     char who[40]; /* the player identity it carries (its first gamepad's), kept through joins and splits */
+    int closing;  /* the main thread's: the dialog disconnects it, the host thread closes its link */
 } Jc2Device;
 typedef struct {
     u8 address[6];
@@ -60,6 +63,10 @@ typedef struct {
     int type;          /* the address type that connected: -1 not known yet, 0 public, 1 random */
     unsigned failures; /* in a row, which lengthen the wait before the next try */
     u64 tried_ns;      /* the last try */
+    /* the dialog disconnected it then: held off until held_until, and the adverts heard meanwhile (logged, as what a
+       controller does after its link closes is not known) */
+    u64 held_since, held_until;
+    unsigned held_adverts;
 } Jc2Known;
 static struct {
     PMutex lock;
@@ -70,10 +77,18 @@ static struct {
     Jc2Device dev[JC2_DEVICES];
     Jc2Known known[JC2_KNOWN];
     int known_n;
+    /* the controllers the controller applet's dialog heard and asks to connect, for the connecting thread */
+    struct {
+        u8 address[6];
+        int random, side, syncing;
+    } asked[JC2_DEVICES];
+    int asked_n;
+    int connecting; /* the connecting thread is on one of them */
+    _Atomic int listening; /* the dialog's scan listens, and the known controllers aren't tried in turn meanwhile */
 } g_joycon2;
 
-/* ---- the controllers the runtime knows: joycon2.txt, a line each, "AA:BB:CC:DD:EE:FF L SERIAL", in the user's config
-   folder (every game's), else the game's */
+/* ---- the controllers the runtime knows: joycon2.txt, a line each, "AA:BB:CC:DD:EE:FF L SERIAL" (L or R a Joy-Con 2's
+   side, P a Pro Controller 2), in the user's config folder (every game's), else the game's */
 static void known_path(char* out, size_t n) {
     char* dir = snx_user_dir(SNX_USER_CONFIG);
     char* path = dir ? snx_path_join(dir, "joycon2.txt") : NULL;
@@ -102,9 +117,9 @@ static void known_load(void) {
         Jc2Known k = {0};
         char side = 0;
         if (strlen(line) < 19 || !parse_address(line, k.address) || sscanf(line + 17, " %c %16s", &side, k.serial) < 1 ||
-            (side != 'L' && side != 'R'))
+            (side != 'L' && side != 'R' && side != 'P'))
             continue;
-        k.side = side == 'R' ? JC2_SIDE_RIGHT : JC2_SIDE_LEFT;
+        k.side = side == 'P' ? JC2_SIDE_PRO : side == 'R' ? JC2_SIDE_RIGHT : JC2_SIDE_LEFT;
         k.type = -1;
         g_joycon2.known[g_joycon2.known_n++] = k;
     }
@@ -122,7 +137,10 @@ static void known_save(void) {
     for (int i = 0; i < g_joycon2.known_n; i++) {
         const u8* a = g_joycon2.known[i].address;
         fprintf(f, "%02X:%02X:%02X:%02X:%02X:%02X %c %s\n", a[0], a[1], a[2], a[3], a[4], a[5],
-                g_joycon2.known[i].side == JC2_SIDE_RIGHT ? 'R' : 'L', g_joycon2.known[i].serial);
+                g_joycon2.known[i].side == JC2_SIDE_PRO     ? 'P'
+                : g_joycon2.known[i].side == JC2_SIDE_RIGHT ? 'R'
+                                                            : 'L',
+                g_joycon2.known[i].serial);
     }
     fclose(f);
 }
@@ -163,14 +181,18 @@ static int host_found(const u8 address[6], int random, const Jc2Advert* a, u64 n
     int free;
     pm_lock(&g_joycon2.lock);
     int k = known_index(address);
-    int taken = device_of(address, &free) >= 0 || free < 0 || (k < 0 && !(a->syncing && now < g_joycon2.sync_until));
+    int taken = device_of(address, &free) >= 0 || free < 0 || (k < 0 && !(a->syncing && now < g_joycon2.sync_until)) ||
+                (k >= 0 && now < g_joycon2.known[k].held_until); /* held off since the dialog disconnected it */
     pm_unlock(&g_joycon2.lock);
     if (taken) return 1;
     Jc2Link link;
+    u64 began = plat_ns();
     if (jc2_link_open(&link, address, random, JC2_CONNECT_MS)) {
-        LOG("joycon2: no connection to %02X:%02X:%02X:%02X:%02X:%02X (%s address): %s\n", address[0], address[1],
-            address[2], address[3], address[4], address[5], random ? "random" : "public",
-            link.err ? strerror(link.err) : "the MTU exchange got no answer");
+        /* ENOSYS from the socket is an HCI status the kernel has no errno for */
+        LOG("joycon2: no connection to %02X:%02X:%02X:%02X:%02X:%02X (%s address): %s (errno %d, after %u ms)\n",
+            address[0], address[1], address[2], address[3], address[4], address[5], random ? "random" : "public",
+            link.err ? strerror(link.err) : "the MTU exchange got no answer", link.err,
+            (unsigned)((plat_ns() - began) / 1000000u));
         return -1;
     }
     pm_lock(&g_joycon2.lock);
@@ -180,12 +202,17 @@ static int host_found(const u8 address[6], int random, const Jc2Advert* a, u64 n
     memcpy(d->address, address, 6);
     d->random = random;
     d->link = link;
-    d->side = a->product == JC2_PID_RIGHT ? JC2_SIDE_RIGHT : JC2_SIDE_LEFT;
+    d->side = a->product == JC2_PID_PRO     ? JC2_SIDE_PRO
+              : a->product == JC2_PID_RIGHT ? JC2_SIDE_RIGHT
+                                            : JC2_SIDE_LEFT;
     jc2_session_start(&d->session, d->side);
     d->state = JC2_SETUP;
     d->rumble = (Jc2Vibration){0.0f, 160.0f, 0.0f, 320.0f};
+    d->rumble_right = d->rumble;
+    int pro = d->side == JC2_SIDE_PRO;
     pm_unlock(&g_joycon2.lock);
-    LOG("joycon2: connected to %s Joy-Con 2 %02X:%02X:%02X:%02X:%02X:%02X, MTU %u\n", k >= 0 ? "known" : "new",
+    LOG("joycon2: connected to %s %s %02X:%02X:%02X:%02X:%02X:%02X, MTU %u\n", k >= 0 ? "known" : "new",
+        pro ? "Pro Controller 2" : "Joy-Con 2",
         address[0], address[1], address[2], address[3], address[4], address[5], (unsigned)link.mtu);
     return 0;
 }
@@ -203,12 +230,13 @@ static void direct_tick(void) {
         }
         Jc2Known* c = &g_joycon2.known[k];
         u64 wait = JC2_DIRECT_NS << (c->failures < JC2_BACKOFF_MAX ? c->failures : JC2_BACKOFF_MAX);
-        int due = (!c->tried_ns || now >= c->tried_ns + wait) && device_of(c->address, &free) < 0;
+        int due = (!c->tried_ns || now >= c->tried_ns + wait) && device_of(c->address, &free) < 0 &&
+                  now >= c->held_until; /* one the dialog disconnected waits out its hold */
         u8 address[6];
         memcpy(address, c->address, 6);
         int type = c->type;
         Jc2Advert a = {0};
-        a.product = c->side == JC2_SIDE_RIGHT ? JC2_PID_RIGHT : JC2_PID_LEFT;
+        a.product = c->side == JC2_SIDE_PRO ? JC2_PID_PRO : c->side == JC2_SIDE_RIGHT ? JC2_PID_RIGHT : JC2_PID_LEFT;
         if (due) c->tried_ns = now ? now : 1;
         pm_unlock(&g_joycon2.lock);
         if (!due) continue;
@@ -221,10 +249,40 @@ static void direct_tick(void) {
         }
     }
 }
+/* the time an adapter gets to leave the dialog's scan before a connect: some refuse a connect started while it ends */
+#define JC2_SETTLE_NS 500000000ull
+/* the controllers the dialog's scan heard, each tried once at once: no wait between tries while it listens */
+static void asked_tick(void) {
+    for (;;) {
+        pm_lock(&g_joycon2.lock);
+        if (!g_joycon2.asked_n) {
+            pm_unlock(&g_joycon2.lock);
+            return;
+        }
+        u8 address[6];
+        memcpy(address, g_joycon2.asked[0].address, 6);
+        int random = g_joycon2.asked[0].random;
+        Jc2Advert a = {0};
+        a.product = g_joycon2.asked[0].side == JC2_SIDE_PRO     ? JC2_PID_PRO
+                    : g_joycon2.asked[0].side == JC2_SIDE_RIGHT ? JC2_PID_RIGHT
+                                                                : JC2_PID_LEFT;
+        a.syncing = g_joycon2.asked[0].syncing;
+        g_joycon2.asked_n--;
+        memmove(g_joycon2.asked, g_joycon2.asked + 1, sizeof g_joycon2.asked[0] * (size_t)g_joycon2.asked_n);
+        g_joycon2.connecting = 1;
+        pm_unlock(&g_joycon2.lock);
+        plat_sleep_ns(JC2_SETTLE_NS); /* the adapter leaves the scan the dialog stopped before a connect starts */
+        host_found(address, random, &a, plat_ns());
+        pm_lock(&g_joycon2.lock);
+        g_joycon2.connecting = 0;
+        pm_unlock(&g_joycon2.lock);
+    }
+}
 static void connect_thread(void* arg) {
     (void)arg;
     while (atomic_load_explicit(&g_joycon2.run, memory_order_acquire)) {
-        if (!g_joycon2.scanner) direct_tick();
+        asked_tick();
+        if (!g_joycon2.scanner && !atomic_load_explicit(&g_joycon2.listening, memory_order_acquire)) direct_tick();
         plat_sleep_ns(200000000);
     }
 }
@@ -245,18 +303,24 @@ static void device_turn(Jc2Device* d) {
     int why = up ? 0 : d->link.err; /* the kernel's reason the link went down (jc2_link_poll's) */
     u64 now = plat_ns();
     pm_lock(&g_joycon2.lock);
-    Jc2Vibration v = d->rumble;
-    if (d->rumble_ns + JC2_STALE_NS < now) v.amp_low = v.amp_high = 0.0f; /* the main thread stopped giving it */
+    int closing = d->closing;
+    Jc2Vibration v = d->rumble, v2 = d->rumble_right;
+    if (d->rumble_ns + JC2_STALE_NS < now) /* the main thread stopped giving it */
+        v.amp_low = v.amp_high = v2.amp_low = v2.amp_high = 0.0f;
     jc2_session_rumble(&d->session, &v);
+    jc2_session_rumble2(&d->session, &v2);
     if (d->led) jc2_session_led(&d->session, d->led);
     pm_unlock(&g_joycon2.lock);
-    int state = up ? jc2_session_tick(&d->session, &t, now) : JC2_FAILED;
+    int state = up && !closing ? jc2_session_tick(&d->session, &t, now) : JC2_FAILED;
     i32 mouse[2];
     jc2_session_mouse(&d->session, mouse);
     pm_lock(&g_joycon2.lock);
     int k = known_index(d->address);
     if (state == JC2_READY && d->state != JC2_READY) {
-        LOG("joycon2: %s Joy-Con 2 %s ready, firmware %u.%u.%u\n", d->session.side == JC2_SIDE_RIGHT ? "right" : "left",
+        LOG("joycon2: %s %s ready, firmware %u.%u.%u\n",
+            d->session.side == JC2_SIDE_PRO     ? "Pro Controller 2"
+            : d->session.side == JC2_SIDE_RIGHT ? "right Joy-Con 2"
+                                                : "left Joy-Con 2",
             d->session.info.serial, d->session.version[0], d->session.version[1], d->session.version[2]);
         d->up_ns = now ? now : 1;
         if (k < 0 && g_joycon2.known_n < JC2_KNOWN) { /* synced now: known from now on */
@@ -273,7 +337,12 @@ static void device_turn(Jc2Device* d) {
        no bond would); a link that stays up ends them */
     int stable = d->up_ns && now >= d->up_ns + JC2_STABLE_NS;
     if (k >= 0 && stable) g_joycon2.known[k].failures = 0;
-    if (state == JC2_FAILED) { /* the main thread frees the slot once the link is closed */
+    if (state == JC2_FAILED && closing) { /* the dialog's Disconnect: only the link closes, no command is sent */
+        LOG("joycon2: %02X:%02X:%02X:%02X:%02X:%02X disconnected by the controller applet's dialog, held off %u s\n",
+            d->address[0], d->address[1], d->address[2], d->address[3], d->address[4], d->address[5],
+            (unsigned)(JC2_HOLD_NS / 1000000000ull));
+        jc2_link_close(&d->link);
+    } else if (state == JC2_FAILED) { /* the main thread frees the slot once the link is closed */
         WARN("joycon2: Joy-Con 2 %02X:%02X:%02X:%02X:%02X:%02X %s%s%s\n", d->address[0], d->address[1], d->address[2],
              d->address[3], d->address[4], d->address[5], up ? "failed its setup" : "disconnected",
              !up && why ? ": " : "", !up && why ? strerror(why) : "");
@@ -325,6 +394,84 @@ void joycon2_start(void) {
     }
 }
 void joycon2_stop(void) { atomic_store_explicit(&g_joycon2.run, 0, memory_order_release); }
+int joycon2_running(void) { return atomic_load_explicit(&g_joycon2.run, memory_order_acquire); }
+void joycon2_listening(int on) { atomic_store_explicit(&g_joycon2.listening, on, memory_order_release); }
+int joycon2_connecting(void) {
+    if (!joycon2_running()) return 0;
+    pm_lock(&g_joycon2.lock);
+    int busy = g_joycon2.asked_n > 0 || g_joycon2.connecting;
+    pm_unlock(&g_joycon2.lock);
+    return busy;
+}
+int joycon2_has(const u8 address[6]) {
+    int free;
+    if (!joycon2_running()) return 0;
+    pm_lock(&g_joycon2.lock);
+    int i = device_of(address, &free);
+    pm_unlock(&g_joycon2.lock);
+    return i >= 0;
+}
+int joycon2_held(const u8 address[6], int wake) {
+    if (!joycon2_running()) return 0;
+    u64 now = plat_ns();
+    pm_lock(&g_joycon2.lock);
+    int k = known_index(address), held = k >= 0 && now < g_joycon2.known[k].held_until;
+    if (held) {
+        Jc2Known* c = &g_joycon2.known[k];
+        unsigned n = ++c->held_adverts;
+        if (n <= 3 || n % 50 == 0) /* what it does once its link closed: whether it advertises, and how */
+            LOG("joycon2: %s held off since its disconnect, advert %u heard %llu ms after it%s\n", c->serial, n,
+                (unsigned long long)((now - c->held_since) / 1000000u), wake ? ", asking its console to wake" : "");
+    }
+    pm_unlock(&g_joycon2.lock);
+    return held;
+}
+int joycon2_disconnect(u32 gamepad_id) {
+    int closed = 0;
+    if (!joycon2_running() || !gamepad_id) return 0;
+    u64 now = plat_ns();
+    pm_lock(&g_joycon2.lock);
+    for (int i = 0; i < JC2_DEVICES; i++) { /* a pair's two halves both */
+        Jc2Device* d = &g_joycon2.dev[i];
+        if (!d->gamepad || jc2_pad_id(d->gamepad) != gamepad_id) continue;
+        d->closing = 1;
+        closed++;
+        int k = known_index(d->address);
+        if (k >= 0) {
+            g_joycon2.known[k].held_since = now ? now : 1;
+            g_joycon2.known[k].held_until = now + JC2_HOLD_NS;
+            g_joycon2.known[k].held_adverts = 0;
+        }
+    }
+    pm_unlock(&g_joycon2.lock);
+    return closed;
+}
+int joycon2_known(const u8 address[6]) {
+    if (!joycon2_running()) return 0;
+    pm_lock(&g_joycon2.lock);
+    int k = known_index(address);
+    pm_unlock(&g_joycon2.lock);
+    return k >= 0;
+}
+void joycon2_connect(const u8 address[6], int random, int side, int syncing) {
+    if (!joycon2_running()) return;
+    pm_lock(&g_joycon2.lock);
+    if (syncing) g_joycon2.sync_until = plat_ns() + 30000000000ull; /* a new one, which the user confirmed */
+    int k = known_index(address);
+    if (k >= 0 && g_joycon2.known[k].held_until) { /* taken back from its hold by the dialog's Connect */
+        LOG("joycon2: %s taken back after its disconnect, %u adverts heard while held off\n",
+            g_joycon2.known[k].serial, g_joycon2.known[k].held_adverts);
+        g_joycon2.known[k].held_until = 0;
+    }
+    if (g_joycon2.asked_n < JC2_DEVICES) {
+        memcpy(g_joycon2.asked[g_joycon2.asked_n].address, address, 6);
+        g_joycon2.asked[g_joycon2.asked_n].random = random;
+        g_joycon2.asked[g_joycon2.asked_n].side = side;
+        g_joycon2.asked[g_joycon2.asked_n].syncing = syncing;
+        g_joycon2.asked_n++;
+    }
+    pm_unlock(&g_joycon2.lock);
+}
 void joycon2_sync(u64 seconds) {
     if (!atomic_load_explicit(&g_joycon2.started, memory_order_acquire)) return;
     pm_lock(&g_joycon2.lock);
@@ -367,8 +514,10 @@ static void attach(u64 now) {
         j[i] = (Jc2Join){d->state == JC2_READY, d->side, d->ready_ns, d->had, d->gamepad, d->kind};
     }
     while ((act = jc2_join_next(j, JC2_DEVICES, g_settings.pair_joy_cons, now, &a, &b)) != JC2_JOIN_NONE) {
-        int kind = act == JC2_JOIN_PAIR ? JC2_PAD_PAIR : g_joycon2.dev[a].side == JC2_SIDE_RIGHT ? JC2_PAD_RIGHT
-                                                                                                : JC2_PAD_LEFT;
+        int kind = act == JC2_JOIN_PAIR                          ? JC2_PAD_PAIR
+                   : g_joycon2.dev[a].side == JC2_SIDE_PRO   ? JC2_PAD_PRO
+                   : g_joycon2.dev[a].side == JC2_SIDE_RIGHT ? JC2_PAD_RIGHT
+                                                             : JC2_PAD_LEFT;
         /* the identity the new gamepad carries: a half's that already had a player (the one with the lower player),
            else the first half's own serial, so a pair takes its single's player and a split half its pair's */
         char who[40] = "";
@@ -413,6 +562,17 @@ void joycon2_poll(void) {
     for (int gamepad = 1; gamepad <= JC2_PADS; gamepad++) {
         Jc2Device *l = half(gamepad, JC2_SIDE_LEFT), *r = half(gamepad, JC2_SIDE_RIGHT);
         Jc2Vibration want[2];
+        Jc2Device* pro = half(gamepad, JC2_SIDE_PRO);
+        if (pro) { /* a Pro Controller 2: fed as the left, both its actuators */
+            jc2_pad_feed(gamepad, &pro->pad, NULL, NULL, NULL);
+            jc2_pad_rumble(gamepad, want);
+            int player = jc2_pad_player(gamepad);
+            pro->rumble = want[0];
+            pro->rumble_right = want[1];
+            pro->rumble_ns = now;
+            pro->led = player >= 0 ? leds[player] : 0;
+            continue;
+        }
         if (!l && !r) continue;
         jc2_pad_feed(gamepad, l ? &l->pad : NULL, r ? &r->pad : NULL, l ? l->mouse : NULL, r ? r->mouse : NULL);
         if (l) l->mouse[0] = l->mouse[1] = 0;
