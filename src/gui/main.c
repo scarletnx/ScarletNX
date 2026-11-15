@@ -15511,6 +15511,15 @@ static bool has_files(const char* folder) {
     snx_free_strings(names, count);
     return any;
 }
+/* a save's folder with something of the save's in it: an entry SNX_SAVE_HIDDEN does not take for a sync tool's */
+static bool has_save_files(const char* folder) {
+    char** names = NULL;
+    size_t count = 0, i = 0;
+    if (folder && !snx_list_dir(folder, &names, &count))
+        while (i < count && SNX_SAVE_HIDDEN(names[i])) ++i;
+    snx_free_strings(names, count);
+    return i < count;
+}
 /* Settings' save_layout is global (its default): the saves in the data folder's save/, fs.c's save_global. Read from
    settings.ini until the Settings are, as settings_user */
 static bool saves_global(const App* app) {
@@ -15572,7 +15581,7 @@ static void left_saves(App* app, const char* folder, bool global) {
                 left_save(app, old);
             else if (!snx_path_format(now, sizeof now, "%s/save/%s/%s%s", app->data_dir, kind, names[i],
                                       cache ? "/0" : ""))
-                left_line(app, old, now, has_files(old));
+                left_line(app, old, now, has_save_files(old));
         }
         snx_free_strings(kinds, kinds_count);
         kinds = NULL;
@@ -15588,8 +15597,8 @@ static void left_saves_in(App* app, const char* folder, int deep) {
     if (snx_list_dir(folder, &names, &count)) return;
     for (i = 0; i < count; ++i) {
         size_t n = strlen(names[i]), tail = sizeof GUI_SAVE_MOVING - 1;
-        /* a move of the save beside it that was cut short, which that save's line goes on from */
-        if ((n > tail && !strcmp(names[i] + n - tail, GUI_SAVE_MOVING)) ||
+        /* a move of the save beside it that was cut short, which that save's line goes on from; a sync tool's entry */
+        if ((n > tail && !strcmp(names[i] + n - tail, GUI_SAVE_MOVING)) || SNX_SAVE_HIDDEN(names[i]) ||
             snx_path_format(path, sizeof path, "%s/%s", folder, names[i]) || !snx_is_dir(path))
             continue;
         if (deep > 1)

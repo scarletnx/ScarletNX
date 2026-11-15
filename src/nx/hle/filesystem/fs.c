@@ -1805,11 +1805,17 @@ static FsNode* save_part(FsNode* base, const char* name) { /* tree.lock held */
     FsNode* node;
     return !fs_tree_lookup(&g_hle.fs.tree, base, name, &node) && node->is_dir ? node : NULL;
 }
+/* the save's folder node holds something of the save's: an entry SNX_SAVE_HIDDEN does not take for a sync tool's */
+static int save_has_files(const FsNode* node) { /* tree.lock held */
+    const FsNode* c;
+    for (c = node->children; c && SNX_SAVE_HIDDEN(c->name); c = c->next) {}
+    return c != NULL;
+}
 /* path in the tree is a save as the versions before kept one: a folder with the game's own files in it, and so
    without the file that says it is laid out as the console's (SNX_SAVE_JOURNALED) */
 static int save_flat(const char* path) { /* tree.lock held */
     FsNode *node, *mark;
-    return !fs_tree_lookup(&g_hle.fs.tree, NULL, path, &node) && node->is_dir && node->children &&
+    return !fs_tree_lookup(&g_hle.fs.tree, NULL, path, &node) && node->is_dir && save_has_files(node) &&
            fs_tree_lookup(&g_hle.fs.tree, node, SNX_SAVE_JOURNALED, &mark);
 }
 
@@ -2410,7 +2416,7 @@ static void save_stray_said(FsNode* base, u8 type, const char* kind) { /* tree.l
     char host[FS_TREE_PATH_MAX];
     for (c = base->children; c; c = c->next) {
         if (!strcmp(c->name, SNX_SAVE_JOURNALED) || !strcmp(c->name, SNX_SAVE_COMMITTED) ||
-            !strcmp(c->name, SNX_SAVE_WORKING) || !strcmp(c->name, SAVE_SYNCING))
+            !strcmp(c->name, SNX_SAVE_WORKING) || !strcmp(c->name, SAVE_SYNCING) || SNX_SAVE_HIDDEN(c->name))
             continue;
         if (first) more++;
         if (!first) first = c;
@@ -2445,7 +2451,8 @@ u32 fs_save_root(u8 type, const u8 uid[16], u16 index, FsNode** root, int* noted
     u32 rc = save_folder(&attribute, p, sizeof p, stop, sizeof stop);
     if (!R_FAILED(rc) && !stop[0]) rc = tree_result(fs_tree_mkdirs(&g_hle.fs.tree, p, &base));
     if (!rc && base) {
-        *journaled = type != 4 && (!base->children || !fs_tree_lookup(&g_hle.fs.tree, base, SNX_SAVE_JOURNALED, &mark));
+        *journaled =
+            type != 4 && (!save_has_files(base) || !fs_tree_lookup(&g_hle.fs.tree, base, SNX_SAVE_JOURNALED, &mark));
         if (!*journaled) {
             *root = base;
             if (type != 4) save_flat_said(base, type, kind);

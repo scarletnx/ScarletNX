@@ -177,6 +177,10 @@ msgid "Not moved: %s could not be made: %s"
 msgstr "Não movido: não foi possível criar %s: %s"
 
 #: src/gui/clean.c
+msgid "Stays beside the save's 0/: a name that starts with a dot is a sync tool's or the system's, not one of the game's files"
+msgstr ""
+
+#: src/gui/clean.c
 #, c-format
 msgid "Its files are in %s, which could not take its place: %s"
 msgstr "Os arquivos dele estão em %s, que não pôde tomar o lugar dele: %s"

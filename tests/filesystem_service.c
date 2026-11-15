@@ -2399,9 +2399,36 @@ static void test_save_commit(void) {
     save = mount_save(6);
     close_fs(save);
     CHECK(test_flat_said == 1);
+    /* a sync tool's entry in a save's folder, there before anything of the save (Syncthing's .stfolder): not the
+       game's, so the folder is no save an older version kept. It is laid out as this version keeps one, the game
+       does not see the entry, it is no file put beside the save, and it stays. The BCAT save an earlier test made
+       goes first, so the folder holds the entry alone */
+    pm_lock(&g_hle.fs.tree.lock);
+    {
+        FsTreeResult gone = fs_tree_remove(&g_hle.fs.tree, NULL, "save/bcat", 1, 1, 0);
+        CHECK(gone == FS_TREE_OK || gone == FS_TREE_NOTFOUND);
+    }
+    pm_unlock(&g_hle.fs.tree.lock);
+    CHECK(!tree_has("save/bcat"));
+    old = mount_folder("save/bcat");
+    root_op(old, CREATE_DIR, "/.stfolder", 0, 0);
+    root_op(old, CREATE_FILE, "/.stfolder/syncthing-folder-1.txt", 6, 0);
+    close_fs(old);
+    CHECK(tree_has("save/bcat/.stfolder/syncthing-folder-1.txt") && !tree_has("save/bcat/" SNX_SAVE_JOURNALED));
+    test_flat_said = 0;
+    test_stray_said = 0;
+    save = mount_save(2);
+    root_op(save, ENTRY_TYPE, "/.stfolder", 0, SNX_RC_FS_PATH_NOT_FOUND);
+    root_op(save, CREATE_FILE, "/slot.bin", 4, 0);
+    commit(save);
+    close_fs(save);
+    CHECK(test_flat_said == 0 && test_stray_said == 0 && tree_has("save/bcat/" SNX_SAVE_JOURNALED) &&
+          tree_has("save/bcat/" SNX_SAVE_COMMITTED "/slot.bin") &&
+          tree_has("save/bcat/.stfolder/syncthing-folder-1.txt") && !tree_has("save/bcat/slot.bin"));
     g_settings.save_layout[0] = 0;
     puts("PASS a save's commit: the last commit and the working copy, an open after no commit, a commit refused with "
-         "a file open for writing, a commit cut short finished, an older version's save played where it is");
+         "a file open for writing, a commit cut short finished, an older version's save played where it is, a sync "
+         "tool's entry beside a save");
 }
 
 /* A game killed while it saves (#1147). Each launch is a process of this harness on the same data folder, which
