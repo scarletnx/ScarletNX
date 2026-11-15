@@ -1597,8 +1597,12 @@ static void span_drop(SnxJitService* s, size_t i) {
             e->code = NULL;
         }
         Region* r = region_of(s, u->leaders[j].pc);
-        if (r && atomic_compare_exchange_strong_explicit(slot(r, u->leaders[j].pc), &expected, NULL,
-                                                         memory_order_release, memory_order_relaxed))
+        /* the slot no longer holds the unit's code when something else emptied it first: no code is there, so the
+           pc is new to the service again either way. Leaving the bit set would make every later miss at the pc
+           answer NULL without queueing it (snx_jit_resolve's lock-free test), for good */
+        if (r && (atomic_compare_exchange_strong_explicit(slot(r, u->leaders[j].pc), &expected, NULL,
+                                                          memory_order_release, memory_order_relaxed) ||
+                  !atomic_load_explicit(slot(r, u->leaders[j].pc), memory_order_acquire)))
             clear_pending(r, u->leaders[j].pc);
     }
     free(u->leaders);

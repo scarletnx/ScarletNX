@@ -1391,8 +1391,8 @@ size_t snx_recompiled_update_code(struct snx_recompiled* m, uint64_t addr, const
         for (at = lo; at < hi; at += 4) {
             uint32_t word;
             memcpy(&word, bytes + (at - addr), sizeof(word));
-            __atomic_store_n((uint32_t*)(void*)((unsigned char*)view->image + (at - view->base)), word,
-                             __ATOMIC_RELAXED);
+            atomic_store_explicit((_Atomic uint32_t*)(void*)((unsigned char*)view->image + (at - view->base)), word,
+                                  memory_order_relaxed);
         }
         updated += (size_t)(hi - lo);
     }
@@ -1407,6 +1407,16 @@ GuestFn snx_recompiled_function(const struct snx_recompiled* m, uint64_t pc) {
 
 void snx_recompiled_set_fallback(struct snx_recompiled* m, GuestFn fallback) {
     atomic_store_explicit(&m->fallback, fallback, memory_order_release);
+}
+
+/* Empty a retired function's slot, only while it still holds the entry table's own function for the address, as the NX
+   runtime's fn_stale does. The table is the lazy JIT's too: a slot it has filled since is its own to retire, and
+   snx_jit_invalidate_ranges clears that slot and the pc's pending bit together. A slot emptied here under a unit leaves
+   the pc's bit set with nothing there, a pc the JIT will never compile again */
+static void retire_slot(struct snx_recompiled* m, size_t entry, uint64_t address) {
+    GuestFn expected = atomic_load_explicit(&m->entry_functions[entry], memory_order_relaxed);
+    atomic_compare_exchange_strong_explicit(&m->dispatch[(address - m->code_lo) >> 2], &expected, NULL,
+                                            memory_order_release, memory_order_relaxed);
 }
 
 size_t snx_recompiled_invalidate(struct snx_recompiled* m, uint64_t addr, uint64_t size,
@@ -1438,16 +1448,14 @@ size_t snx_recompiled_invalidate(struct snx_recompiled* m, uint64_t addr, uint64
         for (; alias_lo < m->entry_alias_count && m->entry_aliases[alias_lo].code == code; ++alias_lo) {
             size_t entry = m->entry_aliases[alias_lo].entry;
             uint64_t address = m->entry_addresses[entry];
-            if (address >= m->code_lo && address < m->code_hi)
-                atomic_store_explicit(&m->dispatch[(address - m->code_lo) >> 2], NULL, memory_order_release);
+            if (address >= m->code_lo && address < m->code_hi) retire_slot(m, entry, address);
         }
         /* The aliases above share the first leader's wrapper; every other leader's slot goes too, so a call through
            one of them cannot re-enter the retired function */
         for (size_t k = 0; k < function->leader_count; ++k) {
             size_t entry = function->leaders[k];
             uint64_t address = m->entry_addresses[entry];
-            if (address >= m->code_lo && address < m->code_hi)
-                atomic_store_explicit(&m->dispatch[(address - m->code_lo) >> 2], NULL, memory_order_release);
+            if (address >= m->code_lo && address < m->code_hi) retire_slot(m, entry, address);
         }
         /* Clear dispatch before marking stale so diversions miss rather than re-enter */
         atomic_store_explicit(&m->stale[function->stale_index], 1, memory_order_release);

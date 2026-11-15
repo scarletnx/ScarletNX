@@ -577,6 +577,69 @@ static void live64(struct snx_recompiler* r, uint8_t* mem) {
     snx_recompiler_set_live_code(r, 0);
 }
 
+/* A function patched again after the JIT built code for its first patch: the AOT retirement and the JIT's own drop of
+   the unit both clear the pc's slot, and whichever comes second must still leave the pc compilable. The retirement used
+   to empty the slot unconditionally, so the unit's drop (a compare-and-swap against its own code) failed and kept the
+   pc's pending bit: every later miss there answered NULL without queueing, an undefined instruction for good */
+static unsigned repatch_undefs;
+static void repatch_undef(CPU* c, uint64_t pc, uint32_t word) {
+    (void)word;
+    ++repatch_undefs;
+    c->pc = 0;
+    (void)pc;
+}
+static void repatch_svc(CPU* c, uint32_t imm) {
+    (void)c;
+    (void)imm;
+}
+static void repatch_brk(CPU* c, uint64_t pc, uint32_t imm) {
+    (void)pc;
+    (void)imm;
+    c->pc = 0;
+}
+static uint64_t repatch_run(struct snx_recompiled* module, uint8_t* mem, RtAPI* rt, uint64_t entry) {
+    CPU cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.mem = mem;
+    cpu.rt = rt;
+    cpu.x[31] = 0x6000;
+    if (snx_recompiled_bind(module, &cpu) != 0) return UINT64_MAX;
+    snx_recompiled_run(module, &cpu, entry, 0);
+    return cpu.x[0];
+}
+static void test_repatch(void) {
+    enum { AT = 0x4000, PATCHED = AT + 0x40 }; /* the entry's line and the patched word's line differ */
+    static uint8_t mem[MEMORY];
+    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    check(r != NULL, "repatch: a recompiler");
+    if (!r) return;
+    uint32_t words[18];
+    for (unsigned i = 0; i < 16; ++i) words[i] = 0xd503201f; /* nop */
+    words[16] = 0x91000400;                                   /* add x0,x0,#1 */
+    words[17] = 0xd65f03c0;                                   /* ret */
+    place(mem, AT, words, 18);
+    snx_recompiler_set_hook_direct_calls(r, 1);
+    struct snx_recompiled* module = snx_recompile(r, AT, mem + AT, sizeof(words));
+    check(module != NULL, "repatch: the module compiles");
+    if (!module) return;
+    RtAPI rt;
+    snx_runtime_defaults(&rt);
+    rt.svc = repatch_svc;
+    rt.undef = repatch_undef;
+    rt.brk = repatch_brk;
+    check(repatch_run(module, mem, &rt, AT) == 1, "repatch: the AOT code runs first");
+    int all = 1;
+    for (unsigned k = 2; k <= 6; ++k) {
+        uint32_t word = 0x91000000u | (k << 10); /* add x0,x0,#k */
+        place(mem, PATCHED, &word, 1);
+        snx_recompiled_update_code(module, PATCHED, &word, sizeof(word));
+        snx_recompiled_invalidate(module, PATCHED, 64, NULL, NULL);
+        if (repatch_run(module, mem, &rt, AT) != k) all = 0;
+    }
+    check(all && repatch_undefs == 0,
+          "repatch: each patch of the same function runs, none is an undefined instruction");
+}
+
 int main(int argc, char** argv) {
     uint8_t* mem = (uint8_t*)calloc(MEMORY, 1);
     struct snx_recompiler* r;
@@ -585,6 +648,7 @@ int main(int argc, char** argv) {
     if (!mem) return 2;
     place(mem, CODE64, a64_words, sizeof(a64_words) / sizeof(a64_words[0]));
     place(mem, CODE32, a32_words, sizeof(a32_words) / sizeof(a32_words[0]));
+    test_repatch();
     check(snx_recompiler_abi() == SNX_ABI, "the library's ABI is this cpu.h's");
     check(!snx_recompiler_has(0) && !snx_recompiler_new(0), "flags must name a backend");
     check(!snx_recompiler_has(2) && !snx_recompiler_new(2), "flags must name LLVM");
