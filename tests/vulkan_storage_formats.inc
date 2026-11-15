@@ -36,9 +36,9 @@ static int storage_pixel(Surf *surface, u32 level, u32 layer, u32 z,
 	};
 
 	CHECK(pixel);
-	vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+	vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL),
 		    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-	rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+	rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL),
 			     buffer, 1, &copy);
 	vk_finish();
 	vk_readback_ready();

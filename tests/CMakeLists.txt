@@ -2603,6 +2603,12 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-pagespace 23)
     target_link_libraries(snx-test-vk-pagespace PRIVATE snx_nx_flags)
     add_test(NAME vk_pagespace COMMAND snx-test-vk-pagespace)
+    # the barriers of an image's uses (gpu/vk/surface.c vk_surf_use) in the layouts that VK_LAYOUT names: with unified
+    # image layouts, GENERAL and no barrier between reads of another kind; without them, each use's own layout
+    add_executable(snx-test-vk-surf-layouts vk_surf_layouts.c tracy_stubs.c)
+    snx_test_target(snx-test-vk-surf-layouts 23)
+    target_link_libraries(snx-test-vk-surf-layouts PRIVATE snx_nx_flags)
+    add_test(NAME vk_surf_layouts COMMAND snx-test-vk-surf-layouts)
     # the file of shaders and pipelines kept across runs (gpu/vk/pipeline_file.c): records back as written, pipelines
     # by their shaders' records (a shipped shader's reference among them), a cut or changed record ending the reading,
     # another key starting over, a full file; its records packed into zstd units and unpacked in their place, a unit

@@ -206,9 +206,9 @@ static int nvn_conversion_depth(u64 gpu, u64 cpu, u32 width, u32 scale, u32 offs
          .imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1},
          .imageExtent = {physical_width, physical_height, 1}},
     };
-    vk_surf_use(vk_cmd(), image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), image, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    rec_CmdCopyImageToBuffer(vk_cmd(), image->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 2, regions);
+    rec_CmdCopyImageToBuffer(vk_cmd(), image->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 2, regions);
     vk_finish();
     vk_readback_ready();
     for (u32 y = 0; y < physical_height; y++)
