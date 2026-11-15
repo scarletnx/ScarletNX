@@ -504,12 +504,23 @@ typedef struct {
        results are about 1e-3 off the console's f32 sum; 0, the default, is the f32 sum the console's tensor core keeps
        */
     unsigned hmma_f16 : 1;
-    /* VK_KHR_cooperative_matrix's 16x16x16 product of f16 A and B into an f32 accumulator in subgroup scope, in
-       compute, with the Vulkan memory model (vulkanMemoryModel, vulkanMemoryModelDeviceScope) and compute subgroups of
-       32 that a pipeline can require: the device's maxComputeSharedMemorySize, else 0. An SM86 compute program's HMMAs
-       are then each one OpCooperativeMatrixMulAddKHR on fragments staged in shared memory after the program's
-       (sm86_translate.c's hmma_coop), where the two fit in that size. 0 offline */
+    /* VK_KHR_cooperative_matrix's product of f16 A and B into an f32 accumulator in subgroup scope, in compute,
+       with the Vulkan memory model (vulkanMemoryModel, vulkanMemoryModelDeviceScope) and compute subgroups of 32 that
+       a pipeline can require: the device's maxComputeSharedMemorySize, else 0. An SM86 compute program's HMMAs are
+       then each one or more OpCooperativeMatrixMulAddKHR on fragments staged in shared memory after the program's
+       (sm86_translate.c's hmma_coop), on the shapes hmma_coop_shapes gives it, where they fit in that size. 0 offline
+       */
     int hmma_coop;
+    /* The cooperative matrix shapes a device offers, the bits of hmma_coop_shapes: an SM86 HMMA's exact 16x8x16
+       (.16816) and 16x8x8 (.1688), a 16x16x16 whose spare 8 columns a .16816 drops or whose spare 8 rows a .1688 pads
+       with zeros, and Metal's simdgroup_matrix 8x8x8, which takes four products a .16816 and two a .1688. An empty
+       mask is no cooperative matrix. vk/device.c reads them; sm86_translate.c's hmma_coop picks the best for one HMMA
+       */
+#define SH_COOP_16x16x16 (1u << 0)
+#define SH_COOP_16x8x16  (1u << 1)
+#define SH_COOP_16x8x8   (1u << 2)
+#define SH_COOP_8x8x8    (1u << 3)
+    u32 hmma_coop_shapes;
     /* an SM86 HMMA off the cooperative matrices gathers its B fragment in pairs of lanes 4 apart, which multiply by the
        same 16 words of it: each shuffles in half of them and takes the other half from its pair with a xor of 4
        (sm86_translate.c's hmma). RADV with subgroups of 32 (GFX10 on): half of the B permutes through LDS become DPP
@@ -526,10 +537,6 @@ typedef struct {
        PackHalf2x16: an SM86 program packs its halves below 2^-14 exactly then (sm86_translate.c's pack_half). 0 offline
        */
     unsigned half_flush : 1;
-    /* The tile that device's cooperative matrices come in, when it has them: 16 for an M by N by K of 16x16x16, which
-       RADV offers, 8 for Metal's simdgroup_matrix of 8x8x8, which a MoltenVK with VK_KHR_cooperative_matrix reports
-       (hmma_coop). One SM86 HMMA is four 8x8x8 products there and one 16x16x16 otherwise */
-    int hmma_coop_tile;
     /* the most mesh workgroups one task workgroup can launch (maxMeshWorkGroupCount[0] and maxMeshWorkGroupTotalCount,
        the less of them): a task program's count, read from its payload's header, is clamped to it, as a count past it
        is undefined behavior that can hang the GPU. 0 offline: not clamped */

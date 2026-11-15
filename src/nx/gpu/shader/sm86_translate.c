@@ -3025,18 +3025,19 @@ static u32 hmma_zero(Ctx* c) {
                                 builtin_vec3(c, &c->num_groups, SPV_BUILT_IN_NUM_WORKGROUPS, 0), c->zero);
     return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, never, cu(c, group + 1), c->zero);
 }
-/* HMMA on the device's matrix unit (g_spirv_translate.hmma_coop): one OpCooperativeMatrixMulAddKHR of 16x16 f16 A and B
-   into a 16x16 f32 accumulator, in place of hmma's 16 B gathers and 32 dot products. SPV_KHR_cooperative_matrix leaves
-   which lane holds which element to the driver, with no query, so the fragments go through shared memory: each
-   subgroup has a slot of its own (SubgroupId) in an array after the program's, where A is row-major (8 words a row
-   of 16 halves), B column-major (8 words a column) and D row-major in f32 (16 words a row). The product has 16
-   columns for HMMA's 8: B's columns 8-15 are whatever the 64 words after its 8 hold (the start of D's), which only
-   reach D's columns 8-15, never read back. The .1688 forms' k of 8 pads to 16 with zeros in A's columns and B's rows
-   8-15, as stale words there could be infinities or NaNs, and 0 times those poisons the sums. The accumulator starts
-   at zero and C is added to the lane's four elements of D after the product: staging C as well (4 stores, 8 loads)
-   cost one game's video upscaler half of the gain. A subgroup barrier comes before the stores (the last HMMA's
-   loads of the slot), between them and the matrix loads, and between D's store and the lanes' loads of it; RADV
-   makes them no instruction, a wave's LDS accesses being in order.
+/* HMMA on the device's matrix unit (g_spirv_translate.hmma_coop): an OpCooperativeMatrixMulAddKHR of 16xK f16 A and KxN f16 B
+   into a 16xN or 8xN f32 accumulator, in place of hmma's 16 B gathers and 32 dot products, on the shape the device
+   offers that HMMA best (coop_shape). SPV_KHR_cooperative_matrix leaves which lane holds which element to the
+   driver, with no query, so the fragments go through shared memory: each subgroup has a slot of its own (SubgroupId)
+   in an array after the program's, where A is row-major (8 words a row of 16 halves), B column-major (8 words a
+   column) and D row-major in f32 (N words a row). A 16 wide shape has 16 columns for HMMA's 8: B's columns 8-15 are
+   whatever the 64 words after its 8 hold (the start of D's), which only reach D's columns 8-15, never read back. A
+   16 wide K pads a .1688's k of 8 with zeros in A's columns and B's rows 8-15, as stale words there could be
+   infinities or NaNs, and 0 times those poisons the sums; a 16x8x8 shape splits a .16816's K in two products and an
+   8x8x8 its M in two more. The accumulator starts at zero and C is added to the lane's four elements of D after the
+   product: staging C as well (4 stores, 8 loads) cost one game's video upscaler half of the gain. A subgroup barrier
+   comes before the stores (the last HMMA's loads of the slot), between them and the matrix loads, and between D's
+   store and the lanes' loads of it; RADV makes them no instruction, a wave's LDS accesses being in order.
    The products of two f16 are exact in f32, and the device sums them in f32 inside the instruction, rounded as it
    does it (RDNA 3.5's is a few f32 places off an FMA chain even on exact sums, as its v_dot2_f32_f16 is); C then adds
    one rounding, in f32. So both D types keep hmma's bound, that of an f32 sum of the products and C, which an f16 D
@@ -3047,13 +3048,13 @@ static u32 hmma_zero(Ctx* c) {
 #define COOP_D     192u
 #define COOP_WORDS 448u
 /* Whether a program's HMMAs take hmma_coop: a compute program with one, in blocks of whole subgroups of 32 (vk/
-   compute.c asks for subgroups of 32 for a program that reads other lanes, full where x is a multiple of 32; a 16x16
-   matrix takes the subgroup's 32 lanes), with shaderFloat16 for the halves, and with room for the slots after the
-   program's shared memory within the device's (g_spirv_translate.hmma_coop). It is the module's choice, as the
-   extension asks for the Vulkan memory model */
+   compute.c asks for subgroups of 32 for a program that reads other lanes, full where x is a multiple of 32; every
+   cooperative matrix spans the subgroup's 32 lanes), with shaderFloat16 for the halves, a shape to take
+   (g_spirv_translate.hmma_coop_shapes), and with room for the slots after the program's shared memory within the device's
+   (g_spirv_translate.hmma_coop). It is the module's choice, as the extension asks for the Vulkan memory model */
 static int coop_wanted(const Ctx* c) {
-    if (!g_spirv_translate.hmma_coop || !g_spirv_translate.float16 || c->stage != ST_CS || c->si->cs_local[0] <= 0 ||
-        c->si->cs_local[0] % 32)
+    if (!g_spirv_translate.hmma_coop || !g_spirv_translate.hmma_coop_shapes || !g_spirv_translate.float16 || c->stage != ST_CS ||
+        c->si->cs_local[0] <= 0 || c->si->cs_local[0] % 32)
         return 0;
     u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
     u32 own = c->si->shared_size > 0 ? (u32)c->si->shared_size : 16384u; /* shared_var's */
@@ -3071,6 +3072,23 @@ static u32 coop_ptr(Ctx* c, u32 index) {
     return SPV(&c->e, SPV_OP_ACCESS_CHAIN, spv_emit_type_workgroup_pointer(&c->e, c->t_u32), c->coop_slots, index);
 }
 static u32 coop_add(Ctx* c, u32 at, u32 k) { return k ? spv_emit_iadd_u32(&c->e, c->t_u32, at, cu(c, k)) : at; }
+/* the shape an HMMA takes on the device's cooperative matrices (g_spirv_translate.hmma_coop_shapes): an exact one first,
+   16x8x16 for a .16816 and 16x8x8 for a .1688, then a 16 wide K for either (the .1688's second K half zeros, the
+   .16816's spare N columns garbage), then the splits, an 8 wide K (two products) and an 8 wide M (two more) */
+enum { COOP_SHAPE_16x16x16, COOP_SHAPE_16x8x16, COOP_SHAPE_16x8x8, COOP_SHAPE_8x8x8 };
+static u32 coop_shape(int k16) {
+    u32 s = g_spirv_translate.hmma_coop_shapes;
+    if (k16) {
+        if (s & SH_COOP_16x8x16) return COOP_SHAPE_16x8x16;
+        if (s & SH_COOP_16x16x16) return COOP_SHAPE_16x16x16;
+        if (s & SH_COOP_16x8x8) return COOP_SHAPE_16x8x8;
+        return COOP_SHAPE_8x8x8;
+    }
+    if (s & SH_COOP_16x8x8) return COOP_SHAPE_16x8x8;
+    if (s & SH_COOP_16x8x16) return COOP_SHAPE_16x8x16;
+    if (s & SH_COOP_16x16x16) return COOP_SHAPE_16x16x16;
+    return COOP_SHAPE_8x8x8;
+}
 static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 rb, u32 rc) {
     u32 na = k16 ? 4 : 2, nb = k16 ? 2 : 1, ncd = f32 ? 4 : 2, a[4], b[2], cc[4], k;
     for (k = 0; k < na; k++) a[k] = rd(c, ra + k);
@@ -3081,12 +3099,15 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
     spv_emit_capability(&c->e, SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR);
     spv_emit_extension(&c->e, "SPV_KHR_cooperative_matrix");
     u32 t_h = spv_emit_type_float(&c->e, 16);
-    u32 tile = g_spirv_translate.hmma_coop_tile == 8 ? 8 : 16; /* Metal's simdgroup_matrix is 8x8x8, RADV's 16x16x16 */
-    u32 t_a = spv_emit_type_cooperative_matrix(&c->e, t_h, SPV_SCOPE_SUBGROUP, tile, tile,
+    /* the shape this HMMA takes: the exact one first, then a 16 wide K (a .1688's second K half zeros, a .16816's
+       spare N columns garbage), then the splits. coop_wanted admits no module without a shape */
+    static const u32 dims[4][3] = {{16, 16, 16}, {16, 8, 16}, {16, 8, 8}, {8, 8, 8}};
+    u32 shape = coop_shape(k16), rows = dims[shape][0], cols = dims[shape][1], depth = dims[shape][2];
+    u32 t_a = spv_emit_type_cooperative_matrix(&c->e, t_h, SPV_SCOPE_SUBGROUP, rows, depth,
                                                SPV_COOPERATIVE_MATRIX_USE_MATRIX_A_KHR);
-    u32 t_b = spv_emit_type_cooperative_matrix(&c->e, t_h, SPV_SCOPE_SUBGROUP, tile, tile,
+    u32 t_b = spv_emit_type_cooperative_matrix(&c->e, t_h, SPV_SCOPE_SUBGROUP, depth, cols,
                                                SPV_COOPERATIVE_MATRIX_USE_MATRIX_B_KHR);
-    u32 t_acc = spv_emit_type_cooperative_matrix(&c->e, c->t_f32, SPV_SCOPE_SUBGROUP, tile, tile,
+    u32 t_acc = spv_emit_type_cooperative_matrix(&c->e, c->t_f32, SPV_SCOPE_SUBGROUP, rows, cols,
                                                  SPV_COOPERATIVE_MATRIX_USE_MATRIX_ACCUMULATOR_KHR);
     if (!c->coop_slots) {
         u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
@@ -3101,65 +3122,54 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
                              spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 2)), cu(c, 3));
     u32 t = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3));
     /* lane l's words (g = l / 4, t = l % 4): A's at 8g + t (+64 row g + 8, +4 columns 8-15), B's at 8g + t (+4 rows
-       8-15), D's at 16g + 2t (+1 the next column, +128 row g + 8) */
+       8-15), D's at 16g + 2t (+1 the next column, +128 row g + 8) in a 16 wide one, 8g + 2t (+1, +64 at row g + 8) in
+       an 8 wide one */
     u32 at_a = spv_emit_iadd_u32(&c->e, c->t_u32, base, spv_emit_iadd_u32(&c->e, c->t_u32, g8, t));
     u32 at_b = coop_add(c, at_a, COOP_B);
+    u32 drow = cols == 16 ? spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g8, cu(c, 1)) : g8;
     u32 at_d = spv_emit_iadd_u32(
         &c->e, c->t_u32, base,
-        spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g8, cu(c, 1)),
+        spv_emit_iadd_u32(&c->e, c->t_u32, drow,
                           spv_emit_iadd_u32(&c->e, c->t_u32,
                                             spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 1)),
                                             cu(c, COOP_D))));
     coop_barrier(c);
-    /* the K halves the products read: a .1688's second is zeros, which an 8 wide tile does not multiply */
-    u32 halves = tile == 8 && !k16 ? 1 : 2;
+    /* the words the staging writes: a .1688's second K half is zeros where the shape's K is 16, and an 8 wide K reads
+       only the first half's, whose .1688 has none to zero */
+    u32 ka = k16 || depth == 16 ? 4 : 2, kb = k16 || depth == 16 ? 2 : 1;
     static const u32 a_at[4] = {0, 64, 4, 68};
-    for (k = 0; k < 2 * halves; k++)
+    for (k = 0; k < ka; k++)
         spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_a, a_at[k])), k < na ? a[k] : c->zero);
-    for (k = 0; k < halves; k++)
+    for (k = 0; k < kb; k++)
         spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_b, 4 * k)), k < nb ? b[k] : c->zero);
     coop_barrier(c);
+    /* the products: an 8 wide K splits a .16816's K in two, an 8 wide M its 16 rows in two blocks of 8, each block's
+       K halves adding into one accumulator. A 16 wide K is one product */
+    static const u32 half_at[2] = {0, 4}, block_at[2] = {0, 64};
+    u32 kblocks = depth == 8 && k16 ? 2 : 1, mblocks = rows == 8 ? 2 : 1;
     u32 zero_acc = spv_emit_const_composite(&c->e, t_acc, (const u32[]){cf(c, 0.0f)}, 1);
-    if (g_spirv_translate.hmma_coop_tile != 8) {
-        u32 ma =
-            SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a, coop_ptr(c, base),
-                cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 8), SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
-        u32 mb =
-            SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b, coop_ptr(c, coop_add(c, base, COOP_B)),
-                cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_COLUMN_MAJOR_KHR), cu(c, 8), SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
-        u32 md = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_MUL_ADD_KHR, t_acc, ma, mb, zero_acc);
-        SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR, coop_ptr(c, coop_add(c, base, COOP_D)), md,
-                 cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 16), SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
-    } else {
-        /* An 8x8x8 tile, as Metal's simdgroup_matrix is: the HMMA's 16x8x16 is two M halves of 8 rows, each the sum
-           of the two K halves' products, so four products a .16816 (two a .1688, whose K is one half), the K halves'
-           the second of each pair adding into the first. The tiles sit where a_at and the B words already are, and D's two go a row of 16 words apart,
-           so the lanes read D back as they do above */
-        static const u32 half_at[2] = {0, 4};     /* K's two halves of A, and of B's columns, 4 words apart */
-        u32 a_at2[2] = {coop_add(c, base, 0), coop_add(c, base, 64)};
-        u32 d_at[2] = {coop_add(c, base, COOP_D), coop_add(c, base, COOP_D + 128)};
-        for (u32 m = 0; m < 2; m++) {
-            u32 acc8 = 0;
-            for (u32 h = 0; h < halves; h++) {
-                u32 ma =
-                    SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a, coop_ptr(c, coop_add(c, a_at2[m], half_at[h])),
-                        cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 8),
-                        SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
-                u32 mb = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b,
-                             coop_ptr(c, coop_add(c, coop_add(c, base, COOP_B), half_at[h])),
-                             cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_COLUMN_MAJOR_KHR), cu(c, 8),
-                             SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
-                acc8 = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_MUL_ADD_KHR, t_acc, ma, mb, acc8 ? acc8 : zero_acc);
-            }
-            SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR, coop_ptr(c, d_at[m]), acc8,
-                     cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 16),
-                     SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
+    for (u32 m = 0; m < mblocks; m++) {
+        u32 acc = 0;
+        for (u32 h = 0; h < kblocks; h++) {
+            u32 ma = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a,
+                         coop_ptr(c, coop_add(c, coop_add(c, base, block_at[m]), half_at[h])),
+                         cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 8),
+                         SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
+            u32 mb = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_b,
+                         coop_ptr(c, coop_add(c, coop_add(c, base, COOP_B), half_at[h])),
+                         cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_COLUMN_MAJOR_KHR), cu(c, 8),
+                         SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
+            acc = SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_MUL_ADD_KHR, t_acc, ma, mb, acc ? acc : zero_acc);
         }
+        SPV_VOID(&c->e, SPV_OP_COOPERATIVE_MATRIX_STORE_KHR,
+                 coop_ptr(c, coop_add(c, coop_add(c, base, COOP_D), block_at[m])), acc,
+                 cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, cols),
+                 SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
     }
     coop_barrier(c);
     u32 acc[4]; /* row g columns 2t and 2t + 1, row g + 8 the same */
     for (k = 0; k < 4; k++) {
-        u32 at = coop_add(c, at_d, (k >> 1) * 128 + (k & 1));
+        u32 at = coop_add(c, at_d, (k >> 1) * (cols == 16 ? 128 : 64) + (k & 1));
         acc[k] = to_f(c, spv_emit_load_nonprivate(&c->e, c->t_u32, coop_ptr(c, at)));
     }
     if (rc < SM86_RZ)
