@@ -305,7 +305,15 @@ static void test_heap(void) {
     CHECK(info(33) == 0x1000);             /* guest page size, also on hosts with larger pages */
     CHECK(info(29) == 0 && info(30) == 0); /* no remote address space */
     CHECK(info(31) == 0 && info(32) == 0); /* no remote allocations */
-    static const u32 process_ids[] = {29, 30, 31, 32, 33};
+    CHECK(info(36) == info(13));           /* AddressSpaceSize: the whole space, as AslrRegionSize names it */
+    CHECK(info(37) == 0 && info(38) == 0); /* no shadow stack, the NPDM does not enable one */
+    {
+        u64 out = ~0ull;
+        CHECK(svc_get_info(26, 0, 0x36, &out) == 0 && out == 1);
+        CHECK(svc_get_info(26, 0, 0x35, &out) == SNX_RC_SVC_INVALID_COMBINATION);
+        CHECK(svc_get_info(26, H_CUR_PROC, 0x36, &out) == SNX_RC_SVC_INVALID_HANDLE);
+    }
+    static const u32 process_ids[] = {29, 30, 31, 32, 33, 36, 37, 38};
     for (size_t i = 0; i < sizeof process_ids / sizeof process_ids[0]; ++i) {
         u32 id = process_ids[i];
         u64 out = ~0ull;
