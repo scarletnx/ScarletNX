@@ -300,6 +300,12 @@ void vk_tex_report_log(void) {
             (unsigned long long)(g_tex_report.reloads - g_tex_report.reported),
             (unsigned long long)g_tex_report.evictions);
     g_tex_report.reported = g_tex_report.reloads;
+    u64 sys_out, sys_back, sys_bytes;
+    vk_tex_sysmem_stats(&sys_out, &sys_back, &sys_bytes);
+    if (sys_out)
+        LOG("vulkan: %llu textures moved into system memory for room in place of an eviction (texture_sysmem), %llu "
+            "moved back; %llu MB there now\n",
+            (unsigned long long)sys_out, (unsigned long long)sys_back, MB(sys_bytes));
     u64 shed_made, shed_bytes, shed_coarser, shed_finer;
     vk_tex_shed_stats(&shed_made, &shed_bytes, &shed_coarser, &shed_finer);
     if (shed_made)

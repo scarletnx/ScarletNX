@@ -1024,6 +1024,9 @@ typedef struct Surf {
     /* textures: an image with sparse residency, memory bound only for the levels that guest memory maps
        (gpu/vk/texture.c tex_bind). mem is VK_NULL_HANDLE, and bytes counts the memory bound now */
     u8 sparse;
+    /* textures: its image is in system memory (texture.c vk_tex_demote), bytes 0 while it is: sys_bytes its size */
+    u8 demoted;
+    u64 sys_bytes;
     /* textures: sparse for its levels alone (texture.c tex_create's shed): mapped whole, with every level from
        lod_floor on bound, its finest going where the device's memory runs short (vk_tex_coarser) and coming back
        when it has room (vk_tex_finer) */
@@ -1276,6 +1279,15 @@ u64 vk_tex_coarser(Surf* t);           /* texture.c: t a level coarser, the byte
 /* texture.c: a shed texture a level finer where the heap has room for it (a fifth of the budget left after it), its
    next use loading it again: 1 when it took one */
 int vk_tex_finer(Surf* t);
+/* texture.c: t's image moved into system memory, where the GPU still samples it (over the bus), in place of an
+   eviction: its texels kept, no load or encode again at its next use. The GPU memory bytes it lets go, 0 when it
+   can't be (texture_sysmem=0, not a plain image, no system memory for it). vk_tex_promote: back into the GPU's memory,
+   1 when it went. vk_tex_sysmem_stats: textures moved out and back, and the bytes in system memory now */
+u64 vk_tex_demote(Surf* t);
+int vk_tex_promote(Surf* t);
+void vk_tex_sysmem_stats(u64* out, u64* back, u64* bytes);
+/* surface.c: once a present, the demoted textures the last presents used moved back while the GPU's memory has room */
+void vk_tex_promote_frame(void);
 /* surface.c: once a present, shed textures used lately a level finer while the heap has room */
 void vk_tex_refine_frame(void);
 /* texture.c: the shed textures made, their bytes as made whole, and the levels shed and taken back so far */

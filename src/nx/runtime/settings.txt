@@ -402,6 +402,15 @@ setting ASTC lines BC1
     help for the textures loaded from then on. Never (the default) = BC7. Always = from the start. On a 2 GB GPU Mario
     help Kart World's race ran no faster with Auto (10.3 and 10.9 frames a second against 12.2 and 11.1): the cache
     help fills what it saves
+setting Texture system memory
+    label Textures given way to system memory
+    key texture_sysmem
+    int 0 1
+    default 1
+    words Off|On
+    help On = where the GPU's memory runs short, a texture the cache would evict is moved into system memory instead,
+    help where the GPU still samples it (more slowly, over the bus), and moved back when it is used and there is room.
+    help Off = it is evicted, and loaded again at its next use
 setting BC7 queue
     key bc7_queue
     int 0 16384

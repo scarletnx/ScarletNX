@@ -2394,6 +2394,15 @@ static int lossless(const Surf* s) {
     return (!s->f.depth && s->f.raw && s->mem_wgen == s->wgen && moves_scaled(s)) || rt_superseded(s);
 }
 /* s out of the table and freed, with its copies (gpu/vk/texture.c rt_crop): the device memory that releases */
+/* a texture where an eviction would take it (want: bytes of the GPU's memory are asked for): moved into system memory
+   (vk_tex_demote), else evicted. One in system memory already frees none of the GPU's memory: it stays for such a
+   reclaim, and an idle one goes as any texture does when nothing is asked for (want ~0, vk_tex_frame) */
+static u64 surf_evict(Surf* s);
+static u64 tex_give_way(Surf* s, u64 want) {
+    if (s->demoted) return want == ~0ull ? surf_evict(s) : 0;
+    const u64 moved = want != ~0ull ? vk_tex_demote(s) : 0;
+    return moved ? moved : surf_evict(s);
+}
 static u64 surf_evict(Surf* s) {
     if (s->row && lru_kind(s->row) == VK_LRU_TEX) vk_tex_evicted(s); /* statistics: one made again later counts */
     if (s->is_rt && !(s->gva >> 63)) rtx_del(s->gva);
@@ -2432,7 +2441,7 @@ static u64 surf_reclaim(int kind, u32 before, u64 want, int lossy) {
             if (vk_gfx_image_holds(s))
                 passed++;
             else
-                freed += surf_evict(s);
+                freed += kind == VK_LRU_TEX ? tex_give_way(s, want) : surf_evict(s);
         }
     for (u32 r = g_rows.lists[kind].head, n; r && freed < want && passed < 512; r = n) {
         n = g_rows.lru[r].next;
@@ -2446,7 +2455,7 @@ static u64 surf_reclaim(int kind, u32 before, u64 want, int lossy) {
         else if (vk_gfx_image_holds(s))
             passed++;
         else
-            freed += surf_evict(s);
+            freed += kind == VK_LRU_TEX ? tex_give_way(s, want) : surf_evict(s);
     }
     return freed;
 }
@@ -2679,6 +2688,42 @@ void vk_tex_refine_frame(void) {
         Surf* t = g_rows.surf[r];
         if ((i32)((u32)t->last_used - since) < 0) break;
         if (t->shed && t->lod_floor) took += (u32)vk_tex_finer(t);
+    }
+}
+/* Once a present: the demoted textures (vk_tex_demote) the last two presents used, the most recently used first, moved
+   back into the GPU's memory, 16 MB a present at most; where the GPU's memory has no room for one, textures no present
+   used in the last 30 go into system memory in its place, the least recently used first. Waiting for room alone, the
+   GPU's memory never had any in Mario Kart World's race, and the textures its frames used stayed in system memory,
+   sampled over the bus. The use counted is less what waits to be freed: what a swap lets go is the GPU's again when
+   the frame is done, and the move back that finds no memory now is tried again at the next present */
+void vk_tex_promote_frame(void) {
+    if (!g_settings.texture_system_memory) return;
+    u64 usage, budget;
+    vk_mem_use(&usage, &budget);
+    const u64 head = trim_head(budget), high = budget > head ? budget - head : 0, pending = vk_deferred_bytes();
+    u64 use = usage > pending ? usage - pending : 0, moved = 0;
+    const u32 hot = vk_present_before(0, 2), cold = vk_present_before(0, 30);
+    u32 looked = 0, coldr = g_rows.lists[VK_LRU_TEX].head;
+    for (u32 r = g_rows.lists[VK_LRU_TEX].tail, p; r && looked < 256 && moved < (16ull << 20); r = p, looked++) {
+        p = g_rows.lru[r].prev;
+        Surf* t = g_rows.surf[r];
+        if ((i32)((u32)t->last_used - hot) < 0) break;
+        if (!t->demoted) continue;
+        /* room for it: cold textures out, from the least recently used on */
+        while (use + t->sys_bytes > high && coldr) {
+            Surf* c = g_rows.surf[coldr];
+            coldr = g_rows.lru[coldr].next;
+            if ((i32)((u32)c->last_used - cold) >= 0) {
+                coldr = 0; /* the rest were used lately */
+                break;
+            }
+            if (c->demoted || vk_gfx_image_holds(c)) continue;
+            const u64 got = vk_tex_demote(c);
+            use = use > got ? use - got : 0;
+        }
+        if (use + t->sys_bytes > high) break;
+        const u64 b = t->sys_bytes;
+        if (vk_tex_promote(t)) moved += b, use += b;
     }
 }
 void vk_mem_trim(u64 extra, int force) {
