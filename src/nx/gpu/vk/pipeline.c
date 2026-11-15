@@ -1663,7 +1663,8 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
                          .stride = l->nbind && g_vk.has_dynamic_stride,
                          .vertex_input = g_vk.vertex_input_dynamic,
                          .tess = k->tes != VK_NULL_HANDLE,
-                         .mesh = k->mesh != 0};
+                         .mesh = k->mesh != 0,
+                         .clamp_range = g_vk.has_depth_clamp_range};
     o->flags = (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
                (k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0);
 }

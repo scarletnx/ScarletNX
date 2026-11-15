@@ -503,11 +503,28 @@ static void check_key_text(void) {
     CHECK(text[0] == 'z', "a buffer of no bytes was written");
 }
 
+/* The depth clamp's range (VK_EXT_depth_clamp_control) is the pre-rasterization part's dynamic state, and only where
+   the renderer uses the extension */
+static void check_clamp_range(void) {
+    VkDynamicState s[VK_PIPE_DYN_MAX];
+    PipeDynIn in = {0};
+    u32 n = vk_pipe_dynamic(VK_PART_ALL, &in, s);
+    CHECK(!has(s, n, VK_DYNAMIC_STATE_DEPTH_CLAMP_RANGE_EXT), "no clamp range without the extension");
+    in.clamp_range = 1;
+    u32 m = vk_pipe_dynamic(VK_PART_ALL, &in, s);
+    CHECK(m == n + 1 && s[m - 1] == VK_DYNAMIC_STATE_DEPTH_CLAMP_RANGE_EXT, "the clamp range after the others");
+    n = vk_pipe_dynamic(VK_PART_PR, &in, s);
+    CHECK(has(s, n, VK_DYNAMIC_STATE_DEPTH_CLAMP_RANGE_EXT), "in the pre-rasterization part");
+    n = vk_pipe_dynamic(VK_PART_VI | VK_PART_FS | VK_PART_FO, &in, s);
+    CHECK(!has(s, n, VK_DYNAMIC_STATE_DEPTH_CLAMP_RANGE_EXT), "in no other part");
+}
+
 int main(void) {
     check_off();
     check_dynamic();
     check_depth_range();
     check_depth_clip();
+    check_clamp_range();
     check_bans();
     check_states();
     check_split();

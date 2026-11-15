@@ -3063,6 +3063,7 @@ static struct {
     u64 set_binds; /* vk_rec_set_binds when sets were: a set bound the old way since unbinds descriptor buffers */
     u32 fb, cull, front, topo, restart, discard, bias_on, dt, dw, dcmp, dbounds, st;
     u32 polygon, clamp, clip, provoking, conservative, patch; /* g_vk.dyn_pr's, as PipeKey holds them */
+    VkDepthClampRangeEXT clamp_range;                         /* with has_depth_clamp_range */
     u32 minus_one;                                      /* and its depth range, which no key holds: from -1 */
     VkViewport vp[GUEST_VIEWPORTS];
     VkRect2D sc[GUEST_VIEWPORTS];
@@ -5633,6 +5634,29 @@ retry:
         rec_CmdSetScissorWithCount(cb, viewports, scissor);
     }
     g_dyn.viewports = viewports;
+    /* The console clamps a fragment's depth to the viewport's clip range (SET_VIEWPORT_CLIP_MIN_Z and MAX_Z), which
+       need not be the transform's minDepth to maxDepth: NVK, which drives the same registers, turns the clamp off on
+       these GPUs by setting that range to -inf..inf. Where the clip control forces 0 to 1 (its bit 0, deko3d's clamp
+       off) the range is that. Vulkan's range is one for every viewport: viewport 0's */
+    if (g_vk.has_depth_clamp_range) {
+        float zn = ds->rkey.depth_zero_one ? 0.0f : ds->vp.z_near[0],
+              zf = ds->rkey.depth_zero_one ? 1.0f : ds->vp.z_far[0];
+        VkDepthClampRangeEXT range = {zn < zf ? zn : zf, zn < zf ? zf : zn};
+        int numbers = zn == zn && zf == zf;
+        if (!g_vk.has_depth_range_unrestricted) {
+            range.minDepthClamp = range.minDepthClamp < 0 ? 0 : range.minDepthClamp > 1 ? 1 : range.minDepthClamp;
+            range.maxDepthClamp = range.maxDepthClamp < 0 ? 0 : range.maxDepthClamp > 1 ? 1 : range.maxDepthClamp;
+        }
+        if (!numbers) range = (VkDepthClampRangeEXT){0, 0}; /* the viewport's range: the mode below says so */
+        if (!ds->rkey.depth_zero_one && viewports > 1 && (ds->vp.z_near[1] != zn || ds->vp.z_far[1] != zf))
+            LOG_LIMIT(1,
+                      "vulkan: viewport 1 clamps depth to %g..%g and viewport 0 to %g..%g: every viewport takes 0's\n",
+                      (double)ds->vp.z_near[1], (double)ds->vp.z_far[1], (double)zn, (double)zf);
+        DYNV(clamp_range, range,
+             rec_CmdSetDepthClampRangeEXT(
+                 cb, numbers ? VK_DEPTH_CLAMP_MODE_USER_DEFINED_RANGE_EXT : VK_DEPTH_CLAMP_MODE_VIEWPORT_RANGE_EXT,
+                 &range));
+    }
     /* Triangle facing has its own window-origin control, independent of viewport scale and swizzle. */
     {
         VkCullModeFlags cull = ds->dyn.cull;

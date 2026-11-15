@@ -835,6 +835,7 @@ static int create_device(void) {
     int has_gpl = 0, has_eds2 = 0, has_eds3 = 0; /* the extensions of pipeline libraries and their dynamic state */
     int has_depth_clip_control = 0;              /* and of the depth range as one of those states */
     int has_depth_clip_enable = 0;               /* depth clipping apart from the clamp (VK_EXT_depth_clip_enable) */
+    int has_depth_clamp_control = 0;             /* the clamp's own range (VK_EXT_depth_clamp_control) */
     int has_mesh = 0;
     int has_size_control = 0; /* VK_EXT_subgroup_size_control, on a 1.2 device: 1.3 has it in its core */
     int has_mixed_dot = 0; /* VK_VALVE_shader_mixed_float_dot_product: HMMA's pairs of f16 products in one instruction */
@@ -881,6 +882,7 @@ static int create_device(void) {
         has_eds3 = snx_vk_extensions_has(&e, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
         has_depth_clip_control = snx_vk_extensions_has(&e, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
         has_depth_clip_enable = snx_vk_extensions_has(&e, VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
+        has_depth_clamp_control = snx_vk_extensions_has(&e, VK_EXT_DEPTH_CLAMP_CONTROL_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
         /* only when vk_checkpoints asks: a device made with it marks every draw and dispatch, and a RenderDoc capture
@@ -1117,6 +1119,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT};
     VkPhysicalDeviceDepthClipEnableFeaturesEXT qclip_enable = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
+    VkPhysicalDeviceDepthClampControlFeaturesEXT qclamp_control = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLAMP_CONTROL_FEATURES_EXT};
     /* with the subset enabled, each of its features is off until the device asks for it: a view's swizzle, for one */
     PortabilityFeatures qport = {.sType = PORTABILITY_FEATURES_STYPE};
     VkPhysicalDevicePresentIdFeaturesKHR qpid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
@@ -1168,6 +1172,7 @@ static int create_device(void) {
                            has_eds3 ? &qeds3 : NULL,
                            has_depth_clip_control ? &qclip_control : NULL,
                            has_depth_clip_enable ? &qclip_enable : NULL,
+                           has_depth_clamp_control ? &qclamp_control : NULL,
                            has_portability ? &qport : NULL,
                            has_reconvergence ? &qreconv : NULL,
                            robustness ? &qpipeline : NULL,
@@ -1377,6 +1382,15 @@ static int create_device(void) {
                 : !qclip_enable.depthClipEnable
                     ? "the device has VK_EXT_depth_clip_enable without depthClipEnable"
                     : "the clamp is dynamic state and the device has no extendedDynamicState3DepthClipEnable");
+        g_vk.has_depth_clamp_range = has_depth_clamp_control && qclamp_control.depthClampControl;
+        if (g_vk.has_depth_clamp_range)
+            LOG("vulkan: a clamped depth stays in the viewport's clip range, as the console clamps it "
+                "(VK_EXT_depth_clamp_control, as dynamic state)\n");
+        else
+            LOG("vulkan: a clamped depth stays in the viewport transform's range, where the console clamps to the "
+                "viewport's clip range (%s)\n",
+                !has_depth_clamp_control ? "VK_EXT_depth_clamp_control is off: its line above says why"
+                                         : "the device has VK_EXT_depth_clamp_control without depthClampControl");
     }
     g_vk.has_xfb = g_vk.has_xfb && fxfb.transformFeedback;
     g_vk.has_geometry_streams = g_vk.has_xfb && fxfb.geometryStreams;
@@ -1882,6 +1896,14 @@ static int create_device(void) {
     if (g_vk.has_depth_clip_enable) {
         chain = &fclip_enable;
         ext[next++] = VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceDepthClampControlFeaturesEXT fclamp_control = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLAMP_CONTROL_FEATURES_EXT,
+        .pNext = chain,
+        .depthClampControl = VK_TRUE};
+    if (g_vk.has_depth_clamp_range) {
+        chain = &fclamp_control;
+        ext[next++] = VK_EXT_DEPTH_CLAMP_CONTROL_EXTENSION_NAME;
     }
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR findex8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR,

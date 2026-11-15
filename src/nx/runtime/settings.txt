@@ -1879,6 +1879,7 @@ setting @VK_EXT_calibrated_timestamps
 setting @VK_EXT_conditional_rendering
 setting @VK_EXT_conservative_rasterization
 setting @VK_EXT_custom_border_color
+setting @VK_EXT_depth_clamp_control
 setting @VK_EXT_depth_clip_control
 setting @VK_EXT_depth_clip_enable
 setting @VK_EXT_depth_range_unrestricted

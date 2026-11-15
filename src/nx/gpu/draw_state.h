@@ -203,7 +203,8 @@ typedef struct {
        nor the rasterizer at either end), and a fragment's depth is clamped to the viewport's range (either end) */
     u8 depth_no_clip;
     u8 depth_pixel_clamp;
-    u8 pad[3];
+    u8 depth_zero_one; /* that clamp is to 0 to 1, not to the viewport's clip range */
+    u8 pad[2];
     u32 patch_vertices; /* control points of a patch, 0 as asked (the renderer takes it as 1) */
     u32 sample_mask;    /* the samples a multisampled draw may write, bit i sample i: ~0 for all */
 } DsRasterKey;
