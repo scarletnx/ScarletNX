@@ -2050,11 +2050,11 @@ rebind:
                 return;
             }
             vk_gmem_words(tic_base + (h & 0xFFFFF) * 32ull, tic, 8);
-            /* a slot with nothing bound (an empty header): an empty image, which nothing writes back. One game's
-               program that makes a texture's levels from its first has seven image slots, one for each level, and
-               the game leaves those past the texture's last level empty (images 4 to 6 of a texture of 4 levels).
-               Skipped whole for them, the dispatch left levels 1 to 3 zero, and the trilinear lookups of the
-               texture drew a dark square under the game's kart */
+            /* a slot with nothing bound (an empty header): a null descriptor (vk_null_descriptors), or else an empty
+               image, which nothing writes back. One game's program that makes a texture's levels from its first has
+               seven image slots, one for each level, and the game leaves those past the texture's last level empty
+               (images 4 to 6 of a texture of 4 levels). Skipped whole for them, the dispatch left levels 1 to 3 zero,
+               and the trilinear lookups of the texture drew a dark square under the game's kart */
             VkImageView null_view = VK_NULL_HANDLE;
             int null_slot = vk_tic_empty(tic) && vk_null_descriptors();
             Surf* null_image = vk_tic_empty(tic) && !null_slot

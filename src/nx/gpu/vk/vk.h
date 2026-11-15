@@ -146,10 +146,10 @@ typedef struct {
     int gpl_hold;
     int has_vertex_robustness2; /* exact zero/default components for out-of-range mesh fetches */
     /* VK_EXT_robustness2's features in effect (device.c): buffer reads past the bound range are zero and writes there
-       dropped, image reads out of bounds are zero with an alpha of 1, and descriptors may be null. The bound range
-       is checked in steps of robust_ubo_align (uniform) and robust_ssbo_align (storage) bytes */
+       dropped, image reads out of bounds are zero with an alpha of 1, and descriptors may be null. A uniform range is
+       checked in steps of robust_ubo_align bytes (vk_cb_round) */
     int robust_buffer2, robust_image2, null_descriptor;
-    u32 robust_ubo_align, robust_ssbo_align;
+    u32 robust_ubo_align;
     int has_calibrated_host;    /* VK_EXT_calibrated_timestamps with CLOCK_MONOTONIC_RAW: the GPU's clock goes next to
                                 the client's, one driver call (gpuprof.c's calibration) */
     int has_portability;        /* a portability driver (MoltenVK): the device lists VK_KHR_portability_subset */
@@ -1766,8 +1766,8 @@ static inline int vk_tic_empty(const u32* tic) { return tic[0] == 0; }
    descriptor. Not with descriptor heaps, whose writes (descriptor_heaps.c) have no null form */
 static inline int vk_null_descriptors(void) { return g_vk.null_descriptor && !g_vk.has_descriptor_heaps; }
 /* A constant buffer's bound range: bytes rounded up to 16, or to the step robustBufferAccess2 checks uniform ranges in
-   where that is larger (a power of two). Reads past the range are then zero, and those inside the step read the
-   bytes the binding copied, never a neighbour's in staging */
+   where that is larger (a power of two). With that feature, reads past the range are zero, and reads inside the last
+   step get the bytes the binding copied, never a neighbour's in staging */
 static inline u32 vk_cb_round(u32 bytes) {
     u32 step = g_vk.robust_buffer2 && g_vk.robust_ubo_align > 16 ? g_vk.robust_ubo_align : 16;
     return (bytes + step - 1) & ~(step - 1);

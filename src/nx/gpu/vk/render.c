@@ -2683,15 +2683,16 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         u64 sa = g_vk.props.limits.minStorageBufferOffsetAlignment; /* an earlier draw's result is read in place */
         VkBuffer b;
         u64 o;
-        int ok = gb->aliased            ? (b = gb->buf, o = gb->off, 1)
-                 : addr && gb->writable ? vk_buf_copy_writable(addr, size, &b, &o, ordered)
-                 : addr && gb->bare     ? vk_buf_get_window(addr, size, &b, &o)
-                 : addr                 ? vk_buf_get_input(addr, size, sa, &b, &o)
-                 : vk_null_descriptors() ? (b = VK_NULL_HANDLE, o = 0, 1) /* no address: a null buffer, reads zero */
-                                        : vk_buf_copy(0, size, &b, &o);
+        /* no address: a null buffer where the device has them, which reads zero, else a staging copy of zeros */
+        int ok = gb->aliased             ? (b = gb->buf, o = gb->off, 1)
+                 : addr && gb->writable  ? vk_buf_copy_writable(addr, size, &b, &o, ordered)
+                 : addr && gb->bare      ? vk_buf_get_window(addr, size, &b, &o)
+                 : addr                  ? vk_buf_get_input(addr, size, sa, &b, &o)
+                 : vk_null_descriptors() ? (b = VK_NULL_HANDLE, o = 0, 1)
+                                         : vk_buf_copy(0, size, &b, &o);
         if (!ok) return VK_NULL_HANDLE;
-        dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o,
-                  !b ? VK_WHOLE_SIZE : gb->aliased ? gb->range : size);
+        u64 range = !b ? VK_WHOLE_SIZE : gb->aliased ? gb->range : size;
+        dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o, range);
     }
     /* each pointer table window's base and length, at its buffer's slot: 16 vec4 of words (SNX_VKB_MBASE, which is
        the fragment stage's SNX_VKB_RS: the translator makes no table for a fragment program) */
@@ -2967,8 +2968,9 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             if (!dw_buffer_image(&d, set, stage, i, tic, kind, handle)) return VK_NULL_HANDLE;
             continue;
         }
-        /* a slot with nothing bound (an empty header): an empty image, which nothing writes back, as a dispatch
-           takes one (compute.c's vk_dispatch), where the draw was skipped */
+        /* a slot with nothing bound (an empty header): a null descriptor (vk_null_descriptors), or else an empty
+           image, which nothing writes back, as a dispatch takes one (compute.c's vk_dispatch), where the draw was
+           skipped */
         VkImageView null_view = VK_NULL_HANDLE;
         int null_slot = vk_tic_empty(tic) && vk_null_descriptors();
         Surf* null_image = vk_tic_empty(tic) && !null_slot

@@ -295,7 +295,7 @@ VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, co
                 info.data.pStorageTexelBuffer = &buffer;
             } else if (w->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                 info.data.pCombinedImageSampler = &w->pImageInfo[j];
-            else info.data.pStorageImage = &w->pImageInfo[j]; /* a null view with nullDescriptor: a null image */
+            else info.data.pStorageImage = &w->pImageInfo[j];
             void* destination = g_descriptors.frame[slot].mapped + base + offset + j * stride;
             u32 run = 1;
             if (w->pImageInfo) {
