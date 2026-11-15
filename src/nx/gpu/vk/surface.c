@@ -1546,6 +1546,12 @@ static void publish_own(const Surf* s, VkOwnRes* r, u64 size) {
    each, a fifth of the run. A pitch-linear one's rows go at the guest's pitch, over the bytes between them as the
    guest has them. 0 when it can't be (pitch-linear rows of part texels, or layers not a pitch's rows apart, no room):
    the caller flushes at once */
+static int rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at, const Surf* of, int newer);
+static void rt_publish_newer(const Surf* s, u64 size);
+/* the target whose owner a publish is putting over its span (publish_own, rt_retire_over): the pending ones newer
+   than it are not published before that owner (rt_before_cpu). The ones reaching past its span are after it
+   (rt_publish_newer); one at another GPU address of the memory stays pending, on top, as a write-back leaves it */
+static const Surf* g_rt_publishing;
 static int surf_publishable(const Surf* s) {
     return s->bl || (!(s->pitch % s->f.bpp) && s->type != VK_IMAGE_VIEW_TYPE_3D &&
                      (s->layers == 1 || s->layer_size == (u64)s->pitch * guest_h(s)));
@@ -1574,8 +1580,8 @@ static int publish_bands(Surf* s, u64 size, u32 mem_wgen, u64 gw0) {
             vk_own_res_unref(r);
             return 0;
         }
-        s->mem_wgen = s->wgen; /* the other targets over the band, under s's pixels */
-        vk_rt_overlay(s->gva + at, hi - at, r->buf, 0);
+        s->mem_wgen = s->wgen; /* the older targets over the band, under s's pixels */
+        rt_overlay(s->gva + at, hi - at, r->buf, 0, s, 0);
         s->mem_wgen = mem_wgen;
         VkCommandBuffer cb = vk_cmd();
         vk_all_barrier(cb);
@@ -1584,9 +1590,13 @@ static int publish_bands(Surf* s, u64 size, u32 mem_wgen, u64 gw0) {
             return 0;
         }
         vk_all_barrier(cb);
-        s->mem_wgen = s->wgen;
+        s->mem_wgen = s->wgen; /* the newer ones wholly in the band, over them */
+        if (rt_overlay(s->gva + at, hi - at, r->buf, 0, s, 1)) vk_all_barrier(vk_cmd());
+        const Surf* publishing = g_rt_publishing;
+        g_rt_publishing = s;
         rt_retire_over(s->gva + at, hi - at, s, r, at); /* r holds the band: its byte 0 is the span's byte at */
         publish_span(s, r, at, at, hi - at);
+        g_rt_publishing = publishing;
         s->mem_wgen = mem_wgen;
         vk_own_res_unref(r);
     }
@@ -1595,6 +1605,7 @@ static int publish_bands(Surf* s, u64 size, u32 mem_wgen, u64 gw0) {
     flush_rebase(s, size, 0, gw0);
     vk_surf_relist(s);
     if (!s->is_rt) vk_tex_note_writeback(s);
+    rt_publish_newer(s, size);
     return 1;
 }
 int vk_surf_publish(Surf* s) {
@@ -1649,10 +1660,10 @@ int vk_surf_publish(Surf* s) {
         }
         vk_all_barrier(cb);
     }
-    /* the other targets over the span: s's own pixels go over them below, in the guest's layout, so a target leaves
+    /* the older targets over the span: s's own pixels go over them below, in the guest's layout, so a target leaves
        itself out (its tight rows would be a pitch-linear one's padding) */
     s->mem_wgen = s->wgen;
-    vk_rt_overlay(s->gva, size, r->buf, 0);
+    rt_overlay(s->gva, size, r->buf, 0, s, 0);
     s->mem_wgen = mem_wgen;
     cb = vk_cmd();
     vk_all_barrier(cb);
@@ -1662,6 +1673,10 @@ int vk_surf_publish(Surf* s) {
         return 0;
     }
     vk_all_barrier(cb);
+    s->mem_wgen = s->wgen; /* the newer targets wholly in the span, over s's pixels */
+    if (rt_overlay(s->gva, size, r->buf, 0, s, 1)) vk_all_barrier(vk_cmd());
+    s->mem_wgen = mem_wgen;
+    cb = vk_cmd();
     for (u64 i = 0, k = 0; i < kept; i++) { /* the CPU's runs over the image (cpu_newer) */
         VkBufferCopy kc = {kat + k, newer.run[i][0], newer.run[i][1] - newer.run[i][0]};
         rec_CmdCopyBuffer(cb, kbuf, r->buf, 1, &kc);
@@ -1670,14 +1685,18 @@ int vk_surf_publish(Surf* s) {
     if (kept) vk_all_barrier(cb);
     /* The buffer now holds this image, and the targets under it: publishing it must not flush them again */
     s->mem_wgen = s->wgen;
+    const Surf* publishing = g_rt_publishing;
+    g_rt_publishing = s;
     rt_retire_over(s->gva, size, s, r, 0);
     publish_own(s, r, size);
+    g_rt_publishing = publishing;
     s->pub_serial = __atomic_load_n(&r->serial, __ATOMIC_ACQUIRE);
     vk_own_res_unref(r);
     /* guest memory (its owner) has the image's pixels now: the texture cache finds them current, by their owner */
     flush_rebase(s, size, kept != 0, gw0);
     vk_surf_relist(s);
     if (!s->is_rt) vk_tex_note_writeback(s);
+    rt_publish_newer(s, size);
     return 1;
 }
 /* A draw's storage image kept on the GPU until the CPU touches its bytes, where the write-back read all of them on the
@@ -1771,7 +1790,15 @@ int vk_surf_keep_end(Surf* s, const VkImageKeep* k, u8** original) {
 }
 
 u64 g_vk_rt_readbacks; /* render targets written back to guest memory because the GPU's copy couldn't take them */
-int vk_rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at) {
+/* a publish made for another one's sake (rt_overlay, rt_publish_newer) is under way: one met inside it is written back */
+static int g_rt_nested;
+/* vk_rt_overlay's work for every pending target over the range (of NULL), or for a publish of the target of: the
+   ones older than it (newer 0), whose pixels go under its own, or the ones newer (newer 1), which go over them. A
+   newer one that reaches past the range is left to rt_publish_newer, once of's owner is over the span: published
+   here, before it, of's older pixels went over the newer one's where the two meet (one game's shadow layers, drawn a
+   frame 128 KiB further on in its pool: the layer of the frame before went over the new one in guest memory, and the
+   texture over them loaded the old pixels) */
+static int rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at, const Surf* of, int newer) {
     Surf *local[16], **list;
     int n = 0;
     u32 count, i;
@@ -1779,7 +1806,9 @@ int vk_rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at) {
     count = rt_pending_over(gva, size, local, 16, &list);
     for (i = 0; i < count; i++) {
         Surf* s = list[i];
-        if (s->gva >= gva && s->gva + rt_bytes(s) <= gva + size) {
+        const int inside = s->gva >= gva && s->gva + rt_bytes(s) <= gva + size;
+        if (of && (newer ? s->wseq < of->wseq || !inside : s->wseq > of->wseq)) continue;
+        if (inside) {
             FlushPart whole = flush_whole(s);
             vk_render_end();
             if (flush_record(vk_cmd(), s, buf, at + (s->gva - gva), &whole)) {
@@ -1794,11 +1823,10 @@ int vk_rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at) {
            it was a readback, a wait for the GPU and a landing, once a frame in one game's compute pass. A target past
            the range is mostly one whose memory a smaller surface took over since, and the program's writes there are
            newer than its pixels */
-        static int nested;
-        if (!nested) {
-            nested = 1;
+        if (!g_rt_nested) {
+            g_rt_nested = 1;
             const int published = vk_surf_publish(s);
-            nested = 0;
+            g_rt_nested = 0;
             if (published) continue;
         }
         g_vk_rt_readbacks++;
@@ -1806,6 +1834,28 @@ int vk_rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at) {
     }
     if (list != local) free(list);
     return n;
+}
+int vk_rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at) { return rt_overlay(gva, size, buf, at, NULL, 0); }
+/* s's owner is over its span's size bytes: the pending targets newer than s that reach past the span (rt_overlay left
+   them) are published now, so their owners go over s's where they meet; written back where one can't be published, or
+   inside a publish made for another's sake */
+static void rt_publish_newer(const Surf* s, u64 size) {
+    Surf *local[16], **list;
+    if ((s->gva >> 63) || !pend_hit_va(&g_rt_pages, s->gva, size)) return;
+    const u32 count = rt_pending_over(s->gva, size, local, 16, &list);
+    for (u32 i = 0; i < count; i++) {
+        Surf* t = list[i];
+        if (t == s || t->wseq < s->wseq || (t->gva >= s->gva && t->gva + rt_bytes(t) <= s->gva + size)) continue;
+        if (!g_rt_nested) {
+            g_rt_nested = 1;
+            const int published = vk_surf_publish(t);
+            g_rt_nested = 0;
+            if (published) continue;
+        }
+        g_vk_rt_readbacks++;
+        vk_surf_flush(t, NULL);
+    }
+    if (list != local) free(list);
 }
 
 /* whether a render target not parked covers a GPU page of [gva, gva + size), with pend_lock held (or vk_lock) */
@@ -1844,8 +1894,11 @@ static void rt_before_cpu(u64 cpu, u64 size, int publish) {
     vk_lock();
     g_rt_flushing = 1;
     gmmu_aliases(cpu, size, rt_pending_alias, &pending);
-    for (u32 i = 0; i < pending.count; i++)
+    for (u32 i = 0; i < pending.count; i++) {
+        /* newer than the target whose owner comes: over it, published after it (rt_publish_newer) or still pending */
+        if (publish && g_rt_publishing && pending.surfaces[i]->wseq > g_rt_publishing->wseq) continue;
         if (!publish || !vk_surf_publish(pending.surfaces[i])) vk_surf_flush(pending.surfaces[i], NULL);
+    }
     if (pending.surfaces != local) free(pending.surfaces);
     g_rt_flushing = 0;
     vk_unlock();

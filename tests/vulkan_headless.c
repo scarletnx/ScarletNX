@@ -6428,6 +6428,22 @@ static int check_rt_superseded(void) {
     vk_rt_before_write(ga, span);
     vk_rt_before_write(alias, span);
     vk_unlock();
+    /* with every target back in memory, each byte has the last one drawn over it: the new layers' blue from where
+       they start, the old first layer's bytes under them too (vk_rt_overlay publishes the new first layer inside the
+       old one's publish, and the old one's owner then went over the bytes they share) */
+    guest_done(cpu + 0x4000 + shift, 2 * layer);
+    u64 stale = 0, first_stale = 0;
+    for (u64 at = 0x4000 + shift; at < 0x4000 + shift + 2 * layer; at += 4)
+        if (!memcmp(GP(cpu + at), red, 4) && !stale++) first_stale = at;
+    if (stale || !all_blue(GP(cpu + 0x4000 + shift), (u32)(2 * layer))) {
+        fprintf(stderr,
+                "a newer target under an older one's publish: %llu of the new layers' %llu pixels read the old "
+                "layer's red, the first at byte %#llx; the first not blue is %02x %02x %02x %02x\n",
+                (unsigned long long)stale, (unsigned long long)(2 * layer / 4), (unsigned long long)first_stale,
+                GP(cpu + 0x4000 + shift)[0], GP(cpu + 0x4000 + shift)[1], GP(cpu + 0x4000 + shift)[2],
+                GP(cpu + 0x4000 + shift)[3]);
+        return 1;
+    }
     CHECK(mem_unmap(cpu, span) == 0);
     free(ch);
     puts("A target later ones drew all over is neither published nor written back for an owner beside it");
