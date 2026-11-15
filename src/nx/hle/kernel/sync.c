@@ -69,6 +69,10 @@ static u32 check_mapped(u64 addr, u64 size) {
     R_SUCCEED();
 }
 static u32* uword(u64 addr) { return (u32*)(void*)GP(addr); }
+int g_lock_futex;
+static void futex_wake(u64 addr) {
+    if (g_lock_futex) plat_wake_word_one(uword(addr));
+}
 /* The words are little-endian, the guest's order: these take and give host numbers, and convert at the access (nothing
    on a little-endian host). A compare-and-swap's expected value is converted in and out, so a failed one gives the
    word's current value as a host number */
@@ -220,6 +224,7 @@ u32 svc_arbitrate_unlock(u64 addr) {
     if (!r) word_store(uword(addr), mutex_tag(n, more));
     if (n) wake(n, 0);
     klock_unlock();
+    if (!r) futex_wake(addr);
     return r;
 }
 
@@ -279,6 +284,7 @@ u32 svc_wait_cv(KThread* t, u64 maddr, u64 key, u32 tag, i64 timeout) {
     if (key_mapped) word_store(uword(key), 1u);
     if (!r) word_store(uword(maddr), mutex_tag(n, more));
     if (n) wake(n, 0);
+    if (!r) futex_wake(maddr);
     if (r) {
         klock_unlock();
         return r;
