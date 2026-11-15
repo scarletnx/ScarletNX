@@ -99,7 +99,12 @@ void fatal(const char* fmt, ...) {
 static const char* report(void) {
     g_report.at = 0;
     g_report.said[0] = 0;
+#if defined(_WIN32)
+    /* Windows' report takes the exception's code, as its vectored handler gives it */
+    if (!setjmp(g_report.end)) crash_report((void*)&strrchr, (void*)0x40, (int)0xC0000005u);
+#else
     if (!setjmp(g_report.end)) crash_report((void*)&strrchr, (void*)0x40, SIGSEGV);
+#endif
     return g_report.said;
 }
 
