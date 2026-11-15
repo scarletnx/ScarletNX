@@ -540,7 +540,7 @@ int vk_rt_move(VkCommandBuffer cb, Surf* s, u64* bytes) {
     s->present = VK_NULL_HANDLE;
     vk_defer_image(s->img, s->mem, s->att, s->att_linear);
     vk_defer_bytes(s->bytes);
-    vk_defer_moved(s->bytes); /* released into the block being emptied */
+    if (vk_devmem_emptying()) vk_defer_moved(s->bytes); /* released into a block closed to requests */
     s->att = s->att_linear = VK_NULL_HANDLE;
     s->img = img;
     s->mem = mem;
