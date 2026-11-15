@@ -1179,6 +1179,17 @@ static int create_device(void) {
                            has_fault ? &qfault : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
+    /* Each order between submissions, queues and the CPU is a timeline value: the graphics and compute timelines
+       (cmd.c, compute.c), the sparse binds (memory.c), and the CPU's waits for a path of its own (vk_host_next). It is
+       core in 1.2 (VK_KHR_timeline_semaphore before), and 1.2 requires it of each device, so the renderer has no
+       way without it. extension_bans.txt's "warn" lines on it are said (vk_bans_filter): an "off" line could not be
+       kept, and the log says so */
+    if (!q12.timelineSemaphore)
+        fatal("vulkan: %s has no timeline semaphores, which Vulkan 1.2 requires", g_vk.props.deviceName);
+    if (vk_ban_find("timelineSemaphore"))
+        WARN("vulkan: extension_bans.txt turns timelineSemaphore off on this driver, but the renderer has no way "
+             "without it: it stays on\n");
+    LOG("vulkan: timeline semaphores on (core 1.2): graphics, compute, sparse binds and the CPU's waits\n");
     /* without it the shaders do their FP16 work in 32 bits */
     if (vk_ban("shaderFloat16", q12.shaderFloat16, ban_say)) q12.shaderFloat16 = VK_FALSE;
     if (!core13) {

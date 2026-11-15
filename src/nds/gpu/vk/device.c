@@ -78,7 +78,7 @@ bool nds_vk_init(const char* title, bool headless, char* error, size_t error_siz
                                      .maxSets = 64,
                                      .poolSizeCount = sizeof sizes / sizeof *sizes,
                                      .pPoolSizes = sizes};
-    if (!v->depth_format || !snx_vk_ring_init(&v->ring, v->device, v->queue, v->family, NDS_VK_SLOTS, &dp)) {
+    if (!v->depth_format || !snx_vk_ring_init(&v->ring, v->device, v->queue, v->family, NDS_VK_SLOTS, &dp, false)) {
         snprintf(error, error_size, "cannot make the Vulkan device's command pool and depth buffer");
         vkDestroyDevice(v->device, NULL);
         snx_vk_window_close(&v->host);

@@ -51,6 +51,7 @@ typedef struct {
     VkPhysicalDeviceProperties properties;
     VkPhysicalDeviceMemoryProperties memory_properties;
     bool index8, logic_op; /* VK_EXT_index_type_uint8; the logicOp feature */
+    bool timeline;         /* timelineSemaphore: the ring's submissions signal a timeline, not fences */
     /* VK_EXT_shader_object: draws bind shaders and set their state, with no pipelines (vk/render.c); and the device's
        shaderBinaryUUID and shaderBinaryVersion, which the shaders' binaries kept between runs are for */
     bool shader_object;

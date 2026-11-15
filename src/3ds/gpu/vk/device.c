@@ -125,6 +125,8 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(phys, &features);
     if (!v12.storageBuffer8BitAccess || !v13.dynamicRendering) return false;
+    /* without them the ring waits for the fence of each slot (extension_bans.txt turns them off on Android) */
+    if (vk_ban("timelineSemaphore", v12.timelineSemaphore, ban_say)) v12.timelineSemaphore = VK_FALSE;
     /* shader objects need the feature alone: with it, every call that sets the state they draw with is the device's,
        whatever the extended dynamic state features say (VK_EXT_shader_object) */
     objects = objects && object_features.shaderObject;
@@ -141,6 +143,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     VkPhysicalDeviceVulkan12Features want12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                                .storageBuffer8BitAccess = VK_TRUE,
                                                .shaderInt8 = v12.shaderInt8,
+                                               .timelineSemaphore = v12.timelineSemaphore,
                                                .uniformAndStorageBuffer8BitAccess =
                                                    v12.uniformAndStorageBuffer8BitAccess};
     VkPhysicalDeviceFeatures2 want = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
@@ -157,6 +160,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     v->index8 = index8 && index_features.indexTypeUint8;
     v->shader_object = objects;
     v->logic_op = features.features.logicOp;
+    v->timeline = v12.timelineSemaphore;
     v->clip_distance = features.features.shaderClipDistance;
     v->fragment_stores = features.features.fragmentStoresAndAtomics;
     v->anisotropic = features.features.samplerAnisotropy;
@@ -710,7 +714,7 @@ static bool init(SnxCtrMemory* memory, bool headless, char* error, size_t error_
                                      .maxSets = 12288,
                                      .poolSizeCount = sizeof sizes / sizeof *sizes,
                                      .pPoolSizes = sizes};
-    if (!snx_vk_ring_init(&v->ring, v->device, v->queue, v->family, SNX_CTR_VK_SLOTS, &dp)) {
+    if (!snx_vk_ring_init(&v->ring, v->device, v->queue, v->family, SNX_CTR_VK_SLOTS, &dp, v->timeline)) {
         snprintf(error, error_size, "cannot make the Vulkan device's command pool");
         snx_ctr_vk_free();
         return false;
