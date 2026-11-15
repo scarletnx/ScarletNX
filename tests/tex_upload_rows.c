@@ -210,8 +210,27 @@ u64 vk_submit_number(void) { return g_splits + 1; }
 void vk_submit_split(void) { g_splits++; }
 /* the BC7 encoder between frames (texture.c vk_tex_later_frame), which no case here runs: the textures are RGBA8 or
    held as such. They link at every level, and abort if a case ever reaches them */
-int vk_cmd_ready(void) { abort(); }
-void vk_submit_recorded(void) { abort(); }
+/* The moves of a texture's image (texture.c tex_move): the memory each asks for, the ledger owner the new memory
+   takes, and the copy of each level. The defrag (vk_tex_defrag_frame) runs only in check_tex_moves, which has a
+   command buffer ready, and gives it the one owner g_mv.moving */
+static struct {
+    DevMemWant want;
+    u32 images, tracks, owner, stops, copies, nreg;
+    u32 tag;  /* the ledger's tag of an allocation here: its owner plus one, 0 for none */
+    int give; /* vk_devmem_image gives memory */
+    int ready;
+    void* moving;
+    u64 moved;
+    VkImageCopy reg[VK_TEX_MAX_LEVELS];
+} g_mv;
+enum { MV_OLD = 0x51, MV_NEW = 0x52 }; /* the allocations of a texture before and after its move */
+int vk_cmd_ready(void) {
+    if (!g_mv.ready) abort();
+    return 1;
+}
+void vk_submit_recorded(void) {
+    if (!g_mv.ready) abort();
+}
 /* the BC7 cache: the key texture.c handed the last vk_astc_upload or vk_astc_upload_layers (keyed 0: none); takes,
    whether vk_astc_cached takes a level; owner_over, an owner on the pages of every range own_hash is asked about */
 static struct {
@@ -662,33 +681,49 @@ void vk_all_barrier(VkCommandBuffer cb) {
     (void)cb;
     all_bars++;
 }
+/* no memory, but for a move of check_tex_moves that is given some */
 VkResult vk_devmem_image(const VkImageCreateInfo* ii, const DevMemWant* ai, VkImage* img, DevMem* mem) {
-    (void)ii, (void)ai, (void)img, (void)mem;
-    return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    (void)ii;
+    g_mv.want = *ai;
+    g_mv.images++;
+    if (!g_mv.give) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    *img = (VkImage)(uintptr_t)0x1B0;
+    *mem = MV_NEW;
+    return VK_SUCCESS;
 }
-/* tex_tag asks where a sampled texture's memory is, for the report of a stopped GPU: no image has memory here */
+/* tex_tag asks where a sampled texture's memory is, for the report of a stopped GPU: no image has memory here but
+   those of check_tex_moves */
 void vk_devmem_info(DevMem mem, DevMemInfo* info) {
-    (void)mem;
     *info = (DevMemInfo){0};
+    if (mem == MV_OLD || mem == MV_NEW) {
+        info->tag = g_mv.tag;
+        info->size = 64 << 10;
+    }
 }
+/* texture.c creates allocations without memory.c and ledger.c, which have the real ones */
+void vk_mem_track(DevMem a, u32 owner) {
+    CHECK(a == MV_NEW);
+    g_mv.tracks++;
+    g_mv.owner = owner;
+}
+void vk_mem_untrack(DevMem a) { (void)a; }
 /* a texture's class follows its pixels (tex_drawn): there is no memory here to give it to */
 void vk_devmem_priority(DevMem mem, u32 prio) { (void)mem, (void)prio; }
 /* the defrag's (vk_tex_defrag_frame): no block is emptied here, so nothing moves and a move is never asked for */
 void vk_devmem_owner(DevMem mem, void* owner) { (void)mem, (void)owner; }
 u32 vk_devmem_moving(DevMem* mems, void** owners, u32 max, u64 budget) {
-    (void)mems, (void)owners, (void)max, (void)budget;
-    return 0;
+    (void)budget;
+    if (!g_mv.moving || !max) return 0;
+    mems[0] = MV_OLD;
+    owners[0] = g_mv.moving;
+    g_mv.moving = NULL;
+    return 1;
 }
-void vk_devmem_moving_stop(void) { abort(); }
+void vk_devmem_moving_stop(void) { g_mv.stops++; }
 int vk_devmem_emptying(void) { return 0; }
-void vk_devmem_moved(u64 bytes) {
-    (void)bytes;
-    abort();
-}
-u32 vk_mem_owner_prio(u32 owner) {
-    (void)owner;
-    abort();
-}
+void vk_devmem_moved(u64 bytes) { g_mv.moved += bytes; }
+/* ledger.c's classes: textures low, other images medium */
+u32 vk_mem_owner_prio(u32 owner) { return owner == VK_OWN_TEXTURE ? DM_PRIO_LOW : DM_PRIO_MID; }
 void vk_defer_moved(u64 bytes) {
     (void)bytes;
     abort();
@@ -707,7 +742,8 @@ const VkPhysicalDeviceMemoryProperties* vk_devmem_props(void) {
 }
 int vk_mem_heap(void) { return 0; }
 int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes) {
-    (void)ii, (void)img, (void)mem, (void)owner, (void)bytes;
+    (void)ii, (void)img, (void)mem, (void)bytes;
+    g_mv.owner = owner;
     return 0;
 }
 /* images with memory only where it is bound: of the shape g_res.shape gives (none while its block is 0 texels), their
@@ -1585,9 +1621,115 @@ static void check_hash_runs(void) {
     g_map.count = 0;
 }
 
+static void record_move_copy(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
+                             const VkImageCopy* r) {
+    (void)cb, (void)sl, (void)dl;
+    CHECK(src == (VkImage)(uintptr_t)0x1A6 && dst == (VkImage)(uintptr_t)0x1B0 && n <= VK_TEX_MAX_LEVELS);
+    g_mv.copies++;
+    g_mv.nreg = n;
+    memcpy(g_mv.reg, r, n * sizeof *r);
+}
+static void no_format(VkPhysicalDevice phys, VkFormat f, VkFormatProperties* p) {
+    (void)phys, (void)f;
+    *p = (VkFormatProperties){0};
+}
+/* a texture that moves (texture.c tex_moves): in memory MV_OLD, loaded, holding pixels */
+static Surf mv_tex(u32 w, u32 h, u32 d3, u32 layers, u32 levels) {
+    Surf t = tex(w, h, d3, levels, 4, 0, 0, 1);
+    t.layers = layers;
+    t.mem = MV_OLD;
+    t.bytes = 64 << 10;
+    t.upload_valid = 1;
+    t.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    return t;
+}
+/* each level copied whole: its extent, all its layers (one slice range for 3D) */
+static void check_move_copy(const Surf* t, u32 w, u32 h, u32 d, u32 layers, u32 levels) {
+    CHECK(g_mv.nreg == levels && t->img == (VkImage)(uintptr_t)0x1B0 && t->mem == MV_NEW);
+    for (u32 l = 0; l < levels; l++) {
+        const VkImageCopy* r = &g_mv.reg[l];
+        CHECK(r->srcSubresource.mipLevel == l && r->dstSubresource.mipLevel == l);
+        CHECK(r->srcSubresource.layerCount == layers && r->dstSubresource.layerCount == layers);
+        CHECK(r->extent.width == (w >> l ? w >> l : 1) && r->extent.height == (h >> l ? h >> l : 1));
+        CHECK(r->extent.depth == (d >> l ? d >> l : 1));
+    }
+}
+/* One tex_move for the defrag and the second tier. vk_tex_demote asks for system memory, vk_tex_promote for the GPU's
+   in the low class (a medium one once the texture took drawn pixels), and the defrag for a run of a block in use, of
+   the class of its owner. Each copies every level and layer of the image, and the copies of a target that draws sample
+   (vk_rt_save) are VK_OWN_IMAGE_OTHER's: above textures in priority, not a target's */
+static void check_tex_moves(void) {
+    const int sysmem = g_settings.texture_system_memory;
+    PFN_vkCmdCopyImage copy_was = vkCmdCopyImage;
+    PFN_vkGetPhysicalDeviceFormatProperties format_was = vkGetPhysicalDeviceFormatProperties;
+    g_settings.texture_system_memory = 1;
+    vkCmdCopyImage = record_move_copy;
+    vkGetPhysicalDeviceFormatProperties = no_format;
+    g_mv.give = 1;
+    g_mv.tag = VK_OWN_TEXTURE + 1;
+    for (int drawn = 0; drawn < 2; drawn++) {
+        Surf t = mv_tex(64, 32, 1, 1, 3);
+        t.took_drawn = (u8)drawn;
+        g_mv.tracks = 0;
+        CHECK(vk_tex_demote(&t) && t.demoted);
+        CHECK(g_mv.want.at == DM_SYSTEM && g_mv.want.image && !g_mv.want.low && !g_mv.want.existing);
+        CHECK(g_mv.tracks == 1 && g_mv.owner == VK_OWN_TEXTURE);
+        check_move_copy(&t, 64, 32, 1, 1, 3);
+        t.img = (VkImage)(uintptr_t)0x1A6;
+        CHECK(vk_tex_promote(&t) && !t.demoted);
+        CHECK(g_mv.want.at == DM_DEVICE && g_mv.want.image && g_mv.want.low == !drawn && !g_mv.want.existing);
+        CHECK(g_mv.tracks == 2 && g_mv.owner == VK_OWN_TEXTURE);
+        check_move_copy(&t, 64, 32, 1, 1, 3);
+    }
+    /* the defrag: a texture into the low class's blocks, an image of another owner into the medium class's */
+    g_mv.ready = 1;
+    for (int other = 0; other < 2; other++) {
+        Surf t = mv_tex(16, 16, 1, 3, 2);
+        g_mv.tag = (other ? VK_OWN_IMAGE_OTHER : VK_OWN_TEXTURE) + 1;
+        g_mv.moving = &t;
+        g_mv.tracks = 0;
+        g_mv.moved = 0;
+        vk_tex_defrag_frame();
+        CHECK(g_mv.want.at == DM_DEVICE && g_mv.want.existing && g_mv.want.low == !other);
+        CHECK(g_mv.tracks == 1 && g_mv.owner == (other ? VK_OWN_IMAGE_OTHER : VK_OWN_TEXTURE));
+        CHECK(g_mv.moved == 64 << 10 && !g_mv.stops);
+        check_move_copy(&t, 16, 16, 1, 3, 2);
+    }
+    /* a 3D texture: each level's slices in one region of one layer */
+    g_mv.tag = VK_OWN_TEXTURE + 1;
+    Surf v = mv_tex(16, 8, 4, 1, 2);
+    g_mv.moving = &v;
+    vk_tex_defrag_frame();
+    check_move_copy(&v, 16, 8, 4, 1, 2);
+    /* no run holds it: the block is left as it is */
+    Surf u = mv_tex(16, 16, 1, 1, 1);
+    g_mv.give = 0;
+    g_mv.moving = &u;
+    const u32 copies = g_mv.copies;
+    vk_tex_defrag_frame();
+    CHECK(g_mv.stops == 1 && g_mv.copies == copies && u.mem == MV_OLD);
+    g_mv.ready = 0;
+    /* a copy of a render target that draws sample */
+    Surf rt = tex(64, 64, 1, 1, 4, 0, 0, 1);
+    rt.is_rt = 1;
+    rt.sw = rt.w;
+    rt.sh = rt.h;
+    const int feedback = g_vk.has_feedback;
+    g_vk.has_feedback = 1;
+    g_mv.owner = VK_OWN_TEXTURE;
+    CHECK(!vk_rt_save(&rt, 0) && g_mv.owner == VK_OWN_IMAGE_OTHER); /* no memory here: none made */
+    g_vk.has_feedback = feedback;
+    g_mv.give = g_mv.tracks = g_mv.stops = g_mv.copies = 0;
+    g_mv.tag = 0;
+    g_settings.texture_system_memory = sysmem;
+    vkCmdCopyImage = copy_was;
+    vkGetPhysicalDeviceFormatProperties = format_was;
+}
+
 int main(void) {
     fill();
     check_take_skip();
+    check_tex_moves();
     g_vk.alloc_cap = 256ull << 20;
     /* the video's picture: 1920 wide in 4 byte pixels, rows of whole pieces, 16 GOBs a block */
     Surf a = tex(1920, 136, 1, 1, 4, 4, 0, 1);

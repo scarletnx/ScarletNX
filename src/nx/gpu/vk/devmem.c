@@ -829,7 +829,7 @@ static int drain_can(const Block* k, u32 h) {
    dxvk_memory.cpp), for each kind of block (memory type, and images apart where they are): a kind is defragmented when
    the heap's blocks are past the budget, or when the free space inside its blocks that hold something is more than an
    eighth of their use plus a block. Of its blocks that can be emptied, half full at most, the one with the least in it,
-   when the free space in the kind's other blocks is one and a half times that block or more. budget: the caches'
+   when the free space in the kind's other blocks is one and a half times what it holds or more. budget: the caches'
    (vk_mem_use, which vk_budget_mb lowers) */
 static u32 drain_pick(u64 budget) {
     if (!g_devmem.drain.on) return 0;
@@ -842,7 +842,7 @@ static u32 drain_pick(u64 budget) {
         if (!drain_can(k, h)) continue;
         const u64 used = (u64)k->free.used * DM_UNIT;
         /* half full at most: DXVK's pick runs over every chunk, where the least used one is the one with most holes.
-           Here it runs over the blocks every allocation of which moves, and in TotK the least used of those was full
+           Here it runs over the blocks every allocation of which moves, and in a game the least used of those was full
            (64 MB in 184 allocations) while the blocks with holes held allocations that do not move: emptying it moved
            64 MB and freed nothing */
         if (used >= best_used || used > k->size / 2) continue;
@@ -859,7 +859,8 @@ static u32 drain_pick(u64 budget) {
         /* within the budget, a kind whose free space is an eighth of its use and a block, or less, is left alone */
         const u64 next = block_size_for(k->type, k->image, k->low, 1, block_cap(k->type));
         if (!over && kind_used + kind_used / 8 + next >= kind_size) continue;
-        if (2 * room < 3 * k->size) continue;
+        /* room for what it holds and half as much again: DXVK's test on the chunk's used pages */
+        if (2 * room < 3 * used) continue;
         best = i + 1;
         best_used = used;
     }
@@ -870,7 +871,9 @@ static u32 drain_pick(u64 budget) {
 static u32 misplaced(const Block* k) {
     return k->low ? k->holds[DM_PRIO_MID] + k->holds[DM_PRIO_HIGH] : k->holds[DM_PRIO_LOW];
 }
-static int is_misplaced(const Block* k, const Rec* r) { return k->low ? r->prio != DM_PRIO_LOW : r->prio == DM_PRIO_LOW; }
+static int is_misplaced(const Block* k, const Rec* r) {
+    return k->low ? r->prio != DM_PRIO_LOW : r->prio == DM_PRIO_LOW;
+}
 /* The block to repair next (lock held), where the driver moves memory by priority (g_vk.has_pageable): its
    index plus one, 0 for none. A class takes the other's blocks when its own have no room and no new one can be made
    (alloc_in), and a texture drawn into rises from the low class. So a block of the low class can hold render targets,
