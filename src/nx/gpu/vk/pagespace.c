@@ -58,6 +58,8 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
+
+static u64 g_pages_system; /* granules that took system memory, the GPU's having none */
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 
@@ -281,7 +283,16 @@ static PgGran* gran_get(PgRegion* r, u64 g) {
     req.size = PG_SIZE;
     DevMemWant aci = {.at = DM_DEVICE};
     DevMemInfo info;
-    if (vk_devmem_alloc(&req, &aci, &q->mem, &info) != VK_SUCCESS) {
+    /* the GPU's memory, else system memory, where the GPU reads it over the bus: a range refused for want of memory
+       is copied to the ring at every submission, and on a GPU of 2 GB under a desktop the GPU's memory has no room
+       for a game whose frames need more (vk_tex_demote's second tier, for buffers) */
+    VkResult got = vk_devmem_alloc(&req, &aci, &q->mem, &info);
+    if (got != VK_SUCCESS) {
+        aci.at = DM_SYSTEM;
+        got = vk_devmem_alloc(&req, &aci, &q->mem, &info);
+        if (got == VK_SUCCESS) g_pages_system++;
+    }
+    if (got != VK_SUCCESS) {
         free(q);
         return NULL;
     }
@@ -297,6 +308,7 @@ static PgGran* gran_get(PgRegion* r, u64 g) {
     return r->gran[g] = q;
 }
 
+u64 vk_pages_system(void) { return g_pages_system; }
 /* granule g of r gives its memory back, once the work that may still read it is done */
 static void gran_drop(PgRegion* r, u64 g) {
     PgGran* q = r->gran[g];
@@ -892,6 +904,28 @@ void vk_pages_frame(void) {
             }
         }
     }
+}
+
+/* For the budget (surface.c vk_mem_trim, through vk_buf_reclaim): the granules nothing read since `before`, whose
+   pages hold no bytes of the GPU's (no owner: their bytes are memory's), give their memory back, until want bytes go;
+   a range that reads one again binds it again, or is copied to the ring. vk_pages_frame waits twenty seconds for a
+   granule, which on a GPU of 2 GB held 150 to 190 MB while Mario Kart World's textures were evicted for room every
+   few frames. The bytes let go */
+u64 vk_pages_reclaim(u32 before, u64 want) {
+    u64 freed = 0;
+    if (g_pages.on <= 0 || !g_pages.bound || g_pages.slabs) return 0;
+    for (u32 rg = 0; rg < g_pages.regions && freed < want; rg++) {
+        PgRegion* r = g_pages.region[rg];
+        if (!r) continue;
+        for (u64 g = 0; g < PG_GRANULES && freed < want; g++) {
+            const PgGran* q = r->gran[g];
+            if (!q || q->own || (i32)(q->used - before) >= 0) continue;
+            const u64 had = g_pages.bound;
+            gran_drop(r, g);
+            if (g_pages.bound < had) freed += PG_SIZE;
+        }
+    }
+    return freed;
 }
 
 void vk_pages_forget_all(void) {
