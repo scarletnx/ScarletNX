@@ -324,22 +324,25 @@ static void raster_key(void) {
         CHECK(k.depth_clamp == (mode == 0 || mode == 2 || mode == 4 || mode == 6 || mode == 7));
         CHECK(k.depth_no_clip == (mode != 3 && mode != 5)); /* both ends clamped (0x7FF): the geometry's clip alone */
         CHECK(k.depth_pixel_clamp == 1);
+        CHECK(k.depth_zero_one == 1); /* bit 0 of 0x7FF */
     }
     static const struct {
-        u32 word, no_clip, pixel_clamp;
+        u32 word, no_clip, pixel_clamp, zero_one;
     } words[] = {
-        {0x181D, 0, 1}, /* deko3d's clamp off: FRUSTUM_XYZ_CLIP, both ends clamped */
-        {0x101A, 1, 1}, /* and on: FRUSTUM_XY_CLIP */
-        {0x1801, 0, 0}, /* both ends clipped */
-        {0x1810, 0, 1}, /* the far end alone clamped, the near one clipped */
-        {0x0800, 0, 0}, /* PASSTHRU: the geometry not clipped, the fragments past both ends are */
-        {0x0818, 1, 1}, /* PASSTHRU, both ends clamped: no clip at all */
-        {0x1010, 0, 1}, /* FRUSTUM_XY_CLIP, the near end clipped by the rasterizer */
+        {0x181D, 0, 1, 1}, /* deko3d's clamp off: FRUSTUM_XYZ_CLIP, both ends clamped, to 0 to 1 */
+        {0x101A, 1, 1, 0}, /* and on: FRUSTUM_XY_CLIP, to the clip range */
+        {0x181C, 0, 1, 0}, /* FRUSTUM_XYZ_CLIP, both ends clamped to the clip range */
+        {0x1801, 0, 0, 1}, /* both ends clipped */
+        {0x1810, 0, 1, 0}, /* the far end alone clamped, the near one clipped */
+        {0x0800, 0, 0, 0}, /* PASSTHRU: the geometry not clipped, the fragments past both ends are */
+        {0x0818, 1, 1, 0}, /* PASSTHRU, both ends clamped: no clip at all */
+        {0x1010, 0, 1, 0}, /* FRUSTUM_XY_CLIP, the near end clipped by the rasterizer */
     };
     for (u32 i = 0; i < sizeof words / sizeof *words; i++) {
         r[0x64F] = words[i].word;
         mx_draw_raster_key(r, &k);
-        CHECK(k.depth_no_clip == words[i].no_clip && k.depth_pixel_clamp == words[i].pixel_clamp);
+        CHECK(k.depth_no_clip == words[i].no_clip && k.depth_pixel_clamp == words[i].pixel_clamp &&
+              k.depth_zero_one == words[i].zero_one);
     }
     r[0x64F] = 0;
     r[0x36B] = 0x1B00;

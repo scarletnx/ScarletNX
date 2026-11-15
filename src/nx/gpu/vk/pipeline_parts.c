@@ -153,7 +153,7 @@ void vk_pipe_part_src(u32 part, const void* key, PipeKey* out) {
 /* every dynamic state a draw pipeline can have, in the order pipe_create always listed them (a pipeline cache entry
    depends on it), with the part that holds it (the specification's "Graphics Pipeline Library" says which state each
    part holds) and when it is there */
-enum { DYN_ALWAYS, DYN_FEEDBACK, DYN_STRIDE, DYN_VERTEX_INPUT, DYN_PR, DYN_PR_TESS };
+enum { DYN_ALWAYS, DYN_FEEDBACK, DYN_STRIDE, DYN_VERTEX_INPUT, DYN_PR, DYN_PR_TESS, DYN_CLAMP_RANGE };
 static const struct {
     VkDynamicState state;
     u32 part; /* VK_PART_* */
@@ -191,6 +191,7 @@ static const struct {
     {VK_DYNAMIC_STATE_EXTRA_PRIMITIVE_OVERESTIMATION_SIZE_EXT, VK_PART_PR, DYN_PR | VK_DYN_PR_CONSERVATIVE << 8},
     {VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT, VK_PART_PR, DYN_PR_TESS | VK_DYN_PR_PATCH << 8},
     {VK_DYNAMIC_STATE_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE_EXT, VK_PART_PR, DYN_PR | VK_DYN_PR_DEPTH_RANGE << 8},
+    {VK_DYNAMIC_STATE_DEPTH_CLAMP_RANGE_EXT, VK_PART_PR, DYN_CLAMP_RANGE},
 };
 typedef char dyn_states_fit[sizeof g_dyn_states / sizeof *g_dyn_states <= VK_PIPE_DYN_MAX ? 1 : -1];
 
@@ -202,6 +203,7 @@ u32 vk_pipe_dynamic(u32 parts, const PipeDynIn* in, VkDynamicState* out) {
                  : when == DYN_FEEDBACK     ? in->feedback_dynamic
                  : when == DYN_STRIDE       ? in->stride
                  : when == DYN_VERTEX_INPUT ? in->vertex_input
+                 : when == DYN_CLAMP_RANGE  ? in->clamp_range
                  : when == DYN_PR           ? (in->dyn_pr & bit) != 0
                                             : (in->dyn_pr & bit) && in->tess;
         if (in->mesh && g_dyn_states[i].part == VK_PART_VI) on = 0; /* a mesh pipeline has no vertex input state */

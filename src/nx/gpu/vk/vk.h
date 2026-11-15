@@ -87,7 +87,7 @@ typedef struct {
        and features enabled */
     u32 video_family;
     VkVideoCodecOperationFlagsKHR video_codecs;
-    const char* dev_ext[69]; /* create_device enables 69 at most, were every one it can enable there */
+    const char* dev_ext[70]; /* create_device enables 70 at most, were every one it can enable there */
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained (to 1.2 on a 1.2 device) */
     VkPhysicalDeviceVulkan11Features feat11;
@@ -155,6 +155,9 @@ typedef struct {
     u32 robust_ubo_align, robust_ssbo_align;
     /* VK_EXT_depth_clip_enable in use: depth clipping and clamping each as the console sets them (PipeKey.depth_clip) */
     int has_depth_clip_enable;
+    /* VK_EXT_depth_clamp_control in use: a clamped depth stays in the viewport's clip range (SET_VIEWPORT_CLIP_MIN_Z,
+       MAX_Z), as the console clamps it, not in the transform's, every draw pipeline with the range as dynamic state */
+    int has_depth_clamp_range;
     int has_calibrated_host;    /* VK_EXT_calibrated_timestamps with CLOCK_MONOTONIC_RAW: the GPU's clock goes next to
                                 the client's, one driver call (gpuprof.c's calibration) */
     int has_portability;        /* a portability driver (MoltenVK): the device lists VK_KHR_portability_subset */
@@ -779,6 +782,7 @@ void rec_CmdSetAttachmentFeedbackLoopEnableEXT(VkCommandBuffer cb, VkImageAspect
 void rec_CmdSetPolygonModeEXT(VkCommandBuffer cb, VkPolygonMode mode);
 void rec_CmdSetDepthClampEnableEXT(VkCommandBuffer cb, VkBool32 on);
 void rec_CmdSetDepthClipEnableEXT(VkCommandBuffer cb, VkBool32 on);
+void rec_CmdSetDepthClampRangeEXT(VkCommandBuffer cb, VkDepthClampModeEXT mode, const VkDepthClampRangeEXT* range);
 void rec_CmdSetProvokingVertexModeEXT(VkCommandBuffer cb, VkProvokingVertexModeEXT mode);
 void rec_CmdSetConservativeRasterizationModeEXT(VkCommandBuffer cb, VkConservativeRasterizationModeEXT mode);
 void rec_CmdSetExtraPrimitiveOverestimationSizeEXT(VkCommandBuffer cb, float size);

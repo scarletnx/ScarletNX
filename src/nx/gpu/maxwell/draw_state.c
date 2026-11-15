@@ -265,6 +265,7 @@ void mx_draw_raster_key(const u32* r, DsRasterKey* k) {
        deko3d's ForceDepthRangeZeroToOne), 0x101A to the clip range */
     k->depth_no_clip = clip != 3 && clip != 5 && (r[0x64F] >> 3 & 1) && (r[0x64F] >> 4 & 1);
     k->depth_pixel_clamp = (r[0x64F] >> 3 & 1) | (r[0x64F] >> 4 & 1);
+    k->depth_zero_one = r[0x64F] & 1; /* MIN_Z_ZERO_MAX_Z_ONE: the clamp's range is 0 to 1, NVK's depthClampZeroOne */
     k->alpha_to_coverage = r[0x54F] & 1;
     k->alpha_to_one = (r[0x54F] >> 4) & 1;
     k->patch_vertices = r[0x373];

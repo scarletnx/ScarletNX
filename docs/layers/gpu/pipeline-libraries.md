@@ -136,6 +136,7 @@ goes into the command buffer only when it changes). Each one needs a `rec_CmdSet
 | patch control points | `vkCmdSetPatchControlPointsEXT` | `extendedDynamicState2PatchControlPoints` |
 | depth range of the clip volume | `vkCmdSetDepthClipNegativeOneToOneEXT` | `extendedDynamicState3DepthClipNegativeOneToOne`, with `depthClipControl` of `VK_EXT_depth_clip_control` |
 | depth clip | `vkCmdSetDepthClipEnableEXT` | `extendedDynamicState3DepthClipEnable`, with `VK_EXT_depth_clip_enable`, only where the depth clamp is dynamic too |
+| depth clamp range | `vkCmdSetDepthClampRangeEXT` | `depthClampControl` of `VK_EXT_depth_clamp_control`, on the whole-pipeline path too |
 
 Each state becomes dynamic only on the GPL path, and only when its feature is there. A state without its feature
 stays in the PR key, as a static value. This keeps the whole-pipeline path of today unchanged, and a device with
@@ -154,6 +155,8 @@ Without `VK_EXT_depth_clip_enable`, depth clip is the opposite of depth clamp, f
 one. With it, the clip is a state of its own (`depth_clip`), as the console's clip control sets the clip and the
 clamp apart; a dynamic clamp without a dynamic clip would turn the clip the other way whatever the pipeline says
 (`vkCmdSetDepthClampEnableEXT`), so the extension is used with a dynamic clamp only where the clip is dynamic too.
+The clamp's range (`VK_EXT_depth_clamp_control`) is the viewport's clip range, or 0 to 1 where the clip control forces
+it (bit 0, the console's clamp off), set with the viewport on both paths and in no key.
 
 Each part lists only the dynamic states of its own subset in its `pDynamicState`, as vkd3d-proton does with its
 `VKD3D_VERTEX_INPUT_DYNAMIC_STATE_MASK` and `VKD3D_FRAGMENT_OUTPUT_DYNAMIC_STATE_MASK`. The link and the optimized
