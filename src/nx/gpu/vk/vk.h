@@ -2381,6 +2381,9 @@ extern u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies, g_
 /* statistics: the guest's full barriers not recorded, as no command came after the one before them in the submission
    (renderer.c vkr_method_barrier) */
 extern u64 g_vk_barriers_merged;
+/* statistics: the guest's fragment barriers and texture data cache invalidations that stayed in the pass, as nothing
+   before them needed a barrier from all work (renderer.c vkr_method_barrier) */
+extern u64 g_vk_barriers_in_pass;
 /* g_vk.feedback_mode, from the device's features and vendor (device.c): in place (attachment feedback loops), the
    two draws of render.c predraw_run, or in place with the pre-draw capture in a fragment interlock (vk/predraw.c) */
 #define VK_FEEDBACK_IN_PLACE  0

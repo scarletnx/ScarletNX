@@ -1403,7 +1403,7 @@ setting Descriptor buffers
     help 1 uses descriptor buffers where supported, else sets. A heap draw whose resource cannot be encoded uses
     help buffers or sets. Compute keeps its own descriptor pools. With buffers or heaps in use, the guest's fragment
     help barriers are skipped, which the tracking of targets and buffers orders. 0 = descriptor sets for graphics
-    help too, and every fragment barrier
+    help too, where a fragment barrier ends the render pass only after storage writes or memory used in place
 setting Vulkan recording thread
     key vk_record
     int 0 1
