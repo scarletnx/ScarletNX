@@ -949,6 +949,59 @@ int main(int argc, char** argv) {
         free(ini);
         free(dir);
     }
+    /* a game's own picks (gui_settings_read_game): the runtime's rows alone, each starting at Global, which no pick has,
+       no plain row nor slider; Global and the launcher's value shown while not picked, a pick saved by section to its
+       picks file and read back, its default too, and Global back by a reset; what a game has of its own said, its
+       picks then its box's GPU driver and Freedreno variables */
+    {
+        static const char list[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
+                                   "Graphics\tresolution\t1\tfloat\t0.25\t16\tScale\tResolution\t\n"
+                                   "Audio\tvolume\t100\tint\t0\t100\tLoud\tVolume\t0=Mute|50=50%|100=100%\t\t\tslider";
+        GuiSettings game = {0}, global = {0};
+        char *dir = snx_temp_dir(NULL), *ini = snx_path_join(dir, "game.ini"), *picks = snx_game_picks(ini), *text,
+             out[256];
+        size_t size;
+        int v;
+        assert(!gui_settings_read_game(&game, list) && !gui_settings_read(&global, list));
+        assert(game.game && !game.own && game.count == 3 && !global.game && global.own > 0);
+        v = at(&game, "volume");
+        assert(!game.values[v].plain && !game.values[v].slider && !game.values[v].word &&
+               !strcmp(key(&game, "volume")->words[0], "Global") && global.values[at(&global, "volume")].slider);
+        gui_settings_mark(&game);
+        assert(!gui_settings_value(&game, "volume") && !gui_settings_value(&game, "fullscreen") &&
+               !gui_settings_changed(&game));
+        assert(gui_settings_set(&global, "volume", "50"));
+        gui_settings_shown_game(&game, &global, v, out, sizeof out);
+        assert(!strcmp(out, "Global (50%)"));
+        gui_settings_shown_game(&game, &global, at(&game, "fullscreen"), out, sizeof out);
+        assert(!strcmp(out, "Global (Off [default])"));
+        /* its default picked: a pick of its own, over the launcher's 50 */
+        assert(gui_settings_set(&game, "volume", "100") && !strcmp(gui_settings_value(&game, "volume"), "100"));
+        gui_settings_shown_game(&game, &global, v, out, sizeof out);
+        assert(!strcmp(out, "100%") && gui_settings_changed(&game) == 1 && !gui_settings_save(&game, picks));
+        assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "[Audio]\nvolume=100\n") &&
+               !strstr(text, "fullscreen") && !strstr(text, "resolution"));
+        free(text);
+        assert(gui_settings_game_own(ini, out, sizeof out) == 1 && !strcmp(out, "volume=100"));
+        assert(!snx_ini_record(ini, "gpu_driver", "Turnip_v32") &&
+               !snx_ini_record(ini, "freedreno_env", "TU_DEBUG=noubwc"));
+        assert(gui_settings_game_own(ini, out, sizeof out) == 3 &&
+               !strcmp(out, "volume=100, gpu_driver=Turnip_v32, freedreno_env"));
+        assert(gui_settings_game_own(ini, out, 12) == 3 && !strcmp(out, "volume=100,")); /* cut, every one counted */
+        gui_settings_free(&game);
+        assert(!gui_settings_read_game(&game, list));
+        gui_settings_mark(&game);
+        assert(!gui_settings_load(&game, picks, NULL, 0) && !strcmp(gui_settings_value(&game, "volume"), "100"));
+        gui_settings_reset(&game, v);
+        assert(!gui_settings_value(&game, "volume") && !gui_settings_changed(&game));
+        assert(gui_settings_game_own(NULL, out, sizeof out) == 0 && !out[0]);
+        gui_settings_free(&game);
+        gui_settings_free(&global);
+        assert(!snx_remove_tree(dir));
+        free(picks);
+        free(ini);
+        free(dir);
+    }
     /* a 3DS game's run gets its own table's picks and the Switch's settings the 3DS takes too (vk_memory,
        async_pipelines, pipeline_threads, gamepad_swap_ab, gamepad_deadzone, gamepad_map, touch, vsync, fullscreen,
        anisotropy, fps_limit, volume) only: another Display, Graphics, Debug, Controllers or On-screen controls setting

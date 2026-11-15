@@ -41,6 +41,8 @@ typedef struct {
     GuiSetting* values; /* their values, which the keys' offsets are in */
     int count;          /* in one block with the list the keys' names and help point into */
     int own;            /* the launcher's own rows and the recompiler's, first (their page's rows among them) */
+    int game;           /* a game's own picks (gui_settings_read_game): none of the launcher's rows, every word row's
+                           first word Global, no pick */
 } GuiSettings;
 /* the launcher's own rows and the recompiler's (g_launch_sections, listed by ini_list_text), then the runtime's list of
    the game's settings, a line each (section[/page], key, default, int | float | text, lowest, highest, help, name, the
@@ -49,6 +51,10 @@ typedef struct {
    nothing. A page's rows are listed after its section's others, one page a section. 0, else nonzero when out of
    memory */
 int gui_settings_read(GuiSettings* settings, const char* runtime);
+/* the rows of a game's own picks, its picks file (<name>.picks beside its .ini) as gui_settings_load and
+   gui_settings_save read and write it: the runtime's alone, each with Global first, the value it starts with, which
+   no pick has and the launcher's picks then give (no plain row, no slider). As gui_settings_read: 0, else nonzero */
+int gui_settings_read_game(GuiSettings* settings, const char* runtime);
 void gui_settings_free(GuiSettings* settings);
 /* the row of key set to value, a word or a text as the row takes: 1 when it did */
 int gui_settings_set(GuiSettings* settings, const char* key, const char* value);
@@ -99,6 +105,13 @@ void gui_settings_shown(const GuiSettings* settings, int row, char* out, size_t 
    picks and gdbstub left out. key=value between ", ", a text's by its key alone, as the game says
    them over its picture (the runtime's options_debug): how many. out cut where it ends, NUL-terminated */
 int gui_settings_debug(const GuiSettings* settings, const char* ini, int picks, char* out, size_t size);
+/* a game's own row's value as its Settings show it: a pick as gui_settings_shown says it, else Global and the
+   launcher's value of it as its Settings show that ("Global (60%)", "Global (Off [default])") */
+void gui_settings_shown_game(const GuiSettings* game, const GuiSettings* global, int row, char* out, size_t size);
+/* what the game whose .ini is at ini has of its own: its picks (<name>.picks), key=value, then the GPU driver and
+   Freedreno's variables its box picked, kept in the .ini (gpu_driver=value, freedreno_env by its key alone), ", "
+   between, cut where out ends: how many */
+int gui_settings_game_own(const char* ini, char* out, size_t size);
 /* the value picked for key, NULL for the .ini's or no such row */
 const char* gui_settings_value(const GuiSettings* settings, const char* key);
 /* argv's options for a run of the game whose .ini is at game_ini (NULL: a dump's, or none): --key=value for each
