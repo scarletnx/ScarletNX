@@ -64,7 +64,8 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
                                                .dynamicRendering = VK_TRUE,
                                                .synchronization2 = VK_TRUE};
     VkPhysicalDeviceVulkan12Features want12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                               .shaderFloat16 = v12.shaderFloat16};
+                                               .shaderFloat16 = v12.shaderFloat16,
+                                               .timelineSemaphore = v12.timelineSemaphore};
     VkPhysicalDeviceFeatures2 want = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     want.features.fragmentStoresAndAtomics = features.features.fragmentStoresAndAtomics;
     want.features.shaderClipDistance = features.features.shaderClipDistance;
@@ -86,6 +87,10 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     v->preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32;
     v->bc = features.features.textureCompressionBC;
     v->depth_clamp = features.features.depthClamp;
+    v->timeline = v12.timelineSemaphore;
+#if defined(__ANDROID__) /* extension_bans.txt turns them off on each Android driver: the ring waits for fences */
+    v->timeline = false;
+#endif
     VkFormatProperties d16;
     vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_D16_UNORM, &d16);
     const VkFormatFeatureFlags blit = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
@@ -136,7 +141,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
                                      .maxSets = 4096,
                                      .poolSizeCount = sizeof sizes / sizeof *sizes,
                                      .pPoolSizes = sizes};
-    bool made = snx_vk_ring_init(&v->ring, v->device, v->queue, v->family, VITA_VK_SLOTS, &dp);
+    bool made = snx_vk_ring_init(&v->ring, v->device, v->queue, v->family, VITA_VK_SLOTS, &dp, v->timeline);
     for (unsigned i = 0; i < VITA_VK_SLOTS && made; ++i)
         made = vkCreateSemaphore(v->device, &semaphore, NULL, &v->acquired[i]) == VK_SUCCESS;
     for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES && made; ++i)

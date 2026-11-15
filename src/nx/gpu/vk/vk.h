@@ -616,8 +616,18 @@ void vk_wait_submit(u64 value); /* until the GPU has done that submission (any t
 /* until sem reaches value, in slices: a GPU whose semaphore stops moving for 15 s ends the run with its hang logged
    (cmd.c), where a wait for good froze the game */
 void vk_wait_semaphore(VkSemaphore sem, u64 value);
-/* until fence is signaled, as vk_wait_semaphore waits: 0 when the device was lost */
-int vk_wait_fence(VkFence fence);
+/* A timeline semaphore of one path that the CPU waits for (a sparse bind, a granule of the mirror, a landing), in place
+   of a fence for each submission: no fence to make, reset or destroy, and the wait is vk_wait_semaphore's. Each
+   submission signals the next value. Take the value under the lock of the queue that the path submits to, and use
+   one queue for each timeline, so that the queue signals the values in order */
+typedef struct {
+    VkSemaphore sem; /* made at the first vk_host_next */
+    u64 value;       /* the last value given */
+} VkHostTimeline;
+/* under the queue's lock: the value that the next submission signals on t->sem, 0 when the semaphore can't be made */
+u64 vk_host_next(VkHostTimeline* t);
+/* until t reaches value, as vk_wait_semaphore waits: 0 when the device was lost */
+int vk_host_wait(const VkHostTimeline* t, u64 value);
 /* Flush recorded work without frame recycling or guest result callbacks, under
    vk_lock, before an ownership readback uses the graphics queue directly. */
 void vk_submit_for_readback(void);
