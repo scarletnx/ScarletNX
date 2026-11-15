@@ -446,13 +446,9 @@ static void key_event(const SDL_Event* event) {
     } else if (window && ((event->key.key == SDLK_F11 && !alt) || (event->key.key == SDLK_RETURN && alt)))
         fullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
     else if (event->key.key == SDLK_F4 && !alt) {
-        int pace = snx_ctr_clock_toggle();
-        if (pace == SNX_CTR_PACE_NONE)
-            fprintf(stderr, "FPS limit: off\n");
-        else if (pace == SNX_CTR_PACE_CONSOLE)
-            fprintf(stderr, "FPS limit: the game's pace\n");
-        else
-            fprintf(stderr, "FPS limit: %d\n", pace);
+        char line[64];
+        snx_ctr_clock_toggle(line, sizeof line);
+        fprintf(stderr, "%s\n", line);
     }
 }
 static void pump(void) {

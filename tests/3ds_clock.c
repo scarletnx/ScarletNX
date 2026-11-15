@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The game's clock (board/clock.c), which the Switch's fps_limit paces: the host's at the console's pace, N/60 of it
-   for N, its waits skipped with no limit; a change of pace never moving it back; F4's toggle; and fps_limit's text read
-   as the Switch reads it, each value not taken as given said with the one in effect */
+   for N, its waits skipped with no limit; a change of pace never moving it back; F4's toggle and its line, the limit now
+   and before it; and fps_limit's text read as the Switch reads it, each value not taken as given said with the one in
+   effect */
 #include "3ds/board/clock.h"
 #include "common/utilities/common.h"
 #include <math.h>
@@ -51,9 +52,23 @@ int main(void) {
     CHECK(snx_ctr_clock_wait(deadline) == 0 && snx_ctr_clock_seconds() >= deadline &&
           near(snx_ctr_clock_seconds(), deadline));
     CHECK(snx_ctr_clock_rate() == 1);
-    /* F4: from none back to the pace before it, then off again */
+    /* F4: off, then back to the pace before it, each line the limit now and before it as a Switch game says it; from
+       the console's pace, back to it */
+    char line[64] = "untouched";
     snx_ctr_clock_set_pace(30);
-    CHECK(snx_ctr_clock_toggle() == SNX_CTR_PACE_NONE && snx_ctr_clock_toggle() == 30);
+    CHECK(snx_ctr_clock_toggle(line, sizeof line) == SNX_CTR_PACE_NONE && !strcmp(line, "FPS limit: off (was 30)"));
+    CHECK(snx_ctr_clock_toggle(line, sizeof line) == 30 && !strcmp(line, "FPS limit: 30 (was off)"));
+    CHECK(near(snx_ctr_clock_rate(), 0.5));
+    snx_ctr_clock_set_pace(SNX_CTR_PACE_CONSOLE);
+    CHECK(snx_ctr_clock_toggle(line, sizeof line) == SNX_CTR_PACE_NONE &&
+          !strcmp(line, "FPS limit: off (was the game's pace)"));
+    CHECK(snx_ctr_clock_toggle(line, sizeof line) == SNX_CTR_PACE_CONSOLE &&
+          !strcmp(line, "FPS limit: the game's pace (was off)"));
+    /* no room given: no line, the toggle the same */
+    snprintf(line, sizeof line, "untouched");
+    CHECK(snx_ctr_clock_toggle(line, 0) == SNX_CTR_PACE_NONE && !strcmp(line, "untouched"));
+    CHECK(snx_ctr_clock_toggle(NULL, 0) == SNX_CTR_PACE_CONSOLE);
+    snx_ctr_clock_set_pace(30);
     CHECK(near(snx_ctr_clock_rate(), 0.5));
     /* back to the console's pace: the clock goes on from where it stood, never back */
     before = snx_ctr_clock_seconds();
