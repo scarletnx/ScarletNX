@@ -23,7 +23,8 @@ int vk_hdr_display(int setting, int has_colorspace, int has_metadata, const VkSu
                    const char** why);
 /* The frame's window metadata as VK_EXT_hdr_metadata names it. 0 when a display can't be what it describes (a value
    that is no number or below 0, a primary or white point outside the chromaticity diagram's square, or a maximum
-   luminance not over the minimum): *out is then untouched, and nothing should be sent */
+   luminance not over the minimum): *out is then untouched, and nothing should be sent. Content light levels that are
+   NVN's window builder defaults (200 and 60) are given as 0, not known */
 int vk_hdr_metadata(const SnxHdrFrame* frame, VkHdrMetadataEXT* out);
 /* The metadata given to the swapchain (vkSetHdrMetadataEXT). 0, and nothing sent, where vk_hdr_metadata refuses it */
 int vk_hdr_metadata_set(VkDevice device, VkSwapchainKHR swapchain, const SnxHdrFrame* frame);
