@@ -215,7 +215,11 @@ int nvn_draw_samples(NvnDraw* d, u64 at, u64 ticks) {
     (void)ticks;
     return 0;
 }
-int nvn_cmd_unfinished(u64 p) { return p == fixture.unfinished; }
+static u32 unfinished_asked; /* each jump of a walk asks once */
+int nvn_cmd_unfinished(u64 p) {
+    unfinished_asked++;
+    return p == fixture.unfinished;
+}
 void nvn_cmd_describe(u64 p, char* out, size_t n) {
     (void)p;
     if (n) out[0] = 0;
@@ -480,6 +484,41 @@ static void retained_texture_snapshot(void) {
     nvn_replay_queue_free(a);
     nvn_replay_queue_free(b);
 }
+/* A submission after one of its queue's that waited is walked once, for its promises and its copy together: its jump
+   asks nvn_cmd_unfinished once, not once for each walk. The copy holds what it replays after the game's memory
+   changed. Then one with no wait keeps no copy and replays from the game's memory */
+static void waited_walk_once(void) {
+    u32 a = nvn_replay_queue(), shown = 0, draws = fixture.draws;
+    u64 ready = 0;
+    gw32(0x800, 0);
+    *(NvnRecHdr*)(void*)GP(0x600) = (NvnRecHdr){OP_WAIT_EVENT | NVN_REC_LAST, 24};
+    *(NvnPWaitEvent*)(void*)GP(0x608) = (NvnPWaitEvent){0x800, NVN_EVENT_WAIT_MODE_EQUAL, 1};
+    gw64(0x108, 0x600);
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    *(NvnRecHdr*)(void*)GP(0x640) = (NvnRecHdr){OP_JUMP, 16};
+    gw64(0x648, 0x700);
+    *(NvnRecHdr*)(void*)GP(0x700) = (NvnRecHdr){OP_WAIT_EVENT, 24};
+    *(NvnPWaitEvent*)(void*)GP(0x708) = (NvnPWaitEvent){0x800, NVN_EVENT_WAIT_MODE_EQUAL, 1};
+    *(NvnRecHdr*)(void*)GP(0x718) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x640);
+    u32 asked = unfinished_asked;
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    assert(unfinished_asked == asked + 1);
+    assert(!pump() && fixture.draws == draws);
+    memset(GP(0x640), 0, 0x10); /* the game's memory changes: the copy replays */
+    memset(GP(0x700), 0, 0x20);
+    gw32(0x800, 1);
+    drain();
+    assert(fixture.draws == draws + 1);
+    /* no wait after one that waited: no copy, the game's memory replays */
+    *(NvnRecHdr*)(void*)GP(0x640) = (NvnRecHdr){OP_DRAW, 8};
+    *(NvnRecHdr*)(void*)GP(0x648) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    *(NvnRecHdr*)(void*)GP(0x648) = (NvnRecHdr){OP_END, 8};
+    drain();
+    assert(fixture.draws == draws + 2);
+    nvn_replay_queue_free(a);
+}
 /* Every live queue's submitted work is done when nvn_replay_finish_all returns, with a freed queue's slot between
    them, and with no queue it queues nothing. */
 static void finish_all(void) {
@@ -633,6 +672,7 @@ int main(int argc, char** argv) {
     cross_queue_fences();
     present_order();
     retained_texture_snapshot();
+    waited_walk_once();
     finish_all();
     finish_all_waits();
     if (argc == 2 && !strcmp(argv[1], "--bench-replay")) bench_replay();

@@ -197,6 +197,19 @@ static void snapshot(void* ctx, u32 op, u64 payload, u32 size) {
     s->size = end;
 }
 
+/* a record's promise, then its copy: one walk for both, the waits captured before the copy takes them */
+typedef struct {
+    Promise* p;
+    Snapshot* s;
+} PromiseSnapshot;
+static void promise_snapshot(void* ctx, u32 op, u64 payload, u32 size) {
+    PromiseSnapshot* b = ctx;
+    if (op == OP_WAIT_SYNC || op == OP_WAIT_EVENT || op == OP_FENCE_SYNC) promise(b->p, op, payload, size);
+    b->s->waits = b->p->waits;
+    b->s->nwaits = b->p->nwaits;
+    snapshot(b->s, op, payload, size);
+}
+
 /* a syncpoint increment once the renderer's work before it is done (gpu.c's stream_incr) */
 static void stream_incr(u32 id) {
     if (g_renderer->stream_incr)
@@ -514,11 +527,30 @@ void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64* ready, u32* shown) {
     if (g_renderer->mem_may_have_changed) gpu_renderer_now()->mem_may_have_changed();
     pm_lock(&g_nvn.replay.lock);
     /* Every header and nested call is still read: the guest can rewrite command memory between submissions.
-       Only waits and fences affect promises, so ordinary records need no callback in this pass. */
-    for (i = 0; i < n; i++) walk(j->handles[i], promise, &p, 0, 1);
+       Only waits and fences affect promises, so ordinary records need no callback in the first pass, and a
+       submission with a wait is walked again for its copy. When the queue's last submission waited, one walk takes
+       both, and the copy is dropped if this one has no wait: two walks were most of the submitting thread's time in
+       one game, about 2.4 ms a frame before the GPU thread could start the submission */
+    NvnReplayQueue* rq = &g_nvn.replay.q[queue - 1];
+    Snapshot s = {0};
+    if (rq->waited) {
+        PromiseSnapshot b = {&p, &s};
+        for (i = 0; i < n; i++) walk(j->handles[i], promise_snapshot, &b, 0, 0);
+        if (!p.has_wait) {
+            free(s.data);
+            s = (Snapshot){0};
+        }
+    } else {
+        for (i = 0; i < n; i++) walk(j->handles[i], promise, &p, 0, 1);
+        if (p.has_wait) {
+            s = (Snapshot){.waits = p.waits, .nwaits = p.nwaits};
+            for (i = 0; i < n; i++) walk(j->handles[i], snapshot, &s, 0, 0);
+        }
+    }
+    rq->waited = p.has_wait;
     if (p.has_wait) {
-        Snapshot s = {.waits = p.waits, .nwaits = p.nwaits};
-        for (i = 0; i < n; i++) walk(j->handles[i], snapshot, &s, 0, 0);
+        s.waits = p.waits;
+        s.nwaits = p.nwaits;
         snapshot(&s, OP_END, 0, 0);
         if (s.wait != p.nwaits) fatal("nvn: command memory changed its sync waits during submission");
         j->snapshot = s.data;
