@@ -148,8 +148,9 @@ typedef struct {
        robustBufferAccess2 (robust_buffer2) does not already give them */
     int has_vertex_robustness2;
     /* VK_EXT_robustness2's features in effect (device.c): buffer reads past the bound range are zero and writes there
-       dropped, image reads out of bounds are zero with an alpha of 1, and descriptors may be null. A uniform range is
-       checked in steps of robust_ubo_align bytes (vk_cb_range), a storage range in robust_ssbo_align (vk_sb_round) */
+       dropped, image reads out of bounds are zero (an alpha of 1 where the format has none), and descriptors may be
+       null. A uniform range is checked in steps of robust_ubo_align bytes (vk_cb_range), a storage range in
+       robust_ssbo_align (vk_sb_round) */
     int robust_buffer2, robust_image2, null_descriptor;
     u32 robust_ubo_align, robust_ssbo_align;
     int has_calibrated_host;    /* VK_EXT_calibrated_timestamps with CLOCK_MONOTONIC_RAW: the GPU's clock goes next to
@@ -1765,7 +1766,8 @@ static inline int vk_tic_empty(const u32* tic) { return tic[0] == 0; }
 /* An empty storage image or storage buffer slot takes a null descriptor (VK_EXT_robustness2's nullDescriptor): its
    reads are zero, its writes and atomics are dropped, and no image or buffer needs barriers for it. A sampled slot
    keeps vk_null_view's 1x1 image: a size query of an empty header reads 1x1 on the console, and 0 from a null
-   descriptor. Not with descriptor heaps, whose writes (descriptor_heaps.c) have no null form */
+   descriptor. Not with descriptor heaps yet: their writes take a NULL resource for a null descriptor too, which
+   descriptor_heaps.c does not write */
 static inline int vk_null_descriptors(void) { return g_vk.null_descriptor && !g_vk.has_descriptor_heaps; }
 /* the step robustBufferAccess2 checks uniform ranges in: 16, or the device's alignment where that is larger */
 static inline u32 vk_cb_step(void) {

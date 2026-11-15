@@ -1217,15 +1217,19 @@ static int create_device(void) {
     g_vk.has_display_timing = has_google_timing && !g_vk.has_present_wait;
     /* VK_EXT_robustness2 for the whole device: reads past a buffer's bound range are zero and writes there are
        dropped (the console's constant buffers read zero past their size, and an unmapped page of a program's storage
-       map is index 0xffffffff, shader_gbuf_word_index), image reads out of bounds are zero with an alpha of 1, and
-       empty slots take null descriptors (vk_null_descriptors). A ban of robustBufferAccess2 also stops the bounds of
-       vertex inputs below, and the device-wide feature needs robustBufferAccess */
+       map is index 0xffffffff, shader_gbuf_word_index), image reads out of bounds are zero (an alpha of 1 where the
+       format has none), and empty slots take null descriptors (vk_null_descriptors). A ban of robustBufferAccess2 also
+       stops the bounds of vertex inputs below, and the device-wide feature needs robustBufferAccess */
     VkPhysicalDeviceRobustness2PropertiesEXT robust_limits = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_PROPERTIES_EXT};
     if (has_robustness2) {
-        if (vk_ban("robustBufferAccess2", qrobust.robustBufferAccess2, ban_say)) qrobust.robustBufferAccess2 = VK_FALSE;
-        if (vk_ban("robustImageAccess2", qrobust.robustImageAccess2, ban_say)) qrobust.robustImageAccess2 = VK_FALSE;
-        if (vk_ban("nullDescriptor", qrobust.nullDescriptor, ban_say)) qrobust.nullDescriptor = VK_FALSE;
+        /* an extension's feature, keyed as extension_bans.txt's head says (extension.feature) */
+        if (vk_ban("VK_EXT_robustness2.robustBufferAccess2", qrobust.robustBufferAccess2, ban_say))
+            qrobust.robustBufferAccess2 = VK_FALSE;
+        if (vk_ban("VK_EXT_robustness2.robustImageAccess2", qrobust.robustImageAccess2, ban_say))
+            qrobust.robustImageAccess2 = VK_FALSE;
+        if (vk_ban("VK_EXT_robustness2.nullDescriptor", qrobust.nullDescriptor, ban_say))
+            qrobust.nullDescriptor = VK_FALSE;
         VkPhysicalDeviceProperties2 query = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
                                              .pNext = &robust_limits};
         vkGetPhysicalDeviceProperties2(g_vk.phys, &query);
