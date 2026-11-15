@@ -217,7 +217,7 @@ int hook_states_refused(char* why, size_t whysize) {
             snprintf(why, whysize, "save states need native_cond_var=0 (it is %d)", g_settings.native_cond_var);
             return -1;
         }
-        if (!strcmp(f, "os_sync")) {
+        if (!strcmp(f, "os_sync") || !strcmp(f, "os_light")) {
             snprintf(why, whysize, "save states need native_os_sync=0 (it is %d)", g_settings.native_os_sync);
             return -1;
         }

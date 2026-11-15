@@ -272,3 +272,152 @@ void os_sdk_cv_wait_recursive(CPU* c, u64 cv, u64 m) {
     cv_wait(c, cv, m, 0);
     snx_st_le32(hook_host(c, m + 4), 1);
 }
+
+/* ---- the light objects: LightEvent, LightSemaphore and LightMessageQueue, whose threads wait on a word of three
+   states (the SDK's LightWaiter: 0 nobody waits, 1 threads wait, 2 signaled) with svcWaitForAddress and
+   svcSignalToAddress. Their functions run here whole, the address arbiter's waits and signals the kernel's own
+   (svc_wait_addr, svc_signal_addr) with no SVC, so a light object's words follow the SDK's protocol and a function of
+   theirs the family leaves to the game's own code still works with them. A light object's spinlock is taken as the
+   SDK takes it, less its preemption counter in TLS, which only the console's scheduler reads */
+#define LW_SIGNALED 2u
+#define RC_DESC(rc) ((rc) & 0x3FFFFFu)
+static void lw_check(u32 rc, const char* what) {
+    if (rc) fatal("nn::os: %s: the address arbiter returned %#x (the SDK aborts here)", what, rc);
+}
+static int lw_retry(u32 rc) { return RC_DESC(rc) == RC_DESC(SNX_RC_SVC_INVALID_STATE); }
+/* the word set to signaled: every waiter woken (all) or one, by SignalAndIncrementIfEqual or
+   SignalAndModifyByWaitingCountIfEqual, as the SDK's manual and automatic clears signal */
+static void lw_signal(CPU* c, u64 a, int all) {
+    u32* p = word(c, a);
+    for (;;) {
+        u32 v = ld(p);
+        if (v == LW_SIGNALED) return;
+        if (v == 0) {
+            if (cas(p, &v, LW_SIGNALED)) return;
+            continue;
+        }
+        if (v != 1) misuse("a light object's waiter word holds neither 0, 1 nor 2");
+        const u32 rc = svc_signal_addr(a, all ? 1u : 2u, 1, all ? -1 : 1);
+        if (!lw_retry(rc)) return lw_check(rc, "a light object's signal");
+    }
+}
+/* a wait on the word while nobody signaled it: 1 when woken, 2 when the word changed before the wait began (the
+   arbiter's InvalidState), 0 when it was signaled already */
+static int lw_wait(CPU* c, u64 a) {
+    u32* p = word(c, a);
+    for (;;) {
+        u32 v = ld(p);
+        if (v == LW_SIGNALED) return 0;
+        if (v == 0 && !cas(p, &v, 1u)) continue;
+        if (v != 0 && v != 1) misuse("a light object's waiter word holds neither 0, 1 nor 2");
+        const u32 rc = svc_wait_addr(kthread_cur(), a, 2, 1, -1);
+        if (lw_retry(rc)) return 2;
+        lw_check(rc, "a light object's wait");
+        return 1;
+    }
+}
+static void lw_clear(CPU* c, u64 a) {
+    u32 v = LW_SIGNALED;
+    cas(word(c, a), &v, 0);
+}
+/* a light object's spinlock word */
+static void spin_lock(CPU* c, u64 a) {
+    u32* p = word(c, a);
+    for (u32 n = 0;; n++) {
+        u32 v = 0;
+        if (cas(p, &v, 1u)) return;
+        if (n >= 64) plat_yield();
+    }
+}
+static void spin_unlock(CPU* c, u64 a) { __atomic_store_n(word(c, a), 0u, __ATOMIC_RELEASE); }
+
+/* LightEventType: its clear mode at 0 (1 automatic), initialized at 1, the waiter word at 4 */
+void os_light_event_init(CPU* c, u64 e, int signaled, u32 mode) {
+    u8* h = hook_host(c, e);
+    h[1] = 1;
+    h[0] = mode == 1;
+    __atomic_store_n(word(c, e + 4), snx_le32(signaled ? LW_SIGNALED : 0u), __ATOMIC_RELEASE);
+}
+void os_light_event_signal(CPU* c, u64 e) { lw_signal(c, e + 4, !*hook_host(c, e)); }
+void os_light_event_clear(CPU* c, u64 e) { lw_clear(c, e + 4); }
+/* an automatic one's signal is taken: the wake of one waiter, or the word's signaled state cleared */
+void os_light_event_wait(CPU* c, u64 e) {
+    u32* p = word(c, e + 4);
+    if (!*hook_host(c, e)) { /* manual: a wake, or the word found changed, ends it */
+        lw_wait(c, e + 4);
+        return;
+    }
+    for (;;) {
+        u32 v = LW_SIGNALED;
+        if (cas(p, &v, 0)) return;
+        /* woken: SignalAndModifyByWaitingCountIfEqual handed the signal to this thread */
+        if (lw_wait(c, e + 4) == 1) return;
+    }
+}
+int os_light_event_try_wait(CPU* c, u64 e) {
+    u32 v = LW_SIGNALED;
+    if (*hook_host(c, e)) return cas(word(c, e + 4), &v, 0);
+    return ld(word(c, e + 4)) == LW_SIGNALED;
+}
+
+/* LightSemaphoreType: its count at 4, its spinlock at 0x10, the waiter word at 0x18 */
+/* one taken if the count has one; the waiter word's signal cleared where it hasn't, but by TryAcquire */
+static int sem_take(CPU* c, u64 s, int clear) {
+    spin_lock(c, s + 0x10);
+    const i32 n = (i32)snx_ld_le32(hook_host(c, s + 4));
+    if (n > 0)
+        snx_st_le32(hook_host(c, s + 4), (u32)(n - 1));
+    else if (clear)
+        lw_clear(c, s + 0x18);
+    spin_unlock(c, s + 0x10);
+    return n > 0;
+}
+void os_light_sem_acquire(CPU* c, u64 s) {
+    while (!sem_take(c, s, 1)) lw_wait(c, s + 0x18);
+}
+int os_light_sem_try_acquire(CPU* c, u64 s) { return sem_take(c, s, 0); }
+void os_light_sem_release_n(CPU* c, u64 s, i32 k) {
+    spin_lock(c, s + 0x10);
+    snx_st_le32(hook_host(c, s + 4), snx_ld_le32(hook_host(c, s + 4)) + (u32)k);
+    spin_unlock(c, s + 0x10);
+    lw_signal(c, s + 0x18, 1);
+}
+void os_light_sem_release(CPU* c, u64 s) { os_light_sem_release_n(c, s, 1); }
+
+/* LightMessageQueueType: its buffer of 64-bit messages at 0, their room at 8, how many it holds at 0xc, the first's
+   index at 0x10, its spinlock at 0x18, the waiter words of room (0x20, senders wait) and of messages (0x28) */
+static int lmq_take(CPU* c, u64 out, u64 q) {
+    spin_lock(c, q + 0x18);
+    const u32 n = snx_ld_le32(hook_host(c, q + 0xc));
+    if (n) {
+        const u32 cap = snx_ld_le32(hook_host(c, q + 8));
+        u32 head = snx_ld_le32(hook_host(c, q + 0x10));
+        const u64 msg = snx_ld_le64(hook_host(c, snx_ld_le64(hook_host(c, q)) + (u64)head * 8));
+        head = head + 1 >= cap ? head + 1 - cap : head + 1;
+        snx_st_le32(hook_host(c, q + 0xc), n - 1);
+        snx_st_le32(hook_host(c, q + 0x10), head);
+        snx_st_le64(hook_host(c, out), msg);
+    } else
+        lw_clear(c, q + 0x28);
+    spin_unlock(c, q + 0x18);
+    if (n) lw_signal(c, q + 0x20, 1);
+    return n != 0;
+}
+int os_lmq_try_receive(CPU* c, u64 out, u64 q) { return lmq_take(c, out, q); }
+void os_lmq_receive(CPU* c, u64 out, u64 q) {
+    while (!lmq_take(c, out, q)) lw_wait(c, q + 0x28);
+}
+int os_lmq_try_send(CPU* c, u64 q, u64 msg) {
+    spin_lock(c, q + 0x18);
+    const u32 cap = snx_ld_le32(hook_host(c, q + 8)), n = snx_ld_le32(hook_host(c, q + 0xc));
+    if ((i32)n < (i32)cap) {
+        u32 at = snx_ld_le32(hook_host(c, q + 0x10)) + n;
+        if (at >= cap) at -= cap;
+        snx_st_le64(hook_host(c, snx_ld_le64(hook_host(c, q)) + (u64)at * 8), msg);
+        snx_st_le32(hook_host(c, q + 0xc), n + 1);
+    }
+    spin_unlock(c, q + 0x18);
+    if ((i32)n >= (i32)cap) return 0;
+    lw_signal(c, q + 0x28, 1);
+    return 1;
+}

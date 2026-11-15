@@ -1327,9 +1327,9 @@ setting Native os sync
     default 1
     startup
     words Off|On
-    help 1 = nn::os's sleeps, yields, locks and condition variables (hle/hook/hooks.hook's os_sync family) run on the
-    help host with no SVC, a lock's waiters waiting on its word with the host's futex, and save states are refused, as
-    help a state can't hold a thread waiting there. 0 = the game's own code makes the SVCs, and save states can be taken
+    help 1 = nn::os's sleeps, yields, locks and condition variables (hle/hook/hooks.hook's os_sync family) and its light
+    help events, semaphores and message queues (os_light) run on the host with no SVC, a lock's waiters waiting on its
+    help word with the host's futex, and save states are refused, as a state can't hold a thread waiting there. 0 = the game's own code makes the SVCs, and save states can be taken
     help and loaded
 setting Shader corpus
     key shader_corpus
