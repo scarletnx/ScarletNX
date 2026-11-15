@@ -274,6 +274,11 @@ typedef struct {
     u32 gfx_timestamp_bits;  /* the graphics queue family's timestampValidBits: 0 where it writes no timestamps */
     /* VK_EXT_memory_budget: the driver tells each heap's use and budget (devmem.c reads them, and guesses without) */
     int has_budget;
+    /* VK_EXT_pageable_device_local_memory with VK_EXT_memory_priority: where the GPU's own memory is short, the driver
+       moves memory of a low priority to system memory first. devmem.c keeps its own use under the driver's budget, so
+       this occurs when the budget falls: other programs or the desktop take video memory. devmem.c gives each block
+       the priority of what it holds (vk_devmem_priority) */
+    int has_pageable;
     int has_checkpoints; /* vk_checkpoints=1 on a driver that has them (checkpoints.c) */
     /* VK_GOOGLE_display_timing, enabled without present waits (Android): presents carry ids and times to be shown at,
        and the swapchain tells when each was */
