@@ -114,3 +114,6 @@ install(FILES "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu.h"
 install(FILES "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/arm.h" DESTINATION ${snx_recompiler_include}/common/cpu/arm)
 install(FILES "${PROJECT_SOURCE_DIR}/src/common/runtime/interface.h"
         DESTINATION ${snx_recompiler_include}/common/runtime)
+# cpu.h includes it
+install(FILES "${PROJECT_SOURCE_DIR}/src/common/utilities/bits.h"
+        DESTINATION ${snx_recompiler_include}/common/utilities)
