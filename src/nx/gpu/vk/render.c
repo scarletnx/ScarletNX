@@ -1367,9 +1367,16 @@ static struct {
    epoch and the baseline brought up to now. In one game's street the epoch dropped 39% of the lookups */
 static int tex_memo_unwritten(TexMemo* m, u64 tic_at, u64 tsc_at, u32 epoch, u32 now) {
     if (m->ww_epoch == epoch) return 1;
+    /* A written page holds 128 headers: the game writes a few of its pool's every frame, and in one battle that dropped
+       about 340 lookups a frame whose own headers were as kept. Where the tracking saw a write, the headers' 64 bytes
+       are compared with m's */
     if (vk_written_since(gmem_host(tic_at, 32), 32, m->wseen) != 0 ||
-        vk_written_since(gmem_host(tsc_at, 32), 32, m->wseen) != 0)
-        return 0;
+        vk_written_since(gmem_host(tsc_at, 32), 32, m->wseen) != 0) {
+        u32 tic[8], tsc[8];
+        vk_gmem_words(tic_at, tic, 8);
+        vk_gmem_words(tsc_at, tsc, 8);
+        if (memcmp(tic, m->tic, sizeof tic) || memcmp(tsc, m->tsc, sizeof tsc)) return 0;
+    }
     m->ww_epoch = epoch;
     m->wseen = now;
     return 1;
