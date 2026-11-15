@@ -499,6 +499,12 @@ static void check_shipped(void) {
         {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0x44050a01, SNX_VK_BAN_ANDROID,
          "OpGroupNonUniformShuffle", 0, NULL},
         {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0x73df, SNX_VK_BAN_LINUX, "OpGroupNonUniformShuffle", 0, NULL},
+        /* the depth clamp's own range: wrong depth values on AMD's drivers, not on RADV */
+        {VK_DRIVER_ID_AMD_PROPRIETARY, MESA(2u, 0u, 302u), 0x744c, SNX_VK_BAN_WINDOWS, "VK_EXT_depth_clamp_control", 1,
+         "AMD's proprietary driver"},
+        {VK_DRIVER_ID_AMD_OPEN_SOURCE, MESA(2u, 0u, 302u), 0x744c, SNX_VK_BAN_LINUX, "VK_EXT_depth_clamp_control", 1,
+         "AMDVLK"},
+        {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0x73df, SNX_VK_BAN_LINUX, "VK_EXT_depth_clamp_control", 0, NULL},
     };
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         char what[400];
