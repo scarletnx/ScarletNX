@@ -8,14 +8,14 @@
 #include <string.h>
 
 /* the families whose handlers run only where the runtime has what they run on: alloc the host allocator's arena in
-   guest memory (alloc.c), and it, sync, cond_var, os_sync and os_light 64-bit games' registers and pointers;
+   guest memory (alloc.c), and it, sync, cond_var, os_sync, os_light and os_core 64-bit games' registers and pointers;
    cond_var, os_sync and os_light, whose waits a save state can't hold, only with native_cond_var=1 and
    native_os_sync=1; and os_sync only where the game's SDK exports every function that writes the words it owns. The
    reason a family is off for, NULL when it may be installed */
 const char* hook_family_unready(const char* family) {
     int alloc = !strcmp(family, "alloc"), sync = !strcmp(family, "sync"), cond = !strcmp(family, "cond_var"),
-        os = !strcmp(family, "os_sync"), light = !strcmp(family, "os_light");
-    if ((alloc || sync || cond || os || light) && g_arm_mod) return "its handlers are for 64-bit games";
+        os = !strcmp(family, "os_sync"), light = !strcmp(family, "os_light"), core = !strcmp(family, "os_core");
+    if ((alloc || sync || cond || os || light || core) && g_arm_mod) return "its handlers are for 64-bit games";
     if (cond && !g_settings.native_cond_var)
         return "native_cond_var is 0, so the game's mutexes and condition variables run its own code, which save "
                "states hold";
