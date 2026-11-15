@@ -3226,7 +3226,11 @@ static Word ushf_r(u32 ud, u32 uc, u32 shift) {
    and gives the texture's word and the sampler's index. The TEX.B takes its handle register R6 from an LDG.64 at
    [UR4 + 0x10]. A handle whose address depends on the invocation (S2R of the lane), or whose register has another
    writer on a path (a guarded MOV), is no texture (SH_PROBE_NONE), and the program translates. Variant 4 samples with
-   a TXD whose handle is in the uniform register pair (TXD_U, 0xf6c), which takes the same slot with no depth reference */
+   a TXD whose handle is in the uniform register pair (TXD_U, 0xf6c), which takes the same slot with no depth reference
+   though its bit 78, TEX's depth reference, is set. In variant 5 a TXD's fault predicate (bits 81-83) writes the P0 of
+   an ISETP before the SEL that reads it, so the handle is made with the TXD's predicate, which nothing evaluates */
+static Word isetp(u32 p, u32 q, u32 a, u32 b, u32 cmp, int is_signed, int ex, u32 low, u32 set_op, u32 acc);
+static Word sel(u32 dst, u32 a, u32 b, u32 pred);
 static void test_uniform_handle(const char* dir) {
     static const struct {
         u64 hi, lo;
@@ -3244,7 +3248,7 @@ static void test_uniform_handle(const char* dir) {
     u32 fsph[32] = {0};
     fsph[0] = sph0(2, 5);
     fsph[18] = 0xf;
-    for (u32 variant = 0; variant < 5; variant++) {
+    for (u32 variant = 0; variant < 6; variant++) {
         int txd = variant == 4, base = txd ? 0 : (int)variant; /* TXD_U's program is variant 0's */
         u8 code[16 * 20] = {0};
         u32 n = 0;
@@ -3261,6 +3265,17 @@ static void test_uniform_handle(const char* dir) {
             put(code, n++, iadd3(2, 2, 3));
         }
         if (variant == 3) put(code, n++, mov_if(2, 3, 0, 0)); /* @P0 MOV R2, R3: two writers reach the LDG */
+        if (variant == 5) { /* P0 = R2 < R3, a TXD of c[0][0x40] whose fault predicate is P0, SEL R2, R2, R3, P0 */
+            put(code, n++, isetp(0, 7, 2, 3, 1, 0, 0, 7, 0, 7));
+            Word g = {{forms[4].lo, forms[4].hi}};
+            set(&g, 10, 1, 0);
+            set(&g, 91, 1, 0);
+            set(&g, 40, 19, 0x10);
+            set(&g, 16, 8, 20); /* R20 to R23, apart from the handle's */
+            set(&g, 81, 3, 0);
+            put(code, n++, g);
+            put(code, n++, sel(2, 2, 3, 0));
+        }
         put(code, n++, shf_imm(2, 2, 5, 255, 3, 0, 0, 0)); /* SHF.L.U32 R2, R2, 5, RZ */
         put(code, n++, iadd3_imm(2, 2, 0x18));
         put(code, n++, ldg_reg_ur64(4, 2, 4, 0));
@@ -3269,6 +3284,7 @@ static void test_uniform_handle(const char* dir) {
         put(code, n++, ushf_r(9, 8, 20));
         Word t = {{forms[txd ? 4 : 0].lo, forms[txd ? 4 : 0].hi}};
         set(&t, 40, 6, 8);
+        if (txd) set(&t, 78, 1, 1);
         put(code, n++, t);
         if (variant == 1) { /* a TEX.B, its handle R6 from [UR4 + 0x10] */
             put(code, n++, ldg_uniform64(6, 4, 0x10));
@@ -3289,13 +3305,16 @@ static void test_uniform_handle(const char* dir) {
         size_t count = 0;
         u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
         if (base >= 2) { /* no texture (SH_PROBE_NONE), the draw going on, and nothing kept to run */
-            const char* want = variant == 2 ? "made with S2R" : "has no one writer";
-            int ok = spv && si.ntex == 1 && (si.tex[0].flags & SNX_TEX_MEMORY) && si.tex[0].cbuf_off == SH_PROBE_NONE &&
-                     si.tex[0].bl2_off == SH_PROBE_NONE && si.memh_none == 1 && strstr(si.memh_why, want) &&
-                     si.nmemh == 0;
+            const char* want = variant == 2 ? "made with S2R" : variant == 5 ? "made with TXD" : "has no one writer";
+            int m = 0; /* the handle's slot: variant 5's TXD has one of its own */
+            while (m + 1 < si.ntex && !(si.tex[m].flags & SNX_TEX_MEMORY)) m++;
+            int ok = spv && si.ntex == (variant == 5 ? 2 : 1) && (si.tex[m].flags & SNX_TEX_MEMORY) &&
+                     si.tex[m].cbuf_off == SH_PROBE_NONE && si.tex[m].bl2_off == SH_PROBE_NONE && si.memh_none == 1 &&
+                     strstr(si.memh_why, want) && si.nmemh == 0;
             CHECK(ok);
             if (!ok)
-                fprintf(stderr, "memory handle, variant %u: %s, %s\n", variant, si.first_unsupported, si.memh_why);
+                fprintf(stderr, "memory handle, variant %u: %s, %s, %d textures\n", variant, si.first_unsupported,
+                        si.memh_why, si.ntex);
             if (spv) CHECK(keep_module(dir, "fs_memory_handle_none", spv, count));
             free(spv);
             continue;
