@@ -885,9 +885,10 @@ do the same, the on-screen controls' too, and a direction held goes on after a m
 Auto, Left and Right either way, once a press: each step docks or undocks the console under the game. **Volume** is the
 game's sound on a slider ([`volume`](settings.md#audio)), 100% at first: Left and Right step it 5% either way, held
 too, and Enter or A up, stopping at Mute and at 100%; a tap or a click on the slider takes the step under it, one left
-of it steps down and one on its value up, and a press moves the knob as it drags. Each step is heard at once and kept
-in the game's `.ini`, but while the launcher's Settings > Audio > Volume passes the run its own (`--volume=N`), which
-the run then keeps to: the step lasts until the game ends.
+of it steps down and one on its value up, and a press moves the knob as it drags. Each step is heard at once.
+What the menu changes is kept for this game alone, in its own picks over the launcher's Settings, which every game
+gets ([Settings](settings.md)): its value shows `*` after it, and Delete or a controller's Y gives back the
+launcher's (else the game's `.ini`'s) at once.
 
 A game that asks for text (a name, a password, a search) shows a box over the game, in the menu's look and the same
 on every platform: the game's own words for it, the line with the text the game started it with, and how many
@@ -917,10 +918,10 @@ tap one and size it with the bar on top; *Done* or Back ends it), snap to a grid
 shown, a stick's middle where the finger lands, a D-pad a finger slides on, a buzz on each press (Android), the touch
 screen, and *Reset layout*, in the warning colour and asked first. Each control is a white shape drawn hard over the game, its edge and its label; a pressed
 one is filled, its label cut out. The
-game's `.ini` keeps them: `controls`, `controls_scale`,
-`controls_snap`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics`, a control's place once it
-was moved (`controls_a=0.930 0.470 100`: its middle across the screen and its size in percent), and whether it is
-shown once that changed (`controls_a_shown=0`). The launcher's Settings have the same, but the layout.
+game's own picks keep them: `controls`, `controls_scale`,
+`controls_snap`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics`, and whether a control is shown once
+that changed (`controls_a_shown=0`); its `.ini` keeps a control's place once it was moved (`controls_a=0.930 0.470 100`:
+its middle across the screen and its size in percent). The launcher's Settings have the same, but the layout.
 Beside the executable: `Game.log`, `threads.txt` (15 s refresh), `captures/` (screenshots); an installed copy on Linux
 keeps the first two in its state folder ([Folders](#folders)). `Game.log` is this run's: the 4 runs before keep theirs
 in `logs/` beside it, named by when each was last written (`2026-10-28_14-05-33.log`). Past `log_max` (MiB, 1 to

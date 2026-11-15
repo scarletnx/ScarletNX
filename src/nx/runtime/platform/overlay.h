@@ -83,6 +83,9 @@ int overlay_shortcut_listening(void);
 void overlay_shortcut_key(unsigned key, unsigned mods);
 /* Backspace: on the Shortcuts page the row in focus back to its default key, as a key given; elsewhere overlay_back */
 int overlay_backspace(void);
+/* Delete, and a controller's Y: the setting in focus that the game's picks hold (its value marked *) back to Global,
+   the launcher's for every game (options.h's ini_unpick); on the Shortcuts page as Backspace */
+int overlay_delete(void);
 /* a tap at x, y on a picture of sw x sh: what it did, OVERLAY_CLOSE outside the panel */
 int overlay_tap(float x, float y, int sw, int sh);
 /* a finger or the mouse (touch.h's SNX_TOUCH_MOUSE) on the open menu, at x, y in the picture's pixels: down off the

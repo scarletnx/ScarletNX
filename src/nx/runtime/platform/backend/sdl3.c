@@ -1391,6 +1391,9 @@ static int menu_event(const SDL_Event* e, int action) {
             case SDLK_BACKSPACE: /* back, and on the Shortcuts page a key's default */
                 if (!e->key.repeat) overlay_do(overlay_backspace());
                 break;
+            case SDLK_DELETE: /* a setting set for this game alone back to Global */
+                if (!e->key.repeat) overlay_do(overlay_delete());
+                break;
             default: /* F1's page goes back to the game on any key */
                 if (!e->key.repeat) overlay_do(overlay_other());
                 break;

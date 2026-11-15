@@ -78,6 +78,19 @@ int options_tv_mode_step(int step, char* text, size_t size) {
     if (size) text[0] = 0;
     return tv.choice;
 }
+/* options.c's picks of the game, which the menu marks with *: the keys picked, and the last one taken out */
+static struct {
+    const char* key; /* the one picked, NULL for none */
+    char unpicked[32];
+    int changes;
+} picks;
+int ini_picked(const char* k) { return picks.key && !strcmp(picks.key, k); }
+void ini_unpick(const char* k) {
+    snprintf(picks.unpicked, sizeof picks.unpicked, "%s", k);
+    if (ini_picked(k)) picks.key = NULL;
+    ++picks.changes;
+}
+const int* ini_picks_changes(void) { return &picks.changes; }
 /* the platform's lock and the backend's touch screen, without either */
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
@@ -1055,14 +1068,15 @@ int main(void) {
     draw();
     assert(text_at(C - 3, 7, "On") && !strcmp(stored, "stats"));
     /* Volume (settings.txt's volume, INI_SLIDER): its icon, its value at the right, a slider a column before the value
-       at its widest, OVERLAY_SLIDER_COLS long, its knob a cell wide at the value, in the row's colour: the ink, the
+       at its widest with room for a game's own * after it, OVERLAY_SLIDER_COLS long, its knob a cell wide at the
+       value, in the row's colour: the ink, the
        page's in focus. Left/Right step it 5 a press and a direction held goes on (no TV mode), Enter and A up, to its
        ends and never round, each step kept in the game's .ini; a tap on the slider takes the step under it, one left
        of it steps down, one on its value up; a press on it takes the step under it at once, the knob follows the drag
        past either end, and the lift taps nothing */
     {
         const int area[4] = {0, 0, SW, SH};
-        const int bar = C - 6 - OVERLAY_SLIDER_COLS; /* the slider's first column */
+        const int bar = C - 8 - OVERLAY_SLIDER_COLS; /* the slider's first column */
         float row = (float)(py + 9 * 16 * s + 5), cell = (float)(8 * s);
         int i;
         draw();
@@ -1101,6 +1115,28 @@ int main(void) {
         overlay_pointer_move(21, (float)px + cell * (float)(bar + 2) + cell / 2, row, area); /* lifted: it moves none */
         assert(g_settings.volume == 75);
         g_settings.volume = 100;
+    }
+    /* a setting the game's picks hold, set for this game alone: * after its value, room for which the slider keeps, and
+       a second line of help saying so; Delete or Y on it takes it out, on a row not picked nothing; the * and the line
+       go with it */
+    {
+        assert(tap(6, C - 3) == OVERLAY_NONE && g_settings.volume == 100); /* Volume in focus, at its end */
+        picks.key = "volume";
+        ++picks.changes; /* as options.c counts each change of the picks, which the menu watches */
+        draw();
+        assert(shows("100% *") && shows("*: set for this game alone.") && shows("back to Global.") && !shows("Off *"));
+        assert(overlay_pad(1ull << 3) == OVERLAY_NONE && !strcmp(picks.unpicked, "volume") && !ini_picked("volume"));
+        draw();
+        assert(text_at(C - 5, 9, "100%") && !shows("100% *") && !shows("*: set for this game alone."));
+        picks.key = "docked";
+        ++picks.changes;
+        picks.unpicked[0] = 0;
+        draw();
+        assert(shows("On *") && overlay_delete() == OVERLAY_NONE && !picks.unpicked[0]); /* Volume in focus: not picked */
+        overlay_move(-2);                                                          /* to TV mode */
+        assert(overlay_delete() == OVERLAY_NONE && !strcmp(picks.unpicked, "docked") && !ini_picked("docked"));
+        picks.unpicked[0] = 0;
+        overlay_move(2);
     }
     /* the page kept from frame to frame, laid out again for what changes elsewhere with no call of the menu's between:
        a setting a row shows (F12's Stats), the TV mode (its key), RenderDoc's capture */
