@@ -13,11 +13,24 @@ const IniOpt* ini_find(const IniOpt* table, const char* key) {
         if (!strcmp(table->key, key)) return table;
     return NULL;
 }
-const char* ini_arg(const char* arg, char* key, size_t size) {
+const char* ini_arg(const char* arg, char* key, size_t size, const char* const* names, int count) {
     const char* eq = strchr(arg, '=');
+    int low = 0, high = count;
     if (strncmp(arg, "--", 2) || !eq || (size_t)(eq - arg - 2) >= size) return NULL;
     memcpy(key, arg + 2, (size_t)(eq - arg - 2));
     key[eq - arg - 2] = 0;
+    while (low < high) {
+        int middle = low + (high - low) / 2, order = strcmp(key, names[middle]);
+        if (!order) {
+            for (char* p = key; *p; p++)
+                if (*p == '-') *p = '_';
+            break;
+        }
+        if (order < 0)
+            high = middle;
+        else
+            low = middle + 1;
+    }
     return eq + 1;
 }
 

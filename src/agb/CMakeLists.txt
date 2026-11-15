@@ -25,8 +25,10 @@ target_link_libraries(scarletnx-agb PUBLIC scarletnx-common snx_arm_llvm snx_llv
 target_compile_options(scarletnx-agb PRIVATE -Wall -Wextra -Werror)
 
 # the runner: the board in a window, with sound and the keypad (runtime/host.c), SDL here and never in the board. Its
-# command line goes beside every GBA game (recompiled/<name>/<name>, its .ini saying system=gba)
+# command line goes beside every GBA game (recompiled/<name>/<name>, its .ini saying system=gba), and reads the
+# settings it takes by their names on a command line (snx_settings' settings_arg)
 add_library(snx_agb_program STATIC runtime/host.c runtime/main.c)
-target_link_libraries(snx_agb_program PUBLIC scarletnx-agb SDL3::SDL3 snx_window_icon snx_pad_sdl snx_build_info)
+target_link_libraries(snx_agb_program PUBLIC scarletnx-agb SDL3::SDL3 snx_window_icon snx_pad_sdl snx_build_info
+                      snx_settings)
 set_target_properties(snx_agb_program PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
 include("${PROJECT_SOURCE_DIR}/tests/cmake/agb.cmake") # its tests

@@ -16,6 +16,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/script.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +52,9 @@ static void usage(FILE* out) {
           "  --aot_threads=N        The threads a recompile may take (0 to 1024), as the other drivers': a ROM's code\n"
           "                         is one module, which compiles on 1 thread whatever N, and the recompile says so;\n"
           "                         --aot_threads_most=N the same\n"
+          "\n"
+          "These settings take their names with a - for each _ too, as every driver's: --press-len=MS is\n"
+          "--press_len=MS.\n"
           "\n"
           "On the GBA, a ROM's code is one module, compiled on 1 thread as one unit: --jobs and --chunk change\n"
           "nothing, which the recompile says. -O is the module's level (default 2, the setting opt's), --jit-cache\n"
@@ -166,7 +170,7 @@ int snx_agb_main(int argc, char** argv) {
     setvbuf(stderr, NULL, _IONBF, 0);
     const char* path = NULL;
     long press_len = 300;
-    const char *threads = NULL, *most = NULL; /* --aot_threads= and --aot_threads_most=, as given */
+    const char *threads = NULL, *most = NULL; /* the values of aot_threads and aot_threads_most, as given */
     char opt = '2';             /* the setting opt's default, or -O's */
     int registers = 0;
     int lcd = 1; /* --gba_color: the original GBA's screen colours, raw the game's (settings.txt's gba_color) */
@@ -185,27 +189,28 @@ int snx_agb_main(int argc, char** argv) {
         }
         if (common == SNX_CLI_OPT) opt = cli.value[SNX_CLI_OPT][0];
         if (common) continue;
-        if (!strncmp(argv[i], "--press_len=", 12)) {
+        /* the settings it takes, their keys' _ a - or not */
+        char key[64];
+        const char* value = settings_arg(argv[i], key, sizeof key);
+        if (value && !strcmp(key, "press_len")) {
             char* end;
-            press_len = strtol(argv[i] + 12, &end, 10);
-            if (end == argv[i] + 12 || *end || press_len < 0 || press_len > 0x7FFFFFFF) {
-                fprintf(stderr, "scarletnx-agb: --press_len=%s is not a whole number of ms\n", argv[i] + 12);
+            press_len = strtol(value, &end, 10);
+            if (end == value || *end || press_len < 0 || press_len > 0x7FFFFFFF) {
+                fprintf(stderr, "scarletnx-agb: --press_len=%s is not a whole number of ms\n", value);
                 snx_cli_free(&cli);
                 return 2;
             }
-        } else if (!strncmp(argv[i], "--aot_threads=", 14) || !strncmp(argv[i], "--aot_threads_most=", 19)) {
+        } else if (value && (!strcmp(key, "aot_threads") || !strcmp(key, "aot_threads_most"))) {
             /* the launcher's Gentle queue gives every driver both */
-            const char* value = strchr(argv[i], '=') + 1;
             char* end;
             long n = strtol(value, &end, 10);
             if (end == value || *end || n < 0 || n > 1024) {
-                fprintf(stderr, "scarletnx-agb: %s is not a whole number from 0 to 1024\n", argv[i] + 2);
+                fprintf(stderr, "scarletnx-agb: %s=%s is not a whole number from 0 to 1024\n", key, value);
                 snx_cli_free(&cli);
                 return 2;
             }
-            *(argv[i][13] == '=' ? &threads : &most) = argv[i] + 2;
-        } else if (!strncmp(argv[i], "--gba_color=", 12)) {
-            const char* value = argv[i] + 12;
+            *(strcmp(key, "aot_threads") ? &most : &threads) = value;
+        } else if (value && !strcmp(key, "gba_color")) {
             if (strcmp(value, "raw") && strcmp(value, "gba")) {
                 fprintf(stderr, "scarletnx-agb: --gba_color=%s is not raw or gba\n", value);
                 snx_cli_free(&cli);
@@ -361,8 +366,8 @@ int snx_agb_main(int argc, char** argv) {
                 printf("Recompiling %s\n", path);
             /* the queue's and a script's --aot_threads=, --jobs and --chunk, which every driver takes: nothing here to
                give them to */
-            if (threads) printf("%s: a ROM's code is one module, compiled on 1 thread\n", threads);
-            if (most) printf("%s: a ROM's code is one module, compiled on 1 thread\n", most);
+            if (threads) printf("aot_threads=%s: a ROM's code is one module, compiled on 1 thread\n", threads);
+            if (most) printf("aot_threads_most=%s: a ROM's code is one module, compiled on 1 thread\n", most);
             if (jobs >= 0) printf("--jobs %d: a ROM's code is one module, compiled on 1 thread\n", jobs);
             if (asked.chunk) printf("--chunk %d: a ROM's code is one module, compiled as one unit\n", asked.chunk);
             error[0] = 0;

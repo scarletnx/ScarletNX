@@ -86,6 +86,14 @@ def main():
         # the launcher's Gentle queue gives every driver --aot_threads=0 and --aot_threads_most=N: both said
         text = run('gentle', '-r', '--aot_threads=0', '--aot_threads_most=4')
         check("aot_threads_most=4: a ROM's code is one module, compiled on 1 thread" in text, 'Gentle refused', text)
+        # the same settings with a - for each _ of their keys, said by their keys
+        text = run('dashes', '-r', '--aot-threads=2', '--aot-threads-most=4')
+        check(
+            "aot_threads=2: a ROM's code is one module, compiled on 1 thread" in text
+            and "aot_threads_most=4: a ROM's code is one module, compiled on 1 thread" in text,
+            '--aot-threads refused',
+            text,
+        )
     if failures:
         sys.exit('agb_recompile_options:\n' + '\n'.join(failures))
     print('agb_recompile_options: ok')

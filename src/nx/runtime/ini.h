@@ -70,9 +70,11 @@ typedef struct {
 } IniSection;
 
 const IniOpt* ini_find(const IniOpt* table, const char* key); /* key's entry in table, or NULL */
-/* a command line's --key=value: its value, with its key in key (of size bytes); NULL for another argument, or for a
-   key that does not fit */
-const char* ini_arg(const char* arg, char* key, size_t size);
+/* a command line's --NAME=value: its value, with in key (of size bytes) the key NAME gives. names, count of them in the
+   order strcmp sorts them, are the settings' names that are not their keys, each key that has an _ with a - for each
+   (settings_arg's, snx_settings.h): one of them gives its key (--aot-threads=4 is aot_threads), any other NAME is the
+   key as given, for the reader to take or refuse by it. NULL for another argument, or for a NAME that does not fit */
+const char* ini_arg(const char* arg, char* key, size_t size, const char* const* names, int count);
 void ini_read(const IniOpt* o, const char* v); /* v into o's variable; a value that isn't a number leaves it */
 /* whether o takes v as it is, for a value given where a wrong one must stop (the recompile's command line): 0, else -1
    with why in out (a number outside lo..hi, not a whole number for an INI_INT, no number at all, a text too long for
