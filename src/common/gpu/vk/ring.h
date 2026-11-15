@@ -6,10 +6,12 @@
 #include <stdint.h>
 #include <volk.h>
 /* A ring of submissions on one queue, as the 3DS's and the Vita's devices record them: work goes into the open slot's
-   command buffer until it is submitted, a few submissions in flight at once, each with a serial. Submission n signals
-   n on the ring's timeline semaphore, where the device has them (core in 1.2, VK_KHR_timeline_semaphore before), or a
-   fence of its slot where it has not. A slot is free again (its command buffer and descriptor pool reset) once its
-   serial is done, in submission order; nothing waits for the GPU but what needs its results or a slot to record in. */
+   command buffer until it is submitted, a few submissions in flight at once, each with a serial. Submission n signals n
+   on the ring's timeline semaphore, where the device has them, or a fence of its slot where it has not. The ring calls
+   the timeline's commands by their core 1.2 names, which a device of an earlier version does not give
+   (vkGetDeviceProcAddr), so only a device of 1.2 or later takes the timeline. A slot is free again (its command buffer
+   and descriptor pool reset) once its serial is done, in submission order; nothing waits for the GPU but what needs its
+   results or a slot to record in. */
 #define SNX_VK_RING_SLOTS 4
 typedef struct {
     VkCommandBuffer cb;
