@@ -887,6 +887,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     /* VK_EXT_shader_atomic_float: RED.ADD.F32 in one instruction (g_spirv_translate.float_atomic_add) */
     int has_atomic_float = 0;
     int has_fault = 0; /* VK_EXT_device_fault: what the GPU reports of a fault, at a lost device */
+    int has_pageable = 0;          /* VK_EXT_pageable_device_local_memory, and VK_EXT_memory_priority that it needs */
     /* VK_KHR_pipeline_executable_properties: the drivers' statistics of each pipeline, for pipeline_stats only */
     int has_exec = 0;
     /* VK_EXT_shader_object: draws bind compiled shaders and set the rest as dynamic state (shader_objects.c) */
@@ -977,6 +978,11 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         /* the driver's budget for each heap, the other processes' use taken out (devmem.c): without it the budget
            is 80% of a heap's size, blind to what the desktop and other programs hold */
         g_vk.has_budget = snx_vk_choice_has(c, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+        /* memory the driver may move to system memory when the GPU's own is short, by the priorities devmem.c gives
+           (vk_devmem_priority). Priorities alone are not used: devmem.c knows an allocation's owner only after the
+           driver made its memory, and only pageable memory takes a new priority after that */
+        has_pageable = snx_vk_choice_has(c, VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME) &&
+                       snx_vk_choice_has(c, VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
         /* the GPU's clock next to the client's, for the profiler's GPU track (gpuprof.c's calibration) */
         has_calibrated = snx_vk_choice_has(c, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
         /* a portability driver's subset must be enabled when it has one (MoltenVK) */
@@ -1141,6 +1147,10 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     VkPhysicalDeviceFaultFeaturesEXT qfault = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+    VkPhysicalDeviceMemoryPriorityFeaturesEXT qpriority = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT};
+    VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT qpageable = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT};
     VkPhysicalDeviceShaderObjectFeaturesEXT qso = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT};
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR qexec = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
@@ -1259,6 +1269,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            has_coop ? &qcoop : NULL,
                            has_atomic_float ? &qatomic_float : NULL,
                            has_fault ? &qfault : NULL,
+                           has_pageable ? &qpriority : NULL,
+                           has_pageable ? &qpageable : NULL,
                            has_exec ? &qexec : NULL,
                            has_so ? &qso : NULL,
                            has_nv_rate ? &qnv_rate : NULL,
@@ -1347,6 +1359,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2 && !g_vk.robust_buffer2;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_fault = has_fault && qfault.deviceFault;
+    g_vk.has_pageable = has_pageable && qpriority.memoryPriority && qpageable.pageableDeviceLocalMemory;
     g_vk.has_exec_stats = has_exec && qexec.pipelineExecutableInfo;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
     g_vk.has_list_restart = has_list_restart && qlist_restart.primitiveTopologyListRestart;
@@ -1948,6 +1961,23 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     if (g_vk.has_fault) {
         chain = &ffault;
         snx_vk_choice_enable(c, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+    }
+    /* the GPU's own memory that the driver may move to system memory when it is short, the lowest priority first */
+    VkPhysicalDeviceMemoryPriorityFeaturesEXT fpriority = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT,
+        .pNext = chain,
+        .memoryPriority = VK_TRUE};
+    VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT fpageable = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT,
+        .pNext = &fpriority,
+        .pageableDeviceLocalMemory = VK_TRUE};
+    if (g_vk.has_pageable) {
+        chain = &fpageable;
+        snx_vk_choice_enable(c, VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
+        snx_vk_choice_enable(c, VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME);
+        LOG("vulkan: the driver may move the GPU's memory to system memory where it is short, the lowest priority "
+            "first: render targets and rings high, textures with drawn pixels medium, textures loaded from memory low "
+            "(VK_EXT_pageable_device_local_memory)\n");
     }
     VkPhysicalDeviceShaderObjectFeaturesEXT fso = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT, .pNext = chain, .shaderObject = VK_TRUE};

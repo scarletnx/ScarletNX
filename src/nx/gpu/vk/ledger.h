@@ -14,7 +14,7 @@
 
 enum {
     VK_OWN_TEXTURE,     /* the texture cache's images, with their sparse blocks, BC7 forms and kept ASTC blocks */
-    VK_OWN_TARGET,      /* the render targets */
+    VK_OWN_TARGET,      /* the render targets, with the copies of them that draws sample (texture.c rt_copy) */
     VK_OWN_IMAGE_OTHER, /* images of no cache: unscaled copies, resolves, captures */
     VK_OWN_BUFFER,      /* the buffer cache's own buffers (buffer.c) */
     VK_OWN_MIRROR,      /* the mirror's granules, masks and shadows (mirror.c) */
@@ -38,6 +38,9 @@ enum {
 /* an allocation of devmem.c entered under owner, and taken out again before it is freed (an allocation never entered
    is left alone). They are also the Tracy memory events of the allocation (SNX_TRACY builds), in a pool named for the owner */
 void vk_mem_track(DevMem a, u32 owner);
+/* the class an owner's memory has (DM_PRIO_*): an allocation for an owner of the low class asks for it at once
+   (DevMemWant.low), so that it goes into the blocks of that class */
+u32 vk_mem_owner_prio(u32 owner);
 void vk_mem_untrack(DevMem a);
 /* an owner's bytes in the process's heap grew (or, negative, shrank) by delta */
 void vk_ledger_heap(u32 owner, i64 delta);
