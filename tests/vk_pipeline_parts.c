@@ -379,8 +379,8 @@ static void check_bans(void) {
         const char* key;               /* in the last line said */
     } cases[] = {
         {"RADV 26.2.6", VK_DRIVER_ID_MESA_RADV, VK_MAKE_VERSION(26, 2, 6), 0, NULL},
-        {"RADV 22.3.0", VK_DRIVER_ID_MESA_RADV, VK_MAKE_VERSION(22, 3, 0), VK_DYN_PR_DEPTH_CLAMP,
-         "extendedDynamicState3DepthClampEnable"},
+        /* its depth clamp line only warns (a ban Eden lifted): the member stays dynamic and nothing is said */
+        {"RADV 22.3.0", VK_DRIVER_ID_MESA_RADV, VK_MAKE_VERSION(22, 3, 0), 0, NULL},
         {"PowerVR", VK_DRIVER_ID_IMAGINATION_PROPRIETARY, VK_MAKE_VERSION(1, 21, 0),
          VK_DYN_PR_POLYGON | VK_DYN_PR_DEPTH_CLAMP, "extendedDynamicState3DepthClampEnable"},
         {"Intel on Windows", VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, 101u << 14 | 5000u, VK_DYN_PR_DEPTH_RANGE,
