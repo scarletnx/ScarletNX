@@ -7,6 +7,11 @@
    EAC alpha block, then an ETC2 RGB one), BC4 and BC5 EAC R11 and RG11, unsigned or signed as they are. BC6H has no
    ETC2 counterpart and is decoded as before.
 
+   The formats: ETC1 is Strom and Akenine-Moller's iPACKMAN ("iPACKMAN: High-Quality, Low-Complexity Texture
+   Compression for Mobile Phones", Graphics Hardware 2005), and ETC2's T, H and planar modes are Strom and Pettersson's
+   ("ETC2: Texture Compression using Invalid Combinations", Graphics Hardware 2007), whose T and H blocks start, as
+   here, from the two clusters of the block's colours.
+
    ETC2 RGB: every block is tried in the modes that suit it and the one whose decoded texels are nearest the block's
    (squared error, summed) is written. Each candidate's builder works out that error as the decoder decodes (clamped
    to 0 and 255 alike), which tests/glsl/bcn_etc2_glsl.cpp holds to the reference decoder's. The candidates: ETC1's

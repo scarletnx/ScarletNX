@@ -67,6 +67,11 @@ CPU (`tests/glsl/glsl.hpp`) and get the GPU's bytes.
 
 ### What a texel costs
 
+The formats are Strom and Akenine-Moller's iPACKMAN, ETC1 ("iPACKMAN: High-Quality, Low-Complexity Texture
+Compression for Mobile Phones", Graphics Hardware 2005), and Strom and Pettersson's ETC2 ("ETC2: Texture Compression
+using Invalid Combinations", Graphics Hardware 2007), whose T and H blocks start from the block's two colour clusters,
+as `et_cluster`'s do.
+
 The candidates are searched as above, and each step below writes the same blocks, byte for byte, as the search written
 out plainly did (a checksum of 20000 blocks of every candidate and of the encoder's choice holds them to it):
 
@@ -88,7 +93,9 @@ out plainly did (a checksum of 20000 blocks of every candidate and of the encode
   tries only the levels the one before it didn't.
 - A subblock's loops walk its 8 texels, not the block's 16.
 
-What was measured and not kept: QuickETC2's early decision (Nah, ACM Transactions on Graphics 39, 6, 2020), which tries
+What was measured and not kept: the early compression-mode decision of Nah's QuickETC2 ("QuickETC2: Fast ETC2
+Texture Compression using Luma Differences", ACM Transactions on Graphics 39, 6, 2020,
+[doi:10.1145/3414685.3417787](https://doi.org/10.1145/3414685.3417787)), which tries
 T and H only where a block's texels spread widely and the planar search only where its fit is good, makes the
 encoder slower on a GPU. Four Kodak crops made BC7 took 93 to 128 ms on a GT 1030 with it and 85 to 106 without
 (before the dot build), for 0.02 to 0.18 dB less. A subgroup runs the candidates any of its invocations takes, and
