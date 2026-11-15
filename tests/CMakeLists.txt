@@ -2607,6 +2607,12 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-surf-layouts 23)
     target_link_libraries(snx-test-vk-surf-layouts PRIVATE snx_nx_flags)
     add_test(NAME vk_surf_layouts COMMAND snx-test-vk-surf-layouts)
+    # a draw that binds an owner where it is (gpu/vk/buffer.c buf_get_owned): one that a draw or the page cache wrote
+    # in this submission takes a pass end and a barrier first, any other none
+    add_executable(snx-test-vk-buffer-owned vk_buffer_owned.c tracy_stubs.c)
+    snx_test_target(snx-test-vk-buffer-owned 23)
+    target_link_libraries(snx-test-vk-buffer-owned PRIVATE snx_nx_flags)
+    add_test(NAME vk_buffer_owned COMMAND snx-test-vk-buffer-owned)
     # the GPU pages of a range as the buffer cache reads them (gpu/vk/buffer.c), over a model of the GMMU: the walks
     # one run at a time give the pages, run flags and byte spans of a walk one page at a time
     add_executable(snx-test-vk-buffer-pages vk_buffer_pages.c tracy_stubs.c)
