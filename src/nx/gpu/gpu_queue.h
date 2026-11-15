@@ -11,6 +11,11 @@
 
 /* 1 when this thread's guest writes go into the queue: the front end's thread, outside the queue's own records */
 int gq_queues(void);
+/* on: this thread now holds the renderer's lock (vk/device.c's vk_lock), and so runs renderer code, as the renderer's
+   side does. Its guest memory writes and reads then go to memory at once, not through the queue. The front end calls
+   the renderer only once the queue is empty (gpu_renderer_now), and a wait on the renderer's side under the lock is a
+   deadlock: the renderer's side needs the lock to run what is queued (gmem_before_write) */
+void gq_direct(int on);
 /* a write of size bytes at src to guest memory at gva, a release (gpu_release_write) and a block linear
    inline-to-memory upload over [at, at + size), each in its place in the queue */
 void gq_write(u64 gva, const void* src, u64 size);

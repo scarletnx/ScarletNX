@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* gpu/gpu_queue.c with no device and no gpu.c: the front end's guest writes, releases and block linear uploads go
    through the ring in their order, each with its bytes as the front end gave them, also when the ring wraps and when
-   a write is too big for it. Only the front end's thread queues, and never while it runs a record. A queued write
+   a write is too big for it. Only the front end's thread queues, never while it runs a record, and never while it
+   holds the renderer's lock (gq_direct), which only that thread's own hold changes. A queued write
    marks each page it covers with its fence (written[]).
 
    With the argument split, gpu_split's renderer thread runs the records: the front end goes on while it is behind, a
@@ -134,6 +135,13 @@ static void check_log(const char* what) {
     CHECK(__atomic_load_n(&g_gq.done, __ATOMIC_ACQUIRE) == g_gq.queued, "%s: the last fence is not done", what);
     nran = nwant = 0;
     queued_in_run = 0;
+}
+
+/* another thread that holds the renderer's lock: its direct access is its own */
+static void* direct_elsewhere(void* arg) {
+    (void)arg;
+    gq_direct(1);
+    return NULL;
 }
 
 /* ------------------------------------------------ gpu_split=1: the renderer thread runs the records */
@@ -273,6 +281,15 @@ int main(int argc, char** argv) {
     CHECK(!gq_queues(), "a thread other than the front end's queues");
     on_thread = 1;
     CHECK(gq_queues(), "the front end's thread does not queue");
+    /* the renderer's lock held: the thread runs renderer code, and its access goes to memory at once */
+    gq_direct(1);
+    CHECK(!gq_queues(), "the front end's thread queues while it holds the renderer's lock");
+    gq_direct(0);
+    CHECK(gq_queues(), "the front end's thread does not queue after it let the renderer's lock go");
+    pthread_t other;
+    pthread_create(&other, NULL, direct_elsewhere, NULL);
+    pthread_join(other, NULL);
+    CHECK(gq_queues(), "another thread's hold of the renderer's lock stopped the front end's queue");
 
     /* the four kinds in their order */
     u64 f;

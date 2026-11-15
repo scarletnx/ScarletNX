@@ -9,6 +9,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/memory/own.h"
@@ -45,10 +46,16 @@ void vk_lock(void) {
             gpu_wait_note(NULL, 0);
         }
         __atomic_store_n(&g_vk_owner, plat_tid(), __ATOMIC_RELAXED);
+        /* With gpu_split, the front end calls the renderer once the queue is empty (gpu_renderer_now). A guest memory
+           write in that call went to the queue, and a big one waited for the renderer thread to run the queue first,
+           with this lock held. The writes queued before it waited for this lock in gmem_before_write: one game's
+           NVN copies locked up so at random. Under the lock this thread is the renderer, and its writes go to memory */
+        gq_direct(1);
     }
 }
 /* lets go of this thread's last hold, then signals the event slots its releases under it reached */
 static void vk_let_go(void) {
+    gq_direct(0);
     __atomic_store_n(&g_vk_owner, 0, __ATOMIC_RELAXED);
     pm_unlock(&g_vklock);
     vk_release_events();
