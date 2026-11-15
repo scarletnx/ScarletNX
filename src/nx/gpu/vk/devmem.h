@@ -19,6 +19,14 @@
    without. A heap that has no room takes no more blocks for a while, so a request without room costs no call to
    the driver.
 
+   With VK_EXT_pageable_device_local_memory, the driver may move memory to system memory when the GPU's own is
+   short, the memory of the lowest priority first. Each allocation has a class (DM_PRIO_*), and a block is one
+   allocation for the driver, which moves all of it or none. So where the driver moves memory, a request of the low
+   class (DevMemWant.low) takes blocks of its own, apart from the others, and the others take blocks of their own.
+   Either takes the other's blocks only when its own have no room and no new one can be made: a request then still
+   finds memory, as one did before the classes. A block of the low class has the priority of the class of most of its
+   bytes, another block that of the highest class it holds (block_prio).
+
    One lock guards it all: any thread may ask. The driver's allocate and free go through the ledger, which times
    them (ledger.h) */
 #ifndef SNX_VK_DEVMEM_H
@@ -37,12 +45,20 @@ enum {
     DM_SYSTEM  /* system memory the GPU alone uses (a texture moved out of the GPU's memory, texture.c's demotion):
                   never a type of the GPU's own memory; no such type, no memory */
 };
+/* priority classes, lowest first, for the driver's choice of what it moves to system memory (vk_devmem_priority) */
+enum {
+    DM_PRIO_LOW,  /* the driver moves it first */
+    DM_PRIO_MID,  /* Vulkan's default: what the driver has from other programs, and each new allocation here */
+    DM_PRIO_HIGH, /* the driver moves it last */
+    DM_PRIO_N
+};
 typedef struct {
     u32 at;                     /* DM_* */
     VkMemoryPropertyFlags need; /* properties the memory type must have besides */
     u8 mapped;                  /* DevMemInfo.ptr is wanted (not for DM_DEVICE) */
     u8 own;                     /* device memory of its own, whatever its size */
     u8 image;                   /* vk_devmem_alloc: the memory is for an image */
+    u8 low; /* of the class DM_PRIO_LOW from the start, in the blocks of that class where the driver moves memory */
 } DevMemWant;
 typedef struct {
     VkDeviceMemory memory;
@@ -78,6 +94,10 @@ void vk_devmem_image_destroy(VkImage img, DevMem mem);
 
 void vk_devmem_info(DevMem mem, DevMemInfo* info);
 void vk_devmem_tag(DevMem mem, u32 tag); /* a number of the caller's, kept with the allocation (the ledger's owner) */
+/* the allocation's class (DM_PRIO_*: DM_PRIO_LOW at first for a request that said low, else DM_PRIO_MID). Its block
+   takes its priority from the classes it holds (block_prio in devmem.c), and an empty block keeps the one it had. The
+   driver is told where it moves memory (g_vk.has_pageable): elsewhere the classes are only kept */
+void vk_devmem_priority(DevMem mem, u32 prio);
 /* the CPU wrote [off, off + size) of a mapped allocation, or reads it next (size VK_WHOLE_SIZE: to its end): what
    memory that is not coherent needs, and nothing for memory that is */
 VkResult vk_devmem_flush(DevMem mem, u64 off, u64 size);

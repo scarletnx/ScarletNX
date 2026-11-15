@@ -846,6 +846,7 @@ static int create_device(void) {
     /* VK_EXT_shader_atomic_float: RED.ADD.F32 in one instruction (g_spirv_translate.float_atomic_add) */
     int has_atomic_float = 0;
     int has_fault = 0; /* VK_EXT_device_fault: what the GPU reports of a fault, at a lost device */
+    int has_pageable = 0;          /* VK_EXT_pageable_device_local_memory, and VK_EXT_memory_priority that it needs */
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     const char* store_none_ext = NULL; /* a 1.2 device's store op NONE (vk12_store_none) */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -926,6 +927,11 @@ static int create_device(void) {
         /* the driver's budget for each heap, the other processes' use taken out (devmem.c): without it the budget
            is 80% of a heap's size, blind to what the desktop and other programs hold */
         g_vk.has_budget = snx_vk_extensions_has(&e, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+        /* memory the driver may move to system memory when the GPU's own is short, by the priorities devmem.c gives
+           (vk_devmem_priority). Priorities alone are not used: devmem.c knows an allocation's owner only after the
+           driver made its memory, and only pageable memory takes a new priority after that */
+        has_pageable = snx_vk_extensions_has(&e, VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME) &&
+                       snx_vk_extensions_has(&e, VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
         /* the GPU's clock next to the client's, for the profiler's GPU track (gpuprof.c's calibration) */
         has_calibrated = snx_vk_extensions_has(&e, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
         /* a portability driver's subset must be enabled when it has one (MoltenVK) */
@@ -1085,6 +1091,10 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     VkPhysicalDeviceFaultFeaturesEXT qfault = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+    VkPhysicalDeviceMemoryPriorityFeaturesEXT qpriority = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT};
+    VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT qpageable = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT};
     VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     VkPhysicalDeviceDescriptorHeapFeaturesEXT qheap = {
@@ -1189,7 +1199,9 @@ static int create_device(void) {
                            has_mixed_dot ? &qmixdot : NULL,
                            has_coop ? &qcoop : NULL,
                            has_atomic_float ? &qatomic_float : NULL,
-                           has_fault ? &qfault : NULL};
+                           has_fault ? &qfault : NULL,
+                           has_pageable ? &qpriority : NULL,
+                           has_pageable ? &qpageable : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
     /* without it the shaders do their FP16 work in 32 bits */
@@ -1261,6 +1273,7 @@ static int create_device(void) {
     g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2 && !g_vk.robust_buffer2;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_fault = has_fault && qfault.deviceFault;
+    g_vk.has_pageable = has_pageable && qpriority.memoryPriority && qpageable.pageableDeviceLocalMemory;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
     g_vk.has_list_restart = has_list_restart && qlist_restart.primitiveTopologyListRestart;
     g_vk.has_patch_list_restart = g_vk.has_list_restart && qlist_restart.primitiveTopologyPatchListRestart;
@@ -1764,6 +1777,23 @@ static int create_device(void) {
     if (g_vk.has_fault) {
         chain = &ffault;
         ext[next++] = VK_EXT_DEVICE_FAULT_EXTENSION_NAME;
+    }
+    /* the GPU's own memory that the driver may move to system memory when it is short, the lowest priority first */
+    VkPhysicalDeviceMemoryPriorityFeaturesEXT fpriority = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT,
+        .pNext = chain,
+        .memoryPriority = VK_TRUE};
+    VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT fpageable = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT,
+        .pNext = &fpriority,
+        .pageableDeviceLocalMemory = VK_TRUE};
+    if (g_vk.has_pageable) {
+        chain = &fpageable;
+        ext[next++] = VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME;
+        ext[next++] = VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME;
+        LOG("vulkan: the driver may move the GPU's memory to system memory where it is short, the lowest priority "
+            "first: render targets and rings high, textures with drawn pixels medium, textures loaded from memory low "
+            "(VK_EXT_pageable_device_local_memory)\n");
     }
     PortabilityFeatures fport = qport;
     fport.pNext = chain;

@@ -409,7 +409,7 @@ static int pieces_bind(VkImage img, const VkMemoryRequirements* req, Pieces* p, 
     for (u32 i = 0; i < n && ok; i++) {
         u64 at = (u64)i * chunk, size = req->size - at < chunk ? req->size - at : chunk;
         VkMemoryRequirements piece = {.size = size, .alignment = req->alignment, .memoryTypeBits = req->memoryTypeBits};
-        DevMemWant aci = {.at = DM_DEVICE, .own = 1, .image = 1};
+        DevMemWant aci = {.at = DM_DEVICE, .own = 1, .image = 1, .low = vk_mem_owner_prio(owner) == DM_PRIO_LOW};
         DevMemInfo info;
         *res = vk_devmem_alloc(&piece, &aci, &p->pages[i], &info);
         if (!VK_OK(*res)) {
@@ -507,7 +507,8 @@ static int image_create_r(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem
         LOG_LIMIT(4, "vulkan: a %llu MiB image in one allocation, past the %llu MiB cap\n",
                   (unsigned long long)(req.memoryRequirements.size >> 20), (unsigned long long)(g_vk.alloc_cap >> 20));
     }
-    DevMemWant aci = {.at = DM_DEVICE};
+    /* an owner of the low class takes the blocks of that class (devmem.h) */
+    DevMemWant aci = {.at = DM_DEVICE, .low = vk_mem_owner_prio(owner) == DM_PRIO_LOW};
     *res = vk_devmem_image(ii, &aci, img, mem);
     if (VK_OK(*res)) vk_mem_track(*mem, owner);
     return VK_OK(*res);
