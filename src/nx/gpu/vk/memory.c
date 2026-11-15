@@ -904,7 +904,8 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
     int ok = ib && ob && fresh && info && rec && rec_a && dead;
     /* the fresh blocks, all at once, then the tails */
     VkMemoryRequirements req = {.size = s->block, .alignment = s->block, .memoryTypeBits = s->memtypes};
-    DevMemWant aci = {.at = s->place_sys ? DM_SYSTEM : DM_DEVICE, .image = 1, .low = 1}; /* a texture's: the low class (ledger.c) */
+    /* a texture's: the low class (ledger.c) */
+    DevMemWant aci = {.at = s->place_sys ? DM_SYSTEM : DM_DEVICE, .image = 1, .low = 1};
     u32 made = 0;
     for (u32 j = 0; ok && j < p.nfresh; j++) {
         /* no room is an answer here (texture.c binds a level coarser), not an error to log */

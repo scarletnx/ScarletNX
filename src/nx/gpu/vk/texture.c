@@ -1409,24 +1409,20 @@ void vk_tex_later_frame(void) {
    image is being made waits for it. When an image finds no run, the block is left as it is (vk_devmem_moving_stop) */
 #define DEFRAG_BYTES (32ull << 20) /* the most a present copies */
 #define DEFRAG_MAX   32u           /* textures asked for a present */
-/* t's image in a free run of another block, copied on cb. 1 when moved, 0 when no run held it */
-static int tex_move(VkCommandBuffer cb, Surf* t, u64* bytes) {
+/* t's image into a new one of the same shape whose memory `want` places, copied on cb, under owner in the ledger: the
+   new image takes the old one's place (tex_image_swap) and the layout t had. bytes: the new one's. 1 when moved, 0 when
+   no memory held it. The defrag's moves and the second tier's (vk_tex_demote, vk_tex_promote) */
+static int tex_move(VkCommandBuffer cb, Surf* t, const DevMemWant* want, u32 owner, u64* bytes) {
     VkImageCreateInfo ii;
     VkViewFormats vf;
     int storage;
     tex_info(t, t->f.vk, &ii, &vf, &storage);
-    DevMemInfo was_info, info;
-    vk_devmem_info(t->mem, &was_info);
-    /* in the blocks of its class: the owner's (textures low), or medium once drawn into (tex_drawn) */
-    const u32 owner = was_info.tag ? was_info.tag - 1 : VK_OWN_TEXTURE;
-    const DevMemWant want = {.at = DM_DEVICE,
-                             .existing = 1,
-                             .low = vk_mem_owner_prio(owner) == DM_PRIO_LOW && !t->took_drawn};
     VkImage img;
     DevMem mem;
-    if (vk_devmem_image(&ii, &want, &img, &mem) != VK_SUCCESS) return 0;
+    if (vk_devmem_image(&ii, want, &img, &mem) != VK_SUCCESS) return 0;
+    vk_mem_track(mem, owner);
+    DevMemInfo info;
     vk_devmem_info(mem, &info);
-    if (was_info.tag) vk_mem_track(mem, owner); /* under the old one's owner in the ledger, and its class */
     *bytes = info.size;
     const VkImageLayout was = t->layout;
     const VkPipelineStageFlags2 stage = t->stage;
@@ -1438,24 +1434,40 @@ static int tex_move(VkCommandBuffer cb, Surf* t, u64* bytes) {
         const int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
         vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
-        vk_barrier(cb, img, aspect, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
-                   VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        vk_barrier(cb, img, aspect, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED,
+                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         VkImageCopy rg[VK_TEX_MAX_LEVELS];
-        const u32 levels = t->levels < VK_TEX_MAX_LEVELS ? t->levels : VK_TEX_MAX_LEVELS;
+        const u32 levels = ii.mipLevels < VK_TEX_MAX_LEVELS ? ii.mipLevels : VK_TEX_MAX_LEVELS;
         for (u32 l = 0; l < levels; l++) {
-            const VkImageSubresourceLayers sub = {.aspectMask = aspect, .mipLevel = l, .layerCount = t->layers};
+            const VkImageSubresourceLayers sub = {.aspectMask = aspect,
+                                                  .mipLevel = l,
+                                                  .layerCount = is3d ? 1 : ii.arrayLayers};
             rg[l] = (VkImageCopy){.srcSubresource = sub,
                                   .dstSubresource = sub,
-                                  .extent = {t->w >> l ? t->w >> l : 1, t->h >> l ? t->h >> l : 1,
-                                             is3d ? (t->depth3d >> l ? t->depth3d >> l : 1) : 1}};
+                                  .extent = {ii.extent.width >> l ? ii.extent.width >> l : 1,
+                                             ii.extent.height >> l ? ii.extent.height >> l : 1,
+                                             ii.extent.depth >> l ? ii.extent.depth >> l : 1}};
         }
         rec_CmdCopyImage(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                          levels, rg);
     }
     vk_devmem_owner(t->mem, NULL); /* the old allocation is not given out again */
-    if (vk_devmem_emptying()) vk_defer_moved(t->bytes); /* released into a block closed to requests */
     tex_image_swap(t, img, mem, info.size, t->f.vk, copied);
     if (copied && was != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) vk_surf_use(cb, t, was, stage, access);
+    return 1;
+}
+/* t's image in a free run of another block of its class, copied on cb. 1 when moved, 0 when no run held it */
+static int tex_defrag_move(VkCommandBuffer cb, Surf* t, u64* bytes) {
+    DevMemInfo was_info;
+    vk_devmem_info(t->mem, &was_info);
+    /* in the blocks of its class: the owner's (textures low), or medium once drawn into (tex_drawn) */
+    const u32 owner = was_info.tag ? was_info.tag - 1 : VK_OWN_TEXTURE;
+    const DevMemWant want = {.at = DM_DEVICE,
+                             .existing = 1,
+                             .low = vk_mem_owner_prio(owner) == DM_PRIO_LOW && !t->took_drawn};
+    const u64 was_bytes = t->bytes;
+    if (!tex_move(cb, t, &want, owner, bytes)) return 0;
+    if (vk_devmem_emptying()) vk_defer_moved(was_bytes); /* released into a block closed to requests */
     return 1;
 }
 void vk_tex_defrag_frame(void) {
@@ -1481,7 +1493,7 @@ void vk_tex_defrag_frame(void) {
         u64 bytes = 0;
         int r = !t           ? vk_buf_move(cb, VK_MOVE_BUF_INDEX(owners[i]), mems[i], &bytes)
                 : t->is_rt ? vk_rt_move(cb, t, &bytes)
-                           : tex_move(cb, t, &bytes);
+                           : tex_defrag_move(cb, t, &bytes);
         if (r < 0) continue;
         if (!r) {
             vk_devmem_moving_stop();
@@ -1565,46 +1577,17 @@ static int tex_moves(const Surf* t) {
     return t->img && t->mem && !t->sparse && !t->bricks && !t->msaa && !t->f.depth && !t->f.stencil && !t->is_rt &&
            !t->crop && !t->bc7.queued && t->layout != VK_IMAGE_LAYOUT_UNDEFINED && t->upload_valid;
 }
-/* t's image into a new one of the same shape whose memory `want` places, on the GPU, in the frame's command buffer
-   (a rendering pass open ends): the image takes the new one's place. bytes: the new one's. 0 when none was made */
-static int tex_move(Surf* t, const DevMemWant* want, u64* bytes) {
-    VkImageCreateInfo ii;
-    VkViewFormats vf;
-    int storage;
-    VkImage img;
-    DevMem mem;
-    tex_info(t, t->f.vk, &ii, &vf, &storage);
-    if (vk_devmem_image(&ii, want, &img, &mem) != VK_SUCCESS) return 0;
-    vk_mem_track(mem, VK_OWN_TEXTURE);
-    DevMemInfo info;
-    vk_devmem_info(mem, &info);
-    *bytes = info.size;
+/* t's image moved by `want` on the frame's command buffer (a rendering pass open ends): tex_move */
+static int tex_move_now(Surf* t, const DevMemWant* want, u64* bytes) {
     vk_render_end();
-    VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-                VK_ACCESS_2_TRANSFER_READ_BIT);
-    vk_barrier(cb, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED,
-               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    VkImageCopy r[16];
-    u32 n = 0;
-    const int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
-    for (u32 l = 0; l < ii.mipLevels && n < 16; l++) {
-        const u32 w = ii.extent.width >> l ? ii.extent.width >> l : 1, h = ii.extent.height >> l ? ii.extent.height >> l : 1,
-                  d = ii.extent.depth >> l ? ii.extent.depth >> l : 1;
-        r[n++] = (VkImageCopy){.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, is3d ? 1 : ii.arrayLayers},
-                               .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, is3d ? 1 : ii.arrayLayers},
-                               .extent = {w, h, d}};
-    }
-    rec_CmdCopyImage(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, n, r);
-    tex_image_swap(t, img, mem, *bytes, t->f.vk, 1);
-    return 1;
+    return tex_move(vk_cmd(), t, want, VK_OWN_TEXTURE, bytes);
 }
 u64 vk_tex_demote(Surf* t) {
     if (!g_settings.texture_system_memory || t->demoted || !tex_moves(t)) return 0;
     const u64 was = t->bytes;
     DevMemWant want = {.at = DM_SYSTEM, .image = 1};
     u64 bytes;
-    if (!tex_move(t, &want, &bytes)) return 0;
+    if (!tex_move_now(t, &want, &bytes)) return 0;
     vk_surf_bytes(t, 0); /* none of the GPU's memory: the budget's bytes are those */
     t->demoted = 1;
     t->sys_bytes = bytes;
@@ -1614,9 +1597,9 @@ u64 vk_tex_demote(Surf* t) {
 }
 int vk_tex_promote(Surf* t) {
     if (!t->demoted || !tex_moves(t)) return 0;
-    DevMemWant want = {.at = DM_DEVICE, .image = 1};
+    DevMemWant want = {.at = DM_DEVICE, .image = 1, .low = !t->took_drawn}; /* a texture's: the low class (ledger.c) */
     u64 bytes;
-    if (!tex_move(t, &want, &bytes)) return 0;
+    if (!tex_move_now(t, &want, &bytes)) return 0;
     t->demoted = 0;
     g_sys_bytes -= t->sys_bytes;
     t->sys_bytes = 0;
@@ -2319,8 +2302,9 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
         VkViewFormats vf;
         vk_view_formats(&ii, &vf, VK_FORMAT_UNDEFINED);
-        /* the target's: its pixels, which draws sample, and which guest memory may not have */
-        if (!vk_cache_image_create(&ii, &c->img, &c->mem, VK_OWN_TARGET, &c->bytes)) { /* rt was used now: it stays */
+        /* its pixels, which draws sample and guest memory may not have: above textures in priority (ledger.c), but
+           not a target's for the out-of-memory gate and the reserve (vk_cache_image_create). rt was used now: it stays */
+        if (!vk_cache_image_create(&ii, &c->img, &c->mem, VK_OWN_IMAGE_OTHER, &c->bytes)) {
             free(c);
             return guest ? NULL : rt;
         }
@@ -2434,7 +2418,7 @@ Surf* vk_rt_save(Surf* rt, u32 set) {
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
         VkViewFormats vf;
         vk_view_formats(&ii, &vf, VK_FORMAT_UNDEFINED);
-        if (!vk_cache_image_create(&ii, &c->img, &c->mem, VK_OWN_TARGET, &c->bytes)) { /* the target's, as rt_copy's */
+        if (!vk_cache_image_create(&ii, &c->img, &c->mem, VK_OWN_IMAGE_OTHER, &c->bytes)) { /* as rt_copy's */
             free(c);
             return NULL;
         }

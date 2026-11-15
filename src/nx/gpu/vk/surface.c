@@ -3012,7 +3012,7 @@ void vk_mem_trim(u64 extra, int force) {
         u32 before = vk_present_before((u64)steps[i].ms * 1000000ull, steps[i].presents);
         int level = steps[i].lossy ? VK_RECLAIM_ANY : VK_RECLAIM_LOSSLESS;
         /* A step for headroom takes no entry of more than twice what it wants: it would free far past its mark, and
-           what goes is what the game still uses now and then. In TotK under a 2 GB budget, a step that wanted 161 MB
+           what goes is what the game still uses now and then. In a game under a 2 GB budget, a step that wanted 161 MB
            took its 650 MiB texture array, which the game asked for again 0.4 s later. Making it again took a trim of
            735 MB, and 4,100 textures were loaded again in the 30 s after it, where a run without that eviction loaded
            160 to 270. What an allocation needs (force) takes any entry */
