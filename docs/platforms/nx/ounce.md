@@ -202,11 +202,12 @@ import limits and the ownership model above don't allow.
 A texture's handle may come from memory too. One game's material programs take each texture's from a table of
 materials in a storage buffer: an `LDG.E.64` at a record that the draw's constant buffers pick (in one program
 `c[0][0x520] + ((c[4][0x88] & 0xfffff) + c[5][0x2ec]) * 32 + 0x18`, with a `SEL` on an `ISETP` of the index's top
-bits), then `R2UR` into the uniform register pair of a `TEX`, `TLD`, `TLD4` or `TXQ` whose handle is in a uniform
-register (0xf60, 0xf66, 0xf63, 0xf6f: the texture's word, then the sampler's index, the word `>> 20`), or into a
-`TEX.B`'s handle register. The translator refused these programs: about 320 draws a frame of the first 3D scene, which
-was then a white screen. It now keeps the instructions that make each such handle in `ShaderInfo.memh`, where every
-value they read is the draw's (constant buffer words, immediates, and words loaded from addresses made of them), and
+bits), then `R2UR` into the uniform register pair of a `TEX`, `TLD`, `TLD4`, `TXD` or `TXQ` whose handle is in a
+uniform register (0xf60, 0xf66, 0xf63, 0xf6c, 0xf6f: the texture's word, then the sampler's index, the word `>> 20`),
+or into a `TEX.B`'s handle register. The translator refused these programs: about 320 draws a frame of the first 3D
+scene, which was then a white screen. It now keeps the instructions that make each such handle in `ShaderInfo.memh`,
+where every value they read is the draw's (constant buffer words, immediates, and words loaded from addresses made
+of them), and
 the slot names the value that is the handle (`SNX_TEX_MEMORY`, `SH_PROBE` in `shader.h`): a register as one of those
 instructions leaves it. Each value one of them reads has one unguarded writer before it on every path, and no other
 kept instruction between the two writes it, so the list run in program order gives what the program computes. The
