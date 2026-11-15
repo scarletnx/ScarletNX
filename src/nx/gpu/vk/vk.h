@@ -87,7 +87,7 @@ typedef struct {
        and features enabled */
     u32 video_family;
     VkVideoCodecOperationFlagsKHR video_codecs;
-    const char* dev_ext[70]; /* create_device enables 70 at most, were every one it can enable there */
+    const char* dev_ext[71]; /* create_device enables 71 at most, were every one it can enable there */
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained (to 1.2 on a 1.2 device) */
     VkPhysicalDeviceVulkan11Features feat11;
@@ -198,6 +198,9 @@ typedef struct {
        pipeline flag, and ordered within the pass by a barrier there (dynamicRenderingLocalRead) or else by beginning
        the pass again */
     int has_feedback, has_feedback_dynamic, has_local_read;
+    /* VK_KHR_unified_image_layouts: GENERAL serves each use as well as its own layout, so the renderer keeps its images
+       in GENERAL (VK_LAYOUT), and a read after a read of another kind takes no layout change */
+    int has_unified_layouts;
     int feedback_mode; /* VK_FEEDBACK_*: how a draw reads a color target it writes, at its own pixel (device.c) */
     /* VK_EXT_conditional_rendering: a render enable comparing a samples-passed count not known yet with zero
        predicates its draws on the GPU (gpu/vk/query.c) instead of waiting for the count */
@@ -266,6 +269,11 @@ typedef struct {
 enum { VK_MEM_SMALL_BAR, VK_MEM_REBAR, VK_MEM_UMA };
 enum { VK_MEM_PATH_COPY, VK_MEM_PATH_UMA };
 extern VkState g_vk;
+/* The layout of an image for a use, VK_IMAGE_LAYOUT_<name>: GENERAL with unified image layouts. Each layout the
+   renderer names for its own images goes through this, so an image's barriers, attachments and descriptors agree.
+   Images that other code writes descriptors or barriers for keep their own layouts: FFmpeg's decoded frames (nvdec.c)
+   and FSR 2's inputs (upscale.c). Feedback loops keep ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT, and present PRESENT_SRC */
+#define VK_LAYOUT(name) (g_vk.has_unified_layouts ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_##name)
 
 /* the swapchain's display clock (sc_clock): none; present ids and waits; their second versions, which a swapchain made
    for VK_EXT_present_timing takes; VK_GOOGLE_display_timing's past presentation timings */

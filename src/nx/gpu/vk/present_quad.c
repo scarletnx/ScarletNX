@@ -148,9 +148,9 @@ int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw
     } else
         from = view(source->img, source->f.vk, VK_IMAGE_USAGE_SAMPLED_BIT);
     if (!from) return 0;
-    vk_surf_use(cb, source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+    vk_surf_use(cb, source, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    VkDescriptorImageInfo image = {g_present_quad.sampler[!!linear], from, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo image = {g_present_quad.sampler[!!linear], from, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL)};
     VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0,
                                    .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                    .pImageInfo = &image};
@@ -199,11 +199,11 @@ int vk_present_quad(Surf* source, VkImage destination, VkFormat format, VkExtent
         return 0;
     }
     vk_barrier(cb, destination, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-               VK_ACCESS_2_MEMORY_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+               VK_ACCESS_2_MEMORY_WRITE_BIT, VK_LAYOUT(TRANSFER_DST_OPTIMAL),
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
-               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL));
     VkRenderingAttachmentInfo attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = to,
-                                            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                            .imageLayout = VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL),
                                             .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkRenderingInfo rendering = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, extent},
                                   .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &attachment};
@@ -212,9 +212,9 @@ int vk_present_quad(Surf* source, VkImage destination, VkFormat format, VkExtent
     rec_CmdEndRendering(cb);
     vk_render_forget_state();
     vk_barrier(cb, destination, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL),
                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+               VK_LAYOUT(TRANSFER_DST_OPTIMAL));
     vk_defer_image(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, to);
     return 1;
 }
