@@ -90,6 +90,9 @@ typedef struct {
     PMutex input_lock;
     /* hid's own, under lock */
     PMutex lock;
+    /* each player's motors' strongest amplitudes since the frontend last read them (hid_vibrate), low | high << 16:
+       a pulse the game starts and ends between two reads still plays, for one */
+    u32 rumble_peak[HID_PADS][2];
     /* atomic: the input ticks done, and the LIFO states they wrote, which the profiler's rates read */
     u64 updates, states;
 } HostHid;

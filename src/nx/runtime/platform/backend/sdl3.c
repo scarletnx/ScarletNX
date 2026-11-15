@@ -1774,11 +1774,20 @@ void video_poll(void) {
         pm_lock(&g_host.hid.lock);
         for (int i = 0; i < SNX_GAMEPADS; i++)
             for (int m = 0; m < 2; m++) {
-                rumble[i][m] =
-                    __atomic_load_n(&(i ? &g_hle.hid.pad_extra[i - 1] : &g_hle.hid.pad1)->rumble[m], __ATOMIC_RELAXED);
+                u32 now = __atomic_load_n(&(i ? &g_hle.hid.pad_extra[i - 1] : &g_hle.hid.pad1)->rumble[m],
+                                          __ATOMIC_RELAXED);
+                /* with the strongest the game asked since the last poll, so a short pulse is not lost between two */
+                u32 peak = i < HID_PADS ? g_host.hid.rumble_peak[i][m] : 0;
+                if (i < HID_PADS) g_host.hid.rumble_peak[i][m] = 0;
+                rumble[i][m] = ((now & 0xffff) > (peak & 0xffff) ? now & 0xffff : peak & 0xffff) |
+                               ((now >> 16) > (peak >> 16) ? now >> 16 : peak >> 16) << 16;
                 hz[i][2 * m] = g_hle.hid.vibration[i][m].freq_low;
                 hz[i][2 * m + 1] = g_hle.hid.vibration[i][m].freq_high;
             }
+        pm_unlock(&g_host.hid.lock);
+    } else { /* paused: what the game asked before comes to nothing after it */
+        pm_lock(&g_host.hid.lock);
+        memset(g_host.hid.rumble_peak, 0, sizeof g_host.hid.rumble_peak);
         pm_unlock(&g_host.hid.lock);
     }
     pm_lock(&g_host.hid.input_lock);
