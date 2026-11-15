@@ -978,6 +978,10 @@ static u32 process_info(u32 id, u64* out) {
         case 31:
         case 32: *out = 0; R_SUCCEED();
         case 33: *out = 0x1000; R_SUCCEED(); /* ProcessPageSize: guest pages, independent of host pages */
+        case 36: *out = AS_END - AS_BASE; R_SUCCEED(); /* AddressSpaceSize: the process's whole address space */
+        /* No shadow stack: the NPDM does not enable one, so the region is empty, at 0 with size 0 */
+        case 37:
+        case 38: *out = 0; R_SUCCEED();
         default: R_THROW(SNX_RC_SVC_INVALID_ENUM_VALUE);
     }
 }
@@ -997,7 +1001,10 @@ u32 svc_get_info(u32 id0, u32 h, u64 id1, u64* out) {
         case 30:
         case 31:
         case 32:
-        case 33: {
+        case 33:
+        case 36:
+        case 37:
+        case 38: {
             KObj* p;
             R_UNLESS(!id1, SNX_RC_SVC_INVALID_ENUM_VALUE);
             if (h != H_CUR_PROC) {
@@ -1034,6 +1041,11 @@ u32 svc_get_info(u32 id0, u32 h, u64 id1, u64* out) {
             *out = guest_ticks();
             R_SUCCEED();
         }
+        case 26: /* IsSvcPermitted: SynchronizePreemptionState (0x36) is the one SVC the call asks about */
+            R_UNLESS(!h, SNX_RC_SVC_INVALID_HANDLE);
+            R_UNLESS(id1 == 0x36, SNX_RC_SVC_INVALID_COMBINATION);
+            *out = 1;
+            R_SUCCEED();
         default:
             WARN_LIMIT(16, "svcGetInfo %x (sub-id %llx): unknown, InvalidEnumValue\n", id0, (unsigned long long)id1);
             R_THROW(SNX_RC_SVC_INVALID_ENUM_VALUE);
