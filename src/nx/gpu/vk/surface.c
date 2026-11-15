@@ -1593,6 +1593,7 @@ static int publish_bands(Surf* s, u64 size, u32 mem_wgen, u64 gw0) {
     return 1;
 }
 int vk_surf_publish(Surf* s) {
+    SNX_ZONE(z_publish, "surface publish");
     u64 size = flush_bytes(s);
     u32 mem_wgen = s ? s->mem_wgen : 0;
     VkOwnRes* r;
