@@ -23,6 +23,8 @@
 
 /* the methods, as the mic_noise_reduction setting numbers them */
 enum { SNX_DENOISE_OFF, SNX_DENOISE_NEURAL, SNX_DENOISE_SPECTRAL };
+/* the one rate the neural method takes, in blocks of a hundredth of it */
+#define SNX_DENOISE_NEURAL_RATE 48000
 
 typedef struct SnxDenoise SnxDenoise;
 /* a reducer for blocks of block samples at rate Hz by method. The neural one falls back to the spectral one at another

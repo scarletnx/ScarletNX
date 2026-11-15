@@ -16,8 +16,7 @@
 #include <rnnoise.h>
 #include <stdlib.h>
 
-#define RNNOISE_RATE  48000
-#define RNNOISE_FRAME 480
+#define RNNOISE_FRAME (SNX_DENOISE_NEURAL_RATE / 100)
 
 /* speex_preprocess_ctl's requests, as the library's header numbers them */
 enum {
@@ -78,7 +77,7 @@ SnxDenoise* snx_denoise_new(uint32_t rate, uint32_t block, int method) {
     SnxDenoise* d = calloc(1, sizeof *d);
     if (!d) return NULL;
     d->block = block;
-    if (method == SNX_DENOISE_NEURAL && rate == RNNOISE_RATE && block == RNNOISE_FRAME &&
+    if (method == SNX_DENOISE_NEURAL && rate == SNX_DENOISE_NEURAL_RATE && block == RNNOISE_FRAME &&
         (d->state = rnnoise_create(NULL)) != NULL) {
         d->method = SNX_DENOISE_NEURAL;
         return d;

@@ -314,6 +314,28 @@ static void mic_free(Mic* m) {
     free(m->ready);
     free(m);
 }
+/* the noise reduction a recording runs, and when it is not the one mic_noise_reduction asks for, that value and why:
+   the neural one at another rate than it takes, or the spectral one without the system's library */
+static void mic_reduction(const Mic* m, char* out, size_t size) {
+    static const char* const method[] = {"off", "neural", "spectral"};
+    int runs = snx_denoise_method(m->denoise), asked = (unsigned)m->asked < 3 ? m->asked : SNX_DENOISE_OFF;
+    if (runs == asked) {
+        snprintf(out, size, "%s", method[runs]);
+        return;
+    }
+    if (asked == SNX_DENOISE_NEURAL && m->rate != SNX_DENOISE_NEURAL_RATE)
+        snprintf(
+            out, size,
+            "%s, not neural as mic_noise_reduction=%d asks: neural takes %u Hz and the stream records at %u Hz%s%s",
+            method[runs], m->asked, SNX_DENOISE_NEURAL_RATE, m->rate,
+            runs == SNX_DENOISE_OFF ? ", and spectral needs " : "", runs == SNX_DENOISE_OFF ? SNX_DENOISE_LIBRARY : "");
+    else if (asked == SNX_DENOISE_SPECTRAL)
+        snprintf(out, size, "%s, not spectral as mic_noise_reduction=%d asks: spectral needs %s", method[runs],
+                 m->asked, SNX_DENOISE_LIBRARY);
+    else
+        snprintf(out, size, "%s, not %s as mic_noise_reduction=%d asks: its reducer could not be made", method[runs],
+                 method[asked], m->asked);
+}
 /* a recording at rate Hz, from the device the microphone setting names, with its reducer: a recording with no device
    (the setting is off, or the host has none) gives silence. Called outside the lock: a device takes a while to open */
 static Mic* mic_open(u32 rate) {
@@ -338,12 +360,11 @@ static Mic* mic_open(u32 rate) {
         LOG_LIMIT(8, "audio: an input stream started with the microphone off: the game hears silence\n");
     else if (!m->dev)
         LOG_LIMIT(8, "audio: an input stream started with no host microphone: the game hears silence\n");
-    else
-        LOG_LIMIT(8, "audio: an input stream records the host's microphone at %u Hz, noise reduction %s\n", rate,
-                  snx_denoise_method(m->denoise) == SNX_DENOISE_NEURAL     ? "neural"
-                  : snx_denoise_method(m->denoise) == SNX_DENOISE_SPECTRAL ? "spectral"
-                  : m->asked == SNX_DENOISE_OFF                            ? "off (the setting)"
-                                                                           : "not there");
+    else {
+        char said[192];
+        mic_reduction(m, said, sizeof said);
+        LOG_LIMIT(8, "audio: an input stream records the host's microphone at %u Hz, noise reduction %s\n", rate, said);
+    }
     return m;
 }
 /* n samples to the ready ring, its oldest dropped when it is full */
@@ -363,9 +384,12 @@ static void mic_push(Mic* m, const i16* x, u32 n) {
 static void mic_block(Mic* m) {
     int want = __atomic_load_n(&g_settings.microphone_noise_reduction, __ATOMIC_RELAXED);
     if (want != m->asked) {
+        char said[192];
         snx_denoise_free(m->denoise);
         m->denoise = snx_denoise_new(m->rate, m->block, want);
         m->asked = want;
+        mic_reduction(m, said, sizeof said);
+        LOG_LIMIT(8, "audio: the microphone's noise reduction is now %s\n", said);
     }
     snx_denoise_run(m->denoise, m->pending);
     mic_push(m, m->pending, m->block);
