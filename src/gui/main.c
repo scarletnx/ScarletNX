@@ -12169,7 +12169,11 @@ static void bt_device_row(App* app, int r, const GuiBtDevice* d) {
     size_t n, room = sizeof app->bt_about[r];
     snx_ble_address_text(d->address, address);
     /* its last two bytes, which tell the controllers nearby apart */
-    snprintf(app->bt_label[r], sizeof app->bt_label[r], snx_tr("Joy-Con 2 (%s) %s"), d->right ? "R" : "L", address + 12);
+    if (d->pro)
+        snprintf(app->bt_label[r], sizeof app->bt_label[r], snx_tr("Pro Controller 2 %s"), address + 12);
+    else
+        snprintf(app->bt_label[r], sizeof app->bt_label[r], snx_tr("Joy-Con 2 (%s) %s"), d->right ? "R" : "L",
+                 address + 12);
     snprintf(value, sizeof app->bt_form.value[r], "%s", snx_tr(d->known ? known[state] : unknown[state]));
     if (d->battery_mv) {
         n = strlen(value);
@@ -12330,25 +12334,36 @@ static void bt_forget_ask(App* app, int i) {
     const GuiBtDevice* d = &app->bt.dev[i];
     memcpy(app->bt_forget, d->address, 6);
     snx_ble_address_text(d->address, address);
-    snprintf(app->ask_line, sizeof app->ask_line,
-             snx_tr("Forget Joy-Con 2 (%s) %s? Games no longer connect it; it stays paired with its console, and its "
-                    "sync button syncs it here again."),
-             d->right ? "R" : "L", address);
+    if (d->pro)
+        snprintf(app->ask_line, sizeof app->ask_line,
+                 snx_tr("Forget Pro Controller 2 %s? Games no longer connect it; it stays paired with its console, and "
+                        "its sync button syncs it here again."),
+                 address);
+    else
+        snprintf(app->ask_line, sizeof app->ask_line,
+                 snx_tr("Forget Joy-Con 2 (%s) %s? Games no longer connect it; it stays paired with its console, and "
+                        "its sync button syncs it here again."),
+                 d->right ? "R" : "L", address);
     gui_confirm_open(&app->confirm, GUI_ASK_FORGET, false);
 }
 /* the forgetting taken: its lines out of joycon2.txt, the other lines kept */
 static void bt_forget(App* app) {
     char why[300], address[18];
-    int i, right;
+    int i, right, pro;
     for (i = 0; i < app->bt.count && memcmp(app->bt.dev[i].address, app->bt_forget, 6); ++i) {}
     snx_ble_address_text(app->bt_forget, address);
     right = i < app->bt.count && app->bt.dev[i].right;
+    pro = i < app->bt.count && app->bt.dev[i].pro;
     if (i == app->bt.count || !app->bt.dev[i].known)
         snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Not known: nothing to forget"));
     else if (gui_bt_forget(&app->bt, i, app->bt_path, why, sizeof why)) {
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not forgotten: %s"), why);
         say_failure(app, app->editor.note);
-    } else
+    } else if (pro)
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 snx_tr("Forgotten: Pro Controller 2 %s. Games no longer connect it; it stays paired with its console"),
+                 address);
+    else
         snprintf(app->editor.note, sizeof app->editor.note,
                  snx_tr("Forgotten: Joy-Con 2 (%s) %s. Games no longer connect it; it stays paired with its console"),
                  right ? "R" : "L", address);
@@ -12379,10 +12394,16 @@ static void bt_sync(App* app, int i) {
         say_failure(app, app->editor.note);
         return;
     }
-    snprintf(app->editor.note, sizeof app->editor.note,
-             snx_tr("Synced: Joy-Con 2 (%s) %s. A game with Joy-Con 2 on connects it as it starts, without pairing "
-                    "it"),
-             d.right ? "R" : "L", address);
+    if (d.pro)
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 snx_tr("Synced: Pro Controller 2 %s. A game with Joy-Con 2 on connects it as it starts, without "
+                        "pairing it"),
+                 address);
+    else
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 snx_tr("Synced: Joy-Con 2 (%s) %s. A game with Joy-Con 2 on connects it as it starts, without pairing "
+                        "it"),
+                 d.right ? "R" : "L", address);
 }
 /* Del: a known controller forgotten, a setting back to its default */
 static void bt_delete(App* app, int r) {

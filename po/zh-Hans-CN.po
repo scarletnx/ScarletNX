@@ -3897,6 +3897,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Pro Controller 2 %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Joy-Con 2 (%s) %s"
 msgstr ""
 
@@ -4003,6 +4008,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Forget Pro Controller 2 %s? Games no longer connect it; it stays paired with its console, and its sync button syncs it here again."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Forget Joy-Con 2 (%s) %s? Games no longer connect it; it stays paired with its console, and its sync button syncs it here again."
 msgstr ""
 
@@ -4013,6 +4023,11 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Not forgotten: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Forgotten: Pro Controller 2 %s. Games no longer connect it; it stays paired with its console"
 msgstr ""
 
 #: src/gui/main.c
@@ -4031,6 +4046,11 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "no config folder"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Synced: Pro Controller 2 %s. A game with Joy-Con 2 on connects it as it starts, without pairing it"
 msgstr ""
 
 #: src/gui/main.c

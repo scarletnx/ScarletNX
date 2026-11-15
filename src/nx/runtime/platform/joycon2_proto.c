@@ -177,7 +177,7 @@ void jc2_motion(const Jc2Report* r, const float gyro_offset[3], float accel[3], 
 int jc2_advert(const u8* p, size_t n, Jc2Advert* a) {
     if (n < 16 || p[0] != 0x01 || p[1] != 0x00 || p[2] != 0x03 || snx_ld_le16(p + 3) != JC2_VENDOR) return 0;
     a->product = snx_ld_le16(p + 5);
-    if (a->product != JC2_PID_LEFT && a->product != JC2_PID_RIGHT) return 0;
+    if (a->product != JC2_PID_LEFT && a->product != JC2_PID_RIGHT && a->product != JC2_PID_PRO) return 0;
     a->wake = p[9] >> 7 & 1;
     memcpy(a->host, p + 10, 6);
     a->syncing = 1;
@@ -210,13 +210,23 @@ void jc2_rumble_limit(Jc2Vibration* v) {
     v->amp_low = lo < JC2_RUMBLE_CAP ? lo : JC2_RUMBLE_CAP;
     v->amp_high = hi < JC2_RUMBLE_CAP ? hi : JC2_RUMBLE_CAP;
 }
-void jc2_rumble_packet(u8 out[JC2_RUMBLE_PACKET], const Jc2Vibration* v, unsigned counter) {
+/* one actuator's 16-byte block at out: the state byte, then v (limited) in all three samples */
+static void rumble_block(u8* out, const Jc2Vibration* v, unsigned counter) {
     Jc2Vibration l = *v;
     u8 sample[5];
     jc2_rumble_limit(&l);
     jc2_rumble_pack(sample, jc2_rumble_freq(l.freq_low), jc2_rumble_amp(l.amp_low), jc2_rumble_freq(l.freq_high),
                     jc2_rumble_amp(l.amp_high));
+    out[0] = (u8)(0x40u | 3u << 4 | (counter & 0x0fu)); /* three samples */
+    for (int i = 0; i < 3; i++) memcpy(out + 1 + 5 * i, sample, 5);
+}
+void jc2_rumble_packet(u8 out[JC2_RUMBLE_PACKET], const Jc2Vibration* v, unsigned counter) {
     memset(out, 0, JC2_RUMBLE_PACKET);
-    out[1] = (u8)(0x40u | 3u << 4 | (counter & 0x0fu)); /* three samples */
-    for (int i = 0; i < 3; i++) memcpy(out + 2 + 5 * i, sample, 5);
+    rumble_block(out + 1, v, counter);
+}
+void jc2_rumble_packet_pro(u8 out[JC2_RUMBLE_PACKET], const Jc2Vibration* left, const Jc2Vibration* right,
+                           unsigned counter) {
+    memset(out, 0, JC2_RUMBLE_PACKET);
+    rumble_block(out + 1, left, counter);
+    rumble_block(out + 17, right, counter);
 }

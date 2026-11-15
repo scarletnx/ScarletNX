@@ -271,6 +271,13 @@ typedef struct {
     u32 kb_answered;
     int kb_cancelled;
     char kb_text[OVERLAY_KB_TEXT];
+    /* the controller applet's dialog, the same way: the ticket of the dialog shown last (0 none), whether a thread
+       waits for it on ctrl_cv, and the ticket answered with whether it was cancelled */
+    PCond ctrl_cv;
+    u32 ctrl_ticket;
+    int ctrl_open;
+    u32 ctrl_answered;
+    int ctrl_cancelled;
 } HostAm;
 
 /* ---- audio.c */

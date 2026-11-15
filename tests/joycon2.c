@@ -282,7 +282,7 @@ static void test_calibration(void) {
         u8 ad[24] = {0x01, 0x00, 0x03, 0x7e, 0x05, 0x69, 0x20, 0x00, 0x01, 0x00, 0, 0, 0, 0, 0, 0, 0x0f};
         static const u8 host[6] = {0x5f, 0x11, 0x85, 0xeb, 0xf1, 0x48};
         Jc2Advert a;
-        assert(!jc2_advert(ad, sizeof ad, &a)); /* not a Joy-Con 2 */
+        assert(jc2_advert(ad, sizeof ad, &a) && a.product == JC2_PID_PRO && a.syncing && !a.wake); /* taken too */
         ad[5] = 0x66;
         assert(jc2_advert(ad, sizeof ad, &a) && a.product == JC2_PID_RIGHT && a.syncing && !a.wake);
         memcpy(ad + 10, host, 6);
@@ -318,7 +318,9 @@ static void test_advert_agrees(void) {
                 theirs = jc2_advert(b.data, n, &a);
                 ours = snx_ble_joycon2(&b, &j);
                 assert(ours == theirs);
-                if (ours) assert(j.right == (a.product == JC2_PID_RIGHT) && j.syncing == a.syncing);
+                if (ours)
+                    assert(j.right == (a.product == JC2_PID_RIGHT) && j.pro == (a.product == JC2_PID_PRO) &&
+                           j.syncing == a.syncing && j.wake == a.wake);
                 checked += ours;
             }
     assert(checked > 0);
@@ -397,6 +399,11 @@ static void answer(Jc2Session* s, u64 t, u8 status) {
             put12(bytes + 0x2e, 1000, 1000);
         }
         if (at == JC2_FLASH_GYRO) memset(bytes, 0, sizeof bytes);
+        if (at == JC2_FLASH_STICK2) { /* a Pro Controller 2's right stick */
+            put12(bytes + 0x28, 1900, 2200);
+            put12(bytes + 0x2b, 1000, 1000);
+            put12(bytes + 0x2e, 1000, 1000);
+        }
         n = flash_reply(r, at, n8, bytes);
     } else if (q->data[0] == 0x10) {
         static const u8 version[12] = {0x01, 0x00, 0x0e, 0x01, 0x0c, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff};
@@ -547,6 +554,61 @@ static void test_session(void) {
         assert(g_test.n == sends + 4);
     }
 }
+/* a Pro Controller 2 (its advert's product 2069): its own setup (the console's feature set 0x27, the second stick's
+   calibration read, no mouse sensor start and no Joy-Con actuator parameters), both sticks from the common report,
+   each by its calibration, and two actuator blocks in one vibration write, the right one's after the left one's */
+static void test_session_pro(void) {
+    Jc2Session s;
+    Jc2Advert a;
+    u64 t = 5 * S;
+    int sends;
+    static const u8 advert[16] = {0x01, 0x00, 0x03, 0x7e, 0x05, 0x69, 0x20, 0x00, 0x01, 0x80};
+    assert(jc2_advert(advert, sizeof advert, &a) && a.product == JC2_PID_PRO && a.syncing && a.wake);
+    g_test.n = 0;
+    jc2_session_start(&s, JC2_SIDE_PRO);
+    sends = g_test.n;
+    for (int i = 0; i < 60 && s.state == JC2_SETUP; i++) {
+        t += 20 * MS;
+        jc2_session_tick(&s, &T, t);
+        if (g_test.n > sends && last()->handle == JC2_H_COMMAND) answer(&s, t + MS, 1);
+        sends = g_test.n;
+    }
+    assert(s.state == JC2_READY && s.side == JC2_SIDE_PRO); /* a version saying a right Joy-Con keeps it a Pro */
+    assert(s.stick.center[0] == 2000 && s.stick2.center[0] == 1900 && s.stick2.center[1] == 2200);
+    {
+        int features = 0, stick2 = 0;
+        for (int i = 0; i < g_test.n; i++) {
+            const Sent* q = &g_test.sent[i];
+            if (q->handle != JC2_H_COMMAND) continue;
+            assert(q->data[0] != 0x13 && !(q->data[0] == 0x0a && q->data[3] == 0x08)); /* no mouse, no Joy-Con params */
+            if (q->data[0] == 0x0c) features += q->data[8] == JC2_F_PRO;
+            if (q->data[0] == 0x02 && snx_ld_le32(q->data + 12) == JC2_FLASH_STICK2) stick2++;
+        }
+        assert(features == 2 && stick2 == 1);
+    }
+    {
+        u8 r[JC2_REPORT_SIZE];
+        static const u8 a_and_zl[4] = {0x08, 0, 0x80, 0};
+        report(r, 1, a_and_zl, 3000, 1100, 1900, 3200, 0, 0, 0, 0);
+        jc2_session_notify(&s, &T, JC2_H_COMMON, r, sizeof r, t);
+        assert(s.pad.buttons == (1ull | 1ull << 8) && s.pad.stick[0] == 32767 && s.pad.stick[1] == -32767);
+        assert(s.pad.rstick[0] == 0 && s.pad.rstick[1] == 32767 && !s.pad.on_surface);
+    }
+    {
+        Jc2Vibration left = {0.0f, 160.0f, 0.0f, 320.0f}, right = {0.5f, 160.0f, 0.0f, 320.0f};
+        u8 p[JC2_RUMBLE_PACKET];
+        jc2_session_rumble(&s, &left);
+        jc2_session_rumble2(&s, &right);
+        sends = g_test.n;
+        jc2_session_tick(&s, &T, t + S);
+        assert(g_test.n == sends + 1 && last()->handle == JC2_H_VIBRATION && last()->n == JC2_RUMBLE_PACKET);
+        jc2_rumble_packet_pro(p, &left, &right, 0);
+        assert(!memcmp(last()->data, p, sizeof p) && (p[1] & 0xf0) == 0x70 && (p[17] & 0xf0) == 0x70);
+        /* the left one's first sample's low amplitude 0, the right one's not (bits 10 to 19 of each sample) */
+        assert(!(p[3] >> 2) && !(p[4] & 0x0f) && ((p[19] >> 2) | (p[20] & 0x0f)));
+        for (int i = 33; i < (int)JC2_RUMBLE_PACKET; i++) assert(!p[i]);
+    }
+}
 /* a version that never comes ends the setup after 5 sends; a read or a refusal of an optional step is skipped */
 static void test_session_failures(void) {
     Jc2Session s;
@@ -662,6 +724,7 @@ int main(void) {
     test_rumble();
     test_session();
     test_session_failures();
+    test_session_pro();
     test_att();
     printf("joycon2: ok\n");
     return 0;

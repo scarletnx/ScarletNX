@@ -1650,7 +1650,8 @@ int main(void) {
     assert(tap(1, 3) == OVERLAY_NONE);
     draw();
     assert(text_at(1, 0, "SCARLETNX  /  CONTROLLERS") && text_at(1, 1, "None connected."));
-    assert(qv(&list.q[0]).h == 11 * 32 && text_at(1, 3, "\xFE Player") && shows("< All >"));
+    assert(qv(&list.q[0]).h == 12 * 32 && text_at(1, 3, "\xFE Player") && shows("< All >"));
+    assert(text_at(1, 9, "\xFE Assign players") && tap(6, 3) == OVERLAY_CONTROLLERS); /* the controller applet's dialog */
     assert(text_at(1, 4, "\xFE Swap A/B") && text_at(C - 4, 4, "Off"));
     tap(1, 3);
     assert(g_settings.swap_a_b && pad_stored == &g_settings.swap_a_b);
@@ -1779,7 +1780,7 @@ int main(void) {
     draw();
     assert(shows("< All >"));
     /* Back, on its item or the key, comes up to the controllers' item */
-    assert(tap(6, 3) == OVERLAY_NONE);
+    assert(tap(7, 3) == OVERLAY_NONE);
     draw();
     assert(text_at(1, 0, "SCARLETNX  /  MENU") && overlay_select() == OVERLAY_NONE);
     draw();

@@ -21,6 +21,7 @@
 #define JC2_VENDOR    0x057eu
 #define JC2_PID_RIGHT 0x2066u
 #define JC2_PID_LEFT  0x2067u
+#define JC2_PID_PRO   0x2069u /* the Pro Controller 2 */
 
 /* the main service's attribute handles, the same on every Joy-Con 2 (the console doesn't discover them) */
 #define JC2_H_COMMON          0x000au /* the common input report, notify */
@@ -53,6 +54,7 @@ int jc2_handle_writable(u16 handle);
 #define JC2_F_MOUSE        0x10u
 #define JC2_F_RUMBLE       0x20u
 #define JC2_F_JOYCON       0x37u /* the console's set for a Joy-Con 2 */
+#define JC2_F_PRO          0x27u /* and for the Pro Controller 2: buttons, sticks, IMU, rumble (public notes saw 0x2f) */
 #define JC2_CMD_HEADER     8u
 #define JC2_CMD_PAYLOAD    32u /* the largest the host sends */
 #define JC2_FLASH_READ_MAX 0x40u
@@ -80,8 +82,9 @@ const u8* jc2_reply_flash(const Jc2Reply* r, u32 address, u8 n);
 #define JC2_FLASH_INFO       0x13000u /* 0x40: the serial, ids and colors */
 #define JC2_FLASH_GYRO       0x13040u /* 0x10: the gyroscope's zero offsets */
 #define JC2_FLASH_STICK      0x13080u /* 0x40: the stick's factory block, its calibration at +0x28 */
+#define JC2_FLASH_STICK2     0x130c0u /* 0x40: the second stick's (a two-stick controller's right one), the same way */
 #define JC2_FLASH_ACCEL      0x13100u /* 0x18: the accelerometer's */
-#define JC2_FLASH_USER_STICK 0x1fc040u /* 0x40: the user's stick calibration, behind B2 A1 */
+#define JC2_FLASH_USER_STICK 0x1fc040u /* 0x40: the user's stick calibration, behind B2 A1, the second stick's at +0x20 */
 typedef struct {
     char serial[17];
     u16 vendor, product;
@@ -134,7 +137,7 @@ typedef struct {
     int syncing; /* its host is all zero */
     int wake;
 } Jc2Advert;
-int jc2_advert(const u8* p, size_t n, Jc2Advert* a); /* 0 when it isn't a Joy-Con 2's */
+int jc2_advert(const u8* p, size_t n, Jc2Advert* a); /* 0 when it isn't a Joy-Con 2's or a Pro Controller 2's */
 
 /* ---- HD rumble: one actuator's 16-byte block, a state byte then three 5-byte samples. A sample is the low band's
    frequency and amplitude, then the high band's, 10 bits each (little-endian) */
@@ -154,4 +157,8 @@ void jc2_rumble_pack(u8 out[5], u16 freq_low, u16 amp_low, u16 freq_high, u16 am
 void jc2_rumble_limit(Jc2Vibration* v);
 /* the packet for handle JC2_H_VIBRATION: v (limited) in all three samples, counter's low 4 bits in the state byte */
 void jc2_rumble_packet(u8 out[JC2_RUMBLE_PACKET], const Jc2Vibration* v, unsigned counter);
+/* the same for a Pro Controller 2, whose two actuators each have a block: the left one's, then the right one's. Same
+   handle (its characteristics share the Joy-Con 2's handle numbers), the rest of the 42 bytes zero */
+void jc2_rumble_packet_pro(u8 out[JC2_RUMBLE_PACKET], const Jc2Vibration* left, const Jc2Vibration* right,
+                           unsigned counter);
 #endif

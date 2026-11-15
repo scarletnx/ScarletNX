@@ -15,6 +15,10 @@ typedef struct {
     Jc2Vibration rumble[2]; /* the game's, for the left (or only) Joy-Con and the right one */
     char who[40];           /* who it is for connect.h's players (jc2_pad_who), "" none */
     u8 surface;             /* the sensors on a surface, a bit each in PadMotion's order */
+    /* the reports per second of its right (or only) Joy-Con, counted over a second: from that count at that time */
+    u32 rate_from;
+    u64 rate_ns;
+    int rate;
 } Jc2Gamepad;
 static struct {
     Jc2Gamepad pad[JC2_PADS];
@@ -41,7 +45,11 @@ static const Jc2Button PAIR[] = {
     {2, SDL_GAMEPAD_BUTTON_NORTH},          {6, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER}, {7, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
     {4, SDL_GAMEPAD_BUTTON_LEFT_STICK},     {5, SDL_GAMEPAD_BUTTON_RIGHT_STICK}, {11, SDL_GAMEPAD_BUTTON_BACK},
     {10, SDL_GAMEPAD_BUTTON_START},         {13, SDL_GAMEPAD_BUTTON_DPAD_UP},   {15, SDL_GAMEPAD_BUTTON_DPAD_DOWN},
-    {12, SDL_GAMEPAD_BUTTON_DPAD_LEFT},     {14, SDL_GAMEPAD_BUTTON_DPAD_RIGHT}};
+    {12, SDL_GAMEPAD_BUTTON_DPAD_LEFT},     {14, SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
+    /* each half's SL and SR as SDL's own pair has them (SDL_gamepad.h's paddles), which the controller applet's
+       dialog reads for its gestures */
+    {24, SDL_GAMEPAD_BUTTON_LEFT_PADDLE1},  {25, SDL_GAMEPAD_BUTTON_LEFT_PADDLE2}, {26, SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2},
+    {27, SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1}};
 #define COUNT(a) (sizeof(a) / sizeof *(a))
 
 static u32 buttons_of(u64 npad, const Jc2Button* map, size_t n) {
@@ -72,6 +80,15 @@ void jc2_sdl_map(int kind, const Jc2Pad* left, const Jc2Pad* right, u32* buttons
            0..32767, so a raw 0 read as half pressed and held ZL and ZR down all the time */
         axes[SDL_GAMEPAD_AXIS_LEFT_TRIGGER] = b >> 8 & 1 ? 32767 : -32768; /* ZL */
         axes[SDL_GAMEPAD_AXIS_RIGHT_TRIGGER] = b >> 9 & 1 ? 32767 : -32768; /* ZR */
+    } else if (kind == JC2_PAD_PRO) { /* both sticks of its own, every button where a pair has it */
+        if (!left) return;
+        *buttons = buttons_of(left->buttons, PAIR, COUNT(PAIR));
+        axes[SDL_GAMEPAD_AXIS_LEFTX] = axis(left->stick[0]);
+        axes[SDL_GAMEPAD_AXIS_LEFTY] = down(left->stick[1]);
+        axes[SDL_GAMEPAD_AXIS_RIGHTX] = axis(left->rstick[0]);
+        axes[SDL_GAMEPAD_AXIS_RIGHTY] = down(left->rstick[1]);
+        axes[SDL_GAMEPAD_AXIS_LEFT_TRIGGER] = left->buttons >> 8 & 1 ? 32767 : -32768;  /* ZL */
+        axes[SDL_GAMEPAD_AXIS_RIGHT_TRIGGER] = left->buttons >> 9 & 1 ? 32767 : -32768; /* ZR */
     } else {
         const Jc2Pad* p = kind == JC2_PAD_LEFT ? left : right;
         if (!p) return;
@@ -114,7 +131,8 @@ int jc2_join_next(const Jc2Join* d, int n, int pair, u64 now_ns, int* a, int* b)
         return JC2_JOIN_PAIR;
     }
     for (int i = 0; i < n; i++)
-        if (d[i].ready && !d[i].gamepad && (!pair || d[i].had || now_ns >= d[i].ready_ns + JC2_PAIR_WAIT_NS)) {
+        if (d[i].ready && !d[i].gamepad &&
+            (!pair || d[i].had || d[i].side == JC2_SIDE_PRO || now_ns >= d[i].ready_ns + JC2_PAIR_WAIT_NS)) {
             *a = i;
             return JC2_JOIN_SINGLE;
         }
@@ -141,14 +159,22 @@ int jc2_pad_attach(int kind) {
     SDL_INIT_INTERFACE(&d);
     d.type = SDL_JOYSTICK_TYPE_GAMEPAD;
     d.vendor_id = JC2_VENDOR;
-    d.product_id = kind == JC2_PAD_LEFT ? JC2_PID_LEFT : kind == JC2_PAD_RIGHT ? JC2_PID_RIGHT : 0x2008;
+    /* a pair as SDL's combined Joy-Cons (2008), a Pro Controller 2 as a Pro Controller (2009): the types SDL gives
+       those ids are what gamepad.c reads */
+    d.product_id = kind == JC2_PAD_LEFT    ? JC2_PID_LEFT
+                   : kind == JC2_PAD_RIGHT ? JC2_PID_RIGHT
+                   : kind == JC2_PAD_PRO   ? 0x2009
+                                           : 0x2008;
     d.naxes = SDL_GAMEPAD_AXIS_COUNT;
     d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
     d.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1;
     d.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
     d.nsensors = kind == JC2_PAD_PAIR ? 4 : 2;
     d.sensors = kind == JC2_PAD_PAIR ? two : one;
-    d.name = kind == JC2_PAD_LEFT ? "Joy-Con 2 (L)" : kind == JC2_PAD_RIGHT ? "Joy-Con 2 (R)" : "Joy-Con 2 (L/R)";
+    d.name = kind == JC2_PAD_LEFT    ? "Joy-Con 2 (L)"
+             : kind == JC2_PAD_RIGHT ? "Joy-Con 2 (R)"
+             : kind == JC2_PAD_PRO   ? "Pro Controller 2"
+                                     : "Joy-Con 2 (L/R)";
     d.Rumble = takes;
     d.SetSensorsEnabled = sensors_on;
     SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
@@ -199,12 +225,23 @@ void jc2_pad_feed(int pad, const Jc2Pad* left, const Jc2Pad* right, const i32* m
             send_motion(g->stick, left, SDL_SENSOR_ACCEL_L, SDL_SENSOR_GYRO_L, now);
         if (right && right->reports != g->reports[1])
             send_motion(g->stick, right, SDL_SENSOR_ACCEL_R, SDL_SENSOR_GYRO_R, now);
-    } else {
-        const Jc2Pad* p = g->kind == JC2_PAD_LEFT ? left : right;
+    } else { /* a single, or a Pro Controller 2 (fed as the left) */
+        const Jc2Pad* p = g->kind == JC2_PAD_RIGHT ? right : left;
         if (p && p->reports != g->reports[g->kind == JC2_PAD_RIGHT])
             send_motion(g->stick, p, SDL_SENSOR_ACCEL, SDL_SENSOR_GYRO, now);
     }
     SDL_UnlockJoysticks();
+    {
+        const Jc2Pad* counted = right ? right : left;
+        if (counted && !g->rate_ns) {
+            g->rate_from = counted->reports;
+            g->rate_ns = now;
+        } else if (counted && now - g->rate_ns >= 1000000000ull) {
+            g->rate = (int)((u64)(counted->reports - g->rate_from) * 1000000000ull / (now - g->rate_ns));
+            g->rate_from = counted->reports;
+            g->rate_ns = now;
+        }
+    }
     if (left) g->reports[0] = left->reports;
     if (right) g->reports[1] = right->reports;
     /* a single's one sensor is the first, as PadMotion has a single Joy-Con's */
@@ -256,6 +293,10 @@ void jc2_pad_who(int pad, const char* who) {
 int joycon2_surface(u32 id) {
     Jc2Gamepad* g = pad_of(id);
     return g ? g->surface : -1;
+}
+int joycon2_rate(u32 id) {
+    Jc2Gamepad* g = pad_of(id);
+    return g ? g->rate : 0;
 }
 int joycon2_who(u32 id, char* out, size_t n) {
     Jc2Gamepad* g = pad_of(id);

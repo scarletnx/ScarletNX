@@ -18,6 +18,8 @@ void unattended_start(void);
 u64 unattended_ms(void); /* milliseconds since then */
 /* 1 when seconds or frames limits the run */
 int unattended_active(void);
+/* a script of presses plays (script): nobody answers a dialog, a run with no limit too */
+int unattended_scripted(void);
 /* The buttons the options press now, as HidNpadButton bits, plus bits 40 to 47 for stick directions (see
    input_key_sticks) */
 u64 unattended_buttons(void);

@@ -171,11 +171,11 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   dead zone, background input, Joy-Cons). A player's *Controller* is *Any*, the next to connect, until Enter on it
   and a press on a controller give it that one (ESC leaves it as it was, Del makes it *Any* again); its *Button
   map* is the page above on its own keys, its A and B as its *Swap A/B* says.
-  Controllers' **Bluetooth** page is for the Joy-Con 2 controllers that a game connects over Bluetooth itself (setting
+  Controllers' **Bluetooth** page is for the Joy-Con 2 and Pro Controller 2 that a game connects over Bluetooth itself (setting
   `joycon2`, Linux only: [Settings](settings.md)), without pairing them, so each one stays paired with its console. Its
   rows: **Joy-Con 2** and **Mouse scale**, the page's `joycon2` and `joycon2_mouse_scale` (Enter, Left and Right step
   them, Del puts the default back, kept at once as the group keeps them), **Search**, then a row for each controller
-  known or heard: its side and the last two bytes of its address (`Joy-Con 2 (L) 34:56`; the whole address is in the
+  known or heard: its side and the last two bytes of its address (`Joy-Con 2 (L) 34:56`, `Pro Controller 2 34:56`; the whole address is in the
   row's help, with its signal) and its state: *Waiting to sync*, *Nearby* (paired with a console), *Known*, *Known,
   nearby*. Search listens for 30 seconds (BlueZ on Linux, through libsystemd; nothing on other systems yet), refused
   while a game runs, and stops when the page is left or a game starts; opening the page searches nothing. Hold a
