@@ -4466,6 +4466,83 @@ static int spv_has_builtin(const u32* words, size_t count, u32 builtin) {
         if ((words[i] & 0xffff) == 71 && words[i] >> 16 == 4 && words[i + 2] == 11 && words[i + 3] == builtin) return 1;
     return 0;
 }
+/* AST a[0x2c0] of two words, ClipDistance0 = 0.5 and ClipDistance1 = 0.25. A vertex program before the rasterizer
+   writes only the planes that SetUserClipEnable enables (ShaderInfo.clip_enable's low bits) into an 8-plane
+   ClipDistance output that it names in uses_clip_mask, and the other planes are 0, as the program starts them: the
+   evaluator starts the output at 0xdeadbeef. With no plane enabled it has no such output. A program that a later
+   stage follows (SNX_SH_NOT_LAST) writes every plane it stores. A passthrough geometry program's plane 0 (0.75) is on
+   each vertex it emits, though each EmitVertex leaves the outputs undefined. Before, the translator refused both */
+static void test_clip_distances(const char* dir) {
+    u8 code[16 * 6] = {0};
+    put(code, 0, mov_imm(1, f2u(0.5f)));
+    put(code, 1, mov_imm(2, f2u(0.25f)));
+    put(code, 2, ast(0x70, 1, 4));
+    put(code, 3, ast(0x2c0, 1, 2));
+    put(code, 4, exit_insn());
+    put(code, 5, bra(5, 5, 7, 0));
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    static const struct {
+        u32 clip_enable;
+        int mask;
+    } cases[] = {{1, 1}, {2, 2}, {4, 0}, {0, 0}, {SNX_SH_NOT_LAST, 3}};
+    static SpvEvalEnv env;
+    for (u32 i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        ShaderInfo si = {0};
+        si.clip_enable = cases[i].clip_enable;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, sizeof code, ST_VS, vsph, &si, &count);
+        int has = cases[i].mask != 0;
+        int ok = spv && si.uses_clip_mask == cases[i].mask && spv_has_builtin(spv, count, 3 /* ClipDistance */) == has;
+        memset(&env, 0, sizeof env);
+        const char* why = spv ? spv_eval(spv, count, &env) : "not translated";
+        ok &= !why;
+        for (u32 plane = 0; plane < 8 && has; plane++) {
+            u32 want = plane == 0 && (cases[i].mask & 1)   ? f2u(0.5f)
+                       : plane == 1 && (cases[i].mask & 2) ? f2u(0.25f)
+                                                           : 0;
+            ok &= env.clip[plane] == want;
+        }
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "clip distances, clip_enable %#x: %s, mask %d, planes %08x %08x %08x\n",
+                    cases[i].clip_enable, why ? why : si.first_unsupported, si.uses_clip_mask, env.clip[0], env.clip[1],
+                    env.clip[2]);
+        if (spv && i == 0) CHECK(keep_module(dir, "vs_clip_distance", spv, count));
+        free(spv);
+    }
+    /* the passthrough geometry program of a triangle strip, which stores plane 0 and emits the input triangle */
+    u8 gs[16 * 4] = {0};
+    put(gs, 0, mov_imm(1, f2u(0.75f)));
+    put(gs, 1, ast(0x2c0, 1, 1));
+    put(gs, 2, exit_insn());
+    put(gs, 3, bra(3, 3, 7, 0));
+    u32 sph[32] = {0};
+    sph[0] = sph0(1, 4) | 1u << 24; /* passthrough */
+    sph[3] = 7u << 24;              /* a triangle strip */
+    sph[4] = 1;
+    ShaderInfo si = {0};
+    si.clip_enable = 1;
+    si.rt_int_mask = 3; /* the input primitive's vertices (gs_vertices), a triangle's */
+    for (u32 w = 0; w < 8; w++) si.gp_skip_mask[w] = 0xffffffffu;
+    si.gp_skip_mask[0] = 0x0fffffffu; /* the position, from the input vertex */
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(gs, sizeof gs, ST_GS, sph, &si, &count);
+    memset(&env, 0, sizeof env);
+    for (u32 v = 0; v < 3; v++)
+        for (u32 k = 0; k < 4; k++) env.gs_in[32][4 * v + k] = f2u((float)(v + 1) + 0.25f * (float)k);
+    const char* why = spv ? spv_eval(spv, count, &env) : "not translated";
+    int ok = !why && si.uses_clip_mask == 1 && env.emitted == 3;
+    for (u32 v = 0; v < 3 && v < env.emitted; v++)
+        for (u32 plane = 0; plane < 8; plane++) ok &= env.vertex_clip[v][plane] == (plane ? 0 : f2u(0.75f));
+    CHECK(ok);
+    if (!ok)
+        fprintf(stderr, "clip distances, geometry: %s (%s), %u vertices, plane 0 %08x %08x %08x, plane 1 %08x\n",
+                why ? why : "ran", si.first_unsupported, env.emitted, env.vertex_clip[0][0], env.vertex_clip[1][0],
+                env.vertex_clip[2][0], env.vertex_clip[1][1]);
+    if (spv) CHECK(keep_module(dir, "gs_clip_distance", spv, count));
+    free(spv);
+}
 /* HMMA (16816 and 1688, F16 and F32), LDSM and MOVM with and without the device's quads in compute and its mixed dot
    product: A's 48 reads are quad broadcasts or shuffles, B's 48, LDSM's 4 and MOVM's 2 stay shuffles, and each pair
    of products is an OpFDot2MixAcc32VALVE (96) or an OpDot. B's registers are OR'd with hmma_zero's zero, which
@@ -5336,6 +5413,7 @@ int main(int argc, char** argv) {
     test_tex_f16(dir);
     test_output_defaults(dir);
     test_fragment_depth(dir);
+    test_clip_distances(dir);
     test_float64_fallback_scale(dir);
     test_flow_operand(dir);
     test_global_pointer(dir);
