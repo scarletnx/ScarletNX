@@ -76,6 +76,7 @@ struct KThread {
     u32 core_waits;
     u64 affinity;
     u64 tls;
+    u32 own_handle; /* the handle the game got for it (kthread_set_own_handle), which its SDK tags the locks it holds with */
     u64 entry, arg, stack_top;
     int state; /* 0 created, 1 running, 2 exited */
     int woken, cancel;

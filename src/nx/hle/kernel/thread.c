@@ -606,8 +606,10 @@ u32 kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core, KThrea
    program (as Eden's KProcess::Run and CreateThread do): no code of the program writes it there, and the SDK from 22 on,
    the Switch's as the Ounce's, takes a lock's owner from it (InternalCriticalSection::IsLockedByCurrentThread), from
    the C library's first lock on. Left 0, it reads as the owner of every free lock, and the first pthread_mutex_lock of
-   a normal mutex aborts as a relock. Older SDKs leave the word alone: the kernel's own words end at 0x10f */
+   a normal mutex aborts as a relock. Older SDKs leave the word alone: the kernel's own words end at 0x10f. The thread
+   keeps it too, for the lock words the hooks write for it (hle/hook/os_sync.c), whatever its SDK reads */
 void kthread_set_own_handle(KThread* t, u32 h) {
+    if (t) t->own_handle = h;
     if (t && t->tls) gw32(t->tls + 0x110, h);
 }
 
