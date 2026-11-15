@@ -233,6 +233,33 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_astc_b_spv HE
                DEFINES SNX_TC_ASTC SNX_ASTC_ENC=1 SNX_ASTC_PASS=2)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_astc_c_spv HEADER nx/gpu/texture/texconv_spv.h
                DEFINES SNX_TC_ASTC SNX_ASTC_ENC=1 SNX_ASTC_PASS=3)
+# and its second and third passes with the encoder of the GPU's vendor (gpu/texture/texconv.glsl's SNX_ASTC_VENDOR,
+# which gpu/vk/texconv.c picks by the device's vendor): Mali's (gpu/texture/astc_encode_arm.glsl, 1) and Adreno's
+# (astc_encode_qcom.glsl, 2). Each again with SPIR-V's packed dot product (bc7_encode.glsl's SNX_BC7_DOT, Vulkan 1.3's
+# shaderIntegerDotProduct) for the GPUs of theirs that say they have an instruction for it: the fitter's inner loop is
+# dot products of packed bytes
+foreach(vendor IN ITEMS arm qcom)
+    if(vendor STREQUAL "arm")
+        set(snx_astc_vendor 1)
+    else()
+        set(snx_astc_vendor 2)
+    endif()
+    foreach(pass IN ITEMS b c)
+        if(pass STREQUAL "b")
+            set(snx_astc_pass 2)
+        else()
+            set(snx_astc_pass 3)
+        endif()
+        snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_astc_${vendor}_${pass}_spv
+                       HEADER nx/gpu/texture/texconv_spv.h
+                       DEFINES SNX_TC_ASTC SNX_ASTC_ENC=1 SNX_ASTC_PASS=${snx_astc_pass}
+                               SNX_ASTC_VENDOR=${snx_astc_vendor})
+        snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_astc_${vendor}_${pass}_dot_spv
+                       HEADER nx/gpu/texture/texconv_spv.h TARGET vulkan1.3
+                       DEFINES SNX_TC_ASTC SNX_ASTC_ENC=1 SNX_ASTC_PASS=${snx_astc_pass}
+                               SNX_ASTC_VENDOR=${snx_astc_vendor} SNX_BC7_DOT=1)
+    endforeach()
+endforeach()
 # and its conversion build: the blits that convert between pixel formats, which a driver's compiler refused inside the
 # plain build (gpu/vk/texconv.c)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_convert_spv HEADER nx/gpu/texture/texconv_spv.h

@@ -3287,9 +3287,9 @@ snx_test_target(snx-test-astc-bcn-glsl 23)
 target_include_directories(snx-test-astc-bcn-glsl PRIVATE glsl)
 add_test(NAME astc_bcn_glsl COMMAND snx-test-astc-bcn-glsl)
 # the ASTC 4x4 encoder's GLSL (BCn encoded again as ASTC) run on the CPU (tests/glsl/glsl.hpp), its blocks decoded by
-# the CPU's ASTC decoder: no GPU needed
+# the CPU's ASTC decoder, each GPU vendor's build beside the generic one: no GPU needed
 add_executable(snx-test-astc-encode-glsl glsl/astc_encode_glsl.cpp glsl/astc_encode_cpu.cpp glsl/bcn_astc_cpu.cpp
-               glsl/bc7_cpu.cpp support/astc.c support/bcn.c)
+               glsl/astc_vendor_cpu.cpp glsl/bc7_cpu.cpp support/astc.c support/bcn.c)
 snx_test_target(snx-test-astc-encode-glsl 23)
 target_include_directories(snx-test-astc-encode-glsl PRIVATE glsl)
 add_test(NAME astc_encode_glsl COMMAND snx-test-astc-encode-glsl)

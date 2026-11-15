@@ -899,6 +899,13 @@ int vk_bc1_tight(const char* why);
    300 presents (an image found none, a trim found too little to free or left the caches past their budget). What
    texture_half_res and astc_lines_bc1's Auto go by */
 int vk_mem_pressed(void);
+/* the encoder BCn is encoded again as ASTC 4x4 with on a GPU of Vulkan vendor ID vendor (texconv.c's builds,
+   texconv.glsl's SNX_ASTC_VENDOR): Arm's Mali (0x13B5) and Qualcomm's Adreno (0x5143) have one each
+   (gpu/texture/astc_encode_arm.glsl, astc_encode_qcom.glsl), any other GPU the generic one (astc_encode.glsl) */
+enum { VK_ASTC_ENC_GENERIC, VK_ASTC_ENC_ARM, VK_ASTC_ENC_QCOM };
+static inline int vk_astc_encoder(u32 vendor) {
+    return vendor == 0x13B5u ? VK_ASTC_ENC_ARM : vendor == 0x5143u ? VK_ASTC_ENC_QCOM : VK_ASTC_ENC_GENERIC;
+}
 /* vk_tic_format for a 3D image: ASTC and ETC2 blocks decoded where the device can't make 3D images of them */
 VkFmt vk_tic_format_3d(u32 w0, int srgb);
 /* The device and optimal-tiling format both support writes without a shader format. */
@@ -1500,6 +1507,9 @@ int vk_tc_nv12_uv(VkCommandBuffer cb, u32 pairs, u32 rows, VkBuffer in, u64 u_at
 /* the bytes of SPIR-V the pipeline of a conversion of mode (texconv_modes.glsl's TC_*) compiles from, its first pass's
    for the ASTC build */
 u64 vk_tc_spirv_bytes(u32 mode);
+/* what the build f's conversion runs in its pass `pass` is, as its errors name it: "" for the plain one, " (its ASTC
+   build's third pass for Mali, with packed dot products)" (the ASTC build's passes are 0 to 2, the others' 0) */
+const char* vk_tc_build_name(const VkFmt* f, int pass);
 /* the DMA copy engine's remap (gpu.h's GpuDmaOp) of lines lines: each line in at in_at + y * in_pitch (bytes, any
    alignment), out at out_at + y * out_pitch (words), which holds the destination's own bytes already for the
    components that keep them. 0 past the device's limits */

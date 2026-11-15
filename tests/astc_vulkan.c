@@ -27,6 +27,7 @@
 #include "astc_bc7_cpu.h"
 #include "astc_bcn_cpu.h"
 #include "bcn_etc2_cpu.h"
+#include "astc_vendor_cpu.h"
 #include "blit_convert_cpu.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/main.h"
@@ -260,6 +261,11 @@ static void init(void) {
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &have2);
     vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
     const char* dot = getenv("SNX_TEST_BC7_DOT");
+    if (dot && atoi(dot) != 0 && !have13.shaderIntegerDotProduct) {
+        printf("SKIP: SNX_TEST_BC7_DOT=%s asks for packed dot products, which %s doesn't have\n", dot,
+               g_vk.props.deviceName);
+        exit(77);
+    }
     g_vk.bc7_dot = have13.shaderIntegerDotProduct &&
                    (dot ? atoi(dot) != 0 : p13.integerDotProduct4x8BitPackedUnsignedAccelerated != 0);
     printf("BC7 encoder: %s\n", g_vk.bc7_dot ? "packed dot products" : "dot products spelled out");
@@ -2009,11 +2015,9 @@ static void convert_case(void) {
     puts("PASS texture conversions (blits between pixel formats, nearest and filtered)");
     fflush(stdout);
 }
-/* texconv.comp's ASTC build on the device against the CPU's run of it (tests/glsl/bcn_astc_cpu.cpp): random BC1, BC2,
-   BC3 and BC7 blocks in an image whose sides aren't multiples of 4, encoded again as ASTC 4x4, byte for byte; and the
-   blocks decode (the CPU's ASTC decoder) near what the BCn blocks do: random blocks are noise, which no block format
-   holds, so near is 12 dB here, where a block the decoder refused, magenta, or one laid out wrong would be far under */
-static void astc_encode_case(void) {
+/* astc_encode_case's for the encoder enc (vk.h's VK_ASTC_ENC_*), whose second and third passes' builds name `named`
+   (NULL: neither names a vendor), with packed dot products where g_vk.bc7_dot */
+static void astc_encode_vendor(int enc, const char* named) {
     u32 w = 67, h = 37, bw = 17, bh = 10;
     static const int kinds[4] = {BCN_BC1, BCN_BC2, BCN_BC3, BCN_BC7};
     for (int ki = 0; ki < 4; ki++) {
@@ -2026,15 +2030,24 @@ static void astc_encode_case(void) {
                    .bw = 4,
                    .bh = 4,
                    .conv = (u8)(VKC_BC1 + kind)};
+        for (int pass = 1; pass < 3; pass++) {
+            const char* name = vk_tc_build_name(&f, pass);
+            const int vendor = strstr(name, "for Mali") || strstr(name, "for Adreno");
+            const int dot = strstr(name, "with packed dot products") != NULL;
+            if (named ? !strstr(name, named) || dot != (g_vk.bc7_dot != 0) : vendor || dot)
+                fatal("texconv's ASTC build: pass %d of encoder %d runs the build%s\n", pass + 1, enc, name);
+        }
         u64 out_size;
         u8* out = tc_blocks(&f, blocks, w, bw, bh, &out_size);
         u8* want = malloc((size_t)bw * bh * 16);
-        bcn_astc_cpu(kind, blocks, bw, bh, 1, want);
+        bcn_astc_vendor_cpu(enc, kind, blocks, bw, bh, 1, want);
         if (out_size != (u64)bw * bh * 16)
-            fatal("texconv's ASTC build: %llu bytes out, not %u\n", (unsigned long long)out_size, bw * bh * 16);
+            fatal("texconv's ASTC build%s: %llu bytes out, not %u\n", vk_tc_build_name(&f, 2),
+                  (unsigned long long)out_size, bw * bh * 16);
         for (u32 i = 0; i < bw * bh; i++)
             if (memcmp(out + (size_t)i * 16, want + (size_t)i * 16, 16))
-                fatal("texconv's ASTC build: BCn kind %d block %u differs from the CPU's\n", kind, i);
+                fatal("texconv's ASTC build%s: BCn kind %d block %u differs from the CPU's\n", vk_tc_build_name(&f, 2),
+                      kind, i);
         u8* was = malloc((size_t)bw * bh * 64);
         u8* is = malloc((size_t)bw * bh * 64);
         bcn_decode_image(blocks, bw * 4, bh * 4, kind, was);
@@ -2042,13 +2055,34 @@ static void astc_encode_case(void) {
         double e = 0;
         for (u32 i = 0; i < bw * bh * 64; i++) e += ((double)was[i] - is[i]) * ((double)was[i] - is[i]);
         const double db = e > 0 ? 10 * log10(255.0 * 255.0 * bw * bh * 64 / e) : 99;
-        if (db < 12) fatal("texconv's ASTC build: BCn kind %d comes back at %.1f dB\n", kind, db);
+        if (db < 12)
+            fatal("texconv's ASTC build%s: BCn kind %d comes back at %.1f dB\n", vk_tc_build_name(&f, 2), kind, db);
         free(was);
         free(is);
         free(blocks);
         free(want);
     }
-    puts("PASS texture conversions (BC1, BC2, BC3 and BC7 encoded again as ASTC 4x4)");
+}
+/* texconv.comp's ASTC build on the device against the CPU's run of it (tests/glsl/bcn_astc_cpu.cpp and
+   astc_vendor_cpu.cpp): random BC1, BC2, BC3 and BC7 blocks in an image whose sides aren't multiples of 4, encoded
+   again as ASTC 4x4, byte for byte; and the blocks decode (the CPU's ASTC decoder) near what the BCn blocks do: random
+   blocks are noise, which no block format holds, so near is 12 dB here, where a block the decoder refused, magenta, or
+   one laid out wrong would be far under. Once for each vendor's encoder, the device's vendor ID set to Arm's and
+   Qualcomm's in turn (vk/texconv.c picks the build by it): the passes the build names are that vendor's, and the
+   bytes are its encoder's on the CPU */
+static void astc_encode_case(void) {
+    const u32 real = g_vk.props.vendorID;
+    /* the generic encoder on this device, or on vendor 0 where this is a phone of one of the two */
+    const u32 vendors[3] = {vk_astc_encoder(real) == VK_ASTC_ENC_GENERIC ? real : 0u, 0x13B5u, 0x5143u};
+    static const char* const builds[3] = {NULL, "for Mali", "for Adreno"};
+    for (int v = 0; v < 3; v++) {
+        g_vk.props.vendorID = vendors[v];
+        const int enc = vk_astc_encoder(g_vk.props.vendorID);
+        if (enc != v) fatal("vendor %04x takes encoder %d, not %d\n", vendors[v], enc, v);
+        astc_encode_vendor(enc, builds[enc]);
+    }
+    g_vk.props.vendorID = real;
+    puts("PASS texture conversions (BC1, BC2, BC3 and BC7 encoded again as ASTC 4x4, by each vendor's encoder)");
     fflush(stdout);
 }
 /* --bench-etc2: a 2048x2048 level of random blocks of each kind decoded (as on a GPU that samples neither BCn nor
@@ -2127,7 +2161,8 @@ int main(int argc, char** argv) {
         } else if (!strcmp(argv[i], "--bench-etc2")) {
             large = 3;
             if (i + 1 < argc && argv[i + 1][0] != '-') bench_src.name = argv[++i];
-        }
+        } else if (!strcmp(argv[i], "--astc-encode"))
+            large = 4; /* the BCn to ASTC transcoder alone (ctest's astc_vulkan_encode_dot) */
     init();
     /* every level as before (the fast build, the cache's whole levels): background_cases turns the quick encode on */
     g_settings.astc_quick_mtexels = 0;
@@ -2135,6 +2170,11 @@ int main(int argc, char** argv) {
     if (upload_wait) return upload_wait_case(upload_wait == 2);
     if (large == 3) {
         bench_etc2(3, bench_src.name);
+        return 0;
+    }
+    if (large == 4) {
+        astc_encode_case();
+        if (errors) fatal("%u validation errors\n", errors);
         return 0;
     }
     if (large == 2) {

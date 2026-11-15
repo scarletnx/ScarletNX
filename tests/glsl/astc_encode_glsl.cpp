@@ -16,6 +16,7 @@
 #include <ctime>
 #include <vector>
 #include "astc_encode_cpu.h"
+#include "astc_vendor_cpu.h"
 #include "bc7_cpu.h"
 #include "bcn_etc2_cpu.h"
 extern "C" void astc_decode_image(const uint8_t* src, uint32_t w, uint32_t h, uint32_t bw, uint32_t bh, uint8_t* dst,
@@ -485,6 +486,198 @@ static int measure(int n, char** files) {
     return 0;
 }
 
+// Each GPU vendor's build of the encoder (texconv.glsl's SNX_ASTC_VENDOR, vk/texconv.c's choice by the device's
+// vendor): the Adreno one writes the generic one's bytes, block for block, which every set here holds it to, and so
+// do both vendors' AsPack, every layout's packing alone on random candidates (the encoder reaches some layouts
+// rarely). In each build the three passes write what one invocation does
+static const char* const VENDOR_NAMES[3] = {"generic", "Mali", "Adreno"};
+static void vendor_pack() {
+    // np, cem, colour encoding (astc_quant.glsl's AS_*), weight bits, two planes: every layout AstcEncode writes
+    static const uint32_t layouts[9][5] = {{1, 8, 0, 4, 0},  {1, 8, 6, 3, 0},  {1, 8, 6, 2, 0},
+                                           {1, 12, 0, 3, 0}, {1, 12, 4, 4, 0}, {1, 12, 6, 2, 0},
+                                           {1, 8, 1, 2, 1},  {1, 12, 4, 2, 1}, {2, 8, 5, 2, 0}};
+    for (int vendor = 1; vendor < 3; vendor++) {
+        uint32_t differ = 0, first = 0;
+        for (uint32_t l = 0; l < 9; l++)
+            for (uint32_t n = 0; n < 3000; n++) {
+                const uint32_t ib = layouts[l][3], top = (1u << ib) - 1u, nib = top * 0x11111111u;
+                AstcCandidate c = {layouts[l][0],
+                                   layouts[l][1],
+                                   layouts[l][2],
+                                   ib,
+                                   random_word(),
+                                   random_word(),
+                                   random_word(),
+                                   random_word(),
+                                   random_word() & nib,
+                                   random_word() & nib,
+                                   layouts[l][4],
+                                   random_word() & 3u,
+                                   random_word() & 0x33333333u,
+                                   random_word() & 0x33333333u,
+                                   random_word() & 63u};
+                uint8_t want[16], got[16];
+                astc_pack_vendor_cpu(0, &c, want);
+                astc_pack_vendor_cpu(vendor, &c, got);
+                if (std::memcmp(want, got, 16) && !differ++) first = l;
+            }
+        std::printf(
+            "%s %s AsPack, 3000 random candidates of each of 9 layouts: %u packed apart from the generic one%s\n",
+            differ ? "FAIL" : "PASS", VENDOR_NAMES[vendor], differ, differ ? " (from layout" : "");
+        if (differ) std::printf("  the first in layout %u\n", first);
+        if (differ) failures++;
+    }
+}
+// the transcoder's sets of vendor_same and vendor_quality: random BC1, BC2, BC3 and BC7 blocks, and the picture's
+// BC7 blocks (bcn.h's kinds)
+struct BcnSet {
+    const char* name;
+    int kind;
+    std::vector<uint8_t> blocks;
+    uint32_t n;
+};
+static std::vector<BcnSet> bcn_sets() {
+    std::vector<BcnSet> sets;
+    static const char* const names[4] = {"random BC1", "random BC2", "random BC3", "random BC7"};
+    static const int kinds[4] = {0, 1, 2, 9};
+    for (int j = 0; j < 4; j++) {
+        BcnSet s = {names[j], kinds[j], std::vector<uint8_t>((size_t)4096 * (kinds[j] == 0 ? 8 : 16)), 4096};
+        for (auto& b : s.blocks) b = (uint8_t)(random_word() >> 24);
+        sets.push_back(s);
+    }
+    const uint32_t w = 128, h = 128;
+    std::vector<uint8_t> texels((size_t)w * h * 4);
+    BcnSet pic = {"the picture's BC7", 9, std::vector<uint8_t>((size_t)w * h), w * h / 16};
+    for (uint32_t y = 0; y < h; y++)
+        for (uint32_t x = 0; x < w; x++) {
+            const uint32_t c = picture(x, y);
+            std::memcpy(&texels[((size_t)y * w + x) * 4], &c, 4);
+        }
+    bc7_encode_cpu(texels.data(), w, h, 1, pic.blocks.data());
+    sets.push_back(pic);
+    return sets;
+}
+static void vendor_same() {
+    const int vendor = 2;
+    uint32_t differ = 0, count = 0;
+    // the encoder alone: blocks()'s 6000 and the picture
+    for (uint32_t n = 0; n < 6000; n++, count++) {
+        uint32_t px[16];
+        uint8_t want[16], got[16];
+        block_new(n % 6, n / 6, px);
+        const uint32_t e0 = astc_encode_block_cpu(px, want), e1 = astc_encode_block_vendor_cpu(vendor, px, got);
+        differ += std::memcmp(want, got, 16) != 0 || e0 != e1;
+    }
+    const uint32_t w = 128, h = 128;
+    std::vector<uint8_t> texels((size_t)w * h * 4), a((size_t)w * h), b((size_t)w * h);
+    for (uint32_t y = 0; y < h; y++)
+        for (uint32_t x = 0; x < w; x++) {
+            const uint32_t c = picture(x, y);
+            std::memcpy(&texels[((size_t)y * w + x) * 4], &c, 4);
+        }
+    astc_encode_cpu(texels.data(), w, h, 1, a.data());
+    astc_encode_vendor_cpu(vendor, texels.data(), w, h, 1, b.data());
+    for (uint32_t k = 0; k < w * h / 16; k++, count++) differ += std::memcmp(&a[k * 16], &b[k * 16], 16) != 0;
+    // the transcoder, in one invocation and in its three passes
+    for (const BcnSet& s : bcn_sets()) {
+        std::vector<uint8_t> one((size_t)s.n * 16), mine((size_t)s.n * 16), three((size_t)s.n * 16);
+        bcn_astc_cpu(s.kind, s.blocks.data(), s.n, 1, 1, one.data());
+        bcn_astc_vendor_cpu(vendor, s.kind, s.blocks.data(), s.n, 1, 1, mine.data());
+        bcn_astc_vendor_passes_cpu(vendor, s.kind, s.blocks.data(), s.n, three.data(), NULL);
+        for (uint32_t k = 0; k < s.n; k++, count += 2)
+            differ += (std::memcmp(&one[k * 16], &mine[k * 16], 16) != 0) +
+                      (std::memcmp(&one[k * 16], &three[k * 16], 16) != 0);
+    }
+    std::printf("%s Adreno's encoder, %u blocks of the encoder's and the transcoder's sets: %u apart from the generic "
+                "one's\n",
+                differ ? "FAIL" : "PASS", count, differ);
+    if (differ) failures++;
+}
+
+// The Mali encoder searches less (astc_encode_arm.glsl), so its blocks are not the generic encoder's: they are held to
+// what the generic one reaches instead. Each of its blocks decodes, with no error colour, to the error it worked out
+// (blocks()'s check); and on each set the PSNR it keeps against the source (the texels, or what the BCn blocks decode
+// to) is at most VENDOR_LOSS_DB under the generic encoder's, and its worst block's largest channel error at most
+// VENDOR_WORSE over the generic one's worst block
+#define VENDOR_LOSS_DB 0.1
+#define VENDOR_WORSE   4
+struct Held {
+    double se;
+    uint32_t worst;
+};
+static Held held(const uint8_t* want, const uint8_t* got, size_t blocks_n, uint32_t row_blocks) {
+    Held h = {0, 0};
+    for (size_t b = 0; b < blocks_n; b++)
+        for (uint32_t y = 0; y < 4; y++)
+            for (uint32_t x = 0; x < 16; x++) {
+                const size_t at = (size_t)y * row_blocks * 16 + b * 16 + x;
+                const int d = int(got[at]) - int(want[at]);
+                h.se += double(d * d);
+                h.worst = std::max(h.worst, uint32_t(std::abs(d)));
+            }
+    return h;
+}
+static void vendor_report(const char* what, size_t values, Held g, Held m) {
+    const double dg = g.se > 0 ? 10 * std::log10(255.0 * 255.0 * double(values) / g.se) : 99.0;
+    const double dm = m.se > 0 ? 10 * std::log10(255.0 * 255.0 * double(values) / m.se) : 99.0;
+    const bool ok = dm >= dg - VENDOR_LOSS_DB && m.worst <= g.worst + VENDOR_WORSE;
+    std::printf("%s Mali's encoder, %s: %.2f dB where the generic one keeps %.2f (%.1f below allowed), a channel %u "
+                "off at most where it is %u (%d more allowed)\n",
+                ok ? "PASS" : "FAIL", what, dm, dg, VENDOR_LOSS_DB, m.worst, g.worst, VENDOR_WORSE);
+    if (!ok) failures++;
+}
+static void vendor_quality() {
+    // the encoder alone: blocks()'s 6000 blocks, a row of them, each legal and at the error it worked out
+    const uint32_t n = 6000;
+    std::vector<uint8_t> want((size_t)n * 64), gen((size_t)n * 16), arm((size_t)n * 16), gd((size_t)n * 64),
+        md((size_t)n * 64);
+    uint32_t wrong = 0;
+    for (uint32_t k = 0; k < n; k++) {
+        uint32_t px[16];
+        block_new(k % 6, k / 6, px);
+        for (int t = 0; t < 16; t++)
+            for (int c = 0; c < 4; c++)
+                want[(size_t)(t / 4) * n * 16 + (size_t)k * 16 + (t % 4) * 4 + c] = uint8_t(px[t] >> (8 * c));
+        astc_encode_block_cpu(px, &gen[(size_t)k * 16]);
+        const uint32_t err = astc_encode_block_vendor_cpu(1, px, &arm[(size_t)k * 16]);
+        uint8_t got[64], mine[64];
+        astc_decode_image(&arm[(size_t)k * 16], 4, 4, 4, 4, got, 0);
+        for (int t = 0; t < 16; t++)
+            for (int c = 0; c < 4; c++) mine[t * 4 + c] = uint8_t(px[t] >> (8 * c));
+        bool magenta = true;
+        for (int t = 0; t < 16; t++)
+            magenta = magenta && got[t * 4] == 255 && got[t * 4 + 1] == 0 && got[t * 4 + 2] == 255;
+        if (sse(got, mine, 64) != err || (magenta && px[0] != 0xFFFF00FFu)) wrong++;
+    }
+    std::printf("%s Mali's encoder, %u blocks: %u decode to another error than it worked out, or to the error colour\n",
+                wrong ? "FAIL" : "PASS", n, wrong);
+    if (wrong) failures++;
+    astc_decode_image(gen.data(), n * 4, 4, 4, 4, gd.data(), 0);
+    astc_decode_image(arm.data(), n * 4, 4, 4, 4, md.data(), 0);
+    vendor_report("6000 blocks", (size_t)n * 64, held(want.data(), gd.data(), n, n),
+                  held(want.data(), md.data(), n, n));
+    // the transcoder: what the BCn blocks decode to against what each encoder's ASTC blocks do; in three passes as
+    // in one
+    for (const BcnSet& s : bcn_sets()) {
+        std::vector<uint8_t> was((size_t)s.n * 64), one((size_t)s.n * 16), three((size_t)s.n * 16), a((size_t)s.n * 16);
+        std::vector<uint8_t> ad((size_t)s.n * 64), od((size_t)s.n * 64);
+        uint32_t listed[2];
+        bcn_decode_image(s.blocks.data(), s.n * 4, 4, s.kind, was.data());
+        bcn_astc_cpu(s.kind, s.blocks.data(), s.n, 1, 1, a.data());
+        bcn_astc_vendor_cpu(1, s.kind, s.blocks.data(), s.n, 1, 1, one.data());
+        bcn_astc_vendor_passes_cpu(1, s.kind, s.blocks.data(), s.n, three.data(), listed);
+        uint32_t differ = 0;
+        for (uint32_t k = 0; k < s.n; k++) differ += std::memcmp(&one[k * 16], &three[k * 16], 16) != 0;
+        std::printf("%s Mali's encoder, %s in three passes as in one: %u of %u blocks differ\n",
+                    differ ? "FAIL" : "PASS", s.name, differ, s.n);
+        if (differ) failures++;
+        astc_decode_image(a.data(), s.n * 4, 4, 4, 4, ad.data(), 0);
+        astc_decode_image(one.data(), s.n * 4, 4, 4, 4, od.data(), 0);
+        vendor_report(s.name, (size_t)s.n * 64, held(was.data(), ad.data(), s.n, s.n),
+                      held(was.data(), od.data(), s.n, s.n));
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc > 2 && !std::strcmp(argv[1], "--measure")) return measure(argc - 2, argv + 2);
     quant_formulas();
@@ -494,6 +687,9 @@ int main(int argc, char** argv) {
     rotated_hints();
     bc2_one_alpha();
     picture_psnr();
+    vendor_pack();
+    vendor_same();
+    vendor_quality();
     if (failures) {
         std::fprintf(stderr, "%d failures\n", failures);
         return 1;
