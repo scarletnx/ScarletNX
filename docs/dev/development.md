@@ -430,8 +430,9 @@ vulkan: VK_KHR_present_id2 is off on NVIDIA GeForce RTX 3060 (NVIDIA, 590.48.01,
 ```
 
 A ban joins the table with its source; one that holds for something the renderer does not use is said as such.
-[Driver quirks](../layers/gpu/driver-quirks.md) lists every line by driver, beside the quirks the code works around by
-itself, and the ones known elsewhere that the renderer does not reach.
+[Driver quirks](../layers/gpu/driver-quirks.md) shows every line by driver, beside the quirks the code works around by
+itself: `scripts/check-docs.py --bans` writes those rows from the table after a change to it, and `docs_check` fails
+while they differ.
 `vulkan_ban_ignore` ([Settings](../user/settings.md#graphics)) goes over the bans of the keys it lists for one run, to test a
 driver again: `--vulkan_ban_ignore=VK_KHR_present_id2` on the command line, `--setting vulkan_ban_ignore=...` to
 `scripts/edenprobe.py`, the row in a phone's `.ini`. Each key is said, as a warning with the ban it goes over where
