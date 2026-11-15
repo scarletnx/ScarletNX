@@ -548,7 +548,10 @@ VkFormat vk_srgb_as(VkFormat f, int srgb) {
     return f;
 }
 void vk_surf_add(Surf* s) { (void)s; }
-void vk_tex_made(const Surf* t) { (void)t; } /* gpu/vk/tex_report.c's count, which no test here reads */
+u32 vk_tex_made(const Surf* t) { /* gpu/vk/tex_report.c's count, which no test here reads */
+    (void)t;
+    return 0;
+}
 void vk_surf_touch(Surf* s) { (void)s; }
 void vk_surf_relist(Surf* s) { (void)s; }
 void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx) { (void)fn, (void)ctx; }
@@ -725,6 +728,33 @@ void vk_devmem_info(DevMem mem, DevMemInfo* info) {
 }
 /* a texture's class follows its pixels (tex_drawn): there is no memory here to give it to */
 void vk_devmem_priority(DevMem mem, u32 prio) { (void)mem, (void)prio; }
+/* the defrag's (vk_tex_defrag_frame): no block is emptied here, so nothing moves and a move is never asked for */
+void vk_devmem_owner(DevMem mem, void* owner) { (void)mem, (void)owner; }
+u32 vk_devmem_moving(DevMem* mems, void** owners, u32 max, u64 budget) {
+    (void)mems, (void)owners, (void)max, (void)budget;
+    return 0;
+}
+void vk_devmem_moving_stop(void) { abort(); }
+void vk_devmem_moved(u64 bytes) {
+    (void)bytes;
+    abort();
+}
+u32 vk_mem_owner_prio(u32 owner) {
+    (void)owner;
+    abort();
+}
+void vk_defer_moved(u64 bytes) {
+    (void)bytes;
+    abort();
+}
+int vk_buf_move(VkCommandBuffer cb, u32 i, DevMem from, u64* bytes) {
+    (void)cb, (void)i, (void)from, (void)bytes;
+    abort();
+}
+int vk_rt_move(VkCommandBuffer cb, Surf* s, u64* bytes) {
+    (void)cb, (void)s, (void)bytes;
+    abort();
+}
 const VkPhysicalDeviceMemoryProperties* vk_devmem_props(void) {
     static const VkPhysicalDeviceMemoryProperties none = {0};
     return &none;

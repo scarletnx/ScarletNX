@@ -74,6 +74,7 @@ typedef struct {
     Dead* dead;
     int ndead, capdead;
     u64 dead_bytes; /* device memory evicted cache entries among them release (vk_defer_bytes) */
+    u64 dead_moved; /* of those, what moves out of a block being emptied release (vk_defer_moved) */
     /* descriptor pools, reset when the frame is reused and kept */
     VkDescriptorPool pool_d[64];
     int npool, ipool; /* pool_d[ipool] is the one allocating; the ones after it are reset and waiting */
@@ -135,6 +136,7 @@ static struct {
 
 static Frame g_fr[VK_FRAMES];
 static u64 g_dead_bytes; /* every frame's dead_bytes */
+static u64 g_dead_moved; /* every frame's dead_moved */
 static u32 g_cur;
 static u32 g_cb_begun = 1; /* command buffers begun, so a command buffer's state is told from an earlier one's */
 static u64 g_frame_id;
@@ -502,6 +504,8 @@ static void frame_recycle(Frame* f) {
     dead_free(f);
     g_dead_bytes -= f->dead_bytes;
     f->dead_bytes = 0;
+    g_dead_moved -= f->dead_moved;
+    f->dead_moved = 0;
     vkResetCommandPool(g_vk.dev, f->pool, 0);
     /* the pools stay, reset: a frame's draws fill several, and making them again every frame costs. Only those the
        slot's recent uses never reached go */
@@ -1563,9 +1567,13 @@ static Frame* dead_slot(void) {
     return f;
 }
 void vk_defer_image(VkImage img, DevMem a, VkImageView v1, VkImageView v2) {
+    vk_devmem_owner(a, NULL); /* not moved once it is let go (devmem.h) */
     dead_push(dead_slot(), (Dead){.img = img, .mem = a, .v1 = v1, .v2 = v2});
 }
-void vk_defer_buffer(VkBuffer b, DevMem a) { dead_push(dead_slot(), (Dead){.buf = b, .mem = a}); }
+void vk_defer_buffer(VkBuffer b, DevMem a) {
+    vk_devmem_owner(a, NULL); /* not moved once it is let go (devmem.h) */
+    dead_push(dead_slot(), (Dead){.buf = b, .mem = a});
+}
 /* on the list its release goes on, so they leave the count when the release is performed: counted on a fresh slot
    before the release that started it, they left at that slot's recycling */
 void vk_defer_bytes(u64 bytes) {
@@ -1574,6 +1582,12 @@ void vk_defer_bytes(u64 bytes) {
     g_dead_bytes += bytes;
 }
 u64 vk_deferred_bytes(void) { return g_dead_bytes; }
+void vk_defer_moved(u64 bytes) {
+    if (!bytes) return;
+    dead_slot()->dead_moved += bytes;
+    g_dead_moved += bytes;
+}
+u64 vk_deferred_moved(void) { return g_dead_moved; }
 void vk_defer_buffer_view(VkBufferView v) { dead_push(dead_slot(), (Dead){.view = v}); }
 void vk_defer_call(void (*fn)(void*), void* arg) { dead_push(dead_slot(), (Dead){.fn = fn, .arg = arg}); }
 
