@@ -7,8 +7,9 @@
 # says which, on which device, driver and version, and why. A "warn" line is only said: a ban another project lifted,
 # one not proven for the way this renderer uses the feature, or a part it has no way around. Compiled in
 # (cmake/vk_extension_bans.cmake); tests/vk_extension_bans.c reads it, and "snx-test-vk-bans --devices" lists the lines
-# that hold for this machine's drivers. docs/layers/gpu/driver-quirks.md lists every line by driver, beside the
-# quirks the code works around by itself.
+# that hold for this machine's drivers. docs/layers/gpu/driver-quirks.md shows every line by driver, beside the quirks
+# the code works around by itself: "scripts/check-docs.py --bans" writes those rows from this file after a change to
+# it, and docs_check fails while they differ.
 #
 # Each extension the renderer can use has a setting of its own (vk_ext_<its name in lowercase>, Graphics > Vulkan
 # Extensions), auto by default: auto leaves the extension to this table, on goes over every line on it, off takes it out
