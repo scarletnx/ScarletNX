@@ -880,8 +880,8 @@ static int defrag_round(u64 budget) {
     }
     /* while a block is emptied, no request takes its runs */
     if (g_devmem.drain.slot && !g_devmem.drain.repair) {
-        Held probe;
-        DevMemWant gpu = {.at = DM_DEVICE, .image = 1};
+        Held probe; /* of the class of the block being emptied, which its blocks are */
+        DevMemWant gpu = {.at = DM_DEVICE, .image = 1, .low = g_devmem.block[g_devmem.drain.slot - 1].low};
         CHECK(make(1, 64 * KIB, 4096, ~0u, 0, gpu, &probe) == VK_SUCCESS);
         CHECK(g_devmem.rec[probe.mem - 1].block != g_devmem.drain.slot || !g_devmem.drain.slot);
         unmake(&probe);
@@ -957,6 +957,27 @@ static void check_defrag(int pageable) {
         CHECK(g_devmem.drain.repaired == 1 && (u32)moved == raised);
         CHECK(!misplaced(&g_devmem.block[slot - 1]) && g_devmem.block[slot - 1].allocs == stays);
         printf("vk_devmem: repair: %d allocations of the high class moved out of a block of the low class\n", moved);
+        /* a move of the low class when its blocks have no room and the other class's have: it fails, and takes
+           no run of the other class (alloc_in's fallback is a request's, not a move's) */
+        Held fill[64], spare, moved_low;
+        u32 nfill = 0;
+        int full = 0;
+        while (nfill < 64 && !full) {
+            CHECK(make(1, MIB, 4096, ~0u, 0, tex, &fill[nfill]) == VK_SUCCESS);
+            nfill++;
+            full = 1;
+            for (u32 i = 0; i < g_devmem.nblock; i++) {
+                const Block* k = &g_devmem.block[i];
+                if (k->mem && !k->own && k->low && k->free.used < k->free.units) full = 0;
+            }
+        }
+        CHECK(full);
+        CHECK(make(1, MIB, 4096, ~0u, 0, mid, &spare) == VK_SUCCESS); /* a mid block with room */
+        DevMemWant move_low = {.at = DM_DEVICE, .image = 1, .existing = 1, .low = 1};
+        g_devmem.drain.moving = 0;
+        CHECK(make(1, MIB, 4096, ~0u, 0, move_low, &moved_low) == VK_ERROR_OUT_OF_DEVICE_MEMORY);
+        unmake(&spare);
+        while (nfill) unmake(&fill[--nfill]);
         for (u32 i = 0; i < LOWS + MIDS; i++) {
             vk_devmem_owner(g_dh[i].mem, NULL);
             unmake(&g_dh[i]);

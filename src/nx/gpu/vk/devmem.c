@@ -624,7 +624,11 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
     }
     u32 prio = want->low ? DM_PRIO_LOW : DM_PRIO_MID; /* until its owner gives its class (vk_devmem_priority) */
     /* a block that took a move is not emptied for 120 presents: what came in settles first */
-    if (want->existing && k->drain_skip < g_devmem.frame + 120) k->drain_skip = g_devmem.frame + 120;
+    /* a block that took a move is not emptied or repaired for 120 presents: what came in settles first. After a
+       repair's move, 600: a texture's class follows whether it took drawn pixels (texture.c), which can change back,
+       and its moves between the classes would copy it each time */
+    const u64 settle = g_devmem.frame + (g_devmem.drain.repair ? 600 : 120);
+    if (want->existing && k->drain_skip < settle) k->drain_skip = settle;
     k->allocs++;
     k->holds[prio] += units ? units : 1;
     block_prio(k);
@@ -693,7 +697,7 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
     /* No request takes a run of the block being emptied. One that found room nowhere else has that block given back
        to the requests: the drain stops (drain_stop), and the request looks again. Emptying a block is never why a
        request finds no memory */
-    if (!*mem && g_devmem.drain.slot) {
+    if (!*mem && g_devmem.drain.slot && !g_devmem.drain.repair) {
         const Block* d = &g_devmem.block[g_devmem.drain.slot - 1];
         LOG_LIMIT(16,
                   "vulkan: a request for %.1f MB of device memory found no room but in the block being emptied (%.1f "
@@ -778,6 +782,9 @@ void vk_devmem_free(DevMem m) {
         if (emptied) {
             g_devmem.drain.slot = 0;
             k->drain = 0;
+        } else if (g_devmem.drain.slot == slot) { /* a block under repair that its frees emptied: nothing to repair */
+            g_devmem.drain.slot = 0;
+            g_devmem.drain.repair = 0;
         }
         int keep = !k->own;
         if (keep && !k->reserve) {
@@ -928,14 +935,26 @@ u32 vk_devmem_moving(DevMem* mems, void** owners, u32 max, u64 budget) {
         mems[n] = i + 1;
         owners[n++] = r->owner;
     }
-    /* a repair with nothing of the wrong class left is done */
-    if (g_devmem.drain.slot && g_devmem.drain.repair && !misplaced(&g_devmem.block[g_devmem.drain.slot - 1])) {
+    /* A repair ends when nothing of the wrong class that moves is left. The block takes requests while it is
+       repaired, and one that found no room in its own class can bring an allocation of the wrong class with no owner
+       (a ring's chunk, a sparse page): the block rests then, as one that was not repaired */
+    if (g_devmem.drain.slot && g_devmem.drain.repair && !n) {
+        Block* k = &g_devmem.block[g_devmem.drain.slot - 1];
+        if (misplaced(k))
+            k->drain_skip = g_devmem.frame + 600;
+        else
+            g_devmem.drain.repaired++;
         g_devmem.drain.slot = 0;
         g_devmem.drain.repair = 0;
-        g_devmem.drain.repaired++;
     }
     pm_unlock(&g_devmem.lk);
     return n;
+}
+int vk_devmem_emptying(void) {
+    pm_lock(&g_devmem.lk);
+    const int on = g_devmem.drain.slot && !g_devmem.drain.repair;
+    pm_unlock(&g_devmem.lk);
+    return on;
 }
 void vk_devmem_moving_stop(void) {
     pm_lock(&g_devmem.lk);

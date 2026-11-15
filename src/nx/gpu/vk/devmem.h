@@ -107,6 +107,9 @@ void vk_devmem_owner(DevMem mem, void* owner);
    and the block is left as it is */
 u32 vk_devmem_moving(DevMem* mems, void** owners, u32 max, u64 budget);
 void vk_devmem_moving_stop(void);
+/* the block being moved out of is emptied, closed to requests: not repaired (one with allocations of the wrong
+   priority class, which takes requests) */
+int vk_devmem_emptying(void);
 void vk_devmem_moved(u64 bytes);
 /* a buffer or an image with its memory bound, and both gone again (either may be none) */
 VkResult vk_devmem_buffer(const VkBufferCreateInfo* bci, const DevMemWant* want, VkBuffer* buf, DevMem* mem,
