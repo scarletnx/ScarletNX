@@ -1286,6 +1286,7 @@ int vk_tex_finer(Surf* t);
 u64 vk_tex_demote(Surf* t);
 int vk_tex_promote(Surf* t);
 void vk_tex_sysmem_stats(u64* out, u64* back, u64* bytes);
+u64 vk_mirror_system(void); /* mirror.c: its granules that took system memory so far */
 /* surface.c: once a present, the demoted textures the last presents used moved back while the GPU's memory has room */
 void vk_tex_promote_frame(void);
 /* surface.c: once a present, shed textures used lately a level finer while the heap has room */

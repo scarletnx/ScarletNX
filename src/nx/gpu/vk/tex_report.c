@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/tex_report.h"
+#include "nx/gpu/vk/pagespace.h"
 #include "common/utilities/bits.h"
 #include "nx/gpu/guest_textures.h"
 #include "nx/gpu/vk/range_shape.h"
@@ -302,6 +303,10 @@ void vk_tex_report_log(void) {
     g_tex_report.reported = g_tex_report.reloads;
     u64 sys_out, sys_back, sys_bytes;
     vk_tex_sysmem_stats(&sys_out, &sys_back, &sys_bytes);
+    if (vk_pages_system() || vk_mirror_system())
+        LOG("vulkan: granules in system memory where the GPU's had no room so far: %llu of the page cache, %llu of the "
+            "GPU mirror\n",
+            (unsigned long long)vk_pages_system(), (unsigned long long)vk_mirror_system());
     if (sys_out)
         LOG("vulkan: %llu textures moved into system memory for room in place of an eviction (texture_sysmem), %llu "
             "moved back; %llu MB there now\n",

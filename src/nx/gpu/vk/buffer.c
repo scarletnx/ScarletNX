@@ -4074,6 +4074,7 @@ u64 vk_buf_reclaim(u32 before, u64 want) {
         drop_own(i); /* the entry stays: its range is copied into a buffer again when next read */
         vk_defer_bytes(g_vb[i].len);
     }
+    if (freed < want) freed += vk_pages_reclaim(before, want - freed); /* then the page cache's idle granules */
     return freed;
 }
 /* A front end with explicit storage ordering supplies these barriers in command-stream order. */

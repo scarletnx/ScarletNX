@@ -42,6 +42,10 @@ void vk_pages_ordered(void);
 void vk_pages_order_request(void);
 /* once a present: the granules nothing read for a while give their memory back */
 void vk_pages_frame(void);
+/* the idle granules with no GPU-written bytes let go for the budget, until want bytes: the bytes let go */
+u64 vk_pages_reclaim(u32 before, u64 want);
+/* statistics: the granules that took system memory so far */
+u64 vk_pages_system(void);
 /* every page goes (a save state's load): the next reads take the bytes again */
 void vk_pages_forget_all(void);
 /* statistics (vk_buffer_stats), every 600 presents */
