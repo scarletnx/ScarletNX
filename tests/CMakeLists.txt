@@ -1974,12 +1974,17 @@ snx_test_target(snx-test-ini-deprecated 11)
 add_test(NAME ini_deprecated COMMAND snx-test-ini-deprecated)
 
 # options.c's TV mode Auto over a faked host power source, a key its .ini gives twice, controls_skin's default as a .ini
-# opens, controls_opacity read as controls_alpha and vk_descriptors as vk_descriptors_mode; the rest of the runtime
-# stubbed
+# opens, controls_opacity read as controls_alpha and vk_descriptors as vk_descriptors_mode, and the FPS limit's,
+# showcase's and stats's keys; the rest of the runtime stubbed
 add_executable(snx-test-options-tv-mode options_tv_mode.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/options.c")
 snx_test_target(snx-test-options-tv-mode 23)
 target_link_libraries(snx-test-options-tv-mode PRIVATE scarletnx-common)
 add_test(NAME options_tv_mode COMMAND snx-test-options-tv-mode)
+# the player's pause (runtime/pause.c), hotkey_pause's: each press's line, a pause that didn't happen, and another pause
+# in force; the guest threads, the GPU, host1x and the clocks stubbed
+add_executable(snx-test-pause-toggle pause_toggle.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/pause.c")
+snx_test_target(snx-test-pause-toggle 23)
+add_test(NAME pause_toggle COMMAND snx-test-pause-toggle)
 # vk_descriptors read as vk_descriptors_mode, a startup setting, which only a process's first .ini sets: a process each
 foreach(case old pick cli)
     add_test(NAME options_vk_descriptors_${case} COMMAND snx-test-options-tv-mode --vk-descriptors-${case})

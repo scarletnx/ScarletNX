@@ -5,6 +5,7 @@
    and the GPU thread holds with the renderer idle, then the audio clock stops, and guest time last. A resume goes the
    other way. The frontend's thread does both, and skips its own guest work (hid, vsync) while paused (main.c) */
 #include "nx/runtime/pause.h"
+#include "common/utilities/key_said.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/video/host1x.h"
 #include "nx/hle/kernel/kernel.h"
@@ -16,6 +17,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/unattended.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -63,12 +65,24 @@ void game_resume(void) {
     LOG("pause: the game goes on after %.2f s paused\n", (double)(plat_ns() - g_pause.since) / 1e9);
 }
 int game_paused(void) { return __atomic_load_n(&g_pause.depth, __ATOMIC_ACQUIRE) > 0; }
-void game_pause_toggle(void) {
+int game_pause_toggle(char* text, size_t size) {
+    char line[96];
+    int now = 1;
     if (g_pause.player) {
-        g_pause.player = 0;
+        g_pause.player = now = 0;
         game_resume();
-    } else if (!game_pause())
+    } else if (game_pause())
+        now = -1;
+    else
         g_pause.player = 1;
+    if (now < 0) /* what didn't stop is in the line game_pause logged */
+        snprintf(line, sizeof line, "Not paused: the game didn't stop within %d s, the log says which part",
+                 PAUSE_MS / 1000);
+    else
+        snx_key_said(line, sizeof line, "Pause", now ? "on" : "off", now ? "off" : "on");
+    LOG("%s\n", line);
+    if (size) snprintf(text, size, "%s", line);
+    return now;
 }
 
 /* a 64-bit word mixed into h: a multiply and a shift per word, so a few GiB hash in about a second */

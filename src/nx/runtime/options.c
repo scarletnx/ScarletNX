@@ -6,6 +6,7 @@
 #include "nx/runtime/options.h"
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/key_said.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/hid.h"
@@ -153,6 +154,44 @@ void fps_limit_text(int fps, char* out, size_t n) {
         snprintf(out, n, "game");
     else
         snprintf(out, n, "%d", fps);
+}
+int options_fps_limit_step(int* was, char* text, size_t size) {
+    int before = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED), now;
+    char v[16], old[16], line[64];
+    if (before) {
+        *was = before;
+        now = 0;
+    } else
+        now = *was ? *was : SNX_FPS_GAME;
+    __atomic_store_n(&g_opt_fps, now, __ATOMIC_RELAXED); /* present_pace reads it on the game's threads */
+    fps_limit_text(now, v, sizeof v);
+    ini_set("fps_limit", v);
+    fps_limit_text(before, old, sizeof old);
+    snx_fps_limit_said(line, sizeof line, v, old);
+    LOG("%s\n", line);
+    if (size) snprintf(text, size, "%s", line);
+    return now;
+}
+/* showcase's and stats's steps: setting off or on, the .ini's key with it (a run's --key=1 stays out of the file);
+   the log's line names the corner it draws in */
+static int onoff_step(int* setting, const char* key, const char* what, const char* corner, char* text, size_t size) {
+    int on = !__atomic_load_n(setting, __ATOMIC_RELAXED);
+    char line[64];
+    __atomic_store_n(setting, on, __ATOMIC_RELAXED); /* the renderer reads it */
+    ini_set(key, on ? "1" : "0");
+    snx_key_said(line, sizeof line, what, on ? "on" : "off", on ? "off" : "on");
+    if (on)
+        LOG("%s, %s_corner=%s\n", line, key, corner);
+    else
+        LOG("%s\n", line);
+    if (size) snprintf(text, size, "%s", line);
+    return on;
+}
+int options_showcase_step(char* text, size_t size) {
+    return onoff_step(&g_settings.showcase, "showcase", "Showcase", g_settings.showcase_corner, text, size);
+}
+int options_stats_step(char* text, size_t size) {
+    return onoff_step(&g_settings.stats, "stats", "Stats", g_settings.stats_corner, text, size);
 }
 
 int g_opt_ldn = SNX_OPT_LDN_LAN;
