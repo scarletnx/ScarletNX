@@ -108,6 +108,26 @@ if(SNX_BUILD_NX)
     snx_quiet(snx_xxhash)
 endif()
 
+# RNNoise 0.1.1 (BSD-3-Clause) for the microphone's noise reduction (src/nx/runtime/platform/audio_denoise.c): a small
+# recurrent network that gives each band of a 10 ms frame at 48 kHz its gain. Its model is rnn_data.c, 87503 weights of
+# one byte (425 KB of C). Its sources but the training program (denoise.c's TRAINING part, off by default), with their
+# symbols hidden, so that a system librnnoise the runtime loads first never binds to them
+if(SNX_BUILD_NX)
+    CPMAddPackage(NAME rnnoise VERSION 0.1.1
+                  URL https://github.com/xiph/rnnoise/archive/refs/tags/v0.1.1.tar.gz
+                  URL_HASH SHA256=1641712c9ae31f3b364e8b2f2e0ec3ce24330e76055c151f695941b0ea5d3987
+                  DOWNLOAD_ONLY YES)
+    add_library(snx_rnnoise STATIC "${rnnoise_SOURCE_DIR}/src/denoise.c" "${rnnoise_SOURCE_DIR}/src/rnn.c"
+                "${rnnoise_SOURCE_DIR}/src/rnn_data.c" "${rnnoise_SOURCE_DIR}/src/kiss_fft.c"
+                "${rnnoise_SOURCE_DIR}/src/pitch.c" "${rnnoise_SOURCE_DIR}/src/celt_lpc.c")
+    target_include_directories(snx_rnnoise SYSTEM PUBLIC "${rnnoise_SOURCE_DIR}/include")
+    set_target_properties(snx_rnnoise PROPERTIES C_VISIBILITY_PRESET hidden POSITION_INDEPENDENT_CODE ON)
+    if(NOT WIN32)
+        target_link_libraries(snx_rnnoise PRIVATE m)
+    endif()
+    snx_quiet(snx_rnnoise)
+endif()
+
 # ENet (MIT) and zstd (BSD-3-Clause) for ldn's rooms (src/common/network/net_room.c): an Eden room is ENet on UDP,
 # and a game's datagrams in it are zstd frames. ENet's own sources, with the POSIX calls every target but Windows
 # has; zstd's compressor and decompressor alone, in C (no assembly, so every target builds the same). The tests of

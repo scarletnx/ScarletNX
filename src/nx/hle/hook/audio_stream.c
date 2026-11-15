@@ -16,7 +16,8 @@
    capacity. Their frames are the host's microphone (the microphone setting: the system's default recording device,
    another by its name, or off for silence), recorded only while a stream is started. The console's audio system has a
    noise reduction for its microphone, which a system setting switches (how strong it is isn't known). Here the noise
-   is reduced too (audio_denoise.h), unless microphone noise reduction is off. The devices the SDK asks auddmg:u about
+   is reduced too, by a neural network or spectrally (audio_denoise.h), as the microphone noise reduction setting says,
+   read for each block of 10 ms. The devices the SDK asks auddmg:u about
    (the virtual input devices and the devices' properties) are answered here too */
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
@@ -50,9 +51,11 @@
 #define MIC_SLACK_MS 60
 typedef struct {
     PMic* dev;
-    SnxDenoise* denoise;  /* NULL: the samples pass as recorded */
+    SnxDenoise* denoise; /* NULL: the samples pass as recorded */
+    int asked;           /* the method the reducer was made for (the setting's value then) */
+    u32 rate;
     u32 block, pending_n; /* the samples of a block, and how many of the next one are recorded so far */
-    i16 *pending, *learn; /* the next block, and a copy the reducer learns from while it is switched off */
+    i16* pending;         /* the next block */
     i16* ready;           /* a ring of size samples, count of them from head */
     u32 size, head, count;
     u32 hold, slack; /* MIC_HOLD_MS (and what shorts added) and MIC_SLACK_MS in samples */
@@ -308,7 +311,6 @@ static void mic_free(Mic* m) {
     plat_mic_close(m->dev);
     snx_denoise_free(m->denoise);
     free(m->pending);
-    free(m->learn);
     free(m->ready);
     free(m);
 }
@@ -322,14 +324,15 @@ static Mic* mic_open(u32 rate) {
     m->hold = (u32)((u64)rate * MIC_HOLD_MS / 1000);
     m->slack = (u32)((u64)rate * MIC_SLACK_MS / 1000);
     m->pending = calloc(m->block, sizeof *m->pending);
-    m->learn = calloc(m->block, sizeof *m->learn);
     m->ready = calloc(m->size, sizeof *m->ready);
-    if (!m->pending || !m->learn || !m->ready) {
+    if (!m->pending || !m->ready) {
         mic_free(m);
         return NULL;
     }
     if (strcmp(g_settings.microphone, "off")) m->dev = plat_mic_open(rate, g_settings.microphone);
-    if (m->dev) m->denoise = snx_denoise_new(rate, m->block, SNX_DENOISE_SUPPRESS_DB);
+    m->rate = rate;
+    m->asked = __atomic_load_n(&g_settings.microphone_noise_reduction, __ATOMIC_RELAXED);
+    if (m->dev) m->denoise = snx_denoise_new(rate, m->block, m->asked);
     /* said for the first starts only: a game may start and stop its stream for each recording */
     if (!strcmp(g_settings.microphone, "off"))
         LOG_LIMIT(8, "audio: an input stream started with the microphone off: the game hears silence\n");
@@ -337,9 +340,10 @@ static Mic* mic_open(u32 rate) {
         LOG_LIMIT(8, "audio: an input stream started with no host microphone: the game hears silence\n");
     else
         LOG_LIMIT(8, "audio: an input stream records the host's microphone at %u Hz, noise reduction %s\n", rate,
-                  !m->denoise                             ? "not there"
-                  : g_settings.microphone_noise_reduction ? "on"
-                                                          : "off (the setting)");
+                  snx_denoise_method(m->denoise) == SNX_DENOISE_NEURAL     ? "neural"
+                  : snx_denoise_method(m->denoise) == SNX_DENOISE_SPECTRAL ? "spectral"
+                  : m->asked == SNX_DENOISE_OFF                            ? "off (the setting)"
+                                                                           : "not there");
     return m;
 }
 /* n samples to the ready ring, its oldest dropped when it is full */
@@ -354,15 +358,16 @@ static void mic_push(Mic* m, const i16* x, u32 n) {
         m->count++;
     }
 }
-/* a whole block: reduced when the setting has it so. Switched off, the reducer still learns the noise from a copy,
-   so that switching it on takes effect at once */
+/* a whole block: reduced as the setting has it now. A change of method makes a new reducer, which learns the noise
+   again in a second or so */
 static void mic_block(Mic* m) {
-    if (m->denoise && __atomic_load_n(&g_settings.microphone_noise_reduction, __ATOMIC_RELAXED))
-        snx_denoise_run(m->denoise, m->pending);
-    else if (m->denoise) {
-        memcpy(m->learn, m->pending, m->block * sizeof *m->learn);
-        snx_denoise_run(m->denoise, m->learn);
+    int want = __atomic_load_n(&g_settings.microphone_noise_reduction, __ATOMIC_RELAXED);
+    if (want != m->asked) {
+        snx_denoise_free(m->denoise);
+        m->denoise = snx_denoise_new(m->rate, m->block, want);
+        m->asked = want;
     }
+    snx_denoise_run(m->denoise, m->pending);
     mic_push(m, m->pending, m->block);
     m->pending_n = 0;
 }

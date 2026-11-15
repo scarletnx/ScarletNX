@@ -129,6 +129,8 @@ if(SNX_TRACY)
     list(APPEND platform runtime/platform/tracy_conn.cpp)
 endif()
 snx_component(platform ${platform})
+# the microphone's neural noise reduction (runtime/platform/audio_denoise.c), from cmake/dependencies.cmake
+target_link_libraries(snx_platform PRIVATE snx_rnnoise)
 # the tracy-capture a capture needs (tracy.c), the client's release (cmake/dependencies.cmake)
 target_compile_definitions(snx_platform PRIVATE SNX_TRACY_VERSION="${SNX_TRACY_VERSION}")
 
