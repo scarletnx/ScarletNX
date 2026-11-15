@@ -188,6 +188,8 @@ void vk_astc_forget(const Surf* t, u32 level) {}
 u64 vk_astc_rgba8_bytes(void) { return 0; }
 int vk_bc1_tight(const char* why) { return 0; }
 void vk_tex_later_forget(Surf* s) {}
+/* no virtual texture (vt_sparse): no record to let go */
+void vk_vt_forget(Surf* t) {}
 /* no draw recorded and not submitted holds an image */
 int vk_gfx_image_holds(const Surf* s) { return 0; }
 /* a target's image and views go when the frames are done, and the pages its pixels cover with it */

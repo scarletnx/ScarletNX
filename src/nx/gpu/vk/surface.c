@@ -2720,6 +2720,7 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
 static void surf_free(Surf* s) {
     const u32 r = s->row;
     vk_tex_later_forget(s);
+    vk_vt_forget(s); /* vt_sparse: its record goes */
     surf_changed(s->gva);
     vk_astc_forget(s, ~0u); /* the background encodes of its levels stop writing into it */
     if (r) {

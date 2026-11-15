@@ -1247,6 +1247,11 @@ typedef struct Surf {
     /* textures: made again within 300 presents of the cache's eviction of its key (texture.c): a trim's first step,
        for headroom, leaves it (surface.c vk_mem_trim) */
     u8 came_back;
+    /* textures: vt_sparse (aogo/vt-sparse, vt_probe.c): an ASTC texture held RGBA8 with memory only for the sparse
+       blocks the probe saw sampled in the last vt_frames presents, and its mip tail. vt_slot: its record there, plus
+       one. vt_fresh_only: set while vk_tex_vt_load decodes only the strips of blocks bound since their last load */
+    u8 vt, vt_fresh_only;
+    u32 vt_slot;
     /* depth targets: undefined but for draws and clears predicated on the GPU, which may not have run, so they count
        as no draw (render.c zt_written) */
     int pred_undefined;
@@ -1499,6 +1504,23 @@ void vk_tex_vt_init(void);
 void vk_tex_vt_handle(u32 handle, Surf* t);
 void vk_vt_bits_present(void); /* each present: the frame's marks copied out, the landed ones counted */
 void vk_vt_bits_window(void);  /* each window: the frames' and their union's tile bytes logged */
+/* vt_sparse (aogo/vt-sparse, vt_probe.c), on the probe's marks. vk_vt_register: a texture made sparse for it gets a
+   record (0 when there is no room for one: then it is no VT texture); vk_vt_forget: it goes. vk_vt_want: the bits
+   of its blocks (vk_image_sparse_bind's order) left only where the probe saw them sampled in the last vt_frames
+   presents (all, for one that fell back to whole); vk_vt_bound: the bind of bits went through, and the blocks it gave
+   memory have no texels yet. vk_vt_strip_fresh: rows y0 to y1 of a level of a layer have such a block;
+   vk_vt_level_fresh: the level has one; vk_vt_loaded: every bound block has its texels. vk_vt_frame: each present,
+   after the probe's marks land: the textures whose wanted blocks changed bound again and their new blocks decoded
+   (texture.c vk_tex_vt_load), the stale ones let go every 30 presents */
+int vk_vt_register(Surf* t);
+void vk_vt_forget(Surf* t);
+void vk_vt_want(const Surf* t, u8* bits, u64 nbits);
+void vk_vt_bound(const Surf* t, const u8* bits, u64 nbits);
+int vk_vt_strip_fresh(const Surf* t, u32 layer, u32 level, u32 y0, u32 y1);
+int vk_vt_level_fresh(const Surf* t, u32 layer, u32 level);
+void vk_vt_loaded(const Surf* t);
+void vk_vt_frame(void);
+int vk_tex_vt_load(Surf* t); /* texture.c: t bound again where the probe wants it, its new blocks decoded */
 /* each present, while memory is short: the textures whose texture object the game ended go, once memory can give
    them again and a grace period passed with no object made at their address (a game that ends a texture and makes
    it again there with the same bytes still finds it) */

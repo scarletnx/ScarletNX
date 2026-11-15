@@ -198,12 +198,12 @@ static int tex_bind_at(Surf* t, int finer_ok) {
     const VkFmt* f = &t->f;
     /* a texture sparse for its levels alone is mapped whole: every block, each like no other (no keys), with no walk
        over its mapping, which a trim that makes hundreds of them coarser would take for each */
-    if (t->shed) {
+    if (t->shed || t->vt) {
         memset(bits, 0xFF, nbits / 8 + 1);
         free(keys);
         keys = NULL;
     }
-    for (u32 layer = 0; layer < (t->shed ? 0 : t->layers); layer++) {
+    for (u32 layer = 0; layer < (t->shed || t->vt ? 0 : t->layers); layer++) {
         u64 at = t->gva + layer * t->layer_size;
         for (u32 l = 0; l < t->levels; l++) {
             u32 lbh, lbd;
@@ -238,6 +238,7 @@ static int tex_bind_at(Surf* t, int finer_ok) {
         else if ((bits[k >> 3] >> (k & 7)) & 1 && !keys[k])
             keys[k] = 1;
     }
+    if (t->vt) vk_vt_want(t, bits, nbits); /* vt_sparse: only the blocks the probe saw sampled */
     u32 floor = t->lod_floor;
     u8* finer = floor && finer_ok ? malloc(nbits / 8 + 1) : NULL;
     if (finer) {
@@ -257,6 +258,7 @@ static int tex_bind_at(Surf* t, int finer_ok) {
         r = vk_image_sparse_bind(t->img, bits, keys, &bytes);
     }
     if (r < 0 && need && !g_bind_no_trim) vk_mem_trim(need, 1); /* room for it by the time the upload is tried again */
+    if (r >= 0 && t->vt) vk_vt_bound(t, bits, nbits);           /* the blocks it gave memory have no texels yet */
     if (r >= 0 && floor != t->lod_floor) {
         if (floor < t->lod_floor) g_shed_finer++;
         else g_shed_coarser += floor - t->lod_floor;
@@ -2214,7 +2216,53 @@ static int tex_upload_(Surf* t) {
         later_queue(t);
         kind_record(vk_cmd(), t); /* the read of the blocks it kept, in the upload's command buffer */
     }
+    if (complete && t->vt) vk_vt_loaded(t); /* every bound block decoded */
     return t->upload_valid = complete;
+}
+/* vt_sparse (aogo/vt-sparse): t bound again where the probe wants it (tex_bind, through vk_vt_want), and only the
+   strips that hold blocks bound since their last load decoded from guest memory, level by level as its upload does
+   (astc.c asks vk_vt_strip_fresh for each strip). A texture whose load is still to come is left to it, which decodes
+   every bound block. 0 when the bind or the decode found no memory or staging: vt_probe.c tries again at the next
+   present */
+int vk_tex_vt_load(Surf* t) {
+    if (!t->vt || !t->img || !t->upload_valid) return 1;
+    g_bind_no_trim = 1; /* inside vt_probe.c's walk of its textures: a trim there may free one it holds */
+    const int r = tex_bind(t);
+    g_bind_no_trim = 0;
+    if (r < 0) return 0;
+    int any = 0;
+    for (u32 layer = 0; layer < t->layers && !any; layer++)
+        for (u32 l = 0; l < t->levels && !any; l++) any = vk_vt_level_fresh(t, layer, l);
+    if (!any) return 1;
+    const VkFmt* f = &t->f;
+    vk_render_end(); /* copies happen outside rendering passes */
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    Upload u = {.cb = cb, .t = t};
+    int ok = 1;
+    t->vt_fresh_only = 1;
+    for (u32 layer = 0; layer < t->layers && ok; layer++) {
+        u64 at = layer * t->layer_size;
+        for (u32 l = 0; l < t->levels && ok; l++) {
+            const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
+            const u32 tw = (lw + f->bw - 1) / f->bw, th = (lh + f->bh - 1) / f->bh, rowb = tw * f->bpp;
+            u32 lbh = 0, lbd = 0;
+            const u64 lsz = bl_level_size(t->w, t->h, 1, f, t->bh, t->bd, t->tile_w, l, &lbh, &lbd);
+            if (vk_vt_level_fresh(t, layer, l)) {
+                LevelSource ls = {
+                    t, t->gva + at, lsz, rowb, th, lbh, lbd, bl_level_gobs_x(rowb, th, 1, t->bh, t->bd, t->tile_w), 0};
+                ok = up_flush(&u) && vk_astc_upload(u.cb, t, 0, 0, lw, lh, 1, l, layer, astc_rows, &ls, NULL);
+                u.scratch = VK_NULL_HANDLE; /* astc_rows may have grown the scratch buffer: asked for again */
+                u.cap = 0;
+            }
+            at += lsz;
+        }
+    }
+    t->vt_fresh_only = 0;
+    ok = up_flush(&u) && ok;
+    if (ok) vk_vt_loaded(t);
+    return ok;
 }
 
 /* change checks: a hash of the whole texture, 4 KiB at a time, the same whichever way its bytes are reached (the
@@ -2552,6 +2600,28 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
         if (!written) vk_image_sparse_mover(t->img, VK_MOVE_SPARSE(t));
         vk_surf_add(t);
         return t;
+    }
+    /* vt_sparse (aogo/vt-sparse, a local prototype): an ASTC texture mapped whole that the GPU only reads, sampled in
+       2D, of TEX_SHED_MIN or more: held RGBA8, decoded exact, in an image with sparse residency whose memory follows
+       the blocks the probe sees sampled (vt_probe.c), its mip tail bound whole; its first load decodes the tail alone.
+       Without a record for it, it is a sparse texture bound where guest memory maps it: all of it */
+    if (g_settings.vt_sparse && g_vt_probe_address && f.conv == VKC_ASTC && !holes && !written && !msaa && bl &&
+        (type == VK_IMAGE_VIEW_TYPE_2D || type == VK_IMAGE_VIEW_TYPE_2D_ARRAY) && g_vk.sparse && g_vk.resident &&
+        g_vk.feat.sparseResidencyImage2D) {
+        const VkFormat rgba8 = fkey >> 31 ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        VkImageCreateInfo vi;
+        VkViewFormats vvf;
+        int storage = 0;
+        t->f.vk = rgba8;
+        tex_info(t, rgba8, &vi, &vvf, &storage);
+        if (vk_image_create_sparse_min(&vi, &t->img, TEX_SHED_MIN)) {
+            t->sparse = 1;
+            t->storage_capable = storage;
+            t->vt = (u8)vk_vt_register(t);
+            vk_surf_add(t);
+            return t;
+        }
+        t->f.vk = f.vk; /* too small, or no such image here: as without vt_sparse */
     }
     /* room is made for it under the budget: the caller holds only surfaces it used this present, which stay. A sparse
        one has no memory until tex_bind, which makes room for what it binds. Only where holes read as zeros
@@ -5006,6 +5076,7 @@ static int vt_cmp(const void* a, const void* b) {
 static void vt_probe_present(void) {
     if (!g_settings.vt_probe) return;
     vk_vt_bits_present();
+    vk_vt_frame(); /* vt_sparse: the marks that landed bound and decoded */
     g_vt_probe.frames[g_vt_probe.nframes++] = g_vt_probe.frame;
     g_vt_probe.frame = (VtSum){0, 0, 0, 0, 0, 0, 0};
     if (g_vt_probe.nframes < VT_PROBE_WINDOW) return;

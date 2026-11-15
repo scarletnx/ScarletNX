@@ -1471,6 +1471,21 @@ setting VT probe
     help 1 = every 60 presents the log says how much of the ASTC textures the frames sampled (aogo/vt-working-set, a
     help local measurement for the virtual texture study): the textures a frame and 60 frames bound, as RGBA8, as
     help ASTC and as held, against every ASTC texture alive
+setting VT sparse
+    key vt_sparse
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = ASTC textures mapped whole and sampled in 2D are held RGBA8 with sparse residency, memory bound only for
+    help the 64 KiB blocks vt_probe saw sampled in the last vt_frames presents and their mip tail, decoded as they get
+    help it (aogo/vt-sparse, a local prototype of the virtual texture study). Needs vt_probe
+setting VT frames
+    key vt_frames
+    int 2 3600
+    default 120
+    startup
+    help vt_sparse: the presents a block stays bound after the probe last saw it sampled
 setting SM86 dump
     key sm86_dump
     text 1024

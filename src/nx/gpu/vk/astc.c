@@ -1728,6 +1728,8 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
             u32 height = h - y * bh < n * bh ? h - y * bh : n * bh;
             u64 size = row_in * n * nz, offset, texels = (u64)w * height * nz * 4;
             if (sh && !vk_image_sparse_bound(t->img, layer, level, y * bh, y * bh + height, z, z + nz, 0)) continue;
+            /* vt_sparse's loads (texture.c vk_tex_vt_load): only the strips of blocks bound since the last one */
+            if (sh && t->vt_fresh_only && !vk_vt_strip_fresh(t, layer, level, y * bh, y * bh + height)) continue;
             if (!keep_only && split_before((u64)w * height * nz)) cb = vk_cmd();
             VkBuffer input;
             const u32 cy = (height + 3) / 4;
