@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/vk.h"
+#include "common/gpu/vk/extension_bans.h"
 #include "common/utilities/window_icon.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -20,6 +22,8 @@ void vita_vk_on_retire(void (*retire)(unsigned slot, uint64_t serial)) { g.vk.ri
 uint32_t vita_vk_memory_type(uint32_t bits, VkMemoryPropertyFlags properties) {
     return snx_vk_memory_type(&g.vk.memory_properties, bits, properties);
 }
+/* a line of the extension bans (extension_bans.h) for the log */
+static void ban_say(const char* line, int warn) { fprintf(stderr, "%s%s\n", warn ? "warning: " : "", line); }
 /* A device of this physical device and queue family, if it has what the Vita needs (snx_vk_first_device's make) */
 static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     VitaVk* v = user;
@@ -52,6 +56,16 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(phys, &features);
     if (!v13.dynamicRendering || !v13.synchronization2) return false;
+    /* the drivers' bans (extension_bans.txt) on this device: without timeline semaphores the ring waits for the fence
+       of each slot (the table turns them off on Android) */
+    VkPhysicalDeviceVulkan12Properties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
+    VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
+    vkGetPhysicalDeviceProperties2(phys, &props);
+    VkBanDevice bd = {
+        props.properties.deviceName,    driver.driverName,         driver.driverInfo, (uint32_t)driver.driverID,
+        props.properties.driverVersion, props.properties.deviceID, vk_ban_system()};
+    vk_bans_device(&bd);
+    if (vk_ban("timelineSemaphore", v12.timelineSemaphore, ban_say)) v12.timelineSemaphore = VK_FALSE;
     v->local_read = local_read && lr.dynamicRenderingLocalRead;
     v->raster_order = raster_order && ro.rasterizationOrderColorAttachmentAccess;
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR want_lr = {
@@ -64,7 +78,8 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
                                                .dynamicRendering = VK_TRUE,
                                                .synchronization2 = VK_TRUE};
     VkPhysicalDeviceVulkan12Features want12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                               .shaderFloat16 = v12.shaderFloat16};
+                                               .shaderFloat16 = v12.shaderFloat16,
+                                               .timelineSemaphore = v12.timelineSemaphore};
     VkPhysicalDeviceFeatures2 want = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     want.features.fragmentStoresAndAtomics = features.features.fragmentStoresAndAtomics;
     want.features.shaderClipDistance = features.features.shaderClipDistance;
@@ -86,6 +101,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     v->preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32;
     v->bc = features.features.textureCompressionBC;
     v->depth_clamp = features.features.depthClamp;
+    v->timeline = v12.timelineSemaphore;
     VkFormatProperties d16;
     vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_D16_UNORM, &d16);
     const VkFormatFeatureFlags blit = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
@@ -117,6 +133,14 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     if (!snx_vk_window_open("scarletnx-vita", title ? title : "ScarletNX Vita", 960, 544, &v->host, error, error_size))
         return false;
     if (v->host.window) snx_window_icon(v->host.window);
+    /* the drivers known to break an extension or feature, read before a device is made (make_device), as the 3DS
+       does: a table the build carries that does not read is the build's fault, a key of vulkan_ban_ignore the table
+       has not is the player's */
+    if (!vk_bans_load(snx_vk_extension_bans_text, error, error_size) ||
+        !vk_bans_ignore(g_settings.vulkan_ban_ignore, error, error_size)) {
+        vita_vk_free();
+        return false;
+    }
     if (!snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, VK_QUEUE_GRAPHICS_BIT, v->host.surface,
                              make_device, v)) {
         snprintf(error, error_size, "no Vulkan 1.3 device with dynamic rendering and VK_EXT_external_memory_host");
@@ -136,7 +160,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
                                      .maxSets = 4096,
                                      .poolSizeCount = sizeof sizes / sizeof *sizes,
                                      .pPoolSizes = sizes};
-    bool made = snx_vk_ring_init(&v->ring, v->device, v->queue, v->family, VITA_VK_SLOTS, &dp);
+    bool made = snx_vk_ring_init(&v->ring, v->device, v->queue, v->family, VITA_VK_SLOTS, &dp, v->timeline);
     for (unsigned i = 0; i < VITA_VK_SLOTS && made; ++i)
         made = vkCreateSemaphore(v->device, &semaphore, NULL, &v->acquired[i]) == VK_SUCCESS;
     for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES && made; ++i)

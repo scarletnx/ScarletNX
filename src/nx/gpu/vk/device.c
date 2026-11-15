@@ -1192,6 +1192,17 @@ static int create_device(void) {
                            has_fault ? &qfault : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
+    /* Each order between submissions, queues and the CPU is a timeline value: the graphics and compute timelines
+       (cmd.c, compute.c), the sparse binds (memory.c), and the CPU's waits for a path of its own (vk_host_next). It is
+       core in 1.2 (VK_KHR_timeline_semaphore before), and 1.2 requires it of each device, so the renderer has no
+       way without it. extension_bans.txt's "warn" lines on it are said (vk_bans_filter): an "off" line could not be
+       kept, and the log says so */
+    if (!q12.timelineSemaphore)
+        fatal("vulkan: %s has no timeline semaphores, which Vulkan 1.2 requires", g_vk.props.deviceName);
+    if (vk_ban_find("timelineSemaphore"))
+        WARN("vulkan: extension_bans.txt turns timelineSemaphore off on this driver, but the renderer has no way "
+             "without it: it stays on\n");
+    LOG("vulkan: timeline semaphores on (core 1.2): graphics, compute, sparse binds and the CPU's waits\n");
     /* without it the shaders do their FP16 work in 32 bits */
     if (vk_ban("shaderFloat16", q12.shaderFloat16, ban_say)) q12.shaderFloat16 = VK_FALSE;
     if (!core13) {
@@ -2015,6 +2026,14 @@ static int create_device(void) {
     g_vk.feat2 = (VkPhysicalDeviceFeatures2){
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &g_vk.feat11, .features = g_vk.feat};
     volkLoadDevice(g_vk.dev);
+    /* NVIDIA's 621.01 lists VK_EXT_depth_clamp_control and its depthClampControl, and the device is made with both,
+       yet vkGetDeviceProcAddr has no vkCmdSetDepthClampRangeEXT: the recorder called a null pointer at the first
+       draw that clamps to a range of its own. Without the command no pipeline takes the range as dynamic state */
+    if (g_vk.has_depth_clamp_range && !vkCmdSetDepthClampRangeEXT) {
+        g_vk.has_depth_clamp_range = 0;
+        LOG("vulkan: a clamped depth stays in the viewport transform's range, where the console clamps to the "
+            "viewport's clip range (the driver has VK_EXT_depth_clamp_control without vkCmdSetDepthClampRangeEXT)\n");
+    }
     const char* lacks_command = NULL;
     if (!core13 && !vk12_commands(&lacks_command)) {
         WARN("vulkan: %s enabled the extensions 1.3 took in, but has no %s\n", g_vk.props.deviceName, lacks_command);

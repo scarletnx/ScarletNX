@@ -102,6 +102,7 @@ class ArchitectureTests(unittest.TestCase):
         errors = self.dynamic_errors({'src/nx/gpu/vk/ui.c': layout})
         self.assertEqual(len(errors), 1)
         self.assertIn('src/nx/gpu/vk/ui.c:3: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: Turnip keeps', errors[0])
+        self.assertIn('docs/layers/gpu/driver-quirks.md#turnip', errors[0])
         pool = 'VkDescriptorPoolSize s = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 3};\n'
         self.assertEqual(len(self.dynamic_errors({'src/nx/gpu/vk/a.c': pool})), 1)
 

@@ -3,7 +3,7 @@
 #include "common/gpu/vk/ring.h"
 
 bool snx_vk_ring_init(SnxVkRing* ring, VkDevice device, VkQueue queue, uint32_t family, unsigned count,
-                      const VkDescriptorPoolCreateInfo* descriptors) {
+                      const VkDescriptorPoolCreateInfo* descriptors, bool timeline) {
     *ring = (SnxVkRing){.device = device, .queue = queue, .count = count};
     if (!count || count > SNX_VK_RING_SLOTS) return false;
     VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -15,8 +15,14 @@ bool snx_vk_ring_init(SnxVkRing* ring, VkDevice device, VkQueue queue, uint32_t 
                                       .commandPool = ring->pool,
                                       .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
                                       .commandBufferCount = 1};
+    if (made && timeline) {
+        VkSemaphoreTypeCreateInfo tci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                         .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+        VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &tci};
+        made = vkCreateSemaphore(device, &sci, NULL, &ring->timeline) == VK_SUCCESS;
+    }
     for (unsigned i = 0; i < count && made; ++i)
-        made = vkCreateFence(device, &fi, NULL, &ring->slots[i].fence) == VK_SUCCESS &&
+        made = (ring->timeline || vkCreateFence(device, &fi, NULL, &ring->slots[i].fence) == VK_SUCCESS) &&
                vkCreateDescriptorPool(device, descriptors, NULL, &ring->slots[i].descriptors) == VK_SUCCESS &&
                vkAllocateCommandBuffers(device, &ai, &ring->slots[i].cb) == VK_SUCCESS &&
                vkAllocateCommandBuffers(device, &ai, &ring->slots[i].uploads) == VK_SUCCESS;
@@ -29,6 +35,7 @@ void snx_vk_ring_free(SnxVkRing* ring) {
         if (ring->slots[i].descriptors) vkDestroyDescriptorPool(ring->device, ring->slots[i].descriptors, NULL);
         if (ring->slots[i].fence) vkDestroyFence(ring->device, ring->slots[i].fence, NULL);
     }
+    if (ring->timeline) vkDestroySemaphore(ring->device, ring->timeline, NULL);
     if (ring->pool) vkDestroyCommandPool(ring->device, ring->pool, NULL);
     *ring = (SnxVkRing){0};
 }
@@ -36,7 +43,7 @@ void snx_vk_ring_free(SnxVkRing* ring) {
 /* a submission done: its slot free again, and what the frontend kept for it */
 static void retire(SnxVkRing* ring, unsigned i) {
     SnxVkRingSlot* s = &ring->slots[i];
-    vkResetFences(ring->device, 1, &s->fence);
+    if (s->fence) vkResetFences(ring->device, 1, &s->fence);
     vkResetCommandBuffer(s->cb, 0);
     vkResetCommandBuffer(s->uploads, 0);
     vkResetDescriptorPool(ring->device, s->descriptors, 0);
@@ -49,11 +56,16 @@ static void retire(SnxVkRing* ring, unsigned i) {
 static unsigned oldest(const SnxVkRing* ring, unsigned n) { return (ring->slot + n) % ring->count; }
 uint64_t snx_vk_ring_poll(SnxVkRing* ring) {
     if (!ring->pool) return 0;
+    uint64_t done = 0;
+    if (ring->timeline && vkGetSemaphoreCounterValue(ring->device, ring->timeline, &done) != VK_SUCCESS)
+        return ring->completed;
     for (unsigned n = 0; n < ring->count; ++n) {
         unsigned i = oldest(ring, n);
         if (!ring->slots[i].serial || (ring->recording && i == ring->slot)) continue;
         /* in order: the later ones are not done either */
-        if (vkGetFenceStatus(ring->device, ring->slots[i].fence) != VK_SUCCESS) break;
+        if (ring->timeline ? ring->slots[i].serial > done
+                           : vkGetFenceStatus(ring->device, ring->slots[i].fence) != VK_SUCCESS)
+            break;
         retire(ring, i);
     }
     return ring->completed;
@@ -61,6 +73,15 @@ uint64_t snx_vk_ring_poll(SnxVkRing* ring) {
 bool snx_vk_ring_wait(SnxVkRing* ring, uint64_t serial, uint64_t timeout_ns) {
     if (!ring->pool || serial <= ring->completed) return true;
     if (serial > ring->submitted) snx_vk_ring_submit(ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    if (serial > ring->submitted) return false; /* a lost device: it never comes */
+    if (ring->timeline) {                       /* one wait for the value, then each slot it passed is free in order */
+        VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                                  .semaphoreCount = 1,
+                                  .pSemaphores = &ring->timeline,
+                                  .pValues = &serial};
+        if (vkWaitSemaphores(ring->device, &wi, timeout_ns) != VK_SUCCESS) return false;
+        return snx_vk_ring_poll(ring) >= serial;
+    }
     for (unsigned n = 0; n < ring->count && ring->completed < serial; ++n) {
         unsigned i = oldest(ring, n);
         const SnxVkRingSlot* s = &ring->slots[i];
@@ -99,7 +120,7 @@ uint64_t snx_vk_ring_submit(SnxVkRing* ring, VkSemaphore wait, VkSemaphore signa
     if (!ring->recording && !wait && !signal) return ring->submitted;
     VkCommandBuffer cb = snx_vk_ring_commands(ring);
     if (ring->close) ring->close();
-    /* everything written is the host's to read once the fence is signaled */
+    /* everything written is the host's to read once its serial is done */
     VkMemoryBarrier host = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
                             .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
                             .dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT};
@@ -117,14 +138,24 @@ uint64_t snx_vk_ring_submit(SnxVkRing* ring, VkSemaphore wait, VkSemaphore signa
         ended = vkEndCommandBuffer(s->uploads) == VK_SUCCESS;
     }
     VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    /* the swapchain's binary semaphore, if any, then the timeline's serial (a binary one's value is not read) */
+    uint64_t serial = ring->submitted + 1, values[2] = {0, 0};
+    VkSemaphore signals[2];
+    uint32_t ns = 0;
+    if (signal) signals[ns++] = signal;
+    if (ring->timeline) values[ns] = serial, signals[ns++] = ring->timeline;
+    VkTimelineSemaphoreSubmitInfo ts = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                        .signalSemaphoreValueCount = ns,
+                                        .pSignalSemaphoreValues = values};
     VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                       .pNext = ring->timeline ? &ts : NULL,
                        .waitSemaphoreCount = wait ? 1 : 0,
                        .pWaitSemaphores = &wait,
                        .pWaitDstStageMask = &stage,
                        .commandBufferCount = ring->uploading ? 2 : 1,
                        .pCommandBuffers = ring->uploading ? buffers : buffers + 1,
-                       .signalSemaphoreCount = signal ? 1 : 0,
-                       .pSignalSemaphores = &signal};
+                       .signalSemaphoreCount = ns,
+                       .pSignalSemaphores = signals};
     ring->recording = ring->uploading = false;
     if (vkEndCommandBuffer(cb) != VK_SUCCESS || !ended || vkQueueSubmit(ring->queue, 1, &si, s->fence) != VK_SUCCESS) {
         /* a lost device: nothing more runs, and the slot is free as if it had */
@@ -132,7 +163,7 @@ uint64_t snx_vk_ring_submit(SnxVkRing* ring, VkSemaphore wait, VkSemaphore signa
         vkResetCommandBuffer(s->uploads, 0);
         return ring->submitted;
     }
-    s->serial = ++ring->submitted;
+    s->serial = ring->submitted = serial;
     ring->slot = (ring->slot + 1) % ring->count;
     return ring->submitted;
 }

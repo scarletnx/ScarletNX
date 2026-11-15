@@ -78,6 +78,7 @@ static const char* const driver_names[] = {
     [VK_DRIVER_ID_APE_SOFT] = "apesoft",
 };
 static const char* const driver_labels[] = {
+    [0] = "Each driver", /* a line on * */
     [VK_DRIVER_ID_AMD_PROPRIETARY] = "AMD's proprietary driver",
     [VK_DRIVER_ID_AMD_OPEN_SOURCE] = "AMDVLK",
     [VK_DRIVER_ID_MESA_RADV] = "RADV",
@@ -434,7 +435,14 @@ static int parse_ban(Ban* b, char* why, size_t n) {
     b->driver = 1;
     while (b->driver < DRIVERS && !(driver_names[b->driver] && field_is(b, VK_BAN_DRIVER, driver_names[b->driver])))
         b->driver++;
-    if (b->driver == DRIVERS) {
+    if (field_is(b, VK_BAN_DRIVER, "*")) { /* each driver: no numbering of versions is common to all of them */
+        b->driver = 0;
+        if (!field_is(b, VK_BAN_VERSIONS, "*")) {
+            snprintf(why, n, "versions \"%.*s\" are not * for the driver *", (int)b->size[VK_BAN_VERSIONS],
+                     g_extension_bans.text + b->at[VK_BAN_VERSIONS]);
+            return 0;
+        }
+    } else if (b->driver == DRIVERS) {
         snprintf(why, n, "driver \"%.*s\" is none of the drivers the table's head names", (int)b->size[VK_BAN_DRIVER],
                  g_extension_bans.text + b->at[VK_BAN_DRIVER]);
         return 0;
@@ -519,9 +527,10 @@ void vk_bans_device(const VkBanDevice* d) {
 static int holds(const Ban* b) {
     uint32_t v = g_extension_bans.driver_version, gpu = !b->ngpus;
     for (uint32_t i = 0; i < b->ngpus; i++) gpu |= b->gpus[i] == g_extension_bans.device_id;
-    return b->driver == g_extension_bans.driver_id && gpu && (!b->systems || (b->systems & g_extension_bans.system)) &&
-           (b->low_bound != BOUND_FROM || v >= b->low) && (b->low_bound != BOUND_AFTER || v > b->low) &&
-           (b->high_bound != BOUND_BEFORE || v < b->high) && (b->high_bound != BOUND_UP_TO || v <= b->high);
+    return (!b->driver || b->driver == g_extension_bans.driver_id) && gpu &&
+           (!b->systems || (b->systems & g_extension_bans.system)) && (b->low_bound != BOUND_FROM || v >= b->low) &&
+           (b->low_bound != BOUND_AFTER || v > b->low) && (b->high_bound != BOUND_BEFORE || v < b->high) &&
+           (b->high_bound != BOUND_UP_TO || v <= b->high);
 }
 
 static const Ban* ban_at(uint32_t line) {

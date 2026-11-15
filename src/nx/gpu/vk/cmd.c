@@ -316,12 +316,11 @@ static int bar_room(const DevMemBudget* b, u64 add, int back) {
 /* The driver gives the GPU's own report of a fault (VK_EXT_device_fault, record.c's fault_dump) only once it has
    declared the device lost, and a GPU that stopped is not lost yet: the driver's own timeout comes later than
    VK_GPU_STUCK_NS. A stopped GPU gets 20 s more to become a lost one, so that the report has the fault */
-static void stopped_wait_lost(VkSemaphore sem, u64 value, VkFence fence) {
+static void stopped_wait_lost(VkSemaphore sem, u64 value) {
     VkSemaphoreWaitInfo wi = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &sem, .pValues = &value};
     for (u32 i = 0; i < 20; i++) {
-        VkResult r = sem ? vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull)
-                         : vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, 1000000000ull);
+        VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull);
         if (r == VK_ERROR_DEVICE_LOST) LOG("vulkan: the driver declared the stopped GPU's device lost\n");
         if (r != VK_TIMEOUT) return;
     }
@@ -362,7 +361,7 @@ void vk_wait_semaphore(VkSemaphore sem, u64 value) {
             idle = 0;
             moved = plat_ns();
         } else if (plat_ns() - moved >= VK_GPU_STUCK_NS) {
-            stopped_wait_lost(sem, value, VK_NULL_HANDLE);
+            stopped_wait_lost(sem, value);
             vk_checkpoint_dump("GPU stopped");
             vk_ck_report(); /* what the submissions it has not finished hold */
             fatal("vulkan: the GPU stopped responding: no work finished for %llu s (at submission %llu, waiting for "
@@ -372,25 +371,50 @@ void vk_wait_semaphore(VkSemaphore sem, u64 value) {
     }
 }
 
-/* a fence's wait, the same way: no fence of the runtime's own (a bind of sparse memory, a landing) takes seconds */
-/* the fence waits since the last statistics and their time, from whichever thread waited (a bind of sparse memory, a
-   granule of the mirror, a landing): each is a round trip to the GPU that vk_finish's sites and the timeline's waits
-   do not count */
-static u64 g_fence_waits, g_fence_wait_ns;
-int vk_wait_fence(VkFence fence) {
+/* the waits on a path's own timeline since the last statistics and their time, from whichever thread waited (a bind
+   of sparse memory, a granule of the mirror, a landing): each is a round trip to the GPU that vk_finish's sites and
+   the graphics timeline's waits do not count */
+static u64 g_host_waits, g_host_wait_ns;
+u64 vk_host_next(VkHostTimeline* t) {
+    if (!t->sem) {
+        VkSemaphoreTypeCreateInfo tci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                         .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+        VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &tci};
+        if (!VK_OK(vkCreateSemaphore(g_vk.dev, &sci, NULL, &t->sem))) return 0;
+    }
+    return ++t->value;
+}
+int vk_host_bind_sparse(VkHostTimeline* t, const VkBindSparseInfo* bi) {
+    vk_queue_lock(g_vk.gfx);
+    u64 value = vk_host_next(t);
+    VkTimelineSemaphoreSubmitInfo ts = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                        .signalSemaphoreValueCount = 1,
+                                        .pSignalSemaphoreValues = &value};
+    VkBindSparseInfo b = *bi;
+    b.pNext = &ts;
+    b.signalSemaphoreCount = 1;
+    b.pSignalSemaphores = &t->sem;
+    int ok = value && VK_OK(vkQueueBindSparse(g_vk.gfx, 1, &b, VK_NULL_HANDLE));
+    vk_queue_unlock(g_vk.gfx);
+    return ok && vk_host_wait(t, value);
+}
+/* no submission of the runtime's own paths takes seconds: a wait that does is a stopped GPU */
+int vk_host_wait(const VkHostTimeline* t, u64 value) {
+    VkSemaphoreWaitInfo wi = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &t->sem, .pValues = &value};
     u64 t0 = plat_ns();
     for (;;) {
-        VkResult r = vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, 1000000000ull);
+        VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull);
         if (r != VK_TIMEOUT) {
-            __atomic_fetch_add(&g_fence_waits, 1, __ATOMIC_RELAXED);
-            __atomic_fetch_add(&g_fence_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+            __atomic_fetch_add(&g_host_waits, 1, __ATOMIC_RELAXED);
+            __atomic_fetch_add(&g_host_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
             return VK_OK(r);
         }
         if (plat_ns() - t0 >= VK_GPU_STUCK_NS) {
-            stopped_wait_lost(VK_NULL_HANDLE, 0, fence);
+            stopped_wait_lost(t->sem, value);
             vk_checkpoint_dump("GPU stopped");
             vk_ck_report();
-            fatal("vulkan: the GPU stopped responding: a fence wasn't signaled for %llu s",
+            fatal("vulkan: the GPU stopped responding: a submission of the runtime's own wasn't done for %llu s",
                   VK_GPU_STUCK_NS / 1000000000ull);
         }
     }
@@ -498,8 +522,11 @@ int vk_cmd_ready(void) {
     return vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done) == VK_SUCCESS && done >= last;
 }
 
+static u64 g_cmd_uses;
+u64 vk_cmd_uses(void) { return g_cmd_uses; }
 VkCommandBuffer vk_cmd(void) {
     Frame* f = &g_fr[g_cur];
+    g_cmd_uses++;
     if (!f->recording) {
         /* not inside a landing: the slot's results may be the ones landing, out of the rings its recycling hands
            back, and the recycling's own landing would recycle the slot again under itself. What a landing records in
@@ -1219,11 +1246,12 @@ void vk_finishes_log(void) {
         g_finish_sites[best].n = 0;
     }
     for (u32 i = 0; i < FINISH_SITES && g_finish_sites[i].file; i++) g_finish_sites[i].n = g_finish_sites[i].ns = 0;
-    u64 fences = __atomic_exchange_n(&g_fence_waits, 0, __ATOMIC_RELAXED),
-        fence_ns = __atomic_exchange_n(&g_fence_wait_ns, 0, __ATOMIC_RELAXED);
-    if (fences)
-        LOG("vulkan:   %llu waits for a fence (%.1f ms): sparse binds, the mirror's granules and landings\n",
-            (unsigned long long)fences, (double)fence_ns / 1e6);
+    u64 hosts = __atomic_exchange_n(&g_host_waits, 0, __ATOMIC_RELAXED),
+        host_ns = __atomic_exchange_n(&g_host_wait_ns, 0, __ATOMIC_RELAXED);
+    if (hosts)
+        LOG("vulkan:   %llu waits for a timeline of its own (%.1f ms): sparse binds, the mirror's granules and "
+            "landings\n",
+            (unsigned long long)hosts, (double)host_ns / 1e6);
 }
 
 /* A present ends the frame: the next one records in the other slot, once that slot's previous use is done. What the
