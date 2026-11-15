@@ -89,6 +89,8 @@ keeps audits and measurements as they were taken.
     that the rewrite of the buffer cache, the rings and the texture trim must keep, from the comments of the code
   - [Graphics pipeline libraries](layers/gpu/pipeline-libraries.md): the design of pipelines linked from shader parts,
     and the optimized pipeline made after them
+  - [Driver quirks](layers/gpu/driver-quirks.md): what each GPU driver gets wrong, where that is known from, and how
+    the renderer works around it
   - [ASTC compute uploads](layers/gpu/astc.md)
   - [Block linear surfaces and texture conversions on the GPU](layers/gpu/blocklinear.md)
   - [BCn without BCn: ETC2 and EAC on phone GPUs](layers/gpu/bcn.md)
