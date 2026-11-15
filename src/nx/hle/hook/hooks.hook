@@ -299,6 +299,12 @@ hook _ZN2nn2os24ReceiveLightMessageQueueEPmPNS0_21LightMessageQueueTypeE(addr ou
 hook _ZN2nn2os27TryReceiveLightMessageQueueEPmPNS0_21LightMessageQueueTypeE(addr out, addr q) -> bool = os_lmq_try_receive
 hook _ZN2nn2os24TrySendLightMessageQueueEPNS0_21LightMessageQueueTypeEm(addr q, u64 msg) -> bool = os_lmq_try_send
 
+# nn::os's current core (os_sync.c): the core the calling thread is scheduled on, svcGetCurrentProcessorNumber's
+# answer with no SVC
+family os_core
+hook _ZN2nn2os20GetCurrentCoreNumberEv() -> i32 = os_core_number
+hook _ZNK2nn2os6detail26ThreadManagerImplByHorizon20GetCurrentCoreNumberEv(addr self) -> i32 = os_core_number_impl
+
 # nn::diag (diag.c): the SDK's abort, which every one of its NN_ABORT overloads ends in, logged with what the SDK passed
 # it, then its own code, which stops the game as it would
 family diag

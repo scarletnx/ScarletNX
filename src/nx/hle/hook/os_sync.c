@@ -100,6 +100,17 @@ void os_yield_impl(CPU* c, u64 self) {
     yield();
 }
 
+/* ---- the core the calling thread is scheduled on, as svcGetCurrentProcessorNumber answers (os_core) */
+i32 os_core_number(CPU* c) {
+    KThread* t = kthread_cur();
+    (void)c;
+    return t ? t->core : 0;
+}
+i32 os_core_number_impl(CPU* c, u64 self) {
+    (void)self;
+    return os_core_number(c);
+}
+
 /* ---- InternalCriticalSection: the word at cs */
 static void cs_enter(CPU* c, u64 cs) {
     u32* p = word(c, cs);
