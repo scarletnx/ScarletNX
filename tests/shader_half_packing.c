@@ -9,7 +9,7 @@
 int main(int argc, char** argv) {
     for (u32 backend = 0; backend < 3; backend++)
         for (u32 kind = 0; kind < 4; kind++) {
-            g_shader_half_rounding = backend == 2 ? 3 : (int)backend;
+            g_spirv_translate.half_rounding = backend == 2 ? 3 : (int)backend;
             u64 program[16] = {0};
             program[9] = 1;
             program[10] = 0x001f8000fc0007e0ull;

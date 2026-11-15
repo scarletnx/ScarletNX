@@ -289,7 +289,7 @@ static u32 conversion_narrow(DirectCtx* c, u32 low, u32 high, u32 source_format,
 /* Native float16 is used only with the declared RTE and denormal controls. PackHalf2x16 alone can round toward
    zero on a conformant host, so the32-bit fallback rounds each finite lane's original significand exactly once. */
 u32 shader_pack_half_rte(DirectCtx* c, u32 pair) {
-    if ((g_shader_half_rounding & 1) && c->f16_type)
+    if ((g_spirv_translate.half_rounding & 1) && c->f16_type)
         return spv_emit_unary(
             &c->emit, SPV_OP_BITCAST, c->u32_type,
             spv_emit_unary(&c->emit, SPV_OP_F_CONVERT, spv_emit_type_vec2(&c->emit, c->f16_type), pair));
@@ -346,7 +346,7 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 else if (B(w, 42, 1))
                     value = spv_emit_glsl_unary(&c->emit, c->f64_type, c->glsl, conversion_rounds[B(w, 39, 2)], value);
                 shader_double_write(c, vec2_u32, d, value);
-            } else if (dst_format == 1 && !B(w, 39, 2) && g_shader_half_rounding && c->f16_type) {
+            } else if (dst_format == 1 && !B(w, 39, 2) && g_spirv_translate.half_rounding && c->f16_type) {
                 u32 result = conversion_native_half(c, value);
                 /* Some native double-to-half implementations turn large finite values into NaNs. RNE half
                    overflow starts at65520; select its exact signed infinity from the original double bits. */
@@ -394,7 +394,7 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 src = spv_emit_glsl_unary(&c->emit, c->f32_type, c->glsl, conversion_rounds[B(w, 39, 2)], src);
             src = shader_float_saturate(c, src, B(w, 50, 1));
             u32 result = 0;
-            if (dst_format == 1 && src_format == 2 && !B(w, 39, 2) && g_shader_half_rounding && c->f16_type)
+            if (dst_format == 1 && src_format == 2 && !B(w, 39, 2) && g_spirv_translate.half_rounding && c->f16_type)
                 result = conversion_native_half(c, src);
             else if (dst_format == 1) {
                 u32 pair =
@@ -563,7 +563,7 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                          spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, c->zero, value), value);
             }
             /* a 16-bit or narrower integer is exact in a float, and the finite F16 ones in an F32 */
-            if (size == 2 && dst_format == 2 && (g_shader_i2f_nearest & (is_signed ? 1 : 2)))
+            if (size == 2 && dst_format == 2 && (g_spirv_translate.i2f_nearest & (is_signed ? 1 : 2)))
                 result = spv_emit_int_to_f32_nearest(&c->emit, value, is_signed);
             else
                 result = is_signed ? spv_emit_unary(&c->emit, SPV_OP_CONVERT_S_TO_F, target_type,
@@ -619,7 +619,7 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         }
         if (dst_format == 3)
             shader_double_write(c, vec2_u32, d, result);
-        else if (dst_format == 1 && !B(w, 39, 2) && g_shader_half_rounding && c->f16_type)
+        else if (dst_format == 1 && !B(w, 39, 2) && g_spirv_translate.half_rounding && c->f16_type)
             reg_write(c, d, conversion_native_half(c, result));
         else if (dst_format == 1) {
             u32 pair =

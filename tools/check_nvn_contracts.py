@@ -384,7 +384,7 @@ RENDERING_GAPS = (
      ('Preserve primitive order and native shader invocation frequency.',
       'A final resolve after a whole draw does not preserve overlap-dependent blending.')),
     ('geometry_nonpoint_streams', 'device_dependent',
-     'src/nx/gpu/shader/spirv_translate.c', r'!g_shader_geometry_streams_lines_triangles',
+     'src/nx/gpu/shader/spirv_translate.c', r'!g_spirv_translate\.geometry_streams_lines_triangles',
      ('Query transformFeedbackStreamsLinesTriangles separately from geometryStreams.',)),
     ('coverage_to_color_late_depth', 'device_dependent',
      'src/nx/gpu/vk/render.c', r'safe post-depth shader coverage',

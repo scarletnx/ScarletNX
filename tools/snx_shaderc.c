@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--sm86")) /* an Ounce game's programs, which the SM86 frontend reads */
             g_shader_sm86 = 1;
         else if (!strcmp(argv[i], "--no-doubles")) /* a device without shaderFloat64, which Apple's are */
-            g_shader_float64 = 0;
+            g_spirv_translate.float64 = 0;
         else if (!strcmp(argv[i], "--direct")) { /* accepted for older corpus commands */
         } else if (argv[i][0] != '-' && !dir)
             dir = argv[i];
@@ -72,10 +72,10 @@ int main(int argc, char** argv) {
     }
     /* Match a renderer with non-uniform sampled image array indexing. Otherwise indexed
        LDC handles look like plain bindless textures and corpus validation misses them. */
-    g_shader_texture_arrays = 1;
+    g_spirv_translate.texture_arrays = 1;
     /* and VK_KHR_shader_maximal_reconvergence, which NVIDIA, AMD and Intel drivers have: programs whose lanes
        reconverge take structured control flow as on such a device (--dispatch-reconverge keeps their dispatch loop) */
-    g_shader_maximal_reconvergence = !dispatch_reconverge;
+    g_spirv_translate.maximal_reconvergence = !dispatch_reconverge;
     DIR* directory = opendir(dir);
     if (!directory) {
         fprintf(stderr, "cannot open %s\n", dir);

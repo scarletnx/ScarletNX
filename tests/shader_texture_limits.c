@@ -491,7 +491,7 @@ static int ordinary_uniform_case(const char* directory, u32 test) {
         0x4c98078000070011ull | 3ull << 34 | 0x80ull << 20,
         0xc038000000070008ull | 74ull << 36 | 3ull << 55 | 1ull << 54 | 1ull << 31 | 2ull << 28 | 16ull << 20 | 4ull << 8,
         0xe30000000007000full};
-    g_shader_dynamic_texture_offsets = 0;
+    g_spirv_translate.dynamic_texture_offsets = 0;
     g_ordinary_uniform.packed = values[test];
     g_ordinary_uniform.reads = 0; g_ordinary_uniform.wrong = 0;
     g_shader_cb_read = ordinary_offset_read;
@@ -547,7 +547,7 @@ static int ordinary_case(u32 type, u32 bindless, u32 mode, int stage, int native
     operations[n++] = 0xe30000000007000full;
     ShaderInfo info = {0};
     size_t words = 0;
-    g_shader_dynamic_texture_offsets = native;
+    g_spirv_translate.dynamic_texture_offsets = native;
     g_native.reads = 0;
     g_shader_cb_read = native ? native_offset_read : NULL;
     u32* code = translate(operations, n, stage, &info, &words);
@@ -640,10 +640,10 @@ static int ordinary_case(u32 type, u32 bindless, u32 mode, int stage, int native
     return ok;
 }
 int main(int argc, char** argv) {
-    g_shader_dynamic_texture_offsets = 0;
+    g_spirv_translate.dynamic_texture_offsets = 0;
     const char* dir = argc == 2 ? argv[1] : NULL;
-    int saved_min_lod = g_shader_resource_min_lod;
-    g_shader_resource_min_lod = 0;
+    int saved_min_lod = g_spirv_translate.resource_min_lod;
+    g_spirv_translate.resource_min_lod = 0;
     for (u32 bindless = 0; bindless < 2; bindless++) {
         u64 ops[] = {0x4c98078000070010ull | 2ull << 34 | 74ull << 20,
                      (bindless ? 0xdeb8000000070008ull : 0xc038000000070008ull | 74ull << 36) |
@@ -662,7 +662,7 @@ int main(int argc, char** argv) {
         free(code);
         if (!explicit_ok) { fprintf(stderr, "explicit LOD needs no MinLod feature bindless%u: %s\n", bindless, info.first_unsupported); return 1; }
     }
-    g_shader_resource_min_lod = saved_min_lod;
+    g_spirv_translate.resource_min_lod = saved_min_lod;
     const u32 types[] = {0, 1, 2, 3, 4, 6, 7}, modes[] = {0, 2, 6};
     u32 tests = 0;
     for (u32 b = 0; b < 2; b++)
@@ -689,7 +689,7 @@ int main(int argc, char** argv) {
         if (code || !info.unsupported) { free(code); return 1; }
     }
     u32 native_tests = 0;
-    g_shader_dynamic_texture_offsets = 1;
+    g_spirv_translate.dynamic_texture_offsets = 1;
     for (u32 b = 0; b < 2; b++)
         for (u32 type = 0; type <= 4; type++)
             for (u32 stage = 0; stage < 2; stage++)
@@ -713,7 +713,7 @@ int main(int argc, char** argv) {
     }
     for (u32 test = 0; test < 3; test++)
         if (!ordinary_uniform_case(dir, test)) return 1;
-    g_shader_dynamic_texture_offsets = 0;
+    g_spirv_translate.dynamic_texture_offsets = 0;
     printf("PASS texture operand limits: %u LC modules,10 full/8 reduced fallback domains,%u native TXD/%u ordinary TEX modules exact=1\n",
            tests, native_tests, ordinary_tests);
     return 0;

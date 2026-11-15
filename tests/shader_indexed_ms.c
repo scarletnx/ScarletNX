@@ -8,7 +8,7 @@
 /* Validate descriptor arrays' MS operand and each fetch's Sample operand for float, unsigned and signed views,
    both 2D and 2D-array instructions. The translated programs use an actual dynamic LDC handle table. */
 int main(int argc, char** argv) {
-    g_shader_texture_arrays = 1;
+    g_spirv_translate.texture_arrays = 1;
     for (u32 array = 0; array < 2; array++)
         for (u32 number = 0; number < 3; number++) {
             const u64 ops[] = {0x3848000000470005ull, /* SHL R5, R0, 4 */

@@ -48,10 +48,10 @@ static int check_texture_half_rounding(void) {
     channel->rcomp[KEPLER_COMPUTE_TSC] = (u32)(sampler >> 32);
     channel->rcomp[KEPLER_COMPUTE_TSC + 1] = (u32)sampler;
     channel->rcomp[KEPLER_COMPUTE_TEX_CB_INDEX] = 2;
-    int native = g_shader_half_rounding;
+    int native = g_spirv_translate.half_rounding;
     u32 checks = 0;
     for (u32 backend = 0; backend < (native ? 2u : 1u); backend++) {
-        g_shader_half_rounding = backend ? native : 0;
+        g_spirv_translate.half_rounding = backend ? native : 0;
         for (u32 kind = 0; kind < 4; kind++) {
             u64 ops[16];
             u32 count = 0;
@@ -104,7 +104,7 @@ static int check_texture_half_rounding(void) {
             }
         }
     }
-    g_shader_half_rounding = native;
+    g_spirv_translate.half_rounding = native;
     free(channel);
     printf("PASS half texture rounding: %u R32F TEXS/TLDS/TLD4S/HADD2 native/software ties and denormals exact=1\n",
            checks);

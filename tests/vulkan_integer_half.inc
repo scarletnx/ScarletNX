@@ -122,8 +122,8 @@ static int check_shader_integer_half_rounding(void) {
 }
 
 /* Execute I2F.F32 of 32-bit integers, signed and unsigned, with each abs/neg combination and rounding mode (RN, RM,
-   RP, RZ), converted whole and in halves (g_shader_i2f_nearest, for a driver whose conversions truncate): the mode
-   rounds the value after abs and neg, as for an F16 result. The sources need rounding, sit on ties either way, are
+   RP, RZ), converted whole and in halves (g_spirv_translate.i2f_nearest, for a driver whose conversions truncate): the
+   mode rounds the value after abs and neg, as for an F16 result. The sources need rounding, sit on ties either way, are
    exact, or round to 2^31 or 2^32 */
 static int check_shader_integer_float(void) {
     const u64 gpu = 0x4f7000000ull, cpu = HEAP_BASE + 0x720000; /* the region of the I2F.F16 check, done with */
@@ -136,11 +136,11 @@ static int check_shader_integer_float(void) {
     GpuChannel* channel = calloc(1, sizeof *channel);
     CHECK(channel);
     gmmu_map(gpu, cpu, 0x10000);
-    int was = g_shader_i2f_nearest;
+    int was = g_spirv_translate.i2f_nearest;
     u32 checks = 0;
     for (u32 run = 0; run < 8; run++) {
         u32 nearest = run & 1, mode = run >> 1;
-        g_shader_i2f_nearest = nearest ? 3 : 0;
+        g_spirv_translate.i2f_nearest = nearest ? 3 : 0;
         for (u32 is_signed = 0; is_signed < 2; is_signed++)
             for (u32 modifiers = 0; modifiers < 4; modifiers++) {
                 u32 input[64][4], expected[64];
@@ -204,14 +204,14 @@ static int check_shader_integer_float(void) {
                     if (input[i][2] != expected[i])
                         fprintf(stderr,
                                 "I2F.F32.%c32 mode%u i2f_nearest %d modifiers%u source %08x: %08x expected %08x\n",
-                                is_signed ? 'S' : 'U', mode, g_shader_i2f_nearest, modifiers,
+                                is_signed ? 'S' : 'U', mode, g_spirv_translate.i2f_nearest, modifiers,
                                 i < 32 ? sources[i] : 0u - sources[i - 32], input[i][2], expected[i]);
                     CHECK(input[i][2] == expected[i] && input[i][3] == 0xcdcdcdcd);
                     checks++;
                 }
             }
     }
-    g_shader_i2f_nearest = was;
+    g_spirv_translate.i2f_nearest = was;
     free(channel);
     printf("PASS shader integer-to-float: %u signed and unsigned, abs/neg, RN/RM/RP/RZ, whole and in halves exact=1\n",
            checks);

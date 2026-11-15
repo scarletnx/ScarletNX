@@ -215,9 +215,9 @@ no draw tells it.
 
 A program whose FADD, FMUL, FFMA or I2F has a directed rounding mode is translated through f64, which keeps the
 rounding exact. Apple's GPUs have no `shaderFloat64`, and the runtime skipped each such program: one game's title
-sequence drew black, and 10 of its compute programs never ran. `g_shader_float64` is the device's capability now, and
-the translator keeps those operations in f32, as rounds to nearest, where it is 0. A float scale of FMUL is a power
-of two, so it stays exact.
+sequence drew black, and 10 of its compute programs never ran. `g_spirv_translate.float64` is the device's capability
+now, and the translator keeps those operations in f32, as rounds to nearest, where it is 0. A float scale of FMUL is a
+power of two, so it stays exact.
 
 `snx-shaderc DIR --sm86 --no-doubles --out DIR` translates a recorded compute program again, as a device without
 doubles has it, and without the game (`--sm86` needs no header, which a compute program has none of). Of one game's 14

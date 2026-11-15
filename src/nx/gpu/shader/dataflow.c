@@ -1706,7 +1706,7 @@ u32 shader_direct_indexed_handle(const ShFlow* f, u32 index, u32 reg, int stage,
     int j = -1, k, depth, op = 0;
     u64 w = 0;
     u32 shift = 2;
-    if (!g_shader_texture_arrays || stage == ST_CS) return 0;
+    if (!g_spirv_translate.texture_arrays || stage == ST_CS) return 0;
     for (depth = 0; depth < 6; depth++) {
         j = direct_reaching_def(f, index, reg);
         if (j < 0) return 0;

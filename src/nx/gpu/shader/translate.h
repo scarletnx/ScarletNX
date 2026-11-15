@@ -335,7 +335,7 @@ void shader_frag_weights(DirectCtx* c, u32 vec4_type, const u32 position[3], int
 void shader_frag_ndc(DirectCtx* c, u32 fragcoord, u32 vec4_type, u32 push, u32 push_pointer, u32 ndc[2]);
 /* What a program's transform feedback writes at each exit or emitted vertex (shader_xfb_store) */
 typedef struct {
-    int stores; /* by storage buffer stores (g_shader_xfb_stores), else by the extension's decorations */
+    int stores; /* by storage buffer stores (g_spirv_translate.xfb_stores), else by the extension's decorations */
     const ShXfb* key;
     u32 vec4, position;
     const u32* output_attrs;

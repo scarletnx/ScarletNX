@@ -393,7 +393,7 @@ static void start_failure_devices(void) {
 }
 
 /* whether the device multiplies 16x16x16 f16 A and B into an f32 accumulator in subgroup scope in compute, as
-   g_shader_hmma_coop asks (VK_KHR_cooperative_matrix: RADV from GFX11) */
+   g_spirv_translate.hmma_coop asks (VK_KHR_cooperative_matrix: RADV from GFX11) */
 static int coop_f16_f32(VkPhysicalDevice phys) {
     VkPhysicalDeviceCooperativeMatrixPropertiesKHR cp = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
@@ -458,10 +458,10 @@ static void mesh_choose(int has_ext, const VkPhysicalDeviceMeshShaderFeaturesEXT
     g_vk.mesh_stages = g_vk.has_mesh ? VK_SHADER_STAGE_MESH_BIT_EXT | (g_vk.has_task ? both : 0) : 0;
     u32 groups = g_vk.has_task ? mp.maxTaskWorkGroupCount[0] : mp.maxMeshWorkGroupCount[0];
     g_vk.mesh_groups_max = g_vk.has_mesh ? groups : 0;
-    g_shader_mesh_tasks_max = g_vk.has_task ? (mp.maxMeshWorkGroupCount[0] < mp.maxMeshWorkGroupTotalCount
-                                                   ? mp.maxMeshWorkGroupCount[0]
-                                                   : mp.maxMeshWorkGroupTotalCount)
-                                            : 0;
+    g_spirv_translate.mesh_tasks_max =
+        g_vk.has_task ? (mp.maxMeshWorkGroupCount[0] < mp.maxMeshWorkGroupTotalCount ? mp.maxMeshWorkGroupCount[0]
+                                                                                     : mp.maxMeshWorkGroupTotalCount)
+                      : 0;
     g_vk.mesh_output_bytes_max = mp.maxMeshOutputMemorySize;
     g_vk.mesh_vertex_granule = mp.meshOutputPerVertexGranularity;
     g_vk.mesh_primitive_granule = mp.meshOutputPerPrimitiveGranularity;
@@ -705,12 +705,12 @@ static int create_device(void) {
        Eden found): its programs take the path of a device that does not list it */
     if (vk_ban("VK_SHADER_STAGE_GEOMETRY_BIT", (g_vk_subgroup_stages & VK_SHADER_STAGE_GEOMETRY_BIT) != 0, ban_say))
         g_vk_subgroup_stages &= ~(VkShaderStageFlags)VK_SHADER_STAGE_GEOMETRY_BIT;
-    g_shader_quad = (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) &&
-                    (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
+    g_spirv_translate.quad = (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) &&
+                             (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
     /* compute has quad operations wherever the bit is and the stage has subgroup operations at all (the quad limit,
        quadOperationsInAllStages, is about the other stages) */
-    g_shader_quad_compute = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) &&
-                            (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
+    g_spirv_translate.quad_compute = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) &&
+                                     (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
     log_subgroups(subgroup.subgroupSize, subgroup.supportedOperations, subgroup.supportedStages);
     g_vk_preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32 != 0;
     /* a binding's stride as dynamic state, core in Vulkan 1.3, unless a driver is banned from it (MoltenVK's fails every
@@ -726,7 +726,7 @@ static int create_device(void) {
     g_vk_flush_denorm = flush_denorm && !vk_ban("shaderDenormFlushToZeroFloat32", flush_denorm, ban_say);
     /* a driver that truncates a 32-bit integer it converts to a float (Turnip on an Adreno 610): I2F.F32 converts the
        integer's two halves, each exact, and adds them, which rounds to nearest even as the console does */
-    g_shader_i2f_nearest =
+    g_spirv_translate.i2f_nearest =
         (vk_ban("OpConvertSToF", 1, ban_say) ? 1 : 0) | (vk_ban("OpConvertUToF", 1, ban_say) ? 2 : 0);
     /* without it, vk_pipeline_init measures whether the device flushes by itself (vk_ftz_native) */
     if (!g_vk_preserve_infnan) WARN("vulkan: FP32 signed-zero/Inf/NaN preservation unavailable on this GPU\n");
@@ -782,7 +782,7 @@ static int create_device(void) {
     WANT(shaderStorageImageReadWithoutFormat);
     WANT(shaderStorageImageMultisample);
     WANT(shaderResourceMinLod);
-    g_shader_resource_min_lod = want->shaderResourceMinLod != 0;
+    g_spirv_translate.resource_min_lod = want->shaderResourceMinLod != 0;
     WANT(shaderClipDistance);
     WANT(shaderCullDistance);
     WANT(shaderFloat64);
@@ -814,9 +814,9 @@ static int create_device(void) {
     }
 #undef WANT
     /* points out of tessellation and geometry programs take the size those write, as the vertex program's do */
-    g_shader_stage_point_size = want->shaderTessellationAndGeometryPointSize != 0;
-    g_shader_geometry = want->geometryShader != 0;
-    g_shader_tessellation = want->tessellationShader != 0;
+    g_spirv_translate.stage_point_size = want->shaderTessellationAndGeometryPointSize != 0;
+    g_spirv_translate.geometry = want->geometryShader != 0;
+    g_spirv_translate.tessellation = want->tessellationShader != 0;
     const char** ext = g_vk.dev_ext;
     int has_pipeline_robustness = 0, has_robustness2 = 0;
     u32 next = 0;
@@ -837,8 +837,8 @@ static int create_device(void) {
     int has_mesh = 0;
     int has_size_control = 0; /* VK_EXT_subgroup_size_control, on a 1.2 device: 1.3 has it in its core */
     int has_mixed_dot = 0; /* VK_VALVE_shader_mixed_float_dot_product: HMMA's pairs of f16 products in one instruction */
-    int has_coop = 0;      /* VK_KHR_cooperative_matrix: HMMA on the matrix unit (g_shader_hmma_coop) */
-    /* VK_EXT_shader_atomic_float: RED.ADD.F32 in one instruction (g_shader_float_atomic_add) */
+    int has_coop = 0;      /* VK_KHR_cooperative_matrix: HMMA on the matrix unit (g_spirv_translate.hmma_coop) */
+    /* VK_EXT_shader_atomic_float: RED.ADD.F32 in one instruction (g_spirv_translate.float_atomic_add) */
     int has_atomic_float = 0;
     int has_fault = 0; /* VK_EXT_device_fault: what the GPU reports of a fault, at a lost device */
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
@@ -1286,8 +1286,8 @@ static int create_device(void) {
     g_vk.has_feedback_dynamic =
         g_vk.has_feedback && has_feedback_dynamic && qloop_dyn.attachmentFeedbackLoopDynamicState;
     g_vk.has_local_read = g_vk.has_feedback && g_vk.has_local_read && qlocal.dynamicRenderingLocalRead;
-    g_shader_maximal_reconvergence = has_reconvergence && qreconv.shaderMaximalReconvergence;
-    g_shader_clock_scopes =
+    g_spirv_translate.maximal_reconvergence = has_reconvergence && qreconv.shaderMaximalReconvergence;
+    g_spirv_translate.clock_scopes =
         has_shader_clock ? (qclock.shaderSubgroupClock ? 1 : 0) | (qclock.shaderDeviceClock ? 2 : 0) : 0;
     g_vk.has_divisor = g_vk.has_divisor && fdiv.vertexAttributeInstanceRateDivisor;
     {
@@ -1329,7 +1329,7 @@ static int create_device(void) {
     }
     g_vk.has_xfb = g_vk.has_xfb && fxfb.transformFeedback;
     g_vk.has_geometry_streams = g_vk.has_xfb && fxfb.geometryStreams;
-    g_shader_geometry_streams = g_vk.has_geometry_streams;
+    g_spirv_translate.geometry_streams = g_vk.has_geometry_streams;
     if (g_vk.has_geometry_streams) {
         VkPhysicalDeviceTransformFeedbackPropertiesEXT properties = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT};
@@ -1338,11 +1338,11 @@ static int create_device(void) {
         vkGetPhysicalDeviceProperties2(g_vk.phys, &query);
         g_vk.geometry_streams_lines_triangles = properties.transformFeedbackStreamsLinesTriangles;
     }
-    g_shader_geometry_streams_lines_triangles = g_vk.geometry_streams_lines_triangles;
+    g_spirv_translate.geometry_streams_lines_triangles = g_vk.geometry_streams_lines_triangles != 0;
     g_vk.has_sample_interlock = g_vk.has_fragment_interlock && qinterlock.fragmentShaderSampleInterlock;
     /* without the extension (MoltenVK) a capture's vertex program stores its words itself, which vertex stores allow */
-    g_shader_xfb_stores = !g_vk.has_xfb && want->vertexPipelineStoresAndAtomics;
-    if (g_shader_xfb_stores)
+    g_spirv_translate.xfb_stores = !g_vk.has_xfb && want->vertexPipelineStoresAndAtomics;
+    if (g_spirv_translate.xfb_stores)
         LOG("vulkan: no VK_EXT_transform_feedback: vertex programs store what transform feedback captures\n");
     g_vk.has_fragment_interlock = g_vk.has_fragment_interlock && qinterlock.fragmentShaderPixelInterlock;
     if (g_vk.advanced_blend_caps.available) {
@@ -1409,15 +1409,16 @@ static int create_device(void) {
         vkGetPhysicalDeviceProperties2(g_vk.phys, &props);
     }
     /* FFmpeg's decoder makes views of its two plane pictures */
-    g_shader_dynamic_texture_offsets = has_maintenance8 && qmaintenance8.maintenance8 && want->shaderImageGatherExtended;
+    g_spirv_translate.dynamic_texture_offsets =
+        has_maintenance8 && qmaintenance8.maintenance8 && want->shaderImageGatherExtended;
     LOG("vulkan: dynamic texture offsets use %s\n",
-        g_shader_dynamic_texture_offsets ? "native maintenance8 sampling" : "portable dispatch");
+        g_spirv_translate.dynamic_texture_offsets ? "native maintenance8 sampling" : "portable dispatch");
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .shaderDrawParameters = q11.shaderDrawParameters,
                                             .samplerYcbcrConversion =
                                                 g_vk.video_family != ~0u && q11.samplerYcbcrConversion};
     g_vk.has_shader_draw_parameters = q11.shaderDrawParameters != 0;
-    g_shader_draw_parameters = g_vk.has_shader_draw_parameters;
+    g_spirv_translate.draw_parameters = g_vk.has_shader_draw_parameters;
     g_vk.has_draw_indirect_count = q12.drawIndirectCount != 0;
     /* Enable mirror clamp and vertex shader Layer output when the device supports them. */
     g_vk.has_mirror_clamp = q12.samplerMirrorClampToEdge;
@@ -1434,12 +1435,13 @@ static int create_device(void) {
                                             .shaderSampledImageArrayNonUniformIndexing =
                                                 q12.shaderSampledImageArrayNonUniformIndexing};
     /* shaders pick an indexed texture per invocation from an array (SNX_VKB_TEXARRAY) */
-    g_shader_texture_arrays = q12.shaderSampledImageArrayNonUniformIndexing != 0;
-    g_shader_float16 = q12.shaderFloat16 != 0;
-    g_shader_float64 = have.shaderFloat64 != 0;
+    g_spirv_translate.texture_arrays = q12.shaderSampledImageArrayNonUniformIndexing != 0;
+    g_spirv_translate.float16 = q12.shaderFloat16 != 0;
+    g_spirv_translate.float64 = have.shaderFloat64 != 0;
     /* its f16 vectors are Float16's, so shaderFloat16 too */
-    g_shader_mixed_dot = has_mixed_dot && qmixdot.shaderMixedFloatDotProductFloat16AccFloat32 && g_shader_float16;
-    g_shader_float_atomic_add = has_atomic_float && qatomic_float.shaderBufferFloat32AtomicAdd;
+    g_spirv_translate.mixed_dot =
+        has_mixed_dot && qmixdot.shaderMixedFloatDotProductFloat16AccFloat32 && g_spirv_translate.float16;
+    g_spirv_translate.float_atomic_add = has_atomic_float && qatomic_float.shaderBufferFloat32AtomicAdd;
     if (shader_hmma_f16_unused())
         LOG("vulkan: hmma_f16=1 asks for HMMA's sums in half floats; they stay in f32, as hmma_f16=0's: %s\n",
             shader_hmma_f16_unused());
@@ -1451,17 +1453,17 @@ static int create_device(void) {
        stage). Gating the matrix unit on the request alone left every driver whose size is fixed without it */
     int warp32 = g_vk.has_cs_warp32 || (subgroup.subgroupSize == 32 &&
                                         (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0);
-    int coop_tile = has_coop && qcoop.cooperativeMatrix && g_shader_float16 && q12.vulkanMemoryModel &&
+    int coop_tile = has_coop && qcoop.cooperativeMatrix && g_spirv_translate.float16 && q12.vulkanMemoryModel &&
                             q12.vulkanMemoryModelDeviceScope && warp32
                         ? coop_f16_f32(g_vk.phys)
                         : 0;
-    g_shader_hmma_coop = coop_tile ? (int)g_vk.props.limits.maxComputeSharedMemorySize : 0;
-    g_shader_hmma_coop_tile = coop_tile ? coop_tile : 16;
+    g_spirv_translate.hmma_coop = coop_tile ? (int)g_vk.props.limits.maxComputeSharedMemorySize : 0;
+    g_spirv_translate.hmma_coop_tile = coop_tile ? coop_tile : 16;
     if (coop_tile)
         LOG("vulkan: HMMA runs on the device's cooperative matrices, %dx%dx%d a product, shared memory's own "
             "fragments after the program's\n",
             coop_tile, coop_tile, coop_tile);
-    f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_shader_hmma_coop != 0;
+    f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_spirv_translate.hmma_coop != 0;
     /* HMMA off the matrix unit: pairs of lanes on RADV with subgroups of 32 (an RX 6700 XT's HMMA bench ran 9.7%
        faster), and A and B through shared memory where the driver loops for a shuffle whose index differs between
        lanes, which no feature or property tells, so the table does */
@@ -1476,8 +1478,8 @@ static int create_device(void) {
     }
     /* shaderDenormPreserveFloat16 is the device's word that it can keep f16 subnormals: without it an SM86 program
        packs those by hand (sm86_translate.c's pack_half), as Turnip on an Adreno 610 flushed them to zero */
-    g_shader_half_flush = !p12.shaderDenormPreserveFloat16;
-    g_shader_half_rounding = 0;
+    g_spirv_translate.half_flush = !p12.shaderDenormPreserveFloat16;
+    g_spirv_translate.half_rounding = 0;
     if (q12.shaderFloat16 && p12.shaderRoundingModeRTEFloat16 && p12.shaderDenormPreserveFloat16 &&
         p12.shaderSignedZeroInfNanPreserveFloat16 &&
         p12.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE &&
@@ -1486,10 +1488,11 @@ static int create_device(void) {
                      p12.roundingModeIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY;
         if (!linked || (have.shaderFloat64 && p12.shaderRoundingModeRTEFloat64 && p12.shaderDenormPreserveFloat64 &&
                         p12.shaderSignedZeroInfNanPreserveFloat64))
-            g_shader_half_rounding = linked ? 3 : 1;
+            g_spirv_translate.half_rounding = linked ? 3 : 1;
     }
-    g_shader_output_layer = q12.shaderOutputLayer != 0; /* ShaderLayer: a vertex or tessellation program's layer */
-    g_shader_viewport_index = have.multiViewport ? 2 | (q12.shaderOutputViewportIndex ? 1 : 0) : 0;
+    g_spirv_translate.output_layer =
+        q12.shaderOutputLayer != 0; /* ShaderLayer: a vertex or tessellation program's layer */
+    g_spirv_translate.viewport_index = have.multiViewport ? 2 | (q12.shaderOutputViewportIndex ? 1 : 0) : 0;
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
                                             .pNext = &f12,
                                             .synchronization2 = VK_TRUE,
@@ -1554,7 +1557,7 @@ static int create_device(void) {
     }
     VkPhysicalDeviceMaintenance8FeaturesKHR fmaintenance8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_8_FEATURES_KHR, .maintenance8 = VK_TRUE};
-    if (g_shader_dynamic_texture_offsets) {
+    if (g_spirv_translate.dynamic_texture_offsets) {
         fmaintenance8.pNext = chain;
         chain = &fmaintenance8;
         ext[next++] = VK_KHR_MAINTENANCE_8_EXTENSION_NAME;
@@ -1638,9 +1641,9 @@ static int create_device(void) {
     VkPhysicalDeviceShaderClockFeaturesKHR fclock = {.sType =
                                                          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR,
                                                      .pNext = chain,
-                                                     .shaderSubgroupClock = !!(g_shader_clock_scopes & 1),
-                                                     .shaderDeviceClock = !!(g_shader_clock_scopes & 2)};
-    if (g_shader_clock_scopes) {
+                                                     .shaderSubgroupClock = !!(g_spirv_translate.clock_scopes & 1),
+                                                     .shaderDeviceClock = !!(g_spirv_translate.clock_scopes & 2)};
+    if (g_spirv_translate.clock_scopes) {
         chain = &fclock;
         ext[next++] = VK_KHR_SHADER_CLOCK_EXTENSION_NAME;
     }
@@ -1648,7 +1651,7 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR,
         .pNext = chain,
         .shaderMaximalReconvergence = VK_TRUE};
-    if (g_shader_maximal_reconvergence) {
+    if (g_spirv_translate.maximal_reconvergence) {
         chain = &freconv;
         ext[next++] = VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME;
     }
@@ -1656,7 +1659,7 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MIXED_FLOAT_DOT_PRODUCT_FEATURES_VALVE,
         .pNext = chain,
         .shaderMixedFloatDotProductFloat16AccFloat32 = VK_TRUE};
-    if (g_shader_mixed_dot) {
+    if (g_spirv_translate.mixed_dot) {
         chain = &fmixdot;
         ext[next++] = VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME;
     }
@@ -1664,7 +1667,7 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR,
         .pNext = chain,
         .cooperativeMatrix = VK_TRUE};
-    if (g_shader_hmma_coop) {
+    if (g_spirv_translate.hmma_coop) {
         chain = &fcoop;
         ext[next++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
     }
@@ -1672,7 +1675,7 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT,
         .pNext = chain,
         .shaderBufferFloat32AtomicAdd = VK_TRUE};
-    if (g_shader_float_atomic_add) {
+    if (g_spirv_translate.float_atomic_add) {
         chain = &fatomic_float;
         ext[next++] = VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME;
     }

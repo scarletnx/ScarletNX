@@ -359,7 +359,7 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
             return "shaderFloat64 is unavailable";
         if (width == 2 && spv[at + 1] == SPV_CAPABILITY_INT64 && !g_vk.feat.shaderInt64)
             return "shaderInt64 is unavailable";
-        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_FLOAT16 && !g_shader_float16)
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_FLOAT16 && !g_spirv_translate.float16)
             return "shaderFloat16 is unavailable";
         if (width == 2 && spv[at + 1] == SPV_CAPABILITY_GEOMETRY && !g_vk.feat.geometryShader)
             return "geometryShader is unavailable";
@@ -389,19 +389,20 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
             return "fragmentShaderPixelInterlock is unavailable";
         if (width == 2 && spv[at + 1] == SPV_CAPABILITY_DRAW_PARAMETERS && !g_vk.has_shader_draw_parameters)
             return "shaderDrawParameters is unavailable";
-        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_SHADER_CLOCK_KHR && !g_shader_clock_scopes)
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_SHADER_CLOCK_KHR && !g_spirv_translate.clock_scopes)
             return "shaderClock is unavailable";
         if (width == 2 && spv[at + 1] == SPV_CAPABILITY_MESH_SHADING_EXT && !g_vk.has_mesh)
             return "meshShader is unavailable";
-        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_DOT_PRODUCT_FLOAT16_ACC_FLOAT32_VALVE && !g_shader_mixed_dot)
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_DOT_PRODUCT_FLOAT16_ACC_FLOAT32_VALVE &&
+            !g_spirv_translate.mixed_dot)
             return "shaderMixedFloatDotProductFloat16AccFloat32 is unavailable";
         if (width == 2 &&
             (spv[at + 1] == SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR ||
              spv[at + 1] == SPV_CAPABILITY_VULKAN_MEMORY_MODEL ||
              spv[at + 1] == SPV_CAPABILITY_VULKAN_MEMORY_MODEL_DEVICE_SCOPE) &&
-            !g_shader_hmma_coop)
+            !g_spirv_translate.hmma_coop)
             return "cooperativeMatrix or the Vulkan memory model is unavailable";
-        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_ATOMIC_FLOAT32_ADD_EXT && !g_shader_float_atomic_add)
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_ATOMIC_FLOAT32_ADD_EXT && !g_spirv_translate.float_atomic_add)
             return "shaderBufferFloat32AtomicAdd is unavailable";
         at += width;
     }
@@ -525,7 +526,8 @@ static int sh_merge_dual(const u8* a, const u8* b, u8* m, VkCbReader read) {
 u32 g_vk_buffer_image_slots;
 
 VkDescriptorType vk_cbuf_type(u32 slot) {
-    return slot < g_shader_uniform_cbufs ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    return slot < g_spirv_translate.uniform_cbufs ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                                                  : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 }
 /* Each stage sees one set, with the 18 constant buffer slots and the uniform buffers of the renderer in it, and
    GeForce devices give a stage 15. The slots past what a device's limits hold are storage buffers, over the same
@@ -538,14 +540,15 @@ static void cbufs_fit_limits(void) {
        and SNX_VKB_TEXMAP with the texture arrays */
     u32 own = 0;
     for (u32 i = SNX_VKB_SSBO; i < SNX_VKB_END; i++)
-        if (binding_type(i) == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && (i < SNX_VKB_TEXARRAY || g_shader_texture_arrays))
+        if (binding_type(i) == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
+            (i < SNX_VKB_TEXARRAY || g_spirv_translate.texture_arrays))
             own++;
     if (set < fit) fit = set;
     fit = fit > own ? fit - own : 0;
     if (fit >= 18) return;
     /* a constant buffer's offset meets the uniform buffers' alignment: it must meet the storage buffers' too */
     if (l->minUniformBufferOffsetAlignment % l->minStorageBufferOffsetAlignment) return;
-    g_shader_uniform_cbufs = fit;
+    g_spirv_translate.uniform_cbufs = fit;
     LOG("vulkan: this device's limits hold %u of the 18 constant buffers as uniform buffers, the others are storage "
         "buffers\n",
         fit);
@@ -579,8 +582,8 @@ void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
             if (binding_type(i) != ty[k]) continue;
             if (i < SNX_VKB_TEXARRAY)
                 n++;
-            else if (g_shader_texture_arrays)
-                arrays += (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? g_shader_tex_array : 1;
+            else if (g_spirv_translate.texture_arrays)
+                arrays += (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? g_spirv_translate.tex_array : 1;
         }
         sz[k] = (VkDescriptorPoolSize){ty[k], n * sets + arrays * array_sets};
     }
@@ -601,10 +604,10 @@ VkShaderStageFlags vk_set_stages(int s) {
     if (s < 0 || s >= 5) return 0;
     return vis[s] | (s == shader_vk_set(ST_MS) || s == shader_vk_set(ST_TS) ? g_vk.mesh_stages : 0);
 }
-u32 vk_texture_array_elements(void) { return g_shader_texture_arrays ? g_shader_tex_array : 0; }
+u32 vk_texture_array_elements(void) { return g_spirv_translate.texture_arrays ? g_spirv_translate.tex_array : 0; }
 int vk_dslayout_arrays(VkDescriptorSetLayout layout) {
     for (u32 s = 0; s < 5; s++)
-        if (layout && layout == g_vk_dslayout[1][s]) return g_shader_texture_arrays;
+        if (layout && layout == g_vk_dslayout[1][s]) return g_spirv_translate.texture_arrays;
     return 0;
 }
 int vk_graphics_playout_is(VkPipelineLayout layout) {
@@ -652,9 +655,9 @@ void vk_pipeline_init(void) {
         SnxVkTextureLimits tl = {l->maxPerStageDescriptorSamplers, l->maxPerStageDescriptorSampledImages,
                                  l->maxDescriptorSetSamplers, l->maxDescriptorSetSampledImages};
         char line[640];
-        g_shader_tex_array =
-            snx_vk_texture_array_say(line, sizeof line, g_shader_texture_arrays, &tl, SH_MAXTEX, g_shader_tex_array);
-        g_shader_texture_arrays = g_shader_tex_array != 0;
+        g_spirv_translate.tex_array = snx_vk_texture_array_say(line, sizeof line, g_spirv_translate.texture_arrays, &tl,
+                                                               SH_MAXTEX, g_spirv_translate.tex_array);
+        g_spirv_translate.texture_arrays = g_spirv_translate.tex_array != 0;
         if (line[0]) LOG("%s\n", line);
     }
     cbufs_fit_limits();
@@ -682,12 +685,12 @@ void vk_pipeline_init(void) {
             if (i == SNX_VKB_CAPTURE && (s != 1 || !vk_capture_tiles_supported())) continue;
             /* Each graphics stage has storage bindings within both per-stage and whole-pipeline limits. */
             if (i >= SNX_VKB_IMG && i < SNX_VKB_RS && i - SNX_VKB_IMG >= image_slots) continue;
-            if (i >= SNX_VKB_TEXARRAY && !g_shader_texture_arrays) continue;
+            if (i >= SNX_VKB_TEXARRAY && !g_spirv_translate.texture_arrays) continue;
             if (i >= SNX_VKB_IMGBUF && i < SNX_VKB_CAPTURE && i - SNX_VKB_IMGBUF >= buffer_slots) continue;
             b[count++] = (VkDescriptorSetLayoutBinding){
                 .binding = i,
                 .descriptorType = binding_type(i),
-                .descriptorCount = (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? g_shader_tex_array : 1,
+                .descriptorCount = (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? g_spirv_translate.tex_array : 1,
                 .stageFlags = vk_set_stages(s)};
         }
         for (int arrays = 0; arrays < 2; arrays++) {
@@ -2710,7 +2713,9 @@ static void pf_key(char* out, size_t n, size_t* guest) {
     char exe[64] = "", uuid[33];
     /* 0 no texture arrays, 1 arrays of SNX_TEX_ARRAY (every file's word before arrays came smaller), else 1 and the
        elements */
-    u32 arrays = !g_shader_texture_arrays ? 0u : g_shader_tex_array == SNX_TEX_ARRAY ? 1u : 1u + g_shader_tex_array;
+    u32 arrays = !g_spirv_translate.texture_arrays              ? 0u
+                 : g_spirv_translate.tex_array == SNX_TEX_ARRAY ? 1u
+                                                                : 1u + g_spirv_translate.tex_array;
     u32 caps[] = {(u32)g_vk.has_divisor,
                   (u32)g_vk.has_dynamic_stride,
                   (u32)g_vk.has_shader_draw_parameters,
@@ -2724,18 +2729,18 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   g_vk.advanced_blend_caps.all_operations,
                   (u32)g_vk.has_fragment_interlock,
                   arrays,
-                  (u32)g_shader_stage_point_size,
-                  (u32)g_shader_output_layer,
-                  (u32)g_shader_geometry,
-                  (u32)g_shader_float16,
-                  (u32)g_shader_half_rounding,
-                  (u32)g_shader_i2f_nearest,
-                  (u32)g_shader_geometry_streams,
-                  (u32)g_shader_geometry_streams_lines_triangles,
-                  (u32)g_shader_tessellation,
-                  (u32)g_shader_xfb_stores,
+                  (u32)g_spirv_translate.stage_point_size,
+                  (u32)g_spirv_translate.output_layer,
+                  (u32)g_spirv_translate.geometry,
+                  (u32)g_spirv_translate.float16,
+                  (u32)g_spirv_translate.half_rounding,
+                  (u32)g_spirv_translate.i2f_nearest,
+                  (u32)g_spirv_translate.geometry_streams,
+                  (u32)g_spirv_translate.geometry_streams_lines_triangles,
+                  (u32)g_spirv_translate.tessellation,
+                  (u32)g_spirv_translate.xfb_stores,
                   (u32)g_vk.has_xfb,
-                  (u32)g_shader_clock_scopes,
+                  (u32)g_spirv_translate.clock_scopes,
                   (u32)g_vk_flush_denorm,
                   (u32)g_vk_preserve_infnan,
                   (u32)g_vk_preserve_infnan64,
@@ -2744,13 +2749,13 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   (u32)g_vk.has_conservative,
                   g_vk_stage_sets,
                   g_vk_buffer_image_slots,
-                  g_shader_uniform_cbufs,
+                  g_spirv_translate.uniform_cbufs,
                   d->limits.maxPerStageDescriptorStorageImages,
                   d->limits.maxDescriptorSetStorageImages,
                   (u32)g_vk.has_mixed_samples,
                   (u32)g_vk.has_descriptor_heap_support,
                   (u32)g_vk.has_descriptor_buffers,
-                  (u32)g_shader_dynamic_texture_offsets,
+                  (u32)g_spirv_translate.dynamic_texture_offsets,
                   g_vk.feat13.maintenance4,
                   (u32)g_vk.has_depth_range_unrestricted,
                   (u32)g_vk.vertex_input_dynamic};
@@ -2780,10 +2785,11 @@ static void pf_key(char* out, size_t n, size_t* guest) {
             out + *guest, n - *guest,
             " %s%s driver=%u api=%u spirv=%x uuid=%s ftz=%d quad=%d,%d mixed_dot=%d hmma_coop=%d hmma_pairs=%d hmma_stage=%d half_flush=%d "
             "hmma_f16=%d sizes=%u,%u vertex_bounds=%d",
-            snx_build_info(), exe, d->driverVersion, d->apiVersion, (unsigned)spv_emit_version(), uuid, g_vk_ftz, g_shader_quad,
-            g_shader_quad_compute, g_shader_mixed_dot, g_shader_hmma_coop, g_shader_hmma_pairs, g_shader_hmma_stage,
-            g_shader_half_flush, g_shader_hmma_f16, (unsigned)sizeof(ShaderInfo), (unsigned)sizeof(PfShader),
-            g_vk.has_vertex_robustness2);
+            snx_build_info(), exe, d->driverVersion, d->apiVersion, (unsigned)spv_emit_version(), uuid, g_vk_ftz,
+            g_spirv_translate.quad, g_spirv_translate.quad_compute, g_spirv_translate.mixed_dot,
+            g_spirv_translate.hmma_coop, g_spirv_translate.hmma_pairs, g_spirv_translate.hmma_stage,
+            g_spirv_translate.half_flush, g_spirv_translate.hmma_f16, (unsigned)sizeof(ShaderInfo),
+            (unsigned)sizeof(PfShader), g_vk.has_vertex_robustness2);
 }
 
 void vk_pipeline_file_key(char* out, size_t n, size_t* guest) { pf_key(out, n, guest); }
