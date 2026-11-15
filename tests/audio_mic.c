@@ -5,9 +5,11 @@
    (plat_mic_*) that plays a generated signal in bursts, never a real one. Checked: what an open leaves for the
    format query, the device properties, the frames' count in guest time and their format on every channel, the
    device opened by a start and closed by a stop, the microphone setting off, the hold before the first frames, a
-   device that runs short or ahead, the gain. Then the noise reduction (src/nx/runtime/platform/audio_denoise.c, the
-   system's libspeexdsp): off, the game gets the signal sample for sample; on, a steady noise under tone bursts is
-   lowered by a measured amount while the bursts pass. Without the library those two checks are skipped, said */
+   device that runs short or ahead, the gain. Then the noise reduction (src/nx/runtime/platform/audio_denoise.c). Off,
+   the game gets the signal sample for sample. On, speech-like syllables over a steady noise and over babble go through
+   the neural method (RNNoise, built in) and the spectral one (the system's libspeexdsp, skipped and said without it),
+   each measured: the noise lowered between the syllables, the syllables' signal-to-noise ratio, the speech kept, the
+   delay and the cost */
 #include "nx/hle/services/services_int.h"
 #include <stdarg.h>
 #include <time.h>
@@ -95,7 +97,10 @@ static double tone_at(u64 n) {
     double fade = in < 240 ? (double)in / 240.0 : in > BURST - 240 ? (double)(BURST - in) / 240.0 : 1.0;
     return burst_on(n) ? TONE_AMP * fade * sin(2.0 * M_PI * TONE_HZ * (double)n / 48000.0) : 0.0;
 }
+static const i16* test_source; /* a signal made beforehand, in place of the tone and noise */
+static u64 test_source_len;
 static i16 signal_at(u64 n) {
+    if (test_source) return n < test_source_len ? test_source[n] : 0;
     double v = (test_tone ? tone_at(n) : 0.0) + (test_noise ? noise_at(n) : 0.0);
     long s = lrint(v * 32767.0);
     return (i16)(s > 32767 ? 32767 : s < -32768 ? -32768 : s);
@@ -329,65 +334,216 @@ static void test_float(void) {
     format(FORMAT, 2, 2, 48000);
 }
 
-/* power in dB of x[from, to) */
-static double power_db(const double* x, u32 from, u32 to) {
-    double sum = 0;
-    for (u32 i = from; i < to; i++) sum += x[i] * x[i];
-    return 10.0 * log10(sum / (double)(to - from) + 1e-20);
+/* ------------------------------------------------------------ the reduction, on speech-like signals */
+/* Speech-like: syllables of 220 ms, one every 350 ms, each a harmonic sound on a pitch that glides (a talker's base
+   between 110 and 230 Hz), its harmonics up to 4 kHz shaped by three formants that move from syllable to syllable, a
+   tilt of 3 dB an octave and a raised-cosine envelope. RNNoise is trained on speech: a steady tone is noise to it */
+#define SYLLABLE 16800u /* 350 ms */
+#define VOICED   10560u /* 220 ms */
+#define TOTAL    (48000u * 8)
+static u32 hash32(u32 a, u32 b) {
+    u64 x = (u64)a * 0x9E3779B97F4A7C15ull ^ ((u64)b + 0x632BE59BD9B4E019ull);
+    x ^= x >> 31;
+    x *= 0xBF58476D1CE4E5B9ull;
+    x ^= x >> 29;
+    return (u32)(x >> 16);
 }
-/* the reduction: 8 s of the signal with it on, measured over the last 4 s (the reducer learns the noise over the
-   first seconds). Each gap's power (the noise alone) and each burst's (the tone and what noise is left), 30 ms away
-   from their edges, against the same stretch of the signal recorded */
-static void test_reduction(u32 lead) {
-    static i16 got[48000 * 9];
-    static double in_x[48000 * 9], out_x[48000 * 9];
-    const u32 edge = 1440;
-    double nin = 0, nout = 0, tin = 0, tout = 0;
-    u32 n = 0, nn = 0, tn = 0;
-    struct timespec t0, t1;
-    SnxDenoise* d = snx_denoise_new(48000, 480, SNX_DENOISE_SUPPRESS_DB);
-    if (!d) {
-        printf("audio_mic: %s is not there: the noise reduction checks are skipped\n", SNX_DENOISE_LIBRARY);
-        return;
+static void make_speech(float* out, u32 n, u32 seed, u32 offset) {
+    double phase[40] = {0};
+    for (u32 i = 0; i < n; i++) {
+        u32 t = i + offset, syl = t / SYLLABLE, in = t % SYLLABLE;
+        out[i] = 0;
+        if (in >= VOICED) continue;
+        u32 h = hash32(seed, syl);
+        double f0 = (110.0 + (double)(h % 120)) * (1.0 + 0.15 * sin(M_PI * in / VOICED));
+        double formant[3] = {300.0 + (double)(hash32(h, 1) % 600), 900.0 + (double)(hash32(h, 2) % 1400),
+                             2300.0 + (double)(hash32(h, 3) % 700)};
+        const double width[3] = {120.0, 180.0, 250.0};
+        double env = 0.5 - 0.5 * cos(2.0 * M_PI * in / VOICED), v = 0;
+        for (int k = 1; k < 40 && k * f0 < 4000.0; k++) {
+            double f = k * f0, gain = 0.02;
+            for (int j = 0; j < 3; j++) gain += exp(-((f - formant[j]) / width[j]) * ((f - formant[j]) / width[j]));
+            phase[k] += 2.0 * M_PI * f / 48000.0;
+            v += gain / sqrt((double)k) * sin(phase[k]);
+        }
+        out[i] = (float)(env * v);
     }
-    /* the cost of a block of 10 ms at 48 kHz */
+}
+/* x scaled so that its power over the voiced cores is rms^2, or over everything */
+static void scale_to(float* x, u32 n, double rms, int voiced_only) {
+    double sum = 0;
+    u32 count = 0;
+    for (u32 i = 0; i < n; i++)
+        if (!voiced_only || i % SYLLABLE < VOICED) sum += (double)x[i] * x[i], count++;
+    double k = rms / sqrt(sum / count + 1e-30);
+    for (u32 i = 0; i < n; i++) x[i] = (float)(x[i] * k);
+}
+static void to_i16(i16* out, const float* a, const float* b, u32 n) {
+    for (u32 i = 0; i < n; i++) {
+        long s = lrint((double)(a[i] + (b ? b[i] : 0.0f)) * 32767.0);
+        out[i] = (i16)(s > 32767 ? 32767 : s < -32768 ? -32768 : s);
+    }
+}
+/* each block of 480 samples of in through a new reducer of method, into out, lined up for its delay */
+static u32 run_method(int method, const i16* in, i16* out, u32 n) {
+    SnxDenoise* d = snx_denoise_new(48000, 480, method);
+    CHECK(d != NULL && snx_denoise_method(d) == method);
+    u32 delay = snx_denoise_delay(d);
     static i16 block[480];
-    for (u32 i = 0; i < 480; i++) block[i] = signal_at(i);
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-    for (int r = 0; r < 2000; r++) snx_denoise_run(d, block);
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    double us = ((double)(t1.tv_sec - t0.tv_sec) * 1e9 + (double)(t1.tv_nsec - t0.tv_nsec)) / 2000.0 / 1000.0;
-    printf("audio_mic: a block of 10 ms takes %.1f us to reduce, %.2f%% of one core\n", us, us / 100.0);
+    for (u32 i = 0; i + 480 <= n; i += 480) {
+        memcpy(block, in + i, sizeof block);
+        snx_denoise_run(d, block);
+        for (u32 k = 0; k < 480; k++)
+            if (i + k >= delay) out[i + k - delay] = block[k];
+    }
     snx_denoise_free(d);
+    return delay;
+}
+/* powers over the last 4 s, as dB: the gaps' cores and the syllables' cores (30 ms in from each edge) */
+static double part_db(const i16* x, const float* ref, int voiced) {
+    double sum = 0;
+    u32 count = 0;
+    for (u32 i = 4 * 48000; i + 480 < TOTAL; i++) {
+        u32 in = i % SYLLABLE;
+        int core = voiced ? in >= 1440 && in < VOICED - 1440 : in >= VOICED + 1440 && in < SYLLABLE - 1440;
+        if (!core) continue;
+        double v = x ? x[i] / 32768.0 : ref[i];
+        sum += v * v;
+        count++;
+    }
+    return 10.0 * log10(sum / count + 1e-20);
+}
+/* the error against the clean speech over the syllables' cores, as dB, x read shift samples later */
+static double error_db(const i16* x, const float* speech, u32 shift) {
+    double sum = 0;
+    u32 count = 0;
+    for (u32 i = 4 * 48000; i + 480 + shift < TOTAL; i++) {
+        u32 in = i % SYLLABLE;
+        if (in < 1440 || in >= VOICED - 1440) continue;
+        double e = x[i + shift] / 32768.0 - speech[i];
+        sum += e * e;
+        count++;
+    }
+    return 10.0 * log10(sum / count + 1e-20);
+}
 
-    g_settings.microphone_noise_reduction = 1;
-    test_host_ns = 0; /* the device's bursts in the same phase as test_pace's: the same hold before the signal */
+static float g_speech[TOTAL], g_steady[TOTAL], g_babble[TOTAL], g_talker[TOTAL];
+static i16 g_mix[TOTAL], g_out[TOTAL], g_clean[TOTAL], g_clean_out[TOTAL];
+
+/* one method on one noise: the noise alone lowered (the gaps), the speech kept (its power with the noise in, and
+   alone), and the signal-to-noise ratio over the syllables before and after */
+static void measure(const char* method_name, int method, const char* noise_name, const float* noise, double* lowered,
+                    double* snr_gain, double* kept) {
+    to_i16(g_mix, g_speech, noise, TOTAL);
+    to_i16(g_clean, g_speech, NULL, TOTAL);
+    memset(g_out, 0, sizeof g_out);
+    memset(g_clean_out, 0, sizeof g_clean_out);
+    run_method(method, g_mix, g_out, TOTAL);
+    run_method(method, g_clean, g_clean_out, TOTAL);
+    double noise_in = part_db(NULL, noise, 0), noise_out = part_db(g_out, NULL, 0);
+    double speech_in = part_db(NULL, g_speech, 1), speech_alone = part_db(g_clean_out, NULL, 1);
+    /* the lag of the speech through it beyond what it says: the least error of the clean speech's output */
+    u32 shift = 0;
+    double best = 1e9;
+    for (u32 k = 0; k <= 960; k++) {
+        double e = error_db(g_clean_out, g_speech, k);
+        if (e < best) best = e, shift = k;
+    }
+    CHECK(shift <= 2); /* the delay it says is the delay it has */
+    double snr_in = speech_in - part_db(NULL, noise, 1), snr_out = speech_in - error_db(g_out, g_speech, shift);
+    *lowered = noise_in - noise_out;
+    *snr_gain = snr_out - snr_in;
+    *kept = speech_alone - speech_in;
+    printf("audio_mic: %s on %s noise: the noise alone %.1f -> %.1f dB (%.1f dB lower); syllables SNR %.1f -> %.1f dB "
+           "(%+.1f); the speech alone through it %+.1f dB, %u samples later than said, its own change to it %.1f dB "
+           "under it (the SNR it could reach)\n",
+           method_name, noise_name, noise_in, noise_out, *lowered, snr_in, snr_out, *snr_gain, *kept, shift,
+           speech_in - best);
+}
+
+/* the cost of a block of 10 ms at 48 kHz, in us */
+static double block_us(int method) {
+    SnxDenoise* d = snx_denoise_new(48000, 480, method);
+    static i16 block[480];
+    struct timespec t0, t1;
+    CHECK(d != NULL);
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (int r = 0; r < 1000; r++) {
+        memcpy(block, g_mix + (u32)(r % 700) * 480, sizeof block);
+        snx_denoise_run(d, block);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    snx_denoise_free(d);
+    return ((double)(t1.tv_sec - t0.tv_sec) * 1e9 + (double)(t1.tv_nsec - t0.tv_nsec)) / 1000.0 / 1000.0;
+}
+
+static void test_reduction(void) {
+    double lowered, gain, kept;
+    make_speech(g_speech, TOTAL, 1, 0);
+    scale_to(g_speech, TOTAL, 0.1, 1); /* -20 dBFS over the syllables */
+    for (u32 i = 0; i < TOTAL; i++) g_steady[i] = (float)noise_at(i);
+    scale_to(g_steady, TOTAL, 0.03, 0);          /* -30 dBFS */
+    for (u32 talker = 0; talker < 6; talker++) { /* six other talkers, out of step: a room's babble */
+        make_speech(g_talker, TOTAL, 100 + talker, talker * 2900 + 1000);
+        for (u32 i = 0; i < TOTAL; i++) g_babble[i] += g_talker[i];
+    }
+    scale_to(g_babble, TOTAL, 0.03, 0);
+
+    /* the neural method, built in (no system librnnoise here), checked: a steady noise and babble lowered, the speech
+       kept, its SNR better */
+    measure("neural", SNX_DENOISE_NEURAL, "steady", g_steady, &lowered, &gain, &kept);
+    CHECK(lowered >= 10.0 && gain >= 3.0 && kept > -6.0);
+    measure("neural", SNX_DENOISE_NEURAL, "babble", g_babble, &lowered, &gain, &kept);
+    CHECK(lowered >= 3.0 && kept > -6.0);
+    printf(
+        "audio_mic: neural: a block of 10 ms takes %.1f us (%.2f%% of one core), and the output lags by %u samples\n",
+        block_us(SNX_DENOISE_NEURAL), block_us(SNX_DENOISE_NEURAL) / 100.0, 480u);
+    SnxDenoise* d = snx_denoise_new(16000, 160, SNX_DENOISE_NEURAL); /* not 48 kHz: the spectral one, or none */
+    CHECK(!d || snx_denoise_method(d) == SNX_DENOISE_SPECTRAL);
+    snx_denoise_free(d);
+    CHECK(snx_denoise_new(48000, 480, SNX_DENOISE_OFF) == NULL);
+
+    d = snx_denoise_new(48000, 480, SNX_DENOISE_SPECTRAL);
+    if (!d) {
+        printf("audio_mic: %s is not there: the spectral checks are skipped\n", SNX_DENOISE_LIBRARY);
+    } else {
+        snx_denoise_free(d);
+        measure("spectral", SNX_DENOISE_SPECTRAL, "steady", g_steady, &lowered, &gain, &kept);
+        CHECK(lowered >= 10.0 && kept > -6.0);
+        measure("spectral", SNX_DENOISE_SPECTRAL, "babble", g_babble, &lowered, &gain, &kept);
+        printf("audio_mic: spectral: a block of 10 ms takes %.1f us\n", block_us(SNX_DENOISE_SPECTRAL));
+    }
+
+    /* through the stream, the setting at Neural: the speech over the steady noise, the noise lowered in the gaps */
+    to_i16(g_mix, g_speech, g_steady, TOTAL);
+    test_source = g_mix;
+    test_source_len = TOTAL;
+    g_settings.microphone_noise_reduction = SNX_DENOISE_NEURAL;
+    test_host_ns = 0;
+    u32 n = 0;
     CHECK(audio_purge_input(&cpu, STREAM) == 0);
-    CHECK(audio_start_input(&cpu, STREAM) == 0 && test_mic != NULL && input_of(STREAM)->mic->denoise != NULL);
+    CHECK(audio_start_input(&cpu, STREAM) == 0 &&
+          snx_denoise_method(input_of(STREAM)->mic->denoise) == SNX_DENOISE_NEURAL);
     for (int t = 0; t < 1600; t++) {
         tick();
-        read_all(STREAM, got, &n, sizeof got / sizeof *got);
+        read_all(STREAM, g_out, &n, TOTAL);
     }
-    CHECK(n == 8 * 48000);
-    for (u32 i = 0; i + lead < n; i++) {
-        in_x[i] = (double)signal_at(i) / 32768.0;
-        out_x[i] = (double)got[i + lead] / 32768.0;
-    }
-    for (u32 start = (4 * 48000 + BURST - 1) / BURST * BURST; start + BURST + lead <= n; start += BURST) {
-        double pi = power_db(in_x, start + edge, start + BURST - edge);
-        double po = power_db(out_x, start + edge, start + BURST - edge);
-        if (burst_on(start))
-            tin += pi, tout += po, tn++;
-        else
-            nin += pi, nout += po, nn++;
-    }
-    CHECK(nn >= 4 && tn >= 4);
-    nin /= nn, nout /= nn, tin /= tn, tout /= tn;
-    printf("audio_mic: the noise alone %.1f dB -> %.1f dB (%.1f dB lower), the bursts %.1f dB -> %.1f dB (%+.1f dB)\n",
-           nin, nout, nin - nout, tin, tout, tout - tin);
-    CHECK(nin - nout >= 10.0);      /* a steady noise lowered */
-    CHECK(fabs(tout - tin) <= 3.0); /* the bursts pass */
+    CHECK(n == TOTAL);
+    u32 lead = 0; /* the hold's silence, then the reducer's frame of delay, then the signal */
+    while (lead < n && g_out[lead] == 0) lead++;
+    CHECK(lead >= 1440 && lead <= 2880 + 480);
+    memmove(g_out, g_out + lead, (TOTAL - lead) * sizeof *g_out);
+    memset(g_out + TOTAL - lead, 0, lead * sizeof *g_out);
+    /* the lead counts the reducer's frame too: put it back so that the output lines up with the source */
+    double gaps = part_db(g_out, NULL, 0), noise_in = part_db(NULL, g_steady, 0);
+    printf("audio_mic: through the stream (neural): the noise alone %.1f -> %.1f dB\n", noise_in, gaps);
+    CHECK(noise_in - gaps >= 10.0);
+    /* the setting changed to Off while it records: the next blocks pass as recorded */
+    g_settings.microphone_noise_reduction = SNX_DENOISE_OFF;
+    for (int t = 0; t < 4; t++) tick();
+    CHECK(input_of(STREAM)->mic->denoise == NULL);
     CHECK(audio_stop_input(&cpu, STREAM) == 0);
+    test_source = NULL;
 }
 
 int main(void) {
@@ -399,7 +555,8 @@ int main(void) {
     test_gain_stop();
     test_off();
     test_float();
-    test_reduction(lead);
+    (void)lead;
+    test_reduction();
     audio_close_input(&cpu, STREAM);
     CHECK(test_event.o.refs == 0 && test_mic == NULL);
     printf("audio_mic: %u checks passed\n", test_checks);
