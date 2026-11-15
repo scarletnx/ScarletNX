@@ -268,9 +268,28 @@ setting Render upscaler
     words Best|FSR 2|FSR 1|Filtered copy|DLSS|FSR 3.1 or 4|XeSS
     help The upscaler of the game's own rendering: a Switch 2 game's DLSS evaluations, and the upscalers that hook
     help modules replace (docs/layers/gpu/upscalers.md). 0 = the best one that can run, 1 = AMD FidelityFX Super
-    help Resolution 2.2 (temporal), 2 = FSR 1 (spatial: one frame, no jitter or motion needed), 3 = a filtered copy.
-    help DLSS, FSR 3.1 or 4 and XeSS are not built in yet. Where the one asked for can't run, or its caller can't take
-    help it (a DLSS evaluation takes a temporal one only), the best one that can stands in
+    help Resolution 2.2 (temporal), 2 = FSR 1 (spatial: one frame, no jitter or motion needed), 3 = a filtered copy,
+    help 4 = NVIDIA DLSS (Windows, an NVIDIA GPU, and NVIDIA's runtime in dlss_runtime's folder). FSR 3.1 or 4 and
+    help XeSS are not built in yet. Where the one asked for can't run, or its caller can't take it (a DLSS evaluation
+    help takes a temporal one only), the best one that can stands in
+setting DLSS runtime
+    key dlss_runtime
+    text 2048
+    startup
+    only windows
+    help The folder that holds NVIDIA's DLSS runtime, which the user downloads from NVIDIA and which is not part of
+    help ScarletNX: sl.interposer.dll, sl.common.dll and sl.dlss.dll from NVIDIA Streamline's SDK and nvngx_dlss.dll
+    help (docs/user/dlss.md). Empty = no DLSS. With it, render_upscaler 0 (Best) or 4 runs DLSS on an NVIDIA GPU. On
+    help any other, or where the files are missing or not signed by NVIDIA, the next upscaler stands in
+setting DLSS preset
+    key dlss_preset
+    int 0 4
+    default 2
+    words NVIDIA's|J|K|L|M
+    startup
+    only windows
+    help The DLSS model: 0 = NVIDIA's choice for each mode, 1 to 4 = the presets J, K, L, M (transformer models). K
+    help by default: at 2x it takes less memory than NVIDIA's choice there (M), 158 against 214 MB at 2560x1440
 setting DLSS render size
     key dlss_render_size
     int 0 5
