@@ -25,13 +25,13 @@ static VkPipelineLayout g_tc_layout;
 /* texconv.comp's builds: the plain one, its ETC2 build, its ASTC build's three passes, its conversion build and its
    NV12 build; then the ASTC build's second and third passes with each vendor's encoder (texconv.glsl's
    SNX_ASTC_VENDOR), each without and with packed dot products (bc7_encode.glsl's SNX_BC7_DOT), the first pass, which
-   encodes no block, being the generic one's */
+   encodes no block, being the generic one's; last the ETC2 build with packed dot products (etc2_encode.glsl's) */
 enum { TC_ASTC_VENDOR_AT = 7 };
 static const struct {
     const u32* code;
     const u64* size;
     const char* what;
-} tc_builds[15] = {
+} tc_builds[16] = {
     {texconv_spv, &texconv_spv_size, ""},
     {texconv_etc2_spv, &texconv_etc2_spv_size, " (its ETC2 build)"},
     {texconv_astc_spv, &texconv_astc_spv_size, " (its ASTC build)"},
@@ -50,8 +50,9 @@ static const struct {
     {texconv_astc_qcom_b_dot_spv, &texconv_astc_qcom_b_dot_spv_size,
      " (its ASTC build's second pass for Adreno, with packed dot products)"},
     {texconv_astc_qcom_c_dot_spv, &texconv_astc_qcom_c_dot_spv_size,
-     " (its ASTC build's third pass for Adreno, with packed dot products)"}};
-static VkPipeline g_tc_pipe[15]; /* tc_builds' pipelines, made on first use */
+     " (its ASTC build's third pass for Adreno, with packed dot products)"},
+    {texconv_etc2_dot_spv, &texconv_etc2_dot_spv_size, " (its ETC2 build, with packed dot products)"}};
+static VkPipeline g_tc_pipe[16]; /* tc_builds' pipelines, made on first use */
 /* the ASTC build's work lists (texconv.comp's Work): the blocks each pass leaves to a later one, two lists of a word a
    block after a head of four words each, as large as the largest dispatch yet */
 static VkBuffer g_tc_work;
@@ -59,7 +60,8 @@ static DevMem g_tc_work_mem;
 static u64 g_tc_work_size;
 #define TC_WORK_HEAD 32u
 
-/* mode's build in tc_builds: the ETC2 or the ASTC build for the BCn modes they encode again (the ASTC build's pass
+/* mode's build in tc_builds: the ETC2 (with packed dot products where g_vk.bc7_dot) or the ASTC build for the BCn
+   modes they encode again (the ASTC build's pass
    `pass`, 0 to 2: the second and third with the encoder of the GPU's vendor, vk_astc_encoder, and packed dot products
    where the GPU has an instruction for them, g_vk.bc7_dot, which the generic encoder's builds leave out), the
    conversion build for TC_BLIT_CONVERT, the NV12 build for TC_NV12_UV, else the plain one */
@@ -69,7 +71,7 @@ static int tc_build(u32 mode, int pass) {
         if (pass == 0 || enc == VK_ASTC_ENC_GENERIC) return 2 + pass;
         return TC_ASTC_VENDOR_AT + 4 * (enc - VK_ASTC_ENC_ARM) + 2 * (g_vk.bc7_dot != 0) + pass - 1;
     }
-    return mode >= TC_BCN_ETC2       ? 1
+    return mode >= TC_BCN_ETC2       ? (g_vk.bc7_dot != 0 ? 15 : 1)
            : mode == TC_BLIT_CONVERT ? 5
            : mode == TC_NV12_UV      ? 6
                                      : 0;

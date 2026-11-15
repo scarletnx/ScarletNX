@@ -57,9 +57,19 @@ uint et_dist(uint i, int r, int g, int b) {
     int db = clamp(b, 0, 255) - et_ch(p, 2u);
     return uint(dr * dr + dg * dg + db * db);
 }
-/* the dot product of two words' R, G and B */
+/* 1: the packed dot product instruction (Vulkan 1.3's shaderIntegerDotProduct), which the build vk/texconv.c runs where
+   the GPU says it is accelerated (g_vk.bc7_dot) takes; the others spell it out, to the same bytes */
+#ifndef SNX_BC7_DOT
+#define SNX_BC7_DOT 0
+#endif
+/* the dot product of two words' R, G and B, of which c's alpha byte is 0 (et1_word's and et_th_word's colours,
+   a texel with its alpha cleared) */
 int et_dot(uint p, uint c) {
+#if SNX_BC7_DOT
+    return int(dotPacked4x8EXT(p, c));
+#else
     return et_ch(p, 0u) * et_ch(c, 0u) + et_ch(p, 1u) * et_ch(c, 1u) + et_ch(p, 2u) * et_ch(c, 2u);
+#endif
 }
 /* The nearest of the four colours c0 to c3 (RGB words as they decode) to texel i, the first of equal ones:
    (squared error << 2) | index; index 2 and no error for a transparent texel of a see-through block, whose opaque
@@ -70,7 +80,7 @@ int et_dot(uint p, uint c) {
    first of the least is the minimum of four words */
 uint et_near4(uint i, uint c0, uint c1, uint c2, uint c3, bool see) {
     if (see && et_clear(i)) return 2u;
-    const uint p = tx_px[i];
+    const uint p = tx_px[i] & 0xFFFFFFu;
     const uint e01 = min(uint(et_dot(c0, c0) - 2 * et_dot(p, c0) + 390150) << 2,
                          (uint(et_dot(c1, c1) - 2 * et_dot(p, c1) + 390150) << 2) | 1u);
     uint e = min(e01, (uint(et_dot(c3, c3) - 2 * et_dot(p, c3) + 390150) << 2) | 3u);
