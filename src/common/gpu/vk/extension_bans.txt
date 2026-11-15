@@ -132,10 +132,10 @@ textureCompressionASTC_LDR | warn | panvk | * | any | * | decodes an illegal or 
 timelineSemaphore | warn | qualcomm | * | any | * | does not run timeline semaphores properly on all of its drivers | yuzu 1462db4694 (2023-07-03) | new:headless:timeline waits and signals across the two queues | never | -
 timelineSemaphore | warn | turnip | * | any | * | has timeline semaphore problems on some devices (a ZTE handset's Snapdragon 870) | yuzu 1462db4694 (2023-07-03) | new:headless:timeline waits and signals across the two queues | never | -
 
-# Timeline semaphores on Android: off on each driver there. The submission ring of the 3DS and the Vita
-# (common/gpu/vk/ring.c) then waits for the fence of each slot. The Switch renderer has no way without them: it says
-# the ban and keeps them on (nx/gpu/vk/device.c)
-timelineSemaphore | off | * | * | android | * | is kept to fences, as the drivers of Android do not all run timeline semaphores properly (Qualcomm's and Turnip's by yuzu's account) | yuzu 1462db4694 (2023-07-03); ScarletNX (2026-11-15) | new:headless:timeline waits and signals across the two queues | never | -
+# Timeline semaphores on Turnip on Android: off there. Turnip emulates them over KGSL, the downstream kernel driver,
+# and they cost frame rate. The submission ring of the 3DS and the Vita (common/gpu/vk/ring.c) then waits for the
+# fence of each slot. The Switch renderer has no way without them: it says the ban and keeps them on (nx/gpu/vk/device.c)
+timelineSemaphore | off | turnip | * | android | * | emulates timeline semaphores over Android's KGSL kernel driver, which took up to half of DXVK's frame rate on an Adreno 735 with Turnip 24.3.0 | DXVK issue 4484 (2024-11; Turnip's werman there: "On KGSL ... we have timeline semaphores emulated") | new:headless:timeline waits and signals across the two queues | never | -
 extendedDynamicState | warn | mali | < 44.1.0 | any | * | has several dynamic state bugs, fixed in r44p1 (r44p0 on Pixels) | ANGLE vk_renderer.cpp:6612 (issuetracker.google.com 285124778, 285196249, 286224923, 287318431) | edenprobe:coherence | never | -
 extendedDynamicState | warn | mali | >= 46.0.0 < 51.0.0 | any | * | has dynamic state regressions on job manager GPUs (Midgard and Bifrost), fixed in r51 | ANGLE vk_renderer.cpp:6612 (issuetracker.google.com 336411904) | edenprobe:coherence | never | -
 VK_DYNAMIC_STATE_CULL_MODE | warn | mali | < 52.0.0 | any | * | culls points and lines with the cull mode set by vkCmdSetCullMode (Arm errata SDEN-3735689) | ANGLE vk_renderer.cpp:6663 | new:edenprobe:points and lines drawn with front and back culling | never | -
