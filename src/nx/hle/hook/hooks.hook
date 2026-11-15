@@ -176,6 +176,7 @@ hook malloc(u64 size) -> addr = alloc_malloc
 hook calloc(u64 count, u64 size) -> addr = alloc_calloc
 hook realloc(addr p, u64 size) -> addr = alloc_realloc
 hook free(addr p) = alloc_free
+hook _ZNK2nn3mem17StandardAllocator9GetSizeOfEPKv(addr self, addr p) -> u64 = alloc_std_size
 hook aligned_alloc(u64 align, u64 size) -> addr = alloc_aligned
 hook memalign(u64 align, u64 size) -> addr = alloc_aligned
 hook posix_memalign(addr out, u64 align, u64 size) -> i32 = alloc_posix_memalign

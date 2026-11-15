@@ -251,6 +251,20 @@ static int live_take(u64 a) {
     return found;
 }
 
+/* 1 when a is a block the arena gave and still holds, which stays counted */
+static int live_has(u64 a) {
+    u32 i;
+    int found = 0;
+    live_lock();
+    for (i = live_slot(a); g_live.at[i]; i = (i + 1) & (LIVE_SLOTS - 1))
+        if (g_live.at[i] == a) {
+            found = 1;
+            break;
+        }
+    live_unlock();
+    return found;
+}
+
 /* ============================================================ the functions */
 /* the arena's pointer of guest address a, NULL for one it didn't make: in the window and a block it gave (counted
    out of the table, as the caller gives it back) */
@@ -314,6 +328,15 @@ u64 alloc_realloc(CPU* c, u64 p, u64 size) {
     return r;
 }
 void alloc_free(CPU* c, u64 p) { give(c, p); }
+/* nn::mem::StandardAllocator::GetSizeOf: a game's own code asks the SDK's allocator the size of a block malloc gave it,
+   which the arena made and the SDK's heap never saw (its CentralHeap stops the game on a pointer it doesn't know): the
+   arena's blocks have jemalloc's size, any other the SDK's own answer */
+u64 alloc_std_size(CPU* c, u64 self, u64 p) {
+    (void)self;
+    if (p >= g_alloc.lo && p < g_alloc.hi && live_has(p)) return (u64)g_alloc.sallocx(GP(p), g_alloc.flags);
+    hook_run_original(c, c->pc);
+    return c->x[0];
+}
 u64 alloc_aligned(CPU* c, u64 align, u64 size) {
     (void)c;
     if (!align || (align & (align - 1))) return 0;

@@ -129,6 +129,15 @@ int main(void) {
     assert(g_original == 4);
     alloc_free(&c, region + 0x300);
     assert(g_original == 5);
+    /* the SDK allocator's size of a block: the arena's own from jemalloc, at least what was asked, and the block stays
+       the arena's; any other pointer, a region's piece among them, the SDK's own answer */
+    const int was = g_original;
+    u64 sized = alloc_malloc(&c, 100);
+    assert(alloc_std_size(&c, 0, sized) >= 100 && g_original == was);
+    assert(alloc_std_size(&c, 0, 0x1000) == 777 && g_original == was + 1);
+    assert(alloc_std_size(&c, 0, sized + 16) == 777 && g_original == was + 2);
+    alloc_free(&c, sized);
+    assert(g_original == was + 2);
     puts("PASS the alloc family's arena: jemalloc found in the program, allocations in the window, a foreign pointer's "
          "own code");
     return 0;
