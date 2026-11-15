@@ -1,16 +1,57 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The Joy-Con 2's protocol (runtime/platform/joycon2_proto.c) on bytes made here, no Bluetooth: the requests against
-   the bytes that public captures show (ndeadly's switch2_controller_research, commands.md and bluetooth_interface.md),
-   the commands and handles the host must never send or write, the replies of those captures, the common report's
-   fields and the features that gate them, the calibration and the HD rumble's codes against a public frame
-   (joycon2cpp's) */
-#include "nx/runtime/platform/joycon2_proto.h"
+/* The Joy-Con 2's protocol (runtime/platform/joycon2_proto.c) and one controller's setup and input
+   (joycon2_session.c), on bytes made here, no Bluetooth: the requests against the bytes that public captures show
+   (ndeadly's switch2_controller_research, commands.md and bluetooth_interface.md), the commands and handles the host
+   must never send or write, the replies of those captures, the common report's fields and the features that gate them,
+   the calibration, the HD rumble's codes against a public frame (joycon2cpp's), the setup's order, retries and
+   failures through a transport that records what it would send, and ATT's PDUs (joycon2_att.c) */
+#include "nx/runtime/platform/joycon2_att.h"
+#include "nx/runtime/platform/joycon2_session.h"
 #include "common/utilities/endian.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+
+#define MS 1000000ull
+#define S  1000000000ull
+
+/* what the transport was asked to send */
+typedef struct {
+    u16 handle; /* 0xffff: a CCCD write */
+    u16 cccd;
+    size_t n;
+    u8 data[64];
+} Sent;
+static struct {
+    Sent sent[64];
+    int n;
+    int fail; /* the next writes fail */
+} g_test;
+
+static int fake_write(void* link, u16 handle, const u8* data, size_t n) {
+    (void)link;
+    assert(jc2_handle_writable(handle)); /* never a handle off the list */
+    if (g_test.fail) return -1;
+    assert(g_test.n < 64 && n <= 64);
+    Sent* s = &g_test.sent[g_test.n++];
+    s->handle = handle;
+    s->n = n;
+    memcpy(s->data, data, n);
+    return 0;
+}
+static int fake_notify(void* link, u16 cccd, int on) {
+    (void)link;
+    assert(on && (cccd == JC2_H_REPLY_CCCD || cccd == JC2_H_COMMON_CCCD));
+    if (g_test.fail) return -1;
+    assert(g_test.n < 64);
+    g_test.sent[g_test.n].handle = 0xffff;
+    g_test.sent[g_test.n].cccd = cccd;
+    g_test.sent[g_test.n++].n = 0;
+    return 0;
+}
+static const Jc2Transport T = {NULL, fake_write, fake_notify};
 
 static int same(const u8* a, size_t n, const u8* b, size_t m) { return n == m && !memcmp(a, b, n); }
 #define SAME(a, n, ...)                                                                                                \
@@ -293,6 +334,295 @@ static void test_rumble(void) {
     }
 }
 
+/* ---- one controller's setup, through the transport */
+static size_t reply_bytes(u8* out, u8 cmd, u8 sub, u8 status, const u8* data, size_t n) {
+    out[0] = cmd;
+    out[1] = status;
+    out[2] = 0x01;
+    out[3] = sub;
+    out[4] = 0x10;
+    out[5] = 0x78;
+    out[6] = out[7] = 0;
+    memcpy(out + 8, data, n);
+    return 8 + n;
+}
+static size_t flash_reply(u8* out, u32 address, u8 n, const u8* bytes) {
+    u8 d[8 + 0x40] = {n};
+    snx_st_le32(d + 4, address);
+    memcpy(d + 8, bytes, n);
+    return reply_bytes(out, 0x02, 0x04, 0x01, d, 8u + n);
+}
+/* the request the transport got last, as a reply would name it */
+static const Sent* last(void) { return g_test.n ? &g_test.sent[g_test.n - 1] : NULL; }
+static void answer(Jc2Session* s, u64 t, u8 status) {
+    const Sent* q = last();
+    u8 r[96];
+    size_t n;
+    assert(q && q->handle == JC2_H_COMMAND);
+    if (q->data[0] == 0x02) { /* a read: bytes of its own for each address */
+        u32 at = snx_ld_le32(q->data + 12);
+        u8 n8 = q->data[8], bytes[0x40];
+        memset(bytes, 0xff, sizeof bytes);
+        if (at == JC2_FLASH_STICK) {
+            put12(bytes + 0x28, 2000, 2100);
+            put12(bytes + 0x2b, 1000, 1000);
+            put12(bytes + 0x2e, 1000, 1000);
+        }
+        if (at == JC2_FLASH_GYRO) memset(bytes, 0, sizeof bytes);
+        n = flash_reply(r, at, n8, bytes);
+    } else if (q->data[0] == 0x10) {
+        static const u8 version[12] = {0x01, 0x00, 0x0e, 0x01, 0x0c, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff};
+        n = reply_bytes(r, 0x10, 0x01, status, version, sizeof version); /* commands.md's: 1.0.14, a right one */
+    } else {
+        static const u8 zero[4] = {0};
+        n = reply_bytes(r, q->data[0], q->data[3], status, zero, sizeof zero);
+    }
+    jc2_session_notify(s, &T, JC2_H_REPLY, r, n, t);
+}
+static void test_session(void) {
+    Jc2Session s;
+    u64 t = 5 * S;
+    int sends;
+    g_test.n = 0;
+    jc2_session_start(&s, JC2_SIDE_LEFT);
+    /* the reply notifications on, the device info, then the version */
+    assert(jc2_session_tick(&s, &T, t) == JC2_SETUP && g_test.n == 1 && g_test.sent[0].cccd == JC2_H_REPLY_CCCD);
+    jc2_session_tick(&s, &T, t + 10 * MS);
+    SAME(last()->data, last()->n, 0x02, 0x91, 0x01, 0x04, 0x00, 0x08, 0x00, 0x00, 0x40, 0x7e, 0x00, 0x00, 0x00, 0x30,
+         0x01, 0x00);
+    answer(&s, t + 11 * MS, 1);
+    g_test.n = 1; /* as if the info read went first, for the counts below */
+    t += 21 * MS;
+    jc2_session_tick(&s, &T, t);
+    SAME(last()->data, last()->n, 0x10, 0x91, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00);
+    /* nothing more while the reply is due, also at a clock read before the send; the same request again after 10 s */
+    jc2_session_tick(&s, &T, t + 5 * S);
+    jc2_session_tick(&s, &T, t - MS);
+    assert(g_test.n == 2);
+    t += 10 * S + 10 * MS;
+    jc2_session_tick(&s, &T, t);
+    assert(g_test.n == 3 && same(g_test.sent[2].data, g_test.sent[2].n, g_test.sent[1].data, g_test.sent[1].n));
+    /* the reply of another command doesn't end the step */
+    {
+        u8 r[16];
+        static const u8 zero[4] = {0};
+        size_t n = reply_bytes(r, 0x0c, 0x02, 1, zero, 4);
+        jc2_session_notify(&s, &T, JC2_H_REPLY, r, n, t);
+        assert(s.step == 2);
+    }
+    answer(&s, t + MS, 1);
+    assert(s.side == JC2_SIDE_RIGHT && s.version[2] == 14 && s.step == 3);
+    /* 10 ms between a reply and the next command; a reply stamped after the tick's clock (two clock reads) keeps
+       the pause too, it doesn't wrap */
+    jc2_session_tick(&s, &T, t + 5 * MS);
+    assert(g_test.n == 3);
+    jc2_session_tick(&s, &T, t);
+    assert(g_test.n == 3);
+    /* every step in its order, each answered */
+    sends = g_test.n;
+    for (int i = 0; i < 40 && s.state == JC2_SETUP; i++) {
+        t += 20 * MS;
+        jc2_session_tick(&s, &T, t);
+        if (g_test.n > sends && last()->handle == JC2_H_COMMAND) answer(&s, t + MS, 1);
+        sends = g_test.n;
+    }
+    assert(s.state == JC2_READY && s.has_stick && s.stick.center[0] == 2000 && s.stick.center[1] == 2100);
+    /* the stream after the version: the reads, then the commands, then the report's notifications */
+    {
+        static const u8 want[][16] = {
+            {0x0c, 0x91, 0x01, 0x02, 0x00, 0x04, 0x00, 0x00, 0x37, 0x00, 0x00, 0x00},
+            {0x02, 0x91, 0x01, 0x04, 0x00, 0x08, 0x00, 0x00, 0x40, 0x7e, 0x00, 0x00, 0x80, 0x30, 0x01, 0x00},
+            {0x02, 0x91, 0x01, 0x04, 0x00, 0x08, 0x00, 0x00, 0x40, 0x7e, 0x00, 0x00, 0x40, 0xc0, 0x1f, 0x00},
+            {0x02, 0x91, 0x01, 0x04, 0x00, 0x08, 0x00, 0x00, 0x10, 0x7e, 0x00, 0x00, 0x40, 0x30, 0x01, 0x00},
+            {0x11, 0x91, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00},
+            {0x0a, 0x91, 0x01, 0x08, 0x00, 0x14, 0x00, 0x00, 0x01, 0x59, 0x09, 0x00, 0x00, 0xff, 0xff, 0xff},
+            {0x11, 0x91, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00},
+            {0x13, 0x91, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00},
+            {0x0c, 0x91, 0x01, 0x04, 0x00, 0x04, 0x00, 0x00, 0x37, 0x00, 0x00, 0x00},
+            {0x0a, 0x91, 0x01, 0x02, 0x00, 0x04, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00}};
+        static const size_t sizes[] = {12, 16, 16, 16, 8, 28, 8, 8, 12, 12};
+        assert(g_test.n == 3 + 10 + 1);
+        for (int i = 0; i < 10; i++) {
+            const Sent* q = &g_test.sent[3 + i];
+            assert(q->handle == JC2_H_COMMAND && q->n == sizes[i] && !memcmp(q->data, want[i], q->n < 16 ? q->n : 16));
+        }
+        /* the actuator's parameters whole, as the console's capture has them */
+        SAME(g_test.sent[8].data, g_test.sent[8].n, 0x0a, 0x91, 0x01, 0x08, 0x00, 0x14, 0x00, 0x00, 0x01, 0x59, 0x09, 0x00,
+             0x00, 0xff, 0xff, 0xff, 0xff, 0x35, 0x00, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00);
+        assert(g_test.sent[13].handle == 0xffff && g_test.sent[13].cccd == JC2_H_COMMON_CCCD);
+    }
+    /* reports: a right Joy-Con's stick is the report's right one, calibrated; the first report's counters only set
+       where the motion starts */
+    {
+        u8 r[JC2_REPORT_SIZE];
+        static const u8 a[4] = {0x08, 0, 0, 0};
+        i32 m[2];
+        report(r, 1, a, 0, 0, 3000, 1100, 100, 200, 4096, 0);
+        jc2_session_notify(&s, &T, JC2_H_COMMON, r, sizeof r, t);
+        jc2_session_mouse(&s, m);
+        assert(!m[0] && !m[1] && s.pad.buttons == 1 && s.pad.stick[0] == 32767 && s.pad.stick[1] == -32767);
+        assert(fabsf(s.pad.accel[0] + 1.0f) < 1e-6f && s.pad.reports == 1);
+        report(r, 2, a, 0, 0, 2000, 2100, 90, 0xfff0, 0, 0);
+        jc2_session_notify(&s, &T, JC2_H_COMMON, r, sizeof r, t);
+        report(r, 3, a, 0, 0, 2000, 2100, 95, 0xfff8, 0, 0);
+        jc2_session_notify(&s, &T, JC2_H_COMMON, r, sizeof r, t);
+        jc2_session_mouse(&s, m);
+        assert(m[0] == -5 && m[1] == -200 - 8 && !s.pad.stick[0] && !s.pad.stick[1]);
+        /* the surface byte as measured: on a table about 10, a palm about 115, a hand about 200, lifted 0xff */
+        {
+            static const u8 at[] = {10, 115, 200, 0xff, 0x35};
+            for (int k = 0; k < 5; k++) {
+                r[0x14] = at[k];
+                jc2_session_notify(&s, &T, JC2_H_COMMON, r, sizeof r, t);
+                assert(s.pad.on_surface == (k == 0));
+            }
+            r[0x14] = 0;
+            jc2_session_notify(&s, &T, JC2_H_COMMON, r, sizeof r, t);
+            jc2_session_mouse(&s, m);
+        }
+        jc2_session_mouse(&s, m);
+        assert(!m[0] && !m[1]);
+    }
+    /* the player lights once, then the vibration: again only after 15 ms, one stop when it ends */
+    sends = g_test.n;
+    jc2_session_led(&s, 0x03);
+    t += S;
+    jc2_session_tick(&s, &T, t);
+    assert(g_test.n == sends + 1);
+    SAME(last()->data, last()->n, 0x09, 0x91, 0x01, 0x07, 0x00, 0x08, 0x00, 0x00, 0x03, 0, 0, 0, 0, 0, 0, 0);
+    answer(&s, t + MS, 1);
+    jc2_session_tick(&s, &T, t + 20 * MS);
+    assert(g_test.n == sends + 1);
+    {
+        Jc2Vibration v = {0.5f, 160.0f, 0.0f, 320.0f}, stop = {0.0f, 160.0f, 0.0f, 320.0f};
+        jc2_session_rumble(&s, &v);
+        jc2_session_tick(&s, &T, t + 30 * MS);
+        assert(g_test.n == sends + 2 && last()->handle == JC2_H_VIBRATION && last()->n == JC2_RUMBLE_PACKET);
+        jc2_session_tick(&s, &T, t + 40 * MS);
+        assert(g_test.n == sends + 2);
+        /* past 15 ms, but no report since the write: the link may not have carried it yet, so none goes */
+        jc2_session_tick(&s, &T, t + 45 * MS);
+        assert(g_test.n == sends + 2);
+        {
+            u8 r[JC2_REPORT_SIZE];
+            static const u8 none[4] = {0, 0, 0, 0};
+            report(r, 4, none, 0, 0, 2000, 2100, 95, 0xfff8, 0, 0);
+            jc2_session_notify(&s, &T, JC2_H_COMMON, r, sizeof r, t + 45 * MS);
+        }
+        jc2_session_tick(&s, &T, t + 45 * MS);
+        assert(g_test.n == sends + 3 && (last()->data[1] & 0x0f) == 1);
+        jc2_session_rumble(&s, &stop);
+        jc2_session_tick(&s, &T, t + 46 * MS);
+        const u8* z = last()->data + 2; /* the first sample: both amplitudes 0 */
+        assert(g_test.n == sends + 4 && !(z[1] >> 2) && !(z[2] & 0x0f) && !(z[3] >> 6) && !z[4]);
+        jc2_session_tick(&s, &T, t + 100 * MS);
+        assert(g_test.n == sends + 4);
+    }
+}
+/* a version that never comes ends the setup after 5 sends; a read or a refusal of an optional step is skipped */
+static void test_session_failures(void) {
+    Jc2Session s;
+    u64 t = S;
+    g_test.n = 0;
+    jc2_session_start(&s, JC2_SIDE_LEFT);
+    jc2_session_tick(&s, &T, t);
+    jc2_session_tick(&s, &T, t + 20 * MS);
+    answer(&s, t + 21 * MS, 1); /* the device info */
+    assert(s.step == 2);
+    for (int i = 0; i < 8; i++) jc2_session_tick(&s, &T, t += 11 * S);
+    assert(s.state == JC2_FAILED && g_test.n == 2 + JC2_SENDS);
+    /* the transport refusing the CCCD write 5 times */
+    g_test.n = 0;
+    g_test.fail = 1;
+    jc2_session_start(&s, JC2_SIDE_LEFT);
+    for (int i = 0; i < 5; i++) jc2_session_tick(&s, &T, t + (u64)i * S);
+    assert(s.state == JC2_FAILED && !g_test.n);
+    g_test.fail = 0;
+    /* the device info read unanswered 5 times: skipped */
+    g_test.n = 0;
+    jc2_session_start(&s, JC2_SIDE_LEFT);
+    jc2_session_tick(&s, &T, t);
+    for (int i = 0; i < 6 && s.step == 1; i++) jc2_session_tick(&s, &T, t += 11 * S);
+    assert(s.state == JC2_SETUP && s.step == 2 && g_test.n == 1 + JC2_SENDS);
+    /* step 2 is the version: on to the stick's read (step 4), where a late reply to another address is not its own */
+    while (s.state == JC2_SETUP && s.step < 4) {
+        int had = g_test.n;
+        jc2_session_tick(&s, &T, t += 20 * MS);
+        if (g_test.n > had) answer(&s, t + MS, 1);
+    }
+    jc2_session_tick(&s, &T, t += 20 * MS);
+    assert(s.step == 4 && snx_ld_le32(last()->data + 12) == JC2_FLASH_STICK);
+    {
+        u8 r[96], bytes[0x40] = {0};
+        size_t n = flash_reply(r, JC2_FLASH_INFO, 0x40, bytes); /* the device info's, late */
+        jc2_session_notify(&s, &T, JC2_H_REPLY, r, n, t + MS);
+        assert(s.step == 4 && s.state == JC2_SETUP && s.sent_ns);
+    }
+    answer(&s, t + 2 * MS, 1);
+    assert(s.step == 5);
+    /* the actuator's parameters (step 8) refused: skipped; the feature set (step 3) refused: the setup stops */
+    while (s.state == JC2_SETUP && s.step < 8) {
+        int had = g_test.n;
+        jc2_session_tick(&s, &T, t += 20 * MS);
+        if (g_test.n > had) answer(&s, t + MS, 1);
+    }
+    assert(s.step == 8);
+    jc2_session_tick(&s, &T, t += 20 * MS);
+    assert(last()->data[0] == JC2_CMD_VIBRATION && last()->data[3] == 0x08);
+    answer(&s, t + MS, 0x00);
+    assert(s.step == 9 && s.state == JC2_SETUP);
+    s.step = 3;
+    s.sent_ns = 0;
+    jc2_session_tick(&s, &T, t += 20 * MS);
+    assert(last()->data[0] == JC2_CMD_FEATURES && last()->data[3] == 0x02);
+    answer(&s, t + MS, 0x04);
+    assert(s.state == JC2_FAILED);
+}
+
+/* ---- ATT's PDUs: writes only to the handles allowed, a CCCD only by a write request */
+static void test_att(void) {
+    u8 b[80], cmd[16];
+    Jc2Att a;
+    size_t n = jc2_att_mtu_req(b, sizeof b, JC2_ATT_MTU);
+    SAME(b, n, 0x02, 0x00, 0x02);
+    n = jc2_cmd(cmd, sizeof cmd, JC2_CMD_VERSION, 0x01, NULL, 0);
+    n = jc2_att_write_cmd(b, sizeof b, JC2_H_COMMAND, cmd, n);
+    SAME(b, n, 0x52, 0x14, 0x00, 0x10, 0x91, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00);
+    assert(jc2_att_write_cmd(b, sizeof b, JC2_H_VIBRATION, cmd, 8) && jc2_att_write_cmd(b, sizeof b, 0x16, cmd, 8));
+    assert(!jc2_att_write_cmd(b, sizeof b, 0x18, cmd, 8) && !jc2_att_write_cmd(b, sizeof b, 0x2a, cmd, 8));
+    assert(!jc2_att_write_cmd(b, sizeof b, JC2_H_REPLY_CCCD, cmd, 2) && !jc2_att_write_cmd(b, 10, 0x14, cmd, 8));
+    n = jc2_att_write_cccd(b, sizeof b, JC2_H_REPLY_CCCD, 1);
+    SAME(b, n, 0x12, 0x1b, 0x00, 0x01, 0x00);
+    n = jc2_att_write_cccd(b, sizeof b, JC2_H_COMMON_CCCD, 0);
+    SAME(b, n, 0x12, 0x0b, 0x00, 0x00, 0x00);
+    assert(!jc2_att_write_cccd(b, sizeof b, JC2_H_COMMAND, 1) && !jc2_att_write_cccd(b, sizeof b, 0x2a, 1));
+    assert(!jc2_att_write_cccd(b, sizeof b, 0x23, 1) && !jc2_att_write_cccd(b, sizeof b, 0x05, 1));
+    /* what the controller sends */
+    memset(b, 0, sizeof b);
+    b[0] = JC2_ATT_NOTIFY;
+    snx_st_le16(b + 1, JC2_H_COMMON);
+    assert(jc2_att_parse(b, 3 + JC2_REPORT_SIZE, &a) && a.op == JC2_ATT_NOTIFY && a.handle == JC2_H_COMMON);
+    assert(a.value == b + 3 && a.n == JC2_REPORT_SIZE && !jc2_att_answer(&a, cmd, sizeof cmd, 512));
+    {
+        static const u8 rsp[] = {0x03, 0xf7, 0x00}, err[] = {0x01, 0x12, 0x1b, 0x00, 0x03};
+        assert(jc2_att_parse(rsp, sizeof rsp, &a) && a.op == JC2_ATT_MTU_RSP && a.mtu == 247);
+        assert(jc2_att_parse(err, sizeof err, &a) && a.request == 0x12 && a.handle == 0x1b && a.error == 3);
+        assert(!jc2_att_parse(err, 4, &a) && !jc2_att_parse(rsp, 2, &a) && !jc2_att_parse(rsp, 0, &a));
+    }
+    {
+        static const u8 mtu[] = {0x02, 0xf7, 0x00}, ind[] = {0x1d, 0x26, 0x00, 0x01}, read[] = {0x0a, 0x03, 0x00};
+        assert(jc2_att_parse(mtu, sizeof mtu, &a));
+        n = jc2_att_answer(&a, b, sizeof b, JC2_ATT_MTU);
+        SAME(b, n, 0x03, 0x00, 0x02);
+        assert(jc2_att_parse(ind, sizeof ind, &a) && a.handle == 0x26 && a.n == 1);
+        n = jc2_att_answer(&a, b, sizeof b, JC2_ATT_MTU);
+        SAME(b, n, 0x1e);
+        assert(jc2_att_parse(read, sizeof read, &a));
+        n = jc2_att_answer(&a, b, sizeof b, JC2_ATT_MTU);
+        SAME(b, n, 0x01, 0x0a, 0x00, 0x00, 0x06);
+    }
+}
+
 int main(void) {
     test_requests();
     test_refusals();
@@ -301,6 +631,9 @@ int main(void) {
     test_motion_frame();
     test_calibration();
     test_rumble();
+    test_session();
+    test_session_failures();
+    test_att();
     printf("joycon2: ok\n");
     return 0;
 }
