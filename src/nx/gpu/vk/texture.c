@@ -1087,6 +1087,15 @@ void vk_tex_later_stats(VkLaterStats* s) {
     s->waiting_bytes = 0;
     for (u32 i = 0; i < g_later.n; i++) s->waiting_bytes += g_later.q[i]->bytes;
 }
+/* The class of t's memory (devmem.h, ledger.c k_owner_prio) follows what the cache does with t: low while memory has
+   its pixels, as vk_mem_trim evicts it first and loads it again, and medium once it took pixels from render targets
+   (took_drawn), which the cache keeps until nothing lossless is left. A texture in pieces or with sparse blocks keeps
+   the low class of its owner: the driver only moves its memory sooner */
+static void tex_drawn(Surf* t, int drawn) {
+    if (t->took_drawn == drawn) return;
+    t->took_drawn = drawn;
+    vk_devmem_priority(t->mem, drawn ? DM_PRIO_MID : DM_PRIO_LOW);
+}
 /* t's image as img (memory mem, bytes bytes) of format fmt, in UNDEFINED or (copied) TRANSFER_DST_OPTIMAL: the old one
    and its views go once the frames that sample them are done */
 static void tex_image_swap(Surf* t, VkImage img, DevMem mem, u64 bytes, VkFormat fmt, int copied) {
@@ -1099,6 +1108,7 @@ static void tex_image_swap(Surf* t, VkImage img, DevMem mem, u64 bytes, VkFormat
     __atomic_add_fetch(&g_tex_frees, 1, __ATOMIC_RELAXED);
     t->img = img;
     t->mem = mem;
+    if (t->took_drawn) vk_devmem_priority(mem, DM_PRIO_MID); /* new memory has the low class of its owner */
     vk_surf_bytes(t, bytes);
     t->f.vk = fmt;
     VkFormatProperties fp;
@@ -1401,7 +1411,7 @@ static int tex_upload_(Surf* t) {
     if (t->upload_valid || !t->bc7_wrote) later_wrote(t); /* the first load, or a write: not a failed one tried again */
     t->upload_valid = 0;
     t->wgen = vk_surf_gen(); /* even a new texture at a reused address invalidates an old target's copy */
-    t->took_drawn = 0;       /* memory's own texels again, until tex_take_drawn copies targets in */
+    tex_drawn(t, 0);         /* memory's own texels again, until tex_take_drawn copies targets in */
     vk_surf_relist(t);
     vk_render_end();                                     /* copies and clears happen outside rendering passes */
     if (t->msaa) return t->upload_valid = vk_ms_load(t); /* its samples drawn from the guest's layout of them */
@@ -1591,7 +1601,7 @@ static int tex_copy_pending(Surf* t) {
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     rec_CmdCopyBufferToImage(cb, ib, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
     t->wgen = vk_surf_gen();
-    t->took_drawn = 0;
+    tex_drawn(t, 0);
     vk_surf_relist(t);
     t->upload_valid = 1;
     t->hash = ~t->hash;
@@ -1962,7 +1972,8 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
         VkViewFormats vf;
         vk_view_formats(&ii, &vf, VK_FORMAT_UNDEFINED);
-        if (!vk_cache_image_create(&ii, &c->img, &c->mem, VK_OWN_TEXTURE, &c->bytes)) { /* rt was used now: it stays */
+        /* the target's: its pixels, which draws sample, and which guest memory may not have */
+        if (!vk_cache_image_create(&ii, &c->img, &c->mem, VK_OWN_TARGET, &c->bytes)) { /* rt was used now: it stays */
             free(c);
             return guest ? NULL : rt;
         }
@@ -2076,7 +2087,7 @@ Surf* vk_rt_save(Surf* rt, u32 set) {
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
         VkViewFormats vf;
         vk_view_formats(&ii, &vf, VK_FORMAT_UNDEFINED);
-        if (!vk_cache_image_create(&ii, &c->img, &c->mem, VK_OWN_TEXTURE, &c->bytes)) {
+        if (!vk_cache_image_create(&ii, &c->img, &c->mem, VK_OWN_TARGET, &c->bytes)) { /* the target's, as rt_copy's */
             free(c);
             return NULL;
         }
@@ -2555,7 +2566,7 @@ static int tex_load_pieces(Surf* t) {
     if (p.all || sum > t->size / 2) return tex_upload(t);
     t->upload_valid = 0;
     t->wgen = vk_surf_gen(); /* even a new texture at a reused address invalidates an old target's copy */
-    t->took_drawn = 0;
+    tex_drawn(t, 0);
     vk_surf_relist(t);
     if (!t->bricks && !tex_zero(t)) return 0; /* a resident image's unbound bricks read as zeros already */
     t->upload_valid = 1;
@@ -3419,7 +3430,7 @@ static int copied_into(const Surf* s, const Surf* t) {
     return 0;
 }
 static void mark_copied(Surf* s, Surf* t) {
-    t->took_drawn = 1;
+    tex_drawn(t, 1);
     if (s->copied[0].t != t) s->copied[1] = s->copied[0];
     s->copied[0].t = t;
     s->copied[0].wgen = s->wgen;

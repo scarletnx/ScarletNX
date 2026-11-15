@@ -7,7 +7,10 @@
    atoms inside the memory. Over that: the GPU's own heap stays under the driver's budget less the margin and its
    resources never land in system memory, a large request takes a block's free run, a resource the driver would
    rather have alone goes into a block when the driver has no memory for it alone, and requests from several threads
-   beside the allocator's own thread keep all of it. No Vulkan loader, device or GPU is used. */
+   beside the allocator's own thread keep all of it. Where the driver moves memory
+   (VK_EXT_pageable_device_local_memory), each memory has the priority of the highest class it holds, and the driver
+   is told only when that changes. Requests of the low class take blocks of their own, and those of the others only
+   when no new block can be made. No Vulkan loader, device or GPU is used. */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +50,7 @@ PFN_vkBindImageMemory vkBindImageMemory;
 PFN_vkDestroyImage vkDestroyImage;
 PFN_vkFlushMappedMemoryRanges vkFlushMappedMemoryRanges;
 PFN_vkInvalidateMappedMemoryRanges vkInvalidateMappedMemoryRanges;
+PFN_vkSetDeviceMemoryPriorityEXT vkSetDeviceMemoryPriorityEXT;
 
 void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
 void fatal(const char* fmt, ...) {
@@ -63,6 +67,7 @@ void fatal(const char* fmt, ...) {
 typedef struct {
     u64 size;
     u32 type, res; /* res: the resource it was made for, as its index plus one */
+    float prio;    /* its priority: Vulkan's default 0.5 until it is set */
     u8 live, mapped;
 } DrvMem;
 typedef struct {
@@ -91,6 +96,7 @@ static struct {
     u64 gran, atom;
     VkMappedMemoryRange range; /* the last one flushed or invalidated */
     u32 ranges;
+    u32 priorities; /* calls that set a priority */
 } g_drv = {.lk = PMUTEX_INIT};
 
 static u32 drv_heap(u32 type) { return g_drv.mp.memoryTypes[type].heapIndex; }
@@ -98,10 +104,14 @@ VkResult VKAPI_CALL vk_ledger_allocate(VkDevice dev, const VkMemoryAllocateInfo*
                                        VkDeviceMemory* mem) {
     (void)dev, (void)cb;
     const VkMemoryDedicatedAllocateInfo* alone = NULL;
-    for (const VkBaseInStructure* s = ai->pNext; s; s = s->pNext)
+    const VkMemoryPriorityAllocateInfoEXT* prio = NULL;
+    for (const VkBaseInStructure* s = ai->pNext; s; s = s->pNext) {
         if (s->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO) alone = (const void*)s;
+        if (s->sType == VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT) prio = (const void*)s;
+    }
     pm_lock(&g_drv.lk);
     CHECK(ai->allocationSize && ai->memoryTypeIndex < g_drv.mp.memoryTypeCount);
+    CHECK(!prio || (g_vk.has_pageable && prio->priority >= 0.0f && prio->priority <= 1.0f));
     u32 heap = drv_heap(ai->memoryTypeIndex), res = 0, i = 0;
     if (alone && (alone->buffer || alone->image)) {
         CHECK(!alone->buffer || !alone->image);
@@ -118,7 +128,11 @@ VkResult VKAPI_CALL vk_ledger_allocate(VkDevice dev, const VkMemoryAllocateInfo*
     if (out == VK_SUCCESS) {
         while (i < MEMS && g_drv.mem[i].live) i++;
         CHECK(i < MEMS);
-        g_drv.mem[i] = (DrvMem){.size = ai->allocationSize, .type = ai->memoryTypeIndex, .res = res, .live = 1};
+        g_drv.mem[i] = (DrvMem){.size = ai->allocationSize,
+                                .type = ai->memoryTypeIndex,
+                                .res = res,
+                                .prio = prio ? prio->priority : 0.5f,
+                                .live = 1};
         g_drv.used[heap] += ai->allocationSize;
         if (g_drv.used[heap] > g_drv.peak[heap]) g_drv.peak[heap] = g_drv.used[heap];
         g_drv.mems++;
@@ -274,6 +288,17 @@ static VkResult VKAPI_CALL mapped_ranges(VkDevice dev, uint32_t n, const VkMappe
     pm_unlock(&g_drv.lk);
     return VK_SUCCESS;
 }
+/* only a device with the extension's feature takes a priority, of [0, 1], and the allocator sets only a new one */
+static void VKAPI_CALL set_priority(VkDevice dev, VkDeviceMemory mem, float prio) {
+    (void)dev;
+    u32 m = (u32)(uintptr_t)mem;
+    pm_lock(&g_drv.lk);
+    CHECK(g_vk.has_pageable && m && m <= MEMS && g_drv.mem[m - 1].live);
+    CHECK(prio >= 0.0f && prio <= 1.0f && prio != g_drv.mem[m - 1].prio);
+    g_drv.mem[m - 1].prio = prio;
+    g_drv.priorities++;
+    pm_unlock(&g_drv.lk);
+}
 static void VKAPI_CALL memory_properties(VkPhysicalDevice phys, VkPhysicalDeviceMemoryProperties* out) {
     (void)phys;
     *out = g_drv.mp;
@@ -409,7 +434,10 @@ static VkResult make_random(u32* seed, Held* h) {
     if (pick == 8) size = 16 * MIB + rnd_of(seed) % (40 * MIB); /* more than a quarter of a block */
     if (pick == 9) size = 64 * MIB + rnd_of(seed) % (8 * MIB);  /* more than a block */
     u32 alone = rnd_of(seed) % 32;
-    DevMemWant want = {.at = where, .mapped = where != DM_DEVICE, .own = rnd_of(seed) % 64 == 0};
+    DevMemWant want = {.at = where,
+                       .mapped = where != DM_DEVICE,
+                       .own = rnd_of(seed) % 64 == 0,
+                       .low = where == DM_DEVICE && rnd_of(seed) % 2};
     return make(kind < 3, size, 1ull << rnd_of(seed) % 17, ~0u, alone == 0 ? 2 : alone == 1 ? 1 : 0, want, h);
 }
 
@@ -426,20 +454,63 @@ static void check_counts(u32 held) {
     CHECK(allocations == held && blocks == g_drv.mems);
 }
 
+/* each block's classes are the units its allocations hold, and where the driver moves memory it has the priority of
+   the class of most of the units in a block of the low class, of the highest class in another. An empty block keeps
+   the priority it had */
+static void check_priorities(void) {
+    u32 holds[MEMS][DM_PRIO_N], count[MEMS];
+    memset(holds, 0, sizeof holds);
+    memset(count, 0, sizeof count);
+    for (u32 i = 0; i < g_devmem.nrec; i++) {
+        const Rec* r = &g_devmem.rec[i];
+        if (!r->block) continue;
+        CHECK(r->prio < DM_PRIO_N && r->block <= MEMS);
+        holds[r->block - 1][r->prio] += r->units ? r->units : 1;
+        count[r->block - 1]++;
+    }
+    for (u32 k = 0; k < g_devmem.nblock; k++) {
+        const Block* b = &g_devmem.block[k];
+        if (!b->mem) continue;
+        CHECK(count[k] == b->allocs);
+        /* blocks of the low class take requests only where the driver moves memory (check_priority turns that off
+           with an empty one left, which the runtime never does) */
+        CHECK(!b->low || g_vk.has_pageable || !b->allocs);
+        u32 top = DM_PRIO_N, most = 0;
+        for (u32 c = 0; c < DM_PRIO_N; c++) {
+            CHECK(b->holds[c] == holds[k][c]);
+            if (!holds[k][c]) continue;
+            if (!b->low)
+                top = c;
+            else if (holds[k][c] >= most) { /* a tie goes to the higher class */
+                top = c;
+                most = holds[k][c];
+            }
+        }
+        if (g_vk.has_pageable) {
+            CHECK(top == DM_PRIO_N || b->prio == top);
+            CHECK(g_drv.mem[(u32)(uintptr_t)b->mem - 1].prio == k_prio[b->prio]);
+        }
+    }
+}
+
 static void check_random(int uma, u64 gran, u64 atom, u32 rounds) {
     enum { CAP = 1024 };
     static Held held[CAP];
     u32 n = 0;
     device(uma, gran, atom, 0);
+    g_vk.has_pageable = !uma; /* and the bookkeeping alone where the driver does not move memory */
     for (u32 r = 0; r < rounds; r++) {
         if (n < CAP && (!n || rnd() % 5 < 3)) {
             if (make_random(&g_seed, &held[n]) == VK_SUCCESS) n++;
+        } else if (rnd() % 3 == 0) { /* an owner gives its class, or a texture's changes */
+            vk_devmem_priority(held[rnd() % n].mem, rnd() % DM_PRIO_N);
         } else {
             u32 k = rnd() % n;
             unmake(&held[k]);
             held[k] = held[--n];
         }
         if (r % 64 == 0) check_counts(n);
+        if (r % 64 == 0) check_priorities();
         /* a block is a power of two of 64 MiB at most, made for no resource */
         if (r % 64 == 0)
             for (u32 k = 0; k < g_devmem.nblock; k++) {
@@ -452,11 +523,13 @@ static void check_random(int uma, u64 gran, u64 atom, u32 rounds) {
     }
     while (n) unmake(&held[--n]);
     check_counts(0);
-    /* what stays is one empty block of a kind at most: a memory type's buffers, and its images where they are apart */
-    u32 kinds[VK_MAX_MEMORY_TYPES][2] = {{0}};
+    check_priorities();
+    /* what stays is one empty block of a kind at most: a memory type's buffers, and its images where they are apart,
+       each for the low class and for the others */
+    u32 kinds[VK_MAX_MEMORY_TYPES][2][2] = {{{0}}};
     for (u32 k = 0; k < g_devmem.nblock; k++) {
         const Block* b = &g_devmem.block[k];
-        if (b->mem) CHECK(!b->own && !b->allocs && !b->free.used && ++kinds[b->type][b->image] == 1);
+        if (b->mem) CHECK(!b->own && !b->allocs && !b->free.used && ++kinds[b->type][b->image][b->low] == 1);
     }
 }
 
@@ -495,6 +568,77 @@ static void check_alone(void) {
     u32 calls = g_drv.allocations;
     CHECK(make(0, MIB, 256, ~0u, 0, gpu, &h) == VK_SUCCESS && h.info.memory == memory && g_drv.allocations == calls);
     unmake(&h);
+    check_counts(0);
+}
+
+/* two allocations in one block, and one with memory of its own: the block has the priority of the higher class it
+   holds, and the driver is told only when that changes, and never where it does not move memory */
+static void check_priority(void) {
+    Held a, b, own;
+    DevMemWant gpu = {.at = DM_DEVICE}, mine = {.at = DM_DEVICE, .own = 1};
+    device(0, 1024, 64, 0);
+    g_vk.has_pageable = 1;
+    CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS && make(0, MIB, 256, ~0u, 0, gpu, &b) == VK_SUCCESS);
+    CHECK(a.info.memory == b.info.memory);
+    const DrvMem* block = &g_drv.mem[(u32)(uintptr_t)a.info.memory - 1];
+    CHECK(block->prio == 0.5f && !g_drv.priorities); /* both are of the middle class at first, as the memory */
+    vk_devmem_priority(a.mem, DM_PRIO_LOW);
+    CHECK(block->prio == 0.5f && !g_drv.priorities); /* b holds it there */
+    vk_devmem_priority(b.mem, DM_PRIO_LOW);
+    CHECK(block->prio == 0.0f && g_drv.priorities == 1);
+    vk_devmem_priority(b.mem, DM_PRIO_LOW); /* the same class: no call */
+    vk_devmem_priority(a.mem, DM_PRIO_HIGH);
+    CHECK(block->prio == 1.0f && g_drv.priorities == 2);
+    unmake(&a);
+    CHECK(block->prio == 0.0f && g_drv.priorities == 3);
+    VkDeviceMemory memory = b.info.memory;
+    unmake(&b); /* the block stays, empty, at the low class */
+    CHECK(g_drv.mem[(u32)(uintptr_t)memory - 1].live && block->prio == 0.0f && g_drv.priorities == 3);
+    CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS && a.info.memory == memory);
+    CHECK(block->prio == 0.5f && g_drv.priorities == 4); /* its new allocation's class */
+    CHECK(make(0, MIB, 256, ~0u, 0, mine, &own) == VK_SUCCESS && alone_of(&own));
+    vk_devmem_priority(own.mem, DM_PRIO_HIGH);
+    CHECK(g_drv.mem[(u32)(uintptr_t)own.info.memory - 1].prio == 1.0f && g_drv.priorities == 5);
+    check_priorities();
+    unmake(&own);
+    unmake(&a);
+    /* a request of the low class where the driver has no room for a new block, and no block of that class exists:
+       it takes the room of a block of the other class, and does not fail where it found memory before the classes */
+    Held low_a, low_b, low_own;
+    DevMemWant low = {.at = DM_DEVICE, .low = 1}, low_mine = {.at = DM_DEVICE, .low = 1, .own = 1};
+    CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS);
+    u64 room = g_drv.room[0];
+    g_drv.room[0] = g_drv.used[0];
+    CHECK(make(0, MIB, 256, ~0u, 0, low, &low_a) == VK_SUCCESS && low_a.info.memory == a.info.memory);
+    check_priorities();
+    unmake(&low_a);
+    g_drv.room[0] = room;
+    g_devmem.full_frame[T_GPU] = 0; /* the heap has room again */
+    /* with room: a block of its own, made at the low priority with no call; memory of its own at that priority too */
+    u32 calls_low = g_drv.priorities;
+    CHECK(make(0, MIB, 256, ~0u, 0, low, &low_a) == VK_SUCCESS && low_a.info.memory != a.info.memory);
+    CHECK(make(0, MIB, 256, ~0u, 0, low, &low_b) == VK_SUCCESS && low_b.info.memory == low_a.info.memory);
+    CHECK(g_drv.mem[(u32)(uintptr_t)low_a.info.memory - 1].prio == 0.0f && g_drv.priorities == calls_low);
+    CHECK(make(0, MIB, 256, ~0u, 0, low_mine, &low_own) == VK_SUCCESS && alone_of(&low_own));
+    CHECK(g_drv.mem[(u32)(uintptr_t)low_own.info.memory - 1].prio == 0.0f && g_drv.priorities == calls_low);
+    /* a texture that took drawn pixels: its block rises, and falls again when it loads from memory */
+    vk_devmem_priority(low_b.mem, DM_PRIO_MID);
+    CHECK(g_drv.mem[(u32)(uintptr_t)low_a.info.memory - 1].prio == 0.5f && g_drv.priorities == calls_low + 1);
+    vk_devmem_priority(low_b.mem, DM_PRIO_LOW);
+    CHECK(g_drv.mem[(u32)(uintptr_t)low_a.info.memory - 1].prio == 0.0f && g_drv.priorities == calls_low + 2);
+    check_priorities();
+    unmake(&low_b);
+    unmake(&low_a);
+    unmake(&low_own);
+    unmake(&a);
+    /* a driver that does not move memory: the classes are kept, with no call */
+    g_vk.has_pageable = 0;
+    u32 calls = g_drv.priorities;
+    CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS);
+    vk_devmem_priority(a.mem, DM_PRIO_HIGH);
+    CHECK(g_drv.priorities == calls && g_devmem.rec[a.mem - 1].prio == DM_PRIO_HIGH);
+    check_priorities();
+    unmake(&a);
     check_counts(0);
 }
 
@@ -703,10 +847,12 @@ int main(void) {
     vkDestroyImage = destroy_image;
     vkFlushMappedMemoryRanges = mapped_ranges;
     vkInvalidateMappedMemoryRanges = mapped_ranges;
+    vkSetDeviceMemoryPriorityEXT = set_priority;
     check_random(0, 1024, 64, 30000); /* buffers and images share the blocks */
     check_random(0, 4096, 64, 30000); /* a granularity over a unit: they have blocks apart */
     check_random(1, 1, 4096, 30000);  /* one heap, and atoms of four units */
     check_alone();
+    check_priority();
     check_cap();
     check_atoms(64);
     check_atoms(4096);

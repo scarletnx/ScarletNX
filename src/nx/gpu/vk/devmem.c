@@ -44,8 +44,11 @@ typedef struct {
     Space free;         /* its free units, not for own memory */
     u32 type;
     u32 allocs;
+    u32 holds[DM_PRIO_N]; /* the units its allocations of each class hold (1 for memory of its own): rec_weight */
     u8 image, own; /* image: for images only, where they cannot share a block with buffers (g_devmem.apart) */
     u8 reserve;    /* the reserve (vk_devmem_reserve): taken only while vk_devmem_reserve_use says, never let go */
+    u8 low;        /* for requests of the low class first (DevMemWant.low): with image and type, its kind */
+    u8 prio;       /* the class whose priority the driver has for it (block_prio) */
 } Block;
 /* an allocation: DevMem is its index plus one */
 typedef struct {
@@ -53,6 +56,7 @@ typedef struct {
     u32 at, units; /* its place in the block, in units (a free entry's at: the next free entry plus one) */
     u32 tag;
     u32 mapped;    /* it asked for the CPU's address */
+    u8 prio;       /* its class, DM_PRIO_*: in the padding before size, so a record stays 32 bytes */
     u64 size;      /* the bytes asked for */
 } Rec;
 
@@ -80,7 +84,7 @@ static struct {
     struct {
         PCond cv;
         int on, want, busy;
-        u32 type, image;
+        u32 type, image, low;
         u64 size;
         VkDeviceMemory gone[64]; /* memory to give back */
         u32 ngone;
@@ -97,6 +101,7 @@ static struct {
     /* requests that found no memory since the last report: all of them, those no larger than the free space inside
        the capped heap's blocks then (no one run held them), and the largest */
     u64 failed, failed_room, failed_max;
+    u64 priorities; /* calls that gave a block a new priority since the last report (block_prio) */
     int coherent;  /* every memory type the CPU maps is coherent: a flush has nothing to do */
     u32 since;     /* requests since the driver's budgets were asked */
     u64 block_bytes[VK_MAX_MEMORY_HEAPS], allocated[VK_MAX_MEMORY_HEAPS];
@@ -262,9 +267,15 @@ static u32 block_slot(void) {
     g_devmem.block[g_devmem.nblock] = (Block){0}; /* free until its caller fills it */
     return ++g_devmem.nblock;
 }
-/* the driver's memory for a block or for one allocation: no state of this file, so any thread calls it with no
-   lock */
-static VkResult block_memory(u32 type, u64 size, int image, VkBuffer buf, VkImage img, VkDeviceMemory* mem) {
+/* The priority of each class, which the driver uses to choose what it moves to system memory when the GPU's own memory
+   is short (VK_EXT_pageable_device_local_memory): the lowest first. The ends of the range, with Vulkan's default in
+   the middle, keep the three classes apart where a driver puts priorities in a few groups. Other memory of this
+   process and of other programs has the default, between the low and the high class */
+static const float k_prio[DM_PRIO_N] = {0.0f, 0.5f, 1.0f};
+
+/* the driver's memory for a block or for one allocation, of the low class's priority for low (where the driver moves
+   memory), else of Vulkan's default: no state of this file, so any thread calls it with no lock */
+static VkResult block_memory(u32 type, u64 size, int image, int low, VkBuffer buf, VkImage img, VkDeviceMemory* mem) {
     VkMemoryDedicatedAllocateInfo alone = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
                                            .image = img,
                                            .buffer = buf};
@@ -273,20 +284,33 @@ static VkResult block_memory(u32 type, u64 size, int image, VkBuffer buf, VkImag
     VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                .allocationSize = size,
                                .memoryTypeIndex = type};
+    VkMemoryPriorityAllocateInfoEXT prio = {.sType = VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT,
+                                            .priority = k_prio[DM_PRIO_LOW]};
     if (buf || img) ai.pNext = &alone;
     if (g_devmem.bda && !image) {
         flags.pNext = ai.pNext;
         ai.pNext = &flags;
     }
+    if (low && g_vk.has_pageable) {
+        prio.pNext = ai.pNext;
+        ai.pNext = &prio;
+    }
     return vk_ledger_allocate(g_vk.dev, &ai, NULL, mem);
 }
 /* mem, of size bytes, enters the table as a block of units, or as the memory of one allocation (units 0), mapped at
    ptr when it is: its index plus one, or 0 without memory for the table (the caller gives mem back) */
-static u32 block_add(u32 type, u64 size, int image, u32 units, VkDeviceMemory mem, void* ptr) {
+static u32 block_add(u32 type, u64 size, int image, int low, u32 units, VkDeviceMemory mem, void* ptr) {
     u32 slot = block_slot();
     if (!slot) return 0;
     Block* k = &g_devmem.block[slot - 1];
-    *k = (Block){.size = size, .type = type, .image = (u8)image, .own = !units, .ptr = ptr};
+    /* the priority block_memory gave it: the low class's, or Vulkan's default, which is DM_PRIO_MID's */
+    *k = (Block){.size = size,
+                 .type = type,
+                 .image = (u8)image,
+                 .own = !units,
+                 .low = (u8)low,
+                 .ptr = ptr,
+                 .prio = low && g_vk.has_pageable ? DM_PRIO_LOW : DM_PRIO_MID};
     if (units && !space_init(&k->free, units)) return 0;
     k->mem = mem;
     u32 heap = g_devmem.mp.memoryTypes[type].heapIndex;
@@ -296,7 +320,7 @@ static u32 block_add(u32 type, u64 size, int image, u32 units, VkDeviceMemory me
 }
 /* size bytes of the driver's memory of a type, as a block (of that many units) or as the memory of one allocation
    (units 0), for a buffer or an image when the driver wants it alone: its index plus one, 0 with *res */
-static u32 block_new(u32 type, u64 size, int image, u32 units, VkBuffer buf, VkImage img, VkResult* res) {
+static u32 block_new(u32 type, u64 size, int image, int low, u32 units, VkBuffer buf, VkImage img, VkResult* res) {
     u32 heap_of = g_devmem.mp.memoryTypes[type].heapIndex;
     /* the capped heap takes no more past its budget: full for this request, as if the driver had said so */
     if (heap_capped(heap_of) && heap_usage(heap_of) + size > heap_budget(heap_of)) {
@@ -304,9 +328,9 @@ static u32 block_new(u32 type, u64 size, int image, u32 units, VkBuffer buf, VkI
         return 0;
     }
     VkDeviceMemory mem;
-    *res = block_memory(type, size, image, buf, img, &mem);
+    *res = block_memory(type, size, image, low, buf, img, &mem);
     if (*res != VK_SUCCESS) return 0;
-    u32 slot = block_add(type, size, image, units, mem, NULL);
+    u32 slot = block_add(type, size, image, low, units, mem, NULL);
     if (!slot) {
         vk_ledger_free(g_vk.dev, mem, NULL);
         *res = VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -327,6 +351,25 @@ static void block_gone(Block* k) {
     g_devmem.block_bytes[heap] -= k->size;
     g_devmem.blocks[heap]--;
     *k = (Block){0};
+}
+
+/* what an allocation counts for in its block's holds: its units, or 1 for memory of its own */
+static u32 rec_weight(const Rec* r) { return r->units ? r->units : 1; }
+/* The priority k takes from what it holds (lock held). A block of the low class takes the class of most of its bytes:
+   a texture with drawn pixels among textures loaded from memory moves with them, as the driver keeps the pixels of
+   what it moves and the GPU samples the one as it samples the others. With the highest class instead, 5% of textures
+   with drawn pixels kept 766 of 1286 MiB of the low class's bytes out of the low priority, in a test of the
+   allocator. Another block takes the highest class it holds: a render target or a ring is not moved for the buffers
+   around it. An empty block keeps the priority it has, as the next request of its kind is most likely of the same
+   class. The driver is told when that changes: one call at most, and none where it does not move memory */
+static void block_prio(Block* k) {
+    u32 top = DM_PRIO_N;
+    for (u32 c = 0; c < DM_PRIO_N; c++)
+        if (k->holds[c] && (top == DM_PRIO_N || !k->low || k->holds[c] >= k->holds[top])) top = c;
+    if (top == DM_PRIO_N || top == k->prio || !g_vk.has_pageable) return;
+    vkSetDeviceMemoryPriorityEXT(g_vk.dev, k->mem, k_prio[top]);
+    k->prio = (u8)top;
+    g_devmem.priorities++;
 }
 
 static DevMem rec_new(void) {
@@ -352,11 +395,12 @@ static void rec_gone(DevMem m) {
 /* The size of a new block for a request of size bytes: the cap, or a half, a quarter or an eighth of it while that
    is more than the kind's largest block so far and holds the request twice. The first blocks of a kind are small, so
    that a kind with little in it holds little */
-static u64 block_size_for(u32 type, int image, u64 size, u64 cap) {
+static u64 block_size_for(u32 type, int image, int low, u64 size, u64 cap) {
     u64 largest = 0, s = cap;
     for (u32 i = 0; i < g_devmem.nblock; i++) {
         const Block* k = &g_devmem.block[i];
-        if (k->mem && !k->own && k->type == type && k->image == image && k->size > largest) largest = k->size;
+        if (k->mem && !k->own && k->type == type && k->image == image && k->low == low && k->size > largest)
+            largest = k->size;
     }
     for (u32 i = 0; i < 3 && s / 2 > largest && s / 2 >= size * 2 && s / 2 >= DM_UNIT; i++) s /= 2;
     return s;
@@ -364,7 +408,7 @@ static u64 block_size_for(u32 type, int image, u64 size, u64 cap) {
 
 /* The thread ahead is asked for one more block of the kind, when the kind has no empty one left and the heap has
    room for two (lock held) */
-static void ahead_ask(u32 type, int image) {
+static void ahead_ask(u32 type, int image, int low) {
     if (!g_devmem.ahead.on || g_devmem.ahead.want || g_devmem.ahead.busy) return;
     u32 heap = g_devmem.mp.memoryTypes[type].heapIndex;
     u64 cap = block_cap(type);
@@ -377,12 +421,13 @@ static void ahead_ask(u32 type, int image) {
         return;
     for (u32 i = 0; i < g_devmem.nblock; i++) {
         const Block* k = &g_devmem.block[i];
-        if (k->mem && !k->own && !k->allocs && k->type == type && k->image == image) return;
+        if (k->mem && !k->own && !k->allocs && k->type == type && k->image == image && k->low == low) return;
     }
-    u64 size = block_size_for(type, image, 1, cap);
+    u64 size = block_size_for(type, image, low, 1, cap);
     if (heap_capped(heap) && heap_usage(heap) + 2 * size > heap_budget(heap)) return;
     g_devmem.ahead.type = type;
     g_devmem.ahead.image = (u32)image;
+    g_devmem.ahead.low = (u32)low;
     g_devmem.ahead.size = size;
     g_devmem.ahead.want = 1;
     pc_signal(&g_devmem.ahead.cv);
@@ -400,14 +445,14 @@ static void ahead_run(void* arg) {
             pm_lock(&g_devmem.lk);
             continue;
         }
-        u32 type = g_devmem.ahead.type, image = g_devmem.ahead.image;
+        u32 type = g_devmem.ahead.type, image = g_devmem.ahead.image, low = g_devmem.ahead.low;
         u64 size = g_devmem.ahead.size;
         g_devmem.ahead.want = 0;
         g_devmem.ahead.busy = 1;
         pm_unlock(&g_devmem.lk);
         VkDeviceMemory mem = VK_NULL_HANDLE;
         void* ptr = NULL;
-        VkResult res = block_memory(type, size, (int)image, VK_NULL_HANDLE, VK_NULL_HANDLE, &mem);
+        VkResult res = block_memory(type, size, (int)image, (int)low, VK_NULL_HANDLE, VK_NULL_HANDLE, &mem);
         /* mapped here too, where the CPU can map it: the first allocation that wants its address finds it there */
         if (res == VK_SUCCESS &&
             (g_devmem.mp.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
@@ -419,13 +464,38 @@ static void ahead_run(void* arg) {
             g_devmem.ahead.quiet_frame = g_devmem.frame + 1;
             g_devmem.ahead.quiet_type = type;
             g_devmem.ahead.quiet_gave = g_devmem.gave[g_devmem.mp.memoryTypes[type].heapIndex];
-        } else if (block_add(type, size, (int)image, (u32)(size / DM_UNIT), mem, ptr)) {
+        } else if (block_add(type, size, (int)image, (int)low, (u32)(size / DM_UNIT), mem, ptr)) {
             g_devmem.ahead.made++;
         } else {
             pm_unlock(&g_devmem.lk);
             vk_ledger_free(g_vk.dev, mem, NULL);
             pm_lock(&g_devmem.lk);
         }
+    }
+}
+
+/* The block of a kind (low: its class, -1 either) with the least free space that holds units at their alignment, its
+   run taken at *at: the full blocks fill up, the others empty. A block whose longest run does not hold it at its
+   alignment is passed over for the next one. Its index plus one, 0 for none (lock held) */
+static u32 block_find(u32 type, int image, int low, u32 units, u32 align_units, u32* at) {
+    u32 from_room = 0, from_i = 0, slot;
+    for (;;) {
+        u32 least = ~0u;
+        slot = 0;
+        for (u32 i = 0; i < g_devmem.nblock; i++) {
+            const Block* k = &g_devmem.block[i];
+            if (!k->mem || k->own || k->type != type || k->image != image || (low >= 0 && k->low != low)) continue;
+            if (k->reserve && !g_devmem.use_reserve) continue;
+            u32 room = k->free.units - k->free.used, piece = k->free.largest;
+            if (room < from_room || (room == from_room && i < from_i)) continue; /* tried */
+            if (piece >= units && piece >= align_units && room < least) {
+                least = room;
+                slot = i + 1;
+            }
+        }
+        if (!slot || space_take(&g_devmem.block[slot - 1].free, units, align_units, at)) return slot;
+        from_room = least;
+        from_i = slot;
     }
 }
 
@@ -446,7 +516,9 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
     /* Buffers and images share the blocks where the device's granularity between the two is a unit or less: what
        one kind gives back, the other can take. In one game's race with blocks apart, 612 MB of textures went to
        system memory while the buffer blocks of the GPU's heap had 1000 MB free. With shared blocks none did */
-    int image = g_devmem.apart && want->image;
+    /* the blocks of the low class only where the driver moves memory: elsewhere they would hold more for nothing (a
+       block partly filled and an empty one of each kind more, 120 MiB in a test of the allocator) */
+    int image = g_devmem.apart && want->image, low = want->low && g_vk.has_pageable;
     /* a request that a block holds takes a free run of one, whatever its size: one of more than a block's share went
        to the driver each time, on the thread that asked, and failed at the heap's cap while the blocks had room. Only
        a request of a block's share or less opens a new block */
@@ -454,27 +526,7 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
     int shared = fits && req->size <= cap / DM_OWN_SHARE;
     if (fits) {
         units = (u32)units64;
-        /* the block of the kind with the least free space that holds it: the full blocks fill up, the others empty.
-           A block whose longest run does not hold it at its alignment is passed over for the next one */
-        u32 from_room = 0, from_i = 0;
-        for (;;) {
-            u32 least = ~0u;
-            slot = 0;
-            for (u32 i = 0; i < g_devmem.nblock; i++) {
-                const Block* k = &g_devmem.block[i];
-                if (!k->mem || k->own || k->type != type || k->image != image) continue;
-                if (k->reserve && !g_devmem.use_reserve) continue;
-                u32 room = k->free.units - k->free.used, piece = k->free.largest;
-                if (room < from_room || (room == from_room && i < from_i)) continue; /* tried */
-                if (piece >= units && piece >= align_units && room < least) {
-                    least = room;
-                    slot = i + 1;
-                }
-            }
-            if (!slot || space_take(&g_devmem.block[slot - 1].free, units, (u32)align_units, &at)) break;
-            from_room = least;
-            from_i = slot;
-        }
+        slot = block_find(type, image, low, units, (u32)align_units, &at); /* a block of its class */
         u32 heap = g_devmem.mp.memoryTypes[type].heapIndex;
         int full = g_devmem.full_frame[type] && g_devmem.frame + 1 - g_devmem.full_frame[type] < 120 &&
                    g_devmem.full_gave[type] == g_devmem.gave[heap];
@@ -482,12 +534,12 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
         if (!slot && shared && !full) {
             /* a new block, of a smaller size when the driver has no room for the one wanted, down to an eighth of
                the cap: a heap with no room for that is full */
-            u64 size = block_size_for(type, image, req->size, cap), least = cap / 8;
+            u64 size = block_size_for(type, image, low, req->size, cap), least = cap / 8;
             if (least < req->size) least = req->size;
             if (least < align) least = align;
             if (least < DM_UNIT) least = DM_UNIT;
             for (;;) {
-                slot = block_new(type, size, image, (u32)(size / DM_UNIT), VK_NULL_HANDLE, VK_NULL_HANDLE, res);
+                slot = block_new(type, size, image, low, (u32)(size / DM_UNIT), VK_NULL_HANDLE, VK_NULL_HANDLE, res);
                 if (slot || size / 2 < least) break;
                 size /= 2;
             }
@@ -501,10 +553,13 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
                 slot = 0;
             }
         }
+        /* a block of the other class, when its own have no room and no new one could be made: the classes only
+           order what the driver moves, and must not make a request fail that would have found room */
+        if (!slot) slot = block_find(type, image, -1, units, (u32)align_units, &at);
     }
     if (!slot && !shared) { /* memory of its own: by its size, or by the request */
         units = 0;
-        slot = block_new(type, req->size, image, 0, buf, img, res);
+        slot = block_new(type, req->size, image, low, 0, buf, img, res);
         if (slot) g_devmem.own_why[alone]++;
     }
     if (!slot) {
@@ -522,13 +577,16 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
             return 0;
         }
     }
+    u32 prio = want->low ? DM_PRIO_LOW : DM_PRIO_MID; /* until its owner gives its class (vk_devmem_priority) */
     k->allocs++;
-    if (!k->own) ahead_ask(type, image); /* the next block of the kind, before a request has to wait for it */
+    k->holds[prio] += units ? units : 1;
+    block_prio(k);
+    if (!k->own) ahead_ask(type, image, k->low); /* the next block of the kind, before a request has to wait for it */
     u32 heap = g_devmem.mp.memoryTypes[type].heapIndex;
     g_devmem.allocated[heap] += k->own ? k->size : (u64)units * DM_UNIT;
     g_devmem.allocs[heap]++;
-    g_devmem.rec[m - 1] =
-        (Rec){.block = slot, .at = at, .units = units, .mapped = k->ptr && want->mapped, .size = req->size};
+    g_devmem.rec[m - 1] = (Rec){
+        .block = slot, .at = at, .units = units, .mapped = k->ptr && want->mapped, .size = req->size, .prio = (u8)prio};
     *res = VK_SUCCESS;
     return m;
 }
@@ -623,6 +681,7 @@ void vk_devmem_free(DevMem m) {
     u32 heap = g_devmem.mp.memoryTypes[k->type].heapIndex;
     g_devmem.allocated[heap] -= k->own ? k->size : (u64)r->units * DM_UNIT;
     g_devmem.allocs[heap]--;
+    k->holds[r->prio] -= rec_weight(r);
     if (!k->own) space_give(&k->free, r->at, r->units);
     rec_gone(m);
     if (!--k->allocs) {
@@ -633,11 +692,14 @@ void vk_devmem_free(DevMem m) {
             if (g_devmem.block_bytes[heap] > budget) keep = 0;
             for (u32 i = 0; keep && i < g_devmem.nblock; i++) {
                 const Block* o = &g_devmem.block[i];
-                if (o != k && o->mem && !o->own && !o->allocs && o->type == k->type && o->image == k->image) keep = 0;
+                if (o != k && o->mem && !o->own && !o->allocs && o->type == k->type && o->image == k->image &&
+                    o->low == k->low)
+                    keep = 0;
             }
         }
         if (!keep) block_gone(k);
     }
+    if (k->allocs) block_prio(k); /* what the block holds now (an empty one keeps its priority) */
     pm_unlock(&g_devmem.lk);
 }
 
@@ -714,6 +776,20 @@ void vk_devmem_tag(DevMem m, u32 tag) {
     pm_unlock(&g_devmem.lk);
 }
 
+void vk_devmem_priority(DevMem m, u32 prio) {
+    if (!m || prio >= DM_PRIO_N) return;
+    pm_lock(&g_devmem.lk);
+    Rec* r = &g_devmem.rec[m - 1];
+    if (r->prio != prio) {
+        Block* k = &g_devmem.block[r->block - 1];
+        k->holds[r->prio] -= rec_weight(r);
+        k->holds[prio] += rec_weight(r);
+        r->prio = (u8)prio;
+        block_prio(k);
+    }
+    pm_unlock(&g_devmem.lk);
+}
+
 /* the range of a block's memory that covers [off, off + size) of an allocation in whole atoms, 0 for memory that is
    coherent or not mapped */
 static int atoms(DevMem m, u64 off, u64 size, VkMappedMemoryRange* range) {
@@ -770,7 +846,8 @@ void vk_devmem_log(void) {
     }
     u64 failed = g_devmem.failed, failed_room = g_devmem.failed_room, failed_max = g_devmem.failed_max;
     g_devmem.failed = g_devmem.failed_room = g_devmem.failed_max = 0;
-    u64 made = g_devmem.ahead.made, asked = g_devmem.ahead.asked;
+    u64 made = g_devmem.ahead.made, asked = g_devmem.ahead.asked, priorities = g_devmem.priorities;
+    g_devmem.priorities = 0;
     u64 why[4] = {g_devmem.own_why[0], g_devmem.own_why[1], g_devmem.own_why[2], g_devmem.own_why[3]};
     g_devmem.ahead.made = g_devmem.ahead.asked = 0;
     for (u32 i = 0; i < 4; i++) g_devmem.own_why[i] = 0;
@@ -789,6 +866,10 @@ void vk_devmem_log(void) {
         LOG("vulkan: device memory blocks since the last report: %llu made ahead of their first request, %llu made "
             "by a request on its own thread\n",
             (unsigned long long)made, (unsigned long long)asked);
+    if (priorities)
+        LOG("vulkan: device memory blocks given a new priority since the last report: %llu (a call to the driver "
+            "each)\n",
+            (unsigned long long)priorities);
     for (u32 t = 0; t < g_devmem.mp.memoryTypeCount; t++)
         for (u32 image = 0; image < 2; image++) {
             if (!k[t][image].blocks && !k[t][image].own) continue;

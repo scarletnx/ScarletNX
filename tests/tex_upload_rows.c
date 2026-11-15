@@ -665,6 +665,8 @@ void vk_devmem_info(DevMem mem, DevMemInfo* info) {
     (void)mem;
     *info = (DevMemInfo){0};
 }
+/* a texture's class follows its pixels (tex_drawn): there is no memory here to give it to */
+void vk_devmem_priority(DevMem mem, u32 prio) { (void)mem, (void)prio; }
 const VkPhysicalDeviceMemoryProperties* vk_devmem_props(void) {
     static const VkPhysicalDeviceMemoryProperties none = {0};
     return &none;

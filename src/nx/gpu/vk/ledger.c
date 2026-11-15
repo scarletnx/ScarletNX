@@ -26,6 +26,29 @@ static const char* const k_owner[VK_OWN_N] = {
     [VK_OWN_MISC] = "other",
 };
 
+/* Each owner's class (DM_PRIO_*, devmem.h): the order in which the driver moves its memory to system memory when the
+   GPU's own memory is short (VK_EXT_pageable_device_local_memory). Moved memory loses nothing, but each use of it by
+   the GPU crosses the bus, so the class follows how much each frame uses it, and the order of the caches' own
+   evictions (vk_mem_trim):
+   - high: the render targets and their copies that draws sample, which each frame's draws write and read many
+     times, and the rings and fixed buffers
+     that each frame's work goes through (staging, arenas, descriptors, queries, results, the mirror). These are
+     also the bytes that guest memory lacks, or that the CPU waits for.
+   - medium: the buffer cache and the images of no cache, which draws read but which hold a copy of guest memory or
+     of a target. Also the textures that the cache keeps under pressure: a texture with pixels copied from render
+     targets (texture.c raises it, tex_drawn), as the cache evicts it only when nothing lossless is left.
+   - low: the textures that the cache evicts first, those loaded from memory, which it can load again. The driver
+     moves them before anything else, as vk_mem_trim frees them before anything else */
+static const u8 k_owner_prio[VK_OWN_N] = {
+    [VK_OWN_TEXTURE] = DM_PRIO_LOW,  [VK_OWN_TARGET] = DM_PRIO_HIGH,      [VK_OWN_IMAGE_OTHER] = DM_PRIO_MID,
+    [VK_OWN_BUFFER] = DM_PRIO_MID,   [VK_OWN_MIRROR] = DM_PRIO_HIGH,      [VK_OWN_OWNED] = DM_PRIO_HIGH,
+    [VK_OWN_ARENA] = DM_PRIO_HIGH,   [VK_OWN_WRITELOG] = DM_PRIO_HIGH,    [VK_OWN_RESULT] = DM_PRIO_HIGH,
+    [VK_OWN_STAGING] = DM_PRIO_HIGH, [VK_OWN_READBACK] = DM_PRIO_HIGH,    [VK_OWN_ENCODER] = DM_PRIO_HIGH,
+    [VK_OWN_CONVERT] = DM_PRIO_HIGH, [VK_OWN_DESCRIPTORS] = DM_PRIO_HIGH, [VK_OWN_QUERY] = DM_PRIO_HIGH,
+    [VK_OWN_XFB] = DM_PRIO_HIGH,     [VK_OWN_DMA] = DM_PRIO_HIGH,         [VK_OWN_UI] = DM_PRIO_HIGH,
+    [VK_OWN_MISC] = DM_PRIO_HIGH,
+};
+
 /* the driver's calls of one kind since the start: all of them, and those made by a thread that held vk_lock, which
    is a thread in the middle of the renderer's work */
 typedef struct {
@@ -53,11 +76,14 @@ static u64* bytes_of(u32 owner, const DevMemInfo* info) {
                                                                              : &g_ledger.host[owner];
 }
 
+u32 vk_mem_owner_prio(u32 owner) { return owner < VK_OWN_N ? k_owner_prio[owner] : DM_PRIO_MID; }
+
 void vk_mem_track(DevMem a, u32 owner) {
     if (!a || owner >= VK_OWN_N) return;
     DevMemInfo info;
     vk_devmem_info(a, &info);
     vk_devmem_tag(a, owner + 1);
+    vk_devmem_priority(a, k_owner_prio[owner]);
     add(bytes_of(owner, &info), info.size);
     add(&g_ledger.count[owner], 1);
     SNX_MEM_ALLOC((const void*)(uintptr_t)a, info.size, k_owner[owner]);
