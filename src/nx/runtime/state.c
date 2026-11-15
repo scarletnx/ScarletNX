@@ -643,8 +643,10 @@ enum {
     HEAP_GRUNS,
     HEAP_VAFREE,
     HEAP_FS,
-    HEAP_VIEW
+    HEAP_VIEW,
+    HEAP_EVENTFD /* a bsd eventfd, slot its session * BSD_MAX_FD + its fd: its count, semaphore and non-blocking */
 };
+#define EVENTFD_BYTES 16
 static int heap_put(StateIo* io, u32 kind, u32 slot, const void* p, u64 n) {
     return io_put32(io, kind) | io_put32(io, slot) | io_put64(io, n) | io_put(io, p, n);
 }
@@ -656,6 +658,13 @@ static int savable(char* why, size_t whysize) {
     for (i = 0; i < BSD_MAX; i++)
         for (k = 0; k < BSD_MAX_FD; k++)
             if (g_hle.bsd.bsds[i].fd[k].s) {
+                /* an eventfd is a counter the runtime keeps, which a load makes again (HEAP_EVENTFD): one game's
+                   socket thread polls one with no connection open, and no state of it could be saved */
+                u64 count;
+                int semaphore;
+                if (!g_hle.bsd.bsds[i].fd[k].bcast &&
+                    !snx_socket_event_get(g_hle.bsd.bsds[i].fd[k].s, &count, &semaphore))
+                    continue;
                 snprintf(why, whysize, "the game has a network connection open");
                 return -1;
             }
@@ -747,7 +756,13 @@ static void nil_host(Hle* c) {
         NIL(x->client_chain);
         NIL(x->lk);
     }
-    for (i = 0; i < BSD_MAX; i++) NIL(c->bsd.bsds[i].lk);
+    for (i = 0; i < BSD_MAX; i++) {
+        NIL(c->bsd.bsds[i].lk);
+        for (u32 k = 0; k < BSD_MAX_FD; k++) {
+            NIL(c->bsd.bsds[i].fd[k].s); /* an eventfd's in HEAP_EVENTFD, made again at a load */
+            NIL(c->bsd.bsds[i].fd[k].bcast);
+        }
+    }
     for (i = 0; i < LDN_MAX; i++) NIL(c->ldn.ldn[i].lk);
 }
 /* HLE (g_hle, its pointers numbers) and HEAP (what its members own) into the buffers, the names its numbers stand for
@@ -834,6 +849,19 @@ static int save_hle(Buf* hle, Buf* heap, Names* names) {
     c->fs.file_next = g_hle.fs.file_next;
     c->fs.dir_next = g_hle.fs.dir_next;
     SWZ(c->bsd.client);
+    /* bsd's eventfds (savable lets no other socket through) */
+    for (i = 0; i < BSD_MAX; i++)
+        for (k = 0; k < BSD_MAX_FD; k++) {
+            SnxSocket* s = c->bsd.bsds[i].fd[k].s;
+            u64 count;
+            int semaphore;
+            u8 rec[EVENTFD_BYTES];
+            if (!s || snx_socket_event_get(s, &count, &semaphore)) continue;
+            snx_st_le64(rec, count);
+            snx_st_le32(rec + 8, (u32)semaphore);
+            snx_st_le32(rec + 12, (u32)snx_socket_nonblocking(s));
+            r |= heap_put(&io, HEAP_EVENTFD, i * BSD_MAX_FD + k, rec, sizeof rec);
+        }
     /* the rest of the host's side: the running process keeps its own, or the load makes it again */
     nil_host(c);
     r |= io_put32(&io, HEAP_END);
@@ -974,6 +1002,7 @@ static void staged_free(Hle* ld) {
     free(ld->nvdrv.gmaps);
     free(ld->nvdrv.gruns);
     free(ld->nvdrv.vafree);
+    for (i = 0; i < BSD_MAX * BSD_MAX_FD; i++) snx_socket_unref(ld->bsd.bsds[i / BSD_MAX_FD].fd[i % BSD_MAX_FD].s);
     nil_host(ld);
 }
 /* The state's copy of g_hle made whole while the game still runs: its host fields cleared, its pointers back, its heap
@@ -1068,6 +1097,16 @@ static int stage_hle(Hle* ld, Buf* heap, const Names* names, Buf* fs_paths) {
                 memcpy(v->snap, p, (size_t)n);
                 break;
             }
+            case HEAP_EVENTFD: {
+                BsdFd* f;
+                SnxSocket* sock;
+                if (slot >= BSD_MAX * BSD_MAX_FD || n != EVENTFD_BYTES) goto bad;
+                f = &ld->bsd.bsds[slot / BSD_MAX_FD].fd[slot % BSD_MAX_FD];
+                if (f->s || snx_socket_eventfd(&sock, snx_ld_le64(p), snx_ld_le32(p + 8) != 0)) goto bad;
+                snx_socket_set_nonblocking(sock, snx_ld_le32(p + 12) != 0);
+                f->s = sock;
+                break;
+            }
             case HEAP_FS:
                 fs_paths->p = p;
                 fs_paths->n = n;
@@ -1130,6 +1169,12 @@ static void install_hle(Hle* ld, const ShmPlan* plan) {
             ld->svcmem.shmems[i].host = plan->host[i];
             ld->svcmem.shmems[i].pool = plan->off[i] + 1;
         }
+    /* the running game's sockets go with it: the state's eventfds are made already, and it holds no other */
+    for (i = 0; i < BSD_MAX * BSD_MAX_FD; i++) {
+        BsdFd* f = &g_hle.bsd.bsds[i / BSD_MAX_FD].fd[i % BSD_MAX_FD];
+        snx_socket_unref(f->s);
+        snx_socket_unref(f->bcast);
+    }
     memcpy(&g_hle, ld, sizeof g_hle);
 }
 
