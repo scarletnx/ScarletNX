@@ -1435,6 +1435,7 @@ typedef struct {
     VkAttachmentSampleCountInfoNV attachment_samples; /* with mixed samples (coverage.raster_samples) */
     VkPipelineRenderingCreateInfo ri;
     VkPipelineRobustnessCreateInfoEXT robustness; /* with has_vertex_robustness2 */
+    VkPipelineRasterizationDepthClipStateCreateInfoEXT depth_clip; /* with k->depth_clip */
     VkPipelineCreationFeedback made;
     VkPipelineCreationFeedbackCreateInfo fi;
     PipeDynIn dyn;
@@ -1522,10 +1523,17 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT,
         .pNext = k->conservative ? &o->conservative : NULL,
         .provokingVertexMode = VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT};
+    o->depth_clip = (VkPipelineRasterizationDepthClipStateCreateInfoEXT){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT,
+        .pNext = k->provoking_last ? (void*)&o->provoking
+                 : k->conservative ? (void*)&o->conservative
+                                   : NULL,
+        .depthClipEnable = k->depth_clip == 2};
     o->rs = (VkPipelineRasterizationStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-                                                     .pNext = k->provoking_last ? (void*)&o->provoking
-                                                              : k->conservative ? (void*)&o->conservative
-                                                                                : NULL,
+                                                     .pNext = k->depth_clip       ? (void*)&o->depth_clip
+                                                              : k->provoking_last ? (void*)&o->provoking
+                                                              : k->conservative   ? (void*)&o->conservative
+                                                                                  : NULL,
                                                      .depthClampEnable = k->depth_clamp,
                                                      .polygonMode = (VkPolygonMode)k->polygon,
                                                      .lineWidth = 1.0f};

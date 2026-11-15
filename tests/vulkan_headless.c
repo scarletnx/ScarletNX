@@ -7598,6 +7598,16 @@ static int run_headless(int argc, char** argv) {
                g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_MAXWELL_FIXED_ONLY")) { /* the 3D engine's fixed state alone */
+        CHECK(!check_maxwell_point_size());
+        CHECK(!check_maxwell_depth_bounds());
+        CHECK(!check_maxwell_depth_range());
+        CHECK(!check_maxwell_depth_clamp());
+        CHECK(!check_maxwell_viewport_swizzle());
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan 3D engine fixed state only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_MSAA_ONLY")) { /* the multisample checks alone */
         CHECK(!check_multisample_shader_gate());
         CHECK(!check_msaa());
@@ -7820,6 +7830,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_maxwell_point_size());
     CHECK(!check_maxwell_depth_bounds());
     CHECK(!check_maxwell_depth_range());
+    CHECK(!check_maxwell_depth_clamp());
     CHECK(!check_maxwell_viewport_swizzle());
     CHECK(!check_nvn_default_tessellation());
     CHECK(!check_nvn_advanced_blend());

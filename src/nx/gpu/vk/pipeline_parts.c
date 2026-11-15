@@ -14,6 +14,7 @@ void vk_gpl_bans(VkGplDevice* d, VkBanSay say) {
     } members[] = {
         {EDS3 "PolygonMode", &d->polygon},
         {EDS3 "DepthClampEnable", &d->depth_clamp},
+        {EDS3 "DepthClipEnable", &d->depth_clip},
         {EDS3 "ProvokingVertexMode", &d->provoking},
         {EDS3 "ConservativeRasterizationMode", &d->conservative_mode},
         {EDS3 "ExtraPrimitiveOverestimationSize", &d->conservative_size},
@@ -71,13 +72,14 @@ int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n) {
     if (d->conservative_mode && d->conservative_size && d->has_conservative) *dyn_pr |= VK_DYN_PR_CONSERVATIVE;
     if (d->patch) *dyn_pr |= VK_DYN_PR_PATCH;
     if (d->depth_range && d->depth_clip_control) *dyn_pr |= VK_DYN_PR_DEPTH_RANGE;
-    static const char* const names[6] = {"polygon mode",         "depth clamp",
-                                         "provoking vertex",     "conservative rasterization",
-                                         "patch control points", "depth range"};
-    char dyn[160];
+    if (d->depth_clip && d->has_depth_clip_enable && (*dyn_pr & VK_DYN_PR_DEPTH_CLAMP)) *dyn_pr |= VK_DYN_PR_DEPTH_CLIP;
+    static const char* const names[7] = {
+        "polygon mode",         "depth clamp", "provoking vertex", "conservative rasterization",
+        "patch control points", "depth range", "depth clip"};
+    char dyn[192];
     size_t at = 0;
     dyn[0] = 0;
-    for (int i = 0; i < 6; i++)
+    for (int i = 0; i < 7; i++)
         if ((*dyn_pr >> i & 1) && at < sizeof dyn)
             at += (size_t)snprintf(dyn + at, sizeof dyn - at, "%s%s", at ? ", " : "", names[i]);
     snprintf(line, n,
@@ -103,6 +105,7 @@ void vk_pipe_part_src(u32 part, const void* key, PipeKey* out) {
         out->patch = pr->patch;
         out->polygon = pr->polygon;
         out->depth_clamp = pr->depth_clamp;
+        out->depth_clip = pr->depth_clip;
         out->provoking_last = pr->provoking_last;
         out->conservative = pr->conservative;
     } else if (part == VK_PART_FS) {
@@ -182,6 +185,7 @@ static const struct {
     {VK_DYNAMIC_STATE_VERTEX_INPUT_EXT, VK_PART_VI, DYN_VERTEX_INPUT},
     {VK_DYNAMIC_STATE_POLYGON_MODE_EXT, VK_PART_PR, DYN_PR | VK_DYN_PR_POLYGON << 8},
     {VK_DYNAMIC_STATE_DEPTH_CLAMP_ENABLE_EXT, VK_PART_PR, DYN_PR | VK_DYN_PR_DEPTH_CLAMP << 8},
+    {VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT, VK_PART_PR, DYN_PR | VK_DYN_PR_DEPTH_CLIP << 8},
     {VK_DYNAMIC_STATE_PROVOKING_VERTEX_MODE_EXT, VK_PART_PR, DYN_PR | VK_DYN_PR_PROVOKING << 8},
     {VK_DYNAMIC_STATE_CONSERVATIVE_RASTERIZATION_MODE_EXT, VK_PART_PR, DYN_PR | VK_DYN_PR_CONSERVATIVE << 8},
     {VK_DYNAMIC_STATE_EXTRA_PRIMITIVE_OVERESTIMATION_SIZE_EXT, VK_PART_PR, DYN_PR | VK_DYN_PR_CONSERVATIVE << 8},
@@ -234,6 +238,7 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
     if (!(d->dyn_pr & VK_DYN_PR_PATCH)) pr->patch = k->patch;
     if (!(d->dyn_pr & VK_DYN_PR_POLYGON)) pr->polygon = k->polygon;
     if (!(d->dyn_pr & VK_DYN_PR_DEPTH_CLAMP)) pr->depth_clamp = k->depth_clamp;
+    if (!(d->dyn_pr & VK_DYN_PR_DEPTH_CLIP)) pr->depth_clip = k->depth_clip;
     if (!(d->dyn_pr & VK_DYN_PR_PROVOKING)) pr->provoking_last = k->provoking_last;
     if (!(d->dyn_pr & VK_DYN_PR_CONSERVATIVE)) pr->conservative = k->conservative;
 
@@ -311,6 +316,7 @@ void vk_pipe_key_text(const PipeKey* k, char* out, size_t n) {
     if (k->sample_shading) at = key_say(out, n, at, ", every sample shaded");
     if (k->conservative) at = key_say(out, n, at, ", conservative");
     if (k->depth_clamp) at = key_say(out, n, at, ", depth clamp");
+    if (k->depth_clip) at = key_say(out, n, at, ", depth clip %s", k->depth_clip == 2 ? "on" : "off");
     if (k->provoking_last) at = key_say(out, n, at, ", the last vertex provokes");
     if (k->feedback) key_say(out, n, at, ", a feedback loop");
 }

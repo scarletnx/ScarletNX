@@ -253,6 +253,80 @@ static int check_maxwell_depth_range(void) {
     return 0;
 }
 
+/* NVB197_SET_VIEWPORT_CLIP_CONTROL (0x64F, open-gpu-doc clb197.h) clips the geometry against the depth planes by its
+   GEOMETRY_CLIP and clamps a fragment's depth by PIXEL_MIN_Z and PIXEL_MAX_Z, each apart: deko3d's word for the clamp
+   off, 0x181D, clips and clamps, to 0 to 1 (its bit 0, deko3d's ForceDepthRangeZeroToOne), and its word for the clamp
+   on, 0x101A, clamps to the clip range without clipping. The triangle over the target at clip z 0.5 is depth 0.375 in a
+   range of 0.25 to 0.5 (scale and offset 0.25, the clip's min and max z the same); a depth bias of 2^24 units, half a
+   unit of depth at that exponent (2^-25 apart), takes it to 0.875, and 2^26 units to 2.375, which the clamp off brings
+   to 1, drawn over a buffer of 1. Vulkan's one switch leaves depth past the range undefined with the clamp off and
+   clipping on (the specification's Depth Clamping and Range Adjustment); VK_EXT_depth_clip_enable gives both */
+static int check_maxwell_depth_clamp(void) {
+    enum { LESS = 0x201, LEQUAL = 0x203 };
+    static const struct {
+        u32 word, func;
+        f32 units, buffer;
+        u32 want, needs_clip_enable;
+        const char* what;
+    } cases[] = {
+        {0x181D, LESS, 0.0f, 0.55f, 64, 0, "clipped and clamped, no bias: 0.375"},
+        {0x181D, LEQUAL, 67108864.0f, 1.0f, 64, 1, "clipped and clamped, biased past 1: 2.375 clamped"},
+        {0x101A, LESS, 16777216.0f, 0.55f, 64, 0, "clamped, not clipped, biased: 0.875 clamped to 0.5"},
+    };
+    const u64 gpu = 0x4c2040000ull, depth = gpu + 0xc000;
+    const f32 quarter = 0.25f, half = 0.5f, zero = 0.0f;
+    GpuChannel* channel = NULL;
+    CHECK(!mx_fixed_channel(161, gpu, HEAP_BASE + 0x54a0000, &channel));
+    u32* r = channel->r3d;
+    r[0x54E] = 1; /* a Z32_FLOAT target of 8 by 8, block linear one GOB high */
+    r[0x3F8] = (u32)(depth >> 32);
+    r[0x3F9] = (u32)depth;
+    r[0x3FA] = 0x0A;
+    r[0x3FB] = 0;
+    r[0x3FC] = 512 / 4;
+    r[0x48A] = r[0x48B] = 8;
+    r[0x48C] = 1;
+    r[0x4B3] = 1; /* the depth test, */
+    r[0x4BA] = 0; /* no writes, */
+    r[0x35F] = 1;                   /* depth from 0 to 1 */
+    memcpy(&r[0x282], &quarter, 4); /* SET_VIEWPORT_SCALE_Z */
+    memcpy(&r[0x285], &quarter, 4); /* SET_VIEWPORT_OFFSET_Z */
+    memcpy(&r[0x302], &quarter, 4); /* SET_VIEWPORT_CLIP_MIN_Z */
+    memcpy(&r[0x303], &half, 4);    /* SET_VIEWPORT_CLIP_MAX_Z */
+    memcpy(&r[0x55B], &zero, 4);    /* no slope */
+    memcpy(&r[0x61F], &zero, 4); /* nor bias clamp */
+    /* SNX_TEST_DEPTH_CLAMP_UNDEFINED=1 draws the cases that need the extension without it too, to show what the
+       driver makes of the undefined depth */
+    int undefined_too = getenv("SNX_TEST_DEPTH_CLAMP_UNDEFINED") != NULL;
+    vk_lock();
+    for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) {
+        if (cases[i].needs_clip_enable && !g_vk.has_depth_clip_enable && !undefined_too) {
+            printf("SKIP 3D engine depth clamp, %s: without VK_EXT_depth_clip_enable in use a fragment's depth past "
+                   "the viewport's range is undefined with the clamp off\n",
+                   cases[i].what);
+            continue;
+        }
+        r[0x64F] = cases[i].word;
+        r[0x4C3] = cases[i].func;
+        r[0x372] = cases[i].units > 0.0f; /* POLYGON_OFFSET_FILL_ENABLE */
+        memcpy(&r[0x56F], &cases[i].units, 4);
+        memcpy(&r[0x364], &cases[i].buffer, 4);
+        engine_clear(channel, 1);
+        u64 covered;
+        CHECK(!mx_fixed_draw(channel, 4, 10, 3, &covered));
+        u32 count = (u32)snx_popcount64(covered);
+        if (count != cases[i].want)
+            fprintf(stderr, "3D engine depth clamp, clip control %04x, %s (case %u): %u pixels, expected %u\n",
+                    cases[i].word, cases[i].what, i, count, cases[i].want);
+        CHECK(count == cases[i].want);
+    }
+    vk_unlock();
+    free(channel);
+    printf("PASS 3D engine depth clamp: clipped and clamped apart (%s), clamped alone\n",
+           g_vk.has_depth_clip_enable ? "VK_EXT_depth_clip_enable" : "skipped: one Vulkan switch");
+    return 0;
+}
+
 /* the pixels of columns x0 to x1 and rows y0 to y1 of the 8x8 target, both ends in, as fixed_state_covered's bits */
 static u64 mx_fixed_rect(u32 x0, u32 x1, u32 y0, u32 y1) {
     u64 bits = 0;

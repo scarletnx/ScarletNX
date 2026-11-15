@@ -834,6 +834,7 @@ static int create_device(void) {
     int has_hdr_metadata = 0;
     int has_gpl = 0, has_eds2 = 0, has_eds3 = 0; /* the extensions of pipeline libraries and their dynamic state */
     int has_depth_clip_control = 0;              /* and of the depth range as one of those states */
+    int has_depth_clip_enable = 0;               /* depth clipping apart from the clamp (VK_EXT_depth_clip_enable) */
     int has_mesh = 0;
     int has_size_control = 0; /* VK_EXT_subgroup_size_control, on a 1.2 device: 1.3 has it in its core */
     int has_mixed_dot = 0; /* VK_VALVE_shader_mixed_float_dot_product: HMMA's pairs of f16 products in one instruction */
@@ -879,6 +880,7 @@ static int create_device(void) {
         has_eds2 = snx_vk_extensions_has(&e, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
         has_eds3 = snx_vk_extensions_has(&e, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
         has_depth_clip_control = snx_vk_extensions_has(&e, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
+        has_depth_clip_enable = snx_vk_extensions_has(&e, VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
         /* only when vk_checkpoints asks: a device made with it marks every draw and dispatch, and a RenderDoc capture
@@ -1113,6 +1115,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
     VkPhysicalDeviceDepthClipControlFeaturesEXT qclip_control = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT};
+    VkPhysicalDeviceDepthClipEnableFeaturesEXT qclip_enable = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
     /* with the subset enabled, each of its features is off until the device asks for it: a view's swizzle, for one */
     PortabilityFeatures qport = {.sType = PORTABILITY_FEATURES_STYPE};
     VkPhysicalDevicePresentIdFeaturesKHR qpid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
@@ -1163,6 +1167,7 @@ static int create_device(void) {
                            has_gpl ? &qgpl : NULL,
                            has_eds3 ? &qeds3 : NULL,
                            has_depth_clip_control ? &qclip_control : NULL,
+                           has_depth_clip_enable ? &qclip_enable : NULL,
                            has_portability ? &qport : NULL,
                            has_reconvergence ? &qreconv : NULL,
                            robustness ? &qpipeline : NULL,
@@ -1341,6 +1346,8 @@ static int create_device(void) {
                           .patch = qeds2.extendedDynamicState2PatchControlPoints,
                           .depth_range = qeds3.extendedDynamicState3DepthClipNegativeOneToOne,
                           .depth_clip_control = qclip_control.depthClipControl,
+                          .depth_clip = qeds3.extendedDynamicState3DepthClipEnable,
+                          .has_depth_clip_enable = has_depth_clip_enable && qclip_enable.depthClipEnable,
                           .has_provoking_last = g_vk.has_provoking_last,
                           .has_conservative = g_vk.has_conservative};
         char line[400];
@@ -1356,6 +1363,20 @@ static int create_device(void) {
         }
         vk_depth_range_line(&gd, g_vk.dyn_pr, line, sizeof line);
         LOG("%s\n", line);
+        /* depth clipping and clamping apart, as the console's viewport clip control has them, where the device can;
+           with pipeline libraries' dynamic clamp only if the clip is dynamic too (pipeline_parts.h) */
+        int clamp_alone = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLAMP) && !(g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLIP);
+        g_vk.has_depth_clip_enable = gd.has_depth_clip_enable && !clamp_alone;
+        if (g_vk.has_depth_clip_enable)
+            LOG("vulkan: depth is clipped and clamped as the console sets each (VK_EXT_depth_clip_enable%s)\n",
+                g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLIP ? ", both as dynamic state" : "");
+        else
+            LOG("vulkan: depth clipping goes with the clamp, one switch: a fragment's depth past the viewport's range is "
+                "undefined with the clamp off, where the console clamps it (%s)\n",
+                !has_depth_clip_enable ? "VK_EXT_depth_clip_enable is off: its line above says why"
+                : !qclip_enable.depthClipEnable
+                    ? "the device has VK_EXT_depth_clip_enable without depthClipEnable"
+                    : "the clamp is dynamic state and the device has no extendedDynamicState3DepthClipEnable");
     }
     g_vk.has_xfb = g_vk.has_xfb && fxfb.transformFeedback;
     g_vk.has_geometry_streams = g_vk.has_xfb && fxfb.geometryStreams;
@@ -1828,7 +1849,8 @@ static int create_device(void) {
         .extendedDynamicState3ProvokingVertexMode = (g_vk.dyn_pr & VK_DYN_PR_PROVOKING) != 0,
         .extendedDynamicState3ConservativeRasterizationMode = (g_vk.dyn_pr & VK_DYN_PR_CONSERVATIVE) != 0,
         .extendedDynamicState3ExtraPrimitiveOverestimationSize = (g_vk.dyn_pr & VK_DYN_PR_CONSERVATIVE) != 0,
-        .extendedDynamicState3DepthClipNegativeOneToOne = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) != 0};
+        .extendedDynamicState3DepthClipNegativeOneToOne = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) != 0,
+        .extendedDynamicState3DepthClipEnable = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLIP) != 0};
     VkPhysicalDeviceDepthClipControlFeaturesEXT fclip_control = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT, .depthClipControl = VK_TRUE};
     if (g_vk.has_gpl) {
@@ -1852,6 +1874,14 @@ static int create_device(void) {
             chain = &fclip_control;
             ext[next++] = VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME;
         }
+    }
+    VkPhysicalDeviceDepthClipEnableFeaturesEXT fclip_enable = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT,
+        .pNext = chain,
+        .depthClipEnable = VK_TRUE};
+    if (g_vk.has_depth_clip_enable) {
+        chain = &fclip_enable;
+        ext[next++] = VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME;
     }
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR findex8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR,

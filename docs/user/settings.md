@@ -132,6 +132,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_ext_conservative_rasterization` | `auto` | `VK_EXT_conservative_rasterization` |
 | `vk_ext_custom_border_color` | `auto` | `VK_EXT_custom_border_color` |
 | `vk_ext_depth_clip_control` | `auto` | `VK_EXT_depth_clip_control` |
+| `vk_ext_depth_clip_enable` | `auto` | `VK_EXT_depth_clip_enable` |
 | `vk_ext_depth_range_unrestricted` | `auto` | `VK_EXT_depth_range_unrestricted` |
 | `vk_ext_descriptor_buffer` | `auto` | `VK_EXT_descriptor_buffer` |
 | `vk_ext_descriptor_heap` | `auto` | `VK_EXT_descriptor_heap` |

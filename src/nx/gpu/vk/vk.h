@@ -87,7 +87,7 @@ typedef struct {
        and features enabled */
     u32 video_family;
     VkVideoCodecOperationFlagsKHR video_codecs;
-    const char* dev_ext[68]; /* create_device enables 68 at most, were every one it can enable there */
+    const char* dev_ext[69]; /* create_device enables 69 at most, were every one it can enable there */
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained (to 1.2 on a 1.2 device) */
     VkPhysicalDeviceVulkan11Features feat11;
@@ -153,6 +153,8 @@ typedef struct {
        robust_ssbo_align (vk_sb_round) */
     int robust_buffer2, robust_image2, null_descriptor;
     u32 robust_ubo_align, robust_ssbo_align;
+    /* VK_EXT_depth_clip_enable in use: depth clipping and clamping each as the console sets them (PipeKey.depth_clip) */
+    int has_depth_clip_enable;
     int has_calibrated_host;    /* VK_EXT_calibrated_timestamps with CLOCK_MONOTONIC_RAW: the GPU's clock goes next to
                                 the client's, one driver call (gpuprof.c's calibration) */
     int has_portability;        /* a portability driver (MoltenVK): the device lists VK_KHR_portability_subset */
@@ -776,6 +778,7 @@ void rec_CmdSetAttachmentFeedbackLoopEnableEXT(VkCommandBuffer cb, VkImageAspect
 /* the pre-rasterization state pipelines of libraries take as dynamic state (g_vk.dyn_pr) */
 void rec_CmdSetPolygonModeEXT(VkCommandBuffer cb, VkPolygonMode mode);
 void rec_CmdSetDepthClampEnableEXT(VkCommandBuffer cb, VkBool32 on);
+void rec_CmdSetDepthClipEnableEXT(VkCommandBuffer cb, VkBool32 on);
 void rec_CmdSetProvokingVertexModeEXT(VkCommandBuffer cb, VkProvokingVertexModeEXT mode);
 void rec_CmdSetConservativeRasterizationModeEXT(VkCommandBuffer cb, VkConservativeRasterizationModeEXT mode);
 void rec_CmdSetExtraPrimitiveOverestimationSizeEXT(VkCommandBuffer cb, float size);
@@ -2326,6 +2329,9 @@ typedef struct {
     u32 topo_class;
     u32 polygon;
     u32 depth_clamp;
+    /* with has_depth_clip_enable, whether the geometry is clipped against the depth planes apart from the clamp: 1 not,
+       2 clipped (VkPipelineRasterizationDepthClipStateCreateInfoEXT); 0 without it, depth_clamp deciding both */
+    u32 depth_clip;
     /* all zero with dynamic vertex input (g_vk.vertex_input_dynamic): each draw sets its own (render.c), and one
        pipeline serves every layout its programs are drawn with */
     VertexLayout vi;
