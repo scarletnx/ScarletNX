@@ -2566,7 +2566,7 @@ static void add_mod(App* app, const char* temporary) {
     const char* cloud = "content://com.example.cloud.documents/tree/abc%3Amods";
     static const int tail[] = {ROW_ADD_MOD,     ROW_MODS_FOLDER, ROW_ADD_CHEATS,  ROW_CHEATS_FOLDER,
                                ROW_OPEN_FOLDER, ROW_STATES,      ROW_CLEAN_CACHE, ROW_GPU_DRIVER,
-                               ROW_FREEDRENO,   ROW_SAVE,        ROW_PLAY};
+                               ROW_FREEDRENO,   ROW_SETTINGS,    ROW_SAVE,        ROW_PLAY};
     size_t index = 0;
     int i, nx, ny;
     while (index < app->games.count &&
@@ -3791,6 +3791,80 @@ static void run_edenprobe(App* app, const char* temporary) {
     free(words);
     free(plan);
     free(argv_file);
+}
+/* a game's box's Settings: its own Settings, the runtime's sections and Reset to Global last, none of the launcher's
+   own groups; each row Global and the launcher's until picked, a pick kept in its picks file beside its .ini at once
+   and Del taking it out (no file with none); its row in Games with the sliders after its name and the side panel
+   saying its own; Reset to Global asked first, with how many; Back from its groups to its box. And the game box's
+   Settings opens the same, Back going to Games */
+static void game_own_settings(App* app) {
+    char *game = snx_strdup(app->addons_game), *title = snx_strdup(app->addons_title), *ini = game_ini_of(game);
+    char *picks = snx_game_picks(ini), *text, value[256], label[512];
+    size_t size, index;
+    int row, groups;
+    addons_open(app, game, title, true);
+    for (row = 0; row < addons_rows(app) && addons_row(app, row) != ROW_SETTINGS; ++row) {}
+    assert(row < addons_rows(app));
+    app->addons_focus = row;
+    key(app, SDLK_RETURN);
+    assert(!app->addons_shown && app->editing && app->form == GUI_FORM_SETTINGS && app->own_picks &&
+           !strcmp(app->own_picks, picks) && screen_settings(app) == &app->game_settings);
+    groups = app->groups;
+    assert(groups == 5 && !strcmp(app->group_keys[0].key, "Display") && !strcmp(app->group_keys[3].key, "User") &&
+           !strcmp(app->group_keys[4].key, "Reset to Global") && app->group_first[4] < 0);
+    screen_title(app, label, sizeof label); /* the game's name, as the other titles are, in capitals */
+    snprintf(value, sizeof value, "SCARLETNX  /  SETTINGS  /  %s", title);
+    for (char* c = value; *c; ++c) *c = (char)SDL_toupper((unsigned char)*c);
+    assert(!strcmp(label, value));
+    key(app, SDLK_RETURN); /* Display */
+    assert(app->form == GUI_FORM_GROUP && app->editor.object == (char*)app->game_settings.values);
+    app->editor.row = 0; /* Fullscreen: Global and the launcher's */
+    setting_shown(app, setting_of(app, 0), value, sizeof value);
+    assert(!strncmp(value, "Global (", 8) && !snx_path_exists(picks));
+    key(app, SDLK_RIGHT);
+    assert(!strcmp(gui_settings_value(&app->game_settings, "fullscreen"), "0"));
+    assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "[Display]\nfullscreen=0\n"));
+    free(text);
+    assert(game_own(game, value, sizeof value) == 1 && !strcmp(value, "fullscreen=0"));
+    assert(strstr(shown_keys(app, label, sizeof label), "Del: Global.")); /* the foot: Del back to Global */
+    key(app, SDLK_DELETE);
+    assert(!gui_settings_value(&app->game_settings, "fullscreen") && !snx_path_exists(picks));
+    key(app, SDLK_RIGHT);
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_SETTINGS && app->own_picks);
+    app->editor.row = groups - 1; /* Reset to Global, asked first: Cancel in focus changes none */
+    key(app, SDLK_RETURN);
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_RESET &&
+           !strncmp(app->ask_line, "Reset to Global? 1 setting of ", 30));
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown && snx_path_exists(picks));
+    key(app, SDLK_ESCAPE); /* back to its box: the sliders on its row, its own in the side panel */
+    assert(!app->editing && app->addons_shown && !app->own_picks && !strcmp(app->addons_game, game));
+    for (index = 0; index < app->games.count && !(app->games.paths[index] && snx_same_file(app->games.paths[index], game));
+         ++index) {}
+    assert(index < app->games.count && app->games_own[index]);
+    game_label(app, &app->games, index, label, sizeof label);
+    assert(strstr(label, GUI_OWN_MARK));
+    side_focus_update(app);
+    assert(!strcmp(app->own_focus, "fullscreen=0"));
+    /* Reset to Global taken: no picks file, no sliders */
+    app->addons_focus = row;
+    key(app, SDLK_RETURN);
+    app->editor.row = groups - 1;
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown && !snx_path_exists(picks) && !strcmp(app->editor.note, "1 setting back to Global"));
+    key(app, SDLK_RETURN);
+    assert(!strcmp(app->editor.note, "Every setting of this game is Global"));
+    key(app, SDLK_ESCAPE);
+    assert(app->addons_shown && !app->games_own[index]);
+    game_label(app, &app->games, index, label, sizeof label);
+    assert(!strstr(label, GUI_OWN_MARK));
+    free(picks);
+    free(ini);
+    free(title);
+    free(game);
 }
 /* a game's box's GPU Driver. On a desktop: greyed, saying Android only on the row, Enter saying this device's line
    with the box staying; but for a game set to a package, whose row stays to take the pick back. On a phone with an
@@ -11734,6 +11808,7 @@ int main(int argc, char** argv) {
                 key(&app, SDLK_M);
                 assert(app.addons_shown && !app.mods_count && !app.cheats_count);
                 game_gpu_driver(&app);
+                game_own_settings(&app);
                 key(&app, SDLK_ESCAPE);
                 assert(!app.addons_shown && !app.menu.running && app.menu.view == GUI_LOAD_GAMES);
                 { /* and on its row of the recent games: the same box, named as the run named it */
@@ -11982,15 +12057,15 @@ int main(int argc, char** argv) {
             key(&app, SDLK_RETURN);
             /* rows: Update 1.2.0, Update 1.0.0, No update, DLC 1, A mod, B mod, 60 FPS, Infinite HP, Speed x2|x4, Add
                Mod, Open Mods Folder, Add Cheats, Open Cheats Folder, Open Folder, Save States, Clean Cache, GPU Driver,
-               Freedreno Settings, Save, Play */
+               Freedreno Settings, Settings, Save, Play */
             assert(app.addons_shown && !app.menu.running && app.addons.count == 3 && app.mods_count == 2 &&
-                   app.cheats_count == 3 && addons_rows(&app) == 20);
+                   app.cheats_count == 3 && addons_rows(&app) == 21);
             assert(addons_row(&app, 9) == ROW_ADD_MOD && addons_row(&app, 10) == ROW_MODS_FOLDER &&
                    addons_row(&app, 11) == ROW_ADD_CHEATS && addons_row(&app, 12) == ROW_CHEATS_FOLDER &&
                    addons_row(&app, 13) == ROW_OPEN_FOLDER && addons_row(&app, 14) == ROW_STATES &&
                    addons_row(&app, 15) == ROW_CLEAN_CACHE && addons_row(&app, 16) == ROW_GPU_DRIVER &&
-                   addons_row(&app, 17) == ROW_FREEDRENO && addons_row(&app, 18) == ROW_SAVE &&
-                   addons_row(&app, 19) == ROW_PLAY);
+                   addons_row(&app, 17) == ROW_FREEDRENO && addons_row(&app, 18) == ROW_SETTINGS &&
+                   addons_row(&app, 19) == ROW_SAVE && addons_row(&app, 20) == ROW_PLAY);
             build_ids(&app, dirs);
             assert(!app.addons_checked[0] && !app.addons_checked[1] && app.addons_checked[2]);
             assert(app.mods_on[0] && !app.mods_on[1] && !strcmp(app.mods[0], "A mod"));
@@ -12079,9 +12154,9 @@ int main(int argc, char** argv) {
             assert(!app.cheats_on[0] && app.cheats_on[1] && app.addons_focus == 8 &&
                    !strcmp(app.message,
                            "\"Speed x2|x4\" always runs: a | in its name, which cheats_off= puts between two"));
-            /* past Open Folder, Save States, Clean Cache, GPU Driver and Freedreno Settings */
-            for (i = 0; i < 10; i++) key(&app, SDLK_DOWN);
-            assert(app.addons_focus == 18);
+            /* past Open Folder, Save States, Clean Cache, GPU Driver, Freedreno Settings and Settings */
+            for (i = 0; i < 11; i++) key(&app, SDLK_DOWN);
+            assert(app.addons_focus == 19);
             key(&app, SDLK_RETURN);
             assert(!app.addons_shown && !app.menu.running && strstr(app.message, "kept"));
             checked = snx_ini_value(ini, "addons");
@@ -12235,8 +12310,8 @@ int main(int argc, char** argv) {
             key(&app, SDLK_DOWN);
             key(&app, SDLK_DOWN);
             key(&app, SDLK_RETURN);
-            for (i = 0; i < 17; i++) key(&app, SDLK_DOWN); /* Recompile, the last row */
-            assert(app.addons_focus == 19);
+            for (i = 0; i < 18; i++) key(&app, SDLK_DOWN); /* Recompile, the last row */
+            assert(app.addons_focus == 20);
             key(&app, SDLK_RETURN);
             assert(!app.addons_shown && !app.menu.running && !app.recompile && gui_queue_running(&app.queue) == 0);
             {

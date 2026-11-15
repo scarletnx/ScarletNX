@@ -658,7 +658,8 @@ cannot be read is named and the others still listed.
   ([AOT packs](aot-packs.md)) through the same queue.
 - A finger held on a game half a second without moving, or a right click on it, opens its box: **Play** (**View
   Progress** for a game of the queue, which shows it on the Compile tab as Enter does), **Recompile** (R), and for a
-  recompiled Switch game **Mods** (M) and **Save States** (S). The finger's lift then taps nothing.
+  recompiled Switch game **Mods** (M), **Save States** (S) and **Settings**, its own (below), Back from them to
+  Games. The finger's lift then taps nothing.
 - **M** (on Android a tap on *Mods* at the foot) opens the box of the recompiled Switch game in focus, recent or on
   the page, that Enter opens for a game with updates, DLCs, mods, cheats or other programs beside it, and for a game
   with none of them too, whose **Add Mod** and **Add Cheats** copy a folder or a `.txt` the system's picker gives
@@ -669,7 +670,14 @@ cannot be read is named and the others still listed.
   Settings > App's pages for that game alone: GPU Driver's first row, **Global**, follows the launcher's pick, the
   game's own kept as `gpu_driver=` in its `.ini` (nothing: the system's driver); where no package loads the row is
   greyed, saying what the device lacks, unless the game is set to a package, to take that pick back. Freedreno
-  Settings with none of its own takes the launcher's. A collection's game ([Usage](usage.md#collections)) has a
+  Settings with none of its own takes the launcher's. **Settings** opens the Settings of that game alone, Back from
+  its groups to the box: a group a section of the runtime's (none of the launcher's own), each row **Global** and
+  the launcher's value (*Global (60%)*) until picked, a pick marked `*` and kept at once in the game's own picks
+  (`<id>.picks` beside its `.ini`, [Settings](settings.md)), which its runs take over the launcher's; Del puts a row
+  back to Global, the file going with its last pick, and **Reset to Global**, the last group, every row, asked first
+  with how many. A game with settings of its own, there or its GPU Driver and Freedreno Settings, has the sliders
+  icon after its name in Games and Recent Games, and the side panel lists them (*Own settings: volume=40,
+  gpu_driver=Turnip_v32*). A collection's game ([Usage](usage.md#collections)) has a
   **Play Program N** row for
   each other program it has made, which plays that program directly as Play plays the game's own (its menu, program
   0), the box's picks kept. On
