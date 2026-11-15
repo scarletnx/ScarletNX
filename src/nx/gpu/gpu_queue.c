@@ -73,7 +73,8 @@ static void gq_recent_add(u64 gva, u64 size, u64 fence, u64 at, u32 fwd) {
     g_gq_recent_n++;
     *e = (GqRecent){gva, size, fence, at, fwd, 0};
 }
-static _Thread_local int t_gq_run; /* this thread runs a record: its writes are the record's own */
+static _Thread_local int t_gq_run;    /* this thread runs a record: its writes are the record's own */
+static _Thread_local int t_gq_direct; /* this thread holds the renderer's lock (gq_direct): it runs renderer code */
 
 static u32 gq_slot(u64 page) { return (u32)((page * 0x9E3779B97F4A7C15ull) >> (64 - GQ_SLOT_BITS)); }
 static void gq_mark(u64 gva, u64 size, u64 fence) {
@@ -197,7 +198,8 @@ static void gq_commit(const GqRecord* r) {
     gq_publish();
     if (!g_gq.started) gq_drain(); /* without the renderer thread the records run here */
 }
-int gq_queues(void) { return gpu_on_thread() && !t_gq_run; }
+int gq_queues(void) { return gpu_on_thread() && !t_gq_run && !t_gq_direct; }
+void gq_direct(int on) { t_gq_direct = on; }
 /* a write record of kind (GQ_WRITE or GQ_WRITE_CB), or the write now after the queue when it is too big */
 static void gq_write_kind(u32 kind, u64 gva, const void* src, u64 size) {
     GqRecord* r = gq_put(kind, gva, size);
