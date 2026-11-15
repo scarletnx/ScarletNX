@@ -12,6 +12,16 @@
   * [From edenprobe](#from-edenprobe)
   * [From the tests](#from-the-tests)
   * [From a game or a homebrew program](#from-a-game-or-a-homebrew-program)
+* [Reading the profile](#reading-the-profile)
+  * [Merge](#merge)
+  * [Reports by file and by folder](#reports-by-file-and-by-folder)
+  * [Line by line](#line-by-line)
+* [Finding the unaccounted-for paths](#finding-the-unaccounted-for-paths)
+  * [Code nothing runs](#code-nothing-runs)
+  * [Code one run reaches and another does not](#code-one-run-reaches-and-another-does-not)
+  * [What the log says is missing](#what-the-log-says-is-missing)
+  * [The static censuses](#the-static-censuses)
+  * [Closing a gap](#closing-a-gap)
 
 [Development](development.md) · [edenprobe](edenprobe.md) · [build](build.md) · [profiling](profiling.md).
 
@@ -33,7 +43,7 @@ Coverage counts the runtime's own C and C++ code: the HLE kernel and services, t
 ends, the Vulkan renderer, the shader translators, the loaders, the recompiler's driver and LLVM backend. It does not
 count a game's code. The recompiled module (`<id>_code.so`) and the code the JIT compiles are made by the
 recompiler, not by the compiler that instruments the build. What a game's code reaches is a different question,
-answered by the static censuses and the log.
+answered by [the static censuses](#the-static-censuses) and the log.
 
 Two processes contribute to a game's run:
 
@@ -85,7 +95,7 @@ cmake --build build/cov --target scarletnx          # the runtime and driver; ad
   Tracy preset does. A run through `build/cov/scarletnx` still puts it beside the game it runs.
 - Clang warns that `-runtime-counter-relocation` is unused at link time. The warning is harmless.
 - The build instruments the dependencies CPM builds too (zstd, FSR2, ...). Reports leave them out by path
-  (Reports).
+  ([Reports](#reports-by-file-and-by-folder)).
 - Keep `-runtime-counter-relocation` on every ELF host. Without it, continuous mode is refused where the profile
   runtime cannot map the counters in place.
 
@@ -169,7 +179,193 @@ LLVM_PROFILE_FILE="$PWD/work/cov/prof-game/%c%p.profraw" \
 ```
 
 A game's profile says which runtime paths real software reaches. Diffed against the checks' profile, it gives the
-paths that games depend on and no check holds (Code one run reaches and another does not).
+paths that games depend on and no check holds ([Code one run reaches and another does not](#code-one-run-reaches-and-another-does-not)).
 The profile names only the runtime's functions, not the game's, but which services and NVN paths a game uses is
 still the game's behaviour: keep game profiles local.
+
+## Reading the profile
+
+### Merge
+
+```sh
+llvm-profdata merge -sparse work/cov/prof/*.profraw -o work/cov/ep.profdata
+llvm-profdata merge -sparse work/cov/ep.profdata work/cov/tests.profdata -o work/cov/all.profdata   # a union
+```
+
+A `.profraw` with continuous mode is the size of the counters (about 8 MB for `scarletnx` here), whatever ran.
+`-sparse` drops the functions that never ran from the merged file.
+
+### Reports by file and by folder
+
+```sh
+X='(\.cache/|/build/|/usr/)'      # CPM's sources, generated files, the system's headers
+llvm-cov report build/cov/scarletnx -instr-profile=work/cov/ep.profdata -ignore-filename-regex="$X" \
+    > work/cov/ep-report.txt
+llvm-cov report build/cov/scarletnx -instr-profile=work/cov/ep.profdata -show-functions src/nx/hle/svc/svc.c
+```
+
+The report has a row per file with regions, functions, lines and branches, each run and missed. Its paths drop the
+common prefix (`nx/hle/svc/svc.c`). The per-folder table above is that report summed:
+
+```sh
+awk 'NR>2 && NF>=10 && $1 ~ /\// { n = split($1, p, "/"); d = p[1]; if (n > 2) d = d "/" p[2];
+     if (n > 3 && p[1] == "nx") d = d "/" p[3]; L[d] += $8; M[d] += $9 }
+     END { for (d in L) printf "%6.1f%% %7d %s\n", L[d] ? 100 * (L[d] - M[d]) / L[d] : 0, L[d], d }' \
+    work/cov/ep-report.txt | sort -k3
+```
+
+A folder at 0% with many lines is a part the workload never enters: the GUI, the other drivers (`3ds`, `vita`,
+`nds`, `android`), `glslc`. That is expected for an edenprobe run; it is the tests' job.
+
+### Line by line
+
+```sh
+llvm-cov show build/cov/scarletnx -instr-profile=work/cov/ep.profdata -format=html -output-dir=work/cov/html \
+    -ignore-filename-regex="$X" -show-branches=count -show-line-counts-or-regions
+llvm-cov export build/cov/scarletnx -instr-profile=work/cov/ep.profdata -format=lcov > work/cov/ep.lcov
+```
+
+The HTML has an index by file, and each file with its counts in the margin: a red line never ran, and a branch
+shows how many times each side was taken. `-format=lcov` feeds `genhtml` or an editor's coverage gutter
+(VS Code's Coverage Gutters, for example). `llvm-cov export` without `-format` writes JSON with every function and
+its count, which the scripts below read: about 100 MB for this run, even with `-skip-expansions`, which leaves out
+the macro expansions' regions.
+
+## Finding the unaccounted-for paths
+
+### Code nothing runs
+
+The functions with a zero count, by file, are the list to start from:
+
+```sh
+llvm-cov export build/cov/scarletnx -instr-profile=work/cov/ep.profdata -skip-expansions > work/cov/ep.json
+python3 - work/cov/ep.json src/nx/hle/services/ <<'EOF'
+import collections, json, os, sys
+d = json.load(open(sys.argv[1]))['data'][0]
+cold, total, names = collections.Counter(), collections.Counter(), collections.defaultdict(list)
+for f in d['functions']:
+    path = f['filenames'][0]
+    if sys.argv[2] not in path: continue
+    name = os.path.basename(path); total[name] += 1
+    if not f['count']:
+        cold[name] += 1; names[name].append(f['name'].split(':')[-1])
+for name, n in cold.most_common(): print(f'{n:4d}/{total[name]:4d} {name}  {", ".join(names[name][:4])}')
+EOF
+```
+
+From the edenprobe run above, part of what it printed:
+
+```
+ 219/ 231 misc.c  apm_configuration, apm_set_configuration, apm_cpu_boost, ...
+ 153/ 179 am.c  am_display_mode_changed, new_appletae, am_user_account_switch_lock, ...
+ 129/ 133 gsv.c  new_gsv_session, gsv_native_memory_cpu, gsv_native_image_reserve, ...
+ 105/ 105 acc.c  acc_playing, new_acc, new_acc_system, ...
+  70/ 111 nvdrv.c  nvmap_addr_by_id, gmmu_translate, gmmu_run, ...
+  68/  70 bsd.c  network_set_room, network_interface, network_online, ...
+  65/  65 ssl.c  new_ssl, new_ssl_system, nn_ssl_sf_ISslService_CreateContext, ...
+```
+
+Read each in three ways:
+
+- **Whole services never opened** (`acc.c`, `ssl.c`): edenprobe never asks for them. A game does (`acc` is the user
+  account), so a game's profile covers them, but nothing *checks* them.
+- **Services opened, most commands not** (`am.c`, `misc.c`): the handlers the generated dispatcher calls
+  (`nn_<service>_sf_<interface>_<command>`) for commands no case sends. Each is a command whose answer nobody holds
+  against the console's.
+- **Branches inside covered functions**: functions at 100% can still have error paths that never ran
+  (`-show-branches=count` in `llvm-cov show`). The kernel's and the SVCs' are the important ones: what a wrong
+  handle, an unaligned address or a full table answers.
+
+Not every gap needs a case. Code for another host (`#ifdef _WIN32`), debug settings and the GUI are reached by
+other means. The point is to know which gaps are deliberate.
+
+### Code one run reaches and another does not
+
+Two profiles, each exported to JSON, and the functions the second runs that the first never does:
+
+```python
+"""covdiff.py A.json B.json [PATH]: the functions B runs and A never does (llvm-cov export), by file"""
+import collections, json, sys
+def ran(path, under):
+    d = json.load(open(path))['data'][0]
+    return {(f['filenames'][0], f['name']) for f in d['functions'] if f['count'] and under in f['filenames'][0]}
+under = sys.argv[3] if len(sys.argv) > 3 else '/src/'
+only = ran(sys.argv[2], under) - ran(sys.argv[1], under)
+by = collections.defaultdict(list)
+for path, name in only: by[path.split('/src/', 1)[-1]].append(name.split(':')[-1])
+for path in sorted(by, key=lambda p: -len(by[p])):
+    print(f'{len(by[path]):4d} {path}: {", ".join(sorted(by[path])[:4])}')
+```
+
+```sh
+python3 work/cov/covdiff.py work/cov/checks.json work/cov/game.json /src/nx/   # what a game needs that no check runs
+python3 work/cov/covdiff.py work/cov/before.json work/cov/after.json            # what a new case or word added
+```
+
+For example, an edenprobe run with the words `quick notime kernel hooks` against the full CI words: the CI words
+add the VP9 decoder (`nx/gpu/video/vp9_rebuild.cpp`, 55 functions), nvdrv's control device (`nvdrv.c`, 38), the
+audio renderer's DSP (`audren_dsp.c`, 34), Vulkan command recording (`vk/cmd.c`, `vk/record.c`) and the GPU's hold on
+guest memory (`vk/owned.c`, `memory/own.c`). That is how to tell which mode word or which case pays for which part
+of the runtime.
+
+The useful pairs:
+
+| A | B | What B minus A is |
+|---|---|---|
+| edenprobe and the tests | a game, or several merged | runtime paths a game depends on that no check holds: candidates for new edenprobe cases or tests |
+| a game, before a fix | the same game, after it | what the fix made the game reach (a service it now gets past, a renderer path it now takes) |
+| one setting's value | another's (`--setting`) | the code that setting switches, which the baseline runs only one side of |
+| `origin/main` | a branch | new code the branch's checks do not run |
+
+### What the log says is missing
+
+Coverage shows the code that ran. The runtime also logs the code that does not exist: what a program asked for and
+found nothing behind. Read the run's logs beside the coverage report:
+
+| Log line | What is missing | Where it comes from |
+|---|---|---|
+| `[undeclared] <service> cmd N -> ok` | a command the service's `.swipc` does not declare, answered with success and zeros | `stub_ok` in `hle/kernel/ipc.c`; `auto_stub_ipc=1`, the default |
+| `[unknown] <service> cmd N -> UnknownCommandId` | the same, answered as the console answers an unknown command | `ipc_unknown`; `auto_stub_ipc=0`, or an interface's `@fallback(ipc_unknown)` |
+| `sm: <name> is not implemented, its commands answer without doing anything` | a whole service | `hle/services/sm.c` |
+| `svc NN (<Name>): not implemented ..., NotImplemented` | an SVC still marked `stub` in `hos.svc` | `hle/svc/svc.c` |
+| `nvn: the game resolved NAME, which nvn doesn't implement` | an NVN function the game looked up; the game stops if it calls it | `gpu/nvn/nvn_loader.c` |
+
+`@stub` commands in a `.swipc` file answer success with no handler and no log line
+([IPC interfaces](../platforms/nx/ipc.md)): `grep -n '@stub' src/nx/hle/services/*.swipc` lists them.
+`--auto_stub_ipc=0` turns every undeclared command into the console's error, which makes a game fail where it
+makes the call instead of later. `--log=2` adds the `ipc:` lines, the service commands served and their times.
+
+```sh
+grep -hE '\[(undeclared|unknown)\]|not implemented|doesn.t implement' work/cov/ep/launch-*.log | sort | uniq -c
+```
+
+The CI edenprobe run logs none of these: its cases only ask for what the runtime has. A game's log is where they
+appear.
+
+### The static censuses
+
+What a game *could* call, from its code and without running it, is in the census tools (pure Python, over the
+modules `scarletnx --dump-modules` reads; their output names the game's functions, so it stays local):
+
+```sh
+python3 tools/nvn_missing.py work/Game            # the NVN procedures the game's driver has that nvn does not implement
+python3 tools/export_census.py report work/exefs/<title>   # the module's SDK imports and exports no hook runs yet
+python3 tools/hook_census.py work/Game            # how many of a game's calls a hook could reach
+python3 tools/nvn_census.py work/Game             # the game's NVN driver: procedure table, command memory writers
+```
+
+The censuses say what exists to be called; coverage says what was called; the log says what was called and missing.
+A function in all three lists (the game imports it, the runtime has it, no check runs it) is the strongest
+candidate for a check.
+
+### Closing a gap
+
+- **An edenprobe case**, when the question has an answer the console gives: a service command, an SVC's error, a
+  scheduler behaviour. [A case from a game report](edenprobe.md#a-case-from-a-game-report) has the MCP tools
+  (`edenprobe_scaffold`, `edenprobe_check`, `edenprobe_run`, `edenprobe_finding`). Rerun the coverage
+  afterwards: the diff against the run before says the case reaches what it was meant to.
+- **A ctest**, when the code is the runtime's own (the renderer, a cache, a decoder): `tests/CMakeLists.txt`.
+- **A word or a setting** in an existing run, when the code is already checked by cases that are not in the run
+  (`graphics`) or behind a setting the baseline leaves at one value.
+- **Nothing**, when the path is deliberate: write down why, so the next survey does not ask again.
 
