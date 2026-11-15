@@ -120,6 +120,7 @@ VK_EXT_extended_dynamic_state3.extendedDynamicState3AlphaToOneEnable | off | pow
 # console clamps it; without the extension, in the viewport transform's range)
 VK_EXT_depth_clamp_control | off | amd-proprietary | * | any | * | writes wrong depth values to the depth buffer with depth clamp control | Dolphin 59e9267e3d (2025-07-26, PR 13830), DriverDetails.cpp:168; Eden's driver bug list (docs/DriverBugs.md:16, 9cf3a04af3) | headless: | never | -
 VK_EXT_depth_clamp_control | off | amdvlk | * | any | * | writes wrong depth values to the depth buffer with depth clamp control, as Dolphin has it for every AMD driver but RADV | Dolphin 59e9267e3d (2025-07-26, PR 13830), DriverDetails.cpp:168, its AMD driver every one but RADV (VulkanContext.cpp:993-1004) | headless: | never | -
+VK_EXT_depth_clamp_control | off | nvidia | * | any | * | lists the extension and its depthClampControl but gives no vkCmdSetDepthClampRangeEXT: the renderer crashed calling it, and with the range left out a menu drew wrong | #2280 (621.01 on Windows); a tester's runs on 620.70.06 under Linux, clean with the extension off | new:headless:the depth clamp range as dynamic state, its command present | 2026-11-15 broken on 620.70.06 and 621.01 | -
 
 # Blending and samplers
 VK_EXT_blend_operation_advanced | off | qualcomm | * | any | 0x6020200,0x7000201 | misrenders pixels along shared primitive edges with advanced blending (Adreno 622 and 702) | ANGLE vk_renderer.cpp:6093 | new:edenprobe:advanced blend over triangles that share an edge | never | -
