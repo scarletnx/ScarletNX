@@ -2516,6 +2516,16 @@ static void astc_bc_suggest(int force, u64 extra, u64 usage, u64 budget, u64 fre
 }
 static u64 g_trimmed;   /* statistics: bytes freed for the budget */
 static u32 g_trim_dry;  /* the present a trim last found too little to free (+1: 0 is none) */
+/* the present memory last ran short (+1: 0 is none): an image found none, a trim found too little to free, or the
+   caches stayed past their budget after one */
+static u32 g_short_at;
+#define PRESSED_PRESENTS 300 /* how long a shortage counts as pressure (vk_mem_pressed) */
+int vk_mem_pressed(void) {
+    u64 usage, budget;
+    if (g_short_at && g_vk_present + 1 < g_short_at + PRESSED_PRESENTS) return 1;
+    vk_mem_use(&usage, &budget);
+    return usage >= budget / 10 * 9;
+}
 /* The GPU ranges whose mapping the game changed since ended_collect last looked, in a game whose front end has no
    texture objects (one that writes its own command buffers): the unmap of a texture's memory is the one sign such a
    game gives that it ended the texture. More ranges than the list holds count as all of the address space */
@@ -2819,6 +2829,7 @@ void vk_mem_trim(u64 extra, int force) {
         vk_bc1_tight("a trim took textures and targets the last eight presents used");
     vk_astc_auto_trimmed(usage, snx_astc_trim_left(usage, extra, freed, force), budget, force);
     if (short_of) g_trim_dry = g_vk_present + 1;
+    if (force || short_of || (usage > freed ? usage - freed : 0) > budget) g_short_at = g_vk_present + 1;
     if (freed || short_of)
         LOG_LIMIT(20,
                   "vulkan: %llu of %llu MB budgeted in use%s: freed %llu MB of textures, %llu of buffers, %llu of "

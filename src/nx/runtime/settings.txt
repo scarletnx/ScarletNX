@@ -390,6 +390,17 @@ setting Texture shed
     help evicted and loaded again at its next use; the level comes back when there is room. Off (the default for now)
     help = textures are whole. On a GPU whose images and buffers take blocks apart, the image blocks run full past the
     help budget and the sparse blocks of such textures find no memory for frames at a time
+setting Texture half res
+    label Textures at half resolution under pressure
+    key texture_half_res
+    int 0 2
+    default 0
+    words Auto|Never|Always
+    help A texture of 1 MiB or more mapped whole, with mipmaps, that the GPU only reads, made while the GPU's memory is
+    help under pressure (its use at 90% of the budget, or short in the last 300 presents), is made with sparse
+    help residency (where the GPU has it, and VK_EXT_image_view_min_lod) and its finest level never bound: sampled at
+    help half its resolution, a quarter of its memory, its size still the game's for textureSize and texelFetch. The
+    help level comes back when there is room, as texture_shed's do. Auto = under pressure, Never, Always
 setting ASTC lines BC1
     label Colour ASTC textures as BC1
     key astc_lines_bc1
