@@ -62,6 +62,8 @@ typedef struct {
        PrimitiveId in and out (passthrough), the viewport mask it writes (a Function variable, 1 until written) and
        whether its SPH asks for passthrough */
     u32 position_in, primitive_id_in, primitive_id_out, viewport_mask;
+    /* a vertex or geometry program's ClipDistance output, 8 planes (clip_var) */
+    u32 clip;
     int passthrough;
     /* a fragment program at a resolution scale: SNX_VKB_RS's vec4 (scale_component) and the fragment stage's push
        constants, whose uvec4s mark the textures bound to scaled render targets (scaled_slot) */
@@ -579,6 +581,21 @@ static void position_var(Ctx* c) {
         add_interface(c, c->position);
     }
 }
+/* whether a store to clip distance plane reaches the rasterizer or a later stage: the last stage before rasterization
+   writes only the planes the 3D engine enables (SetUserClipEnable), as spirv_translate.c does for Maxwell's */
+static int clip_plane_used(const Ctx* c, u32 plane) {
+    return (c->si->clip_enable & SNX_SH_NOT_LAST) || (c->si->clip_enable & (1u << plane));
+}
+/* the ClipDistance output, made before the program's code, so that each plane starts at 0 and a vertex program's
+   planes that it doesn't write clip nothing. A geometry program's planes are undefined again after each EmitVertex, as
+   on Maxwell's path (spirv_translate.c initializes them once too). It has 8 planes, as spirv_translate.c makes
+   Maxwell's, so that the builtin interfaces of adjacent stages agree */
+static void clip_var(Ctx* c) {
+    if (c->clip) return;
+    spv_emit_clip_distance_capability(&c->e);
+    c->clip = spv_emit_clip_distance_output(&c->e, c->t_f32, c->t_u32, 8);
+    add_interface(c, c->clip);
+}
 
 /* a float to BF16 bits, rounded to nearest even, a NaN kept a NaN */
 static u32 bf16(Ctx* c, u32 f) {
@@ -867,6 +884,14 @@ static void attr_store(Ctx* c, u32 addr, u32 bits) {
         spv_emit_store(&c->e, c->viewport_mask, bits);
         return;
     }
+    if (addr >= 0x2c0 && addr < 0x2e0) {
+        /* ClipDistance0 to 7, a word each: the plane is in clip_var's output, made before the code */
+        u32 plane = (addr - 0x2c0) >> 2;
+        if (c->clip && clip_plane_used(c, plane))
+            spv_emit_store(&c->e, spv_emit_output_element_pointer(&c->e, c->t_f32, c->clip, cu(c, plane)),
+                           to_f(c, bits));
+        return;
+    }
     if (addr == 0x5c) {
         /* NAK's NAK_ATTR_VPRS_TABLE_INDEX from SM86, the primitive's shading rate: the default rate, one fragment
            a pixel, is what the translation gives without it */
@@ -936,6 +961,11 @@ static void gs_passthrough(Ctx* c) {
         saved[a] = written ? spv_emit_load(e, c->t_v4f, out[a]) : empty;
     }
     u32 size = c->point_size ? spv_emit_load(e, c->t_f32, c->point_size) : 0;
+    /* and the clip distances, which EmitVertex leaves undefined too (emit_io.c's saved_clip for Maxwell's) */
+    u32 clip_saved[8] = {0};
+    for (u32 plane = 0; plane < 8 && c->clip; plane++)
+        clip_saved[plane] =
+            spv_emit_load(e, c->t_f32, spv_emit_output_element_pointer(e, c->t_f32, c->clip, cu(c, plane)));
     if (!c->primitive_id_in) {
         c->primitive_id_in = spv_emit_builtin_input_u32(e, c->t_u32, SPV_BUILT_IN_PRIMITIVE_ID);
         add_interface(c, c->primitive_id_in);
@@ -961,6 +991,8 @@ static void gs_passthrough(Ctx* c) {
             spv_emit_store(e, out[a], value);
         }
         if (c->point_size) spv_emit_store(e, c->point_size, size);
+        for (u32 plane = 0; plane < 8 && c->clip; plane++)
+            spv_emit_store(e, spv_emit_output_element_pointer(e, c->t_f32, c->clip, cu(c, plane)), clip_saved[plane]);
         spv_emit_store(e, c->primitive_id_out, id);
         if (c->position && !(c->si->clip_enable & SNX_SH_NOT_LAST)) vertex_depth_fix(c);
         spv_emit_emit_vertex(e);
@@ -6547,6 +6579,17 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             if (insn[i].op == SM86_AST)
                 for (u32 k = 0; k <= sm86_field(&insn[i], 74, 2); k++)
                     output_var(c, sm86_field(&insn[i], 40, 10) + 4 * k);
+        /* and the clip distances of a vertex or geometry program, when it stores one that is used. uses_clip_mask names
+           those planes, as spirv_translate.c's clip_used does: the renderer gives such a program no varying geometry
+           program of its own (render.c), and a tessellation passthrough hands them on (tess_passthrough.c) */
+        for (u32 i = 0; i < n && (stage == ST_VS || stage == ST_GS); i++)
+            if (insn[i].op == SM86_AST)
+                for (u32 k = 0; k <= sm86_field(&insn[i], 74, 2); k++) {
+                    u32 addr = sm86_field(&insn[i], 40, 10) + 4 * k;
+                    if (addr < 0x2c0 || addr >= 0x2e0 || !clip_plane_used(c, (addr - 0x2c0) >> 2)) continue;
+                    c->si->uses_clip_mask |= 1 << ((addr - 0x2c0) >> 2);
+                    clip_var(c);
+                }
         StructEmit se = {0};
         se.st = st;
         se.open = 1;
@@ -6565,6 +6608,8 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             for (u32 i = 0; i < 32; i++)
                 if (c->out_attr[i]) spv_emit_store(e, c->out_attr[i], empty);
         }
+        for (u32 plane = 0; plane < 8 && c->clip; plane++)
+            spv_emit_store(e, spv_emit_output_element_pointer(e, c->t_f32, c->clip, cu(c, plane)), cf(c, 0.0f));
         while (!c->failed) {
             int step = structure_step(c, &se);
             if (step == SE_DONE) break;
