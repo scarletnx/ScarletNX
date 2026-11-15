@@ -46,11 +46,12 @@ static void usage(FILE* out) {
     snx_cli_help(out, vita_cli);
     fputs(
         "Vita options:\n"
-        "  --KEY=VALUE            A Vita debug setting: --vita_hle_trace=1 logs each import the runtime lacks (2\n"
-        "                         every call), --vita_gxm_trace=1 each scene. And the Switch's --aot_threads=N:\n"
+        "  --KEY=VALUE            A Vita debug setting: --vita-hle-trace=1 logs each import the runtime lacks (2\n"
+        "                         every call), --vita-gxm-trace=1 each scene. And the Switch's --aot-threads=N:\n"
         "                         the game's code compiles on N threads (1 to 1024; the default 0: the computer's\n"
-        "                         cores with a quarter left free, or --aot_threads_most=N), the same as --jobs N.\n"
-        "                         KEY with a - for each _ is the same setting (--vita-hle-trace=1)\n"
+        "                         cores with a quarter left free, or --aot-threads-most=N), the same as --jobs N.\n"
+        "                         KEY is the key with a - for each _; the key as written, the older spelling, is still\n"
+        "                         read, and said once\n"
         "\n"
         "On the Vita, -O is the level of the blocks' code and of the helpers they call. --chunk N puts N instructions\n"
         "in a chunk, whole blocks (default: 512 blocks a chunk). --jit-cache FILE is the list of the blocks a run\n"
@@ -334,12 +335,12 @@ int snx_vita_main(int argc, char** argv) {
             return common < 0 ? 2 : 0;
         }
         if (common == SNX_CLI_SCRIPT) ini_read(ini_find(g_vita_debug_ini, "vita_script"), cli.value[SNX_CLI_SCRIPT]);
-        /* the Switch's settings, as --aot_threads= is: the last given counts */
+        /* the Switch's settings, as --aot-threads= is: the last given counts */
         if (common == SNX_CLI_OPT) ini_read(ini_find(g_recompile_ini, "opt"), cli.value[SNX_CLI_OPT]);
         if (common == SNX_CLI_JOBS) g_settings.aot_threads = cli.jobs;
         if (common) continue;
         if (!strncmp(a, "--", 2) && strchr(a, '=')) {
-            /* the Vita debug table's, --press_len= and --shot_every= being vita_press_len and vita_shot_every (a Switch
+            /* the Vita debug table's, --press-len= and --shot-every= being vita_press_len and vita_shot_every (a Switch
                game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet) and
                gamepad_map */
             char key[64];
@@ -401,7 +402,7 @@ int snx_vita_main(int argc, char** argv) {
         snx_error("VITA_LOCKSTEP=%s is deprecated, %s: vita_lockstep=%d (docs/user/deprecations.md)", old_at,
                   g_settings.vita_lockstep != old_lockstep ? "and the command line gives vita_lockstep first"
                   : old_none                               ? "and VITA_LOCKSTEP_STEPS=0 compared none"
-                                                           : "and this run reads it as --vita_lockstep",
+                                                           : "and this run reads it as --vita-lockstep",
                   g_settings.vita_lockstep);
     if (old_none)
         snx_error("VITA_LOCKSTEP_STEPS=%s is deprecated, and compared no instruction group, which "
@@ -411,7 +412,7 @@ int snx_vita_main(int argc, char** argv) {
         snx_error("VITA_LOCKSTEP_STEPS=%s is deprecated, %s: vita_lockstep_steps=%d (docs/user/deprecations.md)", old_steps,
                   g_settings.vita_lockstep_steps != old_lockstep_steps
                       ? "and the command line gives vita_lockstep_steps first"
-                      : "and this run reads it as --vita_lockstep_steps",
+                      : "and this run reads it as --vita-lockstep-steps",
                   g_settings.vita_lockstep_steps);
     char *runtime = snx_executable(argv[0]), *folder = game ? snx_strdup(game) : input ? NULL : own_game(argv[0]);
     int status = 1;

@@ -40,7 +40,7 @@ for that separate profile, and [3DS status](README.md) for outstanding work.
   leave the caller's table once a handler has taken the request, even when it
   answers with a transport error. Unknown commands answer success with one normal
   word, as Azahar's ReportUnimplementedFunction does and a Switch game's do, and
-  each is logged the first time it is answered. With `--ctr_auto_stub_ipc=0` they
+  each is logged the first time it is answered. With `--ctr-auto-stub-ipc=0` they
   stop the run, unless `--ipc-stubs` names their service (`all`, or `srv`, `fs`,
   `apt`, `ptm`, `hid`, `gsp`, `cfg`, `dsp`, `system`, `am`, where `fs` covers file
   sessions too).

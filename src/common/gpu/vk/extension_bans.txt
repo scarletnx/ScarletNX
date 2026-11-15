@@ -49,11 +49,11 @@
 key | action | driver | versions | system | devices | breaks | source | retest | checked | override
 
 # Dynamic vertex input (gpu/vk/vertex_input.c: vertex_input_dynamic_state=auto keeps off what holds here, on goes over it)
-VK_EXT_vertex_input_dynamic_state | off | nvidia | < 580.119.02 | any | * | breaks dynamic vertex input | Eden PR 3379 (9b1f6801a5, 2026-02-05) | headless:--vertex_input_dynamic_state=on | never | vertex_input_dynamic_state=on
-VK_EXT_vertex_input_dynamic_state | off | intel-windows | < 27.20.100.0 | any | * | breaks dynamic vertex input | yuzu 69f9b97e7e (2021-06-15), bounded in ddbf851ef6 (2022-12-27), kept by Eden; Eden's driver bug list:24 | headless:--vertex_input_dynamic_state=on | never | vertex_input_dynamic_state=on
-VK_EXT_vertex_input_dynamic_state | warn | intel-windows | >= 27.20.100.0 | any | * | still has issues with dynamic vertex input by ANGLE's account, which keeps it off on every version | ANGLE vk_renderer.cpp:6632, anglebug 42265637 | headless:--vertex_input_dynamic_state=on | never | -
+VK_EXT_vertex_input_dynamic_state | off | nvidia | < 580.119.02 | any | * | breaks dynamic vertex input | Eden PR 3379 (9b1f6801a5, 2026-02-05) | headless:--vertex-input-dynamic-state=on | never | vertex_input_dynamic_state=on
+VK_EXT_vertex_input_dynamic_state | off | intel-windows | < 27.20.100.0 | any | * | breaks dynamic vertex input | yuzu 69f9b97e7e (2021-06-15), bounded in ddbf851ef6 (2022-12-27), kept by Eden; Eden's driver bug list:24 | headless:--vertex-input-dynamic-state=on | never | vertex_input_dynamic_state=on
+VK_EXT_vertex_input_dynamic_state | warn | intel-windows | >= 27.20.100.0 | any | * | still has issues with dynamic vertex input by ANGLE's account, which keeps it off on every version | ANGLE vk_renderer.cpp:6632, anglebug 42265637 | headless:--vertex-input-dynamic-state=on | never | -
 VK_EXT_vertex_input_dynamic_state | off | qualcomm | * | android | * | draws edenprobe's coherence suite wrong with dynamic vertex input | ScarletNX 5722fc560 (2026-11-04); ANGLE vk_renderer.cpp:6632 keeps it off too (anglebug 381384988) | edenprobe:coherence | 2026-11-04 broken on 512.800.48 | vertex_input_dynamic_state=on
-VK_EXT_vertex_input_dynamic_state | off | mali | < 48.0.0 | any | * | applies vkCmdBindVertexBuffers2's strides to the wrong binding (Arm errata SDEN-3735689) | ANGLE vk_renderer.cpp:6632 | headless:--vertex_input_dynamic_state=on | never | vertex_input_dynamic_state=on
+VK_EXT_vertex_input_dynamic_state | off | mali | < 48.0.0 | any | * | applies vkCmdBindVertexBuffers2's strides to the wrong binding (Arm errata SDEN-3735689) | ANGLE vk_renderer.cpp:6632 | headless:--vertex-input-dynamic-state=on | never | vertex_input_dynamic_state=on
 
 # A vertex binding's stride as dynamic state (pipeline.c puts it in the pipeline instead)
 VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE | off | moltenvk | * | any | * | fails every pipeline that lists it: Metal has no dynamic stride | ScarletNX 5d9691ab2 (2026-10-21) | headless: | 2026-10-21 broken, version not recorded | -
@@ -92,7 +92,7 @@ VK_SHADER_STAGE_GEOMETRY_BIT | off | turnip | * | any | * | lists the geometry s
 OpGroupNonUniformShuffle | off | turnip | * | any | * | compiles a shuffle whose index differs between invocations into a loop, a hardware shuffle for each distinct index, as many as 32 for an HMMA's gather: an Adreno 610 ran the HMMA bench 35 times faster staged through shared memory (684.9 ms a dispatch to 19.6), where Qualcomm's driver on an Adreno 830 and RADV ran it 5.4 and 2.2 times slower so; no feature or property says it | Mesa's src/freedreno/ir3/ir3_lower_subgroups.c (make_shuffle_uniform, main of 2026-11-04: every Adreno with shfl); ScarletNX #2037 | new:headless:an HMMA program's dispatch timed gathered and staged, as shader_sm86_gpu's SNX_HMMA_BENCH does | 2026-11-13 a loop on 26.2.99 (Adreno 610) | -
 
 # Descriptors (without heaps, graphics descriptors use buffers or sets)
-VK_EXT_descriptor_heap | off | amd-proprietary | * | any | * | crashes a game at start with descriptor heaps (Adrenalin 26.7.1 on an RX 7900 XTX) | DXVK 076922bd24 (2026-09-19), issue 5837 | headless:--vk_descriptors_mode=3 | never | -
+VK_EXT_descriptor_heap | off | amd-proprietary | * | any | * | crashes a game at start with descriptor heaps (Adrenalin 26.7.1 on an RX 7900 XTX) | DXVK 076922bd24 (2026-09-19), issue 5837 | headless:--vk-descriptors-mode=3 | never | -
 VK_EXT_descriptor_heap | warn | nvidia | < 595.84.0 | any | * | runs descriptor heaps slower than its later drivers do | DXVK dxvk_device_info.cpp:506 (b5fadf8e5a, 2026-06-18) | new:headless:--bench-descriptors under vk_descriptors_mode=3 against vk_descriptors_mode=1 | never | -
 
 # Pipeline libraries (gpu/vk/pipeline_parts.c: a new pipeline links the parts of its shaders)

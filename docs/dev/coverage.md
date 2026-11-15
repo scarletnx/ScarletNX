@@ -178,7 +178,7 @@ Any run through `build/cov/scarletnx` collects the same way:
 
 ```sh
 LLVM_PROFILE_FILE="$PWD/work/cov/prof-game/%c%p.profraw" \
-    build/cov/scarletnx --game="$games/<id>" --seconds=120 --input_replay=1
+    build/cov/scarletnx --game="$games/<id>" --seconds=120 --input-replay=1
 ```
 
 A game's profile says which runtime paths real software reaches. Diffed against the checks' profile, it gives the
@@ -335,7 +335,7 @@ found nothing behind. Read the run's logs beside the coverage report:
 
 `@stub` commands in a `.swipc` file answer success with no handler and no log line
 ([IPC interfaces](../platforms/nx/ipc.md)): `grep -n '@stub' src/nx/hle/services/*.swipc` lists them.
-`--auto_stub_ipc=0` turns every undeclared command into the console's error, which makes a game fail where it
+`--auto-stub-ipc=0` turns every undeclared command into the console's error, which makes a game fail where it
 makes the call instead of later. `--log=2` adds the `ipc:` lines, the service commands served and their times.
 
 ```sh

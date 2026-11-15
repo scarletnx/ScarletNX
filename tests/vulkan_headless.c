@@ -7464,8 +7464,8 @@ static int run_headless(int argc, char** argv) {
        uma_copies, whose auto copies them on amdgpu (vk_uma_imports_dear): in place unless the command line says
        otherwise (--uma_copies=0 or 2), and check_uma_copies takes each value itself */
     g_settings.guest_buffers_copied = 1;
-    /* the runtime's startup flags (-H), its settings as it takes them (--vk_memory=2, --memory_traps=2,
-       --vertex_input_dynamic_state=off), and the benchmarks'. Any other argument stops the run: one dropped unsaid ran
+    /* the runtime's startup flags (-H), its settings as it takes them (--vk-memory=2, --memory-traps=2,
+       --vertex-input-dynamic-state=off), and the benchmarks'. Any other argument stops the run: one dropped unsaid ran
        the checks without it */
     for (int i = 1; i < argc; i++) {
         const char* eq = strchr(argv[i], '=');
@@ -7535,10 +7535,7 @@ static int run_headless(int argc, char** argv) {
             benchmark_passes = (u32)strtoul(argv[i] + 20, NULL, 10);
             continue;
         }
-        if (!strncmp(argv[i], "--", 2) && eq && (size_t)(eq - argv[i] - 2) < sizeof key) {
-            snprintf(key, sizeof key, "%.*s", (int)(eq - argv[i] - 2), argv[i] + 2);
-            o = setting_row(key);
-        }
+        if (settings_arg(argv[i], key, sizeof key)) o = setting_row(key);
         if (!o) {
             fprintf(stderr,
                     "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "

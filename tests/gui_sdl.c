@@ -725,19 +725,19 @@ static bool has_arg(const char* argv, const char* arg, const char* after) {
 }
 /* a console's game not made yet, opened: its first compile through driver, its own (no Switch flag), -r before file
    and its data folder, run to its end with status (driver_will). One the queue started gently has Auto's threads up
-   to half, --aot_threads=0 and --aot_threads_most=, which every console's driver takes; another has neither */
+   to half, --aot-threads=0 and --aot-threads-most=, which every console's driver takes; another has neither */
 static void compiled_by(App* app, const char* driver, const char* file, int status) {
     char threads[48];
     bool gentle = !app->menu.running && app->job_low;
     char* argv;
-    snprintf(threads, sizeof threads, "--aot_threads_most=%d", SDL_max(1, job_cores(app) / 2));
+    snprintf(threads, sizeof threads, "--aot-threads-most=%d", SDL_max(1, job_cores(app) / 2));
     assert(!gentle || app->job_threads == SDL_max(1, job_cores(app) / 2));
     argv = ran(app, status);
     assert(strstr(argv, driver) && strstr(argv, driver) < strchr(argv, '\n') && has_arg(argv, "-r", file) &&
            has_arg(argv, "--data", app->data_dir) && !has_arg(argv, "-S", NULL) &&
            !has_arg(argv, "--fullscreen=1", NULL));
-    assert(gentle ? has_arg(argv, "--aot_threads=0", NULL) && has_arg(argv, threads, NULL)
-                  : !strstr(argv, "--aot_threads=") && !strstr(argv, "--aot_threads_most="));
+    assert(gentle ? has_arg(argv, "--aot-threads=0", NULL) && has_arg(argv, threads, NULL)
+                  : !strstr(argv, "--aot-threads=") && !strstr(argv, "--aot-threads-most="));
     free(argv);
 }
 /* the event e (a game dropped) taken with Background recompile Gentle: its compile starts gently */
@@ -1240,7 +1240,7 @@ static void only_rows(App* app) {
     info = (UiRowInfo){0};
     assert(form_row_info(app, &app->editor, 1, form_labels(&app->editor), 0, &info) && (info.attr & UI_ATTR_OFF) &&
            strstr(info.label, "MoltenVK " GUI_CHANGED_MARK " macOS only"));
-    assert(gui_settings_options(&app->settings, 0, options) == 1 && !strcmp(options[0], "--vulkan_driver=moltenvk"));
+    assert(gui_settings_options(&app->settings, 0, options) == 1 && !strcmp(options[0], "--vulkan-driver=moltenvk"));
     app->editor.row = 1;
     key(app, SDLK_RETURN);
     assert(strstr(app->editor.note, "and it stays MoltenVK") && setting_is(app, "vulkan_driver", "moltenvk"));
@@ -3844,7 +3844,7 @@ static void game_gpu_driver(App* app) {
     assert(!snx_ini_has(ini, "gpu_driver") && !strcmp(app->drivers_form.value[0], "(*)") && !app->confirm.shown &&
            !app->probe_launch && strstr(app->editor.note, ": the GPU driver for every game (System driver)"));
     option = gui_run_option("gpu_driver", ini, "Turnip_v32");
-    assert(option && !strcmp(option, "--gpu_driver=Turnip_v32"));
+    assert(option && !strcmp(option, "--gpu-driver=Turnip_v32"));
     free(option);
     key(app, SDLK_ESCAPE); /* back to its box */
     assert(!app->editing && app->addons_shown && !strcmp(app->addons_game, game));
@@ -5658,9 +5658,9 @@ int main(int argc, char** argv) {
         const char *threads = "default", *most = NULL, *name = argv[2] + strlen(argv[2]);
         char *step = snx_format("%s.step", argv[2]), *pid = snx_format("%s.pid", argv[2]), *at;
         for (int i = 3; i < argc; ++i)
-            if (!strncmp(argv[i], "--aot_threads=", 14))
+            if (!strncmp(argv[i], "--aot-threads=", 14))
                 threads = argv[i] + 14; /* the last one given */
-            else if (!strncmp(argv[i], "--aot_threads_most=", 19))
+            else if (!strncmp(argv[i], "--aot-threads-most=", 19))
                 most = argv[i] + 19;
         while (name > argv[2] && name[-1] != '/' && name[-1] != '\\') --name;
 #ifdef _WIN32
@@ -5794,7 +5794,7 @@ int main(int argc, char** argv) {
         int r = !strcmp(argv[1], "-r"), args = argc;
         /* a recompile the queue runs gently (on battery) ends with Auto and its ceiling of half the threads, which the last
            ones given replace, as the menu's own line says */
-        if (args > 2 && !strncmp(argv[args - 1], "--aot_threads_most=", 19)) args -= 2; /* and its --aot_threads=0 */
+        if (args > 2 && !strncmp(argv[args - 1], "--aot-threads-most=", 19)) args -= 2; /* and its --aot-threads=0 */
         assert(strstr(argv[0], "runtime") && snx_is_file(argv[1 + r]));
         assert(!strcmp(argv[args - 2], "--data") && argv[args - 1][0]);
         puts("ScarletNX - an update");
@@ -5802,14 +5802,14 @@ int main(int argc, char** argv) {
     }
     if (strstr(argv[0], "0100ABCD12350000")) { /* a game played from its save state, slot 1: its own program */
         int i, found = 0;
-        for (i = 1; i < argc; i++) found |= !strncmp(argv[i], "--state_load=0:", 15) && strstr(argv[i], ".1.snxstate");
+        for (i = 1; i < argc; i++) found |= !strncmp(argv[i], "--state-load=0:", 15) && strstr(argv[i], ".1.snxstate");
         assert(found);
         puts("ScarletNX - a save state");
         return 0;
     }
     if (argc > 2 && !strcmp(argv[1], "-r") && strstr(argv[2], "folder game")) { /* R on it: recompiled, not played */
         int i = 3, args = argc;
-        if (args > 2 && !strncmp(argv[args - 1], "--aot_threads_most=", 19)) args -= 2; /* the Gentle recompile's */
+        if (args > 2 && !strncmp(argv[args - 1], "--aot-threads-most=", 19)) args -= 2; /* the Gentle recompile's */
         assert(strstr(argv[0], "runtime") && snx_is_file(argv[2]));
         assert(i + 2 == args && !strcmp(argv[i], "--data") && argv[i + 1][0]);
         puts("Recompiling folder game (1 modules)\nBuilt folder game");
@@ -9636,7 +9636,7 @@ int main(int argc, char** argv) {
             app.recompile = false;
             argv_got = ran(&app, 0);
             assert(has_arg(argv_got, "-r", nro) && has_arg(argv_got, "--nce=0", NULL) &&
-                   has_arg(argv_got, "--slp_vectorizer=1", NULL) && !has_arg(argv_got, "--resolution=2", NULL));
+                   has_arg(argv_got, "--slp-vectorizer=1", NULL) && !has_arg(argv_got, "--resolution=2", NULL));
             free(argv_got);
         }
         driver_will(NULL, 0, NULL);
@@ -11767,7 +11767,7 @@ int main(int argc, char** argv) {
         }
         /* a game's save states (S on Games): a row each, the newest first, the focused one's picture beside the box;
            one this build can't load in the failure colour, Enter saying why; Del deletes one, asked first; Enter
-           plays the game's program with --state_load= of the state */
+           plays the game's program with --state-load= of the state */
         {
             char *own = snx_path_join(app.games_dir, "0100ABCD12350000"), *program, *states, *file[3], *kept, *name;
             static uint8_t thumb[320 * 180 * 4];
@@ -11894,7 +11894,7 @@ int main(int argc, char** argv) {
             launcher(&app, false);
             kept = (char*)snx_read_file(app.run_log, &size);
             {
-                char* option = snx_format("--state_load=0:%s", file[0]);
+                char* option = snx_format("--state-load=0:%s", file[0]);
                 assert(kept && option && strstr(kept, option));
                 free(option);
             }
@@ -15205,7 +15205,7 @@ int main(int argc, char** argv) {
                 char* kept = (char*)snx_read_file(app.settings_file, &size);
                 assert(kept && strstr(kept, "[User]\nuser_uid=0123456789abcdeffedcba9876543210\n"));
                 free(kept);
-                /* back to no pick, as the runs below were written for: theirs has no --user_uid */
+                /* back to no pick, as the runs below were written for: theirs has no --user-uid */
                 gui_settings_reset(&app.settings, setting_row(&app, "user_uid"));
                 gui_settings_sync(&app.settings);
                 assert(!gui_settings_save(&app.settings, app.settings_file));

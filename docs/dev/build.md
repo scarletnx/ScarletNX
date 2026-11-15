@@ -457,12 +457,12 @@ cmake --preset default -B build/headless-vk -DSNX_BUILD_GUI=OFF \
 # Set VK_DRIVER_FILES to your lavapipe manifest to force CPU rendering.
 ctest --test-dir build/headless-vk -R vulkan_headless --output-on-failure
 # the same with the validation layer
-(cd build/headless-vk && src/nx/snx-test-vulkan -H --vk_validation=1)
+(cd build/headless-vk && src/nx/snx-test-vulkan -H --vk-validation=1)
 ```
 
 The test uses synthetic pixels, not a game. It checks offscreen submissions, frame recycling, cropping,
 readback hashes and PPM contents without WSI. Validation requires the Khronos validation layer to be installed.
-It takes the runtime's settings as `--KEY=VALUE` (`--vk_memory=2`, `--memory_traps=2`) and stops on any
+It takes the runtime's settings as `--KEY=VALUE` (`--vk-memory=2`, `--memory-traps=2`) and stops on any
 other argument. `SNX_TEST_VULKAN` is off by default so ordinary unit tests do not require an ICD.
 
 A cross-built driver extracts too: hactool is part of it. The recompiler still requires LLVM development

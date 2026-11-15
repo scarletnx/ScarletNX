@@ -68,19 +68,19 @@ and plays its sound test.
 | sceGxm on Vulkan: guest memory imported with `VK_EXT_external_memory_host`, USSE programs translated to SPIR-V through `src/common/utilities/spirv_emit.c`, decoded by the decoder `tools/decodetree` makes from `usse.decode` | `src/vita/gpu/` (`render.c`, `usse.c`, `usse.decode`, `vk.c`, `present.c`) |
 | Movies: SceMp4 (MP4 demuxed from memory with libavformat, the file read through the game's callbacks), sceAvcdec (H.264 with libavcodec, the picture laid out in the guest's buffer on the GPU, `picture.comp`), sceAudiodec (AAC and ATRAC9) and SceCodecEngine's memory | `src/vita/hle/` (`mp4.c`, `videodec.c`, `audiodec.c`) |
 | Guest memory's writes: the pages the renderer copied to the GPU (textures, color surfaces, the framebuffer) write-protected, a fault marking a page written and letting the write through, so unchanged memory isn't copied again (`mprotect` or `VirtualProtect`, and the fault handler) | `src/vita/runtime/watch.c` |
-| Keyboard, mouse (touch), gamepads and scripted presses (`--script=ms:hex,...`, SceCtrl's button bits, each held for `--press_len=` ms) | `src/vita/platform/input.c` |
+| Keyboard, mouse (touch), gamepads and scripted presses (`--script=ms:hex,...`, SceCtrl's button bits, each held for `--press-len=` ms) | `src/vita/platform/input.c` |
 
 Esc twice within 3 seconds ends the game, a first press warning on the terminal.
 
 The driver's settings (`--key=value`) are the `g_vita_debug_ini` table of `src/nx/runtime/settings.txt`: `vita_hle_trace` prints each import call,
 `vita_jit_trace` each block compiled at run time, `vita_gxm_trace` each scene and draw (and why a draw was
-skipped). `--shot_every=N` (`vita_shot_every`, with `--shot=PATH`) saves a screenshot every N vblanks, as
-`PATH_0000.ppm` on. `--vulkan_video=1` (the Switch runtime's setting) stops the game when it makes an AVC decoder: decoding the Vita's movies with Vulkan Video is
+skipped). `--shot-every=N` (`vita_shot_every`, with `--shot=PATH`) saves a screenshot every N vblanks, as
+`PATH_0000.ppm` on. `--vulkan-video=1` (the Switch runtime's setting) stops the game when it makes an AVC decoder: decoding the Vita's movies with Vulkan Video is
 not implemented yet, and FFmpeg decodes them on the CPU.
 
 ## The shader corpus
 
-`--vita_shader_corpus=DIR` writes each program the game registers or draws with to `DIR` (`<hash>.gxp`: the program
+`--vita-shader-corpus=DIR` writes each program the game registers or draws with to `DIR` (`<hash>.gxp`: the program
 and the hints it was translated with). `build/snx-vita-usse DIR` translates them again as the runtime does and groups
 the reasons the others don't translate; `--survey` counts the instructions the translator lacks over every program,
 `--validate` runs `spirv-val` on each translation and `--out DIR` keeps them (two builds' outputs, diffed, show a
@@ -95,8 +95,8 @@ lacks make it compile the module again with them, so the next runs have them ahe
 ## Checking the CPU backend
 
 Configure with `-DSNX_VITA_LOCKSTEP=ON` (and `SNX_UNICORN_INCLUDE`, `SNX_UNICORN_LIBRARY` pointing at Unicorn 2) and
-run with `--vita_lockstep=N`: from the Nth import call on, every instruction group runs in Unicorn too, and the first
-difference in registers, flags or written memory stops the run with both states (`--vita_lockstep_steps=M` stops
+run with `--vita-lockstep=N`: from the Nth import call on, every instruction group runs in Unicorn too, and the first
+difference in registers, flags or written memory stops the run with both states (`--vita-lockstep-steps=M` stops
 comparing after M groups). This is how the Thumb backend's bugs this driver ran into were found.
 
 ## Limits

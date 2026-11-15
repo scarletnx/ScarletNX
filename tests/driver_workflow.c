@@ -26,6 +26,14 @@ static void check(int good, const char* expression, int line) {
     }
 }
 #define CHECK(value) check((value) != 0, #value, __LINE__)
+/* a setting given as flags, as the driver passes it on: its key with a - for each _ (ini_option), into out */
+static const char* passed_on(const char* flags, char* out, size_t size) {
+    char key[64];
+    const char* value = ini_arg(flags, key, sizeof key, NULL, 0);
+    if (!value) return flags;
+    ini_option(out, size, key, value);
+    return out;
+}
 static void set_env(const char* name, const char* value) {
 #ifdef _WIN32
     CHECK(!_putenv_s(name, value));
@@ -365,13 +373,13 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         memmove(argv + 2, argv + at, (size_t)(argc - at) * sizeof *argv);
         argc -= at - 2;
     }
-    /* a recompile's setting the dump was played with (SNX_WORKFLOW_FLAGS), its key's _ a - or not, passed on as it was
-       given; opt's --opt= is the common option, which reaches the recompile as -O (SNX_WORKFLOW_OPT) */
+    /* a recompile's setting the dump was played with (SNX_WORKFLOW_FLAGS), its key's _ a - or not, passed on with a
+       - for each _; opt's --opt= is the common option, which reaches the recompile as -O (SNX_WORKFLOW_OPT) */
     {
         const char* flags = getenv("SNX_WORKFLOW_FLAGS");
-        char key[64];
+        char key[64], option[256];
         if (flags && settings_arg(flags, key, sizeof key) && snx_recompile_setting(key) && strcmp(key, "opt")) {
-            CHECK(argc > 3 && !strcmp(argv[2], flags));
+            CHECK(argc > 3 && !strcmp(argv[2], passed_on(flags, option, sizeof option)));
             memmove(argv + 2, argv + 3, (size_t)(argc - 3) * sizeof *argv);
             --argc;
         }
@@ -849,13 +857,15 @@ int main(int argc, char** argv) {
             (!strcmp(fullscreen, "--fullscreen") || !strcmp(fullscreen, "--fullscreen=1") || !strcmp(fullscreen, "-f")))
             CHECK(argc == 2 && !strcmp(argv[1], "-f"));
         if (fullscreen && !strcmp(fullscreen, "--fullscreen=0")) CHECK(argc == 2 && !strcmp(argv[1], "--fullscreen=0"));
-        /* the game's own settings, any --key=value of its .ini, reach it as they were given; the recompile's common
-           options (SNX_WORKFLOW_OPT, SNX_WORKFLOW_PASSED) its recompile alone */
+        /* the game's own settings, any --key=value of its .ini, reach it with a - for each _ of the key; the recompile's
+           common options (SNX_WORKFLOW_OPT, SNX_WORKFLOW_PASSED) its recompile alone */
         int recompiles = (getenv("SNX_WORKFLOW_OPT") && *getenv("SNX_WORKFLOW_OPT")) ||
                          (getenv("SNX_WORKFLOW_PASSED") && *getenv("SNX_WORKFLOW_PASSED"));
         if (fullscreen && strchr(fullscreen, '=') && strncmp(fullscreen, "--fullscreen=", 13) &&
-            strncmp(fullscreen, "--backend=", 10) && !recompiles)
-            CHECK(argc == 2 && !strcmp(argv[1], fullscreen));
+            strncmp(fullscreen, "--backend=", 10) && !recompiles) {
+            char option[256];
+            CHECK(argc == 2 && !strcmp(argv[1], passed_on(fullscreen, option, sizeof option)));
+        }
         if (recompiles) CHECK(argc == 1);
         if (flag && *flag) CHECK(argc == 2 && !strcmp(argv[1], "-H"));
         if (getenv("SNX_WORKFLOW_ARGS") && *getenv("SNX_WORKFLOW_ARGS")) {
@@ -1095,18 +1105,20 @@ int main(int argc, char** argv) {
         run(exe, repo, dump, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_FLAGS", "--seconds=5");
         run(exe, repo, dump, log, 0, "G", NULL);
-        /* Debug's SLP vectorizer, which the recompile and the game both take: the game gets it as given, and a
-           recompile made for it takes it too */
+        /* Debug's SLP vectorizer, which the recompile and the game both take: by its key, the older spelling, said
+           once; the game gets it with a -, and a recompile made for it takes it too */
         set_env("SNX_WORKFLOW_FLAGS", "--slp_vectorizer=1");
-        run(exe, repo, dump, log, 0, "G", NULL);
+        run(exe, repo, dump, log, 0, "G",
+            "settings: --slp_vectorizer is the old spelling of --slp-vectorizer: it is read as that; write "
+            "--slp-vectorizer");
         {
             char* stamp = snx_path_join(repo, "recompiled/Test game/Test game.abi");
             CHECK(!snx_write_file(stamp, "broken", 6));
             run(exe, repo, dump, log, 0, "RG", NULL);
             free(stamp);
         }
-        /* and with a - for each _ of its key, as every setting is: the same setting, for the game and a recompile made
-           for it alike; a name with some _ left is no setting */
+        /* and with a - for each _ of its key, as the settings are given: the same setting, for the game and a
+           recompile made for it alike; a name with some _ left is no setting */
         set_env("SNX_WORKFLOW_FLAGS", "--slp-vectorizer=1");
         run(exe, repo, dump, log, 0, "G", NULL);
         {

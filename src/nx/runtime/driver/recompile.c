@@ -48,9 +48,10 @@ static void usage(void) {
          "  --keys FILE            prod.keys for a dump (default: the data folder, then ~/.switch)\n"
          "  --title-keys FILE      title.keys for a dump, found the same way (optional)\n"
          "  --program N            Only program N of a dump's application of several (default: every one)");
-    puts("  --KEY=VALUE            A recompile setting: opt, llvm_batch, aot_threads, unit_cache_gb,\n"
-         "                         llvm_pass_<pass>=0 (scarletnx --settings=recompile lists them). KEY with a - for\n"
-         "                         each _ is the same setting (--aot-threads=4 is aot_threads=4)");
+    puts("  --KEY=VALUE            A recompile setting, KEY its key with a - for each _: --opt, --llvm-batch,\n"
+         "                         --aot-threads, --unit-cache-gb, --llvm-pass-<pass>=0 (scarletnx\n"
+         "                         --settings=recompile lists the keys). The key as written, the older\n"
+         "                         spelling, is still read, and said once");
     puts("  --target auto|linux|win64  The host only: modules are built for the machine that builds them\n"
          "  --target ios           A pack of objects for the iOS app, which loads them into JIT memory (docs/hosts/apple.md)\n"
          "  --no-build             Stage data/INI only, generate no code\n"
@@ -81,7 +82,7 @@ static void old_branch_profile(void) {
                   old, g_settings.ir_branch_profile);
     else if (strlen(old) < sizeof g_settings.ir_branch_profile) {
         memcpy(g_settings.ir_branch_profile, old, strlen(old) + 1);
-        snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated: this recompile reads it as --ir_branch_profile=%s "
+        snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated: this recompile reads it as --ir-branch-profile=%s "
                   "(docs/user/deprecations.md)",
                   old, old);
     } else
@@ -1061,7 +1062,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         usage();
         return 2;
     }
-    /* the settings, whichever way they came: -O and --jobs, or --opt= and --aot_threads= as the launcher passes them */
+    /* the settings, whichever way they came: -O and --jobs, or --opt= and --aot-threads= as the launcher passes them */
     if (strlen(g_settings.optimization_level) != 1 || !strchr("0123sz", g_settings.optimization_level[0]))
         return snx_error("opt = %s: not 0, 1, 2, 3, s or z", g_settings.optimization_level);
     if (strcmp(g_settings.llvm_batch, "full") && strcmp(g_settings.llvm_batch, "ipo"))

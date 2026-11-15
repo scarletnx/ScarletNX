@@ -23,8 +23,9 @@
 #                         llvm_<option> (the ID in snake_case: key KEY where that reads wrong, FastISel's
 #                         llvm_fast_i_sel), LLVM's own value (SETTINGS_UNSET) until it is set
 #     key KEY             its key in the .ini (<N> in a repeat, <ID> in an each), letters, digits and _. A command line
-#                         gives it as --KEY=value, and as KEY with a - for each _ (--aot-threads=4 is aot_threads=4),
-#                         names settingsgen lists for the drivers (settings_arg). An LLVM setting's is LLVM's ID's
+#                         gives it with a - for each _ (aot_threads: --aot-threads=4), the names settingsgen lists for
+#                         the drivers (settings_arg); --KEY=value, the older spelling, is still read and said once a
+#                         run. An LLVM setting's is LLVM's ID's
 #     int LO HI           an int, clamped to LO..HI (C expressions)
 #     float LO HI         a float, clamped
 #     text SIZE           text, up to SIZE - 1 bytes
@@ -1904,7 +1905,7 @@ setting Vita press length
     key vita_press_len
     int 0 INT_MAX
     default 300
-    help How long each press of the Vita game's script is held, in ms (--press_len= too)
+    help How long each press of the Vita game's script is held, in ms (--press-len= too)
 setting Vita screenshot interval
     key vita_shot_every
     int 0 INT_MAX

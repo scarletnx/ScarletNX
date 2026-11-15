@@ -1361,7 +1361,7 @@ static int am_kb_wait(OverlayKeyboard* k, char* out, size_t size) {
     return r;
 }
 
-/* the software keyboard as a whole applet: swkbd_text's answer (--swkbd_text=, for scripted runs), else the box's
+/* the software keyboard as a whole applet: swkbd_text's answer (--swkbd-text=, for scripted runs), else the box's
    (am_kb_unasked's without a window). KeyboardConfig (SwkbdConfigCommon, the second storage, as Eden's
    applet_software_keyboard_types.h lays it out) gives the texts, the kind, the length limits, whether the answer is
    UTF-8, and where the initial text is in the work buffer (the third). An Ounce game's SDK sends KbdConfigForGen2
