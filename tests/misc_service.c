@@ -696,6 +696,100 @@ static void test_npad_condition(SvcObj* h) {
     set_joy_hold_type(h, 0x55, hold);
     CHECK(npad_condition(HO_HidNpadCondition_hold_type) == (u32)hold);
 }
+/* a real Joy-Con 2's mouse sensors (g_host.hid.pad_mouse, which joycon2_mouse fills): each hand's motion to the Jcms of
+   its Npad and hand (index type + 2 * Npad, the right hand odd), the host's mouse still to the right hand's, and Npad
+   No1's right hand to the Nmouse pointer too. The memories are put at guest addresses here, as Initialize* would */
+static const u8* lifo_latest(u64 lifo, u32 state_size) {
+    u64 tail = snx_ld_le64(g_mem + lifo + HO_HidCommonLifoHeader_tail);
+    return g_mem + lifo + 0x20 + tail * (8 + state_size) + 8;
+}
+static void test_joycon2_mouse(void) {
+    HidMouse* m = &g_hle.hid.mouse;
+    g_hle.hid.pad_extra[0] = (PadState){0};
+    g_hle.hid.pad_extra[0].connected = 1;
+    g_hle.hid.pad_extra[0].kind = SNX_PAD_JOY_DUAL; /* a left and right Joy-Con 2 together, player 2 */
+    m->jcms = 0x3a0000;
+    m->nmouse = 0x3b0000;
+    m->jcms_on = 1u << 1 | 1u << 2 | 1u << 3; /* No1's right, No2's left and right */
+    m->width = m->height = 1000;
+    m->x = m->y = 500;
+    m->dx = 3.0f;
+    g_host.hid.pad_mouse[1][0][0] = 5.5f; /* player 2's left hand */
+    g_host.hid.pad_mouse[1][0][1] = -6.0f;
+    g_host.hid.pad_mouse[1][1][0] = 7.0f; /* and its right */
+    g_host.hid.pad_mouse[1][1][1] = 8.0f;
+    g_host.hid.pad_mouse[0][1][0] = 20.0f; /* player 1's right sensor (a Pro Controller has none: as if) */
+    g_host.hid.pad_mouse[0][1][1] = 30.0f;
+    hid_update();
+    const u8* no1_right = lifo_latest(m->jcms + 1 * JCMS_ENTRY, 0x20);
+    const u8* no2_left = lifo_latest(m->jcms + 2 * JCMS_ENTRY, 0x20);
+    const u8* no2_right = lifo_latest(m->jcms + 3 * JCMS_ENTRY, 0x20);
+    CHECK((i32)snx_ld_le32(no1_right + 0x10) == 23 && (i32)snx_ld_le32(no1_right + 0x14) == 30);
+    CHECK((i32)snx_ld_le32(no2_left + 0x10) == 5 && (i32)snx_ld_le32(no2_left + 0x14) == -6);
+    CHECK((i32)snx_ld_le32(no2_right + 0x10) == 7 + 3 && (i32)snx_ld_le32(no2_right + 0x14) == 8); /* the host's too */
+    CHECK(snx_ld_le32(no2_right + 0x18) == MOUSE_CONNECTED);
+    /* the pointer: the host's 3 and No1's right hand's 20, 30 */
+    const u8* merged = lifo_latest(m->nmouse + NMOUSE_LIFO, 0x70);
+    CHECK(snx_ld_le32(merged + 0x10) == 523 && snx_ld_le32(merged + 0x14) == 530);
+    CHECK((i32)snx_ld_le32(merged + 0x18) == 23 && (i32)snx_ld_le32(merged + 0x1c) == 30);
+    /* taken: the whole counts, the half count kept for the next update */
+    CHECK(g_host.hid.pad_mouse[1][0][0] == 0.5f && g_host.hid.pad_mouse[1][1][1] == 0.0f);
+    hid_update();
+    CHECK((i32)snx_ld_le32(lifo_latest(m->jcms + 2 * JCMS_ENTRY, 0x20) + 0x10) == 0);
+    g_host.hid.pad_mouse[1][0][0] = 0.0f;
+    /* the pair is real Joy-Con 2s, the left hand on a surface and the right one lifted: the left keeps its flags and
+       its motion, the right has no motion and neither flag (bit 0 is the game's "this Joy-Con is a mouse") */
+    g_host.hid.pad_mouse_real[1] = 3;
+    g_host.hid.pad_mouse_surface[1] = 1;
+    g_host.hid.pad_mouse[1][0][0] = 4.0f;
+    g_host.hid.pad_mouse[1][1][0] = 9.0f;
+    hid_update();
+    no2_left = lifo_latest(m->jcms + 2 * JCMS_ENTRY, 0x20);
+    no2_right = lifo_latest(m->jcms + 3 * JCMS_ENTRY, 0x20);
+    CHECK(snx_ld_le32(no2_left + 0x18) == MOUSE_CONNECTED && (i32)snx_ld_le32(no2_left + 0x10) == 4);
+    CHECK(snx_ld_le32(no2_right + 0x18) == 0 && (i32)snx_ld_le32(no2_right + 0x10) == 0);
+    CHECK(g_host.hid.pad_mouse[1][1][0] == 0.0f); /* what it moved in the air is dropped, not kept for later */
+    /* put down: both flags and its motion again */
+    g_host.hid.pad_mouse_surface[1] = 3;
+    g_host.hid.pad_mouse[1][1][0] = 9.0f;
+    hid_update();
+    no2_right = lifo_latest(m->jcms + 3 * JCMS_ENTRY, 0x20);
+    CHECK(snx_ld_le32(no2_right + 0x18) == MOUSE_CONNECTED && (i32)snx_ld_le32(no2_right + 0x10) == 9);
+    g_host.hid.pad_mouse_real[1] = g_host.hid.pad_mouse_surface[1] = 0;
+    *m = (HidMouse){0};
+    g_hle.hid.pad_extra[0] = (PadState){0};
+    hid_update();
+}
+/* as an Ounce game takes a mouse: only the Joy-Con 2 styles, a real pair on No1 with both Jcms started. Lifted,
+   both hands' flags are 0 (the game ORs the two hands' bit 0, so one hand left at 3 would keep it in its mouse mode);
+   one hand put down sets only its own. R stays in No1's JoyDual LIFO, where the game reads its clicks */
+static void test_joycon2_mouse_no1(SvcObj* h) {
+    HidMouse* m = &g_hle.hid.mouse;
+    m->jcms = 0x3a0000;
+    m->jcms_on = 1u << 0 | 1u << 1; /* No1's left and right */
+    g_hle.hid.pad1.kind = SNX_PAD_JOY_DUAL;
+    g_hle.hid.pad1.buttons = 1ull << 7; /* R */
+    g_host.hid.pad_mouse_real[0] = 3;
+    g_host.hid.pad_mouse_surface[0] = 0;
+    set_styles(h, STYLE_JOY_DUAL2 | STYLE_JOY_LEFT2);
+    CHECK(hid_mouse_mode());
+    hid_update();
+    CHECK(no1_style() == STYLE_JOY_DUAL2);
+    CHECK(npad_latest_buttons(0, HO_HidNpadInternalState_joy_dual_lifo) & 1ull << 7);
+    CHECK(snx_ld_le32(lifo_latest(m->jcms + 0 * JCMS_ENTRY, 0x20) + 0x18) == 0);
+    CHECK(snx_ld_le32(lifo_latest(m->jcms + 1 * JCMS_ENTRY, 0x20) + 0x18) == 0);
+    g_host.hid.pad_mouse_surface[0] = 2; /* the right hand put down */
+    hid_update();
+    CHECK(snx_ld_le32(lifo_latest(m->jcms + 0 * JCMS_ENTRY, 0x20) + 0x18) == 0);
+    CHECK(snx_ld_le32(lifo_latest(m->jcms + 1 * JCMS_ENTRY, 0x20) + 0x18) == MOUSE_CONNECTED);
+    g_host.hid.pad_mouse_real[0] = g_host.hid.pad_mouse_surface[0] = 0;
+    *m = (HidMouse){0};
+    g_hle.hid.pad1.kind = SNX_PAD_FULL_KEY;
+    g_hle.hid.pad1.buttons = 0;
+    set_styles(h, 0x7F);
+    hid_update();
+}
+
 static void test_hid(void) {
     svc_hid_init();
     SvcObj* h = new_hid();
@@ -741,6 +835,8 @@ static void test_hid(void) {
     g_hle.hid.pad1.kind = SNX_PAD_FULL_KEY;
     g_hle.hid.pad1.buttons = 0;
     set_styles(h, 0x7F);
+    test_joycon2_mouse();
+    test_joycon2_mouse_no1(h);
     test_vibration(h);
     test_npad_players(h);
     /* the input ticks the profiler counts are the host's (g_host.hid): a state load, which puts a saved g_hle in
