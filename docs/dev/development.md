@@ -418,7 +418,8 @@ again with the layout in the key.
 ## Driver bans
 
 `src/common/gpu/vk/extension_bans.txt` is the table of drivers known to break a Vulkan extension or feature: a line per
-ban, with the extension or feature, `off` or `warn`, the driver (its `VkDriverId` by name), the versions in that
+ban, with the extension or feature, `off` or `warn`, the driver (its `VkDriverId` by name, or `*` for each driver,
+whose versions are then `*`), the versions in that
 driver's own numbering, the system, the GPUs, what breaks, where that is known from, the case that tests it again, the
 date it was last tested and the setting that turns it on anyway. Its head explains each field. It is compiled in, and
 the device reads it before it turns anything on (`src/common/gpu/vk/extension_bans.c`): an `off` line takes the extension
