@@ -91,6 +91,10 @@ void ini_unpick(const char* k) {
     ++picks.changes;
 }
 const int* ini_picks_changes(void) { return &picks.changes; }
+/* and its Clean Old Settings: the old keys it counts, and the cleans asked */
+static int old_keys, cleans;
+int ini_old_settings(void) { return old_keys; }
+void ini_clean_old(void) { ++cleans; }
 /* the platform's lock and the backend's touch screen, without either */
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
@@ -1137,6 +1141,28 @@ int main(void) {
         assert(overlay_delete() == OVERLAY_NONE && !strcmp(picks.unpicked, "docked") && !ini_picked("docked"));
         picks.unpicked[0] = 0;
         overlay_move(2);
+    }
+    /* Clean Old Settings shows while the game's files keep old keys (options.h's ini_old_settings), before Exit, its
+       eraser beside it: asked first, with how many, Cancel in focus and Back to its row; taken, the clean asked of
+       the runtime's settings, the count said over the game, and the row gone with the keys */
+    {
+        old_keys = 2;
+        ++picks.changes;
+        draw();
+        assert(text_at(6, 10, "Clean Old Settings") && text_at(6, 11, "Exit") && icon_drawn(GUI_ICON_ERASER));
+        overlay_move(1); /* from Volume */
+        assert(overlay_select() == OVERLAY_NONE);
+        draw();
+        assert(shows("CLEAN OLD SETTINGS?") && shows("2 keys this version does not use"));
+        assert(overlay_select() == OVERLAY_NONE && !cleans); /* Cancel, in focus: its row again */
+        assert(overlay_select() == OVERLAY_NONE);
+        overlay_move(-1); /* Clean */
+        assert(overlay_select() == OVERLAY_NONE && cleans == 1);
+        old_keys = 0;
+        ++picks.changes;
+        draw();
+        assert(text_at(6, 10, "Exit") && shows("Clean Old Settings: 2 taken out")); /* its row gone, the toast */
+        overlay_move(6); /* Volume, as the first page was */
     }
     /* the page kept from frame to frame, laid out again for what changes elsewhere with no call of the menu's between:
        a setting a row shows (F12's Stats), the TV mode (its key), RenderDoc's capture */

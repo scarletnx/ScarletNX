@@ -719,13 +719,45 @@ static int picks_reload(void) {
     free(dir);
     return 0;
 }
+/* the game's menu's Clean Old Settings: the .ini's deprecated keys and the picks' keys no pick takes counted, then
+   at the next tick taken out of both files, said in the log with their values, and none counted after */
+static int picks_clean(void) {
+    char *ini, *picks, *dir = picks_game("[Display]\nstats=0\n[Performance]\nmemory_fit=1\n",
+                                         "[Audio]\nvolume=40\n[Other]\nnewer_key=5\n", &ini, &picks),
+                      *text;
+    g_test.write = 1;
+    ini_open(ini);
+    CHECK(ini_old_settings() == 2);
+    CHECK((text = file_text(ini)) && strstr(text, "\n[Deprecated]\n") && strstr(text, "\nmemory_fit=1\n"));
+    free(text);
+    g_test.said[0] = 0;
+    ini_clean_old();
+    CHECK(ini_poll_due() && !ini_poll_due());
+    ini_poll(0);
+    CHECK(ini_old_settings() == 0);
+    CHECK(strstr(g_test.said, "settings: Clean Old Settings took out memory_fit=1, newer_key=5 (") &&
+          strstr(g_test.said, "game.picks)\n"));
+    CHECK((text = file_text(ini)) && !strstr(text, "[Deprecated]") && !strstr(text, "memory_fit=") &&
+          strstr(text, "\nstats=0\n"));
+    free(text);
+    CHECK((text = file_text(picks)) && strstr(text, "\n[Audio]\nvolume=40\n") && !strstr(text, "newer_key"));
+    free(text);
+    CHECK(g_settings.volume == 40);
+    CHECK(!snx_remove_tree(dir));
+    free(ini);
+    free(picks);
+    free(dir);
+    return 0;
+}
 static int options_picks(const char* which) {
-    int failed = !strcmp(which, "--picks-order")    ? picks_order()
+    int failed = !strcmp(which, "--picks-clean")    ? picks_clean()
+                 : !strcmp(which, "--picks-order")  ? picks_order()
                  : !strcmp(which, "--picks-menu")   ? picks_menu()
                  : !strcmp(which, "--picks-hand")   ? picks_hand()
                  : !strcmp(which, "--picks-reload") ? picks_reload()
                                                     : 2;
-    if (failed == 2) fprintf(stderr, "options_tv_mode: %s is none of --picks-order, -menu, -hand, -reload\n", which);
+    if (failed == 2)
+        fprintf(stderr, "options_tv_mode: %s is none of --picks-order, -menu, -hand, -reload, -clean\n", which);
     if (!failed) printf("options_tv_mode %s: ok\n", which);
     return failed;
 }
