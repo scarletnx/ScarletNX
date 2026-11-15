@@ -1338,7 +1338,7 @@ static int tex_move(VkCommandBuffer cb, Surf* t, u64* bytes) {
     return 1;
 }
 void vk_tex_defrag_frame(void) {
-    if (!g_settings.vulkan_memory_defrag || !vk_cmd_ready()) return;
+    if (!vk_cmd_ready()) return;
     DevMem mems[DEFRAG_MAX];
     void* owners[DEFRAG_MAX];
     u64 usage, budget;
