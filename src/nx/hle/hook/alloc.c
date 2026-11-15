@@ -337,6 +337,21 @@ u64 alloc_std_size(CPU* c, u64 self, u64 p) {
     hook_run_original(c, c->pc);
     return c->x[0];
 }
+/* nn::nlibsdk::heap::CentralHeap, under StandardAllocator: a game's own code frees, sizes or resizes on it a block
+   malloc gave from the arena (one game's free asks GetSizeOf, then calls CentralHeap::Free itself). The arena's blocks
+   are the arena's; any other pointer, the heap's own code */
+void alloc_heap_free(CPU* c, u64 self, u64 p) {
+    (void)self;
+    give(c, p);
+}
+u64 alloc_heap_realloc(CPU* c, u64 self, u64 p, u64 size) {
+    (void)self;
+    if (!p || p < g_alloc.lo || p >= g_alloc.hi || !live_has(p)) {
+        hook_run_original(c, c->pc);
+        return c->x[0];
+    }
+    return alloc_realloc(c, p, size);
+}
 u64 alloc_aligned(CPU* c, u64 align, u64 size) {
     (void)c;
     if (!align || (align & (align - 1))) return 0;
