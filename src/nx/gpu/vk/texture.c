@@ -1441,10 +1441,11 @@ void vk_tex_later_frame(void) {
    image is being made waits for it. When an image finds no run, the block is left as it is (vk_devmem_moving_stop) */
 #define DEFRAG_BYTES (32ull << 20) /* the most a present copies */
 #define DEFRAG_MAX   32u           /* textures asked for a present */
-/* t's image into a new one of the same shape whose memory `want` places, copied on cb, under owner in the ledger: the
-   new image takes the old one's place (tex_image_swap) and the layout t had. bytes: the new one's. 1 when moved, 0 when
-   no memory held it. The defrag's moves and the second tier's (vk_tex_demote, vk_tex_promote) */
-static int tex_move(VkCommandBuffer cb, Surf* t, const DevMemWant* want, u32 owner, u64* bytes) {
+/* t's image into a new one of the same shape whose memory `want` places, copied on cb, under the old allocation's
+   owner in the ledger (none when it had none): the new image takes the old one's place (tex_image_swap) and the layout
+   t had. bytes: the new one's. 1 when moved, 0 when no memory held it. The defrag's moves and the second tier's
+   (vk_tex_demote, vk_tex_promote) */
+static int tex_move(VkCommandBuffer cb, Surf* t, const DevMemWant* want, u64* bytes) {
     VkImageCreateInfo ii;
     VkViewFormats vf;
     int storage;
@@ -1452,8 +1453,9 @@ static int tex_move(VkCommandBuffer cb, Surf* t, const DevMemWant* want, u32 own
     VkImage img;
     DevMem mem;
     if (vk_devmem_image(&ii, want, &img, &mem) != VK_SUCCESS) return 0;
-    vk_mem_track(mem, owner);
-    DevMemInfo info;
+    DevMemInfo was_info, info;
+    vk_devmem_info(t->mem, &was_info);
+    if (was_info.tag) vk_mem_track(mem, was_info.tag - 1);
     vk_devmem_info(mem, &info);
     *bytes = info.size;
     const VkImageLayout was = t->layout;
@@ -1498,7 +1500,7 @@ static int tex_defrag_move(VkCommandBuffer cb, Surf* t, u64* bytes) {
                              .existing = 1,
                              .low = vk_mem_owner_prio(owner) == DM_PRIO_LOW && !t->took_drawn};
     const u64 was_bytes = t->bytes;
-    if (!tex_move(cb, t, &want, owner, bytes)) return 0;
+    if (!tex_move(cb, t, &want, bytes)) return 0;
     if (vk_devmem_emptying()) vk_defer_moved(was_bytes); /* released into a block closed to requests */
     return 1;
 }
@@ -1567,7 +1569,7 @@ static int tex_moves(const Surf* t) {
 /* t's image moved by `want` on the frame's command buffer (a rendering pass open ends): tex_move */
 static int tex_move_now(Surf* t, const DevMemWant* want, u64* bytes) {
     vk_render_end();
-    return tex_move(vk_cmd(), t, want, VK_OWN_TEXTURE, bytes);
+    return tex_move(vk_cmd(), t, want, bytes);
 }
 u64 vk_tex_demote(Surf* t) {
     if (!g_settings.texture_system_memory || t->demoted || !tex_moves(t)) return 0;
