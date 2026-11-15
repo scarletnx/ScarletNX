@@ -60,7 +60,7 @@ static void upright(i32* x, i32* y, int left) {
     *x = left ? oy : -oy;
     *y = left ? -ox : ox;
 }
-static int near(float a, float b) { return fabsf(a - b) < 0.001f; }
+static int close_to(float a, float b) { return fabsf(a - b) < 0.001f; }
 
 /* a single Joy-Con 2 of each side: its type, and what gamepad.c reads of it is what it pressed */
 static void single(int kind) {
@@ -97,9 +97,10 @@ static void single(int kind) {
         PadMotion m[2];
         gamepad_motion(slot, m);
         CHECK(m[0].valid && !m[1].valid);
-        CHECK(near(m[0].acceleration[0], 0) && near(m[0].acceleration[1], 0) && near(m[0].acceleration[2], 1.0f));
-        CHECK(near(m[0].angular_velocity[0], 2.0f) && near(m[0].angular_velocity[1], -0.5f) &&
-              near(m[0].angular_velocity[2], 0));
+        CHECK(close_to(m[0].acceleration[0], 0) && close_to(m[0].acceleration[1], 0) &&
+              close_to(m[0].acceleration[2], 1.0f));
+        CHECK(close_to(m[0].angular_velocity[0], 2.0f) && close_to(m[0].angular_velocity[1], -0.5f) &&
+              close_to(m[0].angular_velocity[2], 0));
     }
     /* the mouse: a single's one sensor is the first */
     {
@@ -119,8 +120,8 @@ static void single(int kind) {
         CHECK(joycon2_rumble(jc2_pad_id(pad), 0x8000u | 0x1000u << 16, 0x4000u | 0x2000u << 16, hz));
         jc2_pad_rumble(pad, v);
         const Jc2Vibration* own = &v[!left];
-        CHECK(near(own->amp_low, 0x8000 / 65535.0f) && own->freq_low == 100.0f);
-        CHECK(near(own->amp_high, 0x2000 / 65535.0f) && own->freq_high == 300.0f);
+        CHECK(close_to(own->amp_low, 0x8000 / 65535.0f) && own->freq_low == 100.0f);
+        CHECK(close_to(own->amp_high, 0x2000 / 65535.0f) && own->freq_high == 300.0f);
         CHECK(v[left].amp_low == 0.0f && v[left].amp_high == 0.0f);
         CHECK(!joycon2_rumble(12345, 1, 1, hz));
     }
@@ -165,7 +166,8 @@ static void pair(void) {
     {
         PadMotion m[2];
         gamepad_motion(slot, m);
-        CHECK(m[0].valid && m[1].valid && near(m[0].acceleration[1], 1.0f) && near(m[1].angular_velocity[2], 3.0f));
+        CHECK(m[0].valid && m[1].valid && close_to(m[0].acceleration[1], 1.0f) &&
+              close_to(m[1].angular_velocity[2], 3.0f));
     }
     {
         const i32 dl[2] = {1, 2}, dr[2] = {30, 40};
@@ -183,8 +185,8 @@ static void pair(void) {
         Jc2Vibration v[2];
         CHECK(joycon2_rumble(jc2_pad_id(pad), 0xffffu, 0xffffu << 16, hz));
         jc2_pad_rumble(pad, v);
-        CHECK(near(v[0].amp_low, 1.0f) && v[0].amp_high == 0.0f && v[0].freq_low == 100.0f);
-        CHECK(v[1].amp_low == 0.0f && near(v[1].amp_high, 1.0f) && v[1].freq_high == 300.0f);
+        CHECK(close_to(v[0].amp_low, 1.0f) && v[0].amp_high == 0.0f && v[0].freq_low == 100.0f);
+        CHECK(v[1].amp_low == 0.0f && close_to(v[1].amp_high, 1.0f) && v[1].freq_high == 300.0f);
     }
     /* Home and Capture as SDL's guide and misc buttons; C, GL and GR go nowhere */
     {
@@ -236,7 +238,7 @@ static void pro(void) {
     {
         PadMotion m[2];
         gamepad_motion(slot, m);
-        CHECK(m[0].valid && near(m[0].acceleration[2], 1.0f));
+        CHECK(m[0].valid && close_to(m[0].acceleration[2], 1.0f));
     }
     CHECK(joycon2_surface(jc2_pad_id(pad)) == 0); /* no mouse sensor */
     jc2_pad_detach(pad);
