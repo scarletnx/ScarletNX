@@ -994,6 +994,29 @@ the blocks are staged to their copy into the image done), from timestamps (`vk_a
 then each image is held to its decoder's texels and the bytes Granite moves from `astc.comp`'s are counted. In a game,
 `vk_gpu_profile=1` names its dispatches "Granite's ASTC decode".
 
+On an RX 6700 XT (RADV), the median of 7 interleaved runs, each a burst of uploads of 64 megatexels or more (one upload
+of a small level left the GPU at its lowest clock, 3.7 times slower), the decode dispatches alone, in milliseconds, on
+levels a racing game's title loads (`astc_dump`; 8x8 is 96.5% of its texels), every image its decoder's texels:
+
+| Level | `astc.comp` | Granite's |
+| --- | --- | --- |
+| 8x8, 5325x2662 | 0.80 | 2.31 |
+| 8x8, 3994x2662 | 0.61 | 1.74 |
+| 8x8, 1024x1024 | 0.089 | 0.153 |
+| 8x8, 614x614 | 0.043 | 0.043 |
+| 5x5, 2273x1425 | 0.227 | 0.664 |
+| 4x4, 1874x1646 | 0.272 | 0.658 |
+| 6x6, 1250x1250 | 0.114 | 0.322 |
+| 6x6, 458x458 | 0.029 | 0.012 |
+| 6x6, 192x192 | 0.028 | 0.010 |
+
+Over 23 such levels the median is 1.77 times `astc.comp`'s time at 8x8, 2.93 at 5x5 and 1.74 at 4x4, and on large
+levels `astc.comp` decodes 0.056 ns a texel where Granite's takes 0.163. Below about 600x600 Granite's is the faster,
+down to 0.36 times: `astc.comp` takes at least 0.026 ms a level and Granite's 0.010. The shapes suggest why, not
+profiled: a small level is few of `astc.comp`'s workgroups of 64 blocks, each invocation decoding all of its block's
+weights and endpoints in a row, where Granite's invocations, a texel each, decode only what their texel needs. On random blocks, most of them
+illegal, Granite's is level or faster (0.75 to 1.9 times): random blocks are no measure of either.
+
 ## Findings and what is left
 
 Both transcoders are meant: ASTC made BC7 (this page) and BCn made ASTC ([BCn without BCn](bcn.md#as-astc)), which
