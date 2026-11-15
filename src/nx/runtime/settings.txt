@@ -142,7 +142,7 @@ setting Save layout
 setting Microphone
     key microphone
     text 256
-    default ""
+    default off
     help The microphone a game hears as the console's own: empty = the system's default recording device; off = none,
     help and the game hears silence; else the first recording device whose name holds this text (any case). It is
     help recording only while the game records, and a change takes effect at the game's next recording
