@@ -59,9 +59,11 @@ int main(void) {
     /* A delayed frame integrates only 100 ms, preventing a one-second jump. */
     assert(u64_at(out, 0) == 100000000ull && u64_at(out, 8) == 2);
     assert(float_close(f32_at(out, HO_HidSixAxisSensorState_acceleration + 8), -1.0f));
-    assert(float_close(f32_at(out, HO_HidSixAxisSensorState_acceleration + 20), 1.57079632679f));
-    assert(float_close(f32_at(out, HO_HidSixAxisSensorState_acceleration + 32), 0.15707963f));
-    assert(f32_at(out, HO_HidSixAxisSensorState_direction + 4) < -0.15f);
+    /* the state's angular velocity and angle are in turns: 90 degrees/s is 0.25 */
+    assert(float_close(f32_at(out, HO_HidSixAxisSensorState_acceleration + 20), 0.25f));
+    assert(float_close(f32_at(out, HO_HidSixAxisSensorState_acceleration + 32), 0.025f));
+    /* the rows are the pad's axes in world coordinates: a turn to the left moves the X row toward +Y */
+    assert(f32_at(out, HO_HidSixAxisSensorState_direction + 4) > 0.15f);
     assert(!hid_motion_at_rest(&motion));
 
     motion.angular_velocity[2] = 0.0f;
@@ -78,7 +80,7 @@ int main(void) {
     motion.valid = 1;
     motion.acceleration[1] = 1.0f;
     hid_motion_sample(&state, &motion, 0, 4, out);
-    const float tilted[9] = {1, 0, 0, 0, 0, 1, 0, -1, 0};
+    const float tilted[9] = {1, 0, 0, 0, 0, -1, 0, 1, 0};
     check_direction(out, tilted);
     /* A short gyro impulse disturbs that tilt. Gravity brings it back when the pad rests. */
     motion.angular_velocity[0] = 1.0f;
@@ -89,17 +91,17 @@ int main(void) {
         for (i = 0; i < 20; i++) {
             hid_motion_sample(&state, &motion, 100000000, (u64)(6 + i), out);
             assert(float_close(f32_at(out, HO_HidSixAxisSensorState_acceleration + 12), 0.0f));
-            assert(float_close(f32_at(out, HO_HidSixAxisSensorState_acceleration + 24), 0.1f));
+            assert(float_close(f32_at(out, HO_HidSixAxisSensorState_acceleration + 24), 0.1f / 6.28318531f));
         }
     }
-    assert(f32_at(out, HO_HidSixAxisSensorState_direction + 28) < -0.999f);
+    assert(f32_at(out, HO_HidSixAxisSensorState_direction + 28) > 0.999f);
     memset(&state, 0, sizeof state);
     memset(&motion, 0, sizeof motion);
     motion.valid = 1;
     motion.acceleration[2] = -1.0f;
     motion.angular_velocity[2] = 15.7079632679f;
     hid_motion_sample(&state, &motion, 100000000, 26, out);
-    const float yaw[9] = {0, -1, 0, 1, 0, 0, 0, 0, 1};
+    const float yaw[9] = {0, 1, 0, -1, 0, 0, 0, 0, 1};
     check_direction(out, yaw);
     /* Rotations around two axes distinguish q * delta from delta * q. */
     memset(&state, 0, sizeof state);
@@ -110,7 +112,7 @@ int main(void) {
     motion.angular_velocity[0] = 0.0f;
     motion.angular_velocity[1] = 15.7079632679f;
     hid_motion_sample(&state, &motion, 100000000, 28, out);
-    const float compound[9] = {0, 0, 1, 1, 0, 0, 0, 1, 0};
+    const float compound[9] = {0, 1, 0, 0, 0, 1, 1, 0, 0};
     check_direction(out, compound);
     /* The inverted gravity pose keeps the existing deterministic X-axis choice. */
     memset(&state, 0, sizeof state);

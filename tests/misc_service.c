@@ -547,12 +547,13 @@ static void test_npad_players(SvcObj* h) {
     CHECK(sticks[0] == 0 && sticks[1] == -1000);
     npad_latest_sticks(2, HO_HidNpadInternalState_joy_right_lifo, sticks);
     CHECK(sticks[2] == 0 && sticks[3] == 2000);
-    /* Replacing a physical controller in No2 resets its sensor orientation before reading the new sample. */
+    /* Replacing a physical controller in No2 resets its sensor orientation before reading the new sample: gravity
+       along the pad's +Y puts its Z axis (the direction's last row) on the world's +Y */
     g_hle.hid.pad_extra[0].source_id = 111;
     g_hle.hid.pad_extra[0].motion[0].valid = 1;
     g_hle.hid.pad_extra[0].motion[0].acceleration[1] = 1.0f;
     hid_update();
-    CHECK(fabsf(npad_latest_direction(1, HO_HidNpadInternalState_joy_left_six_axis_sensor_lifo, 28) + 1.0f) < 0.0005f);
+    CHECK(fabsf(npad_latest_direction(1, HO_HidNpadInternalState_joy_left_six_axis_sensor_lifo, 28) - 1.0f) < 0.0005f);
     g_hle.hid.pad_extra[0].source_id = 222;
     g_hle.hid.pad_extra[0].motion[0].acceleration[1] = 0.0f;
     g_hle.hid.pad_extra[0].motion[0].acceleration[2] = -1.0f;

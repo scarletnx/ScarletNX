@@ -20,17 +20,19 @@ static void quat_multiply_normalized(float q[4], const float delta[4]) {
     }
 }
 
-/* HID stores a row-major 3x3 direction matrix. Translation is not part of a sensor pose. */
+/* The state's direction: row i is the pad's own axis i in world coordinates (q turns the pad's frame into the world's,
+   so these are the columns of q's matrix). The console keeps it so: it turns the rows as the pad's axes by the
+   gyroscope and pulls ax * row0 + ay * row1 + az * row2 toward (0, 0, -1) */
 static void quat_direction(const float q[4], float dir[9]) {
     float w = q[0], x = q[1], y = q[2], z = q[3];
     dir[0] = 1.0f - 2.0f * (y * y + z * z);
-    dir[1] = 2.0f * (x * y - z * w);
-    dir[2] = 2.0f * (x * z + y * w);
-    dir[3] = 2.0f * (x * y + z * w);
+    dir[1] = 2.0f * (x * y + z * w);
+    dir[2] = 2.0f * (x * z - y * w);
+    dir[3] = 2.0f * (x * y - z * w);
     dir[4] = 1.0f - 2.0f * (x * x + z * z);
-    dir[5] = 2.0f * (y * z - x * w);
-    dir[6] = 2.0f * (x * z - y * w);
-    dir[7] = 2.0f * (y * z + x * w);
+    dir[5] = 2.0f * (y * z + x * w);
+    dir[6] = 2.0f * (x * z + y * w);
+    dir[7] = 2.0f * (y * z - x * w);
     dir[8] = 1.0f - 2.0f * (x * x + y * y);
 }
 
@@ -113,7 +115,12 @@ void hid_motion_sample(HidMotionState* state, const PadMotion* motion, u64 dt_ns
         dq[3] = corrected[2] * s;
         quat_multiply_normalized(q, dq);
     }
-    for (i = 0; i < 3; i++) state->angle[i] += gyro[i] * ((float)dt_ns * 0.000000001f);
+    /* The state's angular velocity and angle are in turns (1 = 360 degrees), the fusion's in radians: the console
+       scales the gyroscope to turns a second and sums the turns into the angle */
+    for (i = 0; i < 3; i++) {
+        gyro[i] *= 0.5f / 3.14159265f;
+        state->angle[i] += gyro[i] * ((float)dt_ns * 0.000000001f);
+    }
     quat_direction(q, dir);
     memcpy(out, &dt_ns, 8);
     memcpy(out + 8, &sampling_number, 8);
