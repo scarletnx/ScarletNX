@@ -2733,6 +2733,12 @@ if(NOT SNX_TOOLS_ONLY)
         snx_test_target(snx-test-vk-bans 11)
         target_link_libraries(snx-test-vk-bans PRIVATE snx_nx_flags snx_vk_common)
         add_test(NAME vk_extension_bans COMMAND snx-test-vk-bans)
+        # the commands each Vulkan device extension requires (common/gpu/vk/extension_commands.c), with no GPU: the
+        # table tools/vkcmdgen generates from the registry, its depends, a stand-in device's check and the hide list
+        add_executable(snx-test-vk-commands vk_extension_commands.c)
+        snx_test_target(snx-test-vk-commands 99)
+        target_link_libraries(snx-test-vk-commands PRIVATE snx_nx_flags snx_vk_common)
+        add_test(NAME vk_extension_commands COMMAND snx-test-vk-commands)
     endif()
     if(ANDROID)
         # the GPU driver a run asks for (nx/runtime/platform/gpu_driver_load.c) where none loads: Freedreno's variables set,
@@ -3948,6 +3954,14 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         add_test(NAME settingsgen COMMAND "${CMAKE_COMMAND}" "-DSETTINGSGEN=$<TARGET_FILE:snx-settingsgen>"
                  "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/settingsgen-test"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/settingsgen.cmake")
+        # tools/vkcmdgen on the registry the build has and on registries of its own: the table's lines for what the
+        # renderer met, the same file from a second run, and each registry it refuses, at its line
+        if(TARGET snx-vkcmdgen)
+            get_property(snx_vk_commands_registry GLOBAL PROPERTY snx_vk_commands_registry)
+            add_test(NAME vkcmdgen COMMAND "${CMAKE_COMMAND}" "-DVKCMDGEN=$<TARGET_FILE:snx-vkcmdgen>"
+                     "-DREGISTRY=${snx_vk_commands_registry}" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/vkcmdgen-test"
+                     -P "${CMAKE_CURRENT_SOURCE_DIR}/vkcmdgen.cmake")
+        endif()
         # its output where iOS compiles it: a default-if SNX_IOS value, which needs common.h. Not on Apple hosts, whose
         # own headers read the TargetConditionals.h the test puts in their place
         if(NOT APPLE)
