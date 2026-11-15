@@ -308,13 +308,13 @@ static void atlas_upload(VkCommandBuffer cb) {
         return;
     }
     vk_barrier(cb, g_atlas, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
-               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    rec_CmdCopyBufferToImage(cb, buf, g_atlas, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_LAYOUT(TRANSFER_DST_OPTIMAL));
+    rec_CmdCopyBufferToImage(cb, buf, g_atlas, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &copy);
     vk_barrier(cb, g_atlas, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+               VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL));
     for (i = 0; i < 2; ++i) {
-        VkDescriptorImageInfo di = {g_samplers[i], g_atlas_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo di = {g_samplers[i], g_atlas_view, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL)};
         VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                    .dstSet = g_sets[i],
                                    .descriptorCount = 1,
@@ -354,7 +354,7 @@ static void image_upload(VkCommandBuffer cb) {
     u8* to;
     if (!px || version == g_image_version) return;
     if (!g_image) {
-        VkDescriptorImageInfo di = {g_samplers[0], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo di = {g_samplers[0], VK_NULL_HANDLE, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL)};
         VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                    .dstSet = g_sets[UI_IMAGE],
                                    .descriptorCount = 1,
@@ -382,11 +382,11 @@ static void image_upload(VkCommandBuffer cb) {
     /* the last frame's draws sampled it: they finish before the copy writes over it */
     vk_barrier(cb, g_image, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
                VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    rec_CmdCopyBufferToImage(cb, buf, g_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+               VK_LAYOUT(TRANSFER_DST_OPTIMAL));
+    rec_CmdCopyBufferToImage(cb, buf, g_image, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &copy);
     vk_barrier(cb, g_image, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+               VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL));
     g_image_version = version;
 }
 /* ui.vert's Picture: the picture's size, the ring's head and its slots from bit 16, the bars' slow colour and its
@@ -700,7 +700,7 @@ static void ui_record(VkCommandBuffer cb, int n) {
 static void ui_pass_begin(VkCommandBuffer cb, VkImageView view, int clear) {
     VkRenderingAttachmentInfo at = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                     .imageView = view,
-                                    .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                    .imageLayout = VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL),
                                     .loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
                                     .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                                     .clearValue = {.color = {{0, 0, 0, 1}}}};
@@ -716,15 +716,15 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
     VkImageView view;
     if (!n || !(view = sc_view(sc))) return;
     vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+               VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL));
     ui_pass_begin(cb, view, 0);
     ui_record(cb, n);
     rec_CmdEndRendering(cb);
     vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-               VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL),
+               VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_LAYOUT(TRANSFER_DST_OPTIMAL));
 }
 void vk_ui_present(VkCommandBuffer cb, VkImage sc, Surf* src, VkRect2D crop, VkRect2D to, u32 transform,
                    const int safe[4]) {
@@ -734,7 +734,7 @@ void vk_ui_present(VkCommandBuffer cb, VkImage sc, Surf* src, VkRect2D crop, VkR
     /* the acquire's wait is at the colour output (renderer.c's submit): the image's first use */
     vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
                VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL));
     if (view) {
         ui_pass_begin(cb, view, 1);
         if (framed) vk_present_quad_draw(cb, &from, g_vk.sc_format, crop, to, transform);
@@ -743,6 +743,6 @@ void vk_ui_present(VkCommandBuffer cb, VkImage sc, Surf* src, VkRect2D crop, VkR
         vk_render_forget_state();
     }
     vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL),
                VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }

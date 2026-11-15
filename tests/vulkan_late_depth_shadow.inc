@@ -97,11 +97,11 @@ static int late_shadow_read(u64 target, u64 depth, u8 output[336]) {
     VkBuffer buffer;
     u8* bytes = vk_readback_buffer(336, &buffer);
     CHECK(bytes);
-    vk_surf_use(vk_cmd(), color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), color, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}};
     rec_CmdCopyImageToBuffer(vk_cmd(), color->img, color->layout, buffer, 1, &copy);
-    vk_surf_use(vk_cmd(), zeta, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), zeta, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     const VkBufferImageCopy aspects[2] = {
         {.bufferOffset = 256, .imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}},

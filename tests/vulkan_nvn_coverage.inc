@@ -51,7 +51,7 @@ static int coverage_ratio_one(GpuChannel* channel, u64 target, u64 stream, const
                 CHECK(bytes && grid);
                 VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                           .imageExtent = {8, 8, 1}};
-                rec_CmdCopyImageToBuffer(vk_cmd(), grid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+                rec_CmdCopyImageToBuffer(vk_cmd(), grid, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
                 vk_finish();
                 vk_readback_ready();
                 for (u32 y = 0; y < 4; y++)
@@ -115,7 +115,7 @@ static int coverage_r1_state_cases(GpuChannel* channel, u64 target, u64 stream, 
         CHECK(bytes && grid);
         VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                   .imageExtent = {8, 8, 1}};
-        rec_CmdCopyImageToBuffer(vk_cmd(), grid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+        rec_CmdCopyImageToBuffer(vk_cmd(), grid, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
         vk_finish();
         vk_readback_ready();
         u32 mask = test == 2 ? 7 : 5;
@@ -236,12 +236,12 @@ static int check_nvn_coverage(void) {
                     VkBuffer buffer;
                     u8* actual = vk_readback_buffer(16, &buffer);
                     CHECK(surface && actual);
-                    vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                                 VK_ACCESS_2_TRANSFER_READ_BIT);
                     VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                                 .imageOffset = {1, 1, 0},
                                                 .imageExtent = {1, 1, 1}};
-                    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1,
+                    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1,
                                              &region);
                     vk_finish();
                     vk_readback_ready();
@@ -371,7 +371,7 @@ static int check_nvn_depth_coverage(void) {
             VkBuffer buffer;
             u8* bytes = vk_readback_buffer(packed_stencil ? 256 : 512, &buffer);
             CHECK(bytes);
-            vk_surf_use(vk_cmd(), color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            vk_surf_use(vk_cmd(), color, VK_LAYOUT(TRANSFER_SRC_OPTIMAL),
                         VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
             VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                       .imageExtent = {4, 4, 1}};
@@ -382,7 +382,7 @@ static int check_nvn_depth_coverage(void) {
                 copy = (VkBufferImageCopy){.bufferOffset = 256,
                                            .imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
                                            .imageExtent = {8, 8, 1}};
-                rec_CmdCopyImageToBuffer(vk_cmd(), grid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+                rec_CmdCopyImageToBuffer(vk_cmd(), grid, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
             }
             vk_finish();
             vk_readback_ready();
@@ -449,7 +449,7 @@ static int check_nvn_depth_coverage(void) {
         VkBuffer buffer;
         u8* bytes = vk_readback_buffer(256, &buffer);
         CHECK(bytes);
-        vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL),
                     VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
         VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                   .imageExtent = {4, 4, 1}};

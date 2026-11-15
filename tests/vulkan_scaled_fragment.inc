@@ -138,9 +138,9 @@ static int sf_draw(GpuChannel* channel, u64 target, u32 w, u32 h, u32 format, u3
                               .imageExtent = {2 * w, 2 * h, 1}};
     CHECK(g_vk_drawn == drawn + 1);
     CHECK(surface && surface->sw == 2 * w && surface->sh == 2 * h && surface->f.bpp == texel && data);
-    vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
     vk_finish();
     vk_readback_ready();
     memcpy(pixels, data, bytes);

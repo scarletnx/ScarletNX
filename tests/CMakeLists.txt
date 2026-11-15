@@ -2601,6 +2601,12 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-pagespace 23)
     target_link_libraries(snx-test-vk-pagespace PRIVATE snx_nx_flags)
     add_test(NAME vk_pagespace COMMAND snx-test-vk-pagespace)
+    # the barriers of an image's uses (gpu/vk/surface.c vk_surf_use) in the layouts that VK_LAYOUT names: with unified
+    # image layouts, GENERAL and no barrier between reads of another kind; without them, each use's own layout
+    add_executable(snx-test-vk-surf-layouts vk_surf_layouts.c tracy_stubs.c)
+    snx_test_target(snx-test-vk-surf-layouts 23)
+    target_link_libraries(snx-test-vk-surf-layouts PRIVATE snx_nx_flags)
+    add_test(NAME vk_surf_layouts COMMAND snx-test-vk-surf-layouts)
     # the GPU pages of a range as the buffer cache reads them (gpu/vk/buffer.c), over a model of the GMMU: the walks
     # one run at a time give the pages, run flags and byte spans of a walk one page at a time
     add_executable(snx-test-vk-buffer-pages vk_buffer_pages.c tracy_stubs.c)

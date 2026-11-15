@@ -175,7 +175,7 @@ static int ms_draw(VkCommandBuffer cb, u32 kind, VkImageView target, VkFormat fo
     VkPipeline p = ms_pipe(kind, format, samples);
     VkDescriptorSet set = p ? vk_desc_alloc(g_msaa.dsl) : VK_NULL_HANDLE;
     if (!set) return 0;
-    VkDescriptorImageInfo ii = {g_msaa.sampler, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo ii = {g_msaa.sampler, src, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL)};
     VkWriteDescriptorSet w1 = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                .dstSet = set,
                                .descriptorCount = 1,
@@ -185,8 +185,8 @@ static int ms_draw(VkCommandBuffer cb, u32 kind, VkImageView target, VkFormat fo
     int depth = kind == MS_UNPACK_DEPTH;
     VkRenderingAttachmentInfo att = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                      .imageView = target,
-                                     .imageLayout = depth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-                                                          : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                     .imageLayout = depth ? VK_LAYOUT(DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                                                          : VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL),
                                      .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                                      .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
@@ -252,12 +252,12 @@ VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer, u32 y0, u32 rows) {
     vk_defer_image(grid, mem, src, dst); /* once the frame's commands that read it are done */
     if (!src || !dst) return VK_NULL_HANDLE;
     vk_render_end();
-    vk_surf_use(cb, s, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    vk_surf_use(cb, s, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL), VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     VkPipelineStageFlags2 out = depth ? VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
                                             VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT
                                       : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkAccessFlags2 wr = depth ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    VkImageLayout al = depth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkImageLayout al = depth ? VK_LAYOUT(DEPTH_STENCIL_ATTACHMENT_OPTIMAL) : VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL);
     /* a depth grid holds only depth: a packed format's stencil aspect goes along in the layouts it is moved through */
     VkImageAspectFlags grid_aspect = vk_aspect(&s->f);
     vk_barrier(cb, grid, grid_aspect, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED, out, wr, al);
@@ -265,7 +265,7 @@ VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer, u32 y0, u32 rows) {
         return VK_NULL_HANDLE;
     g_msaa.unpacked += (u64)gw * rows;
     vk_barrier(cb, grid, grid_aspect, out, wr, al, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+               VK_LAYOUT(TRANSFER_SRC_OPTIMAL));
     return grid;
 }
 
@@ -282,16 +282,16 @@ int vk_ms_pack(VkCommandBuffer cb, Surf* s, u32 layer, VkBuffer buf, u64 off, u3
     if (!src || !dst) return 0;
     vk_render_end();
     vk_barrier(cb, grid, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
-               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_LAYOUT(TRANSFER_DST_OPTIMAL));
     VkBufferImageCopy c = {.bufferOffset = off,
                            .bufferRowLength = pitch / s->f.bpp,
                            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                            .imageExtent = {gw, gh, 1}};
-    rec_CmdCopyBufferToImage(cb, buf, grid, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    rec_CmdCopyBufferToImage(cb, buf, grid, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &c);
     vk_barrier(cb, grid, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    vk_surf_use(cb, s, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL));
+    vk_surf_use(cb, s, VK_LAYOUT(COLOR_ATTACHMENT_OPTIMAL), VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     return ms_draw(cb, MS_PACK, dst, f, vk_surf_samples(s), s->w, s->h, 0, src, s->msaa);
 }

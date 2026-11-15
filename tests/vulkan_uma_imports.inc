@@ -731,10 +731,10 @@ static int check_uma_texture_pending(void) {
     int waited = vk_uma_out_waits() != waits;
     u8* texels = vk_readback_buffer(256, &rb);
     CHECK(again == t && texels);
-    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {64, 1, 1}};
-    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb, 1, &copy);
+    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), rb, 1, &copy);
     vk_finish();
     vk_readback_ready();
     u32 differ = 0;

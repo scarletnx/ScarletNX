@@ -35,9 +35,9 @@ static int sc_pixels(Surf* s, u32* pixels) {
                               .imageExtent = {s->sw, s->sh, 1}};
     CHECK(d);
     vk_render_end();
-    vk_surf_use(vk_cmd(), s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), s, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    rec_CmdCopyImageToBuffer(vk_cmd(), s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    rec_CmdCopyImageToBuffer(vk_cmd(), s->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buffer, 1, &copy);
     vk_finish();
     vk_readback_ready();
     for (u64 i = 0; i < bytes / 4; i++) pixels[i] = snx_ld_le32(d + i * 4);
