@@ -119,6 +119,18 @@ CRASH_IN_LIBRARY = (
 """
 )
 
+# Windows' crash report names the DLL as dladdr's does a library elsewhere (crash.c's module_at)
+CRASH_IN_DLL = (
+    HEADER
+    + """[   3.00]
+*** Crash (exception 0xc0000096) at host pc=00007FF8DFE298E5 ***
+[   3.00]   privileged instruction
+[   3.00]   in nvoglv64.dll +298e5 (?), on a game thread
+[   3.00]   host frames: scarletnx.exe+1234 ntdll.dll+a0b1 nvoglv64.dll+298e5
+[   3.01] FATAL: The game crashed (privileged instruction). See the .log for details.
+"""
+)
+
 UNDEFINED = (
     HEADER
     + """[   4.00]
@@ -362,6 +374,8 @@ def main():
     check((tarball['commit'], tarball['branch']) == ('unknown', 'unknown'), f'no git: {tarball["commit"]!r}')
     lib = scan(CRASH_IN_LIBRARY)
     check(lib['signature'] == 'crash (invalid memory access) in libnvidia-glcore.so.580 ?', lib['signature'])
+    dll = scan(CRASH_IN_DLL)
+    check(dll['signature'] == 'crash (privileged instruction) in nvoglv64.dll ?', dll['signature'])
 
     u = scan(UNDEFINED)
     check(u['outcome'] == 'unsupported instruction' and u['failure']['set'] == 'A64', 'A64 undefined instruction')
