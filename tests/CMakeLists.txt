@@ -2185,7 +2185,7 @@ add_test(NAME cpm_local COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpm-local-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/cpm_local_test.cmake")
 # where spirv-opt, spirv-val and spirv-dis come from (cmake/spirv_tools.cmake): the fake tools are shell scripts
 if(NOT CMAKE_HOST_WIN32)
-    add_test(NAME spirv_tools COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+    add_test(NAME spirv_tools COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCC=${CMAKE_C_COMPILER}"
              "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/spirv-tools-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/spirv_tools_test.cmake")
 endif()
 # SNX_SYSTEM_SDL3 takes a system SDL3 from 3.4.12, and says what it found where it takes none (cmake/system_sdl3.cmake)

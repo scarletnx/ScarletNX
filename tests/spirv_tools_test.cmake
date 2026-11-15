@@ -4,9 +4,10 @@
 # system's under CPM_USE_LOCAL_PACKAGES at the pinned release or newer, else the pinned release, and what it says when
 # it does not take what it was given or found. A small project includes it with cmake/dependencies.cmake's pin, fake
 # tools (shell scripts that print a version) and CPMAddPackage replaced by one that only records its arguments, so
-# nothing is downloaded or built. Run by ctest as spirv_tools, with -DSRC and -DWORK
-if(NOT DEFINED SRC OR NOT DEFINED WORK)
-    message(FATAL_ERROR "spirv_tools_test.cmake needs -DSRC=... -DWORK=...")
+# nothing is downloaded or built. Run by ctest as spirv_tools, with -DSRC, -DWORK and -DCC (the C compiler the
+# dependency cache's key runs)
+if(NOT DEFINED SRC OR NOT DEFINED WORK OR NOT DEFINED CC)
+    message(FATAL_ERROR "spirv_tools_test.cmake needs -DSRC=... -DWORK=... -DCC=<C compiler>")
 endif()
 file(REMOVE_RECURSE "${WORK}")
 
@@ -180,6 +181,24 @@ check(local-noversion PATH "${WORK}/noversion" SAYS "${all_pinned}" "${noversion
 # spirv-opt given: the system's fills spirv-val and spirv-dis
 check(local-given-opt PATH "${WORK}/newer" SAYS "RESULT opt=[WORK/given-opt/spirv-opt] ${newer}"
       ARGS ${local} "-DSNX_SPIRV_OPT=${WORK}/given-opt/spirv-opt")
+
+# the dependency cache's key: the same build of the tools for two trees whose Python is another file of one version
+# (a venv's and the system's), another for another Python version
+foreach(python a:3.14.0 b:3.14.0 c:3.13.0)
+    string(REPLACE ":" ";" python "${python}")
+    list(GET python 0 name)
+    list(GET python 1 version)
+    file(WRITE "${WORK}/python-${name}" "#!/bin/sh\necho 'Python ${version}'\n")
+    file(CHMOD "${WORK}/python-${name}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+    check(key-${name} PATH "${WORK}/older" SAYS "built=[yes]"
+          ARGS "-DSNX_DEPS_CACHE=${WORK}/deps" "-DCMAKE_C_COMPILER=${CC}" "-DPython3_EXECUTABLE=${WORK}/python-${name}")
+    file(READ "${WORK}/key-${name}/snx-deps/spirv-tools.dir" dir_${name})
+endforeach()
+if(NOT dir_a STREQUAL dir_b OR dir_a STREQUAL dir_c)
+    message(SEND_ERROR "the tools' cache folder is ${dir_a}, ${dir_b} and ${dir_c} for Pythons 3.14.0, 3.14.0 and "
+                       "3.13.0")
+    set_property(GLOBAL APPEND PROPERTY failed key)
+endif()
 
 get_property(failed GLOBAL PROPERTY failed)
 if(failed)

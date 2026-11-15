@@ -163,9 +163,16 @@ if(NOT snx_spirv_opt OR NOT snx_spirv_val)
         -DSPIRV_TOOLS_BUILD_STATIC=ON
         -DBUILD_SHARED_LIBS=OFF
         -DSKIP_SPIRV_TOOLS_INSTALL=ON)
-    # keyed by the build machine's compiler, not the target's: every target built here runs the same tools
+    # Keyed by the build machine's compiler, not the target's: every target built here runs the same tools. Python by
+    # its version, not its path: the trees of one CI job run it from a venv or from the system
+    execute_process(COMMAND "${Python3_EXECUTABLE}" --version OUTPUT_VARIABLE snx_spirv_python
+                    ERROR_VARIABLE snx_spirv_python)
+    string(STRIP "${snx_spirv_python}" snx_spirv_python)
+    set(snx_spirv_key_args ${snx_spirv_args})
+    list(FILTER snx_spirv_key_args EXCLUDE REGEX "^-DPython3_EXECUTABLE=")
     snx_deps_cached(spirv-tools snx_spirv_tools_cache HOST "${snx_spirv_cc}" "source: ${snx_spirv_tools_sha256}"
-                    "headers: ${snx_spirv_headers_sha256}" "configure: ${snx_spirv_args}")
+                    "headers: ${snx_spirv_headers_sha256}" "configure: ${snx_spirv_key_args}"
+                    "python: ${snx_spirv_python}")
     if(snx_spirv_tools_cache_FOUND)
         set(snx_spirv_prefix "${snx_spirv_tools_cache_DIR}")
     else()
