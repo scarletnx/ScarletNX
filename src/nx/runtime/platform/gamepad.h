@@ -66,7 +66,8 @@ u32 gamepad_names_version(void);
 /* the i that slot's gamepad (its player's) is in the three above, -1 for none. Under ui_lock */
 int gamepad_of_player(int slot);
 /* their tables (settings.h): g_gamepad_ini, keys gamepad_*; g_gamepad_map_ini, gamepad_map, the player's map that
-   SNX_GAMEPAD_MAP's screen sets; g_gamepad_players_ini, gamepad_p<N>_*, their page in the menus */
+   SNX_GAMEPAD_MAP's screen sets; g_gamepad_players_ini, gamepad_p<N>_*, their page in the menus; g_joycon2_ini,
+   joycon2*, the Joy-Con 2's (Bluetooth) */
 #define SNX_GAMEPAD_PAGE "Controllers"   /* their page in the game's menu and the launcher's Settings */
 #define SNX_GAMEPAD_MAP  "Button map"    /* and the screen of what each button sends */
 /* each player's own, as Eden has them, in the game's .ini as gamepad_p<N>_* (N from 1); one left at its default takes

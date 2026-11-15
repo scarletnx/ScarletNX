@@ -9,6 +9,7 @@
 #include "nx/runtime/platform/joycon2_att.h"
 #include "nx/runtime/platform/joycon2_session.h"
 #include "common/utilities/endian.h"
+#include "common/platform/ble_scan.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -294,6 +295,33 @@ static void test_calibration(void) {
         ad[2] = 0x02;
         assert(!jc2_advert(ad, sizeof ad, &a));
     }
+}
+
+/* the launcher's advert check (common/platform/ble_scan.h's snx_ble_joycon2, which Controllers > Bluetooth uses: the
+   launcher builds without this tree) agrees with jc2_advert, byte by byte over the fields both read */
+static void test_advert_agrees(void) {
+    static const u8 base[16] = {0x01, 0x00, 0x03, 0x7e, 0x05, 0x67, 0x20, 0x00, 0x01, 0x00};
+    static const u8 values[] = {0x00, 0x01, 0x02, 0x03, 0x05, 0x20, 0x57, 0x66, 0x67, 0x69, 0x7e, 0x80, 0xff};
+    int checked = 0;
+    for (size_t n = 14; n <= 16; n++)
+        for (size_t at = 0; at < 16; at++)
+            for (size_t v = 0; v < sizeof values; v++) {
+                SnxBleAdvert b;
+                SnxBleJoyCon2 j;
+                Jc2Advert a;
+                int ours, theirs;
+                memset(&b, 0, sizeof b);
+                memcpy(b.data, base, sizeof base);
+                b.data[at] = values[v];
+                b.size = n;
+                b.company = SNX_BLE_NINTENDO;
+                theirs = jc2_advert(b.data, n, &a);
+                ours = snx_ble_joycon2(&b, &j);
+                assert(ours == theirs);
+                if (ours) assert(j.right == (a.product == JC2_PID_RIGHT) && j.syncing == a.syncing);
+                checked += ours;
+            }
+    assert(checked > 0);
 }
 
 /* ---- HD rumble */
@@ -630,6 +658,7 @@ int main(void) {
     test_report();
     test_motion_frame();
     test_calibration();
+    test_advert_agrees();
     test_rumble();
     test_session();
     test_session_failures();

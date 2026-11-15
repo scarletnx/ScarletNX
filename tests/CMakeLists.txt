@@ -2555,7 +2555,8 @@ add_test(NAME connect COMMAND snx-test-connect)
 # the Joy-Con 2's protocol and one controller's setup on made-up bytes, no Bluetooth (runtime/platform/joycon2_*.c)
 add_executable(snx-test-joycon2 joycon2.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/joycon2_proto.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/joycon2_session.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/joycon2_att.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/joycon2_att.c"
+    "${PROJECT_SOURCE_DIR}/src/common/platform/ble_scan.c") # the launcher's advert check, compared
 snx_test_target(snx-test-joycon2 99)
 target_link_libraries(snx-test-joycon2 PRIVATE m)
 add_test(NAME joycon2 COMMAND snx-test-joycon2)

@@ -127,6 +127,7 @@ int gamepad_ini(const char* key, const char* value) {
     const IniOpt* o = ini_find(g_gamepad_ini, key);
     if (!o) o = ini_find(g_gamepad_map_ini, key);
     if (!o) o = ini_find(g_gamepad_players_ini, key);
+    if (!o) o = ini_find(g_joycon2_ini, key);
     if (o) ini_read(o, value);
     return o != NULL;
 }
