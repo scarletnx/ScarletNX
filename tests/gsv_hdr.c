@@ -299,7 +299,8 @@ static void refresh_rate(void) {
     /* on the wire: 354 and 103 put the rate after the result, 301 takes the display, the value and the mask */
     request(r, DEFAULT_DISPLAY, 0);
     CHECK(wire(354, r, 8, &rc) == RATE_60 && !rc);
-    for (u32 i = 0; i < 8; i++) r[8 + i] = r[16 + i] = (u8)(RATE_120 >> (8 * i));
+    snx_st_le64(r + 8, RATE_120);
+    snx_st_le64(r + 16, RATE_120);
     wire(301, r, 0x18, &rc);
     CHECK(!rc && wire(103, r, 8, &rc) == RATE_120 && !rc && wire(354, r, 8, &rc) == RATE_120 && !rc);
     CHECK(set_rates(0x1234, RATE_120, RATE_120) != 0); /* no such display */
