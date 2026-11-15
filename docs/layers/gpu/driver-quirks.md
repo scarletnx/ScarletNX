@@ -58,7 +58,7 @@ line of that file.
 | Primitive restart resets the GPU on GCN 4 (Windows) | Dolphin DriverDetails.cpp:108, VulkanContext.cpp:514 | `primitiveRestartEnable` `warn`: the renderer has no way around it | vk_extension_bans |
 | Cube compatible images on GCN 4 and older | Eden vulkan_device.cpp:615 (4dc69c06f7), *weak*; Eden's list:11 | `VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT` `warn` | vk_extension_bans, a case |
 | A demote or kill inside a loop lets the Windows compiler drop the quad's helpers while they hold the loop open: the loop never ends, until the GPU resets | ec9c208c6 | a fragment program's flow discards after its loop, never inside (`translate.h`, `discarded`) | none |
-| No `D24_UNORM_S8_UINT` on every GPU | df80e8ade | D24S8 is made as `D32_SFLOAT_S8_UINT`, which holds the same values (`format.c`) | none |
+| No `D24_UNORM_S8_UINT` on every GPU | ba8aec5f3 | D24S8 is made as `D32_SFLOAT_S8_UINT`, which holds the same values (`format.c`) | none |
 
 ## RADV
 
@@ -224,10 +224,10 @@ The rows of Eden's list that the renderer does not reach, and why.
 |---|---|---|
 | 12 | AMD GCN 4: `VK_EXT_sampler_filter_minmax` | the renderer does not use the extension: a min or max sample is done in the shader |
 | 13 | AMD: the last attribute wrong where offset + stride * count passes the buffer's size | not checked |
-| 14 | AMD GCN: 2D mipmapped arrays of more than 6 square layers | not checked: no case seen |
+| 14 | AMD GCN: 2D mipmapped arrays of more than 6 square layers | not checked |
 | 15 | RADV: FP16 corrupt with the LLVM back end | RADV compiles with ACO unless `RADV_DEBUG=llvm` |
 | 19, 25 | NVIDIA from 510 and Intel's Windows driver: no MSAA to MSAA blits | Vulkan forbids a blit from a multisampled image |
-| 20 | NVIDIA: no shader stencil export | the renderer writes stencil by copies, not by the shader |
+| 20 | NVIDIA: no shader stencil export | no shader of the renderer exports stencil |
 | 21 | NVIDIA: barriers in conditional flow | Eden's own code turns them off on Intel (vulkan_device.cpp:517), not NVIDIA; not checked |
 | 22, 53 | NVIDIA before Turing, MoltenVK on iOS: push descriptors | the renderer uses no push descriptors |
 | 29 | Intel's Mesa driver: lines in geometry shaders with clip distances written in the vertex shader | not checked: no source names the case |
@@ -238,7 +238,7 @@ The rows of Eden's list that the renderer does not reach, and why.
 | 42 | Mali: a green screen in various places | no case to check against |
 | 45 | Mali: a fence wait after a device loss | a lost device ends the run |
 | 46, 47 | Galaxy S7 and S9: suballocated images, primary command buffers only | Mali GPUs with no Vulkan 1.2 |
-| 49 | Mali: matrix lowering in SkSL | the translator emits no matrices |
+| 49 | Mali: more than 32 matrix temporaries | the translators declare no matrix type |
 | 54 | PowerVR: a clear load op on a framebuffer of another render pass | the renderer uses dynamic rendering, with no framebuffer objects |
 | 55 | AMD: a viewport whose minDepth is above its maxDepth | Dolphin, which the list follows there, names no AMD driver; not checked |
 | OpenGL | Multithreaded shader compiles on Android; a glslang fix | the renderer is Vulkan |
