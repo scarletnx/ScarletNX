@@ -7827,6 +7827,30 @@ int main(int argc, char** argv) {
             assert(app.lefts == 0);
             assert(!snx_path_format(path, sizeof path, "%s/save/device/0100000000ABC000" GUI_SAVE_MOVING, data_saves) &&
                    !snx_remove_tree(path));
+            /* a sync tool's folders (Syncthing's) beside a user's saves, beside the Device saves, and in a game's own
+               save folder that holds nothing else: neither listed nor taken for a save */
+            {
+                static const char* const marks[] = {
+                    "%s/save/user.0123456789abcdeffedcba9876543210/.stfolder/syncthing-folder-1.txt",
+                    "%s/save/device/.stversions/d.bin",
+                    "%s/0100000000ABC000_data/save/bcat/.stfolder/syncthing-folder-1.txt"};
+                for (i = 0; i < sizeof marks / sizeof *marks; ++i) {
+                    char* dir;
+                    assert(!snx_path_format(path, sizeof path, marks[i], i < 2 ? data_saves : game));
+                    dir = snx_dirname(path);
+                    assert(!snx_mkdirs(dir) && !snx_write_file(path, "mark", 4));
+                    free(dir);
+                }
+                left_behind(&app);
+                assert(app.lefts == 0);
+                for (i = 0; i < sizeof marks / sizeof *marks; ++i) {
+                    char* dir;
+                    assert(!snx_path_format(path, sizeof path, marks[i], i < 2 ? data_saves : game));
+                    dir = snx_dirname(path);
+                    assert(!snx_remove_tree(dir));
+                    free(dir);
+                }
+            }
             /* save_layout=game (read from settings.ini, as this driver lists no save_layout): a game's own save as an
                older version kept it is listed where it is, with its 0/ */
             {

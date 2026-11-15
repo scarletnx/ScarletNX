@@ -169,11 +169,22 @@ static char* save_staged(const char* save) {
     while (n > 1 && (save[n - 1] == '/' || save[n - 1] == '\\')) --n;
     return snx_format("%.*s" GUI_SAVE_MOVING, (int)n, save);
 }
+/* how many of a save folder's names are the save's: those SNX_SAVE_HIDDEN does not take for a sync tool's */
+static size_t save_names(char** names, size_t count) {
+    size_t i, n = 0;
+    for (i = 0; i < count; ++i) n += !SNX_SAVE_HIDDEN(names[i]);
+    return n;
+}
+/* where a save's entry name goes as its files go into the save's 0/ (into) in the folder staged: an entry
+   SNX_SAVE_HIDDEN takes for a sync tool's to staged's top, where it was at the save's */
+static char* save_entry_to(const char* staged, const char* into, const char* name) {
+    return snx_path_join(SNX_SAVE_HIDDEN(name) ? staged : into, name);
+}
 bool gui_save_old(const char* save) {
     char *mark = snx_path_join(save, SNX_SAVE_JOURNALED), *staged = save_staged(save), **names = NULL;
     size_t count = 0;
     bool old = mark && staged && snx_is_dir(save) && !snx_is_link(save) && !snx_path_exists(mark) &&
-               !snx_list_dir(save, &names, &count) && (count || snx_is_dir(staged));
+               !snx_list_dir(save, &names, &count) && (save_names(names, count) || snx_is_dir(staged));
     snx_free_strings(names, count);
     free(staged);
     free(mark);
@@ -195,7 +206,7 @@ int gui_move_save_committed(GuiCleaned* done, const char* save, bool apply) {
     }
     for (i = 0; ok && i < count; ++i) {
         from = snx_path_join(save, names[i]);
-        to = snx_path_join(into, names[i]);
+        to = save_entry_to(staged, into, names[i]);
         if (!from || !to)
             ok = false;
         else if (snx_path_exists(to)) {
@@ -211,7 +222,7 @@ int gui_move_save_committed(GuiCleaned* done, const char* save, bool apply) {
     }
     if (!ok) { /* the ones that moved go back: a save with part of its files in its folder is no save */
         for (i = 0; apply && i < moved; ++i) {
-            from = snx_path_join(into, names[i]);
+            from = save_entry_to(staged, into, names[i]);
             to = snx_path_join(save, names[i]);
             if (from && to) plat_replace_file(from, to);
             free(from);
@@ -223,7 +234,11 @@ int gui_move_save_committed(GuiCleaned* done, const char* save, bool apply) {
     for (i = 0; i < count; ++i) {
         from = snx_path_join(save, names[i]);
         to = snx_path_join(last, names[i]);
-        if (from && to) {
+        if (from && to && SNX_SAVE_HIDDEN(names[i]))
+            gui_cleaned_add(done, true, from,
+                            snx_tr("Stays beside the save's 0/: a name that starts with a dot is a sync "
+                                   "tool's or the system's, not one of the game's files"));
+        else if (from && to) {
             snprintf(what, sizeof what, apply ? snx_tr("Moved to %s") : snx_tr("Moves to %s"), to);
             gui_cleaned_add(done, true, from, what);
             ++moves;
@@ -235,7 +250,7 @@ int gui_move_save_committed(GuiCleaned* done, const char* save, bool apply) {
         snprintf(what, sizeof what, snx_tr("Its files are in %s, which could not take its place: %s"), staged,
                  snx_os_error(why, sizeof why));
         gui_cleaned_add(done, false, save, what);
-    } else if (!count) { /* a move cut short after its last file: only the folder was left to put in place */
+    } else if (!save_names(names, count)) { /* a move cut short after its last file: only the folder was left */
         snprintf(what, sizeof what, apply ? snx_tr("Moved to %s") : snx_tr("Moves to %s"), save);
         gui_cleaned_add(done, true, staged, what);
         ++moves;
@@ -292,7 +307,7 @@ int gui_move_save_into(GuiCleaned* done, const char* old, const char* now, bool 
     int moves = 0;
     bool made = staged && !snx_path_exists(staged), ok = true;
     if (!staged || !into || !mark || !last || snx_path_exists(now) || !snx_is_dir(old) || snx_is_link(old) ||
-        snx_list_dir(old, &names, &count) || !count) { /* a save there already, or no folder of files to move */
+        snx_list_dir(old, &names, &count) || !save_names(names, count)) { /* a save there, or no files to move */
         moves = gui_move_entries(done, old, now, NULL, apply);
         if (apply && gui_save_old(now)) moves += gui_move_save_committed(done, now, true);
         goto out;
@@ -305,7 +320,7 @@ int gui_move_save_into(GuiCleaned* done, const char* old, const char* now, bool 
     }
     for (i = 0; ok && i < count; ++i) {
         from = snx_path_join(old, names[i]);
-        to = snx_path_join(into, names[i]);
+        to = save_entry_to(staged, into, names[i]);
         if (!from || !to)
             ok = false;
         else if (snx_path_exists(to)) {
@@ -324,7 +339,7 @@ int gui_move_save_into(GuiCleaned* done, const char* old, const char* now, bool 
     }
     if (!ok) { /* the ones that moved go back: a save with part of its files in either place is no save */
         for (i = 0; apply && i < moved; ++i) {
-            from = snx_path_join(into, names[i]);
+            from = save_entry_to(staged, into, names[i]);
             to = snx_path_join(old, names[i]);
             if (from && to) plat_replace_file(from, to);
             free(from);
@@ -335,7 +350,7 @@ int gui_move_save_into(GuiCleaned* done, const char* old, const char* now, bool 
     }
     for (i = 0; i < count; ++i) {
         from = snx_path_join(old, names[i]);
-        to = snx_path_join(last, names[i]);
+        to = SNX_SAVE_HIDDEN(names[i]) ? snx_path_join(now, names[i]) : snx_path_join(last, names[i]);
         if (from && to) {
             snprintf(what, sizeof what, apply ? snx_tr("Moved to %s") : snx_tr("Moves to %s"), to);
             gui_cleaned_add(done, true, from, what);

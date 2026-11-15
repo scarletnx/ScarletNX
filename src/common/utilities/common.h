@@ -515,6 +515,10 @@ SnxU64 snx_addon_version(const char* entry);
 #define SNX_SAVE_JOURNALED "snx-journaled"
 #define SNX_SAVE_COMMITTED "0"
 #define SNX_SAVE_WORKING   "1"
+/* An entry whose name starts with a dot, in a folder of saves or at a save's top beside its SNX_SAVE_COMMITTED: a sync
+   tool's or the system's (Syncthing's .stfolder and .stversions, a desktop's .directory), never a save nor one of its
+   files, as ScarletNX names everything there. In a save's 0/ and 1/ every name is the game's */
+#define SNX_SAVE_HIDDEN(name) ((name)[0] == '.')
 enum { SNX_ADDON_NONE, SNX_ADDON_UPDATE, SNX_ADDON_DLC, SNX_ADDON_PROGRAM };
 /* what the title id is to the game: SNX_ADDON_UPDATE for its patch (its ID with 0x800, as the console makes every
    patch's), SNX_ADDON_PROGRAM for another program of its application or that program's patch (snx_program_index),
