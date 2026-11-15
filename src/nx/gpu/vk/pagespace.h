@@ -40,6 +40,8 @@ void vk_pages_read(u64 gva, u64 len);
    for a dependency between the work so far and what follows (vk_buf_order_request) */
 void vk_pages_ordered(void);
 void vk_pages_order_request(void);
+/* guest memory was bound in place, to read or to write, in this submission since the last barrier from all work */
+int vk_pages_order_pending(void);
 /* once a present: the granules nothing read for a while give their memory back */
 void vk_pages_frame(void);
 /* the idle granules with no GPU-written bytes let go for the budget, until want bytes: the bytes let go */

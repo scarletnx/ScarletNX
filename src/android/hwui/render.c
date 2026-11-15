@@ -1435,7 +1435,7 @@ static bool start(int width, int height, const char* title) {
                                      .maxSets = 16,
                                      .poolSizeCount = 1,
                                      .pPoolSizes = &size};
-    bool ok = r.stencil_format && snx_vk_ring_init(&r.ring, r.device, r.queue, r.family, SLOTS, &dp);
+    bool ok = r.stencil_format && snx_vk_ring_init(&r.ring, r.device, r.queue, r.family, SLOTS, &dp, false);
     VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     for (unsigned i = 0; i < SLOTS && ok; ++i)
         ok = vkCreateSemaphore(r.device, &si, NULL, &r.acquired[i]) == VK_SUCCESS;

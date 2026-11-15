@@ -490,6 +490,9 @@ u32 vk_present_before(u64 ago_ns, u32 presents);
 /* cmd.c */
 void vk_cmd_init(void);
 VkCommandBuffer vk_cmd(void); /* the current frame's command buffer, begun on first use */
+/* the calls of vk_cmd so far. Each command in the frame's command buffer comes after one of them: when the count and
+   vk_submit_number did not change, no command was recorded there */
+u64 vk_cmd_uses(void);
 /* The current submission's upload command buffer, begun on first use: the submission runs it before the frame's
    (vk_cmd), and its copies before any command recorded there, the rendering pass open now and the draws before it
    too, so they need not end that pass. For copies whose sources were written before the submission and whose
@@ -613,8 +616,23 @@ void vk_wait_submit(u64 value); /* until the GPU has done that submission (any t
 /* until sem reaches value, in slices: a GPU whose semaphore stops moving for 15 s ends the run with its hang logged
    (cmd.c), where a wait for good froze the game */
 void vk_wait_semaphore(VkSemaphore sem, u64 value);
-/* until fence is signaled, as vk_wait_semaphore waits: 0 when the device was lost */
-int vk_wait_fence(VkFence fence);
+/* A timeline semaphore of one path that the CPU waits for (a sparse bind, a granule of the mirror, a landing), in place
+   of a fence for each submission: no fence to make, reset or destroy, and the wait is vk_wait_semaphore's. Each
+   submission signals the next value, and a timeline's values must be signaled in increasing order. A queue does not
+   promise that across its batches (sparse binds are not ordered against command buffers, nor batches in how they
+   complete), so each timeline has one kind of batch on one queue, and one batch of it in flight at a time: its path
+   holds a lock from vk_host_next to the end of vk_host_wait. The paths here hold vk_lock */
+typedef struct {
+    VkSemaphore sem; /* made at the first vk_host_next */
+    u64 value;       /* the last value given */
+} VkHostTimeline;
+/* the value that the next submission signals on t->sem, 0 when the semaphore can't be made */
+u64 vk_host_next(VkHostTimeline* t);
+/* until t reaches value, as vk_wait_semaphore waits: 0 when the device was lost */
+int vk_host_wait(const VkHostTimeline* t, u64 value);
+/* bi's binds (with no semaphores of their own) on the graphics queue, signaling t, and waited for: 0 when the bind
+   failed or the device was lost */
+int vk_host_bind_sparse(VkHostTimeline* t, const VkBindSparseInfo* bi);
 /* Flush recorded work without frame recycling or guest result callbacks, under
    vk_lock, before an ownership readback uses the graphics queue directly. */
 void vk_submit_for_readback(void);
@@ -2611,6 +2629,12 @@ extern u64 g_vk_targets_kept;
    through a copy instead (gpu/vk/render.c); the times a target's pixels were copied into a copy of it, for those draws
    and for textures that read a target as another size or format (gpu/vk/texture.c) */
 extern u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies, g_vk_rt_copy_writes;
+/* statistics: the guest's full barriers not recorded, as no command came after the one before them in the submission
+   (renderer.c vkr_method_barrier) */
+extern u64 g_vk_barriers_merged;
+/* statistics: the guest's fragment barriers and texture data cache invalidations that stayed in the pass, as nothing
+   before them needed a barrier from all work (renderer.c vkr_method_barrier) */
+extern u64 g_vk_barriers_in_pass;
 /* g_vk.feedback_mode, from the device's features and vendor (device.c): in place (attachment feedback loops), the
    two draws of render.c predraw_run, or in place with the pre-draw capture in a fragment interlock (vk/predraw.c) */
 #define VK_FEEDBACK_IN_PLACE  0

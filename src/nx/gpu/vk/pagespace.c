@@ -519,6 +519,10 @@ u64 vk_pages_written(void) { return g_pages.writes; }
 void vk_pages_ordered(void) {
     if (g_pages.on > 0) order_reset();
 }
+int vk_pages_order_pending(void) {
+    return g_pages.on > 0 && g_pages.order.sub == vk_submit_number() &&
+           (g_pages.order.nrd | g_pages.order.nwr | (u32)g_pages.order.rd_all | (u32)g_pages.order.wr_all) != 0;
+}
 void vk_pages_order_request(void) {
     if (g_pages.on > 0 && g_pages.order.sub == vk_submit_number() &&
         (g_pages.order.nrd | g_pages.order.nwr | (u32)g_pages.order.rd_all | (u32)g_pages.order.wr_all))
