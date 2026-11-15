@@ -33,6 +33,7 @@ typedef struct {
     int always;           /* plain, and passed to every run, its start too (gui_settings_always) */
     int type_text;        /* the .ini's value is a text, often a folder: gui_settings_debug says its key alone */
     int needs_build;      /* the build this row needs, which this one has none of: shown, picked by nothing */
+    int slider;           /* a plain word row on a slider (ini.h's INI_SLIDER): stepped to its ends, never round */
     int first, count;     /* the rows a page opens, an All steps */
 } GuiSetting;
 typedef struct {
@@ -43,8 +44,8 @@ typedef struct {
 } GuiSettings;
 /* the launcher's own rows and the recompiler's (g_launch_sections, listed by ini_list_text), then the runtime's list of
    the game's settings, a line each (section[/page], key, default, int | float | text, lowest, highest, help, name, the
-   values value=word between '|', where it does something when not on this system, what the build needs, tabs
-   between); another line is left out. A row this build has none of what it needs is kept and marked, picked by
+   values value=word between '|', where it does something when not on this system, what the build needs, slider for a
+   slider's, tabs between); another line is left out. A row this build has none of what it needs is kept and marked, picked by
    nothing. A page's rows are listed after its section's others, one page a section. 0, else nonzero when out of
    memory */
 int gui_settings_read(GuiSettings* settings, const char* runtime);
@@ -78,6 +79,12 @@ void gui_settings_reset(GuiSettings* settings, int row);
 /* 1 for row (a page's or an All's: each of its rows) at the value it started with, what Del would put back; else 0 */
 int gui_settings_at_start(const GuiSettings* settings, int row);
 int gui_settings_changed(const GuiSettings* settings);
+/* A slider's row (GuiSetting's slider): its value a step down (step -1) or up (1), stopping at its ends; set to the
+   step nearest to at, thousandths of its way from its first word to its last; and where it is now, the same way. The
+   first two: 1 when it changed, 0 at its end or on a row that is no slider's */
+int gui_settings_slide(GuiSettings* settings, int row, int step);
+int gui_settings_slide_to(GuiSettings* settings, int row, int at);
+int gui_settings_knob(const GuiSettings* settings, int row);
 /* an All's row stepped (-1 or 1, 0 for a select) with every row it steps: 1, else 0 */
 int gui_settings_step_all(GuiSettings* settings, int row, int step);
 /* the Alls' values after a change: their rows' word when they share one */

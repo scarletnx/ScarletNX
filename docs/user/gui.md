@@ -151,7 +151,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   (10 after a failure, while another file can still be picked); ESC cancels without changing them.
 - **Settings** opens on its groups, Enter opening one and ESC coming back: **App**, then
   **Launch** (the launcher's own and the recompiler's, from `src/nx/runtime/settings.txt`), then a group per section of the game's `.ini` (Display,
-  Graphics, Performance, Overlay, Controllers, Network, Debug; Overlay is the runtime's On-screen controls, the
+  Graphics, Audio, Performance, Overlay, Controllers, Network, Debug; Overlay is the runtime's On-screen controls, the
   name its page in the game and `settings.ini` keep), as `scarletnx --settings`
   prints them from the runtime's own tables: read from them in the same process where the menu is built into
   scarletnx (iOS too), so every section shows at once; a menu built alone asks `scarletnx --settings`. The game's menu's settings have its names and words
@@ -276,7 +276,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Share Log lists each entry.
   **Reset to Defaults**, the last row, puts every setting of the groups after App back to its default, asking first with how
   many change. A group of settings shows
-  a row each, its help above, Left/Right going round its values, Enter typing one. A value typed (a number, a text, a
+  a row each, its help above, Left/Right going round its values, Enter typing one. A slider's row, Audio's **Volume**,
+  has its value where the others' are and a slider at its right end, its knob at the value: Left/Right and Enter step
+  it, stopping at either end (the foot says the end: `Volume: 100% is its highest`), a click or a finger on the slider
+  takes the step under it, and a drag moves the knob along, each step kept at once. A value typed (a number, a text, a
   nickname, a theme's key, a color's `#RRGGBB`) is typed in a dialog, as UI scale's, never in the row: the row's label
   its title, the text with its cursor in a field, what the row takes under it with its numbers (`A number from 0.25 to
   16, two decimals at most; empty, the default 1`), then OK and Cancel. Enter or A is OK, ESC or B Cancel, Backspace
