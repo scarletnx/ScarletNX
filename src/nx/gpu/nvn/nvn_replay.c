@@ -15,6 +15,7 @@
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
+#include "nx/gpu/nvn/nvn_hook.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/hle/pool.h"
@@ -44,6 +45,7 @@ u32 nvn_replay_queue(void) {
     if (i == NVN_QUEUES) fatal("nvn: more than %d live queues", NVN_QUEUES);
     if (!g_nvn.replay.shown) g_nvn.replay.shown = syncpt_alloc();
     nvn_draw_init(&g_nvn.replay.q[i].d, 0x80000000u | i); /* renderer.h: the NVN replay's queues from 0x80000000 */
+    nvn_hook_start();                                     /* the hook modules' GPU chains, once (before any replay) */
     g_nvn.replay.q[i].syncpt = syncpt_alloc();
     pm_unlock(&g_nvn.replay.lock);
     return i + 1;
@@ -277,6 +279,7 @@ static void effects(NvnReplayQueue* q) {
 }
 static void replay(void* ctx, u32 op, u64 payload, u32 size) {
     NvnReplayQueue* q = ((Replay*)ctx)->q;
+    if (nvn_hook_record(&q->d, op, payload, size)) return; /* a hook module's chain took it (nvn_hook.h) */
     switch (op) {
         case OP_FENCE_SYNC: effect(FX_FENCE, 0, NULL, 0); break;
         case OP_REPORT_COUNTER: {
@@ -361,6 +364,7 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                 fatal("nvn: invalid resumed record at %llx: op %u size %u after %u", (unsigned long long)pc, op, h.size,
                       j->cursor[level].previous);
             if (op == OP_WAIT_EVENT || op == OP_WAIT_SYNC) {
+                nvn_hook_flush(&q->d); /* what a chain held back runs before the CPU can see the work before */
                 effects(q);
                 NvnReplayWait sync;
                 int over = wait_over(j, op, pc, h.size, &sync);
@@ -466,6 +470,7 @@ static int run(void* arg) {
             SNX_ZONE(z_replay, "nvn replay");
             if (g_renderer->stream_run) g_renderer->stream_run(1);
             int done = replay_records(j, q);
+            if (done) nvn_hook_flush(&q->d); /* a chain never holds work past its submission */
             effects(q);
             if (g_renderer->stream_run) g_renderer->stream_run(0);
             if (!done) return 0;
@@ -488,6 +493,7 @@ static int run(void* arg) {
             stream_incr(g_nvn.replay.settled);
             break;
         case JOB_DESTROY:
+            nvn_hook_forget(&q->d);
             nvn_draw_free(&q->d);
             stream_incr(q->syncpt);
             break;

@@ -290,9 +290,11 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # (src/nx/gpu/vk/fsr2, gpu/nvn/nvn_dlss.c): its library and Vulkan backend's sources and its GLSL passes, which the
     # build compiles (cmake/fsr2_shaders.cmake). The archive's prebuilt tools (tools/sc, Windows programs) are not used
     AddJsonPackage(NAME fidelityfx-fsr2 DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
-    # Its library carries one patch (.patch/fidelityfx-fsr2/0001-memory-types.patch): the backend takes device-local
+    # Its library carries two patches (.patch/fidelityfx-fsr2). 0001-memory-types.patch: the backend takes device-local
     # memory only from a type that is not host-visible, and found none where every device-local type is (lavapipe, some
-    # integrated GPUs), so no context could be made there
+    # integrated GPUs), so no context could be made there. 0002-fsr1-easu-glsl.patch: FSR 1's EASU in its ffx_fsr1.h,
+    # which FSR 2 never compiles, puts a comparison in an integer, which GLSL refuses. The upscalers' spatial pass
+    # compiles it (src/nx/gpu/vk/upscaler/up_easu.comp)
     set(snx_fsr2_api_dir "${FidelityFX-FSR2_SOURCE_DIR}/src/ffx-fsr2-api")
     # RenderDoc's in-application API, one header (renderdoc, gpu/vk/renderdoc.c), from the release tag
     snx_package_file(renderdoc_app)

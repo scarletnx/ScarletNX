@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 the ScarletNX contributors
+// The spatial upscaler's first pass (upscaler.h's SNX_UPSCALER_SPATIAL): AMD FidelityFX Super Resolution 1's edge
+// adaptive upsampling, EASU (ffx_fsr1.h from FidelityFX-FSR2 2.2.1, MIT, Copyright (c) 2022 Advanced Micro Devices,
+// Inc.), of the picture's rectangle (render, from the corner of an image of size) to the output's size. Its constants
+// are made here from the sizes, as ffx_fsr1.h allows on the GPU
+#version 450
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D picture;
+layout(binding = 1) uniform writeonly image2D result;
+layout(push_constant) uniform Pass {
+    uvec2 render, size, output_size;
+    float sharpness, pad;
+} pass;
+#include "ffx_core.h"
+#define FFX_FSR_EASU_FLOAT 1
+FfxFloat32x4 FsrEasuRF(FfxFloat32x2 p) { return textureGather(picture, p, 0); }
+FfxFloat32x4 FsrEasuGF(FfxFloat32x2 p) { return textureGather(picture, p, 1); }
+FfxFloat32x4 FsrEasuBF(FfxFloat32x2 p) { return textureGather(picture, p, 2); }
+#include "ffx_fsr1.h"
+void main() {
+    uvec2 p = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(p, pass.output_size))) return;
+    FfxUInt32x4 con0, con1, con2, con3;
+    ffxFsrPopulateEasuConstants(con0, con1, con2, con3, float(pass.render.x), float(pass.render.y), float(pass.size.x),
+                                float(pass.size.y), float(pass.output_size.x), float(pass.output_size.y));
+    FfxFloat32x3 color;
+    ffxFsrEasuFloat(color, p, con0, con1, con2, con3);
+    imageStore(result, ivec2(p), vec4(color, 1.0));
+}

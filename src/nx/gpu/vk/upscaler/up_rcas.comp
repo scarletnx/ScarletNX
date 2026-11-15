@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 the ScarletNX contributors
+// The spatial upscaler's sharpening pass (upscaler.h's SNX_UPSCALER_SPATIAL with a sharpness): AMD FidelityFX Super
+// Resolution 1's robust contrast adaptive sharpening, RCAS (ffx_fsr1.h from FidelityFX-FSR2 2.2.1, MIT, Copyright (c)
+// 2022 Advanced Micro Devices, Inc.), of EASU's result at the output's size. The sharpness 0 to 1 is FSR 2's: 2 - 2s
+// stops below the strongest, as ffx_fsr2.cpp maps it
+#version 450
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D picture;
+layout(binding = 1) uniform writeonly image2D result;
+layout(push_constant) uniform Pass {
+    uvec2 render, size, output_size;
+    float sharpness, pad;
+} pass;
+#include "ffx_core.h"
+#define FSR_RCAS_F 1
+FfxFloat32x4 FsrRcasLoadF(FfxInt32x2 p) { return texelFetch(picture, clamp(p, ivec2(0), ivec2(pass.output_size) - 1), 0); }
+void FsrRcasInputF(inout FfxFloat32 r, inout FfxFloat32 g, inout FfxFloat32 b) {}
+#include "ffx_fsr1.h"
+void main() {
+    uvec2 p = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(p, pass.output_size))) return;
+    FfxUInt32x4 con = FfxUInt32x4(floatBitsToUint(exp2(-(2.0 - 2.0 * clamp(pass.sharpness, 0.0, 1.0)))), 0, 0, 0);
+    FfxFloat32 r, g, b;
+    FsrRcasF(r, g, b, p, con);
+    imageStore(result, ivec2(p), vec4(r, g, b, 1.0));
+}
