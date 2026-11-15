@@ -1479,8 +1479,11 @@ VkImageView vk_storage_image_view(Surf* t, const ShaderInfo* si, int i, u64* byt
                 : t->depth3d != 1 || (si->img[i].type != 3 && si->img[i].type != 4)) ||
         !*bytes || *bytes > UINT32_MAX)
         return VK_NULL_HANDLE;
+    /* an sRGB surface is written through its linear twin (vk_tex_storage_view's view, surf_create_'s EXTENDED_USAGE):
+       NVN's image stores convert no sRGB, so the program's bytes land as it wrote them. One game's upscaler stores
+       its already encoded frame into an RGBA8 sRGB image, and refused, its whole frame stayed black */
     if (kind == 1 ? t->f.vk != VK_FORMAT_R32_UINT
-                  : !vk_format_storage_write(t->f.vk) || kind != (t->f.is_int ? t->f.sint ? 3 : 2 : 0))
+                  : !vk_format_storage_write(vk_srgb_as(t->f.vk, 0)) || kind != (t->f.is_int ? t->f.sint ? 3 : 2 : 0))
         return VK_NULL_HANDLE;
     /* a 2D array surface sees every layer of the image, a single layer one too */
     return vk_tex_storage_view(t, vk_storage_image_type(si, i));
