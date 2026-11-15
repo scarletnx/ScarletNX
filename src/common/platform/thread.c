@@ -271,6 +271,7 @@ void plat_wait_word(uint32_t* w, uint32_t v, int64_t timeout_ns) {
     WaitOnAddress(w, &v, sizeof v, ms);
 }
 void plat_wake_word(uint32_t* w) { WakeByAddressAll(w); }
+void plat_wake_word_one(uint32_t* w) { WakeByAddressSingle(w); }
 
 uint32_t plat_tid(void) { return (uint32_t)GetCurrentThreadId(); }
 #else
@@ -421,6 +422,17 @@ void plat_wake_word(uint32_t* w) {
     syscall(SYS___futex, w, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, INT_MAX, NULL, NULL, 0, 0);
 #else
     __ulock_wake(SNX_UL_COMPARE_AND_WAIT | SNX_ULF_WAKE_ALL | SNX_ULF_NO_ERRNO, w, 0);
+#endif
+}
+void plat_wake_word_one(uint32_t* w) {
+#if defined(__linux__)
+    syscall(SYS_futex, w, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+#elif defined(__FreeBSD__)
+    _umtx_op(w, UMTX_OP_WAKE_PRIVATE, 1, NULL, NULL);
+#elif defined(__NetBSD__)
+    syscall(SYS___futex, w, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1, NULL, NULL, 0, 0);
+#else
+    __ulock_wake(SNX_UL_COMPARE_AND_WAIT | SNX_ULF_NO_ERRNO, w, 0);
 #endif
 }
 

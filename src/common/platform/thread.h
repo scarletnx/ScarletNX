@@ -78,9 +78,11 @@ int pc_wait(PCond* c, PMutex* m, int64_t timeout_ns);
 
 /* ---- waiting on a word, with no lock (a futex on Linux): plat_wait_word blocks while *w holds v, for at most
    timeout_ns (negative: no limit), and may also return early for no reason; plat_wake_word wakes every thread waiting
-   on w. The waker changes *w before it wakes them */
+   on w, plat_wake_word_one one of them (a lock's next owner, where waking them all has the rest wait again). The waker
+   changes *w before it wakes them */
 void plat_wait_word(uint32_t* w, uint32_t v, int64_t timeout_ns);
 void plat_wake_word(uint32_t* w);
+void plat_wake_word_one(uint32_t* w);
 
 /* ---- threads */
 typedef void (*PThreadFn)(void* arg);
