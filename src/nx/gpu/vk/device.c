@@ -2026,6 +2026,14 @@ static int create_device(void) {
     g_vk.feat2 = (VkPhysicalDeviceFeatures2){
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &g_vk.feat11, .features = g_vk.feat};
     volkLoadDevice(g_vk.dev);
+    /* NVIDIA's 621.01 lists VK_EXT_depth_clamp_control and its depthClampControl, and the device is made with both,
+       yet vkGetDeviceProcAddr has no vkCmdSetDepthClampRangeEXT: the recorder called a null pointer at the first
+       draw that clamps to a range of its own. Without the command no pipeline takes the range as dynamic state */
+    if (g_vk.has_depth_clamp_range && !vkCmdSetDepthClampRangeEXT) {
+        g_vk.has_depth_clamp_range = 0;
+        LOG("vulkan: a clamped depth stays in the viewport transform's range, where the console clamps to the "
+            "viewport's clip range (the driver has VK_EXT_depth_clamp_control without vkCmdSetDepthClampRangeEXT)\n");
+    }
     const char* lacks_command = NULL;
     if (!core13 && !vk12_commands(&lacks_command)) {
         WARN("vulkan: %s enabled the extensions 1.3 took in, but has no %s\n", g_vk.props.deviceName, lacks_command);

@@ -156,7 +156,9 @@ one. With it, the clip is a state of its own (`depth_clip`), as the console's cl
 clamp apart; a dynamic clamp without a dynamic clip would turn the clip the other way whatever the pipeline says
 (`vkCmdSetDepthClampEnableEXT`), so the extension is used with a dynamic clamp only where the clip is dynamic too.
 The clamp's range (`VK_EXT_depth_clamp_control`) is the viewport's clip range, or 0 to 1 where the clip control forces
-it (bit 0, the console's clamp off), set with the viewport on both paths and in no key.
+it (bit 0, the console's clamp off), set with the viewport on both paths and in no key. A driver that lists the
+extension and its feature but gives no `vkCmdSetDepthClampRangeEXT` (NVIDIA's 621.01) runs without the range: the
+command is checked once the device's functions are loaded.
 
 Each part lists only the dynamic states of its own subset in its `pDynamicState`, as vkd3d-proton does with its
 `VKD3D_VERTEX_INPUT_DYNAMIC_STATE_MASK` and `VKD3D_FRAGMENT_OUTPUT_DYNAMIC_STATE_MASK`. The link and the optimized
