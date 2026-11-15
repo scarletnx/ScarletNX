@@ -4,11 +4,19 @@
    each side of the barrier shows what it did: a barrier from all work ends the first clear's pass, so the second clear
    begins another, and a barrier in the pass leaves both clears in one pass.
 
-   With nothing before it that the renderer does not order where it is bound, each kind stays in the pass on every
-   descriptor form. After a storage write that is still pending, a device that draws with descriptor sets ends the pass
-   for both kinds. One with descriptor buffers or heaps keeps a fragment barrier in the pass as before, and ends it for
-   an invalidation. A wait for idle (kind 4) just after a barrier from all work, with no command between them, records
-   no second barrier: the first orders all that it would. With a clear between them, it records its own. */
+   Each case begins after a wait for idle, with nothing pending: a write that an earlier case or check left, which a
+   barrier in the pass only asks to order, is not this case's. With nothing pending, each kind stays in the pass on
+   every descriptor form.
+
+   A storage write before the barrier (vk_buf_copy_writable, as a draw binds a storage buffer it writes) takes the way
+   this device's memory gives it: a result or page cache write that the order counts, or a write in place in guest
+   memory (unified memory, which uma.c orders at the next use of its bytes). Where the order counts the write, a device
+   that draws with descriptor sets ends the pass for both kinds, and one with descriptor buffers or heaps for an
+   invalidation only. On every way, a draw that reads the bytes after the barrier (a third clear after a read binding of
+   them) is in another pass than the draw before the barrier: the barrier's own or the binding's ordered them.
+
+   A wait for idle just after a barrier from all work, with no command between them, records no second barrier: the
+   first orders all that it would. With a clear between them, it records its own. */
 static void fragment_barrier_clear(GpuChannel* channel, u64 target) {
     u32* r = channel->r3d;
     const float color[4] = {0.25f, 0.5f, 0.75f, 1};
@@ -23,38 +31,64 @@ static void fragment_barrier_clear(GpuChannel* channel, u64 target) {
     memcpy(&r[0x360], color, sizeof color);
     engine_clear(channel, 15 << 2);
 }
-/* a storage write still pending, as a draw that writes a storage buffer leaves it: 0 when it could not be made */
+/* what a barrier from all work orders that the renderer keeps count of (vk_lock) */
+static int fragment_barrier_counted(void) { return vk_buf_order_pending(0) || vk_pages_order_pending(); }
+enum { FB_NONE, FB_COUNTED, FB_IN_PLACE };
+/* a storage write still pending, as a draw that writes a storage buffer leaves it: FB_COUNTED or FB_IN_PLACE, FB_NONE
+   when it could not be made */
 static int fragment_barrier_write(u64 stored) {
     vk_lock();
     VkBuffer output;
     u64 at;
     int made = vk_buf_copy_writable(stored, 32, &output, &at, 0);
     if (made) vk_buf_writable_commit();
-    made = made && vk_buf_order_pending(1);
+    int way = !made                        ? FB_NONE
+              : fragment_barrier_counted() ? FB_COUNTED
+              : vk_uma_pending(stored, 32) ? FB_IN_PLACE
+                                           : FB_NONE;
     vk_unlock();
-    return made;
+    return way;
 }
-/* the passes that two clears around a barrier of kind take, with a storage write pending before it or not. ~0 when
-   the write was not pending at the barrier */
-static u64 fragment_barrier_passes(GpuChannel* channel, u64 target, u64 stored, int kind, int pending) {
+/* The passes of two clears around a barrier of kind, from a wait for idle on, after a storage write to stored or not
+   (*way), with a read binding of the write's bytes and a third clear after the second clear when read. *counted: the
+   order counted something at the barrier. ~0 when the case could not be set up */
+static u64 fragment_barrier_passes(GpuChannel* channel, u64 target, u64 stored, int kind, int pending, int read,
+                                   int* way, int* counted) {
+    *way = FB_NONE;
+    *counted = 0;
     vk_lock();
     vk_render_end();
     vk_unlock();
-    if (pending && !fragment_barrier_write(stored)) return ~0ull;
+    g_renderer->method_barrier(4);
+    vk_lock();
+    int clean = !fragment_barrier_counted();
+    vk_unlock();
+    if (!clean || (pending && !(*way = fragment_barrier_write(stored)))) return ~0ull;
     u64 before = g_vk_passes;
     fragment_barrier_clear(channel, target);
     vk_lock();
-    int still = !pending || vk_buf_order_pending(1);
+    *counted = fragment_barrier_counted();
     vk_unlock();
     g_renderer->method_barrier(kind);
     fragment_barrier_clear(channel, target);
+    int bound = 1;
+    if (read) {
+        VkBuffer buffer;
+        u64 at;
+        vk_lock();
+        bound = vk_buf_get_strict(stored, 32, &buffer, &at);
+        vk_unlock();
+        fragment_barrier_clear(channel, target);
+    }
     vk_lock();
     vk_render_end();
     vk_unlock();
-    return still ? g_vk_passes - before : ~0ull;
+    return bound ? g_vk_passes - before : ~0ull;
 }
 static int check_fragment_barrier_backend(void) {
     const u64 gpu = 0x8c0000000ull, cpu = HEAP_BASE + 0x11900000, stored = gpu + 0x8000;
+    static const char* const ways[3] = {"nothing pending", "a storage write the order counts",
+                                        "a storage write in place in guest memory"};
     CHECK(!mem_map(cpu, 0x10000, MS_NORMAL, PERM_RW));
     gmmu_map(gpu, cpu, 0x10000);
     GpuChannel* channel = calloc(1, sizeof *channel);
@@ -71,17 +105,30 @@ static int check_fragment_barrier_backend(void) {
         if (sets) g_vk.has_descriptor_buffers = g_vk.has_descriptor_heap_support = 0;
         int in_heaps = g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support;
         vk_unlock();
+        const char* form = sets ? "descriptor sets" : "this device's descriptors";
         static const int kinds[2] = {0, 2};
         for (u32 k = 0; k < 2; k++)
             for (int pending = 0; pending < 2; pending++) {
-                u64 want = pending && !(kinds[k] == 0 && in_heaps) ? 2 : 1;
-                u64 got = fragment_barrier_passes(channel, gpu, stored, kinds[k], pending);
+                int way, counted;
+                u64 got = fragment_barrier_passes(channel, gpu, stored, kinds[k], pending, 0, &way, &counted);
+                u64 want = counted && !(kinds[k] == 0 && in_heaps) ? 2 : 1;
                 if (got != want) {
                     fprintf(stderr,
-                            "barrier kind %d on %s, %s: %llu passes (%llu expected; ~0: the write was not pending)\n",
-                            kinds[k], sets ? "descriptor sets" : "this device's descriptors",
-                            pending ? "a storage write pending" : "nothing pending", (unsigned long long)got,
+                            "barrier kind %d on %s, %s, %s at the barrier: %llu passes (%llu expected; ~0: the case "
+                            "could not be set up)\n",
+                            kinds[k], form, pending ? ways[way] : ways[FB_NONE],
+                            counted ? "something counted" : "nothing counted", (unsigned long long)got,
                             (unsigned long long)want);
+                    failed = 1;
+                }
+                if (!pending) continue;
+                /* a draw after the barrier that reads the bytes: in another pass than the one the write came before */
+                got = fragment_barrier_passes(channel, gpu, stored, kinds[k], 1, 1, &way, &counted);
+                if (got < 2 || got == ~0ull) {
+                    fprintf(stderr,
+                            "barrier kind %d on %s, %s: a draw reading its bytes after the barrier had %llu passes "
+                            "with the draw before it (2 or more expected; ~0: the case could not be set up)\n",
+                            kinds[k], form, ways[way], (unsigned long long)got);
                     failed = 1;
                 }
             }
@@ -89,9 +136,8 @@ static int check_fragment_barrier_backend(void) {
             vk_lock();
             vk_render_end();
             vk_unlock();
-            if (!fragment_barrier_write(stored)) failed = 1;
             fragment_barrier_clear(channel, gpu);
-            g_renderer->method_barrier(0);
+            g_renderer->method_barrier(4);
             merged = g_vk_barriers_merged;
             g_renderer->method_barrier(4);
             merged = g_vk_barriers_merged - merged;
@@ -110,8 +156,8 @@ static int check_fragment_barrier_backend(void) {
     free(channel);
     if (merged != 1 || kept != 0)
         fprintf(stderr,
-                "wait for idle after a fragment barrier on descriptor sets: %llu merged (1 expected), %llu after a "
-                "clear (0 expected)\n",
+                "wait for idle just after a barrier from all work on descriptor sets: %llu merged (1 expected), %llu "
+                "after a clear (0 expected)\n",
                 (unsigned long long)merged, (unsigned long long)kept);
     CHECK(merged == 1 && kept == 0);
     CHECK(!failed);
