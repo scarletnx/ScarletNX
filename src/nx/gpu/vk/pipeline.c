@@ -1630,9 +1630,9 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
                                             .pColorAttachmentFormats = o->cf,
                                             .depthAttachmentFormat = (VkFormat)k->depth,
                                             .stencilAttachmentFormat = (VkFormat)k->stencil};
-    /* Select strict vertex bounds without enabling robustness2 globally for
-       storage/uniform buffers or compute pipelines. Per-pipeline selection
-       requires the feature to be supported, not enabled device-wide. */
+    /* Strict vertex bounds for each draw pipeline. Per-pipeline selection needs robustBufferAccess2 to be
+       supported, not enabled: on a device without robustBufferAccess (which the device-wide feature needs, device.c),
+       vertex inputs still get it. */
     o->robustness = (VkPipelineRobustnessCreateInfoEXT){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO_EXT,
         .vertexInputs = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT};
