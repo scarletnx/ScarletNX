@@ -148,6 +148,10 @@ static inline void hook_put_f64(CPU* c, HookField_f64 f, u64 addr, f64 v) {
    checks that its tables fit */
 #define HOOK_SITES 1024
 
+/* the slots of the index of the sites by address (HostHook's index): twice the sites, so that a search reads a slot or
+   two */
+#define HOOK_INDEX_BITS 11
+
 /* verify mode's scratch memory: slots of guest memory in the kernel region, each call verified taking one without
    waiting (a guest thread may lose its core inside the function's own code, and another verifying a call then must
    not wait for it) */
@@ -169,6 +173,9 @@ typedef struct {
     GuestFn orig[HOOK_SITES]; /* its recompiled code, which its slot held */
     u8 stale[HOOK_SITES];     /* atomic: the game changed the function's code (a mod's patch), so orig is stale */
     GuestFn fn[HOOK_SITES];   /* what its slot holds now: the hook's adapter, or verify mode's check */
+    /* each site by its address, for the calls that find a site from it: site + 1 in the slot of the address's hash or
+       in the first empty one after it, 0 in an empty slot */
+    u16 index[1u << HOOK_INDEX_BITS];
     /* the function's first 20 bytes at hook_install (fewer at the end of the code): the first 4, which a mod's hook
        writes over, are compared; all of them find the mod's trampoline */
     u32 head[HOOK_SITES][5];

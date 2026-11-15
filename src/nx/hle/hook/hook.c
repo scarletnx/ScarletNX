@@ -23,6 +23,8 @@
 
 /* a site for every hook of either table, so that no family is left half native (hook.h) */
 typedef char hook_sites_hold_the_tables[HOOK_COUNT <= HOOK_SITES && HOOK32_COUNT <= HOOK_SITES ? 1 : -1];
+/* an index slot for every site twice over, each holding a site + 1 */
+typedef char hook_index_holds_the_sites[(1u << HOOK_INDEX_BITS) >= 2 * HOOK_SITES && HOOK_SITES < 65535 ? 1 : -1];
 
 /* whether a setting's list (hooks_off, hooks_verify) names family: one of its words, separated by commas or spaces */
 static int family_listed(const char* list, const char* family) {
@@ -103,12 +105,17 @@ void hook_missed_text(char* out, size_t n) {
              (g_arm_mod ? g_arm_mod->mods : g_mod->mods)[h->missed_module].name, version, ranges);
 }
 
-/* the site of the hooked function at addr; -1 for none */
+/* the index slot where the search for addr starts: its hash, Fibonacci's of the address in instructions */
+static u32 index_slot(u64 addr) { return (u32)((addr >> 2) * 0x9E3779B97F4A7C15ull >> (64 - HOOK_INDEX_BITS)); }
+
+/* the site of the hooked function at addr; -1 for none. Each call a hook's own code runs (hook_run_original) and each
+   invalidated hook's call asks it, so it reads the index, where the slots from addr's hash to an empty one hold every
+   site that can be addr's */
 static int site_of(u64 addr) {
     const HostHook* h = &g_host.hook;
-    u32 i;
-    for (i = 0; i < h->count; i++)
-        if (h->addr[i] == addr) return (int)i;
+    u32 s, i;
+    for (s = index_slot(addr); (i = h->index[s]) != 0; s = (s + 1) & ((1u << HOOK_INDEX_BITS) - 1))
+        if (i <= h->count && h->addr[i - 1] == addr) return (int)i - 1;
     return -1;
 }
 
@@ -274,6 +281,7 @@ static void hook_put(int k, u64 addr, u32 sdk, u64 end, const char* name, const 
     HostHook* h = &g_host.hook;
     GuestFn* slot;
     int i;
+    u32 s;
     if (h->count == HOOK_SITES)
         fatal("hooks: no site left for %s at %llx: the runtime holds %d, one for each hook, and the game's modules "
               "export the functions of the hooks more than once",
@@ -289,6 +297,8 @@ static void hook_put(int k, u64 addr, u32 sdk, u64 end, const char* name, const 
     h->sdk[h->count] = sdk;
     h->ext[h->count] = NULL;
     h->tramp[h->count] = 0;
+    for (s = index_slot(addr); h->index[s]; s = (s + 1) & ((1u << HOOK_INDEX_BITS) - 1)) {}
+    h->index[s] = (u16)(h->count + 1);
     __atomic_store_n(slot, h->fn[h->count], __ATOMIC_RELEASE);
     nce_slot_taken(addr, hook_family_name[hook_family[k]]);
     jit_slot_taken(addr, h->fn[h->count]);
@@ -600,11 +610,15 @@ static u64 own_entry(int i) {
     return t ? t : g_host.hook.addr[i];
 }
 
-GuestFn hook_original(u64 addr) {
-    int i = site_of(addr);
-    if (i < 0) return NULL;
+/* the own code of site i: what its slot held, or once the game changed it what the JIT makes of it now */
+static GuestFn original_of(int i) {
     if (!__atomic_load_n(&g_host.hook.stale[i], __ATOMIC_ACQUIRE)) return g_host.hook.orig[i];
     return jit_code_now(own_entry(i));
+}
+
+GuestFn hook_original(u64 addr) {
+    int i = site_of(addr);
+    return i < 0 ? NULL : original_of(i);
 }
 
 void hook_orig_stale(GuestFn f) {
@@ -622,8 +636,8 @@ const char* hook_at(u64 addr, const char** handler) {
 }
 
 void hook_run_original(CPU* c, u64 addr) {
-    GuestFn own = hook_original(addr);
     int i = site_of(addr);
+    GuestFn own = i < 0 ? NULL : original_of(i);
     u64 ret = c->x[30], sp = c->x[31];
     if (!own) fatal("hook: no hook at %llx to run the code of", (unsigned long long)addr);
     own(c, own_entry(i));
