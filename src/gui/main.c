@@ -2768,6 +2768,7 @@ static const char* ask_question(App* app) {
         case GUI_ASK_OUTSIDE: return snx_tr("Outside the app, Android checks every file access: games may run slower.");
         case GUI_ASK_ROOM: return app->room_line;
         case GUI_ASK_CLEAN:
+        case GUI_ASK_CLEAN_OWN:
         case GUI_ASK_RESET:
         case GUI_ASK_PLACES:
         case GUI_ASK_PLACE:
@@ -3198,13 +3199,15 @@ static GuiRect choices_over(const App* app) {
 #define SAY_AGAIN SNX_TR_NOOP("press again")
 #endif
 /* the questions over a run, the menu or a form (GuiAsk's order): the first choice keeps things as they are, but
-   GUI_ASK_ADDONS's Yes, the answer it is asked for, which neither choice keeps */
+   GUI_ASK_ADDONS's Yes, the answer it is asked for, which neither choice keeps, and GUI_ASK_CLEAN_OWN's, both cleans,
+   which Back keeps from */
 static const char* const ask_choices[][2] = {{SNX_TR_NOOP("Continue"), SNX_TR_NOOP("Abort")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Exit")},
                                              {SNX_TR_NOOP("Only This Folder"), SNX_TR_NOOP("With Subfolders")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Use Anyway")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Run Anyway")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Clean")},
+                                             {SNX_TR_NOOP("Keep the Games' Own"), SNX_TR_NOOP("With the Games' Own")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Reset")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Reset")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Reset")},
@@ -3231,6 +3234,7 @@ static const unsigned ask_tones[] = {UI_ATTR_CAUTION, /* Abort: the run ends */
                                      UI_ATTR_CAUTION, /* Use Anyway: a folder Android slows */
                                      UI_ATTR_CAUTION, /* Run Anyway: an extraction that may not fit */
                                      UI_ATTR_CAUTION, /* Clean: the old keys taken out */
+                                     UI_ATTR_CAUTION, /* With the Games' Own: their old keys too */
                                      UI_ATTR_CAUTION, /* Reset: every setting */
                                      UI_ATTR_CAUTION, /* Reset: every folder picked */
                                      UI_ATTR_CAUTION, /* Reset: a folder picked */
@@ -13737,8 +13741,8 @@ static void setup_keyboard(App* app) {
     if (app->setup_on && app->setup_typing && !SDL_TextInputActive(app->window)) SDL_StartTextInput(app->window);
 }
 static int setup_notices(const App* app, int* list);
-static int clean_count(App* app, int* inis, int* keys);
-static void clean_old(App* app);
+static int clean_count(App* app, int* inis, int* keys, int* own);
+static void clean_old(App* app, bool own);
 static int left_groups(const App* app);
 static int left_pages_of(const App* app);
 static int left_group_first(const App* app, int page);
@@ -13761,13 +13765,17 @@ static bool notice_cleans(const App* app) {
 static void notice_choices(App* app, bool back) {
     int list[SNX_NOTICES], backs = app->setup_top > 0;
     if (app->setup_top == setup_notices(app, list) - 1 && app->clean_inis_found < 0)
-        clean_count(app, &app->clean_inis_found, &app->clean_keys_found);
+    {
+        int own;
+        clean_count(app, &app->clean_inis_found, &app->clean_keys_found, &own);
+        app->clean_keys_found += own; /* Clean Now takes the games' own too */
+    }
     app->setup_choice.count = backs + (notice_cleans(app) ? 2 : 1);
     app->setup_choice.focus = back && backs ? 0 : backs;
 }
 /* the last notice's Clean Now: Clean Old Settings, as App's, said in the notice's box rather than over the screen */
 static void clean_now(App* app) {
-    clean_old(app);
+    clean_old(app, true);
     app->cleaned_shown = false;
     app->setup_cleaned = true;
     app->clean_found = -1; /* App looks again */
@@ -14693,7 +14701,7 @@ static bool entry_nth(const GuiCleaned* c, int k, bool* ok, char* file, char* wh
     }
     return false;
 }
-static void clean_said(char* line, size_t size, int inis, int keys);
+static void clean_said(char* line, size_t size, int inis, int keys, int own);
 /* a box of entries (GuiCleaned's) under its label, after lines: each where it is (-, its path short) and under it what
    was done to it or why not, the failure colour on one not done; rolling as setup_rows' rows when they do not fit */
 static void setup_entries_box(App* app, GuiRect r, const char* label, const char* const* lines, int n,
@@ -14762,7 +14770,7 @@ static void setup_notices_box(App* app, GuiRect r) {
             snprintf(text[k], sizeof text[k], snx_tr("Cleaned: %d done, %d not"), app->cleaned.done,
                      app->cleaned.count - app->cleaned.done);
         else
-            clean_said(text[k], sizeof text[k], app->clean_inis_found, app->clean_keys_found);
+            clean_said(text[k], sizeof text[k], app->clean_inis_found, app->clean_keys_found, 0);
         lines[k] = text[k];
         ++k;
     }
@@ -16120,12 +16128,47 @@ static void clean_keys(App* app, const char* file, const char* unread, int faile
     snprintf(what, sizeof what, failed ? snx_tr("Not written without %s") : snx_tr("Removed %s"), unread);
     gui_cleaned_add(&app->cleaned, !failed, file, what);
 }
-/* it done, each file an entry of app->cleaned, which shows over the screen */
-static void clean_old(App* app) {
+/* each game's own picks (gui_picks_files in ini_folders) holding keys no setting takes, how many keys in *keys; with
+   done, each written again without them, removed with no pick left, an entry each. None while the runtime has listed
+   no settings: every key would look old */
+static int clean_picks(App* app, GuiCleaned* done, int* keys) {
+    char *folders[GUI_FOLDERS_MAX + 2], **paths, unread[1024], what[1100];
+    GuiSettings game = {0};
+    int got = ini_folders(app, folders), n = got, i, files = 0, failed;
+    size_t k, count;
+    *keys = 0;
+    if (settings_of(app)->count <= app->settings.own ||
+        gui_settings_read_game(&game, app->settings_list ? app->settings_list : ""))
+        n = 0;
+    gui_settings_mark(&game);
+    for (i = 0; i < n; ++i) {
+        count = gui_picks_files(folders[i], &paths);
+        for (k = 0; k < count; ++k) {
+            int stale = gui_settings_unread(&game, paths[k], unread, sizeof unread);
+            if (!stale) continue;
+            ++files;
+            *keys += stale;
+            if (!done) continue;
+            gui_settings_reset(&game, -1);
+            gui_settings_load(&game, paths[k], NULL, 0);
+            failed = gui_settings_changed(&game) ? gui_settings_save(&game, paths[k]) : remove(paths[k]) != 0;
+            snprintf(what, sizeof what, failed ? snx_tr("Not written without %s") : snx_tr("Removed %s"), unread);
+            gui_cleaned_add(done, !failed, paths[k], what);
+        }
+        snx_free_strings(paths, count);
+    }
+    for (i = 0; i < got; ++i) free(folders[i]);
+    gui_settings_free(&game);
+    return files;
+}
+/* it done, each file an entry of app->cleaned, which shows over the screen; with own, each game's own picks too */
+static void clean_old(App* app, bool own) {
     char unread[1024];
+    int keys;
     gui_cleaned_free(&app->cleaned);
     app->report_move = app->report_delete = false;
     clean_inis(app, &app->cleaned);
+    if (own) clean_picks(app, &app->cleaned, &keys);
     if (settings_unread(app, unread, sizeof unread))
         clean_keys(app, app->settings_file, unread, gui_settings_save(&app->settings, app->settings_file));
     if (app_read(app, false, unread, sizeof unread, NULL, 0)) /* the picks as the menu has them, nothing else */
@@ -16443,14 +16486,16 @@ static void left_move_ask(App* app) {
 }
 /* what Clean Old Settings would take out: the .ini files with a [Deprecated] section in inis, the keys of the menu's
    own files nothing reads in keys; both */
-static int clean_count(App* app, int* inis, int* keys) {
+static int clean_count(App* app, int* inis, int* keys, int* own) {
     char unread[16];
     *inis = clean_inis(app, NULL);
     *keys = settings_unread(app, unread, sizeof unread) + app_read(app, false, unread, sizeof unread, NULL, 0);
-    return *inis + *keys;
+    clean_picks(app, NULL, own);
+    return *inis + *keys + *own;
 }
-/* the question of Clean Old Settings that takes them, into line */
-static void clean_said(char* line, size_t size, int inis, int keys) {
+/* the question of Clean Old Settings that takes them, into line; the games' own picks' old keys after it */
+static void clean_said(char* line, size_t size, int inis, int keys, int own) {
+    size_t n;
     if (inis && keys)
         snprintf(line, size,
                  keys > 1 ? snx_tr("Clean Old Settings? [Deprecated] in %d .ini, %d old keys")
@@ -16458,20 +16503,38 @@ static void clean_said(char* line, size_t size, int inis, int keys) {
                  inis, keys);
     else if (inis)
         snprintf(line, size, snx_tr("Clean Old Settings? [Deprecated] in %d .ini"), inis);
-    else
+    else if (keys)
         snprintf(line, size,
                  keys > 1 ? snx_tr("Clean Old Settings? %d old keys") : snx_tr("Clean Old Settings? %d old key"), keys);
+    else
+        snprintf(line, size, "%s", snx_tr("Clean Old Settings?"));
+    n = strlen(line);
+    if (own && n < size)
+        snprintf(line + n, size - n,
+                 own > 1 ? snx_tr(" The games' own settings keep %d old keys.")
+                         : snx_tr(" The games' own settings keep %d old key."),
+                 own);
 }
-/* App's row: what it would take out, in a box (GUI_ASK_CLEAN), else that there is nothing */
+/* App's row: what it would take out, in a box (GUI_ASK_CLEAN, GUI_ASK_CLEAN_OWN with the games' own picks in focus
+   while they keep old keys), else that there is nothing */
 static void clean_row(App* app) {
-    int inis, keys;
-    if (!clean_count(app, &inis, &keys)) {
+    int inis, keys, own;
+    if (!clean_count(app, &inis, &keys, &own)) {
         snprintf(app->editor.note, sizeof app->editor.note, "%s",
                  snx_tr("Nothing to clean: no [Deprecated] in a game's .ini, no old keys"));
         return;
     }
-    clean_said(app->ask_line, sizeof app->ask_line, inis, keys);
-    gui_confirm_open(&app->confirm, GUI_ASK_CLEAN, false);
+    clean_said(app->ask_line, sizeof app->ask_line, inis, keys, own);
+    gui_confirm_open(&app->confirm, own ? GUI_ASK_CLEAN_OWN : GUI_ASK_CLEAN, false);
+    if (own) gui_confirm_focus(&app->confirm, 1);
+}
+/* GUI_ASK_CLEAN_OWN answered: a choice picked cleans, the games' own picks too with second; Back nothing */
+static void clean_answer(App* app, bool picked, bool second) {
+    if (!picked) return;
+    clean_old(app, second);
+    app->clean_found = -1;
+    snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Cleaned: %d done, %d not"), app->cleaned.done,
+             app->cleaned.count - app->cleaned.done);
 }
 /* Settings > App's Reset to Defaults: how many settings it changes, in a box (GUI_ASK_RESET), else that none */
 static void settings_reset_ask(App* app) {
@@ -16499,7 +16562,7 @@ static void settings_reset_ask(App* app) {
 static void change_answer(App* app, GuiAsk ask, bool taken) {
     if (!taken) return;
     if (ask == GUI_ASK_CLEAN) {
-        clean_old(app);
+        clean_old(app, true);
         app->clean_found = -1;
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Cleaned: %d done, %d not"), app->cleaned.done,
                  app->cleaned.count - app->cleaned.done);
@@ -20272,6 +20335,8 @@ static void ask_key(App* app, GuiKey key) {
         made_answer(app, key == GUI_SELECT, second);
     else if (ask == GUI_ASK_ADDONS)
         addons_answer(app, key == GUI_SELECT, second);
+    else if (ask == GUI_ASK_CLEAN_OWN)
+        clean_answer(app, key == GUI_SELECT, second);
     else if (ask == GUI_ASK_CLEAN || ask == GUI_ASK_RESET || ask == GUI_ASK_PLACES || ask == GUI_ASK_PLACE ||
              ask == GUI_ASK_FOLDER || ask == GUI_ASK_MOVE || ask == GUI_ASK_STATE || ask == GUI_ASK_CACHE ||
              ask == GUI_ASK_DRIVER || ask == GUI_ASK_CRASH)

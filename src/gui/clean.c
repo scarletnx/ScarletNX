@@ -132,6 +132,41 @@ int gui_clean_inis(GuiCleaned* done, const char* folder) {
     snx_free_strings(names, count);
     return found;
 }
+/* name a picks file's, .picks of any case past a name, as ends_ini an .ini's */
+static int ends_picks(const char* name) {
+    static const char suffix[] = ".picks";
+    size_t n = strlen(name), k = sizeof suffix - 1, i;
+    if (n <= k) return 0;
+    for (i = 0; i < k; ++i)
+        if (tolower((unsigned char)name[n - k + i]) != suffix[i]) return 0;
+    return 1;
+}
+size_t gui_picks_files(const char* folder, char*** paths) {
+    char **names = NULL, *path, *own, *inside;
+    size_t count = 0, i, n = 0;
+    *paths = NULL;
+    if (!folder || snx_list_dir(folder, &names, &count)) return 0;
+    *paths = (char**)calloc(count + 1, sizeof **paths);
+    for (i = 0; *paths && i < count; ++i) {
+        path = snx_path_join(folder, names[i]);
+        if (path && ends_picks(names[i]) && snx_is_file(path)) {
+            (*paths)[n++] = path;
+            continue;
+        }
+        if (path && snx_is_dir(path) && !snx_is_link(path)) { /* a game's folder: its own <name>.picks */
+            own = snx_format("%s.picks", names[i]);
+            inside = own ? snx_path_join(path, own) : NULL;
+            if (inside && snx_is_file(inside))
+                (*paths)[n++] = inside;
+            else
+                free(inside);
+            free(own);
+        }
+        free(path);
+    }
+    snx_free_strings(names, count);
+    return n;
+}
 /* whether name is one of only's (NULL: every name is) */
 static bool among(const char* const* only, const char* name) {
     if (!only) return true;

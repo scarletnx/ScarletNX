@@ -76,6 +76,7 @@ typedef enum {
     GUI_ASK_ROOM,    /* a run whose extraction may not fit (gui_room) */
     /* a change to the player's settings or folders, what it changes in the question (main.c's ask_line) */
     GUI_ASK_CLEAN,  /* App's Clean Old Settings: the [Deprecated] sections and old keys taken out */
+    GUI_ASK_CLEAN_OWN, /* the same while games' own picks keep old keys: theirs too (in focus), or kept; Back none */
     GUI_ASK_RESET,  /* Settings' Reset to Defaults: the settings not at their default */
     GUI_ASK_PLACES, /* Folders' Reset to Defaults: the folders picked */
     GUI_ASK_PLACE,  /* a folder picked in Folders, or the Library's recompiled/, back to its default */
