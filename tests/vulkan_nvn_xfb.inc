@@ -3,7 +3,7 @@
 /* Capture, save/import, and redraw a transform-feedback result without reading it on the CPU between those steps.
    Separate owner slots and temporary pause/resume must retain their own byte counters. */
 static int check_nvn_xfb(void) {
-    if (!g_vk.has_xfb && !g_shader_xfb_stores) {
+    if (!g_vk.has_xfb && !g_spirv_translate.xfb_stores) {
         puts("SKIP NVN transform feedback: device has no capture extension and no vertex stores");
         return 0;
     }

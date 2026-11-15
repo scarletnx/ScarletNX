@@ -511,9 +511,11 @@ typedef struct {
     int mixed_dot; /* VK_VALVE_shader_mixed_float_dot_product's Float16AccFloat32, enabled */
     int warp32;    /* compute pipelines can require subgroups of 32, whole, as vk/compute.c's do (enabled) */
     int coop; /* VK_KHR_cooperative_matrix's 16x16x16 f16 product into f32 in subgroup scope, with the Vulkan memory
-                 model, enabled: the device's maxComputeSharedMemorySize, for g_shader_hmma_coop, else 0 */
-    int float_add; /* VK_EXT_shader_atomic_float's shaderBufferFloat32AtomicAdd, enabled (g_shader_float_atomic_add) */
-    int half_flush; /* no shaderDenormPreserveFloat16: f16 subnormals packed by hand, as vk/device.c's g_shader_half_flush */
+                 model, enabled: the device's maxComputeSharedMemorySize, for g_spirv_translate.hmma_coop, else 0 */
+    int float_add;  /* VK_EXT_shader_atomic_float's shaderBufferFloat32AtomicAdd, enabled
+                       (g_spirv_translate.float_atomic_add) */
+    int half_flush; /* no shaderDenormPreserveFloat16: f16 subnormals packed by hand, as vk/device.c's
+                       g_spirv_translate.half_flush */
 } Gpu;
 /* the subgroups of a device's compute stage: their size where they have shuffles, else 0, and *quad whether they
    have quad operations */
@@ -526,7 +528,7 @@ static u32 compute_subgroups(VkPhysicalDevice phys, int* quad) {
     return compute && (sp.supportedOperations & VK_SUBGROUP_FEATURE_SHUFFLE_BIT) ? sp.subgroupSize : 0;
 }
 /* whether the device multiplies 16x16x16 f16 A and B into an f32 accumulator in subgroup scope in compute, as
-   vk/device.c asks for g_shader_hmma_coop */
+   vk/device.c asks for g_spirv_translate.hmma_coop */
 static int coop_shape(VkPhysicalDevice phys) {
     VkPhysicalDeviceCooperativeMatrixPropertiesKHR cp = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
@@ -608,11 +610,11 @@ static int gpu_open(Gpu* g, int warp) {
     int has_mixed = has_device_extension(g->phys, VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME);
     VkPhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE mixq = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MIXED_FLOAT_DOT_PRODUCT_FEATURES_VALVE};
-    /* and the cooperative matrix product that it takes on the device's matrix unit (g_shader_hmma_coop) */
+    /* and the cooperative matrix product that it takes on the device's matrix unit (g_spirv_translate.hmma_coop) */
     int has_coop = warp && has_device_extension(g->phys, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coopq = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR, .pNext = has_mixed ? &mixq : NULL};
-    /* and the float atomic add, which RED.ADD.F32 takes where the device has it (g_shader_float_atomic_add) */
+    /* and the float atomic add, which RED.ADD.F32 takes where the device has it (g_spirv_translate.float_atomic_add) */
     int has_float_add = has_device_extension(g->phys, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
     VkPhysicalDeviceShaderAtomicFloatFeaturesEXT addq = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT,
@@ -1049,9 +1051,9 @@ static int run_fadd(Gpu* g) {
         ShaderInfo si = {0};
         si.cs_local[0] = LOCAL, si.cs_local[1] = si.cs_local[2] = 1;
         size_t words = 0;
-        g_shader_float_atomic_add = native;
+        g_spirv_translate.float_atomic_add = native;
         u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
-        g_shader_float_atomic_add = 0;
+        g_spirv_translate.float_atomic_add = 0;
         if (!spv) {
             fprintf(stderr, "float atomics: not translated: %s\n", si.first_unsupported);
             return 0;
@@ -1091,8 +1093,8 @@ static int run_fadd(Gpu* g) {
    place). A sum kept in f16, or a subnormal flushed, is far outside that. The mixed dot product's precision is the
    device's (SPV_VALVE_mixed_float_dot_product: "implementation defined"): RDNA 3.5's v_dot2_f32_f16 is a few f32
    places off even on the exact sums, within the same bound, so with it every set is held to the bound. So is the
-   cooperative matrix product's (g_shader_hmma_coop), whose sums are the device's too: RDNA 3.5's WMMA is a few f32
-   places off on the exact sums as well */
+   cooperative matrix product's (g_spirv_translate.hmma_coop), whose sums are the device's too: RDNA 3.5's WMMA is a few
+   f32 places off on the exact sums as well */
 #define TENSOR_OUT 33u
 static u16 half_bits(float v) { /* v = n / 4, |n| <= 6 * 6 * 16 + 6: exact */
     u32 b;
@@ -1322,7 +1324,7 @@ static int tensor_match(u32 k, u32 h, u32 w, const Expect* e, int bits) {
    as RADV does, or in two of 32 with warp32), translated with or without quad operations, the mixed dot product and
    the device's cooperative matrices (coop, in subgroups of 32 only), on one set of matrices */
 static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, int coop, int pairs, int exact) {
-    int stage = pairs == 2; /* pairs 2: A and B through a warp's slot of shared memory (g_shader_hmma_stage) */
+    int stage = pairs == 2; /* pairs 2: A and B through a warp's slot of shared memory (g_spirv_translate.hmma_stage) */
     static Prog p;
     static u32 in[INVOCATIONS * 8], want[INVOCATIONS * TENSOR_OUT], got[INVOCATIONS * TENSOR_OUT];
     static Expect expect[INVOCATIONS * TENSOR_OUT];
@@ -1348,17 +1350,20 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
     si.cs_local[0] = (int)local, si.cs_local[1] = si.cs_local[2] = 1;
     si.shared_size = 2048;
     size_t words = 0;
-    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16,
-        coop_was = g_shader_hmma_coop, pairs_was = g_shader_hmma_pairs, stage_was = g_shader_hmma_stage,
-        flush_was = g_shader_half_flush;
-    g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_float16 = g->float16;
-    g_shader_half_flush = g->half_flush;
-    g_shader_hmma_coop = coop ? g->coop : 0, g_shader_hmma_pairs = pairs == 1;
-    g_shader_hmma_stage = stage ? 16384 : 0; /* every device's maxComputeSharedMemorySize is at least that */
+    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
+        f16_was = g_spirv_translate.float16, coop_was = g_spirv_translate.hmma_coop,
+        pairs_was = g_spirv_translate.hmma_pairs, stage_was = g_spirv_translate.hmma_stage,
+        flush_was = g_spirv_translate.half_flush;
+    g_spirv_translate.quad_compute = quad, g_spirv_translate.mixed_dot = mixed, g_spirv_translate.float16 = g->float16;
+    g_spirv_translate.half_flush = g->half_flush;
+    g_spirv_translate.hmma_coop = coop ? g->coop : 0, g_spirv_translate.hmma_pairs = pairs == 1;
+    g_spirv_translate.hmma_stage = stage ? 16384 : 0; /* every device's maxComputeSharedMemorySize is at least that */
     u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
-    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
-    g_shader_hmma_coop = coop_was, g_shader_hmma_pairs = pairs_was, g_shader_hmma_stage = stage_was;
-    g_shader_half_flush = flush_was;
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
+    g_spirv_translate.float16 = f16_was;
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_pairs = pairs_was,
+    g_spirv_translate.hmma_stage = stage_was;
+    g_spirv_translate.half_flush = flush_was;
     const char* how = exact ? "exact" : "rounded";
     if (!spv) {
         fprintf(stderr, "tensor: not translated: %s\n", si.first_unsupported);
@@ -1406,8 +1411,8 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
 }
 /* every way the device can translate them: with what it has, then with neither quads nor the mixed dot product (the
    fallbacks), each in workgroups of one warp and of two, those also in required subgroups of 32 where it can, B
-   gathered by each lane and by pairs of lanes (g_shader_hmma_pairs), and A and B staged through shared memory
-   (g_shader_hmma_stage); and with its cooperative matrices where it has
+   gathered by each lane and by pairs of lanes (g_spirv_translate.hmma_pairs), and A and B staged through shared memory
+   (g_spirv_translate.hmma_stage); and with its cooperative matrices where it has
    them, in workgroups of one warp and of two in subgroups of 32. 1 when every run matches, 0 when one does not, -1
    with no such device */
 static int run_tensor(void) {
@@ -1527,11 +1532,13 @@ static int cmp_double(const void* a, const void* b) {
     return x < y ? -1 : x > y;
 }
 /* the forms of hmma the bench times, each set before its translation (bench_form): each lane gathering its B words,
-   pairs of lanes sharing them (g_shader_hmma_pairs), and A and B through a warp's slot of shared memory
-   (g_shader_hmma_stage) */
+   pairs of lanes sharing them (g_spirv_translate.hmma_pairs), and A and B through a warp's slot of shared memory
+   (g_spirv_translate.hmma_stage) */
 static const char* const bench_forms[] = {"gather", "pairs", "stage"};
 #define BENCH_FORMS (sizeof bench_forms / sizeof *bench_forms)
-static void bench_form(u32 form) { g_shader_hmma_pairs = form == 1, g_shader_hmma_stage = form == 2 ? 16384 : 0; }
+static void bench_form(u32 form) {
+    g_spirv_translate.hmma_pairs = form == 1, g_spirv_translate.hmma_stage = form == 2 ? 16384 : 0;
+}
 static int run_hmma_bench(u32 rounds, u32 groups) {
     Gpu g = {0};
     if (!gpu_open(&g, 1)) {
@@ -1572,13 +1579,16 @@ static int run_hmma_bench(u32 rounds, u32 groups) {
             ShaderInfo si = {0};
             si.cs_local[0] = (int)BENCH_LOCAL, si.cs_local[1] = si.cs_local[2] = 1;
             si.shared_size = 4096;
-            int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16;
-            g_shader_quad_compute = g.quad, g_shader_mixed_dot = g.mixed_dot, g_shader_float16 = g.float16;
+            int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
+                f16_was = g_spirv_translate.float16;
+            g_spirv_translate.quad_compute = g.quad, g_spirv_translate.mixed_dot = g.mixed_dot,
+            g_spirv_translate.float16 = g.float16;
             bench_form(form);
             size_t words = 0;
             u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
             bench_form(0);
-            g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
+            g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
+            g_spirv_translate.float16 = f16_was;
             if (!spv) {
                 fprintf(stderr, "HMMA bench: not translated: %s\n", si.first_unsupported);
                 ok = 0;
@@ -1799,10 +1809,10 @@ int main(void) {
         ok &= run_program(&g, "integer", integer_program);
         ok &= run_program(&g, "float", float_program);
         /* and I2F.S32's integer converted in halves, as for a driver whose conversions truncate
-           (g_shader_i2f_nearest) */
-        g_shader_i2f_nearest = 3;
+           (g_spirv_translate.i2f_nearest) */
+        g_spirv_translate.i2f_nearest = 3;
         ok &= run_program(&g, "float, I2F in halves", float_program);
-        g_shader_i2f_nearest = 0;
+        g_spirv_translate.i2f_nearest = 0;
         ok &= run_program(&g, "flow", flow_program);
         ok &= run_program(&g, "wide", wide_program);
         ok &= run_program(&g, "stores", stores_program);

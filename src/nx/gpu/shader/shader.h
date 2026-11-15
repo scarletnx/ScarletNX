@@ -426,9 +426,9 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1)  /* their depth views */
 #define SNX_VKB_TEXMAP   (SNX_VKB_TEXDEPTH + 1)  /* table and element to compact descriptor index */
 #define SNX_VKB_END      (SNX_VKB_TEXMAP + 1)    /* one past the last binding */
-/* Transform feedback by stores (g_shader_xfb_stores), in the global buffer slots after a program's own (at most
-   SNX_XFB_GBUF_MAX): the parameters (first vertex, first instance, vertices an instance and a draw capture), then the
-   4 buffers from where the capture starts */
+/* Transform feedback by stores (g_spirv_translate.xfb_stores), in the global buffer slots after a program's own (at
+   most SNX_XFB_GBUF_MAX): the parameters (first vertex, first instance, vertices an instance and a draw capture), then
+   the 4 buffers from where the capture starts */
 #define SNX_XFB_GBUF_MAX   11
 #define SNX_VKB_XFB_PARAMS (SNX_VKB_SSBO + SNX_XFB_GBUF_MAX)
 #define SNX_VKB_XFB        (SNX_VKB_XFB_PARAMS + 1)
@@ -445,46 +445,108 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SH_ROOT_TABLE    256
 #define SH_ROOT_BYTES    (SH_ROOT_TABLES * SH_ROOT_TABLE)
 #define SNX_TEX_INDEXED  4
-/* Device capabilities the renderer sets before translating: */
-/* sampled image arrays indexed per invocation (non-uniform indexing) */
-extern int g_shader_texture_arrays;
-/* the elements of each of those arrays: SNX_TEX_ARRAY, or fewer where the device binds fewer combined image samplers
-   (vk_pipeline_init, vk/texture_arrays.h); a test may set fewer before the renderer starts */
-extern u32 g_shader_tex_array;
-/* constant buffers from this slot up are read-only storage buffers, on a device with fewer uniform buffers a stage
-   than the 18 slots and the renderer's own need (18: none) */
-extern u32 g_shader_uniform_cbufs;
-/* tessellation and geometry programs may write the point size (shaderTessellationAndGeometryPointSize) */
-extern int g_shader_stage_point_size;
-/* vertex and tessellation programs may write the layer (shaderOutputLayer, the ShaderLayer capability); without it
-   their layer writes go away (layer 0). 1 offline */
-extern int g_shader_output_layer;
-/* ViewportIndex output: bit 0 vertex/evaluation, bit 1 geometry. 3 offline. */
-extern int g_shader_viewport_index;
-/* the Geometry capability, for fragment programs reading Layer or PrimitiveId */
-extern int g_shader_geometry;
-extern int g_shader_geometry_streams;
-extern int g_shader_geometry_streams_lines_triangles;
-/* shaderFloat16, which fp16 texture results need. 1 offline */
-extern int g_shader_float16;
-/* shaderFloat64, which SM86's directed rounding keeps its exactness with. 1 offline: a device without doubles rounds
-   those operations as its floats do, as Round to Nearest, and the shader still runs (Apple's GPUs have no doubles) */
-extern int g_shader_float64;
-/* shaderResourceMinLod: fragment TEX.LC uses the MinLod image operand. 1 offline. */
-extern int g_shader_resource_min_lod;
-/* maintenance8 permits a runtime Offset operand on texture samples. 0 for portable offline output. */
-extern int g_shader_dynamic_texture_offsets;
-/* Exact native half conversion: bit0 controls16, bit1 also controls64 for linked host modes. */
-extern int g_shader_half_rounding;
-/* bit 0 for OpConvertSToF, bit 1 for OpConvertUToF: the driver's conversion of a 32-bit integer to a 32-bit float
-   truncates (extension_bans.txt), and I2F.F32 of a 32-bit integer converts its halves and adds them
-   (spv_emit_int_to_f32_nearest), rounding to nearest as the console does. 0 offline */
-extern int g_shader_i2f_nearest;
-/* shaderDrawParameters: a vertex program's instance ID is InstanceIndex less BaseInstance, which an indirect draw's
-   arguments set on the GPU. 1 offline */
-extern int g_shader_draw_parameters;
-/* no VK_EXT_transform_feedback but vertex stores: vertex programs store what is captured (SNX_VKB_XFB). 0 offline */
-extern int g_shader_xfb_stores;
+/* Device capabilities the renderer sets before translating, and the values offline translation takes. A 1-bit
+   field holds 0 or 1: a mask goes in through a test (!= 0), or its bit is lost */
+typedef struct {
+    /* sampled image arrays indexed per invocation (non-uniform indexing) */
+    unsigned texture_arrays : 1;
+    /* the elements of each of those arrays: SNX_TEX_ARRAY, or fewer where the device binds fewer combined image
+       samplers (vk_pipeline_init, vk/texture_arrays.h); a test may set fewer before the renderer starts */
+    u32 tex_array;
+    /* constant buffers from this slot up are read-only storage buffers, on a device with fewer uniform buffers a stage
+       than the 18 slots and the renderer's own need (18: none) */
+    u32 uniform_cbufs;
+    /* tessellation and geometry programs may write the point size (shaderTessellationAndGeometryPointSize) */
+    unsigned stage_point_size : 1;
+    /* vertex and tessellation programs may write the layer (shaderOutputLayer, the ShaderLayer capability); without it
+       their layer writes go away (layer 0). 1 offline */
+    unsigned output_layer : 1;
+    /* ViewportIndex output: bit 0 vertex/evaluation, bit 1 geometry. 3 offline. */
+    int viewport_index;
+    /* the Geometry capability, for fragment programs reading Layer or PrimitiveId */
+    unsigned geometry : 1;
+    unsigned geometry_streams : 1;
+    unsigned geometry_streams_lines_triangles : 1;
+    /* shaderFloat16, which fp16 texture results need. 1 offline */
+    unsigned float16 : 1;
+    /* shaderFloat64, which SM86's directed rounding keeps its exactness with. 1 offline: a device without doubles
+       rounds those operations as its floats do, as Round to Nearest, and the shader still runs (Apple's GPUs have no
+       doubles) */
+    unsigned float64 : 1;
+    /* shaderResourceMinLod: fragment TEX.LC uses the MinLod image operand. 1 offline. */
+    unsigned resource_min_lod : 1;
+    /* maintenance8 permits a runtime Offset operand on texture samples. 0 for portable offline output. */
+    unsigned dynamic_texture_offsets : 1;
+    /* Exact native half conversion: bit0 controls16, bit1 also controls64 for linked host modes. */
+    int half_rounding;
+    /* bit 0 for OpConvertSToF, bit 1 for OpConvertUToF: the driver's conversion of a 32-bit integer to a 32-bit float
+       truncates (extension_bans.txt), and I2F.F32 of a 32-bit integer converts its halves and adds them
+       (spv_emit_int_to_f32_nearest), rounding to nearest as the console does. 0 offline */
+    int i2f_nearest;
+    /* shaderDrawParameters: a vertex program's instance ID is InstanceIndex less BaseInstance, which an indirect draw's
+       arguments set on the GPU. 1 offline */
+    unsigned draw_parameters : 1;
+    /* no VK_EXT_transform_feedback but vertex stores: vertex programs store what is captured (SNX_VKB_XFB). 0 offline
+       */
+    unsigned xfb_stores : 1;
+    /* quad operations in fragment programs (the subgroup's QUAD bit): SHFL within a quad reads its helper lanes. 1
+       offline */
+    unsigned quad : 1;
+    /* quad operations in compute programs (the QUAD bit, compute among the subgroup stages): an SM86 HMMA reads its A
+       fragments from the lane's own quad with them, a DPP move on AMD where a shuffle goes through LDS. 1 offline */
+    unsigned quad_compute : 1;
+    /* VK_VALVE_shader_mixed_float_dot_product's shaderMixedFloatDotProductFloat16AccFloat32, with shaderFloat16: an
+       SM86 HMMA sums each pair of f16 products into its f32 accumulator with one OpFDot2MixAcc32VALVE (v_dot2_f32_f16
+       on AMD) instead of unpacking both pairs to f32. 0 offline */
+    unsigned mixed_dot : 1;
+    /* The hmma_f16 setting: an SM86 HMMA's products and their sum in half floats, two products to an OpFma where the
+       f32 sum takes two instructions, for a device whose driver offers no matrix unit (every MoltenVK so far). Its
+       results are about 1e-3 off the console's f32 sum; 0, the default, is the f32 sum the console's tensor core keeps
+       */
+    unsigned hmma_f16 : 1;
+    /* VK_KHR_cooperative_matrix's 16x16x16 product of f16 A and B into an f32 accumulator in subgroup scope, in
+       compute, with the Vulkan memory model (vulkanMemoryModel, vulkanMemoryModelDeviceScope) and compute subgroups of
+       32 that a pipeline can require: the device's maxComputeSharedMemorySize, else 0. An SM86 compute program's HMMAs
+       are then each one OpCooperativeMatrixMulAddKHR on fragments staged in shared memory after the program's
+       (sm86_translate.c's hmma_coop), where the two fit in that size. 0 offline */
+    int hmma_coop;
+    /* an SM86 HMMA off the cooperative matrices gathers its B fragment in pairs of lanes 4 apart, which multiply by the
+       same 16 words of it: each shuffles in half of them and takes the other half from its pair with a xor of 4
+       (sm86_translate.c's hmma). RADV with subgroups of 32 (GFX10 on): half of the B permutes through LDS become DPP
+       moves. 0 offline */
+    unsigned hmma_pairs : 1;
+    /* an SM86 HMMA off the cooperative matrices takes A and B from the other lanes through shared memory, a slot a
+       warp, where the driver compiles a shuffle whose index differs between lanes into a loop over the distinct indices
+       (an "off" line on OpGroupNonUniformShuffle in vk/extension_bans.txt: Turnip, whose Adreno 610 ran the HMMA bench
+       35 times faster so, 684.9 ms a dispatch to 19.6). Where the shuffles are the hardware's they stay: staged, an
+       Adreno 830 ran 5.4 and an RX 6700 XT 2.2 times slower. The device's maxComputeSharedMemorySize, else 0 (offline)
+       */
+    int hmma_stage;
+    /* The device may flush f16 subnormals (no shaderDenormPreserveFloat16), as Turnip on an Adreno 610 does in
+       PackHalf2x16: an SM86 program packs its halves below 2^-14 exactly then (sm86_translate.c's pack_half). 0 offline
+       */
+    unsigned half_flush : 1;
+    /* The tile that device's cooperative matrices come in, when it has them: 16 for an M by N by K of 16x16x16, which
+       RADV offers, 8 for Metal's simdgroup_matrix of 8x8x8, which a MoltenVK with VK_KHR_cooperative_matrix reports
+       (hmma_coop). One SM86 HMMA is four 8x8x8 products there and one 16x16x16 otherwise */
+    int hmma_coop_tile;
+    /* the most mesh workgroups one task workgroup can launch (maxMeshWorkGroupCount[0] and maxMeshWorkGroupTotalCount,
+       the less of them): a task program's count, read from its payload's header, is clamped to it, as a count past it
+       is undefined behavior that can hang the GPU. 0 offline: not clamped */
+    u32 mesh_tasks_max;
+    /* VK_EXT_shader_atomic_float's shaderBufferFloat32AtomicAdd: an SM86 RED.ADD.F32 or ATOMG.ADD.F32 on global memory
+       is one OpAtomicFAddEXT, else a compare and exchange loop on the word's bits (sm86_translate.c's atomic_fadd). 0
+       offline */
+    unsigned float_atomic_add : 1;
+    /* the Tessellation capability, which also gives a fragment program PrimitiveId without Geometry */
+    unsigned tessellation : 1;
+    /* VK_KHR_shader_clock's scopes: bit 0 subgroup, bit 1 device */
+    int clock_scopes;
+    /* VK_KHR_shader_maximal_reconvergence: a structured program's lanes reconverge where its constructs merge, so one
+       whose lanes must reconverge (subgroup operations, barriers, derivatives) takes structured control flow too */
+    unsigned maximal_reconvergence : 1;
+} ShCaps;
+extern ShCaps g_spirv_translate;
 /* NVN's draw parameters: its driver writes each draw's base vertex and base instance into constant buffer 0 at these
    offsets, which vertex programs read (an instanced program adds the base instance to its instance ID). An indirect
    draw's are in its record, on the GPU: with draw parameters, a vertex program's reads of these words take
@@ -499,67 +561,16 @@ extern int g_shader_xfb_stores;
    uniform buffer the renderer copies the record's first word into, vk/render.c's mesh_indirect) to its workgroup ID in
    place of the push constant's x */
 #define SH_PUSH_GPU_MESH_FIRST    4u
-/* quad operations in fragment programs (the subgroup's QUAD bit): SHFL within a quad reads its helper lanes. 1 offline */
-extern int g_shader_quad;
-/* quad operations in compute programs (the QUAD bit, compute among the subgroup stages): an SM86 HMMA reads its A
-   fragments from the lane's own quad with them, a DPP move on AMD where a shuffle goes through LDS. 1 offline */
-extern int g_shader_quad_compute;
-/* VK_VALVE_shader_mixed_float_dot_product's shaderMixedFloatDotProductFloat16AccFloat32, with shaderFloat16: an SM86
-   HMMA sums each pair of f16 products into its f32 accumulator with one OpFDot2MixAcc32VALVE (v_dot2_f32_f16 on AMD)
-   instead of unpacking both pairs to f32. 0 offline */
-extern int g_shader_mixed_dot;
-/* The hmma_f16 setting: an SM86 HMMA's products and their sum in half floats, two products to an OpFma where the f32
-   sum takes two instructions, for a device whose driver offers no matrix unit (every MoltenVK so far). Its results
-   are about 1e-3 off the console's f32 sum; 0, the default, is the f32 sum the console's tensor core keeps */
-extern int g_shader_hmma_f16;
 /* Why HMMA sums in f32 where hmma_f16 asks for the half sums, the device's lack or better (the log's words), else NULL:
    the mixed dot product takes two products an instruction in f32, and the halves need shaderFloat16 */
 const char* shader_hmma_f16_unused(void);
-/* VK_KHR_cooperative_matrix's 16x16x16 product of f16 A and B into an f32 accumulator in subgroup scope, in compute,
-   with the Vulkan memory model (vulkanMemoryModel, vulkanMemoryModelDeviceScope) and compute subgroups of 32 that a
-   pipeline can require: the device's maxComputeSharedMemorySize, else 0. An SM86 compute program's HMMAs are then each
-   one OpCooperativeMatrixMulAddKHR on fragments staged in shared memory after the program's (sm86_translate.c's
-   hmma_coop), where the two fit in that size. 0 offline */
-extern int g_shader_hmma_coop;
-/* an SM86 HMMA off the cooperative matrices gathers its B fragment in pairs of lanes 4 apart, which multiply by the
-   same 16 words of it: each shuffles in half of them and takes the other half from its pair with a xor of 4
-   (sm86_translate.c's hmma). RADV with subgroups of 32 (GFX10 on): half of the B permutes through LDS become DPP
-   moves. 0 offline */
-extern int g_shader_hmma_pairs;
 /* the way a compute program's HMMA takes with the flags above, in words for the log, into out (n bytes) */
 void shader_hmma_way(char* out, size_t n);
-/* an SM86 HMMA off the cooperative matrices takes A and B from the other lanes through shared memory, a slot a warp,
-   where the driver compiles a shuffle whose index differs between lanes into a loop over the distinct indices (an
-   "off" line on OpGroupNonUniformShuffle in vk/extension_bans.txt: Turnip, whose Adreno 610 ran the HMMA bench 35
-   times faster so, 684.9 ms a dispatch to 19.6). Where the shuffles are the hardware's they stay: staged, an Adreno
-   830 ran 5.4 and an RX 6700 XT 2.2 times slower. The device's maxComputeSharedMemorySize, else 0 (offline) */
-extern int g_shader_hmma_stage;
-/* g_shader_hmma_pairs and g_shader_hmma_stage from what vk/device.c reads of the device: subgroup operations in
-   compute (subgroups), RADV with subgroups of 32 a pipeline can require (radv_warp32: its xor of 4 is a DPP move
-   where a shuffle at any other index is a permute through LDS), an "off" line on OpGroupNonUniformShuffle that holds
-   for its driver (shuffle_loops), and its maxComputeSharedMemorySize */
+/* g_spirv_translate.hmma_pairs and g_spirv_translate.hmma_stage from what vk/device.c reads of the device: subgroup
+   operations in compute (subgroups), RADV with subgroups of 32 a pipeline can require (radv_warp32: its xor of 4 is a
+   DPP move where a shuffle at any other index is a permute through LDS), an "off" line on OpGroupNonUniformShuffle that
+   holds for its driver (shuffle_loops), and its maxComputeSharedMemorySize */
 void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int shared_max);
-/* The device may flush f16 subnormals (no shaderDenormPreserveFloat16), as Turnip on an Adreno 610 does in
-   PackHalf2x16: an SM86 program packs its halves below 2^-14 exactly then (sm86_translate.c's pack_half). 0 offline */
-extern int g_shader_half_flush;
-/* The tile that device's cooperative matrices come in, when it has them: 16 for an M by N by K of 16x16x16, which
-   RADV offers, 8 for Metal's simdgroup_matrix of 8x8x8, which a MoltenVK with VK_KHR_cooperative_matrix reports
-   (hmma_coop). One SM86 HMMA is four 8x8x8 products there and one 16x16x16 otherwise */
-extern int g_shader_hmma_coop_tile;
-/* the most mesh workgroups one task workgroup can launch (maxMeshWorkGroupCount[0] and maxMeshWorkGroupTotalCount,
-   the less of them): a task program's count, read from its payload's header, is clamped to it, as a count past it is
-   undefined behavior that can hang the GPU. 0 offline: not clamped */
-extern u32 g_shader_mesh_tasks_max;
-/* VK_EXT_shader_atomic_float's shaderBufferFloat32AtomicAdd: an SM86 RED.ADD.F32 or ATOMG.ADD.F32 on global memory is
-   one OpAtomicFAddEXT, else a compare and exchange loop on the word's bits (sm86_translate.c's atomic_fadd). 0 offline */
-extern int g_shader_float_atomic_add;
-/* the Tessellation capability, which also gives a fragment program PrimitiveId without Geometry */
-extern int g_shader_tessellation;
-/* VK_KHR_shader_clock's scopes: bit 0 subgroup, bit 1 device */
-extern int g_shader_clock_scopes;
-/* VK_KHR_shader_maximal_reconvergence: a structured program's lanes reconverge where its constructs merge, so one
-   whose lanes must reconverge (subgroup operations, barriers, derivatives) takes structured control flow too */
-extern int g_shader_maximal_reconvergence;
 /* in clip_enable: a later stage before rasterization (tessellation or geometry) follows, and the last one applies
    the depth mode and the clip distances */
 #define SNX_SH_NOT_LAST  (1u << 31)

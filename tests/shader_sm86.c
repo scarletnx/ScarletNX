@@ -2472,7 +2472,7 @@ static void test_float64_fallback_scale(const char* dir) {
         {2, 0x71800000u, 0x4d800000u, 0x1p126f, "D4"},       {2, 0x4d800000u, 0x71800000u, 0x1p126f, "D4"},
         {3, 0x1fabdf83u, 0x1fcc002du, 0x223d8fp-149f, "D2"}, {3, 0x1fcc002du, 0x1fabdf83u, 0x223d8fp-149f, "D2"},
     };
-    int had = g_shader_float64;
+    int had = g_spirv_translate.float64;
     for (int f64 = 1; f64 >= 0; f64--)
         for (size_t i = 0; i < sizeof scales / sizeof *scales; i++) {
             u8 code[16 * 8] = {0};
@@ -2485,14 +2485,15 @@ static void test_float64_fallback_scale(const char* dir) {
             put(code, n++, exit_insn());
             put(code, n, bra(n, n, 7, 0));
             n++;
-            g_shader_float64 = f64;
+            g_spirv_translate.float64 = f64;
             CHECK(run_fs_at(code, n, 0, NULL, 0, out));
             if (out[0] != f2u(scales[i].product))
-                fprintf(stderr, "FMUL.%s %#x, %#x with g_shader_float64=%d: %#x, not %g (%#x)\n", scales[i].name,
-                        scales[i].x, scales[i].y, f64, out[0], (double)scales[i].product, f2u(scales[i].product));
+                fprintf(stderr, "FMUL.%s %#x, %#x with g_spirv_translate.float64=%d: %#x, not %g (%#x)\n",
+                        scales[i].name, scales[i].x, scales[i].y, f64, out[0], (double)scales[i].product,
+                        f2u(scales[i].product));
             CHECK(out[0] == f2u(scales[i].product));
         }
-    g_shader_float64 = had;
+    g_spirv_translate.float64 = had;
     (void)dir;
 }
 
@@ -3569,11 +3570,11 @@ static void test_atomic_fadd(const char* dir) {
         put(code, n++, exit_insn());
         put(code, n, bra(n, n, 7, 0));
         n++;
-        g_shader_float_atomic_add = native;
+        g_spirv_translate.float_atomic_add = native;
         ShaderInfo si = {0};
         size_t count = 0;
         u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
-        g_shader_float_atomic_add = 0;
+        g_spirv_translate.float_atomic_add = 0;
         CHECK(spv != NULL);
         if (!spv) {
             fprintf(stderr, "atomic fadd: %s\n", si.first_unsupported);
@@ -4173,16 +4174,16 @@ static void test_geometry(const char* dir) {
     put(ps, 1, ast(0x6c, 1, 1));
     put(ps, 2, exit_insn());
     put(ps, 3, bra(3, 3, 7, 0));
-    int had = g_shader_stage_point_size;
+    int had = g_spirv_translate.stage_point_size;
     for (int feature = 0; feature < 2; feature++) {
-        g_shader_stage_point_size = feature;
+        g_spirv_translate.stage_point_size = feature;
         ShaderInfo p = si;
         spv = sm86_to_spirv(ps, 4 * 16, ST_GS, sph, &p, &count);
         CHECK(spv && spv_declares(spv, count, 24 /* GeometryPointSize */) == feature && p.writes_point_size == feature);
         if (spv && feature) CHECK(keep_module(dir, "gs_point_size", spv, count));
         free(spv);
     }
-    g_shader_stage_point_size = had;
+    g_spirv_translate.stage_point_size = had;
     ShaderInfo base = {0};
     base.rt_int_mask = 3;
     Word x = alu(0x124, 1, 255, 255); /* OUT.EMIT RZ, RZ, RZ */
@@ -4468,9 +4469,9 @@ static int spv_has_builtin(const u32* words, size_t count, u32 builtin) {
 /* HMMA (16816 and 1688, F16 and F32), LDSM and MOVM with and without the device's quads in compute and its mixed dot
    product: A's 48 reads are quad broadcasts or shuffles, B's 48, LDSM's 4 and MOVM's 2 stay shuffles, and each pair
    of products is an OpFDot2MixAcc32VALVE (96) or an OpDot. B's registers are OR'd with hmma_zero's zero, which
-   compares NumWorkgroups.x with 0. With g_shader_hmma_pairs B's reads are 24 shuffles and their 24 xors of 4, and A's
-   96 (two quad lanes, one picked, for each of the 48). With g_shader_hmma_f16 and no mixed dot product, the OpDots
-   are f16 OpFmas (96) */
+   compares NumWorkgroups.x with 0. With g_spirv_translate.hmma_pairs B's reads are 24 shuffles and their 24 xors of 4,
+   and A's 96 (two quad lanes, one picked, for each of the 48). With g_spirv_translate.hmma_f16 and no mixed dot
+   product, the OpDots are f16 OpFmas (96) */
 static void test_warp_matrix(const char* dir) {
     u8 code[16 * 8] = {0};
     static const u32 hmma[4][4] = {{16, 14, 0x08}, {20, 24, 0x18}, {28, 255, 0x00}, {32, 36, 0x10}};
@@ -4497,18 +4498,19 @@ static void test_warp_matrix(const char* dir) {
     put(code, n++, exit_insn());
     put(code, n, bra(n, n, 7, 0));
     n++;
-    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, pairs_was = g_shader_hmma_pairs,
-        f16_was = g_shader_hmma_f16;
-    int coop_was = g_shader_hmma_coop, tile_was = g_shader_hmma_coop_tile;
+    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
+        pairs_was = g_spirv_translate.hmma_pairs, f16_was = g_spirv_translate.hmma_f16;
+    int coop_was = g_spirv_translate.hmma_coop, tile_was = g_spirv_translate.hmma_coop_tile;
     for (int pairs = 0; pairs < 2; pairs++)
         for (int quad = 0; quad < 2; quad++)
             for (int mixed = 0; mixed < 2; mixed++)
                 for (int f16 = 0; f16 < 2; f16++) {
                     /* the halves' products and sums (the hmma_f16 setting) are the f32 dots' place, two products an
                        OpFma, where the mixed dot product is not */
-                    g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_hmma_pairs = pairs;
-                    g_shader_hmma_f16 = f16;
-                    int packed = !mixed && f16 && g_shader_float16;
+                    g_spirv_translate.quad_compute = quad, g_spirv_translate.mixed_dot = mixed,
+                    g_spirv_translate.hmma_pairs = pairs;
+                    g_spirv_translate.hmma_f16 = f16;
+                    int packed = !mixed && f16 && g_spirv_translate.float16;
                     ShaderInfo si = {0};
                     si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
                     si.shared_size = 1024;
@@ -4537,13 +4539,15 @@ static void test_warp_matrix(const char* dir) {
                     CHECK(keep_module(dir, name, spv, count));
                     free(spv);
                 }
-    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_hmma_pairs = pairs_was;
-    g_shader_hmma_f16 = f16_was;
-    /* staged (g_shader_hmma_stage): A and B through the warp's slot of shared memory, so the only shuffles are LDSM's
-       4 and MOVM's 2, no quad broadcast even where the stage has them, and two subgroup barriers an HMMA */
-    int stage_was = g_shader_hmma_stage;
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
+    g_spirv_translate.hmma_pairs = pairs_was;
+    g_spirv_translate.hmma_f16 = f16_was;
+    /* staged (g_spirv_translate.hmma_stage): A and B through the warp's slot of shared memory, so the only shuffles are
+       LDSM's 4 and MOVM's 2, no quad broadcast even where the stage has them, and two subgroup barriers an HMMA */
+    int stage_was = g_spirv_translate.hmma_stage;
     for (int quad = 0; quad < 2; quad++) {
-        g_shader_quad_compute = quad, g_shader_mixed_dot = 0, g_shader_hmma_pairs = 0, g_shader_hmma_stage = 65536;
+        g_spirv_translate.quad_compute = quad, g_spirv_translate.mixed_dot = 0, g_spirv_translate.hmma_pairs = 0,
+        g_spirv_translate.hmma_stage = 65536;
         ShaderInfo si = {0};
         si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
         si.shared_size = 1024;
@@ -4562,15 +4566,16 @@ static void test_warp_matrix(const char* dir) {
         CHECK(keep_module(dir, name, spv, count));
         free(spv);
     }
-    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_hmma_pairs = pairs_was;
-    g_shader_hmma_stage = stage_was;
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
+    g_spirv_translate.hmma_pairs = pairs_was;
+    g_spirv_translate.hmma_stage = stage_was;
     /* The matrix unit's tile: one OpCooperativeMatrixMulAddKHR an HMMA where the driver offers 16x16x16 (RADV), four
        where its tile is 8x8x8 (Metal's simdgroup_matrix, which a MoltenVK with VK_KHR_cooperative_matrix reports):
        the two M halves, each the sum of the two K halves, of which a .1688 has one: 12 for the 4 HMMAs above, two of
        them .1688 */
     for (int tile = 0; tile < 2; tile++) {
-        g_shader_hmma_coop = 65536, g_shader_hmma_coop_tile = tile ? 8 : 16;
-        g_shader_quad_compute = 1, g_shader_mixed_dot = 0, g_shader_hmma_pairs = 0;
+        g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_tile = tile ? 8 : 16;
+        g_spirv_translate.quad_compute = 1, g_spirv_translate.mixed_dot = 0, g_spirv_translate.hmma_pairs = 0;
         ShaderInfo si = {0};
         si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
         si.shared_size = 1024;
@@ -4586,8 +4591,9 @@ static void test_warp_matrix(const char* dir) {
         CHECK(spv && keep_module(dir, name, spv, count));
         free(spv);
     }
-    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_hmma_pairs = pairs_was;
-    g_shader_hmma_coop = coop_was, g_shader_hmma_coop_tile = tile_was;
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
+    g_spirv_translate.hmma_pairs = pairs_was;
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_tile = tile_was;
 }
 
 /* ---- HMMA's values on the evaluator's subgroup of 32 lanes (spv_eval_subgroup) ---- */
@@ -4613,7 +4619,7 @@ static u32 hmma_program(u8* code) {
     set(&x, 64, 8, 255);
     put(code, n++, x);
     /* STS [R2], RZ: the program's shared memory is its first Workgroup variable, the one the evaluator keeps, before
-       a staged HMMA's slots (g_shader_hmma_stage) */
+       a staged HMMA's slots (g_spirv_translate.hmma_stage) */
     x = fix(0x388);
     set(&x, 24, 8, 2);
     set(&x, 32, 8, 255);
@@ -4806,17 +4812,18 @@ static int hmma_match(u32 got, int f32, u32 j, double want, double tol, int kind
     return fabs(v - want) <= tol;
 }
 /* HMMA (16816 and 1688, F16 and F32 D, C from RZ, an f16 input or an earlier D) on the evaluator's 32 lanes, as each
-   lane gathers B, as pairs of lanes share it (g_shader_hmma_pairs) and through a warp's slot of shared memory
-   (g_shader_hmma_stage), with and without the quads and the mixed dot product, and without it in half sums
-   (g_shader_hmma_f16): on the exact set every output is the sum's bits; on the rounded one within an f32 sum's error,
-   or the half sums' (hmma_expect); on the special and zeros ones infinities, NaNs and the sign of zero follow IEEE's
-   sum of the terms in any order, but where the half sums can overflow. And the forms agree with each other: bit for
-   bit on the exact set, the same kinds on the others */
+   lane gathers B, as pairs of lanes share it (g_spirv_translate.hmma_pairs) and through a warp's slot of shared memory
+   (g_spirv_translate.hmma_stage), with and without the quads and the mixed dot product, and without it in half sums
+   (g_spirv_translate.hmma_f16): on the exact set every output is the sum's bits; on the rounded one within an f32 sum's
+   error, or the half sums' (hmma_expect); on the special and zeros ones infinities, NaNs and the sign of zero follow
+   IEEE's sum of the terms in any order, but where the half sums can overflow. And the forms agree with each other: bit
+   for bit on the exact set, the same kinds on the others */
 static void test_warp_matrix_values(const char* dir) {
     u8 code[16 * 48] = {0};
     u32 n = hmma_program(code);
-    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16,
-        pairs_was = g_shader_hmma_pairs, stage_was = g_shader_hmma_stage, half_was = g_shader_hmma_f16;
+    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
+        f16_was = g_spirv_translate.float16, pairs_was = g_spirv_translate.hmma_pairs,
+        stage_was = g_spirv_translate.hmma_stage, half_was = g_spirv_translate.hmma_f16;
     static HmmaMats mats;
     static u32 in[32 * 8], out[3][32 * HMMA_OUT];
     for (int set = HM_EXACT; set <= HM_ZEROS; set++) {
@@ -4826,15 +4833,17 @@ static void test_warp_matrix_values(const char* dir) {
                 for (int packed = 0; packed < 2 - mixed; packed++) { /* the mixed dot product takes no half sums */
                     /* the forms: each lane's gather, pairs of lanes, staged */
                     for (int form = 0; form < 3; form++) {
-                        g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_float16 = 1;
-                        g_shader_hmma_pairs = form == 1, g_shader_hmma_stage = form == 2 ? 65536 : 0;
-                        g_shader_hmma_f16 = packed;
+                        g_spirv_translate.quad_compute = quad, g_spirv_translate.mixed_dot = mixed,
+                        g_spirv_translate.float16 = 1;
+                        g_spirv_translate.hmma_pairs = form == 1, g_spirv_translate.hmma_stage = form == 2 ? 65536 : 0;
+                        g_spirv_translate.hmma_f16 = packed;
                         char keep[32];
                         snprintf(keep, sizeof keep, "warp_values%d%d%d%d", quad, mixed, form, packed);
                         int ran = hmma_run(code, n, in, out[form], dir, set == HM_EXACT ? keep : NULL, 0);
-                        g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
-                        g_shader_hmma_pairs = pairs_was, g_shader_hmma_stage = stage_was;
-                        g_shader_hmma_f16 = half_was;
+                        g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
+                        g_spirv_translate.float16 = f16_was;
+                        g_spirv_translate.hmma_pairs = pairs_was, g_spirv_translate.hmma_stage = stage_was;
+                        g_spirv_translate.hmma_f16 = half_was;
                         CHECK(ran);
                         if (!ran) return;
                         u32 bad = 0;
@@ -4878,19 +4887,19 @@ static void test_warp_matrix_values(const char* dir) {
 }
 
 /* HMMA's f16 D where the device flushes f16 subnormals (the evaluator's half_flush, as Turnip on an Adreno 610 does in
-   PackHalf2x16): with g_shader_half_flush the halves below 2^-14 are packed by hand and every output is what
+   PackHalf2x16): with g_spirv_translate.half_flush the halves below 2^-14 are packed by hand and every output is what
    hmma_expect says; packed by PackHalf2x16 alone, some of the rounded set's are lost, which shows the set reaches them */
 static void test_warp_matrix_flush(const char* dir) {
     u8 code[16 * 48] = {0};
     u32 n = hmma_program(code);
-    int flush_was = g_shader_half_flush, f16_was = g_shader_float16;
+    int flush_was = g_spirv_translate.half_flush, f16_was = g_spirv_translate.float16;
     static HmmaMats mats;
     static u32 in[32 * 8], out[32 * HMMA_OUT];
     hmma_inputs(&mats, in, HM_ROUNDED);
     for (int exact = 0; exact < 2; exact++) {
-        g_shader_half_flush = exact, g_shader_float16 = 1;
+        g_spirv_translate.half_flush = exact, g_spirv_translate.float16 = 1;
         int ran = hmma_run(code, n, in, out, dir, exact ? "warp_flush" : NULL, 1);
-        g_shader_half_flush = flush_was, g_shader_float16 = f16_was;
+        g_spirv_translate.half_flush = flush_was, g_spirv_translate.float16 = f16_was;
         CHECK(ran);
         if (!ran) return;
         u32 bad = 0, small = 0;
@@ -4925,9 +4934,10 @@ static void test_warp_matrix_flush(const char* dir) {
 
 /* the way the log says a device's compute HMMAs take (shader_hmma_way), from the flags device.c sets */
 static void test_hmma_way(void) {
-    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16,
-        pairs_was = g_shader_hmma_pairs, stage_was = g_shader_hmma_stage, coop_was = g_shader_hmma_coop,
-        half_was = g_shader_hmma_f16;
+    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
+        f16_was = g_spirv_translate.float16, pairs_was = g_spirv_translate.hmma_pairs,
+        stage_was = g_spirv_translate.hmma_stage, coop_was = g_spirv_translate.hmma_coop,
+        half_was = g_spirv_translate.hmma_f16;
     static const struct {
         int quad, mixed, pairs, stage, coop, half;
         const char* want;
@@ -4947,17 +4957,21 @@ static void test_hmma_way(void) {
          "A by quad broadcasts, B shared by pairs of lanes, the products by the mixed dot product into f32"},
     };
     for (size_t k = 0; k < sizeof cases / sizeof *cases; k++) {
-        g_shader_quad_compute = cases[k].quad, g_shader_mixed_dot = cases[k].mixed, g_shader_float16 = 1;
-        g_shader_hmma_pairs = cases[k].pairs, g_shader_hmma_stage = cases[k].stage, g_shader_hmma_coop = cases[k].coop;
-        g_shader_hmma_f16 = cases[k].half;
+        g_spirv_translate.quad_compute = cases[k].quad, g_spirv_translate.mixed_dot = cases[k].mixed,
+        g_spirv_translate.float16 = 1;
+        g_spirv_translate.hmma_pairs = cases[k].pairs, g_spirv_translate.hmma_stage = cases[k].stage,
+        g_spirv_translate.hmma_coop = cases[k].coop;
+        g_spirv_translate.hmma_f16 = cases[k].half;
         char way[256];
         shader_hmma_way(way, sizeof way);
         if (strcmp(way, cases[k].want)) fprintf(stderr, "HMMA way %zu: \"%s\", wanted \"%s\"\n", k, way, cases[k].want);
         CHECK(!strcmp(way, cases[k].want));
     }
-    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
-    g_shader_hmma_pairs = pairs_was, g_shader_hmma_stage = stage_was, g_shader_hmma_coop = coop_was;
-    g_shader_hmma_f16 = half_was;
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
+    g_spirv_translate.float16 = f16_was;
+    g_spirv_translate.hmma_pairs = pairs_was, g_spirv_translate.hmma_stage = stage_was,
+    g_spirv_translate.hmma_coop = coop_was;
+    g_spirv_translate.hmma_f16 = half_was;
 }
 
 /* the HMMA forms vk/device.c chooses (shader_hmma_choose) for the devices measured: the Adreno 610 on Turnip, whose
@@ -4966,8 +4980,9 @@ static void test_hmma_way(void) {
    RADV with subgroups of 32 shares B by pairs of lanes, its quads in compute or not: missing quads are no reason to
    stage, as RADV staged ran 2.2 times slower */
 static void test_hmma_choose(void) {
-    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16,
-        pairs_was = g_shader_hmma_pairs, stage_was = g_shader_hmma_stage, coop_was = g_shader_hmma_coop;
+    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
+        f16_was = g_spirv_translate.float16, pairs_was = g_spirv_translate.hmma_pairs,
+        stage_was = g_spirv_translate.hmma_stage, coop_was = g_spirv_translate.hmma_coop;
     static const struct {
         const char* device;
         int quad, mixed, radv_warp32, shuffle_loops;
@@ -4983,37 +4998,42 @@ static void test_hmma_choose(void) {
          "A by shuffles, B shared by pairs of lanes, the products by the mixed dot product into f32"},
     };
     for (size_t k = 0; k < sizeof cases / sizeof *cases; k++) {
-        g_shader_quad_compute = cases[k].quad, g_shader_mixed_dot = cases[k].mixed, g_shader_float16 = 1;
-        g_shader_hmma_coop = 0;
+        g_spirv_translate.quad_compute = cases[k].quad, g_spirv_translate.mixed_dot = cases[k].mixed,
+        g_spirv_translate.float16 = 1;
+        g_spirv_translate.hmma_coop = 0;
         shader_hmma_choose(1, cases[k].radv_warp32, cases[k].shuffle_loops, 65536);
         char way[256];
         shader_hmma_way(way, sizeof way);
         if (strcmp(way, cases[k].want))
             fprintf(stderr, "HMMA on the %s: \"%s\", wanted \"%s\"\n", cases[k].device, way, cases[k].want);
         CHECK(!strcmp(way, cases[k].want));
-        CHECK(g_shader_hmma_stage == (cases[k].shuffle_loops ? 65536 : 0));
+        CHECK(g_spirv_translate.hmma_stage == (cases[k].shuffle_loops ? 65536 : 0));
     }
     shader_hmma_choose(0, 1, 1, 65536); /* no subgroup operations in compute: no form of hmma's runs */
-    CHECK(!g_shader_hmma_stage && !g_shader_hmma_pairs);
-    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
-    g_shader_hmma_pairs = pairs_was, g_shader_hmma_stage = stage_was, g_shader_hmma_coop = coop_was;
+    CHECK(!g_spirv_translate.hmma_stage && !g_spirv_translate.hmma_pairs);
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
+    g_spirv_translate.float16 = f16_was;
+    g_spirv_translate.hmma_pairs = pairs_was, g_spirv_translate.hmma_stage = stage_was,
+    g_spirv_translate.hmma_coop = coop_was;
 }
 
 /* hmma_f16 asked for where the device keeps HMMA's f32 sum: the reason the log gives, which names what the device has
    or lacks, and none where the half sums are taken or not asked for */
 static void test_hmma_f16_unused(void) {
-    int half_was = g_shader_hmma_f16, float16_was = g_shader_float16, mixed_was = g_shader_mixed_dot;
-    g_shader_hmma_f16 = 0, g_shader_float16 = 1, g_shader_mixed_dot = 1;
+    int half_was = g_spirv_translate.hmma_f16, float16_was = g_spirv_translate.float16,
+        mixed_was = g_spirv_translate.mixed_dot;
+    g_spirv_translate.hmma_f16 = 0, g_spirv_translate.float16 = 1, g_spirv_translate.mixed_dot = 1;
     CHECK(shader_hmma_f16_unused() == NULL);
-    g_shader_hmma_f16 = 1;
+    g_spirv_translate.hmma_f16 = 1;
     const char* why = shader_hmma_f16_unused();
     CHECK(why && strstr(why, "VK_VALVE_shader_mixed_float_dot_product"));
-    g_shader_mixed_dot = 0;
+    g_spirv_translate.mixed_dot = 0;
     CHECK(shader_hmma_f16_unused() == NULL);
-    g_shader_float16 = 0;
+    g_spirv_translate.float16 = 0;
     why = shader_hmma_f16_unused();
     CHECK(why && strstr(why, "shaderFloat16"));
-    g_shader_hmma_f16 = half_was, g_shader_float16 = float16_was, g_shader_mixed_dot = mixed_was;
+    g_spirv_translate.hmma_f16 = half_was, g_spirv_translate.float16 = float16_was,
+    g_spirv_translate.mixed_dot = mixed_was;
 }
 
 /* the memory model a module declares (OpMemoryModel's: 1 GLSL450, 3 Vulkan), whether it declares a capability, and
@@ -5034,10 +5054,10 @@ static u32 spv_decorations(const u32* words, size_t count, u32 decoration) {
         found += (words[i] & 0xffff) == 71 && words[i] >> 16 >= 3 && words[i + 2] == decoration;
     return found;
 }
-/* HMMA on the device's cooperative matrices (g_shader_hmma_coop), in a program that also reads and writes global
-   memory (LDG, STG), stores to shared memory (STS, a byte's by two atomics), adds there (ATOMS), waits (MEMBAR.GPU,
-   BAR.SYNC) and reads it (LDSM), whose barriers and atomics the Vulkan memory model takes too: each HMMA one
-   OpCooperativeMatrixMulAddKHR of two matrices loaded and one stored, with no dot products and no B gathers (LDSM's
+/* HMMA on the device's cooperative matrices (g_spirv_translate.hmma_coop), in a program that also reads and writes
+   global memory (LDG, STG), stores to shared memory (STS, a byte's by two atomics), adds there (ATOMS), waits
+   (MEMBAR.GPU, BAR.SYNC) and reads it (LDSM), whose barriers and atomics the Vulkan memory model takes too: each HMMA
+   one OpCooperativeMatrixMulAddKHR of two matrices loaded and one stored, with no dot products and no B gathers (LDSM's
    4 shuffles and MOVM's 2 stay), in a module of the Vulkan memory model, whose global buffer is not Coherent but read
    and written by atomics. With the flag off, or a block of 16 lanes, too little shared memory left for the slots, no
    shaderFloat16, the program is hmma's as before; and a program without HMMA stays GLSL450's with the flag on */
@@ -5110,13 +5130,14 @@ static void test_warp_matrix_coop(const char* dir) {
     put(code, n++, exit_insn());
     put(code, n, bra(n, n, 7, 0));
     n++;
-    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, coop_was = g_shader_hmma_coop,
-        f16_was = g_shader_float16;
+    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot,
+        coop_was = g_spirv_translate.hmma_coop, f16_was = g_spirv_translate.float16;
     /* the translation as each flag and block: 1 when it took the cooperative matrices, 0 when hmma's, -1 failed */
     for (int coop = 0; coop < 2; coop++)
         for (int quad = 0; quad < 2; quad++)
             for (int mixed = 0; mixed < 2; mixed++) {
-                g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_hmma_coop = coop ? 65536 : 0;
+                g_spirv_translate.quad_compute = quad, g_spirv_translate.mixed_dot = mixed,
+                g_spirv_translate.hmma_coop = coop ? 65536 : 0;
                 ShaderInfo si = {0};
                 si.cs_local[0] = 32, si.cs_local[1] = 2, si.cs_local[2] = 1;
                 si.shared_size = 49152;
@@ -5152,19 +5173,19 @@ static void test_warp_matrix_coop(const char* dir) {
             }
     /* where the cooperative matrices don't fit: a block of 16 lanes, 64 KiB of shared memory but 1 KiB, which the
        two slots' 3.5 KiB don't fit in, and no shaderFloat16 */
-    g_shader_hmma_coop = 65536, g_shader_quad_compute = 1, g_shader_mixed_dot = 0;
+    g_spirv_translate.hmma_coop = 65536, g_spirv_translate.quad_compute = 1, g_spirv_translate.mixed_dot = 0;
     for (int k = 0; k < 3; k++) {
         ShaderInfo si = {0};
         si.cs_local[0] = k == 0 ? 16 : 32, si.cs_local[1] = k == 0 ? 4 : 2, si.cs_local[2] = 1;
         si.shared_size = k == 1 ? 65536 - 1024 : 49152;
-        g_shader_float16 = k != 2;
+        g_spirv_translate.float16 = k != 2;
         size_t count = 0;
         u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
         CHECK(spv && spv_count(spv, count, 4459) == 0 && spv_memory_model(spv, count) == 1 &&
               spv_decorations(spv, count, 23) == 1);
         free(spv);
     }
-    g_shader_float16 = f16_was;
+    g_spirv_translate.float16 = f16_was;
     {
         u8 plain[16 * 8] = {0};
         u32 m = compute_program(plain);
@@ -5175,7 +5196,8 @@ static void test_warp_matrix_coop(const char* dir) {
         CHECK(spv && spv_memory_model(spv, count) == 1 && !spv_has_capability(spv, count, 5345));
         free(spv);
     }
-    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_hmma_coop = coop_was;
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
+    g_spirv_translate.hmma_coop = coop_was;
 }
 
 int main(int argc, char** argv) {

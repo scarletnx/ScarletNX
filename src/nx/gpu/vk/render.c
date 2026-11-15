@@ -419,7 +419,7 @@ static int xfb_control_stores(u32* end, u64 control, u32 what, u32 stride) {
 }
 int vk_render_xfb_control(u32 owner_id, u64 control, u32 what, u32 stride, DrawOwner* owner) {
     if ((owner_id & 0x7fffffff) >= GPU_CHANNELS) return 0;
-    if (g_shader_xfb_stores) {
+    if (g_spirv_translate.xfb_stores) {
         if (!xfb_control_stores(g_xfb.end[xfb_counter_offset(owner_id) / 16], control, what, stride)) return 0;
     } else {
         if (!g_vk.has_xfb || !xfb_counters()) return 0;
@@ -438,7 +438,7 @@ int vk_render_xfb_control(u32 owner_id, u64 control, u32 what, u32 stride, DrawO
 /* whether a draw captures its vertices (DsPrograms.xfb_on): by the extension once its counters exist, or by stores */
 static int xfb_wanted(int on) {
     if (!on) return 0;
-    return g_vk.has_xfb ? xfb_counters() : g_shader_xfb_stores;
+    return g_vk.has_xfb ? xfb_counters() : g_spirv_translate.xfb_stores;
 }
 
 /* a draw's capture by stores: the vertex stage's bindings and where each buffer's capture ends */
@@ -2281,12 +2281,12 @@ static int indexed_uniform(DescWrites* writes, VkDescriptorSet set, int stage, u
     return 1;
 }
 
-/* The elements of SNX_VKB_TEXARRAY (g_shader_tex_array of them), from an indexed texture slot: SNX_TEX_ARRAY handles
-   from the slot's offset on, (1 << shift) bytes apart, or as many as the slot says, its stride apart. A handle past the
-   constant buffer's size, or with a header or sampler index past its pool's limit (no texture on hardware either),
-   reads as its kind's null texture. So does a texture of another kind than the slot's. Targets use snapshots refreshed after a draw changes
-   them. Tables of different kinds share the binding, each element viewed as the kind of the table that names it: a
-   handle that two kinds name has an element for each. */
+/* The elements of SNX_VKB_TEXARRAY (g_spirv_translate.tex_array of them), from an indexed texture slot: SNX_TEX_ARRAY
+   handles from the slot's offset on, (1 << shift) bytes apart, or as many as the slot says, its stride apart. A handle
+   past the constant buffer's size, or with a header or sampler index past its pool's limit (no texture on hardware
+   either), reads as its kind's null texture. So does a texture of another kind than the slot's. Targets use snapshots
+   refreshed after a draw changes them. Tables of different kinds share the binding, each element viewed as the kind of
+   the table that names it: a handle that two kinds name has an element for each. */
 static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int* first, int count, Surf** rt, Surf* zt,
                           u32 n, VkImageLayout layout, DescWrites* d, VkDescriptorSet set) {
     /* each table's kind, named by the first table of that kind; a non-shadow kind's elements fill the depth binding
@@ -2330,8 +2330,9 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                other (edenprobe's bindless case samples it) */
             if ((!cba && !in.bytes) || at + 4 > size) {
                 if (tk->id == TEX_NO_ENTRY) {
-                    if (used == g_shader_tex_array) {
-                        LOG_LIMIT(4, "vulkan: indexed texture tables exceed %u unique handles\n", g_shader_tex_array);
+                    if (used == g_spirv_translate.tex_array) {
+                        LOG_LIMIT(4, "vulkan: indexed texture tables exceed %u unique handles\n",
+                                  g_spirv_translate.tex_array);
                         return 0;
                     }
                     tk->id = used++;
@@ -2351,8 +2352,9 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
             u32 id = vk_indexed_handle_find(handle_slots, SNX_TEX_ARRAY, handles, element_kind, used, handle,
                                             (u8)kind_of[table], 8);
             if (id == used) {
-                if (used == g_shader_tex_array) {
-                    LOG_LIMIT(4, "vulkan: indexed texture tables exceed %u unique handles\n", g_shader_tex_array);
+                if (used == g_spirv_translate.tex_array) {
+                    LOG_LIMIT(4, "vulkan: indexed texture tables exceed %u unique handles\n",
+                              g_spirv_translate.tex_array);
                     return 0;
                 }
                 handles[id] = handle;
@@ -2411,7 +2413,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
         }
     }
     /* the first kind's null texture in every entry left: the binding is read whole */
-    for (u32 k = used; k < g_shader_tex_array; k++) {
+    for (u32 k = used; k < g_spirv_translate.tex_array; k++) {
         d->table[k] = kinds[0].info;
         if (depth_fill) {
             d->depth_table[k] = depth_fill->depth;
@@ -2422,7 +2424,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
     *w = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                 .dstSet = set,
                                 .dstBinding = SNX_VKB_TEXARRAY,
-                                .descriptorCount = g_shader_tex_array,
+                                .descriptorCount = g_spirv_translate.tex_array,
                                 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                 .pImageInfo = d->table};
     if (depth_fill) {

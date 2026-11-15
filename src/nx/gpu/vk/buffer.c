@@ -520,10 +520,10 @@ u64 vk_buf_pending_inspected(void) { return g_outx.inspected; }
 static VkPipelineStageFlags2 out_stages(void) {
     return VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT |
-           (g_shader_tessellation ? VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT |
-                                        VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT
-                                  : 0) |
-           (g_shader_geometry ? VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT : 0) |
+           (g_spirv_translate.tessellation ? VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT |
+                                                 VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT
+                                           : 0) |
+           (g_spirv_translate.geometry ? VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT : 0) |
            (g_vk.has_mesh ? VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT : 0) |
            (g_vk.has_task ? VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT : 0) |
            (g_vk.has_xfb ? VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT : 0);

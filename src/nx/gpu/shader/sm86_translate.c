@@ -53,7 +53,7 @@ typedef struct {
     u32 num_groups, hmma_count;  /* NumWorkgroups and the HMMAs so far, for hmma_zero */
     int coop;                    /* HMMA takes hmma_coop (coop_wanted), and the module the Vulkan memory model */
     u32 coop_slots, subgroup_id; /* hmma_coop's slots (Workgroup) and SubgroupId */
-    u32 stage_slots;             /* hmma's A and B staged a warp each (g_shader_hmma_stage, Workgroup) */
+    u32 stage_slots;             /* hmma's A and B staged a warp each (g_spirv_translate.hmma_stage, Workgroup) */
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
@@ -134,11 +134,11 @@ static u32 to_f(Ctx* c, u32 v) { return spv_emit_unary(&c->e, SPV_OP_BITCAST, c-
 static u32 to_u(Ctx* c, u32 v) { return spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_u32, v); }
 static u32 op2(Ctx* c, u32 opcode, u32 type, u32 a, u32 b) { return SPV(&c->e, opcode, type, a, b); }
 /* PackHalf2x16 of a vec2 of f32, as the console converts f32 to f16. Where the device may flush f16 subnormals
-   (g_shader_half_flush) a half below 2^-14 is RoundEven(|x| 2^24), the subnormal's own bits, and x's sign: 2^24
-   scales without rounding and the product is below 1024, so it is the f16 for every such f32 */
+   (g_spirv_translate.half_flush) a half below 2^-14 is RoundEven(|x| 2^24), the subnormal's own bits, and x's sign:
+   2^24 scales without rounding and the product is below 1024, so it is the f16 for every such f32 */
 static u32 pack_half(Ctx* c, u32 pair) {
     u32 bits = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, pair);
-    if (!g_shader_half_flush) return bits;
+    if (!g_spirv_translate.half_flush) return bits;
     for (u32 k = 0; k < 2; k++) {
         u32 x = spv_emit_vec4_extract(&c->e, c->t_f32, pair, k);
         u32 a = SPV_EXT(&c->e, c->t_f32, SPV_GLSL_F_ABS, x);
@@ -220,7 +220,7 @@ static u32 cbuf_load(Ctx* c, u32 bank, u32 off, u32 index) {
        transforms (#2175) */
     if (c->stage == ST_VS && bank == 0 && !index && off == SH_CB0_BASE_INSTANCE) {
         u32 push = to_u(c, push_component(c, 0));
-        if (!g_shader_draw_parameters) return push;
+        if (!g_spirv_translate.draw_parameters) return push;
         spv_emit_draw_parameters_capability(&c->e);
         return spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32,
                                builtin_u32(c, &c->base_instance, SPV_BUILT_IN_BASE_INSTANCE), push);
@@ -492,15 +492,15 @@ static u32 round_sum(Ctx* c, u32 mode, u32 p, u32 q) {
                     op2(c, SPV_OP_LOGICAL_AND, c->t_bool, tie, op2(c, SPV_OP_F_ORD_LESS_THAN, c->t_bool, err, zero)));
     return directed(c, mode, r, above, below);
 }
-/* FADD: x + y in mode. A device without doubles (g_shader_float64) rounds to nearest, as its floats do */
+/* FADD: x + y in mode. A device without doubles (g_spirv_translate.float64) rounds to nearest, as its floats do */
 static u32 float_add(Ctx* c, u32 mode, u32 x, u32 y) {
-    if (!g_shader_float64) mode = 0;
+    if (!g_spirv_translate.float64) mode = 0;
     if (mode == 0) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_ADD, c->t_f32, x, y));
     return round_sum(c, mode, widen(c, x), widen(c, y));
 }
 /* FMUL: x * y * 2^(scale - 4) in mode. The product of two floats is exact in a double */
 static u32 float_mul(Ctx* c, u32 mode, u32 scale, u32 x, u32 y) {
-    if (!g_shader_float64) {
+    if (!g_spirv_translate.float64) {
         if (scale == 4) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
         /* 2^(scale - 4), scale 1 to 7. scale is unsigned: below 4, scale - 4 is a number near 2^32, not a
            negative one, so a .D scale divides by 2^(4 - scale) */
@@ -530,7 +530,7 @@ static u32 float_mul(Ctx* c, u32 mode, u32 scale, u32 x, u32 y) {
 /* FFMA: x * y + z in mode. To nearest, a float FMA, as spirv_translate.c writes it. A directed mode rounds the
    exact sum of the product (exact in a double) and z */
 static u32 float_fma(Ctx* c, u32 mode, u32 x, u32 y, u32 z) {
-    if (!g_shader_float64) mode = 0;
+    if (!g_spirv_translate.float64) mode = 0;
     if (mode == 0) return spv_emit_glsl_ternary(&c->e, c->t_f32, c->glsl, SPV_GLSL_FMA, x, y, z);
     u32 product = nocontract(c, op2(c, SPV_OP_F_MUL, f64_type(c), widen(c, x), widen(c, y)));
     return round_sum(c, mode, product, widen(c, z));
@@ -774,7 +774,7 @@ static u32 attr_load(Ctx* c, u32 addr) {
            translator has it (emit_io.c). Less the push constant alone, a direct draw's instances counted from its
            base instance there: one game's instanced buildings and trees took other instances' transforms */
         u32 base = to_u(c, push_component(c, 0));
-        if (g_shader_draw_parameters) {
+        if (g_spirv_translate.draw_parameters) {
             spv_emit_draw_parameters_capability(&c->e);
             base = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32,
                                    builtin_u32(c, &c->base_instance, SPV_BUILT_IN_BASE_INSTANCE), base);
@@ -864,8 +864,9 @@ static void attr_store(Ctx* c, u32 addr, u32 bits) {
         return;
     } else if (addr == 0x6c) {
         /* a geometry program's point size needs GeometryPointSize, which the device may lack: then it is 1, as the
-           Maxwell translator leaves it (spirv_translate.c declares the output only with g_shader_stage_point_size) */
-        if (c->stage == ST_GS && !g_shader_stage_point_size) return;
+           Maxwell translator leaves it (spirv_translate.c declares the output only with
+           g_spirv_translate.stage_point_size) */
+        if (c->stage == ST_GS && !g_spirv_translate.stage_point_size) return;
         if (!c->point_size) {
             if (c->stage == ST_GS) spv_emit_capability(&c->e, SPV_CAPABILITY_GEOMETRY_POINT_SIZE);
             c->point_size = spv_emit_point_size_output(&c->e, c->t_f32);
@@ -1837,7 +1838,7 @@ static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data) {
    of the lanes that race on a word succeeds each time round. Its sum flushes subnormals as the instruction does
    (ftz) */
 static u32 atomic_fadd(Ctx* c, u32 buffer, u32 address, u32 data) {
-    if (g_shader_float_atomic_add) {
+    if (g_spirv_translate.float_atomic_add) {
         u32 slot = 0;
         while (slot < 15 && c->gbuf[slot] != buffer) slot++;
         if (!c->gbuf_f32[slot]) {
@@ -2362,11 +2363,12 @@ static int tex_slot_indexed(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 
         c->tex_depth_type[i] = c->tex_depth_type[same];
     } else {
         c->tex_array[i] = spv_emit_sampler_image_array(&c->e, c->t_f32, c->t_u32, set, SNX_VKB_TEXARRAY, dim,
-                                                       (int)array, 0, g_shader_tex_array, &c->tex_sampled[i]);
+                                                       (int)array, 0, g_spirv_translate.tex_array, &c->tex_sampled[i]);
         add_interface(c, c->tex_array[i]);
         if (shadow) {
-            c->tex_depth[i] = spv_emit_sampler_image_array(&c->e, c->t_f32, c->t_u32, set, SNX_VKB_TEXDEPTH, dim,
-                                                           (int)array, 1, g_shader_tex_array, &c->tex_depth_type[i]);
+            c->tex_depth[i] =
+                spv_emit_sampler_image_array(&c->e, c->t_f32, c->t_u32, set, SNX_VKB_TEXDEPTH, dim, (int)array, 1,
+                                             g_spirv_translate.tex_array, &c->tex_depth_type[i]);
             add_interface(c, c->tex_depth[i]);
         }
     }
@@ -2958,7 +2960,7 @@ static u32 warp_xor(Ctx* c, u32 value, u32 mask) {
    invocations of adjacent subgroup ids, the first a multiple of 4, in every stage that has them; so in a subgroup of
    64 too the reader's quad is lanes 4g to 4g + 3 of its own 32, and quad lane p is lane 4g + p */
 static u32 quad_read(Ctx* c, u32 value, u32 g4, u32 p) {
-    if (c->stage == ST_CS ? g_shader_quad_compute : c->stage == ST_FS && g_shader_quad) {
+    if (c->stage == ST_CS ? g_spirv_translate.quad_compute : c->stage == ST_FS && g_spirv_translate.quad) {
         spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
         spv_emit_subgroup_quad_capability(&c->e);
         return spv_emit_subgroup_quad_u32(&c->e, c->t_u32, value, 0, cu(c, p));
@@ -2967,30 +2969,32 @@ static u32 quad_read(Ctx* c, u32 value, u32 g4, u32 p) {
 }
 static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, bits); }
 void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int shared_max) {
-    g_shader_hmma_stage = subgroups && shuffle_loops ? shared_max : 0;
-    g_shader_hmma_pairs = subgroups && radv_warp32 && !g_shader_hmma_stage;
+    g_spirv_translate.hmma_stage = subgroups && shuffle_loops ? shared_max : 0;
+    g_spirv_translate.hmma_pairs = subgroups && radv_warp32 && !g_spirv_translate.hmma_stage;
 }
 void shader_hmma_way(char* out, size_t n) {
-    int mixed = g_shader_mixed_dot && g_shader_float16, halves = !mixed && g_shader_hmma_f16 && g_shader_float16;
-    const char* how = g_shader_hmma_stage ? "A and B through a warp's slot of shared memory"
-                      : g_shader_hmma_pairs && g_shader_quad_compute
+    int mixed = g_spirv_translate.mixed_dot && g_spirv_translate.float16,
+        halves = !mixed && g_spirv_translate.hmma_f16 && g_spirv_translate.float16;
+    const char* how = g_spirv_translate.hmma_stage ? "A and B through a warp's slot of shared memory"
+                      : g_spirv_translate.hmma_pairs && g_spirv_translate.quad_compute
                           ? "A by quad broadcasts, B shared by pairs of lanes"
-                      : g_shader_hmma_pairs   ? "A by shuffles, B shared by pairs of lanes"
-                      : g_shader_quad_compute ? "A by quad broadcasts, B by shuffles"
-                                              : "A and B by shuffles";
+                      : g_spirv_translate.hmma_pairs   ? "A by shuffles, B shared by pairs of lanes"
+                      : g_spirv_translate.quad_compute ? "A by quad broadcasts, B by shuffles"
+                                                       : "A and B by shuffles";
     snprintf(out, n, "%s%s, the products %s",
-             g_shader_hmma_coop ? "the device's cooperative matrices where a program's blocks are whole warps and "
-                                  "their fragments fit in shared memory, else "
-                                : "",
+             g_spirv_translate.hmma_coop
+                 ? "the device's cooperative matrices where a program's blocks are whole warps and "
+                   "their fragments fit in shared memory, else "
+                 : "",
              how,
              mixed    ? "by the mixed dot product into f32"
              : halves ? "summed in half floats (hmma_f16), then in f32"
                       : "unpacked to f32");
 }
 const char* shader_hmma_f16_unused(void) {
-    if (!g_shader_hmma_f16) return NULL;
-    if (!g_shader_float16) return "the device has no shaderFloat16";
-    if (g_shader_mixed_dot)
+    if (!g_spirv_translate.hmma_f16) return NULL;
+    if (!g_spirv_translate.float16) return "the device has no shaderFloat16";
+    if (g_spirv_translate.mixed_dot)
         return "the device's mixed dot product (VK_VALVE_shader_mixed_float_dot_product) sums two products an "
                "instruction in f32";
     return NULL;
@@ -3012,8 +3016,8 @@ static u32 hmma_zero(Ctx* c) {
                                 builtin_vec3(c, &c->num_groups, SPV_BUILT_IN_NUM_WORKGROUPS, 0), c->zero);
     return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, never, cu(c, group + 1), c->zero);
 }
-/* HMMA on the device's matrix unit (g_shader_hmma_coop): one OpCooperativeMatrixMulAddKHR of 16x16 f16 A and B into
-   a 16x16 f32 accumulator, in place of hmma's 16 B gathers and 32 dot products. SPV_KHR_cooperative_matrix leaves
+/* HMMA on the device's matrix unit (g_spirv_translate.hmma_coop): one OpCooperativeMatrixMulAddKHR of 16x16 f16 A and B
+   into a 16x16 f32 accumulator, in place of hmma's 16 B gathers and 32 dot products. SPV_KHR_cooperative_matrix leaves
    which lane holds which element to the driver, with no query, so the fragments go through shared memory: each
    subgroup has a slot of its own (SubgroupId) in an array after the program's, where A is row-major (8 words a row
    of 16 halves), B column-major (8 words a column) and D row-major in f32 (16 words a row). The product has 16
@@ -3036,15 +3040,15 @@ static u32 hmma_zero(Ctx* c) {
 /* Whether a program's HMMAs take hmma_coop: a compute program with one, in blocks of whole subgroups of 32 (vk/
    compute.c asks for subgroups of 32 for a program that reads other lanes, full where x is a multiple of 32; a 16x16
    matrix takes the subgroup's 32 lanes), with shaderFloat16 for the halves, and with room for the slots after the
-   program's shared memory within the device's (g_shader_hmma_coop). It is the module's choice, as the extension asks
-   for the Vulkan memory model */
+   program's shared memory within the device's (g_spirv_translate.hmma_coop). It is the module's choice, as the
+   extension asks for the Vulkan memory model */
 static int coop_wanted(const Ctx* c) {
-    if (!g_shader_hmma_coop || !g_shader_float16 || c->stage != ST_CS || c->si->cs_local[0] <= 0 ||
+    if (!g_spirv_translate.hmma_coop || !g_spirv_translate.float16 || c->stage != ST_CS || c->si->cs_local[0] <= 0 ||
         c->si->cs_local[0] % 32)
         return 0;
     u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
     u32 own = c->si->shared_size > 0 ? (u32)c->si->shared_size : 16384u; /* shared_var's */
-    if (own + lanes / 32 * COOP_WORDS * 4 > (u32)g_shader_hmma_coop) return 0;
+    if (own + lanes / 32 * COOP_WORDS * 4 > (u32)g_spirv_translate.hmma_coop) return 0;
     for (u32 i = 0; i < c->n; i++)
         if (c->in[i].op == SM86_HMMA) return 1;
     return 0;
@@ -3068,7 +3072,7 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
     spv_emit_capability(&c->e, SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR);
     spv_emit_extension(&c->e, "SPV_KHR_cooperative_matrix");
     u32 t_h = spv_emit_type_float(&c->e, 16);
-    u32 tile = g_shader_hmma_coop_tile == 8 ? 8 : 16; /* Metal's simdgroup_matrix is 8x8x8, RADV's 16x16x16 */
+    u32 tile = g_spirv_translate.hmma_coop_tile == 8 ? 8 : 16; /* Metal's simdgroup_matrix is 8x8x8, RADV's 16x16x16 */
     u32 t_a = spv_emit_type_cooperative_matrix(&c->e, t_h, SPV_SCOPE_SUBGROUP, tile, tile,
                                                SPV_COOPERATIVE_MATRIX_USE_MATRIX_A_KHR);
     u32 t_b = spv_emit_type_cooperative_matrix(&c->e, t_h, SPV_SCOPE_SUBGROUP, tile, tile,
@@ -3107,7 +3111,7 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
         spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_b, 4 * k)), k < nb ? b[k] : c->zero);
     coop_barrier(c);
     u32 zero_acc = spv_emit_const_composite(&c->e, t_acc, (const u32[]){cf(c, 0.0f)}, 1);
-    if (g_shader_hmma_coop_tile != 8) {
+    if (g_spirv_translate.hmma_coop_tile != 8) {
         u32 ma =
             SPV(&c->e, SPV_OP_COOPERATIVE_MATRIX_LOAD_KHR, t_a, coop_ptr(c, base),
                 cu(c, SPV_COOPERATIVE_MATRIX_LAYOUT_ROW_MAJOR_KHR), cu(c, 8), SPV_MEMORY_ACCESS_NON_PRIVATE_POINTER);
@@ -3165,16 +3169,16 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
         for (u32 i = 0; i < 2; i++)
             wr(c, d + i, pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, acc[2 * i], acc[2 * i + 1])));
 }
-/* hmma's A and B through shared memory (g_shader_hmma_stage), for a device whose shuffles cost far more than a store
-   and a load: each warp has a slot of HMMA_STAGE_WORDS after the program's shared memory, lane l's A words at 4l and
-   its B words at 128 + 2l, between two subgroup barriers as hmma_coop's slots are. A compute program's, where the
+/* hmma's A and B through shared memory (g_spirv_translate.hmma_stage), for a device whose shuffles cost far more than a
+   store and a load: each warp has a slot of HMMA_STAGE_WORDS after the program's shared memory, lane l's A words at 4l
+   and its B words at 128 + 2l, between two subgroup barriers as hmma_coop's slots are. A compute program's, where the
    slots fit the device's shared memory beside the program's own */
 #define HMMA_STAGE_WORDS 192u
 static int stage_wanted(const Ctx* c) {
-    if (!g_shader_hmma_stage || c->coop || c->stage != ST_CS || c->si->cs_local[0] <= 0) return 0;
+    if (!g_spirv_translate.hmma_stage || c->coop || c->stage != ST_CS || c->si->cs_local[0] <= 0) return 0;
     u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
     u32 own = c->si->shared_size > 0 ? (u32)c->si->shared_size : 16384u; /* shared_var's */
-    return own + (lanes + 31) / 32 * HMMA_STAGE_WORDS * 4 <= (u32)g_shader_hmma_stage;
+    return own + (lanes + 31) / 32 * HMMA_STAGE_WORDS * 4 <= (u32)g_spirv_translate.hmma_stage;
 }
 static u32 stage_ptr(Ctx* c, u32 index) {
     return SPV(&c->e, SPV_OP_ACCESS_CHAIN, spv_emit_type_workgroup_pointer(&c->e, c->t_u32), c->stage_slots, index);
@@ -3189,11 +3193,11 @@ static u32 stage_ptr(Ctx* c, u32 index) {
    gathers the A pairs of its two rows from its quad, lanes 4g to 4g + 3 (quad_read), and the B pairs of its two
    columns from lanes 8t + p and 8t + 4 + p (16 shuffles each for k16, of the B registers OR'd with hmma_zero), and
    sums the products in f32, which an f16 D then rounds to. A product of two f16 is exact in f32, so only the sums
-   round, in f32 for both D types: with the mixed dot product (g_shader_mixed_dot) each pair of products goes into
-   the accumulator in one instruction, rounded as the device does it (RDNA 3.5's is a few f32 places off an FMA chain
-   even on exact sums, within the same bound); without it the pairs are unpacked to f32 and dotted.
-   With g_shader_hmma_pairs, lanes l and l ^ 4 (quads g and g ^ 1, the same t, so the same two B columns) split the
-   16 B words both multiply by: lane l shuffles in those of quad lanes 2 G0 and 2 G0 + 1 (G0 = bit 2 of l) and takes
+   round, in f32 for both D types: with the mixed dot product (g_spirv_translate.mixed_dot) each pair of products goes
+   into the accumulator in one instruction, rounded as the device does it (RDNA 3.5's is a few f32 places off an FMA
+   chain even on exact sums, within the same bound); without it the pairs are unpacked to f32 and dotted.
+   With g_spirv_translate.hmma_pairs, lanes l and l ^ 4 (quads g and g ^ 1, the same t, so the same two B columns) split
+   the 16 B words both multiply by: lane l shuffles in those of quad lanes 2 G0 and 2 G0 + 1 (G0 = bit 2 of l) and takes
    its pair's, the other two, with a xor of 4, which RADV makes a DPP move where a shuffle at any index is a permute
    through LDS. Its A pairs follow the same quad lanes, in the same order: quad broadcasts of lanes u and 2 + u, the
    one G0 picks. Only the order of the sums changes, lanes of G0 1 adding quad lanes 2 and 3's pairs first */
@@ -3222,14 +3226,14 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
     u32 t8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
                              spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3)), cu(c, 3));
     /* the pairs as two f16 for OpFDot2MixAcc32VALVE (a bitcast: no instruction), or unpacked to two f32 */
-    int mixed = g_shader_mixed_dot && g_shader_float16;
+    int mixed = g_spirv_translate.mixed_dot && g_spirv_translate.float16;
     /* The products and their sum in half floats, two products to an OpFma where the f32 sum takes two instructions
-       (g_shader_hmma_f16), and C added in f32 to that sum at the end: the one speed an emulated tensor core finds.
-       Each of the two half sums rounds in f16 once a product (8 times for k16, 4 for k8), so a result is within about
-       2^-8 of its products' magnitudes where the f32 sum is within 2^-20, and 2^-21 more below the normals (more where
-       the device flushes f16 subnormals); a product or partial sum past 65504 is an infinity. The driver's matrix
+       (g_spirv_translate.hmma_f16), and C added in f32 to that sum at the end: the one speed an emulated tensor core
+       finds. Each of the two half sums rounds in f16 once a product (8 times for k16, 4 for k8), so a result is within
+       about 2^-8 of its products' magnitudes where the f32 sum is within 2^-20, and 2^-21 more below the normals (more
+       where the device flushes f16 subnormals); a product or partial sum past 65504 is an infinity. The driver's matrix
        unit (hmma_coop) is the exact way to that speed and it is off where the driver has no VK_KHR_cooperative_matrix */
-    int packed = g_shader_hmma_f16 && !shader_hmma_f16_unused();
+    int packed = g_spirv_translate.hmma_f16 && !shader_hmma_f16_unused();
     u32 t_v2h = 0, start2 = 0;
     if (mixed || packed) {
         spv_emit_capability(&c->e, SPV_CAPABILITY_FLOAT16);
@@ -3261,7 +3265,7 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
         }
     }
     /* staged: lane 4g + p's A words at 16g + 4p, lane 8t + 4j + p's B words at 128 + 16t + 8j + 2p */
-    int stage = stage_wanted(c), pairs = !stage && g_shader_hmma_pairs != 0;
+    int stage = stage_wanted(c), pairs = !stage && g_spirv_translate.hmma_pairs != 0;
     u32 a_at = 0, b_at = 0;
     if (stage) {
         if (!c->stage_slots) {
@@ -3670,8 +3674,9 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     if (c->stage == ST_TS) {
         u32 count = spv_emit_load(e, c->t_u32, isbe_ptr(c, payload_var(c), SPV_STORAGE_TASK_PAYLOAD, cu(c, 1)));
         /* within the device's limit: a count past it is undefined behavior, which can hang the GPU */
-        if (g_shader_mesh_tasks_max)
-            count = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, count, cu(c, g_shader_mesh_tasks_max));
+        if (g_spirv_translate.mesh_tasks_max)
+            count = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, count,
+                                         cu(c, g_spirv_translate.mesh_tasks_max));
         SPV_VOID(e, SPV_OP_EMIT_MESH_TASKS_EXT, count, cu(c, 1), cu(c, 1), payload_var(c));
         spv_emit_function_end(e);
         return fn;
@@ -4169,9 +4174,9 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             }
             /* a device without doubles converts to a float, which a 32-bit integer keeps no more exactly: it rounds
                to nearest, as the mode 0 conversion does */
-            if (!g_shader_float64) mode = 0;
+            if (!g_spirv_translate.float64) mode = 0;
             u32 type = mode ? f64_type(c) : c->t_f32, v;
-            if (!mode && src_size == 2 && (g_shader_i2f_nearest & (is_signed ? 1 : 2)))
+            if (!mode && src_size == 2 && (g_spirv_translate.i2f_nearest & (is_signed ? 1 : 2)))
                 v = spv_emit_int_to_f32_nearest(&c->e, x, is_signed);
             else
                 v = is_signed ? spv_emit_unary(&c->e, SPV_OP_CONVERT_S_TO_F, type,
@@ -5083,7 +5088,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 }
                 v = spv_emit_vec4_extract(&c->e, c->t_f32, spv_emit_load(&c->e, c->t_v2f, c->point_coord),
                                           (addr >> 2) & 1);
-            } else if (addr == 0x60 && c->stage == ST_FS && g_shader_geometry) {
+            } else if (addr == 0x60 && c->stage == ST_FS && g_spirv_translate.geometry) {
                 /* NAK's NAK_ATTR_PRIMITIVE_ID: the primitive's number, an integer, its bits as they are. The
                    builtin needs the Geometry capability in a fragment program */
                 if (!c->primitive_id) {
@@ -6197,7 +6202,7 @@ static void prepare_handles(Ctx* c) {
                 int m = reaching_write(c, (u32)k, index);
                 const Sm86Insn* mul = m >= 0 ? &c->in[m] : NULL;
                 u32 stride = 0, base = 0, count = SNX_TEX_ARRAY;
-                if (!g_shader_texture_arrays || c->stage == ST_CS) {
+                if (!g_spirv_translate.texture_arrays || c->stage == ST_CS) {
                     /* a compute program's table doesn't come here: tex_b_cbuf_handle leaves its TEX.B to
                        memory_handles, which gives it a slot (the dispatch's element, or none) or fails the program */
                     fail(c, "TEX.B of a table of handles, without texture arrays");
@@ -6446,7 +6451,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             }
         for (u32 r = 0; r < SM86_URZ; r++) c->ureg[r] = spv_emit_function_variable_init(e, reg_ptr, c->zero);
         /* atomic_fadd's loop's word, where the device has no float atomics */
-        for (u32 i = 0; i < n && !c->cas_var && !g_shader_float_atomic_add; i++)
+        for (u32 i = 0; i < n && !c->cas_var && !g_spirv_translate.float_atomic_add; i++)
             if ((insn[i].op == SM86_RED || insn[i].op == SM86_ATOMG || insn[i].op == SM86_ATOMG_NOU) &&
                 sm86_field(&insn[i], 73, 3) == 3)
                 c->cas_var = spv_emit_function_variable_init(e, reg_ptr, c->zero);

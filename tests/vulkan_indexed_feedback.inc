@@ -6,7 +6,7 @@
 #include "nx/gpu/nvn/nvn_blend.h"
 
 static int check_indexed_texture_feedback(void) {
-    if (!g_shader_texture_arrays) {
+    if (!g_spirv_translate.texture_arrays) {
         puts("SKIP NVN indexed texture feedback: non-uniform sampled image arrays are unavailable");
         puts("SKIP NVN indexed programmable blend: non-uniform sampled image arrays are unavailable");
         return 0;

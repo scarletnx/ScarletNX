@@ -10,7 +10,7 @@
 int main(int argc, char** argv) {
     for (u32 linked = 0; linked < 2; linked++)
         for (u32 source = 0; source < 3; source++) {
-            g_shader_half_rounding = linked ? 3 : 1;
+            g_spirv_translate.half_rounding = linked ? 3 : 1;
             u64 code[16] = {0};
             code[9] = 1;
             code[10] = 0x001f8000fc0007e0ull;

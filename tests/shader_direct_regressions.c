@@ -859,15 +859,15 @@ static void count_conversions(const u32* code, size_t words, int* halves, int* w
     }
 }
 
-/* I2F.F32 of a 32-bit integer where the driver's conversions truncate (g_shader_i2f_nearest, a Turnip on an Adreno
-   610): no conversion is left a value with more than 16 significant bits, so the only rounding is the OpFAdd's, to
-   nearest even as the console's. A 16-bit integer converts exactly, and as it did */
+/* I2F.F32 of a 32-bit integer where the driver's conversions truncate (g_spirv_translate.i2f_nearest, a Turnip on an
+   Adreno 610): no conversion is left a value with more than 16 significant bits, so the only rounding is the OpFAdd's,
+   to nearest even as the console's. A 16-bit integer converts exactly, and as it did */
 static void i2f_by_halves(void) {
-    int was = g_shader_i2f_nearest;
+    int was = g_spirv_translate.i2f_nearest;
     for (u32 size = 1; size < 3; size++)
         for (u32 is_signed = 0; is_signed < 2; is_signed++)
             for (int nearest = 0; nearest < 2; nearest++) {
-                g_shader_i2f_nearest = nearest ? 3 : 0;
+                g_spirv_translate.i2f_nearest = nearest ? 3 : 0;
                 /* I2F.F32.{U,S}{16,32} R9, R9 */
                 const u64 program[] = {(0x5cb8000000970209ull | (u64)size << 10 | (u64)is_signed << 13)};
                 ShaderInfo info;
@@ -875,7 +875,7 @@ static void i2f_by_halves(void) {
                 u32* code = translate(program, 1, ST_FS, &info, &words, 1);
                 char what[96];
                 snprintf(what, sizeof what, "I2F.F32.%c%u with i2f_nearest %d translates", is_signed ? 'S' : 'U',
-                         8u << size, g_shader_i2f_nearest);
+                         8u << size, g_spirv_translate.i2f_nearest);
                 check_translated(code, &info, what);
                 if (!code) continue;
                 int halves, whole;
@@ -883,14 +883,14 @@ static void i2f_by_halves(void) {
                 int split = size == 2 && nearest;
                 if (halves != (split ? 2 : 0) || whole != (split ? 0 : 1))
                     fprintf(stderr, "I2F.F32.%c%u i2f_nearest %d: %d conversions of halves, %d of a whole value\n",
-                            is_signed ? 'S' : 'U', 8u << size, g_shader_i2f_nearest, halves, whole);
+                            is_signed ? 'S' : 'U', 8u << size, g_spirv_translate.i2f_nearest, halves, whole);
                 snprintf(what, sizeof what, "I2F.F32.%c%u with i2f_nearest %d converts %s", is_signed ? 'S' : 'U',
-                         8u << size, g_shader_i2f_nearest, split ? "two halves" : "the whole value");
+                         8u << size, g_spirv_translate.i2f_nearest, split ? "two halves" : "the whole value");
                 check(halves == (split ? 2 : 0) && whole == (split ? 0 : 1), what);
                 if (split) check(count_opcode(code, words, 129, 0xffffffffu) == 1, "one OpFAdd sums the halves");
                 free(code);
             }
-    g_shader_i2f_nearest = was;
+    g_spirv_translate.i2f_nearest = was;
 }
 
 static u64 mov32i(u32 reg, u32 value) { return 0x0100000000000000ull | ((u64)value << 20) | 0x71000ull | reg; }
@@ -1249,9 +1249,9 @@ static void constant_buffers_past_the_limit(void) {
               "a constant buffer below the limit is a uniform buffer");
     }
     free(code);
-    g_shader_uniform_cbufs = 2;
+    g_spirv_translate.uniform_cbufs = 2;
     code = translate(ops, 1, ST_FS, &info, &words, 1);
-    g_shader_uniform_cbufs = 18;
+    g_spirv_translate.uniform_cbufs = 18;
     check_translated(code, &info, "a constant buffer past the limit translates");
     if (code) {
         check(count_variables(code, words, 2) == uniform - 1 && count_variables(code, words, 12) == 1 &&
@@ -2132,7 +2132,7 @@ static void issue126_shader_modes(void) {
     for (int i = 0; i < 17; i++) {
         ShaderInfo info;
         size_t words = 0;
-        g_shader_texture_arrays = i == 16; /* the device's non-uniform indexing, for the table */
+        g_spirv_translate.texture_arrays = i == 16; /* the device's non-uniform indexing, for the table */
         u32* code = translate_with_rt_mask(cases[i].instructions, cases[i].count, cases[i].stage, &info, &words, 1,
                                            cases[i].mask);
         check_translated(code, &info, "issue 126 shader translates");
@@ -2166,7 +2166,7 @@ static void issue126_shader_modes(void) {
         }
         free(code);
     }
-    g_shader_texture_arrays = 0;
+    g_spirv_translate.texture_arrays = 0;
     /* One game's froxel volume: SUST.P.RGBA on a 3D surface (dimension 5), x, y and z in R0-R2, the texel from
        R8-R11, on the bindless handle MOV R4, c[0x2][0x128] */
     {
@@ -2554,7 +2554,7 @@ static void layer_capabilities(void) {
     const u64 write = 0xeff07f800647ff00ull; /* AST a[0x64], R0 */
     const u64 read = 0xe003ff864ff7ff00ull;  /* IPA R0, a[0x64] */
     for (int out = 0; out < 2; out++) {
-        g_shader_output_layer = out;
+        g_spirv_translate.output_layer = out;
         ShaderInfo info;
         size_t words = 0;
         u32* code = translate(&write, 1, ST_VS, &info, &words, 1);
@@ -2566,7 +2566,7 @@ static void layer_capabilities(void) {
         }
         free(code);
         for (int geometry = 0; geometry < 2; geometry++) {
-            g_shader_geometry = geometry;
+            g_spirv_translate.geometry = geometry;
             code = translate(&read, 1, ST_FS, &info, &words, 1);
             check_translated(code, &info, "a fragment program reading the layer translates");
             if (code) {
@@ -2578,7 +2578,7 @@ static void layer_capabilities(void) {
             free(code);
         }
     }
-    g_shader_output_layer = g_shader_geometry = 1;
+    g_spirv_translate.output_layer = g_spirv_translate.geometry = 1;
 }
 
 static void viewport_capabilities(void) {
@@ -2601,13 +2601,13 @@ static void viewport_capabilities(void) {
         }
         free(code);
     }
-    g_shader_viewport_index = 0;
+    g_spirv_translate.viewport_index = 0;
     ShaderInfo info = {0};
     size_t words = 0;
     u32* code = translate(&write, 1, ST_VS, &info, &words, 1);
     check_refused(code, &info, "viewport index output unavailable", "unsupported devices refuse viewport output");
     free(code);
-    g_shader_viewport_index = 3;
+    g_spirv_translate.viewport_index = 3;
 }
 
 /* The viewport transform off (SNX_SH_WINDOW_XY): the last stage before rasterization takes its position's x and y
@@ -3504,9 +3504,9 @@ static void transform_feedback_stores(void) {
     info.xfb.layout[1][0] = 32;
     info.xfb.count[1] = 1;
     info.xfb.stride[1] = 4;
-    g_shader_xfb_stores = 1;
+    g_spirv_translate.xfb_stores = 1;
     u32* spv = spirv_of(code, slots * sizeof *code, ST_VS, &info, &words, 0, 1, 1, 1);
-    g_shader_xfb_stores = 0;
+    g_spirv_translate.xfb_stores = 0;
     free(code);
     check_translated(spv, &info, "a transform feedback capture by stores translates");
     if (spv) {
@@ -3530,7 +3530,7 @@ static void transform_feedback_stores_fog(void) {
     u64* code = guest_program(instructions, 2, NULL, &slots);
     u32* spv[2] = {NULL, NULL};
     if (!code) return;
-    g_shader_xfb_stores = 1;
+    g_spirv_translate.xfb_stores = 1;
     for (int i = 0; i < 2; i++) {
         ShaderInfo info;
         memset(&info, 0, sizeof info);
@@ -3540,7 +3540,7 @@ static void transform_feedback_stores_fog(void) {
         spv[i] = spirv_of(code, slots * sizeof *code, ST_VS, &info, &words[i], 0, 1, 1, 1);
         check_translated(spv[i], &info, "a capture by stores of the fog translates");
     }
-    g_shader_xfb_stores = 0;
+    g_spirv_translate.xfb_stores = 0;
     check(spv[0] && spv[1] && words[0] == words[1] && !memcmp(spv[0], spv[1], words[0] * sizeof *spv[0]),
           "a capture by stores of the fog stores the component it moved to (x), as a capture of that generic does");
     free(spv[0]);
@@ -4003,20 +4003,20 @@ static void system_values(void) {
               count_opcode(code, words, 17, 2) == 1,
           "Layer and PrimitiveId share one Geometry capability");
     free(code);
-    g_shader_geometry = 0;
+    g_spirv_translate.geometry = 0;
     code = translate(fragment, 4, ST_FS, &info, &words, 0);
     check_translated(code, &info, "PrimitiveId with tessellation translates");
     check(code && has_builtin(code, words, 7) == 1 && count_opcode(code, words, 17, 3) == 1,
           "PrimitiveId uses Tessellation when Geometry is unavailable");
     free(code);
-    g_shader_tessellation = 0;
+    g_spirv_translate.tessellation = 0;
     code = translate(fragment, 4, ST_FS, &info, &words, 0);
     check_translated(code, &info, "PrimitiveId fallback translates");
     check(code && !info.unsupported && !has_builtin(code, words, 7),
           "PrimitiveId reads as zero when geometry and tessellation are unavailable");
     free(code);
-    g_shader_geometry = 1;
-    g_shader_tessellation = 1;
+    g_spirv_translate.geometry = 1;
+    g_spirv_translate.tessellation = 1;
     static const u64 compute[] = {
         0xf0c8000002070000ull, /* S2R R0, SR_TID */
         0xf0c8000005170001ull, /* S2R R1, SR_CLOCKHI */
@@ -4036,11 +4036,11 @@ static void system_values(void) {
     if (code) check(count_opcode(code, words, 5056, 0xffffffffu) == 1, "CS2R samples the clock once");
     if (code) check(clock_pair_extracts_both_words(code, words), "CS2R writes both words of one clock sample");
     free(code);
-    g_shader_clock_scopes = 0;
+    g_spirv_translate.clock_scopes = 0;
     code = translate(pair_clock, 1, ST_CS, &info, &words, 0);
     check_refused(code, &info, "shader clock unavailable", "CS2R refuses an unavailable shader clock");
     free(code);
-    g_shader_clock_scopes = 3;
+    g_spirv_translate.clock_scopes = 3;
     code = translate(compute, 2, ST_FS, &info, &words, 0);
     check_refused(code, &info, "S2R", "SR_TID is unavailable outside compute");
     free(code);
@@ -4061,7 +4061,7 @@ static void audit_shader_regressions(void) {
     };
     ShaderInfo info;
     size_t words = 0;
-    g_shader_texture_arrays = 1;
+    g_spirv_translate.texture_arrays = 1;
     u32* code = translate(indexed, 7, ST_FS, &info, &words, 1);
     check_translated(code, &info, "indexed shadow translates mixed depth/color table");
     if (code) {
@@ -4123,12 +4123,12 @@ static void audit_shader_regressions(void) {
         save_fixture(audit_paths[6], code, words);
     }
     free(code);
-    g_shader_texture_arrays = 0;
+    g_spirv_translate.texture_arrays = 0;
     const u64 instance = 0xefd800000007ff00ull | (0x2f8ull << 20);
     /* without draw parameters the instance ID is InstanceIndex less the guest's base instance, pushed; with them
        InstanceIndex less BaseInstance plus what the draw's first instance adds to the guest's base (a 3D engine draw
        that continues an earlier one's instances), so an indirect draw's base instance can come from the GPU */
-    g_shader_draw_parameters = 0;
+    g_spirv_translate.draw_parameters = 0;
     code = translate(&instance, 1, ST_VS, &info, &words, 1);
     check_translated(code, &info, "instance attribute translates with original guest base");
     if (code) {
@@ -4138,7 +4138,7 @@ static void audit_shader_regressions(void) {
         save_fixture(audit_paths[1], code, words);
     }
     free(code);
-    g_shader_draw_parameters = 1;
+    g_spirv_translate.draw_parameters = 1;
     code = translate(&instance, 1, ST_VS, &info, &words, 1);
     check_translated(code, &info, "instance attribute translates with draw parameters");
     if (code) {
@@ -4183,9 +4183,9 @@ static void audit_shader_regressions(void) {
 static void tlds_fp16(void) {
     static const u64 words[] = {0xD244012030570A02ull, 0xD252010040570A18ull, 0xD252014000570A1Aull,
                                 0xD25200E000B70A17ull, 0xD252014010B70A06ull};
-    int saved = g_shader_half_rounding;
+    int saved = g_spirv_translate.half_rounding;
     for (u32 backend = 0; backend < 3; backend++) {
-        g_shader_half_rounding = backend == 2 ? 3 : (int)backend;
+        g_spirv_translate.half_rounding = backend == 2 ? 3 : (int)backend;
         for (size_t i = 0; i < sizeof words / sizeof *words; i++) {
             ShaderInfo info;
             size_t size = 0;
@@ -4213,7 +4213,7 @@ static void tlds_fp16(void) {
             free(code);
         }
     }
-    g_shader_half_rounding = saved;
+    g_spirv_translate.half_rounding = saved;
 }
 
 /* OpTypeImage declarations of that dimensionality (0 1D, 1 2D, 2 3D, 3 cube) */
@@ -5345,14 +5345,14 @@ static void shfl_quad_forms(void) {
                   plain[k].what);
         free(code);
     }
-    g_shader_quad = 0;
+    g_spirv_translate.quad = 0;
     u32* code = shfl_spirv(shfl(0, 1, 0, 0x1c03), ST_FS, &info, &words);
     check_translated(code, &info, "SHFL in a quad translates on a device without quad operations");
     if (code)
         check(count_opcode(code, words, 345, 0xffffffffu) == 1 && count_opcode(code, words, 17, 68) == 0,
               "SHFL in a quad is a shuffle on a device without quad operations");
     free(code);
-    g_shader_quad = 1;
+    g_spirv_translate.quad = 1;
 }
 
 /* VOTE R<d>, P<out>, [!]P<in> in this mode (0 ALL, 1 ANY, 2 EQ) */
@@ -5541,8 +5541,8 @@ static void fragment_quad_reads(void) {
 
 /* Real TCS builtins and nonzero geometry streams use distinct typed interfaces. */
 static void rendering_stage_features(const char* directory) {
-    int point_size_available = g_shader_stage_point_size;
-    g_shader_stage_point_size = 1;
+    int point_size_available = g_spirv_translate.stage_point_size;
+    g_spirv_translate.stage_point_size = 1;
     const u32 control_header[3] = {3u << 24, 0, 0};
     const u64 control[] = {0x01000003f807f000ull, 0xeff000000007ff00ull | (0x6cull << 20),
                            0xeff000000007ff00ull | (0x2c0ull << 20), 0xe30000000007000full};
@@ -5561,7 +5561,7 @@ static void rendering_stage_features(const char* directory) {
     check(code && info.reads_point_size && info.clip_input_mask == 1, "TES builtin input metadata is retained");
     if (code && directory) save_fixture(fixture_path(directory, "tes_builtin_inputs"), code, words);
     free(code);
-    g_shader_stage_point_size = point_size_available;
+    g_spirv_translate.stage_point_size = point_size_available;
 }
 
 /* whether the module has a 32-bit float constant of those bits */
@@ -5593,10 +5593,10 @@ static u32* flow_lod_spirv(const u64* instructions, int count, int can_subgroup,
     memset(info, 0, sizeof *info);
     info->advanced_blend = blend;
     if (blend) set_sph(code, 18, 15); /* the equation blends render target 0's RGBA */
-    int device = g_shader_maximal_reconvergence;
-    g_shader_maximal_reconvergence = reconverges;
+    int device = g_spirv_translate.maximal_reconvergence;
+    g_spirv_translate.maximal_reconvergence = reconverges;
     u32* result = spirv_of(code, slots * sizeof *code, ST_FS, info, words, 1, 1, 1, can_subgroup);
-    g_shader_maximal_reconvergence = device;
+    g_spirv_translate.maximal_reconvergence = device;
     free(code);
     return result;
 }
@@ -5663,7 +5663,7 @@ static void bindless_multisample_order(void) {
     };
     ShaderInfo info;
     size_t words = 0;
-    g_shader_texture_arrays = 1; /* the device's non-uniform indexing, for the table */
+    g_spirv_translate.texture_arrays = 1; /* the device's non-uniform indexing, for the table */
     u32* code = translate(fetch, 9, ST_FS, &info, &words, 1);
     check_translated(code, &info, "a multisample TLD.B with its handle in Rb translates");
     if (code)
@@ -5677,7 +5677,7 @@ static void bindless_multisample_order(void) {
     check_refused(code, &info, "untracked texture handle R4 of TLD.B",
                   "uam's order, the sample in Rb, is not read as the handle");
     free(code);
-    g_shader_texture_arrays = 0;
+    g_spirv_translate.texture_arrays = 0;
 }
 /* A TEX.B that chooses among the constant buffer handles that reach it keeps the sample of the one whose word the
    register holds when it runs: c[2][0] under P0, c[2][4] under !P0, and under P1 a value from elsewhere (MOV32I
@@ -6403,7 +6403,7 @@ static void settled_when_translated(void) {
 }
 
 int main(int argc, char** argv) {
-    g_shader_clock_scopes = 3; /* Exercise both optional Vulkan clock scopes in offline SPIR-V fixtures. */
+    g_spirv_translate.clock_scopes = 3; /* Exercise both optional Vulkan clock scopes in offline SPIR-V fixtures. */
     if (argc != 1 && argc != 2) {
         fprintf(stderr, "usage: %s [fixture directory] (got %d arguments)\n", argv[0], argc - 1);
         return 2;

@@ -6,7 +6,7 @@
    AI, camera, frame limiter, shader compilation, or GPU shader work participates in these measurements. */
 static int bench_descriptor_pattern(u32 sets, u32 count, u32 images, u32 indexed, int unique) {
     CHECK(count && count <= 34 && sets && sets <= 16384 && images <= 16 && indexed <= SNX_TEX_ARRAY);
-    if (indexed && !g_shader_texture_arrays) {
+    if (indexed && !g_spirv_translate.texture_arrays) {
         puts("SKIP DESCRIPTOR_PATTERN_BENCH indexed: descriptor arrays are unavailable");
         return 0;
     }

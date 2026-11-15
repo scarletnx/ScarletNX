@@ -176,11 +176,11 @@ static int check_desc_pool_arrays(void) {
             CHECK(sz[k].descriptorCount ==
                   1024 * one[k].descriptorCount + kinds[kind] * (arrayed[k].descriptorCount - one[k].descriptorCount));
     }
-    if (!g_shader_texture_arrays || g_vk.has_descriptor_buffers) {
+    if (!g_spirv_translate.texture_arrays || g_vk.has_descriptor_buffers) {
         puts("descriptor pools: no texture arrays here, or descriptor buffers: the pools' sets only");
         return 0;
     }
-    CHECK(arrayed[2].descriptorCount == one[2].descriptorCount + 2 * g_shader_tex_array);
+    CHECK(arrayed[2].descriptorCount == one[2].descriptorCount + 2 * g_spirv_translate.tex_array);
     CHECK(VK_POOL_ARRAY_SETS_FOR(g_vk_dslayout[1][1]) == VK_POOL_ARRAY_SETS_MORE &&
           VK_POOL_ARRAY_SETS_FOR(g_vk_dslayout[0][1]) == VK_POOL_ARRAY_SETS);
     /* each kind of frame pool as vk_desc_pool_new makes it, and how many sets of each fragment layout it holds */
@@ -6730,26 +6730,31 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
    shared memory) changes the part of the key past the guest part, so a run that chose another form translates its
    programs again */
 static int check_hmma_file_key(void) {
-    int coop_was = g_shader_hmma_coop, pairs_was = g_shader_hmma_pairs, f16_was = g_shader_hmma_f16;
-    int stage_was = g_shader_hmma_stage;
+    int coop_was = g_spirv_translate.hmma_coop, pairs_was = g_spirv_translate.hmma_pairs,
+        f16_was = g_spirv_translate.hmma_f16;
+    int stage_was = g_spirv_translate.hmma_stage;
     char base[1024], other[1024];
     size_t gbase = 0, gother = 0;
-    g_shader_hmma_coop = g_shader_hmma_pairs = g_shader_hmma_f16 = g_shader_hmma_stage = 0;
+    g_spirv_translate.hmma_coop = g_spirv_translate.hmma_pairs = g_spirv_translate.hmma_f16 =
+        g_spirv_translate.hmma_stage = 0;
     vk_pipeline_file_key(base, sizeof base, &gbase);
     CHECK(gbase);
     for (int form = 0; form < 4; form++) {
-        g_shader_hmma_coop = form == 0 ? 65536 : 0, g_shader_hmma_pairs = form == 1, g_shader_hmma_f16 = form == 2;
-        g_shader_hmma_stage = form == 3 ? 65536 : 0;
+        g_spirv_translate.hmma_coop = form == 0 ? 65536 : 0, g_spirv_translate.hmma_pairs = form == 1,
+        g_spirv_translate.hmma_f16 = form == 2;
+        g_spirv_translate.hmma_stage = form == 3 ? 65536 : 0;
         vk_pipeline_file_key(other, sizeof other, &gother);
-        g_shader_hmma_coop = g_shader_hmma_pairs = g_shader_hmma_f16 = g_shader_hmma_stage = 0;
+        g_spirv_translate.hmma_coop = g_spirv_translate.hmma_pairs = g_spirv_translate.hmma_f16 =
+            g_spirv_translate.hmma_stage = 0;
         CHECK(gother == gbase && !memcmp(base, other, gbase));
         if (!strcmp(base + gbase, other + gother))
             fprintf(stderr, "file key: HMMA form %d (0 coop, 1 pairs, 2 hmma_f16, 3 staged) leaves the key as %s\n",
                     form, other + gother);
         CHECK(strcmp(base + gbase, other + gother) != 0);
     }
-    g_shader_hmma_coop = coop_was, g_shader_hmma_pairs = pairs_was, g_shader_hmma_f16 = f16_was;
-    g_shader_hmma_stage = stage_was;
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_pairs = pairs_was,
+    g_spirv_translate.hmma_f16 = f16_was;
+    g_spirv_translate.hmma_stage = stage_was;
     return 0;
 }
 
@@ -7172,7 +7177,7 @@ static int run_headless(int argc, char** argv) {
             fprintf(stderr, "SNX_TEST_TEX_ARRAY=%s is not a whole number from 1 to %u\n", tex_array, SNX_TEX_ARRAY);
             return 2;
         }
-        g_shader_tex_array = (u32)n;
+        g_spirv_translate.tex_array = (u32)n;
     }
     video_init("Headless Vulkan fixture", "");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
@@ -7427,15 +7432,16 @@ static int run_headless(int argc, char** argv) {
         return 0;
     }
     if (tex_array) { /* the texture arrays at the size asked: their layouts, pools and indexed draws */
-        printf("Texture arrays of %u elements, %u asked\n", g_shader_tex_array, (unsigned)strtoul(tex_array, NULL, 10));
-        CHECK(g_shader_texture_arrays && g_shader_tex_array == strtoul(tex_array, NULL, 10));
+        printf("Texture arrays of %u elements, %u asked\n", g_spirv_translate.tex_array,
+               (unsigned)strtoul(tex_array, NULL, 10));
+        CHECK(g_spirv_translate.texture_arrays && g_spirv_translate.tex_array == strtoul(tex_array, NULL, 10));
         CHECK(!check_desc_pool_arrays());
         CHECK(!check_indexed_texture_feedback());
         CHECK(!check_multisample_shader_gate());
         CHECK(!check_msaa()); /* its indexed multisample fetch (vulkan_indexed_ms.inc) */
         vk_finish();
         vk_pipeline_quiesce();
-        printf("PASS headless Vulkan texture arrays of %u: %u validation messages\n", g_shader_tex_array,
+        printf("PASS headless Vulkan texture arrays of %u: %u validation messages\n", g_spirv_translate.tex_array,
                g_vk_validation_messages);
         return 0;
     }
