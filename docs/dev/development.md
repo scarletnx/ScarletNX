@@ -202,6 +202,9 @@ throughput with unprofiled runs of the same scene.
 
 ## Profiling
 
+[Profiling](profiling.md) walks through every profiler, CPU and GPU, against a recompiled game; this section is the
+reference of the Tracy integration it uses.
+
 The GPU benchmarks and the search for faster GPU settings (`tools/bench_nvn_draws.py`,
 `tools/bench_gpu_descriptors.py`, `tools/bench_gpu_hotpaths.py`, `tools/tune_gpu.py`) are described with the
 measurements they made, in [GPU preparation benchmarks](../history/gpu-hotpath-bench.md) and

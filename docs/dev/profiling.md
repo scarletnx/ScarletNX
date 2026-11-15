@@ -8,6 +8,7 @@
   * [What a recompiled game is to a profiler](#what-a-recompiled-game-is-to-a-profiler)
   * [A build to profile with](#a-build-to-profile-with)
   * [A scene that repeats](#a-scene-that-repeats)
+  * [Which tool for which question](#which-tool-for-which-question)
 * [First look: the stats box and the log](#first-look-the-stats-box-and-the-log)
 * [Tracy: the whole run on one timeline](#tracy-the-whole-run-on-one-timeline)
 * [CPU profiling](#cpu-profiling)
@@ -28,6 +29,8 @@
   * [One shader: snx-shaderperf](#one-shader-snx-shaderperf)
   * [The renderer's CPU side](#the-renderers-cpu-side)
   * [GPU memory](#gpu-memory)
+* [Comparing two builds or two settings](#comparing-two-builds-or-two-settings)
+* [Pitfalls](#pitfalls)
 
 [Development](development.md) · [architecture](architecture.md) · [build](build.md) · [settings](../user/settings.md)
 · [the CPU cost of a draw](draw-cost.md).
@@ -111,6 +114,19 @@ go to the runtime:
 ```sh
 python3 tools/run_game.py <id> --script "" --seconds 60 --fps_limit=0 --vsync=0 --out work/prof/base
 ```
+
+### Which tool for which question
+
+| The question | Start with |
+|---|---|
+| How fast is it, and is it smooth? | the stats box (`F12`), `--seconds`' average FPS, `tools/run_game.py` |
+| Which thread, and what is it doing frame by frame? | [Tracy](#tracy-the-whole-run-on-one-timeline) |
+| Which functions burn the CPU? | [perf](#perf-linux), [pmcstat](#pmcstat-and-dtrace-freebsd), [profile_cpu.py](#profile_cpupy-sampling-without-perf), Tracy's sampler |
+| Is the frame rate bound by the CPU or the GPU? | [CPU-bound or GPU-bound](#cpu-bound-or-gpu-bound) |
+| Which render pass costs the GPU? | [`vk_gpu_profile=1`](#vk_gpu_profile-where-the-gpus-time-goes), Tracy's GPU track |
+| Which draw of that pass, and why? | `vk_gpu_draw_profile=1`, then [RenderDoc](#renderdoc) and a [vendor profiler](#vendor-gpu-profilers) |
+| Is this shader translation faster than that one? | [snx-shaderperf](#one-shader-snx-shaderperf) |
+| Did my change make the game faster? | [`tools/bench_nvn_game.py`](#comparing-two-builds-or-two-settings) |
 
 ## First look: the stats box and the log
 
@@ -383,7 +399,7 @@ Two settings take a profile as input. Both change how the code is laid out or op
   word in hex, then taken and not taken). The recompiler gives LLVM those odds for each branch whose address and word
   match; the next recompile and the JIT's next run take it ([Settings](../user/settings.md)).
 
-Measure either with `tools/bench_nvn_game.py` against the same game without it.
+Measure either with [`tools/bench_nvn_game.py`](#comparing-two-builds-or-two-settings) against the same game without it.
 
 ### Micro-benchmarks for CPU work
 
@@ -540,3 +556,41 @@ and the descriptor pools. `vk_budget_mb` and `vk_max_allocation_mb` impose a sma
 GPU's behaviour on a large one; `astc_mode` changes what ASTC textures cost on a GPU without ASTC
 ([Settings](../user/settings.md#graphics)).
 
+## Comparing two builds or two settings
+
+A profile says where the time goes; whether a change helped is a separate, paired measurement of unprofiled runs.
+
+```sh
+python3 tools/bench_nvn_game.py --game "$games/<id>/<id>_code.so" \
+    --baseline work/build-before/scarletnx --candidate build/rel/scarletnx \
+    --frames 600 --script work/scene.snxtas --rounds 3 --timeout 300 --uncapped --out work/prof/ab
+```
+
+It runs baseline and candidate alternately, each from an isolated copy of the same saves, settings and empty caches,
+replays a frame-based input file, rejects runs that crash, time out or end on a blank screen, and keeps each run's
+final screenshot to inspect. Its metric includes startup and shader preparation; for steady-state frame time, use a
+long `--frames` or compare Tracy's `frame ms` over the same scene.
+
+- `tools/tune_gpu.py GAME --state SLOT --warmup 20 --seconds 60 --out work/prof/tune` searches GPU settings and
+  retests the fastest against the baseline; it applies nothing.
+- `tools/analyze_gpu_budget.py` puts measured component costs side by side without turning them into a promised FPS.
+- Keep the build type, the driver version, the power profile and the clocks the same. Run several rounds and report
+  the spread, not one number.
+
+## Pitfalls
+
+- **Profiling changes the run.** Tracy's sampler, `--log=2`, `vk_gpu_draw_profile`, `tracy_frame_images` and DWARF
+  call graphs all cost time. Find hot spots with them; measure speed without them.
+- **The pace hides the work.** With `fps_limit` and `vsync` on, a faster frame only waits longer. Profile uncapped,
+  or read frame *work* time rather than frame rate.
+- **Cold caches.** Shader translation, pipeline creation and JIT compiles dominate a first run. Profile a warm one
+  unless the start is the subject.
+- **`[unknown]` is not noise.** It is usually JIT code (or NCE code): see [The JIT](#the-jit).
+- **Stacks through the game's code are not trustworthy.** Self time is; use LBR on Intel for callers.
+- **A per-draw timestamp serializes draws.** Draw-level GPU timings rank draws inside a pass; they do not add up to
+  the frame.
+- **Clocks.** CPU frequency scaling and GPU boost move between runs. Pin the governor (`cpupower frequency-set -g
+  performance` on Linux, `powerd` off or `sysctl dev.cpu.0.freq` on FreeBSD) and warm up before measuring; compare
+  within one run where a tool allows it.
+- **Two viewers of Tracy.** The client takes one connection: a capture and the GUI cannot both have a run.
+- **Data stays local.** Traces, captures, corpora and symbolized profiles contain the game's code and assets.
