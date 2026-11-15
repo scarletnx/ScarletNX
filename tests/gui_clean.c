@@ -435,10 +435,16 @@ int main(void) {
             write_text(a, "a");
             assert(gui_save_old(save));
             assert(gui_move_save_committed(&done, save, true) == 1 && done.count == 2 && done.done == 2);
-            said = native(snx_format("+synced/.stfolder|Stays beside the save's 0/: a name that starts with a dot is "
-                                     "a sync tool's or the system's, not one of the game's files\n"
-                                     "+synced/a.bin|Moved to %s/synced/0/a.bin\n",
-                                     root));
+            { /* the paths in the system's separators, the message as the code says it, its 0/ included */
+                char* paths =
+                    native(snx_format("+synced/.stfolder|\n+synced/a.bin|Moved to %s/synced/0/a.bin\n", root));
+                const char* line = strchr(paths, '\n');
+                said = snx_format("%.*s%s%s", (int)(line - paths), paths,
+                                  "Stays beside the save's 0/: a name that starts with a dot is a sync tool's or the "
+                                  "system's, not one of the game's files",
+                                  line);
+                free(paths);
+            }
             assert(!strcmp(entries(&done, base), said));
             free(said);
             gui_cleaned_free(&done);
