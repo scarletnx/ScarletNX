@@ -295,8 +295,11 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   ([Usage](usage.md)), and is kept for every game:
   what was changed, by the `.ini`'s sections and keys, in `settings.ini` of the config folder on
   Linux (`~/.config/scarletnx/`), else the data folder's `config/`. A run takes a setting from what that
-  run picks, then from the game's own picks (to come), then from these, and last from the game's
-  `.ini`. A row not at its default has `*` after its value (*On \**, *2 \**), a page's row and an **All** while
+  run picks, then from the game's own picks (`<id>.picks` beside its `.ini`, which its menu writes:
+  [Settings](settings.md)), then from these, and last from the game's `.ini`; a run is given them with
+  `--launcher-picks=1`, which puts the game's own over them. A setting the recompile takes too (NCE, Debug's SLP
+  vectorizer) goes to a game's recompile and runs as the game's own pick where it has one, since the recompile reads
+  its settings from its options alone. A row not at its default has `*` after its value (*On \**, *2 \**), a page's row and an **All** while
   any of their rows has; Del puts a setting back to its default, and App's **Reset to Defaults** every one.
   **Fullscreen** and
   **Show controls** are the launcher's own choices, Off or On, passed to every run over the `.ini`; `[default]` marks
