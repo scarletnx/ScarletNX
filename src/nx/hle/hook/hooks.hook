@@ -243,6 +243,45 @@ hook _ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexE
 hook _ZNSt3__118condition_variableD1Ev(addr cv) = sync_drop
 hook _ZNSt3__118condition_variableD2Ev(addr cv) = sync_drop
 
+# nn::os's sleeps, yields, locks and condition variables (os_sync.c): no SVC, and a lock's waiters wait on its word with
+# the host's futex. The SDK's own lock and condition variable types, and the InternalCriticalSection and
+# InternalConditionVariable every other nn::os object locks and waits through. The family writes their words its own
+# way, so it takes them all or none (os_sync_ready). A save state can't hold a thread waiting on the host, so
+# native_os_sync=0 leaves them to the game's own code, and save states are refused while they run
+family os_sync
+hook _ZN2nn2os11SleepThreadENS_8TimeSpanE(i64 ns) = os_sleep_thread
+hook _ZN2nn2os11YieldThreadEv() = os_yield_thread
+hook _ZN2nn2os6detail26TimeoutHelperImplByHorizon5SleepENS_8TimeSpanE(i64 ns) = os_sleep_thread
+hook _ZN2nn2os6detail26ThreadManagerImplByHorizon11YieldThreadEv(addr self) = os_yield_impl
+hook _ZN2nn2os12SdkMutexType10InitializeEv(addr m) = os_cs_init
+hook _ZN2nn2os12SdkMutexType4LockEv(addr m) = os_sdk_mutex_lock
+hook _ZN2nn2os12SdkMutexType7TryLockEv(addr m) -> bool = os_sdk_mutex_try_lock
+hook _ZN2nn2os12SdkMutexType6UnlockEv(addr m) = os_sdk_mutex_unlock
+hook _ZN2nn2os21SdkRecursiveMutexType10InitializeEv(addr m) = os_sdk_recursive_init
+hook _ZN2nn2os21SdkRecursiveMutexType4LockEv(addr m) = os_sdk_recursive_lock
+hook _ZN2nn2os21SdkRecursiveMutexType7TryLockEv(addr m) -> bool = os_sdk_recursive_try_lock
+hook _ZN2nn2os21SdkRecursiveMutexType6UnlockEv(addr m) = os_sdk_recursive_unlock
+hook _ZN2nn2os24SdkConditionVariableType10InitializeEv(addr cv) = os_cv_init
+hook _ZN2nn2os24SdkConditionVariableType6SignalEv(addr cv) = os_cv_signal
+hook _ZN2nn2os24SdkConditionVariableType9BroadcastEv(addr cv) = os_cv_broadcast
+hook _ZN2nn2os24SdkConditionVariableType4WaitERNS0_12SdkMutexTypeE(addr cv, addr m) = os_sdk_cv_wait
+hook _ZN2nn2os24SdkConditionVariableType9TimedWaitERNS0_12SdkMutexTypeENS_8TimeSpanE(addr cv, addr m, i64 ns) -> bool = os_sdk_cv_timed_wait
+hook _ZN2nn2os24SdkConditionVariableType4WaitERNS0_21SdkRecursiveMutexTypeE(addr cv, addr m) = os_sdk_cv_wait_recursive
+hook _ZN2nn2os6detail36InternalCriticalSectionImplByHorizonC1Ev(addr cs) = os_cs_init
+hook _ZN2nn2os6detail36InternalCriticalSectionImplByHorizonC2Ev(addr cs) = os_cs_init
+hook _ZN2nn2os6detail36InternalCriticalSectionImplByHorizon10InitializeEv(addr cs) = os_cs_init
+hook _ZN2nn2os6detail36InternalCriticalSectionImplByHorizon5EnterEv(addr cs) = os_cs_enter
+hook _ZN2nn2os6detail36InternalCriticalSectionImplByHorizon8TryEnterEv(addr cs) -> bool = os_cs_try_enter
+hook _ZN2nn2os6detail36InternalCriticalSectionImplByHorizon5LeaveEv(addr cs) = os_cs_leave
+hook _ZNK2nn2os6detail36InternalCriticalSectionImplByHorizon23IsLockedByCurrentThreadEv(addr cs) -> bool = os_cs_mine
+hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizonC1Ev(addr cv) = os_cv_init
+hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizonC2Ev(addr cv) = os_cv_init
+hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizon10InitializeEv(addr cv) = os_cv_init
+hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizon6SignalEv(addr cv) = os_cv_signal
+hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizon9BroadcastEv(addr cv) = os_cv_broadcast
+hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizon4WaitEPNS1_23InternalCriticalSectionE(addr cv, addr cs) = os_cv_wait
+hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizon9TimedWaitEPNS1_23InternalCriticalSectionERKNS1_13TimeoutHelperE(addr cv, addr cs, addr helper) -> bool = os_cv_timed_wait
+
 # nn::diag (diag.c): the SDK's abort, which every one of its NN_ABORT overloads ends in, logged with what the SDK passed
 # it, then its own code, which stops the game as it would
 family diag

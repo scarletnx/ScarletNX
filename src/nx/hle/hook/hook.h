@@ -244,6 +244,9 @@ int libc_wide_ready(void);
 /* alloc.c: the host allocator's arena in guest memory is made (made at the first call): 0 without one, and the alloc
    family is then off */
 int alloc_ready(void);
+/* os_sync.c: the game's SDK exports every function that writes the lock and condition variable words the os_sync
+   family owns, which it takes all of or none of */
+int os_sync_ready(void);
 /* runs the hooked function at addr's own code, with the CPU as the call to it left it, until it returns to the call's
    return address (x30) with the call's stack, through the dispatch loop when its code leaves for code compiled apart:
    for a handler that does its work around the function's, as the function's own code then sees every call */

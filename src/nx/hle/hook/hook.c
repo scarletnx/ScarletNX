@@ -210,12 +210,18 @@ int hook_family_off(const char* family) {
 int hook_states_refused(char* why, size_t whysize) {
     const HostHook* h = &g_host.hook;
     u32 i;
-    for (i = 0; i < h->count; i++)
-        if (!__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE) &&
-            !strcmp(hook_family_name[hook_family[h->hook[i]]], "cond_var")) {
+    for (i = 0; i < h->count; i++) {
+        const char* f = hook_family_name[hook_family[h->hook[i]]];
+        if (__atomic_load_n(&h->invalid[i], __ATOMIC_ACQUIRE)) continue;
+        if (!strcmp(f, "cond_var")) {
             snprintf(why, whysize, "save states need native_cond_var=0 (it is %d)", g_settings.native_cond_var);
             return -1;
         }
+        if (!strcmp(f, "os_sync")) {
+            snprintf(why, whysize, "save states need native_os_sync=0 (it is %d)", g_settings.native_os_sync);
+            return -1;
+        }
+    }
     return 0;
 }
 
