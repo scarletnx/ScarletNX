@@ -343,9 +343,20 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                       j->cursor[level].previous);
             if (op == OP_WAIT_EVENT || op == OP_WAIT_SYNC) {
                 effects(q);
-                if (!j->waiting && g_renderer->stream_end) gpu_stream_end();
                 NvnReplayWait sync;
-                if (!wait_over(j, op, pc, h.size, &sync)) {
+                int over = wait_over(j, op, pc, h.size, &sync);
+                /* A wait for this queue's own fence, whose increment is already in the stream: the GPU runs the
+                   stream in its order, so a barrier of all the work before it is the wait, and the replay goes on.
+                   Stopped here, the replay waited for the GPU to finish the work and the release to come back, once
+                   a frame and about 2.7 ms each in one game */
+                if (!over && !j->waiting && op == OP_WAIT_SYNC && sync.syncpt && sync.syncpt == q->syncpt &&
+                    g_renderer->release_value && g_renderer->method_barrier &&
+                    (i32)(gpu_renderer_now()->release_value(sync.syncpt) - sync.value) >= 0) {
+                    gpu_method_barrier(4);
+                    over = 1;
+                }
+                if (!over && !j->waiting && g_renderer->stream_end) gpu_stream_end();
+                if (!over) {
                     j->waiting = 1;
                     return 0;
                 }
