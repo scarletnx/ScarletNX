@@ -147,6 +147,7 @@ PFN_vkCmdClearDepthStencilImage vkCmdClearDepthStencilImage;
 PFN_vkCmdCopyImage vkCmdCopyImage;
 PFN_vkCreateImageView vkCreateImageView;
 PFN_vkCreateSampler vkCreateSampler;
+PFN_vkGetImageMemoryRequirements vkGetImageMemoryRequirements;
 PFN_vkGetPhysicalDeviceFormatProperties vkGetPhysicalDeviceFormatProperties;
 /* record.c's wrappers, which the frame's command buffer goes through: made at once here */
 void rec_CmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkImageLayout dl, u32 n,
@@ -719,6 +720,10 @@ int vk_image_create_sparse(const VkImageCreateInfo* ii, VkImage* img) {
     (void)ii, (void)img;
     return 0;
 }
+int vk_image_create_sparse_min(const VkImageCreateInfo* ii, VkImage* img, u64 min) {
+    (void)ii, (void)img, (void)min;
+    return 0;
+}
 const VkSparseShape* vk_image_sparse_shape(VkImage img) {
     (void)img;
     return NULL;
@@ -740,6 +745,7 @@ int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32
 void vk_surf_bytes(Surf* s, u64 bytes) { s->bytes = bytes; }
 void vk_mem_trim(u64 extra, int force) { (void)extra, (void)force; }
 void vk_mem_use(u64* usage, u64* budget) { *usage = 0, *budget = 1ull << 30; }
+int vk_mem_pressed(void) { return 0; }
 /* the block linear layout: GOBs of 64 bytes by 8 rows in blocks of 1 << bh by 1 << bd GOBs, gob_w of them across a
    row of blocks, the GOB's 16 byte groups in their order */
 static u64 bl_offset_g(u32 x, u32 y, u32 z, u32 gob_w, u32 h, u32 bh_log2, u32 bd_log2) {
