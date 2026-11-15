@@ -6872,31 +6872,37 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
    shared memory) changes the part of the key past the guest part, so a run that chose another form translates its
    programs again */
 static int check_hmma_file_key(void) {
-    int coop_was = g_spirv_translate.hmma_coop, pairs_was = g_spirv_translate.hmma_pairs,
-        f16_was = g_spirv_translate.hmma_f16;
+    int coop_was = g_spirv_translate.hmma_coop, pairs_was = g_spirv_translate.hmma_pairs, f16_was = g_spirv_translate.hmma_f16;
     int stage_was = g_spirv_translate.hmma_stage;
+    u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
     char base[1024], other[1024];
     size_t gbase = 0, gother = 0;
-    g_spirv_translate.hmma_coop = g_spirv_translate.hmma_pairs = g_spirv_translate.hmma_f16 =
-        g_spirv_translate.hmma_stage = 0;
+    g_spirv_translate.hmma_coop = g_spirv_translate.hmma_pairs = g_spirv_translate.hmma_f16 = g_spirv_translate.hmma_stage = 0;
+    g_spirv_translate.hmma_coop_shapes = 0;
     vk_pipeline_file_key(base, sizeof base, &gbase);
     CHECK(gbase);
     for (int form = 0; form < 4; form++) {
-        g_spirv_translate.hmma_coop = form == 0 ? 65536 : 0, g_spirv_translate.hmma_pairs = form == 1,
-        g_spirv_translate.hmma_f16 = form == 2;
+        g_spirv_translate.hmma_coop = form == 0 ? 65536 : 0, g_spirv_translate.hmma_pairs = form == 1, g_spirv_translate.hmma_f16 = form == 2;
+        g_spirv_translate.hmma_coop_shapes = form == 0 ? SH_COOP_16x16x16 : 0;
         g_spirv_translate.hmma_stage = form == 3 ? 65536 : 0;
         vk_pipeline_file_key(other, sizeof other, &gother);
-        g_spirv_translate.hmma_coop = g_spirv_translate.hmma_pairs = g_spirv_translate.hmma_f16 =
-            g_spirv_translate.hmma_stage = 0;
+        g_spirv_translate.hmma_coop = g_spirv_translate.hmma_pairs = g_spirv_translate.hmma_f16 = g_spirv_translate.hmma_stage = 0;
+        g_spirv_translate.hmma_coop_shapes = 0;
         CHECK(gother == gbase && !memcmp(base, other, gbase));
         if (!strcmp(base + gbase, other + gother))
             fprintf(stderr, "file key: HMMA form %d (0 coop, 1 pairs, 2 hmma_f16, 3 staged) leaves the key as %s\n",
                     form, other + gother);
         CHECK(strcmp(base + gbase, other + gother) != 0);
     }
-    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_pairs = pairs_was,
-    g_spirv_translate.hmma_f16 = f16_was;
+    /* the shapes differ between devices, and their modules with them */
+    g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_shapes = SH_COOP_16x16x16;
+    vk_pipeline_file_key(base, sizeof base, &gbase);
+    g_spirv_translate.hmma_coop_shapes = SH_COOP_16x8x16;
+    vk_pipeline_file_key(other, sizeof other, &gother);
+    CHECK(gbase && gother == gbase && strcmp(base + gbase, other + gother) != 0);
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_pairs = pairs_was, g_spirv_translate.hmma_f16 = f16_was;
     g_spirv_translate.hmma_stage = stage_was;
+    g_spirv_translate.hmma_coop_shapes = shapes_was;
     return 0;
 }
 

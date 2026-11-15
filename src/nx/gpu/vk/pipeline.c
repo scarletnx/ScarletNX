@@ -2814,14 +2814,14 @@ static void pf_key(char* out, size_t n, size_t* guest) {
     if (*guest)
         snprintf(
             out + *guest, n - *guest,
-            " %s%s driver=%u api=%u spirv=%x uuid=%s ftz=%d quad=%d,%d mixed_dot=%d hmma_coop=%d hmma_pairs=%d hmma_stage=%d half_flush=%d "
-            "hmma_f16=%d sizes=%u,%u vertex_bounds=%d robust2=%d%d%d",
+            " %s%s driver=%u api=%u spirv=%x uuid=%s ftz=%d quad=%d,%d mixed_dot=%d hmma_coop=%d hmma_shapes=%u "
+            "hmma_pairs=%d hmma_stage=%d half_flush=%d hmma_f16=%d sizes=%u,%u vertex_bounds=%d robust2=%d%d%d",
             snx_build_info(), exe, d->driverVersion, d->apiVersion, (unsigned)spv_emit_version(), uuid, g_vk_ftz,
             g_spirv_translate.quad, g_spirv_translate.quad_compute, g_spirv_translate.mixed_dot,
-            g_spirv_translate.hmma_coop, g_spirv_translate.hmma_pairs, g_spirv_translate.hmma_stage,
-            g_spirv_translate.half_flush, g_spirv_translate.hmma_f16, (unsigned)sizeof(ShaderInfo),
-            (unsigned)sizeof(PfShader), g_vk.has_vertex_robustness2, g_vk.robust_buffer2, g_vk.robust_image2,
-            g_vk.null_descriptor);
+            g_spirv_translate.hmma_coop, g_spirv_translate.hmma_coop_shapes, g_spirv_translate.hmma_pairs,
+            g_spirv_translate.hmma_stage, g_spirv_translate.half_flush, g_spirv_translate.hmma_f16,
+            (unsigned)sizeof(ShaderInfo), (unsigned)sizeof(PfShader), g_vk.has_vertex_robustness2,
+            g_vk.robust_buffer2, g_vk.robust_image2, g_vk.null_descriptor);
 }
 
 void vk_pipeline_file_key(char* out, size_t n, size_t* guest) { pf_key(out, n, guest); }
