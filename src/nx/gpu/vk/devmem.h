@@ -27,6 +27,16 @@
    finds memory, as one did before the classes. A block of the low class has the priority of the class of most of its
    bytes, another block that of the highest class it holds (block_prio).
 
+   On a discrete GPU, the free space inside the blocks of the GPU's heap is gathered into whole blocks by moving what
+   they hold, by DXVK's rule (pickDefragChunk): a kind of block is defragmented when the heap's blocks are past the
+   caches' budget, or when the free space inside its blocks that hold something is more than an eighth of their use plus
+   a block. Its block with the least in it is emptied (vk_devmem_moving), when the free space of the kind's other blocks
+   is one and a half times that block or more. No request takes its runs, and the owners of its allocations move them to
+   the runs of other blocks on the GPU. Once empty it follows the rule of any empty block: kept as its kind's one empty
+   block, a whole block for a request that no run held, or else given back to the driver. Only allocations whose owner
+   said it can move them (vk_devmem_owner) are moved, and a block with any other in it is not emptied. A GPU that shares
+   the system's memory (integrated or mobile, UMA) keeps the old way: no block is emptied there.
+
    One lock guards it all: any thread may ask. The driver's allocate and free go through the ledger, which times
    them (ledger.h) */
 #ifndef SNX_VK_DEVMEM_H
@@ -57,6 +67,8 @@ typedef struct {
     u8 own;                     /* device memory of its own, whatever its size */
     u8 image;                   /* vk_devmem_alloc: the memory is for an image */
     u8 low; /* of the class DM_PRIO_LOW from the start, in the blocks of that class where the driver moves memory */
+    u8 existing;                /* a free run of a block that is there, or none: no new block and no memory of its
+                                   own (a move out of a block that is emptied) */
 } DevMemWant;
 typedef struct {
     VkDeviceMemory memory;
@@ -83,6 +95,19 @@ const VkPhysicalDeviceMemoryProperties* vk_devmem_props(void);
 /* memory for req. *info, when not NULL, says where it is */
 VkResult vk_devmem_alloc(const VkMemoryRequirements* req, const DevMemWant* want, DevMem* mem, DevMemInfo* info);
 void vk_devmem_free(DevMem mem); /* 0 is ignored */
+/* owner, not NULL, can move mem to other memory when its block is emptied: vk_devmem_moving gives it back. NULL: none
+   can (any allocation starts so). The owner sets NULL before it frees mem or lets it go to another */
+void vk_devmem_owner(DevMem mem, void* owner);
+/* the allocations to move out of the block being emptied, max at most, with their owners: 0 when none is. Called once
+   a present, by the one owner of allocations that move, with the budget its caches keep within (vk_mem_use's, which
+   vk_budget_mb and vk_heap_budget_mb lower): it starts on a block by the rule above when none is being emptied. An
+   owner
+   moves one by making its resource again with existing set, copying it on the GPU, and freeing the old memory once
+   the frames that use it are done; vk_devmem_moved counts it. vk_devmem_moving_stop: an allocation cannot move now,
+   and the block is left as it is */
+u32 vk_devmem_moving(DevMem* mems, void** owners, u32 max, u64 budget);
+void vk_devmem_moving_stop(void);
+void vk_devmem_moved(u64 bytes);
 /* a buffer or an image with its memory bound, and both gone again (either may be none) */
 VkResult vk_devmem_buffer(const VkBufferCreateInfo* bci, const DevMemWant* want, VkBuffer* buf, DevMem* mem,
                           DevMemInfo* info);

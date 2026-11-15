@@ -519,7 +519,10 @@ VkFormat vk_srgb_as(VkFormat f, int srgb) {
     return f;
 }
 void vk_surf_add(Surf* s) { (void)s; }
-void vk_tex_made(const Surf* t) { (void)t; } /* gpu/vk/tex_report.c's count, which no test here reads */
+u32 vk_tex_made(const Surf* t) { /* gpu/vk/tex_report.c's count, which no test here reads */
+    (void)t;
+    return 0;
+}
 void vk_surf_touch(Surf* s) { (void)s; }
 void vk_surf_relist(Surf* s) { (void)s; }
 void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx) { (void)fn, (void)ctx; }
