@@ -5,14 +5,17 @@
 #ifndef SNX_PAUSE_H
 #define SNX_PAUSE_H
 #include "common/cpu/aarch64/cpu.h"
+#include <stddef.h>
 
 /* Pauses nest: each game_pause that returned 0 takes a game_resume. -1 when something didn't stop in time, logged,
    and the game goes on unpaused */
 int game_pause(void);
 void game_resume(void);
 int game_paused(void); /* any thread */
-/* the player's pause (the menu's Pause, the Pause key), on or off */
-void game_pause_toggle(void);
+/* the player's pause (the menu's Pause, the Pause key), on or off: 1 on, 0 off, -1 for a pause that didn't happen,
+   the game going on. Its line in the log, the pause now and before it or why it didn't happen, the same words in text
+   (size bytes, 0 for none) */
+int game_pause_toggle(char* text, size_t size);
 /* an unattended run's pauses (the pause setting), at each pass of the frontend's loop */
 void pause_unattended(void);
 /* a hash of every readable guest page, without landing what the GPU owns (whose owners are hashed instead), and the

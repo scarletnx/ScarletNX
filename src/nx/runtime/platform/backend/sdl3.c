@@ -1133,44 +1133,25 @@ static void hotkey(int action) {
         case HOTKEY_FPS_LIMIT: {
             /* off and back to the limit the player set (fps_limit=120 stays 120), or to the game's pace when it
                started off */
-            if (g_opt_fps) {
-                g_sdl3.fps_was = g_opt_fps;
-                __atomic_store_n(&g_opt_fps, 0, __ATOMIC_RELAXED); /* present_pace reads it on the game's threads */
-            } else
-                __atomic_store_n(&g_opt_fps, g_sdl3.fps_was ? g_sdl3.fps_was : SNX_FPS_GAME, __ATOMIC_RELAXED);
-            char v[16];
-            fps_limit_text(g_opt_fps, v, sizeof v);
-            ini_set("fps_limit", v);
-            if (g_opt_fps == SNX_FPS_GAME)
-                LOG("FPS limit: the game's pace\n");
-            else if (g_opt_fps)
-                LOG("FPS limit: %d\n", g_opt_fps);
-            else
-                LOG("FPS limit: off\n");
+            char text[64];
+            options_fps_limit_step(&g_sdl3.fps_was, text, sizeof text);
+            toast(text);
             break;
         }
         case HOTKEY_THREAD_DUMP: kernel_dump_threads(); break;
         case HOTKEY_SHOWCASE: {
-            int on = !__atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED);
-            __atomic_store_n(&g_settings.showcase, on, __ATOMIC_RELAXED); /* a run's --showcase stays out of the file */
-            ini_set("showcase", on ? "1" : "0");
-            if (on)
-                LOG("showcase: on, showcase_corner=%s\n", g_settings.showcase_corner);
-            else
-                LOG("showcase: off\n");
+            char text[64];
+            options_showcase_step(text, sizeof text);
+            toast(text);
             break;
         }
         case HOTKEY_SAVE_STATE: state_ask(STATE_SAVE, -1); break;
         case HOTKEY_LOAD_STATE: state_ask(STATE_LOAD, -1); break;
         case HOTKEY_NEXT_SLOT: state_slot_next(); break;
         case HOTKEY_STATS: {
-            int on = !__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED);
-            __atomic_store_n(&g_settings.stats, on, __ATOMIC_RELAXED);
-            ini_set("stats", on ? "1" : "0");
-            if (on)
-                LOG("stats: on, stats_corner=%s\n", g_settings.stats_corner);
-            else
-                LOG("stats: off\n");
+            char text[64];
+            options_stats_step(text, sizeof text);
+            toast(text);
             break;
         }
 #if defined(SNX_TRACY)
@@ -1178,10 +1159,13 @@ static void hotkey(int action) {
 #endif
         case HOTKEY_FULLSCREEN:
         case HOTKEY_FULLSCREEN_2: set_fullscreen(!g_sdl3.fullscreen); break;
-        case HOTKEY_PAUSE:
-            game_pause_toggle();
+        case HOTKEY_PAUSE: {
+            char text[96];
+            game_pause_toggle(text, sizeof text);
             title_paused(game_paused());
+            toast(text);
             break;
+        }
         case HOTKEY_CAPTURE: g_renderer->capture(1); break;
         case HOTKEY_MOUSE: mouse_key(); break;
         case HOTKEY_QUIT: /* asked twice: a first press only warns */
