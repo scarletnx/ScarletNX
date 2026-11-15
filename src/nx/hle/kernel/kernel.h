@@ -190,14 +190,16 @@ void kthread_resume(KThread* t);
 /* pc_wait for a guest thread blocked in a service on the service's own lock m: it counts as stopped for a game pause,
    and a wake during one waits for the pause to end, m let go of meanwhile (returning 0, as a spurious wake). A save
    state taken then makes the request again on load, which is only right while the service has changed nothing for
-   it. Once it has (kthread_commit), the wait is a plain one: a pause waits for the request to finish instead. Another
-   thread just waits */
+   it. Once it has (kthread_commit), the wait is a plain one: a pause waits for the request to finish instead. So is a
+   wait outside an SVC (an NVN call's syncpoint wait), which no svc instruction makes again. Another thread just
+   waits */
 int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns);
 /* the request the calling thread serves has changed what a service holds (vi's QueueBuffer queued its slot): it can't
    be made again, so it finishes before a game pause stops the thread. Until the thread's SVC leaves */
 void kthread_commit(void);
 /* around a guest thread's wait for the host off its core (a JIT compile): stopped as far as a game pause goes, and its
-   end a hold point */
+   end a hold point. A save state restarts the thread at the pc its CPU holds (PARK_RUN), which the caller sets first:
+   only a wait at a point the game's code goes on from can use it */
 void kthread_block(KThread* t);
 void kthread_unblock(KThread* t);
 void kernel_run_main(u64 entry, const u64* args, u64 stack_size, int prio, int core);

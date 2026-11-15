@@ -714,6 +714,7 @@ int kthread_hold_point(KThread* t, int park) {
 }
 void kthread_block(KThread* t) {
     if (!t) return;
+    t->park = PARK_RUN; /* at the pc the caller set: a thread a save state restarts goes on there */
     __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
     /* runs no game code now: a svcSetThreadActivity waiting for it to pause has its answer (stopped is set before
        suspended is read, and the pause sets suspended before it reads stopped) */
@@ -739,7 +740,10 @@ int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     int r;
     if (!t) return pc_wait(c, m, timeout_ns);
     slot = kt_ix(t) - 1;
-    if (g_host.thread.committed[slot]) return pc_wait(c, m, timeout_ns); /* not stopped: a pause waits for it */
+    /* not stopped, and a pause waits for it: a request that changed a service, or a wait outside an SVC (a function of
+       the game's that the runtime runs natively, NVN's syncpoint waits), which no svc instruction makes again */
+    if (g_host.thread.committed[slot] || !__atomic_load_n(&t->in_svc, __ATOMIC_SEQ_CST))
+        return pc_wait(c, m, timeout_ns);
     g_host.thread.waiting_on[slot].c = c; /* where kernel_retire wakes it */
     g_host.thread.waiting_on[slot].m = m;
     t->park = PARK_SERVICE;
