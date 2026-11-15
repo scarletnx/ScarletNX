@@ -145,7 +145,6 @@ ShCaps g_spirv_translate = {.tex_array = SNX_TEX_ARRAY,
                             .draw_parameters = 1,
                             .quad = 1,
                             .quad_compute = 1,
-                            .hmma_coop_tile = 16,
                             .tessellation = 1};
 
 /* the family of instructions whose branches take each opcode, FAM_NONE for one no branch takes (refused by

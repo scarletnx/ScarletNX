@@ -392,9 +392,11 @@ static void start_failure_devices(void) {
                  n ? ", and " : "No Vulkan device: ", g_opt_headless ? "graphics" : "graphics and presentation", hint);
 }
 
-/* whether the device multiplies 16x16x16 f16 A and B into an f32 accumulator in subgroup scope in compute, as
-   g_spirv_translate.hmma_coop asks (VK_KHR_cooperative_matrix: RADV from GFX11) */
-static int coop_f16_f32(VkPhysicalDevice phys) {
+/* the shapes of f16 A and B into an f32 accumulator in subgroup scope in compute that the device multiplies, as
+   g_spirv_translate.hmma_coop_shapes asks (VK_KHR_cooperative_matrix: RADV from GFX11): a bit for each of an SM86
+   HMMA's exact 16x8x16 and 16x8x8, a 16x16x16 and Metal's simdgroup_matrix 8x8x8. 0 when it has no product in
+   compute */
+static u32 coop_f16_f32_shapes(VkPhysicalDevice phys) {
     VkPhysicalDeviceCooperativeMatrixPropertiesKHR cp = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &cp};
@@ -409,19 +411,20 @@ static int coop_f16_f32(VkPhysicalDevice phys) {
     for (u32 i = 0; i < n; i++)
         props[i] = (VkCooperativeMatrixPropertiesKHR){.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
     vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(phys, &n, props);
-    int tile = 0;
+    u32 shapes = 0;
     for (u32 i = 0; i < n; i++) {
-        int size = (int)props[i].MSize;
-        if ((size != 8 && size != 16) || props[i].NSize != props[i].MSize || props[i].KSize != props[i].MSize ||
-            props[i].AType != VK_COMPONENT_TYPE_FLOAT16_KHR || props[i].BType != VK_COMPONENT_TYPE_FLOAT16_KHR ||
+        u32 m = props[i].MSize, cols = props[i].NSize, k = props[i].KSize;
+        if (props[i].AType != VK_COMPONENT_TYPE_FLOAT16_KHR || props[i].BType != VK_COMPONENT_TYPE_FLOAT16_KHR ||
             props[i].CType != VK_COMPONENT_TYPE_FLOAT32_KHR ||
             props[i].ResultType != VK_COMPONENT_TYPE_FLOAT32_KHR || props[i].saturatingAccumulation ||
             props[i].scope != VK_SCOPE_SUBGROUP_KHR)
             continue;
-        if (size == 16) return 16; /* one product an HMMA, where the driver has the wider tile */
-        tile = 8;
+        if (m == 16 && cols == 16 && k == 16) shapes |= SH_COOP_16x16x16;
+        else if (m == 16 && cols == 8 && k == 16) shapes |= SH_COOP_16x8x16;
+        else if (m == 16 && cols == 8 && k == 8) shapes |= SH_COOP_16x8x8;
+        else if (m == 8 && cols == 8 && k == 8) shapes |= SH_COOP_8x8x8;
     }
-    return tile;
+    return shapes;
 }
 
 /* The subgroup sizes a pipeline stage can require, where has says the device has them: Vulkan 1.3's, or a 1.2 device's
@@ -1476,23 +1479,34 @@ static int create_device(void) {
         LOG("vulkan: hmma_f16=1 asks for HMMA's sums in half floats; they stay in f32, as hmma_f16=0's: %s\n",
             shader_hmma_f16_unused());
     /* its f16 matrices are Float16's, its modules the Vulkan memory model's, and its matrices span a subgroup of 32.
-       The tile is the 8 or the 16 its vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR offers: Metal's
-       simdgroup_matrix is 8x8x8, so an SM86 HMMA is four products there and one where the tile is 16 */
+       The shapes are the ones vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR lists: an SM86 HMMA's exact 16x8x16
+       and 16x8x8 where they are, a 16x16x16, and Metal's simdgroup_matrix 8x8x8 */
     /* A subgroup of 32 lanes, which is what an HMMA and its matrices span: has_cs_warp32 where the device lets a
        pipeline ask for one, or where its subgroups are already 32 and compute has them (Metal's are, at every
        stage). Gating the matrix unit on the request alone left every driver whose size is fixed without it */
     int warp32 = g_vk.has_cs_warp32 || (subgroup.subgroupSize == 32 &&
                                         (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0);
-    int coop_tile = has_coop && qcoop.cooperativeMatrix && g_spirv_translate.float16 && q12.vulkanMemoryModel &&
-                            q12.vulkanMemoryModelDeviceScope && warp32
-                        ? coop_f16_f32(g_vk.phys)
-                        : 0;
-    g_spirv_translate.hmma_coop = coop_tile ? (int)g_vk.props.limits.maxComputeSharedMemorySize : 0;
-    g_spirv_translate.hmma_coop_tile = coop_tile ? coop_tile : 16;
-    if (coop_tile)
-        LOG("vulkan: HMMA runs on the device's cooperative matrices, %dx%dx%d a product, shared memory's own "
-            "fragments after the program's\n",
-            coop_tile, coop_tile, coop_tile);
+    u32 coop_shapes = has_coop && qcoop.cooperativeMatrix && g_spirv_translate.float16 && q12.vulkanMemoryModel &&
+                              q12.vulkanMemoryModelDeviceScope && warp32
+                          ? coop_f16_f32_shapes(g_vk.phys)
+                          : 0;
+    g_spirv_translate.hmma_coop = coop_shapes ? (int)g_vk.props.limits.maxComputeSharedMemorySize : 0;
+    g_spirv_translate.hmma_coop_shapes = coop_shapes;
+    if (coop_shapes) {
+        char names[64] = "";
+        static const struct {
+            u32 bit;
+            const char* name;
+        } listed[] = {{SH_COOP_16x16x16, "16x16x16"}, {SH_COOP_16x8x16, "16x8x16"},
+                      {SH_COOP_16x8x8, "16x8x8"}, {SH_COOP_8x8x8, "8x8x8"}};
+        for (u32 i = 0; i < 4; i++)
+            if (coop_shapes & listed[i].bit) {
+                size_t used = strlen(names);
+                snprintf(names + used, sizeof names - used, "%s%s", used ? ", " : "", listed[i].name);
+            }
+        LOG("vulkan: HMMA runs on the device's cooperative matrices, %s a product, shared memory's own fragments "
+            "after the program's\n", names);
+    }
     f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_spirv_translate.hmma_coop != 0;
     /* HMMA off the matrix unit: pairs of lanes on RADV with subgroups of 32 (an RX 6700 XT's HMMA bench ran 9.7%
        faster), and A and B through shared memory where the driver loops for a shuffle whose index differs between
