@@ -30,7 +30,7 @@ static struct {
        the owner being read back. Reused after its timeline value is reached, under vk_lock. */
     VkCommandPool pool;
     VkCommandBuffer cb;
-    VkHostTimeline done; /* each landing's copy signals it, on one queue (land_apart's), under vk_lock */
+    VkHostTimeline done; /* each landing's copy signals it on one queue (land_apart's), waited for under vk_lock */
     VkBuffer back;
     DevMem mem;
     u8* ptr;

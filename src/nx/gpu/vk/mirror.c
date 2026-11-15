@@ -141,8 +141,9 @@ VkBuffer vk_mirror_mask(void) { return g_mir.mask; }
 
 static u64 g_mir_system; /* granules that took system memory, the GPU's having none */
 u64 vk_mirror_system(void) { return g_mir_system; }
-/* the granules' binds and the landings signal it, all on the graphics queue, and the CPU waits for each */
-static VkHostTimeline g_mir_done;
+/* the granules' binds signal one, the landings' submissions the other, each under vk_lock: a sparse bind is not
+   ordered against a command buffer, so the two can't share a timeline */
+static VkHostTimeline g_mir_bound, g_mir_landed;
 
 /* memory for granule g bound into the mirror and its mask, the mask cleared; 0 out of memory */
 static Gran* gran_bind(u64 g) {
@@ -182,20 +183,8 @@ static Gran* gran_bind(u64 g) {
          .memoryOffset = info[1].offset}};
     VkSparseBufferMemoryBindInfo bb[2] = {{g_mir.buf, 1, &b[0]}, {g_mir.mask, 1, &b[1]}};
     /* bound before any work that reads it is submitted: once a granule, so a wait is no cost */
-    vk_queue_lock(g_vk.gfx);
-    u64 value = vk_host_next(&g_mir_done);
-    VkTimelineSemaphoreSubmitInfo ts = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-                                        .signalSemaphoreValueCount = 1,
-                                        .pSignalSemaphoreValues = &value};
-    VkBindSparseInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO,
-                           .pNext = &ts,
-                           .bufferBindCount = 2,
-                           .pBufferBinds = bb,
-                           .signalSemaphoreCount = 1,
-                           .pSignalSemaphores = &g_mir_done.sem};
-    int ok = value && VK_OK(vkQueueBindSparse(g_vk.gfx, 1, &bi, VK_NULL_HANDLE));
-    vk_queue_unlock(g_vk.gfx);
-    ok = ok && vk_host_wait(&g_mir_done, value);
+    VkBindSparseInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, .bufferBindCount = 2, .pBufferBinds = bb};
+    int ok = vk_host_bind_sparse(&g_mir_bound, &bi);
     if (!ok) fatal("vulkan: could not bind memory into the GPU mirror");
     vk_render_end();
     rec_CmdFillBuffer(vk_cmd(), g_mir.mask, g * MIR_MASK_G, MIR_MASK_G, 0);
@@ -1013,10 +1002,10 @@ static void harvest_left(const u32* left, u32 n) {
         fatal("vulkan: no descriptor set left to land the GPU mirror's writes");
     VK_OK(vkEndCommandBuffer(g_mir_cb));
     vk_queue_lock(g_vk.gfx);
-    u64 value = vk_host_next(&g_mir_done); /* makes the semaphore at the first use */
+    u64 value = vk_host_next(&g_mir_landed); /* makes the semaphore at the first use */
     VkCommandBufferSubmitInfo ci = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = g_mir_cb};
     VkSemaphoreSubmitInfo done = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                                  .semaphore = g_mir_done.sem,
+                                  .semaphore = g_mir_landed.sem,
                                   .value = value,
                                   .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
@@ -1026,7 +1015,7 @@ static void harvest_left(const u32* left, u32 n) {
                         .pSignalSemaphoreInfos = &done};
     int ok = value && VK_OK(vkQueueSubmit2(g_vk.gfx, 1, &si, VK_NULL_HANDLE));
     vk_queue_unlock(g_vk.gfx);
-    ok = ok && vk_host_wait(&g_mir_done, value);
+    ok = ok && vk_host_wait(&g_mir_landed, value);
     if (!ok || !VK_OK(vk_devmem_invalidate(mem, 0, VK_WHOLE_SIZE)))
         fatal("vulkan: could not land the GPU mirror's writes");
     vkDestroyDescriptorPool(g_vk.dev, dpool, NULL); /* its work is done */
