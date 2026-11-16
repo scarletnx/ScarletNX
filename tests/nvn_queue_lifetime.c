@@ -10,6 +10,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
+#include "nx/memory/own.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/plat.h"
@@ -586,6 +587,28 @@ static void own_fence_barrier(void) {
     nvn_replay_queue_free(a);
     nvn_replay_queue_free(b);
 }
+/* What the GPU holds of a page lands at the first record header that a pass reads there: the walk at the submission
+   and the replay each ask own_acquire once for each page, not for each header (tests/own_stub.c counts the calls) */
+extern u64 g_own_stub_acquires;
+static void own_headers(void) {
+    u32 a = nvn_replay_queue(), shown = 0, draws = fixture.draws;
+    u64 ready = 0;
+    for (u64 at = 0x2fe0; at < 0x3000; at += 8) *(NvnRecHdr*)(void*)GP(at) = (NvnRecHdr){OP_DRAW, 8};
+    *(NvnRecHdr*)(void*)GP(0x3000) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x2fe0);
+    g_own.nown = 1;
+    u64 before = g_own_stub_acquires;
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    u64 walked = g_own_stub_acquires - before;
+    drain();
+    u64 replayed = g_own_stub_acquires - before - walked;
+    g_own.nown = 0;
+    if (walked != 2 || replayed != 2)
+        fprintf(stderr, "own_acquire: %llu calls in the walk and %llu in the replay, 2 each expected\n",
+                (unsigned long long)walked, (unsigned long long)replayed);
+    assert(walked == 2 && replayed == 2 && fixture.draws == draws + 5);
+    nvn_replay_queue_free(a);
+}
 /* Every live queue's submitted work is done when nvn_replay_finish_all returns, with a freed queue's slot between
    them, and with no queue it queues nothing. */
 static void finish_all(void) {
@@ -741,6 +764,7 @@ int main(int argc, char** argv) {
     retained_texture_snapshot();
     waited_walk_once();
     own_fence_barrier();
+    own_headers();
     finish_all();
     finish_all_waits();
     if (argc == 2 && !strcmp(argv[1], "--bench-replay")) bench_replay();
