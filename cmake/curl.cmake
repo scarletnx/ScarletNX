@@ -121,6 +121,7 @@ else()
     if(TARGET openssl_build)
         set(snx_curl_depends openssl_build)
     endif()
+    snx_deps_binary_dir("${PROJECT_BINARY_DIR}/curl-build" "${snx_curl_src}")
     ExternalProject_Add(curl_build
         SOURCE_DIR "${snx_curl_src}"
         BINARY_DIR "${PROJECT_BINARY_DIR}/curl-build"

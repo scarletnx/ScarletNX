@@ -152,6 +152,7 @@ else()
         set(snx_openssl_jobs "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
     endif()
     include(ExternalProject)
+    snx_deps_binary_dir("${PROJECT_BINARY_DIR}/openssl-build" "${snx_openssl_src}")
     ExternalProject_Add(openssl_build
         SOURCE_DIR "${snx_openssl_src}"
         BINARY_DIR "${PROJECT_BINARY_DIR}/openssl-build"
