@@ -7,8 +7,9 @@
 # folder of the test: an archive, extracted into <package>/<version>, and a package of one file, kept as downloaded
 # there. A download that fails says the URL and the status; a folder a fetch cut short is fetched again; a file of one
 # download that is not the pinned one is downloaded again, or refused in a <package>_CUSTOM_DIR, with both hashes; a
-# configure waits for another one's fetch of the same package instead of removing it, and takes what it fetched; and
-# another package's fetch goes on beside it.
+# configure waits for another one's fetch of the same package instead of removing it, and takes what it fetched;
+# another package's fetch goes on beside it; and a package's patches are applied, again when they change, and stop the
+# configure where one does not apply without fuzz.
 # CPMUtil's 5 s between tries is left out: each failure would take 30 s
 if(NOT DEFINED SRC OR NOT DEFINED WORK)
     message(FATAL_ERROR "cpmutil_cache_test.cmake needs -DSRC=... -DWORK=...")
@@ -21,13 +22,17 @@ endfunction()
 file(REMOVE_RECURSE "${WORK}")
 file(WRITE "${WORK}/payload/one.txt" "the whole file\n")
 file(WRITE "${WORK}/payload/arc-1/a.c" "int a;\n")
-execute_process(COMMAND "${CMAKE_COMMAND}" -E tar czf arc.tar.gz arc-1 WORKING_DIRECTORY "${WORK}/payload"
-                RESULT_VARIABLE failed)
-if(failed)
-    message(FATAL_ERROR "cpmutil_cache: could not make the archive")
-endif()
+file(WRITE "${WORK}/payload/pat-1/text.txt" "one\ntwo\nthree\nfour\nfive\nsix\nseven\n")
+foreach(kind arc pat)
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E tar czf ${kind}.tar.gz ${kind}-1 WORKING_DIRECTORY "${WORK}/payload"
+                    RESULT_VARIABLE failed)
+    if(failed)
+        message(FATAL_ERROR "cpmutil_cache: could not make the archive ${kind}.tar.gz")
+    endif()
+endforeach()
 file(SHA512 "${WORK}/payload/one.txt" one_hash)
 file(SHA512 "${WORK}/payload/arc.tar.gz" arc_hash)
+file(SHA512 "${WORK}/payload/pat.tar.gz" pat_hash)
 set(served "${WORK}/served")
 # a file URL of that folder: file:///C:/... on Windows
 set(url "file://${served}")
@@ -37,7 +42,9 @@ endif()
 set(cache "${WORK}/cache")
 file(WRITE "${WORK}/project/cpmfile.json" "{
     \"arc\": {\"url\": \"${url}/arc.tar.gz\", \"version\": \"1\", \"hash\": \"${arc_hash}\"},
-    \"one\": {\"url\": \"${url}/one.txt\", \"version\": \"1\", \"hash\": \"${one_hash}\"}
+    \"one\": {\"url\": \"${url}/one.txt\", \"version\": \"1\", \"hash\": \"${one_hash}\"},
+    \"pat\": {\"url\": \"${url}/pat.tar.gz\", \"version\": \"1\", \"hash\": \"${pat_hash}\",
+             \"patches\": [\"0001-four.patch\"]}
 }
 ")
 # KIND (arc or one) added as cmake/dependencies.cmake adds it, after WAIT names a file to appear (the other fetch's
@@ -71,8 +78,8 @@ if(WAIT)
         execute_process(COMMAND \"\${CMAKE_COMMAND}\" -E sleep 0.1)
     endforeach()
 endif()
-if(KIND STREQUAL \"arc\")
-    AddJsonPackage(NAME arc DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
+if(KIND STREQUAL \"arc\" OR KIND STREQUAL \"pat\")
+    AddJsonPackage(NAME \${KIND} DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
 else()
     snx_package_file(one)
 endif()
@@ -211,6 +218,39 @@ file(LOCK \"${lock}\" RELEASE)
              "what the holder wrote:\n${out}")
     endif()
 endforeach()
+
+# A package's patches (.patch/<key>/, cpmfile.json's "patches"): applied to what the fetch extracts; applied again on a
+# fresh copy when one changes; one that does not apply as it is written, without fuzz, stops the configure, naming it
+# and the folder, and leaves the folder to be fetched again
+function(patch_four line context)
+    file(WRITE "${WORK}/project/.patch/pat/0001-four.patch" "--- a/text.txt\n+++ b/text.txt\n@@ -1,7 +1,7 @@\n"
+               " ${context}\n two\n three\n-four\n+${line}\n five\n six\n seven\n")
+endfunction()
+file(COPY "${WORK}/payload/pat.tar.gz" DESTINATION "${served}")
+set(pat "${cache}/pat/1")
+foreach(line FOUR Four)
+    patch_four(${line} one)
+    configure(pat)
+    set(text "")
+    if(EXISTS "${pat}/text.txt")
+        file(READ "${pat}/text.txt" text)
+    endif()
+    if(failed OR NOT text STREQUAL "one\ntwo\nthree\n${line}\nfive\nsix\nseven\n" OR NOT EXISTS "${pat}/.cpm_patch_key")
+        fail("pat: the patch that writes ${line} gave [${text}]:\n${out}")
+    endif()
+endforeach()
+# its first line of context another: a fuzz of 1 would apply it
+patch_four(FOUR uno)
+configure(pat)
+if(NOT failed OR EXISTS "${pat}/.cpm_patch_key")
+    fail("pat: a patch that applies only with fuzz was applied:\n${out}")
+endif()
+says(pat-fuzz "${WORK}/project/.patch/pat/0001-four.patch does not apply to ${pat}:")
+patch_four(FOUR one)
+configure(pat)
+if(failed OR NOT EXISTS "${pat}/.cpm_patch_key")
+    fail("pat: a folder a patch did not apply to is not fetched again:\n${out}")
+endif()
 
 # A fetch locks its own package alone: a configure fetches one package while another configure is inside its fetch of
 # the other one (PAUSE: its download waits until the first configure has written its folder, or 30 s, and then fails).
