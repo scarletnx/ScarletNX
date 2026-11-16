@@ -11,6 +11,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/shading_rate.h"
+#include "nx/runtime/main.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/vertex_input.h"
@@ -1405,7 +1406,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         if (has_nv_rate) p2.pNext = &pnv;
         else if (has_khr_rate) p2.pNext = &pkhr;
         if (p2.pNext) vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
-        VkVrsDevice vd = {.nv = has_nv_rate && qnv_rate.shadingRateImage,
+        VkVrsDevice vd = {.ounce = g_ounce,
+                          .nv = has_nv_rate && qnv_rate.shadingRateImage,
                           .nv_texel = pnv.shadingRateTexelSize,
                           .nv_palette = pnv.shadingRatePaletteSize,
                           .khr = has_khr_rate && qkhr_rate.attachmentFragmentShadingRate &&

@@ -9,6 +9,10 @@
 
 int vk_vrs_choose(const VkVrsDevice* d, VkExtent2D* texel, char* line, size_t n) {
     *texel = (VkExtent2D){0, 0};
+    if (!d->ounce) {
+        snprintf(line, n, "vulkan: no shading rate images: the game is no Ounce program");
+        return VK_VRS_NONE;
+    }
     /* the game's palettes have 16 entries, which vk_vrs_draw sets as they are */
     if (d->nv && d->nv_palette >= 16 && d->nv_texel.width && d->nv_texel.height) {
         *texel = d->nv_texel;
@@ -64,6 +68,7 @@ void vk_vrs_push(int vrs, VkExtent2D texel, u32 game_w, u32 game_h, u32 game_tex
     o->game_w = game_w, o->game_h = game_h;
     o->texel_w = texel.width, o->texel_h = texel.height;
     o->game_texel = game_texel;
+    o->finest = vrs == VK_VRS_KHR;
     /* the index itself for VK_NV_shading_rate_image, whose palettes the draws set; viewport 0's rate as
        VK_KHR_fragment_shading_rate encodes it */
     for (u32 i = 0; i < 16; i++) {
