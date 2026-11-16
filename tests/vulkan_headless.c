@@ -9040,6 +9040,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
         if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
         if (!strcmp(name, "nvdec") && ++ran) CHECK(!check_uma_nvdec());
+        if (!strcmp(name, "publish_notraps") && ++ran) CHECK(!check_uma_publish_notraps());
         if (!strcmp(name, "dispatch") && ++ran) CHECK(!check_uma_dispatch());
         if (!strcmp(name, "dispatch_open") && ++ran) CHECK(!check_uma_dispatch_open());
         if (!strcmp(name, "texture_pending") && ++ran) CHECK(!check_uma_texture_pending());
@@ -9093,6 +9094,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_feedback());
         CHECK(!check_uma_publish());
         CHECK(!check_uma_nvdec());
+        CHECK(!check_uma_publish_notraps());
         CHECK(!check_uma_dispatch());
         CHECK(!check_uma_dispatch_open());
         CHECK(!check_uma_texture_pending());
@@ -9372,6 +9374,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_feedback());
     CHECK(!check_uma_publish());
     CHECK(!check_uma_nvdec());
+    CHECK(!check_uma_publish_notraps());
     CHECK(!check_uma_dispatch());
     CHECK(!check_uma_dispatch_open());
     CHECK(!check_uma_texture_pending());
