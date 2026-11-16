@@ -15,8 +15,20 @@ typedef struct {
     VkExtent2D khr_min, khr_max; /* the attachment's texel sizes */
     u32 khr_aspect;        /* maxFragmentShadingRateAttachmentTexelSizeAspectRatio */
 } VkVrsDevice;
-/* VK_VRS_* for g_vk.vrs, and the texel size of the device's image in *texel. line: the log line that says which */
+/* VK_VRS_* for g_vk.vrs, and the texel size of the device's image in *texel. line: the log line that says which
+   (shading_rate_table.c) */
 int vk_vrs_choose(const VkVrsDevice* d, VkExtent2D* texel, char* line, size_t n);
+/* a palette entry (VkShadingRatePaletteEntryNV's numbers) as VK_KHR_fragment_shading_rate encodes it: log2 of the
+   width in bits 2-3, of the height in bits 0-1. 1x1 for 2 to 16 invocations for each pixel, 4x4 for none */
+u32 vk_vrs_khr_rate(u32 e);
+/* the conversion's push constants (shading_rate.comp's Params, in its order): the device's image of texel pixels a
+   texel for the game's game_w x game_h texels of game_texel pixels, and each palette entry's value for vrs
+   (VK_VRS_NV: the index, VK_VRS_KHR: viewport 0's rate from palette0) */
+typedef struct {
+    u32 size_x, size_y, game_w, game_h, texel_w, texel_h, game_texel;
+    u32 table[4];
+} VkVrsPush;
+void vk_vrs_push(int vrs, VkExtent2D texel, u32 game_w, u32 game_h, u32 game_texel, u64 palette0, VkVrsPush* o);
 /* Renderer.shading_rate: the game's image converted for the draws (an id for DrawCall.shading_rate, 0 for none) */
 u32 vk_shading_rate(const GpuShadingRate* r);
 /* VK_VRS_NV: the image and the palettes of a draw of id bound in cb, when the command buffer has not got them. A

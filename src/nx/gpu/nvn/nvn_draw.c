@@ -1268,9 +1268,6 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             const NvnPRatePalette* r = NVN_OBJ(const NvnPRatePalette, payload);
             if (d->rate_in.palette[r->viewport & 15] == r->rates) return 1;
             d->rate_in.palette[r->viewport & 15] = r->rates;
-            if (r->rates != NVN_RATE_PALETTE_FULL)
-                LOG_LIMIT(8, "nvn: shading rate palette of viewport %d: %016llx\n", r->viewport,
-                          (unsigned long long)r->rates);
             if (d->rate_in.image.addr) rate_update(d, 0);
             return 1;
         }
