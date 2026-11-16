@@ -2677,12 +2677,29 @@ extern u64 g_vk_wait_ns[VK_WAIT_N], g_vk_waits[VK_WAIT_N]; /* cmd.c: the GPU thr
 int vk_gpuprof_dispatch_begin(VkCommandBuffer cb);
 void vk_gpuprof_dispatch_end(VkCommandBuffer cb);
 void vk_gpuprof_tag(u64 key);
-/* any operation the same way: kind VK_OP_*, key what it is (a copy's: where it was recorded, from vk_gpuprof_base) */
-enum { VK_OP_DISPATCH, VK_OP_COPY, VK_OP_TO_IMAGE, VK_OP_TO_BUFFER, VK_OP_IMAGE, VK_OP_DRAW, VK_OP_N };
+/* the same, with where the next dispatch was asked for (its caller's return address): one of the renderer's own
+   pipelines that many places use (a block linear move) is summed by each of them */
+void vk_gpuprof_tag_at(u64 key, const void* site);
+/* any operation the same way: kind VK_OP_*, key what it is (a copy's, fill's, blit's, clear's or resolve's: where it
+   was recorded, from vk_gpuprof_base) */
+enum {
+    VK_OP_DISPATCH,
+    VK_OP_COPY,
+    VK_OP_TO_IMAGE,
+    VK_OP_TO_BUFFER,
+    VK_OP_IMAGE,
+    VK_OP_DRAW,
+    VK_OP_FILL,
+    VK_OP_BLIT,
+    VK_OP_CLEAR,
+    VK_OP_RESOLVE,
+    VK_OP_N
+};
 typedef struct {
     u32 qi;
     u32 kind; /* VK_OP_* */
     u64 key, bytes;
+    i64 site; /* a tagged dispatch's vk_gpuprof_tag_at site, from vk_gpuprof_base; 0 none */
     u16 q0, q1;
     u64 ep;
 } GpOp;
