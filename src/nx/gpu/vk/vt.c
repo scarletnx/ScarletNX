@@ -37,7 +37,9 @@
 #define VT_UNMAPPED ~0u /* seen[b] of a block guest memory doesn't map: asked for, and given no memory */
 /* A virtual texture's record. seen[b]: the present block b was last sampled in (or asked for), 0 never. want: the
    blocks its next bind gives memory; held: the ones its last bind gave; fresh: of those, the ones with no texels yet.
-   The four arrays are one allocation, seen's */
+   The four arrays are one allocation, seen's. One with holes in its mapping keeps what the walk of that mapping gave
+   its last load (texture.c's tex_bind_at) in front of them: keys, a block's key each, and map, the blocks mapped; a
+   bind between two loads, one for nearly every present, then walks nothing */
 typedef struct {
     Surf* t; /* NULL: a free record */
     u32 gen;
@@ -45,6 +47,9 @@ typedef struct {
     u32 nblocks;
     u32* seen;
     u8 *want, *held, *fresh;
+    u64* keys; /* NULL without holes: the allocation starts at seen then */
+    u8* map;
+    u8 mapped;    /* keys and map hold the walk of its last load */
     u32 bound_at; /* the present of its last bind that changed something */
     u32 stuck;
     u8 changed, whole, missed, asked;
@@ -75,6 +80,7 @@ static struct {
     u64 set_key[VT_SETS];
     /* since the log's last line */
     u64 marks, misses, unknown, asked, bound, gone, loads, fails, wholes, deferred, ns, frames, filled;
+    u64 again[3]; /* of the blocks asked for, those last sampled under 2, under 8 and over 8 vt_frames before */
 } g_vt;
 
 static VtTex* vt_rec(const Surf* t) { return t && t->vt_slot ? &g_vt.v[t->vt_slot - 1] : NULL; }
@@ -86,7 +92,7 @@ int vk_vt_on(void) { return g_shader_vt_address != 0; }
 int vk_vt_makes(int holes) { return vk_vt_on() && !(g_shader_vt_parts & (holes ? 24 : 8)); }
 u32 vk_vt_phase(void) { return g_vt.now & (SH_VT_QUADS - 1); }
 
-int vk_vt_register(Surf* t) {
+int vk_vt_register(Surf* t, int holes) {
     const VkSparseShape* sh = vk_image_sparse_shape(t->img);
     VtShape shape;
     /* levels held always to fall back on (a mip tail, or levels smaller than a block), a level 0 of blocks to page
@@ -110,20 +116,22 @@ int vk_vt_register(Surf* t) {
     }
     VtTex* L = &g_vt.v[i];
     const u32 n = shape.layers * shape.per_layer, bytes = n / 8 + 1;
-    u32* seen = calloc(1, (size_t)n * sizeof *seen + 3u * bytes);
-    if (!seen) return 0;
-    *L = (VtTex){.t = t, .gen = L->gen + 1, .shape = shape, .nblocks = n, .seen = seen};
+    u64* keys = calloc(1, (holes ? (size_t)n * sizeof *keys : 0) + (size_t)n * sizeof(u32) + (holes ? 4u : 3u) * bytes);
+    if (!keys) return 0;
+    u32* seen = holes ? (u32*)(keys + n) : (u32*)keys;
+    *L = (VtTex){.t = t, .gen = L->gen + 1, .shape = shape, .nblocks = n, .seen = seen, .keys = holes ? keys : NULL};
     L->whole = !(g_shader_vt_parts & 4); /* vt_parts without the marks: nothing would ask for its blocks */
     L->want = (u8*)(seen + n);
     L->held = L->want + bytes;
     L->fresh = L->held + bytes;
+    L->map = L->fresh + bytes;
     t->vt_slot = i + 1;
     return 1;
 }
 void vk_vt_forget(Surf* t) {
     VtTex* L = vt_rec(t);
     if (!L) return;
-    free(L->seen);
+    free(L->keys ? (void*)L->keys : (void*)L->seen);
     const u32 gen = L->gen;
     *L = (VtTex){.gen = gen};
     t->vt_slot = 0;
@@ -171,8 +179,23 @@ void vk_vt_loaded(const Surf* t) {
 }
 void vk_vt_remapped(const Surf* t) {
     VtTex* L = vt_rec(t);
+    if (L) L->mapped = 0;
     for (u32 b = 0; L && b < L->nblocks; b++)
         if (L->seen[b] == VT_UNMAPPED) L->seen[b] = 0;
+}
+int vk_vt_mapping(const Surf* t, u8* bits, u64* keys, u64 nbits) {
+    const VtTex* L = vt_rec(t);
+    if (!L || !L->keys || !L->mapped || nbits != L->nblocks) return 0;
+    memcpy(bits, L->map, L->nblocks / 8 + 1);
+    memcpy(keys, L->keys, (size_t)L->nblocks * sizeof *keys);
+    return 1;
+}
+void vk_vt_mapping_keep(const Surf* t, const u8* bits, const u64* keys, u64 nbits) {
+    VtTex* L = vt_rec(t);
+    if (!L || !L->keys || nbits != L->nblocks) return;
+    memcpy(L->map, bits, L->nblocks / 8 + 1);
+    memcpy(L->keys, keys, (size_t)L->nblocks * sizeof *keys);
+    L->mapped = 1;
 }
 void vk_vt_whole(Surf* t, const char* why) {
     VtTex* L = vt_rec(t);
@@ -253,11 +276,15 @@ static int ask(VtTex* L, u32 b) {
     int any = 0;
     for (; b != ~0u; b = vt_block_parent(&L->shape, b)) {
         if (L->seen[b] == VT_UNMAPPED) continue;
+        const u32 last = L->seen[b];
         L->seen[b] = g_vt.now;
         if (bit(L->want, b)) continue;
         set(L->want, b);
         any = 1;
         g_vt.asked++;
+        /* back after it was let go: how long the frames went without it, for the log */
+        const u32 away = last ? g_vt.now - last : ~0u, window = (u32)g_settings.vt_frames;
+        g_vt.again[away < 2 * window ? 0 : away < 8 * window ? 1 : 2] += last != 0;
     }
     if (any) L->changed = 1;
     return any;
@@ -434,17 +461,20 @@ static void say(void) {
     const u64 frames = g_vt.frames ? g_vt.frames : 1;
     LOG("vt: %llu virtual textures hold %llu MB, %llu of their %llu blocks; %llu of them whole (%llu MB), %llu turned "
         "whole; in %u presents: %llu marks a frame of marks (%llu of the table's %u slots), %llu of them misses, "
-        "%llu naming no texture; %llu blocks asked for, %llu bound, %llu let go, %llu loads, %llu without memory, "
-        "%llu put off; %.3f ms of the host a present\n",
+        "%llu naming no texture; %llu blocks asked for (%llu of them sampled under %u presents before, %llu under %u, "
+        "%llu longer ago), %llu bound, %llu let go, %llu loads, %llu without memory, %llu put off; %.3f ms of the "
+        "host a present\n",
         (unsigned long long)n, (unsigned long long)(bytes >> 20), (unsigned long long)blocks, (unsigned long long)all,
         (unsigned long long)whole, (unsigned long long)(whole_bytes >> 20), (unsigned long long)g_vt.wholes, VT_SAY,
         (unsigned long long)(g_vt.marks / frames), (unsigned long long)(g_vt.filled / frames), SH_VT_SLOTS,
         (unsigned long long)(g_vt.misses / frames), (unsigned long long)(g_vt.unknown / frames),
-        (unsigned long long)g_vt.asked, (unsigned long long)g_vt.bound, (unsigned long long)g_vt.gone,
-        (unsigned long long)g_vt.loads, (unsigned long long)g_vt.fails, (unsigned long long)g_vt.deferred,
-        (double)g_vt.ns / 1e6 / VT_SAY);
+        (unsigned long long)g_vt.asked, (unsigned long long)g_vt.again[0], 2u * (u32)g_settings.vt_frames,
+        (unsigned long long)g_vt.again[1], 8u * (u32)g_settings.vt_frames, (unsigned long long)g_vt.again[2],
+        (unsigned long long)g_vt.bound, (unsigned long long)g_vt.gone, (unsigned long long)g_vt.loads,
+        (unsigned long long)g_vt.fails, (unsigned long long)g_vt.deferred, (double)g_vt.ns / 1e6 / VT_SAY);
     g_vt.marks = g_vt.misses = g_vt.unknown = g_vt.asked = g_vt.bound = g_vt.gone = g_vt.loads = g_vt.fails = 0;
     g_vt.wholes = g_vt.deferred = g_vt.ns = g_vt.frames = g_vt.filled = 0;
+    memset(g_vt.again, 0, sizeof g_vt.again);
 }
 void vk_vt_stats(const Surf* t, VkVtStats* s) {
     *s = (VkVtStats){0};

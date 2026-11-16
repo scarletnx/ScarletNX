@@ -205,7 +205,9 @@ static int tex_bind_at(Surf* t, int finer_ok) {
         free(keys);
         keys = NULL;
     }
-    for (u32 layer = 0; layer < (whole ? 0 : t->layers); layer++) {
+    /* vt_sparse: a virtual texture's mapping as its last load walked it, which a bind between loads asks for again */
+    const int kept = t->vt && t->vt_mapped && vk_vt_mapping(t, bits, keys, nbits);
+    for (u32 layer = 0; layer < (whole || kept ? 0 : t->layers); layer++) {
         u64 at = t->gva + layer * t->layer_size;
         for (u32 l = 0; l < t->levels; l++) {
             u32 lbh, lbd;
@@ -234,12 +236,13 @@ static int tex_bind_at(Surf* t, int finer_ok) {
             at += lsz;
         }
     }
-    for (u64 k = 0; keys && k < nbits; k++) { /* 0 is the key of a block like no other */
+    for (u64 k = 0; keys && !kept && k < nbits; k++) { /* 0 is the key of a block like no other */
         if ((odd[k >> 3] >> (k & 7)) & 1)
             keys[k] = 0;
         else if ((bits[k >> 3] >> (k & 7)) & 1 && !keys[k])
             keys[k] = 1;
     }
+    if (t->vt && t->vt_mapped && !kept) vk_vt_mapping_keep(t, bits, keys, nbits);
     if (t->vt) vk_vt_want(t, bits, nbits); /* vt_sparse: only the blocks frames sample */
     u32 floor = t->lod_floor;
     u8* finer = floor && finer_ok ? malloc(nbits / 8 + 1) : NULL;
@@ -1936,7 +1939,7 @@ static int kind_again(Surf* t) {
         const u32 was = vk_astc_bcn(t->f.vk);
         vk_vt_forget(t);
         tex_image_swap(t, img, 0, 0, to, 0);
-        t->vt = (u8)vk_vt_register(t);
+        t->vt = (u8)vk_vt_register(t, 0);
         t->kind_key = 0;
         t->kind_ns = 0;
         t->kind_tries = 0;
@@ -2059,7 +2062,7 @@ static int kind_vt_image(VkCommandBuffer cb, Surf* t, VkFormat to) {
     vk_astc_forget(t, ~0u);
     vk_vt_forget(t);
     tex_image_swap(t, img, 0, 0, to, 0);
-    t->vt = (u8)vk_vt_register(t);
+    t->vt = (u8)vk_vt_register(t, 0);
     t->vt_kind_new = 1;
     t->upload_valid = 0;
     return 1;
@@ -2724,7 +2727,7 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
         t->f.vk = held;
         tex_info(t, held, &vi, &vvf, &storage);
         if (vk_image_create_sparse_min(&vi, &t->img, TEX_SHED_MIN)) {
-            t->vt = (u8)vk_vt_register(t);
+            t->vt = (u8)vk_vt_register(t, holes);
             if (t->vt) {
                 t->sparse = 1;
                 t->vt_mapped = holes != 0;

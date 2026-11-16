@@ -25,9 +25,16 @@ static void* counted_malloc(size_t n) {
 int vk_vt_on(void) { return 0; }
 int vk_vt_makes(int holes) { return (void)holes, 0; }
 void vk_image_destroy(VkImage img, DevMem mem) { (void)img, (void)mem; } /* of a texture it made sparse: none */
-int vk_vt_register(Surf* t) {
-    (void)t;
+int vk_vt_register(Surf* t, int holes) {
+    (void)t, (void)holes;
     return 0;
+}
+int vk_vt_mapping(const Surf* t, u8* bits, u64* keys, u64 nbits) {
+    (void)t, (void)bits, (void)keys, (void)nbits;
+    return 0;
+}
+void vk_vt_mapping_keep(const Surf* t, const u8* bits, const u64* keys, u64 nbits) {
+    (void)t, (void)bits, (void)keys, (void)nbits;
 }
 void vk_vt_forget(Surf* t) { (void)t; }
 void vk_vt_want(const Surf* t, u8* bits, u64 nbits) { (void)t, (void)bits, (void)nbits; }

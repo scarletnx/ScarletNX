@@ -1511,13 +1511,18 @@ void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx);
 void vk_vt_init(void);
 int vk_vt_on(void);
 int vk_vt_makes(int holes);
-int vk_vt_register(Surf* t);
+int vk_vt_register(Surf* t, int holes);
 void vk_vt_forget(Surf* t);
 void vk_vt_want(const Surf* t, u8* bits, u64 nbits);
 void vk_vt_bound(const Surf* t, const u8* bits, u64 nbits);
 const u8* vk_vt_fresh(const Surf* t, u32* nblocks);
 void vk_vt_loaded(const Surf* t);
 void vk_vt_remapped(const Surf* t); /* t loads again: the blocks guest memory didn't map may be mapped now */
+/* a virtual texture with holes in its mapping (vk_vt_register's holes): the blocks guest memory maps and each one's
+   key, as tex_bind_at's walk of the mapping made them (nbits of them), kept until it loads again; vk_vt_mapping: 1 and
+   both copied out when kept */
+int vk_vt_mapping(const Surf* t, u8* bits, u64* keys, u64 nbits);
+void vk_vt_mapping_keep(const Surf* t, const u8* bits, const u64* keys, u64 nbits);
 void vk_vt_bind(u32 id, Surf* t, const char* unmarked);
 void vk_vt_whole(Surf* t, const char* why);
 u32 vk_vt_phase(void);
