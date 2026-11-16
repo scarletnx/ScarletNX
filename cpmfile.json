@@ -1,1 +1,46 @@
-{}
+{
+    "SDL3": {
+        "find_args": "CONFIG",
+        "hash": "12fcb5592016b27922b08d1580d75f5f15c72e67cf04415e2bd824dc7563ac940c25bbe368b03d0a755f5832803049467e3d0ee6784ed3684792bc4d7741af50",
+        "min_version": "3.4.18",
+        "options": [
+            "SDL_SHARED OFF",
+            "SDL_STATIC ON",
+            "SDL_TEST_LIBRARY OFF",
+            "SDL_TESTS OFF",
+            "SDL_EXAMPLES OFF",
+            "SDL_INSTALL OFF",
+            "SDL_UNIX_CONSOLE_BUILD ON",
+            "SDL_ALTIVEC OFF"
+        ],
+        "repo": "libsdl-org/SDL",
+        "version": "release-3.4.18"
+    },
+    "SPIRV-Headers": {
+        "hash": "97271ca47dd397af9a87ee050d88ab81566214e36a4c4f42f95aa61969bf6393dc9a94e5143a07b0b4c1414ccf61ec03884b5ce27ee80e216371733d70dc52bd",
+        "repo": "KhronosGroup/SPIRV-Headers",
+        "version": "496543121ce6419f23d6fa5d7194ba66c36212d2"
+    },
+    "SPIRV-Tools": {
+        "hash": "c9f71c01f382b6a73211241f0f9e48de34e3e3355e1f1ad3cf864ad7b3a76326e88c7fad0d8e509e09592dbc03e678cf0a267cec61cc4b7e33f206de59b2d7f7",
+        "repo": "KhronosGroup/SPIRV-Tools",
+        "version": "v2026.4"
+    },
+    "Vulkan-Headers": {
+        "bundled": true,
+        "find_args": "NAMES VulkanHeaders CONFIG",
+        "hash": "8298006f8c926bf6f662c6eaddd14d5fcba5f192e6a3fdd1543449a971b50c74c05ca714ff50b12047bd274527c477f004114239de9da061c2964afa977616ae",
+        "min_version": "1.4.367",
+        "repo": "KhronosGroup/Vulkan-Headers",
+        "version": "v1.4.367"
+    },
+    "lz4": {
+        "artifact": "lz4-%NUMERIC_VERSION%.tar.gz",
+        "bundled": true,
+        "hash": "8c4ceb217e6dc8e7e0beba99adc736aca8963867bcf9f970d621978ba11ce92855912f8b66138037a1d2ae171e8e17beb7be99281fea840106aa60373c455b28",
+        "min_version": "1.10.0",
+        "numeric_version": "1.10.0",
+        "repo": "lz4/lz4",
+        "version": "v%NUMERIC_VERSION%"
+    }
+}

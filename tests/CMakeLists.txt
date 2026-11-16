@@ -2207,9 +2207,6 @@ add_test(NAME cpmutil_cache COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_D
 # the dependency cache's keys and how a build is published to it (cmake/deps_cache.cmake)
 add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/deps-cache-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/deps_cache_test.cmake")
-# CPM_USE_LOCAL_PACKAGES takes from the system the packages added with snx_cpm_local_package alone (cmake/cpm_local.cmake)
-add_test(NAME cpm_local COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCPM=${cpm_file}"
-         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpm-local-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/cpm_local_test.cmake")
 # where a package comes from by CPMUtil's options and the CPM.cmake ones they replace (cmake/packages.cmake)
 add_test(NAME cpmutil_options COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpmutil-options-test" -P

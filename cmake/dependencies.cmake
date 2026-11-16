@@ -14,14 +14,6 @@
 # warning name, which has to be the same release to capture that client
 set(SNX_TRACY_VERSION 0.15.0)
 
-# SPIRV-Tools' release and the SPIRV-Headers commit its DEPS names (spirv_headers_revision), which
-# cmake/spirv_tools.cmake adds and builds where the build compiles shaders or tests SPIR-V; pinned here, the file the
-# CI's download caches are named after
-set(snx_spirv_tools_version 2026.4)
-set(snx_spirv_tools_sha256 92df4c377603f086c3d2a1eb2bd9b8f883a73ca890fb939d78a0cecdcc01686c)
-set(snx_spirv_headers_commit 496543121ce6419f23d6fa5d7194ba66c36212d2)
-set(snx_spirv_headers_sha256 a9bb9c48713245eacf97cc539b6f1d45405a92d8813f8b82e635f0a085ee9898)
-
 set(CPM_VERSION 0.43.2)
 set(CPM_HASH 49a3bef91ceb65bb66d57255e12d1ffd22abc2f6408fa9fe4534c544a2f232aa)
 if(NOT DEFINED CPM_SOURCE_CACHE AND NOT DEFINED ENV{CPM_SOURCE_CACHE})
@@ -48,9 +40,6 @@ include("${cpm_file}")
 include("${PROJECT_SOURCE_DIR}/cmake/cpm_cache.cmake")
 snx_cpm_cache_sweep()
 
-# which packages CPM_USE_LOCAL_PACKAGES may take from the system: the ones added with snx_cpm_local_package
-include("${PROJECT_SOURCE_DIR}/cmake/cpm_local.cmake")
-
 # CPMUtil (cmake/packages.cmake) over this CPM.cmake, for the packages cpmfile.json pins
 include("${PROJECT_SOURCE_DIR}/cmake/packages.cmake")
 
@@ -69,15 +58,13 @@ endfunction()
 # is built (BSD-2-Clause): the rest of LZ4 is its frame format, the HC compressor and the command-line program, none
 # of which an NSO uses
 if(SNX_BUILD_NX)
-    snx_cpm_local_package(NAME lz4 VERSION 1.10.0
-                          URL https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz
-                          URL_HASH SHA256=537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b
-                          DOWNLOAD_ONLY YES)
+    snx_cpm_options(lz4)
+    AddJsonPackage(NAME lz4 DOWNLOAD_ONLY)
     if(lz4_ADDED)
         add_library(snx_lz4 STATIC "${lz4_SOURCE_DIR}/lib/lz4.c")
         target_include_directories(snx_lz4 PUBLIC "${lz4_SOURCE_DIR}/lib")
         snx_quiet(snx_lz4)
-    else() # the system's library (CPM_USE_LOCAL_PACKAGES)
+    else() # the system's library (lz4_FORCE_SYSTEM, CPMUTIL_FORCE_SYSTEM)
         add_library(snx_lz4 INTERFACE IMPORTED)
         target_link_libraries(snx_lz4 INTERFACE LZ4::lz4)
     endif()
@@ -269,16 +256,14 @@ endif()
 
 if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR SNX_BUILD_NDS OR snx_vita_runtime OR
    (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
-    # the system's package is named VulkanHeaders
-    snx_cpm_local_package(NAME Vulkan-Headers VERSION 1.4.367 FIND_PACKAGE_ARGUMENTS "NAMES VulkanHeaders CONFIG"
-                          URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.367.tar.gz
-                          URL_HASH SHA256=0df7d58b5df617e0a6a17dec521af459206719f9c7cb12d05d09275597c16f70
-                          EXCLUDE_FROM_ALL YES)
+    # the system's package is named VulkanHeaders (cpmfile.json's find_args)
+    snx_cpm_options(Vulkan-Headers)
+    AddJsonPackage(Vulkan-Headers)
     if(Vulkan-Headers_ADDED)
         set(snx_vulkan_include_dir "${Vulkan-Headers_SOURCE_DIR}/include")
     else()
         get_target_property(snx_vulkan_include_dir Vulkan::Headers INTERFACE_INCLUDE_DIRECTORIES)
-        snx_local_vulkan_registry(snx_vulkan_local_registry)
+        snx_system_vulkan_registry(snx_vulkan_local_registry)
     endif()
     # volk.c is compiled into the vk components
     CPMAddPackage(NAME volk VERSION 1.4.363
@@ -432,8 +417,8 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
 endif()
 
 set(SNX_SDL3_FROM_SOURCE OFF)
-# The system's SDL3 from find_package, or CPM's pinned source build. FreeBSD's ports package lags the pin (3.4.16
-# against 3.4.18), so CPM's version check refuses it and builds SDL3 itself: SNX_SYSTEM_SDL3 takes the native package
+# The system's SDL3 from find_package, or the pinned source build. FreeBSD's ports package lags the pin (3.4.16 against
+# 3.4.18), so CPMUtil's version check refuses it and builds SDL3 itself: SNX_SYSTEM_SDL3 takes the native package
 # instead, from 3.4.12 (cmake/system_sdl3.cmake). It is the default on FreeBSD, whose build installs the sdl3 package
 # (docs/dev/build.md), and on NetBSD, whose pkgsrc SDL3 is 3.4.16 too (docs/hosts/netbsd.md); the pinned source build
 # is had with -DSNX_SYSTEM_SDL3=OFF
@@ -442,24 +427,24 @@ set(snx_sdl3_system_default OFF)
 if(CMAKE_SYSTEM_NAME MATCHES "^(FreeBSD|NetBSD)$")
     set(snx_sdl3_system_default ON)
 endif()
-option(SNX_SYSTEM_SDL3 "Use the system's SDL3 from find_package, not CPM's pinned source build"
+option(SNX_SYSTEM_SDL3 "Use the system's SDL3 from find_package, not the pinned source build"
        ${snx_sdl3_system_default})
 if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR snx_vita_runtime OR SNX_BUILD_AGB OR
    SNX_BUILD_NDS OR (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
     if(SNX_SYSTEM_SDL3)
         snx_system_sdl3()
     else()
-    # Prefer a compatible system package. CPM handles the pinned static fallback and user overrides. SDL_ALTIVEC only
-    # changes PowerPC builds: SDL's AltiVec blitters prefetch with dstt, which the ISA phased out and qemu's POWER10
-    # traps as illegal (the window icon's and the menu's software surfaces, which nothing here needs fast)
-    CPMFindPackage(NAME SDL3 VERSION 3.4.18 FIND_PACKAGE_ARGUMENTS CONFIG
-                   URL https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.4.18.tar.gz
-                   URL_HASH SHA256=c4b08b950bd29d83caae0ab8d884298d27046a9d30700fb42841c50992665c90
-                   EXCLUDE_FROM_ALL YES SYSTEM YES
-                   OPTIONS "SDL_SHARED OFF" "SDL_STATIC ON" "SDL_TEST_LIBRARY OFF" "SDL_TESTS OFF"
-                           "SDL_EXAMPLES OFF" "SDL_INSTALL OFF" "SDL_UNIX_CONSOLE_BUILD ON" "SDL_ALTIVEC OFF")
+    # A system package at the pin or newer, else the pinned source, static (CPMUtil's choice, which SDL3_FORCE_SYSTEM
+    # and SDL3_FORCE_BUNDLED make). Of its options in cpmfile.json, SDL_ALTIVEC OFF only changes PowerPC builds: SDL's
+    # AltiVec blitters prefetch with dstt, which the ISA phased out and qemu's POWER10 traps as illegal (the window
+    # icon's and the menu's software surfaces, which nothing here needs fast)
+    snx_cpm_options(SDL3)
+    AddJsonPackage(SDL3)
     if(SDL3_ADDED)
         set(SNX_SDL3_FROM_SOURCE ON)
+        # its headers as system headers to the code that includes them, as FetchContent's SYSTEM gives them
+        get_directory_property(snx_sdl3_targets DIRECTORY "${SDL3_SOURCE_DIR}" BUILDSYSTEM_TARGETS)
+        set_target_properties(${snx_sdl3_targets} PROPERTIES SYSTEM ON)
         snx_quiet(SDL3-static)
         # ccache can't reuse a compile that read a precompiled header: under a launcher, SDL3 goes without one
         if(CMAKE_C_COMPILER_LAUNCHER)

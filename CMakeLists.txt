@@ -297,7 +297,7 @@ endif()
 install(FILES dist/licenses/Noto/OFL.txt DESTINATION ${licenses}/Noto) # the shared fonts' stand-ins (pl.c)
 install(FILES dist/licenses/Montserrat/OFL.txt DESTINATION ${licenses}/Montserrat) # the 3DS shared font's stand-in
 install(FILES dist/licenses/Ryujinx/LICENSE.txt DESTINATION ${licenses}/Ryujinx) # the default Miis (misc.c)
-# a package the system gave (CPM_USE_LOCAL_PACKAGES) is not in the install: its license comes with its own package
+# a package the system gave (Vulkan-Headers_FORCE_SYSTEM) is not in the install: its license comes with its own package
 if(Vulkan-Headers_ADDED)
     install(FILES "${Vulkan-Headers_SOURCE_DIR}/LICENSE.md" DESTINATION ${licenses}/Vulkan-Headers)
     install(DIRECTORY "${Vulkan-Headers_SOURCE_DIR}/LICENSES" DESTINATION ${licenses}/Vulkan-Headers)
