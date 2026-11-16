@@ -1865,8 +1865,8 @@ static u32 mem_ptr(Ctx* c, u32 buffer, u32 address, u32 word) {
     if (buffer)
         return spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, buffer, c->zero, gbuf_word_index(c, buffer, index));
     u32 shared = shared_var(c), last = cu(c, c->shared_words - 1);
-    index = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
-                             spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, last, index), last, index);
+    /* the clamp is one UMin, not a compare and a select: ucas proved the two equal over the whole u32 domain */
+    index = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_U_MIN, last, index);
     if (c->si->shared_spill)
         return spv_emit_storage_access_u32(&c->e, c->shared_ptr, shared, c->zero,
                                            spv_emit_iadd_u32(&c->e, c->t_u32, shared_block_base(c), index));
@@ -2074,9 +2074,8 @@ static u32 isbe_ptr(Ctx* c, u32 var, u32 storage, u32 index) {
 static u32 isbe_load(Ctx* c, u32 var, u32 storage, u32 words, u32 index) {
     u32 last = cu(c, words - 1);
     u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, index, cu(c, words));
-    u32 v =
-        spv_emit_load(&c->e, c->t_u32,
-                      isbe_ptr(c, var, storage, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, inside, index, last)));
+    u32 at = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_U_MIN, last, index); /* a clamp of the index, not a compare */
+    u32 v = spv_emit_load(&c->e, c->t_u32, isbe_ptr(c, var, storage, at));
     return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, inside, v, c->zero);
 }
 /* value into word index of an ISBE array of words: a store past its end goes nowhere */
@@ -2560,8 +2559,7 @@ static u32 uniform_word(Ctx* c, u32 pointer, u32 buffer, u32 index) {
    shader_direct_swap_element does. Returns the array's element */
 static u32 indexed_element(Ctx* c, int slot, u32 var) {
     u32 limit = cu(c, SNX_TEX_ARRAY - 1), index = spv_emit_load(&c->e, c->t_u32, var);
-    index = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
-                             spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, limit, index), limit, index);
+    index = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_U_MIN, limit, index); /* a clamp, not a compare and a select */
     index = spv_emit_iadd_u32(&c->e, c->t_u32, index, cu(c, indexed_table(c->si, slot) * SNX_TEX_ARRAY));
     u32 element = uniform_word(c, c->tex_map_ptr, c->tex_map, index);
     c->tex[slot] = spv_emit_sampler_array_element(&c->e, c->tex_sampled[slot], c->tex_array[slot], element);
@@ -3260,11 +3258,12 @@ static u32 coop_base(Ctx* c) {
     return spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32,
                            builtin_u32(c, &c->subgroup_id, SPV_BUILT_IN_SUBGROUP_ID), cu(c, COOP_WORDS));
 }
-/* a lane's words (g = l / 4, t = l % 4): g8 = 8g and t */
+/* a lane's words (g = l / 4, t = l % 4): g8 = 8g and t. ucas proved the mask form of 8g equal to the two shifts
+   over every lane, and the model prices it one less */
 static void coop_lane(Ctx* c, u32* g8, u32* t) {
     u32 lane = warp_lane(c);
     *g8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
-                          spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 2)), cu(c, 3));
+                          spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 28)), cu(c, 1));
     *t = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3));
 }
 /* the lane's first D word in its slot: row g of a 16 wide shape's 16 words a row at 2g8, and of an 8 wide one's 8 at
