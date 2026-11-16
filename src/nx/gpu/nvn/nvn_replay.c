@@ -16,6 +16,7 @@
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/hle/pool.h"
 #include "nx/runtime/options.h"
@@ -447,6 +448,30 @@ static int settled(void) {
     }
     return 1;
 }
+/* With gpu_split, a window present is a record: the renderer thread presents after the work queued before it, then
+   increments the syncpoint that frees the window's texture. The front end goes on to the next frame at once. A direct
+   present drained the queue first, and the renderer thread then sat idle until the front end queued the next frame */
+typedef struct {
+    NvnReplayPresent p;
+    u64 cpu;
+    u32 shown, syncpt;
+} PresentCall;
+static void present_run(const void* arg, u64 bytes) {
+    PresentCall c;
+    (void)bytes;
+    memcpy(&c, arg, sizeof c);
+    const NvnReplayPresent* p = &c.p;
+    if (c.cpu) {
+        if (g_renderer->present_hdr) g_renderer->present_hdr(&p->hdr);
+        g_renderer->present_buffer(c.cpu, p->w, p->h, p->pitch, p->linear ? 0 : 3, p->bhl, p->fmt, p->crop, p->transform,
+                                   p->released_ns, p->period_ns, c.shown);
+    } else
+        g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 0, p->crop, 0, p->released_ns, p->period_ns, c.shown);
+    if (g_renderer->stream_incr)
+        g_renderer->stream_incr(c.syncpt);
+    else
+        syncpt_incr(c.syncpt);
+}
 static int run(void* arg) {
     NvnJob* j = (NvnJob*)arg;
     NvnReplayQueue* q = j->kind == JOB_SETTLE ? NULL : &g_nvn.replay.q[j->queue - 1]; /* JOB_SETTLE is no queue's */
@@ -479,6 +504,12 @@ static int run(void* arg) {
             if (j->present_order != g_nvn.replay.present_walked + 1) return 0;
             const NvnReplayPresent* p = &j->present;
             u64 cpu = p->gva ? gmmu_translate(p->gva) : 0;
+            if (g_renderer_up && gq_queues()) {
+                PresentCall c = {*p, cpu, g_nvn.replay.shown, q->syncpt};
+                gq_call(present_run, &c, sizeof c);
+                g_nvn.replay.present_walked = j->present_order;
+                break;
+            }
             if (g_renderer_up && cpu) {
                 if (g_renderer->present_hdr) gpu_renderer_now()->present_hdr(&p->hdr);
                 gpu_renderer_now()->present_buffer(cpu, p->w, p->h, p->pitch, p->linear ? 0 : 3, p->bhl, p->fmt, p->crop,

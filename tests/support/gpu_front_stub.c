@@ -69,4 +69,5 @@ const Renderer* gpu_renderer_now(void) { return g_renderer; }
    once, as the queue runs it without gpu_split */
 #ifndef SNX_TEST_GPU_QUEUE
 void gq_call(GqFn fn, const void* arg, u64 bytes) { fn(arg, bytes); }
+int gq_queues(void) { return 0; } /* no renderer thread: the front end calls the renderer itself */
 #endif
