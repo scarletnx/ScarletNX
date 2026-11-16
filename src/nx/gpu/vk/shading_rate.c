@@ -28,7 +28,6 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 
-#define GAME_TEXEL 16u /* the console's texel, in pixels */
 /* the renderer's palette for VK_NV_shading_rate_image is the game's palette of the viewport */
 #define PALETTES 16u
 
@@ -52,53 +51,6 @@ static struct {
     int bound_set;
 } g_rate;
 
-int vk_vrs_choose(const VkVrsDevice* d, VkExtent2D* texel, char* line, size_t n) {
-    *texel = (VkExtent2D){0, 0};
-    if (d->nv && d->nv_palette >= 12 && d->nv_texel.width && d->nv_texel.height) {
-        *texel = d->nv_texel;
-        snprintf(line, n,
-                 "vulkan: an Ounce's shading rate images through VK_NV_shading_rate_image (texels of %ux%u, palettes "
-                 "of %u entries)",
-                 texel->width, texel->height, d->nv_palette);
-        return VK_VRS_NV;
-    }
-    if (d->khr && d->khr_min.width && d->khr_min.height) {
-        /* the console's 16x16 where the device takes it, else the nearest size: both power of two in the range */
-        u32 w = GAME_TEXEL, h = GAME_TEXEL;
-        if (w < d->khr_min.width) w = d->khr_min.width;
-        if (w > d->khr_max.width) w = d->khr_max.width;
-        if (h < d->khr_min.height) h = d->khr_min.height;
-        if (h > d->khr_max.height) h = d->khr_max.height;
-        if (w && h && !(w & (w - 1)) && !(h & (h - 1)) &&
-            (!d->khr_aspect || (w >= h ? w / h : h / w) <= d->khr_aspect)) {
-            *texel = (VkExtent2D){w, h};
-            snprintf(line, n,
-                     "vulkan: an Ounce's shading rate images through the attachment of VK_KHR_fragment_shading_rate "
-                     "(texels of %ux%u, viewport 0's palette only)",
-                     w, h);
-            return VK_VRS_KHR;
-        }
-    }
-    snprintf(line, n,
-             "vulkan: no VK_NV_shading_rate_image or attachment of VK_KHR_fragment_shading_rate: an Ounce's shading "
-             "rate images are shaded at the full rate");
-    return VK_VRS_NONE;
-}
-
-/* a palette entry (VkShadingRatePaletteEntryNV's numbers) as VK_KHR_fragment_shading_rate encodes it */
-static u32 khr_rate(u32 e) {
-    switch (e) {
-        case 0: return 2u << 2 | 2u; /* no invocations: the coarsest rate that all devices give (4x4) */
-        case 6: return 1u << 2;      /* one invocation for 2x1 pixels */
-        case 7: return 1u;           /* 1x2 */
-        case 8: return 1u << 2 | 1u; /* 2x2 */
-        case 9: return 2u << 2 | 1u; /* 4x2 */
-        case 10: return 1u << 2 | 2u; /* 2x4 */
-        case 11: return 2u << 2 | 2u; /* 4x4 */
-        default: return 0;           /* one or more invocations for each pixel */
-    }
-}
-
 static int rate_init(void) {
     if (g_rate.pipe) return 1;
     if (g_rate.failed) return 0;
@@ -110,7 +62,7 @@ static int rate_init(void) {
                                           .bindingCount = 2,
                                           .pBindings = b};
     if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dl, NULL, &g_rate.ds))) return 0;
-    VkPushConstantRange pc = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 10 * sizeof(u32)};
+    VkPushConstantRange pc = {VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(VkVrsPush)};
     VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                      .setLayoutCount = 1,
                                      .pSetLayouts = &g_rate.ds,
@@ -228,21 +180,21 @@ u32 vk_shading_rate(const GpuShadingRate* r) {
         g_rate.valid = 0;
         return 0;
     }
-    /* the pixels the game's image covers, in texels of the device's. A scaled target (resolution=) holds each texel
-       of the game's image scale times in x and y, which covers scale times the pixels: the scale cancels out */
-    u32 tw = g_vk.vrs_texel.width, th = g_vk.vrs_texel.height;
-    u32 w = (u32)(((u64)game->sw * r->texel + tw - 1) / tw), h = (u32)(((u64)game->sh * r->texel + th - 1) / th);
-    if (!w) w = 1;
-    if (!h) h = 1;
+    /* a scaled target (resolution=) holds each texel of the game's image scale times in x and y, which covers
+       scale times the pixels: the scaled size with the game's texel size is the same mapping */
+    VkVrsPush push;
+    vk_vrs_push(g_vk.vrs, g_vk.vrs_texel, game->sw, game->sh, r->texel, r->palette[0], &push);
     VkComponentMapping identity = {0};
     VkImageView in = vk_tex_view(game, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
-    VkDescriptorSet set = in && rate_image(w, h) ? vk_desc_alloc(g_rate.ds) : VK_NULL_HANDLE;
+    VkDescriptorSet set = in && rate_image(push.size_x, push.size_y) ? vk_desc_alloc(g_rate.ds) : VK_NULL_HANDLE;
     if (!set) {
         g_failed++;
         g_rate.id++;
         g_rate.valid = 0;
         return 0;
     }
+    /* the whole image, which an earlier, larger game image may have grown: its texels past this one's take entry 0 */
+    push.size_x = g_rate.w, push.size_y = g_rate.h;
     VkCommandBuffer cb = vk_cmd(); /* after the read check (vk_rt_note_read) */
     vk_render_end();                /* a dispatch outside the pass */
     vk_surf_use(cb, game, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -263,20 +215,11 @@ u32 vk_shading_rate(const GpuShadingRate* r) {
                                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                    .pImageInfo = &ii[1]}};
     vkUpdateDescriptorSets(g_vk.dev, 2, wr, 0, NULL);
-    /* the value of each palette entry: the index itself for VK_NV_shading_rate_image, whose palettes the draws set;
-       viewport 0's rate as VK_KHR_fragment_shading_rate encodes it */
-    u32 push[10] = {g_rate.w, g_rate.h, game->sw, game->sh};
-    float step[2] = {(float)tw / (float)r->texel, (float)th / (float)r->texel};
-    memcpy(&push[4], step, sizeof step);
-    for (u32 i = 0; i < 16; i++) {
-        u32 v = g_vk.vrs == VK_VRS_NV ? i : khr_rate((u32)(r->palette[0] >> (4 * i)) & 15u);
-        push[6 + i / 4] |= v << (8 * (i % 4));
-    }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_rate.pipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_rate.layout, 0, 1, &set, 0, NULL);
-    rec_CmdPushConstants(cb, g_rate.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+    rec_CmdPushConstants(cb, g_rate.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
     vk_gpuprof_tag(VK_PROF_SHADING_RATE);
-    rec_CmdDispatch(cb, (g_rate.w + 7) / 8, (g_rate.h + 7) / 8, 1);
+    rec_CmdDispatch(cb, (push.size_x + 7) / 8, (push.size_y + 7) / 8, 1);
     rate_barrier(cb, 1);
     vk_surf_touch(game);
     memcpy(g_rate.palette, r->palette, sizeof g_rate.palette);
@@ -284,7 +227,7 @@ u32 vk_shading_rate(const GpuShadingRate* r) {
     if (!g_said++)
         LOG("vulkan: the first shading rate image: %ux%u texels of the game's (format R8_UINT) as %ux%u of %ux%u "
             "pixels, viewport 0's palette %016llx\n",
-            game->sw, game->sh, g_rate.w, g_rate.h, tw, th, (unsigned long long)r->palette[0]);
+            game->sw, game->sh, push.size_x, push.size_y, push.texel_w, push.texel_h, (unsigned long long)r->palette[0]);
     g_rate.valid = 1;
     return ++g_rate.id;
 }

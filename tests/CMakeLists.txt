@@ -2735,6 +2735,15 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-pipeline-parts 23)
     target_link_libraries(snx-test-vk-pipeline-parts PRIVATE snx_nx_flags)
     add_test(NAME vk_pipeline_parts COMMAND snx-test-vk-pipeline-parts)
+    # an Ounce's shading rate image (gpu/vk/shading_rate_table.c, shading_rate.glsl): the extension each stand-in
+    # device takes, each palette entry's value, the NVN palette, and the conversion's body run on the CPU
+    # (tests/glsl/glsl.hpp) against a reference made by pixels: no GPU needed
+    add_executable(snx-test-vk-shading-rate vk_shading_rate.c glsl/shading_rate_glsl.cpp support/shading_rate_ref.c
+                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/shading_rate_table.c")
+    snx_test_target(snx-test-vk-shading-rate 23)
+    target_include_directories(snx-test-vk-shading-rate PRIVATE glsl ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(snx-test-vk-shading-rate PRIVATE snx_nx_flags)
+    add_test(NAME vk_shading_rate COMMAND snx-test-vk-shading-rate)
     # constant buffer words folded into a translation (gpu/vk/cb_fold.c): which words fold, what a translation records
     # of its loads, when it holds for a draw's buffers, and how many of a program's translations fold by value
     add_executable(snx-test-vk-cb-fold vk_cb_fold.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/cb_fold.c")
