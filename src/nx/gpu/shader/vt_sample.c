@@ -58,7 +58,7 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
     const u32 zero = cu(e, s, 0), uv = spv_emit_vec2_construct(e, s->t_v2f, s->x, s->y);
     /* a block of this sample's own, so that the joins below know where each value comes from */
     const u32 pre = spv_emit_id(e), miss = spv_emit_id(e), tail = spv_emit_id(e), back = spv_emit_id(e),
-              join = spv_emit_id(e), mark = spv_emit_id(e), done = spv_emit_id(e);
+              mark = spv_emit_id(e), done = spv_emit_id(e);
     spv_emit_branch(e, pre);
     spv_emit_label(e, pre);
     const u32 first = spv_emit_sample_image_sparse(e, ids->pair, s->sampled_type, s->sampler, s->coord, s->mode,
@@ -75,8 +75,24 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
         dx = SPV(e, SPV_OP_DPDX, s->t_v2f, uv);
         dy = SPV(e, SPV_OP_DPDY, s->t_v2f, uv);
     }
-    spv_emit_selection_merge(e, join);
-    spv_emit_branch_conditional(e, resident, join, miss);
+    const u32 qx = SPV(e, SPV_OP_SHIFT_RIGHT_LOGICAL, s->t_u32, to_u(e, s, s->pixel_x), cu(e, s, 1));
+    const u32 qy = SPV(e, SPV_OP_SHIFT_RIGHT_LOGICAL, s->t_u32, to_u(e, s, s->pixel_y), cu(e, s, 1));
+    const u32 turn =
+        SPV(e, SPV_OP_BITWISE_AND, s->t_u32,
+            SPV(e, SPV_OP_I_ADD, s->t_u32,
+                SPV(e, SPV_OP_I_ADD, s->t_u32, qx, SPV(e, SPV_OP_I_MUL, s->t_u32, qy, cu(e, s, 3))), s->phase),
+            cu(e, s, SH_VT_QUADS - 1));
+    const u32 marks = SPV(e, SPV_OP_I_EQUAL, s->t_bool, turn, zero);
+    /* one branch a sample where its texels have memory and its quad doesn't mark, which is nearly always: past it,
+       the coarser read of a texel without memory, then the quad's mark. Every lane of a quad that marks takes the
+       branch, so the mark's query below is in flow the quad shares */
+    const u32 slow = spv_emit_id(e), fixed = spv_emit_id(e), out = spv_emit_id(e);
+    const u32 either = SPV(e, SPV_OP_LOGICAL_OR, s->t_bool, SPV(e, SPV_OP_LOGICAL_NOT, s->t_bool, resident), marks);
+    spv_emit_selection_merge(e, out);
+    spv_emit_branch_conditional(e, either, slow, out);
+    spv_emit_label(e, slow);
+    spv_emit_selection_merge(e, fixed);
+    spv_emit_branch_conditional(e, resident, fixed, miss);
 
     /* A texel without memory: the sample again at a level coarser than the one it wanted, as the size and the
        derivatives estimate it (no anisotropy, no sampler bias: it decides only how coarse this frame reads), and where
@@ -109,21 +125,13 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
     spv_emit_branch(e, back);
     spv_emit_label(e, back);
     const u32 fallback = spv_emit_phi2(e, s->t_v4f, texel2, miss, texel3, tail);
-    spv_emit_branch(e, join);
-    spv_emit_label(e, join);
-    const u32 result = spv_emit_phi2(e, s->t_v4f, texel, pre, fallback, back);
+    spv_emit_branch(e, fixed);
+    spv_emit_label(e, fixed);
+    const u32 read = spv_emit_phi2(e, s->t_v4f, texel, slow, fallback, back);
 
     /* The mark, in one quad of SH_VT_QUADS, another each frame (phase): every lane of a quad takes the branch or none
        does, so the level the hardware takes (OpImageQueryLod, with the sampler's anisotropy and bias) is defined in
        it. Both levels of a trilinear sample, with whether the sample found memory */
-    const u32 qx = SPV(e, SPV_OP_SHIFT_RIGHT_LOGICAL, s->t_u32, to_u(e, s, s->pixel_x), cu(e, s, 1));
-    const u32 qy = SPV(e, SPV_OP_SHIFT_RIGHT_LOGICAL, s->t_u32, to_u(e, s, s->pixel_y), cu(e, s, 1));
-    const u32 turn =
-        SPV(e, SPV_OP_BITWISE_AND, s->t_u32,
-            SPV(e, SPV_OP_I_ADD, s->t_u32,
-                SPV(e, SPV_OP_I_ADD, s->t_u32, qx, SPV(e, SPV_OP_I_MUL, s->t_u32, qy, cu(e, s, 3))), s->phase),
-            cu(e, s, SH_VT_QUADS - 1));
-    const u32 marks = SPV(e, SPV_OP_I_EQUAL, s->t_bool, turn, zero);
     spv_emit_selection_merge(e, done);
     spv_emit_branch_conditional(e, marks, mark, done);
     spv_emit_label(e, mark);
@@ -204,5 +212,7 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
     spv_emit_label(e, written);
     spv_emit_branch(e, done);
     spv_emit_label(e, done);
-    return result;
+    spv_emit_branch(e, out);
+    spv_emit_label(e, out);
+    return spv_emit_phi2(e, s->t_v4f, texel, pre, read, done);
 }

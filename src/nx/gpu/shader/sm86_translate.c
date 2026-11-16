@@ -72,7 +72,7 @@ typedef struct {
     /* vt_sparse: shader_vt_sample's ids, and the slots with a sample it took (vt_took) and with a read of texels
        it didn't take (vt_left): a slot of the first alone may hold a virtual texture (ShaderInfo.tex_vt_mask) */
     ShVtIds vt;
-    u64 vt_took, vt_left, vt_reads[3]; /* vt_reads: the slots read by a fetch, a gather, a sample with gradients */
+    u64 vt_took, vt_left, vt_reads[6]; /* vt_reads: ShaderInfo.tex_vt_reads */
     u32 zero, true_v, false_v, glsl;
     /* the program's state: Function variables, made at the start */
     u32 reg[256], ureg[64], pred[8], upred[8];
@@ -2859,6 +2859,7 @@ static void texture(Ctx* c, const Sm86Insn* in) {
                               : spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord, dref,
                                                       mode, level, const_offset, 0);
             c->vt_left |= 1ull << slot;
+            c->vt_reads[reduce ? 3 : shadow ? 4 : 5] |= 1ull << slot;
         }
         if (shadow) {
             u32 v[4] = {result, cf(c, 0.0f), cf(c, 0.0f), cf(c, 1.0f)};

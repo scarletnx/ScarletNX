@@ -209,8 +209,9 @@ typedef struct {
        level where a texel has no memory and marks what it reads (shader_vt_sample): a slot of these may hold a
        virtual texture (vt_sparse); a texture a draw binds to another slot is held whole */
     u64 tex_vt_mask;
-    /* and for the log, the slots an Ounce fragment program reads with a fetch, a gather, a sample with gradients */
-    u64 tex_vt_reads[3];
+    /* and for the log, the slots an Ounce fragment program reads with a fetch, a gather, a sample with gradients, a
+       reduction (the least or greatest of its texels), a depth compare, or as no 2D texture */
+    u64 tex_vt_reads[6];
     /* FS: texture slots every read of which is a texel fetch at the fragment's own pixel (TLD or TLDS of a 2D texture
        at gl_FragCoord's integer x and y, level 0, no offset): the only ones a draw may sample in place while it
        renders to them (vk/render.c), each fragment reading what earlier draws left at its pixel */

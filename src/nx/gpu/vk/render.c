@@ -2751,8 +2751,19 @@ static const char* vt_unmarked(const ShaderInfo* si, int i) {
     return si->tex_vt_reads[0] >> i & 1   ? "a fragment program fetches its texels (TLD), which marks nothing"
            : si->tex_vt_reads[1] >> i & 1 ? "a fragment program gathers its texels (TLD4), which marks nothing"
            : si->tex_vt_reads[2] >> i & 1 ? "a fragment program samples it with gradients (TXD), which marks nothing"
-                                          : "a fragment program reads it in a way that marks nothing (a depth compare, "
-                                            "a reduction, a texture that is not 2D)";
+           : si->tex_vt_reads[3] >> i & 1 ? "a fragment program takes the least or greatest of its texels, which marks "
+                                            "nothing"
+           : si->tex_vt_reads[4] >> i & 1 ? "a fragment program samples it with a depth compare, which marks nothing"
+           : si->tex_vt_reads[5] >> i & 1 ? "a fragment program samples it as no 2D texture, which marks nothing"
+                                          : "a fragment program has it in a slot none of its samples reads";
+}
+/* the slot of the indexed table of slot `first` that keeps the table's textures whole: one outside tex_vt_mask */
+static int table_unmarked(const ShaderInfo* si, int first) {
+    for (int i = 0; i < si->ntex; i++)
+        if ((si->tex[i].flags & SNX_TEX_INDEXED) && shader_same_indexed_table(&si->tex[i], &si->tex[first]) &&
+            !(si->tex_vt_mask >> i & 1))
+            return i;
+    return first;
 }
 /* vt_sparse: every slot of si that reads the indexed table of slot `first` marks its samples (ShaderInfo.tex_vt_mask) */
 static int table_marks(const ShaderInfo* si, int first) {
@@ -2844,7 +2855,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                     vk_vt_bind(handle, x.t,
                                !g_shader_sm86                         ? "a Maxwell program samples it through an indexed table"
                                : stage != ST_FS                       ? "a program that is no fragment program samples it"
-                               : !table_marks(&s->si, first[table])   ? vt_unmarked(&s->si, first[table])
+                               : !table_marks(&s->si, first[table])   ? vt_unmarked(&s->si, table_unmarked(&s->si, first[table]))
                                                                       : NULL);
                     if (x.t && !!(kind->flags & 2) == !!x.t->msaa && (!kind->shadow || !x.t->f.is_int)) {
                         if (is_target(x.t, rt, zt, n)) {
