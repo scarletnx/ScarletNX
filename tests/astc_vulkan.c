@@ -91,6 +91,19 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
     s->stage = stage;
     s->access = access;
 }
+/* surface.c's table, which holds no texture here: a failed cache read on the recording thread finds no texture to load
+   again (astc.c's cache_failed) */
+Surf* vk_surf_first(u64 gva) {
+    (void)gva;
+    return NULL;
+}
+Surf* vk_surf_next(const Surf* s) {
+    (void)s;
+    return NULL;
+}
+#if defined(_WIN32)
+void plat_prof_add_thread(HANDLE h) { (void)h; } /* profiler_win32.c's: no profiler here */
+#endif
 /* The standalone upload test has no guest buffer cache to flush or retire. */
 void vk_buf_frame_done(u64 frame) { (void)frame; }
 void vk_gfx_image_frame_done(u64 sub) { (void)sub; }
