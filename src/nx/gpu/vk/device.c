@@ -2052,6 +2052,11 @@ static int create_device(void) {
     snx_vk_device_settings(&request, settings);
     SnxVkDevice made;
     if (!snx_vk_device_make(&request, &made, err, sizeof err)) {
+        /* a table that does not read is the build's fault, and which bans hold would be unknown; a setting that does
+           not read stops the game, as the player meant a ban, a hidden command or an extension's value the run would
+           otherwise leave as it is */
+        if (made.refused == SNX_VK_REFUSED_TABLE) fatal("vulkan: %s", err);
+        if (made.refused == SNX_VK_REFUSED_SETTING) fatal("settings: %s", err);
         WARN("vulkan: %s\n", err);
         /* each device and what it lacks, where the choice said nothing of its own */
         if (made.passed_over && !g_vk.start_failure[0]) start_failure_devices();

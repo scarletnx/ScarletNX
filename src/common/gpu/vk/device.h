@@ -101,6 +101,10 @@ typedef struct {
     /* where none is made: every physical device was passed over, as against a table, setting or command that stops
        the device whatever the renderer asks (the 3DS asks again with one window where none presents to two) */
     bool passed_over;
+    /* where none is made for what the request gave, whatever the device: the bans' table that does not read (the
+       build's), or a setting that does not (vk_ext_*, vulkan_ban_ignore, vk_debug_hide_commands: the player's, which
+       the Switch stops the game for); SNX_VK_REFUSED_NONE otherwise */
+    enum { SNX_VK_REFUSED_NONE, SNX_VK_REFUSED_TABLE, SNX_VK_REFUSED_SETTING } refused;
 } SnxVkDevice;
 
 /* The device of the first physical device, in the loader's order (or the one r->score rates highest), of r->api or
