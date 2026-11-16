@@ -178,10 +178,8 @@ if(TARGET OpenSSL::SSL)
     snx_cpmfile(snx_curl_hash curl hash)
     AddJsonPackage(NAME curl DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     include("${PROJECT_SOURCE_DIR}/cmake/curl.cmake")
-    set(snx_cacert_date 2026-10-20)
-    snx_cpm_file(cacert 2026.10.20
-                 https://curl.se/ca/cacert-${snx_cacert_date}.pem
-                 796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe)
+    snx_cpmfile(snx_cacert_date cacert version)
+    snx_package_file(cacert)
     include("${PROJECT_SOURCE_DIR}/cmake/cacert.cmake")
 endif()
 
@@ -245,15 +243,9 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR SNX_BUILD_NDS OR sn
     # B3n30/citra_system_archives makes (GPL-2.0-or-later), as the C arrays Azahar's source holds them in, each at the
     # commit that last changed it. The Mii data is ours (src/common/utilities/mii_model.c), made when a game opens it
     if(SNX_BUILD_3DS)
-        snx_cpm_file(AzaharCountryList 2019
-                     https://raw.githubusercontent.com/azahar-emu/azahar/a1517612d37f17e673849e04673a0f3c146d6208/externals/open_source_archives/include/country_list.app.romfs.h
-                     bd1c384c9788f99ed2cf9157727820c4c0000f6bbc01843ff8642a32e6f90651)
-        snx_cpm_file(AzaharSharedFont 2019
-                     https://raw.githubusercontent.com/azahar-emu/azahar/7f1303a8344724598015a3e48a4bc5aef77090fc/externals/open_source_archives/include/shared_font.app.romfs.h
-                     316a05284c0746bcd1b5623c54ff770f2db736bdb90a592c2eda176e2c3ac6c1)
-        snx_cpm_file(AzaharBadWordList 2019
-                     https://raw.githubusercontent.com/azahar-emu/azahar/8a2c44be5688db1cea22ba7c485e8befc892e673/externals/open_source_archives/include/bad_word_list.app.romfs.h
-                     fe040590fa035e2602c9ce25ba3cf6a208fcb72cb9d53945cbc5747610ad4e15)
+        snx_package_file(AzaharCountryList)
+        snx_package_file(AzaharSharedFont)
+        snx_package_file(AzaharBadWordList)
         include("${PROJECT_SOURCE_DIR}/cmake/ctr_system_archives.cmake")
     endif()
     # volk.c compiled into a target of ours: no warnings, and not
@@ -316,21 +308,10 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # CJK ones; and yuzu's controller button glyphs (GPL-2.0-or-later) in the source file Eden keeps them in. The
     # subsets (SIL OFL 1.1, docs/platforms/nx/filesystem.md) are fetched from the commit of this repository that last changed
     # them, so a checkout, and a project fetching ScarletNX for its recompiler alone, carries none of their 11 MB
-    set(snx_noto_url https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts)
-    foreach(font IN ITEMS "JP 0941fc22edbe0b3b9e8306d4a2feae5e9c0fbd25942600564cc3edb69da88e62"
-                          "SC fa874173ff129ef89f6e24e432ab14a51124a21aae7a1860e9c8146337631312"
-                          "TC 58aac9005ce3f61a1ed1bf052fce327b4a97e99540c45a25da23a8bf162402fa"
-                          "KR ce9a4a8c87c60350440b8e0c77c0af77738ed86a145c85ce031cddf51dbbb9eb")
-        string(REPLACE " " ";" font "${font}")
-        list(GET font 0 script)
-        list(GET font 1 hash)
-        snx_cpm_file(NotoSans${script}Subset 2026
-                     ${snx_noto_url}/NotoSans${script}-Subset.ttf
-                     ${hash})
+    foreach(script JP SC TC KR)
+        snx_package_file(NotoSans${script}Subset)
     endforeach()
-    snx_cpm_file(YuzuOSSExtension 2019
-                 https://raw.githubusercontent.com/eden-emulator/mirror/2b87305d319f0bd04da36fb96314934f37b12637/src/core/file_sys/system_archive/data/font_nintendo_extended.cpp
-                 6fbbf5176ff4fd2024f9d150c889477f6b45ece4ac5e45d51286e32f8b13a6f2)
+    snx_package_file(YuzuOSSExtension)
     include("${PROJECT_SOURCE_DIR}/cmake/shared_fonts.cmake")
 
     # AMD FidelityFX Super Resolution 2.2.1 (MIT), the temporal upscaler the Ounce's DLSS evaluations run through
@@ -346,9 +327,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
                      PATCHES "${PROJECT_SOURCE_DIR}/cmake/fsr2-memory-types.patch"
                      FILES vk/ffx_fsr2_vk.cpp e25f2e7a5ed1faa7a439c4cac0582212b738eac75174f95371accaf2c6552f7e)
     # RenderDoc's in-application API, one header (renderdoc, gpu/vk/renderdoc.c), from the release tag
-    snx_cpm_file(renderdoc_app 1.46
-                 https://raw.githubusercontent.com/baldurk/renderdoc/v1.46/renderdoc/api/app/renderdoc_app.h
-                 b7005e7dc34c3635046868bbd76d81b9b055aede0f56daa0bd39fedee0639ffb)
+    snx_package_file(renderdoc_app)
 
     # Tracy client, for SNX_TRACY development builds.
     if(SNX_TRACY)
@@ -434,9 +413,7 @@ if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
     target_include_directories(snx_harfbuzz SYSTEM PUBLIC "${harfbuzz_SOURCE_DIR}/src")
     set_target_properties(snx_harfbuzz PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
     snx_quiet(snx_harfbuzz)
-    snx_cpm_file(NotoSansJPSubset 2026
-                 https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansJP-Subset.ttf
-                 0941fc22edbe0b3b9e8306d4a2feae5e9c0fbd25942600564cc3edb69da88e62)
+    snx_package_file(NotoSansJPSubset)
     # SQLite (public domain), the amalgamation, for android.database.sqlite (src/android/db/sqlite_jni.c). Its
     # options are the ones of Android's own build that apps can see: the FTS3, FTS4 and FTS5 modules, no extension
     # loading

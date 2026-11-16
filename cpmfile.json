@@ -1,4 +1,19 @@
 {
+    "AzaharBadWordList": {
+        "hash": "870c1158583e69a827257bb64b2c1fb3d2661f6bab5cea96a448c7f1223330a23f0e3739b361aec4269aa536f66e2916ed61cc64c7d9953964621f88f9aa4980",
+        "url": "https://raw.githubusercontent.com/azahar-emu/azahar/8a2c44be5688db1cea22ba7c485e8befc892e673/externals/open_source_archives/include/bad_word_list.app.romfs.h",
+        "version": "8a2c44be5688db1cea22ba7c485e8befc892e673"
+    },
+    "AzaharCountryList": {
+        "hash": "6c1de8832ecd447bfd09372799a9a2e54fad2bfdf0e269137f6866a398dc99392990375151eedd1d8a6ed7ed60ff8e7aab5675546c0e9de1db4d8c8497862813",
+        "url": "https://raw.githubusercontent.com/azahar-emu/azahar/a1517612d37f17e673849e04673a0f3c146d6208/externals/open_source_archives/include/country_list.app.romfs.h",
+        "version": "a1517612d37f17e673849e04673a0f3c146d6208"
+    },
+    "AzaharSharedFont": {
+        "hash": "8cbbee9b953efa265b3a296fb3c84978cf28d60307a0a47bf4f6104783037c40d5f8eb15b2eed5532e7faa57699721a82098384ee68c329466e4333322d456ed",
+        "url": "https://raw.githubusercontent.com/azahar-emu/azahar/7f1303a8344724598015a3e48a4bc5aef77090fc/externals/open_source_archives/include/shared_font.app.romfs.h",
+        "version": "7f1303a8344724598015a3e48a4bc5aef77090fc"
+    },
     "FFmpeg": {
         "hash": "7756f8434371b9bc1d01cf578bf49014e058b0869c3c1df05030f5f4035f1def64b2e7dba3cf340da4dc8dd9239dd5f894530c9e45793ac27876807079aa546a",
         "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
@@ -8,6 +23,26 @@
         "hash": "0a7401431c2c5c4f8c940089c42077e497b62d09b10bd22110e68d49c0d2d27183660a515ea4b1c58942483420c1e6a93ee9bac5f0c0fef5584f590fa238c310",
         "repo": "GPUOpen-Effects/FidelityFX-FSR2",
         "version": "v2.2.1"
+    },
+    "NotoSansJPSubset": {
+        "hash": "b7e2a42fcbf1ffef244d01ce775fb1a86105f27d48ad5ad62a15d655e46c8bc15055a8fa771138192df1b9961db9416cd3ebc04c740d7b1a33ffec80078a2fa7",
+        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansJP-Subset.ttf",
+        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
+    },
+    "NotoSansKRSubset": {
+        "hash": "c26624e48e304eca027e3b504c94aba0990ce6fff1f92e43f55730c3ec1deea0158c2947219dc9c47d64469dba05a8ac742584a0728b72d4de2f32261dc15e6f",
+        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansKR-Subset.ttf",
+        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
+    },
+    "NotoSansSCSubset": {
+        "hash": "ec5c868b02dcf9ee830f01c713f1e68e50acee4aa01131ef97ccca41da8123c0c481320488e7497a51fcf2cc1f09c3761458eea0c0eff6e88e092a36efa582b4",
+        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansSC-Subset.ttf",
+        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
+    },
+    "NotoSansTCSubset": {
+        "hash": "9a1480d788d4ef9028c524e4e826825486981b2138c242855f89b8cc8a9f1c5b22295ef1d40f84585481c16fb036afd2fb95961b6edbd0b8c39439b06e2386dd",
+        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansTC-Subset.ttf",
+        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
     },
     "OpenSSL": {
         "artifact": "%VERSION%.tar.gz",
@@ -49,6 +84,16 @@
         "min_version": "1.4.367",
         "repo": "KhronosGroup/Vulkan-Headers",
         "version": "v1.4.367"
+    },
+    "YuzuOSSExtension": {
+        "hash": "cbc7a2ccf7d7bd86adabb642a75d9d0e286a922654f2f570a9fc1baf56324049e6558a31d09d7426ffaa15baefea58bf0ce1028fc13c2dffbb3a44df0764c857",
+        "url": "https://raw.githubusercontent.com/eden-emulator/mirror/2b87305d319f0bd04da36fb96314934f37b12637/src/core/file_sys/system_archive/data/font_nintendo_extended.cpp",
+        "version": "2b87305d319f0bd04da36fb96314934f37b12637"
+    },
+    "cacert": {
+        "hash": "1d79b49c96037156e55665b48cefaa10bd0eb162b0626bbab1f6c6e7bfc159f1c7d60b37ed2c2d6b715b86a3ad46ab5261058ee10141905f72a6cc8622429316",
+        "url": "https://curl.se/ca/cacert-2026-10-20.pem",
+        "version": "2026-10-20"
     },
     "cgltf": {
         "hash": "9474b2ae79ac34015b21e4a20813bfc14ad037636304a28ce91011989202a11568b7f7201bca745701163e2c1077425065782a2aa265d53fe6edeb2e7d0e0b0a",
@@ -111,6 +156,11 @@
         "hash": "57349751bfc9020e63042f472d828ddc509f724d0c82cdaf34e2047f6333de192c5a4cc6aed376e98a000bd68b3b05f1c00ca84bf7163a16c6c2860bc33fb8d0",
         "repo": "sammycage/plutovg",
         "version": "v1.3.3"
+    },
+    "renderdoc_app": {
+        "hash": "61e9ef550875c9d8fdbadfd8220eb86c91ea4d2c0060fd4ceb89e045b3724e8d76513ea73c6a2ca3bcca2b0471c1a3b2d102e72be3ca5b906d8e49c79b53daac",
+        "url": "https://raw.githubusercontent.com/baldurk/renderdoc/v1.46/renderdoc/api/app/renderdoc_app.h",
+        "version": "v1.46"
     },
     "rnnoise": {
         "hash": "5a282a76d1c9b818bb4edb0d1de868e8d86f50cf149e3c637ee2d383a33d36db298bdad9844a5f4923373ad227e385742928ad121e663e368bdc0b85ba04b56a",
