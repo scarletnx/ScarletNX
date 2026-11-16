@@ -670,12 +670,11 @@ static int vk12_commands(const char** lacks) {
     return !*lacks;
 }
 
-/* what make_device made: no device, the device, or none as an extension it was made with lacks a command (the found
-   list): create_device makes it again without those */
+/* what make_device made: no device, the device, or none as an extension it was made with lacks a command, which
+   vk_bans_lacking keeps for the device create_device makes again */
 enum { DEVICE_FAILED, DEVICE_MADE, DEVICE_AGAIN };
-/* the device, its features and extensions chosen. lacking: the extensions a device made before found without a
-   command, which this one goes without (extension_bans.h's vk_bans_lacking); found: those this one finds, n of them */
-static int make_device(const SnxVkLacking* lacking, u32 lacked, SnxVkLacking* found, u32* n) {
+/* the device, its features and extensions chosen; again: made again, without what the first one lacked */
+static int make_device(int again) {
     g_vk.phys = snx_vk_best_device(g_vk.instance, VK_API_VERSION_1_2, device_rating, NULL);
     if (!g_vk.phys) {
         WARN("vulkan: no Vulkan 1.3 device, or 1.2 with the extensions 1.3 took in, with a suitable %s queue\n",
@@ -697,24 +696,10 @@ static int make_device(const SnxVkLacking* lacking, u32 lacked, SnxVkLacking* fo
     VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
     vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
     {
-        /* the drivers known to break an extension or feature, read before any is turned on: a table the build
-           carries that does not read is the build's fault, and which bans hold would be unknown */
-        char err[1024];
-        if (!vk_bans_load(snx_vk_extension_bans_text, err, sizeof err)) fatal("vulkan: %s", err);
-        /* the bans a run goes over to test a driver again; a key the table has not stops the game, as the player
-           meant a ban that would otherwise still hold */
-        if (!vk_bans_ignore(g_settings.vulkan_ban_ignore, err, sizeof err)) fatal("settings: %s", err);
-        /* the commands a run takes as missing, to test the check below: a name of none stops the game, as one the
-           player mistyped would otherwise test nothing */
-        if (!snx_vk_hide_check(g_settings.vulkan_hidden_commands, err, sizeof err)) fatal("settings: %s", err);
         VkBanDevice bd = {g_vk.props.deviceName,    p12.driverName,      p12.driverInfo, (uint32_t)p12.driverID,
                           g_vk.props.driverVersion, g_vk.props.deviceID, vk_ban_system()};
         vk_bans_device(&bd);
         vk_bans_ignored(ban_say);
-        for (u32 i = 0; i < lacked; i++)
-            if (!vk_bans_lacking(lacking[i].extension, lacking[i].command, lacking[i].hidden))
-                fatal("vulkan: %s without %s is past the %d extensions lacking a command the device leaves out",
-                      lacking[i].extension, lacking[i].command, VK_BANS_LACKING);
     }
     g_vk_subgroup_stages =
         subgroup.subgroupSize >= 32 &&
@@ -2056,47 +2041,15 @@ static int make_device(const SnxVkLacking* lacking, u32 lacked, SnxVkLacking* fo
        vkCmdSetDepthClampRangeEXT) has the renderer call a null pointer. Such an extension goes off, its features and
        their structures with it, as the device is made again without it; one the device can't go without fails the
        start, saying so */
-    {
-        char err[512];
-        int lacks = snx_vk_commands_lacking(g_vk.dev_ext, g_vk.dev_ext_n, g_vk.api, vkGetDeviceProcAddr, g_vk.dev,
-                                            g_settings.vulkan_hidden_commands, found, VK_BANS_LACKING, err, sizeof err);
-        if (lacks < 0) fatal("vulkan: %s", err);
-        if (lacks > VK_BANS_LACKING)
-            fatal(
-                "vulkan: %s's driver gives no pointer for %d commands of the extensions the device is made with, past "
-                "the %d a device made again can leave out",
-                g_vk.props.deviceName, lacks, VK_BANS_LACKING);
-        if (g_settings.vulkan_hidden_commands[0]) {
-            int hidden = 0;
-            for (int i = 0; i < lacks; i++) hidden += found[i].hidden;
-            LOG("vulkan: vk_debug_hide_commands=%s hides %d command%s of the extensions this device is made with\n",
-                g_settings.vulkan_hidden_commands, hidden, hidden == 1 ? "" : "s");
-        }
-        for (int i = 0; i < lacks; i++)
-            for (u32 k = 0; k < needs; k++) {
-                if (strcmp(need[k].name, found[i].extension)) continue;
-                WARN("vulkan: %s's driver lists %s without %s, which it requires%s, and ScarletNX can't run without "
-                     "the extension on this device: %s\n",
-                     g_vk.props.deviceName, found[i].extension, found[i].command,
-                     found[i].hidden ? " (vk_debug_hide_commands hides it from the check)" : "", need[k].why);
-                snprintf(g_vk.start_failure, sizeof g_vk.start_failure,
-                         "%s's driver lists %s without %s, which it requires. ScarletNX can't run without %s on this "
-                         "device: %s",
-                         g_vk.props.deviceName, found[i].extension, found[i].command, found[i].extension, need[k].why);
-                vkDestroyDevice(g_vk.dev, NULL);
-                g_vk.dev = VK_NULL_HANDLE;
-                return DEVICE_FAILED;
-            }
-        for (int i = 0; i < lacks; i++)
-            WARN("vulkan: %s's driver lists %s without %s, which it requires%s: the device is made again without it\n",
-                 g_vk.props.deviceName, found[i].extension, found[i].command,
-                 found[i].hidden ? " (vk_debug_hide_commands hides it from the check)" : "");
-        if (lacks) {
-            *n = (u32)lacks;
-            vkDestroyDevice(g_vk.dev, NULL);
-            g_vk.dev = VK_NULL_HANDLE;
-            return DEVICE_AGAIN;
-        }
+    int lacks = snx_vk_device_commands(g_vk.dev, g_vk.props.deviceName, g_vk.api, g_vk.dev_ext, g_vk.dev_ext_n, need,
+                                       needs, g_settings.vulkan_hidden_commands, again, ban_say, g_vk.start_failure,
+                                       sizeof g_vk.start_failure);
+    if (lacks) {
+        vkDestroyDevice(g_vk.dev, NULL);
+        g_vk.dev = VK_NULL_HANDLE;
+        if (lacks > 0) return DEVICE_AGAIN;
+        WARN("vulkan: %s\n", g_vk.start_failure);
+        return DEVICE_FAILED;
     }
     const char* lacks_command = NULL;
     if (!core13 && !vk12_commands(&lacks_command)) {
@@ -2225,23 +2178,23 @@ static int make_device(const SnxVkLacking* lacking, u32 lacked, SnxVkLacking* fo
    put back as it was before, so the second decides everything again from there (the swapchain's lock among it, which
    nothing takes before there is a swapchain) */
 static int create_device(void) {
-    SnxVkLacking lacking[VK_BANS_LACKING], again[VK_BANS_LACKING];
-    u32 n = 0, m = 0;
+    char err[1024];
+    /* the drivers known to break an extension or feature, read before any is turned on: a table the build carries
+       that does not read is the build's fault, and which bans hold would be unknown */
+    if (!vk_bans_load(snx_vk_extension_bans_text, err, sizeof err)) fatal("vulkan: %s", err);
+    /* the bans a run goes over to test a driver again; a key the table has not stops the game, as the player meant a
+       ban that would otherwise still hold */
+    if (!vk_bans_ignore(g_settings.vulkan_ban_ignore, err, sizeof err)) fatal("settings: %s", err);
+    /* the commands a run takes as missing, to test the check of each extension's commands: a name of none stops the
+       game, as one the player mistyped would otherwise test nothing */
+    if (!snx_vk_hide_check(g_settings.vulkan_hidden_commands, err, sizeof err)) fatal("settings: %s", err);
     const VkState vk = g_vk;
     const ShCaps translate = g_spirv_translate;
-    int made = make_device(NULL, 0, lacking, &n);
-    if (made != DEVICE_AGAIN) return made == DEVICE_MADE;
-    g_vk = vk;
-    g_spirv_translate = translate;
-    made = make_device(lacking, n, again, &m);
+    int made = make_device(0);
     if (made == DEVICE_AGAIN) {
-        char list[1024] = "";
-        size_t at = 0;
-        for (u32 i = 0; i < m && at < sizeof list; i++)
-            at += (size_t)snprintf(list + at, sizeof list - at, "%s%s without %s", i ? ", " : "", again[i].extension,
-                                   again[i].command);
-        fatal("vulkan: %s, made again without what its first device lacked, lacks a command again: its driver lists %s",
-              g_vk.props.deviceName, list);
+        g_vk = vk;
+        g_spirv_translate = translate;
+        made = make_device(1);
     }
     return made == DEVICE_MADE;
 }

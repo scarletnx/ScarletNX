@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nds/gpu/vk/vk.h"
+#include "common/gpu/vk/extension_commands.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -38,8 +39,12 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     if (snx_vk_device_create(phys, family, &want, extensions, n, &v->device) != VK_SUCCESS) return false;
     v->phys = phys;
     v->family = family;
+    memcpy(v->extensions, extensions, n * sizeof *extensions);
+    v->extension_count = n;
     return true;
 }
+/* a line of the command check for the log */
+static void say(const char* line, int warn) { fprintf(stderr, "%s%s\n", warn ? "warning: " : "", line); }
 
 bool nds_vk_init(const char* title, bool headless, char* error, size_t error_size) {
     NdsVk* v = &g_device.vk;
@@ -58,8 +63,19 @@ bool nds_vk_init(const char* title, bool headless, char* error, size_t error_siz
         return false;
     }
     volkLoadDevice(v->device);
-    vkGetDeviceQueue(v->device, v->family, 0, &v->queue);
     vkGetPhysicalDeviceProperties(v->phys, &v->properties);
+    /* each command of each extension the device is made with, as on a Switch game's device (snx_vk_device_commands):
+       the NDS's are the window's swapchain and a portability driver's subset, which it can't go without */
+    VkExtensionNeed need[2] = {
+        {"VK_KHR_portability_subset", "Vulkan has a portability driver's subset on wherever the driver lists it"},
+        {VK_KHR_SWAPCHAIN_EXTENSION_NAME, "the window is drawn with it"}};
+    if (snx_vk_device_commands(v->device, v->properties.deviceName, VK_API_VERSION_1_3, v->extensions,
+                               v->extension_count, need, 2, NULL, 0, say, error, error_size)) {
+        vkDestroyDevice(v->device, NULL);
+        snx_vk_window_close(&v->host);
+        return false;
+    }
+    vkGetDeviceQueue(v->device, v->family, 0, &v->queue);
     vkGetPhysicalDeviceMemoryProperties(v->phys, &v->memory_properties);
     /* a depth buffer of 24 bits or more with a stencil: the 3D engine's depth is 24 bits */
     static const VkFormat depth[] = {VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT};

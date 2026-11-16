@@ -472,9 +472,11 @@ version up to the one the renderer runs it at, an extension it is made with; any
 extension's, does not hold). A driver that lists an extension without one of them (NVIDIA's
 `VK_EXT_depth_clamp_control` without `vkCmdSetDepthClampRangeEXT`) would have the renderer call a null pointer: the
 extension goes off as an `off` line takes one out, its features and their structures with it, and the device is made
-again without it, once (`device.c`'s `create_device`). One the device can't go without (a window's swapchain, what 1.3
-took in on a 1.2 device) fails the start, saying so, and so does a device made again that still lacks a command. The
-log says each, with the driver and its version (here a command `vk_debug_hide_commands` hid, on lavapipe):
+again without it, once. Every renderer's device takes that check (`snx_vk_device_commands`): the Switch's
+(`device.c`'s `create_device`), the 3DS's, the Vita's, the NDS's and the Android apps'. One the device can't go without
+(a window's swapchain, what 1.3 took in on a 1.2 device) fails the start, saying so, and so does a device made again
+that still lacks a command. The log says each, with the driver and its version (here a command
+`vk_debug_hide_commands` hid, on lavapipe):
 
 ```
 vulkan: llvmpipe (LLVM 22.1.8, 256 bits)'s driver lists VK_EXT_conditional_rendering without vkCmdBeginConditionalRenderingEXT, which it requires (vk_debug_hide_commands hides it from the check): the device is made again without it
@@ -482,14 +484,15 @@ vulkan: VK_EXT_conditional_rendering is off on llvmpipe (LLVM 22.1.8, 256 bits) 
 ```
 
 `vk_debug_hide_commands` ([Settings](../user/settings.md#debug)) has the check take the commands it lists as missing,
-to test that path on any driver. `vulkan_headless_hidden_commands` hides `vkCmdSetDepthClampRangeEXT` and
-`vkCmdBeginConditionalRenderingEXT` and runs every check of `vulkan_headless` on the device made again without the
-extensions of the two that the driver has on; `vk_extension_commands` checks the table, the `depends`, a stand-in
+to test that path on any driver; a 3DS or Vita game takes it too. `vulkan_headless_hidden_commands` hides
+`vkCmdSetDepthClampRangeEXT` and `vkCmdBeginConditionalRenderingEXT` and runs every check of `vulkan_headless` on the
+device made again without the extensions of the two that the driver has on; `3ds_vk_hidden_commands` makes the 3DS's
+device again without `VK_EXT_shader_object`; `vk_extension_commands` checks the table, the `depends`, a stand-in
 device's check and the hide list; `vkcmdgen` the generator on registries of its own and on the build's.
 
 ```sh
 ctest --test-dir build -R 'vk_extension_commands|vkcmdgen|vk_extension_bans'
-VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json ctest --test-dir build -R vulkan_headless_hidden_commands
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json ctest --test-dir build -R 'hidden_commands'
 ```
 
 ## SVCs

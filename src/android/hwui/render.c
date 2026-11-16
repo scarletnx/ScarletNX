@@ -19,6 +19,8 @@
 #include "android/hwui/texture_frag_spv.h"
 #include "android/hwui/text.h"
 #include "android/runtime/jvm.h"
+#include "common/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/extension_commands.h"
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/window.h"
@@ -205,6 +207,9 @@ static struct {
     unsigned shot_count;
     long frames;
     bool warned_shader;
+    /* the extensions the device is made with, whose commands are checked once it is (snx_vk_device_commands) */
+    const char* extensions[2];
+    uint32_t extension_count;
 } r;
 
 /* the locks the presenting thread shares with this renderer's: the layer's state (r.layer_*), and a frame against the
@@ -1031,6 +1036,8 @@ static void interpret(Reader* rd) {
 
 /* ---- Vulkan ---- */
 
+/* a line of the command check and the extension bans for the log */
+static void say(const char* line, int warn) { fprintf(stderr, "%s%s\n", warn ? "warning: " : "", line); }
 static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     (void)user;
     VkPhysicalDeviceVulkan13Features v13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
@@ -1039,6 +1046,15 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     if (!v13.dynamicRendering || !v13.synchronization2) return false;
     SnxVkExtensions list;
     if (!snx_vk_device_extensions(phys, &list)) return false;
+    /* an extension a device made before found without a command leaves the list (vk_bans_lacking) */
+    VkPhysicalDeviceVulkan12Properties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
+    VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
+    vkGetPhysicalDeviceProperties2(phys, &props);
+    VkBanDevice bd = {
+        props.properties.deviceName,    driver.driverName,         driver.driverInfo, (uint32_t)driver.driverID,
+        props.properties.driverVersion, props.properties.deviceID, vk_ban_system()};
+    vk_bans_device(&bd);
+    vk_bans_filter(&list, say);
     bool swapchain = snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     /* the layer's images, for an app's own Vulkan (hle_vulkan.h) */
     bool exportable = HLE_LAYER_MEMORY && snx_vk_extensions_has(&list, HLE_LAYER_EXTENSION);
@@ -1058,6 +1074,8 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     r.phys = phys;
     r.family = family;
     r.exportable = exportable;
+    memcpy(r.extensions, extensions, n * sizeof *extensions);
+    r.extension_count = n;
     return true;
 }
 
@@ -1355,18 +1373,35 @@ static bool make_pipelines(void) {
 
 /* the device, the window's or none, and what the frames need. False with the reason printed */
 static bool start(int width, int height, const char* title) {
-    char error[256];
+    char error[512];
     if (!snx_vk_window_open("scarletnx-android", title, width, height, &r.host, error, sizeof error)) {
         fprintf(stderr, "scarletnx-android: %s\n", error);
         return false;
     }
-    if (!snx_vk_first_device(r.host.instance.instance, VK_API_VERSION_1_3, VK_QUEUE_GRAPHICS_BIT, r.host.surface,
-                             make_device, NULL)) {
-        fprintf(stderr, "scarletnx-android: no Vulkan 1.3 device with dynamic rendering\n");
-        snx_vk_window_close(&r.host);
-        return false;
+    /* each command of each extension the device is made with, as on a Switch game's device: one its driver gives no
+       pointer for takes the extension out of the device made again, once (snx_vk_device_commands) */
+    for (int again = 0;; again = 1) {
+        if (!snx_vk_first_device(r.host.instance.instance, VK_API_VERSION_1_3, VK_QUEUE_GRAPHICS_BIT, r.host.surface,
+                                 make_device, NULL)) {
+            fprintf(stderr, "scarletnx-android: no Vulkan 1.3 device with dynamic rendering\n");
+            snx_vk_window_close(&r.host);
+            return false;
+        }
+        volkLoadDevice(r.device);
+        VkPhysicalDeviceProperties made_on;
+        vkGetPhysicalDeviceProperties(r.phys, &made_on);
+        const VkExtensionNeed need[] = {{VK_KHR_SWAPCHAIN_EXTENSION_NAME, "the window is drawn with it"}};
+        int lacks = snx_vk_device_commands(r.device, made_on.deviceName, VK_API_VERSION_1_3, r.extensions,
+                                           r.extension_count, need, 1, NULL, again, say, error, sizeof error);
+        if (!lacks) break;
+        vkDestroyDevice(r.device, NULL);
+        r.device = VK_NULL_HANDLE;
+        if (lacks < 0) {
+            fprintf(stderr, "scarletnx-android: %s\n", error);
+            snx_vk_window_close(&r.host);
+            return false;
+        }
     }
-    volkLoadDevice(r.device);
     vkGetDeviceQueue(r.device, r.family, 0, &r.queue);
     vkGetPhysicalDeviceMemoryProperties(r.phys, &r.memory);
     VkPhysicalDeviceIDProperties id = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};

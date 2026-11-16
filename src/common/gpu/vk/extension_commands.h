@@ -3,13 +3,14 @@
 /* The commands each Vulkan device extension requires (tools/vkcmdgen writes the table from the Khronos registry the
    build has, vk.xml), and the check of a device made with some of them: each command, as vkGetDeviceProcAddr gives
    it. A driver can list an extension and give no pointer for one of its commands (NVIDIA's VK_EXT_depth_clamp_control
-   had no vkCmdSetDepthClampRangeEXT), and the renderer would call a null pointer: gpu/vk/device.c makes the device
-   again without such an extension (extension_bans.h's vk_bans_lacking) */
+   had no vkCmdSetDepthClampRangeEXT), and the renderer would call a null pointer: each renderer makes the device
+   again without such an extension (snx_vk_device_commands, extension_bans.h's vk_bans_lacking) */
 #ifndef SNX_VK_EXTENSION_COMMANDS_H
 #define SNX_VK_EXTENSION_COMMANDS_H
 #include <stddef.h>
 #include <stdint.h>
 #include "common/gpu/vk/vk_common.h"
+#include "common/gpu/vk/extension_bans.h"
 
 /* a device command an extension requires, and the condition the registry puts on it (its <require>'s depends: the
    command is the device's only where that holds), NULL for none */
@@ -50,6 +51,17 @@ typedef struct {
    extension the table has not, or a depends of it that does not parse: the table is the build's, and wrong */
 int snx_vk_commands_lacking(const char* const* enabled, uint32_t n, uint32_t api, PFN_vkGetDeviceProcAddr get,
                             VkDevice dev, const char* hide, SnxVkLacking* out, uint32_t max, char* err, size_t err_n);
+
+/* The check of a device just made, volk loaded for dev (device: its name), of Vulkan version api, with the n
+   extensions of enabled: snx_vk_commands_lacking, hide's commands counting as given none. Each extension that lacks a
+   command is said (a warning naming the device, the extension and the command) and kept by vk_bans_lacking, so the
+   device made again goes without it: vk_bans_filter takes it out of that device's list. The count of commands lacking,
+   0 for a device that stands; the caller then destroys dev and makes it again, once (again set for that one). -1,
+   with err, where dev can't stand: one of need lacks a command, or again is set, or more lack than vk_bans_lacking
+   keeps, or the table refuses an enabled extension. hide not empty says how many of its commands this device has */
+int snx_vk_device_commands(VkDevice dev, const char* device, uint32_t api, const char* const* enabled, uint32_t n,
+                           const VkExtensionNeed* need, uint32_t needs, const char* hide, int again, VkBanSay say,
+                           char* err, size_t err_n);
 
 /* hide, as snx_vk_commands_lacking takes it, checked against the table: 1 when each name is a device command an
    extension requires, else 0 with err naming the first that is not and the three nearest the table has */

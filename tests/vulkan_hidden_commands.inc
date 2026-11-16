@@ -90,10 +90,8 @@ static int check_hidden_commands(const char* log) {
         puts("SKIP hidden commands: none of their extensions would be on with this driver");
         return 77;
     }
-    snprintf(line, sizeof line,
-             "vulkan: vk_debug_hide_commands=%s hides 0 commands of the extensions this device is "
-             "made with",
-             hide);
+    snprintf(line, sizeof line, "vulkan: vk_debug_hide_commands=%s hides 0 commands of the extensions %s is made with",
+             hide, g_vk.props.deviceName);
     CHECK(hidden_line(log, line, NULL));
     return 0;
 }
