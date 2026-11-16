@@ -3930,6 +3930,8 @@ static void fused_ldsm_hmma(Ctx* c, const Sm86Insn* in) {
     c->nfrags = nfrags, c->nacc = nacc; /* and the caches, and any value the module made in the deleted block: the
         ids it made are of the words that are gone, so the fused block makes them again */
     c->warp_base = warp_base;
+    /* coop_gen[] and hmma_count also advanced in the deleted block: the generation marks only compare equal within
+       a block, and hmma_zero only needs a value that is never zero in a lane that runs, so both still hold. */
     u32 count = sm86_fuse_ldsm_count(in), trans = sm86_fuse_ldsm_trans(in);
     u32 imm = sm86_field(in, 40, 24), bias = imm & 0x800000u ? imm | 0xff000000u : imm;
     int k16 = (int)(sm86_field(in, 72, 19) >> 3 & 1);
@@ -7043,8 +7045,8 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             }
             break;
         }
-    /* before any pass that rewrites the array: the pairs of instructions that one operation takes the place of
-       (fuse.c), whose spans the array moves invalidate */
+    /* after the CALLs are inlined and before the passes that move instructions: the pairs of instructions that one
+       operation takes the place of (fuse.c), whose spans the array moves invalidate */
     {
         u32 nfuse = 0;
         FuseSpan* fuse = sm86_fuse_find(insn, n, &nfuse);

@@ -3,8 +3,8 @@
 /* The fusions of two neighbouring SM86 instructions into one, made before the translation lowers them (fuse.h).
    One pass finds the spans and makes them, in place, in one walk of the array: a pair becomes one instruction whose
    fields are the second half's, and the first half's fields are packed into the bits that the second half does not
-   use. The pass runs before the passes that rewrite the array (the CALLs inlined, the global buffers tracked, the
-   blocks placed), which move instructions and so invalidate a span found before them. */
+   use. The pass runs after the CALLs are inlined and before the passes that move instructions (the globals tracked,
+   the blocks placed), which would invalidate a span found before them. */
 #include "nx/gpu/shader/fuse.h"
 #include <stdlib.h>
 
@@ -22,12 +22,17 @@ static u32 ldsm_imm(const Sm86Insn* in) {
     return v & 0x800000u ? v | 0xff000000u : v;
 }
 
-/* the LDSM whose destination is the HMMA's A fragment, from ra on: a register the HMMA kills as D, or a fragment
-   the LDSM does not fill, is not a pair */
+/* the LDSM whose destination is the HMMA's A fragment, from ra on: a register the HMMA kills as D, a fragment the
+   LDSM does not fill, a guard the two do not share, or a variant the LDSM's own lowering refuses is not a pair */
 static int pair_ok(const Sm86Insn* ldsm, const Sm86Insn* hmma) {
     u32 count = sm86_field(ldsm, LDSM_CNT, 2), ra = sm86_field(hmma, HMMA_RA, 8);
     if (count > 2 || ldsm->dst >= SM86_RZ || ra >= SM86_RZ || ldsm->dst != ra) return 0;
+    if (ldsm->pred != hmma->pred) return 0;
+    /* the fields ldsm() rejects: its fused block uses ldsm_words(), which would otherwise accept them */
+    if (sm86_field(ldsm, 74, 4) || sm86_field(ldsm, 79, 12) || sm86_field(ldsm, 91, 1)) return 0;
     u32 fill = 1u << count;
+    u32 need = (sm86_field(hmma, 72, 19) >> 3 & 1) ? 4u : 2u; /* A's words, 4 for k16 and 2 for k8 */
+    if (fill < need) return 0; /* the unfilled words hold the registers' old values, which the fused block would lose */
     return hmma->dst >= SM86_RZ || hmma->dst + 3 < ldsm->dst || hmma->dst >= ldsm->dst + fill;
 }
 

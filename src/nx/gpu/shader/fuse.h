@@ -9,9 +9,9 @@
    a tag that says what the pair is, in one flat array, not a chain or a tree: the translation finds the spans, uses
    them and is done with them.
 
-   The spans are found and used by one pass (sm86_fuse), which runs first, before the passes that rewrite the array.
-   Those passes move instructions, so a span found before them is not true after them: the list is made and used in
-   that one pass, and nothing holds it across a pass. */
+   The spans are found and used by one pass (sm86_fuse), which runs after the CALLs are inlined and before the
+   passes that move instructions (the globals tracked, the blocks placed). Those passes invalidate a span, so the
+   list is made and used in that one pass, and nothing holds it across a pass. */
 typedef struct {
     u32 pos, len; /* the pair's first instruction in the array, and its length (two) */
     u32 tag;      /* SM86_FUSE_*: what the pair is */
