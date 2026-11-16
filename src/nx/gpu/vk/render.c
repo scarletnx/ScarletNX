@@ -335,8 +335,10 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     memcpy(g_rp.ca, ca, n * sizeof *ca);
     g_rp.za = g_rp.zs = za; /* depth and stencil: one view, a load op each */
     g_rp.layers = layers;
-    /* the attachment covers this area, which a pass on smaller targets than area gets */
-    g_rp.rate = rate && vk_vrs_attachment(g_rp.rate_want, ext) ? rate : VK_NULL_HANDLE;
+    /* a draw's attachment covers this area, which a pass on smaller targets than area gets. A pass begun again on
+       the same targets (RATE_KEEP, a feedback loop's layout) keeps the one it had, over the same area */
+    g_rp.rate = rate && (g_rp.rate_want == RATE_KEEP || vk_vrs_attachment(g_rp.rate_want, ext)) ? rate
+                                                                                                : VK_NULL_HANDLE;
     g_rp.begun = g_rp.clears = 0;
     memcpy(g_rp.rt, rt, sizeof g_rp.rt);
     g_rp.zt = zt;

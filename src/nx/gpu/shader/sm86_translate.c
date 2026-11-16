@@ -965,7 +965,8 @@ static void attr_store(Ctx* c, u32 addr, u32 bits) {
     }
     if (addr == 0x5c) {
         /* NAK's NAK_ATTR_VPRS_TABLE_INDEX from SM86, the primitive's shading rate: the default rate, one fragment
-           a pixel, is what the translation gives without it */
+           a pixel, is what the translation gives without it. The game's driver writes no table for the index (the
+           hardware's reset table), so the rate it selects is not known */
         return;
     } else if (addr == 0x6c) {
         /* a geometry program's point size needs GeometryPointSize, which the device may lack: then it is 1, as the

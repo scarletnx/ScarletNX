@@ -1169,13 +1169,11 @@ void nvn_CommandBufferBindShadingRateImage(CPU* c, u64 cb, u64 t, u64 v) {
    the game's numbers and the hardware's. It has no check of n against 16 */
 void nvn_CommandBufferShadingRateImagePalette(CPU* c, u64 cb, i32 viewport, i32 n, u64 rates) {
     NvnPRatePalette* r = REC(c, cb, OP_RATE_PALETTE, NvnPRatePalette, 16);
-    r->viewport = viewport & 15;
-    r->rates = NVN_RATE_PALETTE_FULL;
+    u32 game[16] = {0};
     if (n > 16) LOG_LIMIT(1, "nvn: a shading rate palette of %d entries: the first 16 are taken\n", n);
-    for (i32 i = 0; rates && i < n && i < 16; i++) {
-        u32 shift = 4u * (u32)i;
-        r->rates = (r->rates & ~(15ull << shift)) | (u64)(gr32(rates + 4 * (u64)i) & 15u) << shift;
-    }
+    for (i32 i = 0; rates && i < n && i < 16; i++) game[i] = gr32(rates + 4 * (u64)i);
+    r->viewport = viewport & 15;
+    r->rates = nvn_rate_palette(rates ? game : NULL, n);
 }
 /* the driver writes method 0xb3, 0 for mode 1 and 1 for the others. The game sets mode 1 only, and what the bit
    changes is not known: the renderer reads each viewport's own palette */
