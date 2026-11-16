@@ -571,6 +571,33 @@ def check_cmake_versions(repo):
     return errors
 
 
+DEVICE_MAKE = re.compile(r'(?<![A-Za-z0-9_])(vkCreateDevice|volkLoadDevice)\s*\(')
+DEVICE_MAKER = 'src/common/gpu/vk/device.c'
+
+
+def check_device_makers(repo):
+    """only common/gpu/vk/device.c makes a Vulkan device and loads its commands (snx_vk_device_make): there every
+    renderer's device takes the extension bans, the vk_ext_* settings and the check of each extension's commands, and
+    a renderer turns an extension on only where a setting names it. The Android apps' own Vulkan is the app's, which
+    android/bridge/hle_vulkan.c makes through the pointer the app asks for"""
+    errors = []
+    for path in sorted((repo / 'src').rglob('*')):
+        if path.suffix not in {'.c', '.h', '.cpp', '.hpp', '.inc', '.m', '.mm'}:
+            continue
+        shown = path.relative_to(repo).as_posix()
+        if shown == DEVICE_MAKER:
+            continue
+        source = without_comments(path.read_text(encoding='utf-8', errors='replace'), literals=False)
+        for match in DEVICE_MAKE.finditer(source):
+            line = source.count('\n', 0, match.start()) + 1
+            errors.append(
+                f'{shown}:{line}: {match.group(1)}: only {DEVICE_MAKER} makes a Vulkan device and loads its commands, '
+                "where the extension bans, the vk_ext_* settings and the check of each extension's commands hold for "
+                'every renderer: ask snx_vk_device_make (common/gpu/vk/device.h) for it'
+            )
+    return errors
+
+
 def check_graph(graph):
     source = graph.read_text(encoding='utf-8')
     nodes = {
@@ -841,7 +868,10 @@ def check_target_sources(repo, build):
 
 # a header whose functions only its library defines: a target compiling a source that includes it links that library,
 # itself or through what it links, or a build without another target that links it fails at its link
-LINK_NEEDS = {'common/utilities/build_info.h': 'snx_build_info'}
+LINK_NEEDS = {
+    'common/utilities/build_info.h': 'snx_build_info',
+    'common/gpu/vk/device_settings.h': 'snx_settings_runtime',  # g_vk_extension_settings
+}
 
 
 def check_link_needs(repo, build, graph):
@@ -1085,6 +1115,7 @@ def main():
         + check_dynamic_descriptors(args.repo.resolve())
         + check_packages(args.repo.resolve())
         + check_cmake_versions(args.repo.resolve())
+        + check_device_makers(args.repo.resolve())
     )
     if args.build:
         graph = args.build.resolve() / 'architecture-targets.dot'

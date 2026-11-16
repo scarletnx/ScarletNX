@@ -90,6 +90,35 @@ class ArchitectureTests(unittest.TestCase):
         both = 'void o(void) { SDL_CreateWindowAndRenderer("t", 1, 1, 0, &w, &r); }\n'
         self.assertEqual(len(self.window_errors({'src/nx/a.c': both})), 1)
 
+    def device_errors(self, files):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            return architecture.check_device_makers(root)
+
+    def test_a_device_made_outside_the_common_path_is_rejected(self):
+        files = {
+            'src/3ds/gpu/vk/device.c': 'static bool make(void) {\n    return vkCreateDevice(p, &i, NULL, &d) == 0;\n}\n',
+            'src/nds/gpu/vk/device.c': 'void up(void) { volkLoadDevice (d); }\n',
+        }
+        errors = self.device_errors(files)
+        self.assertEqual(len(errors), 2)
+        self.assertIn('src/3ds/gpu/vk/device.c:2: vkCreateDevice: only src/common/gpu/vk/device.c makes', errors[0])
+        self.assertIn('ask snx_vk_device_make (common/gpu/vk/device.h)', errors[0])
+        self.assertIn('src/nds/gpu/vk/device.c:1: volkLoadDevice: only', errors[1])
+
+    def test_the_common_path_a_pointer_and_a_comment_pass(self):
+        files = {
+            'src/common/gpu/vk/device.c': 'void m(void) { vkCreateDevice(p, &i, NULL, &d); volkLoadDevice(d); }\n',
+            'src/android/bridge/hle_vulkan.c': 'PFN_vkCreateDevice create = VKF(vkCreateDevice);\n'
+            'static const struct { const char* n; } t[] = {{"vkCreateDevice"}};\n',
+            'src/nx/gpu/vk/a.c': '/* made by vkCreateDevice() in common/gpu/vk/device.c */\n'
+            'int snx_vkCreateDevice(int x);\nint y = snx_vkCreateDevice(1);\n',
+        }
+        self.assertEqual(self.device_errors(files), [])
+
     def dynamic_errors(self, files):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             root = Path(temporary)
