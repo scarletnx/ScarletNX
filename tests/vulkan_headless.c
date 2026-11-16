@@ -66,8 +66,19 @@
 static void guest_done(u64 cpu, u64 len) {
     if (vk_uma()) vk_uma_mem_need_cpu(cpu, len);
 }
+/* the GPU's reads of what new ASTC textures' blocks hold done and taken (vk_tex_kind_frame): their submissions waited
+   for, then the work of a frame after its present, which takes each to BC1, BC4 or BC5 where its kind says so */
+static void kind_land(void) {
+    vk_lock();
+    vk_finish();
+    vk_tex_kind_frame();
+    vk_finish();
+    vk_unlock();
+}
 /* the BC7 encoder's frames (vk_tex_later_frame) until every ASTC texture held as BC7 is, or until a frame does nothing
-   (a texture whose load failed waits for it): the images a check compares are BC7 then. The frames it took */
+   (a texture whose load failed waits for it): the images a check compares are BC7 then. No wait for the GPU: a check
+   that holds a submission at a gate drains too. A texture whose kind is still on its way waits for it (kind_land). The
+   frames it took */
 static u32 later_drain(void) {
     VkLaterStats a, b;
     u32 frames = 0;

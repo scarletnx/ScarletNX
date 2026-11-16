@@ -227,6 +227,9 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bcn.comp NAME astc_bc4_spv HEADER 
                DEFINES SNX_BCN_KIND=4)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bcn.comp NAME astc_bc5_spv HEADER nx/gpu/texture/astc_bcn_spv.h
                DEFINES SNX_BCN_KIND=5)
+# what those textures' blocks hold, read on the GPU from the blocks a texture keeps as it loads (gpu/texture/astc_kind.h,
+# gpu/vk/astc.c's vk_astc_kind_read)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_kind.comp NAME astc_kind_spv HEADER nx/gpu/texture/astc_kind_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/blocklinear.comp NAME blocklinear_spv HEADER nx/gpu/texture/blocklinear_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_spv HEADER nx/gpu/texture/texconv_spv.h)
 # its ETC2 build: BCn encoded again as ETC2 and EAC, for a GPU that samples those and not BCn (gpu/vk/texconv.c)

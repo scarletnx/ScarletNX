@@ -291,6 +291,20 @@ inline uint atomicOr(uint& mem, uint data) { return __atomic_fetch_or(&mem, data
 inline uint atomicAnd(leuint& mem, uint data) { return le_order(atomicAnd(mem.raw, le_order(data))); }
 inline uint atomicOr(leuint& mem, uint data) { return le_order(atomicOr(mem.raw, le_order(data))); }
 
+// the least of a word and data, on shared memory (a workgroup's invocations at once, dispatch_workgroups) or on a
+// buffer word in the device's order (the order of its value, not of its bytes)
+inline uint atomicMin(uint& mem, uint data) {
+    uint old = __atomic_load_n(&mem, __ATOMIC_SEQ_CST);
+    while (data < old && !__atomic_compare_exchange_n(&mem, &old, data, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {}
+    return old;
+}
+inline uint atomicMin(leuint& mem, uint data) {
+    uint raw = __atomic_load_n(&mem.raw, __ATOMIC_SEQ_CST);
+    while (data < le_order(raw) &&
+           !__atomic_compare_exchange_n(&mem.raw, &raw, le_order(data), false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {}
+    return le_order(raw);
+}
+
 // an add and a maximum on a buffer word in the device's order, as dispatch runs them: one invocation after another
 inline uint atomicAdd(leuint& mem, uint data) {
     const uint old = uint(mem);

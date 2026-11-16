@@ -746,12 +746,14 @@ static int al_auto(void) {
     vk_bc7_cache_stats(&reads, &stored, &restarts, &file0);
     Surf* a = al_make(&xa, &c, 10);
     CHECK(a && a->f.vk == VK_FORMAT_R8G8B8A8_UNORM && !a->bc7_later && !vk_astc_bc7());
+    kind_land(); /* the kind of its random blocks read: nothing BCn holds, its blocks let go */
     u64 shown_size = 0;
     u8* shown = al_image(&xa, a, &shown_size); /* its RGBA8 texels, no blocks kept */
     const u64 a_bytes = a->bytes;
     CHECK(shown);
     Surf* e = al_make(&xe, &c, 13);
     CHECK(e && e->f.vk == VK_FORMAT_R8G8B8A8_UNORM && !e->bc7_later);
+    kind_land();
     al_fill(&xe); /* its memory written since it loaded, as the game writes it, and nothing loaded it again yet */
     g_renderer->mem_may_have_changed();
     g_vk_present++; /* a trim of its own present: none has run dry in it */
@@ -802,6 +804,7 @@ static int al_auto(void) {
             (unsigned long long)(trimmed.band >> 20), a_marked, a_again, same, e_marked, e_exact, b ? b->bc7_later : -1,
             b ? b->bc7.queued : -1, kept, (unsigned long long)file, back.bc7, (unsigned long long)back.switches,
             d ? d->bc7_later : -1);
+    kind_land(); /* the kinds of the textures made since, which the encoder waits for */
     later_drain();
     if (!failed && a->f.vk != VK_FORMAT_BC7_UNORM_BLOCK) {
         fprintf(stderr, "astc_mode's Auto: the texture loaded RGBA8 before the trim is format %d after the encoder\n",

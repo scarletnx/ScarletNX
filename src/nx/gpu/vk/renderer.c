@@ -1037,7 +1037,9 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             VK_OK(r);
     } else /* not presented: displayed never, once the presents before it are done with */
         vk_display_presented(VK_NULL_HANDLE, 0, game, released_ns, shown_syncpt);
-    /* the BC7 encoder's share of the frame after its present, which it never holds back */
+    /* the ASTC textures whose blocks' kind came back, to BC1, BC4 or BC5 where it says so, then the BC7 encoder's share
+       of the frame after its present, which they never hold back */
+    vk_tex_kind_frame();
     vk_tex_later_frame();
     if (recreate && !g_lost && !g_vk.sc_lost) { /* not when this frame's create found the surface lost */
         vk_finish();

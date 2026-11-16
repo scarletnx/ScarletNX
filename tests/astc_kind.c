@@ -10,7 +10,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-#include "nx/gpu/texture/astc_kind.h"
+#include "support/astc_kind_ref.h"
 #include "support/astc.h"
 
 /* the test's state: its random words, the failures, the blocks counted by the format their kind takes (by decode
