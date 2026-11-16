@@ -275,6 +275,201 @@ def check_dynamic_descriptors(repo):
     return errors
 
 
+# Every third-party download goes through CPMUtil (cmake/packages.cmake): pinned in cpmfile.json, by its SHA-512, and
+# added with AddJsonPackage, or snx_package_file for a package of one file. These fetch without it
+CMAKE_FETCH = re.compile(
+    r'(?<![A-Za-z0-9_])(CPMAddPackage|CPMFindPackage|CPMDeclarePackage|CPMGetPackage|CPMUsePackageLock|'
+    r'FetchContent_Declare|FetchContent_MakeAvailable|FetchContent_Populate|file\s*\(\s*DOWNLOAD)\b',
+    re.IGNORECASE,
+)
+# the calls that name a cpmfile.json entry, and which argument does; AddJsonPackage takes NAME <key> or the key alone
+CMAKE_PACKAGE_CALL = re.compile(
+    r'(?<![A-Za-z0-9_])(AddJsonPackage|snx_package_file|snx_cpm_options|snx_cpmfile|SystemPackageViable)\s*\(',
+    re.IGNORECASE,
+)
+PACKAGE_KEY_ARGUMENT = dict.fromkeys(
+    ('addjsonpackage', 'snx_package_file', 'snx_cpm_options', 'systempackageviable'), 0
+)
+PACKAGE_KEY_ARGUMENT['snx_cpmfile'] = 1
+# the fields CPMUtil reads from an entry (cmake/cpmutil/CPMUtil.cmake's parse_object): any other is a typo it ignores
+CPMFILE_FIELDS = {
+    'package',
+    'repo',
+    'ci',
+    'version',
+    'git_host',
+    'name',
+    'extension',
+    'disabled_platforms',
+    'hash',
+    'min_version',
+    'url',
+    'artifact',
+    'source_subdir',
+    'bundled',
+    'numeric_version',
+    'find_args',
+    'skip_updates',
+    'patches',
+    'options',
+}
+# where the build's CMake code is: the vendored CPMUtil, which defines the calls, is not
+CMAKE_ROOTS = ('cmake', 'src', 'tests', 'scripts', 'tools', 'dist')
+CPMUTIL_DIR = 'cmake/cpmutil'
+
+
+def cmake_code(source):
+    """CMake source with its comments blank, and with the insides of its quoted and bracket arguments blank too, each
+    newline kept: (code, kept), kept being the source with only the comments blank"""
+    code, kept, i, n = [], [], 0, len(source)
+
+    def blank(text):
+        return ''.join(ch if ch == '\n' else ' ' for ch in text)
+
+    while i < n:
+        c = source[i]
+        bracket = re.match(r'\[(=*)\[', source[i + 1 :]) if c == '#' else re.match(r'\[(=*)\[', source[i:])
+        if c == '#':
+            if bracket:
+                end = source.find(']' + bracket.group(1) + ']', i)
+                end = n if end < 0 else end + len(bracket.group(1)) + 2
+            else:
+                end = source.find('\n', i)
+                end = n if end < 0 else end
+            code.append(blank(source[i:end]))
+            kept.append(blank(source[i:end]))
+            i = end
+        elif c == '"' or bracket:
+            if bracket:
+                close = ']' + bracket.group(1) + ']'
+                end = source.find(close, i + len(bracket.group(0)))
+                end = n if end < 0 else end + len(close)
+            else:
+                end = i + 1
+                while end < n and source[end] != '"':
+                    end += 2 if source[end] == '\\' else 1
+                end = min(end + 1, n)
+            code.append(blank(source[i:end]))
+            kept.append(source[i:end])
+            i = end
+        else:
+            code.append(c)
+            kept.append(c)
+            i += 1
+    return ''.join(code), ''.join(kept)
+
+
+def cmake_arguments(kept, start):
+    """the arguments of the CMake call whose ( is at start, each unquoted"""
+    depth, i = 0, start
+    while i < len(kept):
+        if kept[i] == '"':
+            i += 1
+            while i < len(kept) and kept[i] != '"':
+                i += 2 if kept[i] == '\\' else 1
+        elif kept[i] == '(':
+            depth += 1
+        elif kept[i] == ')':
+            depth -= 1
+            if not depth:
+                break
+        i += 1
+    words = re.findall(r'"(?:[^"\\]|\\.)*"|[^\s()]+', kept[start + 1 : i])
+    return [word[1:-1] if word.startswith('"') else word for word in words]
+
+
+def check_packages(repo):
+    """every third-party download goes through CPMUtil: no CPM.cmake, FetchContent or file(DOWNLOAD) call outside the
+    vendored CPMUtil, every key a call names pinned in cpmfile.json and every pin added by one, a package without a
+    min_version (none the system may give) added with FORCE_BUNDLED_PACKAGE ON and none with one, and cpmfile.json in
+    CPMUtil's form: its fields, a version, a SHA-512, a url or a repo, written as jq --indent 4 -S writes it"""
+    errors, pins, text = [], {}, None
+    path = repo / 'cpmfile.json'
+    if path.exists():
+        text = path.read_text(encoding='utf-8')
+        try:
+            pins = json.loads(text)
+        except json.JSONDecodeError as error:
+            errors.append(f'cpmfile.json: {error}')
+            text = None
+    else:
+        errors.append('cpmfile.json is missing: the third-party packages are pinned there (cmake/packages.cmake)')
+    if text is not None and text != json.dumps(pins, indent=4, sort_keys=True) + '\n':
+        errors.append(
+            "cpmfile.json is not in CPMUtil's form, which jq --indent 4 -S . writes (keys sorted, 4 spaces): format "
+            'it with that, or python3 -m json.tool --indent 4 --sort-keys'
+        )
+    for key, entry in pins.items():
+        unknown = sorted(set(entry) - CPMFILE_FIELDS)
+        if unknown:
+            errors.append(f'cpmfile.json: {key} has {", ".join(unknown)}, which CPMUtil does not read')
+        if not entry.get('version'):
+            errors.append(f'cpmfile.json: {key} has no version, which CPMUtil requires')
+        if not re.fullmatch(r'[0-9a-f]{128}', str(entry.get('hash', ''))):
+            errors.append(
+                f"cpmfile.json: {key}'s hash is [{entry.get('hash', '')}], not a SHA-512 (128 lowercase hex digits): "
+                'CPMUtil downloads a package without one unchecked'
+            )
+        if not entry.get('url') and not entry.get('repo'):
+            errors.append(f'cpmfile.json: {key} has neither a url nor a repo to download it from')
+    adds, reads = [], []  # (shown, line, key pattern, forced or None)
+    files = [repo / 'CMakeLists.txt'] if (repo / 'CMakeLists.txt').exists() else []
+    for root in CMAKE_ROOTS:
+        if (repo / root).is_dir():
+            files += [p for p in (repo / root).rglob('*') if p.name == 'CMakeLists.txt' or p.suffix == '.cmake']
+    for file in sorted(files):
+        shown = file.relative_to(repo).as_posix()
+        if shown.startswith(CPMUTIL_DIR + '/'):
+            continue
+        code, kept = cmake_code(file.read_text(encoding='utf-8', errors='replace'))
+        for match in CMAKE_FETCH.finditer(code):
+            line = code.count('\n', 0, match.start()) + 1
+            call = re.sub(r'\s+', '', match.group(1))
+            errors.append(
+                f'{shown}:{line}: {call} fetches a third-party package outside CPMUtil: pin it in cpmfile.json and add '
+                'it with AddJsonPackage, or snx_package_file for a package of one file (cmake/packages.cmake)'
+            )
+        for match in CMAKE_PACKAGE_CALL.finditer(code):
+            line = code.count('\n', 0, match.start()) + 1
+            call = match.group(1).lower()
+            arguments = cmake_arguments(kept, match.end() - 1)
+            if call == 'addjsonpackage' and arguments[:1] == ['NAME']:
+                arguments = arguments[1:]
+            index = PACKAGE_KEY_ARGUMENT[call]
+            if len(arguments) <= index:
+                continue  # a definition's parameters, or a call that names no key
+            key = arguments[index]
+            pattern = re.compile(
+                ''.join('.+' if part.startswith('${') else re.escape(part) for part in re.split(r'(\$\{[^}]*\})', key))
+            )
+            forced = None
+            if call == 'addjsonpackage':
+                at = arguments.index('FORCE_BUNDLED_PACKAGE') if 'FORCE_BUNDLED_PACKAGE' in arguments else -1
+                forced = at >= 0 and at + 1 < len(arguments) and arguments[at + 1].upper() in {'ON', 'YES', 'TRUE', '1'}
+            record = (shown, line, key, pattern, forced)
+            (adds if call in {'addjsonpackage', 'snx_package_file'} else reads).append(record)
+    for shown, line, key, pattern, forced in adds + reads:
+        named = [pin for pin in pins if pattern.fullmatch(pin)]
+        if not named:
+            errors.append(f'{shown}:{line}: {key} is not pinned in cpmfile.json')
+        for pin in named if forced is not None else ():
+            system = 'min_version' in pins[pin]
+            if not system and not forced:
+                errors.append(
+                    f'{shown}:{line}: {pin} is added without FORCE_BUNDLED_PACKAGE ON, and its entry has no min_version:'
+                    ' CPMUTIL_FORCE_SYSTEM would look for a system package that cannot stand in for it'
+                )
+            elif system and forced:
+                errors.append(
+                    f'{shown}:{line}: {pin} is added with FORCE_BUNDLED_PACKAGE ON, and its entry has a min_version for '
+                    'the system package that option keeps out'
+                )
+    for pin in pins:
+        if not any(pattern.fullmatch(pin) for _, _, _, pattern, _ in adds):
+            errors.append(f'cpmfile.json: {pin} is pinned, and no AddJsonPackage or snx_package_file adds it')
+    return errors
+
+
 def check_graph(graph):
     source = graph.read_text(encoding='utf-8')
     nodes = {
@@ -787,6 +982,7 @@ def main():
         + check_window_pixels(args.repo.resolve())
         + check_state_fns(args.repo.resolve())
         + check_dynamic_descriptors(args.repo.resolve())
+        + check_packages(args.repo.resolve())
     )
     if args.build:
         graph = args.build.resolve() / 'architecture-targets.dot'
