@@ -50,9 +50,6 @@ typedef struct {
     uint32_t family;
     VkPhysicalDeviceProperties properties;
     VkPhysicalDeviceMemoryProperties memory_properties;
-    /* the extensions the device is made with, whose commands are checked once it is (snx_vk_device_commands) */
-    const char* extensions[8];
-    uint32_t extension_count;
     bool index8, logic_op; /* VK_EXT_index_type_uint8; the logicOp feature */
     bool timeline;         /* timelineSemaphore: the ring's submissions signal a timeline, not fences */
     /* VK_EXT_shader_object: draws bind shaders and set their state, with no pipelines (vk/render.c); and the device's

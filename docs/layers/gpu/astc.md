@@ -798,7 +798,7 @@ SPIRV-Tools' `spirv-opt -O` and `spirv-val`, into `build/generated/spirv/astc_sp
 them (`astc_spv` and `astc_spv_size`, in bytes). glslang's
 depfile makes an edit to `astc_decode.glsl` rebuild it too.
 
-glslangValidator is KhronosGroup's glslang 16.6.0 release for the host, a CPM package pinned by its SHA-256, on Linux
+glslangValidator is KhronosGroup's glslang 16.6.0 release for the host, pinned by its SHA-512 in `cpmfile.json`, on Linux
 x86-64, Windows x86-64 and macOS. Other hosts (FreeBSD, Linux on ARM) use the one on `PATH`, from the system's glslang
 package, and `-DSNX_GLSLANG=path` picks any. spirv-opt and spirv-val are the SPIRV-Tools release the build pins
 (`cmake/spirv_tools.cmake`).

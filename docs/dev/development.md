@@ -451,8 +451,8 @@ ctest --test-dir build -R 'vk_extension_bans|vk_vertex_input'
 Each extension the renderer can use also has a setting, `vk_ext_<name>`
 ([Settings](../user/settings.md#vulkan-extensions)), `auto` by default: `auto` leaves the extension to this table, `on` goes over every line on it, `off` takes it out of
 the device's list (`vk_extension_settings`, beside the table in `extension_bans.c`). The list is the `table
-g_vk_extensions_ini vulkan` of `src/nx/runtime/settings.txt`, a `setting @VK_...` line per extension `device.c`
-names: `tools/settingsgen` checks each against the Khronos registry (the build's Vulkan-Headers' `registry/vk.xml`)
+g_vk_extensions_ini vulkan` of `src/nx/runtime/settings.txt`, a `setting @VK_...` line per extension a renderer
+turns on: `tools/settingsgen` checks each against the Khronos registry (the build's Vulkan-Headers' `registry/vk.xml`)
 and makes its key and help. A new extension the renderer reads is a line there. The log says each one's value in
 effect and why after the bans:
 
@@ -472,8 +472,8 @@ version up to the one the renderer runs it at, an extension it is made with; any
 extension's, does not hold). A driver that lists an extension without one of them (NVIDIA's
 `VK_EXT_depth_clamp_control` without `vkCmdSetDepthClampRangeEXT`) would have the renderer call a null pointer: the
 extension goes off as an `off` line takes one out, its features and their structures with it, and the device is made
-again without it, once. Every renderer's device takes that check (`snx_vk_device_commands`): the Switch's
-(`device.c`'s `create_device`), the 3DS's, the Vita's, the NDS's and the Android apps'. One the device can't go without
+again without it, once. Every renderer's device takes that check, in the one way they make it (below). One the device
+can't go without
 (a window's swapchain, what 1.3 took in on a 1.2 device) fails the start, saying so, and so does a device made again
 that still lacks a command. The log says each, with the driver and its version (here a command
 `vk_debug_hide_commands` hid, on lavapipe):
@@ -496,6 +496,23 @@ build's; and `vk_extension_settings` that every device extension a renderer can 
 ctest --test-dir build -R 'vk_extension_commands|vk_extension_settings|vkcmdgen|vk_extension_bans'
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json ctest --test-dir build -R 'hidden_commands'
 ```
+
+Every renderer makes its device one way, `snx_vk_device_make` (`src/common/gpu/vk/device.h`): the Switch's, the
+3DS's, the Vita's, the NDS's, the GBA's and the Android apps'. It reads the table, `vulkan_ban_ignore` and
+`vk_debug_hide_commands`; on each physical device it applies the `vk_ext_*` settings, then the bans, to the device's
+list, and gives what is left to the renderer's `choose`. That turns an extension on only through
+`snx_vk_choice_enable`, which refuses, naming it, one no `setting @VK_...` line names (the Android apps' program reads
+no settings, so takes the bans and the check alone), and makes the device through `snx_vk_choice_create`; the check of
+the commands and the device made again follow. The log says the bans and the setting of each extension the renderer
+asked about, each device passed over and why, and the device made:
+
+```
+nds gpu: the device is AMD Radeon RX 6700 XT (RADV NAVI22), driver radv Mesa 26.2.6, Vulkan 1.3, queue family 0, made with no extension
+```
+
+`runtime_architecture` fails a source of `src/` but `common/gpu/vk/device.c` that calls `vkCreateDevice` or
+`volkLoadDevice`, and `vk_device_make` checks the way with stand-in drivers: the settings before the bans, an extension
+no setting names refused, one whose driver lacks a command left out of the device made again, the devices passed over.
 
 ## SVCs
 

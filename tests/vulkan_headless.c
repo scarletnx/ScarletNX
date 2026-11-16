@@ -4822,16 +4822,16 @@ static int resident_astc_blocks(void) {
     CHECK(nsr == 1 && t->sparse && !t->bricks && req.alignment == RS_TILE &&
           t->bytes == 8 * req.alignment + sr[0].imageMipTailSize);
     u8 *in = rs_region(t, 0, 512, 320, 512, 320), *in_whole = rs_region(whole, 0, 512, 320, 512, 320),
-       *far = rs_region(t, 0, 2048, 0, 256, 256);
-    CHECK(in && in_whole && far);
+       *hole = rs_region(t, 0, 2048, 0, 256, 256);
+    CHECK(in && in_whole && hole);
     int bad = memcmp(in, in_whole, 128 * 80 * 16) != 0;
-    for (u32 i = 0; i < 64 * 64 * 16 && !bad; i++) bad = far[i] != 0;
+    for (u32 i = 0; i < 64 * 64 * 16 && !bad; i++) bad = hole[i] != 0;
     if (bad)
         fprintf(stderr, "resident texture ASTC 8x5: tile (1, 1) differs from the texture made whole, or a hole far "
                         "from the tiles isn't zeros\n");
     free(in);
     free(in_whole);
-    free(far);
+    free(hole);
     CHECK(!bad);
     gmmu_space_unmap(gva, r.lay.size);
     gmmu_space_unmap(ref_gva, ref.lay.size);

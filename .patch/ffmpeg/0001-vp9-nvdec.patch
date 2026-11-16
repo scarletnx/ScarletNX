@@ -9,8 +9,8 @@
 # and motion vector probabilities from it, which the compressed header can't carry (it has no uv_mode syntax and codes
 # motion vector probabilities odd only). Any other context decodes as released.
 #
-# cmake/ffmpeg.cmake applies it to a copy of the release and checks the result. To change it, edit a copy of the
-# pristine file, rebuild the hunks with `diff -u --label a/<file> --label b/<file>`, and update the hash there.
+# CPMUtil applies it, without fuzz, to the release it extracts (cpmfile.json's "patches"). To change it, edit a copy of
+# the pristine file and rebuild the hunks with `diff -u --label a/<file> --label b/<file>`.
 --- a/libavcodec/vp9.c
 +++ b/libavcodec/vp9.c
 @@ -553,6 +553,8 @@

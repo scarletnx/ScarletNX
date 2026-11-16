@@ -66,7 +66,7 @@ endif()
 # Built once for every tree that builds it the same way, when SNX_DEPS_CACHE names a folder (cmake/deps_cache.cmake)
 # The header step below changes what is built, so its file is part of the key
 file(SHA256 "${PROJECT_SOURCE_DIR}/cmake/jemalloc_defs.cmake" snx_jemalloc_defs_sha256)
-snx_deps_cached(jemalloc snx_jemalloc_cache "source: ${snx_jemalloc_sha256}" "configure: ${snx_jemalloc_args}"
+snx_deps_cached(jemalloc snx_jemalloc_cache "source: ${snx_jemalloc_hash}" "configure: ${snx_jemalloc_args}"
                 "defs: ${snx_jemalloc_defs_sha256}")
 if(snx_jemalloc_cache_FOUND)
     set(snx_jemalloc_prefix "${snx_jemalloc_cache_DIR}")
@@ -77,6 +77,7 @@ else()
         set(snx_jemalloc_jobs "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
     endif()
     include(ExternalProject)
+    snx_deps_binary_dir("${PROJECT_BINARY_DIR}/jemalloc-build" "${snx_jemalloc_src}")
     ExternalProject_Add(jemalloc_build
         SOURCE_DIR "${snx_jemalloc_src}"
         BINARY_DIR "${PROJECT_BINARY_DIR}/jemalloc-build"

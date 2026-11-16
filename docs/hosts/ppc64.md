@@ -120,7 +120,7 @@ itself.
   fails on its vector form, so FRINTN and the conversions in that mode use the software path (FPCR's own mode, which
   may select it, too). The other modes are instructions. Fused multiply-add and square root are fast paths on the
   scalar FPU of every PowerPC64, and on the vectors where VSX is there.
-- **SDL3 built from source has no AltiVec** (`cmake/dependencies.cmake`): its blitters prefetch with `dstt`, which
+- **SDL3 built from source has no AltiVec** (`SDL_ALTIVEC OFF`, `cpmfile.json`): its blitters prefetch with `dstt`, which
   the ISA phased out and qemu traps. The AppImages take Arch POWER's `sdl3` package instead (`SNX_SYSTEM_SDL3`),
   which has them.
 
