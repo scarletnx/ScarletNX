@@ -5,8 +5,9 @@
    what the renderer can't run without, an extension no setting names refused where the renderer takes settings and
    taken where it takes none, an extension whose driver lacks a command (or whose command vk_debug_hide_commands hides)
    taken out of the device made again, one the renderer needs failing it, the devices passed over in the loader's order
-   each with its reason, the queue family the renderer's queues need, vulkan_ban_ignore going over a ban, and the log:
-   each setting of an extension the renderer asked about, and the device made */
+   each with its reason, the one a rating rates highest alone, each device's needs and the version the renderer runs it
+   at, the queue family the renderer's queues need, vulkan_ban_ignore going over a ban, and the log: each setting of an
+   extension the renderer asked about, and the device made */
 #include "common/gpu/vk/device.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -349,6 +350,81 @@ static void check_devices(void) {
           "the first the renderer takes, on the first family of its queues");
 }
 
+/* a rating: Stand-in GPU A 1, B 3, C 3 (B first of the two), below 0 for the rest */
+static int rating(VkPhysicalDevice phys, const VkPhysicalDeviceProperties* p, void* user) {
+    (void)phys, (void)user;
+    return !strcmp(p->deviceName, "Stand-in GPU A")   ? 1
+           : !strcmp(p->deviceName, "Stand-in GPU B") ? 3
+           : !strcmp(p->deviceName, "Stand-in GPU C") ? 3
+                                                      : -1;
+}
+/* what a device can't run without: the swapchain, and on one of Vulkan 1.2 VK_EXT_index_type_uint8 too */
+static uint32_t needs_of(const VkPhysicalDeviceProperties* p, const SnxVkExtensions* list, VkExtensionNeed* need,
+                         void* user) {
+    (void)list, (void)user;
+    need[0] = (VkExtensionNeed){"VK_KHR_swapchain", "the window is drawn with it"};
+    need[1] = (VkExtensionNeed){"VK_EXT_index_type_uint8", "a 1.2 device draws 8-bit indices with it"};
+    return p->apiVersion < VK_API_VERSION_1_3 ? 2 : 1;
+}
+static bool choose_api(SnxVkChoice* c, void* user) {
+    c->api = c->properties.apiVersion; /* the device's own version, as the Switch runs a device */
+    return choose(c, user);
+}
+
+/* the device a rating rates highest, alone (the Switch's way): the first of equal ones, none of the others asked
+   about, and none left where it is passed over; the needs of each device, and the version choose runs it at */
+static void check_best(void) {
+    SnxVkDeviceRequest r;
+    SnxVkDevice d;
+    char err[512] = "";
+    reset();
+    g_test.gpus[1] = g_test.gpus[0];
+    g_test.gpus[2] = g_test.gpus[0];
+    g_test.gpus[1].name = "Stand-in GPU B";
+    g_test.gpus[2].name = "Stand-in GPU C";
+    g_test.gpu_count = 3;
+    g_test.enable[0] = "VK_KHR_swapchain";
+    make(&r, &d, err);
+    r.score = rating;
+    r.choose = choose_api;
+    g_test.log[0] = 0;
+    CHECK(snx_vk_device_make(&r, &d, err, sizeof err) && d.phys == (VkPhysicalDevice)(uintptr_t)2, err);
+    CHECK(!said("is passed over") && said("test gpu: the device is Stand-in GPU B, driver radv Mesa 26.2.6, Vulkan "
+                                          "1.3, queue family 0, made with VK_KHR_swapchain\n"),
+          "the first of the two rated highest, the others not asked about");
+    g_test.refuse = "Stand-in GPU B";
+    CHECK(!snx_vk_device_make(&r, &d, err, sizeof err) && d.passed_over &&
+              !strcmp(err, "no stand-in device: Stand-in GPU B has no dynamicRendering"),
+          "the one rated highest passed over leaves none: the next is not asked about");
+    g_test.refuse = NULL;
+    g_test.gpus[0].api = VK_API_VERSION_1_1;
+    g_test.gpus[1].name = g_test.gpus[2].name = "Stand-in GPU D";
+    CHECK(!snx_vk_device_make(&r, &d, err, sizeof err) && d.passed_over &&
+              !strcmp(err, "no stand-in device: Stand-in GPU A has Vulkan 1.1, below the 1.3 it needs; Stand-in GPU "
+                           "D is not one it can run on (its rating is below 0); Stand-in GPU D is not one it can run "
+                           "on (its rating is below 0)"),
+          "none rated: each passed over, the version below the one asked for said");
+
+    /* a device's needs and version: on a 1.2 one VK_EXT_index_type_uint8 can't be off */
+    reset();
+    g_test.gpus[0].api = VK_API_VERSION_1_2;
+    g_test.enable[0] = "VK_KHR_swapchain";
+    make(&r, &d, err);
+    r.api = VK_API_VERSION_1_2;
+    r.needs_of = needs_of;
+    r.choose = choose_api;
+    CHECK(!snx_vk_device_make(&r, &d, err, sizeof err) &&
+              !strcmp(err, "vk_ext_index_type_uint8=off turns off VK_EXT_index_type_uint8, which ScarletNX can't run "
+                           "without on this device: a 1.2 device draws 8-bit indices with it"),
+          "a need of this device's: off refused");
+    g_test.settings[2].value = "auto";
+    g_test.log[0] = 0;
+    CHECK(snx_vk_device_make(&r, &d, err, sizeof err) && said(", Vulkan 1.2, queue family 0"), err);
+    g_test.missing[0] = "vkCreateSwapchainKHR";
+    CHECK(!snx_vk_device_make(&r, &d, err, sizeof err) && strstr(err, "the window is drawn with it"),
+          "the needs of the device in the command check too");
+}
+
 static void check_request(void) {
     SnxVkDeviceRequest r;
     SnxVkDevice d;
@@ -398,6 +474,7 @@ int main(void) {
     check_no_setting();
     check_commands();
     check_devices();
+    check_best();
     check_request();
     printf("%s: %u checks, %u failed\n", g_test.failures ? "FAIL" : "PASS", g_test.checks, g_test.failures);
     return g_test.failures != 0;
