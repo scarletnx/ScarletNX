@@ -653,8 +653,9 @@ static u64 out_bytes(u32 room, u64 pages, u32 entry) { return ((u64)MIR_HEAD + (
 /* the programs' writes of the mirror recorded so far, a count: the GPU thread's */
 static u64 g_mir_gen;
 u64 vk_mirror_write_gen(void) { return g_mir_gen; }
-void vk_mirror_fold(VkCommandBuffer cb, VkBuffer log, u64 log_size, const VkMirFold* f, u32 n) {
+u32 vk_mirror_fold(VkCommandBuffer cb, VkBuffer log, u64 log_size, const VkMirFold* f, u32 n) {
     u64 salign = g_vk.props.limits.minStorageBufferOffsetAlignment, mask_size = AS_SIZE / 8;
+    u32 cleared = 0;
     if (salign < 4) salign = 4;
     pipe_init(&g_fold, mirror_fold_spv, mirror_fold_spv_size, 2, sizeof(FoldParams), "fold");
     /* the dispatch's stores (its log), and the folds before, before the ORs */
@@ -666,10 +667,7 @@ void vk_mirror_fold(VkCommandBuffer cb, VkBuffer log, u64 log_size, const VkMirF
         /* the mask's binding at a byte the device binds at, before the buffer's first bit */
         u64 at = (f[i].cpu / 8) & ~(salign - 1), rel = f[i].cpu - at * 8;
         u64 range = ((rel + f[i].len + 31) / 32 + 1) * 4;
-        u32 windows = (f[i].len + 4095) / 4096;
         if (range > mask_size - at) range = mask_size - at;
-        if (windows > SH_WPAGE_SLOT) windows = SH_WPAGE_SLOT;
-        if (!windows) continue;
         VkDescriptorSet set = vk_desc_alloc(g_fold.ds);
         if (!set) fatal("vulkan: no descriptors to log the GPU mirror's writes"); /* the dispatch is recorded */
         VkDescriptorBufferInfo info[2] = {{log, 0, log_size}, {g_mir.mask, at, range}};
@@ -687,10 +685,13 @@ void vk_mirror_fold(VkCommandBuffer cb, VkBuffer log, u64 log_size, const VkMirF
         rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_fold.layout, 0, 1, &set, 0, NULL);
         rec_CmdPushConstants(cb, g_fold.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
         vk_gpuprof_tag(VK_PROF_MIRROR_FOLD);
-        rec_CmdDispatch(cb, windows, 1, 1);
+        /* a workgroup for 128 of the part's windows, all of them: the shader reads and clears only the ones written */
+        rec_CmdDispatch(cb, SH_WPAGE_SLOT / 128, 1, 1);
+        cleared |= 1u << f[i].part;
     }
     for (u32 i = 0; i < n; i++) vk_mirror_wrote(f[i].cpu, f[i].len); /* pending until the submit's harvest */
     g_mir_gen++; /* a program wrote the mirror: the next read of it in place takes a barrier (vk_mirror_write_gen) */
+    return cleared;
 }
 
 /* the presents a CPU touch keeps a page's results landing with the submits after it, as compute.c's reads do */
