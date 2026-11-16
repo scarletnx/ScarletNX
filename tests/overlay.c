@@ -813,8 +813,19 @@ static void keyboard_box(void) {
     draw();
     assert(shows("SCARLETNX  /  KEYBOARD") && shows("Your rival's name") && shows("Up to six letters") &&
            shows("Pick a name"));
-    assert(shows("Ann\xDD") && shows("3 of 6 characters, 4 at least.") && shows("Enter or A: Done. Esc or B: Cancel."));
+    assert(shows("Ann\xDD") && shows("3 of 6 characters, 4 at least.") && shows("Enter: Done. Esc: Cancel."));
     assert(shows("\xFE Done") && shows("\xFE Cancel") && quads_of(PANEL_RGBA) == 1); /* the line on its panel */
+    /* the hint names what was pressed last: a controller's buttons by its face, the console's A and B by default,
+       then the keyboard's keys again; never both */
+    overlay_input_pad("Circle", "Cross");
+    draw();
+    assert(shows("Circle: Done. Cross: Cancel.") && !shows("Enter") && !shows("Esc"));
+    overlay_input_pad(NULL, NULL);
+    draw();
+    assert(shows("A: Done. B: Cancel.") && !shows("Circle"));
+    overlay_input_keys();
+    draw();
+    assert(shows("Enter: Done. Esc: Cancel.") && !shows("A: Done."));
     /* Enter short of the least: still there, saying how many more in the failure colour, until the line changes */
     assert(overlay_keyboard_key(OVERLAY_KEY_ENTER) == OVERLAY_NONE && overlay_keyboard_shown());
     draw();
@@ -1341,7 +1352,13 @@ int main(void) {
     overlay_move(2);
     assert(overlay_select() == OVERLAY_NONE && overlay_shortcut_listening());
     draw();
-    assert(text_at(C - 12, 5, "Press a key") && shows("Press the key for Screenshot. Esc or B cancels."));
+    assert(text_at(C - 12, 5, "Press a key") && shows("Press the key for Screenshot. Esc cancels."));
+    overlay_input_pad("B", "A"); /* an Xbox pad's: its B sends the console's A */
+    draw();
+    assert(shows("Press the key for Screenshot. A cancels."));
+    overlay_input_keys();
+    draw();
+    assert(shows("Press the key for Screenshot. Esc cancels."));
     overlay_shortcut_key(SDLK_LCTRL, HOTKEY_CTRL);
     assert(overlay_shortcut_listening() && !log_[0]);
     overlay_shortcut_key(SDLK_S, HOTKEY_CTRL);

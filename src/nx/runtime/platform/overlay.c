@@ -970,13 +970,37 @@ typedef char DialogRows[DIALOG_PARAS][DIALOG_LINES][FATAL_ROW];
 enum { KB_WAITING, KB_GIVEN, KB_CANCELLED };
 /* The keyboard's box: what the game asked, the line as typed (kb.text) and its UTF-16 units, whether it shows (the
    renderer and the backend read it), Enter pressed short of the least (said until the line changes), and the answer
-   until it is taken. The event thread's rows, for its taps and the line's place */
+   until it is taken. The event thread's rows, for its taps and the line's place. What the hints name (overlay_input_):
+   a controller's buttons when pad, with the names of those sending A and B, else the keyboard's keys */
 static struct {
     OverlayKeyboard kb;
     u32 units;
     int kb_shown, refused, answer;
     DialogRows event_rows;
-} g_overlay;
+    struct {
+        int pad;
+        char ok[OVERLAY_INPUT_NAME], back[OVERLAY_INPUT_NAME];
+    } input;
+} g_overlay
+#ifdef __ANDROID__
+    = {.input = {1, "A", "B"}}
+#endif
+;
+void overlay_input_keys(void) {
+    if (!g_overlay.input.pad) return;
+    g_overlay.input.pad = 0;
+    changed();
+}
+void overlay_input_pad(const char* ok, const char* back) {
+    char was_ok[OVERLAY_INPUT_NAME], was_back[OVERLAY_INPUT_NAME];
+    int was = g_overlay.input.pad;
+    memcpy(was_ok, g_overlay.input.ok, sizeof was_ok);
+    memcpy(was_back, g_overlay.input.back, sizeof was_back);
+    g_overlay.input.pad = 1;
+    snprintf(g_overlay.input.ok, sizeof g_overlay.input.ok, "%s", ok ? ok : "A");
+    snprintf(g_overlay.input.back, sizeof g_overlay.input.back, "%s", back ? back : "B");
+    if (!was || strcmp(was_ok, g_overlay.input.ok) || strcmp(was_back, g_overlay.input.back)) changed();
+}
 /* item i's slider, at its row's letters ty on a box from x cols wide (cells cw x ch), in its letters' colour fg as
    the launcher's (src/gui's slider_row_draw): a thin line, thicker up to the knob, and the knob, a cell wide; ending a
    column before its value at its widest, OVERLAY_SLIDER_COLS long where the label leaves room, a column after it.
@@ -1224,7 +1248,7 @@ int overlay_keyboard_take(u32* ticket, char* out, size_t size) {
 /* the texts the box's dialog points at */
 typedef struct {
     char line[OVERLAY_KB_TEXT + 3]; /* the line and its cursor */
-    char count[96], ok[sizeof g_overlay.kb.ok], hint[sizeof g_overlay.kb.ok + 40];
+    char count[96], ok[sizeof g_overlay.kb.ok], hint[sizeof g_overlay.kb.ok + 2 * OVERLAY_INPUT_NAME + 16];
 } KbTexts;
 /* the box as a dialog: the game's header, sub and guide texts, the line with its cursor at the end (each character an
    asterisk for a password), how many characters it holds against the game's limits, what the keys do, and the game's
@@ -1251,7 +1275,10 @@ static void kb_dialog(Dialog* d, KbTexts* t) {
                  (unsigned)k->max, (unsigned)k->min);
     else
         snprintf(t->count, sizeof t->count, "%u of %u characters.", (unsigned)g_overlay.units, (unsigned)k->max);
-    snprintf(t->hint, sizeof t->hint, "Enter or A: %s. Esc or B: Cancel.", ok);
+    if (g_overlay.input.pad)
+        snprintf(t->hint, sizeof t->hint, "%s: %s. %s: Cancel.", g_overlay.input.ok, ok, g_overlay.input.back);
+    else
+        snprintf(t->hint, sizeof t->hint, "Enter: %s. Esc: Cancel.", ok);
     fatal_cp437(ok, t->ok, sizeof t->ok); /* the items are drawn in the font's bytes */
     {
         /* on a short picture the hint gives up its rows first, then the guide, the sub and the header text; never the
@@ -1511,7 +1538,8 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
         d->paras = 2;
     }
     if (page == PAGE_SHORTCUTS && listening && shortcut(focus) >= 0) {
-        snprintf(pads, size / 2, "Press the key for %s. Esc or B cancels.", hotkey_row(shortcut(focus))->name);
+        snprintf(pads, size / 2, "Press the key for %s. %s cancels.", hotkey_row(shortcut(focus))->name,
+                 g_overlay.input.pad ? g_overlay.input.back : "Esc");
         d->para[0].text = pads;
     }
     if (page == PAGE_SHORTCUTS && refused[0]) { /* why the last key given isn't the row's */
