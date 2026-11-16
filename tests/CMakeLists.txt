@@ -1506,7 +1506,7 @@ snx_test_target(snx-test-nvn-queue-lifetime 11)
 add_dependencies(snx-test-nvn-queue-lifetime snx_settings)
 target_include_directories(snx-test-nvn-queue-lifetime PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/settingsgen")
 add_test(NAME nvn_queue_lifetime COMMAND snx-test-nvn-queue-lifetime)
-# the replay with gpu_split's renderer thread: a fence reaches the renderer after the draws before it (its platform
+# the replay with gpu_split's renderer thread: a fence and a present reach the renderer after the draws before them (its platform
 # stand-ins are pthreads)
 add_executable(snx-test-nvn-replay-split nvn_replay_split.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_replay.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hle.c"

@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* nvn's replay (gpu/nvn/nvn_replay.c) with gpu_split's renderer thread (gpu_queue.c) and the queued calls of
-   gpu/renderer.c: while the renderer thread is behind the replay, a submission's fence reaches the renderer after the
-   submission's draw, in the queue's order, as a GPFIFO job's increments do (gpu.c's job_end). The GPU thread is this
-   one, which pumps the replay's work; the renderer's side is the queue's thread. After a present, the increment that
-   frees the window's texture runs on this thread at once, as the present's drain left the queue empty */
+   gpu/renderer.c: while the renderer thread is behind the replay, a submission's fence and a window's present reach
+   the renderer after the submission's draw, in the queue's order, as a GPFIFO job's increments do (gpu.c's job_end).
+   The present is a record, so the front end goes on without a wait, and the increment that frees the window's
+   texture comes after the present on the renderer thread. The GPU thread is this one, which pumps the replay's work;
+   the renderer's side is the queue's thread */
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_draw.h"
@@ -157,8 +158,9 @@ int syncpt_wait(u32 id, u32 value, i64 timeout) {
 
 /* ------------------------------------------------ the renderer: what it has drawn when the first increment comes, on
    the queue's thread */
-static u32 g_drawn, g_drawn_at_incr = ~0u;
+static u32 g_drawn, g_drawn_at_incr = ~0u, g_drawn_at_present = ~0u;
 static int g_incr_on_front = -1; /* the last increment ran on this thread (1) or the queue's (0) */
+static u32 g_presents, g_presents_at_incr; /* the presents, and how many came before the last increment */
 static void draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     (void)ds, (void)dc, (void)o;
     __atomic_add_fetch(&g_drawn, 1, __ATOMIC_SEQ_CST);
@@ -168,6 +170,7 @@ static void stream_incr(u32 id) {
     __atomic_compare_exchange_n(&g_drawn_at_incr, &none, __atomic_load_n(&g_drawn, __ATOMIC_SEQ_CST), 0,
                                 __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
     __atomic_store_n(&g_incr_on_front, pthread_equal(pthread_self(), g_front) ? 1 : 0, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&g_presents_at_incr, __atomic_load_n(&g_presents, __ATOMIC_SEQ_CST), __ATOMIC_SEQ_CST);
     syncpt_incr(id);
 }
 static void stream_end(void) {}
@@ -176,6 +179,8 @@ static void present_buffer(u64 cpu, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl
                            u32 transform, u64 released, u64 period, u32 shown) {
     (void)cpu, (void)w, (void)h, (void)pitch, (void)layout, (void)bhl, (void)fmt, (void)crop, (void)transform;
     (void)released, (void)period;
+    __atomic_store_n(&g_drawn_at_present, __atomic_load_n(&g_drawn, __ATOMIC_SEQ_CST), __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&g_presents, 1, __ATOMIC_SEQ_CST);
     syncpt_incr(shown);
 }
 static const Renderer renderer = {.draw = draw,
@@ -239,26 +244,27 @@ int main(void) {
     gw64(0x100, 0x300);
     gq_call(held, NULL, 0); /* the renderer thread stops here, behind everything the replay queues next */
     nvn_replay_submit(queue, 1, 0x100, &ready, &shown);
-    u32 fenced = g_promised[id];
-    pump();
+    NvnReplayPresent present = {.gva = 0x2000, .w = 1, .h = 1};
+    u32 fenced = nvn_replay_present(queue, &present, &shown);
+    pump(); /* the present does not wait for the held renderer thread */
+    expect(!__atomic_load_n(&g_presents, __ATOMIC_SEQ_CST), "the present ran before the work queued before it");
     pthread_mutex_lock(&gate_lock);
     gate_open = 1;
     pthread_cond_broadcast(&gate_cv);
     pthread_mutex_unlock(&gate_lock);
     gq_drain();
     u32 at_incr = __atomic_load_n(&g_drawn_at_incr, __ATOMIC_SEQ_CST);
-    if (at_incr != 1) fprintf(stderr, "the renderer had drawn %d draws at the fence's increment (1)\n", (int)at_incr);
+    u32 at_present = __atomic_load_n(&g_drawn_at_present, __ATOMIC_SEQ_CST);
+    if (at_incr != 1 || at_present != 1)
+        fprintf(stderr, "the renderer had drawn %d draws at the fence's increment and %d at the present (1 each)\n",
+                (int)at_incr, (int)at_present);
     expect(g_drawn == 1, "the submission's draw reaches the renderer once");
     expect(at_incr == 1, "the fence's increment comes after the submission's draw");
-    expect((i32)(syncpt_read(id) - fenced) >= 0, "the queue's syncpoint reaches what the replay promised");
-    expect(g_incr_on_front == 0, "the fence's increment ran on the front end, not in the queue");
-    /* a present: the texture's increment after it runs at once, on this thread */
-    NvnReplayPresent present = {.gva = 0x2000, .w = 1, .h = 1};
-    u32 freed = nvn_replay_present(queue, &present, &shown);
-    pump();
-    expect(g_incr_on_front == 1, "the increment that frees the window's texture went to the renderer thread");
-    expect((i32)(syncpt_read(id) - freed) >= 0 && (i32)(syncpt_read(nvn_replay_shown_syncpt()) - shown) >= 0,
-           "the present's syncpoints reach what the replay promised");
+    expect(at_present == 1, "the present comes after the draw before it");
+    expect(g_incr_on_front == 0 && g_presents == 1 && g_presents_at_incr == 1,
+           "the increment that frees the window's texture did not come after the present on the renderer thread");
+    expect(syncpt_read(id) == fenced && syncpt_read(nvn_replay_shown_syncpt()) == shown,
+           "the queue's syncpoint and the presents' reach what the replay promised");
     if (!failures) puts("nvn_replay_split: ok");
     return failures != 0;
 }
