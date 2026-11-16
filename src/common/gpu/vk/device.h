@@ -86,6 +86,9 @@ typedef struct {
     VkPhysicalDevice phys;
     VkDevice device;
     uint32_t family;
+    /* where none is made: every physical device was passed over, as against a table, setting or command that stops
+       the device whatever the renderer asks (the 3DS asks again with one window where none presents to two) */
+    bool passed_over;
 } SnxVkDevice;
 
 /* The device of the first physical device, in the loader's order, of r->api or newer whose queue family of r->queues
