@@ -2715,6 +2715,13 @@ if(NOT SNX_TOOLS_ONLY)
         snx_test_target(snx-test-vk-commands 11)
         target_link_libraries(snx-test-vk-commands PRIVATE snx_nx_flags snx_vk_common)
         add_test(NAME vk_extension_commands COMMAND snx-test-vk-commands)
+        # the one way a renderer makes its device (common/gpu/vk/device.c), with stand-in drivers: the settings before
+        # the bans, an extension no setting names refused, one lacking a command out of the device made again, the
+        # devices passed over with their reasons, and the log
+        add_executable(snx-test-vk-device vk_device_make.c "${volk_SOURCE_DIR}/volk.c")
+        snx_test_target(snx-test-vk-device 11)
+        target_link_libraries(snx-test-vk-device PRIVATE snx_nx_flags snx_vk_common)
+        add_test(NAME vk_device_make COMMAND snx-test-vk-device)
     endif()
     if(ANDROID)
         # the GPU driver a run asks for (nx/runtime/platform/gpu_driver_load.c) where none loads: Freedreno's variables set,

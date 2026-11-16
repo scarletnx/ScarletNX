@@ -8,8 +8,9 @@
 #include <volk.h>
 /* What the Vulkan frontends (the Switch's src/nx/gpu/vk, the 3DS's src/3ds/gpu/vk, the Vita's src/vita/gpu) share of
    setting up a device: the instance, the extension and layer queries, the choice of a physical device and queue
-   family, memory types, pNext chains and the names of results. Each frontend keeps its own feature lists, queues and
-   resources. The calls go through volk, whose loader the frontend initialized. */
+   family, memory types, pNext chains and the names of results. A renderer makes its device through device.h, the one
+   way that applies the bans, the settings and the command check. Each frontend keeps its own feature lists, queues
+   and resources. The calls go through volk, whose loader the frontend initialized. */
 
 /* VkResult's name ("VkResult" for one it doesn't name) */
 const char* snx_vk_result_str(VkResult r);
@@ -54,6 +55,8 @@ VkQueueFamilyProperties* snx_vk_queue_families(VkPhysicalDevice phys, uint32_t* 
    VK_NULL_HANDLE); UINT32_MAX for none */
 uint32_t snx_vk_queue_family(VkPhysicalDevice phys, VkQueueFlags flags, VkSurfaceKHR surface, uint32_t first);
 
+/* the instance's physical devices in the loader's order, *count of them (calloc'd, NULL for none) */
+VkPhysicalDevice* snx_vk_physical_devices(VkInstance instance, uint32_t* count);
 /* The first device, in the loader's order, of api_version or newer whose queue family of flags (presenting to
    surface, as snx_vk_queue_family) make accepts: make creates the device and says whether it did. False when none */
 typedef bool (*SnxVkMake)(VkPhysicalDevice phys, uint32_t family, void* user);
