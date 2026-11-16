@@ -260,8 +260,8 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     if (!zt) zt_ro = 0;
     int same = g_rp.open && g_rp.n == n && g_rp.zt == zt && g_rp.zt_ro == zt_ro && g_rp.srgb_write == srgb_write &&
                !memcmp(g_rp.rt, rt, sizeof g_rp.rt);
-    /* a draw's shading rate attachment: one the pass doesn't have begins another. The size is the open pass's
-       (the same targets), or its area at most */
+    /* a draw's shading rate attachment: one the pass doesn't have begins another. It must cover the open pass's size
+       (the same targets), or else the area, which the new pass's size is no larger than */
     VkImageView rate = g_rp.rate_want == RATE_KEEP ? (same ? g_rp.rate : VK_NULL_HANDLE)
                        : vk_vrs_attachment(g_rp.rate_want, same ? g_rp.ext : area);
     if (same && rate != g_rp.rate) same = 0;
@@ -335,10 +335,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     memcpy(g_rp.ca, ca, n * sizeof *ca);
     g_rp.za = g_rp.zs = za; /* depth and stencil: one view, a load op each */
     g_rp.layers = layers;
-    /* a draw's attachment covers this area, which a pass on smaller targets than area gets. A pass begun again on
-       the same targets (RATE_KEEP, a feedback loop's layout) keeps the one it had, over the same area */
-    g_rp.rate = rate && (g_rp.rate_want == RATE_KEEP || vk_vrs_attachment(g_rp.rate_want, ext)) ? rate
-                                                                                                : VK_NULL_HANDLE;
+    g_rp.rate = rate;
     g_rp.begun = g_rp.clears = 0;
     memcpy(g_rp.rt, rt, sizeof g_rp.rt);
     g_rp.zt = zt;

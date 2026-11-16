@@ -8,6 +8,9 @@
 
 /* what the device has of the two extensions, as device.c reads it: a feature that is on, and their properties */
 typedef struct {
+    /* the game is an Ounce program (g_ounce): no other has a shading rate image, so the others keep their pipelines as
+       they were, with neither extension on */
+    int ounce;
     int nv;                /* VK_NV_shading_rate_image's shadingRateImage */
     VkExtent2D nv_texel;   /* shadingRateTexelSize */
     u32 nv_palette;        /* shadingRatePaletteSize */
@@ -23,9 +26,10 @@ int vk_vrs_choose(const VkVrsDevice* d, VkExtent2D* texel, char* line, size_t n)
 u32 vk_vrs_khr_rate(u32 e);
 /* the conversion's push constants (shading_rate.comp's Params, in its order): the device's image of texel pixels a
    texel for the game's game_w x game_h texels of game_texel pixels, and each palette entry's value for vrs
-   (VK_VRS_NV: the index, VK_VRS_KHR: viewport 0's rate from palette0) */
+   (VK_VRS_NV: the index, VK_VRS_KHR: viewport 0's rate from palette0). finest: VK_VRS_KHR, where a texel of the
+   device's image takes the finest rate of the game's texels under it, else the one under its center */
 typedef struct {
-    u32 size_x, size_y, game_w, game_h, texel_w, texel_h, game_texel;
+    u32 size_x, size_y, game_w, game_h, texel_w, texel_h, game_texel, finest;
     u32 table[4];
 } VkVrsPush;
 void vk_vrs_push(int vrs, VkExtent2D texel, u32 game_w, u32 game_h, u32 game_texel, u64 palette0, VkVrsPush* o);

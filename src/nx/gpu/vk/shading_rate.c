@@ -163,27 +163,25 @@ u32 vk_shading_rate(const GpuShadingRate* r) {
         memcpy(g_rate.palette, r->palette, sizeof g_rate.palette);
         return g_rate.id;
     }
-    const Surf2D* s = &r->image;
-    u32 tile = (s->linear ? 0x1000u : 0) | (s->bh << 4);
-    Surf* game = s->width && s->height && r->texel ? vk_rt(s->addr, s->width, s->height, s->format, tile, 0, s->pitch)
-                                                   : NULL;
-    if (game) vk_rt_note_read(game);
-    if (!game || game->layout == VK_IMAGE_LAYOUT_UNDEFINED || game->msaa || game->f.depth ||
-        game->f.vk != VK_FORMAT_R8_UINT || !rate_init()) {
+    /* the game's texels as a compute program reads a texture (the guest's size where a scaled target has a copy of
+       it): the last texels the GPU or the CPU wrote, from the texture header, as a draw takes it */
+    Surf* game = r->texel ? vk_tex_from_tic_guest(r->tic, 0) : NULL;
+    if (!game || game->msaa || game->f.depth || game->f.vk != VK_FORMAT_R8_UINT || !game->sw || !game->sh ||
+        !rate_init()) {
         g_failed++;
-        LOG_LIMIT(4, "vulkan: a shading rate image at %llx (format %#x, %ux%u) is shaded at the full rate: %s\n",
-                  (unsigned long long)s->addr, s->format, s->width, s->height,
-                  !game ? "no surface there" : game->layout == VK_IMAGE_LAYOUT_UNDEFINED ? "nothing written to it"
+        LOG_LIMIT(4, "vulkan: a shading rate image at %llx is shaded at the full rate: %s\n", (unsigned long long)r->addr,
+                  !game                              ? "no texture there"
                   : game->f.vk != VK_FORMAT_R8_UINT ? "its format is not 8-bit unsigned integer"
-                                                    : "the conversion can't be made");
+                                                     : "the conversion can't be made");
         g_rate.id++; /* the draws of the image before it no longer read the renderer's */
         g_rate.valid = 0;
         return 0;
     }
-    /* a scaled target (resolution=) holds each texel of the game's image scale times in x and y, which covers
-       scale times the pixels: the scaled size with the game's texel size is the same mapping */
+    /* the device's pixels that a texel of the image covers: the game's texel at the resolution scale, over the texels
+       of a scaled image where no copy of the guest's size could be made */
+    u32 game_texel = (u32)((float)r->texel * g_vk_scale * (float)game->w / (float)game->sw + 0.5f);
     VkVrsPush push;
-    vk_vrs_push(g_vk.vrs, g_vk.vrs_texel, game->sw, game->sh, r->texel, r->palette[0], &push);
+    vk_vrs_push(g_vk.vrs, g_vk.vrs_texel, game->sw, game->sh, game_texel ? game_texel : 1, r->palette[0], &push);
     VkComponentMapping identity = {0};
     VkImageView in = vk_tex_view(game, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
     VkDescriptorSet set = in && rate_image(push.size_x, push.size_y) ? vk_desc_alloc(g_rate.ds) : VK_NULL_HANDLE;
@@ -195,7 +193,7 @@ u32 vk_shading_rate(const GpuShadingRate* r) {
     }
     /* the whole image, which an earlier, larger game image may have grown: its texels past this one's take entry 0 */
     push.size_x = g_rate.w, push.size_y = g_rate.h;
-    VkCommandBuffer cb = vk_cmd(); /* after the read check (vk_rt_note_read) */
+    VkCommandBuffer cb = vk_cmd(); /* after the texture lookup, which can submit the frame's commands */
     vk_render_end();                /* a dispatch outside the pass */
     vk_surf_use(cb, game, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);

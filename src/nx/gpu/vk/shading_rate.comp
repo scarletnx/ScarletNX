@@ -17,6 +17,7 @@ layout(push_constant) uniform Params {
     uint game_w, game_h;   /* the game's image, in its texels */
     uint texel_w, texel_h; /* the pixels of a texel of the device's image */
     uint game_texel;       /* the pixels of a texel of the game's image, in x and in y */
+    uint finest;           /* the values are KHR rates: a texel takes the finest of the game's texels under it */
     uint table[4];         /* the value of each of the 16 palette entries, a byte each */
 };
 
