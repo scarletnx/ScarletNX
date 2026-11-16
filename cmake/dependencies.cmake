@@ -51,6 +51,9 @@ snx_cpm_cache_sweep()
 # which packages CPM_USE_LOCAL_PACKAGES may take from the system: the ones added with snx_cpm_local_package
 include("${PROJECT_SOURCE_DIR}/cmake/cpm_local.cmake")
 
+# CPMUtil (cmake/packages.cmake) over this CPM.cmake, for the packages cpmfile.json pins
+include("${PROJECT_SOURCE_DIR}/cmake/packages.cmake")
+
 # Packages whose headers a system may also have (Vulkan) are added without SYSTEM. The compiler searches every
 # -I folder before any -isystem one, so as -isystem they lost to an -I/usr/local/include in CFLAGS, usual on FreeBSD,
 # and the build mixed in the system's copies. Third-party code builds with its own flags and stays out of the warning
