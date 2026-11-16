@@ -662,7 +662,7 @@ cannot be read is named and the others still listed.
 - A finger held on a game half a second without moving, or a right click on it, opens its box: **Play** (**View
   Progress** for a game of the queue, which shows it on the Compile tab as Enter does), **Recompile** (R), and for a
   recompiled Switch game **Mods** (M), **Save States** (S) and **Settings**, its own (below), Back from them to
-  Games. The finger's lift then taps nothing.
+  Games, then **AOT Pack** (B) where B builds one. The finger's lift then taps nothing.
 - **M** (on Android a tap on *Mods* at the foot) opens the box of the recompiled Switch game in focus, recent or on
   the page, that Enter opens for a game with updates, DLCs, mods, cheats or other programs beside it, and for a game
   with none of them too, whose **Add Mod** and **Add Cheats** copy a folder or a `.txt` the system's picker gives
@@ -790,8 +790,12 @@ run's output), never what the tips already say (what the row does, a game's kind
 box. The tips have a row of their own under the head, their letters a half step under the text's (1.5x by a 2x text),
 as the Status box's and the note at the foot of a Settings box are; the setup's go to the foot beside its keys, where they take one row,
 a long one sliding, or wrap over its rows with `[tips] wrap`, the last sliding what does not fit. At the foot the
-screen's keys, the whole width (the setup's beside its tips), in letters a size under the rest's: its own keys, ESC alone
-at the left of the row, **F1** last, which opens a box over the screen, Shortcuts, with every key it has, those every
+screen's keys, the whole width (the setup's beside its tips), in letters a size under the rest's, each after its icon
+(the one F1's box gives it): ESC alone at the left of the row, the screen's own first three, **More** (F3; on a phone
+the word *More*) where it has others, which opens the picks box over the screen with those others, a row each with its
+icon and key, a click, a tap, Enter or a pad's A pressing it as the keyboard does (Games' Save states, AOT pack,
+Folders, View and Refresh past Play, Recompile and Mods; a pad's foot leaves them to F1's box, its buttons pressing
+them all the same), and **F1** last, which opens a box over the screen, Shortcuts, with every key it has, those every
 screen has too (the arrows and the mouse, Enter, Space and a click, the pages, Tab and F2), as the other boxes over a
 screen are: the screen darkened under it, a row a key with its icon, the keys as the foot draws them, the screen's own
 first and those every screen has under the title Every screen (ESC among them; no title where all are those), OK under
