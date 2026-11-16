@@ -81,6 +81,7 @@ typedef struct {
     u32 nfrags, nacc;
     u32 coop_gen[256];               /* the writes each register took, which the matrices are held against */
     u32 stage_slots;                 /* hmma's A and B staged a warp each (g_spirv_translate.hmma_stage, Workgroup) */
+    u32 warp_base;                   /* warp_read's index high bits, made once: every read of a module's is the same */
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
@@ -3095,12 +3096,14 @@ static u32 system_value(Ctx* c, u32 sr);
 static u32 warp_lane(Ctx* c) {
     return spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, 31));
 }
-/* value as lane j (0-31) of the invocation's own 32 holds it */
+/* value as lane j (0-31) of the invocation's own 32 holds it. The index's high bits are the address of the lanes'
+   own 32 in the subgroup's, which every read of a module takes as one value (warp_base) */
 static u32 warp_read(Ctx* c, u32 value, u32 j) {
-    u32 own = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, ~31u));
+    if (!c->warp_base)
+        c->warp_base = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, ~31u));
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
     return SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE, c->t_u32, cu(c, SPV_SCOPE_SUBGROUP), value,
-               spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, own, j));
+               spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, c->warp_base, j));
 }
 /* value as lane l ^ mask of the invocation's own 32 holds it, for lane l (mask below 32) */
 static u32 warp_xor(Ctx* c, u32 value, u32 mask) {
@@ -3900,13 +3903,15 @@ static void ldsm(Ctx* c, const Sm86Insn* in) {
    A's words into the slot without a read of the registers */
 static void fused_ldsm_hmma(Ctx* c, const Sm86Insn* in) {
     SpvMark mark = spv_emit_mark(&c->e);
-    u32 nfrags = c->nfrags, nacc = c->nacc;
+    u32 nfrags = c->nfrags, nacc = c->nacc, warp_base = c->warp_base;
     u32 out4[4];
     ldsm_words(c, sm86_fuse_ldsm_a(in), sm86_field(in, 40, 24), sm86_fuse_ldsm_count(in), sm86_fuse_ldsm_trans(in),
                out4);
     hmma(c, in, NULL, NULL);
     spv_emit_rewind(&c->e, mark);
-    c->nfrags = nfrags, c->nacc = nacc;
+    c->nfrags = nfrags, c->nacc = nacc; /* and the caches, and any value the module made in the deleted block: the
+        ids it made are of the words that are gone, so the fused block makes them again */
+    c->warp_base = warp_base;
     u32 count = sm86_fuse_ldsm_count(in), trans = sm86_fuse_ldsm_trans(in);
     u32 imm = sm86_field(in, 40, 24), bias = imm & 0x800000u ? imm | 0xff000000u : imm;
     int k16 = (int)(sm86_field(in, 72, 19) >> 3 & 1);

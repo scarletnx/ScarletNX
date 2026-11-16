@@ -5528,9 +5528,8 @@ static void test_fuse_ldsm_hmma(const char* dir) {
         g_spirv_translate.hmma_coop = coop_was;
         g_spirv_translate.hmma_coop_shapes = shapes_was;
     }
-    /* the pair's module is five Loads fewer than the two halves': A's four words, which the fused block reads from
-       the LDSM's tile instead of reads of the registers the LDSM wrote, and one more with them. The products, the
-       matrix loads and D's stores are the same: the HMMA takes the same path either side */
+    /* the pair's module is five Loads fewer than the two halves', which are A's four words, read from the loader's
+       tile in the fused block instead of reads of the registers the LDSM wrote, and one more with them */
     for (int coop = 0; coop < 2; coop++)
         CHECK(words_of[coop] == words_of[2 + coop] + 5);
 }
