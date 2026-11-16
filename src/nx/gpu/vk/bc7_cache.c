@@ -60,6 +60,33 @@ typedef struct {
     u64 size; /* 0: a record that didn't check out, whose slot stays taken so that probes go on past it */
 } Bc7Entry;
 
+/* the recording thread's side (vk_bc7_cache_read_later): its own handle and buffer, and the reads that it found did
+   not check out. The GPU thread drops their records from the index (bc7_drop_failed), and gives them to their owners
+   (vk_bc7_cache_take_failed). The atomics that both threads write each have a cache line */
+typedef struct {
+    u64 key[2], at;
+    void* owner; /* vk_bc7_cache_read_later's */
+    u64 gva;
+    int dropped; /* out of the index already */
+} Bc7Failed;
+typedef struct {
+    FILE* f; /* atomic, the GPU thread's: NULL, the hits are read on the GPU thread */
+    PMutex m; /* failed, nfailed and cap */
+    u32 cap;
+    Bc7Failed* failed;
+    int init;  /* m made */
+    int tried; /* f opened, or that failed, since the cache opened */
+    char pad0[64];
+    u32 nfailed; /* atomic: looked at without m */
+    char pad1[64];
+    u64 ns; /* atomic: what the reads of both threads took */
+    char pad2[64];
+    u64 bytes; /* atomic: what they read */
+    char pad3[64];
+    u64 hits; /* atomic, the recording thread's */
+    u8 piece[BC7_PIECE];
+} Bc7Reader;
+
 typedef struct {
     FILE* f;   /* NULL: no cache */
     FILE* idx; /* the index file: NULL where it couldn't be written (the next run reads the records' headers) */
@@ -72,32 +99,10 @@ typedef struct {
     u32 cap; /* slots in map, a power of two */
     u32 used;
     u64 hits, stored, restarts;
-    u8 piece[BC7_PIECE]; /* last: what a close clears ends before it */
+    u8 piece[BC7_PIECE]; /* what a close clears ends before it */
+    Bc7Reader rd;        /* kept over a close: its failed reads go to their owners still */
 } Bc7Cache;
 static Bc7Cache g_bc7_cache;
-
-/* the recording thread's side (vk_bc7_cache_read_later): its own handle and buffer, and the reads that it found did
-   not check out. The GPU thread drops their records from the index (bc7_drop_failed), and gives them to their owners
-   (vk_bc7_cache_take_failed) */
-typedef struct {
-    u64 key[2], at;
-    void* owner; /* vk_bc7_cache_read_later's */
-    u64 gva;
-    int dropped; /* out of the index already */
-} Bc7Failed;
-typedef struct {
-    FILE* f;       /* atomic: NULL, the hits are read on the GPU thread */
-    PMutex m;      /* failed, nfailed and cap */
-    u32 nfailed;   /* atomic: looked at without m */
-    u32 cap;
-    Bc7Failed* failed;
-    int init;      /* m made */
-    int tried;     /* f opened, or that failed, since the cache opened */
-    u64 ns, bytes; /* atomic: what the reads of both threads took, and what they read */
-    u64 hits;      /* atomic: the recording thread's */
-    u8 piece[BC7_PIECE];
-} Bc7Reader;
-static Bc7Reader g_bc7_rd;
 
 void vk_bc7_content(u64 content[2], const void* p, u64 n) {
     u64 words[4] = {content[0], content[1], 0, 0};
@@ -253,11 +258,11 @@ static int bc7_start_over(void) {
    not get to them (a fatal error stops it inside a packet): a read queued still takes the handle that it finds, or
    fails with none. The failed reads stay for their owners */
 static void bc7_reader_close(void) {
-    FILE* f = __atomic_load_n(&g_bc7_rd.f, __ATOMIC_ACQUIRE);
+    FILE* f = __atomic_load_n(&g_bc7_cache.rd.f, __ATOMIC_ACQUIRE);
     const int done = !f || vk_rec_sync_until(plat_ns() + 2000000000ull);
-    __atomic_store_n(&g_bc7_rd.f, NULL, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_bc7_cache.rd.f, NULL, __ATOMIC_RELEASE);
     if (f && done) fclose(f);
-    g_bc7_rd.tried = 0;
+    g_bc7_cache.rd.tried = 0;
 }
 
 void vk_bc7_cache_close(void) {
@@ -369,8 +374,8 @@ static int bc7_read_at(FILE* f, u8* piece, const u64 key[2], u64 at, u64 size, u
         if (plat_pread(f, piece, n, at + o) != (int64_t)n) break;
         h = bc7_check_step(h, vk_hash_copy(dst + o, piece, n));
     }
-    __atomic_add_fetch(&g_bc7_rd.ns, plat_ns() - t0, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&g_bc7_rd.bytes, size, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_bc7_cache.rd.ns, plat_ns() - t0, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_bc7_cache.rd.bytes, size, __ATOMIC_RELAXED);
     return rec[0] == key[0] && rec[1] == key[1] && rec[2] == size && h == rec[3];
 }
 static void bc7_failed_log(void) {
@@ -380,27 +385,27 @@ static void bc7_failed_log(void) {
    past them, and the next upload of their levels encodes them. Only the record that was read: one written since at
    another place stays */
 static void bc7_drop_failed(void) {
-    if (!__atomic_load_n(&g_bc7_rd.nfailed, __ATOMIC_ACQUIRE) || !g_bc7_cache.map) return;
-    pm_lock(&g_bc7_rd.m);
-    for (u32 i = 0; i < g_bc7_rd.nfailed; i++) {
-        Bc7Failed* x = &g_bc7_rd.failed[i];
+    if (!__atomic_load_n(&g_bc7_cache.rd.nfailed, __ATOMIC_ACQUIRE) || !g_bc7_cache.map) return;
+    pm_lock(&g_bc7_cache.rd.m);
+    for (u32 i = 0; i < g_bc7_cache.rd.nfailed; i++) {
+        Bc7Failed* x = &g_bc7_cache.rd.failed[i];
         Bc7Entry* e = x->dropped ? NULL : bc7_slot(x->key);
         if (e && e->at == x->at) e->size = 0;
         x->dropped = 1;
     }
-    pm_unlock(&g_bc7_rd.m);
+    pm_unlock(&g_bc7_cache.rd.m);
 }
 
 void vk_bc7_cache_take_failed(void (*fn)(void* owner, u64 gva, const u64 key[2])) {
-    if (!__atomic_load_n(&g_bc7_rd.nfailed, __ATOMIC_ACQUIRE)) return;
+    if (!__atomic_load_n(&g_bc7_cache.rd.nfailed, __ATOMIC_ACQUIRE)) return;
     bc7_drop_failed();
-    pm_lock(&g_bc7_rd.m);
-    Bc7Failed* failed = g_bc7_rd.failed;
-    const u32 n = g_bc7_rd.nfailed;
-    g_bc7_rd.failed = NULL;
-    g_bc7_rd.cap = 0;
-    __atomic_store_n(&g_bc7_rd.nfailed, 0, __ATOMIC_RELEASE);
-    pm_unlock(&g_bc7_rd.m);
+    pm_lock(&g_bc7_cache.rd.m);
+    Bc7Failed* failed = g_bc7_cache.rd.failed;
+    const u32 n = g_bc7_cache.rd.nfailed;
+    g_bc7_cache.rd.failed = NULL;
+    g_bc7_cache.rd.cap = 0;
+    __atomic_store_n(&g_bc7_cache.rd.nfailed, 0, __ATOMIC_RELEASE);
+    pm_unlock(&g_bc7_cache.rd.m);
     for (u32 i = 0; i < n; i++) fn(failed[i].owner, failed[i].gva, failed[i].key);
     free(failed);
 }
@@ -450,40 +455,40 @@ typedef struct {
 } Bc7Later;
 static void bc7_later_run(const void* p) {
     const Bc7Later* l = p;
-    FILE* f = __atomic_load_n(&g_bc7_rd.f, __ATOMIC_ACQUIRE); /* NULL once the cache closed: then it fails */
-    if (f && bc7_read_at(f, g_bc7_rd.piece, l->key, l->at, l->size, l->dst) > 0) {
+    FILE* f = __atomic_load_n(&g_bc7_cache.rd.f, __ATOMIC_ACQUIRE); /* NULL once the cache closed: then it fails */
+    if (f && bc7_read_at(f, g_bc7_cache.rd.piece, l->key, l->at, l->size, l->dst) > 0) {
         /* staging may not be host coherent, and its submission's flush (cmd.c's rings_flush) came before this */
         vk_devmem_flush(l->mem, l->off, l->size);
         if (l->img) vkCmdCopyBufferToImage(l->cb, l->buf, l->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &l->copy);
-        __atomic_add_fetch(&g_bc7_rd.hits, 1, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&g_bc7_cache.rd.hits, 1, __ATOMIC_RELAXED);
         return;
     }
     if (f) bc7_failed_log();
-    pm_lock(&g_bc7_rd.m);
-    if (g_bc7_rd.nfailed == g_bc7_rd.cap) {
-        const u32 cap = g_bc7_rd.cap ? g_bc7_rd.cap * 2 : 16;
-        Bc7Failed* grown = realloc(g_bc7_rd.failed, (size_t)cap * sizeof *grown);
+    pm_lock(&g_bc7_cache.rd.m);
+    if (g_bc7_cache.rd.nfailed == g_bc7_cache.rd.cap) {
+        const u32 cap = g_bc7_cache.rd.cap ? g_bc7_cache.rd.cap * 2 : 16;
+        Bc7Failed* grown = realloc(g_bc7_cache.rd.failed, (size_t)cap * sizeof *grown);
         if (grown) {
-            g_bc7_rd.failed = grown;
-            g_bc7_rd.cap = cap;
+            g_bc7_cache.rd.failed = grown;
+            g_bc7_cache.rd.cap = cap;
         }
     }
-    if (g_bc7_rd.nfailed < g_bc7_rd.cap) { /* out of memory: its record stays, and its next read fails again */
-        g_bc7_rd.failed[g_bc7_rd.nfailed] = (Bc7Failed){{l->key[0], l->key[1]}, l->at, l->owner, l->gva, 0};
-        __atomic_store_n(&g_bc7_rd.nfailed, g_bc7_rd.nfailed + 1, __ATOMIC_RELEASE);
+    if (g_bc7_cache.rd.nfailed < g_bc7_cache.rd.cap) { /* out of memory: its record stays, and its next read fails again */
+        g_bc7_cache.rd.failed[g_bc7_cache.rd.nfailed] = (Bc7Failed){{l->key[0], l->key[1]}, l->at, l->owner, l->gva, 0};
+        __atomic_store_n(&g_bc7_cache.rd.nfailed, g_bc7_cache.rd.nfailed + 1, __ATOMIC_RELEASE);
     }
-    pm_unlock(&g_bc7_rd.m);
+    pm_unlock(&g_bc7_cache.rd.m);
 }
 
 int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* dst, DevMem mem, u64 off,
                             VkBuffer buf, VkImage img, const VkBufferImageCopy* copy, void* owner, u64 gva) {
     if (!g_bc7_cache.f) return 0;
     /* the recording thread's handle, at the first read once that thread runs: the cache can open before it starts */
-    if (!__atomic_load_n(&g_bc7_rd.f, __ATOMIC_ACQUIRE) && !g_bc7_rd.tried && vk_rec_threaded()) {
-        g_bc7_rd.tried = 1;
-        if (!g_bc7_rd.init) {
-            pm_init(&g_bc7_rd.m);
-            g_bc7_rd.init = 1;
+    if (!__atomic_load_n(&g_bc7_cache.rd.f, __ATOMIC_ACQUIRE) && !g_bc7_cache.rd.tried && vk_rec_threaded()) {
+        g_bc7_cache.rd.tried = 1;
+        if (!g_bc7_cache.rd.init) {
+            pm_init(&g_bc7_cache.rd.m);
+            g_bc7_cache.rd.init = 1;
         }
         FILE* f = snx_fopen(g_bc7_cache.path, "rb");
         if (!f) LOG("vulkan: the BC7 cache's hits are read on the GPU thread: a second handle on it failed\n");
@@ -492,9 +497,9 @@ int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* 
         else
             posix_fadvise(fileno(f), 0, 0, POSIX_FADV_RANDOM);
 #endif
-        __atomic_store_n(&g_bc7_rd.f, f, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_bc7_cache.rd.f, f, __ATOMIC_RELEASE);
     }
-    if (!__atomic_load_n(&g_bc7_rd.f, __ATOMIC_ACQUIRE)) return -1;
+    if (!__atomic_load_n(&g_bc7_cache.rd.f, __ATOMIC_ACQUIRE)) return -1;
     const Bc7Entry* e = bc7_entry(key, size);
     if (!e) return 0;
     const Bc7Later l = {{key[0], key[1]}, e->at, size, off, gva, dst, owner, cb, buf, img, mem, *copy};
@@ -503,8 +508,8 @@ int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* 
 }
 
 u64 vk_bc7_cache_read_ns(u64 bytes) {
-    const u64 ns = __atomic_load_n(&g_bc7_rd.ns, __ATOMIC_RELAXED);
-    const u64 n = __atomic_load_n(&g_bc7_rd.bytes, __ATOMIC_RELAXED);
+    const u64 ns = __atomic_load_n(&g_bc7_cache.rd.ns, __ATOMIC_RELAXED);
+    const u64 n = __atomic_load_n(&g_bc7_cache.rd.bytes, __ATOMIC_RELAXED);
     if (!n) return bytes ? ~0ull >> 1 : 0; /* no rate yet: a budget takes its one read and stops */
     return (u64)((double)bytes * (double)ns / (double)n);
 }
@@ -533,7 +538,7 @@ void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size) {
 }
 
 void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes) {
-    *hits = g_bc7_cache.hits + __atomic_load_n(&g_bc7_rd.hits, __ATOMIC_RELAXED);
+    *hits = g_bc7_cache.hits + __atomic_load_n(&g_bc7_cache.rd.hits, __ATOMIC_RELAXED);
     *stored = g_bc7_cache.stored;
     *restarts = g_bc7_cache.restarts;
     *bytes = g_bc7_cache.f ? g_bc7_cache.end : 0;
