@@ -89,7 +89,7 @@ u32 shader_sample_dref(DirectCtx* c, const ShaderInfo* si, int slot, u32 vec4_ty
 /* vt_sparse (shader/vt_sample.h): whether a sample of slot is one shader_vt_sample takes, a fragment program's of a 2D
    texture of floats with no depth compare or reduction (other), in one of the 32 slots a mark can name */
 static int vt_takes(DirectCtx* c, int stage, int type, int other, int slot, u32 scalar) {
-    return g_shader_vt_address && stage == ST_FS && type == 1 && !other && slot < 32 && scalar == c->f32_type;
+    return c->vt_ok && stage == ST_FS && type == 1 && !other && slot < 32 && scalar == c->f32_type;
 }
 /* that sample. The texture's identity in its mark is the draw's set of virtual textures, in the bits from 4 up of the
    third word of the push constants' uvec4 at byte 32 (vk/render.c), and the slot; the low bits are the frame's phase */

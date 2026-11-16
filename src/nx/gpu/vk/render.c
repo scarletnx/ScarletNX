@@ -2755,6 +2755,9 @@ static const char* vt_unmarked(const ShaderInfo* si, int i) {
                                             "nothing"
            : si->tex_vt_reads[4] >> i & 1 ? "a fragment program samples it with a depth compare, which marks nothing"
            : si->tex_vt_reads[5] >> i & 1 ? "a fragment program samples it as no 2D texture, which marks nothing"
+           : si->tex_vt_reads[6] >> i & 1 ? "a fragment program that cannot test depth before it runs samples it (it "
+                                            "discards, writes depth, a sample mask or memory, or its draw has alpha "
+                                            "to coverage or an alpha test), and takes no sample that marks"
                                           : "a fragment program reads its texels with no sample that marks them";
 }
 /* the slot of the indexed table of slot `first` that keeps the table's textures whole: one outside tex_vt_mask */

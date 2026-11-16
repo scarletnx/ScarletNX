@@ -211,8 +211,9 @@ typedef struct {
        a draw binds to another slot is held whole */
     u64 tex_vt_mask;
     /* and for the log, the slots an Ounce fragment program reads with a fetch, a gather, a sample with gradients, a
-       reduction (the least or greatest of its texels), a depth compare, or as no 2D texture */
-    u64 tex_vt_reads[6];
+       reduction (the least or greatest of its texels), a depth compare, as no 2D texture, or in a program that takes
+       no virtual sample (vt_early) */
+    u64 tex_vt_reads[7];
     /* FS: texture slots every read of which is a texel fetch at the fragment's own pixel (TLD or TLDS of a 2D texture
        at gl_FragCoord's integer x and y, level 0, no offset): the only ones a draw may sample in place while it
        renders to them (vk/render.c), each fragment reading what earlier draws left at its pixel */
@@ -271,6 +272,13 @@ typedef struct {
        force_early_z has them: a program that stores to images or buffers then leaves no trace for fragments they
        reject */
     u32 early_fragment_tests;
+    /* FS key, vt_sparse: the draw's state lets the depth and stencil tests run before the program (no alpha to
+       coverage, no alpha test). A virtual sample's mark is a write to memory, and a driver runs a program that writes
+       memory for the fragments the depth test then drops (RADV tests depth after it: a racing game's scene took
+       4.9 ms of the GPU a frame where it takes 2.6), unless the program asks for the tests first. So only a program
+       that may ask takes virtual samples, and asks: one with this key that keeps its pixels, its depth and its sample
+       mask and writes no memory of its own. Another's samples are plain, and its textures held whole */
+    u32 vt_early;
     ShXfb xfb;           /* key: transform feedback's capture of this program's outputs */
     int writes_viewport; /* the last vertex stage selects one of the 16 viewport/scissor pairs */
     /* key (fragment, vertex and compute programs): texture slots whose header takes unnormalized coordinates (TIC

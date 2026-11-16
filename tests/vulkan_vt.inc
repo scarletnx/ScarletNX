@@ -10,7 +10,9 @@
    - with nothing sampling it for more than vt_frames presents, every block is let go, and a draw brings them back:
      an Ounce program's sample with gradients (TXD) of a pixel's own change its level 2, then TEX.LZ its level 0
    - asked its size alone by a program (TXQ), which reads no texel: nothing changes
-   - fetched (TLD), which marks nothing: the texture is held whole from then on, and the fetch reads its texels
+   - fetched (TLD), which marks nothing: the texture is held whole from then on, and the fetch reads its texels; or
+     (the texture held BC7) sampled by a program that may discard, which takes no virtual sample (the marks need the
+     depth test before the program, ShaderInfo.vt_early): whole too, with the sample's texels
    On a texture held RGBA8 (astc_mode's Exact), exact; on one held BC7, within 3 of each channel; on one held BC1 for
    what its blocks hold (Auto: made as Auto holds one of unknown kind, every block kept, the unbound ones too, and
    made again as BC1 once the GPU's read of their kind is back, virtual still), within 4, which written again with
@@ -30,7 +32,8 @@ static u32 vtc_colour(u32 l, u32 bx, u32 by) {
 }
 /* IPA R4, a[0x70]; IPA R5, a[0x74]; FMUL R4, R4, scale; FMUL R5, R5, scale; then TEX R0-R3, R4, R5, c[2][0x40] with
    the LOD mode lod (0 the derivatives', 1 level zero); with fetch 1, F2I.TRUNC of both and TLD.LZ, as sf_fragment;
-   with fetch 2, TXD with the gradients (scale, 0) and (0, scale) from R8 to R11, a pixel's own change */
+   with fetch 2, TXD with the gradients (scale, 0) and (0, scale) from R8 to R11, a pixel's own change; with fetch 3,
+   TEX.LZ and a KILL no fragment takes (its guard is !PT) */
 static int vtc_fragment(u32 at, float scale, u32 lod, int fetch) {
     Sm86Word code[12];
     u32 n = 0, bits;
@@ -69,6 +72,11 @@ static int vtc_fragment(u32 at, float scale, u32 lod, int fetch) {
     sm86_set(&code[n], 72, 4, 0xf);
     if (fetch != 2) sm86_set(&code[n], 87, 3, fetch ? 1 : lod);
     n++;
+    if (fetch == 3) {
+        code[n] = sm86_fix(0x95b);
+        sm86_set(&code[n], 15, 1, 1);
+        sm86_set(&code[n++], 87, 3, 7);
+    }
     code[n++] = sm86_exit();
     return sf_program(VTC_GPU + at, 2u | 4u << 5 | 5u << 10, 18, 0xf, code, n);
 }
@@ -374,27 +382,30 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int mode, int maxwell) {
         fprintf(stderr, "virtual texture: whole %u with %u blocks held after a program asked its size (0 and %u)\n",
                 s.whole, s.held, before);
     CHECK(!s.whole && s.held == before);
-    /* a fetch marks nothing: the texture is held whole, and the fetch reads level 0's texel (x, y) */
+    /* a fetch marks nothing: the texture is held whole, and the fetch reads level 0's texel (x, y). So is one that a
+       program with a KILL samples: its sample is a plain one, four texels of level 0 a pixel */
+    const int kill = mode == 3 && !maxwell;
     u32 took4 = 0;
     for (u32 frame = 1; frame <= 8 && !took4; frame++) {
-        CHECK(!vtc_draw(channel, base + 0x1800, pixels));
+        CHECK(!vtc_draw(channel, kill ? 0xc000 : base + 0x1800, pixels));
         vtc_present();
-        if (!vtc_wrong(pixels, 0, 8, tolerance, "", 0)) took4 = frame;
+        if (!vtc_wrong(pixels, 0, kill ? 0 : 8, tolerance, "", 0)) took4 = frame;
     }
-    if (!took4) vtc_wrong(pixels, 0, 8, tolerance, "fetched (TLD)", 1);
+    if (!took4)
+        vtc_wrong(pixels, 0, kill ? 0 : 8, tolerance, kill ? "sampled by a program with a KILL" : "fetched (TLD)", 1);
     vk_vt_stats(t, &s);
     CHECK(took4 && s.whole == 1 && s.held == all);
     vk_unlock();
     printf(
         "PASS virtual texture, %s program: a 1024x1024 ASTC texture held %s, a corner sampled: a coarser level in the first "
         "frame, level 0's texels after %u draws with %u of %u blocks held, the derivatives' level after %u more, "
-        "every block let go unsampled, back after %u draws, virtual still with its size asked, whole once fetched (%u "
+        "every block let go unsampled, back after %u draws, virtual still with its size asked, whole once %s (%u "
         "draws)\n",
         maxwell ? "a Maxwell" : "an Ounce",
         bc7   ? "BC7"
         : bc1 ? "BC1"
               : "RGBA8",
-        took, corner, all, took2, took3, took4);
+        took, corner, all, took2, took3, kill ? "a program with a KILL sampled it" : "fetched", took4);
     if (mode == 0)
         printf("PASS virtual texture held as BC1 for its blocks' kind: written again with blocks of colour and alpha, "
                "held as RGBA8 and virtual still, level 0's texels after %u draws\n",
@@ -425,7 +436,8 @@ static int check_vt(void) {
     CHECK(!sf_program(VTC_GPU, 0x000c0481u, 13, 0xfu << 12, code, 3));
     /* a quarter of the texture over the target: four texels of level 0 a pixel */
     CHECK(!vtc_fragment(0x800, 1.0f / 256, 1, 0) && !vtc_fragment(0x1000, 1.0f / 256, 0, 0) &&
-          !vtc_fragment(0x1800, 0, 0, 1) && !vtc_fragment(0xb000, 1.0f / 256, 0, 2) && !vtc_query(0xb800));
+          !vtc_fragment(0x1800, 0, 0, 1) && !vtc_fragment(0xb000, 1.0f / 256, 0, 2) && !vtc_query(0xb800) &&
+          !vtc_fragment(0xc000, 1.0f / 256, 1, 3));
     /* the same as Maxwell programs, with sample_raster_channel's vertex program: IPA R4, a[0x70]; IPA R5, a[0x74];
        FMUL of both by the scale; TEX R0, R4, R5 by the handle at c[2][0x40], at level zero (.LZ) or the derivatives';
        and sf_maxwell_fragment's fetch (F2I.TRUNC, LDC, TLD.B.LZ) */

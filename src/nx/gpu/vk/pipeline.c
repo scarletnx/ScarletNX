@@ -957,6 +957,7 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[SH_KEY_WORDS],
         si->tex_dc_color_funcs = mask[9];
         si->in_unfed_mask = mask[10];
         si->early_fragment_tests = mask[11] & 1;
+        si->vt_early = mask[11] >> 31;
         si->tex_minmax_mask = mask[11] >> 1 & ((1u << SH_MINMAX_SLOTS) - 1);
         si->tex_minmax_max = mask[11] >> (1 + SH_MINMAX_SLOTS) & ((1u << SH_MINMAX_SLOTS) - 1);
         si->tex_rect_mask = mask[12] | (u64)mask[13] << 32;
@@ -1195,6 +1196,8 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
     if (stage == ST_FS && p) mask[11] = p->early_z;
     /* the min/max textures above the early tests' bit, in a word every key has */
     if (stage == ST_FS) mask[11] |= minmax << 1 | (early ? 1u : 0u);
+    /* vt_sparse: the last bit, where the draw's state lets the tests run before the program (ShaderInfo.vt_early) */
+    if (stage == ST_FS && ds && vk_vt_on() && !ds->rkey.alpha_to_coverage && !ds->dyn.alpha_test) mask[11] |= 1u << 31;
     if (stage == ST_FS) {
         mask[21] = (u32)advanced_blend;
         mask[22] = (u32)(advanced_blend >> 32);
