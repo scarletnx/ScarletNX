@@ -5527,6 +5527,7 @@ static void test_fuse_ldsm_hmma(const char* dir) {
 
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
+    if (getenv("SNX_HMMA_TILE_DIRECT")) g_spirv_translate.hmma_tile_direct = 1;
     test_alu_forms();
     test_common_fields();
     test_flow();

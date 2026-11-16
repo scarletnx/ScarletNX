@@ -3830,21 +3830,139 @@ static u32 shared_u16(Ctx* c, u32 address) {
    rows 0 to 7 (the register at 24 plus the signed offset at 40-63; bit 91, a uniform register at 32, is not taken),
    and lane l receives row l / 4's elements at columns 2(l % 4) and 2(l % 4) + 1, or transposed (MT88, bit 78) column
    l / 4's at rows 2(l % 4) and 2(l % 4) + 1 */
+/* whether the LDSM's address register is base + 16*lane here, the row stride of a row-major 16x16 halfword tile:
+   its reaching write must be an IMAD of TID.X by 16 with no addend, and TID.X's reaching write must be the system
+   call that reads the thread id. reaching_write rules out a predicated or ambiguous write to either register. This
+   is the one tile-address form this pass proves; every other program takes the general path. */
+/* whether the LDSM's address register is base + 16*lane here, the row stride of a row-major 16x16 halfword tile:
+   its reaching write must be an IMAD of TID.X by 16 with no addend, and TID.X's reaching write must be the system
+   call that reads the thread id. reaching_write rules out a predicated or ambiguous write to either register. */
+static int tile_from_lane(Ctx* c, u32 reg, u32 imm, u32* base) {
+    int k = reaching_write(c, c->cur, reg);
+    if (k < 0) return 0;
+    const Sm86Insn* mul = &c->in[k];
+    if (mul->op != SM86_IMAD || mul->dst != reg || mul->pred != SM86_PT || mul->pred_not ||
+        mul->a.kind != SM86_SRC_REG || mul->a.reg != 0 || mul->b.kind != SM86_SRC_IMM || mul->b.value != 16 ||
+        mul->c.kind != SM86_SRC_REG || mul->c.reg != SM86_RZ) return 0;
+    int s = reaching_write(c, (u32)k, 0);
+    if (s < 0) return 0;
+    const Sm86Insn* tid = &c->in[s];
+    if (tid->op != SM86_S2R || tid->dst != 0 || tid->pred != SM86_PT || tid->pred_not ||
+        sm86_field(tid, 72, 8) != 0x21) return 0;
+    *base = imm;
+    return 1;
+}
 /* an LDSM's reads: the fragments it fills, one word a matrix. The fields are given, which a fused pair of an LDSM
-   and an HMMA (fuse.c) packs into its own (sm86_fuse_ldsm_*) */
+   and an HMMA (fuse.c) packs into its own (sm86_fuse_ldsm_*).
+
+   Where hmma_tile_direct asks for it, check at run time whether lane i's address is row0 + 16*i for every lane of
+   the subgroup: that is a row-major 16x16 halfword tile, the layout ldmatrix expects. row0 is read from lane 0 in
+   one shuffle; the other lanes compare their own address with the expected one and a subgroup vote makes the check
+   uniform. No static proof of the address register's chain is needed, so a loop-carried base works, and a tile of
+   any other layout takes the general path. */
 static void ldsm_words(Ctx* c, u32 reg, u32 imm, u32 count, int trans, u32* out) {
     shared_var(c); /* before mem_ptr, which bounds the index by its size: as LDS does, for a program whose LDSM comes
                       before any other access to shared memory */
     u32 addr = spv_emit_iadd_u32(&c->e, c->t_u32, rd(c, reg), cu(c, imm));
     u32 lane = warp_lane(c), g = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 2));
     u32 t = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3));
+    u32 static_tile;
+    /* the cooperative path stages these fragments again for the matrix unit, where either direct form costs more
+       than the shuffles it saves: it keeps the general path */
+    int tile_direct = g_spirv_translate.hmma_tile_direct && !g_spirv_translate.hmma_coop;
+    if (tile_direct && tile_from_lane(c, reg, imm, &static_tile)) {
+        /* the address form is proved here: no check, no branch, and the tile moves 512 bytes a warp */
+        u32 warp = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, system_value(c, 0x21), cu(c, 5));
+        u32 base = spv_emit_iadd_u32(&c->e, c->t_u32, cu(c, static_tile),
+                                     spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, warp, cu(c, 9)));
+        for (u32 m = 0; m < (1u << count); m++) {
+            u32 row = spv_emit_iadd_u32(&c->e, c->t_u32, base, cu(c, 128 * m));
+            if (!trans)
+                out[m] = spv_emit_load_nonprivate(
+                    &c->e, c->t_u32,
+                    mem_ptr(c, 0, spv_emit_iadd_u32(&c->e, c->t_u32, row,
+                                                    spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, lane,
+                                                                    cu(c, 2))), 0));
+            else {
+                row = spv_emit_iadd_u32(
+                    &c->e, c->t_u32, row,
+                    spv_emit_iadd_u32(&c->e, c->t_u32,
+                                      spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 5)),
+                                      spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g, cu(c, 1))));
+                u32 lo = shared_u16(c, row), hi = shared_u16(c, spv_emit_iadd_u32(&c->e, c->t_u32, row, cu(c, 16)));
+                out[m] = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, lo,
+                                         spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, hi, cu(c, 16)));
+            }
+        }
+        return;
+    }
+    u32 dval[4], gval[4], direct_label = 0, general_label = 0, merge = 0;
+    if (tile_direct) {
+        u32 row0 = warp_read(c, addr, c->zero);
+        u32 expect = spv_emit_iadd_u32(&c->e, c->t_u32, row0,
+                                       spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, lane, cu(c, 4)));
+        u32 same = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, expect, addr);
+        spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_VOTE);
+        u32 all = SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_ALL, c->t_bool, cu(c, SPV_SCOPE_SUBGROUP), same);
+        direct_label = spv_emit_id(&c->e), general_label = spv_emit_id(&c->e), merge = spv_emit_id(&c->e);
+        spv_emit_selection_merge(&c->e, merge);
+        spv_emit_branch_conditional(&c->e, all, direct_label, general_label);
+        spv_emit_label(&c->e, direct_label);
+    }
+    if (!tile_direct) {
+        for (u32 m = 0; m < (1u << count); m++) {
+            u32 m8 = 8 * m;
+            if (!trans) {
+                u32 row = warp_read(c, addr, m8 ? spv_emit_iadd_u32(&c->e, c->t_u32, g, cu(c, m8)) : g);
+                u32 at = spv_emit_iadd_u32(&c->e, c->t_u32, row,
+                                           spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 2)));
+                out[m] = spv_emit_load_nonprivate(&c->e, c->t_u32, mem_ptr(c, 0, at, 0));
+            } else {
+                u32 t2 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 1));
+                u32 r0 = m8 ? spv_emit_iadd_u32(&c->e, c->t_u32, t2, cu(c, m8)) : t2;
+                u32 col = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g, cu(c, 1));
+                u32 lo = shared_u16(c, spv_emit_iadd_u32(&c->e, c->t_u32, warp_read(c, addr, r0), col));
+                u32 hi = shared_u16(
+                    c, spv_emit_iadd_u32(&c->e, c->t_u32,
+                                         warp_read(c, addr, spv_emit_iadd_u32(&c->e, c->t_u32, r0, cu(c, 1))), col));
+                out[m] = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, lo,
+                                         spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, hi, cu(c, 16)));
+            }
+        }
+        return;
+    }
+    /* the direct block: the row0 ready above is row 0's address, so row i's is row0 + 16i */
+    u32 row0 = warp_read(c, addr, c->zero);
+    for (u32 m = 0; m < (1u << count); m++) {
+        u32 base = spv_emit_iadd_u32(&c->e, c->t_u32, row0, cu(c, 128 * m));
+        if (!trans)
+            dval[m] = spv_emit_load_nonprivate(
+                &c->e, c->t_u32,
+                mem_ptr(c, 0, spv_emit_iadd_u32(&c->e, c->t_u32, base,
+                                                spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, lane,
+                                                                cu(c, 2))), 0));
+        else {
+            u32 row = spv_emit_iadd_u32(
+                &c->e, c->t_u32, base,
+                spv_emit_iadd_u32(&c->e, c->t_u32,
+                                  spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 5)),
+                                  spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g, cu(c, 1))));
+            u32 lo = shared_u16(c, row);
+            u32 hi = shared_u16(c, spv_emit_iadd_u32(&c->e, c->t_u32, row, cu(c, 16)));
+            dval[m] = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, lo,
+                                      spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, hi, cu(c, 16)));
+        }
+    }
+    spv_emit_branch(&c->e, merge);
+    spv_emit_label(&c->e, general_label);
+    /* the general block: the row addresses come from the lanes that hold them */
     for (u32 m = 0; m < (1u << count); m++) {
         u32 m8 = 8 * m;
         if (!trans) {
             u32 row = warp_read(c, addr, m8 ? spv_emit_iadd_u32(&c->e, c->t_u32, g, cu(c, m8)) : g);
             u32 at = spv_emit_iadd_u32(&c->e, c->t_u32, row,
                                        spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 2)));
-            out[m] = spv_emit_load_nonprivate(&c->e, c->t_u32, mem_ptr(c, 0, at, 0));
+            gval[m] = spv_emit_load_nonprivate(&c->e, c->t_u32, mem_ptr(c, 0, at, 0));
         } else {
             u32 t2 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 1));
             u32 r0 = m8 ? spv_emit_iadd_u32(&c->e, c->t_u32, t2, cu(c, m8)) : t2;
@@ -3853,10 +3971,14 @@ static void ldsm_words(Ctx* c, u32 reg, u32 imm, u32 count, int trans, u32* out)
             u32 hi = shared_u16(
                 c, spv_emit_iadd_u32(&c->e, c->t_u32,
                                      warp_read(c, addr, spv_emit_iadd_u32(&c->e, c->t_u32, r0, cu(c, 1))), col));
-            out[m] = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, lo,
-                                     spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, hi, cu(c, 16)));
+            gval[m] = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, lo,
+                                      spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, hi, cu(c, 16)));
         }
     }
+    spv_emit_branch(&c->e, merge);
+    spv_emit_label(&c->e, merge);
+    for (u32 m = 0; m < (1u << count); m++)
+        out[m] = spv_emit_phi2(&c->e, c->t_u32, dval[m], direct_label, gval[m], general_label);
 }
 /* the LDSM's reads into out, and the destination registers' words, which the two halves of a fused pair give
    twice: once each with its own emitter, whose block the fuse deletes, and once with the fuse's words given to the
@@ -3938,7 +4060,7 @@ static void movm(Ctx* c, const Sm86Insn* in) {
 static u32 ballot32(Ctx* c, u32 pred) {
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT);
     u32 all = spv_emit_subgroup_ballot(&c->e, c->t_v4u, c->t_u32, pred);
-    u32 half = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, system_value(c, 0), cu(c, 5));
+    u32 half = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, system_value(c, 0x21), cu(c, 5));
     return SPV(&c->e, SPV_OP_VECTOR_EXTRACT_DYNAMIC, c->t_u32, all, half);
 }
 
