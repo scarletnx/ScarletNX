@@ -26,11 +26,19 @@ void options_old_environment_say(void);
    over this run's command line from then on. A key the launcher's Settings show goes to the game's picks, another (a
    control's place) to the .ini */
 void ini_set(const char* k, const char* v);
+/* the same for a value the menu did not apply: the next tick applies it (one read when the game starts at its next
+   start), then saves it */
+void ini_set_apply(const char* k, const char* v);
 /* the game's pick of k taken out, from its menu: at the next tick its value is the one without it (the launcher's for
    every game, else the .ini's, else the default), applied, and the picks file saved without it */
 void ini_unpick(const char* k);
 /* 1 when the game's picks have k, a change of the menu's not saved yet counted; from any thread */
 int ini_picked(const char* k);
+/* the value the next start takes for k where it is not this run's, into out (n bytes, cut where it ends): the game's
+   pick, a change of the menu's not saved yet counted, else for a setting read at the start whose pick the menu took
+   out this run the value without it. 1, else 0 with out empty. From any thread: the menu's row of a setting read at
+   the start shows it */
+int ini_next_start(const char* k, char* out, size_t n);
 /* a count of the changes to the game's picks and to ini_old_settings, which the menu watches to show them again */
 const int* ini_picks_changes(void);
 /* 1 once after ini_unpick or ini_clean_old: the frontend's loop polls at once (ini_poll) */
