@@ -187,9 +187,9 @@ endif()
 
 # Built once for every tree that builds it the same way, when SNX_DEPS_CACHE names a folder (cmake/deps_cache.cmake).
 # The install prefix stays out of the key: FFmpeg only quotes it in its configuration string
-snx_deps_cached(ffmpeg snx_ffmpeg_cache "source: ${snx_ffmpeg_sha256}" "patch: ${snx_ffmpeg_patch_sha256}"
-                "configure: ${snx_ffmpeg_args}" "nasm: ${snx_ffmpeg_nasm}" "dav1d: ${snx_dav1d_ready} ${snx_dav1d_sha256}"
-                "zlib: ${snx_zlib_sha256}")
+snx_deps_cached(ffmpeg snx_ffmpeg_cache "source: ${snx_ffmpeg_hash}" "patch: ${snx_ffmpeg_patch_sha256}"
+                "configure: ${snx_ffmpeg_args}" "nasm: ${snx_ffmpeg_nasm}" "dav1d: ${snx_dav1d_ready} ${snx_dav1d_hash}"
+                "zlib: ${snx_zlib_hash}")
 if(snx_ffmpeg_cache_FOUND)
     set(snx_ffmpeg_prefix "${snx_ffmpeg_cache_DIR}")
 else()

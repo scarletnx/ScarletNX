@@ -10,10 +10,6 @@
 # Patching a package: snx_patched_copy (cmake/patched_copy.cmake) on a copy in the build tree, never CPM's PATCHES, which
 # patches only what CPM itself downloads into the cache.
 
-# Tracy's release: the client an SNX_TRACY build pins below, and the tracy-capture the driver's help and the runtime's
-# warning name, which has to be the same release to capture that client
-set(SNX_TRACY_VERSION 0.15.0)
-
 set(CPM_VERSION 0.43.2)
 set(CPM_HASH 49a3bef91ceb65bb66d57255e12d1ffd22abc2f6408fa9fe4534c544a2f232aa)
 if(NOT DEFINED CPM_SOURCE_CACHE AND NOT DEFINED ENV{CPM_SOURCE_CACHE})
@@ -42,6 +38,11 @@ snx_cpm_cache_sweep()
 
 # CPMUtil (cmake/packages.cmake) over this CPM.cmake, for the packages cpmfile.json pins
 include("${PROJECT_SOURCE_DIR}/cmake/packages.cmake")
+
+# Tracy's release: the client an SNX_TRACY build pins below, and the tracy-capture the driver's help and the runtime's
+# warning name, which has to be the same release to capture that client
+snx_cpmfile(SNX_TRACY_VERSION tracy version)
+string(REGEX REPLACE "^v" "" SNX_TRACY_VERSION "${SNX_TRACY_VERSION}")
 
 # Packages whose headers a system may also have (Vulkan) are added without SYSTEM. The compiler searches every
 # -I folder before any -isystem one, so as -isystem they lost to an -I/usr/local/include in CFLAGS, usual on FreeBSD,
@@ -72,20 +73,14 @@ endif()
 
 # yyjson (MIT) for the driver's MCP server (src/nx/runtime/driver/mcp*.c) and, in every build, the GPU driver packages'
 # meta.json (src/common/utilities/gpu_driver.c)
-CPMAddPackage(NAME yyjson VERSION 0.13.0
-              URL https://github.com/ibireme/yyjson/archive/refs/tags/0.13.0.tar.gz
-              URL_HASH SHA256=34e0f62a2bc11ab20d601e8ca1cc2b2079503aa45119a19133d89d19b94a0fae
-              DOWNLOAD_ONLY YES)
+AddJsonPackage(NAME yyjson DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
 add_library(snx_yyjson STATIC "${yyjson_SOURCE_DIR}/src/yyjson.c")
 target_include_directories(snx_yyjson PUBLIC "${yyjson_SOURCE_DIR}/src")
 snx_quiet(snx_yyjson)
 
 # cgltf (MIT) for the Mii parts a glTF 2.0 model gives (src/common/utilities/mii_gltf.c): its implementation in a
 # target of ours, built quiet
-CPMAddPackage(NAME cgltf VERSION 1.15
-              URL https://github.com/jkuhlmann/cgltf/archive/refs/tags/v1.15.tar.gz
-              URL_HASH SHA256=84e352092e5cd6aab7f66de62ddb66beb5e6f18d412ca9d12950d7a55bfef25a
-              DOWNLOAD_ONLY YES)
+AddJsonPackage(NAME cgltf DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
 file(CONFIGURE OUTPUT "${PROJECT_BINARY_DIR}/generated/cgltf.c" CONTENT "#define CGLTF_IMPLEMENTATION
 #include \"cgltf.h\"
 ")
@@ -97,10 +92,7 @@ snx_quiet(snx_cgltf)
 # XXH64's speed. src/nx/gpu/vk/xxh3.c builds the dispatcher on x86 (the CPU's SSE2, AVX2 or AVX-512 loop, chosen at
 # run time) and xxhash.c on every other architecture, by the compiler's own macros
 if(SNX_BUILD_NX)
-    CPMAddPackage(NAME xxhash VERSION 0.8.4
-                  URL https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.4.tar.gz
-                  URL_HASH SHA256=5738270935e7c3d38a79b3adf7c9692566ce7895a25f67de43ad52ab504acd32
-                  DOWNLOAD_ONLY YES)
+    AddJsonPackage(NAME xxhash DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     add_library(snx_xxhash STATIC "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/xxh3.c")
     target_include_directories(snx_xxhash PUBLIC "${xxhash_SOURCE_DIR}")
     snx_quiet(snx_xxhash)
@@ -110,13 +102,10 @@ endif()
 # recurrent network that gives each band of a 10 ms frame at 48 kHz its gain. Its model is rnn_data.c, 87503 weights of
 # one byte (425 KB of C). Its sources but the training program (denoise.c's TRAINING part, off by default), with their
 # symbols hidden, so that no other librnnoise a library loads into the process binds to them. It installs no CMake
-# package (its build is autotools), so CPM_USE_LOCAL_PACKAGES has none to find: the pinned copy is the one the runtime
-# runs, and another version's network would give other gains and another delay
+# package (its build is autotools), so find_package has none to find: the pinned copy is the one the runtime runs, and
+# another version's network would give other gains and another delay
 if(SNX_BUILD_NX)
-    CPMAddPackage(NAME rnnoise VERSION 0.1.1
-                  URL https://github.com/xiph/rnnoise/archive/refs/tags/v0.1.1.tar.gz
-                  URL_HASH SHA256=1641712c9ae31f3b364e8b2f2e0ec3ce24330e76055c151f695941b0ea5d3987
-                  DOWNLOAD_ONLY YES)
+    AddJsonPackage(NAME rnnoise DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     add_library(snx_rnnoise STATIC "${rnnoise_SOURCE_DIR}/src/denoise.c" "${rnnoise_SOURCE_DIR}/src/rnn.c"
                 "${rnnoise_SOURCE_DIR}/src/rnn_data.c" "${rnnoise_SOURCE_DIR}/src/kiss_fft.c"
                 "${rnnoise_SOURCE_DIR}/src/pitch.c" "${rnnoise_SOURCE_DIR}/src/celt_lpc.c")
@@ -133,10 +122,7 @@ endif()
 # has; zstd's compressor and decompressor alone, in C (no assembly, so every target builds the same). The tests of
 # the network services link them in a build without the runtime too
 if(SNX_BUILD_NX OR SNX_BUILD_3DS OR BUILD_TESTING)
-    CPMAddPackage(NAME enet VERSION 1.3.18
-                  URL https://github.com/lsalzman/enet/archive/refs/tags/v1.3.18.tar.gz
-                  URL_HASH SHA256=28603c895f9ed24a846478180ee72c7376b39b4bb1287b73877e5eae7d96b0dd
-                  DOWNLOAD_ONLY YES)
+    AddJsonPackage(NAME enet DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     add_library(snx_enet STATIC "${enet_SOURCE_DIR}/callbacks.c" "${enet_SOURCE_DIR}/compress.c"
                 "${enet_SOURCE_DIR}/host.c" "${enet_SOURCE_DIR}/list.c" "${enet_SOURCE_DIR}/packet.c"
                 "${enet_SOURCE_DIR}/peer.c" "${enet_SOURCE_DIR}/protocol.c" "${enet_SOURCE_DIR}/unix.c"
@@ -149,10 +135,7 @@ if(SNX_BUILD_NX OR SNX_BUILD_3DS OR BUILD_TESTING)
                                    HAS_INET_PTON=1 HAS_INET_NTOP=1 HAS_MSGHDR_FLAGS=1 HAS_SOCKLEN_T=1)
     endif()
     snx_quiet(snx_enet)
-    CPMAddPackage(NAME zstd VERSION 1.5.7
-                  URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
-                  URL_HASH SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
-                  DOWNLOAD_ONLY YES)
+    AddJsonPackage(NAME zstd DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     file(GLOB snx_zstd_sources "${zstd_SOURCE_DIR}/lib/common/*.c" "${zstd_SOURCE_DIR}/lib/compress/*.c"
          "${zstd_SOURCE_DIR}/lib/decompress/*.c")
     add_library(snx_zstd STATIC ${snx_zstd_sources})
@@ -180,26 +163,20 @@ endif()
 
 # OpenSSL for the hashes and ciphers (the NX, 3DS and Vita loaders, ldr, csrng, hactool) and the ssl service's TLS. It
 # builds with its own Configure and make, which cmake/openssl.cmake runs
-# The archives' SHA-256 are also part of their cache keys (cmake/deps_cache.cmake)
+# The archives' hashes are also part of their cache keys (cmake/deps_cache.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/deps_cache.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/apple.cmake")
 if(SNX_BUILD_NX OR SNX_BUILD_3DS OR SNX_BUILD_GNUABI OR snx_vita_runtime) # the GNU ABI runtime's random bytes and TLS sockets
-    set(snx_openssl_sha256 325b5c806167c13b40b1ffeadfe0248197c00eccc4cf123ec1e28d2d2fd216d9)
-    CPMAddPackage(NAME OpenSSL VERSION 4.0.3
-                  URL https://github.com/openssl/openssl/releases/download/openssl-4.0.3/openssl-4.0.3.tar.gz
-                  URL_HASH SHA256=${snx_openssl_sha256}
-                  DOWNLOAD_ONLY YES)
+    snx_cpmfile(snx_openssl_hash OpenSSL hash)
+    AddJsonPackage(NAME OpenSSL DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     include("${PROJECT_SOURCE_DIR}/cmake/openssl.cmake")
 endif()
 
 # libcurl (curl's MIT-like license) for the launcher's downloads (src/common/network/https.c), built after OpenSSL
 # (cmake/curl.cmake), and the roots it trusts: Mozilla's, curl's dated extract of them (cmake/cacert.cmake)
 if(TARGET OpenSSL::SSL)
-    set(snx_curl_sha256 8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5)
-    CPMAddPackage(NAME curl VERSION 8.23.0
-                  URL https://curl.se/download/curl-8.23.0.tar.xz
-                  URL_HASH SHA256=${snx_curl_sha256}
-                  DOWNLOAD_ONLY YES)
+    snx_cpmfile(snx_curl_hash curl hash)
+    AddJsonPackage(NAME curl DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     include("${PROJECT_SOURCE_DIR}/cmake/curl.cmake")
     set(snx_cacert_date 2026-10-20)
     snx_cpm_file(cacert 2026.10.20
@@ -245,12 +222,9 @@ if(SNX_JEMALLOC)
                             "(src/nx), which this build does not make (SNX_BUILD_NX=${SNX_BUILD_NX}, "
                             "SNX_TOOLS_ONLY=${SNX_TOOLS_ONLY}). Configure with -DSNX_JEMALLOC=OFF.")
     endif()
-    set(snx_jemalloc_version 5.4.0) # also what tests/jemalloc.cmake finds in the program
-    set(snx_jemalloc_sha256 200776fac271093e7c2f21edd6d62657ecd2be578d9328633f2a86bfa6ef4f1d)
-    CPMAddPackage(NAME jemalloc VERSION ${snx_jemalloc_version}
-                  URL https://github.com/jemalloc/jemalloc/releases/download/${snx_jemalloc_version}/jemalloc-${snx_jemalloc_version}.tar.bz2
-                  URL_HASH SHA256=${snx_jemalloc_sha256}
-                  DOWNLOAD_ONLY YES)
+    snx_cpmfile(snx_jemalloc_version jemalloc version) # also what tests/jemalloc.cmake finds in the program
+    snx_cpmfile(snx_jemalloc_hash jemalloc hash)
+    AddJsonPackage(NAME jemalloc DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     include("${PROJECT_SOURCE_DIR}/cmake/jemalloc.cmake")
 endif()
 
@@ -266,10 +240,7 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR SNX_BUILD_NDS OR sn
         snx_system_vulkan_registry(snx_vulkan_local_registry)
     endif()
     # volk.c is compiled into the vk components
-    CPMAddPackage(NAME volk VERSION 1.4.363
-                  URL https://github.com/zeux/volk/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz
-                  URL_HASH SHA256=1547d8d74395d4048fb3f4a6313da56db626e89b55db238d0d7e8944c8a645f3
-                  DOWNLOAD_ONLY YES)
+    AddJsonPackage(NAME volk DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     # the 3DS system archives' open stand-ins (cmake/ctr_system_archives.cmake): the RomFS images
     # B3n30/citra_system_archives makes (GPL-2.0-or-later), as the C arrays Azahar's source holds them in, each at the
     # commit that last changed it. The Mii data is ours (src/common/utilities/mii_model.c), made when a game opens it
@@ -305,11 +276,8 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
         # Android driver's libz.so, the NDK's zlib that an app's native code links (src/android/bridge/hle_zlib.c).
         # libdeflate has no stream interface, so they get zlib itself: static, as libz.a in a folder of its own that
         # FFmpeg's configure finds with -lz
-        CPMAddPackage(NAME zlib VERSION 1.3.2
-                      URL https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz
-                      URL_HASH SHA256=bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16
-                      DOWNLOAD_ONLY YES)
-        set(snx_zlib_sha256 bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16)
+        AddJsonPackage(NAME zlib DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
+        snx_cpmfile(snx_zlib_hash zlib hash)
         add_library(snx_zlib STATIC
             "${zlib_SOURCE_DIR}/adler32.c" "${zlib_SOURCE_DIR}/compress.c" "${zlib_SOURCE_DIR}/crc32.c"
             "${zlib_SOURCE_DIR}/deflate.c" "${zlib_SOURCE_DIR}/infback.c" "${zlib_SOURCE_DIR}/inffast.c"
@@ -329,19 +297,13 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
                                                   ARCHIVE_OUTPUT_DIRECTORY "$<1:${snx_zlib_lib_dir}>")
         snx_quiet(snx_zlib)
     endif()
-    set(snx_ffmpeg_sha256 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e)
-    CPMAddPackage(NAME FFmpeg VERSION 9.0.2
-                  URL https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
-                  URL_HASH SHA256=${snx_ffmpeg_sha256}
-                  DOWNLOAD_ONLY YES)
+    snx_cpmfile(snx_ffmpeg_hash FFmpeg hash)
+    AddJsonPackage(NAME FFmpeg DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     # dav1d (BSD-2-Clause) for the Ounce's AV1 movies, which FFmpeg decodes through it: built with meson and ninja,
     # which cmake/dav1d.cmake runs, before FFmpeg
     if(SNX_BUILD_NX)
-        set(snx_dav1d_sha256 686616b7c69eb88d44459391ab25cac13b6647a3b288835c5784e71c1514a5c5)
-        CPMAddPackage(NAME dav1d VERSION 1.5.4
-                      URL https://downloads.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz
-                      URL_HASH SHA256=${snx_dav1d_sha256}
-                      DOWNLOAD_ONLY YES)
+        snx_cpmfile(snx_dav1d_hash dav1d hash)
+        AddJsonPackage(NAME dav1d DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
         include("${PROJECT_SOURCE_DIR}/cmake/dav1d.cmake")
     endif()
     include("${PROJECT_SOURCE_DIR}/cmake/ffmpeg.cmake")
@@ -374,10 +336,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # AMD FidelityFX Super Resolution 2.2.1 (MIT), the temporal upscaler the Ounce's DLSS evaluations run through
     # (src/nx/gpu/vk/fsr2, gpu/nvn/nvn_dlss.c): its library and Vulkan backend's sources and its GLSL passes, which the
     # build compiles (cmake/fsr2_shaders.cmake). The archive's prebuilt tools (tools/sc, Windows programs) are not used
-    CPMAddPackage(NAME FidelityFX-FSR2 VERSION 2.2.1
-                  URL https://github.com/GPUOpen-Effects/FidelityFX-FSR2/archive/refs/tags/v2.2.1.tar.gz
-                  URL_HASH SHA256=4d7261ef054b071de83c7d201f6850c274226bd3025f4a2274ef4968343bd534
-                  DOWNLOAD_ONLY YES)
+    AddJsonPackage(NAME FidelityFX-FSR2 DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     # A copy of its library with one patch (cmake/fsr2-memory-types.patch): the backend takes device-local memory only
     # from a type that is not host-visible, and found none where every device-local type is (lavapipe, some integrated
     # GPUs), so no context could be made there
@@ -404,11 +363,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         if(NOT ANDROID)
             list(APPEND snx_tracy_options "TRACY_ONLY_LOCALHOST ON" "TRACY_NO_BROADCAST ON")
         endif()
-        CPMAddPackage(NAME tracy VERSION ${SNX_TRACY_VERSION}
-                      URL https://github.com/wolfpld/tracy/archive/refs/tags/v${SNX_TRACY_VERSION}.tar.gz
-                      URL_HASH SHA256=3d57da54aa67d7875da1e8fecd0bd5957675cef73c27dd52bffb6ab8d290a5e6
-                      EXCLUDE_FROM_ALL YES
-                      OPTIONS ${snx_tracy_options})
+        AddJsonPackage(NAME tracy FORCE_BUNDLED_PACKAGE ON OPTIONS ${snx_tracy_options})
         # The sampler waits for the runtime to ask for it, and samples at 1 kHz unless TRACY_SAMPLING_HZ says
         # otherwise.
         target_compile_definitions(TracyClient PRIVATE TRACY_SAMPLING_PROFILER_MANUAL_START TRACY_SAMPLING_HZ=1000)
@@ -459,10 +414,7 @@ endif()
 # members and compressed eboot segments (src/vita/loader/inflate.c), and their CRC-32, a file's too (snx_crc32 in
 # src/common/utilities/zip.c: the DS's ARM7 BIOS). Its library without gzip, from its own sources; it picks the CPU's
 # SIMD loops at run time
-CPMAddPackage(NAME libdeflate VERSION 1.26
-              URL https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.26.tar.gz
-              URL_HASH SHA256=bba03fffc5538576213675ce6968fcff6ce2e67d82e4d5febea2d05f9f13cf85
-              DOWNLOAD_ONLY YES)
+AddJsonPackage(NAME libdeflate DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
 add_library(snx_libdeflate STATIC
     "${libdeflate_SOURCE_DIR}/lib/utils.c" "${libdeflate_SOURCE_DIR}/lib/arm/cpu_features.c"
     "${libdeflate_SOURCE_DIR}/lib/x86/cpu_features.c" "${libdeflate_SOURCE_DIR}/lib/deflate_compress.c"
@@ -477,10 +429,7 @@ snx_quiet(snx_libdeflate)
 # family is the Noto Sans JP subset of the shared fonts (SIL OFL 1.1, above), which has Latin and the math signs too:
 # the same package, so a build with the Switch driver fetches it once
 if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
-    CPMAddPackage(NAME harfbuzz VERSION 15.0.0
-                  URL https://github.com/harfbuzz/harfbuzz/releases/download/15.0.0/harfbuzz-15.0.0.tar.xz
-                  URL_HASH SHA256=968536e9abd782f07f7954044c0c4020199fcdd39b41d221ec42d2a3be4a44df
-                  DOWNLOAD_ONLY YES)
+    AddJsonPackage(NAME harfbuzz DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     add_library(snx_harfbuzz STATIC "${harfbuzz_SOURCE_DIR}/src/harfbuzz.cc")
     target_include_directories(snx_harfbuzz SYSTEM PUBLIC "${harfbuzz_SOURCE_DIR}/src")
     set_target_properties(snx_harfbuzz PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
@@ -491,10 +440,7 @@ if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
     # SQLite (public domain), the amalgamation, for android.database.sqlite (src/android/db/sqlite_jni.c). Its
     # options are the ones of Android's own build that apps can see: the FTS3, FTS4 and FTS5 modules, no extension
     # loading
-    CPMAddPackage(NAME sqlite VERSION 3.54.1
-                  URL https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip
-                  URL_HASH SHA256=0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9
-                  DOWNLOAD_ONLY YES)
+    AddJsonPackage(NAME sqlite DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     add_library(snx_sqlite STATIC "${sqlite_SOURCE_DIR}/sqlite3.c")
     target_include_directories(snx_sqlite SYSTEM PUBLIC "${sqlite_SOURCE_DIR}")
     target_compile_definitions(snx_sqlite PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION SQLITE_ENABLE_FTS3
@@ -508,10 +454,7 @@ endif()
 # and written as every file is, for Windows' UTF-8 paths) and without zlib's names, which another library's zlib could
 # share
 if(SNX_BUILD_GUI)
-    CPMAddPackage(NAME miniz VERSION 3.1.2
-                  URL https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip
-                  URL_HASH SHA256=f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a
-                  DOWNLOAD_ONLY YES)
+    AddJsonPackage(NAME miniz DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     add_library(snx_miniz STATIC "${miniz_SOURCE_DIR}/miniz.c")
     target_include_directories(snx_miniz SYSTEM PUBLIC "${miniz_SOURCE_DIR}")
     target_compile_definitions(snx_miniz PUBLIC MINIZ_NO_STDIO MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
@@ -522,14 +465,8 @@ endif()
 # stroker come from FreeType, under the FreeType License, source/FTL.TXT). cmake/splash.cmake builds both. The runtime
 # draws one too, the user's picture (hle/services/acc.c)
 if(SNX_BUILD_GUI OR (SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY))
-    CPMAddPackage(NAME plutovg VERSION 1.3.3
-                  URL https://github.com/sammycage/plutovg/archive/refs/tags/v1.3.3.tar.gz
-                  URL_HASH SHA256=2b0d17a6e016f47b86f9c00e2cb82600041b1ea1f7d2a00c2d46ae542cbfed3c
-                  DOWNLOAD_ONLY YES)
-    CPMAddPackage(NAME lunasvg VERSION 3.5.0
-                  URL https://github.com/sammycage/lunasvg/archive/refs/tags/v3.5.0.tar.gz
-                  URL_HASH SHA256=1abf1472ee6c4d19797916e8cc3c2e4b628e0d81178ffac60bdb0d457e32c690
-                  DOWNLOAD_ONLY YES)
+    AddJsonPackage(NAME plutovg DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
+    AddJsonPackage(NAME lunasvg DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
 endif()
 
 # hactool, in the tree (src/nx/runtime/driver/hactool), which scarletnx --extract calls in its own process

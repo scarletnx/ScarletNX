@@ -169,7 +169,7 @@ endif()
 file(READ "${SRC}/cmake/dependencies.cmake" dependencies)
 string(FIND "${dependencies}" "include(\"\${cpm_file}\")" at_cpm)
 string(FIND "${dependencies}" "\nsnx_cpm_cache_sweep()\n" at_sweep)
-string(FIND "${dependencies}" "CPMAddPackage(" at_package)
+string(FIND "${dependencies}" "AddJsonPackage(" at_package)
 if(at_cpm LESS 0 OR at_sweep LESS at_cpm OR at_package LESS at_sweep)
     fail("cmake/dependencies.cmake does not call snx_cpm_cache_sweep() between including CPM (at ${at_cpm}) and its "
          "first package (at ${at_package}): the call is at ${at_sweep}")

@@ -111,8 +111,8 @@ list(APPEND snx_curl_args
      -DCURL_DISABLE_TFTP=ON
      -DCURL_DISABLE_WEBSOCKETS=ON)
 
-snx_deps_cached(curl snx_curl_cache "source: ${snx_curl_sha256}" "configure: ${snx_curl_args}"
-                "openssl: ${snx_openssl_sha256}")
+snx_deps_cached(curl snx_curl_cache "source: ${snx_curl_hash}" "configure: ${snx_curl_args}"
+                "openssl: ${snx_openssl_hash}")
 if(snx_curl_cache_FOUND)
     set(snx_curl_prefix "${snx_curl_cache_DIR}")
 else()
