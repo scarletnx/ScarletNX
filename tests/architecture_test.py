@@ -175,6 +175,22 @@ class ArchitectureTests(unittest.TestCase):
         )
         self.assertIn('cmake/a.cmake:3: first is added with FORCE_BUNDLED_PACKAGE ON, and its entry has a', errors[1])
 
+    def test_every_patch_is_named_and_there(self):
+        pins = {'lib': dict(PIN, patches=['0001-fix.patch', '0002-gone.patch'])}
+        files = {
+            'cmake/a.cmake': 'AddJsonPackage(NAME lib FORCE_BUNDLED_PACKAGE ON)\n',
+            '.patch/lib/0001-fix.patch': '--- a/x\n+++ b/x\n',
+            '.patch/lib/0003-stray.patch': '--- a/y\n+++ b/y\n',
+            '.patch/other/0001-x.patch': '--- a/z\n+++ b/z\n',
+        }
+        errors = self.package_errors(files, pins)
+        self.assertEqual(len(errors), 3, errors)
+        self.assertIn(
+            'cpmfile.json: lib names the patch 0002-gone.patch, and .patch/lib/0002-gone.patch is no file', errors[0]
+        )
+        self.assertIn('.patch/lib/0003-stray.patch is a patch no cpmfile.json entry names', errors[1])
+        self.assertIn('.patch/other/0001-x.patch is a patch no cpmfile.json entry names', errors[2])
+
     def test_a_key_is_lowercase(self):
         pins = {'OpenSSL': dict(PIN), 'openssl-cmake': dict(PIN, package='OpenSSL')}
         files = {

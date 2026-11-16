@@ -288,8 +288,9 @@ endif()
 # and the driver (hactool among them), each in a folder named after it
 set(licenses "${CMAKE_INSTALL_DATADIR}/licenses/scarletnx")
 install(FILES LICENSE DESTINATION ${licenses})
-# FFmpeg's with the change made to it (cmake/ffmpeg-vp9-nvdec.patch), which its LGPL wants carried with the binaries
-install(FILES "${FFmpeg_SOURCE_DIR}/COPYING.LGPLv2.1" "${FFmpeg_SOURCE_DIR}/LICENSE.md" cmake/ffmpeg-vp9-nvdec.patch
+# FFmpeg's with the changes made to it (.patch/ffmpeg), which its LGPL wants carried with the binaries
+install(FILES "${FFmpeg_SOURCE_DIR}/COPYING.LGPLv2.1" "${FFmpeg_SOURCE_DIR}/LICENSE.md"
+              .patch/ffmpeg/0001-vp9-nvdec.patch .patch/ffmpeg/0002-h264-bigendian.patch
         DESTINATION ${licenses}/FFmpeg)
 if(TARGET snx_zlib) # in FFmpeg's PNG decoder and encoder
     install(FILES "${zlib_SOURCE_DIR}/LICENSE" DESTINATION ${licenses}/zlib)

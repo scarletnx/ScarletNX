@@ -7,8 +7,8 @@
 # download checked by hand against the release's own digest, never of what the next configure happens to fetch
 # (docs/dev/build.md, "Third-party packages").
 #
-# Patching a package: snx_patched_copy (cmake/patched_copy.cmake) on a copy in the build tree, never CPMUtil's patches,
-# which leave a <package>_CUSTOM_DIR unpatched.
+# Patching a package: a patch in .patch/<key>/, named in its entry's "patches", which CPMUtil applies without fuzz to
+# the release it extracts.
 include("${PROJECT_SOURCE_DIR}/cmake/packages.cmake")
 
 # Tracy's release: the client an SNX_TRACY build pins below, and the tracy-capture the driver's help and the runtime's
@@ -290,14 +290,10 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # (src/nx/gpu/vk/fsr2, gpu/nvn/nvn_dlss.c): its library and Vulkan backend's sources and its GLSL passes, which the
     # build compiles (cmake/fsr2_shaders.cmake). The archive's prebuilt tools (tools/sc, Windows programs) are not used
     AddJsonPackage(NAME fidelityfx-fsr2 DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
-    # A copy of its library with one patch (cmake/fsr2-memory-types.patch): the backend takes device-local memory only
-    # from a type that is not host-visible, and found none where every device-local type is (lavapipe, some integrated
-    # GPUs), so no context could be made there
-    include("${PROJECT_SOURCE_DIR}/cmake/patched_copy.cmake")
-    set(snx_fsr2_api_dir "${PROJECT_BINARY_DIR}/fsr2-api")
-    snx_patched_copy(SOURCE "${FidelityFX-FSR2_SOURCE_DIR}/src/ffx-fsr2-api" DEST "${snx_fsr2_api_dir}"
-                     PATCHES "${PROJECT_SOURCE_DIR}/cmake/fsr2-memory-types.patch"
-                     FILES vk/ffx_fsr2_vk.cpp e25f2e7a5ed1faa7a439c4cac0582212b738eac75174f95371accaf2c6552f7e)
+    # Its library carries one patch (.patch/fidelityfx-fsr2/0001-memory-types.patch): the backend takes device-local
+    # memory only from a type that is not host-visible, and found none where every device-local type is (lavapipe, some
+    # integrated GPUs), so no context could be made there
+    set(snx_fsr2_api_dir "${FidelityFX-FSR2_SOURCE_DIR}/src/ffx-fsr2-api")
     # RenderDoc's in-application API, one header (renderdoc, gpu/vk/renderdoc.c), from the release tag
     snx_package_file(renderdoc_app)
 

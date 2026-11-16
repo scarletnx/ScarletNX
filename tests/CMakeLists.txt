@@ -2202,11 +2202,8 @@ if(Python3_Interpreter_FOUND)
     endif()
 endif()
 
-# a package patched in the build tree from the cache's copy as released (cmake/patched_copy.cmake)
-add_test(NAME patched_copy COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
-         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/patched-copy-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/patched_copy_test.cmake")
 # what CPMUtil and snx_package_file keep in the package cache: a failed download said, a cut package fetched again,
-# one fetch of a package at a time (cmake/packages.cmake)
+# one fetch of a package at a time, the patches applied without fuzz (cmake/packages.cmake)
 add_test(NAME cpmutil_cache COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpmutil-cache-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/cpmutil_cache_test.cmake")
 # the dependency cache's keys and how a build is published to it (cmake/deps_cache.cmake)

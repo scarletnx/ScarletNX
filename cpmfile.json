@@ -45,12 +45,19 @@
     "ffmpeg": {
         "hash": "7756f8434371b9bc1d01cf578bf49014e058b0869c3c1df05030f5f4035f1def64b2e7dba3cf340da4dc8dd9239dd5f894530c9e45793ac27876807079aa546a",
         "package": "FFmpeg",
+        "patches": [
+            "0001-vp9-nvdec.patch",
+            "0002-h264-bigendian.patch"
+        ],
         "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
         "version": "9.0.2"
     },
     "fidelityfx-fsr2": {
         "hash": "0a7401431c2c5c4f8c940089c42077e497b62d09b10bd22110e68d49c0d2d27183660a515ea4b1c58942483420c1e6a93ee9bac5f0c0fef5584f590fa238c310",
         "package": "FidelityFX-FSR2",
+        "patches": [
+            "0001-memory-types.patch"
+        ],
         "repo": "GPUOpen-Effects/FidelityFX-FSR2",
         "version": "v2.2.1"
     },
