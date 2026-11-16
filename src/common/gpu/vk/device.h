@@ -19,16 +19,19 @@
 
 #define SNX_VK_CHOICE_EXTENSIONS 96  /* the extensions a device is made with, at most */
 #define SNX_VK_CHOICE_ASKED      128 /* the extensions a renderer asks about on one device, at most */
+#define SNX_VK_NEEDS             16  /* the extensions a renderer can't run without on one device, at most */
 
 /* A physical device and queue family a renderer may make its device on, and what it chose there. choose reads phys,
-   family, properties and again, and the rest only through the functions below */
+   family, properties and again, list where a helper reads it whole, may set api, and does the rest through the
+   functions below */
 typedef struct {
     VkPhysicalDevice phys;
     uint32_t family; /* of the request's queues, presenting to its surface */
     VkPhysicalDeviceProperties properties;
-    int again; /* the device is made again, without what the first one's driver lacked a command of */
-    /* device.c's */
+    int again;    /* the device is made again, without what the first one's driver lacked a command of */
+    uint32_t api; /* the Vulkan version the renderer runs it at: the request's, or newer where choose sets it */
     const SnxVkExtensions* list; /* the device's extensions, after the settings and the bans */
+    /* device.c's */
     const VkExtensionSetting* settings;
     uint32_t setting_count;
     const char* extensions[SNX_VK_CHOICE_EXTENSIONS];
@@ -65,13 +68,20 @@ typedef struct {
     uint32_t api; /* the Vulkan version it needs, and runs the device at */
     VkQueueFlags queues;
     VkSurfaceKHR surface; /* the family presents to it; VK_NULL_HANDLE for none */
-    /* Its choice on a physical device and queue family, in the loader's order: the extensions it turns on, its features
-       and queues, and the device made (snx_vk_choice_create), true; or false to pass it over. Called again for the
-       device made again, which decides everything anew */
+    /* where given, the device it rates highest (the first of equal ones; a negative rating passes one over) is the one
+       choose is asked about, on its first family of the queues; where not, each in the loader's order, each family */
+    SnxVkScore score;
+    /* Its choice on a physical device and queue family: the extensions it turns on, its features and queues, and the
+       device made (snx_vk_choice_create), true; or false to pass it over. Called again for the device made again,
+       which decides everything anew */
     bool (*choose)(SnxVkChoice* c, void* user);
     void* user;
     const VkExtensionNeed* need; /* what it can't run without: off is refused for it, and a command it lacks fails */
     uint32_t needs;
+    /* where given, need for each device instead, from its properties and its extensions as its driver lists them, into
+       need (SNX_VK_NEEDS at most): how many */
+    uint32_t (*needs_of)(const VkPhysicalDeviceProperties* p, const SnxVkExtensions* list, VkExtensionNeed* need,
+                         void* user);
     /* the player's vk_ext_* (common/gpu/vk/device_settings.h), NULL for a renderer that takes none; vulkan_ban_ignore
        and vk_debug_hide_commands, NULL for none */
     const VkExtensionSetting* settings;
@@ -81,18 +91,20 @@ typedef struct {
     VkBanSay say;     /* each line of the log; NULL for stderr, a warning's after "warning: " */
 } SnxVkDeviceRequest;
 
-/* the device made, volk loaded for it */
+/* the device made, volk loaded for it, and its extensions */
 typedef struct {
     VkPhysicalDevice phys;
     VkDevice device;
     uint32_t family;
+    const char* extensions[SNX_VK_CHOICE_EXTENSIONS];
+    uint32_t extension_count;
     /* where none is made: every physical device was passed over, as against a table, setting or command that stops
        the device whatever the renderer asks (the 3DS asks again with one window where none presents to two) */
     bool passed_over;
 } SnxVkDevice;
 
-/* The device of the first physical device, in the loader's order, of r->api or newer whose queue family of r->queues
-   (presenting to r->surface) r->choose takes: true. False with why in err: a table, ban key, hidden command or
+/* The device of the first physical device, in the loader's order (or the one r->score rates highest), of r->api or
+   newer whose queue family of r->queues (presenting to r->surface) r->choose takes: true. False with why in err: a table, ban key, hidden command or
    setting that does not read, no device left (r->none, then each device and why), an extension r->choose turned on
    that no setting names, or one r->need names lacking a command */
 bool snx_vk_device_make(const SnxVkDeviceRequest* r, SnxVkDevice* out, char* err, size_t n);
