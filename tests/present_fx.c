@@ -504,7 +504,7 @@ int main(int argc, char** argv) {
                                          .maxSets = 16,
                                          .poolSizeCount = 1,
                                          .pPoolSizes = &size};
-        CHECK(snx_vk_ring_init(&t.ring, t.dev, t.queue, t.family, 2, &dp));
+        CHECK(snx_vk_ring_init(&t.ring, t.dev, t.queue, t.family, 2, &dp, false));
     }
     CHECK(image_make(&t, &src, 320, 240, VK_FORMAT_R8G8B8A8_UNORM,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
