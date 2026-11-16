@@ -151,17 +151,10 @@ u32 vk_shading_rate(const GpuShadingRate* r) {
         LOG_LIMIT(1, "vulkan: a shading rate image is shaded at the full rate: the device has no way to read it\n");
         return 0;
     }
-    /* VK_NV_shading_rate_image reads the palettes at each draw: a new palette alone needs no new image */
-    if (!r->new_image && g_vk.vrs == VK_VRS_NV && g_rate.valid) {
-        g_rate.id++;
+    int reuse = vk_vrs_reuse(g_vk.vrs, r->new_image, g_rate.valid, g_rate.palette[0], r->palette[0]);
+    if (reuse != VK_VRS_CONVERT) {
         memcpy(g_rate.palette, r->palette, sizeof g_rate.palette);
-        return g_rate.id;
-    }
-    /* VK_KHR_fragment_shading_rate's image holds viewport 0's rates: the game sets each viewport's palette in each
-       frame (five in one game), and the others change nothing in it */
-    if (!r->new_image && g_vk.vrs == VK_VRS_KHR && g_rate.valid && r->palette[0] == g_rate.palette[0]) {
-        memcpy(g_rate.palette, r->palette, sizeof g_rate.palette);
-        return g_rate.id;
+        return reuse == VK_VRS_NEW_ID ? ++g_rate.id : g_rate.id;
     }
     /* the game's texels as a compute program reads a texture (the guest's size where a scaled target has a copy of
        it): the last texels the GPU or the CPU wrote, from the texture header, as a draw takes it */
@@ -177,11 +170,9 @@ u32 vk_shading_rate(const GpuShadingRate* r) {
         g_rate.valid = 0;
         return 0;
     }
-    /* the device's pixels that a texel of the image covers: the game's texel at the resolution scale, over the texels
-       of a scaled image where no copy of the guest's size could be made */
-    u32 game_texel = (u32)((float)r->texel * g_vk_scale * (float)game->w / (float)game->sw + 0.5f);
     VkVrsPush push;
-    vk_vrs_push(g_vk.vrs, g_vk.vrs_texel, game->sw, game->sh, game_texel ? game_texel : 1, r->palette[0], &push);
+    vk_vrs_push(g_vk.vrs, g_vk.vrs_texel, game->sw, game->sh, vk_vrs_game_texel(r->texel, g_vk_scale, game->w, game->sw),
+                r->palette[0], &push);
     VkComponentMapping identity = {0};
     VkImageView in = vk_tex_view(game, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
     VkDescriptorSet set = in && rate_image(push.size_x, push.size_y) ? vk_desc_alloc(g_rate.ds) : VK_NULL_HANDLE;
