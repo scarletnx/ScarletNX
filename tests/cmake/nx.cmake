@@ -289,6 +289,18 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
              --vk-debug-hide-commands=vkCmdSetDepthClampRangeEXT,vkCmdBeginConditionalRenderingEXT)
     set_tests_properties(vulkan_headless_hidden_commands PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # what the player gave that does not read stops the game (FATAL), saying the value given and what holds: a
+    # vulkan_ban_ignore key the table has not, a hidden command no extension requires, and off for an extension a
+    # Vulkan 1.2 device can't run without (common/gpu/vk/device.c, gpu/vk/device.c create_device)
+    add_test(NAME vulkan_headless_bad_ban_key COMMAND snx-test-vulkan -H --vulkan-ban-ignore=VK_KHR_present_id3)
+    set_tests_properties(vulkan_headless_bad_ban_key PROPERTIES TIMEOUT 60 PASS_REGULAR_EXPRESSION
+        "FATAL: settings: vulkan_ban_ignore=VK_KHR_present_id3: VK_KHR_present_id3 is no key of the extension bans. the nearest it has: VK_KHR_present_id2")
+    add_test(NAME vulkan_headless_bad_hidden_command COMMAND snx-test-vulkan -H --vk-debug-hide-commands=vkCmdNope)
+    set_tests_properties(vulkan_headless_bad_hidden_command PROPERTIES TIMEOUT 60 PASS_REGULAR_EXPRESSION
+        "FATAL: settings: vk_debug_hide_commands=vkCmdNope: vkCmdNope is no device command a Vulkan extension requires")
+    add_test(NAME vulkan_headless_needed_off COMMAND snx-test-vulkan -H --vk-api=1.2 --vk-khr-synchronization2=off)
+    set_tests_properties(vulkan_headless_needed_off PROPERTIES TIMEOUT 60 PASS_REGULAR_EXPRESSION
+        "FATAL: settings: vk_khr_synchronization2=off turns off VK_KHR_synchronization2, which ScarletNX can't run without on this device: the device has Vulkan 1.2")
     # every check again with each vertex layout in its pipeline: the default run sets it as dynamic state where the
     # device has VK_EXT_vertex_input_dynamic_state (gpu/vk/vertex_input.c), and both find each draw's own layout
     add_test(NAME vulkan_headless_vertex_input_off COMMAND snx-test-vulkan -H --vertex-input-dynamic-state=off)

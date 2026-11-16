@@ -139,7 +139,7 @@ static uint32_t best(const SnxVkDeviceRequest* r, const VkPhysicalDevice* device
    choose saw them and needs what it can't run without; 0 with none, each one's reason in reasons; -1 with err, which
    stops the device */
 static int pass(const SnxVkDeviceRequest* r, int again, VkBanSay say, SnxVkChoice* c, SnxVkExtensions* list,
-                Needs* needs, char* reasons, size_t reasons_n, char* err, size_t n) {
+                Needs* needs, SnxVkDevice* out, char* reasons, size_t reasons_n, char* err, size_t n) {
     uint32_t count = 0;
     VkPhysicalDevice* devices = snx_vk_physical_devices(r->instance, &count);
     uint32_t only = r->score ? best(r, devices, count) : UINT32_MAX;
@@ -187,6 +187,7 @@ static int pass(const SnxVkDeviceRequest* r, int again, VkBanSay say, SnxVkChoic
             break;
         }
         if (!vk_extension_settings(list, r->settings, r->setting_count, needs->need, needs->count, err, n)) {
+            out->refused = SNX_VK_REFUSED_SETTING;
             made = -1;
             break;
         }
@@ -255,16 +256,21 @@ bool snx_vk_device_make(const SnxVkDeviceRequest* r, SnxVkDevice* out, char* err
     /* the drivers known to break an extension or feature, read before any is turned on: a table the build carries
        that does not read is the build's fault; a key of vulkan_ban_ignore the table has not, or a hidden command no
        extension requires, is the player's, who meant something that would otherwise go untested */
-    if (!vk_bans_load(r->bans ? r->bans : snx_vk_extension_bans_text, err, n) ||
-        !vk_bans_ignore(r->ban_ignore ? r->ban_ignore : "", err, n) || !snx_vk_hide_check(r->hide, err, n))
+    if (!vk_bans_load(r->bans ? r->bans : snx_vk_extension_bans_text, err, n)) {
+        out->refused = SNX_VK_REFUSED_TABLE;
         return false;
+    }
+    if (!vk_bans_ignore(r->ban_ignore ? r->ban_ignore : "", err, n) || !snx_vk_hide_check(r->hide, err, n)) {
+        out->refused = SNX_VK_REFUSED_SETTING;
+        return false;
+    }
     SnxVkChoice c;
     SnxVkExtensions list = {0};
     Needs needs;
     /* made again once at most: a device made again that lacks a command fails (snx_vk_device_commands) */
     for (int again = 0;; again = 1) {
         char reasons[2048] = "";
-        int made = pass(r, again, say, &c, &list, &needs, reasons, sizeof reasons, err, n);
+        int made = pass(r, again, say, &c, &list, &needs, out, reasons, sizeof reasons, err, n);
         if (made < 0) return false;
         if (!made) {
             snprintf(err, n, "%s: %s", r->none, reasons);

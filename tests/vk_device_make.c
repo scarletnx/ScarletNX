@@ -213,7 +213,7 @@ static void check_settings_before_bans(void) {
                            "this device: the window is drawn with it") &&
               !g_test.creates,
           "off for what the renderer can't run without fails the device, saying the value");
-    CHECK(!d.passed_over, "an error that stops the device, whatever the renderer would ask");
+    CHECK(!d.passed_over && d.refused == SNX_VK_REFUSED_SETTING, "a setting's error, whatever the renderer would ask");
 
     reset();
     g_test.enable[0] = "VK_KHR_swapchain";
@@ -333,7 +333,8 @@ static void check_devices(void) {
                            "GPU B refuses the device: vkCreateDevice gave VK_ERROR_INITIALIZATION_FAILED (-3); "
                            "Stand-in GPU C has no queue family of graphics and compute queues"),
           "no device left: each passed over, in the loader's order, with its reason");
-    CHECK(d.passed_over && !d.device, "and the device says so, as against an error that stops it");
+    CHECK(d.passed_over && !d.device && d.refused == SNX_VK_REFUSED_NONE,
+          "and the device says so, as against an error that stops it");
     CHECK(said("test gpu: Stand-in GPU Old is passed over: it has Vulkan 1.1, below the 1.3 it needs\n"),
           "each said as it is passed over");
 
@@ -447,17 +448,25 @@ static void check_request(void) {
     r.ban_ignore = "VK_EXT_shader_objects";
     CHECK(!snx_vk_device_make(&r, &d, err, sizeof err) &&
               strstr(err, "vulkan_ban_ignore=VK_EXT_shader_objects: VK_EXT_shader_objects is no key of the extension "
-                          "bans; the nearest it has: VK_EXT_shader_object") == err,
-          "a key the table has not is refused, with the value given");
+                          "bans; the nearest it has: VK_EXT_shader_object") == err &&
+              d.refused == SNX_VK_REFUSED_SETTING,
+          "a key the table has not is refused, with the value given: a setting's error");
     r.ban_ignore = NULL;
     r.hide = "vkCreateShaderEXT";
     CHECK(!snx_vk_device_make(&r, &d, err, sizeof err) &&
-              strstr(err, "vk_debug_hide_commands=vkCreateShaderEXT: vkCreateShaderEXT is no device command"),
-          "a hidden command no extension requires is refused, with the value given");
+              strstr(err, "vk_debug_hide_commands=vkCreateShaderEXT: vkCreateShaderEXT is no device command") &&
+              d.refused == SNX_VK_REFUSED_SETTING,
+          "a hidden command no extension requires is refused, with the value given: a setting's error");
     r.hide = NULL;
+    r.bans = "key | action\n";
+    CHECK(!snx_vk_device_make(&r, &d, err, sizeof err) && d.refused == SNX_VK_REFUSED_TABLE &&
+              strstr(err, "extension_bans.txt:1: "),
+          "a table that does not read is the table's error, said with its line");
+    r.bans = g_bans;
     r.setting_count = VK_EXTENSION_SETTINGS + 1;
     CHECK(!snx_vk_device_make(&r, &d, err, sizeof err) &&
-              !strcmp(err, "161 extension settings, past the 160 the renderer keeps"),
+              !strcmp(err, "161 extension settings, past the 160 the renderer keeps") &&
+              d.refused == SNX_VK_REFUSED_SETTING,
           "more settings than the renderer keeps are refused before any is read");
 }
 
