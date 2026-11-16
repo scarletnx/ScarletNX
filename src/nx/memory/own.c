@@ -14,7 +14,11 @@
    for the GPU's work on its entries with no lock held (OwnHooks' wait). A landing takes the producer's lock before it
    marks its entries, and holds it until they are let go and released: every thread that waits on g_own.cv for a mark
    (own_begin, own_drop, a landing) holds that lock too, so the mark is its own, never one of a thread that waits for
-   the lock in turn. The landing runs with no lock of ours held, so a thread holding the kernel's lock may fault on
+   the lock in turn. A landing in two steps (OwnHooks' land_start) lets go of the producer's lock while the GPU copies,
+   with its entries marked. From then on it takes no lock of the producer's, so a holder that waits for its marks
+   (own_begin, own_drop, another landing) sees them go. Its pages are noted (OwnState's inflight), and no owner or
+   watch comes on them until it is done (own_begin, own_watch): the producer's lock kept them away before. The
+   landing runs with no lock of ours held, so a thread holding the kernel's lock may fault on
    owned memory, as long as no holder of the producer's lock waits for the kernel's (nvdrv.c's syncpt_add_quiet). One
    holding mem.c's lock may not: holders of the producer's lock wait for it (own_begin, every mapping change), so mem.c
    lands what it touches first (own_acquire). Nor may one holding the producer's lock, on an owned page (its landing
@@ -47,6 +51,8 @@
 #include "snx_settings.h"
 
 OwnState g_own = {.lk = PMUTEX_INIT, .trap_lk = PMUTEX_INIT};
+/* this thread lets go of the producer's lock in a landing that goes on without it (land_pages, land_start) */
+static _Thread_local int t_own_window;
 #define OWN_REGION_SHIFT 22 /* the 4 MB regions of g_own.region */
 static void cover_nl(const Own* o, u32 d) {
     if (!g_own.region || o->hi <= o->lo) return;
@@ -206,6 +212,23 @@ static int landing_nl(u64 lo, u64 hi) {
     for (i = first_after_nl(lo); i < g_own.nown && g_own.ent[i].lo < hi; i++)
         if (g_own.ent[i].landing) return 1;
     return 0;
+}
+/* whether a landing that let go of the producer's lock is on a host page of [lo, hi) (OwnState's inflight) */
+static int inflight_nl(u64 lo, u64 hi) {
+    u64 plo = lo & ~(g_own.page - 1), phi = (hi + g_own.page - 1) & ~(g_own.page - 1);
+    for (u32 i = 0; i < g_own.ninflight; i++)
+        if (g_own.inflight[i][0] < phi && plo < g_own.inflight[i][1]) return 1;
+    return 0;
+}
+/* waits until no landing that let go of the producer's lock is on the host pages of [lo, hi). An owner or a watch waits
+   before it reads the pages' CPU bytes (snap_pages): a landing that opens a page after that read leaves it armed with
+   no copy of them. No new landing comes meanwhile, as the caller holds the producer's lock, which a landing takes
+   first */
+static void inflight_wait(u64 lo, u64 hi) {
+    if (!__atomic_load_n(&g_own.ninflight, __ATOMIC_ACQUIRE)) return;
+    pm_lock(&g_own.lk);
+    while (inflight_nl(lo, hi)) pc_wait(&g_own.cv, &g_own.lk, -1);
+    pm_unlock(&g_own.lk);
 }
 
 /* resources to release once g_own.lk is let go (release may take the producer's lock) */
@@ -613,10 +636,31 @@ static void land_pages(u64 lo, u64 hi, int by) {
         if (o->lo < elo) elo = o->lo;
         if (o->hi > ehi) ehi = o->hi;
     }
+    /* The GPU's copy with the producer's lock let go (OwnHooks' land_start): a draw or a dispatch then goes on while
+       the GPU copies, and does not wait for the copy. Only a thread that did not hold that lock before can let go of
+       it, and only while there is room to note its pages. Until this landing is done, no owner or watch comes on its
+       pages (own_begin, own_watch): the producer's lock kept them away before */
+    u64 plo = elo & ~(g_own.page - 1), phi = (ehi + g_own.page - 1) & ~(g_own.page - 1);
+    int two = !busy && g_own.hooks.land_start && g_own.hooks.land_end && g_own.ninflight < OWN_INFLIGHT_MAX, let = 0;
+    if (two) {
+        g_own.inflight[g_own.ninflight][0] = plo;
+        g_own.inflight[g_own.ninflight][1] = phi;
+        __atomic_store_n(&g_own.ninflight, g_own.ninflight + 1, __ATOMIC_RELEASE);
+    }
     pm_unlock(&g_own.lk);
     __atomic_add_fetch(&g_own.land_bytes, total, __ATOMIC_RELAXED);
     SNX_ZONE_TV(z_land, "own land", total, "%u ranges", n);
-    g_own.hooks.land(r, dst, n);
+    if (two) {
+        void* handle = g_own.hooks.land_start(r, dst, n);
+        if (handle) {
+            t_own_window = 1;
+            producer_unlock();
+            t_own_window = 0;
+            let = 1;
+            g_own.hooks.land_end(handle);
+        }
+    } else
+        g_own.hooks.land(r, dst, n);
     __atomic_add_fetch(&g_own.lands, 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&g_own.lands_by[by], 1, __ATOMIC_RELAXED);
     if (!mirror)
@@ -644,10 +688,22 @@ static void land_pages(u64 lo, u64 hi, int by) {
     scratch_put(&g_own.stage, stage);
     /* the pages go before the resources: no page is left armed with no entry on it past this landing (own_stage
        reads such a page directly) */
-    let_go(elo & ~(g_own.page - 1), (ehi + g_own.page - 1) & ~(g_own.page - 1));
+    let_go(plo, phi);
     if (kept[1]) let_go(kept[0], kept[1]);
+    if (two) { /* its pages take owners and watches again */
+        pm_lock(&g_own.lk);
+        for (i = 0; i < g_own.ninflight; i++)
+            if (g_own.inflight[i][0] == plo && g_own.inflight[i][1] == phi) {
+                g_own.inflight[i][0] = g_own.inflight[g_own.ninflight - 1][0];
+                g_own.inflight[i][1] = g_own.inflight[g_own.ninflight - 1][1];
+                __atomic_store_n(&g_own.ninflight, g_own.ninflight - 1, __ATOMIC_RELEASE);
+                break;
+            }
+        pc_broadcast(&g_own.cv);
+        pm_unlock(&g_own.lk);
+    }
     res_release(&rel);
-    producer_unlock();
+    if (!let) producer_unlock();
 }
 
 /* ---------------------------------------------------------------- traps */
@@ -805,6 +861,7 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off) {
     u32 i, n, nedge = 0;
     if (!g_own.traps || !size || addr >= AS_SIZE || size > AS_SIZE - addr) return -1;
     hi = (end + g_own.page - 1) & ~(g_own.page - 1);
+    inflight_wait(lo, hi);
     /* the pages in the pool, mapped here only (the caller holds the renderer's lock, as host memory changes do) */
     if (mem_own_prepare(lo, hi - lo, runs, sizeof runs / sizeof *runs, &n)) return -1;
     /* in place: an edge page with CPU bytes on it, armed by no owner yet (so readable), keeps a copy of them for
@@ -817,7 +874,7 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off) {
         if (last_edge) snap_pages(last, hi, edge, snap, &nedge);
     }
     pm_lock(&g_own.lk);
-    while (landing_nl(addr, end)) pc_wait(&g_own.cv, &g_own.lk, -1);
+    while (landing_nl(addr, end) || inflight_nl(lo, hi)) pc_wait(&g_own.cv, &g_own.lk, -1);
     u8* held = scratch_get(&g_own.held, (hi - lo) / g_own.page, HELD_KEEP);
     held_pages_nl(lo, hi, held);
     Own nw[16]; /* an entry a run of pool pages, so each has one place in the mirror */
@@ -1014,6 +1071,7 @@ int own_watch(u64 addr, u64 size) {
     u32 i, n, nsnap = 0;
     if (!g_own.traps || !size || addr >= AS_SIZE || size > AS_SIZE - addr) return -1;
     hi = (end + g_own.page - 1) & ~(g_own.page - 1);
+    inflight_wait(lo, hi);
     if (mem_own_prepare(lo, hi - lo, runs, sizeof runs / sizeof *runs, &n)) return -1;
     /* in place: each page armed by no entry yet keeps a copy of its bytes, all of them the CPU's, for own_stage. Read
        without faulting, as own_begin's edges: a page that can't be read is armed already and keeps what it has */
@@ -1024,7 +1082,7 @@ int own_watch(u64 addr, u64 size) {
         snap_pages(lo, hi, snap_page, snap, &nsnap);
     }
     pm_lock(&g_own.lk);
-    while (landing_nl(addr, end)) pc_wait(&g_own.cv, &g_own.lk, -1);
+    while (landing_nl(addr, end) || inflight_nl(lo, hi)) pc_wait(&g_own.cv, &g_own.lk, -1);
     u8* held = scratch_get(&g_own.held, (hi - lo) / g_own.page, HELD_KEEP);
     held_pages_nl(lo, hi, held);
     /* each run of pool pages, in the gaps between the owners on it: an older watch there is replaced */
@@ -1087,7 +1145,9 @@ int own_covered(u64 addr, u64 size) {
 
 int own_owed_take(u64* addr, u64* size) {
     int any = 0;
-    if (!__atomic_load_n(&g_own.nowed, __ATOMIC_ACQUIRE)) return 0;
+    /* not in a landing's own let go of the producer's lock: a watch there could wait for that landing's pages
+       (own_watch). The spans stay for the next thread that lets go of the lock */
+    if (t_own_window || !__atomic_load_n(&g_own.nowed, __ATOMIC_ACQUIRE)) return 0;
     pm_lock(&g_own.lk);
     u32 n = g_own.nowed;
     if (n) {

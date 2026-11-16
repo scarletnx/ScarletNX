@@ -26,15 +26,9 @@ static struct {
         u64 granule;
         u32 present;
     } cpu_read[CPU_READ_SLOTS];
-    /* Separate from frame pools and rings: frame result callbacks may acquire
-       the owner being read back. Reused after its timeline value is reached, under vk_lock. */
-    VkCommandPool pool;
-    VkCommandBuffer cb;
-    VkHostTimeline done; /* each landing's copy signals it on one queue (land_apart's), waited for under vk_lock */
-    VkBuffer back;
-    DevMem mem;
-    u8* ptr;
-    u64 cap;
+    /* each landing's copy signals it on one queue (land_apart's): a value is taken under vk_lock, as the copy is
+       submitted, and waited for with or without it */
+    VkHostTimeline done;
     u64 serial; /* the last VkOwnRes.serial given */
     /* the results with a buffer of their own that are in use, and their buffers' bytes: any thread adds and takes */
     u64 live[VK_OWN_BY_N], live_bytes[VK_OWN_BY_N];
@@ -514,26 +508,56 @@ int vk_own_cpu_read(u64 cpu, u64 size, u32 presents) {
     }
     return 0;
 }
-static void land_prepare(u64 size) {
-    if (!g_owned.pool) {
+/* A landing's staging: the copy's commands and the host-cached buffer it copies into. Separate from frame pools and
+   rings: frame result callbacks may acquire the owner being read back. A landing that lets go of vk_lock while the GPU
+   copies (own_land_start) keeps its slot until own_land_end, and the landings meanwhile take others. A slot is one
+   landing's at a time: taken and put back under g_land_lk */
+typedef struct LandSlot {
+    VkCommandPool pool;
+    VkCommandBuffer cb;
+    VkBuffer back;
+    DevMem mem;
+    u8* ptr;
+    u64 cap;
+    struct LandSlot* next;
+} LandSlot;
+static LandSlot* g_land_free;
+static PMutex g_land_lk = PMUTEX_INIT;
+static LandSlot* land_slot_take(void) {
+    pm_lock(&g_land_lk);
+    LandSlot* s = g_land_free;
+    if (s) g_land_free = s->next;
+    pm_unlock(&g_land_lk);
+    if (!s && !(s = (LandSlot*)calloc(1, sizeof *s))) fatal("vulkan: out of memory for an ownership readback");
+    return s;
+}
+static void land_slot_put(LandSlot* s) {
+    pm_lock(&g_land_lk);
+    s->next = g_land_free;
+    g_land_free = s;
+    pm_unlock(&g_land_lk);
+}
+/* under vk_lock: the slot's commands, and room for size bytes */
+static void land_prepare(LandSlot* s, u64 size) {
+    if (!s->pool) {
         VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                       .queueFamilyIndex = land_apart() ? g_vk.compute_family : g_vk.gfx_family};
-        if (!VK_OK(vkCreateCommandPool(g_vk.dev, &pi, NULL, &g_owned.pool)))
+        if (!VK_OK(vkCreateCommandPool(g_vk.dev, &pi, NULL, &s->pool)))
             fatal("vulkan: could not create the ownership readback queue resources");
         VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                                          .commandPool = g_owned.pool,
+                                          .commandPool = s->pool,
                                           .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
-        if (!VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &g_owned.cb)))
+        if (!VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &s->cb)))
             fatal("vulkan: could not allocate the ownership readback commands");
     }
-    if (size <= g_owned.cap) return;
+    if (size <= s->cap) return;
     u64 cap = 4096, limit = g_vk.alloc_cap / 4;
     while (cap < size && cap < limit) cap = cap > limit / 2 ? limit : cap * 2;
     if (cap > limit) cap = limit;
     if (size > cap) fatal("vulkan: ownership readback exceeds its allocation limit");
-    if (g_owned.back) {
-        vk_mem_untrack(g_owned.mem);
-        vk_devmem_buffer_destroy(g_owned.back, g_owned.mem);
+    if (s->back) {
+        vk_mem_untrack(s->mem);
+        vk_devmem_buffer_destroy(s->back, s->mem);
     }
     u32 fam[2];
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = cap,
@@ -542,113 +566,175 @@ static void land_prepare(u64 size) {
     land_sharing(&bi, fam);
     DevMemWant ai = {.at = DM_CACHED, .mapped = 1};
     DevMemInfo info;
-    if (!VK_OK(vk_buffer_create(&bi, &ai, &g_owned.back, &g_owned.mem, &info)))
+    if (!VK_OK(vk_buffer_create(&bi, &ai, &s->back, &s->mem, &info)))
         fatal("vulkan: no host memory for ownership readback");
-    vk_mem_track(g_owned.mem, VK_OWN_OWNED);
-    g_owned.ptr = info.ptr;
-    g_owned.cap = cap;
+    vk_mem_track(s->mem, VK_OWN_OWNED);
+    s->ptr = info.ptr;
+    s->cap = cap;
 }
 
 /* the submission a resource's writes are in (0: unstamped, everything submitted): own.c's writer, on a thread without
    vk_lock too */
 static u64 own_writer(void* res) { return __atomic_load_n(&((const VkOwnRes*)res)->written, __ATOMIC_ACQUIRE); }
-/* own.c's land uses a private reusable command pool and host-cached buffer.
-   Frame result callbacks run only once own.c has removed the landing marks. */
+
+/* what a landing's copies wait for, worked out under vk_lock before the first */
+typedef struct {
+    u64 writer;
+    int apart, finished;
+    VkQueue queue;
+} LandCtx;
+static LandCtx land_ctx(const OwnRange* r, u32 n) {
+    LandCtx c = {0};
+    for (u32 k = 0; k < n; k++) {
+        u64 w = own_writer(r[k].res);
+        cpu_read_note(r[k].addr, r[k].size);
+        if (w > c.writer) c.writer = w;
+    }
+    c.apart = land_apart();
+    c.queue = c.apart ? g_vk.compute : g_vk.gfx;
+    /* done on the GPU already (own_wait waited for it with no lock held): the copy waits for that submission's
+       signal, which is there, and for nothing of the recording thread, whose queue calls it takes the queue's lock
+       beside. Waiting for them held vk_lock while the recording thread waited for a draw's pipeline */
+    u64 gpu_done = 0;
+    c.finished = c.writer && c.writer <= vk_last_submit() &&
+                 VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, vk_gfx_timeline(), &gpu_done)) && gpu_done >= c.writer;
+    /* the open commands go only when the writes are among them: on the graphics queue the copy follows them anyway */
+    if (!c.finished && (!c.apart || !c.writer || c.writer > vk_last_submit()))
+        vk_submit_for_readback();
+    else if (!c.finished)
+        vk_rec_sync(); /* the recorder's calls on the queue (the compute one may be its too) before the copy's */
+    /* unstamped: everything submitted. Past the last submission: nothing was recording, so nothing of it was written
+       there, and a wait for a value never signaled would never end */
+    if (!c.writer || c.writer > vk_last_submit()) c.writer = vk_last_submit();
+    return c;
+}
+#define LAND_PIECES 64
+/* the next pieces of r[] from (*i, *done), up to cap bytes and LAND_PIECES pieces: their bytes */
+static u64 land_gather(const OwnRange* r, u8* const* dst, u32 n, u32* i, u64* done, u64 cap, Piece* pc, u32* np) {
+    u64 total = 0;
+    *np = 0;
+    while (*i < n && *np < LAND_PIECES && total < cap) {
+        u64 len = r[*i].size - *done < cap - total ? r[*i].size - *done : cap - total;
+        pc[*np].res = (const VkOwnRes*)r[*i].res;
+        pc[*np].src = r[*i].res_off + *done;
+        pc[*np].at = total;
+        pc[*np].size = len;
+        pc[*np].dst = dst[*i] + *done;
+        (*np)++;
+        total += len;
+        *done += len;
+        if (*done == r[*i].size) {
+            (*i)++;
+            *done = 0;
+        }
+    }
+    return total;
+}
+/* under vk_lock: the pieces copied into s's buffer, submitted. The value the copy signals on g_owned.done */
+static u64 land_submit(LandSlot* s, const LandCtx* c, const Piece* pc, u32 np, u64 total) {
+    land_prepare(s, total);
+    VkCommandBuffer cb = s->cb;
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    if (!VK_OK(vkResetCommandPool(g_vk.dev, s->pool, 0)) || !VK_OK(vkBeginCommandBuffer(cb, &bi)))
+        fatal("vulkan: could not begin ownership readback");
+    land_barrier(cb, 1);
+    for (u32 j = 0; j < np; j++) {
+        VkBufferCopy cp = {pc[j].src, pc[j].at, pc[j].size};
+        vkCmdCopyBuffer(cb, pc[j].res->buf, s->back, 1, &cp);
+    }
+    land_barrier(cb, 0);
+    VkCommandBufferSubmitInfo ci = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb};
+    /* on the compute queue, the writer's submission alone: its signal carries the writes to the copy */
+    VkSemaphoreSubmitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                .semaphore = vk_gfx_timeline(),
+                                .value = c->writer,
+                                .stageMask = VK_PIPELINE_STAGE_2_COPY_BIT};
+    u64 value = vk_host_next(&g_owned.done);
+    VkSemaphoreSubmitInfo di = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                .semaphore = g_owned.done.sem,
+                                .value = value,
+                                .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                        .waitSemaphoreInfoCount = (c->apart || c->finished) && c->writer ? 1u : 0u,
+                        .pWaitSemaphoreInfos = &wi,
+                        .commandBufferInfoCount = 1,
+                        .pCommandBufferInfos = &ci,
+                        .signalSemaphoreInfoCount = 1,
+                        .pSignalSemaphoreInfos = &di};
+    if (!value || !VK_OK(vkEndCommandBuffer(cb))) fatal("vulkan: could not submit ownership readback");
+    if (c->apart || c->finished) {
+        if (!c->finished) vk_rec_queue(c->queue); /* after the recorder's compute submissions, as cs_submit's */
+        vk_queue_lock(c->queue);
+    }
+    VkResult sr = vkQueueSubmit2(c->queue, 1, &si, VK_NULL_HANDLE);
+    if (c->apart || c->finished) vk_queue_unlock(c->queue);
+    if (!VK_OK(sr)) fatal("vulkan: could not submit ownership readback");
+    return value;
+}
+/* with vk_lock or without it: the copy done, its bytes where the pieces go */
+static void land_finish(const LandSlot* s, u64 value, const Piece* pc, u32 np, u64 total) {
+    gpu_wait_note("GPU-owned memory readback", 0);
+    int ok = vk_host_wait(&g_owned.done, value);
+    gpu_wait_note(NULL, 0);
+    if (!ok) { /* a GPU fault (Xid 109's CTX SWITCH TIMEOUT, say): name the draw that hung, from its checkpoints */
+        vk_checkpoint_dump("device lost");
+    }
+    if (!ok || !VK_OK(vk_devmem_invalidate(s->mem, 0, total))) fatal("vulkan: could not complete ownership readback");
+    for (u32 j = 0; j < np; j++) memcpy(pc[j].dst, s->ptr + pc[j].at, pc[j].size);
+}
+/* own.c's land: every copy waited for under vk_lock */
 static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
     u64 cap = g_vk.alloc_cap / 4, done = 0;
     u32 i = 0;
     SNX_ZONE_V(z, "vk own land", n);
     vk_lock();
-    u64 writer = 0;
-    for (u32 k = 0; k < n; k++) {
-        u64 w = own_writer(r[k].res);
-        cpu_read_note(r[k].addr, r[k].size);
-        if (w > writer) writer = w;
-    }
-    int apart = land_apart();
-    VkQueue queue = apart ? g_vk.compute : g_vk.gfx;
-    /* done on the GPU already (own_wait waited for it with no lock held): the copy waits for that submission's
-       signal, which is there, and for nothing of the recording thread, whose queue calls it takes the queue's lock
-       beside. Waiting for them held vk_lock while the recording thread waited for a draw's pipeline */
-    u64 gpu_done = 0;
-    int finished = writer && writer <= vk_last_submit() &&
-                   VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, vk_gfx_timeline(), &gpu_done)) && gpu_done >= writer;
-    /* the open commands go only when the writes are among them: on the graphics queue the copy follows them anyway */
-    if (!finished && (!apart || !writer || writer > vk_last_submit()))
-        vk_submit_for_readback();
-    else if (!finished)
-        vk_rec_sync(); /* the recorder's calls on the queue (the compute one may be its too) before the copy's */
-    /* unstamped: everything submitted. Past the last submission: nothing was recording, so nothing of it was written
-       there, and a wait for a value never signaled would never end */
-    if (!writer || writer > vk_last_submit()) writer = vk_last_submit();
+    LandCtx c = land_ctx(r, n);
+    LandSlot* s = land_slot_take();
     while (i < n) {
-        Piece pc[64];
-        u32 np = 0, j;
-        u64 total = 0;
-        while (i < n && np < sizeof pc / sizeof *pc && total < cap) {
-            u64 len = r[i].size - done < cap - total ? r[i].size - done : cap - total;
-            pc[np].res = (const VkOwnRes*)r[i].res;
-            pc[np].src = r[i].res_off + done;
-            pc[np].at = total;
-            pc[np].size = len;
-            pc[np].dst = dst[i] + done;
-            np++;
-            total += len;
-            done += len;
-            if (done == r[i].size) {
-                i++;
-                done = 0;
-            }
-        }
-        land_prepare(total);
-        VkCommandBuffer cb = g_owned.cb;
-        VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-        if (!VK_OK(vkResetCommandPool(g_vk.dev, g_owned.pool, 0)) ||
-            !VK_OK(vkBeginCommandBuffer(cb, &bi))) fatal("vulkan: could not begin ownership readback");
-        land_barrier(cb, 1);
-        for (j = 0; j < np; j++) {
-            VkBufferCopy c = {pc[j].src, pc[j].at, pc[j].size};
-            vkCmdCopyBuffer(cb, pc[j].res->buf, g_owned.back, 1, &c);
-        }
-        land_barrier(cb, 0);
-        VkCommandBufferSubmitInfo ci = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb};
-        /* on the compute queue, the writer's submission alone: its signal carries the writes to the copy */
-        VkSemaphoreSubmitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                                    .semaphore = vk_gfx_timeline(),
-                                    .value = writer,
-                                    .stageMask = VK_PIPELINE_STAGE_2_COPY_BIT};
-        u64 value = vk_host_next(&g_owned.done);
-        VkSemaphoreSubmitInfo di = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                                    .semaphore = g_owned.done.sem,
-                                    .value = value,
-                                    .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
-        VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-                            .waitSemaphoreInfoCount = (apart || finished) && writer ? 1u : 0u,
-                            .pWaitSemaphoreInfos = &wi,
-                            .commandBufferInfoCount = 1,
-                            .pCommandBufferInfos = &ci,
-                            .signalSemaphoreInfoCount = 1,
-                            .pSignalSemaphoreInfos = &di};
-        if (!value || !VK_OK(vkEndCommandBuffer(cb))) fatal("vulkan: could not submit ownership readback");
-        if (apart || finished) {
-            if (!finished) vk_rec_queue(queue); /* after the recorder's compute submissions, as cs_submit's */
-            vk_queue_lock(queue);
-        }
-        VkResult sr = vkQueueSubmit2(queue, 1, &si, VK_NULL_HANDLE);
-        if (apart || finished) vk_queue_unlock(queue);
-        if (!VK_OK(sr)) fatal("vulkan: could not submit ownership readback");
-        gpu_wait_note("GPU-owned memory readback", 0);
-        int ok = vk_host_wait(&g_owned.done, value);
-        gpu_wait_note(NULL, 0);
-        if (!ok) { /* a GPU fault (Xid 109's CTX SWITCH TIMEOUT, say): name the draw that hung, from its checkpoints */
-            vk_checkpoint_dump("device lost");
-        }
-        if (!ok || !VK_OK(vk_devmem_invalidate(g_owned.mem, 0, total)))
-            fatal("vulkan: could not complete ownership readback");
-        for (j = 0; j < np; j++) memcpy(pc[j].dst, g_owned.ptr + pc[j].at, pc[j].size);
+        Piece pc[LAND_PIECES];
+        u32 np;
+        u64 total = land_gather(r, dst, n, &i, &done, cap, pc, &np);
+        land_finish(s, land_submit(s, &c, pc, np, total), pc, np, total);
     }
+    land_slot_put(s);
     vk_unlock();
+}
+/* a landing's copy submitted and not waited for yet (own_land_start), for own_land_end */
+typedef struct {
+    LandSlot* s;
+    u64 value, total;
+    u32 np;
+    Piece pc[LAND_PIECES];
+} LandCopy;
+/* own.c's land_start: a landing that fits one copy is submitted, and own_land_end waits for it with vk_lock let go.
+   Its resources live until then: own.c holds them until the landing is done. A bigger one lands here, as own_land */
+static void* own_land_start(const OwnRange* r, u8* const* dst, u32 n) {
+    u64 cap = g_vk.alloc_cap / 4, all = 0;
+    for (u32 k = 0; k < n; k++) all += r[k].size;
+    LandCopy* h = n <= LAND_PIECES && all <= cap ? (LandCopy*)malloc(sizeof *h) : NULL;
+    if (!h) {
+        own_land(r, dst, n);
+        return NULL;
+    }
+    SNX_ZONE_V(z, "vk own land start", n);
+    vk_lock();
+    LandCtx c = land_ctx(r, n);
+    u32 i = 0;
+    u64 done = 0;
+    h->s = land_slot_take();
+    h->total = land_gather(r, dst, n, &i, &done, cap, h->pc, &h->np);
+    h->value = land_submit(h->s, &c, h->pc, h->np, h->total);
+    vk_unlock();
+    return h;
+}
+/* own.c's land_end: with no lock held */
+static void own_land_end(void* handle) {
+    LandCopy* h = (LandCopy*)handle;
+    SNX_ZONE_V(z, "vk own land end", h->np);
+    land_finish(h->s, h->value, h->pc, h->np, h->total);
+    land_slot_put(h->s);
+    free(h);
 }
 
 static u32 lock_owner(void) { return vk_lock_owner(); }
@@ -682,6 +768,8 @@ int vk_own_init(void) {
     /* vk_lock and vk_unlock themselves, not g_vklock: the outermost unlock also signals what the hold's releases
        reached (vk_release_events) */
     OwnHooks h = {.land = own_land,
+                  .land_start = own_land_start,
+                  .land_end = own_land_end,
                   .retain = res_retain,
                   .release = res_release,
                   .busy_tid = lock_owner,
