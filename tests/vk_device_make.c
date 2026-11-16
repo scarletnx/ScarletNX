@@ -463,6 +463,12 @@ static void check_request(void) {
               strstr(err, "extension_bans.txt:1: "),
           "a table that does not read is the table's error, said with its line");
     r.bans = g_bans;
+    r.api = VK_API_VERSION_1_1;
+    CHECK(!snx_vk_device_make(&r, &d, err, sizeof err) &&
+              !strcmp(err, "test gpu asks for Vulkan 1.1, below the 1.2 whose properties the bans read a driver by"),
+          "a request below Vulkan 1.2 is refused, with the version asked for");
+    CHECK(d.refused == SNX_VK_REFUSED_NONE, "the renderer's own error, not a setting's");
+    r.api = VK_API_VERSION_1_3;
     r.setting_count = VK_EXTENSION_SETTINGS + 1;
     CHECK(!snx_vk_device_make(&r, &d, err, sizeof err) &&
               !strcmp(err, "161 extension settings, past the 160 the renderer keeps") &&

@@ -253,6 +253,11 @@ static void say_made(const SnxVkDeviceRequest* r, const SnxVkChoice* c, VkBanSay
 bool snx_vk_device_make(const SnxVkDeviceRequest* r, SnxVkDevice* out, char* err, size_t n) {
     VkBanSay say = r->say ? r->say : say_stderr;
     *out = (SnxVkDevice){0};
+    if (r->api < VK_API_VERSION_1_2) {
+        snprintf(err, n, "%s asks for Vulkan %u.%u, below the 1.2 whose properties the bans read a driver by", r->who,
+                 VK_API_VERSION_MAJOR(r->api), VK_API_VERSION_MINOR(r->api));
+        return false;
+    }
     /* the drivers known to break an extension or feature, read before any is turned on: a table the build carries
        that does not read is the build's fault; a key of vulkan_ban_ignore the table has not, or a hidden command no
        extension requires, is the player's, who meant something that would otherwise go untested */
