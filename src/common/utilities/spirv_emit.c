@@ -329,6 +329,12 @@ uint32_t spv_emit_type_struct_one(SpvEmitter* e, uint32_t member_type) {
 
 
 
+uint32_t spv_emit_type_struct_pair(SpvEmitter* e, uint32_t first, uint32_t second) {
+    uint32_t id = spv_emit_id(e);
+    EMIT(&e->types, SPV_OP_TYPE_STRUCT, id, first, second);
+    return id;
+}
+
 uint32_t spv_emit_type_array_u32(SpvEmitter* e, uint32_t u32_type, uint32_t length) {
     assert(length);
     uint32_t length_id = spv_emit_constant_u32(e, u32_type, length);
@@ -1392,6 +1398,25 @@ uint32_t spv_emit_sample_image_min_lod(SpvEmitter* e, uint32_t result_type, uint
     return id;
 }
 
+
+uint32_t spv_emit_sample_image_sparse(SpvEmitter* e, uint32_t pair_type, uint32_t sampled_type, uint32_t sampler,
+                                      uint32_t coordinates, uint32_t mode, uint32_t level, uint32_t offset) {
+    spv_emit_capability(e, SPV_CAPABILITY_SPARSE_RESIDENCY);
+    uint32_t image = spv_emit_load(e, sampled_type, sampler);
+    uint32_t id = spv_emit_id(e);
+    uint32_t operands = (mode == 1 ? 2u : mode == 2 ? 1u : 0u) | (offset ? 8u : 0u); /* Lod, Bias, ConstOffset */
+    instruction(&e->functions,
+                mode == 1 ? SPV_OP_IMAGE_SPARSE_SAMPLE_EXPLICIT_LOD : SPV_OP_IMAGE_SPARSE_SAMPLE_IMPLICIT_LOD,
+                5 + !!operands + !!(operands & 3) + !!offset);
+    put(&e->functions, pair_type);
+    put(&e->functions, id);
+    put(&e->functions, image);
+    put(&e->functions, coordinates);
+    if (operands) put(&e->functions, operands);
+    if (operands & 3) put(&e->functions, level);
+    if (offset) put(&e->functions, offset);
+    return id;
+}
 
 uint32_t spv_emit_sample_grad_offset(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
                                      uint32_t coordinates, uint32_t dx, uint32_t dy, uint32_t offset,

@@ -234,6 +234,9 @@ enum {
     SPV_OP_ATOMIC_LOAD = 227,
     SPV_OP_ATOMIC_STORE = 228,
     SPV_OP_ATOMIC_EXCHANGE = 229,
+    SPV_OP_IMAGE_SPARSE_SAMPLE_IMPLICIT_LOD = 305,
+    SPV_OP_IMAGE_SPARSE_SAMPLE_EXPLICIT_LOD = 306,
+    SPV_OP_IMAGE_SPARSE_TEXELS_RESIDENT = 316,
     SPV_OP_ATOMIC_COMPARE_EXCHANGE = 230,
     SPV_OP_ATOMIC_I_ADD = 234,
     SPV_OP_ATOMIC_S_MIN = 236,
@@ -389,6 +392,7 @@ enum {
     SPV_CAPABILITY_CLIP_DISTANCE = 32,
     SPV_CAPABILITY_SAMPLE_RATE_SHADING = 35,
     SPV_CAPABILITY_INPUT_ATTACHMENT = 40,
+    SPV_CAPABILITY_SPARSE_RESIDENCY = 41,
     SPV_CAPABILITY_MIN_LOD = 42,
     SPV_CAPABILITY_SAMPLED_BUFFER = 46,
     SPV_CAPABILITY_IMAGE_BUFFER = 47,
@@ -572,6 +576,8 @@ static inline uint32_t spv_emit_type_vec2(SpvEmitter* e, uint32_t component_type
 static inline uint32_t spv_emit_type_vec3(SpvEmitter* e, uint32_t component_type);
 uint32_t spv_emit_type_runtime_array(SpvEmitter* e, uint32_t element_type, uint32_t stride);
 uint32_t spv_emit_type_struct_one(SpvEmitter* e, uint32_t member_type);
+/* a struct of two members that is no block: an OpImageSparse instruction's result, its residency code and its texel */
+uint32_t spv_emit_type_struct_pair(SpvEmitter* e, uint32_t first, uint32_t second);
 static inline uint32_t spv_emit_type_storage_pointer(SpvEmitter* e, uint32_t pointee_type);
 static inline uint32_t spv_emit_type_function_pointer(SpvEmitter* e, uint32_t pointee_type);
 static inline uint32_t spv_emit_type_workgroup_pointer(SpvEmitter* e, uint32_t pointee_type);
@@ -751,6 +757,11 @@ static inline uint32_t spv_emit_sample_image(SpvEmitter* e, uint32_t result_type
                                              uint32_t sampler, uint32_t coordinates, uint32_t depth_reference,
                                              uint32_t mode, uint32_t level, uint32_t offset, int dynamic_offset);
 /* MinLod is valid with implicit LOD or gradients. It is not valid with the Lod image operand. */
+/* spv_emit_sample_image's sample as OpImageSparseSampleImplicitLod or ExplicitLod (mode 1), with no depth reference:
+   pair_type is a struct of an integer, the residency code OpImageSparseTexelsResident reads, and the texel. offset: a
+   constant one, 0 none */
+uint32_t spv_emit_sample_image_sparse(SpvEmitter* e, uint32_t pair_type, uint32_t sampled_type, uint32_t sampler,
+                                      uint32_t coordinates, uint32_t mode, uint32_t level, uint32_t offset);
 uint32_t spv_emit_sample_image_min_lod(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
                                        uint32_t coordinates, uint32_t depth_reference, uint32_t mode, uint32_t level,
                                        uint32_t offset, int dynamic_offset, uint32_t min_lod);
