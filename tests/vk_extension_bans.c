@@ -432,8 +432,9 @@ static void check_settings(void) {
     CHECK(vk_bans_filter(&e, say) == 1 && e.count == 4, "the bans take out VK_EXT_j alone: on goes over VK_EXT_b's");
     CHECK(vk_ban_find("VK_EXT_b") == 0, "and vk_ban_find finds no ban on it either");
     g_test.nsaid = 0;
-    vk_extension_settings_say(&e, VK_API_VERSION_1_3, say);
-    CHECK(g_test.nsaid == 8, "a line for each setting");
+    for (int k = 0; k < 8; k++) vk_extension_setting_say(&e, VK_API_VERSION_1_3, settings[k].name, say);
+    vk_extension_setting_say(&e, VK_API_VERSION_1_3, "VK_EXT_named_by_none", say);
+    CHECK(g_test.nsaid == 8, "a line for each setting, none for an extension no setting names");
     CHECK(said_with("vulkan: VK_KHR_swapchain: on (auto: the driver has it, and no ban holds)", NULL, NULL) >= 0,
           "auto with no ban: on");
     int over = said_with("vulkan: VK_EXT_b: on (vk_ext_b=on goes over the ban: RADV from 25.0.3 to before 26.1 on "
@@ -519,7 +520,7 @@ static void check_lacking(void) {
     CHECK(g_test.nsaid == 3, "the filter says those two and featureF's warning");
     if (g_test.nsaid != 3) show_said();
     g_test.nsaid = 0;
-    vk_extension_settings_say(&e, VK_API_VERSION_1_3, say);
+    for (int k = 0; k < 2; k++) vk_extension_setting_say(&e, VK_API_VERSION_1_3, on[k].name, say);
     CHECK(said_with("vulkan: VK_EXT_depth_clamp_control: off (its driver lists it without vkCmdSetDepthClampRangeEXT, "
                     "which it requires, which vk_ext_depth_clamp_control=on can't change)",
                     NULL, NULL) >= 0,
@@ -535,7 +536,7 @@ static void check_lacking(void) {
     CHECK(vk_extension_settings(&e, automatic, 1, NULL, 0, err, sizeof err), err);
     vk_bans_filter(&e, say);
     g_test.nsaid = 0;
-    vk_extension_settings_say(&e, VK_API_VERSION_1_3, say);
+    vk_extension_setting_say(&e, VK_API_VERSION_1_3, automatic[0].name, say);
     CHECK(said_with("vulkan: VK_EXT_depth_clamp_control: off (its driver lists it without vkCmdSetDepthClampRangeEXT, "
                     "which it requires)",
                     NULL, NULL) >= 0 &&

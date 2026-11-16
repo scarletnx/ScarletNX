@@ -27,7 +27,7 @@ typedef struct {
     unsigned char held;            /* the last vk_bans_filter took its extension out of the list, or warned of it */
 } Ban;
 
-/* the extension settings as vk_extension_settings found them, for vk_extension_settings_say */
+/* the extension settings as vk_extension_settings found them, for vk_extension_setting_say */
 enum { SETTING_AUTO, SETTING_ON, SETTING_OFF };
 static struct {
     const char* name[VK_EXTENSION_SETTINGS];
@@ -794,7 +794,7 @@ uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say) {
             if (!b->off) b->claimed = 1;
             continue;
         }
-        if (b->off && (b->ignored || b->forced)) { /* gone over: vk_bans_ignored or vk_extension_settings_say says so */
+        if (b->off && (b->ignored || b->forced)) { /* gone over: vk_bans_ignored or vk_extension_setting_say says so */
             b->claimed = 1;
             continue;
         }
@@ -932,11 +932,10 @@ static const Ban* held_off(const char* key) {
     return NULL;
 }
 
-/* the line of each setting, or of the one of the extension only where only is not NULL */
-static void say_settings(const SnxVkExtensions* e, uint32_t api, const char* only, VkBanSay say) {
+void vk_extension_setting_say(const SnxVkExtensions* e, uint32_t api, const char* extension, VkBanSay say) {
     for (uint32_t k = 0; k < g_extension_settings.count; k++) {
         const char* name = g_extension_settings.name[k];
-        if (only && strcmp(only, name)) continue;
+        if (strcmp(extension, name)) continue;
         int value = g_extension_settings.value[k], had = g_extension_settings.had[k], in = list_has(e, name);
         int core = g_extension_settings.core[k], warn = 0;
         const Ban* ban = held_off(name);
@@ -986,11 +985,4 @@ static void say_settings(const SnxVkExtensions* e, uint32_t api, const char* onl
         }
         say(line, warn);
     }
-}
-
-void vk_extension_settings_say(const SnxVkExtensions* e, uint32_t api, VkBanSay say) {
-    say_settings(e, api, NULL, say);
-}
-void vk_extension_setting_say(const SnxVkExtensions* e, uint32_t api, const char* name, VkBanSay say) {
-    say_settings(e, api, name, say);
 }
