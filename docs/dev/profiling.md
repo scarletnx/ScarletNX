@@ -197,9 +197,11 @@ Each guest thread's wait also appears as a **fiber**, named for what the thread 
 condition variable, an address, a pause, a service request or a game pause. The Fibers pane lists them with their
 durations, so a thread's idle time can be sorted by why it waited without reading the log.
 
-Tracy 0.15.0 has no call that writes a trace from the app. A fatal marks the trace's message pane with the reason and
-closes the client, so a capture writes the events up to it; start with `--tracy-capture` to keep the trace of a crash.
-The runtime's own crash handler stays in charge of the signal.
+Tracy 0.15.0 has no call that writes a trace from the app. A fatal outside a signal marks the trace's message pane
+with the reason and closes the client, so a capture writes the events up to it. A fatal from the crash handler exits
+before the client can close. Its capture keeps the events already sent, which may not include the reason. Start with
+`--tracy-capture` to keep a trace of a crash, and read the game's log for the reason. The runtime's own crash handler
+stays in charge of the signal.
 
 Things to know (more in [Development](development.md#profiling)):
 
