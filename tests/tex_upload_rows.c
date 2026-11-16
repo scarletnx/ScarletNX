@@ -25,6 +25,8 @@ static void* counted_malloc(size_t n) {
 void vk_vt_bits_present(void) {}
 void vk_vt_bits_window(void) {}
 /* and vt_sparse's records (aogo/vt-sparse), whose textures need the probe: none here */
+u64 g_vt_probe_address; /* spirv_translate.c's: no probe */
+int g_shader_sm86;       /* shader.c's: Maxwell programs */
 int vk_vt_register(Surf* t) {
     (void)t;
     return 0;
