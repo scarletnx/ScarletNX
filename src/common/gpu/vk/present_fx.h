@@ -3,8 +3,9 @@
 /* The presentation effects every Vulkan frontend shares: the spatial upscaler of the shown frame and anti-aliasing of
    the upscaled frame. The Switch frontend's presenter is the reference, and its FSR 1, NIS, SGSR, FXAA and SMAA
    shaders are built here for every frontend. A frontend hands in its device and the frame slot it is recording, and
-   gets an image to blit. Nothing here reads guest memory: the source is a Vulkan image view, and every pass is on the
-   GPU. */
+   gets an image to sample (snx_fx_render), or the frame's last pass drawn into its window's own rendering
+   (snx_fx_prepare, snx_fx_draw), which is the frame sampled with neither effect on. Nothing here reads guest memory:
+   the source is a Vulkan image view, and every pass is on the GPU. */
 #ifndef SNX_COMMON_GPU_VK_PRESENT_FX_H
 #define SNX_COMMON_GPU_VK_PRESENT_FX_H
 #include <stdbool.h>
@@ -99,5 +100,17 @@ int snx_fx_aa_auto(uint32_t render_w, uint32_t render_h, uint32_t shown_w, uint3
 int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src, uint32_t img_w, uint32_t img_h,
                   uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t transform, uint32_t out_w, uint32_t out_h,
                   int filter, int aa, SnxFxImage* out);
+/* snx_fx_render's passes for a window: the crop shown in to's rectangle of a rendering of format the caller opens on
+   cb after this, every pass but the last recorded now and the last one left for snx_fx_draw to draw there, so no
+   image of the window's size is made to be copied. Where neither runs, or the effects can't (said), the draw samples
+   src itself: in sharp pixels with the upscaler Off where snx_fx_set_off_sharp says, else smooth, the crop in place.
+   The same choices, fallbacks and log as snx_fx_render's; slot and src as there. to lies inside the rendering's area.
+   1 with a draw ready; 0 with none (its pipeline for format could not be made, said) */
+int snx_fx_prepare(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src, uint32_t img_w, uint32_t img_h,
+                   uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t transform, VkRect2D to, VkFormat format,
+                   int filter, int aa);
+/* the draw snx_fx_prepare left for slot, recorded into the rendering open on cb (the one it was prepared for); none
+   where it left none. It binds a pipeline and a set of its own */
+void snx_fx_draw(SnxFx* fx, VkCommandBuffer cb, uint32_t slot);
 
 #endif
