@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: Copyright 2026 crueter
 # SPDX-License-Identifier: LGPL-3.0-or-later
 
-# ScarletNX: as Eden carries it (git.eden-emu.dev/eden-emu/eden, CMakeModules/CPMUtil.cmake at e53e76168c), with two
-# changes of ours, which an update keeps: fetch_package fetches a package under a lock, and cpm_download's failure
-# names the URL and the status
+# ScarletNX: as Eden carries it (git.eden-emu.dev/eden-emu/eden, CMakeModules/CPMUtil.cmake at e53e76168c), with three
+# changes of ours, which an update keeps: fetch_package fetches a package under a lock, cpm_download's failure names
+# the URL and the status, and apply_patches applies without fuzz and stops on a patch that does not apply
 
 cmake_minimum_required(VERSION 3.31)
 
@@ -251,13 +251,26 @@ function(apply_patches patches dir)
         fatal("Could not find patch executable")
     endif()
 
+    # No fuzz: with its default one, patch applies a hunk whose context changed (FreeBSD's even one whose removed lines
+    # differ). BusyBox's patch, which w64devkit carries, has no -F and takes no fuzz anyway
+    execute_process(COMMAND ${PATCH_EXE} --help OUTPUT_VARIABLE patch_help ERROR_VARIABLE patch_help)
+    set(fuzz -F0)
+    if (patch_help MATCHES "BusyBox")
+        set(fuzz "")
+    endif()
+
     foreach(patch ${patches})
         get_filename_component(patch_name ${patch} NAME)
         echo("-- Applying patch ${patch_name}")
         execute_process(
-            COMMAND ${PATCH_EXE} -p1
-            INPUT_FILE ${patch}
-            WORKING_DIRECTORY ${dir})
+            COMMAND ${PATCH_EXE} -p1 ${fuzz} -i ${patch}
+            WORKING_DIRECTORY ${dir}
+            RESULT_VARIABLE failed
+            OUTPUT_VARIABLE said
+            ERROR_VARIABLE said)
+        if (failed)
+            fatal("${patch} does not apply to ${dir}:\n${said}")
+        endif()
     endforeach()
 endfunction()
 
