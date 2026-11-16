@@ -235,6 +235,8 @@ static u32 spill_cut(u64 cb, u64 anchor, u32 need, u64* at, u32* piece) {
         st->s[k].at = kmem_alloc(size, MS_KERNEL, PERM_RW);
         st->s[k].size = size;
         st->s[k].top = 0;
+        if (!st->ns || st->s[k].at < st->lo) st->lo = st->s[k].at;
+        if (st->s[k].at + size > st->hi) st->hi = st->s[k].at + size;
         st->ns++;
         st->total += size;
         if ((st->total ^ was) > was) { /* a new power of two of the total */
@@ -410,11 +412,17 @@ int nvn_cmd_unfinished(u64 p) {
     u32 k;
     int r = 0;
     pm_lock(&st->lock);
-    for (k = 0; k < st->ns; k++)
+    /* An address outside every segment (the game's own command memory) is answered at once, and inside them the
+       segment found last is looked at first: each jump of a submission's walk looked through every segment, more of
+       the submitting thread's time than the walk itself in one game */
+    for (u32 i = 0; p >= st->lo && p < st->hi && i < st->ns; i++) {
+        k = (st->found + i) % st->ns;
         if (p >= st->s[k].at && p < st->s[k].at + st->s[k].size) {
             r = st->s[k].owner && p >= st->s[k].at + st->s[k].top;
+            st->found = k;
             break;
         }
+    }
     pm_unlock(&st->lock);
     return r;
 }
