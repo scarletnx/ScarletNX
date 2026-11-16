@@ -3152,16 +3152,17 @@ void vk_mem_trim(u64 extra, int force) {
        such pixels lose them when they go, so they go only when the lossless steps leave the heap within a head of
        the budget: those unused for five seconds, then, within half a head, those unused for a second and eight
        presents, the youngest a lossy entry can be. Every step frees the least recently used first. Before them all
-       go the render targets later ones drew all over, unused for two presents: what they hold is no one's
-       (rt_superseded), and the textures whose texture object the game ended (ended_reclaim) */
+       go the render targets later ones drew all over, unused for two presents (for a second and eight where the
+       driver moves memory, below): what they hold is no one's (rt_superseded), and the textures whose texture object
+       the game ended (ended_reclaim) */
     /* Where the driver moves memory by priority (g_vk.has_pageable), a trim for headroom leaves those targets as long
        as the sweep every 30 presents does, a second and eight presents: they have the highest priority, so where the
        GPU's memory runs short the driver moves textures to system memory first. Freed after two presents, they were
        made again: a game at a dynamic resolution draws its scene to targets of a new size each frame, and under a
-       2 GB budget, where a trim ran each present, 60 to 85% of the targets made in 600 presents had the shape of one
-       freed in the 120 before. Each was a new image and, for the large ones, memory of its own: a call to the driver
-       of 0.64 ms where it moves memory, 0.29 ms where it doesn't. A trim for an allocation (force) still takes them
-       after two presents */
+       2 GB budget, where a trim ran each present, 60 and 85% of the targets made in its two busiest spans of 600
+       presents (21% in a quieter one) had the shape of one freed in the 120 presents before. Each was a new image
+       and, for the large ones, memory of its own: a call to the driver of 0.64 ms where it moves memory, 0.29 ms
+       where it doesn't. A trim for an allocation (force) still takes them after two presents */
     const u32 superseded_before = g_vk.has_pageable && !force ? vk_present_before(1000000000ull, 8)
                                                                : vk_present_before(0, 2);
     u64 superseded = vk_rt_reclaim_superseded(superseded_before, ~0ull);
