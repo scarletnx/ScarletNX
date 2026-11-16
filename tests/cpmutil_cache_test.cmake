@@ -6,8 +6,9 @@
 # What CPMUtil (cmake/cpmutil) and snx_package_file (cmake/packages.cmake) keep in CPM_SOURCE_CACHE, served from a
 # folder of the test: an archive, extracted into <package>/<version>, and a package of one file, kept as downloaded
 # there. A download that fails says the URL and the status; a folder a fetch cut short is fetched again; a file of one
-# download that is not the pinned one is downloaded again, or refused in a <package>_CUSTOM_DIR, with both hashes; and
-# a configure waits for another one's fetch of the same package instead of removing it, and takes what it fetched.
+# download that is not the pinned one is downloaded again, or refused in a <package>_CUSTOM_DIR, with both hashes; a
+# configure waits for another one's fetch of the same package instead of removing it, and takes what it fetched; and
+# another package's fetch goes on beside it.
 # CPMUtil's 5 s between tries is left out: each failure would take 30 s
 if(NOT DEFINED SRC OR NOT DEFINED WORK)
     message(FATAL_ERROR "cpmutil_cache_test.cmake needs -DSRC=... -DWORK=...")
@@ -40,12 +41,28 @@ file(WRITE "${WORK}/project/cpmfile.json" "{
 }
 ")
 # KIND (arc or one) added as cmake/dependencies.cmake adds it, after WAIT names a file to appear (the other fetch's
-# lock taken); its folder written to folder.txt
+# lock taken), its download paused with PAUSE; its folder written to folder.txt
 file(WRITE "${WORK}/project/CMakeLists.txt" "cmake_minimum_required(VERSION 3.31)
 project(cpmutil_cache_test LANGUAGES NONE)
 include(\"${SRC}/cmake/packages.cmake\")
 macro(sleep time)
 endmacro()
+# PAUSE: the download, its package's lock held, says so in LOCKED and waits for PAUSE to appear
+if(PAUSE)
+    function(cpm_download)
+        file(WRITE \"\${LOCKED}\" \"\")
+        foreach(i RANGE 300)
+            if(EXISTS \"\${PAUSE}\")
+                break()
+            endif()
+            execute_process(COMMAND \"\${CMAKE_COMMAND}\" -E sleep 0.1)
+        endforeach()
+        if(NOT EXISTS \"\${PAUSE}\")
+            message(FATAL_ERROR \"\${PAUSE} did not appear while \${KIND}'s fetch held its lock\")
+        endif()
+        _cpm_download(\${ARGV})
+    endfunction()
+endif()
 if(WAIT)
     foreach(i RANGE 200)
         if(EXISTS \"\${WAIT}\")
@@ -195,10 +212,36 @@ file(LOCK \"${lock}\" RELEASE)
     endif()
 endforeach()
 
+# A fetch locks its own package alone: a configure fetches one package while another configure is inside its fetch of
+# the other one (PAUSE: its download waits until the first configure has written its folder, or 30 s, and then fails).
+# A lock that kept other packages out would have the first configure wait for the paused one, which waits for it
+file(COPY "${WORK}/payload/arc.tar.gz" "${WORK}/payload/one.txt" DESTINATION "${served}")
+foreach(kind arc one)
+    if(kind STREQUAL "arc")
+        set(other one)
+    else()
+        set(other arc)
+    endif()
+    file(REMOVE_RECURSE "${cache}/${kind}" "${cache}/${other}" "${WORK}/locked")
+    math(EXPR configures "${configures} + 2")
+    math(EXPR paused "${configures} - 1")
+    set(build "${WORK}/build${configures}")
+    # side by side, as a pipe: the paused one second, as it ends last (its output would find the pipe closed)
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=CPM_SOURCE_CACHE "${CMAKE_COMMAND}" -S "${WORK}/project"
+                            -B "${build}" "-DCPM_SOURCE_CACHE=${cache}" "-DKIND=${kind}" "-DWAIT=${WORK}/locked"
+                    COMMAND "${CMAKE_COMMAND}" -E env --unset=CPM_SOURCE_CACHE "${CMAKE_COMMAND}" -S "${WORK}/project"
+                            -B "${WORK}/build${paused}" "-DCPM_SOURCE_CACHE=${cache}" "-DKIND=${other}"
+                            "-DPAUSE=${build}/folder.txt" "-DLOCKED=${WORK}/locked"
+                    RESULTS_VARIABLE results OUTPUT_VARIABLE out ERROR_VARIABLE out)
+    if(NOT results STREQUAL "0;0" OR NOT EXISTS "${cache}/${kind}/1" OR NOT EXISTS "${cache}/${other}/1")
+        fail("${kind}: fetched while ${other}'s fetch held its lock, the two configures exited [${results}]:\n${out}")
+    endif()
+endforeach()
+
 get_property(failed GLOBAL PROPERTY failed)
 if(failed)
     message(FATAL_ERROR "cpmutil_cache: ${failed}")
 endif()
 message(STATUS "cpmutil_cache: ${configures} configures, the failures said, the cut packages fetched again, the "
-               "fetches of one package one at a time")
+               "fetches of one package one at a time, and of two packages side by side")
 file(REMOVE_RECURSE "${WORK}")
