@@ -53,14 +53,16 @@ if(BUILD_TESTING)
             add_test(NAME gnuabi_litmus COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_litmus.py" "${SNX_GNUABI_PROGRAM}"
                 --cc "${CMAKE_C_COMPILER}")
-            set_tests_properties(gnuabi_litmus PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77)
+            # six tests in one run, each with the script's own 300 s answer budget: the timeout sits above their
+            # sum, so a hang is reported by the script (which names the test) rather than by CTest (which kills it)
+            set_tests_properties(gnuabi_litmus PROPERTIES TIMEOUT 2000 SKIP_RETURN_CODE 77)
             # the same, linked by LLD, which the driver prefers mold over: with both installed the two tests cover
             # both linkers, and on a host with one of them the second test skips or repeats the first. Fewer attempts,
             # since this one checks the linker and the first one checks the model
             add_test(NAME gnuabi_litmus_lld COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_litmus.py" "${SNX_GNUABI_PROGRAM}"
                 --cc "${CMAKE_C_COMPILER}" --linker lld --iterations 50000)
-            set_tests_properties(gnuabi_litmus_lld PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77)
+            set_tests_properties(gnuabi_litmus_lld PROPERTIES TIMEOUT 2000 SKIP_RETURN_CODE 77)
         endif()
     endif()
 endif()
