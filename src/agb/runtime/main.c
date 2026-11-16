@@ -45,16 +45,16 @@ static void usage(FILE* out) {
           out);
     snx_cli_help(out, agb_cli);
     fputs("AGB options:\n"
-          "  --press_len=MS         How long each scripted press is held (default 300)\n"
+          "  --press-len=MS         How long each scripted press is held (default 300)\n"
           "  --registers            Print the CPU's registers when the run ends\n"
-          "  --gba_color=gba|raw    The screen's colours: gba as the original GBA's unlit screen shows them\n"
+          "  --gba-color=gba|raw    The screen's colours: gba as the original GBA's unlit screen shows them\n"
           "                         (default), raw as the game writes them\n"
-          "  --aot_threads=N        The threads a recompile may take (0 to 1024), as the other drivers': a ROM's code\n"
+          "  --aot-threads=N        The threads a recompile may take (0 to 1024), as the other drivers': a ROM's code\n"
           "                         is one module, which compiles on 1 thread whatever N, and the recompile says so;\n"
-          "                         --aot_threads_most=N the same\n"
+          "                         --aot-threads-most=N the same\n"
           "\n"
-          "These settings take their names with a - for each _ too, as every driver's: --press-len=MS is\n"
-          "--press_len=MS.\n"
+          "Each of these settings with an _ for each - (--press_len=MS), the older spelling, is still read, and said\n"
+          "once.\n"
           "\n"
           "On the GBA, a ROM's code is one module, compiled on 1 thread as one unit: --jobs and --chunk change\n"
           "nothing, which the recompile says. -O is the module's level (default 2, the setting opt's), --jit-cache\n"
@@ -173,7 +173,7 @@ int snx_agb_main(int argc, char** argv) {
     const char *threads = NULL, *most = NULL; /* the values of aot_threads and aot_threads_most, as given */
     char opt = '2';             /* the setting opt's default, or -O's */
     int registers = 0;
-    int lcd = 1; /* --gba_color: the original GBA's screen colours, raw the game's (settings.txt's gba_color) */
+    int lcd = 1; /* --gba-color: the original GBA's screen colours, raw the game's (settings.txt's gba_color) */
     SnxCli cli;
     snx_cli_init(&cli, "scarletnx-agb", agb_cli);
     for (int i = 1; i < argc; ++i) {
@@ -196,7 +196,7 @@ int snx_agb_main(int argc, char** argv) {
             char* end;
             press_len = strtol(value, &end, 10);
             if (end == value || *end || press_len < 0 || press_len > 0x7FFFFFFF) {
-                fprintf(stderr, "scarletnx-agb: --press_len=%s is not a whole number of ms\n", value);
+                fprintf(stderr, "scarletnx-agb: --press-len=%s is not a whole number of ms\n", value);
                 snx_cli_free(&cli);
                 return 2;
             }
@@ -212,7 +212,7 @@ int snx_agb_main(int argc, char** argv) {
             *(strcmp(key, "aot_threads") ? &most : &threads) = value;
         } else if (value && !strcmp(key, "gba_color")) {
             if (strcmp(value, "raw") && strcmp(value, "gba")) {
-                fprintf(stderr, "scarletnx-agb: --gba_color=%s is not raw or gba\n", value);
+                fprintf(stderr, "scarletnx-agb: --gba-color=%s is not raw or gba\n", value);
                 snx_cli_free(&cli);
                 return 2;
             }
@@ -364,7 +364,7 @@ int snx_agb_main(int argc, char** argv) {
                 printf("Recompiling %s: %s\n", path, error);
             else if (!asked.quiet)
                 printf("Recompiling %s\n", path);
-            /* the queue's and a script's --aot_threads=, --jobs and --chunk, which every driver takes: nothing here to
+            /* the queue's and a script's --aot-threads=, --jobs and --chunk, which every driver takes: nothing here to
                give them to */
             if (threads) printf("aot_threads=%s: a ROM's code is one module, compiled on 1 thread\n", threads);
             if (most) printf("aot_threads_most=%s: a ROM's code is one module, compiled on 1 thread\n", most);

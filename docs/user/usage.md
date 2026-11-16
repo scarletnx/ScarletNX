@@ -34,10 +34,10 @@ run with the same message in each driver, `scarletnx-agb does not take --update`
 works for now, and the run says once what it is called now ([Deprecations](deprecations.md#now)).
 
 Each driver that recompiles (`scarletnx`, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-agb`, `scarletnx-nds`) also takes
-`--aot_threads=N`, the setting [`aot_threads`](settings.md): the threads compiling the game's code, 0 (the default)
-up to the computer's cores with a quarter left free. The Switch, 3DS, Vita and GBA drivers also take
-`--aot_threads_most=N` (`scarletnx`'s open one at a time, as the memory holds them:
-[Extract → AOT → run](#extract--aot--run)); `scarletnx-nds` takes only `--aot_threads=N`. A GBA ROM's code is one
+`--aot-threads=N`, the setting [`aot_threads`](settings.md): the threads compiling the game's code, 0 (the default)
+up to the computer's cores with a quarter left free. Each also takes `--aot-threads-most=N`, the most 0 takes
+(`scarletnx`'s open one at a time, as the memory holds them: [Extract → AOT → run](#extract--aot--run)), which the
+launcher's Gentle queue gives every driver. A GBA ROM's code is one
 module and compiles on one thread whatever N, which its recompile says. A value that is not a whole number from 0
 to 1024 stops the run. `--jobs N` is the same setting for the Switch, 3DS, Vita and GBA drivers, and `-O` the
 setting [`opt`](settings.md), 2 unless the launcher's Optimization level says another, which
@@ -177,8 +177,9 @@ mouse's left button (the default). The game's menu sets it too; the game's `.ini
 `--controls=0|1|2` likewise hides or shows the [on-screen controls](#on-screen-controls), or shows them on a touch
 screen while no gamepad is connected (`2`, the default); the game's `.ini` keeps `controls`. Any other `--key=value` of the game's
 `.ini` is forwarded as well, for that run (`scarletnx --settings` lists them all), and so are the timed-run ones
-(`--seconds=`, `--shot=`...); any other key stops the run with `unknown option`. Each key is also taken with a `-` for
-each `_`, the same setting (`--state-slots=5`, `--aot-threads=4`), forwarded as given; a name with some `_` left
+(`--seconds=`, `--shot=`...); any other key stops the run with `unknown option`. A key is given with a `-` for each
+`_` (`--state-slots=5`, `--aot-threads=4`); the key as the `.ini` writes it (`--state_slots=5`), the older spelling, is
+still read and said once a run, and goes on to the game and the recompile with `-`. A name with some `_` left
 (`--aot-threads_most=2`) is no setting.
 The game's own executable also takes `-v`, the same as `--log=2`.
 LLVM is the only backend. `--backend=llvm`, which older scripts give, is accepted and changes nothing, and any
@@ -196,7 +197,7 @@ be used as a base game.
 
 ### Experimental CPU extensions
 
-`--cpu_extensions=1` enables LSE atomics, RCpc loads and the PAuth branch, return and signing instructions with the emulated system's
+`--cpu-extensions=1` enables LSE atomics, RCpc loads and the PAuth branch, return and signing instructions with the emulated system's
 instruction and data authentication controls disabled. Signing and authentication leave the pointers unchanged.
 Pointer stripping uses 39-bit virtual addresses with top-byte ignore disabled.
 It provides no pointer authentication protection, and does not implement a complete CPU or graphics profile for a
@@ -208,8 +209,8 @@ Use the same value when recompiling and running. Changing it requires recompilat
 code. The default is 0, which keeps the Cortex-A57 instruction set. For example:
 
 ```sh
-./build/scarletnx -r work/Game Game --cpu_extensions=1
-./build/scarletnx --game=/path/to/recompiled/Game --cpu_extensions=1
+./build/scarletnx -r work/Game Game --cpu-extensions=1
+./build/scarletnx --game=/path/to/recompiled/Game --cpu-extensions=1
 ```
 
 ### Updates and DLC
@@ -430,7 +431,7 @@ Remaining examples: POSIX.
   area all extract, through what [`storage.c`](../../src/nx/runtime/driver/hactool/storage.c) ports from LibHac.
 - **Recompile:** AOT → module (LLVM) →
   final runtime deployment, for this machine's CPU. Shaders compile directly to SPIR-V at runtime.
-  `-O 0..3,s,z` (`--opt=`) sets the optimization level (2 by default), and `--jobs N` (`--aot_threads=N`) the threads
+  `-O 0..3,s,z` (`--opt=`) sets the optimization level (2 by default), and `--jobs N` (`--aot-threads=N`) the threads
   compiling (0 or none: the machine's cores with a quarter left free, the physical cores where it says them,
   else the logical ones, at most 75%, so a recompile does not make the computer stutter). The quarter is
   deliberate: a large game's recompile runs for minutes, a pass that took every core would keep the machine
@@ -448,12 +449,12 @@ Remaining examples: POSIX.
   ended: the recompile only stops opening. Its log says each thread it opens and each reason it opens none, with
   the numbers. Threads given (`--jobs N`) are all open from the start, whatever the memory. Every pass of LLVM's
   pipelines can be turned off for the game's code,
-  `--llvm_pass_<pass>=0` (`--llvm_pass_instcombine=0`), and each option LLVM's C API sets on the pass builder and the
-  target machine set, `--llvm_<option>=N` (`--llvm_inliner_threshold=50`). `scarletnx --settings=recompile` lists
+  `--llvm-pass-<pass>=0` (`--llvm-pass-instcombine=0`), and each option LLVM's C API sets on the pass builder and the
+  target machine set, `--llvm-<option>=N` (`--llvm-inliner-threshold=50`). `scarletnx --settings=recompile` lists
   them, as the launcher's LLVM Internals page shows them: the passes are those of the pipelines the build's LLVM prints
   for each level, and a build without an `opt` of that LLVM has none. A dump played with these is recompiled with them
-  when it has to be, and a game made already keeps its code until `-r` recompiles it. Each of them takes a `-` for each
-  `_` too (`--llvm-pass-instcombine=0`). A value a setting does not take (`--aot_threads=abc`) stops the recompile.
+  when it has to be, and a game made already keeps its code until `-r` recompiles it. A value a setting does not take
+  (`--aot-threads=abc`) stops the recompile.
   The code the runtime compiles while the game runs keeps LLVM's own, but for the SLP vectorizer, which
   `slp_vectorizer` turns on or off for both.
   `--target auto|linux|win64` takes only this host's own system: modules are built for the machine that builds
@@ -463,7 +464,7 @@ Remaining examples: POSIX.
   `--keep-c` is the older name of `--keep-ir`. These and the other recompile options are the
   [common options](#common-options), which the 3DS, Vita and GBA drivers take too.
 - **Codegen:** `--no-build` stages data/INI only; `--jit-only` omits AOT functions.
-  `--chunk N` (`--unit_instructions=N`) sets the instructions per code unit: 90000 by default, 20000 on Android and
+  `--chunk N` (`--unit-instructions=N`) sets the instructions per code unit: 90000 by default, 20000 on Android and
   iOS, where a smaller unit takes less memory at once. Each unit's object, a 32-bit game's blocks too, is kept in
   `units/` of the cache folder ([Folders](#folders)), which every game's recompile shares, under the SHA-256 of the
   unit's LLVM IR, the LLVM, the CPU and its features, the optimization level and the LLVM Internals: a unit found
@@ -474,7 +475,7 @@ Remaining examples: POSIX.
   always leaves a tenth of its disk free, at most 10 GB: when a new unit would take that, the units reused longest ago
   are removed for it, and a unit there is still no room for is not cached (said once, with the disk's free bytes, the
   unit's size and that rule, and how many units at the end; the units removed for room are summed there too).
-  `--unit_cache_gb=N` (0, no limit, by default) also holds the folder to N GB after each recompile, the units reused
+  `--unit-cache-gb=N` (0, no limit, by default) also holds the folder to N GB after each recompile, the units reused
   longest ago removed first. A cache folder that cannot be made stops the recompile, saying why.
   `--keep-ir` saves the generated code (LLVM IR) in `<outdir>/<NAME>/<NAME>_build/`.
   `--hook-direct-calls` sends calls and branches between guest functions through the dispatch table too, so the
@@ -524,7 +525,7 @@ No debugger flags or combined short flags are supported on Windows.
 The recompiled game module is a shared library with a symbol for each function, so GDB names game
 frames as it loads. A 64-bit game's functions are `F_<address>`, and a 32-bit game's blocks are
 `A_<address>` (A32) and `T_<address>` (Thumb). Code the JIT compiles at run time lives in an
-anonymous code arena. With `--gdb_jit=1` (the `[Debug]` setting `gdb_jit`) and the stub (`-S` or
+anonymous code arena. With `--gdb-jit=1` (the `[Debug]` setting `gdb_jit`) and the stub (`-S` or
 `-s`), the runtime hands each compile to GDB through its JIT interface, with its symbols. A 32-bit
 game's are `a32_<address>_<thumb>`. GDB stops the whole game to read each compile while it is
 attached, and again for each at the game's end. That slows a 32-bit game (its blocks compile one
@@ -718,7 +719,7 @@ launcher's Settings > User renames a user (Enter types its nickname, the rule ab
 user's picture file is `users/<uid>.jpg`, the bytes the account service keeps (a JPEG, 256x256 as the console's, from
 its editor), at most 128 KiB, read when the game starts; with `picture=file` and none, or an empty file, it is Wimsy,
 and a launcher that cannot draw it says so and shows Wimsy. The game plays as the user its `.ini`'s `user_uid` names by
-its uid, empty for `[user1]` (`--user_uid=<uid>` for one run): with one user, the game picks it on its own; with more,
+its uid, empty for `[user1]` (`--user-uid=<uid>` for one run): with one user, the game picks it on its own; with more,
 the game's user selector gets that user. Each user's Account saves are in the data folder's
 `save/user.<uid>/<title ID>/`, every save of a game in the data folder's `save/` as the console keeps them
 (`save_layout=global`, the default, [Filesystem](../platforms/nx/filesystem.md)); with
@@ -876,7 +877,7 @@ connection, local play with others, code modules it loaded, or NVN work waiting 
 
 In the launcher, S on Games lists the save states of the game in focus, the newest first, with the picture of the one
 in focus beside them. Enter plays the game from that state, and Del deletes it after asking. A state this version
-can't load is shown in the failure colour, and Enter on it says why. `--state_load=0:FILE` plays a game from the
+can't load is shown in the failure colour, and Enter on it says why. `--state-load=0:FILE` plays a game from the
 state FILE the same way.
 
 In the game's menu the arrows, Enter and Escape move, select and go back; a gamepad's D-pad or left stick, A and B

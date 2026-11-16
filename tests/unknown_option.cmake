@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # A --key=value that no table of runtime/options.c knows is refused before anything runs; a known one reaches the
-# input's check, its key's _ each a - or none (a game's, the recompile's, a timed run's); some _ left is no key. Run by
-# ctest as runtime_unknown_option
+# input's check, its key's _ each a - or none (a game's, the recompile's, a timed run's), the key itself said once as
+# the older spelling; some _ left is no key. Run by ctest as runtime_unknown_option
 set(dir "${CMAKE_CURRENT_BINARY_DIR}/unknown-option")
 file(REMOVE_RECURSE "${dir}")
 file(MAKE_DIRECTORY "${dir}")
@@ -21,6 +21,31 @@ foreach(option --resoltion=2 --resolution=2 --seconds=5 --state-slots=5 --state_
     if(result EQUAL 0 OR at LESS 0)
         file(REMOVE_RECURSE "${dir}")
         message(FATAL_ERROR "scarletnx ${option} missing.nro ended with ${result}, not \"${expected}\":\n${out}")
+    endif()
+endforeach()
+# a key as the .ini writes it, the older spelling, is still read and said once a run with the name now, however many
+# times it is given; the help gives the settings with a - for each _ of their keys
+execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY SDL_VIDEO_DRIVER=dummy
+                        "${RUNTIME}" --state_slots=5 --state_slots=6 missing.nro
+                WORKING_DIRECTORY "${dir}" TIMEOUT 20 RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE out)
+set(said "settings: --state_slots is the old spelling of --state-slots: it is read as that; write --state-slots")
+string(FIND "${out}" "${said}" first)
+string(FIND "${out}" "${said}" last REVERSE)
+string(FIND "${out}" "missing.nro is not a file" reached)
+if(first LESS 0 OR NOT first EQUAL last OR reached LESS 0)
+    file(REMOVE_RECURSE "${dir}")
+    message(FATAL_ERROR "scarletnx --state_slots=5 --state_slots=6 missing.nro did not say \"${said}\" once, or did not "
+                        "go on to the input:\n${out}")
+endif()
+foreach(case "--help;--state-slots=5" "-r;-h;--aot-threads")
+    list(POP_BACK case expected)
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY SDL_VIDEO_DRIVER=dummy
+                            "${RUNTIME}" ${case}
+                    WORKING_DIRECTORY "${dir}" TIMEOUT 20 RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE out)
+    string(FIND "${out}" "${expected}" at)
+    if(at LESS 0)
+        file(REMOVE_RECURSE "${dir}")
+        message(FATAL_ERROR "scarletnx ${case}'s help does not give ${expected}:\n${out}")
     endif()
 endforeach()
 # everything after the "--" is the game's as given, a runtime option's name too, so the run goes on to the input's check

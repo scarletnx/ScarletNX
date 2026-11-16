@@ -335,25 +335,50 @@ int main(void) {
         assert(value && !strcmp(value, "b=c") && !strcmp(key, "a"));
     }
     { /* and its key's name with a - for each _, of the names given (sorted as strcmp sorts them: a - before a digit,
-         which an _ comes after), the first, a middle and the last found; any other NAME is the key as given */
+         which an _ comes after), the first, a middle and the last found. The key itself, the older spelling, is said
+         once a run for each name, with the name now; some _ left, or no name, is the key as given and said nothing */
         static const char* const names[] = {"a-b", "a-b-c", "a1-b", "ab-c", "z-z"};
-        static const char* const cases[][3] = {
-            {"--a-b=1", "a_b", "1"},     {"--a-b-c=x=y", "a_b_c", "x=y"}, {"--a1-b=", "a1_b", ""},
-            {"--ab-c=2", "ab_c", "2"},   {"--z-z=3", "z_z", "3"},         {"--a_b=4", "a_b", "4"},
-            {"--a_b-c=5", "a_b-c", "5"}, {"--a-b_c=6", "a-b_c", "6"},     {"--a-c=7", "a-c", "7"},
-            {"--a1=8", "a1", "8"},       {"--z-zz=9", "z-zz", "9"},       {"--0-a=10", "0-a", "10"},
+        static const char* const cases[][4] = {
+            {"--a-b=1", "a_b", "1", ""},
+            {"--a-b-c=x=y", "a_b_c", "x=y", ""},
+            {"--a1-b=", "a1_b", "", ""},
+            {"--ab-c=2", "ab_c", "2", ""},
+            {"--z-z=3", "z_z", "3", ""},
+            {"--a_b=4", "a_b", "4", "settings: --a_b is the old spelling of --a-b: it is read as that; write --a-b"},
+            {"--a_b=5", "a_b", "5", ""},
+            {"--a-b=6", "a_b", "6", ""},
+            {"--z_z=7", "z_z", "7", "settings: --z_z is the old spelling of --z-z: it is read as that; write --z-z"},
+            {"--a_b-c=8", "a_b-c", "8", ""},
+            {"--a-b_c=9", "a-b_c", "9", ""},
+            {"--a-c=10", "a-c", "10", ""},
+            {"--a_c=11", "a_c", "11", ""},
+            {"--a1=12", "a1", "12", ""},
+            {"--z-zz=13", "z-zz", "13", ""},
+            {"--0-a=14", "0-a", "14", ""},
         };
         char key[8];
         size_t i;
+        ini_set_say(catch_said);
         for (i = 0; i < sizeof cases / sizeof *cases; i++) {
-            const char* value = ini_arg(cases[i][0], key, sizeof key, names, 5);
+            const char* value;
+            line_said[0] = 0;
+            value = ini_arg(cases[i][0], key, sizeof key, names, 5);
             assert(value && !strcmp(value, cases[i][2]));
-            if (strcmp(key, cases[i][1])) {
-                fprintf(stderr, "%s: key %s, not %s\n", cases[i][0], key, cases[i][1]);
-                assert(!"ini_arg's key");
+            if (strcmp(key, cases[i][1]) || strcmp(line_said, cases[i][3])) {
+                fprintf(stderr, "%s: key %s, said \"%s\"; not %s, \"%s\"\n", cases[i][0], key, line_said, cases[i][1],
+                        cases[i][3]);
+                assert(!"ini_arg's key or line");
             }
         }
+        ini_set_say(NULL);
         assert(!ini_arg("--a-b-c-de=1", key, sizeof key, names, 5)); /* a NAME of 8 letters does not fit key's 8 */
+    }
+    { /* the option that sets a key, as the command line gives it: a - for each _ of the key alone, cut to the room */
+        char option[16];
+        assert(ini_option(option, sizeof option, "aot_threads", "4") == 15 && !strcmp(option, "--aot-threads=4"));
+        assert(ini_option(option, sizeof option, "opt", "s_z") == 9 && !strcmp(option, "--opt=s_z"));
+        assert(ini_option(option, 8, "aot_threads", "4") == 15 && !strcmp(option, "--aot-t"));
+        assert(ini_option(NULL, 0, "state_slots", "10") == 16);
     }
     puts("ini passed");
     return 0;

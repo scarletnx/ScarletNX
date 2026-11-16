@@ -511,7 +511,7 @@ the lowest queue, and keep them in the table of parts, so that a draw links them
 ## Commits
 
 What landed, in order. Each commit ran the full ctest. The commits that change a pipeline or a layout also ran the
-menus of an Ounce game under `--vk_validation=1` against the same run on feat/ounce.
+menus of an Ounce game under `--vk-validation=1` against the same run on feat/ounce.
 
 1. **`[gpu] Query graphics pipeline libraries and their dynamic state`**: `vk_gpl_choose` in `pipeline_parts.c`, the
    device query and enable, the setting `pipeline_libraries`, and the tests `vk_pipeline_parts`,

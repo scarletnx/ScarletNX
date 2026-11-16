@@ -1568,6 +1568,8 @@ static int create_device(void) {
     }
     /* shaderDenormPreserveFloat16 is the device's word that it can keep f16 subnormals: without it an SM86 program
        packs those by hand (sm86_translate.c's pack_half), as Turnip on an Adreno 610 flushed them to zero */
+    if (vk_ban("shaderDenormPreserveFloat16", p12.shaderDenormPreserveFloat16, ban_say))
+        p12.shaderDenormPreserveFloat16 = VK_FALSE;
     g_spirv_translate.half_flush = !p12.shaderDenormPreserveFloat16;
     g_spirv_translate.half_rounding = 0;
     if (q12.shaderFloat16 && p12.shaderRoundingModeRTEFloat16 && p12.shaderDenormPreserveFloat16 &&

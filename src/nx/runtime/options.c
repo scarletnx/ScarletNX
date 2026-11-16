@@ -636,7 +636,7 @@ static void vk_descriptors_old(void) {
     }
     if (!given) return;
     if (first) {
-        WARN("settings: --vk_descriptors=%s is deprecated, and the command line gives --vk_descriptors_mode=%s too: "
+        WARN("settings: --vk_descriptors=%s is deprecated, and the command line gives --vk-descriptors-mode=%s too: "
              "vk_descriptors_mode=%s this run (docs/user/deprecations.md)\n",
              given, first, first);
         return;
@@ -644,7 +644,7 @@ static void vk_descriptors_old(void) {
     now = options_vk_descriptors_old(given, 1);
     if (now >= 0) {
         ini_override("vk_descriptors_mode", values[now]);
-        WARN("settings: --vk_descriptors=%s is deprecated: this run reads it as --vk_descriptors_mode=%d (%s) "
+        WARN("settings: --vk_descriptors=%s is deprecated: this run reads it as --vk-descriptors-mode=%d (%s) "
              "(docs/user/deprecations.md)\n",
              given, now, words[now]);
     } else {

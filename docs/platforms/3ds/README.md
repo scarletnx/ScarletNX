@@ -162,7 +162,7 @@ and the fragment pipeline generated (`gpu/vk/fsgen.c`), both ported from Azahar'
 shader generators and both written as SPIR-V words directly (`src/common/utilities/spirv_emit.c`, shared with NX), with no
 shader compiler at run time. The output merger is the pipeline's fixed state. A new pipeline
 is made as its first draw needs it, which pauses the game while the driver compiles it; with the
-Switch's `async_pipelines=1` (`--async_pipelines=1`) workers make it instead
+Switch's `async_pipelines=1` (`--async-pipelines=1`) workers make it instead
 (`pipeline_threads` of them) and the draws that need it are skipped until it is ready, so what
 they draw shows up a few frames late, and the run's end says how many were skipped. The driver
 keeps the pipelines it compiled between runs, as for a Switch game, in
@@ -245,7 +245,7 @@ from then on. A page the GPU wrote is the GPU's until the CPU's first access, wh
 back with the pages the GPU wrote around it (up to 256 on each side) and waits for that. A
 write copies its stale pages in first even where it covers them, as one need not write a whole
 page and a page goes back whole; when the device goes, what the GPU wrote goes back. The copy
-is taken as the Switch's setting `vk_memory` says, with its meaning (`--vk_memory=N`, which the
+is taken as the Switch's setting `vk_memory` says, with its meaning (`--vk-memory=N`, which the
 launcher passes from its Debug settings): `0`, the default, the copy unless the device shares
 the system's memory (`snx_vk_memory_model`), `1` the copy, `2` the RAM in place. The device says
 on the standard error which it took and the value, and when its memory cannot hold the copy,
@@ -260,7 +260,7 @@ frame: 36.8 MiB a second read, 39.8 written); amdgpu has the GPU busy 14.4 ms a 
 17.8; the CPU's time is the same, 323 and 325 ms a second, though its writes trap 61 times a
 frame against 0.2.
 `tests/3ds_vk_copies.c` checks which pages are copied in and back and when, and every GPU
-test runs again on each path (`_copy`, `_in_place`: `--vk_memory=1` and `2`), so lavapipe
+test runs again on each path (`_copy`, `_in_place`: `--vk-memory=1` and `2`), so lavapipe
 checks the copy too.
 
 Compiled code addresses the guest flat: a 4 GiB host reservation where guest
@@ -282,9 +282,9 @@ TLS pages come from the BASE region, outside the application's pool, as Azahar
 allocates them: a game that commits all of its pool still starts threads.
 
 Debug switches are settings of `g_ctr_debug_ini` in `src/nx/runtime/settings.txt`,
-given as `--key=value`: `--ctr_ipc_trace=1` logs each service request with the
-thread and its answer, `--ctr_svc_trace=1` each SVC that fails (2: every SVC),
-`--ctr_gpu_trace=1` each GX command and framebuffer swap, `--ctr_jit_trace=1` each
+given as `--key=value`: `--ctr-ipc-trace=1` logs each service request with the
+thread and its answer, `--ctr-svc-trace=1` each SVC that fails (2: every SVC),
+`--ctr-gpu-trace=1` each GX command and framebuffer swap, `--ctr-jit-trace=1` each
 block compiled at run time. A run ended by `--seconds` (or a stop) reports each
 thread's core, priority, pc, what it waits on (whose event it is) and the return
 addresses on its stack, how long the process sat idle, and its most frequent SVCs.
@@ -508,7 +508,7 @@ the host, and other actions stop. Unknown commands answer success with one word,
 Azahar's ReportUnimplementedFunction does and a Switch game's do (`auto_stub_ipc`),
 each logged the first time. A service the runtime does not know at all is a stand-in
 whose commands answer so, as a Switch game's is (`sm.c`). With
-`--ctr_auto_stub_ipc=0` both stop instead: an unknown command stops the run unless
+`--ctr-auto-stub-ipc=0` both stop instead: an unknown command stops the run unless
 `--ipc-stubs` names its service, and a service the runtime lacks makes the thread
 asking for it wait forever, as no other process can register it, with a message
 that names it.
@@ -747,7 +747,7 @@ See [CTR IPC](ipc.md) for the strict generator subset, descriptor/permission
 checks, quotas, malformed-request policy, tests and unimplemented operations.
 Unknown SVCs still stop explicitly. No service or device success is fabricated,
 except for unknown commands and services, which answer success as a Switch game's
-do unless `--ctr_auto_stub_ipc=0` asks for the console's answers.
+do unless `--ctr-auto-stub-ipc=0` asks for the console's answers.
 
 By default nothing of the game is extracted. `scarletnx-3ds game` maps the game read-only and checks it as the
 extraction would where it reads it (a CIA's content table, the NCCH and ExHeader hashes, the RomFS superblock and its
@@ -831,7 +831,7 @@ bit 12, which the Home Menu refuses on an Old 3DS) or its ExHeader names the New
 178 MiB system mode (0x20D, mode 2), which only a New 3DS has; an Old 3DS otherwise,
 as a title that names the 124 MiB New 3DS mode runs on both. The run says so, and the
 `.ini` keeps the choice. `--board-info` prints physical regions without allocating RAM.
-`--ipc-stubs L`, with `--ctr_auto_stub_ipc=0`, still answers the unknown commands of
+`--ipc-stubs L`, with `--ctr-auto-stub-ipc=0`, still answers the unknown commands of
 the services in L (`all`, or a comma list of `srv`, `fs`, `apt`, `ptm`, `hid`, `gsp`,
 `cfg`, `dsp`, `system`, `am`, `y2r`, `ldr`, `ir`, `irrst`, `mic`, `cam`, `csnd`) with
 success instead of stopping. Given more than once, the lists add up. It only changes a

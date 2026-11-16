@@ -47,7 +47,7 @@ to the Switch, Linux and 3DS loaders.
 `scarletnx-agb` takes the [common options](../../user/usage.md#common-options) that fit it: `-r`, `--game`, `--data`,
 `--outdir`, `--output`, `--frames`, `--shot`, `--script`, `-f`, `-h` and the recompile's (`-O`, `--jobs`, `--chunk`,
 `--jit-cache`, `--jit-only`, `--keep-ir`, `-q`), each value as `--option VALUE` or `--option=VALUE`. A ROM's code is
-one module compiled on one thread as one unit, so `--jobs`, `--chunk` and `--aot_threads_most` change nothing, which
+one module compiled on one thread as one unit, so `--jobs`, `--chunk` and `--aot-threads-most` change nothing, which
 the recompile says; `--jit-cache` names another game folder's `<name>_code.map`, and `--jit-only` plays with no
 module.
 
@@ -67,9 +67,9 @@ R, its left stick the D-pad. `--script ms:hex,...` presses keys unattended, as t
 3DS and Vita drivers take it: each press at its time in ms from the start of the
 run, by the console's frames (the same with a window or without), its keys in
 KEYINPUT's bits (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down,
-100 R, 200 L), held for `--press_len=` ms (300). `--gba_color=gba` (the default)
+100 R, 200 L), held for `--press-len=` ms (300). `--gba-color=gba` (the default)
 shows the colours as the original GBA's unlit screen did, near's color emulation
-formula; `--gba_color=raw` as the game writes them, as mGBA without a shader
+formula; `--gba-color=raw` as the game writes them, as mGBA without a shader
 (Settings > GBA > Colors).
 
 The game's folder is `recompiled/<name>/` of the data folder (`--data`, else the

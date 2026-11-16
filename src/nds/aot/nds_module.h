@@ -38,8 +38,9 @@ typedef struct {
 } NdsModule;
 
 /* Compiles rom's regions into the module at path, replacing an earlier one once the new one is whole. hints names the
-   file of blocks earlier runs compiled, NULL for none. 0, else 1 with the reason in error */
-int nds_aot_compile(const NdsRom* rom, const char* path, const char* hints, int threads, char* error,
+   file of blocks earlier runs compiled, NULL for none; threads and most are the settings aot_threads and
+   aot_threads_most (snx_aot_threads). 0, else 1 with the reason in error */
+int nds_aot_compile(const NdsRom* rom, const char* path, const char* hints, int threads, int most, char* error,
                     size_t error_size);
 
 /* Discovery: which instruction slots of each region start a block and how long each is */
