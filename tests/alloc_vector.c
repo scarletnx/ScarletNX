@@ -29,6 +29,9 @@ const SnxModule* g_mod = &g_module;
 static int g_original;
 
 u64 kernel_find_symbol_exact(const char* name) { return !strcmp(name, "_ZdlPv") ? DELETE : 0; }
+/* alloc_new_shape's symbols, which no case here asks */
+int kernel_symbol(u32 i, u64* addr, const char** name) { return (void)i, (void)addr, (void)name, 0; }
+u64 kernel_symbol_size(u32 i) { return (void)i, 0; }
 void hook_run_original(CPU* c, u64 addr) {
     (void)c, (void)addr;
     g_original++;
