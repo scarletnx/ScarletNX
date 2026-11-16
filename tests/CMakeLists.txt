@@ -3971,6 +3971,13 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
             add_test(NAME vkcmdgen COMMAND "${CMAKE_COMMAND}" "-DVKCMDGEN=$<TARGET_FILE:snx-vkcmdgen>"
                      "-DREGISTRY=${snx_vk_commands_registry}" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/vkcmdgen-test"
                      -P "${CMAKE_CURRENT_SOURCE_DIR}/vkcmdgen.cmake")
+            # every device extension a renderer can make its device with (each source of src/ that makes one) has its
+            # setting @VK_ line in settings.txt, which the bans and the player's on and off go through
+            if(Python3_Interpreter_FOUND)
+                add_test(NAME vk_extension_settings COMMAND "${Python3_EXECUTABLE}"
+                         "${CMAKE_CURRENT_SOURCE_DIR}/vk_extension_settings.py" --repo "${PROJECT_SOURCE_DIR}"
+                         --registry "${snx_vk_commands_registry}")
+            endif()
         endif()
         # its output where iOS compiles it: a default-if SNX_IOS value, which needs common.h. Not on Apple hosts, whose
         # own headers read the TargetConditionals.h the test puts in their place
