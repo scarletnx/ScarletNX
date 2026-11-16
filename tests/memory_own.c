@@ -757,7 +757,13 @@ static void test_two_step(void) {
     pthread_join(reader, NULL);
     pthread_join(owner, NULL);
     CHECK(__atomic_load_n(&g_two_read, __ATOMIC_ACQUIRE) == (u8)(0xA0 + 0x200) && g_lands == lands + 1);
-    CHECK(__atomic_load_n(&g_two_begun, __ATOMIC_ACQUIRE) && refs(r) == 0);
+    CHECK(__atomic_load_n(&g_two_begun, __ATOMIC_ACQUIRE));
+    /* The landing let go of the producer's lock, so refs() does not wait for its release. Where a trap thread lands
+       (userfaultfd), the reader goes on when its page is filled, before that thread releases r */
+    for (int waited_ms = 0; __atomic_load_n(&r->refs, __ATOMIC_ACQUIRE); waited_ms++) {
+        if (waited_ms == 10000) test_fail("the two-step landing released its resource within 10 s", __LINE__);
+        plat_sleep_ns(1000000);
+    }
     CHECK(own_trapped(a + 0x3800, 0x100)); /* the new owner's page stays trapped */
     g_own.hooks.land_start = NULL;
     g_own.hooks.land_end = NULL;
