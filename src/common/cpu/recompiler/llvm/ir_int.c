@@ -68,6 +68,14 @@ static V shift_imm(SnxIr* ir, V v, unsigned type, unsigned amount, int sf) {
     }
 }
 
+/* the guest's N, Z, C and V as a nibble with N in bit 3, as ir_flags_set_nzcv takes them */
+static V nzcv_read(SnxIr* ir) {
+    V v = ir_i32(ir, 0);
+    for (unsigned i = 0; i < 4; ++i)
+        v = LLVMBuildOr(B, v, LLVMBuildShl(B, ir_flag_read(ir, i), ir_i32(ir, 3 - i), ""), "");
+    return v;
+}
+
 /* the N, Z, C and V an addition or subtraction a - b sets, as a nibble with N in bit 3 */
 static V nzcv_of(SnxIr* ir, int sf, V a, V b, int subtract) {
     V r = subtract ? LLVMBuildSub(B, a, b, "") : LLVMBuildAdd(B, a, b, ""), sign = konst(ir, sf, bits_of(sf) - 1);
@@ -455,12 +463,8 @@ static void msr_helper(SnxIr* ir, SnxU32 key, V value) {
    timers' control registers) */
 static V read_sysreg(SnxIr* ir, SnxU32 key) {
     switch (key) {
-        case SYSREG(3, 4, 2, 0): { /* NZCV */
-            V v = ir_i32(ir, 0);
-            for (unsigned i = 0; i < 4; ++i)
-                v = LLVMBuildOr(B, v, LLVMBuildShl(B, ir_flag_read(ir, i), ir_i32(ir, 31 - i), ""), "");
-            return ir_u64(ir, v);
-        }
+        case SYSREG(3, 4, 2, 0): /* NZCV */
+            return ir_u64(ir, LLVMBuildShl(B, nzcv_read(ir), ir_i32(ir, 28), ""));
         case SYSREG(3, 4, 4, 0): return ir_u64(ir, ir_cpu_load(ir, ir->t_i32, offsetof(CPU, fpcr)));
         case SYSREG(3, 4, 4, 1): return ir_u64(ir, ir_cpu_load(ir, ir->t_i32, offsetof(CPU, fpsr)));
         case SYSREG(3, 13, 0, 2): return ir_cpu_load(ir, ir->t_i64, offsetof(CPU, tpidr));   /* TPIDR_EL0 */
@@ -531,6 +535,29 @@ static void sys(SnxIr* ir, const SnxA64Args* a, SnxU32 word, SnxU64 pc) {
     undef(ir, pc, word);
 }
 #undef SYSREG
+
+/* ---- FlagM (the ounce target) ---- */
+
+/* RMIF Xn, #imm, #mask: the flags mask names (N in bit 3) from bits 3:0 of Xn rotated right by imm */
+static void rmif(SnxIr* ir, const SnxA64Args* a) {
+    V rotated = funnel_right(ir, ir_rx(ir, (unsigned)a->rn), ir_rx(ir, (unsigned)a->rn), ir_i64(ir, (SnxU64)a->imm));
+    unsigned mask = (unsigned)a->mask;
+    V kept = LLVMBuildAnd(B, nzcv_read(ir), ir_i32(ir, ~mask & 15u), "");
+    ir_flags_set_nzcv(ir, LLVMBuildOr(B, kept, LLVMBuildAnd(B, ir_u32(ir, rotated), ir_i32(ir, mask), ""), ""));
+}
+/* SETF8 and SETF16 (bits 8 or 16): N the top bit of the low bits of Wn, Z whether they are zero, V that bit XOR the
+   next one up; C unchanged */
+static void setf(SnxIr* ir, const SnxA64Args* a, unsigned bits) {
+    V w = ir_u32(ir, ir_rx(ir, (unsigned)a->rn)), one = ir_i32(ir, 1);
+    V top = LLVMBuildAnd(B, LLVMBuildLShr(B, w, ir_i32(ir, bits - 1), ""), one, "");
+    V next = LLVMBuildAnd(B, LLVMBuildLShr(B, w, ir_i32(ir, bits), ""), one, "");
+    V low = LLVMBuildAnd(B, w, ir_i32(ir, (1u << bits) - 1), "");
+    V z = ir_bool32(ir, LLVMBuildICmp(B, LLVMIntEQ, low, ir_i32(ir, 0), ""));
+    V nzcv = LLVMBuildAnd(B, nzcv_read(ir), ir_i32(ir, 2), "");
+    nzcv = LLVMBuildOr(B, nzcv, LLVMBuildShl(B, top, ir_i32(ir, 3), ""), "");
+    nzcv = LLVMBuildOr(B, nzcv, LLVMBuildShl(B, z, ir_i32(ir, 2), ""), "");
+    ir_flags_set_nzcv(ir, LLVMBuildOr(B, nzcv, LLVMBuildXor(B, top, next, ""), ""));
+}
 
 /* ---- the entry points ---- */
 
@@ -643,7 +670,13 @@ int snx_ir_int_handles(SnxA64Op op) {
         case SNX_A64_OP_CLREX:
         case SNX_A64_OP_DSB_DMB:
         case SNX_A64_OP_ISB:
-        case SNX_A64_OP_SYS: return 1;
+        case SNX_A64_OP_SYS:
+        /* the ounce target's: FlagM, and ESB, a NOP at EL0 with no SError to synchronize */
+        case SNX_A64_OP_CFINV:
+        case SNX_A64_OP_RMIF:
+        case SNX_A64_OP_SETF8:
+        case SNX_A64_OP_SETF16:
+        case SNX_A64_OP_ESB: return 1;
         default: return 0;
     }
 }
@@ -759,7 +792,11 @@ void snx_ir_int(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
         case SNX_A64_OP_DSB_DMB: barrier(ir, (unsigned)a->types); break;
         case SNX_A64_OP_ISB: ir_fence(ir); break;
         case SNX_A64_OP_SYS: sys(ir, a, word, pc); break;
-        default: break; /* NOP and WFI (SCTLR_EL1.nTWI: no trap), the prefetches; the flow ops have no body */
+        case SNX_A64_OP_CFINV: ir_flags_set_nzcv(ir, LLVMBuildXor(B, nzcv_read(ir), ir_i32(ir, 2), "")); break;
+        case SNX_A64_OP_RMIF: rmif(ir, a); break;
+        case SNX_A64_OP_SETF8: setf(ir, a, 8); break;
+        case SNX_A64_OP_SETF16: setf(ir, a, 16); break;
+        default: break; /* NOP and WFI (SCTLR_EL1.nTWI: no trap), ESB, the prefetches; the flow ops have no body */
     }
 }
 

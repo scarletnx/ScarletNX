@@ -9,13 +9,15 @@
    read from its headers (--llvm-include), LLVM's own value until it is set. A vulkan table's settings are the
    Vulkan extensions its setting @NAME lines name, each auto, on or off, auto by default: checked against the Khronos
    registry (vk.xml, --vk-registry), which gives each its help, and listed for the renderer
-   (g_vk_extension_settings). It is strict C99 and depends on nothing, so a cross build can build it for the machine
-   it runs on.
+   (g_vk_extension_settings). Every setting's key is also its name on a command line, as --key=value, and so is the
+   key with - for each _ (--aot-threads=4): those names are listed for the drivers (g_setting_args). It is strict C99
+   and depends on nothing, so a cross build can build it for the machine it runs on.
 
    Usage: settingsgen --out DIR [--pipelines FILE] [--llvm-include DIR] [--vk-registry FILE] SETTINGS
    It writes DIR/snx_settings.h, settings.c (g_settings), a settings_<table>.c for each runtime-scope table (whose set
    functions the runtime defines) and settings_runtime.c (the .ini's sections), settings_launch.c (the launcher's and the recompiler's tables
-   and sections) and settings_llvm.c (LLVM's pipelines, which pass each toggle turns off, and the options set), each
+   and sections), settings_llvm.c (LLVM's pipelines, which pass each toggle turns off, and the options set) and
+   settings_args.c (the names a command line gives the settings by, and settings_arg, which reads them), each
    only rewritten when it changes. Without --pipelines or --llvm-include, the llvm table has no passes or no options
    of LLVM's; without --vk-registry, a vulkan table's names go unchecked and its help says nothing of the registry. */
 #include <ctype.h>
@@ -44,6 +46,7 @@ typedef struct {
     int def_ifs;
     const char* only; /* the systems it does something on, where not every one: ini.h's INI_ONLY_ of them, else NULL */
     int type, size, once, startup, in_game, recompile, step, shift, list, repeat, block, table, line;
+    int slider;  /* drawn on a slider (ini.h's INI_SLIDER): an int with words */
     char* needs; /* the feature its needs block names, NULL: no build gate on it */
     /* LLVM's: its kind, its ID (a pass's name, a setter's suffix), the pipelines' levels a pass is in (bit per LEVELS
        character), the setter's argument type (LLVMBool, int or unsigned) */
@@ -589,6 +592,8 @@ static void read_spec(const char* path) {
             s->in_game = 1;
         } else if (!strcmp(word, "recompile")) {
             s->recompile = 1;
+        } else if (!strcmp(word, "slider")) {
+            s->slider = 1;
         } else if (!strcmp(word, "set")) {
             s->set = dup(rest);
         } else if (!strcmp(word, "each")) {
@@ -612,6 +617,8 @@ static void read_spec(const char* path) {
         if (s->list >= 0 && !strstr(s->key, "<ID>")) fail(s->line, "an each setting's key has <ID>");
         if (s->recompile && (tables[s->table].scope != S_RUNTIME || s->repeat || s->list >= 0 || s->def_ifs || s->set))
             fail(s->line, "%s: recompile takes a game's setting of one value, without default-if or set", s->name);
+        if (s->slider && (s->type != T_INT || !s->words))
+            fail(s->line, "%s: slider takes an int with words, the steps its slider shows", s->name);
     }
 }
 
@@ -682,6 +689,7 @@ static Setting* new_llvm(int table, int kind, const char* id, const char* auto_n
     s->key = dup(o && o->key ? o->key : key);
     s->table = table;
     s->list = -1;
+    s->line = o ? o->line : 0;
     s->llvm = kind;
     s->llvm_id = dup(id);
     return s;
@@ -1037,6 +1045,11 @@ static void write_h(const char* dir) {
          "typedef struct {\n    const char* name;\n    const char* value;\n    int core;\n} SettingsVkExtension;\n"
          "extern const SettingsVkExtension g_vk_extension_settings[];\n"
          "extern const int g_vk_extension_settings_count;\n");
+    outs("/* the names a command line gives the settings by where they are not their keys: each key that has an _,\n"
+         "   with a - for each (aot-threads), in the order strcmp sorts them */\n"
+         "extern const char* const g_setting_args[];\nextern const int g_setting_args_count;\n"
+         "/* a command line's --NAME=value, NAME a setting's key or its name of g_setting_args: ini_arg over them */\n"
+         "const char* settings_arg(const char* arg, char* key, size_t size);\n");
     outs("/* the game's .ini's sections, in its order */\nextern const IniSection g_ini_sections[];\n"
          "extern const int g_ini_sections_count;\n");
     outs("/* the launcher's Settings' own groups: its rows and the recompiler's */\n"
@@ -1135,6 +1148,7 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
         int at = 0;
         if (s->startup) at = snprintf(flags, sizeof flags, "INI_STARTUP");
         if (s->in_game) at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_IN_GAME", at ? " | " : "");
+        if (s->slider) at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_SLIDER", at ? " | " : "");
         if (s->only) at += snprintf(flags + at, sizeof flags - (size_t)at, "%s%s", at ? " | " : "", s->only);
         if (s->needs) {
             char* u = upper(s->needs);
@@ -1214,6 +1228,77 @@ static void write_recompile_game(void) {
         if (settings[i].recompile)
             out_row(&settings[i], 0, settings[i].key, settings[i].label ? settings[i].label : settings[i].name);
     outs("    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};\n");
+}
+
+/* every key, as a command line gives it as it is and with - for each _: letters, digits and _, and a repeat's <N> or
+   an each's <ID>, whose list ids are letters, digits and _ too. A - would make one key's name another's, an = or a
+   space would end it early. Checked before anything is written */
+static void check_keys(void) {
+    int i, k;
+    const char* p;
+    for (i = 0; i < nsettings; i++) {
+        const Setting* s = &settings[i];
+        for (p = s->key; *p;)
+            if (s->repeat && !strncmp(p, "<N>", 3))
+                p += 3;
+            else if (s->list >= 0 && !strncmp(p, "<ID>", 4))
+                p += 4;
+            else if (isalnum((unsigned char)*p) || *p == '_')
+                p++;
+            else
+                fail(s->line, "%s's key %s has a %c: %s", s->name, s->key, *p,
+                     "a key is letters, digits and _ (a command line gives it with - for each _ too)");
+    }
+    for (i = 0; i < nlists; i++)
+        for (k = 0; k < lists[i].n; k++)
+            for (p = lists[i].id[k]; *p; p++)
+                if (!isalnum((unsigned char)*p) && *p != '_')
+                    fail(0, "list %s: its id %s has a %c, which its settings' keys would have: %s", lists[i].name,
+                         lists[i].id[k], *p, "an id is letters, digits and _");
+}
+static int compare_names(const void* a, const void* b) { return strcmp(*(char* const*)a, *(char* const*)b); }
+
+/* every row's key that has an _, with a - for each, sorted for ini_arg's search; and settings_arg over them */
+static void write_args(const char* dir) {
+    int i, k, n = 0;
+    char** names;
+    for (i = 0; i < nsettings; i++) n += count_of(&settings[i]) ? count_of(&settings[i]) : 1;
+    names = (char**)alloc((size_t)n * sizeof *names);
+    n = 0;
+    for (i = 0; i < nsettings; i++) {
+        const Setting* s = &settings[i];
+        int rows = count_of(s) ? count_of(s) : 1;
+        for (k = 0; k < rows; k++) {
+            char number[16];
+            char *key, *p;
+            sprintf(number, "%d", k + 1);
+            key = s->repeat      ? key_of(s, "<N>", number)
+                  : s->list >= 0 ? key_of(s, "<ID>", lists[s->list].id[k])
+                                 : dup(s->key);
+            if (!strchr(key, '_')) {
+                free(key);
+                continue;
+            }
+            for (p = key; *p; p++)
+                if (*p == '_') *p = '-';
+            names[n++] = key;
+        }
+    }
+    qsort(names, (size_t)n, sizeof *names, compare_names);
+    header();
+    outs("#include \"snx_settings.h\"\n\nconst char* const g_setting_args[] = {\n");
+    for (i = 0; i < n; i++) {
+        outs("    ");
+        out_string(names[i]);
+        outs(",\n");
+    }
+    if (!n) outs("    NULL\n");
+    out("};\nconst int g_setting_args_count = %d;\n\n", n);
+    outs("const char* settings_arg(const char* arg, char* key, size_t size) {\n"
+         "    return ini_arg(arg, key, size, g_setting_args, g_setting_args_count);\n}\n");
+    flush(dir, "settings_args.c");
+    for (i = 0; i < n; i++) free(names[i]);
+    free(names);
 }
 
 static void write_sections(const char* name, int launcher) {
@@ -1371,10 +1456,12 @@ int main(int argc, char** argv) {
     if (pipes) read_pipelines(pipes);
     fill_vulkan(registry);
     fill_llvm(include_dir);
+    check_keys();
     write_h(dir);
     write_c(dir);
     write_tables(dir, 1);
     write_tables(dir, 0);
     write_llvm(dir);
+    write_args(dir);
     return 0;
 }

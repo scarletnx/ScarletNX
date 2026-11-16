@@ -3,7 +3,7 @@
 # Copyright 2026 the ScarletNX contributors
 """The static ARM11 compile on one machine's worker threads, again and again: every chunk is built for the memory
 model of the host, so the module links. A chunk built for the checked model on a host that is flat calls a stack probe
-the module does not define, and the link fails. --aot_threads=N, the Switch's setting, is how many of them work: the
+the module does not define, and the link fails. --aot-threads=N, the Switch's setting, is how many of them work: the
 compile says the count it started."""
 
 import importlib.util
@@ -31,7 +31,7 @@ def main():
         for run in range(RUNS):
             output = Path(temp) / f'out {run}'
             # the first two on 2 and on 3 threads, whatever the host's cores; the rest on the host's own count
-            threads = [f'--aot_threads={run + 2}'] if run < 2 else []
+            threads = [f'--aot-threads={run + 2}'] if run < 2 else []
             p = subprocess.run(
                 [driver, '-r', *threads, '--output', str(output), str(source)],
                 text=True,

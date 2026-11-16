@@ -373,15 +373,15 @@ u64 vk_buffer_sparse_bind(VkBuffer buf, const VkSparseMemoryBind* bind, DevMem g
 
 /* an image going: its binds still in the batch leave it (the memory they let go is still freed after the batch). One
    whose batch went to the queue is destroyed once the frames' work is done (vk_defer_image), the batch with it */
-static void bind_drop(const Pieces* p) {
-    if (p->batch <= g_bind.issued || !g_bind.used) return;
+static void bind_drop_img(VkImage img, u64 batch) {
+    if (batch <= g_bind.issued || !g_bind.used) return;
     BindHead* h = (BindHead*)(void*)g_bind.buf;
     u64 at = sizeof *h, to = at;
     while (at < g_bind.used) {
         BindOne one;
         memcpy(&one, g_bind.buf + at, sizeof one);
         u64 len = sizeof one + (u64)one.n * bind_each(one.kind);
-        if (one.kind == BIND_BUFFER || one.of.img != p->img) {
+        if (one.kind == BIND_BUFFER || one.of.img != img) {
             memmove(g_bind.buf + to, g_bind.buf + at, len);
             to += len;
         } else if (one.kind == BIND_OPAQUE)
@@ -393,6 +393,7 @@ static void bind_drop(const Pieces* p) {
     g_bind.used = h->nimg + h->nopaque + h->nbuf ? to : 0;
     g_bind.last = 0; /* the next bind starts an entry of its own */
 }
+static void bind_drop(const Pieces* p) { bind_drop_img(p->img, p->batch); }
 
 static int pieces_bind(VkImage img, const VkMemoryRequirements* req, Pieces* p, u32 owner, VkResult* res) {
     u64 chunk = g_vk.alloc_cap / req->alignment * req->alignment;
@@ -539,7 +540,7 @@ int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u3
    same texels twice or more in half of them, while the cache evicted and made again ten thousand textures for room.
    What goes up to a block goes to every block of its key: the same bytes, as they show the same memory */
 #define SPARSE_MIN (4ull << 20) /* a smaller image is made whole: the memory it can save is small */
-typedef struct {
+typedef struct Sparse {
     VkImage img;
     VkSparseShape sh;
     VkExtent3D extent; /* level 0's */
@@ -549,6 +550,9 @@ typedef struct {
     u32 memtypes;
     u64 bytes; /* the memory bound now: each allocation once */
     int alias; /* made with VK_IMAGE_CREATE_SPARSE_ALIASED_BIT: blocks of one key share memory */
+    u64 batch; /* the bind batch its last binds are in, 0 none */
+    struct Sparse* hnext; /* the next of its hash bucket (g_sparse_hash) */
+    int place_sys; /* the blocks its binds give memory take system memory (vk_image_sparse_place) */
     /* the blocks' allocations: of[b] is block b's, its index in mem and one more, 0 for none. free_mem: the first
        free record and one more (next goes on), 0 for none */
     struct SparseMem {
@@ -565,10 +569,24 @@ static Sparse** g_sparse;
 static u32 g_nsparse, g_capsparse;
 static u64 g_sparse_binds, g_sparse_bind_ns; /* statistics: the binds and the host's wait for them */
 
+/* the images by handle: a game's textures sparse for their levels alone (texture.c's shed) are hundreds, and every
+   bind, bound check and shape asks for one */
+#define SPARSE_HASH 4096
+static Sparse* g_sparse_hash[SPARSE_HASH];
+static u32 sparse_bucket(VkImage img) {
+    return (u32)(((u64)(uintptr_t)img * 0x9E3779B97F4A7C15ull) >> 52) & (SPARSE_HASH - 1);
+}
 static Sparse* sparse_find(VkImage img) {
-    for (u32 i = 0; i < g_nsparse; i++)
-        if (g_sparse[i]->img == img) return g_sparse[i];
+    for (Sparse* s = g_sparse_hash[sparse_bucket(img)]; s; s = s->hnext)
+        if (s->img == img) return s;
     return NULL;
+}
+static void sparse_unhash(Sparse* s) {
+    for (Sparse** at = &g_sparse_hash[sparse_bucket(s->img)]; *at; at = &(*at)->hnext)
+        if (*at == s) {
+            *at = s->hnext;
+            return;
+        }
 }
 static u32 sparse_dim(u32 v, u32 level) { return v >> level ? v >> level : 1; }
 static u64 sparse_nblocks(const Sparse* s) { return (u64)s->sh.layers * s->sh.per_layer; }
@@ -645,6 +663,9 @@ static int sparse_alias_supported(const VkImageCreateInfo* ii) {
 }
 
 int vk_image_create_sparse(const VkImageCreateInfo* ii, VkImage* img) {
+    return vk_image_create_sparse_min(ii, img, SPARSE_MIN);
+}
+int vk_image_create_sparse_min(const VkImageCreateInfo* ii, VkImage* img, u64 min) {
     VkImageCreateInfo si = *ii;
     *img = VK_NULL_HANDLE;
     if (!vk_sparse_supported(ii)) return 0;
@@ -655,7 +676,7 @@ int vk_image_create_sparse(const VkImageCreateInfo* ii, VkImage* img) {
                                          .pCreateInfo = &si};
     VkMemoryRequirements2 whole = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
     vkGetDeviceImageMemoryRequirements(g_vk.dev, &q, &whole);
-    if (whole.memoryRequirements.size < SPARSE_MIN) return 0;
+    if (whole.memoryRequirements.size < min) return 0;
     if (g_nsparse == g_capsparse) {
         u32 cap = g_capsparse ? g_capsparse * 2 : 16;
         Sparse** grown = realloc(g_sparse, cap * sizeof *grown);
@@ -711,6 +732,8 @@ int vk_image_create_sparse(const VkImageCreateInfo* ii, VkImage* img) {
     }
     *s = h;
     g_sparse[g_nsparse++] = s;
+    s->hnext = g_sparse_hash[sparse_bucket(*img)];
+    g_sparse_hash[sparse_bucket(*img)] = s;
     return 1;
 }
 
@@ -733,23 +756,6 @@ static void sparse_dead_free(void* arg) {
     free(d);
 }
 
-/* the binds of info on the graphics queue, waited for */
-static int sparse_submit(const VkBindSparseInfo* bi) {
-    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    VkFence fence;
-    u64 t0 = plat_ns();
-    int ok = VK_OK(vkCreateFence(g_vk.dev, &fi, NULL, &fence));
-    if (ok) {
-        vk_queue_lock(g_vk.gfx);
-        ok = VK_OK(vkQueueBindSparse(g_vk.gfx, 1, bi, fence));
-        vk_queue_unlock(g_vk.gfx);
-        ok = ok && vk_wait_fence(fence);
-        vkDestroyFence(g_vk.dev, fence, NULL);
-    }
-    g_sparse_binds++;
-    g_sparse_bind_ns += plat_ns() - t0;
-    return ok;
-}
 
 /* What a bind of bits and keys changes, with nothing changed yet. to[b]: what block b does. It stays as it is, lets
    its memory go, or takes memory: a record of s->mem (its index), or the plan's new record j (TO_NEW + j), which one
@@ -837,6 +843,17 @@ static int sparse_plan(const Sparse* s, const u8* bits, const u64* keys, SparseP
     return 1;
 }
 
+void vk_image_sparse_place(VkImage img, int system) {
+    Sparse* s = sparse_find(img);
+    if (s) s->place_sys = system;
+}
+u64 vk_image_sparse_level_bytes(VkImage img, u32 levels) {
+    const Sparse* s = sparse_find(img);
+    if (!s) return 0;
+    u64 n = 0;
+    for (u32 l = 0; l < levels && l < s->sh.tail_first; l++) n += (u64)s->sh.bx[l] * s->sh.by[l] * s->sh.bz[l];
+    return n * s->sh.layers * s->block;
+}
 u64 vk_image_sparse_need(VkImage img, const u8* bits, const u64* keys) {
     const Sparse* s = sparse_find(img);
     SparsePlan p;
@@ -886,15 +903,17 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
     int ok = ib && ob && fresh && info && rec && rec_a && dead;
     /* the fresh blocks, all at once, then the tails */
     VkMemoryRequirements req = {.size = s->block, .alignment = s->block, .memoryTypeBits = s->memtypes};
-    DevMemWant aci = {.at = DM_DEVICE, .image = 1};
+    DevMemWant aci = {.at = s->place_sys ? DM_SYSTEM : DM_DEVICE, .image = 1};
     u32 made = 0;
     for (u32 j = 0; ok && j < p.nfresh; j++) {
-        ok = VK_OK(vk_devmem_alloc(&req, &aci, &fresh[j], &info[j]));
+        /* no room is an answer here (texture.c binds a level coarser), not an error to log */
+        ok = vk_devmem_alloc(&req, &aci, &fresh[j], &info[j]) == VK_SUCCESS;
         if (ok) made++;
     }
+    aci.at = DM_DEVICE; /* a mip tail is small: the GPU's memory always */
     for (u32 t = 0; ok && t < p.ntail; t++) {
         VkMemoryRequirements tr = {.size = s->tail_size, .alignment = s->block, .memoryTypeBits = s->memtypes};
-        ok = VK_OK(vk_devmem_alloc(&tr, &aci, &fresh[p.nfresh + t], &info[p.nfresh + t]));
+        ok = vk_devmem_alloc(&tr, &aci, &fresh[p.nfresh + t], &info[p.nfresh + t]) == VK_SUCCESS;
         if (ok) made++;
     }
     /* room in the table for the new records before anything changes: one emptied gives its place too */
@@ -937,14 +956,14 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
                                               .memoryOffset = info[p.nfresh + no].offset};
                 no++;
             }
-        VkSparseImageMemoryBindInfo ibi = {.image = img, .bindCount = ni, .pBinds = ib};
-        VkSparseImageOpaqueMemoryBindInfo obi = {.image = img, .bindCount = no, .pBinds = ob};
-        VkBindSparseInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO,
-                               .imageOpaqueBindCount = no ? 1u : 0u,
-                               .pImageOpaqueBinds = &obi,
-                               .imageBindCount = ni ? 1u : 0u,
-                               .pImageBinds = &ibi};
-        ok = sparse_submit(&bi);
+        /* into the batch that goes to the queue just before the next submission, which waits for it there: a bind
+           waited for on the host waited for all the work queued before it, and a game's hundreds of textures sparse
+           for their levels (texture.c's shed) held its frames for seconds. The batch waits for the work submitted
+           before it, which may read blocks it changes (readers) */
+        ok = bind_ready();
+        for (u32 k = 0; ok && k < ni; k++) s->batch = bind_add(img, 0, &ib[k], sizeof ib[k], 0, 0, 1);
+        for (u32 k = 0; ok && k < no; k++) s->batch = bind_add(img, 1, &ob[k], sizeof ob[k], 0, 0, 1);
+        if (ok) g_sparse_binds++;
     }
     if (!ok) { /* nothing changes: the new memory goes, and what was bound stays */
         for (u32 i = 0; i < made; i++) vk_devmem_free(fresh[i]);
@@ -1071,6 +1090,8 @@ static int sparse_destroy(VkImage img) {
     for (u32 i = 0; i < g_nsparse; i++) {
         Sparse* s = g_sparse[i];
         if (s->img != img) continue;
+        bind_drop_img(img, s->batch); /* its binds not yet gone to the queue leave the batch */
+        sparse_unhash(s);
         vkDestroyImage(g_vk.dev, img, NULL);
         for (u32 k = 0; k < s->nmem; k++) /* each allocation once, however many blocks it has */
             if (s->mem[k].refs) {

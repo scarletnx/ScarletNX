@@ -904,7 +904,9 @@ static void job_check_run(const void* arg, u64 bytes) {
     u32 c[2];
     (void)bytes;
     memcpy(c, arg, sizeof c);
-    u32 v = g_renderer->release_value ? g_renderer->release_value(c[0]) : syncpt_read(c[0]);
+    u32 v = g_renderer->release_value_at_least ? g_renderer->release_value_at_least(c[0])
+            : g_renderer->release_value        ? g_renderer->release_value(c[0])
+                                               : syncpt_read(c[0]);
     if ((i32)(v - c[1]) < 0)
         WARN_LIMIT(8, "gpu: channel %u ended a submission at syncpoint value %u, short of the %u it promised\n", c[0],
                    v, c[1]);

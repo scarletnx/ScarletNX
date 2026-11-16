@@ -370,7 +370,7 @@ static GuiRect row_box(App* app, int row, bool right) {
 static int row_marked(App* app, int r) {
     char line[700];
     size_t n;
-    form_line(app, &app->editor, r, form_labels(&app->editor), 400, line, sizeof line);
+    form_line(app, &app->editor, r, form_labels(&app->editor), 400, line, sizeof line, NULL);
     n = strlen(line);
     return n > 2 && !strcmp(line + n - 2, " *");
 }
@@ -725,19 +725,19 @@ static bool has_arg(const char* argv, const char* arg, const char* after) {
 }
 /* a console's game not made yet, opened: its first compile through driver, its own (no Switch flag), -r before file
    and its data folder, run to its end with status (driver_will). One the queue started gently has Auto's threads up
-   to half, --aot_threads=0 and --aot_threads_most=, which every console's driver takes; another has neither */
+   to half, --aot-threads=0 and --aot-threads-most=, which every console's driver takes; another has neither */
 static void compiled_by(App* app, const char* driver, const char* file, int status) {
     char threads[48];
     bool gentle = !app->menu.running && app->job_low;
     char* argv;
-    snprintf(threads, sizeof threads, "--aot_threads_most=%d", SDL_max(1, job_cores(app) / 2));
+    snprintf(threads, sizeof threads, "--aot-threads-most=%d", SDL_max(1, job_cores(app) / 2));
     assert(!gentle || app->job_threads == SDL_max(1, job_cores(app) / 2));
     argv = ran(app, status);
     assert(strstr(argv, driver) && strstr(argv, driver) < strchr(argv, '\n') && has_arg(argv, "-r", file) &&
            has_arg(argv, "--data", app->data_dir) && !has_arg(argv, "-S", NULL) &&
            !has_arg(argv, "--fullscreen=1", NULL));
-    assert(gentle ? has_arg(argv, "--aot_threads=0", NULL) && has_arg(argv, threads, NULL)
-                  : !strstr(argv, "--aot_threads=") && !strstr(argv, "--aot_threads_most="));
+    assert(gentle ? has_arg(argv, "--aot-threads=0", NULL) && has_arg(argv, threads, NULL)
+                  : !strstr(argv, "--aot-threads=") && !strstr(argv, "--aot-threads-most="));
     free(argv);
 }
 /* the event e (a game dropped) taken with Background recompile Gentle: its compile starts gently */
@@ -841,6 +841,131 @@ static bool picks_have(App* app, const char* line) {
     bool has = kept && strstr(kept, line);
     free(kept);
     return has;
+}
+/* the left button let go, as a drag on a slider ends */
+static void mouse_up(App* app) {
+    SDL_Event e = {0};
+    e.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    e.button.button = SDL_BUTTON_LEFT;
+    event(app, &e);
+}
+/* the open group's row r's slider as drawn (form_slider), its setting's row in *setting */
+static GuiRect slider_of(App* app, int r, int* setting) {
+    static GuiEditor peek; /* a group's rows seen from the groups: as large as an editor is, out of the stack */
+    const GuiEditor* e;
+    GuiFormBoxes f;
+    layout(app);
+    form_boxes(app, &f);
+    e = form_rows(app, &peek);
+    return form_slider(app, e, r,
+                       row_drawn(app, ui_form_side_row, ui_form_side_shown, f.right, UI_FORM_SIDE_ROWS,
+                                 &f.right_lists[UI_FORM_SIDE_ROWS], (size_t)r),
+                       form_labels(e), setting);
+}
+/* the pixel x of step k of 20 on bar, the knob's middle there */
+static int slider_step_x(App* app, GuiRect bar, int k) {
+    return bar.x + cell_w(app) / 2 + (bar.w - cell_w(app)) * k / 20;
+}
+/* Settings > Audio's Volume, a slider's row (settings.txt's slider): its value where a group's values are and the
+   slider at the row's right, the knob at the value, in the row's colour; Left/Right and Enter step it to its ends and
+   never round, the foot saying the end, each step kept at once; a click on the slider takes the step under it and the
+   knob follows the mouse held down, past either end staying there, until the button lifts; a finger the same, its lift
+   no tap; Del back to its default; the group in focus among the groups shows it in its own colour */
+static void volume_view(App* app) {
+    static const char list[] =
+        "Audio\tvolume\t100\tint\t0\t100\tHow loud the game plays\tVolume\t0=Mute|5=5%|10=10%|15=15%|20=20%|25=25%|"
+        "30=30%|35=35%|40=40%|45=45%|50=50%|55=55%|60=60%|65=65%|70=70%|75=75%|80=80%|85=85%|90=90%|95=95%|100=100%"
+        "\t\t\tslider\n";
+    GuiRect bar, box;
+    char line[64];
+    int setting, s, cw, mid, k;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    key(app, SDLK_DOWN); /* past Launch and GBA, the launcher's own */
+    key(app, SDLK_DOWN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP && !strcmp(app->group_keys[app->group].key, "Audio") &&
+           gui_editor_rows(&app->editor) == 1);
+    render(app);
+    snprintf(line, sizeof line, "- %-8s %s", "Volume", "100% [default]");
+    shows(app, line, yellow);
+    /* the slider at the row's right, a column short of its end, the knob at the last step in the focus's colour, the
+       line thick up to it */
+    bar = slider_of(app, 0, &setting);
+    box = row_box(app, 0, true);
+    s = app->scale;
+    cw = cell_w(app);
+    mid = bar.y + bar.h / 2;
+    assert(setting == setting_row(app, "volume") && app->settings.values[setting].slider);
+    assert(bar.w % cw == 0 && bar.w >= GUI_SLIDER_LEAST * cw && bar.w <= GUI_SLIDER_COLS * cw &&
+           bar.x + bar.w == box.x + box.w - cw && bar.h == cell_h(app));
+    { /* past the value at its longest, a column apart, on whole columns */
+        char tail[64];
+        int at = 0, top = 0;
+        snprintf(tail, sizeof tail, "- %-8s Mute [default] *", "Volume");
+        assert(find_text(app, "- Volume", yellow, 1, &at, &top) && top == bar.y);
+        assert(bar.x >= at + (gui_text_cols(tail) + 1) * cw);
+    }
+    assert(same_colour(pixel(app, (float)(bar.x + bar.w - cw / 2), (float)mid), yellow));
+    assert(same_colour(pixel(app, (float)(bar.x + cw), (float)(mid - s)), yellow));      /* the thick line */
+    assert(!same_colour(pixel(app, (float)(bar.x + cw), (float)(mid - 3 * s)), yellow)); /* over it */
+    /* Right at the end: no step round to Mute, the foot says so; Left a step, kept, the knob a column back */
+    key(app, SDLK_RIGHT);
+    assert(setting_is(app, "volume", NULL) && !strcmp(app->editor.note, "Volume: 100% is its highest"));
+    key(app, SDLK_LEFT);
+    assert(setting_is(app, "volume", "95") && !app->editor.note[0] && picks_have(app, "volume=95"));
+    render(app);
+    snprintf(line, sizeof line, "- %-8s %s", "Volume", "95% *");
+    shows(app, line, yellow);
+    assert(same_colour(pixel(app, (float)slider_step_x(app, bar, 19), (float)(bar.y + 3 * s)), yellow));
+    assert(!same_colour(pixel(app, (float)slider_step_x(app, bar, 20), (float)(bar.y + 3 * s)), yellow));
+    key(app, SDLK_RETURN); /* Enter up, as a word row's */
+    assert(setting_is(app, "volume", NULL));
+    for (k = 0; k < 20; ++k) key(app, SDLK_LEFT);
+    assert(setting_is(app, "volume", "0"));
+    key(app, SDLK_LEFT); /* Mute's end: never round to the loudest */
+    assert(setting_is(app, "volume", "0") && !strcmp(app->editor.note, "Volume: Mute is its lowest"));
+    render(app);
+    snprintf(line, sizeof line, "- %-8s %s", "Volume", "Mute *");
+    shows(app, line, yellow);
+    assert(same_colour(pixel(app, (float)(bar.x + cw / 2), (float)(bar.y + 3 * s)), yellow)); /* the knob first */
+    key(app, SDLK_DELETE);
+    assert(setting_is(app, "volume", NULL));
+    /* a click on the slider: the step under it; held, the knob follows, past either end staying there; let go, the
+       mouse moves it no more */
+    mouse_px(app, slider_step_x(app, bar, 10), mid, true);
+    assert(app->row_slide == setting + 1 && setting_is(app, "volume", "50") && picks_have(app, "volume=50"));
+    mouse_px(app, slider_step_x(app, bar, 15) + 1, mid + cell_h(app), false); /* off the row too: its x alone counts */
+    assert(setting_is(app, "volume", "75"));
+    mouse_px(app, bar.x + bar.w + 10 * cw, mid, false);
+    assert(setting_is(app, "volume", NULL));
+    mouse_px(app, bar.x - 10 * cw, mid, false);
+    assert(setting_is(app, "volume", "0"));
+    mouse_up(app);
+    assert(!app->row_slide);
+    mouse_px(app, slider_step_x(app, bar, 4), mid, false);
+    assert(setting_is(app, "volume", "0"));
+    /* a finger the same, its lift no tap */
+    finger_px(app, SDL_EVENT_FINGER_DOWN, slider_step_x(app, bar, 4), mid);
+    assert(setting_is(app, "volume", "20") && app->row_slide);
+    finger_px(app, SDL_EVENT_FINGER_MOTION, slider_step_x(app, bar, 6), mid);
+    assert(setting_is(app, "volume", "30"));
+    finger_px(app, SDL_EVENT_FINGER_UP, slider_step_x(app, bar, 6), mid);
+    assert(setting_is(app, "volume", "30") && !app->row_slide && app->form == GUI_FORM_GROUP);
+    /* the groups again, Audio's in focus: its row beside them with its slider, in the row's own colour */
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_SETTINGS && !strcmp(app->group_keys[app->editor.row].key, "Audio"));
+    render(app);
+    bar = slider_of(app, 0, &setting);
+    assert(bar.w && same_colour(pixel(app, (float)slider_step_x(app, bar, 6), (float)(bar.y + bar.h / 2)), normal));
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DELETE);
+    assert(setting_is(app, "volume", NULL));
+    key(app, SDLK_ESCAPE);
+    leave_editor(app);
 }
 /* Settings > Controllers by player, as Eden's tabs: its Player row goes round All (every player's rows) and 1 to 8
    (the player's own and those no player has its own of); a player's Button map is the button map page on its keys,
@@ -1115,7 +1240,7 @@ static void only_rows(App* app) {
     info = (UiRowInfo){0};
     assert(form_row_info(app, &app->editor, 1, form_labels(&app->editor), 0, &info) && (info.attr & UI_ATTR_OFF) &&
            strstr(info.label, "MoltenVK " GUI_CHANGED_MARK " macOS only"));
-    assert(gui_settings_options(&app->settings, 0, options) == 1 && !strcmp(options[0], "--vulkan_driver=moltenvk"));
+    assert(gui_settings_options(&app->settings, 0, options) == 1 && !strcmp(options[0], "--vulkan-driver=moltenvk"));
     app->editor.row = 1;
     key(app, SDLK_RETURN);
     assert(strstr(app->editor.note, "and it stays MoltenVK") && setting_is(app, "vulkan_driver", "moltenvk"));
@@ -3719,7 +3844,7 @@ static void game_gpu_driver(App* app) {
     assert(!snx_ini_has(ini, "gpu_driver") && !strcmp(app->drivers_form.value[0], "(*)") && !app->confirm.shown &&
            !app->probe_launch && strstr(app->editor.note, ": the GPU driver for every game (System driver)"));
     option = gui_run_option("gpu_driver", ini, "Turnip_v32");
-    assert(option && !strcmp(option, "--gpu_driver=Turnip_v32"));
+    assert(option && !strcmp(option, "--gpu-driver=Turnip_v32"));
     free(option);
     key(app, SDLK_ESCAPE); /* back to its box */
     assert(!app->editing && app->addons_shown && !strcmp(app->addons_game, game));
@@ -5459,6 +5584,59 @@ static void locate_titles(App* app, const char* dir) {
     free(other);
     free(old);
 }
+/* The game activity's arguments for each console (play_args, which play_as hands the activity): the driver's name
+   first where its driver is not the default, --game= the game's folder for a console (the Switch's its program), and
+   the console's settings alone. A refactor that drops these is what ran every game with the Switch's driver */
+static void check_play_args(App* app, const char* root) {
+    int was = app->menu.selected;
+    char* dir = snx_path_join(root, "play-args/0004000000076500");
+    char* prog = dir ? snx_path_join(dir, "0004000000076500") : NULL;
+    const char** argv = (const char**)snx_alloc(512 * sizeof(*argv));
+    PlayArgs own;
+    assert(dir && prog && argv && !snx_mkdirs(dir) && !snx_write_file(prog, "x", 1));
+    /* a 3DS game, the row naming its program: the driver first, its folder */
+    app->menu.selected = GUI_3DS;
+    assert(play_args(app, GUI_3DS, prog, argv, 512, &own) >= 2);
+    assert(!strcmp(argv[0], "scarletnx-3ds") && !strncmp(argv[1], "--game=", 7) && !strcmp(argv[1] + 7, dir));
+    play_args_free(&own);
+    /* the same game where the row names its folder: the folder still */
+    assert(play_args(app, GUI_3DS, dir, argv, 512, &own) >= 2);
+    assert(!strcmp(argv[0], "scarletnx-3ds") && !strncmp(argv[1], "--game=", 7) && !strcmp(argv[1] + 7, dir));
+    play_args_free(&own);
+    /* a GBA game: its driver, its folder */
+    app->menu.selected = GUI_GBA;
+    assert(play_args(app, GUI_GBA, prog, argv, 512, &own) >= 2);
+    assert(!strcmp(argv[0], "scarletnx-agb") && !strncmp(argv[1], "--game=", 7) && !strcmp(argv[1] + 7, dir));
+    play_args_free(&own);
+    /* the Switch: its driver is the default, so no name, and --game= is its program */
+    app->menu.selected = GUI_SWITCH;
+    assert(play_args(app, GUI_SWITCH, prog, argv, 512, &own) >= 1);
+    assert(!strncmp(argv[0], "--game=", 7) && !strcmp(argv[0] + 7, prog));
+    play_args_free(&own);
+    /* a setting the 3DS takes goes to the 3DS and to no other console */
+    app->menu.selected = GUI_3DS;
+    if (gui_settings_set(settings_of(app), "vsync", "0")) {
+        bool ctr = false, gba = false;
+        (void)play_args(app, GUI_3DS, dir, argv, 512, &own);
+        for (size_t i = 0; argv[i]; i++)
+            if (!strcmp(argv[i], "--vsync=0")) ctr = true;
+        assert(ctr);
+        play_args_free(&own);
+        app->menu.selected = GUI_GBA;
+        (void)play_args(app, GUI_GBA, dir, argv, 512, &own);
+        for (size_t i = 0; argv[i]; i++)
+            if (!strcmp(argv[i], "--vsync=0")) gba = true;
+        assert(!gba);
+        play_args_free(&own);
+        (void)gui_settings_set(settings_of(app), "vsync", "1");
+    }
+    free(argv);
+    free(prog);
+    free(dir);
+    app->menu.selected = was;
+    puts("the game activity's arguments name each console's driver, its folder and its settings alone");
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
     snx_test_crash_said();
@@ -5480,9 +5658,9 @@ int main(int argc, char** argv) {
         const char *threads = "default", *most = NULL, *name = argv[2] + strlen(argv[2]);
         char *step = snx_format("%s.step", argv[2]), *pid = snx_format("%s.pid", argv[2]), *at;
         for (int i = 3; i < argc; ++i)
-            if (!strncmp(argv[i], "--aot_threads=", 14))
+            if (!strncmp(argv[i], "--aot-threads=", 14))
                 threads = argv[i] + 14; /* the last one given */
-            else if (!strncmp(argv[i], "--aot_threads_most=", 19))
+            else if (!strncmp(argv[i], "--aot-threads-most=", 19))
                 most = argv[i] + 19;
         while (name > argv[2] && name[-1] != '/' && name[-1] != '\\') --name;
 #ifdef _WIN32
@@ -5616,7 +5794,7 @@ int main(int argc, char** argv) {
         int r = !strcmp(argv[1], "-r"), args = argc;
         /* a recompile the queue runs gently (on battery) ends with Auto and its ceiling of half the threads, which the last
            ones given replace, as the menu's own line says */
-        if (args > 2 && !strncmp(argv[args - 1], "--aot_threads_most=", 19)) args -= 2; /* and its --aot_threads=0 */
+        if (args > 2 && !strncmp(argv[args - 1], "--aot-threads-most=", 19)) args -= 2; /* and its --aot-threads=0 */
         assert(strstr(argv[0], "runtime") && snx_is_file(argv[1 + r]));
         assert(!strcmp(argv[args - 2], "--data") && argv[args - 1][0]);
         puts("ScarletNX - an update");
@@ -5624,14 +5802,14 @@ int main(int argc, char** argv) {
     }
     if (strstr(argv[0], "0100ABCD12350000")) { /* a game played from its save state, slot 1: its own program */
         int i, found = 0;
-        for (i = 1; i < argc; i++) found |= !strncmp(argv[i], "--state_load=0:", 15) && strstr(argv[i], ".1.snxstate");
+        for (i = 1; i < argc; i++) found |= !strncmp(argv[i], "--state-load=0:", 15) && strstr(argv[i], ".1.snxstate");
         assert(found);
         puts("ScarletNX - a save state");
         return 0;
     }
     if (argc > 2 && !strcmp(argv[1], "-r") && strstr(argv[2], "folder game")) { /* R on it: recompiled, not played */
         int i = 3, args = argc;
-        if (args > 2 && !strncmp(argv[args - 1], "--aot_threads_most=", 19)) args -= 2; /* the Gentle recompile's */
+        if (args > 2 && !strncmp(argv[args - 1], "--aot-threads-most=", 19)) args -= 2; /* the Gentle recompile's */
         assert(strstr(argv[0], "runtime") && snx_is_file(argv[2]));
         assert(i + 2 == args && !strcmp(argv[i], "--data") && argv[i + 1][0]);
         puts("Recompiling folder game (1 modules)\nBuilt folder game");
@@ -7774,6 +7952,30 @@ int main(int argc, char** argv) {
             assert(app.lefts == 0);
             assert(!snx_path_format(path, sizeof path, "%s/save/device/0100000000ABC000" GUI_SAVE_MOVING, data_saves) &&
                    !snx_remove_tree(path));
+            /* a sync tool's folders (Syncthing's) beside a user's saves, beside the Device saves, and in a game's own
+               save folder that holds nothing else: neither listed nor taken for a save */
+            {
+                static const char* const marks[] = {
+                    "%s/save/user.0123456789abcdeffedcba9876543210/.stfolder/syncthing-folder-1.txt",
+                    "%s/save/device/.stversions/d.bin",
+                    "%s/0100000000ABC000_data/save/bcat/.stfolder/syncthing-folder-1.txt"};
+                for (i = 0; i < sizeof marks / sizeof *marks; ++i) {
+                    char* dir;
+                    assert(!snx_path_format(path, sizeof path, marks[i], i < 2 ? data_saves : game));
+                    dir = snx_dirname(path);
+                    assert(!snx_mkdirs(dir) && !snx_write_file(path, "mark", 4));
+                    free(dir);
+                }
+                left_behind(&app);
+                assert(app.lefts == 0);
+                for (i = 0; i < sizeof marks / sizeof *marks; ++i) {
+                    char* dir;
+                    assert(!snx_path_format(path, sizeof path, marks[i], i < 2 ? data_saves : game));
+                    dir = snx_dirname(path);
+                    assert(!snx_remove_tree(dir));
+                    free(dir);
+                }
+            }
             /* save_layout=game (read from settings.ini, as this driver lists no save_layout): a game's own save as an
                older version kept it is listed where it is, with its 0/ */
             {
@@ -8165,12 +8367,12 @@ int main(int argc, char** argv) {
             size_t n;
             assert(!strcmp(app.app_form.folder[r], "default"));
             for (int extra = 9; extra <= 40; extra += 31) {
-                form_line(&app, &app.editor, r, labels, whole + extra, line, sizeof line);
+                form_line(&app, &app.editor, r, labels, whole + extra, line, sizeof line, NULL);
                 n = strlen(line);
                 assert(gui_text_cols(line) == whole + extra && n > 7 && !strcmp(line + n - 7, "default") &&
                        strstr(line, app.data_dir));
             }
-            form_line(&app, &app.editor, r, labels, whole + 8, line, sizeof line);
+            form_line(&app, &app.editor, r, labels, whole + 8, line, sizeof line, NULL);
             assert(strstr(line, app.data_dir) && !strstr(line, "default"));
         }
         { /* a click on a row takes it; one on a group's title, nothing */
@@ -9434,7 +9636,7 @@ int main(int argc, char** argv) {
             app.recompile = false;
             argv_got = ran(&app, 0);
             assert(has_arg(argv_got, "-r", nro) && has_arg(argv_got, "--nce=0", NULL) &&
-                   has_arg(argv_got, "--slp_vectorizer=1", NULL) && !has_arg(argv_got, "--resolution=2", NULL));
+                   has_arg(argv_got, "--slp-vectorizer=1", NULL) && !has_arg(argv_got, "--resolution=2", NULL));
             free(argv_got);
         }
         driver_will(NULL, 0, NULL);
@@ -11565,7 +11767,7 @@ int main(int argc, char** argv) {
         }
         /* a game's save states (S on Games): a row each, the newest first, the focused one's picture beside the box;
            one this build can't load in the failure colour, Enter saying why; Del deletes one, asked first; Enter
-           plays the game's program with --state_load= of the state */
+           plays the game's program with --state-load= of the state */
         {
             char *own = snx_path_join(app.games_dir, "0100ABCD12350000"), *program, *states, *file[3], *kept, *name;
             static uint8_t thumb[320 * 180 * 4];
@@ -11692,7 +11894,7 @@ int main(int argc, char** argv) {
             launcher(&app, false);
             kept = (char*)snx_read_file(app.run_log, &size);
             {
-                char* option = snx_format("--state_load=0:%s", file[0]);
+                char* option = snx_format("--state-load=0:%s", file[0]);
                 assert(kept && option && strstr(kept, option));
                 free(option);
             }
@@ -13204,7 +13406,8 @@ int main(int argc, char** argv) {
                 assert(!l->first && l->shift == half);
                 row = row_drawn(&app, ui_form_list_row, ui_form_list_shown, f.left, UI_FORM_LIST_ROWS, l, (size_t)k);
                 b = ui_row_box(&app, row);
-                form_line(&app, &app.editor, k, form_labels(&app.editor), form_room(&app, row.w), line, sizeof line);
+                form_line(&app, &app.editor, k, form_labels(&app.editor), form_room(&app, row.w), line, sizeof line,
+                          NULL);
                 x = b.x + cw / 2 + gui_text_cols(line) * cw + cw;
                 assert(x + 2 * cw <= b.x + b.w - cw);
                 assert(same_colour(pixel(&app, (float)(x + cw), (float)(ui_text_y(&app, b) + 3 * app.scale)),
@@ -15002,7 +15205,7 @@ int main(int argc, char** argv) {
                 char* kept = (char*)snx_read_file(app.settings_file, &size);
                 assert(kept && strstr(kept, "[User]\nuser_uid=0123456789abcdeffedcba9876543210\n"));
                 free(kept);
-                /* back to no pick, as the runs below were written for: theirs has no --user_uid */
+                /* back to no pick, as the runs below were written for: theirs has no --user-uid */
                 gui_settings_reset(&app.settings, setting_row(&app, "user_uid"));
                 gui_settings_sync(&app.settings);
                 assert(!gui_settings_save(&app.settings, app.settings_file));
@@ -16413,6 +16616,7 @@ int main(int argc, char** argv) {
         leave_editor(&app);
     }
     players_view(&app);
+    volume_view(&app);
     only_rows(&app);
     icons_named();
     help_icons_named();
@@ -16564,6 +16768,7 @@ int main(int argc, char** argv) {
     assert(app.closing_ms && !app.menu.quit);
     event(&app, &e);
     assert(app.menu.quit);
+    check_play_args(&app, temporary);
     cleanup(&app);
     assert(!app.hid_held);
     assert(!snx_remove_tree(temporary));

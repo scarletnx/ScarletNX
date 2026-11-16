@@ -54,14 +54,15 @@ env:
 
 # Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
 # recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
-# and LLVM's development libraries come from one compatible toolchain. FFmpeg, OpenSSL, Vulkan and SDL3 are built from
-# the pinned CPM sources, with MSYS2 providing the shell, GNU make and NASM needed by FFmpeg and the Perl OpenSSL's
-# Configure runs on. Downloads are cached in .cache/cpm: one cache for the jobs that fetch the same sources (a Linux
-# architecture's jobs, the four cross builds, Windows, Apple, Android), named by cmake/dependencies.cmake's hash, with
-# the name before the hash as a restore key, so a bump downloads only the packages it changed. Compiles go through
-# ccache, whose .cache/ccache each compiling job restores from the newest one a push saved; a push saves it again,
-# trimmed to what the run used, and a pull request's run saves none: it reads main's (the linux job says why).
-# The artifacts are what `cmake --install` puts in place: the binaries with the licenses that go with them.
+# and LLVM's development libraries come from one compatible toolchain. FFmpeg, OpenSSL, Vulkan, SDL3 and SPIRV-Tools'
+# spirv-opt and spirv-val (cmake/spirv_tools.cmake) are built from the pinned CPM sources, with MSYS2 providing the
+# shell, GNU make and NASM needed by FFmpeg and the Perl OpenSSL's Configure runs on. Downloads are cached in
+# .cache/cpm: one cache for the jobs that fetch the same sources (a Linux architecture's jobs, the four cross builds,
+# Windows, Apple, Android), named by cmake/dependencies.cmake's hash, with the name before the hash as a restore key, so
+# a bump downloads only the packages it changed. Compiles go through ccache, whose .cache/ccache each compiling job
+# restores from the newest one a push saved; a push saves it again, trimmed to what the run used, and a pull request's
+# run saves none: it reads main's (the linux job says why). The artifacts are what `cmake --install` puts in place: the
+# binaries with the licenses that go with them.
 jobs:
   # A scheduled run of a commit that has its nightly already: the run cancels itself, this job with it, which fails
   # nothing
@@ -124,7 +125,7 @@ jobs:
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syuu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang spirv-tools jdk21-openjdk && break
+            pacman -Syuu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -156,16 +157,17 @@ jobs:
           path: .cache/cpm
           key: cpm-linux-${{ matrix.arch }}-${{ hashFiles('cmake/dependencies.cmake') }}
           restore-keys: cpm-linux-${{ matrix.arch }}-
-      # ccache under every compile, FFmpeg's and OpenSSL's too, from the newest cache of this job on this branch, else
-      # on main: a pull request has none of its own, so it reads main's. Each cmake gets it as its launcher: from the
-      # environment CMake would run its configure checks through it, and they only miss
+      # ccache under every compile, FFmpeg's, OpenSSL's and SPIRV-Tools' too, from the newest cache of this job on this
+      # branch, else on main: a pull request has none of its own, so it reads main's. Each cmake gets it as its
+      # launcher: from the environment CMake would run its configure checks through it, and they only miss
       - uses: actions/cache/restore@v5
         with:
           path: .cache/ccache
           key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ccache-${{ github.job }}-${{ matrix.arch }}-
-      # FFmpeg's and OpenSSL's builds (cmake/deps_cache.cmake), from the newest cache of this job on this branch, else
-      # on main. The key named here is never saved: a run saves its own below, named after the builds it used
+      # FFmpeg's, OpenSSL's and SPIRV-Tools' builds (cmake/deps_cache.cmake), from the newest cache of this job on this
+      # branch, else on main. The key named here is never saved: a run saves its own below, named after the builds it
+      # used
       - uses: actions/cache/restore@v5
         id: deps
         with:
@@ -259,7 +261,7 @@ jobs:
       # As many at a time as the runner has cores, as each run keeps its shaders and frames in a folder of its own
       # (tests/vulkan_headless.c)
       - name: Test headless Vulkan and NX runtime
-        run: &headless-tests ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_headless_pipeline_library_whole|vulkan_headless_pipeline_library_linked|vulkan_headless_libraries_off|vulkan_headless_vk12|vulkan_headless_descriptor_buffers|vulkan_headless_vertex_input_off|vulkan_headless_uma|vulkan_headless_hot|vulkan_recorder|vulkan_tex_partial|vulkan_video_av1|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep|vulkan_nvn_savestate|vulkan_owned_page_reads|vulkan_owned_page_reads_protection|astc_vulkan_sync)$' --output-on-failure --parallel "$(getconf _NPROCESSORS_ONLN)"
+        run: &headless-tests ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_headless_pipeline_library_whole|vulkan_headless_pipeline_library_linked|vulkan_headless_libraries_off|vulkan_headless_vk12|vulkan_headless_descriptor_buffers|vulkan_headless_vertex_input_off|vulkan_headless_uma|vulkan_headless_hot|vulkan_recorder|vulkan_tex_partial|vulkan_video_av1|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep|vulkan_nvn_savestate|vulkan_owned_page_reads|vulkan_owned_page_reads_protection|astc_vulkan_sync|astc_vulkan_encode_dot)$' --output-on-failure --parallel "$(getconf _NPROCESSORS_ONLN)"
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
         run: &abi-helpers clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
@@ -364,7 +366,7 @@ jobs:
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang spirv-tools jdk21-openjdk && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -414,9 +416,10 @@ jobs:
 
   # x86-64 with ASan and UBSan (SNX_TEST_SANITIZERS): every test, and the programs and libraries of ours it runs or
   # links, built with them (runtime_architecture names any left out), so our code reading memory after it was freed or
-  # past its end fails on every run, not only where it happens to crash. A report stops the program that made it, a
-  # code generator of the build or a test, and fails the job, printed whole. Its own compiler cache; the linux job's
-  # CPM sources and FFmpeg and OpenSSL builds, which the sanitizers leave as they are, are read and never saved here
+  # past its end fails on every run, not only where it happens to crash. A report stops the program that made it, a code
+  # generator of the build or a test, and fails the job, printed whole. Its own compiler cache; the linux job's CPM
+  # sources and FFmpeg, OpenSSL and SPIRV-Tools builds, which the sanitizers leave as they are, are read and never saved
+  # here
   linux-sanitizers:
     name: Linux (x86_64, ASan + UBSan)
     runs-on: ubuntu-26.04
@@ -447,7 +450,7 @@ jobs:
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang spirv-tools jdk21-openjdk && break
+            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -609,7 +612,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang spirv-tools jdk21-openjdk && break
+            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -945,7 +948,7 @@ jobs:
           docker exec -i build sh -s <<'EOF'
           set -eu
           retry() { for try in 1 2 3; do "$@" && return; [ "$try" = 3 ] && return 1; sleep 5; done; }
-          retry pacman -Syu --noconfirm --needed cmake ninja make patch perl python clang lld llvm glslang spirv-tools qemu-user \
+          retry pacman -Syu --noconfirm --needed cmake ninja make patch perl python clang lld llvm glslang qemu-user \
             git pkgconf patchelf wayland ccache jdk21-openjdk meson
           EOF
       # Saved once a week, as in the linux job. Every architecture's job installs the same, so one of them saves it
@@ -1237,7 +1240,6 @@ jobs:
             mingw-w64-clang-x86_64-nasm
             mingw-w64-clang-x86_64-pkgconf
             mingw-w64-clang-x86_64-python
-            mingw-w64-clang-x86_64-spirv-tools
             mingw-w64-clang-x86_64-ccache
       - name: Check required dependencies
         run: |
@@ -1251,8 +1253,6 @@ jobs:
           perl --version
           nasm --version
           meson --version
-          spirv-val --version
-          spirv-dis --version
       - name: Build the runtime and pinned dependencies
         run: |
           set -euo pipefail
@@ -1431,7 +1431,7 @@ jobs:
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
-          sudo apt-get update && sudo apt-get install -y nasm meson ccache spirv-tools
+          sudo apt-get update && sudo apt-get install -y nasm meson ccache
       - name: Build LLVM's libraries for x86_64
         if: steps.llvm-x86_64.outputs.cache-hit != 'true'
         run: scripts/android-llvm.sh x86_64 "$PWD/android-llvm/x86_64"
@@ -1644,7 +1644,7 @@ jobs:
           key: ios-llvm-${{ hashFiles('scripts/apple-llvm.sh') }}-${{ steps.xcode.outputs.version }}
       # meson: dav1d's build (cmake/dav1d.cmake), with a native file on macOS and a cross file on iOS
       - name: Install tools
-        run: brew install ninja meson ccache spirv-tools
+        run: brew install ninja meson ccache
       - name: Build LLVM's libraries for macOS
         id: macos-llvm-build
         if: steps.macos-llvm.outputs.cache-hit != 'true'
@@ -1994,7 +1994,7 @@ jobs:
       - name: Install the runtime's libraries and lavapipe
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed python llvm-libs sdl3 vulkan-icd-loader vulkan-swrast spirv-tools \
+            pacman -Syu --noconfirm --needed python llvm-libs sdl3 vulkan-icd-loader vulkan-swrast \
               github-cli jre21-openjdk-headless && break
             [ "$try" = 3 ] && exit 1
             sleep 5

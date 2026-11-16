@@ -14,6 +14,7 @@
 #include "common/utilities/mods.h"
 #include "common/utilities/setup.h"
 #include "nx/runtime/cli.h"
+#include "snx_settings.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,7 +72,9 @@ static void usage(void) {
     puts("  --touch=0|1|2          The game's touch screen: off, fingers, or fingers and the mouse\n"
          "  --controls=0|1|2       The on-screen controls: hidden, shown, or Auto, shown on a touch screen while no\n"
          "                         gamepad is connected\n"
-         "  --KEY=VALUE            Any setting of the game's .ini, for this run\n"
+         "  --KEY=VALUE            Any setting of the game's .ini, for this run, KEY its key with a - for each _\n"
+         "                         (--state-slots=5). The key as the .ini writes it, the older spelling, is still\n"
+         "                         read, and said once\n"
          "  --settings[=recompile] List the settings, tab-separated");
     puts("  --program N            The program of a collection's application to play (default: 0, its own, the\n"
          "                         collection's menu). One that is not made plays program 0, said\n"
@@ -1510,15 +1513,8 @@ static int takes_value(const char* arg) {
         if (!strcmp(arg, names[i])) return 1;
     return 0;
 }
-/* key=value's key, a setting the runtime knows */
-static int setting_known(const char* option) {
-    char key[64];
-    size_t n = (size_t)(strchr(option, '=') - option);
-    if (!snx_setting_known || n >= sizeof key) return 0;
-    memcpy(key, option, n);
-    key[n] = 0;
-    return snx_setting_known(key);
-}
+/* a setting the runtime knows */
+static int setting_known(const char* key) { return snx_setting_known && snx_setting_known(key); }
 static int container_path(const char* path) {
     const char* ext = strrchr(path, '.');
     char lower[6];
@@ -1602,6 +1598,7 @@ int snx_driver(int argc, char** argv) {
     const char** updates = NULL;
     int nupdates = 0;
     char *r = NULL, *b = NULL, *exe = NULL, **rest = NULL, **setting, **recompile, *self, *data = NULL, *source = NULL;
+    char* spelled = NULL; /* the settings passed on, spelled as they are given now (ini_option) */
     char *keys_path = NULL, *title_keys_path = NULL;
     const char *prod_keys_flag = NULL, *title_keys_flag = NULL;
     unsigned flags = 0;
@@ -1795,25 +1792,29 @@ int snx_driver(int argc, char** argv) {
             --i;
         }
     /* played, a --key=value that is not the driver's own is a setting of the recompile, passed on to it when the game is
-       made, or of the game's .ini, passed on to the game when the runtime knows the key; any other is refused */
-    for (i = 0; automatic && i < n; ++i)
-        if (!strncmp(rest[i], "--", 2) && strchr(rest[i], '=')) {
-            char key[64];
-            size_t length = (size_t)(strchr(rest[i], '=') - rest[i] - 2);
-            if (length < sizeof key) {
-                memcpy(key, rest[i] + 2, length);
-                key[length] = 0;
-            }
-            int recompiles = length < sizeof key && snx_recompile_setting(key), plays = setting_known(rest[i] + 2);
-            if (!recompiles && !plays) {
-                result = snx_error("unknown option: %s", rest[i]);
-                goto done;
-            }
-            if (recompiles) recompile[recompiling++] = rest[i];
-            if (plays) setting[settings++] = rest[i]; /* both for one both take (slp_vectorizer) */
-            ++taken;
-        } else
-            rest[i - taken] = rest[i];
+       made, or of the game's .ini, passed on to the game when the runtime knows the key; any other is refused. Each
+       goes on with a - for each _ of its key, so an older spelling is said here once, not again by each */
+    if (automatic) {
+        size_t room = 0, at = 0;
+        for (i = 0; i < n; ++i) room += strlen(rest[i]) + 1;
+        spelled = (char*)snx_alloc(room ? room : 1);
+        for (i = 0; i < n; ++i)
+            if (!strncmp(rest[i], "--", 2) && strchr(rest[i], '=')) {
+                char key[64];
+                const char* value = settings_arg(rest[i], key, sizeof key);
+                int recompiles = value && snx_recompile_setting(key), plays = value && setting_known(key);
+                if (!recompiles && !plays) {
+                    result = snx_error("unknown option: %s", rest[i]);
+                    goto done;
+                }
+                rest[i] = spelled + at;
+                at += ini_option(rest[i], room - at, key, value) + 1;
+                if (recompiles) recompile[recompiling++] = rest[i];
+                if (plays) setting[settings++] = rest[i]; /* both for one both take (slp_vectorizer) */
+                ++taken;
+            } else
+                rest[i - taken] = rest[i];
+    }
     n -= taken;
     /* played, --outdir names the games' folder and --out the dump's extraction, as -r and -x take them, and --update
        an update or a DLC played over the game */
@@ -1881,8 +1882,8 @@ int snx_driver(int argc, char** argv) {
             if (!strcmp(rest[i], "--settings") || !strncmp(rest[i], "--settings=", 11) ||
                 !strncmp(rest[i], "--game=", 7))
                 continue;
-            if (!input && (!strcmp(rest[i], "-v") ||
-                           (!strncmp(rest[i], "--", 2) && strchr(rest[i], '=') && setting_known(rest[i] + 2))))
+            char key[64];
+            if (!input && (!strcmp(rest[i], "-v") || (settings_arg(rest[i], key, sizeof key) && setting_known(key))))
                 continue;
             if (rest[i][0] == '-' && rest[i][1] && strcmp(rest[i], "--tmpfs") && strcmp(rest[i], "-h") &&
                 strcmp(rest[i], "--help") && strcmp(rest[i], "--hook-direct-calls")) {
@@ -1994,6 +1995,7 @@ int snx_driver(int argc, char** argv) {
         result = (flags & SNX_RECOMP) ? snx_recompile_game(n, rest, &paths) : snx_extract(n, rest, &paths);
 done:
     free((void*)updates);
+    free(spelled);
     free(rest);
     free(joined);
     free(r);

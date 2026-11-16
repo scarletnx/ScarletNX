@@ -87,6 +87,47 @@ int main(void) {
     copy = snx_path_join(root, "no such folder/agb");
     assert(snx_place_runtime(runtime, copy, error, sizeof error) == -1 && strstr(error, copy));
     free(copy);
+#ifdef _WIN32
+    { /* the DLLs beside the runtime go beside its copy, as Windows finds them there: all when the runtime is placed,
+         a missing or short one again while it is the same build. Other files stay where they are */
+        char* dll = snx_path_join(root, "a.dll");
+        char* upper = snx_path_join(root, "B.DLL");
+        char* text = snx_path_join(root, "c.txt");
+        char* w32 = snx_path_join(root, "w32");
+        char* placed = snx_path_join(root, "w32/game.exe");
+        char* dll_copy = snx_path_join(root, "w32/a.dll");
+        char* upper_copy = snx_path_join(root, "w32/B.DLL");
+        char* text_copy = snx_path_join(root, "w32/c.txt");
+        assert(!snx_mkdirs(w32));
+        assert(!snx_write_file(dll, "dll one", 7) && !snx_write_file(upper, "dll b", 5) &&
+               !snx_write_file(text, "text", 4));
+        assert(snx_place_runtime(runtime, placed, error, sizeof error) == 1);
+        assert(snx_is_file(dll_copy) && snx_is_file(upper_copy) && !snx_path_exists(text_copy));
+        assert(!remove(dll_copy));
+        assert(snx_place_runtime(runtime, placed, error, sizeof error) == 0 && snx_is_file(dll_copy));
+        assert(!remove(dll_copy) && !snx_write_file(dll_copy, "dll", 3)); /* a copy that stopped midway */
+        assert(snx_place_runtime(runtime, placed, error, sizeof error) == 0);
+        assert((bytes = snx_read_file(dll_copy, &size)) && size == 7 && !memcmp(bytes, "dll one", 7));
+        free(bytes);
+        assert(!snx_write_file(dll_copy, "dll two", 7)); /* the same size as the source, other bytes */
+        /* placing the same build again: a DLL the folder holds at the source's size stays */
+        assert(snx_place_runtime(runtime, placed, error, sizeof error) == 0);
+        assert((bytes = snx_read_file(dll_copy, &size)) && size == 7 && !memcmp(bytes, "dll two", 7));
+        free(bytes);
+        assert(!snx_write_file(runtime, "build three", 11));
+        assert(snx_place_runtime(runtime, placed, error, sizeof error) == 1);
+        assert((bytes = snx_read_file(dll_copy, &size)) && size == 7 && !memcmp(bytes, "dll one", 7));
+        free(bytes);
+        free(w32);
+        free(text_copy);
+        free(upper_copy);
+        free(dll_copy);
+        free(placed);
+        free(text);
+        free(upper);
+        free(dll);
+    }
+#endif
     free(runtime);
     { /* a game of the user's data folder, whose .ini the launcher keeps in the config folder (snx_user_path): the
          source= a console's driver wrote in the game's own folder is its source all the same, which Recent maps a

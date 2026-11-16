@@ -798,7 +798,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             if (offset_enabled) {
                 u32 packed = 0, domain = (1u << (4 * offset_count)) - 1;
                 int known = shader_direct_track_const(t->flow, i, offset_source, &packed, 0);
-                if (!known && !g_shader_dynamic_texture_offsets && g_shader_cb_read) {
+                if (!known && !g_spirv_translate.dynamic_texture_offsets && g_shader_cb_read) {
                     u32 offset_bank, offset_word;
                     if (shader_direct_track_cbuf_word(t->flow, i, offset_source, &offset_bank, &offset_word, 0))
                         known = g_shader_cb_read(offset_bank, offset_word * 4, &packed);
@@ -811,7 +811,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                     if (known) packed = offset_value;
                 }
                 if (!known) varying_offset = reg_read(c, offset_source);
-                if (known || g_shader_dynamic_texture_offsets) {
+                if (known || g_spirv_translate.dynamic_texture_offsets) {
                     u32 o[3],
                         signed_bits = known ? 0 : spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, varying_offset);
                     for (u32 axis = 0; axis < 3; axis++) {
@@ -938,7 +938,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         if (B(w, 35, 1)) { /* signed 4-bit offsets from bit 16 of the packed register */
             u32 packed = 0, o[3];
             int known = shader_direct_track_const(t->flow, i, packed_reg, &packed, 0);
-            if (!known && !g_shader_dynamic_texture_offsets && g_shader_cb_read) {
+            if (!known && !g_spirv_translate.dynamic_texture_offsets && g_shader_cb_read) {
                 u32 offset_bank, offset_word;
                 /* The shader cache records this word and makes another variant when it changes. A ConstOffset
                    applies in the selected mip's texels; moving normalized coordinates by the base size does not. */
@@ -962,7 +962,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                    : spv_emit_constant_vec2(&c->emit, vec2_i32, o[0], o[1]);
             } else {
                 varying_offset = reg_read(c, packed_reg);
-                if (g_shader_dynamic_texture_offsets) {
+                if (g_spirv_translate.dynamic_texture_offsets) {
                     /* maintenance8 keeps the offset in texels at the selected mip. Coordinates, explicit
                        gradients, sampler filtering and the array layer all retain their original values. */
                     u32 signed_bits = spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, varying_offset);

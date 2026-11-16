@@ -75,6 +75,9 @@ int own_watch(u64 addr, u64 size);
 int own_owed_take(u64* addr, u64* size);
 /* 1 when watches cover every byte of [addr, addr + size) */
 int own_watched(u64 addr, u64 size);
+/* 1 when owners and watches together cover every byte of [addr, addr + size), none of them being landed: every page
+   of it is trapped, and own_watch there would arm nothing */
+int own_covered(u64 addr, u64 size);
 /* the watches over [addr, addr + size) go (clipped to it), and their pages open where no entry is left. Nothing lands.
    The caller holds the producer's lock */
 void own_unwatch(u64 addr, u64 size);
@@ -126,10 +129,7 @@ typedef struct {
    entry names its slot: a watch arms tens of pages at once, and an allocation for each page took a heap call per page
    and a page fault on Windows for each new one. A slot let go goes on the free list for the next. The slab moves when
    it grows, so its bytes are read under trap_lk only, and it goes when no shadow is left */
-typedef struct {
-    u64 page;
-    u32 slot;
-} Shadow;
+#define OWN_SHADOW_LEAF_SHIFT 10 /* a leaf of OwnState's shadow: the entries of 1024 pages */
 /* A buffer kept for the next use: a fresh allocation of megabytes takes a page fault per page on Windows. Its users run
    one at a time under the producer's lock, but a test's may not: a second one at once gets an allocation of its own */
 typedef struct {
@@ -165,8 +165,14 @@ typedef struct {
        always */
     u32* region;
     u64 nregion;
-    Shadow* shadow; /* sorted by page, under trap_lk */
-    u32 nshadow, capshadow;
+    /* The shadows by page, under trap_lk: leaves of 1 << OWN_SHADOW_LEAF_SHIFT pages, each entry a page's slot + 1 (0 for
+       none), made on first use and kept, with the number of shadows in each leaf (shadow_n), so a drop skips the empty
+       ones. A page's lookup, add and drop touch its own entry: one game keeps some 144,000 shadows, and a sorted array
+       of them, merged at each add and moved at each drop, took about 2 ms of its GPU thread a frame */
+    u32** shadow;
+    u32* shadow_n;
+    u64 shadow_leaves; /* the leaves shadow and shadow_n have room for: the address space's pages */
+    u32 nshadow;
     u8* slab; /* nslot slots of page bytes */
     u32 nslot;
     u32 slot_top;   /* slots [0, slot_top) were handed out at least once */

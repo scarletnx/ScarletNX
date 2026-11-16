@@ -13,6 +13,8 @@
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "common/platform/thread.h"  /* plat_thread_note_get */
+#include "common/utilities/common.h" /* snx_thread_name_get */
 #if !defined(_WIN32)
 #include <dlfcn.h>
 #include <signal.h>
@@ -30,12 +32,33 @@ extern const char __ehdr_start[] __attribute__((weak, visibility("hidden")));
 #define NEAR_FUNCTION ((u64)1 << 20)   /* a host pc this far past a recompiled function's start is still in it */
 #define RUNTIME_WINDOW ((u64)256 << 20) /* the runtime's image is smaller than this */
 
+#if defined(_WIN32)
+/* the module p lies in: its base, and its file's name without the folders into name (a game log's crash lines carry no
+   path); 0 when p is in none */
+static u64 module_at(const void* p, char* name, size_t size) {
+    HMODULE m = NULL;
+    wchar_t path[MAX_PATH];
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR)p, &m) ||
+        !m)
+        return 0;
+    DWORD n = GetModuleFileNameW(m, path, MAX_PATH);
+    const wchar_t* file = path;
+    for (DWORD i = 0; i < n && i < MAX_PATH; i++)
+        if (path[i] == L'\\' || path[i] == L'/') file = path + i + 1;
+    if (!n || !WideCharToMultiByte(CP_UTF8, 0, file, -1, name, (int)size, NULL, NULL)) snprintf(name, size, "?");
+    return (u64)(size_t)m;
+}
+#endif
+
 static const char* crash_kind(void* fault, int sig) {
 #if defined(_WIN32)
+    (void)fault; /* the exception's code says it */
     switch ((unsigned long)sig) {
         case 0xC0000005ul: /* EXCEPTION_ACCESS_VIOLATION */
         case 0xC0000006ul: return "invalid memory access"; /* EXCEPTION_IN_PAGE_ERROR */
         case 0xC000001Dul: return "illegal instruction";
+        case 0xC0000096ul: return "privileged instruction";
         case 0xC000008Eul: /* the float exceptions, then integer division by zero and overflow */
         case 0xC0000090ul:
         case 0xC0000091ul:
@@ -87,6 +110,27 @@ static void report_place(void* host_pc) {
         if (pc >= base && pc - base < RUNTIME_WINDOW) {
             WARN("  in the runtime itself (exe offset +%llx), on %s\n", (unsigned long long)(pc - base),
                  kthread_cur() ? "a game thread" : "one of the runtime's threads");
+            return;
+        }
+    }
+    /* a library's, as dladdr says it elsewhere: which DLL, at an offset a debugger takes, and the host frames */
+    {
+        char name[MAX_PATH];
+        u64 base = module_at(host_pc, name, sizeof name);
+        if (base) {
+            void* bt[24];
+            WARN("  in %s +%llx (?), on %s\n", name, (unsigned long long)(pc - base),
+                 kthread_cur() ? "a game thread" : "one of the runtime's threads");
+            const USHORT n = RtlCaptureStackBackTrace(0, 24, bt, NULL);
+            logf_(0, "  host frames:");
+            for (USHORT i = 0; i < n; i++) {
+                const u64 b = module_at(bt[i], name, sizeof name);
+                if (b)
+                    logf_(0, " %s+%llx", name, (unsigned long long)((u64)(size_t)bt[i] - b));
+                else
+                    logf_(0, " %p", bt[i]);
+            }
+            logf_(0, "\n");
             return;
         }
     }
@@ -168,8 +212,20 @@ void crash_report(void* host_pc, void* fault, int sig) {
         WARN("  thread %llu (%s)\n", (unsigned long long)t->id, t->name);
         if (fault && in_guest) kernel_dump_libc_fault(&t->cpu, guest); /* a copy the runtime ran for the game */
         kernel_dump_regs(&t->cpu);
-    } else
-        WARN("  on one of the runtime's threads, not the game's\n");
+    } else {
+        /* a driver's own thread has no note, and its name says whose it is */
+        char name[64];
+        const char* note = plat_thread_note_get();
+        snx_thread_name_get(name, sizeof name);
+        if (name[0])
+            WARN("  on one of the runtime's threads, not the game's: \"%s\"\n", name);
+        else
+            WARN("  on one of the runtime's threads, not the game's, which the system gives no name\n");
+        if (note[0])
+            WARN("  it was %s\n", note);
+        else
+            WARN("  it noted nothing it was doing (the runtime notes the driver's compiles of the game's pipelines)\n");
+    }
     if (mem_reserved()) {
         char foreign[512];
         mem_report(memory, sizeof memory);

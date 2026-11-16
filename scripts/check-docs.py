@@ -16,8 +16,10 @@
   each key a row names is one settings.txt has. Several keys in a row take one default each, or one for them all,
   and a name in parentheses in the Key cell is no key (`controls_<ID>` (ID one of `a`, `b`)). A vulkan table's
   setting @NAME is keyed by NAME in lowercase and `auto` by default, as tools/settingsgen makes it
+- bans: the ban table of docs/layers/gpu/driver-quirks.md is src/common/gpu/vk/extension_bans.txt's lines, a row each
+  as this script makes it, between its two markers: never written by hand. --bans writes it
 
-    scripts/check-docs.py [--root DIR] [--index]
+    scripts/check-docs.py [--root DIR] [--index] [--bans]
 """
 
 import argparse
@@ -34,6 +36,24 @@ INDEX_LINES = 100  # a document longer than this carries an ## Index
 INDEX_SECTIONS = 3  # of at least this many sections
 SETTINGS = 'src/nx/runtime/settings.txt'
 SETTINGS_DOC = 'docs/user/settings.md'
+BANS = 'src/common/gpu/vk/extension_bans.txt'
+BANS_DOC = 'docs/layers/gpu/driver-quirks.md'
+BANS_BEGIN = '<!-- made by scripts/check-docs.py --bans from src/common/gpu/vk/extension_bans.txt: edit the table -->'
+BANS_END = '<!-- end of the rows scripts/check-docs.py --bans makes -->'
+# a ban's fields, in the table's order (extension_bans.txt's head)
+BAN_FIELDS = (
+    'key',
+    'action',
+    'driver',
+    'versions',
+    'system',
+    'devices',
+    'breaks',
+    'source',
+    'retest',
+    'checked',
+    'override',
+)
 # settings.txt's default-if macros, by the platform a Default cell names
 PLATFORMS = {'SNX_IOS': 'iOS', '__ANDROID__': 'Android'}
 UNSET = object()  # an LLVM option's default: LLVM's own value
@@ -514,10 +534,116 @@ def check_settings(root, failures):
             failures.add(SETTINGS, line_number, f'`{key}` (default {shown(values)}) has no row in {SETTINGS_DOC}')
 
 
+# ---- the ban table ----
+def ban_lines(path):
+    """(line, fields) of each ban of the table at path, by BAN_FIELDS; lines that do not split into them are failures"""
+    bans, bad = [], []
+    for number, line in enumerate(path.read_text(encoding='utf-8').split('\n'), 1):
+        text = line.strip()
+        if not text or text.startswith('#'):
+            continue
+        fields = [field.strip() for field in text.split('|')]
+        if fields == list(BAN_FIELDS):
+            continue  # the head of the columns
+        if len(fields) != len(BAN_FIELDS):
+            bad.append((number, f'{len(fields)} fields, where a ban has {len(BAN_FIELDS)}: {" | ".join(BAN_FIELDS)}'))
+            continue
+        bans.append((number, dict(zip(BAN_FIELDS, fields))))
+    return bans, bad
+
+
+def md_text(text):
+    """text in a table cell as it reads: Markdown's emphasis, link, tag and code marks escaped"""
+    for mark in '\\*_[]<>`':
+        text = text.replace(mark, '\\' + mark)
+    return text
+
+
+def ban_rows(bans):
+    """the table's rows the doc holds, (row, the ban's line), by driver then by line"""
+    rows = [
+        '| Driver | Key | Action | Versions | System | GPUs | What breaks | Source | Tested again by | Last tested |',
+        '|---|---|---|---|---|---|---|---|---|---|',
+    ]
+    lines = [0, 0]
+    for number, b in sorted(bans, key=lambda ban: (ban[1]['driver'], ban[0])):
+        action = b['action'] + ('' if b['override'] == '-' else f'; `{b["override"]}` goes over it')
+        versions = 'all' if b['versions'] == '*' else f'`{b["versions"]}`'
+        gpus = 'every GPU' if b['devices'] == '*' else f'`{b["devices"]}`'
+        cells = (
+            f'`{b["driver"]}`',
+            f'`{b["key"]}`',
+            action,
+            versions,
+            b['system'],
+            gpus,
+            md_text(b['breaks']),
+            md_text(b['source']),
+            f'`{b["retest"]}`',
+            md_text(b['checked']),
+        )
+        rows.append('| ' + ' | '.join(cells) + ' |')
+        lines.append(number)
+    return rows, lines
+
+
+def check_bans(root, failures, write):
+    table_path, doc_path = root / BANS, root / BANS_DOC
+    if not table_path.is_file():
+        return
+    bans, bad = ban_lines(table_path)
+    for number, why in bad:
+        failures.add(BANS, number, why)
+    if bad:
+        return
+    if not doc_path.is_file():
+        failures.add(BANS_DOC, 0, f'is not there: it shows each line of {BANS}')
+        return
+    text = doc_path.read_text(encoding='utf-8')
+    lines = text.split('\n')
+    begin = [i for i, line in enumerate(lines) if line.strip() == BANS_BEGIN]
+    end = [i for i, line in enumerate(lines) if line.strip() == BANS_END]
+    if len(begin) != 1 or len(end) != 1 or end[0] < begin[0]:
+        failures.add(
+            BANS_DOC,
+            0,
+            f'has {len(begin)} {BANS_BEGIN} and {len(end)} {BANS_END}, where it takes one and then the other',
+        )
+        return
+    rows, from_line = ban_rows(bans)
+    held = lines[begin[0] + 1 : end[0]]
+    if held == rows:
+        return
+    if write:
+        doc_path.write_text('\n'.join(lines[: begin[0] + 1] + rows + lines[end[0] :]), encoding='utf-8')
+        print(f'{BANS_DOC}: the ban table written, {len(rows) - 2} rows')
+        return
+    at = next((i for i in range(min(len(held), len(rows))) if held[i] != rows[i]), min(len(held), len(rows)))
+    if at < len(rows) and from_line[at]:
+        what = f'{BANS}:{from_line[at]} ({bans_key(rows[at])}) makes it {rows[at]!r}'
+    elif at < len(rows):
+        what = f"the table's head is {rows[at]!r}"
+    else:
+        what = f'{BANS} makes {len(rows) - 2} rows, and this one is past them'
+    failures.add(
+        BANS_DOC,
+        begin[0] + 2 + at,
+        f'{(held[at] if at < len(held) else "the end of the rows")!r} is not what {what}: '
+        'run scripts/check-docs.py --bans',
+    )
+
+
+def bans_key(row):
+    """a made row's driver and key, as the failures name it"""
+    driver, key = (cell.strip('` ') for cell in row.strip('| ').split(' | ')[:2])
+    return f'{key} on {driver}'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--root', type=Path, default=ROOT, help="the checkout (default: this script's)")
     parser.add_argument('--index', action='store_true', help='write the ## Index of each document that needs one')
+    parser.add_argument('--bans', action='store_true', help=f'write the ban table of {BANS_DOC} from {BANS}')
     args = parser.parse_args()
     root = args.root.resolve()
     docs = documents(root)
@@ -526,13 +652,14 @@ def main():
     check_links(root, docs + documents(root, LINKED), failures)
     check_docs_index(root, failures)
     check_settings(root, failures)
+    check_bans(root, failures, args.bans)
     for failure in failures:
         print(failure, file=sys.stderr)
     if failures:
         print(f'check-docs.py: {len(failures)} to fix', file=sys.stderr)
         return 1
     print(
-        f'check-docs.py: {len(docs)} documents, their links, indexes and the settings they list hold, '
+        f'check-docs.py: {len(docs)} documents, their links, indexes, the settings and the bans they list hold, '
         'and the links of the Claude files'
     )
     return 0

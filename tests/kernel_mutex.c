@@ -25,6 +25,8 @@ void logf_(int lvl, const char* fmt, ...) {
     (void)fmt;
 }
 u64 plat_ns(void) { return 0; }
+/* the wake of a futex waiter on a mutex word (sync.c, g_lock_futex), which no test turns on */
+void plat_wake_word_one(u32* w) { (void)w; }
 void kobj_ref(KObj* o) { (void)o; }
 /* a restored thread's wait (sync_resume), which nothing here does */
 const SnxArmModule* g_arm_mod;

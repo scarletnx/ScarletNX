@@ -18,10 +18,11 @@ enum { NETDB_INTERNAL = -1, NETDB_SUCCESS = 0, NETDB_HOST_NOT_FOUND = 1, NETDB_T
 
 static int blocked(const char* host) {
     size_t n = strlen(host);
+    while (n && host[n - 1] == '.') n--; /* the host's resolver takes "name." as name, and so does the list */
 #define BLOCKED_HOST(d)                                                                                                \
     {                                                                                                                  \
         size_t k = sizeof(d) - 1;                                                                                      \
-        if (n >= k && !strcasecmp(host + n - k, d) && (n == k || host[n - k - 1] == '.')) return 1;                    \
+        if (n >= k && !strncasecmp(host + n - k, d, k) && (n == k || host[n - k - 1] == '.')) return 1;                \
     }
 #include "nx/hle/services/network/abi/blocked_hosts.inc"
     return 0;

@@ -533,6 +533,20 @@ void vk_blocks_say(void) {
     snprintf(why, sizeof why, "native_bc=%d, the GPU samples %sBCn, ETC2 %s", g_settings.native_bc,
              bc_has ? "" : "no ", g_vk.feat.textureCompressionETC2 ? "sampled" : "not sampled");
     family_say("BCn", why, g_settings.native_bc && !bc_has, bcn, bcn_names, 7);
+    /* and which encoder makes those encoded again as ASTC 4x4 (texconv.c), the GPU's vendor's where it has one */
+    int astc_encoded = 0;
+    for (int i = 0; i < 7; i++) {
+        const VkFmt f = vk_tic_format(bcn[i], 0);
+        astc_encoded |= f.conv && f.vk == VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+    }
+    if (astc_encoded) {
+        static const char* const encoders[3] = {"the generic encoder (gpu/texture/astc_encode.glsl)",
+                                                "Mali's encoder (gpu/texture/astc_encode_arm.glsl)",
+                                                "Adreno's encoder (gpu/texture/astc_encode_qcom.glsl)"};
+        const int enc = vk_astc_encoder(g_vk.props.vendorID);
+        LOG("vulkan: BCn encoded again as ASTC 4x4 by %s for vendor %04x, %s\n", encoders[enc], g_vk.props.vendorID,
+            enc != VK_ASTC_ENC_GENERIC && g_vk.bc7_dot ? "with packed dot products" : "its dot products spelled out");
+    }
 }
 
 VkFormat vk_srgb_as(VkFormat f, int srgb) {

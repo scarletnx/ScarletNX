@@ -42,8 +42,9 @@ A game's folder is a folder of the data folder's `recompiled/`, named after its 
 ID as a Switch game's is named (`recompiled/0004000000123400/`). It holds the compiled
 module (`<title ID>_code.so`, `_code.dll` on Windows), the blocks runs compiled at
 run time (`<title ID>.hints`), the game's state (`sdmc/`, `savedata/`, frames,
-audio), the 48x48 icon (`icon.rgba`, when the game has an SMDH), `<title ID>.ini`
-and a copy of the runtime named `<title ID>`. The `.ini`
+audio), the 48x48 icon (`icon.rgba`, when the game has an SMDH), `<title ID>.ini`,
+a copy of the runtime named `<title ID>` and, on Windows, the DLLs beside that
+runtime, which the copy loads. The `.ini`
 names the game (`source=`), the console (`model=`) and the system (`system=3ds`),
 which the launcher and a build's deploy pick the driver by. Running the copy plays the
 game, as a Switch game's copy does: `recompiled/<title ID>/<title ID> --seconds=60
@@ -161,7 +162,7 @@ and the fragment pipeline generated (`gpu/vk/fsgen.c`), both ported from Azahar'
 shader generators and both written as SPIR-V words directly (`src/common/utilities/spirv_emit.c`, shared with NX), with no
 shader compiler at run time. The output merger is the pipeline's fixed state. A new pipeline
 is made as its first draw needs it, which pauses the game while the driver compiles it; with the
-Switch's `async_pipelines=1` (`--async_pipelines=1`) workers make it instead
+Switch's `async_pipelines=1` (`--async-pipelines=1`) workers make it instead
 (`pipeline_threads` of them) and the draws that need it are skipped until it is ready, so what
 they draw shows up a few frames late, and the run's end says how many were skipped. The driver
 keeps the pipelines it compiled between runs, as for a Switch game, in
@@ -244,7 +245,7 @@ from then on. A page the GPU wrote is the GPU's until the CPU's first access, wh
 back with the pages the GPU wrote around it (up to 256 on each side) and waits for that. A
 write copies its stale pages in first even where it covers them, as one need not write a whole
 page and a page goes back whole; when the device goes, what the GPU wrote goes back. The copy
-is taken as the Switch's setting `vk_memory` says, with its meaning (`--vk_memory=N`, which the
+is taken as the Switch's setting `vk_memory` says, with its meaning (`--vk-memory=N`, which the
 launcher passes from its Debug settings): `0`, the default, the copy unless the device shares
 the system's memory (`snx_vk_memory_model`), `1` the copy, `2` the RAM in place. The device says
 on the standard error which it took and the value, and when its memory cannot hold the copy,
@@ -259,7 +260,7 @@ frame: 36.8 MiB a second read, 39.8 written); amdgpu has the GPU busy 14.4 ms a 
 17.8; the CPU's time is the same, 323 and 325 ms a second, though its writes trap 61 times a
 frame against 0.2.
 `tests/3ds_vk_copies.c` checks which pages are copied in and back and when, and every GPU
-test runs again on each path (`_copy`, `_in_place`: `--vk_memory=1` and `2`), so lavapipe
+test runs again on each path (`_copy`, `_in_place`: `--vk-memory=1` and `2`), so lavapipe
 checks the copy too.
 
 Compiled code addresses the guest flat: a 4 GiB host reservation where guest
@@ -281,9 +282,9 @@ TLS pages come from the BASE region, outside the application's pool, as Azahar
 allocates them: a game that commits all of its pool still starts threads.
 
 Debug switches are settings of `g_ctr_debug_ini` in `src/nx/runtime/settings.txt`,
-given as `--key=value`: `--ctr_ipc_trace=1` logs each service request with the
-thread and its answer, `--ctr_svc_trace=1` each SVC that fails (2: every SVC),
-`--ctr_gpu_trace=1` each GX command and framebuffer swap, `--ctr_jit_trace=1` each
+given as `--key=value`: `--ctr-ipc-trace=1` logs each service request with the
+thread and its answer, `--ctr-svc-trace=1` each SVC that fails (2: every SVC),
+`--ctr-gpu-trace=1` each GX command and framebuffer swap, `--ctr-jit-trace=1` each
 block compiled at run time. A run ended by `--seconds` (or a stop) reports each
 thread's core, priority, pc, what it waits on (whose event it is) and the return
 addresses on its stack, how long the process sat idle, and its most frequent SVCs.
@@ -496,8 +497,9 @@ tick of the runtime is on one clock (`board/clock.c`): the host's at the console
 pace, which the Switch's `fps_limit` sets as for a Switch game. `N` runs it at N/60
 of the console's pace (the 3DS shows 60 frames a second), the sound with it; `0`
 skips every wait, the clock moving on by it, so the game runs as fast as the host
-does and its sound is not played; F4 turns the limit off and back on. A change of
-pace never moves the clock back. FSUSER ControlArchive
+does and its sound is not played; F4 turns the limit off and back on, the terminal
+saying the limit now and before it as a Switch game does (`FPS limit: off (was the
+game's pace)`). A change of pace never moves the clock back. FSUSER ControlArchive
 GET_TIMESTAMP (`0x80d`) resolves a bounded UTF-16 archive path and returns the real
 backing file's host modification time as a 3DS datetime (milliseconds since 1900
 UTC). Missing paths return `0xc8804478` and stale tokens `0xc8804465`.
@@ -506,7 +508,7 @@ the host, and other actions stop. Unknown commands answer success with one word,
 Azahar's ReportUnimplementedFunction does and a Switch game's do (`auto_stub_ipc`),
 each logged the first time. A service the runtime does not know at all is a stand-in
 whose commands answer so, as a Switch game's is (`sm.c`). With
-`--ctr_auto_stub_ipc=0` both stop instead: an unknown command stops the run unless
+`--ctr-auto-stub-ipc=0` both stop instead: an unknown command stops the run unless
 `--ipc-stubs` names its service, and a service the runtime lacks makes the thread
 asking for it wait forever, as no other process can register it, with a message
 that names it.
@@ -656,7 +658,8 @@ run says at start which it got. Its `fullscreen=1` starts the window fullscreen 
 top screen's, with Separate screens), but for a `--seconds`, `--frames` or `--max-blocks` run,
 and F11 or Alt+Enter switches the window it is pressed in, as on the Switch;
 Alt+Enter does not press Start. Esc twice within 3 seconds closes the game, a first
-press warning on the terminal. The Switch's `anisotropy` (2 to 16) filters a
+press warning on the terminal and in a line over the game in the window it was pressed in,
+as a Switch game's notices show. The Switch's `anisotropy` (2 to 16) filters a
 mipmapped texture the game filters linearly anisotropically, held to the device's most,
 and the run says at start the value in effect. Bounded PPM snapshots land in
 `<output>/frames` in every mode. `-H` (`--headless`) starts no SDL video, audio or
@@ -733,8 +736,9 @@ filters and gain ramps, mixes the three intermediate mixes with the aux buses an
 effects, writes the statuses and final samples into the other region and raises the
 audio pipe's interrupt. Reverb, the limiter, the compressor and surround output are
 stubs in Azahar too. The binary pipe decodes AAC requests with FFmpeg. Frames play on
-the default device through SDL3 and their first two minutes are recorded to
-`<output>/audio.wav`. libctru's ndsp loads `sdmc:/3ds/dspfirm.cdc` and leaves audio off
+the default device through SDL3, at the Switch's `volume` (`--volume=N`, 0 to 100 percent of the game's sound, which
+the launcher's Settings > Audio > Volume passes), and their first two minutes are recorded to `<output>/audio.wav` as
+the game makes them. libctru's ndsp loads `sdmc:/3ds/dspfirm.cdc` and leaves audio off
 without it, so a stand-in header goes there when the title's SD has none: the HLE DSP
 never runs the component, and a dumped file is used as it is. cfg:u, cfg:s and cfg:i
 (`services/cfg.c`) answer GetConfig for the sound output mode (stereo, Azahar's
@@ -744,15 +748,15 @@ See [CTR IPC](ipc.md) for the strict generator subset, descriptor/permission
 checks, quotas, malformed-request policy, tests and unimplemented operations.
 Unknown SVCs still stop explicitly. No service or device success is fabricated,
 except for unknown commands and services, which answer success as a Switch game's
-do unless `--ctr_auto_stub_ipc=0` asks for the console's answers.
+do unless `--ctr-auto-stub-ipc=0` asks for the console's answers.
 
 By default nothing of the game is extracted. `scarletnx-3ds game` maps the game read-only and checks it as the
 extraction would where it reads it (a CIA's content table, the NCCH and ExHeader hashes, the RomFS superblock and its
 metadata). A launch that reads the game where it lies skips the SHA-256 of each content and of each ExeFS file; an
 extraction checks those too. The game's ExeFS files and its RomFS (level 3, the image the game reads)
 are then read where they lie in the mapping, and only the decompressed `.code` is copied into memory. The game's
-folder keeps its module, its copy of the runtime, its icon (`icon.rgba`) and its state alone: `sdmc/` and the frames
-and audio it writes. An extraction an earlier
+folder keeps its module, its copy of the runtime, the DLLs beside that copy on Windows, its icon (`icon.rgba`) and
+its state alone: `sdmc/` and the frames and audio it writes. An extraction an earlier
 `--extract-container` left there is taken away, its compiled module and saves kept. The image's identity is the same
 either way, so a module compiled in one mode loads in the other. The manifest records which container the game came
 from (`container=`, and `overlay=1` when it is a cartridge's update), which the image loader ignores.
@@ -828,7 +832,7 @@ bit 12, which the Home Menu refuses on an Old 3DS) or its ExHeader names the New
 178 MiB system mode (0x20D, mode 2), which only a New 3DS has; an Old 3DS otherwise,
 as a title that names the 124 MiB New 3DS mode runs on both. The run says so, and the
 `.ini` keeps the choice. `--board-info` prints physical regions without allocating RAM.
-`--ipc-stubs L`, with `--ctr_auto_stub_ipc=0`, still answers the unknown commands of
+`--ipc-stubs L`, with `--ctr-auto-stub-ipc=0`, still answers the unknown commands of
 the services in L (`all`, or a comma list of `srv`, `fs`, `apt`, `ptm`, `hid`, `gsp`,
 `cfg`, `dsp`, `system`, `am`, `y2r`, `ldr`, `ir`, `irrst`, `mic`, `cam`, `csnd`) with
 success instead of stopping. Given more than once, the lists add up. It only changes a

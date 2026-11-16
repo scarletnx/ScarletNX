@@ -271,12 +271,13 @@ VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, co
             u64 buffer_offset = 0;
             if (w->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || w->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
                 const VkDescriptorBufferInfo* b = &w->pBufferInfo[j];
-                if (b->buffer != previous_buffer) {
+                if (b->buffer && b->buffer != previous_buffer) {
                     previous_buffer = b->buffer;
                     previous_address = address(b->buffer);
                 }
-                buffer.address = previous_address + b->offset;
-                buffer.range = b->range;
+                /* a null buffer (vk_null_descriptors): address 0 and the whole size, nullDescriptor's form */
+                buffer.address = b->buffer ? previous_address + b->offset : 0;
+                buffer.range = b->buffer ? b->range : VK_WHOLE_SIZE;
                 identity = b->buffer;
                 buffer_offset = b->offset;
                 if (w->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) info.data.pUniformBuffer = &buffer;

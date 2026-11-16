@@ -54,7 +54,10 @@ static void transcode(const uint8_t* src, uint32_t w, uint32_t h, uint32_t depth
     std::vector<glsl::leuvec4> in((size_t)nx * ny * depth);
     std::memcpy(in.data(), src, in.size() * 16);
     std::vector<glsl::leuint> blocks((size_t)cx * cy * depth * words, 0xdeadbeefu);
-    glsl::dispatch<T>(glsl::uvec3((cx + 63) / 64, cy, depth), glsl::uvec3(64u, 1u, 1u), [&](T& d) {
+    /* as vk/astc.c's bcn_transcode: an invocation an ASTC block for a footprint of whole 4x4 blocks, else a block */
+    const int per_astc = (bw | bh) % 4 == 0;
+    const glsl::uvec3 groups = per_astc ? glsl::uvec3((nx + 63) / 64, ny, depth) : glsl::uvec3((cx + 63) / 64, cy, depth);
+    glsl::dispatch<T>(groups, glsl::uvec3(64u, 1u, 1u), [&](T& d) {
         d.width = w;
         d.height = h;
         d.blocks_x = nx;

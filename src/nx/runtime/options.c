@@ -6,6 +6,7 @@
 #include "nx/runtime/options.h"
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/key_said.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/hid.h"
@@ -153,6 +154,44 @@ void fps_limit_text(int fps, char* out, size_t n) {
         snprintf(out, n, "game");
     else
         snprintf(out, n, "%d", fps);
+}
+int options_fps_limit_step(int* was, char* text, size_t size) {
+    int before = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED), now;
+    char v[16], old[16], line[64];
+    if (before) {
+        *was = before;
+        now = 0;
+    } else
+        now = *was ? *was : SNX_FPS_GAME;
+    __atomic_store_n(&g_opt_fps, now, __ATOMIC_RELAXED); /* present_pace reads it on the game's threads */
+    fps_limit_text(now, v, sizeof v);
+    ini_set("fps_limit", v);
+    fps_limit_text(before, old, sizeof old);
+    snx_fps_limit_said(line, sizeof line, v, old);
+    LOG("%s\n", line);
+    if (size) snprintf(text, size, "%s", line);
+    return now;
+}
+/* showcase's and stats's steps: setting off or on, the .ini's key with it (a run's --key=1 stays out of the file);
+   the log's line names the corner it draws in */
+static int onoff_step(int* setting, const char* key, const char* what, const char* corner, char* text, size_t size) {
+    int on = !__atomic_load_n(setting, __ATOMIC_RELAXED);
+    char line[64];
+    __atomic_store_n(setting, on, __ATOMIC_RELAXED); /* the renderer reads it */
+    ini_set(key, on ? "1" : "0");
+    snx_key_said(line, sizeof line, what, on ? "on" : "off", on ? "off" : "on");
+    if (on)
+        LOG("%s, %s_corner=%s\n", line, key, corner);
+    else
+        LOG("%s\n", line);
+    if (size) snprintf(text, size, "%s", line);
+    return on;
+}
+int options_showcase_step(char* text, size_t size) {
+    return onoff_step(&g_settings.showcase, "showcase", "Showcase", g_settings.showcase_corner, text, size);
+}
+int options_stats_step(char* text, size_t size) {
+    return onoff_step(&g_settings.stats, "stats", "Stats", g_settings.stats_corner, text, size);
 }
 
 int g_opt_ldn = SNX_OPT_LDN_LAN;
@@ -597,7 +636,7 @@ static void vk_descriptors_old(void) {
     }
     if (!given) return;
     if (first) {
-        WARN("settings: --vk_descriptors=%s is deprecated, and the command line gives --vk_descriptors_mode=%s too: "
+        WARN("settings: --vk_descriptors=%s is deprecated, and the command line gives --vk-descriptors-mode=%s too: "
              "vk_descriptors_mode=%s this run (docs/user/deprecations.md)\n",
              given, first, first);
         return;
@@ -605,7 +644,7 @@ static void vk_descriptors_old(void) {
     now = options_vk_descriptors_old(given, 1);
     if (now >= 0) {
         ini_override("vk_descriptors_mode", values[now]);
-        WARN("settings: --vk_descriptors=%s is deprecated: this run reads it as --vk_descriptors_mode=%d (%s) "
+        WARN("settings: --vk_descriptors=%s is deprecated: this run reads it as --vk-descriptors-mode=%d (%s) "
              "(docs/user/deprecations.md)\n",
              given, now, words[now]);
     } else {
@@ -632,7 +671,7 @@ int options_debug(int flags, char* out, size_t n) {
     return count;
 }
 int options_settings(char* out, size_t n) {
-    const IniOpt* const tables[] = {g_display_ini, g_graphics_ini, g_performance_ini};
+    const IniOpt* const tables[] = {g_display_ini, g_graphics_ini, g_audio_ini, g_performance_ini};
     char part[1024];
     size_t at = 0, t;
     int count = 0;
@@ -644,9 +683,9 @@ int options_settings(char* out, size_t n) {
     }
     return count;
 }
-/* the Display, Graphics and Performance settings as the log last said them */
+/* the Display, Graphics, Audio and Performance settings as the log last said them */
 static char g_said[2048];
-/* after a reload, the Display, Graphics and Performance settings again when they changed */
+/* after a reload, the Display, Graphics, Audio and Performance settings again when they changed */
 static void settings_reloaded(void) {
     char now[sizeof g_said];
     int n = options_settings(now, sizeof now);
@@ -654,7 +693,7 @@ static void settings_reloaded(void) {
     if (n)
         LOG("settings: after the reload, %s\n", now);
     else
-        LOG("settings: after the reload, every Display, Graphics and Performance setting is at its default\n");
+        LOG("settings: after the reload, every Display, Graphics, Audio and Performance setting is at its default\n");
     memcpy(g_said, now, sizeof g_said);
 }
 /* the Debug settings in effect at the top of the picture; after a reload that changes them, in the log too */

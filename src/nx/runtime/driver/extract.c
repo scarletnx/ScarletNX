@@ -15,7 +15,8 @@
 
 typedef struct {
     const char *base, *update, *name, *out, *keys, *title_keys;
-    int icon;    /* --icon: the game's icon alone */
+    int icon;       /* --icon: the game's icon alone */
+    int exefs_only; /* --exefs-only: the ExeFS (and control.nacp, icon.jpg), no RomFS */
     int program; /* --program: the program of the application extracted, 0 its own */
 } ExtractOptions;
 
@@ -39,6 +40,8 @@ static void extract_help(void) {
          "  --keys FILE         prod.keys (default: the data folder's, then ~/.switch)\n"
          "  --title-keys FILE   title.keys (same discovery order; optional)\n"
          "  --program N         Program N of an application of several (default: 0, the application's own)\n"
+         "  --exefs-only        The ExeFS alone, no RomFS: the game's modules, for tools that read them\n"
+         "                      (tools/export_census.py), seconds for a game whose RomFS is gigabytes\n"
          "  --icon              The dump's icon, icon.jpg, and what it is, title.ini, into --out DIR (what Games\n"
          "                      shows and groups the dumps by), nothing extracted; a DLC has no icon\n"
          "  --help              Show this help");
@@ -83,6 +86,10 @@ static int parse_options(int argc, char** argv, ExtractOptions* options) {
         }
         if (!positional && !strcmp(argv[i], "--icon")) {
             options->icon = 1;
+            continue;
+        }
+        if (!positional && !strcmp(argv[i], "--exefs-only")) {
+            options->exefs_only = 1;
             continue;
         }
         if (positional || argv[i][0] != '-' || !argv[i][1]) {
@@ -167,8 +174,9 @@ static int prepare_paths(ExtractState* state, const ExtractOptions* options, con
     }
     free(target);
     state->exefs = snx_path_join(state->out, "exefs");
-    state->romfs = snx_path_join(state->out, "romfs");
-    if (!state->exefs || !state->romfs) return snx_error("out of memory resolving extraction output");
+    state->romfs = options->exefs_only ? NULL : snx_path_join(state->out, "romfs");
+    if (!state->exefs || (!state->romfs && !options->exefs_only))
+        return snx_error("out of memory resolving extraction output");
     if (snx_is_file(state->exefs) || snx_is_dir(state->exefs) || snx_is_link(state->exefs))
         return snx_error("output already contains exefs: %s", state->out);
     if (snx_is_file(state->out)) return snx_error("%s is a file, not a folder", state->out);
@@ -233,7 +241,7 @@ static void say_extracted(ExtractState* state) {
     }
     files = folders = 0;
     bytes = 0;
-    if (snx_is_dir(state->romfs)) {
+    if (state->romfs && snx_is_dir(state->romfs)) {
         tree_count(state->romfs, &files, &folders, &bytes);
         snx_size_text(bytes, size, sizeof size);
         printf("  RomFS: %lu file%s in %lu folder%s, %s\n", files, files == 1 ? "" : "s", folders + 1,
@@ -359,8 +367,10 @@ static int extract_files(ExtractState* state, const ExtractOptions* options, con
     if (!program->found && patch->found)
         return snx_error("%s is an update, which goes over its game: give the game's dump, with this one as --update",
                          state->base);
+    /* --exefs-only: a DLC has no ExeFS, and its RomFS image is the RomFS left out */
+    if (!program->found && options->exefs_only) return snx_error("%s is a DLC, which has no ExeFS", state->base);
     if (!program->found) return extract_aoc(state);
-    if (state->dump.aoc.found && extract_aoc(state)) return 1;
+    if (state->dump.aoc.found && !options->exefs_only && extract_aoc(state)) return 1;
     /* the keys each NCA picked needs, said before anything is written */
     if (snx_nca_keys(&state->dump, program, "The game's Program NCA") ||
         (patch->found && snx_nca_keys(&state->dump, patch, "The update's Program NCA")))
@@ -477,7 +487,7 @@ static int copy_extracted(const ExtractOptions* options) {
         }
     printf("Copying %s (%lu MB) into %s\n", options->base, (unsigned long)(state.total >> 20), options->out);
     state.said_at = snx_seconds();
-    for (i = 0; !rc && i < 2; i++) {
+    for (i = 0; !rc && i < (options->exefs_only ? 1 : 2); i++) {
         from = snx_extracted_part(options->base, i);
         to = snx_path_join(options->out, parts[i]);
         if (!from) /* no RomFS: a game that has none */

@@ -762,7 +762,7 @@ FreeBSD), and a texture can be bigger once decoded: a 2D ASTC texture of 11584x1
   cap) in bands of block rows of one slice, converted band by band.
 - The blocks of device memory (`devmem.c`) stay within the cap.
 
-The `[Debug]` setting `vk_max_allocation_mb` (`--vk_max_allocation_mb=4` for a run) lowers the cap, to test the pieces on a driver that accepts anything (lavapipe).
+The `[Debug]` setting `vk_max_allocation_mb` (`--vk-max-allocation-mb=4` for a run) lowers the cap, to test the pieces on a driver that accepts anything (lavapipe).
 
 ## Sparse textures
 
@@ -770,9 +770,13 @@ A sparse texture's memory is mapped a 64 KiB tile at a time; for blocks of 16 by
 device has sparse residency of 2D images and reads what isn't bound as zeros, `texture.c` gives such a texture's image
 memory only for its mapped tiles. An ASTC 4x4 one held as BC7 (`astc_mode`, above) takes part: BC7's sparse block is
 256x256 texels, 64x64 blocks of 16 bytes too, so each mapped tile is one block of the image, decoded and encoded on its own as
-a texture's changed runs are. Other footprints (an 8x8 tile is 2x2 BC7 blocks) and ASTC held as RGBA8 (blocks of
-128x128 texels) keep the whole image, and the log line saying so names the format and the device's block in the
-layout's terms.
+a texture's changed runs are. A tile of several of the device's blocks binds them in stacks where they divide its
+blocks of GOBs (`resident_stacks`): an 8x8 tile is 2x2 BC7 blocks, two stacks of two, each stack bound where memory
+maps any of its bytes. A footprint whose tile is no whole number of the device's blocks (5x4, 6x6 and 8x5 among them:
+256 texels are no whole number of their blocks) isn't bound a tile at a time, and the log line saying so names the
+format and the device's block in the layout's terms; `tex_bind` binds the device's blocks under the memory the game
+maps instead, so it too takes memory only around its mapped tiles. Where the device makes no sparse image of the
+format, or the image is under 4 MiB, the texture is made whole, and the log says so.
 
 A game maps one tile of its memory at many tiles of a sparse texture, and the blocks of those tiles show the same
 texels. Where the device binds memory to more than one place of an image (`sparseResidencyAliased`), such blocks
@@ -788,16 +792,16 @@ level's edge and a mip tail share nothing. `vk_sparse_share=0` gives each block 
 Nothing compiled is checked in. `astc_bc7.comp` is built twelve times: the two passes of the full and of the fast
 build, mode 6 alone and the quick build, each with its dot products spelled out (Vulkan 1.1) and as SPIR-V's packed
 one (Vulkan 1.3).
-`cmake/glsl.cmake` compiles `astc.comp` at build time with
-`glslangValidator -V --target-env vulkan1.1 -O -g0 --spirv-val`, into `build/generated/spirv/astc_spv.c`, which
-holds the words. `nx/gpu/texture/astc_spv.h`, which the build writes beside it (`build/generated/include`), declares
+`cmake/glsl.cmake` compiles `astc.comp` at build time with `glslangValidator -V --target-env vulkan1.1 -g0`, then
+SPIRV-Tools' `spirv-opt -O` and `spirv-val`, into `build/generated/spirv/astc_spv.c`, which holds the words.
+`nx/gpu/texture/astc_spv.h`, which the build writes beside it (`build/generated/include`), declares
 them (`astc_spv` and `astc_spv_size`, in bytes). glslang's
 depfile makes an edit to `astc_decode.glsl` rebuild it too.
 
 glslangValidator is KhronosGroup's glslang 16.6.0 release for the host, a CPM package pinned by its SHA-256, on Linux
 x86-64, Windows x86-64 and macOS. Other hosts (FreeBSD, Linux on ARM) use the one on `PATH`, from the system's glslang
-package, and `-DSNX_GLSLANG=path` picks any. The release has the SPIR-V validator and optimizer built in, so no
-separate SPIRV-Tools is needed.
+package, and `-DSNX_GLSLANG=path` picks any. spirv-opt and spirv-val are the SPIRV-Tools release the build pins
+(`cmake/spirv_tools.cmake`).
 
 ## Tests
 
@@ -899,6 +903,14 @@ separate SPIRV-Tools is needed.
   encoder's dispatches) and their bytes are the first's; a changed block misses; and 100 encodes in one submission
   are all stored. `vulkan_headless` (`tests/vulkan_astc_later.inc`) stores the levels the encoder makes between frames
   and gives them to a second texture of the same bytes in its first frame, with no encode.
+- `vulkan_headless`'s `check_resident_astc` and `check_resident_astc_stacks` make ASTC textures with holes in their
+  mapping through NVN's sparse layout, held as BC7, against the same texture made whole: 4x4 and 8x8 ones bound a
+  tile at a time, the 8x8 one in stacks, with memory for the device's blocks under their mapped tiles alone as tiles
+  are mapped and unmapped; a 16384x16384 8x8 one, 341 MiB made whole, with 896 KiB bound for two tiles of level 0,
+  level 5 and its mip tail; and an 8x5 one bound by the device's blocks (`tex_bind`), which binds its mip tail
+  whatever is mapped. Each holds the texels made whole where memory maps them and zeros elsewhere
+  (`SNX_TEST_RESIDENT_ASTC_ONLY=1` runs them alone). Where the device binds no BC7 image a tile or a block at a time
+  with what isn't bound reading as zeros (lavapipe), they say so and are skipped.
 - `vulkan_headless` (`tests/vulkan_astc_later.inc`) holds the BC7 images made between frames to the CPU encoder's
   blocks over the RGBA8 texels the texture showed first, byte for byte: a 1024x768 texture in three frames of 32768,
   32768 and 3 blocks, the RGBA8 image freed after them; a 2D array of sides on no block in one frame and one dispatch

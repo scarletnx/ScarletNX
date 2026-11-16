@@ -13,6 +13,7 @@
 #include "nx/runtime/platform/tracy.h"
 
 int g_frames;
+int g_vi_refresh_hz = VI_REFRESH_HZ;
 
 /* the game's pace (present_pace). Several threads may queue frames, so the schedule is under a lock */
 static struct {
@@ -76,7 +77,7 @@ void present_pace(u32 interval, int slot) {
         released(slot, 0);
         return;
     }
-    refresh = 1000000000u / (fps == SNX_FPS_GAME ? (u64)VI_REFRESH_HZ : (u64)fps);
+    refresh = 1000000000u / (fps == SNX_FPS_GAME ? (u64)vi_refresh_hz() : (u64)fps);
     period = fps == SNX_FPS_GAME ? refresh * interval : refresh;
     [[maybe_unused]] u64 started = plat_ns();
     if (fps == SNX_FPS_GAME && g_renderer->display_wait) {

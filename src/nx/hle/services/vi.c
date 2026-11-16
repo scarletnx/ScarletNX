@@ -15,6 +15,7 @@
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/services/vi.h"
 #include "nx/hle/services/nvdrv.h"
+#include "nx/runtime/options.h" /* g_opt_fps */
 
 #include "hle/services/vi.swipc.inc"
 
@@ -69,7 +70,9 @@ static int vi_layer_open(u64 layer_id, int first) {
         g_hle.vi.layer[free_i].event = owned_event("vi:buffer queue");
         ev_signal(g_hle.vi.layer[free_i].event);
     }
-    g_hle.vi.layer[free_i].layer_id = layer_id;
+    /* the interval and the id atomic: vi_vsync_period reads them without the lock */
+    __atomic_store_n(&g_hle.vi.layer[free_i].interval, 1, __ATOMIC_RELAXED); /* until its first frame says another */
+    __atomic_store_n(&g_hle.vi.layer[free_i].layer_id, layer_id, __ATOMIC_RELAXED);
     g_hle.vi.layer[free_i].width = VI_WIDTH;
     g_hle.vi.layer[free_i].height = VI_HEIGHT;
     g_hle.vi.layer[free_i].format = 1; /* RGBA8888 */
@@ -84,9 +87,9 @@ static void vi_layer_close(u64 layer_id) {
     for (i = 0; i < VI_LAYERS; i++) {
         ViLayer* l = &g_hle.vi.layer[i];
         if (l->layer_id != layer_id) continue;
-        l->layer_id = 0;
+        __atomic_store_n(&l->layer_id, 0, __ATOMIC_RELAXED);
         l->connected = 0;
-        l->interval = 0;
+        __atomic_store_n(&l->interval, 1, __ATOMIC_RELAXED); /* not 0, which is a rate of its own */
         l->max_buffer_count = 2;
         l->gen++;
         memset(l->slot, 0, sizeof l->slot);
@@ -253,8 +256,8 @@ static void vi_present(void* arg) {
    parcel too short for it (in NULL) queues the whole buffer at a swap interval of 1 */
 static void vi_queue(ViLayer* l, int slot, const u8* in, ParcelOut* out) {
     ViSlot* s = &l->slot[slot];
-    u32 i, pending = 0, interval;
-    i32 swap = 1, crop[4] = {0, 0, 0, 0};
+    u32 i, pending = 0;
+    i32 swap = 1, interval, crop[4] = {0, 0, 0, 0};
     u32 transform = 0;
     if (in) {
         memcpy(crop, in + 12, 16);
@@ -262,15 +265,16 @@ static void vi_queue(ViLayer* l, int slot, const u8* in, ParcelOut* out) {
         transform = snx_ld_le32(in + 32);
         swap = (i32)snx_ld_le32(in + 44);
     }
-    /* the SDK's intervals are 0 to 4; a negative one is the default */
-    interval = swap < 0 ? 1 : swap > 4 ? 4 : (u32)swap;
-    if (interval != l->interval) LOG_LIMIT(16, "vi: swap interval %u\n", interval);
+    /* the SDK's intervals are 0 to 4. 0 and less are also what frame rate mods ask for, made for the yuzu family's
+       extension, where they are a multiple of 120 refreshes a second (vi_vsync_period) */
+    interval = swap < VI_INTERVAL_MIN ? VI_INTERVAL_MIN : swap > 4 ? 4 : swap;
+    if (interval != l->interval) LOG_LIMIT(16, "vi: swap interval %d\n", interval);
     if (memcmp(crop, s->crop, sizeof crop) || transform != s->transform)
         LOG_LIMIT(16, "vi: crop %d,%d to %d,%d, transform %u\n", crop[0], crop[1], crop[2], crop[3], transform);
     memcpy(s->crop, crop, sizeof crop);
     s->transform = transform;
     s->state = SLOT_QUEUED;
-    l->interval = interval;
+    __atomic_store_n(&l->interval, interval, __ATOMIC_RELAXED);
     for (i = 0; i < VI_SLOTS; i++) pending += l->slot[i].state == SLOT_QUEUED;
     parcel_w32(out, l->width);
     parcel_w32(out, l->height);
@@ -299,7 +303,8 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
     ParcelIn in;
     ParcelOut out;
     i32 status = BQ_OK, slot;
-    u32 v, interval = 0, gen, fence_none[9];
+    u32 v, gen, fence_none[9];
+    i32 interval = 0;
     int qslot = -1, li = (int)(l - g_hle.vi.layer), dequeued = 0, qbi_ok = 0, waits = 0;
     uintptr_t qkey = 0;
     u8 qbi[VI_QBI];
@@ -448,7 +453,8 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
         }
         nv_gpu_call_after(n, ids, vals, vi_present, (void*)qkey);
     }
-    if (dequeued && li == VI_SHOWN) present_pace(interval, slot); /* only the display's frames wait for it */
+    /* only the display's frames wait for it, and those of 0 or less never: vi_vsync_period paces them */
+    if (dequeued && li == VI_SHOWN) present_pace(interval > 0 ? (u32)interval : 0, slot);
 }
 
 /* ============================================================ IHOSBinderDriver */
@@ -730,7 +736,29 @@ static int nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(SvcObj*
 }
 
 /* ============================================================ the display */
-/* the main loop's 60 Hz: the display's vsync, and the mode and hotplug events when docked's Auto changed the mode */
+/* The time from one of the display's vsyncs to the next. The console's display refreshes 60 times a second, whatever
+   the swap interval. The yuzu family (yuzu's Nvnflinger::GetNextTicks, and its forks) takes a swap interval of 0 or
+   less as 120 times (1 - interval) frames a second, and signals the vsync event at that rate. Frame rate mods for
+   games that wait for the vsync event once a frame are made for that: one sets an interval of 0 for 120 frames a
+   second, and its game, waiting for a 60 Hz vsync event, showed 60. So the shown layer's interval of 0 or less gives
+   that rate here too, and every other interval the display's 60.
+
+   fps_limit other than game sets the rate, as the yuzu family's speed limit scales it: a number is that many vsyncs a
+   second, and 0 (no limit) VI_NO_LIMIT_VSYNC_HZ, so a game that waits for the vsync event once a frame or more never
+   waits long. A game that counts vsyncs as its time then runs faster than on the console, as a measure of its frame
+   rate with no limit asks. The interval is clamped here too, as vi_queue clamps it, so that no value makes the period
+   0 */
+u64 vi_vsync_period(void) {
+    const ViLayer* l = &g_hle.vi.layer[VI_SHOWN];
+    int fps = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED);
+    if (fps != SNX_FPS_GAME) return 1000000000u / (u64)(fps > 0 ? fps : VI_NO_LIMIT_VSYNC_HZ);
+    i32 interval = __atomic_load_n(&l->interval, __ATOMIC_RELAXED);
+    if (!__atomic_load_n(&l->layer_id, __ATOMIC_RELAXED) || interval > 0) return 1000000000u / VI_REFRESH_HZ;
+    if (interval < VI_INTERVAL_MIN) interval = VI_INTERVAL_MIN;
+    return 1000000000u / (VI_UNLOCKED_HZ * (u64)(1 - interval));
+}
+/* one of the display's vsyncs, vi_vsync_period apart (the main loop): the vsync event, and the mode and hotplug
+   events when docked's Auto changed the mode */
 void vi_vsync_tick(void) {
     if (g_hle.vi.vsync) ev_signal(g_hle.vi.vsync);
     gsv_vsync_tick(); /* the Ounce VI2 session's groups */
@@ -739,7 +767,6 @@ void vi_vsync_tick(void) {
         ev_signal(g_hle.vi.mode_changed);
         ev_signal(g_hle.vi.hotplug);
     }
-    gsv_vsync_tick(); /* the Ounce VI2 session's groups */
 }
 
 static SvcObj* new_vi_u(void) { return nn_visrv_sf_IApplicationRootService_new(); }

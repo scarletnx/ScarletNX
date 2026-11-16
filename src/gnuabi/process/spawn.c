@@ -17,7 +17,7 @@
 #include "gnuabi/kernel/signals.h"
 #include "common/utilities/endian.h"
 #include "common/cpu/recompiler/snx_recompiler.h"
-#include "gnuabi/abi/errno/errno.h"
+#include "gnuabi/abi/errno.inc"
 #include "gnuabi/filesystem/internal.h"
 #include "common/utilities/common.h"
 #include <errno.h>

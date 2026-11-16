@@ -63,22 +63,24 @@ The first run of a game compiles it, which takes a few minutes on a few cores (a
 200000 blocks). Later runs load the module.
 
 `--frames N` and `--seconds N` end the run after that much of the console's time, and `-H` (`--headless`) opens no
-window. `--shot PATH` writes the last frame, both screens, as a PPM image, and `--shot_every=N` one every N frames
+window. `--shot PATH` writes the last frame, both screens, as a PPM image, and `--shot-every=N` one every N frames
 beside it. `--script MS:KEYS,...` presses keys unattended, each at its time in ms from the start of the run, by the
 console's frames: KEYS in hex are KEYINPUT's bits (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down,
 100 R, 200 L), 400 X, 800 Y, and 1000 the pen, at the lower screen's pixel the top 16 bits give (`XXYY1000`:
-`60601000` touches x 96, y 96). `--press_len=MS` is how long each is held (300). `--wav=PATH` writes the run's sound.
+`60601000` touches x 96, y 96). `--press-len=MS` is how long each is held (300). `--wav=PATH` writes the run's sound.
 
 `--aot=0` plays without the module: every block is compiled at run time, which starts at once and is slower until the
-game's code has been seen. `--aot_threads=N` sets the compile's threads. For work on the driver, `--trace` prints the
+game's code has been seen. `--aot-threads=N` sets the compile's threads, and `--aot-threads-most=N` the most its 0
+takes. For work on the driver, `--trace` prints the
 services' requests and what the board does not know (twice, each interrupt too), and `--dump_ram=PATH` writes the
 ITCM and main memory's range, 0x01FF8000 to 0x02FFFFFF, when the run ends.
 
 The game's folder is `recompiled/<name>/` of the data folder (`--data`, else the user's), named after the image's
 file, or `<name>/` of `--outdir`, or the folder `--output` names. It holds the module (`<name>_code.so`), the blocks
-runs compiled at run time (`<name>.hints`), the save (`<name>.sav`), a copy of the runtime named after the game and
-`<name>.ini`, whose `source=` names the image and `system=nds` the console. The image stays where it is and is read
-there. The copy plays its game alone, and `scarletnx-nds --game=recompiled/<name>` plays it the same way. `-r` compiles
+runs compiled at run time (`<name>.hints`), the save (`<name>.sav`), a copy of the runtime named after the game, the
+DLLs beside it on Windows, which the copy loads, and `<name>.ini`, whose `source=` names the image and `system=nds`
+the console. The image stays where it is and is read there. The copy plays its game alone, and
+`scarletnx-nds --game=recompiled/<name>` plays it the same way. `-r` compiles
 the module again without playing, starting from the hints. A `<image>.sav` beside the image, which another emulator
 keeps, is read once, when the folder has none.
 
@@ -155,7 +157,7 @@ are the image's regions.
 The offline compiler (`src/nds/aot/`) discovers the code of each region from the entry point, the overlays' static
 initializers and the hints, along every direct branch and call. A function reached only through its address is found
 from the words that hold the address, where a function can start: at code that reads as code, right after the end of
-code already found or at a region's start. The blocks are compiled in chunks on the threads `--aot_threads` gives and
+code already found or at a region's start. The blocks are compiled in chunks on the threads `--aot-threads` gives and
 linked by the backend's own linker, with a table of blocks for each region and instruction set and each block's
 length.
 

@@ -96,15 +96,15 @@ static int flow_lod_pass(GpuChannel* channel, u64 gpu, u32 offset, int loop, VkS
     state->blend.en[0] = 0;
     state->blend.mask[0] = 15;
     VkShaderStageFlags device_stages = g_vk_subgroup_stages;
-    int device_reconverges = g_shader_maximal_reconvergence;
+    int device_reconverges = g_spirv_translate.maximal_reconvergence;
     g_vk_subgroup_stages = stages;
-    g_shader_maximal_reconvergence = reconverges;
+    g_spirv_translate.maximal_reconvergence = reconverges;
     u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
     DrawCall draw = {.topology = 4, .count = 3, .instances = 1};
     vk_render_draw(state, &draw, &channel->owner);
     vk_render_end();
     g_vk_subgroup_stages = device_stages;
-    g_shader_maximal_reconvergence = device_reconverges;
+    g_spirv_translate.maximal_reconvergence = device_reconverges;
     int drew = g_vk_drawn == drawn + 1 && g_vk_skipped == skipped;
     if (!drew) fprintf(stderr, "fragment flow lod, %s, %s: the draw was skipped\n", loop ? "loop" : "branch", what);
     CHECK(drew);
@@ -189,9 +189,9 @@ static int check_fragment_flow_lod(void) {
     int has_fragment = (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) != 0;
     for (int loop = 0; loop < 2; loop++) {
         u32 offset = 0x1000 + (u32)loop * 0x1000;
-        CHECK(!flow_lod_pass(channel, gpu, offset, loop, g_vk_subgroup_stages, g_shader_maximal_reconvergence,
+        CHECK(!flow_lod_pass(channel, gpu, offset, loop, g_vk_subgroup_stages, g_spirv_translate.maximal_reconvergence,
                              has_fragment ? "the device's fragment subgroups" : "a device without fragment subgroups"));
-        CHECK(!flow_lod_pass(channel, gpu, offset + 0x400, loop, without, g_shader_maximal_reconvergence,
+        CHECK(!flow_lod_pass(channel, gpu, offset + 0x400, loop, without, g_spirv_translate.maximal_reconvergence,
                              "the fragment stage taken out of the subgroups"));
         CHECK(!flow_lod_pass(channel, gpu, offset + 0x800, loop, without, 0,
                              "no fragment subgroups and no MaximallyReconvergesKHR"));
@@ -200,6 +200,6 @@ static int check_fragment_flow_lod(void) {
     printf("PASS fragment flow lod: a sample after a branch and after a loop took level 1 in all 16 pixels, %s, and as "
            "structured flow without them, with MaximallyReconvergesKHR %s and without it\n",
            has_fragment ? "with the device's fragment subgroups" : "on a device without fragment subgroups",
-           g_shader_maximal_reconvergence ? "declared" : "not on this device");
+           g_spirv_translate.maximal_reconvergence ? "declared" : "not on this device");
     return 0;
 }

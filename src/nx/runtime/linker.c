@@ -357,7 +357,7 @@ u32 linker_nro_load(CPU* c, u64 image, u64 size, u64 buffer, u64 buffer_size, in
 int linker_nro_unload(CPU* c, u64 inside) {
     Linker* l = &g_linker;
     char error[512];
-    u64 lr = c->x[30], base, fini, left = 0, words = 0;
+    u64 lr = c->x[30], base, fini, left = 0, words = 0, rebound = 0;
     u32 which, k;
     int closed;
     pm_lock(&l->lock);
@@ -380,7 +380,7 @@ int linker_nro_unload(CPU* c, u64 inside) {
     which = nro_holding(base);
     if (!which) fatal("linker: the NRO at %llx was unloaded twice at once", (unsigned long long)base);
     closed = l->modules[which].closed;
-    if (!closed && snx_relocate_removed(l->modules, l->count + l->loaded, which, &words, error, sizeof error))
+    if (!closed && snx_relocate_removed(l->modules, l->count + l->loaded, which, &words, &rebound, error, sizeof error))
         fatal("linker: the NRO at %llx does not unlink: %s", (unsigned long long)base, error);
     for (k = which - l->count; k + 1 < l->loaded; k++) {
         l->modules[l->count + k] = l->modules[l->count + k + 1];
@@ -393,9 +393,9 @@ int linker_nro_unload(CPU* c, u64 inside) {
         fatal("linker: the NRO at %llx that the game unloads is not mapped as it was loaded, which the SDK stops "
               "the game on",
               (unsigned long long)base);
-    LOG("linker: unlinked the NRO at %llx: %llu words of the other modules that pointed into it are 0, or their "
-        "slot's lazy value, again\n",
-        (unsigned long long)base, (unsigned long long)words);
+    LOG("linker: unlinked the NRO at %llx: %llu words of the other modules pointed into it, %llu PLT slots of them "
+        "are bound again to what the modules left define, the others are 0, or their slot's lazy value, again\n",
+        (unsigned long long)base, (unsigned long long)words, (unsigned long long)rebound);
     return 1;
 }
 

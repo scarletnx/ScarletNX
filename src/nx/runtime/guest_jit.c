@@ -6,6 +6,7 @@
    walk the table's pointer chains. There is no interpreter: when neither the pack nor the JIT has code, the game ends
    with the reason (rtapi.c's rt_miss) */
 #include "nx/runtime/guest_jit.h"
+#include "nx/loader/ounce.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
@@ -285,8 +286,8 @@ void jit_init(void) {
         WARN("jit: jit_opt=%s is not 0, 1, 2, 3, s or z: it compiles at O%c\n", g_settings.jit_optimization, opt);
     }
 #endif
-    /* an Ounce game's CPU, as the recompiler's module_llvm.c gives it from the same NPDM */
-    config.features = g_settings.cpu_extensions || g_ounce ? SNX_A64_TARGET_SWITCH_EXTENDED : 0;
+    /* the game's CPU (loader/ounce.h), as the recompiler's module_llvm.c gives it from the same NPDM */
+    config.features = snx_guest_features(g_ounce, g_settings.cpu_extensions);
     config.opt = opt;
     config.images = g_jit_images;
     config.image_count = g_mod->nmods;

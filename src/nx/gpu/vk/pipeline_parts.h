@@ -21,6 +21,11 @@
 /* the clip volume's depth, from -w or from 0 (DsDynamic.depth_mode): extendedDynamicState3DepthClipNegativeOneToOne
    with VK_EXT_depth_clip_control. No key holds it: without the state the last stage makes the range (render.c) */
 #define VK_DYN_PR_DEPTH_RANGE  32u
+/* depth clipping apart from the clamp: extendedDynamicState3DepthClipEnable, with VK_EXT_depth_clip_enable in use. A
+   dynamic clamp without it turns clipping the other way whatever the pipeline's depth clip state says
+   (the specification's vkCmdSetDepthClampEnableEXT, before maintenance11), so the renderer uses the extension with
+   a dynamic clamp only where this is dynamic too */
+#define VK_DYN_PR_DEPTH_CLIP   64u
 
 /* what a device has, as the choice reads it */
 typedef struct {
@@ -33,6 +38,8 @@ typedef struct {
     int polygon, depth_clamp, provoking, conservative_mode, conservative_size, patch;
     int depth_range;          /* extendedDynamicState3DepthClipNegativeOneToOne */
     int depth_clip_control;   /* VK_EXT_depth_clip_control's depthClipControl */
+    int depth_clip;           /* extendedDynamicState3DepthClipEnable */
+    int has_depth_clip_enable; /* VK_EXT_depth_clip_enable with its depthClipEnable */
     uint32_t depth_range_ban; /* the table's line of the ban that turned depth_range off (vk_gpl_bans), 0 for none */
     /* what the renderer uses at all: a dynamic state of a feature it doesn't use is left out */
     int has_provoking_last, has_conservative;
@@ -55,13 +62,14 @@ void vk_depth_range_line(const VkGplDevice* d, u32 dyn_pr, char* line, size_t n)
 #define VK_PART_FS  4u  /* fragment shader */
 #define VK_PART_FO  8u  /* fragment output interface */
 #define VK_PART_ALL 15u /* a whole pipeline */
-#define VK_PIPE_DYN_MAX 32 /* the most dynamic states a draw pipeline has */
+#define VK_PIPE_DYN_MAX 33  /* the most dynamic states a draw pipeline has */
 /* what decides a draw pipeline's dynamic states: dyn_pr (VK_DYN_PR_*), the feedback loop's dynamic state, a binding
    stride (a vertex layout with bindings and has_dynamic_stride), dynamic vertex input and tessellation. A mesh
    pipeline has no input assembly or vertex input: its topology, primitive restart, strides and layout aren't states */
 typedef struct {
     u32 dyn_pr;
     int feedback_dynamic, stride, vertex_input, tess, mesh;
+    int clamp_range; /* the depth clamp's range as dynamic state (has_depth_clamp_range) */
 } PipeDynIn;
 /* the dynamic states of the parts in parts (VK_PART_*) into out, in the order a whole pipeline lists them: how many */
 u32 vk_pipe_dynamic(u32 parts, const PipeDynIn* in, VkDynamicState* out);
@@ -79,7 +87,7 @@ typedef struct {
     VkShaderModule vs, tcs, tes, gs;
     u32 arrays; /* PipeKey.arrays' bits of the vertex, tessellation and geometry sets */
     /* 0 where dyn_pr makes them dynamic */
-    u32 patch, polygon, depth_clamp, provoking_last, conservative;
+    u32 patch, polygon, depth_clamp, depth_clip, provoking_last, conservative;
 } PipePrKey;
 typedef struct {
     VkShaderModule fs; /* the fragment program, or the empty one */
@@ -118,4 +126,8 @@ void vk_pipe_fs_spec_values(u32 fs_spec, u32 values[SH_SPEC_COUNT]);
    is made the same whatever pipeline needed it first, and a part made without a draw (the programs a game ships)
    is the one a draw makes. Its split gives key back for that part */
 void vk_pipe_part_src(u32 part, const void* key, PipeKey* out);
+/* the state of k a driver compiles a pipeline's shaders with, for the crash report's note of a pipeline being made
+   (plat_thread_note): the color targets' formats (VkFormat) and which blend, the depth and stencil formats, the samples
+   and the topology's class, then what is set of the rest. Into out (n bytes), cut at its end */
+void vk_pipe_key_text(const PipeKey* k, char* out, size_t n);
 #endif

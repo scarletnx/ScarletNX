@@ -147,6 +147,7 @@ PFN_vkCmdClearDepthStencilImage vkCmdClearDepthStencilImage;
 PFN_vkCmdCopyImage vkCmdCopyImage;
 PFN_vkCreateImageView vkCreateImageView;
 PFN_vkCreateSampler vkCreateSampler;
+PFN_vkGetImageMemoryRequirements vkGetImageMemoryRequirements;
 PFN_vkGetPhysicalDeviceFormatProperties vkGetPhysicalDeviceFormatProperties;
 /* record.c's wrappers, which the frame's command buffer goes through: made at once here */
 void rec_CmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkImageLayout dl, u32 n,
@@ -551,6 +552,8 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
     return 0;
 }
 void vk_surf_ended_frame(void) {}
+void vk_tex_refine_frame(void) {}
+void vk_tex_promote_frame(void) {}
 u32 vk_present_before(u64 ago_ns, u32 presents) {
     (void)ago_ns, (void)presents;
     return 0;
@@ -717,6 +720,10 @@ int vk_image_create_sparse(const VkImageCreateInfo* ii, VkImage* img) {
     (void)ii, (void)img;
     return 0;
 }
+int vk_image_create_sparse_min(const VkImageCreateInfo* ii, VkImage* img, u64 min) {
+    (void)ii, (void)img, (void)min;
+    return 0;
+}
 const VkSparseShape* vk_image_sparse_shape(VkImage img) {
     (void)img;
     return NULL;
@@ -725,6 +732,8 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
     (void)img, (void)bits, (void)keys, (void)bytes;
     return -1;
 }
+void vk_image_sparse_place(VkImage img, int system) { (void)img, (void)system; }
+u64 vk_image_sparse_level_bytes(VkImage img, u32 levels) { return (void)img, (void)levels, 0; }
 u64 vk_image_sparse_need(VkImage img, const u8* bits, const u64* keys) {
     (void)img, (void)bits, (void)keys;
     return 0;
@@ -736,6 +745,7 @@ int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32
 void vk_surf_bytes(Surf* s, u64 bytes) { s->bytes = bytes; }
 void vk_mem_trim(u64 extra, int force) { (void)extra, (void)force; }
 void vk_mem_use(u64* usage, u64* budget) { *usage = 0, *budget = 1ull << 30; }
+int vk_mem_pressed(void) { return 0; }
 /* the block linear layout: GOBs of 64 bytes by 8 rows in blocks of 1 << bh by 1 << bd GOBs, gob_w of them across a
    row of blocks, the GOB's 16 byte groups in their order */
 static u64 bl_offset_g(u32 x, u32 y, u32 z, u32 gob_w, u32 h, u32 bh_log2, u32 bd_log2) {
@@ -1412,8 +1422,9 @@ static void check_astc_call(const Surf* t, u32 c, u32 x, u32 y, u32 w, u32 h, u3
    the run of blocks they lie in decoded again, and nothing for 16 of a hole; a tile of level 0 mapped: bound, and
    decoded whole. An ASTC 8x8 one, the device's blocks 4 GOBs high in its layout where its blocks are 8, binds them in
    stacks of two (resident_stacks): 85 bricks of 16 KiB, and its first tile mapped, 64 KiB, binds the 2x2 device
-   blocks it covers, 0, 1, 8 and 9. A 6x6 one, whose blocks aren't whole in 256 texels, and one the device makes no
-   sparse image of are made whole, the log line saying the format and why */
+   blocks it covers, 0, 1, 8 and 9. A 6x6 one, whose blocks aren't whole in 256 texels, isn't bound a tile at a time
+   (tex_create binds it by the device's blocks), and one the device makes no sparse image of is made whole, the log
+   line saying the format and why */
 static void check_resident_astc(void) {
     Surf t = tex(1024, 1024, 1, 11, 16, 3, 0, 1);
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -1458,7 +1469,7 @@ static void check_resident_astc(void) {
     check_astc_call(&t, 0, 512, 0, 256, 256, 0);
     g_map.count = 0;
     astc_append = 0;
-    /* bound in stacks; made whole, saying why */
+    /* bound in stacks; not a tile at a time, or whole, saying why */
     Surf e = tex(2048, 2048, 1, 12, 16, 3, 0, 1), s = tex(1536, 1536, 1, 11, 16, 3, 0, 1), n = t;
     e.f = s.f = t.f;
     e.f.bw = e.f.bh = 8;
@@ -1478,7 +1489,8 @@ static void check_resident_astc(void) {
     g_map.count = 0;
     g_log[0] = 0;
     CHECK(!resident_image(&s, &ii) && !s.bricks);
-    CHECK(strstr(g_log, "in ASTC 6x6 as BC7 with holes") && strstr(g_log, "256x256x1 texels, not whole 6x6 blocks,"));
+    CHECK(strstr(g_log, "in ASTC 6x6 as BC7 with holes in its mapping isn't bound a tile at a time: ") &&
+          strstr(g_log, "256x256x1 texels, not whole 6x6 blocks,"));
     g_res.shape = (VkResidentShape){{0, 0, 0}, 0, 0};
     g_vk.resident = 1;
     g_vk.feat.sparseResidencyImage2D = VK_TRUE;

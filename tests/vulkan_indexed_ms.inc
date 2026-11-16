@@ -3,7 +3,7 @@
 /* Dynamic handle tables preserve multisample image types. Pixel x selects table entry x (a 16-byte stride),
    alternating two different textures, and TLD.B.MS fetches each of their four samples without filtering. */
 static int ms_indexed_fetch(GpuChannel* ch, u64 base, const u32 tic[8], const u8* samples) {
-    if (!g_shader_texture_arrays) {
+    if (!g_spirv_translate.texture_arrays) {
         puts("SKIP indexed multisample fetch: non-uniform sampled image arrays are unavailable");
         return 0;
     }

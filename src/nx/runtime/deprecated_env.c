@@ -81,11 +81,13 @@ void options_old_environment_say(void) {
         if (g_deprecated_env.first[i])
             WARN("settings: %s=%s is deprecated, and %s gives %s first: %s=%s this run (docs/user/deprecations.md)\n",
                  v->name, v->value, g_deprecated_env.first[i], v->key, v->key, now);
-        else if (g_deprecated_env.given[i])
+        else if (g_deprecated_env.given[i]) {
+            char option[96];
+            ini_option(option, sizeof option, v->key, "VALUE");
             WARN("settings: %s=%s is deprecated: this run reads it as %s=%s, a setting of the game's .ini and of "
-                 "--%s=VALUE (docs/user/deprecations.md)\n",
-                 v->name, v->value, v->key, now, v->key);
-        else
+                 "%s (docs/user/deprecations.md)\n",
+                 v->name, v->value, v->key, now, option);
+        } else
             WARN("settings: %s=%s is deprecated, and only %s=signal did anything: %s=%s this run "
                  "(docs/user/deprecations.md)\n",
                  v->name, v->value, v->name, v->key, now);

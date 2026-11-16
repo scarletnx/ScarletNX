@@ -257,6 +257,15 @@ void mx_draw_raster_key(const u32* r, DsRasterKey* k) {
     k->provoking_last = r[0x5A1] & 1; /* PROVOKING_VERTEX: 1 the last vertex, GL's and NVN's default */
     /* GeometryClip: Passthrough, FrustumXYZ and FrustumZ clip depth; the remaining modes clamp it */
     k->depth_clamp = clip != 1 && clip != 3 && clip != 5;
+    /* NVB197_SET_VIEWPORT_CLIP_CONTROL (open-gpu-doc clb197.h) holds them apart: GEOMETRY_CLIP clips the geometry's
+       depth in FRUSTUM_XYZ_CLIP and FRUSTUM_Z_CLIP, and PIXEL_MIN_Z, PIXEL_MAX_Z (bits 3 and 4) each clip a fragment
+       past that end of the viewport's clip range (CLIP, the rasterizer's clip, after the depth bias, as NVK's
+       nvk_cmd_draw.c says) or clamp it there (CLAMP). Vulkan clips the geometry alone: either clip is its depth clip.
+       deko3d's words for its depth clamp, 0x101A on and 0x181D off, clamp both ends in both: 0x181D to 0 to 1 (bit 0,
+       deko3d's ForceDepthRangeZeroToOne), 0x101A to the clip range */
+    k->depth_no_clip = clip != 3 && clip != 5 && (r[0x64F] >> 3 & 1) && (r[0x64F] >> 4 & 1);
+    k->depth_pixel_clamp = (r[0x64F] >> 3 & 1) | (r[0x64F] >> 4 & 1);
+    k->depth_zero_one = r[0x64F] & 1; /* MIN_Z_ZERO_MAX_Z_ONE: the clamp's range is 0 to 1, NVK's depthClampZeroOne */
     k->alpha_to_coverage = r[0x54F] & 1;
     k->alpha_to_one = (r[0x54F] >> 4) & 1;
     k->patch_vertices = r[0x373];

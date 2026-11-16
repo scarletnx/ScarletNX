@@ -126,7 +126,7 @@ int main(void) {
     assert(number == 3 && base_resolution_mult == 0.5f && !strcmp(held, "fits") && !line_said[0]);
     ini_set_say(NULL);
     /* the menus' words: one a value from lo by step; a '#' word for its value and the ones above, plus shift; the
-       number where there is none. Words go round, numbers stop at the ends */
+       number where there is none. Words go round, numbers and a slider's words (INI_SLIDER) stop at the ends */
     {
         static int v;
         static const IniOpt onoff = {"onoff", "0", NULL, INI_INT, 0, &v, 0, 1, NULL, "On or off", "Off|On", 0, 0, 0};
@@ -136,6 +136,8 @@ int main(void) {
         static const IniOpt rumble = {"rumble", "100", NULL,        INI_INT,  0,  &v, 0,
                                       100,      NULL,  "Vibration", "Off|#%", 10, 0, 0};
         static const IniOpt plain = {"plain", "1", NULL, INI_INT, 0, &v, -5, 10, NULL, NULL, NULL, 0, 0, 0};
+        static const IniOpt level = {"level", "1",  NULL,    INI_INT,        INI_SLIDER, &v, 0,
+                                     2,       NULL, "Level", "Low|Mid|High", 0,          0,  0};
         ini_word(&onoff, 0, out, sizeof out);
         assert(!strcmp(out, "Off"));
         ini_word(&onoff, 1, out, sizeof out);
@@ -163,6 +165,24 @@ int main(void) {
         assert(ini_step(&scale, 50, 1) == 60 && ini_step(&scale, 100, 1) == 100 && ini_step(&scale, 0, -1) == 0);
         assert(ini_step(&rumble, 0, 1) == 10 && ini_step(&rumble, 10, -1) == 0 && ini_step(&rumble, 5, 1) == 15);
         assert(ini_step(&plain, -5, -1) == -5 && ini_step(&plain, 3, 1) == 4);
+        assert(ini_step(&level, 2, 1) == 2 && ini_step(&level, 0, -1) == 0 && ini_step(&level, 1, 1) == 2);
+        ini_word(&level, 2, out, sizeof out);
+        assert(!strcmp(out, "High"));
+    }
+    /* a slider's row (INI_SLIDER) for the launcher: slider in its last column, after an empty one where it needs no
+       build, after needs-build where it does */
+    {
+        static int v;
+        static const IniOpt rows[] = {
+            {"volume", "100", "How loud", INI_INT, INI_SLIDER, &v, 0, 100, NULL, "Volume", "Mute|#%", 50, 0, 0},
+            {"gated", "0", "Help", INI_INT, INI_SLIDER | INI_NEEDS_BUILD, &v, 0, 1, NULL, "Gated", "Off|On", 0, 0, 0},
+            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+        static const IniSection sections[] = {{"Audio", 1, {rows, NULL, NULL}, {NULL, NULL, NULL}}};
+        static const char want[] =
+            "Audio\tvolume\t100\tint\t0\t100\tHow loud\tVolume\t0=Mute|50=50%|100=100%\t\t\tslider\n"
+            "Audio\tgated\t0\tint\t0\t1\tHelp\tGated\t0=Off|1=On\t\tneeds-build\tslider\n";
+        char list[512];
+        assert(ini_list_text(sections, 1, list, sizeof list) == strlen(want) && !strcmp(list, want));
     }
     /* the settings not at their default: a number, a float, a text by its value or its key alone, with the defaults;
        a row without a default never */
@@ -307,12 +327,58 @@ int main(void) {
     }
     { /* a command line's --key=value */
         char key[8];
-        const char* value = ini_arg("--speed=2", key, sizeof key);
+        const char* value = ini_arg("--speed=2", key, sizeof key, NULL, 0);
         assert(value && !strcmp(value, "2") && !strcmp(key, "speed"));
-        assert(!ini_arg("--speed", key, sizeof key) && !ini_arg("-s=1", key, sizeof key));
-        assert(!ini_arg("--too_long=1", key, sizeof key));
-        value = ini_arg("--a=b=c", key, sizeof key);
+        assert(!ini_arg("--speed", key, sizeof key, NULL, 0) && !ini_arg("-s=1", key, sizeof key, NULL, 0));
+        assert(!ini_arg("--too_long=1", key, sizeof key, NULL, 0));
+        value = ini_arg("--a=b=c", key, sizeof key, NULL, 0);
         assert(value && !strcmp(value, "b=c") && !strcmp(key, "a"));
+    }
+    { /* and its key's name with a - for each _, of the names given (sorted as strcmp sorts them: a - before a digit,
+         which an _ comes after), the first, a middle and the last found. The key itself, the older spelling, is said
+         once a run for each name, with the name now; some _ left, or no name, is the key as given and said nothing */
+        static const char* const names[] = {"a-b", "a-b-c", "a1-b", "ab-c", "z-z"};
+        static const char* const cases[][4] = {
+            {"--a-b=1", "a_b", "1", ""},
+            {"--a-b-c=x=y", "a_b_c", "x=y", ""},
+            {"--a1-b=", "a1_b", "", ""},
+            {"--ab-c=2", "ab_c", "2", ""},
+            {"--z-z=3", "z_z", "3", ""},
+            {"--a_b=4", "a_b", "4", "settings: --a_b is the old spelling of --a-b: it is read as that; write --a-b"},
+            {"--a_b=5", "a_b", "5", ""},
+            {"--a-b=6", "a_b", "6", ""},
+            {"--z_z=7", "z_z", "7", "settings: --z_z is the old spelling of --z-z: it is read as that; write --z-z"},
+            {"--a_b-c=8", "a_b-c", "8", ""},
+            {"--a-b_c=9", "a-b_c", "9", ""},
+            {"--a-c=10", "a-c", "10", ""},
+            {"--a_c=11", "a_c", "11", ""},
+            {"--a1=12", "a1", "12", ""},
+            {"--z-zz=13", "z-zz", "13", ""},
+            {"--0-a=14", "0-a", "14", ""},
+        };
+        char key[8];
+        size_t i;
+        ini_set_say(catch_said);
+        for (i = 0; i < sizeof cases / sizeof *cases; i++) {
+            const char* value;
+            line_said[0] = 0;
+            value = ini_arg(cases[i][0], key, sizeof key, names, 5);
+            assert(value && !strcmp(value, cases[i][2]));
+            if (strcmp(key, cases[i][1]) || strcmp(line_said, cases[i][3])) {
+                fprintf(stderr, "%s: key %s, said \"%s\"; not %s, \"%s\"\n", cases[i][0], key, line_said, cases[i][1],
+                        cases[i][3]);
+                assert(!"ini_arg's key or line");
+            }
+        }
+        ini_set_say(NULL);
+        assert(!ini_arg("--a-b-c-de=1", key, sizeof key, names, 5)); /* a NAME of 8 letters does not fit key's 8 */
+    }
+    { /* the option that sets a key, as the command line gives it: a - for each _ of the key alone, cut to the room */
+        char option[16];
+        assert(ini_option(option, sizeof option, "aot_threads", "4") == 15 && !strcmp(option, "--aot-threads=4"));
+        assert(ini_option(option, sizeof option, "opt", "s_z") == 9 && !strcmp(option, "--opt=s_z"));
+        assert(ini_option(option, 8, "aot_threads", "4") == 15 && !strcmp(option, "--aot-t"));
+        assert(ini_option(NULL, 0, "state_slots", "10") == 16);
     }
     puts("ini passed");
     return 0;

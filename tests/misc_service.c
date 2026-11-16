@@ -495,16 +495,23 @@ static void test_vibration(SvcObj* h) {
     /* No1's Pro Controller (style index 3), the left device then the right one */
     static const u32 both[2] = {0x00000003u, 0x00010003u};
     static const float values[2][4] = {{0.25f, 160, 0, 320}, {1.5f, 160, 0.5f, 320}};
+    memset(g_host.hid.rumble_peak, 0, sizeof g_host.hid.rumble_peak);
     vibration(h, 0x00000003u, 0.5f, 1.0f);
     CHECK(g_hle.hid.pad1.rumble[0] == (32767u | 65535u << 16) && g_hle.hid.pad1.rumble[1] == 0);
     vibration(h, 0x00010020u, 0.0f, 0.25f); /* the handheld's right device */
     CHECK(g_hle.hid.pad1.rumble[1] == 16383u << 16);
     vibration(h, 0x00000003u, -1.0f, NAN); /* none past the ends, nor a NaN */
     CHECK(g_hle.hid.pad1.rumble[0] == 0);
+    /* the strongest of each band since the frontend last read them stays for it: the pulse above ended at once */
+    CHECK(g_host.hid.rumble_peak[0][0] == (32767u | 65535u << 16) && g_host.hid.rumble_peak[0][1] == 16383u << 16);
+    memset(g_host.hid.rumble_peak, 0, sizeof g_host.hid.rumble_peak); /* as the frontend's poll takes them */
     vibrations(h, both, values, 2);
     CHECK(g_hle.hid.pad1.rumble[0] == 16383u && g_hle.hid.pad1.rumble[1] == (65535u | 32767u << 16));
+    vibration(h, 0x00010003u, 0.25f, 1.0f); /* each band its own strongest: the low one stays 1.5's */
+    CHECK(g_host.hid.rumble_peak[0][1] == (65535u | 65535u << 16) && g_host.hid.rumble_peak[0][0] == 16383u);
     vibrations(h, both, values, 0);
     CHECK(g_hle.hid.pad1.rumble[0] == 16383u);
+    memset(g_host.hid.rumble_peak, 0, sizeof g_host.hid.rumble_peak);
 }
 static void test_npad_players(SvcObj* h) {
     static const u32 first_ids[] = {0, 1, 2, 3, 0x20};
@@ -547,12 +554,13 @@ static void test_npad_players(SvcObj* h) {
     CHECK(sticks[0] == 0 && sticks[1] == -1000);
     npad_latest_sticks(2, HO_HidNpadInternalState_joy_right_lifo, sticks);
     CHECK(sticks[2] == 0 && sticks[3] == 2000);
-    /* Replacing a physical controller in No2 resets its sensor orientation before reading the new sample. */
+    /* Replacing a physical controller in No2 resets its sensor orientation before reading the new sample: gravity
+       along the pad's +Y puts its Z axis (the direction's last row) on the world's +Y */
     g_hle.hid.pad_extra[0].source_id = 111;
     g_hle.hid.pad_extra[0].motion[0].valid = 1;
     g_hle.hid.pad_extra[0].motion[0].acceleration[1] = 1.0f;
     hid_update();
-    CHECK(fabsf(npad_latest_direction(1, HO_HidNpadInternalState_joy_left_six_axis_sensor_lifo, 28) + 1.0f) < 0.0005f);
+    CHECK(fabsf(npad_latest_direction(1, HO_HidNpadInternalState_joy_left_six_axis_sensor_lifo, 28) - 1.0f) < 0.0005f);
     g_hle.hid.pad_extra[0].source_id = 222;
     g_hle.hid.pad_extra[0].motion[0].acceleration[1] = 0.0f;
     g_hle.hid.pad_extra[0].motion[0].acceleration[2] = -1.0f;

@@ -36,8 +36,8 @@ void ini_open(const char* path);
    ", ": how many. ini_open and a reload show the list at the top of the picture (hud.h), a reload that changes it in the
    log too */
 int options_debug(int flags, char* out, size_t n);
-/* the Display, Graphics and Performance settings not at their default, each "key=value (default D)" between ", ": how
-   many. The log's header says them, and a reload that changes them says them again */
+/* the Display, Graphics, Audio and Performance settings not at their default, each "key=value (default D)" between
+   ", ": how many. The log's header says them, and a reload that changes them says them again */
 int options_settings(char* out, size_t n);
 /* memory_fit's value old as memory_fit_mode's (0 Auto, 1 Off): 1 is 0; 0 is 1 where memory_fit's default was 1 (ios),
    else -1, memory_fit_mode's default, as 0 was then memory_fit's own, which every game's .ini had written; -2 for
@@ -60,6 +60,15 @@ void ini_poll(int final);
 #define SNX_FPS_GAME (-1)
 extern int g_opt_fps;                              /* atomic: the game's threads read it */
 void fps_limit_text(int fps, char* out, size_t n); /* g_opt_fps as fps_limit's value: "game", "0", "30"... */
+/* hotkey_fps_limit's, on the frontend's thread: the limit off, *was the one it took off, or back from off to *was (0
+   for none yet: the game's pace), written to the .ini. Its line in the log, the limit now and before it, the same words
+   in text (size bytes, 0 for none), and the limit now */
+int options_fps_limit_step(int* was, char* text, size_t size);
+/* hotkey_showcase's and hotkey_stats's: the setting off or on, written to the .ini. Its line in the log, the setting now
+   and before it and, when on, the corner it draws in; the same words without the corner in text (size bytes, 0 for
+   none); and the setting now */
+int options_showcase_step(char* text, size_t size);
+int options_stats_step(char* text, size_t size);
 
 /* The TV mode in effect now: 0 handheld, 1 TV (docked). docked's Auto asks the host's power state, and
    options_tv_mode_update keeps g_settings.tv_mode at the mode it picks from the frontend's thread, while the game's

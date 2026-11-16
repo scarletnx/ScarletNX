@@ -21,6 +21,7 @@
 #include "common/utilities/spirv_emit.h" /* SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR, the scanner's */
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "common/platform/thread.h" /* plat_thread_note */
 #include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
@@ -118,6 +119,7 @@ static u64 g_cval;
 static int g_ar_gfx;
 static u64 g_org_cap;
 u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns;
+u64 g_vk_cs_open, g_vk_cs_left; /* vk.h */
 /* A program's window: 80 zero bytes in place of a header, then the bytes of its code that cs_read_code reads, and zeros
    after them. It takes as much code as a graphics program's window (pipeline.c's SH_CODE): an Ounce game has a
    compute program of 256,160 bytes. In a window of 64 KiB that program had no end, and each of its dispatches was
@@ -1024,9 +1026,14 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
     /* subgroups of 32 for one that reads other lanes (cs_reads_lanes), whole where the block's x is whole subgroups (as
        Vulkan asks of the flag) */
     int warp = g_vk.has_cs_warp32 && cs_reads_lanes(spv, nw);
+    /* the crash report's note while the driver compiles it (plat_thread_note) */
+    plat_thread_note("making the compute pipeline %016llx (%zu KB of SPIR-V, a block of %ux%ux%u, %u bytes of shared "
+                     "memory)",
+                     (unsigned long long)key, nw / 256, lx, ly, lz, (unsigned)p->si.shared_size);
     if (!VK_OK(snx_vk_compute_pipeline_subgroups(g_vk.dev, vk_pipeline_cache(), g_vk.cs_playout, spv, (size_t)nw * 4,
                                                  warp ? 32 : 0, warp && lx % 32 == 0, &p->p)))
         p->failed = 1;
+    plat_thread_note_clear();
     free(spv);
     /* as a draw's program says it (pipeline.c): the textures a compute program samples as none */
     if (!p->failed && p->si.memh_none)
@@ -1349,6 +1356,7 @@ void vk_dispatch(const DispatchState* d) {
     u64 tic_key_base;
     VkBufImg bimg[8] = {0};
     int i;
+    SNX_ZONE(z_dispatch, "dispatch");
     vk_frame_check();
     vk_own_room();
     if (d->indirect) gx = gy = gz = 1; /* the GPU's: these only say there is a grid */
@@ -1730,13 +1738,11 @@ rebind:
     u32 nw = 0;
     for (int i = 0; i < 8; i++)
         if (p->si.cbuf_mask & (1u << i)) {
-            /* only the bytes the shader reads (robust buffer access keeps reads past them in bounds, of undefined
-               value) */
+            /* only the bytes the shader reads, zeros after the guest's: reads past the range are zero with
+               robustBufferAccess2, and stay in bounds, of undefined value, with robust buffer access alone */
             u32 range = g_cbn[i];
             if (p->si.cbuf_max[i] && range > p->si.cbuf_max[i]) range = p->si.cbuf_max[i];
-            range = (range + 15) & ~15u;
-            if (!range) range = 16;
-            if (range > g_vk.props.limits.maxUniformBufferRange) range = g_vk.props.limits.maxUniformBufferRange;
+            range = vk_cb_range(range); /* a whole checked step, within the limit; the tail is zeroed below */
             u32 n = g_cbn[i] < range ? g_cbn[i] : range;
             VkBuffer cbuf = g_ar;
             u64 o;
@@ -1775,7 +1781,7 @@ rebind:
             nw++;
         }
     if (p->si.root_max) { /* an Ounce program's root tables, the bytes it reads (SNX_VKB_ROOT) */
-        u32 range = (p->si.root_max + 15u) & ~15u;
+        u32 range = vk_cb_range(p->si.root_max); /* a uniform buffer: the same checked step as a constant buffer */
         VkBuffer rbuf = g_ar;
         u64 o;
         u8* dst;
@@ -1789,7 +1795,8 @@ rebind:
             o = arena_alloc(range);
             dst = g_ar_ptr + o;
         }
-        memcpy(dst, d->root, range);
+        memcpy(dst, d->root, p->si.root_max); /* only the real bytes; the rest of the step is zeroed, not read past */
+        memset(dst + p->si.root_max, 0, range - p->si.root_max);
         bi[nw] = (VkDescriptorBufferInfo){rbuf, o, range};
         w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
@@ -1830,6 +1837,7 @@ rebind:
     for (int i = 0; i < ng; i++) {
         VkBuffer sbuf = g_ar;
         u64 o;
+        u32 srange = ss[i]; /* the bound range: a whole storage step where the arena zero-fills the tail below */
         int alias = -1;
         for (int k = 0; k < i && resident && alias < 0; k++)
             if (sa[k] && sa[k] == sa[i] && ss[k] == ss[i]) alias = k; /* one range bound twice names one buffer */
@@ -1872,20 +1880,24 @@ rebind:
             so[i] = o;
         } else {
             if (chain[i] >= 0) chained = 1;
-            o = so[i] = chain[i] >= 0 ? (u64)chain[i] : arena_alloc(ss[i]);
+            /* a chained buffer reads an earlier dispatch's in place: its range stays ss[i]. A fresh one spans a whole
+               checked step, the tail zeroed, so reads past ss[i] in it are zero, not a neighbour's in the arena */
+            if (chain[i] < 0) srange = vk_sb_round(ss[i]);
+            o = so[i] = chain[i] >= 0 ? (u64)chain[i] : arena_alloc(srange);
             if (chain[i] >= 0)
                 ; /* written by an earlier dispatch of the batch, read in place */
             /* read: its bytes copied in. So are those of one written and not logged: its result is what differs from
                them after the dispatch, and a store of the bytes zeroed in their place would differ from nothing */
-            else if (sa[i] && (((p->si.gbuf_rmask >> i) & 1) || !(log && p->si.gbuf_mark[i])))
+            else if (sa[i] && (((p->si.gbuf_rmask >> i) & 1) || !(log && p->si.gbuf_mark[i]))) {
                 gmem_read(sa[i], g_ar_ptr + o, ss[i]);
-            else {
+                memset(g_ar_ptr + o + ss[i], 0, srange - ss[i]);
+            } else {
                 if (sa[i]) gmem_need(sa[i], ss[i]); /* write-only: results pending there land, but nothing is read */
-                memset(g_ar_ptr + o, 0, ss[i]);
+                memset(g_ar_ptr + o, 0, srange);
             }
         }
         bi_buf[i] = sbuf;
-        bi[nw] = (VkDescriptorBufferInfo){sbuf, o, ss[i]};
+        bi[nw] = (VkDescriptorBufferInfo){sbuf, o, srange}; /* outputs still write back ss[i] bytes (g_out) */
         w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
                                        .dstBinding = SNX_VKB_SSBO + i,
@@ -2049,18 +2061,20 @@ rebind:
                 return;
             }
             vk_gmem_words(tic_base + (h & 0xFFFFF) * 32ull, tic, 8);
-            /* a slot with nothing bound (an empty header): an empty image, which nothing writes back. One game's
-               program that makes a texture's levels from its first has seven image slots, one for each level, and
-               the game leaves those past the texture's last level empty (images 4 to 6 of a texture of 4 levels).
-               Skipped whole for them, the dispatch left levels 1 to 3 zero, and the trilinear lookups of the
-               texture drew a dark square under the game's kart */
+            /* a slot with nothing bound (an empty header): a null descriptor (vk_null_descriptors), or else an empty
+               image, which nothing writes back. One game's program that makes a texture's levels from its first has
+               seven image slots, one for each level, and the game leaves those past the texture's last level empty
+               (images 4 to 6 of a texture of 4 levels). Skipped whole for them, the dispatch left levels 1 to 3 zero,
+               and the trilinear lookups of the texture drew a dark square under the game's kart */
             VkImageView null_view = VK_NULL_HANDLE;
-            Surf* null_image = vk_tic_empty(tic)
+            int null_slot = vk_tic_empty(tic) && vk_null_descriptors();
+            Surf* null_image = vk_tic_empty(tic) && !null_slot
                                    ? vk_null_storage(vk_storage_image_type(&p->si, i), p->si.img[i].kind, &null_view)
                                    : NULL;
-            if (null_image) {
-                vk_surf_use(vk_cmd(), null_image, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            VK_STORAGE_IMAGE_ACCESS);
+            if (null_image || null_slot) {
+                if (null_image)
+                    vk_surf_use(vk_cmd(), null_image, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_STORAGE_IMAGE_ACCESS);
                 ii[p->si.ntex + i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, null_view, VK_IMAGE_LAYOUT_GENERAL};
                 w[nw++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                                  .dstSet = set,
@@ -2349,7 +2363,9 @@ rebind:
            once, the GPU runs it while the stream goes on, and a reader of its results waits for that submit alone,
            not for the draws recorded after it: Pokemon Legends Z-A writes command lists with a dispatch and fetches
            them a little later (a GPFIFO entry with SYNC), once a frame */
+        vk_uma_writer(p->key);
         vk_buf_writable_commit();
+        vk_uma_writer(0);
         for (i = 0; i < p->si.nimg && i < 8; i++)
             if (bufimg_view[i]) vk_defer_buffer_view(bufimg_view[i]);
         /* the storage images' texels over their guest bytes, after the dispatch on the GPU */
@@ -2364,7 +2380,18 @@ rebind:
         /* Not one in the GPU mirror: its results land only where the CPU first touches them, and that read submits
            what is open (vk_mirror_mem_need's finish). Submitted each, one game's Ounce programs made about 300
            submissions a present, each with a harvest of the mirror, and the GPU idled between them */
-        if (!mir) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+        if (mir) return;
+        /* On unified memory a dispatch with nothing staged for the host waits in the submission being recorded for
+           the end of the game's GPU submission (vk_release_submit) or whatever submits first, as the console's GPU
+           runs what a flush handed it. Submitted each, one game's battle map made 350 to 390 submissions a present
+           by the GPU profiler, and 22 to 24 so. A program a CPU reader waited for while its writes were still
+           unsubmitted (vk_uma_read_soon) is submitted at once, as above */
+        if (vk_uma() && !vk_buf_pending_unsubmitted() && !vk_uma_read_soon(p->key)) {
+            g_vk_cs_open = vk_submit_number();
+            g_vk_cs_left++;
+            return;
+        }
+        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
         return;
     }
     /* results visible to the host */

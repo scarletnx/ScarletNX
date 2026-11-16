@@ -261,7 +261,13 @@ static bool mount(SnxCtrProcess* p, const char* directory, const SnxCtrSource* g
     p->source = game;
     FsTree* tree = calloc(1, sizeof *tree);
     if (!tree) return false;
-    if (fs_tree_init(tree, directory) != FS_TREE_OK) {
+    /* A game read from its dump has its RomFS and ExeFS from the dump (below). An extraction's romfs/ and exefs/ left
+       in its folder are not indexed: an extraction stopped before its exheader.bin, which no run removes, kept an
+       exefs/icon whose name the dump's own icon takes, and the mount failed */
+    static const char* const extraction[] = {"exefs", "romfs", NULL};
+    FsTreeResult indexed = fs_tree_init_skipping(tree, directory, game ? extraction : NULL);
+    if (indexed != FS_TREE_OK) {
+        fprintf(stderr, "3ds fs: %s %s\n", tree->refused[0] ? tree->refused : directory, fs_tree_why(tree, indexed));
         pm_destroy(&tree->lock);
         free(tree);
         return false;
@@ -280,9 +286,13 @@ static bool mount(SnxCtrProcess* p, const char* directory, const SnxCtrSource* g
         const unsigned char* image = snx_ctr_source_romfs(game, &size);
         /* a CIA without a RomFS reads as an empty one, as its extraction's empty romfs/ folder does */
         ok = ok && snx_ctr_romfs_open_image(image, size, snx_ctr_source_mtime(game), &p->romfs);
+        if (!ok) fprintf(stderr, "3ds fs: the game's RomFS can't be read\n");
         /* the update's, which an updated game opens apart (services/fs.c, SelfNCCH's path type 5) */
-        image = snx_ctr_source_update_romfs(game, &size);
-        ok = ok && (!image || snx_ctr_romfs_open_image(image, size, snx_ctr_source_mtime(game), &p->update_romfs));
+        image = ok ? snx_ctr_source_update_romfs(game, &size) : NULL;
+        if (image && !snx_ctr_romfs_open_image(image, size, snx_ctr_source_mtime(game), &p->update_romfs)) {
+            fprintf(stderr, "3ds fs: the update's RomFS can't be read\n");
+            ok = false;
+        }
         /* the ExeFS files SelfNCCH serves (services/fs.c), in the tree as an extraction's exefs/ has them: copies of
            the CIA's sections, read-only and never on the host */
         static const char* const sections[] = {"icon", "logo", "banner"};
@@ -291,7 +301,11 @@ static bool mount(SnxCtrProcess* p, const char* directory, const SnxCtrSource* g
             const unsigned char* data = snx_ctr_source_exefs(game, sections[i], &size);
             char path[16];
             snprintf(path, sizeof path, "exefs/%s", sections[i]);
-            if (data) ok = !fs_tree_add_virtual(tree, path, data, size, NULL);
+            FsTreeResult added = data ? fs_tree_add_virtual(tree, path, data, size, NULL) : FS_TREE_OK;
+            if (added) {
+                fprintf(stderr, "3ds fs: %s of the title's folder %s\n", path, fs_tree_why(NULL, added));
+                ok = false;
+            }
         }
         pm_unlock(&tree->lock);
     } else if (!ok || !snx_ctr_romfs_open(tree, &p->romfs))
@@ -303,6 +317,7 @@ static bool mount(SnxCtrProcess* p, const char* directory, const SnxCtrSource* g
         if (rc == FS_TREE_NOTFOUND) rc = fs_tree_create(tree, NULL, "sdmc", 1, 0, &sd);
         pm_unlock(&tree->lock);
         ok = !rc && sd;
+        if (!ok) fprintf(stderr, "3ds fs: sdmc of the title's folder %s\n", fs_tree_why(NULL, rc ? rc : FS_TREE_INVALID));
     }
     if (!ok) { /* leave no partial mount behind; the process itself stays the caller's */
         snx_ctr_romfs_free(p->romfs);

@@ -2,8 +2,10 @@
    Copyright 2026 the ScarletNX contributors */
 /* hook_install (src/nx/hle/hook/hook.c) over a full table, the spec tests/CMakeLists.txt writes with as many hooks as
    tools/hookgen takes, with the runtime stubbed: a game whose module exports every one of their functions gets each
-   one hooked, the last as the first. With "twice", a second module exports them all again, and the install stops the
-   game at the first function it has no site for, naming it and the sites there are */
+   one hooked, the last as the first, and the index of the sites by address finds each one, and none at any other
+   address, as a search of every site does, then after an install again and after one into emptied sites. With
+   "twice", a second module exports them all again, and the install stops the game at the first function it has no
+   site for, naming it and the sites there are */
 #include "nx/hle/hook/hook.c"
 #include <assert.h>
 #include <stdarg.h>
@@ -40,7 +42,7 @@ const SnxModule* g_mod = &module;
 const SnxArmModule* g_arm_mod;
 GuestFn* g_disp = slots;
 u64 g_code_lo = CODE, g_code_hi = CODE + sizeof slots / sizeof slots[0] * 4;
-static u8 guest[0x2000];
+static u8 guest[CODE + 8 * HOOK_COUNT]; /* both modules' code */
 u8* g_mem = guest;
 Hle g_hle;
 HleHost g_host;
@@ -79,6 +81,10 @@ void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
 /* hook.c takes its invalidation lock only when a hooked function's code changed */
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
+/* ext_skyline.c's: no hook for a mod's trampoline */
+GuestFn hook_ext_skyline(const char* symbol, u32 sdk, const char** handler) {
+    return (void)symbol, (void)sdk, (void)handler, NULL;
+}
 void fatal(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -87,6 +93,22 @@ void fatal(const char* fmt, ...) {
     va_end(ap);
     putchar('\n');
     exit(1);
+}
+
+/* the site of addr as the sites say it, the first one at addr in install order, or -1: what site_of answered by
+   searching every one before the index */
+static int searched(u64 addr) {
+    u32 i;
+    for (i = 0; i < g_host.hook.count; i++)
+        if (g_host.hook.addr[i] == addr) return (int)i;
+    return -1;
+}
+/* site_of answers as the search on every address of the code and around it, the misses between the sites and past
+   both ends among them, and far from it */
+static void index_agrees(void) {
+    u64 a;
+    for (a = 0; a < g_code_hi + 64; a++) assert(site_of(a) == searched(a));
+    assert(site_of(~0ull) == -1 && site_of(1ull << 40 | CODE) == -1 && site_of(CODE + 2) == -1);
 }
 
 int main(int argc, char** argv) {
@@ -105,10 +127,34 @@ int main(int argc, char** argv) {
     hook_install();
     assert(g_host.hook.count == HOOK_COUNT);
     for (i = 0; i < HOOK_COUNT; i++) assert(slots[i] == hook_fn[i] && g_host.hook.addr[i] == CODE + 4ull * i);
+    for (i = 0; i < HOOK_COUNT; i++) assert(site_of(CODE + 4ull * i) == (int)i);
+    index_agrees();
+    /* an install again finds every function hooked already: no site more, and the index as it was */
+    hook_install();
+    assert(g_host.hook.count == HOOK_COUNT);
+    index_agrees();
+    /* the sites emptied, and the second module's functions hooked alone: each is found at its address, none at the
+       first module's */
+    memset(&g_host.hook, 0, sizeof g_host.hook);
+    for (i = 0; i < sizeof slots / sizeof slots[0]; i++) slots[i] = own;
+    module.mods = modules + 1, module.nmods = 1, exporting = 2;
+    hook_install();
+    assert(g_host.hook.count == HOOK_COUNT && site_of(CODE) == -1 && site_of(CODE + 4ull * HOOK_COUNT) == 0);
+    index_agrees();
+    module.mods = modules, module.nmods = 2, exporting = 1;
+    memset(&g_host.hook, 0, sizeof g_host.hook);
+    for (i = 0; i < sizeof slots / sizeof slots[0]; i++) slots[i] = own;
+    hook_install();
+    assert(g_host.hook.count == HOOK_COUNT);
     /* the last function hooked runs its handler, not its own code */
     c.x[30] = 0x9000;
     slots[HOOK_COUNT - 1](&c, CODE + 4ull * (HOOK_COUNT - 1));
     assert(calls == 1 && own_calls == 0 && c.pc == 0x9000);
     puts("hook_sites: passed");
     return 0;
+}
+/* hook.c asks which families can run (family.c, not linked here): every one of this test's */
+const char* hook_family_unready(const char* family) {
+    (void)family;
+    return NULL;
 }

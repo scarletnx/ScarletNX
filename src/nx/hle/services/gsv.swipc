@@ -89,10 +89,18 @@ interface nn::gsv::UserSession {
     @stub [1502] InitializeInterModuleImageContext();
 }
 
-# The camera context's session. One game's own camera module asks 21 for an event as it starts, which it attaches as a
-# system event and stops if 21 fails. With no camera, nothing about one changes, so the event is never signaled
+# The camera context's session (the SDK's nn::camera, which one game links into a subsdk of its own), as a console with
+# no camera plugged in. nn::camera::Initialize sends 3 with the device name "Default" and keeps the u64 of the answer,
+# the device handle that the other calls take. It aborts on every result but success and 0xdc4, and gives 0xdc4 to the
+# game. That game reads it as a platform without the camera function, skips the setup of its webcam, and reads the
+# webcam after that. Finalize sends 4 and aborts on every failure. QueryDeviceConnection (29) takes 0x7c4, which the
+# game logs as no camera device found. The module asks 21 for an event as it starts, which it
+# attaches as a system event and stops if 21 fails. With no camera, nothing about one changes, so the event is never
+# signaled
 @fallback(gsv_camera_none)
 interface nn::gsv::CameraSession {
+    [3] Initialize(bytes<0x10> name) -> u64 device;
+    [4] Finalize();
     [21] GetEvent(u32 id) -> handle<copy, event> event;
 }
 
@@ -160,11 +168,17 @@ interface nn::vi2::IVi2Session {
     [51] ConfigureRequestGroups(bytes<0x4> request);
     [101] OpenDisplay(bytes<0xc> request);
     [102] CloseDisplay(bytes<0x8> request);
+    # the display's rate now as a code, 1 for 60 Hz and 2 for 120 Hz, a negative one for VRR. Any other is an error
+    # to the SDK
+    [103] GetDisplayRefreshRate(bytes<0x8> request) -> u64 rate;
     # the SDK's proxy reads the format at the start of the reply's raw data and the peak's 16 bits at its byte 8
     @unsorted [104] GetHdrStatus(bytes<0x8> request) -> (u64 format, u32 peak);
     [105] GetHdrPaperWhite(bytes<0x8> request) -> u32 paper_white;
     [106] GetBufferMaxResolution(bytes<0x8> request) -> u64 resolution;
-    [107] GetDisplayState107(bytes<0x8> request) -> (u64 a, u64 b, u64 c);
+    # the refresh rates the display takes, one bit a code (bit 0 for 60 Hz, bit 1 for 120 Hz, bit 63 for VRR), the HDR
+    # output formats, and a second set of refresh rates. The SDK keeps bits 0, 1 and 63 of the two rate sets and bits 0
+    # and 1 of the formats
+    [107] GetDisplayModeCapability(bytes<0x8> request) -> (u64 refresh_rates, u64 hdr_formats, u64 refresh_rates2);
     [111] OpenEndpoint(bytes<0x18> request);
     [112] CloseEndpoint(bytes<0x10> request);
     [201] RegisterClientState(bytes<0x10> request);
@@ -176,8 +190,9 @@ interface nn::vi2::IVi2Session {
     [252] UnbindClientDisplay(bytes<0x8> request);
     [261] RegisterDisplayEventMonitor(bytes<0xc> request);
     [262] UnregisterDisplayEventMonitor(bytes<0xc> request);
-    [263] RegisterDisplayMonitor263(bytes<0xc> request);
-    [264] UnregisterDisplayMonitor264(bytes<0xc> request);
+    # the refresh rate event: the SDK asks 354 again only once it is signaled
+    [263] RegisterRefreshRateMonitor(bytes<0xc> request);
+    [264] UnregisterRefreshRateMonitor(bytes<0xc> request);
     [265] RegisterHdrStatusMonitor(bytes<0xc> request);
     [266] UnregisterHdrStatusMonitor(bytes<0xc> request);
     [267] RegisterDisplayMonitor267(bytes<0xc> request);
@@ -186,8 +201,11 @@ interface nn::vi2::IVi2Session {
     [270] UnregisterBufferMaxResolutionMonitor(bytes<0xc> request);
     [271] RegisterDisplayMonitor271(bytes<0xc> request);
     [272] UnregisterDisplayMonitor272(bytes<0xc> request);
-    [301] SetDisplayParameter301(bytes<0x8> request);
+    # the display, then a value and a mask of rate codes (as 107's bits). The rates in the mask are turned on where the
+    # value has their bit and off where it has not: 120 Hz on is (2, 2), off is (0, 2), VRR on is (1 << 63, 1 << 63)
+    [301] SetDisplayRefreshRateCapability(bytes<0x18> request);
     [351] SetClientOutputEncoding(bytes<0x10> request);
     [352] SetClientOutputLevels(bytes<0x14> request);
-    [354] GetDisplayState354(bytes<0x8> request) -> u64 value;
+    # the rate now as one bit (bit 0 for 60 Hz, bit 1 for 120 Hz, and bit 0 wins), with a flag in bit 63
+    [354] GetDisplayRefreshRateBits(bytes<0x8> request) -> u64 rate;
 }

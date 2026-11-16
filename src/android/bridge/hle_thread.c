@@ -12,7 +12,7 @@
 #include "android/bridge/hle_impl.h"
 #include "android/bridge/hle_signal.h"
 #include "common/utilities/endian.h"
-#include "gnuabi/abi/errno/errno.h"
+#include "gnuabi/abi/errno.inc"
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>

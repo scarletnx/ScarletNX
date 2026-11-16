@@ -753,13 +753,43 @@ int main(void) {
         CHECK(hook_select(&hook_table, update_symbol, versions, &first) == -2);
         CHECK(hook_select(&hook_table, limit_symbol, versions, &first) == -2);
     }
-    { /* the handle's functions with nothing after it hold for any SDK: a second word is not read */
+    /* the handle's functions with nothing after it, in every SDK read: a second word is not read. Not in SDK 2, whose
+       own OpenAudioRenderer fills the handle: a handler would find no renderer of ours there */
+    static const char* const handle_fns[] = {
+        "_ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE",
+        "_ZN2nn5audio18StartAudioRendererENS0_19AudioRendererHandleE",
+        "_ZN2nn5audio17StopAudioRendererENS0_19AudioRendererHandleE",
+        "_ZN2nn5audio21GetAudioRendererStateENS0_19AudioRendererHandleE",
+        "_ZN2nn5audio26GetAudioRendererSampleRateENS0_19AudioRendererHandleE",
+        "_ZN2nn5audio27GetAudioRendererSampleCountENS0_19AudioRendererHandleE",
+        "_ZN2nn5audio30GetAudioRendererMixBufferCountENS0_19AudioRendererHandleE",
+        "_ZN2nn5audio34GetAudioRendererRenderingTimeLimitENS0_19AudioRendererHandleE",
+        "_ZN2nn5audio34SetAudioRendererVoiceDropParameterENS0_19AudioRendererHandleEf",
+        "_ZN2nn5audio34GetAudioRendererVoiceDropParameterENS0_19AudioRendererHandleE",
+        "_ZN2nn5audio29GetAudioRendererExecutionModeENS0_19AudioRendererHandleE",
+        "_ZN2nn5audio31GetAudioRendererRenderingDeviceENS0_19AudioRendererHandleE",
+        "_ZN2nn5audio29QueryAudioRendererSystemEventEPNS0_19AudioRendererHandleEPNS_2os11SystemEventE",
+        "_ZN2nn5audio29ExecuteAudioRendererRenderingENS0_19AudioRendererHandleE"};
+    static const u32 with_handle[] = {0x000c0e, 0x010301, 0x030500, 0x090300, 0x140511};
+    for (unsigned f = 0; f < sizeof handle_fns / sizeof handle_fns[0]; f++) {
         u32 versions[HOOK_KEYS] = {0};
+        for (unsigned i = 0; i < sizeof with_handle / sizeof with_handle[0]; i++) {
+            versions[HOOK_SDK] = with_handle[i];
+            CHECK(hook_select(&hook_table, handle_fns[f], versions, &first) >= 0);
+        }
+        for (unsigned i = 0; i < sizeof unread / sizeof unread[0]; i++) {
+            versions[HOOK_SDK] = unread[i];
+            CHECK(hook_select(&hook_table, handle_fns[f], versions, &first) == -2);
+        }
+    }
+    {
+        u32 versions[HOOK_KEYS] = {0};
+        versions[HOOK_SDK] = 0x140511;
         parameter(&P34, 0, 0, 0x38564552);
         CHECK(nnaudio_open_renderer(c, &P34, T_HANDLE, T_PARAM, 0x5000, 0x10000) == 0);
         id = snx_ld_le64(GP(T_HANDLE));
-        k = hook_select(&hook_table, "_ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE", versions, &first);
-        CHECK(k >= 0 && hook_key[k] == HOOK_ANY);
+        k = hook_select(&hook_table, handle_fns[0], versions, &first);
+        CHECK(k >= 0 && hook_key[k] == HOOK_SDK);
         c->x[0] = id, c->x[1] = 0xabc, c->x[30] = 0x1234, c->pc = 0;
         hook_fn[k](c, 0);
         CHECK(audren_at((u32)id) == NULL && test_states == 0);

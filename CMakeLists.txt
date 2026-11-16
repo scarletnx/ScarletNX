@@ -134,7 +134,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
 endif()
 option(SNX_BUILD_GUI "Build the keyboard-driven SDL3 launcher" ${snx_gui_default})
 # The program, scarletnx, is every driver the build has (src/multicall): each driver is a library, and the program
-# runs the one its name says. scarletnx-switch, scarletnx-3ds, scarletnx-vita, scarletnx-gnuabi and scarletnx-agb are
+# runs the one its name says. scarletnx-switch, scarletnx-3ds, scarletnx-vita, scarletnx-gnuabi, scarletnx-agb and scarletnx-nds are
 # links to it on Linux and macOS
 if(DEFINED CACHE{SNX_MULTICALL}) # an option before, said and taken out of the cache
     message(STATUS "SNX_MULTICALL is no longer an option: scarletnx is every driver the build has")
@@ -320,6 +320,9 @@ endif()
 if(TARGET snx_enet)
     install(FILES "${enet_SOURCE_DIR}/LICENSE" DESTINATION ${licenses}/enet)
     install(FILES "${zstd_SOURCE_DIR}/LICENSE" DESTINATION ${licenses}/zstd)
+endif()
+if(TARGET snx_rnnoise)
+    install(FILES "${rnnoise_SOURCE_DIR}/COPYING" DESTINATION ${licenses}/rnnoise RENAME LICENSE)
 endif()
 if(SNX_SDL3_FROM_SOURCE)
     install(FILES "${SDL3_SOURCE_DIR}/LICENSE.txt" DESTINATION ${licenses}/SDL3)

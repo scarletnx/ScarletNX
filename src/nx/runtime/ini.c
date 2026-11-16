@@ -13,16 +13,72 @@ const IniOpt* ini_find(const IniOpt* table, const char* key) {
         if (!strcmp(table->key, key)) return table;
     return NULL;
 }
-const char* ini_arg(const char* arg, char* key, size_t size) {
-    const char* eq = strchr(arg, '=');
-    if (strncmp(arg, "--", 2) || !eq || (size_t)(eq - arg - 2) >= size) return NULL;
-    memcpy(key, arg + 2, (size_t)(eq - arg - 2));
-    key[eq - arg - 2] = 0;
-    return eq + 1;
+/* the file's state: where a line is said (ini_set_say), and the names whose older spelling this run said, as
+   pointers into the names ini_arg was given; past the room the rest are said each time */
+static struct {
+    void (*say)(const char* line);
+    const char* said_old[64];
+    int said_olds;
+} g_ini;
+void ini_set_say(void (*say)(const char* line)) { g_ini.say = say; }
+static void say_line(const char* line) {
+    if (g_ini.say)
+        g_ini.say(line);
+    else
+        fprintf(stderr, "%s\n", line);
 }
 
-static void (*g_say)(const char* line);
-void ini_set_say(void (*say)(const char* line)) { g_say = say; }
+/* name's place in names (count of them, in the order strcmp sorts them), -1 for none */
+static int name_at(const char* name, const char* const* names, int count) {
+    int low = 0, high = count;
+    while (low < high) {
+        int middle = low + (high - low) / 2, order = strcmp(name, names[middle]);
+        if (!order) return middle;
+        if (order < 0)
+            high = middle;
+        else
+            low = middle + 1;
+    }
+    return -1;
+}
+const char* ini_arg(const char* arg, char* key, size_t size, const char* const* names, int count) {
+    const char* eq = strchr(arg, '=');
+    size_t length = eq ? (size_t)(eq - arg - 2) : 0;
+    char dashed[128];
+    int at, i;
+    if (strncmp(arg, "--", 2) || !eq || length >= size) return NULL;
+    memcpy(key, arg + 2, length);
+    key[length] = 0;
+    if (name_at(key, names, count) >= 0) {
+        for (char* p = key; *p; p++)
+            if (*p == '-') *p = '_';
+        return eq + 1;
+    }
+    /* the key itself, the older spelling of a name with - (no - in it, as a key has none): read, and said once a
+       run with the name now */
+    if (strchr(key, '-') || length >= sizeof dashed) return eq + 1;
+    for (i = 0; key[i]; i++) dashed[i] = key[i] == '_' ? '-' : key[i];
+    dashed[i] = 0;
+    at = name_at(dashed, names, count);
+    if (at < 0) return eq + 1;
+    for (i = 0; i < g_ini.said_olds && g_ini.said_old[i] != names[at]; i++) continue;
+    if (i == g_ini.said_olds) {
+        char line[512];
+        if (g_ini.said_olds < (int)(sizeof g_ini.said_old / sizeof *g_ini.said_old))
+            g_ini.said_old[g_ini.said_olds++] = names[at];
+        snprintf(line, sizeof line, "settings: --%s is the old spelling of --%s: it is read as that; write --%s", key,
+                 names[at], names[at]);
+        say_line(line);
+    }
+    return eq + 1;
+}
+size_t ini_option(char* out, size_t size, const char* key, const char* value) {
+    size_t length = (size_t)snprintf(out, size, "--%s=%s", key, value), end = 2 + strlen(key);
+    for (size_t i = 2; i < end && i + 1 < size; i++)
+        if (out[i] == '_') out[i] = '-';
+    return length;
+}
+
 /* a value not taken as given: ini_check's why, and the value the setting has now, as the .ini writes it (the default,
    or the value before a reload) */
 static void say(const IniOpt* o, const char* v) {
@@ -34,10 +90,7 @@ static void say(const IniOpt* o, const char* v) {
         ini_format(o, value, sizeof value);
         snprintf(line, sizeof line, "settings: %s: it keeps %s", why, value);
     }
-    if (g_say)
-        g_say(line);
-    else
-        fprintf(stderr, "%s\n", line);
+    say_line(line);
 }
 
 void ini_read(const IniOpt* o, const char* v) {
@@ -162,7 +215,7 @@ void ini_word(const IniOpt* o, int v, char* out, size_t n) {
 }
 int ini_step(const IniOpt* o, int v, int dir) {
     int step = step_of(o), count;
-    if (!o->words || strchr(o->words, '#')) {
+    if (!o->words || strchr(o->words, '#') || (o->flags & INI_SLIDER)) {
         double n = (double)v + (double)dir * step;
         return n < o->lo ? (int)o->lo : n > o->hi ? (int)o->hi : (int)n;
     }
@@ -283,7 +336,9 @@ size_t ini_list_text(const IniSection* sections, int count, char* out, size_t si
                 put(&l, "\t%s\t", o->name ? o->name : "");
                 list_values(&l, o);
                 put(&l, "\t%s", ini_only(o) ? ini_only(o) : "");
-                if (o->flags & INI_NEEDS_BUILD) put(&l, "\tneeds-build");
+                if (o->flags & (INI_NEEDS_BUILD | INI_SLIDER))
+                    put(&l, "\t%s", o->flags & INI_NEEDS_BUILD ? "needs-build" : "");
+                if (o->flags & INI_SLIDER) put(&l, "\tslider");
                 put(&l, "\n");
             }
         }

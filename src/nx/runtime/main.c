@@ -797,24 +797,48 @@ static void rate_plots(const RatePlot* p, unsigned n, u64 now_ns) {
     last_ns = now_ns;
 }
 #endif
+/* The display's vsync due at at (vi_vsync_tick), and the time of the next, vi_vsync_period after it. A vsync late by
+   more than its period (a long tick) is signalled once, and the schedule starts again from it, with no burst to catch
+   up. A vsync is guest work, which a pause holds back */
+static u64 vsync_signal(u64 at, int paused) {
+    if (!paused) vi_vsync_tick();
+    u64 step = vi_vsync_period(), done = plat_ns();
+    return at + step > done ? at + step : done + step;
+}
+/* The loop's sleep until its next tick, with the vsyncs due before it signalled on their own schedule: a swap interval
+   of 0 or less, or fps_limit, asks for more of them than the loop's 60 a second. A vsync due at the tick or after it
+   is left to the tick, which signals it after the input, as the loop did when the vsync was its own: a game that wakes
+   on the vsync reads the input of that tick. The next vsync's time */
+static u64 vsync_until(u64 until, u64 at, int paused) {
+    for (;;) {
+        u64 now = plat_ns();
+        if (at >= until) {
+            if (until > now) plat_sleep_ns((i64)(until - now));
+            return at;
+        }
+        if (at > now) plat_sleep_ns((i64)(at - now));
+        at = vsync_signal(at, paused);
+    }
+}
 static void frontend_loop(void) {
     const u64 period = 1000000000u / VI_REFRESH_HZ;
-    u64 tick = 0, next = plat_ns(), now, changed = next, rate_at = next, resources_at = next;
+    u64 tick = 0, next = plat_ns(), now, changed = next, rate_at = next, resources_at = next, vsync = next;
     int frames = 0, stalls = 0, rate_frames = 0;
     while (!g_quit) {
         int shown, paused;
         SNX_ZONE(z_frontend, "frontend tick");
         video_poll();
         options_tv_mode_update();
-        /* the game's input and its display's vsync are guest work, which a pause holds back with the rest */
+        /* the game's input and its display's vsync are guest work, which a pause holds back with the rest. The vsync
+           due at this tick comes after the input; those between ticks come in vsync_until */
         paused = game_paused();
         if (!paused) {
             SNX_ZONE(z_hid, "hid update");
             [[maybe_unused]] u64 states = hid_update();
             SNX_ZONE_VALUE(z_hid, states);
             SNX_ZONE_END(z_hid);
-            vi_vsync_tick();
         }
+        if (plat_ns() >= vsync) vsync = vsync_signal(vsync, paused);
         if (++tick % 60 == 0) ini_poll(0);
         frontend_frame();
         switch_tick();
@@ -890,10 +914,8 @@ static void frontend_loop(void) {
         }
         /* paced at the display's rate, from a schedule: one far behind (a stop in the debugger) starts again */
         next += period;
-        if (now > next + 100000000u)
-            next = now;
-        else if (next > now)
-            plat_sleep_ns((i64)(next - now));
+        if (now > next + 100000000u) next = now;
+        vsync = vsync_until(next, vsync, paused);
     }
     ini_poll(1); /* the settings the game's menu changed, even over an edit of the file */
     snx_save_before_exit();
@@ -1364,12 +1386,12 @@ int snx_main(int argc, char** argv) {
     game_dirs();
     if (g_arm_mod) mem_layout32(g_arm_mod->aspace); /* before anything sizes or reads guest memory */
     if (mod->title_id) g_hle.kernel.title_id = mod->title_id;
-    /* this run's settings: each --key=value before a "--" (-v is log=2); -f and --fullscreen=0|1 through startup.c's
-       record of the last given, which a --fullscreen=... here would only repeat */
+    /* this run's settings: each --key=value before a "--", its key's _ a - or not (-v is log=2); -f and
+       --fullscreen=0|1 through startup.c's record of the last given, which a --fullscreen=... here would only repeat */
     for (i = 1; i < argc && strcmp(argv[i], "--"); i++) {
         const char* arg = argv[i];
         char key[64];
-        const char* value = ini_arg(arg, key, sizeof key);
+        const char* value = settings_arg(arg, key, sizeof key);
         if (!strcmp(arg, "-v")) ini_override("log", "2");
         if (value && strcmp(key, "game") && strcmp(key, "fullscreen")) ini_override(key, value);
     }
@@ -1498,7 +1520,8 @@ int snx_main(int argc, char** argv) {
     nnpl_init();
     nv_init();
     romfs_init();
-    g_shader_hmma_f16 = g_settings.hmma_in_half_floats; /* before the first program is translated */
+    g_spirv_translate.hmma_f16 = g_settings.hmma_in_half_floats; /* before the first program is translated */
+    g_spirv_translate.hmma_astat = g_settings.hmma_a_stationary;
     gpu_init();
     {
         char addons[256];

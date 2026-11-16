@@ -9,7 +9,7 @@
 #include "android/bridge/hle_impl.h"
 #include "common/utilities/endian.h"
 #include <ctype.h>
-#include "gnuabi/abi/linux_file.h"
+#include "gnuabi/abi/file.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>

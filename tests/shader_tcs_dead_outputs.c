@@ -110,8 +110,8 @@ int main(int argc, char** argv) {
                             0xeff07f800687ff00ull, /* AST a[0x68], R0 */
                             0xe30000000007000full};
     for (int features = 0; features < 2; features++) {
-        g_shader_output_layer = features;
-        g_shader_viewport_index = features ? 3 : 0;
+        g_spirv_translate.output_layer = features;
+        g_spirv_translate.viewport_index = features ? 3 : 0;
         ShaderInfo info;
         size_t words = 0;
         u32* code = translate(outputs, 4, ST_TCS, &info, &words);

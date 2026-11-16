@@ -19,6 +19,7 @@
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/texture/astc_bc.h"
 #include "common/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/extension_commands.h"
 #include "nx/gpu/vk/hdr_swapchain.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
@@ -399,9 +400,11 @@ static void start_failure_devices(void) {
                  n ? ", and " : "No Vulkan device: ", g_opt_headless ? "graphics" : "graphics and presentation", hint);
 }
 
-/* whether the device multiplies 16x16x16 f16 A and B into an f32 accumulator in subgroup scope in compute, as
-   g_shader_hmma_coop asks (VK_KHR_cooperative_matrix: RADV from GFX11) */
-static int coop_f16_f32(VkPhysicalDevice phys) {
+/* the shapes of f16 A and B into an f32 accumulator in subgroup scope in compute that the device multiplies, as
+   g_spirv_translate.hmma_coop_shapes asks (VK_KHR_cooperative_matrix: RADV from GFX11): a bit for each of an SM86
+   HMMA's exact 16x8x16 and 16x8x8, a 16x16x16 and Metal's simdgroup_matrix 8x8x8. 0 when it has no product in
+   compute */
+static u32 coop_f16_f32_shapes(VkPhysicalDevice phys) {
     VkPhysicalDeviceCooperativeMatrixPropertiesKHR cp = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &cp};
@@ -416,19 +419,20 @@ static int coop_f16_f32(VkPhysicalDevice phys) {
     for (u32 i = 0; i < n; i++)
         props[i] = (VkCooperativeMatrixPropertiesKHR){.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
     vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(phys, &n, props);
-    int tile = 0;
+    u32 shapes = 0;
     for (u32 i = 0; i < n; i++) {
-        int size = (int)props[i].MSize;
-        if ((size != 8 && size != 16) || props[i].NSize != props[i].MSize || props[i].KSize != props[i].MSize ||
-            props[i].AType != VK_COMPONENT_TYPE_FLOAT16_KHR || props[i].BType != VK_COMPONENT_TYPE_FLOAT16_KHR ||
+        u32 m = props[i].MSize, cols = props[i].NSize, k = props[i].KSize;
+        if (props[i].AType != VK_COMPONENT_TYPE_FLOAT16_KHR || props[i].BType != VK_COMPONENT_TYPE_FLOAT16_KHR ||
             props[i].CType != VK_COMPONENT_TYPE_FLOAT32_KHR ||
             props[i].ResultType != VK_COMPONENT_TYPE_FLOAT32_KHR || props[i].saturatingAccumulation ||
             props[i].scope != VK_SCOPE_SUBGROUP_KHR)
             continue;
-        if (size == 16) return 16; /* one product an HMMA, where the driver has the wider tile */
-        tile = 8;
+        if (m == 16 && cols == 16 && k == 16) shapes |= SH_COOP_16x16x16;
+        else if (m == 16 && cols == 8 && k == 16) shapes |= SH_COOP_16x8x16;
+        else if (m == 16 && cols == 8 && k == 8) shapes |= SH_COOP_16x8x8;
+        else if (m == 8 && cols == 8 && k == 8) shapes |= SH_COOP_8x8x8;
     }
-    return tile;
+    return shapes;
 }
 
 /* The subgroup sizes a pipeline stage can require, where has says the device has them: Vulkan 1.3's, or a 1.2 device's
@@ -465,10 +469,10 @@ static void mesh_choose(int has_ext, const VkPhysicalDeviceMeshShaderFeaturesEXT
     g_vk.mesh_stages = g_vk.has_mesh ? VK_SHADER_STAGE_MESH_BIT_EXT | (g_vk.has_task ? both : 0) : 0;
     u32 groups = g_vk.has_task ? mp.maxTaskWorkGroupCount[0] : mp.maxMeshWorkGroupCount[0];
     g_vk.mesh_groups_max = g_vk.has_mesh ? groups : 0;
-    g_shader_mesh_tasks_max = g_vk.has_task ? (mp.maxMeshWorkGroupCount[0] < mp.maxMeshWorkGroupTotalCount
-                                                   ? mp.maxMeshWorkGroupCount[0]
-                                                   : mp.maxMeshWorkGroupTotalCount)
-                                            : 0;
+    g_spirv_translate.mesh_tasks_max =
+        g_vk.has_task ? (mp.maxMeshWorkGroupCount[0] < mp.maxMeshWorkGroupTotalCount ? mp.maxMeshWorkGroupCount[0]
+                                                                                     : mp.maxMeshWorkGroupTotalCount)
+                      : 0;
     g_vk.mesh_output_bytes_max = mp.maxMeshOutputMemorySize;
     g_vk.mesh_vertex_granule = mp.meshOutputPerVertexGranularity;
     g_vk.mesh_primitive_granule = mp.meshOutputPerPrimitiveGranularity;
@@ -577,18 +581,12 @@ static void ban_say(const char* line, int warn) {
         LOG("%s\n", line);
 }
 
-/* the extension settings (settings.txt's g_vk_extensions_ini) applied to e, the device's list: a value not auto, on or
-   off, or off for an extension the renderer can't run without here, stops the game, as vulkan_ban_ignore's unknown key
-   does. Those are the swapchain of a window, a portability driver's subset, which Vulkan has turned on wherever a
-   driver lists it, and on a 1.2 device what 1.3 took in (vk12_extensions, and one of the store op NONE's two) */
-static void apply_extension_settings(SnxVkExtensions* e, int core13) {
-    static VkExtensionSetting settings[160];
-    VkExtensionNeed need[VK12_EXTENSIONS + 4];
-    u32 count = 0, needs = 0;
-    char err[512];
-    for (int i = 0; i < g_vk_extension_settings_count && count < sizeof settings / sizeof *settings; i++)
-        settings[count++] = (VkExtensionSetting){g_vk_extension_settings[i].name, g_vk_extension_settings[i].value,
-                                                 g_vk_extension_settings[i].core};
+/* the extensions the renderer can't run without on this device, of e, the list its driver gives, and why: the swapchain
+   of a window, a portability driver's subset, which Vulkan has turned on wherever a driver lists it, and on a 1.2
+   device what 1.3 took in (vk12_extensions, and one of the store op NONE's two). Into need, VK_NEEDS at most: how many */
+#define VK_NEEDS (VK12_EXTENSIONS + 3)
+static u32 extension_needs(const SnxVkExtensions* e, int core13, VkExtensionNeed* need) {
+    u32 needs = 0;
     if (!g_opt_headless)
         need[needs++] = (VkExtensionNeed){VK_KHR_SWAPCHAIN_EXTENSION_NAME, "the window is drawn with it"};
     need[needs++] = (VkExtensionNeed){"VK_KHR_portability_subset",
@@ -603,6 +601,19 @@ static void apply_extension_settings(SnxVkExtensions* e, int core13) {
                                                               : VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME,
                                                           why};
     }
+    return needs;
+}
+
+/* the extension settings (settings.txt's g_vk_extensions_ini) applied to e, the device's list: a value not auto, on or
+   off, or off for an extension the renderer can't run without here (need), stops the game, as vulkan_ban_ignore's
+   unknown key does */
+static void apply_extension_settings(SnxVkExtensions* e, const VkExtensionNeed* need, u32 needs) {
+    static VkExtensionSetting settings[160];
+    u32 count = 0;
+    char err[512];
+    for (int i = 0; i < g_vk_extension_settings_count && count < sizeof settings / sizeof *settings; i++)
+        settings[count++] = (VkExtensionSetting){g_vk_extension_settings[i].name, g_vk_extension_settings[i].value,
+                                                 g_vk_extension_settings[i].core};
     if (!vk_extension_settings(e, settings, count, need, needs, err, sizeof err)) fatal("settings: %s", err);
 }
 
@@ -666,13 +677,17 @@ static int vk12_commands(const char** lacks) {
     return !*lacks;
 }
 
-static int create_device(void) {
+/* what make_device made: no device, the device, or none as an extension it was made with lacks a command, which
+   vk_bans_lacking keeps for the device create_device makes again */
+enum { DEVICE_FAILED, DEVICE_MADE, DEVICE_AGAIN };
+/* the device, its features and extensions chosen; again: made again, without what the first one lacked */
+static int make_device(int again) {
     g_vk.phys = snx_vk_best_device(g_vk.instance, VK_API_VERSION_1_2, device_rating, NULL);
     if (!g_vk.phys) {
         WARN("vulkan: no Vulkan 1.3 device, or 1.2 with the extensions 1.3 took in, with a suitable %s queue\n",
              g_opt_headless ? "graphics" : "presentation");
         start_failure_devices();
-        return 0;
+        return DEVICE_FAILED;
     }
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
     g_vk.api = vk_api_for(g_vk.props.apiVersion);
@@ -688,13 +703,6 @@ static int create_device(void) {
     VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
     vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
     {
-        /* the drivers known to break an extension or feature, read before any is turned on: a table the build
-           carries that does not read is the build's fault, and which bans hold would be unknown */
-        char err[1024];
-        if (!vk_bans_load(snx_vk_extension_bans_text, err, sizeof err)) fatal("vulkan: %s", err);
-        /* the bans a run goes over to test a driver again; a key the table has not stops the game, as the player
-           meant a ban that would otherwise still hold */
-        if (!vk_bans_ignore(g_settings.vulkan_ban_ignore, err, sizeof err)) fatal("settings: %s", err);
         VkBanDevice bd = {g_vk.props.deviceName,    p12.driverName,      p12.driverInfo, (uint32_t)p12.driverID,
                           g_vk.props.driverVersion, g_vk.props.deviceID, vk_ban_system()};
         vk_bans_device(&bd);
@@ -712,12 +720,12 @@ static int create_device(void) {
        Eden found): its programs take the path of a device that does not list it */
     if (vk_ban("VK_SHADER_STAGE_GEOMETRY_BIT", (g_vk_subgroup_stages & VK_SHADER_STAGE_GEOMETRY_BIT) != 0, ban_say))
         g_vk_subgroup_stages &= ~(VkShaderStageFlags)VK_SHADER_STAGE_GEOMETRY_BIT;
-    g_shader_quad = (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) &&
-                    (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
+    g_spirv_translate.quad = (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) &&
+                             (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
     /* compute has quad operations wherever the bit is and the stage has subgroup operations at all (the quad limit,
        quadOperationsInAllStages, is about the other stages) */
-    g_shader_quad_compute = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) &&
-                            (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
+    g_spirv_translate.quad_compute = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) &&
+                                     (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
     log_subgroups(subgroup.subgroupSize, subgroup.supportedOperations, subgroup.supportedStages);
     g_vk_preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32 != 0;
     /* a binding's stride as dynamic state, core in Vulkan 1.3, unless a driver is banned from it (MoltenVK's fails every
@@ -733,7 +741,7 @@ static int create_device(void) {
     g_vk_flush_denorm = flush_denorm && !vk_ban("shaderDenormFlushToZeroFloat32", flush_denorm, ban_say);
     /* a driver that truncates a 32-bit integer it converts to a float (Turnip on an Adreno 610): I2F.F32 converts the
        integer's two halves, each exact, and adds them, which rounds to nearest even as the console does */
-    g_shader_i2f_nearest =
+    g_spirv_translate.i2f_nearest =
         (vk_ban("OpConvertSToF", 1, ban_say) ? 1 : 0) | (vk_ban("OpConvertUToF", 1, ban_say) ? 2 : 0);
     /* without it, vk_pipeline_init measures whether the device flushes by itself (vk_ftz_native) */
     if (!g_vk_preserve_infnan) WARN("vulkan: FP32 signed-zero/Inf/NaN preservation unavailable on this GPU\n");
@@ -789,7 +797,7 @@ static int create_device(void) {
     WANT(shaderStorageImageReadWithoutFormat);
     WANT(shaderStorageImageMultisample);
     WANT(shaderResourceMinLod);
-    g_shader_resource_min_lod = want->shaderResourceMinLod != 0;
+    g_spirv_translate.resource_min_lod = want->shaderResourceMinLod != 0;
     WANT(shaderClipDistance);
     WANT(shaderCullDistance);
     WANT(shaderFloat64);
@@ -821,9 +829,9 @@ static int create_device(void) {
     }
 #undef WANT
     /* points out of tessellation and geometry programs take the size those write, as the vertex program's do */
-    g_shader_stage_point_size = want->shaderTessellationAndGeometryPointSize != 0;
-    g_shader_geometry = want->geometryShader != 0;
-    g_shader_tessellation = want->tessellationShader != 0;
+    g_spirv_translate.stage_point_size = want->shaderTessellationAndGeometryPointSize != 0;
+    g_spirv_translate.geometry = want->geometryShader != 0;
+    g_spirv_translate.tessellation = want->tessellationShader != 0;
     const char** ext = g_vk.dev_ext;
     int has_pipeline_robustness = 0, has_robustness2 = 0;
     u32 next = 0;
@@ -841,21 +849,26 @@ static int create_device(void) {
     int has_hdr_metadata = 0;
     int has_gpl = 0, has_eds2 = 0, has_eds3 = 0; /* the extensions of pipeline libraries and their dynamic state */
     int has_depth_clip_control = 0;              /* and of the depth range as one of those states */
+    int has_depth_clip_enable = 0;               /* depth clipping apart from the clamp (VK_EXT_depth_clip_enable) */
+    int has_depth_clamp_control = 0;             /* the clamp's own range (VK_EXT_depth_clamp_control) */
     int has_mesh = 0;
     int has_size_control = 0; /* VK_EXT_subgroup_size_control, on a 1.2 device: 1.3 has it in its core */
     int has_mixed_dot = 0; /* VK_VALVE_shader_mixed_float_dot_product: HMMA's pairs of f16 products in one instruction */
-    int has_coop = 0;      /* VK_KHR_cooperative_matrix: HMMA on the matrix unit (g_shader_hmma_coop) */
-    /* VK_EXT_shader_atomic_float: RED.ADD.F32 in one instruction (g_shader_float_atomic_add) */
+    int has_coop = 0;      /* VK_KHR_cooperative_matrix: HMMA on the matrix unit (g_spirv_translate.hmma_coop) */
+    /* VK_EXT_shader_atomic_float: RED.ADD.F32 in one instruction (g_spirv_translate.float_atomic_add) */
     int has_atomic_float = 0;
     int has_fault = 0; /* VK_EXT_device_fault: what the GPU reports of a fault, at a lost device */
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     const char* store_none_ext = NULL; /* a 1.2 device's store op NONE (vk12_store_none) */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    VkExtensionNeed need[VK_NEEDS]; /* what the device can't go without */
+    u32 needs = 0;
     {
         SnxVkExtensions e;
         snx_vk_device_extensions(g_vk.phys, &e);
+        needs = extension_needs(&e, core13, need);
         /* the extension settings (vk_ext_*) first: an off one leaves the list, an on one goes over its bans */
-        apply_extension_settings(&e, core13);
+        apply_extension_settings(&e, need, needs);
         /* the extensions a driver is banned from leave the list before anything below reads it */
         vk_bans_filter(&e, ban_say);
         /* each setting's extension, on or off in the list, and why */
@@ -870,7 +883,7 @@ static int create_device(void) {
                      "%s has Vulkan 1.2 without %s. ScarletNX needs Vulkan 1.3, or 1.2 with the extensions 1.3 took in",
                      g_vk.props.deviceName, lacks12);
             snx_vk_extensions_free(&e);
-            return 0;
+            return DEVICE_FAILED;
         }
         { /* every device here has maintenance4 (core in 1.3, required of 1.2 above) */
             VkPhysicalDeviceMaintenance4Properties m4 = {
@@ -886,6 +899,8 @@ static int create_device(void) {
         has_eds2 = snx_vk_extensions_has(&e, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
         has_eds3 = snx_vk_extensions_has(&e, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
         has_depth_clip_control = snx_vk_extensions_has(&e, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
+        has_depth_clip_enable = snx_vk_extensions_has(&e, VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
+        has_depth_clamp_control = snx_vk_extensions_has(&e, VK_EXT_DEPTH_CLAMP_CONTROL_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
         /* only when vk_checkpoints asks: a device made with it marks every draw and dispatch, and a RenderDoc capture
@@ -1120,6 +1135,10 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
     VkPhysicalDeviceDepthClipControlFeaturesEXT qclip_control = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT};
+    VkPhysicalDeviceDepthClipEnableFeaturesEXT qclip_enable = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
+    VkPhysicalDeviceDepthClampControlFeaturesEXT qclamp_control = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLAMP_CONTROL_FEATURES_EXT};
     /* with the subset enabled, each of its features is off until the device asks for it: a view's swizzle, for one */
     PortabilityFeatures qport = {.sType = PORTABILITY_FEATURES_STYPE};
     VkPhysicalDevicePresentIdFeaturesKHR qpid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
@@ -1170,10 +1189,12 @@ static int create_device(void) {
                            has_gpl ? &qgpl : NULL,
                            has_eds3 ? &qeds3 : NULL,
                            has_depth_clip_control ? &qclip_control : NULL,
+                           has_depth_clip_enable ? &qclip_enable : NULL,
+                           has_depth_clamp_control ? &qclamp_control : NULL,
                            has_portability ? &qport : NULL,
                            has_reconvergence ? &qreconv : NULL,
                            robustness ? &qpipeline : NULL,
-                           robustness ? &qrobust : NULL,
+                           has_robustness2 ? &qrobust : NULL,
                            present_wait ? &qpid : NULL,
                            present_wait ? &qpwait : NULL,
                            has_present_v2 ? &qpid2 : NULL,
@@ -1186,6 +1207,17 @@ static int create_device(void) {
                            has_fault ? &qfault : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
+    /* Each order between submissions, queues and the CPU is a timeline value: the graphics and compute timelines
+       (cmd.c, compute.c), the sparse binds (memory.c), and the CPU's waits for a path of its own (vk_host_next). It is
+       core in 1.2 (VK_KHR_timeline_semaphore before), and 1.2 requires it of each device, so the renderer has no
+       way without it. extension_bans.txt's "warn" lines on it are said (vk_bans_filter): an "off" line could not be
+       kept, and the log says so */
+    if (!q12.timelineSemaphore)
+        fatal("vulkan: %s has no timeline semaphores, which Vulkan 1.2 requires", g_vk.props.deviceName);
+    if (vk_ban_find("timelineSemaphore"))
+        WARN("vulkan: extension_bans.txt turns timelineSemaphore off on this driver, but the renderer has no way "
+             "without it: it stays on\n");
+    LOG("vulkan: timeline semaphores on (core 1.2): graphics, compute, sparse binds and the CPU's waits\n");
     /* without it the shaders do their FP16 work in 32 bits */
     if (vk_ban("shaderFloat16", q12.shaderFloat16, ban_say)) q12.shaderFloat16 = VK_FALSE;
     if (!core13) {
@@ -1215,14 +1247,44 @@ static int create_device(void) {
                 "%s has Vulkan 1.2 without the features %s. ScarletNX needs Vulkan 1.3, or 1.2 with the extensions "
                 "1.3 took in and their features",
                 g_vk.props.deviceName, lacks);
-            return 0;
+            return DEVICE_FAILED;
         }
     }
     g_vk.has_present_wait = has_present_id && has_present_wait && qpid.presentId && qpwait.presentWait;
     g_vk.has_present_timing = g_vk.has_present_wait && has_present_v2 && qpid2.presentId2 && qpwait2.presentWait2 &&
                               qtiming.presentTiming && qtiming.presentAtAbsoluteTime;
     g_vk.has_display_timing = has_google_timing && !g_vk.has_present_wait;
-    g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2;
+    /* VK_EXT_robustness2 for the whole device: reads past a buffer's bound range are zero and writes there are
+       dropped (the console's constant buffers read zero past their size, and an unmapped page of a program's storage
+       map is index 0xffffffff, shader_gbuf_word_index), image reads out of bounds are zero (an alpha of 1 where the
+       format has none), and empty slots take null descriptors (vk_null_descriptors). A ban of robustBufferAccess2 also
+       stops the bounds of vertex inputs below, and the device-wide feature needs robustBufferAccess */
+    VkPhysicalDeviceRobustness2PropertiesEXT robust_limits = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_PROPERTIES_EXT};
+    if (has_robustness2) {
+        /* an extension's feature, keyed as extension_bans.txt's head says (extension.feature) */
+        if (vk_ban("VK_EXT_robustness2.robustBufferAccess2", qrobust.robustBufferAccess2, ban_say))
+            qrobust.robustBufferAccess2 = VK_FALSE;
+        if (vk_ban("VK_EXT_robustness2.robustImageAccess2", qrobust.robustImageAccess2, ban_say))
+            qrobust.robustImageAccess2 = VK_FALSE;
+        if (vk_ban("VK_EXT_robustness2.nullDescriptor", qrobust.nullDescriptor, ban_say))
+            qrobust.nullDescriptor = VK_FALSE;
+        VkPhysicalDeviceProperties2 query = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                             .pNext = &robust_limits};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &query);
+    }
+    g_vk.robust_buffer2 = qrobust.robustBufferAccess2 && want->robustBufferAccess;
+    g_vk.robust_image2 = qrobust.robustImageAccess2 != 0;
+    g_vk.null_descriptor = qrobust.nullDescriptor != 0;
+    g_vk.robust_ubo_align = (u32)robust_limits.robustUniformBufferAccessSizeAlignment;
+    g_vk.robust_ssbo_align = (u32)robust_limits.robustStorageBufferAccessSizeAlignment;
+    LOG("vulkan: robustness2: robustBufferAccess2=%d robustImageAccess2=%d nullDescriptor=%d (uniform ranges checked "
+        "in %u-byte steps, storage in %u)%s\n",
+        g_vk.robust_buffer2, g_vk.robust_image2, g_vk.null_descriptor, g_vk.robust_ubo_align, g_vk.robust_ssbo_align,
+        has_robustness2 ? "" : ", the device has no VK_EXT_robustness2");
+    /* device-wide robustBufferAccess2 already gives vertex inputs their strict bounds: the per-pipeline struct (and
+       VK_EXT_pipeline_robustness) is only needed where the device feature is off, so don't chain a redundant one */
+    g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2 && !g_vk.robust_buffer2;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_fault = has_fault && qfault.deviceFault;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
@@ -1293,8 +1355,8 @@ static int create_device(void) {
     g_vk.has_feedback_dynamic =
         g_vk.has_feedback && has_feedback_dynamic && qloop_dyn.attachmentFeedbackLoopDynamicState;
     g_vk.has_local_read = g_vk.has_feedback && g_vk.has_local_read && qlocal.dynamicRenderingLocalRead;
-    g_shader_maximal_reconvergence = has_reconvergence && qreconv.shaderMaximalReconvergence;
-    g_shader_clock_scopes =
+    g_spirv_translate.maximal_reconvergence = has_reconvergence && qreconv.shaderMaximalReconvergence;
+    g_spirv_translate.clock_scopes =
         has_shader_clock ? (qclock.shaderSubgroupClock ? 1 : 0) | (qclock.shaderDeviceClock ? 2 : 0) : 0;
     g_vk.has_divisor = g_vk.has_divisor && fdiv.vertexAttributeInstanceRateDivisor;
     {
@@ -1318,6 +1380,8 @@ static int create_device(void) {
                           .patch = qeds2.extendedDynamicState2PatchControlPoints,
                           .depth_range = qeds3.extendedDynamicState3DepthClipNegativeOneToOne,
                           .depth_clip_control = qclip_control.depthClipControl,
+                          .depth_clip = qeds3.extendedDynamicState3DepthClipEnable,
+                          .has_depth_clip_enable = has_depth_clip_enable && qclip_enable.depthClipEnable,
                           .has_provoking_last = g_vk.has_provoking_last,
                           .has_conservative = g_vk.has_conservative};
         char line[400];
@@ -1333,10 +1397,33 @@ static int create_device(void) {
         }
         vk_depth_range_line(&gd, g_vk.dyn_pr, line, sizeof line);
         LOG("%s\n", line);
+        /* depth clipping and clamping apart, as the console's viewport clip control has them, where the device can;
+           with pipeline libraries' dynamic clamp only if the clip is dynamic too (pipeline_parts.h) */
+        int clamp_alone = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLAMP) && !(g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLIP);
+        g_vk.has_depth_clip_enable = gd.has_depth_clip_enable && !clamp_alone;
+        if (g_vk.has_depth_clip_enable)
+            LOG("vulkan: depth is clipped and clamped as the console sets each (VK_EXT_depth_clip_enable%s)\n",
+                g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLIP ? ", both as dynamic state" : "");
+        else
+            LOG("vulkan: depth clipping goes with the clamp, one switch: a fragment's depth past the viewport's range is "
+                "undefined with the clamp off, where the console clamps it (%s)\n",
+                !has_depth_clip_enable ? "VK_EXT_depth_clip_enable is off: its line above says why"
+                : !qclip_enable.depthClipEnable
+                    ? "the device has VK_EXT_depth_clip_enable without depthClipEnable"
+                    : "the clamp is dynamic state and the device has no extendedDynamicState3DepthClipEnable");
+        g_vk.has_depth_clamp_range = has_depth_clamp_control && qclamp_control.depthClampControl;
+        if (g_vk.has_depth_clamp_range)
+            LOG("vulkan: a clamped depth stays in the viewport's clip range, as the console clamps it "
+                "(VK_EXT_depth_clamp_control, as dynamic state)\n");
+        else
+            LOG("vulkan: a clamped depth stays in the viewport transform's range, where the console clamps to the "
+                "viewport's clip range (%s)\n",
+                !has_depth_clamp_control ? "VK_EXT_depth_clamp_control is off: its line above says why"
+                                         : "the device has VK_EXT_depth_clamp_control without depthClampControl");
     }
     g_vk.has_xfb = g_vk.has_xfb && fxfb.transformFeedback;
     g_vk.has_geometry_streams = g_vk.has_xfb && fxfb.geometryStreams;
-    g_shader_geometry_streams = g_vk.has_geometry_streams;
+    g_spirv_translate.geometry_streams = g_vk.has_geometry_streams;
     if (g_vk.has_geometry_streams) {
         VkPhysicalDeviceTransformFeedbackPropertiesEXT properties = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT};
@@ -1345,11 +1432,11 @@ static int create_device(void) {
         vkGetPhysicalDeviceProperties2(g_vk.phys, &query);
         g_vk.geometry_streams_lines_triangles = properties.transformFeedbackStreamsLinesTriangles;
     }
-    g_shader_geometry_streams_lines_triangles = g_vk.geometry_streams_lines_triangles;
+    g_spirv_translate.geometry_streams_lines_triangles = g_vk.geometry_streams_lines_triangles != 0;
     g_vk.has_sample_interlock = g_vk.has_fragment_interlock && qinterlock.fragmentShaderSampleInterlock;
     /* without the extension (MoltenVK) a capture's vertex program stores its words itself, which vertex stores allow */
-    g_shader_xfb_stores = !g_vk.has_xfb && want->vertexPipelineStoresAndAtomics;
-    if (g_shader_xfb_stores)
+    g_spirv_translate.xfb_stores = !g_vk.has_xfb && want->vertexPipelineStoresAndAtomics;
+    if (g_spirv_translate.xfb_stores)
         LOG("vulkan: no VK_EXT_transform_feedback: vertex programs store what transform feedback captures\n");
     g_vk.has_fragment_interlock = g_vk.has_fragment_interlock && qinterlock.fragmentShaderPixelInterlock;
     if (g_vk.advanced_blend_caps.available) {
@@ -1416,15 +1503,16 @@ static int create_device(void) {
         vkGetPhysicalDeviceProperties2(g_vk.phys, &props);
     }
     /* FFmpeg's decoder makes views of its two plane pictures */
-    g_shader_dynamic_texture_offsets = has_maintenance8 && qmaintenance8.maintenance8 && want->shaderImageGatherExtended;
+    g_spirv_translate.dynamic_texture_offsets =
+        has_maintenance8 && qmaintenance8.maintenance8 && want->shaderImageGatherExtended;
     LOG("vulkan: dynamic texture offsets use %s\n",
-        g_shader_dynamic_texture_offsets ? "native maintenance8 sampling" : "portable dispatch");
+        g_spirv_translate.dynamic_texture_offsets ? "native maintenance8 sampling" : "portable dispatch");
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .shaderDrawParameters = q11.shaderDrawParameters,
                                             .samplerYcbcrConversion =
                                                 g_vk.video_family != ~0u && q11.samplerYcbcrConversion};
     g_vk.has_shader_draw_parameters = q11.shaderDrawParameters != 0;
-    g_shader_draw_parameters = g_vk.has_shader_draw_parameters;
+    g_spirv_translate.draw_parameters = g_vk.has_shader_draw_parameters;
     g_vk.has_draw_indirect_count = q12.drawIndirectCount != 0;
     /* Enable mirror clamp and vertex shader Layer output when the device supports them. */
     g_vk.has_mirror_clamp = q12.samplerMirrorClampToEdge;
@@ -1441,34 +1529,46 @@ static int create_device(void) {
                                             .shaderSampledImageArrayNonUniformIndexing =
                                                 q12.shaderSampledImageArrayNonUniformIndexing};
     /* shaders pick an indexed texture per invocation from an array (SNX_VKB_TEXARRAY) */
-    g_shader_texture_arrays = q12.shaderSampledImageArrayNonUniformIndexing != 0;
-    g_shader_float16 = q12.shaderFloat16 != 0;
-    g_shader_float64 = have.shaderFloat64 != 0;
+    g_spirv_translate.texture_arrays = q12.shaderSampledImageArrayNonUniformIndexing != 0;
+    g_spirv_translate.float16 = q12.shaderFloat16 != 0;
+    g_spirv_translate.float64 = have.shaderFloat64 != 0;
     /* its f16 vectors are Float16's, so shaderFloat16 too */
-    g_shader_mixed_dot = has_mixed_dot && qmixdot.shaderMixedFloatDotProductFloat16AccFloat32 && g_shader_float16;
-    g_shader_float_atomic_add = has_atomic_float && qatomic_float.shaderBufferFloat32AtomicAdd;
+    g_spirv_translate.mixed_dot =
+        has_mixed_dot && qmixdot.shaderMixedFloatDotProductFloat16AccFloat32 && g_spirv_translate.float16;
+    g_spirv_translate.float_atomic_add = has_atomic_float && qatomic_float.shaderBufferFloat32AtomicAdd;
     if (shader_hmma_f16_unused())
         LOG("vulkan: hmma_f16=1 asks for HMMA's sums in half floats; they stay in f32, as hmma_f16=0's: %s\n",
             shader_hmma_f16_unused());
     /* its f16 matrices are Float16's, its modules the Vulkan memory model's, and its matrices span a subgroup of 32.
-       The tile is the 8 or the 16 its vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR offers: Metal's
-       simdgroup_matrix is 8x8x8, so an SM86 HMMA is four products there and one where the tile is 16 */
+       The shapes are the ones vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR lists: an SM86 HMMA's exact 16x8x16
+       and 16x8x8 where they are, a 16x16x16, and Metal's simdgroup_matrix 8x8x8 */
     /* A subgroup of 32 lanes, which is what an HMMA and its matrices span: has_cs_warp32 where the device lets a
        pipeline ask for one, or where its subgroups are already 32 and compute has them (Metal's are, at every
        stage). Gating the matrix unit on the request alone left every driver whose size is fixed without it */
     int warp32 = g_vk.has_cs_warp32 || (subgroup.subgroupSize == 32 &&
                                         (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0);
-    int coop_tile = has_coop && qcoop.cooperativeMatrix && g_shader_float16 && q12.vulkanMemoryModel &&
-                            q12.vulkanMemoryModelDeviceScope && warp32
-                        ? coop_f16_f32(g_vk.phys)
-                        : 0;
-    g_shader_hmma_coop = coop_tile ? (int)g_vk.props.limits.maxComputeSharedMemorySize : 0;
-    g_shader_hmma_coop_tile = coop_tile ? coop_tile : 16;
-    if (coop_tile)
-        LOG("vulkan: HMMA runs on the device's cooperative matrices, %dx%dx%d a product, shared memory's own "
-            "fragments after the program's\n",
-            coop_tile, coop_tile, coop_tile);
-    f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_shader_hmma_coop != 0;
+    u32 coop_shapes = has_coop && qcoop.cooperativeMatrix && g_spirv_translate.float16 && q12.vulkanMemoryModel &&
+                              q12.vulkanMemoryModelDeviceScope && warp32
+                          ? coop_f16_f32_shapes(g_vk.phys)
+                          : 0;
+    g_spirv_translate.hmma_coop = coop_shapes ? (int)g_vk.props.limits.maxComputeSharedMemorySize : 0;
+    g_spirv_translate.hmma_coop_shapes = coop_shapes;
+    if (coop_shapes) {
+        char names[64] = "";
+        static const struct {
+            u32 bit;
+            const char* name;
+        } listed[] = {{SH_COOP_16x16x16, "16x16x16"}, {SH_COOP_16x8x16, "16x8x16"},
+                      {SH_COOP_16x8x8, "16x8x8"}, {SH_COOP_8x8x8, "8x8x8"}};
+        for (u32 i = 0; i < 4; i++)
+            if (coop_shapes & listed[i].bit) {
+                size_t used = strlen(names);
+                snprintf(names + used, sizeof names - used, "%s%s", used ? ", " : "", listed[i].name);
+            }
+        LOG("vulkan: HMMA runs on the device's cooperative matrices, %s a product, shared memory's own fragments "
+            "after the program's\n", names);
+    }
+    f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_spirv_translate.hmma_coop != 0;
     /* HMMA off the matrix unit: pairs of lanes on RADV with subgroups of 32 (an RX 6700 XT's HMMA bench ran 9.7%
        faster), and A and B through shared memory where the driver loops for a shuffle whose index differs between
        lanes, which no feature or property tells, so the table does */
@@ -1483,8 +1583,10 @@ static int create_device(void) {
     }
     /* shaderDenormPreserveFloat16 is the device's word that it can keep f16 subnormals: without it an SM86 program
        packs those by hand (sm86_translate.c's pack_half), as Turnip on an Adreno 610 flushed them to zero */
-    g_shader_half_flush = !p12.shaderDenormPreserveFloat16;
-    g_shader_half_rounding = 0;
+    if (vk_ban("shaderDenormPreserveFloat16", p12.shaderDenormPreserveFloat16, ban_say))
+        p12.shaderDenormPreserveFloat16 = VK_FALSE;
+    g_spirv_translate.half_flush = !p12.shaderDenormPreserveFloat16;
+    g_spirv_translate.half_rounding = 0;
     if (q12.shaderFloat16 && p12.shaderRoundingModeRTEFloat16 && p12.shaderDenormPreserveFloat16 &&
         p12.shaderSignedZeroInfNanPreserveFloat16 &&
         p12.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE &&
@@ -1493,10 +1595,11 @@ static int create_device(void) {
                      p12.roundingModeIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY;
         if (!linked || (have.shaderFloat64 && p12.shaderRoundingModeRTEFloat64 && p12.shaderDenormPreserveFloat64 &&
                         p12.shaderSignedZeroInfNanPreserveFloat64))
-            g_shader_half_rounding = linked ? 3 : 1;
+            g_spirv_translate.half_rounding = linked ? 3 : 1;
     }
-    g_shader_output_layer = q12.shaderOutputLayer != 0; /* ShaderLayer: a vertex or tessellation program's layer */
-    g_shader_viewport_index = have.multiViewport ? 2 | (q12.shaderOutputViewportIndex ? 1 : 0) : 0;
+    g_spirv_translate.output_layer =
+        q12.shaderOutputLayer != 0; /* ShaderLayer: a vertex or tessellation program's layer */
+    g_spirv_translate.viewport_index = have.multiViewport ? 2 | (q12.shaderOutputViewportIndex ? 1 : 0) : 0;
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
                                             .pNext = &f12,
                                             .synchronization2 = VK_TRUE,
@@ -1561,7 +1664,7 @@ static int create_device(void) {
     }
     VkPhysicalDeviceMaintenance8FeaturesKHR fmaintenance8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_8_FEATURES_KHR, .maintenance8 = VK_TRUE};
-    if (g_shader_dynamic_texture_offsets) {
+    if (g_spirv_translate.dynamic_texture_offsets) {
         fmaintenance8.pNext = chain;
         chain = &fmaintenance8;
         ext[next++] = VK_KHR_MAINTENANCE_8_EXTENSION_NAME;
@@ -1645,9 +1748,9 @@ static int create_device(void) {
     VkPhysicalDeviceShaderClockFeaturesKHR fclock = {.sType =
                                                          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR,
                                                      .pNext = chain,
-                                                     .shaderSubgroupClock = !!(g_shader_clock_scopes & 1),
-                                                     .shaderDeviceClock = !!(g_shader_clock_scopes & 2)};
-    if (g_shader_clock_scopes) {
+                                                     .shaderSubgroupClock = !!(g_spirv_translate.clock_scopes & 1),
+                                                     .shaderDeviceClock = !!(g_spirv_translate.clock_scopes & 2)};
+    if (g_spirv_translate.clock_scopes) {
         chain = &fclock;
         ext[next++] = VK_KHR_SHADER_CLOCK_EXTENSION_NAME;
     }
@@ -1655,7 +1758,7 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR,
         .pNext = chain,
         .shaderMaximalReconvergence = VK_TRUE};
-    if (g_shader_maximal_reconvergence) {
+    if (g_spirv_translate.maximal_reconvergence) {
         chain = &freconv;
         ext[next++] = VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME;
     }
@@ -1663,7 +1766,7 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MIXED_FLOAT_DOT_PRODUCT_FEATURES_VALVE,
         .pNext = chain,
         .shaderMixedFloatDotProductFloat16AccFloat32 = VK_TRUE};
-    if (g_shader_mixed_dot) {
+    if (g_spirv_translate.mixed_dot) {
         chain = &fmixdot;
         ext[next++] = VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME;
     }
@@ -1671,7 +1774,7 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR,
         .pNext = chain,
         .cooperativeMatrix = VK_TRUE};
-    if (g_shader_hmma_coop) {
+    if (g_spirv_translate.hmma_coop) {
         chain = &fcoop;
         ext[next++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
     }
@@ -1679,7 +1782,7 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT,
         .pNext = chain,
         .shaderBufferFloat32AtomicAdd = VK_TRUE};
-    if (g_shader_float_atomic_add) {
+    if (g_spirv_translate.float_atomic_add) {
         chain = &fatomic_float;
         ext[next++] = VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME;
     }
@@ -1802,7 +1905,8 @@ static int create_device(void) {
         .extendedDynamicState3ProvokingVertexMode = (g_vk.dyn_pr & VK_DYN_PR_PROVOKING) != 0,
         .extendedDynamicState3ConservativeRasterizationMode = (g_vk.dyn_pr & VK_DYN_PR_CONSERVATIVE) != 0,
         .extendedDynamicState3ExtraPrimitiveOverestimationSize = (g_vk.dyn_pr & VK_DYN_PR_CONSERVATIVE) != 0,
-        .extendedDynamicState3DepthClipNegativeOneToOne = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) != 0};
+        .extendedDynamicState3DepthClipNegativeOneToOne = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) != 0,
+        .extendedDynamicState3DepthClipEnable = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLIP) != 0};
     VkPhysicalDeviceDepthClipControlFeaturesEXT fclip_control = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT, .depthClipControl = VK_TRUE};
     if (g_vk.has_gpl) {
@@ -1826,6 +1930,22 @@ static int create_device(void) {
             chain = &fclip_control;
             ext[next++] = VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME;
         }
+    }
+    VkPhysicalDeviceDepthClipEnableFeaturesEXT fclip_enable = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT,
+        .pNext = chain,
+        .depthClipEnable = VK_TRUE};
+    if (g_vk.has_depth_clip_enable) {
+        chain = &fclip_enable;
+        ext[next++] = VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceDepthClampControlFeaturesEXT fclamp_control = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLAMP_CONTROL_FEATURES_EXT,
+        .pNext = chain,
+        .depthClampControl = VK_TRUE};
+    if (g_vk.has_depth_clamp_range) {
+        chain = &fclamp_control;
+        ext[next++] = VK_EXT_DEPTH_CLAMP_CONTROL_EXTENSION_NAME;
     }
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR findex8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR,
@@ -1872,6 +1992,15 @@ static int create_device(void) {
     if (g_vk.has_vertex_robustness2) {
         chain = &fpipeline;
         ext[next++] = VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceRobustness2FeaturesEXT frobust = {.sType =
+                                                          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
+                                                      .pNext = chain,
+                                                      .robustBufferAccess2 = (VkBool32)g_vk.robust_buffer2,
+                                                      .robustImageAccess2 = (VkBool32)g_vk.robust_image2,
+                                                      .nullDescriptor = (VkBool32)g_vk.null_descriptor};
+    if (g_vk.has_vertex_robustness2 || g_vk.robust_buffer2 || g_vk.robust_image2 || g_vk.null_descriptor) {
+        chain = &frobust;
         ext[next++] = VK_EXT_ROBUSTNESS_2_EXTENSION_NAME;
     }
     VkPhysicalDeviceMeshShaderFeaturesEXT fmesh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
@@ -1902,7 +2031,7 @@ static int create_device(void) {
                               .enabledExtensionCount = next,
                               .ppEnabledExtensionNames = ext,
                               .pEnabledFeatures = &g_vk.feat};
-    if (!VK_OK(vkCreateDevice(g_vk.phys, &dci, NULL, &g_vk.dev))) return 0;
+    if (!VK_OK(vkCreateDevice(g_vk.phys, &dci, NULL, &g_vk.dev))) return DEVICE_FAILED;
     g_vk.gfx_queues = second ? 2 : 1;
     g_vk.dev_ext_n = next;
     g_vk.feat11 = f11;
@@ -1914,6 +2043,21 @@ static int create_device(void) {
     g_vk.feat2 = (VkPhysicalDeviceFeatures2){
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &g_vk.feat11, .features = g_vk.feat};
     volkLoadDevice(g_vk.dev);
+    /* every command each extension the device is made with requires, as its driver gives them: a driver that lists an
+       extension and gives no pointer for one of its commands (NVIDIA's VK_EXT_depth_clamp_control without
+       vkCmdSetDepthClampRangeEXT) has the renderer call a null pointer. Such an extension goes off, its features and
+       their structures with it, as the device is made again without it; one the device can't go without fails the
+       start, saying so */
+    int lacks = snx_vk_device_commands(g_vk.dev, g_vk.props.deviceName, g_vk.api, g_vk.dev_ext, g_vk.dev_ext_n, need,
+                                       needs, g_settings.vulkan_hidden_commands, again, ban_say, g_vk.start_failure,
+                                       sizeof g_vk.start_failure);
+    if (lacks) {
+        vkDestroyDevice(g_vk.dev, NULL);
+        g_vk.dev = VK_NULL_HANDLE;
+        if (lacks > 0) return DEVICE_AGAIN;
+        WARN("vulkan: %s\n", g_vk.start_failure);
+        return DEVICE_FAILED;
+    }
     const char* lacks_command = NULL;
     if (!core13 && !vk12_commands(&lacks_command)) {
         WARN("vulkan: %s enabled the extensions 1.3 took in, but has no %s\n", g_vk.props.deviceName, lacks_command);
@@ -1922,7 +2066,7 @@ static int create_device(void) {
                  lacks_command);
         vkDestroyDevice(g_vk.dev, NULL);
         g_vk.dev = VK_NULL_HANDLE;
-        return 0;
+        return DEVICE_FAILED;
     }
     if (g_vk.has_checkpoints) vk_ck_init();
     pm_lock_announce(&g_vklock, "vulkan"); /* the device's calls, every thread's */
@@ -1930,7 +2074,7 @@ static int create_device(void) {
     vkGetDeviceQueue(g_vk.dev, g_vk.compute_family, second ? 1 : 0, &g_vk.compute);
     vk_mem_init(sparse_queue);
     /* the renderer's own allocator (devmem.c): its blocks are 64 MiB at most, and no more than the cap */
-    if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)) return 0;
+    if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)) return DEVICE_FAILED;
     __atomic_store_n(&g_devmem_ready, 1, __ATOMIC_RELEASE);
     { /* a GPU of 4 GiB or less: memory held back for render targets (devmem.c vk_devmem_reserve) */
         VkPhysicalDeviceMemoryProperties mp;
@@ -2034,7 +2178,32 @@ static int create_device(void) {
         LOG("vulkan: draws that sample a color target they render to read a copy of it (no attachment feedback "
             "loops)\n");
     vk_bans_unclaimed(ban_say); /* a ban on something nothing here asked about, said rather than dropped */
-    return 1;
+    return DEVICE_MADE;
+}
+
+/* the device, made again once without the extensions the first one found lacking a command. What making it sets is
+   put back as it was before, so the second decides everything again from there (the swapchain's lock among it, which
+   nothing takes before there is a swapchain) */
+static int create_device(void) {
+    char err[1024];
+    /* the drivers known to break an extension or feature, read before any is turned on: a table the build carries
+       that does not read is the build's fault, and which bans hold would be unknown */
+    if (!vk_bans_load(snx_vk_extension_bans_text, err, sizeof err)) fatal("vulkan: %s", err);
+    /* the bans a run goes over to test a driver again; a key the table has not stops the game, as the player meant a
+       ban that would otherwise still hold */
+    if (!vk_bans_ignore(g_settings.vulkan_ban_ignore, err, sizeof err)) fatal("settings: %s", err);
+    /* the commands a run takes as missing, to test the check of each extension's commands: a name of none stops the
+       game, as one the player mistyped would otherwise test nothing */
+    if (!snx_vk_hide_check(g_settings.vulkan_hidden_commands, err, sizeof err)) fatal("settings: %s", err);
+    const VkState vk = g_vk;
+    const ShCaps translate = g_spirv_translate;
+    int made = make_device(0);
+    if (made == DEVICE_AGAIN) {
+        g_vk = vk;
+        g_spirv_translate = translate;
+        made = make_device(1);
+    }
+    return made == DEVICE_MADE;
 }
 
 /* the swapchain destroyed. Its images' semaphores: a present may still wait on one after the device is idle (the

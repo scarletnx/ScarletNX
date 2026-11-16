@@ -29,22 +29,29 @@
    unversioned hook's, which holds for every module. A version of 0 is unknown, and only HOOK_ANY holds for it */
 enum { HOOK_ANY, HOOK_SDK, HOOK_NVN, HOOK_KEYS };
 
+/* a hook's check (hookgen's check FN): whether the function at guest address addr, which the hook's pattern matched,
+   has the shape its handler does the work of; 0 leaves it to its own code */
+typedef int (*HookCheck)(u64 addr);
 /* a generated table (hookgen's <prefix>_table): its entries sorted by symbol and then by version, entry i for the
-   versions [lo[i], hi[i]) of key[i] */
+   versions [lo[i], hi[i]) of key[i]; patterns[0..npatterns) the first entry of each pattern's symbol (a '*' in it),
+   in strcmp order, and check[i] entry i's check or NULL (NULL for a 32-bit program's table) */
 typedef struct {
     u32 count;
     const char* const* symbol;
     const unsigned char* key;
     const u32* lo;
     const u32* hi;
+    u32 npatterns;
+    const u16* patterns;
+    const HookCheck* check;
 } HookTable;
 
 /* the version an SDK middleware label in bytes gives lib ("nnSdk" or "NVN"): the first "SDK MW+<vendor>+<vendor>SDK_"
    (or "...Sdk_") followed by lib, '-' and x_y_z, packed x << 16 | y << 8 | z; 0 when bytes holds none */
 u32 hook_label_version(const u8* bytes, size_t size, const char* lib);
 /* the entry of t for symbol whose versions hold the module's: versions[key] for each key (versions[HOOK_ANY]
-   unused). -1 when t has no entry for symbol, -2 when it has but none holds; *first is the symbol's first entry, or
-   -1 */
+   unused). A symbol no entry names takes the first pattern that matches it. -1 when t has no entry for symbol, -2
+   when it has but none holds; *first is the symbol's (or pattern's) first entry, or -1 */
 int hook_select(const HookTable* t, const char* symbol, const u32 versions[HOOK_KEYS], int* first);
 /* a version of key as the declarations write it (20.5.22, or 55.12 for NVN), "unknown" for 0 */
 void hook_version_text(char* out, size_t n, int key, u32 version);
@@ -141,6 +148,10 @@ static inline void hook_put_f64(CPU* c, HookField_f64 f, u64 addr, f64 v) {
    checks that its tables fit */
 #define HOOK_SITES 1024
 
+/* the slots of the index of the sites by address (HostHook's index): twice the sites, so that a search reads a slot or
+   two */
+#define HOOK_INDEX_BITS 11
+
 /* verify mode's scratch memory: slots of guest memory in the kernel region, each call verified taking one without
    waiting (a guest thread may lose its core inside the function's own code, and another verifying a call then must
    not wait for it) */
@@ -162,8 +173,20 @@ typedef struct {
     GuestFn orig[HOOK_SITES]; /* its recompiled code, which its slot held */
     u8 stale[HOOK_SITES];     /* atomic: the game changed the function's code (a mod's patch), so orig is stale */
     GuestFn fn[HOOK_SITES];   /* what its slot holds now: the hook's adapter, or verify mode's check */
-    u32 word[HOOK_SITES];     /* the function's first 4 bytes at hook_install, which a mod's hook writes over */
-    u8 invalid[HOOK_SITES];   /* atomic: the game changed them, so the native hook is off (hook_restore) */
+    /* each site by its address, for the calls that find a site from it: site + 1 in the slot of the address's hash or
+       in the first empty one after it, 0 in an empty slot */
+    u16 index[1u << HOOK_INDEX_BITS];
+    /* the function's first 20 bytes at hook_install (fewer at the end of the code): the first 4, which a mod's hook
+       writes over, are compared; all of them find the mod's trampoline */
+    u32 head[HOOK_SITES][5];
+    u8 invalid[HOOK_SITES]; /* atomic: the game changed them, so the native hook is off (hook_restore) */
+    u32 sdk[HOOK_SITES];    /* the SDK version of the module that exports it, which picks its ext_skyline hook */
+    /* once invalidated: its ext_skyline hook's adapter and handler (NULL for none), and the mod's trampoline that
+       adapter runs at, 0 until it first runs (hook_trampoline) */
+    GuestFn ext[HOOK_SITES];
+    const char* ext_handler[HOOK_SITES];
+    u64 tramp[HOOK_SITES];
+    u32 ext_count; /* atomic: the sites with an ext_skyline hook, so a miss looks for no trampoline in a game with none */
     /* verify mode: which scratch slots are taken (bit i, atomic), and each site's calls that agreed, differed and
        were skipped (atomic) */
     u32 verify_taken;
@@ -189,6 +212,10 @@ void hook_install(void);
 int hook_routed(const char* name);
 /* whether the settings turn the hooks of family off: hooks=0, or hooks_off names it */
 int hook_family_off(const char* family);
+/* why a save state can't be saved or loaded while the hooks run (state.c asks before either): a hook of the cond_var
+   family is installed, whose waits are the host's and so out of the state. -1 with the message in why, which names
+   native_cond_var and its value; 0 when states may be taken */
+int hook_states_refused(char* why, size_t whysize);
 /* After the JIT dropped what was compiled in [addr, addr + size) (jit_code_invalidate): a hooked function whose first
    4 bytes the game changed there (a mod's hook over its start; a change further in is not looked at) is the game's
    from then on. Its native hook is invalidated: its adapter's own host code is rewritten into a jump to
@@ -199,12 +226,22 @@ void hook_restore(u64 addr, u64 size);
 /* the sad path of an invalidated native hook, where its adapter jumps with the arguments its call left: runs the
    game's code now at entry, which is what a call of the function runs from then on */
 void hook_invalidated(CPU* RESTRICT c, u64 entry);
+/* A dispatch miss at pc (rtapi.c's rt_miss): when pc is the trampoline a mod's loader keeps for a function whose
+   native hook it invalidated (the function's first 1, 4 or 5 instructions, then a jump back to the one after them) and
+   ext_skyline.hooks has a hook for that function, the hook's adapter, which takes pc's slot: the mod's call of the
+   original runs the native handler. NULL for any other pc */
+GuestFn hook_trampoline(u64 pc);
+/* ext_skyline.c's: the adapter of ext_skyline.hooks's hook of symbol for a module of SDK version sdk, and its
+   handler's name; NULL when it has none */
+GuestFn hook_ext_skyline(const char* symbol, u32 sdk, const char** handler);
 /* what the dispatch slot of addr holds for a hooked function, its handler's adapter or verify mode's check, for as
    long as the game runs; NULL when addr isn't hooked, or its native hook was invalidated */
 GuestFn hook_function(u64 addr);
 /* the recompiled code of the function at addr when it is hooked, for a handler that hands a case back to it with the
    CPU as the function's call left it; NULL when addr isn't hooked. Once the game changed the function's code, the
-   JIT's code of what is there now: the AOT code is stale, and leaves for the dispatch slot, which holds the hook */
+   JIT's code of what is there now: the AOT code is stale, and leaves for the dispatch slot, which holds the hook. Once
+   a mod's trampoline of it took an ext_skyline hook, the JIT's code of that trampoline: the SDK's own code, entered
+   through the instructions the mod moved there (hook_run_original enters it there) */
 GuestFn hook_original(u64 addr);
 /* the symbol of the function hooked at addr, and the name of the runtime's handler that runs it in *handler; NULL when
    addr isn't hooked. Reads only the sites hook_install wrote before the game's first thread, so the crash report may
@@ -215,10 +252,31 @@ void hook_orig_stale(GuestFn f);
 /* where the hook of symbol (a symbol, or an address hook's key as hookgen writes it, BUILDID:OFFSET) was installed:
    the function's guest address, the first one for a symbol several modules export; 0 when it wasn't */
 u64 hook_site(const char* symbol);
+/* A handler that waits on the host (a mutex someone holds, a condition variable, a sleep): its thread leaves its core
+   between the two, and counts as stopped for a pause, as a waiting SVC (sync.c has them) */
+void hook_wait_begin(void);
+void hook_wait_end(void);
+/* family.c: why the family's hooks can't run in this process (a 32-bit game, a host without what its handlers run
+   on), NULL when they can: hook_install leaves such a family's functions to the game's code, and says why */
+const char* hook_family_unready(const char* family);
+/* libc_std.c: errno of the calling guest thread set to e (POSIX's number), through the SDK's __errno_location; 0
+   leaves it. libc_wide.c: the host has what the libc_wide family runs on (a 32-bit wchar_t and a UTF-8 locale) */
+void libc_set_errno(CPU* c, int e);
+int libc_get_errno(CPU* c); /* the guest thread's errno, as the host's number */
+/* errno's number on the host and in musl (the SDK's C library, Linux's numbers), each from the other */
+int libc_errno_musl(int host);
+int libc_errno_host(int musl);
+int libc_wide_ready(void);
+/* alloc.c: the host allocator's arena in guest memory is made (made at the first call): 0 without one, and the alloc
+   family is then off */
+int alloc_ready(void);
+/* os_sync.c: the game's SDK exports every function that writes the lock and condition variable words the os_sync
+   family owns, which it takes all of or none of */
+int os_sync_ready(void);
 /* runs the hooked function at addr's own code, with the CPU as the call to it left it, until it returns to the call's
    return address (x30) with the call's stack, through the dispatch loop when its code leaves for code compiled apart:
    for a handler that does its work around the function's, as the function's own code then sees every call */
-void hook_run_original(CPU* c, u64 addr);
+void hook_run_original(CPU* c, u64 addr); /* a handler finds addr in c->pc, which its adapter sets */
 /* The same for a 32-bit game, from the handler of the hooked function its thread is in: the adapter runs with r15 at
    the function, so no address is given (a 32-bit SDK's symbol is often not the 64-bit one's). The function's own
    code runs with the registers and the stack as the call left them until it returns to the call's lr; its result

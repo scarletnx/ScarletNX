@@ -22,6 +22,9 @@ enum {
    greyed and pick nothing, and the runtime reads it and changes nothing. The generated tables set it for the rows a
    needs block names, resolving to 0 where the build has what they need */
 #define INI_NEEDS_BUILD 4
+/* an INI_INT the menus draw on a slider of its words, which a step takes to its ends and never round (ini_step), a
+   press or a drag on it to the step under it (settings.txt's slider): the launcher lists every step as a word */
+#define INI_SLIDER      8
 
 /* a row a needs FEATURE block names: 0 where the build has FEATURE, INI_NEEDS_BUILD where it has none. One macro per
    feature, resolved by the build that compiles the table (settingsgen writes the block's feature in its place) */
@@ -70,16 +73,24 @@ typedef struct {
 } IniSection;
 
 const IniOpt* ini_find(const IniOpt* table, const char* key); /* key's entry in table, or NULL */
-/* a command line's --key=value: its value, with its key in key (of size bytes); NULL for another argument, or for a
-   key that does not fit */
-const char* ini_arg(const char* arg, char* key, size_t size);
+/* a command line's --NAME=value: its value, with in key (of size bytes) the key NAME gives. names, count of them in the
+   order strcmp sorts them, are the settings' names on a command line, each key that has an _ with a - for each
+   (settings_arg's, snx_settings.h): one of them gives its key (--aot-threads=4 is aot_threads). The key itself, the
+   older spelling, gives it too, and is said once a run through ini_set_say's (--aot_threads: "settings: --aot_threads
+   is the old spelling of --aot-threads: it is read as that; write --aot-threads"). Any other NAME is the key as given,
+   for the reader to take or refuse by it. NULL for another argument, or for a NAME that does not fit */
+const char* ini_arg(const char* arg, char* key, size_t size, const char* const* names, int count);
+/* the command-line option that sets key to value, as the settings are given there: --KEY=value with a - for each _ of
+   KEY (aot_threads, 4: --aot-threads=4). Into out, cut to size and NUL-terminated; the length it needs, without the
+   NUL */
+size_t ini_option(char* out, size_t size, const char* key, const char* value);
 void ini_read(const IniOpt* o, const char* v); /* v into o's variable; a value that isn't a number leaves it */
 /* whether o takes v as it is, for a value given where a wrong one must stop (the recompile's command line): 0, else -1
    with why in out (a number outside lo..hi, not a whole number for an INI_INT, no number at all, a text too long for
    var). ini_read clamps a number and leaves the rest, as a .ini reloaded while the game runs must */
 int ini_check(const IniOpt* o, const char* v, char* out, size_t n);
-/* where ini_read says a value it clamped or left (a line, without its newline): the runtime's log once options.c sets
-   it, stderr until then (the launcher, the recompile) */
+/* where ini_read says a value it clamped or left, and ini_arg an older spelling (a line, without its newline): the
+   runtime's log once options.c sets it, stderr until then (the launcher, the recompile) */
 void ini_set_say(void (*say)(const char* line));
 /* o's variable as ini_read reads it back. An INI_TEXT has none: its set keeps what it read */
 void ini_format(const IniOpt* o, char* out, size_t n);
@@ -96,12 +107,13 @@ const char* ini_only_words(int flags);
 const char* ini_only(const IniOpt* o);
 /* an INI_INT's value v as the menus read it: its word, or the number */
 void ini_word(const IniOpt* o, int v, char* out, size_t n);
-/* v a step down (dir -1) or up (1): words go round, numbers stop at lo and hi */
+/* v a step down (dir -1) or up (1): words go round, numbers and a slider's words stop at lo and hi */
 int ini_step(const IniOpt* o, int v, int dir);
 /* the sections' settings but the INI_IN_GAME ones as the launcher reads them (gui/settings.h), a line each: section
    [/page], key, default, int | float | text, lowest, highest, help, name, the values value=word between '|', then
-   ini_only's words (empty where the setting does something on this system), tabs between. Into out, NUL-terminated
-   as it fits; the length it needs, without the NUL */
+   ini_only's words (empty where the setting does something on this system), needs-build for an INI_NEEDS_BUILD row
+   and slider for an INI_SLIDER one (an empty column before it where the row needs nothing), tabs between. Into out,
+   NUL-terminated as it fits; the length it needs, without the NUL */
 size_t ini_list_text(const IniSection* sections, int count, char* out, size_t size);
 
 /* a key an older version used, which does nothing now (docs/user/deprecations.md): what became of it, NULL for another */

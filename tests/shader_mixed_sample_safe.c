@@ -39,7 +39,7 @@ static int proof(const char* name, u64 extra, u32 output, int stage, int expecte
     return good;
 }
 int main(void) {
-    g_shader_clock_scopes = 3; /* Include both optional clock forms in the rejected-invariance cases. */
+    g_spirv_translate.clock_scopes = 3; /* Include both optional clock forms in the rejected-invariance cases. */
     const struct { const char* name; u64 instruction; int safe; } cases[] = {
         {"literal color", 0, 1},
         {"uniform constant load", 0xef9400000007ff00ull, 1},

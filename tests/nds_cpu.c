@@ -130,7 +130,7 @@ int main(void) {
     CHECK(!nds_module_current(module, &rom));
     CHECK(run(&rom, NULL, 12) == 0);
     /* ahead of time: every block the run needs is in the module */
-    if (nds_aot_compile(&rom, module, NULL, 1, error, sizeof error)) {
+    if (nds_aot_compile(&rom, module, NULL, 1, 0, error, sizeof error)) {
         fprintf(stderr, "%s\n", error);
         return 1;
     }

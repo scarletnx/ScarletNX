@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gnuabi/process/process.h"
-#include "gnuabi/abi/errno/errno.h"
+#include "gnuabi/abi/errno.inc"
 #include "gnuabi/runtime/execution.h"
 #include "common/utilities/endian.h"
 #include "gnuabi/kernel/signals.h"

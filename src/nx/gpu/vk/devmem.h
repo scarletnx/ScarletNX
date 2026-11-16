@@ -33,7 +33,9 @@ enum {
     DM_HOST,   /* system memory that the CPU fills in order and does not read: not cached where the device has such
                   a type, which a driver can map write-combined */
     DM_WINDOW, /* as DM_HOST, but in the GPU's memory where the CPU can map that (the BAR window of a discrete GPU) */
-    DM_CACHED  /* system memory that the CPU reads, or writes here and there: cached where the device has such a type */
+    DM_CACHED, /* system memory that the CPU reads, or writes here and there: cached where the device has such a type */
+    DM_SYSTEM  /* system memory the GPU alone uses (a texture moved out of the GPU's memory, texture.c's demotion):
+                  never a type of the GPU's own memory; no such type, no memory */
 };
 typedef struct {
     u32 at;                     /* DM_* */

@@ -37,7 +37,41 @@ public class GameActivity extends SDLActivity {
             // the runtime then reads the keys from the data folder only
         }
         super.onCreate(state);
+        keepOutput();
         registerPowerReceiver();
+    }
+
+    /** A console of two screens, held as the console is: the top screen above the bottom one, across the phone's
+     *  width. SDL asks this when it makes the window, with the application's SDL_ORIENTATIONS, which is the landscape
+     *  a Switch or GBA game wants; a two-screen game locks the window to portrait instead (src/3ds/gpu/present.c
+     *  stacks the screens) */
+    @Override
+    public void setOrientationBis(int w, int h, boolean resizable, String hint) {
+        String[] args = getIntent().getStringArrayExtra("args");
+        if (args != null && args.length > 0 && args[0] != null &&
+            (args[0].equals("scarletnx-3ds") || args[0].equals("scarletnx-nds"))) {
+            setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
+            return;
+        }
+        super.setOrientationBis(w, h, resizable, hint);
+    }
+
+    /** The run's output in the log the launcher reads (state/last-run.log): a game's process has no terminal, and a
+     *  driver that stops before its window, or an SVC it cannot serve, says so there and nowhere else. The stream
+     *  stays open for the process's life, so the descriptors it copies stay the file's */
+    private static java.io.FileOutputStream runLog;
+
+    private void keepOutput() {
+        try {
+            java.io.File file = new java.io.File(getFilesDir(), ".scarletnx/state/last-run.log");
+            java.io.File folder = file.getParentFile();
+            if (folder != null && !folder.isDirectory() && !folder.mkdirs()) return;
+            runLog = new java.io.FileOutputStream(file, false);
+            Os.dup2(runLog.getFD(), 1);
+            Os.dup2(runLog.getFD(), 2);
+        } catch (Exception e) {
+            runLog = null; // then the output is lost, as it was before
+        }
     }
 
     private void registerPowerReceiver() {

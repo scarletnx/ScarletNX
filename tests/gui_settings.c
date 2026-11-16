@@ -112,33 +112,33 @@ int main(int argc, char** argv) {
     assert(!gui_settings_set(&s, "opt", "q") && gui_settings_set(&s, "opt", "s") &&
            gui_settings_set(&s, "aot_threads", "4"));
     assert(gui_settings_recompile(&s, 0, options) == 2 && !strcmp(options[0], "--opt=s") &&
-           !strcmp(options[1], "--aot_threads=4"));
+           !strcmp(options[1], "--aot-threads=4"));
     /* the 3DS, Vita and GBA drivers' recompiles take the level and the threads, never LLVM Internals' */
     assert(gui_settings_set(&s, "llvm_batch", "ipo") && gui_settings_recompile_shared(&s, options) == 2 &&
-           !strcmp(options[0], "--opt=s") && !strcmp(options[1], "--aot_threads=4") &&
+           !strcmp(options[0], "--opt=s") && !strcmp(options[1], "--aot-threads=4") &&
            gui_settings_set(&s, "llvm_batch", "full"));
     assert(!strcmp(s.keys[opt + 1].section, "Launch") && !strcmp(s.keys[opt + 1].key, "LLVM batch") &&
            !strcmp(s.values[opt + 1].key, "llvm_batch") && !strcmp(s.values[opt + 1].def, "full") &&
            words(&s.keys[opt + 1]) == 2); /* full, the default, which is not passed, and ipo */
     assert(!gui_settings_set(&s, "llvm_batch", "fast") && gui_settings_set(&s, "llvm_batch", "ipo") &&
-           gui_settings_recompile(&s, 0, options) == 3 && !strcmp(options[1], "--llvm_batch=ipo") &&
-           !strcmp(options[2], "--aot_threads=4") && !gui_settings_set(&s, "llvm_batch", ".ini") &&
+           gui_settings_recompile(&s, 0, options) == 3 && !strcmp(options[1], "--llvm-batch=ipo") &&
+           !strcmp(options[2], "--aot-threads=4") && !gui_settings_set(&s, "llvm_batch", ".ini") &&
            gui_settings_set(&s, "llvm_batch", "full") && gui_settings_recompile(&s, 0, options) == 2);
     assert(!strcmp(s.keys[opt + 3].section, "Launch") && !strcmp(s.keys[opt + 3].key, "AOT threads at most") &&
            !strcmp(s.values[opt + 3].key, "aot_threads_most") &&
            !strcmp(s.values[opt + 3].def, "0")); /* Auto, the default, which is not passed */
     assert(gui_settings_set(&s, "aot_threads_most", "3") && gui_settings_recompile(&s, 0, options) == 3 &&
-           !strcmp(options[2], "--aot_threads_most=3") && gui_settings_set(&s, "aot_threads_most", ""));
+           !strcmp(options[2], "--aot-threads-most=3") && gui_settings_set(&s, "aot_threads_most", ""));
     assert(!strcmp(s.keys[opt + 4].section, "Launch") && !strcmp(s.keys[opt + 4].key, "Unit size") &&
            !strcmp(s.values[opt + 4].key, "unit_instructions") && !strcmp(s.values[opt + 4].def, "90000"));
     assert(gui_settings_set(&s, "unit_instructions", "20000") && gui_settings_recompile(&s, 0, options) == 3 &&
-           !strcmp(options[2], "--unit_instructions=20000") && gui_settings_set(&s, "unit_instructions", ""));
+           !strcmp(options[2], "--unit-instructions=20000") && gui_settings_set(&s, "unit_instructions", ""));
     assert(!strcmp(s.keys[opt + 5].section, "Launch") && !strcmp(s.keys[opt + 5].key, "Unit cache limit") &&
            !strcmp(s.values[opt + 5].key, "unit_cache_gb") && strstr(s.keys[opt + 5].about, "0 = no limit"));
     assert(!strcmp(s.values[opt + 5].def, "0") &&
            strstr(s.keys[opt + 5].about, "a tenth of its disk free, at most 10 GB")); /* no limit */
     assert(gui_settings_set(&s, "unit_cache_gb", "50") && gui_settings_recompile(&s, 0, options) == 3 &&
-           !strcmp(options[2], "--unit_cache_gb=50") && gui_settings_set(&s, "unit_cache_gb", ""));
+           !strcmp(options[2], "--unit-cache-gb=50") && gui_settings_set(&s, "unit_cache_gb", ""));
     assert(!strcmp(s.keys[opt + 6].section, "Launch") && s.values[opt + 6].kind == GUI_SETTING_PAGE &&
            !strcmp(s.keys[opt + 6].key, "LLVM Internals"));
     assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "aot_threads", "") &&
@@ -158,7 +158,7 @@ int main(int argc, char** argv) {
         assert(gui_settings_set(&s, "gba_covers", "none") && !gui_settings_value(&s, "gba_covers"));
     }
     /* Settings > GBA's Colors after it: GBA screen by default and then no option for the run (the runner's own default),
-       Raw picked and then the run's --gba_color=raw, an unknown value refused, and never a recompile's option */
+       Raw picked and then the run's --gba-color=raw, an unknown value refused, and never a recompile's option */
     {
         int colors = at(&s, "gba_color");
         assert(colors == at(&s, "gba_covers") + 1 && colors < s.own && !strcmp(s.keys[colors].section, "GBA") &&
@@ -166,23 +166,23 @@ int main(int argc, char** argv) {
                !strcmp(on_screen(&s, "gba_color"), "GBA screen [default]") && !gui_settings_gba(&s, options));
         assert(!gui_settings_set(&s, "gba_color", "sepia") && gui_settings_set(&s, "gba_color", "raw") &&
                !strcmp(on_screen(&s, "gba_color"), "Raw") && gui_settings_gba(&s, options) == 1 &&
-               !strcmp(options[0], "--gba_color=raw"));
+               !strcmp(options[0], "--gba-color=raw"));
         assert(!gui_settings_recompile(&s, 1, options) && !gui_settings_one(&s, "gba_color", options));
         assert(gui_settings_set(&s, "gba_color", "gba") && !gui_settings_gba(&s, options));
     }
     /* a game's setting alone, as a GBA run takes fullscreen: once picked, and never a launcher's own */
     assert(!gui_settings_one(&s, "slp_vectorizer", options) && gui_settings_set(&s, "slp_vectorizer", "1"));
-    assert(gui_settings_one(&s, "slp_vectorizer", options) == 1 && !strcmp(options[0], "--slp_vectorizer=1"));
+    assert(gui_settings_one(&s, "slp_vectorizer", options) == 1 && !strcmp(options[0], "--slp-vectorizer=1"));
     assert(gui_settings_set(&s, "opt", "z") && !gui_settings_one(&s, "opt", options) &&
            gui_settings_set(&s, "opt", "2"));
     /* a run that makes the game (-r) takes the game's settings the recompile takes too, after the recompiler's: Debug's
        SLP vectorizer, not a setting of the game alone (docked); a run gets them with the game's options, never twice */
     assert(gui_settings_set(&s, "opt", "z") && gui_settings_set(&s, "docked", "0"));
     assert(gui_settings_recompile(&s, 1, options) == 2 && !strcmp(options[0], "--opt=z") &&
-           !strcmp(options[1], "--slp_vectorizer=1"));
+           !strcmp(options[1], "--slp-vectorizer=1"));
     assert(gui_settings_recompile(&s, 0, options) == 1 && !strcmp(options[0], "--opt=z"));
     assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "docked", "1") &&
-           gui_settings_recompile(&s, 1, options) == 1 && !strcmp(options[0], "--slp_vectorizer=1"));
+           gui_settings_recompile(&s, 1, options) == 1 && !strcmp(options[0], "--slp-vectorizer=1"));
     assert(gui_settings_set(&s, "slp_vectorizer", "0") && !gui_settings_one(&s, "slp_vectorizer", options) &&
            !gui_settings_recompile(&s, 1, options));
     assert(!strcmp(s.keys[s.own].section, "Display") && !strcmp(s.keys[s.own].key, "docked"));
@@ -285,7 +285,7 @@ int main(int argc, char** argv) {
     assert(gui_settings_step_all(&s, all, -1) && !strcmp(shown(&s, "All"), ".ini"));
     assert(gui_settings_step_all(&s, all, 0) && gui_settings_step_all(&s, all, 0) &&
            !strcmp(shown(&s, "All"), "Shown"));
-    assert(gui_settings_options(&s, 0, options) == 2 && !strcmp(options[0], "--controls_a_shown=1"));
+    assert(gui_settings_options(&s, 0, options) == 2 && !strcmp(options[0], "--controls-a-shown=1"));
     /* the page's row, or its All, back to where they started: its rows */
     gui_settings_mark(&s);
     gui_settings_step_all(&s, all, 1);
@@ -454,11 +454,11 @@ int main(int argc, char** argv) {
         size_t i;
         assert(gui_settings_set(&s, "tracy_capture", "1") && !gui_settings_recompile(&s, 0, options));
         tracy_n = gui_settings_options(&s, 1, options);
-        for (i = 0; i < tracy_n && strcmp(options[i], "--tracy_capture=1"); ++i) continue;
+        for (i = 0; i < tracy_n && strcmp(options[i], "--tracy-capture=1"); ++i) continue;
         assert(i < tracy_n); /* among the run's, where the .ini's other Debug rows are */
         assert(gui_settings_set(&s, "tracy_capture", "0"));
         tracy_n = gui_settings_options(&s, 1, options);
-        for (i = 0; i < tracy_n; ++i) assert(strcmp(options[i], "--tracy_capture=1"));
+        for (i = 0; i < tracy_n; ++i) assert(strcmp(options[i], "--tracy-capture=1"));
     }
     gui_settings_free(&s);
 
@@ -645,7 +645,7 @@ int main(int argc, char** argv) {
             assert(gui_settings_load(&s, path, old, sizeof old) == 1);
             assert(!strcmp(old, "vk_descriptors=1 is deprecated: Descriptor buffers is vk_descriptors_mode=1 now"));
             assert(!strcmp(gui_settings_value(&s, "vk_descriptors_mode"), "1") &&
-                   gui_settings_options(&s, 0, options) == 1 && !strcmp(options[0], "--vk_descriptors_mode=1"));
+                   gui_settings_options(&s, 0, options) == 1 && !strcmp(options[0], "--vk-descriptors-mode=1"));
             assert(!gui_settings_save(&s, path));
             text = (char*)snx_read_file(path, &size);
             assert(text && strstr(text, "\n[Debug]\nvk_descriptors_mode=1\n") && !strstr(text, "vk_descriptors="));
@@ -792,6 +792,10 @@ int main(int argc, char** argv) {
         assert(!strcmp(key(&s, "controls")->key, "Show controls") &&
                !strcmp(key(&s, "touch")->words[2], "Fingers and mouse"));
         assert(!strcmp(key(&s, "gamepad_rumble")->words[0], "Off") && !key(&s, "controls_a"));
+        /* the game's Volume, Audio's: a slider of every 5 percent, Mute first */
+        assert(s.values[at(&s, "volume")].slider && words(key(&s, "volume")) == 21 &&
+               !strcmp(key(&s, "volume")->words[0], "Mute") && !strcmp(key(&s, "volume")->words[20], "100%") &&
+               !strcmp(key(&s, "volume")->section, "Audio") && !strcmp(on_screen(&s, "volume"), "100% [default]"));
         assert(gui_settings_set(&s, "fullscreen", "0") && gui_settings_set(&s, "touch", "1"));
         assert(gui_settings_set(&s, "controls", "0") && key(&s, "resolution")->type == GUI_KEY_TEXT);
         /* as the launcher has them: fullscreen Off or On, Off its [default]; the controls Auto, their [default] */
@@ -830,7 +834,7 @@ int main(int argc, char** argv) {
                     snprintf(value, sizeof value, "100000");
                 else
                     snprintf(value, sizeof value, "%g", atof(o->def) == o->lo ? o->hi : o->lo);
-                snprintf(want, sizeof want, "--%s=%s", o->key, value);
+                ini_option(want, sizeof want, o->key, value);
                 assert(at(&s, o->key) >= s.own && gui_settings_set(&s, o->key, value));
                 assert(gui_settings_recompile(&s, 1, options) == 1 && !strcmp(options[0], want));
                 assert(!gui_settings_recompile(&s, 0, options) && gui_settings_set(&s, o->key, o->def) &&
@@ -858,7 +862,7 @@ int main(int argc, char** argv) {
         assert(words(key(&s, "vulkan_driver")) == 2 && !strcmp(key(&s, "vulkan_driver")->words[1], "MoltenVK") &&
                words(key(&s, "profile")) == 2 && !strcmp(on_screen(&s, "vulkan_driver"), "Auto [default]"));
         assert(gui_settings_set(&s, "vulkan_driver", "moltenvk") && gui_settings_options(&s, 0, options) == 1 &&
-               !strcmp(options[0], "--vulkan_driver=moltenvk") && !strcmp(on_screen(&s, "vulkan_driver"), "MoltenVK"));
+               !strcmp(options[0], "--vulkan-driver=moltenvk") && !strcmp(on_screen(&s, "vulkan_driver"), "MoltenVK"));
         gui_settings_free(&s);
     }
     /* the Debug settings a run of a game takes off their default: its .ini's, a pick over it, a text by its key alone,
@@ -889,8 +893,8 @@ int main(int argc, char** argv) {
     }
     /* a 3DS game's run gets its own table's picks and the Switch's settings the 3DS takes too (vk_memory,
        async_pipelines, pipeline_threads, gamepad_swap_ab, gamepad_deadzone, gamepad_map, touch, vsync, fullscreen,
-       anisotropy, fps_limit) only: another Display, Graphics, Debug, Controllers or On-screen controls setting picked for a
-       Switch game is not one */
+       anisotropy, fps_limit, volume) only: another Display, Graphics, Debug, Controllers or On-screen controls setting
+       picked for a Switch game is not one */
     {
         static const char ctr[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
                                   "Display\tdocked\t1\tint\t0\t1\tTV\tDocked\t0=Off|1=On\n"
@@ -909,7 +913,8 @@ int main(int argc, char** argv) {
                                   "On-screen controls\ttouch\t2\tint\t0\t2\tTouch\tTouch screen\t\n"
                                   "On-screen controls\tcontrols_haptics\t1\tint\t0\t1\tBuzz\tHaptics\t\n"
                                   "Debug\tvk_memory\t0\tint\t0\t2\tGuest buffers\tGuest memory\t0=Auto|1=Copy|2=UMA\n"
-                                  "Debug\tvk_budget_mb\t0\tint\t0\t65536\tBudget\tVulkan budget\t";
+                                  "Debug\tvk_budget_mb\t0\tint\t0\t65536\tBudget\tVulkan budget\t\n"
+                                  "Audio\tvolume\t100\tint\t0\t100\tLoud\tVolume\t0=Mute|50=50%|100=100%\t\t\tslider";
         assert(!gui_settings_read(&s, ctr));
         assert(gui_settings_set(&s, "fullscreen", "1") && gui_settings_set(&s, "ctr_separate_windows", "1") &&
                gui_settings_set(&s, "ctr_top_resolution", "2") && gui_settings_set(&s, "async_pipelines", "1") &&
@@ -920,13 +925,45 @@ int main(int argc, char** argv) {
                gui_settings_set(&s, "vk_budget_mb", "512") && gui_settings_set(&s, "vsync", "0") &&
                gui_settings_set(&s, "shadows", "0") && gui_settings_set(&s, "docked", "0") &&
                gui_settings_set(&s, "anisotropy", "8") && gui_settings_set(&s, "fps_limit", "120"));
-        assert(gui_settings_ctr_options(&s, options) == 13 && !strcmp(options[0], "--fullscreen=1") &&
-               !strcmp(options[1], "--ctr_separate_windows=1") && !strcmp(options[2], "--ctr_top_resolution=2") &&
+        assert(gui_settings_set(&s, "volume", "50"));
+        assert(gui_settings_ctr_options(&s, options) == 14 && !strcmp(options[0], "--fullscreen=1") &&
+               !strcmp(options[1], "--ctr-separate-windows=1") && !strcmp(options[2], "--ctr-top-resolution=2") &&
                !strcmp(options[3], "--vsync=0") && !strcmp(options[4], "--anisotropy=8") &&
-               !strcmp(options[5], "--async_pipelines=1") && !strcmp(options[6], "--pipeline_threads=2") &&
-               !strcmp(options[7], "--fps_limit=120") && !strcmp(options[8], "--gamepad_swap_ab=1") &&
-               !strcmp(options[9], "--gamepad_deadzone=35") && !strcmp(options[10], "--gamepad_map=south:A east:B") &&
-               !strcmp(options[11], "--touch=1") && !strcmp(options[12], "--vk_memory=1"));
+               !strcmp(options[5], "--async-pipelines=1") && !strcmp(options[6], "--pipeline-threads=2") &&
+               !strcmp(options[7], "--fps-limit=120") && !strcmp(options[8], "--gamepad-swap-ab=1") &&
+               !strcmp(options[9], "--gamepad-deadzone=35") && !strcmp(options[10], "--gamepad-map=south:A east:B") &&
+               !strcmp(options[11], "--touch=1") && !strcmp(options[12], "--vk-memory=1"));
+        assert(!strcmp(options[13], "--volume=50"));
+        gui_settings_free(&s);
+    }
+    /* a slider's row (the runtime's twelfth column, settings.txt's slider): a plain word row whose steps stop at its
+       ends, set to the step nearest a place along it; the same words without the mark are no slider, nor are they
+       where the default is no step (its row's first word the .ini's) */
+    {
+        static const char sliders[] =
+            "Audio\tvolume\t100\tint\t0\t100\tHow loud\tVolume\t0=Mute|25=25%|50=50%|75=75%|100=100%\t\t\tslider\n"
+            "Audio\tplain\t100\tint\t0\t100\tHow loud\tPlain\t0=Mute|50=50%|100=100%\n"
+            "Audio\toff_step\t60\tint\t0\t100\tHow loud\tOff step\t0=Mute|50=50%|100=100%\t\t\tslider";
+        int v, p, o;
+        assert(!gui_settings_read(&s, sliders));
+        v = at(&s, "volume");
+        p = at(&s, "plain");
+        o = at(&s, "off_step");
+        assert(v >= 0 && p >= 0 && o >= 0 && s.values[v].slider && !s.values[p].slider && !s.values[o].slider);
+        assert(!strcmp(on_screen(&s, "volume"), "100% [default]") && gui_settings_knob(&s, v) == 1000);
+        assert(!gui_settings_slide(&s, v, 1) && gui_settings_knob(&s, v) == 1000); /* its end: never round to Mute */
+        assert(gui_settings_slide(&s, v, -1) && !strcmp(gui_settings_value(&s, "volume"), "75") &&
+               gui_settings_knob(&s, v) == 750);
+        assert(gui_settings_options(&s, 0, options) == 1 && !strcmp(options[0], "--volume=75"));
+        assert(gui_settings_slide_to(&s, v, 0) && !strcmp(gui_settings_value(&s, "volume"), "0"));
+        assert(!gui_settings_slide(&s, v, -1) && !strcmp(on_screen(&s, "volume"), "Mute")); /* never round to 100% */
+        assert(gui_settings_slide_to(&s, v, 374) && !strcmp(gui_settings_value(&s, "volume"), "25")); /* nearer 250 */
+        assert(gui_settings_slide_to(&s, v, 376) && !strcmp(gui_settings_value(&s, "volume"), "50")); /* nearer 500 */
+        assert(!gui_settings_slide_to(&s, v, 500) && gui_settings_knob(&s, v) == 500);    /* there already */
+        assert(gui_settings_slide_to(&s, v, 5000) && !gui_settings_value(&s, "volume") && /* past its end */
+               !strcmp(on_screen(&s, "volume"), "100% [default]"));
+        assert(!gui_settings_slide(&s, p, -1) && !gui_settings_slide_to(&s, p, 0) && gui_settings_knob(&s, p) == 0);
+        assert(!gui_settings_slide(&s, o, -1) && !strcmp(on_screen(&s, "off_step"), "60 [default]"));
         gui_settings_free(&s);
     }
     puts("GUI settings: the runtime's list, picks and a run's options passed");

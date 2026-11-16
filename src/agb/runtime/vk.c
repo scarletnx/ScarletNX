@@ -1,0 +1,289 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* The GBA runner's Vulkan window (agb/runtime/vk.h). The board's 240x160 RGBA frame goes to a device image through a
+   host-visible staging buffer, and is copied to the window's image at the whole step of the screen it holds, as SDL's
+   renderer shows it (host.c) */
+#include "agb/runtime/vk.h"
+#include "agb/ppu/ppu.h"
+#include "common/gpu/vk/notice.h"
+#include "common/gpu/vk/ring.h"
+#include "common/gpu/vk/swapchain.h"
+#include "common/gpu/vk/vk_common.h"
+#include "common/gpu/vk/window.h"
+#include "common/utilities/window_icon.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define AGB_VK_SLOTS 2 /* a frame on the GPU while the next is recorded */
+
+/* a slot's frame: the device image the copy reads, and the staging buffer the board's frame goes in */
+typedef struct {
+    VkImage image;
+    VkDeviceMemory memory;
+    VkBuffer staging;
+    VkDeviceMemory staging_memory;
+    unsigned char* mapped;
+} AgbFrame;
+
+struct AgbVk {
+    SnxVkWindow host;
+    VkPhysicalDevice phys;
+    VkDevice device;
+    VkQueue queue;
+    uint32_t family;
+    SnxVkSwapchain swap;
+    VkSemaphore acquired[AGB_VK_SLOTS], rendered[SNX_VK_SWAP_IMAGES];
+    SnxVkRing ring;
+    AgbFrame frame[AGB_VK_SLOTS];
+    SnxVkNotice* notice;
+};
+
+static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
+    AgbVk* v = user;
+    SnxVkExtensions list;
+    const char* extensions[2];
+    uint32_t n = 0;
+    if (!snx_vk_device_extensions(phys, &list)) return false;
+    bool ok = snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    if (snx_vk_extensions_has(&list, "VK_KHR_portability_subset")) extensions[n++] = "VK_KHR_portability_subset";
+    snx_vk_extensions_free(&list);
+    if (!ok) return false;
+    VkPhysicalDeviceVulkan13Features want13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+                                               .synchronization2 = VK_TRUE}; /* every 1.3 device has it */
+    VkPhysicalDeviceFeatures2 want = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &want13};
+    if (snx_vk_device_create(phys, family, &want, extensions, n, &v->device) != VK_SUCCESS) return false;
+    v->phys = phys;
+    v->family = family;
+    return true;
+}
+
+/* the window's swapchain, made anew for its size, its images at the display's refresh as SDL's renderer has them */
+static bool swapchain_make(AgbVk* v) {
+    static const VkFormat formats[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+    SnxVkSwapchainInfo info = {.surface = v->host.surface,
+                               .formats = formats,
+                               .format_count = sizeof formats / sizeof *formats,
+                               .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                               .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 640})};
+    return snx_vk_swapchain_make(v->phys, v->device, &info, &v->swap);
+}
+
+static bool frame_make(AgbVk* v, AgbFrame* f) {
+    const VkDeviceSize size = (VkDeviceSize)AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT * 4u;
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = VK_FORMAT_R8G8B8A8_UNORM,
+                            .extent = {AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+    VkBufferCreateInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    VkMemoryRequirements req;
+    VkPhysicalDeviceMemoryProperties mp;
+    void* mapped = NULL;
+    if (vkCreateImage(v->device, &ii, NULL, &f->image) != VK_SUCCESS ||
+        vkCreateBuffer(v->device, &bi, NULL, &f->staging) != VK_SUCCESS)
+        return false;
+    vkGetPhysicalDeviceMemoryProperties(v->phys, &mp);
+    vkGetImageMemoryRequirements(v->device, f->image, &req);
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size};
+    ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (ai.memoryTypeIndex == UINT32_MAX) ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits, 0);
+    if (vkAllocateMemory(v->device, &ai, NULL, &f->memory) != VK_SUCCESS ||
+        vkBindImageMemory(v->device, f->image, f->memory, 0) != VK_SUCCESS)
+        return false;
+    vkGetBufferMemoryRequirements(v->device, f->staging, &req);
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits,
+                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(v->device, &ai, NULL, &f->staging_memory) != VK_SUCCESS ||
+        vkBindBufferMemory(v->device, f->staging, f->staging_memory, 0) != VK_SUCCESS ||
+        vkMapMemory(v->device, f->staging_memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS)
+        return false;
+    f->mapped = mapped;
+    return true;
+}
+
+static void frame_free(AgbVk* v, AgbFrame* f) {
+    if (f->image) vkDestroyImage(v->device, f->image, NULL);
+    if (f->memory) vkFreeMemory(v->device, f->memory, NULL);
+    if (f->staging) vkDestroyBuffer(v->device, f->staging, NULL);
+    if (f->staging_memory) vkFreeMemory(v->device, f->staging_memory, NULL); /* unmapped with it */
+    *f = (AgbFrame){0};
+}
+
+static void barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, VkImageLayout next,
+                    VkPipelineStageFlags2 src_stage, VkAccessFlags2 src, VkPipelineStageFlags2 dst_stage,
+                    VkAccessFlags2 dst) {
+    VkImageMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                               .srcStageMask = src_stage,
+                               .srcAccessMask = src,
+                               .dstStageMask = dst_stage,
+                               .dstAccessMask = dst,
+                               .oldLayout = old,
+                               .newLayout = next,
+                               .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                               .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                               .image = image,
+                               .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b};
+    vkCmdPipelineBarrier2(cb, &d);
+}
+
+static void notice_log(const char* text) { fprintf(stderr, "scarletnx-agb: %s\n", text); }
+
+AgbVk* agb_vk_open(const char* title, int width, int height, bool fullscreen, char* error, size_t error_size) {
+    AgbVk* v = calloc(1, sizeof *v);
+    if (!v) {
+        snprintf(error, error_size, "out of memory");
+        return NULL;
+    }
+    if (!snx_vk_window_open("scarletnx-agb", title, width, height, &v->host, error, error_size)) {
+        free(v);
+        return NULL;
+    }
+    if (!v->host.window || !v->host.surface) {
+        snprintf(error, error_size, "no Vulkan window on this display");
+        agb_vk_close(v);
+        return NULL;
+    }
+    if (fullscreen && !SDL_SetWindowFullscreen(v->host.window, true))
+        fprintf(stderr, "scarletnx-agb: the window cannot go fullscreen: %s\n", SDL_GetError());
+    snx_window_icon(v->host.window);
+    if (!snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, VK_QUEUE_GRAPHICS_BIT, v->host.surface,
+                             make_device, v)) {
+        snprintf(error, error_size, "no Vulkan 1.3 device that presents to the window");
+        agb_vk_close(v);
+        return NULL;
+    }
+    volkLoadDevice(v->device);
+    vkGetDeviceQueue(v->device, v->family, 0, &v->queue);
+    VkPhysicalDeviceProperties properties;
+    vkGetPhysicalDeviceProperties(v->phys, &properties);
+    fprintf(stderr, "scarletnx-agb: the screen through Vulkan on %s\n", properties.deviceName);
+    VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+    VkDescriptorPoolCreateInfo dp = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &size};
+    VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    bool made = snx_vk_ring_init(&v->ring, v->device, v->queue, v->family, AGB_VK_SLOTS, &dp, false);
+    for (unsigned i = 0; i < AGB_VK_SLOTS && made; ++i)
+        made = vkCreateSemaphore(v->device, &si, NULL, &v->acquired[i]) == VK_SUCCESS && frame_make(v, &v->frame[i]);
+    for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES && made; ++i)
+        made = vkCreateSemaphore(v->device, &si, NULL, &v->rendered[i]) == VK_SUCCESS;
+    if (!made || !(v->notice = snx_vk_notice_create(v->phys, v->device, AGB_VK_SLOTS)) || !swapchain_make(v)) {
+        snprintf(error, error_size, "cannot make the Vulkan window's frames, swapchain or command pool");
+        agb_vk_close(v);
+        return NULL;
+    }
+    return v;
+}
+
+SDL_Window* agb_vk_window(AgbVk* vk) { return vk ? vk->host.window : NULL; }
+
+void agb_vk_close(AgbVk* v) {
+    if (!v) return;
+    if (v->device) {
+        vkDeviceWaitIdle(v->device);
+        snx_vk_notice_destroy(v->notice);
+        snx_vk_swapchain_free(v->device, &v->swap);
+        for (unsigned i = 0; i < AGB_VK_SLOTS; ++i) {
+            frame_free(v, &v->frame[i]);
+            if (v->acquired[i]) vkDestroySemaphore(v->device, v->acquired[i], NULL);
+        }
+        for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES; ++i)
+            if (v->rendered[i]) vkDestroySemaphore(v->device, v->rendered[i], NULL);
+        snx_vk_ring_free(&v->ring);
+        vkDestroyDevice(v->device, NULL);
+    }
+    snx_vk_window_close(&v->host);
+    free(v);
+}
+
+void agb_vk_place(uint32_t w, uint32_t h, int32_t rect[4]) {
+    uint32_t step = w / AGB_SCREEN_WIDTH < h / AGB_SCREEN_HEIGHT ? w / AGB_SCREEN_WIDTH : h / AGB_SCREEN_HEIGHT;
+    uint32_t sw = AGB_SCREEN_WIDTH * step, sh = AGB_SCREEN_HEIGHT * step;
+    if (!step) {
+        sw = w, sh = (uint32_t)((uint64_t)w * AGB_SCREEN_HEIGHT / AGB_SCREEN_WIDTH);
+        if (sh > h) sh = h, sw = (uint32_t)((uint64_t)h * AGB_SCREEN_WIDTH / AGB_SCREEN_HEIGHT);
+    }
+    rect[0] = (int32_t)(w - sw) / 2;
+    rect[1] = (int32_t)(h - sh) / 2;
+    rect[2] = (int32_t)sw;
+    rect[3] = (int32_t)sh;
+}
+
+bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer, const SnxNotice* notice) {
+    uint32_t slot, index = 0;
+    VkResult r;
+    /* a window the swapchain was not made for: the driver need not say the surface is out of date, and the screen
+       would show stretched until it does */
+    int ww = 0, wh = 0;
+    if (v->swap.swapchain && SDL_GetWindowSizeInPixels(v->host.window, &ww, &wh) && ww > 0 && wh > 0 &&
+        ((uint32_t)ww != v->swap.extent.width || (uint32_t)wh != v->swap.extent.height))
+        (void)swapchain_make(v);
+    if (!v->swap.swapchain && !swapchain_make(v)) return false; /* a window with no size: none until it has one */
+    /* the recording, begun once the slot's last submission is done: its staging buffer and its semaphore are free */
+    VkCommandBuffer cb = snx_vk_ring_commands(&v->ring);
+    slot = v->ring.slot;
+    AgbFrame* f = &v->frame[slot];
+    /* an image the window can take, waiting for it as SDL's renderer with vsync does; none, and the recording stays
+       open and empty for the next frame */
+    r = vkAcquireNextImageKHR(v->device, v->swap.swapchain, UINT64_MAX, v->acquired[slot], VK_NULL_HANDLE, &index);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+        (void)swapchain_make(v);
+        return false;
+    }
+    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return false;
+    memcpy(f->mapped, framebuffer, (size_t)AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT * 4u);
+    barrier(cb, f->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
+            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkBufferImageCopy copy = {.bufferRowLength = AGB_SCREEN_WIDTH,
+                              .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .imageExtent = {AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT, 1}};
+    vkCmdCopyBufferToImage(cb, f->staging, f->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    barrier(cb, f->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT);
+    uint32_t w = v->swap.extent.width, h = v->swap.extent.height;
+    int32_t at[4];
+    agb_vk_place(w, h, at);
+    VkImage target = v->swap.images[index];
+    barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkClearColorValue black = {{0, 0, 0, 1}};
+    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+    /* the blit overwrites the clear's pixels: its writes wait for the clear's */
+    barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .srcOffsets = {{0, 0, 0}, {AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT, 1}},
+                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .dstOffsets = {{at[0], at[1], 0}, {at[0] + at[2], at[1] + at[3], 1}}};
+    /* sharp pixels, as SDL's renderer scales the screen's texture (SDL_SCALEMODE_NEAREST) */
+    if (at[2] && at[3])
+        vkCmdBlitImage(cb, f->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &blit, VK_FILTER_NEAREST);
+    (void)snx_vk_notice_record(v->notice, cb, slot, target, v->swap.format.format, w, h,
+                               snx_display_percent(SDL_GetWindowDisplayScale(v->host.window)), notice, SDL_GetTicksNS(),
+                               notice_log);
+    barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+    (void)snx_vk_ring_submit(&v->ring, v->acquired[slot], v->rendered[index]);
+    VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                           .waitSemaphoreCount = 1,
+                           .pWaitSemaphores = &v->rendered[index],
+                           .swapchainCount = 1,
+                           .pSwapchains = &v->swap.swapchain,
+                           .pImageIndices = &index};
+    r = vkQueuePresentKHR(v->queue, &pi);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) (void)swapchain_make(v);
+    return r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;
+}

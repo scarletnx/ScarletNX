@@ -494,6 +494,10 @@ static void make_raster_key(NvnDraw* d) {
                                                      : DS_POLYGON_FILL);
     k.provoking_last = d->provoking_last;
     k.depth_clamp = d->depth_clamp;
+    /* the driver's clamp off still clamps a fragment's depth and clips the geometry (deko3d's 0x181D) */
+    k.depth_no_clip = d->depth_clamp;
+    k.depth_pixel_clamp = 1;
+    k.depth_zero_one = !d->depth_clamp; /* to 0 to 1 with the clamp off, to the viewport's range with it on */
     k.conservative = d->conservative ? (u8)(1 + d->dilate) : 0;
     k.sample_shading = d->sample_shading == 1; /* NVN_SAMPLE_SHADING_ENABLE: every sample */
     k.patch_vertices = d->patch_size;

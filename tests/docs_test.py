@@ -40,6 +40,8 @@ class Checkout:
             cd.check_indexes(self.root, docs, failures, False)
         elif check == 'docs index':
             cd.check_docs_index(self.root, failures)
+        elif check in ('bans', 'bans written'):
+            cd.check_bans(self.root, failures, check == 'bans written')
         else:
             cd.check_settings(self.root, failures)
         return list(failures)
@@ -335,6 +337,88 @@ class Settings(unittest.TestCase):
                 'docs/user/settings.md:7: `gamepad_p<N>_rumble` says the default is `0`; '
                 'src/nx/runtime/settings.txt:16 makes it `-10`\ncheck-docs.py: 1 to fix\n',
             )
+
+
+BAN_HEAD = 'key | action | driver | versions | system | devices | breaks | source | retest | checked | override\n'
+BANS = (
+    '# the drivers known to break a feature\n\n'
+    + BAN_HEAD
+    + '\nVK_EXT_b | off | radv | < 23.1.0 | linux | * | breaks b_c *here* | src b | headless: | never | b=on\n'
+    + 'featureA | warn | anv | * | any | 0x1,0x2 | breaks a | src a | new:headless:a case | 2026-11-01 broken | -\n'
+)
+QUIRKS = f'# Quirks\n\n{cd.BANS_BEGIN}\n{cd.BANS_END}\n\nAfter.\n'
+ROWS = [
+    '| Driver | Key | Action | Versions | System | GPUs | What breaks | Source | Tested again by | Last tested |',
+    '|---|---|---|---|---|---|---|---|---|---|',
+    '| `anv` | `featureA` | warn | all | any | `0x1,0x2` | breaks a | src a | `new:headless:a case` '
+    '| 2026-11-01 broken |',
+    '| `radv` | `VK_EXT_b` | off; `b=on` goes over it | `< 23.1.0` | linux | every GPU '
+    '| breaks b\\_c \\*here\\* | src b | `headless:` | never |',
+]
+
+
+class Bans(unittest.TestCase):
+    """the ban table of docs/layers/gpu/driver-quirks.md, written from src/common/gpu/vk/extension_bans.txt alone"""
+
+    def checkout(self, bans=BANS, doc=QUIRKS):
+        files = {cd.BANS: bans}
+        if doc is not None:
+            files[cd.BANS_DOC] = doc
+        return Checkout(files)
+
+    def written(self, c):
+        self.assertEqual(c.failures('bans written'), [])
+        return (c.root / cd.BANS_DOC).read_text(encoding='utf-8')
+
+    def test_written_by_driver_then_held(self):
+        with self.checkout() as c:
+            self.assertEqual(
+                self.written(c),
+                f'# Quirks\n\n{cd.BANS_BEGIN}\n' + '\n'.join(ROWS) + f'\n{cd.BANS_END}\n\nAfter.\n',
+            )
+            self.assertEqual(c.failures('bans'), [])
+
+    def test_a_line_changed_in_the_table_is_named(self):
+        with self.checkout() as c:
+            self.written(c)
+            (c.root / cd.BANS).write_text(BANS.replace('breaks a |', 'breaks a again |'), encoding='utf-8')
+            self.assertEqual(
+                c.failures('bans'),
+                [
+                    f'{cd.BANS_DOC}:6: {ROWS[2]!r} is not what {cd.BANS}:6 (featureA on anv) makes it '
+                    f'{ROWS[2].replace("breaks a |", "breaks a again |")!r}: run scripts/check-docs.py --bans'
+                ],
+            )
+
+    def test_a_row_written_by_hand_past_the_table(self):
+        with self.checkout() as c:
+            doc = self.written(c).replace(cd.BANS_END, '| `nvk` | `x` | warn |\n' + cd.BANS_END)
+            (c.root / cd.BANS_DOC).write_text(doc, encoding='utf-8')
+            self.assertEqual(
+                c.failures('bans'),
+                [
+                    f"{cd.BANS_DOC}:8: '| `nvk` | `x` | warn |' is not what {cd.BANS} makes 2 rows, and this one is "
+                    'past them: run scripts/check-docs.py --bans'
+                ],
+            )
+
+    def test_a_line_short_of_a_field(self):
+        with self.checkout(BANS.replace(' | 2026-11-01 broken', '')) as c:
+            self.assertEqual(
+                c.failures('bans'),
+                [f'{cd.BANS}:6: 10 fields, where a ban has 11: {BAN_HEAD.strip()}'],
+            )
+
+    def test_a_doc_without_its_markers(self):
+        with self.checkout(doc='# Quirks\n') as c:
+            self.assertEqual(
+                c.failures('bans'),
+                [f'{cd.BANS_DOC}: has 0 {cd.BANS_BEGIN} and 0 {cd.BANS_END}, where it takes one and then the other'],
+            )
+
+    def test_a_table_with_no_doc(self):
+        with self.checkout(doc=None) as c:
+            self.assertEqual(c.failures('bans'), [f'{cd.BANS_DOC}: is not there: it shows each line of {cd.BANS}'])
 
 
 if __name__ == '__main__':

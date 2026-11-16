@@ -9,7 +9,8 @@
    controls_alpha, deprecated, kept under [Deprecated], and the other keys settings.txt dropped. And vk_descriptors,
    deprecated: the
    default an older version wrote in every game's .ini is no pick, so the game runs Automatic and nothing is said over
-   its picture; a pick is carried to vk_descriptors_mode, and --vk_descriptors=N is this run's */
+   its picture; a pick is carried to vk_descriptors_mode, and --vk_descriptors=N is this run's. And the FPS limit's,
+   showcase's and stats's keys: the value now and before it, in the log and the toast alike, and the .ini given it */
 #include "common/utilities/common.h"
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h"
@@ -389,7 +390,8 @@ static void test_astc_bc_old(void) {
     g_test.write = 0;
 }
 
-/* the log's settings line: the Display, Graphics and Performance settings off their default, each with its default */
+/* the log's settings line: the Display, Graphics, Audio and Performance settings off their default, each with its
+   default */
 static void test_settings_line(void) {
     char list[2048];
     g_settings.astc_mode = 1;
@@ -397,6 +399,11 @@ static void test_settings_line(void) {
     g_settings.astc_mode = 0;
     options_settings(list, sizeof list);
     CHECK(!strstr(list, "astc_mode"));
+    g_settings.volume = 40; /* the player's Volume: a silent game's log says why */
+    CHECK(options_settings(list, sizeof list) >= 1 && strstr(list, "volume=40 (default 100)"));
+    g_settings.volume = 100;
+    options_settings(list, sizeof list);
+    CHECK(!strstr(list, "volume"));
 }
 
 
@@ -505,7 +512,7 @@ static void test_vk_descriptors_old(void) {
     CHECK(!strstr(g_test.said, "is not a setting") && ini_overridden("vk_descriptors_mode") &&
           !strcmp(ini_overridden("vk_descriptors_mode"), "0"));
     CHECK(strstr(g_test.said,
-                 "settings: --vk_descriptors=0 is deprecated: this run reads it as --vk_descriptors_mode=0 "
+                 "settings: --vk_descriptors=0 is deprecated: this run reads it as --vk-descriptors-mode=0 "
                  "(Sets) (docs/user/deprecations.md)\n"));
     CHECK(text && strstr(text, "\nvk_descriptors_mode=3\n"));
     free(text);
@@ -521,7 +528,7 @@ static void test_vk_descriptors_old(void) {
     text = open_ini("[Debug]\nvk_descriptors_mode=3\n");
     CHECK(!strcmp(ini_overridden("vk_descriptors_mode"), "2"));
     CHECK(strstr(g_test.said, "settings: --vk_descriptors=1 is deprecated, and the command line gives "
-                              "--vk_descriptors_mode=2 too: vk_descriptors_mode=2 this run (docs/user/deprecations.md)\n"));
+                              "--vk-descriptors-mode=2 too: vk_descriptors_mode=2 this run (docs/user/deprecations.md)\n"));
     free(text);
     ini_override("vk_descriptors", NULL);
     ini_override("vk_descriptors_mode", NULL);
@@ -554,6 +561,80 @@ static int options_vk_descriptors_first(const char* which) {
     return 0;
 }
 
+/* the .ini as the next poll writes it, the menu's and the keys' changes in it */
+static char* ini_written(const char* path) {
+    size_t size;
+    char* text;
+    ini_poll(0);
+    CHECK((text = (char*)snx_read_file(path, &size)));
+    return text;
+}
+/* hotkey_fps_limit, hotkey_showcase and hotkey_stats: each press says the value now and the one before it, the same
+   words in the log and over the game (the toast's text), and writes the new one to the .ini. The FPS limit's three:
+   a number off and back to it, the game's pace off and back, and a run that started off going to the game's pace */
+static void test_key_steps(void) {
+    char *dir = snx_temp_dir(NULL), *path, *text, said[64];
+    int was = 0;
+    CHECK(dir);
+    path = snx_path_join(dir, "game.ini");
+    CHECK(path && !snx_write_file(path, "[Performance]\nfps_limit=120\n", strlen("[Performance]\nfps_limit=120\n")));
+    g_test.write = 1;
+    ini_open(path);
+    CHECK(g_opt_fps == 120);
+    CHECK(options_fps_limit_step(&was, said, sizeof said) == 0 && g_opt_fps == 0 && was == 120);
+    CHECK(!strcmp(said, "FPS limit: off (was 120)") && !strcmp(g_test.logged, "FPS limit: off (was 120)\n"));
+    text = ini_written(path);
+    CHECK(strstr(text, "\nfps_limit=0\n"));
+    free(text);
+    CHECK(options_fps_limit_step(&was, said, sizeof said) == 120 && g_opt_fps == 120);
+    CHECK(!strcmp(said, "FPS limit: 120 (was off)") && !strcmp(g_test.logged, "FPS limit: 120 (was off)\n"));
+    text = ini_written(path);
+    CHECK(strstr(text, "\nfps_limit=120\n"));
+    free(text);
+    /* the game's pace, fps_limit's default */
+    was = 0;
+    g_opt_fps = SNX_FPS_GAME;
+    CHECK(options_fps_limit_step(&was, said, sizeof said) == 0 && was == SNX_FPS_GAME);
+    CHECK(!strcmp(said, "FPS limit: off (was the game's pace)"));
+    CHECK(options_fps_limit_step(&was, said, sizeof said) == SNX_FPS_GAME && g_opt_fps == SNX_FPS_GAME);
+    CHECK(!strcmp(said, "FPS limit: the game's pace (was off)"));
+    text = ini_written(path);
+    CHECK(strstr(text, "\nfps_limit=game\n"));
+    free(text);
+    /* fps_limit=0 from the start, nothing taken off yet: the game's pace. No room given: the log's line alone */
+    was = 0;
+    g_opt_fps = 0;
+    CHECK(options_fps_limit_step(&was, NULL, 0) == SNX_FPS_GAME);
+    CHECK(!strcmp(g_test.logged, "FPS limit: the game's pace (was off)\n"));
+
+    /* showcase and stats, each in a corner not its default: the log's line names it while on */
+    snprintf(g_settings.showcase_corner, sizeof g_settings.showcase_corner, "tr");
+    snprintf(g_settings.stats_corner, sizeof g_settings.stats_corner, "br");
+    g_settings.showcase = g_settings.stats = 0;
+    CHECK(options_showcase_step(said, sizeof said) == 1 && g_settings.showcase == 1);
+    CHECK(!strcmp(said, "Showcase: on (was off)") &&
+          !strcmp(g_test.logged, "Showcase: on (was off), showcase_corner=tr\n"));
+    CHECK(options_stats_step(said, sizeof said) == 1 && g_settings.stats == 1);
+    CHECK(!strcmp(said, "Stats: on (was off)") && !strcmp(g_test.logged, "Stats: on (was off), stats_corner=br\n"));
+    text = ini_written(path);
+    CHECK(strstr(text, "\nshowcase=1\n") && strstr(text, "\nstats=1\n"));
+    free(text);
+    CHECK(options_showcase_step(said, sizeof said) == 0 && g_settings.showcase == 0);
+    CHECK(!strcmp(said, "Showcase: off (was on)") && !strcmp(g_test.logged, "Showcase: off (was on)\n"));
+    CHECK(options_stats_step(said, sizeof said) == 0 && g_settings.stats == 0);
+    CHECK(!strcmp(said, "Stats: off (was on)") && !strcmp(g_test.logged, "Stats: off (was on)\n"));
+    text = ini_written(path);
+    CHECK(strstr(text, "\nshowcase=0\n") && strstr(text, "\nstats=0\n"));
+    free(text);
+    /* a toast's buffer too small: cut, ended; the log's line whole */
+    options_stats_step(said, 7);
+    CHECK(!strcmp(said, "Stats:") && !strcmp(g_test.logged, "Stats: on (was off), stats_corner=br\n"));
+    g_test.write = 0;
+    CHECK(!snx_remove_tree(dir));
+    free(path);
+    free(dir);
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) return options_vk_descriptors_first(argv[1]);
     test_fixed();
@@ -568,6 +649,7 @@ int main(int argc, char** argv) {
     test_dropped_keys_old();
     test_vk_descriptors_old_default();
     test_vk_descriptors_old();
+    test_key_steps();
     printf("options_tv_mode: ok\n");
     return 0;
 }

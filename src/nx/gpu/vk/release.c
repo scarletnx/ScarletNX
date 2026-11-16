@@ -180,7 +180,7 @@ static void release_through(u64 gate, u64 cgate) {
         if (!r.gva) {
             /* release_value sees the transfer from queued to completed atomically. */
             perform(&r);
-            if (r.id < SYNC_N) g_rincr[r.id]--;
+            if (r.id < SYNC_N) __atomic_sub_fetch(&g_rincr[r.id], 1, __ATOMIC_RELEASE);
         }
         if (g_rtail == g_rhead) __atomic_store_n(&g_gpu_releases, 0, __ATOMIC_RELEASE);
         pm_unlock(&g_rlock);
@@ -267,7 +267,7 @@ static void release(Release* r) {
     g_rq[g_rhead % RQ_N] = *r;
     g_rhead++;
     if (r->gva) pend_add(&g_rpages, r->gva, r->len, 1);
-    if (!r->gva && r->id < SYNC_N) g_rincr[r->id]++;
+    if (!r->gva && r->id < SYNC_N) __atomic_add_fetch(&g_rincr[r->id], 1, __ATOMIC_RELEASE);
     __atomic_store_n(&g_gpu_releases, 1, __ATOMIC_RELEASE);
     if (!g_rthread) {
         pc_init(&g_rcv);
@@ -309,6 +309,8 @@ void vk_release_submit(void) {
     pm_unlock(&g_rlock);
     release_through(0, 0); /* those no GPU work holds */
     submit_through(gate);
+    if (g_vk_cs_open && g_vk_cs_open == vk_submit_number()) /* the dispatches compute.c left for the stream's end */
+        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
     vk_unlock();
 }
 void vk_release_samples(u64 gva, u32 len, u32 counter, u64 first, u64 end, u64 ticks) {
@@ -791,7 +793,13 @@ void vk_render_predicate_drop(u32 pred) {
 }
 u32 vk_release_value(u32 id) {
     pm_lock(&g_rlock);
-    u32 n = syncpt_read(id) + (id < SYNC_N ? g_rincr[id] : 0);
+    u32 n = syncpt_read(id) + (id < SYNC_N ? __atomic_load_n(&g_rincr[id], __ATOMIC_RELAXED) : 0);
     pm_unlock(&g_rlock);
     return n;
+}
+/* the queued count first: an increment performs (syncpt_add) before it leaves the count, so one that moves between the
+   two reads is counted twice, never missed */
+u32 vk_release_value_at_least(u32 id) {
+    u32 queued = id < SYNC_N ? __atomic_load_n(&g_rincr[id], __ATOMIC_ACQUIRE) : 0;
+    return syncpt_read(id) + queued;
 }

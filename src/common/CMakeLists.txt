@@ -119,13 +119,19 @@ if(TARGET snx_libdeflate)
 endif()
 # What the Vulkan frontends (src/nx/gpu/vk, src/3ds/gpu/vk, src/vita/gpu) share of a device: the instance, queries,
 # the device's choice, the drivers known to break an extension or feature (gpu/vk/extension_bans.txt, compiled in),
-# the submission ring, VK_EXT_shader_object's shader binaries and dynamic state, the swapchain and the SDL window
-# (gpu/vk/). Each frontend compiles volk.c, whose functions these call
+# the commands each extension requires (generated from the registry, cmake/vk_extension_commands.cmake), the submission
+# ring, VK_EXT_shader_object's shader binaries and dynamic state, the swapchain and the SDL window (gpu/vk/). Each
+# frontend compiles volk.c, whose functions these call
+if(TARGET SDL3::SDL3)
+    include("${PROJECT_SOURCE_DIR}/cmake/notice.cmake") # the windows' notices (snx_notice)
+endif()
 if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_bans.cmake")
+    include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_commands.cmake")
     add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/driver_tag.c gpu/vk/extension_bans.c
-                                     "${PROJECT_BINARY_DIR}/generated/vk_extension_bans_text.c" gpu/vk/ring.c
-                                     gpu/vk/shader_object.c gpu/vk/swapchain.c gpu/vk/window.c)
+                                     "${PROJECT_BINARY_DIR}/generated/vk_extension_bans_text.c"
+                                     gpu/vk/extension_commands.c "${snx_vk_extension_commands_c}" gpu/vk/ring.c
+                                     gpu/vk/shader_object.c gpu/vk/swapchain.c gpu/vk/window.c gpu/vk/notice.c)
     set_target_properties(snx_vk_common PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_vk_common PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                                  -Werror=missing-variable-declarations)
@@ -134,4 +140,5 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     # scarletnx-common: on macOS the window names the Vulkan driver beside the program (snx_executable,
     # snx_vulkan_driver)
     target_link_libraries(snx_vk_common PUBLIC Vulkan::Headers SDL3::SDL3 scarletnx-common)
+    target_link_libraries(snx_vk_common PUBLIC snx_notice) # a window's notice copied over its picture (gpu/vk/notice.c)
 endif()

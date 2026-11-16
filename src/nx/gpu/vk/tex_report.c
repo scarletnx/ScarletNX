@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/tex_report.h"
+#include "nx/gpu/vk/pagespace.h"
 #include "common/utilities/bits.h"
 #include "nx/gpu/guest_textures.h"
 #include "nx/gpu/vk/range_shape.h"
@@ -300,6 +301,29 @@ void vk_tex_report_log(void) {
             (unsigned long long)(g_tex_report.reloads - g_tex_report.reported),
             (unsigned long long)g_tex_report.evictions);
     g_tex_report.reported = g_tex_report.reloads;
+    u64 sys_out, sys_back, sys_bytes;
+    vk_tex_sysmem_stats(&sys_out, &sys_back, &sys_bytes);
+    if (vk_pages_system() || vk_mirror_system())
+        LOG("vulkan: granules in system memory where the GPU's had no room so far: %llu of the page cache, %llu of the "
+            "GPU mirror\n",
+            (unsigned long long)vk_pages_system(), (unsigned long long)vk_mirror_system());
+    if (sys_out)
+        LOG("vulkan: %llu textures moved into system memory for room in place of an eviction (texture_sysmem), %llu "
+            "moved back; %llu MB there now\n",
+            (unsigned long long)sys_out, (unsigned long long)sys_back, MB(sys_bytes));
+    u64 shed_made, shed_bytes, shed_coarser, shed_finer;
+    vk_tex_shed_stats(&shed_made, &shed_bytes, &shed_coarser, &shed_finer);
+    if (shed_made)
+        LOG("vulkan: %llu textures made sparse for their levels (texture_shed, %llu MB whole); %llu levels given way for "
+            "room, %llu taken back\n",
+            (unsigned long long)shed_made, MB(shed_bytes), (unsigned long long)shed_coarser,
+            (unsigned long long)shed_finer);
+    u64 half_made, half_bytes;
+    vk_tex_half_stats(&half_made, &half_bytes);
+    if (half_made)
+        LOG("vulkan: %llu textures made at half their resolution under memory pressure (texture_half_res), %llu MB of "
+            "finest levels left unbound\n",
+            (unsigned long long)half_made, MB(half_bytes));
     const u64 *idle = g_tex_report.idle, *back = g_tex_report.back;
     if (idle[0] | idle[1] | idle[2] | idle[3] | back[0] | back[1] | back[2] | back[3])
         LOG("vulkan: since the last report the cache evicted %llu textures unused for under 60 presents, %llu for 60 "

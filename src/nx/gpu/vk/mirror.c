@@ -139,6 +139,12 @@ int vk_mirror_on(void) {
 VkBuffer vk_mirror_buffer(void) { return g_mir.buf; }
 VkBuffer vk_mirror_mask(void) { return g_mir.mask; }
 
+static u64 g_mir_system; /* granules that took system memory, the GPU's having none */
+u64 vk_mirror_system(void) { return g_mir_system; }
+/* the granules' binds signal one, the landings' submissions the other, each under vk_lock: a sparse bind is not
+   ordered against a command buffer, so the two can't share a timeline */
+static VkHostTimeline g_mir_bound, g_mir_landed;
+
 /* memory for granule g bound into the mirror and its mask, the mask cleared; 0 out of memory */
 static Gran* gran_bind(u64 g) {
     Gran* r = calloc(1, sizeof *r);
@@ -151,11 +157,22 @@ static Gran* gran_bind(u64 g) {
     req[1].size = MIR_MASK_G;
     DevMemWant aci = {.at = DM_DEVICE};
     DevMemInfo info[2];
-    if (!r->shadow || !VK_OK(vk_devmem_alloc(&req[0], &aci, &r->mem, &info[0]))) goto fail;
-    if (!VK_OK(vk_devmem_alloc(&req[1], &aci, &r->mask, &info[1]))) {
-        vk_devmem_free(r->mem);
-        goto fail;
+    if (!r->shadow) goto fail;
+    /* the GPU's memory, else system memory, where the programs read and write it over the bus: a granule that found
+       none left its dispatches the slow way each time, under a frame a second for seconds in Mario Kart World on a GPU
+       of 2 GB. Its mask goes with it */
+    int got = 0;
+    for (int at = 0; at < 2 && !got; at++) {
+        aci.at = at ? DM_SYSTEM : DM_DEVICE;
+        if (vk_devmem_alloc(&req[0], &aci, &r->mem, &info[0]) != VK_SUCCESS) continue;
+        if (vk_devmem_alloc(&req[1], &aci, &r->mask, &info[1]) != VK_SUCCESS) {
+            vk_devmem_free(r->mem);
+            continue;
+        }
+        got = 1;
+        g_mir_system += at;
     }
+    if (!got) goto fail;
     vk_mem_track(r->mem, VK_OWN_MIRROR);
     vk_mem_track(r->mask, VK_OWN_MIRROR);
     VkSparseMemoryBind b[2] = {
@@ -165,18 +182,9 @@ static Gran* gran_bind(u64 g) {
          .memory = info[1].memory,
          .memoryOffset = info[1].offset}};
     VkSparseBufferMemoryBindInfo bb[2] = {{g_mir.buf, 1, &b[0]}, {g_mir.mask, 1, &b[1]}};
+    /* bound before any work that reads it is submitted: once a granule, so a wait is no cost */
     VkBindSparseInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, .bufferBindCount = 2, .pBufferBinds = bb};
-    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    VkFence fence;
-    int ok = VK_OK(vkCreateFence(g_vk.dev, &fi, NULL, &fence));
-    if (ok) {
-        /* bound before any work that reads it is submitted: once a granule, so a wait is no cost */
-        vk_queue_lock(g_vk.gfx);
-        ok = VK_OK(vkQueueBindSparse(g_vk.gfx, 1, &bi, fence));
-        vk_queue_unlock(g_vk.gfx);
-        ok = ok && vk_wait_fence(fence);
-        vkDestroyFence(g_vk.dev, fence, NULL);
-    }
+    int ok = vk_host_bind_sparse(&g_mir_bound, &bi);
     if (!ok) fatal("vulkan: could not bind memory into the GPU mirror");
     vk_render_end();
     rec_CmdFillBuffer(vk_cmd(), g_mir.mask, g * MIR_MASK_G, MIR_MASK_G, 0);
@@ -993,17 +1001,21 @@ static void harvest_left(const u32* left, u32 n) {
     if (!harvest_record(g_mir_cb, r, k, out, 0, size, n, MIR_ENTRY, dpool))
         fatal("vulkan: no descriptor set left to land the GPU mirror's writes");
     VK_OK(vkEndCommandBuffer(g_mir_cb));
-    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    VkFence fence;
-    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &g_mir_cb};
-    int ok = VK_OK(vkCreateFence(g_vk.dev, &fi, NULL, &fence));
-    if (ok) {
-        vk_queue_lock(g_vk.gfx);
-        ok = VK_OK(vkQueueSubmit(g_vk.gfx, 1, &si, fence));
-        vk_queue_unlock(g_vk.gfx);
-        ok = ok && vk_wait_fence(fence);
-        vkDestroyFence(g_vk.dev, fence, NULL);
-    }
+    vk_queue_lock(g_vk.gfx);
+    u64 value = vk_host_next(&g_mir_landed); /* makes the semaphore at the first use */
+    VkCommandBufferSubmitInfo ci = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = g_mir_cb};
+    VkSemaphoreSubmitInfo done = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                  .semaphore = g_mir_landed.sem,
+                                  .value = value,
+                                  .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                        .commandBufferInfoCount = 1,
+                        .pCommandBufferInfos = &ci,
+                        .signalSemaphoreInfoCount = 1,
+                        .pSignalSemaphoreInfos = &done};
+    int ok = value && VK_OK(vkQueueSubmit2(g_vk.gfx, 1, &si, VK_NULL_HANDLE));
+    vk_queue_unlock(g_vk.gfx);
+    ok = ok && vk_host_wait(&g_mir_landed, value);
     if (!ok || !VK_OK(vk_devmem_invalidate(mem, 0, VK_WHOLE_SIZE)))
         fatal("vulkan: could not land the GPU mirror's writes");
     vkDestroyDescriptorPool(g_vk.dev, dpool, NULL); /* its work is done */
@@ -1105,18 +1117,21 @@ static int gran_release(u64 g) {
    100 of its 117 granules, bound by the programs of its menus, took no binding through most of a race, 225 MB of the
    device's memory, while its textures were evicted for room. One bound again later takes guest memory's bytes
    whole, as a new one does. A few a call, each a part of the granules: a landing is a round trip to the GPU */
-#define MIR_IDLE    600
+#define MIR_IDLE       600
+#define MIR_IDLE_TIGHT 120 /* past nine tenths of the budget: a granule bound again takes system memory where the GPU's
+                              has none, so letting it go sooner costs a copy of its bytes, not a stall */
 #define MIR_RELEASE 8
 void vk_mirror_trim(void) {
     if (g_mir.on <= 0 || !g_mir.bound || vk_rec_unsafe()) return;
     u64 usage, budget;
     vk_mem_use(&usage, &budget);
     if (usage < budget / 5 * 4) return;
+    const u32 idle = usage >= budget / 10 * 9 ? MIR_IDLE_TIGHT : MIR_IDLE;
     u32 done = 0;
     for (u64 n = 0; n < g_mir.granules / 8 && done < MIR_RELEASE; n++) {
         u64 g = g_mir.trim_at++ % g_mir.granules;
         const Gran* r = g_mir.gran[g];
-        if (r && (u32)(g_vk_present - r->used) >= MIR_IDLE) {
+        if (r && (u32)(g_vk_present - r->used) >= idle) {
             gran_release(g);
             done++;
         }

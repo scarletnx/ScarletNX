@@ -10,6 +10,7 @@
 #include "nx/loader/module.h"
 #include "nx/loader/module_llvm.h"
 #include "nx/loader/codegen_view.h"
+#include "nx/loader/ounce.h"
 #include "nx/runtime/nce/nce_host.h"
 #include "nx/runtime/nce/nce_patch.h"
 #if defined(__ANDROID__)
@@ -47,8 +48,10 @@ static void usage(void) {
          "  --keys FILE            prod.keys for a dump (default: the data folder, then ~/.switch)\n"
          "  --title-keys FILE      title.keys for a dump, found the same way (optional)\n"
          "  --program N            Only program N of a dump's application of several (default: every one)");
-    puts("  --KEY=VALUE            A recompile setting: opt, llvm_batch, aot_threads, unit_cache_gb,\n"
-         "                         llvm_pass_<pass>=0 (scarletnx --settings=recompile lists them)");
+    puts("  --KEY=VALUE            A recompile setting, KEY its key with a - for each _: --opt, --llvm-batch,\n"
+         "                         --aot-threads, --unit-cache-gb, --llvm-pass-<pass>=0 (scarletnx\n"
+         "                         --settings=recompile lists the keys). The key as written, the older\n"
+         "                         spelling, is still read, and said once");
     puts("  --target auto|linux|win64  The host only: modules are built for the machine that builds them\n"
          "  --target ios           A pack of objects for the iOS app, which loads them into JIT memory (docs/hosts/apple.md)\n"
          "  --no-build             Stage data/INI only, generate no code\n"
@@ -79,7 +82,7 @@ static void old_branch_profile(void) {
                   old, g_settings.ir_branch_profile);
     else if (strlen(old) < sizeof g_settings.ir_branch_profile) {
         memcpy(g_settings.ir_branch_profile, old, strlen(old) + 1);
-        snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated: this recompile reads it as --ir_branch_profile=%s "
+        snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated: this recompile reads it as --ir-branch-profile=%s "
                   "(docs/user/deprecations.md)",
                   old, old);
     } else
@@ -106,30 +109,6 @@ char* snx_own_runtime(const SnxPaths* paths) {
     return NULL;
 #endif
 }
-#ifdef _WIN32
-/* Windows finds a program's DLLs next to it: the game's folder gets those next to the runtime (the zip's LLVM), or
-   it does not start. Links where the disk takes them, so each game does not hold copies */
-static int copy_dlls(const char* run, const char* out) {
-    char **names = NULL, *from = snx_dirname(run), *src, *dst;
-    size_t i, count = 0, n;
-    int rc = snx_list_dir(from, &names, &count);
-    for (i = 0; !rc && i < count; ++i) {
-        n = strlen(names[i]);
-        if (n < 4 || names[i][n - 4] != '.' || tolower((unsigned char)names[i][n - 3]) != 'd' ||
-            tolower((unsigned char)names[i][n - 2]) != 'l' || tolower((unsigned char)names[i][n - 1]) != 'l')
-            continue;
-        src = snx_path_join(from, names[i]);
-        dst = snx_path_join(out, names[i]);
-        /* a new one linked, else copied; one there already copied over when it differs (a newer zip's) */
-        rc = snx_is_file(src) && (snx_path_exists(dst) || snx_link_file(src, dst)) && snx_copy_file(src, dst);
-        free(src);
-        free(dst);
-    }
-    snx_free_strings(names, count);
-    free(from);
-    return rc;
-}
-#endif
 int snx_deploy_runtime(const char* run, const char* exe) {
     char* tmp = snx_format("%s.tmp", exe);
     int rc;
@@ -137,7 +116,7 @@ int snx_deploy_runtime(const char* run, const char* exe) {
     char* folder = snx_dirname(exe); /* what a program loads from its own folder goes beside it before it does */
 #endif
 #ifdef _WIN32
-    rc = copy_dlls(run, folder);
+    rc = snx_copy_dlls(run, folder, 1);
     if (rc) snx_error("cannot copy the runtime's DLLs to %s", folder);
     if (rc) {
         free(folder);
@@ -503,8 +482,8 @@ static int nce_prepare(SnxProgram* p, const char* base, int quiet) {
         free(path);
         return snx_error("NCE: the program has no modules");
     }
-    /* the instructions the recompile decodes: an Ounce game's too, as module_llvm.c's analysis does */
-    SnxU64 features = g_settings.cpu_extensions || p->npdm.ounce ? SNX_A64_TARGET_SWITCH_EXTENDED : 0;
+    /* the instructions the recompile decodes, the program's CPU (loader/ounce.h), as module_llvm.c's analysis does */
+    SnxU64 features = snx_guest_features(p->npdm.ounce, g_settings.cpu_extensions);
     if (snx_nx_codegen_analyze(&cg, p, NULL, 0, quiet, features)) {
         free(path);
         return snx_error("NCE: the analysis of the game's code failed");
@@ -1023,6 +1002,14 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         else if (arg[0] == '-') {
             value = NULL;
             if ((equal = strchr(arg, '=')) != NULL) {
+                /* a recompile setting, its key's _ a - or not */
+                char key[64];
+                const IniOpt* o = settings_arg(arg, key, sizeof key) ? snx_recompile_setting(key) : NULL;
+                if (o) {
+                    if (ini_check(o, equal + 1, error, sizeof error)) return snx_error("%s", error);
+                    ini_read(o, equal + 1);
+                    continue;
+                }
                 option_size = (size_t)(equal - arg);
                 if (option_size >= sizeof(option))
                     return snx_error("unknown option: %s (scarletnx -r -h lists them)", arg);
@@ -1030,12 +1017,6 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
                 option[option_size] = 0;
                 value = equal + 1;
                 arg = option;
-                if (arg[1] == '-' && snx_recompile_setting(arg + 2)) {
-                    const IniOpt* o = snx_recompile_setting(arg + 2);
-                    if (ini_check(o, value, error, sizeof error)) return snx_error("%s", error);
-                    ini_read(o, value);
-                    continue;
-                }
             }
             if (strcmp(arg, "-o") && strcmp(arg, "--name") && strcmp(arg, "--out") && strcmp(arg, "--outname") &&
                 strcmp(arg, "--keys") && strcmp(arg, "--title-keys") && strcmp(arg, "--outdir") &&
@@ -1081,7 +1062,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         usage();
         return 2;
     }
-    /* the settings, whichever way they came: -O and --jobs, or --opt= and --aot_threads= as the launcher passes them */
+    /* the settings, whichever way they came: -O and --jobs, or --opt= and --aot-threads= as the launcher passes them */
     if (strlen(g_settings.optimization_level) != 1 || !strchr("0123sz", g_settings.optimization_level[0]))
         return snx_error("opt = %s: not 0, 1, 2, 3, s or z", g_settings.optimization_level);
     if (strcmp(g_settings.llvm_batch, "full") && strcmp(g_settings.llvm_batch, "ipo"))

@@ -175,7 +175,7 @@ static int check_mesh_inputs(void) {
     channel->r3d_dirty = ~0u;
     CHECK(!mesh_pixel(channel, target, 0, (const u8[4]){0, 0, 255, 255}));
     printf("mesh inputs: 10 range, format, update and remapping cases checked (strict bounds %s)\n",
-           g_vk.has_vertex_robustness2 ? "on" : "unavailable");
+           (g_vk.has_vertex_robustness2 || g_vk.robust_buffer2) ? "on" : "unavailable");
     free(channel);
     return 0;
 }

@@ -75,12 +75,14 @@ if(SNX_TEST_SANITIZERS)
         # the menu, its splash, icon and pads
         scarletnx-gui snx_gui_support snx_gui_ui snx_i18n snx_gui_languages snx_gui_languages_test snx_splash snx-test-splash
         snx_window_icon snx-test-window-icon snx_pad_sdl snx_gui_pad
+        # the notice of the 3DS's, the Vita's and the GBA's windows
+        snx_notice
         # the shader corpus translator, which shaderc_sm86 runs
         snx-shaderc
         # GLSL ES into SPIR-V
         snx_glslc snx-glslc-cli snx-test-glslc-lex snx-test-glslc-parse snx-test-glslc-emit snx-test-glslc-fuzz
         # the code generators, which tests run on files they refuse
-        snx-swipc snx-svcgen snx-hookgen snx-settingsgen snx-uigen snx-decodetree)
+        snx-swipc snx-svcgen snx-hookgen snx-settingsgen snx-uigen snx-decodetree snx-vkcmdgen)
 endif()
 # one Python for the scripted tests: without it they are left out
 find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -363,6 +365,16 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-vk-import-error 11)
     target_link_libraries(snx-test-3ds-vk-import-error PRIVATE snx_ctr_gpu)
     add_test(NAME 3ds_vk_import_error COMMAND snx-test-3ds-vk-import-error)
+    # vk_debug_hide_commands on the 3DS's device: VK_EXT_shader_object's vkCreateShadersEXT taken as missing, the
+    # device made again without the extension and the log saying so (common/gpu/vk/extension_commands.c's
+    # snx_vk_device_commands). The log is the device's stderr, read back through dup2
+    if(NOT WIN32)
+        add_executable(snx-test-3ds-vk-hidden-commands 3ds_vk_hidden_commands.c)
+        snx_test_target(snx-test-3ds-vk-hidden-commands 11)
+        target_link_libraries(snx-test-3ds-vk-hidden-commands PRIVATE snx_ctr_gpu)
+        add_test(NAME 3ds_vk_hidden_commands COMMAND snx-test-3ds-vk-hidden-commands)
+        set_tests_properties(3ds_vk_hidden_commands PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    endif()
     # the samplers' anisotropy for the Switch's setting, and what the run says of it
     add_executable(snx-test-3ds-vk-anisotropy 3ds_vk_anisotropy.c)
     snx_test_target(snx-test-3ds-vk-anisotropy 11)
@@ -917,19 +929,21 @@ snx_test_target(snx-test-spirv-opt-fold 99)
 target_include_directories(snx-test-spirv-opt-fold PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME spirv_opt_fold COMMAND snx-test-spirv-opt-fold)
 
-# Validate the direct writer against SPIRV-Tools when the system tools are installed.
-if(SNX_BUILD_NX)
-    find_program(SNX_SPIRV_VAL spirv-val)
-    find_program(SNX_SPIRV_DIS spirv-dis)
-    if(SNX_SPIRV_VAL AND SNX_SPIRV_DIS AND Python3_Interpreter_FOUND)
+# Validate the direct writer against SPIRV-Tools (cmake/spirv_tools.cmake)
+if(SNX_BUILD_NX AND Python3_Interpreter_FOUND)
+    include("${PROJECT_SOURCE_DIR}/cmake/spirv_tools.cmake")
+    if(TARGET snx-spirv-dis)
         add_executable(snx-test-spirv-emitter spirv_emitter.c spirv_emitter_fixture.c
             "${PROJECT_SOURCE_DIR}/src/common/utilities/spirv_emit.c")
         snx_test_target(snx-test-spirv-emitter 11)
                 add_test(NAME spirv_emitter COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/spirv_emitter_test.py"
-            --generator $<TARGET_FILE:snx-test-spirv-emitter> --validator "${SNX_SPIRV_VAL}" --disassembler "${SNX_SPIRV_DIS}")
+            --generator $<TARGET_FILE:snx-test-spirv-emitter> --validator $<TARGET_FILE:snx-spirv-val>
+            --disassembler $<TARGET_FILE:snx-spirv-dis>)
     else()
-        message(STATUS "Skipping spirv_emitter: Python3, spirv-val, and spirv-dis are required")
+        message(STATUS "Skipping spirv_emitter: spirv-dis is required")
     endif()
+elseif(SNX_BUILD_NX)
+    message(STATUS "Skipping spirv_emitter: Python 3 is required")
 endif()
 
 add_executable(snx-test-arm-decode arm_decode.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/rt_helpers.c")
@@ -1284,6 +1298,16 @@ target_include_directories(snx-test-hook-install PRIVATE "${PROJECT_SOURCE_DIR}/
 snx_service_swipc(snx-test-hook-install)
 snx_hookgen(snx-test-hook-install SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook" A32_MARKED)
 add_test(NAME hook_install COMMAND snx-test-hook-install)
+# native_cond_var (src/nx/hle/hook/family.c, hook.c) over tests/hook/states.hook: the cond_var family's hooks at 1, the
+# game's own wait at 0, and save states refused while the host's wait runs, by a message naming the setting's value
+add_executable(snx-test-hook-states hook_states.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
+snx_test_target(snx-test-hook-states 23)
+target_link_libraries(snx-test-hook-states PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
+target_include_directories(snx-test-hook-states PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_service_swipc(snx-test-hook-states)
+snx_hookgen(snx-test-hook-states SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/states.hook" A32_MARKED)
+add_test(NAME hook_states COMMAND snx-test-hook-states)
 # the jumps written over an invalidated native hook's start (src/nx/hle/hook/jump.c), every architecture's bytes
 # against what llvm-mc disassembles them to, on any host
 add_executable(snx-test-hook-jump hook_jump.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
@@ -1292,14 +1316,17 @@ target_link_libraries(snx-test-hook-jump PRIVATE scarletnx-common) # jump.c flus
 target_include_directories(snx-test-hook-jump PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME hook_jump COMMAND snx-test-hook-jump)
 # a native hook the game invalidates (src/nx/hle/hook/hook.c): its adapter rewritten into a jump to the game's code, on
-# this test's own x86_64 code; skipped on another host
+# this test's own x86_64 code, and the mod's trampolines that an ext_skyline hook (tests/hook/ext_skyline.hooks) takes;
+# skipped on another host
 add_executable(snx-test-hook-invalidated hook_invalidated.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/ext_skyline.c")
 snx_test_target(snx-test-hook-invalidated 23)
 target_link_libraries(snx-test-hook-invalidated PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-invalidated PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_service_swipc(snx-test-hook-invalidated)
 snx_hookgen(snx-test-hook-invalidated SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook" A32_MARKED)
+snx_hookgen(snx-test-hook-invalidated SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/ext_skyline.hooks" PREFIX skyline
+            NAME hle/hook/ext_skyline.hooks)
 add_test(NAME hook_invalidated COMMAND snx-test-hook-invalidated)
 set_tests_properties(hook_invalidated PROPERTIES SKIP_RETURN_CODE 77)
 # hook_install over a full table (src/nx/hle/hook/hook.c), the spec written here with as many hooks as tools/hookgen
@@ -1338,11 +1365,73 @@ target_include_directories(snx-test-hook-verify PRIVATE "${PROJECT_SOURCE_DIR}/s
 snx_hookgen(snx-test-hook-verify SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/verify.hook")
 add_test(NAME hook_verify COMMAND snx-test-hook-verify)
 # nn::diag's abort hook (src/nx/hle/hook/diag.c) on a fake abort: the values it logs, then its own code run
-add_executable(snx-test-diag-abort diag_abort.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/diag.c")
+# libc_std.c too: the table names its handlers, which run on the host's C library alone
+add_executable(snx-test-diag-abort diag_abort.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/diag.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_std.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_wide.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_fmt.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libcxx_string.c")
 snx_test_target(snx-test-diag-abort 11) # log.h has _Thread_local
 target_include_directories(snx-test-diag-abort PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-diag-abort SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
 add_test(NAME diag_abort COMMAND snx-test-diag-abort)
+# std::string's hooks (src/nx/hle/hook/libcxx_string.c) on libc++'s layout in guest memory
+add_executable(snx-test-libcxx-string libcxx_string.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libcxx_string.c")
+snx_test_target(snx-test-libcxx-string 11)
+target_include_directories(snx-test-libcxx-string PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_hookgen(snx-test-libcxx-string SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+add_test(NAME libcxx_string COMMAND snx-test-libcxx-string)
+# std::vector's storage hook (src/nx/hle/hook/alloc.c): the destructor shapes alloc_vector_shape takes and leaves, and
+# alloc_vector_free's empty vector and foreign pointer
+if(NOT WIN32)
+    add_executable(snx-test-alloc-vector alloc_vector.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/alloc.c")
+    snx_test_target(snx-test-alloc-vector 11)
+    target_include_directories(snx-test-alloc-vector PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    snx_hookgen(snx-test-alloc-vector SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    add_test(NAME alloc_vector COMMAND snx-test-alloc-vector)
+endif()
+# the sync family's clocks (src/nx/hle/hook/sync.c) against the game's (src/nx/runtime/clock.c): steady_clock stopped
+# by a pause and set by a state's load, system_clock the host's
+add_executable(snx-test-sync-clock sync_clock.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/sync.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/runtime/clock.c")
+snx_test_target(snx-test-sync-clock 11)
+target_include_directories(snx-test-sync-clock PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx-test-sync-clock PRIVATE scarletnx-platform)
+snx_hookgen(snx-test-sync-clock SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+add_test(NAME sync_clock COMMAND snx-test-sync-clock)
+# the os_light family's LightEvent handlers (src/nx/hle/hook/os_sync.c) on each SDK's layout of nn::os::LightEventType,
+# against the bytes the SDK's own InitializeLightEvent leaves
+add_executable(snx-test-os-light-event os_light_event.c)
+snx_test_target(snx-test-os-light-event 11)
+target_include_directories(snx-test-os-light-event PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx-test-os-light-event PRIVATE scarletnx-platform)
+snx_hookgen(snx-test-os-light-event SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+# its handlers on the layouts of the table hookgen makes, which it reads; os_sync.c's split symbol names are deliberate
+target_compile_definitions(snx-test-os-light-event PRIVATE
+    OS_LIGHT_INC="${CMAKE_CURRENT_BINARY_DIR}/hookgen/snx-test-os-light-event/hle/hook/hooks.hook.inc")
+target_compile_options(snx-test-os-light-event PRIVATE -Wno-string-concatenation)
+add_test(NAME os_light_event COMMAND snx-test-os-light-event)
+# the alloc family's arena (src/nx/hle/hook/alloc.c) in a program that links jemalloc as scarletnx does, whole and
+# unexported: ready, and its allocations in the guest's window above the layout; the SDK heap's functions on its
+# blocks, each in the runtime's route list (snx_nx_module's)
+if(SNX_JEMALLOC AND NOT WIN32)
+    add_executable(snx-test-alloc-arena alloc_arena.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/alloc.c")
+    snx_test_target(snx-test-alloc-arena 11)
+    target_include_directories(snx-test-alloc-arena PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(snx-test-alloc-arena PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,snx_jemalloc>" snx_nx_module)
+    snx_hookgen(snx-test-alloc-arena SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    target_compile_definitions(snx-test-alloc-arena PRIVATE LIVE_BITS=8) # a table that fills in a few hundred blocks
+    add_test(NAME alloc_arena COMMAND snx-test-alloc-arena)
+    set_tests_properties(alloc_arena PROPERTIES TIMEOUT 60)
+endif()
+# the C library's functions on guest memory (src/nx/hle/hook/libc_std.c): guest addresses back from pointers into an
+# argument, end pointers, strtok's place, div_t and ldiv_t, errno, qsort and bsearch through the guest's comparison
+if(NOT WIN32)
+    add_executable(snx-test-libc-std libc_std.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_std.c"
+                   "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_wide.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_fmt.c")
+    snx_test_target(snx-test-libc-std 11)
+    target_include_directories(snx-test-libc-std PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    snx_hookgen(snx-test-libc-std SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    add_test(NAME libc_std COMMAND snx-test-libc-std)
+endif()
 # the event a hooked SDK object attaches to the game's SystemEvent (src/nx/hle/hook/codec.c's hook_attach_event): its
 # references, with the kernel's objects stubbed to their counts
 add_executable(snx-test-hook-event-reference hook_event_reference.c)
@@ -1752,6 +1841,18 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     snx_service_swipc(snx-test-nn-audio-renderer)
     snx_hookgen(snx-test-nn-audio-renderer SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/audio_renderer.hook" A32_MARKED)
     add_test(NAME nn_audio_renderer COMMAND snx-test-nn-audio-renderer)
+    # the input streams of the Ounce's SDK (hle/hook/audio_stream.c) over a synthetic microphone, never a real one, and
+    # the noise reduction (runtime/platform/audio_denoise.c): RNNoise built in, and the system's libspeexdsp when it is
+    # there
+    add_executable(snx-test-audio-mic audio_mic.c)
+    snx_test_target(snx-test-audio-mic 23)
+    snx_service_swipc(snx-test-audio-mic)
+    snx_hookgen(snx-test-audio-mic SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    target_link_libraries(snx-test-audio-mic PRIVATE scarletnx-common snx_rnnoise)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-audio-mic PRIVATE m)
+    endif()
+    add_test(NAME audio_mic COMMAND snx-test-audio-mic)
 endif()
 
 # Inline software keyboard protocol and applet completion events.
@@ -1762,7 +1863,8 @@ target_link_libraries(snx-test-am-service PRIVATE snx_test_common) # snx_nacp_ao
 add_test(NAME am_service COMMAND snx-test-am-service)
 
 # gsv.c's display session: what a game is told of the display's HDR (GetHdrStatus, GetHdrPaperWhite, the HDR status
-# event) and of its largest picture (GetBufferMaxResolution), with the renderer stood in for
+# event), of its largest picture (GetBufferMaxResolution) and of its refresh rates (the ones it takes, the one it runs
+# at, a game turning 120 Hz on and off, the refresh rate event), with the renderer and the window's display stood in for
 add_executable(snx-test-gsv-hdr gsv_hdr.c)
 snx_test_target(snx-test-gsv-hdr 23)
 snx_service_swipc(snx-test-gsv-hdr hle/services/native_video.swipc hle/services/gsv.swipc hle/services/nvdrv.swipc)
@@ -1850,7 +1952,7 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
         target_compile_definitions(snx-test-overlay PRIVATE SNX_TRACY=1)
     endif()
     snx_test_target(snx-test-overlay 11)
-    target_link_libraries(snx-test-overlay PRIVATE scarletnx-common snx_splash m SDL3::SDL3)
+    target_link_libraries(snx-test-overlay PRIVATE scarletnx-common snx_splash m SDL3::SDL3 snx_notice)
     target_include_directories(snx-test-overlay PRIVATE "${PROJECT_BINARY_DIR}/generated")
     add_test(NAME overlay COMMAND snx-test-overlay)
 endif()
@@ -1877,6 +1979,13 @@ if(TARGET SDL3::SDL3) # the keys' names are SDL's
     snx_test_target(snx-test-hotkeys 11)
     target_link_libraries(snx-test-hotkeys PRIVATE SDL3::SDL3)
     add_test(NAME hotkeys COMMAND snx-test-hotkeys)
+    # the notice of the windows with no menu of their own (common/utilities/notice.c): the Switch's notice's letters,
+    # place and colours
+    add_executable(snx-test-notice notice.c)
+    snx_test_target(snx-test-notice 99)
+    target_link_libraries(snx-test-notice PRIVATE snx_notice)
+    target_include_directories(snx-test-notice PRIVATE "${PROJECT_BINARY_DIR}/generated") # the theme's colours
+    add_test(NAME notice COMMAND snx-test-notice)
     # the hints every program sets before its SDL video starts (common/utilities/sdl_desktop.h)
     add_executable(snx-test-sdl-desktop-hints sdl_desktop_hints.c)
     snx_test_target(snx-test-sdl-desktop-hints 11)
@@ -1921,18 +2030,32 @@ add_executable(snx-test-rtapi-miss rtapi_miss.c "${PROJECT_SOURCE_DIR}/src/nx/ru
 snx_test_target(snx-test-rtapi-miss 23)
 target_link_libraries(snx-test-rtapi-miss PRIVATE snx_nx_flags snx_settings_runtime)
 add_test(NAME rtapi_miss COMMAND snx-test-rtapi-miss)
+# the crash report of a runtime thread (runtime/crash.c): its name as the system has it and what it noted it was doing,
+# a pipeline the driver was making (common/platform/thread.c's plat_thread_note), or that it noted nothing
+add_executable(snx-test-crash-runtime-thread crash_runtime_thread.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/crash.c")
+snx_test_target(snx-test-crash-runtime-thread 23)
+target_link_libraries(snx-test-crash-runtime-thread PRIVATE snx_nx_flags Threads::Threads ${CMAKE_DL_LIBS})
+if(CMAKE_SYSTEM_NAME STREQUAL "NetBSD")
+    target_link_libraries(snx-test-crash-runtime-thread PRIVATE execinfo) # crash.c's host frames
+endif()
+add_test(NAME crash_runtime_thread COMMAND snx-test-crash-runtime-thread)
 
 add_executable(snx-test-ini-deprecated ini_deprecated.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-ini-deprecated 11)
 add_test(NAME ini_deprecated COMMAND snx-test-ini-deprecated)
 
 # options.c's TV mode Auto over a faked host power source, a key its .ini gives twice, controls_skin's default as a .ini
-# opens, controls_opacity read as controls_alpha and vk_descriptors as vk_descriptors_mode; the rest of the runtime
-# stubbed
+# opens, controls_opacity read as controls_alpha and vk_descriptors as vk_descriptors_mode, and the FPS limit's,
+# showcase's and stats's keys; the rest of the runtime stubbed
 add_executable(snx-test-options-tv-mode options_tv_mode.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/options.c")
 snx_test_target(snx-test-options-tv-mode 23)
 target_link_libraries(snx-test-options-tv-mode PRIVATE scarletnx-common)
 add_test(NAME options_tv_mode COMMAND snx-test-options-tv-mode)
+# the player's pause (runtime/pause.c), hotkey_pause's: each press's line, a pause that didn't happen, and another pause
+# in force; the guest threads, the GPU, host1x and the clocks stubbed
+add_executable(snx-test-pause-toggle pause_toggle.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/pause.c")
+snx_test_target(snx-test-pause-toggle 23)
+add_test(NAME pause_toggle COMMAND snx-test-pause-toggle)
 # vk_descriptors read as vk_descriptors_mode, a startup setting, which only a process's first .ini sets: a process each
 foreach(case old pick cli)
     add_test(NAME options_vk_descriptors_${case} COMMAND snx-test-options-tv-mode --vk-descriptors-${case})
@@ -1969,6 +2092,12 @@ add_test(NAME fatal_screen COMMAND snx-test-fatal-screen)
 add_executable(snx-test-ini ini.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-ini 11)
 add_test(NAME ini COMMAND snx-test-ini)
+# the settings' names on a command line, each key's with a - for each _ (tools/settingsgen's settings_args.c): sorted,
+# each read back as its key, none a common option's
+add_executable(snx-test-settings-args settings_args.c)
+snx_test_target(snx-test-settings-args 11)
+target_link_libraries(snx-test-settings-args PRIVATE scarletnx-common)
+add_test(NAME settings_args COMMAND snx-test-settings-args)
 # the Linux AArch64 signal frame the GNU ABI runtime and the Android bridge share
 add_executable(snx-test-linux-signal linux_signal.c "${PROJECT_SOURCE_DIR}/src/common/runtime/linux_signal.c")
 snx_test_target(snx-test-linux-signal 11)
@@ -2014,8 +2143,9 @@ if(Python3_Interpreter_FOUND)
              COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tracked_material.py" "${PROJECT_SOURCE_DIR}")
     set_tests_properties(tracked_material_self_test tracked_material PROPERTIES SKIP_RETURN_CODE 77)
     # the docs held to the checkout (scripts/check-docs.py): their links and anchors, the ## Index of each long one,
-    # docs/README.md linking every doc, and docs/user/settings.md's keys and defaults against src/nx/runtime/settings.txt;
-    # then the checks on checkouts made to fail them
+    # docs/README.md linking every doc, docs/user/settings.md's keys and defaults against src/nx/runtime/settings.txt,
+    # and docs/layers/gpu/driver-quirks.md's ban table against src/common/gpu/vk/extension_bans.txt; then the checks on
+    # checkouts made to fail them
     add_test(NAME docs_check COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check-docs.py")
     add_test(NAME docs_check_script COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/docs_test.py")
     # every key settings.txt dropped in main's history named by INI_DEPRECATED and docs/user/deprecations.md, the two
@@ -2097,6 +2227,11 @@ add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "
 # CPM_USE_LOCAL_PACKAGES takes from the system the packages added with snx_cpm_local_package alone (cmake/cpm_local.cmake)
 add_test(NAME cpm_local COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCPM=${cpm_file}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpm-local-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/cpm_local_test.cmake")
+# where spirv-opt, spirv-val and spirv-dis come from (cmake/spirv_tools.cmake): the fake tools are shell scripts
+if(NOT CMAKE_HOST_WIN32)
+    add_test(NAME spirv_tools COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCC=${CMAKE_C_COMPILER}"
+             "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/spirv-tools-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/spirv_tools_test.cmake")
+endif()
 # SNX_SYSTEM_SDL3 takes a system SDL3 from 3.4.12, and says what it found where it takes none (cmake/system_sdl3.cmake)
 add_test(NAME system_sdl3 COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/system-sdl3-test" "-DGENERATOR=${CMAKE_GENERATOR}"
@@ -2629,6 +2764,12 @@ if(NOT SNX_TOOLS_ONLY)
         snx_test_target(snx-test-vk-bans 11)
         target_link_libraries(snx-test-vk-bans PRIVATE snx_nx_flags snx_vk_common)
         add_test(NAME vk_extension_bans COMMAND snx-test-vk-bans)
+        # the commands each Vulkan device extension requires (common/gpu/vk/extension_commands.c), with no GPU: the
+        # table tools/vkcmdgen generates from the registry, its depends, a stand-in device's check and the hide list
+        add_executable(snx-test-vk-commands vk_extension_commands.c "${volk_SOURCE_DIR}/volk.c")
+        snx_test_target(snx-test-vk-commands 11)
+        target_link_libraries(snx-test-vk-commands PRIVATE snx_nx_flags snx_vk_common)
+        add_test(NAME vk_extension_commands COMMAND snx-test-vk-commands)
     endif()
     if(ANDROID)
         # the GPU driver a run asks for (nx/runtime/platform/gpu_driver_load.c) where none loads: Freedreno's variables set,
@@ -3226,9 +3367,9 @@ snx_test_target(snx-test-astc-bcn-glsl 23)
 target_include_directories(snx-test-astc-bcn-glsl PRIVATE glsl)
 add_test(NAME astc_bcn_glsl COMMAND snx-test-astc-bcn-glsl)
 # the ASTC 4x4 encoder's GLSL (BCn encoded again as ASTC) run on the CPU (tests/glsl/glsl.hpp), its blocks decoded by
-# the CPU's ASTC decoder: no GPU needed
+# the CPU's ASTC decoder, each GPU vendor's build beside the generic one: no GPU needed
 add_executable(snx-test-astc-encode-glsl glsl/astc_encode_glsl.cpp glsl/astc_encode_cpu.cpp glsl/bcn_astc_cpu.cpp
-               glsl/bc7_cpu.cpp support/astc.c support/bcn.c)
+               glsl/astc_vendor_cpu.cpp glsl/bc7_cpu.cpp support/astc.c support/bcn.c)
 snx_test_target(snx-test-astc-encode-glsl 23)
 target_include_directories(snx-test-astc-encode-glsl PRIVATE glsl)
 add_test(NAME astc_encode_glsl COMMAND snx-test-astc-encode-glsl)
@@ -3294,6 +3435,16 @@ if(TARGET snx_vita_program)
     snx_test_target(snx-test-vita-watch 11)
     target_link_libraries(snx-test-vita-watch PRIVATE snx_vita_program)
     add_test(NAME vita_watch COMMAND snx-test-vita-watch)
+    # the Vita's device as a Switch game's is made (gpu/vk.c): VK_KHR_dynamic_rendering_local_read off when the check
+    # of each extension's commands takes its command as missing (vk_debug_hide_commands), the log saying so, and when
+    # its setting says off. The log is the device's stderr, read back through dup2
+    if(NOT WIN32)
+        add_executable(snx-test-vita-vk-device vita_vk_device.c)
+        snx_test_target(snx-test-vita-vk-device 11)
+        target_link_libraries(snx-test-vita-vk-device PRIVATE snx_vita_program)
+        add_test(NAME vita_vk_device COMMAND snx-test-vita-vk-device)
+        set_tests_properties(vita_vk_device PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    endif()
     # the window's Esc, asked twice, as SDL sends it: no device or window
     add_executable(snx-test-vita-quit-key vita_quit_key.c)
     snx_test_target(snx-test-vita-quit-key 11)
@@ -3382,6 +3533,13 @@ else()
     add_test(NAME audio_opus COMMAND snx-test-audio-opus)
 endif()
 
+# the player's Volume on an SDL output, the Switch's and the 3DS's (common/utilities/audio_volume.h), on SDL's dummy driver
+if(TARGET SDL3::SDL3)
+    add_executable(snx-test-audio-volume audio_volume.c)
+    snx_test_target(snx-test-audio-volume 11)
+    target_link_libraries(snx-test-audio-volume PRIVATE scarletnx-common SDL3::SDL3)
+    add_test(NAME audio_volume COMMAND snx-test-audio-volume)
+endif()
 # a 5.1 game's PCM mixed to stereo for a host output of two channels (runtime/platform/audio_downmix.c)
 add_executable(snx-test-audio-downmix audio_downmix.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/audio_downmix.c")
 snx_test_target(snx-test-audio-downmix 99)
@@ -3814,7 +3972,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     endif()
     add_test(NAME shader_structure COMMAND snx-test-shader-structure)
     # the SM86 frontend (gpu/shader/sm86.h): the decoder on words made by NAK's encoding rules, the search for
-    # programs, and small translations, which spirv-val checks when it is on PATH (shader_sm86_test.py, which passes it
+    # programs, and small translations, which spirv-val checks (shader_sm86_test.py, which passes it
     # each module as an argument: cmd.exe refused the quoted command system() gave it)
     add_executable(snx-test-shader-sm86 shader_sm86.c support/spv_eval.c)
     snx_test_target(snx-test-shader-sm86 23)
@@ -3822,9 +3980,10 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     if(NOT WIN32)
         target_link_libraries(snx-test-shader-sm86 PRIVATE m)
     endif()
-    if(SNX_SPIRV_VAL AND Python3_Interpreter_FOUND)
+    if(Python3_Interpreter_FOUND)
+        include("${PROJECT_SOURCE_DIR}/cmake/spirv_tools.cmake")
         add_test(NAME shader_sm86 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/shader_sm86_test.py"
-                 --test $<TARGET_FILE:snx-test-shader-sm86> --validator "${SNX_SPIRV_VAL}")
+                 --test $<TARGET_FILE:snx-test-shader-sm86> --validator $<TARGET_FILE:snx-spirv-val>)
     else()
         add_test(NAME shader_sm86 COMMAND snx-test-shader-sm86 "${CMAKE_CURRENT_BINARY_DIR}")
     endif()
@@ -3840,6 +3999,21 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         add_test(NAME settingsgen COMMAND "${CMAKE_COMMAND}" "-DSETTINGSGEN=$<TARGET_FILE:snx-settingsgen>"
                  "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/settingsgen-test"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/settingsgen.cmake")
+        # tools/vkcmdgen on the registry the build has and on registries of its own: the table's lines for what the
+        # renderer met, the same file from a second run, and each registry it refuses, at its line
+        if(TARGET snx-vkcmdgen)
+            get_property(snx_vk_commands_registry GLOBAL PROPERTY snx_vk_commands_registry)
+            add_test(NAME vkcmdgen COMMAND "${CMAKE_COMMAND}" "-DVKCMDGEN=$<TARGET_FILE:snx-vkcmdgen>"
+                     "-DREGISTRY=${snx_vk_commands_registry}" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/vkcmdgen-test"
+                     -P "${CMAKE_CURRENT_SOURCE_DIR}/vkcmdgen.cmake")
+            # every device extension a renderer can make its device with (each source of src/ that makes one) has its
+            # setting @VK_ line in settings.txt, which the bans and the player's on and off go through
+            if(Python3_Interpreter_FOUND)
+                add_test(NAME vk_extension_settings COMMAND "${Python3_EXECUTABLE}"
+                         "${CMAKE_CURRENT_SOURCE_DIR}/vk_extension_settings.py" --repo "${PROJECT_SOURCE_DIR}"
+                         --registry "${snx_vk_commands_registry}")
+            endif()
+        endif()
         # its output where iOS compiles it: a default-if SNX_IOS value, which needs common.h. Not on Apple hosts, whose
         # own headers read the TargetConditionals.h the test puts in their place
         if(NOT APPLE)
@@ -3922,6 +4096,13 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         target_link_libraries(snx-test-vk-ring-uploads PRIVATE snx_vk_common)
         add_test(NAME vk_ring_uploads COMMAND snx-test-vk-ring-uploads)
         set_tests_properties(vk_ring_uploads PROPERTIES SKIP_RETURN_CODE 77)
+        # a window's notice copied over its image after the picture's transfers (common/gpu/vk/notice.c), on whatever
+        # device there is
+        add_executable(snx-test-vk-notice vk_notice.c "${volk_SOURCE_DIR}/volk.c")
+        snx_test_target(snx-test-vk-notice 99)
+        target_link_libraries(snx-test-vk-notice PRIVATE snx_vk_common)
+        add_test(NAME vk_notice COMMAND snx-test-vk-notice)
+        set_tests_properties(vk_notice PROPERTIES SKIP_RETURN_CODE 77)
     endif()
     add_executable(snx-test-vk-uma-budget vk_uma_budget.c)
     snx_test_target(snx-test-vk-uma-budget 99)
@@ -3993,6 +4174,13 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     target_include_directories(snx-test-vk-checkpoints PRIVATE "${volk_SOURCE_DIR}")
     target_link_libraries(snx-test-vk-checkpoints PRIVATE Vulkan::Headers)
     add_test(NAME vk_checkpoints COMMAND snx-test-vk-checkpoints)
+    # the ranges a constant buffer, a root table and a storage copy are bound with (gpu/vk/vk.h vk_cb_range,
+    # vk_sb_round): whole robustBufferAccess2 steps, at least one, within maxUniformBufferRange
+    add_executable(snx-test-vk-robust-ranges vk_robust_ranges.c)
+    snx_test_target(snx-test-vk-robust-ranges 11)
+    target_include_directories(snx-test-vk-robust-ranges PRIVATE "${volk_SOURCE_DIR}")
+    target_link_libraries(snx-test-vk-robust-ranges PRIVATE Vulkan::Headers)
+    add_test(NAME vk_robust_ranges COMMAND snx-test-vk-robust-ranges)
     # the renderer's device memory (gpu/vk/devmem.c) over a driver the test plays, which checks each call as the
     # specification reads: alignment, memory types, no byte and no granularity page shared, memory made for a
     # resource alone, whole atoms flushed; the cap of the GPU's own heap, and requests from several threads

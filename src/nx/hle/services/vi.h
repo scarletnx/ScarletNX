@@ -10,8 +10,17 @@
 
 /* the display's refresh rate: vsync ticks, and the swap interval a game asks for, count in it */
 #define VI_REFRESH_HZ 60
+/* The rate the console's display runs at now, which a game's swap interval counts in: VI_REFRESH_HZ, or 120 once an
+   Ounce game turned 120 Hz on where the TV takes it (gsv.c). The vsync ticks stay at VI_REFRESH_HZ. Any thread */
+extern int g_vi_refresh_hz;
+static inline u32 vi_refresh_hz(void) { return (u32)__atomic_load_n(&g_vi_refresh_hz, __ATOMIC_RELAXED); }
 
-void vi_vsync_tick(void); /* one display refresh: signals the vsync event */
+/* a swap interval of 0 or less: a multiple of this many vsyncs a second (vi_vsync_period), from 0 down to the least */
+#define VI_UNLOCKED_HZ  120
+#define VI_INTERVAL_MIN (-3)
+#define VI_NO_LIMIT_VSYNC_HZ 1000 /* the vsyncs a second with fps_limit 0 (no limit), not a swap interval's */
+u64 vi_vsync_period(void); /* ns from one vsync to the next, as the shown layer's swap interval asks */
+void vi_vsync_tick(void);  /* one display refresh: signals the vsync event */
 /* ---- HLE state in g_hle (hle.h) */
 #define VI_LAYERS 8
 #define VI_SLOTS  64    /* BufferQueueDefs::NUM_BUFFER_SLOTS */
@@ -30,7 +39,7 @@ typedef struct {
     int connected;
     u32 width, height, format; /* the default size and format, from the preallocated buffers */
     u32 max_buffer_count;      /* what the game asked SetBufferCount for; 2 by default, as its window does */
-    u32 interval;              /* the swap interval of the last frame queued */
+    i32 interval;              /* the swap interval of the last frame queued (vi_vsync_period) */
     u32 gen;                   /* bumped when the layer closes (vi_key) */
     u32 event;                 /* signaled when a buffer comes free (GetNativeHandle) */
     ViSlot slot[VI_SLOTS];

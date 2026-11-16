@@ -87,7 +87,7 @@ def main():
                 f'--frames={args.frames}',
                 f'--shot={shot}',
                 f'--script={",".join(presses)}',
-                '--press_len=100',
+                '--press-len=100',
                 '--outdir',
                 str(work),
                 str(rom),

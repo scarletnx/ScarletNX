@@ -78,9 +78,11 @@ int pc_wait(PCond* c, PMutex* m, int64_t timeout_ns);
 
 /* ---- waiting on a word, with no lock (a futex on Linux): plat_wait_word blocks while *w holds v, for at most
    timeout_ns (negative: no limit), and may also return early for no reason; plat_wake_word wakes every thread waiting
-   on w. The waker changes *w before it wakes them */
+   on w, plat_wake_word_one one of them (a lock's next owner, where waking them all has the rest wait again). The waker
+   changes *w before it wakes them */
 void plat_wait_word(uint32_t* w, uint32_t v, int64_t timeout_ns);
 void plat_wake_word(uint32_t* w);
+void plat_wake_word_one(uint32_t* w);
 
 /* ---- threads */
 typedef void (*PThreadFn)(void* arg);
@@ -117,6 +119,14 @@ int plat_thread_idle(void);
 /* the calling thread's id, as the system numbers threads (Linux's gettid, kept per thread). Safe in a signal handler
    once the thread has called it one time */
 uint32_t plat_tid(void);
+/* What the calling thread is doing while it is in code outside the runtime that may crash, a driver compiling a
+   pipeline: the crash report of a runtime thread prints it, as the place it gives for such a crash is only the
+   library's. A line, cut at PLAT_THREAD_NOTE_SIZE - 1 bytes, kept until plat_thread_note_clear. Per thread */
+#define PLAT_THREAD_NOTE_SIZE 512
+void plat_thread_note(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+void plat_thread_note_clear(void);
+/* the calling thread's note, "" without one */
+const char* plat_thread_note_get(void);
 #if defined(_WIN32)
 /* asks Windows one time for a 1 ms scheduler tick (its default is 15.6 ms), before the first timed wait */
 void plat_timer_1ms(void);
