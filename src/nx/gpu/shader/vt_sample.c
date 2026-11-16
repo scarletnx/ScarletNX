@@ -21,6 +21,26 @@ static void cell(SpvEmitter* e, const ShVtSample* s, u32 x, u32* at, u32* outsid
                    SPV(e, SPV_OP_SELECT, s->t_u32, over, cu(e, s, 2), cu(e, s, 0)));
 }
 
+/* the level the gradients dx and dy of the coordinates give by the image's size, as a sample without anisotropy takes
+   it: log2 of the longer side's length in texels, half the log2 of its square */
+static u32 estimate(SpvEmitter* e, const ShVtSample* s, u32 dx, u32 dy) {
+    const u32 size = spv_emit_image_query_size_lod(e, spv_emit_type_vector(e, s->t_i32, s->array ? 3 : 2),
+                                                   s->sampled_type, s->sampler, spv_emit_constant_u32(e, s->t_i32, 0));
+    u32 rho = 0;
+    for (u32 k = 0; k < 2; k++) {
+        u32 sum = 0;
+        for (u32 axis = 0; axis < 2; axis++) {
+            const u32 extent = SPV(e, SPV_OP_CONVERT_S_TO_F, s->t_f32, spv_emit_vec4_extract(e, s->t_i32, size, axis));
+            const u32 d = SPV(e, SPV_OP_F_MUL, s->t_f32, spv_emit_vec4_extract(e, s->t_f32, k ? dy : dx, axis), extent);
+            const u32 sq = SPV(e, SPV_OP_F_MUL, s->t_f32, d, d);
+            sum = sum ? SPV(e, SPV_OP_F_ADD, s->t_f32, sum, sq) : sq;
+        }
+        rho = rho ? spv_emit_glsl_binary(e, s->t_f32, s->glsl, SPV_GLSL_F_MAX, rho, sum) : sum;
+    }
+    return SPV(e, SPV_OP_F_MUL, s->t_f32, cf(e, s, 0.5f),
+               spv_emit_glsl_unary(e, s->t_f32, s->glsl, SPV_GLSL_LOG2,
+                                   spv_emit_glsl_binary(e, s->t_f32, s->glsl, SPV_GLSL_F_MAX, rho, cf(e, s, 1e-12f))));
+}
 u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
     if (!ids->pair) {
         ids->pair = spv_emit_type_struct_pair(e, s->t_i32, s->t_v4f);
@@ -41,14 +61,17 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
               join = spv_emit_id(e), mark = spv_emit_id(e), done = spv_emit_id(e);
     spv_emit_branch(e, pre);
     spv_emit_label(e, pre);
-    const u32 first =
-        spv_emit_sample_image_sparse(e, ids->pair, s->sampled_type, s->sampler, s->coord, s->mode, s->level, s->offset);
+    const u32 first = spv_emit_sample_image_sparse(e, ids->pair, s->sampled_type, s->sampler, s->coord, s->mode,
+                                                   s->level, s->offset, s->gradient_y);
     const u32 texel = SPV(e, SPV_OP_COMPOSITE_EXTRACT, s->t_v4f, first, 1);
     const u32 resident =
         SPV(e, SPV_OP_IMAGE_SPARSE_TEXELS_RESIDENT, s->t_bool, SPV(e, SPV_OP_COMPOSITE_EXTRACT, s->t_i32, first, 0));
     /* the coordinates' change across the quad, taken here: past the branch a lane's neighbours may not be there */
     u32 dx = 0, dy = 0;
-    if (s->mode != 1) {
+    if (s->mode == 3) { /* the program's own */
+        dx = s->level;
+        dy = s->gradient_y;
+    } else if (s->mode != 1) {
         dx = SPV(e, SPV_OP_DPDX, s->t_v2f, uv);
         dy = SPV(e, SPV_OP_DPDY, s->t_v2f, uv);
     }
@@ -63,27 +86,7 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
     if (s->mode == 1)
         coarser = s->level;
     else {
-        const u32 size =
-            spv_emit_image_query_size_lod(e, spv_emit_type_vector(e, s->t_i32, s->array ? 3 : 2), s->sampled_type,
-                                          s->sampler, spv_emit_constant_u32(e, s->t_i32, 0));
-        u32 rho = 0;
-        for (u32 k = 0; k < 2; k++) {
-            u32 sum = 0;
-            for (u32 axis = 0; axis < 2; axis++) {
-                const u32 extent =
-                    SPV(e, SPV_OP_CONVERT_S_TO_F, s->t_f32, spv_emit_vec4_extract(e, s->t_i32, size, axis));
-                const u32 d =
-                    SPV(e, SPV_OP_F_MUL, s->t_f32, spv_emit_vec4_extract(e, s->t_f32, k ? dy : dx, axis), extent);
-                const u32 sq = SPV(e, SPV_OP_F_MUL, s->t_f32, d, d);
-                sum = sum ? SPV(e, SPV_OP_F_ADD, s->t_f32, sum, sq) : sq;
-            }
-            rho = rho ? spv_emit_glsl_binary(e, s->t_f32, s->glsl, SPV_GLSL_F_MAX, rho, sum) : sum;
-        }
-        /* log2 of the longer side's length: half the log2 of its square */
-        coarser =
-            SPV(e, SPV_OP_F_MUL, s->t_f32, cf(e, s, 0.5f),
-                spv_emit_glsl_unary(e, s->t_f32, s->glsl, SPV_GLSL_LOG2,
-                                    spv_emit_glsl_binary(e, s->t_f32, s->glsl, SPV_GLSL_F_MAX, rho, cf(e, s, 1e-12f))));
+        coarser = estimate(e, s, dx, dy);
         if (s->mode == 2) coarser = SPV(e, SPV_OP_F_ADD, s->t_f32, coarser, s->level);
     }
     /* no coarser than the last level: the device clamps a level, but lavapipe's sparse sample (Mesa 26.2) reads past
@@ -94,7 +97,7 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
     coarser = spv_emit_glsl_ternary(e, s->t_f32, s->glsl, SPV_GLSL_F_CLAMP,
                                     SPV(e, SPV_OP_F_ADD, s->t_f32, coarser, cf(e, s, 1.0f)), cf(e, s, 0.0f), top);
     const u32 second =
-        spv_emit_sample_image_sparse(e, ids->pair, s->sampled_type, s->sampler, s->coord, 1, coarser, s->offset);
+        spv_emit_sample_image_sparse(e, ids->pair, s->sampled_type, s->sampler, s->coord, 1, coarser, s->offset, 0);
     const u32 texel2 = SPV(e, SPV_OP_COMPOSITE_EXTRACT, s->t_v4f, second, 1);
     const u32 resident2 =
         SPV(e, SPV_OP_IMAGE_SPARSE_TEXELS_RESIDENT, s->t_bool, SPV(e, SPV_OP_COMPOSITE_EXTRACT, s->t_i32, second, 0));
@@ -129,6 +132,8 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
     u32 lod;
     if (s->mode == 1)
         lod = s->level;
+    else if (s->mode == 3) /* no query takes gradients: the estimate, which an anisotropic sample reads finer than */
+        lod = estimate(e, s, dx, dy);
     else {
         const u32 q = spv_emit_image_query_lod(e, s->t_v2f, s->sampled_type, s->sampler, uv);
         lod = spv_emit_vec4_extract(e, s->t_f32, q, s->mode == 2 ? 1 : 0);

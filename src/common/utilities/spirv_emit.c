@@ -1400,20 +1400,24 @@ uint32_t spv_emit_sample_image_min_lod(SpvEmitter* e, uint32_t result_type, uint
 
 
 uint32_t spv_emit_sample_image_sparse(SpvEmitter* e, uint32_t pair_type, uint32_t sampled_type, uint32_t sampler,
-                                      uint32_t coordinates, uint32_t mode, uint32_t level, uint32_t offset) {
+                                      uint32_t coordinates, uint32_t mode, uint32_t level, uint32_t offset,
+                                      uint32_t gradient_y) {
     spv_emit_capability(e, SPV_CAPABILITY_SPARSE_RESIDENCY);
     uint32_t image = spv_emit_load(e, sampled_type, sampler);
     uint32_t id = spv_emit_id(e);
-    uint32_t operands = (mode == 1 ? 2u : mode == 2 ? 1u : 0u) | (offset ? 8u : 0u); /* Lod, Bias, ConstOffset */
+    /* Lod, Bias or Grad, and ConstOffset */
+    uint32_t operands = (mode == 1 ? 2u : mode == 2 ? 1u : mode == 3 ? 4u : 0u) | (offset ? 8u : 0u);
     instruction(&e->functions,
-                mode == 1 ? SPV_OP_IMAGE_SPARSE_SAMPLE_EXPLICIT_LOD : SPV_OP_IMAGE_SPARSE_SAMPLE_IMPLICIT_LOD,
-                5 + !!operands + !!(operands & 3) + !!offset);
+                mode == 1 || mode == 3 ? SPV_OP_IMAGE_SPARSE_SAMPLE_EXPLICIT_LOD
+                                       : SPV_OP_IMAGE_SPARSE_SAMPLE_IMPLICIT_LOD,
+                5 + !!operands + !!(operands & 7) + (mode == 3) + !!offset);
     put(&e->functions, pair_type);
     put(&e->functions, id);
     put(&e->functions, image);
     put(&e->functions, coordinates);
     if (operands) put(&e->functions, operands);
-    if (operands & 3) put(&e->functions, level);
+    if (operands & 7) put(&e->functions, level);
+    if (mode == 3) put(&e->functions, gradient_y);
     if (offset) put(&e->functions, offset);
     return id;
 }

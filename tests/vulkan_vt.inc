@@ -7,7 +7,8 @@
      coarser level and no zeros; within 64 frames every pixel is its texel of level 0, and only the blocks under the
      corner and the ones that cover them in the coarser levels hold memory, a small part of the texture
    - at the level of its derivatives (four texels a pixel: level 2): every pixel its texel of level 2
-   - with nothing sampling it for more than vt_frames presents, every block is let go, and a draw brings them back
+   - with nothing sampling it for more than vt_frames presents, every block is let go, and a draw brings them back:
+     an Ounce program's sample with gradients (TXD) of a pixel's own change its level 2, then TEX.LZ its level 0
    - fetched (TLD), which marks nothing: the texture is held whole from then on, and the fetch reads its texels
    On a texture held RGBA8 (astc_mode's Exact), exact, and on one held BC7, within 3 of each channel. Without vt_sparse, or
    on a device without sparse residency and shaderResourceResidency, the check is skipped. */
@@ -22,9 +23,10 @@ static u32 vtc_colour(u32 l, u32 bx, u32 by) {
     return (16 + 8 * (bx % 28)) | (16 + 8 * (by % 28)) << 8 | (40 + 20 * l) << 16 | 255u << 24;
 }
 /* IPA R4, a[0x70]; IPA R5, a[0x74]; FMUL R4, R4, scale; FMUL R5, R5, scale; then TEX R0-R3, R4, R5, c[2][0x40] with
-   the LOD mode lod (0 the derivatives', 1 level zero), or with fetch F2I.TRUNC of both and TLD.LZ, as sf_fragment */
+   the LOD mode lod (0 the derivatives', 1 level zero); with fetch 1, F2I.TRUNC of both and TLD.LZ, as sf_fragment;
+   with fetch 2, TXD with the gradients (scale, 0) and (0, scale) from R8 to R11, a pixel's own change */
 static int vtc_fragment(u32 at, float scale, u32 lod, int fetch) {
-    Sm86Word code[8];
+    Sm86Word code[12];
     u32 n = 0, bits;
     memcpy(&bits, &scale, 4);
     for (u32 k = 0; k < 2; k++) {
@@ -35,7 +37,7 @@ static int vtc_fragment(u32 at, float scale, u32 lod, int fetch) {
         sm86_set(&code[n++], 81, 3, 7);
     }
     for (u32 k = 0; k < 2; k++) {
-        if (fetch) {
+        if (fetch == 1) {
             code[n] = sm86_alu(0x105, 1, 4 + k, 255);
             sm86_set(&code[n], 32, 8, 4 + k);
             sm86_set(&code[n], 64, 8, 255);
@@ -50,15 +52,17 @@ static int vtc_fragment(u32 at, float scale, u32 lod, int fetch) {
             sm86_set(&code[n++], 64, 8, 255);
         }
     }
-    code[n] = sm86_fix(fetch ? 0xb66 : 0xb60);
+    for (u32 k = 0; fetch == 2 && k < 4; k++) code[n++] = sm86_mov_imm(8 + k, k == 0 || k == 3 ? bits : 0);
+    code[n] = sm86_fix(fetch == 1 ? 0xb66 : fetch == 2 ? 0xb6c : 0xb60);
     sm86_set(&code[n], 16, 8, 0);
     sm86_set(&code[n], 24, 8, 4);
-    sm86_set(&code[n], 32, 8, 255);
+    sm86_set(&code[n], 32, 8, fetch == 2 ? 8 : 255);
     sm86_set(&code[n], 40, 19, 2u << 14 | 0x40 >> 2);
     sm86_set(&code[n], 61, 3, 1);
     sm86_set(&code[n], 64, 8, 255);
     sm86_set(&code[n], 72, 4, 0xf);
-    sm86_set(&code[n++], 87, 3, fetch ? 1 : lod);
+    if (fetch != 2) sm86_set(&code[n], 87, 3, fetch ? 1 : lod);
+    n++;
     code[n++] = sm86_exit();
     return sf_program(VTC_GPU + at, 2u | 4u << 5 | 5u << 10, 18, 0xf, code, n);
 }
@@ -222,8 +226,8 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int exact, int maxwell) {
     if (zeros || level0)
         fprintf(stderr,
                 "virtual texture, the first frame: %u of %u pixels read no texel of a coarser level (alpha 255, blue "
-                "of level 1 or more), %u were level 0's already\n",
-                zeros, VTC_W * VTC_W, level0);
+                "of level 1 or more), %u were level 0's already; pixel (0, 0) holds %08x\n",
+                zeros, VTC_W * VTC_W, level0, snx_ld_le32(pixels));
     CHECK(!zeros && !level0);
     /* then level 0's texels, with memory for the corner alone */
     const u32 took = vtc_until(channel, base + 0x800, pixels, 0, 0, tolerance, "level 0 (TEX.LZ)");
@@ -251,6 +255,10 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int exact, int maxwell) {
                 "virtual texture: %u blocks and %llu bytes held after 52 presents with no sample (0 and %llu)\n",
                 s.held, (unsigned long long)t->bytes, (unsigned long long)tail_bytes);
     CHECK(!s.held && t->bytes == tail_bytes);
+    /* an Ounce program's sample with gradients (TXD), a pixel's own: level 2 again, from nothing */
+    const u32 took_txd =
+        maxwell ? 1 : vtc_until(channel, 0xb000, pixels, 2, 8, tolerance, "the gradients' level (TXD)");
+    CHECK(took_txd);
     const u32 took3 = vtc_until(channel, base + 0x800, pixels, 0, 0, tolerance, "level 0 again");
     CHECK(took3);
     /* a fetch marks nothing: the texture is held whole, and the fetch reads level 0's texel (x, y) */
@@ -295,7 +303,7 @@ static int check_vt(void) {
     CHECK(!sf_program(VTC_GPU, 0x000c0481u, 13, 0xfu << 12, code, 3));
     /* a quarter of the texture over the target: four texels of level 0 a pixel */
     CHECK(!vtc_fragment(0x800, 1.0f / 256, 1, 0) && !vtc_fragment(0x1000, 1.0f / 256, 0, 0) &&
-          !vtc_fragment(0x1800, 0, 0, 1));
+          !vtc_fragment(0x1800, 0, 0, 1) && !vtc_fragment(0xb000, 1.0f / 256, 0, 2));
     /* the same as Maxwell programs, with sample_raster_channel's vertex program: IPA R4, a[0x70]; IPA R5, a[0x74];
        FMUL of both by the scale; TEX R0, R4, R5 by the handle at c[2][0x40], at level zero (.LZ) or the derivatives';
        and sf_maxwell_fragment's fetch (F2I.TRUNC, LDC, TLD.B.LZ) */

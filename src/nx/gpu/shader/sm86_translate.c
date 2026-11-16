@@ -2917,7 +2917,6 @@ static void texture_grad(Ctx* c, const Sm86Insn* in) {
     int slot = in->op == SM86_TXD_U ? (int)c->handle[c->cur].slot - 1 /* memory_handles' */
                                     : tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, 0, 0);
     if (slot < 0) return;
-    c->vt_left |= 1ull << slot, c->vt_reads[2] |= 1ull << slot;
     u32 a = sm86_field(in, 24, 8), b = sm86_field(in, 32, 8), f[4], dx[3], dy[3], count = 0;
 #define TXD_REG(base, k) ((base) < SM86_RZ ? (base) + (k) : SM86_RZ)
     for (u32 k = 0; k < coords; k++, count++) {
@@ -2938,6 +2937,20 @@ static void texture_grad(Ctx* c, const Sm86Insn* in) {
 #undef TXD_REG
     int reduce = shader_minmax_slot(c->si->tex_minmax_mask, c->si->tex_minmax_max, slot);
     u32 coord = coord_vector(c, f, count);
+    /* vt_sparse: a fragment program's 2D sample with gradients is a sparse one too, as texture's */
+    if (g_shader_vt_address && c->stage == ST_FS && type == 1 && !reduce) {
+        u32 h = in->op == SM86_TXD_U ? urd(c, sm86_field(in, 40, 6))
+                                     : cbuf_load(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, 0);
+        const u32 phase = vt_phase(c);
+        coop_flow(c);
+        const ShVtSample sample = {c->t_bool, c->t_u32, c->t_i32, c->t_f32, c->t_v2f, c->t_v4f, c->glsl,
+                                   c->tex_sampled[slot], c->tex[slot], coord, f[0], f[1], array ? f[2] : 0, (int)array,
+                                   3, gx, 0, h, frag_pixel(c, 0), frag_pixel(c, 1), phase, gy};
+        c->vt_took |= 1ull << slot;
+        tex_results(c, in, shader_vt_sample(&c->e, &c->vt, &sample), c->t_f32);
+        return;
+    }
+    c->vt_left |= 1ull << slot, c->vt_reads[2] |= 1ull << slot;
     tex_results(c, in,
                 reduce ? minmax_sample(c, slot, coord, (int)array, 0, reduce)
                        : spv_emit_sample_grad(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, gx, gy, 0),

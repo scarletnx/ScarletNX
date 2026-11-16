@@ -759,9 +759,10 @@ static inline uint32_t spv_emit_sample_image(SpvEmitter* e, uint32_t result_type
 /* MinLod is valid with implicit LOD or gradients. It is not valid with the Lod image operand. */
 /* spv_emit_sample_image's sample as OpImageSparseSampleImplicitLod or ExplicitLod (mode 1), with no depth reference:
    pair_type is a struct of an integer, the residency code OpImageSparseTexelsResident reads, and the texel. offset: a
-   constant one, 0 none */
+   constant one, 0 none. Mode 3: with the gradients level and gradient_y, as spv_emit_sample_grad's */
 uint32_t spv_emit_sample_image_sparse(SpvEmitter* e, uint32_t pair_type, uint32_t sampled_type, uint32_t sampler,
-                                      uint32_t coordinates, uint32_t mode, uint32_t level, uint32_t offset);
+                                      uint32_t coordinates, uint32_t mode, uint32_t level, uint32_t offset,
+                                      uint32_t gradient_y);
 uint32_t spv_emit_sample_image_min_lod(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
                                        uint32_t coordinates, uint32_t depth_reference, uint32_t mode, uint32_t level,
                                        uint32_t offset, int dynamic_offset, uint32_t min_lod);
