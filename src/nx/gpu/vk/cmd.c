@@ -1300,11 +1300,13 @@ void vk_frame_next(void) {
    The thread waits for the next value whether or not it is submitted yet (a timeline's wait before its signal), in
    slices of a second, and stops on a lost device, which the other waits report */
 static u64 g_gdone;
-static int g_gwatch; /* the thread started: the GPU thread's */
+static int g_gwatch;     /* the thread started: the GPU thread's */
+static u32 g_gwatch_tid; /* its thread: vk_timeline_tid */
 static void gdone_watch(void* arg) {
     u64 done = 0;
     (void)arg;
     SNX_THREAD_NAME("Vulkan timeline");
+    __atomic_store_n(&g_gwatch_tid, plat_tid(), __ATOMIC_RELEASE);
     for (;;) {
         u64 want = done + 1;
         VkSemaphoreWaitInfo wi = {
@@ -1322,6 +1324,7 @@ static void gdone_watch(void* arg) {
    180 MB of imports: it made 56 submissions a present, 41 of them for the millisecond alone, the recording thread
    spent 87% of its time in the kernel, and the GPU stood idle 100 ms of each 180 ms present waiting for them. Without
    the thread, every millisecond is a submission, as before */
+u32 vk_timeline_tid(void) { return __atomic_load_n(&g_gwatch_tid, __ATOMIC_ACQUIRE); }
 static int gpu_short_of_work(void) {
     if (!g_gwatch) {
         g_gwatch = 1;

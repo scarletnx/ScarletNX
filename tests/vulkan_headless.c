@@ -3856,6 +3856,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL sc_submit(VkQueue q, u32 n, const VkSubmit
 }
 static void sc_waited(u64 t0, u64 timeout) {
     if (!timeout) return; /* a look, no wait */
+    if (plat_tid() == vk_timeline_tid()) return; /* the thread that follows the timeline waits on it by design */
     __atomic_add_fetch(&g_sc.n.waits, 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&g_sc.n.wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
 }
