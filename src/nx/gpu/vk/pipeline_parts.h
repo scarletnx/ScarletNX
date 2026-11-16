@@ -55,6 +55,10 @@ int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n);
 /* the log line of who makes a depth range of -1 to 1 on d, the device (dyn_pr has VK_DYN_PR_DEPTH_RANGE) or the last
    stage before rasterization, and then what the device lacks for it, into line */
 void vk_depth_range_line(const VkGplDevice* d, u32 dyn_pr, char* line, size_t n);
+/* the pixels conservative rasterization overestimates a draw by: the dilation its key asks for (conservative: 1 plus
+   quarter pixels, 0 to 3), cut to most, the device's maxExtraPrimitiveOverestimationSize. A dilation that is cut is
+   said in line, with the value asked for and the one drawn; line is "" when it is drawn whole */
+float vk_conservative_dilation(u32 conservative, float most, char* line, size_t n);
 
 /* the parts of a pipeline made of libraries, a bit each (docs/layers/gpu/pipeline-libraries.md, "The four parts") */
 #define VK_PART_VI  1u  /* vertex input interface */

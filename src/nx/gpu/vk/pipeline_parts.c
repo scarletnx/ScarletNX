@@ -27,6 +27,17 @@ void vk_gpl_bans(VkGplDevice* d, VkBanSay say) {
 #undef EDS3
 }
 
+float vk_conservative_dilation(u32 conservative, float most, char* line, size_t n) {
+    float asked = conservative > 1 ? (float)(conservative - 1) * 0.25f : 0.0f;
+    float drawn = asked < most ? asked : most;
+    if (n) line[0] = 0;
+    if (drawn < asked)
+        snprintf(line, n,
+                 "vulkan: a conservative raster dilation of %.2f pixels is drawn as %.2f, the most this device "
+                 "overestimates by (maxExtraPrimitiveOverestimationSize): the pixels between the two are left out",
+                 (double)asked, (double)drawn);
+    return drawn;
+}
 void vk_depth_range_line(const VkGplDevice* d, u32 dyn_pr, char* line, size_t n) {
     if (dyn_pr & VK_DYN_PR_DEPTH_RANGE) {
         snprintf(line, n,
