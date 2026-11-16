@@ -50,7 +50,7 @@ wrapper over it through JNI, not a copy of the library in Java.
 | Input (`InputDispatcher`, `InputChannel`) | `system_server` and a socket per window | SDL events made into `MotionEvent` and `KeyEvent` on the window's thread: the left mouse button as a finger, a US keyboard | Abstract | First version |
 | Native `Looper` (epoll) | libutils | The main `MessageQueue` waits in steps of 4 ms and reads SDL's event queue between them | HLE | Done |
 | `Choreographer` vsync | `DisplayEventReceiver` from SurfaceFlinger | A 60 Hz timer; the swapchain's FIFO present holds the main thread to the display | Abstract | Done |
-| SQLite (`android.database.sqlite`) | libsqlite and its JNI | Java classes over SQLite's amalgamation, a CPM package (`src/android/db/sqlite_jni.c`) | HLE | Done |
+| SQLite (`android.database.sqlite`) | libsqlite and its JNI | Java classes over SQLite's amalgamation, a pinned package (`src/android/db/sqlite_jni.c`) | HLE | Done |
 | `SharedPreferences`, files, databases folders | `/data/data/<package>` | A folder of the app in the data folder (`snx.android.data`, or `android/<package>` in ScarletNX's data folder), with Android's XML format for preferences | Abstract | Done |
 | Settings provider (`Settings.Global`, `Secure`, `System`) | A content provider in `system_server` | A table of defaults | HLE | Planned |
 | Accessibility, autofill, content capture, input methods | Services in `system_server` | Managers that report the service is off; text input from the keyboard as key events | Off | Planned |
