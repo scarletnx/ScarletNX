@@ -729,6 +729,7 @@ extern u32 g_vk_present;
    record into that command buffer from the ring, or into any other one at once */
 void vk_rec_init(void);
 int vk_rec_threaded(void); /* the frame's commands go through the recording thread */
+int vk_rec_ring(VkCommandBuffer cb); /* cb's commands go through that thread's ring (vk_lock) */
 u64 vk_rec_behind(void);   /* bytes of commands handed to the recording thread and not recorded yet (any thread) */
 u64 vk_rec_gfx_queued(void); /* the graphics timeline value of the last submission on the queue (any thread) */
 void vk_rec_begin(VkCommandBuffer cb); /* begins cb, the frame's command buffer from now on */
@@ -1656,6 +1657,14 @@ void vk_bc7_cache_close(void);
 u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't there */
 /* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped) */
 int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
+/* key's blocks, size bytes of them, read into dst on the recording thread, and copied from buf (dst is at off in mem
+   and buf) into img by copy there when they check out (none when img is VK_NULL_HANDLE): before the commands that cb
+   gets after this, and before its submission. cb must go through that thread (vk_rec_ring). 1 when it is queued, 0
+   when they aren't there, -1 when there is no such thread or it can't open the file (read them with
+   vk_bc7_cache_read). A record that doesn't check out is dropped, its copy left out */
+int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* dst, DevMem mem, u64 off,
+                            VkBuffer buf, VkImage img, const VkBufferImageCopy* copy);
+u64 vk_bc7_cache_read_ns(u64 bytes); /* how long a read of bytes takes, at the rate of the reads so far: 0 before one */
 void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size);
 /* hits, records stored, times it started over at its bound, and the file's bytes */
 void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
