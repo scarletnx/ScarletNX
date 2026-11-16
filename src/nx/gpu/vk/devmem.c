@@ -5,6 +5,7 @@
 #include "nx/gpu/vk/space.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/tracy.h"
 #include "common/platform/thread.h" /* PMutex */
@@ -676,6 +677,7 @@ VkResult vk_devmem_buffer(const VkBufferCreateInfo* bci, const DevMemWant* want,
     return VK_SUCCESS;
 }
 void vk_devmem_buffer_destroy(VkBuffer buf, DevMem mem) {
+    if (buf) vk_descriptor_heaps_forget_buffer(buf); /* its kept descriptors, before a new buffer can get its handle */
     if (buf) vkDestroyBuffer(g_vk.dev, buf, NULL);
     vk_devmem_free(mem);
 }

@@ -22,6 +22,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/pagespace.h"
+#include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/vk/range_shape.h"
 #include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/descriptors.h"
@@ -3489,6 +3490,7 @@ static int make_own_(u32 i, VkBuffer sb, u64 so) {
     DevMem m;
     if (vk_buffer_create(&bci, &aci, &b, &m, NULL) != VK_SUCCESS) return 0;
     vk_mem_track(m, VK_OWN_BUFFER);
+    vk_descriptor_heaps_lasting(b); /* kept descriptors until drop_own's buffer goes (devmem.c forgets) */
     if (copy_stats_on()) g_copy_owned += len;
     VkBufferCopy r = {so, 0, len};
     rec_CmdCopyBuffer(vk_cmd_upload(0), sb, b, 1, &r);

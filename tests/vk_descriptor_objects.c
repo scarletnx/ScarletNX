@@ -20,7 +20,14 @@ static struct {
     VkResult create_result, register_result;
     const void* native_chain;
     u32 native_index, serial, last_destroy, last_unregister;
+    u32 view_destroys, forgets, forgets_late; /* each view's heap forget comes before its vkDestroyImageView */
 } g_test;
+/* descriptor_heaps.c's hook: the heaps' kept descriptors of the view go before the view does */
+void vk_descriptor_heaps_forget_view(VkImageView view) {
+    (void)view;
+    g_test.forgets_late += g_test.forgets != g_test.view_destroys; /* an earlier destroy had no forget before it */
+    g_test.forgets++;
+}
 static void check(int pass, const char* what) {
     g_test.checks++;
     if (!pass && g_test.failures++ < 12) fprintf(stderr, "FAIL: %s\n", what);
@@ -37,6 +44,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL create_view(VkDevice device, const VkImage
 static VKAPI_ATTR void VKAPI_CALL destroy_view(VkDevice device, VkImageView view, const VkAllocationCallbacks* allocation) {
     (void)device; (void)view; (void)allocation;
     g_test.destroys++;
+    g_test.view_destroys++;
 }
 static VKAPI_ATTR VkResult VKAPI_CALL create_sampler(VkDevice device, const VkSamplerCreateInfo* info,
                                                      const VkAllocationCallbacks* allocation, VkSampler* sampler) {
@@ -276,6 +284,8 @@ int main(void) {
     test_buffer_fallback();
     for (u32 i = 0; i < 64; i++) check(!g_test.palette[i], "all owned palette registrations retired");
     for (u32 i = 0; i < 1024; i++) check(!g_test.sampler_references[i], "all native mock sampler references retired");
+    check(g_test.forgets == g_test.view_destroys && !g_test.forgets_late,
+          "each view destroy forgets the heaps' descriptors of the view first");
     printf("descriptor object registry mock lifecycle: %u checks, %u failures\n", g_test.checks, g_test.failures);
     return g_test.failures != 0;
 }
