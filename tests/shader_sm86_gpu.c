@@ -1592,7 +1592,7 @@ static int fuse_value(Gpu* g) {
    The program below gathers A (LDSM.4) and B (LDSM.T.4) from shared memory and multiplies them with HMMA.16816.
    Translating it with hmma_narrow_lds off (a 32-bit shared load, shift and mask per half) and on (a direct 16-bit
    shared load) must give bit-identical D words. */
-static void narrow_program(Prog* p) {
+static void narrow_program(Prog* p, int subword) {
     p->outputs = 32;
     p->approx_from = 32;
     Sm86Word w = sm86_fix(0x919); /* S2R R0, TID.X */
@@ -1628,13 +1628,15 @@ static void narrow_program(Prog* p) {
         emit(p, w);
     }
     emit(p, ri(0x024, 7, 0, 16, 255)); /* IMAD R7, R0, 16, RZ */
-    for (u32 q = 0; q < 4; q++) { /* STS.128 [R7 + 1024q] into four sets of rows */
-        w = sm86_fix(0x388);
-        f(&w, 24, 8, 7);
-        f(&w, 32, 8, 8 + 4 * q);
-        f(&w, 40, 24, 1024 * q);
-        f(&w, 73, 3, 6);
-        emit(p, w);
+    for (u32 q = 0; q < 4; q++) { /* the tile: one STS.128, or four STS.U16 that must take the general path */
+        for (u32 h = 0; h < (subword ? 8u : 1u); h++) { /* eight halves of the four words, low then high */
+            w = sm86_fix(0x388);
+            f(&w, 24, 8, 7);
+            f(&w, 32, 8, 8 + 4 * q + (subword ? h / 2 : 0));
+            f(&w, 40, 24, 1024 * q + (subword ? 2 * h : 0));
+            f(&w, 73, 3, subword ? 2 : 6);
+            emit(p, w);
+        }
     }
     emit(p, sm86_fix(0xb1d)); /* BAR.SYNC */
     for (u32 m = 0; m < 4; m++) { /* A0 R24, A1 R28 (LDSM.4); B0 R32, B1 R36 (LDSM.T.4) */
@@ -1662,7 +1664,7 @@ static void narrow_program(Prog* p) {
     epilogue(p);
 }
 static int narrow_value(Gpu* g) {
-    static u32 in[32 * 16], a[32 * 32], b[32 * 32];
+    static u32 in[32 * 16], got[2][2][32 * 32]; /* subword store, narrow */
     u32 cb0[64] = {0};
     cb0[0x20 / 4] = (u32)VA_IN;
     cb0[0x24 / 4] = (u32)(VA_IN >> 32);
@@ -1681,9 +1683,10 @@ static int narrow_value(Gpu* g) {
         coop_was = g_spirv_translate.hmma_coop, narrow_was = g_spirv_translate.hmma_narrow_lds;
     u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
     int ok = 1;
+    for (int subword = 0; subword < 2 && ok; subword++)
     for (int narrow = 0; narrow < 2 && ok; narrow++) {
         Prog p = {0};
-        narrow_program(&p);
+        narrow_program(&p, subword);
         ShaderInfo si = {0};
         si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
         si.shared_size = 4096;
@@ -1694,18 +1697,18 @@ static int narrow_value(Gpu* g) {
         size_t words = 0;
         u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
         if (!spv) {
-            fprintf(stderr, "narrow value, narrow %d: %s\n", narrow, si.first_unsupported);
+            fprintf(stderr, "narrow value, subword %d, narrow %d: %s\n", subword, narrow, si.first_unsupported);
             ok = 0;
             break;
         }
-        u32* out = narrow ? b : a;
+        u32* out = got[subword][narrow];
         for (u32 i = 0; i < 32 * 32; i++) out[i] = FILL;
         g_groups = 1, g_warp32 = g->warp32;
-        int ran = si.ngbuf == 2 && gpu_run(g, spv, words, &si, cb0, sizeof cb0, 0x28, in, sizeof in, out, sizeof a);
+        int ran = si.ngbuf == 2 && gpu_run(g, spv, words, &si, cb0, sizeof cb0, 0x28, in, sizeof in, out, sizeof got[0][0]);
         g_groups = GROUPS, g_warp32 = 0;
         free(spv);
         if (!ran) {
-            fprintf(stderr, "narrow value, narrow %d: Vulkan failed\n", narrow);
+            fprintf(stderr, "narrow value, subword %d, narrow %d: Vulkan failed\n", subword, narrow);
             ok = 0;
         }
     }
@@ -1715,8 +1718,13 @@ static int narrow_value(Gpu* g) {
     g_spirv_translate.hmma_narrow_lds = narrow_was;
     if (ok) {
         u32 bad = 0;
-        for (u32 i = 0; i < 32 * 32; i++) bad += a[i] != b[i] || a[i] == FILL;
-        printf("narrow value: %u of %u D words differ between the default and the narrow LDSM\n", bad, 32 * 32);
+        for (u32 i = 0; i < 32 * 32; i++) {
+            bad += got[0][0][i] == FILL || got[0][1][i] != got[0][0][i];
+            /* the sub-word program stores a different tile; what matters is that the narrow flag cannot change it */
+            bad += got[1][0][i] == FILL || got[1][1][i] != got[1][0][i];
+        }
+        printf("narrow value: %u of %u D words differ between the general and narrow LDSM paths, with whole-word and\n"
+               "              sub-word stores (%08x and %08x at word 0)\n", bad, 2 * 32 * 32, got[0][0][0], got[1][0][0]);
         ok = bad == 0;
     }
     return ok;

@@ -4667,6 +4667,8 @@ static void test_narrow_ldsm(const char* dir) {
     put(code, n, bra(n, n, 7, 0));
     n++;
     int narrow_was = g_spirv_translate.hmma_narrow_lds;
+    int coop_was = g_spirv_translate.hmma_coop;
+    u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
     for (int narrow = 0; narrow < 2; narrow++) {
         g_spirv_translate.hmma_narrow_lds = narrow;
         g_spirv_translate.hmma_coop = 0, g_spirv_translate.hmma_coop_shapes = 0;
@@ -4713,7 +4715,35 @@ static void test_narrow_ldsm(const char* dir) {
         CHECK(spv && keep_module(dir, "narrow_ldsm_unsafe", spv, count));
         free(spv);
     }
+    /* a shared atomic cannot be mirrored either: ATOMS.POPC.INC before the LDSM must also fall back */
+    {
+        u8 atom[16 * 4] = {0};
+        u32 m = 0;
+        Word a = fix(0xf8c); /* ATOMS.POPC.INC [URZ] */
+        put(atom, m++, a);
+        Word ld = fix(0x83b);
+        set(&ld, 16, 8, 24);
+        set(&ld, 24, 8, 7);
+        set(&ld, 40, 24, 0x40);
+        set(&ld, 72, 2, 2);
+        set(&ld, 78, 1, 1);
+        put(atom, m++, ld);
+        put(atom, m++, exit_insn());
+        put(atom, m, bra(m, m, 7, 0));
+        m++;
+        g_spirv_translate.hmma_narrow_lds = 1;
+        g_spirv_translate.hmma_coop = 0, g_spirv_translate.hmma_coop_shapes = 0;
+        ShaderInfo si = {0};
+        si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+        si.shared_size = 1024;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(atom, m * 16, ST_CS, NULL, &si, &count);
+        CHECK(spv != NULL && !spv_has_u16(spv, count));
+        CHECK(spv && keep_module(dir, "narrow_ldsm_atomic", spv, count));
+        free(spv);
+    }
     g_spirv_translate.hmma_narrow_lds = narrow_was;
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_shapes = shapes_was;
 }
 /* HMMA (16816 and 1688, F16 and F32), LDSM and MOVM with and without the device's quads in compute and its mixed dot
    product: A's 48 reads are quad broadcasts or shuffles, B's 48, LDSM's 4 and MOVM's 2 stay shuffles, and each pair
