@@ -2,8 +2,8 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # The memory model's litmus tests
 
-These five files state the same tests as `tests/gnuabi/litmus.c` in the format of herd7, the memory model simulator of
-Jade Alglave and Luc Maranget ([herdtools7](https://github.com/herd/herdtools7), documentation at
+These five files state five of the six tests of `tests/gnuabi/litmus.c` in the format of herd7, the memory model
+simulator of Jade Alglave and Luc Maranget ([herdtools7](https://github.com/herd/herdtools7), documentation at
 [diy.inria.fr](http://diy.inria.fr/doc/herd.html)). The C fixture is what runs on the GNU ABI runtime. A file here is
 what derives the expectations, so they can be checked instead of taken on trust: the model is the AArch64 application
 level memory model of the Arm ARM, whose authoritative form is `aarch64.cat` in the herd7 distribution.

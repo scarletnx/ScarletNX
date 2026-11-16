@@ -3,8 +3,8 @@
 # Copyright 2026 the ScarletNX contributors
 """The Arm memory model on the translated code: the litmus tests of M1 in docs/layers/cpu/plan.md.
 
-tests/gnuabi/litmus.c is built once for each test, freestanding for aarch64-linux-gnu with Clang and LLD, and run on
-the GNU ABI runtime. Each thread repeats its accesses behind barriers of its own, and the fixture prints the values
+tests/gnuabi/litmus.c is built once for each test, freestanding for aarch64-linux-gnu with Clang and a linker, mold or
+LLD, and run on the GNU ABI runtime. Each thread repeats its accesses behind barriers of its own, and the fixture prints the values
 its reads saw. Every outcome printed must be one the model allows: an outcome in a test's forbidden set is a fence,
 an acquire or a release the translator did not keep, or a plain access LLVM moved across one.
 
