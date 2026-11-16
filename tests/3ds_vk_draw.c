@@ -1080,6 +1080,13 @@ static void scaled_layout(SnxCtrMemory* m) {
     free(s);
     g_settings.ctr_top_resolution = top;
 }
+/* The screens' layout again through FSR 1 and FXAA: each screen's passes but its last before the window's rendering,
+   and its FXAA pass drawn into the window there (the presenter's snx_fx_prepare and snx_fx_draw) */
+static void scaled_layout_effects(SnxCtrMemory* m) {
+    snprintf(g_settings.upscaler, sizeof g_settings.upscaler, "%s", "fsr1");
+    snprintf(g_settings.anti_aliasing, sizeof g_settings.anti_aliasing, "%s", "fxaa");
+    scaled_layout(m);
+}
 /* A game alternates a screen's picture between two framebuffers of one size: a display transfer fills one while the
    other is shown, so the copy the presenter looks up must be the destination's and not the last transfer's. A GPU
    engine's write over one drops its copy alone, and a transfer into it again keeps its own slot */
@@ -1656,19 +1663,21 @@ typedef struct {
 } Mode;
 static const Mode scenes = {NULL, "the scenes", all_scenes};
 /* the validation runs record only the commands under test */
-static const Mode modes[] = {{"--present", "the presented screens", screens},
-                             {"--scaled-present", "the frames shown from scaled targets", scaled_present},
-                             {"--scaled-transfer", "the scaled targets' transfers", scaled_transfer},
-                             {"--scaled-rotating", "the rotating destinations", scaled_rotating},
-                             {"--scaled-verify", "a destination whose bytes the guest changed", scaled_verify},
-                             {"--scaled-layout", "the screens' layout at different render scales", scaled_layout},
-                             {"--after-draw", "the commands after a draw", presented_after_draw},
-                             {"--texture-after-draw", "the textures after a draw", texture_after_draw},
-                             {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy},
-                             {"--draw-after-submit", "a draw after a submission", draw_after_submit},
-                             {"--async", "the draws with async_pipelines", async_pipelines},
-                             {"--pipeline-cache", "the pipeline cache kept between runs", pipeline_cache},
-                             {"--shadow", "the shadow maps", shadows}};
+static const Mode modes[] = {
+    {"--present", "the presented screens", screens},
+    {"--scaled-present", "the frames shown from scaled targets", scaled_present},
+    {"--scaled-transfer", "the scaled targets' transfers", scaled_transfer},
+    {"--scaled-rotating", "the rotating destinations", scaled_rotating},
+    {"--scaled-verify", "a destination whose bytes the guest changed", scaled_verify},
+    {"--scaled-layout", "the screens' layout at different render scales", scaled_layout},
+    {"--scaled-layout-effects", "the screens' layout through FSR 1 and FXAA", scaled_layout_effects},
+    {"--after-draw", "the commands after a draw", presented_after_draw},
+    {"--texture-after-draw", "the textures after a draw", texture_after_draw},
+    {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy},
+    {"--draw-after-submit", "a draw after a submission", draw_after_submit},
+    {"--async", "the draws with async_pipelines", async_pipelines},
+    {"--pipeline-cache", "the pipeline cache kept between runs", pipeline_cache},
+    {"--shadow", "the shadow maps", shadows}};
 
 int main(int argc, char** argv) {
     /* No window on a host that has a display: these checks render offscreen, and the ones that present do it through
