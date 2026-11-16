@@ -825,6 +825,21 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 (unsigned long long)g_vk_dset_new, (unsigned long long)g_vk_dset_reused, vk_desc_pools(),
                 (unsigned long long)vk_desc_array_sets(), (unsigned long long)g_vk_draw_kept,
                 (unsigned long long)g_vk_draw_checked, (unsigned long long)g_vk_targets_kept);
+            {
+                /* the GPU thread's cost of the work it replays, a measure that doesn't hang on how fast the scene
+                   runs: its busy time a present, and that time over the draws and dispatches it set up */
+                static u64 busy_was, drawn_was, disp_was;
+                const u64 busy = gpu_thread_busy_ns() - busy_was, drawn = g_vk_drawn - drawn_was,
+                          disp = g_vk_dispatches - disp_was;
+                if (drawn + disp)
+                    LOG("vulkan: the GPU thread over the last 600 presents: busy %.2f ms a present, %.2f us a draw "
+                        "or dispatch (%.1f draws and %.1f dispatches a present)\n",
+                        (double)busy / 1e6 / 600, (double)busy / 1e3 / (double)(drawn + disp), (double)drawn / 600,
+                        (double)disp / 600);
+                busy_was += busy;
+                drawn_was = g_vk_drawn;
+                disp_was = g_vk_dispatches;
+            }
             if (g_vk_depth_apart_draws) {
                 static u64 apart_was, moved_was;
                 LOG("vulkan: %llu draws of the last 600 frames clip and clamp depth, as the console's clamp off does, "

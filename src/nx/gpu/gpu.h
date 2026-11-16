@@ -455,6 +455,9 @@ void gpu_park(GpuChannel* ch, u32 kind, u64 addr, u32 val, int geq);
 /* something a parked channel may wait for changed (a syncpoint increment, on the GPU thread or off it): look again.
    Any thread */
 void gpu_kick(void);
+/* the GPU thread's wall time outside its wait for work so far, in ns: replay, setup and recording, the waits inside
+   them (locks, fences) included */
+u64 gpu_thread_busy_ns(void);
 /* the CPU signals what a GPU stream may wait for (an NVN event, a syncpoint increment through nvhost-ctrl): what it
    wrote before is for the work after the wait to see (renderer.h mem_may_have_changed). Before the signal, any thread */
 void gpu_cpu_signal(void);

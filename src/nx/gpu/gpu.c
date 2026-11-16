@@ -1100,6 +1100,9 @@ void gpu_report_stall(void) {
     }
     if (g_renderer && g_renderer->report_stall) g_renderer->report_stall();
 }
+/* the GPU thread's time outside its wait for work (gpu_thread_busy_ns), atomic */
+static u64 g_busy_ns;
+u64 gpu_thread_busy_ns(void) { return __atomic_load_n(&g_busy_ns, __ATOMIC_RELAXED); }
 static void gpu_thread(void* arg) {
     (void)arg;
     t_gpu = 1;
@@ -1108,7 +1111,10 @@ static void gpu_thread(void* arg) {
     for (;;) {
         u64 gen = g_qgen;
         i64 wake = -1;
-        if (run_pass(&wake)) continue;
+        const u64 t0 = plat_ns();
+        const int ran = run_pass(&wake);
+        __atomic_add_fetch(&g_busy_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+        if (ran) continue;
         /* A whole pass ran nothing: sleep until a new item, a kick, or the next look at a wait. A plot, not a zone:
            this wait can last the rest of the run. */
         SNX_PLOT("gpu thread idle", 1);
