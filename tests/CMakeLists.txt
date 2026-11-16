@@ -1791,6 +1791,16 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     add_test(NAME nn_fs_restore_card COMMAND snx-test-nn-fs restore-card)
     set_tests_properties(nn_fs_restore_card PROPERTIES PASS_REGULAR_EXPRESSION
         "fatal: nn::fs::GetSaveDataRestoreFlag failed with result 0x2ee002 \\(error 2002-6000\\)")
+    # Unmount with entries open: each one's path logged, then FileNotClosed, or DirectoryNotClosed for folders alone
+    add_test(NAME nn_fs_unmount_save COMMAND snx-test-nn-fs unmount-save)
+    set_tests_properties(nn_fs_unmount_save PROPERTIES FAIL_REGULAR_EXPRESSION "ng:/" PASS_REGULAR_EXPRESSION
+        "nn::fs::Unmount\\(\"save\"\\): the file save:/five is open\nnn::fs::Unmount\\(\"save\"\\): the directory save:/folder/inner is open\nfatal: nn::fs::Unmount\\(\"save\"\\) failed with result 0x326e02 \\(error 2002-6455\\), which the SDK stops the game on \\(open on it, each logged above: files 1, directories 1\\)\n")
+    add_test(NAME nn_fs_unmount_rom COMMAND snx-test-nn-fs unmount-rom)
+    set_tests_properties(nn_fs_unmount_rom PROPERTIES PASS_REGULAR_EXPRESSION
+        "nn::fs::Unmount\\(\"ng\"\\): the file ng:/d/f is open\nnn::fs::Unmount\\(\"ng\"\\): the directory ng:/d is open\nnn::fs::Unmount\\(\"ng\"\\): the directory ng:/ is open\nfatal: nn::fs::Unmount\\(\"ng\"\\) failed with result 0x326e02 \\(error 2002-6455\\), [^\n]*: files 1, directories 2\\)\n")
+    add_test(NAME nn_fs_unmount_dir COMMAND snx-test-nn-fs unmount-dir)
+    set_tests_properties(nn_fs_unmount_dir PROPERTIES FAIL_REGULAR_EXPRESSION "the file" PASS_REGULAR_EXPRESSION
+        "nn::fs::Unmount\\(\"ng\"\\): the directory ng:/d is open\nfatal: nn::fs::Unmount\\(\"ng\"\\) failed with result 0x327002 \\(error 2002-6456\\), [^\n]*: files 0, directories 1\\)\n")
     # the native nn::pctl (nn/pctl.c): the answers of a console with no parental controls set
     add_executable(snx-test-nn-pctl nn_pctl.c)
     snx_test_target(snx-test-nn-pctl 23)
