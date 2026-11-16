@@ -4,6 +4,7 @@
    makes by the rules of Mesa's NAK encoder (sm70_encode.rs: set_opcode, encode_alu_base, set_pred, set_instr_deps,
    set_rel_offset) and its SPH (sph.rs), the search for programs in shader memory, and the translation of small
    programs, which spirv-val checks when the test gets its path. No word here comes from a game. */
+#include "snx_settings.h"
 #include "nx/gpu/shader/fuse.h"
 #include "nx/gpu/shader/sm86.h"
 #include "common/utilities/endian.h"
@@ -5527,7 +5528,7 @@ static void test_fuse_ldsm_hmma(const char* dir) {
 
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
-    if (getenv("SNX_HMMA_TILE_DIRECT")) g_spirv_translate.hmma_tile_direct = 1;
+    g_spirv_translate.hmma_tile_direct = g_settings.hmma_ldsm_tile_proof;
     test_alu_forms();
     test_common_fields();
     test_flow();
