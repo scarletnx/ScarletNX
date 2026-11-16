@@ -53,15 +53,26 @@ u32 nvn_replay_shown_syncpt(void) { return g_nvn.replay.shown; }
 typedef void (*RecordFn)(void* ctx, u32 op, u64 payload, u32 size);
 /* each record of the recording at p, in order: a JUMP continues in another segment, a CALL runs another recording,
    the recording's last record (or the empty recording's END) returns */
+/* own_acquire for a record header at p, once for each 4 KiB page a pass reads (*page, ~0 at its start): what the GPU
+   holds of a page lands at the first header the pass reads there, and the headers after it on the same page took
+   own.c's locks again for nothing, while other threads took the same locks to stage guest memory (own_stage) */
+static void acquire_header(u64 p, u64* page) {
+    if (!own_any()) return;
+    u64 at = p & ~(u64)4095;
+    if (at == *page && ((p + sizeof(NvnRecHdr) - 1) & ~(u64)4095) == at) return;
+    own_acquire(p, sizeof(NvnRecHdr));
+    *page = ((p + sizeof(NvnRecHdr) - 1) & ~(u64)4095) == at ? at : ~(u64)0;
+}
 static void walk(u64 p, RecordFn fn, void* ctx, int depth, int sync_only) {
     if (depth > 8) fatal("nvn: recordings call each other more than 8 deep (at %llx)", (unsigned long long)p);
     u32 prev = OP_BEGIN;
     u64 start = p, piece = p; /* piece: where the records walked now start, its handle or the last JUMP's target */
+    u64 page = ~(u64)0;
     for (;;) {
         NvnRecHdr h;
         u32 op;
         /* the submitting game thread, without the renderer's lock: what the GPU holds of the record lands first */
-        if (own_any()) own_acquire(p, sizeof h);
+        acquire_header(p, &page);
         memcpy(&h, GP(p), sizeof h);
         __atomic_thread_fence(__ATOMIC_ACQUIRE); /* a JUMP's target is written before its header (nvn_cmd.c) */
         op = NVN_REC_OP(h.op);
@@ -320,6 +331,7 @@ static int wait_over(const NvnJob* j, u32 op, u64 pc, u32 size, NvnReplayWait* s
    direct submissions keep CALL cursors so nested recordings do not repeat earlier draws. */
 static int replay_records(NvnJob* j, NvnReplayQueue* q) {
     Replay replay_context = {.q = q};
+    u64 page = ~(u64)0; /* acquire_header's page for this pass */
     while (j->handle < j->n) {
         if (!j->depth) {
             j->cursor[0].pc = j->cursor[0].piece = j->handles[j->handle];
@@ -334,7 +346,7 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                 continue;
             }
             NvnRecHdr h;
-            if (own_any()) own_acquire(pc, sizeof h);
+            acquire_header(pc, &page);
             memcpy(&h, GP(pc), sizeof h);
             __atomic_thread_fence(__ATOMIC_ACQUIRE);
             u32 op = NVN_REC_OP(h.op);
