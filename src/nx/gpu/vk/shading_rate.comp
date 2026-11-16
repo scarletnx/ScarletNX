@@ -1,0 +1,27 @@
+#version 450
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* An Ounce's shading rate image made the device's (vk/shading_rate.c): an invocation for each texel of the device's
+   image. Its pixels' center falls in a texel of the game's image, a palette index, and the palette gives the value the
+   device reads there: an index into the fixed palette of VK_NV_shading_rate_image, or the rate itself, as
+   VK_KHR_fragment_shading_rate encodes it. A texel past the game's image takes entry 0, as the console reads it.
+   CMake compiles it into SPIR-V at build time (cmake/glsl.cmake). */
+#extension GL_EXT_samplerless_texture_functions : require
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform utexture2D game;
+layout(set = 0, binding = 1, r8ui) uniform writeonly uimage2D rate;
+layout(push_constant) uniform Params {
+    uvec2 size;      /* the device's image, in its texels */
+    uvec2 game_size; /* the game's image, in its texels */
+    vec2 step;       /* a texel of the device's image in texels of the game's */
+    uint table[4];   /* the value of each of the 16 palette entries, a byte each */
+};
+
+void main() {
+    uvec2 p = gl_GlobalInvocationID.xy;
+    if (p.x >= size.x || p.y >= size.y) return;
+    uvec2 g = uvec2((vec2(p) + 0.5) * step);
+    uint index = g.x < game_size.x && g.y < game_size.y ? texelFetch(game, ivec2(g), 0).r & 15u : 0u;
+    imageStore(rate, ivec2(p), uvec4((table[index >> 2] >> ((index & 3u) * 8u)) & 0xFFu));
+}

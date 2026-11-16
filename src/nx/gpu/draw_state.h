@@ -318,6 +318,7 @@ typedef struct {
     u32 multisample_flags, coverage_to_color_output; /* DS_MS_ flags and the integer color output to update */
     u32 subpixel_bias_x, subpixel_bias_y; /* extra conservative snap precision, inclusive0..8 */
     u8 sample_locations[16];            /* x in low4/y in high4, each in units of1/16 pixel */
+    u32 shading_rate; /* the shading rate image the draw reads (Renderer.shading_rate's id), 0 for none */
 } DrawCall;
 
 /* DsState's groups, in its order */

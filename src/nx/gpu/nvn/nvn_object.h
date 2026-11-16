@@ -22,6 +22,7 @@ static inline void nvn_record_relocate(u64 dst, u64 src, u32 op, u32 size) {
         {OP_COPY_T2T, offsetof(NvnPCopyT2T, src), 1},       {OP_COPY_T2T, offsetof(NvnPCopyT2T, dst), 1},
         {OP_CLEAR_TEX, offsetof(NvnPClearTex, texture), 1},
         {OP_DLSS, offsetof(NvnPDlss, tex), NVN_DLSS_TEXTURES},
+        {OP_RATE_IMAGE, offsetof(NvnPRateImage, tex), 1},
     };
     size_t i;
     u32 k;

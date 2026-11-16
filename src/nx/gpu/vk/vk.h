@@ -87,7 +87,7 @@ typedef struct {
        and features enabled */
     u32 video_family;
     VkVideoCodecOperationFlagsKHR video_codecs;
-    const char* dev_ext[70]; /* create_device enables 70 at most, were every one it can enable there */
+    const char* dev_ext[71]; /* create_device enables 71 at most, were every one it can enable there */
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained (to 1.2 on a 1.2 device) */
     VkPhysicalDeviceVulkan11Features feat11;
@@ -228,6 +228,11 @@ typedef struct {
     int has_conservative;
     int has_depth_range_unrestricted; /* raw D32F copies retain every imported bit */
     float conservative_extra;
+    /* how an Ounce's shading rate image lowers the rate of its draws (shading_rate.c): VK_VRS_NV with
+       VK_NV_shading_rate_image, VK_VRS_KHR with the attachment of VK_KHR_fragment_shading_rate, VK_VRS_NONE (each
+       pixel shaded) without either. vrs_texel: the pixels that one texel of the device's rate image covers */
+    int vrs;
+    VkExtent2D vrs_texel;
     /* VK_EXT_graphics_pipeline_library with fast linking (pipeline_parts.h's vk_gpl_choose): a new pipeline links
        parts of its shaders that compile once, and an optimized one is made after it (pipeline.c) */
     int has_gpl;
@@ -265,6 +270,7 @@ typedef struct {
 } VkState;
 enum { VK_MEM_SMALL_BAR, VK_MEM_REBAR, VK_MEM_UMA };
 enum { VK_MEM_PATH_COPY, VK_MEM_PATH_UMA };
+enum { VK_VRS_NONE, VK_VRS_NV, VK_VRS_KHR }; /* VkState.vrs */
 extern VkState g_vk;
 
 /* the swapchain's display clock (sc_clock): none; present ids and waits; their second versions, which a swapchain made
@@ -2723,6 +2729,7 @@ enum {
     VK_PROF_QUERY_PREDICATE, /* the queries' predicates (query_predicate.comp) */
     VK_PROF_QUERY_COMPARE,   /* a query compare (query_compare.comp) */
     VK_PROF_QUERY_COUNT,     /* the queries' counts (query_count.comp) */
+    VK_PROF_SHADING_RATE,    /* an Ounce's shading rate image made the device's (shading_rate.comp) */
     VK_PROF_N
 };
 void vk_gpuprof_cb_begin(VkCommandBuffer cb);
