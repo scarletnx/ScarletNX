@@ -3506,13 +3506,6 @@ static unsigned key_icon(const char* key, const char* what) {
         if (!SDL_strcasecmp(icons[i].what, what)) return icons[i].icon;
     return GUI_ICON_NONE;
 }
-/* parts' sentences as a translation says them, for a foot (help false): the key back first and a \x1f after it,
-   which hints() puts alone at the left, then the first GUI_FOOT_OWN sentences of the screen's own keys, More where
-   there are more (but on a pad), F1's last, their icons in that order (the back's first); for F1's box (help)
-   every one, the screen's own first, then those every screen has (the key back, and key_generic's where they do no
-   thing of the screen's own), *own (when not NULL) how many of the first; with icons each one's icon (key_icon of its
-   English) in icons, max at most. A translation has the sentences with keys of its English in their order
-   (scripts/build-languages.py), so each is known by its English's */
 /* a sentence (said_len bytes at said) of key, with its icon, into more while it has room */
 static void more_add(GuiMore* more, const char* key, const char* said, int said_len, unsigned icon) {
     if (!more || more->n >= GUI_MORE_MAX) return;
@@ -3557,6 +3550,13 @@ static void more_add(GuiMore* more, const char* key, const char* said, int said_
     }
     return out;
 }
+/* parts' sentences as a translation says them, for a foot (help false): the key back first and a \x1f after it,
+   which hints() puts alone at the left, then the first GUI_FOOT_OWN sentences of the screen's own keys, More where
+   there are more (but on a pad), F1's last, their icons in that order (the back's first); for F1's box (help)
+   every one, the screen's own first, then those every screen has (the key back, and key_generic's where they do no
+   thing of the screen's own), *own (when not NULL) how many of the first; with icons each one's icon (key_icon of its
+   English) in icons, max at most. A translation has the sentences with keys of its English in their order
+   (scripts/build-languages.py), so each is known by its English's */
 static const char* keys_said(const char* const* parts, int n, bool pad, bool help, char* out, size_t size,
                              unsigned* icons, int max, int* own, GuiMore* more) {
     char back[192] = "", kept[1024] = "";
