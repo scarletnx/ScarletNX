@@ -343,7 +343,7 @@ static int device_score(VkPhysicalDevice pd, const VkPhysicalDeviceProperties* p
                                                                       : 2) +
            (api >= VK_API_VERSION_1_3);
 }
-/* device_score as snx_vk_best_device rates a device */
+/* device_score as common/gpu/vk/device.c rates a device (the request's score) */
 static int device_rating(VkPhysicalDevice pd, const VkPhysicalDeviceProperties* p, void* user) {
     u32 gf, cf, gq;
     (void)user;

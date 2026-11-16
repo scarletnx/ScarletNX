@@ -57,19 +57,8 @@ uint32_t snx_vk_queue_family(VkPhysicalDevice phys, VkQueueFlags flags, VkSurfac
 
 /* the instance's physical devices in the loader's order, *count of them (calloc'd, NULL for none) */
 VkPhysicalDevice* snx_vk_physical_devices(VkInstance instance, uint32_t* count);
-/* The first device, in the loader's order, of api_version or newer whose queue family of flags (presenting to
-   surface, as snx_vk_queue_family) make accepts: make creates the device and says whether it did. False when none */
-typedef bool (*SnxVkMake)(VkPhysicalDevice phys, uint32_t family, void* user);
-bool snx_vk_first_device(VkInstance instance, uint32_t api_version, VkQueueFlags flags, VkSurfaceKHR surface,
-                         SnxVkMake make, void* user);
-/* The device of api_version or newer that score rates highest, the first of equal ones; a negative score rejects it.
-   VK_NULL_HANDLE when none is left */
+/* a physical device's rating (common/gpu/vk/device.h's score): higher is better, a negative one rejects it */
 typedef int (*SnxVkScore)(VkPhysicalDevice phys, const VkPhysicalDeviceProperties* properties, void* user);
-VkPhysicalDevice snx_vk_best_device(VkInstance instance, uint32_t api_version, SnxVkScore score, void* user);
-
-/* A device with one queue of family: features is the head of its VkPhysicalDeviceFeatures2 chain */
-VkResult snx_vk_device_create(VkPhysicalDevice phys, uint32_t family, const void* features,
-                              const char* const* extensions, uint32_t extension_count, VkDevice* out);
 
 /* Links the structures of links that are not NULL (each a Vulkan structure with sType and pNext) into one pNext chain
    in their order, the last one ending it. The first, NULL when there is none */

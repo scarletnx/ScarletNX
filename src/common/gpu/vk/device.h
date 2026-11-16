@@ -65,7 +65,7 @@ typedef struct {
     const char* none; /* the error where no device is left, before each device's reason: "no Vulkan 1.3 device with
                          dynamic rendering" */
     VkInstance instance;
-    uint32_t api; /* the Vulkan version it needs, and runs the device at */
+    uint32_t api; /* the Vulkan version it needs, 1.2 or newer (the bans read the driver's 1.2 properties) */
     VkQueueFlags queues;
     VkSurfaceKHR surface; /* the family presents to it; VK_NULL_HANDLE for none */
     /* where given, the device it rates highest (the first of equal ones; a negative rating passes one over) is the one
