@@ -488,10 +488,11 @@ to test that path on any driver; a 3DS or Vita game takes it too. `vulkan_headle
 `vkCmdSetDepthClampRangeEXT` and `vkCmdBeginConditionalRenderingEXT` and runs every check of `vulkan_headless` on the
 device made again without the extensions of the two that the driver has on; `3ds_vk_hidden_commands` makes the 3DS's
 device again without `VK_EXT_shader_object`; `vk_extension_commands` checks the table, the `depends`, a stand-in
-device's check and the hide list; `vkcmdgen` the generator on registries of its own and on the build's.
+device's check and the hide list; `vkcmdgen` the generator on registries of its own and on the build's; and
+`vk_extension_settings` that every device extension a renderer can turn on has its `setting @VK_...` line.
 
 ```sh
-ctest --test-dir build -R 'vk_extension_commands|vkcmdgen|vk_extension_bans'
+ctest --test-dir build -R 'vk_extension_commands|vk_extension_settings|vkcmdgen|vk_extension_bans'
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json ctest --test-dir build -R 'hidden_commands'
 ```
 

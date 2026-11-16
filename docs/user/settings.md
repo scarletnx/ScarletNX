@@ -103,10 +103,12 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 ### Vulkan Extensions
 
-Each Vulkan extension the Switch's renderer can use has a setting of its own in `[Graphics]`, its name in lowercase:
-`vk_ext_transform_feedback` for `VK_EXT_transform_feedback`, `vk_khr_maintenance5` for `VK_KHR_maintenance5`. The
-launcher's Graphics group shows them on its Vulkan Extensions page. A 3DS game takes them too, and the same bans,
-for the extensions its renderer uses (`--vk-ext-shader-object=off`). Each is `auto` by default:
+Each Vulkan extension a renderer can make its device with has a setting of its own in `[Graphics]`, its name in
+lowercase: `vk_ext_transform_feedback` for `VK_EXT_transform_feedback`, `vk_khr_maintenance5` for `VK_KHR_maintenance5`
+(the `vk_extension_settings` test fails for one without). The launcher's Graphics group shows them on its Vulkan
+Extensions page. A 3DS or Vita game takes them too, and the same bans, for the extensions its renderer uses
+(`--vk-ext-shader-object=off`); the Android apps' renderer takes the bans' check of each extension's commands alone.
+Each is `auto` by default:
 
 | Value | Effect |
 | --- | --- |
@@ -153,6 +155,8 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_ext_external_memory_host` | `auto` | `VK_EXT_external_memory_host` |
 | `vk_ext_fragment_shader_interlock` | `auto` | `VK_EXT_fragment_shader_interlock` |
 | `vk_ext_graphics_pipeline_library` | `auto` | `VK_EXT_graphics_pipeline_library` |
+| `vk_ext_hdr_metadata` | `auto` | `VK_EXT_hdr_metadata` |
+| `vk_ext_image_view_min_lod` | `auto` | `VK_EXT_image_view_min_lod` |
 | `vk_ext_index_type_uint8` | `auto` | `VK_EXT_index_type_uint8` |
 | `vk_ext_load_store_op_none` | `auto` | `VK_EXT_load_store_op_none` |
 | `vk_ext_map_memory_placed` | `auto` | `VK_EXT_map_memory_placed` |
@@ -164,6 +168,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_ext_present_timing` | `auto` | `VK_EXT_present_timing` |
 | `vk_ext_primitive_topology_list_restart` | `auto` | `VK_EXT_primitive_topology_list_restart` |
 | `vk_ext_provoking_vertex` | `auto` | `VK_EXT_provoking_vertex` |
+| `vk_ext_rasterization_order_attachment_access` | `auto` | `VK_EXT_rasterization_order_attachment_access` |
 | `vk_ext_robustness2` | `auto` | `VK_EXT_robustness2` |
 | `vk_ext_sample_locations` | `auto` | `VK_EXT_sample_locations` |
 | `vk_ext_shader_atomic_float` | `auto` | `VK_EXT_shader_atomic_float` |
@@ -180,7 +185,9 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_khr_dynamic_rendering_local_read` | `auto` | `VK_KHR_dynamic_rendering_local_read`, promoted to Vulkan 1.4 |
 | `vk_khr_extended_flags` | `auto` | `VK_KHR_extended_flags` |
 | `vk_khr_external_memory_fd` | `auto` | `VK_KHR_external_memory_fd` |
+| `vk_khr_external_memory_win32` | `auto` | `VK_KHR_external_memory_win32` |
 | `vk_khr_format_feature_flags2` | `auto` | `VK_KHR_format_feature_flags2`, promoted to Vulkan 1.3 |
+| `vk_khr_fragment_shader_barycentric` | `auto` | `VK_KHR_fragment_shader_barycentric` |
 | `vk_khr_index_type_uint8` | `auto` | `VK_KHR_index_type_uint8`, promoted to Vulkan 1.4 |
 | `vk_khr_load_store_op_none` | `auto` | `VK_KHR_load_store_op_none`, promoted to Vulkan 1.4 |
 | `vk_khr_maintenance4` | `auto` | `VK_KHR_maintenance4`, promoted to Vulkan 1.3 |
