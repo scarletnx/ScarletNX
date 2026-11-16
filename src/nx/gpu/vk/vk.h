@@ -542,7 +542,10 @@ void vk_submit_for_readback(void);
 /* the commands recorded since the last submission submitted, when a command buffer is begun: what a change of an
    image's sparse binding has to follow (memory.c) */
 void vk_submit_recorded(void);
-void vk_submit_upload_wait(void); /* the same, and waits for the GPU, landing nothing: an upload's own pace */
+/* the same, and waits for the GPU, landing nothing: an upload's own pace. let_go: with vk_lock let go meanwhile where
+   it can be (then 1), for an upload that holds nothing of the frame's slot across it, in a setup that starts again */
+int vk_submit_upload_wait(int let_go);
+int vk_upload_letting_go(void); /* vk_submit_upload_wait has let go of vk_lock (read under vk_lock) */
 /* vk_cmd() returns without waiting: the frame slot is recording, or the GPU is done with its last use */
 int vk_cmd_ready(void);
 /* vk_checkpoints=1: what the GPU reached when the device was lost (checkpoints.c) */
@@ -2560,6 +2563,8 @@ VkFrontFace vk_render_front_face(const DsDynamic* d);
 void vk_render_draw_texture(const DsState* ds, const DrawTexture* t);
 void vk_render_discard(const DsState* ds, u32 targets);
 void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o);
+/* in a draw's setup that starts again when the submission number changes (render.c) */
+int vk_render_setup_restarts(void);
 int vk_render_xfb_control(u32 owner, u64 control, u32 what, u32 stride, DrawOwner* o);
 int vk_xfb_control_buffer(VkBuffer counters, u64 counter_offset, u64 control, u32 what, u32 stride);
 int vk_xfb_indirect(u64 control, VkBuffer* arguments, u64* offset);

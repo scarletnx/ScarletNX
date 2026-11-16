@@ -1134,6 +1134,12 @@ static void vkr_refresh(void) {
         now - last < 33000000ull)
         return;
     if (!vk_trylock()) return;
+    /* nor while the GPU thread waits in a draw's setup with the lock let go (vk_upload_letting_go): a show advances
+       the frame, and two would recycle the slot that setup holds */
+    if (vk_upload_letting_go()) {
+        vk_unlock();
+        return;
+    }
     last = now;
     if (refresh_due()) {
         vk_render_end();

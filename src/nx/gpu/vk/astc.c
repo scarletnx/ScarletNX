@@ -1626,10 +1626,17 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
                 g_astc.bc7_queued.until = vk_last_submit() + 1;
                 if (g_astc.bc7_queued.blocks >= bc7_queued_limit()) {
                     g_astc.bc7_queued.blocks = 0;
-                    vk_submit_upload_wait();
+                    /* with vk_lock let go in a draw's setup, which starts again (render.c), when this upload holds
+                       nothing of the frame's slot across the wait: no readback for the cache, no background job */
+                    const int let_go = vk_render_setup_restarts() && capture < 0 && !job && dump == ~0u;
+                    const int paused = vk_submit_upload_wait(let_go);
                     /* This upload continues after the submission too. Rows callbacks may only stage bytes;
                        do not leave them, or the next strip's barriers, with the ended command buffer. */
                     cb = vk_cmd();
+                    /* another thread's commands may have used the image meanwhile */
+                    if (paused && t->layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+                        vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                                    VK_ACCESS_2_TRANSFER_WRITE_BIT);
                 }
             }
         }
