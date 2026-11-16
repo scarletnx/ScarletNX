@@ -177,6 +177,25 @@ static const Renderer renderer = {.stream_incr = stream_incr,
                                   .release_value = release_value,
                                   .present_buffer = present_buffer};
 const Renderer* g_renderer = &renderer;
+/* the same renderer with a method barrier (the wait for idle): a wait for the queue's own fence becomes one */
+static u32 barriers, barrier_kind;
+static void method_barrier(int kind) {
+    assert(fixture.in_gpu);
+    barriers++;
+    barrier_kind = (u32)kind;
+}
+/* and one whose increments in the stream don't reach a fence's value yet: the work is not in the stream */
+static u32 release_value_done(u32 id) { return fixture.current[id]; }
+static const Renderer short_renderer = {.stream_incr = stream_incr,
+                                        .stream_end = stream_end,
+                                        .release_value = release_value_done,
+                                        .present_buffer = present_buffer,
+                                        .method_barrier = method_barrier};
+static const Renderer barrier_renderer = {.stream_incr = stream_incr,
+                                          .stream_end = stream_end,
+                                          .release_value = release_value,
+                                          .present_buffer = present_buffer,
+                                          .method_barrier = method_barrier};
 void nvn_draw_init(NvnDraw* d, u32 owner) {
     d->ds.owner = owner;
     fixture.allocated++;
@@ -519,6 +538,54 @@ static void waited_walk_once(void) {
     assert(fixture.draws == draws + 2);
     nvn_replay_queue_free(a);
 }
+/* A wait for the queue's own fence, whose increment the stream already holds, is a barrier of the work before it: the
+   replay goes on past it at once, and the stream does not end there. A wait for another queue's fence still stops */
+static void own_fence_barrier(void) {
+    u32 a = nvn_replay_queue(), b = nvn_replay_queue(), shown = 0, draws = fixture.draws;
+    u64 ready = 0;
+    fixture.hold = 1; /* the renderer keeps the increments until its GPU is done */
+    /* the fence's value not in the stream: the wait stops until the GPU is done */
+    g_renderer = &short_renderer;
+    *(NvnRecHdr*)(void*)GP(0x600) = (NvnRecHdr){OP_FENCE_SYNC, 16};
+    gw64(0x608, 0x900);
+    *(NvnRecHdr*)(void*)GP(0x610) = (NvnRecHdr){OP_WAIT_SYNC, 16};
+    gw64(0x618, 0x900);
+    *(NvnRecHdr*)(void*)GP(0x620) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x600);
+    u32 first = barriers;
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    assert(!pump() && fixture.draws == draws && barriers == first);
+    assert(gpu_done());
+    drain();
+    assert(fixture.draws == draws + 1 && barriers == first);
+    draws = fixture.draws;
+    g_renderer = &barrier_renderer;
+    *(NvnRecHdr*)(void*)GP(0x600) = (NvnRecHdr){OP_FENCE_SYNC, 16};
+    gw64(0x608, 0x900);
+    *(NvnRecHdr*)(void*)GP(0x610) = (NvnRecHdr){OP_WAIT_SYNC, 16};
+    gw64(0x618, 0x900);
+    *(NvnRecHdr*)(void*)GP(0x620) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x600);
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    u32 before = barriers;
+    assert(pump());
+    assert(fixture.draws == draws + 1 && barriers == before + 1 && barrier_kind == 4);
+    /* another queue's wait for that fence stops until the GPU is done */
+    NvnSync sync = *NVN_OBJ(NvnSync, 0x900);
+    *(NvnRecHdr*)(void*)GP(0x640) = (NvnRecHdr){OP_WAIT_SYNC, 16};
+    gw64(0x648, 0x900);
+    *(NvnRecHdr*)(void*)GP(0x650) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x640);
+    nvn_replay_submit(b, 1, 0x108, &ready, &shown);
+    assert(!pump() && fixture.draws == draws + 1 && barriers == before + 1);
+    fixture.hold = 0;
+    assert(gpu_done());
+    drain();
+    assert(fixture.draws == draws + 2 && fixture.current[nvn_replay_syncpt(a)] == sync.value);
+    g_renderer = &renderer;
+    nvn_replay_queue_free(a);
+    nvn_replay_queue_free(b);
+}
 /* Every live queue's submitted work is done when nvn_replay_finish_all returns, with a freed queue's slot between
    them, and with no queue it queues nothing. */
 static void finish_all(void) {
@@ -673,6 +740,7 @@ int main(int argc, char** argv) {
     present_order();
     retained_texture_snapshot();
     waited_walk_once();
+    own_fence_barrier();
     finish_all();
     finish_all_waits();
     if (argc == 2 && !strcmp(argv[1], "--bench-replay")) bench_replay();
