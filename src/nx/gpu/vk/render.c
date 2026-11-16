@@ -2755,7 +2755,7 @@ static const char* vt_unmarked(const ShaderInfo* si, int i) {
                                             "nothing"
            : si->tex_vt_reads[4] >> i & 1 ? "a fragment program samples it with a depth compare, which marks nothing"
            : si->tex_vt_reads[5] >> i & 1 ? "a fragment program samples it as no 2D texture, which marks nothing"
-                                          : "a fragment program has it in a slot none of its samples reads";
+                                          : "a fragment program reads its texels with no sample that marks them";
 }
 /* the slot of the indexed table of slot `first` that keeps the table's textures whole: one outside tex_vt_mask */
 static int table_unmarked(const ShaderInfo* si, int first) {

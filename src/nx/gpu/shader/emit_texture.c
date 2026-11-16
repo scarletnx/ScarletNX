@@ -125,7 +125,6 @@ static u32 vt_sample(DirectCtx* c, u32 push, u32 fragcoord, u32 vec4, u32 vec2, 
                                shader_input_component(c, vec4, fragcoord, c->f32_type, 0),
                                shader_input_component(c, vec4, fragcoord, c->f32_type, 1),
                                word};
-    c->vt_took |= 1ull << slot;
     return shader_vt_sample(&c->emit, &c->vt, &sample);
 }
 /* Whether a fragment program's texture slot is bound to a scaled render target (resolution= other than 1): its bit in

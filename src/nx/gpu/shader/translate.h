@@ -110,10 +110,10 @@ typedef struct {
     u32 small_u32[64];
     /* the module's specialization constants by SpecId (shader.h's SH_SPEC_), 0 for one no instruction read yet */
     u32 spec[SH_SPEC_COUNT];
-    /* vt_sparse: shader_vt_sample's ids, and the slots with a sample it took (vt_took) and with a read of texels it
-       didn't take (vt_left): a slot of the first alone may hold a virtual texture (ShaderInfo.tex_vt_mask) */
+    /* vt_sparse: shader_vt_sample's ids, and the slots with a read of texels it didn't take: the others may hold a
+       virtual texture (ShaderInfo.tex_vt_mask) */
     ShVtIds vt;
-    u64 vt_took, vt_left;
+    u64 vt_left;
 } DirectCtx;
 #define SH_SMALL_U32 64u
 

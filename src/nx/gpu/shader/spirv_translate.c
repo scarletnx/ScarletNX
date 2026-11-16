@@ -513,6 +513,7 @@ static void predraw_prologue(DirectCtx* c, u64 slots, u32 i32, u32 vec4, u32 fra
     spv_emit_selection_merge(e, done);
     spv_emit_branch_conditional(e, fresh, take, keep);
     spv_emit_label(e, take);
+    c->vt_left |= slots; /* vt_sparse: reads that mark nothing */
     for (int slot = 0; slot < SH_MAXTEX; slot++) {
         if (!(slots >> slot & 1)) continue;
         u32 texel = spv_emit_image_fetch(e, texture_vec4[slot], c->sampled_type[slot], c->sampler[slot], xy,
@@ -3383,7 +3384,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     if (c->blend_end)
         advanced_blend_epilogue(c, si, vec4, i32_type, fragcoord, layer_input, coverage, sample_mask_output,
                                  frontface, depth_buffer, advanced_blend ? outputs[0] : 0, blend_image, blend_image_type);
-    si->tex_vt_mask = stage == ST_FS ? c->vt_took & ~c->vt_left : 0;
+    si->tex_vt_mask = g_shader_vt_address && stage == ST_FS ? ~c->vt_left : 0;
     spv_emit_function_end(&c->emit);
     u32* result = spv_emit_finish(&c->emit, word_count);
     u32 spec = 0;

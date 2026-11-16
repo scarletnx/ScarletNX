@@ -9,6 +9,7 @@
    - at the level of its derivatives (four texels a pixel: level 2): every pixel its texel of level 2
    - with nothing sampling it for more than vt_frames presents, every block is let go, and a draw brings them back:
      an Ounce program's sample with gradients (TXD) of a pixel's own change its level 2, then TEX.LZ its level 0
+   - asked its size alone by a program (TXQ), which reads no texel: nothing changes
    - fetched (TLD), which marks nothing: the texture is held whole from then on, and the fetch reads its texels
    On a texture held RGBA8 (astc_mode's Exact), exact, and on one held BC7, within 3 of each channel. Without vt_sparse, or
    on a device without sparse residency and shaderResourceResidency, the check is skipped. */
@@ -65,6 +66,17 @@ static int vtc_fragment(u32 at, float scale, u32 lod, int fetch) {
     n++;
     code[n++] = sm86_exit();
     return sf_program(VTC_GPU + at, 2u | 4u << 5 | 5u << 10, 18, 0xf, code, n);
+}
+/* TXQ R0-R3 of the texture of the handle at c[2][0x40], level zero: its size and levels, and no texel */
+static int vtc_query(u32 at) {
+    Sm86Word code[2];
+    code[0] = sm86_fix(0xb6f);
+    sm86_set(&code[0], 16, 8, 0);
+    sm86_set(&code[0], 24, 8, 255);
+    sm86_set(&code[0], 40, 19, 2u << 14 | 0x40 >> 2);
+    sm86_set(&code[0], 72, 4, 0xf);
+    code[1] = sm86_exit();
+    return sf_program(VTC_GPU + at, 2u | 4u << 5 | 5u << 10, 18, 0xf, code, 2);
 }
 /* a present: the frame's work done, then the virtual textures' turn (the marks that landed, binds, loads) */
 static void vtc_present(void) {
@@ -261,6 +273,18 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int exact, int maxwell) {
     CHECK(took_txd);
     const u32 took3 = vtc_until(channel, base + 0x800, pixels, 0, 0, tolerance, "level 0 again");
     CHECK(took3);
+    /* a program that asks its size reads no texel: the texture stays virtual, with the blocks it had */
+    vk_vt_stats(t, &s);
+    const u32 before = s.held;
+    for (u32 frame = 0; frame < 2; frame++) {
+        CHECK(!vtc_draw(channel, maxwell ? 0x3c00 : 0xb800, pixels));
+        vtc_present();
+    }
+    vk_vt_stats(t, &s);
+    if (s.whole || s.held != before)
+        fprintf(stderr, "virtual texture: whole %u with %u blocks held after a program asked its size (0 and %u)\n",
+                s.whole, s.held, before);
+    CHECK(!s.whole && s.held == before);
     /* a fetch marks nothing: the texture is held whole, and the fetch reads level 0's texel (x, y) */
     u32 took4 = 0;
     for (u32 frame = 1; frame <= 8 && !took4; frame++) {
@@ -275,7 +299,8 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int exact, int maxwell) {
     printf(
         "PASS virtual texture, %s program: a 1024x1024 ASTC texture held %s, a corner sampled: a coarser level in the first "
         "frame, level 0's texels after %u draws with %u of %u blocks held, the derivatives' level after %u more, "
-        "every block let go unsampled, back after %u draws, whole once fetched (%u draws)\n",
+        "every block let go unsampled, back after %u draws, virtual still with its size asked, whole once fetched (%u "
+        "draws)\n",
         maxwell ? "a Maxwell" : "an Ounce", bc7 ? "BC7" : "RGBA8", took, corner, all, took2, took3, took4);
     return 0;
 }
@@ -303,7 +328,7 @@ static int check_vt(void) {
     CHECK(!sf_program(VTC_GPU, 0x000c0481u, 13, 0xfu << 12, code, 3));
     /* a quarter of the texture over the target: four texels of level 0 a pixel */
     CHECK(!vtc_fragment(0x800, 1.0f / 256, 1, 0) && !vtc_fragment(0x1000, 1.0f / 256, 0, 0) &&
-          !vtc_fragment(0x1800, 0, 0, 1) && !vtc_fragment(0xb000, 1.0f / 256, 0, 2));
+          !vtc_fragment(0x1800, 0, 0, 1) && !vtc_fragment(0xb000, 1.0f / 256, 0, 2) && !vtc_query(0xb800));
     /* the same as Maxwell programs, with sample_raster_channel's vertex program: IPA R4, a[0x70]; IPA R5, a[0x74];
        FMUL of both by the scale; TEX R0, R4, R5 by the handle at c[2][0x40], at level zero (.LZ) or the derivatives';
        and sf_maxwell_fragment's fetch (F2I.TRUNC, LDC, TLD.B.LZ) */
@@ -332,6 +357,9 @@ static int check_vt(void) {
                          0xdd380007a0470200ull,
                          0xe30000000007000full};
     CHECK(mesh_program(VTC_GPU + 0x3400, fetch, 7, 1));
+    /* MOV32I R5, 0; TXQ.DIMENSION R0, R5 of the handle at c[2][0x40] */
+    const u64 query[] = {0x0100000000071005ull, 0xdf48010200470500ull, 0xe30000000007000full};
+    CHECK(mesh_program(VTC_GPU + 0x3c00, query, 3, 1));
     g_renderer->method_barrier(5);
     u8 table[256] = {0};
     snx_st_le32(table + 0x40, 1);

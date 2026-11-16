@@ -205,10 +205,11 @@ void vk_vt_bind(u32 id, Surf* t, const char* unmarked) {
 void vk_vt_slot(u32 slot, Surf* t, const char* unmarked) {
     const VtTex* L = vt_rec(t);
     if (!L || L->whole) return;
-    if (unmarked || slot >= VT_SET_SLOTS) {
-        vk_vt_whole(t, unmarked ? unmarked : "a draw samples it in a slot past the 32 a Maxwell program's marks name");
+    if (unmarked) {
+        vk_vt_whole(t, unmarked);
         return;
     }
+    if (slot >= VT_SET_SLOTS) return; /* a sample past the 32 slots marks nothing and `unmarked` says so: no read */
     g_vt.draw[slot] = (VtId){t->vt_slot, L->gen};
     g_vt.draw_any = 1;
 }

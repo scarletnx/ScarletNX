@@ -206,8 +206,9 @@ typedef struct {
        vk_tex_minmax_in_program, shader_minmax_sample). A fragment program's key holds the first SH_MINMAX_SLOTS */
     u64 tex_minmax_mask, tex_minmax_max;
     /* FS, the translation's: the texture slots whose every read of texels is a sample that falls back to a coarser
-       level where a texel has no memory and marks what it reads (shader_vt_sample): a slot of these may hold a
-       virtual texture (vt_sparse); a texture a draw binds to another slot is held whole */
+       level where a texel has no memory and marks what it reads (shader_vt_sample), those nothing reads texels
+       from among them (a size or level query's): a slot of these may hold a virtual texture (vt_sparse); a texture
+       a draw binds to another slot is held whole */
     u64 tex_vt_mask;
     /* and for the log, the slots an Ounce fragment program reads with a fetch, a gather, a sample with gradients, a
        reduction (the least or greatest of its texels), a depth compare, or as no 2D texture */

@@ -69,10 +69,10 @@ typedef struct {
     /* types and constants */
     u32 t_void, t_bool, t_u32, t_i32, t_f32, t_v2f, t_v3f, t_v4f, t_v4u, t_v3u, t_v2u;
     u32 t_u64_; /* made with the Int64 capability when an instruction needs it (u64_type) */
-    /* vt_sparse: shader_vt_sample's ids, and the slots with a sample it took (vt_took) and with a read of texels
-       it didn't take (vt_left): a slot of the first alone may hold a virtual texture (ShaderInfo.tex_vt_mask) */
+    /* vt_sparse: shader_vt_sample's ids, and the slots with a read of texels it didn't take: the others may hold a
+       virtual texture (ShaderInfo.tex_vt_mask) */
     ShVtIds vt;
-    u64 vt_took, vt_left, vt_reads[6]; /* vt_reads: ShaderInfo.tex_vt_reads */
+    u64 vt_left, vt_reads[6]; /* vt_reads: ShaderInfo.tex_vt_reads */
     u32 zero, true_v, false_v, glsl;
     /* the program's state: Function variables, made at the start */
     u32 reg[256], ureg[64], pred[8], upred[8];
@@ -2852,7 +2852,6 @@ static void texture(Ctx* c, const Sm86Insn* in) {
                                        (int)array, mode, level, const_offset, h, frag_pixel(c, 0), frag_pixel(c, 1),
                                        phase};
             result = shader_vt_sample(&c->e, &c->vt, &sample);
-            c->vt_took |= 1ull << slot;
         } else {
             result = indexed && shadow ? sample_indexed_shadow(c, slot, element, coord, dref, mode, level, const_offset)
                      : reduce ? minmax_sample(c, slot, coord, (int)array, const_offset, reduce)
@@ -2947,7 +2946,6 @@ static void texture_grad(Ctx* c, const Sm86Insn* in) {
         const ShVtSample sample = {c->t_bool, c->t_u32, c->t_i32, c->t_f32, c->t_v2f, c->t_v4f, c->glsl,
                                    c->tex_sampled[slot], c->tex[slot], coord, f[0], f[1], array ? f[2] : 0, (int)array,
                                    3, gx, 0, h, frag_pixel(c, 0), frag_pixel(c, 1), phase, gy};
-        c->vt_took |= 1ull << slot;
         tex_results(c, in, shader_vt_sample(&c->e, &c->vt, &sample), c->t_f32);
         return;
     }
@@ -7585,7 +7583,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             }
             /* Maxwell's and Ampere's programs use infinities and NaNs (CLAUDE.md) */
             spv_emit_float_controls(e, fn, ftz_mode, 1, 0);
-            si->tex_vt_mask = c->vt_took & ~c->vt_left;
+            si->tex_vt_mask = g_shader_vt_address && c->stage == ST_FS ? ~c->vt_left : 0;
             memcpy(si->tex_vt_reads, c->vt_reads, sizeof si->tex_vt_reads);
             out = spv_emit_finish(e, word_count);
         }
