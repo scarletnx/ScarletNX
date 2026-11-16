@@ -218,6 +218,82 @@ class ArchitectureTests(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("cpmfile.json is not in CPMUtil's form, which jq --indent 4 -S . writes", errors[0])
 
+    def version_errors(self, files):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            return architecture.check_cmake_versions(root)
+
+    def test_a_cmake_file_asking_more_than_the_minimum_is_rejected(self):
+        files = {
+            'CMakeLists.txt': '# cmake_minimum_required(VERSION 3.31)\ncmake_minimum_required(VERSION 3.28)\n',
+            'cmake/cpmutil/CPMUtil.cmake': 'cmake_minimum_required(VERSION 3.31)\n',
+            'tests/t.cmake': '# cmake_minimum_required(VERSION 4.0)\n'
+            'file(WRITE p "cmake_minimum_required(VERSION 3.28.6)\n")\n',
+            'tools/x/CMakeLists.txt': 'CMAKE_MINIMUM_REQUIRED(VERSION 3.25)\ncmake_minimum_required(VERSION 3.28.0)\n',
+        }
+        errors = self.version_errors(files)
+        self.assertEqual(len(errors), 2, errors)
+        self.assertEqual(
+            errors[0],
+            "cmake/cpmutil/CPMUtil.cmake:1: asks CMake 3.31, and the build's minimum (CMakeLists.txt) is 3.28, on "
+            'which it stops: ask 3.28 or raise the minimum',
+        )
+        self.assertIn("tests/t.cmake:2: asks CMake 3.28.6, and the build's minimum (CMakeLists.txt) is 3.28", errors[1])
+
+    def test_a_policy_the_minimum_lacks_needs_if_policy(self):
+        files = {
+            'CMakeLists.txt': 'cmake_minimum_required(VERSION 3.28)\n',
+            'cmake/a.cmake': 'macro(m)\n'
+            '  cmake_policy(SET CMP0150 NEW)\n'
+            '  cmake_policy(SET CMP0168 NEW)\n'
+            '  if(POLICY CMP0168)\n'
+            '    cmake_policy(SET CMP0168 NEW)\n'
+            '    if(A)\n'
+            '      cmake_policy(SET CMP0168 NEW)\n'
+            '    endif()\n'
+            '  elseif(POLICY CMP0174)\n'
+            '    cmake_policy(SET CMP0168 NEW)\n'
+            '  endif()\n'
+            '  if(NOT POLICY CMP0170)\n'
+            '  else()\n'
+            '    cmake_policy(SET CMP0170 NEW)\n'
+            '  endif()\n'
+            '  if(NOT POLICY CMP0171)\n'
+            '    cmake_policy(SET CMP0171 NEW)\n'
+            '  endif()\n'
+            '  # cmake_policy(SET CMP0172 NEW)\n'
+            '  message("cmake_policy(SET CMP0173 NEW)")\n'
+            'endmacro()\n',
+        }
+        errors = self.version_errors(files)
+        self.assertEqual(len(errors), 4, errors)
+        self.assertEqual(
+            errors[0],
+            "cmake/a.cmake:3: sets CMP0168 outside if(POLICY CMP0168), and CMake 3.28, the build's minimum, stops on "
+            'it: its last policy is CMP0155',
+        )
+        self.assertIn('cmake/a.cmake:10: sets CMP0168 outside if(POLICY CMP0168)', errors[1])
+        self.assertIn('cmake/a.cmake:14: sets CMP0170 outside if(POLICY CMP0170)', errors[2])
+        self.assertIn('cmake/a.cmake:17: sets CMP0171 outside if(POLICY CMP0171)', errors[3])
+
+    def test_a_minimum_with_no_last_policy_is_named(self):
+        self.assertEqual(
+            self.version_errors({'CMakeLists.txt': 'cmake_minimum_required(VERSION 3.31...4.0)\n'}),
+            [
+                (
+                    'CMakeLists.txt asks CMake 3.31, and CMAKE_LAST_POLICY in tests/architecture.py has no last policy '
+                    'for 3.31: add the last of cmake --help-policy-list in that release'
+                )
+            ],
+        )
+        self.assertEqual(
+            self.version_errors({'CMakeLists.txt': 'project(x)\n'}),
+            ['CMakeLists.txt has no cmake_minimum_required(VERSION ...): the build states the CMake it needs there'],
+        )
+
     def test_a_window_of_the_displays_pixels_passes(self):
         files = {
             'src/nx/a.c': 'void o(void) { w = SDL_CreateWindow("t", 1, 1, SDL_WINDOW_VULKAN |\n'
