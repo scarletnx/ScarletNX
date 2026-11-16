@@ -9,7 +9,7 @@ if(SNX_BUILD_AGB AND BUILD_TESTING)
     AddJsonPackage(NAME gba-tests DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     # DenSinH's FuzzARM (GPL-3.0): five ROMs of 10000 random ARM and Thumb instructions each, checked against the
     # values its generator computed (tests/agb_fuzzarm.py). Test data, not shipped
-    AddJsonPackage(NAME FuzzARM DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
+    AddJsonPackage(NAME fuzzarm DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
 endif()
 # mGBA's test suite (MIT), 13 sections of results measured on the console, as the ROM of mgba-emu/suite e694203 that
 # scarletnx/mgba-suite-rom's release keeps (tests/agb_mgba_suite.py). Off by default, as DraVee asked of slow GBA tests:

@@ -13,7 +13,7 @@ endif()
 file(REMOVE_RECURSE "${WORK}")
 
 file(READ "${SRC}/cpmfile.json" cpmfile)
-string(JSON v GET "${cpmfile}" SPIRV-Tools version)
+string(JSON v GET "${cpmfile}" spirv-tools version)
 string(REGEX REPLACE "^v" "" v "${v}")
 
 # a folder of fake tools, each printing VERSION as SPIRV-Tools does (on stderr, as spirv-opt does)
@@ -31,7 +31,7 @@ tools("${WORK}/newer" "SPIRV-Tools v2099.1 unknown hash" opt val dis)
 tools("${WORK}/newer-nodis" "SPIRV-Tools v2099.1 unknown hash" opt val)
 tools("${WORK}/noversion" "spirv-opt from somewhere" opt val dis)
 
-# the folders the replaced CPMAddPackage names, which ExternalProject_Add wants to hold something
+# the folders the replaced AddJsonPackage names, which ExternalProject_Add wants to hold something
 foreach(name SPIRV-Tools SPIRV-Headers)
     file(WRITE "${WORK}/source-${name}/CMakeLists.txt" "message(FATAL_ERROR \"the test builds nothing\")\n")
 endforeach()
@@ -41,7 +41,8 @@ project(spirv_tools_test LANGUAGES NONE)
 include(\"${SRC}/cmake/packages.cmake\")
 macro(AddJsonPackage)
     cmake_parse_arguments(stub \"DOWNLOAD_ONLY\" \"NAME;FORCE_BUNDLED_PACKAGE\" \"\" \${ARGN})
-    set(\${stub_NAME}_SOURCE_DIR \"${WORK}/source-\${stub_NAME}\")
+    string(JSON stub_package GET \"\${CPMFILE_CONTENT}\" \${stub_NAME} package)
+    set(\${stub_package}_SOURCE_DIR \"${WORK}/source-\${stub_package}\")
     set_property(GLOBAL APPEND PROPERTY stub_added
                  \"\${stub_NAME} FORCE_BUNDLED_PACKAGE=\${stub_FORCE_BUNDLED_PACKAGE}\")
 endmacro()
@@ -94,7 +95,7 @@ function(check label)
 endfunction()
 
 # The texts name WORK for the test's folder and PINNED for where a tree builds the pinned tools
-set(added "added=[SPIRV-Tools FORCE_BUNDLED_PACKAGE=ON | SPIRV-Headers FORCE_BUNDLED_PACKAGE=ON]")
+set(added "added=[spirv-tools FORCE_BUNDLED_PACKAGE=ON | spirv-headers FORCE_BUNDLED_PACKAGE=ON]")
 set(all_pinned "RESULT opt=[PINNED/spirv-opt] val=[PINNED/spirv-val] dis=[PINNED/spirv-dis] built=[yes] ${added}")
 set(given "opt=[WORK/given/spirv-opt] val=[WORK/given/spirv-val] dis=[WORK/given/spirv-dis] built=[no] added=[]")
 set(newer "val=[WORK/newer/spirv-val] dis=[WORK/newer/spirv-dis] built=[no] added=[]")

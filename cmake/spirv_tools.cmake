@@ -16,7 +16,7 @@ include_guard(GLOBAL)
 if(NOT COMMAND snx_cpmfile)
     message(FATAL_ERROR "cmake/spirv_tools.cmake needs CPMUtil and the pins, cmake/packages.cmake: include that first")
 endif()
-snx_cpmfile(snx_spirv_tools_version SPIRV-Tools version)
+snx_cpmfile(snx_spirv_tools_version spirv-tools version)
 string(REGEX REPLACE "^v" "" snx_spirv_tools_version "${snx_spirv_tools_version}")
 
 # A configure from before the pin wrote the tools it found on PATH into these keys: glsl.cmake its spirv-opt and
@@ -140,10 +140,10 @@ endif()
 
 # The pinned release, for spirv-opt or spirv-val when neither a name nor the system gave it, and for spirv-dis with them
 if(NOT snx_spirv_opt OR NOT snx_spirv_val)
-    AddJsonPackage(NAME SPIRV-Tools DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
-    AddJsonPackage(NAME SPIRV-Headers DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
-    snx_cpmfile(snx_spirv_tools_hash SPIRV-Tools hash)
-    snx_cpmfile(snx_spirv_headers_hash SPIRV-Headers hash)
+    AddJsonPackage(NAME spirv-tools DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
+    AddJsonPackage(NAME spirv-headers DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
+    snx_cpmfile(snx_spirv_tools_hash spirv-tools hash)
+    snx_cpmfile(snx_spirv_headers_hash spirv-headers hash)
 
     # The machine doing the build's compilers: a cross build's are the target's (cmake/host_cc.cmake)
     if(CMAKE_CROSSCOMPILING)

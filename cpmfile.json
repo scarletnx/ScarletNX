@@ -1,99 +1,21 @@
 {
-    "AzaharBadWordList": {
+    "azahar-bad-word-list": {
         "hash": "870c1158583e69a827257bb64b2c1fb3d2661f6bab5cea96a448c7f1223330a23f0e3739b361aec4269aa536f66e2916ed61cc64c7d9953964621f88f9aa4980",
+        "package": "AzaharBadWordList",
         "url": "https://raw.githubusercontent.com/azahar-emu/azahar/8a2c44be5688db1cea22ba7c485e8befc892e673/externals/open_source_archives/include/bad_word_list.app.romfs.h",
         "version": "8a2c44be5688db1cea22ba7c485e8befc892e673"
     },
-    "AzaharCountryList": {
+    "azahar-country-list": {
         "hash": "6c1de8832ecd447bfd09372799a9a2e54fad2bfdf0e269137f6866a398dc99392990375151eedd1d8a6ed7ed60ff8e7aab5675546c0e9de1db4d8c8497862813",
+        "package": "AzaharCountryList",
         "url": "https://raw.githubusercontent.com/azahar-emu/azahar/a1517612d37f17e673849e04673a0f3c146d6208/externals/open_source_archives/include/country_list.app.romfs.h",
         "version": "a1517612d37f17e673849e04673a0f3c146d6208"
     },
-    "AzaharSharedFont": {
+    "azahar-shared-font": {
         "hash": "8cbbee9b953efa265b3a296fb3c84978cf28d60307a0a47bf4f6104783037c40d5f8eb15b2eed5532e7faa57699721a82098384ee68c329466e4333322d456ed",
+        "package": "AzaharSharedFont",
         "url": "https://raw.githubusercontent.com/azahar-emu/azahar/7f1303a8344724598015a3e48a4bc5aef77090fc/externals/open_source_archives/include/shared_font.app.romfs.h",
         "version": "7f1303a8344724598015a3e48a4bc5aef77090fc"
-    },
-    "FFmpeg": {
-        "hash": "7756f8434371b9bc1d01cf578bf49014e058b0869c3c1df05030f5f4035f1def64b2e7dba3cf340da4dc8dd9239dd5f894530c9e45793ac27876807079aa546a",
-        "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
-        "version": "9.0.2"
-    },
-    "FidelityFX-FSR2": {
-        "hash": "0a7401431c2c5c4f8c940089c42077e497b62d09b10bd22110e68d49c0d2d27183660a515ea4b1c58942483420c1e6a93ee9bac5f0c0fef5584f590fa238c310",
-        "repo": "GPUOpen-Effects/FidelityFX-FSR2",
-        "version": "v2.2.1"
-    },
-    "FuzzARM": {
-        "hash": "5b478cdb57f2f12b37b064968a6dc7c482ab9755542ebfb74952b933b368942c246f8096f58a94a1fe8993093ee02a3ae95bfc7491fece0e50e0793c78de822c",
-        "repo": "DenSinH/FuzzARM",
-        "version": "a675329cd57da48e3e406216ba2d79dd7e09ee20"
-    },
-    "NotoSansJPSubset": {
-        "hash": "b7e2a42fcbf1ffef244d01ce775fb1a86105f27d48ad5ad62a15d655e46c8bc15055a8fa771138192df1b9961db9416cd3ebc04c740d7b1a33ffec80078a2fa7",
-        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansJP-Subset.ttf",
-        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
-    },
-    "NotoSansKRSubset": {
-        "hash": "c26624e48e304eca027e3b504c94aba0990ce6fff1f92e43f55730c3ec1deea0158c2947219dc9c47d64469dba05a8ac742584a0728b72d4de2f32261dc15e6f",
-        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansKR-Subset.ttf",
-        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
-    },
-    "NotoSansSCSubset": {
-        "hash": "ec5c868b02dcf9ee830f01c713f1e68e50acee4aa01131ef97ccca41da8123c0c481320488e7497a51fcf2cc1f09c3761458eea0c0eff6e88e092a36efa582b4",
-        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansSC-Subset.ttf",
-        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
-    },
-    "NotoSansTCSubset": {
-        "hash": "9a1480d788d4ef9028c524e4e826825486981b2138c242855f89b8cc8a9f1c5b22295ef1d40f84585481c16fb036afd2fb95961b6edbd0b8c39439b06e2386dd",
-        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansTC-Subset.ttf",
-        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
-    },
-    "OpenSSL": {
-        "artifact": "%VERSION%.tar.gz",
-        "hash": "cc424e5f8470a47e2c7345e95516a6a0e2a5eee0fe4feef3de3d39b75071b1f42f4a2388d1c8926652bba4082108b7050ddc30b274543b62937c46bdcad3b3c0",
-        "repo": "openssl/openssl",
-        "version": "openssl-4.0.3"
-    },
-    "SDL3": {
-        "find_args": "CONFIG",
-        "hash": "12fcb5592016b27922b08d1580d75f5f15c72e67cf04415e2bd824dc7563ac940c25bbe368b03d0a755f5832803049467e3d0ee6784ed3684792bc4d7741af50",
-        "min_version": "3.4.18",
-        "options": [
-            "SDL_SHARED OFF",
-            "SDL_STATIC ON",
-            "SDL_TEST_LIBRARY OFF",
-            "SDL_TESTS OFF",
-            "SDL_EXAMPLES OFF",
-            "SDL_INSTALL OFF",
-            "SDL_UNIX_CONSOLE_BUILD ON",
-            "SDL_ALTIVEC OFF"
-        ],
-        "repo": "libsdl-org/SDL",
-        "version": "release-3.4.18"
-    },
-    "SPIRV-Headers": {
-        "hash": "97271ca47dd397af9a87ee050d88ab81566214e36a4c4f42f95aa61969bf6393dc9a94e5143a07b0b4c1414ccf61ec03884b5ce27ee80e216371733d70dc52bd",
-        "repo": "KhronosGroup/SPIRV-Headers",
-        "version": "496543121ce6419f23d6fa5d7194ba66c36212d2"
-    },
-    "SPIRV-Tools": {
-        "hash": "c9f71c01f382b6a73211241f0f9e48de34e3e3355e1f1ad3cf864ad7b3a76326e88c7fad0d8e509e09592dbc03e678cf0a267cec61cc4b7e33f206de59b2d7f7",
-        "repo": "KhronosGroup/SPIRV-Tools",
-        "version": "v2026.4"
-    },
-    "Vulkan-Headers": {
-        "bundled": true,
-        "find_args": "NAMES VulkanHeaders CONFIG",
-        "hash": "8298006f8c926bf6f662c6eaddd14d5fcba5f192e6a3fdd1543449a971b50c74c05ca714ff50b12047bd274527c477f004114239de9da061c2964afa977616ae",
-        "min_version": "1.4.367",
-        "repo": "KhronosGroup/Vulkan-Headers",
-        "version": "v1.4.367"
-    },
-    "YuzuOSSExtension": {
-        "hash": "cbc7a2ccf7d7bd86adabb642a75d9d0e286a922654f2f570a9fc1baf56324049e6558a31d09d7426ffaa15baefea58bf0ce1028fc13c2dffbb3a44df0764c857",
-        "url": "https://raw.githubusercontent.com/eden-emulator/mirror/2b87305d319f0bd04da36fb96314934f37b12637/src/core/file_sys/system_archive/data/font_nintendo_extended.cpp",
-        "version": "2b87305d319f0bd04da36fb96314934f37b12637"
     },
     "cacert": {
         "hash": "1d79b49c96037156e55665b48cefaa10bd0eb162b0626bbab1f6c6e7bfc159f1c7d60b37ed2c2d6b715b86a3ad46ab5261058ee10141905f72a6cc8622429316",
@@ -119,6 +41,24 @@
         "hash": "a0d2fa8c957704dd49e00a726284ac5ca034b50b00d2b20a94fa1bbfbb80841467834bfdc84aa0ed0d6aab894608fd6c86c3b94eee46343f0e6d9c22e391dbf9",
         "repo": "lsalzman/enet",
         "version": "v1.3.18"
+    },
+    "ffmpeg": {
+        "hash": "7756f8434371b9bc1d01cf578bf49014e058b0869c3c1df05030f5f4035f1def64b2e7dba3cf340da4dc8dd9239dd5f894530c9e45793ac27876807079aa546a",
+        "package": "FFmpeg",
+        "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+        "version": "9.0.2"
+    },
+    "fidelityfx-fsr2": {
+        "hash": "0a7401431c2c5c4f8c940089c42077e497b62d09b10bd22110e68d49c0d2d27183660a515ea4b1c58942483420c1e6a93ee9bac5f0c0fef5584f590fa238c310",
+        "package": "FidelityFX-FSR2",
+        "repo": "GPUOpen-Effects/FidelityFX-FSR2",
+        "version": "v2.2.1"
+    },
+    "fuzzarm": {
+        "hash": "5b478cdb57f2f12b37b064968a6dc7c482ab9755542ebfb74952b933b368942c246f8096f58a94a1fe8993093ee02a3ae95bfc7491fece0e50e0793c78de822c",
+        "package": "FuzzARM",
+        "repo": "DenSinH/FuzzARM",
+        "version": "a675329cd57da48e3e406216ba2d79dd7e09ee20"
     },
     "gba-tests": {
         "hash": "1ce9860b33ac1239a080d692aa295ca149ca0c415fb895d880aaf88083d72c1621e4902b7807aa2831dced27321b8264bc1c057cec84fcb928b6f5057bd05993",
@@ -186,6 +126,37 @@
         "repo": "richgel999/miniz",
         "version": "3.1.2"
     },
+    "noto-sans-jp-subset": {
+        "hash": "b7e2a42fcbf1ffef244d01ce775fb1a86105f27d48ad5ad62a15d655e46c8bc15055a8fa771138192df1b9961db9416cd3ebc04c740d7b1a33ffec80078a2fa7",
+        "package": "NotoSansJPSubset",
+        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansJP-Subset.ttf",
+        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
+    },
+    "noto-sans-kr-subset": {
+        "hash": "c26624e48e304eca027e3b504c94aba0990ce6fff1f92e43f55730c3ec1deea0158c2947219dc9c47d64469dba05a8ac742584a0728b72d4de2f32261dc15e6f",
+        "package": "NotoSansKRSubset",
+        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansKR-Subset.ttf",
+        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
+    },
+    "noto-sans-sc-subset": {
+        "hash": "ec5c868b02dcf9ee830f01c713f1e68e50acee4aa01131ef97ccca41da8123c0c481320488e7497a51fcf2cc1f09c3761458eea0c0eff6e88e092a36efa582b4",
+        "package": "NotoSansSCSubset",
+        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansSC-Subset.ttf",
+        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
+    },
+    "noto-sans-tc-subset": {
+        "hash": "9a1480d788d4ef9028c524e4e826825486981b2138c242855f89b8cc8a9f1c5b22295ef1d40f84585481c16fb036afd2fb95961b6edbd0b8c39439b06e2386dd",
+        "package": "NotoSansTCSubset",
+        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansTC-Subset.ttf",
+        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
+    },
+    "openssl": {
+        "artifact": "%VERSION%.tar.gz",
+        "hash": "cc424e5f8470a47e2c7345e95516a6a0e2a5eee0fe4feef3de3d39b75071b1f42f4a2388d1c8926652bba4082108b7050ddc30b274543b62937c46bdcad3b3c0",
+        "package": "OpenSSL",
+        "repo": "openssl/openssl",
+        "version": "openssl-4.0.3"
+    },
     "plutovg": {
         "hash": "57349751bfc9020e63042f472d828ddc509f724d0c82cdaf34e2047f6333de192c5a4cc6aed376e98a000bd68b3b05f1c00ca84bf7163a16c6c2860bc33fb8d0",
         "repo": "sammycage/plutovg",
@@ -200,6 +171,24 @@
         "hash": "5a282a76d1c9b818bb4edb0d1de868e8d86f50cf149e3c637ee2d383a33d36db298bdad9844a5f4923373ad227e385742928ad121e663e368bdc0b85ba04b56a",
         "repo": "xiph/rnnoise",
         "version": "v0.1.1"
+    },
+    "sdl3": {
+        "find_args": "CONFIG",
+        "hash": "12fcb5592016b27922b08d1580d75f5f15c72e67cf04415e2bd824dc7563ac940c25bbe368b03d0a755f5832803049467e3d0ee6784ed3684792bc4d7741af50",
+        "min_version": "3.4.18",
+        "options": [
+            "SDL_SHARED OFF",
+            "SDL_STATIC ON",
+            "SDL_TEST_LIBRARY OFF",
+            "SDL_TESTS OFF",
+            "SDL_EXAMPLES OFF",
+            "SDL_INSTALL OFF",
+            "SDL_UNIX_CONSOLE_BUILD ON",
+            "SDL_ALTIVEC OFF"
+        ],
+        "package": "SDL3",
+        "repo": "libsdl-org/SDL",
+        "version": "release-3.4.18"
     },
     "snx_av1_b8-01-size-66x66": {
         "hash": "d2a617948bfefdd48d652800e7807b284a0069e907326c512d92c394b4127210f539201980da5d3a018c38a7ad96fc5686ea298339429bef43cfd7391e092138",
@@ -401,6 +390,18 @@
         "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-22-svc_1280x720_3.ivf.md5",
         "version": "1"
     },
+    "spirv-headers": {
+        "hash": "97271ca47dd397af9a87ee050d88ab81566214e36a4c4f42f95aa61969bf6393dc9a94e5143a07b0b4c1414ccf61ec03884b5ce27ee80e216371733d70dc52bd",
+        "package": "SPIRV-Headers",
+        "repo": "KhronosGroup/SPIRV-Headers",
+        "version": "496543121ce6419f23d6fa5d7194ba66c36212d2"
+    },
+    "spirv-tools": {
+        "hash": "c9f71c01f382b6a73211241f0f9e48de34e3e3355e1f1ad3cf864ad7b3a76326e88c7fad0d8e509e09592dbc03e678cf0a267cec61cc4b7e33f206de59b2d7f7",
+        "package": "SPIRV-Tools",
+        "repo": "KhronosGroup/SPIRV-Tools",
+        "version": "v2026.4"
+    },
     "sqlite": {
         "hash": "70a88503f1a4e287ed2d89157a0c23d9ecc162f2d4604659cea6f783b3c276dada5ee2bb8cbe967e4a2d9f2caba7f9b1529f66332158cb1e9727bf0a34d47f48",
         "url": "https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip",
@@ -416,10 +417,25 @@
         "repo": "zeux/volk",
         "version": "vulkan-sdk-1.4.363.0"
     },
+    "vulkan-headers": {
+        "bundled": true,
+        "find_args": "NAMES VulkanHeaders CONFIG",
+        "hash": "8298006f8c926bf6f662c6eaddd14d5fcba5f192e6a3fdd1543449a971b50c74c05ca714ff50b12047bd274527c477f004114239de9da061c2964afa977616ae",
+        "min_version": "1.4.367",
+        "package": "Vulkan-Headers",
+        "repo": "KhronosGroup/Vulkan-Headers",
+        "version": "v1.4.367"
+    },
     "xxhash": {
         "hash": "1585ae3f3feded2492e43f4dd5dd43183329c57ffe92afa907f71eb26deaf34beab4434458a2d87e8795a4226339c5b0b493bd8a9186bb6f0c752fa1fdef10e3",
         "repo": "Cyan4973/xxHash",
         "version": "v0.8.4"
+    },
+    "yuzu-oss-extension": {
+        "hash": "cbc7a2ccf7d7bd86adabb642a75d9d0e286a922654f2f570a9fc1baf56324049e6558a31d09d7426ffaa15baefea58bf0ce1028fc13c2dffbb3a44df0764c857",
+        "package": "YuzuOSSExtension",
+        "url": "https://raw.githubusercontent.com/eden-emulator/mirror/2b87305d319f0bd04da36fb96314934f37b12637/src/core/file_sys/system_archive/data/font_nintendo_extended.cpp",
+        "version": "2b87305d319f0bd04da36fb96314934f37b12637"
     },
     "yyjson": {
         "hash": "6447bbb50d18a4e0d57ac3232bd23eed7f94a16cff781d4779d28c81833b8de7566e730f827f1e7e6d60a06fcbbdc41fd581a1f872901391f7a09288bb93fd40",

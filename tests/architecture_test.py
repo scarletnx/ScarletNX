@@ -175,6 +175,16 @@ class ArchitectureTests(unittest.TestCase):
         )
         self.assertIn('cmake/a.cmake:3: first is added with FORCE_BUNDLED_PACKAGE ON, and its entry has a', errors[1])
 
+    def test_a_key_is_lowercase(self):
+        pins = {'OpenSSL': dict(PIN), 'openssl-cmake': dict(PIN, package='OpenSSL')}
+        files = {
+            'cmake/a.cmake': 'AddJsonPackage(NAME OpenSSL FORCE_BUNDLED_PACKAGE ON)\n'
+            'AddJsonPackage(NAME openssl-cmake FORCE_BUNDLED_PACKAGE ON)\n'
+        }
+        errors = self.package_errors(files, pins)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn('cpmfile.json: OpenSSL has upper-case letters: a key is lowercase', errors[0])
+
     def test_the_cpmfile_is_in_cpmutils_form(self):
         pins = {'a': dict(PIN, hash='0' * 64, sha256='x'), 'b': {'hash': 'cd' * 64}}
         files = {'cmake/a.cmake': 'AddJsonPackage(NAME a FORCE_BUNDLED_PACKAGE ON)\nsnx_package_file(b)\n'}

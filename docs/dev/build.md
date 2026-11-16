@@ -408,14 +408,15 @@ To update a package:
 
 To add one:
 
-1. Pin it in cpmfile.json as above, under the name the build calls it by: `<name>_SOURCE_DIR` is where it lands.
+1. Pin it in cpmfile.json as above, under a lowercase key, as Eden's are; `package` gives the CMake name where that
+   differs (`"openssl": {"package": "OpenSSL", ...}`), and `<package>_SOURCE_DIR` is where it lands.
 2. Add it in [dependencies.cmake](../../cmake/dependencies.cmake), under the conditions that need it:
-   `AddJsonPackage(NAME <name> DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)` when the build compiles its sources into a
+   `AddJsonPackage(NAME <key> DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)` when the build compiles its sources into a
    target of its own, patches it or reads it as data, so no system package can stand in for it. One the system may give
-   instead, which installs a CMake package `find_package` finds, gets a `min_version` and `AddJsonPackage(<name>)`,
-   with `"bundled": true` when the pinned one stays the default (and `snx_cpm_options(<name>)` before it, for
+   instead, which installs a CMake package `find_package` finds, gets a `min_version` and `AddJsonPackage(<key>)`,
+   with `"bundled": true` when the pinned one stays the default (and `snx_cpm_options(<key>)` before it, for
    CPM_USE_LOCAL_PACKAGES). A package that is one file (a header, a font, a test vector), which CPMUtil would try to
-   extract, is added with `snx_package_file(<name>)`.
+   extract, is added with `snx_package_file(<key>)`.
 3. Its license: in the install (CMakeLists.txt, under `licenses`) when it ships, and in [CREDITS](../CREDITS.md).
 
 A patch goes on a copy in the build tree (`snx_patched_copy`, [patched_copy.cmake](../../cmake/patched_copy.cmake)),
