@@ -1262,7 +1262,6 @@ static struct {
     VkDescriptorBufferInfo shadow;
 } g_capture_draw;
 static Surf* capture_sample(Surf* texture) {
-    vk_tex_vt_use(texture); /* vt_probe: every texture a draw binds to sample, directly or in its indexed tables */
     if (!g_capture_draw.images || texture != g_capture_draw.images->target) return texture;
     if (!g_capture_draw.snapshot) g_capture_draw.snapshot = vk_rt_snapshot(texture, 1);
     return g_capture_draw.snapshot;
@@ -2747,6 +2746,14 @@ static int indexed_uniform(DescWrites* writes, VkDescriptorSet set, int stage, u
    either), reads as its kind's null texture. So does a texture of another kind than the slot's. Targets use snapshots
    refreshed after a draw changes them. Tables of different kinds share the binding, each element viewed as the kind of
    the table that names it: a handle that two kinds name has an element for each. */
+/* vt_sparse: every slot of si that reads the indexed table of slot `first` marks its samples (ShaderInfo.tex_vt_mask) */
+static int table_marks(const ShaderInfo* si, int first) {
+    for (int i = 0; i < si->ntex; i++)
+        if ((si->tex[i].flags & SNX_TEX_INDEXED) && shader_same_indexed_table(&si->tex[i], &si->tex[first]) &&
+            !(si->tex_vt_mask >> i & 1))
+            return 0;
+    return 1;
+}
 static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int* first, int count, Surf** rt, Surf* zt,
                           u32 n, VkImageLayout layout, DescWrites* d, VkDescriptorSet set) {
     /* each table's kind, named by the first table of that kind; a non-shadow kind's elements fill the depth binding
@@ -2825,7 +2832,8 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                 if ((handle & 0xFFFFF) <= ds->bind.tex_max && ((handle >> 20) & 0xFFF) <= ds->bind.smp_max) {
                     tex_resolve(ds, handle, &x);
                     x.t = capture_sample(x.t);
-                    vk_tex_vt_handle(handle, x.t);
+                    /* vt_sparse: the texture this header index names in the marks of the table's samples */
+                    if (x.t && x.t->vt) vk_vt_bind(handle, x.t, stage == ST_FS && table_marks(&s->si, first[table]));
                     if (x.t && !!(kind->flags & 2) == !!x.t->msaa && (!kind->shadow || !x.t->f.is_int)) {
                         if (is_target(x.t, rt, zt, n)) {
                             /* An indexed handle needs the same pre-draw contents as a directly bound texture.
@@ -3319,7 +3327,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                       "which its samples don't divide by the size: sampled as normalized\n",
                       i, stage, handle, (x->tic[4] >> 23) & 0xF);
         Surf* t = capture_sample(x->t);
-        vk_tex_vt_handle(handle, t);
+        /* vt_sparse: the texture this header index names in the marks of the slot's samples */
+        if (t && t->vt) vk_vt_bind(handle, t, stage == ST_FS && (s->si.tex_vt_mask >> i & 1));
         if (stage == ST_FS) t = predraw_sample(i, t);
         /* a multisampled texture's program fetches its samples (flags bit 1), and an image of other samples than
            the program's reads zeros, as a missing texture does */
@@ -6500,6 +6509,9 @@ retry:
     u32 own_words[2] = {(u32)scaled[1], (u32)(scaled[1] >> 32)};
     memcpy(&pc[24], own_words, sizeof own_words);
     memcpy(&pc[26], &predraw, sizeof predraw); /* its z: the pre-draw capture's draw number */
+    /* vt_sparse: the quads that mark their samples in this frame (shader.h SH_VT_QUADS), in that uvec4's third word */
+    const u32 vt_phase = vk_vt_phase();
+    memcpy(&pc[10], &vt_phase, sizeof(u32));
     memcpy(&pc[11], &ds->dyn.clip_height, sizeof(u32));
     float point_size = (dc->state_flags & DS_DRAW_POINT_SIZE) ? dc->point_size : 1.0f;
     if (!g_vk.feat.largePoints || !(point_size > 0)) point_size = 1.0f;

@@ -4,21 +4,24 @@
 
 static u32 level_dim(u32 d, u32 l) { return d >> l ? d >> l : 1; }
 
-int vt_shape(VtShape* s, u32 w, u32 h, u32 layers, u32 levels, u32 gw, u32 gh, u32 tail_first) {
+int vt_shape(VtShape* s, u32 w, u32 h, u32 layers, u32 levels, u32 gw, u32 gh, u32 device_tail) {
     if (!w || !h || !layers || !levels || !gw || !gh || levels > VT_LEVELS) return 0;
     *s = (VtShape){.w = w, .h = h, .layers = layers, .levels = levels, .gw = gw, .gh = gh};
-    s->tail_first = tail_first < levels ? tail_first : levels;
+    if (device_tail > levels) device_tail = levels;
+    s->tail_first = device_tail;
     u32 at = 0;
-    for (u32 l = 0; l < s->tail_first; l++) {
+    for (u32 l = 0; l < device_tail; l++) {
         s->first[l] = at;
         s->bx[l] = (level_dim(w, l) + gw - 1) / gw;
         s->by[l] = (level_dim(h, l) + gh - 1) / gh;
         at += s->bx[l] * s->by[l];
+        if (s->tail_first == device_tail && (level_dim(w, l) < gw || level_dim(h, l) < gh)) s->tail_first = l;
     }
-    s->first[s->tail_first] = at;
+    s->first[device_tail] = at;
     s->per_layer = at;
     return 1;
 }
+int vt_block_pinned(const VtShape* s, u32 b) { return s->per_layer && b % s->per_layer >= s->first[s->tail_first]; }
 
 /* v into list of n, once */
 static u32 add_once(u32* list, u32 n, u32 cap, u32 v) {

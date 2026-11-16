@@ -44,11 +44,6 @@ u64 g_vk_cs_wait_value;
 static unsigned errors;
 /* uma.c isn't here: no guest memory read in place for cmd.c's draws to settle */
 void vk_uma_settle(u64 ended) { (void)ended; }
-/* vt_sparse (aogo/vt-sparse, vk/vt_probe.c, not linked here): no texture of these is one */
-int vk_vt_strip_fresh(const Surf* t, u32 layer, u32 level, u32 y0, u32 y1) {
-    (void)t, (void)layer, (void)level, (void)y0, (void)y1;
-    return 0;
-}
 int vk_own_make_room(void) { return 0; } /* no kept results here: the device ring finds no room in their pool */
 /* Synthetic upload sources have no guest GPU mappings, ownership or pending in-place writes. */
 OwnState g_own;

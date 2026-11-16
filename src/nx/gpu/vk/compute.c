@@ -2046,7 +2046,7 @@ rebind:
                       : !((p->si.tex_int_mask >> i) & 1) ? 0
                       : ((p->si.tex_sint_mask >> i) & 1) ? 2
                                                          : 1;
-            if (t) vk_vt_whole(t); /* vt_sparse: a compute program's samples mark nothing: bound whole */
+            if (t && t->vt) vk_vt_whole(t, "a compute program samples it, and marks nothing");
             VkImageView v = t ? vk_tex_bind_view(t, want, tic, tsc, num) : VK_NULL_HANDLE;
             if (v && st->shadow && !t->f.depth)
                 LOG_LIMIT(4,

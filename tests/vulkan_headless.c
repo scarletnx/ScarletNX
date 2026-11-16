@@ -7342,6 +7342,7 @@ static int check_pipeline_stats_compute(void) {
 #include "vulkan_texture_quiet_other.inc"
 #include "vulkan_memo_over_target.inc"
 #include "vulkan_astc_later.inc"
+#include "vulkan_vt.inc"
 #include "vulkan_astc_kind.inc"
 
 /* The file of earlier runs' pipelines keeps SPIR-V translated with the HMMA forms its key names: each form a run can
@@ -8615,6 +8616,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_descriptor_room());
     CHECK(!check_sparse_texture());
     CHECK(!check_sparse_texture_shared());
+    CHECK(!check_vt());
     CHECK(!check_desc_pool_arrays());
     CHECK(!check_desc_pool_keep());
     /* the pipeline workers: pipeline_threads when given, else all the CPUs but two, two to twelve */

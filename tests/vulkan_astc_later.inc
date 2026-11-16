@@ -831,6 +831,10 @@ static int al_auto(void) {
 }
 
 static int check_astc_later(void) {
+    if (vk_vt_on()) { /* vt_sparse holds these textures a block at a time, in one format from their first load */
+        printf("skip: ASTC as BC7 between frames: with virtual textures the textures of these checks are virtual\n");
+        return 0;
+    }
     const int had = g_settings.astc_mode;
     u32 tic[8];
     NvnTexture probe = {0};

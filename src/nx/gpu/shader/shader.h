@@ -205,6 +205,10 @@ typedef struct {
        greatest in tex_minmax_max), as their sampler asks and the device's sampler can't (vk/render.c
        vk_tex_minmax_in_program, shader_minmax_sample). A fragment program's key holds the first SH_MINMAX_SLOTS */
     u64 tex_minmax_mask, tex_minmax_max;
+    /* FS, the translation's: the texture slots whose every read of texels is a sample that falls back to a coarser
+       level where a texel has no memory and marks what it reads (shader_vt_sample): a slot of these may hold a
+       virtual texture (vt_sparse); a texture a draw binds to another slot is held whole */
+    u64 tex_vt_mask;
     /* FS: texture slots every read of which is a texel fetch at the fragment's own pixel (TLD or TLDS of a 2D texture
        at gl_FragCoord's integer x and y, level 0, no offset): the only ones a draw may sample in place while it
        renders to them (vk/render.c), each fragment reading what earlier draws left at its pixel */
@@ -566,27 +570,27 @@ typedef struct {
     unsigned maximal_reconvergence : 1;
 } ShCaps;
 extern ShCaps g_spirv_translate;
-/* aogo/vt-working-set's sampling probe (vt_probe=1): the device address of the bitmap a fragment program's 2D samples
-   mark their tiles in, 0 when off. A texture header index h has bits h * SH_VT_REGION up (h under SH_VT_TICS; the
-   last index takes the others), laid out by shader_vt_tile: its levels, then layers, then rows of tiles */
-extern u64 g_vt_probe_address;
-#define SH_VT_TICS       131072u
-#define SH_VT_REGION     8192u
-/* the tile side, SH_VT_PAGE << k for the smallest k from 0 to 7 that fits levels * layers * tiles of level 0 in
-   SH_VT_REGION bits, as the shader picks it: its k, and its tiles across and down level 0. SH_VT_PAGE is eXxe's page
-   (2026-11-15): 128x128 useful texels */
-#define SH_VT_PAGE_SHIFT 7u
-#define SH_VT_PAGE       (1u << SH_VT_PAGE_SHIFT)
-static inline u32 shader_vt_tile(u32 w, u32 h, u32 layers, u32 levels, u32* across, u32* down) {
-    u32 k = 7;
-    for (int j = 7; j >= 0; j--) {
-        const u32 t = SH_VT_PAGE << j, x = (w + t - 1) / t, y = (h + t - 1) / t;
-        if ((u64)levels * layers * x * y <= SH_VT_REGION) k = (u32)j;
-    }
-    const u32 t = SH_VT_PAGE << k;
-    *across = (w + t - 1) / t;
-    *down = (h + t - 1) / t;
-    return k;
+/* Virtual textures (vt_sparse, vk/vt.c). A fragment program's 2D colour samples are sparse ones
+   (shader_vt_sample): a texel without memory reads a coarser level, and one quad in SH_VT_QUADS, another each frame,
+   marks what it sampled in a table on the device, at g_shader_vt_address (0: no virtual textures, and no program is
+   translated for them). The table is SH_VT_SLOTS entries of two words, an entry at the slot its words hash to
+   (shader_vt_slot), the last writer's:
+     word 0: the texture's identity (SH_VT_IDS of them: an Ounce program's header index; a Maxwell program's set of
+             the draw and slot) | level << 20 | resident << 24 | u's side << 25 | v's side << 27 | 1 << 31
+     word 1: u's cell | v's cell << 10 | layer << 20
+   A cell is 1 / SH_VT_CELLS of the level, from the coordinate's fraction; a side says the coordinate was under 0 (1)
+   or 1 and over (2), where the sampler's address mode, which the program doesn't know, decides the texel */
+extern u64 g_shader_vt_address;
+#define SH_VT_IDS        (1u << 20)
+#define SH_VT_SLOT_BITS  15u
+#define SH_VT_SLOTS      (1u << SH_VT_SLOT_BITS)
+#define SH_VT_CELLS      1024u
+#define SH_VT_LAYERS     4096u
+#define SH_VT_QUADS      16u /* a power of two */
+#define SH_VT_LAST_LEVEL 15  /* past any texture's levels: the sampler takes its last */
+static inline u32 shader_vt_slot(u32 w0, u32 w1) {
+    const u32 place = (w1 & 1023u) >> 4 | ((w1 >> 10 & 1023u) >> 4) << 6 | (w1 >> 20) << 12;
+    return ((w0 ^ place * 0x85EBCA6Bu) * 0x9E3779B1u) >> (32 - SH_VT_SLOT_BITS);
 }
 /* NVN's draw parameters: its driver writes each draw's base vertex and base instance into constant buffer 0 at these
    offsets, which vertex programs read (an instanced program adds the base instance to its instance ID). An indirect

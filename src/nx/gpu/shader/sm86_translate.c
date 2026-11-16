@@ -16,6 +16,7 @@
 #include "nx/gpu/shader/write_log.h"
 #include "nx/gpu/shader/fuse.h"
 #include "nx/gpu/shader/minmax_spirv.h"
+#include "nx/gpu/shader/vt_sample.h"
 #include "common/utilities/spirv_emit.h"
 #include "common/utilities/bits.h"
 #include <stdarg.h>
@@ -68,8 +69,10 @@ typedef struct {
     /* types and constants */
     u32 t_void, t_bool, t_u32, t_i32, t_f32, t_v2f, t_v3f, t_v4f, t_v4u, t_v3u, t_v2u;
     u32 t_u64_; /* made with the Int64 capability when an instruction needs it (u64_type) */
-    /* aogo/vt-working-set's probe: the bitmap's struct pointer type and its address, and a pointer to its words */
-    u32 vt_struct_ptr, vt_address, vt_word_ptr;
+    /* vt_sparse: shader_vt_sample's ids, and the slots with a sample it took (vt_took) and with a read of texels
+       it didn't take (vt_left): a slot of the first alone may hold a virtual texture (ShaderInfo.tex_vt_mask) */
+    ShVtIds vt;
+    u64 vt_took, vt_left;
     u32 zero, true_v, false_v, glsl;
     /* the program's state: Function variables, made at the start */
     u32 reg[256], ureg[64], pred[8], upred[8];
@@ -2681,110 +2684,12 @@ static u32 coord_vector(Ctx* c, const u32* f, u32 count) {
     if (count == 3) return spv_emit_vec3_construct(&c->e, c->t_v3f, f[0], f[1], f[2]);
     return spv_emit_vec4_construct(&c->e, c->t_v4f, f);
 }
-/* vt_probe (g_vt_probe_address): a fragment program's 2D sample marks the tiles it reads in the probe's bitmap, at the
-   level the hardware takes (OpImageQueryLod's clamped level, both levels of a trilinear one; the level given, the bias
-   added, or level 0), in the region of its texture header's index (handle's low 20 bits), as shader_vt_tile lays it
-   out. The coordinates wrap (fract): a clamped sample past the edge counts a tile on the other side. lod_kind: 0
-   implicit, 1 the level lod, 2 the bias lod, 3 level 0 */
-static void vt_mark(Ctx* c, int slot, u32 handle, u32 x, u32 y, u32 layer_f, int array, int lod_kind, u32 lod) {
-    SpvEmitter* e = &c->e;
-    if (!c->vt_struct_ptr) {
-        spv_emit_capability(e, 5347); /* PhysicalStorageBufferAddresses */
-        spv_emit_extension(e, "SPV_KHR_physical_storage_buffer");
-        e->physical_storage_buffer = 1;
-        const u32 st = spv_emit_type_struct_one(e, spv_emit_type_runtime_array(e, c->t_u32, 4));
-        c->vt_struct_ptr = spv_emit_type_pointer(e, 5349, st); /* PhysicalStorageBuffer */
-        c->vt_word_ptr = spv_emit_type_pointer(e, 5349, c->t_u32);
-        c->vt_address =
-            spv_emit_constant_vec2(e, c->t_v2u, cu(c, (u32)g_vt_probe_address), cu(c, (u32)(g_vt_probe_address >> 32)));
-    }
-    /* made where it is used: a mark in one branch must not lean on another's */
-    const u32 base = spv_emit_op(e, SPV_OP_BITCAST, c->vt_struct_ptr, (u32[]){c->vt_address}, 1);
-    spv_emit_capability(e, SPV_CAPABILITY_IMAGE_QUERY);
-    const u32 ivec = spv_emit_type_vector(e, c->t_i32, array ? 3 : 2), sampled = c->tex_sampled[slot],
-              var = c->tex[slot];
-    const u32 size0 = spv_emit_image_query_size_lod(e, ivec, sampled, var, c->zero);
-    const u32 w = spv_emit_unary(e, SPV_OP_BITCAST, c->t_u32, spv_emit_vec4_extract(e, c->t_i32, size0, 0));
-    const u32 h = spv_emit_unary(e, SPV_OP_BITCAST, c->t_u32, spv_emit_vec4_extract(e, c->t_i32, size0, 1));
-    const u32 layers =
-        array ? spv_emit_unary(e, SPV_OP_BITCAST, c->t_u32, spv_emit_vec4_extract(e, c->t_i32, size0, 2)) : cu(c, 1);
-    const u32 levels = spv_emit_image_query_levels(e, c->t_u32, sampled, var);
-    const u32 top =
-        spv_emit_unary(e, SPV_OP_CONVERT_U_TO_F, c->t_f32, op2(c, SPV_OP_I_SUB, c->t_u32, levels, cu(c, 1)));
-    u32 lf;
-    if (lod_kind == 3)
-        lf = cf(c, 0.0f);
-    else if (lod_kind == 1)
-        lf = lod;
-    else {
-        const u32 q = spv_emit_image_query_lod(e, c->t_v2f, sampled, var, spv_emit_vec2_construct(e, c->t_v2f, x, y));
-        lf = spv_emit_vec4_extract(e, c->t_f32, q, lod_kind == 2 ? 1 : 0);
-        if (lod_kind == 2) lf = op2(c, SPV_OP_F_ADD, c->t_f32, lf, lod);
-    }
-    lf = spv_emit_glsl_ternary(e, c->t_f32, c->glsl, SPV_GLSL_F_CLAMP, lf, cf(c, 0.0f), top);
-    const u32 m0 = spv_emit_unary(e, SPV_OP_CONVERT_F_TO_U, c->t_u32,
-                                  spv_emit_glsl_unary(e, c->t_f32, c->glsl, SPV_GLSL_FLOOR, lf));
-    const u32 frac = spv_emit_glsl_unary(e, c->t_f32, c->glsl, SPV_GLSL_FRACT, lf);
-    const u32 m1 = spv_emit_ternary(
-        e, SPV_OP_SELECT, c->t_u32, op2(c, SPV_OP_F_ORD_GREATER_THAN, c->t_bool, frac, cf(c, 0.0f)),
-        spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, op2(c, SPV_OP_I_ADD, c->t_u32, m0, cu(c, 1)),
-                             op2(c, SPV_OP_I_SUB, c->t_u32, levels, cu(c, 1))),
-        m0);
-    /* the tile side, shader_vt_tile's: the smallest of SH_VT_PAGE << 7 down to SH_VT_PAGE whose tiles fit */
-    u32 shift = cu(c, SH_VT_PAGE_SHIFT + 7), across = cu(c, 1), down = cu(c, 1);
-    const u32 ll = op2(c, SPV_OP_I_MUL, c->t_u32, levels, layers);
-    for (int j = 7; j >= 0; j--) {
-        const u32 sh = cu(c, SH_VT_PAGE_SHIFT + (u32)j), add = cu(c, (SH_VT_PAGE << j) - 1);
-        const u32 tx = op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, op2(c, SPV_OP_I_ADD, c->t_u32, w, add), sh);
-        const u32 ty = op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, op2(c, SPV_OP_I_ADD, c->t_u32, h, add), sh);
-        const u32 cost = op2(c, SPV_OP_I_MUL, c->t_u32, ll, op2(c, SPV_OP_I_MUL, c->t_u32, tx, ty));
-        const u32 fits = op2(c, SPV_OP_U_LESS_THAN_EQUAL, c->t_bool, cost, cu(c, SH_VT_REGION));
-        shift = spv_emit_ternary(e, SPV_OP_SELECT, c->t_u32, fits, sh, shift);
-        across = spv_emit_ternary(e, SPV_OP_SELECT, c->t_u32, fits, tx, across);
-        down = spv_emit_ternary(e, SPV_OP_SELECT, c->t_u32, fits, ty, down);
-    }
-    const u32 per_layer = op2(c, SPV_OP_I_MUL, c->t_u32, across, down);
-    const u32 per_level = op2(c, SPV_OP_I_MUL, c->t_u32, per_layer, layers);
-    const u32 layer = array ? spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN,
-                                                   spv_emit_unary(e, SPV_OP_CONVERT_F_TO_U, c->t_u32, layer_f),
-                                                   op2(c, SPV_OP_I_SUB, c->t_u32, layers, cu(c, 1)))
-                            : c->zero;
-    const u32 u = spv_emit_glsl_unary(e, c->t_f32, c->glsl, SPV_GLSL_FRACT, x);
-    const u32 v = spv_emit_glsl_unary(e, c->t_f32, c->glsl, SPV_GLSL_FRACT, y);
-    const u32 tic =
-        spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN,
-                             op2(c, SPV_OP_BITWISE_AND, c->t_u32, handle, cu(c, 0xFFFFF)), cu(c, SH_VT_TICS - 1));
-    const u32 region = op2(c, SPV_OP_I_MUL, c->t_u32, tic, cu(c, SH_VT_REGION));
-    for (int k = 0; k < 2; k++) {
-        const u32 m = k ? m1 : m0;
-        const u32 wm = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MAX,
-                                            op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, w, m), cu(c, 1));
-        const u32 hm = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MAX,
-                                            op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, h, m), cu(c, 1));
-        const u32 px =
-            spv_emit_unary(e, SPV_OP_CONVERT_F_TO_U, c->t_u32,
-                           op2(c, SPV_OP_F_MUL, c->t_f32, u, spv_emit_unary(e, SPV_OP_CONVERT_U_TO_F, c->t_f32, wm)));
-        const u32 py =
-            spv_emit_unary(e, SPV_OP_CONVERT_F_TO_U, c->t_u32,
-                           op2(c, SPV_OP_F_MUL, c->t_f32, v, spv_emit_unary(e, SPV_OP_CONVERT_U_TO_F, c->t_f32, hm)));
-        const u32 tx = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN,
-                                            op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, px, shift),
-                                            op2(c, SPV_OP_I_SUB, c->t_u32, across, cu(c, 1)));
-        const u32 ty = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN,
-                                            op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, py, shift),
-                                            op2(c, SPV_OP_I_SUB, c->t_u32, down, cu(c, 1)));
-        u32 off = op2(c, SPV_OP_I_ADD, c->t_u32, op2(c, SPV_OP_I_MUL, c->t_u32, m, per_level),
-                      op2(c, SPV_OP_I_ADD, c->t_u32, op2(c, SPV_OP_I_MUL, c->t_u32, layer, per_layer),
-                          op2(c, SPV_OP_I_ADD, c->t_u32, op2(c, SPV_OP_I_MUL, c->t_u32, ty, across), tx)));
-        off = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, off, cu(c, SH_VT_REGION - 1));
-        const u32 bit = op2(c, SPV_OP_I_ADD, c->t_u32, region, off);
-        const u32 ptr =
-            spv_emit_op(e, SPV_OP_ACCESS_CHAIN, c->vt_word_ptr,
-                        (u32[]){base, c->zero, op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, bit, cu(c, 5))}, 3);
-        spv_emit_atomic_u32(e, c->t_u32, SPV_OP_ATOMIC_OR, ptr,
-                            op2(c, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, cu(c, 1),
-                                op2(c, SPV_OP_BITWISE_AND, c->t_u32, bit, cu(c, 31))));
-    }
+/* vt_sparse: the frame's phase (shader.h's SH_VT_QUADS), the low bits of the third word of the uvec4 after the fragment
+   stage's vec4 in the push constants (vk/render.c) */
+static u32 vt_phase(Ctx* c) {
+    scaled_slot(c, 0, 0); /* makes the block */
+    return spv_emit_push_component_f32(&c->e, spv_emit_type_pointer(&c->e, SPV_STORAGE_PUSH_CONSTANT, c->t_u32),
+                                       c->scaled_push, cu(c, 1), cu(c, 2), c->t_u32);
 }
 static void texture(Ctx* c, const Sm86Insn* in) {
     /* a handle from memory (TEX and TLD4 with it in a uniform register) has its slot from memory_handles and none in
@@ -2932,24 +2837,35 @@ static void texture(Ctx* c, const Sm86Insn* in) {
             }
         }
         int reduce = shadow ? 0 : shader_minmax_slot(c->si->tex_minmax_mask, c->si->tex_minmax_max, slot);
-        result = indexed && shadow ? sample_indexed_shadow(c, slot, element, coord, dref, mode, level, const_offset)
-                 : reduce ? minmax_sample(c, slot, coord, (int)array, const_offset, reduce)
-                          : spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord, dref, mode,
-                                                  level, const_offset, 0);
+        /* vt_sparse: a fragment program's 2D colour sample is a sparse one that marks what it reads, the texture
+           named by its header's index: the handle's, which is the constant buffer's word, the bindless register's
+           or the uniform register's */
+        const int vt = g_shader_vt_address && c->stage == ST_FS && type == 1 && !shadow && !reduce;
+        if (vt) {
+            u32 h = bindless ? rd(c, regs[n0])
+                    : memory ? urd(c, sm86_field(in, 40, 6))
+                             : cbuf_load(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, 0);
+            const u32 phase = vt_phase(c);
+            coop_flow(c);
+            const ShVtSample sample = {c->t_bool, c->t_u32, c->t_i32, c->t_f32, c->t_v2f, c->t_v4f, c->glsl,
+                                       c->tex_sampled[slot], c->tex[slot], coord, f[0], f[1], array ? f[2] : 0,
+                                       (int)array, mode, level, const_offset, h, frag_pixel(c, 0), frag_pixel(c, 1),
+                                       phase};
+            result = shader_vt_sample(&c->e, &c->vt, &sample);
+            c->vt_took |= 1ull << slot;
+        } else {
+            result = indexed && shadow ? sample_indexed_shadow(c, slot, element, coord, dref, mode, level, const_offset)
+                     : reduce ? minmax_sample(c, slot, coord, (int)array, const_offset, reduce)
+                              : spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord, dref,
+                                                      mode, level, const_offset, 0);
+            c->vt_left |= 1ull << slot;
+        }
         if (shadow) {
             u32 v[4] = {result, cf(c, 0.0f), cf(c, 0.0f), cf(c, 1.0f)};
             result = spv_emit_vec4_construct(&c->e, c->t_v4f, v);
         }
     }
-    /* vt_probe: a fragment program's 2D sample or gather, its handle the constant buffer's word, the bindless
-       register's or the uniform register's */
-    if (g_vt_probe_address && c->stage == ST_FS && type == 1 && op != SM86_TMML && !shadow) {
-        u32 h = bindless ? rd(c, regs[n0])
-                : memory ? urd(c, sm86_field(in, 40, 6))
-                         : cbuf_load(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, 0);
-        int kind = op == SM86_TLD4 ? 3 : lod_mode == 3 ? 1 : lod_mode == 2 ? 2 : lod_mode == 1 ? 3 : 0;
-        vt_mark(c, slot, h, f[0], f[1], array ? f[2] : 0, (int)array, kind, kind == 1 || kind == 2 ? level : 0);
-    }
+    if (op == SM86_TLD4) c->vt_left |= 1ull << slot;
     tex_results(c, in, result, c->t_f32);
 }
 static int writes_uniform(const Sm86Insn* w, u32 r);
@@ -3001,6 +2917,7 @@ static void texture_grad(Ctx* c, const Sm86Insn* in) {
     int slot = in->op == SM86_TXD_U ? (int)c->handle[c->cur].slot - 1 /* memory_handles' */
                                     : tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, 0, 0);
     if (slot < 0) return;
+    c->vt_left |= 1ull << slot;
     u32 a = sm86_field(in, 24, 8), b = sm86_field(in, 32, 8), f[4], dx[3], dy[3], count = 0;
 #define TXD_REG(base, k) ((base) < SM86_RZ ? (base) + (k) : SM86_RZ)
     for (u32 k = 0; k < coords; k++, count++) {
@@ -3069,6 +2986,7 @@ static void texel_fetch(Ctx* c, const Sm86Insn* in) {
                                           : spv_emit_vec3_construct(&c->e, uvec, v[0], v[1], v[2]));
     u32 level = lod_mode == 3 ? spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, regs[n0]))
                               : spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, c->zero);
+    c->vt_left |= 1ull << slot;
     u32 texel =
         ms ? spv_emit_image_fetch_sample(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord,
                                          spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, regs[n0 + offset])))
@@ -7653,6 +7571,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             }
             /* Maxwell's and Ampere's programs use infinities and NaNs (CLAUDE.md) */
             spv_emit_float_controls(e, fn, ftz_mode, 1, 0);
+            si->tex_vt_mask = c->vt_took & ~c->vt_left;
             out = spv_emit_finish(e, word_count);
         }
         spv_emit_destroy(e);

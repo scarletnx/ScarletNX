@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The calculations of the virtual textures (vt_probe.c): which blocks of a texture a sample's mark names, the blocks
+/* The calculations of the virtual textures (vt.c): which blocks of a texture a sample's mark names, the blocks
    that cover a block in the coarser levels, and which blocks go when the blocks held pass their budget. No state and
    no Vulkan: a test gives them values and checks the blocks. */
 #ifndef SNX_VK_VT_PAGES_H
@@ -8,16 +8,20 @@
 #include "common/cpu/aarch64/cpu.h"
 
 #define VT_LEVELS 16
-/* A texture's blocks, in the order of VkSparseShape (vk.h): layer by layer, in a layer level by level up to the mip
-   tail, in a level row by row, left to right. A block is gw x gh texels; the levels from tail_first on are the mip
-   tail, which has no blocks: it is held always */
+/* A texture's blocks, in the order of VkSparseShape (vk.h): layer by layer, in a layer level by level up to the
+   device's mip tail, in a level row by row, left to right. A block is gw x gh texels. The levels from tail_first on
+   are held always and no mark names them: the device's mip tail, which has no blocks, and before it the levels
+   smaller than a block (a device without a tail gives each of those a block, which per_layer counts) */
 typedef struct {
     u32 w, h, layers, levels;
     u32 gw, gh, tail_first, per_layer;
     u32 first[VT_LEVELS + 1], bx[VT_LEVELS], by[VT_LEVELS];
 } VtShape;
-/* s from the texture's size and the blocks'. 0 for a size or a block of zero, or more levels than VT_LEVELS */
-int vt_shape(VtShape* s, u32 w, u32 h, u32 layers, u32 levels, u32 gw, u32 gh, u32 tail_first);
+/* s from the texture's size, the blocks' and the device's mip tail (its first level, levels for none). 0 for a size
+   or a block of zero, or more levels than VT_LEVELS */
+int vt_shape(VtShape* s, u32 w, u32 h, u32 layers, u32 levels, u32 gw, u32 gh, u32 device_tail);
+/* block b is of a level held always (tail_first on) */
+int vt_block_pinned(const VtShape* s, u32 b);
 
 /* A mark: a sample of a texture's level and layer at cell (u, v), a cell 1/VT_CELLS of the level each way, taken
    from the coordinate's fraction. uo, vo: the coordinate was under 0 (1) or 1 and over (2), where the sampler's

@@ -19,12 +19,15 @@ static u32 at(const VtShape* s, u32 layer, u32 l, u32 x, u32 y) {
 }
 
 int main(void) {
-    /* a 4096x2048 texture of 13 levels and 2 layers in blocks of 256x256 (BC7's), its tail from level 5 (128x64):
-       16x8, 8x4, 4x2, 2x1 and 1x1 blocks */
+    /* a 4096x2048 texture of 13 levels and 2 layers in blocks of 256x256 (BC7's), the device's tail from level 5
+       (128x64): 16x8, 8x4, 4x2, 2x1 and 1x1 blocks. Level 4, 256x128, is smaller than a block: held always, as the
+       tail is */
     VtShape s;
     assert(vt_shape(&s, 4096, 2048, 2, 13, 256, 256, 5));
     assert(s.bx[0] == 16 && s.by[0] == 8 && s.bx[3] == 2 && s.by[3] == 1 && s.bx[4] == 1 && s.by[4] == 1);
     assert(s.first[1] == 128 && s.first[2] == 160 && s.first[3] == 168 && s.first[4] == 170 && s.per_layer == 171);
+    assert(s.tail_first == 4 && vt_block_pinned(&s, 170) && !vt_block_pinned(&s, 169) &&
+           vt_block_pinned(&s, 171 + 170));
     assert(!vt_shape(&s, 0, 8, 1, 1, 256, 256, 0) && !vt_shape(&s, 8, 8, 1, 17, 256, 256, 0));
     assert(vt_shape(&s, 4096, 2048, 2, 13, 256, 256, 5));
 
@@ -61,11 +64,12 @@ int main(void) {
     m.uo = 1;
     vt_mark_blocks(&s, &m, under, &nu, near, &nn);
     assert(nu == 3 && has(under, nu, at(&s, 0, 0, 0, 0)) && has(under, nu, at(&s, 0, 0, 1, 0)));
-    /* level 4 is one block: any cell is it, and nothing is near. The tail and a layer too many name nothing */
-    m = (VtMark){.level = 4, .layer = 0, .u = 1023, .v = 0};
+    /* level 3 is two blocks across and one down: its last cell is the second, the first near it across the edge. A
+       level held always and a layer too many name nothing */
+    m = (VtMark){.level = 3, .layer = 0, .u = 1023, .v = 0};
     vt_mark_blocks(&s, &m, under, &nu, near, &nn);
-    assert(nu == 1 && under[0] == at(&s, 0, 4, 0, 0) && nn == 0);
-    m.level = 5;
+    assert(nu == 1 && under[0] == at(&s, 0, 3, 1, 0) && nn == 1 && near[0] == at(&s, 0, 3, 0, 0));
+    m.level = 4;
     vt_mark_blocks(&s, &m, under, &nu, near, &nn);
     assert(nu == 0 && nn == 0);
     m = (VtMark){.level = 0, .layer = 2, .u = 1, .v = 1};
@@ -75,8 +79,8 @@ int main(void) {
     /* a block's parent holds its middle: (5, 3) of level 0 is texel (1408, 896), (704, 448) of level 1: (2, 1) */
     assert(vt_block_parent(&s, at(&s, 1, 0, 5, 3)) == at(&s, 1, 1, 2, 1));
     assert(vt_block_parent(&s, at(&s, 0, 1, 7, 3)) == at(&s, 0, 2, 3, 1));
-    assert(vt_block_parent(&s, at(&s, 0, 3, 1, 0)) == at(&s, 0, 4, 0, 0));
-    assert(vt_block_parent(&s, at(&s, 0, 4, 0, 0)) == ~0u);
+    assert(vt_block_parent(&s, at(&s, 0, 2, 3, 1)) == at(&s, 0, 3, 1, 0));
+    assert(vt_block_parent(&s, at(&s, 0, 3, 1, 0)) == ~0u);
     /* every block's chain of parents ends in the tail within the levels */
     for (u32 b = 0; b < s.layers * s.per_layer; b++) {
         u32 p = b, steps = 0;
@@ -85,6 +89,19 @@ int main(void) {
             p = vt_block_parent(&s, p);
         }
     }
+    /* a device with no mip tail gives every level blocks: the levels smaller than a block are held always, as a tail
+       is, and their blocks are pinned. 1024x1024 of 11 levels in 256x256: 16, 4 and 1 blocks, then 8 levels of one */
+    VtShape p;
+    assert(vt_shape(&p, 1024, 1024, 2, 11, 256, 256, 11));
+    assert(p.tail_first == 3 && p.per_layer == 16 + 4 + 1 + 8 && p.first[3] == 21);
+    assert(!vt_block_pinned(&p, 20) && vt_block_pinned(&p, 21) && vt_block_pinned(&p, 28) && !vt_block_pinned(&p, 29) &&
+           vt_block_pinned(&p, 29 + 21));
+    assert(vt_block_parent(&p, at(&p, 1, 0, 3, 3)) == at(&p, 1, 1, 1, 1));
+    assert(vt_block_parent(&p, at(&p, 1, 1, 1, 1)) == at(&p, 1, 2, 0, 0) &&
+           vt_block_parent(&p, at(&p, 1, 2, 0, 0)) == ~0u);
+    m = (VtMark){.level = 3, .layer = 0, .u = 5, .v = 5};
+    vt_mark_blocks(&p, &m, under, &nu, near, &nn);
+    assert(nu == 0 && nn == 0);
     /* a level whose size is no multiple of the block: 1000x600 in 128x128, 8x5 then 4x3 blocks, tail from 300x... */
     VtShape o;
     assert(vt_shape(&o, 1000, 600, 1, 10, 128, 128, 3));

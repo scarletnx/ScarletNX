@@ -168,6 +168,7 @@ static void sparse_floor(const VkSparseShape* sh, u8* bits, u32 floor) {
    and they run inside a trim's walk of the textures (surface.c tex_shed_lru) or the refine's, which a trim inside
    them broke: it evicted the next texture the walk would take, and the texture moved itself */
 static int g_bind_no_trim;
+static u64 g_vt_blocks, g_vt_texels; /* vt_sparse: the blocks vk_tex_vt_load decoded, and their texels */
 static u64 g_shed_made, g_shed_bytes, g_shed_coarser, g_shed_finer, g_half_made, g_half_bytes;
 void vk_tex_shed_stats(u64* made, u64* bytes, u64* coarser, u64* finer) {
     *made = g_shed_made, *bytes = g_shed_bytes, *coarser = g_shed_coarser, *finer = g_shed_finer;
@@ -238,7 +239,7 @@ static int tex_bind_at(Surf* t, int finer_ok) {
         else if ((bits[k >> 3] >> (k & 7)) & 1 && !keys[k])
             keys[k] = 1;
     }
-    if (t->vt) vk_vt_want(t, bits, nbits); /* vt_sparse: only the blocks the probe saw sampled */
+    if (t->vt) vk_vt_want(t, bits, nbits); /* vt_sparse: only the blocks frames sample */
     u32 floor = t->lod_floor;
     u8* finer = floor && finer_ok ? malloc(nbits / 8 + 1) : NULL;
     if (finer) {
@@ -313,6 +314,7 @@ typedef struct {
     u64 lsz;
     u32 rowb, th, lbh, lbd, gobs_x;
     int layers;
+    u32 row0; /* the block row that astc_rows' row 0 is: a region that starts inside a block of GOBs (vt_load_run) */
 } LevelSource;
 /* The part of an ASTC level's BC7 key (vk_bc7_level_key) that its guest bytes make: the words that lay its blocks out
    in guest memory, and those bytes as the CPU has them, of each of nlayers layers. 0 when the GPU holds any byte on
@@ -370,7 +372,8 @@ static int astc_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32 
         return ok;
     }
     if (l->t->bl) {
-        VkBlMove m = {l->rowb, l->th, l->lbh, l->lbd, y, n, z, nz, l->rowb, l->gobs_x}; /* 16 byte blocks: whole runs */
+        /* 16 byte blocks: whole runs */
+        VkBlMove m = {l->rowb, l->th, l->lbh, l->lbd, y + l->row0, n, z, nz, l->rowb, l->gobs_x};
         VkBlSrc staged;
         u64 cap;
         *buf = vk_bl_scratch((u64)l->rowb * n * nz, &cap);
@@ -2216,24 +2219,61 @@ static int tex_upload_(Surf* t) {
         later_queue(t);
         kind_record(vk_cmd(), t); /* the read of the blocks it kept, in the upload's command buffer */
     }
-    if (complete && t->vt) vk_vt_loaded(t); /* every bound block decoded */
+    if (complete && t->vt) vk_vt_loaded(t); /* vt_sparse: every bound block decoded */
     return t->upload_valid = complete;
 }
-/* vt_sparse (aogo/vt-sparse): t bound again where the probe wants it (tex_bind, through vk_vt_want), and only the
-   strips that hold blocks bound since their last load decoded from guest memory, level by level as its upload does
-   (astc.c asks vk_vt_strip_fresh for each strip). A texture whose load is still to come is left to it, which decodes
-   every bound block. 0 when the bind or the decode found no memory or staging: vt_probe.c tries again at the next
-   present */
+/* vt_sparse: texels x0 to x1 of rows y0 to y1 of level l of a layer of t decoded again from guest memory, the level
+   lsz bytes at gva there: the ASTC blocks they lie in and no others, but for the ones that make whole GOBs across (4
+   blocks) and whole 4x4 blocks of the format the texture is held in down (4 rows: a multiple of every footprint's).
+   A run of GOBs of each block of GOBs the rows cross, from the row they start at inside it (LevelSource.row0), as
+   level_patch_astc takes whole ones. Texels decoded past the region land on its neighbours: the same texels where
+   they have memory, nowhere where they have none */
+static int vt_load_run(Upload* u, u32 layer, u32 l, u64 gva, u64 lsz, u32 lbh, u32 lbd, u32 x0, u32 y0, u32 x1,
+                       u32 y1) {
+    Surf* t = u->t;
+    const VkFmt* f = &t->f;
+    const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
+    const u32 tw = (lw + f->bw - 1) / f->bw, th = (lh + f->bh - 1) / f->bh;
+    const u32 gobs_x = bl_level_gobs_x(tw * f->bpp, th, 1, t->bh, t->bd, t->tile_w);
+    const u64 block = 512ull << (lbh + lbd);
+    const u32 ax0 = x0 / f->bw / 4 * 4, ay0 = y0 / f->bh / 4 * 4;
+    u32 ax1 = ((x1 + f->bw - 1) / f->bw + 3) / 4 * 4, ay1 = ((y1 + f->bh - 1) / f->bh + 3) / 4 * 4;
+    if (ax1 > tw) ax1 = tw;
+    if (ay1 > th) ay1 = th;
+    for (u32 ay = ay0; ay < ay1;) {
+        const u32 row = ay >> (3 + lbh), top = row << (3 + lbh);
+        const u32 end = ay1 < top + (8u << lbh) ? ay1 : top + (8u << lbh);
+        const u64 k = (u64)row * gobs_x + ax0 / 4;
+        if ((k + 1) * block > lsz) return 1; /* the layout's end: no such blocks */
+        LevelSource ls = {t, gva + k * block, lsz - k * block, (ax1 - ax0) * 16, 8u << lbh, lbh, lbd, 0, 0, ay - top};
+        const u32 tx = ax0 * f->bw, ty = ay * f->bh;
+        u32 w = (ax1 - ax0) * f->bw, h = (end - ay) * f->bh;
+        if (w > lw - tx) w = lw - tx;
+        if (h > lh - ty) h = lh - ty;
+        if (!up_flush(u) || !vk_astc_upload(u->cb, t, tx, ty, w, h, 1, l, layer, astc_rows, &ls, NULL)) return 0;
+        u->scratch = VK_NULL_HANDLE; /* astc_rows may have grown the scratch buffer: asked for again */
+        u->cap = 0;
+        __atomic_add_fetch(&g_tex_upload_bytes, (u64)(ax1 - ax0) * (end - ay) * 16, __ATOMIC_RELAXED);
+        g_vt_texels += (u64)w * h;
+        ay = end;
+    }
+    return 1;
+}
+/* vt_sparse: t bound again where its record wants it (tex_bind, through vk_vt_want), and the blocks that got memory
+   decoded from guest memory, each row's neighbours in one run. A texture whose load is still to come is left to it,
+   which decodes every bound block. 0 when the bind or the decode found no memory or staging: vt.c tries again at the
+   next present */
 int vk_tex_vt_load(Surf* t) {
     if (!t->vt || !t->img || !t->upload_valid) return 1;
-    g_bind_no_trim = 1; /* inside vt_probe.c's walk of its textures: a trim there may free one it holds */
+    g_bind_no_trim = 1; /* inside vt.c's walk of its textures: a trim there may free one it holds */
     const int r = tex_bind(t);
     g_bind_no_trim = 0;
     if (r < 0) return 0;
-    int any = 0;
-    for (u32 layer = 0; layer < t->layers && !any; layer++)
-        for (u32 l = 0; l < t->levels && !any; l++) any = vk_vt_level_fresh(t, layer, l);
-    if (!any) return 1;
+    const VkSparseShape* sh = vk_image_sparse_shape(t->img);
+    u32 nblocks = 0, any = 0;
+    const u8* fresh = vk_vt_fresh(t, &nblocks);
+    for (u32 i = 0; fresh && i < nblocks / 8 + 1 && !any; i++) any = fresh[i];
+    if (!sh || !any) return 1;
     const VkFmt* f = &t->f;
     vk_render_end(); /* copies happen outside rendering passes */
     VkCommandBuffer cb = vk_cmd();
@@ -2241,29 +2281,32 @@ int vk_tex_vt_load(Surf* t) {
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     Upload u = {.cb = cb, .t = t};
     int ok = 1;
-    t->vt_fresh_only = 1;
-    for (u32 layer = 0; layer < t->layers && ok; layer++) {
+    for (u32 layer = 0; layer < t->layers && layer < sh->layers && ok; layer++) {
         u64 at = layer * t->layer_size;
-        for (u32 l = 0; l < t->levels && ok; l++) {
+        for (u32 l = 0; l < sh->tail_first && ok; l++) {
             const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
-            const u32 tw = (lw + f->bw - 1) / f->bw, th = (lh + f->bh - 1) / f->bh, rowb = tw * f->bpp;
             u32 lbh = 0, lbd = 0;
             const u64 lsz = bl_level_size(t->w, t->h, 1, f, t->bh, t->bd, t->tile_w, l, &lbh, &lbd);
-            if (vk_vt_level_fresh(t, layer, l)) {
-                LevelSource ls = {
-                    t, t->gva + at, lsz, rowb, th, lbh, lbd, bl_level_gobs_x(rowb, th, 1, t->bh, t->bd, t->tile_w), 0};
-                ok = up_flush(&u) && vk_astc_upload(u.cb, t, 0, 0, lw, lh, 1, l, layer, astc_rows, &ls, NULL);
-                u.scratch = VK_NULL_HANDLE; /* astc_rows may have grown the scratch buffer: asked for again */
-                u.cap = 0;
-            }
+            const u32 base = layer * sh->per_layer + sh->first[l], gw = sh->gran.width, gh = sh->gran.height;
+            for (u32 by = 0; by < sh->by[l] && ok; by++)
+                for (u32 bx = 0; bx < sh->bx[l] && ok; bx++) {
+                    const u32 b = base + by * sh->bx[l] + bx;
+                    if (b >= nblocks || !(fresh[b >> 3] >> (b & 7) & 1)) continue;
+                    u32 end = bx + 1;
+                    while (end < sh->bx[l] && (fresh[(b + end - bx) >> 3] >> ((b + end - bx) & 7) & 1)) end++;
+                    const u32 x1 = end * gw < lw ? end * gw : lw, y1 = (by + 1) * gh < lh ? (by + 1) * gh : lh;
+                    ok = vt_load_run(&u, layer, l, t->gva + at, lsz, lbh, lbd, bx * gw, by * gh, x1, y1);
+                    g_vt_blocks += end - bx;
+                    bx = end - 1;
+                }
             at += lsz;
         }
     }
-    t->vt_fresh_only = 0;
     ok = up_flush(&u) && ok;
     if (ok) vk_vt_loaded(t);
     return ok;
 }
+void vk_tex_vt_stats(u64* blocks, u64* texels) { *blocks = g_vt_blocks, *texels = g_vt_texels; }
 
 /* change checks: a hash of the whole texture, 4 KiB at a time, the same whichever way its bytes are reached (the
    sampled check for big long-stable textures is vk_sample_hash) */
@@ -2601,26 +2644,33 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
         vk_surf_add(t);
         return t;
     }
-    /* vt_sparse (aogo/vt-sparse, a local prototype): an ASTC texture mapped whole that the GPU only reads, sampled in
-       2D, of TEX_SHED_MIN or more: held RGBA8, decoded exact, in an image with sparse residency whose memory follows
-       the blocks the probe sees sampled (vt_probe.c), its mip tail bound whole; its first load decodes the tail alone.
-       Without a record for it, it is a sparse texture bound where guest memory maps it: all of it. Only for an Ounce
-       program, whose translator (sm86_translate.c) is the one that marks samples */
-    if (g_settings.vt_sparse && g_vt_probe_address && g_shader_sm86 && f.conv == VKC_ASTC && !holes && !written &&
-        !msaa && bl && (type == VK_IMAGE_VIEW_TYPE_2D || type == VK_IMAGE_VIEW_TYPE_2D_ARRAY) && g_vk.sparse &&
-        g_vk.resident && g_vk.feat.sparseResidencyImage2D) {
-        const VkFormat rgba8 = fkey >> 31 ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    /* vt_sparse: an ASTC texture mapped whole that the GPU only reads, 2D or a 2D array, with levels, of TEX_SHED_MIN
+       or more: an image with sparse residency whose memory follows the blocks frames sample (vt.c), its mip tail held
+       always; its first load decodes the tail alone. Held as astc_mode holds it: RGBA8, decoded exact, or BC7 a
+       block at a time (BC7 too where Auto would hold BC1, BC4 or BC5 for what its blocks hold now: a block decoded
+       later may hold more). One whose level 0 is under two blocks each way, or with no smaller level held always, has nothing to page
+       or to fall back on (vk_vt_register), and is made as without vt_sparse */
+    if (vk_vt_on() && f.conv == VKC_ASTC && !holes && !written && !msaa && bl && levels > 1 &&
+        (type == VK_IMAGE_VIEW_TYPE_2D || type == VK_IMAGE_VIEW_TYPE_2D_ARRAY)) {
+        const int srgb = (int)(fkey >> 31);
+        const VkFormat held = f.vk == VK_FORMAT_R8G8B8A8_SRGB || f.vk == VK_FORMAT_R8G8B8A8_UNORM ? f.vk
+                              : srgb                                                              ? VK_FORMAT_BC7_SRGB_BLOCK
+                                                                                                  : VK_FORMAT_BC7_UNORM_BLOCK;
         VkImageCreateInfo vi;
         VkViewFormats vvf;
         int storage = 0;
-        t->f.vk = rgba8;
-        tex_info(t, rgba8, &vi, &vvf, &storage);
+        t->f.vk = held;
+        tex_info(t, held, &vi, &vvf, &storage);
         if (vk_image_create_sparse_min(&vi, &t->img, TEX_SHED_MIN)) {
-            t->sparse = 1;
-            t->storage_capable = storage;
             t->vt = (u8)vk_vt_register(t);
-            vk_surf_add(t);
-            return t;
+            if (t->vt) {
+                t->sparse = 1;
+                t->storage_capable = storage;
+                vk_surf_add(t);
+                return t;
+            }
+            vk_image_destroy(t->img, 0); /* nothing to page in it */
+            t->img = VK_NULL_HANDLE;
         }
         t->f.vk = f.vk; /* too small, or no such image here: as without vt_sparse */
     }
@@ -4500,9 +4550,8 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     return s;
 }
 
-static void vt_probe_present(void);
 void vk_tex_frame(void) {
-    vt_probe_present();
+    vk_vt_frame();
     /* surfaces whose pixels can be had again go once unused for twenty seconds and in 120 presents (a game at 6 frames
        a second kept 600 presents' worth, 100 seconds, of the targets it made every frame); textures come back from
        memory if they are needed again. Those whose pixels would be lost (vk_surf_reclaim) go before five minutes
@@ -4988,156 +5037,10 @@ static void tex_tag(const Surf* t) {
     vk_devmem_info(t->mem, &info);
     if ((int)vk_devmem_props()->memoryTypes[info.type].heapIndex != vk_mem_heap()) g_tex_tags |= 512;
 }
-/* vt_probe: the ASTC textures the frames sample, a texture a whole (every level and layer): what a cache of whole
-   decoded textures would have to hold. A frame's and a window of VT_PROBE_WINDOW presents', each as RGBA8, as the ASTC
-   blocks and as the image holds it (t->bytes: RGBA8, BC7 or BCn), against every ASTC texture alive, logged at each
-   window's end. A texture bound but not sampled by the draw counts: an upper bound of the textures' working set */
-#define VT_PROBE_WINDOW 60u
-typedef struct {
-    u64 n, rgba8, astc, held;
-    u64 sparse_n, sparse_rgba8, sparse_held; /* of those, the textures with holes in their mapping (t->sparse), whose
-                                                RGBA8 and ASTC sizes count every layer, mapped or not */
-} VtSum;
-static struct {
-    VtSum frame, window, frames[VT_PROBE_WINDOW];
-    u32 nframes, window_id;
-} g_vt_probe;
-static u64 vt_texels(const Surf* t) {
-    u64 n = 0;
-    const u32 d = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1;
-    for (u32 l = 0; l < t->levels; l++)
-        n += (u64)(t->w >> l ? t->w >> l : 1) * (t->h >> l ? t->h >> l : 1) * (d >> l ? d >> l : 1);
-    return n * (t->layers ? t->layers : 1);
-}
-static u64 vt_astc_bytes(const Surf* t) {
-    u64 n = 0;
-    const u32 d = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1, bw = t->f.bw, bh = t->f.bh;
-    for (u32 l = 0; l < t->levels; l++) {
-        const u64 w = t->w >> l ? t->w >> l : 1, h = t->h >> l ? t->h >> l : 1;
-        n += (w + bw - 1) / bw * ((h + bh - 1) / bh) * (d >> l ? d >> l : 1) * 16;
-    }
-    return n * (t->layers ? t->layers : 1);
-}
-static void vt_add(VtSum* s, const Surf* t) {
-    s->n++;
-    s->rgba8 += vt_texels(t) * 4;
-    s->astc += vt_astc_bytes(t);
-    s->held += t->bytes;
-    if (t->sparse) {
-        s->sparse_n++;
-        s->sparse_rgba8 += vt_texels(t) * 4;
-        s->sparse_held += t->bytes;
-    }
-}
-static void vt_probe_use(Surf* t) {
-    if (!g_settings.vt_probe || !t) return;
-    if (t->vt) vk_vt_used(t); /* vt_sparse: bound to sample, marked or not */
-    if (t->f.conv != VKC_ASTC) return;
-    if (t->vt_present != g_vk_present + 1) {
-        t->vt_present = g_vk_present + 1;
-        vt_add(&g_vt_probe.frame, t);
-    }
-    if (t->vt_window != g_vt_probe.window_id + 1) {
-        t->vt_window = g_vt_probe.window_id + 1;
-        vt_add(&g_vt_probe.window, t);
-    }
-}
-void vk_tex_vt_use(Surf* t) { vt_probe_use(t); }
-/* the biggest ASTC textures alive by their RGBA8 size, logged every tenth window: which ones make the totals */
-#define VT_TOP 8
-static struct {
-    const Surf* t[VT_TOP];
-    u64 rgba8[VT_TOP];
-} g_vt_top;
-/* every ASTC texture alive by footprint (bw - 4, bh - 4): textures, RGBA8, ASTC and held bytes */
-static u64 g_vt_alive_fp[9][9][4];
-static void vt_alive(Surf* t, void* ctx) {
-    if (t->f.conv != VKC_ASTC) return;
-    vt_add(ctx, t);
-    if (t->f.bw >= 4 && t->f.bw <= 12 && t->f.bh >= 4 && t->f.bh <= 12) {
-        u64* f = g_vt_alive_fp[t->f.bw - 4][t->f.bh - 4];
-        f[0]++;
-        f[1] += vt_texels(t) * 4;
-        f[2] += vt_astc_bytes(t);
-        f[3] += t->bytes;
-    }
-    const u64 b = vt_texels(t) * 4;
-    int i = VT_TOP;
-    while (i > 0 && g_vt_top.rgba8[i - 1] < b) i--;
-    if (i == VT_TOP) return;
-    for (int k = VT_TOP - 1; k > i; k--) {
-        g_vt_top.t[k] = g_vt_top.t[k - 1];
-        g_vt_top.rgba8[k] = g_vt_top.rgba8[k - 1];
-    }
-    g_vt_top.t[i] = t;
-    g_vt_top.rgba8[i] = b;
-}
-static int vt_cmp(const void* a, const void* b) {
-    const u64 x = *(const u64*)a, y = *(const u64*)b;
-    return x < y ? -1 : x > y;
-}
-static void vt_probe_present(void) {
-    if (!g_settings.vt_probe) return;
-    vk_vt_bits_present();
-    vk_vt_frame(); /* vt_sparse: the marks that landed bound and decoded */
-    g_vt_probe.frames[g_vt_probe.nframes++] = g_vt_probe.frame;
-    g_vt_probe.frame = (VtSum){0, 0, 0, 0, 0, 0, 0};
-    if (g_vt_probe.nframes < VT_PROBE_WINDOW) return;
-    u64 rgba8[VT_PROBE_WINDOW], astc[VT_PROBE_WINDOW], n[VT_PROBE_WINDOW];
-    for (u32 i = 0; i < VT_PROBE_WINDOW; i++) {
-        rgba8[i] = g_vt_probe.frames[i].rgba8;
-        astc[i] = g_vt_probe.frames[i].astc;
-        n[i] = g_vt_probe.frames[i].n;
-    }
-    qsort(rgba8, VT_PROBE_WINDOW, sizeof(u64), vt_cmp);
-    qsort(astc, VT_PROBE_WINDOW, sizeof(u64), vt_cmp);
-    qsort(n, VT_PROBE_WINDOW, sizeof(u64), vt_cmp);
-    VtSum alive = {0, 0, 0, 0, 0, 0, 0};
-    memset(&g_vt_top, 0, sizeof g_vt_top);
-    memset(g_vt_alive_fp, 0, sizeof g_vt_alive_fp);
-    vk_surf_textures(vt_alive, &alive);
-    if (g_vt_probe.window_id % 10 == 0)
-        for (u32 x = 0; x < 9; x++)
-            for (u32 y = 0; y < 9; y++)
-                if (g_vt_alive_fp[x][y][0])
-                    LOG("vt probe: alive, ASTC %ux%u: %llu textures, %llu MB as RGBA8, %llu MB as ASTC, %llu MB held\n",
-                        x + 4, y + 4, (unsigned long long)g_vt_alive_fp[x][y][0],
-                        (unsigned long long)(g_vt_alive_fp[x][y][1] >> 20),
-                        (unsigned long long)(g_vt_alive_fp[x][y][2] >> 20),
-                        (unsigned long long)(g_vt_alive_fp[x][y][3] >> 20));
-    if (g_vt_probe.window_id % 10 == 0)
-        for (int i = 0; i < VT_TOP && g_vt_top.t[i]; i++) {
-            const Surf* t = g_vt_top.t[i];
-            LOG("vt probe: the %d biggest: %ux%u, %u layers, depth %u, %u levels, ASTC %ux%u, format %d, %llu MB as "
-                "RGBA8, %llu MB held, sparse %u, lod floor %u, sampled in this window %u\n",
-                i + 1, t->w, t->h, t->layers, t->depth3d, t->levels, t->f.bw, t->f.bh, (int)t->f.vk,
-                (unsigned long long)(g_vt_top.rgba8[i] >> 20), (unsigned long long)(t->bytes >> 20), t->sparse,
-                t->lod_floor, t->vt_window == g_vt_probe.window_id + 1);
-        }
-    const VtSum* w = &g_vt_probe.window;
-    LOG("vt probe: presents %u to %u: a frame samples %llu ASTC textures (median; %llu at most), %llu MB as RGBA8 "
-        "(median; %llu at most), %llu MB as ASTC; the %u presents together %llu textures, %llu MB as RGBA8, %llu MB as "
-        "ASTC, %llu MB held (sparse: %llu textures, %llu MB as RGBA8, %llu MB held); alive %llu ASTC textures, %llu MB "
-        "as RGBA8, %llu MB as ASTC, %llu MB held (sparse: %llu textures, %llu MB as RGBA8, %llu MB held)\n",
-        g_vk_present + 1 - VT_PROBE_WINDOW, g_vk_present, (unsigned long long)n[VT_PROBE_WINDOW / 2],
-        (unsigned long long)n[VT_PROBE_WINDOW - 1], (unsigned long long)(rgba8[VT_PROBE_WINDOW / 2] >> 20),
-        (unsigned long long)(rgba8[VT_PROBE_WINDOW - 1] >> 20), (unsigned long long)(astc[VT_PROBE_WINDOW / 2] >> 20),
-        VT_PROBE_WINDOW, (unsigned long long)w->n, (unsigned long long)(w->rgba8 >> 20),
-        (unsigned long long)(w->astc >> 20), (unsigned long long)(w->held >> 20), (unsigned long long)w->sparse_n,
-        (unsigned long long)(w->sparse_rgba8 >> 20), (unsigned long long)(w->sparse_held >> 20),
-        (unsigned long long)alive.n, (unsigned long long)(alive.rgba8 >> 20), (unsigned long long)(alive.astc >> 20),
-        (unsigned long long)(alive.held >> 20), (unsigned long long)alive.sparse_n,
-        (unsigned long long)(alive.sparse_rgba8 >> 20), (unsigned long long)(alive.sparse_held >> 20));
-    vk_vt_bits_window();
-    g_vt_probe.nframes = 0;
-    g_vt_probe.window = (VtSum){0, 0, 0, 0, 0, 0, 0};
-    g_vt_probe.window_id++;
-}
 Surf* vk_tex_from_tic(const u32* tic) {
     Surf* t = tex_from_tic(tic, 0, TEX_SAMPLED);
     tex_take_drawn(t);
     tex_tag(t);
-    vt_probe_use(t);
     return t;
 }
 Surf* vk_tex_from_tic_storage(const u32* tic) {
@@ -5148,7 +5051,6 @@ Surf* vk_tex_from_tic_storage(const u32* tic) {
 Surf* vk_tex_from_tic_guest(const u32* tic, int raw) {
     Surf* t = tex_from_tic(tic, raw, TEX_GUEST);
     tex_take_drawn(t);
-    vt_probe_use(t);
     return t;
 }
 Surf* vk_tex_recheck(Surf* t) {
@@ -5161,6 +5063,5 @@ Surf* vk_tex_recheck(Surf* t) {
 Surf* vk_tex_from_tic_raw(const u32* tic) {
     Surf* t = tex_from_tic(tic, 1, TEX_SAMPLED);
     tex_take_drawn(t);
-    vt_probe_use(t);
     return t;
 }

@@ -21,12 +21,9 @@ static void* counted_malloc(size_t n) {
 #define malloc counted_malloc
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers" /* texture.c builds without -Wextra */
 #include "nx/gpu/vk/texture.c"
-/* vt_probe's sampling bitmap (vk/vt_probe.c, not linked here) */
-void vk_vt_bits_present(void) {}
-void vk_vt_bits_window(void) {}
-/* and vt_sparse's records (aogo/vt-sparse), whose textures need the probe: none here */
-u64 g_vt_probe_address; /* spirv_translate.c's: no probe */
-int g_shader_sm86;       /* shader.c's: Maxwell programs */
+/* vt_sparse's records (vk/vt.c, not linked here): virtual textures are off, and no texture is one */
+int vk_vt_on(void) { return 0; }
+void vk_image_destroy(VkImage img, DevMem mem) { (void)img, (void)mem; } /* of a texture it made sparse: none */
 int vk_vt_register(Surf* t) {
     (void)t;
     return 0;
@@ -34,17 +31,13 @@ int vk_vt_register(Surf* t) {
 void vk_vt_forget(Surf* t) { (void)t; }
 void vk_vt_want(const Surf* t, u8* bits, u64 nbits) { (void)t, (void)bits, (void)nbits; }
 void vk_vt_bound(const Surf* t, const u8* bits, u64 nbits) { (void)t, (void)bits, (void)nbits; }
-int vk_vt_strip_fresh(const Surf* t, u32 layer, u32 level, u32 y0, u32 y1) {
-    (void)t, (void)layer, (void)level, (void)y0, (void)y1;
-    return 0;
-}
-int vk_vt_level_fresh(const Surf* t, u32 layer, u32 level) {
-    (void)t, (void)layer, (void)level;
-    return 0;
+const u8* vk_vt_fresh(const Surf* t, u32* nblocks) {
+    (void)t;
+    *nblocks = 0;
+    return NULL;
 }
 void vk_vt_loaded(const Surf* t) { (void)t; }
 void vk_vt_frame(void) {}
-void vk_vt_used(const Surf* t) { (void)t; }
 #undef malloc
 #include "nx/hle/services/nvdrv.h" /* gmmu_pieces, and g_mem, which the stubs below stand in for */
 #include "nx/memory/mem.h"
