@@ -3414,6 +3414,16 @@ if(TARGET snx_vita_program)
     snx_test_target(snx-test-vita-watch 11)
     target_link_libraries(snx-test-vita-watch PRIVATE snx_vita_program)
     add_test(NAME vita_watch COMMAND snx-test-vita-watch)
+    # the Vita's device as a Switch game's is made (gpu/vk.c): VK_KHR_dynamic_rendering_local_read off when the check
+    # of each extension's commands takes its command as missing (vk_debug_hide_commands), the log saying so, and when
+    # its setting says off. The log is the device's stderr, read back through dup2
+    if(NOT WIN32)
+        add_executable(snx-test-vita-vk-device vita_vk_device.c)
+        snx_test_target(snx-test-vita-vk-device 11)
+        target_link_libraries(snx-test-vita-vk-device PRIVATE snx_vita_program)
+        add_test(NAME vita_vk_device COMMAND snx-test-vita-vk-device)
+        set_tests_properties(vita_vk_device PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    endif()
     # the window's Esc, asked twice, as SDL sends it: no device or window
     add_executable(snx-test-vita-quit-key vita_quit_key.c)
     snx_test_target(snx-test-vita-quit-key 11)

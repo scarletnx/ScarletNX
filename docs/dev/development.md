@@ -483,13 +483,14 @@ vulkan: llvmpipe (LLVM 22.1.8, 256 bits)'s driver lists VK_EXT_conditional_rende
 vulkan: VK_EXT_conditional_rendering is off on llvmpipe (LLVM 22.1.8, 256 bits) (llvmpipe, Mesa 26.2.6 (LLVM 22.1.8), driver version 26.2.6): its driver lists it without vkCmdBeginConditionalRenderingEXT, which it requires (vk_debug_hide_commands hides from the check what the driver has)
 ```
 
-`vk_debug_hide_commands` ([Settings](../user/settings.md#debug)) has the check take the commands it lists as missing,
-to test that path on any driver; a 3DS or Vita game takes it too. `vulkan_headless_hidden_commands` hides
+`vk_debug_hide_commands` ([Settings](../user/settings.md#debug)) has the check take the commands it lists as missing, to
+test that path on any driver; a 3DS or Vita game takes it too. `vulkan_headless_hidden_commands` hides
 `vkCmdSetDepthClampRangeEXT` and `vkCmdBeginConditionalRenderingEXT` and runs every check of `vulkan_headless` on the
 device made again without the extensions of the two that the driver has on; `3ds_vk_hidden_commands` makes the 3DS's
-device again without `VK_EXT_shader_object`; `vk_extension_commands` checks the table, the `depends`, a stand-in
-device's check and the hide list; `vkcmdgen` the generator on registries of its own and on the build's; and
-`vk_extension_settings` that every device extension a renderer can turn on has its `setting @VK_...` line.
+device again without `VK_EXT_shader_object`, and `vita_vk_device` the Vita's without
+`VK_KHR_dynamic_rendering_local_read`, by the check and by its setting; `vk_extension_commands` checks the table, the
+`depends`, a stand-in device's check and the hide list; `vkcmdgen` the generator on registries of its own and on the
+build's; and `vk_extension_settings` that every device extension a renderer can turn on has its `setting @VK_...` line.
 
 ```sh
 ctest --test-dir build -R 'vk_extension_commands|vk_extension_settings|vkcmdgen|vk_extension_bans'
