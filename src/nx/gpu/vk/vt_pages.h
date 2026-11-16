@@ -35,10 +35,10 @@ typedef struct {
     u8 uo, vo, resident;
 } VtMark;
 /* The blocks a mark names: `under` the ones its cell lies in (one, or each candidate of a coordinate outside 0 to 1),
-   `near` the others within VT_REACH texels of the cell, across the level's edges too (a repeating sampler reads
+   `beside` the others within VT_REACH texels of the cell, across the level's edges too (a repeating sampler reads
    there). Each array takes VT_MARK_BLOCKS indices at most, in no order, none twice. Nothing for a level in the mip
    tail or a layer the texture doesn't have */
-void vt_mark_blocks(const VtShape* s, const VtMark* m, u32* under, u32* nunder, u32* near, u32* nnear);
+void vt_mark_blocks(const VtShape* s, const VtMark* m, u32* under, u32* nunder, u32* beside, u32* nbeside);
 
 /* the block of the next coarser level that holds block b's middle, ~0u when that level is in the mip tail */
 u32 vt_block_parent(const VtShape* s, u32 b);

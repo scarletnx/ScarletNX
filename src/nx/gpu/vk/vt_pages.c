@@ -31,13 +31,13 @@ static u32 add_once(u32* list, u32 n, u32 cap, u32 v) {
     return n;
 }
 /* An axis of a mark: the blocks (columns or rows) of a level `size` texels long, in blocks of g, that the cell lies
-   in (under) and that a filter VT_REACH texels wide reaches from it (near, those of under left out). A coordinate
+   in (under) and that a filter VT_REACH texels wide reaches from it (beside, those of under left out). A coordinate
    outside 0 to 1 has three candidate cells: the wrapped one, the mirrored one, and the edge it left by */
 #define AXIS_MAX 16u
-static void axis_blocks(u32 size, u32 g, u32 cell, u32 outside, u32* under, u32* nunder, u32* near, u32* nnear) {
+static void axis_blocks(u32 size, u32 g, u32 cell, u32 outside, u32* under, u32* nunder, u32* beside, u32* nbeside) {
     u32 cells[3] = {cell, VT_CELLS - 1 - cell, outside == 1 ? 0 : VT_CELLS - 1};
     const u32 ncells = outside ? 3 : 1, last = (size - 1) / g;
-    *nunder = *nnear = 0;
+    *nunder = *nbeside = 0;
     for (u32 k = 0; k < ncells; k++) {
         /* the cell's texels: [lo, hi] */
         const u32 lo = (u32)((u64)cells[k] * size / VT_CELLS);
@@ -65,12 +65,12 @@ static void axis_blocks(u32 size, u32 g, u32 cell, u32 outside, u32* under, u32*
         for (u32 i = 0; i < n; i++) {
             u32 in_under = 0;
             for (u32 j = 0; j < *nunder; j++) in_under |= under[j] == list[i];
-            if (!in_under) *nnear = add_once(near, *nnear, AXIS_MAX, list[i]);
+            if (!in_under) *nbeside = add_once(beside, *nbeside, AXIS_MAX, list[i]);
         }
     }
 }
-void vt_mark_blocks(const VtShape* s, const VtMark* m, u32* under, u32* nunder, u32* near, u32* nnear) {
-    *nunder = *nnear = 0;
+void vt_mark_blocks(const VtShape* s, const VtMark* m, u32* under, u32* nunder, u32* beside, u32* nbeside) {
+    *nunder = *nbeside = 0;
     if (m->level >= s->tail_first || m->layer >= s->layers || m->u >= VT_CELLS || m->v >= VT_CELLS) return;
     u32 xu[AXIS_MAX], xn[AXIS_MAX], yu[AXIS_MAX], yn[AXIS_MAX], nxu, nxn, nyu, nyn;
     axis_blocks(level_dim(s->w, m->level), s->gw, m->u, m->uo, xu, &nxu, xn, &nxn);
@@ -78,12 +78,12 @@ void vt_mark_blocks(const VtShape* s, const VtMark* m, u32* under, u32* nunder, 
     const u32 base = m->layer * s->per_layer + s->first[m->level], across = s->bx[m->level];
     for (u32 j = 0; j < nyu; j++)
         for (u32 i = 0; i < nxu; i++) *nunder = add_once(under, *nunder, VT_MARK_BLOCKS, base + yu[j] * across + xu[i]);
-    /* near: every other pair of a column and a row the filter reaches */
+    /* beside: every other pair of a column and a row the filter reaches */
     for (u32 j = 0; j < nyu + nyn; j++)
         for (u32 i = 0; i < nxu + nxn; i++) {
             if (j < nyu && i < nxu) continue;
             const u32 y = j < nyu ? yu[j] : yn[j - nyu], x = i < nxu ? xu[i] : xn[i - nxu];
-            *nnear = add_once(near, *nnear, VT_MARK_BLOCKS, base + y * across + x);
+            *nbeside = add_once(beside, *nbeside, VT_MARK_BLOCKS, base + y * across + x);
         }
 }
 

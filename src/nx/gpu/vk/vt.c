@@ -324,14 +324,14 @@ static void mark_land(u32 w0, u32 w1) {
                 .uo = (u8)(w0 >> 25 & 3),
                 .vo = (u8)(w0 >> 27 & 3),
                 .resident = (u8)(w0 >> 24 & 1)};
-    static u32 under[VT_MARK_BLOCKS], near[VT_MARK_BLOCKS];
+    static u32 under[VT_MARK_BLOCKS], beside[VT_MARK_BLOCKS];
     u32 nu, nn;
-    vt_mark_blocks(&L->shape, &m, under, &nu, near, &nn);
+    vt_mark_blocks(&L->shape, &m, under, &nu, beside, &nn);
     g_vt.marks++;
     for (u32 i = 0; i < nu; i++)
         if (bit(L->held, under[i])) touch(L, under[i]);
     for (u32 i = 0; i < nn; i++)
-        if (bit(L->held, near[i])) touch(L, near[i]);
+        if (bit(L->held, beside[i])) touch(L, beside[i]);
     if (m.resident || m.level >= L->shape.tail_first) return;
     g_vt.misses++;
     int asked = 0;
@@ -341,7 +341,7 @@ static void mark_land(u32 w0, u32 w1) {
         return;
     }
     if (g_vt.now - L->bound_at <= VT_SETTLE || pending(L)) return; /* what it asked for is on its way */
-    for (u32 i = 0; i < nn; i++) asked |= ask(L, near[i]);
+    for (u32 i = 0; i < nn; i++) asked |= ask(L, beside[i]);
     /* then the blocks under it in other levels, the nearest first: a level finer, one coarser, up to four finer (an
        anisotropic sample at a level the program computed reads that much finer than the mark's level says) */
     static const int others[5] = {-1, 1, -2, -3, -4};
@@ -350,9 +350,9 @@ static void mark_land(u32 w0, u32 w1) {
         if ((d < 0 && m.level < (u32)-d) || m.level + (u32)d >= L->shape.tail_first) continue;
         VtMark o = m;
         o.level = m.level + (u32)d;
-        static u32 other[VT_MARK_BLOCKS], far[VT_MARK_BLOCKS];
+        static u32 other[VT_MARK_BLOCKS], apart[VT_MARK_BLOCKS];
         u32 no, nf;
-        vt_mark_blocks(&L->shape, &o, other, &no, far, &nf);
+        vt_mark_blocks(&L->shape, &o, other, &no, apart, &nf);
         for (u32 i = 0; i < no; i++) asked |= ask(L, other[i]);
     }
     if (asked)
