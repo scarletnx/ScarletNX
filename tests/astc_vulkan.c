@@ -162,8 +162,9 @@ void vk_gpuprof_waited(u64 value, int kind) {
     (void)value;
     (void)kind;
 }
-/* and record.c's dispatches and copies, which it would time */
+/* and record.c's dispatches and transfers, which it would time, and the block linear moves' callers */
 void vk_gpuprof_tag(u64 key) { (void)key; }
+void vk_gpuprof_tag_at(u64 key, const void* site) { (void)key, (void)site; }
 int vk_gpuprof_dispatch_begin(VkCommandBuffer cb) { return (void)cb, 0; }
 void vk_gpuprof_dispatch_end(VkCommandBuffer cb) { (void)cb; }
 int vk_gpuprof_profiled(VkCommandBuffer cb) { return (void)cb, 0; }

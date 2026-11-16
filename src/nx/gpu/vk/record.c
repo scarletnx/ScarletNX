@@ -810,7 +810,6 @@ REC3(CmdResetQueryPool, VkQueryPool, u32, u32)
 REC3(CmdWriteTimestamp2, VkPipelineStageFlags2, VkQueryPool, u32)
 REC3(CmdBeginQuery, VkQueryPool, u32, VkQueryControlFlags)
 REC2(CmdEndQuery, VkQueryPool, u32)
-REC4(CmdFillBuffer, VkBuffer, VkDeviceSize, VkDeviceSize, u32)
 REC7(CmdCopyQueryPoolResults, VkQueryPool, u32, u32, VkBuffer, VkDeviceSize, VkDeviceSize, VkQueryResultFlags)
 REC0(CmdEndConditionalRenderingEXT)
 
@@ -1332,23 +1331,36 @@ void rec_CmdCopyImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage
     rec_CmdCopyImage_raw(cb, src, sl, dst, dl, n, r);
     if (timed) vk_gpuprof_op_end(cb);
 }
+/* a transfer of kind (VK_OP_*) timed for vk_gpu_profile by where it was recorded, site its caller's return address: 1
+   when it is, for xfer_end */
+static int xfer_begin(VkCommandBuffer cb, u32 kind, const void* site, u64 bytes) {
+    return vk_gpuprof_profiled(cb) &&
+           vk_gpuprof_op_begin(cb, kind, (u64)((const u8*)site - (const u8*)vk_gpuprof_base()), bytes);
+}
+static void xfer_end(VkCommandBuffer cb, int timed) {
+    if (timed) vk_gpuprof_op_end(cb);
+}
 void rec_CmdBlitImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
                       const VkImageBlit* r, VkFilter filter) {
-    if (!rec_on(cb)) {
+    int timed = xfer_begin(cb, VK_OP_BLIT, __builtin_return_address(0), 0);
+    if (!rec_on(cb))
         vkCmdBlitImage(cb, src, sl, dst, dl, n, r, filter);
-        return;
+    else {
+        rec_xfer(blit_run, cb, (u64)src, sl, (u64)dst, dl, n, r, n * sizeof *r)->e = filter;
+        rec_commit();
     }
-    rec_xfer(blit_run, cb, (u64)src, sl, (u64)dst, dl, n, r, n * sizeof *r)->e = filter;
-    rec_commit();
+    xfer_end(cb, timed);
 }
 void rec_CmdResolveImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
                          const VkImageResolve* r) {
-    if (!rec_on(cb)) {
+    int timed = xfer_begin(cb, VK_OP_RESOLVE, __builtin_return_address(0), 0);
+    if (!rec_on(cb))
         vkCmdResolveImage(cb, src, sl, dst, dl, n, r);
-        return;
+    else {
+        rec_xfer(resolve_run, cb, (u64)src, sl, (u64)dst, dl, n, r, n * sizeof *r);
+        rec_commit();
     }
-    rec_xfer(resolve_run, cb, (u64)src, sl, (u64)dst, dl, n, r, n * sizeof *r);
-    rec_commit();
+    xfer_end(cb, timed);
 }
 static void rec_CmdCopyBufferToImage_raw(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkImageLayout dl, u32 n,
                                          const VkBufferImageCopy* r) {
@@ -1388,21 +1400,47 @@ void rec_CmdCopyImageToBuffer(VkCommandBuffer cb, VkImage src, VkImageLayout sl,
 }
 void rec_CmdClearColorImage(VkCommandBuffer cb, VkImage img, VkImageLayout l, const VkClearColorValue* c, u32 n,
                             const VkImageSubresourceRange* r) {
-    if (!rec_on(cb)) {
+    int timed = xfer_begin(cb, VK_OP_CLEAR, __builtin_return_address(0), 0);
+    if (!rec_on(cb))
         vkCmdClearColorImage(cb, img, l, c, n, r);
-        return;
+    else {
+        rec_xfer(clear_color_run, cb, (u64)img, l, 0, 0, n, r, n * sizeof *r)->v.color = *c;
+        rec_commit();
     }
-    rec_xfer(clear_color_run, cb, (u64)img, l, 0, 0, n, r, n * sizeof *r)->v.color = *c;
-    rec_commit();
+    xfer_end(cb, timed);
 }
 void rec_CmdClearDepthStencilImage(VkCommandBuffer cb, VkImage img, VkImageLayout l, const VkClearDepthStencilValue* c,
                                    u32 n, const VkImageSubresourceRange* r) {
-    if (!rec_on(cb)) {
+    int timed = xfer_begin(cb, VK_OP_CLEAR, __builtin_return_address(0), 0);
+    if (!rec_on(cb))
         vkCmdClearDepthStencilImage(cb, img, l, c, n, r);
-        return;
+    else {
+        rec_xfer(clear_depth_run, cb, (u64)img, l, 0, 0, n, r, n * sizeof *r)->v.depthStencil = *c;
+        rec_commit();
     }
-    rec_xfer(clear_depth_run, cb, (u64)img, l, 0, 0, n, r, n * sizeof *r)->v.depthStencil = *c;
-    rec_commit();
+    xfer_end(cb, timed);
+}
+typedef struct {
+    VkCommandBuffer cb;
+    VkBuffer buf;
+    VkDeviceSize off, size;
+    u32 data;
+} FillArgs;
+static void fill_run(const void* p) {
+    const FillArgs* x = p;
+    vkCmdFillBuffer(x->cb, x->buf, x->off, x->size, x->data);
+}
+void rec_CmdFillBuffer(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, VkDeviceSize size, u32 data) {
+    /* its bytes where they are known: VK_WHOLE_SIZE counts none */
+    int timed = xfer_begin(cb, VK_OP_FILL, __builtin_return_address(0), size == VK_WHOLE_SIZE ? 0 : size);
+    if (!rec_on(cb))
+        vkCmdFillBuffer(cb, buf, off, size, data);
+    else {
+        FillArgs* x = rec_push(fill_run, sizeof *x);
+        *x = (FillArgs){cb, buf, off, size, data};
+        rec_commit();
+    }
+    xfer_end(cb, timed);
 }
 
 typedef struct {

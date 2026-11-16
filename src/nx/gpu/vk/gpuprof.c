@@ -110,16 +110,19 @@ static u64 g_round_ns[VK_WAIT_N]; /* IDLE_WAITED by the kind of the CPU's wait *
 enum { HOLD_PASSES, HOLD_DISPATCHES, HOLD_COPIES, HOLD_NOTHING, HOLD_N };
 static const char* const g_hold_name[HOLD_N] = {"rendering passes", "dispatches and no pass", "copies only", "nothing"};
 static u64 g_hold_ns[HOLD_N], g_holds[HOLD_N];
-/* The dispatches recorded into the frame's command buffers, timed each, summed by tag (vk_gpuprof_tag) */
+/* The dispatches recorded into the frame's command buffers, timed each, summed by tag (vk_gpuprof_tag) and by where
+   they were asked for (vk_gpuprof_tag_at), and the transfers by where they were recorded */
 #define GP_DKEYS 512
 typedef struct {
     u64 key, ns, n, bytes;
+    i64 site; /* GpOp's */
     u32 kind;
 } GpDKey;
 static GpDKey g_dkey[GP_DKEYS];
 static u64 g_disp_ns, g_disps;
 static VkCommandBuffer g_cur_cb;  /* the frame's command buffer being recorded, between cb_begin and cb_end */
 static u64 g_tag, g_dispatched;   /* the next dispatch's tag, and the dispatches recorded into g_cur_cb */
+static i64 g_tag_site;            /* the next dispatch's site (vk_gpuprof_tag_at), 0 none */
 static u64 g_last_end;            /* CLOCK_MONOTONIC of the last submission's end, 0 none */
 static int g_prev_why, g_prev_kind; /* that submission's VK_SUB_*, and the CPU's wait for it (VK_WAIT_* + 1, 0 none) */
 static u64 g_t0;        /* the report window's start (plat_ns) */
@@ -255,7 +258,14 @@ static struct {
     VkCommandBuffer cb;
     GpOps* ops;
 } g_cq;
-void vk_gpuprof_tag(u64 key) { g_tag = key; }
+void vk_gpuprof_tag(u64 key) {
+    g_tag = key;
+    g_tag_site = 0;
+}
+void vk_gpuprof_tag_at(u64 key, const void* site) {
+    g_tag = key;
+    g_tag_site = (i64)((const u8*)site - (const u8*)vk_gpuprof_base());
+}
 int vk_gpuprof_profiled(VkCommandBuffer cb) {
     return cb && (cb == g_cur_cb || (cb == g_cq.cb && g_cq.ops));
 }
@@ -273,11 +283,12 @@ static GpOps* gp_ops(VkCommandBuffer cb, int* ctx) {
     }
     return NULL;
 }
-static const char* const g_kind_name[VK_OP_N] = {[VK_OP_DISPATCH] = "dispatch", [VK_OP_COPY] = "buffer copy",
-                                                 [VK_OP_TO_IMAGE] = "buffer to image copy",
-                                                 [VK_OP_TO_BUFFER] = "image to buffer copy",
-                                                 [VK_OP_IMAGE] = "image copy", [VK_OP_DRAW] = "draw"};
-int vk_gpuprof_op_begin(VkCommandBuffer cb, u32 kind, u64 key, u64 bytes) {
+static const char* const g_kind_name[VK_OP_N] = {
+    [VK_OP_DISPATCH] = "dispatch",     [VK_OP_COPY] = "buffer copy", [VK_OP_TO_IMAGE] = "buffer to image copy",
+    [VK_OP_TO_BUFFER] = "image to buffer copy", [VK_OP_IMAGE] = "image copy", [VK_OP_DRAW] = "draw",
+    [VK_OP_FILL] = "buffer fill",      [VK_OP_BLIT] = "image blit",  [VK_OP_CLEAR] = "image clear",
+    [VK_OP_RESOLVE] = "image resolve"};
+static int op_begin(VkCommandBuffer cb, u32 kind, u64 key, i64 site, u64 bytes) {
     GpOp* x;
     int ctx = 0;
     GpOps* o;
@@ -295,6 +306,7 @@ int vk_gpuprof_op_begin(VkCommandBuffer cb, u32 kind, u64 key, u64 bytes) {
     x->kind = kind;
     x->key = key;
     x->bytes = bytes;
+    x->site = site;
     x->q0 = x->q1 = 0;
     gp_stamp(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, o->pool, o->used);
     if (snx_tracy_attached()) {
@@ -304,6 +316,7 @@ int vk_gpuprof_op_begin(VkCommandBuffer cb, u32 kind, u64 key, u64 bytes) {
     }
     return 1;
 }
+int vk_gpuprof_op_begin(VkCommandBuffer cb, u32 kind, u64 key, u64 bytes) { return op_begin(cb, kind, key, 0, bytes); }
 void vk_gpuprof_op_end(VkCommandBuffer cb) {
     int ctx = 0;
     GpOps* o = gp_ops(cb, &ctx);
@@ -317,8 +330,10 @@ void vk_gpuprof_op_end(VkCommandBuffer cb) {
 }
 int vk_gpuprof_dispatch_begin(VkCommandBuffer cb) {
     u64 key = g_tag;
+    i64 site = g_tag_site;
     g_tag = 0;
-    return vk_gpuprof_op_begin(cb, VK_OP_DISPATCH, key, 0);
+    g_tag_site = 0;
+    return op_begin(cb, VK_OP_DISPATCH, key, site, 0);
 }
 void vk_gpuprof_dispatch_end(VkCommandBuffer cb) { vk_gpuprof_op_end(cb); }
 void vk_gpuprof_compute_begin(GpOps* o, VkCommandBuffer cb) {
@@ -386,13 +401,14 @@ void vk_gpuprof_compute_land(GpOps* o) {
     gp_ops_done(o, ts, g_vk.props.limits.timestampPeriod, VK_GPU_CTX_COMPUTE);
 }
 const void* vk_gpuprof_base(void) { return (const void*)vk_gpuprof_tag; }
-static GpDKey* gp_dkey(u32 kind, u64 key) {
-    u64 h = key ^ (key >> 29) ^ kind;
+static GpDKey* gp_dkey(u32 kind, u64 key, i64 site) {
+    u64 h = key ^ (key >> 29) ^ kind ^ (u64)site ^ ((u64)site >> 17);
     for (u32 i = 0; i < GP_DKEYS; i++) {
         GpDKey* k = &g_dkey[(h + i) & (GP_DKEYS - 1)];
-        if (!k->n || (k->key == key && k->kind == kind)) {
+        if (!k->n || (k->key == key && k->kind == kind && k->site == site)) {
             k->key = key;
             k->kind = kind;
+            k->site = site;
             return k;
         }
     }
@@ -545,7 +561,7 @@ static void gp_ops_done(GpOps* o, const u64* ts, double period, int ctx) {
         u64 ns = (u64)((double)(ts[x->qi + 1] - ts[x->qi]) * period);
         GpDKey* k;
         if (x->kind != VK_OP_DRAW) { /* a pass's sum has its draws in it already */
-            k = gp_dkey(x->kind, x->key);
+            k = gp_dkey(x->kind, x->key, x->site);
             g_disp_ns += ns;
             g_disps++;
             if (k) {
@@ -807,12 +823,15 @@ static void gp_report(void) {
         static GpDKey ds[GP_DKEYS];
         memcpy(ds, g_dkey, sizeof ds);
         qsort(ds, GP_DKEYS, sizeof *ds, dkey_cmp);
-        LOG("vulkan: GPU   dispatches and copies: %.2f ms a frame, %llu of them timed\n",
+        LOG("vulkan: GPU   dispatches, copies, fills, blits, clears and resolves: %.2f ms a frame, %llu of them timed\n",
             (double)g_disp_ns / 1e6 / (double)g_frames, (unsigned long long)g_disps);
-        for (int i = 0; i < 16 && ds[i].n; i++) {
-            char what[96];
+        for (int i = 0; i < 24 && ds[i].n; i++) {
+            char what[128];
             if (ds[i].kind != VK_OP_DISPATCH) /* a copy: by where it was recorded, from vk_gpuprof_base */
                 snprintf(what, sizeof what, "recorded at base%+lld", (long long)ds[i].key);
+            else if (ds[i].key < VK_PROF_N && ds[i].site)
+                snprintf(what, sizeof what, "the renderer's own, %s, asked for at base%+lld", own[ds[i].key],
+                         (long long)ds[i].site);
             else if (ds[i].key < VK_PROF_N)
                 snprintf(what, sizeof what, "the renderer's own, %s", own[ds[i].key]);
             else
