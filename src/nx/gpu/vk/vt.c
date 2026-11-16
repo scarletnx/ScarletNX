@@ -24,14 +24,17 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 
-#define VT_BACKS   3u   /* the table's copies in flight */
-#define VT_FLOOR   32u  /* presents a block stays whatever the pressure */
-#define VT_SETTLE  6u   /* presents after a texture's last bind before a miss under held blocks asks for more */
-#define VT_STUCK   60u  /* frames of marks in a row with a miss that had nothing to ask for: the texture goes whole */
-#define VT_NEW_MAX 512u /* blocks given memory a present: 32 MiB of texels to decode at most */
-#define VT_SWEEP   8u   /* presents between the sweeps that let blocks go */
-#define VT_SAY     120u /* presents between the log's lines */
+#define VT_BACKS     3u                         /* the table's copies in flight */
+#define VT_SET_SLOTS 32u                        /* the slots of a Maxwell fragment program a mark can name */
+#define VT_SETS      (SH_VT_IDS / VT_SET_SLOTS) /* its draws' sets of virtual textures: 0 is none */
+#define VT_FLOOR     32u                        /* presents a block stays whatever the pressure */
+#define VT_SETTLE    6u   /* presents after a texture's last bind before a miss under held blocks asks for more */
+#define VT_STUCK     60u  /* frames of marks in a row with a miss that had nothing to ask for: the texture goes whole */
+#define VT_NEW_MAX   512u /* blocks given memory a present: 32 MiB of texels to decode at most */
+#define VT_SWEEP     8u   /* presents between the sweeps that let blocks go */
+#define VT_SAY       120u /* presents between the log's lines */
 
+#define VT_UNMAPPED ~0u /* seen[b] of a block guest memory doesn't map: asked for, and given no memory */
 /* A virtual texture's record. seen[b]: the present block b was last sampled in (or asked for), 0 never. want: the
    blocks its next bind gives memory; held: the ones its last bind gave; fresh: of those, the ones with no texels yet.
    The four arrays are one allocation, seen's */
@@ -58,6 +61,11 @@ static struct {
     u64 back_sub[VT_BACKS];
     u32 slot;
     VtId* ids; /* SH_VT_IDS: what each identity of the marks named when a draw last bound it */
+    /* a Maxwell program's marks name a set of the draw and a slot (identity set << 5 | slot): the virtual textures of
+       the draw being set up, a slot each, and the sets given so far by the hash of theirs (0: free) */
+    VtId draw[VT_SET_SLOTS];
+    u32 draw_any;
+    u64 set_key[VT_SETS];
     /* since the log's last line */
     u64 marks, misses, unknown, asked, bound, gone, loads, fails, wholes, deferred, ns, frames, filled;
 } g_vt;
@@ -124,6 +132,11 @@ void vk_vt_bound(const Surf* t, const u8* bits, u64 nbits) {
     int changed = 0;
     for (u32 b = 0; b < L->nblocks && b < nbits; b++) {
         const int now = bit(bits, b), was = bit(L->held, b);
+        /* asked for where guest memory maps nothing: not asked for again until the texture loads again */
+        if (!now && t->vt_mapped && !L->whole && bit(L->want, b) && !vt_block_pinned(&L->shape, b)) {
+            clear(L->want, b);
+            L->seen[b] = VT_UNMAPPED;
+        }
         if (now == was) continue;
         changed = 1;
         if (now) {
@@ -147,14 +160,20 @@ void vk_vt_loaded(const Surf* t) {
     VtTex* L = vt_rec(t);
     if (L) memset(L->fresh, 0, L->nblocks / 8 + 1);
 }
+void vk_vt_remapped(const Surf* t) {
+    VtTex* L = vt_rec(t);
+    for (u32 b = 0; L && b < L->nblocks; b++)
+        if (L->seen[b] == VT_UNMAPPED) L->seen[b] = 0;
+}
 void vk_vt_whole(Surf* t, const char* why) {
     VtTex* L = vt_rec(t);
     if (!L || L->whole) return;
     L->whole = 1;
-    L->changed = 1;
     g_vt.wholes++;
     LOG_LIMIT(64, "vt: a %ux%ux%u texture of %u levels is held whole from now on: %s\n", t->w, t->h, t->layers,
               t->levels, why);
+    /* at once: the draw that binds it reads every block. Without memory for it now, at the next present */
+    if (!vk_tex_vt_load(t) && t->vt_slot) g_vt.v[t->vt_slot - 1].changed = 1;
 }
 void vk_vt_bind(u32 id, Surf* t, int marked) {
     const VtTex* L = vt_rec(t);
@@ -166,14 +185,55 @@ void vk_vt_bind(u32 id, Surf* t, int marked) {
     g_vt.ids[id & (SH_VT_IDS - 1)] = (VtId){t->vt_slot, L->gen};
 }
 
+void vk_vt_slot(u32 slot, Surf* t, int marked) {
+    const VtTex* L = vt_rec(t);
+    if (!L || L->whole) return;
+    if (!marked || slot >= VT_SET_SLOTS) {
+        vk_vt_whole(t, "a draw samples it where the program marks nothing (not a fragment program's 2D sample)");
+        return;
+    }
+    g_vt.draw[slot] = (VtId){t->vt_slot, L->gen};
+    g_vt.draw_any = 1;
+}
+u32 vk_vt_draw_word(void) {
+    const u32 phase = vk_vt_phase();
+    if (!g_vt.draw_any) return phase;
+    u64 key = 0xcbf29ce484222325ull;
+    for (u32 i = 0; i < VT_SET_SLOTS; i++) {
+        key = (key ^ g_vt.draw[i].slot) * 0x100000001b3ull;
+        key = (key ^ g_vt.draw[i].gen) * 0x100000001b3ull;
+    }
+    if (!key) key = 1;
+    /* the set of this hash, a free one within eight of its place, or its place's taken over (marks in flight that
+       name the old one there then name these textures: blocks nobody samples, which go again) */
+    const u32 home = 1 + (u32)(key % (VT_SETS - 1));
+    u32 set = home;
+    for (u32 probe = 0; probe < 8; probe++) {
+        const u32 i = 1 + (home - 1 + probe) % (VT_SETS - 1);
+        if (g_vt.set_key[i] == key || !g_vt.set_key[i]) {
+            set = i;
+            break;
+        }
+    }
+    if (g_vt.set_key[set] != key) {
+        g_vt.set_key[set] = key;
+        memcpy(&g_vt.ids[set * VT_SET_SLOTS], g_vt.draw, sizeof g_vt.draw);
+    }
+    memset(g_vt.draw, 0, sizeof g_vt.draw);
+    g_vt.draw_any = 0;
+    return phase | set << 4;
+}
+
 /* block b seen now, and the blocks that cover it in the coarser levels: none of them is older than it */
 static void touch(VtTex* L, u32 b) {
-    for (; b != ~0u && L->seen[b] != g_vt.now; b = vt_block_parent(&L->shape, b)) L->seen[b] = g_vt.now;
+    for (; b != ~0u && L->seen[b] != g_vt.now && L->seen[b] != VT_UNMAPPED; b = vt_block_parent(&L->shape, b))
+        L->seen[b] = g_vt.now;
 }
 /* block b and the ones that cover it wanted: 1 when any was not */
 static int ask(VtTex* L, u32 b) {
     int any = 0;
     for (; b != ~0u; b = vt_block_parent(&L->shape, b)) {
+        if (L->seen[b] == VT_UNMAPPED) continue;
         L->seen[b] = g_vt.now;
         if (bit(L->want, b)) continue;
         set(L->want, b);
@@ -309,7 +369,7 @@ static void sweep(void) {
         if (!L->t || L->whole) continue;
         for (u32 b = 0; b < L->nblocks; b++) {
             if (!bit(L->want, b)) continue;
-            const u32 age = L->seen[b] ? g_vt.now - L->seen[b] : VT_AGES - 1;
+            const u32 age = L->seen[b] && L->seen[b] != VT_UNMAPPED ? g_vt.now - L->seen[b] : VT_AGES - 1;
             if (age < cut) continue;
             clear(L->want, b);
             L->changed = 1;

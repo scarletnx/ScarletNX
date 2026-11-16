@@ -84,6 +84,7 @@ static int vtc_draw(GpuChannel* channel, u32 program, u8* pixels) {
     state->bind.smp_pool = VTC_GPU + VTC_SAMPLERS;
     state->bind.tex_max = 1;
     state->bind.smp_max = 0;
+    state->bind.tex_bank = 2; /* a Maxwell TEX's handle is in the texture bank */
     state->bind.cb_addr[ST_FS][2] = state->bind.cb_addr[ST_VS][2] = VTC_GPU + VTC_CONSTANTS;
     state->bind.cb_size[ST_FS][2] = state->bind.cb_size[ST_VS][2] = 256;
     state->blend.en[0] = 0;
@@ -140,8 +141,11 @@ static u32 vtc_until(GpuChannel* channel, u32 program, u8* pixels, u32 l, u32 st
 }
 /* the checks on a texture of its own (pass), held as astc_mode's Exact holds it (RGBA8) or as Auto does (BC7 here: its
    blocks are flat colours) */
-static int vtc_pass(GpuChannel* channel, u32 pass, int exact) {
+static int vtc_pass(GpuChannel* channel, u32 pass, int exact, int maxwell) {
+    const u32 base = maxwell ? 0x2400 - 0x800 : 0; /* the Maxwell programs lie that far past the Ounce ones */
     g_settings.astc_mode = exact ? 1 : 0;
+    g_shader_sm86 = !maxwell;
+    channel->r3d[0x811] = maxwell ? 0x2200 : 0; /* the vertex program */
     /* the texture: each level's blocks, void extents of vtc_colour */
     NvnTexture image = {.gpu = VTC_GPU + VTC_TEXTURE + pass * 0x100000ull};
     image.d.target = NVN_TEXTURE_TARGET_2D;
@@ -210,7 +214,7 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int exact) {
                 s.textures, s.whole, s.held, (unsigned long long)tail_bytes, (unsigned long long)base_bytes);
     CHECK(s.textures >= 1 && !s.whole && !s.held && tail_bytes && tail_bytes <= base_bytes / 2);
     /* the first frame: no block of level 0 has memory, and the sample reads a coarser level's texel, of full alpha */
-    CHECK(!vtc_draw(channel, 0x800, pixels));
+    CHECK(!vtc_draw(channel, base + 0x800, pixels));
     vtc_present();
     u32 zeros = 0, level0 = VTC_W * VTC_W - vtc_wrong(pixels, 0, 0, tolerance, "", 0);
     for (u32 i = 0; i < VTC_W * VTC_W; i++)
@@ -222,7 +226,7 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int exact) {
                 zeros, VTC_W * VTC_W, level0);
     CHECK(!zeros && !level0);
     /* then level 0's texels, with memory for the corner alone */
-    const u32 took = vtc_until(channel, 0x800, pixels, 0, 0, tolerance, "level 0 (TEX.LZ)");
+    const u32 took = vtc_until(channel, base + 0x800, pixels, 0, 0, tolerance, "level 0 (TEX.LZ)");
     CHECK(took);
     vk_vt_stats(t, &s);
     u32 corner = 0; /* the blocks under a quarter of each level across and down */
@@ -237,7 +241,7 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int exact) {
                 s.held, all, corner, (unsigned long long)t->bytes, (unsigned long long)tail_bytes, s.whole);
     CHECK(!s.whole && s.held == corner && t->bytes > tail_bytes);
     /* the level of the derivatives: four texels a pixel, level 2, a texel a pixel */
-    const u32 took2 = vtc_until(channel, 0x1000, pixels, 2, 8, tolerance, "the derivatives' level (TEX)");
+    const u32 took2 = vtc_until(channel, base + 0x1000, pixels, 2, 8, tolerance, "the derivatives' level (TEX)");
     CHECK(took2);
     /* nothing samples it: past vt_frames presents every block is let go */
     for (u32 i = 0; i < 32 + 2 * 8 + 4; i++) vtc_present();
@@ -247,12 +251,12 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int exact) {
                 "virtual texture: %u blocks and %llu bytes held after 52 presents with no sample (0 and %llu)\n",
                 s.held, (unsigned long long)t->bytes, (unsigned long long)tail_bytes);
     CHECK(!s.held && t->bytes == tail_bytes);
-    const u32 took3 = vtc_until(channel, 0x800, pixels, 0, 0, tolerance, "level 0 again");
+    const u32 took3 = vtc_until(channel, base + 0x800, pixels, 0, 0, tolerance, "level 0 again");
     CHECK(took3);
     /* a fetch marks nothing: the texture is held whole, and the fetch reads level 0's texel (x, y) */
     u32 took4 = 0;
     for (u32 frame = 1; frame <= 8 && !took4; frame++) {
-        CHECK(!vtc_draw(channel, 0x1800, pixels));
+        CHECK(!vtc_draw(channel, base + 0x1800, pixels));
         vtc_present();
         if (!vtc_wrong(pixels, 0, 8, tolerance, "", 0)) took4 = frame;
     }
@@ -260,10 +264,11 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int exact) {
     vk_vt_stats(t, &s);
     CHECK(took4 && s.whole == 1 && s.held == all);
     vk_unlock();
-    printf("PASS virtual texture: a 1024x1024 ASTC texture held %s, a corner sampled: a coarser level in the first "
-           "frame, level 0's texels after %u draws with %u of %u blocks held, the derivatives' level after %u more, "
-           "every block let go unsampled, back after %u draws, whole once fetched (%u draws)\n",
-           bc7 ? "BC7" : "RGBA8", took, corner, all, took2, took3, took4);
+    printf(
+        "PASS virtual texture, %s program: a 1024x1024 ASTC texture held %s, a corner sampled: a coarser level in the first "
+        "frame, level 0's texels after %u draws with %u of %u blocks held, the derivatives' level after %u more, "
+        "every block let go unsampled, back after %u draws, whole once fetched (%u draws)\n",
+        maxwell ? "a Maxwell" : "an Ounce", bc7 ? "BC7" : "RGBA8", took, corner, all, took2, took3, took4);
     return 0;
 }
 static int check_vt(void) {
@@ -291,6 +296,34 @@ static int check_vt(void) {
     /* a quarter of the texture over the target: four texels of level 0 a pixel */
     CHECK(!vtc_fragment(0x800, 1.0f / 256, 1, 0) && !vtc_fragment(0x1000, 1.0f / 256, 0, 0) &&
           !vtc_fragment(0x1800, 0, 0, 1));
+    /* the same as Maxwell programs, with sample_raster_channel's vertex program: IPA R4, a[0x70]; IPA R5, a[0x74];
+       FMUL of both by the scale; TEX R0, R4, R5 by the handle at c[2][0x40], at level zero (.LZ) or the derivatives';
+       and sf_maxwell_fragment's fetch (F2I.TRUNC, LDC, TLD.B.LZ) */
+    const u64 vertex[] = {0xefd9ff800807ff00ull, 0xeff1ff800707ff00ull, 0xefd9ff800907ff00ull, 0xeff1ff800807ff00ull,
+                          0xe30000000007000full};
+    CHECK(mesh_program(VTC_GPU + 0x2200, vertex, 5, 0));
+    const float quarter = 1.0f / 256;
+    u32 quarter_bits;
+    memcpy(&quarter_bits, &quarter, 4);
+    for (u32 k = 0; k < 2; k++) {
+        u64 ops[6];
+        for (u32 axis = 0; axis < 2; axis++) {
+            ops[axis] = 0xe000000000070000ull | (0x1cull + axis) << 30 | (4 + axis);
+            ops[2 + axis] = 0x1e00000000070000ull | (u64)quarter_bits << 20 | (4 + axis) << 8 | (4 + axis);
+        }
+        ops[4] = 0xc038000000000000ull | 16ull << 36 | 7ull << 51 | (u64)!k << 55 | 0xfull << 31 | 2ull << 28 |
+                 16ull << 20 | 7ull << 16 | 4ull << 8;
+        ops[5] = 0xe30000000007000full;
+        CHECK(mesh_program(VTC_GPU + 0x2400 + k * 0x800, ops, 6, 1));
+    }
+    const u64 fetch[] = {0xe000000000070000ull | 0x1cull << 30 | 2,
+                         0xe000000000070000ull | 0x1dull << 30 | 3,
+                         0x5cb0000000070000ull | 3ull << 39 | 2ull << 20 | 2ull << 10 | 2ull << 8 | 2,
+                         0x5cb0000000070000ull | 3ull << 39 | 3ull << 20 | 2ull << 10 | 2ull << 8 | 3,
+                         0xef9400200007ff04ull | 0x40ull << 20,
+                         0xdd380007a0470200ull,
+                         0xe30000000007000full};
+    CHECK(mesh_program(VTC_GPU + 0x3400, fetch, 7, 1));
     g_renderer->method_barrier(5);
     u8 table[256] = {0};
     snx_st_le32(table + 0x40, 1);
@@ -298,7 +331,8 @@ static int check_vt(void) {
     const int sm86 = g_shader_sm86, frames = g_settings.vt_frames, mode = g_settings.astc_mode;
     g_shader_sm86 = 1;
     g_settings.vt_frames = 32;
-    const int failed = vtc_pass(channel, 0, 1) || vtc_pass(channel, 1, 0);
+    const int failed = vtc_pass(channel, 0, 1, 0) || vtc_pass(channel, 1, 0, 0) || vtc_pass(channel, 2, 1, 1);
+    channel->r3d[0x811] = 0;
     g_shader_sm86 = sm86;
     g_settings.vt_frames = frames;
     g_settings.astc_mode = mode;

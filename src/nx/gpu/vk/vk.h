@@ -1249,7 +1249,7 @@ typedef struct Surf {
     u8 came_back;
     /* textures: vt_sparse (vt.c): a virtual texture, an image with sparse residency whose memory follows the blocks
        frames sample. vt_slot: its record there, plus one */
-    u8 vt;
+    u8 vt, vt_mapped; /* vt_mapped: guest memory maps it in part, and a block takes memory only where it is mapped */
     u32 vt_slot;
     /* depth targets: undefined but for draws and clears predicated on the GPU, which may not have run, so they count
        as no draw (render.c zt_written) */
@@ -1500,8 +1500,9 @@ void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx);
    wants memory (all, for one held whole); vk_vt_bound: the bind of bits went through. vk_vt_fresh: the blocks with
    memory and no texels yet, a bit each; vk_vt_loaded: every block with memory has its texels.
    vk_vt_bind: a draw binds t to a slot whose samples mark what they read under identity id (marked), or to one whose
-   reads mark nothing: t is then held whole (vk_vt_whole, which says why once). vk_vt_phase: the frame's quads that
-   mark, for the programs' push constants. vk_vt_frame: each present, the marks that landed applied, the textures whose
+   reads mark nothing: t is then held whole (vk_vt_whole, which says why once). vk_vt_slot: the same for a Maxwell
+   program's slot, whose marks name the draw's set of virtual textures and the slot; vk_vt_draw_word: the draw's word
+   of the push constants, that set (0: no virtual texture) above the frame's quads that mark (vk_vt_phase). vk_vt_frame: each present, the marks that landed applied, the textures whose
    wanted blocks changed bound and loaded (texture.c vk_tex_vt_load: 0 when memory or staging ran out), the blocks
    nothing sampled for a while let go */
 void vk_vt_init(void);
@@ -1512,9 +1513,12 @@ void vk_vt_want(const Surf* t, u8* bits, u64 nbits);
 void vk_vt_bound(const Surf* t, const u8* bits, u64 nbits);
 const u8* vk_vt_fresh(const Surf* t, u32* nblocks);
 void vk_vt_loaded(const Surf* t);
+void vk_vt_remapped(const Surf* t); /* t loads again: the blocks guest memory didn't map may be mapped now */
 void vk_vt_bind(u32 id, Surf* t, int marked);
 void vk_vt_whole(Surf* t, const char* why);
 u32 vk_vt_phase(void);
+void vk_vt_slot(u32 slot, Surf* t, int marked);
+u32 vk_vt_draw_word(void);
 void vk_vt_frame(void);
 int vk_tex_vt_load(Surf* t);
 /* statistics, of t or (NULL) of all: the virtual textures now, those held whole, their memory and the blocks with memory that could have

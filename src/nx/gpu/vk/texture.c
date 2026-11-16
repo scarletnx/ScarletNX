@@ -199,12 +199,13 @@ static int tex_bind_at(Surf* t, int finer_ok) {
     const VkFmt* f = &t->f;
     /* a texture sparse for its levels alone is mapped whole: every block, each like no other (no keys), with no walk
        over its mapping, which a trim that makes hundreds of them coarser would take for each */
-    if (t->shed || t->vt) {
+    const int whole = t->shed || (t->vt && !t->vt_mapped);
+    if (whole) {
         memset(bits, 0xFF, nbits / 8 + 1);
         free(keys);
         keys = NULL;
     }
-    for (u32 layer = 0; layer < (t->shed || t->vt ? 0 : t->layers); layer++) {
+    for (u32 layer = 0; layer < (whole ? 0 : t->layers); layer++) {
         u64 at = t->gva + layer * t->layer_size;
         for (u32 l = 0; l < t->levels; l++) {
             u32 lbh, lbd;
@@ -2139,6 +2140,7 @@ static int tex_upload_(Surf* t) {
         kind_unqueue(t);
     }
     t->bc7.keyed = 0; /* the BC7 cache's keys of the bytes loaded now, below */
+    if (t->vt) vk_vt_remapped(t);
     /* a sparse texture: the levels guest memory maps get memory first, and only they are copied */
     int bound = !t->sparse || tex_bind(t) >= 0;
     VkCommandBuffer cb = vk_cmd();
@@ -2637,20 +2639,14 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     VkImageCreateInfo ii;
     VkViewFormats vf;
     tex_info(t, f.vk, &ii, &vf, &t->storage_capable);
-    if (holes && resident_image(t, &ii)) {
-        /* its pages move out of a block of device memory that is emptied (vk_tex_defrag_frame), but for an image the
-           GPU writes, whose writes may come from another queue */
-        if (!written) vk_image_sparse_mover(t->img, VK_MOVE_SPARSE(t));
-        vk_surf_add(t);
-        return t;
-    }
-    /* vt_sparse: an ASTC texture mapped whole that the GPU only reads, 2D or a 2D array, with levels, of TEX_SHED_MIN
-       or more: an image with sparse residency whose memory follows the blocks frames sample (vt.c), its mip tail held
-       always; its first load decodes the tail alone. Held as astc_mode holds it: RGBA8, decoded exact, or BC7 a
-       block at a time (BC7 too where Auto would hold BC1, BC4 or BC5 for what its blocks hold now: a block decoded
-       later may hold more). One whose level 0 is under two blocks each way, or with no smaller level held always, has nothing to page
-       or to fall back on (vk_vt_register), and is made as without vt_sparse */
-    if (vk_vt_on() && f.conv == VKC_ASTC && !holes && !written && !msaa && bl && levels > 1 &&
+    /* vt_sparse: an ASTC texture that the GPU only reads, 2D or a 2D array, with levels, of TEX_SHED_MIN or more: an
+       image with sparse residency whose memory follows the blocks frames sample (vt.c), its mip tail held always; its
+       first load decodes the tail alone. Held as astc_mode holds it: RGBA8, decoded exact, or BC7 a block at a time
+       (BC7 too where Auto would hold BC1, BC4 or BC5 for what its blocks hold now: a block decoded later may hold
+       more). One with holes in its mapping (vt_mapped) takes memory only where it is mapped too. One whose level 0
+       is under two blocks each way, or with no smaller level held always, has nothing to page or to fall back on
+       (vk_vt_register), and is made as without vt_sparse */
+    if (vk_vt_on() && f.conv == VKC_ASTC && !written && !msaa && bl && levels > 1 &&
         (type == VK_IMAGE_VIEW_TYPE_2D || type == VK_IMAGE_VIEW_TYPE_2D_ARRAY)) {
         const int srgb = (int)(fkey >> 31);
         const VkFormat held = f.vk == VK_FORMAT_R8G8B8A8_SRGB || f.vk == VK_FORMAT_R8G8B8A8_UNORM ? f.vk
@@ -2665,6 +2661,7 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
             t->vt = (u8)vk_vt_register(t);
             if (t->vt) {
                 t->sparse = 1;
+                t->vt_mapped = holes != 0;
                 t->storage_capable = storage;
                 vk_surf_add(t);
                 return t;
@@ -2673,6 +2670,13 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
             t->img = VK_NULL_HANDLE;
         }
         t->f.vk = f.vk; /* too small, or no such image here: as without vt_sparse */
+    }
+    if (holes && resident_image(t, &ii)) {
+        /* its pages move out of a block of device memory that is emptied (vk_tex_defrag_frame), but for an image the
+           GPU writes, whose writes may come from another queue */
+        if (!written) vk_image_sparse_mover(t->img, VK_MOVE_SPARSE(t));
+        vk_surf_add(t);
+        return t;
     }
     /* room is made for it under the budget: the caller holds only surfaces it used this present, which stay. A sparse
        one has no memory until tex_bind, which makes room for what it binds. Only where holes read as zeros

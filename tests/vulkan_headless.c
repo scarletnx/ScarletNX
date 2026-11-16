@@ -4732,6 +4732,10 @@ static int check_resident_texture(void) {
 /* the same for an ASTC 4x4 texture held as BC7 (astc_mode=2), whose tiles of 64x64 blocks are BC7's 256x256 texels:
    its bound tiles are decoded where they lie, its image the same texture's made whole there and zeros elsewhere */
 static int check_resident_astc(void) {
+    if (vk_vt_on()) { /* vt_sparse pages these textures by what frames sample, not by their mapping alone */
+        printf("skip: resident ASTC textures: with virtual textures the textures of these checks are virtual\n");
+        return 0;
+    }
     const int had = g_settings.astc_mode;
     RsTex probe;
     g_settings.astc_mode = 2;
@@ -4986,6 +4990,10 @@ static int resident_astc_blocks(void) {
     return 0;
 }
 static int check_resident_astc_stacks(void) {
+    if (vk_vt_on()) { /* vt_sparse pages these textures by what frames sample, not by their mapping alone */
+        printf("skip: resident ASTC textures: with virtual textures the textures of these checks are virtual\n");
+        return 0;
+    }
     const int had = g_settings.astc_mode;
     g_settings.astc_mode = 2;
     const int failed = resident_astc_stacks() || resident_astc_blocks();
@@ -7889,6 +7897,23 @@ static int run_headless(int argc, char** argv) {
         free(shot);
         free(ppm);
         return 77;
+    }
+    /* vt_sparse on lavapipe: the virtual textures' own check alone. With it every fragment program's 2D sample is a
+       sparse one, and lavapipe (Mesa 26.2.6) reads through a null pointer in the sparse sample of some images that
+       have no sparse residency (the cross-stage alias check's and the storage formats' crash in its JIT code; RADV
+       runs them): the other checks run with vt_sparse on a GPU's driver */
+    if (vk_vt_on() && g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+        int result = check_vt();
+        vk_finish();
+        vk_pipeline_quiesce();
+        CHECK(!snx_remove_tree(root));
+        free(root);
+        free(shot);
+        free(ppm);
+        if (!result)
+            printf("PASS headless Vulkan, virtual textures alone on a CPU driver: %u validation messages\n",
+                   g_vk_validation_messages);
+        return result;
     }
     if (indexed_map_benchmark >= 0) {
         CHECK(indexed_map_benchmark <= 1);

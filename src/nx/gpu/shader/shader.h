@@ -587,7 +587,6 @@ extern u64 g_shader_vt_address;
 #define SH_VT_CELLS      1024u
 #define SH_VT_LAYERS     4096u
 #define SH_VT_QUADS      16u /* a power of two */
-#define SH_VT_LAST_LEVEL 15  /* past any texture's levels: the sampler takes its last */
 static inline u32 shader_vt_slot(u32 w0, u32 w1) {
     const u32 place = (w1 & 1023u) >> 4 | ((w1 >> 10 & 1023u) >> 4) << 6 | (w1 >> 20) << 12;
     return ((w0 ^ place * 0x85EBCA6Bu) * 0x9E3779B1u) >> (32 - SH_VT_SLOT_BITS);

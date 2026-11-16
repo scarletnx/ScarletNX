@@ -37,6 +37,7 @@ const u8* vk_vt_fresh(const Surf* t, u32* nblocks) {
     return NULL;
 }
 void vk_vt_loaded(const Surf* t) { (void)t; }
+void vk_vt_remapped(const Surf* t) { (void)t; }
 void vk_vt_frame(void) {}
 #undef malloc
 #include "nx/hle/services/nvdrv.h" /* gmmu_pieces, and g_mem, which the stubs below stand in for */

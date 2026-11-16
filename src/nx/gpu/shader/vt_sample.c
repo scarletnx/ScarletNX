@@ -86,8 +86,13 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
                                     spv_emit_glsl_binary(e, s->t_f32, s->glsl, SPV_GLSL_F_MAX, rho, cf(e, s, 1e-12f))));
         if (s->mode == 2) coarser = SPV(e, SPV_OP_F_ADD, s->t_f32, coarser, s->level);
     }
-    coarser = SPV(e, SPV_OP_F_ADD, s->t_f32,
-                  spv_emit_glsl_binary(e, s->t_f32, s->glsl, SPV_GLSL_F_MAX, coarser, cf(e, s, 0.0f)), cf(e, s, 1.0f));
+    /* no coarser than the last level: the device clamps a level, but lavapipe's sparse sample (Mesa 26.2) reads past
+       the image's levels with one that isn't */
+    const u32 top = SPV(e, SPV_OP_CONVERT_U_TO_F, s->t_f32,
+                        SPV(e, SPV_OP_I_SUB, s->t_u32,
+                            spv_emit_image_query_levels(e, s->t_u32, s->sampled_type, s->sampler), cu(e, s, 1)));
+    coarser = spv_emit_glsl_ternary(e, s->t_f32, s->glsl, SPV_GLSL_F_CLAMP,
+                                    SPV(e, SPV_OP_F_ADD, s->t_f32, coarser, cf(e, s, 1.0f)), cf(e, s, 0.0f), top);
     const u32 second =
         spv_emit_sample_image_sparse(e, ids->pair, s->sampled_type, s->sampler, s->coord, 1, coarser, s->offset);
     const u32 texel2 = SPV(e, SPV_OP_COMPOSITE_EXTRACT, s->t_v4f, second, 1);
@@ -96,8 +101,8 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
     spv_emit_selection_merge(e, back);
     spv_emit_branch_conditional(e, resident2, back, tail);
     spv_emit_label(e, tail);
-    const u32 texel3 = spv_emit_sample_image(e, s->t_v4f, s->sampled_type, s->sampler, s->coord, 0, 1,
-                                             cf(e, s, (float)SH_VT_LAST_LEVEL), s->offset, 0);
+    const u32 texel3 =
+        spv_emit_sample_image(e, s->t_v4f, s->sampled_type, s->sampler, s->coord, 0, 1, top, s->offset, 0);
     spv_emit_branch(e, back);
     spv_emit_label(e, back);
     const u32 fallback = spv_emit_phi2(e, s->t_v4f, texel2, miss, texel3, tail);
