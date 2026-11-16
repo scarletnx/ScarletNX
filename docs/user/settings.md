@@ -26,9 +26,10 @@
 A game keeps its settings in its `.ini` (`recompiled/<id>/<id>.ini`), a section each as below, and the launcher's
 Settings show a group for each section ([GUI launcher](gui.md)).
 
-`Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
-On every driver's command line a key is also given with a `-` for each `_`, the same setting (`--state-slots=5` is
-`--state_slots=5`); a value it does not take is said by its key, as the `.ini`'s is.
+`Game.ini`: help rewritten at startup, most settings hot-reload. A setting given on the command line overrides one
+run: its key with a `-` for each `_` (`state_slots`: `--state-slots=5`), on every driver; a value it does not take is
+said by its key, as the `.ini`'s is. The key as the `.ini` writes it (`--state_slots=5`) is the older spelling, still
+read and said once a run ([Deprecations](deprecations.md)).
 Restart for `docked` (`Auto` follows the host's power while the game runs, and `hotkey_tv_mode` and the game's menu's
 **TV mode** change the mode for the run), `tv_refresh_rate`, `tv_resolution`, `fullscreen`, `transition_screen`, `language`, `resolution`,
 `anisotropy`, `hdr_game`, `hdr_paperwhite`, `hdr_peak`, `memory_gb`, `memory_fit_mode`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
@@ -102,10 +103,12 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 ### Vulkan Extensions
 
-Each Vulkan extension the Switch's renderer can use has a setting of its own in `[Graphics]`, its name in lowercase:
-`vk_ext_transform_feedback` for `VK_EXT_transform_feedback`, `vk_khr_maintenance5` for `VK_KHR_maintenance5`. The
-launcher's Graphics group shows them on its Vulkan Extensions page. A 3DS game takes them too, and the same bans,
-for the extensions its renderer uses (`--vk_ext_shader_object=off`). Each is `auto` by default:
+Each Vulkan extension a renderer can make its device with has a setting of its own in `[Graphics]`, its name in
+lowercase: `vk_ext_transform_feedback` for `VK_EXT_transform_feedback`, `vk_khr_maintenance5` for `VK_KHR_maintenance5`
+(the `vk_extension_settings` test fails for one without). The launcher's Graphics group shows them on its Vulkan
+Extensions page. A 3DS or Vita game takes them too, and the same bans, for the extensions its renderer uses
+(`--vk-ext-shader-object=off`); the Android apps' renderer takes the bans' check of each extension's commands alone.
+Each is `auto` by default:
 
 | Value | Effect |
 | --- | --- |
@@ -152,6 +155,8 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_ext_external_memory_host` | `auto` | `VK_EXT_external_memory_host` |
 | `vk_ext_fragment_shader_interlock` | `auto` | `VK_EXT_fragment_shader_interlock` |
 | `vk_ext_graphics_pipeline_library` | `auto` | `VK_EXT_graphics_pipeline_library` |
+| `vk_ext_hdr_metadata` | `auto` | `VK_EXT_hdr_metadata` |
+| `vk_ext_image_view_min_lod` | `auto` | `VK_EXT_image_view_min_lod` |
 | `vk_ext_index_type_uint8` | `auto` | `VK_EXT_index_type_uint8` |
 | `vk_ext_load_store_op_none` | `auto` | `VK_EXT_load_store_op_none` |
 | `vk_ext_map_memory_placed` | `auto` | `VK_EXT_map_memory_placed` |
@@ -165,6 +170,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_ext_present_timing` | `auto` | `VK_EXT_present_timing` |
 | `vk_ext_primitive_topology_list_restart` | `auto` | `VK_EXT_primitive_topology_list_restart` |
 | `vk_ext_provoking_vertex` | `auto` | `VK_EXT_provoking_vertex` |
+| `vk_ext_rasterization_order_attachment_access` | `auto` | `VK_EXT_rasterization_order_attachment_access` |
 | `vk_ext_robustness2` | `auto` | `VK_EXT_robustness2` |
 | `vk_ext_sample_locations` | `auto` | `VK_EXT_sample_locations` |
 | `vk_ext_shader_atomic_float` | `auto` | `VK_EXT_shader_atomic_float` |
@@ -181,7 +187,9 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `vk_khr_dynamic_rendering_local_read` | `auto` | `VK_KHR_dynamic_rendering_local_read`, promoted to Vulkan 1.4 |
 | `vk_khr_extended_flags` | `auto` | `VK_KHR_extended_flags` |
 | `vk_khr_external_memory_fd` | `auto` | `VK_KHR_external_memory_fd` |
+| `vk_khr_external_memory_win32` | `auto` | `VK_KHR_external_memory_win32` |
 | `vk_khr_format_feature_flags2` | `auto` | `VK_KHR_format_feature_flags2`, promoted to Vulkan 1.3 |
+| `vk_khr_fragment_shader_barycentric` | `auto` | `VK_KHR_fragment_shader_barycentric` |
 | `vk_khr_index_type_uint8` | `auto` | `VK_KHR_index_type_uint8`, promoted to Vulkan 1.4 |
 | `vk_khr_load_store_op_none` | `auto` | `VK_KHR_load_store_op_none`, promoted to Vulkan 1.4 |
 | `vk_khr_maintenance4` | `auto` | `VK_KHR_maintenance4`, promoted to Vulkan 1.3 |
@@ -217,7 +225,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS. A 3DS game takes it too (`--fps_limit=N`): its clock runs at N/60 of the console's pace (the 3DS shows 60 frames a second), its sound with it; `0` skips every wait, its sound not played. F4 turns it off and on there too |
+| `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS. A 3DS game takes it too (`--fps-limit=N`): its clock runs at N/60 of the console's pace (the 3DS shows 60 frames a second), its sound with it; `0` skips every wait, its sound not played. F4 turns it off and on there too |
 | `memory_gb` | `0` | Memory the game sees. Below `6` it is the console's 3.2 GB, `6` gives 4.8 GB and `8` gives 6.8 GB. Games that run out of memory on 3.2 GB need `6`. `12` is an experimental 10 GiB application budget with a 12 GiB heap region for newer games. It needs enough host memory and address space. |
 | `memory_fit_mode` | `0` | `0` (Auto) tells the game at least the console's memory, and of what `memory_gb` adds above it no more than the device can still give, measured as the game starts, less what the rest of ScarletNX takes: a device with less than the console has runs as with `1`, and one that can give it all tells it all of it. The log says what it measured. `1` (Off) tells it all of `memory_gb`'s. It takes the place of `memory_fit`, whose `0` was Off ([Deprecations](deprecations.md)) |
 | `heap_max_mb` | `0` | The most heap the game can allocate, in MB. `0` is as much as the memory allows |
@@ -225,7 +233,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `map_limit_files` | `0` (iOS `2048`) | The most of those files mapped. `0` is no limit. Each mapped file holds a descriptor, of which a device may give the whole app a few thousand |
 | `thread_stack_mb` | `32` (iOS `8`) | The host stack of each of the game's threads, in MB, which a game's deep calls take. Less leaves address space for more threads where a device has little, and a game that calls very deep may then stop |
 | `pipeline_threads` | `0` | Threads that make the GPU's new pipelines while the game goes on, and those of earlier runs before it starts with `prepare_shaders=2`. `0` uses all the computer's threads but two, two to twelve. `1` to `32` is that many. Past the first two they run at the system's low priority (nice +10 on Linux and Android, the utility QoS class on macOS and iOS, below normal on Windows, the idle class where FreeBSD allows it), so more make a first run's new pipelines sooner and the game's own threads still go first |
-| `async_pipelines` | `0` | `1` skips what a new shader draws while its pipeline is made, where the game would otherwise pause until it is ready. The game no longer stops where a new shader first appears, and the things that shader draws show up a few frames later. `0` waits for every pipeline. A 3DS game takes it too, and `pipeline_threads` (the launcher passes them to `scarletnx-3ds` as `--async_pipelines=1` and `--pipeline_threads=N`) |
+| `async_pipelines` | `0` | `1` skips what a new shader draws while its pipeline is made, where the game would otherwise pause until it is ready. The game no longer stops where a new shader first appears, and the things that shader draws show up a few frames later. `0` waits for every pipeline. A 3DS game takes it too, and `pipeline_threads` (the launcher passes them to `scarletnx-3ds` as `--async-pipelines=1` and `--pipeline-threads=N`) |
 | `pipeline_libraries` | `1` | `1` makes a new pipeline from parts of its shaders that compile once, where the GPU has graphics pipeline libraries, and makes an optimized one in the background. A new state of a known shader then costs a link of a few milliseconds, not a compile. `0` compiles each pipeline whole |
 | `prepare_shaders` | `2` | Prepares the shaders the game ships in its files and executables ahead of time, so the game's draws needn't make them and it stutters less. They are prepared again after ScarletNX, the GPU or its driver is updated. `0` (Off) makes each shader only when the game first draws with it. `1` (While playing) prepares them in the background, and the game uses them once all are ready. `2` (Before starting) prepares them behind a loading screen in the launcher theme's look, which also waits for the shader cache of earlier sessions, so an opening movie doesn't stutter. A key that types, an arrow or the keypad, a gamepad button other than Home, or a tap starts the game at once, and the rest is prepared while it runs. Esc twice quits (on Android, back opens the menu, whose Exit quits). F2 or a gamepad's Home opens the menu, and F11 or Alt+Enter switches fullscreen, without starting the game. The screen shows only when the wait passes a quarter second, its words are in English, and a timed run (`--seconds`) starts its clock after it |
 | `compress_shader_cache` | `1` | `1` packs the shaders and pipelines saved from earlier sessions (`shader_cache/<id>.<driver>.vkshaders`) with zstd, about 70 shaders at a time: about a quarter of the space, a few milliseconds more to read when the game starts, and up to 7 ms on the thread that made the last of each 70 new shaders. `0` saves them as they are made. What is packed already is read either way |
@@ -250,9 +258,9 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `gamepad_swap_ab` | `0` | `1` swaps a gamepad's A and B. `0` sends A, B, X and Y where the console's are. A 3DS game takes it too (the launcher passes it to `scarletnx-3ds` as `--gamepad_swap_ab=1`) |
-| `gamepad_map` | none | The player's map over that, below. A 3DS game takes it too (`--gamepad_map=MAP`), Plus as Start and Minus as Select; a control sent to L3 or R3, which the 3DS has none of, sends nothing, and the log says so |
-| `gamepad_deadzone` | `20` | The sticks' dead zone, in percent of their travel (`0` to `90`). A 3DS game takes it too, for its circle pad (`--gamepad_deadzone=N`) |
+| `gamepad_swap_ab` | `0` | `1` swaps a gamepad's A and B. `0` sends A, B, X and Y where the console's are. A 3DS game takes it too (the launcher passes it to `scarletnx-3ds` as `--gamepad-swap-ab=1`) |
+| `gamepad_map` | none | The player's map over that, below. A 3DS game takes it too (`--gamepad-map=MAP`), Plus as Start and Minus as Select; a control sent to L3 or R3, which the 3DS has none of, sends nothing, and the log says so |
+| `gamepad_deadzone` | `20` | The sticks' dead zone, in percent of their travel (`0` to `90`). A 3DS game takes it too, for its circle pad (`--gamepad-deadzone=N`) |
 | `gamepad_rumble` | `100` | How strongly gamepads vibrate when the game asks, in percent. `0` is never. A Pro Controller or a single Joy-Con plays the game's HD rumble, with its frequencies, when SDL reads it through its HIDAPI driver (the log says "plays HD rumble"). A Pro Controller plays each side on its own actuator, and a single Joy-Con plays each band of the stronger side on its one actuator. Other controllers, two paired Joy-Cons, and a Switch controller that only the kernel driver reads get the strength of the vibration only. The log says why for each of them |
 | `gamepad_background` | `0` | `1` keeps gamepads playing while the window is not focused |
 | `gamepad_joycon_pair` | `1` | `1` plays a left and right Joy-Con together, `0` separately. Restart the game after changing it |
@@ -358,7 +366,8 @@ The profiler's rows (`tracy_`) only do something in a build with `SNX_TRACY` (`c
 | `gpu_trace_target` | empty | `address[:bytes]`: logs the clears and draws that write a render target starting in that GPU address range |
 | `vk_gpu_profile` | `0` | `1` logs the GPU's time per rendering pass every 10 seconds |
 | `vk_checkpoints` | `0` | `1` logs the work each queue reached when the device is lost (`VK_NV_device_diagnostic_checkpoints`). `0` makes the device without that extension, so a RenderDoc capture also replays on a driver that lacks it |
-| `vk_memory` | `0` | How the GPU reads and writes guest buffers (vertices, indices, storage, the engines' results; [GPU ownership](../layers/gpu/ownership.md)). `1` copies them into the renderer's buffers when they change, and back. `2` reads and writes them where they are in guest memory (`VK_EXT_external_memory_host`; on Android without it, guest memory moves into AHardwareBuffers), as the console's GPU does: for a GPU that shares system memory; on a discrete GPU it goes across the bus, slowly, which still shows that the path is correct. `0` is `2` on a GPU that shares system memory, but never the moves into AHardwareBuffers (unless `uma_memory=2`), else `1`. A 3DS game takes it too (the launcher passes it to `scarletnx-3ds` as `--vk_memory=N`), for the board's RAM: `1` has the GPU work on a copy of it in its own memory, kept in step by page, `2` on the RAM in place, `0` the same choice by the device ([3DS](../platforms/3ds/README.md)) |
+| `vk_debug_hide_commands` | empty | Vulkan device commands, separated by commas, that the check of each extension's commands takes as missing from the driver, to test that path: an extension that requires one goes off, and the device is made again without it, as with a driver that lists the extension without the command ([Driver bans](../dev/development.md#driver-bans)). The log says each. Empty: none. A name that is no device command of a Vulkan extension stops the game, naming the nearest ones |
+| `vk_memory` | `0` | How the GPU reads and writes guest buffers (vertices, indices, storage, the engines' results; [GPU ownership](../layers/gpu/ownership.md)). `1` copies them into the renderer's buffers when they change, and back. `2` reads and writes them where they are in guest memory (`VK_EXT_external_memory_host`; on Android without it, guest memory moves into AHardwareBuffers), as the console's GPU does: for a GPU that shares system memory; on a discrete GPU it goes across the bus, slowly, which still shows that the path is correct. `0` is `2` on a GPU that shares system memory, but never the moves into AHardwareBuffers (unless `uma_memory=2`), else `1`. A 3DS game takes it too (the launcher passes it to `scarletnx-3ds` as `--vk-memory=N`), for the board's RAM: `1` has the GPU work on a copy of it in its own memory, kept in step by page, `2` on the RAM in place, `0` the same choice by the device ([3DS](../platforms/3ds/README.md)) |
 | `uma_memory` | `0` | Android only. Where `vk_memory` has the GPU read guest memory in place, how it reaches it, to compare the two ways on one device. `0` (Auto) imports it where it is (`VK_EXT_external_memory_host`), and without that moves it into AHardwareBuffers when `vk_memory=2`. `1` (Import) only imports: without `VK_EXT_external_memory_host` guest memory is copied. `2` (Move) only moves it into AHardwareBuffers, on a driver that imports too and with `vk_memory=0` as well; elsewhere than Android there are none, and guest memory is copied. The log's `guest buffers` line says the way taken |
 | `uma_copies` | `0` | Where `vk_memory` reads guest memory in place, whether vertices, indices and constant buffers are read there too. `0` (Auto) copies them on amdgpu's drivers (RADV, AMDVLK, AMD's on Linux), where each import costs every submission, and reads them in place elsewhere. `1` reads them in place, `2` copies them. A dispatch's storage ranges and what the GPU writes stay in place either way ([GPU ownership](../layers/gpu/ownership.md)) |
 | `vk_buffer_stats` | `0` | `1` logs what the renderer copies between guest memory and its buffers |
@@ -368,7 +377,7 @@ The profiler's rows (`tracy_`) only do something in a build with `SNX_TRACY` (`c
 | `vk_stream_ring` | `1` | `1` sends the bytes that a copy or a draw recorded at once reads (texture uploads, the pages of `vk_buffer_pages`, the copies of the buffer cache) through chunks that are free again when that work is done. `0` sends them through the frame's rings, which come back when the frame's slot does |
 | `vk_buffer_slabs` | `0` | `1` makes `vk_buffer_pages` keep its bytes in slabs, buffers with all their memory, on every GPU. That is its way on a GPU with no sparse buffers, and the value is for testing. `0` uses slabs only on such a GPU |
 | `nvn_storage_order` | `2` | How NVN draws that write storage buffers are ordered. `2` lets draws whose writable views cover the same buffer overlap, as NVN does until the game's own barrier, and puts the Vulkan barrier that barrier asks for at the next buffer use that depends on it. `1` puts it where the game's barrier is. `0` orders each such draw after the ones before it, as Maxwell draws are, to compare ([NVN storage ordering](../history/gpu-hotpath-bench.md#measure-nvn-storage-ordering)) |
-| `vk_descriptors_mode` | `3` | `3`, Automatic, is `2` on a GPU that shares the system's memory (an integrated one, a phone's) and `0` on one with memory of its own, where heaps would write each draw's descriptors on the GPU thread and sets let the recording thread write them. `2`: graphics descriptors in heaps where the device has them, else buffers, else sets, and a heap draw whose resource cannot be encoded uses buffers or sets. `1` uses descriptor buffers where supported, else sets. Heap encodings, index tables and buffer descriptors stay unchanged until their frame retires. Compute keeps its own pools. With buffers or heaps in use, the guest fragment barriers that target/buffer tracking orders are skipped. `0` uses descriptor sets and every fragment barrier. See [descriptor measurements](../history/gpu-descriptor-bench.md) |
+| `vk_descriptors_mode` | `3` | `3`, Automatic, is `2` on a GPU that shares the system's memory (an integrated one, a phone's) and `0` on one with memory of its own, where heaps would write each draw's descriptors on the GPU thread and sets let the recording thread write them. `2`: graphics descriptors in heaps where the device has them, else buffers, else sets, and a heap draw whose resource cannot be encoded uses buffers or sets. `1` uses descriptor buffers where supported, else sets. Heap encodings, index tables and buffer descriptors stay unchanged until their frame retires. Compute keeps its own pools. With buffers or heaps in use, the guest fragment barriers that target/buffer tracking orders are skipped. `0` uses descriptor sets, where a fragment barrier ends the render pass only after storage writes or reads that are still pending, or after guest memory used in place. See [descriptor measurements](../history/gpu-descriptor-bench.md) |
 | `vk_record` | `1` | `0` records Vulkan commands on the GPU thread instead of a thread of their own |
 | `compute` | `1` | `0` skips every compute shader dispatch |
 | `hmma_f16` | `0` | `1` sums an SM86 HMMA's products in half floats, two a packed `OpFma`, where the console's tensor core keeps the sum in f32 and an f32 emulation needs two instructions for the same pair: about 2 and a half times the frames a second on a device whose driver offers no matrix unit, and a result is then up to 0.4% of its products' size off (more than that of itself where they cancel), a product or partial sum past 65504 an infinity. `0` is the f32 sum. A device with the matrix unit (`VK_KHR_cooperative_matrix`) uses it in compute; one with the mixed dot product (`VK_VALVE_shader_mixed_float_dot_product`) or without `shaderFloat16` keeps the f32 sum, and the log says so |
@@ -434,7 +443,7 @@ The unattended runs' settings ([Run / diagnose](../dev/development.md#run--diagn
 | `vita_gxm_trace` | `0` | `1` logs each scene, draw and display queue entry the game makes through sceGxm |
 | `vita_shader_corpus` | empty | A folder the runtime writes each GXP program it translates to, with what it was translated for, as `<hash>.gxp`, which `tools/snx_vita_usse.c` translates again (the game's own code: keep it local) |
 | `vita_script` | empty | The game's scripted input (`--script=` too): `when:buttons`, a comma between two, when in ms from the start and buttons in hex as SceCtrl has them (1 Select, 8 Start, 10 Up, 20 Right, 40 Down, 80 Left, 100 L, 200 R, 1000 Triangle, 2000 Circle, 4000 Cross, 8000 Square, and the left stick pushed all the way: 1000000 right, 2000000 left, 4000000 up, 8000000 down), each held for `vita_press_len` ms |
-| `vita_press_len` | `300` | How long each press of the script is held, in ms (`--press_len=` too) |
+| `vita_press_len` | `300` | How long each press of the script is held, in ms (`--press-len=` too) |
 | `vita_shot_every` | `0` | With `--shot=PATH`, also a screenshot every this many vblanks (60 a second), `PATH_0000.ppm` on; `0`, only the last frame's |
 | `vita_lockstep` | `-1` | From this import call on (`0` is the first), every instruction group of the game also runs in Unicorn, and the first difference in registers, flags or written memory stops the run with both states ([Checking the CPU backend](../platforms/vita/README.md#checking-the-cpu-backend)). Only in a build configured with `-DSNX_VITA_LOCKSTEP=ON`: another build says so at start. `-1` is off |
 | `vita_lockstep_steps` | `0` | With `vita_lockstep`, how many instruction groups are compared before the game runs on without Unicorn. `0` has no limit |

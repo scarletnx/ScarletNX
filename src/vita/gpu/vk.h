@@ -30,6 +30,7 @@ typedef struct {
     bool bc; /* the device samples BC1 to BC3 (textureCompressionBC) */
     bool depth16_blit; /* D16 depth images blit both ways (a depth surface scaled to and from its samples) */
     bool depth_clamp;  /* the device clamps depth rather than clipping it (depthClamp), as the console does */
+    bool timeline;     /* timelineSemaphore: the ring's submissions signal a timeline, not fences */
     VkFormat stencil_format; /* a depth and stencil format it renders to (D24S8, else D32S8), UNDEFINED for none */
     /* the color attachment read as an input attachment while rendered to (VK_KHR_dynamic_rendering_local_read), in
        primitive order within a draw (VK_EXT_rasterization_order_attachment_access) */
@@ -56,6 +57,10 @@ bool vita_vk_wait(uint64_t serial);
 unsigned vita_vk_slot(void);
 VkDescriptorSet vita_vk_set(VkDescriptorSetLayout layout);
 uint32_t vita_vk_memory_type(uint32_t bits, VkMemoryPropertyFlags properties);
+/* a line over the game for a few seconds, as a Switch game shows one: Esc's first press */
+void vita_vk_notice(const char* text);
+/* that line while it shows, "" when none does */
+const char* vita_vk_notice_text(void);
 /* the renderer's per-submission resources, freed when the slot's submission is done */
 void vita_vk_on_retire(void (*retire)(unsigned slot, uint64_t serial));
 /* Shows the framebuffer: width by height pixels, pitch pixels a row, R8G8B8A8 bytes at offset in buffer, scaled into

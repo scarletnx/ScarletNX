@@ -294,7 +294,9 @@ int vk_uma_choose(int has_import, int has_ahb, int has_placed) {
     }
     g_uma.migrate = with == VK_UMA_WITH_AHB;
     /* placed maps: a whole chunk mapped at an address of a window's alignment, given back reserved. Linux's and
-       Android's, whose reservation plat_alias_unmap gives back */
+       Android's, whose reservation plat_alias_unmap gives back. Decided again for a device made again without
+       VK_EXT_map_memory_placed (device.c's create_device) */
+    g_uma.can_place = 0;
 #if defined(__linux__)
     if (has_placed && g_vk.mem_path == VK_MEM_PATH_UMA) {
         VkPhysicalDeviceMapMemoryPlacedFeaturesEXT f = {

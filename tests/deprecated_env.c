@@ -92,7 +92,7 @@ int main(void) {
     CHECK(g_settings.write_tracking == 1, "SNX_WW=signal is not write_tracking=1");
     CHECK(!strcmp(g_test.log,
                   "settings: SNX_WW=signal is deprecated: this run reads it as write_tracking=1, a setting of "
-                  "the game's .ini and of --write_tracking=VALUE (docs/user/deprecations.md)\n"),
+                  "the game's .ini and of --write-tracking=VALUE (docs/user/deprecations.md)\n"),
           "SNX_WW=signal is not said with write_tracking=1");
 
     start();

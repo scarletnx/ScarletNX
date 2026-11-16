@@ -23,7 +23,20 @@ typedef struct {
     u32 freq, step_ns, step_ticks;
 } ClockRate;
 ClockRate clock_rate(void);
-u64 guest_gpu_ticks(void); /* the GPU's 19.2 MHz timestamps, which the NVN handlers convert back to nanoseconds */
+/* The graphics unit's timer counts 384 ticks every 625 nanoseconds (614.4 MHz): the unit of a report's timestamp and of
+   nvhost-ctrl-gpu's GET_GPU_TIME, which the driver turns into nanoseconds by one ratio. With n = q * 625 + r,
+   n * 384 / 625 is q * 384 + r * 384 / 625 exactly (r * 384 can't carry), and never overflows where n * 384 would; the
+   same split converts back */
+#define SNX_GPU_TICKS_NUM 384u
+#define SNX_GPU_TICKS_DEN 625u
+static inline u64 snx_gpu_ticks_of_ns(u64 ns) {
+    return ns / SNX_GPU_TICKS_DEN * SNX_GPU_TICKS_NUM + ns % SNX_GPU_TICKS_DEN * SNX_GPU_TICKS_NUM / SNX_GPU_TICKS_DEN;
+}
+static inline u64 snx_gpu_ns_of_ticks(u64 ticks) {
+    return ticks / SNX_GPU_TICKS_NUM * SNX_GPU_TICKS_DEN +
+           ticks % SNX_GPU_TICKS_NUM * SNX_GPU_TICKS_DEN / SNX_GPU_TICKS_NUM;
+}
+u64 guest_gpu_ticks(void); /* the guest clock in the graphics unit's ticks */
 
 /* The guest clock in the host's virtual counter (CNTVCT_EL0), as NCE's stubs read it with no outcall (nce_patch.c):
    the clock's nanoseconds are cnt * mul_hi + (cnt * mul_lo >> 64) - origin, and words is the address of its two words,

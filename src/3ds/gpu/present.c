@@ -21,6 +21,7 @@
 #include "3ds/gpu/vk/vk_y2r.h"
 #include "3ds/gpu/vk/vk_render.h"
 #include "common/utilities/bits.h"
+#include "common/gpu/vk/notice.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
@@ -59,6 +60,11 @@ static struct {
     SnxVkSwapchain swap[2]; /* the combined window's, or each screen's own */
     /* each submission slot's: a slot is free again only once its submission is done, and so are they */
     VkSemaphore acquire[2][SNX_CTR_VK_SLOTS], presented[2][SNX_CTR_VK_SLOTS];
+    /* a line over the game for a few seconds, as a Switch game shows one: Esc's first press. In the window it was
+       asked in, each window's band copied by its own (common/gpu/vk/notice.h) */
+    SnxNotice notice;
+    SDL_WindowID notice_window;
+    SnxVkNotice* notice_vk[2];
     const char* frame_dir;
     unsigned dumps;
     double latest_at[2];   /* past the first dumps, when each screen's latest was last kept (host seconds) */
@@ -221,6 +227,11 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir, bool head
         return false;
     }
     g_present.readback_view = mapped;
+    for (unsigned screen = 0; screen < 2; ++screen)
+        if (!(g_present.notice_vk[screen] = snx_vk_notice_create(v->phys, v->device, SNX_CTR_VK_SLOTS))) {
+            snx_ctr_present_free();
+            return false;
+        }
     image_barrier(snx_ctr_vk_commands(), g_present.source_dummy.image, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_GENERAL);
     g_present.source_dummy.layout = VK_IMAGE_LAYOUT_GENERAL;
@@ -427,9 +438,14 @@ void snx_ctr_present_fullscreen(void) {
     const SnxCtrVk* v = snx_ctr_vk();
     if (g_present.up && v && v->host.window) fullscreen(v->host.window, true);
 }
+/* a line over the game in window (0: the top screen's) for a few seconds */
+static void notice(const char* text, SDL_WindowID window) {
+    snx_notice_show(&g_present.notice, text, SDL_GetTicksNS());
+    g_present.notice_window = window || !g_present.up ? window : SDL_GetWindowID(screen_window(0));
+}
 /* The window's own keys, as a Switch game's (backend/sdl3.c): F11, or Alt+Enter, switches the window it is pressed in
    to fullscreen and back, F4 turns the FPS limit off and back on (board/clock.h), and Esc twice closes it, a first one
-   warning on the terminal; not with Ctrl or the system key, the desktop's, nor F4 or Esc with Alt */
+   warning on the terminal and over the game; not with Ctrl or the system key, the desktop's, nor F4 or Esc with Alt */
 static void key_event(const SDL_Event* event) {
     if (event->type != SDL_EVENT_KEY_DOWN || event->key.repeat || (event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)))
         return;
@@ -442,6 +458,7 @@ static void key_event(const SDL_Event* event) {
             char warning[64];
             snx_quit_warning(warning, sizeof warning, "Esc");
             fprintf(stderr, "%s\n", warning);
+            notice(warning, event->key.windowID);
         }
     } else if (window && ((event->key.key == SDLK_F11 && !alt) || (event->key.key == SDLK_RETURN && alt)))
         fullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
@@ -459,6 +476,9 @@ static void pump(void) {
         key_event(&event);
         snx_ctr_input_event(&event); /* the gamepads connected and gone */
     }
+}
+const char* snx_ctr_present_notice(void) {
+    return snx_notice_shown(&g_present.notice, SDL_GetTicksNS()) ? g_present.notice.text : "";
 }
 /* SDL turns SIGINT and SIGTERM into a quit event in a windowed run. A headless run installs its own handler, since it
    starts no SDL subsystem, and this is how Ctrl+C ends it with its report, --shot and a finalised WAV */
@@ -480,10 +500,12 @@ static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, 
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0,
                          NULL, 1, &b);
 }
+static void notice_log(const char* text) { fprintf(stderr, "3ds gpu: %s\n", text); }
 /* The window's picture: in one window the top screen above the bottom one, which is centred under it (400 and 320
    pixels wide, 240 high), the pair scaled as one to fit the swapchain's image and centred in it, the rest black; in
-   separate windows this screen alone, scaled to fit and centred. */
-static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen) {
+   separate windows this screen alone, scaled to fit and centred. Over it the notice while one shows in that window,
+   its band in slot's buffer */
+static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen, unsigned slot) {
     image_barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkClearColorValue black = {.float32 = {0, 0, 0, 1}};
     VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -505,6 +527,14 @@ static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen) {
         vkCmdBlitImage(cb, f->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                        1, &blit, VK_FILTER_NEAREST);
     }
+    /* the notice over the window it was asked in: the screen's own, or the one both share */
+    unsigned shown = g_present.separate ? screen : 0;
+    SDL_Window* window = screen_window(shown);
+    if (window && SDL_GetWindowID(window) == g_present.notice_window)
+        (void)snx_vk_notice_record(g_present.notice_vk[shown], cb, slot, target, g_present.swap[shown].format.format,
+                                   g_present.swap[shown].extent.width, g_present.swap[shown].extent.height,
+                                   snx_display_percent(SDL_GetWindowDisplayScale(window)), &g_present.notice,
+                                   SDL_GetTicksNS(), notice_log);
     image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
 bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigned height, unsigned format,
@@ -632,7 +662,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     }
     if (show) {
         g_present.bottom_alone = 0;
-        show_screens(cb, g_present.swap[window_index].images[index], screen);
+        show_screens(cb, g_present.swap[window_index].images[index], screen, slot);
     }
     /* submitted, waited for only when the host reads the frame (a dump, a test's hash) */
     bool ok = true;
@@ -825,6 +855,7 @@ void snx_ctr_present_free(void) {
         if (g_present.swap[screen].swapchain) swap_destroy(screen);
     for (unsigned i = 0; i < 2; ++i) frame_free(&g_present.frames[i]);
     frame_free(&g_present.source_dummy);
+    for (unsigned screen = 0; screen < 2; ++screen) snx_vk_notice_destroy(g_present.notice_vk[screen]);
     for (unsigned screen = 0; screen < 2; ++screen)
         for (unsigned i = 0; i < SNX_CTR_VK_SLOTS; ++i) {
             if (g_present.acquire[screen][i]) vkDestroySemaphore(v->device, g_present.acquire[screen][i], NULL);

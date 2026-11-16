@@ -27,10 +27,10 @@ static struct {
         u32 present;
     } cpu_read[CPU_READ_SLOTS];
     /* Separate from frame pools and rings: frame result callbacks may acquire
-       the owner being read back. Reused after its fence completes, under vk_lock. */
+       the owner being read back. Reused after its timeline value is reached, under vk_lock. */
     VkCommandPool pool;
     VkCommandBuffer cb;
-    VkFence fence;
+    VkHostTimeline done; /* each landing's copy signals it on one queue (land_apart's), waited for under vk_lock */
     VkBuffer back;
     DevMem mem;
     u8* ptr;
@@ -518,9 +518,7 @@ static void land_prepare(u64 size) {
     if (!g_owned.pool) {
         VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                       .queueFamilyIndex = land_apart() ? g_vk.compute_family : g_vk.gfx_family};
-        VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        if (!VK_OK(vkCreateCommandPool(g_vk.dev, &pi, NULL, &g_owned.pool)) ||
-            !VK_OK(vkCreateFence(g_vk.dev, &fi, NULL, &g_owned.fence)))
+        if (!VK_OK(vkCreateCommandPool(g_vk.dev, &pi, NULL, &g_owned.pool)))
             fatal("vulkan: could not create the ownership readback queue resources");
         VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                                           .commandPool = g_owned.pool,
@@ -620,22 +618,28 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
                                     .semaphore = vk_gfx_timeline(),
                                     .value = writer,
                                     .stageMask = VK_PIPELINE_STAGE_2_COPY_BIT};
+        u64 value = vk_host_next(&g_owned.done);
+        VkSemaphoreSubmitInfo di = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                    .semaphore = g_owned.done.sem,
+                                    .value = value,
+                                    .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
         VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                             .waitSemaphoreInfoCount = (apart || finished) && writer ? 1u : 0u,
                             .pWaitSemaphoreInfos = &wi,
                             .commandBufferInfoCount = 1,
-                            .pCommandBufferInfos = &ci};
-        if (!VK_OK(vkEndCommandBuffer(cb)) || !VK_OK(vkResetFences(g_vk.dev, 1, &g_owned.fence)))
-            fatal("vulkan: could not submit ownership readback");
+                            .pCommandBufferInfos = &ci,
+                            .signalSemaphoreInfoCount = 1,
+                            .pSignalSemaphoreInfos = &di};
+        if (!value || !VK_OK(vkEndCommandBuffer(cb))) fatal("vulkan: could not submit ownership readback");
         if (apart || finished) {
             if (!finished) vk_rec_queue(queue); /* after the recorder's compute submissions, as cs_submit's */
             vk_queue_lock(queue);
         }
-        VkResult sr = vkQueueSubmit2(queue, 1, &si, g_owned.fence);
+        VkResult sr = vkQueueSubmit2(queue, 1, &si, VK_NULL_HANDLE);
         if (apart || finished) vk_queue_unlock(queue);
         if (!VK_OK(sr)) fatal("vulkan: could not submit ownership readback");
         gpu_wait_note("GPU-owned memory readback", 0);
-        int ok = vk_wait_fence(g_owned.fence);
+        int ok = vk_host_wait(&g_owned.done, value);
         gpu_wait_note(NULL, 0);
         if (!ok) { /* a GPU fault (Xid 109's CTX SWITCH TIMEOUT, say): name the draw that hung, from its checkpoints */
             vk_checkpoint_dump("device lost");

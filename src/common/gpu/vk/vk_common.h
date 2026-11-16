@@ -8,8 +8,9 @@
 #include <volk.h>
 /* What the Vulkan frontends (the Switch's src/nx/gpu/vk, the 3DS's src/3ds/gpu/vk, the Vita's src/vita/gpu) share of
    setting up a device: the instance, the extension and layer queries, the choice of a physical device and queue
-   family, memory types, pNext chains and the names of results. Each frontend keeps its own feature lists, queues and
-   resources. The calls go through volk, whose loader the frontend initialized. */
+   family, memory types, pNext chains and the names of results. A renderer makes its device through device.h, the one
+   way that applies the bans, the settings and the command check. Each frontend keeps its own feature lists, queues
+   and resources. The calls go through volk, whose loader the frontend initialized. */
 
 /* VkResult's name ("VkResult" for one it doesn't name) */
 const char* snx_vk_result_str(VkResult r);
@@ -54,19 +55,10 @@ VkQueueFamilyProperties* snx_vk_queue_families(VkPhysicalDevice phys, uint32_t* 
    VK_NULL_HANDLE); UINT32_MAX for none */
 uint32_t snx_vk_queue_family(VkPhysicalDevice phys, VkQueueFlags flags, VkSurfaceKHR surface, uint32_t first);
 
-/* The first device, in the loader's order, of api_version or newer whose queue family of flags (presenting to
-   surface, as snx_vk_queue_family) make accepts: make creates the device and says whether it did. False when none */
-typedef bool (*SnxVkMake)(VkPhysicalDevice phys, uint32_t family, void* user);
-bool snx_vk_first_device(VkInstance instance, uint32_t api_version, VkQueueFlags flags, VkSurfaceKHR surface,
-                         SnxVkMake make, void* user);
-/* The device of api_version or newer that score rates highest, the first of equal ones; a negative score rejects it.
-   VK_NULL_HANDLE when none is left */
+/* the instance's physical devices in the loader's order, *count of them (calloc'd, NULL for none) */
+VkPhysicalDevice* snx_vk_physical_devices(VkInstance instance, uint32_t* count);
+/* a physical device's rating (common/gpu/vk/device.h's score): higher is better, a negative one rejects it */
 typedef int (*SnxVkScore)(VkPhysicalDevice phys, const VkPhysicalDeviceProperties* properties, void* user);
-VkPhysicalDevice snx_vk_best_device(VkInstance instance, uint32_t api_version, SnxVkScore score, void* user);
-
-/* A device with one queue of family: features is the head of its VkPhysicalDeviceFeatures2 chain */
-VkResult snx_vk_device_create(VkPhysicalDevice phys, uint32_t family, const void* features,
-                              const char* const* extensions, uint32_t extension_count, VkDevice* out);
 
 /* Links the structures of links that are not NULL (each a Vulkan structure with sType and pNext) into one pNext chain
    in their order, the last one ending it. The first, NULL when there is none */
@@ -126,7 +118,7 @@ int snx_vk_write_replace(const char* path, const void* data, size_t size, char* 
 
 /* a shader module of size bytes of SPIR-V */
 VkResult snx_vk_shader_module(VkDevice dev, const uint32_t* words, size_t size, VkShaderModule* out);
-/* Pipelines made one at a time. NVIDIA's driver (580.178.04 on FreeBSD, a GT 1030) deadlocked in its compiler when
+/* Pipelines made one at a time. NVIDIA's Unix driver (580.178.04 on FreeBSD, a GT 1030) deadlocked in its compiler when
    several threads made pipelines at once: one waited in a pthread_once whose initializer, on another thread, waited
    for a mutex. With serial on, each pipeline the helpers here make, and each call between snx_vk_compile_enter and
    snx_vk_compile_leave, is made alone; with it off, enter takes nothing (0) */

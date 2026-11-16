@@ -4,33 +4,27 @@
 # then optimized by SPIRV-Tools' spirv-opt and validated by its spirv-val, as a step of their own: the optimizations do
 # not hang on whether the glslang at hand was built with SPIRV-Tools, which glslang's own -O needs.
 #
-# The compiler is SNX_GLSLANG when it is set. Otherwise it is KhronosGroup's glslang release for the host, a CPM package
-# pinned by its SHA-256 like the libraries (cmake/dependencies.cmake), on the hosts it publishes builds for (Linux
-# x86-64, Windows x86-64, macOS); elsewhere (FreeBSD, Linux on ARM) the glslangValidator on PATH, from the system's
-# glslang package. Cross builds run the host's, since the shader is the same for every target.
+# The compiler is SNX_GLSLANG when it is set. Otherwise it is KhronosGroup's glslang release for the host, pinned in
+# cpmfile.json like the libraries (cmake/packages.cmake), on the hosts it publishes builds for (Linux x86-64, Windows
+# x86-64, macOS); elsewhere (FreeBSD, Linux on ARM) the glslangValidator on PATH, from the system's glslang package.
+# Cross builds run the host's, since the shader is the same for every target.
 
 set(SNX_GLSLANG "" CACHE FILEPATH "glslangValidator to compile shaders with (empty: the pinned release, or PATH)")
 if(NOT SNX_GLSLANG)
-    set(snx_glslang_version 16.6.0)
-    set(snx_glslang_asset "")
+    set(snx_glslang_host "")
     if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
-        set(snx_glslang_asset linux-x86_64-release.tar.gz)
-        set(snx_glslang_sha256 2c34071f56ecf39d16233294d3739cf43f981fd39080f2fd9dccb782101191ce)
+        set(snx_glslang_host linux-x86_64)
     elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows" AND CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
-        set(snx_glslang_asset windows-x86_64-release.zip)
-        set(snx_glslang_sha256 82bf434e69b9bb4829de7e2b4bc2c5e7a7861e53d66cf75e5cc70f5f694a8d9b)
+        set(snx_glslang_host windows-x86_64)
     elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
-        set(snx_glslang_asset macos-universal-release.tar.gz)
-        set(snx_glslang_sha256 4f8c05f2888a73ed0b7b274bc524af9130e09ae94b43c0f3f9ed83cfae852834)
+        set(snx_glslang_host macos)
     endif()
-    if(snx_glslang_asset)
-        CPMAddPackage(NAME glslang-tools VERSION ${snx_glslang_version}
-                      URL https://github.com/KhronosGroup/glslang/releases/download/${snx_glslang_version}/glslang-${snx_glslang_version}-${snx_glslang_asset}
-                      URL_HASH SHA256=${snx_glslang_sha256}
-                      DOWNLOAD_ONLY YES)
-        set(snx_glslang_path "${glslang-tools_SOURCE_DIR}/bin/glslangValidator${CMAKE_HOST_EXECUTABLE_SUFFIX}")
+    if(snx_glslang_host)
+        AddJsonPackage(NAME glslang-tools-${snx_glslang_host} DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
+        set(snx_glslang_dir "${glslang-tools-${snx_glslang_host}_SOURCE_DIR}")
+        set(snx_glslang_path "${snx_glslang_dir}/bin/glslangValidator${CMAKE_HOST_EXECUTABLE_SUFFIX}")
         if (NOT EXISTS "${snx_glslang_path}")
-            set(snx_glslang_path "${glslang-tools_SOURCE_DIR}/bin/glslang${CMAKE_HOST_EXECUTABLE_SUFFIX}")
+            set(snx_glslang_path "${snx_glslang_dir}/bin/glslang${CMAKE_HOST_EXECUTABLE_SUFFIX}")
         endif()
     else()
         find_program(snx_glslang_path NAMES glslangValidator glslang)

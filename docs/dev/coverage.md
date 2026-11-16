@@ -97,7 +97,7 @@ cmake --build build/cov --target scarletnx          # the runtime and driver; ad
 - `SNX_DEPLOY=OFF` keeps the instrumented runtime from being copied over every game in your data folder, as the
   Tracy preset does. A run through `build/cov/scarletnx` still puts it beside the game it runs.
 - Clang warns that `-runtime-counter-relocation` is unused at link time. The warning is harmless.
-- The build instruments the dependencies CPM builds too (zstd, FSR2, ...). Reports leave them out by path
+- The build instruments the dependencies it compiles from CPMUtil's packages too (zstd, FSR2, ...). Reports leave them out by path
   ([Reports](#reports-by-file-and-by-folder)).
 - Keep `-runtime-counter-relocation` on every ELF host. Without it, continuous mode is refused where the profile
   runtime cannot map the counters in place.
@@ -178,7 +178,7 @@ Any run through `build/cov/scarletnx` collects the same way:
 
 ```sh
 LLVM_PROFILE_FILE="$PWD/work/cov/prof-game/%c%p.profraw" \
-    build/cov/scarletnx --game="$games/<id>" --seconds=120 --input_replay=1
+    build/cov/scarletnx --game="$games/<id>" --seconds=120 --input-replay=1
 ```
 
 A game's profile says which runtime paths real software reaches. Diffed against the checks' profile, it gives the
@@ -201,7 +201,7 @@ A `.profraw` with continuous mode is the size of the counters (about 8 MB for `s
 ### Reports by file and by folder
 
 ```sh
-X='(\.cache/|/build/|/usr/)'      # CPM's sources, generated files, the system's headers
+X='(\.cache/|/build/|/usr/)'      # CPMUtil's sources, generated files, the system's headers
 llvm-cov report build/cov/scarletnx -instr-profile=work/cov/ep.profdata -ignore-filename-regex="$X" \
     > work/cov/ep-report.txt
 llvm-cov report build/cov/scarletnx -instr-profile=work/cov/ep.profdata -show-functions src/nx/hle/svc/svc.c
@@ -335,7 +335,7 @@ found nothing behind. Read the run's logs beside the coverage report:
 
 `@stub` commands in a `.swipc` file answer success with no handler and no log line
 ([IPC interfaces](../platforms/nx/ipc.md)): `grep -n '@stub' src/nx/hle/services/*.swipc` lists them.
-`--auto_stub_ipc=0` turns every undeclared command into the console's error, which makes a game fail where it
+`--auto-stub-ipc=0` turns every undeclared command into the console's error, which makes a game fail where it
 makes the call instead of later. `--log=2` adds the `ipc:` lines, the service commands served and their times.
 
 ```sh

@@ -160,7 +160,7 @@ def main():
     parser.add_argument('--timeout', type=float, default=30)
     parser.add_argument('--artifact-dir', type=Path, default=Path('build/nx-smoke-failures'))
     parser.add_argument(
-        '--runtime-arg', action='append', default=[], help="an argument of the game's runs (--host_page=65536)"
+        '--runtime-arg', action='append', default=[], help="an argument of the game's runs (--host-page=65536)"
     )
     parser.add_argument('--log-has', action='append', default=[], help="a line each run's log must hold")
     args = parser.parse_args()
@@ -177,7 +177,7 @@ def main():
             # before the game ran), none, and in the background, which the game's exit may cut short
             for mode in ('2', '0', '1'):
                 code, text = run(
-                    folder, 'NX Smoke', [f'--prepare_shaders={mode}', *args.runtime_arg], scratch, env, args.timeout
+                    folder, 'NX Smoke', [f'--prepare-shaders={mode}', *args.runtime_arg], scratch, env, args.timeout
                 )
                 if code or '[game] NX runtime smoke' not in text or 'The game exited (code 0)' not in text:
                     raise RuntimeError(
@@ -196,7 +196,7 @@ def main():
             fixture.write_bytes(make_nro(null_call_code))
             folder = recompile(runtime, repo, fixture, 'NX Null Call', output, scratch, env, args.timeout)
             code, text = run(
-                folder, 'NX Null Call', ['--prepare_shaders=0', *args.runtime_arg], scratch, env, args.timeout
+                folder, 'NX Null Call', ['--prepare-shaders=0', *args.runtime_arg], scratch, env, args.timeout
             )
             lacks = null_call(text)
             if not code or lacks:
@@ -205,7 +205,7 @@ def main():
             fixture.write_bytes(make_nro(core_order_code, text=0x180))
             folder = recompile(runtime, repo, fixture, 'NX Core Order', output, scratch, env, args.timeout)
             code, text = run(
-                folder, 'NX Core Order', ['--prepare_shaders=0', *args.runtime_arg], scratch, env, args.timeout
+                folder, 'NX Core Order', ['--prepare-shaders=0', *args.runtime_arg], scratch, env, args.timeout
             )
             if code or '[game] NX runtime smoke' not in text or 'The game exited (code 0)' not in text:
                 raise RuntimeError(

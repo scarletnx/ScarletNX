@@ -516,14 +516,14 @@ size_t gui_settings_recompile(GuiSettings* s, int make, const char** argv) {
         const char* key = s->values[i].key;
         /* the launcher's own tables' rows are its own to act on, no recompile's option */
         if (!value || ini_find(g_launch_ini, key) || ini_find(g_gba_ini, key)) continue;
-        snprintf(s->values[i].option, sizeof s->values[i].option, "--%s=%s", key, value);
+        ini_option(s->values[i].option, sizeof s->values[i].option, key, value);
         argv[n++] = s->values[i].option;
     }
     /* -r reads the game's settings it recompiles with from its options alone: a run gets them with the game's */
     for (i = s->own; make && i < s->count; ++i) {
         const char* value = s->values[i].kind ? NULL : picked(s, i);
         if (!value || !ini_find(g_recompile_game_ini, s->values[i].key)) continue;
-        snprintf(s->values[i].option, sizeof s->values[i].option, "--%s=%s", s->values[i].key, value);
+        ini_option(s->values[i].option, sizeof s->values[i].option, s->values[i].key, value);
         argv[n++] = s->values[i].option;
     }
     return n;
@@ -535,7 +535,7 @@ size_t gui_settings_recompile_shared(GuiSettings* s, const char** argv) {
         int i = find(s, shared[k]);
         const char* value = i < s->own ? picked(s, i) : NULL;
         if (!value) continue;
-        snprintf(s->values[i].option, sizeof s->values[i].option, "--%s=%s", shared[k], value);
+        ini_option(s->values[i].option, sizeof s->values[i].option, shared[k], value);
         argv[n++] = s->values[i].option;
     }
     return n;
@@ -552,14 +552,14 @@ size_t gui_settings_gba(GuiSettings* s, const char** argv) {
     int i = find(s, "gba_color");
     const char* value = i < s->own ? picked(s, i) : NULL;
     if (!value) return 0;
-    snprintf(s->values[i].option, sizeof s->values[i].option, "--gba_color=%s", value);
+    ini_option(s->values[i].option, sizeof s->values[i].option, "gba_color", value);
     argv[0] = s->values[i].option;
     return 1;
 }
 size_t gui_settings_one(GuiSettings* s, const char* key, const char** argv) {
     int i = find(s, key);
     if (i < s->own || i >= s->count || !picked(s, i)) return 0;
-    snprintf(s->values[i].option, sizeof s->values[i].option, "--%s=%s", key, picked(s, i));
+    ini_option(s->values[i].option, sizeof s->values[i].option, key, picked(s, i));
     argv[0] = s->values[i].option;
     return 1;
 }
@@ -573,7 +573,7 @@ static size_t picked_options(GuiSettings* s, const char** argv, int ctr) {
         const char* value = picked(s, i);
         const char* key = s->values[i].key;
         if (!value || !key || (ctr && strncmp(key, "ctr_", 4) && !snx_ctr_shared_setting(key))) continue;
-        snprintf(s->values[i].option, sizeof s->values[i].option, "--%s=%s", s->values[i].key, value);
+        ini_option(s->values[i].option, sizeof s->values[i].option, s->values[i].key, value);
         argv[n++] = s->values[i].option;
     }
     return n;

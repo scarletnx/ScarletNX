@@ -294,11 +294,17 @@ void os_sdk_recursive_unlock(CPU* c, u64 m) { (void)c, (void)m; }
 void os_sdk_cv_wait(CPU* c, u64 cv, u64 m) { (void)c, (void)cv, (void)m; }
 int os_sdk_cv_timed_wait(CPU* c, u64 cv, u64 m, i64 ns) { return (void)c, (void)cv, (void)m, (void)ns, 0; }
 void os_sdk_cv_wait_recursive(CPU* c, u64 cv, u64 m) { (void)c, (void)cv, (void)m; }
-void os_light_event_init(CPU* c, u64 e, int signaled, u32 mode) { (void)c, (void)e, (void)signaled, (void)mode; }
-void os_light_event_signal(CPU* c, u64 e) { (void)c, (void)e; }
-void os_light_event_clear(CPU* c, u64 e) { (void)c, (void)e; }
-void os_light_event_wait(CPU* c, u64 e) { (void)c, (void)e; }
-int os_light_event_try_wait(CPU* c, u64 e) { return (void)c, (void)e, 0; }
+typedef const HookLayout_nn_os_LightEventType LightEventLayout;
+void os_light_event_init(CPU* c, LightEventLayout* L, u64 e, int signaled, u32 mode) {
+    (void)c, (void)L, (void)e, (void)signaled, (void)mode;
+}
+void os_light_event_init_old(CPU* c, LightEventLayout* L, u64 e, int signaled, u32 mode) {
+    (void)c, (void)L, (void)e, (void)signaled, (void)mode;
+}
+void os_light_event_signal(CPU* c, LightEventLayout* L, u64 e) { (void)c, (void)L, (void)e; }
+void os_light_event_clear(CPU* c, LightEventLayout* L, u64 e) { (void)c, (void)L, (void)e; }
+void os_light_event_wait(CPU* c, LightEventLayout* L, u64 e) { (void)c, (void)L, (void)e; }
+int os_light_event_try_wait(CPU* c, LightEventLayout* L, u64 e) { return (void)c, (void)L, (void)e, 0; }
 void os_light_sem_acquire(CPU* c, u64 s) { (void)c, (void)s; }
 int os_light_sem_try_acquire(CPU* c, u64 s) { return (void)c, (void)s, 0; }
 void os_light_sem_release(CPU* c, u64 s) { (void)c, (void)s; }

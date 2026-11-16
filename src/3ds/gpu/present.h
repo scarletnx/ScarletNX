@@ -39,8 +39,11 @@ bool snx_ctr_present_shot(const char* path);
 /* A line for the run's summary on the standard output: each screen's frames decoded, and what the GPU's work took of
    the RAM (vk_render.h's snx_ctr_vk_traffic). Nothing before init */
 void snx_ctr_present_report(void);
-/* Pumps SDL's events: true once the player closed the window, or SIGINT or SIGTERM came */
+/* Pumps SDL's events: true once the player closed the window, or SIGINT or SIGTERM came. Esc's first press is said in a
+   line over the game */
 bool snx_ctr_present_closed(void);
+/* that line while it shows, "" when none does */
+const char* snx_ctr_present_notice(void);
 /* the presenter and the device */
 void snx_ctr_present_free(void);
 #endif

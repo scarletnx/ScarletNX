@@ -1,0 +1,466 @@
+{
+    "azahar-bad-word-list": {
+        "hash": "870c1158583e69a827257bb64b2c1fb3d2661f6bab5cea96a448c7f1223330a23f0e3739b361aec4269aa536f66e2916ed61cc64c7d9953964621f88f9aa4980",
+        "package": "AzaharBadWordList",
+        "url": "https://raw.githubusercontent.com/azahar-emu/azahar/8a2c44be5688db1cea22ba7c485e8befc892e673/externals/open_source_archives/include/bad_word_list.app.romfs.h",
+        "version": "8a2c44be5688db1cea22ba7c485e8befc892e673"
+    },
+    "azahar-country-list": {
+        "hash": "6c1de8832ecd447bfd09372799a9a2e54fad2bfdf0e269137f6866a398dc99392990375151eedd1d8a6ed7ed60ff8e7aab5675546c0e9de1db4d8c8497862813",
+        "package": "AzaharCountryList",
+        "url": "https://raw.githubusercontent.com/azahar-emu/azahar/a1517612d37f17e673849e04673a0f3c146d6208/externals/open_source_archives/include/country_list.app.romfs.h",
+        "version": "a1517612d37f17e673849e04673a0f3c146d6208"
+    },
+    "azahar-shared-font": {
+        "hash": "8cbbee9b953efa265b3a296fb3c84978cf28d60307a0a47bf4f6104783037c40d5f8eb15b2eed5532e7faa57699721a82098384ee68c329466e4333322d456ed",
+        "package": "AzaharSharedFont",
+        "url": "https://raw.githubusercontent.com/azahar-emu/azahar/7f1303a8344724598015a3e48a4bc5aef77090fc/externals/open_source_archives/include/shared_font.app.romfs.h",
+        "version": "7f1303a8344724598015a3e48a4bc5aef77090fc"
+    },
+    "cacert": {
+        "hash": "1d79b49c96037156e55665b48cefaa10bd0eb162b0626bbab1f6c6e7bfc159f1c7d60b37ed2c2d6b715b86a3ad46ab5261058ee10141905f72a6cc8622429316",
+        "url": "https://curl.se/ca/cacert-2026-10-20.pem",
+        "version": "2026-10-20"
+    },
+    "cgltf": {
+        "hash": "9474b2ae79ac34015b21e4a20813bfc14ad037636304a28ce91011989202a11568b7f7201bca745701163e2c1077425065782a2aa265d53fe6edeb2e7d0e0b0a",
+        "repo": "jkuhlmann/cgltf",
+        "version": "v1.15"
+    },
+    "curl": {
+        "hash": "69cf0feafdc79fbad007cf2fc977b777ce6ccb05d01afd17b5a42f8bedbfcc342fc3a48193faa7f3eafe6800cd7d07948916e8733db1b9de60287ed06219b840",
+        "url": "https://curl.se/download/curl-8.23.0.tar.xz",
+        "version": "8.23.0"
+    },
+    "dav1d": {
+        "hash": "75ab7c922bc9647d73534c9f6c95a514748557adbf7a4debf95eee52ef1db681012cbaad165a46141d904cdd01c1e6319cdea33d254afb5c6b3d968679e55b98",
+        "url": "https://downloads.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz",
+        "version": "1.5.4"
+    },
+    "enet": {
+        "hash": "a0d2fa8c957704dd49e00a726284ac5ca034b50b00d2b20a94fa1bbfbb80841467834bfdc84aa0ed0d6aab894608fd6c86c3b94eee46343f0e6d9c22e391dbf9",
+        "repo": "lsalzman/enet",
+        "version": "v1.3.18"
+    },
+    "ffmpeg": {
+        "hash": "7756f8434371b9bc1d01cf578bf49014e058b0869c3c1df05030f5f4035f1def64b2e7dba3cf340da4dc8dd9239dd5f894530c9e45793ac27876807079aa546a",
+        "package": "FFmpeg",
+        "patches": [
+            "0001-vp9-nvdec.patch",
+            "0002-h264-bigendian.patch"
+        ],
+        "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+        "version": "9.0.2"
+    },
+    "fidelityfx-fsr2": {
+        "hash": "0a7401431c2c5c4f8c940089c42077e497b62d09b10bd22110e68d49c0d2d27183660a515ea4b1c58942483420c1e6a93ee9bac5f0c0fef5584f590fa238c310",
+        "package": "FidelityFX-FSR2",
+        "patches": [
+            "0001-memory-types.patch"
+        ],
+        "repo": "GPUOpen-Effects/FidelityFX-FSR2",
+        "version": "v2.2.1"
+    },
+    "fuzzarm": {
+        "hash": "5b478cdb57f2f12b37b064968a6dc7c482ab9755542ebfb74952b933b368942c246f8096f58a94a1fe8993093ee02a3ae95bfc7491fece0e50e0793c78de822c",
+        "package": "FuzzARM",
+        "repo": "DenSinH/FuzzARM",
+        "version": "a675329cd57da48e3e406216ba2d79dd7e09ee20"
+    },
+    "gba-tests": {
+        "hash": "1ce9860b33ac1239a080d692aa295ca149ca0c415fb895d880aaf88083d72c1621e4902b7807aa2831dced27321b8264bc1c057cec84fcb928b6f5057bd05993",
+        "repo": "jsmolka/gba-tests",
+        "version": "a7113b67e63f83a9b321696ddd7042ccfad6c881"
+    },
+    "glslang-tools-linux-x86_64": {
+        "artifact": "glslang-%VERSION%-linux-x86_64-release.tar.gz",
+        "hash": "0afef8a0fc399aaf6d585653e8a96d9827e49e15cb44d548e3560606accd01a6404302ecb5c4511dce2b994e56d536194364b6d5c00da914fd2844201ac74111",
+        "repo": "KhronosGroup/glslang",
+        "version": "16.6.0"
+    },
+    "glslang-tools-macos": {
+        "artifact": "glslang-%VERSION%-macos-universal-release.tar.gz",
+        "hash": "2ffe7aa415b19a2080065301c2db7d3754a4be73cb00d0a5d947d1848ae4263842ef3f1427a309dad4caa9cd12292a8094f16d3435d836e42bb3061ab205bc02",
+        "repo": "KhronosGroup/glslang",
+        "version": "16.6.0"
+    },
+    "glslang-tools-windows-x86_64": {
+        "artifact": "glslang-%VERSION%-windows-x86_64-release.zip",
+        "hash": "b7b4ae4701f9dbdd1ab77fa489e7f8b3fdaea63eded1dec692d49078c54d783b916d4b1c0283b5c34ea1130aee12b239ff9dd8aa176a1647ceefd6b9419a204f",
+        "repo": "KhronosGroup/glslang",
+        "version": "16.6.0"
+    },
+    "harfbuzz": {
+        "artifact": "harfbuzz-%VERSION%.tar.xz",
+        "hash": "5a0e4f446d47c56f1a7eec0890d6c4dee036ebde398bfb372d883004737518621a7167a368384b411b67920c0a8807e74517574929b0982ba0fd72509ed68d19",
+        "repo": "harfbuzz/harfbuzz",
+        "version": "15.0.0"
+    },
+    "jemalloc": {
+        "artifact": "jemalloc-%VERSION%.tar.bz2",
+        "hash": "a6771bdc3f066fc458d4723cee3018b445b966a96013074b6aa5ee685e9991ca8a20473ee069c9f4b5912b1ed74a705b059f5c19b4e57c3035d428f055b4d7fd",
+        "repo": "jemalloc/jemalloc",
+        "version": "5.4.0"
+    },
+    "libdeflate": {
+        "hash": "06605eabce8635b82e03863c87b515696d08b8a1fc36b746b44b660989613d2ebd6ca1bb13dd0f88244846894dbf5a15169dd443c34dcda64e960fdbd08a8d3b",
+        "repo": "ebiggers/libdeflate",
+        "version": "v1.26"
+    },
+    "lunasvg": {
+        "hash": "62cf1433f4d158008ab07c9b6a83dca2322e1adf97a7f30a2021be5610af7b28e2ed54c75292fb382a3dcc6205f0e7b8d815b8a59aa11843a059883203d191c1",
+        "repo": "sammycage/lunasvg",
+        "version": "v3.5.0"
+    },
+    "lz4": {
+        "artifact": "lz4-%NUMERIC_VERSION%.tar.gz",
+        "bundled": true,
+        "hash": "8c4ceb217e6dc8e7e0beba99adc736aca8963867bcf9f970d621978ba11ce92855912f8b66138037a1d2ae171e8e17beb7be99281fea840106aa60373c455b28",
+        "min_version": "1.10.0",
+        "numeric_version": "1.10.0",
+        "repo": "lz4/lz4",
+        "version": "v%NUMERIC_VERSION%"
+    },
+    "mgba-suite": {
+        "artifact": "suite.gba",
+        "hash": "c30050f821b41212ce6baab646e620bd5c30813092c93bc1ef8c2640975fd73b0ef5e2b9e5327aa633eaa12931eb627079392e821e17a48239795ae4d4884b71",
+        "repo": "scarletnx/mgba-suite-rom",
+        "version": "v0-e694203"
+    },
+    "miniz": {
+        "artifact": "miniz-%VERSION%.zip",
+        "hash": "15261f4dfa69851df2d87ea544248b2f8737a50123852071677238004b37b0dd844632e4221624742c7d68a3f4699d7ed51e844e6da0c0cac423ce4d8d70738b",
+        "repo": "richgel999/miniz",
+        "version": "3.1.2"
+    },
+    "noto-sans-jp-subset": {
+        "hash": "b7e2a42fcbf1ffef244d01ce775fb1a86105f27d48ad5ad62a15d655e46c8bc15055a8fa771138192df1b9961db9416cd3ebc04c740d7b1a33ffec80078a2fa7",
+        "package": "NotoSansJPSubset",
+        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansJP-Subset.ttf",
+        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
+    },
+    "noto-sans-kr-subset": {
+        "hash": "c26624e48e304eca027e3b504c94aba0990ce6fff1f92e43f55730c3ec1deea0158c2947219dc9c47d64469dba05a8ac742584a0728b72d4de2f32261dc15e6f",
+        "package": "NotoSansKRSubset",
+        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansKR-Subset.ttf",
+        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
+    },
+    "noto-sans-sc-subset": {
+        "hash": "ec5c868b02dcf9ee830f01c713f1e68e50acee4aa01131ef97ccca41da8123c0c481320488e7497a51fcf2cc1f09c3761458eea0c0eff6e88e092a36efa582b4",
+        "package": "NotoSansSCSubset",
+        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansSC-Subset.ttf",
+        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
+    },
+    "noto-sans-tc-subset": {
+        "hash": "9a1480d788d4ef9028c524e4e826825486981b2138c242855f89b8cc8a9f1c5b22295ef1d40f84585481c16fb036afd2fb95961b6edbd0b8c39439b06e2386dd",
+        "package": "NotoSansTCSubset",
+        "url": "https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansTC-Subset.ttf",
+        "version": "777f377013806bc4cdbbc0306eca6e7e9c835df2"
+    },
+    "openssl": {
+        "artifact": "%VERSION%.tar.gz",
+        "hash": "cc424e5f8470a47e2c7345e95516a6a0e2a5eee0fe4feef3de3d39b75071b1f42f4a2388d1c8926652bba4082108b7050ddc30b274543b62937c46bdcad3b3c0",
+        "package": "OpenSSL",
+        "repo": "openssl/openssl",
+        "version": "openssl-4.0.3"
+    },
+    "plutovg": {
+        "hash": "57349751bfc9020e63042f472d828ddc509f724d0c82cdaf34e2047f6333de192c5a4cc6aed376e98a000bd68b3b05f1c00ca84bf7163a16c6c2860bc33fb8d0",
+        "repo": "sammycage/plutovg",
+        "version": "v1.3.3"
+    },
+    "renderdoc_app": {
+        "hash": "61e9ef550875c9d8fdbadfd8220eb86c91ea4d2c0060fd4ceb89e045b3724e8d76513ea73c6a2ca3bcca2b0471c1a3b2d102e72be3ca5b906d8e49c79b53daac",
+        "url": "https://raw.githubusercontent.com/baldurk/renderdoc/v1.46/renderdoc/api/app/renderdoc_app.h",
+        "version": "v1.46"
+    },
+    "rnnoise": {
+        "hash": "5a282a76d1c9b818bb4edb0d1de868e8d86f50cf149e3c637ee2d383a33d36db298bdad9844a5f4923373ad227e385742928ad121e663e368bdc0b85ba04b56a",
+        "repo": "xiph/rnnoise",
+        "version": "v0.1.1"
+    },
+    "sdl3": {
+        "find_args": "CONFIG",
+        "hash": "12fcb5592016b27922b08d1580d75f5f15c72e67cf04415e2bd824dc7563ac940c25bbe368b03d0a755f5832803049467e3d0ee6784ed3684792bc4d7741af50",
+        "min_version": "3.4.18",
+        "options": [
+            "SDL_SHARED OFF",
+            "SDL_STATIC ON",
+            "SDL_TEST_LIBRARY OFF",
+            "SDL_TESTS OFF",
+            "SDL_EXAMPLES OFF",
+            "SDL_INSTALL OFF",
+            "SDL_UNIX_CONSOLE_BUILD ON",
+            "SDL_ALTIVEC OFF"
+        ],
+        "package": "SDL3",
+        "repo": "libsdl-org/SDL",
+        "version": "release-3.4.18"
+    },
+    "snx_av1_b8-01-size-66x66": {
+        "hash": "d2a617948bfefdd48d652800e7807b284a0069e907326c512d92c394b4127210f539201980da5d3a018c38a7ad96fc5686ea298339429bef43cfd7391e092138",
+        "url": "https://storage.googleapis.com/aom-test-data/av1-1-b8-01-size-66x66.ivf",
+        "version": "1"
+    },
+    "snx_av1_b8-01-size-66x66_md5": {
+        "hash": "42a9a893a17545f47b9a9ba72cc4e46a2137d4ed9d7aae62fc42e667a62bce26e60c0b79ca7590a9a1cd14f9c8650bfe8294650d547902d701e5902edafcef5c",
+        "url": "https://storage.googleapis.com/aom-test-data/av1-1-b8-01-size-66x66.ivf.md5",
+        "version": "1"
+    },
+    "snx_av1_b8-05-mv": {
+        "hash": "024c96afc5e7b2739a6efb9140548fb8c9089031a0b30730d41adabd7c713361605f72478d4b3f1ba1260ff0032497735b236a0823b154e3fe8e26dac6a80607",
+        "url": "https://storage.googleapis.com/aom-test-data/av1-1-b8-05-mv.ivf",
+        "version": "1"
+    },
+    "snx_av1_b8-05-mv_md5": {
+        "hash": "d3414659adfa281c7cf0d663c641c962d4d411c2525bc8da5a60778d62afac70a93f457e1bede95543bbf68f3ec780ff5f5d866675459ac8db3ad43f4f2dd121",
+        "url": "https://storage.googleapis.com/aom-test-data/av1-1-b8-05-mv.ivf.md5",
+        "version": "1"
+    },
+    "snx_av1_b8-23-film_grain-50": {
+        "hash": "e7bbc02dbd2d59626365651c1265001d3b998a66f42794cca27a440297a438a88619257a432b017d0ed36858245339294d1722d6ad617d3cf806b8c9ef39883d",
+        "url": "https://storage.googleapis.com/aom-test-data/av1-1-b8-23-film_grain-50.ivf",
+        "version": "1"
+    },
+    "snx_av1_b8-23-film_grain-50_md5": {
+        "hash": "c5e24a62dafadd2345d2846492ef7b35c54c5de2baa74f83c8ca7c67e295015736eeb01e576076ee2862e8ac50404d7490ff6ea0a43013a3994230d6624f202f",
+        "url": "https://storage.googleapis.com/aom-test-data/av1-1-b8-23-film_grain-50.ivf.md5",
+        "version": "1"
+    },
+    "snx_av1_b8-24-monochrome": {
+        "hash": "be0375dbe2c482eb9a769bc05c4ac9eb1db1012c6cca84ccca4bf3dccdd48b25476b2ff404a9069ed2f8d868fd5bb9fd33bc9a6829e8fc70cad7d5bafd9bcab7",
+        "url": "https://storage.googleapis.com/aom-test-data/av1-1-b8-24-monochrome.ivf",
+        "version": "1"
+    },
+    "snx_av1_b8-24-monochrome_md5": {
+        "hash": "6a308719d6adc137d85cee7cbacf54990b80a9e71af3b1077e24e991b2c3f4a5dae14aa94428ae5728893467005706c175fc537b06c813da6a44b92568707638",
+        "url": "https://storage.googleapis.com/aom-test-data/av1-1-b8-24-monochrome.ivf.md5",
+        "version": "1"
+    },
+    "snx_vp9_02-size-66x66": {
+        "hash": "e06962f1b5869113d90a4688f477e0e0f3b3c9de8eda79df8251edfae98123dd1718dec5d411a4bbb71735c0c3141749494f3ac147263dae7a1571dcd5583423",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-02-size-66x66.webm",
+        "version": "1"
+    },
+    "snx_vp9_02-size-66x66_md5": {
+        "hash": "86595ef07e6386cabe66901a04361eac6726ee1dbb51b0618cc975fcfd2bfae1b033ee41b4829572bc5f51cfc50578beff33a1551959cf613257b576056da014",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-02-size-66x66.webm.md5",
+        "version": "1"
+    },
+    "snx_vp9_03-deltaq": {
+        "hash": "bb067dd5923d4f591ec8631aa6eb1248f9d9d1151dbee8dc6b1f403cc6c9631453dbe9fa6d4b914d763c07a507e0199646ff15f39d87aba27f6d1ae41be8e63b",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-03-deltaq.webm",
+        "version": "1"
+    },
+    "snx_vp9_03-deltaq_md5": {
+        "hash": "c0dd89f0bee7c9729b68f6b0c3ae8992963d1c9bd8d391a9d7c0acb7fd9394c81826fd70961cfb27094fca85023de52c64b190f8f66e5a9b76f2d1d61ea8acb7",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-03-deltaq.webm.md5",
+        "version": "1"
+    },
+    "snx_vp9_05-resize": {
+        "hash": "ded9e61d35d3a6ab09a5a8b6c6e3869094db489c6e2702079453a6db0dbd28f7da86ad2bcbc4c919789b536061015b8234048c5a75933105a632c2cb42ac17ad",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-05-resize.ivf",
+        "version": "1"
+    },
+    "snx_vp9_05-resize_md5": {
+        "hash": "f3515f1da5027084cb3a7dd770cf066c62149658b73027bfb3867417a1673e47992412565328dc6c5d17818c9f4fbf823af2eebdcdc647a14299d7b5a109eaba",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-05-resize.ivf.md5",
+        "version": "1"
+    },
+    "snx_vp9_07-frame_parallel": {
+        "hash": "296049165ce534c3ada4e5421bb12be1f20d6d55aa7d2e0b5e8762c4a40c6d627e69a6b5c523ac3e57343672dc8040c9536ae1829aa7b93b1fbee513e579fde3",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-07-frame_parallel.webm",
+        "version": "1"
+    },
+    "snx_vp9_07-frame_parallel_md5": {
+        "hash": "81bde5d88dd64e74c2829b4b41f113b17377c96563d6035e9a5eb8e7a7b3bd536fb72df309a9d959a02f98fa68ce552818e4fa0228af2b76a632304e22420dd9",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-07-frame_parallel.webm.md5",
+        "version": "1"
+    },
+    "snx_vp9_08-tile-4x4": {
+        "hash": "e6f24d2cf231c6a08ffb7396f62434dc354ff37199d07ee7c9f9f8eec2d40bb75583bf3d3315a0d2b6f9295dcbc0223c6b9592043a2bc903b79e6c625aafd4e5",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-08-tile-4x4.webm",
+        "version": "1"
+    },
+    "snx_vp9_08-tile-4x4_md5": {
+        "hash": "72f854f92d26b9c2c182d15aa90851334ba1a7bc0a352446807155e0a8f4e726e9c860799a5bf0fa07a17963904f4923860acff1d9630b584f331684005c74f7",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-08-tile-4x4.webm.md5",
+        "version": "1"
+    },
+    "snx_vp9_09-lf_deltas": {
+        "hash": "944332fe4e7a081a1c9be2cade73b7b591f474c86f9acdeff4696d5f65e6f030531118c3778da035dcef246de07b15f07ad6b505a6077cff7328391ab82f4fcf",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-09-lf_deltas.webm",
+        "version": "1"
+    },
+    "snx_vp9_09-lf_deltas_md5": {
+        "hash": "05d1e780a398ad79313897decc13742fdaedd738a64e3cf5ad938684065b8631a1d15de00baacf3e7a287f02970b9ec8f586057949e9adf2a4370c41bb534e91",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-09-lf_deltas.webm.md5",
+        "version": "1"
+    },
+    "snx_vp9_10-show-existing-frame": {
+        "hash": "8b175139dd940f4a8958970f2e262a99c9a339f6d2f3ade68e9202f45dab375755fa03a8de76d0b42d6b0129bfde0f7f723ed1a3bab93486c06d0a98f9c48034",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-10-show-existing-frame.webm",
+        "version": "1"
+    },
+    "snx_vp9_10-show-existing-frame_md5": {
+        "hash": "2fa6d1d06b4409d1dc5de6baf2206a5a6baca389a9449ec9842c9eb185a158f23366c347dc45fa0c67f5ffa47d6fc173af8ab283b761d916bb7503e298d02637",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-10-show-existing-frame.webm.md5",
+        "version": "1"
+    },
+    "snx_vp9_11-size-351x287": {
+        "hash": "36462ca2a09b7cbfbec1f554e92b1bc2886108f64d3c85cae24d199ff9fed6bc317a51ee35a82d081c0acc6e3c0c9771b416ae2791283eab98515d8640d0e16e",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-11-size-351x287.webm",
+        "version": "1"
+    },
+    "snx_vp9_11-size-351x287_md5": {
+        "hash": "2cc5c9ca61c85f7298cc5cadc6bc835b093a994dac647bac8122924595a8075836abacaa572f0f89faeeb1d1f172def8e6e8d57223bbdb227e057d390bf2a6ec",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-11-size-351x287.webm.md5",
+        "version": "1"
+    },
+    "snx_vp9_15-segkey": {
+        "hash": "36e2e7e1154cdf53580573a37ea5dcf281a6b045860471f35ef6778d13e3145c0673f87fdab0c5ddbe4c940e3671851032f150a35c98199eb2fc2233936f1a65",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-15-segkey.webm",
+        "version": "1"
+    },
+    "snx_vp9_15-segkey_adpq": {
+        "hash": "0b785757ab249db37e91d8a9bbaef0650d4cd4f9845c8736ba45a2b293e91ee5b5aee73cde098f3b9b63f1773d748ec6938b91875b8bab296d74e776c64c70b5",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-15-segkey_adpq.webm",
+        "version": "1"
+    },
+    "snx_vp9_15-segkey_adpq_md5": {
+        "hash": "de8c0c65ac685199d3af34c1b25f51201840c9e923d78c173c7546d35d89d79bd38a126639c747948aaf085d29642e5e6e5bbae2d46abf659d58f5dd9011da9a",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-15-segkey_adpq.webm.md5",
+        "version": "1"
+    },
+    "snx_vp9_15-segkey_md5": {
+        "hash": "07c67da4e1181320bdd3d93bb2b6d57f4fde7fce752ffb9babd8cc86e1e3c2b1d7ee6a509b331852b0f36f56025210a280ec8ffe6ef10ae76e3d113098018cb6",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-15-segkey.webm.md5",
+        "version": "1"
+    },
+    "snx_vp9_16-intra-only": {
+        "hash": "6970cf0fa8cfe14944c41b2f723372bd96c35cc861ee565548557f8f6090ee7bf25312de6050ef7319f82ba4957d09e633833add8729edfa38c90439a6bd177e",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-16-intra-only.webm",
+        "version": "1"
+    },
+    "snx_vp9_16-intra-only_md5": {
+        "hash": "fdf1850f66044e9fd2af9cd8f1ade5cb1f7fe1050cec2e314b323ceb932441b93f058438548a4313e317ecfbe10fd48934cc5f51c31dc2ec2eaa4bf4394e4e88",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-16-intra-only.webm.md5",
+        "version": "1"
+    },
+    "snx_vp9_17-show-existing-frame": {
+        "hash": "7fef43f7d3ca0c405cb2a99a6b35dfb19ac5c602e9d6b9c6c87b0a8474cfd51171d597aa1bbdc0acbc7ed26c77a470947a962f878c7d670cdf70cb9555945cd0",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-17-show-existing-frame.webm",
+        "version": "1"
+    },
+    "snx_vp9_17-show-existing-frame_md5": {
+        "hash": "7c59d2a883f52fd2f58208de1990bea8dea83ca08519d78c1ba3f114846bdad37e548df24ad43084c2061de285888790de575d692894d49fc775ee7a4944e8e7",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-17-show-existing-frame.webm.md5",
+        "version": "1"
+    },
+    "snx_vp9_19-skip": {
+        "hash": "c8c6141a67565e26d9a0c0ded5d0d56b4d13b53d595d897a4e5d6b9e41359a1944bfcf7c9761758c60cf4a277d61334d24347b9358fbff345866a1fa5ec50652",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-19-skip.webm",
+        "version": "1"
+    },
+    "snx_vp9_19-skip_md5": {
+        "hash": "1593b0b336a46c8209a6cfce882fbca2f735ace4fe7a6ad6a7041a0083173bf96b5e2176c199eed75d4007a26c1e55152bfade9419bcc3c39be0d94192aa1741",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-19-skip.webm.md5",
+        "version": "1"
+    },
+    "snx_vp9_20-big_superframe-01": {
+        "hash": "776f52e7b900363c428794e96a241e27738e70823cfc530b9f08d303c1896ea68a57a11daef231676690f268c06fa4d1948a3cb2371a67cd7a2b8a2e2e39e1ee",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-20-big_superframe-01.webm",
+        "version": "1"
+    },
+    "snx_vp9_20-big_superframe-01_md5": {
+        "hash": "c13370688105e3082886786b6c7db89b8f039e899380d23b5d1b0a38e3070ccdec7fd6e6943a18976553c0ef298df3a4fe0f96a66c078f072e657ed15e3eb72d",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-20-big_superframe-01.webm.md5",
+        "version": "1"
+    },
+    "snx_vp9_21-resize_inter_320x180_5_1-2": {
+        "hash": "92be06ce12294ec0abe84342c823f94ae133f03e38587daa431e5535f0547e6fa3151fb7f162f9dc6275fe9d1bc0dceab8da9f25d6e1d6089692f2cb7a08fd10",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-21-resize_inter_320x180_5_1-2.webm",
+        "version": "1"
+    },
+    "snx_vp9_21-resize_inter_320x180_5_1-2_md5": {
+        "hash": "bbaeb9548f827ace5e7504bc22dbede6993d9daf7695b39b4a4e9c8d2b2bb339906ba2f3e9dbb8da144b7c9d329143250343d39498c961039f25f5755360c7a8",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-21-resize_inter_320x180_5_1-2.webm.md5",
+        "version": "1"
+    },
+    "snx_vp9_22-svc_1280x720_3": {
+        "hash": "407065b2eb981de91fc51a4978e858465f01ab7cc4c905ab2597f440349a2cde63bd11197aa1a1fb8675951e30671124ac6c9a3da2cca8c16ac01476699ac600",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-22-svc_1280x720_3.ivf",
+        "version": "1"
+    },
+    "snx_vp9_22-svc_1280x720_3_md5": {
+        "hash": "eec2a199244af699b7b78c1ab17c48ecc85545a184c25c87e4bf7f2c325c060cbc715272358434b71470f3c70398e4ce60618088e3f78b2b6de72ce70499296b",
+        "url": "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/vp90-2-22-svc_1280x720_3.ivf.md5",
+        "version": "1"
+    },
+    "spirv-headers": {
+        "hash": "97271ca47dd397af9a87ee050d88ab81566214e36a4c4f42f95aa61969bf6393dc9a94e5143a07b0b4c1414ccf61ec03884b5ce27ee80e216371733d70dc52bd",
+        "package": "SPIRV-Headers",
+        "repo": "KhronosGroup/SPIRV-Headers",
+        "version": "496543121ce6419f23d6fa5d7194ba66c36212d2"
+    },
+    "spirv-tools": {
+        "hash": "c9f71c01f382b6a73211241f0f9e48de34e3e3355e1f1ad3cf864ad7b3a76326e88c7fad0d8e509e09592dbc03e678cf0a267cec61cc4b7e33f206de59b2d7f7",
+        "package": "SPIRV-Tools",
+        "repo": "KhronosGroup/SPIRV-Tools",
+        "version": "v2026.4"
+    },
+    "sqlite": {
+        "hash": "70a88503f1a4e287ed2d89157a0c23d9ecc162f2d4604659cea6f783b3c276dada5ee2bb8cbe967e4a2d9f2caba7f9b1529f66332158cb1e9727bf0a34d47f48",
+        "url": "https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip",
+        "version": "3.54.1"
+    },
+    "tracy": {
+        "hash": "a274fbb62ec25ab9b6025eeeb6e0458ba282fe61509dcd0daf824bdbcf3215c25eb992271d33cc88544068f83e00d791833e980eed7c8f4a1cd3ef71841cf38e",
+        "repo": "wolfpld/tracy",
+        "version": "v0.15.0"
+    },
+    "volk": {
+        "hash": "c1d97fb4419effe08e84dc83e220229e1a070359b4d7187cfd54142df0dd0cee525d791d89e0deadb399d270772805ba1f48f8f6c6f3dd3820a44a947ca297db",
+        "repo": "zeux/volk",
+        "version": "vulkan-sdk-1.4.363.0"
+    },
+    "vulkan-headers": {
+        "bundled": true,
+        "find_args": "NAMES VulkanHeaders CONFIG",
+        "hash": "8298006f8c926bf6f662c6eaddd14d5fcba5f192e6a3fdd1543449a971b50c74c05ca714ff50b12047bd274527c477f004114239de9da061c2964afa977616ae",
+        "min_version": "1.4.367",
+        "package": "Vulkan-Headers",
+        "repo": "KhronosGroup/Vulkan-Headers",
+        "version": "v1.4.367"
+    },
+    "xxhash": {
+        "hash": "1585ae3f3feded2492e43f4dd5dd43183329c57ffe92afa907f71eb26deaf34beab4434458a2d87e8795a4226339c5b0b493bd8a9186bb6f0c752fa1fdef10e3",
+        "repo": "Cyan4973/xxHash",
+        "version": "v0.8.4"
+    },
+    "yuzu-oss-extension": {
+        "hash": "cbc7a2ccf7d7bd86adabb642a75d9d0e286a922654f2f570a9fc1baf56324049e6558a31d09d7426ffaa15baefea58bf0ce1028fc13c2dffbb3a44df0764c857",
+        "package": "YuzuOSSExtension",
+        "url": "https://raw.githubusercontent.com/eden-emulator/mirror/2b87305d319f0bd04da36fb96314934f37b12637/src/core/file_sys/system_archive/data/font_nintendo_extended.cpp",
+        "version": "2b87305d319f0bd04da36fb96314934f37b12637"
+    },
+    "yyjson": {
+        "hash": "6447bbb50d18a4e0d57ac3232bd23eed7f94a16cff781d4779d28c81833b8de7566e730f827f1e7e6d60a06fcbbdc41fd581a1f872901391f7a09288bb93fd40",
+        "repo": "ibireme/yyjson",
+        "version": "0.13.0"
+    },
+    "zlib": {
+        "artifact": "zlib-%NUMERIC_VERSION%.tar.gz",
+        "hash": "70963771ea5d763614278a69b474f09b7d237ef8f53b675a10fe31d9923aeef601504b35d7ebd1b1e7f347e9ebb048e6b3b47fffdf137e7bdc7e8d5eb4ec4692",
+        "numeric_version": "1.3.2",
+        "repo": "madler/zlib",
+        "version": "v%NUMERIC_VERSION%"
+    },
+    "zstd": {
+        "artifact": "zstd-%NUMERIC_VERSION%.tar.gz",
+        "hash": "b4de208f179b68d4c6454139ca60d66ed3ef3893a560d6159a056640f83d3ee67cdf6ffb88971cdba35449dba4b597eaa8b4ae908127ef7fd58c89f40bf9a705",
+        "numeric_version": "1.5.7",
+        "repo": "facebook/zstd",
+        "version": "v%NUMERIC_VERSION%"
+    }
+}

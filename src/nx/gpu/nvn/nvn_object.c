@@ -306,11 +306,11 @@ u64 nvn_DeviceGetTexelFetchHandle(CPU* c, u64 d, i32 id) {
     (void)d;
     return (u64)(i64)id | 1ull << 32;
 }
-/* a counter's timestamp is in the GPU's 19.2 MHz ticks */
+/* a counter's timestamp is in the graphics unit's ticks (runtime/clock.h) */
 u64 nvn_DeviceGetTimestampInNanoseconds(CPU* c, u64 d, u64 counter) {
     (void)c;
     (void)d;
-    return NVN_OBJ(NVNcounterData, counter)->timestamp * 625 / 12;
+    return snx_gpu_ns_of_ticks(NVN_OBJ(NVNcounterData, counter)->timestamp);
 }
 /* fast clear values are hints to the hardware's compression */
 int nvn_DeviceRegisterFastClearColor(CPU* c, u64 d, u64 color, i32 format) {
@@ -3042,11 +3042,11 @@ i32 nvn_DeviceGetDepthMode(CPU* c, u64 d) {
     (void)c;
     return (i32)NVN_OBJ(const NvnDevice, d)->depth_mode;
 }
-/* the GPU's timestamp now, in nanoseconds: its 19.2 MHz ticks, as GetTimestampInNanoseconds converts a counter's */
+/* the GPU's timestamp now, in nanoseconds: its ticks, as GetTimestampInNanoseconds converts a counter's */
 u64 nvn_DeviceGetCurrentTimestampInNanoseconds(CPU* c, u64 d) {
     (void)c;
     (void)d;
-    return guest_gpu_ticks() * 625 / 12;
+    return snx_gpu_ns_of_ticks(guest_gpu_ticks());
 }
 
 /* ============================================================ builder getters: what was set */

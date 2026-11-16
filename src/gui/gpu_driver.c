@@ -8,6 +8,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
 #include "gui/i18n.h"
+#include "nx/runtime/ini.h"
 #include <libdeflate.h>
 #include <miniz.h>
 #include <stdio.h>
@@ -301,6 +302,11 @@ int gui_gpu_driver_remove(const char* dir, const char* id, char* said, size_t si
 }
 
 char* gui_run_option(const char* key, const char* game_ini, const char* global) {
+    size_t size;
+    char* option;
     if ((game_ini && snx_ini_has(game_ini, key)) || !global || !global[0]) return NULL;
-    return snx_format("--%s=%s", key, global);
+    size = ini_option(NULL, 0, key, global) + 1;
+    option = (char*)snx_alloc(size);
+    ini_option(option, size, key, global);
+    return option;
 }

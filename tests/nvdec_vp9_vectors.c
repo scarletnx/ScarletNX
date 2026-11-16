@@ -5,7 +5,7 @@
    it, and a player reads the surface after the job's fence), a hidden one too, which a later frame shows again or
    predicts from, and nothing is left undone when the stream ends. The jobs come from FFmpeg's decoder reading the
    vector (nvdec_vp9_jobs.c); what decodes them is nvdec.c, vp9_rebuild.cpp and FFmpeg with
-   cmake/ffmpeg-vp9-nvdec.patch, as in the runtime. The surfaces are linear here: block linear writes are
+   .patch/ffmpeg/0001-vp9-nvdec.patch, as in the runtime. The surfaces are linear here: block linear writes are
    nvdec_packets's.
 
    usage: snx-test-nvdec-vp9-vectors VECTOR MD5-LIST */

@@ -15,7 +15,9 @@
    no buffer, a buffer smaller than the file and a path Disable cannot take. A save's Restore flag, clear on the
    device's save, and with "restore-null", "restore-account" and "restore-card" the stops on no place for it and on a
    mount with no save attribute, an account's save and the SD card. The SD card under MountSdCardForDebug's name, in
-   both games, after which a folder made on it is native */
+   both games, after which a folder made on it is native. With "unmount-save", "unmount-rom" and "unmount-dir", the
+   stop of Unmount with files or directories open on the mount: each one logged with its path, then FileNotClosed, or
+   DirectoryNotClosed when only directories are open */
 #include "nx/nn/fs.c"
 #include "hle/hook/hooks.hook.inc" /* fs.hook's table, and a 32-bit game's */
 #include <stdarg.h>
@@ -155,8 +157,9 @@ u32 fs_root_time_stamp(FsNode* root, const char* path, u64* seconds) {
 }
 i64 fs_root_space(int total) { return (void)total, 0; }
 /* a save's file and the card's: /five, of 5 bytes, on either root, opened to read; nothing else is there. The opens
-   and closes are counted */
-static FsNode five = {.size = 5};
+   and closes are counted. Its parent is the save's root once a check needs its path */
+static char name_five[] = "five", name_folder[] = "folder", name_inner[] = "inner";
+static FsNode five = {.name = name_five, .size = 5};
 static unsigned files_open;
 u32 fs_file_open(FsNode* root, const char* path, u32 mode, FileData* out) {
     if ((root != save_root && root != sd_root) || strcmp(path, "/five") || mode != 1) return FSR(1);
@@ -173,8 +176,12 @@ u32 fs_file_write(FileData* f, u32 option, u64 off, u64 addr, u64 size) {
     return (void)f, (void)option, (void)off, (void)addr, (void)size, FSR(1);
 }
 u32 fs_file_set_size(FileData* f, i64 size) { return (void)f, (void)size, FSR(1); }
+/* a save's directory, /folder/inner, which is the one there; folder's parent is the save's root as five's is */
+static FsNode folder = {.name = name_folder, .is_dir = 1}, inner = {.name = name_inner, .parent = &folder, .is_dir = 1};
 u32 fs_dir_open(FsNode* root, const char* path, u32 mode, DirData* out) {
-    return (void)root, (void)path, (void)mode, (void)out, FSR(1);
+    if (root != save_root || strcmp(path, "/folder/inner")) return FSR(1);
+    *out = (DirData){.node = &inner, .filter = mode & 3};
+    return 0;
 }
 void fs_dir_close(DirData* d) { (void)d; }
 u64 fs_dir_count(const DirData* d) { return (void)d, 0; }
@@ -194,7 +201,16 @@ int snx_utf8_valid(const char* text, size_t n, char* hex, size_t hex_size) {
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
-void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+/* the log, on stderr once a check sets log_shown: the lines a stop logs first are part of what it says */
+static int log_shown;
+void logf_(int lvl, const char* fmt, ...) {
+    va_list ap;
+    (void)lvl;
+    if (!log_shown) return;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+}
 /* the kernel's core and the platform's sleep, as a paced read waits: the sleeps, how many of them the thread spent off
    its core, and whether it holds its core now */
 static KThread self;
@@ -288,6 +304,31 @@ static void image_with_file(u8* b) {
     memcpy(b + files + 0x24, "hello", 5);
 }
 
+/* the archive's image with a folder, /d, that holds one file, /d/f, of the five bytes "hello" */
+static void image_with_folder(u8* b) {
+    u64 dirs = 0x54, file_hash = dirs + 0x34, files = file_hash + 4, data = files + 0x24;
+    u8 *d = b + dirs, *f = b + files;
+    memset(b, 0, 0x100);
+    snx_st_le64(b, 0x50);
+    snx_st_le64(b + 0x08, 0x50), snx_st_le64(b + 0x10, 4);
+    snx_st_le64(b + 0x18, dirs), snx_st_le64(b + 0x20, 0x34);
+    snx_st_le64(b + 0x28, file_hash), snx_st_le64(b + 0x30, 4);
+    snx_st_le64(b + 0x38, files), snx_st_le64(b + 0x40, 0x24);
+    snx_st_le64(b + 0x48, data);
+    memset(b + 0x50, 0xff, 4), memset(b + file_hash, 0xff, 4); /* empty buckets */
+    /* the root: its own parent, no sibling, the child /d at 0x18, no file; then /d, in the root, the file at 0 */
+    snx_st_le32(d, 0), snx_st_le32(d + 4, ROM_NONE), snx_st_le32(d + 8, 0x18), snx_st_le32(d + 12, ROM_NONE);
+    snx_st_le32(d + 16, ROM_NONE), snx_st_le32(d + 20, 0);
+    snx_st_le32(d + 24, 0), snx_st_le32(d + 28, ROM_NONE), snx_st_le32(d + 32, ROM_NONE), snx_st_le32(d + 36, 0);
+    snx_st_le32(d + 40, ROM_NONE), snx_st_le32(d + 44, 1);
+    memcpy(d + 48, "d\0\0\0", 4);
+    snx_st_le32(f, 0x18), snx_st_le32(f + 4, ROM_NONE);
+    snx_st_le64(f + 8, 0), snx_st_le64(f + 16, 5);
+    snx_st_le32(f + 24, ROM_NONE), snx_st_le32(f + 28, 1);
+    memcpy(f + 32, "f\0\0\0", 4);
+    memcpy(b + data, "hello", 5);
+}
+
 #define NAME  0x100u /* a mount name */
 #define PATH  0x140u /* a path */
 #define RESULT   0x200u /* a result's place, 0xee before each call */
@@ -297,6 +338,38 @@ static void image_with_file(u8* b) {
 #define OTHER    0x740u /* a mount name the native layer does not know */
 static void text(u32 at, const char* s) { strcpy((char*)mem + at, s); }
 static void outs(void) { memset(mem + RESULT, 0xee, 0x40); }
+
+/* Unmount with entries open on the mount, each case one: "save" a save's file and folder, while the archive's mount
+   has a file open that is not the save's to name; "rom" the archive's file in its folder, the folder and the root;
+   "dir" only the folder, after its file was opened and closed */
+static void unmount_open(CPU* c, const char* which) {
+    image_with_folder(data_image_bytes);
+    text(NAME, "ng");
+    CHECK(nnfs_mount_system_data(c, NAME, SYSTEM_ID, CACHE, 0x100) == 0);
+    text(PATH, "ng:/d/f");
+    CHECK(nnfs_open_file(c, RESULT, PATH, 1) == 0);
+    if (!strcmp(which, "save")) {
+        save_given = 0;
+        five.parent = folder.parent = save_root;
+        text(NAME, "save");
+        CHECK(nnfs_mount_save_data(c, NAME, CACHE) == 0);
+        text(PATH, "save:/five");
+        CHECK(nnfs_open_file(c, RESULT, PATH, 1) == 0);
+        text(PATH, "save:/folder/inner");
+        CHECK(nnfs_open_directory(c, RESULT, PATH, 3) == 0);
+    } else if (!strcmp(which, "rom")) {
+        text(PATH, "ng:/d");
+        CHECK(nnfs_open_directory(c, RESULT, PATH, 3) == 0);
+        text(PATH, "ng:/");
+        CHECK(nnfs_open_directory(c, RESULT, PATH, 1) == 0);
+    } else {
+        nnfs_close_file(c, snx_ld_le64(mem + RESULT));
+        text(PATH, "ng:/d");
+        CHECK(nnfs_open_directory(c, RESULT, PATH, 2) == 0);
+    }
+    log_shown = 1;
+    nnfs_unmount(c, NAME);
+}
 
 int main(int argc, char** argv) {
     CPU* c = &cpu;
@@ -329,6 +402,7 @@ int main(int argc, char** argv) {
             if (!strcmp(argv[1], "restore-card")) CHECK(nnfs_mount_sd_card(c, NAME) == 0);
             nnfs_get_save_data_restore_flag(c, strcmp(argv[1], "restore-null") ? RESULT : 0, NAME);
         }
+        if (!strncmp(argv[1], "unmount-", 8)) unmount_open(c, argv[1] + 8);
         printf("nn_fs: %s was answered\n", argv[1]);
         return 1;
     }
