@@ -241,6 +241,7 @@ typedef struct {
        pixel shaded) without either. vrs_texel: the pixels that one texel of the device's rate image covers */
     int vrs;
     VkExtent2D vrs_texel;
+    u8 conservative_said; /* the dilations whose cut the log has said (a bit a quarter pixel): each once */
     /* VK_EXT_graphics_pipeline_library with fast linking (pipeline_parts.h's vk_gpl_choose): a new pipeline links
        parts of its shaders that compile once, and an optimized one is made after it (pipeline.c) */
     int has_gpl;

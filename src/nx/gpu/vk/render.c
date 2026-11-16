@@ -4505,9 +4505,16 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
             LOG_LIMIT(1,
                       "vulkan: this GPU has no sample shading: a program asked for per sample is shaded per pixel\n");
     }
-    if (rk->conservative && g_vk.has_conservative)
+    if (rk->conservative && g_vk.has_conservative) {
         k->conservative = rk->conservative;
-    else if (rk->conservative)
+        u8 bit = (u8)(1u << ((rk->conservative - 1) & 3));
+        if (rk->conservative > 1 && !(g_vk.conservative_said & bit)) {
+            char line[256];
+            g_vk.conservative_said |= bit;
+            vk_conservative_dilation(rk->conservative, g_vk.conservative_extra, line, sizeof line);
+            if (line[0]) LOG("%s\n", line);
+        }
+    } else if (rk->conservative)
         LOG_LIMIT(1,
                   "vulkan: this GPU has no conservative rasterization: such draws cover only the pixels they center\n");
     return 1;

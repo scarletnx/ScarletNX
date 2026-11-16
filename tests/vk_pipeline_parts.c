@@ -534,7 +534,24 @@ static void check_clamp_range(void) {
     CHECK(!has(s, n, VK_DYNAMIC_STATE_DEPTH_CLAMP_RANGE_EXT), "in no other part");
 }
 
+/* a conservative draw's dilation: whole within the device's most, else cut to it, and the cut said with both values */
+static void check_conservative_dilation(void) {
+    char line[256];
+    strcpy(line, "left from before");
+    CHECK(vk_conservative_dilation(0, 0.75f, line, sizeof line) == 0.0f && !line[0], "no conservative draw");
+    CHECK(vk_conservative_dilation(1, 0.0f, line, sizeof line) == 0.0f && !line[0], "no dilation asked for");
+    CHECK(vk_conservative_dilation(3, 0.75f, line, sizeof line) == 0.5f && !line[0], "half a pixel within 0.75");
+    CHECK(vk_conservative_dilation(4, 0.75f, line, sizeof line) == 0.75f && !line[0], "the most asked, and had");
+    /* a device that overestimates by no more than a quarter pixel, and one by none (RADV) */
+    CHECK(vk_conservative_dilation(4, 0.25f, line, sizeof line) == 0.25f, "0.75 cut to 0.25");
+    CHECK(strstr(line, "a conservative raster dilation of 0.75 pixels is drawn as 0.25") != NULL, line);
+    CHECK(vk_conservative_dilation(3, 0.0f, line, sizeof line) == 0.0f, "0.50 cut to none");
+    CHECK(strstr(line, "a conservative raster dilation of 0.50 pixels is drawn as 0.00") != NULL, line);
+    CHECK(vk_conservative_dilation(3, 0.0f, NULL, 0) == 0.0f, "with no room for a line");
+}
+
 int main(void) {
+    check_conservative_dilation();
     check_off();
     check_dynamic();
     check_depth_range();
