@@ -149,18 +149,16 @@ static int pass(const SnxVkDeviceRequest* r, int again, VkBanSay say, SnxVkChoic
         VkPhysicalDeviceProperties props;
         char why[600];
         vkGetPhysicalDeviceProperties(devices[i], &props);
-        if (r->score && i != only) {
+        snprintf(why, sizeof why, "has Vulkan %u.%u, below the %u.%u it needs", VK_API_VERSION_MAJOR(props.apiVersion),
+                 VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_MAJOR(r->api), VK_API_VERSION_MINOR(r->api));
+        if (r->score && i != only) { /* another rates higher, said only where none is left */
             if (only == UINT32_MAX)
                 pass_over(r, say, props.deviceName,
-                          props.apiVersion < r->api ? "has a Vulkan version below the one it needs"
-                                                    : "is not one it can run on (its rating)",
-                          reasons, reasons_n);
+                          props.apiVersion < r->api ? why : "is not one it can run on (its rating is below 0)", reasons,
+                          reasons_n);
             continue;
         }
         if (props.apiVersion < r->api) {
-            snprintf(why, sizeof why, "has Vulkan %u.%u, below the %u.%u it needs",
-                     VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion),
-                     VK_API_VERSION_MAJOR(r->api), VK_API_VERSION_MINOR(r->api));
             pass_over(r, say, props.deviceName, why, reasons, reasons_n);
             continue;
         }
