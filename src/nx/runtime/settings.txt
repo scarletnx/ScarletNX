@@ -1336,9 +1336,9 @@ setting Draw state check
     default 0
     startup
     words Off|On
-    help 1 = a draw that keeps the last draw's shaders and pipeline makes them again to compare, and the log names
-    help each difference (a register missing from a group, an input that is not compared). Slow: for checking what
-    help a draw keeps
+    help 1 = a draw that keeps an earlier draw's shaders and pipeline makes them again to compare, and the log names
+    help each difference (a register missing from a group, an input that is not compared, a kept key that is not the
+    help state's bytes). Slow: for checking what a draw keeps
 setting Profiler
     key profile
     only windows

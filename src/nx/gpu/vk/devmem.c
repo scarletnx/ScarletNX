@@ -99,6 +99,7 @@ static struct {
     u64 failed, failed_room, failed_max;
     int coherent;  /* every memory type the CPU maps is coherent: a flush has nothing to do */
     u32 since;     /* requests since the driver's budgets were asked */
+    u32 fetches;   /* the times they were asked: written under lk, read without it (vk_devmem_fetches) */
     u64 block_bytes[VK_MAX_MEMORY_HEAPS], allocated[VK_MAX_MEMORY_HEAPS];
     u32 blocks[VK_MAX_MEMORY_HEAPS], allocs[VK_MAX_MEMORY_HEAPS];
     /* the driver's last answer, and this process's blocks then */
@@ -131,6 +132,7 @@ static u64 heap_usage(u32 h) {
 /* the driver's budgets (lock held) */
 static void budgets_fetch(void) {
     g_devmem.since = 0;
+    __atomic_add_fetch(&g_devmem.fetches, 1, __ATOMIC_RELEASE);
     if (!g_vk.has_budget) return;
     VkPhysicalDeviceMemoryBudgetPropertiesEXT bp = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
@@ -178,6 +180,7 @@ void vk_devmem_frame(void) {
     budgets_fetch();
     pm_unlock(&g_devmem.lk);
 }
+u32 vk_devmem_fetches(void) { return __atomic_load_n(&g_devmem.fetches, __ATOMIC_ACQUIRE); }
 void vk_devmem_budgets(DevMemBudget* b) {
     pm_lock(&g_devmem.lk);
     if (g_devmem.since >= DM_REFETCH) budgets_fetch();

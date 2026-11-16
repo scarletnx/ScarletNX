@@ -126,6 +126,9 @@ static struct {
     u32 stream_cur;
     u64 stream_used;
     u64 stream_since; /* the bytes it handed out since the last submit (frame_check) */
+    /* frame_ring_cap's last answer (0: none), and the ring bytes, the caps and vk_mem_budget_gen it was made at */
+    u64 cap, cap_rings, cap_caps;
+    u32 cap_gen;
     u64 submits[VK_SUB_N]; /* submissions since the start, by why (statistics, tests) */
     u32 stage_told; /* the staging ring's memory type is in the log */
 } g_cmd;
@@ -1363,12 +1366,23 @@ static u64 frame_rings(const Frame* f) {
 }
 /* the bytes a frame writes to its rings before it ends, as it has written rings already: VK_FRAME_RING_CAPS
    allocations, and on a GPU that shares the system's memory, where the rings are memory the caches budget, an eighth
-   of the budget, but no less than two chunks (uma_budget.h). The budget is asked only past those two */
+   of the budget, but no less than two chunks (uma_budget.h). The budget is asked only past those two, and then again
+   only once the rings grew by a chunk since the last answer, or the budget can have moved (vk_mem_budget_gen): each
+   draw asked it, which takes devmem.c's lock and reads every heap. A frame then ends a chunk later at most */
 static u64 frame_ring_cap(u64 rings) {
     u64 caps = VK_FRAME_RING_CAPS * g_vk.alloc_cap, floor = 2 * chunk_size(), usage, budget;
     if (g_vk.mem_model != VK_MEM_UMA || rings < floor) return caps;
+    u32 gen = vk_mem_budget_gen();
+    if (rings < g_cmd.cap_rings) g_cmd.cap_rings = rings; /* a submit took the stream's bytes, or a new frame began */
+    if (g_cmd.cap && g_cmd.cap_caps == caps && g_cmd.cap_gen == gen && rings - g_cmd.cap_rings < chunk_size())
+        return g_cmd.cap;
     vk_mem_use(&usage, &budget);
-    return vk_uma_ring_cap(caps, budget, floor);
+    g_cmd.cap = vk_uma_ring_cap(caps, budget, floor);
+    g_cmd.cap_caps = caps;
+    g_cmd.cap_rings = rings;
+    /* the generation before the ask: a budget the ask or another thread fetched after it is asked for again next */
+    g_cmd.cap_gen = gen;
+    return g_cmd.cap;
 }
 static void frame_check(void) {
     const Frame* f = &g_fr[g_cur];

@@ -7097,6 +7097,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_unmapped_tail.inc"
 #include "vulkan_draw_storage_stages.inc"
 #include "vulkan_mesh_inputs.inc"
+#include "vulkan_draw_memo.inc"
 #include "vulkan_shader_stage_images.inc"
 #include "vulkan_cross_stage_blend.inc"
 #include "vulkan_texture_gradients.inc"
@@ -7804,6 +7805,8 @@ static int run_headless(int argc, char** argv) {
             result = check_fragment_flow_lod();
         else if (!strcmp(name, "fragment_quad"))
             result = check_fragment_quad();
+        else if (!strcmp(name, "draw_memo"))
+            result = check_draw_memo();
         else if (!strcmp(name, "owned_page_reads"))
             result = check_owned_page_reads();
         else if (!strcmp(name, "cross_stage_blend"))
@@ -8218,6 +8221,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_saturate());
     CHECK(!check_sampler_reduction());
     CHECK(!check_shader_invalidation());
+    CHECK(!check_draw_memo());
     CHECK(!check_indirect_dispatch_once());
     CHECK(!check_shared_clamp());
     CHECK(!check_shared_spill());

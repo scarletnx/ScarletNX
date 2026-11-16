@@ -87,6 +87,8 @@ VkResult vk_devmem_invalidate(DevMem mem, u64 off, u64 size);
    present) and after every 30 requests, and follow this process's blocks in between */
 void vk_devmem_budgets(DevMemBudget* b);
 void vk_devmem_frame(void);
+/* the times the driver's budgets were asked (any thread): a budget from vk_devmem_budgets holds while it is the same */
+u32 vk_devmem_fetches(void);
 /* a line of the log for each memory type and kind with memory in it: its blocks, what of them is handed out, the
    largest piece free in one, and the allocations with memory of their own (the ledger's report) */
 void vk_devmem_log(void);
