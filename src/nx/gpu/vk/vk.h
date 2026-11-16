@@ -2000,6 +2000,15 @@ int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off
 void vk_buf_prefetch(u64 gva, u64 len, int step);
 void vk_buf_mapping_changed(void); /* the GPU mappings or the guest memory under them changed: translations go */
 int vk_buf_get_uniform(u64 gva, u64 len, VkBuffer* buf, u64* off); /* a constant buffer: in place where it can be */
+/* The buffer of its own of the cache's entry for the range that the last lookup (vk_buf_get_uniform and the others)
+   bound: the entry's index, and in *id that buffer's number. 0 when the lookup bound something else: a copy in the
+   stream, the page cache, guest memory in place, the mirror, a pending result, which live for their submission only.
+   The token holds while the entry keeps that buffer (vk_buf_own_holds), across submissions and frames: the buffer
+   holds the bytes the entry was checked against, and goes only through drop_own */
+u32 vk_buf_own_got(u64* id);
+/* whether entry i still has the buffer of its own numbered id: then the entry is used in this present, as a lookup
+   would use it (the own buffers least used go first, vk_buf_reclaim) */
+int vk_buf_own_holds(u32 i, u64 id);
 /* a dispatch's read-only storage buffer: no delayed content checks, and in place where it can be, as a constant buffer */
 int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off);
 /* a copy engine's source (DMA, 2D): as strict, and on pool pages compared by contents rather than trusted to the
@@ -2715,11 +2724,12 @@ extern u64 g_vk_capture_draws, g_vk_capture_primitives, g_vk_capture_capped;
 extern u64 g_vk_draw_kept, g_vk_draw_checked;
 /* What the lookups of the draws found, counted since the start (gpu/vk/render.c). A constant buffer slot: its inline
    block kept or staged again, a kept range (before or after the check for pending results), its bytes copied from the
-   CPU, a range from the buffer cache, or a range under a pending result (not kept). A texture slot: its handle kept,
-   resolved again, or past the limits of its pools */
+   CPU, a range from the buffer cache, or a range under a pending result (not kept); and of the kept ones, those kept
+   past the submission they were made in. A texture slot: its handle kept, resolved again, or past the limits of its
+   pools; and its view and its sampler kept */
 enum { VK_CB_INLINE_KEPT, VK_CB_INLINE_STAGED, VK_CB_KEPT, VK_CB_KEPT_CHECKED, VK_CB_COPIED, VK_CB_CACHE, VK_CB_PENDING,
-       VK_CB_N };
-enum { VK_TEX_KEPT, VK_TEX_RESOLVED, VK_TEX_PAST, VK_TEX_N };
+       VK_CB_PAST_SUBMIT, VK_CB_N };
+enum { VK_TEX_KEPT, VK_TEX_RESOLVED, VK_TEX_PAST, VK_TEX_VIEW_KEPT, VK_TEX_SAMPLER_KEPT, VK_TEX_N };
 typedef struct {
     u64 lookups; /* draws that looked for a kept state */
     u64 last;    /* of them, those that took the last draw's */
@@ -2730,6 +2740,7 @@ typedef struct {
     u64 hashed;  /* draw state groups hashed for a key */
     u64 differs; /* the differences draw_state_check=1 found */
     u64 epochs;  /* write tracking epochs with draws */
+    u64 sets_last; /* descriptor sets a stage took again from its last one, with no hash or lookup */
     u64 cb[VK_CB_N], tex[VK_TEX_N];
 } VkDrawCounts;
 void vk_draw_counts(VkDrawCounts* c);

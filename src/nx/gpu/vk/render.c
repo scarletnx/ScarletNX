@@ -1245,11 +1245,13 @@ static void tex_handles(const DsState* ds, int stage, u32 tcb, const ShaderInfo*
                                                              : tex_handle(ds, stage, tcb, si, i);
 }
 
-/* a texture binding of a draw: the headers its handle names, and the texture */
+/* a texture binding of a draw: the headers its handle names, and the texture. memo: the way of g_tex_memo the headers
+   were kept in, plus one (0 for none), which keeps the slot's view and sampler (tex_bind_view) */
 typedef struct {
     u32 handle, have;
     u32 tic[8], tsc[8];
     Surf* t;
+    u32 memo;
 } TexRes;
 /* A capture slice shares the original shader state but writes host-only scratch attachments. */
 static struct {
@@ -1360,9 +1362,10 @@ void vk_render_stats_log(void) {
         (double)(periodic - g_stats.submits[VK_SUB_PERIODIC]) / (double)presents,
         (double)(u32)(epoch - g_stats.ww_epoch) / (double)presents, (double)(n->epochs - w->epochs) / (double)presents);
     LOG("vulkan: lookups in the last %llu presents: constant buffers %llu inline kept, %llu inline staged, %llu kept, "
-        "%llu kept after the pending check, %llu copied from the CPU, %llu from the buffer cache, %llu pending; "
-        "textures %llu kept, %llu resolved again, %llu past the pools; descriptor sets %llu written, %llu reused; %llu "
-        "draws kept the last one's targets\n",
+        "%llu kept after the pending check, %llu copied from the CPU, %llu from the buffer cache, %llu pending, %llu of "
+        "the kept ones past their submission; textures %llu kept, %llu resolved again, %llu past the pools, %llu views "
+        "and %llu samplers kept; descriptor sets %llu written, %llu reused, %llu of those a stage's last; %llu draws "
+        "kept the last one's targets\n",
         (unsigned long long)presents, (unsigned long long)(n->cb[VK_CB_INLINE_KEPT] - w->cb[VK_CB_INLINE_KEPT]),
         (unsigned long long)(n->cb[VK_CB_INLINE_STAGED] - w->cb[VK_CB_INLINE_STAGED]),
         (unsigned long long)(n->cb[VK_CB_KEPT] - w->cb[VK_CB_KEPT]),
@@ -1370,11 +1373,15 @@ void vk_render_stats_log(void) {
         (unsigned long long)(n->cb[VK_CB_COPIED] - w->cb[VK_CB_COPIED]),
         (unsigned long long)(n->cb[VK_CB_CACHE] - w->cb[VK_CB_CACHE]),
         (unsigned long long)(n->cb[VK_CB_PENDING] - w->cb[VK_CB_PENDING]),
+        (unsigned long long)(n->cb[VK_CB_PAST_SUBMIT] - w->cb[VK_CB_PAST_SUBMIT]),
         (unsigned long long)(n->tex[VK_TEX_KEPT] - w->tex[VK_TEX_KEPT]),
         (unsigned long long)(n->tex[VK_TEX_RESOLVED] - w->tex[VK_TEX_RESOLVED]),
         (unsigned long long)(n->tex[VK_TEX_PAST] - w->tex[VK_TEX_PAST]),
+        (unsigned long long)(n->tex[VK_TEX_VIEW_KEPT] - w->tex[VK_TEX_VIEW_KEPT]),
+        (unsigned long long)(n->tex[VK_TEX_SAMPLER_KEPT] - w->tex[VK_TEX_SAMPLER_KEPT]),
         (unsigned long long)(g_vk_dset_new - g_stats.dset_new),
         (unsigned long long)(g_vk_dset_reused - g_stats.dset_reused),
+        (unsigned long long)(n->sets_last - w->sets_last),
         (unsigned long long)(g_vk_targets_kept - g_stats.targets_kept));
     if (g_vk.has_descriptor_heaps) {
         VkDescriptorHeapStats h;
@@ -1425,6 +1432,26 @@ typedef struct {
     u32 used; /* g_tex_memo.use when last found or kept: the way used longest ago makes room */
     /* vk_gfx_image_adds() + 1 when no storage image but its texture's own was pending over its texture: 0 unknown */
     u64 img_adds;
+    /* The view and the sampler a slot made of the two headers (tex_bind_view, tex_bind_sampler): what vk_tex_bind_view
+       and vk_tex_bind_sampler make depends on nothing else but the surface, how the program reads the slot (how) and
+       settings read once at start. Kept in the frame they were made in (frame, vk_frame_id() + 1, 0 for none): nothing
+       destroys a view or an image before the work of its frame is done (vk_defer_*), so another surface made since at
+       the surface's address has another image (img). A view is also made from the image's finest level with memory
+       (lod_floor). Emptied when the headers are kept again */
+    struct {
+        u64 frame;
+        const Surf* t;
+        VkImage img;
+        u32 floor, how;
+        VkImageView view;
+    } view;
+    struct {
+        u64 frame;
+        const Surf* t; /* the texture whose view is bound, or NULL */
+        VkImage img;
+        u32 how;
+        VkSampler smp;
+    } smp;
 } TexMemo;
 /* by the handle, in sets of TEX_MEMO_WAYS ways. With one way in 4096 slots, a handle that shared its slot with another
    one the draws used too put it out each time: 9% of an Ounce game's lookups in a race and 22% of a Switch game's in
@@ -1487,7 +1514,8 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     }
     u64 tic_base = b->tex_pool, tsc_base = b->smp_pool;
     u64 tic_at = tic_base + (handle & 0xFFFFF) * 32ull, tsc_at = tsc_base + ((handle >> 20) & 0xFFF) * 32ull;
-    TexMemo* set = g_tex_memo.set[((u64)handle * VK_FIB_MULT) >> (64 - TEX_MEMO_SET_BITS)];
+    u32 set_at = (u32)(((u64)handle * VK_FIB_MULT) >> (64 - TEX_MEMO_SET_BITS));
+    TexMemo* set = g_tex_memo.set[set_at];
     TexMemo* m = NULL;
     for (u32 w = 0; w < TEX_MEMO_WAYS && !m; w++)
         if (set[w].t && set[w].handle == handle && set[w].ds == ds && set[w].tic_base == tic_base &&
@@ -1498,6 +1526,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     u64 adds = __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED);
     x->handle = handle;
     x->have = 1;
+    x->memo = 0;
     /* an index past its pool's limit names no header: no texture, or the
        default sampler, as Eden's VisitImageView and the sampler table have it. One game's movie overlay hands
        texture indices 0x2000 past a 2048-entry pool, where shader code lies */
@@ -1531,6 +1560,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         m->used = ++g_tex_memo.use;
         memcpy(x->tic, m->tic, sizeof x->tic);
         memcpy(x->tsc, m->tsc, sizeof x->tsc);
+        x->memo = set_at * TEX_MEMO_WAYS + (u32)(m - set) + 1;
         if (m->rt) {
             if (m->t->layout != VK_IMAGE_LAYOUT_UNDEFINED) vk_rt_note_read(m->t);
             if (m->t->layout != VK_IMAGE_LAYOUT_UNDEFINED) {
@@ -1539,9 +1569,13 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
                 return;
             }
             m->t = NULL; /* undefined: memory has its texels, resolved below */
+            x->memo = 0;
         } else {
             x->t = vk_tex_recheck(m->t);
-            if (!x->t) m->t = NULL;
+            if (!x->t) {
+                m->t = NULL;
+                x->memo = 0;
+            }
             g_stats.n.tex[VK_TEX_KEPT]++;
             return;
         }
@@ -1574,6 +1608,8 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         memcpy(m->tsc, x->tsc, sizeof m->tsc);
         m->t = x->t;
         m->img_adds = 0;
+        m->view.frame = m->smp.frame = 0;
+        x->memo = set_at * TEX_MEMO_WAYS + (u32)(m - set) + 1;
     }
 }
 
@@ -2051,51 +2087,198 @@ VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, i
     return vk_sampler(tc, raise, num != 0);
 }
 
+static void draw_differs(const char* what);
+/* the way of g_tex_memo that x's headers were kept in, while it still keeps them: NULL for none */
+static TexMemo* tex_memo_of(const TexRes* x) {
+    if (!x->memo || x->memo > TEX_MEMO_WAYS << TEX_MEMO_SET_BITS) return NULL;
+    TexMemo* m = &g_tex_memo.set[(x->memo - 1) / TEX_MEMO_WAYS][(x->memo - 1) % TEX_MEMO_WAYS];
+    if (!m->t || m->handle != x->handle || memcmp(m->tic, x->tic, sizeof m->tic) || memcmp(m->tsc, x->tsc, sizeof m->tsc))
+        return NULL;
+    return m;
+}
+/* vk_tex_bind_view of t with x's headers, kept with them (TexMemo.view) in the frame. draw_state_check=1 makes a kept
+   one again and compares */
+static VkImageView tex_bind_view(const TexRes* x, Surf* t, VkImageViewType want, int num) {
+    TexMemo* m = t ? tex_memo_of(x) : NULL;
+    u64 frame = vk_frame_id() + 1;
+    u32 how = (u32)want | (u32)num << 8;
+    if (m && m->view.frame == frame && m->view.t == t && m->view.img == t->img && m->view.floor == t->lod_floor &&
+        m->view.how == how) {
+        g_stats.n.tex[VK_TEX_VIEW_KEPT]++;
+        if (!g_settings.draw_state_check) return m->view.view;
+        VkImageView made = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
+        if (made != m->view.view) {
+            draw_differs("texture view");
+            m->view.frame = 0;
+        }
+        return made;
+    }
+    VkImageView v = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
+    if (m && v) {
+        m->view.frame = frame;
+        m->view.t = t;
+        m->view.img = t->img;
+        m->view.floor = t->lod_floor;
+        m->view.how = how;
+        m->view.view = v;
+    }
+    return v;
+}
+/* vk_tex_bind_sampler with x's headers, kept with them (TexMemo.smp) in the frame. draw_state_check=1 makes a kept one
+   again and compares */
+static VkSampler tex_bind_sampler(const TexRes* x, const ShTex* st, int num, const Surf* sampled, VkImageViewType want,
+                                  int in_program) {
+    TexMemo* m = tex_memo_of(x);
+    u64 frame = vk_frame_id() + 1;
+    u32 how = (u32)want | (u32)num << 8 | (u32)(st->shadow != 0) << 16 | (u32)(in_program != 0) << 17;
+    VkImage img = sampled ? sampled->img : VK_NULL_HANDLE;
+    if (m && m->smp.frame == frame && m->smp.t == sampled && m->smp.img == img && m->smp.how == how) {
+        g_stats.n.tex[VK_TEX_SAMPLER_KEPT]++;
+        if (!g_settings.draw_state_check) return m->smp.smp;
+        VkSampler made = vk_tex_bind_sampler(x->tsc, x->tic, st, num, sampled, want, in_program);
+        if (made != m->smp.smp) {
+            draw_differs("sampler");
+            m->smp.frame = 0;
+        }
+        return made;
+    }
+    VkSampler smp = vk_tex_bind_sampler(x->tsc, x->tic, st, num, sampled, want, in_program);
+    if (m && smp) {
+        m->smp.frame = frame;
+        m->smp.t = sampled;
+        m->smp.img = img;
+        m->smp.how = how;
+        m->smp.smp = smp;
+    }
+    return smp;
+}
 /* a constant buffer's bytes for this draw, reused while the guest can't have changed them. An inline block (in) is
-   staged once a frame while its generation holds. A buffer in guest memory is kept by its address as well as by its
-   stage and slot: what vk_buf_get_strict gives for it depends on nothing else. One game binds another buffer to the
-   same slot in most draws, and those missed the slot's entry in 37% of the lookups */
+   staged once while its generation holds. A buffer in guest memory is kept by its address as well as by its stage and
+   slot: what vk_buf_get_strict gives for it depends on nothing else. One game binds another buffer to the same slot in
+   most draws, and those missed the slot's entry in 37% of the lookups. An entry is kept as long as what it binds lives
+   (life): bytes in the frame's staging (vk_stage, vk_stage_upload) until the frame ends (vk_frame_id: the slot of its
+   rings is used again only after vk_frame_next), the buffer cache's own buffer while its entry keeps it
+   (vk_buf_own_holds), and anything else (a copy in the stream, the page cache, guest memory in place, the mirror) for
+   its submission, which its reads and their effects are for. Submissions go for each millisecond of the GPU thread's
+   work (cmd.c's frame_check): one game's race made 55 a present, and an entry kept only for its submission had every
+   constant buffer looked up again. A submission's landing changes nothing a kept entry binds without telling it: a
+   result lands or is published with a GPU-side write's stamp (gpu_mem_written_*), which gpu_mem_dirty_since sees, and
+   one added since the entry moves g_pend_any.adds */
+enum { CB_SUBMIT, CB_FRAME, CB_OWN };
 typedef struct {
-    u64 a, gw, frame, cs_adds, gfx_adds;
+    u64 a, gw, adds;
+    u64 made; /* the submission it was made in: its life with CB_SUBMIT */
+    u64 at;   /* CB_FRAME: vk_frame_id() then; CB_OWN: the own buffer's number (vk_buf_own_got) */
     u32 sz, epoch;
+    u32 life, own; /* CB_*, and with CB_OWN the buffer cache's entry */
     VkBuffer buf;
     u64 off;
     const u8* in; /* or the inline block staged, of generation gen */
     u64 gen;
+    /* draw_state_check=1: the hash of the bytes it was made of (chk_have), and the write tracking clock before they
+       were read (cb_check) */
+    u64 chk;
+    u32 wseen;
+    int chk_have;
 } CbEntry;
-/* e holds a's bytes, sz of them at least, for this draw: checked as it is cached, and with adds, with no compute or
-   graphics result added since (none can cover it, and only a write of its memory leaves the copy stale) */
-static int cb_kept(const CbEntry* e, u64 a, u32 sz, int adds, u32 epoch) {
-    return a && e->a == a && e->epoch == epoch && e->frame == vk_submit_number() && e->sz >= sz &&
-           (!adds || (e->cs_adds == vk_compute_adds() && e->gfx_adds == vk_buf_adds())) &&
-           !gpu_mem_dirty_since(e->gw, a, sz);
+/* the entries: by stage and slot, by address, and the root tables' (root_get) */
+static struct {
+    CbEntry slot[DS_GFX_STAGES][18];
+    CbEntry by_addr[1024];
+    CbEntry root;
+} g_cb;
+/* the results added that a kept entry was checked against: results of every kind (the mirror's writes, storage
+   images and queued releases too: an entry lives past the submission that lands them). Both counts only grow, so
+   their sum stays while both do */
+static u64 cb_adds(void) { return __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED); }
+/* e made now, binding what lives as life says. CB_OWN: what the buffer cache's last lookup bound, its own buffer or
+   else something of the submission's */
+static void cb_life(CbEntry* e, u32 life) {
+    e->life = life;
+    e->made = vk_submit_number();
+    e->at = 0;
+    e->own = 0;
+    if (e->life == CB_FRAME) e->at = vk_frame_id();
+    if (e->life == CB_OWN && !(e->own = vk_buf_own_got(&e->at))) e->life = CB_SUBMIT;
 }
-/* the first sz bytes of the root tables an Ounce program reads (DsInline.root), staged once a frame while their
-   generation holds: every graphics stage reads the same tables */
+/* whether what e binds still lives (cb_life). The entries kept past their submission are counted */
+static int cb_lives(const CbEntry* e) {
+    u64 sub = vk_submit_number();
+    int lives = e->life == CB_SUBMIT  ? e->made == sub
+                : e->life == CB_FRAME ? e->at == vk_frame_id()
+                                      : vk_buf_own_holds(e->own, e->at);
+    if (lives && e->made != sub) g_stats.n.cb[VK_CB_PAST_SUBMIT]++;
+    return lives;
+}
+/* draw_state_check=1: the hash of the sz guest bytes at a, when the CPU can read them where they are: one run of guest
+   memory on no page the GPU owns, whose read would wait for the renderer's lock this thread holds (1) */
+static int cb_source_hash(u64 a, u32 sz, u64* h) {
+    u64 cpu = 0;
+    if (!a || gmmu_run(a, sz, &cpu) != sz || (own_any() && own_trapped(cpu, sz))) return 0;
+    *h = vk_hash(GP(cpu), sz);
+    return 1;
+}
+/* draw_state_check=1, for the entry e made now of the guest bytes at a, or of n bytes of the inline block in, with the
+   write tracking clock ws from before they were read: the hash of those bytes, which a draw that keeps e compares */
+static void cb_check_note(CbEntry* e, u64 a, const u8* in, u32 n, u32 ws) {
+    e->chk_have = 0;
+    if (!g_settings.draw_state_check) return;
+    e->wseen = ws;
+    if (in) {
+        e->chk = vk_hash(in, n);
+        e->chk_have = 1;
+    } else
+        e->chk_have = cb_source_hash(a, e->sz, &e->chk);
+}
+/* draw_state_check=1, for a draw that keeps e: its bytes made again and compared, those of n bytes of the inline block
+   in, or those of the guest memory at a where the CPU wrote nothing since (a write in the same epoch is for the next
+   epoch to show). No result of any kind may be pending over a: a lookup made again binds that */
+static void cb_check(const CbEntry* e, u64 a, const u8* in, u32 n) {
+    u64 h, cpu = 0;
+    if (a && pend_hit(&g_pend_any, a, e->sz)) draw_differs("constant buffer, with a result pending over it");
+    if (!e->chk_have) return;
+    if (in) {
+        if (vk_hash(in, n) != e->chk) draw_differs("constant buffer's inline bytes");
+        return;
+    }
+    if (gmmu_run(a, e->sz, &cpu) == e->sz && vk_written_since(GP(cpu), e->sz, e->wseen) == 0 &&
+        cb_source_hash(a, e->sz, &h) && h != e->chk)
+        draw_differs("constant buffer's bytes");
+}
+/* e holds a's bytes, sz of them at least, for this draw: checked as it is cached, and with adds, with no result added
+   since (none can cover it, and only a write of its memory leaves the copy stale) */
+static int cb_kept(const CbEntry* e, u64 a, u32 sz, int adds, u32 epoch) {
+    return a && e->a == a && e->epoch == epoch && e->sz >= sz && (!adds || e->adds == cb_adds()) &&
+           !gpu_mem_dirty_since(e->gw, a, sz) && cb_lives(e);
+}
+/* the first sz bytes of the root tables an Ounce program reads (DsInline.root), staged once while their generation
+   holds: every graphics stage reads the same tables */
 static int root_get(const DsState* ds, u32 sz, VkBuffer* buf, u64* off) {
-    static CbEntry e;
-    if (e.in == ds->inl.root && e.gen == ds->gen[DS_INLINE] && e.frame == vk_submit_number() && e.sz >= sz) {
-        *buf = e.buf;
-        *off = e.off;
+    CbEntry* e = &g_cb.root;
+    if (e->in == ds->inl.root && e->gen == ds->gen[DS_INLINE] && e->sz >= sz && cb_lives(e)) {
+        *buf = e->buf;
+        *off = e->off;
+        if (g_settings.draw_state_check) cb_check(e, 0, ds->inl.root, e->sz);
         return 1;
     }
     u8* p = vk_stage(sz, vk_stage_align(), buf, off);
     if (!p) return 0;
     memcpy(p, ds->inl.root, sz);
-    e = (CbEntry){.frame = vk_submit_number(), .sz = sz, .buf = *buf, .off = *off, .in = ds->inl.root,
-                  .gen = ds->gen[DS_INLINE]};
+    *e = (CbEntry){.sz = sz, .buf = *buf, .off = *off, .in = ds->inl.root, .gen = ds->gen[DS_INLINE]};
+    cb_life(e, CB_FRAME);
+    cb_check_note(e, 0, ds->inl.root, sz, 0);
     return 1;
 }
 static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u64* off) {
-    static CbEntry c[DS_GFX_STAGES][18];
-    static CbEntry by_addr[1024];
+    int check = g_settings.draw_state_check != 0;
     DsCbBlock in = ds_cb_inline(ds, stage, (u32)i);
     if (in.bytes) {
-        if (c[stage][i].in == in.bytes && c[stage][i].gen == ds->gen[DS_INLINE] &&
-            c[stage][i].frame == vk_submit_number() && c[stage][i].sz >= sz) {
-            *buf = c[stage][i].buf;
-            *off = c[stage][i].off;
+        CbEntry* e = &g_cb.slot[stage][i];
+        if (e->in == in.bytes && e->gen == ds->gen[DS_INLINE] && e->sz >= sz && cb_lives(e)) {
+            *buf = e->buf;
+            *off = e->off;
             g_stats.n.cb[VK_CB_INLINE_KEPT]++;
+            if (check) cb_check(e, 0, in.bytes, e->sz < in.size ? e->sz : in.size);
             return 1;
         }
         u8* p = vk_stage(sz, vk_stage_align(), buf, off);
@@ -2103,52 +2286,65 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
         u32 n = sz < in.size ? sz : in.size;
         memcpy(p, in.bytes, n);
         memset(p + n, 0, sz - n); /* past the block: zeros, as an unbound buffer reads */
-        c[stage][i].a = 0;
-        c[stage][i].in = in.bytes;
-        c[stage][i].gen = ds->gen[DS_INLINE];
-        c[stage][i].frame = vk_submit_number();
-        c[stage][i].sz = sz;
-        c[stage][i].buf = *buf;
-        c[stage][i].off = *off;
+        *e = (CbEntry){.in = in.bytes, .gen = ds->gen[DS_INLINE], .sz = sz, .buf = *buf, .off = *off};
+        cb_life(e, CB_FRAME);
+        cb_check_note(e, 0, in.bytes, n, 0);
         g_stats.n.cb[VK_CB_INLINE_STAGED]++;
         return 1;
     }
     u64 a = ds->bind.cb_addr[stage][i];
     u32 epoch = vk_ww_epoch(); /* before the buffer is checked */
-    CbEntry* e = &c[stage][i];
-    CbEntry* x = &by_addr[(u32)((a >> 8) * 0x9E3779B97F4A7C15ull >> 54)];
+    u32 ws = check ? vk_ww_now() : 0;
+    CbEntry* e = &g_cb.slot[stage][i];
+    CbEntry* x = &g_cb.by_addr[(u32)((a >> 8) * 0x9E3779B97F4A7C15ull >> 54)];
     /* The pending checks were the most of cb_get's time in one game: an entry is taken first while no result was
        added since it was made */
     if (cb_kept(e, a, sz, 1, epoch) || (cb_kept(x, a, sz, 1, epoch) && (*e = *x, 1))) {
         *buf = e->buf;
         *off = e->off;
         g_stats.n.cb[VK_CB_KEPT]++;
+        if (check) cb_check(e, a, NULL, 0);
         return 1;
     }
     /* Pending compute results there land first. A pending graphics result is newer than the guest memory the checks
-       below see: the buffer then comes from vk_buf_get_strict, which reads it on the GPU, and isn't cached */
+       below see: the buffer then comes from vk_buf_get_strict, which reads it on the GPU, and isn't cached. Neither is
+       one under a result of another kind (the mirror's writes, a storage image, a queued release), which the buffer
+       cache looks for: the entry would live past the submission that lands it */
     if (g_cs_any && a) vk_compute_mem_need(a, sz);
-    int pending = a && ((g_gfx_any && vk_buf_pending(a, sz)) || vk_uma_pending(a, sz)); /* written in place too */
+    int pending = a && ((g_gfx_any && vk_buf_pending(a, sz)) || vk_uma_pending(a, sz) || /* written in place too */
+                        pend_hit(&g_pend_any, a, sz));
     if (!pending && (cb_kept(e, a, sz, 0, epoch) || (cb_kept(x, a, sz, 0, epoch) && (*e = *x, 1)))) {
+        /* no result of any kind is over the bytes it holds: the next draw takes it at the first check, while no
+           result is added */
+        if (e->sz == sz) {
+            e->adds = cb_adds();
+            if (x->a == a && x->sz == sz && x->buf == e->buf && x->off == e->off) x->adds = e->adds;
+        }
         *buf = e->buf;
         *off = e->off;
         g_stats.n.cb[VK_CB_KEPT_CHECKED]++;
+        if (check) cb_check(e, a, NULL, 0);
         return 1;
     }
     /* a constant buffer's bytes are usually the CPU's, in one run: copy them straight into staging. The general buffer
        path (the mirror, the cache, the hash) runs only where a result holds them, the mirror has them, the run isn't
        whole, unified memory reads them in place, or the GPU owns some of them (memory/own.c): that path copies those
        from their owner on the GPU. The CPU's bytes on a page the GPU owns others of are trapped, and this thread holds
-       the renderer's lock, which their landing needs: own_stage reads them through the pool's mirror */
-    u64 cpu = 0;
+       the renderer's lock, which their landing needs: own_stage reads them through the pool's mirror. What the entry
+       is checked against is read before the bytes are */
+    u64 cpu = 0, adds = cb_adds(), gw = gpu_mem_generation();
+    u32 life = CB_OWN; /* the buffer cache's own buffer, or else what lives for the submission */
     if (a && !pending && !vk_uma() && !vk_mirror_pending(a, sz) && !vk_mirror_holds(a, sz) &&
         gmmu_run(a, sz, &cpu) == sz) {
         u8* p = vk_stage_upload(sz, vk_stage_align(), buf, off);
         if (!p) return 0;
+        life = CB_FRAME;
         if (!own_any())
             memcpy(p, GP(cpu), sz);
-        else if (own_stage(cpu, sz, p, NULL, 0) && !vk_buf_get_uniform(a, sz, buf, off))
-            return 0;
+        else if (own_stage(cpu, sz, p, NULL, 0)) {
+            if (!vk_buf_get_uniform(a, sz, buf, off)) return 0;
+            life = CB_OWN;
+        }
         g_stats.n.cb[VK_CB_COPIED]++;
     } else if (!(a ? vk_buf_get_uniform(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off)))
         return 0;
@@ -2158,16 +2354,12 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
         e->a = 0;
         return 1;
     }
-    *e = (CbEntry){.a = a,
-                   .cs_adds = vk_compute_adds(),
-                   .gfx_adds = vk_buf_adds(),
-                   .gw = gpu_mem_generation(),
-                   .frame = vk_submit_number(),
-                   .sz = sz,
-                   .epoch = epoch,
-                   .buf = *buf,
-                   .off = *off};
-    if (a) *x = *e;
+    *e = (CbEntry){.a = a, .adds = adds, .gw = gw, .sz = sz, .epoch = epoch, .buf = *buf, .off = *off};
+    cb_life(e, a ? life : CB_SUBMIT);
+    if (a) {
+        cb_check_note(e, a, NULL, 0, ws);
+        *x = *e;
+    }
     return 1;
 }
 
@@ -2191,11 +2383,13 @@ static void cb_prefetch(const DsState* ds, int stage, const VkSh* s, int step) {
 }
 
 /* small constants in this frame's staging: 1/resolution scale (SNX_RS) at 0, the 0,0,0,1 of attributes without
-   data at 16 (float) and 32 (integer) */
+   data at 16 (float) and 32 (integer). Staged once a frame and scale (vk_stage lives for the frame) */
 static int frame_consts(VkBuffer* buf, u64* off) {
     static u64 frame = ~0ull, o;
     static VkBuffer b;
-    if (frame != vk_submit_number()) {
+    static float scale;
+    u64 at = vk_frame_id();
+    if (frame != at || scale != g_vk_scale) {
         u8* p = vk_stage(64, vk_stage_align(), &b, &o);
         if (!p) return 0;
         float rs[4] = {1 / g_vk_scale, 1 / g_vk_scale, g_vk_scale, 0}, fa[4] = {0, 0, 0, 1};
@@ -2205,7 +2399,8 @@ static int frame_consts(VkBuffer* buf, u64* off) {
         memcpy(p + 32, ia, 16);
         memset(p + 48, 0, 16); /* empty vertex bindings retain their original format */
         snx_le32_array(p, 12); /* the device reads them little-endian */
-        frame = vk_submit_number();
+        frame = at;
+        scale = g_vk_scale;
     }
     *buf = b;
     *off = o;
@@ -2685,7 +2880,18 @@ typedef struct {
     u64 h1, h2, frame;
     VkDescriptorSet set;
 } DescSetEntry;
-static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites* d) {
+/* Each stage's last set and the key of its writes (vk_descriptor_key), in the frame and (with heaps) the descriptor
+   heaps' epoch it was made in: a draw whose writes are the same, word for word, takes it with no hash and no lookup in
+   the cache, as the draws of one material in a row do. A key longer than key holds isn't kept */
+static struct {
+    struct {
+        u64 frame, heaps;
+        size_t n;
+        VkDescriptorSet set;
+        u64 key[512];
+    } last[DS_GFX_STAGES];
+} g_dset;
+static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites* d, int stage) {
     /* Two ways share one cache line on 64-bit hosts. A collision need not discard a live descriptor set.
        Both ways remain scoped to the frame whose pools and resources keep the sets alive. */
     static DescSetEntry cache[1u << 14][2];
@@ -2693,24 +2899,41 @@ static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites*
        then hash them with the SIMD dispatcher instead of two serial multiply chains for every descriptor. */
     u64 key[VK_DESCRIPTOR_KEY_WORDS(SNX_VKB_END, SNX_VKB_END + 2 * SNX_TEX_ARRAY)];
     size_t words = vk_descriptor_key(key, layout, d->w, d->n);
+    u64 frame = ((vk_frame_id() + 1) << 2) | (g_vk.has_descriptor_heaps ? 2 : g_vk.has_descriptor_buffers ? 1 : 0);
+    u64 heaps = g_vk.has_descriptor_heaps ? vk_descriptor_heaps_epoch() : 0; /* it moves at each draw without heaps */
+    int keep = (u32)stage < DS_GFX_STAGES && words <= sizeof g_dset.last[0].key / sizeof *key;
+    if (keep && g_dset.last[stage].frame == frame && g_dset.last[stage].heaps == heaps &&
+        g_dset.last[stage].n == words && !memcmp(g_dset.last[stage].key, key, words * sizeof *key)) {
+        g_vk_dset_reused++;
+        g_stats.n.sets_last++;
+        return g_dset.last[stage].set;
+    }
     u64 hash[2];
     vk_hash128(key, words * sizeof *key, hash);
-    u64 frame = ((vk_frame_id() + 1) << 2) | (g_vk.has_descriptor_heaps ? 2 : g_vk.has_descriptor_buffers ? 1 : 0);
+    VkDescriptorSet set = VK_NULL_HANDLE;
     DescSetEntry* bucket = cache[hash[0] >> 50];
-    for (u32 i = 0; i < 2; i++)
+    for (u32 i = 0; i < 2 && !set; i++)
         if (bucket[i].frame == frame && bucket[i].h1 == hash[0] && bucket[i].h2 == hash[1]) {
             g_vk_dset_reused++;
-            return bucket[i].set;
+            set = bucket[i].set;
         }
-    DescSetEntry* e = bucket[0].frame != frame   ? &bucket[0]
-                      : bucket[1].frame != frame ? &bucket[1]
-                                                 : &bucket[hash[1] >> 63];
-    VkDescriptorSet set =
-        (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heaps) ? vk_descriptors_write(layout, d->n, d->w)
-                                                                  : vk_rec_new_set(layout, d->n, d->w);
-    if (!set) return VK_NULL_HANDLE;
-    g_vk_dset_new++;
-    *e = (DescSetEntry){hash[0], hash[1], frame, set};
+    if (!set) {
+        DescSetEntry* e = bucket[0].frame != frame   ? &bucket[0]
+                          : bucket[1].frame != frame ? &bucket[1]
+                                                     : &bucket[hash[1] >> 63];
+        set = (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heaps) ? vk_descriptors_write(layout, d->n, d->w)
+                                                                         : vk_rec_new_set(layout, d->n, d->w);
+        if (!set) return VK_NULL_HANDLE;
+        g_vk_dset_new++;
+        *e = (DescSetEntry){hash[0], hash[1], frame, set};
+    }
+    if (keep) {
+        g_dset.last[stage].frame = frame;
+        g_dset.last[stage].heaps = heaps;
+        g_dset.last[stage].n = words;
+        g_dset.last[stage].set = set;
+        memcpy(g_dset.last[stage].key, key, words * sizeof *key);
+    }
     return set;
 }
 /* The fragment program's texture slots a draw samples at the own pixel's centre by where its vertex stage puts the
@@ -3039,7 +3262,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         } else if (slots) {
             /* the guest reads the target's previous contents during a draw that writes it: in place, in a feedback
                loop */
-            view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
+            view = tex_bind_view(x, t, want, num);
             if (view) *fb |= slots;
             if (view && stage == ST_FS) predraw_probe((u32)i, x, t);
         } else if (t && is_target(t, rt, zt, n) && !depth_ro) {
@@ -3051,12 +3274,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             Surf* snap = vk_rt_snapshot(t, texels);
             if (snap != t) {
                 t = snap;
-                view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
+                view = tex_bind_view(x, t, want, num);
                 if (texels) g_vk_rt_copies++;
             } else
                 LOG_LIMIT(1, "vulkan: a draw samples a target it renders to (read as empty)\n");
         } else
-            view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
+            view = tex_bind_view(x, t, want, num);
         const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */
         if (sampled && st->shadow && !g_settings.shadows) shadow_map_sampled(sampled);
         if (scaled && sampled && (sampled->sw != sampled->w || sampled->sh != sampled->h)) {
@@ -3092,8 +3315,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             layout = VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL);
         }
         if (!view) return VK_NULL_HANDLE;
-        VkSampler smp =
-            vk_tex_bind_sampler(x->tsc, x->tic, st, num, sampled, want, (int)(s->si.tex_minmax_mask >> i & 1));
+        VkSampler smp = tex_bind_sampler(x, st, num, sampled, want, (int)(s->si.tex_minmax_mask >> i & 1));
         if (!smp) return VK_NULL_HANDLE;
         u32 b = SNX_VKB_TEX + i;
         d.ii[b] = (VkDescriptorImageInfo){smp, view, layout};
@@ -3199,7 +3421,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                             .pImageInfo = &d.ii[binding]};
     }
     SNX_ZONE(zset, "stage set descriptors");
-    return desc_set_cached(layout, &d);
+    return desc_set_cached(layout, &d, stage);
 }
 
 /* ------------------------------------------------------------ draws */
@@ -3544,6 +3766,12 @@ static void draw_drop(u32 i) {
 void vk_render_draws_forget(void) {
     memset(g_draw.tag, 0, sizeof g_draw.tag);
     draw_forget();
+    /* and the constant buffers, views and samplers a later draw takes past its submission or in its frame: a loaded
+       state's surfaces and buffers can be other objects at the same addresses */
+    memset(&g_cb, 0, sizeof g_cb);
+    memset(&g_dset, 0, sizeof g_dset);
+    for (u32 i = 0; i < 1u << TEX_MEMO_SET_BITS; i++)
+        for (u32 w = 0; w < TEX_MEMO_WAYS; w++) g_tex_memo.set[i][w].view.frame = g_tex_memo.set[i][w].smp.frame = 0;
 }
 /* group i of g_draw_groups of ds hashed: the hash its generation had, or (check: also, to compare) its bytes'. The
    targets' formats have no struct: what target_formats_differ (gpu/maxwell/draw_state.c) compares is hashed */

@@ -35,6 +35,7 @@ typedef struct {
     u64 cs_adds, gfx_adds; /* vk_compute_adds and vk_buf_adds when pending results were last checked for */
     u64 frame; /* the staging frame buf/off point into, when not own */
     int own;   /* buf is this entry's own buffer */
+    u64 own_id; /* that buffer's number among all own buffers made (make_own): a token names it (vk_buf_own_got) */
     /* 1: the page cache serves it (pagespace.c), and it takes no buffer of its own: one made at a lookup the pages
        refused was dropped at the next lookup they served and made again at the next refusal, 548 MB more of such
        copies in 600 presents of one game. -1: the page cache found a page of it changed after a draw of the same
@@ -178,6 +179,11 @@ static struct {
         VkBufferCopy* more;
         u32 cap;
     } patch;
+    u64 own_made; /* own buffers made since the start: the last one's own_id */
+    /* the entry and the own_id of the own buffer the last buf_get bound, 0 when it bound something else
+       (vk_buf_own_got) */
+    u32 got;
+    u64 got_id;
 } g_buffer;
 /* why keep_new turned a writable binding away (temporary diagnosis of the writeback cost) */
 enum {
@@ -3308,8 +3314,8 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
     return 1;
 }
 
-/* the entry's data where draws read it */
-static void use(u32 i, VkBuffer* buf, u64* off) {
+/* the entry used in this present: an own buffer goes to the recent end of the list vk_buf_reclaim drops from */
+static void touch(u32 i) {
     Vb* e = &g_vb[i];
     if (e->used != g_vk_present) {
         e->used = g_vk_present;
@@ -3318,9 +3324,27 @@ static void use(u32 i, VkBuffer* buf, u64* off) {
             own_link(i);
         }
     }
+}
+/* the entry's data where draws read it */
+static void use(u32 i, VkBuffer* buf, u64* off) {
+    Vb* e = &g_vb[i];
+    touch(i);
+    if (e->own) {
+        g_buffer.got = i;
+        g_buffer.got_id = e->own_id;
+    }
     if (copy_stats_on()) g_read_bound += e->len;
     *buf = e->buf;
     *off = e->off;
+}
+u32 vk_buf_own_got(u64* id) {
+    *id = g_buffer.got_id;
+    return g_buffer.got;
+}
+int vk_buf_own_holds(u32 i, u64 id) {
+    if (!i || i >= g_nvb || !g_vb[i].len || !g_vb[i].own || g_vb[i].own_id != id) return 0;
+    touch(i);
+    return 1;
 }
 static void drop_own(u32 i) {
     Vb* e = &g_vb[i];
@@ -3471,6 +3495,7 @@ static int make_own_(u32 i, VkBuffer sb, u64 so) {
     g_buffer.ahead++;
     drop_own(i);
     e->own = 1;
+    e->own_id = ++g_buffer.own_made;
     e->buf = b;
     e->mem = m;
     e->off = 0;
@@ -3648,8 +3673,14 @@ u32 vk_buf_sources(void) {
 static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace);
 static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace) {
     g_buf_kind = 0;
+    g_buffer.got = 0;
     int got = buf_get_(gva, len, buf, off, strict, align, inplace);
     if (got) g_buf_sources |= g_buf_kind ? g_buf_kind : 64;
+    /* the token names the range's own buffer only when that is what was bound: a lookup inside this one (a result
+       composed of others) can have used another entry's */
+    const Vb* e = g_buffer.got ? &g_vb[g_buffer.got] : NULL;
+    if (!got || (e && (!e->own || e->start != gva || e->len != len || e->buf != *buf || e->off != *off)))
+        g_buffer.got = 0;
     return got;
 }
 static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace) {
