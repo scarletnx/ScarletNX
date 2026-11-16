@@ -78,7 +78,11 @@
      each submission, which undoes a scan's protection, and the next scan reports them written with no CPU write. What
      trusted that report kept a guest page's old bytes over the pixels a render target drew there. And a submission
      after a scan faulted every protected page in again: 16 ms for 32 MiB imported, against 0.3 ms. Write tracking
-     can't tell there (vk_written_since), and its users compare the bytes. */
+     can't tell there (vk_written_since), and its users compare the bytes. A dma-buf region's pages it watches as the
+     rest of guest memory (Imp.tracked): the driver pinned them once, when the udmabuf was made, and leaves the CPU's
+     page table alone; mem_migrate's mapping is registered again (ww_remapped), and its first scan reports every page
+     written. The GPU's writes in place there reach the caches as everywhere, when their submit is done
+     (vk_uma_frame_done's gpu_mem_written_cpu), not through a scan. */
 #include <errno.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -119,6 +123,7 @@ typedef struct {
        of it; fd -1 for an import of guest memory where it is */
     int fd;
     void* handle;
+    int tracked; /* a dma-buf region (imp_make_dmabuf): the driver leaves the CPU's page table alone, and scans watch it */
 } Imp;
 /* Spans the driver refused to import (pages it can't pin, or amdgpu's refusal of the alias pool's), whose ranges are copied
    until UMA_IDLE presents pass or their pages change. Without them every range in such a window asked the driver
@@ -971,6 +976,7 @@ static int imp_make_dmabuf(Imp* m, u64 cpu, u64 size, int fd) {
         if (g_uma.import_result != VK_SUCCESS) plat_vm_fd_close(dmabuf);
         return 0;
     }
+    m->tracked = 1;
     return 1;
 }
 /* guest memory [cpu, cpu + size) as a region (the migrate way): a buffer of its own, imported, that its pages then move
@@ -1580,7 +1586,11 @@ u64 vk_uma_import_in(u64 cpu, u64 end, u64* hi) {
     *hi = end;
     if (!vk_uma() || cpu >= end) return end;
     pm_lock(&g_uma.lk);
+    /* the first import a scan leaves alone: not a dma-buf region, whose pages the driver doesn't take again at each
+       submission (an ordinary shared mapping of a memfd, which a scan protects and watches, as wp.c's probe found on
+       kernel 7.2: the region's pages are tracked as the rest of guest memory) */
     u32 i = imp_find(cpu);
+    while (i < g_uma.nimp && g_uma.imp[i].cpu < end && g_uma.imp[i].tracked) i++;
     if (i < g_uma.nimp && g_uma.imp[i].cpu < end) {
         lo = g_uma.imp[i].cpu > cpu ? g_uma.imp[i].cpu : cpu;
         *hi = g_uma.imp[i].cpu + g_uma.imp[i].size;
@@ -1598,7 +1608,7 @@ u64 vk_uma_import_in(u64 cpu, u64 end, u64* hi) {
     for (u32 k = 0; k < g_uma.ngone; k++) {
         const Imp* g = &g_uma.gone[k];
         u64 at = g->cpu > cpu ? g->cpu : cpu;
-        if (g->cpu < end && cpu < g->cpu + g->size && at < lo) {
+        if (!g->tracked && g->cpu < end && cpu < g->cpu + g->size && at < lo) {
             lo = at;
             *hi = g->cpu + g->size;
         }

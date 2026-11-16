@@ -497,9 +497,17 @@ stay held until the region's memory is freed. The pinned pages count as Shmem an
 On the Deck the same race went from the recording thread at 95% of a core (87% in the kernel) to 24% (12%), and the
 GPU's wait for submitted work from about 1.8 ms to 0.31 ms a submission. `check_uma_migrate`, `check_uma_region_writes`
 and `check_uma_region_merge` run on dma-buf regions where the driver takes no memfd as host memory and udmabuf works
-(`vk_uma_migrate(2)`, `vk_uma_can_dmabuf`); before, they skipped on amdgpu. Write tracking still leaves region pages
-alone, as it leaves an import's. A probe on kernel 7.2.7 found userfaultfd's write-protect with `PAGEMAP_SCAN` and its
-minor faults working on a memfd mapping whose pages a udmabuf holds, so a later change can track them.
+(`vk_uma_migrate(2)`, `vk_uma_can_dmabuf`); before, they skipped on amdgpu.
+
+Write tracking watches a dma-buf region's pages as the rest of guest memory (`Imp.tracked`, which `vk_uma_import_in`
+passes over), where it leaves an import's alone: the driver pinned the pages once, when the udmabuf was made, and
+leaves the CPU's page table alone at each submission. A probe on kernel 7.2.7 found userfaultfd's write-protect with
+`PAGEMAP_SCAN` reporting exactly the pages written on a memfd mapping whose pages a udmabuf holds, and minor faults
+registering there too. `mem_migrate`'s new mapping is registered again (`ww_remapped`), and its first scan reports
+every page written. The GPU's writes in place there reach the caches when their submit is done
+(`gpu_mem_written_cpu`), as for imports. `check_uma_migrate` checks that a region's pages answer `vk_written_since`
+and that a CPU write there is found. In the race above, the caches stopped comparing the regions' bytes: about 12.0 and
+12.5 fps over its last 40 s against 10.7 and 11.2 with the regions untracked.
 
 ### Placed maps
 

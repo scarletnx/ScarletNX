@@ -1201,6 +1201,21 @@ static int check_uma_migrate(void) {
     CHECK(vk_uma_imports(UMA_M, 4 * window) == 1 && vk_uma_imports(UMA_M + window, 3 * window) == 0);
     CHECK(uma_in_buffer(g) == 1 && uma_in_buffer(g + window) == 0);
     CHECK(vk_uma_get(UMA_GM + 0x100000, 256, 1, &b2, &off2) && b2 == b && off2 == 0x100000);
+    /* a dma-buf region's pages are watched for writes as the rest of guest memory (the driver leaves the CPU's page
+       table alone): quiet, then a CPU write found. A host-memory region's aren't (vk_written_since -1) */
+    if (way == 2 && vk_written_since(g + 0x4000, 0x4000, 0) >= 0) {
+        u32 since = vk_ww_now();
+        vk_unlock();
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        CHECK(vk_written_since(g + 0x4000, 0x4000, since) == 0);
+        vk_unlock();
+        g[0x5000] = uma_fill(0x5000); /* a write of the byte it holds: a write all the same */
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        CHECK(vk_written_since(g + 0x4000, 0x4000, since) == 1);
+    } else /* a dma-buf region where tracking is on (a page outside any region answers) is watched */
+        CHECK(way != 2 || vk_written_since(g + 3 * window, 0x1000, 0) < 0);
     g[0x1000] = 0x5a; /* after the lookup, before the GPU reads it */
     uma_read(b, off, rb, 0);
     /* over the edge: one region of both windows, the first one's going with its last reader */
