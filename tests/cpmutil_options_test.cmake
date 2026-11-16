@@ -6,6 +6,9 @@
 # headers' entries are), "first", the system's when there is one (SDL3's), and "pinned", added with
 # FORCE_BUNDLED_PACKAGE ON (every other package). A prefix has the first two, "local" giving a Vulkan::Headers with and
 # without its registry. Run by ctest as cpmutil_options, with -DSRC and -DWORK
+# the policies of the CMake the build needs: a script has none of its own, and before CMake 4 an unset CMP0054 read
+# if(kind STREQUAL "arc") as the variable arc
+cmake_minimum_required(VERSION 3.28)
 if(NOT DEFINED SRC OR NOT DEFINED WORK)
     message(FATAL_ERROR "cpmutil_options_test.cmake needs -DSRC=... -DWORK=...")
 endif()
@@ -48,7 +51,7 @@ foreach(name local first pinned)
 endforeach()
 list(JOIN entries ", " entries)
 file(WRITE "${WORK}/project/cpmfile.json" "{${entries}}\n")
-file(WRITE "${WORK}/project/CMakeLists.txt" "cmake_minimum_required(VERSION 3.31)
+file(WRITE "${WORK}/project/CMakeLists.txt" "cmake_minimum_required(VERSION 3.28)
 project(cpmutil_options_test LANGUAGES NONE)
 include(\"${SRC}/cmake/packages.cmake\")
 snx_cpm_options(snxtestlocal)
