@@ -382,7 +382,8 @@ def check_packages(repo):
     """every third-party download goes through CPMUtil: no CPM.cmake, FetchContent or file(DOWNLOAD) call outside the
     vendored CPMUtil, every key a call names pinned in cpmfile.json and every pin added by one, a package without a
     min_version (none the system may give) added with FORCE_BUNDLED_PACKAGE ON and none with one, and cpmfile.json in
-    CPMUtil's form: its fields, a version, a SHA-512, a url or a repo, written as jq --indent 4 -S writes it"""
+    CPMUtil's form: lowercase keys, its fields, a version, a SHA-512, a url or a repo, written as jq --indent 4 -S
+    writes it"""
     errors, pins, text = [], {}, None
     path = repo / 'cpmfile.json'
     if path.exists():
@@ -400,6 +401,11 @@ def check_packages(repo):
             'it with that, or python3 -m json.tool --indent 4 --sort-keys'
         )
     for key, entry in pins.items():
+        if key != key.lower():
+            errors.append(
+                f'cpmfile.json: {key} has upper-case letters: a key is lowercase, as Eden\'s are, and its "package" '
+                'names the CMake package where that differs'
+            )
         unknown = sorted(set(entry) - CPMFILE_FIELDS)
         if unknown:
             errors.append(f'cpmfile.json: {key} has {", ".join(unknown)}, which CPMUtil does not read')

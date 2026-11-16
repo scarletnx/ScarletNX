@@ -139,8 +139,8 @@ endif()
 include("${PROJECT_SOURCE_DIR}/cmake/deps_cache.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/apple.cmake")
 if(SNX_BUILD_NX OR SNX_BUILD_3DS OR SNX_BUILD_GNUABI OR snx_vita_runtime) # the GNU ABI runtime's random bytes and TLS sockets
-    snx_cpmfile(snx_openssl_hash OpenSSL hash)
-    AddJsonPackage(NAME OpenSSL DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
+    snx_cpmfile(snx_openssl_hash openssl hash)
+    AddJsonPackage(NAME openssl DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     include("${PROJECT_SOURCE_DIR}/cmake/openssl.cmake")
 endif()
 
@@ -201,8 +201,8 @@ endif()
 if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR SNX_BUILD_NDS OR snx_vita_runtime OR
    (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
     # the system's package is named VulkanHeaders (cpmfile.json's find_args)
-    snx_cpm_options(Vulkan-Headers)
-    AddJsonPackage(Vulkan-Headers)
+    snx_cpm_options(vulkan-headers)
+    AddJsonPackage(vulkan-headers)
     if(Vulkan-Headers_ADDED)
         set(snx_vulkan_include_dir "${Vulkan-Headers_SOURCE_DIR}/include")
     else()
@@ -215,9 +215,9 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR SNX_BUILD_NDS OR sn
     # B3n30/citra_system_archives makes (GPL-2.0-or-later), as the C arrays Azahar's source holds them in, each at the
     # commit that last changed it. The Mii data is ours (src/common/utilities/mii_model.c), made when a game opens it
     if(SNX_BUILD_3DS)
-        snx_package_file(AzaharCountryList)
-        snx_package_file(AzaharSharedFont)
-        snx_package_file(AzaharBadWordList)
+        snx_package_file(azahar-country-list)
+        snx_package_file(azahar-shared-font)
+        snx_package_file(azahar-bad-word-list)
         include("${PROJECT_SOURCE_DIR}/cmake/ctr_system_archives.cmake")
     endif()
     # volk.c compiled into a target of ours: no warnings, and not
@@ -261,8 +261,8 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
                                                   ARCHIVE_OUTPUT_DIRECTORY "$<1:${snx_zlib_lib_dir}>")
         snx_quiet(snx_zlib)
     endif()
-    snx_cpmfile(snx_ffmpeg_hash FFmpeg hash)
-    AddJsonPackage(NAME FFmpeg DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
+    snx_cpmfile(snx_ffmpeg_hash ffmpeg hash)
+    AddJsonPackage(NAME ffmpeg DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     # dav1d (BSD-2-Clause) for the Ounce's AV1 movies, which FFmpeg decodes through it: built with meson and ninja,
     # which cmake/dav1d.cmake runs, before FFmpeg
     if(SNX_BUILD_NX)
@@ -280,16 +280,16 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # CJK ones; and yuzu's controller button glyphs (GPL-2.0-or-later) in the source file Eden keeps them in. The
     # subsets (SIL OFL 1.1, docs/platforms/nx/filesystem.md) are fetched from the commit of this repository that last changed
     # them, so a checkout, and a project fetching ScarletNX for its recompiler alone, carries none of their 11 MB
-    foreach(script JP SC TC KR)
-        snx_package_file(NotoSans${script}Subset)
+    foreach(script jp sc tc kr)
+        snx_package_file(noto-sans-${script}-subset)
     endforeach()
-    snx_package_file(YuzuOSSExtension)
+    snx_package_file(yuzu-oss-extension)
     include("${PROJECT_SOURCE_DIR}/cmake/shared_fonts.cmake")
 
     # AMD FidelityFX Super Resolution 2.2.1 (MIT), the temporal upscaler the Ounce's DLSS evaluations run through
     # (src/nx/gpu/vk/fsr2, gpu/nvn/nvn_dlss.c): its library and Vulkan backend's sources and its GLSL passes, which the
     # build compiles (cmake/fsr2_shaders.cmake). The archive's prebuilt tools (tools/sc, Windows programs) are not used
-    AddJsonPackage(NAME FidelityFX-FSR2 DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
+    AddJsonPackage(NAME fidelityfx-fsr2 DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     # A copy of its library with one patch (cmake/fsr2-memory-types.patch): the backend takes device-local memory only
     # from a type that is not host-visible, and found none where every device-local type is (lavapipe, some integrated
     # GPUs), so no context could be made there
@@ -344,8 +344,8 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR sn
     # and SDL3_FORCE_BUNDLED make). Of its options in cpmfile.json, SDL_ALTIVEC OFF only changes PowerPC builds: SDL's
     # AltiVec blitters prefetch with dstt, which the ISA phased out and qemu's POWER10 traps as illegal (the window
     # icon's and the menu's software surfaces, which nothing here needs fast)
-    snx_cpm_options(SDL3)
-    AddJsonPackage(SDL3)
+    snx_cpm_options(sdl3)
+    AddJsonPackage(sdl3)
     if(SDL3_ADDED)
         set(SNX_SDL3_FROM_SOURCE ON)
         # its headers as system headers to the code that includes them, as FetchContent's SYSTEM gives them
@@ -385,7 +385,7 @@ if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
     target_include_directories(snx_harfbuzz SYSTEM PUBLIC "${harfbuzz_SOURCE_DIR}/src")
     set_target_properties(snx_harfbuzz PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
     snx_quiet(snx_harfbuzz)
-    snx_package_file(NotoSansJPSubset)
+    snx_package_file(noto-sans-jp-subset)
     # SQLite (public domain), the amalgamation, for android.database.sqlite (src/android/db/sqlite_jni.c). Its
     # options are the ones of Android's own build that apps can see: the FTS3, FTS4 and FTS5 modules, no extension
     # loading
