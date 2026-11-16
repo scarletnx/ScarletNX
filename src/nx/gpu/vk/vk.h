@@ -505,6 +505,10 @@ int vk_uma_can_dmabuf(void);
 void vk_mem_use(u64* usage, u64* budget);
 int vk_mem_heap(void); /* that heap's index */
 u64 vk_mem_budget_cap(u64 bytes); /* vk_budget_mb's cap set to bytes (0: none), the one it had back */
+/* moves whenever the budget vk_mem_use gives can have moved since: the driver's budgets asked again
+   (vk_devmem_fetches), the cap set, or on Android the system's budget measured again. vk_mem_use itself asks the
+   driver after every 30 requests for device memory, so a budget kept by this lags those at most until the next ask */
+u32 vk_mem_budget_gen(void);
 /* that heap's use by this process and its budget as the driver tells them (VK_EXT_memory_budget), for the stats box;
    without the extension, *ours set: what the process took from the heap and the heap's size */
 void vk_mem_driver_use(u64* usage, u64* budget, int* ours);
@@ -2706,8 +2710,31 @@ extern u64 g_vk_mesh_draws, g_vk_mesh_drawn; /* of them, an Ounce's mesh draws, 
    this many primitives a draw is skipped instead. Statistics: draws captured, their primitives, the draws skipped */
 #define VK_CAPTURE_PRIMITIVES_MAX 256u
 extern u64 g_vk_capture_draws, g_vk_capture_primitives, g_vk_capture_capped;
-/* draws that kept the last draw's shaders and pipeline key, and those of them draw_state_check made again to compare */
+/* draws that kept an earlier draw's shaders and pipeline key, and those of them draw_state_check made again to
+   compare */
 extern u64 g_vk_draw_kept, g_vk_draw_checked;
+/* What the lookups of the draws found, counted since the start (gpu/vk/render.c). A constant buffer slot: its inline
+   block kept or staged again, a kept range (before or after the check for pending results), its bytes copied from the
+   CPU, a range from the buffer cache, or a range under a pending result (not kept). A texture slot: its handle kept,
+   resolved again, or past the limits of its pools */
+enum { VK_CB_INLINE_KEPT, VK_CB_INLINE_STAGED, VK_CB_KEPT, VK_CB_KEPT_CHECKED, VK_CB_COPIED, VK_CB_CACHE, VK_CB_PENDING,
+       VK_CB_N };
+enum { VK_TEX_KEPT, VK_TEX_RESOLVED, VK_TEX_PAST, VK_TEX_N };
+typedef struct {
+    u64 lookups; /* draws that looked for a kept state */
+    u64 last;    /* of them, those that took the last draw's */
+    u64 table;   /* those that took an earlier draw's from the table */
+    u64 late;    /* those that found one, but a later check of the draw made it again */
+    u64 made;    /* states kept in the table */
+    u64 evicted; /* of those, the ones that put another out */
+    u64 hashed;  /* draw state groups hashed for a key */
+    u64 differs; /* the differences draw_state_check=1 found */
+    u64 epochs;  /* write tracking epochs with draws */
+    u64 cb[VK_CB_N], tex[VK_TEX_N];
+} VkDrawCounts;
+void vk_draw_counts(VkDrawCounts* c);
+void vk_render_stats_log(void); /* the counts of the last 600 presents in the log (each 600 presents) */
+void vk_render_draws_forget(void); /* no draw keeps an earlier draw's state (a save state's load) */
 /* draws, clears and the like that kept the last one's render targets, found again through the surface table before */
 extern u64 g_vk_targets_kept;
 /* draws that sampled a color target they render to in place, the barriers ordering them within a pass, the passes

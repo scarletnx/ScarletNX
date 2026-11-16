@@ -1326,6 +1326,81 @@ static Surf* predraw_sample(int i, Surf* t) {
     return t;
 }
 
+/* The counts of what the draws' lookups found (VkDrawCounts), and the counts of the renderer at the last report
+   (vk_render_stats_log), which tell how much of a draw's setup a later draw can keep: the kept draw states, the
+   constant buffer and texture lookups, the descriptor sets, the submissions and the write tracking epochs */
+static struct {
+    VkDrawCounts n, was;
+    u32 epoch; /* the last draw's write tracking epoch */
+    u64 present, drawn, kept, dset_new, dset_reused, targets_kept, submits[VK_SUB_N];
+    u32 ww_epoch;
+    u64 heap_buffer_calls, heap_buffer_hits, heap_image_calls, heap_image_hits;
+} g_stats;
+void vk_draw_counts(VkDrawCounts* c) { *c = g_stats.n; }
+void vk_render_stats_log(void) {
+    const VkDrawCounts* n = &g_stats.n;
+    const VkDrawCounts* w = &g_stats.was;
+    u64 presents = g_vk_present - g_stats.present, submits = 0, periodic = vk_submits(VK_SUB_PERIODIC);
+    u64 was_submits = 0;
+    for (int i = 0; i < VK_SUB_N; i++) {
+        submits += vk_submits(i);
+        was_submits += g_stats.submits[i];
+    }
+    u32 epoch = vk_ww_epoch();
+    if (!presents) presents = 1;
+    LOG("vulkan: draw states in the last %llu presents: %llu draws, %llu kept an earlier draw's (%llu the last "
+        "draw's, %llu one from the table), %llu found one that a later check made again; %llu kept in the table "
+        "(%llu putting another out), %llu groups hashed. A present: %.1f submissions (%.1f periodic), %.1f write "
+        "tracking epochs (%.1f with draws)\n",
+        (unsigned long long)presents, (unsigned long long)(g_vk_drawn - g_stats.drawn),
+        (unsigned long long)(g_vk_draw_kept - g_stats.kept), (unsigned long long)(n->last - w->last),
+        (unsigned long long)(n->table - w->table), (unsigned long long)(n->late - w->late),
+        (unsigned long long)(n->made - w->made), (unsigned long long)(n->evicted - w->evicted),
+        (unsigned long long)(n->hashed - w->hashed), (double)(submits - was_submits) / (double)presents,
+        (double)(periodic - g_stats.submits[VK_SUB_PERIODIC]) / (double)presents,
+        (double)(u32)(epoch - g_stats.ww_epoch) / (double)presents, (double)(n->epochs - w->epochs) / (double)presents);
+    LOG("vulkan: lookups in the last %llu presents: constant buffers %llu inline kept, %llu inline staged, %llu kept, "
+        "%llu kept after the pending check, %llu copied from the CPU, %llu from the buffer cache, %llu pending; "
+        "textures %llu kept, %llu resolved again, %llu past the pools; descriptor sets %llu written, %llu reused; %llu "
+        "draws kept the last one's targets\n",
+        (unsigned long long)presents, (unsigned long long)(n->cb[VK_CB_INLINE_KEPT] - w->cb[VK_CB_INLINE_KEPT]),
+        (unsigned long long)(n->cb[VK_CB_INLINE_STAGED] - w->cb[VK_CB_INLINE_STAGED]),
+        (unsigned long long)(n->cb[VK_CB_KEPT] - w->cb[VK_CB_KEPT]),
+        (unsigned long long)(n->cb[VK_CB_KEPT_CHECKED] - w->cb[VK_CB_KEPT_CHECKED]),
+        (unsigned long long)(n->cb[VK_CB_COPIED] - w->cb[VK_CB_COPIED]),
+        (unsigned long long)(n->cb[VK_CB_CACHE] - w->cb[VK_CB_CACHE]),
+        (unsigned long long)(n->cb[VK_CB_PENDING] - w->cb[VK_CB_PENDING]),
+        (unsigned long long)(n->tex[VK_TEX_KEPT] - w->tex[VK_TEX_KEPT]),
+        (unsigned long long)(n->tex[VK_TEX_RESOLVED] - w->tex[VK_TEX_RESOLVED]),
+        (unsigned long long)(n->tex[VK_TEX_PAST] - w->tex[VK_TEX_PAST]),
+        (unsigned long long)(g_vk_dset_new - g_stats.dset_new),
+        (unsigned long long)(g_vk_dset_reused - g_stats.dset_reused),
+        (unsigned long long)(g_vk_targets_kept - g_stats.targets_kept));
+    if (g_vk.has_descriptor_heaps) {
+        VkDescriptorHeapStats h;
+        vk_descriptor_heaps_get_stats(&h);
+        LOG("vulkan: descriptor heaps in the last %llu presents: %llu buffer descriptors written by the driver, %llu "
+            "found; %llu image descriptors written, %llu found\n",
+            (unsigned long long)presents, (unsigned long long)(h.buffer_driver_calls - g_stats.heap_buffer_calls),
+            (unsigned long long)(h.buffer_hits - g_stats.heap_buffer_hits),
+            (unsigned long long)(h.image_driver_calls - g_stats.heap_image_calls),
+            (unsigned long long)(h.image_hits - g_stats.heap_image_hits));
+        g_stats.heap_buffer_calls = h.buffer_driver_calls;
+        g_stats.heap_buffer_hits = h.buffer_hits;
+        g_stats.heap_image_calls = h.image_driver_calls;
+        g_stats.heap_image_hits = h.image_hits;
+    }
+    g_stats.was = g_stats.n;
+    g_stats.present = g_vk_present;
+    g_stats.drawn = g_vk_drawn;
+    g_stats.kept = g_vk_draw_kept;
+    g_stats.dset_new = g_vk_dset_new;
+    g_stats.dset_reused = g_vk_dset_reused;
+    g_stats.targets_kept = g_vk_targets_kept;
+    for (int i = 0; i < VK_SUB_N; i++) g_stats.submits[i] = vk_submits(i);
+    g_stats.ww_epoch = epoch;
+}
+
 /* What a texture handle resolved to, kept while nothing it came from can have changed: the pools' addresses, the
    surface table at the texture's address (vk_surf_epoch_at: tex_from_tic looks nowhere else, and a texture's drawn
    targets are taken in by vk_tex_recheck at every hit), the CPU's writes to the two headers (tex_memo_unwritten), the
@@ -1440,6 +1515,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
             vk_gmem_words(tsc_at, x->tsc, 8);
         LOG_LIMIT(1, "vulkan: a texture handle %08x names headers past the pools' limits (%x, %x): no texture there\n",
                   handle, b->tex_max, b->smp_max);
+        g_stats.n.tex[VK_TEX_PAST]++;
         return;
     }
     /* a pending storage image over this texture's own memory invalidates it; one elsewhere does not. The global flag
@@ -1459,15 +1535,18 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
             if (m->t->layout != VK_IMAGE_LAYOUT_UNDEFINED) vk_rt_note_read(m->t);
             if (m->t->layout != VK_IMAGE_LAYOUT_UNDEFINED) {
                 x->t = m->t;
+                g_stats.n.tex[VK_TEX_KEPT]++;
                 return;
             }
             m->t = NULL; /* undefined: memory has its texels, resolved below */
         } else {
             x->t = vk_tex_recheck(m->t);
             if (!x->t) m->t = NULL;
+            g_stats.n.tex[VK_TEX_KEPT]++;
             return;
         }
     }
+    g_stats.n.tex[VK_TEX_RESOLVED]++;
     vk_gmem_words(tic_at, x->tic, 8);
     vk_gmem_words(tsc_at, x->tsc, 8);
     x->t = vk_tex_from_tic(x->tic);
@@ -2016,6 +2095,7 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
             c[stage][i].frame == vk_submit_number() && c[stage][i].sz >= sz) {
             *buf = c[stage][i].buf;
             *off = c[stage][i].off;
+            g_stats.n.cb[VK_CB_INLINE_KEPT]++;
             return 1;
         }
         u8* p = vk_stage(sz, vk_stage_align(), buf, off);
@@ -2030,6 +2110,7 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
         c[stage][i].sz = sz;
         c[stage][i].buf = *buf;
         c[stage][i].off = *off;
+        g_stats.n.cb[VK_CB_INLINE_STAGED]++;
         return 1;
     }
     u64 a = ds->bind.cb_addr[stage][i];
@@ -2041,6 +2122,7 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
     if (cb_kept(e, a, sz, 1, epoch) || (cb_kept(x, a, sz, 1, epoch) && (*e = *x, 1))) {
         *buf = e->buf;
         *off = e->off;
+        g_stats.n.cb[VK_CB_KEPT]++;
         return 1;
     }
     /* Pending compute results there land first. A pending graphics result is newer than the guest memory the checks
@@ -2050,6 +2132,7 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
     if (!pending && (cb_kept(e, a, sz, 0, epoch) || (cb_kept(x, a, sz, 0, epoch) && (*e = *x, 1)))) {
         *buf = e->buf;
         *off = e->off;
+        g_stats.n.cb[VK_CB_KEPT_CHECKED]++;
         return 1;
     }
     /* a constant buffer's bytes are usually the CPU's, in one run: copy them straight into staging. The general buffer
@@ -2066,8 +2149,11 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
             memcpy(p, GP(cpu), sz);
         else if (own_stage(cpu, sz, p, NULL, 0) && !vk_buf_get_uniform(a, sz, buf, off))
             return 0;
+        g_stats.n.cb[VK_CB_COPIED]++;
     } else if (!(a ? vk_buf_get_uniform(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off)))
         return 0;
+    else
+        g_stats.n.cb[pending ? VK_CB_PENDING : VK_CB_CACHE]++;
     if (pending) {
         e->a = 0;
         return 1;
@@ -2714,6 +2800,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     VkDescriptorSet set = VK_NULL_HANDLE; /* the writes take it once their contents are known (desc_set_cached) */
     DescWrites d;
     d.n = 0;
+    /* the profiler's zones of a stage's set: its constant buffers, storage buffers, textures and the set itself */
+    SNX_ZONE(zcb, "stage set constants");
     for (int i = 0; i < 18; i++) {
         if (!(s->si.cbuf_mask & (1u << i))) continue;
         u32 sz = cb_range(ds, stage, s, i);
@@ -2734,6 +2822,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
        method_barrier gives each of those. A read of an earlier draw's writes still gets its barrier here. One game
        draws about 600 times a frame into one result buffer, and each of those draws ended the pass for a barrier
        before it. nvn_storage_order 0 keeps that order for comparisons */
+    SNX_ZONE_END(zcb);
+    SNX_ZONE(zsb, "stage set storage");
     int ordered = !g_settings.nvn_storage_ordering;
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
         const VkDrawGbuf* gb = &draw->b[stage][i];
@@ -2753,6 +2843,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         u64 range = !b ? VK_WHOLE_SIZE : gb->aliased ? gb->range : size;
         dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o, range);
     }
+    SNX_ZONE_END(zsb);
     /* each pointer table window's base and length, at its buffer's slot: 16 vec4 of words (SNX_VKB_MBASE, which is
        the fragment stage's SNX_VKB_RS: the translator makes no table for a fragment program) */
     u32 mb[64] = {0}, tables = 0;
@@ -2825,6 +2916,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                             .pImageInfo = &d.ii[binding]};
     }
+    SNX_ZONE(ztex, "stage set textures");
     u32 tcb = ds->bind.tex_bank;
     int nt = s->si.ntex > SH_MAXTEX ? SH_MAXTEX : s->si.ntex;
     int table_first[SH_INDEXED_TABLES] = {0}, table_count = 0;
@@ -3012,6 +3104,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                             .pImageInfo = &d.ii[b]};
     }
+    SNX_ZONE_END(ztex);
     /* by the bindings' stage (DsBindings): an Ounce's task and mesh programs' last */
     static const VkPipelineStageFlags2 image_stages[DS_GFX_STAGES] = {
         VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT,
@@ -3105,6 +3198,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                             .pImageInfo = &d.ii[binding]};
     }
+    SNX_ZONE(zset, "stage set descriptors");
     return desc_set_cached(layout, &d);
 }
 
@@ -3293,8 +3387,8 @@ static VkPrimitiveTopology topology_vk(u32 topology) {
     }
 }
 /* ------------------------------------------------------------ a draw's shaders and pipeline, kept between draws */
-/* the draw state's groups (their generations) a draw's shaders and pipeline key are made from, but the vertex format,
-   whose change is looked at closer (vertex_format_holds) */
+/* the draw state's groups (their generations, and their bytes' hashes in DrawKey) a draw's shaders and pipeline key are
+   made from, but the vertex format, whose change is looked at closer (vertex_format_holds) */
 static const u8 g_draw_groups[] = {DS_PROGRAMS, DS_BLEND, DS_RASTER_KEY, DS_XFB, DS_TARGET_FORMATS};
 /* the programs a draw's registers select */
 typedef struct {
@@ -3358,31 +3452,42 @@ typedef struct {
     u32 color[8], depth;
     u32 samples, depth_samples; /* color count (depth count for depth-only); 0 when color counts differ */
 } TargetFormats;
-/* What the last draw made from its state, kept for the next draw while nothing it was made from changed: the state's
-   owner and the generations of the groups it was made from (g_draw_groups and the vertex format), the draw's topology,
-   the shaders' code (trusted within an epoch and shader generation, as vk_shader_get trusts it) and the constant
-   buffer words their translation read (checked each draw, as vk_shader_get checks them on a hit). What else goes into it is found each
-   draw and compared: the fragment variant's key (its textures' formats), the targets' formats, which vertex streams
-   are empty, and whether the draw samples a target it renders to. Draws made all of it again, a 1 KiB key built and
-   compared included, for each of the ~3,400 draws a frame in one game, most of them with the state of the draw
-   before. draw_state_check=1 makes it again for each draw that keeps it, and warns of any difference: a register
-   missing from a group, or an input that isn't compared */
-static struct {
-    u32 ch_id;             /* the owner of the state it was made from */
-    u64 gen[DS_GENS];      /* that state's generations */
-    u32 topology;          /* the draw's argument, before tessellation makes it a patch list */
+/* A key of what a draw's shaders and pipeline are made from, by content: a hash of each group of g_draw_groups (of
+   their bytes, not their generations: a draw between two of the same draw gives the groups new generations and leaves
+   their bytes), the owner of the state, the draw's topology before tessellation makes it a patch list, whether it is a
+   mesh draw, and whether the descriptor heaps are on. All its bytes are set, for memcmp */
+enum { DRAW_KEY_GROUPS = 5 };
+typedef char draw_key_groups_check[sizeof g_draw_groups == DRAW_KEY_GROUPS ? 1 : -1];
+typedef struct {
+    u64 hash[DRAW_KEY_GROUPS][2]; /* vk_hash128 (draw_group_hash) */
+    u32 owner, topology;
+    u32 mesh, heaps;
+} DrawKey;
+/* What a draw made from its state, kept for later draws while nothing it was made from changed: the state's owner and
+   its groups (g_draw_groups and the vertex format), the draw's topology, the shaders' code (trusted within an epoch and
+   shader generation, as vk_shader_get trusts it) and the constant buffer words their translation read (checked each
+   draw, as vk_shader_get checks them on a hit). What else goes into it is found each draw and compared: the fragment
+   variant's key (its textures' formats), the targets' formats, which vertex streams are empty, and whether the draw
+   samples a target it renders to. Draws made all of it again, a 1 KiB key built and compared included, for each of
+   the ~3,400 draws a frame in one game, most of them with the state of the draw before. draw_state_check=1 makes it
+   again for each draw that keeps it, and warns of any difference: a register missing from a group, or an input that
+   isn't compared */
+typedef struct {
+    DrawKey key;           /* owner, topology and the groups' hashes */
+    u64 gen[DS_GENS];      /* the state's generations at the last draw that made or took it */
     u32 epoch;             /* vk_ww_epoch */
+    u32 used;              /* g_draw.use when last made or taken: of a set's ways, the one used longest ago makes room */
     u64 shader_generation; /* instruction invalidations also expire kept draws */
     /* A program can have more than one translation, each with other constant buffer words folded (cb_fold.h), and
        vk_shader_get takes the one that folds the most words of those that hold. A kept shader still holds when
        another translation of its program starts to hold, because it doesn't read the words that the other folds. So
        fold_gen is vk_shader_fold_gen when the state was kept (no translation came since), and not_top has a bit for
-       each shader of used_shaders that another translation of its program folded more than then. draw_kept
+       each shader of used_shaders that another translation of its program folded more than then. draw_holds
        asks vk_shader_chosen for those. Without these checks, draw_state_check=1 found 0.22% of the kept draws in one
        game's town with a fragment program that folded no word, where a lookup gave one that folded a word: the game
        had set that word to the value the other translation folded */
     u32 fold_gen, not_top;
-    DrawShaders sh;        /* the rest holds when sh.vs is set */
+    DrawShaders sh; /* the rest holds when sh.vs is set */
     FsKey fkey;
     VkSh* fs;
     VertexPlan plan;
@@ -3394,31 +3499,110 @@ static struct {
        what was read kept 66% of its draws where the register groups alone kept 60% */
     DsVertexFormat vfmt;
     u32 vstreams; /* the streams the attributes the vertex program reads name */
-    int check;    /* draw_state_check, -1 until read */
-} g_draw = {.check = -1};
+} DrawKept;
+/* a group's hash at a generation (g_draw.group) */
+typedef struct {
+    u64 gen, hash[2];
+} DrawGroupHash;
+/* The kept draws, in a table by their key (DrawKey), in sets of DRAW_WAYS ways, where a draw finds what an earlier
+   draw of the same state made in this epoch, with draws of other state between them (A, B, A) or not. A set can hold
+   two entries of one key, made from other vertex formats (vertex_format_holds) */
+#define DRAW_SET_BITS  8
+#define DRAW_WAYS      4
+#define DRAW_TABLE     1 /* the table's first entry: set s's way w is DRAW_TABLE + s * DRAW_WAYS + w */
+#define DRAW_HASH_BITS 6
+static struct {
+    DrawKept e[DRAW_TABLE + (DRAW_WAYS << DRAW_SET_BITS)]; /* 0 is none */
+    u64 tag[1u << DRAW_SET_BITS][DRAW_WAYS]; /* each way's key mixed (draw_key_mix), odd; 0 when the way is empty */
+    /* each group's last hashes by generation: a generation is one state of one owner's group (ds_generation_next), so
+       a group hashed at a generation is the same bytes while it lasts. 0, a state never synced, is hashed each time */
+    DrawGroupHash group[DRAW_KEY_GROUPS][1u << DRAW_HASH_BITS];
+    u32 last; /* the entry the last draw made or took, 0 for none */
+    u32 use;  /* counts the entries made or taken */
+    VkSh* fs; /* the fragment shader the last draw drew with, which a capture's resolve reads */
+    int told; /* draw_state_check=1's line is in the log */
+} g_draw;
 u64 g_vk_draw_kept, g_vk_draw_checked;
 
 static void draw_differs(const char* what) {
+    g_stats.n.differs++;
     WARN_LIMIT(32,
-               "vulkan: draw_state_check=1: a draw that kept the last draw's state has another %s when it is made "
+               "vulkan: draw_state_check=1: a draw that kept an earlier draw's state has another %s when it is made "
                "again (%llu draws checked)\n",
                what, (unsigned long long)g_vk_draw_checked);
 }
+/* the next draw keeps nothing of the last one's. The table's entries stay: only draws of the guest's own state make
+   them, and each is checked as a draw takes it */
+static void draw_forget(void) { g_draw.last = 0; }
+/* entry i was found wrong (draw_state_check=1): emptied, and out of its set */
+static void draw_drop(u32 i) {
+    if (!i) return;
+    g_draw.e[i].sh.vs = NULL;
+    if (i >= DRAW_TABLE) g_draw.tag[(i - DRAW_TABLE) / DRAW_WAYS][(i - DRAW_TABLE) % DRAW_WAYS] = 0;
+    if (g_draw.last == i) g_draw.last = 0;
+}
+void vk_render_draws_forget(void) {
+    memset(g_draw.tag, 0, sizeof g_draw.tag);
+    draw_forget();
+}
+/* group i of g_draw_groups of ds hashed: the hash its generation had, or (check: also, to compare) its bytes'. The
+   targets' formats have no struct: what target_formats_differ (gpu/maxwell/draw_state.c) compares is hashed */
+static void draw_group_hash(const DsState* ds, u32 i, int check, u64 out[2]) {
+    u64 gen = ds->gen[g_draw_groups[i]], h[2];
+    DrawGroupHash* had = &g_draw.group[i][gen & ((1u << DRAW_HASH_BITS) - 1)];
+    int known = gen && had->gen == gen;
+    if (known && !check) {
+        out[0] = had->hash[0];
+        out[1] = had->hash[1];
+        return;
+    }
+    switch (g_draw_groups[i]) {
+        case DS_PROGRAMS: vk_hash128(&ds->prog, sizeof ds->prog, h); break;
+        case DS_BLEND: vk_hash128(&ds->blend, sizeof ds->blend, h); break;
+        case DS_RASTER_KEY: vk_hash128(&ds->rkey, sizeof ds->rkey, h); break;
+        case DS_XFB: vk_hash128(&ds->xfb, sizeof ds->xfb, h); break;
+        default: {
+            u32 w[3 + DS_TARGETS_MAX] = {ds->tgt.count, ds->tgt.srgb_write, ds->tgt.msaa};
+            for (u32 t = 0; t < DS_TARGETS_MAX; t++) w[3 + t] = ds->tgt.color[t].format;
+            vk_hash128(w, sizeof w, h);
+        }
+    }
+    g_stats.n.hashed++;
+    if (known && (h[0] != had->hash[0] || h[1] != had->hash[1])) draw_differs("draw state hash");
+    had->gen = gen;
+    had->hash[0] = out[0] = h[0];
+    had->hash[1] = out[1] = h[1];
+}
+static void draw_memo_key(const DsState* ds, u32 topology, int mesh, int check, DrawKey* key) {
+    for (u32 i = 0; i < DRAW_KEY_GROUPS; i++) draw_group_hash(ds, i, check, key->hash[i]);
+    key->owner = ds->owner;
+    key->topology = topology;
+    key->mesh = (u32)mesh;
+    key->heaps = (u32)g_vk.has_descriptor_heaps;
+}
+/* a key's words mixed, odd: its set is the top DRAW_SET_BITS */
+static u64 draw_key_mix(const DrawKey* key) {
+    u64 m = (u64)key->owner << 32 ^ (u64)key->topology << 2 ^ (u64)key->mesh << 1 ^ key->heaps;
+    for (u32 i = 0; i < DRAW_KEY_GROUPS; i++) m = (m ^ key->hash[i][0]) * VK_FIB_MULT;
+    return m | 1;
+}
+static u32 draw_key_set(u64 mix) { return (u32)(mix >> (64 - DRAW_SET_BITS)); }
 /* the kept shaders that hold their constant buffer words: the stages, the fragment program and its variant */
-static void used_shaders(const VkSh* used[6]) {
-    const DrawShaders* s = &g_draw.sh;
+static void used_shaders(const DrawKept* e, const VkSh* used[6]) {
+    const DrawShaders* s = &e->sh;
     used[0] = s->vs;
     used[1] = s->tcs;
     used[2] = s->tes;
     used[3] = s->gs;
     used[4] = s->fs0;
-    used[5] = g_draw.fs;
+    used[5] = e->fs;
 }
-/* whether the vertex format f is, in what the kept state read of it, the one it was made from: the attributes the
-   vertex program reads, the streams they name, and which of all 32 attributes are integers (they key the program) */
-static int vertex_format_holds(const DsVertexFormat* f, const DrawShaders* s) {
-    const DsVertexFormat* k = &g_draw.vfmt;
-    u32 in = s->vs->si.in_mask, st = g_draw.vstreams;
+/* whether the vertex format f is, in what e read of it, the one e was made from: the attributes the vertex program
+   reads, the streams they name, and which of all 32 attributes are integers (they key the program) */
+static int vertex_format_holds(const DsVertexFormat* f, const DrawKept* e) {
+    const DrawShaders* s = &e->sh;
+    const DsVertexFormat* k = &e->vfmt;
+    u32 in = s->vs->si.in_mask, st = e->vstreams;
     if (f->is_int != s->attr_int || f->is_sint != s->attr_sint || ((f->constant ^ k->constant) & in) ||
         ((f->bgra ^ k->bgra) & in) || ((f->stream_on ^ k->stream_on) & st) || ((f->instanced ^ k->instanced) & st))
         return 0;
@@ -3434,34 +3618,85 @@ static int vertex_format_holds(const DsVertexFormat* f, const DrawShaders* s) {
     }
     return 1;
 }
-/* whether the state kept in g_draw holds for this draw of ch, as far as what is checked before drawing tells */
-static int draw_kept(const DsState* ds, u32 topology, int mesh, u32 epoch) {
-    const DrawShaders* s = &g_draw.sh;
-    if (s->mesh != mesh) return 0;
-    if (g_draw.shader_generation != g_vk.shader_generation) return 0;
-    if (g_draw.fold_gen != vk_shader_fold_gen()) return 0; /* a translation came that a lookup may take instead */
-    if (g_draw.k.heaps != (u32)g_vk.has_descriptor_heaps) return 0;
-    if (!s->vs || g_draw.ch_id != ds->owner || g_draw.topology != topology || g_draw.epoch != epoch) return 0;
-    for (u32 i = 0; i < sizeof g_draw_groups; i++)
-        if (g_draw.gen[g_draw_groups[i]] != ds->gen[g_draw_groups[i]]) return 0;
-    if (g_draw.gen[DS_VFORMAT] !=
-        ds->gen[DS_VFORMAT]) { /* the vertex format changed: what the state read may not have */
-        if (!vertex_format_holds(&ds->vfmt, s)) return 0;
-        g_draw.gen[DS_VFORMAT] = ds->gen[DS_VFORMAT];
+/* whether entry e, whose groups' bytes are this draw's, holds for this draw of ds, as far as what is checked before
+   drawing tells */
+static int draw_holds(DrawKept* e, const DsState* ds, u32 topology, int mesh, u32 epoch) {
+    const DrawShaders* s = &e->sh;
+    if (!s->vs || s->mesh != mesh) return 0;
+    if (e->shader_generation != g_vk.shader_generation) return 0;
+    if (e->fold_gen != vk_shader_fold_gen()) return 0; /* a translation came that a lookup may take instead */
+    if (e->k.heaps != (u32)g_vk.has_descriptor_heaps) return 0;
+    if (e->key.owner != ds->owner || e->key.topology != topology || e->epoch != epoch) return 0;
+    if (e->gen[DS_VFORMAT] != ds->gen[DS_VFORMAT]) { /* the vertex format changed: what the state read may not have */
+        if (!vertex_format_holds(&ds->vfmt, e)) return 0;
+        e->gen[DS_VFORMAT] = ds->gen[DS_VFORMAT];
     }
     if (s->xfb_on != xfb_wanted(ds->prog.xfb_on)) return 0; /* capture began or ended, or its counters were made */
     if (s->window_xy != !ds->vp.transform_on) return 0; /* the viewports' group keys no shader otherwise */
     if (s->swizzle != vk_viewport_swizzle_key(&ds->vp)) return 0;
     const VkSh* used[6];
-    used_shaders(used);
+    used_shaders(e, used);
     for (int i = 0; i < 6; i++) {
         if (!used[i]) continue;
-        if (g_draw.not_top >> i & 1) {
+        if (e->not_top >> i & 1) {
             if (!vk_shader_chosen(ds, used[i])) return 0;
         } else if (used[i]->cbr.n && !vk_shader_cb_hold(ds, used[i]))
             return 0;
     }
     return 1;
+}
+/* The kept entry that holds for this draw of ds, 0 for none: the last draw's when the groups' generations are its, as
+   they are for most draws in a row; else the table's latest entry of the draw's key that holds. *key is made when the
+   table is looked in (*have set). check (draw_state_check=1): the groups are hashed again, and the last draw's entry's
+   key is compared with them */
+static u32 draw_find(const DsState* ds, u32 topology, int mesh, u32 epoch, int check, DrawKey* key, int* have) {
+    u32 last = g_draw.last;
+    *have = 0;
+    g_stats.n.lookups++;
+    if (last) {
+        DrawKept* e = &g_draw.e[last];
+        int same = e->sh.vs != NULL;
+        for (u32 i = 0; same && i < DRAW_KEY_GROUPS; i++)
+            same = e->gen[g_draw_groups[i]] == ds->gen[g_draw_groups[i]];
+        if (same && draw_holds(e, ds, topology, mesh, epoch)) {
+            if (check) {
+                draw_memo_key(ds, topology, mesh, 1, key);
+                *have = 1;
+                if (memcmp(key, &e->key, sizeof *key)) draw_differs("draw state key");
+            }
+            g_stats.n.last++;
+            return last;
+        }
+    }
+    draw_memo_key(ds, topology, mesh, check, key);
+    *have = 1;
+    u64 mix = draw_key_mix(key);
+    u32 set = draw_key_set(mix), found = 0;
+    for (u32 w = 0; w < DRAW_WAYS; w++) {
+        u32 i = DRAW_TABLE + set * DRAW_WAYS + w;
+        DrawKept* e = &g_draw.e[i];
+        if (g_draw.tag[set][w] != mix || memcmp(&e->key, key, sizeof *key)) continue;
+        if (found && (i32)(e->used - g_draw.e[found].used) < 0) continue; /* the latest of those that hold */
+        if (draw_holds(e, ds, topology, mesh, epoch)) found = i;
+    }
+    if (!found) return 0;
+    DrawKept* e = &g_draw.e[found];
+    for (u32 i = 0; i < DRAW_KEY_GROUPS; i++) e->gen[g_draw_groups[i]] = ds->gen[g_draw_groups[i]];
+    g_stats.n.table++;
+    return found;
+}
+/* the entry a draw's state is kept in: found, which the draw found and couldn't take (of the same key), else an empty
+   way of its key's set, else the way used longest ago */
+static u32 draw_slot(const DrawKey* key, u32 found) {
+    if (found >= DRAW_TABLE) return found;
+    u64 mix = draw_key_mix(key);
+    u32 set = draw_key_set(mix), w = 0;
+    const DrawKept* ways = &g_draw.e[DRAW_TABLE + set * DRAW_WAYS];
+    for (u32 v = 1; v < DRAW_WAYS && g_draw.tag[set][w]; v++)
+        if (!g_draw.tag[set][v] || (i32)(ways[v].used - ways[w].used) < 0) w = v;
+    if (g_draw.tag[set][w]) g_stats.n.evicted++;
+    g_draw.tag[set][w] = mix;
+    return DRAW_TABLE + set * DRAW_WAYS + w;
 }
 static int draw_shaders_same(const DrawShaders* a, const DrawShaders* b) {
     return a->vs == b->vs && a->tcs == b->tcs && a->tes == b->tes && a->gs == b->gs && a->fs0 == b->fs0 &&
@@ -4516,7 +4751,7 @@ static const char* predraw_run(const DsState* ds, const DrawCall* dc, DrawOwner*
     }
     g_predraw.phase = 0;
     g_predraw.n = g_predraw.in_place = 0;
-    g_draw.sh.vs = NULL; /* the next draw keeps nothing of these two */
+    draw_forget(); /* the next draw keeps nothing of these two */
     return saved ? NULL : "had its save draw skipped (the log says why above)";
 }
 void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
@@ -4570,11 +4805,12 @@ static void render_draw_main(const DsState* ds, const DrawCall* dc, DrawOwner* o
             return;
         }
     }
-    if (g_draw.check < 0) {
-        g_draw.check = g_settings.draw_state_check != 0;
-        if (g_draw.check)
-            LOG("vulkan: draw_state_check=1: draws that keep the last draw's shaders and pipeline make them again to "
-                "compare\n");
+    /* read each draw: a test turns them on and off */
+    int check = g_settings.draw_state_check != 0;
+    if (check && !g_draw.told) {
+        g_draw.told = 1;
+        LOG("vulkan: draw_state_check=1: draws that keep an earlier draw's shaders and pipeline make them again to "
+            "compare\n");
     }
     u32 initial_first = first, initial_count = count, draw_topo = topology;
     int retries = 0, initial_indexed = indexed, predraw_refused = 0;
@@ -4586,14 +4822,24 @@ retry:
     u64 setup_frame = vk_submit_number();
     g_setup_restarts = 1;
     u32 epoch = vk_ww_epoch();
-    /* kept: the state the last draw made holds for this one, as far as each check below tells. Each part is made
-       here when it doesn't (and when draw_state_check compares) */
-    int capture = g_capture_draw.images != NULL;
-    int kept = !texture && !capture && !g_predraw.phase && draw_kept(ds, draw_topo, mesh, epoch);
-    if (kept && g_draw.check) g_vk_draw_checked++;
+    if (epoch != g_stats.epoch) {
+        g_stats.epoch = epoch;
+        g_stats.n.epochs++;
+    }
+    /* kept: the state an earlier draw made (entry found, ke) holds for this one, as far as each check below tells. Each
+       part is made here when it doesn't (and when draw_state_check compares). Only draws of the guest's own state look,
+       and only they keep what they made: a draw of a texture, a capture's slices and a save draw draw other state,
+       which a later draw of the same bytes must not take */
+    int capture = g_capture_draw.images != NULL, own = !texture && !capture && !g_predraw.phase;
+    DrawKey key;
+    int have_key = 0;
+    u32 found = own ? draw_find(ds, draw_topo, mesh, epoch, check, &key, &have_key) : 0;
+    DrawKept* ke = found ? &g_draw.e[found] : NULL;
+    int kept = found != 0;
+    if (kept && check) g_vk_draw_checked++;
     DrawShaders sh;
-    if (kept) sh = g_draw.sh;
-    if (!kept || g_draw.check) {
+    if (kept) sh = ke->sh;
+    if (!kept || check) {
         DrawShaders made = {0};
         int shaders_ok;
         if (texture) {
@@ -4607,7 +4853,7 @@ retry:
         if (!shaders_ok) {
             if (kept) {
                 draw_differs("shaders");
-                g_draw.sh.vs = NULL;
+                draw_drop(found);
             }
             g_vk_skipped++;
             return;
@@ -4854,9 +5100,9 @@ retry:
                nothing a passing one wants */
             fk.early = fk.predraw && blend_early_safe && !(sh.fs0->si.sph[19] & 3u);
         }
-        if (kept && memcmp(&fk, &g_draw.fkey, sizeof fk)) kept = 0;
-        if (kept) fs = g_draw.fs;
-        if (!kept || g_draw.check) {
+        if (kept && memcmp(&fk, &ke->fkey, sizeof fk)) kept = 0;
+        if (kept) fs = ke->fs;
+        if (!kept || check) {
             VkSh* made = texture ? vk_draw_texture_fragment((u32)fk.tm, (u32)fk.ts, fk.rm, fk.rs,
                                                             fk.advanced_blend, fk.advanced_mask)
                                  : fs_variant(ds, ds->prog.code[5], sh.fs0, &fk);
@@ -4946,8 +5192,8 @@ retry:
        same too */
     TargetFormats tf;
     target_formats(rt, zt, n, &tf);
-    if (kept && (memcmp(&tf, &g_draw.tf, sizeof tf) ||
-                 attributes_empty(&ds->vbuf, &ds->vfmt, sh.vs->si.in_mask) != g_draw.plan.empty))
+    if (kept && (memcmp(&tf, &ke->tf, sizeof tf) ||
+                 attributes_empty(&ds->vbuf, &ds->vfmt, sh.vs->si.in_mask) != ke->plan.empty))
         kept = 0;
     VkCoverage coverage;
     if (!vk_coverage_key(&coverage, dc, tf.samples ? tf.samples : 1, n, tf.depth_samples, g_vk.has_mixed_samples,
@@ -4996,23 +5242,23 @@ retry:
         g_vk_skipped++;
         return;
     }
-    if (kept && memcmp(&coverage, &g_draw.k.coverage, sizeof coverage)) kept = 0;
-    if (kept && (memcmp(&sample_locations, &g_draw.k.sample_locations, sizeof sample_locations) ||
-                 to_color != g_draw.k.coverage_to_color)) kept = 0;
-    if (kept && memcmp(&native_blend, &g_draw.k.advanced, sizeof native_blend)) kept = 0;
+    if (kept && memcmp(&coverage, &ke->k.coverage, sizeof coverage)) kept = 0;
+    if (kept && (memcmp(&sample_locations, &ke->k.sample_locations, sizeof sample_locations) ||
+                 to_color != ke->k.coverage_to_color)) kept = 0;
+    if (kept && memcmp(&native_blend, &ke->k.advanced, sizeof native_blend)) kept = 0;
     u32 fs_spec = fs ? vk_pipe_fs_spec(fs->si.spec, ds->dyn.alpha_test, ds->dyn.alpha_func,
                                        (ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0, ds->dyn.sprite_origin)
                      : 0;
-    if (kept && fs_spec != g_draw.k.fs_spec) kept = 0;
+    if (kept && fs_spec != ke->k.fs_spec) kept = 0;
     PipeKey made_k;
     VertexPlan made_pl;
-    const PipeKey* k = &g_draw.k;
-    const VertexPlan* pl = &g_draw.plan;
-    if (!kept || g_draw.check) {
+    const PipeKey* k = kept ? &ke->k : &made_k;
+    const VertexPlan* pl = kept ? &ke->plan : &made_pl;
+    if (!kept || check) {
         if (!draw_key(ds, &drawn, fs, rt, zt, n, &made_k, &made_pl)) {
             if (kept) {
                 draw_differs("pipeline key");
-                g_draw.sh.vs = NULL;
+                draw_drop(found);
             }
             g_vk_skipped++;
             return;
@@ -5255,7 +5501,7 @@ retry:
         if (g_vk.has_descriptor_heaps) {
             g_vk.has_descriptor_heaps = 0;
             vk_descriptor_heaps_invalidate();
-            g_draw.sh.vs = NULL;
+            draw_forget();
             goto retry;
         }
         g_vk_skipped++;
@@ -5448,17 +5694,22 @@ retry:
         k = &made_k;
         kept = 0;
     }
-    if (kept && g_draw.check && memcmp(k, &g_draw.k, sizeof *k)) {
+    /* compared each draw, as above, where draw_state_check made the key again: a kept key of another feedback, topology
+       class or polygon mode isn't a difference the check reports. The same state drawn directly and indirectly, or as
+       polygons made into lines on the CPU and not, is one key of the table with two of these */
+    if (kept && (ke->k.feedback != feedback || ke->k.topo_class != topo_class || ke->k.polygon != polygon)) kept = 0;
+    if (kept && check && memcmp(k, &ke->k, sizeof *k)) {
         draw_differs("pipeline key");
         kept = 0;
     }
-    /* the kept pipeline, or the last draw's when its key is the same (draws in a row mostly are): one comparison of
-       the key, where the table hashed all of it each draw. Pipelines and modules live as long as the run, so the
-       handle stays good, a stand-in for one still being made too (vk_pipeline_get_deferred) */
+    /* the kept pipeline, or the found or the last draw's entry's when its key is the same (draws in a row mostly are):
+       one comparison of the key, where the table hashed all of it each draw. Pipelines and modules live as long as the
+       run, so the handle stays good, a stand-in for one still being made too (vk_pipeline_get_deferred) */
     VkPipeline pipe;
+    const DrawKept* pe = ke ? ke : g_draw.last ? &g_draw.e[g_draw.last] : NULL;
     if (kept) {
-        pipe = g_draw.pipe;
-        if (g_draw.check) {
+        pipe = ke->pipe;
+        if (check) {
             VkPipeline made = vk_pipeline_get_deferred(k);
             if (vk_pipeline_ready(made) != vk_pipeline_ready(pipe)) {
                 draw_differs("pipeline");
@@ -5466,8 +5717,8 @@ retry:
                 pipe = made;
             }
         }
-    } else if (g_draw.pipe && !memcmp(k, &g_draw.k, sizeof *k))
-        pipe = g_draw.pipe;
+    } else if (pe && pe->pipe && !memcmp(k, &pe->k, sizeof *k))
+        pipe = pe->pipe;
     else
         pipe = vk_pipeline_get_deferred(k);
     if (!pipe) {
@@ -5486,34 +5737,44 @@ retry:
         g_vk_skipped++;
         return;
     }
-    /* kept for the next draw */
-    if (kept)
+    /* kept for later draws: in the entry found when it didn't hold, else in a way of the table's set of the draw's
+       key */
+    g_draw.fs = fs;
+    if (found && !kept) g_stats.n.late++;
+    if (kept) {
         g_vk_draw_kept++;
-    else if (pipe && saves)
-        g_draw.sh.vs = NULL; /* a draw with save attachments keeps nothing for the next draw (it has other targets) */
-    else if (pipe) {
-        g_draw.topology = draw_topo;
-        g_draw.epoch = epoch;
-        g_draw.shader_generation = g_vk.shader_generation;
+        ke->used = ++g_draw.use;
+        g_draw.last = found;
+    } else if (pipe && saves)
+        draw_forget(); /* a draw with save attachments keeps nothing for the next draw (it has other targets) */
+    else if (pipe && own) {
+        if (!have_key) draw_memo_key(ds, draw_topo, mesh, 0, &key);
+        u32 slot = draw_slot(&key, found);
+        DrawKept* e = &g_draw.e[slot];
+        e->key = key;
+        g_stats.n.made++;
+        e->epoch = epoch;
+        e->used = ++g_draw.use;
+        e->shader_generation = g_vk.shader_generation;
         /* the translations as they are after this draw's lookups, which can have made some */
-        g_draw.fold_gen = vk_shader_fold_gen();
-        g_draw.sh = sh;
-        g_draw.fkey = fk;
-        g_draw.fs = fs;
+        e->fold_gen = vk_shader_fold_gen();
+        e->sh = sh;
+        e->fkey = fk;
+        e->fs = fs;
         const VkSh* used[6];
-        used_shaders(used);
-        g_draw.not_top = 0;
+        used_shaders(e, used);
+        e->not_top = 0;
         for (int i = 0; i < 6; i++)
-            if (used[i] && !vk_shader_fold_top(used[i])) g_draw.not_top |= 1u << i;
-        g_draw.tf = tf;
-        if (pl != &g_draw.plan) g_draw.plan = *pl;
-        if (k != &g_draw.k) g_draw.k = *k;
-        g_draw.pipe = pipe;
-        g_draw.ch_id = ds->owner;
-        memcpy(g_draw.gen, ds->gen, sizeof g_draw.gen);
-        g_draw.vfmt = ds->vfmt;
-        g_draw.vstreams = 0;
-        for (u32 m = vs->si.in_mask; m; m &= m - 1) g_draw.vstreams |= 1u << ds->vfmt.stream[snx_ctz32(m)];
+            if (used[i] && !vk_shader_fold_top(used[i])) e->not_top |= 1u << i;
+        e->tf = tf;
+        if (pl != &e->plan) e->plan = *pl;
+        if (k != &e->k) e->k = *k;
+        e->pipe = pipe;
+        memcpy(e->gen, ds->gen, sizeof e->gen);
+        e->vfmt = ds->vfmt;
+        e->vstreams = 0;
+        for (u32 m = vs->si.in_mask; m; m &= m - 1) e->vstreams |= 1u << ds->vfmt.stream[snx_ctz32(m)];
+        g_draw.last = slot;
     }
     /* the color slots the draw writes */
     u32 writes = 0;
@@ -6020,7 +6281,7 @@ static int capture_draw(const DsState* ds, const DrawCall* dc, DrawOwner* owner,
     }
     g_capture_draw.images = NULL;
     g_capture_draw.snapshot = NULL;
-    g_draw.sh.vs = NULL;
+    draw_forget();
     if (complete) {
         g_vk_drawn = before + 1;
         g_vk_capture_draws++;
@@ -6091,5 +6352,5 @@ void vk_render_draw_texture(const DsState* ds, const DrawTexture* texture) {
     int heaps = g_vk.has_descriptor_heaps;
     render_draw(&state, &call, &owner, texture);
     g_vk.has_descriptor_heaps = heaps;
-    g_draw.sh.vs = NULL;
+    draw_forget();
 }

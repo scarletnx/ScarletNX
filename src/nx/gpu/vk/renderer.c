@@ -813,7 +813,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 "%llu finishes (%llu ms); %llu reads past queued releases (%llu samples counts written on the GPU); "
                 "%llu descriptor sets written, %llu reused (%u descriptor pools, %llu sets with texture arrays taken "
                 "from them); "
-                "%llu draws kept the last one's shaders and pipeline (%llu checked), %llu its targets\n",
+                "%llu draws kept an earlier one's shaders and pipeline (%llu checked), %llu the last one's targets\n",
                 (unsigned long long)g_vk_drawn, (unsigned long long)g_vk_skipped, (unsigned long long)g_vk_mesh_draws,
                 (unsigned long long)(g_vk_mesh_draws - g_vk_mesh_drawn), (unsigned long long)g_vk_dispatches,
                 (unsigned long long)g_vk_cs_batches,
@@ -840,6 +840,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 drawn_was = g_vk_drawn;
                 disp_was = g_vk_dispatches;
             }
+            vk_render_stats_log();
             if (g_vk_depth_apart_draws) {
                 static u64 apart_was, moved_was;
                 LOG("vulkan: %llu draws of the last 600 frames clip and clamp depth, as the console's clamp off does, "
@@ -1400,6 +1401,7 @@ static void vkr_reset(void) {
     vk_lock();
     vk_render_end();
     vk_render_forget_state();
+    vk_render_draws_forget();
     vk_zt_forget();
     vk_surf_forget_all();
     vk_buf_forget_all();

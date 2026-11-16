@@ -302,10 +302,10 @@ there, which is the time of a part compile and a link. The wait never includes t
 The swap:
 
 - `vk_pipeline_get_deferred` gives the stand-in while `opt` is not ready, and the `opt` handle after. `render.c`
-  keeps the handle in `g_draw.pipe` and binds again when it changes (`g_dyn.pipe`). Thus a draw after the swap binds
-  `opt`. A draw that kept the stand-in resolves to `opt` at its next bind, and `g_dyn` starts again with each command
-  buffer.
-- The `g_draw.check` path in `render.c` compares `vk_pipeline_ready` of two handles of the same `Pipe` at one time.
+  keeps the handle in its kept draw states (the `pipe` of each entry of `g_draw`) and binds again when it changes
+  (`g_dyn.pipe`). Thus a draw after the swap binds `opt`. A draw that kept the stand-in resolves to `opt` at its next
+  bind, and `g_dyn` starts again with each command buffer.
+- The `draw_state_check` path in `render.c` compares `vk_pipeline_ready` of two handles of the same `Pipe` at one time.
   Both give the same result, so the swap does not make it report a difference.
 - The `fast` pipeline goes through `vk_defer_call` on the GPU thread when the GPU thread first sees `opt` ready. The
   frame slot that it goes to recycles after its last submission. All binds of `fast` are in that frame or before it,
