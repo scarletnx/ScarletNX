@@ -1559,6 +1559,15 @@ setting Descriptor buffers
     help barriers are skipped, which the tracking of targets and buffers orders. 0 = descriptor sets for graphics
     help too, where a fragment barrier ends the render pass only after storage writes or reads that are still
     help pending, or after guest memory used in place
+setting Submit interval
+    key vk_submit_every_ms
+    int 1 100
+    default 1
+    startup
+    help The most recording one Vulkan submission holds before it goes to the driver, in ms. The default of 1 keeps
+    help the GPU fed where vkQueueSubmit2 is cheap. On a driver where one submit costs milliseconds, 4 lowers the
+    help submit count and raised the frame rate of one Ounce game on a Steam Deck by a tenth
+
 setting Vulkan recording thread
     key vk_record
     int 0 1

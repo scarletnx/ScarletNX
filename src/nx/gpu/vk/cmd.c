@@ -1271,7 +1271,7 @@ void vk_frame_next(void) {
     __atomic_store_n(&g_recycle_at, f->last > f->hold ? f->last : f->hold, __ATOMIC_RELEASE);
 }
 /* the GPU thread's recording time a submission holds at most */
-#define SUBMIT_EVERY_NS 1000000
+#define SUBMIT_EVERY_NS ((u64)g_settings.submit_interval * 1000000ull)
 /* A frame that goes long without a present (a loading screen) still has to hand its pools and rings back: one with
    many submissions, descriptor pools or descriptor tables ends here, at the start of a draw or dispatch, before
    anything is set up (a draw's setup must not submit). Otherwise what was recorded goes to the GPU once it holds a
