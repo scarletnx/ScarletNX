@@ -586,6 +586,9 @@ extern ShCaps g_spirv_translate;
    A cell is 1 / SH_VT_CELLS of the level, from the coordinate's fraction; a side says the coordinate was under 0 (1)
    or 1 and over (2), where the sampler's address mode, which the program doesn't know, decides the texel */
 extern u64 g_shader_vt_address;
+/* vt_parts: the parts of a virtual sample that are translated, a bit each: 1 the sparse sample, 2 its coarser read
+   where a texel has no memory, 4 its mark */
+extern u32 g_shader_vt_parts;
 #define SH_VT_IDS        (1u << 20)
 #define SH_VT_SLOT_BITS  15u
 #define SH_VT_SLOTS      (1u << SH_VT_SLOT_BITS)

@@ -1473,6 +1473,14 @@ setting VT sparse
     help levels always; the blocks are decoded as they get memory, exact (RGBA8) where astc_mode holds ASTC Exact and
     help as BC7 otherwise. A block's first frames read a coarser level. Needs sparse residency of 2D images and
     help shaderResourceResidency: the log says when the device has neither, and textures are then held whole
+setting VT parts
+    key vt_parts
+    int 0 7
+    default 7
+    startup
+    help vt_sparse: a measurement of what each part of a virtual sample costs the GPU. The sum of the parts translated:
+    help 1 the sparse sample, 2 its coarser read where a texel has no memory, 4 its mark. Without the marks every
+    help virtual texture is held whole, so the frames show the same texels
 setting VT frames
     key vt_frames
     int 32 1023

@@ -112,6 +112,7 @@ int vk_vt_register(Surf* t) {
     u32* seen = calloc(1, (size_t)n * sizeof *seen + 3u * bytes);
     if (!seen) return 0;
     *L = (VtTex){.t = t, .gen = L->gen + 1, .shape = shape, .nblocks = n, .seen = seen};
+    L->whole = !(g_shader_vt_parts & 4); /* vt_parts without the marks: nothing would ask for its blocks */
     L->want = (u8*)(seen + n);
     L->held = L->want + bytes;
     L->fresh = L->held + bytes;
@@ -562,6 +563,12 @@ void vk_vt_init(void) {
     g_vt.named_dirty = 1; /* the device's copy starts as the host's: no identity named */
     VkBufferDeviceAddressInfo ai = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = g_vt.table};
     g_shader_vt_address = vkGetBufferDeviceAddress(g_vk.dev, &ai);
+    g_shader_vt_parts = (u32)g_settings.vt_parts;
+    if (g_shader_vt_parts != 7)
+        LOG("vt: vt_parts=%u: a measurement, the samples translated without %s%s%s; without the marks every virtual "
+            "texture is held whole\n",
+            g_shader_vt_parts, g_shader_vt_parts & 1 ? "" : "the sparse sample, ",
+            g_shader_vt_parts & 2 ? "" : "the coarser read, ", g_shader_vt_parts & 4 ? "" : "the marks");
     LOG("vt: virtual textures on: ASTC textures of 1 MiB and more that programs only sample take memory a %u KiB "
         "block at a time, where frames sample them; the marks' table of %u KiB at device address %llx; a block goes "
         "%d presents after it was last sampled\n",

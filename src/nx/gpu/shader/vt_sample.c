@@ -4,6 +4,7 @@
 #include "nx/gpu/shader/vt_sample.h"
 
 u64 g_shader_vt_address;
+u32 g_shader_vt_parts = 7;
 
 static u32 cu(SpvEmitter* e, const ShVtSample* s, u32 v) { return spv_emit_constant_u32(e, s->t_u32, v); }
 static u32 cf(SpvEmitter* e, const ShVtSample* s, float v) { return spv_emit_constant_f32(e, s->t_f32, v); }
@@ -61,11 +62,22 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
               mark = spv_emit_id(e), done = spv_emit_id(e);
     spv_emit_branch(e, pre);
     spv_emit_label(e, pre);
-    const u32 first = spv_emit_sample_image_sparse(e, ids->pair, s->sampled_type, s->sampler, s->coord, s->mode,
-                                                   s->level, s->offset, s->gradient_y);
-    const u32 texel = SPV(e, SPV_OP_COMPOSITE_EXTRACT, s->t_v4f, first, 1);
-    const u32 resident =
-        SPV(e, SPV_OP_IMAGE_SPARSE_TEXELS_RESIDENT, s->t_bool, SPV(e, SPV_OP_COMPOSITE_EXTRACT, s->t_i32, first, 0));
+    /* vt_parts (a measurement of what each part costs): without its bit a part is left out or never taken, by a
+       condition that is a constant */
+    const u32 always = SPV(e, SPV_OP_I_EQUAL, s->t_bool, zero, zero);
+    u32 texel, resident = always;
+    if (g_shader_vt_parts & 1) {
+        const u32 first = spv_emit_sample_image_sparse(e, ids->pair, s->sampled_type, s->sampler, s->coord, s->mode,
+                                                       s->level, s->offset, s->gradient_y);
+        texel = SPV(e, SPV_OP_COMPOSITE_EXTRACT, s->t_v4f, first, 1);
+        if (g_shader_vt_parts & 2)
+            resident = SPV(e, SPV_OP_IMAGE_SPARSE_TEXELS_RESIDENT, s->t_bool,
+                           SPV(e, SPV_OP_COMPOSITE_EXTRACT, s->t_i32, first, 0));
+    } else if (s->mode == 3)
+        texel = spv_emit_sample_grad(e, s->t_v4f, s->sampled_type, s->sampler, s->coord, s->level, s->gradient_y, 0);
+    else
+        texel = spv_emit_sample_image(e, s->t_v4f, s->sampled_type, s->sampler, s->coord, 0, s->mode,
+                                      s->mode ? s->level : 0, s->offset, 0);
     /* the coordinates' change across the quad, taken here: past the branch a lane's neighbours may not be there */
     u32 dx = 0, dy = 0;
     if (s->mode == 3) { /* the program's own */
@@ -82,7 +94,8 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
             SPV(e, SPV_OP_I_ADD, s->t_u32,
                 SPV(e, SPV_OP_I_ADD, s->t_u32, qx, SPV(e, SPV_OP_I_MUL, s->t_u32, qy, cu(e, s, 3))), s->phase),
             cu(e, s, SH_VT_QUADS - 1));
-    const u32 marks = SPV(e, SPV_OP_I_EQUAL, s->t_bool, turn, zero);
+    const u32 marks = g_shader_vt_parts & 4 ? SPV(e, SPV_OP_I_EQUAL, s->t_bool, turn, zero)
+                                            : SPV(e, SPV_OP_LOGICAL_NOT, s->t_bool, always);
     /* one branch a sample where its texels have memory and its quad doesn't mark, which is nearly always: past it,
        the coarser read of a texel without memory, then the quad's mark. Every lane of a quad that marks takes the
        branch, so the mark's query below is in flow the quad shares */

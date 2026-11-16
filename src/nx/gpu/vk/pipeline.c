@@ -2985,7 +2985,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   g_vk.feat13.maintenance4,
                   /* vt_sparse's marks write to this address: a program translated with another, or none, is not it */
                   (u32)g_shader_vt_address,
-                  (u32)(g_shader_vt_address >> 32),
+                  (u32)(g_shader_vt_address >> 32) ^ g_shader_vt_parts << 28,
                   (u32)g_vk.has_depth_range_unrestricted,
                   /* how a fragment program reads its fragment's size (S2R 0x84) */
                   (u32)g_spirv_translate.shading_rate,
