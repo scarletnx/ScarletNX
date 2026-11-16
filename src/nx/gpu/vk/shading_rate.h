@@ -33,6 +33,16 @@ typedef struct {
     u32 table[4];
 } VkVrsPush;
 void vk_vrs_push(int vrs, VkExtent2D texel, u32 game_w, u32 game_h, u32 game_texel, u64 palette0, VkVrsPush* o);
+/* the device's pixels that a texel of the game's image covers: the game's texel (texel pixels) at the resolution
+   scale, over the texels of the image the renderer holds (sw of them for the guest's w: a scaled image where no copy
+   of the guest's size could be made). 1 at least */
+u32 vk_vrs_game_texel(u32 texel, float scale, u32 w, u32 sw);
+/* what a new palette or image (vk_shading_rate) needs: VK_VRS_CONVERT, a conversion of the image; VK_VRS_NEW_ID, the
+   image as it is with a new id, whose draws set the new palettes (VK_VRS_NV); VK_VRS_SAME_ID, nothing, as viewport 0's
+   palette, the only one the image holds, is the same (VK_VRS_KHR). valid: the last conversion made the image.
+   palette0_was and palette0: viewport 0's palette that the image holds and the new one */
+enum { VK_VRS_CONVERT, VK_VRS_NEW_ID, VK_VRS_SAME_ID };
+int vk_vrs_reuse(int vrs, int new_image, int valid, u64 palette0_was, u64 palette0);
 /* Renderer.shading_rate: the game's image converted for the draws (an id for DrawCall.shading_rate, 0 for none) */
 u32 vk_shading_rate(const GpuShadingRate* r);
 /* VK_VRS_NV: the image and the palettes of a draw of id bound in cb, when the command buffer has not got them. A

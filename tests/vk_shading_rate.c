@@ -164,11 +164,32 @@ static void check_glsl(void) {
     CHECK(out[0] == 15, "VK_NV_shading_rate_image's index under the center pixel, (16, 16): texel (1, 1)");
 }
 
+/* the texel's pixels at each resolution scale, and over a scaled image with no copy of the guest's size; and what a
+   palette or image change needs on each path */
+static void check_scale_and_reuse(void) {
+    CHECK(vk_vrs_game_texel(16, 1.0f, 160, 160) == 16, "16 pixels at scale 1");
+    CHECK(vk_vrs_game_texel(16, 2.0f, 160, 160) == 32, "32 pixels at scale 2, the guest's size");
+    CHECK(vk_vrs_game_texel(16, 1.5f, 160, 160) == 24, "24 pixels at scale 1.5");
+    CHECK(vk_vrs_game_texel(16, 2.0f, 160, 320) == 16, "16 pixels over a scaled image's texels at scale 2");
+    CHECK(vk_vrs_game_texel(16, 0.5f, 160, 160) == 8, "8 pixels at scale 0.5");
+    CHECK(vk_vrs_game_texel(16, 1.0f, 160, 0) == 1 && vk_vrs_game_texel(0, 1.0f, 160, 160) == 1, "1 at least");
+    const u64 a = 0xb985555555555555ull, b = 0xbbbbbbbbbbbb8885ull;
+    for (int vrs = VK_VRS_NV; vrs <= VK_VRS_KHR; vrs++) {
+        CHECK(vk_vrs_reuse(vrs, 1, 1, a, a) == VK_VRS_CONVERT, "a new image is converted");
+        CHECK(vk_vrs_reuse(vrs, 0, 0, a, a) == VK_VRS_CONVERT, "a palette after a failed conversion converts again");
+    }
+    CHECK(vk_vrs_reuse(VK_VRS_NV, 0, 1, a, b) == VK_VRS_NEW_ID, "NVIDIA's: a new palette is a new id, no conversion");
+    CHECK(vk_vrs_reuse(VK_VRS_NV, 0, 1, a, a) == VK_VRS_NEW_ID, "NVIDIA's: another viewport's palette, a new id");
+    CHECK(vk_vrs_reuse(VK_VRS_KHR, 0, 1, a, a) == VK_VRS_SAME_ID, "KHR: viewport 0's palette unchanged, nothing");
+    CHECK(vk_vrs_reuse(VK_VRS_KHR, 0, 1, a, b) == VK_VRS_CONVERT, "KHR: viewport 0's palette changed, converted");
+}
+
 int main(void) {
     _Static_assert(sizeof(VkVrsPush) == 12 * sizeof(u32), "VkVrsPush is shading_rate.comp's 12 words");
     check_choose();
     check_table();
     check_palette();
+    check_scale_and_reuse();
     check_glsl();
     printf("vk_shading_rate: %u checks, %u failures\n", g_checks, g_failures);
     return g_failures != 0;

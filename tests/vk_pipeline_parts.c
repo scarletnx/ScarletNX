@@ -237,6 +237,21 @@ static void check_states(void) {
     CHECK(has(part[2], np[2], VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE) && has(part[2], np[2], VK_DYNAMIC_STATE_STENCIL_OP),
           "the fragment shader part holds the depth and stencil tests");
     CHECK(np[3] == 2 && has(part[3], np[3], VK_DYNAMIC_STATE_BLEND_CONSTANTS), "the output part holds the blend constants");
+    /* the viewports' shading rate palettes (VK_NV_shading_rate_image, shading_rate.c): only with rate_palette, after
+       the others, in the pre-rasterization part alone */
+    PipeDynIn rate = {.rate_palette = 1};
+    u32 nrate = vk_pipe_dynamic(VK_PART_ALL, &rate, s);
+    CHECK(nrate == 22u && s[nrate - 1] == VK_DYNAMIC_STATE_VIEWPORT_SHADING_RATE_PALETTE_NV,
+          "the palettes' state with rate_palette, after the others");
+    CHECK(!has(whole, nwhole, VK_DYNAMIC_STATE_VIEWPORT_SHADING_RATE_PALETTE_NV), "no palettes' state without it");
+    for (u32 p = 0; p < 4; p++) {
+        u32 n = vk_pipe_dynamic(1u << p, &rate, part[p]);
+        CHECK(has(part[p], n, VK_DYNAMIC_STATE_VIEWPORT_SHADING_RATE_PALETTE_NV) == (p == 1),
+              "the palettes' state in the pre-rasterization part alone");
+    }
+    rate = all;
+    rate.rate_palette = 1;
+    CHECK(vk_pipe_dynamic(VK_PART_ALL, &rate, s) <= VK_PIPE_DYN_MAX, "every state at once fits VK_PIPE_DYN_MAX");
 }
 
 

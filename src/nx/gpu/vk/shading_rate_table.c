@@ -45,6 +45,20 @@ int vk_vrs_choose(const VkVrsDevice* d, VkExtent2D* texel, char* line, size_t n)
     return VK_VRS_NONE;
 }
 
+u32 vk_vrs_game_texel(u32 texel, float scale, u32 w, u32 sw) {
+    u32 t = sw ? (u32)((float)texel * scale * (float)w / (float)sw + 0.5f) : 0;
+    return t ? t : 1;
+}
+
+int vk_vrs_reuse(int vrs, int new_image, int valid, u64 palette0_was, u64 palette0) {
+    if (new_image || !valid) return VK_VRS_CONVERT;
+    /* VK_NV_shading_rate_image reads the palettes at each draw: a new palette alone needs no new image */
+    if (vrs == VK_VRS_NV) return VK_VRS_NEW_ID;
+    /* the KHR image holds viewport 0's rates: the game sets each viewport's palette in each frame (five in one game),
+       and the others change nothing in it */
+    return palette0 == palette0_was ? VK_VRS_SAME_ID : VK_VRS_CONVERT;
+}
+
 u32 vk_vrs_khr_rate(u32 e) {
     switch (e) {
         case 0: return 2u << 2 | 2u;  /* no invocations: the coarsest rate that all devices give (4x4) */
