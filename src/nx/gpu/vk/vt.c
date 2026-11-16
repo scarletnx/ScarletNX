@@ -354,7 +354,26 @@ void vk_vt_stats(const Surf* t, VkVtStats* s) {
     }
 }
 
+/* vt_sparse or vk_gpu_profile: every 600 presents, what the textures' loads moved in them: the guest bytes staged for
+   the GPU, the bytes the ASTC decoder made RGBA8 and the bytes its encoders made BC7, each a present, so a run with
+   virtual textures and one without say the same things */
+static void traffic_say(void) {
+    static u64 last[4], presents;
+    if (!g_settings.vt_sparse && !g_settings.gpu_profile) return;
+    if (++presents % 600) return;
+    u64 uploads, levels, hits, rgba8, texels, now[4];
+    vk_tex_stats(&uploads, &now[0]);
+    vk_astc_stats(&levels, &hits, &now[2], &rgba8);
+    vk_tex_vt_stats(&now[3], &texels);
+    now[1] = vk_astc_rgba8_bytes();
+    LOG("vulkan: texture traffic over 600 presents: %llu KB of guest bytes staged a present, %llu KB of ASTC decoded "
+        "to RGBA8 and %llu KB encoded as BC7 a present; %llu virtual texture blocks decoded\n",
+        (unsigned long long)((now[0] - last[0]) / 600 >> 10), (unsigned long long)((now[1] - last[1]) / 600 >> 10),
+        (unsigned long long)((now[2] - last[2]) / 600 >> 10), (unsigned long long)(now[3] - last[3]));
+    memcpy(last, now, sizeof last);
+}
 void vk_vt_frame(void) {
+    traffic_say();
     if (!vk_vt_on()) return;
     const u64 t0 = plat_ns();
     g_vt.now++;
