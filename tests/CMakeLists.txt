@@ -3608,7 +3608,8 @@ snx_ship_walk("${PROJECT_SOURCE_DIR}/src/nx/gpu/shipped_pass.c")
 add_test(NAME shipped_pass COMMAND snx-test-shipped-pass)
 # the walk's version, which keys the .vkscan file: the same in every folder, and with CRLF line ends
 add_test(NAME ship_walk_version COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
-         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/ship-walk-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/ship_walk_test.cmake")
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/ship-walk-test" "-DGENERATOR=${CMAKE_GENERATOR}"
+         "-DMAKE=${CMAKE_MAKE_PROGRAM}" -P "${CMAKE_CURRENT_SOURCE_DIR}/ship_walk_test.cmake")
 # ZBIC, the other compression of an Ounce game's NSO segments (common/utilities/zbic.c), on a frame of synthetic text
 if(TARGET snx_zbic)
     add_executable(snx-test-zbic zbic.c)
