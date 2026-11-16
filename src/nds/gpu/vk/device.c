@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nds/gpu/vk/vk.h"
-#include "common/gpu/vk/extension_commands.h"
+#include "common/gpu/vk/device_settings.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,38 +13,23 @@ static struct {
 
 NdsVk* nds_vk(void) { return g_device.up ? &g_device.vk : NULL; }
 
-/* a device of this physical device and queue family, if it has what the NDS needs (snx_vk_first_device's make) */
-static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
-    NdsVk* v = user;
-    SnxVkExtensions list;
-    if (!snx_vk_device_extensions(phys, &list)) return false;
-    const char* extensions[2];
-    uint32_t n = 0;
-    bool ok = true;
-    if (v->host.surface) {
-        ok = snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-        extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-    }
-    if (snx_vk_extensions_has(&list, "VK_KHR_portability_subset")) extensions[n++] = "VK_KHR_portability_subset";
-    snx_vk_extensions_free(&list);
-    if (!ok) return false;
+/* the NDS's device on a physical device and queue family (common/gpu/vk/device.h) */
+static bool choose(SnxVkChoice* c, void* user) {
+    const NdsVk* v = user;
+    if (v->host.surface && !snx_vk_choice_enable(c, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
+        return snx_vk_choice_refuse(c, "has no VK_KHR_swapchain to draw the window with");
+    snx_vk_choice_enable(c, "VK_KHR_portability_subset");
     VkPhysicalDeviceVulkan13Features v13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &v13};
-    vkGetPhysicalDeviceFeatures2(phys, &features);
-    if (!v13.dynamicRendering || !features.features.independentBlend) return false;
+    vkGetPhysicalDeviceFeatures2(c->phys, &features);
+    if (!v13.dynamicRendering || !features.features.independentBlend)
+        return snx_vk_choice_refuse(c, "has no dynamicRendering or no independentBlend");
     VkPhysicalDeviceVulkan13Features want13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
                                                .dynamicRendering = VK_TRUE};
     VkPhysicalDeviceFeatures2 want = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &want13};
     want.features.independentBlend = VK_TRUE;
-    if (snx_vk_device_create(phys, family, &want, extensions, n, &v->device) != VK_SUCCESS) return false;
-    v->phys = phys;
-    v->family = family;
-    memcpy(v->extensions, extensions, n * sizeof *extensions);
-    v->extension_count = n;
-    return true;
+    return snx_vk_choice_create(c, &want, NULL, NULL, 0);
 }
-/* a line of the command check for the log */
-static void say(const char* line, int warn) { fprintf(stderr, "%s%s\n", warn ? "warning: " : "", line); }
 
 bool nds_vk_init(const char* title, bool headless, char* error, size_t error_size) {
     NdsVk* v = &g_device.vk;
@@ -56,25 +41,31 @@ bool nds_vk_init(const char* title, bool headless, char* error, size_t error_siz
     } else if (!snx_vk_window_open("scarletnx-nds", title, NDS_SCREEN_WIDTH * 2, NDS_SCREEN_HEIGHT * 4, &v->host, error,
                                    error_size))
         return false;
-    VkQueueFlags queue = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
-    if (!snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v)) {
-        snprintf(error, error_size, "no Vulkan 1.3 device with dynamic rendering");
-        snx_vk_window_close(&v->host);
-        return false;
-    }
-    volkLoadDevice(v->device);
-    vkGetPhysicalDeviceProperties(v->phys, &v->properties);
-    /* each command of each extension the device is made with, as on a Switch game's device (snx_vk_device_commands):
-       the NDS's are the window's swapchain and a portability driver's subset, which it can't go without */
+    /* what the NDS can't go without: a portability driver's subset, and the window's swapchain */
     VkExtensionNeed need[2] = {
         {"VK_KHR_portability_subset", "Vulkan has a portability driver's subset on wherever the driver lists it"},
         {VK_KHR_SWAPCHAIN_EXTENSION_NAME, "the window is drawn with it"}};
-    if (snx_vk_device_commands(v->device, v->properties.deviceName, VK_API_VERSION_1_3, v->extensions,
-                               v->extension_count, need, 2, NULL, 0, say, error, error_size)) {
-        vkDestroyDevice(v->device, NULL);
+    VkExtensionSetting settings[VK_EXTENSION_SETTINGS];
+    SnxVkDeviceRequest request = {.who = "nds gpu",
+                                  .none = "no Vulkan 1.3 device with dynamic rendering",
+                                  .instance = v->host.instance.instance,
+                                  .api = VK_API_VERSION_1_3,
+                                  .queues = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT,
+                                  .surface = v->host.surface,
+                                  .choose = choose,
+                                  .user = v,
+                                  .need = need,
+                                  .needs = v->host.surface ? 2 : 1};
+    snx_vk_device_settings(&request, settings);
+    SnxVkDevice made;
+    if (!snx_vk_device_make(&request, &made, error, error_size)) {
         snx_vk_window_close(&v->host);
         return false;
     }
+    v->phys = made.phys;
+    v->device = made.device;
+    v->family = made.family;
+    vkGetPhysicalDeviceProperties(v->phys, &v->properties);
     vkGetDeviceQueue(v->device, v->family, 0, &v->queue);
     vkGetPhysicalDeviceMemoryProperties(v->phys, &v->memory_properties);
     /* a depth buffer of 24 bits or more with a stencil: the 3D engine's depth is 24 bits */
@@ -101,7 +92,6 @@ bool nds_vk_init(const char* title, bool headless, char* error, size_t error_siz
         return false;
     }
     g_device.up = true;
-    fprintf(stderr, "nds gpu: %s\n", v->properties.deviceName);
     return true;
 }
 
