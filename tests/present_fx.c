@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The shared presentation effects on a real Vulkan device, with no game data and no window: a synthetic frame through
-   FSR 1, FXAA, SMAA and SSAA, and the choices that turn them on. Read back and checked.
-   --showcase=DIR writes the frames as PPM panels. */
+   FSR 1, FXAA, SMAA and SSAA, and the choices that turn them on. Read back and checked. The 3DS's and the Vita's
+   windows drawn by the effects' last pass (snx_fx_prepare, snx_fx_draw) against the blit they used before, with the
+   commands each records. --showcase=DIR writes the frames as PPM panels. */
 #include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/vk_common.h"
@@ -38,10 +39,23 @@ typedef struct {
 
 static int succeed(VkResult r) { return r == VK_SUCCESS; }
 
-/* the test's state: the effects' last line, for the checks of what they say, and the Khronos layer's errors */
+/* the commands the effects record, counted through volk's pointers, which the effects call */
+typedef struct {
+    unsigned renderings, dispatches, blits, clears, draws;
+} Counts;
+/* the test's state: the effects' last line, for the checks of what they say, the Khronos layer's errors, and the
+   commands counted with the functions volk had for them */
 static struct {
     char said[256];
     unsigned val_errors;
+    Counts count;
+    struct {
+        PFN_vkCmdBeginRendering begin;
+        PFN_vkCmdDispatch dispatch;
+        PFN_vkCmdBlitImage blit;
+        PFN_vkCmdClearColorImage clear;
+        PFN_vkCmdDraw draw;
+    } real;
 } g_test;
 
 /* the effects' log: printed, and the last line kept */
@@ -396,6 +410,131 @@ static unsigned char* read_ppm(const char* path, uint32_t* w, uint32_t* h) {
    pixels with the upscaler Off, as the 3DS's window does, the effects' output of each written to DIR. A measure, not a
    check: run it under lock.sh gpu-measure */
 #define BENCH_ROUNDS 105
+/* ---- the window's draw (snx_fx_prepare, snx_fx_draw) against the blit the 3DS and the Vita drew it with before */
+static VKAPI_ATTR void VKAPI_CALL count_begin(VkCommandBuffer cb, const VkRenderingInfo* info) {
+    ++g_test.count.renderings;
+    g_test.real.begin(cb, info);
+}
+static VKAPI_ATTR void VKAPI_CALL count_dispatch(VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z) {
+    ++g_test.count.dispatches;
+    g_test.real.dispatch(cb, x, y, z);
+}
+static VKAPI_ATTR void VKAPI_CALL count_blit(VkCommandBuffer cb, VkImage src, VkImageLayout src_layout, VkImage dst,
+                                             VkImageLayout dst_layout, uint32_t n, const VkImageBlit* regions,
+                                             VkFilter filter) {
+    ++g_test.count.blits;
+    g_test.real.blit(cb, src, src_layout, dst, dst_layout, n, regions, filter);
+}
+static VKAPI_ATTR void VKAPI_CALL count_clear(VkCommandBuffer cb, VkImage image, VkImageLayout layout,
+                                              const VkClearColorValue* color, uint32_t n,
+                                              const VkImageSubresourceRange* ranges) {
+    ++g_test.count.clears;
+    g_test.real.clear(cb, image, layout, color, n, ranges);
+}
+static VKAPI_ATTR void VKAPI_CALL count_draw(VkCommandBuffer cb, uint32_t vertices, uint32_t instances, uint32_t first,
+                                             uint32_t first_instance) {
+    ++g_test.count.draws;
+    g_test.real.draw(cb, vertices, instances, first, first_instance);
+}
+static void counting(void) {
+    g_test.real.begin = vkCmdBeginRendering, vkCmdBeginRendering = count_begin;
+    g_test.real.dispatch = vkCmdDispatch, vkCmdDispatch = count_dispatch;
+    g_test.real.blit = vkCmdBlitImage, vkCmdBlitImage = count_blit;
+    g_test.real.clear = vkCmdClearColorImage, vkCmdClearColorImage = count_clear;
+    g_test.real.draw = vkCmdDraw, vkCmdDraw = count_draw;
+}
+/* the commands recorded since before, added to *n */
+static void counted(Counts* n, const Counts* before) {
+    n->renderings += g_test.count.renderings - before->renderings;
+    n->dispatches += g_test.count.dispatches - before->dispatches;
+    n->blits += g_test.count.blits - before->blits;
+    n->clears += g_test.count.clears - before->clears;
+    n->draws += g_test.count.draws - before->draws;
+}
+
+/* The window as the 3DS's and the Vita's presenters drew it before: cleared black, then snx_fx_render's image of to's
+   size, or the frame itself where neither effect ran, blitted into to: in sharp pixels where the image is to's size,
+   or where sharp asks it with the upscaler Off, else smooth. The effects' own commands counted into n */
+static unsigned char* window_blit(Test* t, SnxFx* fx, Image* frame, Image* win, VkRect2D to, int filter, int aa,
+                                  int sharp, Counts* n) {
+    VkCommandBuffer cb = snx_vk_ring_commands(&t->ring);
+    VkClearColorValue black = {.float32 = {0, 0, 0, 1}};
+    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    SnxFxImage out = {0};
+    Counts before;
+    int effects;
+    barrier(cb, win->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE,
+            0, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    vkCmdClearColorImage(cb, win->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+    barrier(cb, win->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    before = g_test.count;
+    effects = snx_fx_render(fx, cb, 0, frame->view, frame->width, frame->height, 0, 0, frame->width, frame->height, 0,
+                            to.extent.width, to.extent.height, filter, aa, &out);
+    counted(n, &before);
+    if (!effects)
+        barrier(cb, frame->image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_SHADER_READ_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    {
+        uint32_t sw = effects ? out.width : frame->width, sh = effects ? out.height : frame->height;
+        int one = effects && sw == to.extent.width && sh == to.extent.height;
+        VkImageBlit blit = {
+            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .srcOffsets = {{0, 0, 0}, {(int32_t)sw, (int32_t)sh, 1}},
+            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .dstOffsets = {{to.offset.x, to.offset.y, 0},
+                           {to.offset.x + (int32_t)to.extent.width, to.offset.y + (int32_t)to.extent.height, 1}}};
+        vkCmdBlitImage(cb, effects ? out.image : frame->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, win->image,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                       one || (sharp && filter == SNX_FX_UPSCALE_OFF) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+    }
+    if (!effects)
+        barrier(cb, frame->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT);
+    if (!snx_vk_ring_wait(&t->ring, snx_vk_ring_submit(&t->ring, VK_NULL_HANDLE, VK_NULL_HANDLE), UINT64_MAX))
+        return NULL;
+    return read_image(t, win->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, win->width, win->height);
+}
+
+/* The same window through snx_fx_prepare and snx_fx_draw: the passes before the last, then a rendering of the window
+   cleared black by its load, the last pass drawn into to there. The effects' commands counted into n; NULL when
+   prepare leaves no draw */
+static unsigned char* window_draw(Test* t, SnxFx* fx, Image* frame, Image* win, VkFormat format, VkRect2D to,
+                                  int filter, int aa, Counts* n) {
+    VkCommandBuffer cb = snx_vk_ring_commands(&t->ring);
+    Counts before = g_test.count;
+    int ready = snx_fx_prepare(fx, cb, 0, frame->view, frame->width, frame->height, 0, 0, frame->width, frame->height,
+                               0, to, format, filter, aa);
+    counted(n, &before);
+    barrier(cb, win->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    {
+        VkRenderingAttachmentInfo color = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                           .imageView = win->view,
+                                           .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                           .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                           .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                           .clearValue = {.color = {.float32 = {0, 0, 0, 1}}}};
+        VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                              .renderArea = {{0, 0}, {win->width, win->height}},
+                              .layerCount = 1,
+                              .colorAttachmentCount = 1,
+                              .pColorAttachments = &color};
+        vkCmdBeginRendering(cb, &ri);
+        before = g_test.count;
+        if (ready) snx_fx_draw(fx, cb, 0);
+        counted(n, &before);
+        vkCmdEndRendering(cb);
+    }
+    if (!snx_vk_ring_wait(&t->ring, snx_vk_ring_submit(&t->ring, VK_NULL_HANDLE, VK_NULL_HANDLE), UINT64_MAX) || !ready)
+        return NULL;
+    return read_image(t, win->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, win->width, win->height);
+}
+
 static int bench(Test* t, SnxFx* fx, const char* frame, const char* showcase) {
     static const struct {
         int filter, aa;
@@ -497,6 +636,7 @@ int main(int argc, char** argv) {
         return 77;
     }
     volkLoadDevice(t.dev);
+    counting();
     vkGetDeviceQueue(t.dev, t.family, 0, &t.queue);
     {
         VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 32};
@@ -1004,6 +1144,199 @@ int main(int argc, char** argv) {
             CHECK(!bad);
         }
         image_free(&t, &framed);
+    }
+
+    /* The 3DS's and the Vita's windows drawn by the effects' last pass in the window's own rendering, against the
+       blit they were drawn with before, the same frame, rectangle and settings: equal where the last pass was the
+       copy of a picture of the rectangle's size or a smooth scale, and within a level where the image the effects
+       drew it into held 16-bit floats. In sharp pixels each pixel is the texel under its centre, exactly: the blit
+       takes the other texel at a tie (a centre on a texel's edge at 1.5x), so there it is held to the texels alone.
+       The effects record the passes before the last as before and leave the last to the draw; a compute pass last
+       (NIS alone), or none, records as before, and the window's copy is the draw */
+    {
+        static const struct {
+            const char* name;
+            uint32_t fw, fh, ww, wh;
+            VkRect2D to;
+            VkFormat format;
+            int filter, aa, sharp, last_drawn;
+            int most;         /* the largest difference of a channel */
+            unsigned percent; /* the share of the window's pixels that may differ at all, in hundredths of a percent */
+        } cases[] = {
+            {"3DS top screen at 2x, upscaler Off",
+             400,
+             240,
+             800,
+             480,
+             {{0, 0}, {800, 480}},
+             VK_FORMAT_R8G8B8A8_UNORM,
+             SNX_FX_UPSCALE_OFF,
+             SNX_FX_AA_OFF,
+             1,
+             0,
+             0,
+             0},
+            {"3DS bottom screen at 1.5x in the layout, upscaler Off",
+             320,
+             240,
+             600,
+             720,
+             {{60, 360}, {480, 360}},
+             VK_FORMAT_R8G8B8A8_UNORM,
+             SNX_FX_UPSCALE_OFF,
+             SNX_FX_AA_OFF,
+             1,
+             0,
+             255,
+             10000}, /* the blit's ties */
+            {"3DS bottom screen at 1.5x in the layout, FSR 1",
+             320,
+             240,
+             600,
+             720,
+             {{60, 360}, {480, 360}},
+             VK_FORMAT_B8G8R8A8_UNORM,
+             SNX_FX_UPSCALE_FSR1,
+             SNX_FX_AA_OFF,
+             1,
+             1,
+             1,
+             10000},
+            {"3DS bottom screen at 1.5x in the layout, upscaler Off and FXAA",
+             320,
+             240,
+             600,
+             720,
+             {{60, 360}, {480, 360}},
+             VK_FORMAT_R8G8B8A8_UNORM,
+             SNX_FX_UPSCALE_OFF,
+             SNX_FX_AA_FXAA,
+             1,
+             1,
+             1,
+             10000},
+            {"3DS top screen at 1.5x, NIS",
+             400,
+             240,
+             600,
+             720,
+             {{0, 0}, {600, 360}},
+             VK_FORMAT_R8G8B8A8_UNORM,
+             SNX_FX_UPSCALE_NIS,
+             SNX_FX_AA_OFF,
+             1,
+             0,
+             0,
+             0},
+            {"Vita screen at 2.06x, upscaler Off",
+             480,
+             272,
+             1000,
+             560,
+             {{6, 0}, {988, 560}},
+             VK_FORMAT_B8G8R8A8_UNORM,
+             SNX_FX_UPSCALE_OFF,
+             SNX_FX_AA_OFF,
+             0,
+             0,
+             0,
+             0},
+            {"Vita screen at 2.06x, SGSR and SMAA",
+             480,
+             272,
+             1000,
+             560,
+             {{6, 0}, {988, 560}},
+             VK_FORMAT_R8G8B8A8_UNORM,
+             SNX_FX_UPSCALE_SGSR,
+             SNX_FX_AA_SMAA,
+             0,
+             1,
+             1,
+             10000},
+            {"Vita screen at 2.06x, bilinear and SSAA 2x",
+             480,
+             272,
+             1000,
+             560,
+             {{6, 0}, {988, 560}},
+             VK_FORMAT_B8G8R8A8_UNORM,
+             SNX_FX_UPSCALE_BILINEAR,
+             SNX_FX_AA_SSAA2,
+             0,
+             1,
+             0,
+             0},
+        };
+        int failed = 0;
+        for (size_t c = 0; c < sizeof cases / sizeof *cases; ++c) {
+            Image frame = {0}, old_win = {0}, new_win = {0};
+            Counts old_n = {0}, new_n = {0};
+            unsigned char *frame_pixels = malloc((size_t)cases[c].fw * cases[c].fh * 4), *old_px, *new_px;
+            unsigned differ = 0, most = 0, pixels = cases[c].ww * cases[c].wh;
+            const VkImageUsageFlags window_usage =
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            CHECK(frame_pixels);
+            pattern(frame_pixels, cases[c].fw, cases[c].fh);
+            CHECK(image_make(&t, &frame, cases[c].fw, cases[c].fh, VK_FORMAT_R8G8B8A8_UNORM,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                 VK_IMAGE_USAGE_SAMPLED_BIT));
+            CHECK(upload(&t, &frame, frame_pixels));
+            CHECK(image_make(&t, &old_win, cases[c].ww, cases[c].wh, cases[c].format, window_usage));
+            CHECK(image_make(&t, &new_win, cases[c].ww, cases[c].wh, cases[c].format, window_usage));
+            snx_fx_set_off_sharp(fx, cases[c].sharp);
+            old_px = window_blit(&t, fx, &frame, &old_win, cases[c].to, cases[c].filter, cases[c].aa, cases[c].sharp,
+                                 &old_n);
+            new_px = window_draw(&t, fx, &frame, &new_win, cases[c].format, cases[c].to, cases[c].filter, cases[c].aa,
+                                 &new_n);
+            CHECK(old_px && new_px);
+            for (unsigned i = 0; i < pixels; ++i) {
+                unsigned d = 0;
+                for (int k = 0; k < 4; ++k) {
+                    unsigned e = (unsigned)abs((int)old_px[(size_t)i * 4 + k] - (int)new_px[(size_t)i * 4 + k]);
+                    d = e > d ? e : d;
+                }
+                differ += d != 0;
+                most = d > most ? d : most;
+            }
+            printf("present_fx: window, %s: %u of %u pixels differ from the blit, by %u at most; the effects record "
+                   "%u renderings, %u dispatches, %u draws, %u blits, %u clears for the draw, %u, %u, %u, %u, %u "
+                   "before\n",
+                   cases[c].name, differ, pixels, most, new_n.renderings, new_n.dispatches, new_n.draws, new_n.blits,
+                   new_n.clears, old_n.renderings, old_n.dispatches, old_n.draws, old_n.blits, old_n.clears);
+            if (cases[c].sharp && cases[c].filter == SNX_FX_UPSCALE_OFF && cases[c].aa == SNX_FX_AA_OFF) {
+                /* in sharp pixels each pixel of to is the frame's texel under its centre, a tie the right or lower
+                   one: (2 * d + 1) * frame / (2 * to), in whole numbers */
+                const VkRect2D* to = &cases[c].to;
+                unsigned off_old = 0, off_new = 0;
+                for (uint32_t y = 0; y < to->extent.height; ++y)
+                    for (uint32_t x = 0; x < to->extent.width; ++x) {
+                        uint32_t sx = (2 * x + 1) * cases[c].fw / (2 * to->extent.width),
+                                 sy = (2 * y + 1) * cases[c].fh / (2 * to->extent.height);
+                        size_t at = ((size_t)(to->offset.y + (int32_t)y) * cases[c].ww + (size_t)to->offset.x + x) * 4;
+                        const unsigned char* want = frame_pixels + ((size_t)sy * cases[c].fw + sx) * 4;
+                        off_old += memcmp(old_px + at, want, 3) != 0;
+                        off_new += memcmp(new_px + at, want, 3) != 0;
+                    }
+                printf("present_fx: window, %s: the texel under each pixel's centre missed by %u pixels of the draw, "
+                       "%u of the blit\n",
+                       cases[c].name, off_new, off_old);
+                failed |= off_new != 0;
+                write_ppm(showcase, c ? "window-3ds-1.5x" : "window-3ds-2x", new_px, cases[c].ww, cases[c].wh);
+            }
+            free(frame_pixels);
+            failed |= (int)most > cases[c].most || (uint64_t)differ * 10000u > (uint64_t)pixels * cases[c].percent;
+            failed |= new_n.renderings + (unsigned)cases[c].last_drawn != old_n.renderings ||
+                      new_n.dispatches != old_n.dispatches || new_n.blits != old_n.blits ||
+                      new_n.clears != old_n.clears || new_n.draws != old_n.draws + 1u - (unsigned)cases[c].last_drawn;
+            free(old_px);
+            free(new_px);
+            image_free(&t, &frame);
+            image_free(&t, &old_win);
+            image_free(&t, &new_win);
+        }
+        snx_fx_set_off_sharp(fx, 0);
+        CHECK(!failed);
     }
 
     snx_fx_destroy(fx);
