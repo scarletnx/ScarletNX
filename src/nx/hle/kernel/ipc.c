@@ -74,7 +74,7 @@ static void ring_set(u32 seq, u32 kind, const char* name, u32 type, u32 cmd, con
 
 /* ============================================================ log=2's counters */
 /* a served request of the service object name's command cmd took ns: its pair's count and time, under the pools'
-   lock. Only log=2 comes here */
+   lock. A verbose log or an attached profiler comes here */
 static void stat_add(const char* name, u32 cmd, u64 ns) {
     IpcStat* s;
     u32 i;

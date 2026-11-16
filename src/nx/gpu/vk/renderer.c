@@ -585,7 +585,8 @@ static void flip_src(VkImageBlit* b, u32 transform) {
 #define FRAME_IMAGE_W 320
 #define FRAME_IMAGE_H 180
 static void frame_image(void); /* after surf_read, whose readback it asks for */
-/* One name for each resource category, shared by the slow-frame log and the plots below. */
+/* One name for each resource category, for the slow-frame log. The plots below name the same categories in their
+   own table, since a plot's name is the full text the profiler shows. */
 static const char* const g_resource_name[VK_RESOURCE_N] = {
     [VK_RESOURCE_IMAGE_QUERY] = "image requirements",
     [VK_RESOURCE_IMAGE_CREATE] = "image allocation",

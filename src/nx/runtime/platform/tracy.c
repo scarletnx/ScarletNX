@@ -21,7 +21,7 @@
    flight. t_tracy is this thread's: the zones it has open, its zone tick, whether it mirrors a connection, and the
    name it goes by. */
 #define SNX_TRACY_ZONE_MAX  64
-#define SNX_TRACY_FIBER_MAX  4 /* a service wait can hold a game-pause wait inside it */
+#define SNX_TRACY_FIBER_MAX  4 /* room for a wait nested inside another, though none of the call sites does it now */
 #define SNX_TRACY_POLL      4096
 #define SNX_TRACY_OFF     0 /* not started */
 #define SNX_TRACY_ON      1
@@ -422,14 +422,13 @@ void snx_tracy_thread_name(const char* name) {
 }
 
 void snx_tracy_fiber_enter(uint32_t slot, uint32_t kind, const char* name) {
-    char* dst;
     if (!name || !*name || t_tracy.fiber_depth >= SNX_TRACY_FIBER_MAX) return;
     if (slot >= SNX_FIBER_SLOTS || kind >= SNX_FIBER_KINDS) return;
     if (!snx_tracy_enter()) return;
     if (TracyCIsConnected) {
         /* No leave without an enter: a connection that came and went while this thread was not looking would
            otherwise leave a fiber the server never saw. The pair is pushed only when both events went out. */
-        dst = g_fiber_names[slot][kind];
+        char* dst = g_fiber_names[slot][kind];
         snprintf(dst, SNX_TRACY_FIBER_NAME_MAX, "%s", name);
         TracyCFiberEnter(dst);
         t_tracy.fiber_slot[t_tracy.fiber_depth] = (uint8_t)slot;
@@ -440,19 +439,21 @@ void snx_tracy_fiber_enter(uint32_t slot, uint32_t kind, const char* name) {
 }
 
 void snx_tracy_fiber_leave(void) {
-    /* The name of an inner fiber is that of its slot: the pair on top tells which one ends. */
-    char* dst;
+    /* Pop the pair whatever the connection does: a disconnect here must not leave a depth that leave_all cannot
+       clear. Only the events depend on a server being there. */
     if (t_tracy.fiber_depth <= 0) return;
     if (!snx_tracy_enter()) {
         t_tracy.fiber_depth--;
         return;
     }
+    t_tracy.fiber_depth--;
     if (TracyCIsConnected) {
-        t_tracy.fiber_depth--;
         TracyCFiberLeave;
         if (t_tracy.fiber_depth > 0) {
-            dst = g_fiber_names[t_tracy.fiber_slot[t_tracy.fiber_depth]][t_tracy.fiber_kind[t_tracy.fiber_depth]];
-            if (*dst) TracyCFiberEnter(dst); /* the fiber that switched away is running again */
+            /* The name of an inner fiber is that of its slot: the pair on top tells which one ends. The fiber that
+               switched away is running again after this one leaves. */
+            char* dst = g_fiber_names[t_tracy.fiber_slot[t_tracy.fiber_depth]][t_tracy.fiber_kind[t_tracy.fiber_depth]];
+            if (*dst) TracyCFiberEnter(dst);
         }
     }
     snx_tracy_leave();
@@ -564,7 +565,7 @@ static void tracy_plots_send(void) {
         {"nce trap/s", 0, 0, 1},        {"nce ticks/s", 0, 0, 1},
         {"nce run/s", 0, 0, 1},
         /* the JIT's compiled code and its AOT lookups */
-        {"jit code KiB", 1, 0, 1},      {"jit instructions", 0, 0, 1},
+        {"jit code KiB", 0, 0, 1},      {"jit instructions", 0, 0, 1},
         {"jit variant hits", 0, 0, 1},  {"jit variant misses", 0, 0, 1},
     };
     if (!snx_tracy_enter()) return;
@@ -809,12 +810,11 @@ void snx_tracy_fiber_leave_all(void) {
 }
 
 void snx_tracy_fatal(const char* text) {
-    size_t n;
     /* No pending count here: the crash path can reach this with a lock held, and leave() would take the wait lock
        when the count reached zero. A run ending here cannot have work left in flight to wait for. */
     if (!text || !snx_tracy_gate_open()) return;
     if (TracyCIsConnected) {
-        n = strlen(text);
+        size_t n = strlen(text);
         while (n && (text[n - 1] == '\n' || text[n - 1] == '\r')) n--;
         if (n) ___tracy_emit_logString(TracyMessageSeverityFatal, 0, 0, n, text);
     }

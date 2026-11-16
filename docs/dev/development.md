@@ -335,7 +335,7 @@ second tool. The cost of each is one atomic load per emission, and each goes out
 |---|---|
 | Why is this frame slow? | `frame ms`, `jit compile ms` and `jit miss ms` (a compile the game waited for), `pipeline make ms` and `pipeline wait ms`, `shader translate ms`, `texture uploads` (bytes) and `texture upload count`, `render targets made`, `vk finish ms`, `texture pipeline count` and `texture pipeline ms`, `shaders` |
 | Is the GPU or the CPU the bound? | the GPU track's passes and `gpu gap:` plots beside `frame ms` and the CPU's own zones |
-| Where does the GPU's time go? | the pass zones, `gpu gap: dispatches/copies/barriers/nothing`, `gpu idle: waited/frame/recording/queued`, `gpu busy %`, `gpu submissions/frame`, `copy MB`; `gpu round:` splits the CPU's waits by kind, `gpu hold:` the busy time by what it held, `gpu submit:` the submissions by reason |
+| Where does the GPU's time go? | the pass zones, `gpu gap: dispatches/copies/barriers/nothing`, `gpu idle: waited/frame/recording/queued`, `gpu busy` (a percentage), `gpu submissions/frame`, `copy MB`; `gpu round:` splits the CPU's waits by kind, `gpu hold:` the busy time by what it held, `gpu submit:` the submissions by reason |
 | Which draw of that pass? | `vk_gpu_draw_profile=1` adds a zone on each draw and dispatch up to its cap; the log says how many went untimed |
 | What does the guest cost the host? | `guest cpu` and `process cpu` (of one processor), `guest threads`, `guest top thread ms`, `top svc 0/s` to `top svc 5/s` and `top hook 0/s` to `top hook 4/s` (a message names each rank) |
 | What does the game ask of the kernel? | the SVC zones with their result on error, and `svc/s`, `svc miss/s` |
