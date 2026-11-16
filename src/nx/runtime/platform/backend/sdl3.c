@@ -1453,6 +1453,30 @@ static int overlay_event(const SDL_Event* e, int action) {
     ui_unlock();
     return taken;
 }
+/* the menu's hints follow what was pressed last (overlay_input_): a key the keyboard's, a button, a stick or a trigger
+   past SNX_PAD_TRIGGER that controller's, named as its face names the controls sending A and B; a finger or the
+   mouse leaves them */
+static void input_seen(const SDL_Event* e) {
+    char ok[OVERLAY_INPUT_NAME], back[OVERLAY_INPUT_NAME];
+    u32 id;
+    if (e->type == SDL_EVENT_KEY_DOWN) {
+        ui_lock();
+        overlay_input_keys();
+        ui_unlock();
+        return;
+    }
+    if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN)
+        id = e->gbutton.which;
+    else if (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION &&
+             (e->gaxis.value > SNX_PAD_TRIGGER || e->gaxis.value < -SNX_PAD_TRIGGER))
+        id = e->gaxis.which;
+    else
+        return;
+    ui_lock();
+    overlay_input_pad(gamepad_sends_name(id, 0, ok, sizeof ok) ? ok : NULL,
+                      gamepad_sends_name(id, 1, back, sizeof back) ? back : NULL);
+    ui_unlock();
+}
 
 /* the picture the renderer shows, in the window's pixels: where a finger lands on the game's touch screen */
 static void touch_window(int picture[4]) {
@@ -1767,6 +1791,7 @@ void video_poll(void) {
         int action = e.type == SDL_EVENT_KEY_DOWN ? key_action(&e.key) : -1; /* the runtime key it is */
         /* SDL numbers the app's, the displays' and the window's events under the keyboard's */
         if (e.type < SDL_EVENT_KEY_DOWN) __atomic_add_fetch(&g_sdl3.window_changes, 1, __ATOMIC_RELEASE);
+        input_seen(&e);
         if (press_event(&e, action)) continue;
         if (overlay_event(&e, action)) continue;
         switch (e.type) {
