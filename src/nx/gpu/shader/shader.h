@@ -611,6 +611,12 @@ typedef struct {
        hmma_stage), and the partial sums meet by a butterfly of 12 xor shuffles. ucas's mma found it, proved over the
        32 lanes. 0 offline */
     unsigned hmma_astat : 1;
+    /* an SM86 LDSM's transposed gather (LDSM.T) reads each 16-bit element with a 32-bit shared load plus a shift and
+       a mask (g_spirv_translate's default). With this flag it loads the 16 bits directly (a narrow shared load,
+       Google's mixed-input trick), placing each half where the fragment wants it without the shift and mask, at the
+       cost of narrower LDS reads and of a second u16 view of shared memory that the stores keep in sync. 0 offline:
+       the default path */
+    unsigned hmma_narrow_lds : 1;
     /* an SM86 HMMA off the cooperative matrices takes A and B from the other lanes through shared memory, a slot a
        warp, where the driver compiles a shuffle whose index differs between lanes into a loop over the distinct indices
        (an "off" line on OpGroupNonUniformShuffle in vk/extension_bans.txt: Turnip, whose Adreno 610 ran the HMMA bench

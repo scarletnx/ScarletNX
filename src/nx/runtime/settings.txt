@@ -1698,6 +1698,17 @@ setting HMMA A-stationary
     help shuffles: the GT 1030 ran the HMMA bench 5.6 times faster than the gather, and 2.7 times faster than A and
     help B through shared memory. Its f32 sums are a tree, at most 6 roundings a term where the gather's chain has
     help 16. 0 = the gather, or what the device chose for it (pairs, staging)
+setting HMMA narrow LDS
+    key hmma_narrow_lds
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help Read an SM86 LDSM's transposed halves with 16-bit shared loads instead of loading a word and shifting and
+    help masking each half. RADV compiles the 16-bit forms to one ds_read_u16 each: a Steam Deck's HMMA gather runs
+    help 3% and its pairs 9% faster, where the stage-only path is unchanged. The module keeps a 16-bit view of shared
+    help memory in sync with its whole-word stores; programs with a shared atomic or a sub-word shared store take the
+    help general path. 0 = the general path
 setting Vulkan allocation cap
     key vk_max_allocation_mb
     int 0 INT_MAX
