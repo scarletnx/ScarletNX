@@ -48,11 +48,6 @@ static struct {
 } g_engines;
 
 /* ------------------------------------------------------------ timestamps */
-/* GM20B's timer counts at 614.4 MHz (Eden's common/cpu_features.h GPUTickFreq, its NsToGPUTickRatio): ticks =
-   ns * 614400000 / 10^9 = ns * 384 / 625. With ns = q * 625 + rem, that is q * 384 + rem * 384 / 625 exactly
-   (rem * 384 < 625 * 384 can't carry), which never overflows where ns * 384 would */
-#define GPU_TICKS_PER_NS_NUM 384u
-#define GPU_TICKS_PER_NS_DEN 625u
 /* stamps step at least this many ns, more than one tick (625 / 384 ns), so that they strictly increase */
 #define GPU_TICK_MIN_STEP_NS 16u
 /* The timestamp a report or semaphore carries: the guest clock when the stream reaches it, as GPU ticks, past the
@@ -61,8 +56,7 @@ u64 gpu_ticks(void) {
     u64 ns = guest_ns();
     if (ns < g_engines.last_tick_ns + GPU_TICK_MIN_STEP_NS) ns = g_engines.last_tick_ns + GPU_TICK_MIN_STEP_NS;
     g_engines.last_tick_ns = ns;
-    return ns / GPU_TICKS_PER_NS_DEN * GPU_TICKS_PER_NS_NUM +
-           ns % GPU_TICKS_PER_NS_DEN * GPU_TICKS_PER_NS_NUM / GPU_TICKS_PER_NS_DEN;
+    return snx_gpu_ticks_of_ns(ns);
 }
 
 /* ------------------------------------------------------------ made-up counter values */

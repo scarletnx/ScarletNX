@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The runtime's clock and vi's presenting side (clock.c, present.c) against a clock the test sets: the system tick
-   exact at any uptime, fps_limit's pacing of DequeueBuffer, and the buffer vi_show_buffer hands the renderer. A
-   buffer no render target holds is converted on the GPU (vk/renderer.c's cpu_frame): tests/glsl/texconv_glsl.cpp
-   checks its formats, tests/astc_vulkan.c a block linear one on a device */
+   and the graphics unit's exact at any uptime, fps_limit's pacing of DequeueBuffer, and the buffer vi_show_buffer
+   hands the renderer. A buffer no render target holds is converted on the GPU (vk/renderer.c's cpu_frame):
+   tests/glsl/texconv_glsl.cpp checks its formats, tests/astc_vulkan.c a block linear one on a device */
 #include "common/utilities/bits.h"
 #include "nx/runtime/clock.c"
 #include "nx/runtime/present.c"
@@ -57,6 +57,28 @@ static void ticks(void) {
         CHECK(guest_ticks() == (u64)exact, "ticks at %llu ns: %llu, not %llu", (unsigned long long)at[i],
               (unsigned long long)guest_ticks(), (unsigned long long)exact);
     }
+}
+
+/* the graphics unit's ticks, 384 every 625 ns, exact at any uptime, and back to the nanosecond they start in: both ways
+   round down and a tick is 625 / 384 ns, so the way back loses at most 2 */
+static void graphics_ticks(void) {
+    static const u64 at[] = {
+        0, 1, 624, 625, 626, 1000000000u, 16014034169ull, 0x02D79883D2000000ull /* 10 years */, 0x7FFFFFFFFFFFFFFFull};
+    size_t i;
+    for (i = 0; i < sizeof at / sizeof *at; i++) {
+        u64 hi, rem, lo = snx_mul_wide(at[i], 384, &hi), exact = snx_div_wide(hi, lo, 625, &rem), back;
+        now_ns = at[i]; /* clock_start ran at 0 */
+        CHECK(guest_gpu_ticks() == exact, "graphics ticks at %llu ns: %llu, not %llu", (unsigned long long)at[i],
+              (unsigned long long)guest_gpu_ticks(), (unsigned long long)exact);
+        lo = snx_mul_wide(exact, 625, &hi);
+        back = snx_div_wide(hi, lo, 384, &rem);
+        CHECK(snx_gpu_ns_of_ticks(exact) == back && back <= at[i] && at[i] - back <= 2,
+              "%llu graphics ticks are %llu ns, not %llu (%llu ns before)", (unsigned long long)exact,
+              (unsigned long long)snx_gpu_ns_of_ticks(exact), (unsigned long long)back, (unsigned long long)at[i]);
+    }
+    /* the most ticks whose nanoseconds a u64 holds */
+    CHECK(snx_gpu_ns_of_ticks(11333679558887148512ull) == 18446744073709551614ull, "the last tick: %llu ns",
+          (unsigned long long)snx_gpu_ns_of_ticks(11333679558887148512ull));
 }
 
 static void pacing(void) {
@@ -192,6 +214,7 @@ int main(void) {
     i32 crop[4] = {0, 0, 0, 0};
     clock_start();
     ticks();
+    graphics_ticks();
     pacing();
     display_pacing();
     display_period();
