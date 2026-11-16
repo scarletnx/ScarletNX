@@ -146,7 +146,8 @@ typedef enum {
     GUI_PICKS_ASSET,
     GUI_PICKS_THEME,
     GUI_PICKS_GAME,
-    GUI_PICKS_MISSING
+    GUI_PICKS_MISSING,
+    GUI_PICKS_MORE /* the foot's More: the screen's own keys past its first (more_open) */
 } GuiPicksOf;
 /* a finger held this long on a game of Games without moving opens its box (game_box_open), as a right click does */
 #define GUI_HOLD_MS     500
@@ -179,6 +180,14 @@ typedef struct {
 } GuiBar;
 #define GUI_BARS         16 /* the scene lists one frame shows at most, a box's over a screen's */
 #define GUI_GROUPS_MAX   32
+/* the foot's More's box (more_open): the screen's own keys its foot left out */
+#define GUI_MORE_MAX     12 /* the most sentences More's box holds: every screen's own past its first, with room */
+typedef struct {
+    char key[GUI_MORE_MAX][128];   /* each one's keys (a finger's word), as a translation says them: what it presses */
+    char label[GUI_MORE_MAX][256]; /* and the sentence, its row */
+    unsigned icon[GUI_MORE_MAX];
+    int n;
+} GuiMore;
 #define GUI_FOLDERS_MAX  16    /* the player's game folders, past recompiled/ and dumps/ */
 #define GUI_FOLDER_DEPTH 4     /* how deep the games of a folder kept with its subfolders are looked for */
 #define GUI_FOLDER_DEEP  "/**" /* after such a folder's path, in the file of folders */
@@ -842,7 +851,11 @@ typedef struct App {
     int pick_row; /* the Folders row the box is of */
     /* the box of themes (themes_open): each theme's name in app->themes' order, and the one shown as it opened */
     const char* theme_picks[GUI_THEME_PICKS + 1];
-    const char* game_picks[6]; /* the box of the game in focus on Games (game_box_open): its actions */
+    const char* game_picks[8]; /* the box of the game in focus on Games (game_box_open): its actions */
+    /* the foot's More (more_open): the keys it holds, their rows' texts as picks_list gives them, NULL after the
+       last */
+    GuiMore more;
+    const char* more_picks[GUI_MORE_MAX + 1];
     /* a finger down on Games: when, 0 for none, and whether it was held long enough to open the game's box, which its
        lift then does not tap */
     Uint64 hold_ms;
@@ -2078,6 +2091,14 @@ static void missing_read(App* app);
 #define SAY_BACK     SNX_TR_KEYS("ESC: back.")
 #define SAY_HELP     SNX_TR_KEYS("F1: help.")
 #define SAY_PAD_HELP SNX_TR_KEYS("Select: help.")
+/* a foot's More, after its first GUI_FOOT_OWN sentences of the screen's own: the box of the rest (more_open), which a
+   pad's foot leaves to F1's box, its buttons taking each anyway */
+#define GUI_FOOT_OWN        3
+#ifdef SNX_TOUCH_UI
+#define SAY_MORE SNX_TR_KEYS("More.")
+#else
+#define SAY_MORE SNX_TR_KEYS("F3: more.")
+#endif
 /* Games' foot says the AOT pack's key: there is a cache to build it from, or the pack built is bad */
 /* B (R3) said where it builds a pack: a JIT cache read whole, at the build's level */
 static bool aot_said(const App* app) {
@@ -3476,7 +3497,8 @@ static unsigned key_icon(const char* key, const char* what) {
                  {"side box", GUI_ICON_PANEL_RIGHT},
                  {"folders", GUI_ICON_FOLDER},
                  {"view", GUI_ICON_EYE},
-                 {"help", GUI_ICON_INFO}};
+                 {"help", GUI_ICON_INFO},
+                 {"more", GUI_ICON_ELLIPSIS}};
     size_t i;
     if (!*what) what = key;
     if (!strcmp(what, "select") || !strcmp(what, "choose")) return key_moves(key) ? GUI_ICON_MOVE : GUI_ICON_POINTER;
@@ -3485,16 +3507,62 @@ static unsigned key_icon(const char* key, const char* what) {
     return GUI_ICON_NONE;
 }
 /* parts' sentences as a translation says them, for a foot (help false): the key back first and a \x1f after it,
-   which hints() puts alone at the left, then the sentences of the screen's own keys, F1's last; for F1's box (help)
+   which hints() puts alone at the left, then the first GUI_FOOT_OWN sentences of the screen's own keys, More where
+   there are more (but on a pad), F1's last, their icons in that order (the back's first); for F1's box (help)
    every one, the screen's own first, then those every screen has (the key back, and key_generic's where they do no
    thing of the screen's own), *own (when not NULL) how many of the first; with icons each one's icon (key_icon of its
    English) in icons, max at most. A translation has the sentences with keys of its English in their order
    (scripts/build-languages.py), so each is known by its English's */
+/* a sentence (said_len bytes at said) of key, with its icon, into more while it has room */
+static void more_add(GuiMore* more, const char* key, const char* said, int said_len, unsigned icon) {
+    if (!more || more->n >= GUI_MORE_MAX) return;
+    while (said_len > 0 && (said[said_len - 1] == '.' || said[said_len - 1] == ' ')) --said_len; /* a row, no stop */
+    snprintf(more->key[more->n], sizeof more->key[0], "%s", key);
+    snprintf(more->label[more->n], sizeof more->label[0], "%.*s", said_len, said);
+    more->icon[more->n++] = icon;
+}
+/* a finger's foot: parts' sentences whole, the words to tap, but the screen's own words (a key alone, as "Play.")
+   past the first GUI_FOOT_OWN, which go to More's box (into more when not NULL) and leave "More." last; with icons
+   each one's icon in icons, max at most */
+[[maybe_unused]] static const char* touch_said(const char* const* parts, int n, char* out, size_t size, unsigned* icons,
+                                               int max, GuiMore* more) {
+    size_t used = 0;
+    int i, k = 0, own = 0, over = 0;
+    if (size) out[0] = 0;
+    for (i = 0; i < n; ++i) {
+        const char *english = parts[i], *said = snx_tr(parts[i]);
+        char key[128], what[256], ekey[128], ewhat[256];
+        for (;;) {
+            const char* from = said;
+            bool found = false;
+            unsigned icon;
+            while (*from == ' ') ++from;
+            if (!hint_next(&said, key, what, sizeof key)) break;
+            while (!found && hint_next(&english, ekey, ewhat, sizeof ekey)) found = true;
+            icon = found ? key_icon(ekey, ewhat) : GUI_ICON_NONE;
+            if (key[0] && !what[0] && !(found && !strcmp(ekey, "Back")) && ++own > GUI_FOOT_OWN) {
+                more_add(more, key, from, (int)(said - from), icon);
+                over = 1;
+                continue;
+            }
+            if (icons && k < max) icons[k] = icon;
+            ++k;
+            if (used < size)
+                used += (size_t)snprintf(out + used, size - used, "%s%.*s", used ? " " : "", (int)(said - from), from);
+        }
+    }
+    if (over && used < size) {
+        snprintf(out + used, size - used, "%s%s", used ? " " : "", snx_tr(SAY_MORE));
+        if (icons && k < max) icons[k] = GUI_ICON_ELLIPSIS;
+    }
+    return out;
+}
 static const char* keys_said(const char* const* parts, int n, bool pad, bool help, char* out, size_t size,
-                             unsigned* icons, int max, int* own) {
+                             unsigned* icons, int max, int* own, GuiMore* more) {
     char back[192] = "", kept[1024] = "";
     size_t used = 0;
-    int i, k = 0, pass;
+    int i, k = 0, pass, over = 0;
+    unsigned back_icon = GUI_ICON_NONE;
     for (pass = 0; pass < (help ? 2 : 1); ++pass) {
         if (pass && own) *own = k;
         for (i = 0; i < n; ++i) {
@@ -3510,10 +3578,16 @@ static const char* keys_said(const char* const* parts, int n, bool pad, bool hel
                 common = is_back || (found && key_generic(ekey) && !key_own(parts[i]));
                 if (!help && is_back) {
                     snprintf(back, sizeof back, "%.*s", (int)(said - from), from);
+                    back_icon = key_icon(ekey, ewhat);
                     continue;
                 }
                 if (help ? common != (pass == 1) : common) continue;
-                if (icons && k < max) icons[k] = found ? key_icon(ekey, ewhat) : GUI_ICON_NONE;
+                if (!help && k >= GUI_FOOT_OWN) { /* More's (more_open) */
+                    more_add(more, key, from, (int)(said - from), found ? key_icon(ekey, ewhat) : GUI_ICON_NONE);
+                    over = 1;
+                    continue;
+                }
+                if (icons && k + !help < max) icons[k + !help] = found ? key_icon(ekey, ewhat) : GUI_ICON_NONE;
                 ++k;
                 used += (size_t)snprintf(kept + used, sizeof kept - SDL_min(used, sizeof kept), "%.*s ",
                                          (int)(said - from), from);
@@ -3523,29 +3597,27 @@ static const char* keys_said(const char* const* parts, int n, bool pad, bool hel
     }
     if (help)
         snprintf(out, size, "%s", kept);
-    else
-        snprintf(out, size, "%s\x1f%s%s", back, kept, snx_tr(pad ? SAY_PAD_HELP : SAY_HELP));
+    else {
+        over = over && !pad; /* a pad's buttons take them, F1's box (its Select) lists them */
+        snprintf(out, size, "%s\x1f%s%s%s%s", back, kept, over ? snx_tr(SAY_MORE) : "", over ? " " : "",
+                 snx_tr(pad ? SAY_PAD_HELP : SAY_HELP));
+        if (icons && max > 0) icons[0] = back_icon;
+        if (icons && over && k + 1 < max) icons[k + 1] = GUI_ICON_ELLIPSIS;
+        if (icons && k + 1 + over < max) icons[k + 1 + over] = GUI_ICON_INFO;
+    }
     return out;
 }
 /* the keys of the screen shown: what its foot says (help false: keys_said), or F1's box every one (help), the screen's
    own first and *own of them; with icons each one's icon in icons, max at most (keys_said) */
 static void queue_said(const App* app, bool pad, const char** parts, int* n);
 #define SAY_SIDE SNX_TR_KEYS("F2: side box.")
-static const char* screen_keys(const App* app, bool help, char* out, size_t size, unsigned* icons, int max, int* own) {
-    const char *keys = SAY_MENU_KEYS, *parts[GUI_SAID_PARTS];
+/* the sentences of the screen shown into parts, a pad's while one drives the menu: how many */
+static int screen_parts(const App* app, bool pad, const char** parts) {
+    const char* keys = SAY_MENU_KEYS;
     int n = 0;
-    bool pad = app->pad_driven && !(app->editing && app->form == GUI_FORM_PAD);    /* the button map's speaks of pads */
     if (!app->editing && !app->setup_on && app->menu.view == GUI_LOAD_RECOMPILE) { /* its Tab goes to Games */
         queue_said(app, pad, parts, &n);
-#ifdef SNX_TOUCH_UI
-        if (help && !pad) return keys_said(parts, n, false, true, out, size, icons, max, own);
-        if (!pad) { /* a finger's: the words to tap are the foot, whole */
-            size_t used = 0;
-            for (int i = 0; i < n && used < size; ++i)
-                used += (size_t)snprintf(out + used, size - used, "%s%s", i ? " " : "", snx_tr(parts[i]));
-            return out;
-        }
-#else
+#ifndef SNX_TOUCH_UI
         if (!pad) said_add(parts, &n, SAY_SIDE);
 #endif
     } else if (pad) {
@@ -3601,27 +3673,46 @@ static const char* screen_keys(const App* app, bool help, char* out, size_t size
             said_add(parts, &n, SAY_GAMES_VIEW);    /* its options' box */
         }
         if (aot_said(app)) said_add(parts, &n, SAY_GAMES_AOT);
-#ifdef SNX_TOUCH_UI
-        if (help) return keys_said(parts, n, false, true, out, size, icons, max, own);
-        { /* a finger's: the words to tap are the foot, whole */
-            size_t used = 0;
-            int i;
-            for (i = 0; i < n && used < size; ++i)
-                used += (size_t)snprintf(out + used, size - used, "%s%s", i ? " " : "", snx_tr(parts[i]));
-            return out;
-        }
-#else
+#ifndef SNX_TOUCH_UI
         if (!app->editing && app->menu.view == GUI_LOAD_GAMES) said_add(parts, &n, SAY_BACK); /* to the menu */
         said_add(parts, &n, SAY_TAB);
 #endif
     }
-    if (!pad) return keys_said(parts, n, false, help, out, size, icons, max, own);
+    return n;
+}
+/* the screen's pad, while one drives the menu: the button map's speaks of pads */
+static bool screen_pad(const App* app) { return app->pad_driven && !(app->editing && app->form == GUI_FORM_PAD); }
+static const char* screen_keys(const App* app, bool help, char* out, size_t size, unsigned* icons, int max, int* own) {
+    const char* parts[GUI_SAID_PARTS];
+    bool pad = screen_pad(app);
+    int n = screen_parts(app, pad, parts);
+#ifdef SNX_TOUCH_UI
+    if (!pad && help) return keys_said(parts, n, false, true, out, size, icons, max, own, NULL);
+    if (!pad) return touch_said(parts, n, out, size, icons, max, NULL); /* a finger's: the words to tap */
+#endif
+    if (!pad) return keys_said(parts, n, false, help, out, size, icons, max, own, NULL);
     {
         char said[1024];
-        keys_said(parts, n, true, help, said, sizeof said, icons, max, own);
+        keys_said(parts, n, true, help, said, sizeof said, icons, max, own, NULL);
         gui_pad_keys_named(said, app->pads.labels, out, size);
         return out;
     }
+}
+/* the foot's sentences More's box holds (more_open): the screen's own past its first GUI_FOOT_OWN, in more, their
+   count in more->n */
+static void screen_more(const App* app, GuiMore* more) {
+    const char* parts[GUI_SAID_PARTS];
+    char said[1024];
+    bool pad = screen_pad(app);
+    int n = screen_parts(app, pad, parts);
+    more->n = 0;
+#ifdef SNX_TOUCH_UI
+    if (!pad) {
+        touch_said(parts, n, said, sizeof said, NULL, 0, more);
+        return;
+    }
+#endif
+    keys_said(parts, n, pad, false, said, sizeof said, NULL, 0, NULL, more);
 }
 static const char* screen_said(const App* app, bool help, char* out, size_t size) {
     return screen_keys(app, help, out, size, NULL, 0, NULL);
@@ -3864,15 +3955,22 @@ static int hint_off(const char* s) {
 static int hint_width(const char* key, const char* what) {
     return gui_text_cols(key) + (key[0] ? 1 : 0) + gui_text_cols(what) + 2 * GUI_BUTTON_PAD;
 }
-/* the columns the key back takes alone at the left of a foot (keys_said: what is before its \x1f), 0 for none */
-static int hints_cols(const char* keys) {
+#define GUI_FOOT_ICONS 16 /* a foot's icons, a sentence each: the key back's, the screen's own, More's, F1's */
+/* the columns before a foot sentence's keys its icon takes (icons[i], the foot's, NULL for none): the icon and one */
+static int hint_icon_cols(const unsigned* icons, int i) {
+    return icons && i < GUI_FOOT_ICONS && icons[i] != GUI_ICON_NONE ? 3 : 0;
+}
+/* the columns the key back takes alone at the left of a foot (keys_said: what is before its \x1f), its icon (icons'
+   first) too, 0 for none */
+static int hints_cols(const char* keys, const unsigned* icons) {
     const char* apart = strchr(keys, '\x1f');
     char back[192], key[128], what[128];
     const char* at = back;
     int cols = 0;
     if (!apart) return 0;
     snprintf(back, sizeof back, "%.*s", (int)(apart - keys), keys);
-    while (hint_next(&at, key, what, sizeof key)) cols += hint_width(key, what) + (cols ? GUI_BUTTON_GAP : 0);
+    while (hint_next(&at, key, what, sizeof key))
+        cols += hint_width(key, what) + hint_icon_cols(icons, 0) + (cols ? GUI_BUTTON_GAP : 0);
     return cols;
 }
 /* a click or a tap, for hints() to say which sentence with keys it is on: their keys, and how many columns into the
@@ -3893,35 +3991,38 @@ static int button_h(const App* app) { return finger_h(app, cell_h(app) + 4 * app
 /* a row of the foot's keys, in the foot's letters: a button's without the two pixels above and below, which the foot's
    margins give it */
 static int hint_pitch(const App* app) { return button_h(app) - 4 * app->scale; }
-static int hints(App* app, const char* keys, int width, GuiRect r, int y, int draw, int band, GuiHintHit* hit) {
+static int hints(App* app, const char* keys, int width, GuiRect r, int y, int draw, int band, GuiHintHit* hit,
+                 const unsigned* icons) {
     const GuiTheme* t = &app->theme;
-    char key[128], what[128];
+    char key[128], what[128], glyph[4];
     const char *row = keys, *apart = strchr(keys, '\x1f');
-    int rows = 0, s = app->scale, lit, off, filled = t->panels == GUI_PANELS_FILL;
+    int rows = 0, s = app->scale, lit, off, filled = t->panels == GUI_PANELS_FILL, seg = 0;
     if (apart) { /* the key back alone at the left of the first row (keys_said), three columns before the others */
         char back[192];
-        int cols = hints_cols(keys);
+        int cols = hints_cols(keys, icons);
         snprintf(back, sizeof back, "%.*s", (int)(apart - keys), keys);
-        if (cols) hints(app, back, cols, gui_rect(r.x, r.y, cols * cell_w(app), r.h), y, draw, band, hit);
-        return hints(app, apart + 1, width - (cols ? cols + 3 * GUI_BUTTON_GAP : 0), r, y, draw, band, hit);
+        if (cols) hints(app, back, cols, gui_rect(r.x, r.y, cols * cell_w(app), r.h), y, draw, band, hit, icons);
+        return hints(app, apart + 1, width - (cols ? cols + 3 * GUI_BUTTON_GAP : 0), r, y, draw, band, hit,
+                     icons ? icons + 1 : NULL);
     }
     for (;;) {
         const char *at = row, *end = row, *u = row;
-        int used = 0, x;
+        int used = 0, x, m = seg;
         while (hint_next(&at, key, what, sizeof key)) {
-            int w = hint_width(key, what) + (used ? GUI_BUTTON_GAP : 0);
+            int w = hint_width(key, what) + hint_icon_cols(icons, m) + (used ? GUI_BUTTON_GAP : 0);
             if (used && used + w > width) break;
             used += w;
             end = at;
+            ++m;
         }
         if (end == row) break;
         for (x = r.x + r.w - used * cell_w(app);
-             (draw || hit) && u != end && (off = hint_off(u), hint_next(&u, key, what, sizeof key));) {
-            int cy = y + rows * (hint_pitch(app) + 4 * s), k = gui_text_cols(key),
-                w = hint_width(key, what) * cell_w(app);
+             (draw || hit) && u != end && (off = hint_off(u), hint_next(&u, key, what, sizeof key)); ++seg) {
+            int ic = hint_icon_cols(icons, seg), cy = y + rows * (hint_pitch(app) + 4 * s), k = gui_text_cols(key),
+                w = (hint_width(key, what) + ic) * cell_w(app);
             int ty = cy + (hint_pitch(app) - cell_h(app)) / 2; /* the text in the middle of its row */
             GuiRect button = gui_rect(x, cy - 2 * s, w, button_h(app));
-            x += GUI_BUTTON_PAD * cell_w(app); /* its text */
+            x += (GUI_BUTTON_PAD + ic) * cell_w(app); /* its text, after its icon */
             if (hit && k && !off && in_rect(button, hit->x, hit->y)) {
                 snprintf(hit->key, sizeof hit->key, "%s", key);
                 hit->col = (int)SDL_floorf((hit->x - (float)x) / (float)cell_w(app));
@@ -3936,6 +4037,12 @@ static int hints(App* app, const char* keys, int width, GuiRect r, int y, int dr
                 fill_rect(app, button, t->dim);
             else if (draw)
                 outline(app, button, t->dim);
+            if (draw && ic) /* in what it does's colour */
+                text_in(app, r, x - ic * cell_w(app), ty, gui_icon_utf8(icons[seg], glyph),
+                        rgb(off    ? t->soft
+                            : lit  ? (band ? t->ink : t->page)
+                            : band ? t->page
+                                   : t->ink));
             if (draw && k && !off && !lit && t->focus_bar)
                 fill_rect(app, gui_rect(x - s, ty, k * cell_w(app) + 2 * s, cell_h(app)), band ? t->soft : t->focus);
             if (draw && k)
@@ -3950,8 +4057,9 @@ static int hints(App* app, const char* keys, int width, GuiRect r, int y, int dr
                             : lit  ? (band ? t->ink : t->page)
                             : band ? t->page
                                    : t->ink));
-            x += w - GUI_BUTTON_PAD * cell_w(app) + GUI_BUTTON_GAP * cell_w(app);
+            x += w - (GUI_BUTTON_PAD + ic) * cell_w(app) + GUI_BUTTON_GAP * cell_w(app);
         }
+        seg = m;
         ++rows;
         row = end;
     }
@@ -3989,8 +4097,18 @@ static GuiRect foot_box(App* app, GuiRect r, int box, int band) {
                                                  : t->soft);
     return foot_text(app, r, box);
 }
+/* the icons of a foot's sentences, into icons, when keys are the screen's foot (screen_keys); NULL for another (the
+   setup's), which has none */
+static const unsigned* foot_icons(const App* app, const char* keys, unsigned* icons) {
+    char said[1024];
+    int i;
+    for (i = 0; i < GUI_FOOT_ICONS; ++i) icons[i] = GUI_ICON_NONE;
+    screen_keys(app, false, said, sizeof said, icons, GUI_FOOT_ICONS, NULL);
+    return strcmp(said, keys) ? NULL : icons;
+}
 static void foot(App* app, const GuiPlace* p, const char* tips, SDL_Color color, const char* keys) {
     const GuiTheme* t = &app->theme;
+    unsigned icons[GUI_FOOT_ICONS];
     int band = t->footer == GUI_STYLE_BAR, below = p->tips.h && p->tips.y == p->keys.y, s = app->scale;
     int small = foot_scale(app), half = app->half;
     GuiRect foot = below ? gui_rect(p->tips.x, p->keys.y, p->keys.x + p->keys.w - p->tips.x, p->keys.h) : p->keys;
@@ -4010,7 +4128,7 @@ static void foot(App* app, const GuiPlace* p, const char* tips, SDL_Color color,
     app->half = half;
     app->scale = small;
     text = foot_box(app, p->keys, t->footer_box, band);
-    hints(app, keys, text.w / cell_w(app), text, text.y, 1, band, NULL);
+    hints(app, keys, text.w / cell_w(app), text, text.y, 1, band, NULL, foot_icons(app, keys, icons));
     app->scale = s;
 }
 /* the foot of a screen: the message while there is one, a failure's in its colour, else about */
@@ -6954,12 +7072,13 @@ static int frame_status(App* app, int width) {
 static int frame_keys(App* app, int width) {
     const GuiTheme* t = &app->theme;
     GuiRect none = {0, 0, 0, 0};
+    unsigned icons[GUI_FOOT_ICONS];
     int s = app->scale, h;
     app->scale = foot_scale(app);
     h = hints_h(app, SDL_max(!app->frame.tips_foot || !t->tips_wrap ? 1 : 2,
                              hints(app, app->frame.keys,
                                    foot_text(app, gui_rect(0, 0, width, 0), t->footer_box).w / cell_w(app), none, 0, 0,
-                                   0, NULL))) +
+                                   0, NULL, foot_icons(app, app->frame.keys, icons)))) +
         4 * app->scale;
     app->scale = s;
     return h;
@@ -6969,7 +7088,8 @@ static int frame_keys_least(App* app) {
     const GuiTheme* t = &app->theme;
     const char *apart = strchr(app->frame.keys, '\x1f'), *at = apart ? apart + 1 : app->frame.keys;
     char key[128], what[128];
-    int s = app->scale, cols = 0, back = hints_cols(app->frame.keys), least;
+    unsigned icons[GUI_FOOT_ICONS];
+    int s = app->scale, cols = 0, back = hints_cols(app->frame.keys, foot_icons(app, app->frame.keys, icons)), least;
     while (hint_next(&at, key, what, sizeof key)) cols = SDL_max(cols, hint_width(key, what));
     app->scale = foot_scale(app);
     least = (cols + (back ? back + 3 * GUI_BUTTON_GAP : 0) + (t->footer_box ? 4 : 0)) * cell_w(app);
@@ -16975,6 +17095,7 @@ static const char* const* picks_list(const App* app) {
     if (app->picks_of == GUI_PICKS_ASSET) return app->asset_picks;
     if (app->picks_of == GUI_PICKS_THEME) return app->theme_picks;
     if (app->picks_of == GUI_PICKS_GAME) return app->game_picks;
+    if (app->picks_of == GUI_PICKS_MORE) return app->more_picks;
     kind = folder_row(app, app->pick_row, &at, &group);
     if (kind == GUI_ROW_DUMPS) return app->dumps_off ? main_off_picks : dumps_picks;
     if (kind == GUI_ROW_PLACE && at == GUI_PLACE_GAMES) return app->recompiled_off ? main_off_picks : recompiled_picks;
@@ -16986,7 +17107,8 @@ static const char* pick_label(App* app, int i) {
     int n = 0, at, group;
     while (picks[n]) ++n;
     if (i < 0 || i >= n) return NULL;
-    if (app->picks_of == GUI_PICKS_ASSET || app->picks_of == GUI_PICKS_THEME) return picks[i]; /* names, as they are */
+    if (app->picks_of == GUI_PICKS_ASSET || app->picks_of == GUI_PICKS_THEME || app->picks_of == GUI_PICKS_MORE)
+        return picks[i]; /* names, and the foot's sentences, as they are */
     if (strcmp(picks[i], SAY_SUBFOLDERS)) return snx_tr(picks[i]);
     snprintf(
         app->pick_text, sizeof app->pick_text, "%s %s",
@@ -17003,14 +17125,16 @@ static unsigned pick_tone(const App* app, int i) {
     int n = 0;
     while (picks[n]) ++n;
     if (i < 0 || i >= n || app->picks_of == GUI_PICKS_ASSET || app->picks_of == GUI_PICKS_THEME ||
-        app->picks_of == GUI_PICKS_GAME)
+        app->picks_of == GUI_PICKS_GAME || app->picks_of == GUI_PICKS_MORE)
         return 0;
     if (app->picks_of == GUI_PICKS_DRIVER) return !strcmp(picks[i], "Remove") ? UI_ATTR_DANGER : 0;
     if (app->picks_of == GUI_PICKS_MISSING) return !strcmp(picks[i], SAY_MISSING_REMOVE) ? UI_ATTR_CAUTION : 0;
     return !strcmp(picks[i], "Reset to Default") || !strcmp(picks[i], "Remove from Library") ? UI_ATTR_CAUTION : 0;
 }
-/* the icon before the picks box's choice i: a missing game's box's (missing_icons); none in the other boxes */
+/* the icon before the picks box's choice i: a missing game's box's (missing_icons) and More's (its keys' icons, as
+   the foot and F1's box draw them); none in the other boxes */
 static unsigned pick_icon(const App* app, int i) {
+    if (app->picks_of == GUI_PICKS_MORE) return i >= 0 && i < app->more.n ? app->more.icon[i] : GUI_ICON_NONE;
     return app->picks_of == GUI_PICKS_MISSING && i >= 0 && i < (int)SDL_arraysize(missing_icons) ? missing_icons[i]
                                                                                                  : GUI_ICON_NONE;
 }
@@ -17019,6 +17143,19 @@ static void picks_open(App* app, GuiPicksOf of) {
     app->picks.focus = 0;
     for (app->picks.count = 0; pick_label(app, app->picks.count);) ++app->picks.count;
     app->picks_shown = true;
+}
+/* the foot's More (F3, its button, a finger's word): the screen's own keys its foot left out (screen_more) in the picks
+   box, a row each with its icon, which presses that key as the keyboard does; none, said */
+static void more_open(App* app) {
+    int i;
+    screen_more(app, &app->more);
+    if (!app->more.n) {
+        snprintf(app->message, sizeof app->message, "%s", snx_tr("Every key of this screen is in its foot"));
+        return;
+    }
+    for (i = 0; i < app->more.n; ++i) app->more_picks[i] = app->more.label[i];
+    app->more_picks[app->more.n] = NULL;
+    picks_open(app, GUI_PICKS_MORE);
 }
 static void picks_open_row(App* app, int row) {
     app->pick_row = row;
@@ -17062,9 +17199,14 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
            : app->picks_of == GUI_PICKS_ASSET  ? snx_tr("Download Driver")
            : app->picks_of == GUI_PICKS_THEME  ? (app->theme.dialog == GUI_DIALOG_YORHA ? snx_tr("Theme") : "")
            : app->picks_of == GUI_PICKS_GAME || app->picks_of == GUI_PICKS_MISSING ? snx_tr("Game")
+           : app->picks_of == GUI_PICKS_MORE                                       ? snx_tr("More")
                                                                                    : snx_tr("Folders");
     if (app->picks_of == GUI_PICKS_GAME) { /* the game's name, as its row shows it */
         snprintf(out, size, "%s", app->pick_text);
+        return;
+    }
+    if (app->picks_of == GUI_PICKS_MORE) { /* what the foot left out, each key pressed from here as there */
+        snprintf(out, size, "%s", snx_tr("The rest of this screen's keys"));
         return;
     }
     if (app->picks_of == GUI_PICKS_MISSING) { /* the file, whole */
@@ -17183,6 +17325,7 @@ static void subfolders_switch(App* app, int kind, int at) {
 #define SAY_GAME_MODS      SNX_TR_NOOP("Mods")
 #define SAY_GAME_STATES    SNX_TR_NOOP("Save States")
 #define SAY_GAME_SETTINGS  SNX_TR_NOOP("Settings")
+#define SAY_GAME_AOT       SNX_TR_NOOP("AOT Pack")
 static void play_focus(App* app);
 static void queue_show(App* app, int i);
 static void recompile_focus(App* app);
@@ -17220,9 +17363,11 @@ static void game_box_open(App* app) {
         app->game_picks[n++] = SAY_GAME_STATES;
         app->game_picks[n++] = SAY_GAME_SETTINGS;
     }
+    if (aot_said(app)) app->game_picks[n++] = SAY_GAME_AOT; /* as B builds it, where it can */
     app->game_picks[n] = NULL;
     picks_open(app, GUI_PICKS_GAME);
 }
+static void aot_focus(App* app);
 static void game_box_take(App* app, const char* pick) {
     int queued;
     char name[sizeof app->pick_text];
@@ -17239,6 +17384,8 @@ static void game_box_take(App* app, const char* pick) {
         states_focus(app);
     else if (!strcmp(pick, SAY_GAME_SETTINGS))
         settings_focus(app);
+    else if (!strcmp(pick, SAY_GAME_AOT))
+        aot_focus(app);
 }
 /* ---- a made game whose file to play from is not there (gui_game_source_missing): its row says so, and opening it, to
    play or to recompile, asks first in a box of its own (GUI_PICKS_MISSING). Keep, in focus, leaves it as it is;
@@ -17468,6 +17615,7 @@ static void missing_remove(App* app) {
 }
 /* choice i taken, or none (-1: Back): the logs as one zip, as the one log of before, or their folder opened; a Folders
    row's folder opened, another picked, its default asked for or its Extra taken off */
+static bool hint_press(App* app, const char* key, int col);
 static void pick_take(App* app, int i) {
     int at, group, kind = folder_row(app, app->pick_row, &at, &group);
     app->picks_shown = false;
@@ -17494,6 +17642,12 @@ static void pick_take(App* app, int i) {
     if (i < 0) return;
     if (app->picks_of == GUI_PICKS_GAME) { /* as its key on Games does */
         game_box_take(app, app->game_picks[i]);
+        return;
+    }
+    if (app->picks_of == GUI_PICKS_MORE) { /* its key pressed, as on the keyboard: the box gone first */
+        char key[sizeof app->more.key[0]];
+        snprintf(key, sizeof key, "%s", app->more.key[i]);
+        hint_press(app, key, 0);
         return;
     }
     if (app->picks_of == GUI_PICKS_ASSET) { /* the asset downloaded */
@@ -20597,6 +20751,8 @@ static const struct {
                  {SNX_TR_KEY("F5"), SDLK_F5, 0, false},
                  {SNX_TR_KEY("F2"), SDLK_F2, 0, false},
                  {SNX_TR_KEY("F1"), SDLK_F1, 0, false},
+                 {SNX_TR_KEY("F3"), SDLK_F3, 0, false},
+                 {SNX_TR_KEY("More"), SDLK_F3, 0, false}, /* a finger's */
                  {SNX_TR_KEY("Select"), SDLK_F1, 0, true},
                  {SNX_TR_KEY("Refresh"), SDLK_F5, 0, false}};
 /* the hint_keys entry of the n bytes at word, a pad's buttons' only when pad (a pad drives the menu), -1 for none */
@@ -20693,19 +20849,21 @@ static bool foot_press(App* app, float x, float y) {
     GuiPlace p;
     GuiRect text;
     GuiHintHit hit;
-    char keys[256];
+    char keys[1024]; /* the foot's whole, as foot_icons says it */
+    unsigned icons[GUI_FOOT_ICONS];
     const char* say = shown_place(app, &p, keys, sizeof keys);
+    const unsigned* drawn = foot_icons(app, say, icons); /* as foot() draws them */
     int s = app->scale, rows;
     if (x < (float)p.keys.x || x >= (float)(p.keys.x + p.keys.w) || y < (float)p.keys.y ||
         y >= (float)(p.keys.y + p.keys.h))
         return false;
     app->scale = foot_scale(app);
     text = foot_text(app, p.keys, app->theme.footer_box);
-    rows = hints(app, say, text.w / cell_w(app), text, text.y, 0, 0, NULL);
+    rows = hints(app, say, text.w / cell_w(app), text, text.y, 0, 0, NULL, drawn);
     hit.x = x;
     hit.y = SDL_clamp(y, (float)text.y, (float)(text.y + hints_h(app, rows) - 1));
     hit.key[0] = 0;
-    hints(app, say, text.w / cell_w(app), text, text.y, 0, 0, &hit);
+    hints(app, say, text.w / cell_w(app), text, text.y, 0, 0, &hit, drawn);
     app->scale = s;
     return hit.key[0] && hint_press(app, hit.key, hit.col);
 }
@@ -21575,6 +21733,12 @@ static void event_take(App* app, const SDL_Event* e) {
             app->help_shown = true;
             app->help_top = 0;
         }
+        return;
+    }
+    /* F3, or the foot's More: the screen's own keys its foot left out, in a box that presses them */
+    if (e->type == SDL_EVENT_KEY_DOWN && e->key.key == SDLK_F3 && !app->menu.running && !app->finished &&
+        !(app->setup_on && !app->editing) && !(app->editing && app->editor.typing)) {
+        if (!e->key.repeat) more_open(app);
         return;
     }
     /* F2, or the foot's: the side box hidden where it shows, shown where it does not, kept in app.ini */

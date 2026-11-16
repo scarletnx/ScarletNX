@@ -5,6 +5,14 @@
 #include "gui/main.c"
 #define SNX_SCREEN_TEST "gui_sdl.c"
 #include "gui_screen.h"
+/* whether More's box (screen_more, the foot's own past its first three) holds the sentence label, its key key */
+static bool more_has(const App* app, const char* key, const char* label) {
+    GuiMore more;
+    screen_more(app, &more);
+    for (int i = 0; i < more.n; ++i)
+        if (!strcmp(more.key[i], key) && !strcmp(more.label[i], label)) return true;
+    return false;
+}
 #include "support/sdl_real_pads.h"
 #include "support/crc_forge.h"
 #include "common/cpu/aarch64/cpu.h" /* SNX_ABI, which a save state names */
@@ -1798,8 +1806,17 @@ static void view_box(App* app, const char* temporary) {
     render(app);
     shows(app, "Recent Games", rgb(app->theme.soft));
     shows(app, "dumps", rgb(app->theme.soft)); /* the side box's folders, dumps/ with them, wrapped at a slash */
-    shows_foot(app, "V", yellow);              /* its key, then what it does; its word presses V as the key does */
-    shows_foot(app, "view", normal);
+    /* the foot's own past its first three in More's box (F3), V among them: its key, then what it does, its icon */
+    shows_foot(app, "F3", yellow);
+    shows_foot(app, "more", normal);
+    {
+        GuiMore more;
+        int i, v = 0;
+        screen_more(app, &more);
+        for (i = 0; i < more.n; ++i)
+            v += !strcmp(more.key[i], "V") && !strcmp(more.label[i], "V: view") && more.icon[i] == GUI_ICON_EYE;
+        assert(v == 1);
+    }
     assert(hint_keys[hint_pick("V", 0, false)].key == SDLK_V && !hint_keys[hint_pick("V", 0, false)].mod);
     assert(hint_keys[hint_pick("View", 1, false)].key == SDLK_V); /* a phone's: the word alone */
     assert(strstr(screen_said(app, true, said, sizeof said), "V: view."));
@@ -11165,7 +11182,15 @@ int main(int argc, char** argv) {
     key(&app, SDLK_F5);
     assert(app.games.count == 35 && app.browser.count == 35 && !strcmp(app.message, "Refreshed: 35 games"));
     app.message[0] = 0;
-    press_key(&app, "F5", 0, false, yellow);
+    { /* the foot's Refresh in More's box (F3) on a game's row, its own three before it: taken there, as F5 */
+        int i;
+        more_open(&app);
+        for (i = 0; i < app.more.n && strcmp(app.more.key[i], "F5"); ++i) {}
+        assert(app.picks_shown && app.picks_of == GUI_PICKS_MORE && i < app.more.n &&
+               !strcmp(app.more.label[i], "F5: refresh") && app.more.icon[i] == GUI_ICON_REFRESH_CW);
+        pick_take(&app, i);
+        assert(!app.picks_shown);
+    }
     assert(app.games.count == 35 && !strcmp(app.message, "Refreshed: 35 games"));
     app.message[0] = 0;
     app.browser.activated = true; /* which a new listing would reset */
@@ -11463,8 +11488,7 @@ int main(int argc, char** argv) {
     render(&app);
     hides(&app, "- Add Folder", yellow);
     hides(&app, "Back [ESC]", normal);
-    shows_foot(&app, "P", yellow);
-    shows_foot(&app, "folders", normal);
+    assert(more_has(&app, "P", "P: folders")); /* in More's box, the foot's own three before it */
     {
         GuiGamesBoxes g;
         games_boxes(&app, &g);
@@ -11693,8 +11717,37 @@ int main(int argc, char** argv) {
 #ifndef SDL_PLATFORM_ANDROID
                 assert(strstr(said, "S: save states."));
 #endif
-                assert(strstr(shown_keys(&app, said, sizeof said), "R: recompile.") && strstr(said, "B: AOT pack.") &&
-                       strstr(said, "P: folders.") && strstr(said, "ESC: back."));
+                /* the foot: back, the game's first three, More and help, with an icon each; the rest in More's box */
+                {
+                    unsigned icons[GUI_FOOT_ICONS];
+                    assert(foot_icons(&app, shown_keys(&app, said, sizeof said), icons) == icons);
+                    assert(strstr(said, "ESC: back.\x1fL: play. R: recompile. M: mods. F3: more. F1: help.") &&
+                           icons[0] == GUI_ICON_ARROW_LEFT && icons[1] == GUI_ICON_PLAY &&
+                           icons[2] == GUI_ICON_HAMMER && icons[4] == GUI_ICON_ELLIPSIS && icons[5] == GUI_ICON_INFO);
+                    assert(more_has(&app, "B", "B: AOT pack") && more_has(&app, "P", "P: folders") &&
+                           more_has(&app, "V", "V: view") && more_has(&app, "F5", "F5: refresh"));
+                }
+                { /* its box (a right click, a held finger) has AOT Pack too, as B builds it */
+                    int n = 0;
+                    game_box_open(&app);
+                    while (app.game_picks[n]) ++n;
+                    assert(app.picks_shown && n > 0 && !strcmp(app.game_picks[n - 1], SAY_GAME_AOT));
+                    app.picks_shown = false;
+                }
+                { /* a finger's foot: its own words past the first three in More's box, "More." last */
+                    static const char* const parts[] = {
+                        "Play.",   "Recompile.", "Mods.", "Save states.", "Tap: open. Drag: scroll. Refresh. Back.",
+                        "Folders."};
+                    char words[512];
+                    GuiMore more = {0};
+                    unsigned icons[GUI_FOOT_ICONS] = {0};
+                    touch_said(parts, 6, words, sizeof words, icons, GUI_FOOT_ICONS, &more);
+                    snprintf(said, sizeof said, "Play. Recompile. Mods. Tap: open. Drag: scroll. Back. %s",
+                             snx_tr(SAY_MORE));
+                    assert(!strcmp(words, said) && icons[0] == GUI_ICON_PLAY && icons[6] == GUI_ICON_ELLIPSIS);
+                    assert(more.n == 3 && !strcmp(more.key[0], "Save states") && !strcmp(more.label[1], "Refresh") &&
+                           !strcmp(more.key[2], "Folders") && more.icon[1] == GUI_ICON_REFRESH_CW);
+                }
                 { /* F1's box of them, the most rows it has: an icon each, the keyboard's and a pad's, Games' own keys
                      first, then under "Every screen" those every screen has; a window short of them shows those that
                      fit, Up/Down, PgUp/PgDn and the wheel going over them as far as the last and moving nothing under
@@ -11931,7 +11984,8 @@ int main(int argc, char** argv) {
             render(&app);
             {
                 char said[512];
-                assert(strstr(shown_keys(&app, said, sizeof said), "S: save states.")); /* Games' foot says S */
+                (void)said; /* Games' S, past its foot's three, in More's box */
+                assert(more_has(&app, "S", "S: save states"));
             }
             key(&app, SDLK_S);
             assert(app.states_shown && app.states_count == 3 && !app.menu.running);
@@ -11942,8 +11996,9 @@ int main(int argc, char** argv) {
                 char said[512];
                 key(&app, SDLK_ESCAPE);
                 assert(!app.states_shown);
-                app.pad_driven = true;
-                assert(strstr(shown_keys(&app, said, sizeof said), "X: save states."));
+                app.pad_driven = true; /* its foot's three before it; F1's box (its Select) says X */
+                assert(!strstr(shown_keys(&app, said, sizeof said), "X: save states.") &&
+                       strstr(screen_said(&app, true, said, sizeof said), "X: save states."));
                 { /* X as pad_menu.c gives it: Del from the pads' own keyboard */
                     SDL_Event e = {0};
                     e.type = SDL_EVENT_KEY_DOWN;
@@ -14194,14 +14249,14 @@ int main(int argc, char** argv) {
         r = m.place.keys;
         assert(r.y > m.place.list.y + m.place.list.h && r.y + r.h == 800 - 8 * s);
         { /* the keys in the foot's letters, a size under the rest's, each sentence a button as a tab is (a box a cell
-             and 4 pixels of its letters high, the sentence a column inside, a column between two, the rows 2 pixels
-             apart): ESC alone against the left edge of the first row, F1's the last key, against the right edge of the
-             keys' last row */
+             and 4 pixels of its letters high, the sentence a column inside after its icon, a column between two, the
+             rows 2 pixels apart): ESC alone against the left edge of the first row, F1's the last key, against the
+             right edge of the keys' last row */
             int fs = foot_scale(&app), rows, pitch = 20 * fs;
             assert(fs == s - 1);
             rows = r.h / pitch;
             assert(rows >= 1 && r.h == rows * pitch); /* one row as tall as before the buttons: 16 and 4 pixels */
-            foot_px_is(&app, r.x + 8 * fs, r.y + 2 * fs, "ESC", yellow, black);
+            foot_px_is(&app, r.x + 4 * 8 * fs, r.y + 2 * fs, "ESC", yellow, black); /* after its icon and a column */
             assert(
                 same_colour(pixel(&app, (float)r.x, (float)(r.y + 10 * fs)), rgb(app.theme.dim))); /* its box's edge */
             assert(same_colour(pixel(&app, (float)(r.x + 4 * fs), (float)r.y), rgb(app.theme.dim)));
@@ -14730,8 +14785,8 @@ int main(int argc, char** argv) {
                 menu_boxes(&app, &mb);
                 room = foot_room(&app, mb.place.keys, app.theme.footer_box);
                 app.scale = foot_scale(&app);
-                /* each in its button, a column inside its edges */
-                assert(find_text(&app, "ESC", yellow, 1, &x, &y) && x == room.x + GUI_BUTTON_PAD * 8 * app.scale);
+                /* each in its button, a column inside its edges, after its icon and a column */
+                assert(find_text(&app, "ESC", yellow, 1, &x, &y) && x == room.x + (GUI_BUTTON_PAD + 3) * 8 * app.scale);
                 assert(find_text(&app, "F1", yellow, 1, &x, &y) &&
                        x + (int)(strlen("F1 help") + GUI_BUTTON_PAD) * 8 * app.scale == room.x + room.w);
                 app.scale = scale;

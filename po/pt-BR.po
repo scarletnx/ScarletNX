@@ -1535,6 +1535,18 @@ msgstr "F1: ajuda."
 msgid "Select: help."
 msgstr "Select: ajuda."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "More."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "F3: more."
+msgstr ""
+
 #: src/gui/main.c
 msgid "Updates and DLCs"
 msgstr "Updates e DLCs"
@@ -4822,6 +4834,20 @@ msgid "Remove from Games"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Every key of this screen is in its foot"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "More"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The rest of this screen's keys"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"
 msgstr "Cada tema aparece quando o foco chega nele: Enter fica com ele, ESC volta para %s"
@@ -4850,6 +4876,10 @@ msgstr "Ver progresso"
 #, snx-key
 msgid "Mods"
 msgstr "Mods"
+
+#: src/gui/main.c
+msgid "AOT Pack"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -5559,6 +5589,12 @@ msgstr "F2"
 #, snx-key
 msgid "F1"
 msgstr "F1"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "F3"
+msgstr ""
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
