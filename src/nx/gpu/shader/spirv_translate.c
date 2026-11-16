@@ -3092,9 +3092,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             if (stage == ST_FS)
                 lowest = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
                                           spv_emit_is_helper(&c->emit, c->bool_type), selector, lowest);
-            lowest = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
-                                      spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, selector, lowest),
-                                      selector, lowest);
+            lowest = SPV_EXT(&c->emit, c->u32_type, SPV_GLSL_U_MIN, lowest, selector); /* the min, not a compare */
             selector = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
                                         spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, selector, lowest),
                                         selector, shader_u32(c, UINT32_MAX - 1));
