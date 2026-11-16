@@ -74,7 +74,7 @@ __pycache__/
 /dist/android/.gradle/
 /dist/android/local.properties
 
-# Third-party packages downloaded by CPM.cmake (cmake/dependencies.cmake), and the Windows toolchain from
+# Third-party packages downloaded by CPMUtil (cpmfile.json, cmake/packages.cmake), and the Windows toolchain from
 # scripts/bootstrap.ps1
 /.cache/
 /deps/

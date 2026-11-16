@@ -3,14 +3,15 @@
 #
 #   snx_patched_copy(SOURCE <dir> DEST <dir> PATCHES <file>... FILES <name> <sha256>...)
 #
-# DEST: a copy of SOURCE with PATCHES applied by patch -p1, as CPM's PATCHES applies them. A package with patches is kept
-# in CPM_SOURCE_CACHE as released, so a cache filled by hand (a Flatpak manifest's sources, a distribution's offline
-# build) works too. patch(1) applies a hunk whose context moved or changed without an error, so each file the patches
-# touch is in FILES with the SHA-256 it has patched; one that has another makes the copy again (a patch edited since, a
-# copy left half patched) and, after that, stops the configure.
+# DEST: a copy of SOURCE with PATCHES applied by patch -p1, as CPMUtil's patches are applied. A package with patches is
+# kept in CPM_SOURCE_CACHE as released, so a folder given with <package>_CUSTOM_DIR (a Flatpak manifest's sources, a
+# distribution's offline build) works too. patch(1) applies a hunk whose context moved or changed without an error, so
+# each file the patches touch is in FILES with the SHA-256 it has patched; one that has another makes the copy again (a
+# patch edited since, a copy left half patched) and, after that, stops the configure.
 #
-# The one way a package is patched here: CPM's PATCHES leaves a cache it did not fill unpatched (#214). FFmpeg uses it,
-# for NVDEC's VP9 jobs. hactool, a fork of ours since #166, is in the tree (src/nx/runtime/driver/hactool).
+# The one way a package is patched here: CPMUtil's patches leave a <package>_CUSTOM_DIR unpatched. FFmpeg uses it, for
+# NVDEC's VP9 jobs, and FidelityFX-FSR2 for its device memory. hactool, a fork of ours since #166, is in the tree
+# (src/nx/runtime/driver/hactool).
 function(snx_patched_copy)
     cmake_parse_arguments(arg "" "SOURCE;DEST" "PATCHES;FILES" ${ARGN})
     set(stale FALSE)
@@ -28,7 +29,7 @@ function(snx_patched_copy)
     if(NOT stale)
         return()
     endif()
-    # CPM's search: on PATH, or the one Git for Windows carries
+    # CPMUtil's search (cpm_find_program): on PATH, or the one Git for Windows carries
     find_package(Git QUIET)
     if(GIT_EXECUTABLE)
         get_filename_component(git_dir "${GIT_EXECUTABLE}" DIRECTORY)
