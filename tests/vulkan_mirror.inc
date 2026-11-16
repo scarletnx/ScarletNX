@@ -61,38 +61,62 @@ static int mirror_write(u64 cpu, u32 n, u8 value, int logged) {
     return 0;
 }
 
+/* a log's words from from on that aren't zero: the first's index, or -1 with none */
+static i64 log_dirty(const u32* w, u64 from, u64 n) {
+    for (u64 i = from; i < from + n; i++)
+        if (w[i]) return (i64)i;
+    return -1;
+}
+/* check_mirror_fold's unflagged run, b's bytes 0x1100 to 0x1104 in part 1: still in the log after the folds, then
+   taken out of it, so the rest can be checked clear. 0, or 1 where a bit of it went */
+static int unflagged_kept(u32* w) {
+    for (u32 x = 0x1100; x < 0x1104; x++) {
+        u32* word = &w[SH_WLOG_PART + SH_WPAGE_SLOT + x / 32];
+        if (!(*word >> (x % 32) & 1)) {
+            fprintf(stderr, "vulkan_headless: mirror fold: the unflagged bit of b's byte %#x went from the log\n", x);
+            return 1;
+        }
+        *word &= ~(1u << (x % 32));
+    }
+    return 0;
+}
 /* A dispatch's write log into the mirror's mask (vk_mirror_fold): two buffers of one dispatch, the first at a byte
    that is not the first of a mask word, the second over it. Only the windows flagged are taken, the bits past a
-   buffer's length go, and the bits of the two buffers meet in the mask. With gpu, the log in the GPU's memory, as a
-   dispatch in the mirror takes it (vk_wlog_get_gpu), cleared on the GPU after the fold (vk_wlog_clear) */
+   buffer's length go, and the bits of the two buffers meet in the mask. The folds leave the parts they read clear,
+   the windows past a buffer's length too (a store past the windows is logged in the last one, shader/write_log.c),
+   and vk_wlog_clear fills the part no fold read (a slot not bound) alone: a part the folds left clear keeps what is
+   there. With gpu, the log in the GPU's memory, as a dispatch in the mirror takes it (vk_wlog_get_gpu) */
 static int check_mirror_fold(u64 cpu, u64 gva, int gpu) {
     const u64 a = cpu + 0x1005, b = a + 8; /* a: bit 5 of its mask word */
     const u32 alen = 0x1800, blen = 0x1ff0; /* b inside the 3 pages mapped */
     static u8 want[0x2100]; /* a byte for each guest byte from cpu + 0x1000 */
-    static u32 words[2 * SH_WLOG_PART];
+    static u32 words[3 * SH_WLOG_PART];
     memset(want, 0, sizeof want);
     memset(words, 0, sizeof words);
-    /* the bits of buffer p for its bytes [from, to), the window flagged or not */
-    u32* part[2] = {words, words + SH_WLOG_PART};
+    /* the bits of part p for its buffer's bytes [from, to), the window flagged or not; part 2 is no fold's */
+    u32* part[3] = {words, words + SH_WLOG_PART, words + 2 * SH_WLOG_PART};
     const struct {
         u32 p, from, to, flag;
     } runs[] = {
-        {0, 0x10, 0x30, 1},     /* across a mask word of the log and two of the mirror's */
-        {0, 0x17f0, 0x1810, 1}, /* past a's length from 0x1800: those go */
-        {1, 0x0, 0x4, 1},       /* b's first bytes, a's 8 to 12 */
-        {1, 0x1100, 0x1104, 0}, /* window 1 of b not flagged: not taken */
+        {0, 0x10, 0x30, 1},         /* across a mask word of the log and two of the mirror's */
+        {0, 0x17f0, 0x1810, 1},     /* past a's length from 0x1800: those go */
+        {0, 0xfff000, 0xfff008, 1}, /* the last window, far past a's length: none taken, cleared all the same */
+        {1, 0x0, 0x4, 1},           /* b's first bytes, a's 8 to 12 */
+        {1, 0x1100, 0x1104, 0},     /* window 1 of b not flagged: not taken */
+        {2, 0x7000, 0x7010, 1},     /* the part no fold reads */
     };
     for (u32 r = 0; r < sizeof runs / sizeof *runs; r++) {
         u32* flags = part[runs[r].p];
         for (u32 x = runs[r].from; x < runs[r].to; x++) {
             flags[SH_WPAGE_SLOT + x / 32] |= 1u << (x % 32);
             if (runs[r].flag) flags[x / 4096] = 1;
+            if (runs[r].p == 2) continue;
             u64 at = (runs[r].p ? b : a) + x;
             u32 len = runs[r].p ? blen : alen;
             if (runs[r].flag && x < len) want[at - (cpu + 0x1000)] = 1;
         }
     }
-    VkWriteLog* log = gpu ? vk_wlog_get_gpu(2) : vk_wlog_get(2);
+    VkWriteLog* log = gpu ? vk_wlog_get_gpu(3) : vk_wlog_get(3);
     CHECK(log && vk_wlog_size(log) == sizeof words && vk_wlog_on_gpu(log) == gpu);
     VkBuffer src;
     u64 at;
@@ -112,7 +136,8 @@ static int check_mirror_fold(u64 cpu, u64 gva, int gpu) {
     VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     rec_CmdPipelineBarrier2(vk_cmd(), &d);
     VkMirFold f[2] = {{a, alen, 0}, {b, blen, 1}};
-    vk_mirror_fold(vk_cmd(), vk_wlog_buffer(log), vk_wlog_size(log), f, 2);
+    const u32 cleared = vk_mirror_fold(vk_cmd(), vk_wlog_buffer(log), vk_wlog_size(log), f, 2);
+    CHECK(cleared == 3);
     CHECK(vk_mirror_pending(gva + 0x1005, alen));
     /* the mask, read before the submit's harvest clears it */
     static u32 mask[0x2100 / 32];
@@ -123,16 +148,41 @@ static int check_mirror_fold(u64 cpu, u64 gva, int gpu) {
                     mask[i / 32] >> (i % 32) & 1, want[i]);
             return 1;
         }
-    if (gpu) { /* every word of the log zero again, for the next dispatch that takes it */
-        static u32 after[2 * SH_WLOG_PART];
-        vk_wlog_clear(vk_cmd(), log);
+    /* the folds' parts clear but for the bits of b's window left unflagged, which no fold reads (the log never holds
+       a window's bits without its flag: shader/write_log.c); the other part as it was */
+    static u32 after[3 * SH_WLOG_PART];
+    CHECK(!buffer_read(vk_wlog_buffer(log), 0, sizeof after, (u8*)after));
+    CHECK(!unflagged_kept(after));
+    i64 dirty = log_dirty(after, 0, 2 * SH_WLOG_PART);
+    if (dirty >= 0) {
+        fprintf(stderr, "vulkan_headless: mirror fold: word %#llx of the log is %#x after the folds\n",
+                (unsigned long long)dirty, after[dirty]);
+        return 1;
+    }
+    CHECK(!memcmp(after + 2 * SH_WLOG_PART, part[2], SH_WLOG_PART * 4));
+    if (gpu) { /* every word of the log zero again, for the next dispatch that takes it: part 2 filled, the folds'
+                  parts not written (a word put in part 1 stays) */
+        const u32 mark = 0x5eed;
+        VkBuffer ms;
+        u64 mat;
+        u8* mp = vk_stage_upload(4, 16, &ms, &mat);
+        CHECK(mp);
+        memcpy(mp, &mark, 4);
+        VkBufferCopy mc = {mat, (u64)SH_WLOG_PART * 4, 4};
+        rec_CmdCopyBuffer(vk_cmd(), ms, vk_wlog_buffer(log), 1, &mc);
+        vk_all_barrier(vk_cmd());
+        vk_wlog_clear(vk_cmd(), log, cleared);
         CHECK(!buffer_read(vk_wlog_buffer(log), 0, sizeof after, (u8*)after));
-        for (u32 i = 0; i < 2 * SH_WLOG_PART; i++)
-            if (after[i]) {
-                fprintf(stderr, "vulkan_headless: mirror fold: word %#x of the GPU's log is %#x after its clear\n", i,
-                        after[i]);
-                return 1;
-            }
+        CHECK(after[SH_WLOG_PART] == mark);
+        after[SH_WLOG_PART] = 0;
+        CHECK(!unflagged_kept(after));
+        dirty = log_dirty(after, 0, 3 * SH_WLOG_PART);
+        if (dirty >= 0) {
+            fprintf(stderr, "vulkan_headless: mirror fold: word %#llx of the GPU's log is %#x after its clear\n",
+                    (unsigned long long)dirty, after[dirty]);
+            return 1;
+        }
+        vk_wlog_clear(vk_cmd(), log, 0); /* the mark too: the log goes back to the pool clear */
     }
     vk_wlog_unref(log);
     /* the mirror's bytes there are guest memory's: landing the bits changes nothing */

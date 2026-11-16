@@ -19,7 +19,7 @@ static int check_wlog_again(void) {
     VkWriteLog* b = vk_wlog_get_gpu(2); /* a's clear is not recorded: another log */
     CHECK(a && b && a != b && vk_wlog_on_gpu(a) && vk_wlog_on_gpu(b) && vk_wlog_again() == again);
     vk_wlog_stats(&logs0, &bytes, &in_use, &windows);
-    vk_wlog_clear(vk_cmd(), a);
+    vk_wlog_clear(vk_cmd(), a, 0);
     vk_wlog_ready(a);
     VkWriteLog* c = vk_wlog_get_gpu(2);
     VkWriteLog* d = vk_wlog_get_gpu(2);
@@ -49,7 +49,7 @@ static int check_wlog_again(void) {
                (unsigned long long)(usage >> 20), (unsigned long long)(budget >> 20),
                (unsigned long long)(usage_after >> 20), (unsigned long long)(budget_after >> 20));
     /* c is the clear log from here on, whatever that trim did with the one before: cleared, and given again */
-    vk_wlog_clear(vk_cmd(), c);
+    vk_wlog_clear(vk_cmd(), c, 0);
     vk_wlog_ready(c);
     vk_wlog_unref(c);
     vk_finish();
