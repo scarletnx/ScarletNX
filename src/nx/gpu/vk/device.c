@@ -66,6 +66,14 @@ int vk_trylock(void) {
 }
 u32 vk_lock_owner(void) { return __atomic_load_n(&g_vk_owner, __ATOMIC_RELAXED); }
 int vk_lock_held(void) { return t_vkdepth > 0; }
+int vk_lock_pause(void) {
+    if (t_vkdepth != 1) return 0;
+    vk_unlock();
+    return 1;
+}
+void vk_lock_resume(int paused) {
+    if (paused) vk_lock();
+}
 
 /* What held the memory at an out-of-memory, at the first ones: each heap as devmem.c counts it, and the descriptor
    pools, which MoltenVK backs with Metal memory that its blocks do not hold (cmd.c). The heap's use less its blocks
