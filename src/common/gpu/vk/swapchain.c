@@ -67,8 +67,55 @@ uint32_t snx_vk_swap_image_count(const VkSurfaceCapabilitiesKHR* caps, uint32_t 
 }
 
 void snx_vk_swapchain_free(VkDevice device, SnxVkSwapchain* sc) {
+    for (uint32_t i = 0; i < SNX_VK_SWAP_IMAGES; ++i)
+        if (sc->views[i]) vkDestroyImageView(device, sc->views[i], NULL);
     if (sc->swapchain) vkDestroySwapchainKHR(device, sc->swapchain, NULL);
     *sc = (SnxVkSwapchain){0};
+}
+
+static void swap_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImageLayout to,
+                         VkPipelineStageFlags2 src_stage, VkAccessFlags2 src, VkPipelineStageFlags2 dst_stage,
+                         VkAccessFlags2 dst) {
+    VkImageMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                               .srcStageMask = src_stage,
+                               .srcAccessMask = src,
+                               .dstStageMask = dst_stage,
+                               .dstAccessMask = dst,
+                               .oldLayout = from,
+                               .newLayout = to,
+                               .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                               .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                               .image = image,
+                               .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b};
+    vkCmdPipelineBarrier2(cb, &d);
+}
+
+void snx_vk_swapchain_begin(VkCommandBuffer cb, const SnxVkSwapchain* sc, uint32_t index) {
+    /* the acquire's semaphore is waited for before the clear's writes, at the attachment's output */
+    swap_barrier(cb, sc->images[index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    VkRenderingAttachmentInfo at = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                    .imageView = sc->views[index],
+                                    .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                    .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                    .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                    .clearValue = {.color = {.float32 = {0, 0, 0, 1}}}};
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                          .renderArea = {{0, 0}, sc->extent},
+                          .layerCount = 1,
+                          .colorAttachmentCount = 1,
+                          .pColorAttachments = &at};
+    vkCmdBeginRendering(cb, &ri);
+}
+
+void snx_vk_swapchain_end(VkCommandBuffer cb, const SnxVkSwapchain* sc, uint32_t index) {
+    vkCmdEndRendering(cb);
+    swap_barrier(cb, sc->images[index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                 VK_PIPELINE_STAGE_2_NONE, 0);
 }
 
 VkPresentModeKHR snx_vk_present_mode(const VkPresentModeKHR* modes, uint32_t count, bool vsync) {
@@ -130,9 +177,20 @@ bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSw
     uint32_t count = 0;
     vkGetSwapchainImagesKHR(device, made, &count, NULL);
     if (count > SNX_VK_SWAP_IMAGES) count = SNX_VK_SWAP_IMAGES;
-    if (vkGetSwapchainImagesKHR(device, made, &count, sc->images) < 0 || !count) {
-        vkDestroySwapchainKHR(device, made, NULL);
-        *sc = (SnxVkSwapchain){0};
+    bool listed = vkGetSwapchainImagesKHR(device, made, &count, sc->images) >= 0 && count;
+    for (uint32_t i = 0; listed && info->views && i < count; ++i) {
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                    .image = sc->images[i],
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                    .format = format.format,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        VkImageView view = VK_NULL_HANDLE;
+        listed = vkCreateImageView(device, &vi, NULL, &view) == VK_SUCCESS;
+        sc->views[i] = listed ? view : VK_NULL_HANDLE;
+    }
+    if (!listed) {
+        sc->swapchain = made; /* freed with the views made */
+        snx_vk_swapchain_free(device, sc);
         return false;
     }
     sc->swapchain = made;
