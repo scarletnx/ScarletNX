@@ -5,8 +5,8 @@
 
 A pull request's caches are read by that pull request only, and a branch's by that branch and the pull requests into
 it: once the pull request is closed or the branch gone, nothing reads them, yet they count until GitHub evicts them.
-A key that ends in a run's number or a hash (ccache-linux-x86_64-<run>-<attempt>, cpm-linux-<hash of the
-dependencies>) is one entry of a cache whose runs restore the entry used last: on each ref the older entries of that
+A key that ends in a run's number or a hash (ccache-linux-x86_64-<run>-<attempt>, cpmutil-linux-<hash of the
+pins>) is one entry of a cache whose runs restore the entry used last: on each ref the older entries of that
 family go too, among those of one version (GitHub's hash of the paths and of the system, so one key saved by two
 systems is two caches). A key without such an end is a family of its own and stays. A compiler cache (ccache-...) is
 saved by a push alone (build.yml): one on a pull request's ref, which that pull request reads in place of main's

@@ -1,39 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The third-party libraries, fetched at configure time with CPM.cmake (https://github.com/cpm-cmake/CPM.cmake). Each
-# package is pinned to a release archive and its SHA-256, and downloaded once into CPM_SOURCE_CACHE (.cache/cpm in the
-# repository by default, shared by every build folder). Configuring offline works once the cache is filled.
+# The third-party libraries, fetched at configure time with CPMUtil (cmake/packages.cmake): each one cpmfile.json pins
+# is added here, under the conditions that need it.
 #
-# Bumping a package: change its version, URL and hash together, the hash taken from the release asset's digest or from
-# a download checked by hand, never from what the next configure happens to fetch (snx-build skill).
+# Bumping a package: change its entry's version (and artifact or url) and hash together, the hash the SHA-512 of a
+# download checked by hand against the release's own digest, never of what the next configure happens to fetch
+# (docs/dev/build.md, "Third-party packages").
 #
-# Patching a package: snx_patched_copy (cmake/patched_copy.cmake) on a copy in the build tree, never CPM's PATCHES, which
-# patches only what CPM itself downloads into the cache.
-
-set(CPM_VERSION 0.43.2)
-set(CPM_HASH 49a3bef91ceb65bb66d57255e12d1ffd22abc2f6408fa9fe4534c544a2f232aa)
-if(NOT DEFINED CPM_SOURCE_CACHE AND NOT DEFINED ENV{CPM_SOURCE_CACHE})
-    set(CPM_SOURCE_CACHE "${PROJECT_SOURCE_DIR}/.cache/cpm" CACHE PATH "Where CPM.cmake keeps downloaded packages")
-endif()
-if(DEFINED CPM_SOURCE_CACHE)
-    set(cpm_file "${CPM_SOURCE_CACHE}/cpm/CPM_${CPM_VERSION}.cmake")
-else()
-    set(cpm_file "$ENV{CPM_SOURCE_CACHE}/cpm/CPM_${CPM_VERSION}.cmake")
-endif()
-# Checked on every configure, not only after downloading it: a download that failed its check or broke off leaves a
-# file behind, and the next configure would include it. The download goes to a .part file, renamed once checked
-set(cpm_have "")
-if(EXISTS "${cpm_file}")
-    file(SHA256 "${cpm_file}" cpm_have)
-endif()
-if(NOT cpm_have STREQUAL CPM_HASH)
-    file(DOWNLOAD "https://github.com/cpm-cmake/CPM.cmake/releases/download/v${CPM_VERSION}/CPM.cmake"
-         "${cpm_file}.part" EXPECTED_HASH SHA256=${CPM_HASH})
-    file(RENAME "${cpm_file}.part" "${cpm_file}")
-endif()
-include("${cpm_file}")
-
-# CPMUtil (cmake/packages.cmake) over this CPM.cmake, for the packages cpmfile.json pins
+# Patching a package: snx_patched_copy (cmake/patched_copy.cmake) on a copy in the build tree, never CPMUtil's patches,
+# which leave a <package>_CUSTOM_DIR unpatched.
 include("${PROJECT_SOURCE_DIR}/cmake/packages.cmake")
 
 # Tracy's release: the client an SNX_TRACY build pins below, and the tracy-capture the driver's help and the runtime's
