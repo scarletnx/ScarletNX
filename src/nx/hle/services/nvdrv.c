@@ -1590,8 +1590,8 @@ static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra, int s2) {
         case NVGPU_GPU_PMU_GET_GPU_LOAD:
             snx_st_le32(d + CTRL_GPU_PMU_GPU_LOAD, NVGPU_PMU_GPU_LOAD);
             return NV_RESULT_SUCCESS;
-        case NVGPU_GPU_GET_GPU_TIME: /* the system tick's timebase */
-            snx_st_le64(d + CTRL_GPU_GPU_TIME, guest_ns());
+        case NVGPU_GPU_GET_GPU_TIME: /* the graphics unit's ticks, which its reports' timestamps hold too */
+            snx_st_le64(d + CTRL_GPU_GPU_TIME, guest_gpu_ticks());
             return NV_RESULT_SUCCESS;
         case NVGPU_GPU_GET_ENGINE_INFO: {
             /* nvgpu's engine IDs: graphics, graphics copy and asynchronous copy. */

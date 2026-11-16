@@ -67,7 +67,9 @@ int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
 }
 int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) { return pc_wait(c, m, timeout_ns); }
 u64 plat_ns(void) { return 0; }
-u64 guest_ns(void) { return 0; }
+static u64 test_guest_ns; /* the guest clock the runtime's clock.c would answer */
+u64 guest_ns(void) { return test_guest_ns; }
+u64 guest_gpu_ticks(void) { return snx_gpu_ticks_of_ns(test_guest_ns); }
 KThread* kthread_cur(void) { return NULL; } /* no guest thread: requests aren't recorded on one */
 void logf_(int level, const char* format, ...) {
     (void)level;
@@ -601,6 +603,12 @@ static void test_ioctl3(u32 ctrlgpu) {
     CHECK(ioctl_ctrlgpu(0xC0044714u, d, 4, mapping, 4, 0) == 0 && !memcmp(d, sms, 4) && !memcmp(mapping, sms, 4));
     CHECK(d[4] == 0xCC);
     CHECK(ioctl_ctrlgpu(0xC0084714u & ~0x40000000u, d, 8, NULL, 0, 0) == 0 && d[0] == 7 && d[4] == 1); /* slot mask */
+    /* GET_GPU_TIME answers the graphics unit's ticks, 384 every 625 ns, the unit its reports' timestamps hold */
+    u8 t[16];
+    memset(t, 0xCC, sizeof t);
+    test_guest_ns = 16014034169ull;
+    CHECK(ioctl_ctrlgpu(0xC010471Cu, t, sizeof t, NULL, 0, 0) == 0 && snx_ld_le64(t) == 9839022593ull);
+    test_guest_ns = 0;
 }
 
 /* QueryEvent (4) {fd, event id}: the NvError, then the event as a copy handle */
