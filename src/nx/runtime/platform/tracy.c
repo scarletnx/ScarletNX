@@ -528,6 +528,44 @@ static void tracy_plots_send(void) {
         {"submits pending", 0, 0, 1},    {"compute pending", 0, 0, 1},    {"pipelines", 0, 0, 1},
         {"pipeline make ms", 0, 0, 1},   {"pipeline wait ms", 0, 0, 1},   {"pipeline cache hits", 0, 0, 1},
         {"io read MB/s", 0, 0, 1},       {"io write MB/s", 0, 0, 1},
+        /* the renderer's per-frame counters and the resource categories, which the slow-frame log used to keep */
+        {"shader translate ms", 0, 0, 1},  {"texture upload count", 0, 0, 1},
+        {"render targets made", 0, 0, 1},  {"vk finish ms", 0, 0, 1},
+        {"texture pipeline count", 0, 0, 1}, {"texture pipeline ms", 0, 0, 1},
+        {"gpu wait: finish ms", 0, 0, 1},  {"gpu wait: recycle ms", 0, 0, 1},
+        {"gpu wait: submit ms", 0, 0, 1},
+        {"vk resource: image requirements ms", 0, 0, 1}, {"vk resource: image allocation ms", 0, 0, 1},
+        {"vk resource: image destruction ms", 0, 0, 1},  {"vk resource: target setup ms", 0, 0, 1},
+        {"vk resource: target reload ms", 0, 0, 1},      {"vk resource: surface reclaim ms", 0, 0, 1},
+        {"vk resource: buffer maintenance ms", 0, 0, 1}, {"vk resource: buffer cache build ms", 0, 0, 1},
+        /* the GPU queue's waits, holds and reasons for a submission */
+        {"gpu round: finish ms", 0, 0, 1},  {"gpu round: recycle ms", 0, 0, 1},
+        {"gpu round: submit ms", 0, 0, 1},  {"gpu hold: passes ms", 0, 0, 1},
+        {"gpu hold: dispatches ms", 0, 0, 1}, {"gpu hold: copies ms", 0, 0, 1},
+        {"gpu hold: nothing ms", 0, 0, 1},  {"gpu submit: other", 0, 0, 1},
+        {"gpu submit: present", 0, 0, 1},   {"gpu submit: finish", 0, 0, 1},
+        {"gpu submit: 1 ms", 0, 0, 1},      {"gpu submit: readback", 0, 0, 1},
+        {"gpu submit: frame end", 0, 0, 1}, {"gpu submit: split", 0, 0, 1},
+        {"gpu submit: background", 0, 0, 1},
+        /* the IPC window's totals and its most costly commands, by rank */
+        {"ipc req/s", 0, 0, 1},         {"ipc handler ms", 0, 0, 1},
+        {"ipc commands", 0, 0, 1},      {"ipc other req/s", 0, 0, 1},
+        {"ipc top 0 ms", 0, 0, 1},      {"ipc top 1 ms", 0, 0, 1},
+        {"ipc top 2 ms", 0, 0, 1},      {"ipc top 3 ms", 0, 0, 1},
+        {"ipc top 4 ms", 0, 0, 1},      {"ipc top 5 ms", 0, 0, 1},
+        {"ipc top 6 ms", 0, 0, 1},      {"ipc top 7 ms", 0, 0, 1},
+        /* the guest's busiest SVCs and hook families, and the NCE's own counters */
+        {"top svc 0/s", 0, 0, 1},       {"top svc 1/s", 0, 0, 1},
+        {"top svc 2/s", 0, 0, 1},       {"top svc 3/s", 0, 0, 1},
+        {"top svc 4/s", 0, 0, 1},       {"top svc 5/s", 0, 0, 1},
+        {"top hook 0/s", 0, 0, 1},      {"top hook 1/s", 0, 0, 1},
+        {"top hook 2/s", 0, 0, 1},      {"top hook 3/s", 0, 0, 1},
+        {"top hook 4/s", 0, 0, 1},      {"nce svc/s", 0, 0, 1},
+        {"nce trap/s", 0, 0, 1},        {"nce ticks/s", 0, 0, 1},
+        {"nce run/s", 0, 0, 1},
+        /* the JIT's compiled code and its AOT lookups */
+        {"jit code KiB", 1, 0, 1},      {"jit instructions", 0, 0, 1},
+        {"jit variant hits", 0, 0, 1},  {"jit variant misses", 0, 0, 1},
     };
     if (!snx_tracy_enter()) return;
     if (TracyCIsConnected)

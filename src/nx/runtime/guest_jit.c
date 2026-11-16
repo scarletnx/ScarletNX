@@ -180,7 +180,7 @@ static GuestFn variant_resolve(SnxU64 pc) {
    shows which of the two it was. */
 static _Thread_local struct {
     int named;
-    unsigned long cached, batches;
+    unsigned long cached, batches, hits, misses;
 } t_jit_plot;
 
 static void jit_report_plots(const SnxJitReport* r) {
@@ -200,10 +200,21 @@ static void jit_report_plots(const SnxJitReport* r) {
         t_jit_plot.cached = cached;
         t_jit_plot.batches = batches;
         SNX_PLOT("jit queue depth", (double)queued);
+        SNX_PLOT("jit code KiB", (double)(stats.bytes >> 10));
     }
     SNX_PLOT("jit compile ms", r->seconds * 1000.0);
     SNX_PLOT("jit batch size", (double)r->pcs);
     SNX_PLOT("jit batch functions", (double)r->functions);
+    SNX_PLOT("jit instructions", (double)r->instructions);
+    /* the AOT lookup's hits and misses, between one batch and the next; the compiled code's own counts are above */
+    {
+        unsigned long hits = __atomic_load_n(&g_jit_hits, __ATOMIC_RELAXED);
+        unsigned long misses = __atomic_load_n(&g_jit_misses, __ATOMIC_RELAXED);
+        SNX_PLOT("jit variant hits", (double)(hits - t_jit_plot.hits));
+        SNX_PLOT("jit variant misses", (double)(misses - t_jit_plot.misses));
+        t_jit_plot.hits = hits;
+        t_jit_plot.misses = misses;
+    }
     if (r->dropped)
         SNX_PLOT("jit dropped batches", 1);
     else if (r->error)
