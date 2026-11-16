@@ -530,22 +530,47 @@ void vk_astc_frame_done(u64 sub) {
     }
 }
 
-/* a level's blocks from the cache (size bytes of them) staged and copied into level `level` of img, w x h texels and
-   depth slices, or with layered depth layers from layer: 0 when they aren't there, staging has no room, or they don't
-   check out (then dropped) */
-static int bc7_from_cache(VkCommandBuffer cb, VkImage img, const u64 key[2], u64 size, u32 w, u32 h, u32 depth,
-                          u32 level, u32 layer, int layered) {
+/* the blocks of key's record in the cache, size bytes of them, staged and copied into img by copy (its bufferOffset
+   set here; no copy when img is VK_NULL_HANDLE). Where cb goes through the recording thread, that thread reads them
+   and makes the copy, in order with cb's commands (vk_bc7_cache_read_later): the GPU thread never waits for the file.
+   CACHED_QUEUED then, CACHED_DONE when they were read and copied at once, CACHED_NONE when they aren't there or (read at
+   once) don't check out, CACHED_NO_ROOM when staging has no room this frame */
+enum { CACHED_NO_ROOM = -1, CACHED_NONE, CACHED_DONE, CACHED_QUEUED };
+static int stage_cached(VkCommandBuffer cb, const u64 key[2], u64 size, VkImage img, VkBufferImageCopy copy) {
     VkBuffer buf;
     u64 off;
+    DevMem mem = 0;
     u8* p;
-    if (vk_bc7_cache_find(key) != size || !(p = vk_stage(size, 16, &buf, &off)) || !vk_bc7_cache_read(key, p, size))
-        return 0;
-    VkBufferImageCopy copy = {.bufferOffset = off,
-                              .bufferRowLength = (w + 3) / 4 * 4,
-                              .bufferImageHeight = (h + 3) / 4 * 4,
-                              .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, layered ? depth : 1},
-                              .imageExtent = {w, h, layered ? 1 : depth}};
-    rec_CmdCopyBufferToImage(cb, buf, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    if (vk_bc7_cache_find(key) != size) return CACHED_NONE;
+    if (!(p = vk_stage_output(size, 16, &buf, &off, &mem))) return CACHED_NO_ROOM;
+    copy.bufferOffset = off;
+    if (vk_rec_ring(cb)) {
+        /* timed for vk_gpu_profile as rec_CmdCopyBufferToImage times the copy it records */
+        const int timed = img && vk_gpuprof_profiled(cb) &&
+                          vk_gpuprof_op_begin(cb, VK_OP_TO_IMAGE,
+                                              (u64)((const u8*)__builtin_return_address(0) -
+                                                    (const u8*)vk_gpuprof_base()),
+                                              0);
+        const int r = vk_bc7_cache_read_later(cb, key, size, p, mem, off, buf, img, &copy);
+        if (timed) vk_gpuprof_op_end(cb);
+        if (r >= 0) return r ? CACHED_QUEUED : CACHED_NONE;
+    }
+    if (!vk_bc7_cache_read(key, p, size)) return CACHED_NONE;
+    if (img) rec_CmdCopyBufferToImage(cb, buf, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    return CACHED_DONE;
+}
+
+/* a level's blocks from the cache (size bytes of them) staged and copied into level `level` of img, w x h texels and
+   depth slices, or with layered depth layers from layer: 0 when they aren't there, staging has no room, or they don't
+   check out (then dropped). On the recording thread a record that doesn't check out is dropped there, and the level
+   keeps what the image held until the game loads it again */
+static int bc7_from_cache(VkCommandBuffer cb, VkImage img, const u64 key[2], u64 size, u32 w, u32 h, u32 depth,
+                          u32 level, u32 layer, int layered) {
+    const VkBufferImageCopy copy = {.bufferRowLength = (w + 3) / 4 * 4,
+                                    .bufferImageHeight = (h + 3) / 4 * 4,
+                                    .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, layered ? depth : 1},
+                                    .imageExtent = {w, h, layered ? 1 : depth}};
+    if (stage_cached(cb, key, size, img, copy) <= CACHED_NONE) return 0;
     g_astc.bc7_hits++;
     return 1;
 }
@@ -1033,8 +1058,9 @@ static void piece_at(const Bc7Pieces* p, const u64 level[2], u32 i, Bc7Piece* q)
 
 /* a level in the background: its snapshot (the ASTC blocks, rows of nx a slice, ny rows a slice, slice after slice),
    whole once ready_sub is done, and its pieces' states */
-/* a piece: to encode, being encoded, in the cache to load into the texture (after presents, vk_astc_background), done */
-enum { BG_TODO, BG_TAKEN, BG_DONE, BG_LOAD };
+/* a piece: to encode, being encoded, in the cache to load into the texture (after presents, vk_astc_background), done,
+   or read on the recording thread until read_sub is done (bg_read_done) */
+enum { BG_TODO, BG_TAKEN, BG_DONE, BG_LOAD, BG_READ };
 typedef struct {
     u64 key[2]; /* the level's, its fast build's */
     u32 w, h, depth, bw, bh, srgb, nx, ny;
@@ -1044,6 +1070,8 @@ typedef struct {
     u32 left;  /* pieces not BG_DONE */
     u64 ready_sub;
     int ready;
+    u32 reading;   /* pieces BG_READ */
+    u64 read_sub;  /* the submission after their reads */
     VkBuffer snap;
     DevMem snap_mem;
     u64 snap_bytes;
@@ -1283,28 +1311,56 @@ static void bg_gpu_piece(void) {
     vk_submit_background();
 }
 
-/* pieces the cache holds, read from its file into the textures of their ready jobs, BG_LOAD_NS of them at most (at
-   least one) on the GPU thread. One that doesn't check out is encoded where the job has a snapshot, else its level
-   keeps the quick blocks there for this run, and the next encodes it */
+/* a piece loaded from the cache (ok), or not: one that doesn't check out is encoded where the job has a snapshot, else
+   its level keeps the quick blocks there for this run, and the next encodes it */
+static void bg_loaded(Bc7Job* j, u32 i, int ok) {
+    g_bg.loaded += ok;
+    j->state[i] = ok || !j->snap ? BG_DONE : BG_TODO;
+    j->left -= ok || !j->snap;
+}
+/* the pieces read on the recording thread, once the submission after their reads is done: a record that didn't check
+   out is out of the index by then */
+static void bg_read_done(Bc7Job* j) {
+    if (!j->reading || g_bg_landed < j->read_sub) return;
+    for (u32 i = 0; i < j->p.n; i++) {
+        if (j->state[i] != BG_READ) continue;
+        Bc7Piece q;
+        piece_at(&j->p, j->key, i, &q);
+        bg_loaded(j, i, vk_bc7_cache_find(q.key) == q.bytes);
+    }
+    j->reading = 0;
+}
+/* pieces the cache holds, read from its file into the textures of their ready jobs, BG_LOAD_NS of reads at most (at
+   least one) a frame: on the recording thread, at the rate of the reads so far, where the frame's commands go through
+   it, else on the GPU thread */
 static void bg_load(void) {
     const u64 t0 = plat_ns();
+    u64 queued = 0; /* bytes read on the recording thread */
     for (u32 k = 0; k < g_bg.njobs; k++) {
         Bc7Job* j = g_bg.jobs[k];
         for (u32 i = j->next; j->ready && i < j->p.n; i++) {
             if (j->state[i] != BG_LOAD) continue;
-            if (plat_ns() - t0 >= BG_LOAD_NS && g_bg.loaded_now) return;
+            if (plat_ns() - t0 + vk_bc7_cache_read_ns(queued) >= BG_LOAD_NS && g_bg.loaded_now) return;
             Bc7Piece q;
-            VkBuffer buf;
-            u64 off;
-            u8* to = NULL;
             piece_at(&j->p, j->key, i, &q);
-            const int ok = (to = vk_stage(q.bytes, 16, &buf, &off)) && vk_bc7_cache_read(q.key, to, q.bytes);
-            if (!to) return; /* staging ran out this frame */
-            if (ok) bg_to_image(vk_cmd(), j, &q, buf, off);
-            g_bg.loaded += ok;
+            VkCommandBuffer cb = vk_cmd();
+            Surf* t = j->surf;
+            /* into the texture while it holds what j's upload wrote (bg_to_image) */
+            const int into = t && !t->took_drawn;
+            if (into)
+                vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                            VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            const int r = stage_cached(cb, q.key, q.bytes, into ? t->img : VK_NULL_HANDLE,
+                                       piece_copy(&j->p, &q, 0, j->w, j->h, j->level, j->layer, j->as_layers));
+            if (r == CACHED_NO_ROOM) return; /* staging ran out this frame */
             g_bg.loaded_now++;
-            j->state[i] = ok || !j->snap ? BG_DONE : BG_TODO;
-            j->left -= ok || !j->snap;
+            if (r == CACHED_QUEUED) {
+                queued += q.bytes;
+                j->state[i] = BG_READ;
+                j->reading++;
+                j->read_sub = vk_submit_number();
+            } else
+                bg_loaded(j, i, r == CACHED_DONE);
         }
     }
 }
@@ -1327,6 +1383,7 @@ void vk_astc_background(void) {
     for (u32 k = 0; k < g_bg.njobs;) {
         Bc7Job* j = g_bg.jobs[k];
         if (!j->ready && g_bg_landed >= j->ready_sub) j->ready = 1;
+        bg_read_done(j);
         const int end = (!j->left || !on) && g_bg.slice_job != j;
         if (end) g_bg.jobs[k] = g_bg.jobs[--g_bg.njobs];
         if (!end) {
@@ -1349,7 +1406,7 @@ void vk_astc_background(void) {
 void vk_astc_background_drain(void) {
     while (g_bg.njobs) {
         int copying = 0;
-        for (u32 k = 0; k < g_bg.njobs; k++) copying |= !g_bg.jobs[k]->ready;
+        for (u32 k = 0; k < g_bg.njobs; k++) copying |= !g_bg.jobs[k]->ready || g_bg.jobs[k]->reading;
         if (copying || g_bg.slice_sub) vk_finish(); /* lands the snapshots' copies, or the GPU's piece */
         vk_astc_background();
     }
@@ -1377,14 +1434,13 @@ static int pieces_from_cache(VkCommandBuffer cb, Surf* t, const u64 key[2], u32 
         g_hit_frame = vk_frame_id();
         g_hit_ns = 0;
     }
+    /* the reads on the recording thread count at the rate of the reads so far */
     const u64 t0 = plat_ns() - g_hit_ns;
+    u64 queued = 0;
     for (u32 i = 0; i < p.n; i++) {
         Bc7Piece q;
-        VkBuffer buf;
-        u64 off;
-        u8* to;
         piece_at(&p, key, i, &q);
-        g_hit_ns = plat_ns() - t0;
+        g_hit_ns = plat_ns() - t0 + vk_bc7_cache_read_ns(queued);
         if (g_hit_ns >= g_vk_astc_hit_ns) { /* a slow disk: encoded quickly, and loaded after the presents */
             LOG_LIMIT(4,
                       "vulkan: a %ux%ux%u ASTC level's pieces read slowly from the BC7 cache: it is encoded quickly "
@@ -1392,11 +1448,11 @@ static int pieces_from_cache(VkCommandBuffer cb, Surf* t, const u64 key[2], u32 
                       w, h, depth);
             return 0;
         }
-        if (!(to = vk_stage(q.bytes, 16, &buf, &off)) || !vk_bc7_cache_read(q.key, to, q.bytes)) return 0;
-        const VkBufferImageCopy copy = piece_copy(&p, &q, off, w, h, level, layer, as_layers);
-        rec_CmdCopyBufferToImage(cb, buf, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        const int r = stage_cached(cb, q.key, q.bytes, t->img, piece_copy(&p, &q, 0, w, h, level, layer, as_layers));
+        if (r <= CACHED_NONE) return 0;
+        if (r == CACHED_QUEUED) queued += q.bytes;
     }
-    g_hit_ns = plat_ns() - t0;
+    g_hit_ns = plat_ns() - t0 + vk_bc7_cache_read_ns(queued);
     return 1;
 }
 

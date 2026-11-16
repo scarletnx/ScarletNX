@@ -112,6 +112,8 @@ static int rec_on(VkCommandBuffer cb) {
     return g_rec > 0 && (cb == g_rec_cb || (cb && cb == vk_cmd_upload_recording()));
 }
 
+int vk_rec_ring(VkCommandBuffer cb) { return rec_on(cb); }
+
 static void wake(void) {
     if (__atomic_load_n(&g_sleep, __ATOMIC_SEQ_CST)) {
         pm_lock(&g_m);

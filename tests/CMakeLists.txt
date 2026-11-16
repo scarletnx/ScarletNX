@@ -2672,7 +2672,7 @@ if(NOT SNX_TOOLS_ONLY)
     # record starts the file over or drops the record, a record cut short is cut off, and the bound starts it over
     add_executable(snx-test-bc7-cache bc7_cache.c tracy_stubs.c)
     snx_test_target(snx-test-bc7-cache 23)
-    target_link_libraries(snx-test-bc7-cache PRIVATE snx_nx_flags snx_xxhash scarletnx-common)
+    target_link_libraries(snx-test-bc7-cache PRIVATE snx_nx_flags snx_xxhash scarletnx-common scarletnx-platform)
     add_test(NAME bc7_cache COMMAND snx-test-bc7-cache)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         # The real cache saver with a fake driver: compilation defers periodic snapshots without losing dirty work.
