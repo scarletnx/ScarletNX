@@ -125,7 +125,7 @@ jobs:
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syuu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
+            pacman -Syuu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld mold llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done

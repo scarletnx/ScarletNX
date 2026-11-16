@@ -1,0 +1,13 @@
+AArch64 SB+dmb.ish
+(* SPDX-License-Identifier: GPL-3.0-or-later *)
+(* Copyright 2026 the ScarletNX contributors *)
+{
+0:X1=x; 0:X3=y;
+1:X1=y; 1:X3=x;
+}
+ P0          | P1          ;
+ MOV W0,#1   | MOV W0,#1   ;
+ STR W0,[X1] | STR W0,[X1] ;
+ DMB ISH     | DMB ISH     ;
+ LDR W2,[X3] | LDR W2,[X3] ;
+exists (0:X2=0 /\ 1:X2=0)
