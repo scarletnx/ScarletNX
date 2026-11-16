@@ -11,7 +11,9 @@
 #
 # After each build the runtime is copied next to every recompiled game in the data folder's games/ (SNX_DEPLOY), so a
 # runtime fix reaches the games without recompiling them.
-cmake_minimum_required(VERSION 3.25)
+# CMake 3.31 for CPMUtil (cmake/packages.cmake); the policies stay 3.25's, which the build is written and tested to
+cmake_minimum_required(VERSION 3.31)
+cmake_policy(VERSION 3.25)
 
 # Clang only: the runtime, the generated game code and the third-party libraries are built and tested with one
 # compiler. It is the default here, so a plain `cmake -B build` picks it over the system's cc
