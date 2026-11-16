@@ -236,6 +236,8 @@ void kernel_dump_threads(void);
 /* the guest thread of slot ix (kt_ix): its id, and its name into out as the dump gives it (the SDK's, else the
    kernel's, "" for none); 0 for a slot with no thread. Read without the locks, as the dump reads them */
 u64 kernel_thread_name(u32 ix, char* out, int n);
+/* The wait reason of a thread, as the dump gives it, for a Tracy fiber's name. Read without the locks */
+const char* kernel_thread_state(const KThread* t, char* out, size_t n);
 /* how long threads waited for their cores and how busy each core was, logged at exit */
 void kernel_core_report(void);
 /* host thread tid (plat_tid's) waits in a fault on memory the GPU holds: its guest thread lets go of its emulated

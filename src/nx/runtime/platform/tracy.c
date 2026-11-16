@@ -20,11 +20,12 @@
 /* g_tracy_state is the client's, and the emissions' gate is it being SNX_TRACY_ON; g_tracy_pending counts them in
    flight. t_tracy is this thread's: the zones it has open, its zone tick, whether it mirrors a connection, and the
    name it goes by. */
-#define SNX_TRACY_ZONE_MAX 64
-#define SNX_TRACY_POLL     4096
-#define SNX_TRACY_OFF      0 /* not started */
-#define SNX_TRACY_ON       1
-#define SNX_TRACY_STOPPED  2 /* shut down, for good */
+#define SNX_TRACY_ZONE_MAX  64
+#define SNX_TRACY_FIBER_MAX  4 /* a service wait can hold a game-pause wait inside it */
+#define SNX_TRACY_POLL      4096
+#define SNX_TRACY_OFF     0 /* not started */
+#define SNX_TRACY_ON      1
+#define SNX_TRACY_STOPPED 2 /* shut down, for good */
 static int g_tracy_state;
 static int g_tracy_pending;
 /* zones wanted deeper than SNX_TRACY_ZONE_MAX: dropped rather than leaked, and counted so a hole in a trace
@@ -34,11 +35,19 @@ typedef struct {
     TracyCZoneCtx zones[SNX_TRACY_ZONE_MAX];
     int zone_depth;
     int attached;
+    int fiber_depth;
+    uint8_t fiber_slot[SNX_TRACY_FIBER_MAX];
+    uint8_t fiber_kind[SNX_TRACY_FIBER_MAX];
     unsigned zone_tick;
     uint64_t conn; /* the connection attached mirrors: a new one is re-announced to its server */
     char name[64];
 } TracyThread;
 static _Thread_local TracyThread t_tracy;
+
+/* The server keys a fiber by its name's address and reads the string when a GUI asks, so the name must stay at one
+   address for the capture's life. One slot of each kind gives every guest thread's wait its own lane. */
+#define SNX_TRACY_FIBER_NAME_MAX 96
+static char g_fiber_names[SNX_FIBER_SLOTS][SNX_FIBER_KINDS][SNX_TRACY_FIBER_NAME_MAX];
 
 /* The launcher's tracy-capture process; it writes the trace when the client disconnects. */
 static SDL_Process* g_tracy_capture;
@@ -72,9 +81,12 @@ static void tracy_plots_send(void);
    graphs. */
 static int g_tracy_sampling;
 static void tracy_sampling_start(void) {
-    if (!g_settings.tracy_sampling) return;
+    /* Tracy 0.15.0 starts its system trace (the OS's context switches, and the sampled stacks with it) from
+       BeginSamplingProfiling, which this build makes manual. Both settings ask for that one call; without it the
+       context-switch lanes stay empty even though the library can capture them. */
+    if (!g_settings.tracy_sampling && !g_settings.tracy_context_switches) return;
     if (__atomic_exchange_n(&g_tracy_sampling, 1, __ATOMIC_ACQ_REL)) return;
-    if (TracyCBeginSamplingProfiling()) LOG("tracy: sampling the run's stacks\n");
+    if (TracyCBeginSamplingProfiling()) LOG("tracy: the stack sampler and the OS's context switches are on\n");
 }
 static void tracy_sampling_stop(void) {
     if (!__atomic_exchange_n(&g_tracy_sampling, 0, __ATOMIC_ACQ_REL)) return;
@@ -409,6 +421,43 @@ void snx_tracy_thread_name(const char* name) {
     snx_tracy_leave();
 }
 
+void snx_tracy_fiber_enter(uint32_t slot, uint32_t kind, const char* name) {
+    char* dst;
+    if (!name || !*name || t_tracy.fiber_depth >= SNX_TRACY_FIBER_MAX) return;
+    if (slot >= SNX_FIBER_SLOTS || kind >= SNX_FIBER_KINDS) return;
+    if (!snx_tracy_enter()) return;
+    if (TracyCIsConnected) {
+        /* No leave without an enter: a connection that came and went while this thread was not looking would
+           otherwise leave a fiber the server never saw. The pair is pushed only when both events went out. */
+        dst = g_fiber_names[slot][kind];
+        snprintf(dst, SNX_TRACY_FIBER_NAME_MAX, "%s", name);
+        TracyCFiberEnter(dst);
+        t_tracy.fiber_slot[t_tracy.fiber_depth] = (uint8_t)slot;
+        t_tracy.fiber_kind[t_tracy.fiber_depth] = (uint8_t)kind;
+        t_tracy.fiber_depth++;
+    }
+    snx_tracy_leave();
+}
+
+void snx_tracy_fiber_leave(void) {
+    /* The name of an inner fiber is that of its slot: the pair on top tells which one ends. */
+    char* dst;
+    if (t_tracy.fiber_depth <= 0) return;
+    if (!snx_tracy_enter()) {
+        t_tracy.fiber_depth--;
+        return;
+    }
+    if (TracyCIsConnected) {
+        t_tracy.fiber_depth--;
+        TracyCFiberLeave;
+        if (t_tracy.fiber_depth > 0) {
+            dst = g_fiber_names[t_tracy.fiber_slot[t_tracy.fiber_depth]][t_tracy.fiber_kind[t_tracy.fiber_depth]];
+            if (*dst) TracyCFiberEnter(dst); /* the fiber that switched away is running again */
+        }
+    }
+    snx_tracy_leave();
+}
+
 /* The plots' formats: the byte counts as sizes, the shares as percent, the idle mark as steps. */
 static void tracy_plots_send(void) {
     static const struct {
@@ -432,6 +481,10 @@ static void tracy_plots_send(void) {
         {"syncpt timeouts/s", 0, 0, 1},
         {"hid updates/s", 0, 0, 1},
         {"audio mix ms", 0, 0, 1},
+        {"audio frame ms", 0, 0, 1},
+        {"audio queued ms", 0, 0, 1},
+        {"audio underruns", 0, 1, 0},
+        {"tracy dropped zones", 0, 0, 1},
         {"guest memory", 1, 0, 1},
         {"compute cpu reads", 0, 0, 1},
         {"gpu thread idle", 0, 1, 0},
@@ -461,6 +514,7 @@ static void tracy_plots_send(void) {
         {"gpu idle: queued", 0, 0, 1},
         {"gpu busy", 2, 0, 1},
         {"gpu submissions/frame", 0, 0, 1},
+        {"copy MB", 1, 0, 1},
         {"jit compile ms", 0, 0, 1},
         {"jit batch size", 0, 0, 1},
         {"jit batch functions", 0, 0, 1},
@@ -712,9 +766,26 @@ void snx_tracy_log(int lvl, const char* text) {
     snx_tracy_leave();
 }
 
+void snx_tracy_fiber_leave_all(void) {
+    while (t_tracy.fiber_depth > 0) snx_tracy_fiber_leave();
+}
+
+void snx_tracy_fatal(const char* text) {
+    size_t n;
+    /* No pending count here: the crash path can reach this with a lock held, and leave() would take the wait lock
+       when the count reached zero. A run ending here cannot have work left in flight to wait for. */
+    if (!text || !snx_tracy_gate_open()) return;
+    if (TracyCIsConnected) {
+        n = strlen(text);
+        while (n && (text[n - 1] == '\n' || text[n - 1] == '\r')) n--;
+        if (n) ___tracy_emit_logString(TracyMessageSeverityFatal, 0, 0, n, text);
+    }
+}
+
 void snx_tracy_shutdown(void) {
     u64 until;
     int on = SNX_TRACY_ON;
+    snx_tracy_fiber_leave_all(); /* this thread's fibers, while the client can still hear their end */
     /* Close the gate, once and only on a running client; the exchange is sequenced with the counts, so a thread that
        passed it is already counted. */
     if (!__atomic_compare_exchange_n(&g_tracy_state, &on, SNX_TRACY_STOPPED, 0, __ATOMIC_SEQ_CST, __ATOMIC_ACQUIRE))

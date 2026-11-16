@@ -9,6 +9,7 @@
 #include "common/utilities/bits.h"
 #include "nx/hle/hle.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/platform/tracy.h"
 
 /* ============================================================ references */
 void kobj_ref(KObj* o) {
@@ -246,6 +247,13 @@ int sleep_nl(KThread* t, i64 timeout) {
     core_leave(t);
     t->park = PARK_WAIT;
     __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
+#if defined(SNX_TRACY)
+    {
+        char reason[128];
+        kernel_thread_state(t, reason, sizeof reason);
+        SNX_FIBER_ENTER(kt_ix(t) - 1, (uint32_t)t->wait_kind, reason);
+    }
+#endif
     for (;;) {
         u32 seq = kt_seq(t);
         i64 left = -1;
@@ -268,6 +276,7 @@ int sleep_nl(KThread* t, i64 timeout) {
         kt_wait(t, seq, &g_host.kernel.klock, -1);
     }
     __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
+    SNX_FIBER_LEAVE();
     return r;
 }
 

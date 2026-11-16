@@ -11,6 +11,7 @@
 static struct {
     int failures;
     int startups, shutdowns, connected, zones, zone_ends, captures, logs, frames;
+    int fibers, fiber_leaves;
     int gpu_begins, gpu_ends, gpu_times, gpu_syncs, gpu_calibrates, configs, srclocs;
     int msgs;
     size_t msg_size;
@@ -93,6 +94,11 @@ void ___tracy_emit_gpu_calibration_serial(const struct ___tracy_gpu_calibration_
     (void)d;
     g_test.gpu_calibrates++;
 }
+void ___tracy_fiber_enter(const char* fiber) {
+    (void)fiber;
+    g_test.fibers++;
+}
+void ___tracy_fiber_leave(void) { g_test.fiber_leaves++; }
 void ___tracy_emit_frame_image(const void* image, uint16_t w, uint16_t h, uint8_t offset, int32_t flip) {
     (void)image, (void)w, (void)h, (void)offset, (void)flip;
     g_test.frames++;
@@ -220,6 +226,20 @@ int main(void) {
     g_test.msgs = 0;
     SNX_MSG("a syncpoint wait", 16);
     CHECK(g_test.msgs == 1 && g_test.msg_size == 16 && !strncmp(g_test.msg, "a syncpoint wait", 16));
+    snx_tracy_fatal("a fatal end");
+    CHECK(g_test.msgs == 2 && !strncmp(g_test.msg, "a fatal end", 11));
+    /* the guest's waits: a fiber's name goes out once per enter, and an unpaired leave is dropped */
+    g_test.fibers = g_test.fiber_leaves = 0;
+    SNX_FIBER_LEAVE();
+    CHECK(g_test.fiber_leaves == 0);
+    SNX_FIBER_ENTER(0, 1, "waiting on an event");
+    CHECK(g_test.fibers == 1 && t_tracy.fiber_depth == 1);
+    SNX_FIBER_ENTER(0, 2, "the game is paused"); /* a service wait can hold a pause inside it */
+    CHECK(g_test.fibers == 2 && t_tracy.fiber_depth == 2);
+    SNX_FIBER_LEAVE_ALL();
+    CHECK(g_test.fiber_leaves == 2 && t_tracy.fiber_depth == 0);
+    /* a name lives at one address for the server, which reads it when a GUI asks; the table keeps it */
+    CHECK(!strcmp(g_fiber_names[0][1], "waiting on an event"));
     /* a zone deeper than the limit is dropped rather than leaked: its begin sends nothing, and the count says how
        many went that way */
     {
@@ -248,7 +268,7 @@ int main(void) {
     snx_tracy_zone_end(ctx);
     CHECK(g_test.zone_ends == 67);
     SNX_MSG("after the stop", 14);
-    CHECK(g_test.msgs == 1); /* the gate is shut: the client's data cannot be read */
+    CHECK(g_test.msgs == 2); /* the gate is shut: the client's data cannot be read */
     CHECK(!snx_tracy_gate_open() && !snx_tracy_enter() && !snx_tracy_zone_begin(&where).active);
     /* stopped for good: a second shutdown and a capture asked for start and stop nothing, and say nothing either
        (a running client's capture would say the GUI is attached) */

@@ -702,6 +702,9 @@ int kthread_hold_point(KThread* t, int park) {
     pm_lock(&g_host.kernel.klock);
     t->park = park;
     __atomic_store_n(&t->stopped, 2, __ATOMIC_SEQ_CST);
+#if defined(SNX_TRACY)
+    SNX_FIBER_ENTER(kt_ix(t) - 1, 7, "the game is paused");
+#endif
     for (;;) {
         u32 seq = kt_seq(t);
         kthread_retire_check(&g_host.kernel.klock);
@@ -709,6 +712,7 @@ int kthread_hold_point(KThread* t, int park) {
         kt_wait(t, seq, &g_host.kernel.klock, -1);
     }
     __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
+    SNX_FIBER_LEAVE();
     klock_unlock();
     return 1;
 }
@@ -748,7 +752,11 @@ int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     g_host.thread.waiting_on[slot].m = m;
     t->park = PARK_SERVICE;
     __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
+#if defined(SNX_TRACY)
+    SNX_FIBER_ENTER(kt_ix(t) - 1, 6, "in a service wait");
+#endif
     r = pc_wait(c, m, timeout_ns);
+    SNX_FIBER_LEAVE();
     __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
     kthread_retire_check(m);
     if (__atomic_load_n(&g_hle.thread.hold, __ATOMIC_SEQ_CST)) {
@@ -771,6 +779,7 @@ void kthread_retire_check(PMutex* held) {
     if (held) pm_unlock(held);
     guest_stats_thread_end(kt_ix(kthread_cur()));
     __atomic_sub_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
+    SNX_FIBER_LEAVE_ALL(); /* this host thread ends inside its guest's wait */
     plat_thread_exit();
 }
 int kernel_retire(int timeout_ms) {

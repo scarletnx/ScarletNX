@@ -360,6 +360,7 @@ void fatal_code(int status, const char* fmt, ...) {
     va_end(ap);
     t_plat.log_redirect = NULL; /* a failure while writing threads.txt belongs in the log */
     logf_(0, "FATAL: %s\n", msg);
+    snx_tracy_fatal(msg); /* the message pane says why the trace ends here */
 #if !defined(_WIN32)
     /* from the crash handler: a box or a flush could wait on a lock the crashed code holds */
     if (__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) _exit(status);
@@ -367,6 +368,9 @@ void fatal_code(int status, const char* fmt, ...) {
     /* everywhere, since a player started from a desktop entry sees no console and no log. A remake's too: a game
        an app or a shortcut started has no driver to recompile it, and one the driver started recompiles once
        the box is closed */
+    /* Close the client so a connected capture writes the trace up to this point. From the crash handler there is
+       neither time nor safety for it: _exit above leaves the socket, and the capture writes what it has. */
+    if (!__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) snx_tracy_shutdown();
     win_fatal_box(msg);
     plat_exit_now(status);
 }
