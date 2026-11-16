@@ -881,7 +881,8 @@ can't load is shown in the failure colour, and Enter on it says why. `--state-lo
 state FILE the same way.
 
 In the game's menu the arrows, Enter and Escape move, select and go back; a gamepad's D-pad or left stick, A and B
-do the same, the on-screen controls' too, and a direction held goes on after a moment. **TV mode** steps On, Off and
+do the same, and a direction held goes on after a moment. The on-screen controls hide while the menu is open, so the
+two never lie over each other: a finger taps its rows, and the controls come back as it closes. **TV mode** steps On, Off and
 Auto, Left and Right either way, once a press: each step docks or undocks the console under the game. **Volume** is the
 game's sound on a slider ([`volume`](settings.md#audio)), 100% at first: Left and Right step it 5% either way, held
 too, and Enter or A up, stopping at Mute and at 100%; a tap or a click on the slider takes the step under it, one left
