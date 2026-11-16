@@ -77,6 +77,7 @@ else()
         set(snx_jemalloc_jobs "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
     endif()
     include(ExternalProject)
+    snx_deps_binary_dir("${PROJECT_BINARY_DIR}/jemalloc-build" "${snx_jemalloc_src}")
     ExternalProject_Add(jemalloc_build
         SOURCE_DIR "${snx_jemalloc_src}"
         BINARY_DIR "${PROJECT_BINARY_DIR}/jemalloc-build"

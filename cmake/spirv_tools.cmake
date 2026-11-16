@@ -191,6 +191,7 @@ if(NOT snx_spirv_opt OR NOT snx_spirv_val)
             endif()
         endforeach()
         include(ExternalProject)
+        snx_deps_binary_dir("${PROJECT_BINARY_DIR}/spirv-tools-build" "${SPIRV-Tools_SOURCE_DIR}")
         # Only the three tools are built, straight into the prefix: SPIRV-Tools' install would want every target
         ExternalProject_Add(snx_spirv_tools_build
             SOURCE_DIR "${SPIRV-Tools_SOURCE_DIR}"
