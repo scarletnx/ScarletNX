@@ -132,6 +132,8 @@ Audits and measurements, kept as they were when they were taken. The code has ch
 - [The 3DS staged roadmap](history/3ds-staged-roadmap.md): the first plan of the 3DS driver, which the parity
   roadmap replaced
 - [NVDEC H.264 packet submission audit](history/nvdec-audit.md)
+- [The LDSM tile-address study](history/hmma-ldsm-layout-study.md): what a row-major tile would save, and why
+  games swizzle theirs
 - [Shader corrections, batch 001](history/shader-audit/fixes-001.md)
 
 ## Moved pages
