@@ -319,7 +319,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "FATAL: settings: vk_khr_synchronization2=off turns off VK_KHR_synchronization2, which ScarletNX can't run without on this device: the device has Vulkan 1.2")
     # every check again with virtual textures (vt_sparse, gpu/vk/vt.c), under the validation layer when it is installed:
     # every fragment program's 2D sample is then a sparse one that marks what it reads, and check_vt samples an ASTC
-    # texture held RGBA8 (exact) and one held BC7. Skipped inside where the device has no sparse residency
+    # texture held RGBA8 (exact), one held BC7 and one held BC1. Skipped inside where the device has no sparse residency
     add_test(NAME vulkan_headless_vt COMMAND snx-test-vulkan -H --vt-sparse=1 --vk-validation=1)
     set_tests_properties(vulkan_headless_vt PROPERTIES TIMEOUT 120
         ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")

@@ -1842,7 +1842,9 @@ static VkFormat astc_kind_vk(int outcome, int srgb) {
    new parts of the track, and 21% of it over 15 s. A texture written before its read lands is read again from the
    blocks its new upload kept, KIND_TRIES reads at most. The kinds of bytes read before are kept (g_kind.memo, by the
    hash of the bytes and their layout): a texture evicted and made again goes up straight to its format, as before.
-   Not a sparse texture (its image is bound by levels), whose blocks are not read: it stays as Auto holds the rest */
+   Not a sparse texture (its image is bound by levels), whose blocks are not read: it stays as Auto holds the rest; but
+   a virtual one (vt_sparse), whose first load keeps every block for the read, the ones it leaves unbound too (astc.c),
+   and whose image in its kind's format kind_vt_image makes again, with nothing bound */
 #define KIND_TRIES 4
 static struct {
     Surf** q; /* the textures whose kind is to be read, in the order they were made */
@@ -1911,7 +1913,7 @@ static void kind_record(VkCommandBuffer cb, Surf* t) {
 static int kind_again(Surf* t) {
     const int srgb = (int)(t->fkey >> 31);
     VkFormat to = vk_tic_format(t->fkey & 0x7FFFF, srgb).vk;
-    const int later = is_bc7(to) && !g_vk.astc_at_load;
+    const int later = is_bc7(to) && !g_vk.astc_at_load && !t->vt; /* a virtual one's BC7 is made a block at a time */
     if (later) to = later_rgba8(to);
     VkImageCreateInfo ii;
     VkViewFormats vf;
@@ -1920,6 +1922,28 @@ static int kind_again(Surf* t) {
     u64 bytes;
     int storage;
     tex_info(t, to, &ii, &vf, &storage);
+    /* a virtual texture (vt_sparse) goes on as one in that format: an image with no block bound in its image's place
+       and its record made again, so the load fills the levels held always and the frames' marks bring the rest. Where
+       that format's blocks leave nothing to page (vk_vt_register), the texture is whole from now on */
+    if (t->vt) {
+        if (!vk_image_create_sparse_min(&ii, &img, TEX_SHED_MIN)) {
+            LOG_LIMIT(4,
+                      "vulkan: no sparse %s image for a %ux%ux%u virtual ASTC texture held as %s, loaded again while "
+                      "its blocks' kind is read: it is left out until a check makes one\n",
+                      astc_held_name(to), t->w, t->h, t->layers, astc_held_name(t->f.vk));
+            return 0;
+        }
+        const u32 was = vk_astc_bcn(t->f.vk);
+        vk_vt_forget(t);
+        tex_image_swap(t, img, 0, 0, to, 0);
+        t->vt = (u8)vk_vt_register(t);
+        t->kind_key = 0;
+        t->kind_ns = 0;
+        t->kind_tries = 0;
+        if (!t->kind_want) kind_queue(t);
+        t->kind_again = (u8)was;
+        return 1;
+    }
     if (!vk_cache_image_create(&ii, &img, &mem, VK_OWN_TEXTURE | (t->movable ? VK_OWN_MOVES : 0), &bytes)) {
         LOG_LIMIT(4,
                   "vulkan: no memory for the %s image (%llu MB) a %ux%ux%u ASTC texture held as %s is loaded again "
@@ -2008,6 +2032,38 @@ static int kind_image(VkCommandBuffer cb, Surf* t, VkFormat to) {
         vk_surf_use(cb, t, was, stage, access);
     return 1;
 }
+/* a virtual texture's (vt_sparse) image in format to (BC1, BC4 or BC5), in its image's place: one with sparse residency
+   and no block bound, its record made again (vk_vt_register), and t loaded again at its next use (vt_kind_new: as a
+   first load, the levels held always decoded and its kind not read again), the frames' marks bringing the rest. Where
+   to's blocks leave nothing to page, the texture is whole from then on. Where the device makes no such image, or one
+   under TEX_SHED_MIN, it is made whole from its kept blocks (kind_image), every one of them kept, as tex_create makes a
+   texture too small to page. 0 when neither was made: it stays as it is */
+static int kind_vt_image(VkCommandBuffer cb, Surf* t, VkFormat to) {
+    VkImageCreateInfo ii;
+    VkViewFormats vf;
+    VkImage img;
+    int storage;
+    tex_info(t, to, &ii, &vf, &storage);
+    if (!vk_image_create_sparse_min(&ii, &img, TEX_SHED_MIN)) {
+        if (!kind_image(cb, t, to)) return 0;
+        LOG_LIMIT(8,
+                  "vulkan: a %ux%ux%u virtual ASTC texture held as %s from now on is whole: no sparse image of it, "
+                  "or one under %llu MiB\n",
+                  t->w, t->h, t->layers, astc_held_name(to), (unsigned long long)(TEX_SHED_MIN >> 20));
+        vk_vt_forget(t);
+        t->vt = 0;
+        t->vt_mapped = 0;
+        t->sparse = 0;
+        return 1;
+    }
+    vk_astc_forget(t, ~0u);
+    vk_vt_forget(t);
+    tex_image_swap(t, img, 0, 0, to, 0);
+    t->vt = (u8)vk_vt_register(t);
+    t->vt_kind_new = 1;
+    t->upload_valid = 0;
+    return 1;
+}
 /* t's kind read, or given up: out of the queue, and its blocks let go unless the BC7 encoder still makes its image
    from them (RGBA8 now, queued or held Exact for its writes, later_cool) */
 static void kind_let_go(Surf* t) {
@@ -2078,7 +2134,7 @@ void vk_tex_kind_frame(void) {
                 cb = vk_cmd();
             }
             const VkFormat was = t->f.vk;
-            if (kind_image(cb, t, to))
+            if (t->vt ? kind_vt_image(cb, t, to) : kind_image(cb, t, to))
                 LOG_LIMIT(32,
                           "vulkan: a %ux%ux%u ASTC %ux%u texture of %u levels holds %s: held as %s, made from its "
                           "blocks in place of %s\n",
@@ -2124,8 +2180,11 @@ static int tex_upload_(Surf* t) {
     vk_render_end();                                     /* copies and clears happen outside rendering passes */
     if (t->msaa) return t->upload_valid = vk_ms_load(t); /* its samples drawn from the guest's layout of them */
     if (t->bricks) return t->upload_valid = resident_upload(t);
-    /* held as BC1, BC4 or BC5 for what its blocks held, and loaded before: they are read again */
-    if (loaded && f->conv == VKC_ASTC && vk_astc_bcn(f->vk) && !kind_again(t)) return t->upload_valid = 0;
+    /* held as BC1, BC4 or BC5 for what its blocks held, and loaded before: they are read again. Not a virtual texture's
+       first load in the format its kind took (kind_vt_image) */
+    const int kind_new = t->vt_kind_new;
+    t->vt_kind_new = 0;
+    if (loaded && !kind_new && f->conv == VKC_ASTC && vk_astc_bcn(f->vk) && !kind_again(t)) return t->upload_valid = 0;
     /* held as BC7 and whole: RGBA8 again, made BC7 again between frames */
     if (t->bc7_later && is_bc7(f->vk) && !later_rgba8_again(t)) return t->upload_valid = 0;
     /* its blocks kept beside the RGBA8 image as they are decoded, for the BC7 image made from them between frames */
@@ -2168,7 +2227,10 @@ static int tex_upload_(Surf* t) {
             u64 lsz = t->bl ? bl_level_size(t->w, t->h, d3, f, t->bh, t->bd, t->tile_w, l, &lbh, &lbd)
                             : (u64)t->pitch * th * ld;
             u32 gobs_x = bl_level_gobs_x(rowb, th, ld, t->bh, t->bd, t->tile_w);
-            if (t->sparse && !vk_image_sparse_bound(t->img, layer, l, 0, lh, 0, ld, 0)) {
+            /* a level with no block bound is left, but a virtual texture's whose blocks' kind the GPU is to read:
+               its strips are kept, not decoded (astc.c) */
+            if (t->sparse && !vk_image_sparse_bound(t->img, layer, l, 0, lh, 0, ld, 0) &&
+                !(t->vt && t->kind_want && t->bc7.kept)) {
                 at += lsz;
                 continue;
             }
@@ -2641,17 +2703,21 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     tex_info(t, f.vk, &ii, &vf, &t->storage_capable);
     /* vt_sparse: an ASTC texture that the GPU only reads, 2D or a 2D array, with levels, of TEX_SHED_MIN or more: an
        image with sparse residency whose memory follows the blocks frames sample (vt.c), its mip tail held always; its
-       first load decodes the tail alone. Held as astc_mode holds it: RGBA8, decoded exact, or BC7 a block at a time
-       (BC7 too where Auto would hold BC1, BC4 or BC5 for what its blocks hold now: a block decoded later may hold
-       more). One with holes in its mapping (vt_mapped) takes memory only where it is mapped too. One whose level 0
-       is under two blocks each way, or with no smaller level held always, has nothing to page or to fall back on
-       (vk_vt_register), and is made as without vt_sparse */
+       first load decodes the tail alone. Held in the format it has without vt_sparse, a block at a time: RGBA8,
+       decoded exact, BC7, or BC1, BC4 or BC5 where Auto holds them so (astc_by_kind): the memo's kind, or the GPU's
+       read of every block its first load keeps, after which vk_tex_kind_frame makes its image again in that format,
+       virtual still, or whole where that image would be under TEX_SHED_MIN (kind_vt_image); loaded again, kind_again
+       makes it again as Auto holds one of unknown kind and the kind is read again. One with holes in its mapping
+       (vt_mapped) takes memory only where it is mapped too. One
+       whose level 0 is under two blocks each way, or with no smaller level held always, has nothing to page or to
+       fall back on (vk_vt_register), and is made as without vt_sparse */
     if (vk_vt_on() && f.conv == VKC_ASTC && !written && !msaa && bl && levels > 1 &&
         (type == VK_IMAGE_VIEW_TYPE_2D || type == VK_IMAGE_VIEW_TYPE_2D_ARRAY)) {
         const int srgb = (int)(fkey >> 31);
-        const VkFormat held = f.vk == VK_FORMAT_R8G8B8A8_SRGB || f.vk == VK_FORMAT_R8G8B8A8_UNORM ? f.vk
-                              : srgb                                                              ? VK_FORMAT_BC7_SRGB_BLOCK
-                                                                                                  : VK_FORMAT_BC7_UNORM_BLOCK;
+        const VkFormat held = f.vk == VK_FORMAT_R8G8B8A8_SRGB || f.vk == VK_FORMAT_R8G8B8A8_UNORM || vk_astc_bcn(f.vk)
+                                  ? f.vk
+                              : srgb ? VK_FORMAT_BC7_SRGB_BLOCK
+                                     : VK_FORMAT_BC7_UNORM_BLOCK;
         VkImageCreateInfo vi;
         VkViewFormats vvf;
         int storage = 0;
@@ -4191,7 +4257,7 @@ texture_from_memory:
         tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, tile_w, pitch, stride, msaa, holes, storage);
     if (!t) return NULL;
     t->size = sz;
-    if (kind_unknown && t->sparse) {
+    if (kind_unknown && t->sparse && !t->vt) {
         vk_astc_kind_seen(VK_ASTC_KIND_UNREAD, kind_ns, 0);
     } else if (kind_unknown) {
         t->kind_key = kind_memo_key;

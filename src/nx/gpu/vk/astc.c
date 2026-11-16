@@ -1727,17 +1727,21 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
             u32 n = ny - y < nrows ? ny - y : nrows;
             u32 height = h - y * bh < n * bh ? h - y * bh : n * bh;
             u64 size = row_in * n * nz, offset, texels = (u64)w * height * nz * 4;
-            if (sh && !vk_image_sparse_bound(t->img, layer, level, y0 + y * bh, y0 + y * bh + height, z, z + nz, 0))
-                continue;
-            if (!keep_only && split_before((u64)w * height * nz)) cb = vk_cmd();
+            /* a virtual texture's blocks not bound are staged and kept all the same, not decoded, while the GPU is
+               to read their kind (texture.c's kind_frame): every block of it counts */
+            const int bound =
+                !sh || vk_image_sparse_bound(t->img, layer, level, y0 + y * bh, y0 + y * bh + height, z, z + nz, 0);
+            if (!bound && !(t->vt && t->kind_want && t->bc7.kept)) continue;
+            const int keep_strip_only = keep_only || !bound;
+            if (!keep_strip_only && split_before((u64)w * height * nz)) cb = vk_cmd();
             VkBuffer input;
             const u32 cy = (height + 3) / 4;
             VkDescriptorSet set = VK_NULL_HANDLE;
             const int staged = rows(ctx, &cb, z, nz, y, n, &input, &offset);
-            if (staged && !keep_only)
+            if (staged && !keep_strip_only)
                 set = blocks4 ? bc7_buffers(input, offset, size, (u64)cx * cy * nz * (bc7 ? 16u : bcn_bytes))
                               : two_buffers(input, offset, size, g_astc.scratch, texels);
-            if (!staged || (!keep_only && !set)) {
+            if (!staged || (!keep_strip_only && !set)) {
                 LOG_LIMIT(1, "vulkan: out of staging memory for a %ux%u ASTC texture (left out)\n", w, h);
                 if (job) bg_job_free(job);
                 return 0;
@@ -1756,7 +1760,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
                            : is3d  ? z
                                    : layer,
                            input, offset, nx, n, nz);
-            if (keep_only) continue;
+            if (keep_strip_only) continue;
             VkBuffer from = g_astc.scratch;
             u32 row_texels = 0, image_rows = 0;
             if (bc7) {

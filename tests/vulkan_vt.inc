@@ -11,17 +11,22 @@
      an Ounce program's sample with gradients (TXD) of a pixel's own change its level 2, then TEX.LZ its level 0
    - asked its size alone by a program (TXQ), which reads no texel: nothing changes
    - fetched (TLD), which marks nothing: the texture is held whole from then on, and the fetch reads its texels
-   On a texture held RGBA8 (astc_mode's Exact), exact, and on one held BC7, within 3 of each channel. Without vt_sparse, or
-   on a device without sparse residency and shaderResourceResidency, the check is skipped. */
+   On a texture held RGBA8 (astc_mode's Exact), exact; on one held BC7, within 3 of each channel; on one held BC1 for
+   what its blocks hold (Auto: made as Auto holds one of unknown kind, every block kept, the unbound ones too, and
+   made again as BC1 once the GPU's read of their kind is back, virtual still), within 4, which written again with
+   blocks of colour and alpha is held as RGBA8, virtual still, its kind read again. Without vt_sparse, or on a device
+   without sparse residency and shaderResourceResidency, the check is skipped. */
 #define VTC_GPU 0x8f8000000ull
 #define VTC_CPU (HEAP_BASE + 0x1b000000)
 #define VTC_W   64u
 #define VTC_TEX 1024u
 enum { VTC_POOL = 0x8000, VTC_SAMPLERS = 0x9000, VTC_CONSTANTS = 0xa000, VTC_TARGET = 0x4000, VTC_TEXTURE = 0x100000 };
 
-/* the colour of block (bx, by) of level l, as the target's bytes hold it: R, G, B, A */
+/* the colour of block (bx, by) of level l, as the target's bytes hold it: R, G, B, A (g_vtc_alpha: opaque, until a
+   pass writes the texture again with another) */
+static u32 g_vtc_alpha = 255;
 static u32 vtc_colour(u32 l, u32 bx, u32 by) {
-    return (16 + 8 * (bx % 28)) | (16 + 8 * (by % 28)) << 8 | (40 + 20 * l) << 16 | 255u << 24;
+    return (16 + 8 * (bx % 28)) | (16 + 8 * (by % 28)) << 8 | (40 + 20 * l) << 16 | g_vtc_alpha << 24;
 }
 /* IPA R4, a[0x70]; IPA R5, a[0x74]; FMUL R4, R4, scale; FMUL R5, R5, scale; then TEX R0-R3, R4, R5, c[2][0x40] with
    the LOD mode lod (0 the derivatives', 1 level zero); with fetch 1, F2I.TRUNC of both and TLD.LZ, as sf_fragment;
@@ -155,11 +160,30 @@ static u32 vtc_until(GpuChannel* channel, u32 program, u8* pixels, u32 l, u32 st
     vtc_wrong(pixels, l, step, tolerance, what, 1);
     return 0;
 }
-/* the checks on a texture of its own (pass), held as astc_mode's Exact holds it (RGBA8) or as Auto does (BC7 here: its
-   blocks are flat colours) */
-static int vtc_pass(GpuChannel* channel, u32 pass, int exact, int maxwell) {
+/* each level's blocks of the pass's texture in guest memory: void extents of vtc_colour */
+static void vtc_fill(const NvnTexture* image, u32 pass) {
+    for (u32 l = 0; l < 11; l++) {
+        const u32 size = VTC_TEX >> l ? VTC_TEX >> l : 1, blocks = (size + 7) / 8;
+        unsigned tile_h, tile_d;
+        nvn_tex_level_tiles(&image->d, l, &tile_h, &tile_d);
+        u8* level = GP(VTC_CPU + VTC_TEXTURE + pass * 0x100000ull) + nvn_tex_level_offset(&image->d, l);
+        for (u32 by = 0; by < blocks; by++)
+            for (u32 bx = 0; bx < blocks; bx++) {
+                u8* b = level + bl_offset(bx * 16, by, 0, blocks * 16, blocks, tile_h, tile_d);
+                const u32 colour = vtc_colour(l, bx, by);
+                static const u8 head[8] = {0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+                memcpy(b, head, 8);
+                for (u32 c = 0; c < 4; c++) b[8 + 2 * c] = b[9 + 2 * c] = (u8)(colour >> (8 * c));
+            }
+    }
+}
+/* the checks on a texture of its own (pass), held as astc_mode `mode` holds it: Exact's RGBA8 (1), BC7 as it loads
+   (3), or under Auto (0) BC1, as its blocks are flat opaque colours */
+static int vtc_pass(GpuChannel* channel, u32 pass, int mode, int maxwell) {
     const u32 base = maxwell ? 0x2400 - 0x800 : 0; /* the Maxwell programs lie that far past the Ounce ones */
-    g_settings.astc_mode = exact ? 1 : 0;
+    const int exact = mode == 1;
+    g_settings.astc_mode = mode;
+    g_vtc_alpha = 255;
     g_shader_sm86 = !maxwell;
     channel->r3d[0x811] = maxwell ? 0x2200 : 0; /* the vertex program */
     /* the texture: each level's blocks, void extents of vtc_colour */
@@ -174,20 +198,7 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int exact, int maxwell) {
     const u64 span = (layout.size + 0xFFFF) & ~0xFFFFull;
     CHECK(span <= 0x100000 && !mem_map(VTC_CPU + VTC_TEXTURE + pass * 0x100000ull, span, MS_NORMAL, PERM_RW));
     gmmu_map(image.gpu, VTC_CPU + VTC_TEXTURE + pass * 0x100000ull, span);
-    for (u32 l = 0; l < 11; l++) {
-        const u32 size = VTC_TEX >> l ? VTC_TEX >> l : 1, blocks = (size + 7) / 8;
-        unsigned tile_h, tile_d;
-        nvn_tex_level_tiles(&image.d, l, &tile_h, &tile_d);
-        u8* level = GP(VTC_CPU + VTC_TEXTURE + pass * 0x100000ull) + nvn_tex_level_offset(&image.d, l);
-        for (u32 by = 0; by < blocks; by++)
-            for (u32 bx = 0; bx < blocks; bx++) {
-                u8* b = level + bl_offset(bx * 16, by, 0, blocks * 16, blocks, tile_h, tile_d);
-                const u32 colour = vtc_colour(l, bx, by);
-                static const u8 head[8] = {0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-                memcpy(b, head, 8);
-                for (u32 c = 0; c < 4; c++) b[8 + 2 * c] = b[9 + 2 * c] = (u8)(colour >> (8 * c));
-            }
-    }
+    vtc_fill(&image, pass);
     u32 tic[8];
     CHECK(nvn_tic_encode(&image, NULL, 0, 0, tic));
     CHECK(!storage_write_words(VTC_GPU + VTC_POOL + 32, tic, 8));
@@ -206,11 +217,51 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int exact, int maxwell) {
         vk_unlock();
         return 0;
     }
-    const int bc7 = t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK;
-    const u32 tolerance = bc7 ? 3 : 0;
-    if (bc7 != !exact)
-        fprintf(stderr, "virtual texture: held in format %d with astc_mode=%d\n", (int)t->f.vk, exact ? 1 : 0);
-    CHECK(bc7 == !exact && (bc7 || t->f.vk == VK_FORMAT_R8G8B8A8_UNORM));
+    if (mode == 0) { /* its kind read on the GPU from every block its first load kept, then its BC1 image loaded */
+        const VkFormat first = t->f.vk;
+        const int asked = t->kind_want && t->bc7.kept;
+        vk_unlock();
+        kind_land();
+        vk_lock();
+        const int bc1 = t->f.vk == VK_FORMAT_BC1_RGBA_UNORM_BLOCK && !t->kind_want;
+        /* a sparse BC1 image of the texture under the 1 MiB a texture is paged from (a device with a mip tail): whole,
+           made from every block its load kept, the unbound ones too, its texels BC1's within 4 */
+        if (asked && first != VK_FORMAT_BC1_RGBA_UNORM_BLOCK && bc1 && !t->vt && !t->sparse && t->upload_valid) {
+            const u32 took_whole =
+                vtc_until(channel, base + 0x800, pixels, 0, 0, 4, "level 0 of the BC1 texture held whole");
+            CHECK(took_whole);
+            vk_unlock();
+            printf("PASS virtual texture under Auto: its blocks' kind read on the GPU from every block its first load "
+                   "kept, then held as BC1, whole (this device's sparse BC1 image of it is under 1 MiB), level 0's "
+                   "texels after %u draws\n",
+                   took_whole);
+            return 0;
+        }
+        const int made = bc1 && t->vt && !t->upload_valid;
+        vk_unlock();
+        g_renderer->mem_may_have_changed();
+        g_vk_present++;
+        vk_lock();
+        const int loaded = vk_tex_from_tic(tic) == t && t->upload_valid;
+        if (!asked || first == VK_FORMAT_BC1_RGBA_UNORM_BLOCK || !made || !loaded)
+            fprintf(stderr,
+                    "virtual texture under Auto: made in format %d, its kind to read %d; made again as BC1 (%d), "
+                    "virtual, to load %d (format %d, virtual %d, sparse %d, loaded %d, its kind to come %d); "
+                    "loaded %d\n",
+                    (int)first, asked, (int)VK_FORMAT_BC1_RGBA_UNORM_BLOCK, made, (int)t->f.vk, t->vt, t->sparse,
+                    t->upload_valid, t->kind_want, loaded);
+        CHECK(asked && first != VK_FORMAT_BC1_RGBA_UNORM_BLOCK && made && loaded);
+    }
+    /* BC1's endpoints are 5, 6 and 5 bits: a flat colour is within 4 of its own */
+    const int bc7 = t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK, bc1 = t->f.vk == VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+    u32 tolerance = bc7 ? 3 : bc1 ? 4 : 0;
+    const VkFormat held = mode == 1   ? VK_FORMAT_R8G8B8A8_UNORM
+                          : mode == 3 ? VK_FORMAT_BC7_UNORM_BLOCK
+                                      : VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+    if (t->f.vk != held)
+        fprintf(stderr, "virtual texture: held in format %d with astc_mode=%d, not %d\n", (int)t->f.vk, mode,
+                (int)held);
+    CHECK(t->f.vk == held);
     const VkSparseShape* shape = vk_image_sparse_shape(t->img);
     CHECK(shape && shape->tail_first);
     /* the levels of blocks to page: those of a block or more each way (the others are held always) */
@@ -222,7 +273,8 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int exact, int maxwell) {
     vk_vt_stats(t, &s);
     const u64 tail_bytes = t->bytes;
     /* the levels held always: a device with no mip tail gives each of the eight under a block 64 KiB */
-    const u64 base_bytes = (bc7 ? 1u : 4u) * VTC_TEX * VTC_TEX;
+    /* (BC1's level 0 is half a MiB, under the nine levels of 64 KiB such a device holds always: not bounded) */
+    const u64 base_bytes = bc1 ? 4ull * VTC_TEX * VTC_TEX : (bc7 ? 1u : 4u) * VTC_TEX * VTC_TEX;
     if (!s.textures || s.whole || s.held || !tail_bytes || tail_bytes > base_bytes / 2)
         fprintf(stderr,
                 "virtual texture, made: %u virtual textures, %u whole, %u blocks held, %llu bytes (the levels held "
@@ -273,6 +325,43 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int exact, int maxwell) {
     CHECK(took_txd);
     const u32 took3 = vtc_until(channel, base + 0x800, pixels, 0, 0, tolerance, "level 0 again");
     CHECK(took3);
+    /* held by its blocks' kind and written again with blocks of another (a colour with alpha, which BC1 does not
+       hold): loaded again it is held as Auto holds those with room, RGBA8, virtual still, its record new: the levels
+       held always first, then the blocks the frames sample; its kind read again, which leaves it so */
+    u32 took_kind = 0;
+    if (mode == 0) {
+        g_vtc_alpha = 128;
+        guest_done(VTC_CPU + VTC_TEXTURE + pass * 0x100000ull, span);
+        vtc_fill(&image, pass);
+        vk_unlock();
+        g_renderer->mem_may_have_changed();
+        g_vk_present++;
+        vk_lock();
+        CHECK(vk_tex_from_tic(tic) == t);
+        shape = vk_image_sparse_shape(t->img);
+        vk_vt_stats(t, &s);
+        if (t->f.vk != VK_FORMAT_R8G8B8A8_UNORM || !t->vt || !shape || s.whole || s.held)
+            fprintf(stderr,
+                    "virtual texture, loaded again with blocks of colour and alpha: format %d (RGBA8 is %d), virtual "
+                    "%d, whole %u, %u blocks held (0)\n",
+                    (int)t->f.vk, (int)VK_FORMAT_R8G8B8A8_UNORM, t->vt, s.whole, s.held);
+        CHECK(t->f.vk == VK_FORMAT_R8G8B8A8_UNORM && t->vt && shape && !s.whole && !s.held);
+        vk_unlock();
+        kind_land();
+        vk_lock();
+        if (t->f.vk != VK_FORMAT_R8G8B8A8_UNORM || !t->vt || t->kind_want)
+            fprintf(stderr, "virtual texture of colour and alpha, its kind read: format %d, virtual %d, to read %d\n",
+                    (int)t->f.vk, t->vt, t->kind_want);
+        CHECK(t->f.vk == VK_FORMAT_R8G8B8A8_UNORM && t->vt && !t->kind_want);
+        tolerance = 0;
+        took_kind = vtc_until(channel, base + 0x800, pixels, 0, 0, tolerance, "level 0 of the blocks written again");
+        CHECK(took_kind);
+        vk_vt_stats(t, &s);
+        CHECK(!s.whole && s.held);
+        all = 0;
+        for (u32 l = 0; l < shape->tail_first && VTC_TEX >> l >= shape->gran.width; l++)
+            all += shape->bx[l] * shape->by[l];
+    }
     /* a program that asks its size reads no texel: the texture stays virtual, with the blocks it had */
     vk_vt_stats(t, &s);
     const u32 before = s.held;
@@ -301,7 +390,15 @@ static int vtc_pass(GpuChannel* channel, u32 pass, int exact, int maxwell) {
         "frame, level 0's texels after %u draws with %u of %u blocks held, the derivatives' level after %u more, "
         "every block let go unsampled, back after %u draws, virtual still with its size asked, whole once fetched (%u "
         "draws)\n",
-        maxwell ? "a Maxwell" : "an Ounce", bc7 ? "BC7" : "RGBA8", took, corner, all, took2, took3, took4);
+        maxwell ? "a Maxwell" : "an Ounce",
+        bc7   ? "BC7"
+        : bc1 ? "BC1"
+              : "RGBA8",
+        took, corner, all, took2, took3, took4);
+    if (mode == 0)
+        printf("PASS virtual texture held as BC1 for its blocks' kind: written again with blocks of colour and alpha, "
+               "held as RGBA8 and virtual still, level 0's texels after %u draws\n",
+               took_kind);
     return 0;
 }
 static int check_vt(void) {
@@ -367,7 +464,9 @@ static int check_vt(void) {
     const int sm86 = g_shader_sm86, frames = g_settings.vt_frames, mode = g_settings.astc_mode;
     g_shader_sm86 = 1;
     g_settings.vt_frames = 32;
-    const int failed = vtc_pass(channel, 0, 1, 0) || vtc_pass(channel, 1, 0, 0) || vtc_pass(channel, 2, 1, 1);
+    const int failed = vtc_pass(channel, 0, 1, 0) || vtc_pass(channel, 1, 3, 0) || vtc_pass(channel, 2, 1, 1) ||
+                       vtc_pass(channel, 3, 0, 0);
+    g_vtc_alpha = 255;
     channel->r3d[0x811] = 0;
     g_shader_sm86 = sm86;
     g_settings.vt_frames = frames;

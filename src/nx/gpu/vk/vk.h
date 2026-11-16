@@ -1248,8 +1248,10 @@ typedef struct Surf {
        for headroom, leaves it (surface.c vk_mem_trim) */
     u8 came_back;
     /* textures: vt_sparse (vt.c): a virtual texture, an image with sparse residency whose memory follows the blocks
-       frames sample. vt_slot: its record there, plus one */
-    u8 vt, vt_mapped; /* vt_mapped: guest memory maps it in part, and a block takes memory only where it is mapped */
+       frames sample. vt_slot: its record there, plus one. vt_kind_new: its image made again in the format its blocks'
+       kind takes (texture.c kind_vt_image), not loaded yet */
+    u8 vt, vt_mapped, vt_kind_new; /* vt_mapped: guest memory maps it in part, and a block takes memory only where it is
+                                      mapped */
     u32 vt_slot;
     /* depth targets: undefined but for draws and clears predicated on the GPU, which may not have run, so they count
        as no draw (render.c zt_written) */
