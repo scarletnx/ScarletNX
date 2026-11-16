@@ -363,6 +363,16 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-vk-import-error 11)
     target_link_libraries(snx-test-3ds-vk-import-error PRIVATE snx_ctr_gpu)
     add_test(NAME 3ds_vk_import_error COMMAND snx-test-3ds-vk-import-error)
+    # vk_debug_hide_commands on the 3DS's device: VK_EXT_shader_object's vkCreateShadersEXT taken as missing, the
+    # device made again without the extension and the log saying so (common/gpu/vk/extension_commands.c's
+    # snx_vk_device_commands). The log is the device's stderr, read back through dup2
+    if(NOT WIN32)
+        add_executable(snx-test-3ds-vk-hidden-commands 3ds_vk_hidden_commands.c)
+        snx_test_target(snx-test-3ds-vk-hidden-commands 11)
+        target_link_libraries(snx-test-3ds-vk-hidden-commands PRIVATE snx_ctr_gpu)
+        add_test(NAME 3ds_vk_hidden_commands COMMAND snx-test-3ds-vk-hidden-commands)
+        set_tests_properties(3ds_vk_hidden_commands PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    endif()
     # the samplers' anisotropy for the Switch's setting, and what the run says of it
     add_executable(snx-test-3ds-vk-anisotropy 3ds_vk_anisotropy.c)
     snx_test_target(snx-test-3ds-vk-anisotropy 11)
@@ -2735,8 +2745,8 @@ if(NOT SNX_TOOLS_ONLY)
         add_test(NAME vk_extension_bans COMMAND snx-test-vk-bans)
         # the commands each Vulkan device extension requires (common/gpu/vk/extension_commands.c), with no GPU: the
         # table tools/vkcmdgen generates from the registry, its depends, a stand-in device's check and the hide list
-        add_executable(snx-test-vk-commands vk_extension_commands.c)
-        snx_test_target(snx-test-vk-commands 99)
+        add_executable(snx-test-vk-commands vk_extension_commands.c "${volk_SOURCE_DIR}/volk.c")
+        snx_test_target(snx-test-vk-commands 11)
         target_link_libraries(snx-test-vk-commands PRIVATE snx_nx_flags snx_vk_common)
         add_test(NAME vk_extension_commands COMMAND snx-test-vk-commands)
     endif()

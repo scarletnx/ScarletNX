@@ -198,3 +198,61 @@ int snx_vk_commands_lacking(const char* const* enabled, uint32_t n, uint32_t api
     }
     return count;
 }
+
+int snx_vk_device_commands(VkDevice dev, const char* device, uint32_t api, const char* const* enabled, uint32_t n,
+                           const VkExtensionNeed* need, uint32_t needs, const char* hide, int again, VkBanSay say,
+                           char* err, size_t err_n) {
+    SnxVkLacking found[VK_BANS_LACKING];
+    char line[1024];
+    int lacks =
+        snx_vk_commands_lacking(enabled, n, api, vkGetDeviceProcAddr, dev, hide, found, VK_BANS_LACKING, err, err_n);
+    if (lacks < 0) return -1;
+    if (hide && hide[0]) {
+        int hidden = 0;
+        for (int i = 0; i < lacks && i < VK_BANS_LACKING; i++) hidden += found[i].hidden;
+        snprintf(line, sizeof line,
+                 "vulkan: vk_debug_hide_commands=%s hides %d command%s of the extensions %s is made "
+                 "with",
+                 hide, hidden, hidden == 1 ? "" : "s", device);
+        say(line, 0);
+    }
+    if (lacks > VK_BANS_LACKING) {
+        snprintf(err, err_n,
+                 "%s's driver gives no pointer for %d commands of the extensions the device is made with, past the %d "
+                 "a device made again can leave out",
+                 device, lacks, VK_BANS_LACKING);
+        return -1;
+    }
+    for (int i = 0; i < lacks; i++) {
+        const char* hidden = found[i].hidden ? " (vk_debug_hide_commands hides it from the check)" : "";
+        for (uint32_t k = 0; k < needs; k++)
+            if (!strcmp(need[k].name, found[i].extension)) {
+                snprintf(err, err_n,
+                         "%s's driver lists %s without %s, which it requires%s, and ScarletNX can't run without the "
+                         "extension on this device: %s",
+                         device, found[i].extension, found[i].command, hidden, need[k].why);
+                return -1;
+            }
+        if (again) {
+            snprintf(err, err_n,
+                     "%s, made again without what its first device lacked, lacks a command again: its driver lists %s "
+                     "without %s, which it requires%s",
+                     device, found[i].extension, found[i].command, hidden);
+            return -1;
+        }
+    }
+    for (int i = 0; i < lacks; i++) {
+        snprintf(line, sizeof line,
+                 "vulkan: %s's driver lists %s without %s, which it requires%s: the device is made "
+                 "again without it",
+                 device, found[i].extension, found[i].command,
+                 found[i].hidden ? " (vk_debug_hide_commands hides it from the check)" : "");
+        say(line, 1);
+        if (!vk_bans_lacking(found[i].extension, found[i].command, found[i].hidden)) {
+            snprintf(err, err_n, "%s without %s is past the %d extensions lacking a command a device leaves out",
+                     found[i].extension, found[i].command, VK_BANS_LACKING);
+            return -1;
+        }
+    }
+    return lacks;
+}

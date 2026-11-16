@@ -54,6 +54,9 @@ typedef struct {
     SnxVkWindow host;
     VkPhysicalDevice phys;
     VkDevice device;
+    /* the extensions the device is made with, whose commands are checked once it is (snx_vk_device_commands) */
+    const char* extensions[2];
+    uint32_t extension_count;
     VkQueue queue;
     uint32_t family;
     VkPhysicalDeviceProperties properties;

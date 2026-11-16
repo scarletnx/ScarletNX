@@ -6,7 +6,9 @@
    a physical device's command left out; the registry's depends, , and + binding alike from the left; a stand-in
    device's check: a command its driver gives no pointer for, one the hide list names, a command under a depends that
    holds only with another extension or a version, an extension the table has not refused, and more than fit counted;
-   and the hide list checked, a name of no device command refused with the nearest */
+   a device just made, as each renderer checks it: made again without an extension it can go without, failing for one
+   it can't or for a second device that lacks one; and the hide list checked, a name of no device command refused with
+   the nearest */
 #include "common/gpu/vk/extension_commands.h"
 #include <stdio.h>
 #include <string.h>
@@ -159,6 +161,68 @@ static void check_device(void) {
           "an enabled extension the table has not is refused, named");
 }
 
+static char g_said[8][1024];
+static unsigned g_nsaid;
+static void say(const char* line, int warn) {
+    if (g_nsaid < 8) snprintf(g_said[g_nsaid++], sizeof g_said[0], "%s%s", warn ? "warn: " : "", line);
+}
+static int said(const char* text) {
+    for (unsigned i = 0; i < g_nsaid; i++)
+        if (strstr(g_said[i], text)) return 1;
+    return 0;
+}
+
+/* a device just made, as each renderer checks it (snx_vk_device_commands, through volk's vkGetDeviceProcAddr): an
+   extension it can go without said and kept for the device made again, whose filter takes it out; one it can't go
+   without, a second device lacking one, and the hide list's count */
+static void check_device_commands(void) {
+    static const char* const enabled[] = {"VK_KHR_swapchain", "VK_EXT_depth_clamp_control"};
+    const VkExtensionNeed need[] = {{"VK_KHR_swapchain", "the window is drawn with it"}};
+    char err[512] = "";
+    vkGetDeviceProcAddr = stand_in;
+    memset(g_test.missing, 0, sizeof g_test.missing);
+    CHECK(vk_bans_load(snx_vk_extension_bans_text, err, sizeof err), err);
+    VkBanDevice device = {"Stand-in GPU", "stand-in", "1.0", 0, 0, 0, 0};
+    vk_bans_device(&device);
+    g_nsaid = 0;
+    CHECK(snx_vk_device_commands(VK_NULL_HANDLE, "Stand-in GPU", VK_API_VERSION_1_3, enabled, 2, need, 1, "", 0, say,
+                                 err, sizeof err) == 0 &&
+              g_nsaid == 0,
+          "a device with every command stands, unsaid");
+    g_test.missing[0] = "vkCmdSetDepthClampRangeEXT";
+    CHECK(snx_vk_device_commands(VK_NULL_HANDLE, "Stand-in GPU", VK_API_VERSION_1_3, enabled, 2, need, 1, NULL, 0, say,
+                                 err, sizeof err) == 1 &&
+              said("warn: vulkan: Stand-in GPU's driver lists VK_EXT_depth_clamp_control without "
+                   "vkCmdSetDepthClampRangeEXT, which it requires: the device is made again without it"),
+          "an extension it can go without: said, a warning, and made again");
+    VkExtensionProperties list[2];
+    SnxVkExtensions e = {list, 2};
+    snprintf(list[0].extensionName, sizeof list[0].extensionName, "%s", "VK_KHR_swapchain");
+    snprintf(list[1].extensionName, sizeof list[1].extensionName, "%s", "VK_EXT_depth_clamp_control");
+    CHECK(vk_bans_filter(&e, say) == 1 && e.count == 1 && !strcmp(list[0].extensionName, "VK_KHR_swapchain"),
+          "the device made again goes without it: the filter takes it out");
+    CHECK(snx_vk_device_commands(VK_NULL_HANDLE, "Stand-in GPU", VK_API_VERSION_1_3, enabled, 2, need, 1, NULL, 1, say,
+                                 err, sizeof err) == -1 &&
+              strstr(err, "Stand-in GPU, made again without what its first device lacked, lacks a command again: its "
+                          "driver lists VK_EXT_depth_clamp_control without vkCmdSetDepthClampRangeEXT"),
+          "a device made again that still lacks one does not stand, saying what");
+    g_test.missing[0] = "vkAcquireNextImage2KHR";
+    CHECK(snx_vk_device_commands(VK_NULL_HANDLE, "Stand-in GPU", VK_API_VERSION_1_3, enabled, 2, need, 1, NULL, 0, say,
+                                 err, sizeof err) == -1 &&
+              !strcmp(err, "Stand-in GPU's driver lists VK_KHR_swapchain without vkAcquireNextImage2KHR, which it "
+                           "requires, and ScarletNX can't run without the extension on this device: the window is "
+                           "drawn with it"),
+          "one it can't go without fails the device, saying why");
+    g_test.missing[0] = NULL;
+    g_nsaid = 0;
+    CHECK(snx_vk_device_commands(VK_NULL_HANDLE, "Stand-in GPU", VK_API_VERSION_1_3, enabled, 2, need, 1,
+                                 "vkCmdSetDepthClampRangeEXT", 0, say, err, sizeof err) == 1 &&
+              said("vulkan: vk_debug_hide_commands=vkCmdSetDepthClampRangeEXT hides 1 command of the extensions "
+                   "Stand-in GPU is made with") &&
+              said("(vk_debug_hide_commands hides it from the check)"),
+          "the hide list: how many it hides, and each said as hidden");
+}
+
 static void check_hide(void) {
     char err[512] = "";
     CHECK(snx_vk_hide_check("", err, sizeof err) && snx_vk_hide_check(NULL, err, sizeof err), "an empty list");
@@ -179,6 +243,7 @@ int main(void) {
     check_table();
     check_depends();
     check_device();
+    check_device_commands();
     check_hide();
     printf("%s: %u checks, %u failed\n", g_test.failures ? "FAIL" : "PASS", g_test.checks, g_test.failures);
     return g_test.failures != 0;

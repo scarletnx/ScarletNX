@@ -3,6 +3,7 @@
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
 #include "common/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/extension_commands.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/memory/host.h"
 #include "common/utilities/common.h"
@@ -45,6 +46,14 @@ uint32_t snx_ctr_vk_memory_type(uint32_t bits, VkMemoryPropertyFlags properties)
 }
 /* a line of the extension bans (extension_bans.h) for the log */
 static void ban_say(const char* line, int warn) { fprintf(stderr, "%s%s\n", warn ? "warning: " : "", line); }
+/* what the device can't go without, into need: how many */
+static uint32_t extension_needs(bool windowed, VkExtensionNeed* need) {
+    uint32_t needs = 0;
+    if (windowed) need[needs++] = (VkExtensionNeed){VK_KHR_SWAPCHAIN_EXTENSION_NAME, "the window is drawn with it"};
+    need[needs++] = (VkExtensionNeed){"VK_KHR_portability_subset",
+                                      "Vulkan has a portability driver's subset on wherever the driver lists it"};
+    return needs;
+}
 /* The extension settings (vk_ext_*) and the drivers' bans (extension_bans.txt) on e, the device's list, before
    anything reads it, as on a Switch game's device: an extension off or banned leaves the list. False when a setting is
    wrong (a value not auto, on or off, or off for what the device can't do without), which the log says */
@@ -62,9 +71,7 @@ static bool extension_rules(VkPhysicalDevice phys, SnxVkExtensions* e, bool wind
         settings[count++] = (VkExtensionSetting){g_vk_extension_settings[i].name, g_vk_extension_settings[i].value,
                                                  g_vk_extension_settings[i].core};
     VkExtensionNeed need[2];
-    if (windowed) need[needs++] = (VkExtensionNeed){VK_KHR_SWAPCHAIN_EXTENSION_NAME, "the window is drawn with it"};
-    need[needs++] = (VkExtensionNeed){"VK_KHR_portability_subset",
-                                      "Vulkan has a portability driver's subset on wherever the driver lists it"};
+    needs = extension_needs(windowed, need);
     char err[512];
     if (!vk_extension_settings(e, settings, count, need, needs, err, sizeof err)) {
         fprintf(stderr, "3ds gpu: settings: %s\n", err);
@@ -157,6 +164,8 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     if (snx_vk_device_create(phys, family, &want, extensions, n, &v->device) != VK_SUCCESS) return false;
     v->phys = phys;
     v->family = family;
+    memcpy(v->extensions, extensions, n * sizeof *extensions);
+    v->extension_count = n;
     v->index8 = index8 && index_features.indexTypeUint8;
     v->shader_object = objects;
     v->logic_op = features.features.logicOp;
@@ -665,27 +674,47 @@ static bool init(SnxCtrMemory* memory, bool headless, char* error, size_t error_
        build carries that does not read is the build's fault; a key of vulkan_ban_ignore the table has not is the
        player's, who meant a ban that would otherwise still hold */
     if (!vk_bans_load(snx_vk_extension_bans_text, error, error_size) ||
-        !vk_bans_ignore(g_settings.vulkan_ban_ignore, error, error_size)) {
+        !vk_bans_ignore(g_settings.vulkan_ban_ignore, error, error_size) ||
+        !snx_vk_hide_check(g_settings.vulkan_hidden_commands, error, error_size)) {
         snx_ctr_vk_free();
         return false;
     }
     const VkQueueFlags queue = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
-    bool made =
-        snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v);
-    if (!made && v->second) { /* no device presents to both windows: one window again */
-        vkDestroySurfaceKHR(v->host.instance.instance, v->second_surface, NULL);
-        SDL_DestroyWindow(v->second);
-        v->second = NULL;
-        v->second_surface = VK_NULL_HANDLE;
-        made =
+    /* each command of each extension the device is made with, as on a Switch game's device: one its driver gives no
+       pointer for takes the extension out of the device made again, once (snx_vk_device_commands) */
+    for (int again = 0;; again = 1) {
+        bool made =
             snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v);
+        if (!made && v->second) { /* no device presents to both windows: one window again */
+            vkDestroySurfaceKHR(v->host.instance.instance, v->second_surface, NULL);
+            SDL_DestroyWindow(v->second);
+            v->second = NULL;
+            v->second_surface = VK_NULL_HANDLE;
+            made = snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface,
+                                       make_device, v);
+        }
+        if (!made) {
+            snprintf(error, error_size, "no Vulkan 1.3 device with 8-bit storage buffers and dynamic rendering");
+            snx_ctr_vk_free();
+            return false;
+        }
+        volkLoadDevice(v->device);
+        VkPhysicalDeviceProperties made_on;
+        vkGetPhysicalDeviceProperties(v->phys, &made_on);
+        VkExtensionNeed need[2];
+        uint32_t needs = extension_needs(v->host.surface || v->second_surface, need);
+        int lacks =
+            snx_vk_device_commands(v->device, made_on.deviceName, VK_API_VERSION_1_3, v->extensions, v->extension_count,
+                                   need, needs, g_settings.vulkan_hidden_commands, again, ban_say, error, error_size);
+        if (!lacks) break;
+        vkDestroyDevice(v->device, NULL);
+        v->device = VK_NULL_HANDLE;
+        if (lacks < 0) {
+            fprintf(stderr, "3ds gpu: %s\n", error);
+            snx_ctr_vk_free();
+            return false;
+        }
     }
-    if (!made) {
-        snprintf(error, error_size, "no Vulkan 1.3 device with 8-bit storage buffers and dynamic rendering");
-        snx_ctr_vk_free();
-        return false;
-    }
-    volkLoadDevice(v->device);
     VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     VkPhysicalDeviceProperties2 chosen = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
     vkGetPhysicalDeviceProperties2(v->phys, &chosen);
