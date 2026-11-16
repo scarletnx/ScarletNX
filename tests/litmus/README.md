@@ -30,8 +30,9 @@ on that host. `mp+dmb.ishst+dmb.ishld.litmus` is one fence on Arm, two on x86-64
 PowerPC64, so a lowering that is right on one host and wrong on another shows up there first.
 
 `tests/gnuabi_litmus.py --replay FILE` checks a recorded run of the fixture without a compiler or a runner. The file
-holds the lines the fixture printed, one `litmus <test> <outcome> <count>` per outcome and one
-`litmus <test> done <attempts>`, grouped in any order.
+holds the lines the fixture printed, one `litmus <test> <outcome> <count>` per outcome, one `litmus <test> done
+<attempts>`, and one `litmus <test> bad <n>` when a read was not 0 or 1, grouped in any order. The outcome counts and
+the bad reads together must equal the attempts, or the record is one the fixture could not have printed.
 
 The spin loop of `T_SPIN` in the C fixture has no file here: it has no forbidden outcome. What it checks is that a
 plain load in a loop is still a load of memory after the translator and LLVM are done with it, so the loop ends.
