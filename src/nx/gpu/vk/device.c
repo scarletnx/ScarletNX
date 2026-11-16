@@ -1291,8 +1291,14 @@ static int make_device(int again) {
             has_list_restart ? "VK_EXT_primitive_topology_list_restart without its list feature"
                              : "no VK_EXT_primitive_topology_list_restart");
     g_vk.has_barycentric = has_barycentric && qbarycentric.fragmentShaderBarycentric;
-    /* NVIDIA's compiler deadlocked with pipelines made on several threads at once (snx_vk_compile_serial) */
+    /* NVIDIA's compiler of its Unix driver (libnvidia-gpucomp) deadlocked with pipelines made on several threads at
+       once (snx_vk_compile_serial). The Windows driver has its own compiler: there the lock made each fast link wait
+       behind a part's compile or a background optimized link, 1.2 to 1.7 ms a link where 0.02 ms is the link's own */
+#ifdef _WIN32
+    snx_vk_compile_serial(0);
+#else
     snx_vk_compile_serial(p12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY);
+#endif
     if (p12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
         LOG("vulkan: fragment inputs are the driver's interpolation (NVIDIA's keeps the console's precision)\n");
     else if (g_vk.has_barycentric)
