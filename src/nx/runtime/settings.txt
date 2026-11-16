@@ -2000,6 +2000,7 @@ setting @VK_KHR_external_memory_fd
 setting @VK_KHR_external_memory_win32
 setting @VK_KHR_format_feature_flags2
 setting @VK_KHR_fragment_shader_barycentric
+setting @VK_KHR_fragment_shading_rate
 setting @VK_KHR_index_type_uint8
 setting @VK_KHR_load_store_op_none
 setting @VK_KHR_maintenance4
@@ -2024,6 +2025,7 @@ setting @VK_KHR_video_queue
 setting @VK_NV_device_diagnostic_checkpoints
 setting @VK_NV_fragment_coverage_to_color
 setting @VK_NV_framebuffer_mixed_samples
+setting @VK_NV_shading_rate_image
 setting @VK_VALVE_shader_mixed_float_dot_product
 
 section Game: g_game_ini

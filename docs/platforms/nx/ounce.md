@@ -9,6 +9,7 @@
 * [Shaders](#shaders)
 * [Surfaces](#surfaces)
 * [Driver offsets](#driver-offsets)
+* [Shading rate images](#shading-rate-images)
 * [Compute QMDs](#compute-qmds)
 * [Mesh shaders](#mesh-shaders)
   * [Stages](#stages)
@@ -279,8 +280,29 @@ address, then the control section's CPU address. `nvnProgramInitializeFromBuilde
 Push constants write `table | offset << 8` to method 0x141 of the 3D or compute engine (`SET_ROOT_TABLE_SELECTOR`),
 and the words to 0x142 (`LOAD_ROOT_TABLE`). The driver passes the API's offset, in bytes, and it cuts a push at 256
 bytes, a table's size. Programs read the eight tables as banks 24 to 31, which the renderer binds as one uniform
-buffer (`SNX_VKB_ROOT`). Variable rate shading writes the shading rate image and palette, which the runtime leaves at the full rate.
+buffer (`SNX_VKB_ROOT`). Variable rate shading writes the shading rate image and palette (next section).
 `SetGeometryProcessingMode` writes method 0xe26.
+
+## Shading rate images
+
+The driver of game-d1ed1846 (its `sdk` module) writes these methods for variable rate shading:
+
+| Function | Methods |
+| --- | --- |
+| `nvnCommandBufferBindShadingRateImage(cb, texture, view)` | 8 words from 0x4aa: the address, the size and the block layout. Then 0 to 0x9f. A null texture writes 6 zero words from 0x4aa. |
+| `nvnCommandBufferShadingRateImagePalette(cb, viewport, count, rates)` | 3 words from 0xed0: the viewport in bits 4 to 7, then 16 entries of 4 bits. |
+| `nvnCommandBufferSetShadingRatePaletteMode(cb, mode)` | 0xb3: 0 for mode 1, 1 for the others. The meaning is not known. The game sets mode 1 only. |
+
+The driver sends the game's rates to the hardware with no table. The numbers are those of
+`VkShadingRatePaletteEntryNV` (5 is one invocation for each pixel). The driver fills the entries that the game leaves
+out with 5. A texel of the image covers 16x16 pixels, and holds an index into the palette of the primitive's
+viewport. The game's image is R8_UINT (format 0xF6), 160x90 texels for 2560x1440. In a race, the game sets
+palettes for viewports 0 to 4. Viewport 0 maps indices 13 to 15 to 2x2, 4x2 and 4x4, and the others to 1x1.
+
+The renderer converts the image on the GPU at each bind (`vk/shading_rate.c`). With `VK_NV_shading_rate_image`, the
+draws read the game's indices and palettes, as the console does. With the attachment of
+`VK_KHR_fragment_shading_rate`, the image holds the rates of viewport 0's palette, with no supersampled rates. The
+fragment programs read their fragment's size (S2R 0x84) from `FragmentSizeNV` or `ShadingRateKHR`.
 
 ## Compute QMDs
 

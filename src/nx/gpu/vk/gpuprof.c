@@ -801,7 +801,8 @@ static void gp_report(void) {
                                                    [VK_PROF_XFB_INDIRECT] = "transform feedback's draw arguments",
                                                    [VK_PROF_QUERY_PREDICATE] = "the queries' predicates",
                                                    [VK_PROF_QUERY_COMPARE] = "a query compare",
-                                                   [VK_PROF_QUERY_COUNT] = "the queries' counts"};
+                                                   [VK_PROF_QUERY_COUNT] = "the queries' counts",
+                                                   [VK_PROF_SHADING_RATE] = "shading rate images"};
         static GpDKey ds[GP_DKEYS];
         memcpy(ds, g_dkey, sizeof ds);
         qsort(ds, GP_DKEYS, sizeof *ds, dkey_cmp);
