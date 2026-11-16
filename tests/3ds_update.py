@@ -51,10 +51,10 @@ def main():
         assert (
             f'title {TITLE:016x} name PATCHED exheader {UPDATE_TITLE:016x} romfs base update-romfs update icon 1' in out
         ), out
-        assert 'self romfs base update-romfs update' in out, out
+        assert 'self romfs base update-romfs update exefs-icon own' in out, out
         # the game read from its dump over an extraction's leftovers: they are not read, and its ExeFS icon is its own
         code, out = run(game, cia(application=update_ncch(), title=UPDATE_TITLE), 'leftover', leftover=True)
-        assert code == 0 and 'self romfs base update-romfs update' in out, out
+        assert code == 0 and 'self romfs base update-romfs update exefs-icon own' in out, out
 
         # a console's update: the NCCH under the update's ID, its ExHeader naming the game's program
         def console_update():
