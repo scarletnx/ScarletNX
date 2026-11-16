@@ -181,8 +181,7 @@ uint32_t snx_vk_queue_family(VkPhysicalDevice phys, VkQueueFlags flags, VkSurfac
     return found;
 }
 
-/* the instance's physical devices, *count of them (calloc'd, NULL for none) */
-static VkPhysicalDevice* physical_devices(VkInstance instance, uint32_t* count) {
+VkPhysicalDevice* snx_vk_physical_devices(VkInstance instance, uint32_t* count) {
     uint32_t n = 0;
     *count = 0;
     if (vkEnumeratePhysicalDevices(instance, &n, NULL) != VK_SUCCESS || !n) return NULL;
@@ -194,57 +193,6 @@ static VkPhysicalDevice* physical_devices(VkInstance instance, uint32_t* count) 
     free(devices);
     return NULL;
 }
-bool snx_vk_first_device(VkInstance instance, uint32_t api_version, VkQueueFlags flags, VkSurfaceKHR surface,
-                         SnxVkMake make, void* user) {
-    uint32_t count = 0;
-    VkPhysicalDevice* devices = physical_devices(instance, &count);
-    bool made = false;
-    for (uint32_t i = 0; i < count && !made; ++i) {
-        VkPhysicalDeviceProperties p;
-        vkGetPhysicalDeviceProperties(devices[i], &p);
-        if (p.apiVersion < api_version) continue;
-        for (uint32_t f = snx_vk_queue_family(devices[i], flags, surface, 0); f != UINT32_MAX && !made;
-             f = snx_vk_queue_family(devices[i], flags, surface, f + 1))
-            made = make(devices[i], f, user);
-    }
-    free(devices);
-    return made;
-}
-VkPhysicalDevice snx_vk_best_device(VkInstance instance, uint32_t api_version, SnxVkScore score, void* user) {
-    uint32_t count = 0;
-    VkPhysicalDevice* devices = physical_devices(instance, &count);
-    VkPhysicalDevice best = VK_NULL_HANDLE;
-    int best_score = -1;
-    for (uint32_t i = 0; i < count; ++i) {
-        VkPhysicalDeviceProperties p;
-        vkGetPhysicalDeviceProperties(devices[i], &p);
-        if (p.apiVersion < api_version) continue;
-        int s = score(devices[i], &p, user);
-        if (s > best_score) {
-            best_score = s;
-            best = devices[i];
-        }
-    }
-    free(devices);
-    return best;
-}
-
-VkResult snx_vk_device_create(VkPhysicalDevice phys, uint32_t family, const void* features,
-                              const char* const* extensions, uint32_t extension_count, VkDevice* out) {
-    float priority = 1.0f;
-    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                                  .queueFamilyIndex = family,
-                                  .queueCount = 1,
-                                  .pQueuePriorities = &priority};
-    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-                             .pNext = features,
-                             .queueCreateInfoCount = 1,
-                             .pQueueCreateInfos = &qi,
-                             .enabledExtensionCount = extension_count,
-                             .ppEnabledExtensionNames = extensions};
-    return vkCreateDevice(phys, &di, NULL, out);
-}
-
 void* snx_vk_chain(void* const* links, size_t count) {
     void* head = NULL;
     /* from the last one back, each pointing at the one after it: pNext is written as bytes at its offset, which every

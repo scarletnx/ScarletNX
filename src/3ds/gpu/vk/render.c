@@ -325,10 +325,11 @@ static struct {
     size_t triangle_count, triangle_capacity, triangle_first;
     SnxCtrVkTraffic traffic;
     /* async_pipelines: the threads that make the new pipelines while the draws that need them are skipped, started
-       at the first one and stopped with the renderer, their jobs, and the lock and conditions over those */
+       at the first one and stopped with the renderer, their jobs, and the lock and conditions over those. jobs_held:
+       a test's hold (snx_ctr_vk_pipelines_hold), under which they take no job */
     SDL_Thread* workers[WORKERS];
     unsigned worker_count;
-    bool workers_tried, jobs_stop;
+    bool workers_tried, jobs_stop, jobs_held;
     SDL_Mutex* job_lock;
     SDL_Condition *job_queued, *job_done;
     PipeJob jobs[PIPE_JOBS];
@@ -1704,7 +1705,7 @@ static int SDLCALL pipe_worker(void* low) {
     SDL_LockMutex(g.job_lock);
     while (!g.jobs_stop) {
         PipeJob* j = NULL;
-        for (unsigned i = 0; i < PIPE_JOBS && !j; ++i)
+        for (unsigned i = 0; i < PIPE_JOBS && !j && !g.jobs_held; ++i)
             if (g.jobs[i].state == JOB_QUEUED) j = &g.jobs[i];
         if (!j) {
             SDL_WaitCondition(g.job_queued, g.job_lock);
@@ -1815,7 +1816,16 @@ static void pipes_wait(bool stopping) {
     }
     SDL_UnlockMutex(g.job_lock);
 }
+/* the workers' hold set or ended; before they start, the flag alone, which they read once started */
+static void pipes_held(bool held) {
+    if (g.job_lock) SDL_LockMutex(g.job_lock);
+    g.jobs_held = held;
+    if (g.job_queued) SDL_BroadcastCondition(g.job_queued);
+    if (g.job_lock) SDL_UnlockMutex(g.job_lock);
+}
+void snx_ctr_vk_pipelines_hold(void) { pipes_held(true); }
 uint64_t snx_ctr_vk_pipelines_wait(void) {
+    pipes_held(false);
     pipes_wait(false);
     return g.skipped;
 }

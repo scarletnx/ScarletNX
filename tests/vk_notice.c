@@ -7,7 +7,7 @@
    layer is installed. None is a skip (77) */
 #include "common/gpu/vk/notice.h"
 #include "common/gpu/vk/ring.h"
-#include "common/gpu/vk/vk_common.h"
+#include "common/gpu/vk/device.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,13 +47,11 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL layer_said(VkDebugUtilsMessageSeverityFlag
     return VK_FALSE;
 }
 
-static bool make(VkPhysicalDevice phys, uint32_t family, void* user) {
-    Made* m = user;
+/* the device, with no feature asked for (common/gpu/vk/device.h) */
+static bool choose(SnxVkChoice* c, void* user) {
+    (void)user;
     VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    if (snx_vk_device_create(phys, family, &features, NULL, 0, &m->dev) != VK_SUCCESS) return false;
-    m->phys = phys;
-    m->family = family;
-    return true;
+    return snx_vk_choice_create(c, &features, NULL, NULL, 0);
 }
 
 /* memory of the properties for req, bound to image or buffer */
@@ -100,12 +98,22 @@ int main(void) {
         printf("vk_notice: no Vulkan instance: skipped\n");
         return 77;
     }
-    if (!snx_vk_first_device(instance.instance, VK_API_VERSION_1_1, VK_QUEUE_GRAPHICS_BIT, VK_NULL_HANDLE, make, &m)) {
-        printf("vk_notice: no Vulkan device: skipped\n");
+    SnxVkDeviceRequest request = {.who = "vk_notice",
+                                  .none = "no Vulkan 1.2 device with a graphics queue",
+                                  .instance = instance.instance,
+                                  .api = VK_API_VERSION_1_2,
+                                  .queues = VK_QUEUE_GRAPHICS_BIT,
+                                  .choose = choose};
+    SnxVkDevice made;
+    char why[1024];
+    if (!snx_vk_device_make(&request, &made, why, sizeof why)) {
+        printf("vk_notice: %s: %s\n", why, made.passed_over ? "skipped" : "failed");
         snx_vk_instance_free(&instance);
-        return 77;
+        return made.passed_over ? 77 : 1;
     }
-    volkLoadDevice(m.dev);
+    m.phys = made.phys;
+    m.dev = made.device;
+    m.family = made.family;
     VkPhysicalDeviceProperties properties;
     vkGetPhysicalDeviceProperties(m.phys, &properties);
     printf("vk_notice: on %s, the Khronos layer %s\n", properties.deviceName,

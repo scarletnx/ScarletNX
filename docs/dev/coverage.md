@@ -97,7 +97,7 @@ cmake --build build/cov --target scarletnx          # the runtime and driver; ad
 - `SNX_DEPLOY=OFF` keeps the instrumented runtime from being copied over every game in your data folder, as the
   Tracy preset does. A run through `build/cov/scarletnx` still puts it beside the game it runs.
 - Clang warns that `-runtime-counter-relocation` is unused at link time. The warning is harmless.
-- The build instruments the dependencies CPM builds too (zstd, FSR2, ...). Reports leave them out by path
+- The build instruments the dependencies it compiles from CPMUtil's packages too (zstd, FSR2, ...). Reports leave them out by path
   ([Reports](#reports-by-file-and-by-folder)).
 - Keep `-runtime-counter-relocation` on every ELF host. Without it, continuous mode is refused where the profile
   runtime cannot map the counters in place.
@@ -201,7 +201,7 @@ A `.profraw` with continuous mode is the size of the counters (about 8 MB for `s
 ### Reports by file and by folder
 
 ```sh
-X='(\.cache/|/build/|/usr/)'      # CPM's sources, generated files, the system's headers
+X='(\.cache/|/build/|/usr/)'      # CPMUtil's sources, generated files, the system's headers
 llvm-cov report build/cov/scarletnx -instr-profile=work/cov/ep.profdata -ignore-filename-regex="$X" \
     > work/cov/ep-report.txt
 llvm-cov report build/cov/scarletnx -instr-profile=work/cov/ep.profdata -show-functions src/nx/hle/svc/svc.c
