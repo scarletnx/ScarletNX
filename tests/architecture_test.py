@@ -13,6 +13,10 @@ architecture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(architecture)
 
 
+# a cpmfile.json entry CPMUtil takes
+PIN = {'hash': 'ab' * 64, 'repo': 'a/b', 'version': 'v1'}
+
+
 class ArchitectureTests(unittest.TestCase):
     def environment_errors(self, files):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
@@ -114,6 +118,79 @@ class ArchitectureTests(unittest.TestCase):
             'static int t = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;\n',
         }
         self.assertEqual(self.dynamic_errors(files), [])
+
+    def package_errors(self, files, pins):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            (root / 'cpmfile.json').write_text(json.dumps(pins, indent=4, sort_keys=True) + '\n', encoding='ascii')
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            return architecture.check_packages(root)
+
+    def test_a_download_outside_cpmutil_is_rejected(self):
+        files = {
+            'cmake/deps.cmake': 'CPMAddPackage(NAME x VERSION 1 URL https://x/x.tgz)\n',
+            'src/CMakeLists.txt': 'if(A)\n  cpmfindpackage (NAME y)\nendif()\nfile(DOWNLOAD https://x/y y)\n',
+            'tests/cmake/t.cmake': 'FetchContent_Declare(z URL https://x/z.tgz)\n',
+        }
+        errors = self.package_errors(files, {})
+        self.assertEqual(len(errors), 4, errors)
+        self.assertIn('cmake/deps.cmake:1: CPMAddPackage fetches a third-party package outside CPMUtil', errors[0])
+        self.assertIn('src/CMakeLists.txt:2: cpmfindpackage fetches', errors[1])
+        self.assertIn('src/CMakeLists.txt:4: file(DOWNLOAD fetches', errors[2])
+        self.assertIn('tests/cmake/t.cmake:1: FetchContent_Declare fetches', errors[3])
+
+    def test_cpmutil_comments_and_strings_do_not_fetch(self):
+        files = {
+            'cmake/cpmutil/CPMUtil.cmake': 'function(AddPackage)\n  CPMAddPackage(NAME ${n})\nendfunction()\n',
+            'cmake/a.cmake': '# CPMAddPackage(NAME x)\n#[[ file(DOWNLOAD u f) ]]\nmessage("CPMAddPackage(x)")\n'
+            'file(WRITE p [=[FetchContent_Declare(y)]=])\n',
+        }
+        self.assertEqual(self.package_errors(files, {}), [])
+
+    def test_every_pin_is_added_and_every_key_pinned(self):
+        files = {
+            'cmake/a.cmake': 'AddJsonPackage(NAME lib DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)\n'
+            'AddJsonPackage(gone)\nsnx_cpmfile(v lib version)\nsnx_cpmfile(v absent hash)\n',
+            'tests/CMakeLists.txt': 'foreach(n a b)\n  snx_package_file(vec_${n})\nendforeach()\n',
+        }
+        pins = {'lib': PIN, 'vec_a': PIN, 'vec_b': PIN, 'unused': PIN}
+        errors = self.package_errors(files, pins)
+        self.assertEqual(len(errors), 3, errors)
+        self.assertIn('cmake/a.cmake:2: gone is not pinned in cpmfile.json', errors[0])
+        self.assertIn('cmake/a.cmake:4: absent is not pinned in cpmfile.json', errors[1])
+        self.assertIn('cpmfile.json: unused is pinned, and no AddJsonPackage or snx_package_file adds it', errors[2])
+
+    def test_only_a_package_the_system_may_give_is_left_to_cpmutils_options(self):
+        system = dict(PIN, min_version='1')
+        files = {
+            'cmake/a.cmake': 'AddJsonPackage(NAME pinned DOWNLOAD_ONLY)\nAddJsonPackage(local)\n'
+            'AddJsonPackage(NAME first FORCE_BUNDLED_PACKAGE ON)\nAddJsonPackage(NAME kept FORCE_BUNDLED_PACKAGE ON)\n',
+        }
+        errors = self.package_errors(files, {'pinned': PIN, 'local': system, 'first': system, 'kept': PIN})
+        self.assertEqual(len(errors), 2, errors)
+        self.assertIn(
+            'cmake/a.cmake:1: pinned is added without FORCE_BUNDLED_PACKAGE ON, and its entry has no', errors[0]
+        )
+        self.assertIn('cmake/a.cmake:3: first is added with FORCE_BUNDLED_PACKAGE ON, and its entry has a', errors[1])
+
+    def test_the_cpmfile_is_in_cpmutils_form(self):
+        pins = {'a': dict(PIN, hash='0' * 64, sha256='x'), 'b': {'hash': 'cd' * 64}}
+        files = {'cmake/a.cmake': 'AddJsonPackage(NAME a FORCE_BUNDLED_PACKAGE ON)\nsnx_package_file(b)\n'}
+        errors = self.package_errors(files, pins)
+        self.assertEqual(len(errors), 4, errors)
+        self.assertIn('cpmfile.json: a has sha256, which CPMUtil does not read', errors[0])
+        self.assertIn("cpmfile.json: a's hash is [" + '0' * 64 + '], not a SHA-512', errors[1])
+        self.assertIn('cpmfile.json: b has no version', errors[2])
+        self.assertIn('cpmfile.json: b has neither a url nor a repo', errors[3])
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            (root / 'cpmfile.json').write_text(json.dumps({'a': PIN}), encoding='ascii')
+            (root / 'CMakeLists.txt').write_text('AddJsonPackage(NAME a FORCE_BUNDLED_PACKAGE ON)\n', encoding='ascii')
+            errors = architecture.check_packages(root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("cpmfile.json is not in CPMUtil's form, which jq --indent 4 -S . writes", errors[0])
 
     def test_a_window_of_the_displays_pixels_passes(self):
         files = {
