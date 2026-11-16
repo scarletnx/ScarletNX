@@ -5459,6 +5459,40 @@ static void test_fuse_pairs(void) {
 /* a program's LDSM and HMMAs on the same fragments, in two shapes: the LDSM beside the first HMMA (a pair), and the
    same with an instruction between them (none). The pair's module takes four instructions less than the other's,
    which are A's words read from the registers the LDSM wrote */
+/* a branch that spans a fused pair keeps its absolute target: the pass shortens its encoded offset, as the CALL
+   inliner does when it removes instructions. */
+static void test_fuse_branch(void) {
+    Word words[5] = {0};
+    u32 n = 0;
+    words[n++] = bra(0, 4, 7, 0); /* over the pair */
+    Word x = fix(0x83b); /* LDSM.16.M88.4 R40, [R7 + 0x40] */
+    set(&x, 16, 8, 40);
+    set(&x, 24, 8, 7);
+    set(&x, 40, 24, 0x40);
+    set(&x, 72, 2, 2);
+    words[n++] = x;
+    x = fix(0x23c); /* HMMA.16816.F32 R16, R40, R12, RZ */
+    set(&x, 16, 8, 16);
+    set(&x, 24, 8, 40);
+    set(&x, 32, 8, 12);
+    set(&x, 64, 8, 255);
+    set(&x, 72, 19, 0x18);
+    words[n++] = x;
+    words[n++] = alu(0x002, 5, 60, 255); /* MOV R60, RZ */
+    words[n++] = bra(4, 0, 7, 0); /* back over the pair */
+    Sm86Insn in[5];
+    for (u32 i = 0; i < n; i++) CHECK(sm86_decode(words[i].w[0], words[i].w[1], &in[i]));
+    u32 count = 0;
+    FuseSpan* span = sm86_fuse_find(in, n, &count);
+    CHECK(span && count == 1);
+    if (span) {
+        sm86_fuse_make(in, &n, span, count);
+        CHECK(n == 4);
+        CHECK(in[0].op == SM86_BRA && sm86_branch_target(&in[0], 0) == 3); /* was 4 */
+        CHECK(in[3].op == SM86_BRA && sm86_branch_target(&in[3], 3) == 0); /* backward, unchanged */
+    }
+}
+
 static void test_fuse_ldsm_hmma(const char* dir) {
     static const u32 hmma[4][3] = {{16, 14, 0x08}, {20, 24, 0x18}, {28, 255, 0x00}, {32, 36, 0x10}};
     static u32 words_of[4];
@@ -5616,6 +5650,7 @@ int main(int argc, char** argv) {
     test_ftz_modes(dir);
     test_complementary_pair(dir);
     test_fuse_pairs();
+    test_fuse_branch();
     test_fuse_ldsm_hmma(dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);

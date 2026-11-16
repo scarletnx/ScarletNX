@@ -27,7 +27,7 @@ static u32 ldsm_imm(const Sm86Insn* in) {
 static int pair_ok(const Sm86Insn* ldsm, const Sm86Insn* hmma) {
     u32 count = sm86_field(ldsm, LDSM_CNT, 2), ra = sm86_field(hmma, HMMA_RA, 8);
     if (count > 2 || ldsm->dst >= SM86_RZ || ra >= SM86_RZ || ldsm->dst != ra) return 0;
-    if (ldsm->pred != hmma->pred) return 0;
+    if (ldsm->pred != hmma->pred || ldsm->pred_not != hmma->pred_not) return 0;
     /* the fields ldsm() rejects: its fused block uses ldsm_words(), which would otherwise accept them */
     if (sm86_field(ldsm, 74, 4) || sm86_field(ldsm, 79, 12) || sm86_field(ldsm, 91, 1)) return 0;
     u32 fill = 1u << count;
@@ -58,6 +58,20 @@ FuseSpan* sm86_fuse_find(const Sm86Insn* in, u32 n, u32* count) {
     return have ? spans : (free(spans), (FuseSpan*)NULL);
 }
 
+/* removing one instruction shifts every later position down: a branch's encoded offset must change when either its
+   own position or its target moves across the removed index. inline_calls re-encodes its BRAs the same way. */
+static void fuse_shift_branch(Sm86Insn* b, u32 ip, u32 removed) {
+    int op = b->op;
+    if (op != SM86_BRA && op != SM86_UBRA && op != SM86_BSSY && op != SM86_CALL && op != SM86_RET) return;
+    u32 target = sm86_branch_target(b, ip);
+    if (target == 0xffffffffu) return;
+    u32 ip2 = ip > removed ? ip - 1 : ip, target2 = target > removed ? target - 1 : target;
+    if (ip2 == ip && target2 == target) return;
+    unsigned bits = op == SM86_BRA || op == SM86_UBRA ? 48 : 30;
+    u64 field = ((u64)target2 - (u64)ip2 - 1) * 4 & ((((u64)1) << bits) - 1);
+    b->lo = (b->lo & ~(((1ull << 30) - 1) << 34)) | ((field & ((1ull << 30) - 1)) << 34);
+    if (bits == 48) b->hi = (b->hi & ~0x3ffffull) | (field >> 30 & 0x3ffffull);
+}
 void sm86_fuse_make(Sm86Insn* in, u32* n, FuseSpan* spans, u32 count) {
     if (!spans) return;
     u32 shift = 0; /* the instructions a pair has taken out of the array before this one */
@@ -75,6 +89,8 @@ void sm86_fuse_make(Sm86Insn* in, u32* n, FuseSpan* spans, u32 count) {
         fused.lo |= (u64)ldsm_imm(first) << 40;
         fused.op = (u16)SM86_LDSM_HMMA;
         in[pos] = fused;
+        for (u32 i = 0; i < *n; i++)
+            if (i != pos && i != pos + 1) fuse_shift_branch(&in[i], i, pos + 1);
         u32 rest = *n - pos - len;
         for (u32 k = 0; k < rest; k++) in[pos + 1 + k] = in[pos + len + k];
         *n -= len - 1;
