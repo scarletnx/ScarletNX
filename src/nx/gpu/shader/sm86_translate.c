@@ -1857,8 +1857,8 @@ static u32 gbuf_bytes(Ctx* c, u32 buffer) {
 /* a word of global (buffer), shared (buffer 0) or local (MEM_LOCAL) memory at the byte address. An address past
    the local memory wraps in it, as spirv_translate.c keeps Maxwell's LDL and STL in theirs */
 static u32 mem_ptr(Ctx* c, u32 buffer, u32 address, u32 word) {
-    u32 index = spv_emit_iadd_u32(
-        &c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, address, cu(c, 2)), cu(c, word));
+    u32 index = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, address, cu(c, 2));
+    if (word) index = spv_emit_iadd_u32(&c->e, c->t_u32, index, cu(c, word));
     if (buffer == MEM_LOCAL)
         return spv_emit_function_element_pointer(
             &c->e, c->local_ptr, c->local,
@@ -3110,17 +3110,27 @@ static u32 warp_xor(Ctx* c, u32 value, u32 mask) {
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
     return SPV(&c->e, SPV_OP_GROUP_NON_UNIFORM_SHUFFLE_XOR, c->t_u32, cu(c, SPV_SCOPE_SUBGROUP), value, cu(c, mask));
 }
-/* value as lane 4g + p of the invocation's own 32 holds it, g4 = 4g for the reader's own g: a quad broadcast where the
-   stage has quad operations, which AMD makes a DPP move where a shuffle goes through LDS. Vulkan's quad is four
-   invocations of adjacent subgroup ids, the first a multiple of 4, in every stage that has them; so in a subgroup of
-   64 too the reader's quad is lanes 4g to 4g + 3 of its own 32, and quad lane p is lane 4g + p */
-static u32 quad_read(Ctx* c, u32 value, u32 g4, u32 p) {
+/* the lane of the invocation's own 32 that a read takes: base with k, one of the 16 B words or a quad lane, which is
+   base itself for lane 0 */
+static u32 warp_index(Ctx* c, u32 base, u32 k) {
+    return k ? spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, base, cu(c, k)) : base;
+}
+/* 4g, the first lane of the reader's own quad: made once, where a read or staged A needs it */
+static u32 quad_base(Ctx* c, u32 lane, u32* g4) {
+    if (!*g4) *g4 = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 28));
+    return *g4;
+}
+/* value as lane 4g + p of the invocation's own 32 holds it: a quad broadcast where the stage has quad operations,
+   which AMD makes a DPP move where a shuffle goes through LDS. Vulkan's quad is four invocations of adjacent subgroup
+   ids, the first a multiple of 4, in every stage that has them; so in a subgroup of 64 too the reader's quad is lanes
+   4g to 4g + 3 of its own 32, and quad lane p is lane 4g + p */
+static u32 quad_read(Ctx* c, u32 value, u32 lane, u32* g4, u32 p) {
     if (c->stage == ST_CS ? g_spirv_translate.quad_compute : c->stage == ST_FS && g_spirv_translate.quad) {
         spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
         spv_emit_subgroup_quad_capability(&c->e);
         return spv_emit_subgroup_quad_u32(&c->e, c->t_u32, value, 0, cu(c, p));
     }
-    return warp_read(c, value, spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, g4, cu(c, p)));
+    return warp_read(c, value, warp_index(c, quad_base(c, lane, g4), p));
 }
 static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, bits); }
 void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int shared_max) {
@@ -3261,20 +3271,20 @@ static u32 coop_base(Ctx* c) {
     return spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32,
                            builtin_u32(c, &c->subgroup_id, SPV_BUILT_IN_SUBGROUP_ID), cu(c, COOP_WORDS));
 }
-/* a lane's words (g = l / 4, t = l % 4): g8 = 8g and t. ucas proved the mask form of 8g equal to the two shifts
-   over every lane, and the model prices it one less */
-static void coop_lane(Ctx* c, u32* g8, u32* t) {
+/* a lane's words (g = l / 4, t = l % 4): 8g, or 16g where the shape's D rows are 16 words (wide), and t. ucas
+   proved the mask form of 8g equal to the two shifts over every lane, and the model prices it one less; the wide
+   row's one shift more is the same mask's, so it is made at the same time */
+static void coop_lane(Ctx* c, u32* g8, u32* t, int wide) {
     u32 lane = warp_lane(c);
     *g8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
-                          spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 28)), cu(c, 1));
+                          spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 28)), cu(c, wide ? 2 : 1));
     *t = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3));
 }
 /* the lane's first D word in its slot: row g of a 16 wide shape's 16 words a row at 2g8, and of an 8 wide one's 8 at
    g8, then its two columns. Its four words are that one, the next, and both a row of 8 lanes further on */
 static u32 coop_d_at(Ctx* c, u32 shape) {
-    u32 cols = coop_dim[shape][1], drow, g8, t;
-    coop_lane(c, &g8, &t);
-    drow = cols == 16 ? spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g8, cu(c, 1)) : g8;
+    u32 cols = coop_dim[shape][1], drow, t;
+    coop_lane(c, &drow, &t, cols == 16);
     return spv_emit_iadd_u32(
         &c->e, c->t_u32, coop_base(c),
         spv_emit_iadd_u32(&c->e, c->t_u32, drow,
@@ -3439,7 +3449,7 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
             for (k = 0; k < na; k++) a[k] = ldsm_a ? ldsm_a[k] : rd(c, ra + k);
         if (rb < SM86_RZ && fb < 0)
             for (k = 0; k < nb; k++) b[k] = rd(c, rb + k);
-        coop_lane(c, &g8, &t);
+        coop_lane(c, &g8, &t, 0);
         at_a = spv_emit_iadd_u32(&c->e, c->t_u32, base, spv_emit_iadd_u32(&c->e, c->t_u32, g8, t));
         at_b = coop_add(c, at_a, COOP_B);
         coop_barrier(c);
@@ -3689,9 +3699,8 @@ static void hmma(Ctx* c, const Sm86Insn* in, const u32* ldsm_a, const u32* ldsm_
     }
     for (k = 0; k < ncd; k++) cc[k] = rc >= SM86_RZ ? c->zero : rd(c, rc + k);
     u32 lane = warp_lane(c);
-    u32 g4 = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 28));
-    u32 t8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
-                             spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3)), cu(c, 3));
+    u32 g4 = 0; /* 4g, which quad_read and a staged A make where they need it */
+    u32 t8 = 0; /* (lane % 4) * 8, which the paths that read B by a shuffle or as a pair take: staged B's row is 16t */
     /* the pairs as two f16 for OpFDot2MixAcc32VALVE (a bitcast: no instruction), or unpacked to two f32 */
     int mixed = g_spirv_translate.mixed_dot && g_spirv_translate.float16;
     /* The products and their sum in half floats, two products to an OpFma where the f32 sum takes two instructions
@@ -3757,13 +3766,22 @@ static void hmma(Ctx* c, const Sm86Insn* in, const u32* ldsm_a, const u32* ldsm_
         for (k = 0; k < nb; k++) spv_emit_store_nonprivate(&c->e, stage_ptr(c, coop_add(c, own_b, k)), b[k]);
         coop_barrier(c);
         a_at = spv_emit_iadd_u32(&c->e, c->t_u32, slot,
-                                 spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g4, cu(c, 2)));
+                                 spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                                                 quad_base(c, lane, &g4), cu(c, 2)));
+        /* B's row t at 16t: ucas found the two shifts by constants (8t, then one more) one */
         b_at = spv_emit_iadd_u32(
             &c->e, c->t_u32, slot,
             spv_emit_iadd_u32(&c->e, c->t_u32,
-                              spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t8, cu(c, 1)), cu(c, 128)));
+                              spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                                              spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3)),
+                                              cu(c, 4)),
+                              cu(c, 128)));
     }
     u32 g0 = 0, t8h = 0, mine[2][2][2]; /* pairs: [column 2t + j][B's register h][quad lane 2 G0 + u]'s word */
+    if (!stage) {
+        t8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                             spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3)), cu(c, 3));
+    }
     if (pairs) {
         u32 half = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
                                    spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 1)),
@@ -3778,10 +3796,10 @@ static void hmma(Ctx* c, const Sm86Insn* in, const u32* ldsm_a, const u32* ldsm_
             if (stage)
                 bits = spv_emit_load_nonprivate(&c->e, c->t_u32, stage_ptr(c, coop_add(c, a_at, 4 * p + k)));
             else if (pairs) {
-                u32 x = quad_read(c, a[k], g4, p & 1), y = quad_read(c, a[k], g4, 2 + (p & 1));
+                u32 x = quad_read(c, a[k], lane, &g4, p & 1), y = quad_read(c, a[k], lane, &g4, 2 + (p & 1));
                 bits = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, g0, p < 2 ? y : x, p < 2 ? x : y);
             } else
-                bits = quad_read(c, a[k], g4, p);
+                bits = quad_read(c, a[k], lane, &g4, p);
             av[k] = mixed || packed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
         }
         for (u32 j = 0; j < 2; j++)
@@ -3792,10 +3810,10 @@ static void hmma(Ctx* c, const Sm86Insn* in, const u32* ldsm_a, const u32* ldsm_
                         spv_emit_load_nonprivate(&c->e, c->t_u32, stage_ptr(c, coop_add(c, b_at, 8 * j + 2 * p + k)));
                 else if (!pairs)
                     bits =
-                        warp_read(c, b[k], spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, cu(c, 4 * j + p)));
+                        warp_read(c, b[k], warp_index(c, t8, 4 * j + p));
                 else if (p < 2)
                     bits = mine[j][k][p] =
-                        warp_read(c, b[k], spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8h, cu(c, 4 * j + p)));
+                        warp_read(c, b[k], warp_index(c, t8h, 4 * j + p));
                 else
                     bits = warp_xor(c, mine[j][k][p - 2], 4);
                 bv[j][k] = mixed || packed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
@@ -3857,15 +3875,15 @@ static void ldsm_words(Ctx* c, u32 reg, u32 imm, u32 count, int trans, u32* out)
     u32 lane = warp_lane(c), g = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 2));
     u32 t = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3));
     for (u32 m = 0; m < (1u << count); m++) {
+        u32 m8 = 8 * m;
         if (!trans) {
-            u32 row = warp_read(c, addr, spv_emit_iadd_u32(&c->e, c->t_u32, g, cu(c, 8 * m)));
+            u32 row = warp_read(c, addr, m8 ? spv_emit_iadd_u32(&c->e, c->t_u32, g, cu(c, m8)) : g);
             u32 at = spv_emit_iadd_u32(&c->e, c->t_u32, row,
                                        spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 2)));
             out[m] = spv_emit_load_nonprivate(&c->e, c->t_u32, mem_ptr(c, 0, at, 0));
         } else {
-            u32 r0 = spv_emit_iadd_u32(&c->e, c->t_u32,
-                                       spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 1)),
-                                       cu(c, 8 * m));
+            u32 t2 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 1));
+            u32 r0 = m8 ? spv_emit_iadd_u32(&c->e, c->t_u32, t2, cu(c, m8)) : t2;
             u32 col = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g, cu(c, 1));
             u32 lo = shared_u16(c, spv_emit_iadd_u32(&c->e, c->t_u32, warp_read(c, addr, r0), col));
             u32 hi = shared_u16(
