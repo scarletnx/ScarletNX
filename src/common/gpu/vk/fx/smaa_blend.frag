@@ -8,13 +8,14 @@ layout(set = 0, binding = 0) uniform sampler2D ColorTex;
 layout(set = 0, binding = 1) uniform sampler2D BlendTex;
 
 layout(push_constant) uniform Smaa {
-    vec4 inv; /* 1/width, 1/height, 0, 0 */
+    vec4 inv;    /* 1/width, 1/height, 0, 0 */
+    vec4 origin; /* the output's top left in its attachment: a window's rectangle, or 0 */
 } pc;
 
 layout(location = 0) out vec4 o;
 
 void main() {
-    vec2 texcoord = gl_FragCoord.xy * pc.inv.xy;
+    vec2 texcoord = (gl_FragCoord.xy - pc.origin.xy) * pc.inv.xy;
     vec4 a;
     a.x = texture(BlendTex, texcoord + vec2(pc.inv.x, 0.0)).a;
     a.y = texture(BlendTex, texcoord + vec2(0.0, pc.inv.y)).g;

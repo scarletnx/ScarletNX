@@ -35,7 +35,7 @@ void FsrRcasInputF(inout AF1 r, inout AF1 g, inout AF1 b) {}
 layout(location = 0) out vec4 FragColor;
 
 void main() {
-    AU2 ip = AU2(gl_FragCoord.xy);
+    AU2 ip = AU2(gl_FragCoord.xy - Origin.xy);
 #ifdef YUZU_USE_FP16
     AH4 c;
     FsrRcasH(c.r, c.g, c.b, c.a, ip, Const0);

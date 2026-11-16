@@ -15,6 +15,7 @@ layout(push_constant) uniform constants {
     uvec4 Const3;
     vec4 Flip; /* x: FlipH, y: FlipV */
     vec4 Crop; /* left, top, right, bottom, normalized */
+    vec4 Origin; /* RCAS's output's top left in its attachment, in pixels: a window's rectangle, or 0 */
 };
 
 layout(set = 0, binding = 0) uniform sampler2D InputTexture;
