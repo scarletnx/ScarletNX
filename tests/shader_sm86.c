@@ -5299,6 +5299,77 @@ static void test_clip_distances(const char* dir) {
     if (spv) CHECK(keep_module(dir, "gs_clip_distance", spv, count));
     free(spv);
 }
+/* whether a module declares a 16-bit integer type: only the narrow LDSM path loads one */
+static int spv_has_u16(const u32* words, size_t count) {
+    for (size_t i = 5; i + 3 < count && words[i] >> 16; i += words[i] >> 16)
+        if ((words[i] & 0xffff) == 21 && words[i + 2] == 16) return 1; /* OpTypeInt, width 16 */
+    return 0;
+}
+/* an LDSM.T.4 with hmma_narrow_lds off and on: the default reads each half with a 32-bit shared load, a shift and a
+   mask, the narrow one loads the 16 bits directly through a bit-cast pointer. Both must translate, only the narrow
+   module declares a 16-bit integer type, and spirv-val checks both. */
+static void test_narrow_ldsm(const char* dir) {
+    u8 code[16 * 4] = {0};
+    u32 n = 0;
+    Word x = fix(0x83b); /* LDSM.16.M88.4.T R24, [R7 + 0x40] */
+    set(&x, 16, 8, 24);
+    set(&x, 24, 8, 7);
+    set(&x, 40, 24, 0x40);
+    set(&x, 72, 2, 2);
+    set(&x, 78, 1, 1);
+    put(code, n++, x);
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    int narrow_was = g_spirv_translate.hmma_narrow_lds;
+    for (int narrow = 0; narrow < 2; narrow++) {
+        g_spirv_translate.hmma_narrow_lds = narrow;
+        g_spirv_translate.hmma_coop = 0, g_spirv_translate.hmma_coop_shapes = 0;
+        ShaderInfo si = {0};
+        si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+        si.shared_size = 1024;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) continue;
+        CHECK(spv_has_u16(spv, count) == (narrow != 0));
+        CHECK(keep_module(dir, narrow ? "narrow_ldsm_on" : "narrow_ldsm_off", spv, count));
+        free(spv);
+    }
+    /* a sub-word shared store cannot be mirrored into the u16 view: with the flag on the module must fall back to
+       the general LDSM path and carry no 16-bit workgroup load */
+    {
+        u8 unsafe[16 * 5] = {0};
+        u32 m = 0;
+        Word st = fix(0x388); /* STS.U16 [R7 + 0x40], R8 */
+        set(&st, 24, 8, 7);
+        set(&st, 32, 8, 8);
+        set(&st, 40, 24, 0x40);
+        set(&st, 73, 3, 2);
+        put(unsafe, m++, st);
+        Word ld = fix(0x83b); /* the same LDSM.T as above */
+        set(&ld, 16, 8, 24);
+        set(&ld, 24, 8, 7);
+        set(&ld, 40, 24, 0x40);
+        set(&ld, 72, 2, 2);
+        set(&ld, 78, 1, 1);
+        put(unsafe, m++, ld);
+        put(unsafe, m++, exit_insn());
+        put(unsafe, m, bra(m, m, 7, 0));
+        m++;
+        g_spirv_translate.hmma_narrow_lds = 1;
+        g_spirv_translate.hmma_coop = 0, g_spirv_translate.hmma_coop_shapes = 0;
+        ShaderInfo si = {0};
+        si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+        si.shared_size = 1024;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(unsafe, m * 16, ST_CS, NULL, &si, &count);
+        CHECK(spv != NULL && !spv_has_u16(spv, count));
+        CHECK(spv && keep_module(dir, "narrow_ldsm_unsafe", spv, count));
+        free(spv);
+    }
+    g_spirv_translate.hmma_narrow_lds = narrow_was;
+}
 /* HMMA (16816 and 1688, F16 and F32), LDSM and MOVM with and without the device's quads in compute and its mixed dot
    product: A's 48 reads are quad broadcasts or shuffles, B's 48, LDSM's 4 and MOVM's 2 stay shuffles, and each pair
    of products is an OpFDot2MixAcc32VALVE (96) or an OpDot. B's registers are OR'd with hmma_zero's zero, which
@@ -7491,6 +7562,7 @@ int main(int argc, char** argv) {
     test_uses_isbe();
     test_warp_matrix(dir);
     test_hfma2_once(dir);
+    test_narrow_ldsm(dir);
     test_warp_matrix_values(dir);
     test_coop_fused_chain(dir);
     test_coop_rz(dir);

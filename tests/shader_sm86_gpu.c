@@ -8,6 +8,7 @@
    Also the Maxwell translators' write log (spirv_translate.c, emit_memory.c, spirv_compute.c): two Maxwell compute
    programs whose stores and atomics must log the bytes they write as the SM86 programs' do (maxwell_log).
    No word here comes from a game. */
+#include "snx_settings.h"
 #include "nx/gpu/shader/sm86.h"
 #include "support/sm86_ref.h"
 #include "common/utilities/endian.h"
@@ -1434,6 +1435,7 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, u
    them, in workgroups of one warp and of two in subgroups of 32. 1 when every run matches, 0 when one does not, -1
    with no such device */
 static int fuse_value(Gpu* g);
+static int narrow_value(Gpu* g);
 static int run_tensor(void) {
     Gpu g = {0};
     if (!gpu_open(&g, 1)) {
@@ -1459,6 +1461,7 @@ static int run_tensor(void) {
                 for (int exact = 1; exact >= 0; exact--)
                     ok &= run_tensor_with(&g, run ? 64 : 32, 1, g.quad, g.mixed_dot, 1u << shape, 0, 0, exact);
     ok &= fuse_value(&g);
+    ok &= narrow_value(&g);
     vkDestroyDevice(g.device, NULL);
     vkDestroyInstance(g.instance, NULL);
     return ok;
@@ -1585,6 +1588,140 @@ static int fuse_value(Gpu* g) {
     return ok;
 }
 
+/* ---- narrow LDSM value ----
+   The program below gathers A (LDSM.4) and B (LDSM.T.4) from shared memory and multiplies them with HMMA.16816.
+   Translating it with hmma_narrow_lds off (a 32-bit shared load, shift and mask per half) and on (a direct 16-bit
+   shared load) must give bit-identical D words. */
+static void narrow_program(Prog* p) {
+    p->outputs = 32;
+    p->approx_from = 32;
+    Sm86Word w = sm86_fix(0x919); /* S2R R0, TID.X */
+    f(&w, 72, 8, 0x21);
+    emit(p, w);
+    w = sm86_fix(0x919); /* S2R R1, CTAID.X */
+    f(&w, 16, 8, 1);
+    f(&w, 72, 8, 0x25);
+    emit(p, w);
+    emit(p, ri(0x024, 2, 1, 32, 0)); /* IMAD R2, R1, 32, R0 */
+    for (u32 k = 0; k < 2; k++) { /* ULDC.64: input and output bases */
+        w = sm86_fix(0xab9);
+        f(&w, 16, 6, 4 + 2 * k);
+        sm86_cbuf(&w, 0, 0x20 + 8 * k);
+        f(&w, 73, 3, 5);
+        emit(p, w);
+    }
+    w = rr(0x011, 3, 0, 255); /* LEA R3, R0, RZ, 6: the lane's 64 input bytes */
+    f(&w, 75, 5, 6);
+    f(&w, 81, 3, 7);
+    emit(p, w);
+    for (u32 k = 0; k < 4; k++) { /* LDG.E.128 R8 + 4k */
+        w = sm86_fix(0x981);
+        f(&w, 16, 8, 8 + 4 * k);
+        f(&w, 24, 8, 3);
+        f(&w, 32, 6, 4);
+        f(&w, 40, 24, 16 * k);
+        f(&w, 72, 1, 1);
+        f(&w, 73, 3, 6);
+        f(&w, 81, 3, 7);
+        f(&w, 84, 3, 1);
+        f(&w, 91, 1, 1);
+        emit(p, w);
+    }
+    emit(p, ri(0x024, 7, 0, 16, 255)); /* IMAD R7, R0, 16, RZ */
+    for (u32 q = 0; q < 4; q++) { /* STS.128 [R7 + 1024q] into four sets of rows */
+        w = sm86_fix(0x388);
+        f(&w, 24, 8, 7);
+        f(&w, 32, 8, 8 + 4 * q);
+        f(&w, 40, 24, 1024 * q);
+        f(&w, 73, 3, 6);
+        emit(p, w);
+    }
+    emit(p, sm86_fix(0xb1d)); /* BAR.SYNC */
+    for (u32 m = 0; m < 4; m++) { /* A0 R24, A1 R28 (LDSM.4); B0 R32, B1 R36 (LDSM.T.4) */
+        w = sm86_fix(0x83b);
+        f(&w, 16, 8, 24 + 4 * m);
+        f(&w, 24, 8, 7);
+        f(&w, 40, 24, 1024 * m);
+        f(&w, 72, 2, 2);
+        f(&w, 78, 1, m >= 2);
+        emit(p, w);
+    }
+    for (u32 i = 0; i < 2; i++)
+        for (u32 j = 0; j < 4; j++) { /* 8 HMMA.16816.F32 into R40 + 4(4i + j) */
+            u32 d = 40 + 4 * (4 * i + j);
+            w = sm86_fix(0x23c);
+            f(&w, 16, 8, d);
+            f(&w, 24, 8, 24 + 4 * i);
+            f(&w, 32, 8, 32 + 2 * j);
+            f(&w, 64, 8, 255);
+            f(&w, 72, 19, 0x18);
+            emit(p, w);
+        }
+    emit(p, ri(0x024, 6, 2, 32 * 4, 255)); /* IMAD R6, R2, 128, RZ: the lane's 32 output words */
+    for (u32 k = 0; k < 32; k++) store(p, k, 40 + k);
+    epilogue(p);
+}
+static int narrow_value(Gpu* g) {
+    static u32 in[32 * 16], a[32 * 32], b[32 * 32];
+    u32 cb0[64] = {0};
+    cb0[0x20 / 4] = (u32)VA_IN;
+    cb0[0x24 / 4] = (u32)(VA_IN >> 32);
+    cb0[0x28 / 4] = (u32)VA_OUT;
+    cb0[0x2c / 4] = (u32)(VA_OUT >> 32);
+    u32 seed = 0x2545f491u;
+    for (u32 k = 0; k < 32 * 16; k++) { /* two f16 of [0.5, 2), either sign */
+        u32 h[2];
+        for (u32 j = 0; j < 2; j++) {
+            seed = seed * 1664525u + 1013904223u;
+            h[j] = (seed >> 31) << 15 | (14u + (seed >> 20 & 1)) << 10 | (seed >> 8 & 0x3ffu);
+        }
+        in[k] = h[0] | h[1] << 16;
+    }
+    int quad_was = g_spirv_translate.quad_compute, mixed_was = g_spirv_translate.mixed_dot, f16_was = g_spirv_translate.float16,
+        coop_was = g_spirv_translate.hmma_coop, narrow_was = g_spirv_translate.hmma_narrow_lds;
+    u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
+    int ok = 1;
+    for (int narrow = 0; narrow < 2 && ok; narrow++) {
+        Prog p = {0};
+        narrow_program(&p);
+        ShaderInfo si = {0};
+        si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+        si.shared_size = 4096;
+        g_spirv_translate.quad_compute = g->quad, g_spirv_translate.mixed_dot = g->mixed_dot,
+        g_spirv_translate.float16 = g->float16;
+        g_spirv_translate.hmma_coop = 0, g_spirv_translate.hmma_coop_shapes = 0;
+        g_spirv_translate.hmma_narrow_lds = narrow;
+        size_t words = 0;
+        u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
+        if (!spv) {
+            fprintf(stderr, "narrow value, narrow %d: %s\n", narrow, si.first_unsupported);
+            ok = 0;
+            break;
+        }
+        u32* out = narrow ? b : a;
+        for (u32 i = 0; i < 32 * 32; i++) out[i] = FILL;
+        g_groups = 1, g_warp32 = g->warp32;
+        int ran = si.ngbuf == 2 && gpu_run(g, spv, words, &si, cb0, sizeof cb0, 0x28, in, sizeof in, out, sizeof a);
+        g_groups = GROUPS, g_warp32 = 0;
+        free(spv);
+        if (!ran) {
+            fprintf(stderr, "narrow value, narrow %d: Vulkan failed\n", narrow);
+            ok = 0;
+        }
+    }
+    g_spirv_translate.quad_compute = quad_was, g_spirv_translate.mixed_dot = mixed_was,
+    g_spirv_translate.float16 = f16_was;
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_shapes = shapes_was;
+    g_spirv_translate.hmma_narrow_lds = narrow_was;
+    if (ok) {
+        u32 bad = 0;
+        for (u32 i = 0; i < 32 * 32; i++) bad += a[i] != b[i] || a[i] == FILL;
+        printf("narrow value: %u of %u D words differ between the default and the narrow LDSM\n", bad, 32 * 32);
+        ok = bad == 0;
+    }
+    return ok;
+}
+
 /* ---- the HMMA bench (SNX_HMMA_BENCH=ROUNDS: only it runs) ----
    shader.h's HMMA bench program, as hmma_mode's Auto times it (vk/hmma_pick.c), by hand: SNX_HMMA_BENCH_GROUPS
    workgroups (BENCH_GROUPS where unset), in subgroups of 32 where the device lets a pipeline require them, as
@@ -1608,7 +1745,8 @@ static int cmp_double(const void* a, const void* b) {
    (g_spirv_translate.hmma_stage), the device's cooperative matrices (g_spirv_translate.hmma_coop), and f16 half sums
    (g_spirv_translate.hmma_f16). A form the device cannot take is skipped: coop without the matrices, half where the mixed dot
    product already sums two products an instruction */
-static const char* const bench_forms[] = {"gather", "pairs", "stage", "coop", "half", "astat", "astat-stage"};
+static const char* const bench_forms[] = {"gather", "pairs", "stage", "coop", "half", "astat", "astat-stage",
+                                          "narrow"};
 #define BENCH_FORMS (sizeof bench_forms / sizeof *bench_forms)
 static void bench_form(u32 form, const Gpu* g) {
     g_spirv_translate.hmma_pairs = form == 1;
@@ -1617,6 +1755,7 @@ static void bench_form(u32 form, const Gpu* g) {
     g_spirv_translate.hmma_coop = form == 3 ? g->coop : 0;
     g_spirv_translate.hmma_coop_shapes = form == 3 ? g->coop_shapes : 0;
     g_spirv_translate.hmma_f16 = form == 4;
+    g_spirv_translate.hmma_narrow_lds = form == 7;
 }
 static int bench_form_usable(u32 form, const Gpu* g) {
     if (form == 3) return g->coop != 0;
@@ -1869,6 +2008,9 @@ static int maxwell_log(Gpu* g) {
 }
 
 int main(void) {
+    /* SNX_HMMA_NARROW_LDS: force the narrow LDSM shared loads on for every translation, so a bench run can be
+       compared against one without the flag (the value test overrides it for its own two runs) */
+    g_spirv_translate.hmma_narrow_lds = g_settings.hmma_narrow_lds;
     const char* bench = getenv("SNX_HMMA_BENCH");
     if (bench) {
         char* end = NULL;
