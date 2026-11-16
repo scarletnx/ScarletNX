@@ -280,6 +280,19 @@ static int keys_red(App* app, Uint64 clock) {
     return same_colour(pixel(app, (float)(b.x + b.w - 3 * app->scale - 1), (float)(b.y + b.h / 2)),
                        rgb(app->theme.failure));
 }
+/* the screen as drawn now into SNX_TEST_SHOTS/name.png, when that names a folder: for a person to look at, never a
+   check */
+static void foot_shot(App* app, const char* name) {
+    const char* folder = getenv("SNX_TEST_SHOTS");
+    char path[1024];
+    SDL_Surface* image;
+    if (!folder || !*folder) return;
+    render(app);
+    image = SDL_RenderReadPixels(app->renderer, NULL);
+    snprintf(path, sizeof path, "%s/%s.png", folder, name);
+    if (!image || !SDL_SavePNG(image, path)) fprintf(stderr, "foot_shot: %s not written: %s\n", path, SDL_GetError());
+    SDL_DestroySurface(image);
+}
 static int near_colour(SDL_Color a, SDL_Color b, int by) {
     return abs(a.r - b.r) <= by && abs(a.g - b.g) <= by && abs(a.b - b.b) <= by;
 }
@@ -11785,6 +11798,33 @@ int main(int argc, char** argv) {
                            !strcmp(what, "move"));
                     shows(&app, "Right stick", yellow);
                     app.pad_driven = false;
+                    { /* the foot names what was pressed last: a pad's button its buttons, a key of the keyboard
+                         its keys (a pad's own key downs, GUI_PAD_KEYBOARD's, keep the pad's), a mouse that barely
+                         moves nothing */
+                        SDL_Event in;
+                        char said[1024];
+                        SDL_zero(in);
+                        in.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+                        assert(!input_seen(&app, &in) && app.pad_driven);
+                        assert(strstr(screen_said(&app, false, said, sizeof said), "Select: help.") &&
+                               !strstr(said, "F1: help."));
+                        foot_shot(&app, "launcher-foot-pad");
+                        SDL_zero(in);
+                        in.type = SDL_EVENT_KEY_DOWN;
+                        in.key.which = GUI_PAD_KEYBOARD;
+                        assert(!input_seen(&app, &in) && app.pad_driven);
+                        SDL_zero(in);
+                        in.type = SDL_EVENT_MOUSE_MOTION;
+                        in.motion.xrel = 2.0f;
+                        assert(input_seen(&app, &in) && app.pad_driven);
+                        SDL_zero(in);
+                        in.type = SDL_EVENT_KEY_DOWN;
+                        in.key.which = 1;
+                        assert(!input_seen(&app, &in) && !app.pad_driven);
+                        assert(strstr(screen_said(&app, false, said, sizeof said), "F1: help.") &&
+                               !strstr(said, "Select: help."));
+                        foot_shot(&app, "launcher-foot-keyboard");
+                    }
                     assert(SDL_GetWindowSize(app.window, &w, &height));
                     assert(SDL_SetWindowSize(app.window, w, rows_height(GUI_LEAST_ROWS, app.scale)));
                     render(&app);
