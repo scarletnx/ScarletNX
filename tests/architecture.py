@@ -487,6 +487,90 @@ def check_packages(repo):
     return errors
 
 
+# The last policy of each CMake the root CMakeLists.txt may ask as its minimum (the last of cmake --help-policy-list in
+# that release): a later one is set only under if(POLICY ...), or that CMake stops on it
+CMAKE_LAST_POLICY = {(3, 28): 155}
+CMAKE_MINIMUM = re.compile(r'(?<![\w])cmake_minimum_required\s*\(\s*VERSION\s+(\d+(?:\.\d+)+)', re.IGNORECASE)
+CMAKE_CONDITION = re.compile(r'(?<![\w])(if|elseif|else|endif)\s*\(', re.IGNORECASE)
+CMAKE_POLICY_SET = re.compile(r'(?<![\w])cmake_policy\s*\(\s*SET\s+CMP(\d{4})', re.IGNORECASE)
+
+
+def cmake_version(text):
+    """major, minor, patch, tweak: CMake reads a missing one as 0, so 3.28.0 is 3.28"""
+    parts = [int(part) for part in text.split('.')]
+    return tuple(parts + [0] * (4 - len(parts)))
+
+
+def unguarded_policies(code):
+    """(policy number, line) of each cmake_policy(SET CMPnnnn) in code that no if(POLICY CMPnnnn) it sits in guards"""
+    found, branches = [], []  # branches: the condition of each if a point sits in, '' for an else
+    tokens = sorted(
+        [(m.start(), 'condition', m) for m in CMAKE_CONDITION.finditer(code)]
+        + [(m.start(), 'policy', m) for m in CMAKE_POLICY_SET.finditer(code)],
+        key=lambda token: token[0],
+    )
+    for start, kind, match in tokens:
+        if kind == 'policy':
+            policy = int(match.group(1))
+            guard = re.compile(rf'(?<![\w])(NOT\s+)?POLICY\s+CMP{policy:04d}(?![\w])', re.IGNORECASE)
+            if not any((g := guard.search(branch)) and not g.group(1) for branch in branches):
+                found.append((policy, code.count('\n', 0, start) + 1))
+            continue
+        word, depth, end = match.group(1).lower(), 1, match.end()
+        while end < len(code) and depth:
+            depth += {'(': 1, ')': -1}.get(code[end], 0)
+            end += 1
+        condition = code[match.end() : end - 1]
+        if word == 'if':
+            branches.append(condition)
+        elif word == 'endif':
+            if branches:
+                branches.pop()
+        elif branches:
+            branches[-1] = condition if word == 'elseif' else ''
+    return found
+
+
+def check_cmake_versions(repo):
+    """no CMake file asks a newer CMake than the root CMakeLists.txt's cmake_minimum_required, a project a test writes
+    included, and a policy that CMake does not have is set only under if(POLICY ...)"""
+    path = repo / 'CMakeLists.txt'
+    if not path.exists():
+        return []
+    match = CMAKE_MINIMUM.search(cmake_code(path.read_text(encoding='utf-8', errors='replace'))[1])
+    if not match:
+        return ['CMakeLists.txt has no cmake_minimum_required(VERSION ...): the build states the CMake it needs there']
+    shown_minimum, minimum = match.group(1), cmake_version(match.group(1))
+    errors, last = [], CMAKE_LAST_POLICY.get(minimum[:2])
+    if last is None:
+        errors.append(
+            f'CMakeLists.txt asks CMake {shown_minimum}, and CMAKE_LAST_POLICY in tests/architecture.py has no last '
+            f'policy for {minimum[0]}.{minimum[1]}: add the last of cmake --help-policy-list in that release'
+        )
+    files = [path]
+    for root in CMAKE_ROOTS:
+        if (repo / root).is_dir():
+            files += [p for p in (repo / root).rglob('*') if p.name == 'CMakeLists.txt' or p.suffix == '.cmake']
+    for file in sorted(files):
+        shown = file.relative_to(repo).as_posix()
+        code, kept = cmake_code(file.read_text(encoding='utf-8', errors='replace'))
+        for asked in CMAKE_MINIMUM.finditer(kept):
+            if cmake_version(asked.group(1)) > minimum:
+                errors.append(
+                    f'{shown}:{kept.count(chr(10), 0, asked.start()) + 1}: asks CMake {asked.group(1)}, and the '
+                    f"build's minimum (CMakeLists.txt) is {shown_minimum}, on which it stops: ask {shown_minimum} or "
+                    'raise the minimum'
+                )
+        if last is not None:
+            for policy, line in unguarded_policies(code):
+                if policy > last:
+                    errors.append(
+                        f'{shown}:{line}: sets CMP{policy:04d} outside if(POLICY CMP{policy:04d}), and CMake '
+                        f"{shown_minimum}, the build's minimum, stops on it: its last policy is CMP{last:04d}"
+                    )
+    return errors
+
+
 def check_graph(graph):
     source = graph.read_text(encoding='utf-8')
     nodes = {
@@ -1000,6 +1084,7 @@ def main():
         + check_state_fns(args.repo.resolve())
         + check_dynamic_descriptors(args.repo.resolve())
         + check_packages(args.repo.resolve())
+        + check_cmake_versions(args.repo.resolve())
     )
     if args.build:
         graph = args.build.resolve() / 'architecture-targets.dot'
