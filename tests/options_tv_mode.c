@@ -594,8 +594,8 @@ static int picks_order(void) {
         ini_option(on, sizeof on, key, value);
         CHECK(!strcmp(on, "--launcher-picks=1") && (value = settings_arg(on, key, sizeof key)) &&
               !strcmp(key, SNX_LAUNCHER_PICKS) && !strcmp(value, "1"));
-        ini_override(key, value);
     }
+    ini_override(SNX_LAUNCHER_PICKS, "1"); /* what it read, in strings that last as argv's do: ini_override keeps them */
     ini_override("volume", "60");
     ini_override("fps_limit", "90");
     ini_override("stats", "1");
