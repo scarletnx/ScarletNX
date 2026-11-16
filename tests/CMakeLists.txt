@@ -4102,6 +4102,14 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     target_include_directories(snx-test-vk-devmem PRIVATE "${volk_SOURCE_DIR}")
     target_link_libraries(snx-test-vk-devmem PRIVATE Vulkan::Headers scarletnx-common) # snx_thread_name
     add_test(NAME vk_devmem COMMAND snx-test-vk-devmem)
+    # the trim of the caches (gpu/vk/surface.c vk_mem_trim) over stubs of the rest of the renderer: when it takes the
+    # render targets that later ones drew all over, where the driver moves memory by priority and where it does not
+    add_executable(snx-test-vk-mem-trim vk_mem_trim.c)
+    snx_test_target(snx-test-vk-mem-trim 23)
+    target_compile_definitions(snx-test-vk-mem-trim PRIVATE VK_NO_PROTOTYPES)
+    target_include_directories(snx-test-vk-mem-trim PRIVATE "${volk_SOURCE_DIR}" "${renderdoc_app_SOURCE_DIR}")
+    target_link_libraries(snx-test-vk-mem-trim PRIVATE Vulkan::Headers)
+    add_test(NAME vk_mem_trim COMMAND snx-test-vk-mem-trim)
     add_executable(snx-test-vk-descriptor-heap-setup vk_descriptor_heap_setup.c
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/descriptor_heaps.c")
     snx_test_target(snx-test-vk-descriptor-heap-setup 11)
