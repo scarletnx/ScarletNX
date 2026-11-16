@@ -1274,7 +1274,7 @@ static u32 later_encode(VkCommandBuffer cb, Surf* t, u32 left, int begun) {
         const int keyed = l < VK_TEX_MAX_LEVELS && (t->bc7.keyed >> l & 1);
         /* a level the BC7 cache has: copied from it, a sixteenth of the encoder's cost a block counted */
         if (keyed && !t->bc7.slice && !t->bc7.row &&
-            vk_bc7_cache_level(cb, t->bc7.img, t->bc7.key[l], l, lw, lh, slices, is3d)) {
+            vk_bc7_cache_level(cb, t, t->bc7.key[l], l, lw, lh, slices, is3d)) {
             used += (u32)((slice_blocks * slices + 15) / 16);
             t->bc7.level++;
             __atomic_add_fetch(&g_tex_cache_hits, 1, __ATOMIC_RELAXED);
