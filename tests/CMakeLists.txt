@@ -3369,8 +3369,15 @@ add_test(NAME astc_bc7_glsl COMMAND snx-test-astc-bc7-glsl)
 add_executable(snx-test-astc-bcn-glsl glsl/astc_bcn_glsl.cpp glsl/astc_bcn_cpu.cpp glsl/astc_bc7_cpu.cpp support/astc.c
                support/bcn.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c") # g_gob_native
 snx_test_target(snx-test-astc-bcn-glsl 23)
-target_include_directories(snx-test-astc-bcn-glsl PRIVATE glsl)
+target_include_directories(snx-test-astc-bcn-glsl PRIVATE glsl "${CMAKE_CURRENT_SOURCE_DIR}") # support/astc_kind_ref.h
 add_test(NAME astc_bcn_glsl COMMAND snx-test-astc-bcn-glsl)
+# astc_kind.comp's GLSL, what an ASTC texture's blocks hold read on the GPU (gpu/texture/astc_kind.h), run on the CPU
+# (tests/glsl/glsl.hpp): each block's kind and each level's, its early stop too, are the CPU's. No GPU needed
+add_executable(snx-test-astc-kind-glsl glsl/astc_kind_glsl.cpp
+               "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c") # g_gob_native
+snx_test_target(snx-test-astc-kind-glsl 23)
+target_include_directories(snx-test-astc-kind-glsl PRIVATE glsl "${CMAKE_CURRENT_SOURCE_DIR}") # support/astc_kind_ref.h
+add_test(NAME astc_kind_glsl COMMAND snx-test-astc-kind-glsl)
 # the ASTC 4x4 encoder's GLSL (BCn encoded again as ASTC) run on the CPU (tests/glsl/glsl.hpp), its blocks decoded by
 # the CPU's ASTC decoder, each GPU vendor's build beside the generic one: no GPU needed
 add_executable(snx-test-astc-encode-glsl glsl/astc_encode_glsl.cpp glsl/astc_encode_cpu.cpp glsl/bcn_astc_cpu.cpp

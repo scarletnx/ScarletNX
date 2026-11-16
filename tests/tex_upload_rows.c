@@ -229,6 +229,20 @@ u32 vk_bc7_kept_unit(const Surf* t) {
     (void)t;
     abort();
 }
+/* the GPU's read of what the kept blocks hold (astc.c): none recorded, so a case's textures stay as Auto made them */
+u32 vk_astc_kind_read(VkCommandBuffer cb, const Surf* t) {
+    (void)cb, (void)t;
+    return 0;
+}
+const u32* vk_astc_kind_words(u32 slot) {
+    (void)slot;
+    return NULL;
+}
+void vk_astc_kind_release(u32 slot) { (void)slot; }
+int vk_astc_bcn_kept(VkCommandBuffer cb, Surf* t, VkImage dst, u32 kind) {
+    (void)cb, (void)t, (void)dst, (void)kind;
+    abort();
+}
 /* the BC7 cache (astc.c, bc7_cache.c): it takes a level while g_astc_key.takes says so. The content is the bytes and
    layout words mixed in by FNV-1a, and the key that with the level's shape, which is all texture.c needs of them */
 int vk_astc_cached(u32 w, u32 h, u32 depth) {

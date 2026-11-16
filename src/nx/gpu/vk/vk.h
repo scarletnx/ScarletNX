@@ -1125,6 +1125,16 @@ typedef struct Surf {
        again since (its wgen then, texture.c later_reread) */
     u8 bc7_reread;
     u32 bc7_reread_wgen;
+    /* textures: an ASTC one under astc_mode's Auto whose blocks' kind the GPU reads (texture.c's kind_frame), made in
+       the format Auto holds one of unknown kind in, its blocks kept (bc7.kept) for the read and for the BC1, BC4 or BC5
+       image made from them where the kind takes one. kind_want: the read is to come or on its way (the texture is in
+       kind_frame's queue); kind_tries: the reads recorded; kind_slot: the one on its way (astc.c's slot plus one, 0:
+       none), of the blocks of write generation kind_wgen; kind_key: the kind memo's key of the bytes it was made from
+       (0: none); kind_ns: the CPU's time on it so far; kind_again: loaded again while held as BC1, BC4 or BC5, that
+       format's vk_astc_bcn (0: its first load) */
+    u8 kind_want, kind_tries, kind_again;
+    u32 kind_slot, kind_wgen;
+    u64 kind_key, kind_ns;
     /* that BC7 image while it is made (VK_NULL_HANDLE before the encoder starts on it), its memory, and how far the
        encoder got: level, then slice (a layer, or a 3D level's depth slice) and row of ASTC blocks, from the blocks
        kept of write generation wgen. queued: in the encoder's queue */
@@ -1633,6 +1643,19 @@ void vk_astc_unkeep(Surf* t);
 u64 vk_astc_kept_bytes(void);
 u32 vk_bc7_kept_unit(const Surf* t);
 int vk_bc7_encode_kept(VkCommandBuffer cb, Surf* t, VkImage dst, u32 level, u32 z, u32 nz, u32 y, u32 n);
+/* The same blocks kept, while it is not known yet, for the GPU's read of what they hold (texture.c's kind_frame,
+   gpu/texture/astc_kind.h). vk_astc_kind_read: astc_kind.comp over every level of every layer of what t keeps, after
+   the copies into it, its words (four a level of each layer, layer after layer: the first block of each kind bit in
+   the CPU walk's order, ~0u for none) on their way back to the host in the readback ring: its slot plus one, 0 when
+   none was recorded (no memory, staging or descriptor set, or past the device's limits). vk_astc_kind_words: the
+   words, once the submission recorded then is done (vk_astc_frame_done); NULL before. vk_astc_kind_release: the slot
+   free again. vk_astc_bcn_kept: every level of every layer of dst, an image of t's shape in BC1, BC4 or BC5 (kind 1, 4
+   or 5) in TRANSFER_DST_OPTIMAL, made from what t keeps (astc_bcn.comp): the blocks an upload straight to that format
+   makes. 0 when a level is past the device's limits or no descriptor set is left */
+u32 vk_astc_kind_read(VkCommandBuffer cb, const Surf* t);
+const u32* vk_astc_kind_words(u32 slot);
+void vk_astc_kind_release(u32 slot);
+int vk_astc_bcn_kept(VkCommandBuffer cb, Surf* t, VkImage dst, u32 kind);
 /* A level of ASTC encoded again as BC7 with VK_BC7_FAST_TEXELS texels or more takes the encoder's fast build, which
    keeps mode 6 where it is close and tries every mode on the other blocks, and one of VK_BC7_MODE6_TEXELS or more its
    build of mode 6 alone (bc7_encode.glsl's SNX_BC7_FAST). vk_bc7_build: the build for a level of w x h texels and d
@@ -1699,11 +1722,11 @@ u64 vk_astc_bc7_copies(void); /* BC7 levels copied from another texture's image 
 u32 vk_astc_bcn(VkFormat f);
 const char* vk_astc_bcn_name(u32 kind);
 void vk_astc_bcn_stats(u64 levels[3], u64 bytes[3], u64 rgba8_bytes[3]);
-/* What astc_mode's Auto found an ASTC texture's blocks to hold, read from their endpoint modes as it is made (texture.c,
-   gpu/texture/astc_kind.h): the BCn format they take (luminance in sRGB BC1, as BC4 has no sRGB), or why none does
-   and the texture is held as Auto holds the rest (colour with alpha, colour on more than one line a 4x4 block,
-   luminance with alpha in sRGB, which BC5 has not, the error colour or HDR, or memory the CPU can't read as one run
-   there) */
+/* What astc_mode's Auto found an ASTC texture's blocks to hold, read from their endpoint modes on the GPU after it is
+   made or loaded again (texture.c's vk_tex_kind_frame, gpu/texture/astc_kind.h): the BCn format they take (luminance in
+   sRGB BC1, as BC4 has no sRGB), or why none does and the texture is held as Auto holds the rest (colour with alpha,
+   colour on more than one line a 4x4 block, luminance with alpha in sRGB, which BC5 has not, the error colour or HDR,
+   or blocks not read: a sparse texture, no room to keep its blocks, or reads that never came back) */
 enum {
     VK_ASTC_KIND_BC4,
     VK_ASTC_KIND_BC5,
@@ -1716,9 +1739,10 @@ enum {
     VK_ASTC_KIND_UNREAD,
     VK_ASTC_KIND_N
 };
-/* a texture's blocks read in ns of the CPU's time: as it is made (again 0), or loaded whole again while held as BC1, BC4
-   or BC5 (1 the same format, 2 another); vk_astc_kind_name: what the log calls an outcome; vk_astc_kind_say: their
-   counts, the time and the memory, with the stats every 600 presents */
+/* a texture's blocks read in ns of the CPU's time: as it is made, its kind from the GPU or the memo of bytes read
+   before (again 0), or loaded whole again while held as BC1, BC4 or BC5 (1 the same format, 2 another);
+   vk_astc_kind_name: what the log calls an outcome; vk_astc_kind_say: their counts, the time and the memory, with the
+   stats every 600 presents */
 void vk_astc_kind_seen(int outcome, u64 ns, int again);
 const char* vk_astc_kind_name(int outcome);
 void vk_astc_kind_say(void);
@@ -1934,6 +1958,12 @@ void vk_tex_frame(void);    /* a frame was presented: evicts what wasn't used fo
    their RGBA8 ones, VK_BC7_LATER_BLOCKS blocks at most, a texture at a time in the order they were loaded, and puts
    each in its texture's place once whole. Nothing when vk_cmd would wait for the GPU first */
 void vk_tex_later_frame(void);
+/* After a frame's present, before the BC7 encoder: the reads of ASTC textures' blocks' kinds whose submissions are
+   done (texture.c's kind_frame) take each texture to its BC1, BC4 or BC5 image where the kind says so, made from its
+   blocks, VK_KIND_FRAME_BLOCKS 4x4 blocks a frame at most, a texture at a time; a read is recorded again for a texture
+   written since its read. Nothing when vk_cmd would wait for the GPU first */
+void vk_tex_kind_frame(void);
+#define VK_KIND_FRAME_BLOCKS (1u << 18)
 /* the encoder's blocks a frame: 3.3 ms of an RX 6700 XT, which encodes 10 million a second (docs/layers/gpu/astc.md), a tenth of
    a frame at 30 fps */
 #define VK_BC7_LATER_BLOCKS (1u << 15)
@@ -2797,6 +2827,7 @@ enum {
     VK_PROF_QUERY_COMPARE,   /* a query compare (query_compare.comp) */
     VK_PROF_QUERY_COUNT,     /* the queries' counts (query_count.comp) */
     VK_PROF_SHADING_RATE,    /* an Ounce's shading rate image made the device's (shading_rate.comp) */
+    VK_PROF_ASTC_KIND,       /* what an ASTC texture's blocks hold, read (astc_kind.comp) */
     VK_PROF_N
 };
 void vk_gpuprof_cb_begin(VkCommandBuffer cb);
