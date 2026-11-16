@@ -306,6 +306,11 @@ void vk_unlock(void);
 int vk_trylock(void);    /* vk_lock unless another thread holds it: 1 when taken */
 u32 vk_lock_owner(void); /* the thread (plat_tid) holding vk_lock, 0 when none */
 int vk_lock_held(void);  /* this thread holds vk_lock */
+/* Lets go of vk_lock for work that needs nothing it guards, when this thread holds it once (an outer hold can't be let
+   go of here): 1 when it let go. vk_lock_resume(that) takes it again. What the hold saw before can have changed when
+   the work ends */
+int vk_lock_pause(void);
+void vk_lock_resume(int paused);
 
 /* memory.c. vk_mem_init once the device exists, before the allocator (devmem.c keeps its blocks within the cap):
    sparse_queue is whether the graphics queue's family can bind sparse memory */
