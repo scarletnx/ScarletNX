@@ -66,8 +66,12 @@ void vk_ban_scope(uint32_t line, char* out, size_t n);
 void vk_ban_why(uint32_t line, char* out, size_t n);
 /* takes out of e every extension an "off" line without an override holds for, but those vulkan_ban_ignore goes over,
    and every one vk_bans_lacking named, each said; says the "warn" lines that hold for an extension e has and for a
-   feature; the rest (features, overrides) wait for vk_ban and vk_ban_find. How many it took out */
+   feature; the rest (features, overrides) wait for vk_ban and vk_ban_find. How many it took out. With say NULL it
+   says none of them, and vk_bans_say says those of an extension the renderer asks about */
 uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say);
+/* the lines the last vk_bans_filter held for the extension key: an "off" line that took it out, a "warn" line on it,
+   or the command its driver lacked */
+void vk_bans_say(const char* key, VkBanSay say);
 /* says each "off" line that holds and nothing claimed */
 void vk_bans_unclaimed(VkBanSay say);
 /* an extension a device was made with whose driver gave no pointer for command, which the extension requires
@@ -85,6 +89,7 @@ typedef struct {
     const char* value;
     int core;
 } VkExtensionSetting;
+#define VK_EXTENSION_SETTINGS 160 /* the settings vk_extension_settings takes, at most */
 /* an extension the renderer can't run without on this device, and why: off is refused for it */
 typedef struct {
     const char* name;
@@ -98,6 +103,8 @@ int vk_extension_settings(SnxVkExtensions* e, const VkExtensionSetting* s, uint3
 /* after vk_bans_filter, a line for each setting: its extension on or off in e, the list the renderer reads, and why.
    api: the Vulkan version the renderer runs the device at, for an extension that is core there */
 void vk_extension_settings_say(const SnxVkExtensions* e, uint32_t api, VkBanSay say);
+/* the same line for the setting of the extension name alone, none where no setting names it */
+void vk_extension_setting_say(const SnxVkExtensions* e, uint32_t api, const char* name, VkBanSay say);
 /* the first line after line that holds for the device, of either action; 0 past the last */
 uint32_t vk_bans_holding(uint32_t line);
 /* a field of a line (VK_BAN_*), as the table writes it */

@@ -118,7 +118,7 @@ if(TARGET snx_libdeflate)
     target_compile_options(snx_zip PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 endif()
 # What the Vulkan frontends (src/nx/gpu/vk, src/3ds/gpu/vk, src/vita/gpu) share of a device: the instance, queries,
-# the device's choice, the drivers known to break an extension or feature (gpu/vk/extension_bans.txt, compiled in),
+# the one way a renderer makes its device (gpu/vk/device.c), the drivers known to break an extension or feature (gpu/vk/extension_bans.txt, compiled in),
 # the commands each extension requires (generated from the registry, cmake/vk_extension_commands.cmake), the submission
 # ring, VK_EXT_shader_object's shader binaries and dynamic state, the swapchain and the SDL window (gpu/vk/). Each
 # frontend compiles volk.c, whose functions these call
@@ -128,7 +128,7 @@ endif()
 if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_bans.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_commands.cmake")
-    add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/driver_tag.c gpu/vk/extension_bans.c
+    add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/device.c gpu/vk/driver_tag.c gpu/vk/extension_bans.c
                                      "${PROJECT_BINARY_DIR}/generated/vk_extension_bans_text.c"
                                      gpu/vk/extension_commands.c "${snx_vk_extension_commands_c}" gpu/vk/ring.c
                                      gpu/vk/shader_object.c gpu/vk/swapchain.c gpu/vk/window.c gpu/vk/notice.c)

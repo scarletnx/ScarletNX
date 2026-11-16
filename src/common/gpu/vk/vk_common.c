@@ -181,8 +181,7 @@ uint32_t snx_vk_queue_family(VkPhysicalDevice phys, VkQueueFlags flags, VkSurfac
     return found;
 }
 
-/* the instance's physical devices, *count of them (calloc'd, NULL for none) */
-static VkPhysicalDevice* physical_devices(VkInstance instance, uint32_t* count) {
+VkPhysicalDevice* snx_vk_physical_devices(VkInstance instance, uint32_t* count) {
     uint32_t n = 0;
     *count = 0;
     if (vkEnumeratePhysicalDevices(instance, &n, NULL) != VK_SUCCESS || !n) return NULL;
@@ -197,7 +196,7 @@ static VkPhysicalDevice* physical_devices(VkInstance instance, uint32_t* count) 
 bool snx_vk_first_device(VkInstance instance, uint32_t api_version, VkQueueFlags flags, VkSurfaceKHR surface,
                          SnxVkMake make, void* user) {
     uint32_t count = 0;
-    VkPhysicalDevice* devices = physical_devices(instance, &count);
+    VkPhysicalDevice* devices = snx_vk_physical_devices(instance, &count);
     bool made = false;
     for (uint32_t i = 0; i < count && !made; ++i) {
         VkPhysicalDeviceProperties p;
@@ -212,7 +211,7 @@ bool snx_vk_first_device(VkInstance instance, uint32_t api_version, VkQueueFlags
 }
 VkPhysicalDevice snx_vk_best_device(VkInstance instance, uint32_t api_version, SnxVkScore score, void* user) {
     uint32_t count = 0;
-    VkPhysicalDevice* devices = physical_devices(instance, &count);
+    VkPhysicalDevice* devices = snx_vk_physical_devices(instance, &count);
     VkPhysicalDevice best = VK_NULL_HANDLE;
     int best_score = -1;
     for (uint32_t i = 0; i < count; ++i) {
