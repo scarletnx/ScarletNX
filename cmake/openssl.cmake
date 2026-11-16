@@ -141,7 +141,7 @@ endif()
 # Built once for every tree that builds it the same way, when SNX_DEPS_CACHE names a folder (cmake/deps_cache.cmake).
 # The install prefix stays out of the key: it is only OPENSSLDIR and MODULESDIR in the library, which a build without
 # modules and without a configuration file at startup never reads
-snx_deps_cached(openssl snx_openssl_cache "source: ${snx_openssl_sha256}" "configure: ${snx_openssl_args}"
+snx_deps_cached(openssl snx_openssl_cache "source: ${snx_openssl_hash}" "configure: ${snx_openssl_args}"
                 "android: ${CMAKE_ANDROID_NDK} ${snx_openssl_android_cc}" "perl: ${PERL_VERSION_STRING}")
 if(snx_openssl_cache_FOUND)
     set(snx_openssl_prefix "${snx_openssl_cache_DIR}")

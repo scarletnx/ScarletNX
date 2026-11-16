@@ -3,7 +3,7 @@
 #
 # FFmpeg and OpenSSL, which build with their own configure and make (cmake/ffmpeg.cmake, cmake/openssl.cmake), built
 # once for every build tree that would build them the same way. With SNX_DEPS_CACHE naming a folder, each build of
-# them lives there in a folder named after a hash of all that goes into it: the source's SHA-256, the configure line,
+# them lives there in a folder named after a hash of all that goes into it: the source's hash, the configure line,
 # the compiler and its version, the text of the system's C headers as the compiler reads them, and the cmake file
 # that builds it. A tree whose hash finds a finished folder uses it and builds neither; one that finds none builds as
 # without the cache and then publishes what it installed. A change to any of those inputs is another folder, so a

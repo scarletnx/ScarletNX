@@ -1,4 +1,20 @@
 {
+    "FFmpeg": {
+        "hash": "7756f8434371b9bc1d01cf578bf49014e058b0869c3c1df05030f5f4035f1def64b2e7dba3cf340da4dc8dd9239dd5f894530c9e45793ac27876807079aa546a",
+        "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+        "version": "9.0.2"
+    },
+    "FidelityFX-FSR2": {
+        "hash": "0a7401431c2c5c4f8c940089c42077e497b62d09b10bd22110e68d49c0d2d27183660a515ea4b1c58942483420c1e6a93ee9bac5f0c0fef5584f590fa238c310",
+        "repo": "GPUOpen-Effects/FidelityFX-FSR2",
+        "version": "v2.2.1"
+    },
+    "OpenSSL": {
+        "artifact": "%VERSION%.tar.gz",
+        "hash": "cc424e5f8470a47e2c7345e95516a6a0e2a5eee0fe4feef3de3d39b75071b1f42f4a2388d1c8926652bba4082108b7050ddc30b274543b62937c46bdcad3b3c0",
+        "repo": "openssl/openssl",
+        "version": "openssl-4.0.3"
+    },
     "SDL3": {
         "find_args": "CONFIG",
         "hash": "12fcb5592016b27922b08d1580d75f5f15c72e67cf04415e2bd824dc7563ac940c25bbe368b03d0a755f5832803049467e3d0ee6784ed3684792bc4d7741af50",
@@ -34,6 +50,48 @@
         "repo": "KhronosGroup/Vulkan-Headers",
         "version": "v1.4.367"
     },
+    "cgltf": {
+        "hash": "9474b2ae79ac34015b21e4a20813bfc14ad037636304a28ce91011989202a11568b7f7201bca745701163e2c1077425065782a2aa265d53fe6edeb2e7d0e0b0a",
+        "repo": "jkuhlmann/cgltf",
+        "version": "v1.15"
+    },
+    "curl": {
+        "hash": "69cf0feafdc79fbad007cf2fc977b777ce6ccb05d01afd17b5a42f8bedbfcc342fc3a48193faa7f3eafe6800cd7d07948916e8733db1b9de60287ed06219b840",
+        "url": "https://curl.se/download/curl-8.23.0.tar.xz",
+        "version": "8.23.0"
+    },
+    "dav1d": {
+        "hash": "75ab7c922bc9647d73534c9f6c95a514748557adbf7a4debf95eee52ef1db681012cbaad165a46141d904cdd01c1e6319cdea33d254afb5c6b3d968679e55b98",
+        "url": "https://downloads.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz",
+        "version": "1.5.4"
+    },
+    "enet": {
+        "hash": "a0d2fa8c957704dd49e00a726284ac5ca034b50b00d2b20a94fa1bbfbb80841467834bfdc84aa0ed0d6aab894608fd6c86c3b94eee46343f0e6d9c22e391dbf9",
+        "repo": "lsalzman/enet",
+        "version": "v1.3.18"
+    },
+    "harfbuzz": {
+        "artifact": "harfbuzz-%VERSION%.tar.xz",
+        "hash": "5a0e4f446d47c56f1a7eec0890d6c4dee036ebde398bfb372d883004737518621a7167a368384b411b67920c0a8807e74517574929b0982ba0fd72509ed68d19",
+        "repo": "harfbuzz/harfbuzz",
+        "version": "15.0.0"
+    },
+    "jemalloc": {
+        "artifact": "jemalloc-%VERSION%.tar.bz2",
+        "hash": "a6771bdc3f066fc458d4723cee3018b445b966a96013074b6aa5ee685e9991ca8a20473ee069c9f4b5912b1ed74a705b059f5c19b4e57c3035d428f055b4d7fd",
+        "repo": "jemalloc/jemalloc",
+        "version": "5.4.0"
+    },
+    "libdeflate": {
+        "hash": "06605eabce8635b82e03863c87b515696d08b8a1fc36b746b44b660989613d2ebd6ca1bb13dd0f88244846894dbf5a15169dd443c34dcda64e960fdbd08a8d3b",
+        "repo": "ebiggers/libdeflate",
+        "version": "v1.26"
+    },
+    "lunasvg": {
+        "hash": "62cf1433f4d158008ab07c9b6a83dca2322e1adf97a7f30a2021be5610af7b28e2ed54c75292fb382a3dcc6205f0e7b8d815b8a59aa11843a059883203d191c1",
+        "repo": "sammycage/lunasvg",
+        "version": "v3.5.0"
+    },
     "lz4": {
         "artifact": "lz4-%NUMERIC_VERSION%.tar.gz",
         "bundled": true,
@@ -41,6 +99,61 @@
         "min_version": "1.10.0",
         "numeric_version": "1.10.0",
         "repo": "lz4/lz4",
+        "version": "v%NUMERIC_VERSION%"
+    },
+    "miniz": {
+        "artifact": "miniz-%VERSION%.zip",
+        "hash": "15261f4dfa69851df2d87ea544248b2f8737a50123852071677238004b37b0dd844632e4221624742c7d68a3f4699d7ed51e844e6da0c0cac423ce4d8d70738b",
+        "repo": "richgel999/miniz",
+        "version": "3.1.2"
+    },
+    "plutovg": {
+        "hash": "57349751bfc9020e63042f472d828ddc509f724d0c82cdaf34e2047f6333de192c5a4cc6aed376e98a000bd68b3b05f1c00ca84bf7163a16c6c2860bc33fb8d0",
+        "repo": "sammycage/plutovg",
+        "version": "v1.3.3"
+    },
+    "rnnoise": {
+        "hash": "5a282a76d1c9b818bb4edb0d1de868e8d86f50cf149e3c637ee2d383a33d36db298bdad9844a5f4923373ad227e385742928ad121e663e368bdc0b85ba04b56a",
+        "repo": "xiph/rnnoise",
+        "version": "v0.1.1"
+    },
+    "sqlite": {
+        "hash": "70a88503f1a4e287ed2d89157a0c23d9ecc162f2d4604659cea6f783b3c276dada5ee2bb8cbe967e4a2d9f2caba7f9b1529f66332158cb1e9727bf0a34d47f48",
+        "url": "https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip",
+        "version": "3.54.1"
+    },
+    "tracy": {
+        "hash": "a274fbb62ec25ab9b6025eeeb6e0458ba282fe61509dcd0daf824bdbcf3215c25eb992271d33cc88544068f83e00d791833e980eed7c8f4a1cd3ef71841cf38e",
+        "repo": "wolfpld/tracy",
+        "version": "v0.15.0"
+    },
+    "volk": {
+        "hash": "c1d97fb4419effe08e84dc83e220229e1a070359b4d7187cfd54142df0dd0cee525d791d89e0deadb399d270772805ba1f48f8f6c6f3dd3820a44a947ca297db",
+        "repo": "zeux/volk",
+        "version": "vulkan-sdk-1.4.363.0"
+    },
+    "xxhash": {
+        "hash": "1585ae3f3feded2492e43f4dd5dd43183329c57ffe92afa907f71eb26deaf34beab4434458a2d87e8795a4226339c5b0b493bd8a9186bb6f0c752fa1fdef10e3",
+        "repo": "Cyan4973/xxHash",
+        "version": "v0.8.4"
+    },
+    "yyjson": {
+        "hash": "6447bbb50d18a4e0d57ac3232bd23eed7f94a16cff781d4779d28c81833b8de7566e730f827f1e7e6d60a06fcbbdc41fd581a1f872901391f7a09288bb93fd40",
+        "repo": "ibireme/yyjson",
+        "version": "0.13.0"
+    },
+    "zlib": {
+        "artifact": "zlib-%NUMERIC_VERSION%.tar.gz",
+        "hash": "70963771ea5d763614278a69b474f09b7d237ef8f53b675a10fe31d9923aeef601504b35d7ebd1b1e7f347e9ebb048e6b3b47fffdf137e7bdc7e8d5eb4ec4692",
+        "numeric_version": "1.3.2",
+        "repo": "madler/zlib",
+        "version": "v%NUMERIC_VERSION%"
+    },
+    "zstd": {
+        "artifact": "zstd-%NUMERIC_VERSION%.tar.gz",
+        "hash": "b4de208f179b68d4c6454139ca60d66ed3ef3893a560d6159a056640f83d3ee67cdf6ffb88971cdba35449dba4b597eaa8b4ae908127ef7fd58c89f40bf9a705",
+        "numeric_version": "1.5.7",
+        "repo": "facebook/zstd",
         "version": "v%NUMERIC_VERSION%"
     }
 }
