@@ -226,6 +226,7 @@ bool snx_vk_device_make(const SnxVkDeviceRequest* r, SnxVkDevice* out, char* err
         if (made < 0) return false;
         if (!made) {
             snprintf(err, n, "%s: %s", r->none, reasons);
+            out->passed_over = true;
             return false;
         }
         /* each command of each extension it is made with, as its driver gives them: one with none takes the
@@ -245,6 +246,6 @@ bool snx_vk_device_make(const SnxVkDeviceRequest* r, SnxVkDevice* out, char* err
     }
     snx_vk_extensions_free(&list);
     say_made(r, &c, say);
-    *out = (SnxVkDevice){c.phys, c.device, c.family};
+    *out = (SnxVkDevice){c.phys, c.device, c.family, false};
     return true;
 }

@@ -212,6 +212,7 @@ static void check_settings_before_bans(void) {
                            "this device: the window is drawn with it") &&
               !g_test.creates,
           "off for what the renderer can't run without fails the device, saying the value");
+    CHECK(!d.passed_over, "an error that stops the device, whatever the renderer would ask");
 
     reset();
     g_test.enable[0] = "VK_KHR_swapchain";
@@ -331,6 +332,7 @@ static void check_devices(void) {
                            "GPU B refuses the device: vkCreateDevice gave VK_ERROR_INITIALIZATION_FAILED (-3); "
                            "Stand-in GPU C has no queue family of graphics and compute queues"),
           "no device left: each passed over, in the loader's order, with its reason");
+    CHECK(d.passed_over && !d.device, "and the device says so, as against an error that stops it");
     CHECK(said("test gpu: Stand-in GPU Old is passed over: it has Vulkan 1.1, below the 1.3 it needs\n"),
           "each said as it is passed over");
 
