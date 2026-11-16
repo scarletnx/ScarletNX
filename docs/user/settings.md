@@ -41,7 +41,8 @@ keeps its own values meanwhile. The log's `settings: this game's own, from <path
 value a run's own `--key=value` plays over one. A change to the file is read while the game runs, as the `.ini`'s is; a
 key no pick takes is said with its value, kept in the file and does nothing; with no pick left the file is removed.
 In the game's menu a value the picks hold has `*` after it, and Delete or a controller's Y takes it out: the value
-goes back to the launcher's, else the `.ini`'s, at once.
+goes back to the launcher's, else the `.ini`'s, at once. Its **Settings** page sets the rest of these sections for the
+game alone ([Usage](usage.md#playing)).
 
 Restart for `docked` (`Auto` follows the host's power while the game runs, and `hotkey_tv_mode` and the game's menu's
 **TV mode** change the mode for the run), `tv_refresh_rate`, `tv_resolution`, `fullscreen`, `transition_screen`, `language`, `resolution`,

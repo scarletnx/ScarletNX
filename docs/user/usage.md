@@ -888,7 +888,13 @@ too, and Enter or A up, stopping at Mute and at 100%; a tap or a click on the sl
 of it steps down and one on its value up, and a press moves the knob as it drags. Each step is heard at once.
 What the menu changes is kept for this game alone, in its own picks over the launcher's Settings, which every game
 gets ([Settings](settings.md)): its value shows `*` after it, and Delete or a controller's Y gives back the
-launcher's (else the game's `.ini`'s) at once. **Clean Old Settings** shows while the game's `.ini` keeps keys
+launcher's (else the game's `.ini`'s) at once; with fingers, a tap on that line does it for the row in focus.
+**Settings**, after Volume, opens the game's other settings, a page for each section the menu has no page of its own
+for (Display, Graphics with Vulkan Extensions, Audio, Performance, Network, then Debug), each row named and worded as
+the launcher's Settings say it, kept in the game's own picks as Volume is. A row read when the game starts says
+*(next start)* and shows the value it starts with next; a number with no words steps a quarter (a twentieth within a
+range of 2), a word round its words, and a text with no words (a folder, a name) is only shown here: the launcher's
+Settings type it. **Clean Old Settings** shows while the game's `.ini` keeps keys
 under `[Deprecated]` or its own picks keys no setting takes ([Deprecations](deprecations.md)): asked first, with how
 many, Cancel in focus, it takes them out of both files at once, the log naming each with its value.
 

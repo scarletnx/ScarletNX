@@ -277,6 +277,7 @@ typedef struct {
     char key[KEY_MAX];
     char value[PENDING_VALUE];
     int unpick; /* the game's pick taken out (ini_unpick): value is empty */
+    int apply;  /* the menu did not apply it (ini_set_apply): the poll does */
 } Pending;
 static Pending g_pending[PENDING_MAX];
 static int g_npending;
@@ -300,6 +301,10 @@ static struct {
     u64 hash, seen; /* as g_hash and g_seen are the .ini's */
     int old;        /* atomic: the keys Clean Old Settings takes out, the .ini's deprecated ones and the picks' no
                        pick takes, as the files were last read or written */
+    /* the settings read at the start whose pick the menu took out this run: the value the next start takes without
+       it (value_of then), which this run's is not; under g_picks_lock */
+    Entry next[16];
+    int nnext;
     int clean_soon; /* atomic: the game's menu's Clean Old Settings, taken at the next tick */
 } g_picks;
 static PMutex g_picks_lock = PMUTEX_INIT;
@@ -339,6 +344,7 @@ static int picks_key(const char* key) {
 /* key's pick set to value, or taken out (value NULL); one that does not fit is said and left out, never cut */
 static void picks_put(const char* key, const char* value) {
     Entry* e;
+    int i;
     if (value && (strlen(key) >= KEY_MAX || strlen(value) >= VALUE_MAX)) {
         WARN_LIMIT(1, "settings: %s's value is too long for %s, and this game's pick of it is not saved\n", key,
                    g_picks.path);
@@ -350,6 +356,8 @@ static void picks_put(const char* key, const char* value) {
         return;
     }
     pm_lock(&g_picks_lock);
+    for (i = 0; value && i < g_picks.nnext; i++) /* picked again: the pick is the next start's */
+        if (!strcmp(g_picks.next[i].key, key)) g_picks.next[i--] = g_picks.next[--g_picks.nnext];
     e = picks_find(key);
     if (!value && e)
         *e = g_picks.entry[--g_picks.n];
@@ -450,8 +458,9 @@ void ini_override(const char* k, const char* v) {
 
 const char* ini_overridden(const char* k) { return override_of(k); }
 
-/* the menu's change, or its taking out of the game's pick (unpick), waiting for the next poll */
-static void pending_put(const char* k, const char* v, int unpick) {
+/* the menu's change, or its taking out of the game's pick (unpick), waiting for the next poll; apply: the poll applies
+   it */
+static void pending_put(const char* k, const char* v, int unpick, int apply) {
     size_t kn = strlen(k), vn = strlen(v);
     int i;
     if (kn >= KEY_MAX || vn >= PENDING_VALUE) {
@@ -464,13 +473,18 @@ static void pending_put(const char* k, const char* v, int unpick) {
         if (i == g_npending) memcpy(g_pending[g_npending++].key, k, kn + 1);
         memcpy(g_pending[i].value, v, vn + 1);
         g_pending[i].unpick = unpick;
+        g_pending[i].apply = apply;
     }
     pm_unlock(&g_pending_lock);
     if (i == PENDING_MAX) WARN_LIMIT(1, "settings: too many changes at once, %s is not saved\n", k);
 }
-void ini_set(const char* k, const char* v) { pending_put(k, v, 0); }
+void ini_set(const char* k, const char* v) { pending_put(k, v, 0, 0); }
+void ini_set_apply(const char* k, const char* v) {
+    pending_put(k, v, 0, 1);
+    __atomic_store_n(&g_picks.poll_soon, 1, __ATOMIC_RELEASE);
+}
 void ini_unpick(const char* k) {
-    if (picks_key(k)) pending_put(k, "", 1);
+    if (picks_key(k)) pending_put(k, "", 1, 0);
     __atomic_store_n(&g_picks.poll_soon, 1, __ATOMIC_RELEASE);
 }
 int ini_picked(const char* k) {
@@ -488,6 +502,27 @@ int ini_picked(const char* k) {
     pm_unlock(&g_picks_lock);
     return picked;
 }
+int ini_next_start(const char* k, char* out, size_t n) {
+    const Entry* e;
+    int i, found = -1;
+    if (n) out[0] = 0;
+    pm_lock(&g_pending_lock);
+    for (i = 0; i < g_npending; i++)
+        if (!strcmp(g_pending[i].key, k)) {
+            found = !g_pending[i].unpick;
+            if (found && n) snprintf(out, n, "%s", g_pending[i].value);
+            break;
+        }
+    pm_unlock(&g_pending_lock);
+    if (found >= 0) return found;
+    pm_lock(&g_picks_lock);
+    e = picks_find(k);
+    for (i = 0; !e && i < g_picks.nnext; i++)
+        if (!strcmp(g_picks.next[i].key, k)) e = &g_picks.next[i];
+    if (e && n) snprintf(out, n, "%s", e->value);
+    pm_unlock(&g_picks_lock);
+    return e != NULL;
+}
 const int* ini_picks_changes(void) { return &g_picks.changes; }
 int ini_poll_due(void) { return __atomic_exchange_n(&g_picks.poll_soon, 0, __ATOMIC_ACQ_REL); }
 int ini_old_settings(void) { return __atomic_load_n(&g_picks.old, __ATOMIC_ACQUIRE); }
@@ -497,6 +532,18 @@ void ini_clean_old(void) {
 }
 
 static void apply(const char* key, const char* value);
+/* key's value for the next start, a setting read at the start whose pick was taken out this run */
+static void next_put(const char* key, const char* value) {
+    int i;
+    if (strlen(key) >= KEY_MAX || strlen(value) >= VALUE_MAX) return; /* a row's: never */
+    pm_lock(&g_picks_lock);
+    for (i = 0; i < g_picks.nnext && strcmp(g_picks.next[i].key, key); i++) continue;
+    if (i < (int)(sizeof g_picks.next / sizeof *g_picks.next)) {
+        if (i == g_picks.nnext) memcpy(g_picks.next[g_picks.nnext++].key, key, strlen(key) + 1);
+        memcpy(g_picks.next[i].value, value, strlen(value) + 1);
+    }
+    pm_unlock(&g_picks_lock);
+}
 /* the menu's change of key over the command line's value of it, which the run plays no longer */
 static void override_beaten(const char* key, int beaten) {
     int i = override_at(key);
@@ -521,10 +568,12 @@ static int pending_take(Pending* taken) {
             }
             override_beaten(key, 0);
             if ((o = find_row(key, NULL)) != NULL && value_of(o)) apply(key, value_of(o));
+            if (o && g_started && (o->flags & INI_STARTUP) && value_of(o)) next_put(key, value_of(o));
         } else if (picks_key(key)) {
             picks_put(key, taken[i].value);
             g_picks.dirty = 1;
             if (run_value(key)) override_beaten(key, 1);
+            if (taken[i].apply && (o = find_row(key, NULL)) != NULL) apply(key, value_of(o));
         } else {
             store_put(key, taken[i].value);
             override_beaten(key, 1);
