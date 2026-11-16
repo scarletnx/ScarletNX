@@ -14,7 +14,9 @@ plausible cause, and each was disproved by its own instrumentation. Measure firs
 
 - `N finishes (P%, M ms) at file:line` — each submit-and-wait, attributed to the call site that made it. Read this
   first: a frame that waits for the GPU names its own file and line here.
-- `N dispatches in N batches (M ms waiting, K a network's pass stood in for), N skipped`.
+- `N dispatches in N batches (M ms waiting), N skipped <why>` — the dispatches whose bindings could not be made,
+  with the reason the last one gives (`past the GPU's limits`, `a storage image not bound`, and the rest of the
+  `cs_skip_names` list in `gpu/vk/compute.c`).
 - `N texture uploads (M MB)` — bytes moved into images, the usual cost of a scene that reloads its pictures.
 - `... waits for it`, then `those waits by who asked: ...` — the same waits split by caller.
 - `a N ms frame: ... M ms in finishes` — the slow frames, with what they held.
@@ -62,9 +64,9 @@ With no GPU profiler, take the GPU's cost by difference: the same scene at two `
 - **Linux**: launch the game under perf with its events off, and turn them on for the scene: `mkfifo ctl ack`,
   `perf record -F 199 --call-graph dwarf,8192 -D -1 --control fifo:ctl,ack -- <the game's command>`, then
   `echo enable > ctl` and `echo disable > ctl`, and `perf report`. Attached with `-p <pid>`, perf runs out of time
-  reading the game's memory maps and the game's own frames come out `[unknown]`; `dwarf,65528` slowed a game three
-  times over.
-- **macOS**: `sample <pid> 5 -file out.txt`. It samples every thread, so a busy process can look idle; check
+  reading the game's memory maps and the game's own frames come out `[unknown]`. The `dwarf,65528` setting slowed a
+  game three times over.
+- **macOS**: `sample <pid> 5 -file out.txt`. It samples every thread, so a busy process can look idle. Check
   `ps -o time` as well. Read CPU **seconds per frame**, not samples.
 - **iOS**: Instruments, Time Profiler, on a device.
 
@@ -75,6 +77,6 @@ If a sampler disagrees with `ps` about the total, trust `ps` and use the sampler
 - One protocol for both builds: same `--seconds`, `--docked`, `--vsync=0`, `--fps_limit=0`, same scene.
 - Interleave them A/B/B/A. A fanless host throttles 15% within a minute, and a single window at the cap is not a
   sustained rate: quote the whole per-5-second series.
-- When the rate swings, quote CPU seconds per frame; it does not follow the clock.
+- When the rate swings, quote CPU seconds per frame, which does not follow the clock.
 - Keep the picture: `--shot=<stem>` writes the framebuffer. Faster and wrong is not faster.
 - A change is ready only when its mechanism shows in a counter, not only in the rate.
