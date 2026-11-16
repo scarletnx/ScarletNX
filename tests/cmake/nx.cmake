@@ -203,38 +203,19 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         # the native video service's AV1 decoder on AOMedia's test vectors, each picture against the MD5 its list gives
         # (tests/vulkan_video_av1.inc): with Vulkan Video where the device decodes AV1, on the CPU elsewhere, and a
         # monochrome vector that Vulkan Video refuses on any device. The vectors and their lists come from libaom's
-        # test data, downloaded once into CPM_SOURCE_CACHE: a vector's name, then the SHA-256 of the vector and of its
-        # list. Off by default, as the VP9 vectors are (tests/CMakeLists.txt)
+        # test data, downloaded once into CPM_SOURCE_CACHE: snx_av1_<name> and snx_av1_<name>_md5 in cpmfile.json, for
+        # each name here. Off by default, as the VP9 vectors are (tests/CMakeLists.txt)
         set(snx_av1_vectors
-            av1-1-b8-01-size-66x66.ivf 5f9285cbc417b0457c806df9154a1898f0f9ca09066abfdfd828cb3b2ba0371b
-                c9e5553ef735c82723595ce9317d55e54e0a8c916902960e65a644090fbf5653
-            av1-1-b8-05-mv.ivf 222a9050059b254dab17cfb802ff829c778e3f93af18961a622c8268576c1395
-                76eeebe50c438619b4cadce90fc194010c50c4a5a876441444d726d12de58c50
-            av1-1-b8-23-film_grain-50.ivf ba3edd82a58414f009e1c821b947ec8de4e0420f33803ca7bfea39af6aeea155
-                8996cc98e68102e60620d28208246009601b2906f05e1d1cc0da74479c828ac9
-            av1-1-b8-24-monochrome.ivf 3dcc2a3c181f74788bd9575d94f0862d9e914415ac358a4da4ed7d904f0535b7
-                01658b28fc7b6760de63602b472c3732af5debef53059b0a3b6f237437afe652)
+            av1-1-b8-01-size-66x66.ivf av1-1-b8-05-mv.ivf av1-1-b8-23-film_grain-50.ivf
+            av1-1-b8-24-monochrome.ivf)
         set(snx_av1_paths "")
-        while(snx_av1_vectors)
-            list(POP_FRONT snx_av1_vectors name vector_sha256 list_sha256)
+        foreach(name IN LISTS snx_av1_vectors)
             string(REGEX REPLACE "^av1-1-|\\.ivf$" "" short "${name}")
-            foreach(file "${name}" "${name}.md5")
-                if(file STREQUAL name)
-                    set(sha256 ${vector_sha256})
-                    set(package snx_av1_${short})
-                else()
-                    set(sha256 ${list_sha256})
-                    set(package snx_av1_${short}_md5)
-                endif()
-                CPMAddPackage(NAME ${package}
-                              URL https://storage.googleapis.com/aom-test-data/${file}
-                              URL_HASH SHA256=${sha256}
-                              DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
-                # checked on every configure, as a package of one file is (cmake/cpm_cache.cmake)
-                snx_cpm_file_check("${${package}_SOURCE_DIR}" "${file}" ${sha256})
-                string(APPEND snx_av1_paths "${${package}_SOURCE_DIR}/${file}\n")
-            endforeach()
-        endwhile()
+            snx_package_file(snx_av1_${short})
+            snx_package_file(snx_av1_${short}_md5)
+            string(APPEND snx_av1_paths "${snx_av1_${short}_SOURCE_DIR}/${name}\n"
+                                        "${snx_av1_${short}_md5_SOURCE_DIR}/${name}.md5\n")
+        endforeach()
         file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/vulkan_video_av1.txt" "${snx_av1_paths}")
         add_test(NAME vulkan_video_av1 COMMAND snx-test-vulkan -H)
         set_tests_properties(vulkan_video_av1 PROPERTIES TIMEOUT 60

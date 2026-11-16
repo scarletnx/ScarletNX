@@ -32,9 +32,6 @@ if(NOT cpm_have STREQUAL CPM_HASH)
     file(RENAME "${cpm_file}.part" "${cpm_file}")
 endif()
 include("${cpm_file}")
-# before the first package: a folder a failed download left in the cache is not taken for its package
-include("${PROJECT_SOURCE_DIR}/cmake/cpm_cache.cmake")
-snx_cpm_cache_sweep()
 
 # CPMUtil (cmake/packages.cmake) over this CPM.cmake, for the packages cpmfile.json pins
 include("${PROJECT_SOURCE_DIR}/cmake/packages.cmake")
