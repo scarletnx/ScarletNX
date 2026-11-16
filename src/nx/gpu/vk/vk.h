@@ -1496,7 +1496,8 @@ void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx);
 /* fn on each texture of the caches with ctx, the least recently used first: it may change one, not free or add one */
 void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx);
 /* Virtual textures (vt.c, vt_sparse). vk_vt_init: with the device, the table the programs' samples mark and its
-   address (g_shader_vt_address), where the device has what they need; vk_vt_on: they are on. vk_vt_register: a texture
+   address (g_shader_vt_address), where the device has what they need; vk_vt_on: they are on; vk_vt_makes: and a
+   texture, with holes in its mapping or not, is made one (vt_parts leaves them out to measure). vk_vt_register: a texture
    made sparse for it gets a record (0 when it can have none: no level held always, a level 0 under two blocks each
    way, or no room); vk_vt_forget: it goes. vk_vt_want: the bits of its blocks (vk_image_sparse_bind's order) left only where it
    wants memory (all, for one held whole); vk_vt_bound: the bind of bits went through. vk_vt_fresh: the blocks with
@@ -1509,6 +1510,7 @@ void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx);
    nothing sampled for a while let go */
 void vk_vt_init(void);
 int vk_vt_on(void);
+int vk_vt_makes(int holes);
 int vk_vt_register(Surf* t);
 void vk_vt_forget(Surf* t);
 void vk_vt_want(const Surf* t, u8* bits, u64 nbits);

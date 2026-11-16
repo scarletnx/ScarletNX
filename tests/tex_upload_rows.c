@@ -23,6 +23,7 @@ static void* counted_malloc(size_t n) {
 #include "nx/gpu/vk/texture.c"
 /* vt_sparse's records (vk/vt.c, not linked here): virtual textures are off, and no texture is one */
 int vk_vt_on(void) { return 0; }
+int vk_vt_makes(int holes) { return (void)holes, 0; }
 void vk_image_destroy(VkImage img, DevMem mem) { (void)img, (void)mem; } /* of a texture it made sparse: none */
 int vk_vt_register(Surf* t) {
     (void)t;

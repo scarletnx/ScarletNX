@@ -2711,7 +2711,7 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
        (vt_mapped) takes memory only where it is mapped too. One
        whose level 0 is under two blocks each way, or with no smaller level held always, has nothing to page or to
        fall back on (vk_vt_register), and is made as without vt_sparse */
-    if (vk_vt_on() && f.conv == VKC_ASTC && !written && !msaa && bl && levels > 1 &&
+    if (vk_vt_makes(holes) && f.conv == VKC_ASTC && !written && !msaa && bl && levels > 1 &&
         (type == VK_IMAGE_VIEW_TYPE_2D || type == VK_IMAGE_VIEW_TYPE_2D_ARRAY)) {
         const int srgb = (int)(fkey >> 31);
         const VkFormat held = f.vk == VK_FORMAT_R8G8B8A8_SRGB || f.vk == VK_FORMAT_R8G8B8A8_UNORM || vk_astc_bcn(f.vk)

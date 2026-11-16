@@ -588,7 +588,7 @@ extern ShCaps g_spirv_translate;
    or 1 and over (2), where the sampler's address mode, which the program doesn't know, decides the texel */
 extern u64 g_shader_vt_address;
 /* vt_parts: the parts of a virtual sample that are translated, a bit each: 1 the sparse sample, 2 its coarser read
-   where a texel has no memory, 4 its mark */
+   where a texel has no memory, 4 its mark (8 and 16 are the renderer's: vk_vt_makes) */
 extern u32 g_shader_vt_parts;
 #define SH_VT_IDS        (1u << 20)
 #define SH_VT_SLOT_BITS  15u

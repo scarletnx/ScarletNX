@@ -83,6 +83,7 @@ static void set(u8* b, u32 i) { b[i >> 3] |= (u8)(1u << (i & 7)); }
 static void clear(u8* b, u32 i) { b[i >> 3] &= (u8) ~(1u << (i & 7)); }
 
 int vk_vt_on(void) { return g_shader_vt_address != 0; }
+int vk_vt_makes(int holes) { return vk_vt_on() && !(g_shader_vt_parts & (holes ? 24 : 8)); }
 u32 vk_vt_phase(void) { return g_vt.now & (SH_VT_QUADS - 1); }
 
 int vk_vt_register(Surf* t) {
@@ -567,9 +568,12 @@ void vk_vt_init(void) {
     g_shader_vt_parts = (u32)g_settings.vt_parts;
     if (g_shader_vt_parts != 7)
         LOG("vt: vt_parts=%u: a measurement, the samples translated without %s%s%s; without the marks every virtual "
-            "texture is held whole\n",
+            "texture is held whole%s\n",
             g_shader_vt_parts, g_shader_vt_parts & 1 ? "" : "the sparse sample, ",
-            g_shader_vt_parts & 2 ? "" : "the coarser read, ", g_shader_vt_parts & 4 ? "" : "the marks");
+            g_shader_vt_parts & 2 ? "" : "the coarser read, ", g_shader_vt_parts & 4 ? "" : "the marks",
+            g_shader_vt_parts & 8    ? "; no texture is made virtual"
+            : g_shader_vt_parts & 16 ? "; no texture mapped in part is made virtual"
+                                     : "");
     LOG("vt: virtual textures on: ASTC textures of 1 MiB and more that programs only sample take memory a %u KiB "
         "block at a time, where frames sample them; the marks' table of %u KiB at device address %llx; a block goes "
         "%d presents after it was last sampled\n",
