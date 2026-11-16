@@ -115,18 +115,48 @@ static void drop(VkDevice dev) {
     vkDestroyDevice(dev, NULL);
 }
 
+/* what a device can't run without: the request's, or what its needs_of gives for the device */
+typedef struct {
+    VkExtensionNeed list[SNX_VK_NEEDS];
+    const VkExtensionNeed* need;
+    uint32_t count;
+} Needs;
+
+/* the device r->score rates highest of count, the first of equal ones, of r->api or newer: UINT32_MAX for none */
+static uint32_t best(const SnxVkDeviceRequest* r, const VkPhysicalDevice* devices, uint32_t count) {
+    uint32_t found = UINT32_MAX;
+    int most = -1;
+    for (uint32_t i = 0; i < count; i++) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(devices[i], &props);
+        int s = props.apiVersion < r->api ? -1 : r->score(devices[i], &props, r->user);
+        if (s > most) most = s, found = i;
+    }
+    return found;
+}
+
 /* One pass over the physical devices: 1 with c's device made on the first r->choose takes, list its extensions as
-   choose saw them; 0 with none, each one's reason in reasons; -1 with err, which stops the device */
+   choose saw them and needs what it can't run without; 0 with none, each one's reason in reasons; -1 with err, which
+   stops the device */
 static int pass(const SnxVkDeviceRequest* r, int again, VkBanSay say, SnxVkChoice* c, SnxVkExtensions* list,
-                char* reasons, size_t reasons_n, char* err, size_t n) {
+                Needs* needs, char* reasons, size_t reasons_n, char* err, size_t n) {
     uint32_t count = 0;
     VkPhysicalDevice* devices = snx_vk_physical_devices(r->instance, &count);
+    uint32_t only = r->score ? best(r, devices, count) : UINT32_MAX;
     int made = 0;
     if (!count) snprintf(reasons, reasons_n, "the instance lists no physical device");
     for (uint32_t i = 0; i < count && !made; i++) {
         VkPhysicalDeviceProperties props;
         char why[600];
         vkGetPhysicalDeviceProperties(devices[i], &props);
+        if (r->score && i != only) {
+            if (only == UINT32_MAX)
+                pass_over(r, say, props.deviceName,
+                          props.apiVersion < r->api ? "has a Vulkan version below the one it needs"
+                                                    : "is not one it can run on (its rating)",
+                          reasons, reasons_n);
+            continue;
+        }
         if (props.apiVersion < r->api) {
             snprintf(why, sizeof why, "has Vulkan %u.%u, below the %u.%u it needs",
                      VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion),
@@ -147,7 +177,18 @@ static int pass(const SnxVkDeviceRequest* r, int again, VkBanSay say, SnxVkChoic
             pass_over(r, say, props.deviceName, "gives no list of its extensions", reasons, reasons_n);
             continue;
         }
-        if (!vk_extension_settings(list, r->settings, r->setting_count, r->need, r->needs, err, n)) {
+        *needs = (Needs){.need = r->need, .count = r->needs};
+        if (r->needs_of) {
+            needs->count = r->needs_of(&props, list, needs->list, r->user);
+            needs->need = needs->list;
+        }
+        if (needs->count > SNX_VK_NEEDS) {
+            snprintf(err, n, "the renderer can't run without %u extensions on %s, past the %d it may name",
+                     needs->count, props.deviceName, SNX_VK_NEEDS);
+            made = -1;
+            break;
+        }
+        if (!vk_extension_settings(list, r->settings, r->setting_count, needs->need, needs->count, err, n)) {
             made = -1;
             break;
         }
@@ -165,6 +206,7 @@ static int pass(const SnxVkDeviceRequest* r, int again, VkBanSay say, SnxVkChoic
                                .family = family,
                                .properties = props,
                                .again = again,
+                               .api = r->api,
                                .list = list,
                                .settings = r->settings,
                                .setting_count = r->setting_count};
@@ -182,6 +224,7 @@ static int pass(const SnxVkDeviceRequest* r, int again, VkBanSay say, SnxVkChoic
                 c->device = VK_NULL_HANDLE;
                 snprintf(why, sizeof why, "%s", c->why[0] ? c->why : "is not one the renderer takes");
             }
+            if (r->score) break; /* the device rated highest, on its first family */
         }
         if (made) break;
         pass_over(r, say, props.deviceName, why, reasons, reasons_n);
@@ -201,7 +244,7 @@ static void say_made(const SnxVkDeviceRequest* r, const SnxVkChoice* c, VkBanSay
     size_t w = (size_t)snprintf(line, sizeof line,
                                 "%s: the device is %s, driver %s%s%s, Vulkan %u.%u, queue family %u, made with %s",
                                 r->who, c->properties.deviceName, driver.driverName, driver.driverInfo[0] ? " " : "",
-                                driver.driverInfo, VK_API_VERSION_MAJOR(r->api), VK_API_VERSION_MINOR(r->api),
+                                driver.driverInfo, VK_API_VERSION_MAJOR(c->api), VK_API_VERSION_MINOR(c->api),
                                 c->family, c->extension_count ? "" : "no extension");
     for (uint32_t i = 0; i < c->extension_count && w < sizeof line; i++)
         w += (size_t)snprintf(line + w, sizeof line - w, "%s%s", i ? ", " : "", c->extensions[i]);
@@ -219,10 +262,11 @@ bool snx_vk_device_make(const SnxVkDeviceRequest* r, SnxVkDevice* out, char* err
         return false;
     SnxVkChoice c;
     SnxVkExtensions list = {0};
+    Needs needs;
     /* made again once at most: a device made again that lacks a command fails (snx_vk_device_commands) */
     for (int again = 0;; again = 1) {
         char reasons[2048] = "";
-        int made = pass(r, again, say, &c, &list, reasons, sizeof reasons, err, n);
+        int made = pass(r, again, say, &c, &list, &needs, reasons, sizeof reasons, err, n);
         if (made < 0) return false;
         if (!made) {
             snprintf(err, n, "%s: %s", r->none, reasons);
@@ -232,8 +276,8 @@ bool snx_vk_device_make(const SnxVkDeviceRequest* r, SnxVkDevice* out, char* err
         /* each command of each extension it is made with, as its driver gives them: one with none takes the
            extension out of the device made again, once; one the renderer can't go without fails it */
         volkLoadDevice(c.device);
-        int lacks = snx_vk_device_commands(c.device, c.properties.deviceName, r->api, c.extensions, c.extension_count,
-                                           r->need, r->needs, r->hide, again, say, err, n);
+        int lacks = snx_vk_device_commands(c.device, c.properties.deviceName, c.api, c.extensions, c.extension_count,
+                                           needs.need, needs.count, r->hide, again, say, err, n);
         if (!lacks) break;
         vkDestroyDevice(c.device, NULL);
         snx_vk_extensions_free(&list);
@@ -242,10 +286,11 @@ bool snx_vk_device_make(const SnxVkDeviceRequest* r, SnxVkDevice* out, char* err
     /* each extension the renderer asked about: the bans that hold for it, and its setting, on or off and why */
     for (uint32_t i = 0; i < c.asked_count; i++) {
         vk_bans_say(c.asked[i], say);
-        vk_extension_setting_say(&list, r->api, c.asked[i], say);
+        vk_extension_setting_say(&list, c.api, c.asked[i], say);
     }
     snx_vk_extensions_free(&list);
     say_made(r, &c, say);
-    *out = (SnxVkDevice){c.phys, c.device, c.family, false};
+    *out = (SnxVkDevice){.phys = c.phys, .device = c.device, .family = c.family, .extension_count = c.extension_count};
+    memcpy(out->extensions, c.extensions, c.extension_count * sizeof *c.extensions);
     return true;
 }

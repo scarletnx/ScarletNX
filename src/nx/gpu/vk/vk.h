@@ -33,6 +33,7 @@
 #ifndef SNX_VK_H
 #define SNX_VK_H
 #include "common/cpu/aarch64/cpu.h"
+#include "common/gpu/vk/device.h"
 #include "common/utilities/endian.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/draw_state.h"
@@ -87,7 +88,7 @@ typedef struct {
        and features enabled */
     u32 video_family;
     VkVideoCodecOperationFlagsKHR video_codecs;
-    const char* dev_ext[70]; /* create_device enables 70 at most, were every one it can enable there */
+    const char* dev_ext[SNX_VK_CHOICE_EXTENSIONS]; /* as common/gpu/vk/device.c made the device */
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained (to 1.2 on a 1.2 device) */
     VkPhysicalDeviceVulkan11Features feat11;

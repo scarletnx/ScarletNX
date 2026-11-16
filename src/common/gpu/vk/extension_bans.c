@@ -832,6 +832,13 @@ uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say) {
     return removed;
 }
 
+void vk_bans_features_say(VkBanSay say) {
+    for (uint32_t i = 0; i < g_extension_bans.count; i++) {
+        const Ban* b = &g_extension_bans.bans[i];
+        if (!b->extension && !b->off && holds(b)) say_ban(b, SAY_WARN, say);
+    }
+}
+
 void vk_bans_say(const char* key, VkBanSay say) {
     for (uint32_t i = 0; i < g_extension_bans.count; i++) {
         const Ban* b = &g_extension_bans.bans[i];

@@ -67,8 +67,12 @@ void vk_ban_why(uint32_t line, char* out, size_t n);
 /* takes out of e every extension an "off" line without an override holds for, but those vulkan_ban_ignore goes over,
    and every one vk_bans_lacking named, each said; says the "warn" lines that hold for an extension e has and for a
    feature; the rest (features, overrides) wait for vk_ban and vk_ban_find. How many it took out. With say NULL it
-   says none of them, and vk_bans_say says those of an extension the renderer asks about */
+   says none of them: vk_bans_say says those of an extension the renderer asks about, vk_bans_features_say those of
+   the features */
 uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say);
+/* the "warn" lines that hold for a feature, as vk_bans_filter says them given a say: what the renderer that uses
+   them has to know, as no ban turns them off */
+void vk_bans_features_say(VkBanSay say);
 /* the lines the last vk_bans_filter held for the extension key: an "off" line that took it out, a "warn" line on it,
    or the command its driver lacked */
 void vk_bans_say(const char* key, VkBanSay say);

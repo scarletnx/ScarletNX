@@ -7,7 +7,8 @@
    driver and version, and the line; and the table the build carries, read whole, against the drivers its lines are
    about; and vulkan_ban_ignore read from a game's .ini, a key the table has going over its ban, said with the ban, and
    one it has not refused with the nearest keys it has; and the extensions a device found without a command they
-   require, taken out by the filter over their settings and said.
+   require, taken out by the filter over their settings and said; and the filter saying nothing, each line then said
+   on asking, an extension's and the features' warnings.
    Its other uses, for retesting a ban (the workspace's tools/vk-ban-retest.py reads their lines):
      --devices [--table FILE]                     this machine's Vulkan devices, and the lines that hold for each
      --match DRIVER VERSION [SYSTEM [DEVICEID]] [--table FILE]   the lines that hold for a driver given by hand
@@ -452,6 +453,36 @@ static void check_settings(void) {
     CHECK(said_with("vulkan: VK_EXT_y: off (vk_ext_y=off, and the driver has it not)", NULL, NULL) >= 0,
           "off for one the driver has not says both");
     if (g_test.nsaid != 8) show_said();
+}
+
+/* the filter with no say (common/gpu/vk/device.c): it takes out what it does with one and says nothing; the lines it
+   held are said on asking, an extension's (vk_bans_say) and the features' warnings (vk_bans_features_say) */
+static void check_quiet(void) {
+    static const char* const names[] = {"VK_KHR_swapchain", "VK_EXT_b", "VK_EXT_c", "VK_EXT_j"};
+    VkExtensionProperties list[4];
+    SnxVkExtensions e = {list, 4};
+    char err[512] = "";
+    for (int i = 0; i < 4; i++) snprintf(list[i].extensionName, sizeof list[i].extensionName, "%s", names[i]);
+    CHECK(vk_bans_load(g_table, err, sizeof err), err);
+    device(VK_DRIVER_ID_MESA_RADV, MESA(26u, 0u, 4u), 0x73bf, SNX_VK_BAN_LINUX);
+    g_test.nsaid = 0;
+    CHECK(vk_bans_filter(&e, NULL) == 2 && e.count == 2 && !strcmp(list[1].extensionName, "VK_EXT_c") &&
+              g_test.nsaid == 0,
+          "with no say it takes out VK_EXT_b and VK_EXT_j, saying nothing");
+    vk_bans_say("VK_EXT_b", say);
+    int b = said_with("vulkan: VK_EXT_b is off on AMD Radeon", "breaks b (src b; extension_bans.txt:4)", NULL);
+    CHECK(b >= 0 && !g_test.warned[b] && g_test.nsaid == 1, "an extension's line, the one that took it out");
+    vk_bans_say("VK_EXT_c", say);
+    int c = said_with("vulkan: a known problem the extension bans do not turn off: VK_EXT_c on AMD Radeon", "breaks c",
+                      NULL);
+    CHECK(c >= 0 && g_test.warned[c] && g_test.nsaid == 2, "a warn line on an extension the device has");
+    vk_bans_say("VK_KHR_swapchain", say);
+    CHECK(g_test.nsaid == 2, "none on one no line holds for");
+    vk_bans_features_say(say);
+    int f = said_with("vulkan: a known problem the extension bans do not turn off: featureF on AMD Radeon", "breaks f",
+                      NULL);
+    CHECK(f >= 0 && g_test.warned[f] && g_test.nsaid == 3, "the features' warn lines, featureF's alone");
+    if (g_test.nsaid != 3) show_said();
 }
 
 /* an extension a device made before found without a command it requires (vk_bans_lacking): the filter takes it out
@@ -1087,6 +1118,7 @@ int main(int argc, char** argv) {
     check_filter();
     check_settings();
     check_lacking();
+    check_quiet();
     check_shipped();
     ini_set_say(say_ini);
     check_ignore();
