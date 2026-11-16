@@ -61,6 +61,13 @@ static struct {
     u64 back_sub[VT_BACKS];
     u32 slot;
     VtId* ids; /* SH_VT_IDS: what each identity of the marks named when a draw last bound it */
+    /* the identities that name a virtual texture now, a bit each, as the programs read them after the table: the
+       host's copy, staged and copied to the device when it changed */
+    u32* named;
+    VkBuffer named_stage;
+    DevMem named_mem;
+    u32* named_ptr;
+    int named_dirty;
     /* a Maxwell program's marks name a set of the draw and a slot (identity set << 5 | slot): the virtual textures of
        the draw being set up, a slot each, and the sets given so far by the hash of theirs (0: free) */
     VtId draw[VT_SET_SLOTS];
@@ -175,21 +182,30 @@ void vk_vt_whole(Surf* t, const char* why) {
     /* at once: the draw that binds it reads every block. Without memory for it now, at the next present */
     if (!vk_tex_vt_load(t) && t->vt_slot) g_vt.v[t->vt_slot - 1].changed = 1;
 }
-void vk_vt_bind(u32 id, Surf* t, int marked) {
+/* identity id names the virtual texture of record slot (plus one) and generation gen, or with slot 0 none */
+static void name(u32 id, u32 slot, u32 gen) {
+    id &= SH_VT_IDS - 1;
+    g_vt.ids[id] = (VtId){slot, gen};
+    const u32 bit = 1u << (id & 31), had = g_vt.named[id >> 5];
+    g_vt.named[id >> 5] = slot ? had | bit : had & ~bit;
+    if (g_vt.named[id >> 5] != had) g_vt.named_dirty = 1;
+}
+void vk_vt_bind(u32 id, Surf* t, const char* unmarked) {
+    if (!vk_vt_on()) return;
     const VtTex* L = vt_rec(t);
-    if (!L || L->whole) return;
-    if (!marked) {
-        vk_vt_whole(t, "a draw samples it where the program marks nothing (not a fragment program's 2D sample)");
+    if (L && !L->whole && unmarked) vk_vt_whole(t, unmarked);
+    if (!L || L->whole) { /* no virtual texture, or one that pages nothing: its samples have nothing to mark */
+        if (g_vt.ids[id & (SH_VT_IDS - 1)].slot) name(id, 0, 0);
         return;
     }
-    g_vt.ids[id & (SH_VT_IDS - 1)] = (VtId){t->vt_slot, L->gen};
+    name(id, t->vt_slot, L->gen);
 }
 
-void vk_vt_slot(u32 slot, Surf* t, int marked) {
+void vk_vt_slot(u32 slot, Surf* t, const char* unmarked) {
     const VtTex* L = vt_rec(t);
     if (!L || L->whole) return;
-    if (!marked || slot >= VT_SET_SLOTS) {
-        vk_vt_whole(t, "a draw samples it where the program marks nothing (not a fragment program's 2D sample)");
+    if (unmarked || slot >= VT_SET_SLOTS) {
+        vk_vt_whole(t, unmarked ? unmarked : "a draw samples it in a slot past the 32 a Maxwell program's marks name");
         return;
     }
     g_vt.draw[slot] = (VtId){t->vt_slot, L->gen};
@@ -217,7 +233,7 @@ u32 vk_vt_draw_word(void) {
     }
     if (g_vt.set_key[set] != key) {
         g_vt.set_key[set] = key;
-        memcpy(&g_vt.ids[set * VT_SET_SLOTS], g_vt.draw, sizeof g_vt.draw);
+        for (u32 i = 0; i < VT_SET_SLOTS; i++) name(set * VT_SET_SLOTS + i, g_vt.draw[i].slot, g_vt.draw[i].gen);
     }
     memset(g_vt.draw, 0, sizeof g_vt.draw);
     g_vt.draw_any = 0;
@@ -290,8 +306,12 @@ static void mark_land(u32 w0, u32 w1) {
     }
     if (g_vt.now - L->bound_at <= VT_SETTLE || pending(L)) return; /* what it asked for is on its way */
     for (u32 i = 0; i < nn; i++) asked |= ask(L, near[i]);
-    for (int d = -1; d <= 1 && !asked; d += 2) {
-        if ((d < 0 && !m.level) || m.level + (u32)d >= L->shape.tail_first) continue;
+    /* then the blocks under it in other levels, the nearest first: a level finer, one coarser, up to four finer (an
+       anisotropic sample at a level the program computed reads that much finer than the mark's level says) */
+    static const int others[5] = {-1, 1, -2, -3, -4};
+    for (u32 k = 0; k < 5 && !asked; k++) {
+        const int d = others[k];
+        if ((d < 0 && m.level < (u32)-d) || m.level + (u32)d >= L->shape.tail_first) continue;
         VtMark o = m;
         o.level = m.level + (u32)d;
         static u32 other[VT_MARK_BLOCKS], far[VT_MARK_BLOCKS];
@@ -338,7 +358,7 @@ static void table_copy(void) {
     VkBufferCopy copy = {0, 0, (u64)SH_VT_SLOTS * 8};
     rec_CmdCopyBuffer(cb, g_vt.table, g_vt.back[s], 1, &copy);
     rec_CmdPipelineBarrier2(cb, &d);
-    rec_CmdFillBuffer(cb, g_vt.table, 0, VK_WHOLE_SIZE, 0);
+    rec_CmdFillBuffer(cb, g_vt.table, 0, (u64)SH_VT_SLOTS * 8, 0);
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
     mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT;
     mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
@@ -347,6 +367,27 @@ static void table_copy(void) {
     rec_CmdPipelineBarrier2(cb, &d);
     g_vt.back_sub[s] = vk_last_submit() + 1;
     g_vt.slot = (s + 1) % VT_BACKS;
+}
+/* the identities' bits to the device, after the table, when a bind changed one */
+static void named_copy(void) {
+    if (!g_vt.named_dirty) return;
+    g_vt.named_dirty = 0;
+    memcpy(g_vt.named_ptr, g_vt.named, SH_VT_IDS / 8);
+    VkCommandBuffer cb = vk_cmd();
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_HOST_BIT,
+                           .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                           .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    rec_CmdPipelineBarrier2(cb, &d);
+    VkBufferCopy copy = {0, (u64)SH_VT_SLOTS * 8, SH_VT_IDS / 8};
+    rec_CmdCopyBuffer(cb, g_vt.named_stage, g_vt.table, 1, &copy);
+    mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+    rec_CmdPipelineBarrier2(cb, &d);
 }
 /* blocks not seen for vt_frames presents are no longer wanted; while the GPU's memory is under pressure, the oldest
    eighth of those held too, down to the ones seen in the last VT_FLOOR presents */
@@ -473,13 +514,14 @@ void vk_vt_frame(void) {
         }
     }
     table_copy();
+    named_copy();
     g_vt.ns += plat_ns() - t0;
     if (g_vt.now % VT_SAY == 0) say();
 }
 
-static int table_buffer(VkBuffer* b, DevMem* m, u32 at, VkBufferUsageFlags usage, u32** ptr) {
+static int table_buffer(VkBuffer* b, DevMem* m, u32 at, u64 size, VkBufferUsageFlags usage, u32** ptr) {
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                             .size = (u64)SH_VT_SLOTS * 8,
+                             .size = size,
                              .usage = usage,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     DevMemWant want = {
@@ -501,20 +543,27 @@ void vk_vt_init(void) {
             lacks);
         return;
     }
+    const u64 table = (u64)SH_VT_SLOTS * 8, named = SH_VT_IDS / 8;
     g_vt.ids = calloc(SH_VT_IDS, sizeof *g_vt.ids);
-    int ok = g_vt.ids && table_buffer(&g_vt.table, &g_vt.table_mem, DM_DEVICE,
-                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                      NULL);
+    g_vt.named = calloc(SH_VT_IDS / 32, sizeof *g_vt.named);
+    int ok = g_vt.ids && g_vt.named &&
+             table_buffer(&g_vt.table, &g_vt.table_mem, DM_DEVICE, table + named,
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                          NULL) &&
+             table_buffer(&g_vt.named_stage, &g_vt.named_mem, DM_CACHED, named, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          &g_vt.named_ptr) &&
+             g_vt.named_ptr;
     for (u32 i = 0; ok && i < VT_BACKS; i++)
-        ok = table_buffer(&g_vt.back[i], &g_vt.back_mem[i], DM_CACHED, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        ok = table_buffer(&g_vt.back[i], &g_vt.back_mem[i], DM_CACHED, table, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                           &g_vt.back_ptr[i]) &&
              g_vt.back_ptr[i];
-    if (!ok) fatal("vt: no memory for the table of the samples' marks (%u KiB)", SH_VT_SLOTS * 8 >> 10);
+    if (!ok) fatal("vt: no memory for the table of the samples' marks (%u KiB)", (u32)((table + named) >> 10));
+    g_vt.named_dirty = 1; /* the device's copy starts as the host's: no identity named */
     VkBufferDeviceAddressInfo ai = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = g_vt.table};
     g_shader_vt_address = vkGetBufferDeviceAddress(g_vk.dev, &ai);
     LOG("vt: virtual textures on: ASTC textures of 1 MiB and more that programs only sample take memory a %u KiB "
         "block at a time, where frames sample them; the marks' table of %u KiB at device address %llx; a block goes "
         "%d presents after it was last sampled\n",
-        64u, SH_VT_SLOTS * 8 >> 10, (unsigned long long)g_shader_vt_address, g_settings.vt_frames);
+        64u, (u32)((table + named) >> 10), (unsigned long long)g_shader_vt_address, g_settings.vt_frames);
 }

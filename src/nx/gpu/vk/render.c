@@ -2746,6 +2746,9 @@ static int indexed_uniform(DescWrites* writes, VkDescriptorSet set, int stage, u
    either), reads as its kind's null texture. So does a texture of another kind than the slot's. Targets use snapshots
    refreshed after a draw changes them. Tables of different kinds share the binding, each element viewed as the kind of
    the table that names it: a handle that two kinds name has an element for each. */
+/* vt_sparse: why a slot outside ShaderInfo.tex_vt_mask holds a virtual texture whole */
+static const char vt_unmarked[] = "a fragment program reads it in a way that marks nothing (a fetch, a gather, a "
+                                 "sample with gradients, a depth compare or a reduction)";
 /* vt_sparse: every slot of si that reads the indexed table of slot `first` marks its samples (ShaderInfo.tex_vt_mask) */
 static int table_marks(const ShaderInfo* si, int first) {
     for (int i = 0; i < si->ntex; i++)
@@ -2833,8 +2836,11 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                     tex_resolve(ds, handle, &x);
                     x.t = capture_sample(x.t);
                     /* vt_sparse: the texture this header index names in the marks of the table's samples */
-                    if (x.t && x.t->vt)
-                        vk_vt_bind(handle, x.t, g_shader_sm86 && stage == ST_FS && table_marks(&s->si, first[table]));
+                    vk_vt_bind(handle, x.t,
+                               !g_shader_sm86                         ? "a Maxwell program samples it through an indexed table"
+                               : stage != ST_FS                       ? "a program that is no fragment program samples it"
+                               : !table_marks(&s->si, first[table])   ? vt_unmarked
+                                                                      : NULL);
                     if (x.t && !!(kind->flags & 2) == !!x.t->msaa && (!kind->shadow || !x.t->f.is_int)) {
                         if (is_target(x.t, rt, zt, n)) {
                             /* An indexed handle needs the same pre-draw contents as a directly bound texture.
@@ -3329,13 +3335,13 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                       i, stage, handle, (x->tic[4] >> 23) & 0xF);
         Surf* t = capture_sample(x->t);
         /* vt_sparse: the texture the marks of the slot's samples name, an Ounce program's by this header index */
-        if (t && t->vt) {
-            const int marked = stage == ST_FS && (s->si.tex_vt_mask >> i & 1);
-            if (g_shader_sm86)
-                vk_vt_bind(handle, t, marked);
-            else
-                vk_vt_slot((u32)i, t, marked); /* a Maxwell program's marks name the draw's set and the slot */
-        }
+        const char* unmarked = stage != ST_FS                    ? "a program that is no fragment program samples it"
+                               : !(s->si.tex_vt_mask >> i & 1) ? vt_unmarked
+                                                               : NULL;
+        if (g_shader_sm86)
+            vk_vt_bind(handle, t, unmarked);
+        else if (t && t->vt)
+            vk_vt_slot((u32)i, t, unmarked); /* a Maxwell program's marks name the draw's set and the slot */
         if (stage == ST_FS) t = predraw_sample(i, t);
         /* a multisampled texture's program fetches its samples (flags bit 1), and an image of other samples than
            the program's reads zeros, as a missing texture does */

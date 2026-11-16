@@ -1499,8 +1499,8 @@ void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx);
    way, or no room); vk_vt_forget: it goes. vk_vt_want: the bits of its blocks (vk_image_sparse_bind's order) left only where it
    wants memory (all, for one held whole); vk_vt_bound: the bind of bits went through. vk_vt_fresh: the blocks with
    memory and no texels yet, a bit each; vk_vt_loaded: every block with memory has its texels.
-   vk_vt_bind: a draw binds t to a slot whose samples mark what they read under identity id (marked), or to one whose
-   reads mark nothing: t is then held whole (vk_vt_whole, which says why once). vk_vt_slot: the same for a Maxwell
+   vk_vt_bind: a draw binds t (NULL or any texture) to a slot whose samples mark what they read under identity id, or
+   (unmarked: why, for the log) to one whose reads mark nothing: a virtual t is then held whole (vk_vt_whole). vk_vt_slot: the same for a Maxwell
    program's slot, whose marks name the draw's set of virtual textures and the slot; vk_vt_draw_word: the draw's word
    of the push constants, that set (0: no virtual texture) above the frame's quads that mark (vk_vt_phase). vk_vt_frame: each present, the marks that landed applied, the textures whose
    wanted blocks changed bound and loaded (texture.c vk_tex_vt_load: 0 when memory or staging ran out), the blocks
@@ -1514,10 +1514,10 @@ void vk_vt_bound(const Surf* t, const u8* bits, u64 nbits);
 const u8* vk_vt_fresh(const Surf* t, u32* nblocks);
 void vk_vt_loaded(const Surf* t);
 void vk_vt_remapped(const Surf* t); /* t loads again: the blocks guest memory didn't map may be mapped now */
-void vk_vt_bind(u32 id, Surf* t, int marked);
+void vk_vt_bind(u32 id, Surf* t, const char* unmarked);
 void vk_vt_whole(Surf* t, const char* why);
 u32 vk_vt_phase(void);
-void vk_vt_slot(u32 slot, Surf* t, int marked);
+void vk_vt_slot(u32 slot, Surf* t, const char* unmarked);
 u32 vk_vt_draw_word(void);
 void vk_vt_frame(void);
 int vk_tex_vt_load(Surf* t);

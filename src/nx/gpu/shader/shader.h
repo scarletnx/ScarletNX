@@ -578,6 +578,8 @@ extern ShCaps g_spirv_translate;
      word 0: the texture's identity (SH_VT_IDS of them: an Ounce program's header index; a Maxwell program's set of
              the draw and slot) | level << 20 | resident << 24 | u's side << 25 | v's side << 27 | 1 << 31
      word 1: u's cell | v's cell << 10 | layer << 20
+   After the table come SH_VT_IDS bits, a word 32 identities: the ones that name a virtual texture now, whose samples
+   alone write marks (any other texture's would fill the table).
    A cell is 1 / SH_VT_CELLS of the level, from the coordinate's fraction; a side says the coordinate was under 0 (1)
    or 1 and over (2), where the sampler's address mode, which the program doesn't know, decides the texel */
 extern u64 g_shader_vt_address;

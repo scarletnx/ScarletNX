@@ -157,6 +157,26 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
                             SPV(e, SPV_OP_SELECT, s->t_u32, resident, cu(e, s, 1u << 24), zero)),
                          OR(OR(SHL(uo, 25), SHL(vo, 27)), cu(e, s, 1u << 31)));
     const u32 base = spv_emit_op(e, SPV_OP_BITCAST, ids->table_ptr, (u32[]){ids->address}, 1);
+    /* only a virtual texture's samples take a slot of the table: its identity's bit, in the words after the table */
+    const u32 identity = SPV(e, SPV_OP_BITWISE_AND, s->t_u32, s->id, cu(e, s, SH_VT_IDS - 1));
+    const u32 named = spv_emit_op(
+        e, SPV_OP_ATOMIC_LOAD, s->t_u32,
+        (u32[]){spv_emit_op(
+                    e, SPV_OP_ACCESS_CHAIN, ids->word_ptr,
+                    (u32[]){base, zero, SPV(e, SPV_OP_I_ADD, s->t_u32, SHR(identity, 5), cu(e, s, 2 * SH_VT_SLOTS))},
+                    3),
+                cu(e, s, 1), zero},
+        3);
+    const u32 is_virtual = SPV(e, SPV_OP_I_NOT_EQUAL, s->t_bool,
+                               SPV(e, SPV_OP_BITWISE_AND, s->t_u32,
+                                   SPV(e, SPV_OP_SHIFT_RIGHT_LOGICAL, s->t_u32, named,
+                                       SPV(e, SPV_OP_BITWISE_AND, s->t_u32, identity, cu(e, s, 31))),
+                                   cu(e, s, 1)),
+                               zero);
+    const u32 write = spv_emit_id(e), written = spv_emit_id(e);
+    spv_emit_selection_merge(e, written);
+    spv_emit_branch_conditional(e, is_virtual, write, written);
+    spv_emit_label(e, write);
     for (u32 k = 0; k < 2; k++) {
         const u32 w0 = OR(flags, SHL(k ? m1 : m0, 20));
         /* shader_vt_slot's hash */
@@ -175,6 +195,8 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
 #undef OR
 #undef SHL
 #undef SHR
+    spv_emit_branch(e, written);
+    spv_emit_label(e, written);
     spv_emit_branch(e, done);
     spv_emit_label(e, done);
     return result;
