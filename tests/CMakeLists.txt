@@ -451,6 +451,10 @@ if(TARGET snx_ctr_board)
     add_test(NAME 3ds_vk_draw_scaled_layout COMMAND snx-test-3ds-vk-draw --scaled-layout)
     set_tests_properties(3ds_vk_draw_scaled_layout PROPERTIES SKIP_RETURN_CODE 77
                          ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+    # the same through FSR 1 and FXAA: each screen's last pass drawn into the window's rendering
+    add_test(NAME 3ds_vk_draw_scaled_layout_effects COMMAND snx-test-3ds-vk-draw --scaled-layout-effects)
+    set_tests_properties(3ds_vk_draw_scaled_layout_effects PROPERTIES SKIP_RETURN_CODE 77
+                         ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
     if(NOT WIN32 AND Python3_Interpreter_FOUND)
         # the copies' blits, lookups and compare, under Khronos validation
         add_test(NAME 3ds_vk_draw_scaled_transfer_validation
@@ -464,6 +468,15 @@ if(TARGET snx_ctr_board)
                      $<TARGET_FILE:snx-test-3ds-vk-draw> --scaled-verify)
         set_tests_properties(3ds_vk_draw_scaled_transfer_validation 3ds_vk_draw_scaled_rotating_validation
                              3ds_vk_draw_scaled_verify_validation PROPERTIES SKIP_RETURN_CODE 77)
+        # the window's rendering, with the screens drawn by a copy and through the effects, under Khronos validation
+        foreach(snx_mode scaled-layout scaled-layout-effects)
+            string(REPLACE "-" "_" snx_name "${snx_mode}")
+            add_test(NAME 3ds_vk_draw_${snx_name}_validation
+                     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                         $<TARGET_FILE:snx-test-3ds-vk-draw> --${snx_mode})
+            set_tests_properties(3ds_vk_draw_${snx_name}_validation PROPERTIES SKIP_RETURN_CODE 77
+                                 ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+        endforeach()
     endif()
     # the scaled modes again on each path the GPU's work can take to the RAM (vk.h)
     foreach(snx_path copy in_place)
