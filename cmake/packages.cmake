@@ -33,6 +33,42 @@ endif()
 set(CPM_USE_LOCAL_PACKAGES OFF)
 set(CPM_LOCAL_PACKAGES_ONLY OFF)
 
+# CPMUtil takes a <package>_CUSTOM_DIR as it is, without its entry's patches: refused for a patched package, which would
+# build unpatched otherwise
+function(snx_cpm_check_custom_dirs)
+    string(JSON count LENGTH "${CPMFILE_CONTENT}")
+    if(NOT count)
+        return()
+    endif()
+    math(EXPR last "${count} - 1")
+    foreach(i RANGE ${last})
+        string(JSON key MEMBER "${CPMFILE_CONTENT}" ${i})
+        string(JSON patches ERROR_VARIABLE error GET "${CPMFILE_CONTENT}" "${key}" patches)
+        if(error)
+            continue()
+        endif()
+        string(JSON package ERROR_VARIABLE error GET "${CPMFILE_CONTENT}" "${key}" package)
+        if(error)
+            set(package "${key}")
+        endif()
+        if(NOT ${package}_CUSTOM_DIR)
+            continue()
+        endif()
+        string(JSON n LENGTH "${patches}")
+        math(EXPR n "${n} - 1")
+        set(names "")
+        foreach(j RANGE ${n})
+            string(JSON name GET "${patches}" ${j})
+            list(APPEND names "${name}")
+        endforeach()
+        list(JOIN names ", " names)
+        message(FATAL_ERROR "${package}_CUSTOM_DIR=${${package}_CUSTOM_DIR}: CPMUtil takes that folder as it is, and "
+                            "cpmfile.json patches ${package} with ${names} (.patch/${key}). Configure with "
+                            "-D${package}_CUSTOM_DIR= for the pinned release, which CPMUtil downloads and patches.")
+    endforeach()
+endfunction()
+snx_cpm_check_custom_dirs()
+
 # A field of a cpmfile.json entry (a version a message names, a hash a cache key holds), stopping the configure when
 # the entry has none
 function(snx_cpmfile out key field)

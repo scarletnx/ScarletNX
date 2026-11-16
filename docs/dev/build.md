@@ -349,8 +349,9 @@ matching `Game_code.so/.dll`, in the data folder's `recompiled/` ([Usage](../use
 CPMUtil downloads each package [cpmfile.json](../../cpmfile.json) pins once into a shared `.cache/cpm` cache, at
 `<package>/<version>`, checked by its SHA-512 ([Third-party packages](#third-party-packages)). Offline configuration
 needs the matching sources already in the cache, or `-D<package>_CUSTOM_DIR=/path` naming a folder that holds one (a
-package of one file is checked against its pin there too). Cached sources stay unmodified: FFmpeg's patch goes on a copy
-in the build tree. With tests on (`BUILD_TESTING`, the default) and the runtime, libvpx's VP9 test vectors download
+package of one file is checked against its pin there too; a patched package, FFmpeg's and FidelityFX-FSR2's, is
+refused there, as CPMUtil would take it unpatched). A patched package is kept patched in the cache, extracted and patched
+again when its patches change. With tests on (`BUILD_TESTING`, the default) and the runtime, libvpx's VP9 test vectors download
 there too ([tests](../../tests/CMakeLists.txt)). The Switch runtime's shared font stand-ins download only when it is
 built ([Shared fonts](../platforms/nx/filesystem.md#shared-fonts)). Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 is
 the system's package when `find_package` finds 3.4.18 or newer, else the pinned static source build;
@@ -419,10 +420,13 @@ To add one:
    extract, is added with `snx_package_file(<key>)`.
 3. Its license: in the install (CMakeLists.txt, under `licenses`) when it ships, and in [CREDITS](../CREDITS.md).
 
-A patch goes on a copy in the build tree (`snx_patched_copy`, [patched_copy.cmake](../../cmake/patched_copy.cmake)),
-never CPMUtil's `patches`, which leave a `<package>_CUSTOM_DIR` unpatched. `runtime_architecture` refuses a download
-outside CPMUtil (CPM.cmake's calls, FetchContent, `file(DOWNLOAD)`), a name cpmfile.json does not pin, a pin nothing
-adds, a package without a `min_version` added without `FORCE_BUNDLED_PACKAGE ON`, and a cpmfile.json out of that form.
+A patch goes in `.patch/<key>/NNNN-<what>.patch`, named in the entry's `patches` in the order they apply. CPMUtil
+applies them with `patch -p1` and no fuzz to the release it extracts, does it again on a fresh copy when one changes,
+and stops the configure on one that does not apply. To make one, edit a copy of the pristine file and rebuild the
+hunks with `diff -u --label a/<file> --label b/<file>`. `runtime_architecture` refuses a download outside CPMUtil
+(CPM.cmake's calls, FetchContent, `file(DOWNLOAD)`), a name cpmfile.json does not pin, a pin nothing adds, a package
+without a `min_version` added without `FORCE_BUNDLED_PACKAGE ON`, a patch named and missing or there and not named,
+and a cpmfile.json out of that form.
 
 ## Build variants
 
@@ -456,7 +460,7 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
   SDL3). `-DCPM_USE_LOCAL_PACKAGES=ON` before CPMUtil, read as these where the system has them. See
   [Rebuild, deploy, cache](#rebuild-deploy-cache).
 - `-D<package>_CUSTOM_DIR=/path`: a folder holding that package (as cpmfile.json names it) already, which the configure
-  takes instead of downloading it.
+  takes instead of downloading it; refused for a package cpmfile.json patches, which CPMUtil would take unpatched.
 - `-DSNX_DEPS_CACHE=/path`: reuse and publish finished FFmpeg, OpenSSL, jemalloc and SPIRV-Tools builds there
   (default: the environment's `SNX_DEPS_CACHE`, else none).
 - `-DSNX_BUILD_NX=OFF`: omit the Switch runtime (default ON).

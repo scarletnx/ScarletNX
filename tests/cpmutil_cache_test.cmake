@@ -251,6 +251,13 @@ configure(pat)
 if(failed OR NOT EXISTS "${pat}/.cpm_patch_key")
     fail("pat: a folder a patch did not apply to is not fetched again:\n${out}")
 endif()
+# a folder of the packager's for a patched package, which CPMUtil would take unpatched: refused, with the patches
+configure(pat "-Dpat_CUSTOM_DIR=${WORK}/payload/pat-1")
+if(NOT failed)
+    fail("pat: pat_CUSTOM_DIR was taken unpatched:\n${out}")
+endif()
+says(pat-custom "pat_CUSTOM_DIR=${WORK}/payload/pat-1: CPMUtil takes that folder as it is, and cpmfile.json patches"
+                "pat with 0001-four.patch (.patch/pat).")
 
 # A fetch locks its own package alone: a configure fetches one package while another configure is inside its fetch of
 # the other one (PAUSE: its download waits until the first configure has written its folder, or 30 s, and then fails).

@@ -383,7 +383,7 @@ def check_packages(repo):
     vendored CPMUtil, every key a call names pinned in cpmfile.json and every pin added by one, a package without a
     min_version (none the system may give) added with FORCE_BUNDLED_PACKAGE ON and none with one, and cpmfile.json in
     CPMUtil's form: lowercase keys, its fields, a version, a SHA-512, a url or a repo, written as jq --indent 4 -S
-    writes it"""
+    writes it, and every patch an entry names in .patch/<key>/ and named by one"""
     errors, pins, text = [], {}, None
     path = repo / 'cpmfile.json'
     if path.exists():
@@ -418,6 +418,17 @@ def check_packages(repo):
             )
         if not entry.get('url') and not entry.get('repo'):
             errors.append(f'cpmfile.json: {key} has neither a url nor a repo to download it from')
+        for patch in entry.get('patches', []):
+            if not (repo / '.patch' / key / patch).is_file():
+                errors.append(f'cpmfile.json: {key} names the patch {patch}, and .patch/{key}/{patch} is no file')
+    if (repo / '.patch').is_dir():
+        for path in sorted(p for p in (repo / '.patch').rglob('*') if p.is_file()):
+            shown = path.relative_to(repo).as_posix()
+            parts = path.relative_to(repo / '.patch').parts
+            if len(parts) != 2 or parts[1] not in pins.get(parts[0], {}).get('patches', []):
+                errors.append(
+                    f'{shown} is a patch no cpmfile.json entry names in its "patches": CPMUtil never applies it'
+                )
     adds, reads = [], []  # (shown, line, key pattern, forced or None)
     files = [repo / 'CMakeLists.txt'] if (repo / 'CMakeLists.txt').exists() else []
     for root in CMAKE_ROOTS:
