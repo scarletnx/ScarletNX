@@ -11,7 +11,7 @@
 #include "nx/gpu/vk/shading_rate.h"
 #include "support/shading_rate_ref.h"
 
-void shading_rate_glsl_run(const uint32_t push[11], const uint8_t* game, uint8_t* out);
+void shading_rate_glsl_run(const uint32_t push[12], const uint8_t* game, uint8_t* out);
 
 static unsigned g_checks, g_failures;
 #define CHECK(c, what)                                                                                                 \
@@ -25,7 +25,8 @@ static unsigned g_checks, g_failures;
 
 /* an RTX 4090 on Windows: both extensions, NVIDIA's with 16x16 texels and palettes of 16 entries */
 static VkVrsDevice nvidia(void) {
-    return (VkVrsDevice){.nv = 1,
+    return (VkVrsDevice){.ounce = 1,
+                         .nv = 1,
                          .nv_texel = {16, 16},
                          .nv_palette = 16,
                          .khr = 1,
@@ -35,7 +36,7 @@ static VkVrsDevice nvidia(void) {
 }
 /* an AMD integrated GPU: the KHR attachment only, at 8x8 */
 static VkVrsDevice amd(void) {
-    return (VkVrsDevice){.khr = 1, .khr_min = {8, 8}, .khr_max = {8, 8}, .khr_aspect = 1};
+    return (VkVrsDevice){.ounce = 1, .khr = 1, .khr_min = {8, 8}, .khr_max = {8, 8}, .khr_aspect = 1};
 }
 
 static void check_choose(void) {
@@ -44,6 +45,10 @@ static void check_choose(void) {
     VkVrsDevice d = nvidia();
     CHECK(vk_vrs_choose(&d, &t, line, sizeof line) == VK_VRS_NV && t.width == 16 && t.height == 16,
           "a device with both extensions takes NVIDIA's");
+    d.ounce = 0;
+    CHECK(vk_vrs_choose(&d, &t, line, sizeof line) == VK_VRS_NONE && !t.width,
+          "a game that is no Ounce program keeps its pipelines without either extension");
+    d.ounce = 1;
     d.nv_palette = 12;
     CHECK(vk_vrs_choose(&d, &t, line, sizeof line) == VK_VRS_KHR && t.width == 16,
           "palettes shorter than the game's 16 entries take the KHR attachment");
@@ -61,7 +66,7 @@ static void check_choose(void) {
           "the console's 16x16 where the range has it");
     d.khr_min = (VkExtent2D){12, 12}, d.khr_max = (VkExtent2D){12, 12};
     CHECK(vk_vrs_choose(&d, &t, line, sizeof line) == VK_VRS_NONE, "a texel size that is no power of two is refused");
-    d = (VkVrsDevice){0};
+    d = (VkVrsDevice){.ounce = 1};
     CHECK(vk_vrs_choose(&d, &t, line, sizeof line) == VK_VRS_NONE && strstr(line, "full rate"),
           "no extension: the full rate, and the line says so");
 }
@@ -125,10 +130,10 @@ static void check_glsl(void) {
         for (u32 i = 0; i < gw * gh; i++) game[i] = (u8)next(); /* the high bits too, which the body drops */
         u8 value[16];
         for (u32 i = 0; i < 16; i++) value[i] = (u8)(p.table[i / 4] >> (8 * (i % 4)));
-        u32 push[11];
+        u32 push[12];
         memcpy(push, &p, sizeof push);
         shading_rate_glsl_run(push, game, gpu);
-        shading_rate_ref(game, gw, gh, 16, t, t, p.size_x, p.size_y, value, ref);
+        shading_rate_ref(game, gw, gh, 16, t, t, p.size_x, p.size_y, value, (int)p.finest, ref);
         cases++;
         if (memcmp(gpu, ref, (size_t)p.size_x * p.size_y)) {
             wrong++;
@@ -141,10 +146,26 @@ static void check_glsl(void) {
     }
     g_checks += cases;
     g_failures += wrong;
+    /* a KHR texel of 32x32 over 2x2 of the game's texels, with the race's palette: indices 15 (4x4) and 13 (2x2)
+       give 2x2, the finer, and one index 0 (1x1) among them gives 1x1. NVIDIA's takes the center's index */
+    VkVrsPush p;
+    u8 out[1];
+    u32 push[12];
+    const u8 coarse[4] = {15, 15, 13, 15}, one[4] = {15, 0, 15, 15};
+    vk_vrs_push(VK_VRS_KHR, (VkExtent2D){32, 32}, 2, 2, 16, 0xb985555555555555ull, &p);
+    memcpy(push, &p, sizeof push);
+    shading_rate_glsl_run(push, coarse, out);
+    CHECK(p.size_x == 1 && out[0] == 5, "the finest of 4x4 and 2x2 under a texel is 2x2");
+    shading_rate_glsl_run(push, one, out);
+    CHECK(out[0] == 0, "a 1x1 texel under a coarse one makes it 1x1");
+    vk_vrs_push(VK_VRS_NV, (VkExtent2D){32, 32}, 2, 2, 16, 0, &p);
+    memcpy(push, &p, sizeof push);
+    shading_rate_glsl_run(push, one, out);
+    CHECK(out[0] == 15, "VK_NV_shading_rate_image's index under the center pixel, (16, 16): texel (1, 1)");
 }
 
 int main(void) {
-    _Static_assert(sizeof(VkVrsPush) == 11 * sizeof(u32), "VkVrsPush is shading_rate.comp's 11 words");
+    _Static_assert(sizeof(VkVrsPush) == 12 * sizeof(u32), "VkVrsPush is shading_rate.comp's 12 words");
     check_choose();
     check_table();
     check_palette();
