@@ -1338,8 +1338,9 @@ setting Draw state check
     words Off|On
     help 1 = a draw that keeps an earlier draw's shaders and pipeline makes them again to compare, and the log names
     help each difference (a register missing from a group, an input that is not compared, a kept key that is not the
-    help state's bytes). A kept constant buffer's bytes are hashed again (where the CPU wrote nothing since) and a
-    help kept texture view or sampler is made again, and compared too. Slow: for checking what a draw keeps
+    help state's bytes). A kept constant buffer's bytes are hashed again (where the CPU wrote nothing since), a kept
+    help texture view or sampler is made again, and a descriptor kept from an earlier frame is encoded again, and
+    help compared too. Slow: for checking what a draw keeps
 setting Profiler
     key profile
     only windows

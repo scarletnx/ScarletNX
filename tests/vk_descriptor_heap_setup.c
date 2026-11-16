@@ -6,6 +6,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/vk/ledger.h"
+#include "nx/runtime/platform/log.h" /* snx_settings.h: g_settings */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,6 +72,11 @@ VkCommandBuffer vk_cmd(void) { return VK_NULL_HANDLE; }
 u32 vk_cb_begun(void) { return 1; }
 u64 vk_frame_id(void) { return 1; }
 u32 vk_frame_slot(void) { return 0; }
+Settings g_settings;
+int vk_lock_held(void) { return 1; }
+u64 vk_submit_number(void) { return 1; }
+u64 vk_last_submit(void) { return 0; }
+void vk_submit_progress(u64* submitted, u64* done) { *submitted = *done = 0; }
 void rec_CmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout, u32 first, u32 n,
                                const VkDescriptorSet* sets, u32 ndyn, const u32* dyn) {
     (void)cb, (void)bp, (void)layout, (void)first, (void)n, (void)sets, (void)ndyn, (void)dyn;
@@ -246,7 +252,8 @@ int main(void) {
     g_test.buffer_result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
     char why[256];
     snprintf(why, sizeof why, "the resource heap's %llu-byte buffer could not be made",
-             (unsigned long long)(VK_DESCRIPTOR_HEAP_RESOURCE_FRAME * VK_FRAMES + 256 + 63));
+             (unsigned long long)(VK_DESCRIPTOR_HEAP_RESOURCE_FRAME * VK_FRAMES + 256 +
+                                  32ull * VK_DESCRIPTOR_HEAP_LASTING_SLOTS + 63)); /* the lasting part's 32-byte slots */
     refused(&props, 0, why, "the resource heap's buffer");
     g_test.pool_result = VK_ERROR_OUT_OF_HOST_MEMORY;
     refused(&props, 1, "the empty descriptor set that leaves descriptor buffers: vkCreateDescriptorPool failed",

@@ -91,6 +91,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/maxwell/write_pages.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/renderer.h"
 #include "common/gpu/vk/vk_common.h"
@@ -400,6 +401,7 @@ static void read_done(u64 sub) {
 static u64 last_read(const Imp* m) { return m->sub >= g_uma.seg ? vk_submit_number() : m->sub; }
 static u64 last_bound(const Chunk* c) { return c->sub >= g_uma.seg ? vk_submit_number() : c->sub; }
 static void imp_destroy(const Imp* m) {
+    vk_descriptor_heaps_forget_buffer(m->buf); /* its kept descriptors, before a new buffer can get its handle */
     vkDestroyBuffer(g_vk.dev, m->buf, NULL);
     vkFreeMemory(g_vk.dev, m->mem, NULL);
     if (m->fd >= 0) plat_gpu_buffer_free(m->fd, m->handle, m->size); /* a region's, whose pages moved off it */
@@ -593,6 +595,7 @@ static Chunk* placed_of(u64* cpu, u64 len) {
     return c;
 }
 static void chunk_destroy(const Chunk* c) {
+    vk_descriptor_heaps_forget_buffer(c->buf); /* its kept descriptors, before a new buffer can get its handle */
     vkDestroyBuffer(g_vk.dev, c->buf, NULL);
     vkFreeMemory(g_vk.dev, c->mem, NULL);
     plat_vm_fd_close(c->fd); /* a view still mapped keeps its pages */
@@ -720,6 +723,7 @@ static int placed_commit(u64 a, u64 size) {
                   (unsigned long long)w, (unsigned long long)MEM_PLACED);
         return -1;
     }
+    vk_descriptor_heaps_lasting(m.buf); /* it lives past the frame: its descriptors are kept (chunk_destroy forgets) */
     memset(GP(w), 0, (size_t)MEM_PLACED); /* the driver's memory may hold anything */
     memset(m.pages, 0xFF, sizeof m.pages);
     u32 i = chunk_find(w);
@@ -1107,6 +1111,7 @@ static u32 imp_get(u64 cpu, u64 len) {
         fail(lo, hi, why);
         return ~0u; /* the imports there stay */
     }
+    vk_descriptor_heaps_lasting(m.buf); /* it lives past the frame: its descriptors are kept (imp_destroy forgets) */
     g_uma.imports++;
     g_uma.import_bytes += hi - lo;
     g_uma.import_ns += plat_ns() - t0;

@@ -118,6 +118,7 @@ void vk_own_res_unref(VkOwnRes* r) { (void)r; }
 void vk_own_res_wrote(VkOwnRes* r) { (void)r; }
 void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) { (void)cpu, (void)size, (void)r, (void)off; }
 void vk_mem_track(DevMem a, u32 owner) { (void)a, (void)owner; }
+void vk_descriptor_heaps_lasting(VkBuffer buffer) { (void)buffer; } /* no descriptor heaps here */
 u64 vk_submit_number(void) { return g_t.sub; }
 u32 vk_present_before(u64 ago_ns, u32 presents) {
     (void)ago_ns, (void)presents;

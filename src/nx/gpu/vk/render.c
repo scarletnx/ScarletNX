@@ -1338,7 +1338,12 @@ static struct {
     u32 ww_epoch;
     u64 heap_buffer_calls, heap_buffer_hits, heap_image_calls, heap_image_hits;
 } g_stats;
-void vk_draw_counts(VkDrawCounts* c) { *c = g_stats.n; }
+void vk_draw_counts(VkDrawCounts* c) {
+    *c = g_stats.n;
+    VkDescriptorHeapStats heaps; /* the kept descriptors of the heaps' lasting part that draw_state_check=1 found wrong */
+    vk_descriptor_heaps_get_stats(&heaps);
+    c->differs += heaps.lasting_differs;
+}
 void vk_render_stats_log(void) {
     const VkDrawCounts* n = &g_stats.n;
     const VkDrawCounts* w = &g_stats.was;

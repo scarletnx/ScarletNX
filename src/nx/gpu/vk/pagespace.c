@@ -55,6 +55,7 @@
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pagespace.h"
+#include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
@@ -270,6 +271,7 @@ static PgRegion* region_get(u64 rg) {
             return NULL;
         }
     }
+    vk_descriptor_heaps_lasting(r->buf); /* it lives as long as the cache: its descriptors are kept */
     g_pages.nregion++;
     return g_pages.region[rg] = r;
 }
@@ -405,6 +407,7 @@ static u32 slab_join(PgRegion* r, u64 g0, u64 g1, u64 sub) {
         return 0;
     }
     vk_mem_track(made.mem, VK_OWN_BUFFER);
+    vk_descriptor_heaps_lasting(made.buf); /* kept descriptors until slab_retire's buffer goes (devmem.c forgets) */
     VkCommandBuffer cb = VK_NULL_HANDLE;
     for (u64 g = lo; g <= hi; g++) {
         PgGran* q = r->gran[g];

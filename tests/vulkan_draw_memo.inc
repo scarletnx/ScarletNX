@@ -7,6 +7,7 @@
    one key. A new write tracking epoch, or the program's code written and invalidated, makes it again. Each sequence
    is drawn a second time with draw_state_check=1, which makes the kept states again and compares: the same pixels,
    and no difference. Synthetic programs only. */
+#include "nx/gpu/vk/descriptor_heaps.h" /* the lasting part's counts (last_cases) */
 #define MEMO_GPU    0x9d4000000ull
 #define MEMO_CPU    (HEAP_BASE + 0x13400000)
 #define MEMO_SIDE   4
@@ -124,9 +125,8 @@ static int memo_case(GpuChannel* channel, const char* what, const MemoDraw* draw
    each draw, and the pixels must be the same in the two runs and as the case's model says. A fragment program reads its
    color from constant buffer 3 (LIFE_CB), or samples a 2x1 R32F texture of 0 and 1 at 5/8 of its width, linearly (red
    0.75) */
-#define LIFE_CB (MEMO_GPU + 0x38000)
-#define LIFE_POOL                                                                                                      \
-    (MEMO_GPU + 0x3a000) /* the texture header; its sampler at 0x100, the handle's buffer at
+#define LIFE_CB          (MEMO_GPU + 0x38000)
+#define LIFE_POOL        (MEMO_GPU + 0x3a000) /* the texture header; its sampler at 0x100, the handle's buffer at
                                                  0x200, the texels at 0x400 */
 #define LIFE_CB_PROGRAM  0x10800
 #define LIFE_TEX_PROGRAM 0x10c00
@@ -205,8 +205,8 @@ static int life_event(GpuChannel* channel, int ev) {
                                   .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
                                   .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                   .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
-            VkDependencyInfo d = {
-                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
+            VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
+                                  .pMemoryBarriers = &b};
             rec_CmdPipelineBarrier2(vk_cmd(), &d);
             vk_unlock();
             break;
@@ -281,7 +281,7 @@ static int life_sequence(GpuChannel* channel, int tex, const u8* events, u32 n, 
         rt_clear(channel, target, MEMO_SIDE, MEMO_SIDE, 0, 0);
         r[0x851] = tex ? LIFE_TEX_PROGRAM : LIFE_CB_PROGRAM;
         r[0x458] = 0 | 1u << 21 | 7u << 27; /* RGBA32F, the whole target's triangle */
-        channel->r3d_dirty = ~0u;           /* the registers were set directly */
+        channel->r3d_dirty = ~0u; /* the registers were set directly */
         mx_draw_state_sync(channel);
         DrawCall call = {.topology = 4, .count = 3, .instances = 1};
         vk_render_draw(&channel->ds, &call, &channel->owner);
@@ -419,6 +419,214 @@ static int life_cases(GpuChannel* channel) {
     return 0;
 }
 
+/* The descriptor heaps' lasting part (descriptor_heaps.c): the descriptors of views and of the buffers that outlive a
+   frame are kept from frame to frame, and a destroy forgets them. Each case draws as it is and with
+   draw_state_check=1, each draw into a target of its own read at once (an eviction takes the targets too), and the
+   pixels must be the same in the two runs and the model's. LAST_EVICT evicts the texture, lets its view be
+   destroyed (the frames after it), and makes its texture 4 texels wide (0, 0, 1, 1: red one where the program samples):
+   a view made later, often with the destroyed one's handle, must be drawn, not the kept descriptor of the old one
+   (2 wide, red 0.75 or none). LAST_REBUFFER drops every buffer of the buffer cache, lets them be destroyed, and has the
+   CPU write the constant buffer (blue) */
+enum {
+    LAST_NONE,
+    LAST_FRAMES,   /* VK_FRAMES + 1 presents, each with commands: every slot recycled, its deferred objects destroyed */
+    LAST_EVICT,    /* the texture evicted, destroyed, and made 4 texels wide */
+    LAST_REBUFFER, /* the buffer cache's buffers dropped and destroyed, and new bytes in the constant buffer */
+};
+#define LAST_DRAWS 8
+typedef struct {
+    u64 made, hits, forgotten, differs, checked;
+    int reused; /* a view after LAST_EVICT got the handle of one destroyed before it */
+} LastCounts;
+static int last_frames(void) {
+    vk_lock();
+    vk_render_end();
+    for (u32 k = 0; k <= VK_FRAMES; k++) {
+        CHECK(vk_cmd()); /* the slot recycled: the deferred destroys of its last use run */
+        vk_frame_next();
+    }
+    vk_cmd();
+    vk_unlock();
+    return 0;
+}
+/* the views the texture at LIFE_POOL + 0x400 has, into views (up to 6), their count */
+static u32 last_views(VkImageView* views) {
+    u32 n = 0;
+    for (Surf* s = vk_surf_first(LIFE_POOL + 0x400); s; s = vk_surf_next(s))
+        if (!s->is_rt && s->gva == LIFE_POOL + 0x400)
+            for (int i = 0; i < s->nsv && n < 6; i++) views[n++] = s->sv[i].v;
+    return n;
+}
+static int last_texture(int wide) {
+    u32 tic[8];
+    u8 bytes[32];
+    life_tic(tic, 0);
+    tic[4] = (wide ? 3u : 1u) | 1u << 23; /* the width less one */
+    for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+    CHECK(!gmem_write(LIFE_POOL, bytes, 32));
+    u8 texels[16] = {0};
+    if (wide) {
+        snx_st_le32(texels + 8, 0x3f800000);
+        snx_st_le32(texels + 12, 0x3f800000);
+    } else
+        snx_st_le32(texels + 4, 0x3f800000);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, texels, 16));
+    return 0;
+}
+static int last_sequence(GpuChannel* channel, int tex, const u8* events, u32 n, int check, u8 px[LAST_DRAWS][4],
+                         LastCounts* counts) {
+    u32* r = channel->r3d;
+    int saved_check = g_settings.draw_state_check;
+    u8 bytes[256] = {0};
+    life_floats(bytes, g_life_green, 4);
+    CHECK(!gmem_write(LIFE_CB, bytes, 256));
+    CHECK(!life_headers(0, 0));
+    CHECK(!last_texture(0));
+    g_settings.draw_state_check = check;
+    vk_lock();
+    vk_finish();
+    vk_render_draws_forget();
+    vk_surf_forget_all(); /* nothing of the run before: the texture is made again from its 2-wide header */
+    vk_buf_forget_all();
+    vk_unlock();
+    CHECK(!last_frames());
+    vk_ww_new_epoch();
+    VkDescriptorHeapStats before;
+    vk_descriptor_heaps_get_stats(&before);
+    VkImageView gone[64];
+    u32 ngone = 0;
+    *counts = (LastCounts){0};
+    for (u32 i = 0; i < n; i++) {
+        const u64 target = MEMO_GPU + 0x20000 + i * 0x4000;
+        switch (events[i]) {
+            case LAST_FRAMES: CHECK(!last_frames()); break;
+            case LAST_EVICT:
+                vk_lock();
+                ngone += last_views(gone + ngone);
+                vk_surf_forget_all();
+                vk_unlock();
+                CHECK(!last_frames());
+                CHECK(!last_texture(1));
+                vk_ww_new_epoch();
+                break;
+            case LAST_REBUFFER:
+                vk_lock();
+                vk_buf_forget_all();
+                vk_unlock();
+                CHECK(!last_frames());
+                life_floats(bytes, g_life_blue, 4);
+                memcpy(GP(MEMO_CPU + (LIFE_CB - MEMO_GPU)), bytes, 16);
+                vk_ww_new_epoch();
+                break;
+            default: break;
+        }
+        u64 drawn = g_vk_drawn;
+        vk_lock();
+        rt_clear(channel, target, MEMO_SIDE, MEMO_SIDE, 0, 0);
+        r[0x851] = tex ? LIFE_TEX_PROGRAM : LIFE_CB_PROGRAM;
+        r[0x458] = 0 | 1u << 21 | 7u << 27; /* RGBA32F, the whole target's triangle */
+        channel->r3d_dirty = ~0u; /* the registers were set directly */
+        mx_draw_state_sync(channel);
+        DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+        vk_render_draw(&channel->ds, &call, &channel->owner);
+        vk_render_end();
+        Surf* drawn_into = vk_rt_find(target);
+        CHECK(drawn_into);
+        CHECK(!read_pixel_at(drawn_into, 0, 0, px[i]));
+        if (i && events[i] == LAST_EVICT) {
+            VkImageView views[6];
+            u32 nv = last_views(views);
+            for (u32 a = 0; a < nv; a++)
+                for (u32 b = 0; b < ngone; b++) counts->reused |= views[a] == gone[b];
+        }
+        vk_unlock();
+        CHECK(g_vk_drawn == drawn + 1);
+    }
+    VkDescriptorHeapStats after;
+    vk_descriptor_heaps_get_stats(&after);
+    counts->made = after.lasting_made - before.lasting_made;
+    counts->hits = after.lasting_hits - before.lasting_hits;
+    counts->forgotten = after.lasting_forgotten - before.lasting_forgotten;
+    counts->differs = after.lasting_differs - before.lasting_differs;
+    counts->checked = after.lasting_checked - before.lasting_checked;
+    g_settings.draw_state_check = saved_check;
+    return 0;
+}
+/* the case's two runs: the same pixels, the model's, no difference found; descriptors kept and found again in a later
+   frame, and (forgets) forgotten with their object. forgets 2: only where the bytes are in a buffer that lives past
+   the frame (the buffer cache's own, not staging or a stream copy, as some buffer options give): there the pixels
+   alone are checked */
+static int last_case(GpuChannel* channel, const char* what, int tex, const u8* events, u32 n, int forgets) {
+    u8 px[2][LAST_DRAWS][4];
+    LastCounts counts[2];
+    for (int run = 0; run < 2; run++) CHECK(!last_sequence(channel, tex, events, n, run, px[run], &counts[run]));
+    u8 want[4] = {0, 255, 0, 255};
+    if (tex) memcpy(want, (const u8[4]){191, 0, 0, 255}, 4); /* 0.75 of the way from 0 to 1 */
+    for (u32 i = 0; i < n; i++) {
+        if (events[i] == LAST_EVICT) memcpy(want, (const u8[4]){255, 0, 0, 255}, 4); /* texel 2 of 0, 0, 1, 1 */
+        if (events[i] == LAST_REBUFFER) memcpy(want, (const u8[4]){0, 0, 255, 255}, 4);
+        for (int run = 0; run < 2; run++) {
+            int ok = life_near(px[run][i], want) && !memcmp(px[run][i], px[0][i], 4);
+            if (!ok)
+                fprintf(stderr,
+                        "lasting descriptors, %s: draw %u%s: pixel %u,%u,%u,%u, expected %u,%u,%u,%u and the pixel of "
+                        "the first run\n",
+                        what, i, run ? " with draw_state_check=1" : "", px[run][i][0], px[run][i][1], px[run][i][2],
+                        px[run][i][3], want[0], want[1], want[2], want[3]);
+            CHECK(ok);
+        }
+    }
+    int kept = forgets != 2 || counts[0].made || counts[1].made;
+    int counted = !counts[0].differs && !counts[1].differs && (!kept || counts[1].checked != 0);
+    for (int run = 0; run < 2 && kept; run++) counted &= counts[run].made != 0 && counts[run].hits != 0;
+    if (forgets && kept)
+        for (int run = 0; run < 2; run++) counted &= counts[run].forgotten != 0;
+    printf("lasting descriptors, %s: made %llu and %llu, found %llu and %llu, forgotten %llu and %llu, checked %llu, "
+           "different %llu and %llu%s\n",
+           what, (unsigned long long)counts[0].made, (unsigned long long)counts[1].made,
+           (unsigned long long)counts[0].hits, (unsigned long long)counts[1].hits,
+           (unsigned long long)counts[0].forgotten, (unsigned long long)counts[1].forgotten,
+           (unsigned long long)counts[1].checked, (unsigned long long)counts[0].differs,
+           (unsigned long long)counts[1].differs,
+           counts[0].reused || counts[1].reused ? "; a new view had a destroyed one's handle"
+           : kept                               ? ""
+                                                : "; the bytes were in no buffer that lives past the frame");
+    CHECK(counted);
+    return 0;
+}
+static int last_cases(GpuChannel* channel) {
+    if (!g_vk.has_descriptor_heaps) {
+        puts("SKIP lasting descriptors: the device draws without descriptor heaps");
+        return 0;
+    }
+    u32* r = channel->r3d;
+    r[0x982] = 2;
+    r[0x8E0] = 256; /* constant buffers 2 (the texture's handle) and 3 (the color) of the fragment stage */
+    r[0x8E1] = (u32)((LIFE_POOL + 0x200) >> 32);
+    r[0x8E2] = (u32)(LIFE_POOL + 0x200);
+    r3d_cb_bind(channel, 4, 1 | 2u << 4);
+    r[0x8E1] = (u32)(LIFE_CB >> 32);
+    r[0x8E2] = (u32)LIFE_CB;
+    r3d_cb_bind(channel, 4, 1 | 3u << 4);
+    /* a texture's view through frames: made once, found in each later frame */
+    const u8 frames[] = {LAST_NONE, LAST_FRAMES, LAST_NONE, LAST_FRAMES, LAST_NONE};
+    CHECK(!last_case(channel, "a texture through frames", 1, frames, 5, 0));
+    /* the texture evicted, its view destroyed, and a new view (often at the same handle) of a texture loaded again */
+    const u8 evict[] = {LAST_NONE, LAST_FRAMES, LAST_NONE, LAST_EVICT, LAST_FRAMES, LAST_NONE, LAST_EVICT, LAST_NONE};
+    CHECK(!last_case(channel, "a texture evicted and its view made again", 1, evict, 8, 1));
+    /* the constant buffer through frames, the buffer cache's buffers dropped and made again with new bytes */
+    const u8 rebuffer[] = {LAST_NONE,     LAST_FRAMES, LAST_NONE,   LAST_FRAMES,
+                           LAST_REBUFFER, LAST_FRAMES, LAST_NONE,   LAST_FRAMES};
+    CHECK(!last_case(channel, "a buffer of the cache dropped and made again", 0, rebuffer, 8, 2));
+    channel->ds.bind.cb_addr[4][2] = channel->ds.bind.cb_addr[4][3] = 0;
+    channel->ds.bind.cb_size[4][2] = channel->ds.bind.cb_size[4][3] = 0;
+    r[0x982] = 0;
+    puts("PASS lasting descriptors: views and buffers kept from frame to frame, an evicted texture's view and the "
+         "buffer cache's dropped buffers forgotten, draw_state_check=1 draws the same pixels and finds no "
+         "difference");
+    return 0;
+}
+
 static int check_draw_memo(void) {
     const u64 vertex[] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
                           0xeff1ff800707ff00ull, /* the position */
@@ -476,6 +684,7 @@ static int check_draw_memo(void) {
     const MemoDraw recode[] = {{MEMO_GREEN, 0, 0, 0}, {MEMO_BLUE, 0, 0, 0}, {MEMO_GREEN, 0, 0, 1}};
     CHECK(!memo_case(channel, "A, B, A's code written, A", recode, 3, 0));
     CHECK(!life_cases(channel));
+    CHECK(!last_cases(channel));
     free(channel);
     puts("PASS draw memo: A, B, A and a state in two vertex formats take the table, a new epoch and new code make the "
          "state again; constant buffers kept past submissions, views, samplers and a stage's last set kept in the "
