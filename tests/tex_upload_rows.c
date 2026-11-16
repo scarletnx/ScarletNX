@@ -253,9 +253,9 @@ u32 vk_bc7_build(u32 w, u32 h, u32 d) {
     (void)w, (void)h, (void)d;
     return 1;
 }
-int vk_bc7_cache_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
+int vk_bc7_cache_level(VkCommandBuffer cb, Surf* t, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
                        int is3d) {
-    (void)cb, (void)img, (void)key, (void)level, (void)w, (void)h, (void)slices, (void)is3d;
+    (void)cb, (void)t, (void)key, (void)level, (void)w, (void)h, (void)slices, (void)is3d;
     abort();
 }
 int vk_bc7_capture_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
