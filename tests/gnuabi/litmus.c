@@ -189,7 +189,7 @@ static void tally(void) {
     for (u32 i = 0; i < READERS; i++) {
         if (values[i] > 1) { /* a read the instruction cannot produce: counted apart, not folded into a bit */
             bad_values++;
-            continue;
+            return; /* the attempt is counted once, in bad_values, so the counts still add up to the attempts */
         }
         bits |= (values[i] & 1u) << i;
     }
