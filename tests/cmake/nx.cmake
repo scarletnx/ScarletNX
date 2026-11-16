@@ -384,6 +384,16 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk-memory=2)
     set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # a publish over memory no import holds, as a host without traps takes it (memory_traps=2 makes one of this host):
+    # the span makes its import, copies there on the GPU and lands nothing. Every CI host traps, so without this entry
+    # the case runs only where a developer's host has no traps
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_notraps.ini" "[Debug]\nmemory_traps=2\n")
+    add_test(NAME vulkan_headless_notraps COMMAND snx-test-vulkan -H
+        "--settings-ini=${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_notraps.ini")
+    set_tests_properties(vulkan_headless_notraps PROPERTIES TIMEOUT 120
+        ENVIRONMENT "SNX_TEST_UMA_ONLY=publish_notraps"
+        PASS_REGULAR_EXPRESSION "PASS headless Vulkan in place, publish_notraps"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with the guest memory that draws read kept by page in sparse buffers, and what draws write to
     # guest memory kept there too (gpu/vk/pagespace.c). A device without sparse buffers or write tracking runs the
     # checks as before
