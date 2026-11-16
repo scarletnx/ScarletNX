@@ -726,6 +726,16 @@ static int key_cmp(const void* a, const void* b) {
     u64 x = ((const GpKey*)a)->ns, y = ((const GpKey*)b)->ns;
     return x < y ? 1 : x > y ? -1 : 0;
 }
+/* The log's other breakdowns as plots too: why the CPU waited, what the busy time held, and why submissions went
+   out. Each is the window's sum divided by the same presents or frames as the log. */
+static const char* const g_round_plot[VK_WAIT_N] = {"gpu round: finish ms", "gpu round: recycle ms",
+                                                    "gpu round: submit ms"};
+static const char* const g_hold_plot[HOLD_N] = {"gpu hold: passes ms", "gpu hold: dispatches ms",
+                                                "gpu hold: copies ms", "gpu hold: nothing ms"};
+static const char* const g_sub_plot[VK_SUB_N] = {"gpu submit: other",    "gpu submit: present",
+                                                 "gpu submit: finish",   "gpu submit: 1 ms",
+                                                 "gpu submit: readback", "gpu submit: frame end",
+                                                 "gpu submit: split",    "gpu submit: background"};
 /* the window's gaps and idle time as plots: the log's sums, so a --tracy run whose setting is off still shows where
    the GPU's time went. The gaps are per frame, the idle time per present, and the busy share of the window's wall */
 static void gp_plots(void) {
@@ -737,6 +747,10 @@ static void gp_plots(void) {
     if (g_t0 && wall) SNX_PLOT("gpu busy", 100.0 * (double)g_busy_ns / (double)wall);
     SNX_PLOT("gpu submissions/frame", (double)g_subs / f);
     SNX_PLOT("copy MB", (double)(g_mix_bytes[0] + g_mix_bytes[1] + g_mix_bytes[2]) / 1048576.0 / f);
+    double p = presents ? (double)presents : 1.0;
+    for (int k = 0; k < VK_WAIT_N; k++) SNX_PLOT(g_round_plot[k], (double)g_round_ns[k] / 1e6 / p);
+    for (int k = 0; k < HOLD_N; k++) SNX_PLOT(g_hold_plot[k], (double)g_hold_ns[k] / 1e6 / p);
+    for (int k = 0; k < VK_SUB_N; k++) SNX_PLOT(g_sub_plot[k], (double)g_sub_why[k] / f);
 }
 /* the pass bookkeeping is file-global: vk_lock serializes recording (record.c) */
 /* the targets that took the most GPU time, then a fresh sum */

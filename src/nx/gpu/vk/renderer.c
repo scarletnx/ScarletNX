@@ -578,6 +578,16 @@ static void flip_src(VkImageBlit* b, u32 transform) {
 #define FRAME_IMAGE_W 320
 #define FRAME_IMAGE_H 180
 static void frame_image(void); /* after surf_read, whose readback it asks for */
+/* One name for each resource category, shared by the slow-frame log and the plots below. */
+static const char* const g_resource_name[VK_RESOURCE_N] = {
+    [VK_RESOURCE_IMAGE_QUERY] = "image requirements",
+    [VK_RESOURCE_IMAGE_CREATE] = "image allocation",
+    [VK_RESOURCE_IMAGE_DESTROY] = "image destruction",
+    [VK_RESOURCE_SURFACE_CREATE] = "target setup",
+    [VK_RESOURCE_RT_RELOAD] = "target reload",
+    [VK_RESOURCE_SURFACE_RECLAIM] = "surface reclaim",
+    [VK_RESOURCE_BUFFER_MAINTENANCE] = "buffer maintenance",
+    [VK_RESOURCE_BUFFER_CACHE_BUILD] = "buffer cache build"};
 #if defined(SNX_TRACY)
 /* The heap the caches manage, as vk_mem_use reads it for their own trimming, in bytes (the plot is a Memory one). */
 static void gpu_memory_plots(void) {
@@ -596,6 +606,23 @@ static void host_memory_plots(void) {
     SNX_PLOT("host heap", snx_heap_used());
     SNX_PLOT("host rss", snx_footprint());
     if (snx_memory_available(&free)) SNX_PLOT("host free", free);
+}
+/* The CPU time the renderer spends in each resource category, per frame. The slow-frame log showed only the
+   categories over 1 ms; a plot keeps the small ones too, and a rank uses the same names as the log. */
+static const char* const g_resource_plot[VK_RESOURCE_N] = {
+    [VK_RESOURCE_IMAGE_QUERY] = "vk resource: image requirements ms",
+    [VK_RESOURCE_IMAGE_CREATE] = "vk resource: image allocation ms",
+    [VK_RESOURCE_IMAGE_DESTROY] = "vk resource: image destruction ms",
+    [VK_RESOURCE_SURFACE_CREATE] = "vk resource: target setup ms",
+    [VK_RESOURCE_RT_RELOAD] = "vk resource: target reload ms",
+    [VK_RESOURCE_SURFACE_RECLAIM] = "vk resource: surface reclaim ms",
+    [VK_RESOURCE_BUFFER_MAINTENANCE] = "vk resource: buffer maintenance ms",
+    [VK_RESOURCE_BUFFER_CACHE_BUILD] = "vk resource: buffer cache build ms"};
+static const char* const g_wait_plot[VK_WAIT_N] = {"gpu wait: finish ms", "gpu wait: recycle ms",
+                                                   "gpu wait: submit ms"};
+static void resource_plots(const VkResourceStats* is, const VkResourceStats* was) {
+    for (u32 k = 0; k < VK_RESOURCE_N; k++)
+        SNX_PLOT(g_resource_plot[k], (double)(is->ns[k] - was->ns[k]) / 1e6);
 }
 #endif
 
@@ -711,6 +738,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
 #if defined(SNX_TRACY)
             gpu_memory_plots();
             host_memory_plots();
+            resource_plots(&resource_is, &resource_was);
             frame_image();
             /* what the CPU has put in the queues and the GPU hasn't got through: the CPU running ahead of the GPU
                (a submit backlog), and the compute batches waiting to land */
@@ -734,6 +762,18 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             SNX_PLOT("pipeline make ms", (double)(is[2] - was[2]));
             SNX_PLOT("pipeline wait ms", (double)(is[3] - was[3]));
             SNX_PLOT("texture uploads", is[7] - was[7]);
+            /* The slow-frame log's other counters, kept as plots so a hitch's neighbours show without waiting for a
+               slow frame to log them. is[5] is already ms; is[11] and the waits are ns. */
+            SNX_PLOT("shader translate ms", (double)(is[5] - was[5]));
+            SNX_PLOT("texture upload count", (double)(is[6] - was[6]));
+            SNX_PLOT("render targets made", (double)(is[8] - was[8]));
+            SNX_PLOT("vk finish ms", (double)(is[9] - was[9]));
+            SNX_PLOT("texture pipeline count", (double)(is[10] - was[10]));
+            SNX_PLOT("texture pipeline ms", (double)(is[11] - was[11]) / 1e6);
+#if defined(SNX_TRACY)
+            for (u32 k = 0; k < VK_WAIT_N; k++)
+                SNX_PLOT(g_wait_plot[k], (double)(is[12 + k] - was[12 + k]) / 1e6);
+#endif
             was_drawn = g_vk_drawn;
             if (d > 50000000) {
                 slow_frames++;
@@ -754,18 +794,9 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 /* These CPU categories exclude nested resource categories. Pipeline and wait counters above can
                    overlap them, so the two groups must not be added as independent parts of a frame. */
                 for (u32 k = 0; k < VK_RESOURCE_N; k++) {
-                    static const char* const names[VK_RESOURCE_N] = {
-                        [VK_RESOURCE_IMAGE_QUERY] = "image requirements",
-                        [VK_RESOURCE_IMAGE_CREATE] = "image allocation",
-                        [VK_RESOURCE_IMAGE_DESTROY] = "image destruction",
-                        [VK_RESOURCE_SURFACE_CREATE] = "target setup",
-                        [VK_RESOURCE_RT_RELOAD] = "target reload",
-                        [VK_RESOURCE_SURFACE_RECLAIM] = "surface reclaim",
-                        [VK_RESOURCE_BUFFER_MAINTENANCE] = "buffer maintenance",
-                        [VK_RESOURCE_BUFFER_CACHE_BUILD] = "buffer cache build"};
                     u64 ns = resource_is.ns[k] - resource_was.ns[k];
                     if (ns >= 1000000)
-                        LOG_LIMIT(400, "vulkan: frame resource CPU: %s %llu ms (%llu calls)\n", names[k],
+                        LOG_LIMIT(400, "vulkan: frame resource CPU: %s %llu ms (%llu calls)\n", g_resource_name[k],
                                   (unsigned long long)(ns / 1000000),
                                   (unsigned long long)(resource_is.calls[k] - resource_was.calls[k]));
                 }
