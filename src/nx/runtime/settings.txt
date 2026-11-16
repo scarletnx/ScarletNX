@@ -1487,7 +1487,9 @@ setting VT frames
     int 32 1023
     default 120
     startup
-    help vt_sparse: the presents a block keeps its memory after a frame last sampled it
+    help vt_sparse: the presents a block keeps its memory after a frame last sampled it, at least: twice as many, up
+    help to 1023, each time more than an eighth of the blocks asked for are ones it let go under two such spans
+    help before, an eighth fewer while under a thirty-second are, and this many while the GPU's memory is short
 setting SM86 dump
     key sm86_dump
     text 1024

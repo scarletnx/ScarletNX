@@ -50,4 +50,11 @@ u32 vt_block_parent(const VtShape* s, u32 b);
 #define VT_AGES 1024u
 void vt_age_count(u32 hist[VT_AGES], const u32* seen, const u8* held, u32 n, u32 now);
 u32 vt_age_cut(const u32 hist[VT_AGES], u64 keep, u32 floor);
+
+/* The presents a block keeps its memory after its last sample, for the period after one in which `asked` blocks were
+   asked for, `back` of them last sampled under two windows before: the window let those go and the frames came back
+   to them, each decoded and encoded again. Twice the window where they are more than an eighth of the blocks asked
+   for (of 32 or more), an eighth less where they are under a thirty-second, never under base (vt_frames) nor over
+   VT_AGES - 1; base while the device's memory is pressed, where the blocks' ages decide (vt_age_cut) */
+u32 vt_window_next(u32 window, u32 base, u64 asked, u64 back, int pressed);
 #endif

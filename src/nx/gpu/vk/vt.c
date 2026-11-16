@@ -32,6 +32,7 @@
 #define VT_STUCK     60u  /* frames of marks in a row with a miss that had nothing to ask for: the texture goes whole */
 #define VT_NEW_MAX   512u /* blocks given memory a present: 32 MiB of texels to decode at most */
 #define VT_SWEEP     8u   /* presents between the sweeps that let blocks go */
+#define VT_PERIOD    15u  /* sweeps between the window's changes (vt_window_next) */
 #define VT_SAY       120u /* presents between the log's lines */
 
 #define VT_UNMAPPED ~0u /* seen[b] of a block guest memory doesn't map: asked for, and given no memory */
@@ -80,7 +81,10 @@ static struct {
     u64 set_key[VT_SETS];
     /* since the log's last line */
     u64 marks, misses, unknown, asked, bound, gone, loads, fails, wholes, deferred, ns, frames, filled;
-    u64 again[3]; /* of the blocks asked for, those last sampled under 2, under 8 and over 8 vt_frames before */
+    u64 again[3]; /* of the blocks asked for, those last sampled under 2, under 8 and over 8 windows before */
+    /* the presents a block keeps its memory unsampled (vt_window_next), and its period's blocks asked for and back */
+    u32 window, base, sweeps; /* base: vt_frames as the window last had it */
+    u64 w_asked, w_back;
 } g_vt;
 
 static VtTex* vt_rec(const Surf* t) { return t && t->vt_slot ? &g_vt.v[t->vt_slot - 1] : NULL; }
@@ -283,8 +287,10 @@ static int ask(VtTex* L, u32 b) {
         any = 1;
         g_vt.asked++;
         /* back after it was let go: how long the frames went without it, for the log */
-        const u32 away = last ? g_vt.now - last : ~0u, window = (u32)g_settings.vt_frames;
+        const u32 away = last ? g_vt.now - last : ~0u, window = g_vt.window;
         g_vt.again[away < 2 * window ? 0 : away < 8 * window ? 1 : 2] += last != 0;
+        g_vt.w_asked++;
+        g_vt.w_back += away < 2 * window;
     }
     if (any) L->changed = 1;
     return any;
@@ -419,8 +425,9 @@ static void named_copy(void) {
     mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
     rec_CmdPipelineBarrier2(cb, &d);
 }
-/* blocks not seen for vt_frames presents are no longer wanted; while the GPU's memory is under pressure, the oldest
-   eighth of those held too, down to the ones seen in the last VT_FLOOR presents */
+/* blocks not seen for the window's presents are no longer wanted (vt_frames of them, more while the blocks let go
+   come back: vt_window_next); while the GPU's memory is under pressure, the oldest eighth of those held too, down to
+   the ones seen in the last VT_FLOOR presents */
 static void sweep(void) {
     static u32 hist[VT_AGES];
     memset(hist, 0, sizeof hist);
@@ -431,8 +438,15 @@ static void sweep(void) {
         vt_age_count(hist, L->seen, L->want, L->nblocks, g_vt.now);
     }
     for (u32 a = 0; a < VT_AGES; a++) held += hist[a];
-    u32 cut = vt_age_cut(hist, vk_mem_pressed() ? held / 8 * 7 : held, VT_FLOOR);
-    const u32 window = (u32)g_settings.vt_frames;
+    const int pressed = vk_mem_pressed();
+    u32 cut = vt_age_cut(hist, pressed ? held / 8 * 7 : held, VT_FLOOR);
+    if (g_vt.base != (u32)g_settings.vt_frames) g_vt.window = g_vt.base = (u32)g_settings.vt_frames;
+    if (pressed || ++g_vt.sweeps >= VT_PERIOD) {
+        g_vt.window = vt_window_next(g_vt.window, (u32)g_settings.vt_frames, g_vt.w_asked, g_vt.w_back, pressed);
+        g_vt.sweeps = 0;
+        g_vt.w_asked = g_vt.w_back = 0;
+    }
+    const u32 window = g_vt.window;
     if (cut > window) cut = window;
     if (cut < VT_FLOOR) cut = VT_FLOOR;
     for (u32 i = 0; i < g_vt.n; i++) {
@@ -462,16 +476,16 @@ static void say(void) {
     LOG("vt: %llu virtual textures hold %llu MB, %llu of their %llu blocks; %llu of them whole (%llu MB), %llu turned "
         "whole; in %u presents: %llu marks a frame of marks (%llu of the table's %u slots), %llu of them misses, "
         "%llu naming no texture; %llu blocks asked for (%llu of them sampled under %u presents before, %llu under %u, "
-        "%llu longer ago), %llu bound, %llu let go, %llu loads, %llu without memory, %llu put off; %.3f ms of the "
-        "host a present\n",
+        "%llu longer ago), %llu bound, %llu let go, %llu loads, %llu without memory, %llu put off; a block goes %u "
+        "presents after its last sample; %.3f ms of the host a present\n",
         (unsigned long long)n, (unsigned long long)(bytes >> 20), (unsigned long long)blocks, (unsigned long long)all,
         (unsigned long long)whole, (unsigned long long)(whole_bytes >> 20), (unsigned long long)g_vt.wholes, VT_SAY,
         (unsigned long long)(g_vt.marks / frames), (unsigned long long)(g_vt.filled / frames), SH_VT_SLOTS,
         (unsigned long long)(g_vt.misses / frames), (unsigned long long)(g_vt.unknown / frames),
-        (unsigned long long)g_vt.asked, (unsigned long long)g_vt.again[0], 2u * (u32)g_settings.vt_frames,
-        (unsigned long long)g_vt.again[1], 8u * (u32)g_settings.vt_frames, (unsigned long long)g_vt.again[2],
+        (unsigned long long)g_vt.asked, (unsigned long long)g_vt.again[0], 2u * g_vt.window,
+        (unsigned long long)g_vt.again[1], 8u * g_vt.window, (unsigned long long)g_vt.again[2],
         (unsigned long long)g_vt.bound, (unsigned long long)g_vt.gone, (unsigned long long)g_vt.loads,
-        (unsigned long long)g_vt.fails, (unsigned long long)g_vt.deferred, (double)g_vt.ns / 1e6 / VT_SAY);
+        (unsigned long long)g_vt.fails, (unsigned long long)g_vt.deferred, g_vt.window, (double)g_vt.ns / 1e6 / VT_SAY);
     g_vt.marks = g_vt.misses = g_vt.unknown = g_vt.asked = g_vt.bound = g_vt.gone = g_vt.loads = g_vt.fails = 0;
     g_vt.wholes = g_vt.deferred = g_vt.ns = g_vt.frames = g_vt.filled = 0;
     memset(g_vt.again, 0, sizeof g_vt.again);
@@ -596,6 +610,7 @@ void vk_vt_init(void) {
     VkBufferDeviceAddressInfo ai = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = g_vt.table};
     g_shader_vt_address = vkGetBufferDeviceAddress(g_vk.dev, &ai);
     g_shader_vt_parts = (u32)g_settings.vt_parts;
+    g_vt.window = g_vt.base = (u32)g_settings.vt_frames;
     if (g_shader_vt_parts != 7)
         LOG("vt: vt_parts=%u: a measurement, the samples translated without %s%s%s; without the marks every virtual "
             "texture is held whole%s\n",
@@ -606,6 +621,6 @@ void vk_vt_init(void) {
                                      : "");
     LOG("vt: virtual textures on: ASTC textures of 1 MiB and more that programs only sample take memory a %u KiB "
         "block at a time, where frames sample them; the marks' table of %u KiB at device address %llx; a block goes "
-        "%d presents after it was last sampled\n",
+        "%d presents after it was last sampled, later while the blocks let go come back\n",
         64u, (u32)((table + named) >> 10), (unsigned long long)g_shader_vt_address, g_settings.vt_frames);
 }

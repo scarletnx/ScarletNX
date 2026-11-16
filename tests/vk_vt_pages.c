@@ -126,6 +126,17 @@ int main(void) {
     assert(vt_age_cut(hist, 2, 0) == 1);
     /* a floor of 32 presents keeps what was seen in them whatever the budget */
     assert(vt_age_cut(hist, 0, 32) == 32 && vt_age_cut(hist, 2, 32) == 32 && vt_age_cut(hist, 3, 32) == 40);
-    printf("PASS vt pages: a mark's blocks under it and near it, across edges and outside 0 to 1; parents; ages\n");
+    /* the window: twice as long while more than an eighth of the blocks asked for come back from under two windows,
+       up to the ages counted; as it is between an eighth and a thirty-second; an eighth shorter under that, or with
+       nothing asked for, down to the setting; the setting at once while memory is pressed; few blocks decide nothing */
+    assert(vt_window_next(120, 120, 800, 101, 0) == 240 && vt_window_next(120, 120, 800, 100, 0) == 120);
+    assert(vt_window_next(960, 120, 800, 400, 0) == VT_AGES - 1 &&
+           vt_window_next(VT_AGES - 1, 120, 800, 400, 0) == VT_AGES - 1);
+    assert(vt_window_next(480, 120, 800, 30, 0) == 480 && vt_window_next(480, 120, 800, 24, 0) == 420);
+    assert(vt_window_next(480, 120, 0, 0, 0) == 420 && vt_window_next(130, 120, 800, 0, 0) == 120);
+    assert(vt_window_next(960, 120, 800, 400, 1) == 120 && vt_window_next(64, 120, 800, 400, 0) == 120);
+    assert(vt_window_next(120, 120, 31, 31, 0) == 120 && vt_window_next(120, 2000, 800, 400, 0) == VT_AGES - 1);
+    printf("PASS vt pages: a mark's blocks under it and near it, across edges and outside 0 to 1; parents; ages; the "
+           "window\n");
     return 0;
 }

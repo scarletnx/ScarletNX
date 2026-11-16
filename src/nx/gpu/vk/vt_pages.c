@@ -111,6 +111,13 @@ void vt_age_count(u32 hist[VT_AGES], const u32* seen, const u8* held, u32 n, u32
         hist[age < VT_AGES - 1 ? age : VT_AGES - 1]++;
     }
 }
+u32 vt_window_next(u32 window, u32 base, u64 asked, u64 back, int pressed) {
+    if (base > VT_AGES - 1) base = VT_AGES - 1;
+    if (pressed || window < base) return base;
+    if (asked >= 32 && back * 8 > asked) return window * 2 < VT_AGES - 1 ? window * 2 : VT_AGES - 1;
+    if (back * 32 < asked || !asked) return window - window / 8 > base ? window - window / 8 : base;
+    return window;
+}
 u32 vt_age_cut(const u32 hist[VT_AGES], u64 keep, u32 floor) {
     u64 kept = 0;
     u32 age = 0;
