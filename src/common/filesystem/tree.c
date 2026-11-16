@@ -830,10 +830,22 @@ static FsTreeResult link_folder(FsTree* tree, const FsNode* parent, const char* 
     return FS_TREE_OK;
 }
 
-/* whether name is one of names (NULL-terminated, or NULL for none) */
+/* whether name is one of names (NULL-terminated, or NULL for none): equal to one, or, for one that starts with '*',
+   ending in what follows it, in any case */
 static int named(const char* const* names, const char* name) {
-    for (size_t i = 0; names && names[i]; i++)
-        if (!strcmp(names[i], name)) return 1;
+    const size_t length = strlen(name);
+    for (size_t i = 0; names && names[i]; i++) {
+        if (names[i][0] != '*') {
+            if (!strcmp(names[i], name)) return 1;
+            continue;
+        }
+        const char* ending = names[i] + 1;
+        const size_t e = strlen(ending);
+        if (e > length) continue;
+        size_t k = 0;
+        while (k < e && snx_to_lower(name[length - e + k]) == snx_to_lower(ending[k])) k++;
+        if (k == e) return 1;
+    }
     return 0;
 }
 static FsTreeResult scan_linked(FsTree* tree, FsNode* n);
