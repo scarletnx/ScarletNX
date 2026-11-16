@@ -3,8 +3,9 @@
 /* The 3DS's and the Vita's notice copied over a window's image (common/gpu/vk/notice.c), on whatever Vulkan device
    there is, with no window: after the picture's own transfers, the band's pixels where snx_notice_rect puts it, in the
    window's byte order, and the picture's everywhere else; a slot's buffer grown for a longer text; nothing drawn once
-   its time is up, nor on a window format it does not write, said once. The Khronos layer's errors fail it where the
-   layer is installed. None is a skip (77) */
+   its time is up, nor on a window format it does not write, said once. The same band drawn in a window's rendering
+   (snx_vk_notice_draw) where the device has dynamic rendering: its pixels as the copy's, none on an sRGB window, said
+   once. The Khronos layer's errors fail it where the layer is installed. None is a skip (77) */
 #include "common/gpu/vk/notice.h"
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/device.h"
@@ -24,6 +25,7 @@ typedef struct {
     VkPhysicalDevice phys;
     VkDevice dev;
     uint32_t family;
+    int rendering; /* dynamic rendering on, for snx_vk_notice_draw's checks */
 } Made;
 
 /* the notice's log, its last line kept for the checks of what it says; the layer's errors counted */
@@ -47,10 +49,26 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL layer_said(VkDebugUtilsMessageSeverityFlag
     return VK_FALSE;
 }
 
-/* the device, with no feature asked for (common/gpu/vk/device.h) */
+/* the device, with dynamic rendering where it is 1.3 and has it, for snx_vk_notice_draw's checks
+   (common/gpu/vk/device.h) */
 static bool choose(SnxVkChoice* c, void* user) {
-    (void)user;
+    Made* m = user;
+    VkPhysicalDeviceProperties properties;
+    VkPhysicalDeviceVulkan13Features has13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceVulkan13Features want13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceFeatures2 has = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &has13};
     VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    vkGetPhysicalDeviceProperties(c->phys, &properties);
+    m->rendering = 0;
+    if (properties.apiVersion >= VK_API_VERSION_1_3) {
+        vkGetPhysicalDeviceFeatures2(c->phys, &has);
+        if (has13.dynamicRendering) {
+            want13.dynamicRendering = VK_TRUE;
+            features.pNext = &want13;
+            c->api = VK_API_VERSION_1_3;
+            m->rendering = 1;
+        }
+    }
     return snx_vk_choice_create(c, &features, NULL, NULL, 0);
 }
 
@@ -103,7 +121,8 @@ int main(void) {
                                   .instance = instance.instance,
                                   .api = VK_API_VERSION_1_2,
                                   .queues = VK_QUEUE_GRAPHICS_BIT,
-                                  .choose = choose};
+                                  .choose = choose,
+                                  .user = &m};
     SnxVkDevice made;
     char why[1024];
     if (!snx_vk_device_make(&request, &made, why, sizeof why)) {
@@ -211,6 +230,105 @@ int main(void) {
     CHECK(!snx_vk_notice_record(vn, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_FORMAT_A2B10G10R10_UNORM_PACK32, WW, WH, 100,
                                 &n, 0, log_line));
     CHECK(!g_test.said[0]); /* once */
+    /* the same band drawn in the window's rendering after its picture (snx_vk_notice_draw), on an 8-bit UNORM window
+       of either order: its pixels the band's as they are, the picture's everywhere else; an sRGB window draws none,
+       said once */
+    if (!m.rendering)
+        printf("vk_notice: the device has no dynamic rendering: the draw's checks skipped\n");
+    else {
+        SnxVkNotice* dn = snx_vk_notice_create(m.phys, m.dev, 2);
+        CHECK(dn);
+        for (int k = 0; k < 2; ++k) {
+            VkFormat format = k ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_B8G8R8A8_UNORM;
+            int bgra = !k, rect[4], scale = snx_notice_scale(WW, WH, 100), drawn;
+            unsigned bad = 0, inside = 0;
+            VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                    .imageType = VK_IMAGE_TYPE_2D,
+                                    .format = format,
+                                    .extent = {WW, WH, 1},
+                                    .mipLevels = 1,
+                                    .arrayLayers = 1,
+                                    .samples = VK_SAMPLE_COUNT_1_BIT,
+                                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                    .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+            VkImage win;
+            VkImageView view;
+            VkDeviceMemory win_memory;
+            VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                      .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                      .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                      .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+            VkRenderingAttachmentInfo color = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                               .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                               .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                               .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+            VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                                  .renderArea = {{0, 0}, {WW, WH}},
+                                  .layerCount = 1,
+                                  .colorAttachmentCount = 1,
+                                  .pColorAttachments = &color};
+            CHECK(vkCreateImage(m.dev, &ii, NULL, &win) == VK_SUCCESS);
+            vkGetImageMemoryRequirements(m.dev, win, &req);
+            CHECK(bind(&m, req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, win, VK_NULL_HANDLE, &win_memory));
+            {
+                VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                            .image = win,
+                                            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                            .format = format,
+                                            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+                CHECK(vkCreateImageView(m.dev, &vi, NULL, &view) == VK_SUCCESS);
+            }
+            snx_notice_show(&n, texts[k], 0);
+            for (int c = 0; c < 3; ++c) color.clearValue.color.float32[c] = (float)ground[c] / 255.0f;
+            color.clearValue.color.float32[3] = 1.0f;
+            color.imageView = view;
+            b.image = win;
+            VkCommandBuffer cb = snx_vk_ring_commands(&ring);
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL,
+                                 0, NULL, 1, &b);
+            vkCmdBeginRendering(cb, &ri);
+            drawn = snx_vk_notice_draw(dn, cb, ring.slot, format, WW, WH, 100, &n, 0, log_line);
+            vkCmdEndRendering(cb);
+            b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL,
+                                 0, NULL, 1, &b);
+            VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                      .imageExtent = {WW, WH, 1}};
+            vkCmdCopyImageToBuffer(cb, win, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+            CHECK(snx_vk_ring_wait(&ring, snx_vk_ring_submit(&ring, VK_NULL_HANDLE, VK_NULL_HANDLE), UINT64_MAX));
+            CHECK(drawn && snx_notice_rect(&n, WW, WH, scale, rect));
+            snx_notice_pixels(&n, scale, bgra, rect, band, (size_t)rect[2] * 4u);
+            for (int y = 0; y < WH; ++y)
+                for (int x = 0; x < WW; ++x) {
+                    const unsigned char* p = got + ((size_t)y * WW + (size_t)x) * 4u;
+                    int in = x >= rect[0] && x < rect[0] + rect[2] && y >= rect[1] && y < rect[1] + rect[3];
+                    inside += in;
+                    if (in)
+                        bad += memcmp(p, band + ((size_t)(y - rect[1]) * (size_t)rect[2] + (size_t)(x - rect[0])) * 4u,
+                                      4) != 0;
+                    else
+                        bad += abs((int)p[bgra ? 2 : 0] - ground[0]) > 1 || abs((int)p[1] - ground[1]) > 1 ||
+                               abs((int)p[bgra ? 0 : 2] - ground[2]) > 1;
+                }
+            printf("vk_notice: \"%s\" drawn in a %ux%u %s window's rendering: %u pixels of its band, %u wrong\n",
+                   n.text, WW, WH, bgra ? "BGRA" : "RGBA", inside, bad);
+            CHECK(!bad && inside == (unsigned)(rect[2] * rect[3]));
+            vkDestroyImageView(m.dev, view, NULL);
+            vkDestroyImage(m.dev, win, NULL);
+            vkFreeMemory(m.dev, win_memory, NULL);
+        }
+        g_test.said[0] = 0;
+        CHECK(!snx_vk_notice_draw(dn, VK_NULL_HANDLE, 0, VK_FORMAT_R8G8B8A8_SRGB, WW, WH, 100, &n, 0, log_line));
+        CHECK(strstr(g_test.said, "format 43") && strstr(g_test.said, "only on 8-bit UNORM RGBA or BGRA"));
+        g_test.said[0] = 0;
+        CHECK(!snx_vk_notice_draw(dn, VK_NULL_HANDLE, 0, VK_FORMAT_R8G8B8A8_SRGB, WW, WH, 100, &n, 0, log_line));
+        CHECK(!g_test.said[0]); /* once */
+        snx_vk_notice_destroy(dn);
+    }
     free(band);
     snx_vk_notice_destroy(vn);
     vkUnmapMemory(m.dev, readback_memory);
