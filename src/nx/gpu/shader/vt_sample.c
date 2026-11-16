@@ -152,7 +152,7 @@ u32 shader_vt_sample(SpvEmitter* e, ShVtIds* ids, const ShVtSample* s) {
 #define SHL(a, n) SPV(e, SPV_OP_SHIFT_LEFT_LOGICAL, s->t_u32, (a), cu(e, s, (n)))
 #define SHR(a, n) SPV(e, SPV_OP_SHIFT_RIGHT_LOGICAL, s->t_u32, (a), cu(e, s, (n)))
     const u32 w1 = OR(OR(u, SHL(v, 10)), SHL(layer, 20));
-    const u32 place = OR(OR(SHR(u, 4), SHL(SHR(v, 4), 6)), SHL(layer, 12));
+    const u32 place = OR(OR(SHR(u, 6), SHL(SHR(v, 6), 4)), SHL(layer, 8));
     const u32 flags = OR(OR(SPV(e, SPV_OP_BITWISE_AND, s->t_u32, s->id, cu(e, s, SH_VT_IDS - 1)),
                             SPV(e, SPV_OP_SELECT, s->t_u32, resident, cu(e, s, 1u << 24), zero)),
                          OR(OR(SHL(uo, 25), SHL(vo, 27)), cu(e, s, 1u << 31)));

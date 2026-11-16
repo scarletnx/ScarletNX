@@ -209,6 +209,8 @@ typedef struct {
        level where a texel has no memory and marks what it reads (shader_vt_sample): a slot of these may hold a
        virtual texture (vt_sparse); a texture a draw binds to another slot is held whole */
     u64 tex_vt_mask;
+    /* and for the log, the slots an Ounce fragment program reads with a fetch, a gather, a sample with gradients */
+    u64 tex_vt_reads[3];
     /* FS: texture slots every read of which is a texel fetch at the fragment's own pixel (TLD or TLDS of a 2D texture
        at gl_FragCoord's integer x and y, level 0, no offset): the only ones a draw may sample in place while it
        renders to them (vk/render.c), each fragment reading what earlier draws left at its pixel */
@@ -574,7 +576,7 @@ extern ShCaps g_spirv_translate;
    (shader_vt_sample): a texel without memory reads a coarser level, and one quad in SH_VT_QUADS, another each frame,
    marks what it sampled in a table on the device, at g_shader_vt_address (0: no virtual textures, and no program is
    translated for them). The table is SH_VT_SLOTS entries of two words, an entry at the slot its words hash to
-   (shader_vt_slot), the last writer's:
+   (shader_vt_slot: the samples of a sixteenth of a level each way share one), the last writer's:
      word 0: the texture's identity (SH_VT_IDS of them: an Ounce program's header index; a Maxwell program's set of
              the draw and slot) | level << 20 | resident << 24 | u's side << 25 | v's side << 27 | 1 << 31
      word 1: u's cell | v's cell << 10 | layer << 20
@@ -590,7 +592,7 @@ extern u64 g_shader_vt_address;
 #define SH_VT_LAYERS     4096u
 #define SH_VT_QUADS      16u /* a power of two */
 static inline u32 shader_vt_slot(u32 w0, u32 w1) {
-    const u32 place = (w1 & 1023u) >> 4 | ((w1 >> 10 & 1023u) >> 4) << 6 | (w1 >> 20) << 12;
+    const u32 place = (w1 & 1023u) >> 6 | ((w1 >> 10 & 1023u) >> 6) << 4 | (w1 >> 20) << 8;
     return ((w0 ^ place * 0x85EBCA6Bu) * 0x9E3779B1u) >> (32 - SH_VT_SLOT_BITS);
 }
 /* NVN's draw parameters: its driver writes each draw's base vertex and base instance into constant buffer 0 at these

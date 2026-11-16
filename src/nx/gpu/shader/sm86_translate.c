@@ -72,7 +72,7 @@ typedef struct {
     /* vt_sparse: shader_vt_sample's ids, and the slots with a sample it took (vt_took) and with a read of texels
        it didn't take (vt_left): a slot of the first alone may hold a virtual texture (ShaderInfo.tex_vt_mask) */
     ShVtIds vt;
-    u64 vt_took, vt_left;
+    u64 vt_took, vt_left, vt_reads[3]; /* vt_reads: the slots read by a fetch, a gather, a sample with gradients */
     u32 zero, true_v, false_v, glsl;
     /* the program's state: Function variables, made at the start */
     u32 reg[256], ureg[64], pred[8], upred[8];
@@ -2865,7 +2865,7 @@ static void texture(Ctx* c, const Sm86Insn* in) {
             result = spv_emit_vec4_construct(&c->e, c->t_v4f, v);
         }
     }
-    if (op == SM86_TLD4) c->vt_left |= 1ull << slot;
+    if (op == SM86_TLD4) c->vt_left |= 1ull << slot, c->vt_reads[1] |= 1ull << slot;
     tex_results(c, in, result, c->t_f32);
 }
 static int writes_uniform(const Sm86Insn* w, u32 r);
@@ -2917,7 +2917,7 @@ static void texture_grad(Ctx* c, const Sm86Insn* in) {
     int slot = in->op == SM86_TXD_U ? (int)c->handle[c->cur].slot - 1 /* memory_handles' */
                                     : tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, 0, 0);
     if (slot < 0) return;
-    c->vt_left |= 1ull << slot;
+    c->vt_left |= 1ull << slot, c->vt_reads[2] |= 1ull << slot;
     u32 a = sm86_field(in, 24, 8), b = sm86_field(in, 32, 8), f[4], dx[3], dy[3], count = 0;
 #define TXD_REG(base, k) ((base) < SM86_RZ ? (base) + (k) : SM86_RZ)
     for (u32 k = 0; k < coords; k++, count++) {
@@ -2986,7 +2986,7 @@ static void texel_fetch(Ctx* c, const Sm86Insn* in) {
                                           : spv_emit_vec3_construct(&c->e, uvec, v[0], v[1], v[2]));
     u32 level = lod_mode == 3 ? spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, regs[n0]))
                               : spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, c->zero);
-    c->vt_left |= 1ull << slot;
+    c->vt_left |= 1ull << slot, c->vt_reads[0] |= 1ull << slot;
     u32 texel =
         ms ? spv_emit_image_fetch_sample(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord,
                                          spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, regs[n0 + offset])))
@@ -7572,6 +7572,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             /* Maxwell's and Ampere's programs use infinities and NaNs (CLAUDE.md) */
             spv_emit_float_controls(e, fn, ftz_mode, 1, 0);
             si->tex_vt_mask = c->vt_took & ~c->vt_left;
+            memcpy(si->tex_vt_reads, c->vt_reads, sizeof si->tex_vt_reads);
             out = spv_emit_finish(e, word_count);
         }
         spv_emit_destroy(e);
