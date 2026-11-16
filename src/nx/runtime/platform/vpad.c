@@ -141,9 +141,16 @@ typedef char vpad_ini_places[SETTINGS_CONTROLS_COUNT == SNX_VPAD_COUNT ? 1 : -1]
 /* controls=2 (Auto): shown while the device has a touch screen and no gamepad (vpad_auto), atomic: the backend's thread
    writes it, the drawing reads it */
 static int g_auto_shown;
+static int g_menu_open; /* atomic: the game's menu over the picture, which hides the controls (vpad_menu) */
 static int on(void) {
     int c = __atomic_load_n(&g_settings.show_controls, __ATOMIC_RELAXED);
+    if (__atomic_load_n(&g_menu_open, __ATOMIC_ACQUIRE)) return 0;
     return c == 1 || (c == 2 && __atomic_load_n(&g_auto_shown, __ATOMIC_RELAXED));
+}
+void vpad_menu(int open) {
+    ++g_version;
+    __atomic_store_n(&g_menu_open, open != 0, __ATOMIC_RELEASE);
+    if (open) vpad_release();
 }
 int vpad_auto_shown(int touch, int pads) { return touch && !pads; }
 int vpad_auto_said(int touch, int pads, char* out, size_t n) {

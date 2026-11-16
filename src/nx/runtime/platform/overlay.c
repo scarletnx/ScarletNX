@@ -888,6 +888,7 @@ void overlay_toggle(void) {
     changed();
     if (!shown) page_open(PAGE_MAIN);
     __atomic_store_n(&shown, !shown, __ATOMIC_RELEASE);
+    vpad_menu(shown); /* the on-screen controls hide under it */
 }
 /* the panel's rows: the page's items under the head, a blank row under them */
 static int rows(void) { return FIRST + (items() < visible() ? items() : visible()) + 1; }

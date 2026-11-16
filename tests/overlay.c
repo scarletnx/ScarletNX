@@ -1563,25 +1563,24 @@ int main(void) {
         overlay_toggle(); /* B still held as it opens */
         assert(overlay_controls(1ull << 1, still, 3505) == OVERLAY_NONE);
         assert(overlay_controls(0, still, 3506) == OVERLAY_NONE);
-        /* a finger or the mouse on the open menu: down on an on-screen control it is the controls', whose D-pad then
-           moves the menu and whose lift elsewhere taps nothing; off them its lift taps the menu, outside the panel
-           closing it; one the menu forgot (it opened, the window lost the focus) or the system cancelled taps nothing */
+        /* a finger or the mouse on the open menu: the on-screen controls hide under it (vpad_menu), so one down where
+           the D-pad shows takes nothing of theirs and its lift there, off the panel, closes the menu; closed, they
+           show and take fingers again. One the menu forgot (it opened, the window lost the focus) or the system
+           cancelled taps nothing */
         {
             const int area[4] = {0, 0, SW, SH};
             const SnxVpadConfig* v = vpad_config();
             float dx = v->at[SNX_VPAD_DPAD].x * SW, dy = v->at[SNX_VPAD_DPAD].y * SH + 0.6f * 0.25f * SH / 2;
             u64 b;
             i32 st[4];
-            assert(vpad_ini("controls", "1"));
+            assert(vpad_ini("controls", "1") && !vpad_shown()); /* on, but under the menu */
             overlay_pointer_down(SNX_TOUCH_MOUSE, dx, dy, area);
             vpad_state(&b, st);
-            assert(b == 1ull << 15 && overlay_controls(b, still, 4000) == OVERLAY_NONE); /* to Controllers */
-            assert(overlay_pointer_up(SNX_TOUCH_MOUSE, 5, 5, SW, SH) == OVERLAY_NONE && overlay_shown());
-            vpad_state(&b, st);
-            assert(!b && overlay_controls(1ull << 0, still, 4001) == OVERLAY_NONE);
-            draw();
-            assert(text_at(1, 0, "SCARLETNX  /  CONTROLLERS"));
-            assert(overlay_controls(1ull << 1, still, 4002) == OVERLAY_NONE); /* B: the menu */
+            assert(!b && overlay_pointer_up(SNX_TOUCH_MOUSE, dx, dy, SW, SH) == OVERLAY_CLOSE);
+            overlay_toggle();
+            assert(!overlay_shown() && vpad_shown());
+            overlay_toggle();
+            assert(overlay_shown() && !vpad_shown());
             overlay_pointer_down(8, 5, 5, area);
             assert(overlay_pointer_up(8, 5, 5, SW, SH) == OVERLAY_CLOSE);
             overlay_pointer_down(9, 5, 5, area);
