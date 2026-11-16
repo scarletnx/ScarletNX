@@ -305,7 +305,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # each extension off, the log saying the command and the driver (tests/vulkan_hidden_commands.inc). A driver that
     # would have neither on skips (77)
     add_test(NAME vulkan_headless_hidden_commands COMMAND snx-test-vulkan -H
-             --vk_debug_hide_commands=vkCmdSetDepthClampRangeEXT,vkCmdBeginConditionalRenderingEXT)
+             --vk-debug-hide-commands=vkCmdSetDepthClampRangeEXT,vkCmdBeginConditionalRenderingEXT)
     set_tests_properties(vulkan_headless_hidden_commands PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with each vertex layout in its pipeline: the default run sets it as dynamic state where the
