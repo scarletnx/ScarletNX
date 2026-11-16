@@ -288,7 +288,7 @@ int vk_present_quad_effects(VkCommandBuffer cb, SnxPresentSource* s, VkRect2D* c
                 snx_fx_upscale_label(filter), snx_fx_aa_label(aa));
             return 0;
         }
-        snx_fx_set_fp16(g_present_quad.fx, g_shader_float16);
+        snx_fx_set_fp16(g_present_quad.fx, g_spirv_translate.float16);
     }
     snx_fx_set_sharpness(g_present_quad.fx, sharpness);
     snx_fx_set_light(g_present_quad.fx, s->light);
