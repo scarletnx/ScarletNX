@@ -27,7 +27,9 @@ void vk_present_quad_effects_init(void);
 const char* vk_present_quad_effects_step(int which);
 /* s's crop (an SDR frame: the swapchain's g_vk.sc_space SRGB) through them, into an image of the size to has on
    screen (its sides swapped by transform's quarter turn), which s and crop then name, drawn with the same transform:
-   1; 0 with neither changed where both are Off or nothing ran. Between the window's commands, before its pass. Under
-   vk_lock */
+   1; 0 with neither changed where nothing ran: at once where the upscaler is Off or Bilinear, the quad's own
+   sampler, with anti-aliasing Off. Between the window's commands, before its pass. Under vk_lock */
 int vk_present_quad_effects(VkCommandBuffer cb, SnxPresentSource* s, VkRect2D* crop, VkRect2D to, u32 transform);
+/* statistics: the frames vk_present_quad_effects handed to the effects, each after the recording ring drained */
+u64 vk_present_quad_effects_frames(void);
 #endif

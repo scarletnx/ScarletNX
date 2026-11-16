@@ -32,6 +32,7 @@ static struct {
     char upscaler_seen[sizeof g_settings.upscaler], aa_seen[sizeof g_settings.anti_aliasing]; /* the words last read */
     SnxFx* fx;
     int fx_failed, hdr_said;
+    u64 fx_frames; /* the frames handed to the effects (vk_present_quad_effects_frames) */
 } g_present_quad;
 
 static int initialize(void) {
@@ -255,6 +256,7 @@ static void effects_follow(int start) {
         start ? "" : ", as the settings say now");
 }
 void vk_present_quad_effects_init(void) { effects_follow(1); }
+u64 vk_present_quad_effects_frames(void) { return g_present_quad.fx_frames; }
 const char* vk_present_quad_effects_step(int which) {
     int* at = which ? &g_present_quad.aa : &g_present_quad.upscaler;
     int was = __atomic_load_n(at, __ATOMIC_RELAXED);
@@ -270,7 +272,11 @@ int vk_present_quad_effects(VkCommandBuffer cb, SnxPresentSource* s, VkRect2D* c
     int sharpness = __atomic_load_n(&g_settings.upscaler_sharpness, __ATOMIC_RELAXED);
     u32 w = transform & 4 ? to.extent.height : to.extent.width, h = transform & 4 ? to.extent.width : to.extent.height;
     SnxFxImage out;
-    if ((filter == SNX_FX_UPSCALE_OFF && aa == SNX_FX_AA_OFF) || g_present_quad.fx_failed || !w || !h) return 0;
+    /* Bilinear is the quad's own sampler: with anti-aliasing Off, it and Off record no pass (snx_fx_render), so they
+       neither make the effects nor drain the recording ring */
+    if (((filter == SNX_FX_UPSCALE_OFF || filter == SNX_FX_UPSCALE_BILINEAR) && aa == SNX_FX_AA_OFF) ||
+        g_present_quad.fx_failed || !w || !h)
+        return 0;
     /* an HDR frame (a game's own, gpu/vk/hdr_swapchain.c) is shown as it is: the passes are for SDR's range */
     if (g_vk.sc_space != SNX_HDR_SPACE_SRGB) {
         if (!g_present_quad.hdr_said++)
@@ -295,6 +301,7 @@ int vk_present_quad_effects(VkCommandBuffer cb, SnxPresentSource* s, VkRect2D* c
     /* the passes record on cb at once, where the commands queued for the recording thread (vk_rec_call) come after
        what they read: the ring drained, every one of those is in cb */
     vk_rec_sync();
+    ++g_present_quad.fx_frames;
     int ran = snx_fx_render(g_present_quad.fx, cb, vk_frame_id() % VK_FRAMES, s->view, s->width, s->height,
                             (u32)crop->offset.x, (u32)crop->offset.y, crop->extent.width, crop->extent.height, 0, w, h,
                             filter, aa, &out);
