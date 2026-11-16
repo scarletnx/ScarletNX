@@ -30,6 +30,7 @@ static struct {
        submitted, and waited for with or without it */
     VkHostTimeline done;
     u64 serial; /* the last VkOwnRes.serial given */
+    VkOwnRes* later; /* released while another thread held vk_lock: freed at a later vk_unlock (atomic stack) */
     /* the results with a buffer of their own that are in use, and their buffers' bytes: any thread adds and takes */
     u64 live[VK_OWN_BY_N], live_bytes[VK_OWN_BY_N];
     /* those let go since the last statistics, by how many presents they were kept: under 8, under 120, under 1200,
@@ -441,6 +442,7 @@ VkOwnRes* vk_own_res_borrow(VkBuffer buf) {
     r->serial = __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED);
     return r;
 }
+static void res_free_buffer(VkOwnRes* r);
 static void res_release(void* res) {
     VkOwnRes* r = (VkOwnRes*)res;
     if (__atomic_sub_fetch(&r->refs, 1, __ATOMIC_ACQ_REL)) return;
@@ -452,13 +454,34 @@ static void res_release(void* res) {
     __atomic_fetch_sub(&g_owned.live[r->by], 1, __ATOMIC_RELAXED);
     __atomic_fetch_sub(&g_owned.live_bytes[r->by], r->size, __ATOMIC_RELAXED);
     __atomic_fetch_add(&g_owned.let_go[kept < 8 ? 0 : kept < 120 ? 1 : kept < 1200 ? 2 : 3], 1, __ATOMIC_RELAXED);
-    vk_lock();
+    /* Another thread holds vk_lock: the buffer goes later, at that thread's outermost vk_unlock or the next one
+       (vk_own_release_later). A landing lets its resources go after it let go of vk_lock (own.c's land_start), and a
+       wait for the lock there held the faulting game thread behind the renderer's draws: 6.2 s in 83 s of one game */
+    if (!vk_trylock()) {
+        VkOwnRes* head = __atomic_load_n(&g_owned.later, __ATOMIC_RELAXED);
+        do r->later = head;
+        while (!__atomic_compare_exchange_n(&g_owned.later, &head, r, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED));
+        return;
+    }
+    res_free_buffer(r);
+    vk_unlock();
+}
+/* under vk_lock: a resource no one refers to, its buffer to the pool or to the frame's end, and its record */
+static void res_free_buffer(VkOwnRes* r) {
     /* the frame recording may still copy from it: the pool keeps it from the next result until the GPU has done what
        is recorded now. A full pool has it destroyed with the frame, as before the pool */
     /* one in system memory goes with the frame too: the next result is made in the device's, when it has room */
     if (r->host || !own_pool_put(r->buf, r->mem, r->size)) vk_defer_buffer(r->buf, r->mem);
-    vk_unlock();
     free(r);
+}
+int vk_own_later_any(void) { return __atomic_load_n(&g_owned.later, __ATOMIC_ACQUIRE) != NULL; }
+void vk_own_release_later(void) {
+    VkOwnRes* r = __atomic_exchange_n(&g_owned.later, NULL, __ATOMIC_ACQUIRE);
+    while (r) {
+        VkOwnRes* next = r->later;
+        res_free_buffer(r);
+        r = next;
+    }
 }
 void vk_own_res_ref(VkOwnRes* r) { res_retain(r); }
 void vk_own_res_unref(VkOwnRes* r) { res_release(r); }

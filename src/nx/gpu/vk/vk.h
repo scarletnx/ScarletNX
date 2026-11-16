@@ -1421,7 +1421,11 @@ typedef struct VkOwnRes {
     u8 borrowed; /* buf is another's (the GPU mirror's): letting go of the last reference frees only this record */
     u8 by;       /* VK_OWN_BY_*: what made it, for the statistics */
     u8 host;     /* buf is in system memory, for want of the device's: not pooled when it is let go */
+    struct VkOwnRes* later; /* owned.c's list of those released while another thread held vk_lock */
 } VkOwnRes;
+/* owned.c: the resources released while another thread held vk_lock, freed by the next outermost vk_unlock */
+int vk_own_later_any(void);
+void vk_own_release_later(void); /* under vk_lock */
 /* what makes a kept result: a dispatch, a draw that writes guest memory, a copy engine, the video engines, a render
    target written back */
 enum { VK_OWN_BY_COMPUTE, VK_OWN_BY_DRAW, VK_OWN_BY_COPY, VK_OWN_BY_VIDEO, VK_OWN_BY_TARGET, VK_OWN_BY_N };

@@ -57,6 +57,7 @@ void vk_unlock(void) {
     /* watched bytes that this hold read with no publish (own.c owes them): the targets over them are watched again
        before the lock goes, and the next CPU access publishes them */
     if (t_vkdepth == 1 && own_owed_any()) vk_rt_watch_owed();
+    if (t_vkdepth == 1 && vk_own_later_any()) vk_own_release_later();
     if (!--t_vkdepth) vk_let_go();
 }
 int vk_trylock(void) {
