@@ -37,7 +37,7 @@ target_link_libraries(my_emulator PRIVATE ScarletNX::recompiler)
 ```
 
 A project can also build the library in its own tree, fetched with
-[CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) (or added with `add_subdirectory`), with CMake 3.31 or newer,
+[CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) (or added with `add_subdirectory`), with CMake 3.28 or newer,
 which CPMUtil, the build's own package fetcher, needs.
 With every driver off, the configure needs LLVM and nothing else: no third-party
 package is downloaded and no font or other asset of the runtimes is fetched. ScarletNX's

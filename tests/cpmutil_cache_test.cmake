@@ -11,6 +11,9 @@
 # another package's fetch goes on beside it; and a package's patches are applied, again when they change, and stop the
 # configure where one does not apply without fuzz.
 # CPMUtil's 5 s between tries is left out: each failure would take 30 s
+# the policies of the CMake the build needs: a script has none of its own, and before CMake 4 an unset CMP0054 read
+# if(kind STREQUAL "arc") as the variable arc
+cmake_minimum_required(VERSION 3.28)
 if(NOT DEFINED SRC OR NOT DEFINED WORK)
     message(FATAL_ERROR "cpmutil_cache_test.cmake needs -DSRC=... -DWORK=...")
 endif()
@@ -49,7 +52,7 @@ file(WRITE "${WORK}/project/cpmfile.json" "{
 ")
 # KIND (arc or one) added as cmake/dependencies.cmake adds it, after WAIT names a file to appear (the other fetch's
 # lock taken), its download paused with PAUSE; its folder written to folder.txt
-file(WRITE "${WORK}/project/CMakeLists.txt" "cmake_minimum_required(VERSION 3.31)
+file(WRITE "${WORK}/project/CMakeLists.txt" "cmake_minimum_required(VERSION 3.28)
 project(cpmutil_cache_test LANGUAGES NONE)
 include(\"${SRC}/cmake/packages.cmake\")
 macro(sleep time)

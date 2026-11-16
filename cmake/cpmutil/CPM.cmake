@@ -29,7 +29,7 @@
   SOFTWARE.
 ]]
 
-cmake_minimum_required(VERSION 3.31 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.28 FATAL_ERROR)
 
 # Initialize logging prefix
 if(NOT CPM_INDENT)
@@ -64,8 +64,10 @@ macro(cpm_set_policies)
   set(CMAKE_POLICY_DEFAULT_CMP0150 NEW)
 
   # Disable sub-build nonsense
-  cmake_policy(SET CMP0168 NEW)
-  set(CMAKE_POLICY_DEFAULT_CMP0168 NEW)
+  if(POLICY CMP0168) # CMake 3.30: before it, FetchContent populates in a sub-build
+    cmake_policy(SET CMP0168 NEW)
+    set(CMAKE_POLICY_DEFAULT_CMP0168 NEW)
+  endif()
 endmacro()
 
 cpm_set_policies()

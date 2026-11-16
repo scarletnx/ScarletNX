@@ -1,11 +1,12 @@
 # SPDX-FileCopyrightText: Copyright 2026 crueter
 # SPDX-License-Identifier: LGPL-3.0-or-later
 
-# ScarletNX: as Eden carries it (git.eden-emu.dev/eden-emu/eden, CMakeModules/CPMUtil.cmake at e53e76168c), with three
+# ScarletNX: as Eden carries it (git.eden-emu.dev/eden-emu/eden, CMakeModules/CPMUtil.cmake at e53e76168c), with four
 # changes of ours, which an update keeps: fetch_package fetches a package under a lock, cpm_download's failure names
-# the URL and the status, and apply_patches applies without fuzz and stops on a patch that does not apply
+# the URL and the status, apply_patches applies without fuzz and stops on a patch that does not apply, and CMake 3.28
+# is the minimum, here and in CPM.cmake, which sets CMP0168 where CMake has it
 
-cmake_minimum_required(VERSION 3.31)
+cmake_minimum_required(VERSION 3.28)
 
 if(MSVC OR ANDROID OR IOS)
     set(BUNDLED_DEFAULT ON)

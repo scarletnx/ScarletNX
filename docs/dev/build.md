@@ -25,12 +25,12 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
 ## Prerequisites
 
 - **Linux / FreeBSD:** Clang (CI: 23; FreeBSD's system Clang also works), LLVM's development files
-  (`llvm-config`, required by the recompiler), CMake ≥3.31, Ninja, POSIX shell, GNU make (`gmake` on FreeBSD),
+  (`llvm-config`, required by the recompiler), CMake ≥3.28, Ninja, POSIX shell, GNU make (`gmake` on FreeBSD),
   NASM on x86-64, Perl, Python 3 (the menu's languages, SPIRV-Tools' build), Git, pkg-config, `patch` and meson
   (dav1d's build).
   Use a system SDL3 development package, or X11/Wayland and audio development libraries for the bundled
   SDL3 build.
-- **macOS:** Apple silicon, macOS 13 or newer, Xcode (its Clang and SDKs), CMake ≥3.31, Ninja, meson, Python 3 and
+- **macOS:** Apple silicon, macOS 13 or newer, Xcode (its Clang and SDKs), CMake ≥3.28, Ninja, meson, Python 3 and
   Git.
   LLVM's libraries come from `scripts/apple-llvm.sh` or Homebrew ([steps](#macos)).
 - **Windows:** Win10/11 x64. CI builds in MSYS2's CLANG64 environment, which has LLVM's development files
@@ -93,7 +93,7 @@ sudo apt install libwayland-dev libxkbcommon-dev wayland-protocols libdecor-0-de
 Without `libegl-dev` SDL3 quietly leaves Wayland out and builds X11 only. The `SDL_WAYLAND` line of
 its configure summary reads `(Wanted: ON): ON` when Wayland is in.
 
-CMake needs version 3.31 or newer (CPMUtil, which fetches the third-party packages, needs it), and Clang must support
+CMake needs version 3.28 or newer (CPMUtil, which fetches the third-party packages, needs it), and Clang must support
 C23/C++23. Upgrade these tools if your
 release ships older versions. Install your GPU's Vulkan driver separately. For Intel/AMD or lavapipe
 on Debian/Ubuntu, the usual packages are `libvulkan1 mesa-vulkan-drivers`. NVIDIA users need a
