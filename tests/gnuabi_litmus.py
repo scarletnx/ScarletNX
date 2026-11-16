@@ -17,14 +17,17 @@ aarch64.cat in the herd7 tool suite (Jade Alglave and Luc Maranget). tests/litmu
 format, so the expectations can be re-derived with herd7 or with Arm's copy at https://developer.arm.com/herd7
 instead of taken on trust.
 
-    gnuabi_litmus.py RUNNER [--iterations N] [--runs N] [--clang CLANG] [--linker L] [--timeout SECONDS]
+    gnuabi_litmus.py RUNNER [--iterations N] [--runs N] [--cc CC] [--linker L] [--timeout SECONDS]
     gnuabi_litmus.py --build-only      # build the images, and say which linker did it, without running them
     gnuabi_litmus.py --replay FILE     # check the fixture's printed lines, with no compiler and no runner
     gnuabi_litmus.py --self-test       # check this script's own decisions on histograms known by hand
 
-The linker is mold or LLD, whichever the build machine has: each is tried by linking a probe program, so a name on
-PATH that cannot build the image is not taken for a linker that can. mold is tried first because it is the faster of
-the two, and LLD, which CI installs, is the fallback. `--linker lld` or `--linker PATH` says which.
+The compiler and the linker are both found by building something, not by looking a name up on PATH. The compiler is
+the one the build named (CMake passes its C compiler) and then `clang` from PATH, and it counts only if the object it
+emits is an AArch64 one: clang takes the triple with `--target=`, a cross GCC has it in its own name, and a native
+compiler that quietly builds for the host is rejected rather than tested. The linker is mold or LLD. mold is tried
+first because it is the faster of the two, and LLD, which CI installs, is the fallback. `--linker lld` or
+`--linker PATH` says which.
 
 Without a Clang that targets AArch64 and a linker that builds the image, the test is skipped (exit 77), as
 tests/gnuabi_threads.py does.
@@ -130,10 +133,16 @@ def read_output(name, text, histogram):
             continue
         irregular = BAD.match(line)
         if irregular:
+            if irregular.group(1) != name:
+                problems.append(f'{name}: the run printed a bad count of {irregular.group(1)}')
+                continue
             bad += int(irregular.group(2))
             continue
         done = DONE.match(line)
         if done:
+            if done.group(1) != name:
+                problems.append(f'{name}: the run printed the done line of {done.group(1)}')
+                continue
             reported_done = True
             attempts = int(done.group(2))
             continue
@@ -142,6 +151,11 @@ def read_output(name, text, histogram):
     if not reported_done:
         problems.append(f'{name}: the run never printed its "done" line, so the spin loop or a barrier did not end')
     return attempts, bad, problems
+
+
+def counted(histogram, bad):
+    """The attempts the fixture accounted for: one outcome or one bad read each."""
+    return sum(histogram.values()) + bad
 
 
 def report(name, attempts, bad, histogram, problems):
@@ -160,41 +174,77 @@ def report(name, attempts, bad, histogram, problems):
     return 0
 
 
-def probe_linker(linker, clang, scratch):
-    """Whether this linker builds the kind of image the fixtures need: a static freestanding AArch64 executable.
-
-    A name on PATH is not enough. A distribution's GNU gold has the host's target alone, and a wrapper or a
-    half-installed mold fails on a flag this link uses, so the question is asked by linking something."""
-    program = scratch / 'probe.c'
-    program.write_text('void _start(void) { for (;;) { } }\n')
-    flags = [clang, '--target=aarch64-linux-gnu', f'-fuse-ld={linker}', '-static', '-ffreestanding', '-nostdlib',
-             '-fno-pie', '-march=armv8-a', '-Wl,-e,_start', str(program), '-o', str(scratch / 'probe')]
-    try:
-        return subprocess.run(flags, check=False, capture_output=True).returncode == 0
-    except OSError:
-        return False
+TARGET = 'aarch64-linux-gnu'
+AARCH64_EM = 183  # e_machine in an ELF header, at offset 18, little endian
 
 
-def choose_linker(candidates, clang, scratch):
-    """The first of the candidates that links a probe image, or None."""
-    for linker in candidates:
-        if probe_linker(linker, clang, scratch):
-            return linker
+def emits_aarch64(cc, scratch):
+    """The flag that makes this compiler emit guest objects, or None when it cannot.
+
+    clang takes the triple with --target=. A cross GCC has it in its own name and refuses the flag. The question is
+    asked by compiling, and the object is read back: a native compiler given neither flag builds happily, for the
+    host, and must not be mistaken for a cross compiler that works."""
+    source = scratch / 'probe-empty.c'
+    source.write_text('void snx_target_probe(void) { }\n')
+    for flags in (['--target=' + TARGET], []):
+        obj = scratch / 'probe-empty.o'
+        try:
+            built = subprocess.run([cc, *flags, '-c', str(source), '-o', str(obj)], check=False, capture_output=True,
+                                   timeout=120)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if built.returncode or not obj.exists():
+            continue
+        header = obj.read_bytes()[:20]
+        if len(header) == 20 and header[:4] == b'\x7fELF' and header[18] == AARCH64_EM and header[19] == 0:
+            return flags
     return None
 
 
-def build(name, linker, clang, scratch, iterations):
+def probe_linker(linker, cc, cc_flags, scratch):
+    """Whether this linker builds the kind of image the fixtures need: a static freestanding AArch64 executable."""
+    program = scratch / 'probe.c'
+    program.write_text('void _start(void) { for (;;) { } }\n')
+    flags = [cc, *cc_flags, f'-fuse-ld={linker}', '-static', '-ffreestanding', '-nostdlib', '-fno-pie',
+             '-march=armv8-a', '-Wl,-e,_start', str(program), '-o', str(scratch / 'probe')]
+    try:
+        return subprocess.run(flags, check=False, capture_output=True, timeout=120).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def choose_toolchain(cc, linkers, scratch):
+    """The first (compiler, compiler flags, linker) that builds a probe image, or None.
+
+    The build's compiler is tried before clang on PATH, and the linkers in their order, so a host that has one of
+    each still runs the tests, and the one it used is named in the output."""
+    seen = []
+    for compiler in (cc, shutil.which('clang')):
+        if not compiler or compiler in seen:
+            continue
+        seen.append(compiler)
+        flags = emits_aarch64(compiler, scratch)
+        if flags is None:
+            continue
+        for linker in linkers:
+            if probe_linker(linker, compiler, flags, scratch):
+                return compiler, flags, linker
+    return None
+
+
+def build(name, linker, cc, cc_flags, scratch, iterations):
     """One freestanding AArch64 image of the fixture, with this test selected at compile time."""
     image = scratch / name
-    flags = [clang, '--target=aarch64-linux-gnu', f'-fuse-ld={linker}', '-static', '-O2', '-ffreestanding',
+    flags = [cc, *cc_flags, f'-fuse-ld={linker}', '-static', '-O2', '-ffreestanding',
              '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-nostdlib', '-march=armv8-a', '-mno-outline-atomics',
              '-std=c99', '-pedantic', '-Wall', '-Wextra', '-Werror', f'-DLITMUS_TEST={LITMUS[name]["test"]}',
              f'-DLITMUS_ITERATIONS={iterations[name]}', '-Wl,-e,_start', '-I', str(SOURCE), str(SOURCE / 'start.S'),
              str(SOURCE / 'thread_start.S'), str(SOURCE / 'litmus.c'), '-o', str(image)]
-    result = subprocess.run(flags, check=False, capture_output=True, text=True)
+    try:
+        result = subprocess.run(flags, check=False, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return None, f'{name}: the build took longer than 300 s'
     if result.returncode:
-        if 'unable to create target' in result.stderr or 'unknown target' in result.stderr:
-            return None, 'clang has no AArch64 target'
         return None, f'{name}: build failed\n{result.stderr}'
     return image, None
 
@@ -202,17 +252,17 @@ def build(name, linker, clang, scratch, iterations):
 def replay(path):
     """Check the lines a fixture printed, grouped by test, without building or running anything."""
     groups = collections.defaultdict(list)
+    failures = 0
     for number, line in enumerate(path.read_text().splitlines(), 1):
         matched = OUTCOME.match(line) or BAD.match(line) or DONE.match(line)
         if matched:
             groups[matched.group(1)].append(line)
         elif line.strip():
             print(f'{path}:{number}: not a line of the fixture: {line!r}')
-            return 1
+            failures += 1
     if not groups:
         print(f'{path}: no lines of the fixture')
         return 1
-    failures = 0
     for name in sorted(groups):
         if name not in LITMUS:
             print(f'{path}: no test named {name}')
@@ -220,6 +270,9 @@ def replay(path):
             continue
         histogram = collections.Counter()
         attempts, bad, problems = read_output(name, '\n'.join(groups[name]), histogram)
+        if not problems and counted(histogram, bad) != attempts:
+            problems.append(f'{name}: {counted(histogram, bad)} outcomes for {attempts} attempts, so an attempt is '
+                            'missing from the record')
         failures += report(name, attempts, bad, histogram, problems)
     return 1 if failures else 0
 
@@ -264,6 +317,11 @@ def self_test():
     if attempts != 4 or bad != 3 or problems:
         print(f'self-test: a bad count came back as {attempts}, {bad}, {problems}')
         failures += 1
+    for histogram, bad, attempts, expected in (({}, 0, 0, True), ({1: 7}, 0, 8, False), ({1: 7}, 1, 8, True),
+                                               ({1: 7, 3: 1}, 0, 8, True)):
+        if (counted(histogram, bad) == attempts) is not expected:
+            print(f'self-test: counted({histogram}, {bad}) against {attempts} is wrong')
+            failures += 1
     if LINKERS[0] != 'mold' or 'lld' not in LINKERS or 'gold' in LINKERS:
         print(f'self-test: the linker order is {LINKERS}')
         failures += 1
@@ -277,9 +335,11 @@ def self_test():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('runner', nargs='?')
-    parser.add_argument('--clang', default=shutil.which('clang'))
+    parser.add_argument('--cc', '--clang', dest='cc', default=shutil.which('clang'),
+                        help='the C compiler to build the guest images with; clang by default')
     parser.add_argument('--linker', default='auto', help='auto, lld, mold, or the path of a linker')
-    parser.add_argument('--iterations', type=int, default=200000)
+    parser.add_argument('--iterations', type=int, default=200000,
+                        help='attempts per ordered test; the spin test always runs once')
     parser.add_argument('--runs', type=int, default=1)
     parser.add_argument('--timeout', type=float, default=300.0)
     parser.add_argument('--build-only', action='store_true')
@@ -292,11 +352,11 @@ def main():
         return replay(pathlib.Path(args.replay))
     if not args.runner and not args.build_only:
         parser.error('a runner is needed unless --build-only, --replay or --self-test is given')
-    if not args.clang:
-        print('no clang: skipped')
+    if not args.cc:
+        print('no C compiler: skipped')
         return 77
-    if not shutil.which(args.clang):
-        print(f'{args.clang}: not a program')
+    if not shutil.which(args.cc):
+        print(f'{args.cc}: not a program')
         return 1
     if not args.build_only and not pathlib.Path(args.runner or '').exists():
         print(f'{args.runner}: no such runner')
@@ -306,17 +366,19 @@ def main():
     failures = 0
     with tempfile.TemporaryDirectory(prefix='snx-gnuabi-litmus-') as temporary:
         scratch = pathlib.Path(temporary)
-        linker = choose_linker(candidates, args.clang, scratch)
-        if linker is None:
-            print(f'no linker built a freestanding aarch64-linux-gnu image (tried {", ".join(candidates)}): skipped')
+        chosen = choose_toolchain(args.cc, candidates, scratch)
+        if chosen is None:
+            print(f'no compiler and linker built a freestanding {TARGET} image (compilers {args.cc} and clang, '
+                  f'linkers {", ".join(candidates)}): skipped')
             return 77
-        print(f'linker: {linker}')
+        cc, cc_flags, linker = chosen
+        print(f'compiler: {cc} {" ".join(cc_flags)}'.rstrip() + f', linker: {linker}')
         cache = scratch / 'cache'
         for name in LITMUS:
-            image, error = build(name, linker, args.clang, scratch, iterations)
-            if error:
+            image, error = build(name, linker, cc, cc_flags, scratch, iterations)
+            if error:  # the compiler and the linker were probed above, so a build that fails now is a defect
                 print(error)
-                return 77 if 'no AArch64 target' in error else 1
+                return 1
             if args.build_only:
                 print(f'{name}: {image.name} built, {image.stat().st_size} bytes')
                 continue
@@ -324,8 +386,13 @@ def main():
             attempts = bad = 0
             problems = []
             for _ in range(args.runs):
-                run = subprocess.run([args.runner, '--isolated', f'--jit-cache={cache}', str(image)],
-                                     check=False, capture_output=True, text=True, timeout=args.timeout)
+                try:
+                    run = subprocess.run([args.runner, '--isolated', f'--jit-cache={cache}', str(image)],
+                                         check=False, capture_output=True, text=True, timeout=args.timeout)
+                except subprocess.TimeoutExpired:
+                    problems.append(f'{name}: no answer in {args.timeout:g} s, so the spin loop or a barrier did not '
+                                    'end')
+                    break
                 if run.returncode:
                     problems.append(f'{name}: exit {run.returncode}\n{run.stdout}{run.stderr}')
                     break
@@ -334,8 +401,9 @@ def main():
                 bad += run_bad
                 problems += run_problems
             expected = iterations[name] * args.runs
-            if not problems and attempts != expected:
-                problems.append(f'{name}: {attempts} attempts, expected {expected}')
+            if not problems and counted(histogram, bad) != expected:
+                problems.append(f'{name}: {counted(histogram, bad)} outcomes for {expected} attempts, so an attempt is '
+                                'missing from the record')
             failures += report(name, attempts, bad, histogram, problems)
     return 1 if failures else 0
 

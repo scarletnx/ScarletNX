@@ -187,7 +187,10 @@ static void collect(void) {
 static void tally(void) {
     u32 bits = 0;
     for (u32 i = 0; i < READERS; i++) {
-        if (values[i] > 1) bad_values++;
+        if (values[i] > 1) { /* a read the instruction cannot produce: counted apart, not folded into a bit */
+            bad_values++;
+            continue;
+        }
         bits |= (values[i] & 1u) << i;
     }
     histogram[bits]++;

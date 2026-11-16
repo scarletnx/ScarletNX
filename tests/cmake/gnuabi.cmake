@@ -46,17 +46,20 @@ if(BUILD_TESTING)
                 "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_threads.py" "${SNX_GNUABI_PROGRAM}")
             set_tests_properties(gnuabi_threads PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
             # the Arm memory model, in guest threads: every outcome a litmus test reports must be one the model allows
-            # (tests/litmus/ has the same tests for herd7). Without Clang, and a linker that builds the image (LLD or
-            # mold, which the driver probes for by linking), it skips, as the QEMU reference does.
+            # (tests/litmus/ has the same tests for herd7). Without a compiler that emits AArch64 (the build's C
+            # compiler, else clang) and a linker that builds the image (mold or LLD, probed by linking), it skips.
             # It is registered with the other guest fixtures, so Windows runs no litmus test today: its job has Clang
             # and ld.lld, so lifting it out of this block is all a Windows x86-64 or ARM64 host needs.
             add_test(NAME gnuabi_litmus COMMAND "${Python3_EXECUTABLE}"
-                "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_litmus.py" "${SNX_GNUABI_PROGRAM}")
+                "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_litmus.py" "${SNX_GNUABI_PROGRAM}"
+                --cc "${CMAKE_C_COMPILER}")
             set_tests_properties(gnuabi_litmus PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77)
             # the same, linked by LLD, which the driver prefers mold over: with both installed the two tests cover
-            # both linkers, and on a host with one of them the second test skips or repeats the first
+            # both linkers, and on a host with one of them the second test skips or repeats the first. Fewer attempts,
+            # since this one checks the linker and the first one checks the model
             add_test(NAME gnuabi_litmus_lld COMMAND "${Python3_EXECUTABLE}"
-                "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_litmus.py" "${SNX_GNUABI_PROGRAM}" --linker lld)
+                "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_litmus.py" "${SNX_GNUABI_PROGRAM}"
+                --cc "${CMAKE_C_COMPILER}" --linker lld --iterations 50000)
             set_tests_properties(gnuabi_litmus_lld PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77)
         endif()
     endif()
