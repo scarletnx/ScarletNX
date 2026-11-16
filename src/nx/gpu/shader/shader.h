@@ -538,6 +538,10 @@ typedef struct {
        Adreno 830 ran 5.4 and an RX 6700 XT 2.2 times slower. The device's maxComputeSharedMemorySize, else 0 (offline)
        */
     int hmma_stage;
+    /* an SM86 LDSM whose address register is proven to be base + 16*lane reads its tile's words directly instead
+       of gathering the row addresses from the other lanes (sm86_translate.c's tile_from_lane). Off until the proof
+       and the two lowering paths are checked on both devices. 0 offline */
+    unsigned hmma_tile_direct : 1;
     /* The device may flush f16 subnormals (no shaderDenormPreserveFloat16), as Turnip on an Adreno 610 does in
        PackHalf2x16: an SM86 program packs its halves below 2^-14 exactly then (sm86_translate.c's pack_half). 0 offline
        */

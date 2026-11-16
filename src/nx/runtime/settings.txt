@@ -1597,6 +1597,17 @@ setting HMMA A-stationary
     help shuffles: the GT 1030 ran the HMMA bench 5.6 times faster than the gather, and 2.7 times faster than A and
     help B through shared memory. Its f32 sums are a tree, at most 6 roundings a term where the gather's chain has
     help 16. 0 = the gather, or what the device chose for it (pairs, staging)
+setting HMMA LDSM tile proof
+    key hmma_tile_direct
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help Experimental: read an SM86 LDSM's shared tile directly where its lane addresses are proved to be a row-major
+    help 16x16 halfword tile, instead of shuffling the row addresses from the lanes that hold them. Where the proof
+    help does not hold, a subgroup vote checks the tile at run time and the general path takes over. The study is in
+    help docs/history/hmma-ldsm-layout-study.md: a Steam Deck's synthetic HMMA forms gain up to 4x, but a game that
+    help swizzles its tile gains nothing and keeps the general path. 0 = the general path
 setting Vulkan allocation cap
     key vk_max_allocation_mb
     int 0 INT_MAX
