@@ -19,6 +19,14 @@ typedef struct {
     uint64_t conn;      /* the connection this anchor belongs to: a new one re-anchors it */
 } SnxTracyGpuCal;
 
+/* A guest's wait gets a fiber of its own. The name's address is the fiber's identity for the server, so tracy.c
+   keeps one name of each slot and kind for the capture's life; a caller's stack buffer would not do. */
+#define SNX_FIBER_SLOTS 256
+#define SNX_FIBER_KINDS 8
+#define SNX_FIBER_ENTER(slot, kind, name) snx_tracy_fiber_enter((uint32_t)(slot), (uint32_t)(kind), (name))
+#define SNX_FIBER_LEAVE() snx_tracy_fiber_leave()
+#define SNX_FIBER_LEAVE_ALL() snx_tracy_fiber_leave_all()
+
 #if defined(SNX_TRACY)
 #include <tracy/TracyC.h>
 
@@ -73,6 +81,9 @@ typedef struct {
 /* the name goes into the client's table, which the server asks for when a GUI connects; kept per thread, so a
    thread that named itself before the client started is named again when it attaches */
 #define SNX_THREAD_NAME(name) snx_tracy_thread_name(name)
+void snx_tracy_fiber_enter(uint32_t slot, uint32_t kind, const char* name);
+void snx_tracy_fiber_leave(void);
+void snx_tracy_fiber_leave_all(void);
 
 /* A frame's picture on the timeline: w x h RGBA8 pixels, at the moment they were read back. The client copies them,
    so the buffer is only read here. Costs a readback of the presented frame, so the caller asks at its own cadence */
@@ -135,6 +146,11 @@ void snx_tracy_lock_try(SnxTracyLock* l, int acquired);
 static inline int snx_tracy_enter(void) { return 0; }
 static inline void snx_tracy_leave(void) {}
 static inline int snx_tracy_attached(void) { return 0; }
+static inline void snx_tracy_fiber_enter(uint32_t slot, uint32_t kind, const char* name) {
+    (void)slot, (void)kind, (void)name;
+}
+static inline void snx_tracy_fiber_leave(void) {}
+static inline void snx_tracy_fiber_leave_all(void) {}
 static inline int snx_tracy_gpu_context(int ctx, int64_t gpu_time, float period, int calibrated,
                                         const char* name) {
     (void)ctx, (void)gpu_time, (void)period, (void)calibrated, (void)name;
@@ -211,6 +227,10 @@ void snx_tracy_thread_name(const char* name);
 void snx_tracy_capture_now(void);
 /* 0 warning, 1 log, 2 verbose. */
 void snx_tracy_log(int lvl, const char* text);
+/* A fatal end of the run: the message goes to the trace with the fatal severity, with no lock taken, so the crash
+   path can use it too. Tracy 0.15.0 has no call that writes a trace from the app; closing the client after this is
+   what gives a capture the events up to the fatal. */
+void snx_tracy_fatal(const char* text);
 /* Closes the client cleanly before plat_exit_now. */
 void snx_tracy_shutdown(void);
 #else
@@ -224,6 +244,7 @@ static inline void snx_tracy_log(int lvl, const char* text) {
     (void)lvl;
     (void)text;
 }
+static inline void snx_tracy_fatal(const char* text) { (void)text; }
 static inline void snx_tracy_shutdown(void) {}
 #endif
 
