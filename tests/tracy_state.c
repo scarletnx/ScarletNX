@@ -150,6 +150,59 @@ bool SDL_WaitProcess(SDL_Process* process, bool block, int* exitcode) {
 void SDL_DestroyProcess(SDL_Process* process) { (void)process; }
 const char* SDL_GetError(void) { return "no process in this test"; }
 
+/* A seeded run over the wrapper. The ops mix zones, fibers, plots, messages and a GUI that comes and goes. After
+   each one the counts must still agree: an open zone holds one pending count, and a fiber stack cannot overflow. */
+static uint32_t fuzz_next(uint32_t* s) {
+    uint32_t x = *s;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *s = x;
+    return x;
+}
+static void fuzz(uint32_t seed) {
+    static const struct ___tracy_source_location_data where = {NULL, "fuzz", __FILE__, __LINE__, 0};
+    TracyCZoneCtx zones[SNX_TRACY_ZONE_MAX];
+    uint32_t s = seed ? seed : 1;
+    int depth = 0;
+    for (int i = 0; i < 2000; i++) {
+        uint32_t op = fuzz_next(&s) % 12;
+        if (op < 2) {
+            TracyCZoneCtx c = snx_tracy_zone_begin(&where);
+            if (c.active) zones[depth++] = c;
+        } else if (op < 4 && depth) {
+            int k = (int)(fuzz_next(&s) % (uint32_t)depth);
+            TracyCZoneCtx c = zones[k];
+            memmove(&zones[k], &zones[k + 1], sizeof zones[0] * (size_t)(depth - k - 1));
+            depth--;
+            snx_tracy_zone_end(c);
+        } else if (op < 6) {
+            char name[32];
+            snprintf(name, sizeof name, "wait %u", fuzz_next(&s) % 8);
+            SNX_FIBER_ENTER(fuzz_next(&s) % SNX_FIBER_SLOTS, fuzz_next(&s) % SNX_FIBER_KINDS, name);
+        } else if (op == 6)
+            SNX_FIBER_LEAVE();
+        else if (op == 7)
+            SNX_FIBER_LEAVE_ALL();
+        else if (op == 8)
+            g_test.connected = !g_test.connected;
+        else if (op == 9)
+            g_test.conn = fuzz_next(&s) % 4 + 1;
+        else if (op == 10)
+            SNX_PLOT("fuzz plot", (double)(fuzz_next(&s) % 100));
+        else
+            SNX_MSG("fuzz msg", 8);
+        CHECK(depth >= 0 && depth <= SNX_TRACY_ZONE_MAX);
+        CHECK(t_tracy.fiber_depth >= 0 && t_tracy.fiber_depth <= SNX_TRACY_FIBER_MAX);
+        CHECK(g_tracy_pending == depth); /* every other emission balances its count inside the call */
+    }
+    SNX_FIBER_LEAVE_ALL();
+    CHECK(t_tracy.fiber_depth == 0);
+    while (depth) snx_tracy_zone_end(zones[--depth]);
+    CHECK(g_tracy_pending == 0);
+    g_test.connected = 1;
+}
+
 int main(void) {
     static const struct ___tracy_source_location_data where = {NULL, "zone", __FILE__, __LINE__, 0};
     TracyCZoneCtx ctx;
@@ -274,6 +327,13 @@ int main(void) {
         snx_tracy_zone_end(deep[0]); /* the outer one first */
         snx_tracy_zone_end(deep[1]);
         CHECK(g_test.zone_ends == (int)SNX_TRACY_ZONE_MAX + 2 && g_tracy_pending == 0);
+    }
+    /* stress the wrapper with seeded runs, then restore the counts the shutdown checks below read */
+    {
+        int zone_ends = g_test.zone_ends, msgs = g_test.msgs;
+        for (uint32_t seed = 1; seed <= 32; seed++) fuzz(seed);
+        g_test.zone_ends = zone_ends;
+        g_test.msgs = msgs;
     }
     /* shut down with a zone open: the zone ended once, the gate shut, the client shut down once */
     ctx = snx_tracy_zone_begin(&where);
