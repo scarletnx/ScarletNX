@@ -265,6 +265,19 @@ jobs:
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
         run: &abi-helpers clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
+      - name: TEMP loop memory_own and memory_own_signal_both 500 times each, 4 at a time
+        shell: bash
+        run: |
+          for t in memory_own memory_own_signal_both; do
+            for w in 1 2 3 4; do
+              ( f=0; for i in $(seq 125); do
+                  ctest --test-dir build/default -R "^$t\$" -V > /tmp/own_loop_$w.txt 2>&1 || { f=$((f + 1)); grep -m3 "memory_own.c:" /tmp/own_loop_$w.txt || true; }
+                  grep "OWN_DIAG" /tmp/own_loop_$w.txt | sed "s/^/$t: /" || true
+                done; echo $f > /tmp/own_fails_$w ) &
+            done
+            wait
+            echo "OWN_LOOP_RESULT: $t: $(( $(cat /tmp/own_fails_1) + $(cat /tmp/own_fails_2) + $(cat /tmp/own_fails_3) + $(cat /tmp/own_fails_4) )) failures in 500 runs, 4 at a time"
+          done
       - name: Test native tooling and indexed filesystems
         run: &native-tests ctest --test-dir build/default --output-on-failure --parallel 4
       - name: Check optional Python diagnostics

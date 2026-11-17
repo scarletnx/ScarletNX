@@ -1115,12 +1115,23 @@ static void test_stress(void) {
         g_resolve_res = r;
         g_resolve_lo = g_sa;
         g_resolve_size = 0x20000;
-        for (i = 0; i < 0x20000; i += 0x1800)
+        u64 mid_at = 0; /* TEMP: the first piece watched after a resolve came, 0 for none */
+        for (i = 0; i < 0x20000; i += 0x1800) {
+            if (!mid_at && i && __atomic_load_n(&g_resolves, __ATOMIC_ACQUIRE) != resolves) mid_at = i;
             CHECK(own_watch(g_sa + i, 0x20000 - i < 0x1800 ? 0x20000 - i : 0x1800) == 0);
+        }
+        int before_readers = __atomic_load_n(&g_resolves, __ATOMIC_ACQUIRE) - resolves; /* TEMP */
         for (i = 0; i < THREADS; i++) pthread_create(&t[i], NULL, reader, (void*)(uintptr_t)(i + 1));
         for (i = 0; i < THREADS; i++) pthread_join(t[i], NULL);
         own_acquire(g_sa, 0x20000);
         g_resolve_res = NULL;
+        if (mid_at || refs(r) != 0 || g_resolves != resolves + 1 || own_trapped(g_sa, 0x20000)) /* TEMP */
+            fprintf(stderr,
+                    "OWN_DIAG round %d: resolve before piece %llx, %d before the readers, refs %d, resolves +%d, "
+                    "trapped %d
+",
+                    g_round, (unsigned long long)mid_at, before_readers, refs(r), g_resolves - resolves,
+                    own_trapped(g_sa, 0x20000));
         CHECK(refs(r) == 0 && g_resolves == resolves + 1 && !own_trapped(g_sa, 0x20000));
         for (i = 0; i < (u64)g_nstale && i < STALE_MAX; i++)
             CHECK(GP(g_sa)[g_stale[i]] == (u8)(g_round * 7 + g_stale[i]));
