@@ -4519,7 +4519,17 @@ void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     g_vk.has_descriptor_heaps = heaps;
     SNX_ZONE_END(z);
 }
+/* in a draw's setup, from its start (retry) to its check of the submission number (setup_frame), where it starts again
+   when that changed: an upload's wait for the GPU there may let go of vk_lock (vk_submit_upload_wait). 0 past it, and
+   once a draw inside a draw (a save draw, a captured primitive) ended, for the rest of the outer one's setup */
+static int g_setup_restarts;
+int vk_render_setup_restarts(void) { return g_setup_restarts; }
+static void render_draw_main(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture);
 static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture) {
+    render_draw_main(ds, dc, o, texture);
+    g_setup_restarts = 0;
+}
+static void render_draw_main(const DsState* ds, const DrawCall* dc, DrawOwner* o, const DrawTexture* texture) {
     DrawCall normalized;
     if (dc->xfb_control) {
         normalized = *dc;
@@ -4567,6 +4577,7 @@ retry:
     first = initial_first;
     count = initial_count;
     u64 setup_frame = vk_submit_number();
+    g_setup_restarts = 1;
     u32 epoch = vk_ww_epoch();
     /* kept: the state the last draw made holds for this one, as far as each check below tells. Each part is made
        here when it doesn't (and when draw_state_check compares) */
@@ -5460,6 +5471,7 @@ retry:
     }
     /* A guest read while preparing descriptors can submit and land an older graphics output into memory these
        descriptors and staged inputs were read from. Rebuild them before recording the draw. */
+    g_setup_restarts = 0;
     if (setup_frame != vk_submit_number()) {
         draw_images_discard(&images);
         if (late_depth) vk_depth_shadow_cancel();
