@@ -58,7 +58,9 @@ typedef struct {
     u8 image, own; /* image: its kind (DM_KIND_*) besides its memory type */
     u8 reserve;    /* the reserve (vk_devmem_reserve): taken only while vk_devmem_reserve_use says, never let go */
     u8 low;        /* for requests of the low class first (DevMemWant.low): with image and type, its kind */
-    u8 prio;       /* the class whose priority the driver has for it (block_prio) */
+    u8 prio;       /* the class whose priority it should have (block_prio) */
+    u8 prio_drv;   /* the class whose priority the driver has for it: the thread ahead tells the driver (prio_set) */
+    u8 prio_queued; /* in the thread ahead's queue of priorities */
     u8 drain;      /* being emptied (vk_devmem_moving): no request takes a run of it */
     u32 movable;   /* its allocations whose owner can move them (vk_devmem_owner) */
     u64 drain_skip; /* not emptied again before this present: a move out of it failed */
@@ -105,6 +107,12 @@ static struct {
         u64 size;
         VkDeviceMemory gone[64]; /* memory to give back */
         u32 ngone;
+        /* blocks whose priority the driver is to be told (prio_set), and the one it is told now: its index plus one
+           and its memory. done: signaled when that call returns */
+        u32 prio_q[256];
+        u32 nprio, prio_slot;
+        VkDeviceMemory prio_mem;
+        PCond done;
         /* the driver had no room for a block of quiet_type: the present after it and the heap's count of memory
            given back then. None is asked for ahead until that count changes or 120 presents pass. A request still
            tries, with smaller blocks too */
@@ -213,6 +221,7 @@ int vk_devmem_init(int bda) {
     budgets_fetch();
     if (!g_devmem.ahead.on) {
         pc_init(&g_devmem.ahead.cv);
+        pc_init(&g_devmem.ahead.done);
         g_devmem.ahead.on = plat_thread(ahead_run, NULL, 0) == 0;
     }
     pm_unlock(&g_devmem.lk);
@@ -358,7 +367,8 @@ static u32 block_add(u32 type, u64 size, int image, int low, u32 units, VkDevice
                  .own = !units,
                  .low = (u8)low,
                  .ptr = ptr,
-                 .prio = low && g_vk.has_pageable ? DM_PRIO_LOW : DM_PRIO_MID};
+                 .prio = low && g_vk.has_pageable ? DM_PRIO_LOW : DM_PRIO_MID,
+                 .prio_drv = low && g_vk.has_pageable ? DM_PRIO_LOW : DM_PRIO_MID};
     if (units && !space_init(&k->free, units)) return 0;
     k->mem = mem;
     u32 heap = g_devmem.mp.memoryTypes[type].heapIndex;
@@ -392,8 +402,12 @@ static void block_gone(Block* k) {
     if (g_devmem.ahead.on && g_devmem.ahead.ngone < sizeof g_devmem.ahead.gone / sizeof *g_devmem.ahead.gone) {
         g_devmem.ahead.gone[g_devmem.ahead.ngone++] = k->mem;
         pc_signal(&g_devmem.ahead.cv);
-    } else
+    } else {
+        /* not while the thread ahead tells the driver its priority (prio_set): the lock is let go meanwhile */
+        while (g_devmem.ahead.prio_slot && g_devmem.ahead.prio_mem == k->mem)
+            pc_wait(&g_devmem.ahead.done, &g_devmem.lk, -1);
         vk_ledger_free(g_vk.dev, k->mem, NULL);
+    }
     g_devmem.gave[heap]++;
     space_destroy(&k->free);
     g_devmem.block_bytes[heap] -= k->size;
@@ -410,14 +424,31 @@ static u32 rec_weight(const Rec* r) { return r->units ? r->units : 1; }
    allocator. Another block takes the highest class it holds: a render target or a ring is not moved for the buffers
    around it. An empty block keeps the priority it has, as the next request of its kind is most likely of the same
    class. The driver is told when that changes: one call at most, and none where it does not move memory */
+/* k's priority as the class prio (lock held). The driver's call (vkSetDeviceMemoryPriorityEXT) is made on the thread
+   ahead: on the thread that asked it took 2 to 4 us as a rule, but one took 1,323 ms inside the renderer's work in
+   one game's race at 2 GB, and 1.9 s of 4,414 calls in all. The thread tells the driver the class a block has when it
+   comes to it, so a change and its undoing (memory kept for reuse and taken again) make no call. With no thread or no
+   room in its queue, the call is made here */
+static void prio_set(Block* k, u32 prio) {
+    k->prio = (u8)prio;
+    if (!g_vk.has_pageable || k->prio_queued) return;
+    if (g_devmem.ahead.on && g_devmem.ahead.nprio < sizeof g_devmem.ahead.prio_q / sizeof *g_devmem.ahead.prio_q) {
+        k->prio_queued = 1;
+        g_devmem.ahead.prio_q[g_devmem.ahead.nprio++] = (u32)(k - g_devmem.block);
+        pc_signal(&g_devmem.ahead.cv);
+        return;
+    }
+    if (k->prio == k->prio_drv) return;
+    vk_ledger_priority(g_vk.dev, k->mem, k_prio[k->prio]);
+    k->prio_drv = k->prio;
+    g_devmem.priorities++;
+}
 static void block_prio(Block* k) {
     u32 top = DM_PRIO_N;
     for (u32 c = 0; c < DM_PRIO_N; c++)
         if (k->holds[c] && (top == DM_PRIO_N || !k->low || k->holds[c] >= k->holds[top])) top = c;
     if (top == DM_PRIO_N || top == k->prio || !g_vk.has_pageable) return;
-    vk_ledger_priority(g_vk.dev, k->mem, k_prio[top]);
-    k->prio = (u8)top;
-    g_devmem.priorities++;
+    prio_set(k, top);
 }
 
 static DevMem rec_new(void) {
@@ -487,7 +518,29 @@ static void ahead_run(void* arg) {
     SNX_THREAD_NAME("Vulkan memory");
     pm_lock(&g_devmem.lk);
     for (;;) {
-        while (!g_devmem.ahead.want && !g_devmem.ahead.ngone) pc_wait(&g_devmem.ahead.cv, &g_devmem.lk, -1);
+        while (!g_devmem.ahead.want && !g_devmem.ahead.ngone && !g_devmem.ahead.nprio)
+            pc_wait(&g_devmem.ahead.cv, &g_devmem.lk, -1);
+        if (g_devmem.ahead.nprio) { /* a block's priority, which the driver is told without the lock */
+            const u32 i = g_devmem.ahead.prio_q[--g_devmem.ahead.nprio];
+            Block* k = &g_devmem.block[i];
+            k->prio_queued = 0;
+            if (!k->mem || k->prio == k->prio_drv) continue;
+            const VkDeviceMemory mem = k->mem;
+            const u32 prio = k->prio;
+            g_devmem.ahead.prio_slot = i + 1;
+            g_devmem.ahead.prio_mem = mem;
+            pm_unlock(&g_devmem.lk);
+            vk_ledger_priority(g_vk.dev, mem, k_prio[prio]);
+            pm_lock(&g_devmem.lk);
+            g_devmem.ahead.prio_slot = 0;
+            g_devmem.ahead.prio_mem = VK_NULL_HANDLE;
+            /* the block may have gone meanwhile, and another may be in its place: the driver's class is that
+               memory's */
+            if (g_devmem.block[i].mem == mem) g_devmem.block[i].prio_drv = (u8)prio;
+            g_devmem.priorities++;
+            pc_broadcast(&g_devmem.ahead.done);
+            continue;
+        }
         if (g_devmem.ahead.ngone) {
             VkDeviceMemory gone = g_devmem.ahead.gone[--g_devmem.ahead.ngone];
             pm_unlock(&g_devmem.lk);
@@ -620,11 +673,7 @@ static void own_keep(Block* k) {
     k->idle = (u32)g_devmem.frame + 1;
     g_devmem.kept_bytes += k->size;
     g_devmem.kept_heap[heap] += k->size;
-    if (g_vk.has_pageable && k->prio != DM_PRIO_LOW) { /* a request that takes it gives it its class (block_prio) */
-        vk_ledger_priority(g_vk.dev, k->mem, k_prio[DM_PRIO_LOW]);
-        k->prio = DM_PRIO_LOW;
-        g_devmem.priorities++;
-    }
+    if (g_vk.has_pageable && k->prio != DM_PRIO_LOW) prio_set(k, DM_PRIO_LOW); /* a taker gives it its class */
 }
 /* kept memory of a type that a request of size bytes takes: the smallest that holds it, an eighth more at most. Its
    index plus one, 0 for none */
