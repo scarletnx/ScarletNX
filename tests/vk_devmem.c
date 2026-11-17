@@ -299,6 +299,8 @@ static void VKAPI_CALL set_priority(VkDevice dev, VkDeviceMemory mem, float prio
     g_drv.priorities++;
     pm_unlock(&g_drv.lk);
 }
+/* ledger.c's timed priority: the driver's, here the model's */
+void vk_ledger_priority(VkDevice dev, VkDeviceMemory mem, float priority) { vkSetDeviceMemoryPriorityEXT(dev, mem, priority); }
 static void VKAPI_CALL memory_properties(VkPhysicalDevice phys, VkPhysicalDeviceMemoryProperties* out) {
     (void)phys;
     *out = g_drv.mp;

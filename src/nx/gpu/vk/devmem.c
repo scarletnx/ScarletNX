@@ -415,7 +415,7 @@ static void block_prio(Block* k) {
     for (u32 c = 0; c < DM_PRIO_N; c++)
         if (k->holds[c] && (top == DM_PRIO_N || !k->low || k->holds[c] >= k->holds[top])) top = c;
     if (top == DM_PRIO_N || top == k->prio || !g_vk.has_pageable) return;
-    vkSetDeviceMemoryPriorityEXT(g_vk.dev, k->mem, k_prio[top]);
+    vk_ledger_priority(g_vk.dev, k->mem, k_prio[top]);
     k->prio = (u8)top;
     g_devmem.priorities++;
 }
@@ -621,7 +621,7 @@ static void own_keep(Block* k) {
     g_devmem.kept_bytes += k->size;
     g_devmem.kept_heap[heap] += k->size;
     if (g_vk.has_pageable && k->prio != DM_PRIO_LOW) { /* a request that takes it gives it its class (block_prio) */
-        vkSetDeviceMemoryPriorityEXT(g_vk.dev, k->mem, k_prio[DM_PRIO_LOW]);
+        vk_ledger_priority(g_vk.dev, k->mem, k_prio[DM_PRIO_LOW]);
         k->prio = DM_PRIO_LOW;
         g_devmem.priorities++;
     }

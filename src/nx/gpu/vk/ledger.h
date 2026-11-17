@@ -48,6 +48,8 @@ void vk_ledger_heap(u32 owner, i64 delta);
 VkResult VKAPI_CALL vk_ledger_allocate(VkDevice dev, const VkMemoryAllocateInfo* ai, const VkAllocationCallbacks* cb,
                                        VkDeviceMemory* mem);
 void VKAPI_CALL vk_ledger_free(VkDevice dev, VkDeviceMemory mem, const VkAllocationCallbacks* cb);
+/* the driver's priority of a block (VK_EXT_pageable_device_local_memory), timed as the allocate and the free are */
+void vk_ledger_priority(VkDevice dev, VkDeviceMemory mem, float priority);
 /* one owner's bytes now, for a caller that budgets it: device, host, heap */
 void vk_ledger_owner(u32 owner, u64* device, u64* host, u64* heap);
 /* each owner that holds something, a few a line of the log (any thread): the bytes of devmem.c's under an owner. The

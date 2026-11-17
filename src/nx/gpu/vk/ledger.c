@@ -61,8 +61,8 @@ typedef struct {
    counts are read for a report only, so they share their lines */
 static struct {
     u64 device[VK_OWN_N], host[VK_OWN_N], heap[VK_OWN_N], count[VK_OWN_N];
-    DriverCalls allocate, release;
-    DriverCalls reported[2]; /* the two above at the last report */
+    DriverCalls allocate, release, priority;
+    DriverCalls reported[3]; /* the three above at the last report */
 } g_ledger;
 
 static void add(u64* to, u64 v) { __atomic_fetch_add(to, v, __ATOMIC_RELAXED); }
@@ -134,6 +134,13 @@ VkResult VKAPI_CALL vk_ledger_allocate(VkDevice dev, const VkMemoryAllocateInfo*
     return r;
 }
 
+void vk_ledger_priority(VkDevice dev, VkDeviceMemory mem, float priority) {
+    u64 t0 = plat_ns();
+    SNX_ZONE(z, "driver priority");
+    vkSetDeviceMemoryPriorityEXT(dev, mem, priority);
+    SNX_ZONE_END(z);
+    driver_call(&g_ledger.priority, 0, plat_ns() - t0);
+}
 void VKAPI_CALL vk_ledger_free(VkDevice dev, VkDeviceMemory mem, const VkAllocationCallbacks* cb) {
     u64 t0 = plat_ns();
     SNX_ZONE(z, "driver free");
@@ -217,4 +224,10 @@ void vk_ledger_log(void) {
             (unsigned long long)a.n, mb(a.bytes), ms(a.ns), ms(a.max_ns), (unsigned long long)a.slow,
             (unsigned long long)a.locked_n, ms(a.locked_ns), (unsigned long long)f.n, ms(f.ns), ms(f.max_ns),
             (unsigned long long)f.locked_n, ms(f.locked_ns));
+    DriverCalls p;
+    if (driver_report(&g_ledger.priority, &g_ledger.reported[2], &p))
+        LOG("vulkan: the driver set %llu priorities of device memory in %.1f ms, the longest %.2f ms, %llu of a "
+            "millisecond or more, %llu (%.1f ms) inside the renderer's work\n",
+            (unsigned long long)p.n, ms(p.ns), ms(p.max_ns), (unsigned long long)p.slow, (unsigned long long)p.locked_n,
+            ms(p.locked_ns));
 }
