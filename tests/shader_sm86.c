@@ -5915,10 +5915,10 @@ static void test_brx_far_bound_flow(const char* dir) {
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "far flow bound brx: %s\n", si.first_unsupported);
     if (spv) {
-        u32 cases[4], n = switch_cases(spv, count, cases, 4);
-        CHECK(n == 3);
-        CHECK(cases[0] == CASE0 || cases[0] == CASE1 || cases[0] == CASE2);
-        CHECK(cases[0] != 0 && cases[1] != 0 && cases[2] != 0);
+        u32 cases[4], n = switch_cases(spv, count, cases, 4), mask = 0;
+        for (u32 k = 0; k < n; k++)
+            mask |= cases[k] == CASE0 ? 1 : cases[k] == CASE1 ? 2 : cases[k] == CASE2 ? 4 : 0;
+        CHECK(n == 3 && mask == 7);
         CHECK(keep_module(dir, "fs_brx_far_bound_flow", spv, count));
     }
     free(spv);

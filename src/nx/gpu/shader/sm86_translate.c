@@ -50,11 +50,13 @@ typedef struct {
     u32 mat[2];
 } CoopAcc;
 /* the jump table of a BRX, as brx_resolve found it: the instructions that its entries name. state is 0 before the
-   search, 1 when count entries were found, and 2 when no table reaches the BRX on every path (c->failed says why) */
+   search, 1 when count entries were found (in targets, malloc'd), and 2 when no table reaches the BRX on every path
+   (c->failed says why). The targets are not kept by instruction: the code window is 0x80000 bytes, so 64 words for
+   each of its 32768 instructions would be 8.6 MB of zeroing for a program that may have no BRX at all */
 typedef struct {
     u32 count;
+    u32* targets;
     u8 state;
-    u32 targets[64];
 } BrxTable;
 typedef struct {
     SpvEmitter e;
@@ -6086,19 +6088,21 @@ static int brx_scan_load(Ctx* c, u32 i) {
     }
     return -1;
 }
+static int brx_load(Ctx* c, u32 i, const u32* first, const u32* from);
 /* The entries of the table of the load at k that the next table in its bank starts, as ptxas puts adjacent switches'
    tables one after another: an unclamped read would take that table's words as its own (shader_brx_targets clamps
-   Maxwell's so). max when no scan of another block names a later table in the bank */
-static u32 brx_table_limit(Ctx* c, u32 k, u32 max) {
+   Maxwell's so). A later table is the one whose load reaches its BRX over the flow, or, without the flow, the scan of
+   its block. max when no other table is found */
+static u32 brx_table_limit(Ctx* c, u32 k, u32 max, const u32* first, const u32* from) {
     const Sm86Insn* w = &c->in[k];
     u32 bank = sm86_field(w, 54, 5), off = sm86_field(w, 38, 16), limit = max;
     for (u32 i = 0; i < c->n; i++) {
         if (!is_brx(c->in[i].op) || sm86_never(&c->in[i])) continue;
-        int other = brx_scan_load(c, i);
+        int other = first ? brx_load(c, i, first, from) : brx_scan_load(c, i);
         if (other < 0 || (u32)other == k) continue;
         const Sm86Insn* o = &c->in[other];
         u32 ooff = sm86_field(o, 38, 16), words;
-        if (sm86_field(o, 54, 5) != bank || ooff <= off) continue;
+        if (sm86_field(o, 54, 5) != bank || ooff < off + 4) continue;
         words = (ooff - off) / 4;
         if (words < limit) limit = words;
     }
@@ -6108,14 +6112,15 @@ static u32 brx_table_limit(Ctx* c, u32 k, u32 max) {
    Maxwell's: as many entries as ptxas's bound on the index says, else up to the first word that is no target, or the
    next table in the bank. Two tables one after the other were read as one, and gave a BRX the other's targets as its
    own. The count, or 0 */
-static u32 brx_read_words(Ctx* c, u32 k, u32 bias, u32 entries, u32* targets, u32 max) {
+static u32 brx_read_words(Ctx* c, u32 k, u32 bias, u32 entries, u32* targets, u32 max, const u32* first,
+                          const u32* from) {
     const Sm86Insn* w = &c->in[k];
     u32 bank = sm86_field(w, 54, 5), off = sm86_field(w, 38, 16), count = 0;
     if (entries > max) {
         fail(c, "BRX with a jump table of %u entries", entries);
         return 0;
     }
-    u32 limit = entries ? entries : brx_table_limit(c, k, max);
+    u32 limit = entries ? entries : brx_table_limit(c, k, max, first, from);
     for (; count < limit; count++) {
         u32 entry;
         if (!g_shader_cb_read(bank, off + 4 * count, &entry)) break;
@@ -6139,7 +6144,7 @@ static u32 brx_read_table(Ctx* c, u32 k, u32 bias, u32* targets, u32 max) {
     const Sm86Insn* w = &c->in[k];
     u32 entries = w->op == SM86_ULDC_IDX ? uniform_table_entries(c, k, sm86_field(w, 24, 6))
                                          : jump_table_entries(c, k, sm86_field(w, 24, 8));
-    return brx_read_words(c, k, bias, entries, targets, max);
+    return brx_read_words(c, k, bias, entries, targets, max, NULL, NULL);
 }
 /* The predecessors of each instruction from the BRAs and the jump tables that brx_resolve has found: first[k] to
    first[k + 1] index from[]. first is malloc'd (n + 1 + the edges words, from after them), NULL when memory runs out */
@@ -6295,11 +6300,14 @@ static int brx_resolve(Ctx* c) {
         if (!first) return 0; /* out of memory */
         int load = brx_load(c, at, first, from);
         u32 entries = load >= 0 && g_shader_cb_read ? brx_entries_flow(c, first, from, (u32)load) : 0;
-        free(first);
-        if (load == -2) return 0; /* out of memory */
-        u32 count = 0;
+        if (load == -2) {
+            free(first);
+            return 0; /* out of memory */
+        }
+        u32 words[64], count = 0;
         if (load >= 0 && g_shader_cb_read)
-            count = brx_read_words(c, (u32)load, brx_bias(&c->in[at], at), entries, c->brx_table[at].targets, 64);
+            count = brx_read_words(c, (u32)load, brx_bias(&c->in[at], at), entries, words, 64, first, from);
+        free(first);
         if (!count) {
             /* the flow names no single table load: the scan of the block gives the reason when that is the one, and
                the scan's own table is not used, which may be another path's */
@@ -6309,6 +6317,10 @@ static int brx_resolve(Ctx* c) {
             c->brx_table[at].state = 2;
             return 1;
         }
+        u32* targets = malloc((size_t)count * sizeof *targets);
+        if (!targets) return 0; /* out of memory */
+        memcpy(targets, words, (size_t)count * sizeof *targets);
+        c->brx_table[at].targets = targets;
         c->brx_table[at].count = count;
         c->brx_table[at].state = 1;
     }
@@ -6337,7 +6349,7 @@ static u32 brx_targets_scan(Ctx* c, u32 i, u32* targets, u32 max) {
 static u32 brx_targets(Ctx* c, u32 i, u32* targets, u32 max) {
     if (c->brx_table && c->brx_table[i].state) {
         u32 count = c->brx_table[i].count;
-        if (count > max) return 0;
+        if (!count || count > max) return 0;
         memcpy(targets, c->brx_table[i].targets, (size_t)count * sizeof *targets);
         return count;
     }
@@ -7538,7 +7550,10 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     free(c->mh_dep);
     free(c->mh_new);
     free(c->jump_first);
-    free(c->brx_table);
+    if (c->brx_table) {
+        for (u32 i = 0; i < c->n; i++) free(c->brx_table[i].targets);
+        free(c->brx_table);
+    }
     free(insn);
     free(words);
     free(c);
