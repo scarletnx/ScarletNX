@@ -33,7 +33,7 @@ if(CMAKE_CROSSCOMPILING)
     add_dependencies(snx-decodetree snx_decodetree_host)
 else()
     add_executable(snx-decodetree ${snx_decodetree_sources})
-    set_target_properties(snx-decodetree PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON
+    set_target_properties(snx-decodetree PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON
                                                     C_EXTENSIONS OFF RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
     target_compile_options(snx-decodetree PRIVATE -pedantic-errors -Wall -Wextra -Werror)
 endif()

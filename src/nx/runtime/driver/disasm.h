@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A64 disassembly through LLVM's disassembler (disasm.c, C11 for the LLVM-C headers), for scarletnx --mcp. It is built
+/* A64 disassembly through LLVM's disassembler (disasm.c, GNU C23 for the LLVM-C headers), for scarletnx --mcp. It is built
    where LLVM has its AArch64 target (SNX_A64_DISASM, cmake/llvm.cmake): elsewhere snx_disasm_a64 says it has none */
 #ifndef SNX_DISASM_H
 #define SNX_DISASM_H

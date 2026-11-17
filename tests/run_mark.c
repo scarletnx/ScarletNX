@@ -6,7 +6,7 @@
    gives each, held or not, and deletes none. On POSIX, a child that ends with exit() leaves none, one that ends with
    _exit (a kill, a crash) leaves its own for the next start */
 #ifndef _WIN32
-#define _POSIX_C_SOURCE 200809L /* fork and waitpid, which strict C99 leaves undeclared */
+#define _POSIX_C_SOURCE 200809L /* fork and waitpid, which strict ISO C leaves undeclared */
 #endif
 #include "common/utilities/common.h"
 #include "common/utilities/run_mark.h"

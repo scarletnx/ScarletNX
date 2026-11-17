@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The code units' cache (module_llvm.c's units, and module_arm.c's of a 32-bit game): each unit's object kept under a
    key, the SHA-256 of the unit's LLVM IR and of everything else its object is made with, in a folder every game
-   shares. A unit whose key is there, whole, is not compiled again; the module descriptor and the link always are. C11
-   and the LLVM-C headers, as module_llvm.c: not for the C99 driver */
+   shares. A unit whose key is there, whole, is not compiled again; the module descriptor and the link always are. GNU C23
+   and the LLVM-C headers, as module_llvm.c: not for the ISO C driver */
 #ifndef SNX_NX_UNIT_CACHE_H
 #define SNX_NX_UNIT_CACHE_H
 

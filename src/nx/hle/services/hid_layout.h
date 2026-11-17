@@ -126,11 +126,11 @@
 #define HS_HidMouseState                      0x28
 #define HS_HidDebugPadState                   0x20
 
-/* ---- consistency, checked at compile time (without C11's static assert: a negative array size fails). A ring holds 17 entries, each an
+/* ---- consistency, checked at compile time. A ring holds 17 entries, each an
    8-byte sampling number before its state; the npad's rings follow each other; ten npad entries end where the
    gesture block starts; sixteen touches fill a touch screen state */
 #define HID_LAYOUT_ENTRIES 17
-#define HID_LAYOUT_CHECK(name, cond) typedef char hid_layout_check_##name[(cond) ? 1 : -1]
+#define HID_LAYOUT_CHECK(name, cond) static_assert(cond, "hid layout: " #name)
 HID_LAYOUT_CHECK(npad_storage, HS_HidNpadCommonStateAtomicStorage == 8 + HS_HidNpadCommonState);
 HID_LAYOUT_CHECK(npad_lifo, HS_HidNpadCommonLifo ==
                                  HS_HidCommonLifoHeader + HID_LAYOUT_ENTRIES * HS_HidNpadCommonStateAtomicStorage);

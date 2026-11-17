@@ -42,7 +42,7 @@ if(CMAKE_CROSSCOMPILING)
     add_dependencies(snx-vkcmdgen snx_vkcmdgen_host)
 else()
     add_executable(snx-vkcmdgen "${PROJECT_SOURCE_DIR}/tools/vkcmdgen/vkcmdgen.c")
-    set_target_properties(snx-vkcmdgen PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON
+    set_target_properties(snx-vkcmdgen PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON
                                                   C_EXTENSIONS OFF RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
     target_compile_options(snx-vkcmdgen PRIVATE -pedantic-errors -Wall -Wextra -Werror)
 endif()

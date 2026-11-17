@@ -28,6 +28,7 @@ CFLAGS = [
     '-mcpu=cortex-a57',
     '-mfpu=crypto-neon-fp-armv8',
     '-mfloat-abi=hard',
+    '-std=gnu23',
     '-O2',
     '-ffreestanding',
     '-fno-builtin',

@@ -21,7 +21,7 @@
    3. This notice may not be removed or altered from any source
       distribution.
 
-   Altered: deko3d's C++ for NVN's formats, targets and sampler enums, as C99. */
+   Altered: deko3d's C++ for NVN's formats, targets and sampler enums, as C. */
 /* An NVN texture or sampler as the GPU's descriptor: the TIC and TSC entries NVIDIA's driver writes into a texture
    or sampler pool at the ID a game registers it under. NVN's handles keep the hardware's packing (texture ID |
    sampler ID << 20) because the game's shaders are Maxwell code reading handles the game stores in its own buffers,

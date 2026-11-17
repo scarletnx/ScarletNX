@@ -22,7 +22,7 @@ typedef struct {
     float x, y;
 } Point;
 
-/* pi as a float: strict C99 has no M_PI */
+/* pi as a float: strict ISO C has no M_PI */
 #define HWUI_PI 3.14159265358979323846f
 
 /* flattened contours: points, and where each contour ends in them */

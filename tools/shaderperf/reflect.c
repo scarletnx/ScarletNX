@@ -80,7 +80,7 @@ static void* grow(void* p, size_t* cap, size_t count, size_t elem) {
     return q;
 }
 
-/* strnlen, which C99 lacks */
+/* strnlen, which ISO C lacks */
 static size_t bounded_len(const char* s, size_t max) {
     size_t n = 0;
     while (n < max && s[n])

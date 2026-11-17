@@ -76,7 +76,7 @@ target_include_directories(snx_splash SYSTEM PRIVATE "${plutovg_SOURCE_DIR}/incl
 # static, built here; no font of the system is looked for, as the drawings have no text
 target_compile_definitions(snx_splash PRIVATE PLUTOVG_BUILD PLUTOVG_BUILD_STATIC LUNASVG_BUILD LUNASVG_BUILD_STATIC
                            PLUTOVG_DISABLE_FONT_FACE_CACHE_LOAD LUNASVG_DISABLE_LOAD_SYSTEM_FONTS)
-set_target_properties(snx_splash PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON C_STANDARD 11
+set_target_properties(snx_splash PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON C_STANDARD 23
                       POSITION_INDEPENDENT_CODE ON)
 # drawn once a boot: built for size. The libraries' own warnings stay out of the output, ours (splash.cpp) do not
 target_compile_options(snx_splash PRIVATE -Os)

@@ -31,6 +31,7 @@ typedef struct {
     VkSurfaceFormatKHR format;
     VkExtent2D extent;
     VkImage images[SNX_VK_SWAP_IMAGES];
+    VkImageView views[SNX_VK_SWAP_IMAGES]; /* where the info asked for views: each image's, for a rendering into it */
     uint32_t count;
     VkPresentModeKHR mode; /* its presentation */
 } SnxVkSwapchain;
@@ -40,7 +41,7 @@ typedef struct {
 VkPresentModeKHR snx_vk_present_mode(const VkPresentModeKHR* modes, uint32_t count, bool vsync);
 /* what a swapchain is made of: the formats wanted, in order (the surface's first one when it has none of them), its
    images' usage, the window's size in pixels and its presentation (snx_vk_present_mode: FIFO unless unsynced asks
-   for vsync off), an image more than the least */
+   for vsync off), an image more than the least; views, a view of each image (snx_vk_swapchain_begin's) */
 typedef struct {
     VkSurfaceKHR surface;
     const VkFormat* formats;
@@ -48,6 +49,7 @@ typedef struct {
     VkImageUsageFlags usage;
     VkExtent2D window;
     bool unsynced;
+    bool views;
 } SnxVkSwapchainInfo;
 /* The swapchain made anew for the surface's size, in place of the one sc holds (which goes whether or not the new one
    is made, after the device is idle). False with none when it can't be */
@@ -55,4 +57,9 @@ bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSw
                            SnxVkSwapchain* sc);
 /* the swapchain destroyed: nothing may use its images any more */
 void snx_vk_swapchain_free(VkDevice device, SnxVkSwapchain* sc);
+/* image index of a swapchain made with views as the one colour attachment of a rendering begun on cb, cleared to black
+   over the whole image, its old pixels dropped: the window's frame is drawn there, then snx_vk_swapchain_end ends the
+   rendering and leaves the image to be presented. Synchronization2's barriers */
+void snx_vk_swapchain_begin(VkCommandBuffer cb, const SnxVkSwapchain* sc, uint32_t index);
+void snx_vk_swapchain_end(VkCommandBuffer cb, const SnxVkSwapchain* sc, uint32_t index);
 #endif

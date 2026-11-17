@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The runtime JIT (jit_service.h). C99 in style; the target's C11 is for the LLVM-C headers */
+/* The runtime JIT (jit_service.h). ISO C in style; the target's GNU C23 is for the LLVM-C headers */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE 1 /* sched_getaffinity: the CPUs this process may run on */
 #endif

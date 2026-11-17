@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
-#define _POSIX_C_SOURCE 200809L /* getpid in strict C99 */
+#define _POSIX_C_SOURCE 200809L /* getpid in strict ISO C */
 #endif
 #include "common/gpu/vk/vk_common.h"
 #include "common/platform/file.h"

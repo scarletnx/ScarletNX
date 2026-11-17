@@ -38,10 +38,10 @@ static int find(unsigned key, unsigned mods) { return hotkey_find(key, mods, &g.
 static void set(int action, const char* v) { ini_read(hotkey_row(action), v); }
 
 int main(void) {
-    static const char* const DEFAULTS[HOTKEY_COUNT] = {"F1",     "F2",     "F3",         "F4",  "F5",
-                                                       "F6",     "F7",     "F8",         "F9",  "F10",
-                                                       "Pause",  "F11",    "Alt+Return", "F12", "Ctrl+Shift+F12",
-                                                       "Ctrl+G", "Escape", "Ctrl+D"};
+    static const char* const DEFAULTS[HOTKEY_COUNT] = {"F1",     "F2",     "F3",         "F4",     "F5",
+                                                       "F6",     "F7",     "F8",         "F9",     "F10",
+                                                       "Pause",  "F11",    "Alt+Return", "F12",    "Ctrl+Shift+F12",
+                                                       "Ctrl+G", "Escape", "Ctrl+D",     "Ctrl+U", "Ctrl+Shift+A"};
     char name[64];
     const IniOpt* o;
     int a, rows = 0;

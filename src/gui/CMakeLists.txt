@@ -8,10 +8,10 @@ else()
     message(FATAL_ERROR "scarletnx-gui currently supports Linux, FreeBSD, NetBSD, macOS, iOS and Windows")
 endif()
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
-# The menu's languages (i18n.h): snx_tr and the catalogs' reader, strict ISO C99 as the build info; each po/*.po a
+# The menu's languages (i18n.h): snx_tr and the catalogs' reader, strict ISO C23 as the build info; each po/*.po a
 # catalog compiled in, checked and made by scripts/build-languages.py against po/scarletnx.pot
 add_library(snx_i18n STATIC i18n.c)
-set_target_properties(snx_i18n PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+set_target_properties(snx_i18n PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_i18n PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(snx_i18n PUBLIC scarletnx-common) # the tags' fit (common/utilities/language_tag.h)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -49,7 +49,7 @@ add_custom_command(OUTPUT "${PROJECT_BINARY_DIR}/generated/gui/ui.h" "${PROJECT_
 add_library(snx_gui_ui OBJECT "${PROJECT_BINARY_DIR}/generated/gui/ui.c")
 target_include_directories(snx_gui_ui PUBLIC "${PROJECT_BINARY_DIR}/generated")
 target_link_libraries(snx_gui_ui PRIVATE SDL3::SDL3) # its platform macros and keycodes
-set_target_properties(snx_gui_ui PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+set_target_properties(snx_gui_ui PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_gui_ui PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 add_library(snx_gui_support STATIC aot.c model.c browser.c steps.c theme.c recent.c editor.c settings.c place.c clean.c
             queue.c latin.c wide.c log.c logzip.c saves.c gpu_driver.c gpu_driver_fetch.c covers.c probe.c last_run.c
@@ -67,7 +67,7 @@ if(TARGET snx_zstd)
     target_compile_definitions(snx_gui_support PRIVATE SNX_GUI_ZSTD)
 endif()
 target_include_directories(snx_gui_support PRIVATE "${PROJECT_BINARY_DIR}/generated")
-set_target_properties(snx_gui_support PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+set_target_properties(snx_gui_support PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_gui_support PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 if(WIN32)
     target_compile_definitions(snx_gui_support PRIVATE _WIN32_WINNT=0x0602 _CRT_SECURE_NO_WARNINGS)
@@ -80,7 +80,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/splash.cmake")
 # the menu's pads, their presses its keys (pad_menu.h)
 add_library(snx_gui_pad STATIC pad_menu.c)
 target_link_libraries(snx_gui_pad PUBLIC scarletnx-common snx_pad_sdl SDL3::SDL3)
-set_target_properties(snx_gui_pad PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+set_target_properties(snx_gui_pad PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_gui_pad PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 include(GNUInstallDirs)
 # The menu: Android's activity loads it as libmain.so and runs its SDL_main (dist/android); scarletnx, the Switch
@@ -138,7 +138,7 @@ if(APPLE)
     # C++: the menu alone (no Switch runtime) is a program, and links the splash's C++ (lunasvg)
     set_target_properties(scarletnx-gui PROPERTIES LINKER_LANGUAGE CXX)
 endif()
-set_target_properties(scarletnx-gui PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
+set_target_properties(scarletnx-gui PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
 target_compile_options(scarletnx-gui PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_compile_definitions(scarletnx-gui PRIVATE SNX_SOURCE_DIR="${PROJECT_SOURCE_DIR}" SNX_BUILD_DIR="${PROJECT_BINARY_DIR}")

@@ -15,7 +15,7 @@
    order: outputs as pointers, an Address or Size as u64 in both ABIs), a wrapper for each ABI (svc64_<Name> from a
    CPU's x registers, svc32_<Name> from a SnxArmCPU's r registers, both through svc.c's svc_begin and svc_end), and
    the tables by number: g_svc64 and g_svc32 (svc64_unknown and svc32_unknown for every number without a handler,
-   a stub's too) and g_svc_name. It is strict C99 and depends on nothing, so a cross build can build it for the
+   a stub's too) and g_svc_name. It is strict ISO C23 and depends on nothing, so a cross build can build it for the
    machine it runs on.
 
    Usage: svcgen [--out OUT.inc] [--layout] SPEC

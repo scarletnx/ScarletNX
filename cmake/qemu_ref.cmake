@@ -8,7 +8,7 @@ include_guard(GLOBAL)
 set(SNX_QEMU_REF OFF)
 set(SNX_QEMU_REF_MISSING "")
 set(snx_qemu_ref_flags --target=aarch64-linux-gnu -fuse-ld=lld -static -ffreestanding -nostdlib -fno-stack-protector
-    -fno-pie -O2 -march=armv8-a -std=c99 -Wall -Wextra -pedantic -Werror -Wl,-e,_start
+    -fno-pie -O2 -march=armv8-a -std=c23 -Wall -Wextra -pedantic -Werror -Wl,-e,_start
     "-Wl,--image-base=0x40000000000")
 if(NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_CROSSCOMPILING)
     set(SNX_QEMU_REF_MISSING "the QEMU reference runs on a Linux host's own build only")

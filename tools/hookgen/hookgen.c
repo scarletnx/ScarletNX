@@ -74,7 +74,7 @@
    function's ret would, and the entries sorted by symbol and then by version (hook_symbol, hook_fn, hook_handler,
    hook_family (an index into hook_family_name), hook_key, hook_lo and hook_hi (the versions [lo, hi) of key,
    hook.h's HOOK_ANY for unversioned), hook_layouts (the variants it passes, for the log) and hook_table, the view
-   hook_select searches. It is strict C99 and depends on nothing, so a cross build can build it for the machine it
+   hook_select searches. It is strict ISO C23 and depends on nothing, so a cross build can build it for the machine it
    runs on (cmake/hookgen.cmake).
 
    Verify mode (verify.h). A hook says `pure` after its handler (and its uses) when its function depends on nothing but
@@ -1670,7 +1670,7 @@ static void write_table(const char* path) {
             out("%s{%d, %d, %d, %lu, %lu}", n++ ? ", " : "", a->reg, a->mode,
                 a->len_arg < 0 ? 0xFF : h->args[a->len_arg].reg, a->len_arg < 0 ? 0ul : a->len_mul, a->len_add);
         }
-        out("%s}},\n", n ? "" : "{0, 0, 0, 0, 0}"); /* C99 has no empty initializer */
+        out("}},\n");
     }
     out("    {0, 0, 0, {{0, 0, 0, 0, 0}}}};\n");
     out("static const char* const %s_family_name[%s_FAMILIES + 1] = {\n", prefix, upper);

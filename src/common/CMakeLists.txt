@@ -40,13 +40,13 @@ endif()
 # snx_demangle (utilities/demangle.h): C++ names through the C++ runtime's demangler, for the log summary. C, but what
 # links it links the C++ runtime (LINKER_LANGUAGE CXX)
 add_library(snx_demangle STATIC utilities/demangle.c)
-set_target_properties(snx_demangle PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+set_target_properties(snx_demangle PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_demangle PRIVATE -pedantic-errors -Wall -Wextra -Werror -Werror=missing-prototypes)
 # snx-logscan: the log summary (utilities/logscan.h) as a program, as scarletnx --scan-log, for the game reports
 # workflow and the tests: only the C library and the demangler. Not for the phones, which run no programs of their own
 if(NOT ANDROID AND NOT IOS)
     add_executable(snx-logscan utilities/logscan_main.c utilities/logscan.c)
-    set_target_properties(snx-logscan PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    set_target_properties(snx-logscan PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
                                                  LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
     target_compile_options(snx-logscan PRIVATE -pedantic-errors -Wall -Wextra -Werror -Werror=missing-prototypes)
     target_link_libraries(snx-logscan PRIVATE snx_demangle)
@@ -66,7 +66,7 @@ endif()
 # (platform/vm.h); and shared libraries (platform/dl.h). No guest type, setting or SDL enters this target
 add_library(scarletnx-platform STATIC platform/thread.c platform/thread_spawn.c platform/time.c platform/sleep.c
     platform/file.c platform/file_map.c platform/file_share.c platform/file_replace.c platform/vm.c platform/dl.c)
-set_target_properties(scarletnx-platform PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
+set_target_properties(scarletnx-platform PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(scarletnx-platform PRIVATE _FILE_OFFSET_BITS=64 _CRT_SECURE_NO_WARNINGS)
 target_compile_options(scarletnx-platform PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(scarletnx-platform PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
@@ -78,7 +78,7 @@ endif()
 # The same indexed host filesystem and shared immutable file views (platform/file.h) serve NX
 # and CTR. No guest ABI or runtime/platform dependency enters this target.
 add_library(scarletnx-filesystem STATIC filesystem/tree.c)
-set_target_properties(scarletnx-filesystem PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
+set_target_properties(scarletnx-filesystem PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(scarletnx-filesystem PRIVATE _GNU_SOURCE _FILE_OFFSET_BITS=64 _CRT_SECURE_NO_WARNINGS)
 target_compile_options(scarletnx-filesystem PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(scarletnx-filesystem PUBLIC scarletnx-platform Threads::Threads)
@@ -92,7 +92,7 @@ if(TARGET CURL::libcurl)
 endif()
 
 # The emulated network stack (network/net.h), shared by nx's bsd and sfdnsres and the GNU ABI's socket syscalls. A
-# library of its own so the C99 tools don't link Winsock
+# library of its own so the ISO C tools don't link Winsock
 add_library(scarletnx-net STATIC network/net.c network/net_icmp.c network/net_event.c network/net_dns.c
     network/net_iface.c)
 target_compile_options(scarletnx-net PRIVATE -Wall -Wextra -Werror=missing-prototypes)
@@ -131,8 +131,9 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/device.c gpu/vk/driver_tag.c gpu/vk/extension_bans.c
                                      "${PROJECT_BINARY_DIR}/generated/vk_extension_bans_text.c"
                                      gpu/vk/extension_commands.c "${snx_vk_extension_commands_c}" gpu/vk/ring.c
-                                     gpu/vk/shader_object.c gpu/vk/swapchain.c gpu/vk/window.c gpu/vk/notice.c)
-    set_target_properties(snx_vk_common PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+                                     gpu/vk/shader_object.c gpu/vk/swapchain.c gpu/vk/window.c gpu/vk/notice.c
+                                     gpu/vk/present_fx.c gpu/vk/fx/fx_fsr.c)
+    set_target_properties(snx_vk_common PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_vk_common PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                                  -Werror=missing-variable-declarations)
     target_compile_definitions(snx_vk_common PRIVATE VK_NO_PROTOTYPES)
@@ -141,4 +142,28 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     # snx_vulkan_driver)
     target_link_libraries(snx_vk_common PUBLIC Vulkan::Headers SDL3::SDL3 scarletnx-common)
     target_link_libraries(snx_vk_common PUBLIC snx_notice) # a window's notice copied over its picture (gpu/vk/notice.c)
+    # the spatial upscalers and the anti-aliasing (gpu/vk/present_fx.c, gpu/vk/fx/)
+    include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
+    foreach(pair IN ITEMS "fsr.vert=fx_fsr_vert" "copy.frag=fx_copy"
+                          "fsr_easu.frag=fx_fsr_easu" "fsr_rcas.frag=fx_fsr_rcas" "fxaa.frag=fx_fxaa"
+                          "smaa_edge.frag=fx_smaa_edge" "smaa_weights.frag=fx_smaa_weights"
+                          "smaa_blend.frag=fx_smaa_blend")
+        string(REPLACE "=" ";" parts "${pair}")
+        list(GET parts 0 shader)
+        list(GET parts 1 symbol)
+        snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/${shader} NAME ${symbol}_spv
+                       HEADER common/gpu/vk/fx_spv.h)
+    endforeach()
+    # FSR 1's fp16 builds of the same two passes, where the device's shaderFloat16 runs them
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/fsr_easu.frag NAME fx_fsr_easu_fp16_spv
+                   HEADER common/gpu/vk/fx_spv.h DEFINES A_HALF=1)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/fsr_rcas.frag NAME fx_fsr_rcas_fp16_spv
+                   HEADER common/gpu/vk/fx_spv.h DEFINES A_HALF=1)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/nis.comp NAME fx_nis_spv HEADER common/gpu/vk/fx_spv.h)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/nis.comp NAME fx_nis8_spv HEADER common/gpu/vk/fx_spv.h
+                   DEFINES NIS_OUTPUT_RGBA8)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/sgsr1.vert NAME fx_sgsr_vert_spv HEADER common/gpu/vk/fx_spv.h)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/sgsr1.frag NAME fx_sgsr_frag_spv HEADER common/gpu/vk/fx_spv.h)
+    # a notice's band drawn in a window's rendering (gpu/vk/notice.c), over the effects' fullscreen triangle
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/notice.frag NAME notice_frag_spv HEADER common/gpu/vk/notice_spv.h)
 endif()

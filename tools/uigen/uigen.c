@@ -8,7 +8,7 @@
    run time, by straight-line code from what its callbacks measure). An item's text is an
    offset into its scene's array of characters, never a pointer: a table of pointers goes to .data.rel.ro in a PIE or a
    shared library. The callbacks and the drawing are main.c's and are linked: one the file names and nothing defines
-   fails the link. It is strict C99 and depends on nothing, so a cross build can build it for the machine it runs on.
+   fails the link. It is strict ISO C23 and depends on nothing, so a cross build can build it for the machine it runs on.
 
    Usage: uigen --out DIR FILE
    It writes DIR/gui/ui.h and DIR/gui/ui.c, each only rewritten when it changes. An error names the file and the line

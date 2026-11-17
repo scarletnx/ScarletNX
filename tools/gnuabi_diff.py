@@ -121,6 +121,7 @@ def compile_fixture(cc, extra, fixture, sources, include, cwd, timeout, pie=Fals
     mode = ['-fPIE', '-Wl,-pie,--no-dynamic-linker'] if pie else ['-fno-pie', '-no-pie']
     argv = [
         *cc,
+        '-std=gnu23',
         '-static',
         '-O2',
         '-ffreestanding',
