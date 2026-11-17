@@ -950,6 +950,101 @@ int main(void) {
         free(ctr);
     }
 
+    /* the Vita's: ux0/user/00/savedata/<ID> decrypted, as Vita3K keeps it, a folder <ID>/ in a zip; one copied from
+       the console still encrypted (sce_pfs/) refused, as is a member out of an ID's folder and another game's alone */
+    {
+        char *psv = at(root, "psv", NULL), *lib = at(psv, "a", NULL), *lib2 = at(psv, "b", NULL);
+        char *psv_trash = at(psv, "trash", NULL), *game = at(lib, "PCSE00001", NULL),
+             *game2 = at(lib2, "PCSE00001", NULL);
+        char* zipped = at(psv, "vita.zip", NULL);
+        const char* folders[1] = {lib};
+        GuiSavePsv one, other;
+        GuiSavesPsv list;
+        GuiSavesZip* writing;
+        size_t kept = 0, files = 0;
+        SnxU64 took = 0;
+        path = at(game, "PCSE00001.ini", NULL);
+        put_text(path, "[Game]\nsystem=vita\n");
+        free(path);
+        assert(gui_saves_psv_place(game, "PCSE00001", psv_trash, &one));
+        path = at(game, "ux0/user/00/savedata", "PCSE00001");
+        assert(!strcmp(one.folder, path));
+        free(path);
+        path = at(one.folder, "SAVEDATA.BIN", NULL);
+        put_text(path, "vita save");
+        free(path);
+        path = at(one.folder, "sce_sys/sdslot.dat", NULL);
+        put_text(path, "slots");
+        free(path);
+        gui_saves_psv_list(psv_trash, folders, 1, true, &list);
+        assert(list.count == 1 && !strcmp(list.at[0].name, "PCSE00001"));
+        gui_saves_psv_free(&list);
+        writing = gui_saves_zip_begin(zipped, &done, error, sizeof error);
+        assert(writing && !gui_saves_psv_add(writing, GUI_SAVES_VITA, &one, 1, &kept, error, sizeof error) &&
+               kept == 1);
+        assert(!gui_saves_zip_end(writing, true, &files, &took, error, sizeof error) && files == 2);
+        assert(has_member(zipped, "vita/PCSE00001/SAVEDATA.BIN") &&
+               has_member(zipped, "vita/PCSE00001/sce_sys/sdslot.dat"));
+        gui_cleaned_free(&done);
+        /* into the same game elsewhere, never run: made; again: the one there to the trash */
+        assert(gui_saves_psv_place(game2, "PCSE00001", psv_trash, &other));
+        result = (GuiSavesDone){0};
+        assert(!gui_saves_psv_import(&done, zipped, zipped, GUI_SAVES_VITA, &other, 1, false, &result, error,
+                                     sizeof error));
+        path = at(other.folder, "sce_sys/sdslot.dat", NULL);
+        assert(holds_text(path, "slots") && result.saves == 1 && result.files == 2 && !result.backups);
+        free(path);
+        assert(!gui_saves_psv_import(&done, zipped, zipped, GUI_SAVES_VITA, &other, 1, false, &result, error,
+                                     sizeof error) &&
+               result.backups == 1);
+        gui_cleaned_free(&done);
+        {
+            Member m[] = {{"PCSE00001/sce_pfs/files.db", "x", 1, 0, 0, false}};
+            zip_make(zipped, m, 1);
+            assert(gui_saves_psv_import(&done, zipped, "the picked.zip", "", &other, 1, false, &result, error,
+                                        sizeof error));
+            assert(!strcmp(error, "the picked.zip holds PCSE00001's save as the console keeps it, encrypted "
+                                  "(PCSE00001/sce_pfs/files.db): only a decrypted one goes in, as Vita3K keeps one"));
+        }
+        {
+            Member m[] = {{"SAVEDATA.BIN", "x", 1, 0, 0, false}};
+            zip_make(zipped, m, 1);
+            assert(gui_saves_psv_import(&done, zipped, "the picked.zip", "", &other, 1, false, &result, error,
+                                        sizeof error));
+            assert(!strcmp(error, "the picked.zip is no export of Vita saves: SAVEDATA.BIN is not in a folder named by "
+                                  "its save's ID, as ux0:user/00/savedata/<ID> is"));
+        }
+        {
+            Member m[] = {{"PCSE00002/SAVEDATA.BIN", "x", 1, 0, 0, false}};
+            zip_make(zipped, m, 1);
+            assert(gui_saves_psv_import(&done, zipped, "the picked.zip", "", &other, 1, false, &result, error,
+                                        sizeof error));
+            assert(!strcmp(error, "the picked.zip holds the saves of PCSE00002, not of PCSE00001"));
+            assert(gui_saves_psv_import(&done, zipped, "the picked.zip", "", &other, 1, true, &result, error,
+                                        sizeof error));
+            assert(!strcmp(error, "none of the saves in the picked.zip, PCSE00002, is of a Vita game of the library"));
+            path = at(other.folder, "SAVEDATA.BIN", NULL);
+            assert(holds_text(path, "vita save"));
+            free(path);
+        }
+        gui_cleaned_free(&done);
+        {
+            GuiSavePsv* a = (GuiSavePsv*)malloc(2 * sizeof one);
+            GuiSavesPsv both = {a, 2};
+            assert(a);
+            a[0] = one;
+            a[1] = other;
+            gui_saves_psv_free(&both);
+        }
+        free(zipped);
+        free(game2);
+        free(game);
+        free(psv_trash);
+        free(lib2);
+        free(lib);
+        free(psv);
+    }
+
 #ifndef _WIN32 /* a link Windows makes only with developer mode or an administrator */
     /* a save folder that is a link: refused, naming what it links to, the link and that folder as they were */
     {

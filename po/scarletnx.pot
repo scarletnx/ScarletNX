@@ -5023,7 +5023,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%s: %s holds none of the consoles' folders of an export of every save: %s, %s, %s, %s"
+msgid "%s: %s holds none of the consoles' folders of an export of every save: %s, %s, %s, %s, %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -6326,6 +6326,41 @@ msgstr ""
 #: src/gui/saves.c
 #, c-format
 msgid "Not imported: it holds the backups of %zu other games too"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no export of Vita saves: %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s is no export of Vita saves: %s is not in a folder named by its save's ID, as ux0:user/00/savedata/<ID> is"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds %s's save as the console keeps it, encrypted (%s): only a decrypted one goes in, as Vita3K keeps one"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds no save of the Vita: <ID>/ and its files"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "%s holds the saves of %s, not of %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "Not imported: %s holds no save of %s"
+msgstr ""
+
+#: src/gui/saves.c
+#, c-format
+msgid "none of the saves in %s, %s, is of a Vita game of the library"
 msgstr ""
 
 #: src/gui/settings.c

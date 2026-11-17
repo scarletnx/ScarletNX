@@ -1292,3 +1292,181 @@ size_t gui_saves_ctr_keep(const char* path, const char* prefix, GuiSavesCtr* lis
     snx_zip_close(zip);
     return kept;
 }
+
+/* ---- the Vita's: its save data folder, decrypted, as Vita3K keeps ux0:user/00/savedata/<ID> */
+
+void gui_saves_psv_free(GuiSavesPsv* list) {
+    for (size_t i = 0; i < list->count; ++i) {
+        free((void*)list->at[i].folder);
+        free((void*)list->at[i].trash);
+        free((void*)list->at[i].name);
+    }
+    free(list->at);
+    list->at = NULL;
+    list->count = 0;
+}
+int gui_saves_psv_place(const char* game, const char* name, const char* trash, GuiSavePsv* out) {
+    char* folder = snx_format("%s/ux0/user/00/savedata/%s", game, name);
+    if (!folder) return 0;
+    snx_path_native(folder);
+    out->folder = folder;
+    out->trash = snx_strdup(trash);
+    out->name = snx_strdup(name);
+    return 1;
+}
+void gui_saves_psv_list(const char* trash, const char* const* folders, size_t count, bool there, GuiSavesPsv* list) {
+    list->at = NULL;
+    list->count = 0;
+    for (size_t f = 0; f < count; ++f) {
+        char** names = NULL;
+        size_t n = 0;
+        if (snx_list_dir(folders[f], &names, &n)) continue;
+        for (size_t i = 0; i < n; ++i) {
+            char* game = snx_path_join(folders[f], names[i]);
+            GuiSavePsv save;
+            if (game && snx_is_dir(game) && snx_game_system(game, names[i]) == SNX_SYSTEM_VITA &&
+                gui_saves_psv_place(game, names[i], trash, &save)) {
+                if (!there || files_in(save.folder, false)) {
+                    list->at = (GuiSavePsv*)snx_realloc(list->at, (list->count + 1) * sizeof *list->at);
+                    list->at[list->count++] = save;
+                } else {
+                    free((void*)save.folder);
+                    free((void*)save.trash);
+                    free((void*)save.name);
+                }
+            }
+            free(game);
+        }
+        snx_free_strings(names, n);
+    }
+}
+int gui_saves_psv_add(GuiSavesZip* zip, const char* prefix, const GuiSavePsv* saves, size_t count, size_t* kept,
+                      char* error, size_t size) {
+    *kept = 0;
+    for (size_t i = 0; i < count; ++i) {
+        char* name;
+        int rc;
+        if (!files_in(saves[i].folder, false)) {
+            gui_cleaned_add(zip->done, false, saves[i].folder, snx_tr("Not exported: no save there"));
+            continue;
+        }
+        name = snx_format("%s%s/", prefix, saves[i].name);
+        rc = zip_tree(zip, saves[i].folder, name, false, error, size);
+        free(name);
+        if (rc) return 1;
+        ++*kept;
+    }
+    return 0;
+}
+/* member name under prefix: its save ID's folder (letters and digits, as a title ID is) into id, what is after it
+   into *rest; 0 for one at the top or out of such a folder */
+static bool psv_member(const char* name, const char* prefix, char* id, size_t size, const char** rest) {
+    const char *at = name + strlen(prefix), *slash;
+    size_t n;
+    if (strncmp(name, prefix, strlen(prefix))) return false;
+    slash = strchr(at, '/');
+    n = slash ? (size_t)(slash - at) : 0;
+    if (!n || n >= size) return false;
+    for (size_t i = 0; i < n; ++i)
+        if (!((at[i] >= 'A' && at[i] <= 'Z') || (at[i] >= 'a' && at[i] <= 'z') || (at[i] >= '0' && at[i] <= '9')))
+            return false;
+    snprintf(id, size, "%.*s", (int)n, at);
+    *rest = slash + 1;
+    return true;
+}
+int gui_saves_psv_import(GuiCleaned* done, const char* path, const char* shown, const char* prefix,
+                         const GuiSavePsv* saves, size_t count, bool all, GuiSavesDone* result, char* error,
+                         size_t size) {
+    char why[1024], id[64], what[SNX_PATH_SIZE + 256], listed[256] = "", kept[SNX_PATH_SIZE];
+    SnxZip* zip = snx_zip_open(path, why, sizeof why);
+    uint32_t i, n;
+    size_t j, found = 0, m = 0, left = 0;
+    const char* rest;
+    error[0] = 0;
+    if (!zip) {
+        snprintf(error, size, snx_tr("%s is no export of Vita saves: %s"), shown, why);
+        return 1;
+    }
+    n = snx_zip_count(zip);
+    for (i = 0; i < n && !error[0]; ++i) { /* the whole zip checked before anything is written */
+        const char* member = snx_zip_name(zip, i);
+        if (strncmp(member, prefix, strlen(prefix)) || !strcmp(member, prefix)) continue; /* another console's */
+        if (!snx_zip_safe_name(member) || !psv_member(member, prefix, id, sizeof id, &rest))
+            snprintf(error, size,
+                     snx_tr("%s is no export of Vita saves: %s is not in a folder named by its save's ID, as "
+                            "ux0:user/00/savedata/<ID> is"),
+                     shown, member);
+        else if (!strncmp(rest, "sce_pfs/", 8))
+            snprintf(error, size,
+                     snx_tr("%s holds %s's save as the console keeps it, encrypted (%s): only a decrypted one goes in, "
+                            "as Vita3K keeps one"),
+                     shown, id, member);
+        else if (!strstr(listed, id) && m < sizeof listed - 16) {
+            m += (size_t)snprintf(listed + m, sizeof listed - m, "%s%s", found ? ", " : "", id);
+            ++found;
+        }
+    }
+    if (!error[0] && !found) snprintf(error, size, snx_tr("%s holds no save of the Vita: <ID>/ and its files"), shown);
+    for (j = 0; j < count && !error[0] && !all; ++j) {
+        char want[80];
+        snprintf(want, sizeof want, "%s%s/", prefix, saves[j].name);
+        for (i = 0; i < n && strncmp(snx_zip_name(zip, i), want, strlen(want)); ++i) {}
+        if (i == n) snprintf(error, size, snx_tr("%s holds the saves of %s, not of %s"), shown, listed, saves[j].name);
+    }
+    for (j = 0; j < count && !error[0]; ++j) {
+        char *parent = snx_dirname(saves[j].folder), *hidden = snx_format(".%s.importing", saves[j].name);
+        char *staged = parent && hidden ? snx_path_join(parent, hidden) : NULL,
+             *label = snx_format("%s.savedata", saves[j].name);
+        size_t files = 0;
+        SnxU64 bytes = 0;
+        bool any = false;
+        if (!staged || !label || (snx_path_exists(staged) && snx_remove_tree(staged)) || snx_mkdirs(staged))
+            snprintf(error, size, snx_tr("%s could not be made: %s"), staged ? staged : saves[j].folder,
+                     snx_os_error(why, sizeof why));
+        for (i = 0; i < n && !error[0]; ++i) {
+            const char* member = snx_zip_name(zip, i);
+            char *into, *folder = NULL;
+            size_t length;
+            if (!psv_member(member, prefix, id, sizeof id, &rest) || strcmp(id, saves[j].name)) continue;
+            any = true;
+            if (!*rest) continue;
+            length = strlen(rest);
+            into = snx_format("%s/%.*s", staged, (int)(length - (rest[length - 1] == '/')), rest);
+            if (into) snx_path_native(into);
+            if (into && rest[length - 1] != '/') folder = snx_dirname(into);
+            if (!into || (rest[length - 1] == '/' ? snx_mkdirs(into) != 0 : !folder || snx_mkdirs(folder) != 0))
+                snprintf(error, size, snx_tr("%s could not be made: %s"), into ? into : staged,
+                         snx_os_error(why, sizeof why));
+            else if (rest[length - 1] != '/' && !snx_zip_extract(zip, i, into, why, sizeof why))
+                snprintf(error, size, snx_tr("%s could not be taken out of %s: %s"), member, shown, why);
+            else if (rest[length - 1] != '/') {
+                ++files;
+                bytes += snx_zip_size(zip, i);
+                snprintf(what, sizeof what, snx_tr("Imported from %s in %s"), member, shown);
+                gui_cleaned_add(done, true, into, what);
+            }
+            free(folder);
+            free(into);
+        }
+        if (!error[0] && !any) { /* a game of the library the zip has nothing of: left as it is, said */
+            snprintf(what, sizeof what, snx_tr("Not imported: %s holds no save of %s"), shown, saves[j].name);
+            gui_cleaned_add(done, false, saves[j].folder, what);
+            ++left;
+        } else if (!error[0] && !gui_saves_put(done, staged, saves[j].folder, saves[j].trash, label, kept, sizeof kept,
+                                               error, size)) {
+            ++result->saves;
+            result->files += files;
+            result->bytes += bytes;
+            if (kept[0] && !result->backups++) snprintf(result->backup, sizeof result->backup, "%s", kept);
+        }
+        if (staged && snx_path_exists(staged)) snx_remove_tree(staged);
+        free(label);
+        free(staged);
+        free(hidden);
+        free(parent);
+    }
+    if (!error[0] && all && left == count)
+        snprintf(error, size, snx_tr("none of the saves in %s, %s, is of a Vita game of the library"), shown, listed);
+    snx_zip_close(zip);
+    return error[0] != 0;
+}

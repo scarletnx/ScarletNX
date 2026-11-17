@@ -122,13 +122,14 @@ int main(void) {
 
     /* the menu's Saves: Export All Saves and Import All Saves, then the Switch's two, the user named over them */
     saves_open(&app);
-    assert(app.picks_shown && app.picks_of == GUI_PICKS_SAVES && app.picks.count == 10);
+    assert(app.picks_shown && app.picks_of == GUI_PICKS_SAVES && app.picks.count == 12);
     assert(!strcmp(pick_label(&app, 0), "Export All Saves") && !strcmp(pick_label(&app, 1), "Import All Saves") &&
            !strcmp(pick_label(&app, 2), "Switch: Export Saves") &&
            !strcmp(pick_label(&app, 3), "Switch: Import Saves") && !strcmp(pick_label(&app, 4), "3DS: Export Saves") &&
-           !strcmp(pick_label(&app, 5), "3DS: Import Saves") && !strcmp(pick_label(&app, 6), "GBA: Export Saves") &&
-           !strcmp(pick_label(&app, 7), "GBA: Import Saves") && !strcmp(pick_label(&app, 8), "NDS: Export Saves") &&
-           !strcmp(pick_label(&app, 9), "NDS: Import Saves") && !pick_label(&app, 10));
+           !strcmp(pick_label(&app, 5), "3DS: Import Saves") && !strcmp(pick_label(&app, 6), "Vita: Export Saves") &&
+           !strcmp(pick_label(&app, 7), "Vita: Import Saves") && !strcmp(pick_label(&app, 8), "GBA: Export Saves") &&
+           !strcmp(pick_label(&app, 9), "GBA: Import Saves") && !strcmp(pick_label(&app, 10), "NDS: Export Saves") &&
+           !strcmp(pick_label(&app, 11), "NDS: Import Saves") && !pick_label(&app, 12));
     assert(pick_icon(&app, 0) == GUI_ICON_SHARE_2 && pick_icon(&app, 1) == GUI_ICON_FOLDER_INPUT);
     {
         char question[GUI_PICKS_QUESTION];
@@ -267,7 +268,7 @@ int main(void) {
         own_answer_dropped(&app);
         saves_picked_answer(&app, out, NULL, false);
         path = snx_format("Import All Saves: %s holds none of the consoles' folders of an export of every save: "
-                          "switch/, 3ds/, gba/, nds/",
+                          "switch/, 3ds/, vita/, gba/, nds/",
                           out);
         assert(!strcmp(app.message, path));
         free(path);
@@ -388,6 +389,34 @@ int main(void) {
         free(ctr_ini);
         free(ctr_program);
         free(ctr);
+    }
+
+    /* a Vita game's save out as <ID>/ in a zip, and back in over the one there after the question */
+    {
+        char *psv = snx_path_join(games, "PCSE00001"), *psv_program = snx_path_join(psv, "PCSE00001");
+        char *psv_ini = snx_path_join(psv, "PCSE00001.ini"), *psv_zip = snx_path_join(root, "vita.zip");
+        char* data = snx_path_join(psv, "ux0/user/00/savedata/PCSE00001/SAVEDATA.BIN");
+        put_text(psv_program, "a recompiled Vita game");
+        put_text(psv_ini, "[Game]\nsystem=vita\n");
+        put_text(data, "vita 1");
+        saves_start(&app, GUI_SAVES_ROW(GUI_VITA, false), psv_program, "A Vita Game");
+        assert(app.saves_psv.count == 1);
+        own_answer_dropped(&app);
+        saves_picked_answer(&app, psv_zip, NULL, false);
+        assert(has_member(psv_zip, "PCSE00001/SAVEDATA.BIN"));
+        put_text(data, "vita 2");
+        saves_start(&app, GUI_SAVES_ROW(GUI_VITA, true), psv_program, "A Vita Game");
+        own_answer_dropped(&app);
+        saves_picked_answer(&app, psv_zip, NULL, false);
+        assert(app.confirm.shown && app.confirm.ask == GUI_ASK_SAVES);
+        ask_key(&app, GUI_RIGHT);
+        ask_key(&app, GUI_SELECT);
+        assert(holds_text(data, "vita 1") && strstr(app.message, "Import Saves: 1 files (1 KB) of A Vita Game for "));
+        free(data);
+        free(psv_zip);
+        free(psv_ini);
+        free(psv_program);
+        free(psv);
     }
 
     /* the Switch's export with no save of the user: said before any picker opens */
