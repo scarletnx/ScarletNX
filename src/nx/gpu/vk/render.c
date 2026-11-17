@@ -6247,7 +6247,7 @@ retry:
         DYN(fb, fb ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_NONE,
             rec_CmdSetAttachmentFeedbackLoopEnableEXT(cb, fb ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_NONE));
     VkDescriptorSet sets[2] = {vset, fset};
-    VkPipelineLayout layout = vk_playout(k->arrays);
+    VkPipelineLayout layout = vk_pipeline_layout(pipe, k->arrays);
     if (g_dyn.layout != layout) { /* the sets bound through another layout are bound again */
         memset(g_dyn.sets, 0, sizeof g_dyn.sets);
         g_dyn.layout = layout;

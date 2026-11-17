@@ -24,6 +24,7 @@ programs that a game ships (step 8) is not.
 * [Across runs](#across-runs)
 * [The programs a game ships](#the-programs-a-game-ships)
 * [Interactions](#interactions)
+* [Shader objects](#shader-objects)
 * [Without the extension](#without-the-extension)
 * [Measurement](#measurement)
   * [Results](#results)
@@ -414,6 +415,29 @@ after it.
 - **The pipeline cache save**: `vk_pipeline_save` writes `g_pipeline.pcache` after `PCACHE_QUIET_NS` with no new pipeline.
   Part makes and optimized pipelines must also update `g_pipeline.pcache_used` (`pcache_note`), so a save does not hold the
   cache's lock while a draw's part compiles.
+
+## Shader objects
+
+Where the device has `VK_EXT_shader_object` (setting `vk_ext_shader_object`, issue #1454), a draw makes no pipeline
+and no parts. `src/nx/gpu/vk/shader_objects.c` gives each key a set of shader objects: one for each stage's program,
+made once on the pipeline workers and shared by every key that runs the program with the same set layouts and
+fragment specialization. The recording thread binds the set (`vk_pipeline_bind`) and sets, as dynamic state, what a
+pipeline held (`vk_so_bind`). `render.c` sets the rest as for a pipeline, `pr_dynamic` too, so the path needs the
+dynamic pre-rasterization state of this design and the vertex layout as dynamic state.
+
+- A key's handle is always a stand-in, and its sets are bound with a layout of no independent sets: a shader
+  object's set layouts are not compatible with a layout of `INDEPENDENT_SETS`.
+- An object is made from the program's SPIR-V, which the module keeps (`vk_so_keep_spirv`). A key whose modules
+  have no SPIR-V kept (the runtime's clears), or with state that is no dynamic state here (per-sample shading, mesh
+  stages, descriptor heaps, mixed samples, coverage to color, sample locations), is made as a pipeline. So is a key
+  whose objects the device refuses.
+- The driver's binaries of the objects are kept between runs in `vk_shaders.<driver>.bin`, beside the pipeline
+  cache. Their key holds what the set layouts are made of (`g_vk_dslayout_hash`), the specialization and the flags.
+- The states that the device's extensions make a draw set are taken when the renderer starts. The tests turn native
+  paths off in `g_vk` later, and the device keeps the extensions and their rules.
+
+`vulkan_headless_shader_objects` runs every check with them under the validation layer. The pipeline tests above
+pass `--vk-ext-shader-object=off`.
 
 ## Without the extension
 

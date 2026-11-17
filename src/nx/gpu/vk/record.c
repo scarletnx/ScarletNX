@@ -435,13 +435,13 @@ static void bind_pipeline_run(const void* p) {
     VkPipeline pipe =
         graphics && g_settings.async_pipelines ? vk_pipeline_now(x->p, &pending) : vk_pipeline_resolve(x->p);
     if (graphics) g_rec_unbound = pipe ? 0 : pending ? 2 : 1;
-    if (pipe) vkCmdBindPipeline(x->cb, x->bp, pipe);
+    if (pipe) vk_pipeline_bind(x->cb, x->bp, pipe);
 }
 void rec_CmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline p) {
     if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS) vk_descriptor_heaps_pipeline_state(0);
     if (!rec_on(cb)) {
         VkPipeline pipe = vk_pipeline_resolve(p);
-        if (pipe) vkCmdBindPipeline(cb, bp, pipe);
+        if (pipe) vk_pipeline_bind(cb, bp, pipe);
         return;
     }
     BindPipelineArgs* x = rec_push(bind_pipeline_run, sizeof *x);

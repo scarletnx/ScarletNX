@@ -245,6 +245,11 @@ typedef struct {
     int has_cache_control;
     /* VK_KHR_pipeline_executable_properties, on only for the pipeline_stats setting (pipeline_stats.c) */
     int has_exec_stats;
+    /* VK_EXT_shader_object (shader_objects.c): draws bind shaders, and the device's binaries are of this uuid and
+       version, as a file of them keeps them between runs */
+    int has_shader_objects;
+    u8 so_binary_uuid[VK_UUID_SIZE];
+    u32 so_binary_version;
     u32 dyn_pr; /* VK_DYN_PR_*: the pre-rasterization state those pipelines take as dynamic state */
     /* VK_KHR_index_type_uint8 (or the EXT before it): 8-bit index buffers bound as they are */
     int has_index8;
@@ -2522,6 +2527,8 @@ extern VkShaderStageFlags g_vk_subgroup_stages;
    descriptors cost the driver twice the time to bind (one game's 6,700 draws a frame), so only an indexed shader's has
    them */
 extern VkDescriptorSetLayout g_vk_dslayout[2][5];
+/* a hash of what the layouts of g_vk_dslayout are made of (pipeline.c), in the key of a shader object's binary */
+extern u64 g_vk_dslayout_hash;
 extern u32 g_vk_stage_sets; /* sets in the pipeline layout: 5, or 2 without the tessellation and geometry stages */
 /* the stages that read the push constants: every graphics stage reads the viewport/depth parameters in pc[0..3]
    (the last one before rasterization applies them); fragment reads the alpha test in pc[4..6] and sprite T flip
@@ -2643,6 +2650,13 @@ void vk_pipeline_file_key(char* out, size_t n, size_t* guest);
    pipeline a stand-in names, or h itself) */
 VkPipeline vk_pipeline_get_deferred(const PipeKey* k);
 VkPipeline vk_pipeline_resolve(VkPipeline h);
+/* h, resolved (vk_pipeline_resolve or vk_pipeline_now), bound to cb: a pipeline, or a draw's shader objects with the
+   state of its key (shader_objects.c) */
+void vk_pipeline_bind(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline h);
+/* the layout a draw of handle h binds its sets with: a draw with shader objects has one of no independent sets */
+VkPipelineLayout vk_pipeline_layout(VkPipeline h, u32 arrays);
+/* the color targets' blend states of k, as a draw pipeline has them (pipeline.c) */
+void vk_pipe_blend(const PipeKey* k, VkPipelineColorBlendAttachmentState cba[8]);
 /* the pipeline h names when it is ready, else h itself, without waiting: a stand-in and its pipeline are one */
 VkPipeline vk_pipeline_ready(VkPipeline h);
 /* h's pipeline if it is ready, else VK_NULL_HANDLE, *pending saying whether a worker still makes it */

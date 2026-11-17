@@ -46,6 +46,7 @@ void vk_pipeline_save(int at_exit) {
                 g_pipeline.pf.nidx);
         }
     }
+    vk_so_save(); /* the shader objects' binaries, beside the cache and at the same quiet times */
     /* vk_pipeline_cache=0: the driver's cache is neither read nor written, its size only logged at the end */
     if (!g_settings.vulkan_pipeline_cache && at_exit && g_pipeline.pcache) {
         size_t n = 0;

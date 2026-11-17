@@ -125,6 +125,25 @@ void snx_vk_shader_binaries_load(SnxVkShaderBinaries* b, const char* path, size_
     b->dirty = false;
 }
 
+bool snx_vk_shader_binaries_put(SnxVkShaderBinaries* b, uint64_t key, const void* data, size_t size) {
+    size_t had = 0;
+    if (!snx_vk_shader_binary(b, key, &had)) {
+        bool kept = add(b, key, data, size);
+        b->dirty |= kept;
+        return kept;
+    }
+    /* the entry takes the new bytes, put after the others: the old ones stay in the blob until the next load */
+    size_t at = (size_t)snx_align_up(b->blob_size, 16);
+    if (!size || size > UINT32_MAX || !room(b, at - b->blob_size + size)) return false;
+    memcpy(b->blob + at, data, size);
+    struct SnxVkShaderBinary* e = &b->entries[b->slots[slot_of(b, key)] - 1];
+    e->at = at;
+    e->size = size;
+    b->blob_size = at + size;
+    b->dirty = true;
+    return true;
+}
+
 bool snx_vk_shader_binaries_keep(SnxVkShaderBinaries* b, VkDevice dev, uint64_t key, VkShaderEXT shader) {
     size_t size = 0;
     if (snx_vk_shader_binary(b, key, &size)) return true;

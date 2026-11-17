@@ -880,6 +880,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     int has_fault = 0; /* VK_EXT_device_fault: what the GPU reports of a fault, at a lost device */
     /* VK_KHR_pipeline_executable_properties: the drivers' statistics of each pipeline, for pipeline_stats only */
     int has_exec = 0;
+    /* VK_EXT_shader_object: draws bind compiled shaders and set the rest as dynamic state (shader_objects.c) */
+    int has_so = 0;
     /* VK_NV_shading_rate_image and VK_KHR_fragment_shading_rate: an Ounce's shading rate image (shading_rate.c) */
     int has_nv_rate = 0, has_khr_rate = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
@@ -924,6 +926,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         g_vk.has_nv_checkpoints =
             g_settings.gpu_checkpoints && snx_vk_choice_has(c, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
         has_fault = snx_vk_choice_has(c, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+        has_so = snx_vk_choice_has(c, VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
         has_exec = g_settings.pipeline_stats[0] &&
                    snx_vk_choice_has(c, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
         if (g_settings.pipeline_stats[0] && !has_exec)
@@ -1128,6 +1131,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     VkPhysicalDeviceFaultFeaturesEXT qfault = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+    VkPhysicalDeviceShaderObjectFeaturesEXT qso = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT};
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR qexec = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
     VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {
@@ -1243,6 +1247,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            has_atomic_float ? &qatomic_float : NULL,
                            has_fault ? &qfault : NULL,
                            has_exec ? &qexec : NULL,
+                           has_so ? &qso : NULL,
                            has_nv_rate ? &qnv_rate : NULL,
                            has_khr_rate ? &qkhr_rate : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
@@ -1476,6 +1481,32 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         }
         vk_depth_range_line(&gd, g_vk.dyn_pr, line, sizeof line);
         LOG("%s\n", line);
+        /* Shader objects where the device has them: a draw binds its compiled shaders and sets what a pipeline held as
+           dynamic state, and no pipeline is made for each combination of shaders and state (issue #1454). They take
+           the pre-rasterization state that pipeline libraries take as dynamic (render.c's pr_dynamic) and the vertex
+           layout as the draws set it, so they need both. A draw they can't take is made as a pipeline
+           (shader_objects.c's vk_so_takes) */
+        const char* so_why = !has_so ? "the device has no VK_EXT_shader_object, or a setting or a ban took it out"
+                             : !qso.shaderObject ? "the device has VK_EXT_shader_object without shaderObject"
+                             : !g_vk.has_gpl ? "pipeline libraries are off, and with them the dynamic pre-rasterization "
+                                               "state"
+                             : !g_vk.vertex_input_dynamic ? "the vertex layout is no dynamic state"
+                             : g_vk.has_vertex_robustness2
+                                 ? "vertex inputs take their strict bounds from each pipeline, without the device's "
+                                   "robustBufferAccess2"
+                                 : NULL;
+        g_vk.has_shader_objects = !so_why;
+        if (g_vk.has_shader_objects) {
+            VkPhysicalDeviceShaderObjectPropertiesEXT sop = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT};
+            VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &sop};
+            vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+            memcpy(g_vk.so_binary_uuid, sop.shaderBinaryUUID, VK_UUID_SIZE);
+            g_vk.so_binary_version = sop.shaderBinaryVersion;
+            LOG("vulkan: draws bind shader objects (VK_EXT_shader_object), and go through pipelines only where they "
+                "can't\n");
+        } else
+            LOG("vulkan: draws go through pipelines: %s\n", so_why);
         /* depth clipping and clamping apart, as the console's viewport clip control has them, where the device can;
            with pipeline libraries' dynamic clamp only if the clip is dynamic too (pipeline_parts.h) */
         int clamp_alone = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLAMP) && !(g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLIP);
@@ -1874,6 +1905,12 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     if (g_vk.has_fault) {
         chain = &ffault;
         snx_vk_choice_enable(c, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+    }
+    VkPhysicalDeviceShaderObjectFeaturesEXT fso = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT, .pNext = chain, .shaderObject = VK_TRUE};
+    if (g_vk.has_shader_objects) {
+        chain = &fso;
+        snx_vk_choice_enable(c, VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
     }
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR fexec = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR,
