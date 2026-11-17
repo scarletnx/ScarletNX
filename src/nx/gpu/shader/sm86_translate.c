@@ -1798,12 +1798,23 @@ static u32 smap_slot(Ctx* c, u32 buffer) {
         c->smap = spv_emit_storage_buffer(
             &c->e, spv_emit_type_struct_one(&c->e, spv_emit_type_runtime_array(&c->e, c->t_u32, 4)),
             (u32)shader_vk_set(c->stage), SNX_VKB_SMAP);
+        /* NonWritable: no instruction writes the table (the write log, SNX_VKB_WPAGES on the same binding, is a
+           compute program's, which has no table), so the shared optimizer (spv_opt_values) reads each word of it
+           once where it dominates. Before, each word of global memory loaded it again: a third of the module */
+        spv_emit_decorate(&c->e, c->smap, 24, NULL, 0);
         add_interface(c, c->smap);
     }
     return slot;
 }
-static u32 gbuf_word_index(Ctx* c, u32 buffer, u32 word) {
-    if (c->stage == ST_CS) return word;
+/* The n words from word on (n 1, 2 or 4) in index[]. The table's offset is the buffer's place in its first page of
+   guest memory, so at counts the words from the start of a page; the hardware aligns an access of 8 or 16 bytes to
+   its size, so its words are in one page, and one lookup of the page gives them all. Each word has its own check of
+   the buffer's end */
+static void gbuf_word_indices(Ctx* c, u32 buffer, u32 word, u32 n, u32 index[4]) {
+    if (c->stage == ST_CS) {
+        for (u32 k = 0; k < n; k++) index[k] = k ? spv_emit_iadd_u32(&c->e, c->t_u32, word, cu(c, k)) : word;
+        return;
+    }
     u32 slot = smap_slot(c, buffer);
     u32 first = smap_word(c, cu(c, slot)), offset = smap_word(c, cu(c, 16 + slot)),
         count = smap_word(c, cu(c, 32 + slot));
@@ -1817,9 +1828,18 @@ static u32 gbuf_word_index(Ctx* c, u32 buffer, u32 word) {
         spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32,
                         spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, smap_word(c, entry), cu(c, 10)),
                         spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, at, cu(c, 1023)));
-    mapped = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
-                              spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, word, count), mapped, cu(c, ~0u));
-    return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, none, word, mapped);
+    for (u32 k = 0; k < n; k++) {
+        u32 w = k ? spv_emit_iadd_u32(&c->e, c->t_u32, word, cu(c, k)) : word;
+        u32 m = k ? spv_emit_iadd_u32(&c->e, c->t_u32, mapped, cu(c, k)) : mapped;
+        m = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
+                             spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, w, count), m, cu(c, ~0u));
+        index[k] = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, none, w, m);
+    }
+}
+static u32 gbuf_word_index(Ctx* c, u32 buffer, u32 word) {
+    u32 index[4];
+    gbuf_word_indices(c, buffer, word, 1, index);
+    return index[0];
 }
 /* A global buffer's bytes as the program sees them: the array's length where it is bound whole, and in an atlas of
    pages its own words that SNX_VKB_SMAP gives, as gbuf_word_index takes them */
@@ -1886,11 +1906,25 @@ static void mem_word_store(Ctx* c, u32 buffer, u32 ptr, u32 value) {
     else
         spv_emit_store_nonprivate(&c->e, ptr, value);
 }
+/* the n words (1, 2 or 4) of one access at the byte address: a global buffer's through one lookup of their page
+   (gbuf_word_indices) */
+static void mem_ptrs(Ctx* c, u32 buffer, u32 address, u32 n, u32 ptrs[4]) {
+    if (!buffer || buffer == MEM_LOCAL) {
+        for (u32 k = 0; k < n; k++) ptrs[k] = mem_ptr(c, buffer, address, k);
+        return;
+    }
+    u32 index[4];
+    gbuf_word_indices(c, buffer, spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, address, cu(c, 2)), n,
+                      index);
+    for (u32 k = 0; k < n; k++)
+        ptrs[k] = spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, buffer, c->zero, index[k]);
+}
 /* a load of mem_type (NAK's MemType) into registers dst on */
 static void mem_load(Ctx* c, u32 buffer, u32 address, u32 type, u32 dst, int uniform_dst) {
-    u32 words = type == 5 ? 2 : type == 6 ? 4 : 1;
+    u32 words = type == 5 ? 2 : type == 6 ? 4 : 1, ptrs[4];
+    mem_ptrs(c, buffer, address, dst >= SM86_RZ ? 1 : words, ptrs);
     for (u32 k = 0; k < words; k++) {
-        u32 v = mem_word_load(c, buffer, mem_ptr(c, buffer, address, k));
+        u32 v = mem_word_load(c, buffer, ptrs[k]);
         if (type < 4) {
             /* a byte or a halfword of the word, sign or zero extended */
             u32 shift = spv_emit_binary(
@@ -1939,9 +1973,9 @@ static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data) {
         }
         return;
     }
-    u32 words = type == 5 ? 2 : type == 6 ? 4 : 1;
-    for (u32 k = 0; k < words; k++)
-        mem_word_store(c, buffer, mem_ptr(c, buffer, address, k), rd(c, data >= SM86_RZ ? data : data + k));
+    u32 words = type == 5 ? 2 : type == 6 ? 4 : 1, ptrs[4];
+    mem_ptrs(c, buffer, address, words, ptrs);
+    for (u32 k = 0; k < words; k++) mem_word_store(c, buffer, ptrs[k], rd(c, data >= SM86_RZ ? data : data + k));
 }
 
 /* RED.ADD.F32 and ATOMG.ADD.F32 (NAK's AtomType F32, .FTZ.RN): a float atomic add to the word of a global buffer at

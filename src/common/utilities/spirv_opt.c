@@ -33,6 +33,7 @@ enum {
     SPV_OPT_GLSL_INTERPOLATE_AT_CENTROID = 76, /* the three that read an input through a pointer operand */
     SPV_OPT_GLSL_INTERPOLATE_AT_OFFSET = 78,
     SPV_OPT_DECORATION_BUFFER_BLOCK = 3, /* a block under Uniform that the module may write */
+    SPV_OPT_DECORATION_NON_WRITABLE = 24, /* memory that no instruction of the module writes */
     SPV_OPT_SWEEPS = 16, /* the most dead code elimination walks the functions: what is left then stays */
     /* what a pass knows of an id */
     SPV_OPT_VARIABLE = 1, /* a Function variable */
@@ -907,6 +908,12 @@ static uint32_t constant_slot(const uint32_t* table, uint32_t mask, const uint32
     return s;
 }
 
+/* whether the decoration bits of an id (spv_opt_values' sign) have the decoration of no operands */
+static int decorated(uint32_t bits, const uint32_t* kinds, uint32_t nkinds, uint32_t decoration) {
+    for (uint32_t k = 0; k < nkinds; k++)
+        if (kinds[k] == decoration) return bits >> k & 1;
+    return 0;
+}
 size_t spv_opt_values(uint32_t* module, size_t words) {
     if (words <= SPV_OPT_HEADER) return words;
     uint32_t bound = module[3], glsl = 0;
@@ -997,8 +1004,10 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
                 if (w[k] < bound) is[w[k]] |= SPV_OPT_PINNED;
         } else if (op == SPV_OP_VARIABLE && width >= 4 && w[2] < bound &&
                    (w[3] == SPV_STORAGE_UNIFORM_CONSTANT || w[3] == SPV_STORAGE_INPUT ||
-                    w[3] == SPV_STORAGE_PUSH_CONSTANT || (w[3] == SPV_STORAGE_UNIFORM && !buffer_block))) {
-            is[w[2]] |= SPV_OPT_READ_ONLY;
+                    w[3] == SPV_STORAGE_PUSH_CONSTANT || (w[3] == SPV_STORAGE_UNIFORM && !buffer_block) ||
+                    (w[3] == SPV_STORAGE_STORAGE_BUFFER && decorated(sign[w[2]], kinds, nkinds,
+                                                                      SPV_OPT_DECORATION_NON_WRITABLE)))) {
+            is[w[2]] |= SPV_OPT_READ_ONLY; /* the decorations come before the variables */
         } else if (op == SPV_OP_TYPE_INT && width >= 3 && w[1] < bound && w[2] == 32) {
             is[w[1]] |= SPV_OPT_INT;
         } else if (op == SPV_OP_TYPE_BOOL && width >= 2 && w[1] < bound) {
