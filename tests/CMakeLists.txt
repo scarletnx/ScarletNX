@@ -94,6 +94,10 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME gnu_extensions COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/gnu_extensions.py"
                                          --repo "${PROJECT_SOURCE_DIR}")
 endif()
+# each native hook of a mod's trampoline (src/nx/hle/hook/ext_skyline.hooks) as the function's own native hook
+if(Python3_Interpreter_FOUND)
+    add_test(NAME ext_skyline_hooks COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ext_skyline_hooks.py")
+endif()
 # every RtAPI a test makes carries cas128, which an STXP of doublewords calls on RISC-V, LoongArch, MIPS64 and
 # PowerPC64 before POWER8 only
 if(Python3_Interpreter_FOUND)
