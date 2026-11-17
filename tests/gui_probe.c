@@ -158,12 +158,21 @@ int main(void) {
     gui_probe_said(&r, said, sizeof said);
     assert(!strcmp(said, "Amberlith ?: 1 passed, 0 failed, 0 skipped, 0 crashed"));
 
-    /* a card that cannot be made: said with the path */
+    /* a press with no NRO to read, which says which folder the card goes in: said with the NRO's path; a card that
+       cannot be made: said with the mode file's */
     {
-        char* blocked = snx_path_join(root, "a file");
+        char *blocked = snx_path_join(root, "a file"), *made = snx_path_join(root, "made"),
+             *made_nro = snx_path_join(made, GUI_PROBE_NRO), *data = snx_path_join(made, ".scarletnx");
         assert(!snx_write_file(blocked, "x", 1));
-        assert(gui_probe_start(blocked, GUI_PROBE_QUICK, &cleared, why, sizeof why) && strstr(why, "the mode file ") &&
-               strstr(why, "a file"));
+        assert(gui_probe_start(blocked, GUI_PROBE_QUICK, &cleared, why, sizeof why) &&
+               strstr(why, " cannot be read: ") && strstr(why, "a file"));
+        assert(!snx_mkdirs(made) && !snx_write_file(made_nro, "NRO0 sdmc:/amberlith", 20) &&
+               !snx_write_file(data, "x", 1));
+        assert(gui_probe_start(made, GUI_PROBE_QUICK, &cleared, why, sizeof why) && strstr(why, "the mode file ") &&
+               strstr(why, "amberlith"));
+        free(data);
+        free(made_nro);
+        free(made);
         free(blocked);
     }
 
