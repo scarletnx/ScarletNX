@@ -2710,13 +2710,13 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     }
     if (indexed_shadow) {
         c->tex_func_buffer =
-            spv_emit_uniform_vec4_array(&c->emit, vec4_u32, c->u32_type, c->u32_type, shader_vk_set(stage),
+            spv_emit_uniform_vec4_array(&c->emit, vec4_u32, c->u32_type, c->u32_type, shader_vk_tex_set(stage),
                                         SNX_VKB_TEXFUNCS, SNX_TEX_ARRAY / 4, &c->tex_func_pointer);
         interfaces[count++] = c->tex_func_buffer;
     }
     if (indexed_count) {
         c->tex_map_buffer =
-            spv_emit_uniform_vec4_array(&c->emit, vec4_u32, c->u32_type, c->u32_type, shader_vk_set(stage),
+            spv_emit_uniform_vec4_array(&c->emit, vec4_u32, c->u32_type, c->u32_type, shader_vk_tex_set(stage),
                                         SNX_VKB_TEXMAP, (u32)indexed_count * SNX_TEX_ARRAY / 4, &c->tex_map_pointer);
         interfaces[count++] = c->tex_map_buffer;
     }
@@ -2735,13 +2735,13 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                 same++;
             if (same == i) { /* the first slot of its kind declares the kind's arrays */
                 c->tex_array[i] = spv_emit_sampler_image_array_ex(
-                    &c->emit, scalar, c->u32_type, shader_vk_set(stage), SNX_VKB_TEXARRAY,
+                    &c->emit, scalar, c->u32_type, shader_vk_tex_set(stage), SNX_VKB_TEXARRAY,
                     textures[i].type == 0 ? 1 : textures[i].type, textures[i].array, 0, !!(textures[i].flags & 2),
                     g_spirv_translate.tex_array, &c->sampled_type[i]);
                 interfaces[count++] = c->tex_array[i];
                 if (textures[i].shadow) {
                     c->tex_depth[i] = spv_emit_sampler_image_array(
-                        &c->emit, c->f32_type, c->u32_type, shader_vk_set(stage), SNX_VKB_TEXDEPTH,
+                        &c->emit, c->f32_type, c->u32_type, shader_vk_tex_set(stage), SNX_VKB_TEXDEPTH,
                         textures[i].type == 0 ? 1 : textures[i].type, textures[i].array, 1, g_spirv_translate.tex_array,
                         &c->tex_depth_type[i]);
                     interfaces[count++] = c->tex_depth[i];
@@ -2755,7 +2755,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             c->sampler[i] = c->tex_array[i];
             continue;
         }
-        c->sampler[i] = spv_emit_sampler_image(&c->emit, scalar, shader_vk_set(stage), SNX_VKB_TEX + (u32)i,
+        c->sampler[i] = spv_emit_sampler_image(&c->emit, scalar, shader_vk_tex_set(stage), SNX_VKB_TEX + (u32)i,
                                                textures[i].type == 0 ? 1 : textures[i].type, textures[i].array,
                                                textures[i].shadow && shader_dc_color_func(si, i) < 0,
                                                !!(textures[i].flags & 2), &c->sampled_type[i]);

@@ -463,6 +463,9 @@ typedef struct {
     /* constant buffers from this slot up are read-only storage buffers, on a device with fewer uniform buffers a stage
        than the 18 slots and the renderer's own need (18: none) */
     u32 uniform_cbufs;
+    /* each graphics stage's textures in a set of their own, five after its buffers' (shader_vk_tex_set): a draw that
+       binds the same textures keeps that set while its constant buffers change (vk/render.c stage_set_) */
+    unsigned split_sets : 1;
     /* tessellation and geometry programs may write the point size (shaderTessellationAndGeometryPointSize) */
     unsigned stage_point_size : 1;
     /* vertex and tessellation programs may write the layer (shaderOutputLayer, the ShaderLayer capability); without it
@@ -611,6 +614,7 @@ void shader_hmma_choose(int subgroups, int radv_warp32, int shuffle_loops, int s
 #define SNX_SH_SWIZZLE_SHIFT 8
 /* the descriptor set of a stage's bindings */
 int shader_vk_set(int stage);
+int shader_vk_tex_set(int stage);
 /* can_flush: how the module gets the console's FP32 flush to zero (FTZ on FADD, FMUL and FFMA). SH_FTZ_EMULATE: a
    test and a select on each such operand and result; SH_FTZ_MODE: the DenormFlushToZero execution mode, in a module
    whose every such instruction flushes; SH_FTZ_NATIVE: neither, on a device that flushes them by itself (vk/ftz_probe.c) */

@@ -302,7 +302,7 @@ static const char* const vk_tracy_stage[] = {"vert", "tess ctrl", "tess eval", "
 
 VkPipelineLayout g_vk_playout;
 u64 g_vk_dslayout_hash = SNX_FNV_BASIS;
-VkDescriptorSetLayout g_vk_dslayout[2][5];
+VkDescriptorSetLayout g_vk_dslayout[2][10];
 u32 g_vk_stage_sets;
 int g_vk_ftz; /* SH_FTZ_*: how translations flush FP32 subnormals (vk_pipeline_init) */
 static void pf_start_load(void);
@@ -580,6 +580,11 @@ static void cbufs_fit_limits(void) {
         fit);
 }
 
+/* the bindings of a stage's textures, which split sets (ShCaps.split_sets) put in a set of their own (shader_vk_tex_set) */
+int vk_binding_is_texture(u32 i) {
+    return (i >= SNX_VKB_TEX && i < SNX_VKB_TEX + SH_MAXTEX) || i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXFUNCS ||
+           i == SNX_VKB_TEXDEPTH || i == SNX_VKB_TEXMAP;
+}
 /* descriptors of each type in one set: the binding ranges in shader.h */
 static VkDescriptorType binding_type(u32 i) {
     if (i == SNX_VKB_SMAP || i == SNX_VKB_CAPTURE) return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -632,7 +637,7 @@ VkShaderStageFlags vk_set_stages(int s) {
 }
 u32 vk_texture_array_elements(void) { return g_spirv_translate.texture_arrays ? g_spirv_translate.tex_array : 0; }
 int vk_dslayout_arrays(VkDescriptorSetLayout layout) {
-    for (u32 s = 0; s < 5; s++)
+    for (u32 s = 0; s < 10; s++)
         if (layout && layout == g_vk_dslayout[1][s]) return g_spirv_translate.texture_arrays;
     return 0;
 }
@@ -652,15 +657,16 @@ static VkPipelineLayout playout(u32 arrays, int independent) {
     if (made) return made;
     pm_lock(&g_pipeline.playout_lock);
     if (!atomic_load_explicit(&(*l), memory_order_relaxed)) {
-        VkDescriptorSetLayout sets[5];
-        for (u32 s = 0; s < g_vk_stage_sets; s++) sets[s] = g_vk_dslayout[(arrays >> s) & 1][s];
+        VkDescriptorSetLayout sets[10];
+        const u32 nsets = g_spirv_translate.split_sets ? 10 : g_vk_stage_sets;
+        for (u32 s = 0; s < nsets; s++) sets[s] = g_vk_dslayout[(arrays >> (s % 5)) & 1][s];
         /* push constants: viewport/depth pc[0..3], fragment alpha test pc[4..6], sprite T flip pc[7], scaled textures
            pc[8..9], and of those the ones of the draw's size pc[24..25] */
         VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 128};
         /* with pipeline libraries, a link of parts whose layouts have only their own sets (part_layout) */
         VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                          .flags = independent ? VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT : 0,
-                                         .setLayoutCount = g_vk_stage_sets,
+                                         .setLayoutCount = nsets,
                                          .pSetLayouts = sets,
                                          .pushConstantRangeCount = 1,
                                          .pPushConstantRanges = &pc};
@@ -697,6 +703,12 @@ void vk_pipeline_init(void) {
         if (line[0]) LOG("%s\n", line);
     }
     cbufs_fit_limits();
+    /* a stage's textures in a set of their own (shader_vk_tex_set): with plain sets, where all five stage sets are and
+       the device binds ten. Descriptor buffers and heaps keep one set a stage */
+    g_spirv_translate.split_sets = g_vk_stage_sets == 5 && g_vk.props.limits.maxBoundDescriptorSets >= 10 &&
+                                   !g_vk.has_descriptor_buffers && !g_vk.has_descriptor_heap_support;
+    LOG("vulkan: %s\n", g_spirv_translate.split_sets ? "each stage's textures are in a descriptor set of their own"
+                                                       : "one descriptor set a stage, its textures with its buffers");
     for (int s = 0; s < 5; s++) {
         VkDescriptorSetLayoutBinding b[SNX_VKB_END];
         u32 count = 0;
@@ -729,27 +741,47 @@ void vk_pipeline_init(void) {
                 .descriptorCount = (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? g_spirv_translate.tex_array : 1,
                 .stageFlags = vk_set_stages(s)};
         }
+        /* split: the buffers' set s, the same with the arrays or without, and the textures' set s + 5 */
+        VkDescriptorSetLayoutBinding tex[SNX_VKB_END];
+        u32 ntex = 0;
+        if (g_spirv_translate.split_sets) {
+            u32 kept = 0;
+            for (u32 k = 0; k < count; k++)
+                if (vk_binding_is_texture(b[k].binding))
+                    tex[ntex++] = b[k];
+                else
+                    b[kept++] = b[k];
+            count = kept;
+        }
         for (int arrays = 0; arrays < 2; arrays++) {
-            u32 n = count;
-            while (!arrays && n && b[n - 1].binding >= SNX_VKB_TEXARRAY) n--; /* the arrays are the last bindings */
-            VkDescriptorSetLayoutCreateInfo dl = {
-                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                .flags = g_vk.has_descriptor_buffers ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0,
-                .bindingCount = n,
-                .pBindings = b};
-            if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dl, NULL, &g_vk_dslayout[arrays][s])))
-                fatal("vulkan: cannot create shader descriptor layout");
-            /* what the layout is made of, for the key of a shader object's binary (shader_objects.c): a layout
-               another build or setting makes is another program to the driver, with the same SPIR-V */
-            u64 h = snx_fnv_step(snx_fnv_step(snx_fnv_step(g_vk_dslayout_hash, (u64)s), (u64)arrays), dl.flags);
-            for (u32 i = 0; i < n; i++) {
-                h = snx_fnv_step(h, b[i].binding);
-                h = snx_fnv_step(h, (u64)b[i].descriptorType);
-                h = snx_fnv_step(h, b[i].descriptorCount);
-                h = snx_fnv_step(h, b[i].stageFlags);
+            VkDescriptorSetLayoutBinding* list = g_spirv_translate.split_sets ? tex : b;
+            u32 n = g_spirv_translate.split_sets ? ntex : count;
+            while (!arrays && n && list[n - 1].binding >= SNX_VKB_TEXARRAY) n--; /* the arrays are the last bindings */
+            for (int k = 0; k < (g_spirv_translate.split_sets ? 2 : 1); k++) {
+                /* k 1: the buffers' set of a split stage, with no arrays either way */
+                VkDescriptorSetLayoutBinding* l = k ? b : list;
+                u32 ln = k ? count : n;
+                int set = g_spirv_translate.split_sets && !k ? s + 5 : s;
+                VkDescriptorSetLayoutCreateInfo dl = {
+                    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                    .flags = g_vk.has_descriptor_buffers ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0,
+                    .bindingCount = ln,
+                    .pBindings = l};
+                if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dl, NULL, &g_vk_dslayout[arrays][set])))
+                    fatal("vulkan: cannot create shader descriptor layout");
+                /* what the layout is made of, for the key of a shader object's binary (shader_objects.c): a layout
+                   another build or setting makes is another program to the driver, with the same SPIR-V */
+                u64 h =
+                    snx_fnv_step(snx_fnv_step(snx_fnv_step(g_vk_dslayout_hash, (u64)set), (u64)arrays), dl.flags);
+                for (u32 i = 0; i < ln; i++) {
+                    h = snx_fnv_step(h, l[i].binding);
+                    h = snx_fnv_step(h, (u64)l[i].descriptorType);
+                    h = snx_fnv_step(h, l[i].descriptorCount);
+                    h = snx_fnv_step(h, l[i].stageFlags);
+                }
+                g_vk_dslayout_hash = h;
+                vk_descriptors_layout(g_vk_dslayout[arrays][set], l, ln);
             }
-            g_vk_dslayout_hash = h;
-            vk_descriptors_layout(g_vk_dslayout[arrays][s], b, n);
         }
     }
     /* A compute dispatch does not bind the five graphics sets. Give it the full per-stage image budget instead
@@ -1823,10 +1855,10 @@ static VkPipelineLayout part_layout(u32 part, u32 arrays) {
     if (made) return made;
     pm_lock(&g_pipeline.playout_lock);
     if (!atomic_load_explicit(&(*l), memory_order_relaxed)) {
-        VkDescriptorSetLayout sets[5] = {0};
-        u32 n = fs ? 2 : g_vk_stage_sets;
+        VkDescriptorSetLayout sets[10] = {0};
+        u32 n = g_spirv_translate.split_sets ? (fs ? 7 : 10) : fs ? 2 : g_vk_stage_sets;
         for (u32 s = 0; s < n; s++)
-            if ((s == 1) == fs) sets[s] = g_vk_dslayout[(arrays >> s) & 1][s];
+            if ((s % 5 == 1) == fs) sets[s] = g_vk_dslayout[(arrays >> (s % 5)) & 1][s];
         VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 128}; /* vk_playout's: a link's parts take its push constants */
         VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                          .flags = VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT,
@@ -2966,6 +2998,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   g_vk.advanced_blend_caps.all_operations,
                   (u32)g_vk.has_fragment_interlock,
                   arrays,
+                  (u32)g_spirv_translate.split_sets,
                   (u32)g_spirv_translate.stage_point_size,
                   (u32)g_spirv_translate.output_layer,
                   (u32)g_spirv_translate.geometry,
