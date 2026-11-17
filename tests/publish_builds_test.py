@@ -702,6 +702,54 @@ if legs:
         getattr(publish_builds, 'NIGHTLY_ONLY', None) == expected and set(NIGHTLY_ONLY) == every_arch - pull_arches,
         f'NIGHTLY_ONLY {sorted(getattr(publish_builds, "NIGHTLY_ONLY", ()))}, build.yml {sorted(expected)}',
     )
+
+
+def installed_checks(text):
+    """{job id: what is wrong with when it runs} of build.yml's checks of the packages as installed: a version's
+    release waits on them (a run that builds everywhere), so they run on every push, main's and a tag's, the nightly
+    and a run by hand, and never on a pull request"""
+    out = {}
+    jobs = text[text.index('\njobs:\n') :]
+    for block in re.split(r'\n(?=  [\w-]+:\n)', jobs)[1:]:
+        name = re.search(r'^    name: (.+)$', block, re.MULTILINE)
+        if not name or not name[1].endswith(', as installed'):
+            continue
+        cond = re.search(r'^    if: (>-\n(?:      .*\n)+|.*\n)', block + '\n', re.MULTILINE)
+        cond = ' '.join(cond[1].replace('>-', '').split()) if cond else ''
+        wrong = []
+        if "github.event_name != 'pull_request'" not in cond:
+            wrong.append('runs on a pull request')
+        if 'refs/heads' in cond or "'push'" in cond or "'schedule'" in cond:
+            wrong.append(f'leaves out a push, a tag or the nightly: {cond}')
+        out[block.split(':', 1)[0].strip()] = wrong
+    if "tags: ['v*']" not in text[: text.index('\njobs:\n')]:
+        out['on'] = ["a version's tag starts no Build"]
+    return out
+
+
+got = installed_checks(workflow)
+check(
+    "the checks as installed run on every push, a version's tag's among them, and on no pull request",
+    sorted(got) == ['appimage-check', 'appimage-cross-check', 'windows-check'] and not any(got.values()),
+    got,
+)
+for what, copy in {
+    'on pull requests too': workflow.replace(
+        "    needs: appimage\n    if: github.event_name != 'pull_request'\n", '    needs: appimage\n'
+    ),
+    "on main's pushes alone": workflow.replace(
+        "  windows-check:\n    name: Windows zip, as installed\n    needs: windows\n    if: github.event_name != 'pull_request'",
+        '  windows-check:\n    name: Windows zip, as installed\n    needs: windows\n'
+        "    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'",
+    ),
+    'without the tags': workflow.replace("tags: ['v*']", 'tags: []'),
+}.items():
+    check(
+        f'a build.yml whose checks as installed run {what} is named wrong',
+        copy != workflow and any(installed_checks(copy).values()),
+        what,
+    )
+
 for failure in failures:
     print('FAIL:', failure)
 print('publish-builds:', 'FAILED' if failures else 'ok')
