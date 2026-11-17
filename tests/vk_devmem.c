@@ -300,6 +300,13 @@ static void VKAPI_CALL set_priority(VkDevice dev, VkDeviceMemory mem, float prio
     g_drv.priorities++;
     pm_unlock(&g_drv.lk);
 }
+/* the priorities asked so far, told the driver: the thread ahead takes them from its queue (devmem.c prio_set) */
+static void prio_settle(void) {
+    pm_lock(&g_devmem.lk);
+    while (g_devmem.ahead.on && (g_devmem.ahead.nprio || g_devmem.ahead.prio_slot))
+        pc_wait(&g_devmem.ahead.done, &g_devmem.lk, 1000000);
+    pm_unlock(&g_devmem.lk);
+}
 /* ledger.c's timed priority: the driver's, here the model's */
 void vk_ledger_priority(VkDevice dev, VkDeviceMemory mem, float priority) { vkSetDeviceMemoryPriorityEXT(dev, mem, priority); }
 static void VKAPI_CALL memory_properties(VkPhysicalDevice phys, VkPhysicalDeviceMemoryProperties* out) {
@@ -461,6 +468,7 @@ static void check_counts(u32 held) {
    the class of most of the units in a block of the low class, of the highest class in another. An empty block keeps
    the priority it had */
 static void check_priorities(void) {
+    prio_settle();
     u32 holds[MEMS][DM_PRIO_N], count[MEMS];
     memset(holds, 0, sizeof holds);
     memset(count, 0, sizeof count);
@@ -491,6 +499,7 @@ static void check_priorities(void) {
         }
         if (g_vk.has_pageable) {
             CHECK(top == DM_PRIO_N || b->prio == top);
+            prio_settle();
             CHECK(g_drv.mem[(u32)(uintptr_t)b->mem - 1].prio == k_prio[b->prio]);
         }
     }
@@ -592,23 +601,31 @@ static void check_priority(void) {
     CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS && make(0, MIB, 256, ~0u, 0, gpu, &b) == VK_SUCCESS);
     CHECK(a.info.memory == b.info.memory);
     const DrvMem* block = &g_drv.mem[(u32)(uintptr_t)a.info.memory - 1];
+    prio_settle();
     CHECK(block->prio == 0.5f && !g_drv.priorities); /* both are of the middle class at first, as the memory */
     vk_devmem_priority(a.mem, DM_PRIO_LOW);
+    prio_settle();
     CHECK(block->prio == 0.5f && !g_drv.priorities); /* b holds it there */
     vk_devmem_priority(b.mem, DM_PRIO_LOW);
+    prio_settle();
     CHECK(block->prio == 0.0f && g_drv.priorities == 1);
     vk_devmem_priority(b.mem, DM_PRIO_LOW); /* the same class: no call */
     vk_devmem_priority(a.mem, DM_PRIO_HIGH);
+    prio_settle();
     CHECK(block->prio == 1.0f && g_drv.priorities == 2);
     unmake(&a);
+    prio_settle();
     CHECK(block->prio == 0.0f && g_drv.priorities == 3);
     VkDeviceMemory memory = b.info.memory;
     unmake(&b); /* the block stays, empty, at the low class */
+    prio_settle();
     CHECK(g_drv.mem[(u32)(uintptr_t)memory - 1].live && block->prio == 0.0f && g_drv.priorities == 3);
     CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS && a.info.memory == memory);
+    prio_settle();
     CHECK(block->prio == 0.5f && g_drv.priorities == 4); /* its new allocation's class */
     CHECK(make(0, MIB, 256, ~0u, 0, mine, &own) == VK_SUCCESS && alone_of(&own));
     vk_devmem_priority(own.mem, DM_PRIO_HIGH);
+    prio_settle();
     CHECK(g_drv.mem[(u32)(uintptr_t)own.info.memory - 1].prio == 1.0f && g_drv.priorities == 5);
     check_priorities();
     unmake(&own);
@@ -629,13 +646,17 @@ static void check_priority(void) {
     u32 calls_low = g_drv.priorities;
     CHECK(make(0, MIB, 256, ~0u, 0, low, &low_a) == VK_SUCCESS && low_a.info.memory != a.info.memory);
     CHECK(make(0, MIB, 256, ~0u, 0, low, &low_b) == VK_SUCCESS && low_b.info.memory == low_a.info.memory);
+    prio_settle();
     CHECK(g_drv.mem[(u32)(uintptr_t)low_a.info.memory - 1].prio == 0.0f && g_drv.priorities == calls_low);
     CHECK(make(0, MIB, 256, ~0u, 0, low_mine, &low_own) == VK_SUCCESS && alone_of(&low_own));
+    prio_settle();
     CHECK(g_drv.mem[(u32)(uintptr_t)low_own.info.memory - 1].prio == 0.0f && g_drv.priorities == calls_low);
     /* a texture that took drawn pixels: its block rises, and falls again when it loads from memory */
     vk_devmem_priority(low_b.mem, DM_PRIO_MID);
+    prio_settle();
     CHECK(g_drv.mem[(u32)(uintptr_t)low_a.info.memory - 1].prio == 0.5f && g_drv.priorities == calls_low + 1);
     vk_devmem_priority(low_b.mem, DM_PRIO_LOW);
+    prio_settle();
     CHECK(g_drv.mem[(u32)(uintptr_t)low_a.info.memory - 1].prio == 0.0f && g_drv.priorities == calls_low + 2);
     check_priorities();
     VkDeviceMemory low_mem = low_a.info.memory;
@@ -655,6 +676,7 @@ static void check_priority(void) {
     u32 calls = g_drv.priorities;
     CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS);
     vk_devmem_priority(a.mem, DM_PRIO_HIGH);
+    prio_settle();
     CHECK(g_drv.priorities == calls && g_devmem.rec[a.mem - 1].prio == DM_PRIO_HIGH);
     check_priorities();
     unmake(&a);
@@ -743,6 +765,7 @@ static void check_keep(void) {
     DevMemBudget bud[VK_MAX_MEMORY_HEAPS];
     vk_devmem_budgets(bud);
     CHECK(bud[0].allocated_bytes == 32 * MIB && bud[0].block_bytes == 32 * MIB);
+    prio_settle();
     CHECK(g_drv.mem[(u32)(uintptr_t)memory - 1].prio == 0.0f);
     u32 calls = g_drv.allocations;
     CHECK(make(1, 30 * MIB, 256, ~0u, 1, gpu, &a) == VK_SUCCESS && a.info.memory == memory);
@@ -971,6 +994,35 @@ static void check_ahead_class(void) {
     unmake(&mid);
     ahead_wait(NULL);
     g_vk.has_pageable = 0;
+    check_counts(0);
+}
+/* With the thread ahead, the driver is told a block's priority on that thread (devmem.c prio_set), not on the one that
+   asked: what each block should have is what the driver has once the queue is done, and a change undone before the
+   thread came to it makes no call */
+static void check_priority_ahead(void) {
+    Held a;
+    const DevMemWant gpu = {.at = DM_DEVICE};
+    g_threads = 1;
+    device(0, 1024, 64, 0);
+    CHECK(g_devmem.ahead.on);
+    g_vk.has_pageable = 1;
+    CHECK(make(0, MIB, 256, ~0u, 0, gpu, &a) == VK_SUCCESS);
+    const DrvMem* block = &g_drv.mem[(u32)(uintptr_t)a.info.memory - 1];
+    vk_devmem_priority(a.mem, DM_PRIO_HIGH);
+    prio_settle();
+    CHECK(block->prio == 1.0f);
+    check_priorities();
+    pm_lock(&g_devmem.lk); /* the thread waits for the lock: both changes are in before it comes */
+    const u32 calls = g_drv.priorities;
+    Block* k = &g_devmem.block[g_devmem.rec[a.mem - 1].block - 1];
+    prio_set(k, DM_PRIO_LOW);
+    prio_set(k, DM_PRIO_HIGH);
+    pm_unlock(&g_devmem.lk);
+    prio_settle();
+    CHECK(block->prio == 1.0f && g_drv.priorities == calls);
+    unmake(&a);
+    g_vk.has_pageable = 0;
+    ahead_wait(NULL); /* the thread gives back what was let go */
     check_counts(0);
 }
 static void check_threads(void) {
@@ -1353,6 +1405,7 @@ int main(void) {
     check_cap();
     check_atoms(64);
     check_atoms(4096);
+    check_priority_ahead();
     check_threads();
     puts("vk_devmem: ok");
     return 0;
