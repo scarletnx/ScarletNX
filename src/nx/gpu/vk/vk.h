@@ -1992,6 +1992,8 @@ static inline void vk_gmem_words(u64 gva, u32* w, u32 n) {
 /* texture.c */
 void vk_render_forget_state(void);     /* the next draw sets all its state again (another pipeline or state was set) */
 Surf* vk_tex_from_tic(const u32* tic); /* tic: the header's words as host numbers */
+/* whether t is one of render target rt's copies (its crops, rt_guest's), which a lookup refreshes from rt's pixels */
+int vk_tex_is_copy_of(const Surf* t, const Surf* rt);
 /* Writable resolution bypasses read-only render-target crop snapshots. */
 Surf* vk_tex_from_tic_storage(const u32* tic);
 /* a texture vk_tex_from_tic returned for an unchanged header, checked again as it would be: memory written since, what

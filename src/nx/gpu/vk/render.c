@@ -1362,6 +1362,8 @@ enum {
     MEMO_GPU,
     MEMO_UNDEFINED,
     MEMO_UNKEPT,
+    MEMO_DRAWN,
+    MEMO_OVER_DIFFERS,
     MEMO_CAUSES
 };
 static u64 g_memo_miss[MEMO_CAUSES];
@@ -1371,10 +1373,14 @@ static void memo_miss_log(u64 presents) {
     for (int i = 0; i < MEMO_CAUSES; i++) d[i] = g_memo_miss[i] - was[i], was[i] = g_memo_miss[i];
     const double p = (double)presents;
     LOG("vulkan: texture memo misses a present: %.1f no way, %.1f other state, %.1f surface epoch, %.1f headers, %.1f "
-        "image, %.1f pending, %.1f GPU write, %.1f undefined target; %.1f not kept (over a target)\n",
+        "image, %.1f pending, %.1f GPU write, %.1f undefined target, %.1f target drawn or memory written under a "
+        "texture over it; %.1f not kept (over a target)\n",
         (double)d[MEMO_WAY] / p, (double)d[MEMO_STATE] / p, (double)d[MEMO_SURFACE] / p, (double)d[MEMO_HEADERS] / p,
         (double)d[MEMO_IMAGE] / p, (double)d[MEMO_PENDING] / p, (double)d[MEMO_GPU] / p, (double)d[MEMO_UNDEFINED] / p,
-        (double)d[MEMO_UNKEPT] / p);
+        (double)d[MEMO_DRAWN] / p, (double)d[MEMO_UNKEPT] / p);
+    if (d[MEMO_OVER_DIFFERS])
+        LOG("vulkan: draw_state_check=1: %llu textures kept over a target differed from those resolved again\n",
+            (unsigned long long)d[MEMO_OVER_DIFFERS]);
 }
 void vk_render_stats_log(void) {
     const VkDrawCounts* n = &g_stats.n;
@@ -1470,6 +1476,14 @@ typedef struct {
     u32 tic[8], tsc[8];
     Surf* t;
     int rt;   /* t is the render target itself, read whole */
+    /* t lies over the render target `over` without being it (a crop of it, or a texture loaded from memory with its
+       drawn targets taken in), kept while that target holds the pixels it had (its write generation over_wgen), nothing
+       GPU-side wrote t's memory since over_gw and the epoch is the same. copy: t is a copy of the target's pixels
+       (rt_crop), returned as it is; else checked again as a kept texture is */
+    Surf* over;
+    u32 over_wgen, over_epoch;
+    u64 over_gw;
+    int copy;
     u32 used; /* g_tex_memo.use when last found or kept: the way used longest ago makes room */
     /* vk_gfx_image_adds() + 1 when no storage image but its texture's own was pending over its texture: 0 unknown */
     u64 img_adds;
@@ -1607,6 +1621,42 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
                : m->gw != gw && (gpu_mem_dirty_since(m->gw, tic_at, 32) || gpu_mem_dirty_since(m->gw, tsc_at, 32))
                    ? MEMO_GPU
                    : -1;
+    /* a texture kept over a target: the target holds the same pixels, at the same address, and nothing wrote the
+       texture's memory since (the choice tex_from_tic made, a copy of the target or its memory, stands) */
+    if (miss < 0 && m->over &&
+        (vk_rt_find(m->t_gva) != m->over || m->over->wgen != m->over_wgen ||
+         m->over->layout == VK_IMAGE_LAYOUT_UNDEFINED || m->over_epoch != epoch ||
+         gpu_mem_dirty_since(m->over_gw, m->t_gva, vk_surf_guest_size(m->t))))
+        miss = MEMO_DRAWN;
+    if (miss < 0 && m->over) {
+        m->used = ++g_tex_memo.use;
+        memcpy(x->tic, m->tic, sizeof x->tic);
+        memcpy(x->tsc, m->tsc, sizeof x->tsc);
+        x->memo = set_at * TEX_MEMO_WAYS + (u32)(m - set) + 1;
+        if (m->copy) vk_rt_note_read(m->over); /* as tex_from_tic notes a read of the target */
+        x->t = m->copy ? m->t : vk_tex_recheck(m->t);
+        if (g_settings.draw_state_check) { /* resolved again in full, and that one taken */
+            u32 tic[8];
+            const u32 crop_gen = m->copy ? m->t->crop_gen : 0;
+            vk_gmem_words(tic_at, tic, 8);
+            Surf* full = vk_tex_from_tic(tic);
+            /* a kept copy the full lookup copied again (rt_copy: the target's pixels changed) was stale */
+            if (full != x->t || memcmp(tic, m->tic, sizeof tic) || (m->copy && m->t->crop_gen != crop_gen)) {
+                g_memo_miss[MEMO_OVER_DIFFERS]++;
+                WARN_LIMIT(16,
+                           "vulkan: draw_state_check=1: a texture kept over the target at %llx is not the one "
+                           "resolved again\n",
+                           (unsigned long long)m->t_gva);
+            }
+            x->t = full;
+        }
+        if (!x->t) {
+            m->t = NULL;
+            x->memo = 0;
+        }
+        g_stats.n.tex[VK_TEX_KEPT]++;
+        return;
+    }
     if (miss < 0) {
         m->gw = gw;
         m->used = ++g_tex_memo.use;
@@ -1640,15 +1690,17 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     x->t = vk_tex_from_tic(x->tic);
     if (m) m->t = NULL; /* what it held is gone: kept again below if it can be */
     Surf* at = x->t ? vk_rt_find(x->t->gva) : NULL;
-    if (x->t && !(x->t->is_rt ? x->t == at : !at)) g_memo_miss[MEMO_UNKEPT]++; /* over a target, not it */
-    if (x->t && (x->t->is_rt ? x->t == at : !at)) {
+    /* one over a defined target, not the target itself (a copy of it is a target too), kept too (TexMemo.over) */
+    Surf* over = x->t && at && x->t != at && at->layout != VK_IMAGE_LAYOUT_UNDEFINED ? at : NULL;
+    if (x->t && !(x->t->is_rt ? x->t == at : !at) && !over) g_memo_miss[MEMO_UNKEPT]++; /* over a target, not it */
+    if (x->t && ((x->t->is_rt ? x->t == at : !at) || over)) {
         if (!m) { /* an empty way, else the one used longest ago */
             m = &set[0];
             for (u32 w = 1; w < TEX_MEMO_WAYS && m->t; w++)
                 if (!set[w].t || (i32)(set[w].used - m->used) < 0) m = &set[w];
         }
         m->used = ++g_tex_memo.use;
-        m->rt = x->t->is_rt;
+        m->rt = x->t->is_rt && !over; /* a copy of a target is kept as one over it */
         m->ds = ds;
         m->handle = handle;
         m->tic_base = tic_base;
@@ -1664,6 +1716,11 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         m->t = x->t;
         m->img_adds = 0;
         m->view.frame = m->smp.frame = 0;
+        m->over = over;
+        m->over_wgen = over ? over->wgen : 0;
+        m->over_epoch = epoch;
+        m->over_gw = gw; /* read before the headers and the texture */
+        m->copy = over && vk_tex_is_copy_of(x->t, over);
         x->memo = set_at * TEX_MEMO_WAYS + (u32)(m - set) + 1;
     }
 }

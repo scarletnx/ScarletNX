@@ -2493,6 +2493,11 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
    one game's full-screen pass read its 800x448 target as 792x448 through each of its draws to it, and the copy before
    each draw (210 a frame) took about 10 ms of the GPU. Its GPU timer then held its render size down there */
 static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) { return rt_copy(rt, w, h, as, 0, 1, 1); }
+int vk_tex_is_copy_of(const Surf* t, const Surf* rt) {
+    for (const Surf* x = rt->crop; x; x = x->next)
+        if (x == t) return 1;
+    return 0;
+}
 /* Whether a texture of format f reads the B, G, R, A target format t (format.c's Cbgra) as its R, G, B, A twin: the
    same bytes, red and blue in each other's places. The copy in f's format (rt_copy's CmdCopyImage, texels as they are)
    holds byte 0 as red, and the target's own view gives byte 0 as blue, to which tex_map (render.c) sends the
