@@ -520,6 +520,13 @@ static void ahead_run(void* arg) {
     for (;;) {
         while (!g_devmem.ahead.want && !g_devmem.ahead.ngone && !g_devmem.ahead.nprio)
             pc_wait(&g_devmem.ahead.cv, &g_devmem.lk, -1);
+        if (g_devmem.ahead.ngone) { /* memory given back first: a priority can wait, and a request may want the room */
+            VkDeviceMemory gone = g_devmem.ahead.gone[--g_devmem.ahead.ngone];
+            pm_unlock(&g_devmem.lk);
+            vk_ledger_free(g_vk.dev, gone, NULL);
+            pm_lock(&g_devmem.lk);
+            continue;
+        }
         if (g_devmem.ahead.nprio) { /* a block's priority, which the driver is told without the lock */
             const u32 i = g_devmem.ahead.prio_q[--g_devmem.ahead.nprio];
             Block* k = &g_devmem.block[i];
@@ -539,13 +546,6 @@ static void ahead_run(void* arg) {
             if (g_devmem.block[i].mem == mem) g_devmem.block[i].prio_drv = (u8)prio;
             g_devmem.priorities++;
             pc_broadcast(&g_devmem.ahead.done);
-            continue;
-        }
-        if (g_devmem.ahead.ngone) {
-            VkDeviceMemory gone = g_devmem.ahead.gone[--g_devmem.ahead.ngone];
-            pm_unlock(&g_devmem.lk);
-            vk_ledger_free(g_vk.dev, gone, NULL);
-            pm_lock(&g_devmem.lk);
             continue;
         }
         u32 type = g_devmem.ahead.type, image = g_devmem.ahead.image, low = g_devmem.ahead.low;
