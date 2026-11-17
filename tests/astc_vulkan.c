@@ -139,6 +139,11 @@ int gmem_read(u64 gva, void* dst, u64 size) {
 void vk_lock(void) {}
 void vk_unlock(void) {}
 int vk_lock_held(void) { return 1; } /* cmd.c's wait for the next frame slot then waits under the lock, as before */
+/* the lock is no lock here, so a wait has nothing to let go of (device.c) */
+int vk_lock_pause(void) { return 0; }
+void vk_lock_resume(int paused) { (void)paused; }
+/* no draw's setup runs here, so an upload never lets the lock go to restart one (render.c) */
+int vk_render_setup_restarts(void) { return 0; }
 /* record.c resolves stand-ins for pipelines still being made (pipeline.c, not here): the test binds real ones */
 VkPipeline vk_pipeline_resolve(VkPipeline h) { return h; }
 VkPipeline vk_pipeline_now(VkPipeline h, int* pending) {
