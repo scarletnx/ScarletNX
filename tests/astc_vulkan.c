@@ -1197,7 +1197,7 @@ static void live_surf(Surf* t, const CacheCase* c, u64 gva) {
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
     if (!vk_image_create(&ii, &t->img, &t->mem)) fatal("cannot create a %ux%u BC7 image\n", c->w, c->h);
-    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
 }
 /* the level into t, with the key texture.c makes of its blocks */
@@ -1208,20 +1208,20 @@ static void live_upload(Surf* t, const CacheCase* c, const u8* blocks) {
     vk_bc7_content(content, layout, sizeof layout);
     vk_bc7_content(content, blocks, (u64)nx * ny * 16);
     Level lv = {blocks, nx, ny, NULL, 2, 0};
-    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     if (!vk_astc_upload(vk_cmd(), t, 0, 0, c->w, c->h, 1, 0, 0, level_rows, &lv, content))
         fatal("live upload failed\n");
 }
 /* t's blocks, read back (the caller frees them) */
 static u8* live_read(Surf* t, u64 size) {
-    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+    vk_surf_use(vk_cmd(), t, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBuffer readback;
     u8* actual = vk_readback_buffer(size, &readback);
     if (!actual) fatal("no readback buffer of %llu bytes\n", (unsigned long long)size);
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {t->w, t->h, 1}};
-    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), readback, 1, &copy);
     vk_finish();
     vk_readback_ready();
     u8* got = malloc((size_t)size);
