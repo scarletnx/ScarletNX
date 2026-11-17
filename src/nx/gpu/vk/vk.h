@@ -1373,6 +1373,8 @@ void vk_astc_auto_say(void);
    forced trim makes room for later, and images as big fail at once for the rest of the present: render targets and
    images the GPU writes (owner with VK_OWN_WRITTEN) counted apart from the others. bytes: the device memory it takes */
 #define VK_OWN_WRITTEN 0x100u
+/* with the owner: the image's owner says it can move it when its block is emptied (vk_devmem_owner, DevMemWant.moves) */
+#define VK_OWN_MOVES 0x200u
 int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes);
 /* the device memory a surface of the caches takes now: an image whose memory follows its mapping grows and shrinks */
 void vk_surf_bytes(Surf* s, u64 bytes);

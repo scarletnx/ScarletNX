@@ -524,12 +524,13 @@ static void check_random(int uma, u64 gran, u64 atom, u32 rounds) {
     while (n) unmake(&held[--n]);
     check_counts(0);
     check_priorities();
-    /* what stays is one empty block of a kind at most: a memory type's buffers, and its images where they are apart.
-       The two classes share it */
-    u32 kinds[VK_MAX_MEMORY_TYPES][2] = {{0}};
+    /* what stays is one empty block at most for a memory type's buffers, and for its images where they are apart: the
+       two classes, and what moves and what does not, share it */
+    u32 kinds[VK_MAX_MEMORY_TYPES][DM_KINDS] = {{0}};
     for (u32 k = 0; k < g_devmem.nblock; k++) {
         const Block* b = &g_devmem.block[k];
-        if (b->mem) CHECK(!b->own && !b->allocs && !b->free.used && ++kinds[b->type][b->image] == 1);
+        if (b->mem)
+            CHECK(!b->own && !b->allocs && !b->free.used && ++kinds[b->type][b->image & DM_KIND_IMAGE] == 1);
     }
 }
 
@@ -647,6 +648,61 @@ static void check_priority(void) {
     CHECK(g_drv.priorities == calls && g_devmem.rec[a.mem - 1].prio == DM_PRIO_HIGH);
     check_priorities();
     unmake(&a);
+    check_counts(0);
+}
+
+/* the block of an allocation (its index), from the allocator's table */
+static u32 block_of(const Held* h) { return g_devmem.rec[h->mem - 1].block - 1; }
+/* What moves and what does not, in blocks of their own kinds where blocks are emptied: an allocation that no owner moves
+   kept every block from being emptied (drain_can), as in one game's race under a budget of 2 GB, where sparse blocks
+   and buffer pages went into every block of the GPU's heap. A block of what moves is emptied while those exist, and a
+   move goes to the blocks of what moves. A UMA device empties no block, and keeps one kind */
+static void check_kinds(void) {
+    enum { N = 24, F = 8 };
+    Held m[N], f[F];
+    const DevMemWant moves = {.at = DM_DEVICE, .moves = 1}, fixed = {.at = DM_DEVICE};
+    device(0, 1024, 64, 0);
+    CHECK(g_devmem.drain.on);
+    for (u32 i = 0, j = 0; i < N; i++) {
+        CHECK(make(0, MIB, 256, ~0u, 0, moves, &m[i]) == VK_SUCCESS && !alone_of(&m[i]));
+        vk_devmem_owner(m[i].mem, (void*)(uintptr_t)(i + 1));
+        if (i % 3 == 0 && j < F) CHECK(make(0, MIB, 256, ~0u, 0, fixed, &f[j++]) == VK_SUCCESS && !alone_of(&f[j - 1]));
+    }
+    for (u32 i = 0; i < N; i++)
+        for (u32 j = 0; j < F; j++) CHECK(block_of(&m[i]) != block_of(&f[j]));
+    for (u32 j = 0; j < F; j++) CHECK(g_devmem.block[block_of(&f[j])].image & DM_KIND_FIXED);
+    /* the first block of what moves keeps one allocation and the last another, with room for the first's block: the
+       first is emptied, past the budget, though the blocks of what does not move hold allocations still */
+    const u32 first = block_of(&m[0]), last = block_of(&m[N - 1]);
+    CHECK(first != last);
+    for (u32 i = 1; i < N - 1; i++) unmake(&m[i]);
+    DevMem mems[4];
+    void* owners[4];
+    u32 n = 0;
+    for (u32 p = 0; p < 31 && !n; p++) {
+        vk_devmem_frame();
+        n = vk_devmem_moving(mems, owners, 4, 1);
+    }
+    CHECK(n == 1 && mems[0] == m[0].mem && owners[0] == (void*)(uintptr_t)1);
+    CHECK(g_devmem.drain.slot == first + 1);
+    /* the move: into the last block, the one of what moves that holds something and is not being emptied */
+    Held to;
+    CHECK(make(0, MIB, 256, ~0u, 0, (DevMemWant){.at = DM_DEVICE, .existing = 1}, &to) == VK_SUCCESS);
+    CHECK(block_of(&to) == last);
+    vk_devmem_owner(m[0].mem, NULL);
+    unmake(&m[0]);
+    vk_devmem_moved(MIB);
+    unmake(&to);
+    unmake(&m[N - 1]);
+    for (u32 j = 0; j < F; j++) unmake(&f[j]);
+    check_counts(0);
+    /* a UMA device: one kind, and what moves shares blocks with what does not */
+    device(1, 1, 64, 0);
+    CHECK(!g_devmem.drain.on);
+    CHECK(make(0, MIB, 256, ~0u, 0, moves, &m[0]) == VK_SUCCESS && make(0, MIB, 256, ~0u, 0, fixed, &f[0]) == VK_SUCCESS);
+    CHECK(block_of(&m[0]) == block_of(&f[0]));
+    unmake(&m[0]);
+    unmake(&f[0]);
     check_counts(0);
 }
 
@@ -909,7 +965,8 @@ static int defrag_round(u64 budget) {
     /* while a block is emptied, no request takes its runs */
     if (g_devmem.drain.slot && !g_devmem.drain.repair) {
         Held probe; /* of the class of the block being emptied, which its blocks are */
-        DevMemWant gpu = {.at = DM_DEVICE, .image = 1, .low = g_devmem.block[g_devmem.drain.slot - 1].low};
+        DevMemWant gpu = {.at = DM_DEVICE, .image = 1, .low = g_devmem.block[g_devmem.drain.slot - 1].low,
+                          .moves = 1};
         CHECK(make(1, 64 * KIB, 4096, ~0u, 0, gpu, &probe) == VK_SUCCESS);
         CHECK(g_devmem.rec[probe.mem - 1].block != g_devmem.drain.slot || !g_devmem.drain.slot);
         unmake(&probe);
@@ -921,7 +978,7 @@ static void check_defrag(int pageable) {
     device(0, 1024, 64, budget);
     g_vk.has_pageable = pageable;
     CHECK(g_devmem.drain.on);
-    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .low = 1}, mid = {.at = DM_DEVICE, .image = 1};
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .low = 1, .moves = 1}, mid = {.at = DM_DEVICE, .image = 1, .moves = 1};
     for (u32 i = 0; i < DEFRAG_N; i++) {
         CHECK(make(1, MIB, 4096, ~0u, 0, i < 192 ? tex : mid, &g_dh[i]) == VK_SUCCESS);
         vk_devmem_priority(g_dh[i].mem, i < 192 ? DM_PRIO_LOW : DM_PRIO_MID);
@@ -1033,7 +1090,7 @@ static void check_defrag(int pageable) {
 static void check_drain_alone(void) {
     const u64 budget = 4 * GIB;
     device(0, 1024, 64, budget);
-    DevMemWant tex = {.at = DM_DEVICE, .image = 1}, gpu = {.at = DM_DEVICE}, mine = {.at = DM_DEVICE, .own = 1};
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .moves = 1}, gpu = {.at = DM_DEVICE}, mine = {.at = DM_DEVICE, .own = 1};
     for (u32 i = 0; i < DEFRAG_N; i++) {
         CHECK(make(1, MIB, 4096, ~0u, 0, tex, &g_dh[i]) == VK_SUCCESS);
         vk_devmem_owner(g_dh[i].mem, &g_dh[i]);
@@ -1069,7 +1126,7 @@ static void check_drain_alone(void) {
    4.5 MiB do not fit in the room. With 1 MiB in it, it is emptied, though the room is less than 1.5 times its size */
 static void check_drain_room(void) {
     const u64 room = 3 * MIB, high = 3 * MIB, low = MIB;
-    DevMemWant tex = {.at = DM_DEVICE, .image = 1};
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .moves = 1};
     device(0, 1024, 64, 4 * GIB);
     g_vk.has_pageable = 0;
     u32 n = 0, first = 0, second = 0;
@@ -1116,7 +1173,7 @@ static void check_drain_room(void) {
 /* A block of the low class whose first allocations rose to the high class, as check_defrag's repair: its index plus
    one, and the count raised */
 static u32 repair_setup(u32* raised) {
-    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .low = 1}, mid = {.at = DM_DEVICE, .image = 1};
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .low = 1, .moves = 1}, mid = {.at = DM_DEVICE, .image = 1, .moves = 1};
     device(0, 1024, 64, 4 * GIB);
     g_vk.has_pageable = 1;
     for (u32 i = 0; i < 80; i++) {
@@ -1150,7 +1207,7 @@ static void check_repair_end(void) {
     u32 raised;
     u32 slot = repair_setup(&raised);
     Held none;
-    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .low = 1};
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .low = 1, .moves = 1};
     CHECK(defrag_round(budget) == (int)raised && g_devmem.drain.slot == slot && g_devmem.drain.repair);
     CHECK(make(1, MIB, 4096, 0, 0, tex, &none) != VK_SUCCESS); /* no memory type: no memory */
     CHECK(g_devmem.drain.slot == slot && g_devmem.drain.repair && !g_devmem.drain.gave_up);
@@ -1220,6 +1277,7 @@ int main(void) {
     check_repair_end();
     check_drain_alone();
     check_drain_room();
+    check_kinds();
     check_cap();
     check_atoms(64);
     check_atoms(4096);

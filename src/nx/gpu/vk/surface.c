@@ -466,7 +466,7 @@ static Surf* surf_create_(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 
     }
     /* a scaled target can pass the allocation cap (4x of 4K is 506 MiB in RGBA8). Room is made for it under the
        budget: the caller holds only surfaces it used this present, which stay */
-    if (!vk_cache_image_create(&ii, &s->img, &s->mem, VK_OWN_TARGET, &s->bytes)) {
+    if (!vk_cache_image_create(&ii, &s->img, &s->mem, VK_OWN_TARGET | (is_rt ? VK_OWN_MOVES : 0), &s->bytes)) {
         free(s);
         return NULL;
     }
@@ -3124,8 +3124,8 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem
        of 2 to 8 MB, refused for them, skipped 500,000 draws in a minute and a half where 220 found no memory. So are
        the images its compute programs store to (VK_OWN_WRITTEN), whose loss is a dispatch's results: refused about
        20 times for each that found no memory, and each refusal skipped the dispatch */
-    const int target = owner == VK_OWN_TARGET || (owner & VK_OWN_WRITTEN);
-    owner &= ~VK_OWN_WRITTEN;
+    const int target = (owner & ~(VK_OWN_WRITTEN | VK_OWN_MOVES)) == VK_OWN_TARGET || (owner & VK_OWN_WRITTEN);
+    owner &= ~VK_OWN_WRITTEN; /* VK_OWN_MOVES goes on to vk_image_create_r */
     u32* oom = target ? &g_oom_target : &g_oom;
     u64* oom_bytes = target ? &g_oom_target_bytes : &g_oom_bytes;
     if (*oom == g_vk_present + 1 && *bytes >= *oom_bytes) return 0;

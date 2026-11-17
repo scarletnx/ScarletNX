@@ -34,7 +34,10 @@
    is one and a half times that block or more. No request takes its runs, and the owners of its allocations move them to
    the runs of other blocks on the GPU. Once empty it follows the rule of any empty block: kept as its kind's one empty
    block, a whole block for a request that no run held, or else given back to the driver. Only allocations whose owner
-   said it can move them (vk_devmem_owner) are moved, and a block with any other in it is not emptied. A GPU that shares
+   said it can move them (vk_devmem_owner) are moved, and a block with any other in it is not emptied. So in that heap
+   the requests that will move (DevMemWant.moves) and the others are blocks of different kinds: mixed, the sparse
+   blocks of textures and the pages of buffers, of 64 KiB, went into every block, and in one game's race under a budget
+   of 2 GB no block of the heap could be emptied while 300 MB to 1.1 GB was free inside them. A GPU that shares
    the system's memory (integrated or mobile, UMA) keeps the old way: no block is emptied there.
 
    One lock guards it all: any thread may ask. The driver's allocate and free go through the ledger, which times
@@ -70,7 +73,10 @@ typedef struct {
     u8 image;                   /* vk_devmem_alloc: the memory is for an image */
     u8 low; /* of the class DM_PRIO_LOW from the start, in the blocks of that class where the driver moves memory */
     u8 existing;                /* a free run of a block that is there, or none: no new block and no memory of its
-                                   own (a move out of a block that is emptied) */
+                                   own (a move out of a block that is emptied, which moves) */
+    u8 moves;                   /* its owner will say it can move it (vk_devmem_owner): it shares blocks only with
+                                   others that move, where blocks are emptied. One that never gets an owner keeps its
+                                   block from being emptied, and one that gets an owner without this stays where it is */
 } DevMemWant;
 typedef struct {
     VkDeviceMemory memory;
