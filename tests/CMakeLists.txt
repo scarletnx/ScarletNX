@@ -4087,6 +4087,12 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vulkan-release gnu23)
     target_link_libraries(snx-test-vulkan-release PRIVATE scarletnx-common) # release.c's snx_os_error
     add_test(NAME vulkan_release COMMAND snx-test-vulkan-release)
+    # the GPU mirror's bookkeeping on the CPU (gpu/vk/mirror.c), with no device
+    add_executable(snx-test-mirror-landing mirror_landing.c tracy_stubs.c
+                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c")
+    snx_test_target(snx-test-mirror-landing 23)
+    target_link_libraries(snx-test-mirror-landing PRIVATE snx_nx_flags scarletnx-common)
+    add_test(NAME mirror_landing COMMAND snx-test-mirror-landing)
     add_executable(snx-test-vulkan-backing vulkan_backing.c)
     snx_test_target(snx-test-vulkan-backing gnu23)
     add_test(NAME vulkan_backing COMMAND snx-test-vulkan-backing)
