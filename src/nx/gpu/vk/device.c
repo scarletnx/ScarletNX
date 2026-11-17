@@ -846,6 +846,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     int has_atomic_float = 0;
     int has_fault = 0; /* VK_EXT_device_fault: what the GPU reports of a fault, at a lost device */
     int has_pageable = 0;          /* VK_EXT_pageable_device_local_memory, and VK_EXT_memory_priority that it needs */
+    int has_image_aliasing = 0;    /* VK_NV_dedicated_allocation_image_aliasing */
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     const char* store_none_ext = NULL; /* a 1.2 device's store op NONE (vk12_store_none) */
     if (!g_opt_headless && !snx_vk_choice_enable(c, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
@@ -926,6 +927,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
            driver made its memory, and only pageable memory takes a new priority after that */
         has_pageable = snx_vk_choice_has(c, VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME) &&
                        snx_vk_choice_has(c, VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
+        /* an image takes memory made for another alone, which devmem.c keeps when that image goes (own_take) */
+        has_image_aliasing = snx_vk_choice_has(c, VK_NV_DEDICATED_ALLOCATION_IMAGE_ALIASING_EXTENSION_NAME);
         /* the GPU's clock next to the client's, for the profiler's GPU track (gpuprof.c's calibration) */
         has_calibrated = snx_vk_choice_has(c, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
         /* a portability driver's subset must be enabled when it has one (MoltenVK) */
@@ -1088,6 +1091,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT};
     VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT qpageable = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT};
+    VkPhysicalDeviceDedicatedAllocationImageAliasingFeaturesNV qaliasing = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEDICATED_ALLOCATION_IMAGE_ALIASING_FEATURES_NV};
     VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     VkPhysicalDeviceDescriptorHeapFeaturesEXT qheap = {
@@ -1194,7 +1199,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            has_atomic_float ? &qatomic_float : NULL,
                            has_fault ? &qfault : NULL,
                            has_pageable ? &qpriority : NULL,
-                           has_pageable ? &qpageable : NULL};
+                           has_pageable ? &qpageable : NULL,
+                           has_image_aliasing ? &qaliasing : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
     /* Each order between submissions, queues and the CPU is a timeline value: the graphics and compute timelines
@@ -1280,6 +1286,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_fault = has_fault && qfault.deviceFault;
     g_vk.has_pageable = has_pageable && qpriority.memoryPriority && qpageable.pageableDeviceLocalMemory;
+    g_vk.has_image_aliasing = has_image_aliasing && qaliasing.dedicatedAllocationImageAliasing;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
     g_vk.has_list_restart = has_list_restart && qlist_restart.primitiveTopologyListRestart;
     g_vk.has_patch_list_restart = g_vk.has_list_restart && qlist_restart.primitiveTopologyPatchListRestart;
@@ -1808,6 +1815,16 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         LOG("vulkan: the driver may move the GPU's memory to system memory where it is short, the lowest priority "
             "first: render targets and rings high, textures with drawn pixels medium, textures loaded from memory low "
             "(VK_EXT_pageable_device_local_memory)\n");
+    }
+    VkPhysicalDeviceDedicatedAllocationImageAliasingFeaturesNV faliasing = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEDICATED_ALLOCATION_IMAGE_ALIASING_FEATURES_NV,
+        .pNext = chain,
+        .dedicatedAllocationImageAliasing = VK_TRUE};
+    if (g_vk.has_image_aliasing) {
+        chain = &faliasing;
+        snx_vk_choice_enable(c, VK_NV_DEDICATED_ALLOCATION_IMAGE_ALIASING_EXTENSION_NAME);
+        LOG("vulkan: memory made for an image alone is kept when the image goes, for the next image of its create info "
+            "and no greater extent (VK_NV_dedicated_allocation_image_aliasing)\n");
     }
     PortabilityFeatures fport = qport;
     fport.pNext = chain;
