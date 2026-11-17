@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""scripts/trim-caches.py's choice of caches, on keys as the workflows write them"""
+"""scripts/trim-caches.py's choice of caches, on keys as the workflows write them, and when cache-cleanup.yml runs it"""
 
 import importlib.util
 from pathlib import Path
@@ -119,6 +119,24 @@ check('nothing deleted twice', len(doomed), len(got))
 # a listing of nothing but main's newest entries leaves them all
 newest = [caches[name] for name in ('new ccache', 'aarch64 ccache', 'cpm read now', 'llvm', 'msys2 new files')]
 check('newest entries kept', trim.plan(newest, set(), {'main'}), [])
+
+# when it runs (.github/workflows/cache-cleanup.yml): a pull request closed, and a Build of main ended, not every Build
+workflow = (Path(__file__).resolve().parent.parent / '.github' / 'workflows' / 'cache-cleanup.yml').read_text()
+triggers = workflow.split('\non:\n', 1)[1].split('\npermissions:', 1)[0]
+build_ends = (
+    triggers.split('\n  workflow_run:\n', 1)[1].split('\n  workflow_dispatch:', 1)[0]
+    if '\n  workflow_run:\n' in triggers
+    else ''
+)
+check(
+    "cache-cleanup.yml's triggers: a closed pull request, a Build of main",
+    (
+        '\n  pull_request_target:\n    types: [closed]\n' in triggers,
+        'workflows: [Build]' in build_ends,
+        '\n    branches: [main]' in build_ends,
+    ),
+    (True, True, True),
+)
 
 for failure in failures:
     print('FAIL:', failure)

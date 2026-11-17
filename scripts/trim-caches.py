@@ -12,7 +12,7 @@ systems is two caches). A key without such an end is a family of its own and sta
 saved by a push alone (build.yml): one on a pull request's ref, which that pull request reads in place of main's
 newer one, goes too.
 
-.github/workflows/cache-cleanup.yml runs it when a pull request closes and after each build. It needs gh, with GH_REPO
+.github/workflows/cache-cleanup.yml runs it when a pull request closes and after each Build of main. It needs gh, with GH_REPO
 set and a token allowed actions: write; --dry-run only lists.
 """
 

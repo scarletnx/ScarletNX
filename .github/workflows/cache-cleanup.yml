@@ -9,10 +9,13 @@ on:
   # copy of this file whatever the base, and the job checks out that branch, nothing of the pull request
   pull_request_target:
     types: [closed]
-  # The entries a build's new caches replaced
+  # The entries a build's new caches replaced, once a Build of main ends, which saves them: a pull request's saves
+  # none of the compiler caches, so its end would take a runner for little, and main's next Build or the pull request
+  # closing trims what it saved
   workflow_run:
     workflows: [Build]
     types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       dry-run:
