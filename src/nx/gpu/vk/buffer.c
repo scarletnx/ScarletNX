@@ -4574,7 +4574,16 @@ static void buf_frame(void) {
     if (g_vk_present % 4) return;
     vk_wlog_trim();
     vk_mirror_trim();
-    if (g_vk_present % 600 == 0) gcopy_log();
+    if (g_vk_present % 600 == 0) {
+        gcopy_log();
+        static u64 wlog_was[3];
+        u64 wlog[3];
+        vk_wlog_clear_stats(&wlog[0], &wlog[1], &wlog[2]);
+        LOG("vulkan: write logs over 600 presents: %llu unrefs, %llu windows scanned, %llu cleared\n",
+            (unsigned long long)(wlog[0] - wlog_was[0]), (unsigned long long)(wlog[1] - wlog_was[1]),
+            (unsigned long long)(wlog[2] - wlog_was[2]));
+        memcpy(wlog_was, wlog, sizeof wlog_was);
+    }
     if (copy_stats_on() && g_vk_present % 600 == 0) {
         LOG("vulkan: buffer bytes over 600 presents: uncached=%llu zero=%llu calls=%llu peak=%llu staged=%llu owned=%llu bound=%llu owner_bound=%llu writeback=%llu/%llu waits=%llu/%llums reused=%llu\n",
             (unsigned long long)g_copy_uncached, (unsigned long long)g_copy_zero, (unsigned long long)g_copy_calls,

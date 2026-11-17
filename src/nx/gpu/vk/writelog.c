@@ -20,6 +20,8 @@
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 
+/* the u64 words of a part's mark: a bit for each of its windows */
+#define WLOG_MARK_WORDS (SH_WPAGE_SLOT / 64)
 struct VkWriteLog {
     VkBuffer buf;
     DevMem mem;
@@ -29,6 +31,12 @@ struct VkWriteLog {
     int seen;  /* invalidated since the GPU wrote it: its words are the GPU's to the host */
     u32 freed; /* the present it went back to the pool at, for vk_wlog_trim */
     struct VkWriteLog* next;
+    /* In host memory, what the last unref clears: the windows of each part that vk_wlog_runs
+       read (scanned), and of those the ones with a flag (mark, WLOG_MARK_WORDS a part). A store past the range its
+       reader reads sets a flag past the windows read (write_log.c clamps the window, and does not bound it by the
+       binding), and a part no reader read has flags too: the windows past scanned are read again at the unref */
+    u16 scanned[16];
+    u64 mark[];
 };
 
 /* the logs free, by kind (host memory, the GPU's) and their parts less one; a log is never smaller than the program
@@ -45,6 +53,7 @@ static struct {
 } g_ready[16];
 static struct {
     u64 made, in_use, bytes, windows, cleared, again;
+    u64 unrefs, scanned; /* the host logs cleared at their last unref, and the window flags those clears read */
 } g_wlog;
 
 static u64 log_bytes(u32 parts) { return (u64)parts * SH_WLOG_PART * 4; }
@@ -55,7 +64,7 @@ static VkWriteLog* log_get(u32 parts, int gpu) {
     if (l) {
         g_free[gpu][parts - 1] = l->next;
     } else {
-        l = calloc(1, sizeof *l);
+        l = calloc(1, sizeof *l + (gpu ? 0 : sizeof *l->mark * WLOG_MARK_WORDS * parts));
         if (!l) return NULL;
         u32 fam[2] = {g_vk.gfx_family, g_vk.compute_family};
         VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -215,16 +224,38 @@ void vk_wlog_unref(VkWriteLog* l) {
     }
     log_see(l);
     int cleared = 0;
+    g_wlog.unrefs++;
     for (u32 p = 0; p < l->parts; p++) {
         u32* flags = l->w + (size_t)p * SH_WLOG_PART;
         u32* masks = flags + SH_WPAGE_SLOT;
-        for (u32 j = 0; j < SH_WPAGE_SLOT; j++)
-            if (flags[j]) {
+        u64* mark = l->mark + (size_t)p * WLOG_MARK_WORDS;
+        const u32 scanned = l->scanned[p];
+        l->scanned[p] = 0;
+        /* the windows read that had a flag: the windows read with none stay clear */
+        for (u32 k = 0; k < (scanned + 63) / 64; k++) {
+            for (u64 bits = mark[k]; bits; bits &= bits - 1) {
+                const u32 j = k * 64 + snx_ctz64(bits);
                 flags[j] = 0;
                 memset(masks + (size_t)j * SH_WLOG_MASK, 0, SH_WLOG_MASK * 4);
                 cleared = 1;
                 g_wlog.cleared++;
             }
+            mark[k] = 0;
+        }
+        /* the windows past them, 64 flags at a time: an OR of each 64, which the compiler makes wide */
+        for (u32 c = scanned & ~63u; c < SH_WPAGE_SLOT; c += 64) {
+            u32 any = 0;
+            for (u32 j = 0; j < 64; j++) any |= flags[c + j];
+            g_wlog.scanned += 64;
+            if (!any) continue;
+            for (u32 j = c; j < c + 64; j++)
+                if (flags[j]) {
+                    flags[j] = 0;
+                    memset(masks + (size_t)j * SH_WLOG_MASK, 0, SH_WLOG_MASK * 4);
+                    cleared = 1;
+                    g_wlog.cleared++;
+                }
+        }
     }
     if (cleared && !VK_OK(vk_devmem_flush(l->mem, 0, VK_WHOLE_SIZE)))
         fatal("vulkan: a write log stayed unflushed");
@@ -238,9 +269,12 @@ u32 vk_wlog_runs(VkWriteLog* l, u32 part, u32 size, VkRunFn fn, void* user) {
     const u32* masks = flags + SH_WPAGE_SLOT;
     u32 windows = (u32)(((u64)size + 4095) / 4096), seen = 0;
     if (windows > SH_WPAGE_SLOT) windows = SH_WPAGE_SLOT;
+    u64* mark = l->mark + (size_t)part * WLOG_MARK_WORDS;
+    if (windows > l->scanned[part]) l->scanned[part] = (u16)windows; /* the unref's: the flags of these are marked */
     u64 from = 0, to = 0; /* the run being gathered, empty when equal */
     for (u32 j = 0; j < windows; j++) {
         if (!flags[j]) continue;
+        mark[j / 64] |= 1ull << (j % 64);
         seen++;
         const u32* m = masks + (size_t)j * SH_WLOG_MASK;
         for (u32 k = 0; k < SH_WLOG_MASK; k++) {
@@ -307,6 +341,11 @@ int vk_wlog_merge(VkWriteLog* l, u32 part, u32 from, u32 to, VkBuffer src, u64 s
 }
 
 u64 vk_wlog_again(void) { return g_wlog.again; }
+void vk_wlog_clear_stats(u64* unrefs, u64* scanned, u64* cleared) {
+    *unrefs = g_wlog.unrefs;
+    *scanned = g_wlog.scanned;
+    *cleared = g_wlog.cleared;
+}
 void vk_wlog_stats(u64* logs, u64* bytes, u64* in_use, u64* windows) {
     *logs = g_wlog.made;
     *bytes = g_wlog.bytes;

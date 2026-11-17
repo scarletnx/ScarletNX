@@ -2143,6 +2143,8 @@ u32 vk_wlog_runs(VkWriteLog* l, u32 part, u32 size, VkRunFn fn, void* user);
    it after that work and before what uses dst. 0 when it can't be (no descriptor set left), with nothing recorded */
 int vk_wlog_merge(VkWriteLog* l, u32 part, u32 from, u32 to, VkBuffer src, u64 src_off, VkBuffer dst, u64 dst_off);
 void vk_wlog_stats(u64* logs, u64* bytes, u64* in_use, u64* windows);
+/* the host logs cleared at their last unref so far, the window flags those clears read, and the windows cleared */
+void vk_wlog_clear_stats(u64* unrefs, u64* scanned, u64* cleared);
 void vk_wlog_trim(void); /* the logs the pool hasn't given out for a while go */
 /* The GPU mirror of guest memory (mirror.c): whether it is on, its buffer and its mask (a bit a byte) */
 int vk_mirror_on(void);
