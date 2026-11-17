@@ -6,6 +6,7 @@
    green one, so a quad drawn from the wrong vertices shows red, and a strip that takes its restart index (2, the red
    quad's top right corner) for a vertex draws a second triangle with red in it */
 #include <math.h>
+#include "nx/gpu/vk/quad_indices.h"
 
 /* a program at address of count instructions (a scheduling word before every three), a fragment program's header
    taking a screen-linear RGBA input when fragment is set, or one with perspective when it is 2 */
