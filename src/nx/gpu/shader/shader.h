@@ -210,10 +210,11 @@ typedef struct {
        from among them (a size or level query's): a slot of these may hold a virtual texture (vt_sparse); a texture
        a draw binds to another slot is held whole */
     u64 tex_vt_mask;
-    /* and for the log, the slots an Ounce fragment program reads with a fetch, a gather, a sample with gradients, a
-       reduction (the least or greatest of its texels), a depth compare, as no 2D texture, or in a program that takes
-       no virtual sample (vt_early) */
-    u64 tex_vt_reads[7];
+    /* and for the log, the slots a fragment program reads with a fetch, a gather, a sample with gradients, a
+       reduction (the least or greatest of its texels), a depth compare, as no 2D texture of floats in a slot the
+       marks name, in a program that takes no virtual sample (vt_early), or (a Maxwell program) with a sample of a
+       form that takes no mark: a minimum level, an offset from a register, an indexed table, one of two handles */
+    u64 tex_vt_reads[8];
     /* FS: texture slots every read of which is a texel fetch at the fragment's own pixel (TLD or TLDS of a 2D texture
        at gl_FragCoord's integer x and y, level 0, no offset): the only ones a draw may sample in place while it
        renders to them (vk/render.c), each fragment reading what earlier draws left at its pixel */

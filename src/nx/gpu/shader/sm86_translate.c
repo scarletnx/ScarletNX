@@ -72,7 +72,7 @@ typedef struct {
     /* vt_sparse: shader_vt_sample's ids, and the slots with a read of texels it didn't take: the others may hold a
        virtual texture (ShaderInfo.tex_vt_mask) */
     ShVtIds vt;
-    u64 vt_left, vt_reads[7]; /* vt_reads: ShaderInfo.tex_vt_reads */
+    u64 vt_left, vt_reads[8]; /* vt_reads: ShaderInfo.tex_vt_reads */
     int vt_ok;                /* the program takes virtual samples (ShaderInfo.vt_early) */
     u32 zero, true_v, false_v, glsl;
     /* the program's state: Function variables, made at the start */

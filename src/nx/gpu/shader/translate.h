@@ -113,8 +113,8 @@ typedef struct {
     /* vt_sparse: shader_vt_sample's ids, and the slots with a read of texels it didn't take: the others may hold a
        virtual texture (ShaderInfo.tex_vt_mask) */
     ShVtIds vt;
-    u64 vt_left;
-    int vt_ok; /* the program takes virtual samples (ShaderInfo.vt_early) */
+    u64 vt_left, vt_reads[8]; /* vt_reads: ShaderInfo.tex_vt_reads */
+    int vt_ok;                /* the program takes virtual samples (ShaderInfo.vt_early) */
 } DirectCtx;
 #define SH_SMALL_U32 64u
 

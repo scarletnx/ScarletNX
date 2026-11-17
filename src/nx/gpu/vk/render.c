@@ -2748,16 +2748,20 @@ static int indexed_uniform(DescWrites* writes, VkDescriptorSet set, int stage, u
    the table that names it: a handle that two kinds name has an element for each. */
 /* vt_sparse: why slot i of a fragment program, outside ShaderInfo.tex_vt_mask, holds a virtual texture whole */
 static const char* vt_unmarked(const ShaderInfo* si, int i) {
-    return si->tex_vt_reads[0] >> i & 1   ? "a fragment program fetches its texels (TLD), which marks nothing"
+    return si->tex_vt_reads[6] >> i & 1   ? "a fragment program that cannot test depth before it runs samples it (it "
+                                            "discards, writes depth, a sample mask or memory, or its draw has alpha "
+                                            "to coverage or an alpha test), and takes no sample that marks"
+           : si->tex_vt_reads[0] >> i & 1 ? "a fragment program fetches its texels (TLD), which marks nothing"
            : si->tex_vt_reads[1] >> i & 1 ? "a fragment program gathers its texels (TLD4), which marks nothing"
            : si->tex_vt_reads[2] >> i & 1 ? "a fragment program samples it with gradients (TXD), which marks nothing"
            : si->tex_vt_reads[3] >> i & 1 ? "a fragment program takes the least or greatest of its texels, which marks "
                                             "nothing"
            : si->tex_vt_reads[4] >> i & 1 ? "a fragment program samples it with a depth compare, which marks nothing"
-           : si->tex_vt_reads[5] >> i & 1 ? "a fragment program samples it as no 2D texture, which marks nothing"
-           : si->tex_vt_reads[6] >> i & 1 ? "a fragment program that cannot test depth before it runs samples it (it "
-                                            "discards, writes depth, a sample mask or memory, or its draw has alpha "
-                                            "to coverage or an alpha test), and takes no sample that marks"
+           : si->tex_vt_reads[5] >> i & 1 ? "a fragment program samples it as no 2D texture of floats in a slot its "
+                                            "marks name, which marks nothing"
+           : si->tex_vt_reads[7] >> i & 1 ? "a fragment program samples it with a minimum level, an offset from a "
+                                            "register, through an indexed table or as one of two handles, which "
+                                            "marks nothing"
                                           : "a fragment program reads its texels with no sample that marks them";
 }
 /* the slot of the indexed table of slot `first` that keeps the table's textures whole: one outside tex_vt_mask */
