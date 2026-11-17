@@ -3,20 +3,21 @@
 /* The integer emitters tools/sailgen generates from the Sail (ir_sail.c) against the hand-written ones they replaced
    (support/ir_int_reference.c), word by word: the same IR, and the same results.
      snx-test-llvm-sail-ir [--report FILE] [--samples N] [--states N]
-   The words: samples of every decoder row the generated subset covers (llvm_qemu_words.c), each again with its
-   register fields 31 (the zero register or SP). On three paths (x86-64 with SSE4.2's CRC32C, AArch64 with CRC32, and
-   the generic one other hosts take; a path whose target this LLVM lacks is said and skipped) each word becomes a step
+   The words: samples of every decoder row the generated subset covers (llvm_qemu_words.c), each again with its register
+   fields 31 (the zero register or SP). On three paths (x86-64 with SSE4.2's CRC32C, AArch64 with CRC32, and the generic
+   one other hosts take; a path whose target this LLVM lacks is said and skipped) each word becomes a step
    (snx_ir_static_step) in two modules, one emitted by each, optimized as a game's module is (snx_ir_module_optimize,
-   O2, the SLP vectorizer off as the setting's default), and the two functions are compared. Then
-   both sets of steps run on this host from random states, and every register, the flags, the next pc and UNDEF must
-   match. Sequences that hand flags or a register from one instruction to the next (SUBS then CSEL, CMP then CCMP
-   then CSEL, ADDS then ADC, SUBS then B.HI, a load from a register an ADD just wrote, FCMP then CSEL) are emitted as
-   functions (snx_ir_emit) and must give the hand-written emitters' IR, so a compare's flags still reach the condition
-   as the compare, and a value one emitter writes is the one the other reads back, whichever of the two (generated or
-   written by hand) wrote it: both keep their values in ir->state's per-block cache. Two IRs that differ only in the
-   order of their instructions and their names count as the same; a step's that differs otherwise may not have more
-   instructions than the hand-written one, and is listed. --report writes each difference's two IR texts;
-   --time ROUNDS only times the two emitters (time_emitters) */
+   O2, the SLP vectorizer off as the setting's default), and the two functions are compared. Then both sets of steps run
+   on this host from random states, and every register, the flags, the next pc and UNDEF must match. Sequences that hand
+   flags or a register from one instruction to the next (SUBS then CSEL, CMP then CCMP then CSEL, ADDS then ADC, SUBS
+   then B.HI, a load from a register an ADD just wrote, FCMP then CSEL) are emitted as functions (snx_ir_emit) and must
+   give the hand-written emitters' IR, so a compare's flags still reach the condition as the compare, and a value one
+   emitter writes is the one the other reads back, whichever of the two (generated or written by hand) wrote it. Both
+   keep their state in one per-block cache (the back end's), so in a sequence the hand-written integer emitters run with
+   no value carried through it from one instruction to the next (reference_uncached): a cache that kept a stale one
+   shows in the generated side only. Two IRs that differ only in the order of their instructions and their names count
+   as the same; a step's that differs otherwise may not have more instructions than the hand-written one, and is listed.
+   --report writes each difference's two IR texts; --time ROUNDS only times the two emitters (time_emitters) */
 #include "llvm_steps.h"
 #include "llvm_qemu_words.h"
 #include "support/ir_int_reference.h"
@@ -334,6 +335,18 @@ static int compare_path(const Path* p, const u32* words, size_t count, size_t* e
     return r;
 }
 
+/* the hand-written integer emitters with the registers' and the flags' values dropped from the cache before and
+   after each: the reference of a sequence then reads every value an instruction left from the CPU structure, which
+   O2 forwards from the store, and the generated side alone reads them from the cache. What made the flags stays
+   (llvm_flags_cache checks it): a condition after a compare is the compare on both sides */
+static void reference_uncached(SnxIr* ir, const void* decoded, SnxU32 word, SnxU64 pc) {
+    ir_registers_invalidate(ir);
+    ir->state.flags.valid = 0;
+    snx_ir_int_reference(ir, decoded, word, pc);
+    ir_registers_invalidate(ir);
+    ir->state.flags.valid = 0;
+}
+
 /* a sequence as a function of its own (snx_ir_emit), from each emitter, on this host, compared */
 static void compare_sequence(unsigned s) {
     char error[1024];
@@ -366,7 +379,7 @@ static void compare_sequence(unsigned s) {
             if (k) snx_ir_free(irs[0]);
             return;
         }
-        if (k == 0) ir->int_reference = snx_ir_int_reference;
+        if (k == 0) ir->int_reference = reference_uncached;
         snx_ir_emit(ir, &codegen, &function);
         if (snx_ir_module_optimize(ir, ir->mod, '2', error, sizeof error)) {
             fprintf(stderr, "FAIL: %s: %s\n", sequences[s].what, error);
