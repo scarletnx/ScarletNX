@@ -100,7 +100,7 @@ static int check_slices_from_targets(void) {
     }
     g_vk_scale = scale;
     vk_lock();
-    vk_rt_before_write(ST_GPU, ST_SPAN); /* the targets go back to memory before it does */
+    vk_rt_before_write(ST_GPU, ST_SPAN, 0); /* the targets go back to memory before it does */
     vk_unlock();
     CHECK(mem_unmap(ST_CPU, ST_SPAN) == 0);
     free(ch);

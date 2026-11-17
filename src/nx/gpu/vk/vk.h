@@ -791,9 +791,9 @@ void vk_finish_at(const char* file, int line);
 void vk_finish_letting_go_at(const char* file, int line);
 #define vk_finish_letting_go() vk_finish_letting_go_at(__FILE__, __LINE__)
 void vk_finishes_log(void);
-/* who asked for what a finish lands (a guest write, a read of guest memory, ...), for vk_finishes_log's sites: set
-   by the renderer's hooks around vk_gfx_image_mem_need and the front end's flush, under vk_lock */
-extern const char* g_vk_finish_who;
+/* this thread's reason for what a finish lands (a guest write, a read of guest memory, ...), for vk_finishes_log's
+   sites: the renderer's hooks set it around the calls that land images, and surf_flush names it in its log line */
+extern _Thread_local const char* g_vk_finish_who;
 /* a save state's load (Renderer.reset): every surface, buffer and sample counter kept of the old guest memory goes */
 void vk_surf_forget_all(void);
 void vk_buf_forget_all(void);
@@ -1454,7 +1454,10 @@ Surf* vk_rt_save(Surf* rt, u32 set);
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest presents from that memory */
 /* a render target read where its guest memory is (a texture, a present): reload it if the GPU wrote its memory */
 void vk_rt_note_read(Surf* s);
-void vk_rt_before_write(u64 gva, u64 size);
+/* The guest (or a GPU engine's result) writes [gva, gva + size): every pending target over those bytes goes to
+   memory first, except one the write covers whole when whole says the caller writes every byte of its range. Such a
+   target's image has nothing of its own to give back, so it is dropped instead: memory is the truth (rt_cover.h) */
+void vk_rt_before_write(u64 gva, u64 size, int whole);
 void vk_rt_before_publish_cpu(u64 cpu, u64 size);
 void vk_rt_before_write_cpu(u64 cpu, u64 size);
 /* whether a render target that is not parked covers any of guest memory [cpu, cpu + size), through any GPU address

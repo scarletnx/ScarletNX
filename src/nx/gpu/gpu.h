@@ -343,7 +343,10 @@ int gmem_write_cb(u64 gva, const void* src, u64 size);
    gpu_mem_written after), then the runs without them */
 void gmem_need(u64 gva, u64 size);
 void gmem_read_raw(u64 gva, void* dst, u64 size);
-void gmem_before_write(u64 gva, u64 size);
+/* whole: the caller writes every byte of [gva, gva + size), which is what lets a render target there be dropped
+   instead of written back (vk_rt_before_write). A write of the lines in a span of rows of blocks, or a change of the
+   mapping under them, writes a part of its range and gives 0 */
+void gmem_before_write(u64 gva, u64 size, int whole);
 void gmem_write_raw(u64 gva, const void* src, u64 size);
 /* a shader program: up to size bytes, stopping at the first page with no guest memory behind it, zeros after */
 void gmem_read_code(u64 gva, void* dst, u64 size);
@@ -575,8 +578,9 @@ void gpu_report_stall(void);
 void gpu_mem_changed(u64 cpu_addr, u64 len);
 extern void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len); /* the renderer's side of it, set when it starts */
 /* the renderer lands pending shader results before the stream goes on past them: before a write of memory those
-   results overlap (size > 0), and before anything the game can observe (gpu_signal_point, size 0) */
-extern void (*g_gpu_before_write)(u64 gva, u64 size);
+   results overlap (size > 0), and before anything the game can observe (gpu_signal_point, size 0). whole: the caller
+   writes every byte of [gva, gva + size) (gmem_write, gmem_before_write's own argument) */
+extern void (*g_gpu_before_write)(u64 gva, u64 size, int whole);
 extern _Atomic int g_gpu_releases; /* the renderer holds releases waiting to happen (renderer.h release_need) */
 /* what a change of backing changes (g_gpu_mapping_begin's kind) */
 enum {
