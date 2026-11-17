@@ -863,12 +863,20 @@ static void copy_indirect_call(const CopyIndirectArgs* x) {
 static void copy_indirect_run(const void* p) { copy_indirect_call(p); }
 void rec_CmdCopyMemoryIndirectKHR(VkCommandBuffer cb, const VkCopyMemoryIndirectInfoKHR* info) {
     CopyIndirectArgs a = {cb, info->srcCopyFlags, info->dstCopyFlags, info->copyCount, info->copyAddressRange};
-    if (!rec_on(cb)) {
+    /* timed for vk_gpu_profile as the copies it takes the place of are (rec_CmdCopyBuffer), its bytes in the GPU's
+       list. Each ring's copy counts, as they do (rec_xfer) */
+    int timed = vk_gpuprof_profiled(cb) &&
+                vk_gpuprof_op_begin(cb, VK_OP_COPY,
+                                    (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()), 0);
+    if (!rec_on(cb))
         copy_indirect_call(&a);
-        return;
+    else {
+        g_rec_xfers++;
+        g_rec_xfer_kind[0]++;
+        *(CopyIndirectArgs*)rec_push(copy_indirect_run, sizeof a) = a;
+        rec_commit();
     }
-    *(CopyIndirectArgs*)rec_push(copy_indirect_run, sizeof a) = a;
-    rec_commit();
+    if (timed) vk_gpuprof_op_end(cb);
 }
 /* ------------------------------------------------------------ commands with arrays, copied after their arguments */
 /* the packet's arrays follow its arguments, each at a multiple of 16 */

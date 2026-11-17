@@ -1281,8 +1281,9 @@ void vk_rt_note_read(Surf* s);
 void vk_rt_before_write(u64 gva, u64 size);
 void vk_rt_before_publish_cpu(u64 cpu, u64 size);
 void vk_rt_before_write_cpu(u64 cpu, u64 size);
-/* whether a pending render target covers any of guest memory [cpu, cpu + size), through any GPU address that maps it:
-   where none does, vk_rt_before_write_cpu over a part of it does nothing */
+/* whether a render target that is not parked covers any of guest memory [cpu, cpu + size), through any GPU address
+   that maps it, pending or not (a superset of what vk_rt_before_write_cpu writes back): where none does,
+   vk_rt_before_write_cpu over a part of it does nothing */
 int vk_rt_pending_cpu(u64 cpu, u64 size);
 /* whether a render target not parked covers a GPU page of the range: pend_lock (or vk_lock) held */
 int vk_rt_pages_hit(u64 gva, u64 size);
@@ -1578,11 +1579,16 @@ typedef struct VkOwnRes {
     u8 by;       /* VK_OWN_BY_*: what made it, for the statistics */
     u8 host;     /* buf is in system memory, for want of the device's: not pooled when it is let go */
     struct VkOwnRes* later; /* owned.c's list of those released while another thread held vk_lock */
-    VkDeviceAddress addr; /* buf's device address, 0 until an indirect copy asks for it (g_vk.has_copy_indirect) */
+    /* buf's device address, 0 until an indirect copy or an in-place read asks for it (owned.c res_addr) */
+    VkDeviceAddress addr;
 } VkOwnRes;
 /* owned.c: the resources released while another thread held vk_lock, freed by the next outermost vk_unlock */
 int vk_own_later_any(void);
 void vk_own_release_later(void); /* under vk_lock */
+/* this thread's results held while commands not recorded yet read them by address (owned.c res_hold): let go at
+   the end of its hold of vk_lock (not at vk_lock_pause), under it */
+int vk_own_held_any(void);
+void vk_own_release_held(void);
 /* what makes a kept result: a dispatch, a draw that writes guest memory, a copy engine, the video engines, a render
    target written back */
 enum { VK_OWN_BY_COMPUTE, VK_OWN_BY_DRAW, VK_OWN_BY_COPY, VK_OWN_BY_VIDEO, VK_OWN_BY_TARGET, VK_OWN_BY_N };
