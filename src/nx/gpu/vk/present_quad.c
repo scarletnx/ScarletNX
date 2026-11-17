@@ -302,9 +302,9 @@ int vk_present_quad_effects(VkCommandBuffer cb, SnxPresentSource* s, VkRect2D* c
        what they read: the ring drained, every one of those is in cb */
     vk_rec_sync();
     ++g_present_quad.fx_frames;
-    int ran = snx_fx_render(g_present_quad.fx, cb, vk_frame_id() % VK_FRAMES, s->view, s->width, s->height,
-                            (u32)crop->offset.x, (u32)crop->offset.y, crop->extent.width, crop->extent.height, 0, w, h,
-                            filter, aa, &out);
+    int ran = snx_fx_render(g_present_quad.fx, cb, vk_frame_id() % VK_FRAMES, s->view,
+                            VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL), s->width, s->height, (u32)crop->offset.x,
+                            (u32)crop->offset.y, crop->extent.width, crop->extent.height, 0, w, h, filter, aa, &out);
     vk_render_forget_state(); /* their pipelines and sets are bound now */
     if (!ran) return 0;
     VkDescriptorSet set = vk_desc_alloc(g_present_quad.descriptors);
