@@ -45,6 +45,7 @@ GuiMenuDo gui_menu_key(GuiMenu* menu, GuiKey key) {
                 case GUI_ANDROID: menu->view = GUI_LOAD_DROP; break;
                 case GUI_KEYS: menu->view = GUI_LOAD_KEYS; break;
                 case GUI_SETTINGS: return GUI_MENU_SETTINGS;
+                case GUI_SAVES: return GUI_MENU_SAVES;
                 case GUI_LOG: return GUI_MENU_LOG;
                 case GUI_FOLDERS: return GUI_MENU_FOLDERS;
                 case GUI_EXIT: menu->quit = true; break;
@@ -199,6 +200,9 @@ void gui_usage_text(char* out, size_t size, bool available, uint64_t memory_byte
 const char* gui_setting_description(const GuiMenu* menu) {
     switch (menu->selected) {
         case GUI_SETTINGS: return snx_tr("The game's .ini settings, the launcher's for the next runs, and its theme");
+        case GUI_SAVES:
+            return snx_tr("The saves of the user playing out to a file another emulator reads, and back in: every "
+                          "console's, a console's, or a game's from its box");
         case GUI_LOG:
             return snx_tr(
                 "Saves the logs as one zip or as scarletnx.log in a folder it opens to share from, or opens their folder");

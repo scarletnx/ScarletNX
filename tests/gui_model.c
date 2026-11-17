@@ -134,6 +134,10 @@ int main(void) {
     assert(gui_menu_key(&menu, GUI_DOWN) == GUI_MENU_STAY && menu.selected == GUI_SETTINGS);
     assert(gui_menu_key(&menu, GUI_SELECT) == GUI_MENU_STAY);
     menu.running = false;
+    /* Saves after Settings: the box of the user's saves out and in (main.c's saves_open) */
+    gui_menu_key(&menu, GUI_DOWN);
+    assert(menu.selected == GUI_SAVES && strstr(gui_setting_description(&menu), "The saves of the user playing"));
+    assert(gui_menu_key(&menu, GUI_SELECT) == GUI_MENU_SAVES && menu.active == GUI_SAVES && !menu.quit);
     gui_menu_key(&menu, GUI_DOWN);
     assert(gui_menu_key(&menu, GUI_SELECT) == GUI_MENU_LOG && menu.selected == GUI_LOG && !menu.quit);
     /* Folders, on every system, before Exit: Settings > App > Folders */

@@ -1804,6 +1804,10 @@ msgstr "Não"
 msgid "Overwrite"
 msgstr "Sobrescrever"
 
+#: src/gui/main.c
+msgid "Import"
+msgstr ""
+
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
@@ -1904,7 +1908,7 @@ msgstr "Dump"
 msgid "Game"
 msgstr "Jogo"
 
-#: src/gui/main.c src/common/utilities/setup.c
+#: src/gui/main.c src/gui/ui.txt src/common/utilities/setup.c
 msgid "Saves"
 msgstr "Saves"
 
@@ -2002,6 +2006,14 @@ msgstr "Abrir pasta de cheats"
 #: src/gui/main.c
 msgid "Open Folder"
 msgstr "Abrir pasta"
+
+#: src/gui/main.c
+msgid "Export Saves"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Import Saves"
+msgstr ""
 
 #: src/gui/main.c
 msgid "Clean Cache"
@@ -4844,6 +4856,11 @@ msgid "More"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "The saves of %s, the user playing: every console's in one zip, or a console's as its emulators keep them (the Switch's as Eden's zip). An import moves a save there to the trash first."
+msgstr ""
+
+#: src/gui/main.c
 msgid "The rest of this screen's keys"
 msgstr ""
 
@@ -4903,6 +4920,157 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s is off Games: %s is not found. Its folder %s stays, and Games lists it again once that file is back."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Export All Saves"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Import All Saves"
+msgstr ""
+
+#: src/gui/main.c src/gui/saves.c
+#, c-format
+msgid "%s could not be written: %s"
+msgstr ""
+
+#: src/gui/main.c src/gui/saves.c
+#, c-format
+msgid "%s could not be read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "the save in %s holds no file"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "none of the %zu saves found holds a file"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s could not be made: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: the zip could not be copied to %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu files (%s) of %s in %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu files (%s) of %zu saves of %s in %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "; the share sheet did not open"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu saves imported, then: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu files (%s) of %s for %s; the save there before is in %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu files (%s) of %s for %s; there was no save before"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu saves for %s, %zu files (%s); %zu saves there before are in the trash, the first in %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu saves for %s, %zu files (%s); none was there before"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "; %zu more in the zip have no game of their title ID in the library, where save_layout=game keeps a save: the log names them"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: cancelled, nothing imported from %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s could not be read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: none of the %zu saves in %s has a game of that title ID in the library, where save_layout=game keeps a save"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s has a save of %s, in %s. It goes to the trash, %s, and the one in %s takes its place."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu of the %zu saves in %s are there already for %s. Each goes to the trash, %s, and the zip's takes its place."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: there is no data folder to work in"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: a game runs, which could write over its saves: close it, then import"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s has no title ID of its own, which Eden's zip names a game's saves by"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s has no save of %s: %s is not there"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s has no save of the %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: the file picker could not open: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Zip"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s save data"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: no file was picked."
 msgstr ""
 
 #: src/gui/main.c
@@ -5791,6 +5959,10 @@ msgid "The game's .ini settings, the launcher's for the next runs, and its theme
 msgstr "Os ajustes do .ini do jogo, os do launcher para as próximas execuções, e o tema dele"
 
 #: src/gui/model.c
+msgid "The saves of the user playing out to a file another emulator reads, and back in: every console's, a console's, or a game's from its box"
+msgstr ""
+
+#: src/gui/model.c
 msgid "Saves the logs as one zip or as scarletnx.log in a folder it opens to share from, or opens their folder"
 msgstr "Salva os logs num zip ou como scarletnx.log numa pasta que ele abre para compartilhar, ou abre a pasta deles"
 
@@ -5915,16 +6087,6 @@ msgstr ""
 
 #: src/gui/saves.c
 msgid "no memory for libdeflate's compressor"
-msgstr ""
-
-#: src/gui/saves.c
-#, c-format
-msgid "%s could not be written: %s"
-msgstr ""
-
-#: src/gui/saves.c
-#, c-format
-msgid "%s could not be read: %s"
 msgstr ""
 
 #: src/gui/saves.c
