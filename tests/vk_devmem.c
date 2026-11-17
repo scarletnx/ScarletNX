@@ -540,9 +540,14 @@ static void check_alone(void) {
     DevMemWant gpu = {.at = DM_DEVICE}, mine = {.at = DM_DEVICE, .own = 1};
     device(0, 1024, 64, 0);
     CHECK(make(0, MIB, 256, ~0u, 2, gpu, &must) == VK_SUCCESS && alone_of(&must) && !must.info.offset);
-    CHECK(make(1, MIB, 256, ~0u, 1, gpu, &rather) == VK_SUCCESS && alone_of(&rather));
+    /* the driver's preference holds for more than a block's share: a smaller one goes into a block, with no call to
+       the driver of its own, and the report counts it */
+    CHECK(make(1, 32 * MIB, 256, ~0u, 1, gpu, &rather) == VK_SUCCESS && alone_of(&rather));
     CHECK(make(0, MIB, 256, ~0u, 0, mine, &own) == VK_SUCCESS && alone_of(&own));
     CHECK(make(0, MIB, 256, ~0u, 0, gpu, &block) == VK_SUCCESS && !alone_of(&block));
+    CHECK(make(1, MIB, 256, ~0u, 1, gpu, &h) == VK_SUCCESS && !alone_of(&h) && h.info.memory == block.info.memory);
+    CHECK(g_devmem.rather_in_block == 1 && g_devmem.rather_in_block_bytes == MIB);
+    unmake(&h);
     /* the driver has no memory for a resource alone: the one it would rather have so goes into a block, which has
        room, and the one it must have so fails */
     g_drv.no_alone = 1;
