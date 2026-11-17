@@ -254,6 +254,10 @@ typedef struct {
     /* statistics */
     u64 hits, hit_bytes, misses, imports, import_bytes, import_ns, failed, dropped, quiesces, waits;
     u64 written_bytes, barriers, out_waits, published;
+    /* the writes in place (out_add), those of a range that a write of the same submission had (a direct-mapped
+       table of the last ones, by range: a range it lost to another counts as new), and the pages they counted */
+    u64 out_n, out_same, out_npages;
+    Seen out_seen[4096];
     u64 wait_by[4]; /* out_waits by the caller of wait_out_why: region, mem-need, mem-need-cpu, front-write */
     u64 imp_why[6]; /* why imp_get made no import: chunked, unmade over imports, unmapped, over the cap, refused
                        before, table full */
@@ -1784,8 +1788,16 @@ static void out_add(u64 gva, u64 cpu, u64 len) {
     pend_add_pages(&g_uma.out_pages, cpu >> 12, (cpu + len - 1) >> 12, 1);
     st_stamp(UMA_WSEQ, cpu, len, g_uma.barrier_no + 1);
     if (g_uma.chk) write_pages_stamp(&g_uma.chk->written, cpu, len, g_uma.barrier_no + 1);
-    g_uma.out[g_uma.nout++] = (Out){gva, cpu, len, vk_submit_number(), g_uma.writer};
+    const u64 sub = vk_submit_number();
+    g_uma.out[g_uma.nout++] = (Out){gva, cpu, len, sub, g_uma.writer};
     g_uma.written_bytes += len;
+    g_uma.out_n++;
+    g_uma.out_npages += ((cpu + len - 1) >> 12) - (cpu >> 12) + 1;
+    Seen* seen = &g_uma.out_seen[(u32)(((cpu ^ (len << 40)) * 0x9E3779B97F4A7C15ull) >> 52)];
+    if (seen->cpu == cpu && seen->len == len && seen->sub == sub)
+        g_uma.out_same++;
+    else
+        *seen = (Seen){cpu, len, sub};
     g_uma_any = 1;
 }
 void vk_uma_writes_commit(void) {
@@ -2140,7 +2152,8 @@ void vk_uma_frame(void) {
         "imports made (%llu MB, %llu ms), %llu spans refused, %llu dropped; %u imports hold %llu MB; %llu hazards (a "
         "GPU-side write on a page that unfinished work reads in place); %llu waits for that work before a trap or a "
         "remap, %llu before a write of the runtime's; %llu MB written in place (%llu MB of them engines' results), "
-        "%llu barriers for it, %llu waits for it; %u chunks GPU memory where they are (%llu made, %llu given back)\n"
+        "%llu barriers for it, %llu waits for it; %u chunks GPU memory where they are (%llu made, %llu given back); "
+        "%llu writes, %llu the same range as one of the same submission, %llu pages counted\n"
         "vulkan:   those waits by who asked: %llu region, %llu mem-need, %llu mem-need-cpu, %llu front-write\n",
         (unsigned long long)g_uma.hits, (unsigned long long)(g_uma.hit_bytes >> 20), (unsigned long long)g_uma.misses,
         (unsigned long long)g_uma.imports, (unsigned long long)(g_uma.import_bytes >> 20),
@@ -2150,7 +2163,8 @@ void vk_uma_frame(void) {
         (unsigned long long)g_uma.waits, (unsigned long long)(g_uma.written_bytes >> 20),
         (unsigned long long)(g_uma.published >> 20), (unsigned long long)g_uma.barriers,
         (unsigned long long)g_uma.out_waits, g_uma.nchunk, (unsigned long long)g_uma.chunks_made,
-        (unsigned long long)g_uma.chunks_gone, (unsigned long long)g_uma.wait_by[0],
+        (unsigned long long)g_uma.chunks_gone, (unsigned long long)g_uma.out_n, (unsigned long long)g_uma.out_same,
+        (unsigned long long)g_uma.out_npages, (unsigned long long)g_uma.wait_by[0],
         (unsigned long long)g_uma.wait_by[1], (unsigned long long)g_uma.wait_by[2],
         (unsigned long long)g_uma.wait_by[3]);
     LOG("vulkan:   imports declined: %llu chunked, %llu unmade over imports, %llu unmapped, %llu over the cap, %llu "
@@ -2222,7 +2236,8 @@ void vk_uma_frame(void) {
     g_vk_cs_left = g_uma.open_waits = 0;
     g_uma.hits = g_uma.hit_bytes = g_uma.misses = g_uma.imports = g_uma.import_bytes = g_uma.import_ns = g_uma.failed =
         g_uma.dropped = g_uma.quiesces = g_uma.waits = g_uma.written_bytes = g_uma.barriers = g_uma.out_waits =
-            g_uma.published = g_uma.chunks_made = g_uma.chunks_gone = 0;
+            g_uma.published = g_uma.chunks_made = g_uma.chunks_gone = g_uma.out_n = g_uma.out_same =
+                g_uma.out_npages = 0;
     memset(g_uma.wait_by, 0, sizeof g_uma.wait_by);
     __atomic_store_n(&g_uma.hazards, 0, __ATOMIC_RELAXED);
 }
