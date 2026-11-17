@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The GPU mirror's bookkeeping on the CPU (vk/mirror.c), with no device: the landing of a page's entry (land_entry):
-   which owners and render targets it asks for, and the bytes it puts in guest memory. Everything else mirror.c calls is a
+/* The GPU mirror's bookkeeping on the CPU (vk/mirror.c), with no device: the ranges its programs write and their
+   pending counts (vk_mirror_wrote, the real pending_pages.c), and the landing of a page's entry (land_entry): which
+   owners and render targets it asks for, and the bytes it puts in guest memory. Everything else mirror.c calls is a
    stub below */
 #include <stdarg.h>
 #include <stdio.h>
@@ -142,6 +143,30 @@ u32 vk_ww_epoch(void) { return 1; }
 u32 vk_ww_now(void) { return 1; }
 
 /* ------------------------------------------------ the cases */
+/* the pages the mirror counts as pending, as pend_hit sees them */
+static u64 pending_pages(void) { return g_mir_pend.total; }
+
+/* A written range that one of the submission's ranges holds already is neither listed nor counted: its pages stay
+   pending through the range that holds them. One that reaches past them is, as a range that meets none */
+static void check_wrote_held(void) {
+    vk_mirror_wrote(0x10000, 0x8000); /* pages 0x10 to 0x17 */
+    CHECK(g_mir_nnow == 1 && pending_pages() == 8);
+    vk_mirror_wrote(0x12000, 0x2000); /* inside it */
+    vk_mirror_wrote(0x10000, 0x8000); /* the same again */
+    vk_mirror_wrote(0x17FFF, 1);      /* its last byte */
+    CHECK(g_mir_nnow == 1 && pending_pages() == 8);
+    vk_mirror_wrote(0x17000, 0x2000); /* past its end: listed and counted */
+    CHECK(g_mir_nnow == 2 && pending_pages() == 10);
+    vk_mirror_wrote(0x30000, 0x1000); /* elsewhere */
+    CHECK(g_mir_nnow == 3 && pending_pages() == 11);
+    vk_mirror_wrote(0x17800, 0x1000); /* inside the second, past the first */
+    CHECK(g_mir_nnow == 3 && pending_pages() == 11);
+    /* the counts go as the harvest takes them: each listed range once */
+    for (u32 i = 0; i < g_mir_nnow; i++) mir_pend_pages(g_mir_now[i].first, g_mir_now[i].end - 1, -1);
+    g_mir_nnow = 0;
+    CHECK(pending_pages() == 0 && !g_mir_any);
+}
+
 /* an entry of the harvest's output for the page at cpu: its mask's runs [run[k][0], run[k][1]) of bytes, its data
    the byte index plus fill */
 static u32 entry[MIR_ENTRY];
@@ -203,6 +228,7 @@ static void check_land_entry(void) {
 
 int main(void) {
     g_mir.on = 1;
+    check_wrote_held();
     check_land_entry();
     printf("mirror_landing: %u checks passed\n", checks);
     return 0;
