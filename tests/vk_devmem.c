@@ -762,7 +762,7 @@ static void check_kinds(void) {
 
 /* Memory of its own that the driver only preferred is kept when let go, for the next request it fits, with no call to
    the driver (own_keep, own_take). It names no resource, and fits a request of its size up to an eighth less. Kept
-   memory goes after DM_KEEP_PRESENTS presents, and the oldest goes first past DM_KEEP_BYTES */
+   memory goes after DM_KEEP_PRESENTS presents, and the oldest of its heap goes first past keep_cap */
 static void check_keep(void) {
     Held a, b, c;
     const DevMemWant gpu = {.at = DM_DEVICE};
@@ -789,11 +789,25 @@ static void check_keep(void) {
     unmake(&b);
     unmake(&c);
     CHECK(g_devmem.kept_bytes == 92 * MIB);
-    /* past DM_KEEP_BYTES the oldest goes */
+    /* past keep_cap the oldest goes: DM_KEEP_BYTES under a budget of 2 GiB */
+    const u64 drv = g_devmem.drv_budget[0];
+    const int had = g_vk.has_budget;
+    g_vk.has_budget = 1;
+    g_devmem.drv_budget[0] = 2ull << 30;
+    CHECK(keep_cap(0) == DM_KEEP_BYTES);
     Held m[8];
     for (u32 i = 0; i < 8; i++) CHECK(make(0, 33 * MIB + i * MIB, 256, ~0u, 1, gpu, &m[i]) == VK_SUCCESS);
     for (u32 i = 0; i < 8; i++) unmake(&m[i]);
     CHECK(g_devmem.kept_bytes <= DM_KEEP_BYTES && g_devmem.kept_gone > 0);
+    /* a heap of a large budget keeps a share of it */
+    g_devmem.drv_budget[0] = 16ull << 30;
+    CHECK(keep_cap(0) == heap_budget(0) / DM_KEEP_SHARE && keep_cap(0) > DM_KEEP_BYTES);
+    /* only in the GPU's own heap: the others keep DM_KEEP_BYTES */
+    CHECK(heap_capped(0));
+    for (u32 h = 0; h < g_devmem.mp.memoryHeapCount; h++)
+        if (!heap_capped(h)) CHECK(keep_cap(h) == DM_KEEP_BYTES);
+    g_devmem.drv_budget[0] = drv;
+    g_vk.has_budget = had;
     /* and all of it after DM_KEEP_PRESENTS presents */
     for (u32 p = 0; p <= DM_KEEP_PRESENTS; p++) vk_devmem_frame();
     CHECK(g_devmem.kept_bytes == 0);
