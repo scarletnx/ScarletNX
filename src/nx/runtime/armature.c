@@ -15,6 +15,9 @@
 #include "nx/runtime/platform/log.h"
 #include "snx_settings.h"
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 /* armature's ArmatureMemoryCallbacks, ArmatureExceptionCallbacks, ArmatureHostTraps and ArmatureRegs (ffi.rs) */
 typedef struct ArmMemory {
@@ -281,6 +284,38 @@ void armature_kick(struct KThread* t) {
     if (e) g_armature.context_request_interrupt(e);
 }
 
+/* ---- faults in the JIT's code or the library (Windows): the runtime's crash filter reports only the game
+   module's, so this says where an exception came from, with the guest pc of the last callback ---- */
+#ifdef _WIN32
+static LONG WINAPI fault_note(EXCEPTION_POINTERS* x) {
+    const EXCEPTION_RECORD* r = x->ExceptionRecord;
+    const u8* rip = (const u8*)r->ExceptionAddress;
+    HMODULE m = NULL;
+    char name[MAX_PATH] = "JIT code";
+    u8 bytes[8] = {0};
+    int access = r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION;
+    if (!access && r->ExceptionCode != EXCEPTION_ILLEGAL_INSTRUCTION && r->ExceptionCode != EXCEPTION_PRIV_INSTRUCTION &&
+        r->ExceptionCode != 0xC0000409u /* __fastfail, a Rust abort */)
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)rip, &m) &&
+        m)
+        GetModuleFileNameA(m, name, sizeof name);
+    /* an access violation is the runtime's to report unless the JIT's code or the library made it */
+    if (access && m && m != (HMODULE)g_armature.lib) return EXCEPTION_CONTINUE_SEARCH;
+    if (access && r->NumberParameters >= 2)
+        LOG("armature: the access was a %s of %#llx\n", r->ExceptionInformation[0] == 1 ? "write" : "read",
+            (unsigned long long)r->ExceptionInformation[1]);
+    if (!IsBadReadPtr(rip, sizeof bytes)) memcpy(bytes, rip, sizeof bytes);
+    LOG("armature: exception %08lx at %p (%s +%#llx), bytes %02x %02x %02x %02x %02x %02x %02x %02x; the thread's "
+        "last guest pc %llx\n",
+        (unsigned long)r->ExceptionCode, (const void*)rip, name,
+        (unsigned long long)(m ? (uintptr_t)rip - (uintptr_t)m : 0), bytes[0], bytes[1], bytes[2], bytes[3], bytes[4],
+        bytes[5], bytes[6], bytes[7], (unsigned long long)(t_cpu ? t_cpu->pc : 0));
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
+
 /* ---- the library ---- */
 
 static void* sym(const char* name) {
@@ -321,6 +356,9 @@ void armature_init(void) {
        take theirs after this */
     if (g_disp)
         for (u64 i = 0; i < (g_code_hi - g_code_lo) / 4; i++) __atomic_store_n(&g_disp[i], NULL, __ATOMIC_RELAXED);
+#ifdef _WIN32
+    AddVectoredExceptionHandler(0, fault_note);
+#endif
     g_armature.on = 1;
     LOG("armature: the game's code runs on %s, not on the recompiled module\n", g_settings.armature_jit);
 }
