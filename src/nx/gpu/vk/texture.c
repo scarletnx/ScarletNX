@@ -1622,6 +1622,8 @@ static void sparse_moves_end(SparseMove* sp, u32 nsp, VkBuffer scratch) {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &back};
     rec_CmdPipelineBarrier2(cb, &d);
     vk_submit_recorded();
+    /* the compute queue's next batch after the copies back: a dispatch reads the buffer cache's pages in place */
+    vk_compute_after_gfx(vk_last_submit());
 }
 void vk_tex_defrag_frame(void) {
     if (!vk_cmd_ready()) return;
