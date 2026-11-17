@@ -790,7 +790,13 @@ static uint32_t system_update_continue(VitaProcess* p, VitaThread* t) {
         bool playing = true;
         if (rack->kind == DEF_SIMPLE_ATRAC9) {
             /* no decoder for SceNgsAT9Params here: a silent voice, done after its first granule rather than read as
-               the PCM/HE-ADPCM player's struct */
+            the PCM/HE-ADPCM player's struct */
+            static bool warned;
+            if (!warned) {
+                warned = true;
+                printf("ngs: rack %u is an Atrac9 voice, which has no decoder and plays silent\n",
+                       n->update_rack);
+            }
             playing = false;
         } else if (rack->kind == DEF_SIMPLE || rack->kind == DEF_TEMPLATE1) {
             PlayerEvent event = {0};
