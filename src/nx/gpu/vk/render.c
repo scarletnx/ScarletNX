@@ -3078,7 +3078,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         int ok = gb->aliased             ? (b = gb->buf, o = gb->off, 1)
                  : addr && gb->writable  ? vk_buf_copy_writable(addr, size, &b, &o, ordered)
                  : addr && gb->bare      ? vk_buf_get_window(addr, size, &b, &o)
-                 : addr                  ? vk_buf_get_input(addr, size, sa, &b, &o)
+                 : addr                  ? vk_buf_get_storage(addr, size, sa, &b, &o)
                  : vk_null_descriptors() ? (b = VK_NULL_HANDLE, o = 0, 1)
                                          : vk_buf_copy(0, size, &b, &o);
         if (!ok) return VK_NULL_HANDLE;
