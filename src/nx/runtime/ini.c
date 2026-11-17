@@ -394,6 +394,8 @@ static const struct {
                       {"press_at", "now script, whose press_at:press is the same press"},
                       {"vk_defrag", "the renderer always defragments a discrete GPU's memory, and never another's"},
                       {"vk_heap_budget_mb", "went with no replacement: it was for tests of a GPU with less memory"},
+                      {"vk_nv_dedicated_allocation_image_aliasing",
+                       "the renderer no longer uses the extension: it lost the GPU on NVIDIA's driver"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;
