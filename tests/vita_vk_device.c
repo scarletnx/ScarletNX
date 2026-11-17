@@ -41,20 +41,22 @@ static bool init_said(char* log, size_t size, char* why, size_t why_size) {
     fputs(log, stdout);
     return made;
 }
-static bool enabled(const VitaVk* v, const char* name) {
-    for (uint32_t i = 0; i < v->extension_count; i++)
-        if (!strcmp(v->extensions[i], name)) return true;
-    return false;
+/* the line of log that says what the device is made with (common/gpu/vk/device.c) names the extension */
+static bool enabled(const char* log, const char* name) {
+    const char* made = strstr(log, "scarletnx-vita: the device is ");
+    const char* end = made ? strchr(made, '\n') : NULL;
+    const char* at = made ? strstr(made, name) : NULL;
+    return at && end && at < end;
 }
 
 int main(void) {
     static char log[65536];
     char why[512];
-    if (!vita_vk_init(NULL, why, sizeof why)) {
+    if (!init_said(log, sizeof log, why, sizeof why)) {
         printf("SKIP no Vulkan device (%s)\n", why);
         return 77;
     }
-    bool local_read = enabled(vita_vk(), LOCAL_READ);
+    bool local_read = enabled(log, LOCAL_READ);
     vita_vk_free();
     if (!local_read) {
         puts("SKIP the device has no " LOCAL_READ);
@@ -62,7 +64,7 @@ int main(void) {
     }
     ini_read(ini_find(g_debug_ini, "vk_debug_hide_commands"), "vkCmdSetRenderingAttachmentLocationsKHR");
     CHECK(init_said(log, sizeof log, why, sizeof why));
-    CHECK(vita_vk() && !vita_vk()->local_read && !enabled(vita_vk(), LOCAL_READ));
+    CHECK(vita_vk() && !vita_vk()->local_read && !enabled(log, LOCAL_READ));
     CHECK(strstr(log, "lists " LOCAL_READ " without vkCmdSetRenderingAttachmentLocationsKHR, which it requires "
                       "(vk_debug_hide_commands hides it from the check): the device is made again without it"));
     const char* off = strstr(log, "vulkan: " LOCAL_READ " is off on ");
@@ -71,8 +73,8 @@ int main(void) {
     /* the extension's own setting, which the Vita now takes as a Switch game does */
     ini_read(ini_find(g_debug_ini, "vk_debug_hide_commands"), "");
     ini_read(ini_find(g_vk_extensions_ini, "vk_khr_dynamic_rendering_local_read"), "off");
-    CHECK(vita_vk_init(NULL, why, sizeof why));
-    CHECK(!vita_vk()->local_read && !enabled(vita_vk(), LOCAL_READ));
+    CHECK(init_said(log, sizeof log, why, sizeof why));
+    CHECK(!vita_vk()->local_read && !enabled(log, LOCAL_READ));
     vita_vk_free();
     puts("PASS the Vita's device without " LOCAL_READ ", by the check and by its setting");
     return 0;

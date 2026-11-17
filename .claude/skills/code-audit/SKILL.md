@@ -197,6 +197,30 @@ For partitioned scopes:
 4. Wait until all the agents return.
 5. Merge their findings into one list without duplicates. Then continue to step 4.
 
+### Reviewer context isolation (READ THIS BEFORE YOU WRITE A PROMPT)
+
+A partition reviewer must not know what you already suspect. In the Goldfish model of the Elephant-Goldfish plugin, a reviewer is a newcomer who reads the document and nothing else. A reviewer that you tell what to look for finds it, and it reports a clean pass when the thing is absent. Such a pass confirms itself, and it is the cheapest way to turn an audit into a rubber stamp.
+
+A Phase A partition prompt carries only these items, plus the coverage line at the end of this section:
+
+- the partition file paths, and the instruction to read each one fully
+- the step 3 analysis dimensions, copied word for word
+- the project rules from `CLAUDE.md`, quoted
+- the grep and ast-grep scope, which is the full repository, and the three targets that the parent item lists
+- the output format, and the delivery instruction, which is the `SendMessage` text and the two extra clauses of the parent item
+
+It does not carry the ledger from `audit-state.json`, the finding of an earlier pass, or the name of a function that you want examined. It also does not carry a hypothesis about a root cause, or a note that an area is fragile. If a site needs attention, it is a file in a partition, and the dimensions of this step cover it.
+
+This rule limits what you pass to the reviewer. It does not limit what the reviewer already knows. The definition of a specialist in `.claude/agents/review/` carries its list of known past-bug shapes, and that list stays. The difference is the source. A pattern from the project history is expertise. A finding of this run is a conclusion that the reviewer must reach alone.
+
+This is the reviewer-side twin of step 8.5. Step 8.5 forbids a pass that reads fewer files. This rule forbids a pass that narrows what the reviewer looks for inside them. A pass whose prompts carry prior findings is INVALID, because it cannot find anything new when you told it what to find.
+
+The exception is a Phase B confirmation round. There the job is to check a fix that you made, so the prompt names the fix, its site and its rationale. The agent still verifies the mechanism itself, and it must not take the rationale as proof that the fix is correct.
+
+**A reviewer reports its own coverage.** Each partition prompt also carries this line: "If you cannot open a file in your partition, say so in the report. Mark that file INCOMPLETE. Do not describe a file that you did not read as clean." A report that is silent about a file it never opened is the same failure as a partition that never ran. Step 12 then counts it as a false 100% coverage.
+
+The mark is per file, and it is not the INCOMPLETE verdict of step 12.
+
 ### A silent partition (READ THIS BEFORE YOU DECIDE THAT THE AGENTS ARE BROKEN)
 
 The most frequent failure mode is **an agent that goes idle with no report**. You get an idle notification with `idleReason: "available"` and nothing more. That is NOT a crash, and it is almost never an infrastructure fault. `"available"` means that the agent finished its turn cleanly. The cause is almost always this: the agent did the analysis, wrote the findings as plain text and did not call `SendMessage`. Thus the report disappeared.

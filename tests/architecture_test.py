@@ -13,6 +13,10 @@ architecture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(architecture)
 
 
+# a cpmfile.json entry CPMUtil takes
+PIN = {'hash': 'ab' * 64, 'repo': 'a/b', 'version': 'v1'}
+
+
 class ArchitectureTests(unittest.TestCase):
     def environment_errors(self, files):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
@@ -86,6 +90,35 @@ class ArchitectureTests(unittest.TestCase):
         both = 'void o(void) { SDL_CreateWindowAndRenderer("t", 1, 1, 0, &w, &r); }\n'
         self.assertEqual(len(self.window_errors({'src/nx/a.c': both})), 1)
 
+    def device_errors(self, files):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            return architecture.check_device_makers(root)
+
+    def test_a_device_made_outside_the_common_path_is_rejected(self):
+        files = {
+            'src/3ds/gpu/vk/device.c': 'static bool make(void) {\n    return vkCreateDevice(p, &i, NULL, &d) == 0;\n}\n',
+            'src/nds/gpu/vk/device.c': 'void up(void) { volkLoadDevice (d); }\n',
+        }
+        errors = self.device_errors(files)
+        self.assertEqual(len(errors), 2)
+        self.assertIn('src/3ds/gpu/vk/device.c:2: vkCreateDevice: only src/common/gpu/vk/device.c makes', errors[0])
+        self.assertIn('ask snx_vk_device_make (common/gpu/vk/device.h)', errors[0])
+        self.assertIn('src/nds/gpu/vk/device.c:1: volkLoadDevice: only', errors[1])
+
+    def test_the_common_path_a_pointer_and_a_comment_pass(self):
+        files = {
+            'src/common/gpu/vk/device.c': 'void m(void) { vkCreateDevice(p, &i, NULL, &d); volkLoadDevice(d); }\n',
+            'src/android/bridge/hle_vulkan.c': 'PFN_vkCreateDevice create = VKF(vkCreateDevice);\n'
+            'static const struct { const char* n; } t[] = {{"vkCreateDevice"}};\n',
+            'src/nx/gpu/vk/a.c': '/* made by vkCreateDevice() in common/gpu/vk/device.c */\n'
+            'int snx_vkCreateDevice(int x);\nint y = snx_vkCreateDevice(1);\n',
+        }
+        self.assertEqual(self.device_errors(files), [])
+
     def dynamic_errors(self, files):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             root = Path(temporary)
@@ -114,6 +147,181 @@ class ArchitectureTests(unittest.TestCase):
             'static int t = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;\n',
         }
         self.assertEqual(self.dynamic_errors(files), [])
+
+    def package_errors(self, files, pins):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            (root / 'cpmfile.json').write_text(json.dumps(pins, indent=4, sort_keys=True) + '\n', encoding='ascii')
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            return architecture.check_packages(root)
+
+    def test_a_download_outside_cpmutil_is_rejected(self):
+        files = {
+            'cmake/deps.cmake': 'CPMAddPackage(NAME x VERSION 1 URL https://x/x.tgz)\n',
+            'src/CMakeLists.txt': 'if(A)\n  cpmfindpackage (NAME y)\nendif()\nfile(DOWNLOAD https://x/y y)\n',
+            'tests/cmake/t.cmake': 'FetchContent_Declare(z URL https://x/z.tgz)\n',
+        }
+        errors = self.package_errors(files, {})
+        self.assertEqual(len(errors), 4, errors)
+        self.assertIn('cmake/deps.cmake:1: CPMAddPackage fetches a third-party package outside CPMUtil', errors[0])
+        self.assertIn('src/CMakeLists.txt:2: cpmfindpackage fetches', errors[1])
+        self.assertIn('src/CMakeLists.txt:4: file(DOWNLOAD fetches', errors[2])
+        self.assertIn('tests/cmake/t.cmake:1: FetchContent_Declare fetches', errors[3])
+
+    def test_cpmutil_comments_and_strings_do_not_fetch(self):
+        files = {
+            'cmake/cpmutil/CPMUtil.cmake': 'function(AddPackage)\n  CPMAddPackage(NAME ${n})\nendfunction()\n',
+            'cmake/a.cmake': '# CPMAddPackage(NAME x)\n#[[ file(DOWNLOAD u f) ]]\nmessage("CPMAddPackage(x)")\n'
+            'file(WRITE p [=[FetchContent_Declare(y)]=])\n',
+        }
+        self.assertEqual(self.package_errors(files, {}), [])
+
+    def test_every_pin_is_added_and_every_key_pinned(self):
+        files = {
+            'cmake/a.cmake': 'AddJsonPackage(NAME lib DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)\n'
+            'AddJsonPackage(gone)\nsnx_cpmfile(v lib version)\nsnx_cpmfile(v absent hash)\n',
+            'tests/CMakeLists.txt': 'foreach(n a b)\n  snx_package_file(vec_${n})\nendforeach()\n',
+        }
+        pins = {'lib': PIN, 'vec_a': PIN, 'vec_b': PIN, 'unused': PIN}
+        errors = self.package_errors(files, pins)
+        self.assertEqual(len(errors), 3, errors)
+        self.assertIn('cmake/a.cmake:2: gone is not pinned in cpmfile.json', errors[0])
+        self.assertIn('cmake/a.cmake:4: absent is not pinned in cpmfile.json', errors[1])
+        self.assertIn('cpmfile.json: unused is pinned, and no AddJsonPackage or snx_package_file adds it', errors[2])
+
+    def test_only_a_package_the_system_may_give_is_left_to_cpmutils_options(self):
+        system = dict(PIN, min_version='1')
+        files = {
+            'cmake/a.cmake': 'AddJsonPackage(NAME pinned DOWNLOAD_ONLY)\nAddJsonPackage(local)\n'
+            'AddJsonPackage(NAME first FORCE_BUNDLED_PACKAGE ON)\nAddJsonPackage(NAME kept FORCE_BUNDLED_PACKAGE ON)\n',
+        }
+        errors = self.package_errors(files, {'pinned': PIN, 'local': system, 'first': system, 'kept': PIN})
+        self.assertEqual(len(errors), 2, errors)
+        self.assertIn(
+            'cmake/a.cmake:1: pinned is added without FORCE_BUNDLED_PACKAGE ON, and its entry has no', errors[0]
+        )
+        self.assertIn('cmake/a.cmake:3: first is added with FORCE_BUNDLED_PACKAGE ON, and its entry has a', errors[1])
+
+    def test_every_patch_is_named_and_there(self):
+        pins = {'lib': dict(PIN, patches=['0001-fix.patch', '0002-gone.patch'])}
+        files = {
+            'cmake/a.cmake': 'AddJsonPackage(NAME lib FORCE_BUNDLED_PACKAGE ON)\n',
+            '.patch/lib/0001-fix.patch': '--- a/x\n+++ b/x\n',
+            '.patch/lib/0003-stray.patch': '--- a/y\n+++ b/y\n',
+            '.patch/other/0001-x.patch': '--- a/z\n+++ b/z\n',
+        }
+        errors = self.package_errors(files, pins)
+        self.assertEqual(len(errors), 3, errors)
+        self.assertIn(
+            'cpmfile.json: lib names the patch 0002-gone.patch, and .patch/lib/0002-gone.patch is no file', errors[0]
+        )
+        self.assertIn('.patch/lib/0003-stray.patch is a patch no cpmfile.json entry names', errors[1])
+        self.assertIn('.patch/other/0001-x.patch is a patch no cpmfile.json entry names', errors[2])
+
+    def test_a_key_is_lowercase(self):
+        pins = {'OpenSSL': dict(PIN), 'openssl-cmake': dict(PIN, package='OpenSSL')}
+        files = {
+            'cmake/a.cmake': 'AddJsonPackage(NAME OpenSSL FORCE_BUNDLED_PACKAGE ON)\n'
+            'AddJsonPackage(NAME openssl-cmake FORCE_BUNDLED_PACKAGE ON)\n'
+        }
+        errors = self.package_errors(files, pins)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn('cpmfile.json: OpenSSL has upper-case letters: a key is lowercase', errors[0])
+
+    def test_the_cpmfile_is_in_cpmutils_form(self):
+        pins = {'a': dict(PIN, hash='0' * 64, sha256='x'), 'b': {'hash': 'cd' * 64}}
+        files = {'cmake/a.cmake': 'AddJsonPackage(NAME a FORCE_BUNDLED_PACKAGE ON)\nsnx_package_file(b)\n'}
+        errors = self.package_errors(files, pins)
+        self.assertEqual(len(errors), 4, errors)
+        self.assertIn('cpmfile.json: a has sha256, which CPMUtil does not read', errors[0])
+        self.assertIn("cpmfile.json: a's hash is [" + '0' * 64 + '], not a SHA-512', errors[1])
+        self.assertIn('cpmfile.json: b has no version', errors[2])
+        self.assertIn('cpmfile.json: b has neither a url nor a repo', errors[3])
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            (root / 'cpmfile.json').write_text(json.dumps({'a': PIN}), encoding='ascii')
+            (root / 'CMakeLists.txt').write_text('AddJsonPackage(NAME a FORCE_BUNDLED_PACKAGE ON)\n', encoding='ascii')
+            errors = architecture.check_packages(root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("cpmfile.json is not in CPMUtil's form, which jq --indent 4 -S . writes", errors[0])
+
+    def version_errors(self, files):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            return architecture.check_cmake_versions(root)
+
+    def test_a_cmake_file_asking_more_than_the_minimum_is_rejected(self):
+        files = {
+            'CMakeLists.txt': '# cmake_minimum_required(VERSION 3.31)\ncmake_minimum_required(VERSION 3.28)\n',
+            'cmake/cpmutil/CPMUtil.cmake': 'cmake_minimum_required(VERSION 3.31)\n',
+            'tests/t.cmake': '# cmake_minimum_required(VERSION 4.0)\n'
+            'file(WRITE p "cmake_minimum_required(VERSION 3.28.6)\n")\n',
+            'tools/x/CMakeLists.txt': 'CMAKE_MINIMUM_REQUIRED(VERSION 3.25)\ncmake_minimum_required(VERSION 3.28.0)\n',
+        }
+        errors = self.version_errors(files)
+        self.assertEqual(len(errors), 2, errors)
+        self.assertEqual(
+            errors[0],
+            "cmake/cpmutil/CPMUtil.cmake:1: asks CMake 3.31, and the build's minimum (CMakeLists.txt) is 3.28, on "
+            'which it stops: ask 3.28 or raise the minimum',
+        )
+        self.assertIn("tests/t.cmake:2: asks CMake 3.28.6, and the build's minimum (CMakeLists.txt) is 3.28", errors[1])
+
+    def test_a_policy_the_minimum_lacks_needs_if_policy(self):
+        files = {
+            'CMakeLists.txt': 'cmake_minimum_required(VERSION 3.28)\n',
+            'cmake/a.cmake': 'macro(m)\n'
+            '  cmake_policy(SET CMP0150 NEW)\n'
+            '  cmake_policy(SET CMP0168 NEW)\n'
+            '  if(POLICY CMP0168)\n'
+            '    cmake_policy(SET CMP0168 NEW)\n'
+            '    if(A)\n'
+            '      cmake_policy(SET CMP0168 NEW)\n'
+            '    endif()\n'
+            '  elseif(POLICY CMP0174)\n'
+            '    cmake_policy(SET CMP0168 NEW)\n'
+            '  endif()\n'
+            '  if(NOT POLICY CMP0170)\n'
+            '  else()\n'
+            '    cmake_policy(SET CMP0170 NEW)\n'
+            '  endif()\n'
+            '  if(NOT POLICY CMP0171)\n'
+            '    cmake_policy(SET CMP0171 NEW)\n'
+            '  endif()\n'
+            '  # cmake_policy(SET CMP0172 NEW)\n'
+            '  message("cmake_policy(SET CMP0173 NEW)")\n'
+            'endmacro()\n',
+        }
+        errors = self.version_errors(files)
+        self.assertEqual(len(errors), 4, errors)
+        self.assertEqual(
+            errors[0],
+            "cmake/a.cmake:3: sets CMP0168 outside if(POLICY CMP0168), and CMake 3.28, the build's minimum, stops on "
+            'it: its last policy is CMP0155',
+        )
+        self.assertIn('cmake/a.cmake:10: sets CMP0168 outside if(POLICY CMP0168)', errors[1])
+        self.assertIn('cmake/a.cmake:14: sets CMP0170 outside if(POLICY CMP0170)', errors[2])
+        self.assertIn('cmake/a.cmake:17: sets CMP0171 outside if(POLICY CMP0171)', errors[3])
+
+    def test_a_minimum_with_no_last_policy_is_named(self):
+        self.assertEqual(
+            self.version_errors({'CMakeLists.txt': 'cmake_minimum_required(VERSION 3.31...4.0)\n'}),
+            [
+                (
+                    'CMakeLists.txt asks CMake 3.31, and CMAKE_LAST_POLICY in tests/architecture.py has no last policy '
+                    'for 3.31: add the last of cmake --help-policy-list in that release'
+                )
+            ],
+        )
+        self.assertEqual(
+            self.version_errors({'CMakeLists.txt': 'project(x)\n'}),
+            ['CMakeLists.txt has no cmake_minimum_required(VERSION ...): the build states the CMake it needs there'],
+        )
 
     def test_a_window_of_the_displays_pixels_passes(self):
         files = {

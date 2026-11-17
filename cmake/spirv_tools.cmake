@@ -1,20 +1,23 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # SPIRV-Tools' spirv-opt, spirv-val and spirv-dis, as the executables snx-spirv-opt, snx-spirv-val and snx-spirv-dis:
-# the shaders' optimizer and validator (cmake/glsl.cmake) and the tests' checks of the SPIR-V the build writes. They
-# are KhronosGroup's release that cmake/dependencies.cmake pins, built from its source with the SPIRV-Headers commit
-# its DEPS names, for the machine doing the build (a cross build's too: nothing links them), as Release whatever the
-# build's type, and kept in SNX_DEPS_CACHE when it is set (cmake/deps_cache.cmake): every machine optimizes and
-# validates with the same release, whatever its distribution packages.
+# the shaders' optimizer and validator (cmake/glsl.cmake) and the tests' checks of the SPIR-V the build writes. They are
+# KhronosGroup's release that cpmfile.json pins, built from its source with the SPIRV-Headers commit its DEPS names
+# (spirv_headers_revision), for the machine doing the build (a cross build's too: nothing links them), as Release
+# whatever the build's type, and kept in SNX_DEPS_CACHE when it is set (cmake/deps_cache.cmake): every machine optimizes
+# and validates with the same release, whatever its distribution packages.
 #
 # SNX_SPIRV_OPT, SNX_SPIRV_VAL and SNX_SPIRV_DIS name other tools; one not named is the one beside the tool before it
-# (spirv-val beside spirv-opt, spirv-dis beside spirv-val) when there is one. With CPM_USE_LOCAL_PACKAGES
-# (cmake/cpm_local.cmake), the system's tools on PATH are taken when spirv-opt --version says the pinned release or
-# a newer one.
+# (spirv-val beside spirv-opt, spirv-dis beside spirv-val) when there is one. SPIRV-Tools_FORCE_SYSTEM and
+# CPMUTIL_FORCE_SYSTEM (CPMUtil's options, cmake/packages.cmake) take the system's tools on PATH instead, which
+# spirv-opt --version must say are the pinned release or a newer one, as CPM_USE_LOCAL_PACKAGES did where they are,
+# the pinned ones elsewhere; SPIRV-Tools_FORCE_BUNDLED and CPMUTIL_FORCE_BUNDLED keep the pinned ones.
 include_guard(GLOBAL)
-if(NOT DEFINED snx_spirv_tools_version)
-    message(FATAL_ERROR "cmake/spirv_tools.cmake needs the pin cmake/dependencies.cmake sets: include that first")
+if(NOT COMMAND snx_cpmfile)
+    message(FATAL_ERROR "cmake/spirv_tools.cmake needs CPMUtil and the pins, cmake/packages.cmake: include that first")
 endif()
+snx_cpmfile(snx_spirv_tools_version spirv-tools version)
+string(REGEX REPLACE "^v" "" snx_spirv_tools_version "${snx_spirv_tools_version}")
 
 # A configure from before the pin wrote the tools it found on PATH into these keys: glsl.cmake its spirv-opt and
 # spirv-val, with its own search's result beside each, and the tests their find_program's, with that command's
@@ -69,10 +72,30 @@ foreach(snx_spirv_pair opt:val val:dis)
     endif()
 endforeach()
 
-# The system's tools, all three from one place, when CPM_USE_LOCAL_PACKAGES asks for them and SNX_SPIRV_OPT and
-# SNX_SPIRV_VAL leave one to find. Their version is spirv-opt's --version ("SPIRV-Tools v2026.3 ..."): no
-# distribution's SPIRV-Tools package installs a CMake version file find_package could compare
-if(snx_cpm_use_local_packages AND NOT (snx_spirv_opt AND snx_spirv_val))
+# Whether the system's tools are asked for, in CPMUtil's order: SPIRV-Tools' own option first, then the global ones,
+# then CPM_USE_LOCAL_PACKAGES, which a configure from before CPMUtil gave and which takes the system's where they fit
+option(SPIRV-Tools_FORCE_SYSTEM "Take spirv-opt, spirv-val and spirv-dis from PATH, at the pinned SPIRV-Tools or newer"
+       OFF)
+option(SPIRV-Tools_FORCE_BUNDLED "Build the pinned SPIRV-Tools' spirv-opt, spirv-val and spirv-dis" OFF)
+set(snx_spirv_system "")
+if(SPIRV-Tools_FORCE_SYSTEM)
+    set(snx_spirv_system SPIRV-Tools_FORCE_SYSTEM)
+elseif(SPIRV-Tools_FORCE_BUNDLED)
+elseif(CPMUTIL_FORCE_SYSTEM)
+    set(snx_spirv_system CPMUTIL_FORCE_SYSTEM)
+elseif(CPMUTIL_FORCE_BUNDLED)
+elseif(snx_cpm_use_local_packages) # as cmake/packages.cmake read it
+    set(snx_spirv_system CPM_USE_LOCAL_PACKAGES)
+    snx_cpm_note(SPIRV-Tools "${snx_cpm_use_local_packages_from} is CPM.cmake's option, which CPMUtil's replace: "
+                             "read for SPIRV-Tools as SPIRV-Tools_FORCE_SYSTEM=ON where spirv-opt, spirv-val and "
+                             "spirv-dis on PATH are its pinned release or newer, the pinned ones otherwise. Configure "
+                             "with -DSPIRV-Tools_FORCE_SYSTEM=ON instead.")
+endif()
+
+# The system's tools, all three from one place, when they are asked for and SNX_SPIRV_OPT and SNX_SPIRV_VAL leave one to
+# find. Their version is spirv-opt's --version ("SPIRV-Tools v2026.3 ..."): no distribution's SPIRV-Tools package
+# installs a CMake version file find_package could compare
+if(snx_spirv_system AND NOT (snx_spirv_opt AND snx_spirv_val))
     find_program(snx_spirv_local NAMES spirv-opt NO_CACHE NO_CMAKE_FIND_ROOT_PATH)
     set(snx_spirv_local_why "")
     if(NOT snx_spirv_local)
@@ -98,14 +121,18 @@ if(snx_cpm_use_local_packages AND NOT (snx_spirv_opt AND snx_spirv_val))
             endforeach()
         endif()
     endif()
-    if(snx_spirv_local_why)
-        message(STATUS "CPM_USE_LOCAL_PACKAGES=${snx_cpm_use_local_packages}: ${snx_spirv_local_why}, so the build "
-                       "builds the pinned SPIRV-Tools v${snx_spirv_tools_version}")
+    if(snx_spirv_local_why AND snx_spirv_system STREQUAL "CPM_USE_LOCAL_PACKAGES")
+        message(STATUS "CPM_USE_LOCAL_PACKAGES=ON: ${snx_spirv_local_why}, so the build builds the pinned SPIRV-Tools "
+                       "v${snx_spirv_tools_version}")
+    elseif(snx_spirv_local_why)
+        message(FATAL_ERROR "${snx_spirv_system}=ON: ${snx_spirv_local_why}. Put SPIRV-Tools "
+                            "v${snx_spirv_tools_version} or newer on PATH, name the tools with SNX_SPIRV_OPT and "
+                            "SNX_SPIRV_VAL, or configure with -D${snx_spirv_system}=OFF for the pinned release.")
     else()
         foreach(snx_spirv_tool opt val dis)
             if(NOT snx_spirv_${snx_spirv_tool})
                 set(snx_spirv_${snx_spirv_tool} "${snx_spirv_dir}/spirv-${snx_spirv_tool}${snx_spirv_exe}")
-                set(snx_spirv_${snx_spirv_tool}_from "the system's v${snx_spirv_local_version}, CPM_USE_LOCAL_PACKAGES")
+                set(snx_spirv_${snx_spirv_tool}_from "the system's v${snx_spirv_local_version}, ${snx_spirv_system}")
             endif()
         endforeach()
     endif()
@@ -113,14 +140,10 @@ endif()
 
 # The pinned release, for spirv-opt or spirv-val when neither a name nor the system gave it, and for spirv-dis with them
 if(NOT snx_spirv_opt OR NOT snx_spirv_val)
-    CPMAddPackage(NAME SPIRV-Tools VERSION ${snx_spirv_tools_version}
-                  URL https://github.com/KhronosGroup/SPIRV-Tools/archive/refs/tags/v${snx_spirv_tools_version}.tar.gz
-                  URL_HASH SHA256=${snx_spirv_tools_sha256}
-                  DOWNLOAD_ONLY YES)
-    CPMAddPackage(NAME SPIRV-Headers
-                  URL https://github.com/KhronosGroup/SPIRV-Headers/archive/${snx_spirv_headers_commit}.tar.gz
-                  URL_HASH SHA256=${snx_spirv_headers_sha256}
-                  DOWNLOAD_ONLY YES)
+    AddJsonPackage(NAME spirv-tools DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
+    AddJsonPackage(NAME spirv-headers DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
+    snx_cpmfile(snx_spirv_tools_hash spirv-tools hash)
+    snx_cpmfile(snx_spirv_headers_hash spirv-headers hash)
 
     # The machine doing the build's compilers: a cross build's are the target's (cmake/host_cc.cmake)
     if(CMAKE_CROSSCOMPILING)
@@ -170,8 +193,8 @@ if(NOT snx_spirv_opt OR NOT snx_spirv_val)
     string(STRIP "${snx_spirv_python}" snx_spirv_python)
     set(snx_spirv_key_args ${snx_spirv_args})
     list(FILTER snx_spirv_key_args EXCLUDE REGEX "^-DPython3_EXECUTABLE=")
-    snx_deps_cached(spirv-tools snx_spirv_tools_cache HOST "${snx_spirv_cc}" "source: ${snx_spirv_tools_sha256}"
-                    "headers: ${snx_spirv_headers_sha256}" "configure: ${snx_spirv_key_args}"
+    snx_deps_cached(spirv-tools snx_spirv_tools_cache HOST "${snx_spirv_cc}" "source: ${snx_spirv_tools_hash}"
+                    "headers: ${snx_spirv_headers_hash}" "configure: ${snx_spirv_key_args}"
                     "python: ${snx_spirv_python}")
     if(snx_spirv_tools_cache_FOUND)
         set(snx_spirv_prefix "${snx_spirv_tools_cache_DIR}")
@@ -191,6 +214,7 @@ if(NOT snx_spirv_opt OR NOT snx_spirv_val)
             endif()
         endforeach()
         include(ExternalProject)
+        snx_deps_binary_dir("${PROJECT_BINARY_DIR}/spirv-tools-build" "${SPIRV-Tools_SOURCE_DIR}")
         # Only the three tools are built, straight into the prefix: SPIRV-Tools' install would want every target
         ExternalProject_Add(snx_spirv_tools_build
             SOURCE_DIR "${SPIRV-Tools_SOURCE_DIR}"

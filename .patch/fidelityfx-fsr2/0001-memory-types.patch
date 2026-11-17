@@ -1,5 +1,5 @@
---- a/vk/ffx_fsr2_vk.cpp
-+++ b/vk/ffx_fsr2_vk.cpp
+--- a/src/ffx-fsr2-api/vk/ffx_fsr2_vk.cpp
++++ b/src/ffx-fsr2-api/vk/ffx_fsr2_vk.cpp
 @@ -452,13 +452,18 @@
      vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
  

@@ -6,9 +6,13 @@
 #include "nx/memory/mem.h"
 
 OwnState g_own;
+/* the calls of own_acquire, for a test that counts them (with g_own.nown set, own_any says the GPU owns memory) */
+extern u64 g_own_stub_acquires;
+u64 g_own_stub_acquires;
 void own_acquire(u64 addr, u64 size) {
     (void)addr;
     (void)size;
+    g_own_stub_acquires++;
 }
 u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     (void)addr;

@@ -32,7 +32,7 @@
 #include <libavutil/frame.h>
 #include <libavutil/log.h>
 
-#define CTX_MAGIC  0x534E5856u /* "SNXV": what cmake/ffmpeg-vp9-nvdec.patch looks for at the context's start */
+#define CTX_MAGIC  0x534E5856u /* "SNXV": what the VP9 patch (.patch/ffmpeg) looks for at the context's start */
 #define HDR_CAP    1024u       /* an SPS and a PPS with full scaling lists and emulation prevention take ~800 */
 #define MAX_STREAM (16u << 20) /* the largest bitstream a job may name */
 #define MAX_DIM    4096u       /* the largest picture width or height NVDEC decodes */

@@ -441,7 +441,7 @@ static void submission_tests(void) {
 }
 #endif
 /* A VP9 job opens a VP9 decoder whose opaque is the channel's context, which starts with what FFmpeg's patched VP9
-   decoder reads there (cmake/ffmpeg-vp9-nvdec.patch); one with no probability table fails without writing the
+   decoder reads there (.patch/ffmpeg/0001-vp9-nvdec.patch); one with no probability table fails without writing the
    picture; a codec NVDEC jobs are not decoded for fails and leaves the decoder as it was */
 /* a job failed before its size was known: the status says failed, and the output surface keeps its bytes */
 static void failed_untouched(void) {

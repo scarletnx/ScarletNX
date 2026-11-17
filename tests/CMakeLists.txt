@@ -1791,6 +1791,16 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     add_test(NAME nn_fs_restore_card COMMAND snx-test-nn-fs restore-card)
     set_tests_properties(nn_fs_restore_card PROPERTIES PASS_REGULAR_EXPRESSION
         "fatal: nn::fs::GetSaveDataRestoreFlag failed with result 0x2ee002 \\(error 2002-6000\\)")
+    # Unmount with entries open: each one's path logged, then FileNotClosed, or DirectoryNotClosed for folders alone
+    add_test(NAME nn_fs_unmount_save COMMAND snx-test-nn-fs unmount-save)
+    set_tests_properties(nn_fs_unmount_save PROPERTIES FAIL_REGULAR_EXPRESSION "ng:/" PASS_REGULAR_EXPRESSION
+        "nn::fs::Unmount\\(\"save\"\\): the file save:/five is open\nnn::fs::Unmount\\(\"save\"\\): the directory save:/folder/inner is open\nfatal: nn::fs::Unmount\\(\"save\"\\) failed with result 0x326e02 \\(error 2002-6455\\), which the SDK stops the game on \\(open on it, each logged above: files 1, directories 1\\)\n")
+    add_test(NAME nn_fs_unmount_rom COMMAND snx-test-nn-fs unmount-rom)
+    set_tests_properties(nn_fs_unmount_rom PROPERTIES PASS_REGULAR_EXPRESSION
+        "nn::fs::Unmount\\(\"ng\"\\): the file ng:/d/f is open\nnn::fs::Unmount\\(\"ng\"\\): the directory ng:/d is open\nnn::fs::Unmount\\(\"ng\"\\): the directory ng:/ is open\nfatal: nn::fs::Unmount\\(\"ng\"\\) failed with result 0x326e02 \\(error 2002-6455\\), [^\n]*: files 1, directories 2\\)\n")
+    add_test(NAME nn_fs_unmount_dir COMMAND snx-test-nn-fs unmount-dir)
+    set_tests_properties(nn_fs_unmount_dir PROPERTIES FAIL_REGULAR_EXPRESSION "the file" PASS_REGULAR_EXPRESSION
+        "nn::fs::Unmount\\(\"ng\"\\): the directory ng:/d is open\nfatal: nn::fs::Unmount\\(\"ng\"\\) failed with result 0x327002 \\(error 2002-6456\\), [^\n]*: files 0, directories 1\\)\n")
     # the native nn::pctl (nn/pctl.c): the answers of a console with no parental controls set
     add_executable(snx-test-nn-pctl nn_pctl.c)
     snx_test_target(snx-test-nn-pctl 23)
@@ -2202,19 +2212,17 @@ if(Python3_Interpreter_FOUND)
     endif()
 endif()
 
-# a package patched in the build tree from the cache's copy as released (cmake/patched_copy.cmake)
-add_test(NAME patched_copy COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
-         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/patched-copy-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/patched_copy_test.cmake")
-# the empty folder a failed download leaves in the CPM cache, which the next configure removes (cmake/cpm_cache.cmake)
-add_test(NAME cpm_cache COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCPM=${CPM_FILE}"
-         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpm-cache-test" "-DGENERATOR=${CMAKE_GENERATOR}"
-         "-DMAKE=${CMAKE_MAKE_PROGRAM}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cpm_cache_test.cmake")
+# what CPMUtil and snx_package_file keep in the package cache: a failed download said, a cut package fetched again,
+# one fetch of a package at a time, the patches applied without fuzz (cmake/packages.cmake)
+add_test(NAME cpmutil_cache COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpmutil-cache-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/cpmutil_cache_test.cmake")
 # the dependency cache's keys and how a build is published to it (cmake/deps_cache.cmake)
 add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/deps-cache-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/deps_cache_test.cmake")
-# CPM_USE_LOCAL_PACKAGES takes from the system the packages added with snx_cpm_local_package alone (cmake/cpm_local.cmake)
-add_test(NAME cpm_local COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCPM=${cpm_file}"
-         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpm-local-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/cpm_local_test.cmake")
+# where a package comes from by CPMUtil's options and the CPM.cmake ones they replace (cmake/packages.cmake)
+add_test(NAME cpmutil_options COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpmutil-options-test" -P
+         "${CMAKE_CURRENT_SOURCE_DIR}/cpmutil_options_test.cmake")
 # where spirv-opt, spirv-val and spirv-dis come from (cmake/spirv_tools.cmake): the fake tools are shell scripts
 if(NOT CMAKE_HOST_WIN32)
     add_test(NAME spirv_tools COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCC=${CMAKE_C_COMPILER}"
@@ -2522,44 +2530,17 @@ if(SNX_TEST_VP9_VECTORS)
     # nvdec.c's VP9 jobs on libvpx's test vectors, each image against the MD5 libvpx lists for it, at its own job's
     # fence (nvdec_vp9_vectors.c). FFmpeg's decoder works the jobs out of each vector from its private state
     # (nvdec_vp9_jobs.c), so that part builds against FFmpeg's source and configuration. The vectors and their lists
-    # come from the WebM project's test data (BSD-3-Clause), downloaded once into CPM_SOURCE_CACHE: a vector's name,
-    # then the SHA-256 of the vector and of its list. Hidden frames, contexts that adapt, frame parallel mode, a
+    # come from the WebM project's test data (BSD-3-Clause), downloaded once into CPM_SOURCE_CACHE: snx_vp9_<name> and
+    # snx_vp9_<name>_md5 in cpmfile.json, for each name here. Hidden frames, contexts that adapt, frame parallel mode, a
     # superframe of hidden frames, frames shown again, intra-only frames, spatial layers, tiles, size changes,
     # segmentation, loop filter and quantizer deltas. Off by default: a build without the network (a Flatpak's, a
     # distribution's) would wait on the downloads
     set(snx_vp9_vectors
-        vp90-2-02-size-66x66.webm 749e4260de357b2704117389cd0a620f73f8229043d214528d1cc7d81524faaa
-            96cdfc13db1458a93a3cecaf73acc5cee5ec8d5112a0406f7321d88fcee486e0
-        vp90-2-03-deltaq.webm c1ef6ca3eea22a53a79c7f82bdf295f2bf4d5c6dce7bb9659e0ab0e14bd6a72b
-            fe813160663227127f8de16053fc23aeefe2516301e3c740da3a96b98511d404
-        vp90-2-05-resize.ivf 84a345546e47e37de87d2959347bf731f9f440f9f2ab32bede3f0e416100c585
-            3158d3e404f06137bd6d8a9a1ec33ea37ccfad7aea8c9f61fa691ca5ab6e6f7c
-        vp90-2-07-frame_parallel.webm b101f5f71920b893ff301bd506d43d62f2f678ab9196ffc06fe605f1fa4caf4f
-            b3c0d7a1412209c78c5b8113fdbf946ad44b2fa84cadcfdf84e23b0e077dc269
-        vp90-2-08-tile-4x4.webm 89ce4c213d7f83f677e67a9e9906b61f1053949489b8343356034f0b9577e33e
-            7a24e9c0e883ea4fffe88cac475ec8547386b48022ae280a7a78e056aec01dba
-        vp90-2-09-lf_deltas.webm 651fc818fea9687fb1acccac35433c555cf005d2a78d39d5168d40760fd23fa1
-            feebf034c3306affc93903dd8b9eaaa8f24f0c6eb8fe7a75cc8309fa107a4ede
-        vp90-2-10-show-existing-frame.webm 21d60d305ed05f06d838f90f0e62bbd2a37c4b994304ad7f8556430cc551aa1b
-            62bff400e0cb7e3ab0681971f623dc68d12dbf33fa5c8f2f9db7e2210d03da5c
-        vp90-2-11-size-351x287.webm 4e8fa03af4fc90e97f0f0ac7f6808819586e8b063e369a7c47b13de443718b19
-            bb7094ab6c422e1bbd35a150e823bc8fc483eded9d9f2cc3206baaaa240ccbb8
-        vp90-2-15-segkey.webm 2809d3c237383bcecffee926c624dbbccd2146331cc569344caabbd8b8141449
-            ad85c8e90bf15c7e80ea582aaa83762482f391e4be2cb7c7d98ddac851bed077
-        vp90-2-15-segkey_adpq.webm c402502113c173ce4ba827fa50e7f1c4cc657ad0c0893ee550c4ca82f497355b
-            9b0e367e2e0feb170a69b592f4cc855f7db5ca8453ca544357bdc8581a154646
-        vp90-2-16-intra-only.webm 328abd0bbb630f76ed5e6a5ed94e8065f8dda53c8f5ad120fba515a03438512b
-            2e037d40bfd4b4eca40409be440e8deeaeb23e87eeb429bc0bc5825406a8cc3f
-        vp90-2-17-show-existing-frame.webm f78980c5e9db098946d4784c2d5e875da129050098bef7afc988e793dbb2edb1
-            1d0a6b53c33cdb45690495fcc356cec1693bdd1f43e901bdc6457ea78b4b87f5
-        vp90-2-19-skip.webm 7aa1de5c86fdb89fbd7443b79ef412771e29ca996f7ba2ea8f13375e37683bdd
-            aed7e371a3706139f797d2e84ad055c67be78823c911d33a86d4c546ebebeb71
-        vp90-2-20-big_superframe-01.webm 08c30e4e653e6f0bbcb58f0d506e843a45d9630060bb9568b6a04b3a8c61bdfa
-            bc498d393ddecfa7742920d459362c13cf7c0d66cea5cbfa99c208c8d3943ce7
-        vp90-2-21-resize_inter_320x180_5_1-2.webm 56de7662174fc1e07960ffec74e7e43a1ab77a86e382239ff62aa698568fee51
-            ea204491ee6f70f9c73fdc71d6cf38da26817d3bb5a8d6b63708c98de106bef4
-        vp90-2-22-svc_1280x720_3.ivf 41f2ac2086be31e4cf39bad75612ebfd5a3d5445b4328f064ec4f2996d286666
-            adade013ec6d91e80e1f296dc65e27f8966c384ee052939b43baffcfc6a0a30c)
+        vp90-2-02-size-66x66.webm vp90-2-03-deltaq.webm vp90-2-05-resize.ivf vp90-2-07-frame_parallel.webm
+        vp90-2-08-tile-4x4.webm vp90-2-09-lf_deltas.webm vp90-2-10-show-existing-frame.webm vp90-2-11-size-351x287.webm
+        vp90-2-15-segkey.webm vp90-2-15-segkey_adpq.webm vp90-2-16-intra-only.webm vp90-2-17-show-existing-frame.webm
+        vp90-2-19-skip.webm vp90-2-20-big_superframe-01.webm vp90-2-21-resize_inter_320x180_5_1-2.webm
+        vp90-2-22-svc_1280x720_3.ivf)
     add_library(snx-test-nvdec-vp9-jobs STATIC nvdec_vp9_jobs.c)
     snx_test_target(snx-test-nvdec-vp9-jobs 11)
     target_include_directories(snx-test-nvdec-vp9-jobs PRIVATE ${snx_ffmpeg_private_include})
@@ -2573,28 +2554,14 @@ if(SNX_TEST_VP9_VECTORS)
                    support/nvdec_ref.c)
     snx_test_target(snx-test-nvdec-vp9-vectors 11)
     target_link_libraries(snx-test-nvdec-vp9-vectors PRIVATE snx-test-nvdec-vp9-jobs)
-    while(snx_vp9_vectors)
-        list(POP_FRONT snx_vp9_vectors name vector_sha256 list_sha256)
+    foreach(name IN LISTS snx_vp9_vectors)
         string(REGEX REPLACE "^vp90-2-|\\.(webm|ivf)$" "" short "${name}")
-        foreach(file "${name}" "${name}.md5")
-            if(file STREQUAL name)
-                set(sha256 ${vector_sha256})
-                set(package snx_vp9_${short})
-            else()
-                set(sha256 ${list_sha256})
-                set(package snx_vp9_${short}_md5)
-            endif()
-            CPMAddPackage(NAME ${package}
-                          URL https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/${file}
-                          URL_HASH SHA256=${sha256}
-                          DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
-            # checked on every configure, as a package of one file is (cmake/cpm_cache.cmake)
-            snx_cpm_file_check("${${package}_SOURCE_DIR}" "${file}" ${sha256})
-        endforeach()
+        snx_package_file(snx_vp9_${short})
+        snx_package_file(snx_vp9_${short}_md5)
         add_test(NAME nvdec_vp9_${short}
                  COMMAND snx-test-nvdec-vp9-vectors "${snx_vp9_${short}_SOURCE_DIR}/${name}"
                          "${snx_vp9_${short}_md5_SOURCE_DIR}/${name}.md5")
-    endwhile()
+    endforeach()
 endif()
 # VP9 packets rebuilt from NVDEC jobs (gpu/video/vp9_rebuild.cpp): the destination of the frame each emits, and
 # setups with invalid tile layouts refused before a header is built
@@ -2758,6 +2725,13 @@ if(NOT SNX_TOOLS_ONLY)
         snx_test_target(snx-test-vk-commands 11)
         target_link_libraries(snx-test-vk-commands PRIVATE snx_nx_flags snx_vk_common)
         add_test(NAME vk_extension_commands COMMAND snx-test-vk-commands)
+        # the one way a renderer makes its device (common/gpu/vk/device.c), with stand-in drivers: the settings before
+        # the bans, an extension no setting names refused, one lacking a command out of the device made again, the
+        # devices passed over with their reasons, and the log
+        add_executable(snx-test-vk-device vk_device_make.c "${volk_SOURCE_DIR}/volk.c")
+        snx_test_target(snx-test-vk-device 11)
+        target_link_libraries(snx-test-vk-device PRIVATE snx_nx_flags snx_vk_common)
+        add_test(NAME vk_device_make COMMAND snx-test-vk-device)
     endif()
     if(ANDROID)
         # the GPU driver a run asks for (nx/runtime/platform/gpu_driver_load.c) where none loads: Freedreno's variables set,
