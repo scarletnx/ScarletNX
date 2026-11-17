@@ -82,7 +82,7 @@ if(SNX_TEST_SANITIZERS)
         # GLSL ES into SPIR-V
         snx_glslc snx-glslc-cli snx-test-glslc-lex snx-test-glslc-parse snx-test-glslc-emit snx-test-glslc-fuzz
         # the code generators, which tests run on files they refuse
-        snx-swipc snx-svcgen snx-hookgen snx-settingsgen snx-uigen snx-decodetree snx-vkcmdgen)
+        snx-swipc snx-svcgen snx-hookgen snx-settingsgen snx-uigen snx-decodetree snx-vkcmdgen snx-sailgen)
 endif()
 # one Python for the scripted tests: without it they are left out
 find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -1258,6 +1258,32 @@ add_test(NAME a64_decode_unordered
                  "${CMAKE_CURRENT_SOURCE_DIR}/a64_decode_group/unordered.decode")
 set_tests_properties(a64_decode_unordered PROPERTIES PASS_REGULAR_EXPRESSION
     "unordered.decode:7: %wide spans 0 to 2097151: !function=xor_2 is not rising, and a span is tried whole up to 1048576 values")
+
+
+# sailgen (tools/sailgen/): --extract copies the closure of a root (its clause, what it calls, the enum it names) and
+# nothing else; --generate refuses a throw it has no meaning for, with its file and line
+include("${PROJECT_SOURCE_DIR}/cmake/sailgen.cmake")
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/sailgen"
+    COMMAND snx-sailgen --extract "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/fixture.roots"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail" "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/upstream.sail"
+    DEPENDS snx-sailgen "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/fixture.roots"
+            "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/upstream.sail" VERBATIM)
+add_custom_target(snx_sailgen_extract_test ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail")
+add_test(NAME sailgen_extract COMMAND "${CMAKE_COMMAND}" -E compare_files
+         "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/extract_expected.sail" "${CMAKE_CURRENT_BINARY_DIR}/sailgen/extract.sail")
+add_test(NAME sailgen_refused
+         COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused.roots"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h" -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused.inc"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused.sail")
+set_tests_properties(sailgen_refused PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused.sail:4: error: a throw of other than Error_Undefined\\(\\) or Error_ConstrainedUnpredictable\\(\\)")
+# and the A64 subsets of src/common/cpu/aarch64/sail/ generate whole, with the NX's fixups
+add_test(NAME sailgen_a64
+         COMMAND snx-sailgen --generate "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.roots"
+                 --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h" -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/a64_sail.inc"
+                 "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.sail"
+                 --overlay "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/nx.sail")
 
 
 # The QEMU reference (tests/qemu_ref/): hand-checked cases, the ported cases and the decoder's UNDEF sets under

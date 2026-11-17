@@ -1,0 +1,1681 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* sailgen's generator: one C function per decode function the roots name, which emits that instruction's IR through
+   the LLVM back end (llvm.h, copied at the top of the output), and the dispatcher that picks one by the decode
+   clauses' fixed bits.
+
+   Each decode function is walked with everything it calls inlined, and each value is given the time it is known at:
+   CONST (here, when sailgen runs: literals, an overlay's top-level let, what only they make), STATIC (when the
+   recompiler runs: the word's fields and all that only they make) or DYN (when the guest runs: what reads a register
+   or a flag). CONST folds here, so an if on one keeps one branch; STATIC is C in the output; DYN is the back end's
+   calls. A mutable local takes the latest time any of its assignments has, found by walking each decode function
+   until no local's time changes. A function whose arguments are all STATIC and that reaches no state becomes a C
+   function of its own (DecodeBitMasks, DecodeShift); the rest are inlined, their return in tail position. An if on a
+   DYN condition becomes a select of what each branch assigns, and its branches may not change state. Every C name is
+   unique, so inlined bodies and Sail's blocks need no braces of their own. Anything outside the part of Sail this
+   knows stops it with the file, the line and why */
+#include "sailgen.h"
+#include <ctype.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+enum { BT_CONST, BT_STATIC, BT_DYN };
+
+typedef struct {
+    unsigned char kind, bt, ntuple;
+    long long value;   /* CONST bool, int or enum member */
+    char c[512];       /* the C expression of the value */
+    unsigned tuple[4]; /* K_TUPLE: the components, in the value pool */
+    unsigned node;
+} Val;
+
+typedef struct {
+    unsigned name;
+    Val val;
+    int var;      /* a mutable local: its index in vars, else -1 */
+    unsigned def; /* an immutable let: its value's node, which the CRC rule reads through */
+} Binding;
+
+typedef struct {
+    unsigned char kind, bt;
+} Var;
+
+typedef struct {
+    char* text;
+    size_t length, cap;
+} Buffer;
+
+/* a static function made a C function: its definition, the kinds it was made for, its name and results */
+typedef struct {
+    unsigned def;
+    char key[80];
+    char name[96];
+    unsigned char ret_count;
+    int tuple;
+    unsigned char ret_kinds[4];
+} Helper;
+
+typedef struct {
+    unsigned clause; /* its definition */
+    unsigned decode; /* the decode function it calls (a root) */
+    SgU64 mask, value;
+    unsigned shadowed; /* the earlier clause that covers it, plus 1 */
+} Clause;
+
+static struct {
+    Binding* stack;
+    unsigned depth, cap, frame;
+    Var* vars;
+    unsigned var_count, var_cap, var_next;
+    int changed;
+    Val* pool;
+    unsigned pool_count, pool_cap;
+    unsigned temp;
+    Buffer helpers, body, *out;
+    Helper helper[64];
+    unsigned helper_count;
+    int indent;
+    int in_helper;      /* walking a static helper: a throw returns 1, a return sets its outputs */
+    int dynamic_branch; /* inside a branch of a DYN if: no state may change */
+    unsigned call_depth;
+    unsigned roots[1024];
+    Clause clauses[1024];
+} g_gen;
+
+/* ---- output ---- */
+
+static void buf_add(Buffer* b, const char* text, size_t n) {
+    if (b->length + n + 1 > b->cap) {
+        b->cap = (b->length + n + 1) * 2;
+        b->text = (char*)realloc(b->text, b->cap);
+        if (!b->text) sg_fail(0, "out of memory for the output");
+    }
+    memcpy(b->text + b->length, text, n);
+    b->length += n;
+    b->text[b->length] = 0;
+}
+static void emit(const char* fmt, ...) {
+    char line[4096];
+    va_list ap;
+    int i, n;
+    for (i = 0; i < g_gen.indent; ++i) buf_add(g_gen.out, "    ", 4);
+    va_start(ap, fmt);
+    n = vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= sizeof line) sg_fail(0, "a generated line over %zu characters", sizeof line);
+    buf_add(g_gen.out, line, (size_t)n);
+}
+
+#define N(i) (g_parse.nodes[i])
+static const char* name_of(unsigned node) { return sg_str(N(node).name); }
+
+static void temp(char* out, size_t size) { snprintf(out, size, "t%u", ++g_gen.temp); }
+
+static const char* ctype(int kind, int bt) {
+    if (bt == BT_DYN) {
+        switch (kind) {
+            case K_BOOL: return "LLVMValueRef";
+            case K_INT: return "SgI";
+            case K_BITS:
+            case K_BIT: return "SgD";
+            default: break;
+        }
+    } else {
+        switch (kind) {
+            case K_BOOL:
+            case K_ENUM: return "int";
+            case K_INT: return "long long";
+            case K_BITS:
+            case K_BIT: return "SgS";
+            default: break;
+        }
+    }
+    sg_fail(0, "no C type for a value of kind %d at time %d", kind, bt);
+    return "";
+}
+
+static Val val_c(int kind, int bt, const char* fmt, ...) {
+    Val v = {0};
+    va_list ap;
+    int n;
+    v.kind = (unsigned char)(kind == K_BIT ? K_BITS : kind);
+    v.bt = (unsigned char)bt;
+    va_start(ap, fmt);
+    n = vsnprintf(v.c, sizeof v.c, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= sizeof v.c) sg_fail(0, "a C expression over %zu characters", sizeof v.c);
+    return v;
+}
+static Val val_const(int kind, long long value) {
+    Val v = val_c(kind, BT_CONST, kind == K_INT ? "%lldll" : "%lld", value);
+    v.value = value;
+    return v;
+}
+static Val unit(void) { return val_c(K_UNIT, BT_CONST, "0"); }
+
+/* the value in a new temporary of its own C type, so a later assignment to what it came from leaves it */
+static Val keep(Val v) {
+    char t[16];
+    if (v.kind == K_UNIT || v.kind == K_TUPLE || v.bt == BT_CONST) return v;
+    temp(t, sizeof t);
+    emit("%s %s = %s;\n", ctype(v.kind, v.bt), t, v.c);
+    snprintf(v.c, sizeof v.c, "%s", t);
+    return v;
+}
+
+/* the value at time bt (BT_DYN from STATIC or CONST) */
+static Val raise(Val v, int bt) {
+    if (bt <= BT_STATIC || v.bt == BT_DYN) {
+        if (v.bt == BT_CONST && bt == BT_STATIC && v.kind != K_TUPLE) v.bt = BT_STATIC;
+        return v;
+    }
+    switch (v.kind) {
+        case K_BITS: return val_c(K_BITS, BT_DYN, "sg_d_from_s(%s)", v.c);
+        case K_INT: return val_c(K_INT, BT_DYN, "sg_i_const(g, %s)", v.c);
+        case K_BOOL: return val_c(K_BOOL, BT_DYN, "LLVMConstInt(g->ir->t_i1, (unsigned long long)(%s), 0)", v.c);
+        default: sg_fail(v.node, "a value of kind %d can't be known only at run time", v.kind);
+    }
+    return v;
+}
+
+static unsigned pool_add(Val v) {
+    if (g_gen.pool_count >= g_gen.pool_cap) {
+        g_gen.pool_cap = g_gen.pool_cap ? g_gen.pool_cap * 2 : 256;
+        g_gen.pool = (Val*)realloc(g_gen.pool, sizeof(Val) * g_gen.pool_cap);
+        if (!g_gen.pool) sg_fail(0, "out of memory for the values");
+    }
+    g_gen.pool[g_gen.pool_count] = v;
+    return g_gen.pool_count++;
+}
+static Val tuple_of(const Val* parts, unsigned count, unsigned node) {
+    Val t = {0};
+    unsigned i;
+    t.kind = K_TUPLE;
+    t.bt = BT_STATIC;
+    t.ntuple = (unsigned char)count;
+    t.node = node;
+    for (i = 0; i < count; ++i) t.tuple[i] = pool_add(parts[i]);
+    return t;
+}
+
+/* ---- bindings ---- */
+
+static void bind(unsigned name, Val v, int var, unsigned def) {
+    if (g_gen.depth >= g_gen.cap) {
+        g_gen.cap = g_gen.cap ? g_gen.cap * 2 : 256;
+        g_gen.stack = (Binding*)realloc(g_gen.stack, sizeof(Binding) * g_gen.cap);
+        if (!g_gen.stack) sg_fail(0, "out of memory for the bindings");
+    }
+    g_gen.stack[g_gen.depth].name = name;
+    g_gen.stack[g_gen.depth].val = v;
+    g_gen.stack[g_gen.depth].var = var;
+    g_gen.stack[g_gen.depth].def = def;
+    ++g_gen.depth;
+}
+static Binding* lookup(const char* name) {
+    unsigned i;
+    for (i = g_gen.depth; i > g_gen.frame; --i)
+        if (!strcmp(sg_str(g_gen.stack[i - 1].name), name)) return &g_gen.stack[i - 1];
+    return NULL;
+}
+static Binding* var_binding(int var) {
+    unsigned i;
+    for (i = g_gen.depth; i > 0; --i)
+        if (g_gen.stack[i - 1].var == var) return &g_gen.stack[i - 1];
+    return NULL;
+}
+
+/* a mutable local: its index, the same from one walk to the next (the walk's order doesn't depend on the times) */
+static int new_var(int kind, int bt) {
+    unsigned i = g_gen.var_next++;
+    if (i >= g_gen.var_cap) {
+        g_gen.var_cap = g_gen.var_cap ? g_gen.var_cap * 2 : 256;
+        g_gen.vars = (Var*)realloc(g_gen.vars, sizeof(Var) * g_gen.var_cap);
+        if (!g_gen.vars) sg_fail(0, "out of memory for the locals");
+    }
+    if (i >= g_gen.var_count) {
+        g_gen.vars[i].kind = (unsigned char)(kind == K_BIT ? K_BITS : kind);
+        g_gen.vars[i].bt = (unsigned char)(bt < BT_STATIC ? BT_STATIC : bt);
+        g_gen.var_count = i + 1;
+        g_gen.changed = 1;
+    } else if (bt > g_gen.vars[i].bt) {
+        g_gen.vars[i].bt = (unsigned char)bt;
+        g_gen.changed = 1;
+    }
+    return (int)i;
+}
+static void var_raise(int var, int bt) {
+    if (bt > g_gen.vars[var].bt) {
+        g_gen.vars[var].bt = (unsigned char)bt;
+        g_gen.changed = 1;
+    }
+}
+
+/* the index of the enum member name, -1 when it is none */
+static long long enum_member(const char* name) {
+    unsigned i;
+    for (i = 1; i < g_parse.def_count; ++i) {
+        const SgDef* d = &g_parse.defs[i];
+        unsigned m;
+        long long k = 0;
+        if (d->kind != D_ENUM) continue;
+        for (m = d->params; m; m = N(m).next, ++k)
+            if (!strcmp(name_of(m), name)) return k;
+    }
+    return -1;
+}
+
+static Val eval(unsigned n, int tail);
+static void assign(unsigned target, Val v);
+static Val undefined_of(unsigned type, int bt);
+static void stmt(unsigned n) { (void)eval(n, 0); }
+
+static void throw_undefined(unsigned n) {
+    if (g_gen.dynamic_branch) sg_fail(n, "a throw under a condition known only at run time");
+    if (g_gen.in_helper)
+        emit("return 1;\n");
+    else {
+        emit("sg_undefined(g);\n");
+        emit("return;\n");
+    }
+}
+
+static int top_bt(int a, int b) { return a > b ? a : b; }
+
+/* c without the parentheses around all of it, for an if's condition (-Wparentheses-equality) */
+static const char* cond_text(const char* c, char* out, size_t size) {
+    size_t n = strlen(c), i;
+    int depth = 0;
+    if (n < 2 || c[0] != '(' || c[n - 1] != ')') return c;
+    for (i = 0; i < n; ++i) {
+        if (c[i] == '(') ++depth;
+        if (c[i] == ')' && --depth == 0 && i != n - 1) return c; /* (a) == (b): the first ) closes before the end */
+    }
+    snprintf(out, size, "%.*s", (int)(n - 2), c + 1);
+    return out;
+}
+
+static Val need_static_int(unsigned n, Val v, const char* what) {
+    if (v.kind != K_INT && v.kind != K_ENUM && v.kind != K_BOOL)
+        sg_fail(n, "%s must be an integer, found kind %d", what, v.kind);
+    if (v.bt == BT_DYN) sg_fail(n, "%s must be known when the recompiler runs", what);
+    return v;
+}
+static Val need_bits(unsigned n, Val v, const char* what) {
+    if (v.kind != K_BITS) sg_fail(n, "%s must be bits, found kind %d", what, v.kind);
+    return v;
+}
+
+/* ---- calls ---- */
+
+static unsigned arg_at(unsigned n, unsigned index) {
+    unsigned a = N(n).a;
+    while (a && index--) a = N(a).next;
+    return a;
+}
+static unsigned arg_count(unsigned n) {
+    unsigned a = N(n).a, k = 0;
+    for (; a; a = N(a).next) ++k;
+    if (k == 1 && N(N(n).a).kind == N_UNIT) return 0;
+    return k;
+}
+static int is_call(unsigned n, const char* name) { return n && N(n).kind == N_CALL && !strcmp(name_of(n), name); }
+
+/* the expression an immutable let bound n's name to, or n itself */
+static unsigned through_let(unsigned n) {
+    while (n && N(n).kind == N_ID) {
+        Binding* b = lookup(name_of(n));
+        if (!b || b->var >= 0 || !b->def) break;
+        n = b->def;
+    }
+    return n;
+}
+
+/* does a function reach state (a register, PSTATE, a feature, the pc), or call one that does? */
+static int reaches_state(unsigned def, unsigned depth);
+static int node_reaches_state(unsigned n, unsigned depth) {
+    if (!n) return 0;
+    if (N(n).kind == N_ID) {
+        const char* s = name_of(n);
+        if (!strcmp(s, "_PC") || !strcmp(s, "PSTATE") || !strncmp(s, "SP_EL", 5)) return 1;
+        if (sg_find(s, D_REGISTER) && !sg_find(s, D_LET)) return 1;
+    }
+    if (N(n).kind == N_CALL) {
+        const char* s = name_of(n);
+        unsigned d = sg_find(s, D_FUNCTION);
+        if (!strcmp(s, "_R") || !strcmp(s, "IsFeatureImplemented") || !strcmp(s, "AddWithCarry") ||
+            !strcmp(s, "ConditionHolds"))
+            return 1;
+        if (d && reaches_state(d, depth + 1)) return 1;
+    }
+    return node_reaches_state(N(n).a, depth) || node_reaches_state(N(n).b, depth) ||
+           node_reaches_state(N(n).c, depth) || node_reaches_state(N(n).d, depth) ||
+           node_reaches_state(N(n).next, depth);
+}
+static int reaches_state(unsigned def, unsigned depth) {
+    if (depth > 32) return 1;
+    return node_reaches_state(g_parse.defs[def].body, depth);
+}
+
+static void param_names(unsigned def, unsigned* names, unsigned* count) {
+    unsigned p = g_parse.defs[def].params, k = 0;
+    if (p && N(p).kind == N_TUPLE) p = N(p).a;
+    for (; p; p = N(p).next) {
+        unsigned q = N(p).kind == N_TYPED ? N(p).a : p;
+        if (N(q).kind == N_UNIT) continue;
+        if (N(q).kind != N_ID) sg_fail(q, "a parameter that is not a name");
+        if (k == 16) sg_fail(q, "more than 16 parameters");
+        names[k++] = N(q).name;
+    }
+    *count = k;
+}
+
+/* a function whose arguments are all known when the recompiler runs, and that reaches no state, as a C function
+   (int: 1 when it throws; its results through pointers) */
+static Val helper_call(unsigned n, unsigned def, Val* args, unsigned count) {
+    char key[80], text[768];
+    unsigned i, names[16], name_count;
+    Helper* h = NULL;
+    size_t at = 0;
+    Val outs[4];
+    param_names(def, names, &name_count);
+    if (name_count != count)
+        sg_fail(n, "%s takes %u arguments, given %u", sg_str(g_parse.defs[def].name), name_count, count);
+    snprintf(key, sizeof key, "%s/", sg_str(g_parse.defs[def].name));
+    for (i = 0; i < count && strlen(key) + 2 < sizeof key; ++i) {
+        size_t l = strlen(key);
+        key[l] = (char)('0' + args[i].kind);
+        key[l + 1] = 0;
+    }
+    for (i = 0; i < g_gen.helper_count; ++i)
+        if (!strcmp(g_gen.helper[i].key, key)) h = &g_gen.helper[i];
+    if (!h) {
+        Buffer local = {0, 0, 0}, *saved_out = g_gen.out;
+        unsigned saved_frame = g_gen.frame, saved_depth = g_gen.depth, k;
+        int saved_indent = g_gen.indent, saved_in = g_gen.in_helper, saved_dyn = g_gen.dynamic_branch;
+        Val ret;
+        char sig[768];
+        size_t s = 0;
+        if (g_gen.helper_count == sizeof g_gen.helper / sizeof *g_gen.helper) sg_fail(n, "more than 64 helpers");
+        h = &g_gen.helper[g_gen.helper_count++];
+        memset(h, 0, sizeof *h);
+        h->def = def;
+        snprintf(h->key, sizeof h->key, "%s", key);
+        snprintf(h->name, sizeof h->name, "sgh_%u_%s", g_gen.helper_count, sg_str(g_parse.defs[def].name));
+        g_gen.out = &local;
+        g_gen.indent = 1;
+        g_gen.in_helper = 1;
+        g_gen.dynamic_branch = 0;
+        for (k = 0; k < count; ++k) bind(names[k], val_c(args[k].kind, BT_STATIC, "a_%s", sg_str(names[k])), -1, 0);
+        g_gen.frame = saved_depth;
+        ret = eval(g_parse.defs[def].body, 1);
+        if (ret.kind == K_TUPLE) {
+            h->tuple = 1;
+            h->ret_count = ret.ntuple;
+            for (k = 0; k < ret.ntuple; ++k) {
+                Val part = raise(g_gen.pool[ret.tuple[k]], BT_STATIC);
+                if (part.bt == BT_DYN)
+                    sg_fail(n, "%s's result is known only at run time", sg_str(g_parse.defs[def].name));
+                h->ret_kinds[k] = part.kind;
+                emit("*out%u = %s;\n", k, part.c);
+            }
+        } else if (ret.kind != K_UNIT) {
+            h->ret_count = 1;
+            h->ret_kinds[0] = ret.kind;
+            emit("*out0 = %s;\n", ret.c);
+        }
+        emit("return 0;\n");
+        g_gen.out = &g_gen.helpers;
+        g_gen.indent = 0;
+        s += (size_t)snprintf(sig + s, sizeof sig - s, "static int %s(SgCtx* g", h->name);
+        for (k = 0; k < count; ++k)
+            s += (size_t)snprintf(sig + s, sizeof sig - s, ", %s a_%s", ctype(args[k].kind, BT_STATIC),
+                                  sg_str(names[k]));
+        for (k = 0; k < h->ret_count; ++k)
+            s += (size_t)snprintf(sig + s, sizeof sig - s, ", %s* out%u", ctype(h->ret_kinds[k], BT_STATIC), k);
+        emit("%s) {\n    (void)g;\n", sig);
+        buf_add(&g_gen.helpers, local.text ? local.text : "", local.length);
+        emit("}\n\n");
+        free(local.text);
+        g_gen.out = saved_out;
+        g_gen.frame = saved_frame;
+        g_gen.depth = saved_depth;
+        g_gen.indent = saved_indent;
+        g_gen.in_helper = saved_in;
+        g_gen.dynamic_branch = saved_dyn;
+    }
+    at += (size_t)snprintf(text + at, sizeof text - at, "%s(g", h->name);
+    for (i = 0; i < count; ++i)
+        at += (size_t)snprintf(text + at, sizeof text - at, ", %s", raise(args[i], BT_STATIC).c);
+    for (i = 0; i < h->ret_count; ++i) {
+        char t[16];
+        temp(t, sizeof t);
+        emit("%s %s;\n", ctype(h->ret_kinds[i], BT_STATIC), t);
+        outs[i] = val_c(h->ret_kinds[i], BT_STATIC, "%s", t);
+        at += (size_t)snprintf(text + at, sizeof text - at, ", &%s", t);
+    }
+    if (at >= sizeof text) sg_fail(n, "a helper call over %zu characters", sizeof text);
+    emit("if (%s)) {\n", text);
+    ++g_gen.indent;
+    throw_undefined(n);
+    --g_gen.indent;
+    emit("}\n");
+    if (!h->ret_count) return unit();
+    if (h->tuple) return tuple_of(outs, h->ret_count, n);
+    return outs[0];
+}
+
+/* an inlined function: its parameters bound to the arguments in a frame of its own, the value of its body */
+static Val inline_call(unsigned n, unsigned def, Val* args, unsigned count) {
+    unsigned names[16], name_count, k, saved_frame = g_gen.frame, base = g_gen.depth;
+    Val r;
+    param_names(def, names, &name_count);
+    if (name_count != count)
+        sg_fail(n, "%s takes %u arguments, given %u", sg_str(g_parse.defs[def].name), name_count, count);
+    if (++g_gen.call_depth > 48) sg_fail(n, "calls nested over 48 deep inlining %s", sg_str(g_parse.defs[def].name));
+    for (k = 0; k < count; ++k) bind(names[k], args[k], -1, args[k].node);
+    g_gen.frame = base;
+    emit("/* %s */\n", sg_str(g_parse.defs[def].name));
+    r = eval(g_parse.defs[def].body, 1);
+    if (r.kind != K_UNIT && r.kind != K_TUPLE) r = keep(r);
+    g_gen.frame = saved_frame;
+    g_gen.depth = base;
+    --g_gen.call_depth;
+    return r;
+}
+
+/* ---- builtins: Sail's library and the shared functions sailgen lowers itself (README.md, "Builtins") ---- */
+
+static Val arg(unsigned n, unsigned i) { return eval(arg_at(n, i), 0); }
+static void need_args(unsigned n, unsigned count) {
+    if (arg_count(n) != count) sg_fail(n, "%s takes %u arguments, given %u", name_of(n), count, arg_count(n));
+}
+
+/* BitReverse(Poly32Mod2(EOR(BitReverse(acc) @ Zeros(size), BitReverse(val) @ Zeros(32)), poly)): the reflected CRC
+   update, lowered whole (llvm.h's sg_crc32); 0 when x is not that */
+static int crc_rule(unsigned x, Val* r) {
+    unsigned mod = through_let(x), eor, left, right, acc, val;
+    Val a, v, size, poly;
+    if (!is_call(mod, "Poly32Mod2") || arg_count(mod) != 2) return 0;
+    eor = through_let(arg_at(mod, 0));
+    if (!is_call(eor, "EOR") || arg_count(eor) != 2) return 0;
+    left = through_let(arg_at(eor, 0));
+    right = through_let(arg_at(eor, 1));
+    if (N(left).kind != N_BINOP || strcmp(name_of(left), "@") || N(right).kind != N_BINOP ||
+        strcmp(name_of(right), "@"))
+        return 0;
+    acc = through_let(N(left).a);
+    val = through_let(N(right).a);
+    if (!is_call(acc, "BitReverse") || !is_call(val, "BitReverse") || !is_call(N(left).b, "Zeros") ||
+        !is_call(N(right).b, "Zeros"))
+        return 0;
+    a = raise(need_bits(acc, eval(arg_at(acc, 0), 0), "a CRC's accumulator"), BT_DYN);
+    v = raise(need_bits(val, eval(arg_at(val, 0), 0), "a CRC's value"), BT_DYN);
+    size = need_static_int(left, eval(arg_at(N(left).b, 0), 0), "a CRC's size");
+    poly = eval(arg_at(mod, 1), 0);
+    if (poly.kind != K_BITS || poly.bt == BT_DYN) sg_fail(mod, "a CRC's polynomial must be known when it recompiles");
+    *r = val_c(K_BITS, BT_DYN, "sg_crc32(g, %s, %s, %s, %s)", a.c, v.c, size.c, poly.c);
+    return 1;
+}
+
+static Val shift(unsigned n, int kind) {
+    static const char* const s_fn[4] = {"sg_s_lsl", "sg_s_lsr", "", "sg_s_ror"};
+    static const char* const d_fn[4] = {"sg_d_lsl", "sg_d_lsr", "sg_d_asr", "sg_d_ror"};
+    Val x = need_bits(n, arg(n, 0), "a shift's value"), amount = arg(n, 1);
+    need_args(n, 2);
+    if (amount.kind != K_INT) sg_fail(n, "a shift amount that is not an integer");
+    if (amount.bt == BT_DYN) {
+        x = raise(x, BT_DYN);
+        return val_c(K_BITS, BT_DYN, "sg_d_shift_dyn(g, %s, (%s).v, %d)", x.c, amount.c, kind);
+    }
+    if (x.bt != BT_DYN && kind != 2) return val_c(K_BITS, BT_STATIC, "%s(%s, %s)", s_fn[kind], x.c, amount.c);
+    x = raise(x, BT_DYN);
+    return val_c(K_BITS, BT_DYN, "%s(g, %s, %s)", d_fn[kind], x.c, amount.c);
+}
+
+static int builtin(unsigned n, const char* name, Val* r) {
+    Val a, b, c;
+    if (!strcmp(name, "UInt") || !strcmp(name, "SInt")) {
+        int s = name[0] == 'S';
+        need_args(n, 1);
+        a = need_bits(n, arg(n, 0), name);
+        *r = a.bt == BT_DYN ? val_c(K_INT, BT_DYN, "sg_i_%s(g, %s)", s ? "sint" : "uint", a.c)
+                            : val_c(K_INT, BT_STATIC, "sg_s_%s(%s)", s ? "sint" : "uint", a.c);
+        return 1;
+    }
+    if (!strcmp(name, "asl_Int")) { /* asl_Int(x, unsigned) */
+        need_args(n, 2);
+        a = need_bits(n, arg(n, 0), name);
+        b = arg(n, 1);
+        if (b.kind != K_BOOL || b.bt == BT_DYN) sg_fail(n, "asl_Int's signedness must be known when it recompiles");
+        if (a.bt == BT_DYN)
+            *r = val_c(K_INT, BT_DYN, "((%s) ? sg_i_uint(g, %s) : sg_i_sint(g, %s))", b.c, a.c, a.c);
+        else
+            *r = val_c(K_INT, BT_STATIC, "((%s) ? sg_s_uint(%s) : sg_s_sint(%s))", b.c, a.c, a.c);
+        return 1;
+    }
+    if (!strcmp(name, "ZeroExtend") || !strcmp(name, "SignExtend")) {
+        int s = name[0] == 'S';
+        need_args(n, 2);
+        a = need_bits(n, arg(n, 0), name);
+        b = need_static_int(n, arg(n, 1), "an extension's width");
+        *r = a.bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_%s(g, %s, %s)", s ? "sext" : "zext", a.c, b.c)
+                            : val_c(K_BITS, BT_STATIC, "sg_s_%s(%s, %s)", s ? "sext" : "zext", a.c, b.c);
+        return 1;
+    }
+    if (!strcmp(name, "Extend")) { /* Extend(x, n, unsigned) */
+        need_args(n, 3);
+        a = need_bits(n, arg(n, 0), name);
+        b = need_static_int(n, arg(n, 1), "an extension's width");
+        c = arg(n, 2);
+        if (c.kind != K_BOOL || c.bt == BT_DYN) sg_fail(n, "Extend's signedness must be known when it recompiles");
+        if (a.bt == BT_DYN)
+            *r = val_c(K_BITS, BT_DYN, "((%s) ? sg_d_zext(g, %s, %s) : sg_d_sext(g, %s, %s))", c.c, a.c, b.c, a.c, b.c);
+        else
+            *r = val_c(K_BITS, BT_STATIC, "((%s) ? sg_s_zext(%s, %s) : sg_s_sext(%s, %s))", c.c, a.c, b.c, a.c, b.c);
+        return 1;
+    }
+    if (!strcmp(name, "Zeros") || !strcmp(name, "Ones")) {
+        need_args(n, 1);
+        a = need_static_int(n, arg(n, 0), "a width");
+        *r = val_c(K_BITS, BT_STATIC, "sg_s_%s(%s)", name[0] == 'Z' ? "zeros" : "ones", a.c);
+        return 1;
+    }
+    if (!strcmp(name, "Replicate")) {
+        need_args(n, 2);
+        a = need_bits(n, arg(n, 0), name);
+        b = need_static_int(n, arg(n, 1), "Replicate's count");
+        *r = a.bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_replicate(g, %s, %s)", a.c, b.c)
+                            : val_c(K_BITS, BT_STATIC, "sg_s_replicate(%s, %s)", a.c, b.c);
+        return 1;
+    }
+    if (!strcmp(name, "IsZero") || !strcmp(name, "IsZeroBit")) {
+        int bit = name[6] == 'B';
+        need_args(n, 1);
+        a = need_bits(n, arg(n, 0), name);
+        if (a.bt == BT_DYN)
+            *r = bit ? val_c(K_BITS, BT_DYN, "sg_d_is_zero_bit(g, %s)", a.c)
+                     : val_c(K_BOOL, BT_DYN, "sg_d_is_zero(g, %s)", a.c);
+        else
+            *r = bit ? val_c(K_BITS, BT_STATIC, "sg_s((%s).v == 0, 1)", a.c)
+                     : val_c(K_BOOL, BT_STATIC, "((%s).v == 0)", a.c);
+        return 1;
+    }
+    if (!strcmp(name, "not_vec")) {
+        need_args(n, 1);
+        a = need_bits(n, arg(n, 0), name);
+        *r = a.bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_not(g, %s)", a.c)
+                            : val_c(K_BITS, BT_STATIC, "sg_s_not(%s)", a.c);
+        return 1;
+    }
+    if (!strcmp(name, "not_bool")) {
+        need_args(n, 1);
+        a = arg(n, 0);
+        if (a.kind != K_BOOL) sg_fail(n, "not_bool of other than a bool");
+        if (a.bt == BT_CONST)
+            *r = val_const(K_BOOL, !a.value);
+        else if (a.bt == BT_STATIC)
+            *r = val_c(K_BOOL, BT_STATIC, "(!(%s))", a.c);
+        else
+            *r = val_c(K_BOOL, BT_DYN, "LLVMBuildNot(SG_B, %s, \"\")", a.c);
+        return 1;
+    }
+    if (!strcmp(name, "EOR")) {
+        need_args(n, 2);
+        a = need_bits(n, arg(n, 0), name);
+        b = need_bits(n, arg(n, 1), name);
+        if (a.bt != BT_DYN && b.bt != BT_DYN)
+            *r = val_c(K_BITS, BT_STATIC, "sg_s_xor(%s, %s)", a.c, b.c);
+        else
+            *r = val_c(K_BITS, BT_DYN, "sg_d_xor(g, %s, %s)", raise(a, BT_DYN).c, raise(b, BT_DYN).c);
+        return 1;
+    }
+    if (!strcmp(name, "Bit")) {
+        need_args(n, 1);
+        *r = need_bits(n, arg(n, 0), name);
+        return 1;
+    }
+    if (!strcmp(name, "LSL") || !strcmp(name, "LSR") || !strcmp(name, "ASR") || !strcmp(name, "ROR")) {
+        *r = shift(n, name[0] == 'L' ? (name[2] == 'L' ? 0 : 1) : name[0] == 'A' ? 2 : 3);
+        return 1;
+    }
+    if (!strcmp(name, "MOD") || !strcmp(name, "DIV")) {
+        need_args(n, 2);
+        a = arg(n, 0);
+        b = need_static_int(n, arg(n, 1), "a divisor");
+        if (a.kind != K_INT) sg_fail(n, "%s of other than an integer", name);
+        if (a.bt == BT_DYN) {
+            if (name[0] != 'M') sg_fail(n, "DIV of an integer known only at run time");
+            *r = val_c(K_INT, BT_DYN, "sg_i_mod(g, %s, %s)", a.c, b.c);
+        } else if (a.bt == BT_CONST && b.bt == BT_CONST && b.value) {
+            long long m = a.value % b.value;
+            if (m < 0) m += b.value < 0 ? -b.value : b.value;
+            *r = val_const(K_INT, name[0] == 'M' ? m : (a.value - m) / b.value);
+        } else
+            *r = val_c(K_INT, BT_STATIC, "sg_%s(%s, %s)", name[0] == 'M' ? "mod" : "div", a.c, b.c);
+        return 1;
+    }
+    if (!strcmp(name, "RoundTowardsZero")) { /* RoundTowardsZero(Real(a) / Real(b)): the integer quotient */
+        unsigned q = arg_at(n, 0);
+        need_args(n, 1);
+        if (N(q).kind != N_BINOP || strcmp(name_of(q), "/") || !is_call(N(q).a, "Real") || !is_call(N(q).b, "Real"))
+            sg_fail(n, "RoundTowardsZero of other than Real(a) / Real(b)");
+        a = eval(arg_at(N(q).a, 0), 0);
+        b = eval(arg_at(N(q).b, 0), 0);
+        if (a.kind != K_INT || b.kind != K_INT) sg_fail(n, "a quotient of other than integers");
+        *r = val_c(K_INT, BT_DYN, "sg_i_div(g, %s, %s)", raise(a, BT_DYN).c, raise(b, BT_DYN).c);
+        return 1;
+    }
+    if (!strcmp(name, "CountLeadingZeroBits") || !strcmp(name, "CountLeadingSignBits")) {
+        need_args(n, 1);
+        a = need_bits(n, arg(n, 0), name);
+        if (a.bt != BT_DYN) sg_fail(n, "%s of a value the recompiler knows: not needed yet", name);
+        *r = val_c(K_INT, BT_DYN, "sg_i_%s(g, %s)", !strcmp(name, "CountLeadingZeroBits") ? "clz" : "cls", a.c);
+        return 1;
+    }
+    if (!strcmp(name, "HighestSetBit")) {
+        need_args(n, 1);
+        a = need_bits(n, arg(n, 0), name);
+        if (a.bt == BT_DYN) sg_fail(n, "HighestSetBit of a value known only at run time");
+        *r = val_c(K_INT, BT_STATIC, "sg_highest_set_bit(%s)", a.c);
+        return 1;
+    }
+    if (!strcmp(name, "BitReverse")) {
+        need_args(n, 1);
+        if (crc_rule(arg_at(n, 0), r)) return 1;
+        a = need_bits(n, arg(n, 0), name);
+        *r = val_c(K_BITS, BT_DYN, "sg_d_bitreverse(g, %s)", raise(a, BT_DYN).c);
+        return 1;
+    }
+    if (!strcmp(name, "AddWithCarry")) {
+        char t1[16], t2[16];
+        Val parts[2];
+        need_args(n, 3);
+        a = raise(need_bits(n, arg(n, 0), name), BT_DYN);
+        b = raise(need_bits(n, arg(n, 1), name), BT_DYN);
+        c = raise(need_bits(n, arg(n, 2), name), BT_DYN);
+        temp(t1, sizeof t1);
+        temp(t2, sizeof t2);
+        emit("SgD %s, %s;\n", t1, t2);
+        emit("sg_add_with_carry(g, %s, %s, %s, &%s, &%s);\n", a.c, b.c, c.c, t1, t2);
+        parts[0] = val_c(K_BITS, BT_DYN, "%s", t1);
+        parts[1] = val_c(K_BITS, BT_DYN, "%s", t2);
+        *r = tuple_of(parts, 2, n);
+        return 1;
+    }
+    if (!strcmp(name, "ConditionHolds")) {
+        /* the compare that set the flags, when one did in the block; else ConditionHolds's own Sail */
+        unsigned def = sg_find(name, D_FUNCTION);
+        char t[16];
+        Val v;
+        need_args(n, 1);
+        if (!def) sg_fail(n, "ConditionHolds has no definition");
+        a = keep(need_bits(n, arg(n, 0), name));
+        if (a.bt == BT_DYN) sg_fail(n, "ConditionHolds of a condition known only at run time");
+        temp(t, sizeof t);
+        emit("LLVMValueRef %s = sg_condition_origin(g, %s);\n", t, a.c);
+        emit("if (!%s) {\n", t);
+        ++g_gen.indent;
+        v = inline_call(n, def, &a, 1);
+        if (v.kind != K_BOOL) sg_fail(n, "ConditionHolds's Sail gave other than a bool");
+        emit("%s = %s;\n", t, raise(v, BT_DYN).c);
+        --g_gen.indent;
+        emit("}\n");
+        *r = val_c(K_BOOL, BT_DYN, "%s", t);
+        return 1;
+    }
+    if (!strcmp(name, "IsFeatureImplemented")) {
+        unsigned f = arg_at(n, 0);
+        need_args(n, 1);
+        if (N(f).kind != N_ID || strncmp(name_of(f), "FEAT_", 5))
+            sg_fail(n, "IsFeatureImplemented of other than a FEAT_");
+        /* the feature's bit from a64.profile (a64_decode.h, its names in capitals): one the profile lacks is a
+           compile error there */
+        {
+            char upper[64];
+            size_t k;
+            snprintf(upper, sizeof upper, "%s", name_of(f));
+            for (k = 0; upper[k]; ++k) upper[k] = (char)toupper((unsigned char)upper[k]);
+            *r = val_c(K_BOOL, BT_STATIC, "sg_feature(g, SNX_A64_%s)", upper);
+        }
+        return 1;
+    }
+    if (!strcmp(name, "Min") || !strcmp(name, "Max")) {
+        int min = name[1] == 'i';
+        need_args(n, 2);
+        a = need_static_int(n, arg(n, 0), name);
+        b = need_static_int(n, arg(n, 1), name);
+        if (a.bt == BT_CONST && b.bt == BT_CONST)
+            *r = val_const(K_INT, (a.value < b.value) == min ? a.value : b.value);
+        else
+            *r = val_c(K_INT, BT_STATIC, "((%s) %s (%s) ? (%s) : (%s))", a.c, min ? "<" : ">", b.c, a.c, b.c);
+        return 1;
+    }
+    if (!strcmp(name, "negate")) {
+        need_args(n, 1);
+        a = need_static_int(n, arg(n, 0), name);
+        *r = a.bt == BT_CONST ? val_const(K_INT, -a.value) : val_c(K_INT, BT_STATIC, "(-(%s))", a.c);
+        return 1;
+    }
+    if (!strcmp(name, "_R")) { /* the X registers, 0 to 30 */
+        need_args(n, 1);
+        a = need_static_int(n, arg(n, 0), "a register number");
+        *r = val_c(K_BITS, BT_DYN, "sg_reg_read(g, %s)", a.c);
+        return 1;
+    }
+    if (!strcmp(name, "Slice")) { /* Slice(x, lo, n): x[lo + n - 1 .. lo] */
+        need_args(n, 3);
+        a = need_bits(n, arg(n, 0), name);
+        b = need_static_int(n, arg(n, 1), "a slice's start");
+        c = need_static_int(n, arg(n, 2), "a slice's width");
+        *r = a.bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_slice(g, %s, (%s) + (%s) - 1, %s)", a.c, b.c, c.c, b.c)
+                            : val_c(K_BITS, BT_STATIC, "sg_s_slice(%s, (%s) + (%s) - 1, %s)", a.c, b.c, c.c, b.c);
+        return 1;
+    }
+    if (!strcmp(name, "Unreachable")) {
+        need_args(n, 0);
+        emit("sg_fail(\"Unreachable() reached at %s:%u\", 0, 0);\n", sg_str(N(n).file), N(n).line);
+        *r = unit();
+        return 1;
+    }
+    return 0;
+}
+
+static Val call(unsigned n) {
+    const char* name = name_of(n);
+    unsigned count = arg_count(n), def, i;
+    Val args[16], r;
+    int all_static = 1;
+    if (builtin(n, name, &r)) return r;
+    def = sg_find(name, D_FUNCTION);
+    if (!def) sg_fail(n, "%s has no definition and is not one of sailgen's builtins", name);
+    if (count > 16) sg_fail(n, "%s called with over 16 arguments", name);
+    for (i = 0; i < count; ++i) {
+        args[i] = eval(arg_at(n, i), 0);
+        args[i].node = arg_at(n, i);
+        all_static &= args[i].bt != BT_DYN && args[i].kind != K_TUPLE && args[i].kind != K_UNIT;
+    }
+    if (all_static && !reaches_state(def, 0)) return helper_call(n, def, args, count);
+    for (i = 0; i < count; ++i) args[i] = keep(args[i]);
+    return inline_call(n, def, args, count);
+}
+
+/* ---- names, operators, slices ---- */
+
+static Val ident(unsigned n) {
+    const char* s = name_of(n);
+    Binding* b = lookup(s);
+    unsigned d;
+    long long m;
+    if (b) {
+        Val v = b->val;
+        if (b->var >= 0) {
+            v.bt = g_gen.vars[b->var].bt;
+            v.kind = g_gen.vars[b->var].kind;
+        }
+        v.node = n;
+        return v;
+    }
+    if (!strcmp(s, "_PC")) return val_c(K_BITS, BT_STATIC, "sg_s(g->pc, 64)");
+    if (!strcmp(s, "SP_EL0")) return val_c(K_BITS, BT_DYN, "sg_sp_read(g)");
+    if ((d = sg_find(s, D_LET)) != 0) { /* a top-level constant: an overlay's fixup */
+        Val v = eval(g_parse.defs[d].body, 0);
+        if (v.bt != BT_CONST) sg_fail(n, "the top-level let %s is not a constant", s);
+        return v;
+    }
+    if ((m = enum_member(s)) >= 0) {
+        Val v = val_const(K_ENUM, m);
+        snprintf(v.c, sizeof v.c, "%lld", m);
+        return v;
+    }
+    sg_fail(n, "%s is not bound", s);
+    return unit();
+}
+
+static Val binop(unsigned n) {
+    const char* op = name_of(n);
+    Val a = eval(N(n).a, 0), b;
+    int bt;
+    /* & and | of bools short-circuit: a constant left side decides without the right */
+    if ((!strcmp(op, "&") || !strcmp(op, "|")) && a.kind == K_BOOL) {
+        int is_and = op[0] == '&';
+        if (a.bt == BT_CONST && a.value == !is_and) return val_const(K_BOOL, !is_and);
+        b = eval(N(n).b, 0);
+        if (b.kind != K_BOOL) sg_fail(n, "%s of a bool and other than a bool", op);
+        if (a.bt == BT_CONST) return b;
+        if (b.bt == BT_CONST) return b.value == is_and ? a : val_const(K_BOOL, !is_and);
+        if (a.bt == BT_STATIC && b.bt == BT_STATIC)
+            return val_c(K_BOOL, BT_STATIC, "((%s) %s (%s))", a.c, is_and ? "&&" : "||", b.c);
+        return val_c(K_BOOL, BT_DYN, "LLVMBuild%s(SG_B, %s, %s, \"\")", is_and ? "And" : "Or", raise(a, BT_DYN).c,
+                     raise(b, BT_DYN).c);
+    }
+    b = eval(N(n).b, 0);
+    bt = top_bt(a.bt, b.bt);
+    if (!strcmp(op, "==") || !strcmp(op, "!=")) {
+        int ne = op[0] == '!';
+        if (a.kind == K_BITS && b.kind == K_BITS) {
+            if (bt != BT_DYN) return val_c(K_BOOL, BT_STATIC, "(%ssg_s_eq(%s, %s))", ne ? "!" : "", a.c, b.c);
+            {
+                Val e = val_c(K_BOOL, BT_DYN, "sg_d_eq(g, %s, %s)", raise(a, BT_DYN).c, raise(b, BT_DYN).c);
+                return ne ? val_c(K_BOOL, BT_DYN, "LLVMBuildNot(SG_B, %s, \"\")", e.c) : e;
+            }
+        }
+        if (a.kind == K_BITS || b.kind == K_BITS) sg_fail(n, "%s of bits and other than bits", op);
+        if (bt == BT_CONST) return val_const(K_BOOL, (a.value == b.value) != ne);
+        if (bt == BT_STATIC) return val_c(K_BOOL, BT_STATIC, "((%s) %s (%s))", a.c, op, b.c);
+        if (a.kind == K_BOOL)
+            return val_c(K_BOOL, BT_DYN, "LLVMBuildICmp(SG_B, %s, %s, %s, \"\")", ne ? "LLVMIntNE" : "LLVMIntEQ",
+                         raise(a, BT_DYN).c, raise(b, BT_DYN).c);
+        sg_fail(n, "%s of integers known only at run time", op);
+    }
+    if (!strcmp(op, "<") || !strcmp(op, "<=") || !strcmp(op, ">") || !strcmp(op, ">=")) {
+        need_static_int(n, a, "a comparison's side");
+        need_static_int(n, b, "a comparison's side");
+        if (bt == BT_CONST) {
+            int v = op[0] == '<' ? (op[1] ? a.value <= b.value : a.value < b.value)
+                                 : (op[1] ? a.value >= b.value : a.value > b.value);
+            return val_const(K_BOOL, v);
+        }
+        return val_c(K_BOOL, BT_STATIC, "((%s) %s (%s))", a.c, op, b.c);
+    }
+    if (!strcmp(op, "@")) {
+        need_bits(n, a, "a concatenation's side");
+        need_bits(n, b, "a concatenation's side");
+        if (bt != BT_DYN) return val_c(K_BITS, BT_STATIC, "sg_s_concat(%s, %s)", a.c, b.c);
+        return val_c(K_BITS, BT_DYN, "sg_d_concat(g, %s, %s)", raise(a, BT_DYN).c, raise(b, BT_DYN).c);
+    }
+    if (!strcmp(op, "&") || !strcmp(op, "|")) {
+        const char* f = op[0] == '&' ? "and" : "or";
+        need_bits(n, a, op);
+        need_bits(n, b, op);
+        if (bt != BT_DYN) return val_c(K_BITS, BT_STATIC, "sg_s_%s(%s, %s)", f, a.c, b.c);
+        return val_c(K_BITS, BT_DYN, "sg_d_%s(g, %s, %s)", f, raise(a, BT_DYN).c, raise(b, BT_DYN).c);
+    }
+    if (!strcmp(op, "+") || !strcmp(op, "-") || !strcmp(op, "*")) {
+        int add = op[0] == '+', mul = op[0] == '*';
+        if (a.kind == K_BITS && b.kind == K_BITS && !mul) {
+            if (bt != BT_DYN) return val_c(K_BITS, BT_STATIC, "sg_s_%s(%s, %s)", add ? "add" : "sub", a.c, b.c);
+            return val_c(K_BITS, BT_DYN, "sg_d_%s(g, %s, %s)", add ? "add" : "sub", raise(a, BT_DYN).c,
+                         raise(b, BT_DYN).c);
+        }
+        if (a.kind == K_BITS && b.kind == K_INT && !mul) { /* bits + integer: the integer's bits of that width */
+            Val k = need_static_int(n, b, "the integer added to bits");
+            if (a.bt != BT_DYN)
+                return val_c(K_BITS, BT_STATIC, "sg_s_%s(%s, sg_s((SnxU64)(%s), (%s).w))", add ? "add" : "sub", a.c,
+                             k.c, a.c);
+            return val_c(K_BITS, BT_DYN, "sg_d_add_int(g, %s, %s(%s))", a.c, add ? "" : "-", k.c);
+        }
+        if (a.kind != K_INT || b.kind != K_INT) sg_fail(n, "%s of kinds %d and %d", op, a.kind, b.kind);
+        if (bt == BT_CONST)
+            return val_const(K_INT, add ? a.value + b.value : mul ? a.value * b.value : a.value - b.value);
+        if (bt == BT_STATIC) return val_c(K_INT, BT_STATIC, "((%s) %s (%s))", a.c, op, b.c);
+        return val_c(K_INT, BT_DYN, "sg_i_%s(g, %s, %s)",
+                     add   ? "add"
+                     : mul ? "mul"
+                           : "sub",
+                     raise(a, BT_DYN).c, raise(b, BT_DYN).c);
+    }
+    if (!strcmp(op, "<<") || !strcmp(op, "^")) { /* integers: a * 2^b, 2^b */
+        need_static_int(n, a, op);
+        need_static_int(n, b, op);
+        if (op[0] == '^' && !(a.bt == BT_CONST && a.value == 2)) sg_fail(n, "a power of other than 2");
+        if (bt == BT_CONST && b.value >= 0 && b.value < 62)
+            return val_const(K_INT, op[0] == '^' ? 1ll << b.value : a.value * (1ll << b.value));
+        if (op[0] == '^') return val_c(K_INT, BT_STATIC, "sg_pow2(%s)", b.c);
+        return val_c(K_INT, BT_STATIC, "((%s) * sg_pow2(%s))", a.c, b.c);
+    }
+    sg_fail(n, "the operator %s", op);
+    return unit();
+}
+
+static Val slice(unsigned n) {
+    Val x = eval(N(n).a, 0), hi = need_static_int(n, eval(N(n).b, 0), "a slice's bound"), lo;
+    lo = N(n).kind == N_SLICE ? need_static_int(n, eval(N(n).c, 0), "a slice's bound") : hi;
+    if (x.kind == K_INT) {
+        if (x.bt == BT_DYN) return val_c(K_BITS, BT_DYN, "sg_i_slice(g, %s, %s, %s)", x.c, hi.c, lo.c);
+        return val_c(K_BITS, BT_STATIC, "sg_s_of_int(%s, %s, %s)", x.c, hi.c, lo.c);
+    }
+    need_bits(n, x, "what is sliced");
+    if (x.bt == BT_DYN) return val_c(K_BITS, BT_DYN, "sg_d_slice(g, %s, %s, %s)", x.c, hi.c, lo.c);
+    return val_c(K_BITS, BT_STATIC, "sg_s_slice(%s, %s, %s)", x.c, hi.c, lo.c);
+}
+
+/* [a, b, ...]: the elements' bits, the first the most significant */
+static Val vector(unsigned n) {
+    unsigned e = N(n).a;
+    Val r;
+    if (!e) sg_fail(n, "an empty vector");
+    r = need_bits(e, eval(e, 0), "a vector's element");
+    for (e = N(e).next; e; e = N(e).next) {
+        Val x = need_bits(e, eval(e, 0), "a vector's element");
+        if (r.bt != BT_DYN && x.bt != BT_DYN)
+            r = val_c(K_BITS, BT_STATIC, "sg_s_concat(%s, %s)", r.c, x.c);
+        else
+            r = val_c(K_BITS, BT_DYN, "sg_d_concat(g, %s, %s)", raise(r, BT_DYN).c, raise(x, BT_DYN).c);
+    }
+    return r;
+}
+
+static int flag_index(unsigned n) {
+    static const char* const names[4] = {"N", "Z", "C", "V"};
+    int i;
+    if (N(n).kind != N_FIELD || N(N(n).a).kind != N_ID || strcmp(name_of(N(n).a), "PSTATE")) return -1;
+    for (i = 0; i < 4; ++i)
+        if (!strcmp(name_of(n), names[i])) return i;
+    sg_fail(n, "PSTATE.%s: sailgen maps N, Z, C and V", name_of(n));
+    return -1;
+}
+
+/* ---- statements ---- */
+
+static Val type_width(unsigned type) {
+    if (!type || N(type).value != K_BITS || !N(type).a) sg_fail(type, "a bits type with no width");
+    return need_static_int(type, eval(N(type).a, 0), "a width");
+}
+static int type_kind(unsigned type) { return type ? (int)N(type).value : K_NONE; }
+
+/* the value undefined takes in a local of this type and time: zero */
+static Val undefined_of(unsigned type, int bt) {
+    int kind = type_kind(type);
+    Val w;
+    switch (kind) {
+        case K_BITS:
+            w = type_width(type);
+            return bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_from_s(sg_s_zeros(%s))", w.c)
+                                : val_c(K_BITS, BT_STATIC, "sg_s_zeros(%s)", w.c);
+        case K_BIT:
+            return bt == BT_DYN ? val_c(K_BITS, BT_DYN, "sg_d_from_s(sg_s(0, 1))")
+                                : val_c(K_BITS, BT_STATIC, "sg_s(0, 1)");
+        case K_INT: return bt == BT_DYN ? val_c(K_INT, BT_DYN, "sg_i_const(g, 0)") : val_c(K_INT, BT_STATIC, "0ll");
+        case K_BOOL:
+            return bt == BT_DYN ? val_c(K_BOOL, BT_DYN, "LLVMConstInt(g->ir->t_i1, 0, 0)")
+                                : val_c(K_BOOL, BT_STATIC, "0");
+        case K_ENUM: return val_c(K_ENUM, BT_STATIC, "0");
+        default: sg_fail(type, "undefined of a type sailgen does not keep (%s)", sg_str(N(type).name));
+    }
+    return unit();
+}
+
+/* name : type = init, a mutable local, declared at the time its assignments reach */
+static void declare_var(unsigned name, unsigned type, unsigned init_node) {
+    Val init = N(init_node).kind == N_UNDEF ? unit() : eval(init_node, 0);
+    int kind = init.kind != K_UNIT ? init.kind : type_kind(type), var, bt;
+    char cname[96];
+    if (kind == K_BIT) kind = K_BITS;
+    if (kind == K_NONE || kind == K_OTHER || kind == K_TUPLE)
+        sg_fail(init_node, "a local of a type sailgen does not keep");
+    var = new_var(kind, init.kind != K_UNIT ? init.bt : BT_STATIC);
+    if (g_gen.dynamic_branch) var_raise(var, BT_DYN);
+    bt = g_gen.vars[var].bt;
+    snprintf(cname, sizeof cname, "v%d_%s", var, sg_str(name));
+    init = init.kind == K_UNIT ? undefined_of(type, bt) : raise(init, bt);
+    emit("%s %s = %s;\n", ctype(kind, bt), cname, init.c);
+    bind(name, val_c(kind, bt, "%s", cname), var, 0);
+}
+
+/* let pattern = value: the names bound to copies (the value may come from a local assigned later) */
+static void let_bind(unsigned pattern, Val v, unsigned value_node) {
+    unsigned p = pattern;
+    if (N(p).kind == N_TYPED) p = N(p).a;
+    if (N(p).kind == N_WILD) return;
+    if (N(p).kind == N_ID) {
+        v = keep(v);
+        bind(N(p).name, v, -1, value_node);
+        return;
+    }
+    if (N(p).kind == N_TUPLE) {
+        unsigned q, k = 0;
+        if (v.kind != K_TUPLE) sg_fail(pattern, "a tuple pattern for a value that is not one");
+        for (q = N(p).a; q; q = N(q).next, ++k) {
+            if (k >= v.ntuple) sg_fail(q, "more names than the tuple has values");
+            let_bind(q, g_gen.pool[v.tuple[k]], 0);
+        }
+        return;
+    }
+    sg_fail(pattern, "a let pattern sailgen does not read");
+}
+
+static void assign(unsigned target, Val v) {
+    unsigned t = target;
+    int f;
+    if (N(t).kind == N_TYPED) t = N(t).a;
+    if (N(t).kind == N_WILD) return;
+    if ((f = flag_index(t)) >= 0) { /* PSTATE.N = v */
+        if (g_gen.dynamic_branch) sg_fail(t, "a flag written under a condition known only at run time");
+        emit("sg_flags_write(g, %d, 1, %s);\n", f, raise(need_bits(t, v, "a flag's value"), BT_DYN).c);
+        return;
+    }
+    if (N(t).kind == N_BINOP && !strcmp(name_of(t), "@")) { /* PSTATE.N @ PSTATE.Z @ ... = v */
+        int first = -1, count = 0;
+        unsigned stack[8], depth = 0, u;
+        stack[depth++] = t;
+        while (depth) { /* the leaves, left to right */
+            u = stack[--depth];
+            if (N(u).kind == N_BINOP && !strcmp(name_of(u), "@")) {
+                stack[depth++] = N(u).b;
+                stack[depth++] = N(u).a;
+                continue;
+            }
+            f = flag_index(u);
+            if (f < 0) sg_fail(u, "a concatenation assigned that is not of PSTATE's flags");
+            if (first < 0) first = f;
+            if (f != first + count) sg_fail(u, "flags assigned out of their order N, Z, C, V");
+            ++count;
+        }
+        if (g_gen.dynamic_branch) sg_fail(t, "flags written under a condition known only at run time");
+        emit("sg_flags_write(g, %d, %d, %s);\n", first, count, raise(need_bits(t, v, "the flags' value"), BT_DYN).c);
+        return;
+    }
+    if (N(t).kind == N_TUPLE) {
+        unsigned q, k = 0;
+        if (v.kind != K_TUPLE) sg_fail(t, "a tuple assigned a value that is not one");
+        for (q = N(t).a; q; q = N(q).next, ++k) assign(q, g_gen.pool[v.tuple[k]]);
+        return;
+    }
+    if (N(t).kind == N_CALL) { /* a setter: f(args) = v is f(args, v) */
+        const char* s = name_of(t);
+        Val args[17];
+        unsigned count = arg_count(t), i, def;
+        if (g_gen.dynamic_branch) sg_fail(t, "%s() = under a condition known only at run time", s);
+        if (!strcmp(s, "_R")) {
+            Val r = need_static_int(t, eval(arg_at(t, 0), 0), "a register number");
+            emit("sg_reg_write(g, %s, %s);\n", r.c, raise(need_bits(t, v, "a register's value"), BT_DYN).c);
+            return;
+        }
+        def = sg_find(s, D_FUNCTION);
+        if (!def) sg_fail(t, "the setter %s has no definition", s);
+        for (i = 0; i < count; ++i) args[i] = keep(eval(arg_at(t, i), 0));
+        args[count++] = keep(v);
+        (void)inline_call(t, def, args, count);
+        return;
+    }
+    if (N(t).kind == N_SLICE || N(t).kind == N_INDEX) { /* x[hi .. lo] = v */
+        unsigned x = N(t).a;
+        Binding* b = NULL;
+        Val hi, lo;
+        if (N(x).kind != N_ID || !(b = lookup(name_of(x))) || b->var < 0)
+            sg_fail(t, "a slice assigned of other than a local");
+        hi = need_static_int(t, eval(N(t).b, 0), "a slice's bound");
+        lo = N(t).kind == N_SLICE ? need_static_int(t, eval(N(t).c, 0), "a slice's bound") : hi;
+        need_bits(t, v, "a slice's value");
+        var_raise(b->var, v.bt);
+        if (g_gen.dynamic_branch) var_raise(b->var, BT_DYN);
+        if (g_gen.vars[b->var].bt == BT_DYN)
+            emit("sg_d_set_slice(g, &%s, %s, %s, %s);\n", b->val.c, hi.c, lo.c, raise(v, BT_DYN).c);
+        else
+            emit("%s = sg_s_set_slice(%s, %s, %s, %s);\n", b->val.c, b->val.c, hi.c, lo.c, raise(v, BT_STATIC).c);
+        return;
+    }
+    if (N(t).kind == N_ID) {
+        const char* s = name_of(t);
+        Binding* b = lookup(s);
+        if (!b && !strcmp(s, "SP_EL0")) {
+            if (g_gen.dynamic_branch) sg_fail(t, "SP written under a condition known only at run time");
+            emit("sg_sp_write(g, %s);\n", raise(need_bits(t, v, "SP's value"), BT_DYN).c);
+            return;
+        }
+        if (!strcmp(s, "SEE")) return; /* the decoder's own bookkeeping */
+        if (!b) sg_fail(t, "%s assigned but not declared", s);
+        if (b->var < 0) sg_fail(t, "%s assigned but bound by let", s);
+        var_raise(b->var, v.bt);
+        if (g_gen.dynamic_branch) var_raise(b->var, BT_DYN);
+        if (v.kind != K_UNIT && v.kind != g_gen.vars[b->var].kind)
+            sg_fail(t, "%s (kind %d) assigned a value of kind %d", s, g_gen.vars[b->var].kind, v.kind);
+        emit("%s = %s;\n", b->val.c, raise(v, g_gen.vars[b->var].bt).c);
+        return;
+    }
+    sg_fail(t, "an assignment to an expression of kind %d", N(t).kind);
+}
+
+/* the mutable locals a statement assigns (a DYN if's branches give them back as selects) */
+static void assigned_vars(unsigned n, int* vars, unsigned* count) {
+    unsigned q;
+    if (!n) return;
+    if (N(n).kind == N_ASSIGN) {
+        unsigned t = N(n).a, list[8], k = 0, i;
+        while (N(t).kind == N_SLICE || N(t).kind == N_INDEX || N(t).kind == N_TYPED) t = N(t).a;
+        if (N(t).kind == N_TUPLE)
+            for (q = N(t).a; q && k < 8; q = N(q).next) list[k++] = N(q).kind == N_TYPED ? N(q).a : q;
+        else
+            list[k++] = t;
+        for (i = 0; i < k; ++i) {
+            Binding* b = N(list[i]).kind == N_ID ? lookup(name_of(list[i])) : NULL;
+            unsigned j;
+            if (!b || b->var < 0) continue;
+            for (j = 0; j < *count && vars[j] != b->var; ++j) {}
+            if (j == *count) {
+                if (*count == 32) sg_fail(n, "over 32 locals assigned under one run-time condition");
+                vars[(*count)++] = b->var;
+            }
+        }
+    }
+    if (N(n).kind == N_BLOCK) {
+        for (q = N(n).a; q; q = N(q).next) assigned_vars(q, vars, count);
+        return;
+    }
+    if (N(n).kind == N_LET) { /* let ... in body */
+        assigned_vars(N(n).b, vars, count);
+        assigned_vars(N(n).c, vars, count);
+        return;
+    }
+    assigned_vars(N(n).a, vars, count);
+    assigned_vars(N(n).b, vars, count);
+    assigned_vars(N(n).c, vars, count);
+    assigned_vars(N(n).d, vars, count);
+}
+
+static const char* select_fn(int kind) {
+    if (kind == K_BITS) return "sg_d_select";
+    if (kind == K_INT) return "sg_i_select";
+    return NULL;
+}
+
+/* if c then a else b, c known only at run time: each branch on copies of what they assign, then selects */
+static Val dynamic_if(unsigned n, Val c, int tail) {
+    int vars[32];
+    unsigned count = 0, i, saved_depth;
+    char names_t[32][16], names_e[32][16], cond[16];
+    Val then_v, else_v = unit();
+    temp(cond, sizeof cond);
+    emit("LLVMValueRef %s = %s;\n", cond, c.c);
+    assigned_vars(N(n).b, vars, &count);
+    assigned_vars(N(n).c, vars, &count);
+    for (i = 0; i < count; ++i) var_raise(vars[i], BT_DYN);
+    for (i = 0; i < count; ++i) {
+        Binding* b = var_binding(vars[i]);
+        temp(names_t[i], sizeof names_t[i]);
+        temp(names_e[i], sizeof names_e[i]);
+        emit("%s %s = %s, %s = %s;\n", ctype(g_gen.vars[vars[i]].kind, BT_DYN), names_t[i], raise(b->val, BT_DYN).c,
+             names_e[i], raise(b->val, BT_DYN).c);
+    }
+    ++g_gen.dynamic_branch;
+    saved_depth = g_gen.depth;
+    for (i = 0; i < count; ++i) {
+        Binding copy = *var_binding(vars[i]);
+        snprintf(copy.val.c, sizeof copy.val.c, "%s", names_t[i]);
+        bind(copy.name, copy.val, copy.var, 0);
+    }
+    then_v = eval(N(n).b, tail);
+    if (then_v.kind != K_UNIT) then_v = keep(raise(then_v, BT_DYN));
+    g_gen.depth = saved_depth;
+    for (i = 0; i < count; ++i) {
+        Binding copy = *var_binding(vars[i]);
+        snprintf(copy.val.c, sizeof copy.val.c, "%s", names_e[i]);
+        bind(copy.name, copy.val, copy.var, 0);
+    }
+    if (N(n).c) {
+        else_v = eval(N(n).c, tail);
+        if (else_v.kind != K_UNIT) else_v = keep(raise(else_v, BT_DYN));
+    }
+    g_gen.depth = saved_depth;
+    --g_gen.dynamic_branch;
+    for (i = 0; i < count; ++i) {
+        int kind = g_gen.vars[vars[i]].kind;
+        Binding* b = var_binding(vars[i]);
+        if (kind == K_BOOL)
+            emit("%s = LLVMBuildSelect(SG_B, %s, %s, %s, \"\");\n", b->val.c, cond, names_t[i], names_e[i]);
+        else if (select_fn(kind))
+            emit("%s = %s(g, %s, %s, %s);\n", b->val.c, select_fn(kind), cond, names_t[i], names_e[i]);
+        else
+            sg_fail(n, "a local of kind %d assigned under a condition known only at run time", kind);
+    }
+    if (then_v.kind == K_UNIT) return unit();
+    if (then_v.kind == K_BOOL)
+        return keep(val_c(K_BOOL, BT_DYN, "LLVMBuildSelect(SG_B, %s, %s, %s, \"\")", cond, then_v.c, else_v.c));
+    if (!select_fn(then_v.kind)) sg_fail(n, "an if's value of kind %d under a run-time condition", then_v.kind);
+    return keep(val_c(then_v.kind, BT_DYN, "%s(g, %s, %s, %s)", select_fn(then_v.kind), cond, then_v.c, else_v.c));
+}
+
+/* walks n into a buffer that is dropped: what it gives (an if's or a match's branch, to declare the result first) */
+static Val probe(unsigned n, int tail) {
+    Buffer scratch = {0, 0, 0}, *saved = g_gen.out;
+    unsigned saved_depth = g_gen.depth, saved_var = g_gen.var_next, saved_temp = g_gen.temp;
+    int saved_indent = g_gen.indent;
+    Val v;
+    g_gen.out = &scratch;
+    v = eval(n, tail);
+    g_gen.out = saved;
+    g_gen.depth = saved_depth;
+    g_gen.var_next = saved_var;
+    g_gen.temp = saved_temp;
+    g_gen.indent = saved_indent;
+    free(scratch.text);
+    return v;
+}
+
+static Val if_expr(unsigned n, int tail) {
+    Val c = eval(N(n).a, 0), a, b, r;
+    char t[16], buffer[sizeof c.c];
+    if (c.kind != K_BOOL) sg_fail(N(n).a, "an if's condition is not a bool");
+    if (c.bt == BT_CONST) {
+        if (c.value) return eval(N(n).b, tail);
+        return N(n).c ? eval(N(n).c, tail) : unit();
+    }
+    if (c.bt == BT_DYN) return dynamic_if(n, c, tail);
+    a = probe(N(n).b, tail);
+    b = N(n).c ? probe(N(n).c, tail) : unit();
+    if (a.kind == K_UNIT || b.kind == K_UNIT || a.kind == K_TUPLE) {
+        emit("if (%s) {\n", cond_text(c.c, buffer, sizeof buffer));
+        ++g_gen.indent;
+        stmt(N(n).b);
+        --g_gen.indent;
+        if (N(n).c) {
+            emit("} else {\n");
+            ++g_gen.indent;
+            stmt(N(n).c);
+            --g_gen.indent;
+        }
+        emit("}\n");
+        return unit();
+    }
+    r = val_c(a.kind, top_bt(top_bt(a.bt, b.bt), BT_STATIC), "");
+    temp(t, sizeof t);
+    snprintf(r.c, sizeof r.c, "%s", t);
+    emit("%s %s;\n", ctype(r.kind, r.bt), t);
+    emit("if (%s) {\n", cond_text(c.c, buffer, sizeof buffer));
+    ++g_gen.indent;
+    a = eval(N(n).b, tail);
+    emit("%s = %s;\n", t, raise(a, r.bt).c);
+    --g_gen.indent;
+    emit("} else {\n");
+    ++g_gen.indent;
+    b = eval(N(n).c, tail);
+    emit("%s = %s;\n", t, raise(b, r.bt).c);
+    --g_gen.indent;
+    emit("}\n");
+    return r;
+}
+
+/* a case's pattern against the scrutinee, as a C condition: 0 for one that always matches */
+static int pattern_test(unsigned p, Val s, char* out, size_t size) {
+    if (N(p).kind == N_WILD) return 0;
+    if (N(p).kind == N_BITS) {
+        snprintf(out, size, "(%s).v == 0x%llxull", s.c, N(p).value);
+        return 1;
+    }
+    if (N(p).kind == N_NUM) {
+        snprintf(out, size, "(%s) == %lldll", s.c, (long long)N(p).value);
+        return 1;
+    }
+    if (N(p).kind == N_ID) {
+        long long m = enum_member(name_of(p));
+        if (m < 0) sg_fail(p, "a pattern binding a name (%s): sailgen reads literals, enum members and _", name_of(p));
+        snprintf(out, size, "(%s) == %lld", s.c, m);
+        return 1;
+    }
+    sg_fail(p, "a pattern sailgen does not read");
+    return 0;
+}
+
+static Val match_expr(unsigned n, int tail) {
+    Val s = eval(N(n).a, 0), r = unit(), first;
+    unsigned c;
+    int valued, opened = 0, total = 0;
+    char t[16];
+    if (s.bt == BT_DYN) sg_fail(n, "a match on a value known only at run time");
+    s = keep(raise(s, BT_STATIC));
+    for (c = N(n).b; c; c = N(c).next)
+        if (N(c).c) sg_fail(c, "a guarded case");
+    first = probe(N(N(n).b).b, tail);
+    valued = first.kind != K_UNIT && first.kind != K_TUPLE;
+    if (valued) {
+        int bt = BT_STATIC;
+        for (c = N(n).b; c; c = N(c).next) bt = top_bt(bt, probe(N(c).b, tail).bt);
+        r = val_c(first.kind, bt, "");
+        temp(t, sizeof t);
+        snprintf(r.c, sizeof r.c, "%s", t);
+        emit("%s %s;\n", ctype(r.kind, r.bt), t);
+    }
+    for (c = N(n).b; c; c = N(c).next) {
+        char test[192];
+        int conditional = pattern_test(N(c).a, s, test, sizeof test);
+        if (!opened)
+            emit(conditional ? "if (%s) {\n" : "{\n", test);
+        else
+            emit(conditional ? "} else if (%s) {\n" : "} else {\n", test);
+        opened = 1;
+        ++g_gen.indent;
+        if (valued) {
+            Val v = eval(N(c).b, tail);
+            emit("%s = %s;\n", t, raise(v, r.bt).c);
+        } else
+            stmt(N(c).b);
+        --g_gen.indent;
+        if (!conditional) {
+            total = 1;
+            break;
+        }
+    }
+    if (opened) {
+        if (!total) { /* every value listed, or the decode makes the rest impossible: reached, it is a bug */
+            emit("} else {\n");
+            emit("    sg_fail(\"a match with no case for its value at %s:%u\", 0, 0);\n", sg_str(N(n).file), N(n).line);
+        }
+        emit("}\n");
+    }
+    return r;
+}
+
+static Val block(unsigned n, int tail) {
+    unsigned item, saved = g_gen.depth;
+    Val v = unit();
+    for (item = N(n).a; item; item = N(item).next) {
+        int last = !N(item).next;
+        if (N(item).kind == N_LET && !N(item).c) {
+            Val value = eval(N(item).b, 0);
+            let_bind(N(item).a, value, N(item).b);
+            v = unit();
+            continue;
+        }
+        v = eval(item, last && tail);
+    }
+    /* the block's names go; its value is a temporary, which stays in scope (the block has no braces) */
+    g_gen.depth = saved;
+    return v;
+}
+
+static Val foreach_loop(unsigned n) {
+    Val from = need_static_int(n, eval(N(n).a, 0), "a foreach's start");
+    Val to = need_static_int(n, eval(N(n).b, 0), "a foreach's end");
+    Val by = N(n).c ? need_static_int(n, eval(N(n).c, 0), "a foreach's step") : val_const(K_INT, 1);
+    char v[96];
+    unsigned saved = g_gen.depth;
+    if (g_gen.dynamic_branch) sg_fail(n, "a foreach under a run-time condition");
+    snprintf(v, sizeof v, "l%u_%s", ++g_gen.temp, name_of(n));
+    emit("for (long long %s = %s; %s %s %s; %s %s= %s) {\n", v, from.c, v, N(n).dec ? ">=" : "<=", to.c, v,
+         N(n).dec ? "-" : "+", by.c);
+    ++g_gen.indent;
+    bind(N(n).name, val_c(K_INT, BT_STATIC, "%s", v), -1, 0);
+    stmt(N(n).d);
+    g_gen.depth = saved;
+    --g_gen.indent;
+    emit("}\n");
+    return unit();
+}
+
+/* the leaves of an @ chain, left to right: how many (at most cap) */
+static unsigned concat_leaves(unsigned n, unsigned* out, unsigned cap) {
+    if (N(n).kind == N_BINOP && !strcmp(name_of(n), "@")) {
+        unsigned k = concat_leaves(N(n).a, out, cap);
+        return k + concat_leaves(N(n).b, out + k, cap > k ? cap - k : 0);
+    }
+    if (!cap) return 1;
+    out[0] = n;
+    return 1;
+}
+
+/* PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V = [r[i]] @ IsZeroBit(r) @ 0b00: a logical result's flags, lowered whole
+   (llvm.h's sg_flags_logic: the result r compared as the origin of the conditions that read them); 0 when the
+   assignment is not that */
+static int logic_flags_rule(unsigned n) {
+    unsigned lhs[8], rhs[8], k, bit, index, zero;
+    Binding* b;
+    Val r, i;
+    if (concat_leaves(N(n).a, lhs, 8) != 4 || concat_leaves(N(n).b, rhs, 8) != 3) return 0;
+    for (k = 0; k < 4; ++k)
+        if (flag_index(lhs[k]) != (int)k) return 0;
+    if (N(rhs[0]).kind != N_VEC || !N(rhs[0]).a || N(N(rhs[0]).a).next) return 0;
+    bit = N(rhs[0]).a;
+    zero = rhs[1];
+    if (N(bit).kind != N_INDEX || N(N(bit).a).kind != N_ID || !is_call(zero, "IsZeroBit") || arg_count(zero) != 1 ||
+        N(arg_at(zero, 0)).kind != N_ID || strcmp(name_of(N(bit).a), name_of(arg_at(zero, 0))))
+        return 0;
+    if (N(rhs[2]).kind != N_BITS || N(rhs[2]).width != 2 || N(rhs[2]).value) return 0;
+    if (!(b = lookup(name_of(N(bit).a)))) return 0;
+    if (g_gen.dynamic_branch) sg_fail(n, "flags written under a condition known only at run time");
+    index = N(bit).b;
+    r = raise(eval(N(bit).a, 0), BT_DYN);
+    i = need_static_int(index, eval(index, 0), "a bit index");
+    emit("if ((%s) != (long long)(%s).w - 1) sg_fail(\"N from other than the result's top bit\", %s, (%s).w);\n", i.c,
+         r.c, i.c, r.c);
+    emit("sg_flags_logic(g, %s);\n", r.c);
+    return 1;
+}
+
+static Val eval(unsigned n, int tail) {
+    Val v;
+    if (!n) return unit();
+    switch (N(n).kind) {
+        case N_NUM: return val_const(K_INT, (long long)N(n).value);
+        case N_BITS:
+            v = val_c(K_BITS, BT_STATIC, "sg_s(0x%llxull, %u)", N(n).value, N(n).width);
+            v.node = n;
+            return v;
+        case N_BOOL: return val_const(K_BOOL, (long long)N(n).value);
+        case N_UNIT: return unit();
+        case N_ID: return ident(n);
+        case N_CALL: v = call(n); break;
+        case N_BINOP: v = binop(n); break;
+        case N_NEG: {
+            Val a = need_static_int(n, eval(N(n).a, 0), "a negation");
+            if (a.bt == BT_CONST) return val_const(K_INT, -a.value);
+            return val_c(K_INT, a.bt, "(-(%s))", a.c);
+        }
+        case N_SLICE:
+        case N_INDEX: v = slice(n); break;
+        case N_VEC: v = vector(n); break;
+        case N_FIELD: {
+            int f = flag_index(n);
+            if (f < 0) sg_fail(n, "a field of other than PSTATE");
+            return val_c(K_BITS, BT_DYN, "sg_flag_read(g, %d)", f);
+        }
+        case N_IF: return if_expr(n, tail);
+        case N_MATCH: return match_expr(n, tail);
+        case N_BLOCK: return block(n, tail);
+        case N_TYPED: /* undefined : T is T's zero, known when it recompiles */
+            if (N(N(n).a).kind == N_UNDEF) return undefined_of(N(n).b, BT_STATIC);
+            return eval(N(n).a, tail);
+        case N_TUPLE: {
+            Val parts[4];
+            unsigned q, k = 0;
+            for (q = N(n).a; q; q = N(q).next) {
+                if (k == 4) sg_fail(n, "a tuple of more than 4");
+                parts[k++] = keep(eval(q, 0));
+            }
+            return tuple_of(parts, k, n);
+        }
+        case N_LET: { /* let p = e in body */
+            unsigned saved = g_gen.depth;
+            Val value = eval(N(n).b, 0);
+            let_bind(N(n).a, value, N(n).b);
+            v = eval(N(n).c, tail);
+            g_gen.depth = saved;
+            return v;
+        }
+        case N_VAR: declare_var(N(n).name, N(n).c, N(n).b); return unit();
+        case N_ASSIGN:
+            if (logic_flags_rule(n)) return unit();
+            assign(N(n).a, eval(N(n).b, 0));
+            return unit();
+        case N_FOREACH: return foreach_loop(n);
+        case N_RETURN:
+            if (g_gen.in_helper && !tail) {
+                Val r = eval(N(n).a, 0);
+                unsigned k;
+                if (r.kind == K_TUPLE)
+                    for (k = 0; k < r.ntuple; ++k)
+                        emit("*out%u = %s;\n", k, raise(g_gen.pool[r.tuple[k]], BT_STATIC).c);
+                else if (r.kind != K_UNIT)
+                    emit("*out0 = %s;\n", raise(r, BT_STATIC).c);
+                emit("return 0;\n");
+                return unit();
+            }
+            if (!tail) sg_fail(n, "a return before the end of an inlined function");
+            return eval(N(n).a, 1);
+        case N_THROW:
+            /* CONSTRAINED UNPREDICTABLE: the decoder routes no such word here; were one, UNDEF is one of its choices */
+            if (!is_call(N(n).a, "Error_Undefined") && !is_call(N(n).a, "Error_ConstrainedUnpredictable"))
+                sg_fail(n, "a throw of other than Error_Undefined() or Error_ConstrainedUnpredictable()");
+            throw_undefined(n);
+            return unit();
+        case N_ASSERT: return unit(); /* what the decode guarantees: nothing to generate */
+        case N_UNDEF: sg_fail(n, "undefined other than as a local's start"); return unit();
+        default: sg_fail(n, "an expression of kind %d sailgen does not read", N(n).kind); return unit();
+    }
+    if (!v.node) v.node = n;
+    return v;
+}
+
+/* ---- the decode clauses and the output ---- */
+
+/* the fixed bits of a clause's vector pattern [b31, ..., b0] of bitzero, bitone and _ */
+static void clause_bits(unsigned def, SgU64* mask, SgU64* value) {
+    unsigned p = g_parse.defs[def].params, e, i = 0;
+    if (N(p).kind != N_TUPLE || !N(N(p).a).next) sg_fail(p, "a decode clause's pattern is not (pc, (... as __opcode))");
+    p = N(N(p).a).next;
+    if (N(p).kind == N_BINOP && !strcmp(name_of(p), "as")) p = N(p).a;
+    if (N(p).kind == N_BITS) { /* every bit fixed */
+        if (N(p).width != 32) sg_fail(p, "a decode pattern of %u bits", N(p).width);
+        *mask = 0xffffffffull;
+        *value = N(p).value;
+        return;
+    }
+    if (N(p).kind != N_VEC) sg_fail(p, "a decode clause's pattern is not a bit vector");
+    *mask = 0;
+    *value = 0;
+    for (e = N(p).a; e; e = N(e).next, ++i) {
+        unsigned bit = 31 - i;
+        if (i > 31) sg_fail(e, "a decode pattern over 32 bits");
+        if (N(e).kind == N_WILD) continue;
+        if (N(e).kind != N_ID || (strcmp(name_of(e), "bitone") && strcmp(name_of(e), "bitzero")))
+            sg_fail(e, "a decode pattern bit that is not bitzero, bitone or _");
+        *mask |= 1ull << bit;
+        if (!strcmp(name_of(e), "bitone")) *value |= 1ull << bit;
+    }
+    if (i != 32) sg_fail(p, "a decode pattern of %u bits", i);
+}
+
+static void generate_decode(const Clause* c) {
+    unsigned body = g_parse.defs[c->clause].body;
+    const char* decode_name = sg_str(g_parse.defs[c->decode].name);
+    int pass;
+    /* walked until no local's time changes; only the last walk's text is kept. The clause's body runs as it is:
+       its lets slice __opcode (the word), its checks throw, its call is the decode function's */
+    g_gen.var_count = 0;
+    for (pass = 0; pass < 8; ++pass) {
+        Buffer scratch = {0, 0, 0};
+        g_gen.changed = 0;
+        g_gen.var_next = 0;
+        g_gen.depth = 0;
+        g_gen.frame = 0;
+        g_gen.temp = 0;
+        g_gen.call_depth = 0;
+        g_gen.dynamic_branch = 0;
+        g_gen.in_helper = 0;
+        g_gen.out = &scratch;
+        g_gen.indent = 1;
+        bind(sg_intern("__opcode", 8), val_c(K_BITS, BT_STATIC, "sg_s(g->word, 32)"), -1, 0);
+        bind(sg_intern("pc", 2), val_c(K_INT, BT_STATIC, "(long long)g->pc"), -1, 0);
+        stmt(body);
+        if (!g_gen.changed) {
+            Buffer* out = &g_gen.body;
+            g_gen.out = out;
+            g_gen.indent = 0;
+            emit("/* %s */\nstatic void sg_%s(SgCtx* g) {\n", decode_name, decode_name);
+            buf_add(out, scratch.text ? scratch.text : "", scratch.length);
+            emit("}\n\n");
+            free(scratch.text);
+            return;
+        }
+        free(scratch.text);
+    }
+    sg_fail(body, "the times of %s's locals did not settle in 8 walks", decode_name);
+}
+
+/* the root a clause's body calls, anywhere in it: its index in roots, or -1 */
+static int clause_root(unsigned n, const unsigned* roots, unsigned count) {
+    unsigned i;
+    int r;
+    if (!n) return -1;
+    if (N(n).kind == N_CALL)
+        for (i = 0; i < count; ++i)
+            if (!strcmp(name_of(n), sg_str(roots[i]))) return (int)i;
+    if ((r = clause_root(N(n).a, roots, count)) >= 0) return r;
+    if ((r = clause_root(N(n).b, roots, count)) >= 0) return r;
+    if ((r = clause_root(N(n).c, roots, count)) >= 0) return r;
+    if ((r = clause_root(N(n).d, roots, count)) >= 0) return r;
+    return clause_root(N(n).next, roots, count);
+}
+
+/* the roots file: root NAME (a decode function); stop lines are --extract's */
+static unsigned read_roots(const char* path, unsigned* roots, unsigned cap) {
+    size_t size, i;
+    char* text = sg_read(path, &size);
+    unsigned count = 0;
+    for (i = 0; i < size;) {
+        size_t e = i, w;
+        while (e < size && text[e] != '\n') ++e;
+        while (i < e && isspace((unsigned char)text[i])) ++i;
+        if (i + 5 < e && !strncmp(text + i, "root", 4) && isspace((unsigned char)text[i + 4])) {
+            i += 4;
+            while (i < e && isspace((unsigned char)text[i])) ++i;
+            w = 0;
+            while (i + w < e && !isspace((unsigned char)text[i + w])) ++w;
+            if (count == cap) sg_fail(0, "%s: more than %u roots", path, cap);
+            roots[count++] = sg_intern(text + i, w);
+        }
+        i = e + 1;
+    }
+    free(text);
+    return count;
+}
+
+int sg_generate(const char* roots_path, const char* backend_path, const char* out_path) {
+    unsigned* roots = g_gen.roots;
+    Clause* clauses = g_gen.clauses;
+    unsigned root_count = read_roots(roots_path, roots, 1024), clause_count = 0, i, k, d;
+    size_t backend_size;
+    char* backend;
+    for (d = 1; d < g_parse.def_count; ++d) { /* each root's clause: the one that calls it */
+        const SgDef* def = &g_parse.defs[d];
+        int root;
+        if (def->kind != D_CLAUSE || (root = clause_root(def->body, roots, root_count)) < 0) continue;
+        {
+            Clause* c = &clauses[clause_count++];
+            c->clause = d;
+            c->decode = sg_find(sg_str(roots[root]), D_FUNCTION);
+            if (!c->decode) sg_fail(def->body, "the root %s has no definition", sg_str(roots[root]));
+            clause_bits(d, &c->mask, &c->value);
+        }
+    }
+    for (i = 0; i < root_count; ++i) {
+        for (k = 0; k < clause_count && strcmp(sg_str(g_parse.defs[clauses[k].decode].name), sg_str(roots[i])); ++k) {}
+        if (k == clause_count) sg_fail(0, "%s: no decode clause calls the root %s", roots_path, sg_str(roots[i]));
+    }
+    /* the clauses are tried in their order, as Sail's scattered decode tries them: one an earlier clause covers
+       whole is never reached (REV16 and REV32 go to REV's clause, which runs the same execute) */
+    for (k = 0; k < clause_count; ++k)
+        for (i = 0; i < k && !clauses[k].shadowed; ++i)
+            if ((clauses[i].mask & clauses[k].mask) == clauses[i].mask &&
+                (clauses[k].value & clauses[i].mask) == clauses[i].value)
+                clauses[k].shadowed = i + 1;
+    for (i = 0; i < clause_count; ++i)
+        if (!clauses[i].shadowed) generate_decode(&clauses[i]);
+    sg_out("/* Generated by tools/sailgen (--generate %s) from", roots_path);
+    for (i = 0; i < g_parse.file_count; ++i) sg_out(" %s", g_parse.files[i].path);
+    sg_out(": do not edit */\n\n");
+    backend = sg_read(backend_path, &backend_size);
+    sg_out("%.*s\n", (int)backend_size, backend);
+    free(backend);
+    sg_out("/* ---- helpers: functions of what the recompiler knows ---- */\n\n");
+    if (g_gen.helpers.length) sg_out("%s", g_gen.helpers.text);
+    sg_out("/* ---- the decode functions ---- */\n\n");
+    if (g_gen.body.length) sg_out("%s", g_gen.body.text);
+    sg_out("/* the word's instruction emitted at pc, when it is one of these: 1, else 0 */\n");
+    sg_out("static int sg_emit(SnxIr* ir, SnxU32 word, SnxU64 pc) {\n");
+    sg_out("    SgCtx context, *g = &context;\n");
+    sg_out("    memset(g, 0, sizeof *g);\n    g->ir = ir;\n    g->word = word;\n    g->pc = pc;\n   ");
+    for (i = 0; i < clause_count; ++i) {
+        if (clauses[i].shadowed) {
+            sg_out(" /* %s: its words are %s's */\n   ", sg_str(g_parse.defs[clauses[i].decode].name),
+                   sg_str(g_parse.defs[clauses[clauses[i].shadowed - 1].decode].name));
+            continue;
+        }
+        sg_out(" if ((word & 0x%08llxu) == 0x%08llxu)\n        sg_%s(g);\n    else", clauses[i].mask, clauses[i].value,
+               sg_str(g_parse.defs[clauses[i].decode].name));
+    }
+    sg_out("\n        return 0;\n    sg_flags_flush(g);\n    return 1;\n}\n");
+    return sg_flush(out_path);
+}
