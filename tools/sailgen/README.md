@@ -24,7 +24,8 @@ Each decode function is walked with everything it calls inlined, and each value 
   one branch, so a fixup such as `let SPESampleInFlight : bool = false` leaves no trace.
 - **STATIC**, when the recompiler runs: the word's fields, the pc, the guest's features, and all that only they make:
   `datasize`, the immediates, `DecodeBitMasks`, the `if`s and `match`es on fields. They are C in the output.
-- **DYN**, when the guest runs: what reads a register or a flag. They are calls of the back end that build IR.
+- **DYN**, when the guest runs: what reads a register, the flags among them. They are calls of the back end that
+  build IR.
 
 A mutable local takes the latest time any of its assignments has; the walk repeats until no local's time changes.
 A function whose arguments are all STATIC and that reaches no state becomes a C function of its own
@@ -54,22 +55,35 @@ Builtins, lowered by the back end rather than from Sail:
 | `LSL`, `LSR`, `ASR`, `ROR`, `Extend`, `ZeroExtend`, `SignExtend`, `Replicate`, `Zeros`, `Ones`, `IsZero`, `IsZeroBit`, `Bit`, `EOR`, `MOD`, `DIV`, `Min`, `Max`, `HighestSetBit`, `Slice` | the map, or C when the value is STATIC |
 | `IsFeatureImplemented(FEAT_X)` | the guest's feature bit (`SNX_A64_FEAT_X` of `a64.profile`) |
 
-## The state model
+## The state
 
-The generated code reaches the CPU only through the functions every emitter uses (`ir.h`): `ir_x` and `ir_set_x`
-for `_R(n)` and `SP_EL0` (X31), `ir_flag_read` for PSTATE's N, Z, C and V, `ir_flags_commit` and `ir_flags_origin`
-to write them, `ir_undef` for a throw. So the per-block caches of registers and flags, the alias tags and the
-promotion of registers (`ir_promote.c`) treat its accesses as the hand-written emitters' ones. When NZCV is written
-from `AddWithCarry(x, NOT(y), '1')` the origin is the compare `x - y`, from `AddWithCarry(x, y, '0')` the sum, and
-from `[r[N-1]] @ IsZeroBit(r) @ 0b00` the logical result `r`; `ConditionHolds` then reads a condition on them as one
-`icmp` of the operands, as `ir_state.c`'s `ir_flags_cond` does for the emitters still written by hand.
+The registers are the Sail's: sail-arm's `PSTATE` (its `struct ProcState`), and `nx.sail`'s `GPR`, the array ScarletNX's
+CPU keeps X0 to X30 and SP_EL0 in, which `get_R`, `set_R`, `SP_read` and `SP_set` index where sail-arm picks one of 31
+registers by a match. A read or a write of a register `NAME` is a call of the back end's `sg_NAME_read` or
+`sg_NAME_write`: of the whole value for a register of bits, of an element for a vector of them (`GPR[n]`), of a field
+for a struct (`PSTATE.N`, which the back end numbers `SG_PSTATE_N`); consecutive fields assigned together (`PSTATE.N @
+PSTATE.Z @ PSTATE.C @ PSTATE.V = nzcv`) are one write of the first and how many. A call of an overload (`_R`) is the
+member that takes that many arguments. sailgen checks that the back end defines each name it calls and stops at the line
+that reaches one it does not. The pc is the one register sailgen knows itself: the instruction's.
+
+`llvm.h` keeps them where the CPU does (`cpu.h`: `x[32]`, and the flags `n`, `z`, `cf` and `vf`, each the i32 0 or 1).
+Each write is stored at once, and the values are cached for the basic block in `ir->state`, the cache `ir_state.c`'s
+accessors keep for the emitters still written by hand: a block that mixes the two loads a register once and reads a
+write back as the value written, and the alias tags and the promotion of registers (`ir_promote.c`) treat its loads and
+stores as the hand-written emitters'. When the four flags are written from `AddWithCarry(x, NOT(y), '1')` they keep the
+compare `x - y` as their origin, from `AddWithCarry(x, y, '0')` the sum, and from `[r[N-1]] @ IsZeroBit(r) @ 0b00` the
+logical result `r`; `ConditionHolds` then reads a condition on them as one `icmp` of the operands, and so does
+`ir_state.c`'s `ir_flags_cond` for B.cond and the other emitters written by hand. Flags written alone (CFINV, RMIF,
+SETF8) are stored with the others at the end of the instruction.
 
 ## Another back end
 
 The front (the parse, the inlining, the times) and the Sail don't depend on LLVM. Another back end is another
-`llvm.h`, with the same functions over its own values, and its own state model.
+`llvm.h`, with the same functions over its own values, keeping the registers its own way behind the same
+`sg_NAME_read` and `sg_NAME_write`.
 
 ## Tests
 
 `tests/sailgen/`: `--extract` of a small file copies the closure of its root and nothing else, and `--generate`
-refuses a throw it has no meaning for, naming its line; `sailgen_a64` generates the in-tree A64 subsets whole.
+refuses a throw it has no meaning for and a register or a field the back end does not keep, naming its line;
+`sailgen_a64` generates the in-tree A64 subsets whole.

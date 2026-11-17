@@ -83,10 +83,10 @@ root decode_smulh_aarch64_instrs_integer_arithmetic_mul_widening_64_128hi
 root decode_umulh_aarch64_instrs_integer_arithmetic_mul_widening_64_128hi
 root decode_xpac_aarch64_instrs_integer_pac_strip_dp_1src
 
-# the state the generator maps to the backend's (gen.c)
-stop _R
+# what the generator knows when it recompiles (gen.c: the pc, the decode's SEE) and the state no instruction here
+# reaches: the banked stack pointers the original SP_read picks among (nx.sail's reads GPR's last element), SPE's
+# sample (nx.sail's constant) and the features' table (IsFeatureImplemented is lowered)
 stop _PC
-stop PSTATE
 stop SP_EL0
 stop SP_EL1
 stop SP_EL2
@@ -98,7 +98,10 @@ stop FeatureImpl
 # what the generator lowers itself (tools/sailgen/README.md, "Builtins"): their Sail is not needed
 stop IsFeatureImplemented
 
-# NX's fixups (nx.sail) in their place
+# NX's fixups (nx.sail) in their place: the register file is GPR's elements; nothing writes a part of a register
+stop get_R
+stop set_R
+stop set_R_bits
 stop SPESampleAddOpOther
 stop AddPACIA
 stop AddPACIB

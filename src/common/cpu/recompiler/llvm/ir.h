@@ -226,10 +226,6 @@ LLVMValueRef ir_flags_adds(SnxIr* ir, unsigned bits, LLVMValueRef a, LLVMValueRe
 LLVMValueRef ir_flags_subs(SnxIr* ir, unsigned bits, LLVMValueRef a, LLVMValueRef b);
 void ir_flags_logic(SnxIr* ir, LLVMValueRef value, unsigned bits);
 void ir_flags_set_nzcv(SnxIr* ir, LLVMValueRef nzcv);
-/* the four flags written (any integer width: each is stored as the i32 0 or 1 the CPU structure keeps) and kept as
-   this block's values; and what all four came from, when a compare made them (SNX_IR_FLAGS_SUB, ADD, LOGIC) */
-void ir_flags_commit(SnxIr* ir, LLVMValueRef n, LLVMValueRef z, LLVMValueRef c, LLVMValueRef v);
-void ir_flags_origin(SnxIr* ir, unsigned origin, LLVMValueRef left, LLVMValueRef right);
 LLVMValueRef ir_flags_cond(SnxIr* ir, unsigned cond);
 
 /* Once per process, before any other call; threads may then each own SnxIrs. 0, or -1 with the reason */

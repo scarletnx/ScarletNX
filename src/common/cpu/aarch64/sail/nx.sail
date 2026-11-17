@@ -1,17 +1,31 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The NX's fixups over a64.sail: what Horizon's EL0 makes of the architecture where it chooses, each with why.
-   sailgen reads this file after a64.sail (--overlay), and a definition here takes the place of a64.sail's of the
-   same name; a top-level let is a constant the generated code folds. a64.roots stops the extraction at the names
-   defined here, so a64.sail holds only sail-arm's own text */
+/* The NX's fixups over a64.sail, each with why: what Horizon's EL0 makes of the architecture where it chooses, and
+   where ScarletNX's CPU keeps the registers. sailgen reads this file after a64.sail (--overlay), and a definition
+   here takes the place of a64.sail's of the same name; a top-level let is a constant the generated code folds.
+   a64.roots stops the extraction at the names defined here, so a64.sail holds only sail-arm's own text */
 
-// Guest code runs at EL0 alone, where the stack pointer is always SP_EL0 (PSTATE.SP is 0 there and EL0 can't set it)
+// ScarletNX's CPU keeps the general-purpose registers in one array of 32 (cpu.h's CPU.x): X0 to X30, then the stack
+// pointer. sail-arm has 31 registers R0 to R30, which get_R and set_R pick by a match on the number; here they are
+// GPR's elements, by that number, which the back end loads and stores where the CPU keeps them (sg_GPR_read)
+register GPR : vector(32, bits(64))
+
+val get_R : forall 'n, 0 <= 'n <= 30. int('n) -> bits(64)
+function get_R n = GPR[n]
+
+val set_R : forall 'n, 0 <= 'n <= 30. (int('n), bits(64)) -> unit
+function set_R (n, v) = {
+    GPR[n] = v
+}
+
+// Guest code runs at EL0 alone, where the stack pointer is always SP_EL0 (PSTATE.SP is 0 there and EL0 can't set
+// it), which the CPU keeps after X30, as GPR's last element
 val SP_read : unit -> bits(64)
-function SP_read () = SP_EL0
+function SP_read () = GPR[31]
 
 val SP_set : bits(64) -> unit
 function SP_set value_name = {
-    SP_EL0 = value_name
+    GPR[31] = value_name
 }
 
 // No Statistical Profiling Extension: no sample is ever in flight

@@ -1278,6 +1278,19 @@ add_test(NAME sailgen_refused
                  "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused.sail")
 set_tests_properties(sailgen_refused PROPERTIES PASS_REGULAR_EXPRESSION
     "refused.sail:4: error: a throw of other than Error_Undefined\\(\\) or Error_ConstrainedUnpredictable\\(\\)")
+# a register, or a struct register's field, the back end does not keep: refused at the line that reads it, naming
+# what the back end lacks
+foreach(case IN ITEMS register field)
+    add_test(NAME sailgen_refused_${case}
+             COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.roots"
+                     --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/llvm.h"
+                     -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/refused_${case}.inc"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_${case}.sail")
+endforeach()
+set_tests_properties(sailgen_refused_register PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused_register.sail:6: error: the register FPCR: the back end llvm.h defines no sg_FPCR_read")
+set_tests_properties(sailgen_refused_field PROPERTIES PASS_REGULAR_EXPRESSION
+    "refused_field.sail:12: error: PSTATE.D: the back end llvm.h defines no SG_PSTATE_D")
 # and the A64 subsets of src/common/cpu/aarch64/sail/ generate whole, with the NX's fixups
 add_test(NAME sailgen_a64
          COMMAND snx-sailgen --generate "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail/a64.roots"
