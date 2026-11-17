@@ -26,6 +26,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -155,6 +156,11 @@ static void promise(void* ctx, u32 op, u64 payload, u32 size) {
     s = NVN_OBJ(NvnSync, gr64(payload));
     s->syncpt = pr->syncpt;
     s->value = syncpt_promise(pr->syncpt, 1);
+    if (snx_tracy_attached()) { /* the fences a recording promises, for the waits' zones (nvn_queue.c trace_msg) */
+        char msg[64];
+        int n = snprintf(msg, sizeof msg, "nvn recorded fence %u=%u", s->syncpt, s->value);
+        if (n > 0 && n < (int)sizeof msg) SNX_MSG(msg, (size_t)n);
+    }
     s->ready = pr->ready;
     s->shown = pr->shown;
     __atomic_store_n(&s->fenced, 1, __ATOMIC_RELEASE);
@@ -618,6 +624,7 @@ void nvn_replay_queue_free(u32 queue) {
     pm_unlock(&g_nvn.replay.lock);
 }
 void nvn_replay_finish(u32 queue) {
+    SNX_ZONE(z, "nvn queue finish");
     u32 id = nvn_replay_syncpt(queue), value;
     pm_lock(&g_nvn.replay.lock);
     value = syncpt_promise(id, 1);
