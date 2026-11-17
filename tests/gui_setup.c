@@ -42,7 +42,8 @@ static char* text_of(const char* folder, const char* name) {
 }
 static void holds(const char* folder, const char* name, const char* words) {
     char* text = text_of(folder, name);
-    if (!text || !strstr(text, words)) fprintf(stderr, "%s/%s holds:\n%s\nnot: %s\n", folder, name, text, words);
+    if (!text || !strstr(text, words))
+        fprintf(stderr, "%s/%s holds:\n%s\nnot: %s\n", folder, name, text ? text : "(no file it could read)", words);
     assert(text && strstr(text, words));
     free(text);
 }

@@ -83,7 +83,8 @@ static void said_with(const char* format, const char* first, const char* second)
 }
 static void expect(const char* folder, const char* name, const char* words) {
     char* text = text_of(folder, name);
-    if (!text || !strstr(text, words)) fprintf(stderr, "%s/%s holds:\n%s\nnot: %s\n", folder, name, text, words);
+    if (!text || !strstr(text, words))
+        fprintf(stderr, "%s/%s holds:\n%s\nnot: %s\n", folder, name, text ? text : "(no file it could read)", words);
     assert(text && strstr(text, words));
     free(text);
 }
