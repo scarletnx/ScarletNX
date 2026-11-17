@@ -11,7 +11,9 @@
    version 2 is rebuilt, one of version 1 started over. A file read as its records are used
    (pf_open_mapped) hands each over with where it starts, checks one when it is read (a payload changed on disk doesn't
    check out), drops a record cut short and maps the file as rewritten, leaves one it can't map as it is and never
-   appends to it, and shows what was appended once sealed. Where plat_cpus lists no CPUs, the threads that check and
+   appends to it, and shows what was appended once sealed. A run that ends with such a file open (a shader pass
+   stopped by the time limit) leaves each record it appended, and the next run reads them back and appends after
+   them. Where plat_cpus lists no CPUs, the threads that check and
    unpack a file count the system's */
 #include <errno.h>
 #include <stdarg.h>
@@ -271,6 +273,56 @@ static void mapped(void) {
     memset(&each_got, 0, sizeof each_got);
     pf_open_mapped(&pf, PATH, "another key", each_rec, NULL);
     CHECK(!pf.f && each_got.n == 0 && file_size() == (long)pf.size);
+    plat_file_unmap(&pf.view);
+    pm_destroy(&pf.lock);
+    remove(PATH);
+}
+/* the PF_SCAN records pf_open_mapped handed over: how many, and whether each one's id was the next of 0, 1, 2... */
+static struct {
+    u32 n, in_order;
+} scan_got;
+static void scan_rec(void* ctx, u32 type, const u8* payload, u32 len, u64 at) {
+    u64 words[2];
+    (void)ctx;
+    (void)at;
+    if (type != PF_SCAN || len != sizeof words) return;
+    memcpy(words, payload, sizeof words);
+    scan_got.in_order += words[0] == 3 && words[1] == scan_got.n;
+    scan_got.n++;
+}
+static void scan_read(PFile* pf) {
+    scan_got.n = scan_got.in_order = 0;
+    pf_open_mapped(pf, PATH, "walk=0123456789abcdef", scan_rec, NULL);
+}
+/* A shader pass that the run's time limit stops, as a .vkscan file sees it: the run ends with the file open, never
+   closed. Each PF_SCAN record is on disk once pf_scan returns, so the next run reads back every one and appends after
+   them; a record the exit cut short goes, and those before it stay */
+static void scan_cut_short(void) {
+    PFile pf = {0};
+    long whole, before;
+    remove(PATH);
+    pm_init(&pf.lock);
+    scan_read(&pf);
+    CHECK(scan_got.n == 0);
+    pf_unseal(&pf);
+    for (u64 i = 0; i < 100; i++) pf_scan(&pf, 3, i);
+    whole = file_size();
+    CHECK(pf.f && whole == (long)pf.size); /* on disk with the file still open */
+    fclose(pf.f);                           /* the process ends: the system closes it, nothing more is written */
+    pf.f = NULL;
+    /* the next run: the 100 back, in order, with no rewrite, and its own records after them */
+    scan_read(&pf);
+    CHECK(scan_got.n == 100 && scan_got.in_order == 100 && pf.size == (u64)whole && file_size() == whole);
+    pf_unseal(&pf);
+    for (u64 i = 100; i < 150; i++) pf_scan(&pf, 3, i);
+    before = file_size();
+    pf_scan(&pf, 3, 150);
+    fclose(pf.f);
+    pf.f = NULL;
+    rewrite(-1, 8); /* the exit cut the last record short */
+    /* the run after it: 150 back, and the file cut to them */
+    scan_read(&pf);
+    CHECK(scan_got.n == 150 && scan_got.in_order == 150 && pf.size == (u64)before && file_size() == before);
     plat_file_unmap(&pf.view);
     pm_destroy(&pf.lock);
     remove(PATH);
@@ -1401,6 +1453,7 @@ int main(void) {
     }
 #endif
     mapped();
+    scan_cut_short();
     zipped();
     shiprefs();
     rebuilds();
