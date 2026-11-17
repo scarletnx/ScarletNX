@@ -278,6 +278,14 @@ jobs:
             wait
             echo "OWN_LOOP_RESULT: $t: $(( $(cat /tmp/own_fails_1) + $(cat /tmp/own_fails_2) + $(cat /tmp/own_fails_3) + $(cat /tmp/own_fails_4) )) failures in 500 runs, 4 at a time"
           done
+          bin=$(find build/default -name snx-test-memory-own -type f | head -1)
+          for a in "" "--memory_traps=1 --write_tracking=1"; do
+            f=0
+            for i in $(seq 50); do
+              "$bin" --late $a > /tmp/own_late.txt 2>&1 || { f=$((f + 1)); grep -m2 -E "memory_own.c:|OWN_DIAG" /tmp/own_late.txt || true; }
+            done
+            echo "OWN_LATE_RESULT: --late $a: $f failures in 50 runs"
+          done
       - name: Test native tooling and indexed filesystems
         run: &native-tests ctest --test-dir build/default --output-on-failure --parallel 4
       - name: Check optional Python diagnostics

@@ -1030,6 +1030,12 @@ static int g_round;
 static u64 g_stale[STALE_MAX]; /* the offsets read stale, in place */
 static int g_nstale;           /* atomic */
 static int g_stale_total;
+static int g_late; /* TEMP: --late */
+static void* late_lander(void* a) {
+    (void)a;
+    own_acquire(g_sa, 0x1000);
+    return NULL;
+}
 static void* reader(void* arg) {
     u32 seed = (u32)(uintptr_t)arg * 2654435761u + (u32)g_round;
     int i;
@@ -1118,6 +1124,11 @@ static void test_stress(void) {
         u64 mid_at = 0; /* TEMP: the first piece watched after a resolve came, 0 for none */
         for (i = 0; i < 0x20000; i += 0x1800) {
             if (!mid_at && i && __atomic_load_n(&g_resolves, __ATOMIC_ACQUIRE) != resolves) mid_at = i;
+            if (g_late && i == 2 * 0x1800) { /* TEMP: a late fault's landing, on the first page, comes here */
+                pthread_t late;
+                pthread_create(&late, NULL, late_lander, NULL);
+                pthread_join(late, NULL);
+            }
             CHECK(own_watch(g_sa + i, 0x20000 - i < 0x1800 ? 0x20000 - i : 0x1800) == 0);
         }
         int before_readers = __atomic_load_n(&g_resolves, __ATOMIC_ACQUIRE) - resolves; /* TEMP */
@@ -1162,6 +1173,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         const char* eq = strchr(argv[i], '=');
         char key[64];
+        if (!strcmp(argv[i], "--late")) g_late = 1; /* TEMP */
         if (!eq) continue; /* --busy and the others, below */
         CHECK(!strncmp(argv[i], "--", 2) && (size_t)(eq - argv[i] - 2) < sizeof key);
         CHECK(g_settings_count < (int)(sizeof g_settings_given / sizeof *g_settings_given));
