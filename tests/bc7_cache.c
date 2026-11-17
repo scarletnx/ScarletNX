@@ -303,27 +303,28 @@ static void later(void) {
     const VkBufferImageCopy copy = {.bufferOffset = 4096};
     /* before the recording thread runs: read at once, and the next read once it runs goes there */
     CHECK(vk_bc7_cache_read_later(cb, ka, na, dst, 1, 4096, buf, img, &copy, NULL, 0) == -1);
+    CHECK(!vk_bc7_cache_failed_pending());
     g_threaded = 1;
     CHECK(vk_bc7_cache_read_later(cb, ka, na, dst, 1, 4096, buf, img, &copy, NULL, 0) == 1);
     CHECK(g_copies == 1 && g_copy_at == 4096 && !memcmp(dst, a, (size_t)na));
-    CHECK(vk_bc7_cache_read_later(cb, ka, na, dst, 1, 4096, buf, VK_NULL_HANDLE, &copy, NULL, 0) == 1 &&
-          g_copies == 1);
+    CHECK(vk_bc7_cache_read_later(cb, ka, na, dst, 1, 4096, buf, VK_NULL_HANDLE, &copy, NULL, 0) == 1 && g_copies == 1);
     CHECK(vk_bc7_cache_read_later(cb, ka, 16, dst, 1, 4096, buf, img, &copy, NULL, 0) == 0); /* another size */
     CHECK(vk_bc7_cache_read_later(cb, kc, na, dst, 1, 4096, buf, img, &copy, NULL, 0) == 0); /* not there */
     CHECK(vk_bc7_cache_find(kb) == nb);
-    CHECK(vk_bc7_cache_read_later(cb, kb, nb, dst, 1, 4096, buf, img, &copy, &owner, 0x1234000) == 1 &&
-          g_copies == 1);
+    CHECK(vk_bc7_cache_read_later(cb, kb, nb, dst, 1, 4096, buf, img, &copy, &owner, 0x1234000) == 1 && g_copies == 1);
     CHECK(!vk_bc7_cache_find(kb) && vk_bc7_cache_find(ka) == na);
+    CHECK(vk_bc7_cache_failed_pending());  /* until its owner has it */
     vk_bc7_cache_take_failed(took_failed); /* given to its owner once */
     CHECK(g_failed == 1 && g_failed_owner == &owner && g_failed_gva == 0x1234000 && same(g_failed_key, kb));
+    CHECK(!vk_bc7_cache_failed_pending());
     vk_bc7_cache_take_failed(took_failed);
     CHECK(g_failed == 1);
     u64 hits, stored, restarts, bytes;
     vk_bc7_cache_stats(&hits, &stored, &restarts, &bytes);
     CHECK(hits == 2);
     vk_bc7_cache_put(kb, b, nb); /* encoded again, and kept again at another place */
-    CHECK(vk_bc7_cache_read_later(cb, kb, nb, dst, 1, 4096, buf, img, &copy, &owner, 0x1234000) == 1 &&
-          g_copies == 2 && !memcmp(dst, b, (size_t)nb));
+    CHECK(vk_bc7_cache_read_later(cb, kb, nb, dst, 1, 4096, buf, img, &copy, &owner, 0x1234000) == 1 && g_copies == 2 &&
+          !memcmp(dst, b, (size_t)nb));
     vk_bc7_cache_take_failed(took_failed);
     CHECK(g_failed == 1);
     /* the rate of the reads so far: none for nothing, and a whole budget's worth before any read was timed */

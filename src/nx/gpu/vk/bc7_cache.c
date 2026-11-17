@@ -70,7 +70,7 @@ typedef struct {
     int dropped; /* out of the index already */
 } Bc7Failed;
 typedef struct {
-    FILE* f; /* atomic, the GPU thread's: NULL, the hits are read on the GPU thread */
+    FILE* f;  /* atomic, the GPU thread's: NULL, the hits are read on the GPU thread */
     PMutex m; /* failed, nfailed and cap */
     u32 cap;
     Bc7Failed* failed;
@@ -396,6 +396,7 @@ static void bc7_drop_failed(void) {
     pm_unlock(&g_bc7_cache.rd.m);
 }
 
+int vk_bc7_cache_failed_pending(void) { return __atomic_load_n(&g_bc7_cache.rd.nfailed, __ATOMIC_ACQUIRE) != 0; }
 void vk_bc7_cache_take_failed(void (*fn)(void* owner, u64 gva, const u64 key[2])) {
     if (!__atomic_load_n(&g_bc7_cache.rd.nfailed, __ATOMIC_ACQUIRE)) return;
     bc7_drop_failed();
@@ -473,15 +474,16 @@ static void bc7_later_run(const void* p) {
             g_bc7_cache.rd.cap = cap;
         }
     }
-    if (g_bc7_cache.rd.nfailed < g_bc7_cache.rd.cap) { /* out of memory: its record stays, and its next read fails again */
+    /* out of memory: its record stays, and its next read fails again */
+    if (g_bc7_cache.rd.nfailed < g_bc7_cache.rd.cap) {
         g_bc7_cache.rd.failed[g_bc7_cache.rd.nfailed] = (Bc7Failed){{l->key[0], l->key[1]}, l->at, l->owner, l->gva, 0};
         __atomic_store_n(&g_bc7_cache.rd.nfailed, g_bc7_cache.rd.nfailed + 1, __ATOMIC_RELEASE);
     }
     pm_unlock(&g_bc7_cache.rd.m);
 }
 
-int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* dst, DevMem mem, u64 off,
-                            VkBuffer buf, VkImage img, const VkBufferImageCopy* copy, void* owner, u64 gva) {
+int vk_bc7_cache_read_later(VkCommandBuffer cb, const u64 key[2], u64 size, u8* dst, DevMem mem, u64 off, VkBuffer buf,
+                            VkImage img, const VkBufferImageCopy* copy, void* owner, u64 gva) {
     if (!g_bc7_cache.f) return 0;
     /* the recording thread's handle, at the first read once that thread runs: the cache can open before it starts */
     if (!__atomic_load_n(&g_bc7_cache.rd.f, __ATOMIC_ACQUIRE) && !g_bc7_cache.rd.tried && vk_rec_threaded()) {
