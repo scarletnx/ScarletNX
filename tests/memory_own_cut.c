@@ -71,7 +71,8 @@ static void release_resource(void* p) {
     CHECK(r->refs > 0);
     r->refs--;
 }
-static void land_resources(const OwnRange* r, u8* const* dst, u32 n) {
+static void land_resources(const OwnRange* r, u8* const* dst, u32 n, int by) {
+    (void)by;
     for (u32 i = 0; i < n; i++) {
         CHECK(r[i].size > 0 && dst[i] == g_mem + r[i].addr);
         CHECK(((Resource*)r[i].res)->refs > 0);

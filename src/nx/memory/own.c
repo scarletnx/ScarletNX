@@ -651,7 +651,7 @@ static void land_pages(u64 lo, u64 hi, int by) {
     __atomic_add_fetch(&g_own.land_bytes, total, __ATOMIC_RELAXED);
     SNX_ZONE_TV(z_land, "own land", total, "%u ranges", n);
     if (two) {
-        void* handle = g_own.hooks.land_start(r, dst, n);
+        void* handle = g_own.hooks.land_start(r, dst, n, by);
         if (handle) {
             t_own_window = 1;
             producer_unlock();
@@ -660,7 +660,7 @@ static void land_pages(u64 lo, u64 hi, int by) {
             g_own.hooks.land_end(handle);
         }
     } else
-        g_own.hooks.land(r, dst, n);
+        g_own.hooks.land(r, dst, n, by);
     __atomic_add_fetch(&g_own.lands, 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&g_own.lands_by[by], 1, __ATOMIC_RELAXED);
     if (!mirror)

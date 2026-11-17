@@ -17,8 +17,10 @@ typedef struct {
 /* the producer's side (the renderer's): what owning, landing and letting go of a resource does */
 typedef struct {
     /* the n ranges' contents from their resources written to dst[i] (host memory that isn't trapped), done when it
-       returns: it waits for the GPU. Called with the producer's lock held (lock) and none of own.c's, on any thread */
-    void (*land)(const OwnRange* r, u8* const* dst, u32 n);
+       returns: it waits for the GPU. Called with the producer's lock held (lock) and none of own.c's, on any thread.
+       by is what asked for the landing (OWN_BY_*): a guest access says the CPU uses those bytes, the runtime's own
+       access says nothing about the CPU */
+    void (*land)(const OwnRange* r, u8* const* dst, u32 n, int by);
     void (*retain)(void* res);
     void (*release)(void* res); /* may take the producer's lock */
     /* the thread (plat_tid) holding the producer's lock, or 0: its fault on an owned page can't be answered (the
@@ -58,7 +60,7 @@ typedef struct {
        and gives a handle. NULL: it landed the ranges itself, as land does (a copy too big for one step). land_end(handle)
        waits for the copy and puts the bytes in dst[], with no lock held. It never takes the producer's lock, because
        a thread that holds that lock can wait for this landing's marks */
-    void* (*land_start)(const OwnRange* r, u8* const* dst, u32 n);
+    void* (*land_start)(const OwnRange* r, u8* const* dst, u32 n, int by);
     void (*land_end)(void* handle);
 } OwnHooks;
 
